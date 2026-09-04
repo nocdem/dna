@@ -228,6 +228,21 @@ typedef struct {
  * anything further is treated exactly as before (ignored as stale/far). */
 #define NODUS_W_VOTE_BUFFER_ROUND_AHEAD  2
 
+/* ── O15R B′ — HOW MANY VIEWS AHEAD A VOTE MAY BE PARKED ─────────────
+ *
+ * ONE, and one is not a placeholder. Nodes cross a view boundary at
+ * different instants because each moves only after independently
+ * verifying its own f+1 VIEW_OK proof, so the node still at view V while
+ * the cluster opens V+1 is the ORDINARY case, not a fault. A node two
+ * views behind is a different situation — it has missed a whole
+ * completed rotation and needs the proof ladder, not a vote cache.
+ *
+ * The cost of raising it is not memory (the per-sender bound below caps
+ * occupancy regardless) but TIME: an entry for view V+2 would sit until
+ * the round prune reached it, and it can only ever be counted by a node
+ * that walks two boundaries without committing. */
+#define NODUS_W_VOTE_BUFFER_VIEW_AHEAD   1
+
 /* ⚠ THIS CAPACITY IS AN ARITHMETIC CONSEQUENCE, NOT A ROUND NUMBER.
  *
  * It was 32, which is what a SEVEN-node committee needs and what a
@@ -689,7 +704,69 @@ typedef struct nodus_witness {
      * parked here and re-fed through the ordinary vote handler when the
      * round/phase catches up; replay and chain-id were checked at first
      * arrival, and cert_sig + committee authorization are checked at
-     * drain time by the ordinary handler. */
+     * drain time by the ordinary handler.
+     *
+     * ── O15R B′ — THE THIRD ADMISSION: ONE VIEW AHEAD ────────────────
+     *
+     * WHAT IT ADMITS. A vote whose view is ABOVE the round we hold, at
+     * or above our own `current_view`, and no further ahead than
+     * NODUS_W_VOTE_BUFFER_VIEW_AHEAD. All three conditions are needed
+     * and each excludes a different thing:
+     *   - `> round_state.view` catches BOTH the node still in the old
+     *     view AND the node that has already moved but whose
+     *     `round_state.view` is stale because it is IDLE
+     *     (bft_view_move_finish sets phase = IDLE and never touches
+     *     `round_state.view`, so the two fields disagree by design in
+     *     the window this buffer exists to cover);
+     *   - `>= current_view` refuses to park a vote for a view we have
+     *     already passed — that vote can never be counted again;
+     *   - the ceiling bounds how far the transport may run ahead.
+     *
+     * THE ROUND IS DELIBERATELY NOT RANGE-TESTED on this branch. The
+     * next view's leader may carry a round counter equal to, above, or
+     * BELOW ours: a follower adopts the leader's number only on an
+     * accepted PROPOSE, while a leader that has been refusing proposals
+     * opens from its own counter. Testing the round here would drop
+     * exactly the votes of the leader whose round we have not yet seen.
+     *
+     * WHAT IT COST NOT TO HAVE IT (nodus/BUGS.md, N=20 entry). At a
+     * 20-validator committee with 6 nodes stopped the 14 survivors are
+     * EXACTLY quorum — every alive node's vote is required. Measured at
+     * one stuck height: PREVOTE quorum reached 74 times, PRECOMMIT
+     * quorum ZERO times, zero commits, and 495 votes dropped of which
+     * 486 (98%) involved a VIEW disagreement rather than a round one.
+     * One node a boundary behind is enough to make every round at that
+     * height unwinnable, and votes are broadcast exactly once — there
+     * is no re-send path, so a dropped vote is gone for good.
+     *
+     * ── THE PER-SENDER BOUND, and why eviction cannot be by round ────
+     *
+     * At most NODUS_W_VOTE_BUFFER_ROUND_AHEAD live entries per
+     * (sender, msg_type). A new entry that would exceed it evicts that
+     * sender's STALEST — lowest (view, round) LEXICOGRAPHICALLY, never
+     * lowest round alone.
+     *
+     * ⚠ LOWEST-ROUND ALONE IS WRONG ACROSS A BOUNDARY, which is the
+     * only place this admission fires. "An honest sender's rounds are
+     * monotone" holds WITHIN one view, not across two: a sender may
+     * hold (r=100, view V) and (r=5, view V+1) at once, because the
+     * V+1 leader opened from its own counter. Evicting the lowest round
+     * would throw away the V+1 vote — the newer one, and the exact vote
+     * the whole mechanism exists to keep. A lower VIEW is strictly
+     * staler whatever its round, so the view is the primary key.
+     *
+     * WHY A BOUND PER SENDER RATHER THAN A BIGGER CAP. It makes the cap
+     * unreachable by any single member: 2 entries × 2 vote types × N
+     * senders = 4N, which is 80 at N=20 against a
+     * NODUS_W_VOTE_BUFFER_CAP of 512. A Byzantine member can churn only
+     * its OWN four slots, so it can neither evict an honest entry nor
+     * fill the buffer — the two failure modes an unbounded park would
+     * have introduced.
+     *
+     * THE ROUND-BASED PRUNE STAYS (it is NOT replaced by a view prune).
+     * On a healthy chain at a stable view, entries for already-settled
+     * ROUNDS would otherwise hold slots forever under keep-first, which
+     * re-creates the starvation this buffer was written to fix. */
     nodus_witness_pending_vote_t vote_buffer[NODUS_W_VOTE_BUFFER_CAP];
 
     /* BFT config (computed from roster) */
@@ -1030,6 +1107,51 @@ typedef struct nodus_witness {
         int       count;
         nodus_witness_mempool_entry_t *entries[NODUS_W_MAX_BLOCK_TXS];
     } retained_batch;
+
+    /* ── O15R B′ — THE PARKED PROPOSE FOR THE NEXT VIEW ───────────────
+     *
+     * ONE SLOT, holding the RAW FRAME BYTES of a PROPOSE for exactly
+     * `current_view + 1` that arrived while this node still held the
+     * lower view, so it can be replayed the instant the view moves.
+     *
+     * WHY IT EXISTS. Nodes cross a view boundary at different instants
+     * (each moves only on its own verified f+1 VIEW_OK proof), and a
+     * PROPOSE is broadcast exactly once — there is no re-send path in
+     * this tree. A node one boundary behind therefore refused the new
+     * leader's proposal, then moved, then sat IDLE having missed it,
+     * and waited a full round timeout. At a 20-validator committee with
+     * 14 alive the quorum is 14 of 14, so that one node made the round
+     * unwinnable; measured at one stuck height, 45 proposals were
+     * refused as "round in progress" and 35 of them came from a view
+     * AHEAD of the refusing node (nodus/BUGS.md, N=20 entry).
+     *
+     * ⚠ RAW BYTES, NOT THE DECODED STRUCT, AND THAT IS NOT A STYLE
+     * CHOICE. A decoded batch ALIASES the frame buffer
+     * (nodus_tier3.c, `tx->tx_data = val.bstr.ptr`), and that buffer is
+     * a callback argument of nodus_witness_dispatch_t3 which does not
+     * outlive the call. Storing the decoded message would leave every
+     * batch transaction pointing into freed transport memory.
+     *
+     * WHAT FILLS IT. Only nodus_witness_dispatch_t3, and only when
+     * nodus_witness_bft_handle_propose has returned 1 — a value it
+     * produces solely BELOW the leader/committee block, so the frame is
+     * already known to come from the EXPECTED LEADER FOR THE INCOMING
+     * VIEW. A roster member that is not that leader cannot take the
+     * slot. The bytes were wsig-verified before dispatch, so what is
+     * stored is verified bytes.
+     *
+     * ⚠ Heap pointer — in-memory only, NEVER persisted (the same rule
+     * retained_batch above states). Released when the chain reaches
+     * `height`, when the view passes `view`, at the replay attempt
+     * whatever its outcome, and at shutdown. */
+    struct {
+        bool      present;
+        uint32_t  view;                            /* the view it is FOR */
+        uint64_t  height;                          /* propose.block_height */
+        uint8_t   sender_id[NODUS_T3_WITNESS_ID_LEN];
+        size_t    len;
+        uint8_t  *bytes;                           /* heap, owned */
+    } parked_propose;
 
     /* PR 3 Yol B — auto-bootstrap state machine fields.
      *
@@ -1684,6 +1806,39 @@ void nodus_witness_close(nodus_witness_t *witness);
 void nodus_witness_dispatch_t3(nodus_witness_t *witness,
                                struct nodus_tcp_conn *conn,
                                const uint8_t *payload, size_t len);
+
+/* ── O15R B′ — the parked next-view PROPOSE slot ──────────────────────
+ *
+ * DECLARED HERE, not in nodus_witness_bft.h, because the slot is filled
+ * by the DISPATCHER: nodus_witness_dispatch_t3 is the only place the raw
+ * frame bytes exist, and it is the only caller of the store. The BFT
+ * engine reads the slot through the witness struct and releases it
+ * through the clear. Same split as `retained_batch`, which is round
+ * state and therefore lives in the BFT header instead. */
+
+/**
+ * Park the raw bytes of a PROPOSE for the NEXT view, to be replayed once
+ * this node's own view move completes.
+ *
+ * Called ONLY when nodus_witness_bft_handle_propose returned 1, which it
+ * does solely below the leader/committee block — so `sender_id` is the
+ * expected leader for `view` and the caller must not weaken that.
+ *
+ * KEEP-FIRST for an equal (view, height): the first frame from that
+ * leader is the one that will satisfy the C5 binding, and a second
+ * arrival is either a duplicate or a leader equivocating, neither of
+ * which should displace it. A parked frame for a LOWER view is replaced,
+ * because it can no longer be replayed into any view we will enter.
+ *
+ * @return true if the slot now holds this frame.
+ */
+bool nodus_witness_parked_propose_store(nodus_witness_t *witness,
+                                        uint32_t view, uint64_t height,
+                                        const uint8_t *sender_id,
+                                        const uint8_t *payload, size_t len);
+
+/** Release the parked PROPOSE slot. Idempotent. */
+void nodus_witness_parked_propose_clear(nodus_witness_t *witness);
 
 /**
  * Dispatch a DNAC client query ("dnac_*" methods).

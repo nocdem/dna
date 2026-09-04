@@ -6060,7 +6060,7 @@ int main(void) {
         chain_db_drop(w, dir);
     }
 
-    /* ── §15c — a PROPOSE at a different view is REFUSED, BOTH ways ────
+    /* ── §15c — a PROPOSE at a different view NEVER ENTERS A ROUND ─────
      *
      * ⚠ THE LOWER DIRECTION IS THE DEFECT THE SEASON EXISTS TO CLOSE.
      * handle_propose used to execute `w->current_view = hdr->view;`
@@ -6068,13 +6068,25 @@ int main(void) {
      * already LEFT could drag this node back to it — and `current_view`
      * is what leader election reads.
      *
-     * ORDER IS LOAD-BEARING: both refusals run while the phase is IDLE,
+     * ⚠ O15R B′ SPLIT THE "HIGHER" DIRECTION IN TWO, and this section was
+     * updated with it rather than around it. EXACTLY ONE view ahead now
+     * returns 1 — "park me" — because that frame will become valid the
+     * moment this node's own view move completes, and it is broadcast only
+     * once. TWO or more views ahead is unchanged at -1: that node has
+     * missed a whole completed rotation and needs the proof ladder, not a
+     * one-slot cache. The property this section has always asserted is
+     * untouched and is what every leg still checks: NO proposal at any
+     * other view enters a round, and NONE of them moves the counter.
+     * Behaviour changed, so the test changed; see
+     * tests/test_bft_view_boundary.c for what the parked frame then does.
+     *
+     * ORDER IS LOAD-BEARING: every refusal runs while the phase is IDLE,
      * and the POSITIVE CONTROL runs last. A control that ran first would
      * put us in PREVOTE, and every later proposal would then be refused
      * by the round-in-progress check instead of by the view gate — the
-     * two refusals would look identical and prove nothing. ──────────── */
-    printf("§15c O15N — a PROPOSE at any other view is refused, in both "
-           "directions, and the counter never moves\n");
+     * refusals would look identical and prove nothing. ──────────────── */
+    printf("§15c O15N/O15R — a PROPOSE at any other view never enters a "
+           "round, and the counter never moves\n");
     {
         peer_t p[6];
         for (int i = 0; i < 6; i++) peer_make(&p[i]);
@@ -6090,20 +6102,25 @@ int main(void) {
         CHECK(tip == 3, "seeded chain tip is 3 (see §12a)");
         vok_seed_committee(w, (peer_t[]){self, p[0], p[1], p[2], p[3]}, 5);
 
-        /* Three consecutive views, none of them led by us, so every
-         * message below passes the leader gate and reaches the view gate
-         * that is under test. */
-        uint32_t VL = 0, VC = 0, VH = 0;
+        /* FOUR consecutive views, none of them led by us, so every message
+         * below passes the leader gate and reaches the view gate that is
+         * under test. Four rather than three since O15R B′: the "higher"
+         * direction now needs BOTH a +1 leg (parked) and a +2 leg (still
+         * refused outright), and the two must be distinguished on the same
+         * fixture or the boundary between them is untested. We lead one
+         * view in n_witnesses, so a run of four unled views always exists
+         * inside this limit. */
+        uint32_t VL = 0, VC = 0, VH = 0, VF = 0;
         {
             bool found = false;
             uint32_t lim = w->roster.n_witnesses * 2 + 2;
-            for (uint32_t a = 1; a + 2 <= lim && !found; a++) {
+            for (uint32_t a = 1; a + 3 <= lim && !found; a++) {
                 if (p2_is_leader_at(w, a) || p2_is_leader_at(w, a + 1) ||
-                    p2_is_leader_at(w, a + 2))
+                    p2_is_leader_at(w, a + 2) || p2_is_leader_at(w, a + 3))
                     continue;
-                VL = a; VC = a + 1; VH = a + 2; found = true;
+                VL = a; VC = a + 1; VH = a + 2; VF = a + 3; found = true;
             }
-            CHECK(found, "found three consecutive views, none led by us");
+            CHECK(found, "found four consecutive views, none led by us");
         }
         w->current_view = VC;
 
@@ -6121,8 +6138,9 @@ int main(void) {
         /* One PROPOSE builder, three views — so the ONLY thing that
          * varies between the legs is hdr.view. */
         nodus_t3_msg_t pm;
-        for (int leg = 0; leg < 3; leg++) {
-            uint32_t V = (leg == 0) ? VH : (leg == 1) ? VL : VC;
+        for (int leg = 0; leg < 4; leg++) {
+            uint32_t V = (leg == 0) ? VH : (leg == 1) ? VL :
+                         (leg == 2) ? VF : VC;
             const peer_t *leader = p2_leader_at(w, all, V);
             CHECK(memcmp(leader->id, w->my_id,
                          NODUS_T3_WITNESS_ID_LEN) != 0,
@@ -6149,11 +6167,14 @@ int main(void) {
             int rc = nodus_witness_bft_handle_propose(w, &pm);
 
             if (leg == 0) {
-                CHECK(rc == -1,
-                      "a PROPOSE at a HIGHER view is REFUSED");
+                CHECK(rc == 1,
+                      "a PROPOSE at EXACTLY ONE view ahead is not entered "
+                      "but is kept — O15R B′ returns 1, 'park me', because "
+                      "that frame becomes valid the instant our own view "
+                      "move completes and it is broadcast only once");
                 CHECK(w->current_view == held,
                       "and the counter did not RISE — one leader's word is "
-                      "not a proof");
+                      "not a proof, and parking does not change that");
                 CHECK(w->round_state.phase == NODUS_W_PHASE_IDLE,
                       "nothing was written: no round was entered");
             } else if (leg == 1) {
@@ -6163,6 +6184,16 @@ int main(void) {
                       "left used to drag us back to it");
                 CHECK(w->current_view == held,
                       "and the counter did not FALL");
+                CHECK(w->round_state.phase == NODUS_W_PHASE_IDLE,
+                      "nothing was written");
+            } else if (leg == 2) {
+                CHECK(rc == -1,
+                      "a PROPOSE TWO views ahead is REFUSED OUTRIGHT — the "
+                      "park is one view deep, so a node that has missed a "
+                      "whole completed rotation still takes the proof "
+                      "ladder and nothing else");
+                CHECK(w->current_view == held,
+                      "and the counter did not RISE");
                 CHECK(w->round_state.phase == NODUS_W_PHASE_IDLE,
                       "nothing was written");
             } else {

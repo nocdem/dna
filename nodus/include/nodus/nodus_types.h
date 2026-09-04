@@ -20,10 +20,14 @@ extern "C" {
 
 /* ── Protocol constants ──────────────────────────────────────────── */
 
+/* ⚠ THESE FOUR MUST AGREE. NODUS_VERSION_STRING had drifted to "0.19.41"
+ * while NODUS_VERSION_PATCH read 48 — seven releases apart, so anything
+ * reading the string reported a version this binary had not been for a
+ * long time. Bump BOTH, together, every time. */
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  19
-#define NODUS_VERSION_PATCH  48
-#define NODUS_VERSION_STRING "0.19.41"
+#define NODUS_VERSION_PATCH  49
+#define NODUS_VERSION_STRING "0.19.49"
 
 /* Wire frame.
  *

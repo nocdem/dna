@@ -5639,11 +5639,40 @@ int nodus_witness_bft_start_round_from_mempool(nodus_witness_t *w) {
  *   round identity; it does not substitute for state recompute.
  * ════════════════════════════════════════════════════════════════════ */
 
-int nodus_witness_bft_handle_propose(nodus_witness_t *w,
-                                       const nodus_t3_msg_t *msg) {
+/* `live` is the O15R B′ replay token, and it follows the shape the vote
+ * path already established with `live_hdr` (see the contract at
+ * bft_handle_vote_inner's forward declaration) rather than inventing a
+ * second one.
+ *
+ *   true  — a frame straight off the wire. The replay CHECK below runs,
+ *           and the matching nonce_record runs at its usual place under
+ *           the leader/committee block.
+ *   false — the parked next-view PROPOSE, replayed out of
+ *           `w->parked_propose` by bft_view_move_finish once this node's
+ *           own view move completed. BOTH of those steps are skipped,
+ *           and skipping them is REQUIRED, not an optimisation: the
+ *           nonce was ALREADY recorded on the first pass — the record
+ *           sits between the leader check and the view gate, ABOVE the
+ *           point at which the frame was parked — so a replay through
+ *           the public entry point would be refused at the replay gate
+ *           as a duplicate of itself, and the round would be lost
+ *           exactly as it is today.
+ *
+ * ⚠ ONLY THOSE TWO STEPS ARE SKIPPED. safety_halt, the chain-id check
+ * and every consensus gate below re-run on the replay: the phase gate
+ * (now IDLE), the leader/committee check, the view gate (now equal), C5,
+ * the A2 height check, the prepared-value lock, the round init, the
+ * PREVOTE broadcast and the vote-buffer drain. A parked frame gets no
+ * authority a live one would not have had — it gets a SECOND CHANCE to
+ * be judged, in the view it was addressed to. */
+static int bft_handle_propose_inner(nodus_witness_t *w,
+                                      const nodus_t3_msg_t *msg, bool live) {
     if (!w || !msg) return -1;
 
-    /* C3 fix: refuse all BFT participation once safety_halt is latched. */
+    /* C3 fix: refuse all BFT participation once safety_halt is latched.
+     * Deliberately INSIDE the shared body: a replayed proposal entering a
+     * round is BFT participation like any other, and a halted node must
+     * refuse it too. */
     if (w->safety_halt) {
         fprintf(stderr, "%s: propose rejected — safety halt (h=%llu)\n",
                 LOG_TAG, (unsigned long long)w->halt_block_height);
@@ -5654,8 +5683,10 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
     const nodus_t3_header_t *hdr = &msg->header;
 
     /* Replay CHECK — pure, records nothing. The matching nonce_record is
-     * below the leader/committee block (O15O Faz 5). */
-    if (is_replay(hdr->sender_id, hdr->nonce, hdr->timestamp))
+     * below the leader/committee block (O15O Faz 5). Skipped on the
+     * parked replay, which would otherwise trip over its own first-pass
+     * record; see the `live` contract above. */
+    if (live && is_replay(hdr->sender_id, hdr->nonce, hdr->timestamp))
         return -1;
 
     /* CRITICAL-2: Chain ID validation */
@@ -5761,7 +5792,52 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
         w->round_state.client_conn = NULL;
     }
 
-    if (w->round_state.phase != NODUS_W_PHASE_IDLE) {
+    /* ── O15R B′ — A PROPOSE FOR A HIGHER VIEW IS NOT "IN PROGRESS" ────
+     *
+     * The release above handles the round we have LEFT. This handles the
+     * round we have not yet ENTERED, and it is the other half of the same
+     * boundary.
+     *
+     * MEASURED (nodus/BUGS.md, N=20 entry): at one stuck height, 45
+     * proposals were refused here as "round in progress" and 35 of them
+     * came from a view AHEAD of the refusing node. This gate sits ABOVE
+     * the view gate, so those 35 never even reached the proof request
+     * that would have moved this node — the refusal blocked its own
+     * remedy. The node then moved on a proof anyway, sat IDLE having
+     * missed the proposal, and burned a full round timeout. Votes and
+     * proposals are broadcast EXACTLY ONCE; nothing re-sends them.
+     *
+     * THE RULE: refuse only a proposal that is competing with the round
+     * we are actually running — one for a view at or below the one we
+     * hold. A proposal for a STRICTLY HIGHER view is describing a round
+     * that has not started here yet and must fall through, so the view
+     * gate below can either request the proof (further ahead) or ask for
+     * the frame to be parked (exactly the next view).
+     *
+     * STRICTLY GREATER, and the strictness is load-bearing: a same-view
+     * PROPOSE arriving while we are in VIEW_CHANGE stays refused, which
+     * is the genuine duplicate-proposal guard this check was written to
+     * be. Widening it to `<` would let a second proposal restart a live
+     * round in the view we are already serving.
+     *
+     * ⚠ THE SAFETY ARGUMENT, and it is short enough to check by reading.
+     * A LIVE ROUND CAN STILL NEVER BE OVERWRITTEN BY THIS. Everything
+     * that mutates round state — C5, the A2 height check, the prepared
+     * lock, the round-state init — sits BELOW the view-equality gate,
+     * which admits only `hdr->view == w->current_view`. A frame that gets
+     * past the test below while `phase != IDLE` has `hdr->view >
+     * current_view` by construction, so it reaches that gate and leaves
+     * through it, as a park (exactly one ahead) or a refusal (further).
+     * The reachable set of proposals that can enter a round is therefore
+     * UNCHANGED; only the set that can be KEPT for later has grown.
+     *
+     * ONE SIDE EFFECT, stated rather than discovered later: nonce_record
+     * now runs for a higher-view proposal that arrives while a round is
+     * live, because it sits above the view gate. That is the behaviour
+     * the IDLE path has always had for the same frame, and it is what the
+     * replay depends on skipping (see the `live` contract). */
+    if (w->round_state.phase != NODUS_W_PHASE_IDLE &&
+        hdr->view <= w->current_view) {
         fprintf(stderr, "%s: proposal rejected — round in progress "
                 "(phase=%d; our round view=%u height=%llu round=%lu, "
                 "our current_view=%u; proposal view=%u height=%llu)\n",
@@ -5916,6 +5992,28 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
                 LOG_TAG, hdr->view, w->current_view);
         if (hdr->view > w->current_view)
             bft_viewok_send_request(w, hdr->sender_id);
+        /* ── O15R B′ — "PARK ME": the caller may keep this frame ────────
+         *
+         * A DISTINGUISHED RETURN, not a third refusal code. The view
+         * counter still does not move here and nothing is written; this
+         * says only that the frame is worth holding until the proof
+         * requested just above arrives, because it is addressed to the
+         * VERY NEXT view and will become valid the moment we enter it.
+         *
+         * ⚠ THIS POINT IS ONLY REACHABLE BELOW THE LEADER/COMMITTEE
+         * BLOCK, AND THAT IS WHAT MAKES THE PARK SAFE. That block
+         * resolved the committee at tip+1 and ranked the sender with
+         * nodus_witness_bft_leader_index(epoch, hdr->view, count) — at
+         * the PROPOSAL'S view, not ours. So a frame that reaches here is
+         * already known to come from the EXPECTED LEADER FOR THE
+         * INCOMING VIEW. Moving this decision any earlier — to the phase
+         * gate, say — would let any roster member fill the single slot
+         * and starve the real leader's proposal.
+         *
+         * Anything further ahead than one view, or behind, is unchanged:
+         * -1, and the proof ladder is the only way forward. */
+        if (hdr->view == w->current_view + 1)
+            return 1;
         return -1;
     }
 
@@ -6418,10 +6516,26 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
     /* O15C-C D2 — peers' votes that arrived before this proposal did.
      * This is the exact loss that starved round 20 of the 2026-08-19
      * rehearsal: fast peers' PREVOTEs landed while this node was still
-     * settling the previous round and were silently ignored. */
+     * settling the previous round and were silently ignored.
+     *
+     * O15R B′ — THIS IS ALSO WHAT COLLECTS THE PARKED NEXT-VIEW VOTES,
+     * and the reason no drain call was added at the view move. Drain
+     * eligibility requires a LIVE round at the entry's (round, view), and
+     * a node that has just moved is IDLE — so a drain at the move would
+     * be a no-op on every parked entry. They become eligible when this
+     * node ENTERS the round at the new view, which is this line, and
+     * which the parked-PROPOSE replay is what makes reachable at all. */
     nodus_witness_bft_drain_vote_buffer(w);
 
     return 0;
+}
+
+/* The public entry point. Every frame off the wire is LIVE; the one
+ * caller that passes false is bft_view_move_finish, replaying the parked
+ * next-view PROPOSE, and it calls the inner function directly. */
+int nodus_witness_bft_handle_propose(nodus_witness_t *w,
+                                       const nodus_t3_msg_t *msg) {
+    return bft_handle_propose_inner(w, msg, /*live*/ true);
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -6432,29 +6546,90 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
  * Dedup key is (sender, type, round, view), keep-first, so a repeated
  * frame can never evict an honest entry. A full buffer drops the new
  * entry with a log line — bounded memory beats completeness here, and
- * the sender's vote still counts on every node that was in phase. */
+ * the sender's vote still counts on every node that was in phase.
+ *
+ * O15R B′ — and a PER-SENDER BOUND on top of the dedup, because the view
+ * admission added this season lets one sender occupy slots across two
+ * views rather than one. At most NODUS_W_VOTE_BUFFER_ROUND_AHEAD live
+ * entries per (sender, msg_type); the (view, round)-stalest is evicted to
+ * make room. That caps total occupancy at 4N — 80 at N=20 against a cap
+ * of 512 — so no member, honest or Byzantine, can fill the buffer or
+ * displace another member's entry. */
 static void bft_vote_buffer_insert(nodus_witness_t *w, uint8_t msg_type,
                                    uint64_t round, uint32_t view,
                                    const uint8_t *sender_id,
                                    const nodus_t3_vote_t *vote) {
     int free_slot = -1;
+    /* O15R B′ — the per-sender occupancy of THIS (sender, msg_type), and
+     * the stalest of those entries. Both are gathered in the one pass the
+     * dedup scan already makes; a second walk would cost another 512
+     * iterations per parked vote for nothing. */
+    int mine = 0;
+    int stalest = -1;
     for (int i = 0; i < NODUS_W_VOTE_BUFFER_CAP; i++) {
         nodus_witness_pending_vote_t *e = &w->vote_buffer[i];
         if (!e->used) {
             if (free_slot < 0) free_slot = i;
             continue;
         }
-        /* Prune entries for rounds that are already settled. */
+        /* Prune entries for rounds that are already settled.
+         *
+         * ⚠ THIS PRUNE IS BY ROUND AND MUST STAY BY ROUND. A view-based
+         * prune looks like the natural companion to the view admission
+         * added this season and is not: on a healthy chain sitting at ONE
+         * stable view, no entry's view would ever fall behind, so entries
+         * for rounds the chain has already committed would hold their
+         * slots forever under keep-first — which is precisely the
+         * starvation this buffer was written to remove. */
         if (e->round <= w->last_committed_round) {
             e->used = false;
             if (free_slot < 0) free_slot = i;
             continue;
         }
-        if (e->msg_type == msg_type && e->round == round &&
-            e->view == view &&
+        if (e->msg_type == msg_type &&
             memcmp(e->sender_id, sender_id,
-                   NODUS_T3_WITNESS_ID_LEN) == 0)
-            return;  /* keep-first */
+                   NODUS_T3_WITNESS_ID_LEN) == 0) {
+            /* Dedup key keeps the ROUND: the same leader can open two
+             * rounds at ONE (height, view) after a local batch abort, and
+             * those carry different round numbers, so folding them would
+             * silently discard the second round's vote. */
+            if (e->round == round && e->view == view)
+                return;  /* keep-first */
+            mine++;
+            /* ⚠ STALEST IS LOWEST (view, round) LEXICOGRAPHICALLY, NEVER
+             * LOWEST ROUND. "An honest sender's rounds are monotone" is
+             * true WITHIN a view and false across a boundary — which is
+             * the only place the view admission fires. The next view's
+             * leader opens from ITS OWN counter, so one sender can hold
+             * (r=100, view V) and (r=5, view V+1) at the same time, and
+             * evicting the lowest round would throw away the V+1 vote:
+             * the newer one, and the exact vote the park exists to keep.
+             * A lower VIEW is strictly staler whatever its round. */
+            if (stalest < 0 ||
+                e->view < w->vote_buffer[stalest].view ||
+                (e->view == w->vote_buffer[stalest].view &&
+                 e->round < w->vote_buffer[stalest].round))
+                stalest = i;
+        }
+    }
+    /* O15R B′ — THE PER-SENDER BOUND. Total occupancy is then at most
+     * ROUND_AHEAD × 2 vote types × committee size = 4N, which is 80 at
+     * N=20 against a cap of 512: no single member can fill the buffer,
+     * and a Byzantine one can churn only its own four slots. Without
+     * this, the view admission would let one sender spend the whole cap
+     * and evict every honest entry — the failure the cap sizing already
+     * refuses for rounds. */
+    if (mine >= NODUS_W_VOTE_BUFFER_ROUND_AHEAD && stalest >= 0) {
+        fprintf(stderr, "%s: vote buffer per-sender bound (%d) reached — "
+                "evicting the stalest %s (view %u round %llu) for "
+                "(view %u round %llu)\n", LOG_TAG,
+                NODUS_W_VOTE_BUFFER_ROUND_AHEAD,
+                msg_type == NODUS_T3_PREVOTE ? "PREVOTE" : "PRECOMMIT",
+                w->vote_buffer[stalest].view,
+                (unsigned long long)w->vote_buffer[stalest].round,
+                view, (unsigned long long)round);
+        w->vote_buffer[stalest].used = false;
+        free_slot = stalest;
     }
     if (free_slot < 0) {
         fprintf(stderr, "%s: vote buffer full — dropping early %s for "
@@ -6579,13 +6754,67 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
             hdr->round == cur && hdr->view == w->round_state.view &&
             msg->type == NODUS_T3_PRECOMMIT &&
             w->round_state.phase == NODUS_W_PHASE_PREVOTE;
-        if (future_round || early_precommit) {
+        /* ── O15R B′ — A VOTE FOR THE NEXT VIEW IS PARKED, NOT DROPPED ──
+         *
+         * THE LOSS THIS CLOSES. Nodes cross a view boundary at different
+         * instants — each moves only on its own verified f+1 VIEW_OK
+         * proof — and votes are broadcast EXACTLY ONCE (there is no
+         * re-send path in this tree). Every PREVOTE/PRECOMMIT for V+1
+         * that reached a node still holding V died at the round/view
+         * equality test in bft_handle_vote_inner. Measured at one stuck
+         * height on a 20-validator committee with 14 alive
+         * (nodus/BUGS.md, N=20 entry): 495 votes dropped, 486 of them —
+         * 98% — involving a VIEW disagreement rather than a round one,
+         * with PRECOMMIT quorum reached ZERO times against 74 PREVOTE
+         * quorums. At 14 of 14 there is no slack: one node a boundary
+         * behind makes every round at that height unwinnable.
+         *
+         * WHY BOTH VIEW TESTS. `> round_state.view` catches the node
+         * still in the old view AND the node that has just moved but
+         * whose `round_state.view` is stale while IDLE —
+         * bft_view_move_finish sets phase = IDLE and never touches
+         * `round_state.view`, so those two fields disagree by design in
+         * exactly this window. `>= current_view` refuses to park a vote
+         * for a view we have already passed, which could never be
+         * counted again.
+         *
+         * ⚠ hdr->round IS DELIBERATELY NOT RANGE-TESTED HERE. The next
+         * view's leader may carry a round counter equal to, above, or
+         * BELOW ours: a follower adopts the leader's number only on an
+         * ACCEPTED PROPOSE, while a leader that has been refusing
+         * proposals opens the round from its own counter. A round test
+         * would drop precisely the votes of the leader whose round this
+         * node has not seen yet — the case the park exists for. */
+        bool view_ahead =
+            hdr->view > w->round_state.view &&
+            hdr->view >= w->current_view &&
+            hdr->view <= w->current_view + NODUS_W_VOTE_BUFFER_VIEW_AHEAD;
+        if (future_round || early_precommit || view_ahead) {
             /* O15O Faz 5 — NOTHING IS RECORDED ON THIS BRANCH, and it is
              * the one place a frame is admitted without ever meeting a
              * committee gate. bft_vote_buffer_insert is what bounds it:
              * it dedups on (sender, msg_type, round, view) with
              * keep-first, so a re-presented frame takes no second slot
-             * and can never evict an honest entry. */
+             * and can never evict an honest entry.
+             *
+             * ⚠ THE NONCE MUST NOT BE RECORDED HERE, and O15R B′ widens
+             * what that protects. A parked frame has not been judged;
+             * recording it would refuse the re-delivery that WOULD have
+             * been counted. The record happens in bft_handle_vote_inner,
+             * below the committee gate, and only for a live frame.
+             *
+             * PARKING NEVER COUNTS A VOTE — the invariant the whole
+             * mechanism rests on. A parked vote reaches a tally only
+             * through bft_handle_vote_inner, after this node holds that
+             * view AND a live round at it, where the committee gate and
+             * the C5 cert verify (which reads w->current_view) run
+             * exactly as they do for a vote off the wire. The view
+             * admission moves WHEN a vote is judged, never WHETHER or
+             * under WHOSE authority.
+             *
+             * O15R B′ adds a per-sender bound inside the insert, so one
+             * member — honest or not — can occupy at most
+             * ROUND_AHEAD × 2 slots however many views it spans. */
             bft_vote_buffer_insert(w, msg->type, hdr->round, hdr->view,
                                    hdr->sender_id, &msg->vote);
             return 0;
@@ -9896,6 +10125,39 @@ static void bft_view_move_finish(nodus_witness_t *w) {
     w->view_change_voted = false;
     w->round_state.phase = NODUS_W_PHASE_IDLE;
 
+    /* ── O15R D — RESTART THE P3 WINDOW, so P3 agrees with P2 ──────────
+     *
+     * P3 (the demand-armed follower deadman) evaluates only in the IDLE
+     * branch of check_timeout, and its window has exactly THREE writers,
+     * all inside that branch: the first-observation/chain-moved re-stamp,
+     * the re-stamp at the would-fire point, and the no-demand disarm.
+     * NONE of them is a view move.
+     *
+     * WHAT THAT COSTS ON A FROZEN TIP. The line above just returned us to
+     * IDLE in a BRAND-NEW view whose leader has not had a single tick to
+     * propose. If this node's last re-stamp is already older than
+     * round_timeout_ms — which it is, on the stuck height that made the
+     * rotation happen — P3 fires on the very FIRST IDLE tick after the
+     * move and initiates yet another view change, against a leader that
+     * was never given a chance. That node then refuses the new leader's
+     * PROPOSE, and the boundary repeats.
+     *
+     * P2, three lines below, already gives the new leader a full
+     * round_timeout_ms. This makes P3 agree with P2 instead of
+     * contradicting it — one window, one deadline, one meaning.
+     *
+     * ⚠ RE-STAMP, NEVER ARM, AND NEVER DISARM. The `!= 0` guard is the
+     * whole safety of this line: 0 means DISARMED, so a node with no
+     * pending demand stays disarmed and a quiet chain is untouched.
+     * `last_seen_tip` is deliberately NOT written — it is the "the chain
+     * moved" detector, and forging it would make a genuinely frozen tip
+     * look like a moving one on the next tick.
+     *
+     * LIVENESS ONLY: this changes WHEN this node ASKS for a rotation,
+     * never WHAT it votes. `current_view` is not touched here. */
+    if (w->tip_since_ms != 0)
+        w->tip_since_ms = time_ms();
+
     /* ONE evaluation for the two decisions below. is_leader resolves the
      * committee from the DB and hashes its members, so asking twice
      * costs two lookups — and, more to the point, the arm decision and
@@ -9946,6 +10208,100 @@ static void bft_view_move_finish(nodus_witness_t *w) {
     if (!i_am_leader) {
         w->awaiting_propose_deadline_ms =
             time_ms() + w->bft_config.round_timeout_ms;
+
+        /* ── O15R B′ — REPLAY THE PARKED PROPOSE FOR THIS VIEW ──────────
+         *
+         * We have just entered the view the parked frame was addressed
+         * to, and the leader will not send it again — a PROPOSE is
+         * broadcast exactly once. Without this the node sits IDLE having
+         * missed the round entirely and burns the full round_timeout_ms
+         * armed two lines above; at a committee where the quorum equals
+         * the number of live nodes, that one absence makes the round
+         * unwinnable and the boundary repeats.
+         *
+         * EVERY GATE RUNS AGAIN except the replay check and the nonce
+         * record (see the `live` contract on bft_handle_propose_inner).
+         * The three that were false when the frame arrived are true now:
+         * the phase gate (we are IDLE), the view gate (equal), and the
+         * drain at the end of the round entry, which is what finally
+         * counts the votes for this view parked in the vote buffer.
+         *
+         * THE SLOT IS CLEARED WHATEVER HAPPENS. One replay attempt, one
+         * outcome: if the frame is refused — a C5 mismatch, a height that
+         * moved under us, the prepared lock — holding it would only
+         * re-offer the same rejected bytes at the next move.
+         *
+         * ⚠ KNOWN RESIDUAL, DOCUMENTED AND DELIBERATELY NOT FIXED HERE.
+         * A NEW_VIEW that arrives while we are still behind only triggers
+         * the proof request; its carried certificate is adopted only at
+         * an EQUAL view. So the replayed PROPOSE meets the C5 gate
+         * against the binding this node computed for ITSELF a few lines
+         * above (bind_reproposal_from_view_changes), not against the
+         * leader's. At exact quorum every node holds the same VIEW_CHANGE
+         * records, so the two bindings agree and the replay lands. Where
+         * the quorum has slack the bindings can differ, the replay is
+         * refused, and the view rotates — FAIL-CLOSED, and still strictly
+         * better than today, where that round is lost outright rather
+         * than rotated away from.
+         *
+         * The call depth is the one the leader branch below already uses
+         * for nodus_witness_try_repropose_retained. */
+        if (w->parked_propose.present &&
+            w->parked_propose.view == w->current_view) {
+            /* ⚠ OWNERSHIP MOVES OUT OF THE SLOT BEFORE THE CALL — the
+             * same discipline nodus_witness_try_repropose_retained states
+             * for the retained batch, and for the same reason:
+             * handle_propose re-enters paths that inspect witness state
+             * (the round entry drains the vote buffer, which can carry
+             * the round through PREVOTE quorum and beyond), and the slot
+             * must not be reachable by any of them while `pm` still
+             * aliases its bytes. Two owners of one buffer is the
+             * double-free this shape invites. It also gives the "release
+             * whatever the outcome" rule for free: by the time the
+             * handler runs there is nothing left to release. */
+            uint8_t *bytes  = w->parked_propose.bytes;
+            size_t   blen   = w->parked_propose.len;
+            uint32_t pview  = w->parked_propose.view;
+            uint64_t pheight = w->parked_propose.height;
+            memset(&w->parked_propose, 0, sizeof(w->parked_propose));
+
+            /* HEAP, and not for tidiness. nodus_t3_msg_t is a union over
+             * every T3 body, so it is ~600 KB (nodus_t3_viewok_t alone is
+             * NODUS_T3_MAX_WITNESSES × 4659 bytes — see the SIZE warning
+             * on that type). The leader branch below already puts one
+             * such object on this frame, and nodus_witness_dispatch_t3 is
+             * holding another further up the same call chain; a stack
+             * copy here would add 600 KB to a path that is already deep.
+             * The malloc costs one allocation per view change. */
+            nodus_t3_msg_t *pm = calloc(1, sizeof(*pm));
+            if (!pm) {
+                fprintf(stderr,
+                        "%s: cannot replay the PROPOSE parked for view %u "
+                        "— out of memory; the round is lost exactly as it "
+                        "is without the park\n", LOG_TAG, pview);
+            } else if (nodus_t3_decode(bytes, blen, pm) == 0 &&
+                       pm->type == NODUS_T3_PROPOSE) {
+                fprintf(stderr,
+                        "%s: replaying the PROPOSE parked for view %u "
+                        "(height %llu) — the leader broadcast it once, "
+                        "before we held this view\n", LOG_TAG,
+                        pview, (unsigned long long)pheight);
+                (void)bft_handle_propose_inner(w, pm, /*live*/ false);
+            } else {
+                fprintf(stderr,
+                        "%s: the PROPOSE parked for view %u no longer "
+                        "decodes as a proposal — dropping it\n",
+                        LOG_TAG, pview);
+            }
+            /* `pm`'s batch entries ALIAS `bytes` (nodus_tier3.c sets
+             * tx->tx_data into the input buffer), so the message is
+             * released before the buffer and neither is read again. The
+             * round entry above copied every transaction it kept into its
+             * own allocation (the malloc+memcpy in the batch block), so
+             * freeing here leaves no dangling pointer behind. */
+            free(pm);
+            free(bytes);
+        }
     }
 
     /* F17 A4 — if we are the committee-derived new leader for the new
@@ -9954,6 +10310,14 @@ static void bft_view_move_finish(nodus_witness_t *w) {
      * current_view before entering here, so the modulus picks up the new
      * view. */
     if (i_am_leader) {
+        /* O15R B′ — WE are the one who proposes in this view, so a frame
+         * parked from some other leader can never be replayed into it.
+         * Released at the TOP of the branch on purpose: the C5 paths
+         * below return early in two places, and clearing at the bottom
+         * would leak the buffer past both until a tick release caught
+         * it. */
+        nodus_witness_parked_propose_clear(w);
+
         fprintf(stderr, "%s: we are new leader for view %u\n",
                 LOG_TAG, w->current_view);
 
@@ -10219,6 +10583,16 @@ static int bft_viewok_apply(nodus_witness_t *w, uint64_t height,
 
     /* ── THE WRITE ────────────────────────────────────────────────── */
     w->current_view = view;
+
+    /* O15R B′ — a proof can carry us PAST the view a frame was parked
+     * for, and then that frame can never be replayed into any view we
+     * will enter. bft_view_move_finish below handles the ordinary case
+     * (it replays the frame when the view it names is the one we just
+     * entered, and clears it either way); this releases the frame the
+     * jump skipped over, which that match would leave held until a tick
+     * caught it. */
+    if (w->parked_propose.present && w->parked_propose.view < view)
+        nodus_witness_parked_propose_clear(w);
 
     /* RETAIN, so this node can rescue the node behind it. Kept as it
      * ARRIVED, entry for entry: this is the evidence that convinced us,

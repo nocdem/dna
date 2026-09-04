@@ -350,11 +350,54 @@ rate-limited per roster slot in both directions. A node that has never
 moved holds no proof and answers nothing; that is the correct answer, not
 an error.
 
+**While it waits, it keeps the next view's traffic instead of destroying
+it.** Because nodes cross a boundary at different instants and every
+consensus frame is broadcast **exactly once** — there is no re-send path
+— a node one view behind used to lose everything addressed to the view it
+was about to enter. Two things are now held rather than dropped:
+
+- **The PROPOSE**, one slot, and only for **exactly the next view**
+  (`current_view + 1`) and only from **that view's expected leader**. The
+  decision is made below the leader/committee block, so the sender has
+  already been ranked with `leader_index(epoch, hdr->view, count)` at the
+  *proposal's* view; a bare roster member cannot fill the slot. The raw
+  frame bytes are kept, not the decoded message, whose batch entries alias
+  a transport buffer that does not outlive the dispatch call. On the view
+  move the frame is replayed through every gate except the replay check
+  and the nonce record — both of which already ran on its first pass — and
+  the slot is released whatever the outcome.
+- **Votes for the next view**, in the existing bounded vote buffer, under
+  a third admission rule alongside the near-future-round one. A vote is
+  parked when its view is above the round we hold, at or above our own
+  `current_view`, and no more than one view ahead. Its round is
+  deliberately **not** range-tested: the next view's leader may open from
+  its own counter and so carry a round number equal to, above, or below
+  ours. Parking never counts a vote — a parked vote reaches a tally only
+  through the ordinary handler, after this node holds that view and a live
+  round, where the committee gate and the certificate check run exactly as
+  they do for a frame off the wire. One sender may hold at most two
+  entries per vote type, and the entry evicted is the one with the lowest
+  `(view, round)`; a lower view is staler whatever its round.
+
+Anything **two or more views ahead** is unchanged: refused outright, and
+the proof ladder above is the only way forward.
+
 **Three consequences worth stating plainly:**
 
-1. **A node behind in view declines rounds until a proof reaches it.**
-   That is a liveness cost, not a safety one — its persisted
-   `last_prepared` lock still refuses conflicting values while it waits.
+1. **A node behind in view parks the next view's PROPOSE and votes and
+   replays them once the proof arrives; it still declines rounds for any
+   view further ahead.** Declining remains a liveness cost, not a safety
+   one — its persisted `last_prepared` lock still refuses conflicting
+   values while it waits.
+   *Known residual, accepted:* a NEW_VIEW arriving while this node is
+   behind only triggers the proof request; the leader's carried
+   certificate is adopted only at an **equal** view. The replayed PROPOSE
+   therefore meets the C5 gate against the binding this node computed for
+   itself from its own VIEW_CHANGE records, not against the leader's. At
+   exact quorum every node holds the same records and the two bindings
+   agree. Where the quorum has slack they can differ, the replay is
+   refused and the view rotates — fail-closed, and still better than
+   losing the round outright.
 2. **On a chain with NO committee snapshot the view still moves — by the
    bootstrap path above, never by a proof.** `sign_view_ok` still refuses
    to SIGN over an empty set (a set hash over no set is not a statement)

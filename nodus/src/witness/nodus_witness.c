@@ -1904,6 +1904,47 @@ void nodus_witness_tick(nodus_witness_t *witness) {
         }
     }
 
+    /* ── O15R B′ — release a parked PROPOSE that can no longer be used ──
+     *
+     * The ordinary release is the replay itself, in bft_view_move_finish.
+     * Two states never reach it and would otherwise hold the frame's heap
+     * buffer indefinitely:
+     *   - the chain reached the height the frame proposes, by SYNC or by
+     *     another node's block, so the round it describes is settled;
+     *   - our view moved past the view it names by a route that did not
+     *     match the replay (the same reason the C5 binding above needs a
+     *     tick release: a node that learns the outcome instead of voting
+     *     on it never runs the handler that clears the state).
+     *
+     * The height read is behind the `present` test, so an idle tick still
+     * costs no DB round trip. A FAULTED read HOLDS the frame, matching
+     * both releases above: dropping it against an unknown tip would throw
+     * away a proposal that is still replayable, which is the harm — and
+     * the view half of the test needs no DB at all. */
+    if (witness->parked_propose.present) {
+        if (witness->current_view > witness->parked_propose.view) {
+            fprintf(stderr, "WITNESS: the PROPOSE parked for view %u is "
+                    "behind our view %u — releasing\n",
+                    witness->parked_propose.view, witness->current_view);
+            nodus_witness_parked_propose_clear(witness);
+        } else {
+            uint64_t tip = 0;
+            if (nodus_witness_block_height_checked(witness, &tip) != 0) {
+                fprintf(stderr, "%s: parked PROPOSE — chain-height read "
+                        "faulted; HOLDING the frame parked for view %u "
+                        "rather than releasing it against an unknown tip\n",
+                        LOG_TAG, witness->parked_propose.view);
+            } else if (tip >= witness->parked_propose.height) {
+                fprintf(stderr, "WITNESS: the PROPOSE parked at height %llu "
+                        "is superseded by the committed chain (tip=%llu) — "
+                        "releasing\n",
+                        (unsigned long long)witness->parked_propose.height,
+                        (unsigned long long)tip);
+                nodus_witness_parked_propose_clear(witness);
+            }
+        }
+    }
+
     /* O15C-D.1 — release a C5 binding whose height the chain has already
      * reached. handle_propose clears the binding when the matching
      * PROPOSE arrives, but a node that instead learns the block through
@@ -2033,6 +2074,70 @@ void nodus_witness_test_inject_drop(nodus_witness_drop_predicate_t pred) {
     g_drop_pred = pred;
 }
 #endif
+
+/* ── O15R B′ — the parked next-view PROPOSE slot ──────────────────── */
+
+void nodus_witness_parked_propose_clear(nodus_witness_t *witness) {
+    if (!witness) return;
+    free(witness->parked_propose.bytes);
+    memset(&witness->parked_propose, 0, sizeof(witness->parked_propose));
+}
+
+bool nodus_witness_parked_propose_store(nodus_witness_t *witness,
+                                        uint32_t view, uint64_t height,
+                                        const uint8_t *sender_id,
+                                        const uint8_t *payload, size_t len) {
+    if (!witness || !sender_id || !payload || len == 0) return false;
+
+    /* The frame already passed the decoder, which enforces this bound
+     * itself — so this is a restatement at the point of ALLOCATION rather
+     * than a new rule, and it keeps the one heap buffer this slot owns
+     * bounded by something visible at the malloc. */
+    if (len > NODUS_T3_MAX_MSG_SIZE) {
+        fprintf(stderr, "%s: refusing to park a %zu-byte PROPOSE for view "
+                "%u — above the T3 frame limit\n", LOG_TAG, len, view);
+        return false;
+    }
+
+    if (witness->parked_propose.present) {
+        /* KEEP-FIRST at an equal (view, height). The first frame from
+         * that view's leader is the one a C5 binding would have been
+         * computed against; a second arrival is a duplicate or a leader
+         * equivocating, and neither should displace it. */
+        if (witness->parked_propose.view == view &&
+            witness->parked_propose.height == height)
+            return false;
+        /* A frame parked for a LOWER view can no longer be replayed into
+         * any view we will enter, so the newer one takes the slot. A
+         * frame for a HIGHER view is not replaced: it is the one still
+         * ahead of us, and this one is already stale by comparison. */
+        if (witness->parked_propose.view >= view)
+            return false;
+        nodus_witness_parked_propose_clear(witness);
+    }
+
+    uint8_t *copy = malloc(len);
+    if (!copy) {
+        fprintf(stderr, "%s: cannot park the PROPOSE for view %u — out of "
+                "memory; the round will be lost as it is today\n",
+                LOG_TAG, view);
+        return false;
+    }
+    memcpy(copy, payload, len);
+
+    witness->parked_propose.present = true;
+    witness->parked_propose.view    = view;
+    witness->parked_propose.height  = height;
+    witness->parked_propose.len     = len;
+    witness->parked_propose.bytes   = copy;
+    memcpy(witness->parked_propose.sender_id, sender_id,
+           NODUS_T3_WITNESS_ID_LEN);
+
+    fprintf(stderr, "%s: parked the PROPOSE for view %u (height %llu, "
+            "%zu bytes) — we hold a lower view, and it is broadcast only "
+            "once\n", LOG_TAG, view, (unsigned long long)height, len);
+    return true;
+}
 
 void nodus_witness_dispatch_t3(nodus_witness_t *witness,
                                struct nodus_tcp_conn *conn,
@@ -2211,7 +2316,30 @@ void nodus_witness_dispatch_t3(nodus_witness_t *witness,
     /* Route to appropriate handler */
     switch (msg.type) {
     case NODUS_T3_PROPOSE:
-        nodus_witness_bft_handle_propose(witness, &msg);
+        /* O15R B′ — 1 means "park me": the handler walked every gate down
+         * to the view check, established that the sender IS the expected
+         * leader for the view it names, and found that view to be exactly
+         * one ahead of ours. It wrote no round or view state. The frame is
+         * held so it can be replayed the instant our own view move
+         * completes — the leader will not send it a second time.
+         *
+         * ⚠ THE RAW `payload` IS WHAT IS STORED, not `msg`. The decode
+         * above points every batch transaction's tx_data INTO this buffer
+         * (nodus_tier3.c), and this buffer belongs to the caller and does
+         * not outlive this call — so a stored `msg` would be a table of
+         * dangling pointers.
+         *
+         * The bytes are VERIFIED bytes: the wsig check against the
+         * sender's roster pubkey ran above, before any handler saw them.
+         *
+         * This is the ONLY case in this switch whose return value is
+         * consulted, and it has to be — the handler is where the leader
+         * and view facts are known, and the frame bytes only exist here. */
+        if (nodus_witness_bft_handle_propose(witness, &msg) == 1) {
+            (void)nodus_witness_parked_propose_store(
+                witness, msg.header.view, msg.propose.block_height,
+                msg.header.sender_id, payload, len);
+        }
         break;
     case NODUS_T3_PREVOTE:
     case NODUS_T3_PRECOMMIT:
@@ -2351,6 +2479,10 @@ void nodus_witness_close(nodus_witness_t *witness) {
 
     /* MED-28 — same for the retained reproposal batch. */
     nodus_witness_retained_batch_clear(witness);
+
+    /* O15R B′ — and for the parked next-view PROPOSE, whose one heap
+     * buffer would otherwise leak on a shutdown that lands mid-boundary. */
+    nodus_witness_parked_propose_clear(witness);
 
     /* Clear mempool */
     nodus_witness_mempool_clear(&witness->mempool);

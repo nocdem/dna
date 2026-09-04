@@ -1374,6 +1374,14 @@ target_link_libraries(test_bft_view_change_hardening nodus dsa nodus)
 add_test(NAME test_bft_view_change_hardening
          COMMAND test_bft_view_change_hardening)
 
+# O15R B′/D — the view boundary. A vote or a PROPOSE addressed to the very
+# next view used to be discarded, and at a committee where the quorum
+# equals the number of live nodes that loss made every round unwinnable.
+# These are the deterministic regressions the 20-node run cannot isolate.
+add_executable(test_bft_view_boundary tests/test_bft_view_boundary.c)
+target_link_libraries(test_bft_view_boundary nodus dsa nodus)
+add_test(NAME test_bft_view_boundary COMMAND test_bft_view_boundary)
+
 # PR 3 Yol B — bootstrap state machine regression.
 # Covers HAVE_CHAIN branch: chain DB present → reaches DONE without
 # network I/O, sets bootstrap_settle_until_ms in the future (H-4).
