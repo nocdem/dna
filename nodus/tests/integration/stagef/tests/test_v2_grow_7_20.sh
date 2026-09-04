@@ -162,7 +162,36 @@ for i in $(seq 1 $NCAND); do
     [ -s "$BASE_DIR/cand$i/identity/nodus.pk" ] || \
         skip "candidate $i missing — export STAGEF_V2_CANDIDATES=$NCAND before stagef_up_v2.sh"
 done
-ok "requirements met (E=$E, $NCAND candidates present)"
+# ── THE PUMP BUDGET, CHECKED UP FRONT ───────────────────────────────
+#
+# A V2 chain makes a block only when a transaction arrives, so every
+# height this scenario reaches costs one pump leaf. Running out halfway
+# is not a soft failure: it stops the run at whatever step happened to be
+# next and, before the fix in pump_to, reported it as "chain stopped
+# advancing" — the harness accusing the chain of its own empty tank.
+#
+# WHERE THE NUMBER COMES FROM. 26 blocks go to the 13 claims and 13
+# bonds. The rest is height: the growth boundaries alone need 4E+2, and
+# STEPS 6c/6e/7/8 each drive the tip further — STEP 8 by a full epoch
+# past wherever STEP 7 left it. A measured run reached 227 and wanted
+# 242. So the requirement is stated as a formula with real margin rather
+# than a number someone once found sufficient:
+#
+#     16 x E + 80     (=320 at E=15)
+#
+# Checked HERE, before anything is spent, so the failure is one line at
+# the start naming the number to raise — not a death at STEP 8 forty
+# minutes in.
+PUMP_HAVE=$(grep -c "^amount       = 1000000000$" "$CONF" 2>/dev/null || echo 0)
+PUMP_NEED=$(( 16 * E + 80 ))
+[ "$PUMP_HAVE" -ge "$PUMP_NEED" ] || \
+    skip "pump budget too small: the config has $PUMP_HAVE pump leaves, this
+       scenario needs $PUMP_NEED at E=$E (16*E+80). Every height costs one
+       leaf and running dry mid-run cannot be distinguished from a stalled
+       chain without lying about one of them. Re-run the bring-up with
+       STAGEF_V2_PUMP_LEAVES=$PUMP_NEED."
+
+ok "requirements met (E=$E, $NCAND candidates, $PUMP_HAVE pump leaves >= $PUMP_NEED needed)"
 
 PORT1=$(stagef_tcp_port 1)
 SDB=$(stagef_node_chain_db 1)
@@ -236,10 +265,33 @@ pump_remaining() {
 # Advance to tip >= $1. Pumps, then polls. Fails on no PROGRESS rather
 # than on a clock: if the chain is moving at all the budget renews.
 pump_to() {
-    local target="$1" last stuck=0
+    local target="$1" last stuck=0 prc
     last=$(tip)
     while [ "$(tip)" -lt "$target" ]; do
-        pump_once
+        pump_once; prc=$?
+        # ⚠ AN EMPTY PUMP IS NOT A STOPPED CHAIN, AND SAYING SO IS A LIE
+        # ABOUT THE SUBJECT. This loop used to discard pump_once's verdict
+        # and report `chain stopped advancing` whenever the tip did not
+        # move — including when there was nothing left to submit. It did
+        # exactly that on a run where the chain was demonstrably healthy:
+        # node1's own log showed block 227 committed with its QC attached
+        # (14 certs) and `evicted 5/5 decided mempool entries (0 still
+        # pending)`, while v2-claim was answering `all 200 leaf/leaves
+        # bound to this key are already claimed — nothing to submit`.
+        # The scenario had run out of fuel and blamed the chain for it.
+        #
+        # This is the same vacuity this file's header warns about, applied
+        # to the other direction: there, a stall check that submits nothing
+        # passes for the wrong reason; here, a progress check that submits
+        # nothing FAILS for the wrong reason. Both are the harness lying
+        # about what it measured.
+        if [ "$prc" = 2 ]; then
+            die "the pump is DRY at tip $(tip), target $target — every leaf
+       bound to the pump identity is already claimed. The chain is NOT
+       stopped; this scenario ran out of transactions to send. Raise
+       STAGEF_V2_PUMP_LEAVES (see the budget check at startup) and re-run.
+       Do NOT read this as a consensus failure."
+        fi
         local waited=0
         while [ "$waited" -lt 40 ]; do
             sleep 2; waited=$(( waited + 2 ))
@@ -247,7 +299,7 @@ pump_to() {
         done
         if [ "$(tip)" -le "$last" ]; then
             stuck=$(( stuck + 1 ))
-            [ "$stuck" -ge 3 ] && die "chain stopped advancing at tip $(tip), target $target"
+            [ "$stuck" -ge 3 ] && die "chain stopped advancing at tip $(tip), target $target (the pump still had leaves — this one IS the chain)"
         else
             stuck=0
         fi
@@ -369,17 +421,65 @@ for i in $(seq 1 $NCAND); do
     isval=$(sqlite3 -readonly "$SDB" "SELECT COUNT(*) FROM validators WHERE lower(hex(pubkey))='$pk';" 2>/dev/null || echo 0)
     [ "${isval:-0}" = "0" ] || die "candidate $i is ALREADY a validator — it cannot demonstrate becoming one"
 
+    # ⚠ THE CLIENT'S PATIENCE IS NOT THE CHAIN'S VERDICT.
+    #
+    # `committed: height=` is printed only when the submitting CLI is still
+    # waiting when the reply arrives. It gives up after 60 s, and ONE leader
+    # rotation costs more than that: round timeout (15 s) + view change
+    # (10 s) + the new leader's round. So a transaction that commits
+    # perfectly well can leave the client with nothing but
+    # `dnac_spend RPC failed (rc=6)` and `Pending txn abandoned:
+    # reason=timeout after 60000ms`.
+    #
+    # This scenario read that as a failure and killed a run in which the
+    # chain was demonstrably fine: node1 had committed the block, attached
+    # its QC (5 certs, quorum 5 of 7) and evicted the entry as decided,
+    # while `v2_claims_spent` showed the claim SETTLED — and the harness
+    # reported "candidate 8 could not claim its genesis leaf". Same class as
+    # the empty-pump lie fixed in pump_to: the harness blaming the chain for
+    # something that is not the chain's.
+    #
+    # So: the CLI's word is taken when it says yes; when it says no, the
+    # CHAIN is asked. A claim is settled when its nullifier is in
+    # v2_claims_spent, and a bond when the validator row exists — both are
+    # committed state, which is the only authority here.
+    claims_before=$(sqlite3 -readonly "$SDB" "SELECT COUNT(*) FROM v2_claims_spent;" 2>/dev/null || echo 0)
     "$CLI" -s 127.0.0.1 -p "$PORT1" v2-claim --config "$CONF" --db "$SDB" \
         --keys "$k" --submit "127.0.0.1:$PORT1" > "$BASE_DIR/grow_claim_$i.log" 2>&1 || true
-    grep -q '^committed: height=' "$BASE_DIR/grow_claim_$i.log" || \
-        { tail -5 "$BASE_DIR/grow_claim_$i.log" >&2; die "candidate $i could not claim its genesis leaf"; }
+    if ! grep -q '^committed: height=' "$BASE_DIR/grow_claim_$i.log"; then
+        settled=0
+        for _ in $(seq 1 30); do
+            now=$(sqlite3 -readonly "$SDB" "SELECT COUNT(*) FROM v2_claims_spent;" 2>/dev/null || echo 0)
+            [ "${now:-0}" -gt "${claims_before:-0}" ] && { settled=1; break; }
+            sleep 2
+        done
+        [ "$settled" = 1 ] || {
+            tail -5 "$BASE_DIR/grow_claim_$i.log" >&2
+            die "candidate $i's claim did NOT settle — the client gave up AND
+       v2_claims_spent did not grow, so this one really is the chain"
+        }
+        info "candidate $i's claim SETTLED after the client gave up (a leader
+       rotation outlasts the 60 s wait) — reading the chain, not the client"
+    fi
     sleep 2
 
     "$CLI" -s 127.0.0.1 -p "$PORT1" v2-envelope stake --db "$SDB" --keys "$k" \
         --bond "$BOND" --commission "$COMMISSION" --dest-fp "$(cat "$k/nodus.fp")" \
         --submit "127.0.0.1:$PORT1" > "$BASE_DIR/grow_stake_$i.log" 2>&1 || true
-    grep -q '^committed: height=' "$BASE_DIR/grow_stake_$i.log" || \
-        { tail -5 "$BASE_DIR/grow_stake_$i.log" >&2; die "candidate $i's bond was refused"; }
+    if ! grep -q '^committed: height=' "$BASE_DIR/grow_stake_$i.log"; then
+        bonded=0
+        for _ in $(seq 1 30); do
+            n=$(sqlite3 -readonly "$SDB" "SELECT COUNT(*) FROM validators WHERE lower(hex(pubkey))='$pk';" 2>/dev/null || echo 0)
+            [ "${n:-0}" -ge 1 ] && { bonded=1; break; }
+            sleep 2
+        done
+        [ "$bonded" = 1 ] || {
+            tail -5 "$BASE_DIR/grow_stake_$i.log" >&2
+            die "candidate $i's bond did NOT settle — the client gave up AND no
+       validator row appeared, so this one really is the chain"
+        }
+        info "candidate $i's bond SETTLED after the client gave up"
+    fi
     sleep 2
 done
 
