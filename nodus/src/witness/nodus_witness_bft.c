@@ -93,6 +93,13 @@
 
 /* Forward declaration — defined near bft_check_timeout */
 static void round_state_free_batch(nodus_witness_round_state_t *rs);
+/* Defined beside retained_batch_clear near the end of this file. Declared
+ * here rather than at its first use because handle_propose (stale-round
+ * release) and initiate_view_change both call it, and both sit thousands
+ * of lines ahead of the definition. Not pulled in from
+ * nodus_witness_bft_internal.h, which is test-only and which this file
+ * deliberately does not include (see :102). */
+void nodus_witness_retained_batch_take(nodus_witness_t *w);
 static void bft_emit_batch_replies(nodus_witness_t *w, int status,
                                     const char *error_msg);
 
@@ -5677,10 +5684,83 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
         }
     }
 
-    /* Check for existing round in progress */
+    /* Check for existing round in progress.
+     *
+     * DIAGNOSTIC ONLY (2026-09-04): the message used to print the phase and
+     * nothing else, which is not enough to tell a legitimate duplicate
+     * proposal from a node wedged behind a round it should have left. At
+     * N=20 with exactly quorum alive this rejection fires 7-54 times per
+     * node while the chain makes no progress (nodus/BUGS.md, N=20 entry),
+     * and which of those two it is decides whether there is a defect here
+     * at all. Print the proposal's view and height against the round's, so
+     * the log answers that instead of inviting a guess. */
+    /* ══ A ROUND FROM A VIEW WE HAVE LEFT IS STALE, NOT "IN PROGRESS" ══
+     *
+     * THE DEFECT THIS CLOSES, read straight off the diagnostic above
+     * (nodus/BUGS.md, N=20 entry):
+     *
+     *   proposal rejected — round in progress (phase=5; our round view=16
+     *     height=60 round=70, our current_view=17; proposal view=17
+     *     height=60)
+     *
+     * Phase 5 is NODUS_W_PHASE_VIEW_CHANGE. So this node had given up on
+     * the view-16 round and was ASKING FOR A NEW LEADER — and then refused
+     * that new leader's proposal, for the view it had itself moved to, at
+     * the same height, because the abandoned round was still sitting in
+     * round_state. The node blocks exactly the thing it was asking for.
+     *
+     * `bft_view_move_finish` does return the phase to IDLE, which is why
+     * reading it alone suggests this cannot happen. It can: `current_view`
+     * also advances on the VIEW_OK proof path and the node can re-enter
+     * VIEW_CHANGE afterwards, leaving `round_state.view` behind
+     * `current_view`. The measurement is what settled it, not the reading.
+     *
+     * WHY THIS MATTERS AT N=20 AND NOT AT N=7. A round needs `quorum`
+     * prevotes — 14 of 14 when 14 of 20 are alive, with no slack at all.
+     * Every node still holding a stale round is a vote the new leader can
+     * never collect, so one such node is enough to make the round
+     * unwinnable. Measured: 197 prevote quorums and 194 commits with all
+     * 20 alive, versus 2 prevote quorums and ZERO commits at 14 — with
+     * this rejection firing 7-54 times per node.
+     *
+     * THE RULE: a round whose view is BELOW our current view can no longer
+     * commit — its votes are cast in a view nobody is in — so it is
+     * released rather than used to refuse the present. A round at our
+     * CURRENT view still blocks, which is the genuine duplicate-proposal
+     * guard this check was written to be.
+     *
+     * SAFETY: nothing is discarded that protects anything. `last_prepared`
+     * and the C5 reproposal binding live in their own fields and are
+     * untouched here, so the prepared certificate the cluster carries
+     * through a view change survives; the batch goes to the MED-28 holder
+     * on the same paths as any other abandoned round. Releasing the round
+     * changes only whether this node is ABLE to vote in the view it is
+     * already in. */
+    if (w->round_state.phase != NODUS_W_PHASE_IDLE &&
+        w->round_state.view < w->current_view) {
+        fprintf(stderr, "%s: releasing a STALE round (view=%u height=%llu "
+                "round=%lu phase=%d) — we are at view %u now, and holding "
+                "it would refuse this view's own proposal\n",
+                LOG_TAG, w->round_state.view,
+                (unsigned long long)w->round_state.block_height,
+                (unsigned long)w->round_state.round, w->round_state.phase,
+                w->current_view);
+        nodus_witness_retained_batch_take(w);
+        round_state_free_batch(&w->round_state);
+        w->round_state.phase = NODUS_W_PHASE_IDLE;
+        w->round_state.client_conn = NULL;
+    }
+
     if (w->round_state.phase != NODUS_W_PHASE_IDLE) {
-        fprintf(stderr, "%s: proposal rejected — round in progress (phase=%d)\n",
-                LOG_TAG, w->round_state.phase);
+        fprintf(stderr, "%s: proposal rejected — round in progress "
+                "(phase=%d; our round view=%u height=%llu round=%lu, "
+                "our current_view=%u; proposal view=%u height=%llu)\n",
+                LOG_TAG, w->round_state.phase,
+                w->round_state.view,
+                (unsigned long long)w->round_state.block_height,
+                (unsigned long)w->round_state.round,
+                w->current_view,
+                hdr->view, (unsigned long long)prop->block_height);
         return -1;
     }
 
@@ -8411,13 +8491,8 @@ static int vc_record_alloc_sigs(nodus_witness_vc_record_t *vc,
 /* Forward decl — defined beside handle_viewchg below (O15C-C D1). */
 static int bft_vc_check_quorum(nodus_witness_t *w);
 
-/* Forward decl — defined beside retained_batch_clear near the end of this
- * file. Needed HERE because nodus_witness_bft_initiate_view_change (just
- * below) must retain the abandoned round's batch, and that call site sits
- * ~2700 lines ahead of the definition. Declared locally rather than by
- * including nodus_witness_bft_internal.h, which is test-only and which
- * this file deliberately does not pull in (see :102). */
-void nodus_witness_retained_batch_take(nodus_witness_t *w);
+/* nodus_witness_retained_batch_take is declared in this file's opening
+ * block; initiate_view_change below is one of its two callers. */
 
 /* O15H D5b — the f+1 threshold at which we JOIN a view we did not ask
  * for, DERIVED FROM THE QUORUM IN FORCE.
@@ -8985,11 +9060,94 @@ int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
     }
 
     {
+        /* Tally at OUR target before this record lands, so the window
+         * extension just below can tell a vote that ADDS support from one
+         * that merely repeats it. */
+        uint32_t tally_before = bft_vc_tally(w, w->view_change_target);
+
         memcpy(w->view_changes[slot].voter_id,
                hdr->sender_id, NODUS_T3_WITNESS_ID_LEN);
         w->view_changes[slot].target_view = vc->new_view;
         w->view_changes[slot].last_committed_round =
             vc->last_committed_round;
+
+        /* ══ EXTEND THE WINDOW WHILE SUPPORT IS STILL ARRIVING ═════════
+         *
+         * THE DEFECT THIS CLOSES (nodus/BUGS.md, N=20 entry, measured
+         * 2026-09-04). A 20-validator committee at exact quorum could not
+         * rotate away from a dead leader. Not for want of demand, votes or
+         * delivery — all fourteen live nodes armed, all fourteen
+         * broadcast, and each heard 19-20 distinct senders. The vote
+         * stream shows the whole cluster marching upward in step:
+         *
+         *     14 votes → target 79     14 votes → target 84
+         *     14 votes → target 80     14 votes → target 85
+         *     16 votes → target 82     14 votes → target 87
+         *
+         * Yet no target ever tallied more than 6 of the 14 needed.
+         *
+         * WHY. Each voter keeps ONE record and escalation MOVES it (the
+         * O15H D9 upsert above). Every node escalates every
+         * viewchg_timeout_ms on its OWN timer, and those timers started at
+         * different moments, so at any INSTANT the fourteen are spread
+         * across two or three ADJACENT targets. The quorum test is
+         * exact-match (:9489 — the correct PBFT rule, and it must stay
+         * exact), so adjacent targets never combine. With phases roughly
+         * uniform the expected number sharing one target is 14 × (window
+         * overlap); the measured figure was 6. Quorum at N=20 with 14
+         * alive is 14 of 14 — there is no slack, and 6 is not close.
+         *
+         * In textbook PBFT a replica sends VIEW-CHANGE for v+1 and WAITS,
+         * escalating only if that view ALSO fails. Here the timer fired
+         * faster than a quorum could be collected, so the target was
+         * always moving out from under the votes chasing it.
+         *
+         * THE RULE: a vote that INCREASES support for the target we
+         * currently hold restarts our window. Nodes converging on one
+         * target therefore converge their windows too — they all reset on
+         * the same messages and time out together — which is precisely the
+         * phase-locking the independent timers destroy.
+         *
+         * ⚠ WHY "INCREASES" AND NOT "ARRIVES". A repeat from a voter
+         * already counted must NOT extend anything, or one Byzantine
+         * member could hold the window open forever by re-sending at our
+         * target — a liveness attack for one message per interval, the
+         * same shape the O15H D9 per-target tally was built to stop. Gated
+         * on a rising tally, each committee member can extend the window
+         * at most once per target, so the extension is bounded by the
+         * committee size and the escalation still terminates.
+         *
+         * NOT A SAFETY CHANGE. This moves only WHEN this node next speaks.
+         * No verdict, no vote, no view and no certificate depends on it —
+         * which is also why the file's standing objection to per-node
+         * timing state does not reach it: that objection is about state
+         * that changes a DECISION.
+         *
+         * AND ONLY WHILE THE TARGET IS ACTUALLY VIABLE. The first cut
+         * extended on ANY rising tally, which let the window grow by up to
+         * one committee's worth of intervals — 7 × 11 s at N=7, 20 × 11 s
+         * at N=20 — before a node would try the next view. That is far
+         * longer than a client's 30-second wait, and it showed up
+         * immediately: a scenario run stalled at STEP 1 with
+         * `w_fwd_rsp no matching pending forward`, the block having
+         * committed AFTER the client's forward slot had already expired.
+         * The chain was never broken, only made slow by waiting on a view
+         * that had not yet earned the wait.
+         *
+         * So: extend only once f+1 voters already back this target. Below
+         * that threshold the target has no cluster behind it and waiting
+         * on it is pure delay — time out on schedule and move on. Above
+         * it, the cluster IS converging here and the extra window is what
+         * lets the remaining votes land. */
+        if (w->round_state.phase == NODUS_W_PHASE_VIEW_CHANGE &&
+            vc->new_view == w->view_change_target) {
+            uint32_t tally_now = bft_vc_tally(w, w->view_change_target);
+            if (tally_now > tally_before &&
+                tally_now >= bft_vc_join_threshold(w) &&
+                tally_now < w->bft_config.quorum) {
+                w->round_state.phase_start_time = time_ms();
+            }
+        }
 
         /* C5 — verify + store the incoming prepared cert. Each sig in
          * vc->prepared_sigs is verified against the PREPARED preimage
