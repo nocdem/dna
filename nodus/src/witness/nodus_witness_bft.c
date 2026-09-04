@@ -4963,6 +4963,16 @@ static int bft_start_round_internal(nodus_witness_t *w,
     }
 
     /* Initialize round state */
+    /* ⚠ DIAGNOSTIC ONLY — NO BEHAVIOUR CHANGE. The counter is per-node and
+     * this is the only place it advances on its own. Pair it with the
+     * ROUND ADOPT line on the follower path: between the two, a split
+     * counter can be traced to the exact round a node opened that its
+     * peers did not. */
+    fprintf(stderr, "%s: ROUND OPEN (leader) — %lu -> %lu (view=%u "
+            "height=%llu)\n", LOG_TAG,
+            (unsigned long)w->current_round,
+            (unsigned long)(w->current_round + 1),
+            w->current_view, (unsigned long long)(anchor_tip + 1));
     w->current_round++;
     round_state_free_batch(&w->round_state);
     memset(&w->round_state, 0, sizeof(w->round_state));
@@ -6076,6 +6086,20 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
      * a persist of state nothing changed is work with no reader.
      * `round_state.view` below therefore records the same number it
      * always did. */
+    /* ⚠ DIAGNOSTIC ONLY — NO BEHAVIOUR CHANGE. This is the ONE place a
+     * follower takes the leader's round NUMBER. A node that rejects a
+     * proposal never reaches it and keeps its own counter, which is how
+     * two nodes end up agreeing on the height and the view while
+     * disagreeing about the round's NAME — and votes are matched by that
+     * name (bft_handle_vote_inner). Log the transition so the split can be
+     * traced to the proposal it came from, instead of being inferred. */
+    if (w->current_round != hdr->round)
+        fprintf(stderr, "%s: ROUND ADOPT — %lu -> %lu (leader %02x%02x%02x%02x, "
+                "view=%u height=%llu)\n", LOG_TAG,
+                (unsigned long)w->current_round, (unsigned long)hdr->round,
+                hdr->sender_id[0], hdr->sender_id[1],
+                hdr->sender_id[2], hdr->sender_id[3],
+                hdr->view, (unsigned long long)prop->block_height);
     w->current_round = hdr->round;
 
     round_state_free_batch(&w->round_state);
@@ -6699,10 +6723,44 @@ static int bft_handle_vote_inner(nodus_witness_t *w, uint8_t msg_type,
                                  const uint8_t *sender_id,
                                  const nodus_t3_vote_t *vote,
                                  const nodus_t3_header_t *live_hdr) {
-    /* Verify round and view match */
+    /* Verify round and view match.
+     *
+     * ⚠ DIAGNOSTIC ONLY — NO BEHAVIOUR CHANGE. This drop was SILENT, and
+     * that silence is why the N=20 stall could not be explained from a log
+     * (nodus/BUGS.md, N=20 entry). A vote discarded here leaves no trace at
+     * all, so "who dropped whose vote, and over which field" was
+     * unanswerable — and the first two answers guessed from the outside
+     * were both wrong.
+     *
+     * What it then MEASURED, once it existed: 495 drops at the stuck
+     * height, 9 of them over the ROUND alone and 486 involving the VIEW.
+     * The suspicion this line was added to test — that the node-local
+     * round counter was splitting the vote — is the one it refuted. Keep
+     * printing BOTH fields for exactly that reason.
+     *
+     * Print BOTH sides — incoming (round, view, sender) against ours
+     * (round, view, height, phase) — and say which field disagreed. Rate
+     * limiting is deliberately absent: this fires only on a mismatch,
+     * which on a healthy chain is rare, and on a stalled one it is exactly
+     * the thing being investigated. */
     if (round != w->round_state.round ||
-        view != w->round_state.view)
+        view != w->round_state.view) {
+        fprintf(stderr, "%s: VOTE DROPPED (%s) — incoming round=%lu view=%u "
+                "from %02x%02x%02x%02x; ours round=%lu view=%u height=%llu "
+                "phase=%d; mismatch=%s%s%s\n",
+                LOG_TAG,
+                msg_type == NODUS_T3_PREVOTE ? "PREVOTE" : "PRECOMMIT",
+                (unsigned long)round, view,
+                sender_id[0], sender_id[1], sender_id[2], sender_id[3],
+                (unsigned long)w->round_state.round, w->round_state.view,
+                (unsigned long long)w->round_state.block_height,
+                w->round_state.phase,
+                (round != w->round_state.round) ? "ROUND" : "",
+                (round != w->round_state.round &&
+                 view != w->round_state.view) ? "+" : "",
+                (view != w->round_state.view) ? "VIEW" : "");
         return 0;  /* Stale vote, ignore */
+    }
 
     /* Verify tx_hash matches */
     if (memcmp(vote->vote_target, w->round_state.tx_hash,
