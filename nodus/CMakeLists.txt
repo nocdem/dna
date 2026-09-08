@@ -124,6 +124,18 @@ set(NODUS_SOURCES
     src/client/nodus_republish.c
     src/client/nodus_cc_client.c
 
+    # Tendermint consensus core (T1) — engine-independent interface, the
+    # protocol registry, and the pure Algorithm 1 state machine. ZERO
+    # CONSUMERS: nothing in the tree calls dna_consensus_lookup yet; the
+    # host binding is a later season. Pure C over libc + dnac/ledger_ids.h —
+    # no I/O, no clock, no crypto, no SQLite — so it belongs in the common
+    # list rather than the Linux-only server block.
+    src/bft/dna_consensus_registry.c
+    src/bft/tendermint/tm_state.c
+    src/bft/tendermint/tm_log.c
+    src/bft/tendermint/tm_timeouts.c
+    src/bft/tendermint/tm_proposer.c
+
     # Shared dnac wire format (Hard-Fork v1 — single source of truth for
     # the CHAIN_CONFIG TX extension block encoder/decoder shared with dnac)
     ${SHARED_DIR}/dnac/chain_config_wire.c
@@ -2428,6 +2440,14 @@ register_witness_test(test_fault_inject_round_skip)
 # returns rc=99 (SKIP). ctest treats rc=99 as Skipped via this prop.
 set_tests_properties(test_fault_inject_round_skip
     PROPERTIES SKIP_RETURN_CODE 99)
+
+# ── Tendermint T1 (zero consumers) ───────────────────────────────────
+# Algorithm 1 line tests, the CometBFT proposer-priority KATs, and the
+# seeded N-node simulation. No ports, no files, no environment, no clock
+# (virtual) and no RNG (seeded xorshift) -> safe under `ctest -j`.
+register_witness_test(test_tm_core)
+register_witness_test(test_tm_proposer)
+register_witness_test(test_tm_sim)
 
 # Task 81 — supply invariance property test (Phase 17).
 # Pure-C simulated state machine — does NOT need the witness internal

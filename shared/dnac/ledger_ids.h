@@ -141,6 +141,24 @@ static inline uint32_t dna_bft_quorum(uint32_t n) {
     return (2u * n) / 3u + 1u;
 }
 
+/** BFT "f+1" for an active set of n validators: floor((n-1)/3) + 1.
+ *  The Tendermint paper (arXiv:1807.04938v3, Algorithm 1 line 55) presents
+ *  the algorithm for n = 3f+1 and writes "f+1"; DNA runs a general n, so the
+ *  fault bound is f = floor((n-1)/3) and this is f+1 — the smallest count
+ *  that MUST contain at least one honest member.
+ *
+ *  Like dna_bft_quorum, it never returns 0: n = 0 yields 1. A threshold of 0
+ *  is vacuous ("x >= 0" is always true), so returning it would silently let
+ *  a single message clear a gate that is supposed to prove honest support.
+ *
+ *  DO NOT derive this from n - dna_bft_quorum(n). They disagree, and the
+ *  formula here is the correct one: at n = 9 this gives 3 while n - quorum(9)
+ *  = 9 - 7 = 2, which is below the fault bound f = 2 and would let two
+ *  Byzantine members drive an honest node's round forward. */
+static inline uint32_t dna_bft_f_plus_one(uint32_t n) {
+    return n ? (n - 1u) / 3u + 1u : 1u;
+}
+
 /** @return owning domain for a numeric tx type, or DNA_TX_OWNER_NONE for
  *  GENESIS (bootstrap special case), retired type 8, and unassigned types.
  *  Pure metadata — NOT an admission or routing gate in S1. */

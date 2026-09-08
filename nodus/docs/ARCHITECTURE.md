@@ -109,6 +109,15 @@ nodus/
 │   │   └── nodus_inter_circuit.c  # Inter-node circuit table (cross-nodus relay)
 │   ├── consensus/
 │   │   └── nodus_cluster.c       # Cluster membership + leader election
+│   ├── bft/                      # Tendermint consensus core (T1, 2026-09-08) — ZERO consumers yet
+│   │   ├── dna_consensus.h           # Engine-independent interface + host contract (registry key = protocol id)
+│   │   ├── dna_consensus_registry.c  # protocol id -> ops table (1 = Tendermint; 0 = INVALID)
+│   │   └── tendermint/
+│   │       ├── tm_core.h             # Internal API: core, proposer object, replay, snapshot
+│   │       ├── tm_state.c            # arXiv 1807.04938v3 Algorithm 1 lines 1-67, one function per rule
+│   │       ├── tm_log.c              # Per-height message log, thresholds, equivocation (two slots), byte budget
+│   │       ├── tm_timeouts.c         # timeoutX(r) = init + r*delta, three timer slots, saturating deadlines
+│   │       └── tm_proposer.c         # CometBFT proposer-priority round-robin (cometbft@709fd12b, pure C port)
 │   ├── server/
 │   │   ├── nodus_server.c     # Server event loop + message dispatch
 │   │   └── nodus_auth.c       # Dilithium5 challenge-response auth
@@ -141,7 +150,10 @@ nodus/
 │   ├── test_channel_protocol.c  # Channel protocol message tests
 │   ├── test_tcp.c               # TCP transport tests
 │   ├── test_client.c          # Client SDK tests
-│   └── test_server.c          # Server integration tests
+│   ├── test_server.c          # Server integration tests
+│   ├── test_tm_core.c         # Tendermint T1: Algorithm 1 line tests + replay/WAL rules
+│   ├── test_tm_proposer.c     # Tendermint T1: proposer-priority KATs (reference tables + hand-derived)
+│   └── test_tm_sim.c          # Tendermint T1: seeded N-node simulation (relay + sync stand-ins, Byzantine models)
 ├── CMakeLists.txt             # Build system
 └── docs/
     └── ARCHITECTURE.md        # This file
