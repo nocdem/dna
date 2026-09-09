@@ -31,8 +31,22 @@ typedef enum { TM_STEP_PROPOSE = 0, TM_STEP_PREVOTE = 1, TM_STEP_PRECOMMIT = 2 }
 /* [JUDGMENT] log bounds — design §5.6 */
 #define TM_ROUND_LOOKAHEAD               64u
 #define TM_MAX_HEIGHT_LOG_BYTES  (64u * 1024u * 1024u)
-#define TM_MAX_VALUE_BYTES        (2u * 1024u * 1024u)  /* one PROPOSAL value; same as the
-                                                         * SYSTEM meter's max_block_env_bytes */
+/* T3 §4.F — the PROPOSAL value bound is DERIVED, never a literal (D-19
+ * rev 3 / D-14 rev 2). The 2 MiB written here was the envelope cap alone;
+ * once D-17 rev 3 put the previous height's certificate inside the value,
+ * the real maximum is header v4 + certificate + envelopes + framing +
+ * claims = DNA_TM_VALUE_MAX_LEN (2 807 586). shared/dnac/tm_bounds.h
+ * carries the formula and _Static_asserts it against the published T2 §4.8
+ * numbers, so raising any input constant without the others fails the build.
+ *
+ * NOTE for the reader of the header comment above: this include widens the
+ * dependency surface that comment enumerates. tm_bounds.h is header-only
+ * and pulls in shared/dnac + the Dilithium signature length; it adds no
+ * I/O, no clock, no hash and no allocation to this module. */
+#include "dnac/tm_bounds.h"
+#define TM_MAX_VALUE_BYTES        DNA_TM_VALUE_MAX_LEN  /* one PROPOSAL value (T2 §4.8) */
+_Static_assert(TM_MAX_VALUE_BYTES <= TM_MAX_HEIGHT_LOG_BYTES,
+               "a single maximal PROPOSAL must fit the per-height log budget");
 #define TM_MAX_ROUND              0x7FFFFFFFu           /* the int32 round fields never wrap */
 #define TM_ROUND_LOOKAHEAD_MAX    4096u                 /* ceiling on params.round_lookahead */
 #define TM_H1_PROPOSAL_ROUNDS        2u                 /* highest round a BUFFERED h+1 PROPOSAL may carry */

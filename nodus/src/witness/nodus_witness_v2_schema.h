@@ -489,6 +489,58 @@ int nodus_witness_db_migrate_v2s12(nodus_witness_t *w);
 int nodus_witness_db_migrate_v2s12_ex(nodus_witness_t *w,
                                       nodus_v2s12_mig_fail_t fail_at);
 
+/* ── S13 migration (T3 wave 1): Tendermint WAL, state row, commit cert ─
+ *
+ * Adds the persistence the Tendermint host will need, and NOTHING that
+ * runs today — no live path reads or writes any of it in this wave.
+ *
+ *   tm_wal      the consensus write-ahead log: one row per own/received
+ *               message, timeout and height close, keyed
+ *               (protocol_id, height, seq). `bytes` is
+ *               SHA3-512(payload) ‖ payload, so a flipped bit on disk is
+ *               detected and HALTS a replay instead of feeding the core
+ *               a message nobody signed (D-15 rev 4 (1)).
+ *   tm_state    one row per protocol_id carrying the validator set the
+ *               node is running a height with (same digest framing).
+ *   v2_blocks   gains `commit_cert BLOB` — the CANONICAL certificate of
+ *               height h, written when h+1 commits, beside the existing
+ *               `qc` column which keeps the node-local SEEN certificate
+ *               (D-17 rev 3; the two are deliberately kept apart).
+ *
+ * NAMING: D-17 rev 3 named that column `v2_blocks.commit`. In the SQLite
+ * the tree links (3.44.4) `ADD COLUMN commit BLOB` is a syntax error —
+ * COMMIT is a reserved word the parser does not fall back to an
+ * identifier — and the quoted form would demand quoting in every future
+ * statement. The column is `commit_cert`; the meaning is unchanged, no
+ * wire byte moves, and the deviation is recorded in the T3 host design
+ * doc §0 (Atlas D-17 rev 4 proposes the rename).
+ *
+ * Purely ADDITIVE — two new tables and one nullable column, nothing
+ * dropped or rebuilt, so there is no populated-data refusal: existing
+ * rows keep every value they had and `commit_cert` reads NULL until a
+ * later block writes it. Version 14+ fails closed. */
+#define NODUS_V2_SCHEMA_VERSION_S13  13u
+
+typedef enum {
+    V2S13MIG_FAIL_NONE = 0,
+    V2S13MIG_FAIL_AFTER_BEGIN,      /* after BEGIN, before any DDL        */
+    V2S13MIG_FAIL_AFTER_REVALIDATE, /* in-txn version re-read passed      */
+    V2S13MIG_FAIL_AFTER_TABLES,     /* both tables + the column exist     */
+    V2S13MIG_FAIL_AFTER_VERIFY,     /* schema-shape verification passed   */
+    V2S13MIG_FAIL_BEFORE_COMMIT     /* user_version written, pre-COMMIT   */
+} nodus_v2s13_mig_fail_t;
+
+/** Atomic T3 wave-1 migration. Versions below 12 run the S9…S12 chain
+ *  first, then 12 → 13 atomically with the in-transaction revalidation.
+ *  @return 0 migrated or already at 13 (idempotent); -1 failure (full
+ *  rollback of the running stage) — including an UNKNOWN user_version
+ *  (14+): fail closed. */
+int nodus_witness_db_migrate_v2s13(nodus_witness_t *w);
+
+/** Test variant: deterministic abort inside the 12 → 13 transaction. */
+int nodus_witness_db_migrate_v2s13_ex(nodus_witness_t *w,
+                                      nodus_v2s13_mig_fail_t fail_at);
+
 #ifdef __cplusplus
 }
 #endif

@@ -131,7 +131,10 @@ nodus/
 │       ├── nodus_witness_bft.c/h    # BFT consensus state machine (PBFT)
 │       ├── nodus_witness_peer.c/h   # TCP peer mesh management
 │       ├── nodus_witness_handlers.c/h # DNAC message dispatch (spend, query, block)
-│       └── nodus_witness_verify.c/h # TX verification (hash, sig, balance, fee, nullifiers)
+│       ├── nodus_witness_verify.c/h # TX verification (hash, sig, balance, fee, nullifiers)
+│       ├── nodus_witness_v2_schema.c/h # Ledger V2 versioned schema S5..S13 (S13 = tm_wal, tm_state, v2_blocks.commit_cert)
+│       └── nodus_witness_tm_wal.c/h   # Tendermint T3 wave 1: consensus WAL + validator-state row on a SECOND
+│                                      #   synchronous=FULL SQLite connection, SHA3-512 row digests — ZERO consumers yet
 ├── tests/
 │   ├── test_wire.c            # Wire frame tests
 │   ├── test_cbor.c            # CBOR encoder/decoder tests
@@ -153,7 +156,10 @@ nodus/
 │   ├── test_server.c          # Server integration tests
 │   ├── test_tm_core.c         # Tendermint T1: Algorithm 1 line tests + replay/WAL rules
 │   ├── test_tm_proposer.c     # Tendermint T1: proposer-priority KATs (reference tables + hand-derived)
-│   └── test_tm_sim.c          # Tendermint T1: seeded N-node simulation (relay + sync stand-ins, Byzantine models)
+│   ├── test_tm_sim.c          # Tendermint T1: seeded N-node simulation (relay + sync stand-ins, Byzantine models)
+│   ├── test_tm_vote.c         # Tendermint T3: nodus.vote.v1 229-byte preimage (hand-built layout, KATs, signer diff class)
+│   ├── test_tm_commit.c       # Tendermint T3: nodus.commit.v1 certificate codec, BFT-time median, real-key fail-closed verify
+│   └── test_tm_wal.c          # Tendermint T3: tm_wal/tm_state on a second FULL connection, digest halt, startup table
 ├── CMakeLists.txt             # Build system
 └── docs/
     └── ARCHITECTURE.md        # This file
@@ -224,6 +230,8 @@ dependency. Supported types:
 | Map | `cbor_encode_map` | message envelope, arguments |
 | Boolean | `cbor_encode_bool` | flags (major type 7, values 20/21) |
 | Null | `cbor_encode_null` | absent values (major type 7, value 22) |
+| Signed int | `cbor_encode_int` / `cbor_decode_int` | Tendermint T3 verbs 28/29 only (`sst` i64, `lcr`/`vr` i32 with −1 = "none"); RFC 8949 §3.1 — value < 0 is major type 1 with argument −1−value. `cbor_decode_int` is a SEPARATE reader: `cbor_decode_next` / `cbor_decode_peek` / `cbor_decode_skip` still report major type 1 as an error, so every legacy decoder keeps rejecting negative bytes |
+| Signed skip | `cbor_decode_skip_signed` | ONE caller: `nodus_t3_decode` pass 1, which steps over the `a` body to reach the method name and `wsig`. Identical to `cbor_decode_skip` except that a major type 1 item is stepped over (via `cbor_decode_int`) and reported through `*saw_negint`; after the verb is known, a negative inside `a` is admitted for verbs 28/29 only and rejected (−1) for every other verb, exactly as before. The shared `cbor_decode_skip` (≈230 call sites in 12 files) is unchanged |
 
 ### Message Envelope
 
@@ -1271,7 +1279,7 @@ to `/usr/local/bin/`, and restarts the systemd service.
 | Test File | Module Tested | Test Count |
 |-----------|---------------|------------|
 | `test_wire.c` | Wire frame encode/decode | ~10 |
-| `test_cbor.c` | CBOR encoder/decoder | ~15 |
+| `test_cbor.c` | CBOR encoder/decoder; RFC 8949 §3.1 signed-integer vectors, rejects, legacy pin (`cbor_decode_next` on `0x20` stays ERROR), `cbor_decode_skip_signed` negatives + parity with `cbor_decode_skip` (13 shapes + depth 33) | 26 |
 | `test_tier1.c` | T1 protocol encode/decode | ~12 |
 | `test_tier2.c` | T2 protocol encode/decode | ~18 |
 | `test_value.c` | Value create/sign/verify/serialize | ~12 |
@@ -1283,7 +1291,7 @@ to `/usr/local/bin/`, and restarts the systemd service.
 | `test_tcp.c` | TCP transport | ~5 |
 | `test_client.c` | Client SDK | ~8 |
 | `test_server.c` | Server integration | ~7 |
-| `test_tier3.c` | T3 (DNAC BFT) protocol encode/decode | ~10 |
+| `test_tier3.c` | T3 (DNAC BFT) protocol encode/decode — 18 legacy sections + 16 Tendermint sections (verbs 28-34 round-trips incl. `sst` twin and a maximal 2.8 MB proposal verified inside its class buffer, encoder range refusals, hand-built decode negatives with a control first, signed-field negatives, per-verb ceiling table, the legacy negative-integer pin `tm_legacy_negint_pin`) | 34 |
 | `test_witness_verify.c` | TX verification (hash, sig, balance) | ~10 |
 
 ### Integration Tests
@@ -1334,6 +1342,37 @@ Tier 3 uses the same CBOR wire format as T1/T2 but with DNAC-specific method nam
 | `dnac_tx` | Client→Witness | Query full TX data by hash |
 | `dnac_block` | Client→Witness | Query block by height |
 | `dnac_block_range` | Client→Witness | Query block range |
+
+### Tendermint T3 reactor verbs 28-34 (wave 1 — DORMANT, no dispatcher yet)
+
+Appended to `nodus_t3_msg_type_t` after `NODUS_T3_VIEWOK_REQ = 27` by the Tendermint
+T3 season (normative bytes: T2 wire design §4.2, Atlas D-16 rev 4; design
+`docs/plans/2026-09-09-tendermint-t3-host-design.md` §4.D, local). They have a full
+codec and tests but NO consumer until wave 2 wires the host; `NODUS_T3_BFT_PROTOCOL_VER`
+is unchanged (6) and a peer sending them today is dropped as an unknown method by every
+handler. Values 1-27 do not move.
+
+| Verb | Method | CBOR keys (exact set, any order) | Class bound |
+|------|--------|----------------------------------|-------------|
+| 28 | `w_tm_step` | `h` u64, `r` u32, `s` u8 (0 propose / 1 prevote / 2 precommit / 3 new_height), `sst` i64 (carried, never read), `lcr` i32 ≥ −1 | SMALL (256 + 8192) |
+| 29 | `w_tm_prop` | `h`, `r`, `vr` i32 ≥ −1, `v` bstr 1..`DNA_TM_VALUE_MAX_LEN` (2 807 586; zero-copy into the decode buffer) | PROP (`DNA_TM_VALUE_MAX_LEN` + 8192) |
+| 30 | `w_tm_pol` | `h`, `pr` u32, `bm` bstr 1..16 | SMALL |
+| 31 | `w_tm_vote` | `ty` ∈ {0x01 PREVOTE, 0x02 PRECOMMIT}, `h`, `r`, `bi` 64, `vid` 32, `ix` u32, `ts` u64, `sig` 4627 (inner vote signature — carried, verified by the wave-2 host) | VOTE (4627 + 256 + 8192) |
+| 32 | `w_tm_has` | `h`, `r`, `ty`, `ix` | SMALL |
+| 33 | `w_tm_maj23` | `h`, `r`, `ty`, `bi` 64 | SMALL |
+| 34 | `w_tm_bits` | `h`, `r`, `ty`, `bi` 64, `bm` 1..16 | SMALL |
+
+Rules that differ from the legacy verbs, on purpose: the 28-34 arg decoders demand the EXACT
+key set (missing, duplicate, unknown key or wrong CBOR type → −1) so the codec is a bijection;
+the vote type byte is the CometBFT `SignedMsgType` wire value (D-12), NOT the T1 core enum
+`dna_cmsg_type_t` {1,2,3} — the wave-2 host maps the two in one table; `sst`, `lcr` and `vr`
+are the only signed integers on any Nodus wire (D-22, RFC 8949 §3.1). `nodus_t3_max_msg_size(type)`
+reports the class bound (legacy verbs: the 1 MB verify-side bound `NODUS_W_MAX_SYNC_RSP_SIZE`;
+sizing peer.c's 128 KB receive buffers from it is a separate wave-2 decision) and `nodus_t3_verify`
+allocates exactly that class for 28-34 while keeping the 1 MB literal for legacy verbs (D-14 rev 3,
+proposed). `nodus_t3_decode` pass 1 steps over `a` with `cbor_decode_skip_signed` and admits a
+negative integer inside `a` for verbs 28/29 only (D-22 rev 2) — every other verb still returns −1
+for one, which `test_tier3`'s `tm_legacy_negint_pin` pins.
 
 ### BFT Consensus Flow
 

@@ -1288,3 +1288,117 @@ int nodus_witness_db_migrate_v2s12_ex(nodus_witness_t *w,
 int nodus_witness_db_migrate_v2s12(nodus_witness_t *w) {
     return nodus_witness_db_migrate_v2s12_ex(w, V2S12MIG_FAIL_NONE);
 }
+
+/* ── S13 (T3 wave 1): Tendermint WAL, state row, canonical commit cert ─ */
+
+int nodus_witness_db_migrate_v2s13_ex(nodus_witness_t *w,
+                                      nodus_v2s13_mig_fail_t fail_at) {
+    if (!w || !w->db) return -1;
+
+    uint32_t ver = 0;
+    if (nodus_witness_db_schema_version(w, &ver) != 0) return -1;
+    if (ver == NODUS_V2_SCHEMA_VERSION_S13) return 0;    /* idempotent    */
+    if (ver != NODUS_V2_SCHEMA_VERSION_S12) {
+        if (nodus_witness_db_migrate_v2s12(w) != 0) return -1;
+        ver = NODUS_V2_SCHEMA_VERSION_S12;
+    }
+
+    if (exec_sql(w, "BEGIN IMMEDIATE") != 0) return -1;
+
+    int ok = 0;
+    int already = 0;
+    do {
+        if (fail_at == V2S13MIG_FAIL_AFTER_BEGIN) break;
+
+        /* O15B discipline: the pre-BEGIN read decided nothing. */
+        int rv = mig_revalidate_version(w, NODUS_V2_SCHEMA_VERSION_S12,
+                                        NODUS_V2_SCHEMA_VERSION_S13, "S13");
+        if (rv < 0) break;
+        if (rv == 0) { already = 1; break; }
+        if (fail_at == V2S13MIG_FAIL_AFTER_REVALIDATE) break;
+
+        /* tm_wal: PK (protocol_id, height, seq) is the replay order —
+         * seq is monotonic per protocol_id and continues ACROSS heights,
+         * so (height, seq) is a total order over the log. `bytes` is
+         * SHA3-512(payload) ‖ payload; the digest is the only integrity
+         * check a kind-2/3 row has (they carry no signature), and a
+         * mismatch halts replay rather than skipping the row.
+         * tm_state: exactly one row per protocol_id — the current
+         * validator set, replaced in place, never appended to.
+         * NO default on any column. */
+        if (exec_sql(w,
+                "CREATE TABLE IF NOT EXISTS tm_wal ("
+                "  protocol_id INTEGER NOT NULL,"
+                "  height INTEGER NOT NULL,"
+                "  seq INTEGER NOT NULL,"
+                "  kind INTEGER NOT NULL,"
+                "  bytes BLOB NOT NULL,"
+                "  PRIMARY KEY (protocol_id, height, seq)"
+                ")") != 0)
+            break;
+        if (exec_sql(w,
+                "CREATE TABLE IF NOT EXISTS tm_state ("
+                "  protocol_id INTEGER PRIMARY KEY,"
+                "  bytes BLOB NOT NULL"
+                ")") != 0)
+            break;
+        /* The canonical certificate of h, written at h+1 (D-17 rev 3).
+         * NULLABLE and unwritten here: every existing row keeps its
+         * values and reads NULL, which is what "purely additive" means
+         * for a column. Named commit_cert, not commit — see the header
+         * (SQLite reserves COMMIT; measured on 3.44.4). */
+        if (exec_sql(w,
+                "ALTER TABLE v2_blocks ADD COLUMN commit_cert BLOB") != 0)
+            break;
+        if (fail_at == V2S13MIG_FAIL_AFTER_TABLES) break;
+
+        static const char *const wal_cols[] = {
+            "protocol_id", "height", "seq", "kind", "bytes"
+        };
+        static const char *const state_cols[] = {
+            "protocol_id", "bytes"
+        };
+        /* v2_blocks is verified WHOLE: the S9 shape with commit_cert
+         * appended. A column added in the wrong place — or an earlier
+         * column quietly lost — is drift, not a migrated schema. */
+        static const char *const block_cols[] = {
+            "global_height", "block_id", "prev_block_id", "epoch",
+            "tx_root", "domain_updates_root", "domains_root",
+            "global_root", "vset_hash", "tx_count", "header", "qc",
+            "commit_cert"
+        };
+        if (table_cols_exact(w, "tm_wal", wal_cols,
+                sizeof(wal_cols) / sizeof(wal_cols[0])) != 1 ||
+            table_cols_exact(w, "tm_state", state_cols,
+                sizeof(state_cols) / sizeof(state_cols[0])) != 1 ||
+            table_cols_exact(w, "v2_blocks", block_cols,
+                sizeof(block_cols) / sizeof(block_cols[0])) != 1) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "S13 schema shape drift — refusing");
+            break;
+        }
+        if (fail_at == V2S13MIG_FAIL_AFTER_VERIFY) break;
+
+        if (exec_sql(w, "PRAGMA user_version = 13") != 0) break;
+        if (fail_at == V2S13MIG_FAIL_BEFORE_COMMIT) break;
+
+        ok = 1;
+    } while (0);
+
+    if (already) {
+        (void)exec_sql(w, "ROLLBACK");
+        return 0;
+    }
+    if (!ok) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    if (exec_sql(w, "COMMIT") != 0) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    return 0;
+}
+
+int nodus_witness_db_migrate_v2s13(nodus_witness_t *w) {
+    return nodus_witness_db_migrate_v2s13_ex(w, V2S13MIG_FAIL_NONE);
+}

@@ -149,6 +149,24 @@ static int has_table(sqlite3 *db, const char *name) {
     return rc == SQLITE_ROW ? 1 : 0;
 }
 
+/* 1 = `table` has a column named `col`, 0 = not, -1 = fault. Generic
+ * form of has_domain_col below; S13 adds a COLUMN, and a rolled-back
+ * stage must be shown to have left none behind. */
+static int has_col(sqlite3 *db, const char *table, const char *col) {
+    char sql[128];
+    snprintf(sql, sizeof(sql), "PRAGMA table_info(\"%s\")", table);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) return -1;
+    int found = 0, rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const unsigned char *nm = sqlite3_column_text(st, 1);
+        if (nm && strcmp((const char *)nm, col) == 0) found = 1;
+    }
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) return -1;
+    return found;
+}
+
 static int has_domain_col(sqlite3 *db) {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db, "PRAGMA table_info(utxo_set)", -1, &st,
@@ -914,6 +932,121 @@ int main(void) {
         CHECK(has_table(f13.w->db, "v2_claim_bytes") == 0,
               "version 13 got a claim table"); OK();
         fx_close(&f13);
+    }
+
+    /* ════════════════════════════════════════════════════════════════
+     * S13 (Tendermint T3 wave 1) — tm_wal + tm_state + the canonical
+     * commit-certificate column. Same matrix shape as S12: fresh climb,
+     * upgrade with every fail stage rolling back to a byte-identical
+     * version-12 database, and an unknown newer version failing closed.
+     * ════════════════════════════════════════════════════════════════ */
+
+    /* S13-fresh: 0 → 13 in one call; both tables and the column, with the
+     * earlier schema still whole underneath. */
+    {
+        fixture_t s13f;
+        CHECK(fx_open(&s13f) == 0, "fixture s13 fresh");
+        CHECK(nodus_witness_db_migrate_v2s13(s13f.w) == 0, "0->13"); OK();
+        CHECK(nodus_witness_db_schema_version(s13f.w, &ver) == 0 && ver == 13,
+              "version != 13"); OK();
+        CHECK(has_table(s13f.w->db, "tm_wal") == 1 &&
+              has_table(s13f.w->db, "tm_state") == 1,
+              "S13 tables missing"); OK();
+        /* Shape, not just existence: the migration verifies it internally
+         * with table_cols_exact, so the test verifies it independently. */
+        CHECK(has_col(s13f.w->db, "tm_wal", "protocol_id") == 1 &&
+              has_col(s13f.w->db, "tm_wal", "height") == 1 &&
+              has_col(s13f.w->db, "tm_wal", "seq") == 1 &&
+              has_col(s13f.w->db, "tm_wal", "kind") == 1 &&
+              has_col(s13f.w->db, "tm_wal", "bytes") == 1,
+              "tm_wal column shape"); OK();
+        CHECK(has_col(s13f.w->db, "tm_state", "protocol_id") == 1 &&
+              has_col(s13f.w->db, "tm_state", "bytes") == 1,
+              "tm_state column shape"); OK();
+        CHECK(has_col(s13f.w->db, "v2_blocks", "commit_cert") == 1,
+              "v2_blocks.commit_cert missing"); OK();
+        /* The SEEN certificate column stays beside the canonical one —
+         * D-17 rev 3 keeps the two apart on purpose. */
+        CHECK(has_col(s13f.w->db, "v2_blocks", "qc") == 1,
+              "S13 disturbed v2_blocks.qc"); OK();
+        /* the earlier schemas remain present (additive superset) */
+        CHECK(has_table(s13f.w->db, "v2_claim_bytes") == 1 &&
+              has_table(s13f.w->db, "v2_claim_counts") == 1 &&
+              has_table(s13f.w->db, "v2_tx_bytes") == 1 &&
+              has_table(s13f.w->db, "v2_blocks") == 1,
+              "S13 dropped an earlier table"); OK();
+        /* idempotent re-run */
+        CHECK(nodus_witness_db_migrate_v2s13(s13f.w) == 0, "re-run 13"); OK();
+        CHECK(nodus_witness_db_schema_version(s13f.w, &ver) == 0 && ver == 13,
+              "re-run moved version"); OK();
+        /* restart keeps it */
+        CHECK(fx_reopen(&s13f) == 0, "reopen s13");
+        CHECK(nodus_witness_db_schema_version(s13f.w, &ver) == 0 && ver == 13,
+              "restart lost v13"); OK();
+        CHECK(has_table(s13f.w->db, "tm_wal") == 1,
+              "restart lost tm_wal"); OK();
+        CHECK(has_col(s13f.w->db, "v2_blocks", "commit_cert") == 1,
+              "restart lost commit_cert"); OK();
+        fx_close(&s13f);
+    }
+
+    /* S13-upgrade + fault stages: from a valid S12 base, EVERY stage rolls
+     * back to a byte-identical version-12 database — no table AND no
+     * column leaked (an ALTER TABLE rolls back with its transaction; that
+     * is asserted here, not assumed) — then the migration succeeds. */
+    {
+        fixture_t s12b;
+        CHECK(fx_open(&s12b) == 0, "fixture s12 base for S13");
+        CHECK(nodus_witness_db_migrate_v2s12(s12b.w) == 0, "0->12 base"); OK();
+        CHECK(nodus_witness_db_schema_version(s12b.w, &ver) == 0 && ver == 12,
+              "S13 base not at 12"); OK();
+
+        uint8_t d12[64];
+        CHECK(v2x_db_digest(s12b.w, d12) == 0, "S12 base digest"); OK();
+
+        for (int stage = V2S13MIG_FAIL_AFTER_BEGIN;
+             stage <= V2S13MIG_FAIL_BEFORE_COMMIT; stage++) {
+            CHECK(nodus_witness_db_migrate_v2s13_ex(s12b.w,
+                      (nodus_v2s13_mig_fail_t)stage) == -1,
+                  "staged S13 failure did not fail");
+            CHECK(nodus_witness_db_schema_version(s12b.w, &ver) == 0 &&
+                  ver == 12, "failed S13 stage moved the version");
+            CHECK(has_table(s12b.w->db, "tm_wal") == 0 &&
+                  has_table(s12b.w->db, "tm_state") == 0,
+                  "failed S13 stage left a table");
+            CHECK(has_col(s12b.w->db, "v2_blocks", "commit_cert") == 0,
+                  "failed S13 stage left the column");
+            uint8_t dnow[64];
+            CHECK(v2x_db_digest(s12b.w, dnow) == 0, "post-stage digest");
+            CHECK(memcmp(d12, dnow, 64) == 0,
+                  "failed S13 stage mutated the DB");
+        }
+        OK();
+
+        CHECK(nodus_witness_db_migrate_v2s13(s12b.w) == 0, "12->13"); OK();
+        CHECK(nodus_witness_db_schema_version(s12b.w, &ver) == 0 && ver == 13,
+              "post-fault version != 13"); OK();
+        CHECK(has_table(s12b.w->db, "tm_state") == 1,
+              "post-fault tm_state missing"); OK();
+        CHECK(has_col(s12b.w->db, "v2_blocks", "commit_cert") == 1,
+              "post-fault commit_cert missing"); OK();
+        fx_close(&s12b);
+    }
+
+    /* S13 unknown/newer version (14) fails closed — nothing changes. */
+    {
+        fixture_t s13u;
+        CHECK(fx_open(&s13u) == 0, "fixture s13 v14");
+        CHECK(run_sql(s13u.w->db, "PRAGMA user_version = 14") == 0, "set 14");
+        CHECK(nodus_witness_db_migrate_v2s13(s13u.w) == -1,
+              "version 14 migrated"); OK();
+        CHECK(nodus_witness_db_schema_version(s13u.w, &ver) == 0 &&
+              ver == 14, "version 14 mutated"); OK();
+        CHECK(has_table(s13u.w->db, "tm_wal") == 0,
+              "version 14 got a WAL table"); OK();
+        CHECK(has_col(s13u.w->db, "v2_blocks", "commit_cert") == 0,
+              "version 14 got the column"); OK();
+        fx_close(&s13u);
     }
 
     /* apply-side: phase 12c persistence + F49 rollback. */

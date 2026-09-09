@@ -203,6 +203,13 @@ grounded V1↔V2 reference). On the client side:
 
 - the canonical V2 codecs (envelope, block header, QC, claims, pools,
   activation records) live in `shared/dnac/` and compile into `libdna`;
+- the Tendermint consensus codecs of the T3 season (`shared/dnac/tm_vote.{h,c}`
+  — the 229-byte `nodus.vote.v1` vote preimage; `tm_commit.{h,c}` — the
+  `nodus.commit.v1` commit certificate with its BFT-time median;
+  `tm_bounds.h` — the derived size bounds) are DORMANT: zero consumers, compiled
+  into `libnodus` only (libdna does not list them yet), byte layouts normative in
+  the local T2 wire design; they carry the previous height's certificate INSIDE
+  the next block, so header v4 / body v2 land with a chain wipe in T3 wave 2;
 - the legacy v2 TX wire above stays the accepted format until the
   switch; Wire V3 (types 11/12/13) is defined but rejected by every
   live admission path;

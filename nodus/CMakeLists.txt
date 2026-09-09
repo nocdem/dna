@@ -192,6 +192,13 @@ set(NODUS_SOURCES
     src/witness/nodus_witness_v2_schema.c
     src/witness/nodus_witness_v2_apply.c
 
+    # Tendermint T3 wave 1 — the consensus WAL (tm_wal) and validator
+    # state row (tm_state) on schema stage S13. ZERO CONSUMERS: no live
+    # witness path opens it; the host that replays it is wave 2. It needs
+    # SQLite (a SECOND connection at synchronous=FULL, D-13), which is
+    # why it sits here and not with the pure T1 core above.
+    src/witness/nodus_witness_tm_wal.c
+
     # Ledger V2 O12 S2 — INACTIVE engine-mandatory epoch-boundary
     # transition (pending-commission activation, RETIRING -> UNSTAKED
     # graduation with its canonical per-record release identity, then
@@ -287,6 +294,14 @@ set(NODUS_SOURCES
     # is untouched. Same ownership pattern as ledger_roots_v2.c.
     ${SHARED_DIR}/dnac/vset_wire.c
     ${SHARED_DIR}/dnac/qc_v2.c
+
+    # Tendermint T3 wave 1 — INACTIVE nodus.vote.v1 preimage + nodus.commit.v1
+    # certificate codec (encode/decode/verify, BFT-time median). Derived size
+    # bounds live in the header-only shared/dnac/tm_bounds.h. No consensus path
+    # calls either; the live witness BFT path is untouched. Same ownership
+    # pattern as qc_v2.c above.
+    ${SHARED_DIR}/dnac/tm_vote.c
+    ${SHARED_DIR}/dnac/tm_commit.c
 
     # Ledger V2 O15B — canonical BlockMessage v1 wire codec. Structure and
     # bounds ONLY: it computes no consensus value and touches no committed
@@ -906,6 +921,22 @@ add_test(NAME test_vset_wire COMMAND test_vset_wire)
 add_executable(test_qc_v2 tests/test_qc_v2.c)
 target_link_libraries(test_qc_v2 nodus dsa nodus crypto)
 add_test(NAME test_qc_v2 COMMAND test_qc_v2)
+
+# Tendermint T3 wave 1 — nodus.vote.v1 preimage: the 229-byte layout checked
+# offset by offset against a hand-built array, the T2 §4.1 KATs, the signer's
+# timestamp-only classification, and own-vote stamping as pure arithmetic.
+add_executable(test_tm_vote tests/test_tm_vote.c)
+target_link_libraries(test_tm_vote nodus dsa nodus crypto)
+add_test(NAME test_tm_vote COMMAND test_tm_vote)
+
+# Tendermint T3 wave 1 — nodus.commit.v1 certificate: the 94-byte empty
+# certificate KAT, strict decode negatives, the BFT-time median walk with its
+# published KATs, a REAL-KEY N=4 suite (fail-closed on one bad signature, NIL
+# verified but not counted, quorum boundary, wrong-context rejects) and an
+# N=128 length/round-trip section with synthetic signatures.
+add_executable(test_tm_commit tests/test_tm_commit.c)
+target_link_libraries(test_tm_commit nodus dsa nodus crypto)
+add_test(NAME test_tm_commit COMMAND test_tm_commit)
 
 # Ledger V2 O15A — obligation 1: an allocation failure in or beneath the
 # QC path is a NODE FAULT, never a consensus verdict. malloc/calloc are
@@ -2448,6 +2479,13 @@ set_tests_properties(test_fault_inject_round_skip
 register_witness_test(test_tm_core)
 register_witness_test(test_tm_proposer)
 register_witness_test(test_tm_sim)
+
+# T3 wave 1 — the consensus WAL / state row on schema S13. Unlike the
+# three above this one DOES touch the file system: it needs two SQLite
+# connections on one file, which `:memory:` cannot provide. It creates a
+# unique temp directory per process (mkdtemp) and removes it, so it stays
+# safe under `ctest -j`. Still no ports, no clock and no RNG.
+register_witness_test(test_tm_wal)
 
 # Task 81 — supply invariance property test (Phase 17).
 # Pure-C simulated state machine — does NOT need the witness internal
