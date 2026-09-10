@@ -159,7 +159,22 @@ nodus/
 │   ├── test_tm_sim.c          # Tendermint T1: seeded N-node simulation (relay + sync stand-ins, Byzantine models)
 │   ├── test_tm_vote.c         # Tendermint T3: nodus.vote.v1 229-byte preimage (hand-built layout, KATs, signer diff class)
 │   ├── test_tm_commit.c       # Tendermint T3: nodus.commit.v1 certificate codec, BFT-time median, real-key fail-closed verify
-│   └── test_tm_wal.c          # Tendermint T3: tm_wal/tm_state on a second FULL connection, digest halt, startup table
+│   ├── test_tm_wal.c          # Tendermint T3: tm_wal/tm_state on a second FULL connection, digest halt, startup table
+│   ├── test_cmt_merkle.c      # cometbft port R1-A: RFC 6962 tree on SHA3-512 — roots, proofs, empty root H("")
+│   ├── test_cmt_bits.c        # cometbft port R1-A: BitArray + packed wire form (Elems == (Bits+63)/64 enforced)
+│   ├── test_cmt_safemath.c    # cometbft port R1-A: libs/math/safemath.go
+│   ├── test_cmt_time.c        # cometbft port R1-A: BFT-time value, WeightedMedian (time_test.go vectors), zero time = year one
+│   ├── test_cmt_pb.c          # cometbft port R1-A/B: proto3 codec against the generated encoders' rules (K-1 rev 2), oracle KATs
+│   ├── test_cmt_block.c       # cometbft port R1-B: Header.Hash 14 leaves, Commit/CommitSig/ExtendedCommit, MakeBlock, size constants 790/159/4685
+│   ├── test_cmt_vote.c        # cometbft port R1-B: CanonicalVote sign bytes, Verify with real ML-DSA-87 keys, ValidateBasic, signer callback
+│   ├── test_cmt_part_set.c    # cometbft port R1-B: Part / PartSetHeader / PartSet, AddPart outcomes, reader
+│   ├── test_cmt_validator_set.c # cometbft port R1-C: proposer priority (cometbft's ProposerSelection1/2 vectors), change sets, ValidatorsHash
+│   ├── test_cmt_results.c     # cometbft port R1-C: ABCIResults root + proof
+│   ├── test_cmt_params.c      # cometbft port R1-C: ConsensusParams flat hash, ValidateBasic / ValidateUpdate / Update
+│   ├── test_cmt_genesis.c     # cometbft port R1-C: GenesisDoc ValidateAndComplete (clock via callback), ValidatorHash
+│   ├── test_cmt_validation.c  # cometbft port R1-D: VerifyCommit with real signatures — +2/3 strict, NIL verified-not-counted, every signature checked
+│   ├── test_cmt_evidence.c    # cometbft port R1-D: DuplicateVoteEvidence bare bytes / flat hash / canonical order, EvidenceList root
+│   └── test_cmt_state.c       # cometbft port R1-D: MedianTime (voting-power weights), MakeGenesisState, Copy, MakeBlock
 ├── CMakeLists.txt             # Build system
 └── docs/
     └── ARCHITECTURE.md        # This file
@@ -1373,6 +1388,53 @@ allocates exactly that class for 28-34 while keeping the 1 MB literal for legacy
 proposed). `nodus_t3_decode` pass 1 steps over `a` with `cbor_decode_skip_signed` and admits a
 negative integer inside `a` for verbs 28/29 only (D-22 rev 2) — every other verb still returns −1
 for one, which `test_tier3`'s `tm_legacy_negint_pin` pins.
+
+### cometbft @709fd12b literal port — R1 types layer (`shared/dnac/cmt_*`, DORMANT, zero consumers)
+
+On 2026-09-09 the Tendermint migration became a function-by-function port of cometbft
+v0.38.19 (commit `709fd12b`, `BlockProtocol` 11) into C under `shared/dnac/cmt_*`
+(operator rule: every rule is the reference's, nothing is re-derived). R1 (2026-09-10)
+is the TYPES layer; nothing in the running node calls it yet, `NODUS_T3_BFT_PROTOCOL_VER`
+is unchanged and the live consensus path is byte-untouched (the R1 diff adds files and
+CMake lines only). Every function carries its `cometbft@709fd12b <file>:<lines>`
+citation; the only substitutions are the APPROVED ones (Atlas umbrella rev 3, K-1 rev 2,
+K-2): SHA3-512 / 64-byte digests in place of SHA-256, ML-DSA-87 keys (2592 B, `PublicKey`
+oneof field 9) and signatures (4627 B), a 32-byte address = SHA3-512(pubkey)[0..31] — the
+tree's own witness id (`nodus_chain_config_derive_witness_id`) — a 32-byte raw chain id, a
+single host clock callback type (`cmt_now_fn`, reached only from `GenesisDoc.ValidateAndComplete`),
+and Go panics turned into explicit `CMT_REJECT` (bad input) or `CMT_FAULT` (this process
+cannot decide). Return contract everywhere: 0 / −1 / −2, as in `qc_v2.h`.
+
+| Module | Reference (cometbft @709fd12b) | Holds |
+|---|---|---|
+| `cmt_tmhash.h` | `crypto/tmhash/hash.go`, `crypto/crypto.go` | `Sum`, `SumMany`, `SumTruncated` (32), `AddressHash` — the ONE address derivation; `CMT_OK/REJECT/FAULT` |
+| `cmt_merkle.{h,c}` | `crypto/merkle` | RFC 6962 tree: `HashFromByteSlices`, proofs, empty root H("") |
+| `cmt_bits.{h,c}` | `libs/bits/bit_array.go` | `BitArray` and its wire form; the decoder enforces `Elems == (Bits+63)/64` (the reference's one unguarded read) |
+| `cmt_safemath.{h,c}` | `libs/math/safemath.go` | checked int64 arithmetic |
+| `cmt_time.{h,c}` | `types/time/time.go` | `{seconds, nanos}`; `CMT_TIME_ZERO` = year one, NOT the Unix epoch; `WeightedMedian` (stable sort); `is_zero`; the `cmt_now_fn` type |
+| `cmt_pb.{h,c}` | `proto/tendermint/*.pb.go` (generated) | proto3 encode/decode written from the GENERATED code's rules: omit-zero, `nullable=false` always-emit, `StdTime`, wrapper leaves; `MarshalDelimited` |
+| `cmt_canonical.{h,c}` | `types/canonical.go` | CanonicalVote / CanonicalProposal — the signed bytes |
+| `cmt_vote.{h,c}` | `types/vote.go`, `crypto/ed25519/ed25519.go` | Vote verify (ML-DSA-87), `ValidateBasic`, `SignAndCheckVote` through a host signer callback (adopts the signer's timestamp, vote.go:451) |
+| `cmt_proposal.{h,c}` | `types/proposal.go` | Proposal, sign bytes, `ValidateBasic` |
+| `cmt_part_set.{h,c}` | `types/part_set.go` | Part / PartSetHeader / PartSet, `AddPart`, reader, `ValidateHash` (64) |
+| `cmt_block.{h,c}` | `types/block.go`, `types/test_util.go` | Header (14-leaf hash), Commit / CommitSig / ExtendedCommit, Data, EvidenceData, BlockID, Block, `MakeBlock` + `fillHeader`; re-derived `MaxHeaderBytes` 790, `MaxCommitOverheadBytes` 159, `MaxCommitSigBytes` 4685 |
+| `cmt_validator_set.{h,c}` | `types/validator.go`, `validator_set.go` | Validator, ValidatorSet, proposer priority (128-bit average, `MaxTotalVotingPower` → FAULT), change sets, `ValidatorsHash`, `VerifyCommit` method; supersedes `src/bft/tendermint/tm_proposer.c` when R2 lands |
+| `cmt_results.{h,c}` | `types/results.go` | ABCIResults root + proof |
+| `cmt_params.{h,c}` | `types/params.go` | ConsensusParams flat hash, `ValidateBasic` / `ValidateUpdate` / `Update`, defaults, pubkey type name `"mldsa87"` |
+| `cmt_genesis.{h,c}` | `types/genesis.go` | GenesisDoc `ValidateAndComplete` (addresses checked or derived; chain id ≤ 32 bytes by operator decision), `ValidatorHash` |
+| `cmt_validation.{h,c}` | `types/validation.go` | `VerifyCommit`: strictly more than 2/3, EVERY non-absent signature verified, NIL verified but not counted; batch path unreachable (no ML-DSA-87 batch verifier); light-client family out of scope |
+| `cmt_evidence.{h,c}` | `types/evidence.go` | DuplicateVoteEvidence — bare bytes, FLAT hash, canonical pair order; `EvidenceList.Hash` (the header's EvidenceHash), `Has`; wrapper codec (branch 1 only) |
+| `cmt_state.{h,c}` | `state/state.go` | `State`, `Copy`, `IsEmpty`, `MakeBlock`, `MedianTime` (weighted by voting power, address lookup), `MakeGenesisState` |
+
+Not ported, by rule: the light-client / evidence-pool / blocksync callers (scope rule of
+the local port map), batch verification, JSON and file I/O (host), the `State` store codec
+(R2). Every departure from the reference is enumerated in the local
+`tasks/reference-deviation-register.md` (rows R1A-*, R1B-*, R1C-*, R1D-*). Vectors come
+from four independent Python oracles under `shared/dnac/tests/` (`hashlib.sha3_512`, the
+K-1 rules, no port code imported) and from the reference's own test files; the 15
+`test_cmt_*` targets build with zero warnings and run clean under ASan/UBSan. Open
+questions and pending Atlas revisions at any given time are tracked in the local
+deviation register and the fleet ledger under `tasks/`, not here.
 
 ### BFT Consensus Flow
 

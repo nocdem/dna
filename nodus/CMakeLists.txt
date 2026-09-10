@@ -303,6 +303,39 @@ set(NODUS_SOURCES
     ${SHARED_DIR}/dnac/tm_vote.c
     ${SHARED_DIR}/dnac/tm_commit.c
 
+    # cometbft @709fd12b → C port, wave R1-A (FLEET-TM-R1) — INACTIVE
+    # encoding/hashing foundation: proto3 wire codec (K-1 rev 2 / K-2),
+    # RFC 6962 Merkle over SHA3-512, BitArray, safemath, BFT-time helpers.
+    # Zero runtime consumers; no consensus path calls any of it yet. Same
+    # ownership pattern as tm_vote.c / tm_commit.c above.
+    ${SHARED_DIR}/dnac/cmt_merkle.c
+    ${SHARED_DIR}/dnac/cmt_bits.c
+    ${SHARED_DIR}/dnac/cmt_safemath.c
+    ${SHARED_DIR}/dnac/cmt_time.c
+    ${SHARED_DIR}/dnac/cmt_pb.c
+    # wave R1-B — block / vote / proposal / canonical / part-set domain
+    # types (types/block.go, vote.go, proposal.go, canonical.go,
+    # part_set.go). Pure functions over cmt_pb; still zero consumers.
+    ${SHARED_DIR}/dnac/cmt_canonical.c
+    ${SHARED_DIR}/dnac/cmt_vote.c
+    ${SHARED_DIR}/dnac/cmt_proposal.c
+    ${SHARED_DIR}/dnac/cmt_part_set.c
+    ${SHARED_DIR}/dnac/cmt_block.c
+
+    # cometbft @709fd12b → C port, wave R1-C (FLEET-TM-R1) — INACTIVE
+    # validator / validator set (proposer priority, change sets, hash),
+    # ABCI results, consensus params, genesis document. Zero runtime
+    # consumers; supersedes nodus/src/bft/tendermint/tm_proposer.c in R2.
+    ${SHARED_DIR}/dnac/cmt_validator_set.c
+    ${SHARED_DIR}/dnac/cmt_results.c
+    ${SHARED_DIR}/dnac/cmt_params.c
+    ${SHARED_DIR}/dnac/cmt_genesis.c
+    # cometbft @709fd12b → C port, wave R1-D (types/validation.go,
+    # types/evidence.go, state/state.go helpers). Still zero consumers.
+    ${SHARED_DIR}/dnac/cmt_validation.c
+    ${SHARED_DIR}/dnac/cmt_evidence.c
+    ${SHARED_DIR}/dnac/cmt_state.c
+
     # Ledger V2 O15B — canonical BlockMessage v1 wire codec. Structure and
     # bounds ONLY: it computes no consensus value and touches no committed
     # state, so it can never become a second engine. Production-dormant with
@@ -937,6 +970,78 @@ add_test(NAME test_tm_vote COMMAND test_tm_vote)
 add_executable(test_tm_commit tests/test_tm_commit.c)
 target_link_libraries(test_tm_commit nodus dsa nodus crypto)
 add_test(NAME test_tm_commit COMMAND test_tm_commit)
+
+# cometbft @709fd12b → C port, wave R1-A — the five foundation tests. Each
+# file's header states what it proves, what it requires (a default build,
+# nothing else), what it leaves behind (nothing) and how it can lie (the
+# SHA3-512 vectors are self-consistent freezes derived by python, not an
+# oracle from cometbft's own output).
+add_executable(test_cmt_merkle tests/test_cmt_merkle.c)
+target_link_libraries(test_cmt_merkle nodus dsa nodus crypto)
+add_test(NAME test_cmt_merkle COMMAND test_cmt_merkle)
+
+add_executable(test_cmt_bits tests/test_cmt_bits.c)
+target_link_libraries(test_cmt_bits nodus dsa nodus crypto)
+add_test(NAME test_cmt_bits COMMAND test_cmt_bits)
+
+add_executable(test_cmt_safemath tests/test_cmt_safemath.c)
+target_link_libraries(test_cmt_safemath nodus dsa nodus crypto)
+add_test(NAME test_cmt_safemath COMMAND test_cmt_safemath)
+
+add_executable(test_cmt_time tests/test_cmt_time.c)
+target_link_libraries(test_cmt_time nodus dsa nodus crypto)
+add_test(NAME test_cmt_time COMMAND test_cmt_time)
+
+add_executable(test_cmt_pb tests/test_cmt_pb.c)
+target_link_libraries(test_cmt_pb nodus dsa nodus crypto)
+add_test(NAME test_cmt_pb COMMAND test_cmt_pb)
+
+add_executable(test_cmt_block tests/test_cmt_block.c)
+target_link_libraries(test_cmt_block nodus dsa nodus crypto)
+add_test(NAME test_cmt_block COMMAND test_cmt_block)
+
+add_executable(test_cmt_vote tests/test_cmt_vote.c)
+target_link_libraries(test_cmt_vote nodus dsa nodus crypto)
+add_test(NAME test_cmt_vote COMMAND test_cmt_vote)
+
+add_executable(test_cmt_part_set tests/test_cmt_part_set.c)
+target_link_libraries(test_cmt_part_set nodus dsa nodus crypto)
+add_test(NAME test_cmt_part_set COMMAND test_cmt_part_set)
+
+# cometbft @709fd12b → C port, wave R1-C — validator set (cometbft's own
+# ProposerSelection1/2 vectors), results, params, genesis. Each file's
+# header states what it proves / requires / leaves behind / how it can lie.
+add_executable(test_cmt_validator_set tests/test_cmt_validator_set.c)
+target_link_libraries(test_cmt_validator_set nodus dsa nodus crypto)
+add_test(NAME test_cmt_validator_set COMMAND test_cmt_validator_set)
+
+add_executable(test_cmt_results tests/test_cmt_results.c)
+target_link_libraries(test_cmt_results nodus dsa nodus crypto)
+add_test(NAME test_cmt_results COMMAND test_cmt_results)
+
+add_executable(test_cmt_params tests/test_cmt_params.c)
+target_link_libraries(test_cmt_params nodus dsa nodus crypto)
+add_test(NAME test_cmt_params COMMAND test_cmt_params)
+
+add_executable(test_cmt_genesis tests/test_cmt_genesis.c)
+target_link_libraries(test_cmt_genesis nodus dsa nodus crypto)
+add_test(NAME test_cmt_genesis COMMAND test_cmt_genesis)
+
+# cometbft @709fd12b → C port, wave R1-D — VerifyCommit (real ML-DSA-87
+# signatures), duplicate-vote evidence + EvidenceList, state helpers
+# (MedianTime, MakeGenesisState, MakeBlock, Copy). Each file's header
+# states what it proves / requires / leaves behind / how it can lie.
+add_executable(test_cmt_validation tests/test_cmt_validation.c)
+target_link_libraries(test_cmt_validation nodus dsa nodus crypto)
+add_test(NAME test_cmt_validation COMMAND test_cmt_validation)
+
+add_executable(test_cmt_evidence tests/test_cmt_evidence.c)
+target_link_libraries(test_cmt_evidence nodus dsa nodus crypto)
+add_test(NAME test_cmt_evidence COMMAND test_cmt_evidence)
+
+add_executable(test_cmt_state tests/test_cmt_state.c)
+target_link_libraries(test_cmt_state nodus dsa nodus crypto)
+add_test(NAME test_cmt_state COMMAND test_cmt_state)
 
 # Ledger V2 O15A — obligation 1: an allocation failure in or beneath the
 # QC path is a NODE FAULT, never a consensus verdict. malloc/calloc are

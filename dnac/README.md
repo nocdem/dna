@@ -210,6 +210,17 @@ grounded V1↔V2 reference). On the client side:
   into `libnodus` only (libdna does not list them yet), byte layouts normative in
   the local T2 wire design; they carry the previous height's certificate INSIDE
   the next block, so header v4 / body v2 land with a chain wipe in T3 wave 2;
+- the **cometbft @709fd12b literal port, R1 types layer** (`shared/dnac/cmt_*`,
+  2026-09-10: `cmt_pb` proto3 codec, `cmt_merkle`, `cmt_bits`, `cmt_safemath`,
+  `cmt_time`, `cmt_tmhash`, `cmt_canonical`, `cmt_vote`, `cmt_proposal`,
+  `cmt_part_set`, `cmt_block`, `cmt_validator_set`, `cmt_results`, `cmt_params`,
+  `cmt_genesis`, `cmt_validation`, `cmt_evidence`, `cmt_state`) is likewise
+  DORMANT: zero consumers, compiled into `libnodus` only (libdna does not list
+  it), every function cited to cometbft v0.38.19 `file:line`, substitutions
+  limited to SHA3-512 / ML-DSA-87 / 32-byte addresses / a host clock callback.
+  It supersedes the T3-season `tm_*` codecs and the T1 `tm_proposer.c` once the
+  R2 core lands (module table: `../nodus/docs/ARCHITECTURE.md`, "cometbft
+  literal port"); Python oracles under `shared/dnac/tests/` pin its vectors;
 - the legacy v2 TX wire above stays the accepted format until the
   switch; Wire V3 (types 11/12/13) is defined but rejected by every
   live admission path;

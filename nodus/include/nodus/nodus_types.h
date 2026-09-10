@@ -26,8 +26,8 @@ extern "C" {
  * long time. Bump BOTH, together, every time. */
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  19
-#define NODUS_VERSION_PATCH  51
-#define NODUS_VERSION_STRING "0.19.51"
+#define NODUS_VERSION_PATCH  52
+#define NODUS_VERSION_STRING "0.19.52"
 
 /* Wire frame.
  *

@@ -117,7 +117,7 @@ Produces:
 
 ```bash
 cd nodus/build
-ctest --output-on-failure    # 200 registered tests (~125 test source files)
+ctest --output-on-failure    # 247 registered tests (2026-09-10; 240 unit + 7 bench)
 ```
 
 **Test coverage (representative areas — `ctest` runs all):**
@@ -133,6 +133,7 @@ ctest --output-on-failure    # 200 registered tests (~125 test source files)
 | Media / DHT features | `test_media_storage`, `test_media_tier2`, `test_put_if_newer`, `test_hinted_handoff` |
 | Presence / Server | `test_presence`, `test_server` |
 | Witness / BFT | `test_witness_verify`, `test_witness_cert_verify`, `test_bft_quorum_formula`, `test_commit_atomicity`, `test_vset_*`, `test_qc_v2` |
+| cometbft literal port, R1 types (dormant) | `test_cmt_pb`, `test_cmt_merkle`, `test_cmt_bits`, `test_cmt_safemath`, `test_cmt_time`, `test_cmt_block`, `test_cmt_vote`, `test_cmt_part_set`, `test_cmt_validator_set`, `test_cmt_results`, `test_cmt_params`, `test_cmt_genesis`, `test_cmt_validation`, `test_cmt_evidence`, `test_cmt_state` |
 | Merkle / state_root | `test_witness_merkle`, `test_merkle_proof`, `test_state_root_4subtree`, `test_merkle_scan_fail_close` |
 | Ledger V2 | `test_v2_apply`, `test_v2_native`, `test_v2_epoch`, `test_v2_finalize`, `test_v2_produce`, `test_block_v2`, `test_v2_qc_authority`, `test_domain_wire`, `test_v2_pools`, `test_v2_claims` |
 
