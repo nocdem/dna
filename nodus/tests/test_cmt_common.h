@@ -3,9 +3,23 @@
  * the C stand-in for `consensus/common_test.go`, the fixture every
  * scenario in test_cmt_cs.c is driven through.
  *
- * HEADER-ONLY, every function `static`: exactly ONE translation unit
- * includes it (test_cmt_cs.c), so a second CMake source would buy a
- * link-time boundary nobody crosses.
+ * HEADER-ONLY, every function `static`. TWO translation units include it:
+ * test_cmt_cs.c directly, and test_cmt_byzantine.c through the multi-node
+ * driver test_cmt_multinode.h (wave R2-BYZ), which builds N of these
+ * fixtures. What those two files use of this one, by grep (2026-09-11):
+ * `test_cmt_multinode.h` calls `tc_setup`, `tc_teardown`, `tc_sign_vote`,
+ * `tc_decide_proposal`, `tc_set_next_tx` and `tc_store_at`, and reads
+ * `tc_t`'s `recs`/`recs_n` (as `tc_block_rec_t`), `applied_height`,
+ * `store_height`, `decode_misses`, `conflict_calls` and `tc_store_ent_t`
+ * directly; `test_cmt_byzantine.c` calls `tc_check_proposer` and
+ * `tc_expected_proposer` and reads `create_calls`, `recs_n` and
+ * `recs[].hash`. Those functions, types and fields are therefore an
+ * interface: a wave that needs a different shape ADDS a function beside
+ * them (which is what R2-T2 did for `tc_stub_sign_vote` and
+ * `tc_decide_proposal_from`) rather than changing them. The first version
+ * of this comment said one TU included the file; Atlas's include graph
+ * said two. R2-T2's first version listed six functions and put
+ * `tc_check_proposer` in the wrong file; verifier T2 grepped.
  *
  * ── WHAT IT PROVES ─────────────────────────────────────────────────────
  * By itself, nothing — it asserts no property of the port. It is the
@@ -50,10 +64,11 @@
  *
  * ── WHAT IT LEAVES BEHIND ──────────────────────────────────────────────
  * Nothing. No files, no directories, no processes, no environment
- * variables. The only state outside a `tc_t` is `tc_ext_bytes`, a
- * `static const` array of 9 bytes with static storage duration (see
- * `tc_sign_vote`), which is read-only and never freed because it is not
- * allocated.
+ * variables. The only state outside a `tc_t` is two `static const`
+ * arrays with static storage duration: `tc_ext_bytes`, the 9 bytes of
+ * common_test.go:143 (see `tc_sign_vote`), and `tc_ext_bytes_of`, the
+ * four 11-byte per-validator extensions of state_test.go:1656-1661. Both
+ * are read-only and never freed because they are not allocated.
  *
  * ── HOW IT CAN LIE ─────────────────────────────────────────────────────
  *  1. `decode_block` NEVER PARSES. This tree deliberately has no
@@ -156,6 +171,28 @@
  *     per height with the header, the seen commit and the seen extended
  *     commit, and nothing else. `store/store.go`'s pruning, its batch
  *     writes and every panic it has are not modelled.
+ * 11. A PART SET THE STATE MACHINE ASSEMBLED BORROWS THE SENDER'S BYTES.
+ *     `cmt_part_set_add_part` stores the part STRUCT, whose `bytes` is a
+ *     pointer (cmt_part_set.c:457, `ps->parts[part->index] = *part`), so a
+ *     part set built from `tc_set_proposal_and_block` points into THIS
+ *     FIXTURE'S `ext_scratch` — the one buffer `tc_decide_proposal_from`
+ *     and `tc_make_part_set` marshal into, and which the NEXT call to
+ *     either overwrites. The bytes are read at exactly two moments: when
+ *     the set completes (the reader, state.go:2005) and when a VALID block
+ *     is RE-PROPOSED (state.go:1211 hands `ValidBlockParts` to :1246-1249).
+ *     Every scenario drains before it rebuilds, so the first read is safe;
+ *     NO scenario re-proposes a fixture-made valid block after a second
+ *     fixture-made block, so the second never sees a stale pointer. A
+ *     scenario that did would queue parts whose proofs no longer match and
+ *     the block would never complete. Named here because nothing checks it.
+ * 12. THE EXTENDED-COMMIT CAPTURE RECORDS THE FIXTURE'S OWN CALLS TOO.
+ *     `tc_create_proposal_block` remembers the `last_ext_commit` it was
+ *     handed (`cap_ext*`, the C answer to state_test.go:1669-1674's
+ *     captured RequestPrepareProposal) — but `tc_decide_proposal_from`
+ *     calls the same function on the fixture's behalf, so the LAST capture
+ *     is whichever of the two ran last. `cap_ext_for_height` says which
+ *     height it was for, and the one scenario that reads the capture makes
+ *     no fixture-side proposal after the state machine's own.
  *
  * ── WHICH GO HELPER EACH C HELPER STANDS IN FOR ────────────────────────
  * Named at each definition. The systematic difference, stated once: the
@@ -171,6 +208,8 @@
  * Reference @709fd12b (SHA-256 verified before use):
  *   consensus/common_test.go   991 lines
  *     3e3940e51975f030a0190bc2b5217d93ee768eef30097d8b14b379b006023a38
+ *   consensus/state_test.go   2620 lines   (R2-T2: :1656-1661, :2579-2590)
+ *     9b8080ecfc32198f2bfcbd7ebb3c7b9be3c44c7cf5f053b1eb365b6a24f652c3
  *   consensus/state.go        2653 lines
  *     f9517e9f45f4f9afefebf869eb4674bf0135d5edda00de67eab2e1695c945090
  *   state/execution.go         789 lines
@@ -181,12 +220,14 @@
  *     6c3a663aaf84fbee94735731eaba27d1a8e5269dd6e316e0b175595e32902221
  *   config/config.go          1283 lines
  *     f0c2f601d49e1a56b36e8d557387e96ee53ecc3616ecb79749b0f71c0f218c21
- * Opened by this wave and reported in the wave report. The first three
- * turned out to be PINNED already — in tasks/comet-port-map.md rather
- * than in a numbered revision of the pin record, which is why the wave
- * reported them as unpinned; the ORCHESTRATOR checked the map at O6 and
- * recomputed every hash. The last two were genuinely absent and are pin
- * revision 9:
+ * Opened by wave R2-T and reported in its wave report (the "(R2-T2: …)"
+ * annotations above mark the lines wave R2-T2 added to that list; R2-T2
+ * itself opened one unpinned file, internal/test/config.go, informative
+ * only, pin revision 10). Of R2-T's five, the first three turned out to be
+ * PINNED already — in tasks/comet-port-map.md rather than in a numbered
+ * revision of the pin record, which is why the wave reported them as
+ * unpinned; the ORCHESTRATOR checked the map at O6 and recomputed every
+ * hash. The last two were genuinely absent and are pin revision 9:
  *   state/validation.go        150 lines   (map line 40, PINNED)
  *     a456fbc7dfb91d893c1eacf737c2f0c4848b154ac8c2d616b45eac5f02b6153a
  *   types/priv_validator.go    158 lines   (map line 911, PINNED)
@@ -268,8 +309,14 @@ static int g_tc_checks = 0;
  *  refusal; no scenario here reaches it. */
 #define TC_PAYLOAD_CAP    (8u * (unsigned)CMT_BLOCK_PART_SIZE_BYTES)
 
-/** Blocks one scenario may create. The longest ported scenario
- *  (TestStateLockNoPOL, state_test.go:455-654) makes four. */
+/** Blocks one scenario may create — every block the state machine
+ *  proposes AND every block the fixture makes on a stub's behalf. The
+ *  widest ported scenario is TestStateLockPOLUnlockOnUnknownBlock
+ *  (state_test.go:858-984), which makes THREE: this node's round-0 block
+ *  and two stub blocks. TestStateLockNoPOL (:455-654) makes two — its
+ *  round-2 proposal re-uses the ValidBlock and creates nothing. The first
+ *  version of this comment said LockNoPOL "makes four"; it was counted,
+ *  not measured, and is corrected here by reading the scenarios. */
 #define TC_BLOCK_RECS     12
 
 /** Heights the block store keeps. */
@@ -278,6 +325,12 @@ static int g_tc_checks = 0;
 /** The vote-extension arena (cmt_cs.h OWNERSHIP (2)). One extension per
  *  precommit this node signs, a handful per scenario. */
 #define TC_ARENA_CAP      65536u
+
+/** The widest vote extension the `create_proposal_block` capture keeps a
+ *  copy of (HOW IT CAN LIE (12)). The fixture's own extensions are 9 and
+ *  11 bytes (common_test.go:143, state_test.go:1656-1661); a longer one
+ *  marks the capture as not taken rather than truncating it. */
+#define TC_CAP_EXT_MAX    64u
 
 /** WAL rows recorded for inspection. */
 #define TC_WAL_MAX        512
@@ -430,6 +483,30 @@ typedef struct {
      *  …)` (state_test.go:1566). */
     uint8_t               verify_ext_addr[TC_MAX_VALS * 4][CMT_ADDRESS_SIZE];
     size_t                verify_ext_len;
+    /** What `ExtendVote` answers (state_test.go:1499-1501's mock returns
+     *  "extension"; :1664-1666's returns `voteExtensions[0]`). Static
+     *  storage duration, never the arena's: `tc_extend_vote` COPIES it
+     *  into the arena, which is what OWNERSHIP (2) asks for. Defaulted by
+     *  `tc_setup` to `tc_ext_bytes`; a scenario may point it elsewhere. */
+    const uint8_t        *extend_ext;
+    size_t                extend_ext_len;
+    /** The `last_ext_commit` the most recent `create_proposal_block` was
+     *  handed — the C answer to state_test.go:1669-1674, which captures
+     *  the RequestPrepareProposal whose `LocalLastCommit` carries the
+     *  previous height's extended commit (state/execution.go:127-129 feeds
+     *  `lastExtCommit` into both). Copied INSIDE the callback, because
+     *  cmt_cs.c frees the commit it passed the moment the callback
+     *  returns; `cap_ecsigs` is heap (TC_MAX_VALS × ~4.7 KB) and every
+     *  entry's extension bytes are copied into `cap_ext_bytes`, so the
+     *  capture owns everything it points at. `cap_ext_ok` is false when a
+     *  commit did not fit — HOW IT CAN LIE (12) says what the capture is
+     *  and is not. */
+    int                   cap_ext_calls;
+    bool                  cap_ext_ok;
+    int64_t               cap_ext_for_height;
+    cmt_extended_commit_t cap_ext;
+    cmt_extended_commit_sig_t *cap_ecsigs;
+    uint8_t               cap_ext_bytes[TC_MAX_VALS][TC_CAP_EXT_MAX];
     /** Transactions the NEXT proposed block carries. */
     uint8_t              *next_txs[TC_MAX_TXS];
     size_t                next_txs_len[TC_MAX_TXS];
@@ -492,6 +569,21 @@ static const uint8_t *tc_arena_put(tc_t *tc, const uint8_t *src, size_t len)
  *  and is why the arena carries only the extensions this node makes. */
 static const uint8_t tc_ext_bytes[9] = {
     'e', 'x', 't', 'e', 'n', 's', 'i', 'o', 'n'
+};
+
+/** cometbft@709fd12b consensus/state_test.go:1656-1661 — the
+ *  `voteExtensions` table of TestPrepareProposalReceivesVoteExtensions:
+ *  "extension 0" … "extension 3", one per validator INDEX, eleven bytes
+ *  each. `static const` for the same OWNERSHIP (2) reason as
+ *  `tc_ext_bytes`: a stub's vote points straight at these and they
+ *  outlive every height. Spelled as byte lists rather than string
+ *  literals so that no terminating NUL is part of the extension. */
+#define TC_EXT_OF_LEN 11u
+static const uint8_t tc_ext_bytes_of[TC_MAX_VALS][TC_EXT_OF_LEN] = {
+    { 'e', 'x', 't', 'e', 'n', 's', 'i', 'o', 'n', ' ', '0' },
+    { 'e', 'x', 't', 'e', 'n', 's', 'i', 'o', 'n', ' ', '1' },
+    { 'e', 'x', 't', 'e', 'n', 's', 'i', 'o', 'n', ' ', '2' },
+    { 'e', 'x', 't', 'e', 'n', 's', 'i', 'o', 'n', ' ', '3' }
 };
 
 /* ══ the signer — types/priv_validator.go:73-100, MockPV.SignVote ════ */
@@ -624,6 +716,31 @@ static int tc_create_proposal_block(void *ctx, int64_t height,
     rec = tc_rec_take(tc);
     if (rec == NULL) {
         return CMT_FAULT;
+    }
+
+    /* state_test.go:1669-1674 — capture what the proposer was handed, so
+     * that a scenario can assert the previous height's extensions ARRIVED
+     * here (:1727-1744). Copied now: the caller frees `last_ext` on return
+     * (cmt_cs.c, `cs_create_proposal_block`). Not the reference's
+     * behaviour — instrumentation, and it changes nothing the state
+     * machine sees. HOW IT CAN LIE (12) says what it records. */
+    tc->cap_ext_calls++;
+    tc->cap_ext_for_height = height;
+    tc->cap_ext_ok = cmt_extended_commit_clone(last_ext, tc->cap_ecsigs,
+                                               (size_t)TC_MAX_VALS,
+                                               &tc->cap_ext) == CMT_OK;
+    for (i = 0u; tc->cap_ext_ok && i < tc->cap_ext.extended_signatures_len;
+         i++) {
+        cmt_extended_commit_sig_t *e = &tc->cap_ecsigs[i];
+
+        if (e->extension.len > (size_t)TC_CAP_EXT_MAX) {
+            tc->cap_ext_ok = false;
+            break;
+        }
+        if (e->extension.len > 0u) {
+            memcpy(tc->cap_ext_bytes[i], e->extension.data, e->extension.len);
+        }
+        e->extension.data = tc->cap_ext_bytes[i];
     }
 
     /* :127 — ToCommit(). The commit lives in the record, because the
@@ -888,7 +1005,9 @@ static int tc_apply_verified_block(void *ctx, const cmt_block_id_t *block_id,
 /**
  * cometbft@709fd12b consensus/state.go:2400 —
  * `blockExec.ExtendVote(ctx, vote, block, state)`, as the mock of
- * state_test.go:1499-1501 is: it returns the nine bytes "extension".
+ * state_test.go:1499-1501 is: it returns the nine bytes "extension" —
+ * or, for the one scenario that installs a different answer
+ * (:1664-1666, `voteExtensions[0]`), whatever `tc->extend_ext` names.
  *
  * The bytes go in the ARENA, which is what cmt_cs.h's OWNERSHIP (2)
  * requires: `cmt_vote_copy` shares an extension's bytes into every vote
@@ -905,12 +1024,12 @@ static int tc_extend_vote(void *ctx, const cmt_vote_t *vote,
     (void)block;
     (void)state;
     tc->extend_calls++;
-    p = tc_arena_put(tc, tc_ext_bytes, sizeof(tc_ext_bytes));
+    p = tc_arena_put(tc, tc->extend_ext, tc->extend_ext_len);
     if (p == NULL) {
         return CMT_FAULT;
     }
     out_ext->data = p;
-    out_ext->len  = sizeof(tc_ext_bytes);
+    out_ext->len  = tc->extend_ext_len;
     return CMT_OK;
 }
 
@@ -934,6 +1053,29 @@ static int tc_verify_vote_extension(void *ctx, const cmt_vote_t *vote)
         tc->verify_ext_len++;
     }
     return CMT_OK;
+}
+
+/** Was `verify_vote_extension` ever called for validator `index`? The C
+ *  answer to `m.AssertNotCalled(t, "VerifyVoteExtension",
+ *  &abci.RequestVerifyVoteExtension{… ValidatorAddress: addr …})`
+ *  (state_test.go:1640-1645): the mock matches on the whole request, of
+ *  which the address is the field that names the validator; the port has
+ *  no request object, so the address alone is what is recorded and
+ *  compared. */
+static bool tc_verify_ext_called_for(const tc_t *tc, size_t index)
+{
+    size_t i;
+
+    if (index >= tc->nvals) {
+        return false;
+    }
+    for (i = 0u; i < tc->verify_ext_len; i++) {
+        if (memcmp(tc->verify_ext_addr[i], tc->addr[index],
+                   (size_t)CMT_ADDRESS_SIZE) == 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 /* ══ the host: sm.BlockStore ══════════════════════════════════════════ */
@@ -1432,6 +1574,9 @@ static int tc_setup(tc_t *tc, size_t nvals,
     tc->ecsigs       = (cmt_extended_commit_sig_t *)calloc(
                             (size_t)TC_MAX_VALS,
                             sizeof(cmt_extended_commit_sig_t));
+    tc->cap_ecsigs   = (cmt_extended_commit_sig_t *)calloc(
+                            (size_t)TC_MAX_VALS,
+                            sizeof(cmt_extended_commit_sig_t));
     tc->conflict_a   = (cmt_vote_t *)calloc(1u, sizeof(*tc->conflict_a));
     tc->conflict_b   = (cmt_vote_t *)calloc(1u, sizeof(*tc->conflict_b));
     tc->marshal_scratch = (uint8_t *)calloc((size_t)TC_PAYLOAD_CAP, 1u);
@@ -1446,7 +1591,7 @@ static int tc_setup(tc_t *tc, size_t nvals,
         tc->arena == NULL || tc->recs == NULL || tc->store == NULL ||
         tc->wal == NULL || tc->sv == NULL || tc->val == NULL ||
         tc->prop == NULL || tc->tmp_block == NULL || tc->ecsigs == NULL ||
-        tc->conflict_a == NULL ||
+        tc->cap_ecsigs == NULL || tc->conflict_a == NULL ||
         tc->conflict_b == NULL || tc->marshal_scratch == NULL ||
         tc->ext_parts == NULL || tc->ext_part_set == NULL ||
         tc->ext_scratch == NULL) {
@@ -1656,6 +1801,10 @@ static int tc_setup(tc_t *tc, size_t nvals,
 
     /* ── the application's standing answers ───────────────────────── */
     tc->process_accept = true;
+    /* state_test.go:1499-1501 — ExtendVote answers "extension" unless a
+     * scenario says otherwise. */
+    tc->extend_ext     = tc_ext_bytes;
+    tc->extend_ext_len = sizeof(tc_ext_bytes);
 
     /* ── the state machine (state.go:154-208, NewState) ───────────── */
     if (cmt_config_default(&tc->config) != CMT_OK) {
@@ -1732,6 +1881,7 @@ static void tc_teardown(tc_t *tc)
     free(tc->prop);
     free(tc->tmp_block);
     free(tc->ecsigs);
+    free(tc->cap_ecsigs);
     free(tc->conflict_a);
     free(tc->conflict_b);
     free(tc->marshal_scratch);
@@ -1814,12 +1964,6 @@ static int tc_start_test_round(tc_t *tc, int64_t height, int32_t round)
 
 /**
  * common_test.go:177-181 — `incrementRound(vss...)`.
- *
- * Its sibling `incrementHeight` (:171-175) has no C counterpart here: the
- * only place the reference uses it is the fixture's own construction
- * (:492), which `tc_setup` performs inline, and no ported scenario votes
- * at a second height. A helper nothing calls would be a compile warning
- * in a build that forbids them.
  */
 static void tc_increment_round(tc_t *tc, size_t from, size_t to)
 {
@@ -1827,6 +1971,25 @@ static void tc_increment_round(tc_t *tc, size_t from, size_t to)
 
     for (i = from; i < to && i < tc->nvals; i++) {
         tc->vss[i].round++;
+    }
+}
+
+/**
+ * common_test.go:171-175 — `incrementHeight(vss...)`.
+ *
+ * Wave R2-T left this out because the only use it saw was the fixture's
+ * own construction (:492, performed inline by `tc_setup`) and no scenario
+ * then voted at a second height. TestPrepareProposalReceivesVoteExtensions
+ * does (state_test.go:1710), so it exists now. It moves the HEIGHT only;
+ * the reference's stubs keep their round across heights and the test
+ * increments it separately (:1715-1717).
+ */
+static void tc_increment_height(tc_t *tc, size_t from, size_t to)
+{
+    size_t i;
+
+    for (i = from; i < to && i < tc->nvals; i++) {
+        tc->vss[i].height++;
     }
 }
 
@@ -1862,24 +2025,36 @@ static bool tc_sign_data_is_equal(const cmt_vote_t *a, const cmt_vote_t *b)
 }
 
 /**
- * cometbft@709fd12b consensus/common_test.go:90-132
- * (`(vs *validatorStub) signVote`) and :134-155 (the free `signVote`),
- * as one function because the second is the first plus the extension
- * rule at :137-145.
+ * cometbft@709fd12b consensus/common_test.go:90-132 —
+ * `(vs *validatorStub) signVote(voteType, hash, header, voteExtension,
+ * extEnabled)`, the METHOD. It takes the extension bytes from its caller
+ * and attaches whatever it is given (:109); the rule about WHICH votes may
+ * carry one lives in the free function below (:137-145), and
+ * `signAddPrecommitWithExtension` (state_test.go:2579-2590) calls this
+ * method directly to bypass that rule with a caller-chosen extension.
+ *
+ * Wave R2-T had the method and the free function as one C function;
+ * R2-T2 split them because state_test.go:2587 needs the method alone. The
+ * seven existing callers of `tc_sign_vote` (four in test_cmt_cs.c, two in
+ * test_cmt_multinode.h, one below) see no change in signature or effect.
  *
  * `out` is filled with a signed vote. The reference's `cmttime.Now()` at
- * :106 is this fixture's frozen clock.
+ * :106 is this fixture's frozen clock. Does NOT set `vs->last` — that is
+ * :152, in the free function, and :2587-2589 deliberately skips it.
  *
  * @param hash NULL for a nil BlockID (the reference passes a nil slice).
  * @param header NULL for `types.PartSetHeader{}`.
- * @param ext_enabled the reference's `extEnabled`, which decides both
- *        whether an extension is attached (:141-144) and whether the
- *        extension signature survives (:127-129).
+ * @param ext / ext_len the reference's `voteExtension` (:109); NULL/0 for
+ *        none. Must have static storage duration or live in the arena —
+ *        OWNERSHIP (2) of cmt_cs.h, because the vote set shares the bytes.
+ * @param ext_enabled the reference's `extEnabled`, which here decides
+ *        only whether the extension signature survives (:127-129).
  */
-static int tc_sign_vote(tc_t *tc, tc_stub_t *vs, int32_t vote_type,
-                        const uint8_t *hash, size_t hash_len,
-                        const cmt_part_set_header_t *header,
-                        bool ext_enabled, cmt_vote_t *out)
+static int tc_stub_sign_vote(tc_t *tc, tc_stub_t *vs, int32_t vote_type,
+                             const uint8_t *hash, size_t hash_len,
+                             const cmt_part_set_header_t *header,
+                             const uint8_t *ext, size_t ext_len,
+                             bool ext_enabled, cmt_vote_t *out)
 {
     memset(out, 0, sizeof(*out));
     out->type   = vote_type;
@@ -1897,24 +2072,14 @@ static int tc_sign_vote(tc_t *tc, tc_stub_t *vs, int32_t vote_type,
            (size_t)CMT_ADDRESS_SIZE);                            /* :107 */
     out->validator_address_len = (size_t)CMT_ADDRESS_SIZE;
     out->validator_index       = vs->index;                      /* :108 */
-
-    /* :137-145 — only a non-nil precommit may carry an extension, and it
-     * carries one only when extensions are enabled. */
-    if (ext_enabled) {
-        if (vote_type != (int32_t)CMT_PB_MSG_TYPE_PRECOMMIT) {
-            fprintf(stderr, "tc_sign_vote: extensions on a non-precommit\n");
-            return 1;
-        }
-        if ((hash != NULL && hash_len != 0u) ||
-            (header != NULL && !cmt_psh_is_zero(header))) {
-            out->extension.data = tc_ext_bytes;                  /* :143 */
-            out->extension.len  = sizeof(tc_ext_bytes);
-        }
+    if (ext != NULL && ext_len > 0u) {
+        out->extension.data = ext;                               /* :109 */
+        out->extension.len  = ext_len;
     }
 
     if (tc_mock_sign_vote(tc->sk[vs->index], tc->chain_id, tc->chain_id_len,
                           out) != CMT_OK) {                      /* :112 */
-        fprintf(stderr, "tc_sign_vote: signing failed\n");
+        fprintf(stderr, "tc_stub_sign_vote: signing failed\n");
         return 1;
     }
 
@@ -1937,7 +2102,43 @@ static int tc_sign_vote(tc_t *tc, tc_stub_t *vs, int32_t vote_type,
     if (!ext_enabled) {
         out->extension_signature_len = 0u;                   /* :127-129 */
     }
+    return 0;
+}
 
+/**
+ * cometbft@709fd12b consensus/common_test.go:134-155 — the free
+ * `signVote(vs, voteType, hash, header, extEnabled)`: the extension rule
+ * at :137-145, the method above (:146), and `vs.lastVote = v` (:152).
+ *
+ * @param ext_enabled the reference's `extEnabled`, which decides both
+ *        whether an extension is attached (:141-144) and whether the
+ *        extension signature survives (:127-129, in the method).
+ */
+static int tc_sign_vote(tc_t *tc, tc_stub_t *vs, int32_t vote_type,
+                        const uint8_t *hash, size_t hash_len,
+                        const cmt_part_set_header_t *header,
+                        bool ext_enabled, cmt_vote_t *out)
+{
+    const uint8_t *ext     = NULL;                               /* :136 */
+    size_t         ext_len = 0u;
+
+    /* :137-145 — only a non-nil precommit may carry an extension, and it
+     * carries one only when extensions are enabled. */
+    if (ext_enabled) {
+        if (vote_type != (int32_t)CMT_PB_MSG_TYPE_PRECOMMIT) {
+            fprintf(stderr, "tc_sign_vote: extensions on a non-precommit\n");
+            return 1;                                            /* :140 */
+        }
+        if ((hash != NULL && hash_len != 0u) ||
+            (header != NULL && !cmt_psh_is_zero(header))) {
+            ext     = tc_ext_bytes;                              /* :143 */
+            ext_len = sizeof(tc_ext_bytes);
+        }
+    }
+    if (tc_stub_sign_vote(tc, vs, vote_type, hash, hash_len, header,
+                          ext, ext_len, ext_enabled, out) != 0) {/* :146 */
+        return 1;                                            /* :148-150 */
+    }
     *vs->last    = *out;                                         /* :152 */
     vs->has_last = true;
     return 0;
@@ -1962,6 +2163,47 @@ static int tc_add_vote(tc_t *tc, const cmt_vote_t *v)
 }
 
 /**
+ * cometbft@709fd12b consensus/common_test.go:157-169 — `signVotes` over
+ * `vss[from..to)`: sign, and do NOT add. Two scenarios need exactly that —
+ * a polka signed at one round and delivered at a later one
+ * (state_test.go:1024/:1102 and :1144/:1198).
+ *
+ * @param out caller storage for `to - from` votes (~9.5 KB each: heap).
+ */
+static int tc_sign_votes_range(tc_t *tc, int32_t vote_type,
+                               const uint8_t *hash, size_t hash_len,
+                               const cmt_part_set_header_t *header,
+                               bool ext_enabled, size_t from, size_t to,
+                               cmt_vote_t *out)
+{
+    size_t i;
+
+    for (i = from; i < to && i < tc->nvals; i++) {               /* :165 */
+        if (tc_sign_vote(tc, &tc->vss[i], vote_type, hash, hash_len,
+                         header, ext_enabled, &out[i - from]) != 0) {/* :166 */
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/**
+ * cometbft@709fd12b consensus/common_test.go:255-259 — `addVotes` over an
+ * array, then the drain that stands in for the receive routine.
+ */
+static int tc_add_votes(tc_t *tc, const cmt_vote_t *votes, size_t n)
+{
+    size_t i;
+
+    for (i = 0u; i < n; i++) {                                   /* :256 */
+        if (tc_add_vote(tc, &votes[i]) != 0) {                   /* :257 */
+            return 1;
+        }
+    }
+    return tc_drain(tc);
+}
+
+/**
  * cometbft@709fd12b consensus/common_test.go:261-271 — `signAddVotes`
  * over `vss[from..to)`, which is how every scenario spells
  * `vs2, vs3, vs4`.
@@ -1977,29 +2219,64 @@ static int tc_sign_add_votes_range(tc_t *tc, int32_t vote_type,
                                    bool ext_enabled,
                                    size_t from, size_t to)
 {
-    size_t      i;
     cmt_vote_t *votes;
+    size_t      n = (to > from) ? (to - from) : 0u;
+    int         rc;
 
-    votes = (cmt_vote_t *)calloc(to > from ? (to - from) : 1u,
-                                 sizeof(cmt_vote_t));
+    if (to > tc->nvals) {
+        n = (tc->nvals > from) ? (tc->nvals - from) : 0u;
+    }
+    votes = (cmt_vote_t *)calloc(n == 0u ? 1u : n, sizeof(cmt_vote_t));
     if (votes == NULL) {
         return 1;
     }
-    for (i = from; i < to && i < tc->nvals; i++) {
-        if (tc_sign_vote(tc, &tc->vss[i], vote_type, hash, hash_len,
-                         header, ext_enabled, &votes[i - from]) != 0) {
-            free(votes);
-            return 1;
-        }
+    if (tc_sign_votes_range(tc, vote_type, hash, hash_len, header,
+                            ext_enabled, from, to, votes) != 0) { /* :269 */
+        free(votes);
+        return 1;
     }
-    for (i = from; i < to && i < tc->nvals; i++) {
-        if (tc_add_vote(tc, &votes[i - from]) != 0) {
-            free(votes);
-            return 1;
-        }
-    }
+    rc = tc_add_votes(tc, votes, n);                             /* :270 */
     free(votes);
-    return tc_drain(tc);
+    return rc;
+}
+
+/**
+ * cometbft@709fd12b consensus/state_test.go:2579-2590 —
+ * `signAddPrecommitWithExtension(t, cs, hash, header, extension, stub)`:
+ * the stub METHOD with a caller-chosen extension (:2587), then `addVotes`
+ * (:2589). It does NOT go through the free `signVote`, so :137-145's rule
+ * and :152's `lastVote` update are both skipped — which is the reference's
+ * shape, reproduced.
+ *
+ * @param ext must have static storage duration (OWNERSHIP (2)); the one
+ *        caller passes a row of `tc_ext_bytes_of`.
+ */
+static int tc_sign_add_precommit_with_extension(tc_t *tc, size_t index,
+                                                const uint8_t *hash,
+                                                size_t hash_len,
+                                                const cmt_part_set_header_t *header,
+                                                const uint8_t *ext,
+                                                size_t ext_len)
+{
+    cmt_vote_t *v;
+    int         rc;
+
+    if (index >= tc->nvals) {
+        return 1;
+    }
+    v = (cmt_vote_t *)calloc(1u, sizeof(*v));
+    if (v == NULL) {
+        return 1;
+    }
+    if (tc_stub_sign_vote(tc, &tc->vss[index],
+                          (int32_t)CMT_PB_MSG_TYPE_PRECOMMIT, hash, hash_len,
+                          header, ext, ext_len, true, v) != 0) { /* :2587 */
+        free(v);
+        return 1;                                                /* :2588 */
+    }
+    rc = tc_add_votes(tc, v, 1u);                                /* :2589 */
+    free(v);
+    return rc;
 }
 
 /** `signAddVotes(cs1, type, hash, header, ext, vs2, vs3, vs4)` for a
@@ -2016,30 +2293,126 @@ static int tc_sign_add_vote_one(tc_t *tc, size_t index, int32_t vote_type,
 /* ══ making a proposal on another validator's behalf ══════════════════ */
 
 /**
- * cometbft@709fd12b consensus/common_test.go:222-253 — `decideProposal`.
+ * cometbft@709fd12b types/priv_validator.go:102-115 —
+ * `(pv MockPV) SignProposal()`, for a STUB's key: the reference's
+ * `vs.SignProposal(chainID, p)` at common_test.go:246 and
+ * state_test.go:1187. `tc_sign_proposal_row` above is the same function
+ * for this node's own key, reached through the host table.
+ */
+static int tc_stub_sign_proposal(tc_t *tc, size_t signer, cmt_proposal_t *p)
+{
+    uint8_t sb[CMT_PROPOSAL_SIGN_BYTES_MAX];
+    size_t  sb_len  = 0u;
+    size_t  sig_len = 0u;
+
+    if (signer >= tc->nvals) {
+        return 1;
+    }
+    if (cmt_proposal_sign_bytes(tc->chain_id, tc->chain_id_len, p,
+                                sb, sizeof(sb), &sb_len) != CMT_OK) {
+        return 1;
+    }
+    if (qgp_dsa87_sign(p->signature, &sig_len, sb, sb_len,
+                       tc->sk[signer]) != 0) {
+        return 1;
+    }
+    p->signature_len = sig_len;
+    return 0;
+}
+
+/**
+ * `types.NewProposal(height, round, polRound, blockID)` signed by a stub —
+ * common_test.go:244-246 inside `decideProposal`, and on its own at
+ * state_test.go:1185-1191, where TestStateLockPOLSafety2 re-proposes an
+ * OLD block at a new round with the POL round of the polka it claims.
  *
- * The reference builds the block with cs1's own `createProposalBlock` and
- * then signs the PROPOSAL with a different stub's key, which is what
- * makes "a proposal from the validator whose turn it is" possible without
- * a second node. This does the same, with the two differences the port
- * forces:
- *   · `cs1.createProposalBlock` is private to the module and is not on
+ * The clock argument is this fixture's frozen `now` — proposal.go:44 reads
+ * `cmttime.Now()` inside NewProposal; this tree's `cmt_new_proposal` takes
+ * the instant as an argument (cmt_cs.h's clock note).
+ */
+static int tc_make_signed_proposal(tc_t *tc, size_t signer, int64_t height,
+                                   int32_t round, int32_t pol_round,
+                                   const cmt_block_id_t *block_id,
+                                   cmt_proposal_t *out)
+{
+    if (cmt_new_proposal(height, round, pol_round, block_id, tc->now,
+                         out) != CMT_OK) {                       /* :244 */
+        return 1;
+    }
+    return tc_stub_sign_proposal(tc, signer, out);               /* :246 */
+}
+
+/**
+ * `block.MakePartSet(types.BlockPartSizeBytes)` for a block the fixture
+ * already holds — state_test.go:533, :581, :622, :1139, :1247 and the rest
+ * of the reference's MakePartSet calls on a block it has in hand.
+ *
+ * ⚠ ONE BUFFER. The parts are built into the fixture's own `ext_parts` /
+ * `ext_scratch`, the same storage `tc_decide_proposal_from` uses, so this
+ * call INVALIDATES whatever part set either function returned before it —
+ * and, per HOW IT CAN LIE (11), the bytes of any part set the state
+ * machine assembled from that earlier one. Deterministic: the same block
+ * marshals to the same bytes and splits into the same parts, which is why
+ * the reference can call MakePartSet as often as it likes and compare the
+ * headers (:571-576 relies on exactly that).
+ */
+static int tc_make_part_set(tc_t *tc, const cmt_block_t *block,
+                            cmt_part_set_t **out_parts)
+{
+    memset(tc->ext_part_set, 0, sizeof(*tc->ext_part_set));
+    if (cmt_block_make_part_set(block, (uint32_t)CMT_BLOCK_PART_SIZE_BYTES,
+                                tc->ext_scratch, (size_t)TC_PAYLOAD_CAP,
+                                tc->ext_parts, (size_t)TC_PARTS_CAP,
+                                tc->ext_part_set) != CMT_OK) {
+        fprintf(stderr, "tc_make_part_set: MakePartSet failed\n");
+        return 1;
+    }
+    *out_parts = tc->ext_part_set;
+    return 0;
+}
+
+/**
+ * cometbft@709fd12b consensus/common_test.go:222-253 — `decideProposal`,
+ * with the ONE input the reference takes from the State it is handed made
+ * explicit: `polRound := cs.ValidRound` (:235, via :243).
+ *
+ * The reference builds the block with the given State's own
+ * `createProposalBlock` and then signs the PROPOSAL with a different
+ * stub's key, which is what makes "a proposal from the validator whose
+ * turn it is" possible without a second node. This does the same, with
+ * the differences the port forces:
+ *   · `createProposalBlock` is private to the module and is not on
  *     cmt_cs.h's surface, so the block is built by calling THIS
  *     FIXTURE'S OWN `tc_create_proposal_block` — the same function the
- *     state machine would have called, with the same state;
- *   · the reference reads `cs1.ValidRound` for the POL round (:235); so
- *     does this, through `cs->rs.valid_round`.
+ *     state machine would have called, with THIS node's state;
+ *   · the PROPOSER ADDRESS stamped into the block is the SIGNER's, where
+ *     the reference stamps the given State's own (:226 →
+ *     state.go:1306). Passing cs1 therefore gives the reference a block
+ *     that is byte-identical to cs1's own, and this fixture one that
+ *     differs in its proposer. Every scenario that turns on the two blocks
+ *     being different (or the same) says so at the site;
+ *   · `pol_round` is what the reference's `cs.ValidRound` would have been
+ *     for the State it was given: `tc->cs->rs.valid_round` when that
+ *     State is cs1 (the wrapper below), and −1 when it is a FRESH second
+ *     State — `randState(2)` at state_test.go:604, `newState(cs1.state,
+ *     …)` at :902 and :948 — whose ValidRound is the −1 `updateToState`
+ *     leaves (state.go:740). Nothing else of that second State is
+ *     observable in what decideProposal returns: the block comes from
+ *     `cs1.state` either way and the proposal's other fields are the
+ *     arguments.
  *
  * @param out_block receives the block (owned by the registry).
  * @param out_parts receives the part set, built into the fixture's own
  *        `ext_parts` / `ext_scratch` — NOT into one of the three slots,
  *        for exactly the reason cmt_cs.h:551-570 gives for the proposer's
- *        marshal buffer.
+ *        marshal buffer; and invalidated by the next call of this or of
+ *        `tc_make_part_set` (HOW IT CAN LIE (11)).
  */
-static int tc_decide_proposal(tc_t *tc, size_t signer, int64_t height,
-                              int32_t round, cmt_proposal_t *out_prop,
-                              cmt_block_t **out_block,
-                              cmt_part_set_t **out_parts)
+static int tc_decide_proposal_from(tc_t *tc, size_t signer, int64_t height,
+                                   int32_t round, int32_t pol_round,
+                                   cmt_proposal_t *out_prop,
+                                   cmt_block_t **out_block,
+                                   cmt_part_set_t **out_parts)
 {
     cmt_extended_commit_t     ec;
     cmt_block_t              *slot;
@@ -2089,13 +2462,12 @@ static int tc_decide_proposal(tc_t *tc, size_t signer, int64_t height,
     slot = &tc->recs[n_before].block;
 
     /* :233 — block.MakePartSet(types.BlockPartSizeBytes). */
-    memset(tc->ext_part_set, 0, sizeof(*tc->ext_part_set));
-    if (cmt_block_make_part_set(slot, (uint32_t)CMT_BLOCK_PART_SIZE_BYTES,
-                                tc->ext_scratch, (size_t)TC_PAYLOAD_CAP,
-                                tc->ext_parts, (size_t)TC_PARTS_CAP,
-                                tc->ext_part_set) != CMT_OK) {
-        fprintf(stderr, "tc_decide_proposal: MakePartSet failed\n");
-        return 1;
+    {
+        cmt_part_set_t *parts = NULL;
+
+        if (tc_make_part_set(tc, slot, &parts) != 0) {
+            return 1;
+        }
     }
     if (cmt_block_hash(slot, hash) != CMT_OK) {
         return 1;
@@ -2108,27 +2480,11 @@ static int tc_decide_proposal(tc_t *tc, size_t signer, int64_t height,
     bid.hash_len        = sizeof(hash);
     bid.part_set_header = psh;
 
-    /* :244 — NewProposal(height, round, polRound, blockID), where the POL
-     * round is cs1's ValidRound (:235, :243). */
-    if (cmt_new_proposal(height, round, tc->cs->rs.valid_round, &bid,
-                         tc->now, out_prop) != CMT_OK) {
+    /* :243-246 — NewProposal(height, round, polRound, blockID), signed by
+     * `vs` and not by cs1. */
+    if (tc_make_signed_proposal(tc, signer, height, round, pol_round, &bid,
+                                out_prop) != 0) {
         return 1;
-    }
-    /* :246 — signed by `vs`, not by cs1. */
-    {
-        uint8_t sb[CMT_PROPOSAL_SIGN_BYTES_MAX];
-        size_t  sb_len  = 0u;
-        size_t  sig_len = 0u;
-
-        if (cmt_proposal_sign_bytes(tc->chain_id, tc->chain_id_len, out_prop,
-                                    sb, sizeof(sb), &sb_len) != CMT_OK) {
-            return 1;
-        }
-        if (qgp_dsa87_sign(out_prop->signature, &sig_len, sb, sb_len,
-                           tc->sk[signer]) != 0) {
-            return 1;
-        }
-        out_prop->signature_len = sig_len;
     }
     if (out_block != NULL) {
         *out_block = slot;
@@ -2137,6 +2493,21 @@ static int tc_decide_proposal(tc_t *tc, size_t signer, int64_t height,
         *out_parts = tc->ext_part_set;
     }
     return 0;
+}
+
+/**
+ * `decideProposal(ctx, t, cs1, vs, height, round)` — the reference's call
+ * with cs1 as the State, so the POL round is cs1's ValidRound (:235).
+ * Every caller that existed before R2-T2 goes through here unchanged.
+ */
+static int tc_decide_proposal(tc_t *tc, size_t signer, int64_t height,
+                              int32_t round, cmt_proposal_t *out_prop,
+                              cmt_block_t **out_block,
+                              cmt_part_set_t **out_parts)
+{
+    return tc_decide_proposal_from(tc, signer, height, round,
+                                   tc->cs->rs.valid_round,       /* :235 */
+                                   out_prop, out_block, out_parts);
 }
 
 /**
@@ -2285,6 +2656,115 @@ static int tc_ensure_no_timeout_for(tc_t *tc, int64_t height, int32_t round,
     return 0;
 }
 
+/**
+ * common_test.go:603-606 — `ensureNewValidBlock`. The reference waits for
+ * `EventValidBlock` at (height, round), which the state machine publishes
+ * in TWO places for a prevote polka (state.go:2302-2305) and one more on
+ * a commit for a block it lacks (:1649-1653). The round state does NOT
+ * always carry a ValidBlock afterwards: when the polka is for a block the
+ * node does not have, :2295 clears ProposalBlock and only :2298-2300 runs,
+ * so `valid_round` is unchanged and asserting it would fail a correct
+ * machine. The one fact BOTH branches of :2282-2300 guarantee — and :1647
+ * too — is that `ProposalBlockParts` now carries the polka's part-set
+ * header, so that is what this asserts, plus the height and round the
+ * event would have named.
+ *
+ * @param psh the polka's part-set header.
+ */
+static int tc_ensure_new_valid_block(tc_t *tc, int64_t height, int32_t round,
+                                     const cmt_part_set_header_t *psh)
+{
+    TC_CHECK(tc->cs->rs.height == height, "ensureNewValidBlock: wrong height");
+    TC_OK();
+    TC_CHECK(tc->cs->rs.round == round, "ensureNewValidBlock: wrong round");
+    TC_OK();
+    TC_CHECK(tc->cs->rs.proposal_block_parts != NULL &&
+             cmt_part_set_has_header(tc->cs->rs.proposal_block_parts, psh),
+             "ensureNewValidBlock: ProposalBlockParts does not carry the "
+             "polka's header");
+    TC_OK();
+    return 0;
+}
+
+/**
+ * common_test.go:608-622 — `ensureNewBlock`: `EventDataNewBlock` with
+ * `Block.Height == height`. The reference checks the HEIGHT ONLY (:618);
+ * `tc_ensure_new_block_header` with a hash is the stronger sibling and a
+ * scenario that knows which block it expects should call that as well.
+ */
+static int tc_ensure_new_block(tc_t *tc, int64_t height)
+{
+    return tc_ensure_new_block_header(tc, height, NULL, 0u);
+}
+
+/**
+ * common_test.go:643-646 — `ensureNewUnlock`. The reference waits for
+ * `EventUnlock` at (height, round); the state machine publishes it at
+ * exactly the three sites that clear the lock (state.go:1497, :1556,
+ * :2274), each immediately after `LockedRound = -1; LockedBlock = nil;
+ * LockedBlockParts = nil`. So the round-state evidence is those three
+ * fields, at that height and round.
+ */
+static int tc_ensure_new_unlock(tc_t *tc, int64_t height, int32_t round)
+{
+    TC_CHECK(tc->cs->rs.height == height, "ensureNewUnlock: wrong height");
+    TC_OK();
+    TC_CHECK(tc->cs->rs.round == round, "ensureNewUnlock: wrong round");
+    TC_OK();
+    TC_CHECK(tc->cs->rs.locked_round == -1 && tc->cs->rs.locked_block == NULL &&
+             tc->cs->rs.locked_block_parts == NULL,
+             "ensureNewUnlock: still locked");
+    TC_OK();
+    return 0;
+}
+
+/**
+ * common_test.go:524-529 — `ensureNoNewUnlock`. The reference waits out its
+ * budget and panics if an Unlock EVENT arrived. There is no event here, so
+ * this asserts the stronger and cheaper thing: the lock is STILL the one
+ * the caller says it was — same round, same block. A relock onto the same
+ * block at a later round would fail this and not the reference's; no
+ * ported scenario is in that position, and both tests that call this do
+ * so to prove the lock did not move at all (state_test.go:1086-1088,
+ * :1202-1204).
+ */
+static int tc_ensure_no_new_unlock(tc_t *tc, int32_t locked_round,
+                                   const uint8_t *locked_hash,
+                                   size_t locked_hash_len)
+{
+    uint8_t lh[CMT_TMHASH_SIZE];
+
+    TC_CHECK(tc->cs->rs.locked_block != NULL,
+             "ensureNoNewUnlock: the lock was released");
+    TC_OK();
+    TC_CHECK(tc->cs->rs.locked_round == locked_round,
+             "ensureNoNewUnlock: the locked round moved");
+    TC_OK();
+    TC_CHECK(cmt_block_hash(tc->cs->rs.locked_block, lh) == CMT_OK &&
+             locked_hash_len == (size_t)CMT_TMHASH_SIZE &&
+             memcmp(lh, locked_hash, (size_t)CMT_TMHASH_SIZE) == 0,
+             "ensureNoNewUnlock: locked on a different block");
+    TC_OK();
+    return 0;
+}
+
+/**
+ * common_test.go:517-522 — `ensureNoNewRoundStep`. The reference subscribes
+ * to `EventNewRoundStep` AFTER the step it is at and panics if one arrives
+ * within its budget; `newStep` (state.go:758-766) fires that event on every
+ * `updateRoundStep`. The round-state fact is that the (height, round, step)
+ * triple the caller snapshotted is unchanged.
+ */
+static int tc_ensure_no_new_round_step(tc_t *tc, int64_t height, int32_t round,
+                                       cmt_round_step_t step)
+{
+    TC_CHECK(tc->cs->rs.height == height && tc->cs->rs.round == round &&
+             tc->cs->rs.step == step,
+             "ensureNoNewRoundStep: the round step moved");
+    TC_OK();
+    return 0;
+}
+
 /** The vote this node put in its own vote set for (round, type). NULL
  *  when it did not vote. */
 static const cmt_vote_t *tc_own_vote(tc_t *tc, int32_t round,
@@ -2353,6 +2833,44 @@ static int tc_ensure_vote(tc_t *tc, int64_t height, int32_t round,
 {
     TC_CHECK(tc_wal_has_vote(tc, height, round, vote_type),
              "ensureVote: this node signed no such vote");
+    TC_OK();
+    return 0;
+}
+
+/**
+ * common_test.go:670-701's `ensureVote` on an UNFILTERED vote channel. Most
+ * reference tests subscribe with `subscribeToVoter(cs1, addr)` (:356-375),
+ * so their `ensurePrevote`/`ensurePrecommit` mean THIS node voted — that is
+ * `tc_ensure_vote`. TestStateLockNoPOL subscribes to every vote
+ * (state_test.go:467, `subscribeUnBuffered(…, EventQueryVote)`), so there
+ * the SAME helper, called right after a `signAddVotes(…, vs2)`, means "the
+ * STUB's vote was added" (state.go:2245 publishes EventVote for every vote
+ * `AddVote` accepts). The round-state fact is that the stub's vote is in
+ * this node's vote set for that round and type — asserted here by address,
+ * which is what the event's `vote.ValidatorAddress` would have said.
+ *
+ * Reads the CURRENT height's vote set, so it is only meaningful before the
+ * height moves — every call site in this suite is mid-height.
+ */
+static int tc_ensure_stub_vote(tc_t *tc, size_t index, int32_t round,
+                               int32_t vote_type)
+{
+    cmt_vote_set_t   *vs;
+    const cmt_vote_t *v = NULL;
+
+    TC_CHECK(index < tc->nvals, "ensureStubVote: no such stub");
+    TC_OK();
+    if (vote_type == (int32_t)CMT_PB_MSG_TYPE_PREVOTE) {
+        vs = cmt_hvs_prevotes(tc->cs->rs.votes, round);
+    } else {
+        vs = cmt_hvs_precommits(tc->cs->rs.votes, round);
+    }
+    TC_CHECK(vs != NULL, "ensureStubVote: no vote set for that round");
+    TC_OK();
+    TC_CHECK(cmt_vote_set_get_by_address(vs, tc->addr[index],
+                                         (size_t)CMT_ADDRESS_SIZE,
+                                         &v) == CMT_OK && v != NULL,
+             "ensureStubVote: the stub's vote was not added");
     TC_OK();
     return 0;
 }

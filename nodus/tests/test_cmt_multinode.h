@@ -62,7 +62,7 @@
  * `mn_net_new`.
  *
  * ── HOW IT CAN LIE ─────────────────────────────────────────────────────
- * The fixture's ten ways (test_cmt_common.h) all apply, per node. These
+ * The fixture's twelve ways (test_cmt_common.h) all apply, per node. These
  * are the driver's own:
  *  M1. THE ROUTER IS NOT THE REACTOR. It ports the reactor's THREE gossip
  *      routines and its VoteSetMaj23 query as RULES evaluated against the
@@ -577,7 +577,7 @@ static int mn_rec_ps_build(mn_node_t *node, size_t k)
  * `data.txs`, `evidence.evidence` and `last_commit`; the fixture's
  * `tc_create_proposal_block` points the first at the record's own `txs`
  * array whose entries point into the record's `tx_storage` (test_cmt_
- * common.h:637-651), leaves evidence empty (:654), and points the third at
+ * common.h:754-768), leaves evidence empty (:771), and points the third at
  * the record's own `last_commit`, whose `signatures` is the record's
  * `sigs` (:631-633). Every one of those is re-based onto the destination
  * record; the shape is CHECKED first and a record of any other shape is a
@@ -1928,11 +1928,11 @@ static void mn_net_free(mn_net_t *net)
  *
  * Every fixture is `tc_setup(tc, n, 0, 0)`: the SAME derandomised keys,
  * the same address order and therefore the same validator set and the
- * same chain id in every node (test_cmt_common.h:1497-1564, :1588-1592);
+ * same chain id in every node (test_cmt_common.h:1642-1709, :1733-1737);
  * `vote_extensions_enable_height` 0 because the reference's genesis has
  * nil params (common_test.go:770 → genesis.go:83-84 → params.go:127-132;
- * M10). The fixture memoises validator 0's key (test_cmt_common.h:1404,
- * :1674); node i re-points `self` and re-runs `SetPrivValidator` so the
+ * M10). The fixture memoises validator 0's key (test_cmt_common.h:1546,
+ * :1823); node i re-points `self` and re-runs `SetPrivValidator` so the
  * memoised key is its own (cmt_cs.c:573-583).
  *
  * The validators' power is the fixture's testMinPower = 10 where the
@@ -2034,7 +2034,7 @@ static void mn_connect(mn_net_t *net, size_t a, size_t b)
  * Start one node and let it settle (M13). `SwitchToConsensus(state,
  * skipWAL)` (reactor.go:107-142) → `cs.Start()` → OnStart (state.go:
  * 318-405), which is `cmt_cs_start`. The fixture has no WAL to replay
- * (its read rows answer "nothing", test_cmt_common.h:1238-1256), so
+ * (its read rows answer "nothing", test_cmt_common.h:1380-1398), so
  * `do_wal_catchup` is cleared first — that is `skipWAL = true`, where the
  * reference passes false (byzantine_test.go:399, :405) over a WAL that a
  * fresh node seeds with EndHeight{0} (wal.go:125-132). What is skipped is
@@ -2114,7 +2114,7 @@ static int mn_net_start(mn_net_t *net)
 /**
  * The BlockID this node's store holds for `height`, i.e. what it
  * committed there — read from the seen commit `bs_save_block` recorded
- * (test_cmt_common.h:1064-1092), NOT from `applied_hash`, which is the
+ * (test_cmt_common.h:1206-1234), NOT from `applied_hash`, which is the
  * LAST applied block and may already be a later height's.
  * @return true when the height is committed here.
  */

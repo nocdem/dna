@@ -63,7 +63,7 @@
  * scenarios do not see each other.
  *
  * ── HOW IT CAN LIE ─────────────────────────────────────────────────────
- * The driver's fifteen (M1-M15) and the fixture's ten all apply. These
+ * The driver's fifteen (M1-M15) and the fixture's twelve all apply. These
  * are the scenarios' own:
  *  S1. THE EVIDENCE-POOL CHECK FOUND A DEFECT IN THE PORT, AND THE SAME
  *      COMMIT FIXED IT — so it now PASSES, and its history is the reason

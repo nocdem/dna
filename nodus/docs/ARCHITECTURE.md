@@ -174,7 +174,7 @@ nodus/
 │   ├── test_cmt_replay.c      # cometbft port R2-B: the handshake classifier — one row per branch, the 4^5 sweep, the negative-height bound
 │   ├── test_cmt_cs_unit.c     # cometbft port R2-C: the state machine's host-free parts — the seven entry guards as predicates, timeout acceptance, internal queue FIFO/overflow, voteTime clamp
 │   ├── test_cmt_common.h      # cometbft port R2-T: the host fixture (C stand-in for common_test.go) — application, block store, MockPV signer, WAL ring, frozen clock, hand-fired timer; 10 "how it can lie" entries
-│   ├── test_cmt_cs.c          # cometbft port R2-T: 29 whole-height scenarios from state_test.go / byzantine_test.go / mempool_test.go; asserts WHICH block was committed; 18 "how it can lie" entries
+│   ├── test_cmt_cs.c          # cometbft port R2-T + R2-T2: 39 whole-height scenarios from state_test.go / byzantine_test.go / mempool_test.go (every state_test.go func a single-node fixture can drive; 4 remain BLOCKED, listed with reasons); asserts WHICH block was committed; "how it can lie" items 11-21 (the fixture's 1-12 are in test_cmt_common.h)
 │   ├── test_cmt_multinode.h   # cometbft port R2-BYZ: the reactor stand-in — N fixtures, connectivity matrix, router porting the three gossip routines as rules, step budget instead of wall clock
 │   └── test_cmt_byzantine.c   # cometbft port R2-BYZ: TestByzantineConflictingProposalsWithPartition — 4 nodes, byzantine proposer, partition heals, all honest nodes commit the SAME block; + 2 C-only scenarios
 ├── CMakeLists.txt             # Build system
@@ -1467,9 +1467,12 @@ the node stops — every ported panic site says which and why (umbrella rev 4); 
 
 Tests: 15 `test_cmt_*` binaries from R1 plus `test_cmt_vote_set`, `test_cmt_hvs`,
 `test_cmt_msgs`, `test_cmt_wal`, `test_cmt_ticker`, `test_cmt_privval`, `test_cmt_replay`,
-`test_cmt_cs_unit` (host-free), `test_cmt_cs` (29 whole-height scenarios ported from
+`test_cmt_cs_unit` (host-free), `test_cmt_cs` (39 whole-height scenarios ported from
 `state_test.go` / `byzantine_test.go` / `mempool_test.go` over a deterministic host fixture,
-`test_cmt_common.h`), and `test_cmt_byzantine` (four independent state machines behind a
+`test_cmt_common.h` — R2-T2 added the ten `state_test.go` tests R2-T had left as "drivable, not
+done", among them the two lock-safety tests and the one that checks vote extensions survive the
+height boundary, so every `state_test.go` test a single-node fixture can drive is now ported and
+the four that remain are listed in the file with the reason each), and `test_cmt_byzantine` (four independent state machines behind a
 deterministic router, `test_cmt_multinode.h`: a byzantine proposer sends conflicting blocks
 to a partitioned network, the partition heals, and every honest node commits the SAME block).
 All build with zero warnings and run clean under ASan/UBSan. Each test file's header states
