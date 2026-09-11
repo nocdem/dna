@@ -1,6 +1,61 @@
 /**
- * Nodus — cometbft @709fd12b C port, wave R1-A: proto3 codec tests
- * (INACTIVE layer).
+ * Nodus — cometbft @709fd12b C port, waves R1-A / R1-B / R2-B: proto3
+ * codec tests (INACTIVE layer).
+ *
+ * ── WHAT WAVE R2-B ADDED TO THIS FILE ──────────────────────────────────
+ * Five more groups at the end, and the vectors they use. They prove:
+ *   · google.protobuf.Duration, which is NOT Timestamp — `nanos` may be
+ *     negative, both halves of a negative duration carry the sign, and
+ *     the STD path validates (±10000 years, |nanos| < 1e9, agreeing
+ *     signs, and the narrower bound that a nanosecond count imposes)
+ *     while the RAW message decoder does not, exactly as the generated
+ *     pair does not;
+ *   · the nine consensus messages and their `Message` oneof — FIVE of
+ *     them against the REFERENCE'S OWN golden hex from
+ *     consensus/msgs_test.go:362-400, transcribed because those cases
+ *     contain no substituted field, and the rest derived by the oracle
+ *     at DNA widths;
+ *   · that an ALWAYS-emitted EMPTY BitArray is `1a 00` and a nil POINTER
+ *     BitArray is nothing at all — two different fields, two different
+ *     rules, both pinned;
+ *   · that the standalone BitArray encoder (R1's cmt_bits_to_proto) and
+ *     the embedded one this wave added produce the SAME body, so the two
+ *     cannot drift apart unnoticed;
+ *   · the four WAL kinds at their oneof field numbers 1-4, which are the
+ *     values a WAL row's `kind` column takes (D-15 rev 5), including the
+ *     two empty-body cases — EndHeight{0} is `22 00` and a zero Duration
+ *     inside TimeoutInfo is `0a 00` — where the kind survives only
+ *     because the field is written unconditionally;
+ *   · that a peer id is accepted at exactly 0 or 32 bytes and refused at
+ *     any other length, on both encode and decode (the substitution);
+ *   · that the relocated Block and EvidenceList encoders (R1B-6) produce
+ *     the same shape as the code they replace, keep its CMT_FAULT for a
+ *     length with no array, and — the one behaviour the relocation could
+ *     silently have dropped — still refuse an over-long chain id and
+ *     proposer address, because the encoder they replaced framed field 1
+ *     by CALLING `cmt_pb_header_marshal`, which carries that bound, while
+ *     `block_wr` reaches `header_wr` directly;
+ *   · that a wrapper reaching a message body directly — the `Message`
+ *     oneof, MsgInfo, and the WAL's kind 2 — applies the same length
+ *     bounds the wrapped branch's OWN entry applies, so an over-long
+ *     ML-DSA-87 signature or a 65-byte BlockID hash cannot reach the wire
+ *     through the wrapper after being refused at the branch.
+ *
+ * HOW THE R2-B GROUPS CAN LIE: the four derived Message vectors and the
+ * two Block vectors are pinned by (length, SHA3-512), so a matching
+ * digest proves the C encoder agrees with the PYTHON ORACLE — not with
+ * cometbft. Only the five transcribed vectors compare against the
+ * reference itself, and they cover no substituted field by construction.
+ * The relocated-encoder proof is likewise indirect here: the decisive
+ * evidence that no byte moved is the UNCHANGED test_cmt_block.c, which
+ * this wave does not touch and does not run.
+ *
+ * The length-bound negatives can lie in one specific way: CMT_REJECT is
+ * also what a buffer too small to hold the message returns, so a test that
+ * passed a tight buffer would report a bound it never checked. Every one
+ * of them passes the whole 16 KiB g_buf and sets a length exactly ONE past
+ * the bound, and the same message shape at a legal length is shown
+ * encoding successfully into that same buffer in the same group.
  *
  * ── WHAT IT PROVES ─────────────────────────────────────────────────────
  * That shared/dnac/cmt_pb.c produces THE BYTES THAT GET HASHED AND SIGNED
@@ -2569,6 +2624,1077 @@ static int test_extended_commit(void)
     return 0;
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+ * WAVE R2-B ADDITION — the consensus package's own wire, the WAL record,
+ * google.protobuf.Duration, and the Block / EvidenceList encoders
+ * relocated out of cmt_block.c (R1B-6).
+ *
+ * Vectors from shared/dnac/tests/cmt_pb_oracle.py's emit_r2b(). FIVE of
+ * them are the REFERENCE'S OWN GOLDEN HEX, transcribed from
+ * consensus/msgs_test.go:362-400 because those cases contain no field
+ * this port substitutes; the oracle asserts them in check_r2b() and would
+ * refuse to emit if they did not match. The rest are derived, because the
+ * reference's vectors carry a 32-byte hash where this chain carries 64.
+ *
+ * Nothing above this banner changed.
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/* ── google.protobuf.Duration ── */
+/* Duration{0}: 0 bytes (both fields omit-zero) */
+#define V_DUR_100NS_LEN 2
+static const uint8_t V_DUR_100NS[2] = {
+    0x10, 0x64,
+};
+#define V_DUR_1S_LEN 2
+static const uint8_t V_DUR_1S[2] = {
+    0x08, 0x01,
+};
+#define V_DUR_NEG_1_5S_LEN 22
+static const uint8_t V_DUR_NEG_1_5S[22] = {
+    0x08, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01, 0x10,
+    0x80, 0xb6, 0xca, 0x91, 0xfe, 0xff, 0xff, 0xff, 0xff, 0x01,
+};
+#define V_DUR_MAX_SECONDS_LEN 7
+static const uint8_t V_DUR_MAX_SECONDS[7] = {
+    0x08, 0x80, 0xbc, 0xae, 0xce, 0x97, 0x09,
+};
+#define V_DUR_MIN_SECONDS_LEN 11
+static const uint8_t V_DUR_MIN_SECONDS[11] = {
+    0x08, 0x80, 0xc4, 0xd1, 0xb1, 0xe8, 0xf6, 0xff, 0xff, 0xff, 0x01,
+};
+#define V_DUR_SECONDS_TOO_BIG_LEN 7
+static const uint8_t V_DUR_SECONDS_TOO_BIG[7] = {
+    0x08, 0x81, 0xbc, 0xae, 0xce, 0x97, 0x09,
+};
+#define V_DUR_NANOS_1E9_LEN 6
+static const uint8_t V_DUR_NANOS_1E9[6] = {
+    0x10, 0x80, 0x94, 0xeb, 0xdc, 0x03,
+};
+#define V_DUR_SIGN_MISMATCH_LEN 13
+static const uint8_t V_DUR_SIGN_MISMATCH[13] = {
+    0x08, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01, 0x10,
+    0x01,
+};
+
+/* ── types.EventDataRoundState ── */
+#define V_EDRS_A_LEN 28
+static const uint8_t V_EDRS_A[28] = {
+    0x08, 0x02, 0x10, 0x01, 0x1a, 0x16, 0x52, 0x6f, 0x75, 0x6e, 0x64, 0x53,
+    0x74, 0x65, 0x70, 0x50, 0x72, 0x65, 0x63, 0x6f, 0x6d, 0x6d, 0x69, 0x74,
+    0x57, 0x61, 0x69, 0x74,
+};
+
+/* ── consensus.Message: the five TRANSCRIBED golden vectors ── */
+#define V_MSG_NEW_ROUND_STEP_LEN 12
+static const uint8_t V_MSG_NEW_ROUND_STEP[12] = {
+    0x0a, 0x0a, 0x08, 0x01, 0x10, 0x01, 0x18, 0x01, 0x20, 0x01, 0x28, 0x01,
+};
+#define V_MSG_NEW_ROUND_STEP_MAX_LEN 40
+static const uint8_t V_MSG_NEW_ROUND_STEP_MAX[40] = {
+    0x0a, 0x26, 0x08, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f,
+    0x10, 0xff, 0xff, 0xff, 0xff, 0x07, 0x18, 0xff, 0xff, 0xff, 0xff, 0x0f,
+    0x20, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f, 0x28, 0xff,
+    0xff, 0xff, 0xff, 0x07,
+};
+#define V_MSG_PROPOSAL_POL_EMPTY_LEN 8
+static const uint8_t V_MSG_PROPOSAL_POL_EMPTY[8] = {
+    0x22, 0x06, 0x08, 0x01, 0x10, 0x01, 0x1a, 0x00,
+};
+#define V_MSG_HAS_VOTE_LEN 10
+static const uint8_t V_MSG_HAS_VOTE[10] = {
+    0x3a, 0x08, 0x08, 0x01, 0x10, 0x01, 0x18, 0x01, 0x20, 0x01,
+};
+#define V_MSG_HAS_VOTE_MAX_LEN 26
+static const uint8_t V_MSG_HAS_VOTE_MAX[26] = {
+    0x3a, 0x18, 0x08, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f,
+    0x10, 0xff, 0xff, 0xff, 0xff, 0x07, 0x18, 0x01, 0x20, 0xff, 0xff, 0xff,
+    0xff, 0x07,
+};
+
+/* ── consensus.Message: DERIVED (64-byte hashes) ── */
+#define V_MSG_NEW_VALID_BLOCK_LEN 83
+static const char V_MSG_NEW_VALID_BLOCK_SHA3[] =
+    "a91b554015722485d109779672a365a1258ee94c2f29afd1b7d7ba0b0260d864"
+    "a1df73d0e9926b68eb0ffa3360b65a85b07cca017dd80502a3c5d0ae15e2746c";
+#define V_MSG_PROPOSAL_POL_1_LEN 13
+static const uint8_t V_MSG_PROPOSAL_POL_1[13] = {
+    0x22, 0x0b, 0x08, 0x01, 0x10, 0x01, 0x1a, 0x05, 0x08, 0x01, 0x12, 0x01,
+    0x00,
+};
+#define V_MSG_PROPOSAL_LEN 177
+static const char V_MSG_PROPOSAL_SHA3[] =
+    "3a982c45a4da65d1d05dc82a72796697edf76ede4c4f132c4db58cfca9ca2297"
+    "9b5096cee7828129fde7eb22352456b3b49aeaac72b63d8294cee4d97f494a3d";
+#define V_MSG_BLOCK_PART_LEN 88
+static const char V_MSG_BLOCK_PART_SHA3[] =
+    "7dd6fd4135062dca895739d680be0cb03954f2d4bef06eca76408e91e936e4ca"
+    "d953eb34e5c35229f5d65d06efcbc076a43f5467723f31d5991e9c3f64aa41e7";
+#define V_MSG_VOTE_LEN 209
+static const char V_MSG_VOTE_SHA3[] =
+    "f6001ede8b72a9caaf795e8095f6a976beac9b89e7d876902002c4d08a87944b"
+    "5dd52520fb619523eb283358b9b667b5120259f46884f24abddca3070a81c249";
+#define V_MSG_VOTE_EXT_LEN 231
+static const char V_MSG_VOTE_EXT_SHA3[] =
+    "827ba34e75930120c82b283a1391471b9747888c9cb816c32083d43c5b8e8d97"
+    "587cf322348cd47e5a306bcc40867ab6f7062f91e3840a5dbc23af59a08db185";
+#define V_MSG_VOTE_SET_MAJ23_LEN 148
+static const char V_MSG_VOTE_SET_MAJ23_SHA3[] =
+    "4aefa18aa7485d473076b81cd4b98d28ad4579273f634ea468cbf1ae8d764779"
+    "de7a85a6a91c2f9029fe6ac9b4ffdde5a5ab7a47c93931097e8e995f013c6d64";
+#define V_MSG_VOTE_SET_BITS_LEN 155
+static const char V_MSG_VOTE_SET_BITS_SHA3[] =
+    "53ac0eb00ab89d8760cf5a4522e5335c16e05eb80021372bc556a4c4d58ffe96"
+    "c716dd1add13a9eeb6c84ee610eb6449e6d446acfe686f69b4d0964892593c67";
+/* A nil Vote POINTER inside the branch: the branch is still written, with
+ * an EMPTY body (types.pb.go:1419-1434). */
+#define V_MSG_VOTE_NIL_LEN 2
+static const uint8_t V_MSG_VOTE_NIL[2] = { 0x32, 0x00 };
+/* A NewValidBlock with a nil BlockParts pointer: field 4 is omitted and
+ * the ALWAYS field 3 is still there, as `1a 00`. */
+#define V_MSG_NEW_VALID_BLOCK_NIL_PARTS_LEN 10
+static const uint8_t V_MSG_NEW_VALID_BLOCK_NIL_PARTS[10] = {
+    0x12, 0x08, 0x08, 0x01, 0x10, 0x01, 0x1a, 0x00, 0x28, 0x01,
+};
+
+/* ── consensus.WALMessage / TimedWALMessage ── */
+#define V_WAL_EDRS_LEN 14
+static const uint8_t V_WAL_EDRS[14] = {
+    0x0a, 0x0c, 0x08, 0x02, 0x10, 0x01, 0x1a, 0x06, 0x72, 0x6f, 0x6e, 0x69,
+    0x65, 0x73,
+};
+#define V_WAL_MSG_INFO_LEN 126
+static const char V_WAL_MSG_INFO_SHA3[] =
+    "26cdd08019347e348901ae5d8587c2997a57f0be7cccc878020376b8bbdb9c3d"
+    "6f8bfb98f60fc0603e555b5c143be2d7d35145368a7f43afa602baeabd79a462";
+/* The node's OWN message: an empty peer id, so field 2 is off the wire. */
+#define V_WAL_MSG_INFO_OWN_LEN 16
+static const uint8_t V_WAL_MSG_INFO_OWN[16] = {
+    0x12, 0x0e, 0x0a, 0x0c, 0x0a, 0x0a, 0x08, 0x01, 0x10, 0x01, 0x18, 0x01,
+    0x20, 0x01, 0x28, 0x01,
+};
+#define V_WAL_TIMEOUT_INFO_LEN 12
+static const uint8_t V_WAL_TIMEOUT_INFO[12] = {
+    0x1a, 0x0a, 0x0a, 0x02, 0x10, 0x64, 0x10, 0x01, 0x18, 0x01, 0x20, 0x01,
+};
+/* A ZERO duration is still written, as `0a 00`. */
+#define V_WAL_TIMEOUT_INFO_ZERO_DUR_LEN 10
+static const uint8_t V_WAL_TIMEOUT_INFO_ZERO_DUR[10] = {
+    0x1a, 0x08, 0x0a, 0x00, 0x10, 0x01, 0x18, 0x01, 0x20, 0x01,
+};
+#define V_WAL_END_HEIGHT_LEN 4
+static const uint8_t V_WAL_END_HEIGHT[4] = { 0x22, 0x02, 0x08, 0x01 };
+/* EndHeight{0}: an EMPTY body, so the kind survives as `22 00`. */
+#define V_WAL_END_HEIGHT_ZERO_LEN 2
+static const uint8_t V_WAL_END_HEIGHT_ZERO[2] = { 0x22, 0x00 };
+#define V_TWM_ZERO_TIME_END_HEIGHT_LEN 19
+static const uint8_t V_TWM_ZERO_TIME_END_HEIGHT[19] = {
+    0x0a, 0x0b, 0x08, 0x80, 0x92, 0xb8, 0xc3, 0x98, 0xfe, 0xff, 0xff, 0xff,
+    0x01, 0x12, 0x04, 0x22, 0x02, 0x08, 0x07,
+};
+#define V_TWM_TS_A_END_HEIGHT_LEN 19
+static const uint8_t V_TWM_TS_A_END_HEIGHT[19] = {
+    0x0a, 0x0b, 0x08, 0x80, 0xe2, 0xcf, 0xaa, 0x06, 0x10, 0x95, 0x9a, 0xef,
+    0x3a, 0x12, 0x04, 0x22, 0x02, 0x08, 0x07,
+};
+/* A TimedWALMessage with NO msg: field 1 only. */
+#define V_TWM_NO_MSG_LEN 13
+static const uint8_t V_TWM_NO_MSG[13] = {
+    0x0a, 0x0b, 0x08, 0x80, 0xe2, 0xcf, 0xaa, 0x06, 0x10, 0x95, 0x9a, 0xef,
+    0x3a,
+};
+
+/* ── types.EvidenceList and types.Block (relocated encoders) ── */
+#define V_BLOCK_ZERO_LEN 25
+static const uint8_t V_BLOCK_ZERO[25] = {
+    0x0a, 0x13, 0x0a, 0x00, 0x22, 0x0b, 0x08, 0x80, 0x92, 0xb8, 0xc3, 0x98,
+    0xfe, 0xff, 0xff, 0xff, 0x01, 0x2a, 0x02, 0x12, 0x00, 0x12, 0x00, 0x1a,
+    0x00,
+};
+#define V_BLOCK_FULL_LEN 843
+static const char V_BLOCK_FULL_SHA3[] =
+    "4367a9e8c36842b4e9b76e4bbb2c82729af5a63cc349cc913789a8dcc681acb1"
+    "74525cf6a8015c14e7d5a22b3d2bf5f18d59465a84cc991aab848639a88dd4b2";
+
+/* ── fixture builders, matching emit_r2b()'s inputs exactly ── */
+
+static void r2b_psh_a(cmt_pb_part_set_header_t *psh)
+{
+    cmt_pb_part_set_header_init(psh);
+    psh->total = 7;                          /* oracle PSH_A */
+    memcpy(psh->hash, HASH_A, 64);
+    psh->hash_len = 64;
+}
+
+static void r2b_bid_a(cmt_pb_block_id_t *bid)
+{
+    cmt_pb_block_id_init(bid);
+    memcpy(bid->hash, HASH_B, 64);           /* oracle BID_A */
+    bid->hash_len = 64;
+    r2b_psh_a(&bid->part_set_header);
+}
+
+static void r2b_bits_1(cmt_bit_array_t *ba)
+{
+    memset(ba, 0, sizeof(*ba));
+    ba->bits    = 1;                         /* oracle BITS_1 = (1, [0]) */
+    ba->n_elems = 1;
+    ba->elems[0] = 0u;
+}
+
+static void r2b_part_a(cmt_pb_part_t *p)
+{
+    static const uint8_t test_bytes[4] = { 't', 'e', 's', 't' };
+
+    cmt_pb_part_init(p);
+    p->index      = 1;
+    p->bytes.data = test_bytes;
+    p->bytes.len  = 4;
+    p->proof.total = 1;
+    p->proof.index = 1;
+    memcpy(p->proof.leaf_hash, HASH_A, 64);
+    p->proof.leaf_hash_len = 64;
+    p->proof.aunts_len = 0;
+}
+
+static void r2b_proposal_a(cmt_pb_proposal_t *pr)
+{
+    cmt_pb_proposal_init(pr);
+    pr->type      = 32;                      /* PROPOSAL */
+    pr->height    = 1;
+    pr->round     = 1;
+    pr->pol_round = 1;
+    r2b_bid_a(&pr->block_id);
+    pr->timestamp = TS_A;
+    memcpy(pr->signature, SIG_S, sizeof(SIG_S));
+    pr->signature_len = sizeof(SIG_S);
+}
+
+static void r2b_vote_a(cmt_pb_vote_t *v, const uint8_t *ext, size_t ext_len,
+                       const uint8_t *ext_sig, size_t ext_sig_len)
+{
+    cmt_pb_vote_init(v);
+    v->type   = 2;                           /* PRECOMMIT */
+    v->height = 1;
+    v->round  = 0;
+    r2b_bid_a(&v->block_id);
+    v->timestamp = TS_A;
+    memcpy(v->validator_address, ADDR_A, 32);
+    v->validator_address_len = 32;
+    v->validator_index = 1;
+    memcpy(v->signature, SIG_S, sizeof(SIG_S));
+    v->signature_len = sizeof(SIG_S);
+    v->extension.data = ext;
+    v->extension.len  = ext_len;
+    if (ext_sig_len != 0) {
+        memcpy(v->extension_signature, ext_sig, ext_sig_len);
+    }
+    v->extension_signature_len = ext_sig_len;
+}
+
+/* One encode + decode + re-encode cycle over the oneof, so nothing is
+ * silently lost. Uses g_buf for the first encoding and g_buf2 for the
+ * second. */
+static int r2b_round_trip(const char *what, const cmt_pb_cons_message_t *m)
+{
+    cmt_pb_cons_message_t *back;
+    size_t                 n1 = 0;
+    size_t                 n2 = 0;
+    int                    ok;
+
+    if (cmt_pb_cons_message_marshal(m, g_buf, sizeof(g_buf), &n1)
+            != CMT_OK) {
+        fprintf(stderr, "%s: marshal failed\n", what);
+        return 0;
+    }
+    back = (cmt_pb_cons_message_t *)malloc(sizeof(*back));
+    if (back == NULL) {
+        fprintf(stderr, "%s: out of memory\n", what);
+        return 0;
+    }
+    arena_reset();
+    ok = cmt_pb_cons_message_unmarshal(g_buf, n1, back, &g_arena) == CMT_OK;
+    if (ok) {
+        ok = cmt_pb_cons_message_marshal(back, g_buf2, sizeof(g_buf2), &n2)
+                 == CMT_OK;
+    }
+    if (ok) {
+        ok = (n1 == n2) && memcmp(g_buf, g_buf2, n1) == 0;
+    }
+    if (!ok) {
+        fprintf(stderr, "%s: round trip differs (%zu vs %zu)\n", what, n1,
+                n2);
+    }
+    free(back);
+    return ok;
+}
+
+static int test_r2b_duration(void)
+{
+    cmt_pb_duration_t d;
+    int64_t           ns = 0;
+    size_t            n = 0;
+
+    /* gogoproto duration.pb.go:287-307 — both fields omit-zero, so a zero
+     * Duration is ZERO BYTES. Inside TimeoutInfo it is still framed,
+     * which V_WAL_TIMEOUT_INFO_ZERO_DUR pins. */
+    CHECK(cmt_pb_std_duration_marshal(0, g_buf, sizeof(g_buf), &n) == CMT_OK
+          && n == 0, "Duration{0} is zero bytes");
+    CHECK(cmt_pb_std_duration_size(0) == 0, "and SizeOfStdDuration agrees");
+    OK();
+
+    CHECK(cmt_pb_std_duration_marshal(100, g_buf, sizeof(g_buf), &n)
+          == CMT_OK && is_vec("Duration{100ns}", g_buf, n, V_DUR_100NS,
+                              V_DUR_100NS_LEN),
+          "100 ns is nanos only");
+    CHECK(cmt_pb_std_duration_size(100) == V_DUR_100NS_LEN, "size agrees");
+    OK();
+
+    CHECK(cmt_pb_std_duration_marshal(1000000000, g_buf, sizeof(g_buf), &n)
+          == CMT_OK && is_vec("Duration{1s}", g_buf, n, V_DUR_1S,
+                              V_DUR_1S_LEN),
+          "one second is seconds only");
+    OK();
+
+    /* duration.go:92-99 — truncation toward zero, so BOTH halves of a
+     * negative duration are negative and each is the ten-byte varint of
+     * K-1 rev 2 rule (g). */
+    CHECK(cmt_pb_std_duration_marshal(-1500000000, g_buf, sizeof(g_buf), &n)
+          == CMT_OK && is_vec("Duration{-1.5s}", g_buf, n, V_DUR_NEG_1_5S,
+                              V_DUR_NEG_1_5S_LEN),
+          "-1.5 s splits into -1 s and -500000000 ns");
+    CHECK(cmt_pb_duration_proto(-1500000000, &d) == CMT_OK &&
+          d.seconds == -1 && d.nanos == -500000000,
+          "DurationProto truncates toward zero");
+    OK();
+
+    /* Round trip through the std path. */
+    CHECK(cmt_pb_std_duration_unmarshal(V_DUR_NEG_1_5S, V_DUR_NEG_1_5S_LEN,
+                                        &ns) == CMT_OK && ns == -1500000000,
+          "and decodes back to the same nanosecond count");
+    CHECK(cmt_pb_std_duration_unmarshal(V_DUR_100NS, V_DUR_100NS_LEN, &ns)
+          == CMT_OK && ns == 100, "100 ns round trips");
+    OK();
+
+    /* duration.go:58-60 — seconds outside ±10000 years. */
+    CHECK(cmt_pb_std_duration_unmarshal(V_DUR_SECONDS_TOO_BIG,
+                                        V_DUR_SECONDS_TOO_BIG_LEN, &ns)
+          == CMT_REJECT, "seconds past maxSeconds must REJECT");
+    /* duration.go:61-63 — nanos at the bound. */
+    CHECK(cmt_pb_std_duration_unmarshal(V_DUR_NANOS_1E9, V_DUR_NANOS_1E9_LEN,
+                                        &ns) == CMT_REJECT,
+          "nanos = 1e9 must REJECT");
+    /* duration.go:64-67 — seconds and nanos disagreeing in sign. */
+    CHECK(cmt_pb_std_duration_unmarshal(V_DUR_SIGN_MISMATCH,
+                                        V_DUR_SIGN_MISMATCH_LEN, &ns)
+          == CMT_REJECT, "a sign disagreement must REJECT");
+    OK();
+
+    /* duration.go:79-81 — validateDuration ACCEPTS ±10000 years, but the
+     * conversion to a nanosecond count overflows long before that and the
+     * reference detects it by dividing back out. Both bounds therefore
+     * decode to an error, and the check is NOT the same as the range
+     * check above. */
+    CHECK(cmt_pb_duration_unmarshal(V_DUR_MAX_SECONDS, V_DUR_MAX_SECONDS_LEN,
+                                    &d) == CMT_OK &&
+          d.seconds == 315576000000LL && d.nanos == 0,
+          "the RAW Duration decoder accepts maxSeconds — it does not"
+          " validate, exactly as the generated one does not");
+    CHECK(cmt_pb_duration_validate(&d) == CMT_OK,
+          "and validateDuration accepts it too");
+    CHECK(cmt_pb_duration_from_proto(&d, &ns) == CMT_REJECT,
+          "but it does not fit a nanosecond count, so DurationFromProto"
+          " refuses it");
+    CHECK(cmt_pb_std_duration_unmarshal(V_DUR_MIN_SECONDS,
+                                        V_DUR_MIN_SECONDS_LEN, &ns)
+          == CMT_REJECT, "and so does minSeconds");
+    OK();
+    return 0;
+}
+
+static int test_r2b_event_data_round_state(void)
+{
+    cmt_pb_event_data_round_state_t e;
+    cmt_pb_event_data_round_state_t back;
+    size_t                          n = 0;
+    static const uint8_t            step[22] = {
+        'R','o','u','n','d','S','t','e','p','P','r','e','c','o','m','m',
+        'i','t','W','a','i','t'
+    };
+    uint8_t                        *over;
+
+    cmt_pb_event_data_round_state_init(&e);
+    e.height = 2;
+    e.round  = 1;
+    memcpy(e.step, step, sizeof(step));
+    e.step_len = sizeof(step);
+    CHECK(cmt_pb_event_data_round_state_marshal(&e, g_buf, sizeof(g_buf), &n)
+          == CMT_OK && is_vec("EventDataRoundState", g_buf, n, V_EDRS_A,
+                              V_EDRS_A_LEN),
+          "the longest step string the reference produces");
+    CHECK(cmt_pb_event_data_round_state_unmarshal(V_EDRS_A, V_EDRS_A_LEN,
+                                                  &back) == CMT_OK &&
+          back.height == 2 && back.round == 1 &&
+          back.step_len == sizeof(step) &&
+          memcmp(back.step, step, sizeof(step)) == 0,
+          "and it decodes back field for field");
+    OK();
+
+    cmt_pb_event_data_round_state_init(&e);
+    CHECK(cmt_pb_event_data_round_state_marshal(&e, g_buf, sizeof(g_buf), &n)
+          == CMT_OK && n == 0,
+          "an all-zero EventDataRoundState is zero bytes (omit-zero)");
+    OK();
+
+    /* A step longer than the destination is REFUSED — the capacity rule
+     * of cmt_pb.h, exercised from an EXACT-SIZE heap buffer so an
+     * over-read is detectable. */
+    {
+        size_t body = (size_t)CMT_PB_ROUND_STEP_STR_MAX + 1u;
+        size_t total = 2u + body;
+
+        over = (uint8_t *)malloc(total);
+        CHECK(over != NULL, "allocation");
+        over[0] = 0x1a;                       /* field 3, wire type 2 */
+        over[1] = (uint8_t)body;
+        memset(over + 2, 'x', body);
+        CHECK(cmt_pb_event_data_round_state_unmarshal(over, total, &back)
+              == CMT_REJECT, "a step longer than the destination REJECTS");
+        free(over);
+        OK();
+    }
+    return 0;
+}
+
+static int test_r2b_cons_messages(void)
+{
+    cmt_pb_cons_message_t *m;
+    size_t                 n = 0;
+    static const uint8_t   ext[9] = {
+        'e','x','t','e','n','s','i','o','n'
+    };
+
+    m = (cmt_pb_cons_message_t *)malloc(sizeof(*m));
+    CHECK(m != NULL, "allocation");
+
+    /* ── the five TRANSCRIBED golden vectors ── */
+    cmt_pb_cons_message_init(m);
+    m->sum = CMT_PB_CONS_MSG_NEW_ROUND_STEP;
+    cmt_pb_new_round_step_init(&m->u.new_round_step);
+    m->u.new_round_step.height = 1;
+    m->u.new_round_step.round  = 1;
+    m->u.new_round_step.step   = 1;
+    m->u.new_round_step.seconds_since_start_time = 1;
+    m->u.new_round_step.last_commit_round = 1;
+    CHECK(cmt_pb_cons_message_marshal(m, g_buf, sizeof(g_buf), &n) == CMT_OK
+          && is_vec("NewRoundStep", g_buf, n, V_MSG_NEW_ROUND_STEP,
+                    V_MSG_NEW_ROUND_STEP_LEN),
+          "msgs_test.go:368's golden hex, byte for byte");
+    CHECK(r2b_round_trip("NewRoundStep", m), "round trip");
+    OK();
+
+    m->u.new_round_step.height = INT64_MAX;
+    m->u.new_round_step.round  = INT32_MAX;
+    m->u.new_round_step.step   = UINT32_MAX;
+    m->u.new_round_step.seconds_since_start_time = INT64_MAX;
+    m->u.new_round_step.last_commit_round = INT32_MAX;
+    CHECK(cmt_pb_cons_message_marshal(m, g_buf, sizeof(g_buf), &n) == CMT_OK
+          && is_vec("NewRoundStep max", g_buf, n, V_MSG_NEW_ROUND_STEP_MAX,
+                    V_MSG_NEW_ROUND_STEP_MAX_LEN),
+          "msgs_test.go:375's golden hex at every maximum");
+    OK();
+
+    cmt_pb_cons_message_init(m);
+    m->sum = CMT_PB_CONS_MSG_PROPOSAL_POL;
+    cmt_pb_proposal_pol_init(&m->u.proposal_pol);
+    m->u.proposal_pol.height = 1;
+    m->u.proposal_pol.proposal_pol_round = 1;
+    CHECK(cmt_pb_cons_message_marshal(m, g_buf, sizeof(g_buf), &n) == CMT_OK
+          && is_vec("ProposalPOL empty", g_buf, n,
+                    V_MSG_PROPOSAL_POL_EMPTY, V_MSG_PROPOSAL_POL_EMPTY_LEN),
+          "msgs_test.go:384 — the ALWAYS-emitted EMPTY bit array is"
+          " `1a 00`, K-1 rev 2 rule (b)");
+    CHECK(r2b_round_trip("ProposalPOL empty", m), "round trip");
+    OK();
+
+    r2b_bits_1(&m->u.proposal_pol.proposal_pol);
+    CHECK(cmt_pb_cons_message_marshal(m, g_buf, sizeof(g_buf), &n) == CMT_OK
+          && is_vec("ProposalPOL bits(1)", g_buf, n, V_MSG_PROPOSAL_POL_1,
+                    V_MSG_PROPOSAL_POL_1_LEN),
+          "and a one-bit array is `08 01 12 01 00`, PACKED elems");
+    /* THE DRIFT GUARD: cmt_bits_to_proto (R1) and the embedded writer
+     * this wave added must produce the same body. The embedded body is
+     * the seven bytes after the `1a 05` frame. */
+    {
+        size_t          bn = 0;
+        cmt_bit_array_t ba;
+
+        r2b_bits_1(&ba);
+        CHECK(cmt_bits_to_proto(&ba, g_buf2, sizeof(g_buf2), &bn) == CMT_OK,
+              "cmt_bits_to_proto");
+        CHECK(bn == 5u && memcmp(g_buf2, V_MSG_PROPOSAL_POL_1 + 8, 5) == 0,
+              "the standalone BitArray encoder and the embedded one agree"
+              " — if this fails they have drifted");
+    }
+    CHECK(r2b_round_trip("ProposalPOL bits(1)", m), "round trip");
+    OK();
+
+    cmt_pb_cons_message_init(m);
+    m->sum = CMT_PB_CONS_MSG_HAS_VOTE;
+    cmt_pb_has_vote_init(&m->u.has_vote);
+    m->u.has_vote.height = 1;
+    m->u.has_vote.round  = 1;
+    m->u.has_vote.type   = 1;              /* PREVOTE */
+    m->u.has_vote.index  = 1;
+    CHECK(cmt_pb_cons_message_marshal(m, g_buf, sizeof(g_buf), &n) == CMT_OK
+          && is_vec("HasVote", g_buf, n, V_MSG_HAS_VOTE,
+                    V_MSG_HAS_VOTE_LEN),
+          "msgs_test.go:396's golden hex");
+    CHECK(r2b_round_trip("HasVote", m), "round trip");
+    OK();
+
+    m->u.has_vote.height = INT64_MAX;
+    m->u.has_vote.round  = INT32_MAX;
+    m->u.has_vote.index  = INT32_MAX;
+    CHECK(cmt_pb_cons_message_marshal(m, g_buf, sizeof(g_buf), &n) == CMT_OK
+          && is_vec("HasVote max", g_buf, n, V_MSG_HAS_VOTE_MAX,
+                    V_MSG_HAS_VOTE_MAX_LEN),
+          "msgs_test.go:400's golden hex");
+    OK();
+
+    /* ── the four DERIVED vectors ── */
+    cmt_pb_cons_message_init(m);
+    m->sum = CMT_PB_CONS_MSG_NEW_VALID_BLOCK;
+    cmt_pb_new_valid_block_init(&m->u.new_valid_block);
+    m->u.new_valid_block.height = 1;
+    m->u.new_valid_block.round  = 1;
+    r2b_psh_a(&m->u.new_valid_block.block_part_set_header);
+    m->u.new_valid_block.has_block_parts = true;
+    r2b_bits_1(&m->u.new_valid_block.block_parts);
+    m->u.new_valid_block.is_commit = false;
+    CHECK(cmt_pb_cons_message_marshal(m, g_buf, sizeof(g_buf), &n) == CMT_OK
+          && is_digest("NewValidBlock", g_buf, n, V_MSG_NEW_VALID_BLOCK_LEN,
+                       V_MSG_NEW_VALID_BLOCK_SHA3),
+          "NewValidBlock with a 64-byte part-set hash");
+    CHECK(r2b_round_trip("NewValidBlock", m), "round trip");
+    OK();
+
+    /* A nil BlockParts POINTER: field 4 off the wire, field 3 still there,
+     * and is_commit true so the bool is exercised. */
+    cmt_pb_cons_message_init(m);
+    m->sum = CMT_PB_CONS_MSG_NEW_VALID_BLOCK;
+    cmt_pb_new_valid_block_init(&m->u.new_valid_block);
+    m->u.new_valid_block.height = 1;
+    m->u.new_valid_block.round  = 1;
+    m->u.new_valid_block.is_commit = true;
+    CHECK(cmt_pb_cons_message_marshal(m, g_buf, sizeof(g_buf), &n) == CMT_OK
+          && is_vec("NewValidBlock nil parts", g_buf, n,
+                    V_MSG_NEW_VALID_BLOCK_NIL_PARTS,
+                    V_MSG_NEW_VALID_BLOCK_NIL_PARTS_LEN),
+          "a nil BitArray POINTER is omitted; the ALWAYS PartSetHeader is"
+          " not");
+    OK();
+
+    cmt_pb_cons_message_init(m);
+    m->sum = CMT_PB_CONS_MSG_PROPOSAL;
+    cmt_pb_cons_proposal_init(&m->u.proposal);
+    r2b_proposal_a(&m->u.proposal.proposal);
+    CHECK(cmt_pb_cons_message_marshal(m, g_buf, sizeof(g_buf), &n) == CMT_OK
+          && is_digest("Proposal", g_buf, n, V_MSG_PROPOSAL_LEN,
+                       V_MSG_PROPOSAL_SHA3),
+          "the consensus Proposal wrapper, field 1 ALWAYS");
+    CHECK(r2b_round_trip("Proposal", m), "round trip");
+    OK();
+
+    cmt_pb_cons_message_init(m);
+    m->sum = CMT_PB_CONS_MSG_BLOCK_PART;
+    cmt_pb_block_part_init(&m->u.block_part);
+    m->u.block_part.height = 1;
+    m->u.block_part.round  = 1;
+    r2b_part_a(&m->u.block_part.part);
+    CHECK(cmt_pb_cons_message_marshal(m, g_buf, sizeof(g_buf), &n) == CMT_OK
+          && is_digest("BlockPart", g_buf, n, V_MSG_BLOCK_PART_LEN,
+                       V_MSG_BLOCK_PART_SHA3),
+          "BlockPart, field 3 ALWAYS");
+    CHECK(r2b_round_trip("BlockPart", m), "round trip");
+    OK();
+
+    cmt_pb_cons_message_init(m);
+    m->sum = CMT_PB_CONS_MSG_VOTE;
+    cmt_pb_cons_vote_init(&m->u.vote);
+    m->u.vote.has_vote = true;
+    r2b_vote_a(&m->u.vote.vote, NULL, 0, NULL, 0);
+    CHECK(cmt_pb_cons_message_marshal(m, g_buf, sizeof(g_buf), &n) == CMT_OK
+          && is_digest("Vote", g_buf, n, V_MSG_VOTE_LEN, V_MSG_VOTE_SHA3),
+          "a precommit with no extension");
+    CHECK(r2b_round_trip("Vote", m), "round trip");
+    OK();
+
+    r2b_vote_a(&m->u.vote.vote, ext, sizeof(ext), SIG_S, sizeof(SIG_S));
+    CHECK(cmt_pb_cons_message_marshal(m, g_buf, sizeof(g_buf), &n) == CMT_OK
+          && is_digest("Vote ext", g_buf, n, V_MSG_VOTE_EXT_LEN,
+                       V_MSG_VOTE_EXT_SHA3),
+          "and one carrying an extension and its signature");
+    CHECK(r2b_round_trip("Vote ext", m), "round trip");
+    OK();
+
+    /* A nil Vote POINTER: the BRANCH is still written, with an empty
+     * body. This is what keeps the message type visible. */
+    cmt_pb_cons_message_init(m);
+    m->sum = CMT_PB_CONS_MSG_VOTE;
+    cmt_pb_cons_vote_init(&m->u.vote);
+    CHECK(cmt_pb_cons_message_marshal(m, g_buf, sizeof(g_buf), &n) == CMT_OK
+          && is_vec("Vote nil", g_buf, n, V_MSG_VOTE_NIL, V_MSG_VOTE_NIL_LEN),
+          "a nil Vote pointer is `32 00`, not an omission");
+    OK();
+
+    cmt_pb_cons_message_init(m);
+    m->sum = CMT_PB_CONS_MSG_VOTE_SET_MAJ23;
+    cmt_pb_vote_set_maj23_init(&m->u.vote_set_maj23);
+    m->u.vote_set_maj23.height = 1;
+    m->u.vote_set_maj23.round  = 1;
+    m->u.vote_set_maj23.type   = 1;
+    r2b_bid_a(&m->u.vote_set_maj23.block_id);
+    CHECK(cmt_pb_cons_message_marshal(m, g_buf, sizeof(g_buf), &n) == CMT_OK
+          && is_digest("VoteSetMaj23", g_buf, n, V_MSG_VOTE_SET_MAJ23_LEN,
+                       V_MSG_VOTE_SET_MAJ23_SHA3),
+          "VoteSetMaj23, field 4 ALWAYS");
+    CHECK(r2b_round_trip("VoteSetMaj23", m), "round trip");
+    OK();
+
+    cmt_pb_cons_message_init(m);
+    m->sum = CMT_PB_CONS_MSG_VOTE_SET_BITS;
+    cmt_pb_vote_set_bits_init(&m->u.vote_set_bits);
+    m->u.vote_set_bits.height = 1;
+    m->u.vote_set_bits.round  = 1;
+    m->u.vote_set_bits.type   = 1;
+    r2b_bid_a(&m->u.vote_set_bits.block_id);
+    r2b_bits_1(&m->u.vote_set_bits.votes);
+    CHECK(cmt_pb_cons_message_marshal(m, g_buf, sizeof(g_buf), &n) == CMT_OK
+          && is_digest("VoteSetBits", g_buf, n, V_MSG_VOTE_SET_BITS_LEN,
+                       V_MSG_VOTE_SET_BITS_SHA3),
+          "VoteSetBits, fields 4 AND 5 ALWAYS");
+    CHECK(r2b_round_trip("VoteSetBits", m), "round trip");
+    OK();
+
+    /* The nil oneof: types.pb.go:1297 writes NOTHING for a nil Sum. */
+    cmt_pb_cons_message_init(m);
+    CHECK(cmt_pb_cons_message_marshal(m, g_buf, sizeof(g_buf), &n) == CMT_OK
+          && n == 0, "a Message with no branch is zero bytes");
+    OK();
+
+    /* An UNKNOWN branch on the wire is SKIPPED, not refused — the
+     * generated decoder's default. Field 10, wire type 2, empty body. */
+    {
+        static const uint8_t unknown[2] = { 0x52, 0x00 };
+        cmt_pb_cons_message_t *back =
+            (cmt_pb_cons_message_t *)malloc(sizeof(*back));
+
+        CHECK(back != NULL, "allocation");
+        arena_reset();
+        CHECK(cmt_pb_cons_message_unmarshal(unknown, sizeof(unknown), back,
+                                            &g_arena) == CMT_OK &&
+              back->sum == CMT_PB_CONS_MSG_NONE,
+              "an unknown field number is skipped and leaves no branch");
+        free(back);
+        OK();
+    }
+
+    /* A known branch with the WRONG wire type is refused. */
+    {
+        static const uint8_t bad_wt[2] = { 0x08, 0x01 };  /* field 1, wt 0 */
+        cmt_pb_cons_message_t *back =
+            (cmt_pb_cons_message_t *)malloc(sizeof(*back));
+
+        CHECK(back != NULL, "allocation");
+        arena_reset();
+        CHECK(cmt_pb_cons_message_unmarshal(bad_wt, sizeof(bad_wt), back,
+                                            &g_arena) == CMT_REJECT,
+              "a oneof branch with a scalar wire type REJECTS");
+        free(back);
+        OK();
+    }
+
+    /* THE ONEOF CARRIES ITS BRANCH'S BOUND. `cons_message_wr` reaches
+     * `cons_vote_wr` directly — as the generated Message encoder reaches
+     * Vote.MarshalToSizedBuffer — so without an explicit check the wrapper
+     * would write a signature that `cmt_pb_cons_vote_marshal` refuses.
+     * CMT_PB_SIG_MAX + 1 is one past the ML-DSA-87 signature (4627,
+     * qgp_dilithium.h:14); g_buf is far larger than the message, so a
+     * REJECT here is the LENGTH check and not the buffer running out. */
+    cmt_pb_cons_message_init(m);
+    m->sum = CMT_PB_CONS_MSG_VOTE;
+    cmt_pb_cons_vote_init(&m->u.vote);
+    r2b_vote_a(&m->u.vote.vote, NULL, 0, NULL, 0);
+    CHECK(cmt_pb_cons_vote_marshal(&m->u.vote, g_buf, sizeof(g_buf), &n)
+          == CMT_OK, "the branch itself encodes at a legal length");
+    m->u.vote.vote.signature_len = (size_t)CMT_PB_SIG_MAX + 1u;
+    CHECK(cmt_pb_cons_vote_marshal(&m->u.vote, g_buf, sizeof(g_buf), &n)
+          == CMT_REJECT, "the branch entry refuses an over-long signature");
+    CHECK(cmt_pb_cons_message_marshal(m, g_buf, sizeof(g_buf), &n)
+          == CMT_REJECT, "and so does the Message that wraps it");
+    OK();
+
+    /* The same for a branch whose bound is on a BlockID hash, and through
+     * the WAL wrappers that reach the Message the same way. */
+    cmt_pb_cons_message_init(m);
+    m->sum = CMT_PB_CONS_MSG_VOTE_SET_MAJ23;
+    cmt_pb_vote_set_maj23_init(&m->u.vote_set_maj23);
+    r2b_bid_a(&m->u.vote_set_maj23.block_id);
+    m->u.vote_set_maj23.block_id.hash_len = (size_t)CMT_PB_HASH_MAX + 1u;
+    CHECK(cmt_pb_cons_message_marshal(m, g_buf, sizeof(g_buf), &n)
+          == CMT_REJECT,
+          "a 65-byte BlockID hash is refused through the oneof too");
+    {
+        cmt_pb_msg_info_t *mi = (cmt_pb_msg_info_t *)malloc(sizeof(*mi));
+
+        CHECK(mi != NULL, "allocation");
+        cmt_pb_msg_info_init(mi);
+        mi->msg = *m;
+        CHECK(cmt_pb_msg_info_marshal(mi, g_buf, sizeof(g_buf), &n)
+              == CMT_REJECT, "MsgInfo carries its Message's bound");
+        free(mi);
+    }
+    OK();
+
+    free(m);
+    return 0;
+}
+
+static int test_r2b_wal(void)
+{
+    cmt_pb_wal_message_t       *w;
+    cmt_pb_timed_wal_message_t *tw;
+    size_t                      n = 0;
+    static const uint8_t        ronies[6] = { 'r','o','n','i','e','s' };
+
+    w  = (cmt_pb_wal_message_t *)malloc(sizeof(*w));
+    tw = (cmt_pb_timed_wal_message_t *)malloc(sizeof(*tw));
+    CHECK(w != NULL && tw != NULL, "allocation");
+
+    /* KIND 1 — EventDataRoundState. The kind numbers ARE the row's
+     * `kind` column (D-15 rev 5), so each is pinned by its tag byte. */
+    cmt_pb_wal_message_init(w);
+    w->sum = CMT_PB_WAL_EVENT_DATA_ROUND_STATE;
+    cmt_pb_event_data_round_state_init(&w->u.event_data_round_state);
+    w->u.event_data_round_state.height = 2;
+    w->u.event_data_round_state.round  = 1;
+    memcpy(w->u.event_data_round_state.step, ronies, sizeof(ronies));
+    w->u.event_data_round_state.step_len = sizeof(ronies);
+    CHECK(cmt_pb_wal_message_marshal(w, g_buf, sizeof(g_buf), &n) == CMT_OK
+          && is_vec("WAL kind 1", g_buf, n, V_WAL_EDRS, V_WAL_EDRS_LEN),
+          "kind 1 is tag 0x0a — msgs_test.go:219-231's scenario");
+    CHECK(g_buf[0] == 0x0a, "kind 1 tag");
+    OK();
+
+    /* KIND 2 — MsgInfo with a 32-byte peer id. */
+    cmt_pb_wal_message_init(w);
+    w->sum = CMT_PB_WAL_MSG_INFO;
+    cmt_pb_msg_info_init(&w->u.msg_info);
+    w->u.msg_info.msg.sum = CMT_PB_CONS_MSG_BLOCK_PART;
+    cmt_pb_block_part_init(&w->u.msg_info.msg.u.block_part);
+    w->u.msg_info.msg.u.block_part.height = 100;
+    w->u.msg_info.msg.u.block_part.round  = 1;
+    r2b_part_a(&w->u.msg_info.msg.u.block_part.part);
+    memcpy(w->u.msg_info.peer_id, ADDR_A, 32);
+    w->u.msg_info.peer_id_len = 32;
+    CHECK(cmt_pb_wal_message_marshal(w, g_buf, sizeof(g_buf), &n) == CMT_OK
+          && is_digest("WAL kind 2", g_buf, n, V_WAL_MSG_INFO_LEN,
+                       V_WAL_MSG_INFO_SHA3),
+          "kind 2 wraps a whole consensus Message — msgs_test.go:232-254");
+    CHECK(g_buf[0] == 0x12, "kind 2 tag");
+    OK();
+
+    /* A peer id that is neither empty nor 32 bytes is REFUSED on both
+     * sides — the substitution rule of cmt_pb.h. */
+    w->u.msg_info.peer_id_len = 6;
+    CHECK(cmt_pb_wal_message_marshal(w, g_buf, sizeof(g_buf), &n)
+          == CMT_REJECT, "a six-byte peer id must REJECT on encode");
+    w->u.msg_info.peer_id_len = 32;
+    OK();
+
+    /* A WAL row reaches the wrapped Message through `wal_message_wr` →
+     * `msg_info_wr` → `cons_message_wr`, none of which is a public entry,
+     * so the branch's own bound has to be applied at kind 2 as well. A
+     * 65-byte BlockID hash is one past CMT_PB_HASH_MAX (64). */
+    w->u.msg_info.msg.sum = CMT_PB_CONS_MSG_VOTE_SET_MAJ23;
+    cmt_pb_vote_set_maj23_init(&w->u.msg_info.msg.u.vote_set_maj23);
+    w->u.msg_info.msg.u.vote_set_maj23.block_id.hash_len =
+        (size_t)CMT_PB_HASH_MAX + 1u;
+    CHECK(cmt_pb_wal_message_marshal(w, g_buf, sizeof(g_buf), &n)
+          == CMT_REJECT,
+          "kind 2 refuses a Message branch that exceeds its own bound");
+    OK();
+
+    /* The node's OWN message: peer id empty, so field 2 is absent. */
+    cmt_pb_wal_message_init(w);
+    w->sum = CMT_PB_WAL_MSG_INFO;
+    cmt_pb_msg_info_init(&w->u.msg_info);
+    w->u.msg_info.msg.sum = CMT_PB_CONS_MSG_NEW_ROUND_STEP;
+    cmt_pb_new_round_step_init(&w->u.msg_info.msg.u.new_round_step);
+    w->u.msg_info.msg.u.new_round_step.height = 1;
+    w->u.msg_info.msg.u.new_round_step.round  = 1;
+    w->u.msg_info.msg.u.new_round_step.step   = 1;
+    w->u.msg_info.msg.u.new_round_step.seconds_since_start_time = 1;
+    w->u.msg_info.msg.u.new_round_step.last_commit_round = 1;
+    CHECK(cmt_pb_wal_message_marshal(w, g_buf, sizeof(g_buf), &n) == CMT_OK
+          && is_vec("WAL kind 2 own", g_buf, n, V_WAL_MSG_INFO_OWN,
+                    V_WAL_MSG_INFO_OWN_LEN),
+          "an empty peer id leaves field 2 off the wire (omit-empty)");
+    OK();
+
+    /* A wire peer id of a length that is neither 0 nor 32 is refused. */
+    {
+        uint8_t *bad;
+        size_t   total;
+
+        /* kind 2 body: field 1 (empty Message) then field 2 with 6 bytes */
+        total = 2u + 2u + 2u + 6u;
+        bad = (uint8_t *)malloc(total);
+        CHECK(bad != NULL, "allocation");
+        bad[0] = 0x12;                        /* WALMessage field 2 */
+        bad[1] = (uint8_t)(total - 2u);
+        bad[2] = 0x0a;                        /* MsgInfo field 1 */
+        bad[3] = 0x00;                        /* empty Message */
+        bad[4] = 0x12;                        /* MsgInfo field 2 */
+        bad[5] = 0x06;
+        memcpy(bad + 6, ronies, 6);
+        arena_reset();
+        CHECK(cmt_pb_wal_message_unmarshal(bad, total, w, &g_arena)
+              == CMT_REJECT,
+              "and a six-byte peer id must REJECT on decode too");
+        free(bad);
+        OK();
+    }
+
+    /* KIND 3 — TimeoutInfo. */
+    cmt_pb_wal_message_init(w);
+    w->sum = CMT_PB_WAL_TIMEOUT_INFO;
+    cmt_pb_timeout_info_init(&w->u.timeout_info);
+    w->u.timeout_info.duration = 100;
+    w->u.timeout_info.height   = 1;
+    w->u.timeout_info.round    = 1;
+    w->u.timeout_info.step     = 1;
+    CHECK(cmt_pb_wal_message_marshal(w, g_buf, sizeof(g_buf), &n) == CMT_OK
+          && is_vec("WAL kind 3", g_buf, n, V_WAL_TIMEOUT_INFO,
+                    V_WAL_TIMEOUT_INFO_LEN),
+          "kind 3 — msgs_test.go:255-269, Duration(100) nanoseconds");
+    CHECK(g_buf[0] == 0x1a, "kind 3 tag");
+    OK();
+
+    w->u.timeout_info.duration = 0;
+    CHECK(cmt_pb_wal_message_marshal(w, g_buf, sizeof(g_buf), &n) == CMT_OK
+          && is_vec("WAL kind 3 zero dur", g_buf, n,
+                    V_WAL_TIMEOUT_INFO_ZERO_DUR,
+                    V_WAL_TIMEOUT_INFO_ZERO_DUR_LEN),
+          "a ZERO duration is still framed, as `0a 00` — the field is"
+          " (nullable) = false");
+    OK();
+
+    /* KIND 4 — EndHeight, including the height-zero case whose body is
+     * empty and whose kind therefore survives only as `22 00`. */
+    cmt_pb_wal_message_init(w);
+    w->sum = CMT_PB_WAL_END_HEIGHT;
+    cmt_pb_end_height_init(&w->u.end_height);
+    w->u.end_height.height = 1;
+    CHECK(cmt_pb_wal_message_marshal(w, g_buf, sizeof(g_buf), &n) == CMT_OK
+          && is_vec("WAL kind 4", g_buf, n, V_WAL_END_HEIGHT,
+                    V_WAL_END_HEIGHT_LEN),
+          "kind 4 — msgs_test.go:270-278");
+    CHECK(g_buf[0] == 0x22, "kind 4 tag");
+    w->u.end_height.height = 0;
+    CHECK(cmt_pb_wal_message_marshal(w, g_buf, sizeof(g_buf), &n) == CMT_OK
+          && is_vec("WAL kind 4 zero", g_buf, n, V_WAL_END_HEIGHT_ZERO,
+                    V_WAL_END_HEIGHT_ZERO_LEN),
+          "EndHeight{0} is `22 00`: the kind survives an empty body");
+    OK();
+
+    /* A WALMessage with no branch is zero bytes; a fifth field number is
+     * skipped. */
+    cmt_pb_wal_message_init(w);
+    CHECK(cmt_pb_wal_message_marshal(w, g_buf, sizeof(g_buf), &n) == CMT_OK
+          && n == 0, "no branch, no bytes");
+    {
+        static const uint8_t k5[2] = { 0x2a, 0x00 };   /* field 5 */
+
+        arena_reset();
+        CHECK(cmt_pb_wal_message_unmarshal(k5, sizeof(k5), w, &g_arena)
+              == CMT_OK && w->sum == CMT_PB_WAL_NONE,
+              "a fifth kind is an unknown field: skipped, no branch");
+    }
+    OK();
+
+    /* TimedWALMessage: field 1 is ALWAYS (Go's zero time is eleven
+     * bytes), field 2 is a POINTER. */
+    cmt_pb_timed_wal_message_init(tw);
+    tw->has_msg = true;
+    tw->msg.sum = CMT_PB_WAL_END_HEIGHT;
+    cmt_pb_end_height_init(&tw->msg.u.end_height);
+    tw->msg.u.end_height.height = 7;
+    CHECK(cmt_pb_timed_wal_message_marshal(tw, g_buf, sizeof(g_buf), &n)
+          == CMT_OK && is_vec("TimedWALMessage zero time", g_buf, n,
+                              V_TWM_ZERO_TIME_END_HEIGHT,
+                              V_TWM_ZERO_TIME_END_HEIGHT_LEN),
+          "the zero time is ELEVEN bytes here, not zero — CMT_TIME_ZERO");
+    tw->time = TS_A;
+    CHECK(cmt_pb_timed_wal_message_marshal(tw, g_buf, sizeof(g_buf), &n)
+          == CMT_OK && is_vec("TimedWALMessage TS_A", g_buf, n,
+                              V_TWM_TS_A_END_HEIGHT,
+                              V_TWM_TS_A_END_HEIGHT_LEN),
+          "and a real stamp encodes as its {seconds, nanos}");
+    tw->has_msg = false;
+    CHECK(cmt_pb_timed_wal_message_marshal(tw, g_buf, sizeof(g_buf), &n)
+          == CMT_OK && is_vec("TimedWALMessage no msg", g_buf, n,
+                              V_TWM_NO_MSG, V_TWM_NO_MSG_LEN),
+          "a nil Msg POINTER leaves field 2 off the wire");
+    OK();
+
+    /* Round trip through the whole record. */
+    {
+        cmt_pb_timed_wal_message_t *back =
+            (cmt_pb_timed_wal_message_t *)malloc(sizeof(*back));
+
+        CHECK(back != NULL, "allocation");
+        arena_reset();
+        CHECK(cmt_pb_timed_wal_message_unmarshal(
+                  V_TWM_TS_A_END_HEIGHT, V_TWM_TS_A_END_HEIGHT_LEN, back,
+                  &g_arena) == CMT_OK &&
+              back->has_msg && back->msg.sum == CMT_PB_WAL_END_HEIGHT &&
+              back->msg.u.end_height.height == 7 &&
+              back->time.seconds == TS_A.seconds &&
+              back->time.nanos == TS_A.nanos,
+              "a TimedWALMessage decodes back to its kind, height and"
+              " stamp");
+        free(back);
+        OK();
+    }
+
+    free(w);
+    free(tw);
+    return 0;
+}
+
+static int test_r2b_block_relocated(void)
+{
+    cmt_pb_block_t          b;
+    cmt_pb_evidence_list_t  el;
+    cmt_pb_commit_t         commit;
+    cmt_pb_commit_sig_t     sigs[1];
+    cmt_pb_evidence_t      *ev;
+    cmt_pb_bytes_t          txs[2];
+    static const uint8_t    tx0[3] = { 't', 'x', '0' };
+    size_t                  n = 0;
+
+    /* An EMPTY EvidenceList is ZERO bytes on its own; inside a Block it
+     * is `1a 00`, because field 3 is (nullable) = false. */
+    el.evidence     = NULL;
+    el.evidence_len = 0;
+    CHECK(cmt_pb_evidence_list_marshal(&el, g_buf, sizeof(g_buf), &n)
+          == CMT_OK && n == 0, "an empty EvidenceList is zero bytes");
+    OK();
+
+    memset(&b, 0, sizeof(b));
+    cmt_pb_header_init(&b.header);
+    cmt_pb_data_init(&b.data);
+    b.evidence.evidence     = NULL;
+    b.evidence.evidence_len = 0;
+    b.last_commit           = NULL;
+    CHECK(cmt_pb_block_marshal(&b, g_buf, sizeof(g_buf), &n) == CMT_OK &&
+          is_vec("Block zero", g_buf, n, V_BLOCK_ZERO, V_BLOCK_ZERO_LEN),
+          "the relocated Block encoder: fields 1, 2 and 3 ALWAYS, field 4"
+          " omitted");
+    OK();
+
+    /* Every field exercised: two evidence items and a commit. */
+    ev = (cmt_pb_evidence_t *)malloc(2 * sizeof(*ev));
+    CHECK(ev != NULL, "allocation");
+    cmt_pb_evidence_init(&ev[0]);
+    ev[0].has_duplicate_vote_evidence = true;
+    {
+        cmt_pb_duplicate_vote_evidence_t *d = &ev[0].duplicate_vote_evidence;
+
+        d->has_vote_a = true;
+        r2b_vote_a(&d->vote_a, NULL, 0, NULL, 0);
+        d->vote_a.height = 9;
+        d->vote_a.round  = 1;
+        d->vote_a.validator_index = 0;
+        d->has_vote_b = true;
+        r2b_vote_a(&d->vote_b, NULL, 0, NULL, 0);
+        d->vote_b.height = 9;
+        d->vote_b.round  = 1;
+        cmt_pb_block_id_init(&d->vote_b.block_id);   /* BID_ZERO */
+        d->vote_b.validator_index = 1;
+        d->total_voting_power = 30;
+        d->validator_power    = 10;
+        d->timestamp          = TS_A;
+    }
+    ev[1] = ev[0];
+
+    txs[0].data = tx0;
+    txs[0].len  = sizeof(tx0);
+    txs[1].data = NULL;
+    txs[1].len  = 0;
+
+    cmt_pb_commit_init(&commit);
+    commit.height = 9;
+    commit.round  = 2;
+    r2b_bid_a(&commit.block_id);
+    cmt_pb_commit_sig_init(&sigs[0]);
+    sigs[0].block_id_flag = 2;                     /* COMMIT */
+    memcpy(sigs[0].validator_address, ADDR_A, 32);
+    sigs[0].validator_address_len = 32;
+    sigs[0].timestamp = TS_A;
+    memcpy(sigs[0].signature, SIG_S, sizeof(SIG_S));
+    sigs[0].signature_len = sizeof(SIG_S);
+    commit.signatures      = sigs;
+    commit.signatures_cap  = 1;
+    commit.signatures_len  = 1;
+
+    cmt_pb_header_init(&b.header);
+    cmt_pb_data_init(&b.data);
+    b.data.txs     = txs;
+    b.data.txs_cap = 2;
+    b.data.txs_len = 2;
+    b.evidence.evidence     = ev;
+    b.evidence.evidence_len = 2;
+    b.last_commit           = &commit;
+    CHECK(cmt_pb_block_marshal(&b, g_buf, sizeof(g_buf), &n) == CMT_OK &&
+          is_digest("Block full", g_buf, n, V_BLOCK_FULL_LEN,
+                    V_BLOCK_FULL_SHA3),
+          "a Block with two evidence items and a commit");
+    OK();
+
+    /* The header bound the relocation had to KEEP. The encoder this
+     * replaced framed field 1 by calling `cmt_pb_header_marshal`, which
+     * refuses a chain id over CMT_PB_CHAINID_MAX (32) and a proposer
+     * address over CMT_PB_ADDRESS_MAX (32); `block_wr` reaches `header_wr`
+     * directly and would otherwise write them. 33 is one past the array,
+     * so this also proves the check is on the LENGTH and not on the buffer
+     * running out — g_buf is far larger than the message. */
+    b.header.chain_id_len = 33;
+    CHECK(cmt_pb_block_marshal(&b, g_buf, sizeof(g_buf), &n) == CMT_REJECT,
+          "a 33-byte chain id is refused, as cmt_pb_header_marshal does");
+    b.header.chain_id_len         = 0;
+    b.header.proposer_address_len = 33;
+    CHECK(cmt_pb_block_marshal(&b, g_buf, sizeof(g_buf), &n) == CMT_REJECT,
+          "and so is a 33-byte proposer address");
+    b.header.proposer_address_len = 0;
+    OK();
+
+    /* A length with no array is a CALLER error, and it stays CMT_FAULT —
+     * the code this replaced returned exactly that. */
+    b.evidence.evidence = NULL;
+    CHECK(cmt_pb_block_marshal(&b, g_buf, sizeof(g_buf), &n) == CMT_FAULT,
+          "evidence_len with a NULL array is CMT_FAULT, as before");
+    el.evidence_len = 2;
+    el.evidence     = NULL;
+    CHECK(cmt_pb_evidence_list_marshal(&el, g_buf, sizeof(g_buf), &n)
+          == CMT_FAULT, "and so is the bare EvidenceList");
+    OK();
+
+    free(ev);
+    return 0;
+}
+
 int main(void)
 {
     build_fixtures();
@@ -2588,6 +3714,12 @@ int main(void)
     if (test_bit_array_codec() != 0)       { return 1; }
     if (test_truncation() != 0)            { return 1; }
     if (test_extended_commit() != 0)       { return 1; }   /* wave R1-B */
+
+    if (test_r2b_duration() != 0)          { return 1; }   /* wave R2-B */
+    if (test_r2b_event_data_round_state() != 0) { return 1; }
+    if (test_r2b_cons_messages() != 0)     { return 1; }
+    if (test_r2b_wal() != 0)               { return 1; }
+    if (test_r2b_block_relocated() != 0)   { return 1; }
 
     printf("test_cmt_pb: OK (%d groups)\n", g_checks);
     return 0;

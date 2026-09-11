@@ -8,16 +8,16 @@
  * anything here yet; the module is additive only. The live witness BFT,
  * QC V2 and the T3 wave-1 modules are byte-identically untouched.
  *
- * ⚠ THIS MODULE SUPERSEDES `nodus/src/bft/tendermint/tm_proposer.c` — the
- * T1 proposer-priority implementation — in wave R2. That file is NOT
- * edited here and both exist side by side until R2 retires it. The one
- * behavioural difference is deliberate and is the deviation register's
- * row J4: tm_proposer.c REFUSES any priority outside ±2^40
- * (`TM_PRIO_ABS_BOUND`, tm_core.h) where the reference CLIPS to the int64
- * ends (safeAddClip / safeSubClip, validator_set.go:1011-1031) and bounds
- * the TOTAL VOTING POWER instead (MaxTotalVotingPower = MaxInt64/8,
- * :27). The operator's ruling of 2026-09-09 is "Comet'e dön: kırpma +
- * MaxTotalVotingPower"; this module clips and does not repeat J4.
+ * THIS MODULE SUPERSEDED the T1 proposer-priority implementation
+ * (`nodus/src/bft/tendermint/tm_proposer.c`), which R2 DELETED together
+ * with the rest of the T1 core — atlas-dec-a309a65984f1709149b40db9cb5b38a7.
+ * The one behavioural difference between them was deliberate and is the
+ * deviation register's row J4: the T1 code REFUSED any priority outside
+ * ±2^40 where the reference CLIPS to the int64 ends (safeAddClip /
+ * safeSubClip, validator_set.go:1011-1031) and bounds the TOTAL VOTING
+ * POWER instead (MaxTotalVotingPower = MaxInt64/8, :27). The operator's
+ * ruling of 2026-09-09 is "Comet'e dön: kırpma + MaxTotalVotingPower";
+ * this module clips and does not repeat J4.
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── What is in here ────────────────────────────────────────────────────

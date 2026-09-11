@@ -3814,3 +3814,2296 @@ int cmt_pb_extended_commit_unmarshal(const uint8_t *in, size_t len,
     cmt_pb_extended_commit_init(m);
     return ec_merge(in, len, m, arena);
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+ * ══ wave R2-B addition ════════════════════════════════════════════════
+ * The consensus package's wire (consensus/types.proto, wal.proto), the
+ * round-state event, google.protobuf.Duration, and the Block /
+ * EvidenceList encoders relocated out of cmt_block.c (R1B-6).
+ *
+ * Nothing above this line changed. Same writer, same reader, same rules.
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/* ══ google.protobuf.Duration ═════════════════════════════════════════ */
+
+/* cometbft@709fd12b gogoproto v1.7.0 types/duration.go:54-69 —
+ * validateDuration(). The nil check of :55-57 is the NULL argument. */
+int cmt_pb_duration_validate(const cmt_pb_duration_t *d)
+{
+    if (d == NULL) {
+        return CMT_FAULT;                                    /* :55-57 */
+    }
+    if (d->seconds < CMT_PB_DURATION_MIN_SECONDS ||
+        d->seconds > CMT_PB_DURATION_MAX_SECONDS) {
+        return CMT_REJECT;                                   /* :58-60 */
+    }
+    if (d->nanos <= -1000000000 || d->nanos >= 1000000000) {
+        return CMT_REJECT;                                   /* :61-63 */
+    }
+    /* :64-67 — seconds and nanos must have the same sign unless nanos is
+     * zero. Written exactly as the reference's two disagreement tests. */
+    if ((d->seconds < 0 && d->nanos > 0) ||
+        (d->seconds > 0 && d->nanos < 0)) {
+        return CMT_REJECT;
+    }
+    return CMT_OK;
+}
+
+/* cometbft@709fd12b gogoproto v1.7.0 types/duration.go:92-99 —
+ * DurationProto(). Go's `/` and `%` on int64 truncate toward zero, as C99's
+ * do, so a negative nanosecond count yields a negative seconds AND a
+ * negative nanos — which is exactly the sign agreement validateDuration
+ * demands. */
+int cmt_pb_duration_proto(int64_t d_ns, cmt_pb_duration_t *out)
+{
+    int64_t nanos = d_ns;                                    /* :93 */
+    int64_t secs;
+
+    if (out == NULL) {
+        return CMT_FAULT;
+    }
+    secs   = nanos / 1000000000;                             /* :94 */
+    nanos -= secs * 1000000000;                              /* :95 */
+    out->seconds = secs;                                     /* :97 */
+    out->nanos   = (int32_t)nanos;                           /* :98 */
+    return CMT_OK;
+}
+
+/* cometbft@709fd12b gogoproto v1.7.0 types/duration.go:74-89 —
+ * DurationFromProto(). */
+int cmt_pb_duration_from_proto(const cmt_pb_duration_t *p, int64_t *out_ns)
+{
+    uint64_t acc;
+    int64_t  d;
+    int      rc;
+
+    if (p == NULL || out_ns == NULL) {
+        return CMT_FAULT;
+    }
+    rc = cmt_pb_duration_validate(p);                        /* :75-77 */
+    if (rc != CMT_OK) {
+        return rc;
+    }
+    /* :78 `d := time.Duration(p.Seconds) * time.Second`. Go's signed
+     * multiplication WRAPS on overflow; C's is undefined, so the product is
+     * formed in unsigned arithmetic and converted back. The reference then
+     * detects the wrap at :79-81 by dividing back out. */
+    acc = (uint64_t)p->seconds * (uint64_t)1000000000u;
+    d   = (int64_t)acc;
+    if (d / 1000000000 != p->seconds) {
+        return CMT_REJECT;                                   /* :79-81 */
+    }
+    if (p->nanos != 0) {                                     /* :82 */
+        acc = (uint64_t)d + (uint64_t)(int64_t)p->nanos;     /* :83 */
+        d   = (int64_t)acc;
+        if ((d < 0) != (p->nanos < 0)) {
+            return CMT_REJECT;                               /* :84-86 */
+        }
+    }
+    *out_ns = d;                                             /* :88 */
+    return CMT_OK;
+}
+
+void cmt_pb_duration_init(cmt_pb_duration_t *m)
+{
+    if (m != NULL) {
+        m->seconds = 0;
+        m->nanos   = 0;
+    }
+}
+
+/* cometbft@709fd12b gogoproto v1.7.0 types/duration.pb.go:287-307 —
+ * Duration.MarshalToSizedBuffer. Both fields omit-zero; a negative `nanos`
+ * is the 10-byte varint of K-1 rev 2 rule (g), because the generated code
+ * widens through `uint64(m.Nanos)` on an int32 that Go sign-extends. */
+static void duration_wr(pb_w_t *w, const cmt_pb_duration_t *m)
+{
+    wf_varint(w, 2, (uint64_t)(int64_t)m->nanos);            /* :296-300 */
+    wf_varint(w, 1, (uint64_t)m->seconds);                   /* :301-305 */
+}
+
+int cmt_pb_duration_marshal(const cmt_pb_duration_t *m, uint8_t *out,
+                            size_t cap, size_t *out_len)
+{
+    pb_w_t w;
+
+    if (m == NULL || out == NULL || out_len == NULL) {
+        return CMT_FAULT;
+    }
+    w_init(&w, out, cap);
+    duration_wr(&w, m);
+    return w_finish(&w, out_len);
+}
+
+/* cometbft@709fd12b gogoproto v1.7.0 types/duration.pb.go:344-432 —
+ * Duration.Unmarshal. `nanos` is an int32 the generated loop accumulates
+ * with shifts that Go defines to zero past the width; the truncation is
+ * written out here because C leaves it undefined. */
+static int duration_merge(const uint8_t *in, size_t len,
+                          cmt_pb_duration_t *m)
+{
+    size_t i = 0;
+
+    while (i < len) {
+        int32_t  fieldnum;
+        uint32_t wt;
+        size_t   start = i;
+        uint64_t v;
+
+        if (r_tag(in, len, &i, &fieldnum, &wt) != CMT_OK) {
+            return CMT_REJECT;
+        }
+        if (fieldnum == 1) {                                 /* :373-391 */
+            if (wt != 0u) {
+                return CMT_REJECT;
+            }
+            if (cmt_pb_get_uvarint(in, len, &i, &v) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            m->seconds = (int64_t)v;
+        } else if (fieldnum == 2) {                          /* :392-410 */
+            if (wt != 0u) {
+                return CMT_REJECT;
+            }
+            if (cmt_pb_get_uvarint(in, len, &i, &v) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            m->nanos = (int32_t)(uint32_t)v;
+        } else {
+            i = start;
+            if (pb_skip(in, len, &i) != CMT_OK) {
+                return CMT_REJECT;
+            }
+        }
+    }
+    return CMT_OK;
+}
+
+int cmt_pb_duration_unmarshal(const uint8_t *in, size_t len,
+                              cmt_pb_duration_t *m)
+{
+    if (m == NULL || (in == NULL && len != 0)) {
+        return CMT_FAULT;
+    }
+    cmt_pb_duration_init(m);
+    return duration_merge(in, len, m);
+}
+
+/* cometbft@709fd12b gogoproto v1.7.0 types/duration_gogo.go:72-75 —
+ * SizeOfStdDuration(): DurationProto, then Duration.Size()
+ * (duration.pb.go:320-336). */
+size_t cmt_pb_std_duration_size(int64_t d_ns)
+{
+    cmt_pb_duration_t d;
+    size_t            n = 0;
+
+    (void)cmt_pb_duration_proto(d_ns, &d);
+    if (d.seconds != 0) {
+        n += 1u + cmt_pb_uvarint_size((uint64_t)d.seconds);  /* :326-328 */
+    }
+    if (d.nanos != 0) {
+        n += 1u + cmt_pb_uvarint_size((uint64_t)(int64_t)d.nanos);
+    }                                                        /* :329-331 */
+    return n;
+}
+
+/* cometbft@709fd12b gogoproto v1.7.0 types/duration_gogo.go:84-87 —
+ * StdDurationMarshalTo(). No validation here: the reference has none,
+ * because DurationProto of an int64 nanosecond count is always in range. */
+int cmt_pb_std_duration_marshal(int64_t d_ns, uint8_t *out, size_t cap,
+                                size_t *out_len)
+{
+    cmt_pb_duration_t d;
+    int               rc;
+
+    if (out == NULL || out_len == NULL) {
+        return CMT_FAULT;
+    }
+    rc = cmt_pb_duration_proto(d_ns, &d);                    /* :85 */
+    if (rc != CMT_OK) {
+        return rc;
+    }
+    return cmt_pb_duration_marshal(&d, out, cap, out_len);   /* :86 */
+}
+
+/* cometbft@709fd12b gogoproto v1.7.0 types/duration_gogo.go:89-99 —
+ * StdDurationUnmarshal(): Unmarshal, then DurationFromProto, which
+ * validates. */
+int cmt_pb_std_duration_unmarshal(const uint8_t *in, size_t len,
+                                  int64_t *out_ns)
+{
+    cmt_pb_duration_t d;
+    int               rc;
+
+    if (out_ns == NULL || (in == NULL && len != 0)) {
+        return CMT_FAULT;
+    }
+    rc = cmt_pb_duration_unmarshal(in, len, &d);             /* :91 */
+    if (rc != CMT_OK) {
+        return rc;
+    }
+    return cmt_pb_duration_from_proto(&d, out_ns);           /* :94-98 */
+}
+
+/* ══ libs.bits.BitArray as an EMBEDDED field ══════════════════════════
+ * cmt_bits_to_proto (above) is bit_array.go:475-484 ToProto(), a top-level
+ * entry point that returns CMT_BITS_NIL for the reference's nil result.
+ * Three messages of consensus/types.proto EMBED a BitArray, so the same
+ * body is needed inside the backward writer. It is written here rather
+ * than by refactoring cmt_bits_to_proto, because this wave's whitelist
+ * permits ADDING to cmt_pb and not rewriting an encoder R1 shipped.
+ *
+ * ⚠ The two must stay in step. test_cmt_pb.c pins that they do: it
+ * compares cmt_bits_to_proto's output against the body of a ProposalPOL's
+ * field 3 built from the same array.
+ *
+ * cometbft@709fd12b proto/tendermint/libs/bits/types.pb.go:113-142 —
+ * BitArray.MarshalToSizedBuffer: `elems` PACKED under one tag and written
+ * only when the slice is non-empty (:118-135), then `bits` omit-zero
+ * (:136-140). */
+static void bits_wr(pb_w_t *w, const cmt_bit_array_t *ba)
+{
+    size_t before;
+    size_t k;
+
+    if (ba == NULL) {
+        w->err = CMT_REJECT;
+        return;
+    }
+    if (ba->n_elems > CMT_BITS_MAX_ELEMS || ba->bits < 0) {
+        w->err = CMT_REJECT;
+        return;
+    }
+    if (ba->n_elems > 0u) {                                  /* :118 */
+        before = w->i;
+        for (k = ba->n_elems; k > 0u; k--) {
+            w_uvarint(w, ba->elems[k - 1u]);                 /* :121-129 */
+        }
+        if (w->err != CMT_OK) {
+            return;
+        }
+        w_uvarint(w, (uint64_t)(before - w->i));             /* :132 */
+        w_tag(w, 2, 2);                                      /* :134 */
+    }
+    wf_varint(w, 1, (uint64_t)ba->bits);                     /* :136-140 */
+}
+
+/* ══ types.EventDataRoundState ════════════════════════════════════════ */
+
+void cmt_pb_event_data_round_state_init(cmt_pb_event_data_round_state_t *m)
+{
+    if (m != NULL) {
+        memset(m, 0, sizeof(*m));
+    }
+}
+
+/* cometbft@709fd12b proto/tendermint/types/events.pb.go:123-146 —
+ * EventDataRoundState.MarshalToSizedBuffer. */
+static void edrs_wr(pb_w_t *w, const cmt_pb_event_data_round_state_t *m)
+{
+    wf_bytes(w, 3, m->step, m->step_len);                    /* :128-134 */
+    wf_varint(w, 2, (uint64_t)(int64_t)m->round);            /* :135-139 */
+    wf_varint(w, 1, (uint64_t)m->height);                    /* :140-144 */
+}
+
+int cmt_pb_event_data_round_state_marshal(
+        const cmt_pb_event_data_round_state_t *m, uint8_t *out, size_t cap,
+        size_t *out_len)
+{
+    pb_w_t w;
+
+    if (m == NULL || out == NULL || out_len == NULL) {
+        return CMT_FAULT;
+    }
+    if (m->step_len > (size_t)CMT_PB_ROUND_STEP_STR_MAX) {
+        return CMT_REJECT;
+    }
+    w_init(&w, out, cap);
+    edrs_wr(&w, m);
+    return w_finish(&w, out_len);
+}
+
+/* cometbft@709fd12b proto/tendermint/types/events.pb.go:184-292 —
+ * EventDataRoundState.Unmarshal. */
+static int edrs_merge(const uint8_t *in, size_t len,
+                      cmt_pb_event_data_round_state_t *m)
+{
+    size_t i = 0;
+
+    while (i < len) {
+        int32_t        fieldnum;
+        uint32_t       wt;
+        size_t         start = i;
+        uint64_t       v;
+        const uint8_t *p;
+        size_t         n;
+
+        if (r_tag(in, len, &i, &fieldnum, &wt) != CMT_OK) {
+            return CMT_REJECT;
+        }
+        switch (fieldnum) {
+        case 1:
+        case 2:
+            if (wt != 0u) {
+                return CMT_REJECT;
+            }
+            if (cmt_pb_get_uvarint(in, len, &i, &v) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            if (fieldnum == 1) {
+                m->height = (int64_t)v;
+            } else {
+                m->round = (int32_t)(uint32_t)v;
+            }
+            break;
+        case 3:
+            if (wt != 2u) {
+                return CMT_REJECT;
+            }
+            if (r_ld(in, len, &i, &p, &n) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            if (r_copy_fixed(m->step, (size_t)CMT_PB_ROUND_STEP_STR_MAX,
+                             &m->step_len, p, n) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            break;
+        default:
+            i = start;
+            if (pb_skip(in, len, &i) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            break;
+        }
+    }
+    return CMT_OK;
+}
+
+int cmt_pb_event_data_round_state_unmarshal(
+        const uint8_t *in, size_t len, cmt_pb_event_data_round_state_t *m)
+{
+    if (m == NULL || (in == NULL && len != 0)) {
+        return CMT_FAULT;
+    }
+    cmt_pb_event_data_round_state_init(m);
+    return edrs_merge(in, len, m);
+}
+
+/* ══ consensus.NewRoundStep ═══════════════════════════════════════════ */
+
+void cmt_pb_new_round_step_init(cmt_pb_new_round_step_t *m)
+{
+    if (m != NULL) {
+        memset(m, 0, sizeof(*m));
+    }
+}
+
+/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:876-907 */
+static void nrs_wr(pb_w_t *w, const cmt_pb_new_round_step_t *m)
+{
+    wf_varint(w, 5, (uint64_t)(int64_t)m->last_commit_round);/* :881-885 */
+    wf_varint(w, 4, (uint64_t)m->seconds_since_start_time);  /* :886-890 */
+    wf_varint(w, 3, (uint64_t)m->step);                      /* :891-895 */
+    wf_varint(w, 2, (uint64_t)(int64_t)m->round);            /* :896-900 */
+    wf_varint(w, 1, (uint64_t)m->height);                    /* :901-905 */
+}
+
+int cmt_pb_new_round_step_marshal(const cmt_pb_new_round_step_t *m,
+                                  uint8_t *out, size_t cap, size_t *out_len)
+{
+    pb_w_t w;
+
+    if (m == NULL || out == NULL || out_len == NULL) {
+        return CMT_FAULT;
+    }
+    w_init(&w, out, cap);
+    nrs_wr(&w, m);
+    return w_finish(&w, out_len);
+}
+
+/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:1805-1949 —
+ * NewRoundStep.Unmarshal. */
+static int nrs_merge(const uint8_t *in, size_t len,
+                     cmt_pb_new_round_step_t *m)
+{
+    size_t i = 0;
+
+    while (i < len) {
+        int32_t  fieldnum;
+        uint32_t wt;
+        size_t   start = i;
+        uint64_t v;
+
+        if (r_tag(in, len, &i, &fieldnum, &wt) != CMT_OK) {
+            return CMT_REJECT;
+        }
+        if (fieldnum >= 1 && fieldnum <= 5) {
+            if (wt != 0u) {
+                return CMT_REJECT;
+            }
+            if (cmt_pb_get_uvarint(in, len, &i, &v) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            switch (fieldnum) {
+            case 1: m->height = (int64_t)v; break;
+            case 2: m->round = (int32_t)(uint32_t)v; break;
+            case 3: m->step = (uint32_t)v; break;
+            case 4: m->seconds_since_start_time = (int64_t)v; break;
+            default: m->last_commit_round = (int32_t)(uint32_t)v; break;
+            }
+        } else {
+            i = start;
+            if (pb_skip(in, len, &i) != CMT_OK) {
+                return CMT_REJECT;
+            }
+        }
+    }
+    return CMT_OK;
+}
+
+int cmt_pb_new_round_step_unmarshal(const uint8_t *in, size_t len,
+                                    cmt_pb_new_round_step_t *m)
+{
+    if (m == NULL || (in == NULL && len != 0)) {
+        return CMT_FAULT;
+    }
+    cmt_pb_new_round_step_init(m);
+    return nrs_merge(in, len, m);
+}
+
+/* ══ consensus.NewValidBlock ══════════════════════════════════════════ */
+
+void cmt_pb_new_valid_block_init(cmt_pb_new_valid_block_t *m)
+{
+    if (m != NULL) {
+        memset(m, 0, sizeof(*m));
+    }
+}
+
+/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:924-972 */
+static int nvb_wr(pb_w_t *w, const cmt_pb_new_valid_block_t *m)
+{
+    size_t before;
+
+    if (m->is_commit) {                                      /* :929-938 */
+        uint8_t one = 1u;
+
+        w_raw(w, &one, 1u);
+        w_tag(w, 5, 0);
+    }
+    if (m->has_block_parts) {                                /* :939-950 */
+        before = w->i;
+        bits_wr(w, &m->block_parts);
+        if (w->err != CMT_OK) {
+            return CMT_REJECT;
+        }
+        wf_close_msg(w, 4, before);
+    }
+    before = w->i;                                           /* :951-960 */
+    psh_wr(w, &m->block_part_set_header);
+    wf_close_msg(w, 3, before);
+
+    wf_varint(w, 2, (uint64_t)(int64_t)m->round);            /* :961-965 */
+    wf_varint(w, 1, (uint64_t)m->height);                    /* :966-970 */
+    return CMT_OK;
+}
+
+int cmt_pb_new_valid_block_marshal(const cmt_pb_new_valid_block_t *m,
+                                   uint8_t *out, size_t cap, size_t *out_len)
+{
+    pb_w_t w;
+
+    if (m == NULL || out == NULL || out_len == NULL) {
+        return CMT_FAULT;
+    }
+    if (m->block_part_set_header.hash_len > (size_t)CMT_PB_HASH_MAX) {
+        return CMT_REJECT;
+    }
+    w_init(&w, out, cap);
+    if (nvb_wr(&w, m) != CMT_OK) {
+        return CMT_REJECT;
+    }
+    return w_finish(&w, out_len);
+}
+
+/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:1950-2126 —
+ * NewValidBlock.Unmarshal.
+ *
+ * NOTE deviation, field 4: the generated decoder MERGES a repeated
+ * occurrence into the BitArray it already has (:2079-2084 allocates only
+ * when nil and then calls Unmarshal on it, which APPENDS to Elems). This
+ * port calls the ported FromProto (cmt_bits_from_proto), which parses the
+ * occurrence whole and REPLACES. The two differ only for a malformed
+ * message that carries field 4 twice: Go would build an array whose Elems
+ * no longer agree with Bits — the very state the APPROVED INVARIANT
+ * (atlas-dec-7495d3372e004b24b4f6cc7bff5caf07) exists to refuse — while
+ * this decoder keeps the last occurrence and checks the agreement. Reusing
+ * the ported FromProto is preferred over a second BitArray decoder. */
+static int nvb_merge(const uint8_t *in, size_t len,
+                     cmt_pb_new_valid_block_t *m)
+{
+    size_t i = 0;
+
+    while (i < len) {
+        int32_t        fieldnum;
+        uint32_t       wt;
+        size_t         start = i;
+        uint64_t       v;
+        const uint8_t *p;
+        size_t         n;
+
+        if (r_tag(in, len, &i, &fieldnum, &wt) != CMT_OK) {
+            return CMT_REJECT;
+        }
+        switch (fieldnum) {
+        case 1:
+        case 2:
+        case 5:
+            if (wt != 0u) {
+                return CMT_REJECT;
+            }
+            if (cmt_pb_get_uvarint(in, len, &i, &v) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            if (fieldnum == 1) {
+                m->height = (int64_t)v;
+            } else if (fieldnum == 2) {
+                m->round = (int32_t)(uint32_t)v;
+            } else {
+                m->is_commit = (v != 0u);                    /* :2105 */
+            }
+            break;
+        case 3:
+            if (wt != 2u) {
+                return CMT_REJECT;
+            }
+            if (r_ld(in, len, &i, &p, &n) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            if (psh_merge(p, n, &m->block_part_set_header) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            break;
+        case 4:
+            if (wt != 2u) {
+                return CMT_REJECT;
+            }
+            if (r_ld(in, len, &i, &p, &n) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            if (cmt_bits_from_proto(p, n, &m->block_parts) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            m->has_block_parts = true;
+            break;
+        default:
+            i = start;
+            if (pb_skip(in, len, &i) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            break;
+        }
+    }
+    return CMT_OK;
+}
+
+int cmt_pb_new_valid_block_unmarshal(const uint8_t *in, size_t len,
+                                     cmt_pb_new_valid_block_t *m)
+{
+    if (m == NULL || (in == NULL && len != 0)) {
+        return CMT_FAULT;
+    }
+    cmt_pb_new_valid_block_init(m);
+    return nvb_merge(in, len, m);
+}
+
+/* ══ consensus.Proposal ═══════════════════════════════════════════════ */
+
+void cmt_pb_cons_proposal_init(cmt_pb_cons_proposal_t *m)
+{
+    if (m != NULL) {
+        cmt_pb_proposal_init(&m->proposal);
+    }
+}
+
+/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:989-1005 —
+ * field 1 is (nullable) = false and written with no `if`. */
+static int cons_proposal_wr(pb_w_t *w, const cmt_pb_cons_proposal_t *m)
+{
+    size_t before = w->i;
+
+    if (proposal_wr(w, &m->proposal) != CMT_OK) {
+        return CMT_REJECT;
+    }
+    wf_close_msg(w, 1, before);
+    return CMT_OK;
+}
+
+int cmt_pb_cons_proposal_marshal(const cmt_pb_cons_proposal_t *m,
+                                 uint8_t *out, size_t cap, size_t *out_len)
+{
+    pb_w_t w;
+
+    if (m == NULL || out == NULL || out_len == NULL) {
+        return CMT_FAULT;
+    }
+    if (m->proposal.signature_len > (size_t)CMT_PB_SIG_MAX) {
+        return CMT_REJECT;
+    }
+    w_init(&w, out, cap);
+    if (cons_proposal_wr(&w, m) != CMT_OK) {
+        return CMT_REJECT;
+    }
+    return w_finish(&w, out_len);
+}
+
+/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:2127-2209 —
+ * Proposal.Unmarshal. Field 1 is non-repeated and MERGED. */
+static int cons_proposal_merge(const uint8_t *in, size_t len,
+                               cmt_pb_cons_proposal_t *m)
+{
+    size_t i = 0;
+
+    while (i < len) {
+        int32_t        fieldnum;
+        uint32_t       wt;
+        size_t         start = i;
+        const uint8_t *p;
+        size_t         n;
+
+        if (r_tag(in, len, &i, &fieldnum, &wt) != CMT_OK) {
+            return CMT_REJECT;
+        }
+        if (fieldnum == 1) {
+            if (wt != 2u) {
+                return CMT_REJECT;
+            }
+            if (r_ld(in, len, &i, &p, &n) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            if (proposal_merge(p, n, &m->proposal) != CMT_OK) {
+                return CMT_REJECT;
+            }
+        } else {
+            i = start;
+            if (pb_skip(in, len, &i) != CMT_OK) {
+                return CMT_REJECT;
+            }
+        }
+    }
+    return CMT_OK;
+}
+
+int cmt_pb_cons_proposal_unmarshal(const uint8_t *in, size_t len,
+                                   cmt_pb_cons_proposal_t *m)
+{
+    if (m == NULL || (in == NULL && len != 0)) {
+        return CMT_FAULT;
+    }
+    cmt_pb_cons_proposal_init(m);
+    return cons_proposal_merge(in, len, m);
+}
+
+/* ══ consensus.ProposalPOL ════════════════════════════════════════════ */
+
+void cmt_pb_proposal_pol_init(cmt_pb_proposal_pol_t *m)
+{
+    if (m != NULL) {
+        memset(m, 0, sizeof(*m));
+    }
+}
+
+/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:1022-1048 —
+ * field 3 is (nullable) = false, so an EMPTY bit array is `1a 00`. */
+static int ppol_wr(pb_w_t *w, const cmt_pb_proposal_pol_t *m)
+{
+    size_t before = w->i;
+
+    bits_wr(w, &m->proposal_pol);                            /* :1027-1034 */
+    if (w->err != CMT_OK) {
+        return CMT_REJECT;
+    }
+    wf_close_msg(w, 3, before);
+
+    wf_varint(w, 2, (uint64_t)(int64_t)m->proposal_pol_round);/* :1037-1041 */
+    wf_varint(w, 1, (uint64_t)m->height);                    /* :1042-1046 */
+    return CMT_OK;
+}
+
+int cmt_pb_proposal_pol_marshal(const cmt_pb_proposal_pol_t *m, uint8_t *out,
+                                size_t cap, size_t *out_len)
+{
+    pb_w_t w;
+
+    if (m == NULL || out == NULL || out_len == NULL) {
+        return CMT_FAULT;
+    }
+    w_init(&w, out, cap);
+    if (ppol_wr(&w, m) != CMT_OK) {
+        return CMT_REJECT;
+    }
+    return w_finish(&w, out_len);
+}
+
+/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:2210-2330 —
+ * ProposalPOL.Unmarshal. Field 3's merge-vs-replace note is nvb_merge's. */
+static int ppol_merge(const uint8_t *in, size_t len,
+                      cmt_pb_proposal_pol_t *m)
+{
+    size_t i = 0;
+
+    while (i < len) {
+        int32_t        fieldnum;
+        uint32_t       wt;
+        size_t         start = i;
+        uint64_t       v;
+        const uint8_t *p;
+        size_t         n;
+
+        if (r_tag(in, len, &i, &fieldnum, &wt) != CMT_OK) {
+            return CMT_REJECT;
+        }
+        switch (fieldnum) {
+        case 1:
+        case 2:
+            if (wt != 0u) {
+                return CMT_REJECT;
+            }
+            if (cmt_pb_get_uvarint(in, len, &i, &v) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            if (fieldnum == 1) {
+                m->height = (int64_t)v;
+            } else {
+                m->proposal_pol_round = (int32_t)(uint32_t)v;
+            }
+            break;
+        case 3:
+            if (wt != 2u) {
+                return CMT_REJECT;
+            }
+            if (r_ld(in, len, &i, &p, &n) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            if (cmt_bits_from_proto(p, n, &m->proposal_pol) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            break;
+        default:
+            i = start;
+            if (pb_skip(in, len, &i) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            break;
+        }
+    }
+    return CMT_OK;
+}
+
+int cmt_pb_proposal_pol_unmarshal(const uint8_t *in, size_t len,
+                                  cmt_pb_proposal_pol_t *m)
+{
+    if (m == NULL || (in == NULL && len != 0)) {
+        return CMT_FAULT;
+    }
+    cmt_pb_proposal_pol_init(m);
+    return ppol_merge(in, len, m);
+}
+
+/* ══ consensus.BlockPart ══════════════════════════════════════════════ */
+
+void cmt_pb_block_part_init(cmt_pb_block_part_t *m)
+{
+    if (m != NULL) {
+        memset(m, 0, sizeof(*m));
+        cmt_pb_part_init(&m->part);
+    }
+}
+
+/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:1065-1091 —
+ * field 3 is (nullable) = false and written with no `if`. */
+static int block_part_wr(pb_w_t *w, const cmt_pb_block_part_t *m)
+{
+    size_t before = w->i;
+
+    if (part_wr(w, &m->part) != CMT_OK) {                    /* :1070-1077 */
+        return CMT_REJECT;
+    }
+    wf_close_msg(w, 3, before);
+
+    wf_varint(w, 2, (uint64_t)(int64_t)m->round);            /* :1080-1084 */
+    wf_varint(w, 1, (uint64_t)m->height);                    /* :1085-1089 */
+    return CMT_OK;
+}
+
+int cmt_pb_block_part_marshal(const cmt_pb_block_part_t *m, uint8_t *out,
+                              size_t cap, size_t *out_len)
+{
+    pb_w_t w;
+
+    if (m == NULL || out == NULL || out_len == NULL) {
+        return CMT_FAULT;
+    }
+    w_init(&w, out, cap);
+    if (block_part_wr(&w, m) != CMT_OK) {
+        return CMT_REJECT;
+    }
+    return w_finish(&w, out_len);
+}
+
+/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:2331-2451 —
+ * BlockPart.Unmarshal. */
+static int block_part_merge(const uint8_t *in, size_t len,
+                            cmt_pb_block_part_t *m, cmt_pb_arena_t *a)
+{
+    size_t i = 0;
+
+    while (i < len) {
+        int32_t        fieldnum;
+        uint32_t       wt;
+        size_t         start = i;
+        uint64_t       v;
+        const uint8_t *p;
+        size_t         n;
+
+        if (r_tag(in, len, &i, &fieldnum, &wt) != CMT_OK) {
+            return CMT_REJECT;
+        }
+        switch (fieldnum) {
+        case 1:
+        case 2:
+            if (wt != 0u) {
+                return CMT_REJECT;
+            }
+            if (cmt_pb_get_uvarint(in, len, &i, &v) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            if (fieldnum == 1) {
+                m->height = (int64_t)v;
+            } else {
+                m->round = (int32_t)(uint32_t)v;
+            }
+            break;
+        case 3:
+            if (wt != 2u) {
+                return CMT_REJECT;
+            }
+            if (r_ld(in, len, &i, &p, &n) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            if (part_merge(p, n, &m->part, a) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            break;
+        default:
+            i = start;
+            if (pb_skip(in, len, &i) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            break;
+        }
+    }
+    return CMT_OK;
+}
+
+int cmt_pb_block_part_unmarshal(const uint8_t *in, size_t len,
+                                cmt_pb_block_part_t *m, cmt_pb_arena_t *arena)
+{
+    if (m == NULL || (in == NULL && len != 0)) {
+        return CMT_FAULT;
+    }
+    cmt_pb_block_part_init(m);
+    return block_part_merge(in, len, m, arena);
+}
+
+/* ══ consensus.Vote ═══════════════════════════════════════════════════ */
+
+void cmt_pb_cons_vote_init(cmt_pb_cons_vote_t *m)
+{
+    if (m != NULL) {
+        m->has_vote = false;
+        cmt_pb_vote_init(&m->vote);
+    }
+}
+
+/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:1108-1126 —
+ * field 1 is a POINTER, omitted when nil. */
+static int cons_vote_wr(pb_w_t *w, const cmt_pb_cons_vote_t *m)
+{
+    size_t before;
+
+    if (m->has_vote) {                                       /* :1113 */
+        before = w->i;
+        if (vote_wr(w, &m->vote) != CMT_OK) {
+            return CMT_REJECT;
+        }
+        wf_close_msg(w, 1, before);
+    }
+    return CMT_OK;
+}
+
+int cmt_pb_cons_vote_marshal(const cmt_pb_cons_vote_t *m, uint8_t *out,
+                             size_t cap, size_t *out_len)
+{
+    pb_w_t w;
+
+    if (m == NULL || out == NULL || out_len == NULL) {
+        return CMT_FAULT;
+    }
+    if (m->vote.validator_address_len > (size_t)CMT_PB_ADDRESS_MAX ||
+        m->vote.signature_len > (size_t)CMT_PB_SIG_MAX ||
+        m->vote.extension_signature_len > (size_t)CMT_PB_SIG_MAX) {
+        return CMT_REJECT;
+    }
+    w_init(&w, out, cap);
+    if (cons_vote_wr(&w, m) != CMT_OK) {
+        return CMT_REJECT;
+    }
+    return w_finish(&w, out_len);
+}
+
+/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:2452-2537 —
+ * Vote.Unmarshal. Field 1 is non-repeated and MERGED (:2513-2518). */
+static int cons_vote_merge(const uint8_t *in, size_t len,
+                           cmt_pb_cons_vote_t *m, cmt_pb_arena_t *a)
+{
+    size_t i = 0;
+
+    while (i < len) {
+        int32_t        fieldnum;
+        uint32_t       wt;
+        size_t         start = i;
+        const uint8_t *p;
+        size_t         n;
+
+        if (r_tag(in, len, &i, &fieldnum, &wt) != CMT_OK) {
+            return CMT_REJECT;
+        }
+        if (fieldnum == 1) {
+            if (wt != 2u) {
+                return CMT_REJECT;
+            }
+            if (r_ld(in, len, &i, &p, &n) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            if (vote_merge(p, n, &m->vote, a) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            m->has_vote = true;
+        } else {
+            i = start;
+            if (pb_skip(in, len, &i) != CMT_OK) {
+                return CMT_REJECT;
+            }
+        }
+    }
+    return CMT_OK;
+}
+
+int cmt_pb_cons_vote_unmarshal(const uint8_t *in, size_t len,
+                               cmt_pb_cons_vote_t *m, cmt_pb_arena_t *arena)
+{
+    if (m == NULL || (in == NULL && len != 0)) {
+        return CMT_FAULT;
+    }
+    cmt_pb_cons_vote_init(m);
+    return cons_vote_merge(in, len, m, arena);
+}
+
+/* ══ consensus.HasVote ════════════════════════════════════════════════ */
+
+void cmt_pb_has_vote_init(cmt_pb_has_vote_t *m)
+{
+    if (m != NULL) {
+        memset(m, 0, sizeof(*m));
+    }
+}
+
+/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:1143-1169 */
+static void has_vote_wr(pb_w_t *w, const cmt_pb_has_vote_t *m)
+{
+    wf_varint(w, 4, (uint64_t)(int64_t)m->index);            /* :1148-1152 */
+    wf_varint(w, 3, (uint64_t)(int64_t)m->type);             /* :1153-1157 */
+    wf_varint(w, 2, (uint64_t)(int64_t)m->round);            /* :1158-1162 */
+    wf_varint(w, 1, (uint64_t)m->height);                    /* :1163-1167 */
+}
+
+int cmt_pb_has_vote_marshal(const cmt_pb_has_vote_t *m, uint8_t *out,
+                            size_t cap, size_t *out_len)
+{
+    pb_w_t w;
+
+    if (m == NULL || out == NULL || out_len == NULL) {
+        return CMT_FAULT;
+    }
+    w_init(&w, out, cap);
+    has_vote_wr(&w, m);
+    return w_finish(&w, out_len);
+}
+
+/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:2538-2663 —
+ * HasVote.Unmarshal. */
+static int has_vote_merge(const uint8_t *in, size_t len,
+                          cmt_pb_has_vote_t *m)
+{
+    size_t i = 0;
+
+    while (i < len) {
+        int32_t  fieldnum;
+        uint32_t wt;
+        size_t   start = i;
+        uint64_t v;
+
+        if (r_tag(in, len, &i, &fieldnum, &wt) != CMT_OK) {
+            return CMT_REJECT;
+        }
+        if (fieldnum >= 1 && fieldnum <= 4) {
+            if (wt != 0u) {
+                return CMT_REJECT;
+            }
+            if (cmt_pb_get_uvarint(in, len, &i, &v) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            switch (fieldnum) {
+            case 1: m->height = (int64_t)v; break;
+            case 2: m->round = (int32_t)(uint32_t)v; break;
+            case 3: m->type = (int32_t)(uint32_t)v; break;
+            default: m->index = (int32_t)(uint32_t)v; break;
+            }
+        } else {
+            i = start;
+            if (pb_skip(in, len, &i) != CMT_OK) {
+                return CMT_REJECT;
+            }
+        }
+    }
+    return CMT_OK;
+}
+
+int cmt_pb_has_vote_unmarshal(const uint8_t *in, size_t len,
+                              cmt_pb_has_vote_t *m)
+{
+    if (m == NULL || (in == NULL && len != 0)) {
+        return CMT_FAULT;
+    }
+    cmt_pb_has_vote_init(m);
+    return has_vote_merge(in, len, m);
+}
+
+/* ══ consensus.VoteSetMaj23 ═══════════════════════════════════════════ */
+
+void cmt_pb_vote_set_maj23_init(cmt_pb_vote_set_maj23_t *m)
+{
+    if (m != NULL) {
+        memset(m, 0, sizeof(*m));
+        cmt_pb_block_id_init(&m->block_id);
+    }
+}
+
+/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:1186-1217 —
+ * field 4 is (nullable) = false and written with no `if`. */
+static void vsm23_wr(pb_w_t *w, const cmt_pb_vote_set_maj23_t *m)
+{
+    size_t before = w->i;
+
+    block_id_wr(w, &m->block_id);                            /* :1191-1198 */
+    wf_close_msg(w, 4, before);
+
+    wf_varint(w, 3, (uint64_t)(int64_t)m->type);             /* :1201-1205 */
+    wf_varint(w, 2, (uint64_t)(int64_t)m->round);            /* :1206-1210 */
+    wf_varint(w, 1, (uint64_t)m->height);                    /* :1211-1215 */
+}
+
+int cmt_pb_vote_set_maj23_marshal(const cmt_pb_vote_set_maj23_t *m,
+                                  uint8_t *out, size_t cap, size_t *out_len)
+{
+    pb_w_t w;
+
+    if (m == NULL || out == NULL || out_len == NULL) {
+        return CMT_FAULT;
+    }
+    if (m->block_id.hash_len > (size_t)CMT_PB_HASH_MAX ||
+        m->block_id.part_set_header.hash_len > (size_t)CMT_PB_HASH_MAX) {
+        return CMT_REJECT;
+    }
+    w_init(&w, out, cap);
+    vsm23_wr(&w, m);
+    return w_finish(&w, out_len);
+}
+
+/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:2664-2803 —
+ * VoteSetMaj23.Unmarshal. */
+static int vsm23_merge(const uint8_t *in, size_t len,
+                       cmt_pb_vote_set_maj23_t *m)
+{
+    size_t i = 0;
+
+    while (i < len) {
+        int32_t        fieldnum;
+        uint32_t       wt;
+        size_t         start = i;
+        uint64_t       v;
+        const uint8_t *p;
+        size_t         n;
+
+        if (r_tag(in, len, &i, &fieldnum, &wt) != CMT_OK) {
+            return CMT_REJECT;
+        }
+        switch (fieldnum) {
+        case 1:
+        case 2:
+        case 3:
+            if (wt != 0u) {
+                return CMT_REJECT;
+            }
+            if (cmt_pb_get_uvarint(in, len, &i, &v) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            if (fieldnum == 1) {
+                m->height = (int64_t)v;
+            } else if (fieldnum == 2) {
+                m->round = (int32_t)(uint32_t)v;
+            } else {
+                m->type = (int32_t)(uint32_t)v;
+            }
+            break;
+        case 4:
+            if (wt != 2u) {
+                return CMT_REJECT;
+            }
+            if (r_ld(in, len, &i, &p, &n) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            if (block_id_merge(p, n, &m->block_id) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            break;
+        default:
+            i = start;
+            if (pb_skip(in, len, &i) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            break;
+        }
+    }
+    return CMT_OK;
+}
+
+int cmt_pb_vote_set_maj23_unmarshal(const uint8_t *in, size_t len,
+                                    cmt_pb_vote_set_maj23_t *m)
+{
+    if (m == NULL || (in == NULL && len != 0)) {
+        return CMT_FAULT;
+    }
+    cmt_pb_vote_set_maj23_init(m);
+    return vsm23_merge(in, len, m);
+}
+
+/* ══ consensus.VoteSetBits ════════════════════════════════════════════ */
+
+void cmt_pb_vote_set_bits_init(cmt_pb_vote_set_bits_t *m)
+{
+    if (m != NULL) {
+        memset(m, 0, sizeof(*m));
+        cmt_pb_block_id_init(&m->block_id);
+    }
+}
+
+/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:1234-1275 —
+ * fields 4 AND 5 are (nullable) = false and written with no `if`. */
+static int vsb_wr(pb_w_t *w, const cmt_pb_vote_set_bits_t *m)
+{
+    size_t before = w->i;
+
+    bits_wr(w, &m->votes);                                   /* :1239-1246 */
+    if (w->err != CMT_OK) {
+        return CMT_REJECT;
+    }
+    wf_close_msg(w, 5, before);
+
+    before = w->i;
+    block_id_wr(w, &m->block_id);                            /* :1249-1256 */
+    wf_close_msg(w, 4, before);
+
+    wf_varint(w, 3, (uint64_t)(int64_t)m->type);             /* :1259-1263 */
+    wf_varint(w, 2, (uint64_t)(int64_t)m->round);            /* :1264-1268 */
+    wf_varint(w, 1, (uint64_t)m->height);                    /* :1269-1273 */
+    return CMT_OK;
+}
+
+int cmt_pb_vote_set_bits_marshal(const cmt_pb_vote_set_bits_t *m,
+                                 uint8_t *out, size_t cap, size_t *out_len)
+{
+    pb_w_t w;
+
+    if (m == NULL || out == NULL || out_len == NULL) {
+        return CMT_FAULT;
+    }
+    if (m->block_id.hash_len > (size_t)CMT_PB_HASH_MAX ||
+        m->block_id.part_set_header.hash_len > (size_t)CMT_PB_HASH_MAX) {
+        return CMT_REJECT;
+    }
+    w_init(&w, out, cap);
+    if (vsb_wr(&w, m) != CMT_OK) {
+        return CMT_REJECT;
+    }
+    return w_finish(&w, out_len);
+}
+
+/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:2804-2976 —
+ * VoteSetBits.Unmarshal. Field 5's merge-vs-replace note is nvb_merge's. */
+static int vsb_merge(const uint8_t *in, size_t len,
+                     cmt_pb_vote_set_bits_t *m)
+{
+    size_t i = 0;
+
+    while (i < len) {
+        int32_t        fieldnum;
+        uint32_t       wt;
+        size_t         start = i;
+        uint64_t       v;
+        const uint8_t *p;
+        size_t         n;
+
+        if (r_tag(in, len, &i, &fieldnum, &wt) != CMT_OK) {
+            return CMT_REJECT;
+        }
+        switch (fieldnum) {
+        case 1:
+        case 2:
+        case 3:
+            if (wt != 0u) {
+                return CMT_REJECT;
+            }
+            if (cmt_pb_get_uvarint(in, len, &i, &v) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            if (fieldnum == 1) {
+                m->height = (int64_t)v;
+            } else if (fieldnum == 2) {
+                m->round = (int32_t)(uint32_t)v;
+            } else {
+                m->type = (int32_t)(uint32_t)v;
+            }
+            break;
+        case 4:
+            if (wt != 2u) {
+                return CMT_REJECT;
+            }
+            if (r_ld(in, len, &i, &p, &n) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            if (block_id_merge(p, n, &m->block_id) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            break;
+        case 5:
+            if (wt != 2u) {
+                return CMT_REJECT;
+            }
+            if (r_ld(in, len, &i, &p, &n) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            if (cmt_bits_from_proto(p, n, &m->votes) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            break;
+        default:
+            i = start;
+            if (pb_skip(in, len, &i) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            break;
+        }
+    }
+    return CMT_OK;
+}
+
+int cmt_pb_vote_set_bits_unmarshal(const uint8_t *in, size_t len,
+                                   cmt_pb_vote_set_bits_t *m)
+{
+    if (m == NULL || (in == NULL && len != 0)) {
+        return CMT_FAULT;
+    }
+    cmt_pb_vote_set_bits_init(m);
+    return vsb_merge(in, len, m);
+}
+
+/* ══ consensus.Message (the oneof) ════════════════════════════════════ */
+
+void cmt_pb_cons_message_init(cmt_pb_cons_message_t *m)
+{
+    if (m == NULL) {
+        return;
+    }
+    memset(m, 0, sizeof(*m));
+    m->sum = CMT_PB_CONS_MSG_NONE;
+}
+
+/* Initialise the branch `sum` names. Split out because the oneof decoder
+ * allocates a FRESH branch message on every occurrence
+ * (types.pb.go:3035, :3070 and the seven siblings). */
+static void cons_message_init_branch(cmt_pb_cons_message_t *m)
+{
+    switch (m->sum) {
+    case CMT_PB_CONS_MSG_NEW_ROUND_STEP:
+        cmt_pb_new_round_step_init(&m->u.new_round_step);
+        break;
+    case CMT_PB_CONS_MSG_NEW_VALID_BLOCK:
+        cmt_pb_new_valid_block_init(&m->u.new_valid_block);
+        break;
+    case CMT_PB_CONS_MSG_PROPOSAL:
+        cmt_pb_cons_proposal_init(&m->u.proposal);
+        break;
+    case CMT_PB_CONS_MSG_PROPOSAL_POL:
+        cmt_pb_proposal_pol_init(&m->u.proposal_pol);
+        break;
+    case CMT_PB_CONS_MSG_BLOCK_PART:
+        cmt_pb_block_part_init(&m->u.block_part);
+        break;
+    case CMT_PB_CONS_MSG_VOTE:
+        cmt_pb_cons_vote_init(&m->u.vote);
+        break;
+    case CMT_PB_CONS_MSG_HAS_VOTE:
+        cmt_pb_has_vote_init(&m->u.has_vote);
+        break;
+    case CMT_PB_CONS_MSG_VOTE_SET_MAJ23:
+        cmt_pb_vote_set_maj23_init(&m->u.vote_set_maj23);
+        break;
+    case CMT_PB_CONS_MSG_VOTE_SET_BITS:
+        cmt_pb_vote_set_bits_init(&m->u.vote_set_bits);
+        break;
+    default:
+        break;
+    }
+}
+
+/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:1292-1307
+ * Message.MarshalToSizedBuffer (a nil Sum writes NOTHING) and :1314-1502,
+ * the nine branch MarshalToSizedBuffers, each `tag ‖ len ‖ body`. */
+static int cons_message_wr(pb_w_t *w, const cmt_pb_cons_message_t *m)
+{
+    size_t before = w->i;
+    int    rc     = CMT_OK;
+
+    switch (m->sum) {
+    case CMT_PB_CONS_MSG_NONE:
+        return CMT_OK;                                       /* :1297 nil */
+    case CMT_PB_CONS_MSG_NEW_ROUND_STEP:
+        nrs_wr(w, &m->u.new_round_step);
+        break;
+    case CMT_PB_CONS_MSG_NEW_VALID_BLOCK:
+        rc = nvb_wr(w, &m->u.new_valid_block);
+        break;
+    case CMT_PB_CONS_MSG_PROPOSAL:
+        rc = cons_proposal_wr(w, &m->u.proposal);
+        break;
+    case CMT_PB_CONS_MSG_PROPOSAL_POL:
+        rc = ppol_wr(w, &m->u.proposal_pol);
+        break;
+    case CMT_PB_CONS_MSG_BLOCK_PART:
+        rc = block_part_wr(w, &m->u.block_part);
+        break;
+    case CMT_PB_CONS_MSG_VOTE:
+        rc = cons_vote_wr(w, &m->u.vote);
+        break;
+    case CMT_PB_CONS_MSG_HAS_VOTE:
+        has_vote_wr(w, &m->u.has_vote);
+        break;
+    case CMT_PB_CONS_MSG_VOTE_SET_MAJ23:
+        vsm23_wr(w, &m->u.vote_set_maj23);
+        break;
+    case CMT_PB_CONS_MSG_VOTE_SET_BITS:
+        rc = vsb_wr(w, &m->u.vote_set_bits);
+        break;
+    default:
+        /* A `sum` outside 1-9 is not a branch the reference can hold: its
+         * Sum field is a typed interface. CMT_REJECT, never silence. */
+        return CMT_REJECT;
+    }
+    if (rc != CMT_OK || w->err != CMT_OK) {
+        return CMT_REJECT;
+    }
+    wf_close_msg(w, (uint32_t)m->sum, before);
+    return CMT_OK;
+}
+
+/**
+ * The bounds each branch's OWN public marshal applies, applied here too.
+ *
+ * This has no Go counterpart: the substitution list replaces cometbft's
+ * unbounded `[]byte` with fixed-capacity arrays (address 32, chain id 32,
+ * signature 4627, hash 64), so every encoder entry has to refuse a length
+ * the wire type cannot express — Go's implicit bound becomes an explicit
+ * check (INVARIANT atlas-dec-7495d3372e004b24b4f6cc7bff5caf07).
+ *
+ * `cons_message_wr` reaches the branch bodies (`nvb_wr`, `cons_vote_wr`, …)
+ * DIRECTLY, exactly as the generated `Message.MarshalToSizedBuffer` does,
+ * so a value that `cmt_pb_cons_vote_marshal` refuses would otherwise be
+ * written by `cmt_pb_cons_message_marshal`. The conditions below are
+ * copied verbatim from those nine entries; a branch that has no length to
+ * check (NewRoundStep, ProposalPOL, BlockPart, HasVote) has no case here,
+ * and `sum` itself is left to `cons_message_wr`, which is the only place
+ * that may decide what an out-of-range branch means.
+ */
+static int cons_message_lengths_ok(const cmt_pb_cons_message_t *m)
+{
+    switch (m->sum) {
+    case CMT_PB_CONS_MSG_NEW_VALID_BLOCK:
+        if (m->u.new_valid_block.block_part_set_header.hash_len >
+            (size_t)CMT_PB_HASH_MAX) {
+            return CMT_REJECT;
+        }
+        break;
+    case CMT_PB_CONS_MSG_PROPOSAL:
+        if (m->u.proposal.proposal.signature_len > (size_t)CMT_PB_SIG_MAX) {
+            return CMT_REJECT;
+        }
+        break;
+    case CMT_PB_CONS_MSG_VOTE:
+        if (m->u.vote.vote.validator_address_len >
+                (size_t)CMT_PB_ADDRESS_MAX ||
+            m->u.vote.vote.signature_len > (size_t)CMT_PB_SIG_MAX ||
+            m->u.vote.vote.extension_signature_len >
+                (size_t)CMT_PB_SIG_MAX) {
+            return CMT_REJECT;
+        }
+        break;
+    case CMT_PB_CONS_MSG_VOTE_SET_MAJ23:
+        if (m->u.vote_set_maj23.block_id.hash_len > (size_t)CMT_PB_HASH_MAX ||
+            m->u.vote_set_maj23.block_id.part_set_header.hash_len >
+                (size_t)CMT_PB_HASH_MAX) {
+            return CMT_REJECT;
+        }
+        break;
+    case CMT_PB_CONS_MSG_VOTE_SET_BITS:
+        if (m->u.vote_set_bits.block_id.hash_len > (size_t)CMT_PB_HASH_MAX ||
+            m->u.vote_set_bits.block_id.part_set_header.hash_len >
+                (size_t)CMT_PB_HASH_MAX) {
+            return CMT_REJECT;
+        }
+        break;
+    default:
+        break;
+    }
+    return CMT_OK;
+}
+
+int cmt_pb_cons_message_marshal(const cmt_pb_cons_message_t *m, uint8_t *out,
+                                size_t cap, size_t *out_len)
+{
+    pb_w_t w;
+
+    if (m == NULL || out == NULL || out_len == NULL) {
+        return CMT_FAULT;
+    }
+    if (cons_message_lengths_ok(m) != CMT_OK) {
+        return CMT_REJECT;
+    }
+    w_init(&w, out, cap);
+    if (cons_message_wr(&w, m) != CMT_OK) {
+        return CMT_REJECT;
+    }
+    return w_finish(&w, out_len);
+}
+
+/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:2977-3424 —
+ * Message.Unmarshal. Every branch REPLACES Sum with a freshly allocated
+ * message, so a repeated oneof field is last-one-wins and never merged. */
+static int cons_message_merge(const uint8_t *in, size_t len,
+                              cmt_pb_cons_message_t *m, cmt_pb_arena_t *a)
+{
+    size_t i = 0;
+
+    while (i < len) {
+        int32_t        fieldnum;
+        uint32_t       wt;
+        size_t         start = i;
+        const uint8_t *p;
+        size_t         n;
+        int            rc;
+
+        if (r_tag(in, len, &i, &fieldnum, &wt) != CMT_OK) {
+            return CMT_REJECT;
+        }
+        if (fieldnum >= 1 && fieldnum <= 9) {
+            if (wt != 2u) {
+                return CMT_REJECT;
+            }
+            if (r_ld(in, len, &i, &p, &n) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            m->sum = (cmt_pb_cons_msg_kind_t)fieldnum;
+            cons_message_init_branch(m);
+            switch (m->sum) {
+            case CMT_PB_CONS_MSG_NEW_ROUND_STEP:
+                rc = nrs_merge(p, n, &m->u.new_round_step);
+                break;
+            case CMT_PB_CONS_MSG_NEW_VALID_BLOCK:
+                rc = nvb_merge(p, n, &m->u.new_valid_block);
+                break;
+            case CMT_PB_CONS_MSG_PROPOSAL:
+                rc = cons_proposal_merge(p, n, &m->u.proposal);
+                break;
+            case CMT_PB_CONS_MSG_PROPOSAL_POL:
+                rc = ppol_merge(p, n, &m->u.proposal_pol);
+                break;
+            case CMT_PB_CONS_MSG_BLOCK_PART:
+                rc = block_part_merge(p, n, &m->u.block_part, a);
+                break;
+            case CMT_PB_CONS_MSG_VOTE:
+                rc = cons_vote_merge(p, n, &m->u.vote, a);
+                break;
+            case CMT_PB_CONS_MSG_HAS_VOTE:
+                rc = has_vote_merge(p, n, &m->u.has_vote);
+                break;
+            case CMT_PB_CONS_MSG_VOTE_SET_MAJ23:
+                rc = vsm23_merge(p, n, &m->u.vote_set_maj23);
+                break;
+            default:
+                rc = vsb_merge(p, n, &m->u.vote_set_bits);
+                break;
+            }
+            if (rc != CMT_OK) {
+                return CMT_REJECT;
+            }
+        } else {
+            i = start;
+            if (pb_skip(in, len, &i) != CMT_OK) {
+                return CMT_REJECT;
+            }
+        }
+    }
+    return CMT_OK;
+}
+
+int cmt_pb_cons_message_unmarshal(const uint8_t *in, size_t len,
+                                  cmt_pb_cons_message_t *m,
+                                  cmt_pb_arena_t *arena)
+{
+    if (m == NULL || (in == NULL && len != 0)) {
+        return CMT_FAULT;
+    }
+    cmt_pb_cons_message_init(m);
+    return cons_message_merge(in, len, m, arena);
+}
+
+/* ══ consensus.MsgInfo ════════════════════════════════════════════════ */
+
+void cmt_pb_msg_info_init(cmt_pb_msg_info_t *m)
+{
+    if (m != NULL) {
+        memset(m, 0, sizeof(*m));
+        cmt_pb_cons_message_init(&m->msg);
+    }
+}
+
+/* cometbft@709fd12b proto/tendermint/consensus/wal.pb.go:427-450 —
+ * field 1 is (nullable) = false and written with no `if`, field 2 is
+ * omit-empty. */
+static int msg_info_wr(pb_w_t *w, const cmt_pb_msg_info_t *m)
+{
+    size_t before;
+
+    wf_bytes(w, 2, m->peer_id, m->peer_id_len);              /* :432-438 */
+
+    before = w->i;
+    if (cons_message_wr(w, &m->msg) != CMT_OK) {             /* :439-446 */
+        return CMT_REJECT;
+    }
+    wf_close_msg(w, 1, before);
+    return CMT_OK;
+}
+
+int cmt_pb_msg_info_marshal(const cmt_pb_msg_info_t *m, uint8_t *out,
+                            size_t cap, size_t *out_len)
+{
+    pb_w_t w;
+
+    if (m == NULL || out == NULL || out_len == NULL) {
+        return CMT_FAULT;
+    }
+    /* The substituted peer id is 0 or exactly 32 bytes — see cmt_pb.h. */
+    if (m->peer_id_len != 0u &&
+        m->peer_id_len != (size_t)CMT_PB_PEER_ID_MAX) {
+        return CMT_REJECT;
+    }
+    /* Field 1 is an embedded Message, written by `cons_message_wr`; it
+     * carries the same bounds here as it does through its own entry. */
+    if (cons_message_lengths_ok(&m->msg) != CMT_OK) {
+        return CMT_REJECT;
+    }
+    w_init(&w, out, cap);
+    if (msg_info_wr(&w, m) != CMT_OK) {
+        return CMT_REJECT;
+    }
+    return w_finish(&w, out_len);
+}
+
+/* cometbft@709fd12b proto/tendermint/consensus/wal.pb.go:824-938 —
+ * MsgInfo.Unmarshal. Field 1 is non-repeated and MERGED. */
+static int msg_info_merge(const uint8_t *in, size_t len,
+                          cmt_pb_msg_info_t *m, cmt_pb_arena_t *a)
+{
+    size_t i = 0;
+
+    while (i < len) {
+        int32_t        fieldnum;
+        uint32_t       wt;
+        size_t         start = i;
+        const uint8_t *p;
+        size_t         n;
+
+        if (r_tag(in, len, &i, &fieldnum, &wt) != CMT_OK) {
+            return CMT_REJECT;
+        }
+        switch (fieldnum) {
+        case 1:
+            if (wt != 2u) {
+                return CMT_REJECT;
+            }
+            if (r_ld(in, len, &i, &p, &n) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            if (cons_message_merge(p, n, &m->msg, a) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            break;
+        case 2:
+            if (wt != 2u) {
+                return CMT_REJECT;
+            }
+            if (r_ld(in, len, &i, &p, &n) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            /* 0 or exactly 32 bytes, and nothing else — the substitution
+             * rule in cmt_pb.h, enforced at the message boundary. */
+            if (n != 0u && n != (size_t)CMT_PB_PEER_ID_MAX) {
+                return CMT_REJECT;
+            }
+            if (r_copy_fixed(m->peer_id, (size_t)CMT_PB_PEER_ID_MAX,
+                             &m->peer_id_len, p, n) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            break;
+        default:
+            i = start;
+            if (pb_skip(in, len, &i) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            break;
+        }
+    }
+    return CMT_OK;
+}
+
+int cmt_pb_msg_info_unmarshal(const uint8_t *in, size_t len,
+                              cmt_pb_msg_info_t *m, cmt_pb_arena_t *arena)
+{
+    if (m == NULL || (in == NULL && len != 0)) {
+        return CMT_FAULT;
+    }
+    cmt_pb_msg_info_init(m);
+    return msg_info_merge(in, len, m, arena);
+}
+
+/* ══ consensus.TimeoutInfo ════════════════════════════════════════════ */
+
+void cmt_pb_timeout_info_init(cmt_pb_timeout_info_t *m)
+{
+    if (m != NULL) {
+        memset(m, 0, sizeof(*m));
+    }
+}
+
+/* cometbft@709fd12b proto/tendermint/consensus/wal.pb.go:467-496 —
+ * field 1 is stdduration and (nullable) = false: StdDurationMarshalTo is
+ * called with NO `if`, so a zero duration is `0a 00`. */
+static int timeout_info_wr(pb_w_t *w, const cmt_pb_timeout_info_t *m)
+{
+    cmt_pb_duration_t d;
+    size_t            before;
+
+    wf_varint(w, 4, (uint64_t)m->step);                      /* :472-476 */
+    wf_varint(w, 3, (uint64_t)(int64_t)m->round);            /* :477-481 */
+    wf_varint(w, 2, (uint64_t)m->height);                    /* :482-486 */
+
+    if (cmt_pb_duration_proto(m->duration, &d) != CMT_OK) {
+        w->err = CMT_REJECT;
+        return CMT_REJECT;
+    }
+    before = w->i;
+    duration_wr(w, &d);                                      /* :487-492 */
+    wf_close_msg(w, 1, before);                              /* :493-494 */
+    return CMT_OK;
+}
+
+int cmt_pb_timeout_info_marshal(const cmt_pb_timeout_info_t *m, uint8_t *out,
+                                size_t cap, size_t *out_len)
+{
+    pb_w_t w;
+
+    if (m == NULL || out == NULL || out_len == NULL) {
+        return CMT_FAULT;
+    }
+    w_init(&w, out, cap);
+    if (timeout_info_wr(&w, m) != CMT_OK) {
+        return CMT_REJECT;
+    }
+    return w_finish(&w, out_len);
+}
+
+/* cometbft@709fd12b proto/tendermint/consensus/wal.pb.go:939-1078 —
+ * TimeoutInfo.Unmarshal; field 1 goes through StdDurationUnmarshal
+ * (:997), which validates. */
+static int timeout_info_merge(const uint8_t *in, size_t len,
+                              cmt_pb_timeout_info_t *m)
+{
+    size_t i = 0;
+
+    while (i < len) {
+        int32_t        fieldnum;
+        uint32_t       wt;
+        size_t         start = i;
+        uint64_t       v;
+        const uint8_t *p;
+        size_t         n;
+
+        if (r_tag(in, len, &i, &fieldnum, &wt) != CMT_OK) {
+            return CMT_REJECT;
+        }
+        switch (fieldnum) {
+        case 1:
+            if (wt != 2u) {
+                return CMT_REJECT;
+            }
+            if (r_ld(in, len, &i, &p, &n) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            if (cmt_pb_std_duration_unmarshal(p, n, &m->duration)
+                    != CMT_OK) {
+                return CMT_REJECT;
+            }
+            break;
+        case 2:
+        case 3:
+        case 4:
+            if (wt != 0u) {
+                return CMT_REJECT;
+            }
+            if (cmt_pb_get_uvarint(in, len, &i, &v) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            if (fieldnum == 2) {
+                m->height = (int64_t)v;
+            } else if (fieldnum == 3) {
+                m->round = (int32_t)(uint32_t)v;
+            } else {
+                m->step = (uint32_t)v;
+            }
+            break;
+        default:
+            i = start;
+            if (pb_skip(in, len, &i) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            break;
+        }
+    }
+    return CMT_OK;
+}
+
+int cmt_pb_timeout_info_unmarshal(const uint8_t *in, size_t len,
+                                  cmt_pb_timeout_info_t *m)
+{
+    if (m == NULL || (in == NULL && len != 0)) {
+        return CMT_FAULT;
+    }
+    cmt_pb_timeout_info_init(m);
+    return timeout_info_merge(in, len, m);
+}
+
+/* ══ consensus.EndHeight ══════════════════════════════════════════════ */
+
+void cmt_pb_end_height_init(cmt_pb_end_height_t *m)
+{
+    if (m != NULL) {
+        m->height = 0;
+    }
+}
+
+/* cometbft@709fd12b proto/tendermint/consensus/wal.pb.go:513-524 */
+static void end_height_wr(pb_w_t *w, const cmt_pb_end_height_t *m)
+{
+    wf_varint(w, 1, (uint64_t)m->height);                    /* :518-522 */
+}
+
+int cmt_pb_end_height_marshal(const cmt_pb_end_height_t *m, uint8_t *out,
+                              size_t cap, size_t *out_len)
+{
+    pb_w_t w;
+
+    if (m == NULL || out == NULL || out_len == NULL) {
+        return CMT_FAULT;
+    }
+    w_init(&w, out, cap);
+    end_height_wr(&w, m);
+    return w_finish(&w, out_len);
+}
+
+/* cometbft@709fd12b proto/tendermint/consensus/wal.pb.go:1079-1147 */
+static int end_height_merge(const uint8_t *in, size_t len,
+                            cmt_pb_end_height_t *m)
+{
+    size_t i = 0;
+
+    while (i < len) {
+        int32_t  fieldnum;
+        uint32_t wt;
+        size_t   start = i;
+        uint64_t v;
+
+        if (r_tag(in, len, &i, &fieldnum, &wt) != CMT_OK) {
+            return CMT_REJECT;
+        }
+        if (fieldnum == 1) {
+            if (wt != 0u) {
+                return CMT_REJECT;
+            }
+            if (cmt_pb_get_uvarint(in, len, &i, &v) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            m->height = (int64_t)v;
+        } else {
+            i = start;
+            if (pb_skip(in, len, &i) != CMT_OK) {
+                return CMT_REJECT;
+            }
+        }
+    }
+    return CMT_OK;
+}
+
+int cmt_pb_end_height_unmarshal(const uint8_t *in, size_t len,
+                                cmt_pb_end_height_t *m)
+{
+    if (m == NULL || (in == NULL && len != 0)) {
+        return CMT_FAULT;
+    }
+    cmt_pb_end_height_init(m);
+    return end_height_merge(in, len, m);
+}
+
+/* ══ consensus.WALMessage (the oneof) ═════════════════════════════════ */
+
+void cmt_pb_wal_message_init(cmt_pb_wal_message_t *m)
+{
+    if (m == NULL) {
+        return;
+    }
+    memset(m, 0, sizeof(*m));
+    m->sum = CMT_PB_WAL_NONE;
+}
+
+static void wal_message_init_branch(cmt_pb_wal_message_t *m)
+{
+    switch (m->sum) {
+    case CMT_PB_WAL_EVENT_DATA_ROUND_STATE:
+        cmt_pb_event_data_round_state_init(&m->u.event_data_round_state);
+        break;
+    case CMT_PB_WAL_MSG_INFO:
+        cmt_pb_msg_info_init(&m->u.msg_info);
+        break;
+    case CMT_PB_WAL_TIMEOUT_INFO:
+        cmt_pb_timeout_info_init(&m->u.timeout_info);
+        break;
+    case CMT_PB_WAL_END_HEIGHT:
+        cmt_pb_end_height_init(&m->u.end_height);
+        break;
+    default:
+        break;
+    }
+}
+
+/* cometbft@709fd12b proto/tendermint/consensus/wal.pb.go:541-556
+ * WALMessage.MarshalToSizedBuffer (a nil Sum writes NOTHING) and
+ * :563-641, the four branch writers, each `tag ‖ len ‖ body`. An
+ * EndHeight{0} branch is therefore `22 00`, not an omission — which is
+ * what keeps the WAL row's kind visible for a height-zero record. */
+static int wal_message_wr(pb_w_t *w, const cmt_pb_wal_message_t *m)
+{
+    size_t before = w->i;
+    int    rc     = CMT_OK;
+
+    switch (m->sum) {
+    case CMT_PB_WAL_NONE:
+        return CMT_OK;                                       /* :546 nil */
+    case CMT_PB_WAL_EVENT_DATA_ROUND_STATE:
+        edrs_wr(w, &m->u.event_data_round_state);
+        break;
+    case CMT_PB_WAL_MSG_INFO:
+        rc = msg_info_wr(w, &m->u.msg_info);
+        break;
+    case CMT_PB_WAL_TIMEOUT_INFO:
+        rc = timeout_info_wr(w, &m->u.timeout_info);
+        break;
+    case CMT_PB_WAL_END_HEIGHT:
+        end_height_wr(w, &m->u.end_height);
+        break;
+    default:
+        return CMT_REJECT;
+    }
+    if (rc != CMT_OK || w->err != CMT_OK) {
+        return CMT_REJECT;
+    }
+    wf_close_msg(w, (uint32_t)m->sum, before);
+    return CMT_OK;
+}
+
+int cmt_pb_wal_message_marshal(const cmt_pb_wal_message_t *m, uint8_t *out,
+                               size_t cap, size_t *out_len)
+{
+    pb_w_t w;
+
+    if (m == NULL || out == NULL || out_len == NULL) {
+        return CMT_FAULT;
+    }
+    if (m->sum == CMT_PB_WAL_MSG_INFO) {
+        if (m->u.msg_info.peer_id_len != 0u &&
+            m->u.msg_info.peer_id_len != (size_t)CMT_PB_PEER_ID_MAX) {
+            return CMT_REJECT;
+        }
+        if (cons_message_lengths_ok(&m->u.msg_info.msg) != CMT_OK) {
+            return CMT_REJECT;
+        }
+    }
+    w_init(&w, out, cap);
+    if (wal_message_wr(&w, m) != CMT_OK) {
+        return CMT_REJECT;
+    }
+    return w_finish(&w, out_len);
+}
+
+/* cometbft@709fd12b proto/tendermint/consensus/wal.pb.go:1148-1337 —
+ * WALMessage.Unmarshal; every branch REPLACES Sum with a fresh message. */
+static int wal_message_merge(const uint8_t *in, size_t len,
+                             cmt_pb_wal_message_t *m, cmt_pb_arena_t *a)
+{
+    size_t i = 0;
+
+    while (i < len) {
+        int32_t        fieldnum;
+        uint32_t       wt;
+        size_t         start = i;
+        const uint8_t *p;
+        size_t         n;
+        int            rc;
+
+        if (r_tag(in, len, &i, &fieldnum, &wt) != CMT_OK) {
+            return CMT_REJECT;
+        }
+        if (fieldnum >= 1 && fieldnum <= 4) {
+            if (wt != 2u) {
+                return CMT_REJECT;
+            }
+            if (r_ld(in, len, &i, &p, &n) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            m->sum = (cmt_pb_wal_kind_t)fieldnum;
+            wal_message_init_branch(m);
+            switch (m->sum) {
+            case CMT_PB_WAL_EVENT_DATA_ROUND_STATE:
+                rc = edrs_merge(p, n, &m->u.event_data_round_state);
+                break;
+            case CMT_PB_WAL_MSG_INFO:
+                rc = msg_info_merge(p, n, &m->u.msg_info, a);
+                break;
+            case CMT_PB_WAL_TIMEOUT_INFO:
+                rc = timeout_info_merge(p, n, &m->u.timeout_info);
+                break;
+            default:
+                rc = end_height_merge(p, n, &m->u.end_height);
+                break;
+            }
+            if (rc != CMT_OK) {
+                return CMT_REJECT;
+            }
+        } else {
+            i = start;
+            if (pb_skip(in, len, &i) != CMT_OK) {
+                return CMT_REJECT;
+            }
+        }
+    }
+    return CMT_OK;
+}
+
+int cmt_pb_wal_message_unmarshal(const uint8_t *in, size_t len,
+                                 cmt_pb_wal_message_t *m,
+                                 cmt_pb_arena_t *arena)
+{
+    if (m == NULL || (in == NULL && len != 0)) {
+        return CMT_FAULT;
+    }
+    cmt_pb_wal_message_init(m);
+    return wal_message_merge(in, len, m, arena);
+}
+
+/* ══ consensus.TimedWALMessage ════════════════════════════════════════ */
+
+void cmt_pb_timed_wal_message_init(cmt_pb_timed_wal_message_t *m)
+{
+    if (m == NULL) {
+        return;
+    }
+    m->time    = CMT_TIME_ZERO;
+    m->has_msg = false;
+    cmt_pb_wal_message_init(&m->msg);
+}
+
+/* cometbft@709fd12b proto/tendermint/consensus/wal.pb.go:657-683 —
+ * field 1 is stdtime and (nullable) = false (ALWAYS, so Go's zero time is
+ * eleven bytes), field 2 is a POINTER. */
+static int twm_wr(pb_w_t *w, const cmt_pb_timed_wal_message_t *m)
+{
+    size_t before;
+
+    if (m->has_msg) {                                        /* :662-673 */
+        before = w->i;
+        if (wal_message_wr(w, &m->msg) != CMT_OK) {
+            return CMT_REJECT;
+        }
+        wf_close_msg(w, 2, before);
+    }
+    before = w->i;
+    if (ts_wr(w, &m->time) != CMT_OK) {                      /* :674-681 */
+        return CMT_REJECT;
+    }
+    wf_close_msg(w, 1, before);
+    return CMT_OK;
+}
+
+int cmt_pb_timed_wal_message_marshal(const cmt_pb_timed_wal_message_t *m,
+                                     uint8_t *out, size_t cap,
+                                     size_t *out_len)
+{
+    pb_w_t w;
+
+    if (m == NULL || out == NULL || out_len == NULL) {
+        return CMT_FAULT;
+    }
+    if (m->has_msg && m->msg.sum == CMT_PB_WAL_MSG_INFO) {
+        if (m->msg.u.msg_info.peer_id_len != 0u &&
+            m->msg.u.msg_info.peer_id_len != (size_t)CMT_PB_PEER_ID_MAX) {
+            return CMT_REJECT;
+        }
+        if (cons_message_lengths_ok(&m->msg.u.msg_info.msg) != CMT_OK) {
+            return CMT_REJECT;
+        }
+    }
+    w_init(&w, out, cap);
+    if (twm_wr(&w, m) != CMT_OK) {
+        return CMT_REJECT;
+    }
+    return w_finish(&w, out_len);
+}
+
+/* cometbft@709fd12b proto/tendermint/consensus/wal.pb.go:1338-1467 —
+ * TimedWALMessage.Unmarshal; field 1 goes through StdTimeUnmarshal
+ * (:1396), which validates the range. */
+static int twm_merge(const uint8_t *in, size_t len,
+                     cmt_pb_timed_wal_message_t *m, cmt_pb_arena_t *a)
+{
+    size_t i = 0;
+
+    while (i < len) {
+        int32_t        fieldnum;
+        uint32_t       wt;
+        size_t         start = i;
+        const uint8_t *p;
+        size_t         n;
+
+        if (r_tag(in, len, &i, &fieldnum, &wt) != CMT_OK) {
+            return CMT_REJECT;
+        }
+        switch (fieldnum) {
+        case 1:
+            if (wt != 2u) {
+                return CMT_REJECT;
+            }
+            if (r_ld(in, len, &i, &p, &n) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            if (cmt_pb_timestamp_unmarshal(p, n, &m->time) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            break;
+        case 2:
+            if (wt != 2u) {
+                return CMT_REJECT;
+            }
+            if (r_ld(in, len, &i, &p, &n) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            if (wal_message_merge(p, n, &m->msg, a) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            m->has_msg = true;
+            break;
+        default:
+            i = start;
+            if (pb_skip(in, len, &i) != CMT_OK) {
+                return CMT_REJECT;
+            }
+            break;
+        }
+    }
+    return CMT_OK;
+}
+
+int cmt_pb_timed_wal_message_unmarshal(const uint8_t *in, size_t len,
+                                       cmt_pb_timed_wal_message_t *m,
+                                       cmt_pb_arena_t *arena)
+{
+    if (m == NULL || (in == NULL && len != 0)) {
+        return CMT_FAULT;
+    }
+    cmt_pb_timed_wal_message_init(m);
+    return twm_merge(in, len, m, arena);
+}
+
+/* ══ types.EvidenceList and types.Block — relocated (R1B-6) ═══════════ */
+
+/* cometbft@709fd12b proto/tendermint/types/evidence.pb.go:375-396
+ * Evidence.MarshalToSizedBuffer and :397-412
+ * Evidence_DuplicateVoteEvidence.MarshalToSizedBuffer — the oneof and its
+ * branch-1 writer. The same body cmt_pb_evidence_marshal writes; needed
+ * inside the backward writer so an EvidenceList can nest it. */
+static int evidence_wr(pb_w_t *w, const cmt_pb_evidence_t *m)
+{
+    size_t before;
+
+    if (m->has_duplicate_vote_evidence) {
+        before = w->i;
+        if (dve_wr(w, &m->duplicate_vote_evidence) != CMT_OK) {
+            return CMT_REJECT;
+        }
+        wf_close_msg(w, 1, before);
+    }
+    return CMT_OK;
+}
+
+/* cometbft@709fd12b proto/tendermint/types/evidence.pb.go:581-601 —
+ * EvidenceList.MarshalToSizedBuffer. Backwards, so the loop runs from the
+ * LAST element down (:587), exactly as the generated code does. */
+static int evidence_list_wr(pb_w_t *w, const cmt_pb_evidence_list_t *m)
+{
+    size_t k;
+
+    if (m->evidence_len != 0u && m->evidence == NULL) {
+        w->err = CMT_REJECT;
+        return CMT_REJECT;
+    }
+    for (k = m->evidence_len; k > 0u; k--) {                 /* :586-598 */
+        size_t before = w->i;
+
+        if (evidence_wr(w, &m->evidence[k - 1u]) != CMT_OK) {
+            return CMT_REJECT;
+        }
+        wf_close_msg(w, 1, before);
+        if (w->err != CMT_OK) {
+            return CMT_REJECT;
+        }
+    }
+    return CMT_OK;
+}
+
+int cmt_pb_evidence_list_marshal(const cmt_pb_evidence_list_t *m,
+                                 uint8_t *out, size_t cap, size_t *out_len)
+{
+    pb_w_t w;
+
+    if (m == NULL || out == NULL || out_len == NULL) {
+        return CMT_FAULT;
+    }
+    /* A length with no array is a caller error, not bad input — the same
+     * CMT_FAULT the encoder this replaced returned (former
+     * cmt_block.c:90-92). */
+    if (m->evidence_len != 0u && m->evidence == NULL) {
+        return CMT_FAULT;
+    }
+    w_init(&w, out, cap);
+    if (evidence_list_wr(&w, m) != CMT_OK) {
+        return CMT_REJECT;
+    }
+    return w_finish(&w, out_len);
+}
+
+/* cometbft@709fd12b proto/tendermint/types/block.pb.go:136-184 —
+ * Block.MarshalToSizedBuffer. Fields 1, 2, 3 ALWAYS; field 4 POINTER. */
+static int block_wr(pb_w_t *w, const cmt_pb_block_t *m)
+{
+    size_t before;
+
+    if (m->last_commit != NULL) {                            /* :141-152 */
+        before = w->i;
+        if (commit_wr(w, m->last_commit) != CMT_OK) {
+            return CMT_REJECT;
+        }
+        wf_close_msg(w, 4, before);
+    }
+    before = w->i;                                           /* :153-162 */
+    if (evidence_list_wr(w, &m->evidence) != CMT_OK) {
+        return CMT_REJECT;
+    }
+    wf_close_msg(w, 3, before);
+
+    before = w->i;                                           /* :163-172 */
+    if (data_wr(w, &m->data) != CMT_OK) {
+        return CMT_REJECT;
+    }
+    wf_close_msg(w, 2, before);
+
+    before = w->i;                                           /* :173-182 */
+    if (header_wr(w, &m->header) != CMT_OK) {
+        return CMT_REJECT;
+    }
+    wf_close_msg(w, 1, before);
+    return CMT_OK;
+}
+
+int cmt_pb_block_marshal(const cmt_pb_block_t *m, uint8_t *out, size_t cap,
+                         size_t *out_len)
+{
+    pb_w_t w;
+
+    if (m == NULL || out == NULL || out_len == NULL) {
+        return CMT_FAULT;
+    }
+    if (m->evidence.evidence_len != 0u && m->evidence.evidence == NULL) {
+        return CMT_FAULT;         /* as the replaced encoder did */
+    }
+    /* The bound `cmt_pb_header_marshal` applies (:1762-1763), applied here
+     * too. The encoder this replaced framed field 1 by CALLING that entry,
+     * so a header with an over-long chain id or proposer address was
+     * refused; `block_wr` reaches `header_wr` directly, as the generated
+     * Block.MarshalToSizedBuffer does, and would otherwise write it.
+     *
+     * The other three fields are NOT guarded here, and that is not an
+     * omission: `cmt_pb_data_marshal`, `cmt_pb_commit_marshal` and
+     * `cmt_pb_evidence_marshal` — the entries the replaced encoder called
+     * for fields 2, 3 and 4 — carry no length guard of their own either
+     * (:1931-1944, :2360-2373, :3195-3213), so adding one here would make
+     * this encoder REFUSE values wave R1 accepted. Whether those three
+     * composite entries should gain their leaves' bounds is an R1-scope
+     * question this wave's whitelist does not open. */
+    if (m->header.chain_id_len > CMT_PB_CHAINID_MAX ||
+        m->header.proposer_address_len > CMT_PB_ADDRESS_MAX) {
+        return CMT_REJECT;
+    }
+    w_init(&w, out, cap);
+    if (block_wr(&w, m) != CMT_OK) {
+        return CMT_REJECT;
+    }
+    return w_finish(&w, out_len);
+}

@@ -67,10 +67,13 @@
  *  3. `MakeGenesisState` is exercised with 3 and with 0 validators. The
  *     128-validator capacity bound is never approached, and a green says
  *     nothing about it.
- *  4. The state's `Software` version string is asserted to be the
- *     reference's literal. That is the wave's open QUESTION, not a
- *     settled answer — if the operator chooses a DNA version string, this
- *     assertion is the one to change, and it is not consensus-critical
+ *  4. The state's `Software` version string is asserted to equal the
+ *     CMT_SOFTWARE_VERSION macro, which since 2026-09-10 is supplied by
+ *     the BUILD (the Nodus version — atlas-dec-157739c22040e385e1096932-
+ *     fc7d3a63) and no longer a literal in cmt_state.h. The assertion
+ *     therefore proves that MakeGenesisState copies the macro through, and
+ *     NOTHING about which string the build passed: run with a wrong -D and
+ *     it still passes. The field is store-only and not consensus-critical
  *     (see CMT_SOFTWARE_VERSION in cmt_state.h).
  *
  * ── REFERENCE TEST CASES PORTED (state/state_test.go, UNPINNED) ────────
@@ -377,7 +380,7 @@ static int t_make_genesis(void)
           st.version.consensus.app == 0u,
           "Version.Consensus is {BlockProtocol 11, App 0}"); OK();
     CHECK(strcmp(st.version.software, CMT_SOFTWARE_VERSION) == 0,
-          "and Software is the reference's string — the open QUESTION");
+          "and Software is the build's CMT_SOFTWARE_VERSION, copied through");
     OK();
 
     /* :338-343 — the immutable fields and the block-0 fields. */

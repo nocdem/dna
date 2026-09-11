@@ -642,6 +642,428 @@ typedef struct {
 CMT_PB_DECL_ARENA(cmt_pb_extended_commit_sig, cmt_pb_extended_commit_sig_t);
 CMT_PB_DECL_ARENA(cmt_pb_extended_commit,     cmt_pb_extended_commit_t);
 
+/* ══ wave R2-B addition ═══════════════════════════════════════════════
+ * The consensus package's own wire (proto/tendermint/consensus/types.proto
+ * and wal.proto), the round-state event (proto/tendermint/types/
+ * events.proto), google.protobuf.Duration, and the Block / EvidenceList
+ * encoders relocated out of cmt_block.c (R1B-6).
+ *
+ * Nothing above this line changed. These follow exactly the same rules
+ * (K-1 rev 2, INVARIANT 7495d337, the arena contract, CMT_TIME_ZERO for
+ * every embedded time), and every struct field carries its .proto line.
+ *
+ * Reference files added by pin record rev 6 (atlas-dec-483ec17c…, PROPOSED
+ * at the time this was written — see the wave report):
+ *   proto/tendermint/consensus/types.proto     92 lines
+ *   proto/tendermint/consensus/types.pb.go   3425 lines (encoder evidence)
+ *   proto/tendermint/consensus/wal.proto       46 lines
+ *   proto/tendermint/consensus/wal.pb.go     1540 lines
+ *   proto/tendermint/consensus/message.go     110 lines (oneof wrappers)
+ *   proto/tendermint/types/events.proto        10 lines
+ *   proto/tendermint/types/events.pb.go       387 lines
+ *   gogoproto v1.7.0 types/duration.go, duration.pb.go, duration_gogo.go
+ *   google/protobuf v25.1 duration.proto
+ * ═════════════════════════════════════════════════════════════════════ */
+
+/* ── google.protobuf.Duration ───────────────────────────────────────── */
+
+/** gogoproto v1.7.0 types/duration.go:46 — `maxSeconds`, about 10 000
+ *  years: int64(10000 * 365.25 * 24 * 60 * 60). */
+#define CMT_PB_DURATION_MAX_SECONDS ((int64_t)315576000000)
+/** duration.go:47 — `minSeconds = -maxSeconds`. */
+#define CMT_PB_DURATION_MIN_SECONDS (-CMT_PB_DURATION_MAX_SECONDS)
+
+/**
+ * google/protobuf v25.1 duration.proto:106-114 — `Duration`.
+ * {int64 seconds = 1, int32 nanos = 2}, both omit-zero
+ * (gogoproto duration.pb.go:287-307).
+ *
+ * ⚠ NOT Timestamp. `nanos` may be NEGATIVE here, and when it is, the
+ * 10-byte two's-complement varint of K-1 rev 2 rule (g) is what goes on the
+ * wire. Seconds and nanos must agree in sign unless nanos is zero
+ * (duration.go:64-67).
+ */
+typedef struct {
+    int64_t seconds;   /* field 1 */
+    int32_t nanos;     /* field 2 */
+} cmt_pb_duration_t;
+
+/** gogoproto v1.7.0 types/duration.go:54-69 — `validateDuration()`.
+ *  Seconds within ±10 000 years, nanos strictly inside ±1e9, and the two
+ *  agreeing in sign unless nanos is zero.
+ *  @return CMT_OK, CMT_REJECT, CMT_FAULT on NULL. */
+int cmt_pb_duration_validate(const cmt_pb_duration_t *d);
+
+/** gogoproto v1.7.0 types/duration.go:92-99 — `DurationProto()`.
+ *  Splits a nanosecond count into {seconds, nanos} by truncating division,
+ *  so both halves carry the sign of the input.
+ *  @return CMT_OK, CMT_FAULT on NULL. */
+int cmt_pb_duration_proto(int64_t d_ns, cmt_pb_duration_t *out);
+
+/**
+ * gogoproto v1.7.0 types/duration.go:74-89 — `DurationFromProto()`.
+ * validateDuration, then the conversion to a nanosecond count with the
+ * reference's two overflow checks (:79-81 and :84-86).
+ * @return CMT_OK, CMT_REJECT (invalid or out of range for a nanosecond
+ *         count), CMT_FAULT on NULL.
+ */
+int cmt_pb_duration_from_proto(const cmt_pb_duration_t *p, int64_t *out_ns);
+
+CMT_PB_DECL(cmt_pb_duration, cmt_pb_duration_t);
+
+/**
+ * gogoproto v1.7.0 types/duration_gogo.go:84-87 — `StdDurationMarshalTo()`,
+ * i.e. DurationProto followed by the generated Marshal. This is what a
+ * `(gogoproto.stdduration) = true` field writes.
+ *
+ * NOTE: the marshal side does NOT validate — DurationProto cannot produce
+ * an out-of-range value from an int64 nanosecond count, so the reference
+ * has nothing to check there. The UNMARSHAL side does (below).
+ * @return CMT_OK, CMT_REJECT if it does not fit, CMT_FAULT on NULL.
+ */
+int cmt_pb_std_duration_marshal(int64_t d_ns, uint8_t *out, size_t cap,
+                                size_t *out_len);
+
+/** gogoproto v1.7.0 types/duration_gogo.go:89-99 —
+ *  `StdDurationUnmarshal()`: the generated Unmarshal, then
+ *  DurationFromProto, which validates.
+ *  @return CMT_OK, CMT_REJECT, CMT_FAULT on NULL. */
+int cmt_pb_std_duration_unmarshal(const uint8_t *in, size_t len,
+                                  int64_t *out_ns);
+
+/** duration_gogo.go:72-75 — `SizeOfStdDuration()`. */
+size_t cmt_pb_std_duration_size(int64_t d_ns);
+
+/* ── types/events.proto — EventDataRoundState ───────────────────────── */
+
+/**
+ * The widest `step` string the reference can produce is
+ * "RoundStepPrecommitWait", 22 bytes — consensus/types/round_state.go:39-59
+ * (`(rs RoundStepType) String()`; the eight named steps plus
+ * "RoundStepUnknown"). 32 rounds that up. A longer value on the wire is
+ * REFUSED, which is cmt_pb.h's standing capacity rule, not a semantic one.
+ *
+ * round_state.go IS pinned: tasks/comet-port-map.md records it at 224
+ * lines, SHA-256
+ * 44404a9f7c8125449edc3756c50c5f7575a9de45db6fb2b568ead80ac3e8c354.
+ */
+#define CMT_PB_ROUND_STEP_STR_MAX 32
+
+/** types/events.proto:6-10 — `EventDataRoundState`. Every field is
+ *  omit-zero (events.pb.go:123-146). */
+typedef struct {
+    int64_t height;                               /* field 1 */
+    int32_t round;                                /* field 2 */
+    uint8_t step[CMT_PB_ROUND_STEP_STR_MAX];      /* field 3 */
+    size_t  step_len;
+} cmt_pb_event_data_round_state_t;
+
+CMT_PB_DECL(cmt_pb_event_data_round_state,
+            cmt_pb_event_data_round_state_t);
+
+/* ── consensus/types.proto — the nine reactor messages ──────────────── */
+
+/** consensus/types.proto:12-18 — `NewRoundStep`. All scalars, all
+ *  omit-zero (types.pb.go:876-907). */
+typedef struct {
+    int64_t  height;                    /* field 1 */
+    int32_t  round;                     /* field 2 */
+    uint32_t step;                      /* field 3 */
+    int64_t  seconds_since_start_time;  /* field 4 */
+    int32_t  last_commit_round;         /* field 5 */
+} cmt_pb_new_round_step_t;
+
+/**
+ * consensus/types.proto:23-29 — `NewValidBlock`.
+ * Field 3 is `(gogoproto.nullable) = false` and ALWAYS emitted; field 4 is
+ * a POINTER BitArray, omitted when nil (types.pb.go:924-972).
+ */
+typedef struct {
+    int64_t                  height;                 /* 1 */
+    int32_t                  round;                  /* 2 */
+    cmt_pb_part_set_header_t block_part_set_header;  /* 3 ALWAYS */
+    bool                     has_block_parts;        /* 4 POINTER */
+    cmt_bit_array_t          block_parts;
+    bool                     is_commit;              /* 5 */
+} cmt_pb_new_valid_block_t;
+
+/** consensus/types.proto:32-34 — `Proposal` (the consensus-package
+ *  wrapper, NOT types.Proposal). Field 1 is ALWAYS emitted
+ *  (types.pb.go:989-1005). */
+typedef struct {
+    cmt_pb_proposal_t proposal;   /* 1 ALWAYS */
+} cmt_pb_cons_proposal_t;
+
+/** consensus/types.proto:37-41 — `ProposalPOL`. Field 3 is ALWAYS
+ *  emitted, so an empty POL bit array is `1a 00` on the wire
+ *  (types.pb.go:1022-1048; golden vector msgs_test.go:384). */
+typedef struct {
+    int64_t         height;              /* 1 */
+    int32_t         proposal_pol_round;  /* 2 */
+    cmt_bit_array_t proposal_pol;        /* 3 ALWAYS */
+} cmt_pb_proposal_pol_t;
+
+/** consensus/types.proto:44-48 — `BlockPart`. Field 3 is ALWAYS emitted
+ *  (types.pb.go:1065-1091). The part's payload lives in the arena. */
+typedef struct {
+    int64_t       height;   /* 1 */
+    int32_t       round;    /* 2 */
+    cmt_pb_part_t part;     /* 3 ALWAYS */
+} cmt_pb_block_part_t;
+
+/** consensus/types.proto:51-53 — `Vote` (the consensus-package wrapper).
+ *  Field 1 is a POINTER, omitted when nil (types.pb.go:1108-1126). */
+typedef struct {
+    bool          has_vote;   /* 1 POINTER */
+    cmt_pb_vote_t vote;
+} cmt_pb_cons_vote_t;
+
+/** consensus/types.proto:56-61 — `HasVote`. All scalars, all omit-zero
+ *  (types.pb.go:1143-1169). */
+typedef struct {
+    int64_t height;   /* 1 */
+    int32_t round;    /* 2 */
+    int32_t type;     /* 3 SignedMsgType */
+    int32_t index;    /* 4 */
+} cmt_pb_has_vote_t;
+
+/** consensus/types.proto:64-69 — `VoteSetMaj23`. Field 4 is ALWAYS
+ *  emitted (types.pb.go:1186-1217). */
+typedef struct {
+    int64_t           height;    /* 1 */
+    int32_t           round;     /* 2 */
+    int32_t           type;      /* 3 SignedMsgType */
+    cmt_pb_block_id_t block_id;  /* 4 ALWAYS */
+} cmt_pb_vote_set_maj23_t;
+
+/** consensus/types.proto:72-78 — `VoteSetBits`. Fields 4 AND 5 are ALWAYS
+ *  emitted (types.pb.go:1234-1275). */
+typedef struct {
+    int64_t           height;    /* 1 */
+    int32_t           round;     /* 2 */
+    int32_t           type;      /* 3 SignedMsgType */
+    cmt_pb_block_id_t block_id;  /* 4 ALWAYS */
+    cmt_bit_array_t   votes;     /* 5 ALWAYS */
+} cmt_pb_vote_set_bits_t;
+
+/** consensus/types.proto:80-92 — the `Message` oneof's field numbers.
+ *  0 is the reference's nil `Sum`, which marshals to zero bytes
+ *  (types.pb.go:1292-1307). */
+typedef enum {
+    CMT_PB_CONS_MSG_NONE            = 0,
+    CMT_PB_CONS_MSG_NEW_ROUND_STEP  = 1,
+    CMT_PB_CONS_MSG_NEW_VALID_BLOCK = 2,
+    CMT_PB_CONS_MSG_PROPOSAL        = 3,
+    CMT_PB_CONS_MSG_PROPOSAL_POL    = 4,
+    CMT_PB_CONS_MSG_BLOCK_PART      = 5,
+    CMT_PB_CONS_MSG_VOTE            = 6,
+    CMT_PB_CONS_MSG_HAS_VOTE        = 7,
+    CMT_PB_CONS_MSG_VOTE_SET_MAJ23  = 8,
+    CMT_PB_CONS_MSG_VOTE_SET_BITS   = 9
+} cmt_pb_cons_msg_kind_t;
+
+/**
+ * consensus/types.proto:80-92 — `Message`.
+ *
+ * ⚠ LARGE. The Vote branch alone carries two 4627-byte signatures and the
+ * BlockPart branch a 100-aunt proof; sizeof this struct is on the order of
+ * ten kilobytes. Heap-allocate it or make it a long-lived member — never a
+ * stack local inside a deep call.
+ *
+ * DECODE: the generated Unmarshal REPLACES `Sum` on every oneof field it
+ * meets (types.pb.go:3035-3039 and the eight siblings allocate a FRESH
+ * branch message each time), so a repeated oneof field is last-one-wins
+ * with no merge. This decoder does the same.
+ *
+ * ⚠ BUILDING ONE BY HAND: `cmt_pb_cons_message_init` sets `sum` to NONE
+ * and zeroes the union, which is Go's nil `Sum`. A caller that then
+ * SELECTS a branch must call that branch's own `_init` before filling it —
+ * a memset is the wrong zero value for any branch holding a time (Vote and
+ * Proposal), where Go's zero is CMT_TIME_ZERO. The decoder does this for
+ * itself on every occurrence.
+ */
+typedef struct {
+    cmt_pb_cons_msg_kind_t sum;
+    union {
+        cmt_pb_new_round_step_t  new_round_step;   /* 1 */
+        cmt_pb_new_valid_block_t new_valid_block;  /* 2 */
+        cmt_pb_cons_proposal_t   proposal;         /* 3 */
+        cmt_pb_proposal_pol_t    proposal_pol;     /* 4 */
+        cmt_pb_block_part_t      block_part;       /* 5 */
+        cmt_pb_cons_vote_t       vote;             /* 6 */
+        cmt_pb_has_vote_t        has_vote;         /* 7 */
+        cmt_pb_vote_set_maj23_t  vote_set_maj23;   /* 8 */
+        cmt_pb_vote_set_bits_t   vote_set_bits;    /* 9 */
+    } u;
+} cmt_pb_cons_message_t;
+
+CMT_PB_DECL(cmt_pb_new_round_step,   cmt_pb_new_round_step_t);
+CMT_PB_DECL(cmt_pb_new_valid_block,  cmt_pb_new_valid_block_t);
+CMT_PB_DECL(cmt_pb_proposal_pol,     cmt_pb_proposal_pol_t);
+CMT_PB_DECL(cmt_pb_has_vote,         cmt_pb_has_vote_t);
+CMT_PB_DECL(cmt_pb_vote_set_maj23,   cmt_pb_vote_set_maj23_t);
+CMT_PB_DECL(cmt_pb_vote_set_bits,    cmt_pb_vote_set_bits_t);
+CMT_PB_DECL(cmt_pb_cons_proposal,    cmt_pb_cons_proposal_t);
+
+CMT_PB_DECL_ARENA(cmt_pb_block_part,   cmt_pb_block_part_t);
+CMT_PB_DECL_ARENA(cmt_pb_cons_vote,    cmt_pb_cons_vote_t);
+CMT_PB_DECL_ARENA(cmt_pb_cons_message, cmt_pb_cons_message_t);
+
+/* ── consensus/wal.proto ────────────────────────────────────────────── */
+
+/**
+ * wal.proto:15 declares `peer_id` a proto3 `string`.
+ *
+ * SUBSTITUTION (port map REV 3.4 item 7; deviation register R2-2): a DNA
+ * peer identity is the 32-byte witness id — SHA3-512(pubkey)[0..31], the
+ * same construction as cmt_address_hash — so field 2 carries those 32 RAW
+ * bytes as its length-delimited payload, exactly as the 32-byte chain id is
+ * carried in its own proto `string` field elsewhere in this port.
+ *
+ * The node's OWN messages carry the EMPTY id, which is the reference's
+ * `msgInfo{PeerID: ""}` (state.go:839 enqueues own messages with no peer);
+ * omit-zero then leaves field 2 off the wire entirely.
+ *
+ * The decoder accepts EXACTLY 0 or 32 bytes and refuses any other length.
+ * That is stricter than the plain capacity rule this header states for
+ * every other byte field, and it is deliberate: a WAL row is replayed as if
+ * it had been received, so a peer id that is neither empty nor a witness id
+ * is a row this node cannot have written (INVARIANT
+ * atlas-dec-7495d3372e004b24b4f6cc7bff5caf07).
+ */
+#define CMT_PB_PEER_ID_MAX 32
+
+/** wal.proto:13-16 — `MsgInfo`. Field 1 is ALWAYS emitted, field 2 is
+ *  omit-empty (wal.pb.go:427-450). */
+typedef struct {
+    cmt_pb_cons_message_t msg;                        /* 1 ALWAYS */
+    uint8_t               peer_id[CMT_PB_PEER_ID_MAX];/* 2 */
+    size_t                peer_id_len;
+} cmt_pb_msg_info_t;
+
+/**
+ * wal.proto:19-25 — `TimeoutInfo`.
+ *
+ * Field 1 is `(gogoproto.nullable) = false, (gogoproto.stdduration) = true`
+ * and is ALWAYS emitted (wal.pb.go:487-494, which calls
+ * StdDurationMarshalTo with no `if`), so a ZERO duration is `0a 00`.
+ * `duration` is held as Go holds a `time.Duration`: a count of NANOSECONDS.
+ */
+typedef struct {
+    int64_t  duration;   /* 1 ALWAYS, nanoseconds */
+    int64_t  height;     /* 2 */
+    int32_t  round;      /* 3 */
+    uint32_t step;       /* 4 */
+} cmt_pb_timeout_info_t;
+
+/** wal.proto:29-31 — `EndHeight`. One omit-zero scalar, so `EndHeight{0}`
+ *  has an EMPTY body and appears in a WALMessage as `22 00`
+ *  (wal.pb.go:513-524, :626-641). */
+typedef struct {
+    int64_t height;   /* 1 */
+} cmt_pb_end_height_t;
+
+/**
+ * wal.proto:33-40 — the `WALMessage` oneof's field numbers.
+ *
+ * These numbers ARE the WAL row's `kind` column (D-15 rev 5, PROPOSED at
+ * the time of writing — atlas-dec-c0bfc5344204b9282ceaaa5e06042350). 0 is
+ * the reference's nil `Sum`, which marshals to zero bytes.
+ */
+typedef enum {
+    CMT_PB_WAL_NONE                   = 0,
+    CMT_PB_WAL_EVENT_DATA_ROUND_STATE = 1,
+    CMT_PB_WAL_MSG_INFO               = 2,
+    CMT_PB_WAL_TIMEOUT_INFO           = 3,
+    CMT_PB_WAL_END_HEIGHT             = 4
+} cmt_pb_wal_kind_t;
+
+/** wal.proto:33-40 — `WALMessage`. Same replace-not-merge oneof decode
+ *  rule as cmt_pb_cons_message_t (wal.pb.go:1148-1337). */
+typedef struct {
+    cmt_pb_wal_kind_t sum;
+    union {
+        cmt_pb_event_data_round_state_t event_data_round_state; /* 1 */
+        cmt_pb_msg_info_t               msg_info;               /* 2 */
+        cmt_pb_timeout_info_t           timeout_info;           /* 3 */
+        cmt_pb_end_height_t             end_height;             /* 4 */
+    } u;
+} cmt_pb_wal_message_t;
+
+/**
+ * wal.proto:43-46 — `TimedWALMessage`.
+ *
+ * Field 1 is `(gogoproto.nullable) = false, (gogoproto.stdtime) = true` and
+ * is ALWAYS emitted, so Go's ZERO time is the eleven bytes of K-1 rev 2
+ * rule (c) — use CMT_TIME_ZERO, never a memset. Field 2 is a POINTER,
+ * omitted when nil (wal.pb.go:657-683).
+ */
+typedef struct {
+    cmt_time_t           time;      /* 1 ALWAYS */
+    bool                 has_msg;   /* 2 POINTER */
+    cmt_pb_wal_message_t msg;
+} cmt_pb_timed_wal_message_t;
+
+CMT_PB_DECL(cmt_pb_timeout_info, cmt_pb_timeout_info_t);
+CMT_PB_DECL(cmt_pb_end_height,   cmt_pb_end_height_t);
+
+CMT_PB_DECL_ARENA(cmt_pb_msg_info,          cmt_pb_msg_info_t);
+CMT_PB_DECL_ARENA(cmt_pb_wal_message,       cmt_pb_wal_message_t);
+CMT_PB_DECL_ARENA(cmt_pb_timed_wal_message, cmt_pb_timed_wal_message_t);
+
+/* ── Block and EvidenceList, relocated from cmt_block.c (R1B-6) ─────── */
+
+/**
+ * types/evidence.proto:36-38 — `EvidenceList`. One repeated field, every
+ * element carrying its own tag (evidence.pb.go:581-601).
+ *
+ * The elements are CALLER-OWNED, as every repeated field in this header
+ * is; `evidence` may be NULL only when `evidence_len` is 0.
+ */
+typedef struct {
+    const cmt_pb_evidence_t *evidence;   /* field 1, repeated */
+    size_t                   evidence_len;
+} cmt_pb_evidence_list_t;
+
+/**
+ * types/block.proto:10-15 — `Block`. Fields 1, 2 and 3 are
+ * `(gogoproto.nullable) = false` and ALWAYS emitted; field 4 is a POINTER
+ * (block.pb.go:136-184).
+ *
+ * WHY IT MOVED. Wave R1-B built this encoder inside cmt_block.c because
+ * that wave's whitelist closed cmt_pb, and recorded the relocation as
+ * recommended (R1B-6). It is here now, on the same backward writer every
+ * other message uses; cmt_block.c's `cmt_block_marshal` fills this struct
+ * from its domain `cmt_block_t` and calls `cmt_pb_block_marshal`. THE
+ * BYTES ARE UNCHANGED — the forward frame-and-memmove writer that used to
+ * live there produced exactly what the generated backward writer does, and
+ * test_cmt_block.c's vectors, which this wave does not touch, are the
+ * proof.
+ *
+ * There is deliberately NO `cmt_pb_block_unmarshal`: the reference decodes
+ * a block through `BlockFromProto` (types/block.go:246-278), which wave
+ * R1-B ported as `cmt_block_from_proto` over an already-decoded structure.
+ * Adding a wire decoder here would be a function with no reference row.
+ */
+typedef struct {
+    cmt_pb_header_t        header;        /* 1 ALWAYS */
+    cmt_pb_data_t          data;          /* 2 ALWAYS */
+    cmt_pb_evidence_list_t evidence;      /* 3 ALWAYS */
+    const cmt_pb_commit_t *last_commit;   /* 4 POINTER */
+} cmt_pb_block_t;
+
+/** cometbft@709fd12b proto/tendermint/types/evidence.pb.go:581-601 —
+ *  `EvidenceList.MarshalToSizedBuffer`.
+ *  @return CMT_OK, CMT_REJECT if it does not fit or an element will not
+ *          encode, CMT_FAULT on NULL. */
+int cmt_pb_evidence_list_marshal(const cmt_pb_evidence_list_t *m,
+                                 uint8_t *out, size_t cap, size_t *out_len);
+
+/** cometbft@709fd12b proto/tendermint/types/block.pb.go:136-184 —
+ *  `Block.MarshalToSizedBuffer`. */
+int cmt_pb_block_marshal(const cmt_pb_block_t *m, uint8_t *out, size_t cap,
+                         size_t *out_len);
+
 #ifdef __cplusplus
 }
 #endif

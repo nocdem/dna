@@ -10,6 +10,24 @@ get_filename_component(NODUS_DIR "${CMAKE_CURRENT_LIST_DIR}" ABSOLUTE)
 get_filename_component(MONOREPO_ROOT "${NODUS_DIR}/.." ABSOLUTE)
 set(SHARED_DIR "${MONOREPO_ROOT}/shared")
 
+# ── cometbft port: the software version a State stores ───────────────
+# State.Version.Software carries THIS node's Nodus version, not cometbft's
+# "0.38.19" (operator 2026-09-10, atlas-dec-157739c22040e385e1096932fc7d3a63).
+# shared/dnac must not include a nodus header, so the value is read out of
+# nodus_types.h here and handed to every translation unit as a definition;
+# cmt_state.h refuses to compile without it (#error), so it can never fall
+# back to the reference's literal. The single source of truth stays the
+# header that already governs the four NODUS_VERSION_* macros.
+file(STRINGS "${NODUS_DIR}/include/nodus/nodus_types.h" _nodus_version_line
+     REGEX "^#define NODUS_VERSION_STRING \"[0-9]+\\.[0-9]+\\.[0-9]+\"")
+string(REGEX REPLACE "^#define NODUS_VERSION_STRING \"([0-9]+\\.[0-9]+\\.[0-9]+)\".*$"
+       "\\1" NODUS_VERSION_STRING "${_nodus_version_line}")
+if(NOT NODUS_VERSION_STRING MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+    message(FATAL_ERROR "NODUS_VERSION_STRING not found in nodus_types.h: '${_nodus_version_line}'")
+endif()
+add_compile_definitions(CMT_SOFTWARE_VERSION="${NODUS_VERSION_STRING}")
+message(STATUS "CMT_SOFTWARE_VERSION = \"${NODUS_VERSION_STRING}\" (from nodus_types.h)")
+
 # ── Dependencies ─────────────────────────────────────────────────────
 # When built within the messenger tree (NODUS_STANDALONE=OFF), the parent
 # CMakeLists.txt already found these packages. Only search when standalone.
@@ -124,18 +142,6 @@ set(NODUS_SOURCES
     src/client/nodus_republish.c
     src/client/nodus_cc_client.c
 
-    # Tendermint consensus core (T1) — engine-independent interface, the
-    # protocol registry, and the pure Algorithm 1 state machine. ZERO
-    # CONSUMERS: nothing in the tree calls dna_consensus_lookup yet; the
-    # host binding is a later season. Pure C over libc + dnac/ledger_ids.h —
-    # no I/O, no clock, no crypto, no SQLite — so it belongs in the common
-    # list rather than the Linux-only server block.
-    src/bft/dna_consensus_registry.c
-    src/bft/tendermint/tm_state.c
-    src/bft/tendermint/tm_log.c
-    src/bft/tendermint/tm_timeouts.c
-    src/bft/tendermint/tm_proposer.c
-
     # Shared dnac wire format (Hard-Fork v1 — single source of truth for
     # the CHAIN_CONFIG TX extension block encoder/decoder shared with dnac)
     ${SHARED_DIR}/dnac/chain_config_wire.c
@@ -191,13 +197,6 @@ set(NODUS_SOURCES
     # global-block apply engine + V2 supply gate.
     src/witness/nodus_witness_v2_schema.c
     src/witness/nodus_witness_v2_apply.c
-
-    # Tendermint T3 wave 1 — the consensus WAL (tm_wal) and validator
-    # state row (tm_state) on schema stage S13. ZERO CONSUMERS: no live
-    # witness path opens it; the host that replays it is wave 2. It needs
-    # SQLite (a SECOND connection at synchronous=FULL, D-13), which is
-    # why it sits here and not with the pure T1 core above.
-    src/witness/nodus_witness_tm_wal.c
 
     # Ledger V2 O12 S2 — INACTIVE engine-mandatory epoch-boundary
     # transition (pending-commission activation, RETIRING -> UNSTAKED
@@ -295,19 +294,17 @@ set(NODUS_SOURCES
     ${SHARED_DIR}/dnac/vset_wire.c
     ${SHARED_DIR}/dnac/qc_v2.c
 
-    # Tendermint T3 wave 1 — INACTIVE nodus.vote.v1 preimage + nodus.commit.v1
-    # certificate codec (encode/decode/verify, BFT-time median). Derived size
-    # bounds live in the header-only shared/dnac/tm_bounds.h. No consensus path
-    # calls either; the live witness BFT path is untouched. Same ownership
-    # pattern as qc_v2.c above.
-    ${SHARED_DIR}/dnac/tm_vote.c
-    ${SHARED_DIR}/dnac/tm_commit.c
+    # (The T3 wave-1 codecs tm_vote.c / tm_commit.c and the T1 core under
+    # src/bft/ were deleted in R2 — atlas-dec-a309a65984f1709149b40db9cb5b38a7
+    # — as a second, dead implementation of what the cometbft port below
+    # provides. shared/dnac/tm_bounds.h stays until R3 rewrites the tier-3
+    # verbs; nodus_tier3.h:37 still includes it.)
 
     # cometbft @709fd12b → C port, wave R1-A (FLEET-TM-R1) — INACTIVE
     # encoding/hashing foundation: proto3 wire codec (K-1 rev 2 / K-2),
     # RFC 6962 Merkle over SHA3-512, BitArray, safemath, BFT-time helpers.
     # Zero runtime consumers; no consensus path calls any of it yet. Same
-    # ownership pattern as tm_vote.c / tm_commit.c above.
+    # ownership pattern as qc_v2.c above.
     ${SHARED_DIR}/dnac/cmt_merkle.c
     ${SHARED_DIR}/dnac/cmt_bits.c
     ${SHARED_DIR}/dnac/cmt_safemath.c
@@ -325,7 +322,7 @@ set(NODUS_SOURCES
     # cometbft @709fd12b → C port, wave R1-C (FLEET-TM-R1) — INACTIVE
     # validator / validator set (proposer priority, change sets, hash),
     # ABCI results, consensus params, genesis document. Zero runtime
-    # consumers; supersedes nodus/src/bft/tendermint/tm_proposer.c in R2.
+    # consumers; the T1 tm_proposer.c it superseded was deleted in R2.
     ${SHARED_DIR}/dnac/cmt_validator_set.c
     ${SHARED_DIR}/dnac/cmt_results.c
     ${SHARED_DIR}/dnac/cmt_params.c
@@ -335,6 +332,28 @@ set(NODUS_SOURCES
     ${SHARED_DIR}/dnac/cmt_validation.c
     ${SHARED_DIR}/dnac/cmt_evidence.c
     ${SHARED_DIR}/dnac/cmt_state.c
+    # cometbft @709fd12b → C port, wave R2-A (FLEET-TM-R2): types/vote_set.go,
+    # consensus/types/height_vote_set.go (+ block.go ToVoteSet family;
+    # round_state.go is header-only). Zero runtime consumers.
+    ${SHARED_DIR}/dnac/cmt_vote_set.c
+    ${SHARED_DIR}/dnac/cmt_hvs.c
+
+    # cometbft @709fd12b → C port, wave R2-B (FLEET-TM-R2): consensus/msgs.go
+    # codecs, wal.go record types, ticker.go, privval/file.go signing logic,
+    # replay.go handshake classifier (config.go is header-only). Zero
+    # runtime consumers.
+    ${SHARED_DIR}/dnac/cmt_msgs.c
+    ${SHARED_DIR}/dnac/cmt_wal.c
+    ${SHARED_DIR}/dnac/cmt_ticker.c
+    ${SHARED_DIR}/dnac/cmt_privval.c
+    ${SHARED_DIR}/dnac/cmt_replay.c
+
+    # cometbft @709fd12b → C port, wave R2-C (FLEET-TM-R2): consensus/state.go
+    # itself — the consensus state machine, its single-threaded event loop and
+    # its host callback table, plus replay.go's readReplayMessage and
+    # catchupReplay. Zero runtime consumers: the reactor that would drive it is
+    # R3.
+    ${SHARED_DIR}/dnac/cmt_cs.c
 
     # Ledger V2 O15B — canonical BlockMessage v1 wire codec. Structure and
     # bounds ONLY: it computes no consensus value and touches no committed
@@ -955,22 +974,6 @@ add_executable(test_qc_v2 tests/test_qc_v2.c)
 target_link_libraries(test_qc_v2 nodus dsa nodus crypto)
 add_test(NAME test_qc_v2 COMMAND test_qc_v2)
 
-# Tendermint T3 wave 1 — nodus.vote.v1 preimage: the 229-byte layout checked
-# offset by offset against a hand-built array, the T2 §4.1 KATs, the signer's
-# timestamp-only classification, and own-vote stamping as pure arithmetic.
-add_executable(test_tm_vote tests/test_tm_vote.c)
-target_link_libraries(test_tm_vote nodus dsa nodus crypto)
-add_test(NAME test_tm_vote COMMAND test_tm_vote)
-
-# Tendermint T3 wave 1 — nodus.commit.v1 certificate: the 94-byte empty
-# certificate KAT, strict decode negatives, the BFT-time median walk with its
-# published KATs, a REAL-KEY N=4 suite (fail-closed on one bad signature, NIL
-# verified but not counted, quorum boundary, wrong-context rejects) and an
-# N=128 length/round-trip section with synthetic signatures.
-add_executable(test_tm_commit tests/test_tm_commit.c)
-target_link_libraries(test_tm_commit nodus dsa nodus crypto)
-add_test(NAME test_tm_commit COMMAND test_tm_commit)
-
 # cometbft @709fd12b → C port, wave R1-A — the five foundation tests. Each
 # file's header states what it proves, what it requires (a default build,
 # nothing else), what it leaves behind (nothing) and how it can lie (the
@@ -1042,6 +1045,80 @@ add_test(NAME test_cmt_evidence COMMAND test_cmt_evidence)
 add_executable(test_cmt_state tests/test_cmt_state.c)
 target_link_libraries(test_cmt_state nodus dsa nodus crypto)
 add_test(NAME test_cmt_state COMMAND test_cmt_state)
+
+# cometbft @709fd12b → C port, wave R2-A — vote sets: the seven vote_set_test.go
+# scenarios plus weight-vs-count and the C-only capacity bounds; the two
+# height_vote_set_test.go scenarios plus SetRound's round -1, POLInfo and the
+# peer catch-up bound. Default build, `ctest -j` safe; see each file's header.
+add_executable(test_cmt_vote_set tests/test_cmt_vote_set.c)
+target_link_libraries(test_cmt_vote_set nodus dsa nodus crypto)
+add_test(NAME test_cmt_vote_set COMMAND test_cmt_vote_set)
+
+add_executable(test_cmt_hvs tests/test_cmt_hvs.c)
+target_link_libraries(test_cmt_hvs nodus dsa nodus crypto)
+add_test(NAME test_cmt_hvs COMMAND test_cmt_hvs)
+
+# cometbft @709fd12b → C port, wave R2-B — the consensus-package codecs
+# (msgs.go, WAL record types), the timeout ticker's rule, the private
+# validator's signing logic, the handshake classifier. Default build,
+# `ctest -j` safe; see each file's header for the four items.
+add_executable(test_cmt_msgs tests/test_cmt_msgs.c)
+target_link_libraries(test_cmt_msgs nodus dsa nodus crypto)
+add_test(NAME test_cmt_msgs COMMAND test_cmt_msgs)
+
+add_executable(test_cmt_wal tests/test_cmt_wal.c)
+target_link_libraries(test_cmt_wal nodus dsa nodus crypto)
+add_test(NAME test_cmt_wal COMMAND test_cmt_wal)
+
+add_executable(test_cmt_ticker tests/test_cmt_ticker.c)
+target_link_libraries(test_cmt_ticker nodus dsa nodus crypto)
+add_test(NAME test_cmt_ticker COMMAND test_cmt_ticker)
+
+add_executable(test_cmt_privval tests/test_cmt_privval.c)
+target_link_libraries(test_cmt_privval nodus dsa nodus crypto)
+add_test(NAME test_cmt_privval COMMAND test_cmt_privval)
+
+add_executable(test_cmt_replay tests/test_cmt_replay.c)
+target_link_libraries(test_cmt_replay nodus dsa nodus crypto)
+add_test(NAME test_cmt_replay COMMAND test_cmt_replay)
+
+# cometbft @709fd12b → C port, wave R2-C — the state machine's host-free
+# parts: the round-step walk of a non-validator, the seven entry guards as
+# predicates, the timeout acceptance rule, the internal queue's order and its
+# overflow fault, proposer selection, voteTime's clamp, the config-derived
+# durations and the replay END_HEIGHT rule. It does NOT reach the slot
+# allocator, any block, any signature or finalizeCommit — the file's own
+# "how it can lie" section says which and why, and the scenario suite that
+# drives a whole height is wave R2-T's test_cmt_cs.c.
+# Default build, `ctest -j` safe; see the file's header for the four items.
+add_executable(test_cmt_cs_unit tests/test_cmt_cs_unit.c)
+target_link_libraries(test_cmt_cs_unit nodus dsa nodus crypto)
+add_test(NAME test_cmt_cs_unit COMMAND test_cmt_cs_unit)
+
+# cometbft @709fd12b → C port, wave R2-T — the scenario suite: whole heights
+# driven through cmt_cs's public surface against a deterministic host
+# fixture (tests/test_cmt_common.h, the C stand-in for the reference's
+# consensus/common_test.go). Ported from state_test.go, byzantine_test.go and
+# mempool_test.go; each scenario names the Go func it comes from. Slow — it
+# makes a few hundred real ML-DSA-87 signatures. Default build, `ctest -j`
+# safe; the file's header lists what it proves and, at length, what it
+# cannot reach.
+add_executable(test_cmt_cs tests/test_cmt_cs.c)
+target_link_libraries(test_cmt_cs nodus dsa nodus crypto)
+add_test(NAME test_cmt_cs COMMAND test_cmt_cs)
+
+# cometbft @709fd12b → C port, wave R2-BYZ — the multi-node byzantine
+# partition test: four independent state machines behind a deterministic
+# router (tests/test_cmt_multinode.h, the reactor stand-in) with a
+# connectivity matrix that starts partitioned and heals. Ported from
+# byzantine_test.go's TestByzantineConflictingProposalsWithPartition, plus
+# two C-only scenarios the driver makes cheap. The one test in the suite that
+# asks "do N nodes fork" rather than "does one node react correctly". Slow —
+# real ML-DSA-87 signatures across four nodes. Default build, `ctest -j` safe;
+# both files' headers list what they cannot reach.
+add_executable(test_cmt_byzantine tests/test_cmt_byzantine.c)
+target_link_libraries(test_cmt_byzantine nodus dsa nodus crypto)
+add_test(NAME test_cmt_byzantine COMMAND test_cmt_byzantine)
 
 # Ledger V2 O15A — obligation 1: an allocation failure in or beneath the
 # QC path is a NODE FAULT, never a consensus verdict. malloc/calloc are
@@ -2577,20 +2654,10 @@ register_witness_test(test_fault_inject_round_skip)
 set_tests_properties(test_fault_inject_round_skip
     PROPERTIES SKIP_RETURN_CODE 99)
 
-# ── Tendermint T1 (zero consumers) ───────────────────────────────────
-# Algorithm 1 line tests, the CometBFT proposer-priority KATs, and the
-# seeded N-node simulation. No ports, no files, no environment, no clock
-# (virtual) and no RNG (seeded xorshift) -> safe under `ctest -j`.
-register_witness_test(test_tm_core)
-register_witness_test(test_tm_proposer)
-register_witness_test(test_tm_sim)
-
-# T3 wave 1 — the consensus WAL / state row on schema S13. Unlike the
-# three above this one DOES touch the file system: it needs two SQLite
-# connections on one file, which `:memory:` cannot provide. It creates a
-# unique temp directory per process (mkdtemp) and removes it, so it stays
-# safe under `ctest -j`. Still no ports, no clock and no RNG.
-register_witness_test(test_tm_wal)
+# (The T1 core tests test_tm_core / test_tm_proposer / test_tm_sim and the
+# T3 wave-1 test_tm_wal were deleted in R2 with the modules they tested —
+# atlas-dec-a309a65984f1709149b40db9cb5b38a7. Their subjects live on as the
+# cometbft port's test_cmt_* binaries registered above.)
 
 # Task 81 — supply invariance property test (Phase 17).
 # Pure-C simulated state machine — does NOT need the witness internal

@@ -5,8 +5,9 @@
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
  * Wave R1-A of the cometbft → C consensus port. Nothing in the running
  * chain calls anything in this file; it is additive only. The live witness
- * BFT, the QC V2 path and the T3 wave-1 modules (tm_commit, tm_vote,
- * tm_wal) are byte-identically untouched.
+ * BFT and the QC V2 path are byte-identically untouched. (The T3 wave-1
+ * modules tm_commit / tm_vote / tm_wal that R1 left in place were deleted
+ * in R2 — atlas-dec-a309a65984f1709149b40db9cb5b38a7.)
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── The one substitution ───────────────────────────────────────────────
@@ -100,7 +101,7 @@ extern "C" {
 #define CMT_TMHASH_TRUNCATED_SIZE 32
 
 /** Return codes shared by every cmt_* module, identical to the contract
- *  of shared/dnac/qc_v2.h and tm_commit.h:
+ *  of shared/dnac/qc_v2.h (and of the deleted tm_commit.h before it):
  *    0  accept
  *   -1  REJECT — the input is bad. Deterministic: every honest node
  *       reaches the same verdict on the same bytes.

@@ -50,16 +50,21 @@
  * ⚠ WHERE THE BLOCK'S OWN proto3 ENCODER LIVES. `Block.MakePartSet`
  * (:146-164) and `Block.Size` (:177-184) need the marshalled
  * `tendermint.types.Block`, and `EvidenceData` needs the marshalled
- * `EvidenceList`. Wave R1-A's cmt_pb does not carry those two messages and
- * WAVE R1-B'S FILE WHITELIST ADMITS ONLY ExtendedCommitSig AND
- * ExtendedCommit INTO cmt_pb. Their encoders therefore live in
- * cmt_block.c, built on cmt_pb's PUBLIC per-message marshals and
- * `cmt_pb_put_uvarint`, so the wire RULES stay cmt_pb's and only the outer
- * four-field frame is written here (block.pb.go:136-184,
- * evidence.pb.go:581-601). No DECODER is needed: the reference's
- * `BlockFromProto` takes an already-decoded proto struct, and bytes → struct
- * is `proto.Unmarshal`, which is cmt_pb's job. RECOMMENDED: relocate both
- * encoders into cmt_pb at integration, when its whitelist is open.
+ * `EvidenceList`. Wave R1-A's cmt_pb did not carry those two messages and
+ * wave R1-B's file whitelist admitted only ExtendedCommitSig and
+ * ExtendedCommit into cmt_pb, so R1-B built both encoders HERE, on a
+ * forward writer over cmt_pb's public per-message marshals, and recorded
+ * the recommendation to relocate them.
+ *
+ * WAVE R2-B DID THAT (R1B-6). `cmt_pb_block_marshal` and
+ * `cmt_pb_evidence_list_marshal` now live in cmt_pb.c on the same backward
+ * writer as every other generated encoder (block.pb.go:136-184,
+ * evidence.pb.go:581-601); `cmt_block_marshal` below builds the cmt_pb view
+ * of the block — a four-field copy, because `(b *Block) ToProto()` is the
+ * identity on this representation — and calls it. The bytes are unchanged.
+ * No DECODER is needed on either side: the reference's `BlockFromProto`
+ * takes an already-decoded proto struct, and bytes → struct is
+ * `proto.Unmarshal`, which is cmt_pb's job.
  *
  * ── Determinism ────────────────────────────────────────────────────────
  * Every function here is a pure function of its arguments. No clock is

@@ -392,7 +392,9 @@ int cmt_state_make_genesis(cmt_genesis_doc_t *gen_doc,
 
     /* :337 — InitStateVersion (:30-36): the block protocol, App 0, and the
      * software string. See CMT_SOFTWARE_VERSION in cmt_state.h — it is
-     * store-only and is the wave's open QUESTION. */
+     * store-only, and since 2026-09-10 it is this node's own Nodus version,
+     * supplied by the build rather than compiled in as the reference's
+     * literal (atlas-dec-157739c22040e385e1096932fc7d3a63). */
     out->version.consensus.block = (uint64_t)CMT_BLOCK_PROTOCOL;  /* :32  */
     out->version.consensus.app   = 0u;                            /* :33  */
     memset(out->version.software, 0, sizeof(out->version.software));

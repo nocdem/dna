@@ -109,15 +109,9 @@ nodus/
 │   │   └── nodus_inter_circuit.c  # Inter-node circuit table (cross-nodus relay)
 │   ├── consensus/
 │   │   └── nodus_cluster.c       # Cluster membership + leader election
-│   ├── bft/                      # Tendermint consensus core (T1, 2026-09-08) — ZERO consumers yet
-│   │   ├── dna_consensus.h           # Engine-independent interface + host contract (registry key = protocol id)
-│   │   ├── dna_consensus_registry.c  # protocol id -> ops table (1 = Tendermint; 0 = INVALID)
-│   │   └── tendermint/
-│   │       ├── tm_core.h             # Internal API: core, proposer object, replay, snapshot
-│   │       ├── tm_state.c            # arXiv 1807.04938v3 Algorithm 1 lines 1-67, one function per rule
-│   │       ├── tm_log.c              # Per-height message log, thresholds, equivocation (two slots), byte budget
-│   │       ├── tm_timeouts.c         # timeoutX(r) = init + r*delta, three timer slots, saturating deadlines
-│   │       └── tm_proposer.c         # CometBFT proposer-priority round-robin (cometbft@709fd12b, pure C port)
+│   │   (src/bft/ — the T1 Tendermint core of 2026-09-08 — was DELETED in R2,
+│   │    2026-09-11, as a second implementation of what the cometbft port
+│   │    under shared/dnac/cmt_*.c provides; see "cometbft literal port" below)
 │   ├── server/
 │   │   ├── nodus_server.c     # Server event loop + message dispatch
 │   │   └── nodus_auth.c       # Dilithium5 challenge-response auth
@@ -132,9 +126,9 @@ nodus/
 │       ├── nodus_witness_peer.c/h   # TCP peer mesh management
 │       ├── nodus_witness_handlers.c/h # DNAC message dispatch (spend, query, block)
 │       ├── nodus_witness_verify.c/h # TX verification (hash, sig, balance, fee, nullifiers)
-│       ├── nodus_witness_v2_schema.c/h # Ledger V2 versioned schema S5..S13 (S13 = tm_wal, tm_state, v2_blocks.commit_cert)
-│       └── nodus_witness_tm_wal.c/h   # Tendermint T3 wave 1: consensus WAL + validator-state row on a SECOND
-│                                      #   synchronous=FULL SQLite connection, SHA3-512 row digests — ZERO consumers yet
+│       └── nodus_witness_v2_schema.c/h # Ledger V2 versioned schema S5..S13 (S13 = tm_wal, tm_state, v2_blocks.commit_cert;
+│                                      #   the S13 tables stay — the wave-1 module that wrote them, nodus_witness_tm_wal.c/h,
+│                                      #   was deleted in R2; the host that writes them to D-15 rev 5 is R3)
 ├── tests/
 │   ├── test_wire.c            # Wire frame tests
 │   ├── test_cbor.c            # CBOR encoder/decoder tests
@@ -154,12 +148,8 @@ nodus/
 │   ├── test_tcp.c               # TCP transport tests
 │   ├── test_client.c          # Client SDK tests
 │   ├── test_server.c          # Server integration tests
-│   ├── test_tm_core.c         # Tendermint T1: Algorithm 1 line tests + replay/WAL rules
-│   ├── test_tm_proposer.c     # Tendermint T1: proposer-priority KATs (reference tables + hand-derived)
-│   ├── test_tm_sim.c          # Tendermint T1: seeded N-node simulation (relay + sync stand-ins, Byzantine models)
-│   ├── test_tm_vote.c         # Tendermint T3: nodus.vote.v1 229-byte preimage (hand-built layout, KATs, signer diff class)
-│   ├── test_tm_commit.c       # Tendermint T3: nodus.commit.v1 certificate codec, BFT-time median, real-key fail-closed verify
-│   ├── test_tm_wal.c          # Tendermint T3: tm_wal/tm_state on a second FULL connection, digest halt, startup table
+│   │   (test_tm_core / test_tm_proposer / test_tm_sim / test_tm_vote / test_tm_commit /
+│   │    test_tm_wal were deleted in R2 with the T1 core and T3 wave-1 modules they tested)
 │   ├── test_cmt_merkle.c      # cometbft port R1-A: RFC 6962 tree on SHA3-512 — roots, proofs, empty root H("")
 │   ├── test_cmt_bits.c        # cometbft port R1-A: BitArray + packed wire form (Elems == (Bits+63)/64 enforced)
 │   ├── test_cmt_safemath.c    # cometbft port R1-A: libs/math/safemath.go
@@ -174,7 +164,19 @@ nodus/
 │   ├── test_cmt_genesis.c     # cometbft port R1-C: GenesisDoc ValidateAndComplete (clock via callback), ValidatorHash
 │   ├── test_cmt_validation.c  # cometbft port R1-D: VerifyCommit with real signatures — +2/3 strict, NIL verified-not-counted, every signature checked
 │   ├── test_cmt_evidence.c    # cometbft port R1-D: DuplicateVoteEvidence bare bytes / flat hash / canonical order, EvidenceList root
-│   └── test_cmt_state.c       # cometbft port R1-D: MedianTime (voting-power weights), MakeGenesisState, Copy, MakeBlock
+│   ├── test_cmt_state.c       # cometbft port R1-D: MedianTime (voting-power weights), MakeGenesisState, Copy, MakeBlock
+│   ├── test_cmt_vote_set.c    # cometbft port R2-A: VoteSet — the seven vote_set_test.go scenarios, weight-vs-count, the C-only capacity bounds (128 peers, N+P blocks)
+│   ├── test_cmt_hvs.c         # cometbft port R2-A: HeightVoteSet — the two height_vote_set_test.go scenarios, SetRound's round −1, POLInfo, peer catch-up bound
+│   ├── test_cmt_msgs.c        # cometbft port R2-B: MsgToProto / MsgFromProto for the 9 reactor messages, the Message oneof, msgs_test.go golden hex
+│   ├── test_cmt_wal.c         # cometbft port R2-B: WALToProto / WALFromProto, the 4 record kinds, TimedWALMessage, Duration range incl. INT64 extremes
+│   ├── test_cmt_ticker.c      # cometbft port R2-B: the timeout ticker's ignore rule (ticker.go:108-118), every branch of the step guard
+│   ├── test_cmt_privval.c     # cometbft port R2-B: FilePV signing — CheckHRS branch by branch, reuse / timestamp-only / conflicting-data, save-then-sign order, real ML-DSA-87
+│   ├── test_cmt_replay.c      # cometbft port R2-B: the handshake classifier — one row per branch, the 4^5 sweep, the negative-height bound
+│   ├── test_cmt_cs_unit.c     # cometbft port R2-C: the state machine's host-free parts — the seven entry guards as predicates, timeout acceptance, internal queue FIFO/overflow, voteTime clamp
+│   ├── test_cmt_common.h      # cometbft port R2-T: the host fixture (C stand-in for common_test.go) — application, block store, MockPV signer, WAL ring, frozen clock, hand-fired timer; 10 "how it can lie" entries
+│   ├── test_cmt_cs.c          # cometbft port R2-T: 29 whole-height scenarios from state_test.go / byzantine_test.go / mempool_test.go; asserts WHICH block was committed; 18 "how it can lie" entries
+│   ├── test_cmt_multinode.h   # cometbft port R2-BYZ: the reactor stand-in — N fixtures, connectivity matrix, router porting the three gossip routines as rules, step budget instead of wall clock
+│   └── test_cmt_byzantine.c   # cometbft port R2-BYZ: TestByzantineConflictingProposalsWithPartition — 4 nodes, byzantine proposer, partition heals, all honest nodes commit the SAME block; + 2 C-only scenarios
 ├── CMakeLists.txt             # Build system
 └── docs/
     └── ARCHITECTURE.md        # This file
@@ -1418,7 +1420,7 @@ cannot decide). Return contract everywhere: 0 / −1 / −2, as in `qc_v2.h`.
 | `cmt_proposal.{h,c}` | `types/proposal.go` | Proposal, sign bytes, `ValidateBasic` |
 | `cmt_part_set.{h,c}` | `types/part_set.go` | Part / PartSetHeader / PartSet, `AddPart`, reader, `ValidateHash` (64) |
 | `cmt_block.{h,c}` | `types/block.go`, `types/test_util.go` | Header (14-leaf hash), Commit / CommitSig / ExtendedCommit, Data, EvidenceData, BlockID, Block, `MakeBlock` + `fillHeader`; re-derived `MaxHeaderBytes` 790, `MaxCommitOverheadBytes` 159, `MaxCommitSigBytes` 4685 |
-| `cmt_validator_set.{h,c}` | `types/validator.go`, `validator_set.go` | Validator, ValidatorSet, proposer priority (128-bit average, `MaxTotalVotingPower` → FAULT), change sets, `ValidatorsHash`, `VerifyCommit` method; supersedes `src/bft/tendermint/tm_proposer.c` when R2 lands |
+| `cmt_validator_set.{h,c}` | `types/validator.go`, `validator_set.go` | Validator, ValidatorSet, proposer priority (128-bit average, `MaxTotalVotingPower` → FAULT), change sets, `ValidatorsHash`, `VerifyCommit` method; superseded the T1 `tm_proposer.c`, which R2 deleted |
 | `cmt_results.{h,c}` | `types/results.go` | ABCIResults root + proof |
 | `cmt_params.{h,c}` | `types/params.go` | ConsensusParams flat hash, `ValidateBasic` / `ValidateUpdate` / `Update`, defaults, pubkey type name `"mldsa87"` |
 | `cmt_genesis.{h,c}` | `types/genesis.go` | GenesisDoc `ValidateAndComplete` (addresses checked or derived; chain id ≤ 32 bytes by operator decision), `ValidatorHash` |
@@ -1427,14 +1429,66 @@ cannot decide). Return contract everywhere: 0 / −1 / −2, as in `qc_v2.h`.
 | `cmt_state.{h,c}` | `state/state.go` | `State`, `Copy`, `IsEmpty`, `MakeBlock`, `MedianTime` (weighted by voting power, address lookup), `MakeGenesisState` |
 
 Not ported, by rule: the light-client / evidence-pool / blocksync callers (scope rule of
-the local port map), batch verification, JSON and file I/O (host), the `State` store codec
-(R2). Every departure from the reference is enumerated in the local
-`tasks/reference-deviation-register.md` (rows R1A-*, R1B-*, R1C-*, R1D-*). Vectors come
-from four independent Python oracles under `shared/dnac/tests/` (`hashlib.sha3_512`, the
-K-1 rules, no port code imported) and from the reference's own test files; the 15
-`test_cmt_*` targets build with zero warnings and run clean under ASan/UBSan. Open
-questions and pending Atlas revisions at any given time are tracked in the local
-deviation register and the fleet ledger under `tasks/`, not here.
+the local port map), batch verification, JSON and file I/O (host). Every departure from
+the reference is enumerated in the local `tasks/reference-deviation-register.md` (rows
+R1A-*, R1B-*, R1C-*, R1D-*). Vectors come from four independent Python oracles under
+`shared/dnac/tests/` (`hashlib.sha3_512`, the K-1 rules, no port code imported) and from
+the reference's own test files. Open questions and pending Atlas revisions at any given
+time are tracked in the local deviation register and the fleet ledger under `tasks/`,
+not here.
+
+### cometbft @709fd12b literal port — R2 consensus core (`shared/dnac/cmt_*`, DORMANT, zero consumers)
+
+R2 (2026-09-10/11) ports the `consensus/` package's state machine and everything it
+calls, on top of R1. Still no runtime consumer: the reactor that would drive `cmt_cs` —
+what a peer may send, what is gossiped, peer-state bookkeeping — is R3, and until it lands
+the state machine has no caller in the running node. The live witness BFT is byte-untouched.
+Naming follows the Go receiver: `consensus/state.go`'s receiver is `cs`, so its functions are
+`cmt_cs_*`; `state/state.go`'s is `state`, so R1's `cmt_state_*` stands.
+
+| Module | Reference (cometbft @709fd12b) | Holds |
+|---|---|---|
+| `cmt_vote_set.{h,c}` | `types/vote_set.go` | VoteSet: `AddVote` with the peer-maj23 path, `TwoThirdsMajority`, `HasTwoThirdsAny`, `SetPeerMaj23`, `BitArrayByBlockID`, `MakeCommit` / `MakeExtendedCommit`; peer table bounded at `CMT_PEER_MAX` = 128 (= `NODUS_T3_MAX_WITNESSES`, `_Static_assert`ed), block table at N+P |
+| `cmt_hvs.{h,c}` | `consensus/types/height_vote_set.go` | HeightVoteSet: rounds as a sparse list (round −1 exists, as `SetRound`'s `SafeSubInt32(0,1)` makes it), `POLInfo`, the two-round peer catch-up ceiling, the vote-type gate |
+| `cmt_round_state.h` | `consensus/types/round_state.go` | `RoundState`, the eight `RoundStepType` values, `String()` (the one String the port carries — it goes into the WAL) |
+| `cmt_msgs.{h,c}` | `consensus/msgs.go:21-238`, `reactor.go:1527-1794` | `MsgToProto` / `MsgFromProto` for the nine reactor messages; STOPS before `ValidateBasic` (R3's gate) and says so |
+| `cmt_wal.{h,c}` | `consensus/msgs.go:240-347`, `wal.go` record types | `WALToProto` / `WALFromProto`, the four record kinds (kind = oneof field 1-4), `TimedWALMessage` encode/decode — the bytes D-15 rev 5 stores; the file frame (CRC32c) is the host's SQLite row |
+| `cmt_ticker.{h,c}` | `consensus/ticker.go` | the one-pending timeout ticker and its drop rule (:108-118); the host arms/disarms a timer |
+| `cmt_privval.{h,c}` | `privval/file.go` (signing logic) | FilePV: `CheckHRS`, `signVote` / `signProposal` with reuse / timestamp-only / conflicting-data, `saveSigned` before the signature is used; the state file itself is the host's |
+| `cmt_replay.{h,c}` | `consensus/replay.go:375-459, :545-565` | the handshake classifier as a pure function of five heights (one action per branch; the three panics are FAULT actions), the two app-hash asserts; InitChain / replayBlocks are R3 host |
+| `cmt_config.h` | `config/config.go:979-1085` | `ConsensusConfig`, the reference defaults, the five timeout helpers; the CHAIN's values (D-4: 60 s idle, block-interval commit) are the host's at R3 |
+| `cmt_cs.{h,c}` | `consensus/state.go`, `replay.go:39-167`, `libs/fail/fail.go` | the state machine: `updateToState`, the single-threaded event loop (fixed poll order txs → peer queue → internal queue → timer → quit), `handleMsg` / `handleTimeout`, the `enter*` chain with its seven entry guards, `finalizeCommit`, `addProposalBlockPart`, `addVote` / `tryAddVote` (the conflict reaches the evidence pool on EVERY path, added or not), `signVote` / `voteTime`, `catchupReplay`; everything outside the package is a row in `cmt_cs_host_t`; three host-owned block slots; six `CMT_FAIL_POINT()`s under `QGP_FAULT_INJECT` |
+
+Two rules R2 made explicit (both APPROVED Atlas records): a Go `panic` a PEER's input can
+reach becomes `CMT_REJECT`, one that guards a NODE-LOCAL invariant becomes `CMT_FAULT` and
+the node stops — every ported panic site says which and why (umbrella rev 4); and
+`State.Version.Software` is the Nodus version, supplied to the build as
+`CMT_SOFTWARE_VERSION` from `nodus_types.h` (the header refuses to compile without it).
+
+Tests: 15 `test_cmt_*` binaries from R1 plus `test_cmt_vote_set`, `test_cmt_hvs`,
+`test_cmt_msgs`, `test_cmt_wal`, `test_cmt_ticker`, `test_cmt_privval`, `test_cmt_replay`,
+`test_cmt_cs_unit` (host-free), `test_cmt_cs` (29 whole-height scenarios ported from
+`state_test.go` / `byzantine_test.go` / `mempool_test.go` over a deterministic host fixture,
+`test_cmt_common.h`), and `test_cmt_byzantine` (four independent state machines behind a
+deterministic router, `test_cmt_multinode.h`: a byzantine proposer sends conflicting blocks
+to a partitioned network, the partition heals, and every honest node commits the SAME block).
+All build with zero warnings and run clean under ASan/UBSan. Each test file's header states
+what it proves, what it requires, what it leaves behind and — at length — how it can report
+success without exercising its subject; the byzantine suite's and the scenario suite's lists
+are the honest statement of what is NOT yet measured (one byzantine node only, one
+interleaving only, no link cut, the has-bits model chattier than the reactor's).
+
+What running the suites found that reading did not, all fixed in R2: a NULL passed where
+wave A's header requires a value (every commit path faulted); a validator-set borrow that
+the in-place state copy overwrote (a late precommit at an epoch boundary would have been
+verified against the NEXT height's set); a proposal pointer into a freed queue element;
+and — from the byzantine test — a conflicting vote that was ADDED (peer-maj23 path) was
+never reported to the evidence pool, so an equivocating validator went unpunished on that
+path. The R2 diff is additive with respect to live code: no live function loses a line,
+so the Genesis Protocol harness was not run for R2 (it runs at R3, when the reactor is
+rewritten on the `cmt_*` types). The T1 core (`src/bft/`), the T3 wave-1 codecs
+(`tm_vote`, `tm_commit`) and the wave-1 WAL module were deleted in R2 as a second, dead
+implementation; `shared/dnac/tm_bounds.h` stays until R3.
 
 ### BFT Consensus Flow
 

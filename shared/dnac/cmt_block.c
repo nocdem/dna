@@ -23,130 +23,40 @@
 #include <string.h>
 
 /* ══ the block's own proto3 frame ═════════════════════════════════════
- * See cmt_block.h's banner: the Block and EvidenceList encoders live here
- * because wave R1-B's whitelist closes cmt_pb. Only the outer frame is
- * written; every BODY comes from a cmt_pb marshal, so the wire rules stay
- * cmt_pb's (K-1 rev 2). Recommended for relocation into cmt_pb.
+ * RELOCATED (wave R2-B, R1B-6). The Block and EvidenceList encoders that
+ * wave R1-B had to build here — because that wave's whitelist closed
+ * cmt_pb — now live in cmt_pb.c beside every other generated encoder, as
+ * `cmt_pb_block_marshal` and `cmt_pb_evidence_list_marshal`, on the same
+ * backward writer. The forward frame-and-memmove helpers they needed
+ * (`frame_begin`, `frame_end`, `PB_LEN_RESERVE`) went with them and have
+ * no counterpart there: the backward writer never needs one.
+ *
+ * THE BYTES ARE UNCHANGED. The two functions below now only build the
+ * cmt_pb view of what they already held and call the relocated encoder;
+ * test_cmt_block.c's vectors, untouched by this wave, are the proof.
  * ═════════════════════════════════════════════════════════════════════ */
 
-/** Room reserved for a length prefix before the body is measured. Ten is
- *  the widest uvarint a size_t can need. */
-#define PB_LEN_RESERVE 10u
-
-/**
- * Start `tag ‖ uvarint(len) ‖ body` at out + *off. The body is marshalled
- * into `*body` (which sits PB_LEN_RESERVE bytes past the tag) and the gap
- * is closed by frame_end. The reference's generated encoders write
- * BACKWARD and so never need this; a forward writer built on cmt_pb's
- * public per-message marshals does. The BYTES PRODUCED ARE IDENTICAL — the
- * only difference is one memmove per field.
- */
-static int frame_begin(uint8_t *out, size_t cap, size_t *off, uint32_t field,
-                       uint8_t **body, size_t *body_cap)
+/** Fill the wire view of an EvidenceData. `cmt_evidence_data_t.evidence`
+ *  is already an array of `cmt_pb_evidence_t` (types/block.go:1420-1438 —
+ *  ToProto is the identity), so this is a two-field copy. */
+static void evidence_list_view(const cmt_evidence_data_t *ed,
+                               cmt_pb_evidence_list_t *out)
 {
-    size_t head;
-
-    if (field == 0u || field > 15u) {
-        return CMT_FAULT;              /* one-byte tags only in Block   */
-    }
-    head = *off + 1u + PB_LEN_RESERVE;
-    if (head < *off || head > cap) {
-        return CMT_REJECT;
-    }
-    out[*off]  = (uint8_t)((field << 3) | 2u);
-    *body      = out + head;
-    *body_cap  = cap - head;
-    return CMT_OK;
-}
-
-/** Close the frame frame_begin opened: write the real length prefix and
- *  slide the body down over the reserved gap. */
-static int frame_end(uint8_t *out, size_t *off, size_t body_len)
-{
-    size_t at = *off + 1u;
-    size_t pl = cmt_pb_uvarint_size((uint64_t)body_len);
-    size_t w  = at;
-
-    if (cmt_pb_put_uvarint(out, at + pl, &w, (uint64_t)body_len) != CMT_OK) {
-        return CMT_REJECT;
-    }
-    memmove(out + at + pl, out + at + PB_LEN_RESERVE, body_len);
-    *off = at + pl + body_len;
-    return CMT_OK;
-}
-
-/* cometbft@709fd12b proto/tendermint/types/evidence.pb.go:581-601 —
- * EvidenceList.MarshalToSizedBuffer. One tag per element (field 1), every
- * element written unconditionally. */
-static int evidence_list_marshal(const cmt_evidence_data_t *ed,
-                                 uint8_t *out, size_t cap, size_t *out_len)
-{
-    size_t off = 0;
-    size_t i;
-
-    if (out == NULL || out_len == NULL) {
-        return CMT_FAULT;
-    }
-    if (ed != NULL && ed->evidence_len != 0 && ed->evidence == NULL) {
-        return CMT_FAULT;
-    }
-    for (i = 0; ed != NULL && i < ed->evidence_len; i++) {
-        uint8_t *body;
-        size_t   body_cap;
-        size_t   body_len;
-        int      rc;
-
-        rc = frame_begin(out, cap, &off, 1u, &body, &body_cap);
-        if (rc != CMT_OK) {
-            return rc;
-        }
-        rc = cmt_pb_evidence_marshal(&ed->evidence[i], body, body_cap,
-                                     &body_len);
-        if (rc != CMT_OK) {
-            return rc;
-        }
-        rc = frame_end(out, &off, body_len);
-        if (rc != CMT_OK) {
-            return rc;
-        }
-    }
-    *out_len = off;
-    return CMT_OK;
+    out->evidence     = (ed == NULL) ? NULL : ed->evidence;
+    out->evidence_len = (ed == NULL) ? 0u : ed->evidence_len;
 }
 
 /* ── upper bounds for the transient buffers ─────────────────────────── */
-
-/** Widest marshal of a Vote given its variable-length extension. Every
- *  field is bounded by tag(1) + uvarint(10) + body. */
-static size_t vote_upper_bound(const cmt_pb_vote_t *v)
-{
-    size_t n = 0;
-
-    n += 11u;                                            /* 1 type      */
-    n += 11u;                                            /* 2 height    */
-    n += 11u;                                            /* 3 round     */
-    n += 11u + (size_t)CMT_BLOCK_ID_MAX_BYTES;           /* 4 block_id  */
-    n += 11u + 17u;                                      /* 5 timestamp */
-    n += 11u + (size_t)CMT_PB_ADDRESS_MAX;               /* 6 address   */
-    n += 11u;                                            /* 7 index     */
-    n += 11u + (size_t)CMT_PB_SIG_MAX;                   /* 8 signature */
-    n += 11u + v->extension.len;                         /* 9 extension */
-    n += 11u + (size_t)CMT_PB_SIG_MAX;                   /* 10 ext sig  */
-    return n;
-}
-
-/** Widest marshal of a bare DuplicateVoteEvidence. */
-static size_t dve_upper_bound(const cmt_pb_duplicate_vote_evidence_t *d)
-{
-    size_t n = 0;
-
-    n += 11u + vote_upper_bound(&d->vote_a);             /* 1 vote_a    */
-    n += 11u + vote_upper_bound(&d->vote_b);             /* 2 vote_b    */
-    n += 11u;                                            /* 3 total pow */
-    n += 11u;                                            /* 4 val power */
-    n += 11u + 17u;                                      /* 5 timestamp */
-    return n;
-}
+/*
+ * REMOVED (wave R2-B, R1D-5). The file-static `vote_upper_bound` and
+ * `dve_upper_bound` that stood here were a second copy of
+ * `cmt_dve_upper_bound` (cmt_evidence.h:138) and its `vote_bound` helper
+ * (cmt_evidence.c:34-50) — wave R1-D wrote the copy there and recorded the
+ * duplication with a recommendation to consolidate. The single definition
+ * in cmt_evidence is used now; `vote_upper_bound` went with it because
+ * `dve_upper_bound` was its only caller. The two bodies were identical
+ * term for term, so no bound changes.
+ */
 
 /* ══ BlockID ══════════════════════════════════════════════════════════ */
 
@@ -1395,11 +1305,12 @@ int cmt_evidence_data_hash(const cmt_evidence_data_t *data,
  * The size of the WRAPPED EvidenceList (:1395), not of the bare items. */
 int cmt_evidence_data_byte_size(cmt_evidence_data_t *data, int64_t *out)
 {
-    uint8_t *buf;
-    size_t   bound = 0;
-    size_t   len;
-    size_t   i;
-    int      rc;
+    cmt_pb_evidence_list_t view;
+    uint8_t               *buf;
+    size_t                 bound = 0;
+    size_t                 len;
+    size_t                 i;
+    int                    rc;
 
     if (data == NULL || out == NULL) {
         return CMT_FAULT;
@@ -1418,14 +1329,15 @@ int cmt_evidence_data_byte_size(cmt_evidence_data_t *data, int64_t *out)
             return CMT_REJECT;
         }
         /* wrapper: tag + uvarint + bare body, then the list's own frame */
-        bound += 22u + dve_upper_bound(
+        bound += 22u + cmt_dve_upper_bound(
                      &data->evidence[i].duplicate_vote_evidence);
     }
     buf = (uint8_t *)malloc(bound);
     if (buf == NULL) {
         return CMT_FAULT;
     }
-    rc = evidence_list_marshal(data, buf, bound, &len);
+    evidence_list_view(data, &view);
+    rc = cmt_pb_evidence_list_marshal(&view, buf, bound, &len);
     free(buf);
     if (rc != CMT_OK) {
         return rc;                                   /* :1392-1394 panics */
@@ -1692,73 +1604,22 @@ bool cmt_block_hashes_to(cmt_block_t *b, const uint8_t *hash, size_t hash_len)
 int cmt_block_marshal(const cmt_block_t *b, uint8_t *out, size_t cap,
                       size_t *out_len)
 {
-    size_t   off = 0;
-    uint8_t *body;
-    size_t   body_cap;
-    size_t   body_len;
-    int      rc;
+    cmt_pb_block_t pb;
 
     if (b == NULL || out == NULL || out_len == NULL) {
         return CMT_FAULT;                            /* :227-229 nil     */
     }
-    /* field 1 header — (nullable) = false, ALWAYS (block.pb.go:173-182) */
-    rc = frame_begin(out, cap, &off, 1u, &body, &body_cap);
-    if (rc != CMT_OK) {
-        return rc;
-    }
-    rc = cmt_pb_header_marshal(&b->header, body, body_cap, &body_len);
-    if (rc != CMT_OK) {
-        return rc;
-    }
-    rc = frame_end(out, &off, body_len);
-    if (rc != CMT_OK) {
-        return rc;
-    }
-    /* field 2 data — ALWAYS (block.pb.go:163-172) */
-    rc = frame_begin(out, cap, &off, 2u, &body, &body_cap);
-    if (rc != CMT_OK) {
-        return rc;
-    }
-    rc = cmt_pb_data_marshal(&b->data, body, body_cap, &body_len);
-    if (rc != CMT_OK) {
-        return rc;
-    }
-    rc = frame_end(out, &off, body_len);
-    if (rc != CMT_OK) {
-        return rc;
-    }
-    /* field 3 evidence — an EvidenceList, ALWAYS (block.pb.go:153-162) */
-    rc = frame_begin(out, cap, &off, 3u, &body, &body_cap);
-    if (rc != CMT_OK) {
-        return rc;
-    }
-    rc = evidence_list_marshal(&b->evidence, body, body_cap, &body_len);
-    if (rc != CMT_OK) {
-        return rc;
-    }
-    rc = frame_end(out, &off, body_len);
-    if (rc != CMT_OK) {
-        return rc;
-    }
-    /* field 4 last_commit — a POINTER, omitted when nil
-     * (block.pb.go:141-152) */
-    if (b->last_commit != NULL) {
-        rc = frame_begin(out, cap, &off, 4u, &body, &body_cap);
-        if (rc != CMT_OK) {
-            return rc;
-        }
-        rc = cmt_pb_commit_marshal(b->last_commit, body, body_cap,
-                                   &body_len);
-        if (rc != CMT_OK) {
-            return rc;
-        }
-        rc = frame_end(out, &off, body_len);
-        if (rc != CMT_OK) {
-            return rc;
-        }
-    }
-    *out_len = off;
-    return CMT_OK;
+    /* The wire view of this block: field 1 header, field 2 data and
+     * field 3 evidence are ALWAYS emitted and field 4 last_commit is a
+     * POINTER, omitted when nil (block.pb.go:136-184). Every one of these
+     * members already IS the cmt_pb type — `(b *Block) ToProto()`
+     * (block.go:225-244) is the identity on this representation — so this
+     * is a copy of four fields and not a conversion. */
+    pb.header      = b->header;
+    pb.data        = b->data;
+    evidence_list_view(&b->evidence, &pb.evidence);
+    pb.last_commit = b->last_commit;
+    return cmt_pb_block_marshal(&pb, out, cap, out_len);
 }
 
 /* cometbft@709fd12b types/block.go:176-184 — (b *Block) Size() */

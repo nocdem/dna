@@ -120,25 +120,45 @@ extern "C" {
  * cometbft@709fd12b version/version.go:6 — `TMCoreSemVer`, the string
  * `InitStateVersion.Software` is set from (state.go:35).
  *
- * ⚠ QUESTION FOR THE OPERATOR, deliberately left as the reference's value.
- * This is the only field of `State` that names a SOFTWARE build rather
- * than a protocol, and it is the reference's own version, not this
- * chain's. Should a DNA node write "0.38.19" here, or its own
- * NODUS_VERSION_* string?
+ * ANSWERED (operator, 2026-09-10 — R2 O4 question 4; recorded as
+ * atlas-dec-157739c22040e385e1096932fc7d3a63): a DNA node writes ITS OWN
+ * Nodus version here, not the reference's "0.38.19". A node reporting
+ * another project's version in its own database helps nobody.
  *
- * IT IS NOT CONSENSUS-CRITICAL, and that can be checked rather than
+ * The check that made the answer safe to give, which stands and is not
  * assumed: `Header.Version` is a `cmtversion.Consensus` carrying only
  * {Block, App} (types/block.go:331, cmt_pb.h `cmt_pb_consensus_t`), so the
  * Software string is not in the header, not in a leaf of Header.Hash
  * (block.go:445-479) and not in any other hashed structure. It reaches
  * only `cmtstate.State` (state.go:141), which is store-only and taşınmadı.
- * So the answer changes what a node writes in its own database and nothing
- * two nodes must agree on.
+ * The answer therefore changes what a node writes in its own database and
+ * nothing two nodes must agree on.
+ *
+ * THE REFERENCE'S SHAPE IS KEPT: a build constant, not a parameter, as
+ * MakeGenesisState reads one. The value is supplied to the compilation as
+ * a definition — nodus/CMakeLists.txt reads NODUS_VERSION_STRING out of
+ * nodus/include/nodus/nodus_types.h and passes it to every target that
+ * compiles a translation unit INCLUDING THIS HEADER — today cmt_state.c,
+ * cmt_replay.c (through cmt_replay.h:73), test_cmt_state.c and
+ * test_cmt_replay.c, not cmt_state.c alone — and this header REFUSES TO
+ * COMPILE without it, so
+ * the value can never silently fall back to the reference's string.
+ * shared/dnac does not `#include` a nodus header for it, because shared/
+ * must not depend on nodus/.
  */
-#define CMT_SOFTWARE_VERSION "0.38.19"   /* QUESTION — see above */
+#ifndef CMT_SOFTWARE_VERSION
+#error "CMT_SOFTWARE_VERSION must be defined by the build (NODUS_VERSION_STRING, nodus/CMakeLists.txt)"
+#endif
 
 /** The longest software version string a state stores, including the NUL. */
 #define CMT_STATE_SOFTWARE_MAX 32
+
+/* The value now arrives from the build, so its LENGTH is no longer fixed
+ * at this file's own literal. cmt_state.c:400-402 memcpy's it into
+ * `version.software`; a longer definition would overrun that array, which
+ * the seven-byte literal made impossible. Caught at compile time. */
+_Static_assert(sizeof(CMT_SOFTWARE_VERSION) <= (size_t)CMT_STATE_SOFTWARE_MAX,
+               "CMT_SOFTWARE_VERSION does not fit in cmt_state_version_t.software");
 
 /** cometbft@709fd12b proto/tendermint/state/types.proto — `Version`, the
  *  shape `InitStateVersion` (state.go:30-36) fills. */
