@@ -98,7 +98,7 @@
  *   for every cmt_* target (shared/dnac/cmt_state.h:150 refuses to
  *   compile without it). NOTHING ELSE — a DEFAULT BUILD is enough, and in
  *   particular `QGP_FAULT_INJECT` is NOT set, so all six fail points
- *   (cmt_cs.h:159-168) compile to `((void)0)` and NONE of them is
+ *   (cmt_cs.h:189-198) compile to `((void)0)` and NONE of them is
  *   exercised. There is no scenario here that depends on one; if there
  *   were, it would have to be skipped and reported as skipped.
  * ENVIRONMENT: none. No variable is read or written — in particular
@@ -145,7 +145,7 @@
  *      `EventDataNewRound`, `EventValidBlock`, `EventUnlock` or
  *      `EventRelock`, this suite asserts the ROUND STATE that the event
  *      would have announced. Those five publications are among the rows
- *      cmt_cs.h:72-74 deliberately does not port, so a regression that
+ *      cmt_cs.h:98-103 deliberately does not port, so a regression that
  *      broke only the events would be invisible here — and there is
  *      nothing to break, because they do not exist.
  *  13. TIMEOUT DURATIONS ARE CHECKED, TIMEOUT ORDERING IN REAL TIME IS
@@ -2892,7 +2892,7 @@ static int s_wait_timeout_propose_on_nil_polka_current_round(void)
  * from the committed BlockID's part-set header (state.go:1637-1650).
  *
  * The reference names this after the event it emits; this port emits no
- * events (cmt_cs.h:72-74), so the round state the event would have
+ * events (cmt_cs.h:98-103), so the round state the event would have
  * carried is asserted instead — which is what the reference itself
  * checks at :2124-2127.
  */
@@ -3663,7 +3663,7 @@ static int s_mempool_progress_after_create_empty_blocks_interval(void)
 
 /**
  * mempool_test.go:84-92 — the `cs.setProposal` the reference installs on
- * the State itself. cmt_cs.h:643-649 keeps that seam: `set_proposal` is
+ * the State itself. cmt_cs.h:711-717 keeps that seam: `set_proposal` is
  * one of the three overridable functions `cmt_cs_init` defaults, and the
  * header says in as many words that a caller may replace it "which is
  * what the reference's own tests do".

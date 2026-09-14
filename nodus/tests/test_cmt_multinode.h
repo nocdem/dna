@@ -32,7 +32,7 @@
  * COMPILE FLAGS: exactly the fixture's — `CMT_SOFTWARE_VERSION` from the
  *   nodus build (shared/dnac/cmt_state.h:150), nothing else; a DEFAULT
  *   BUILD. `QGP_FAULT_INJECT` is NOT set, so the six fail points of
- *   cmt_cs.h:159-168 compile to nothing.
+ *   cmt_cs.h:189-198 compile to nothing.
  * ENVIRONMENT: none. No variable is read. `FAIL_TEST_INDEX` is never set.
  * No network, no files, no database, no wall clock.
  * CAPACITIES, all fixed at compile time and all checked at run time —
@@ -42,7 +42,7 @@
  *     mirrors every block any node makes (see "THE REGISTRY" below), so
  *     the whole network may make at most 12 distinct blocks per scenario;
  *   · MN_SENT_CAP = 128 sent-log entries per directed link;
- *   · the per-node peer queue is cmt_cs's own, 1000 deep (cmt_cs.h:287).
+ *   · the per-node peer queue is cmt_cs's own, 1000 deep (cmt_cs.h:318).
  * ⚠ MEMORY: N fixtures at ~6 MB each (test_cmt_common.h's estimate) plus
  * per node 12 × TC_PARTS_CAP `cmt_part_t` (a part carries a 100-aunt
  * Merkle proof, cmt_merkle.h:81 — about 7 KB each, so ~700 KB per node),
@@ -88,7 +88,7 @@
  *      pick a random missing part or vote; this driver picks the lowest
  *      index. One legal choice out of many, fixed.
  *  M3. ONE INTERLEAVING. `mn_round` steps node 0, then 1, … each ONCE
- *      (one `receiveRoutine` iteration, cmt_cs.h:29-32), fires its timer
+ *      (one `receiveRoutine` iteration, cmt_cs.h:55-58), fires its timer
  *      by the rule in M5, mirrors new blocks, then runs the three gossip
  *      routines ONCE per connected link in the goroutine start order of
  *      reactor.go:201-203 (data, votes, maj23), links in peer-index
@@ -126,7 +126,7 @@
  *      cutting a link afterwards never un-sends it. No scenario here cuts
  *      a link (the partition is initial and only heals), so the rule is
  *      stated, not exercised. A send that the receiver's queue REFUSES
- *      (CMT_REJECT: 1000 entries, cmt_cs.h:48-55) is treated as the
+ *      (CMT_REJECT: 1000 entries, cmt_cs.h:74-81) is treated as the
  *      reference's blocked reactor goroutine: not sent, retried next turn.
  *  M7. THE REGISTRY IS MIRRORED, AND THAT IS A FIXTURE ARTEFACT. The
  *      fixture's `decode_block` is a registry lookup over blocks the
@@ -186,7 +186,7 @@
  *      callback, i.e. inside node 0's own `cmt_cs_step`. That is a legal
  *      schedule of the goroutines (they may run at once) and it touches
  *      only OTHER nodes' queues, never node 0's own state machine — which
- *      is what cmt_cs.h:332-334's re-entrancy rule protects.
+ *      is what cmt_cs.h:363-365's re-entrancy rule protects.
  * M12. THE PEER ORDER OF THE SPLIT IS THIS DRIVER'S. byzantine_test.go:498
  *      takes `sw.Peers().List()`, whose order the p2p switch does not
  *      specify (:409 "note peers and switches order don't match"); here
@@ -196,12 +196,16 @@
  * M13. START IS SETTLED. `mn_net_start` starts each honest node and lets
  *      it run to quiescence BEFORE the byzantine node starts — the
  *      reference's :395-405 ("these must be started before the byz"). It
- *      is done because this port polls the peer queue BEFORE the tock
- *      (cmt_cs.h:17-32): had the byzantine proposal reached a node before
- *      that node consumed its NEW_HEIGHT tock, the node would have
- *      installed the proposal at step NEW_HEIGHT and skipped
- *      `enterNewRound` for round 0 (state.go:1055-1062's guard), a path
- *      the reference permits but its test never takes.
+ *      is done because this port may serve a peer message BEFORE a
+ *      pending tock — through R2 it always did (fixed poll order), and
+ *      since W1.5's rotating poll (cmt_cs.h "ONE THREAD, ONE ROTATING
+ *      POLL") it still can, whenever the start sits on the peer queue, as
+ *      the reference's random select can: had the byzantine proposal
+ *      reached a node before that node consumed its NEW_HEIGHT tock, the
+ *      node would have installed the proposal at step NEW_HEIGHT and
+ *      skipped `enterNewRound` for round 0 (state.go:1055-1062's guard),
+ *      a path the reference permits but its test never takes. Settling
+ *      first removes the race whichever source is polled first.
  * M14. THE STEP BUDGET IS A LIVENESS BOUND OF THIS DRIVER'S SCHEDULE. The
  *      reference's ten-second deadline (byzantine_test.go:444-453)
  *      becomes a number of network rounds. Exhausting it is a FAILURE
@@ -1784,7 +1788,7 @@ static int mn_byz_send_set(mn_node_t *byz, mn_node_t *peer,
 /**
  * byzantine_test.go:459-507 — `byzantineDecideProposalFunc`, installed as
  * the byzantine node's `decide_proposal` (:340-342; the seam is
- * cmt_cs.h:643-649, exactly as wave T's `s_mempool_progress_in_higher_
+ * cmt_cs.h:711-717, exactly as wave T's `s_mempool_progress_in_higher_
  * round` installs `set_proposal`).
  *
  * Two blocks from the same state, a transaction delivered in between so

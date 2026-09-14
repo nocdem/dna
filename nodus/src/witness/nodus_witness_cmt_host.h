@@ -27,7 +27,7 @@
  * plus what the other host rows forward to: the WAL storage, the file
  * privval, the clock, the block slots and the vote-extension arena.
  *
- * ── THE 26 ROWS OF cmt_cs_host_t (cmt_cs.h:336-532) ────────────────────
+ * ── THE 26 ROWS OF cmt_cs_host_t (cmt_cs.h:367-563) ────────────────────
  *   6 BlockExecutor  create_proposal_block :101, process_proposal :162,
  *                    validate_block :190, apply_verified_block :199,
  *                    extend_vote :325, verify_vote_extension :356

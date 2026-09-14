@@ -66,7 +66,7 @@
  *
  * ── DETERMINISM ────────────────────────────────────────────────────────
  * No clock: `ApplyNewRoundStepMessage`'s `cmttime.Now()` (:1379) is READ
- * BY THE CALLER and handed in as a value, exactly as cmt_cs.h:120-126
+ * BY THE CALLER and handed in as a value, exactly as cmt_cs.h:146-155
  * does for `NewProposal`, so every clock read sits at a reactor call site
  * (D-20 rev 3, atlas-dec-fb3ed0315ffbfd0459efa779a2e00c19: one `now`
  * callback). The ONE random draw is `PickRandom` (:1188) through

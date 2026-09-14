@@ -1378,6 +1378,7 @@ int cmt_cs_step(cmt_cs_t *cs, bool *out_worked)
 {
     cmt_round_state_t  rs;
     cmt_msg_info_t    *mi;
+    unsigned           k;
     int                rc;
 
     if (cs == NULL) {
@@ -1396,70 +1397,113 @@ int cmt_cs_step(cmt_cs_t *cs, bool *out_worked)
      * compares against THIS, not against the live one (:865). */
     rs = cs->rs;
 
-    /* 1. :827-828 */
-    if (cs->txs_available) {
-        cs->txs_available = false;
-        if (out_worked != NULL) {
-            *out_worked = true;
-        }
-        return cmt_cs_handle_txs_available(cs);                    /* :828 */
-    }
+    /* :826-865 — the `select`. Go picks one of the READY cases uniformly
+     * at random (the language specification's "Select statements" clause
+     * — NOT in the pinned tarball, cited as atlas-dec-efa4d29c… quotes
+     * it; the same stated limit as cs_time_sub_ns's above), so no source
+     * that is ready on every iteration can starve another. This walk is
+     * the deterministic form of that: the four sources are visited in
+     * the reference's listed order from a ROTATING start, the first ready
+     * one is served with exactly the body its case has, and the start
+     * moves to the one after it — the source just served goes to the
+     * back. A source that is ready on every call is therefore served at
+     * least once in any four consecutive working calls: each call that
+     * serves some other source shortens the cyclic distance from the
+     * start to it by at least one, and that distance is never more than
+     * three. AT MOST ONE event per call, because one iteration of the
+     * reference's `for` handles exactly one case. Through wave R2 the
+     * walk began at source 0 on every call, and a peer that kept the peer
+     * queue non-empty starved this node's own internal queue and its
+     * timeouts (deviation register R2C-12; umbrella rev 5
+     * atlas-dec-d5e766de…, rule atlas-dec-efa4d29c… rev 2). */
+    for (k = 0u; k < 4u; k++) {
+        const unsigned src = ((unsigned)cs->poll_start + k) % 4u;
 
-    /* 2. :830-836 */
-    mi = cs_q_pop(cs->peer_q, &cs->peer_q_head, &cs->peer_q_len);
-    if (mi != NULL) {
-        if (out_worked != NULL) {
-            *out_worked = true;
-        }
-        rc = cs_wal_write_msg(cs, mi, false);                      /* :831 */
-        if (rc != CMT_OK) {
+        switch (src) {
+        case 0u:                                                /* :827-828 */
+            if (!cs->txs_available) {
+                break;
+            }
+            cs->poll_start    = (uint8_t)((src + 1u) % 4u);
+            cs->txs_available = false;
+            if (out_worked != NULL) {
+                *out_worked = true;
+            }
+            return cmt_cs_handle_txs_available(cs);                /* :828 */
+
+        case 1u:                                                /* :830-836 */
+            mi = cs_q_pop(cs->peer_q, &cs->peer_q_head, &cs->peer_q_len);
+            if (mi == NULL) {
+                break;
+            }
+            cs->poll_start = (uint8_t)((src + 1u) % 4u);
+            if (out_worked != NULL) {
+                *out_worked = true;
+            }
+            rc = cs_wal_write_msg(cs, mi, false);                  /* :831 */
+            if (rc != CMT_OK) {
+                free(mi);
+                return rc;
+            }
+            rc = cmt_cs_handle_msg(cs, mi);                        /* :836 */
+            free(mi);
+            return rc;
+
+        case 2u: {                                              /* :838-856 */
+            bool is_vote;
+
+            mi = cs_q_pop(cs->internal_q, &cs->internal_q_head,
+                          &cs->internal_q_len);
+            if (mi == NULL) {
+                break;
+            }
+            cs->poll_start = (uint8_t)((src + 1u) % 4u);
+            if (out_worked != NULL) {
+                *out_worked = true;
+            }
+            rc = cs_wal_write_msg(cs, mi, true);                   /* :839 */
+            if (rc != CMT_OK) {
+                free(mi);
+                return rc;                /* :841-844 panic → CMT_FAULT   */
+            }
+            is_vote = (mi->msg.kind == CMT_PB_CONS_MSG_VOTE);      /* :847 */
+            if (is_vote) {
+                CMT_FAIL_POINT();                                  /* :852 */
+            }
+            rc = cmt_cs_handle_msg(cs, mi);                        /* :856 */
             free(mi);
             return rc;
         }
-        rc = cmt_cs_handle_msg(cs, mi);                            /* :836 */
-        free(mi);
-        return rc;
+
+        case 3u: {                                              /* :858-865 */
+            cmt_timeout_info_t ti;
+
+            if (!cs->tock_pending) {
+                break;
+            }
+            ti               = cs->tock;
+            cs->poll_start   = (uint8_t)((src + 1u) % 4u);
+            cs->tock_pending = false;
+            if (out_worked != NULL) {
+                *out_worked = true;
+            }
+            rc = cs_wal_write_timeout(cs, &ti);                    /* :859 */
+            if (rc != CMT_OK) {
+                return rc;
+            }
+            return cmt_cs_handle_timeout(cs, &ti, &rs);            /* :865 */
+        }
+
+        default:
+            /* `src` is a residue mod 4; there is no fifth value. */
+            break;
+        }
     }
 
-    /* 3. :838-856 */
-    mi = cs_q_pop(cs->internal_q, &cs->internal_q_head, &cs->internal_q_len);
-    if (mi != NULL) {
-        bool is_vote;
-
-        if (out_worked != NULL) {
-            *out_worked = true;
-        }
-        rc = cs_wal_write_msg(cs, mi, true);                       /* :839 */
-        if (rc != CMT_OK) {
-            free(mi);
-            return rc;                    /* :841-844 panic → CMT_FAULT   */
-        }
-        is_vote = (mi->msg.kind == CMT_PB_CONS_MSG_VOTE);          /* :847 */
-        if (is_vote) {
-            CMT_FAIL_POINT();                                      /* :852 */
-        }
-        rc = cmt_cs_handle_msg(cs, mi);                            /* :856 */
-        free(mi);
-        return rc;
-    }
-
-    /* 4. :858-865 */
-    if (cs->tock_pending) {
-        cmt_timeout_info_t ti = cs->tock;
-
-        cs->tock_pending = false;
-        if (out_worked != NULL) {
-            *out_worked = true;
-        }
-        rc = cs_wal_write_timeout(cs, &ti);                        /* :859 */
-        if (rc != CMT_OK) {
-            return rc;
-        }
-        return cmt_cs_handle_timeout(cs, &ti, &rs);                /* :865 */
-    }
-
-    /* 5. :867-869 — onExit. The WAL is the host's and is stopped there;
-     * `close(cs.done)` has no counterpart in a single-threaded port. */
+    /* :867-869 — onExit, LAST and only when none of the four was ready.
+     * The start does not move: nothing was served. The WAL is the host's
+     * and is stopped there; `close(cs.done)` has no counterpart in a
+     * single-threaded port. */
     if (cs->quit) {
         if (out_worked != NULL) {
             *out_worked = true;

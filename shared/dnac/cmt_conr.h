@@ -107,7 +107,7 @@
  * `cmt_conr_host_t` — the transport and the block-store reads the REACTOR
  * makes, distinct from `cmt_cs_host_t` (the state machine's). Every row
  * carries its Go call site. The block-store rows follow the storage
- * contract of cmt_cs.h:378-420 word for word: the host fills the
+ * contract of cmt_cs.h:408-448 word for word: the host fills the
  * out-parameter, including pointing any list at storage the host owns,
  * and that storage stays valid until the next call of the same row.
  *
@@ -171,8 +171,12 @@
  * only. Iteration is by slot index and by validator/part index; no map,
  * no unordered collection. `Broadcast`'s goroutine order and Go's
  * scheduler order between the three routines and between peers are
- * REPLACED BY INDEX ORDER (umbrella rev 4 item 7 — the same
- * determinization cmt_cs.h:17-32 states for `select`).
+ * REPLACED BY INDEX ORDER (umbrella rev 5 item 7 — the same class of
+ * determinization cmt_cs.h "ONE THREAD, ONE ROTATING POLL" states for
+ * `select`, which there is a rotating start rather than a fixed index
+ * order because `select`'s guarantee is fairness among ready sources;
+ * here nothing is starved by index order, since every slot is visited
+ * on every tick).
  *
  * ── taşınmadı (not ported), with the reason — port map YOK rows ────────
  *   · `OnStart` (:74-91) / `OnStop` (:95-103) — BaseService hooks. Their
@@ -363,13 +367,13 @@ typedef struct {
     int (*bs_base)(void *ctx, int64_t *out);
 
     /** reactor.go:584, :654, :924 — `blockStore.Height()`. The same row as
-     *  cmt_cs.h:390's; the host passes the same function. */
+     *  cmt_cs.h:422's; the host passes the same function. */
     int (*bs_height)(void *ctx, int64_t *out);
 
     /** reactor.go:581-587 and :651-663 — `blockStore.LoadBlockMeta(h)`,
      *  of which the ported code reads ONLY `blockMeta.BlockID` (:587,
      *  :657) and of that only the PartSetHeader — so the row hands back
-     *  the BlockID. (cmt_cs.h:407-413's `bs_load_block_meta` hands back
+     *  the BlockID. (cmt_cs.h:438-444's `bs_load_block_meta` hands back
      *  the HEADER for state.go:1131's `AppHash` read; two projections of
      *  one BlockMeta, each named for what its reader takes.)
      *  @param out_found false is the reference's nil (:582, :652). */
@@ -386,12 +390,12 @@ typedef struct {
                               cmt_part_t *out, bool *out_found);
 
     /** reactor.go:756 — `blockStore.LoadBlockCommit(height)`. The same
-     *  row and storage contract as cmt_cs.h:393-399's. */
+     *  row and storage contract as cmt_cs.h:421-427's. */
     int (*bs_load_block_commit)(void *ctx, int64_t height,
                                 cmt_commit_t *out, bool *out_found);
 
     /** reactor.go:754 — `blockStore.LoadBlockExtendedCommit(height)`.
-     *  The same row and storage contract as cmt_cs.h:401-405's. */
+     *  The same row and storage contract as cmt_cs.h:429-433's. */
     int (*bs_load_block_extended_commit)(void *ctx, int64_t height,
                                          cmt_extended_commit_t *out,
                                          bool *out_found);
@@ -533,7 +537,7 @@ int cmt_conr_stop(cmt_conr_t *conR);
  *        reactor_test.go:88 does with `GetState()`.
  * @return CMT_OK; CMT_FAULT at :116's or :121's panics, at :132-140 —
  *         ANY error from `cmt_cs_start`, the double-signing refusal of
- *         cmt_cs.h:828-830 included, because the reference panics on
+ *         cmt_cs.h:937-939 included, because the reference panics on
  *         every error there — or on NULL.
  */
 int cmt_conr_switch_to_consensus(cmt_conr_t *conR, const cmt_state_t *state,
@@ -625,12 +629,12 @@ int cmt_conr_remove_peer(cmt_conr_t *conR, int peer_idx);
  *           state machine's peer queue is FULL (`cmt_cs_add_vote` /
  *           `cmt_cs_set_proposal_input` /
  *           `cmt_cs_add_proposal_block_part_input` returned CMT_REJECT,
- *           cmt_cs.h:48-55). The reference's reactor goroutine BLOCKS at
+ *           cmt_cs.h:74-81). The reference's reactor goroutine BLOCKS at
  *           :324, :330 and :350 until the queue drains; a single thread
  *           cannot, so the message is NOT queued, the peer state was
  *           already updated as at :323/:328/:346-348, no peer is
  *           disconnected, and the host decides (backpressure, or drop —
- *           R2's open question, cmt_cs.h:54-55). The reference's own
+ *           R2's open question, cmt_cs.h:80-81). The reference's own
  *           blocking is a third behaviour neither answer reproduces.
  *         CMT_FAULT — NULL, a slot never `InitPeer`'d (:255), a fault
  *           from the state machine or a host row, or a marshal failure

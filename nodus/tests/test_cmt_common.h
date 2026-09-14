@@ -44,7 +44,7 @@
  *   nodus build passes `NODUS_VERSION_STRING`). Nothing else. A DEFAULT
  *   BUILD is enough; `QGP_FAULT_INJECT` is NOT set, so `CMT_FAIL_POINT()`
  *   expands to `((void)0)` and none of the six fail points of
- *   `cmt_cs.h:159-168` is compiled into the run.
+ *   `cmt_cs.h:189-198` is compiled into the run.
  * ENVIRONMENT: none. No variable is read. In particular `FAIL_TEST_INDEX`
  *   — the only variable the module ever looks at, and only under
  *   QGP_FAULT_INJECT — is never set and never read here.
@@ -148,7 +148,7 @@
  *  7. THE PEER QUEUE IS FED WITH A SYNTHETIC PEER ID. Go's `addVotes`
  *     (common_test.go:255-259) puts a stub's vote on the PEER queue
  *     carrying an EMPTY PeerID. In this port an empty id means "our own
- *     message" and routes to the INTERNAL queue (cmt_cs.h:841-854), so
+ *     message" and routes to the INTERNAL queue (cmt_cs.h:950-963), so
  *     the two cannot both be reproduced. `tc_add_vote` keeps the QUEUE
  *     and gives up the ID: it passes `tc->peer_id`, 32 bytes. The one
  *     consequence is that `peerCatchupRounds`
@@ -157,12 +157,16 @@
  *     accounts them against "", so the two-round catch-up ceiling is
  *     reached on a different schedule.
  *  8. THE POLL ORDER IS THE PORT'S, NOT THE REFERENCE'S. Go's
- *     `receiveRoutine` selects at random between the peer queue, the
- *     internal queue and the tock; this port fixes the order
- *     (cmt_cs.h:17-32). Every helper here drains to quiescence before it
- *     returns, so a scenario rarely has both queues non-empty — but where
- *     it does, this suite exercises ONE of the interleavings the
- *     reference is allowed to take, and says nothing about the others.
+ *     `receiveRoutine` selects UNIFORMLY AT RANDOM among the ready
+ *     sources — the peer queue, the internal queue and the tock; this
+ *     port walks them from a ROTATING start and serves the first ready
+ *     one (cmt_cs.h "ONE THREAD, ONE ROTATING POLL" — W1.5 closed
+ *     deviation R2C-12; through R2 the start was fixed at the first
+ *     source). Every helper here drains to quiescence before it returns,
+ *     so a scenario rarely has both queues non-empty — but where it does,
+ *     this suite exercises ONE of the interleavings the reference is
+ *     allowed to take (a deterministic one, the same on every run), and
+ *     says nothing about the others.
  *  9. `tc_drain` HIDES HOW MANY STEPS SOMETHING TOOK. It steps until
  *     `cmt_cs_has_work` is false. A scenario therefore cannot tell "the
  *     transition happened on the message I just sent" from "it happened
@@ -198,7 +202,7 @@
  * Named at each definition. The systematic difference, stated once: the
  * reference's `ensure*` helpers BLOCK ON A CHANNEL fed by the event bus,
  * with a 200 ms budget (common_test.go:55). This port has no event bus —
- * `eventBus.PublishEvent*` is one of the rows cmt_cs.h:72-74 says is
+ * `eventBus.PublishEvent*` is one of the rows cmt_cs.h:98-103 says is
  * deliberately not ported — so every `tc_ensure_*` here instead drives
  * `cmt_cs_step` to quiescence and then ASSERTS ON THE ROUND STATE. That
  * turns "an event was published" into "the round state says the
@@ -300,7 +304,7 @@ static int g_tc_checks = 0;
 #define TC_PARTS_CAP      8u
 
 /** The payload buffer behind each of the three part-set slots, and behind
- *  the proposer's marshal scratch. `cmt_cs.h:549` says it must cover
+ *  the proposer's marshal scratch. `cmt_cs.h:580` says it must cover
  *  ConsensusParams.Block.MaxBytes — 21 MB at the reference defaults
  *  (params.go:99). THIS FIXTURE DELIBERATELY UNDER-PROVIDES: 512 KiB,
  *  because every block it makes is at most two 64 KiB parts. A block
@@ -1461,7 +1465,7 @@ static int tc_timer_disarm(void *ctx)
 }
 
 /** Fill every row of `cmt_cs_host_t`. A row left NULL would be CMT_FAULT
- *  the first time it were reached (cmt_cs.h:325-330), so all 26 are
+ *  the first time it were reached (cmt_cs.h:356-361), so all 26 are
  *  wired even where no ported scenario reaches them. */
 static void tc_build_host(cmt_cs_host_t *h)
 {
@@ -2404,7 +2408,7 @@ static int tc_make_part_set(tc_t *tc, const cmt_block_t *block,
  * @param out_block receives the block (owned by the registry).
  * @param out_parts receives the part set, built into the fixture's own
  *        `ext_parts` / `ext_scratch` — NOT into one of the three slots,
- *        for exactly the reason cmt_cs.h:551-570 gives for the proposer's
+ *        for exactly the reason cmt_cs.h:582-603 gives for the proposer's
  *        marshal buffer; and invalidated by the next call of this or of
  *        `tc_make_part_set` (HOW IT CAN LIE (11)).
  */

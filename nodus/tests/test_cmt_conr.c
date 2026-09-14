@@ -47,7 +47,7 @@
  * COMPILE FLAGS: `CMT_SOFTWARE_VERSION`, defined by the nodus build for
  *   every cmt_* target (shared/dnac/cmt_state.h:150 refuses to compile
  *   without it). NOTHING ELSE — a DEFAULT BUILD. `QGP_FAULT_INJECT` is NOT
- *   set; the six fail points of cmt_cs.h:159-168 compile to `((void)0)`
+ *   set; the six fail points of cmt_cs.h:189-198 compile to `((void)0)`
  *   and nothing here depends on one.
  * ENVIRONMENT: none. No variable is read (`FAIL_TEST_INDEX` is never set).
  *   No network, no files, no database, no wall clock (the fixture's frozen

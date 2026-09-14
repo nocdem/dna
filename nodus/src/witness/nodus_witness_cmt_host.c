@@ -1724,7 +1724,7 @@ static int host_bs_load_block_meta(void *vctx, int64_t height,
     }
     rc = nodus_cmt_bs_load_block_meta(ctx->store, height, meta, out_found);
     if (rc == CMT_OK && *out_found) {
-        *out = meta->header;              /* the HEADER, cmt_cs.h:412-418 */
+        *out = meta->header;              /* the HEADER, cmt_cs.h:438-444 */
     }
     free(meta);
     return rc;

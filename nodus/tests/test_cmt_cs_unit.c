@@ -20,6 +20,15 @@
  *     1000-deep queue (state.go:45) STOPS the node instead of being
  *     reordered the way the reference's goroutine reorders it
  *     (:571-578, whose own comment admits the reordering);
+ *   · the event loop starves no source (state.go:826-870): Go's `select`
+ *     picks one of the READY cases uniformly at random, and this port's
+ *     rotating poll start is its deterministic form — with the peer
+ *     queue refilled before EVERY step, this node's own queued vote and
+ *     its pending tock are each served within four working steps (at
+ *     steps 2 and 3, exactly), a step with work on only one source never
+ *     idles whatever the start index, a step that serves nothing leaves
+ *     the start where it was, and quit (:867) is looked at only when
+ *     none of the four sources is ready (deviation register R2C-12);
  *   · a proposal carrying no signature is refused at :1927 and installs
  *     neither itself nor a part set, and the two part-set slots the round
  *     state already names are left byte-identical through that refusal
@@ -124,6 +133,20 @@
  *     given (height, round, step); it does NOT prove the state machine
  *     ever REACHES those combinations by its own transitions, nor what
  *     the body past a guard does. Both are wave T's.
+ * 10. WHICH SOURCE A STEP SERVED IS OBSERVED THROUGH THE WAL ONLY.
+ *     `t_poll_rotation` reads it back out of the WAL class the reference
+ *     writes for each source — `wal.Write` of a MsgInfo with a peer id
+ *     (:831), `wal.Write` of a TimeoutInfo (:859), `wal.WriteSync` of a
+ *     MsgInfo with the empty id (:839) — tagged into `g_served`. A
+ *     fixture that captured nothing would NOT pass vacuously: every step
+ *     of the case asserts that the tag list grew by EXACTLY one, the own
+ *     vote's round tag must appear in the WriteSync capture, and the
+ *     tock must have moved the round step to Propose (:983, :1113). A
+ *     MsgInfo reaching the WRONG class (a peer id through WriteSync, the
+ *     empty id through Write) is tagged SRC_UNEXPECTED, which no
+ *     assertion accepts. What the case does NOT observe is the round
+ *     state written at :760 or END_HEIGHT at :1760 — neither is tagged,
+ *     deliberately, so that one served event is exactly one tag.
  *
  * Reference @709fd12b (SHA-256 verified before use):
  *   consensus/state.go   2653 lines
@@ -193,6 +216,30 @@ static int        g_disarm_calls;
 static int32_t   *g_sync_rounds;
 static size_t     g_sync_len;
 
+/* Which SOURCE each `cmt_cs_step` served, in order, read out of the WAL
+ * class the reference writes for it: a peer message is `wal.Write` of a
+ * MsgInfo carrying a peer id (:831), a tock is `wal.Write` of a
+ * TimeoutInfo (:859), an own message is `wal.WriteSync` of a MsgInfo with
+ * the empty id (:839). Round-state records (:760) and END_HEIGHT (:1760)
+ * are deliberately NOT tagged, so one served event is exactly one tag.
+ * SRC_UNEXPECTED marks a MsgInfo in the wrong class; no assertion accepts
+ * it. This is how t_poll_rotation observes the rotating poll. */
+#define SRC_PEER       1u
+#define SRC_INTERNAL   2u
+#define SRC_TOCK       3u
+#define SRC_UNEXPECTED 9u
+#define SERVED_MAX SYNC_MAX
+static uint8_t    g_served[SERVED_MAX];
+static size_t     g_served_len;
+
+static void served_push(uint8_t tag)
+{
+    if (g_served_len < (size_t)SERVED_MAX) {
+        g_served[g_served_len] = tag;
+        g_served_len++;
+    }
+}
+
 /* Replay: which heights the WAL claims an END_HEIGHT for. */
 static int64_t    g_end_height_present;   /* -1 = none                    */
 static bool       g_replay_eof;
@@ -223,13 +270,27 @@ static int h_timer_disarm(void *ctx)
 static int h_wal_write(void *ctx, const cmt_wal_message_t *msg)
 {
     (void)ctx;
-    (void)msg;
+    if (msg == NULL) {
+        return CMT_OK;
+    }
+    if (msg->kind == CMT_PB_WAL_MSG_INFO) {
+        /* :831 — a PEER message; the internal queue never reaches Write. */
+        served_push(msg->u.msg_info.peer_id_len != 0u ? (uint8_t)SRC_PEER
+                                                       : (uint8_t)SRC_UNEXPECTED);
+    } else if (msg->kind == CMT_PB_WAL_TIMEOUT_INFO) {
+        served_push((uint8_t)SRC_TOCK);                            /* :859 */
+    }
     return CMT_OK;
 }
 
 static int h_wal_write_sync(void *ctx, const cmt_wal_message_t *msg)
 {
     (void)ctx;
+    if (msg != NULL && msg->kind == CMT_PB_WAL_MSG_INFO) {
+        /* :839 — an OWN message; a peer id here is the wrong class. */
+        served_push(msg->u.msg_info.peer_id_len == 0u ? (uint8_t)SRC_INTERNAL
+                                                       : (uint8_t)SRC_UNEXPECTED);
+    }
     if (msg != NULL && msg->kind == CMT_PB_WAL_MSG_INFO &&
         msg->u.msg_info.msg.kind == CMT_PB_CONS_MSG_VOTE &&
         g_sync_rounds != NULL && g_sync_len < (size_t)SYNC_MAX) {
@@ -510,6 +571,7 @@ static int fresh_cs(void)
     g_disarm_calls = 0;
     g_armed_ns    = 0;
     g_sync_len    = 0;
+    g_served_len  = 0;
     g_end_height_present = 0;   /* END_HEIGHT for 0 exists, for 1 does not */
     g_replay_eof  = true;
 
@@ -877,6 +939,178 @@ static int t_internal_queue(void)
     return 0;
 }
 
+/* ══ 5b. the rotating poll — state.go:826-870, deviation R2C-12 ═══════
+ *
+ * Go's `select` picks one of the READY cases uniformly at random, so a
+ * source that is ready on every iteration cannot starve another. This
+ * port walks the four sources — 0 txs available, 1 the peer queue, 2 the
+ * internal queue, 3 the tock — from a rotating start and moves the start
+ * to just past the one it served (cmt_cs.h, "ONE THREAD, ONE ROTATING
+ * POLL"). Which source a step served is read back out of the WAL class
+ * the reference writes for it (`g_served`, see the fixture). Every vote
+ * here carries a height the state machine ignores at :2172, so a served
+ * vote leaves exactly its WAL trace and nothing else.                   */
+
+static int t_poll_rotation(void)
+{
+    /* (a)'s expected poll start AFTER each step: the served source plus
+     * one, mod four — peer 1 -> 2, internal 2 -> 3, tock 3 -> 0, peer 1
+     * -> 2. */
+    static const uint8_t start_after[4] = { 2u, 3u, 0u, 2u };
+    cmt_vote_t *v;
+    uint8_t     peer[CMT_PB_PEER_ID_MAX];
+    size_t      i;
+    size_t      before;
+    bool        worked;
+
+    v = (cmt_vote_t *)calloc(1u, sizeof(*v));
+    CHECK(v != NULL, "vote fixture"); OK();
+    memset(peer, 0xEE, sizeof(peer));
+
+    /* ── (a) STARVATION-FREEDOM. One own vote on the internal queue, one
+     * tock pending, and a fresh peer vote pushed BEFORE EVERY step so the
+     * peer queue is never empty — the exact shape under which the fixed
+     * order of wave R2 never reached the internal queue or the tock. */
+    CHECK(fresh_cs() == 0, "construct"); OK();
+    CHECK(g_cs->poll_start == 0u,
+          "the poll starts at source 0 after construction — cmt_cs_init's "
+          "memset; a select carries no state before its first draw (:814)");
+    OK();
+
+    memset(v, 0, sizeof(*v));
+    v->type   = CMT_PB_MSG_TYPE_PREVOTE;
+    v->height = g_cs->rs.height + 5;
+    v->round  = 7;
+    CHECK(cmt_cs_add_vote(g_cs, v, NULL, 0u) == CMT_OK,
+          "an own vote goes onto the internal queue (:478, empty peer id)");
+    OK();
+
+    /* Arm the NewHeight tock scheduleRound0 would arm (:559) and fire
+     * it — the ticker's `tockChan <- ti` (ticker.go:137). */
+    CHECK(cmt_cs_schedule_timeout(g_cs, 0, 1, 0,
+                                  CMT_ROUND_STEP_NEW_HEIGHT) == CMT_OK,
+          "scheduleTimeout (:564) arms the host timer"); OK();
+    CHECK(g_arm_calls == 1, "the host timer was armed exactly once"); OK();
+    CHECK(cmt_cs_on_timer_expired(g_cs) == CMT_OK && g_cs->tock_pending,
+          "the tock is pending (ticker.go:130-137)"); OK();
+
+    for (i = 0; i < 4u; i++) {
+        memset(v, 0, sizeof(*v));
+        v->type   = CMT_PB_MSG_TYPE_PREVOTE;
+        v->height = g_cs->rs.height + 5;
+        v->round  = (int32_t)(1000 + i);
+        CHECK(cmt_cs_add_vote(g_cs, v, peer, sizeof(peer)) == CMT_OK,
+              "a peer vote goes onto the peer queue before every step "
+              "(:478, 32-byte peer id)");
+        before = g_served_len;
+        worked = false;
+        CHECK(cmt_cs_step(g_cs, &worked) == CMT_OK, "step");
+        CHECK(worked, "every step found work");
+        CHECK(g_served_len == before + 1u,
+              "exactly one source was served per step — one iteration of "
+              "the reference's `for` (:814) handles exactly one case");
+        CHECK(g_cs->poll_start == start_after[i],
+              "after serving source i the next poll begins at i+1 mod 4 "
+              "(cmt_cs.h, ONE THREAD, ONE ROTATING POLL)");
+    }
+    OK();
+
+    CHECK(g_served[0] == SRC_PEER,
+          "step 1 served the PEER queue (:830-836): from start 0, txs "
+          "available (:827) is not ready and the peer queue is"); OK();
+    CHECK(g_served[1] == SRC_INTERNAL,
+          "step 2 served the INTERNAL queue (:838-856): the start moved "
+          "past the peer queue, so the own vote is looked at first even "
+          "though the peer queue is non-empty again"); OK();
+    CHECK(g_served[2] == SRC_TOCK,
+          "step 3 served the TOCK (:858-865): the start moved past the "
+          "internal queue"); OK();
+    CHECK(g_served[3] == SRC_PEER,
+          "step 4 served the PEER queue again: the start wrapped to 0 and "
+          "txs available is still not ready"); OK();
+
+    /* Served means HANDLED, not merely popped. The own vote's round tag
+     * went through WriteSync (:839) once; the tock was the NewHeight
+     * tock, so handleTimeout (:865, :983) ran the NewHeight -> NewRound ->
+     * Propose walk of t_round_step_walk. */
+    CHECK(g_sync_len == 1u && g_sync_rounds[0] == 7,
+          "the own vote went through WriteSync (:839), exactly once"); OK();
+    CHECK(g_cs->rs.step == CMT_ROUND_STEP_PROPOSE,
+          "the tock drove enterNewRound -> enterPropose (:983, :1113)"); OK();
+    CHECK(g_cs->internal_q_len == 0u && !g_cs->tock_pending,
+          "the internal queue and the tock are both drained"); OK();
+    CHECK(g_cs->peer_q_len == 2u,
+          "four peer votes were pushed and two were served"); OK();
+    cmt_cs_free(g_cs);
+
+    /* ── (b) ROTATION NEVER IDLES. With ONLY the peer queue holding work,
+     * every step serves it whatever the start index: after each service
+     * the start is 2, and the walk has to pass the internal queue, the
+     * tock and txs available before it reaches the peer queue again. */
+    CHECK(fresh_cs() == 0, "construct"); OK();
+    for (i = 0; i < 8u; i++) {
+        memset(v, 0, sizeof(*v));
+        v->type   = CMT_PB_MSG_TYPE_PREVOTE;
+        v->height = g_cs->rs.height + 5;
+        v->round  = (int32_t)(2000 + i);
+        CHECK(cmt_cs_add_vote(g_cs, v, peer, sizeof(peer)) == CMT_OK,
+              "eight peer votes are queued");
+    }
+    OK();
+    for (i = 0; i < 8u; i++) {
+        before = g_served_len;
+        worked = false;
+        CHECK(cmt_cs_step(g_cs, &worked) == CMT_OK, "step");
+        CHECK(worked, "a step with work on ONE source never idles — the "
+                      "walk wraps from any start (:826-870)");
+        CHECK(g_served_len == before + 1u && g_served[before] == SRC_PEER,
+              "and it served the peer queue (:830-836)");
+        CHECK(g_cs->poll_start == 2u,
+              "the start sits just past the peer queue after each service");
+    }
+    OK();
+    CHECK(g_cs->peer_q_len == 0u, "eight steps drained eight votes"); OK();
+    worked = true;
+    CHECK(cmt_cs_step(g_cs, &worked) == CMT_OK && !worked,
+          "with nothing ready the step reports no work"); OK();
+    CHECK(g_cs->poll_start == 2u,
+          "and a step that serves nothing does not move the start"); OK();
+    cmt_cs_free(g_cs);
+
+    /* ── (c) FIFO PRESERVED: t_internal_queue, unchanged, is the proof.
+     * Under rotation the internal queue is the only ready source there,
+     * so each step still serves it in arrival order. Not repeated. */
+
+    /* ── (d) QUIT LAST. In Go :867 is one case of the select and competes;
+     * a quit racing a ready message has no consensus meaning, and here it
+     * is looked at only when none of the four sources is ready. */
+    CHECK(fresh_cs() == 0, "construct"); OK();
+    cmt_cs_quit(g_cs);
+    memset(v, 0, sizeof(*v));
+    v->type   = CMT_PB_MSG_TYPE_PREVOTE;
+    v->height = g_cs->rs.height + 5;
+    v->round  = 3000;
+    CHECK(cmt_cs_add_vote(g_cs, v, peer, sizeof(peer)) == CMT_OK,
+          "a peer vote is queued with quit already set"); OK();
+    before = g_served_len;
+    worked = false;
+    CHECK(cmt_cs_step(g_cs, &worked) == CMT_OK && worked, "the step works");
+    OK();
+    CHECK(g_served_len == before + 1u && g_served[before] == SRC_PEER,
+          "and it served the peer message, not quit — :867 is last"); OK();
+    before = g_served_len;
+    worked = false;
+    CHECK(cmt_cs_step(g_cs, &worked) == CMT_OK && worked,
+          "with nothing queued the step reports work for quit (:867-869)");
+    OK();
+    CHECK(g_served_len == before,
+          "and served no source: nothing reached the WAL"); OK();
+    cmt_cs_free(g_cs);
+
+    free(v);
+    return 0;
+}
+
 /* ══ 6. the block-slot discipline — cmt_cs.h "OWNERSHIP" (1) ══════════ */
 
 static int t_part_set_slots(void)
@@ -1191,6 +1425,7 @@ int main(void)
     if (rc == 0 && t_entry_guards() != 0)            { rc = 1; }
     if (rc == 0 && t_timeout_acceptance() != 0)      { rc = 1; }
     if (rc == 0 && t_internal_queue() != 0)          { rc = 1; }
+    if (rc == 0 && t_poll_rotation() != 0)           { rc = 1; }
     if (rc == 0 && t_part_set_slots() != 0)          { rc = 1; }
     if (rc == 0 && t_proposer_wiring() != 0)         { rc = 1; }
     if (rc == 0 && t_vote_time() != 0)               { rc = 1; }

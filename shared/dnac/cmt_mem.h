@@ -71,7 +71,7 @@
  *     height, as the `notifiedTxsAvailable` flag (:31, :514, :593)
  *     makes it. A direct call is equivalent to a capacity-1 channel with
  *     an idempotent consumer, and the consumer IS idempotent:
- *     `cmt_cs_notify_txs_available` sets a bool (cmt_cs.h:673).
+ *     `cmt_cs_notify_txs_available` sets a bool (cmt_cs.h:741).
  *   · `SetResponseCallback` (:89; app_conn.go:30) → gone with the async
  *     client. `proxyAppConn.Error()` (:253) and `Flush()` (:178, :674)
  *     stay as rows of the application table.

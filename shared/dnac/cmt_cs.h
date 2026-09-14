@@ -14,17 +14,43 @@
  * `cmt_state_*` is `state/state.go`, whose receiver is `state`, and is a
  * different module (cmt_state.h).
  *
- * ── ONE THREAD, ONE FIXED ORDER ────────────────────────────────────────
+ * ── ONE THREAD, ONE ROTATING POLL ──────────────────────────────────────
  * The reference is `receiveRoutine` (:784-872), a goroutine selecting over
- * five channels. Go's `select` picks a READY case at RANDOM; this port
- * replaces it with a FIXED poll order, which is the behavioural
- * determinization the umbrella record names (rev 3, atlas-dec-d5e766de…):
+ * five channels. Go's `select` picks one of the READY cases UNIFORMLY AT
+ * RANDOM — the language specification's "Select statements" clause; STATED
+ * LIMIT: the Go specification is NOT in the pinned tarball, so that rule
+ * is cited from it as the dispatch record atlas-dec-efa4d29c… quotes it,
+ * not read from a pinned file — so a source that is ready on every
+ * iteration can never starve another. This
+ * port has no scheduler to draw from: `cmt_cs_step` polls the four event
+ * sources in the reference's listed order but from a ROTATING start,
+ * which is the behavioural determinization the umbrella record names
+ * (rev 5, atlas-dec-d5e766de…; the rule itself is atlas-dec-efa4d29c…
+ * rev 2):
  *
- *   1. txs available   (:827-828)
- *   2. the peer queue  (:830-836)
- *   3. the internal queue (:838-856)
- *   4. the timer tock  (:858-865)
- *   5. quit            (:867-869)
+ *   0. txs available      (:827-828)
+ *   1. the peer queue     (:830-836)
+ *   2. the internal queue (:838-856)
+ *   3. the timer tock     (:858-865)
+ *   ·  quit               (:867-869) — LAST, and only when none of the
+ *                                     four is ready; it does not rotate.
+ *
+ * The walk begins at `poll_start`, wraps, and handles the FIRST source
+ * that is ready; after serving source i the next call begins at i+1 (mod
+ * 4) — the source just served goes to the back. A call that serves
+ * nothing leaves the start where it was. THE PROPERTY: a source that is
+ * ready on every call is served at least once in any four consecutive
+ * working calls, because every call that serves some OTHER source moves
+ * the start strictly closer to it, and the start is never more than three
+ * away. That is the deterministic form of the fairness Go's random
+ * select gives probabilistically; it adds no priority the reference does
+ * not have.
+ *
+ * WHY (deviation register row R2C-12): through wave R2 the poll began at
+ * source 0 on every call. A peer that kept the peer queue non-empty then
+ * starved this node's OWN internal queue — its proposal, its block parts
+ * and its votes (:1244, :1248, :2472) — and its timeouts, indefinitely.
+ * The reference's random select starves nothing; the fixed order did.
  *
  * `cmt_cs_step` handles AT MOST ONE of them per call, because one
  * iteration of the reference's `for` handles exactly one case; draining a
@@ -157,7 +183,8 @@
  *
  * Revision 4 was APPROVED by the operator on 2026-09-10, after this wave
  * was written against it; waves R2-A and R2-B shipped under the same
- * rule.
+ * rule. Revision 5 (2026-09-14) carries it unchanged and amends only the
+ * event-loop sentence — see "ONE THREAD, ONE ROTATING POLL" above.
  *
  * ── FAIL POINTS ────────────────────────────────────────────────────────
  * The six `fail.Fail()` calls at :852, :1727, :1744, :1767, :1787 and
@@ -243,8 +270,9 @@
  *   libs/fail/fail.go                  47 lines
  *     c47b87d25a4232d825f4283d7bfe0dc2a81aaceb977e4ab8ea4dda42ac8a32a9
  *
- * Governing records, all APPROVED: umbrella rev 4
- * (atlas-dec-d5e766defde138eb6dd02e5b81e735a8), K-1 rev 2
+ * Governing records, all APPROVED: umbrella rev 5
+ * (atlas-dec-d5e766defde138eb6dd02e5b81e735a8), the event-loop rotation
+ * rev 2 (atlas-dec-efa4d29c345f9e9cd7e2baa797b1ed2a), K-1 rev 2
  * (atlas-dec-3ba8153088b0d60c63083028023b61be), INVARIANT explicit bounds
  * (atlas-dec-7495d3372e004b24b4f6cc7bff5caf07), D-4 rev 2
  * (atlas-dec-d5ddcba654eb48d861c03a0ecd170718), D-15 rev 5
@@ -567,10 +595,12 @@ typedef struct {
  * `marshal_scratch` must stay valid until every block part queued out of
  * it has been handled. One buffer is enough for a host that cannot begin
  * a second proposal before the internal queue has drained; a host that
- * can must double-buffer. The event loop polls the PEER queue (order 2)
- * before the INTERNAL queue (order 3), so a peer's vote can carry this
- * node into a new round — and a new proposal — while its own parts are
- * still queued. Raised as a RISK in this wave's report.
+ * can must double-buffer. The event loop may serve a peer's vote before
+ * this node's own queued parts — exactly as the reference's `select` may
+ * (:826-870) — so a peer's vote can carry this node into a new round, and
+ * a new proposal, while its own parts are still queued. The rotating poll
+ * (file header) changes nothing here; the obligation stands unchanged.
+ * Raised as a RISK in wave R2-C's report.
  */
 typedef struct {
     cmt_block_t     blocks[CMT_CS_BLOCK_SLOTS];
@@ -596,7 +626,7 @@ typedef struct {
  * (libs/events/events.go:77-99), one listener id "consensus-reactor".
  *
  * Added in wave R3-A, the first live consumer of this module. Before it,
- * cmt_cs.h:72-74 listed `evsw.FireEvent` as "not ported"; the five fire
+ * cmt_cs.h:95-97 listed `evsw.FireEvent` as "not ported"; the five fire
  * sites are now ported as calls through this table, and NOTHING ELSE of
  * events.go is: the switch has exactly one listener (the reactor) and
  * exactly three events, so a map of cells (:58-59) would be two names for
@@ -605,7 +635,7 @@ typedef struct {
  * ⚠ THE CALLBACK RUNS INSIDE THE STATE MACHINE. events.go:147-158
  * `FireEvent` → :189-200 `cell.FireEvent` calls every callback on the
  * FIRING goroutine, synchronously, and so does this port. A listener MUST
- * NOT re-enter `cs` (the rule at :332-334 above): the reactor's three
+ * NOT re-enter `cs` (the rule at :360-362 above): the reactor's three
  * broadcasts only read the `rs` / `vote` they are handed and call the
  * host's `send`; they never call a `cmt_cs_*` function.
  *
@@ -715,6 +745,19 @@ struct cmt_cs_s {
      *  deep: the reference's `tockChan` carries one timeout at a time. */
     bool                tock_pending;
     cmt_timeout_info_t  tock;
+
+    /** C only — the rotating start of `cmt_cs_step`'s poll (file header,
+     *  "ONE THREAD, ONE ROTATING POLL"): the index in 0..3 of the source
+     *  the NEXT poll begins at — 0 txs available (:827), 1 the peer queue
+     *  (:830), 2 the internal queue (:838), 3 the tock (:858). Set to i+1
+     *  (mod 4) after source i is served; left alone by a call that serves
+     *  nothing. Zero from `cmt_cs_init`'s memset, which is the reference
+     *  before its first iteration at :814 — a `select` carries no state
+     *  between draws. NOT persisted, in NO hash, NOT touched by
+     *  `updateToState`: scheduling state of this loop, exactly as the
+     *  reference's random draw is, never consensus state. Deviation
+     *  register R2C-12, atlas-dec-efa4d29c… rev 2. */
+    uint8_t             poll_start;
 
     /* ── C-only lifetime bookkeeping ───────────────────────────────── */
 
@@ -963,7 +1006,10 @@ int cmt_cs_on_timer_expired(cmt_cs_t *cs);
  * cometbft@709fd12b consensus/state.go:784-872 — `receiveRoutine`, one
  * iteration.
  *
- * Handles AT MOST ONE event, in the fixed order named in the file header.
+ * Handles AT MOST ONE event: the four sources are polled from the rotating
+ * start `poll_start` in the reference's listed order (file header, "ONE
+ * THREAD, ONE ROTATING POLL") and the FIRST one that is ready is served;
+ * quit (:867-869) is checked last, only when none of the four is ready.
  * The round state is snapshotted before the poll (:823) and the snapshot —
  * not the live one — is what `handleTimeout` compares against (:865).
  *
