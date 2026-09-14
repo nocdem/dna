@@ -202,7 +202,7 @@ static void key_block_hash(const uint8_t *hash, size_t n,
     out[3 + 2 * n] = '\0';
 }
 
-#define KEY_BLOCK_STORE  "blockStore"                  /* store.go:662 */
+#define KEY_BLOCK_STORE  "blockStore"                  /* store.go:658 */
 #define KEY_STATE        "stateKey"                    /* state.go:20  */
 #define KEY_LAST_ABCI    "lastABCIResponseKey"         /* state/store.go:44 */
 #define KEY_OFFLINE_SS   "offlineStateSyncHeightKey"   /* :45 */
@@ -2155,10 +2155,20 @@ int nodus_cmt_ss_save_finalize_block_response(
         return CMT_FAULT;
     }
     /* ABCIResponsesInfo's own two fields (height, a frame) on top of the
-     * response's bound. */
+     * response's bound. No reference line: Go marshals into a growing
+     * slice. `s->buf` is `cmt_pb_store_state_upper_bound(CMT_VALSET_MAX)`
+     * bytes (nodus_cmt_store_init) and the response is THIS NODE'S OWN
+     * PRODUCT — the engine's ExecTxResults and validator updates out of
+     * FinalizeBlock (execution.go:259), never a peer's bytes — so a
+     * response wider than the bound is a NODE-LOCAL invariant broken
+     * (the bound or the engine), not something a peer sent: CMT_FAULT
+     * (umbrella rev 5 panic rule), not REJECT. */
     need = 32u + cmt_pb_store_response_finalize_block_upper_bound(resp);
     if (need > s->buf_cap) {
-        return CMT_REJECT;                /* wider than the module's scratch */
+        QGP_LOG_ERROR(LOG_TAG, "FinalizeBlock response needs %zu bytes, the "
+                      "store's bound is %zu — this node's invariant", need,
+                      s->buf_cap);
+        return CMT_FAULT;                 /* wider than the module's scratch */
     }
     if (!s->discard_abci_responses) {                                /* :507 */
         rc = cmt_pb_store_response_finalize_block_marshal(resp, s->buf,

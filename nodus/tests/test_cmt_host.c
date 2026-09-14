@@ -35,12 +35,15 @@
  *    are seen, `start` writes EndHeight(0) into an empty log only, the
  *    flush deadline fires at now+2s, prune removes heights below.
  *  · The MEASURED two-connection interaction, in three legs: the
- *    approved routing runs ten `finalizeCommit`-order heights with NO
- *    contention; the CONTROL proves that is not vacuous (an OPEN
- *    transaction on either connection does block the other — the W1
- *    shape that was withdrawn before the commit); and a `Write` issued
- *    inside a store transaction is rolled back with it (the caller
- *    contract).
+ *    approved routing runs ten `finalizeCommit`-order heights — WAL
+ *    `Write`, the REAL `SaveBlock` (store.go:434-457: `BEGIN IMMEDIATE`
+ *    … `COMMIT` on the main connection, ten blocks with part sets and
+ *    seen commits, the store's height reaching 10), WAL `WriteSync
+ *    (EndHeight)` — with NO contention; the CONTROL proves that is not
+ *    vacuous (an OPEN transaction on either connection does block the
+ *    other — the W1 shape that was withdrawn before the commit); and a
+ *    `Write` issued inside a store transaction is rolled back with it
+ *    (the caller contract).
  *  · execution.go/validation.go behave as TestApplyBlock,
  *    TestFinalizeBlockDecidedLastCommit, TestFinalizeBlockValidators,
  *    TestProcessProposal, TestValidateValidatorUpdates,
@@ -55,8 +58,11 @@
  *  Compile flags: the nodus build's own (`CMT_SOFTWARE_VERSION` from
  *  nodus/CMakeLists.txt:28); no fault-injection flag; no extra define.
  *  Environment: none. A writable current working directory (the fixture
- *  is `mkdtemp("test_cmt_host.XXXXXX")` in the cwd) and SQLite ≥ 3.35
- *  (DROP COLUMN; the tree links 3.40.1).
+ *  is `mkdtemp("test_cmt_host.XXXXXX")` in the cwd) and SQLite ≥ 3.35.0
+ *  (DROP COLUMN — the S14 rung refuses an older linked library before
+ *  writing, `NODUS_V2_S14_SQLITE_MIN_VERSION`, and every fixture here
+ *  climbs to S14, so an older library fails every case at "fixture";
+ *  the tree links 3.40.1 and the guard itself is not exercised).
  *
  * ── WHAT IT LEAVES BEHIND ───────────────────────────────────────────────
  *  Nothing on success: every `test_cmt_host.XXXXXX` directory is removed
@@ -91,7 +97,14 @@
  *     once per direction; the case WAITS that long TWICE, by design.
  *     The first leg — the approved routing — waits for nothing, and a
  *     green there proves an ABSENCE of contention, which is only
- *     meaningful because the control leg produces it on demand.
+ *     meaningful because the control leg produces it on demand AND
+ *     because that leg drives the real `nodus_cmt_bs_save_block` (the
+ *     store's own transaction, the very statement the withdrawn shape
+ *     locked against) rather than a lone autocommit row; a leg that
+ *     wrote only `blockStore` state would be green under BOTH shapes.
+ *     The blocks carry a one-signature test commit that is never
+ *     verified (store_test.go's makeTestExtCommit), so the leg proves
+ *     lock behaviour, not commit validity.
  *  NOT PORTED — BLOCKED BY:
  *   · TestFinalizeBlockRecoveryUsingLegacyABCIResponses
  *     (state/store_test.go:309) — no legacy format in this chain (D-23).
@@ -2276,7 +2289,12 @@ static int t_wal_corruption_faults(void)
  *
  *   (1) the approved routing (D-13, D-15 rev 5 (4)) never contends — the
  *       `finalizeCommit` order runs ten heights with no failure, because
- *       every write of both classes is a single autocommit statement;
+ *       every write of both classes is a single autocommit statement and
+ *       the store's own `BEGIN IMMEDIATE … COMMIT` (SaveBlock's batch,
+ *       store.go:439-454 → `batch_begin`) opens and closes BETWEEN them.
+ *       The block store is driven through the REAL `nodus_cmt_bs_save_
+ *       block` — the multi-statement transaction the withdrawn W1 shape
+ *       deadlocked against — not through a lone autocommit row;
  *   (2) the CONTROL that proves (1) is not vacuous: an OPEN transaction
  *       on either connection does block the other, so the earlier W1
  *       shape (a WAL transaction left open across `Write`s) really did
@@ -2286,69 +2304,106 @@ static int t_wal_corruption_faults(void)
  *       must not do that — here it is only asserted that the row is
  *       written and then ROLLED BACK with the store's work.
  *
- * (2) waits the busy timeout twice (HOW IT CAN LIE 7). */
+ * (2) waits the busy timeout twice (HOW IT CAN LIE 7). The fixture is
+ * the execution tests' `t_env_t` (its store and DB, helpers_test.go's
+ * makeState(1, 1)) so the blocks are the same makeBlock/MakeNTxs shape
+ * as `env_save_n_blocks`; the seen commit is store_test.go's
+ * makeTestExtCommit → `ToCommit()`, as TestLoadBlockExtendedCommit's
+ * plain-commit row builds it. */
 static int t_wal_main_connection_interaction(void)
 {
-    dbfx_t fx;
+    t_env_t e;
     nodus_cmt_wal_t *w;
-    nodus_cmt_store_t *s;
     cmt_wal_message_t *m;
-    cmt_pb_block_store_state_t bss = { 1, 1 };
+    cmt_block_t *b;
+    cmt_commit_t *empty, *commit;
+    cmt_commit_sig_t *sigs;
+    cmt_part_set_t ps;
+    cmt_extended_commit_t ec;
+    cmt_extended_commit_sig_t ecs[1];
+    cmt_data_t data;
+    cmt_validator_t proposer;
+    cmt_pb_block_store_state_t bss = { 1, 10 };
     int i, n = -1;
 
-    CHECK(dbfx_open_s14(&fx) == 0, "fixture");
+    CHECK(env_make_state(&e, 1, 1) == 0, "makeState(1, 1): S14 fixture + store");
     w = (nodus_cmt_wal_t *)calloc(1, sizeof(*w));
-    s = (nodus_cmt_store_t *)calloc(1, sizeof(*s));
     m = (cmt_wal_message_t *)calloc(1, sizeof(*m));
-    CHECK(w && s && m, "alloc");
-    CHECK(nodus_cmt_wal_open(w, fx.w->db, t_now, NULL) == CMT_OK, "wal open");
-    CHECK(nodus_cmt_store_init(s, fx.w->db, false) == CMT_OK, "store init");
+    b = (cmt_block_t *)calloc(1, sizeof(*b));
+    empty = (cmt_commit_t *)calloc(1, sizeof(*empty));
+    commit = (cmt_commit_t *)calloc(1, sizeof(*commit));
+    sigs = (cmt_commit_sig_t *)calloc(CMT_VALSET_MAX, sizeof(*sigs));
+    CHECK(w && m && b && empty && commit && sigs, "alloc");
+    CHECK(nodus_cmt_wal_open(w, e.fx.w->db, t_now, NULL) == CMT_OK, "wal open");
+    {
+        cmt_validator_set_t vals;
+        cmt_validator_t *vstor = (cmt_validator_t *)calloc(CMT_VALSET_MAX, sizeof(cmt_validator_t));
+
+        CHECK(vstor && cmt_validator_set_init(&vals, vstor, CMT_VALSET_MAX) == CMT_OK &&
+              cmt_validator_set_copy(&e.state->validators, &vals) == CMT_OK &&
+              cmt_validator_set_get_proposer(&vals, &proposer) == CMT_OK, "proposer");
+        free(vstor);
+    }
 
     /* (1) ten heights in the reference's own order: newStep's Write
-     * (state.go:760), SaveBlock (:1737), WriteSync(EndHeight) (:1760). */
+     * (state.go:760), the REAL SaveBlock (:1737 — the ToCommit branch;
+     * store.go:434-457 with its batch), WriteSync(EndHeight) (:1760).
+     * Contiguous heights (store.go:516-518), complete part sets
+     * (:519-521), the seen commit at the block's height (:522-524). */
     for (i = 1; i <= 10; i++) {
+        cmt_time_t ts = g_now;
+
+        ts.seconds += i;
         wal_round_state(m, i, 0);
-        CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "Write");
-        bss.base = 1;
-        bss.height = i;
-        CHECK(nodus_cmt_bs_save_block_store_state(s, &bss) == CMT_OK, "SaveBlock");
+        CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "Write (state.go:760)");
+        CHECK(env_make_n_txs(&e, i, 10, &data) == 0 &&
+              cmt_state_make_block(e.state, i, &data, empty, NULL, proposer.address,
+                                   proposer.address_len, e.bscratch, b) == CMT_OK &&
+              env_make_part_set(&e, b, &ps) == 0, "makeBlock(h) + part set");
+        make_test_ext_commit(i, ts, 1, (unsigned)(0xC0 + i), ecs, &ec);
+        CHECK(cmt_extended_commit_to_commit(&ec, sigs, CMT_VALSET_MAX, commit) == CMT_OK,
+              "seenExtendedCommit.ToCommit() (state.go:1737)");
+        CHECK(nodus_cmt_bs_save_block(e.store, b, &ps, commit, e.size_scratch,
+                                      e.part_scratch_cap) == CMT_OK,
+              "SaveBlock (state.go:1737): BEGIN IMMEDIATE … COMMIT on the main connection");
         wal_end_height(m, i);
-        CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_OK, "WriteSync(EndHeight)");
+        CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_OK, "WriteSync(EndHeight) (state.go:1760)");
     }
-    CHECK(wal_rows_main(fx.w->db, &n) == 0 && n == 20, "twenty rows, no contention");
+    CHECK(wal_rows_main(e.fx.w->db, &n) == 0 && n == 20, "twenty rows, no contention");
+    CHECK(nodus_cmt_bs_height(e.store) == 10 && nodus_cmt_bs_base(e.store) == 1,
+          "the store saved ten blocks (store.go:448-451): the real SaveBlock ran");
 
     /* (2) the control, both directions */
-    CHECK(run_sql(fx.w->db, "BEGIN IMMEDIATE") == 0, "main txn open");
+    CHECK(run_sql(e.fx.w->db, "BEGIN IMMEDIATE") == 0, "main txn open");
     CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_FAULT,
           "a WriteSync on the FULL connection FAULTs while a main txn is open");
-    CHECK(run_sql(fx.w->db, "COMMIT") == 0, "main commit");
+    CHECK(run_sql(e.fx.w->db, "COMMIT") == 0, "main commit");
     {
         char *err = NULL;
         CHECK(sqlite3_exec(w->full, "BEGIN IMMEDIATE", NULL, NULL, &err) == SQLITE_OK,
               "WAL-connection txn open");
         sqlite3_free(err);
-        CHECK(nodus_cmt_bs_save_block_store_state(s, &bss) == CMT_FAULT,
+        CHECK(nodus_cmt_bs_save_block_store_state(e.store, &bss) == CMT_FAULT,
               "the store FAULTs while the WAL connection holds a txn — the W1 shape");
         CHECK(sqlite3_exec(w->full, "ROLLBACK", NULL, NULL, &err) == SQLITE_OK, "rollback");
         sqlite3_free(err);
     }
-    CHECK(nodus_cmt_bs_save_block_store_state(s, &bss) == CMT_OK,
+    CHECK(nodus_cmt_bs_save_block_store_state(e.store, &bss) == CMT_OK,
           "the same store write succeeds once nothing holds a transaction");
 
     /* (3) the caller contract, stated as an observation: a Write inside
      * the store's transaction is rolled back with it. */
-    CHECK(wal_rows_main(fx.w->db, &n) == 0 && n == 20, "twenty before");
-    CHECK(run_sql(fx.w->db, "BEGIN IMMEDIATE") == 0, "main txn open");
+    CHECK(wal_rows_main(e.fx.w->db, &n) == 0 && n == 20, "twenty before");
+    CHECK(run_sql(e.fx.w->db, "BEGIN IMMEDIATE") == 0, "main txn open");
     wal_round_state(m, 99, 0);
     CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "the Write joins the open txn");
-    CHECK(run_sql(fx.w->db, "ROLLBACK") == 0, "main rollback");
-    CHECK(wal_rows_main(fx.w->db, &n) == 0 && n == 20,
+    CHECK(run_sql(e.fx.w->db, "ROLLBACK") == 0, "main rollback");
+    CHECK(wal_rows_main(e.fx.w->db, &n) == 0 && n == 20,
           "the WAL row went with it — why the host must not do this");
 
     nodus_cmt_wal_close(w);
-    nodus_cmt_store_release(s);
-    free(w); free(s); free(m);
-    dbfx_close(&fx);
+    free(w); free(m); free(b); free(empty); free(commit); free(sigs);
+    env_free(&e);
     return 0;
 }
 
@@ -4466,14 +4521,20 @@ static int t_exec_prepare_proposal_serialization_overhead(void)
 
     /* :922 — `nonDataSize := 5000 - types.MaxDataBytes(5000, 0, 1)`, i.e.
      * the block's fixed overhead, which the reference can only read
-     * through MaxDataBytes. With ML-DSA-87 the overhead is
-     * MaxOverheadForBlock 11 + MaxHeaderBytes 790 + 1 × MaxCommitSigBytes
-     * 4685 = 5486 bytes (cmt_block.h:244-283), so a 5000-byte block has
-     * NEGATIVE data room and `MaxDataBytes(5000, …)` is the reference's
-     * panic — CMT_REJECT here. The same quantity is therefore read from a
-     * base large enough to be valid; the value of `non_data` is identical
-     * for every base, which is what makes the reference's trick work at
-     * all. SUBSTITUTION (umbrella rev 4: PQ sizes), labelled here. */
+     * through MaxDataBytes (types/block.go:284-289: maxBytes −
+     * MaxOverheadForBlock − MaxHeaderBytes − MaxCommitBytes(valsCount) −
+     * evidenceBytes). With ML-DSA-87 the overhead is
+     * MaxOverheadForBlock 11 + MaxHeaderBytes 790 + MaxCommitBytes(1),
+     * where MaxCommitBytes(1) = MaxCommitOverheadBytes 159 +
+     * 1 × (MaxCommitSigBytes 4685 + 2) = 4846 (block.go:594-597,
+     * :608-611; cmt_block.h:244, :254, :268, :283; cmt_block.c:451
+     * `per = CMT_MAX_COMMIT_SIG_BYTES + 2`) — 5647 bytes in all, so a
+     * 5000-byte block has data room 5000 − 5647 = −647, NEGATIVE, and
+     * `MaxDataBytes(5000, …)` is the reference's panic — CMT_REJECT here.
+     * The same quantity is therefore read from a base large enough to be
+     * valid; the value of `non_data` is identical for every base, which
+     * is what makes the reference's trick work at all. SUBSTITUTION
+     * (umbrella rev 4: PQ sizes), labelled here. */
     CHECK(cmt_max_data_bytes(5000, 0, 1, &md5000) == CMT_REJECT,
           "a 5000-byte block has no data room under ML-DSA-87");
     CHECK(cmt_max_data_bytes(1000000, 0, 1, &md5000) == CMT_OK, "MaxDataBytes(1 MB)");

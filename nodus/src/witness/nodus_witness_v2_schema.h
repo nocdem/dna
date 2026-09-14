@@ -548,7 +548,8 @@ int nodus_witness_db_migrate_v2s13_ex(nodus_witness_t *w,
  * so the Comet stores become (key BLOB PRIMARY KEY,
  * value BLOB NOT NULL) tables whose keys are the reference's own byte
  * strings and whose values are the proto messages the reference
- * marshals (D-17 rev 5, PROPOSED, operator ruling 2026-09-11):
+ * marshals (D-17 rev 5, operator ruling 2026-09-11; rev 6 APPROVED
+ * 2026-09-14 adds `cmt_wal_sync`, the FlushAndSync barrier — see below):
  *
  *   cmt_blockstore  store/store.go — `H:<h>` BlockMeta, `P:<h>:<i>`
  *                   Part, `C:<h>` Commit, `SC:<h>` seen Commit,
@@ -586,8 +587,10 @@ int nodus_witness_db_migrate_v2s13_ex(nodus_witness_t *w,
  * nothing written by this build under those columns is consensus
  * state anyone else agrees on: the chain is devnet, a consensus change
  * deploys as stop-all + wipe, and the S13 tables were empty by
- * construction. DROP COLUMN is SQLite ≥ 3.35; the tree links 3.40.1
- * (`SQLite3_LIBRARY` in the nodus build cache), measured on it.
+ * construction. DROP COLUMN needs SQLite ≥ 3.35.0 — enforced by the
+ * guard below (`NODUS_V2_S14_SQLITE_MIN_VERSION`), not by this comment;
+ * the tree links 3.40.1 (`SQLite3_LIBRARY` in the nodus build cache),
+ * measured on it.
  *
  * REACHABILITY (W1): the LIVE path still runs the S12 migration
  * (nodus_witness_v2_join.c, nodus_witness_v2_gen.c) and the schema
@@ -596,6 +599,18 @@ int nodus_witness_db_migrate_v2s13_ex(nodus_witness_t *w,
  * R3-C1 flips the live path together with the apply/produce rewrite.
  * Version 15+ fails closed. */
 #define NODUS_V2_SCHEMA_VERSION_S14  14u
+
+/** The LINKED SQLite library must be at least this
+ *  (`sqlite3_libversion_number()` form, MAJOR*1000000 + MINOR*1000 +
+ *  PATCH): `ALTER TABLE … DROP COLUMN`, which the S14 rung issues three
+ *  times, was added in SQLite 3.35.0 (2021-03-12, per SQLite's
+ *  changelog); an older library reports it as a syntax error and the
+ *  rung would roll back to -1 with a generic message. The S14 migration
+ *  checks this FIRST — before the S13 chain, before BEGIN — and fails
+ *  closed with the linked version in the log, so nothing is written by
+ *  a library that cannot finish the rung. The check is against the
+ *  run-time library, not the compile-time header: those can differ. */
+#define NODUS_V2_S14_SQLITE_MIN_VERSION  3035000
 
 typedef enum {
     V2S14MIG_FAIL_NONE = 0,
@@ -610,7 +625,9 @@ typedef enum {
  *  first, then 13 → 14 atomically with the in-transaction revalidation.
  *  @return 0 migrated or already at 14 (idempotent); -1 failure (full
  *  rollback of the running stage) — including an UNKNOWN user_version
- *  (15+): fail closed. */
+ *  (15+): fail closed — and -1 BEFORE ANY WRITE when the linked SQLite
+ *  is below `NODUS_V2_S14_SQLITE_MIN_VERSION` (DROP COLUMN), whatever
+ *  the database's version. */
 int nodus_witness_db_migrate_v2s14(nodus_witness_t *w);
 
 /** Test variant: deterministic abort inside the 13 → 14 transaction. */

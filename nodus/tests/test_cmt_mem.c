@@ -29,9 +29,13 @@
  *   · `ComputeProtoSizeForTxs` equals the LENGTH `cmt_pb_data_marshal`
  *     produces for the same list, which is its definition
  *     (types/tx.go:188-192).
- *   · THE CACHE. `Push` returns false on a repeat and evicts the OLDEST
- *     key when full; `Remove` and `Has` agree with the map; the list
- *     order after Update is the reference's (cache_test.go).
+ *   · THE CACHE. `Push` reports `added == false` on a repeat (the
+ *     reference's false) and evicts the OLDEST key when full; `Remove`
+ *     and `Has` agree with the map; the list order after Update is the
+ *     reference's (cache_test.go). C-only: a NULL or freed cache is a
+ *     FAULT out of Push and Remove, never "already in cache" — the
+ *     hash-backend FAULT itself (cmt_mem.h "NO GO LINE") is not
+ *     reachable here, since the OpenSSL backend does not fail on demand.
  *   · THE IDS. Reservation hands out 1, 2, … and never reuses an id that
  *     is still active; reclaim frees it; the 65 535th active id is the
  *     FAULT the reference panics on (ids_test.go).
@@ -933,39 +937,49 @@ static int t_mem_tx_and_errors(void)
 
 /* cache_test.go:17-42 — TestCacheRemove. `rand.Read` → a byte pattern
  * (fixture note 3). The two counts the reference reads —
- * len(cacheMap) and list.Len() — are one count here. */
+ * len(cacheMap) and list.Len() — are one count here. The reference's
+ * `Push` is one bool; here it is CMT_OK + `*out_added` (a hash-backend
+ * failure is CMT_FAULT, never "already in cache" — cmt_mem.h), so every
+ * `Push` below asserts the code AND the bool. */
 static int t_cache_remove(void)
 {
     cmt_mem_lru_tx_cache_t c;
     int     num_txs = 10;                                     /* :19 */
     uint8_t txs[10][32];
+    bool    added;
     int     i;
 
     CHECK(cmt_mem_lru_tx_cache_init(&c, 100) == CMT_OK, "NewLRUTxCache(100)"); /* :18 */
     for (i = 0; i < num_txs; i++) {
         pat(txs[i], 32, (unsigned)(40 + i));                  /* :24-25 */
-        CHECK(cmt_mem_lru_tx_cache_push(&c, txs[i], 32), "Push");  /* :29 */
+        CHECK(cmt_mem_lru_tx_cache_push_ex(&c, txs[i], 32, &added) == CMT_OK && added,
+              "Push");                                        /* :29 */
         CHECK(cmt_mem_lru_tx_cache_len(&c) == i + 1, "len == i+1 (:32-33)");
     }
     for (i = 0; i < num_txs; i++) {
-        cmt_mem_lru_tx_cache_remove(&c, txs[i], 32);          /* :37 */
+        CHECK(cmt_mem_lru_tx_cache_remove(&c, txs[i], 32) == CMT_OK, "Remove"); /* :37 */
         CHECK(cmt_mem_lru_tx_cache_len(&c) == num_txs - (i + 1),
               "len == numTxs-(i+1) (:39-40)");
         CHECK(!cmt_mem_lru_tx_cache_has(&c, txs[i], 32), "removed");
     }
+    CHECK(cmt_mem_lru_tx_cache_remove(&c, txs[0], 32) == CMT_OK &&
+          cmt_mem_lru_tx_cache_len(&c) == 0, "Remove of a missing key is a no-op (:96-101)");
     cmt_mem_lru_tx_cache_free(&c);
     OK();
 
-    /* C-only: Push's LRU semantics (cache.go:64-89) — a repeat returns
-     * false and moves to the BACK; when full the FRONT (oldest) goes. */
+    /* C-only: Push's LRU semantics (cache.go:64-89) — a repeat is
+     * `added == false` (the reference's false, :73) and moves to the
+     * BACK; when full the FRONT (oldest) goes. */
     CHECK(cmt_mem_lru_tx_cache_init(&c, 3) == CMT_OK, "size 3");
-    CHECK(cmt_mem_lru_tx_cache_push(&c, txs[0], 32), "0");
-    CHECK(cmt_mem_lru_tx_cache_push(&c, txs[1], 32), "1");
-    CHECK(cmt_mem_lru_tx_cache_push(&c, txs[2], 32), "2");
-    CHECK(!cmt_mem_lru_tx_cache_push(&c, txs[0], 32), "repeat → false (:73)");
+    CHECK(cmt_mem_lru_tx_cache_push_ex(&c, txs[0], 32, &added) == CMT_OK && added, "0");
+    CHECK(cmt_mem_lru_tx_cache_push_ex(&c, txs[1], 32, &added) == CMT_OK && added, "1");
+    CHECK(cmt_mem_lru_tx_cache_push_ex(&c, txs[2], 32, &added) == CMT_OK && added, "2");
+    CHECK(cmt_mem_lru_tx_cache_push_ex(&c, txs[0], 32, &added) == CMT_OK && !added,
+          "repeat → CMT_OK, added false (:73) — not a FAULT");
     CHECK(cmt_mem_lru_tx_cache_len(&c) == 3, "still 3");
     /* order is now 1, 2, 0 (0 moved to the back) */
-    CHECK(cmt_mem_lru_tx_cache_push(&c, txs[3], 32), "3 evicts the front");
+    CHECK(cmt_mem_lru_tx_cache_push_ex(&c, txs[3], 32, &added) == CMT_OK && added,
+          "3 evicts the front");
     CHECK(!cmt_mem_lru_tx_cache_has(&c, txs[1], 32), "1 (the oldest) evicted (:77-81)");
     CHECK(cmt_mem_lru_tx_cache_has(&c, txs[0], 32) && cmt_mem_lru_tx_cache_has(&c, txs[2], 32) &&
           cmt_mem_lru_tx_cache_has(&c, txs[3], 32), "2, 0, 3 present");
@@ -986,21 +1000,33 @@ static int t_cache_remove(void)
     cmt_mem_lru_tx_cache_reset(&c);                           /* :56-62 */
     CHECK(cmt_mem_lru_tx_cache_len(&c) == 0 && !cmt_mem_lru_tx_cache_has(&c, txs[0], 32) &&
           cmt_mem_lru_tx_cache_front(&c) == NULL, "Reset");
-    CHECK(cmt_mem_lru_tx_cache_push(&c, txs[0], 32), "usable after Reset");
+    CHECK(cmt_mem_lru_tx_cache_push_ex(&c, txs[0], 32, &added) == CMT_OK && added,
+          "usable after Reset");
     cmt_mem_lru_tx_cache_free(&c);
     OK();
 
     /* NewLRUTxCache(0) still keeps ONE key (cache.go:76-84: eviction
      * only when Front() is non-nil, then the push). */
     CHECK(cmt_mem_lru_tx_cache_init(&c, 0) == CMT_OK, "size 0");
-    CHECK(cmt_mem_lru_tx_cache_push(&c, txs[0], 32), "first push");
+    CHECK(cmt_mem_lru_tx_cache_push_ex(&c, txs[0], 32, &added) == CMT_OK && added, "first push");
     CHECK(cmt_mem_lru_tx_cache_len(&c) == 1, "one key held");
-    CHECK(cmt_mem_lru_tx_cache_push(&c, txs[1], 32), "second push evicts the first");
+    CHECK(cmt_mem_lru_tx_cache_push_ex(&c, txs[1], 32, &added) == CMT_OK && added,
+          "second push evicts the first");
     CHECK(cmt_mem_lru_tx_cache_len(&c) == 1 && cmt_mem_lru_tx_cache_has(&c, txs[1], 32) &&
           !cmt_mem_lru_tx_cache_has(&c, txs[0], 32), "only the newest");
     cmt_mem_lru_tx_cache_free(&c);
     CHECK(cmt_mem_lru_tx_cache_init(&c, -1) == CMT_FAULT, "negative size");
     CHECK(cmt_mem_lru_tx_cache_init(NULL, 1) == CMT_FAULT, "NULL");
+    /* The C-only failure channel (no Go line — cmt_mem.h's "NO GO LINE"
+     * panic): a NULL or freed cache is a FAULT, never "already there";
+     * `c` was just freed, so its node storage is NULL. */
+    added = true;
+    CHECK(cmt_mem_lru_tx_cache_push_ex(&c, txs[0], 32, &added) == CMT_FAULT && !added,
+          "push into a freed cache → FAULT, added false");
+    CHECK(cmt_mem_lru_tx_cache_push_ex(NULL, txs[0], 32, &added) == CMT_FAULT &&
+          cmt_mem_lru_tx_cache_push_ex(&c, txs[0], 32, NULL) == CMT_FAULT &&
+          cmt_mem_lru_tx_cache_remove(NULL, txs[0], 32) == CMT_FAULT &&
+          cmt_mem_lru_tx_cache_remove(&c, txs[0], 32) == CMT_FAULT, "NULL / freed → FAULT");
     OK();
 
     /* The Nop cache (cache.go:113-120) through the dispatcher. */
@@ -1009,13 +1035,18 @@ static int t_cache_remove(void)
 
         memset(&nop, 0, sizeof(nop));
         nop.kind = CMT_MEM_TX_CACHE_NOP;
-        CHECK(cmt_mem_tx_cache_push(&nop, txs[0], 32), "Nop Push → true (:118)");
-        CHECK(cmt_mem_tx_cache_push(&nop, txs[0], 32), "and again");
+        CHECK(cmt_mem_tx_cache_push_ex(&nop, txs[0], 32, &added) == CMT_OK && added,
+              "Nop Push → true (:118)");
+        CHECK(cmt_mem_tx_cache_push_ex(&nop, txs[0], 32, &added) == CMT_OK && added,
+              "and again");
         CHECK(!cmt_mem_tx_cache_has(&nop, txs[0], 32), "Nop Has → false (:120)");
-        cmt_mem_tx_cache_remove(&nop, txs[0], 32);
+        CHECK(cmt_mem_tx_cache_remove(&nop, txs[0], 32) == CMT_OK, "Nop Remove (:119)");
         cmt_mem_tx_cache_reset(&nop);
-        CHECK(!cmt_mem_tx_cache_push(NULL, txs[0], 32) && !cmt_mem_tx_cache_has(NULL, txs[0], 32),
-              "NULL");
+        CHECK(cmt_mem_tx_cache_push_ex(NULL, txs[0], 32, &added) == CMT_FAULT &&
+              cmt_mem_tx_cache_push_ex(&nop, txs[0], 32, NULL) == CMT_FAULT &&
+              cmt_mem_tx_cache_remove(NULL, txs[0], 32) == CMT_FAULT &&
+              !cmt_mem_tx_cache_has(NULL, txs[0], 32),
+              "NULL → FAULT (Has keeps the reference's bool)");
     }
     OK();
     return 0;
@@ -1459,7 +1490,7 @@ static int t_keep_invalid_txs_in_cache(void)
     OK();
 
     /* 2. (:363-373): `mp.cache.Remove(a)` is the public cache call. */
-    cmt_mem_tx_cache_remove(&fx->mem.cache, a, 8);            /* :369 */
+    CHECK(cmt_mem_tx_cache_remove(&fx->mem.cache, a, 8) == CMT_OK, "cache.Remove(a) (:369)");
     CHECK(check_one(&fx->mem, a, 8, NULL, &err) == CMT_OK, "CheckTx(a) succeeds (:371-372)");
     OK();
     fx_free(fx);
@@ -1834,7 +1865,8 @@ static int t_notify_txs_available(void)
     OK();
 
     /* :785-789 — the same tx again should not notify. */
-    cmt_mem_tx_cache_remove(&fx->mem.cache, tx, len);   /* WEAKER/DIFFERENT entry: see above */
+    CHECK(cmt_mem_tx_cache_remove(&fx->mem.cache, tx, len) == CMT_OK,
+          "cache.Remove — WEAKER/DIFFERENT entry: see above");
     CHECK(check_one(&fx->mem, tx, len, NULL, &err) == CMT_OK, "resCbFirstTime via CheckTx (:786)");
     CHECK(cmt_mem_size(&fx->mem) == 1, "require.Equal(1, Size) (:787)");
     CHECK(fx->mem.notified_txs_available, "require.True (:788)");

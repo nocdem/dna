@@ -57,15 +57,36 @@
  * ── THE EXPERIMENTAL GOSSIP LIMITS (:28-32, :43-44, :92-129) ───────────
  * `semaphore.Weighted` of capacity `ExperimentalMaxGossipConnectionsTo
  * {Persistent,NonPersistent}Peers` (0 = unlimited, config.go:778-779);
- * an unconditional peer skips it (:94-95). A routine that cannot acquire
- * WAITS (:104-121; the 30 s context timeout there only re-checks
- * `peer.IsRunning()` and re-acquires, so it needs no clock here: removal
- * ends the wait directly) and releases on exit (:119). Here the two
- * semaphores are COUNTERS; waiting peers try to acquire on every tick in
- * ASCENDING SLOT ORDER. The order in which `golang.org/x/sync/semaphore`
- * wakes waiters was NOT verified (the package is not pinned and was not
- * opened); slot order is this port's rule, stated here because
- * reactor_test.go:262-305 observes it.
+ * an unconditional peer skips it (:94-95). The semaphore is
+ * golang.org/x/sync v0.11.0 semaphore/semaphore.go (pinned, rev 17; its
+ * line numbers as corrected in rev 18), and the port keeps its rules by
+ * line:
+ *   · `Acquire` (:111 here; semaphore.go:38-107) takes a slot AT ONCE
+ *     only if capacity is free AND `s.waiters.Len() == 0` (:52);
+ *     otherwise the caller joins the BACK of the waiter list (:69-71).
+ *     → `cmt_memr_add_peer`: a newcomer starts its routine only when a
+ *     slot is free AND no present peer is WAITING on the same semaphore;
+ *     otherwise it is WAITING. A peer added between a release and the
+ *     next tick therefore does NOT overtake a peer already waiting.
+ *   · `Release` (:119 here; semaphore.go:122-131) → `notifyWaiters`
+ *     (:133-160) serves the waiter list from the FRONT, each waiter on
+ *     capacity alone (:141, :156), stopping at the first that does not
+ *     fit (:153). → the WAITING loop of `cmt_memr_tick` is that call,
+ *     run at the tick: the waiter list is the set of WAITING slots and
+ *     "front" is the LOWEST SLOT — DEVIATION R3-M-6, the approved
+ *     determinization of the library's arrival-order list; what the
+ *     test pins (reactor_test.go:267-305, and this port's own
+ *     newcomer case in test_cmt_memr.c) is stated there.
+ *   · The `for peer.IsRunning()` loop around `Acquire` with its 30 s
+ *     context timeout and `continue` (:105-116) has NO COUNTERPART —
+ *     DEVIATION, labelled: in Go the timeout exists only so a peer that
+ *     disconnected before acquiring does not block its goroutine
+ *     forever (it re-checks IsRunning and re-acquires; semaphore.go:75-92
+ *     removes the timed-out waiter); here `cmt_memr_remove_peer` and
+ *     `cmt_memr_stop` clear the WAITING state structurally, so no clock
+ *     is read for it.
+ * Here the two semaphores are COUNTERS (`active_*_peers`) plus the
+ * WAITING states; nothing else of the library is reproduced.
  *
  * ── RECEIVE: what the p2p layer did before `Receive` ───────────────────
  * The reference's `Receive` (:140-177) is handed an already DECODED and
@@ -119,6 +140,12 @@
  *   mempool/reactor.go   269 lines  c8908583…
  *   mempool/mempool.go   149 lines  1fab7e19… (:13-22)
  *   p2p/peer.go          443 lines  35f34157… (:258-295 Send, :400-430 onReceive)
+ * The library reactor.go:93-121 limits gossip with (pin record rev 17,
+ * PROPOSED 2026-09-14 at the operator's direction, line numbers
+ * corrected in rev 18; cometbft go.mod:44, go.sum:437; local copy
+ * .claude/ref/golang.org-x-sync-v0.11.0/):
+ *   golang.org/x/sync v0.11.0 semaphore/semaphore.go
+ *                        160 lines  c3673708… (:52, :69-71, :111-119, :122-160)
  * Governing records: D-4 rev 3 (atlas-dec-d5ddcba654eb48d861c03a0ecd170718),
  * umbrella rev 4 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
  * PQ POLICY (atlas-dec-652be084b95d02d253834906271e9fb0) — the p2p
@@ -290,8 +317,9 @@ int cmt_memr_get_channels(const cmt_memr_t *memR,
  * reactor.go:91-130 — `AddPeer(peer)`. When `config.Broadcast`: an
  * unconditional peer starts its routine at once (:94-95); otherwise the
  * semaphore for its persistence class is chosen (:96-102), acquired if
- * a slot is free or WAITED on (:104-122), and the routine starts
- * (:127). `is_persistent` and `is_unconditional` are the switch's
+ * a slot is free AND no present peer is WAITING on it (semaphore.go:52 —
+ * the header's first rule), or WAITED on (:104-122), and the routine
+ * starts (:127). `is_persistent` and `is_unconditional` are the switch's
  * knowledge of the peer (p2p), supplied by the host.
  * @return CMT_OK; CMT_REJECT for a slot out of range; CMT_FAULT on NULL
  *         or a slot that is already present (host contract, header).
@@ -328,7 +356,8 @@ int cmt_memr_receive(cmt_memr_t *memR, int peer_slot,
 /**
  * reactor.go:185-259 — every peer's `broadcastTxRoutine`, one pass each
  * in ascending slot order, as the header describes. Waiting routines
- * (:104-121) try the semaphore first.
+ * (:104-121) are served first, in slot order, on capacity alone — the
+ * library's `notifyWaiters` (semaphore.go:133-160) run at the tick.
  *
  * @param out_next_deadline_ns the earliest `not_before` among sleeping
  *        peers, when `*out_has_deadline` — the host should tick again

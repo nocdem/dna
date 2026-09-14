@@ -158,20 +158,20 @@
  * Two nodes with different timeouts still decide the same blocks: the
  * durations here are a LOCAL scheduling policy, not consensus state.
  *
- * ── ⚠ THE ValidateBasic GATE IS NOT HERE YET ───────────────────────────
+ * ── THE ValidateBasic GATE IS IN THE REACTOR, NOT HERE ─────────────────
  * In the reference a peer's message becomes a `msgInfo` only after
  * `MsgFromProto` has run `pb.ValidateBasic()` (msgs.go:232-234), which is
  * where a vote with a non-positive height (types/vote.go:283-285), an
- * invalid type or an out-of-range index is refused. THIS PORT STOPS
- * BEFORE THAT CALL (cmt_msgs.h:28-35) and the gate is R3's, so until R3
- * wires it every field of every message reaching this module is a raw
- * peer number.
- * Two consequences are already handled here and neither should be undone
- * when the gate lands: the `vote.Height+1` of :2137 is formed as
+ * invalid type or an out-of-range index is refused. `cmt_msg_from_proto`
+ * STOPS BEFORE THAT CALL (cmt_msgs.h:28-35); the gate is
+ * `cmt_msg_validate_basic`, run by R3-A's `cmt_conr_receive` right after
+ * the decode, before anything reaches this module (register R3-A-6).
+ * Through R2 nothing ran it and every message field was a raw peer
+ * number; two guards added then are KEPT (a test or a future caller may
+ * feed this module directly): the `vote.Height+1` of :2137 is formed as
  * `cs.Height - 1` so a height of INT64_MAX cannot overflow, and a peer id
  * that is neither empty nor 32 bytes is refused at the message boundary.
- * Anything else this module assumes about a peer's numbers is stated at
- * the site that assumes it.
+ * Anything else assumed about a peer's numbers is stated at its site.
  *
  * ── THE PANIC RULE ─────────────────────────────────────────────────────
  * Umbrella revision 4 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8 — see
@@ -626,7 +626,7 @@ typedef struct {
  * (libs/events/events.go:77-99), one listener id "consensus-reactor".
  *
  * Added in wave R3-A, the first live consumer of this module. Before it,
- * cmt_cs.h:95-97 listed `evsw.FireEvent` as "not ported"; the five fire
+ * cmt_cs.h:98-103 listed `evsw.FireEvent` as "not ported"; the five fire
  * sites are now ported as calls through this table, and NOTHING ELSE of
  * events.go is: the switch has exactly one listener (the reactor) and
  * exactly three events, so a map of cells (:58-59) would be two names for
@@ -635,7 +635,7 @@ typedef struct {
  * ⚠ THE CALLBACK RUNS INSIDE THE STATE MACHINE. events.go:147-158
  * `FireEvent` → :189-200 `cell.FireEvent` calls every callback on the
  * FIRING goroutine, synchronously, and so does this port. A listener MUST
- * NOT re-enter `cs` (the rule at :360-362 above): the reactor's three
+ * NOT re-enter `cs` (the rule at :363-365 above): the reactor's three
  * broadcasts only read the `rs` / `vote` they are handed and call the
  * host's `send`; they never call a `cmt_cs_*` function.
  *

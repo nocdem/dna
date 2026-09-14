@@ -512,25 +512,39 @@ void cmt_mem_lru_tx_cache_reset(cmt_mem_lru_tx_cache_t *c)
     lru_rebuild_free_list(c);
 }
 
-/* cache.go:64-89 — Push(tx) */
-bool cmt_mem_lru_tx_cache_push(cmt_mem_lru_tx_cache_t *c,
-                               const uint8_t *tx, size_t tx_len)
+/* cache.go:64-89 — Push(tx). The reference's one bool becomes
+ * `*out_added` plus a return code: `tx.Key()` (:68) is Go's sha256 and
+ * cannot fail, while `cmt_mem_tx_key` runs OpenSSL EVP (qgp_sha3.c:27-35)
+ * and can. That failure, and the two bookkeeping failures below, are
+ * NODE-LOCAL — the sender did nothing — so they are CMT_FAULT (umbrella
+ * rev 5 panic rule), never the "already in cache" false that
+ * `cmt_mem_check_tx` turns into ErrTxInCache. */
+int cmt_mem_lru_tx_cache_push_ex(cmt_mem_lru_tx_cache_t *c,
+                                 const uint8_t *tx, size_t tx_len,
+                                 bool *out_added)
 {
     uint8_t             key[CMT_MEM_TX_KEY_SIZE];
     cmt_mem_lru_node_t *moved;
     cmt_mem_lru_node_t *n;
 
+    if (out_added == NULL) {
+        return CMT_FAULT;
+    }
+    *out_added = false;
     if (c == NULL || c->nodes == NULL) {
-        return false;
+        return CMT_FAULT;                 /* node-local: no cache to push into */
     }
     if (cmt_mem_tx_key(tx, tx_len, key) != CMT_OK) {                /* :68 */
-        return false;
+        /* No Go line: sha256 cannot fail. The hash backend is this
+         * node's — CMT_FAULT, node-local. */
+        QGP_LOG_ERROR(LOG_TAG, "lru cache: tx key hash failed");
+        return CMT_FAULT;
     }
     moved = (cmt_mem_lru_node_t *)index_load(&c->map, key);        /* :70 */
     if (moved != NULL) {                                           /* :71 */
         lru_unlink(c, moved);                                      /* :72 MoveToBack */
         lru_push_back(c, moved);
-        return false;                                              /* :73 */
+        return CMT_OK;                                             /* :73 — added stays false */
     }
     if (c->len >= c->size) {                                       /* :76 */
         cmt_mem_lru_node_t *front = c->front;                      /* :77 */
@@ -547,9 +561,9 @@ bool cmt_mem_lru_tx_cache_push(cmt_mem_lru_tx_cache_t *c,
     n = c->free_list;
     if (n == NULL) {
         /* Node storage is sized for exactly this bound; running out is
-         * a bookkeeping defect of this file. */
+         * a bookkeeping defect of this file — CMT_FAULT, node-local. */
         QGP_LOG_ERROR(LOG_TAG, "lru cache: node storage exhausted");
-        return false;
+        return CMT_FAULT;
     }
     c->free_list = n->next;
     n->in_use    = true;
@@ -560,25 +574,30 @@ bool cmt_mem_lru_tx_cache_push(cmt_mem_lru_tx_cache_t *c,
         n->in_use    = false;
         n->next      = c->free_list;
         c->free_list = n;
+        /* The index is sized with the nodes; a full index is the same
+         * bookkeeping defect — CMT_FAULT, node-local. */
         QGP_LOG_ERROR(LOG_TAG, "lru cache: index full");
-        return false;
+        return CMT_FAULT;
     }
     c->len++;
-    return true;                                                   /* :88 */
+    *out_added = true;                                             /* :88 */
+    return CMT_OK;
 }
 
-/* cache.go:91-102 — Remove(tx) */
-void cmt_mem_lru_tx_cache_remove(cmt_mem_lru_tx_cache_t *c,
-                                 const uint8_t *tx, size_t tx_len)
+/* cache.go:91-102 — Remove(tx). `tx.Key()` (:95) as in Push: a hash
+ * failure is CMT_FAULT, node-local. */
+int cmt_mem_lru_tx_cache_remove(cmt_mem_lru_tx_cache_t *c,
+                                const uint8_t *tx, size_t tx_len)
 {
     uint8_t             key[CMT_MEM_TX_KEY_SIZE];
     cmt_mem_lru_node_t *e;
 
     if (c == NULL || c->nodes == NULL) {
-        return;
+        return CMT_FAULT;
     }
     if (cmt_mem_tx_key(tx, tx_len, key) != CMT_OK) {                /* :95 */
-        return;
+        QGP_LOG_ERROR(LOG_TAG, "lru cache: tx key hash failed");
+        return CMT_FAULT;
     }
     e = (cmt_mem_lru_node_t *)index_load(&c->map, key);            /* :96 */
     index_delete(&c->map, key);                                    /* :97 */
@@ -589,6 +608,7 @@ void cmt_mem_lru_tx_cache_remove(cmt_mem_lru_tx_cache_t *c,
         c->free_list = e;
         c->len--;
     }
+    return CMT_OK;
 }
 
 /* cache.go:104-111 — Has(tx) */
@@ -637,25 +657,29 @@ void cmt_mem_tx_cache_reset(cmt_mem_tx_cache_t *c)
     /* :117 NopTxCache.Reset — nothing */
 }
 
-bool cmt_mem_tx_cache_push(cmt_mem_tx_cache_t *c, const uint8_t *tx,
-                           size_t tx_len)
+int cmt_mem_tx_cache_push_ex(cmt_mem_tx_cache_t *c, const uint8_t *tx,
+                             size_t tx_len, bool *out_added)
 {
-    if (c == NULL) {
-        return false;
+    if (c == NULL || out_added == NULL) {
+        return CMT_FAULT;
     }
     if (c->kind == CMT_MEM_TX_CACHE_LRU) {
-        return cmt_mem_lru_tx_cache_push(&c->lru, tx, tx_len);
+        return cmt_mem_lru_tx_cache_push_ex(&c->lru, tx, tx_len, out_added);
     }
-    return true;                                                   /* :118 */
+    *out_added = true;                                             /* :118 — hashes nothing */
+    return CMT_OK;
 }
 
-void cmt_mem_tx_cache_remove(cmt_mem_tx_cache_t *c, const uint8_t *tx,
-                             size_t tx_len)
+int cmt_mem_tx_cache_remove(cmt_mem_tx_cache_t *c, const uint8_t *tx,
+                            size_t tx_len)
 {
-    if (c != NULL && c->kind == CMT_MEM_TX_CACHE_LRU) {
-        cmt_mem_lru_tx_cache_remove(&c->lru, tx, tx_len);
+    if (c == NULL) {
+        return CMT_FAULT;
     }
-    /* :119 NopTxCache.Remove — nothing */
+    if (c->kind == CMT_MEM_TX_CACHE_LRU) {
+        return cmt_mem_lru_tx_cache_remove(&c->lru, tx, tx_len);
+    }
+    return CMT_OK;                                                 /* :119 NopTxCache.Remove — nothing */
 }
 
 bool cmt_mem_tx_cache_has(const cmt_mem_tx_cache_t *c, const uint8_t *tx,
@@ -1226,7 +1250,10 @@ static int mem_res_cb_first_time(cmt_mem_t *mem, const uint8_t *tx,
 
         /* :413-422 — full again? drop the cache entry, refuse. */
         if (mem_is_full(mem, tx_len, &full)) {                     /* :415 */
-            cmt_mem_tx_cache_remove(&mem->cache, tx, tx_len);      /* :417 */
+            if (cmt_mem_tx_cache_remove(&mem->cache, tx, tx_len)
+                != CMT_OK) {                                       /* :417 */
+                return CMT_FAULT;      /* hash backend — node-local (header) */
+            }
             QGP_LOG_DEBUG(LOG_TAG, "mempool is full: number of txs %lld"
                           " (max: %lld), total txs bytes %lld (max: %lld)",
                           (long long)full.num_txs, (long long)full.max_txs,
@@ -1273,7 +1300,9 @@ static int mem_res_cb_first_time(cmt_mem_t *mem, const uint8_t *tx,
                   post_check_err);                                 /* :456-462 */
     /* :463 metrics — not ported. */
     if (!mem->config->keep_invalid_txs_in_cache) {                 /* :465 */
-        cmt_mem_tx_cache_remove(&mem->cache, tx, tx_len);          /* :467 */
+        if (cmt_mem_tx_cache_remove(&mem->cache, tx, tx_len) != CMT_OK) { /* :467 */
+            return CMT_FAULT;          /* hash backend — node-local (header) */
+        }
     }
     return CMT_OK;
 }
@@ -1316,7 +1345,10 @@ static int mem_res_cb_recheck(cmt_mem_t *mem, const uint8_t *tx,
             return rc;
         }
         if (!mem->config->keep_invalid_txs_in_cache) {             /* :498 */
-            cmt_mem_tx_cache_remove(&mem->cache, tx, tx_len);      /* :499 */
+            if (cmt_mem_tx_cache_remove(&mem->cache, tx, tx_len)
+                != CMT_OK) {                                       /* :499 */
+                return CMT_FAULT;      /* hash backend — node-local (header) */
+            }
             /* :500 metrics — not ported. */
         }
     }
@@ -1339,6 +1371,7 @@ int cmt_mem_check_tx(cmt_mem_t *mem, const uint8_t *tx, size_t tx_len,
     size_t                      tx_size;
     cmt_mem_request_check_tx_t  req;
     cmt_mem_response_check_tx_t res;
+    bool                        added = false;
     int                         rc;
 
     cmt_mem_error_init(out_err);
@@ -1391,7 +1424,16 @@ int cmt_mem_check_tx(cmt_mem_t *mem, const uint8_t *tx, size_t tx_len,
         return CMT_REJECT;
     }
 
-    if (!cmt_mem_tx_cache_push(&mem->cache, tx, tx_len)) {         /* :257 */
+    rc = cmt_mem_tx_cache_push_ex(&mem->cache, tx, tx_len, &added);  /* :257 */
+    if (rc != CMT_OK) {
+        /* No Go line: `tx.Key()` (cache.go:68) is sha256 and cannot
+         * fail. A hash-backend or cache bookkeeping failure is this
+         * node's, not the sender's — CMT_FAULT (node-local, umbrella
+         * rev 5), NEVER ErrTxInCache: that is a REJECT the reactor only
+         * logs (reactor.go:160-161) and would hide a broken node. */
+        return CMT_FAULT;
+    }
+    if (!added) {                                                  /* :257 `!mem.cache.Push(tx)` */
         /* :258-267 — seen before: record the new sender on the resident
          * transaction, if it is still resident. */
         uint8_t       key[CMT_MEM_TX_KEY_SIZE];
@@ -1673,13 +1715,21 @@ int cmt_mem_update(cmt_mem_t *mem, int64_t height,
     for (i = 0; i < n_txs; i++) {                                  /* :602 */
         uint8_t         key[CMT_MEM_TX_KEY_SIZE];
         cmt_mem_error_t err;
+        bool            added;
 
         if (tx_results[i].code == CMT_MEM_CODE_TYPE_OK) {          /* :603 */
-            (void)cmt_mem_tx_cache_push(&mem->cache, txs[i].data,
-                                        txs[i].len);               /* :605 */
+            /* :605 `_ = mem.cache.Push(tx)` discards the BOOL (added or
+             * already there); a FAULT is not that bool — node-local
+             * hash backend, header's "NO GO LINE" panic. */
+            if (cmt_mem_tx_cache_push_ex(&mem->cache, txs[i].data,
+                                         txs[i].len, &added) != CMT_OK) {
+                return CMT_FAULT;
+            }
         } else if (!mem->config->keep_invalid_txs_in_cache) {      /* :606 */
-            cmt_mem_tx_cache_remove(&mem->cache, txs[i].data,
-                                    txs[i].len);                   /* :608 */
+            if (cmt_mem_tx_cache_remove(&mem->cache, txs[i].data,
+                                        txs[i].len) != CMT_OK) {   /* :608 */
+                return CMT_FAULT;
+            }
         }
 
         /* :611-625 — remove the committed tx; "not in mempool" is not

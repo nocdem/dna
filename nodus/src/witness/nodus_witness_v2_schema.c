@@ -1413,6 +1413,25 @@ int nodus_witness_db_migrate_v2s14_ex(nodus_witness_t *w,
                                       nodus_v2s14_mig_fail_t fail_at) {
     if (!w || !w->db) return -1;
 
+    /* The rung's DROP COLUMNs need SQLite ≥ 3.35.0 (header constant).
+     * Asked FIRST — before the S13 chain below writes anything and
+     * before BEGIN — against the RUN-TIME library, so an older library
+     * refuses the whole call with nothing written instead of failing
+     * three DDL statements deep with a generic rollback. It precedes
+     * the idempotent version read on purpose: the requirement is the
+     * witness's on its linked library, stated once at the S14 entry, so
+     * a database ALREADY at S14 opened under a pre-3.35 library fails
+     * closed here too. The linked library here is 3.40.1 (measured,
+     * `sqlite3_libversion()`), so this guard passes on this tree; it
+     * cannot be exercised by a test without an older libsqlite3. */
+    if (sqlite3_libversion_number() < NODUS_V2_S14_SQLITE_MIN_VERSION) {
+        QGP_LOG_ERROR(LOG_TAG, "S14 needs SQLite >= 3.35.0 (ALTER TABLE "
+                      "DROP COLUMN); linked library is %s (%d) — refusing, "
+                      "nothing written", sqlite3_libversion(),
+                      sqlite3_libversion_number());
+        return -1;
+    }
+
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0) return -1;
     if (ver == NODUS_V2_SCHEMA_VERSION_S14) return 0;    /* idempotent    */
@@ -1505,7 +1524,9 @@ int nodus_witness_db_migrate_v2s14_ex(nodus_witness_t *w,
          * (`H:<h>`), the seen commit in `SC:<h>`, the canonical commit
          * in `C:<h>`. None of the three is indexed, keyed or referenced
          * by a constraint (S9 DDL above), so DROP COLUMN is permitted;
-         * measured on the linked 3.40.1. */
+         * measured on the linked 3.40.1. The library version that makes
+         * DROP COLUMN exist at all was checked at the top of this
+         * function (NODUS_V2_S14_SQLITE_MIN_VERSION), not here. */
         if (exec_sql(w, "ALTER TABLE v2_blocks DROP COLUMN header") != 0)
             break;
         if (exec_sql(w, "ALTER TABLE v2_blocks DROP COLUMN qc") != 0)

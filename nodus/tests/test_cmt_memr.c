@@ -30,6 +30,12 @@
  *   · with the experimental non-persistent limit at 1, only the first
  *     peer in slot order is gossiped to; when it is removed the next
  *     waiting peer takes its place and the last stays silent (:267-305);
+ *   · a peer added AFTER a slot was released but WHILE another peer is
+ *     still waiting does not take the slot — it waits behind the waiter,
+ *     the tick serves the waiter first, and a newcomer with nobody
+ *     waiting starts at once (golang.org/x/sync v0.11.0 semaphore.go:52,
+ *     :69-71, :133-160 — pin rev 17, lines as corrected in rev 18; the
+ *     port's own case, no reference test drives that moment);
  *   · removing a peer ends its routine and releases its semaphore slot;
  *     stopping the reactor ends every routine (:189-231, as cursor-ended
  *     checks — see the cases);
@@ -89,7 +95,9 @@
  *     round, the add order of peers and the FIFO of a link are choices
  *     made here to be deterministic; where the reference's own outcome
  *     depends on its p2p order (the semaphore case), this file pins the
- *     port's rule (slot order), not the reference's.
+ *     port's rule (slot order among waiters), not the reference's
+ *     arrival order — only the "no newcomer overtakes a waiter" half of
+ *     semaphore.go's FIFO is pinned as the library states it.
  *  2. "Arrives in order" is proven through `ReapMaxTxs` on the receiving
  *     mempool, exactly as the reference's `checkTxsInOrder` (:394-403);
  *     the reactor's own cursor is not read for it.
@@ -1358,6 +1366,92 @@ static int t_cursor_after_removal(void)
     return 0;
 }
 
+/* golang.org/x/sync v0.11.0 semaphore/semaphore.go (pin rev 17, lines
+ * as corrected in rev 18): the `Acquire` of reactor.go:111 takes a slot
+ * AT ONCE only when capacity is
+ * free AND `s.waiters.Len() == 0` (:52); otherwise the caller is appended
+ * to the BACK of the waiter list (:69-71) and `Release` (:122-131) →
+ * `notifyWaiters` (:133-160) serves that list from the FRONT while
+ * capacity allows (:141). So a peer that arrives after a slot was freed
+ * but while another peer is still waiting does NOT overtake it. No
+ * reference test drives that moment (reactor_test.go:267-305 removes a
+ * peer and then waits); this case is the port's own (LABELLED), on ONE
+ * node whose peers are bare slots over an EMPTY mempool, so a tick does
+ * nothing but serve the queue (cmt_memr.c: the WAITING loop of the tick
+ * is the queue, in ascending slot order — R3-M-6). The old add_peer
+ * checked capacity alone and failed the "C waits" assertion. */
+static int t_semaphore_newcomer_waits(void)
+{
+    net_t  *net = (net_t *)calloc(1, sizeof(*net));
+    cmt_mempool_config_t cfg;
+    node_t *node;
+
+    CHECK(net != NULL, "alloc");
+    (void)cmt_mempool_config_default(&cfg);
+    cfg.experimental_max_gossip_connections_to_non_persistent_peers = 1;   /* capacity 1 */
+    CHECK(net_make(net, 1, &cfg) == 0, "one node");
+    node = net->nodes[0];
+    CHECK(cmt_memr_start(&node->memR) == CMT_OK, "start");
+
+    /* A (slot 1) acquires; B (slot 2) finds no capacity and waits. */
+    CHECK(cmt_memr_init_peer(&node->memR, 1) == CMT_OK &&
+          cmt_memr_add_peer(&node->memR, 1, false, false) == CMT_OK, "AddPeer(A)");
+    CHECK(cmt_memr_peer_routine_state(&node->memR, 1) == CMT_MEMR_ROUTINE_RUNNING,
+          "A acquired: capacity free, no waiters (semaphore.go:52)");
+    CHECK(cmt_memr_init_peer(&node->memR, 2) == CMT_OK &&
+          cmt_memr_add_peer(&node->memR, 2, false, false) == CMT_OK, "AddPeer(B)");
+    CHECK(cmt_memr_peer_routine_state(&node->memR, 2) == CMT_MEMR_ROUTINE_WAITING,
+          "B waits: no capacity (semaphore.go:52 false, :69-71 PushBack)");
+    CHECK(node->memR.active_non_persistent_peers == 1, "one held");
+    OK();
+
+    /* A's routine ends — the deferred Release of reactor.go:119 — BEFORE
+     * the next tick; then C (slot 3) arrives. Capacity is free, but B is
+     * still in the waiter list, so C must wait behind it. */
+    CHECK(cmt_memr_remove_peer(&node->memR, 1) == CMT_OK, "RemovePeer(A) → Release");
+    CHECK(node->memR.active_non_persistent_peers == 0, "the slot is free (:124)");
+    CHECK(cmt_memr_init_peer(&node->memR, 3) == CMT_OK &&
+          cmt_memr_add_peer(&node->memR, 3, false, false) == CMT_OK, "AddPeer(C)");
+    CHECK(cmt_memr_peer_routine_state(&node->memR, 3) == CMT_MEMR_ROUTINE_WAITING,
+          "C WAITS: a newcomer does not overtake a waiter (semaphore.go:52 `waiters.Len() == 0`)");
+    CHECK(cmt_memr_peer_routine_state(&node->memR, 2) == CMT_MEMR_ROUTINE_WAITING,
+          "B still waits: the queue is served by the tick, not at arrival");
+    CHECK(node->memR.active_non_persistent_peers == 0, "nothing acquired at arrival");
+    OK();
+
+    /* notifyWaiters (:133-160): the FRONT of the queue — B, the lowest
+     * waiting slot — takes the slot on the tick; C stays (:141). */
+    CHECK(net_round(net) == 0, "tick");
+    CHECK(cmt_memr_peer_routine_state(&node->memR, 2) == CMT_MEMR_ROUTINE_RUNNING,
+          "B running: the front waiter is served first (:135-158; slot order here)");
+    CHECK(cmt_memr_peer_routine_state(&node->memR, 3) == CMT_MEMR_ROUTINE_WAITING,
+          "C still waits: no capacity left for the next waiter (:141-153)");
+    CHECK(node->memR.active_non_persistent_peers == 1, "one held");
+    /* B ends; the next tick serves C. */
+    CHECK(cmt_memr_remove_peer(&node->memR, 2) == CMT_OK, "RemovePeer(B) → Release");
+    CHECK(cmt_memr_peer_routine_state(&node->memR, 3) == CMT_MEMR_ROUTINE_WAITING,
+          "C waits for the tick that serves the queue");
+    CHECK(net_round(net) == 0, "tick");
+    CHECK(cmt_memr_peer_routine_state(&node->memR, 3) == CMT_MEMR_ROUTINE_RUNNING,
+          "C running");
+    CHECK(node->memR.active_non_persistent_peers == 1, "one held");
+    OK();
+
+    /* CONTROL — nobody waiting and capacity free: a newcomer starts at
+     * once (semaphore.go:52, both terms true) — today's behaviour, kept. */
+    CHECK(cmt_memr_remove_peer(&node->memR, 3) == CMT_OK, "RemovePeer(C) → Release");
+    CHECK(node->memR.active_non_persistent_peers == 0, "free, no waiters");
+    CHECK(cmt_memr_init_peer(&node->memR, 4) == CMT_OK &&
+          cmt_memr_add_peer(&node->memR, 4, false, false) == CMT_OK, "AddPeer(D)");
+    CHECK(cmt_memr_peer_routine_state(&node->memR, 4) == CMT_MEMR_ROUTINE_RUNNING,
+          "D acquired at once: capacity free AND no waiters (semaphore.go:52)");
+    CHECK(node->memR.active_non_persistent_peers == 1, "one held");
+    OK();
+    net_free(net);
+    free(net);
+    return 0;
+}
+
 typedef struct {
     const char *name;
     int       (*fn)(void);
@@ -1379,6 +1473,8 @@ int main(void)
         { "receive (Receive + the p2p decode)",                  t_receive },
         { "sleeps (R3-M-1: the three time.Sleep sites)",         t_sleeps },
         { "cursor_after_removal (:195-208, :238-247)",           t_cursor_after_removal },
+        { "semaphore_newcomer_waits (x/sync semaphore.go:52, :69-71, :133-160; port's own)",
+          t_semaphore_newcomer_waits },
     };
     size_t i;
     size_t n = sizeof(cases) / sizeof(cases[0]);

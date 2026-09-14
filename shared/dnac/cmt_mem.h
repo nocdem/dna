@@ -117,6 +117,12 @@
  *     re-reserving without reclaiming (see cmt_mem_ids_reserve_for_peer)
  *   · Go's implicit index panic at :603 (`txResults[i]` shorter than
  *     `txs`) — made explicit, the BlockExecutor's contract
+ *   · NO GO LINE: the cache's `tx.Key()` (cache.go:68, :95) is sha256
+ *     and cannot fail in Go; here it is the OpenSSL-backed SHA3-512 and
+ *     can. A hash-backend failure — or the cache's own bookkeeping
+ *     giving out — is this node's, not the sender's: CMT_FAULT out of
+ *     `cmt_mem_check_tx` and `cmt_mem_update`, NEVER `ErrTxInCache`
+ *     (which is a REJECT the reactor merely logs, reactor.go:160-161).
  * Go `error` returns (errors.go) → CMT_REJECT with the kind and its
  * fields in `cmt_mem_error_t`, because the reactor switches on the kind
  * (reactor.go:159-167) and the RPC renders it.
@@ -549,19 +555,36 @@ void cmt_mem_lru_tx_cache_free(cmt_mem_lru_tx_cache_t *c);
 void cmt_mem_lru_tx_cache_reset(cmt_mem_lru_tx_cache_t *c);
 
 /** cache.go:64-89 — `Push(tx)`: a key already present is moved to the
- *  BACK (:70-73) and false is returned; otherwise, when the list is at
- *  `size`, the FRONT is evicted (:75-82); the key is appended at the
- *  back (:84-85) and true is returned.
- *  @return true iff newly added; false for NULL or a hash failure. */
-bool cmt_mem_lru_tx_cache_push(cmt_mem_lru_tx_cache_t *c,
-                               const uint8_t *tx, size_t tx_len);
+ *  BACK (:70-73) and `*out_added` is false; otherwise, when the list is
+ *  at `size`, the FRONT is evicted (:75-82); the key is appended at the
+ *  back (:84-85) and `*out_added` is true.
+ *
+ *  The reference's `tx.Key()` (:68; types/tx.go:33-35) is Go's sha256
+ *  and CANNOT FAIL, so `Push` has one bool. Here the key is
+ *  `cmt_mem_tx_key` → SHA3-512 through OpenSSL EVP (qgp_sha3.c:27-35),
+ *  whose context allocation or digest init CAN fail — this node's
+ *  defect, never the sender's — so the failure has its own channel:
+ *  @return CMT_OK with `*out_added`; CMT_FAULT (node-local, umbrella
+ *          rev 5) on NULL / an uninitialised cache, a hash-backend
+ *          failure, or exhausted node storage / a full index (the
+ *          bookkeeping of this file, sized for `size`). A FAULT is never
+ *          "already in cache". */
+int cmt_mem_lru_tx_cache_push_ex(cmt_mem_lru_tx_cache_t *c,
+                                 const uint8_t *tx, size_t tx_len,
+                                 bool *out_added);
 
-/** cache.go:91-102 — `Remove(tx)`. A missing key is a no-op. */
-void cmt_mem_lru_tx_cache_remove(cmt_mem_lru_tx_cache_t *c,
-                                 const uint8_t *tx, size_t tx_len);
+/** cache.go:91-102 — `Remove(tx)`. A missing key is a no-op (:96-101).
+ *  @return CMT_OK; CMT_FAULT on NULL / an uninitialised cache or a
+ *          hash-backend failure (`tx.Key()` at :95 — see `_push_ex`). */
+int cmt_mem_lru_tx_cache_remove(cmt_mem_lru_tx_cache_t *c,
+                                const uint8_t *tx, size_t tx_len);
 
 /** cache.go:104-111 — `Has(tx)`. "Checking for presence is not treated
- *  as an access" (:26-27): the list is not touched. */
+ *  as an access" (:26-27): the list is not touched. The reference's
+ *  mempool never calls `Has` outside cache_test.go, and neither does
+ *  this module — it is reached only by test_cmt_mem.c — so it keeps the
+ *  reference's one bool: a hash-backend failure reads as false here,
+ *  with no production consequence. */
 bool cmt_mem_lru_tx_cache_has(const cmt_mem_lru_tx_cache_t *c,
                               const uint8_t *tx, size_t tx_len);
 
@@ -590,12 +613,15 @@ typedef struct {
 
 /** cache.go:117 / :56 — `Reset()`. */
 void cmt_mem_tx_cache_reset(cmt_mem_tx_cache_t *c);
-/** cache.go:118 / :64 — `Push()`; the Nop cache always returns true. */
-bool cmt_mem_tx_cache_push(cmt_mem_tx_cache_t *c, const uint8_t *tx,
-                           size_t tx_len);
-/** cache.go:119 / :91 — `Remove()`. */
-void cmt_mem_tx_cache_remove(cmt_mem_tx_cache_t *c, const uint8_t *tx,
-                             size_t tx_len);
+/** cache.go:118 / :64 — `Push()`; the Nop cache always says added
+ *  (:118) and hashes nothing, so it cannot FAULT.
+ *  @return as `cmt_mem_lru_tx_cache_push_ex`; CMT_FAULT on NULL. */
+int cmt_mem_tx_cache_push_ex(cmt_mem_tx_cache_t *c, const uint8_t *tx,
+                             size_t tx_len, bool *out_added);
+/** cache.go:119 / :91 — `Remove()`; the Nop cache does nothing (:119).
+ *  @return as `cmt_mem_lru_tx_cache_remove`; CMT_FAULT on NULL. */
+int cmt_mem_tx_cache_remove(cmt_mem_tx_cache_t *c, const uint8_t *tx,
+                            size_t tx_len);
 /** cache.go:120 / :104 — `Has()`; the Nop cache always returns false. */
 bool cmt_mem_tx_cache_has(const cmt_mem_tx_cache_t *c, const uint8_t *tx,
                           size_t tx_len);
@@ -791,7 +817,9 @@ cmt_clist_elem_t *cmt_mem_txs_front(const cmt_mem_t *mem);
  *        NULL (the reactor passes nil at reactor.go:157).
  * @param out_err receives the error kind on CMT_REJECT; may be NULL.
  * @return CMT_OK, CMT_REJECT, CMT_FAULT (NULL; the panics at :273 and
- *         :336; allocation; `notifyTxsAvailable`'s :512).
+ *         :336; allocation; `notifyTxsAvailable`'s :512; a cache
+ *         hash-backend or bookkeeping failure at :257 — the header's
+ *         "NO GO LINE" panic, never read as `ErrTxInCache`).
  */
 int cmt_mem_check_tx(cmt_mem_t *mem, const uint8_t *tx, size_t tx_len,
                      const cmt_mem_tx_info_t *info,
@@ -865,7 +893,10 @@ int cmt_mem_reap_max_txs(const cmt_mem_t *mem, int max, cmt_pb_bytes_t *out,
  *        BlockExecutor's contract, node-local).
  * @param pre_check / post_check NULL keeps the current one (:595, :598).
  * @return CMT_OK (the reference returns nil, :642); CMT_FAULT on NULL,
- *         the panics of `recheckTxs`, or `notifyTxsAvailable`'s.
+ *         the panics of `recheckTxs`, `notifyTxsAvailable`'s, or a cache
+ *         hash-backend failure at :605 / :608 (the header's "NO GO LINE"
+ *         panic; the reference discards Push's bool at :605 and this
+ *         port discards only that bool, not a FAULT).
  */
 int cmt_mem_update(cmt_mem_t *mem, int64_t height,
                    const cmt_pb_bytes_t *txs, size_t n_txs,

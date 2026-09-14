@@ -1508,7 +1508,7 @@ static int mn_query_maj23(mn_node_t *i, mn_node_t *j, mn_link_t *link)
  *   · real ticker (ticker.go): whatever is armed, once the node has
  *     nothing else to do (the determinization of "its duration elapsed").
  * `cmt_cs_on_timer_expired` is a FAULT while a tock is pending
- * (cmt_cs.c:1345-1350), so that is checked first. The fixture's own
+ * (cmt_cs.c:1361-1366), so that is checked first. The fixture's own
  * `tc_fire_timeout` is NOT used: it drains, and a turn is one step.
  */
 static int mn_timers(mn_node_t *node)

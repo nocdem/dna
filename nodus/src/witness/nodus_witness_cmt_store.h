@@ -85,7 +85,16 @@
  *
  * Reference @709fd12b (SHA-256 verified before use):
  *   store/store.go       765 lines
- *   state/store.go       839 lines
+ *   state/store.go       827 lines
+ *   ⚠ CITATION DRIFT (found 2026-09-14 by the W1 verifier round): most
+ *   `:NNN` ranges in this header and in the .c bodies for these two files
+ *   were written against a DIFFERENT revision of store.go / state/store.go
+ *   (this line used to say "839 lines") and are off by 1-15 lines in
+ *   either direction, with no uniform offset. The key-builder lines
+ *   (.c:160-224), the block_meta.go / safemath.go / math.go / config.go
+ *   citations and about twenty others are exact; everything else is being
+ *   re-anchored site by site in a dedicated pass (deviation register
+ *   R3-B-10). Until then, read the Go by FUNCTION NAME, not by number.
  *   types/block_meta.go   86 lines
  *   evidence/verify.go   303 lines (:295-303 IsEvidenceExpired;
  *     6025cb953abb6fbe955b2c22fed82472f630c98102771c3eba0e8b074508875e —
@@ -416,7 +425,16 @@ int nodus_cmt_ss_load_last_finalize_block_response(
 
 /** :494-528 SaveFinalizeBlockResponse: `abciResponsesKey:<h>` unless
  *  discarding (:507-515), then `lastABCIResponseKey` (:519-527). The nil
- *  stripping of :496-502 has no C counterpart (the array holds values). */
+ *  stripping of :496-502 has no C counterpart (the array holds values).
+ *  The encoded ABCIResponsesInfo must fit the module's scratch,
+ *  `cmt_pb_store_state_upper_bound(CMT_VALSET_MAX)` bytes
+ *  (nodus_witness_cmt_store.c, `nodus_cmt_store_init`); the response is
+ *  this node's own FinalizeBlock product, never a peer's input, so
+ *  exceeding that bound is a NODE-LOCAL invariant broken → CMT_FAULT.
+ *  @return CMT_OK; CMT_FAULT on NULL, the bound, or a SQLite failure
+ *          (:512, :527); an encode failure returns the codec's own code
+ *          (cmt_pb_store.h). The host treats every non-OK as the
+ *          execution.go:260 error → CMT_FAULT. */
 int nodus_cmt_ss_save_finalize_block_response(
         nodus_cmt_store_t *s, int64_t height,
         const cmt_pb_response_finalize_block_t *resp);

@@ -715,6 +715,9 @@ int cmt_conr_receive(cmt_conr_t *conR, int peer_idx, uint8_t channel_id,
         return CMT_FAULT;
     }
     if (rc != CMT_OK) {                                          /* :237 */
+        /* ⚠ Also reached when `recv_arena` is EXHAUSTED (r_copy_arena →
+         * CMT_REJECT), which the reference cannot hit and which blames the
+         * wrong peer — register R3-A-5; R3-C2 separates the two. */
         QGP_LOG_ERROR(LOG_TAG, "Error decoding message from peer %d on chId %02x",
                       peer_idx, (unsigned)channel_id);           /* :238 */
         if (conR->host.stop_peer_for_error == NULL) {
@@ -725,6 +728,14 @@ int cmt_conr_receive(cmt_conr_t *conR, int peer_idx, uint8_t channel_id,
         return CMT_OK;                                           /* :240 */
     }
 
+    /* :243-247 — `msg.ValidateBasic()`. LABELLED DEVIATION (register
+     * R3-A-6): in the reference `MsgFromProto` already ran
+     * `pb.ValidateBasic()` (msgs.go:232-234), so every ValidateBasic
+     * failure fires at :239 with the DECODE reason and :243-247 is dead
+     * for a message that reached it; `cmt_msg_from_proto` stops before
+     * that call (cmt_msgs.h:28-35), so here the gate runs as its own step
+     * and reports the VALIDATE_BASIC reason. The disconnect is identical;
+     * only the host-visible reason code differs. */
     rc = cmt_msg_validate_basic(msg);                            /* :243 */
     if (rc == CMT_FAULT) {
         return CMT_FAULT;

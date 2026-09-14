@@ -107,7 +107,7 @@
  * `cmt_conr_host_t` — the transport and the block-store reads the REACTOR
  * makes, distinct from `cmt_cs_host_t` (the state machine's). Every row
  * carries its Go call site. The block-store rows follow the storage
- * contract of cmt_cs.h:408-448 word for word: the host fills the
+ * contract of cmt_cs.h:419-448 word for word: the host fills the
  * out-parameter, including pointing any list at storage the host owns,
  * and that storage stays valid until the next call of the same row.
  *
@@ -129,6 +129,16 @@
  * Passing `cs->ext_arena` itself is the designed wiring; a host that
  * wants two arenas must give both the same lifetime. The reset policy is
  * the host's (R3-C2) and is raised as a QUESTION in the wave report.
+ * ⚠ WHAT HAPPENS IF IT IS NEVER RESET — register R3-A-5 (verifier A,
+ * 2026-09-14): the arena is ONE for all peers, the decode consumes it
+ * BEFORE ValidateBasic, before the `wait_sync` drop and before any height
+ * check, and `r_copy_arena` answers exhaustion with the same CMT_REJECT
+ * as malformed bytes, so `cmt_conr_receive` stops WHICHEVER peer's message
+ * hit the wall as a DECODE error. A peer that fills the arena with
+ * decodable junk parts (`Part.ValidateBasic` checks shape, not the block
+ * root) therefore gets an HONEST peer disconnected. The reference has no
+ * analogue (Go allocates per message). R3-C2 must both choose the reset
+ * policy and make exhaustion a distinct outcome from a bad message.
  *
  * ── THE ValidateBasic GATE (msgs.go:232-234), NOW HERE ─────────────────
  * The reference's `Receive` calls `MsgFromProto` (:236), whose last act
@@ -193,7 +203,7 @@
  *   · `init` (:1511-1521) — JSON type registration.
  *   · `peerStatsRoutine` (:947-985) — p2p peer scoring
  *     (`MarkPeerAsGood`); its feed `cs.statsMsgQueue` (state.go:913,
- *     :931) is not in cmt_cs (cmt_cs.c:1533). Consequence: `RecordVote` /
+ *     :931) is not in cmt_cs (cmt_cs.c:1571, :1593). Consequence: `RecordVote` /
  *     `RecordBlockPart` (cmt_ps.h) have no caller.
  *   · `ReactorMetrics` (:1011-1013) and the `Metrics` field (:49, :61,
  *     :329) — metrics; `NopMetrics` is what the reference installs, and
@@ -233,14 +243,15 @@
  *     f12c172b48f03e95c3a69c2d71174c56e563d9e09ce6cc8d014560f407166a27
  *     (read for :130-158 Start, :167-190 Stop, :224-226 IsRunning —
  *      genuinely unpinned when R3-A opened it, pinned by rev 16)
- * Governing records: umbrella rev 4
+ * Governing records: umbrella rev 5
  * (atlas-dec-d5e766defde138eb6dd02e5b81e735a8), D-4 rev 3
  * (atlas-dec-d5ddcba654eb48d861c03a0ecd170718 — the sleep durations are
  * NODE settings read from `cs->config`), D-20 rev 3
  * (atlas-dec-fb3ed0315ffbfd0459efa779a2e00c19), PQ POLICY
  * (atlas-dec-652be084b95d02d253834906271e9fb0 — the reference's p2p
  * security is out of scope; p2p files read for message semantics only),
- * pin record rev 11 (atlas-dec-483ec17cbb352ef0ec2267ccd953339c).
+ * pin record rev 16 (atlas-dec-483ec17cbb352ef0ec2267ccd953339c; rev 11
+ * when R3-A was written).
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -395,7 +406,7 @@ typedef struct {
                                 cmt_commit_t *out, bool *out_found);
 
     /** reactor.go:754 — `blockStore.LoadBlockExtendedCommit(height)`.
-     *  The same row and storage contract as cmt_cs.h:429-433's. */
+     *  The same row and storage contract as cmt_cs.h:432-436's. */
     int (*bs_load_block_extended_commit)(void *ctx, int64_t height,
                                          cmt_extended_commit_t *out,
                                          bool *out_found);

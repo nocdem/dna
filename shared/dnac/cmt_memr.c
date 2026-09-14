@@ -41,7 +41,35 @@ static cmt_memr_semaphore_t choose_semaphore(const cmt_memr_t *memR,
     return CMT_MEMR_SEM_NONE;
 }
 
-/* semaphore.Acquire(ctx, 1) (:111): true when a slot was free. */
+/* golang.org/x/sync v0.11.0 semaphore.go:52 (Acquire) and :113
+ * (TryAcquire) — the `s.waiters.Len() == 0` term: is any PRESENT peer's
+ * routine blocked on semaphore `s`? The library's waiter list is here
+ * the set of WAITING slots, which the tick serves in ascending slot
+ * order (the port's determinization of that FIFO list, deviation
+ * R3-M-6). The newcomer itself is not counted: `add_peer` asks before
+ * it sets any state. */
+static bool semaphore_has_waiters(const cmt_memr_t *memR,
+                                  cmt_memr_semaphore_t s)
+{
+    size_t i;
+
+    for (i = 0; i < CMT_MEM_MAX_PEERS; i++) {
+        const cmt_memr_peer_t *p = &memR->peers[i];
+
+        if (p->present && p->state == CMT_MEMR_ROUTINE_WAITING &&
+            p->semaphore == s) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* The CAPACITY term of semaphore.go:52 / :113 (`s.size-s.cur >= n`,
+ * n = 1), taking the slot when it holds — `s.cur += n` (:57, :115). For
+ * a routine that is already WAITING this is the whole test: it is the
+ * front of the queue in slot order, and `notifyWaiters` (:133-160)
+ * grants the front waiter on capacity alone (:141, :156). A NEWCOMER
+ * must pass `semaphore_has_waiters` first — see cmt_memr_add_peer. */
 static bool semaphore_try_acquire(cmt_memr_t *memR, cmt_memr_semaphore_t s)
 {
     switch (s) {
@@ -64,7 +92,11 @@ static bool semaphore_try_acquire(cmt_memr_t *memR, cmt_memr_semaphore_t s)
     }
 }
 
-/* semaphore.Release(1) (:119). */
+/* semaphore.Release(1) (:119; semaphore.go:122-131 `s.cur -= n`). The
+ * library's `notifyWaiters` (:129, :133-160) runs here on the NEXT TICK:
+ * the WAITING loop of cmt_memr_tick is that call, over the waiter list
+ * in slot order. Nothing is granted at release time — which is why a
+ * newcomer arriving between a release and the tick must still queue. */
 static void semaphore_release(cmt_memr_t *memR, cmt_memr_semaphore_t s)
 {
     switch (s) {
@@ -279,11 +311,27 @@ int cmt_memr_add_peer(cmt_memr_t *memR, int peer_slot, bool is_persistent,
     /* :93-128 — the goroutine: choose the semaphore, acquire or wait,
      * then broadcastTxRoutine. */
     p->semaphore = choose_semaphore(memR, p);                      /* :94-102 */
+    /* :104-121 — `peerSemaphore.Acquire(ctxTimeout, 1)` (:111), which is
+     * golang.org/x/sync v0.11.0 semaphore.go:38-107: the caller takes a
+     * slot AT ONCE only if capacity is free AND `s.waiters.Len() == 0`
+     * (:52); otherwise it is appended to the BACK of the waiter list
+     * (:69-71) and is granted by `Release` → `notifyWaiters` from the
+     * FRONT (:122-160). So a peer that arrives after a slot was freed but
+     * while another peer is still waiting does NOT overtake it. Here the
+     * waiter list is the set of WAITING slots and the tick serves it in
+     * ascending slot order (R3-M-6); the newcomer joins it. The
+     * `for peer.IsRunning()` loop with the 30 s timeout and `continue`
+     * (:105-116) has NO counterpart: in Go it only stops a peer that
+     * disconnected before acquiring from blocking forever, and here
+     * `cmt_memr_remove_peer` clears the WAITING state structurally —
+     * DEVIATION, labelled in the header. `&&` keeps the acquire from
+     * running (it counts) when a waiter exists. */
     if (p->semaphore == CMT_MEMR_SEM_NONE ||
-        semaphore_try_acquire(memR, p->semaphore)) {               /* :104, :111 */
+        (!semaphore_has_waiters(memR, p->semaphore) &&              /* semaphore.go:52 */
+         semaphore_try_acquire(memR, p->semaphore))) {             /* :111 */
         routine_start(memR, peer_slot, p);                         /* :127 */
     } else {
-        p->state = CMT_MEMR_ROUTINE_WAITING;                       /* :105-121 */
+        p->state = CMT_MEMR_ROUTINE_WAITING;                       /* :105-121, semaphore.go:69-71 */
     }
     return CMT_OK;
 }
@@ -555,16 +603,22 @@ int cmt_memr_tick(cmt_memr_t *memR, int64_t *out_next_deadline_ns,
         if (!p->present) {
             continue;
         }
-        /* :104-121 — a routine blocked on the semaphore tries again. */
+        /* :104-121 — a routine blocked on the semaphore. This loop IS
+         * the library's `notifyWaiters` (semaphore.go:133-160), run at
+         * the tick instead of at Release: the waiter list is the set of
+         * WAITING slots, walked from the front — ascending slot order,
+         * R3-M-6 — and each is granted on capacity alone (:141, :156);
+         * with unit weights, the first waiter that finds no capacity
+         * means none after it can either (the `break` of :153). */
         if (p->state == CMT_MEMR_ROUTINE_WAITING) {
             if (!memR->running) {                                  /* :105 peer.IsRunning, and the reactor's quit */
                 routine_end(memR, p);
                 continue;
             }
-            if (!semaphore_try_acquire(memR, p->semaphore)) {      /* :111 */
+            if (!semaphore_try_acquire(memR, p->semaphore)) {      /* :111; semaphore.go:141 */
                 continue;                                          /* :114-116 */
             }
-            routine_start(memR, (int)i, p);                        /* :120, :127 */
+            routine_start(memR, (int)i, p);                        /* :120, :127; semaphore.go:156-158 */
         }
         if (p->state != CMT_MEMR_ROUTINE_RUNNING) {
             continue;

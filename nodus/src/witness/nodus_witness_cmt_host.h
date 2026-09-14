@@ -126,9 +126,9 @@
  *   (the last-sign-state file), state/helpers_test.go and
  *   internal/test/tx.go (the test fixtures), libs/math/math.go.
  * Governing records: D-23 rev 4 (atlas-dec-cb08dde681aa3c4ab1d1f1b33cdb68e1,
- * PROPOSED, operator ruling 2026-09-11), D-4 rev 3
+ * APPROVED 2026-09-14), D-4 rev 3
  * (atlas-dec-d5ddcba654eb48d861c03a0ecd170718), D-25 rev 3
- * (atlas-dec-f8319da0758745dbe615150ed939c34a, PROPOSED), D-20 rev 3
+ * (atlas-dec-f8319da0758745dbe615150ed939c34a, APPROVED 2026-09-11), D-20 rev 3
  * (atlas-dec-fb3ed0315ffbfd0459efa779a2e00c19), umbrella rev 4
  * (atlas-dec-d5e766defde138eb6dd02e5b81e735a8), PQ POLICY
  * (atlas-dec-652be084b95d02d253834906271e9fb0).

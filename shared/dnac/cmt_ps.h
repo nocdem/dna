@@ -93,8 +93,8 @@
  *   · `RecordVote` / `RecordBlockPart` ARE ported (below) but have NO
  *     CALLER in this port: their only reference caller is
  *     `peerStatsRoutine` (:970, :974), which the port map marks YOK and
- *     whose feed, `cs.statsMsgQueue` (state.go:913, :931), cmt_cs.c:1533
- *     does not carry. Stated so the orphan is visible, not hidden.
+ *     whose feed, `cs.statsMsgQueue` (state.go:913, :931), cmt_cs.c:1571
+ *     and :1593 do not carry. Stated so the orphan is visible, not hidden.
  *
  * Reference @709fd12b (SHA-256 verified before use):
  *   consensus/reactor.go                1817 lines

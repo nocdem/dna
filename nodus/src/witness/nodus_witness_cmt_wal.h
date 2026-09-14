@@ -175,9 +175,11 @@
  *                        f6bd6d512bbda08f31231d535b97df3c9c6feb3ddaf01a2054e2f0cf994f2a2d
  *   consensus/replay.go  565 lines (:94-167)
  *                        5609c4d4174a536389cb2814bac09557a66e3299292141b54c635e31425284fe
- * Governing records: D-15 rev 5 (atlas-dec-c0bfc5344204b9282ceaaa5e06042350,
- * APPROVED), D-17 rev 5 (atlas-dec-9d96e2ec31ad4840cf258df21732b67f,
- * PROPOSED, operator ruling 2026-09-11), umbrella rev 4
+ * Governing records: D-15 rev 6 (atlas-dec-c0bfc5344204b9282ceaaa5e06042350,
+ * APPROVED 2026-09-14 — rev 5's routing plus the FlushAndSync barrier),
+ * D-17 rev 6 (atlas-dec-9d96e2ec31ad4840cf258df21732b67f, APPROVED
+ * 2026-09-14 — S14 with cmt_wal_sync), D-13 rev 1
+ * (atlas-dec-c4ad532ce8434fe7d434ed61bc22804a), umbrella rev 5
  * (atlas-dec-d5e766defde138eb6dd02e5b81e735a8).
  */
 
