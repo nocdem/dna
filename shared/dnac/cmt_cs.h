@@ -69,9 +69,12 @@
  *   The dispatch's table covers only the WAL WRITE side; `catchupReplay`
  *   cannot be ported without the read side.
  *
- * NOT host and NOT ported, deliberately: `eventBus.PublishEvent*`,
- * `evsw.FireEvent` and every `metrics.*` call. They are neither PORT nor
- * HOST rows of the port map, and no consensus decision reads them.
+ * NOT host and NOT ported, deliberately: `eventBus.PublishEvent*` and
+ * every `metrics.*` call. They are neither PORT nor HOST rows of the port
+ * map, and no consensus decision reads them. `evsw.FireEvent` WAS in that
+ * list through R2; wave R3-A ported its five sites as the three callbacks
+ * of `cmt_cs_listener_t` below, because the reactor's broadcasts are what
+ * those events drive (reactor.go:411-433).
  *
  * ── OWNERSHIP, AND THE THREE WAYS IT CAN GO WRONG ──────────────────────
  *
@@ -585,6 +588,41 @@ typedef struct {
     cmt_part_set_t  marshal_part_set;
 } cmt_cs_slots_t;
 
+/* ══ the event switch (state.go:113 `evsw`, libs/events/events.go) ════ */
+
+/**
+ * cometbft@709fd12b consensus/reactor.go:411-433 — the three callbacks
+ * the reactor registers on `cs.evsw` with `AddListenerForEvent`
+ * (libs/events/events.go:77-99), one listener id "consensus-reactor".
+ *
+ * Added in wave R3-A, the first live consumer of this module. Before it,
+ * cmt_cs.h:72-74 listed `evsw.FireEvent` as "not ported"; the five fire
+ * sites are now ported as calls through this table, and NOTHING ELSE of
+ * events.go is: the switch has exactly one listener (the reactor) and
+ * exactly three events, so a map of cells (:58-59) would be two names for
+ * one thing.
+ *
+ * ⚠ THE CALLBACK RUNS INSIDE THE STATE MACHINE. events.go:147-158
+ * `FireEvent` → :189-200 `cell.FireEvent` calls every callback on the
+ * FIRING goroutine, synchronously, and so does this port. A listener MUST
+ * NOT re-enter `cs` (the rule at :332-334 above): the reactor's three
+ * broadcasts only read the `rs` / `vote` they are handed and call the
+ * host's `send`; they never call a `cmt_cs_*` function.
+ *
+ * No listener installed = no fire, which is the reference before
+ * `OnStart` (reactor.go:74-80) and the `cs.eventBus != nil` guard at
+ * state.go:767.
+ */
+typedef struct {
+    /** state.go:772 (`EventNewRoundStep`, inside `newStep`) —
+     *  reactor.go:412-416. */
+    void (*on_new_round_step)(void *ctx, const cmt_round_state_t *rs);
+    /** state.go:1653 and :2302 (`EventValidBlock`) — reactor.go:419-423. */
+    void (*on_valid_block)(void *ctx, const cmt_round_state_t *rs);
+    /** state.go:2158 and :2248 (`EventVote`) — reactor.go:426-430. */
+    void (*on_vote)(void *ctx, const cmt_vote_t *vote);
+} cmt_cs_listener_t;
+
 /* ══ who owns cs.LastCommit ═══════════════════════════════════════════ */
 
 /** The state machine, defined below. Named early because three of its own
@@ -731,6 +769,12 @@ struct cmt_cs_s {
      *  never touched here; it is recorded so that the contract has a
      *  place to live and so the host can be asked for it once. */
     cmt_pb_arena_t     *ext_arena;
+
+    /** state.go:113 — `evsw`, reduced to its one listener (see
+     *  `cmt_cs_listener_t`). Zeroed by `cmt_cs_init`'s memset, which is
+     *  the reference's "not before the node is wired" (:766-767). */
+    cmt_cs_listener_t   listener;
+    void               *listener_ctx;
 };
 
 /* ══ construction (state.go:154-208) ══════════════════════════════════ */
@@ -776,6 +820,28 @@ int cmt_cs_init(cmt_cs_t *cs,
  *  height vote sets and any standalone LastCommit. Borrowed storage is not
  *  touched. NULL is a no-op. */
 void cmt_cs_free(cmt_cs_t *cs);
+
+/* ══ the event switch (state.go:113, libs/events/events.go) ═══════════ */
+
+/**
+ * cometbft@709fd12b libs/events/events.go:77-99 — `AddListenerForEvent`,
+ * for the one listener id the reference ever registers here,
+ * "consensus-reactor" (reactor.go:412), and its three events (:413,
+ * :420, :427) at once.
+ *
+ * A second call REPLACES the callbacks, which is what :175-178
+ * (`cell.listeners[listenerID] = cb`, a map write) does for the same id.
+ * A NULL entry in `l` is an event the listener did not subscribe to.
+ *
+ * @param l copied; `ctx` is handed back to every callback.
+ * @return CMT_OK, CMT_FAULT on NULL.
+ */
+int cmt_cs_add_listener(cmt_cs_t *cs, const cmt_cs_listener_t *l, void *ctx);
+
+/** cometbft@709fd12b libs/events/events.go:101-119 — `RemoveListener`,
+ *  reached from reactor.go:435-438. After it no site fires. NULL is a
+ *  no-op. */
+void cmt_cs_remove_listener(cmt_cs_t *cs);
 
 /* ══ accessors (state.go:240-314) ═════════════════════════════════════ */
 
@@ -1031,6 +1097,21 @@ int cmt_compare_hrs(int64_t h1, int32_t r1, cmt_round_step_t s1,
 
 /** cometbft@709fd12b consensus/state.go:647-756 — `updateToState`. */
 int cmt_cs_update_to_state(cmt_cs_t *cs, const cmt_state_t *state);
+
+/**
+ * cometbft@709fd12b consensus/state.go:597-608 — `reconstructLastCommit`.
+ *
+ * Exposed in wave R3-A for the reactor's `SwitchToConsensus`
+ * (reactor.go:116), whose call is the ONLY one outside this module; the
+ * body is unchanged and stays the file-local `cs_reconstruct_last_commit`
+ * that `cmt_cs_init` also calls (:198) — this is a one-line public wrapper
+ * over it, not a rename, so that the two callers keep one definition.
+ *
+ * @return CMT_OK; CMT_FAULT where the reference panics (:605, and :588
+ *         through `reconstructSeenCommit`) — NODE-LOCAL, the commit came
+ *         out of this node's own store; or from a host row.
+ */
+int cmt_cs_reconstruct_last_commit(cmt_cs_t *cs, const cmt_state_t *state);
 
 /** cometbft@709fd12b consensus/state.go:556-560 — `scheduleRound0`. */
 int cmt_cs_schedule_round0(cmt_cs_t *cs, const cmt_round_state_t *rs);

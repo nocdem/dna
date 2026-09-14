@@ -1172,16 +1172,379 @@ def emit_r2b():
     return "\n".join(out)
 
 
+# ══════════════════════════════════════════════════════════════════════
+# ══ WAVE R3-M ═════════════════════════════════════════════════════════
+# proto/tendermint/mempool/types.proto (14 lines, SHA-256
+# 47977b934b6551d036aaa00b93921416e54e6fdea5de1ecf8032f07060d617fe):
+#
+#     message Txs     { repeated bytes txs = 1; }
+#     message Message { oneof sum { Txs txs = 1; } }
+#
+# `Txs` has the shape of types.Data (repeated bytes, field 1, one tag per
+# element, an empty element written as `0a 00`); `Message` is a oneof
+# whose only branch is field 1, written as `0a ‖ len ‖ Txs body` whenever
+# the branch is set — an EMPTY Txs is `0a 00` — and as nothing at all for
+# a nil Sum (mempool/types.pb.go:212-249).
+#
+# Golden hex: mempool/reactor_test.go:411-434 TestMempoolVectors, two
+# cases, transcribed — neither carries a substituted field.
+# ══════════════════════════════════════════════════════════════════════
+
+
+def m_mempool_txs(txs):
+    """tendermint.mempool.Txs {txs = 1 repeated bytes} — same shape as
+    types.Data (m_data)."""
+    return f_rep_bytes(1, txs)
+
+
+def m_mempool_message(txs_body):
+    """tendermint.mempool.Message oneof: the Txs branch (field 1) written
+    even when the body is empty; None is the nil Sum (nothing)."""
+    return f_msg_ptr(1, txs_body)
+
+
+def check_r3m():
+    """reactor_test.go:417-418 — the two TestMempoolVectors rows."""
+    fails = []
+
+    def eq(name, got, want_hex):
+        if got.hex() != want_hex:
+            fails.append("%s: got %s want %s" % (name, got.hex(), want_hex))
+
+    # :417 "tx 1"
+    eq("Message{Txs{[0x7b]}}",
+       m_mempool_message(m_mempool_txs([bytes([123])])),
+       "0a030a017b")
+    # :418 "tx 2"
+    eq("Message{Txs{[\"proto encoding in mempool\"]}}",
+       m_mempool_message(m_mempool_txs([b"proto encoding in mempool"])),
+       "0a1b0a1970726f746f20656e636f64696e6720696e206d656d706f6f6c")
+    return fails
+
+
+def emit_r3m():
+    out = []
+    add = out.append
+
+    add("/* ══ mempool.Txs / mempool.Message (R3-M) ══ */")
+    add("/* Txs{}: 0 bytes; Message{nil}: 0 bytes — both omit everything. */")
+    add(c_vec("V_MEM_TXS_EMPTY", m_mempool_txs([])))
+    add("/* Message{Txs{}} — the branch is written even when the body is")
+    add(" * empty: `0a 00`. */")
+    add(c_vec("V_MEM_MSG_TXS_EMPTY", m_mempool_message(m_mempool_txs([]))))
+    add("/* Txs{\"\", \"ab\", \"\"} — an empty element is a real `0a 00`. */")
+    add(c_vec("V_MEM_TXS_THREE", m_mempool_txs([b"", b"ab", b""])))
+    add(c_vec("V_MEM_MSG_TXS_THREE",
+              m_mempool_message(m_mempool_txs([b"", b"ab", b""]))))
+    add("/* reactor_test.go:417-418 — transcribed, also asserted by")
+    add(" * check_r3m(). */")
+    add(c_vec("V_MEM_MSG_TX1", m_mempool_message(m_mempool_txs([bytes([123])]))))
+    add(c_vec("V_MEM_MSG_TX2",
+              m_mempool_message(m_mempool_txs([b"proto encoding in mempool"]))))
+    add("/* Two 300-byte txs in one Txs: the size arithmetic crosses the")
+    add(" * one-byte varint boundary on both the element and the frame. */")
+    two = [pat(300, 1), pat(300, 2)]
+    add(c_vec("V_MEM_MSG_TWO_300", m_mempool_message(m_mempool_txs(two))))
+    add("/* RecvMessageCapacity (reactor.go:71-89): Message{Txs{[1 MiB]}}")
+    add(" * .Size() at the default MaxTxBytes = 1048576. */")
+    one_mib = m_mempool_message(m_mempool_txs([b"\x00" * 1048576]))
+    add("#define V_MEM_RECV_MESSAGE_CAPACITY %d" % len(one_mib))
+    return "\n".join(out)
+
+
+# ══ R3-B (FLEET-TM-R3 W1): the STORED values — cmt_pb_store ══════════
+#
+# The messages store/store.go and state/store.go marshal (D-17 rev 5),
+# the FinalizeBlock response family (D-23 rev 4), and the Block decoder's
+# inputs. Same K-1 rules. Generated-encoder citations:
+#   BlockStoreState        store/types.pb.go:113-131
+#   BlockMeta              types/types.pb.go:2058-2098
+#   Version                state/types.pb.go:965-1003
+#   ValidatorsInfo         state/types.pb.go:835-873
+#   ConsensusParamsInfo    state/types.pb.go:875-911
+#   ABCIResponsesInfo      state/types.pb.go:913-963
+#   State                  state/types.pb.go:1005-1116
+#   ConsensusParams + 5    types/params.pb.go:702-978
+#   ResponseFinalizeBlock  abci/types/types.pb.go:6775-6843
+#   Event / EventAttribute abci/types/types.pb.go:6943-7026
+#   ExecTxResult (8 flds)  abci/types/types.pb.go:7034-7097
+#   ValidatorUpdate        abci/types/types.pb.go:7199-7235
+
+def m_block_store_state(base, height):
+    """store.BlockStoreState {base 1, height 2}."""
+    return f_varint(1, base) + f_varint(2, height)
+
+
+def m_block_meta(block_id, block_size, header_body, num_txs):
+    """types.BlockMeta {block_id 1 ALWAYS, block_size 2, header 3 ALWAYS,
+    num_txs 4}."""
+    return (f_msg_always(1, m_block_id(*block_id)) +
+            f_varint(2, block_size) +
+            f_msg_always(3, header_body) +
+            f_varint(4, num_txs))
+
+
+def m_version(consensus, software):
+    """state.Version {consensus 1 ALWAYS, software 2 string}."""
+    return f_msg_always(1, m_consensus(*consensus)) + f_bytes(2, software)
+
+
+def m_block_params(max_bytes, max_gas):
+    """types.BlockParams {max_bytes 1, max_gas 2}."""
+    return f_varint(1, max_bytes) + f_varint(2, max_gas)
+
+
+def m_evidence_params(max_age_num_blocks, max_age_duration_ns, max_bytes):
+    """types.EvidenceParams {max_age_num_blocks 1, max_age_duration 2 ALWAYS
+    stdduration, max_bytes 3}."""
+    return (f_varint(1, max_age_num_blocks) +
+            f_msg_always(2, m_std_duration(max_age_duration_ns)) +
+            f_varint(3, max_bytes))
+
+
+def m_validator_params(pub_key_types):
+    """types.ValidatorParams {pub_key_types 1 repeated string}."""
+    return f_rep_bytes(1, list(pub_key_types))
+
+
+def m_version_params(app):
+    """types.VersionParams {app 1 uint64}."""
+    return f_varint(1, app)
+
+
+def m_abci_params(vote_extensions_enable_height):
+    """types.ABCIParams {vote_extensions_enable_height 1}."""
+    return f_varint(1, vote_extensions_enable_height)
+
+
+def m_consensus_params(block, evidence, validator, version, abci):
+    """types.ConsensusParams — five POINTER sub-messages (None = nil):
+    block 1, evidence 2, validator 3, version 4, abci 5."""
+    return (f_msg_ptr(1, None if block is None else m_block_params(*block)) +
+            f_msg_ptr(2, None if evidence is None else m_evidence_params(*evidence)) +
+            f_msg_ptr(3, None if validator is None else m_validator_params(validator)) +
+            f_msg_ptr(4, None if version is None else m_version_params(version)) +
+            f_msg_ptr(5, None if abci is None else m_abci_params(abci)))
+
+
+def m_validators_info(validator_set_body, last_height_changed):
+    """state.ValidatorsInfo {validator_set 1 POINTER, last_height_changed 2}."""
+    return f_msg_ptr(1, validator_set_body) + f_varint(2, last_height_changed)
+
+
+def m_consensus_params_info(params_body, last_height_changed):
+    """state.ConsensusParamsInfo {consensus_params 1 ALWAYS,
+    last_height_changed 2}."""
+    return f_msg_always(1, params_body) + f_varint(2, last_height_changed)
+
+
+def m_event_attribute(key, value, index):
+    """abci.EventAttribute {key 1, value 2, index 3 bool}."""
+    return f_bytes(1, key) + f_bytes(2, value) + f_varint(3, 1 if index else 0)
+
+
+def m_event(etype, attributes):
+    """abci.Event {type 1, attributes 2 repeated nullable=false}."""
+    return f_bytes(1, etype) + f_rep_bytes(2, [m_event_attribute(*a) for a in attributes])
+
+
+def m_exec_tx_result_stored(code, data, log, info, gas_wanted, gas_used,
+                            events, codespace):
+    """abci.ExecTxResult, ALL eight fields (the STORED form; cmt_pb's
+    m_exec_tx_result is the four-field deterministic copy)."""
+    return (f_varint(1, code) + f_bytes(2, data) + f_bytes(3, log) +
+            f_bytes(4, info) + f_varint(5, gas_wanted) +
+            f_varint(6, gas_used) +
+            f_rep_bytes(7, [m_event(*e) for e in events]) +
+            f_bytes(8, codespace))
+
+
+def m_validator_update(pub_key, power):
+    """abci.ValidatorUpdate {pub_key 1 ALWAYS, power 2}. pub_key None is
+    the nil oneof: an EMPTY PublicKey message, still written."""
+    pk = b"" if pub_key is None else m_public_key_mldsa87(pub_key)
+    return f_msg_always(1, pk) + f_varint(2, power)
+
+
+def m_response_finalize_block(events, tx_results, validator_updates,
+                              consensus_param_updates, app_hash):
+    """abci.ResponseFinalizeBlock {events 1, tx_results 2,
+    validator_updates 3, consensus_param_updates 4 POINTER, app_hash 5}."""
+    return (f_rep_bytes(1, [m_event(*e) for e in events]) +
+            f_rep_bytes(2, [m_exec_tx_result_stored(*r) for r in tx_results]) +
+            f_rep_bytes(3, [m_validator_update(*u) for u in validator_updates]) +
+            f_msg_ptr(4, consensus_param_updates) +
+            f_bytes(5, app_hash))
+
+
+def m_abci_responses_info(height, response_finalize_block_body):
+    """state.ABCIResponsesInfo {legacy 1 NEVER, height 2,
+    response_finalize_block 3 POINTER}."""
+    return f_varint(2, height) + f_msg_ptr(3, response_finalize_block_body)
+
+
+def m_state(version, chain_id, last_block_height, last_block_id,
+            last_block_time, next_validators, validators, last_validators,
+            last_height_validators_changed, consensus_params,
+            last_height_consensus_params_changed, last_results_hash,
+            app_hash, initial_height):
+    """state.State — the wire ascends by FIELD NUMBER (14 last), not by
+    the .proto's declaration order; 1/4/5/10 ALWAYS, 6/7/8 POINTER."""
+    return (f_msg_always(1, m_version(*version)) +
+            f_bytes(2, chain_id) +
+            f_varint(3, last_block_height) +
+            f_msg_always(4, m_block_id(*last_block_id)) +
+            f_msg_always(5, m_timestamp(last_block_time)) +
+            f_msg_ptr(6, next_validators) +
+            f_msg_ptr(7, validators) +
+            f_msg_ptr(8, last_validators) +
+            f_varint(9, last_height_validators_changed) +
+            f_msg_always(10, consensus_params) +
+            f_varint(11, last_height_consensus_params_changed) +
+            f_bytes(12, last_results_hash) +
+            f_bytes(13, app_hash) +
+            f_varint(14, initial_height))
+
+
+def check_r3b():
+    """Hand-derived bytes for the smallest R3-B messages — the same
+    discipline as check(): a mismatch is a STOP."""
+    fails = []
+
+    def eq(name, got, want_hex):
+        if got.hex() != want_hex:
+            fails.append("%s: got %s want %s" % (name, got.hex(), want_hex))
+
+    # store/types.pb.go:113-131 — base 100 = 08 64, height 1000 = 10 e8 07
+    eq("BlockStoreState{100,1000}", m_block_store_state(100, 1000), "086410e807")
+    eq("BlockStoreState{0,0}", m_block_store_state(0, 0), "")
+    # params.pb.go:825-834 — a ZERO Duration is still written: 12 00
+    eq("EvidenceParams{0,0,0}", m_evidence_params(0, 0, 0), "1200")
+    # ConsensusParams with only Evidence set → 12 02 12 00
+    eq("ConsensusParams{Evidence:{}}",
+       m_consensus_params(None, (0, 0, 0), None, None, None), "12021200")
+    # ConsensusParamsInfo{params empty (no sub-message), changed 5}
+    eq("ConsensusParamsInfo{{},5}", m_consensus_params_info(b"", 5), "0a001005")
+    # ValidatorsInfo{nil set, changed 7} → 10 07
+    eq("ValidatorsInfo{nil,7}", m_validators_info(None, 7), "1007")
+    # ValidatorUpdate with a nil key: the EMPTY PublicKey is still written
+    eq("ValidatorUpdate{nil,0}", m_validator_update(None, 0), "0a00")
+    # EventAttribute index=true → 18 01; false → omitted
+    eq("EventAttribute{k,v,true}", m_event_attribute(b"k", b"v", True),
+       "0a016b120176" + "1801")
+    eq("EventAttribute{k,v,false}", m_event_attribute(b"k", b"v", False),
+       "0a016b120176")
+    # ABCIResponsesInfo{height 10, nil response} → 10 0a
+    eq("ABCIResponsesInfo{10,nil}", m_abci_responses_info(10, None), "100a")
+    # Version{{11,0},""} → 0a 02 08 0b
+    eq("Version{{11,0},''}", m_version((11, 0), b""), "0a02080b")
+    return fails
+
+
+def emit_r3b():
+    out = []
+    add = out.append
+    PUB_A = pat(2592, 0x03)
+
+    add("/* ══ store.BlockStoreState ══ */")
+    add(c_vec("V_BSS_100_1000", m_block_store_state(100, 1000)))
+    add(c_vec("V_BSS_0_1000", m_block_store_state(0, 1000)))
+
+    add("")
+    add("/* ══ state.Version ══ */")
+    add(c_vec("V_VERSION_11_0_EMPTY", m_version((11, 0), b"")))
+    add(c_vec("V_VERSION_11_1_SW", m_version((11, 1), b"0.19.54")))
+
+    add("")
+    add("/* ══ types.ConsensusParams and its five ══ */")
+    # types/params.go:97-132 defaults under this port: 22020096 / -1,
+    # 100000 / 48h / 1048576, ["mldsa87"], app 0, enable height 0.
+    CP_DEFAULT = ((22020096, -1),
+                  (100000, 48 * 3600 * 1000000000, 1048576),
+                  [b"mldsa87"], 0, 0)
+    add(c_vec("V_CP_DEFAULT", m_consensus_params(*CP_DEFAULT)))
+    add(c_vec("V_CP_EVIDENCE_ONLY",
+              m_consensus_params(None, (0, 0, 0), None, None, None)))
+    add(c_vec("V_CP_VERSION_APP_1",
+              m_consensus_params(None, None, None, 1, None)))
+    add("/* ConsensusParams{} (all nil): 0 bytes */")
+
+    add("")
+    add("/* ══ state.ValidatorsInfo / ConsensusParamsInfo ══ */")
+    add(c_vec("V_VI_NIL_7", m_validators_info(None, 7)))
+    VS_ONE = ([(ADDR_A, PUB_A, 10, 0)], (ADDR_A, PUB_A, 10, 0), 0)
+    add(c_vec("V_VI_ONE_3", m_validators_info(m_validator_set(*VS_ONE), 3)))
+    add(c_vec("V_CPI_EMPTY_5", m_consensus_params_info(b"", 5)))
+    add(c_vec("V_CPI_DEFAULT_9",
+              m_consensus_params_info(m_consensus_params(*CP_DEFAULT), 9)))
+
+    add("")
+    add("/* ══ abci.Event / EventAttribute / ExecTxResult (stored) ══ */")
+    add(c_vec("V_EA_KV_TRUE", m_event_attribute(b"k", b"v", True)))
+    add(c_vec("V_EVENT_A",
+              m_event(b"transfer", [(b"from", b"alice", True),
+                                    (b"to", b"bob", False)])))
+    # state/store_test.go:218-220 TestTxResultsHash's result, stored form
+    add(c_vec("V_ETR_STORED_32_HELLO_HUH",
+              m_exec_tx_result_stored(32, b"Hello", b"Huh?", b"", 0, 0, [], b"")))
+    add(c_vec("V_ETR_STORED_FULL",
+              m_exec_tx_result_stored(1, b"d", b"log", b"info", 5, 6,
+                                      [(b"e", [(b"k", b"v", False)])], b"cs")))
+
+    add("")
+    add("/* ══ abci.ValidatorUpdate ══ */")
+    add(c_vec("V_VU_NIL_0", m_validator_update(None, 0)))
+    add(c_vec("V_VU_A_10", m_validator_update(PUB_A, 10)))
+
+    add("")
+    add("/* ══ abci.ResponseFinalizeBlock / state.ABCIResponsesInfo ══ */")
+    # store_test.go:256-261 response1: one result {32, Hello, Huh?},
+    # AppHash = make([]byte, 1) = 00
+    RFB_1 = ([], [(32, b"Hello", b"Huh?", b"", 0, 0, [], b"")], [], None, b"\x00")
+    add(c_vec("V_RFB_RESPONSE1", m_response_finalize_block(*RFB_1)))
+    add(c_vec("V_ARI_10_RESPONSE1",
+              m_abci_responses_info(10, m_response_finalize_block(*RFB_1))))
+    # helpers_test.go:258-268 testApp: ConsensusParamUpdates{Version{App:1}}
+    RFB_TESTAPP = ([], [(0, b"", b"", b"", 0, 0, [], b"")], [(PUB_A, 10)],
+                   m_consensus_params(None, None, None, 1, None), b"")
+    add(c_vec("V_RFB_TESTAPP", m_response_finalize_block(*RFB_TESTAPP)))
+    add(c_vec("V_ARI_10_NIL", m_abci_responses_info(10, None)))
+
+    add("")
+    add("/* ══ types.BlockMeta ══ */")
+    HEADER_MIN = ((11, 0), CHAIN, 1, TS_A, BID_ZERO, b"", b"", b"", b"",
+                  b"", b"", b"", b"", ADDR_A)
+    add(c_vec("V_BLOCK_META_A",
+              m_block_meta(BID_A, 1234, m_header(*HEADER_MIN), 3)))
+
+    add("")
+    add("/* ══ state.State ══ */")
+    STATE_GENESIS = (((11, 0), b"0.19.54"), CHAIN, 0, BID_ZERO, TS_A,
+                     m_validator_set(*VS_ONE), m_validator_set(*VS_ONE), None,
+                     1, m_consensus_params(*CP_DEFAULT), 1, b"", b"", 1)
+    add(c_vec("V_STATE_GENESIS_ONE", m_state(*STATE_GENESIS)))
+    STATE_H2 = (((11, 1), b"0.19.54"), CHAIN, 2, BID_A, TS_A,
+                m_validator_set(*VS_ONE), m_validator_set(*VS_ONE),
+                m_validator_set(*VS_ONE), 4, m_consensus_params(*CP_DEFAULT),
+                3, HASH_C, HASH_B, 1)
+    add(c_vec("V_STATE_H2_ONE", m_state(*STATE_H2)))
+    return "\n".join(out)
+
+
 if __name__ == "__main__":
-    problems = check() + check_r2b()
+    problems = check() + check_r2b() + check_r3m() + check_r3b()
     if problems:
         sys.stderr.write("GOLDEN VECTOR MISMATCH — STOP:\n")
         for p in problems:
             sys.stderr.write("  " + p + "\n")
         sys.exit(1)
-    sys.stderr.write("golden vectors: all REV 3.2 values reproduced, and "
-                     "the five transcribable TestConsMsgsVectors cases\n")
+    sys.stderr.write("golden vectors: all REV 3.2 values reproduced, "
+                     "the five transcribable TestConsMsgsVectors cases, "
+                     "the two TestMempoolVectors cases, and the stored-value "
+                     "messages of the state and block stores\n")
     print("/* GENERATED by shared/dnac/tests/cmt_pb_oracle.py — do not edit */")
     print(emit())
     print(emit_extended())
     print(emit_r2b())
+    print(emit_r3m())
+    print(emit_r3b())

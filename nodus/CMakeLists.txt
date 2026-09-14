@@ -198,6 +198,19 @@ set(NODUS_SOURCES
     src/witness/nodus_witness_v2_schema.c
     src/witness/nodus_witness_v2_apply.c
 
+    # cometbft @709fd12b → C port, wave R3-B (FLEET-TM-R3): the HOST behind
+    # cmt_cs_host_t — state/execution.go's BlockExecutor and
+    # state/validation.go, the Comet key-value stores (store/store.go +
+    # state/store.go over SQLite, schema S14, D-17 rev 5), the consensus WAL
+    # storage (D-15 rev 5, second connection) and the privval last-sign-state
+    # file (privval/file.go + libs/tempfile, plus a directory fsync).
+    # Production-dormant: the live V2 lane still runs at S12 and the engine
+    # binding is R3-C1's.
+    src/witness/nodus_witness_cmt_store.c
+    src/witness/nodus_witness_cmt_wal.c
+    src/witness/nodus_witness_cmt_privval.c
+    src/witness/nodus_witness_cmt_host.c
+
     # Ledger V2 O12 S2 — INACTIVE engine-mandatory epoch-boundary
     # transition (pending-commission activation, RETIRING -> UNSTAKED
     # graduation with its canonical per-record release identity, then
@@ -354,6 +367,32 @@ set(NODUS_SOURCES
     # catchupReplay. Zero runtime consumers: the reactor that would drive it is
     # R3.
     ${SHARED_DIR}/dnac/cmt_cs.c
+
+    # cometbft @709fd12b → C port, wave R3-B — the STORED-VALUE codecs:
+    # BlockMeta, BlockStoreState, State/Version/ValidatorsInfo/
+    # ConsensusParamsInfo/ABCIResponsesInfo, ConsensusParams and the ABCI
+    # ResponseFinalizeBlock family, proto3 per K-1 rev 2, plus the block
+    # decoder the store needs to read a stored block.
+    ${SHARED_DIR}/dnac/cmt_pb_store.c
+
+    # cometbft @709fd12b → C port, wave R3-A (FLEET-TM-R3): consensus/reactor.go
+    # — the consensus reactor (gossip data/votes/maj23 as per-peer tick passes,
+    # Receive with the nine ValidateBasic gates, the three broadcast listeners
+    # on cmt_cs) and its PeerState/PeerRoundState. The first live consumer of
+    # cmt_cs; bound to tier3 and the server tick by R3-C2.
+    ${SHARED_DIR}/dnac/cmt_ps.c
+    ${SHARED_DIR}/dnac/cmt_conr.c
+
+    # cometbft @709fd12b → C port, wave R3-M (FLEET-TM-R3): the Flood
+    # mempool — libs/clist (the CList), mempool/clist_mempool.go + cache.go +
+    # ids.go (the CList mempool, LRU tx cache, peer ids), mempool/reactor.go
+    # (the Txs gossip reactor as per-peer tick passes) and the mempool proto
+    # (Txs / Message). Synchronous CheckTx (R3-M-1). Bound to the ledger's
+    # admission check and the tier3 verb by R3-C1/C2.
+    ${SHARED_DIR}/dnac/cmt_clist.c
+    ${SHARED_DIR}/dnac/cmt_pb_mempool.c
+    ${SHARED_DIR}/dnac/cmt_mem.c
+    ${SHARED_DIR}/dnac/cmt_memr.c
 
     # Ledger V2 O15B — canonical BlockMessage v1 wire codec. Structure and
     # bounds ONLY: it computes no consensus value and touches no committed
@@ -1120,6 +1159,34 @@ add_executable(test_cmt_byzantine tests/test_cmt_byzantine.c)
 target_link_libraries(test_cmt_byzantine nodus dsa nodus crypto)
 add_test(NAME test_cmt_byzantine COMMAND test_cmt_byzantine)
 
+# cometbft @709fd12b → C port, wave R3-A — consensus/reactor_test.go: the
+# ten message ValidateBasic tables, the two Receive-before-InitPeer/AddPeer
+# cases, and the multi-node reactor scenarios over an in-memory switch (real
+# cmt_conr reactors per node, per-link queues with the reference's send-queue
+# capacities). Real ML-DSA-87 signatures; default build, `ctest -j` safe;
+# the file header lists the BLOCKED reference tests and how it can lie.
+add_executable(test_cmt_conr tests/test_cmt_conr.c)
+target_link_libraries(test_cmt_conr nodus dsa nodus crypto)
+add_test(NAME test_cmt_conr COMMAND test_cmt_conr)
+
+# cometbft @709fd12b → C port, wave R3-M — the Flood mempool's tests:
+# libs/clist/clist_test.go (the CList, plus the C-only refcount cases),
+# mempool/clist_mempool_test.go + cache_test.go + ids_test.go + the
+# TestMempoolVectors codec rows (the CList mempool), and mempool/
+# reactor_test.go over an in-memory switch (the Txs gossip reactor). No
+# clock, no files; each header lists the concurrency tests NOT PORTED.
+add_executable(test_cmt_clist tests/test_cmt_clist.c)
+target_link_libraries(test_cmt_clist nodus dsa nodus crypto)
+add_test(NAME test_cmt_clist COMMAND test_cmt_clist)
+
+add_executable(test_cmt_mem tests/test_cmt_mem.c)
+target_link_libraries(test_cmt_mem nodus dsa nodus crypto)
+add_test(NAME test_cmt_mem COMMAND test_cmt_mem)
+
+add_executable(test_cmt_memr tests/test_cmt_memr.c)
+target_link_libraries(test_cmt_memr nodus dsa nodus crypto)
+add_test(NAME test_cmt_memr COMMAND test_cmt_memr)
+
 # Ledger V2 O15A — obligation 1: an allocation failure in or beneath the
 # QC path is a NODE FAULT, never a consensus verdict. malloc/calloc are
 # interposed at LINK time (--wrap) so the code under test is the
@@ -1284,6 +1351,17 @@ register_witness_test(test_domreg)
 # paths, per-stage failure rollback, idempotency, restart, UTXO domain
 # ownership backfill, unknown-version fail-close, no CPUNK.
 register_witness_test(test_v2_schema)
+
+# cometbft @709fd12b → C port, wave R3-B — the host, the stores, the
+# consensus WAL storage, the privval last-sign-state file and the stored
+# value codecs: schema S14, the ported store/state-store/execution/
+# validation tests, the WAL write classes and the JSON document. Uses a
+# real temporary SQLite database (created and removed by the test) and
+# real ML-DSA-87 keys; default build, no environment.
+add_executable(test_cmt_host tests/test_cmt_host.c)
+target_link_libraries(test_cmt_host nodus dsa nodus crypto)
+target_compile_definitions(test_cmt_host PRIVATE NODUS_WITNESS_INTERNAL_API)
+add_test(NAME test_cmt_host COMMAND test_cmt_host)
 
 # Ledger V2 S5 — atomic apply engine: genesis-root cycle proof, heads/
 # updates, replay matrix, cross-domain atomicity, 15-point fault-injection

@@ -1402,3 +1402,169 @@ int nodus_witness_db_migrate_v2s13_ex(nodus_witness_t *w,
 int nodus_witness_db_migrate_v2s13(nodus_witness_t *w) {
     return nodus_witness_db_migrate_v2s13_ex(w, V2S13MIG_FAIL_NONE);
 }
+
+/* ── S14 (FLEET-TM-R3 W1): the four Comet stores, D-17 rev 5 ──────────
+ *
+ * Reachable in W1 ONLY from the unit tests (`test_cmt_host.c`): the
+ * live path still stops at S12 (see the header paragraph) and R3-C1
+ * flips it. */
+
+int nodus_witness_db_migrate_v2s14_ex(nodus_witness_t *w,
+                                      nodus_v2s14_mig_fail_t fail_at) {
+    if (!w || !w->db) return -1;
+
+    uint32_t ver = 0;
+    if (nodus_witness_db_schema_version(w, &ver) != 0) return -1;
+    if (ver == NODUS_V2_SCHEMA_VERSION_S14) return 0;    /* idempotent    */
+    if (ver != NODUS_V2_SCHEMA_VERSION_S13) {
+        if (nodus_witness_db_migrate_v2s13(w) != 0) return -1;
+        ver = NODUS_V2_SCHEMA_VERSION_S13;
+    }
+
+    if (exec_sql(w, "BEGIN IMMEDIATE") != 0) return -1;
+
+    int ok = 0;
+    int already = 0;
+    do {
+        if (fail_at == V2S14MIG_FAIL_AFTER_BEGIN) break;
+
+        /* O15B discipline: the pre-BEGIN read decided nothing. */
+        int rv = mig_revalidate_version(w, NODUS_V2_SCHEMA_VERSION_S13,
+                                        NODUS_V2_SCHEMA_VERSION_S14, "S14");
+        if (rv < 0) break;
+        if (rv == 0) { already = 1; break; }
+        if (fail_at == V2S14MIG_FAIL_AFTER_REVALIDATE) break;
+
+        /* The reference's dbm.DB stores are byte-keyed maps
+         * (store/store.go:632-716 key builders; state/store.go:25-45).
+         * A key is the reference's own byte string, a value the proto
+         * message the reference marshals. Point lookups only — the
+         * reference never ranges over these keys either — so the BLOB
+         * collation order of `H:10` vs `H:9` is irrelevant.
+         * NO default on any column. */
+        if (exec_sql(w,
+                "CREATE TABLE IF NOT EXISTS cmt_blockstore ("
+                "  key BLOB PRIMARY KEY,"
+                "  value BLOB NOT NULL"
+                ")") != 0)
+            break;
+        if (exec_sql(w,
+                "CREATE TABLE IF NOT EXISTS cmt_state ("
+                "  key BLOB PRIMARY KEY,"
+                "  value BLOB NOT NULL"
+                ")") != 0)
+            break;
+        /* cmt_wal: the S13 tm_wal row shape (D-15 rev 5) under the cmt_
+         * name — PK (protocol_id, height, seq) is the replay order, seq
+         * monotonic per protocol_id across heights, `bytes` =
+         * SHA3-512(payload) ‖ payload. */
+        if (exec_sql(w,
+                "CREATE TABLE IF NOT EXISTS cmt_wal ("
+                "  protocol_id INTEGER NOT NULL,"
+                "  height INTEGER NOT NULL,"
+                "  seq INTEGER NOT NULL,"
+                "  kind INTEGER NOT NULL,"
+                "  bytes BLOB NOT NULL,"
+                "  PRIMARY KEY (protocol_id, height, seq)"
+                ")") != 0)
+            break;
+        /* cmt_wal_sync: the DURABILITY BARRIER `FlushAndSync` needs, and
+         * nothing else. D-15 rev 5 (4) routes the Write class through the
+         * NORMAL connection and leaves the FlushAndSync MECHANISM to R3
+         * under D-13. In SQLite a connection cannot fsync on demand — only
+         * a COMMIT at `synchronous=FULL` does, and an EMPTY transaction
+         * commits nothing and syncs nothing (measured). So the flush
+         * bumps ONE counter row on the FULL connection: that commit
+         * fdatasyncs the shared `-wal` file, which is the same file the
+         * NORMAL connection appended its rows to, so every earlier row
+         * becomes durable with it (measured: three NORMAL autocommit rows
+         * issue zero fdatasync; one FULL commit issues exactly one, on the
+         * `-wal` fd). `PRAGMA wal_checkpoint` was the alternative and is
+         * REFUSED: it can return BUSY and then syncs nothing, which is a
+         * durability hole that depends on timing. The counter's value is
+         * never read by consensus and is in no hash. */
+        if (exec_sql(w,
+                "CREATE TABLE IF NOT EXISTS cmt_wal_sync ("
+                "  protocol_id INTEGER PRIMARY KEY,"
+                "  n INTEGER NOT NULL"
+                ")") != 0)
+            break;
+        /* cmt_light: named by D-17 rev 5, filled by R3-L. */
+        if (exec_sql(w,
+                "CREATE TABLE IF NOT EXISTS cmt_light ("
+                "  key BLOB PRIMARY KEY,"
+                "  value BLOB NOT NULL"
+                ")") != 0)
+            break;
+        /* S13's tables never reached a live chain (no live path writes
+         * them); D-17 rev 5 drops both. */
+        if (exec_sql(w, "DROP TABLE IF EXISTS tm_wal") != 0) break;
+        if (exec_sql(w, "DROP TABLE IF EXISTS tm_state") != 0) break;
+        /* The old consensus's header / seen certificate / canonical
+         * certificate columns. Under Comet the header is in BlockMeta
+         * (`H:<h>`), the seen commit in `SC:<h>`, the canonical commit
+         * in `C:<h>`. None of the three is indexed, keyed or referenced
+         * by a constraint (S9 DDL above), so DROP COLUMN is permitted;
+         * measured on the linked 3.40.1. */
+        if (exec_sql(w, "ALTER TABLE v2_blocks DROP COLUMN header") != 0)
+            break;
+        if (exec_sql(w, "ALTER TABLE v2_blocks DROP COLUMN qc") != 0)
+            break;
+        if (exec_sql(w, "ALTER TABLE v2_blocks DROP COLUMN commit_cert") != 0)
+            break;
+        if (fail_at == V2S14MIG_FAIL_AFTER_TABLES) break;
+
+        static const char *const kv_cols[] = { "key", "value" };
+        static const char *const wal_cols[] = {
+            "protocol_id", "height", "seq", "kind", "bytes"
+        };
+        static const char *const wal_sync_cols[] = { "protocol_id", "n" };
+        /* v2_blocks is verified WHOLE: S13's list minus the three. */
+        static const char *const block_cols[] = {
+            "global_height", "block_id", "prev_block_id", "epoch",
+            "tx_root", "domain_updates_root", "domains_root",
+            "global_root", "vset_hash", "tx_count"
+        };
+        if (table_cols_exact(w, "cmt_blockstore", kv_cols,
+                sizeof(kv_cols) / sizeof(kv_cols[0])) != 1 ||
+            table_cols_exact(w, "cmt_state", kv_cols,
+                sizeof(kv_cols) / sizeof(kv_cols[0])) != 1 ||
+            table_cols_exact(w, "cmt_wal", wal_cols,
+                sizeof(wal_cols) / sizeof(wal_cols[0])) != 1 ||
+            table_cols_exact(w, "cmt_wal_sync", wal_sync_cols,
+                sizeof(wal_sync_cols) / sizeof(wal_sync_cols[0])) != 1 ||
+            table_cols_exact(w, "cmt_light", kv_cols,
+                sizeof(kv_cols) / sizeof(kv_cols[0])) != 1 ||
+            table_cols_exact(w, "v2_blocks", block_cols,
+                sizeof(block_cols) / sizeof(block_cols[0])) != 1 ||
+            table_exists(w, "tm_wal") != 0 ||
+            table_exists(w, "tm_state") != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "S14 schema shape drift — refusing");
+            break;
+        }
+        if (fail_at == V2S14MIG_FAIL_AFTER_VERIFY) break;
+
+        if (exec_sql(w, "PRAGMA user_version = 14") != 0) break;
+        if (fail_at == V2S14MIG_FAIL_BEFORE_COMMIT) break;
+
+        ok = 1;
+    } while (0);
+
+    if (already) {
+        (void)exec_sql(w, "ROLLBACK");
+        return 0;
+    }
+    if (!ok) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    if (exec_sql(w, "COMMIT") != 0) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    return 0;
+}
+
+int nodus_witness_db_migrate_v2s14(nodus_witness_t *w) {
+    return nodus_witness_db_migrate_v2s14_ex(w, V2S14MIG_FAIL_NONE);
+}

@@ -1493,6 +1493,62 @@ rewritten on the `cmt_*` types). The T1 core (`src/bft/`), the T3 wave-1 codecs
 (`tm_vote`, `tm_commit`) and the wave-1 WAL module were deleted in R2 as a second, dead
 implementation; `shared/dnac/tm_bounds.h` stays until R3.
 
+### cometbft @709fd12b literal port — R3 wave W1: reactor, host, stores, mempool (`cmt_conr` / `cmt_ps`, `nodus_witness_cmt_*`, `cmt_mem`, DORMANT)
+
+W1 (2026-09-11) is the first wave of R3, the season that writes `cmt_cs`'s consumer. It is
+still DORMANT: nothing in the running node constructs a reactor, a host or a mempool — the
+tier-3 verbs, the server tick and the engine binding are W2/W3 — and the live witness BFT,
+the legacy lane and every ZK path are byte-untouched. Three packages landed together:
+
+| Module | cometbft source | What it is |
+|---|---|---|
+| `shared/dnac/cmt_ps.{h,c}` | `consensus/reactor.go:1017-1482`, `consensus/types/peer_round_state.go` | PeerState and PeerRoundState: what THIS node believes a peer has — its height/round/step, its proposal and part-set header, its vote bit arrays and catch-up commit round — and the `Apply*` methods that update that picture from the peer's own announcements |
+| `shared/dnac/cmt_conr.{h,c}` | `consensus/reactor.go` (57 PORT rows), `consensus/msgs.go:232-234` | the reactor: the four channel descriptors, `Receive` with the nine `ValidateBasic` gates (the gate R2 deliberately left out), the three broadcasts, and the three per-peer gossip routines — data, votes, VoteSetMaj23 — as TICK PASSES instead of goroutines |
+| `nodus/src/witness/nodus_witness_cmt_host.{h,c}` | `state/execution.go`, `state/validation.go` | the BlockExecutor behind `cmt_cs_host_t`: CreateProposalBlock / ProcessProposal / ValidateBlock / ApplyVerifiedBlock / ExtendVote / VerifyVoteExtension / Commit / updateState, plus the application, mempool and evidence-pool interface tables the reference keeps |
+| `nodus/src/witness/nodus_witness_cmt_store.{h,c}` | `store/store.go`, `state/store.go` | the two Comet stores over SQLite with the reference's OWN keys (`H:`/`P:`/`C:`/`SC:`/`EC:`/`BH:`/`blockStore`, `stateKey`/`validatorsKey:`/`consensusParamsKey:`/`abciResponsesKey:`/…) and proto values — schema S14 |
+| `nodus/src/witness/nodus_witness_cmt_wal.{h,c}` | `consensus/wal.go` (write, search, decode) | the consensus WAL split by CALL CLASS across two connections (D-13, D-15 rev 5): `Write` is one autocommit row on the MAIN connection (`synchronous=NORMAL`, no fsync — the reference's buffered write), `WriteSync` one autocommit row on a SECOND connection at `synchronous=FULL` (the commit IS the fsync), `FlushAndSync` a one-row barrier on that same FULL connection, and the 2 s flush ticker a deadline the host's tick honours. No transaction is ever held, so the two connections never contend |
+| `nodus/src/witness/nodus_witness_cmt_privval.{h,c}` | `privval/file.go:135-147`, `libs/tempfile`, `libs/json` | the last-sign-state file: the reference's JSON document written atomically (temp file, `O_SYNC`, rename) PLUS an fsync of the directory |
+| `shared/dnac/cmt_pb_store.{h,c}` | `store/types.proto`, `state/types.proto`, `types/types.proto`, `params.proto`, `abci/types.proto` | the STORED values as proto3 under K-1: BlockMeta, BlockStoreState, State, ValidatorsInfo, ConsensusParamsInfo, ABCIResponsesInfo, ConsensusParams and the ResponseFinalizeBlock family — plus the block decoder the store needs to read a block back |
+| `shared/dnac/cmt_mem.{h,c}`, `cmt_memr.{h,c}`, `cmt_clist.{h,c}`, `cmt_pb_mempool.{h,c}` | `mempool/*`, `libs/clist/clist.go`, `proto/tendermint/mempool` | the Flood mempool (D-4 rev 3): the CList, the LRU cache, peer ids, the synchronous CheckTx flow, recheck after every block, and the Txs gossip reactor |
+| `shared/dnac/cmt_pb_wire.h` | — | the writer/reader primitives (varint, tag, bytes, skip, arena copy) that every `cmt_pb*` codec repeats, as ONE definition; merged at integration from the two executors' own reports, so a second codec can never drift from the first |
+
+THE ONE STRUCTURAL SUBSTITUTION is threads → ticks. The reference runs three goroutines per
+peer forever and sleeps inside them; here `cmt_conr_tick` runs each routine as far as the
+reference would go before a `time.Sleep` or a refused send, records the sleep as a per-routine
+DEADLINE, and reports the earliest one so the server's poll wait can honour it. A send never
+blocks (the reference's blocks for up to 10 s), and a refused send ends that routine's pass
+for the tick instead of spinning. Every one of the fourteen sleep sites maps to a deadline
+site with its Go line beside it.
+
+The reactor also gets what R2 could not have: the state machine's event switch. `cmt_cs` now
+carries ONE listener with three callbacks — new round step, valid block, vote — fired at the
+same five `state.go` lines the reference fires `evsw` at, and the reactor subscribes after
+construction exactly as `OnStart` does. No listener installed means no fire, which is the
+reference's own `eventBus != nil` guard.
+
+Tests: `test_cmt_conr` (the ten ValidateBasic tables, the two Receive-before-InitPeer cases,
+and multi-node scenarios over an in-memory switch where every byte crosses through the REAL
+reactor), `test_cmt_host` (48 cases: schema S14, the ported store / state-store / execution /
+validation tests, the WAL write classes against a real SQLite file, the last-sign-state JSON),
+`test_cmt_mem` / `test_cmt_memr` / `test_cmt_clist`. Running them found four defects — all in
+the tests, none in the port: a prune fixture whose genesis time was AFTER the state's last
+block time (so the evidence retain height came out 1 instead of 1100), an expectation that a
+validator set sorts by address when `UpdateWithChangeSet` sorts by voting power, an absent
+commit signature built with `memset` (1970) where the reference's zero time is year one, and
+a test constant (a 5000-byte block) that cannot hold a header plus one ML-DSA-87 signature.
+
+One defect was found in the PORT, at the close, by re-reading the approved records rather
+than by running: the WAL's `Write` class had been given an open transaction on the second
+connection, which is in neither D-13 nor D-15 rev 5 nor the reference (`wal.go:184` is a
+buffered write), and which deadlocked the store's `SaveBlock` against it. It came from the
+wave's dispatch, not from an executor. The routing above is the approved one, every row is a
+single autocommit statement, and `test_cmt_host` keeps the lock as a CONTROL in both
+directions so the shape cannot return unnoticed. The one thing the records left to R3 —
+how `FlushAndSync` fsyncs rows that are already committed — is a one-row barrier on the FULL
+connection (table `cmt_wal_sync`, S14), because SQLite has no fsync-on-demand and an empty
+transaction syncs nothing; `PRAGMA wal_checkpoint` was rejected for returning BUSY, which
+would make durability timing-dependent.
+
 ### BFT Consensus Flow
 
 ```

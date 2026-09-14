@@ -4,6 +4,26 @@
 
 > **Status (2026-04-24):** Mempool + 5s batch-BFT timer described below is live since v0.10.14. Block proposal / BFT flow below reflects the model at merge time; the F17 committee enforcement (v0.15.1) and stake-delegation v1 added chain-derived top-7 committee as the voting roster but preserved the mempool and batching described here.
 
+> **⚠ SUPERSEDED FOR THE COMET LANE (2026-09-11, R3 wave W1, v0.19.55).** Everything below
+> describes the LEGACY lane's mempool and is still true of it. The cometbft port has its own,
+> and it is a different thing: `shared/dnac/cmt_mem.{h,c}` is a literal port of
+> cometbft @709fd12b's **Flood** mempool (D-4 rev 3, `atlas-dec-d5ddcba654eb48d861c03a0ecd170718`),
+> and it is **FIFO, not fee-sorted** — a transaction enters through the application's CheckTx
+> (which is the ledger's existing admission check), is kept in arrival order in a CList, is
+> forwarded to every peer that did not send it, is removed when a block commits it and the
+> remainder is rechecked. The ledger's two ordering rules — fee-descending, and "a chain_config
+> transaction rides alone in its block" — move to the application's **PrepareProposal** step,
+> which is where the reference lets an application reorder. "Forward to the leader" is retired:
+> Tendermint has a proposer per round, and every node gossips. The block's content is bounded by
+> cometbft's ConsensusParams (`Block.MaxBytes` 22 020 096, `MaxGas` −1), never by the old lane's
+> ten-transaction rule, and mempool config is cometbft's defaults (size 5 000, cache 10 000,
+> `MaxTxBytes` 1 MiB, `MaxTxsBytes` 1 GiB, recheck on, mempool WAL off). Cadence is two NODE
+> settings, not chain rules: `TimeoutCommit` 5 000 ms and `CreateEmptyBlocksInterval` 60 000 ms,
+> so a block under demand takes ≈ 5.3-5.5 s and an epoch of 720 blocks ≈ 1 hour.
+> **The Comet mempool has no runtime consumer yet** — W1 is dormant; the tier-3 verb that
+> carries `Txs` and the tick that drives the gossip land in W2/W3, and this note is rewritten
+> into the body of this document in the commit that makes them live.
+
 ---
 
 ## Overview

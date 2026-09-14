@@ -1084,12 +1084,25 @@ static int cs_reconstruct_last_commit(cmt_cs_t *cs, const cmt_state_t *state)
     return CMT_OK;
 }
 
+/* cometbft@709fd12b consensus/state.go:597-608 — reconstructLastCommit(),
+ * the public entry the reactor's SwitchToConsensus uses (reactor.go:116).
+ * A one-line wrapper (R3-A); see cmt_cs.h. */
+int cmt_cs_reconstruct_last_commit(cmt_cs_t *cs, const cmt_state_t *state)
+{
+    if (cs == NULL || state == NULL) {
+        return CMT_FAULT;
+    }
+    return cs_reconstruct_last_commit(cs, state);
+}
+
 /* ══════════════════════════════════════════════════════════════════════
  * state.go:647-774 — updateToState and newStep
  * ══════════════════════════════════════════════════════════════════════ */
 
 /* cometbft@709fd12b consensus/state.go:758-774 — newStep().
- * :767-773 is the event bus and the event switch; neither is ported. */
+ * :768-770 is the event bus, not ported. :772 is the event switch, fired
+ * through the listener (R3-A); :767's `cs.eventBus != nil` guard is "no
+ * listener installed" here (cmt_cs.h, cmt_cs_listener_t). */
 static int cs_new_step(cmt_cs_t *cs)
 {
     int rc;
@@ -1099,6 +1112,9 @@ static int cs_new_step(cmt_cs_t *cs)
         return rc;
     }
     cs->n_steps++;                                                 /* :764 */
+    if (cs->listener.on_new_round_step != NULL) {                  /* :767 */
+        cs->listener.on_new_round_step(cs->listener_ctx, &cs->rs); /* :772 */
+    }
     return CMT_OK;
 }
 
@@ -2554,8 +2570,11 @@ int cmt_cs_enter_commit(cmt_cs_t *cs, int64_t height, int32_t commit_round)
             if (rc != CMT_OK) {                                  /* :1647 */
                 return rc;
             }
-            /* :1649-1653 — PublishEventValidBlock and the event switch,
-             * neither of which is ported. */
+            /* :1649-1651 — PublishEventValidBlock, not ported. */
+            if (cs->listener.on_valid_block != NULL) {
+                cs->listener.on_valid_block(cs->listener_ctx,
+                                            &cs->rs);            /* :1653 */
+            }
         }
     }
     return cs_enter_commit_done(cs, height, commit_round);
@@ -3226,7 +3245,10 @@ static int cs_add_vote_last_commit(cmt_cs_t *cs, const cmt_vote_t *vote,
     if (rc == CMT_FAULT) {
         return rc;
     }
-    /* :2154-2158 — PublishEventVote and the event switch, not ported. */
+    /* :2154-2156 — PublishEventVote, not ported. */
+    if (cs->listener.on_vote != NULL) {
+        cs->listener.on_vote(cs->listener_ctx, vote);            /* :2158 */
+    }
 
     if (cs->config->skip_timeout_commit) {                       /* :2161 */
         has_all = false;
@@ -3365,7 +3387,11 @@ static int cs_add_vote_prevote(cmt_cs_t *cs, const cmt_vote_t *vote,
                     return rc;
                 }
             }
-            /* :2302-2305 — the event switch and PublishEventValidBlock. */
+            if (cs->listener.on_valid_block != NULL) {
+                cs->listener.on_valid_block(cs->listener_ctx,
+                                            &cs->rs);            /* :2302 */
+            }
+            /* :2303-2305 — PublishEventValidBlock, not ported. */
         }
     }
 
@@ -3549,7 +3575,11 @@ static int cs_add_vote(cmt_cs_t *cs, const cmt_vote_t *vote,
         /* :2230-2238 — either a duplicate (no error) or a refusal. */
         return rc;
     }
-    /* :2239-2243 is MarkVoteReceived, a metric; :2245-2248 the event bus. */
+    /* :2239-2243 is MarkVoteReceived, a metric; :2245-2247 the event bus.
+     * :2248 is the event switch, fired through the listener (R3-A). */
+    if (cs->listener.on_vote != NULL) {
+        cs->listener.on_vote(cs->listener_ctx, vote);            /* :2248 */
+    }
 
     switch (vote->type) {                                        /* :2250 */
     case CMT_PB_MSG_TYPE_PREVOTE:
@@ -4156,6 +4186,33 @@ void cmt_cs_free(cmt_cs_t *cs)
     cs->vals_buf_storage[0]      = NULL;
     cs->vals_buf_storage[1]      = NULL;
     cs->last_commit_vals_storage = NULL;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * libs/events/events.go — the event switch, reduced to one listener (R3-A)
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/* cometbft@709fd12b libs/events/events.go:77-99 — AddListenerForEvent(),
+ * three events for the id "consensus-reactor" (reactor.go:411-433). */
+int cmt_cs_add_listener(cmt_cs_t *cs, const cmt_cs_listener_t *l, void *ctx)
+{
+    if (cs == NULL || l == NULL) {
+        return CMT_FAULT;
+    }
+    cs->listener     = *l;                                     /* :175-178 */
+    cs->listener_ctx = ctx;
+    return CMT_OK;
+}
+
+/* cometbft@709fd12b libs/events/events.go:101-119 — RemoveListener(),
+ * reached from reactor.go:435-438. */
+void cmt_cs_remove_listener(cmt_cs_t *cs)
+{
+    if (cs == NULL) {
+        return;
+    }
+    memset(&cs->listener, 0, sizeof(cs->listener));            /* :111, :117 */
+    cs->listener_ctx = NULL;
 }
 
 int cmt_cs_start(cmt_cs_t *cs)

@@ -541,6 +541,82 @@ int nodus_witness_db_migrate_v2s13(nodus_witness_t *w);
 int nodus_witness_db_migrate_v2s13_ex(nodus_witness_t *w,
                                       nodus_v2s13_mig_fail_t fail_at);
 
+/* ── S14 migration (FLEET-TM-R3 W1): the Comet stores, D-17 rev 5 ────
+ *
+ * The cometbft @709fd12b port keeps its state the way the reference
+ * does — `dbm.DB` key/value stores (store/store.go, state/store.go) —
+ * so the Comet stores become (key BLOB PRIMARY KEY,
+ * value BLOB NOT NULL) tables whose keys are the reference's own byte
+ * strings and whose values are the proto messages the reference
+ * marshals (D-17 rev 5, PROPOSED, operator ruling 2026-09-11):
+ *
+ *   cmt_blockstore  store/store.go — `H:<h>` BlockMeta, `P:<h>:<i>`
+ *                   Part, `C:<h>` Commit, `SC:<h>` seen Commit,
+ *                   `EC:<h>` ExtendedCommit, `BH:<hex>` height,
+ *                   `blockStore` BlockStoreState.
+ *   cmt_state       state/store.go — `stateKey` State,
+ *                   `validatorsKey:<h>`, `consensusParamsKey:<h>`,
+ *                   `abciResponsesKey:<h>`, `lastABCIResponseKey`,
+ *                   `offlineStateSyncHeightKey`.
+ *   cmt_wal         S13's `tm_wal` row shape (D-15 rev 5) under the
+ *                   cmt_ name — the consensus write-ahead log.
+ *   cmt_wal_sync    (protocol_id INTEGER PRIMARY KEY, n INTEGER NOT
+ *                   NULL) — NOT a store. It is the only way a SQLite
+ *                   connection can be made to fsync on demand: D-15
+ *                   rev 5 (4) routes the WAL's `Write` class through the
+ *                   NORMAL connection and makes `FlushAndSync` a HOST
+ *                   OBLIGATION whose mechanism is R3's under D-13, and
+ *                   an empty transaction commits nothing and syncs
+ *                   nothing (measured). Bumping this one row on the
+ *                   `synchronous=FULL` connection is a real commit, so
+ *                   it fdatasyncs the shared `-wal` file and every row
+ *                   the NORMAL connection appended to it before that
+ *                   moment becomes durable with it. Never read by
+ *                   consensus, in no hash.
+ *   cmt_light       reserved for the light-client store (R3-L);
+ *                   created empty here so the schema version names it.
+ *
+ * DROPPED: `tm_wal` and `tm_state` (S13's — never reached a live
+ * chain: no live path ever wrote them, and D-17 rev 5 supersedes the
+ * `tm_state` sentence of D-15), and v2_blocks' `header`, `qc`,
+ * `commit_cert` — those three carried the OLD consensus's header,
+ * seen-certificate and canonical certificate; under Comet the header
+ * lives in BlockMeta (`H:<h>`), the seen commit in `SC:<h>` and the
+ * canonical commit in `C:<h>` (D-17 rev 5). Dropping is safe because
+ * nothing written by this build under those columns is consensus
+ * state anyone else agrees on: the chain is devnet, a consensus change
+ * deploys as stop-all + wipe, and the S13 tables were empty by
+ * construction. DROP COLUMN is SQLite ≥ 3.35; the tree links 3.40.1
+ * (`SQLite3_LIBRARY` in the nodus build cache), measured on it.
+ *
+ * REACHABILITY (W1): the LIVE path still runs the S12 migration
+ * (nodus_witness_v2_join.c, nodus_witness_v2_gen.c) and the schema
+ * gates accept S10-S12 only; the S13 and S14 rungs are reachable ONLY
+ * from the unit tests (`test_v2_schema.c`, `test_cmt_host.c`) until
+ * R3-C1 flips the live path together with the apply/produce rewrite.
+ * Version 15+ fails closed. */
+#define NODUS_V2_SCHEMA_VERSION_S14  14u
+
+typedef enum {
+    V2S14MIG_FAIL_NONE = 0,
+    V2S14MIG_FAIL_AFTER_BEGIN,      /* after BEGIN, before any DDL        */
+    V2S14MIG_FAIL_AFTER_REVALIDATE, /* in-txn version re-read passed      */
+    V2S14MIG_FAIL_AFTER_TABLES,     /* five tables created, drops done    */
+    V2S14MIG_FAIL_AFTER_VERIFY,     /* schema-shape verification passed   */
+    V2S14MIG_FAIL_BEFORE_COMMIT     /* user_version written, pre-COMMIT   */
+} nodus_v2s14_mig_fail_t;
+
+/** Atomic R3-W1 migration. Versions below 13 run the S9…S13 chain
+ *  first, then 13 → 14 atomically with the in-transaction revalidation.
+ *  @return 0 migrated or already at 14 (idempotent); -1 failure (full
+ *  rollback of the running stage) — including an UNKNOWN user_version
+ *  (15+): fail closed. */
+int nodus_witness_db_migrate_v2s14(nodus_witness_t *w);
+
+/** Test variant: deterministic abort inside the 13 → 14 transaction. */
+int nodus_witness_db_migrate_v2s14_ex(nodus_witness_t *w,
+                                      nodus_v2s14_mig_fail_t fail_at);
+
 #ifdef __cplusplus
 }
 #endif
