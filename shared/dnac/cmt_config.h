@@ -33,11 +33,11 @@
  *
  * ── THE CHAIN OVERRIDES TWO OF THESE AT R3 ─────────────────────────────
  * `create_empty_blocks_interval` becomes 60 000 ms and `timeout_commit`
- * becomes the chain-config block interval, per D-4
- * (atlas-dec-d5ddcba654eb48d861c03a0ecd170718: "blocks follow the block
- * interval when there is demand and a 60 s idle interval when there is
- * none"). That wiring is R3's; the defaults below are the reference's,
- * copied from the pinned file and not from anybody's memory.
+ * 5 000 ms, both compile-time NODE settings per D-4 rev 3
+ * (atlas-dec-d5ddcba654eb48d861c03a0ecd170718, APPROVED 2026-09-11; the
+ * CHAIN_CONFIG block-interval parameter has NO effect on this lane; a
+ * 60 s idle interval when there is no demand). That wiring is R3's; the
+ * defaults below are the reference's, copied from the pinned file.
  *
  * ── DETERMINISM ────────────────────────────────────────────────────────
  * Every function here is a pure function of its arguments. No clock is

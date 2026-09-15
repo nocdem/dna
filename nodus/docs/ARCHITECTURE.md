@@ -1549,6 +1549,32 @@ connection (table `cmt_wal_sync`, S14), because SQLite has no fsync-on-demand an
 transaction syncs nothing; `PRAGMA wal_checkpoint` was rejected for returning BUSY, which
 would make durability timing-dependent.
 
+### cometbft @709fd12b literal port — W1.7 audit round + fix package, W1.8 store citations (2026-09-15)
+
+Six read-only auditors, one per module plus a panic-rule lens over every FAULT/REJECT site,
+re-derived every deviation-register row from the C and the pinned Go at `7f21263c`; every
+SAFETY/LIVENESS claim was re-opened by the ORCHESTRATOR in both sources. No fork-class
+divergence was found. What the fix package changed, by module (Atlas `atlas-dec-b02c8de1…`):
+
+| Module | Change | Reference line |
+|---|---|---|
+| `cmt_bits.h` | capacity `CMT_BITS_MAX_BITS` 1601 → **10 000** = `MaxVotesCount`; the part-set bound stays 1601 as `CMT_PART_SET_MAX_PARTS` | `types/vote_set.go:18`, `reactor.go:1663/:1806/:1614` |
+| `cmt_msgs.{h,c}` | the nine `*_validate_basic` bodies and `cmt_msg_validate_basic` live here now (moved verbatim from the reactor) so the core can run the gate without including `cmt_conr.h` | `msgs.go:232-234` |
+| `cmt_cs.{h,c}` | replay runs ValidateBasic on every WAL MsgInfo, failure = corruption → FAULT; tocks are a **10-deep FIFO ring** (`CMT_CS_TOCK_QUEUE_SIZE`) served one per step, eleventh = FAULT; the LastCommit branch fills the conflict sink so previous-height equivocation reaches the evidence pool; the four `NewPartSetFromHeader` sites log once, leave both names NULL and complete the step when the port's bound refuses; `cmt_cs_init` refuses a host table with any of 26 rows NULL; a REJECT from the node's own validator set is FAULT; a block of exactly `payload_cap` bytes is accepted (one-byte EOF probe) | `replay.go:147 → wal.go:410`, `ticker.go:11/:48/:137`, `state.go:970`, `:2144 → :2072-2094`, `:1553/:1647/:2299/:1945`, `:1999-2003` |
+| `cmt_state.c` | `MedianTime`'s power sum is the wrapping add (Go wraps by specification; C was undefined) | `state/state.go:277-280` |
+| `cmt_ps.c`, `cmt_conr.{h,c}` | `SetHasProposal` writes nothing on refusal; `cmt_conr_start` after `stop` is `ErrAlreadyStopped` (a `stopped` latch) | `reactor.go:1096-1119`, `libs/service/service.go:132-137` |
+| `nodus_witness_cmt_store.{h,c}` | 346 line citations re-anchored site by site against the pinned `store/store.go` (765) and `state/store.go` (827); comment-only, stripped translation units byte-identical | — |
+
+Tests: `test_cmt_cs` 42 scenarios / 1211 checks (three port-only scenarios: part-set bound
+continuation, LastCommit equivocation report, block of exactly payload_cap),
+`test_cmt_cs_unit` 174 (host rows mandatory, own-set REJECT → FAULT, tock queue, replay
+gate), `test_cmt_conr` 18/18 (535; the 10 001-bit ProposalPOL row is now drivable),
+`test_cmt_bits` 39 groups (10 000-bit wire round trip, 10 001 refused by the decoder),
+`test_cmt_state` 111 (the wrapping sum — meaningful only under UBSan). Two RED proofs were
+run against the old files (`cmt_ps.c` in a plain build, `cmt_state.c` under UBSan); the
+`cmt_cs.c` items rest on the diff reading, the green run and the verifier. Still DORMANT:
+nothing in the running node calls any of it until W3.
+
 ### BFT Consensus Flow
 
 ```

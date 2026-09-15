@@ -47,6 +47,26 @@
  *     (replay.go:100-137): a record for the height being replayed must
  *     NOT exist, one for the height below MUST, and at the initial height
  *     the marker looked for is 0;
+ *   · (W1.7) a WAL MsgInfo record that would not survive ValidateBasic
+ *     STOPS the replay with CMT_FAULT instead of being handled — in the
+ *     reference the gate is `MsgFromProto`'s last line (msgs.go:232-234,
+ *     reached through wal.go:410 from replay.go:147) and a failure there
+ *     is a DataCorruptionError; D-15 rev 6 makes corruption a stop
+ *     (R3-AUD-5);
+ *   · (W1.7) UP TO TEN undelivered tocks are normal, not a fault. The
+ *     reference's `tockChan` is `tickTockBufferSize` = 10 deep
+ *     (ticker.go:11, :48) and each expiry is sent from its own goroutine
+ *     (:137); they are served oldest-first and a stale one is DROPPED by
+ *     :970, while an eleventh is CMT_FAULT because Go's eleventh send
+ *     would park a goroutine and a single thread cannot (R3-AUD-8);
+ *   · (W1.7) `cmt_cs_init` refuses a host table with ANY of its 26 rows
+ *     NULL, so a missing callback is a construction-time CMT_FAULT and
+ *     not a segfault mid-round — the reference's one defaulted row,
+ *     `wal`, defaults to the NO-OP nilWAL and never to nil (state.go:174,
+ *     wal.go:426-434; R3-AUD-7);
+ *   · (W1.7) a refusal out of the node's OWN validator set at :1073-1074
+ *     is CMT_FAULT and not CMT_REJECT — every one of them is a Go panic
+ *     and the set is node-local state (R3-AUD-16);
  *   · `CompareHRS` (:2600-2617) orders by height, then round, then step;
  *   · each of the SEVEN `enter*` entry guards drops what the reference
  *     drops and lets through what the reference lets through, and each is
@@ -313,10 +333,19 @@ static int h_wal_search_end_height(void *ctx, int64_t height, bool *found)
     return CMT_OK;
 }
 
+/** One record the replay loop is handed before EOF, or NULL for none. */
+static const cmt_timed_wal_message_t *g_replay_rec;
+static int                            g_replay_rec_left;
+
 static int h_wal_read_next(void *ctx, cmt_timed_wal_message_t *out, bool *eof)
 {
     (void)ctx;
-    (void)out;
+    if (g_replay_rec != NULL && g_replay_rec_left > 0) {
+        *out = *g_replay_rec;
+        g_replay_rec_left--;
+        *eof = false;
+        return CMT_OK;
+    }
     *eof = g_replay_eof;
     return CMT_OK;
 }
@@ -574,6 +603,8 @@ static int fresh_cs(void)
     g_served_len  = 0;
     g_end_height_present = 0;   /* END_HEIGHT for 0 exists, for 1 does not */
     g_replay_eof  = true;
+    g_replay_rec      = NULL;
+    g_replay_rec_left = 0;
 
     if (cmt_config_default(&g_config) != CMT_OK) {
         return 1;
@@ -582,6 +613,119 @@ static int fresh_cs(void)
                     g_stor_cs, g_stor_scratch, NULL, 0) != CMT_OK) {
         return 1;
     }
+    return 0;
+}
+
+/* ══ 0. every host row is mandatory — R3-AUD-7 ═══════════════════════
+ *
+ * WHAT IT PROVES: that `cmt_cs_init` refuses a host table with a NULL
+ * row, so a missing callback is a construction-time CMT_FAULT and not a
+ * segfault in the middle of a round. The reference has nothing to check —
+ * its collaborators are interfaces the constructor is handed
+ * (state.go:154-172) and its one defaulted field, `wal`, defaults to the
+ * NO-OP `nilWAL{}` (:174, wal.go:426-434), never to nil.
+ *
+ * RED at 7f21263c: `cmt_cs_init` validated only `host != NULL`
+ * (cmt_cs.c:4130-4133), so every construction below returned CMT_OK.
+ */
+static int t_host_rows_mandatory(void)
+{
+    cmt_cs_host_t host;
+
+/* Build a complete table, clear ONE row, and assert the refusal. */
+#define NULL_ROW(field) do {                                              \
+        build_host(&host);                                                \
+        CHECK(host.field != NULL, "the fixture fills " #field);           \
+        host.field = NULL;                                                \
+        CHECK(cmt_cs_init(g_cs, &g_config, g_genesis, &host, NULL,        \
+                          g_slots, g_stor_cs, g_stor_scratch, NULL, 0)    \
+                  == CMT_FAULT,                                           \
+              "a NULL " #field " row is refused at CONSTRUCTION, not at " \
+              "the call site that would have dereferenced it");           \
+    } while (0)
+
+    /* Every row is a function pointer and there is nothing else in the
+     * table, so this pins the COUNT: a 27th row added without a NULL
+     * check fails here rather than on someone's node. */
+    CHECK(sizeof(cmt_cs_host_t) == 26u * sizeof(void (*)(void)),
+          "cmt_cs_host_t is 26 function pointers and nothing else"); OK();
+
+    if (cmt_config_default(&g_config) != CMT_OK) {
+        return 1;
+    }
+    NULL_ROW(create_proposal_block);
+    NULL_ROW(process_proposal);
+    NULL_ROW(validate_block);
+    NULL_ROW(apply_verified_block);
+    NULL_ROW(extend_vote);
+    NULL_ROW(verify_vote_extension);
+    NULL_ROW(bs_height);
+    NULL_ROW(bs_load_block_commit);
+    NULL_ROW(bs_load_block_extended_commit);
+    NULL_ROW(bs_load_block_meta);
+    NULL_ROW(bs_load_seen_commit);
+    NULL_ROW(bs_save_block);
+    NULL_ROW(bs_save_block_with_extended_commit);
+    NULL_ROW(report_conflicting_votes);
+    NULL_ROW(sign_vote);
+    NULL_ROW(sign_proposal);
+    NULL_ROW(get_pub_key);
+    NULL_ROW(wal_write);
+    NULL_ROW(wal_write_sync);
+    NULL_ROW(wal_flush_and_sync);
+    NULL_ROW(wal_search_end_height);
+    NULL_ROW(wal_read_next);
+    NULL_ROW(decode_block);
+    NULL_ROW(now);
+    NULL_ROW(timer_arm);
+    NULL_ROW(timer_disarm);
+    OK();
+#undef NULL_ROW
+
+    /* And the complete table still constructs, so the 26 refusals above
+     * are not passing because construction fails for some other reason. */
+    CHECK(fresh_cs() == 0, "a complete host table constructs"); OK();
+    cmt_cs_free(g_cs);
+    return 0;
+}
+
+/* ══ 0b. a REJECT from our OWN validator set is a FAULT — R3-AUD-16 ═══
+ *
+ * WHAT IT PROVES: that `enterNewRound`'s
+ * `cs.Validators.CopyIncrementProposerPriority` (state.go:1073-1074)
+ * answers CMT_FAULT and not CMT_REJECT when it refuses. Every refusal
+ * inside it is a Go PANIC on an empty or impossible set
+ * (types/validator_set.go:132-134 among eight others), and the set is the
+ * NODE'S OWN state, never a peer's bytes — so the class is the
+ * node-local one, the same correction :1751-1758 already makes for
+ * GetProposer one line below.
+ *
+ * RED at 7f21263c: the R1 layer's CMT_REJECT was passed straight through
+ * (cmt_cs.c:1739-1742), so this returned CMT_REJECT.
+ */
+static int t_own_validator_set_reject_is_fault(void)
+{
+    size_t saved;
+
+    CHECK(fresh_cs() == 0, "construct"); OK();
+    CHECK(g_cs->rs.validators != NULL && g_cs->rs.validators->validators_len > 0u,
+          "the fixture starts with a non-empty set"); OK();
+
+    /* An EMPTY set is validator_set.go:132-134's panic. Nothing else about
+     * the state machine is touched. */
+    saved = g_cs->rs.validators->validators_len;
+    g_cs->rs.validators->validators_len = 0u;
+    CHECK(cmt_cs_enter_new_round(g_cs, g_cs->rs.height, 1) == CMT_FAULT,
+          "a refusal from the node's OWN validator set is CMT_FAULT, not a "
+          "message-level CMT_REJECT");
+    OK();
+    g_cs->rs.validators->validators_len = saved;
+
+    /* And with the set intact the same call succeeds, so the FAULT above
+     * is the set and not the arguments. */
+    CHECK(cmt_cs_enter_new_round(g_cs, g_cs->rs.height, 1) == CMT_OK,
+          "the same round change works on a healthy set"); OK();
+    cmt_cs_free(g_cs);
     return 0;
 }
 
@@ -991,8 +1135,8 @@ static int t_poll_rotation(void)
                                   CMT_ROUND_STEP_NEW_HEIGHT) == CMT_OK,
           "scheduleTimeout (:564) arms the host timer"); OK();
     CHECK(g_arm_calls == 1, "the host timer was armed exactly once"); OK();
-    CHECK(cmt_cs_on_timer_expired(g_cs) == CMT_OK && g_cs->tock_pending,
-          "the tock is pending (ticker.go:130-137)"); OK();
+    CHECK(cmt_cs_on_timer_expired(g_cs) == CMT_OK && g_cs->tock_q_len == 1u,
+          "the tock is queued (ticker.go:130-137)"); OK();
 
     for (i = 0; i < 4u; i++) {
         memset(v, 0, sizeof(*v));
@@ -1037,8 +1181,8 @@ static int t_poll_rotation(void)
           "the own vote went through WriteSync (:839), exactly once"); OK();
     CHECK(g_cs->rs.step == CMT_ROUND_STEP_PROPOSE,
           "the tock drove enterNewRound -> enterPropose (:983, :1113)"); OK();
-    CHECK(g_cs->internal_q_len == 0u && !g_cs->tock_pending,
-          "the internal queue and the tock are both drained"); OK();
+    CHECK(g_cs->internal_q_len == 0u && g_cs->tock_q_len == 0u,
+          "the internal queue and the tock queue are both drained"); OK();
     CHECK(g_cs->peer_q_len == 2u,
           "four peer votes were pushed and two were served"); OK();
     cmt_cs_free(g_cs);
@@ -1108,6 +1252,104 @@ static int t_poll_rotation(void)
     cmt_cs_free(g_cs);
 
     free(v);
+    return 0;
+}
+
+/* ══ 5c. the tock queue — ticker.go:11, :48, :137; R3-AUD-8 ══════════
+ *
+ * WHAT IT PROVES: that a SECOND undelivered tock is normal and is served
+ * after the first, not a node-local fault. The reference's `tockChan` is
+ * `tickTockBufferSize` = 10 deep (ticker.go:11, :48) and every expiry is
+ * sent from a goroutine of its own (:137), so up to ten can be in flight;
+ * the stale ones are dropped by handleTimeout's height/round/step test
+ * (state.go:970), not by refusing to accept them.
+ *
+ * RED at 7f21263c: `cmt_cs_on_timer_expired` held ONE tock and answered
+ * CMT_FAULT for the second (cmt_cs.c:1361-1366), so the second
+ * `cmt_cs_on_timer_expired` below returned CMT_FAULT and the node was
+ * DEAD. It needed no byzantine input: a timeout fires, the rotating poll
+ * serves some other source first, that source's handler schedules a
+ * timeout of ≤ 0 (`handleTxsAvailable` :1033, `scheduleRound0` :558), the
+ * host finds it due and calls in again. Here the two timeouts are armed
+ * directly, which is the same sequence with the handlers taken out.
+ */
+static int t_tock_queue(void)
+{
+    bool   worked;
+    size_t before;
+    int    i;
+
+    CHECK(fresh_cs() == 0, "construct"); OK();
+
+    /* Tock A: the NewHeight timeout scheduleRound0 arms (:559). */
+    CHECK(cmt_cs_schedule_timeout(g_cs, 0, 1, 0,
+                                  CMT_ROUND_STEP_NEW_HEIGHT) == CMT_OK,
+          "scheduleTimeout arms the host timer"); OK();
+    CHECK(cmt_cs_on_timer_expired(g_cs) == CMT_OK && g_cs->tock_q_len == 1u,
+          "the first expiry is queued (ticker.go:137)"); OK();
+
+    /* Tock B, BEFORE any step consumed A. A later step for the same
+     * height and round is not ignored by the ticker (ticker.go:113-116
+     * only drops `newti.Step <= ti.Step`), so it arms and fires. */
+    CHECK(cmt_cs_schedule_timeout(g_cs, 0, 1, 0,
+                                  CMT_ROUND_STEP_NEW_ROUND) == CMT_OK,
+          "a second timeout is armed while the first is undelivered"); OK();
+    CHECK(cmt_cs_on_timer_expired(g_cs) == CMT_OK,
+          "a SECOND undelivered tock is NOT a fault — tockChan is 10 deep "
+          "(ticker.go:11, :48)"); OK();
+    CHECK(g_cs->tock_q_len == 2u, "both are queued"); OK();
+    CHECK(cmt_cs_has_work(g_cs),
+          "a non-empty tock queue is work (:858)"); OK();
+
+    /* FIFO: A first. Serving it runs handleTimeout for RoundStepNewHeight,
+     * which is enterNewRound -> enterPropose (:983, :1113). */
+    before = g_served_len;
+    worked = false;
+    CHECK(cmt_cs_step(g_cs, &worked) == CMT_OK && worked, "step"); OK();
+    CHECK(g_served_len == before + 1u && g_served[before] == SRC_TOCK,
+          "the step served a tock (:858-865)"); OK();
+    CHECK(g_cs->tock_q_len == 1u, "one tock is left"); OK();
+    CHECK(g_cs->rs.step == CMT_ROUND_STEP_PROPOSE,
+          "and it was the OLDER one: the NewHeight tock drove "
+          "enterNewRound -> enterPropose (:983, :1113)"); OK();
+
+    /* Then B, which is now STALE — same height and round, a step BELOW
+     * the one we are on — and :970 drops it. Dropped means CONSUMED and
+     * ignored, not refused: the step still reports work and the queue
+     * empties. */
+    before = g_served_len;
+    worked = false;
+    CHECK(cmt_cs_step(g_cs, &worked) == CMT_OK && worked, "step"); OK();
+    CHECK(g_served_len == before + 1u && g_served[before] == SRC_TOCK,
+          "the second tock was served too"); OK();
+    CHECK(g_cs->tock_q_len == 0u, "the queue is empty"); OK();
+    CHECK(g_cs->rs.step == CMT_ROUND_STEP_PROPOSE,
+          "the stale tock changed nothing — state.go:970 ignores a tock "
+          "whose step is behind the snapshot's"); OK();
+    CHECK(!cmt_cs_has_work(g_cs) || g_cs->peer_q_len != 0u,
+          "nothing else is pending because of it"); OK();
+    cmt_cs_free(g_cs);
+
+    /* The ELEVENTH is the internal-queue rule: Go's eleventh send parks a
+     * goroutine, and a single thread has no such wait. */
+    CHECK(fresh_cs() == 0, "construct"); OK();
+    for (i = 0; i < (int)CMT_CS_TOCK_QUEUE_SIZE; i++) {
+        CHECK(cmt_cs_schedule_timeout(g_cs, 0, 1, (int32_t)i,
+                                      CMT_ROUND_STEP_PROPOSE) == CMT_OK,
+              "arm");
+        CHECK(cmt_cs_on_timer_expired(g_cs) == CMT_OK,
+              "ten tocks fit (tickTockBufferSize)");
+    }
+    OK();
+    CHECK(g_cs->tock_q_len == (size_t)CMT_CS_TOCK_QUEUE_SIZE,
+          "ten are queued"); OK();
+    CHECK(cmt_cs_schedule_timeout(g_cs, 0, 1,
+                                  (int32_t)CMT_CS_TOCK_QUEUE_SIZE,
+                                  CMT_ROUND_STEP_PROPOSE) == CMT_OK, "arm");
+    CHECK(cmt_cs_on_timer_expired(g_cs) == CMT_FAULT,
+          "the eleventh is CMT_FAULT — the host is firing timers faster "
+          "than the loop is stepped"); OK();
+    cmt_cs_free(g_cs);
     return 0;
 }
 
@@ -1378,6 +1620,107 @@ static int t_replay_end_height_rule(void)
     return 0;
 }
 
+/* ══ 11. the replay ValidateBasic gate — R3-AUD-5 ═════════════════════
+ *
+ * WHAT IT PROVES: that a WAL MsgInfo record which would not survive
+ * `ValidateBasic` STOPS the replay instead of being handled.
+ *
+ * In the reference the record cannot reach the state machine at all:
+ * replay.go:147 `dec.Decode()` → wal.go:410 `WALFromProto` → msgs.go:316
+ * `MsgFromProto`, whose last line is `pb.ValidateBasic()`
+ * (msgs.go:232-234); a failure becomes a DataCorruptionError
+ * (wal.go:411-413) and the node goes to the repair path
+ * (state.go:338-386), which this port does not have. So the class is
+ * CMT_FAULT — D-15 rev 6, corruption stops the node.
+ *
+ * RED at 7f21263c: `cmt_cs_read_replay_message` called
+ * `cmt_cs_handle_msg` straight (cmt_cs.c:4006-4007), and handleMsg
+ * swallows a message error into a log line (:954-963), so this replay
+ * returned CMT_OK and the node carried on from a corrupt WAL.
+ */
+static int t_replay_validate_basic_gate(void)
+{
+    cmt_timed_wal_message_t *rec;
+
+    CHECK(fresh_cs() == 0, "construct"); OK();
+    /* Heap: a TimedWALMessage's MsgInfo branch carries a whole message. */
+    rec = (cmt_timed_wal_message_t *)calloc(1u, sizeof(*rec));
+    CHECK(rec != NULL, "heap record"); OK();
+
+    rec->msg.kind                   = CMT_PB_WAL_MSG_INFO;
+    rec->msg.u.msg_info.peer_id_len = 0u;         /* our own (:839) */
+    rec->msg.u.msg_info.msg.kind    = CMT_PB_CONS_MSG_VOTE;
+    rec->msg.u.msg_info.msg.u.vote.has_vote    = true;
+    rec->msg.u.msg_info.msg.u.vote.vote.type   = CMT_PB_MSG_TYPE_PREVOTE;
+    /* The one thing wrong with it: types/vote.go:283-285 refuses a
+     * Height <= 0. Everything else about the record is well formed, so a
+     * green here cannot come from the record being unreadable. */
+    rec->msg.u.msg_info.msg.u.vote.vote.height = -1;
+
+    CHECK(cmt_vote_msg_validate_basic(&rec->msg.u.msg_info.msg.u.vote)
+              == CMT_REJECT,
+          "the record's vote does fail ValidateBasic (reactor.go:1710-1712)");
+    OK();
+
+    g_end_height_present = 0;
+    g_replay_eof         = true;
+    g_replay_rec         = rec;
+    g_replay_rec_left    = 1;
+    CHECK(cmt_cs_catchup_replay(g_cs, 1) == CMT_FAULT,
+          "a WAL record that fails ValidateBasic STOPS the replay — it is "
+          "corruption (D-15 rev 6), not a peer's message"); OK();
+    CHECK(g_replay_rec_left == 0, "the record really was delivered"); OK();
+    CHECK(!g_cs->replay_mode, "replay mode is cleared on that path too");
+    OK();
+
+    /* POSITIVE CONTROL: a record that PASSES the gate replays, so the
+     * FAULT above is the gate and not the record's mere existence. A
+     * NewRoundStep is used rather than a well-formed vote, because
+     * handleMsg's default arm (:949-951) simply logs and returns, so this
+     * control turns on the GATE alone and on nothing the vote sets do.
+     * A real WAL never holds one — state.go:831 and :839 write proposals,
+     * block parts and votes — but the record TYPE is structurally legal
+     * (cmt_wal_from_proto carries all nine kinds), which is all the
+     * control needs. It logs "unknown msg type" on the way through; that
+     * line is expected output, not a failure. */
+    cmt_cs_free(g_cs);           /* Delta W17-2: LeakSanitizer found the
+                                  * first draft re-constructing over a
+                                  * live cs (28 allocations, 3.6 MB). */
+    CHECK(fresh_cs() == 0, "construct"); OK();
+    memset(&rec->msg.u.msg_info.msg, 0, sizeof(rec->msg.u.msg_info.msg));
+    rec->msg.u.msg_info.msg.kind = CMT_PB_CONS_MSG_NEW_ROUND_STEP;
+    rec->msg.u.msg_info.msg.u.new_round_step.height            = 1;
+    rec->msg.u.msg_info.msg.u.new_round_step.round             = 0;
+    rec->msg.u.msg_info.msg.u.new_round_step.step =
+            (uint8_t)CMT_ROUND_STEP_NEW_HEIGHT;
+    rec->msg.u.msg_info.msg.u.new_round_step.last_commit_round = -1;
+    CHECK(cmt_msg_validate_basic(&rec->msg.u.msg_info.msg) == CMT_OK,
+          "and this one passes ValidateBasic"); OK();
+    g_end_height_present = 0;
+    g_replay_eof         = true;
+    g_replay_rec         = rec;
+    g_replay_rec_left    = 1;
+    CHECK(cmt_cs_catchup_replay(g_cs, 1) == CMT_OK,
+          "a record that passes the gate replays"); OK();
+    CHECK(g_replay_rec_left == 0, "it was delivered"); OK();
+
+    /* And the SAME message with a negative Height is refused, so the pair
+     * differs in exactly one field. */
+    cmt_cs_free(g_cs);                                   /* Delta W17-2 */
+    CHECK(fresh_cs() == 0, "construct"); OK();
+    rec->msg.u.msg_info.msg.u.new_round_step.height = -1;  /* :1537 */
+    g_end_height_present = 0;
+    g_replay_eof         = true;
+    g_replay_rec         = rec;
+    g_replay_rec_left    = 1;
+    CHECK(cmt_cs_catchup_replay(g_cs, 1) == CMT_FAULT,
+          "one field wrong and the replay stops"); OK();
+
+    free(rec);
+    cmt_cs_free(g_cs);
+    return 0;
+}
+
 /* ══ main ═════════════════════════════════════════════════════════════ */
 
 int main(void)
@@ -1419,17 +1762,21 @@ int main(void)
         return 1;
     }
 
-    if (t_compare_hrs() != 0)            { rc = 1; }
+    if (t_host_rows_mandatory() != 0)    { rc = 1; }
+    if (rc == 0 && t_own_validator_set_reject_is_fault() != 0) { rc = 1; }
+    if (rc == 0 && t_compare_hrs() != 0) { rc = 1; }
     if (rc == 0 && t_config_durations() != 0)        { rc = 1; }
     if (rc == 0 && t_round_step_walk() != 0)         { rc = 1; }
     if (rc == 0 && t_entry_guards() != 0)            { rc = 1; }
     if (rc == 0 && t_timeout_acceptance() != 0)      { rc = 1; }
     if (rc == 0 && t_internal_queue() != 0)          { rc = 1; }
     if (rc == 0 && t_poll_rotation() != 0)           { rc = 1; }
+    if (rc == 0 && t_tock_queue() != 0)              { rc = 1; }
     if (rc == 0 && t_part_set_slots() != 0)          { rc = 1; }
     if (rc == 0 && t_proposer_wiring() != 0)         { rc = 1; }
     if (rc == 0 && t_vote_time() != 0)               { rc = 1; }
     if (rc == 0 && t_replay_end_height_rule() != 0)  { rc = 1; }
+    if (rc == 0 && t_replay_validate_basic_gate() != 0) { rc = 1; }
 
     free_slots();
     free(g_sync_rounds);

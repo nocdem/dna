@@ -308,9 +308,12 @@ static int g_tc_checks = 0;
  *  ConsensusParams.Block.MaxBytes — 21 MB at the reference defaults
  *  (params.go:99). THIS FIXTURE DELIBERATELY UNDER-PROVIDES: 512 KiB,
  *  because every block it makes is at most two 64 KiB parts. A block
- *  larger than this is refused at cmt_cs.c's `total_read >= buf_cap`
- *  branch rather than at the MaxBytes check, which is a DIFFERENT
- *  refusal; no scenario here reaches it. */
+ *  larger than this is refused inside the part-assembly loop of
+ *  `cmt_cs_add_proposal_block_part` rather than at the MaxBytes check,
+ *  which is a DIFFERENT refusal. Only ONE scenario reaches it, and it
+ *  reaches it by SHRINKING `slots->payload_cap` to the block's own size
+ *  (test_cmt_cs.c, `block_of_exactly_payload_cap`, register R3-AUD-9);
+ *  every other scenario stays far below this value. */
 #define TC_PAYLOAD_CAP    (8u * (unsigned)CMT_BLOCK_PART_SIZE_BYTES)
 
 /** Blocks one scenario may create — every block the state machine

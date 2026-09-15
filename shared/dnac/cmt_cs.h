@@ -158,14 +158,24 @@
  * Two nodes with different timeouts still decide the same blocks: the
  * durations here are a LOCAL scheduling policy, not consensus state.
  *
- * ── THE ValidateBasic GATE IS IN THE REACTOR, NOT HERE ─────────────────
+ * ── THE ValidateBasic GATE: THE REACTOR'S, AND THE REPLAY'S ────────────
  * In the reference a peer's message becomes a `msgInfo` only after
  * `MsgFromProto` has run `pb.ValidateBasic()` (msgs.go:232-234), which is
  * where a vote with a non-positive height (types/vote.go:283-285), an
  * invalid type or an out-of-range index is refused. `cmt_msg_from_proto`
- * STOPS BEFORE THAT CALL (cmt_msgs.h:28-35); the gate is
- * `cmt_msg_validate_basic`, run by R3-A's `cmt_conr_receive` right after
- * the decode, before anything reaches this module (register R3-A-6).
+ * STOPS BEFORE THAT CALL (cmt_msgs.h); the gate is
+ * `cmt_msg_validate_basic` (cmt_msgs.h — it lives BESIDE the conversion,
+ * not in the reactor, precisely so this module can reach it without
+ * including cmt_conr.h). TWO callers run it, and both must:
+ *   · R3-A's `cmt_conr_receive`, right after the decode and before
+ *     anything reaches this module (register R3-A-6);
+ *   · `cmt_cs_read_replay_message` BELOW, on every WAL MsgInfo record —
+ *     the reference reaches the same line through wal.go:410 from
+ *     replay.go:147, and a failure there is a DataCorruptionError. Here
+ *     it is CMT_FAULT: a WAL record is this node's own file, so a record
+ *     that fails the gate is CORRUPTION, and D-15 rev 6 stops on
+ *     corruption. The reference's repair path (state.go:338-386, with
+ *     `repairWalFile` at :374) is not ported. Register R3-AUD-5.
  * Through R2 nothing ran it and every message field was a raw peer
  * number; two guards added then are KEPT (a test or a future caller may
  * feed this module directly): the `vote.Height+1` of :2137 is formed as
@@ -317,6 +327,16 @@ extern "C" {
  *  The capacity of BOTH queues (:168, :169). */
 #define CMT_CS_MSG_QUEUE_SIZE 1000
 
+/** cometbft@709fd12b consensus/ticker.go:11 — `tickTockBufferSize = 10`,
+ *  the depth of the `tockChan` the ticker delivers expiries on (:48).
+ *  The reference's timer goroutine sends each expiry from a goroutine of
+ *  its own (:137) so the routine never blocks, which means up to ten
+ *  undelivered tocks can be in flight; the stale ones are dropped by
+ *  handleTimeout's height/round/step test (state.go:970). An ELEVENTH is
+ *  CMT_FAULT here — the internal-queue rule, since the reference's
+ *  eleventh send would block a goroutine rather than be lost. */
+#define CMT_CS_TOCK_QUEUE_SIZE 10
+
 /** Go's `time.Millisecond` in nanoseconds — the `timeIota` of :2420 and
  *  the "+1ms" of :1032. cmt_config.h defines the same value as
  *  CMT_MILLISECOND; this name is the reference's, at the two sites that
@@ -353,12 +373,26 @@ void cmt_cs_fail_point(void);
  * Everything `consensus/state.go` reaches outside its own package, as one
  * table the caller supplies. Every row carries the Go call site.
  *
- * ⚠ EVERY POINTER IS REQUIRED unless its comment says otherwise; a NULL
- * row reached at run time is CMT_FAULT, not a silent no-op. A node that is
- * not a validator supplies the three privValidator rows anyway and calls
- * `cmt_cs_set_priv_validator(cs, false)` — that is the reference's
- * `cs.privValidator == nil` (:1170, :1280, :2445), a state of the STATE
- * machine rather than of the table.
+ * ⚠ EVERY POINTER IS REQUIRED — all 26 — and `cmt_cs_init` REFUSES a
+ * table with any of them NULL (CMT_FAULT), rather than letting the site
+ * that calls it segfault mid-round; the sites themselves do not test.
+ * The 26: create_proposal_block, process_proposal, validate_block,
+ * apply_verified_block, extend_vote, verify_vote_extension, bs_height,
+ * bs_load_block_commit, bs_load_block_extended_commit,
+ * bs_load_block_meta, bs_load_seen_commit, bs_save_block,
+ * bs_save_block_with_extended_commit, report_conflicting_votes,
+ * sign_vote, sign_proposal, get_pub_key, wal_write, wal_write_sync,
+ * wal_flush_and_sync, wal_search_end_height, wal_read_next, decode_block,
+ * now, timer_arm, timer_disarm. The reference's only DEFAULTED row is
+ * `wal`, and its default is `nilWAL{}` (state.go:174) — a no-op
+ * implementation (wal.go:426-434), NOT a nil pointer — so a host that
+ * wants the WAL to do nothing supplies rows that do nothing, exactly as
+ * the reference does. Deviation register R3-AUD-7.
+ *
+ * A node that is not a validator supplies the three privValidator rows
+ * anyway and calls `cmt_cs_set_priv_validator(cs, false)` — that is the
+ * reference's `cs.privValidator == nil` (:1170, :1280, :2445), a state of
+ * the STATE machine rather than of the table.
  *
  * ⚠ A callback MUST NOT re-enter `cs`. The reference's callees are in
  * other packages and cannot; a C host that called back into
@@ -741,10 +775,17 @@ struct cmt_cs_s {
     bool                txs_available;
     /** The reference's `<-cs.Quit()` (:867). */
     bool                quit;
-    /** The tock the ticker produced (ticker.go:137, state.go:858). One
-     *  deep: the reference's `tockChan` carries one timeout at a time. */
-    bool                tock_pending;
-    cmt_timeout_info_t  tock;
+    /** The tocks the ticker produced (ticker.go:137, state.go:858), as a
+     *  FIFO ring of CMT_CS_TOCK_QUEUE_SIZE — the reference's `tockChan`,
+     *  which is `tickTockBufferSize` = 10 deep (ticker.go:11, :48).
+     *  `cmt_cs_step` serves ONE per call through source 3, in the order
+     *  they arrived; `handleTimeout`'s :970 test drops the stale ones.
+     *  Through wave R3 W1 this was a single slot and a second undelivered
+     *  tock was CMT_FAULT, which a node could reach with no byzantine
+     *  input at all (deviation register R3-AUD-8). */
+    cmt_timeout_info_t  tock_q[CMT_CS_TOCK_QUEUE_SIZE];
+    size_t              tock_q_head;
+    size_t              tock_q_len;
 
     /** C only — the rotating start of `cmt_cs_step`'s poll (file header,
      *  "ONE THREAD, ONE ROTATING POLL"): the index in 0..3 of the source
@@ -990,13 +1031,20 @@ void cmt_cs_quit(cmt_cs_t *cs);
 
 /**
  * C only — the host's timer expired. Takes the pending timeout out of the
- * ticker (ticker.go:130-137) and leaves it for the next `cmt_cs_step`,
- * which is the reference's `tockChan <- ti`.
+ * ticker (ticker.go:130-137) and QUEUES it for a later `cmt_cs_step`,
+ * which is the reference's `go func(toi timeoutInfo) { t.tockChan <- toi }`
+ * (ticker.go:137) onto a channel `tickTockBufferSize` = 10 deep (:11, :48).
+ * Up to CMT_CS_TOCK_QUEUE_SIZE tocks may therefore be undelivered at once,
+ * and they are served in arrival order; a stale one is dropped by
+ * `handleTimeout`'s height/round/step test (state.go:970), not here.
  *
- * @return CMT_OK; CMT_FAULT when no timer was armed or a tock is already
- *         pending — both mean the HOST fired a timer this module did not
- *         ask for, which `stopTimer`'s drain (ticker.go:88-90) exists to
- *         prevent. A local defect, never a peer's doing.
+ * @return CMT_OK; CMT_FAULT when NO TIMER WAS ARMED — the HOST fired a
+ *         timer this module did not ask for, which `stopTimer`'s drain of
+ *         `timer.C` (ticker.go:88-90) exists to prevent — or when the
+ *         queue is FULL, which is the internal-queue rule: the reference's
+ *         eleventh send parks a goroutine until the receiver catches up,
+ *         and a single-threaded port has no such wait. Both are local
+ *         defects, never a peer's doing.
  */
 int cmt_cs_on_timer_expired(cmt_cs_t *cs);
 

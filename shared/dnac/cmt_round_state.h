@@ -85,9 +85,9 @@
  *   consensus/replay.go             565 lines
  *     5609c4d4174a536389cb2814bac09557a66e3299292141b54c635e31425284fe
  *     (read for :39-90, what a replay compares)
- * Governing records: umbrella rev 3 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
+ * Governing records: umbrella rev 5 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
  * clock POLICY (atlas-dec-4ac0423068085c100fdfa3e264ca16bc),
- * pin record rev 5 (atlas-dec-483ec17cbb352ef0ec2267ccd953339c).
+ * pin record rev 18 (atlas-dec-483ec17cbb352ef0ec2267ccd953339c).
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT

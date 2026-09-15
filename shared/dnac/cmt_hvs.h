@@ -74,11 +74,11 @@
  *     d6793961c6f113acad7fa153cf2d912224191350f547860812d623e9ca13964c
  *   libs/math/safemath.go                65 lines
  *     be592544331912400aecaee1ccdc8834afdf8508857d32d475e3f6bfaf3b33d2
- *     ⚠ NOT in the pin record's table; opened for ONE range
- *       (:25-32, SafeSubInt32), which :100 calls. Reported with its hash.
- * Governing records: umbrella rev 3 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
+ *     PINNED at pin record rev 3 (hash equal); opened for ONE range
+ *       (:25-32, SafeSubInt32), which :100 calls.
+ * Governing records: umbrella rev 5 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
  * INVARIANT (atlas-dec-7495d3372e004b24b4f6cc7bff5caf07),
- * pin record rev 5 (atlas-dec-483ec17cbb352ef0ec2267ccd953339c),
+ * pin record rev 18 (atlas-dec-483ec17cbb352ef0ec2267ccd953339c),
  * T2 reference pins (atlas-dec-84fab23d6bfec90b9572d70c8937450f — this
  * file is one of the four named there).
  *

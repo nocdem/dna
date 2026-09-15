@@ -16,23 +16,35 @@
  * and they call these.
  *
  * ── WHAT IS HERE AND WHAT IS NOT ───────────────────────────────────────
- * HERE: the nine message STRUCTS (fields only) and the four conversions
+ * HERE: the nine message STRUCTS (fields only), the two conversions
  * `cmt_msg_to_proto` (msgs.go:21-118) and `cmt_msg_from_proto`
- * (msgs.go:121-237).
+ * (msgs.go:121-237), and — since wave R3 W1.7 — the `pb.ValidateBasic()`
+ * gate of msgs.go:232-234 with its nine per-message bodies
+ * (reactor.go:1536, :1596, :1634, :1653, :1684, :1710, :1730, :1762,
+ * :1795). They were the reactor's through W1; they are here because the
+ * WAL REPLAY path (cmt_cs.c, replay.go:147 → wal.go:410 →
+ * msgs.go:232-234) must run the same gate and the consensus core must not
+ * include the reactor (atlas-dec-b02c8de1f52854b20dbfd64f6c987b34, item
+ * 4). Bodies and citations are unchanged by the move.
  *
- * NOT HERE — the `ValidateBasic()` methods of reactor.go:1536, :1596,
- * :1634, :1653, :1684, :1710, :1730, :1762, :1795 and
- * `NewRoundStepMessage.ValidateHeight` (:1560). They belong to the reactor
- * and are wave R3's.
+ * NOT HERE — `NewRoundStepMessage.ValidateHeight` (reactor.go:1560). It
+ * is not part of the msgs.go gate: `Receive` runs it on its own at :264,
+ * against the chain's initial height, and it stays in cmt_conr.{h,c}.
  *
  * ⚠ CONSEQUENCE, AND IT IS NOT A DETAIL: `MsgFromProto` ENDS in
- * `pb.ValidateBasic()` (msgs.go:232-234) and returns its error. This port
- * stops one step short of that line. `cmt_msg_from_proto` therefore
- * accepts messages the reference would refuse — a negative height, an
- * invalid Step, an empty ProposalPOL bit array, a malformed BlockID — and
- * every caller MUST run the R3 ValidateBasic before acting on one. The
- * same gap reaches `cmt_wal_from_proto`, whose MsgInfo branch
- * (msgs.go:316) goes through this function.
+ * `pb.ValidateBasic()` (msgs.go:232-234) and returns its error. This
+ * port's `cmt_msg_from_proto` stops one step short of that line and
+ * therefore accepts messages the reference would refuse — a negative
+ * height, an invalid Step, an empty ProposalPOL bit array, a malformed
+ * BlockID. EVERY CALLER MUST RUN `cmt_msg_validate_basic` BEFORE ACTING
+ * ON ONE. The same gap reaches `cmt_wal_from_proto`, whose MsgInfo branch
+ * (msgs.go:316) goes through this function. The two callers that exist
+ * today both meet the obligation: `cmt_conr_receive` at cmt_conr.c (:243)
+ * and `cmt_cs_read_replay_message` in cmt_cs.c (replay.go:82) — the
+ * replay one was added by W1.7, and a failure there is WAL CORRUPTION,
+ * so it is CMT_FAULT and not a refusal (D-15 rev 6:
+ * atlas-dec-c0bfc5344204b9282ceaaa5e06042350; the repair path of
+ * state.go:338-386, `repairWalFile` at :374, is not ported).
  *
  * ── THE STEP FIELD ─────────────────────────────────────────────────────
  * `NewRoundStepMessage.Step` is a `cstypes.RoundStepType`, which is a
@@ -307,6 +319,76 @@ int cmt_msg_to_proto(const cmt_msg_t *msg, cmt_pb_cons_message_t *out);
  * @return CMT_OK, CMT_REJECT, CMT_FAULT on NULL.
  */
 int cmt_msg_from_proto(const cmt_pb_cons_message_t *p, cmt_msg_t *out);
+
+/* ══ the ValidateBasic gate (msgs.go:232-234; reactor.go:1536-1810) ═══
+ * Moved here from cmt_conr.{h,c} by wave R3 W1.7, bodies unchanged — see
+ * the file header for why. */
+
+/**
+ * cometbft@709fd12b consensus/msgs.go:232-234 — the `pb.ValidateBasic()`
+ * every decoded message passes in `MsgFromProto`, dispatched over the
+ * nine `Message` implementations (reactor.go:1507-1509) to the nine
+ * functions below. `kind` NONE or unknown is the `default` of
+ * msgs.go:228-229 ("message not recognized").
+ * @return CMT_OK, CMT_REJECT (the reference's error), CMT_FAULT on NULL.
+ */
+int cmt_msg_validate_basic(const cmt_msg_t *msg);
+
+/** cometbft@709fd12b consensus/reactor.go:1536-1557 —
+ *  `NewRoundStepMessage.ValidateBasic()`. Negative Height, negative
+ *  Round, an invalid Step (`cmt_round_step_is_valid`) and a
+ *  LastCommitRound below -1 refuse; "NOTE: SecondsSinceStartTime may be
+ *  negative". */
+int cmt_new_round_step_msg_validate_basic(const cmt_new_round_step_msg_t *m);
+
+/** cometbft@709fd12b consensus/reactor.go:1596-1618 —
+ *  `NewValidBlockMessage.ValidateBasic()`: negative Height or Round, a
+ *  bad PartSetHeader (`cmt_psh_validate_basic`), an empty bit array
+ *  (nil counts), a bit array whose Size differs from the header's Total,
+ *  or one wider than MaxBlockPartsCount (CMT_MAX_BLOCK_PARTS_COUNT —
+ *  the PART-SET bound, which is NOT the bit array's capacity). */
+int cmt_new_valid_block_msg_validate_basic(const cmt_new_valid_block_msg_t *m);
+
+/** cometbft@709fd12b consensus/reactor.go:1634-1636 —
+ *  `ProposalMessage.ValidateBasic()`: `cmt_proposal_validate_basic`. */
+int cmt_proposal_msg_validate_basic(const cmt_proposal_msg_t *m);
+
+/** cometbft@709fd12b consensus/reactor.go:1653-1667 —
+ *  `ProposalPOLMessage.ValidateBasic()`: negative Height or
+ *  ProposalPOLRound, an empty bit array, one wider than MaxVotesCount
+ *  (CMT_MAX_VOTES_COUNT). */
+int cmt_proposal_pol_msg_validate_basic(const cmt_proposal_pol_msg_t *m);
+
+/** cometbft@709fd12b consensus/reactor.go:1684-1695 —
+ *  `BlockPartMessage.ValidateBasic()`: negative Height or Round, then
+ *  `cmt_part_validate_basic`. */
+int cmt_block_part_msg_validate_basic(const cmt_block_part_msg_t *m);
+
+/** cometbft@709fd12b consensus/reactor.go:1710-1712 —
+ *  `VoteMessage.ValidateBasic()`: `cmt_vote_validate_basic`. A message
+ *  with NO vote (`has_vote` false — msgs.go:187 can produce one from a
+ *  wire message whose field 1 is absent, see the VoteMessage struct
+ *  above) is where the reference dereferences nil at types/vote.go:278
+ *  and panics; PEER-REACHABLE → CMT_REJECT. */
+int cmt_vote_msg_validate_basic(const cmt_vote_msg_t *m);
+
+/** cometbft@709fd12b consensus/reactor.go:1730-1744 —
+ *  `HasVoteMessage.ValidateBasic()`: negative Height, Round or Index,
+ *  or a Type that is not a vote type. */
+int cmt_has_vote_msg_validate_basic(const cmt_has_vote_msg_t *m);
+
+/** cometbft@709fd12b consensus/reactor.go:1762-1776 —
+ *  `VoteSetMaj23Message.ValidateBasic()`: negative Height or Round, a
+ *  Type that is not a vote type, a BlockID that fails
+ *  `cmt_block_id_validate_basic`. */
+int cmt_vote_set_maj23_msg_validate_basic(const cmt_vote_set_maj23_msg_t *m);
+
+/** cometbft@709fd12b consensus/reactor.go:1795-1810 —
+ *  `VoteSetBitsMessage.ValidateBasic()`: negative Height, a Type that is
+ *  not a vote type, a bad BlockID, a bit array wider than MaxVotesCount.
+ *  "NOTE: Votes.Size() can be zero if the node does not have any" — and
+ *  Round is NOT checked, exactly as the reference does not. */
+int cmt_vote_set_bits_msg_validate_basic(const cmt_vote_set_bits_msg_t *m);
 
 #ifdef __cplusplus
 }

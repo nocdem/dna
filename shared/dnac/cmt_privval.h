@@ -68,12 +68,12 @@
  * Reference @709fd12b (SHA-256 verified before use):
  *   privval/file.go       466 lines
  *                         e685aed7ac222738f8f623fe2d5e8a7132aeefad3e4cdc909cd1168e6012db98
- *   libs/protoio/reader.go 107 lines — NOT in any pin table; opened for
+ *   libs/protoio/reader.go 107 lines — PINNED at pin rev 7; opened for
  *                         `UnmarshalDelimited` (:104-107) and `ReadMsg`
  *                         (:67-95), SHA-256
  *                         fc5f95050b989b238a34e84b332e841b424654929e19f1be2bf000b334a27c0d
- * Governing records: umbrella rev 3 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
- * D-15 rev 5 (atlas-dec-c0bfc5344204b9282ceaaa5e06042350, PROPOSED),
+ * Governing records: umbrella rev 5 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
+ * D-15 rev 6 (atlas-dec-c0bfc5344204b9282ceaaa5e06042350, APPROVED),
  * D-16 rev 4 (atlas-dec-0c86593601db977cd5af648b78910004),
  * clock POLICY (atlas-dec-4ac0423068085c100fdfa3e264ca16bc),
  * INVARIANT (atlas-dec-7495d3372e004b24b4f6cc7bff5caf07).

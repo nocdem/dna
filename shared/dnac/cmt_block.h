@@ -106,7 +106,7 @@
  * Reference @709fd12b (SHA-256 verified against tasks/comet-port-map.md
  * before use):
  *   types/block.go            1555 lines 2094420e26fa23d4b6a592a06e7953025541973694bd96ff9c8e5d9911162109
- *   types/test_util.go         123 lines 32333c3ef6fb373706e8d7d6b87723c08d9c5b35d0b23094eb42178a8ae8caf2
+ *   types/test_util.go         123 lines 32333c3ef6fb373706e8d7d6b87723c08d9c5b35d0b23094eb42178a8ae8caf2 (MakeBlock :106-123 ported as cmt_make_block; MakeExtCommit :14, signAddVote :47, MakeVote :57, MakeVoteNoError :90 are test helpers — YOK)
  *   types/tx.go                192 lines 186fd6822ee915c2c0daa2426fceaf60ac7b00859df8c70b2c540480b0747091
  *   types/evidence.go          637 lines 5a41f27f0de4a63412f7e8a64f288b81d8fa52502102ad5b111214211c091fde
  *   types/encoding_helper.go    47 lines 3deeeaa72d628f5d0f9d8435ec8dbffbfbb492b3cc055bcf745c47a4e9105815

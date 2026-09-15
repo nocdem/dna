@@ -264,10 +264,27 @@ int64_t cmt_ps_get_height(const cmt_ps_t *ps)
  * reactor.go:1095-1144 — what the peer has
  * ══════════════════════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b consensus/reactor.go:1096-1119 — SetHasProposal() */
+/**
+ * cometbft@709fd12b consensus/reactor.go:1096-1119 — SetHasProposal()
+ *
+ * ORDER DEVIATION, and it is the point of it: the reference assigns
+ * `Proposal = true` (:1108), the header (:1115) and the bit array (:1116)
+ * in that order, because `bits.NewBitArray` cannot fail — it allocates
+ * whatever `Total` asks. `ps_bits_new` CAN refuse (a `Total` above the bit
+ * array's capacity, or a pool with no free slot), and doing it in the
+ * reference's order left the PeerState HALF APPLIED: the proposal flag
+ * and the header written, the array, the POL round and the POL not —
+ * so this peer looked like it had announced a proposal whose POL round was
+ * whatever the previous height left behind (deviation register R3-AUD-21).
+ *
+ * Here NOTHING is written until the array exists. The observable order is
+ * unchanged for every input the reference can also handle, because on
+ * those the constructor never refuses.
+ */
 int cmt_ps_set_has_proposal(cmt_ps_t *ps, const cmt_proposal_t *proposal)
 {
-    int rc;
+    cmt_bit_array_t *parts;
+    int              rc;
 
     if (ps == NULL || proposal == NULL) {
         return CMT_FAULT;
@@ -279,21 +296,27 @@ int cmt_ps_set_has_proposal(cmt_ps_t *ps, const cmt_proposal_t *proposal)
     if (ps->prs.proposal) {                                      /* :1104 */
         return CMT_OK;
     }
-    ps->prs.proposal = true;                                     /* :1108 */
 
-    /* :1110-1113 — set by NewValidBlockMessage already. */
+    /* :1110-1113 — set by NewValidBlockMessage already: the flag is the
+     * only thing this call has left to do. */
     if (ps->prs.proposal_block_parts != NULL) {
+        ps->prs.proposal = true;                                 /* :1108 */
         return CMT_OK;
     }
-    ps->prs.proposal_block_part_set_header =
-            proposal->block_id.part_set_header;                  /* :1115 */
+
+    parts = NULL;
     rc = ps_bits_new(ps, (int)proposal->block_id.part_set_header.total,
-                     &ps->prs.proposal_block_parts);             /* :1116 */
+                     &parts);                                    /* :1116 */
     if (rc != CMT_OK) {
+        /* Apply NOTHING. The peer state is exactly what it was. */
         return rc;
     }
-    ps->prs.proposal_pol_round = proposal->pol_round;            /* :1117 */
-    ps->prs.proposal_pol       = NULL;   /* :1118 nil until POL received */
+    ps->prs.proposal = true;                                     /* :1108 */
+    ps->prs.proposal_block_part_set_header =
+            proposal->block_id.part_set_header;                  /* :1115 */
+    ps->prs.proposal_block_parts = parts;                        /* :1116 */
+    ps->prs.proposal_pol_round   = proposal->pol_round;          /* :1117 */
+    ps->prs.proposal_pol         = NULL; /* :1118 nil until POL received */
     return CMT_OK;
 }
 

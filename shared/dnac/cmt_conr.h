@@ -87,6 +87,14 @@
  *   by `cmt_conr_stop` BEFORE its body, which is libs/service/service.go
  *   `BaseService.Start` (:131 sets `started`, :144 calls OnStart, :147
  *   reverts on error) and `Stop` (:168 sets `stopped`, :181 calls OnStop).
+ *   The `stopped` half of that pair is a SECOND flag here, and it is a
+ *   LATCH: `cmt_conr_stop` sets it and nothing clears it, so
+ *   `cmt_conr_start` after a stop returns CMT_REJECT, which is
+ *   service.go:132-137's ErrAlreadyStopped. The reference's `Reset`
+ *   (:200-215) is the only way back and is not ported — `OnReset` panics
+ *   for this service (:217-220). Without the latch a stop→start kept
+ *   every stale PeerState and re-entered `cmt_cs_start` (deviation
+ *   register R3-AUD-20).
  *   `peer.IsRunning()` (:545, :707, :852) is the host's per-peer
  *   "connected" state, which this module learns through
  *   `cmt_conr_remove_peer`: the host calls it when the connection closes,
@@ -140,15 +148,19 @@
  * analogue (Go allocates per message). R3-C2 must both choose the reset
  * policy and make exhaustion a distinct outcome from a bad message.
  *
- * ── THE ValidateBasic GATE (msgs.go:232-234), NOW HERE ─────────────────
+ * ── THE ValidateBasic GATE (msgs.go:232-234) ───────────────────────────
  * The reference's `Receive` calls `MsgFromProto` (:236), whose last act
  * is `pb.ValidateBasic()` (msgs.go:232-234), and then `msg.ValidateBasic()`
  * again (:243). R2's `cmt_msg_from_proto` stops before that line
- * (cmt_msgs.h:28-35); `cmt_msg_validate_basic` below IS that line, called
- * by `cmt_conr_receive` right after the decode, and its nine per-message
+ * (cmt_msgs.h:28-35); `cmt_msg_validate_basic` IS that line, called by
+ * `cmt_conr_receive` right after the decode, and its nine per-message
  * bodies are :1536, :1596, :1634, :1653, :1684, :1710, :1730, :1762 and
- * :1795. `NewRoundStepMessage.ValidateHeight` (:1560) is the tenth, run
- * by `Receive` at :264 against the chain's initial height.
+ * :1795. They LIVE IN cmt_msgs.{h,c}, not here, because the WAL replay
+ * path (cmt_cs.c, replay.go:147 → wal.go:410 → msgs.go:232-234) runs the
+ * same gate and the consensus core must not depend on the reactor
+ * (atlas-dec-b02c8de1f52854b20dbfd64f6c987b34, item 4).
+ * `NewRoundStepMessage.ValidateHeight` (:1560) is the tenth and stays
+ * here, run by `Receive` at :264 against the chain's initial height.
  *
  * ── THE PANIC RULE (umbrella rev 4) ────────────────────────────────────
  *   · :255 "Peer %v has no state" — a Receive for a slot `InitPeer` never
@@ -469,6 +481,11 @@ typedef struct {
     cmt_cs_t                  *cs;              /* :42 conS               */
     bool                       wait_sync;       /* :45 waitSync           */
     bool                       running;         /* BaseService (:40)      */
+    /** libs/service/service.go's `stopped` flag (:101), set by `Stop`
+     *  (:168) and tested by `Start` (:132). Set by `cmt_conr_stop` and
+     *  NEVER cleared: the reference's `Reset` (:200-215) is the only way
+     *  back and is not ported (its `OnReset` panics, :217-219). */
+    bool                       stopped;
     cmt_conr_host_t            host;
     void                      *host_ctx;
     cmt_pb_arena_t            *recv_arena;      /* see the file header    */
@@ -515,8 +532,16 @@ void cmt_conr_free(cmt_conr_t *conR);
  * `cmt_cs_add_listener`), then — unless `wait_sync` — `conR.conS.Start()`
  * (:83-88, `cmt_cs_start`). `peerStatsRoutine` (:78) is YOK and
  * `updateRoundStateRoutine` (:81) has nothing to start.
+ *
+ * ⚠ ONE-WAY: once `cmt_conr_stop` has run, this REFUSES. That is
+ * service.go:132-137's ErrAlreadyStopped, and the reference's only way
+ * back — `Reset` (:200-215) — is not ported because its `OnReset` panics
+ * for this service (:217-220). A host that wants a second reactor builds
+ * a second one.
+ *
  * @return CMT_OK; the reference reverts the flag and returns the error
  *         of :84-87 — so does this, with `cmt_cs_start`'s code (:147).
+ *         CMT_REJECT after `cmt_conr_stop` (service.go:137).
  *         CMT_FAULT on NULL.
  */
 int cmt_conr_start(cmt_conr_t *conR);
@@ -680,24 +705,16 @@ int cmt_conr_tick(cmt_conr_t *conR, int64_t *out_next_deadline_ns);
  */
 int cmt_conr_get_round_state(const cmt_conr_t *conR, cmt_round_state_t *out);
 
-/* ══ the ValidateBasic gate (msgs.go:232-234; reactor.go:1536-1810) ═══ */
+/* ══ ValidateHeight (reactor.go:1560-1574) ═══════════════════════════ */
 
-/**
- * cometbft@709fd12b consensus/msgs.go:232-234 — the `pb.ValidateBasic()`
- * every decoded message passes in `MsgFromProto`, dispatched over the
- * nine `Message` implementations (reactor.go:1507-1509) to the nine
- * methods below. `kind` NONE or unknown is the `default` of
- * msgs.go:228-229 ("message not recognized").
- * @return CMT_OK, CMT_REJECT (the reference's error), CMT_FAULT on NULL.
- */
-int cmt_msg_validate_basic(const cmt_msg_t *msg);
-
-/** cometbft@709fd12b consensus/reactor.go:1536-1557 —
- *  `NewRoundStepMessage.ValidateBasic()`. Negative Height, negative
- *  Round, an invalid Step (`cmt_round_step_is_valid`) and a
- *  LastCommitRound below -1 refuse; "NOTE: SecondsSinceStartTime may be
- *  negative". */
-int cmt_new_round_step_msg_validate_basic(const cmt_new_round_step_msg_t *m);
+/* `cmt_msg_validate_basic` and the nine per-message ValidateBasic bodies
+ * used to be declared here. They are in cmt_msgs.{h,c} now (reached
+ * through the include above), because the WAL REPLAY path in cmt_cs.c has
+ * to run the same gate — msgs.go:232-234 through wal.go:410 from
+ * replay.go:147 — and the consensus core must not include the reactor
+ * (atlas-dec-b02c8de1f52854b20dbfd64f6c987b34, item 4). Nothing about
+ * them changed; `cmt_conr_receive` still calls `cmt_msg_validate_basic`
+ * at :243. ValidateHeight stays: it is `Receive`'s alone (:264). */
 
 /** cometbft@709fd12b consensus/reactor.go:1560-1574 —
  *  `NewRoundStepMessage.ValidateHeight(initialHeight)`: Height below the
@@ -705,54 +722,6 @@ int cmt_new_round_step_msg_validate_basic(const cmt_new_round_step_msg_t *m);
  *  negative LastCommitRound ABOVE it. */
 int cmt_new_round_step_msg_validate_height(const cmt_new_round_step_msg_t *m,
                                            int64_t initial_height);
-
-/** cometbft@709fd12b consensus/reactor.go:1596-1618 —
- *  `NewValidBlockMessage.ValidateBasic()`: negative Height or Round, a
- *  bad PartSetHeader (`cmt_psh_validate_basic`), an empty bit array
- *  (nil counts), a bit array whose Size differs from the header's Total,
- *  or one wider than MaxBlockPartsCount (CMT_MAX_BLOCK_PARTS_COUNT). */
-int cmt_new_valid_block_msg_validate_basic(const cmt_new_valid_block_msg_t *m);
-
-/** cometbft@709fd12b consensus/reactor.go:1634-1636 —
- *  `ProposalMessage.ValidateBasic()`: `cmt_proposal_validate_basic`. */
-int cmt_proposal_msg_validate_basic(const cmt_proposal_msg_t *m);
-
-/** cometbft@709fd12b consensus/reactor.go:1653-1667 —
- *  `ProposalPOLMessage.ValidateBasic()`: negative Height or
- *  ProposalPOLRound, an empty bit array, one wider than MaxVotesCount
- *  (CMT_MAX_VOTES_COUNT). */
-int cmt_proposal_pol_msg_validate_basic(const cmt_proposal_pol_msg_t *m);
-
-/** cometbft@709fd12b consensus/reactor.go:1684-1695 —
- *  `BlockPartMessage.ValidateBasic()`: negative Height or Round, then
- *  `cmt_part_validate_basic`. */
-int cmt_block_part_msg_validate_basic(const cmt_block_part_msg_t *m);
-
-/** cometbft@709fd12b consensus/reactor.go:1710-1712 —
- *  `VoteMessage.ValidateBasic()`: `cmt_vote_validate_basic`. A message
- *  with NO vote (`has_vote` false — msgs.go:187 can produce one from a
- *  wire message whose field 1 is absent, cmt_msgs.h:157-163) is where the
- *  reference dereferences nil at types/vote.go:278 and panics;
- *  PEER-REACHABLE → CMT_REJECT. */
-int cmt_vote_msg_validate_basic(const cmt_vote_msg_t *m);
-
-/** cometbft@709fd12b consensus/reactor.go:1730-1744 —
- *  `HasVoteMessage.ValidateBasic()`: negative Height, Round or Index,
- *  or a Type that is not a vote type. */
-int cmt_has_vote_msg_validate_basic(const cmt_has_vote_msg_t *m);
-
-/** cometbft@709fd12b consensus/reactor.go:1762-1776 —
- *  `VoteSetMaj23Message.ValidateBasic()`: negative Height or Round, a
- *  Type that is not a vote type, a BlockID that fails
- *  `cmt_block_id_validate_basic`. */
-int cmt_vote_set_maj23_msg_validate_basic(const cmt_vote_set_maj23_msg_t *m);
-
-/** cometbft@709fd12b consensus/reactor.go:1795-1810 —
- *  `VoteSetBitsMessage.ValidateBasic()`: negative Height, a Type that is
- *  not a vote type, a bad BlockID, a bit array wider than MaxVotesCount.
- *  "NOTE: Votes.Size() can be zero if the node does not have any" — and
- *  Round is NOT checked, exactly as the reference does not. */
-int cmt_vote_set_bits_msg_validate_basic(const cmt_vote_set_bits_msg_t *m);
 
 #ifdef __cplusplus
 }

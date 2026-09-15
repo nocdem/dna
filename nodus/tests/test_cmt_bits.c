@@ -11,9 +11,14 @@
  *   · a NULL array answers the reference's nil answers: Size 0, GetIndex
  *     false, IsEmpty true, IsFull true, and the combinators their own nil
  *     rules — the behaviour half of cometbft's call sites rely on;
- *   · the derived capacity is the reference's MaxBlockPartsCount, 1601
- *     bits in 26 words, and asking for more is REFUSED rather than
- *     truncated, so no wire value can make the module allocate;
+ *   · the derived capacity is the reference's MaxVotesCount, 10 000 bits
+ *     in 157 words — the ceiling reactor.go:1663/:1806 put on the two bit
+ *     arrays a peer may send as a message field of their own — and asking
+ *     for more is REFUSED rather than truncated, so no wire value can make
+ *     the module allocate;
+ *   · an array of exactly that width survives the wire codec unchanged,
+ *     and one bit wider is refused by the DECODER (cmt_pb.c:3206) — the
+ *     capacity is enforced on the way in, not by trusting the sender;
  *   · GetIndex/SetIndex are little-endian WITHIN a word (bit i is word
  *     i/64, bit i%64) — the layout Bytes() and the packed `elems` codec
  *     both depend on;
@@ -49,18 +54,24 @@
  *     into consensus, this file stops being sufficient.
  *  2. It never builds a 1601-bit array with real part data. It pins the
  *     BOUND and the refusal past it, not the behaviour of a full part set.
+ *     The 10 000-bit case it does build carries a handful of set bits, not
+ *     ten thousand real vote bits.
  *  3. The quirk assertions (Or's dropped words, Update leaving Bits alone)
  *     pin what the REFERENCE does. If a future cometbft pin fixes them,
  *     this file will fail — and that failure is the correct signal, not a
  *     defect in the port.
- *  4. Nothing here touches the wire codec; cmt_bits_to_proto /
- *     cmt_bits_from_proto and the "elems must match bits" refusal are
- *     tested in test_cmt_pb.c.
+ *  4. The only wire-codec case here is the capacity round trip of
+ *     test_capacity_wire; cmt_bits_to_proto / cmt_bits_from_proto in
+ *     general, and the "elems must match bits" refusal, are tested in
+ *     test_cmt_pb.c.
  *
  * @file test_cmt_bits.c
  */
 
 #include "dnac/cmt_bits.h"
+#include "dnac/cmt_pb.h"        /* cmt_bits_to_proto / cmt_bits_from_proto */
+#include "dnac/cmt_vote_set.h"  /* CMT_MAX_VOTES_COUNT — the same ceiling  */
+#include "dnac/cmt_params.h"    /* CMT_MAX_BLOCK_PARTS_COUNT               */
 
 #include <stdio.h>
 #include <stdint.h>
@@ -119,19 +130,37 @@ static int test_capacity(void)
     cmt_bit_array_t ba;
 
     /* MaxBlockPartsCount = MaxBlockSizeBytes / BlockPartSizeBytes + 1
-     * (types/params.go:16, :19, :22) = 104857600 / 65536 + 1 = 1601. */
+     * (types/params.go:16, :19, :22) = 104857600 / 65536 + 1 = 1601. It is
+     * the PART-SET bound and no longer this module's capacity. */
     CHECK(CMT_BITS_MAX_BLOCK_SIZE_BYTES == 104857600, "MaxBlockSizeBytes");
     CHECK(CMT_BITS_BLOCK_PART_SIZE_BYTES == 65536, "BlockPartSizeBytes");
     CHECK(CMT_BITS_MAX_BLOCK_PARTS_COUNT == 1601, "MaxBlockPartsCount");
-    CHECK(CMT_BITS_MAX_BITS == 1601, "max bits");
-    CHECK(CMT_BITS_MAX_ELEMS == 26, "(1601+63)/64 = 26");
-    CHECK(CMT_BITS_MAX_BYTES == 201, "(1601+7)/8 = 201");
     OK();
 
-    CHECK(cmt_bits_new(&ba, CMT_BITS_MAX_BITS) == CMT_OK, "1601 must fit");
-    CHECK(ba.n_elems == CMT_BITS_MAX_ELEMS, "1601 -> 26 words");
+    /* The capacity is MaxVotesCount (types/vote_set.go:18), the ceiling
+     * ProposalPOLMessage.ValidateBasic (reactor.go:1663) and
+     * VoteSetBitsMessage.ValidateBasic (:1806) enforce. cmt_bits.h restates
+     * the constant to avoid an include cycle; the two must agree. */
+    CHECK(CMT_BITS_MAX_VOTES_COUNT == 10000, "MaxVotesCount");
+    CHECK(CMT_BITS_MAX_VOTES_COUNT == (int)CMT_MAX_VOTES_COUNT,
+          "cmt_bits.h and cmt_vote_set.h must name the SAME MaxVotesCount");
+    CHECK(CMT_BITS_MAX_BITS == 10000, "max bits");
+    CHECK(CMT_BITS_MAX_ELEMS == 157, "(10000+63)/64 = 157");
+    CHECK(CMT_BITS_MAX_BYTES == 1250, "(10000+7)/8 = 1250");
+    OK();
+
+    /* The part-set bound must stay BELOW the capacity, or a part-set bit
+     * array would not fit the array it is built in. */
+    CHECK((int)CMT_MAX_BLOCK_PARTS_COUNT <= CMT_BITS_MAX_BITS,
+          "a 1601-part bit array must still fit the capacity");
+    CHECK(cmt_bits_new(&ba, (int)CMT_MAX_BLOCK_PARTS_COUNT) == CMT_OK,
+          "1601 must fit");
+    OK();
+
+    CHECK(cmt_bits_new(&ba, CMT_BITS_MAX_BITS) == CMT_OK, "10000 must fit");
+    CHECK(ba.n_elems == CMT_BITS_MAX_ELEMS, "10000 -> 157 words");
     CHECK(cmt_bits_new(&ba, CMT_BITS_MAX_BITS + 1) == CMT_REJECT,
-          "1602 must REJECT, never truncate");
+          "10001 must REJECT, never truncate");
     CHECK(ba.bits == 0 && ba.n_elems == 0, "a refused array must be zeroed");
     OK();
 
@@ -147,6 +176,67 @@ static int test_capacity(void)
     CHECK(cmt_bits_num_elems(65) == 2, "65 -> 2");
     CHECK(cmt_bits_num_elems(128) == 2, "128 -> 2");
     CHECK(cmt_bits_num_elems(0) == 0, "0 -> 0");
+    OK();
+    return 0;
+}
+
+/* ── the capacity across the wire codec ─────────────────────────────── */
+
+/**
+ * RED at 7f21263c: CMT_BITS_MAX_BITS was MaxBlockPartsCount (1601), so
+ * `cmt_bits_new(&ba, 10000)` returned CMT_REJECT on the FIRST line and the
+ * decoder refused the encoding at cmt_pb.c:3206 — a ProposalPOL or
+ * VoteSetBits array that reactor.go:1663/:1806 accept was cut off at the
+ * decoder (deviation register R3-AUD-19).
+ */
+static int test_capacity_wire(void)
+{
+    cmt_bit_array_t ba;
+    cmt_bit_array_t back;
+    /* Worst case: 157 elems as 10-byte varints, plus the packed length,
+     * the two tags and the `bits` varint. */
+    uint8_t         buf[CMT_BITS_MAX_ELEMS * 10 + 16];
+    uint8_t         wide[sizeof(buf)];
+    size_t          n = 0;
+    int             i;
+
+    /* A widest-legal array with bits set in the first, a middle and the
+     * last word, so a truncated round trip cannot pass. */
+    CHECK(cmt_bits_new(&ba, CMT_BITS_MAX_BITS) == CMT_OK, "new 10000");
+    CHECK(cmt_bits_set_index(&ba, 0, true) == 1, "bit 0");
+    CHECK(cmt_bits_set_index(&ba, 5000, true) == 1, "bit 5000");
+    CHECK(cmt_bits_set_index(&ba, CMT_BITS_MAX_BITS - 1, true) == 1,
+          "bit 9999");
+    OK();
+
+    CHECK(cmt_bits_to_proto(&ba, buf, sizeof(buf), &n) == CMT_OK,
+          "ToProto (bit_array.go:475-484)");
+    CHECK(cmt_bits_from_proto(buf, n, &back) == CMT_OK,
+          "FromProto (bit_array.go:487-497) must accept 10000 bits");
+    CHECK(back.bits == CMT_BITS_MAX_BITS, "width survives");
+    CHECK(back.n_elems == (size_t)CMT_BITS_MAX_ELEMS, "157 words survive");
+    CHECK(cmt_bits_get_index(&back, 0) == 1, "bit 0 survives");
+    CHECK(cmt_bits_get_index(&back, 5000) == 1, "bit 5000 survives");
+    CHECK(cmt_bits_get_index(&back, CMT_BITS_MAX_BITS - 1) == 1,
+          "bit 9999 survives");
+    for (i = 1; i < 5000; i++) {
+        CHECK(cmt_bits_get_index(&back, i) == 0, "no bit invented");
+    }
+    OK();
+
+    /* One bit wider must be refused BY THE DECODER, not by the sender.
+     * cmt_pb.c:3111-3121 writes backwards, so field 1 (`bits`) comes out
+     * FIRST; 10000 and 10001 are both two-byte varints, so the refusal
+     * case is these same bytes with one bit flipped. (10000+63)/64 and
+     * (10001+63)/64 are both 157, so the elems-vs-bits agreement check of
+     * :3209 passes and the refusal is the capacity test at :3206. */
+    CHECK(n > 3u && buf[0] == 0x08u && buf[1] == 0x90u && buf[2] == 0x4Eu,
+          "wire form starts with field 1 = varint(10000)");
+    memcpy(wide, buf, n);
+    wide[1] = 0x91u;                                 /* varint(10001) */
+    CHECK(cmt_bits_from_proto(wide, n, &back) == CMT_REJECT,
+          "10001 bits must be REFUSED by the decoder (cmt_pb.c:3206)");
+    CHECK(back.bits == 0 && back.n_elems == 0, "a refused array is zeroed");
     OK();
     return 0;
 }
@@ -557,7 +647,8 @@ static int test_pick_random(void)
 
 int main(void)
 {
-    if (test_capacity() != 0)     { return 1; }
+    if (test_capacity() != 0)      { return 1; }
+    if (test_capacity_wire() != 0) { return 1; }
     if (test_nil_contract() != 0) { return 1; }
     if (test_get_set() != 0)      { return 1; }
     if (test_combinators() != 0)  { return 1; }

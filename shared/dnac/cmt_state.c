@@ -16,6 +16,27 @@
 
 #include <string.h>
 
+/* Go's `totalVotingPower += validator.VotingPower` (state.go:280), which
+ * WRAPS on overflow by specification; C signed overflow is UNDEFINED, so
+ * the sum is carried in uint64 and converted back. The same shape as
+ * cmt_validation.c:63-66 and cmt_validator_set.c's wrap helpers — this
+ * was the one int64 accumulation of the R1 layer that skipped them
+ * (deviation register R3-AUD-22).
+ *
+ * At this chain's INTENDED scale it cannot overflow — under tokenomics v2
+ * (atlas-dec-93ff0761d40f5bc16fbae607ab54f458, PROPOSED as of 2026-09-15:
+ * power = stake / 10^8, supply 10^9) a 128-member set totals ~10^9, nine
+ * orders below INT64_MAX. It is written wrap-safe anyway because the
+ * summand is NOT bounded by the set's total here: MedianTime looks a
+ * signature's validator up BY ADDRESS (:277) and never cross-checks that
+ * address against the signature's index, so a commit whose signatures all
+ * name the same high-power validator sums that power once per signature.
+ * The reference wraps on that input; C would be undefined. */
+static int64_t go_add_i64(int64_t a, int64_t b)
+{
+    return (int64_t)((uint64_t)a + (uint64_t)b);
+}
+
 /* ══ init / IsEmpty ═══════════════════════════════════════════════════ */
 
 int cmt_state_init(cmt_state_t *state, cmt_state_storage_t *storage)
@@ -185,7 +206,8 @@ int cmt_state_median_time(const cmt_commit_t *commit,
              * not contain contributes NOTHING, silently. */
             continue;
         }
-        total = total + val.voting_power;                        /* :280 */
+        total = go_add_i64(total, val.voting_power); /* :280 — Go wraps by
+                                                      * specification    */
         rc = cmt_new_weighted_time(cs->timestamp, val.voting_power,
                                    &times[i]);                   /* :281 */
         if (rc != CMT_OK) {

@@ -73,7 +73,7 @@
  * `cmt_bits_pick_random` — the recorded substitution (cmt_bits.h:256-273),
  * gossip-only. No unordered iteration, no allocation, no global state.
  *
- * ── SUBSTITUTIONS (umbrella rev 4, atlas-dec-d5e766defde138eb6dd02e5b81e735a8)
+ * ── SUBSTITUTIONS (umbrella rev 5, atlas-dec-d5e766defde138eb6dd02e5b81e735a8)
  * Every `ps.mtx.Lock()` / `defer Unlock()` is dropped (single thread,
  * item 7): :1071, :1080, :1090, :1097, :1123, :1136, :1169, :1274, :1304,
  * :1315, :1324, :1333, :1341, :1364, :1418, :1435, :1452, :1468, :1490.
@@ -110,10 +110,10 @@
  *   types/vote_set.go                    724 lines
  *     548a256c311755a4a2d83696c90030f144952c64c0e3a459ac86baf844c56880
  *     (read for :716-724, VoteSetReader)
- * Governing records: umbrella rev 4
+ * Governing records: umbrella rev 5
  * (atlas-dec-d5e766defde138eb6dd02e5b81e735a8), D-20 rev 3
  * (atlas-dec-fb3ed0315ffbfd0459efa779a2e00c19), PQ POLICY
- * (atlas-dec-652be084b95d02d253834906271e9fb0), pin record rev 11
+ * (atlas-dec-652be084b95d02d253834906271e9fb0), pin record rev 18
  * (atlas-dec-483ec17cbb352ef0ec2267ccd953339c).
  *
  * Copyright (c) 2026 nocdem

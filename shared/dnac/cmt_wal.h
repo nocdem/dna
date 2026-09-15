@@ -35,7 +35,7 @@
  *     (:157), `OnStop` (:164), `Wait` (:177), `Write` (:184),
  *     `WriteSync` (:201), `SearchForEndHeight` (:231) and
  *     `WALSearchOptions` (:221) — HOST (storage, sync classes, search).
- *   · `nilWAL` (:422-434) — a no-op implementation of the same interface.
+ *   · `nilWAL` (:422-434) — NOT ported; a missing WAL row is refused at init (R3-AUD-7).
  *   · `init()` (:48-52) — amino/JSON type registration; this port has no
  *     JSON codec.
  *   · `IsDataCorruptionError` (:333-336) and `DataCorruptionError` with
@@ -63,12 +63,12 @@
  *                      f6bd6d512bbda08f31231d535b97df3c9c6feb3ddaf01a2054e2f0cf994f2a2d
  *   consensus/msgs.go  347 lines (:239-347)
  *                      7acb318c8910da0c0f4d874b9bd6bb4fdc7212736919939fc933dd405b8e4ada
- *   types/events.go    188 lines (:93-97, EventDataRoundState) — NOT in
- *                      any pin table; opened for that one range, SHA-256
+ *   types/events.go    188 lines (:93-97, EventDataRoundState) — PINNED
+ *                      at pin record rev 7; opened for that one range, SHA-256
  *                      13d8f653492d87fb90d1512ed0495d7d178839b371884e785b2620c29aae3cd5
  *   consensus/reactor.go:30 — maxMsgSize.
- * Governing records: umbrella rev 3 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
- * D-15 rev 5 (atlas-dec-c0bfc5344204b9282ceaaa5e06042350, PROPOSED),
+ * Governing records: umbrella rev 5 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
+ * D-15 rev 6 (atlas-dec-c0bfc5344204b9282ceaaa5e06042350, APPROVED),
  * K-1 rev 2 (atlas-dec-3ba8153088b0d60c63083028023b61be),
  * INVARIANT (atlas-dec-7495d3372e004b24b4f6cc7bff5caf07).
  *
@@ -182,9 +182,9 @@ int cmt_wal_to_proto(const cmt_wal_message_t *msg,
  * `MsgFromProto` (:311-323), TimeoutInfo with `SafeConvertUint8` on Step
  * (:325-337), and EndHeight (:338-342).
  *
- * ⚠ The MsgInfo branch inherits `cmt_msg_from_proto`'s gap: the reference
- * would have run `ValidateBasic` inside it (msgs.go:232-234) and this port
- * does not. See cmt_msgs.h.
+ * ⚠ The MsgInfo branch does NOT run `ValidateBasic` itself (the reference
+ * does, inside MsgFromProto, msgs.go:232-234): the reactor runs it at
+ * receive and the replay caller must run it before handle_msg (R3-AUD-5).
  *
  * @return CMT_OK; CMT_REJECT for :343-344 (a kind this build does not
  *         recognise) and for a message that will not convert; CMT_FAULT on

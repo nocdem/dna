@@ -14,6 +14,11 @@
  *   · an ABSENT entry is skipped (:274-276), and a signer the set does not
  *     contain is skipped AND excluded from the total (:277-282) — the
  *     latter changes the answer, which is how the skip is observable;
+ *   · that same power sum WRAPS on overflow, as Go's does by
+ *     specification (:280): nine entries naming one 2^61-power validator
+ *     total 2^61 again, and the walk answers the EARLIEST timestamp where
+ *     exact arithmetic would answer the middle one (R3-AUD-22). See "how
+ *     it can lie" 6 — this case is only meaningful under UBSan;
  *   · `MakeGenesisState` (:317-355) derives every validator address FROM
  *     THE KEY (:330), builds `NextValidators` as the same set after ONE
  *     proposer-priority increment (:333), leaves `LastValidators` EMPTY
@@ -75,6 +80,15 @@
  *     NOTHING about which string the build passed: run with a wrong -D and
  *     it still passes. The field is store-only and not consensus-critical
  *     (see CMT_SOFTWARE_VERSION in cmt_state.h).
+ *  5. `t_median_time_wraps` needs the SET MUTATED BY HAND — one member's
+ *     voting power is overwritten after genesis, because a document with
+ *     that power would be refused. It proves the ARITHMETIC of :280, not
+ *     that such a set can be built through the normal path.
+ *  6. AND IT ONLY MEANS SOMETHING UNDER UBSan. Signed overflow is
+ *     undefined in C, and on this compiler the unfixed code happens to
+ *     wrap too, so the assertion passes at 7f21263c in a plain build. A
+ *     green from `ctest` alone is NOT evidence for that case; the run has
+ *     to carry -fsanitize=undefined.
  *
  * ── REFERENCE TEST CASES PORTED (state/state_test.go, UNPINNED) ────────
  * `TestStateCopy` (:56-72) — copy, mutate, original unchanged.
@@ -346,6 +360,103 @@ static int t_median_time(void)
           "NULL set"); OK();
     CHECK(g_now_calls == 0,
           "and NO CLOCK was read anywhere above"); OK();
+    return 0;
+}
+
+/* ══ 1b. MedianTime's voting-power sum WRAPS — R3-AUD-22 ══════════════
+ *
+ * WHAT IT PROVES: that `totalVotingPower += validator.VotingPower`
+ * (state.go:280) is carried out in C the way Go carries it out — WRAPPING
+ * — so that an input which overflows produces the reference's answer
+ * instead of undefined behaviour.
+ *
+ * WHY THE INPUT IS REACHABLE AT ALL, since a validator set's total is
+ * capped at MaxTotalVotingPower: MedianTime looks a signature's validator
+ * up BY ADDRESS (state.go:277) and never cross-checks that address
+ * against the signature's INDEX, while the signatures themselves are
+ * verified by index (types/validation.go:353-356) and the address is not
+ * in the signed bytes (canonical.go:57-66). A commit whose entries all
+ * name one heavy validator therefore adds that validator's power once per
+ * entry, and the sum is NOT bounded by the set's total. That hole is the
+ * reference's own; this test is about the ARITHMETIC, not the hole.
+ *
+ * RED at 7f21263c ONLY UNDER -fsanitize=undefined (or a compiler that
+ * exploits the UB): `total = total + val.voting_power` on plain int64_t
+ * overflows here, which is undefined in C. Without UBSan the same
+ * machine instruction happens to wrap and the assertion below passes, so
+ * a plain ctest run is NOT evidence for this one — it must be run under
+ * UBSan to mean anything.
+ */
+static int t_median_time_wraps(void)
+{
+    static const int64_t equal_powers[NVALS] = { 1, 1, 1 };
+    /* 9 x 2^61 = 20752587082923245568, which is 2^61 again modulo 2^64. */
+    const int64_t        heavy = (int64_t)1 << 61;
+    const size_t         n_sigs = 9u;
+    cmt_genesis_doc_t    doc;
+    cmt_state_t          st;
+    cmt_commit_sig_t    *sigs;
+    cmt_commit_t         commit;
+    cmt_time_t           med;
+    int64_t              wrapped;
+    int64_t              expect_median;
+    size_t               i;
+
+    /* Heap: nine commit signatures are ~42 KB. */
+    sigs = (cmt_commit_sig_t *)calloc(n_sigs, sizeof(*sigs));
+    CHECK(sigs != NULL, "heap signatures"); OK();
+
+    make_doc(&doc, NVALS, equal_powers);
+    CHECK(cmt_state_init(&st, g_stor_a) == CMT_OK, "init"); OK();
+    CHECK(cmt_state_make_genesis(&doc, never_now, NULL, g_scratch, &st) ==
+          CMT_OK, "genesis"); OK();
+
+    /* The set's own cached total is not touched and is not read by
+     * MedianTime, which recomputes the sum itself (:271, :280). */
+    st.validators.validators[0].voting_power = heavy;
+
+    cmt_pb_commit_init(&commit);
+    commit.height         = 1;
+    commit.round          = 0;
+    commit.signatures     = sigs;
+    commit.signatures_cap = n_sigs;
+    commit.signatures_len = n_sigs;
+    for (i = 0; i < n_sigs; i++) {
+        sigs[i].block_id_flag = (int32_t)CMT_BLOCK_ID_FLAG_COMMIT;
+        memcpy(sigs[i].validator_address,
+               st.validators.validators[0].address, 32);
+        sigs[i].validator_address_len = 32u;
+        /* Descending, so the answer cannot be the first entry by
+         * accident: the sort has to put 100 s in front. */
+        sigs[i].timestamp.seconds = 100 + 10 * (int64_t)(n_sigs - 1u - i);
+        sigs[i].timestamp.nanos   = 0;
+        pat(sigs[i].signature, 64, (uint8_t)(0x70u + i));
+        sigs[i].signature_len = 64u;
+    }
+
+    /* The expected total, computed HERE the way Go computes it. */
+    wrapped = 0;
+    for (i = 0; i < n_sigs; i++) {
+        wrapped = (int64_t)((uint64_t)wrapped + (uint64_t)heavy);
+    }
+    CHECK(wrapped == heavy,
+          "nine times 2^61 wraps back to 2^61 (Go's specified behaviour)");
+    OK();
+    expect_median = wrapped / 2;                          /* time.go:36 */
+    CHECK(expect_median <= heavy,
+          "so the walk stops on the FIRST entry: median 2^60 <= weight 2^61");
+    OK();
+
+    CHECK(cmt_state_median_time(&commit, &st.validators, &med) == CMT_OK,
+          "MedianTime over an overflowing sum"); OK();
+    CHECK(med.seconds == 100 && med.nanos == 0,
+          "the wrapped total picks the EARLIEST timestamp. Exact (non-Go) "
+          "arithmetic would give median 9*2^61/2 and have to subtract four "
+          "weights first, landing on 140 s — so this assertion really does "
+          "discriminate wrapping from a wider accumulator"); OK();
+
+    CHECK(g_now_calls == 0, "and NO CLOCK was read"); OK();
+    free(sigs);
     return 0;
 }
 
@@ -728,6 +839,7 @@ int main(void)
 
     if (t_time_is_zero() != 0) goto out;
     if (t_median_time() != 0) goto out;
+    if (t_median_time_wraps() != 0) goto out;
     if (t_make_genesis() != 0) goto out;
     if (t_copy() != 0) goto out;
     if (t_make_block() != 0) goto out;

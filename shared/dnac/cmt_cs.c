@@ -315,6 +315,47 @@ static int cs_new_part_set_from_header(cmt_cs_t *cs,
     return CMT_OK;
 }
 
+/**
+ * What the four `NewPartSetFromHeader` sites do when the BOUND refuses
+ * the header — `total` above CMT_PART_SET_MAX_PARTS, or above the slot's
+ * `parts_cap` (cmt_part_set.c:276-282).
+ *
+ * The reference has no such path: `types.NewPartSetFromHeader` allocates
+ * whatever `Total` asks for and dies on an absurd one. The bound is this
+ * port's own, so there is no reference line to port, and the answer is
+ * the operator's (atlas-dec-b02c8de1f52854b20dbfd64f6c987b34 item 2,
+ * ruling "b"; deviation register R3-AUD-10): log the refusal ONCE at
+ * ERROR, leave BOTH names NULL, and COMPLETE the step the reference
+ * completes — the round goes on, this node simply has no proposal block
+ * for it. Through wave R3 W1 the site returned early with the names half
+ * cleared and the REJECT was dropped by the caller's FAULT-only filter,
+ * so the node neither precommitted nil nor advanced its step.
+ */
+static void cs_part_set_bound_refused(const char *site,
+                                      const cmt_part_set_header_t *header)
+{
+    QGP_LOG_ERROR(LOG_TAG,
+                  "%s: refused a part set header of Total %u (bound %d "
+                  "parts); no proposal block this round",
+                  site, (unsigned)header->total,
+                  (int)CMT_PART_SET_MAX_PARTS);
+}
+
+/**
+ * The reference's transitions return NOTHING (state.go:1053, :1140,
+ * :1319, :1442, :1596 …), so a CMT_REJECT out of one of them is a refusal
+ * this port invented — today only `cs_part_set_bound_refused`'s. The
+ * caller carries on exactly as the reference does, but the refusal is NOT
+ * SWALLOWED: the FAULT-only filters used to drop it without a word.
+ */
+static void cs_note_transition_refusal(const char *what, int rc)
+{
+    if (rc != CMT_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "%s refused (rc %d); the round continues",
+                      what, rc);
+    }
+}
+
 /** The index of a part-set slot, so its payload buffer can be reached. */
 static int cs_part_slot_index(const cmt_cs_t *cs, const cmt_part_set_t *ps,
                               size_t *out)
@@ -1347,7 +1388,7 @@ bool cmt_cs_has_work(const cmt_cs_t *cs)
         return false;
     }
     return cs->txs_available || cs->peer_q_len > 0u ||
-           cs->internal_q_len > 0u || cs->tock_pending || cs->quit;
+           cs->internal_q_len > 0u || cs->tock_q_len > 0u || cs->quit;
 }
 
 int cmt_cs_on_timer_expired(cmt_cs_t *cs)
@@ -1358,19 +1399,26 @@ int cmt_cs_on_timer_expired(cmt_cs_t *cs)
     if (cs == NULL) {
         return CMT_FAULT;
     }
-    if (cs->tock_pending) {
-        /* NODE-LOCAL: the reference's tockChan carries one timeout and the
-         * routine is the only reader. Two undelivered tocks means the host
-         * armed or delivered a timer this module did not ask for. */
-        QGP_LOG_ERROR(LOG_TAG, "timer fired while a tock is still pending");
+    if (cs->tock_q_len >= (size_t)CMT_CS_TOCK_QUEUE_SIZE) {
+        /* NODE-LOCAL: `tockChan` is tickTockBufferSize = 10 deep
+         * (ticker.go:11, :48) and the reference's eleventh send parks the
+         * goroutine it was made in (:137) until receiveRoutine catches up.
+         * A single-threaded port cannot park, so an eleventh undelivered
+         * tock means the host is firing timers faster than the loop is
+         * stepped — the internal-queue rule. */
+        QGP_LOG_ERROR(LOG_TAG, "timer fired with %d tocks already undelivered",
+                      (int)CMT_CS_TOCK_QUEUE_SIZE);
         return CMT_FAULT;
     }
     rc = cmt_ticker_fire(&cs->ticker, &ti);              /* ticker.go:130-137 */
     if (rc != CMT_OK) {
         return rc;
     }
-    cs->tock          = ti;
-    cs->tock_pending  = true;
+    /* :137 `go func(toi timeoutInfo) { t.tockChan <- toi }(ti)` — the send
+     * onto the buffered channel, in arrival order. */
+    cs->tock_q[(cs->tock_q_head + cs->tock_q_len) %
+               (size_t)CMT_CS_TOCK_QUEUE_SIZE] = ti;
+    cs->tock_q_len++;
     return CMT_OK;
 }
 
@@ -1478,12 +1526,16 @@ int cmt_cs_step(cmt_cs_t *cs, bool *out_worked)
         case 3u: {                                              /* :858-865 */
             cmt_timeout_info_t ti;
 
-            if (!cs->tock_pending) {
+            if (cs->tock_q_len == 0u) {
                 break;
             }
-            ti               = cs->tock;
-            cs->poll_start   = (uint8_t)((src + 1u) % 4u);
-            cs->tock_pending = false;
+            /* The oldest undelivered tock: `case ti := <-cs.timeoutTicker
+             * .Chan()` (:858) off a FIFO channel. */
+            ti             = cs->tock_q[cs->tock_q_head];
+            cs->tock_q_head = (cs->tock_q_head + 1u) %
+                              (size_t)CMT_CS_TOCK_QUEUE_SIZE;
+            cs->tock_q_len--;
+            cs->poll_start = (uint8_t)((src + 1u) % 4u);
             if (out_worked != NULL) {
                 *out_worked = true;
             }
@@ -1738,7 +1790,21 @@ int cmt_cs_enter_new_round(cmt_cs_t *cs, int64_t height, int32_t round)
         }
         rc = cs_copy_increment_validators(cs, times);        /* :1073-1074 */
         if (rc != CMT_OK) {
-            return rc;
+            /* :1073-1074 `cs.Validators.CopyIncrementProposerPriority` —
+             * every refusal reachable inside it is a Go PANIC on an empty
+             * or impossible set (types/validator_set.go:81-83, :132-134,
+             * :135-137, :159-161, :197, :207-208, :213-215, :242-244),
+             * and the set is THIS NODE'S OWN state, never a peer's bytes.
+             * The R1 layer mapped those nine panics to CMT_REJECT before
+             * umbrella rev 4 settled the classes (cmt_validator_set.c
+             * :457, :693, :703, :719, :751, :835, :860, :896, :899;
+             * deviation register R3-AUD-16), so the class is corrected
+             * HERE, where the caller is known — the same correction
+             * :1751-1758 and :2908-2912 already make for GetProposer.
+             * NODE-LOCAL → CMT_FAULT. */
+            QGP_LOG_ERROR(LOG_TAG, "CopyIncrementProposerPriority failed "
+                                   "(rc %d) on our own validator set", rc);
+            return CMT_FAULT;
         }
     }
 
@@ -2487,8 +2553,16 @@ int cmt_cs_enter_precommit(cmt_cs_t *cs, int64_t height, int32_t round)
         cs->rs.proposal_block_parts = NULL;   /* clear the name first     */
         rc = cs_new_part_set_from_header(cs, &block_id.part_set_header,
                                          &cs->rs.proposal_block_parts);
-        if (rc != CMT_OK) {                                     /* :1553 */
+        if (rc == CMT_FAULT) {                                  /* :1553 */
             return rc;
+        }
+        if (rc != CMT_OK) {
+            /* The bound refused it. Both names stay NULL and the step
+             * runs to its end — the nil precommit of :1560 below is
+             * exactly what the reference signs here. */
+            cs_part_set_bound_refused("enterPrecommit",
+                                      &block_id.part_set_header);
+            cs->rs.proposal_block_parts = NULL;
         }
     }
     /* :1556-1558 — PublishEventUnlock, not ported. */
@@ -2611,8 +2685,18 @@ int cmt_cs_enter_commit(cmt_cs_t *cs, int64_t height, int32_t commit_round)
             cs->rs.proposal_block_parts = NULL;   /* clear before taking  */
             rc = cs_new_part_set_from_header(cs, &block_id.part_set_header,
                                              &cs->rs.proposal_block_parts);
-            if (rc != CMT_OK) {                                  /* :1647 */
+            if (rc == CMT_FAULT) {                               /* :1647 */
                 return rc;
+            }
+            if (rc != CMT_OK) {
+                /* The bound refused it. Both names stay NULL and the
+                 * `defer` below still runs: step Commit, commit_round
+                 * set, tryFinalizeCommit — which will decline at :1672
+                 * because we have no block, exactly as it declines for a
+                 * commit whose block has not arrived. */
+                cs_part_set_bound_refused("enterCommit",
+                                          &block_id.part_set_header);
+                cs->rs.proposal_block_parts = NULL;
             }
             /* :1649-1651 — PublishEventValidBlock, not ported. */
             if (cs->listener.on_valid_block != NULL) {
@@ -2707,8 +2791,29 @@ int cmt_cs_finalize_commit(cmt_cs_t *cs, int64_t height)
         return CMT_FAULT;
     }
     if (!cmt_part_set_has_header(block_parts, &block_id.part_set_header)) {
-        /* :1707 — panic. NODE-LOCAL → CMT_FAULT: enterCommit installed
-         * these parts against this same header (:1637-1647). */
+        /* :1707 — panic("expected ProposalBlockParts header to be commit
+         * header"). CMT_FAULT, IDENTICAL TO THE REFERENCE, and classed
+         * with R2C-3 ("the node may stop"), not as node-local.
+         *
+         * IT IS PEER-REACHABLE, and the earlier claim here — "enterCommit
+         * installed these parts against this same header" — is FALSE on
+         * the alias path (deviation register R3-AUD-13). The trigger:
+         * SAME BLOCK HASH, TWO PART SETS. This node locks alone on
+         * (H, psh1) in some round; in a later round a byzantine proposer
+         * re-proposes the SAME block X with a different byte layout, so
+         * its PartSetHeader is psh2 while its header hash is unchanged
+         * (the header hashes FIELDS, the part set hashes BYTES, and the
+         * proto3 decoder accepts either field order — cmt_pb_store.c
+         * :2234-2237). The unlocked honest nodes prevote (H, psh2); this
+         * node relocks at :1509-1518, which sets LockedRound but does NOT
+         * refresh LockedBlockParts, so it still holds psh1's parts and
+         * precommits (H, psh2). On +2/3, enterCommit ALIASES those psh1
+         * parts onto ProposalBlockParts (:1629-1632) and its :1636 test
+         * is false, so :1637-1647 never replaces them — and this line
+         * fires. One byzantine proposer plus one node locked alone is
+         * enough; the others commit and this node stops. The reference
+         * halts here for the same input, which is why the class is the
+         * reference's and not a port decision. */
         QGP_LOG_ERROR(LOG_TAG, "expected ProposalBlockParts header to be "
                                "commit header");
         return CMT_FAULT;
@@ -2966,7 +3071,16 @@ int cmt_cs_default_set_proposal(cmt_cs_t *cs, const cmt_proposal_t *proposal)
                                          &proposal->block_id.part_set_header,
                                          &cs->rs.proposal_block_parts);
         if (rc != CMT_OK) {                                      /* :1945 */
-            cs->rs.proposal = NULL;
+            if (rc != CMT_FAULT) {
+                /* The bound refused the header. This site is the only one
+                 * of the four that can answer the sender: a proposal is a
+                 * peer's message, so the REJECT goes back as the refusal
+                 * of THAT PROPOSAL, and nothing of it is stored. */
+                cs_part_set_bound_refused("setProposal",
+                                          &proposal->block_id.part_set_header);
+            }
+            cs->rs.proposal             = NULL;
+            cs->rs.proposal_block_parts = NULL;
             return rc;
         }
     }
@@ -3053,13 +3167,36 @@ int cmt_cs_add_proposal_block_part(cmt_cs_t *cs,
     }
     total_read = 0u;
     for (;;) {
-        size_t n = 0u;
+        size_t  n = 0u;
+        uint8_t probe;
 
-        if (total_read >= buf_cap) {
-            /* The assembled block is larger than the buffer the host
-             * sized for MaxBytes. PEER-REACHABLE → CMT_REJECT: the parts
-             * came from the wire, and :1999-2003 already refuses on
-             * ByteSize; this is the same refusal one layer down. */
+        if (total_read == buf_cap) {
+            /* The host's buffer is FULL. That is not yet a refusal:
+             * :1999-2003 refuses a block whose ByteSize is `> maxBytes`,
+             * so a block of EXACTLY maxBytes is accepted, and a host that
+             * sizes the buffer at MaxBytes (cmt_cs.h) must accept the same
+             * one. Probe ONE byte past the end to tell the two apart —
+             * `cmt_part_set_reader_read` reports CMT_PART_SET_EOF only for
+             * a read that delivered nothing (cmt_part_set.c:565-567), and
+             * a zero-length read cannot report it (:536-540).
+             *
+             * Through wave R3 W1 this test was `total_read >= buf_cap` at
+             * the TOP of the loop, before any read, so a block of exactly
+             * payload_cap bytes was refused where the reference accepts it
+             * (deviation register R3-AUD-9). */
+            rc = cmt_part_set_reader_read(&reader, &probe, 1u, &n);
+            if (rc == CMT_PART_SET_EOF) {
+                break;                      /* ended on the boundary */
+            }
+            if (rc != CMT_OK) {
+                return rc;                                   /* :2006-2008 */
+            }
+            if (n == 0u) {
+                break;
+            }
+            /* There really is more block than the host sized for.
+             * PEER-REACHABLE → CMT_REJECT: the parts came from the wire,
+             * and :1999-2003 refuses the same excess one layer up. */
             return CMT_REJECT;
         }
         rc = cmt_part_set_reader_read(&reader, buf + total_read,
@@ -3138,6 +3275,7 @@ int cmt_cs_handle_complete_proposal(cmt_cs_t *cs, int64_t block_height)
             if (rc == CMT_FAULT) {
                 return rc;
             }
+            cs_note_transition_refusal("enterPrevote", rc);
             if (has_two_thirds) {                                 /* :2059 */
                 return cmt_cs_enter_precommit(cs, block_height,
                                               cs->rs.round);      /* :2060 */
@@ -3253,11 +3391,24 @@ int cmt_cs_try_add_vote(cmt_cs_t *cs, const cmt_vote_t *vote,
     return CMT_REJECT;
 }
 
-/** The precommit-for-the-previous-height branch, :2137-2168. */
+/**
+ * The precommit-for-the-previous-height branch, :2137-2168.
+ *
+ * `conflict` is the SAME sink the same-height branch fills at the bottom
+ * of `cs_add_vote`, and it is filled here the same way. The reference
+ * gives this branch no special treatment: `cs.LastCommit.AddVote(vote)`
+ * (:2144) returns the same `(added, err)` pair, the branch returns it
+ * (:2150, :2167), and `tryAddVote` runs the WHOLE of :2072-2094 on it —
+ * including `evpool.ReportConflictingVotes` at :2094. Through wave R3 W1
+ * this parameter did not exist and the error died in a local, so an
+ * equivocation on the PREVIOUS height was never reported to the evidence
+ * pool (deviation register R3-AUD-1).
+ */
 static int cs_add_vote_last_commit(cmt_cs_t *cs, const cmt_vote_t *vote,
-                                   bool *out_added)
+                                   bool *out_added, cs_conflict_t *conflict)
 {
     cmt_vote_set_err_t err;
+    cmt_vote_t        *conflicting;
     bool               added;
     bool               has_all;
     int                rc;
@@ -3278,10 +3429,27 @@ static int cs_add_vote_last_commit(cmt_cs_t *cs, const cmt_vote_t *vote,
          * equivalent of the reference's crash. */
         return CMT_REJECT;
     }
+    /* Heap: a conflicting vote is ~9.5 KB (the same reason as :2229's). */
+    conflicting = (cmt_vote_t *)calloc(1u, sizeof(*conflicting));
+    if (conflicting == NULL) {
+        return CMT_FAULT;
+    }
     added = false;
     err   = CMT_VOTE_SET_ERR_NONE;
-    rc = cmt_vote_set_add_vote(cs->rs.last_commit, vote, &added, &err, NULL);
+    rc = cmt_vote_set_add_vote(cs->rs.last_commit, vote, &added, &err,
+                               conflicting);
     *out_added = added;                                          /* :2144 */
+    if (err == CMT_VOTE_SET_ERR_CONFLICTING_VOTES && conflict != NULL) {
+        /* vote_set.go:236 — NewConflictingVoteError(conflicting, vote):
+         * VoteA is the one already in the set, VoteB the caller's. Filled
+         * BEFORE the `added` test, because vote_set.go:326 returns
+         * `(true, conflicting)` on the peer-maj23 path — the same reason
+         * `cmt_cs_try_add_vote` tests the conflict regardless of `added`. */
+        conflict->present = true;
+        conflict->vote_a  = *conflicting;
+        conflict->vote_b  = *vote;
+    }
+    free(conflicting);
     if (!added) {
         /* :2145-2151 — not added; a duplicate when there is no error. */
         return rc;
@@ -3427,8 +3595,16 @@ static int cs_add_vote_prevote(cmt_cs_t *cs, const cmt_vote_t *vote,
                 rc = cs_new_part_set_from_header(
                         cs, &block_id.part_set_header,
                         &cs->rs.proposal_block_parts);           /* :2299 */
-                if (rc != CMT_OK) {
+                if (rc == CMT_FAULT) {
                     return rc;
+                }
+                if (rc != CMT_OK) {
+                    /* The bound refused it. Both names stay NULL and the
+                     * arm runs on to the :2310-2328 transitions, which is
+                     * where this node's round actually moves. */
+                    cs_part_set_bound_refused("addVote/prevote",
+                                              &block_id.part_set_header);
+                    cs->rs.proposal_block_parts = NULL;
                 }
             }
             if (cs->listener.on_valid_block != NULL) {
@@ -3507,15 +3683,18 @@ static int cs_add_vote_precommit(cmt_cs_t *cs, const cmt_vote_t *vote,
         if (rc == CMT_FAULT) {
             return rc;
         }
+        cs_note_transition_refusal("enterNewRound", rc);
         rc = cmt_cs_enter_precommit(cs, height, vote->round);    /* :2343 */
         if (rc == CMT_FAULT) {
             return rc;
         }
+        cs_note_transition_refusal("enterPrecommit", rc);
         if (block_id.hash_len != 0u) {                           /* :2345 */
             rc = cmt_cs_enter_commit(cs, height, vote->round);   /* :2346 */
             if (rc == CMT_FAULT) {
                 return rc;
             }
+            cs_note_transition_refusal("enterCommit", rc);
             if (cs->config->skip_timeout_commit) {               /* :2347 */
                 has_all = false;
                 if (cmt_vote_set_has_all(precommits, &has_all) != CMT_OK) {
@@ -3574,7 +3753,7 @@ static int cs_add_vote(cmt_cs_t *cs, const cmt_vote_t *vote,
      * atlas-dec-7495d3372e004b24b4f6cc7bff5caf07. */
     if (cs->rs.height > 0 && vote->height == cs->rs.height - 1 &&
         vote->type == CMT_PB_MSG_TYPE_PRECOMMIT) {               /* :2137 */
-        return cs_add_vote_last_commit(cs, vote, out_added);
+        return cs_add_vote_last_commit(cs, vote, out_added, conflict);
     }
     if (vote->height != cs->rs.height) {                         /* :2172 */
         /* :2173-2174 — a height mismatch is ignored, not an error. */
@@ -4003,8 +4182,36 @@ int cmt_cs_read_replay_message(cmt_cs_t *cs,
          * comparison never runs and there is nothing to port. */
         return CMT_OK;
 
-    case CMT_PB_WAL_MSG_INFO:
+    case CMT_PB_WAL_MSG_INFO: {
+        int rc;
+
+        /* THE GATE cmt_msgs.h DEMANDS OF EVERY CALLER. In the reference
+         * the record cannot get this far unvalidated: replay.go:147
+         * `dec.Decode()` → wal.go:410 `WALFromProto` → msgs.go:316
+         * `MsgFromProto`, whose last act is `pb.ValidateBasic()`
+         * (msgs.go:232-234); a failure becomes a DataCorruptionError at
+         * wal.go:411-413. This port's `cmt_msg_from_proto` stops short of
+         * that line, so the gate runs here, as its own step.
+         *
+         * A FAILURE IS WAL CORRUPTION, NOT A PEER'S MESSAGE: every record
+         * on this file was written by this node, and every message it
+         * accepted from a peer passed this same gate at cmt_conr.c (:243)
+         * before it was queued. So the class is CMT_FAULT and not
+         * CMT_REJECT — D-15 rev 6 (atlas-dec-c0bfc5344204b9282ceaaa5e06-
+         * 042350): corruption stops the node. The reference's repair path
+         * (state.go:338-386: stop the WAL, copy it to `.CORRUPTED`,
+         * `repairWalFile` at :374, retry catchupReplay ONCE) is NOT
+         * ported, so there is nothing else to do with a record that
+         * fails. Deviation register R3-AUD-5. */
+        rc = cmt_msg_validate_basic(&msg->msg.u.msg_info.msg);
+        if (rc != CMT_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "replay: WAL MsgInfo failed ValidateBasic "
+                                   "(kind %d, rc %d) — the WAL is corrupt",
+                          (int)msg->msg.u.msg_info.msg.kind, rc);
+            return CMT_FAULT;
+        }
         return cmt_cs_handle_msg(cs, &msg->msg.u.msg_info);   /* replay.go:82 */
+    }
 
     case CMT_PB_WAL_TIMEOUT_INFO:
         /* replay.go:85 — against the LIVE round state, not a snapshot. */
@@ -4129,6 +4336,47 @@ int cmt_cs_init(cmt_cs_t *cs,
 
     if (cs == NULL || config == NULL || state == NULL || host == NULL ||
         slots == NULL || state_storage == NULL || scratch_storage == NULL) {
+        return CMT_FAULT;
+    }
+    /* EVERY ROW OF cmt_cs_host_t IS MANDATORY (cmt_cs.h, "THE HOST").
+     * The reference has no nil rows to check: `blockExec`, `blockStore`,
+     * `evpool` and `privValidator` are interfaces the constructor is
+     * handed (state.go:154-172), and the one field that DOES have a
+     * default is `wal`, which is `nilWAL{}` at :174 — a no-op
+     * implementation (wal.go:426-434), not a nil pointer. A C host that
+     * leaves a row NULL therefore has no reference counterpart at all,
+     * and the sites that call it do not test it (:427, :449, :451, :481,
+     * :501 …): the process would segfault mid-round instead of failing at
+     * construction. NODE-LOCAL → CMT_FAULT here, where the caller can
+     * still do something about it. Deviation register R3-AUD-7. */
+    if (host->create_proposal_block == NULL ||
+        host->process_proposal == NULL ||
+        host->validate_block == NULL ||
+        host->apply_verified_block == NULL ||
+        host->extend_vote == NULL ||
+        host->verify_vote_extension == NULL ||
+        host->bs_height == NULL ||
+        host->bs_load_block_commit == NULL ||
+        host->bs_load_block_extended_commit == NULL ||
+        host->bs_load_block_meta == NULL ||
+        host->bs_load_seen_commit == NULL ||
+        host->bs_save_block == NULL ||
+        host->bs_save_block_with_extended_commit == NULL ||
+        host->report_conflicting_votes == NULL ||
+        host->sign_vote == NULL ||
+        host->sign_proposal == NULL ||
+        host->get_pub_key == NULL ||
+        host->wal_write == NULL ||
+        host->wal_write_sync == NULL ||
+        host->wal_flush_and_sync == NULL ||
+        host->wal_search_end_height == NULL ||
+        host->wal_read_next == NULL ||
+        host->decode_block == NULL ||
+        host->now == NULL ||
+        host->timer_arm == NULL ||
+        host->timer_disarm == NULL) {
+        QGP_LOG_ERROR(LOG_TAG, "cmt_cs_init: the host left a mandatory row "
+                               "NULL (all 26 of cmt_cs_host_t are required)");
         return CMT_FAULT;
     }
     if (state_storage == scratch_storage) {

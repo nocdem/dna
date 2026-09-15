@@ -54,8 +54,8 @@
  *
  * Reference @709fd12b: consensus/replay.go, 565 lines, SHA-256
  * 5609c4d4174a536389cb2814bac09557a66e3299292141b54c635e31425284fe.
- * Governing records: umbrella rev 3 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
- * D-15 rev 5 (atlas-dec-c0bfc5344204b9282ceaaa5e06042350, PROPOSED).
+ * Governing records: umbrella rev 5 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
+ * D-15 rev 6 (atlas-dec-c0bfc5344204b9282ceaaa5e06042350, APPROVED).
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT

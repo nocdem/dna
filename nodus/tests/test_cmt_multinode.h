@@ -1507,16 +1507,19 @@ static int mn_query_maj23(mn_node_t *i, mn_node_t *j, mn_link_t *link)
  *     fires the first time this runs after it was armed;
  *   · real ticker (ticker.go): whatever is armed, once the node has
  *     nothing else to do (the determinization of "its duration elapsed").
- * `cmt_cs_on_timer_expired` is a FAULT while a tock is pending
- * (cmt_cs.c:1361-1366), so that is checked first. The fixture's own
- * `tc_fire_timeout` is NOT used: it drains, and a turn is one step.
+ * `cmt_cs_on_timer_expired` queues up to CMT_CS_TOCK_QUEUE_SIZE tocks
+ * (ticker.go:11) and FAULTs on the eleventh. This harness delivers ONE
+ * timeout per turn and lets the node consume it before arming again, so
+ * it never queues a second; the `tock_q_len` test keeps that property
+ * explicit rather than relying on it. The fixture's own `tc_fire_timeout`
+ * is NOT used: it drains, and a turn is one step.
  */
 static int mn_timers(mn_node_t *node)
 {
     tc_t     *tc = node->tc;
     cmt_cs_t *cs = tc->cs;
 
-    if (!tc->armed || cs->tock_pending) {
+    if (!tc->armed || cs->tock_q_len != 0u) {
         return 0;
     }
     if (node->real_ticker) {
@@ -1574,7 +1577,7 @@ static void mn_dump(const mn_net_t *net, const char *why)
                 i, node->byzantine ? " (byzantine)" : "",
                 (long long)cs->rs.height, (int)cs->rs.round,
                 (unsigned)cs->rs.step, cs->peer_q_len, cs->internal_q_len,
-                cs->tock_pending ? 1 : 0, tc->armed ? 1 : 0,
+                (int)cs->tock_q_len, tc->armed ? 1 : 0,
                 (unsigned)cs->ticker.ti.step, tc->apply_calls,
                 (long long)tc->applied_height, (long long)tc->store_height,
                 tc->recs_n, tc->decode_misses, tc->conflict_calls,

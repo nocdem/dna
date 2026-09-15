@@ -92,6 +92,18 @@
  *     validates a height-2 block whose time is the weighted median of four
  *     DIFFERENT precommit timestamps (state/validation.go:120-140; see
  *     item 16 for what that does and does not prove).
+ *   · (W1.7) THREE REFUSALS THE REFERENCE DOES NOT HAVE BEHAVE. They are
+ *     the last three scenarios and they have NO Go counterpart, because
+ *     each turns on a bound this port added:
+ *       — a polka for a BlockID whose part count is above
+ *         CMT_PART_SET_MAX_PARTS still produces the nil precommit of
+ *         :1560 and still advances the step (R3-AUD-10, ruling (b));
+ *       — an equivocation on the PREVIOUS height, in the LastCommit
+ *         branch of :2137-2168, reaches the evidence pool exactly as a
+ *         same-height one does (R3-AUD-1);
+ *       — a block whose assembled size EQUALS the host's payload buffer
+ *         is accepted and one byte more is refused, matching
+ *         :1999-2003's `> maxBytes` (R3-AUD-9).
  *
  * ── WHAT IT REQUIRES ───────────────────────────────────────────────────
  * COMPILE FLAGS: `CMT_SOFTWARE_VERSION`, which the nodus build defines
@@ -223,9 +235,14 @@
  *      says nothing about extensions in blocks — the reference does not
  *      either.
  *  18. `TC_PAYLOAD_CAP` IS DELIBERATELY UNDER-PROVISIONED
- *      (test_cmt_common.h's slot storage), so the MaxBytes refusal INSIDE
- *      the part-assembly path (cmt_cs.c's payload-buffer overrun REJECT)
- *      is never the check that fires; the earlier ByteSize refusal is.
+ *      (test_cmt_common.h's slot storage), so in every ported scenario the
+ *      MaxBytes refusal INSIDE the part-assembly path (cmt_cs.c's
+ *      payload-buffer overrun REJECT) is never the check that fires; the
+ *      earlier ByteSize refusal is. ONE port-only scenario,
+ *      `block_of_exactly_payload_cap`, makes that bound observable on
+ *      purpose by shrinking `slots->payload_cap` to the block's assembled
+ *      size — and it says nothing about the MaxBytes check, which is the
+ *      subject of `oversized_block`.
  *  19. ONE SCENARIO WALKS A PATH THE REFERENCE'S OWN RUN DOES NOT, BECAUSE
  *      OF FIXTURE ITEM 2. `s_start_next_height_correctly_after_timeout`
  *      pokes the tx notifier while the node waits out timeoutCommit
@@ -3751,6 +3768,232 @@ static int s_mempool_progress_in_higher_round(void)
     return 0;
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+ * PORT-ONLY scenarios — no reference test row exists for any of these,
+ * because each turns on a refusal the reference does not have.
+ * ════════════════════════════════════════════════════════════════════ */
+
+/**
+ * NO REFERENCE TEST — register R3-AUD-10, ruling (b) of
+ * atlas-dec-b02c8de1f52854b20dbfd64f6c987b34.
+ *
+ * WHAT IT PROVES: that when +2/3 prevote for a BlockID whose
+ * PartSetHeader.Total is above this port's part-set bound, the node
+ * COMPLETES the round — it signs the nil precommit of state.go:1560 and
+ * advances its step — instead of stopping with a half-cleared round
+ * state.
+ *
+ * WHY THE INPUT EXISTS AT ALL: `types.NewPartSetFromHeader` allocates
+ * whatever `Total` asks, so the reference has no refusal here; this port
+ * bounds it (cmt_part_set.c:276-282) because a wire `Total` must not size
+ * an allocation. A byzantine two thirds can therefore drive an honest
+ * node into a path the reference never walks. Ruling (b): log once, leave
+ * both names NULL, and carry on with the round.
+ *
+ * RED at 7f21263c: `cmt_cs_enter_precommit` returned CMT_REJECT from
+ * cmt_cs.c:2490 with LockedRound/LockedBlock/ProposalBlock already
+ * cleared, so NO nil precommit was signed, the step never left
+ * PrevoteWait, and the caller's FAULT-only filter dropped the REJECT
+ * without a log line. Both assertions below failed.
+ *
+ * HOW IT CAN LIE: it drives ONE node. That the ROUND recovers across a
+ * cluster is the separate multi-node obligation
+ * atlas-dec-247e5c0e9c6a5d02b258a026c34870cd, due before R3 W3.
+ */
+static int s_part_set_bound_continues_the_round(void)
+{
+    tc_t                 *tc = tc_alloc(4u, 1, 0);
+    uint8_t               hash[CMT_TMHASH_SIZE];
+    uint8_t               unknown[CMT_TMHASH_SIZE];
+    cmt_part_set_header_t huge;
+
+    S_CHECK(tc != NULL, "part_set_bound: setup");
+
+    S_STEP(tc_start_test_round(tc, 1, 0));
+    S_STEP(tc_ensure_new_round(tc, 1, 0));
+    S_STEP(tc_ensure_new_proposal(tc, 1, 0));
+    S_STEP(tc_proposal_block_hash(tc, hash));
+    S_STEP(tc_proposal_parts_header(tc, &huge));
+    S_STEP(tc_ensure_vote(tc, 1, 0, S_PREVOTE));
+    S_STEP(tc_validate_prevote(tc, 0, hash, sizeof(hash)));
+
+    /* A BlockID for a block this node does not have, whose part count is
+     * one above the bound. The header keeps the real root hash, so the
+     * BlockID is well formed and only the COUNT is impossible. */
+    memcpy(unknown, hash, sizeof(unknown));
+    unknown[0] = (uint8_t)(unknown[0] ^ 0xFFu);
+    huge.total = (uint32_t)CMT_PART_SET_MAX_PARTS + 1u;
+    S_CHECK(cmt_new_part_set_from_header(&huge, tc->slots->parts[0],
+                                         tc->slots->parts_cap[0],
+                                         &tc->slots->part_sets[0])
+                == CMT_REJECT,
+            "part_set_bound: the header must actually be refused");
+    memset(&tc->slots->part_sets[0], 0, sizeof(tc->slots->part_sets[0]));
+
+    /* +2/3 prevotes for it (state.go:2299 builds the part set, and this
+     * is the site that refuses). */
+    S_STEP(tc_sign_add_votes_range(tc, S_PREVOTE, unknown, sizeof(unknown),
+                                   &huge, false, 1u, 4u));
+    S_CHECK(tc->cs->rs.proposal_block == NULL &&
+            tc->cs->rs.proposal_block_parts == NULL,
+            "part_set_bound: a refused header must leave BOTH names NULL");
+    S_CHECK(tc->cs->rs.height == 1 && tc->cs->rs.round == 0,
+            "part_set_bound: the round state moved");
+
+    /* The proposal is not complete (no parts), so :2319-2320 waits out
+     * the prevote timeout, and THAT is what enters precommit. */
+    S_STEP(tc_ensure_new_timeout(tc, 1, 0,
+                                 cmt_config_prevote(&tc->config, 0),
+                                 CMT_ROUND_STEP_PREVOTE_WAIT));
+    S_STEP(tc_fire_timeout(tc));
+
+    /* :1542-1560 — unlock, arrange to fetch the block we do not have,
+     * and precommit NIL. The arrangement fails; the nil precommit and
+     * the step do not. */
+    S_STEP(tc_ensure_vote(tc, 1, 0, S_PRECOMMIT));
+    S_STEP(tc_validate_precommit(tc, 0, -1, NULL, 0u, NULL, 0u));
+    S_CHECK(tc->cs->rs.step >= CMT_ROUND_STEP_PRECOMMIT,
+            "part_set_bound: the step did not advance past the refusal");
+    S_CHECK(tc->cs->rs.proposal_block_parts == NULL,
+            "part_set_bound: a part set appeared from somewhere");
+    S_CHECK(tc->apply_calls == 0, "part_set_bound: committed something");
+    tc_release(tc);
+    return 0;
+}
+
+/**
+ * NO REFERENCE TEST ROW — the reference reaches this through
+ * `TestByzantine*`; register R3-AUD-1.
+ *
+ * WHAT IT PROVES: that an equivocation on the PREVIOUS height — the
+ * LastCommit branch of state.go:2137-2168 — is reported to the evidence
+ * pool, exactly as the same-height branch is. In the reference the two
+ * are one code path: :2144 returns `(added, err)`, :2150/:2167 hand that
+ * err back, and `tryAddVote` runs :2072-2094 on it, including
+ * `evpool.ReportConflictingVotes` at :2094.
+ *
+ * WHY IT IS REACHABLE: after committing height H the node sits in
+ * RoundStepNewHeight for timeoutCommit (state.go:2138 is the gate), and
+ * any peer may deliver a second, conflicting precommit for H from a
+ * validator that already precommitted there.
+ *
+ * RED at 7f21263c: `cs_add_vote_last_commit` took no conflict sink, the
+ * vote set's error died in a local, and `report_conflicting_votes` was
+ * NEVER called on this path — the final assertion read 0.
+ */
+static int s_last_commit_equivocation_is_reported(void)
+{
+    tc_t                 *tc = tc_alloc(4u, 1, 0);
+    uint8_t               hash[CMT_TMHASH_SIZE];
+    cmt_part_set_header_t psh;
+    cmt_part_set_header_t zero;
+
+    S_CHECK(tc != NULL, "last_commit_equivocation: setup");
+    tc_zero_psh(&zero);
+
+    /* Commit height 1 at round 0. */
+    S_STEP(tc_start_test_round(tc, 1, 0));
+    S_STEP(tc_ensure_new_round(tc, 1, 0));
+    S_STEP(tc_ensure_new_proposal(tc, 1, 0));
+    S_STEP(tc_proposal_block_hash(tc, hash));
+    S_STEP(tc_proposal_parts_header(tc, &psh));
+    S_STEP(tc_ensure_vote(tc, 1, 0, S_PREVOTE));
+    S_STEP(tc_sign_add_votes_range(tc, S_PREVOTE, hash, sizeof(hash),
+                                   &psh, false, 1u, 4u));
+    S_STEP(tc_ensure_vote(tc, 1, 0, S_PRECOMMIT));
+    S_STEP(tc_sign_add_votes_range(tc, S_PRECOMMIT, hash, sizeof(hash),
+                                   &psh, true, 1u, 4u));
+    S_CHECK(tc->apply_calls == 1, "last_commit_equivocation: no commit");
+    S_CHECK(tc->cs->rs.height == 2 &&
+            tc->cs->rs.step == CMT_ROUND_STEP_NEW_HEIGHT,
+            "last_commit_equivocation: not in the timeoutCommit window");
+    S_CHECK(tc->cs->rs.last_commit != NULL,
+            "last_commit_equivocation: no LastCommit to conflict with");
+    S_CHECK(tc->conflict_calls == 0,
+            "last_commit_equivocation: something already reported");
+
+    /* vs2's stub was never incremented, so it still signs for height 1
+     * round 0 — and it already precommitted the block there. A NIL
+     * precommit for the same height and round is the equivocation. */
+    S_CHECK(tc->vss[1].height == 1 && tc->vss[1].round == 0,
+            "last_commit_equivocation: the stub moved");
+    S_STEP(tc_sign_vote(tc, &tc->vss[1], S_PRECOMMIT, NULL, 0u, &zero,
+                        false, tc->sv));
+    S_STEP(tc_add_vote(tc, tc->sv));
+    S_STEP(tc_drain(tc));
+
+    S_CHECK(tc->conflict_calls == 1,
+            "last_commit_equivocation: the LastCommit branch did not report "
+            "the conflict to the evidence pool (state.go:2144 -> :2094)");
+    S_CHECK(tc->cs->rs.height == 2 &&
+            tc->cs->rs.step == CMT_ROUND_STEP_NEW_HEIGHT,
+            "last_commit_equivocation: the round state moved");
+    tc_release(tc);
+    return 0;
+}
+
+/**
+ * NO REFERENCE TEST — register R3-AUD-9. One case, driven twice.
+ *
+ * WHAT IT PROVES: that a block whose assembled size is EXACTLY the host's
+ * payload buffer is accepted, and one byte more is refused. The reference
+ * refuses on `ByteSize() > maxBytes` (state.go:1999-2003), so equality
+ * passes; a host that sizes its buffer at MaxBytes (cmt_cs.h) must accept
+ * the same block.
+ *
+ * RED at 7f21263c: the capacity test sat at the TOP of the assembly loop
+ * (`total_read >= buf_cap`) and fired before the read that would have
+ * reported EOF, so the exact-fit case was refused and
+ * `rs.proposal_block` stayed NULL.
+ *
+ * HOW IT CAN LIE: the fixture's normal TC_PAYLOAD_CAP is far above any
+ * block these scenarios build, so this is the only scenario in the file
+ * where the buffer bound is observable at all; it is made observable by
+ * SHRINKING the slots to the block's own size.
+ */
+static int s_payload_cap_case(int64_t delta, bool expect_block)
+{
+    tc_t                 *tc = tc_alloc(2u, 1, 0);
+    cmt_part_set_t       *parts = NULL;
+    int64_t               size;
+    size_t                i;
+
+    S_CHECK(tc != NULL, "payload_cap: setup");
+
+    /* The round-1 block, built by the stub that proposes there. */
+    S_STEP(tc_decide_proposal(tc, 1u, 1, 1, tc->prop, NULL, &parts));
+    size = cmt_part_set_byte_size(parts);
+    S_CHECK(size > 1, "payload_cap: an empty block proves nothing");
+
+    for (i = 0u; i < (size_t)CMT_CS_BLOCK_SLOTS; i++) {
+        tc->slots->payload_cap[i] = (size_t)(size + delta);
+    }
+
+    tc_increment_round(tc, 1u, 2u);
+    S_STEP(tc_set_proposal_and_block(tc, tc->prop, parts));
+    S_STEP(tc_start_test_round(tc, 1, 1));
+
+    if (expect_block) {
+        S_CHECK(tc->cs->rs.proposal_block != NULL,
+                "payload_cap: a block of EXACTLY the buffer size was "
+                "refused — state.go:1999-2003 accepts equality");
+    } else {
+        S_CHECK(tc->cs->rs.proposal_block == NULL,
+                "payload_cap: a block ONE BYTE over the buffer was "
+                "assembled anyway");
+    }
+    tc_release(tc);
+    return 0;
+}
+
+static int s_block_of_exactly_payload_cap(void)
+{
+    if (s_payload_cap_case(0, true) != 0) {
+        return 1;
+    }
+    return s_payload_cap_case(-1, false);
+}
+
 /* ══ the runner ═══════════════════════════════════════════════════════ */
 
 typedef struct {
@@ -3817,7 +4060,12 @@ int main(void)
         { "mempool_progress_after_create_empty_blocks_interval",
           s_mempool_progress_after_create_empty_blocks_interval },
         { "mempool_progress_in_higher_round",
-          s_mempool_progress_in_higher_round }
+          s_mempool_progress_in_higher_round },
+        { "part_set_bound_continues_the_round",
+          s_part_set_bound_continues_the_round },
+        { "last_commit_equivocation_is_reported",
+          s_last_commit_equivocation_is_reported },
+        { "block_of_exactly_payload_cap",     s_block_of_exactly_payload_cap }
     };
     size_t i;
     size_t n = sizeof(cases) / sizeof(cases[0]);

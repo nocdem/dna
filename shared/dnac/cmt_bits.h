@@ -20,16 +20,36 @@
  *    line ranges.
  * 2. FIXED CAPACITY instead of a heap slice. Go grows `Elems` on demand;
  *    here the array is inline and bounded. The bound is DERIVED, not
- *    chosen: the largest BitArray any consensus path builds is a part-set
- *    bit array, one bit per block part, and
- *        MaxBlockPartsCount = MaxBlockSizeBytes / BlockPartSizeBytes + 1
- *                           = 104857600 / 65536 + 1
- *                           = 1601                       (types/params.go:16, :19, :22)
- *    so CMT_BITS_MAX_BITS = 1601 and CMT_BITS_MAX_ELEMS = 26. A vote bit
- *    array is far smaller — one bit per validator, bounded by
- *    DNA_MAX_ACTIVE_VALIDATORS = 128 (shared/dnac/ledger_ids.h:103) = 2
- *    elems. Anything larger than the derived bound is REFUSED rather than
+ *    chosen: it is the WIDEST array a reference peer may legally put on
+ *    the wire, which is the ceiling the reference's own ValidateBasic
+ *    functions enforce on the two bit arrays that travel as a message
+ *    field of their own —
+ *        MaxVotesCount = 10000                        (types/vote_set.go:18)
+ *    refused above by ProposalPOLMessage.ValidateBasic (reactor.go:1663)
+ *    and VoteSetBitsMessage.ValidateBasic (:1806) — so
+ *    CMT_BITS_MAX_BITS = 10000 and CMT_BITS_MAX_ELEMS = 157.
+ *
+ *    THE CAPACITY IS NOT A CONSENSUS RULE, and the two narrower arrays
+ *    keep their own reference bound above it:
+ *      · a PART-SET bit array is one bit per block part, and
+ *          MaxBlockPartsCount = MaxBlockSizeBytes / BlockPartSizeBytes + 1
+ *                             = 104857600 / 65536 + 1
+ *                             = 1601                 (types/params.go:16, :19, :22)
+ *        which CMT_PART_SET_MAX_PARTS (cmt_part_set.h) and
+ *        NewValidBlockMessage.ValidateBasic (reactor.go:1614,
+ *        cmt_conr.c) enforce, unchanged by this capacity;
+ *      · a VOTE bit array is one bit per validator, bounded by
+ *        DNA_MAX_ACTIVE_VALIDATORS = 128 (shared/dnac/ledger_ids.h:103)
+ *        = 2 elems.
+ *    Anything larger than the derived bound is REFUSED rather than
  *    truncated; a wire value cannot make this module allocate.
+ *
+ *    Through wave R3 W1 this capacity was MaxBlockPartsCount (1601, 26
+ *    words), which cut a reference peer's LEGAL 1602..10000-bit
+ *    ProposalPOL or VoteSetBits off at the decoder and left the two
+ *    10000 gates of reactor.go:1663/:1806 dead (deviation register
+ *    R3-AUD-19). Raised to MaxVotesCount by atlas-dec-b02c8de1f52854b20-
+ *    dbfd64f6c987b34; the measured cost is ~1 KB per array.
  *
  * ── Go's nil *BitArray ─────────────────────────────────────────────────
  * Half of these methods have a documented nil behaviour (Size 0, GetIndex
@@ -60,10 +80,12 @@
  *
  * Reference @709fd12b: libs/bits/bit_array.go, 497 lines,
  * de70791bae05efc5c2e059f56c6582b7cbe700531dfb73c0e53077cfaa297d49.
- * Governing records: umbrella rev 3 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
+ * Governing records: umbrella rev 5 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
  * INVARIANT (atlas-dec-7495d3372e004b24b4f6cc7bff5caf07),
  * chunking rev 2 (atlas-dec-6d35670369b69df4439cb720036fa2d7 — the part
- * set is un-parked, which is why the 1601-bit bound is the live one).
+ * set is un-parked, which is why the 1601-part bound is the live one for
+ * a PART-SET array), capacity = MaxVotesCount
+ * (atlas-dec-b02c8de1f52854b20dbfd64f6c987b34).
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -88,15 +110,24 @@ extern "C" {
 #define CMT_BITS_MAX_BLOCK_SIZE_BYTES  104857600
 /** cometbft@709fd12b types/params.go:19 — `BlockPartSizeBytes`. */
 #define CMT_BITS_BLOCK_PART_SIZE_BYTES 65536
-/** cometbft@709fd12b types/params.go:22 — `MaxBlockPartsCount`. */
+/** cometbft@709fd12b types/params.go:22 — `MaxBlockPartsCount` = 1601.
+ *  The PART-SET bound (cmt_part_set.h's CMT_PART_SET_MAX_PARTS and
+ *  reactor.go:1614), NOT this module's capacity — see the header. */
 #define CMT_BITS_MAX_BLOCK_PARTS_COUNT \
     ((CMT_BITS_MAX_BLOCK_SIZE_BYTES / CMT_BITS_BLOCK_PART_SIZE_BYTES) + 1)
 
-/** The widest bit array this port will build or accept: 1601 bits. */
-#define CMT_BITS_MAX_BITS  CMT_BITS_MAX_BLOCK_PARTS_COUNT
-/** (1601 + 63) / 64 = 26 uint64 words. */
+/** cometbft@709fd12b types/vote_set.go:18 — `MaxVotesCount`. Restated
+ *  here, and only here, because cmt_vote_set.h names the same value
+ *  (CMT_MAX_VOTES_COUNT, :157) and including it would be a cycle: that
+ *  header reaches this one through cmt_bits.h. The two are checked
+ *  against each other by test_cmt_bits.c. */
+#define CMT_BITS_MAX_VOTES_COUNT 10000
+
+/** The widest bit array this port will build or accept: 10 000 bits. */
+#define CMT_BITS_MAX_BITS  CMT_BITS_MAX_VOTES_COUNT
+/** (10000 + 63) / 64 = 157 uint64 words. */
 #define CMT_BITS_MAX_ELEMS ((CMT_BITS_MAX_BITS + 63) / 64)
-/** (1601 + 7) / 8 = 201 bytes, the widest cmt_bits_bytes output. */
+/** (10000 + 7) / 8 = 1250 bytes, the widest cmt_bits_bytes output. */
 #define CMT_BITS_MAX_BYTES ((CMT_BITS_MAX_BITS + 7) / 8)
 
 /** A constructor or combinator returned the reference's nil *BitArray.

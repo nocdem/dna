@@ -23,6 +23,14 @@
  *   · RECEIVE BEFORE AddPeer IS FINE AND RECEIVE BEFORE InitPeer IS A
  *     FAULT (:248-305) — the port's reading of the reference's panic at
  *     reactor.go:255 as NODE-LOCAL.
+ *   · (W1.7) TWO PORT-ONLY REFUSALS, neither with a Go test row:
+ *     `SetHasProposal` (reactor.go:1096-1119) applies NOTHING when the
+ *     bit array it needs cannot be built — the reference's constructor
+ *     cannot fail, so it writes the flag and the header first, and in
+ *     that order a refusal left the PeerState half applied (R3-AUD-21);
+ *     and a reactor that has been STOPPED refuses to start again, which
+ *     is libs/service/service.go:132-137's ErrAlreadyStopped, since
+ *     `Reset` (:200-215) is not ported (R3-AUD-20).
  *   · SwitchToConsensus REFUSES TO START ON A STORE THAT LACKS THE VOTE
  *     EXTENSIONS ITS PARAMS REQUIRE, and starts otherwise (:309-415) — the
  *     five rows, CMT_FAULT where the reference panics.
@@ -1587,7 +1595,7 @@ static int r_timers(r_node_t *node)
     tc_t     *tc = node->tc;
     cmt_cs_t *cs = tc->cs;
 
-    if (!node->started || !tc->armed || cs->tock_pending) {
+    if (!node->started || !tc->armed || cs->tock_q_len != 0u) {
         return 0;
     }
     if (cs->ticker.ti.step != CMT_ROUND_STEP_NEW_HEIGHT) {
@@ -1674,7 +1682,7 @@ static void r_dump(const r_net_t *net, const char *why)
                 i, node->started ? "" : " (not started)",
                 (long long)cs->rs.height, (int)cs->rs.round,
                 (unsigned)cs->rs.step, cs->peer_q_len, cs->internal_q_len,
-                cs->tock_pending ? 1 : 0, tc->armed ? 1 : 0,
+                (int)cs->tock_q_len, tc->armed ? 1 : 0,
                 (unsigned)cs->ticker.ti.step, node->fired ? 1 : 0,
                 tc->apply_calls, (long long)tc->applied_height,
                 (long long)node->store_height, tc->recs_n, tc->decode_misses,
@@ -2078,12 +2086,11 @@ static int s_new_round_step_validate_height(void)
  * reference asserts the error STRING (:904-905), this port asserts the
  * code and names the string at each row.
  *
- * Row #5 (:885-886): `NewBitArray(MaxBlockPartsCount + 1)` = 1602 bits.
- * `cmt_bits_new` REFUSES above 1601 (cmt_bits.h:96, :129: the derived
- * bound), so the array is HAND-BUILT here — {bits 1602, 26 words}, which
- * the struct can hold — bypassing the constructor. The reference's error
- * for the row is the SIZE MISMATCH of :1609 (1602 ≠ 1), not the
- * "too big" of :1614, and that is what is asserted.
+ * Row #5 (:885-886): `NewBitArray(MaxBlockPartsCount + 1)` = 1602 bits,
+ * built with the constructor — 1602 is below the module's capacity
+ * (MaxVotesCount, cmt_bits.h) and only above the PART-SET bound. The
+ * reference's error for the row is the SIZE MISMATCH of :1609 (1602 ≠ 1),
+ * not the "too big" of :1614, and that is what is asserted.
  */
 static int s_new_valid_block_validate_basic(void)
 {
@@ -2121,12 +2128,11 @@ static int s_new_valid_block_validate_basic(void)
             break;                                /* "empty blockParts" */
         case 5:
         default:
-            /* :885 — 1602 bits, hand-built (see above). */
+            /* :885 — 1602 bits (see above). */
             memset(&m.block_parts, 0, sizeof(m.block_parts));
-            m.block_parts.bits    = (int)CMT_MAX_BLOCK_PARTS_COUNT + 1;
-            m.block_parts.n_elems = cmt_bits_num_elems(m.block_parts.bits);
-            R_HCHECK(m.block_parts.n_elems <= (size_t)CMT_BITS_MAX_ELEMS,
-                     "1602 bits fit the struct's 26 words");
+            R_HCHECK(cmt_bits_new(&m.block_parts,
+                                  (int)CMT_MAX_BLOCK_PARTS_COUNT + 1) == CMT_OK,
+                     "1602 bits fit the module's capacity");
             break;                                /* "size 1602 not equal to
                                                    *  BlockPartSetHeader.Total 1" */
         }
@@ -2143,22 +2149,30 @@ static int s_new_valid_block_validate_basic(void)
 /**
  * cometbft@709fd12b consensus/reactor_test.go:911-942 —
  * `TestProposalPOLMessageValidateBasic`. Base (:929-933): Height 1,
- * POLRound 1, POL = NewBitArray(1). Five rows.
+ * POLRound 1, POL = NewBitArray(1). Five rows, all five drivable.
  *
- * Row #4 (:921-922): `NewBitArray(MaxVotesCount + 1)` = 10001 bits is
- * NOT representable here — the widest `cmt_bit_array_t` is 1601 bits
- * (cmt_bits.h:21-32), and both `cmt_bits_new` and the wire decoder
- * refuse above it one layer BEFORE ValidateBasic. WEAKER: the row
- * asserts that refusal (the constructor's CMT_REJECT) instead of
- * :1663's "proposalPOL bit array is too big: 10001, max: 10000".
+ * Row #4 (:921-922) is `NewBitArray(MaxVotesCount + 1)` = 10001 bits, and
+ * it is the REASON the :1663 gate exists. It is hand-built — 10001 bits
+ * need (10001+63)/64 = 157 words, which is exactly CMT_BITS_MAX_ELEMS, so
+ * the struct holds it while `cmt_bits_new` refuses it — and the refusal
+ * asserted is :1663's "proposalPOL bit array is too big: 10001, max:
+ * 10000", not a constructor bound.
+ *
+ * RED at 7f21263c: CMT_BITS_MAX_BITS was MaxBlockPartsCount (1601), so the
+ * 1602-bit case below could not be built at all and the 10001-bit case
+ * would not fit the struct's 26 words; the :1663 gate was DEAD (deviation
+ * register R3-AUD-19). Both are live at MaxVotesCount.
  */
 static int s_proposal_pol_validate_basic(void)
 {
     cmt_proposal_pol_msg_t m;
-    cmt_bit_array_t        wide;
+    cmt_bit_array_t        mid;
+    cmt_bit_array_t        back;
+    uint8_t                buf[CMT_BITS_MAX_ELEMS * 10 + 16];
+    size_t                 n = 0u;
     size_t                 i;
 
-    for (i = 0u; i < 4u; i++) {
+    for (i = 0u; i < 5u; i++) {
         int rc;
 
         memset(&m, 0, sizeof(m));
@@ -2166,7 +2180,7 @@ static int s_proposal_pol_validate_basic(void)
         m.proposal_pol_round = 1;                                /* :931 */
         R_HCHECK(cmt_bits_new(&m.proposal_pol, 1) == CMT_OK, "NewBitArray(1)"); /* :932 */
         m.has_proposal_pol = true;
-        switch (i) {                                             /* :916-919 */
+        switch (i) {                                             /* :916-922 */
         case 0:
             break;
         case 1:
@@ -2176,10 +2190,20 @@ static int s_proposal_pol_validate_basic(void)
             m.proposal_pol_round = -1;            /* "negative ProposalPOLRound" */
             break;
         case 3:
-        default:
             m.has_proposal_pol = false;           /* NewBitArray(0) = nil */
             memset(&m.proposal_pol, 0, sizeof(m.proposal_pol));
             break;                                /* "empty ProposalPOL bit array" */
+        case 4:
+        default:
+            /* :921 — NewBitArray(MaxVotesCount + 1), hand-built. */
+            memset(&m.proposal_pol, 0, sizeof(m.proposal_pol));
+            m.proposal_pol.bits    = (int)CMT_MAX_VOTES_COUNT + 1;
+            m.proposal_pol.n_elems = cmt_bits_num_elems(m.proposal_pol.bits);
+            R_HCHECK(m.proposal_pol.n_elems <= (size_t)CMT_BITS_MAX_ELEMS,
+                     "10001 bits fit the struct's 157 words");
+            break;                                /* "proposalPOL bit array is
+                                                   *  too big: 10001, max:
+                                                   *  10000" */
         }
         rc = cmt_proposal_pol_msg_validate_basic(&m);            /* :936 */
         if (i == 0u) {
@@ -2188,9 +2212,27 @@ static int s_proposal_pol_validate_basic(void)
             R_HCHECK(rc == CMT_REJECT, "ProposalPOL refused");
         }
     }
-    /* :920-923 — WEAKER (see above): the bound refuses the construction. */
-    R_HCHECK(cmt_bits_new(&wide, (int)CMT_MAX_VOTES_COUNT + 1) == CMT_REJECT,
-             "a 10001-bit array cannot be built (refused before ValidateBasic)");
+
+    /* Between the two bounds: 1602 bits is above MaxBlockPartsCount and
+     * below MaxVotesCount, so a reference peer may legally send it. It
+     * must survive the DECODER and then pass ValidateBasic. */
+    R_HCHECK(cmt_bits_new(&mid, (int)CMT_MAX_BLOCK_PARTS_COUNT + 1) == CMT_OK,
+             "1602 bits must be constructible");
+    R_HCHECK(cmt_bits_set_index(&mid, 1601, true) == 1, "highest bit");
+    R_HCHECK(cmt_bits_to_proto(&mid, buf, sizeof(buf), &n) == CMT_OK,
+             "ToProto(1602)");
+    R_HCHECK(cmt_bits_from_proto(buf, n, &back) == CMT_OK,
+             "the decoder must ACCEPT 1602 bits (cmt_pb.c:3206)");
+    R_HCHECK(back.bits == (int)CMT_MAX_BLOCK_PARTS_COUNT + 1, "width survives");
+    R_HCHECK(cmt_bits_get_index(&back, 1601) == 1, "bit 1601 survives");
+
+    memset(&m, 0, sizeof(m));
+    m.height             = 1;
+    m.proposal_pol_round = 1;
+    m.proposal_pol       = back;
+    m.has_proposal_pol   = true;
+    R_HCHECK(cmt_proposal_pol_msg_validate_basic(&m) == CMT_OK,
+             "a 1602-bit ProposalPOL must pass ValidateBasic (:1663 is 10000)");
     return 0;
 }
 
@@ -2567,6 +2609,123 @@ static int s_receive_panics_if_init_peer_hasnt_been_called_yet(void)
                           net->buf_scratch, len);                /* :294 */
     R_CHECK(rc == CMT_FAULT, "Receive before InitPeer is the :255 panic → FAULT");
     R_CHECK(net->nodes[0].stop_calls == 0, "not a peer error");
+    r_net_free(net);
+    return 0;
+}
+
+/**
+ * NO REFERENCE TEST — this is a PORT-ONLY refusal (register R3-AUD-21).
+ *
+ * WHAT IT PROVES: that `SetHasProposal` (reactor.go:1096-1119) leaves the
+ * PeerState UNTOUCHED when the bit array it needs cannot be built. The
+ * reference cannot reach the case — `bits.NewBitArray` allocates whatever
+ * `Total` asks and never fails — so it assigns `Proposal = true` (:1108)
+ * and the header (:1115) before the array (:1116). This port's
+ * constructor refuses a Total above the bit array's capacity, and in the
+ * reference's order that left the peer flagged as having announced a
+ * proposal with no parts array and a stale `ProposalPOLRound`.
+ *
+ * RED at 7f21263c: `ps->prs.proposal` and the header were written before
+ * the refusal, so the first two assertions below failed.
+ */
+static int s_set_has_proposal_applies_nothing_on_refusal(void)
+{
+    cmt_ps_t        *ps;
+    cmt_proposal_t  *p;
+    cmt_ps_peer_t    peer;
+    cmt_ps_scratch_t scratch;
+    int              rc;
+
+    /* Heap: a PeerState is several KB of bit arrays. */
+    ps = (cmt_ps_t *)calloc(1u, sizeof(*ps));
+    p  = (cmt_proposal_t *)calloc(1u, sizeof(*p));
+    R_HCHECK(ps != NULL && p != NULL, "heap fixtures");
+
+    /* `cmt_ps_init` FAULTs on a NULL scratch (cmt_ps.c, NewPeerState) —
+     * the reactor always hands its own (cmt_conr.c, InitPeer). Nothing
+     * here sends, so an empty scratch is enough. (Delta W17-1, found by
+     * running: the first draft passed a zeroed peer and never reached
+     * the assertions it was written for.) */
+    memset(&scratch, 0, sizeof(scratch));
+    memset(&peer, 0, sizeof(peer));
+    peer.scratch = &scratch;
+    R_HCHECK(cmt_ps_init(ps, &peer) == CMT_OK,
+             "NewPeerState (reactor.go:1044-1058)");
+    R_HCHECK(ps->prs.proposal_pol_round == -1,
+             "NewPeerState leaves ProposalPOLRound -1 (:1053)");
+
+    /* The peer is at the proposal's height and round, so :1100 does not
+     * return early, and it has not announced a proposal yet (:1104). */
+    ps->prs.height = 1;
+    ps->prs.round  = 0;
+    p->height      = 1;
+    p->round       = 0;
+    p->pol_round   = 7;
+    p->block_id.part_set_header.total = (uint32_t)CMT_BITS_MAX_BITS + 1u;
+
+    rc = cmt_ps_set_has_proposal(ps, p);
+    R_HCHECK(rc == CMT_REJECT,
+             "a Total above the bit array's capacity is refused");
+    R_HCHECK(!ps->prs.proposal,
+             "the Proposal flag of :1108 was NOT written");
+    R_HCHECK(ps->prs.proposal_block_part_set_header.total == 0u,
+             "the header of :1115 was NOT written");
+    R_HCHECK(ps->prs.proposal_block_parts == NULL, "and there is no array");
+    R_HCHECK(ps->prs.proposal_pol_round == -1,
+             "ProposalPOLRound is still NewPeerState's -1, not the "
+             "refused proposal's 7");
+
+    /* The same call with a Total the constructor accepts applies ALL of
+     * :1108-:1118, so the assertions above are about the REFUSAL and not
+     * about the function doing nothing. */
+    p->block_id.part_set_header.total = 4u;
+    R_HCHECK(cmt_ps_set_has_proposal(ps, p) == CMT_OK, "a legal Total");
+    R_HCHECK(ps->prs.proposal, "Proposal (:1108)");
+    R_HCHECK(ps->prs.proposal_block_part_set_header.total == 4u,
+             "the header (:1115)");
+    R_HCHECK(ps->prs.proposal_block_parts != NULL &&
+             cmt_bits_size(ps->prs.proposal_block_parts) == 4,
+             "a four-bit parts array (:1116)");
+    R_HCHECK(ps->prs.proposal_pol_round == 7, "ProposalPOLRound (:1117)");
+    R_HCHECK(ps->prs.proposal_pol == NULL, "ProposalPOL nil (:1118)");
+
+    free(p);
+    free(ps);
+    return 0;
+}
+
+/**
+ * NO REFERENCE TEST FILE ROW — the rule is libs/service/service.go's, and
+ * it is tested here because the reactor is what has it (register
+ * R3-AUD-20).
+ *
+ * WHAT IT PROVES: that a reactor which has been stopped cannot be
+ * started again. `BaseService.Start` loads the `stopped` flag (:132),
+ * reverts `started` and returns ErrAlreadyStopped (:133-137); the only
+ * way back is `Reset` (:200-215), whose `OnReset` panics for this service
+ * (:217-220) and which is not ported.
+ *
+ * RED at 7f21263c: `cmt_conr_start` had no latch, so the second start
+ * below returned CMT_OK and re-entered `cmt_cs_start` with every stale
+ * PeerState still in the table.
+ */
+static int s_start_after_stop_is_refused(void)
+{
+    r_net_t *net = r_net_new(1u, 1u, true);
+
+    R_CHECK(net != NULL, "network");
+    R_STEP(r_start_consensus_net(net, 1u));
+    R_CHECK(net->nodes[0].conR.running, "the reactor is running");
+    R_CHECK(!net->nodes[0].conR.stopped, "and has not been stopped");
+
+    R_CHECK(cmt_conr_stop(&net->nodes[0].conR) == CMT_OK, "OnStop (:95-103)");
+    R_CHECK(!net->nodes[0].conR.running, "no longer running");
+    R_CHECK(net->nodes[0].conR.stopped, "the latch is set (service.go:168)");
+
+    R_CHECK(cmt_conr_start(&net->nodes[0].conR) == CMT_REJECT,
+            "a stopped reactor refuses to start (service.go:132-137)");
+    R_CHECK(!net->nodes[0].conR.running,
+            "and it did NOT revive: `started` is not set (:136)");
     r_net_free(net);
     return 0;
 }
@@ -2991,6 +3150,9 @@ int main(void)
           s_receive_does_not_panic_if_add_peer_hasnt_been_called_yet },
         { "receive_panics_if_init_peer_hasnt_been_called_yet",
           s_receive_panics_if_init_peer_hasnt_been_called_yet },
+        { "set_has_proposal_applies_nothing_on_refusal",
+          s_set_has_proposal_applies_nothing_on_refusal },
+        { "start_after_stop_is_refused", s_start_after_stop_is_refused },
         { "switch_to_consensus_vote_extensions",
           s_switch_to_consensus_vote_extensions },
         { "reactor_basic",                   s_reactor_basic },

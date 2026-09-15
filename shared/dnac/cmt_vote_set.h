@@ -59,7 +59,7 @@
  *    searched linearly — see CMT_VOTE_SET_MAX_BLOCKS.
  * 5. PEER IDENTITY. `P2PID` (:25) is a Go string. Here it is
  *    `cmt_peer_id_t`, 32 bytes, the width of this tree's witness id
- *    (= `cmt_address_hash`, cmt_tmhash.h:100). The reference passes `""`
+ *    (= `cmt_address_hash`, cmt_tmhash.h:255). The reference passes `""`
  *    for the node's OWN messages (height_vote_set.go:132); `""` is
  *    represented by the ALL-ZERO id and is NOT special-cased anywhere,
  *    because the reference does not special-case it either — at :344,
@@ -120,9 +120,9 @@
  *   consensus/state.go    2653 lines f9517e9f45f4f9afefebf869eb4674bf0135d5edda00de67eab2e1695c945090
  *     (read-only, for the caller's error discrimination at :2069-2118 and
  *      the two ToVoteSet call sites at :610-624 and :626-643)
- * Governing records: umbrella rev 3 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
+ * Governing records: umbrella rev 5 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
  * INVARIANT (atlas-dec-7495d3372e004b24b4f6cc7bff5caf07),
- * pin record rev 5 (atlas-dec-483ec17cbb352ef0ec2267ccd953339c),
+ * pin record rev 18 (atlas-dec-483ec17cbb352ef0ec2267ccd953339c),
  * R1 types port (atlas-dec-9285f4a5c9679f00a4d042a15acf45e4),
  * clock POLICY (atlas-dec-4ac0423068085c100fdfa3e264ca16bc).
  *
@@ -214,7 +214,7 @@ _Static_assert((int)CMT_PEER_MAX == 128,
  * reference).
  *
  * Here a peer is named by its 32-byte witness id — SHA3-512(pubkey)[0..31]
- * = `cmt_address_hash` (cmt_tmhash.h:100), CMT_TMHASH_TRUNCATED_SIZE wide.
+ * = `cmt_address_hash` (cmt_tmhash.h:255), CMT_TMHASH_TRUNCATED_SIZE wide.
  * The reference's `""` (the node's own messages, height_vote_set.go:132)
  * is the ALL-ZERO id.
  *
@@ -479,8 +479,8 @@ int cmt_vote_set_size(const cmt_vote_set_t *vs);
  * ⚠ THE TWO OUTPUTS ARE INDEPENDENT, exactly as the reference's
  * `(added bool, err error)` are. The reference's own test asserts
  * `added == true` together with a non-nil error (vote_set_test.go:314-320,
- * the peerMaj23 path that returns `true, conflicting` at :326), and
- * asserts `added == false` with a nil error for a duplicate (:211). So:
+ * the peerMaj23 path that returns `true, conflicting` at :326); the
+ * duplicate case (`false, nil`, :210-211) has no assertion in that test. So:
  *   · CMT_OK  + *added == true   → stored;
  *   · CMT_OK  + *added == false  → duplicate (:210-211), nothing to do;
  *   · CMT_REJECT + *added == true  → stored AND conflicting (:236 with

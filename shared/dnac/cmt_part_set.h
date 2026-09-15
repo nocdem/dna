@@ -101,8 +101,8 @@ extern "C" {
 
 /** cometbft@709fd12b types/params.go:22 — `MaxBlockPartsCount` = 1601.
  *  The widest part set this port will build or accept; a `total` above it
- *  is REFUSED (INVARIANT 7495d337), never truncated. It is also exactly
- *  cmt_bits.h's CMT_BITS_MAX_BITS, so the parts bit array always fits. */
+ *  is REFUSED (INVARIANT 7495d337), never truncated. It is BELOW cmt_bits.h's
+ *  CMT_BITS_MAX_BITS (MaxVotesCount since W1.7), so a parts array fits. */
 #define CMT_PART_SET_MAX_PARTS CMT_BITS_MAX_BLOCK_PARTS_COUNT
 
 /** The reader has delivered every byte. POSITIVE, like CMT_BITS_NIL, so it
