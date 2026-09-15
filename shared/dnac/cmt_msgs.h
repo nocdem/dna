@@ -42,9 +42,9 @@
  * today both meet the obligation: `cmt_conr_receive` at cmt_conr.c (:243)
  * and `cmt_cs_read_replay_message` in cmt_cs.c (replay.go:82) — the
  * replay one was added by W1.7, and a failure there is WAL CORRUPTION,
- * so it is CMT_FAULT and not a refusal (D-15 rev 6:
- * atlas-dec-c0bfc5344204b9282ceaaa5e06042350; the repair path of
- * state.go:338-386, `repairWalFile` at :374, is not ported).
+ * so it is CMT_FAULT and not a refusal: D-15 rev 5 point (3)'s "corruption
+ * = stop" class (atlas-dec-c0bfc534…, names digest/kind), EXTENDED to a
+ * ValidateBasic failure by atlas-dec-b02c8de1… item 4; no repair path).
  *
  * ── THE STEP FIELD ─────────────────────────────────────────────────────
  * `NewRoundStepMessage.Step` is a `cstypes.RoundStepType`, which is a

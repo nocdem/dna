@@ -2714,16 +2714,38 @@ static int s_start_after_stop_is_refused(void)
     r_net_t *net = r_net_new(1u, 1u, true);
 
     R_CHECK(net != NULL, "network");
+
+    /* service.go:169-175 — a Stop BEFORE any Start is ErrNotStarted and
+     * REVERTS the `stopped` flag it just set, so the service can still be
+     * started. (Verifier A, 2026-09-15: the first W1.7 latch was taken
+     * here unconditionally — register R3-AUD-23.) */
+    R_CHECK(!net->nodes[0].conR.running && !net->nodes[0].conR.stopped,
+            "a fresh reactor is neither running nor stopped");
+    R_CHECK(cmt_conr_stop(&net->nodes[0].conR) == CMT_REJECT,
+            "Stop before Start is ErrNotStarted (service.go:169-175)");
+    R_CHECK(!net->nodes[0].conR.stopped,
+            "and the latch is NOT taken: `stopped` reverted (:173)");
+
     R_STEP(r_start_consensus_net(net, 1u));
     R_CHECK(net->nodes[0].conR.running, "the reactor is running");
     R_CHECK(!net->nodes[0].conR.stopped, "and has not been stopped");
+
+    /* service.go:153-158 — a second Start is ErrAlreadyStarted, nothing
+     * changes. */
+    R_CHECK(cmt_conr_start(&net->nodes[0].conR) == CMT_REJECT,
+            "Start twice is ErrAlreadyStarted (service.go:153-158)");
+    R_CHECK(net->nodes[0].conR.running, "and it is still running");
 
     R_CHECK(cmt_conr_stop(&net->nodes[0].conR) == CMT_OK, "OnStop (:95-103)");
     R_CHECK(!net->nodes[0].conR.running, "no longer running");
     R_CHECK(net->nodes[0].conR.stopped, "the latch is set (service.go:168)");
 
+    /* service.go:185-190 — a second Stop is ErrAlreadyStopped. */
+    R_CHECK(cmt_conr_stop(&net->nodes[0].conR) == CMT_REJECT,
+            "Stop twice is ErrAlreadyStopped (service.go:185-190)");
+
     R_CHECK(cmt_conr_start(&net->nodes[0].conR) == CMT_REJECT,
-            "a stopped reactor refuses to start (service.go:132-137)");
+            "a stopped reactor refuses to start (service.go:132-138)");
     R_CHECK(!net->nodes[0].conR.running,
             "and it did NOT revive: `started` is not set (:136)");
     r_net_free(net);

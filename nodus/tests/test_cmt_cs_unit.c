@@ -1290,9 +1290,14 @@ static int t_tock_queue(void)
 
     /* Tock B, BEFORE any step consumed A. A later step for the same
      * height and round is not ignored by the ticker (ticker.go:113-116
-     * only drops `newti.Step <= ti.Step`), so it arms and fires. */
+     * only drops `newti.Step <= ti.Step`), so it arms and fires. Its step
+     * is PROPOSE, whose tock is handleTimeout's `enterPrevote` (:993):
+     * served FIRST it would take the node straight to PREVOTE, served
+     * SECOND it moves PROPOSE → PREVOTE — so the state after ONE step
+     * tells FIFO from LIFO (verifier A, 2026-09-15: the first draft's
+     * NEW_ROUND tock ended on PROPOSE either way). */
     CHECK(cmt_cs_schedule_timeout(g_cs, 0, 1, 0,
-                                  CMT_ROUND_STEP_NEW_ROUND) == CMT_OK,
+                                  CMT_ROUND_STEP_PROPOSE) == CMT_OK,
           "a second timeout is armed while the first is undelivered"); OK();
     CHECK(cmt_cs_on_timer_expired(g_cs) == CMT_OK,
           "a SECOND undelivered tock is NOT a fault — tockChan is 10 deep "
@@ -1311,23 +1316,28 @@ static int t_tock_queue(void)
     CHECK(g_cs->tock_q_len == 1u, "one tock is left"); OK();
     CHECK(g_cs->rs.step == CMT_ROUND_STEP_PROPOSE,
           "and it was the OLDER one: the NewHeight tock drove "
-          "enterNewRound -> enterPropose (:983, :1113)"); OK();
+          "enterNewRound -> enterPropose (:983, :1113) — under LIFO the "
+          "PROPOSE tock would have been served first and the step would "
+          "already be PREVOTE (:993)"); OK();
 
-    /* Then B, which is now STALE — same height and round, a step BELOW
-     * the one we are on — and :970 drops it. Dropped means CONSUMED and
-     * ignored, not refused: the step still reports work and the queue
-     * empties. */
+    /* Then B, in order: same height and round, step PROPOSE, which is
+     * NOT behind the snapshot's PROPOSE (:970 drops only `ti.Step <
+     * rs.Step`), so handleTimeout runs `enterPrevote` (:993) and the
+     * node prevotes nil for the proposal it never got. */
     before = g_served_len;
     worked = false;
     CHECK(cmt_cs_step(g_cs, &worked) == CMT_OK && worked, "step"); OK();
     CHECK(g_served_len == before + 1u && g_served[before] == SRC_TOCK,
           "the second tock was served too"); OK();
     CHECK(g_cs->tock_q_len == 0u, "the queue is empty"); OK();
-    CHECK(g_cs->rs.step == CMT_ROUND_STEP_PROPOSE,
-          "the stale tock changed nothing — state.go:970 ignores a tock "
-          "whose step is behind the snapshot's"); OK();
-    CHECK(!cmt_cs_has_work(g_cs) || g_cs->peer_q_len != 0u,
-          "nothing else is pending because of it"); OK();
+    CHECK(g_cs->rs.step == CMT_ROUND_STEP_PREVOTE,
+          "the PROPOSE tock was handled in FIFO order: enterPrevote "
+          "(:993) moved PROPOSE -> PREVOTE"); OK();
+    /* No vote is queued by that enterPrevote: this fixture's signer
+     * (`h_sign_vote`) refuses, which signAddVote logs and survives
+     * (:2478-2483) — the FIFO proof here is the STEP sequence, PROPOSE
+     * after the first tock and PREVOTE after the second, which LIFO
+     * cannot produce. */
     cmt_cs_free(g_cs);
 
     /* The ELEVENTH is the internal-queue rule: Go's eleventh send parks a

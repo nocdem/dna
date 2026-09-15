@@ -334,10 +334,18 @@ static int cs_new_part_set_from_header(cmt_cs_t *cs,
 static void cs_part_set_bound_refused(const char *site,
                                       const cmt_part_set_header_t *header)
 {
+    /* The refusal can come from any of cmt_part_set.c:276-291's three
+     * tests — Total above CMT_PART_SET_MAX_PARTS, Total above the slot's
+     * parts_cap, or a hash longer than CMT_TMHASH_SIZE — and the
+     * constructor does not say which, so the log names all three rather
+     * than naming one bound that may not be the one that fired
+     * (verifier A, 2026-09-15). */
     QGP_LOG_ERROR(LOG_TAG,
-                  "%s: refused a part set header of Total %u (bound %d "
-                  "parts); no proposal block this round",
-                  site, (unsigned)header->total,
+                  "%s: refused a part set header (Total %u, hash %u B) — "
+                  "above CMT_PART_SET_MAX_PARTS %d, above the slot's "
+                  "parts_cap, or a bad hash length; no proposal block "
+                  "this round",
+                  site, (unsigned)header->total, (unsigned)header->hash_len,
                   (int)CMT_PART_SET_MAX_PARTS);
 }
 
@@ -1699,6 +1707,7 @@ int cmt_cs_handle_timeout(cmt_cs_t *cs, const cmt_timeout_info_t *ti,
         if (rc == CMT_FAULT) {
             return rc;
         }
+        cs_note_transition_refusal("enterPrecommit", rc);
         return cmt_cs_enter_new_round(cs, ti->height, ti->round + 1);/* :1009 */
 
     default:                                                      /* :1011 */
@@ -3075,7 +3084,9 @@ int cmt_cs_default_set_proposal(cmt_cs_t *cs, const cmt_proposal_t *proposal)
                 /* The bound refused the header. This site is the only one
                  * of the four that can answer the sender: a proposal is a
                  * peer's message, so the REJECT goes back as the refusal
-                 * of THAT PROPOSAL, and nothing of it is stored. */
+                 * of THAT PROPOSAL, and nothing of it stays REACHABLE —
+                 * the copy in `proposal_storage` (above) is reached only
+                 * through `rs.proposal`, which is cleared below. */
                 cs_part_set_bound_refused("setProposal",
                                           &proposal->block_id.part_set_header);
             }
@@ -3719,6 +3730,7 @@ static int cs_add_vote_precommit(cmt_cs_t *cs, const cmt_vote_t *vote,
         if (rc == CMT_FAULT) {
             return rc;
         }
+        cs_note_transition_refusal("enterNewRound", rc);
         return cmt_cs_enter_precommit_wait(cs, height, vote->round);/* :2355 */
     }
     return CMT_OK;
@@ -4197,8 +4209,12 @@ int cmt_cs_read_replay_message(cmt_cs_t *cs,
          * on this file was written by this node, and every message it
          * accepted from a peer passed this same gate at cmt_conr.c (:243)
          * before it was queued. So the class is CMT_FAULT and not
-         * CMT_REJECT — D-15 rev 6 (atlas-dec-c0bfc5344204b9282ceaaa5e06-
-         * 042350): corruption stops the node. The reference's repair path
+         * CMT_REJECT — the "corruption = stop, no skip" rule of D-15
+         * rev 5 point (3) (atlas-dec-c0bfc5344204b9282ceaaa5e06042350),
+         * which names a digest mismatch and an out-of-range kind; a
+         * ValidateBasic failure is the same class by EXTENSION, recorded
+         * as such in atlas-dec-b02c8de1f52854b20dbfd64f6c987b34 item 4,
+         * not quoted from D-15. The reference's repair path
          * (state.go:338-386: stop the WAL, copy it to `.CORRUPTED`,
          * `repairWalFile` at :374, retry catchupReplay ONCE) is NOT
          * ported, so there is nothing else to do with a record that

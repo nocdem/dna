@@ -431,8 +431,15 @@ int cmt_conr_start(cmt_conr_t *conR)
     if (conR == NULL) {
         return CMT_FAULT;
     }
+    if (conR->running) {
+        /* service.go:131 CAS `started` 0→1 fails → :153-158 "already
+         * started", ErrAlreadyStarted. Nothing changes. */
+        QGP_LOG_ERROR(LOG_TAG, "Not starting consensus reactor -- "
+                               "already started");         /* :154-155 */
+        return CMT_REJECT;                                 /* :158 */
+    }
     if (conR->stopped) {
-        /* service.go:132-137 — `Start` on a service that has been stopped
+        /* service.go:132-138 — `Start` on a service that has been stopped
          * reverts the started flag and returns ErrAlreadyStopped; only
          * `Reset` (:200-215) clears the latch, and its `OnReset` panics
          * for this service (:217-220), so there is no way back. Without
@@ -472,6 +479,24 @@ int cmt_conr_stop(cmt_conr_t *conR)
 
     if (conR == NULL) {
         return CMT_FAULT;
+    }
+    if (conR->stopped) {
+        /* service.go:168 CAS `stopped` 0→1 fails → :185-190 "already
+         * stopped", ErrAlreadyStopped. Nothing changes. */
+        QGP_LOG_ERROR(LOG_TAG, "Stopping consensus reactor (already "
+                               "stopped)");                /* :186-187 */
+        return CMT_REJECT;                                 /* :190 */
+    }
+    if (!conR->running) {
+        /* service.go:169-175 — a Stop before any Start REVERTS the
+         * `stopped` flag it just set and returns ErrNotStarted, so the
+         * latch below is NOT taken: the service can still be started.
+         * (Verifier A, 2026-09-15: the first W1.7 latch was taken here
+         * unconditionally, which made a stop-before-start permanent —
+         * register R3-AUD-23.) */
+        QGP_LOG_ERROR(LOG_TAG, "Not stopping consensus reactor -- has "
+                               "not been started yet");    /* :170-171 */
+        return CMT_REJECT;                                 /* :174 */
     }
     conR->running = false;
     conR->stopped = true;                            /* service.go:168 */

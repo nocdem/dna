@@ -90,11 +90,15 @@
  *   The `stopped` half of that pair is a SECOND flag here, and it is a
  *   LATCH: `cmt_conr_stop` sets it and nothing clears it, so
  *   `cmt_conr_start` after a stop returns CMT_REJECT, which is
- *   service.go:132-137's ErrAlreadyStopped. The reference's `Reset`
+ *   service.go:132-138's ErrAlreadyStopped. The reference's `Reset`
  *   (:200-215) is the only way back and is not ported — `OnReset` panics
  *   for this service (:217-220). Without the latch a stop→start kept
  *   every stale PeerState and re-entered `cmt_cs_start` (deviation
- *   register R3-AUD-20).
+ *   register R3-AUD-20). The other three answers of the pair are ported
+ *   too: Start while running is ErrAlreadyStarted (:153-158), Stop before
+ *   any Start is ErrNotStarted and does NOT take the latch (:169-175),
+ *   Stop twice is ErrAlreadyStopped (:185-190) — each CMT_REJECT, nothing
+ *   changed (register R3-AUD-23).
  *   `peer.IsRunning()` (:545, :707, :852) is the host's per-peer
  *   "connected" state, which this module learns through
  *   `cmt_conr_remove_peer`: the host calls it when the connection closes,
@@ -534,15 +538,16 @@ void cmt_conr_free(cmt_conr_t *conR);
  * `updateRoundStateRoutine` (:81) has nothing to start.
  *
  * ⚠ ONE-WAY: once `cmt_conr_stop` has run, this REFUSES. That is
- * service.go:132-137's ErrAlreadyStopped, and the reference's only way
+ * service.go:132-138's ErrAlreadyStopped, and the reference's only way
  * back — `Reset` (:200-215) — is not ported because its `OnReset` panics
  * for this service (:217-220). A host that wants a second reactor builds
- * a second one.
+ * a second one. A second Start while running is ErrAlreadyStarted
+ * (:153-158) and changes nothing.
  *
  * @return CMT_OK; the reference reverts the flag and returns the error
  *         of :84-87 — so does this, with `cmt_cs_start`'s code (:147).
- *         CMT_REJECT after `cmt_conr_stop` (service.go:137).
- *         CMT_FAULT on NULL.
+ *         CMT_REJECT after `cmt_conr_stop` (service.go:137) and while
+ *         already running (:158). CMT_FAULT on NULL.
  */
 int cmt_conr_start(cmt_conr_t *conR);
 
@@ -553,7 +558,9 @@ int cmt_conr_start(cmt_conr_t *conR);
  * `cmt_cs_remove_listener`) and `conR.conS.Stop()` (:97, `cmt_cs_stop`;
  * the reference only logs its error). `conR.conS.Wait()` (:100-102)
  * waits for the receive goroutine, which does not exist here.
- * @return CMT_OK, CMT_FAULT on NULL.
+ * @return CMT_OK; CMT_REJECT before any Start (ErrNotStarted, :169-175 —
+ *         the latch is NOT taken) and after a Stop (ErrAlreadyStopped,
+ *         :185-190); CMT_FAULT on NULL.
  */
 int cmt_conr_stop(cmt_conr_t *conR);
 
