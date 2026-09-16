@@ -25,6 +25,10 @@
 #include "witness/nodus_witness_domreg.h"
 #include "witness/nodus_witness_roots_v2.h"
 #include "witness/nodus_witness_db.h"
+#include "witness/nodus_witness_v2_gen.h"      /* the cometbft lane's
+                                                * chain identity: the
+                                                * STORED genesis document
+                                                * (D-18 rev 4)           */
 #include "witness/nodus_witness_committee.h"   /* capacity season: the
                                         * governing snapshot resolution */
 #include "nodus/nodus_chain_config.h"
@@ -1500,7 +1504,624 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
     return 0;
 }
 
-int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
+/**
+ * `RELEASE SAVEPOINT <name>`. The witness DB layer ships
+ * `nodus_witness_db_savepoint` and
+ * `nodus_witness_db_rollback_to_savepoint` (nodus_witness_db.h:486-487)
+ * but no release, and a savepoint that is rolled back is still ACTIVE
+ * until it is released — so the cometbft lane, which opens one per item,
+ * needs this to avoid accumulating one nesting level per transaction in
+ * the block.
+ *
+ * The name is ENGINE-GENERATED (`cmt_item_<n>`), never caller- or
+ * peer-derived, which is what makes inlining it into the SQL safe — the
+ * same contract the two shipped helpers state.
+ *
+ * @return 0 / -1.
+ */
+static int cmt_savepoint_release(nodus_witness_t *w, const char *name)
+{
+    char sql[96];
+
+    snprintf(sql, sizeof(sql), "RELEASE SAVEPOINT %s", name);
+    return exec_sql(w, sql);
+}
+
+/**
+ * The GOVERNING COMMITTEE SNAPSHOT for a block at `height` — the
+ * authority a committee-indexed (`auth_kind` 2) leg's approvals are
+ * verified against.
+ *
+ * FACTORED OUT of the phase-0b block it used to be written inline in,
+ * with the logic byte-for-byte unchanged: the same
+ * `nodus_committee_get_for_block_alloc` at the same governing height
+ * `height - 1` (the SAME authority the legacy chain-config apply
+ * consults — nodus_witness_chain_config.c's lookup_height =
+ * commit_block - 1), the same contract bound on the member count, the
+ * same per-member fingerprint, the same set hash, the same epoch. It is
+ * a function now because BOTH lanes must resolve it and two copies could
+ * drift — and a drift here would make two builds reach different
+ * authorization verdicts for the same bytes, which is a chain split.
+ *
+ * The transaction can neither carry nor select the snapshot: nothing in
+ * an envelope names an epoch, a height or a set hash; approvals merely
+ * FAIL against the wrong one. An EMPTY committee is deterministic chain
+ * state and flows into the view (the auth hook rejects kind-2 legs at
+ * count 0).
+ *
+ * On success `*out_pubkeys` / `*out_fps` receive heap buffers the CALLER
+ * frees; on every failure they are left as they were.
+ *
+ * @return 0 resolved (possibly empty); 1 `height` is 0, so the governing
+ *         height would be below genesis — the CALLER decides the class,
+ *         because it differs by lane; -2 node-local fault, with the
+ *         reason written into (reason, reason_size).
+ */
+static int committee_snapshot_for_height(nodus_witness_t *w, uint64_t height,
+                                         nodus_rt_committee_t *view,
+                                         uint8_t **out_pubkeys,
+                                         uint8_t (**out_fps)[64],
+                                         char *reason, size_t reason_size)
+{
+    nodus_committee_member_t *mem = NULL;
+    uint8_t                  *cm_pubkeys = NULL;
+    uint8_t                 (*cm_fps)[64] = NULL;
+    int                       cm_count = 0;
+
+    if (height == 0) {
+        return 1;                                    /* below genesis    */
+    }
+    if (nodus_committee_get_for_block_alloc(w, height - 1, &mem,
+                                            &cm_count) != 0) {
+        V2AP_ENV_FAULT("phase 0b: governing committee lookup at height "
+                       "%llu failed on this node",
+                       (unsigned long long)(height - 1));
+        return -2;
+    }
+    if (cm_count < 0 || cm_count > DNA_MAX_ACTIVE_VALIDATORS) {
+        free(mem);
+        V2AP_ENV_FAULT("phase 0b: committee resolution returned %d "
+                       "members, outside the contract [0,%u]",
+                       cm_count, (unsigned)DNA_MAX_ACTIVE_VALIDATORS);
+        return -2;                       /* out-of-contract resolution   */
+    }
+    if (cm_count > 0) {
+        int ci;
+
+        cm_pubkeys = malloc((size_t)cm_count * NODUS_CC_PUBKEY_SIZE);
+        cm_fps = malloc((size_t)cm_count * 64);
+        if (!cm_pubkeys || !cm_fps) {
+            free(cm_pubkeys);
+            free(cm_fps);
+            free(mem);
+            V2AP_ENV_FAULT("phase 0b: allocation for the %d-member "
+                           "committee snapshot failed", cm_count);
+            return -2;
+        }
+        for (ci = 0; ci < cm_count; ci++) {
+            memcpy(cm_pubkeys + (size_t)ci * NODUS_CC_PUBKEY_SIZE,
+                   mem[ci].pubkey, NODUS_CC_PUBKEY_SIZE);
+            if (qgp_sha3_512(mem[ci].pubkey, NODUS_CC_PUBKEY_SIZE,
+                             cm_fps[ci]) != 0) {
+                free(cm_pubkeys);
+                free(cm_fps);
+                free(mem);
+                V2AP_ENV_FAULT("phase 0b: hash backend failed on "
+                               "committee member %d of %d", ci, cm_count);
+                return -2;
+            }
+        }
+        if (nodus_rt_committee_set_hash((const uint8_t (*)[64])cm_fps,
+                                        (uint32_t)cm_count,
+                                        view->set_hash) != 0) {
+            free(cm_pubkeys);
+            free(cm_fps);
+            free(mem);
+            V2AP_ENV_FAULT("phase 0b: committee set-hash over %d members "
+                           "failed", cm_count);
+            return -2;
+        }
+        view->pubkeys = cm_pubkeys;
+        view->fps = (const uint8_t (*)[64])cm_fps;
+        *out_pubkeys = cm_pubkeys;
+        *out_fps = cm_fps;
+    }
+    free(mem);
+    view->count = (uint32_t)cm_count;
+    view->epoch = nodus_v2_epoch_for_height(height - 1);
+    return 0;
+}
+
+/**
+ * THE PER-ENVELOPE AUTHORIZATION STAGE: every leg's authorization
+ * COMMITMENT turned into a VERDICT by the resolved runtime's own `auth`
+ * hook, against the ENGINE-DERIVED leg auth digest.
+ *
+ * This is the ONE implementation. The cometbft item loop calls it inside
+ * the item's SAVEPOINT, and `nodus_witness_v2_env_authorize` calls it
+ * for the mempool — because NOTHING ELSE in the tree verifies an
+ * envelope's signatures. `dna_env_preflight` says so in its own honest
+ * label (env_preflight.h:57-63: it decides nothing about "whether any
+ * authorization is VALID"), and the admission lane
+ * (`verify_v2_successor_tx`, nodus_witness_verify.c:674-784) runs only
+ * the marker, the ruleset table, that preflight, a wire_id comparison
+ * and the committed-intent guard. Without this stage at CheckTx a
+ * transaction with a forged or corrupted signature is admitted to the
+ * mempool and only refused when a block carrying it is applied.
+ *
+ * The legacy batch stage (phase 0b) is NOT routed through here: its
+ * refusal text names the envelope's BATCH INDEX, which a per-envelope
+ * helper cannot know, and its behaviour is pinned by the shipped V2
+ * tests. It performs the identical checks in the identical order.
+ *
+ * `out_verdicts` receives DNA_ENV_MAX_LEGS verdicts (the engine-owned
+ * array the exec context later reads); a caller that only wants the
+ * yes/no may point it at scratch.
+ *
+ * @return 0 every leg authorized; -1 a leg REFUSED (deterministic — the
+ *         same bytes give the same answer on every node); -2 a node-local
+ *         backend failure. The reason goes into (reason, reason_size).
+ */
+static int env_authorize_legs(nodus_witness_t *w,
+                              const dna_env_preflight_t *p,
+                              dom_ctx_t *doms, size_t n_dom,
+                              const uint8_t chain_id[DNA_CHAIN_ID_LEN],
+                              uint64_t height, uint64_t epoch,
+                              const nodus_rt_committee_t *cm,
+                              nodus_rt_auth_verdict_t *out_verdicts,
+                              char *reason, size_t reason_size)
+{
+    const dna_env_view_t *v = &p->view;
+    uint16_t l;
+
+    (void)w;
+    for (l = 0; l < v->leg_count; l++) {
+        dom_ctx_t          *d = dom_for(doms, n_dom, v->leg[l].domain_id);
+        nodus_rt_exec_ctx_t actx;
+        int                 arc;
+
+        if (!d || !d->rt || !d->rt->auth) {
+            V2AP_ENV_FAULT("auth: domain %u lost its runtime or auth hook "
+                           "between admission and verification (leg %u) - "
+                           "engine invariant broken on this node",
+                           (unsigned)v->leg[l].domain_id, (unsigned)l);
+            return -2;
+        }
+        memset(&actx, 0, sizeof(actx));
+        actx.chain_id            = chain_id;
+        actx.global_height       = height;
+        actx.epoch               = epoch;
+        actx.wire_id             = p->wire_id;
+        actx.intent_id           = p->intent_id;
+        actx.auth_context_commit = p->auth_context_commit;
+        actx.leg_auth_digest     = p->auth_digest[l];
+        /* the resolved snapshot view, ONLY for the kind that consumes it
+         * (runtime.h's ctx contract) */
+        actx.committee =
+            v->leg[l].auth_kind == NODUS_RT_AUTHKIND_DSA87_CC_V1
+                ? cm : NULL;
+        arc = d->rt->auth(d->rt, v, l, &actx, &out_verdicts[l]);
+        if (arc == -2) {
+            V2AP_ENV_FAULT("auth: the verification backend failed for leg "
+                           "%u domain %u auth_kind %u", (unsigned)l,
+                           (unsigned)d->domain_id,
+                           (unsigned)v->leg[l].auth_kind);
+            return -2;
+        }
+        if (arc != 0) {
+            V2AP_ENV_VERDICT("auth: leg %u domain %u auth_kind %u FAILED "
+                             "verification against the engine-derived leg "
+                             "digest (rc %d)", (unsigned)l,
+                             (unsigned)d->domain_id,
+                             (unsigned)v->leg[l].auth_kind, arc);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int nodus_witness_v2_env_authorize(nodus_witness_t *w, const uint8_t *bytes,
+                                   size_t len, char *reason,
+                                   size_t reason_size)
+{
+    nodus_witness_v2_block_ctx_t *bctx = NULL;
+    dom_ctx_t                    *doms = NULL;
+    dna_env_preflight_t          *pf = NULL;
+    nodus_rt_auth_verdict_t      *verdicts = NULL;
+    uint8_t                      *cm_pubkeys = NULL;
+    uint8_t                     (*cm_fps)[64] = NULL;
+    nodus_rt_committee_t          cmview;
+    dna_env_leg_ctx_t             lctx[DNA_ENV_MAX_LEGS];
+    dna_env_view_t                probe;
+    uint8_t                       chain_id[DNA_CHAIN_ID_LEN];
+    uint64_t                      tip = 0, height;
+    size_t                        n_dom = 0;
+    uint16_t                      l;
+    int                           ret = -2;
+
+    if (reason && reason_size) {
+        reason[0] = '\0';
+    }
+    if (!w || !w->db || !bytes || len == 0) {
+        return -2;
+    }
+    memset(&cmview, 0, sizeof(cmview));
+    memset(&probe, 0, sizeof(probe));
+
+    /* The CANDIDATE height, exactly as the admission lane picks it
+     * (nodus_witness_verify.c:735-741): an envelope is judged at the
+     * height it would be INCLUDED in, not at the tip. The tip read is
+     * the engine's own — the same statement phase 0 uses — so a chain
+     * with no block rows at all (the cometbft lane's genesis) answers 0
+     * and the candidate is 1, which is that lane's first block. */
+    if (sum_q(w, "SELECT COALESCE(MAX(global_height),0) FROM v2_blocks",
+              &tip) != 0) {
+        V2AP_ENV_FAULT("%s", "auth: the chain height is unreadable on this "
+                       "node");
+        return -2;
+    }
+    height = tip + 1;
+    if (nodus_witness_v2_chain_id(w, chain_id) != 0) {
+        V2AP_ENV_FAULT("%s", "auth: the chain id is underivable on this "
+                       "node");
+        return -2;
+    }
+    bctx     = calloc(1, sizeof(*bctx));
+    doms     = calloc(MAX_DOMS, sizeof(*doms));
+    pf       = calloc(1, sizeof(*pf));
+    verdicts = calloc(DNA_ENV_MAX_LEGS, sizeof(*verdicts));
+    if (!bctx || !doms || !pf || !verdicts) {
+        V2AP_ENV_FAULT("%s", "auth: the working set could not be allocated");
+        goto done;
+    }
+    if (doms_load(w, doms, &n_dom, /*strict_active=*/1) != 0) {
+        V2AP_ENV_FAULT("%s", "auth: the domain registry / heads / runtime "
+                       "tuples are unreadable on this node");
+        goto done;
+    }
+    if (block_ctx_from_doms(doms, n_dom, bctx) != 0) {
+        V2AP_ENV_FAULT("%s", "auth: the block-start context could not be "
+                       "built on this node");
+        goto done;
+    }
+    /* the positional ruleset table, as the item loop builds it */
+    if (dna_env_decode(bytes, len, &probe) != 0) {
+        V2AP_ENV_VERDICT("%s", "auth: the envelope does not decode");
+        ret = -1;
+        goto done;
+    }
+    for (l = 0; l < probe.leg_count; l++) {
+        size_t k;
+        int    found = 0;
+
+        for (k = 0; k < bctx->n_rulesets; k++) {
+            if (bctx->rulesets[k].domain_id == probe.leg[l].domain_id) {
+                lctx[l] = bctx->rulesets[k];
+                found = 1;
+                break;
+            }
+        }
+        if (!found) {
+            V2AP_ENV_VERDICT("auth: leg %u names domain %u, which has no "
+                             "entry in the committed context table",
+                             (unsigned)l, (unsigned)probe.leg[l].domain_id);
+            ret = -1;
+            goto done;
+        }
+    }
+    if (dna_env_preflight(bytes, len, chain_id, height, lctx,
+                          probe.leg_count, pf) != DNA_ENV_PF_OK) {
+        V2AP_ENV_VERDICT("%s", "auth: the envelope failed preflight");
+        ret = -1;
+        goto done;
+    }
+    /* the governing committee for the SAME candidate height the item
+     * loop would use */
+    {
+        int crc = committee_snapshot_for_height(w, height, &cmview,
+                                                &cm_pubkeys, &cm_fps,
+                                                reason, reason_size);
+        if (crc != 0) {
+            if (crc == 1) {
+                V2AP_ENV_FAULT("%s", "auth: the governing committee height "
+                               "would be below genesis");
+            }
+            goto done;                   /* the helper wrote the reason  */
+        }
+    }
+    ret = env_authorize_legs(w, pf, doms, n_dom, chain_id, height,
+                             nodus_v2_epoch_for_height(height), &cmview,
+                             verdicts, reason, reason_size);
+done:
+    free(cm_pubkeys);
+    free(cm_fps);
+    free(verdicts);
+    free(pf);
+    free(doms);
+    free(bctx);
+    return ret;
+}
+
+/**
+ * ONE CLAIM'S PRE-EXECUTION DERIVATION: shape, the committed manifest,
+ * its distribution section, the distribution leaf hash and the canonical
+ * NULLIFIER — the claim's semantic identity.
+ *
+ * FACTORED OUT of the pre-BEGIN claim scan, logic unchanged, because the
+ * two lanes need it at different MOMENTS: the legacy lane runs it for the
+ * whole block before the transaction opens, the cometbft lane runs it for
+ * ONE claim inside that claim's own SAVEPOINT. It is a pure function of
+ * the claim's bytes and COMMITTED context — `dna_claim_validate`,
+ * `nodus_witness_v2_manifest_load_by_hash`, `dna_dist_leaf_hash` and
+ * `dna_claim_nullifier` (the "DNA.CLNUL.v1" preimage over chain,
+ * manifest hash, target domain, target asset and leaf) — so moving WHEN
+ * it runs cannot change WHAT it answers.
+ *
+ * ⚠ The conflation the engine's header already records is preserved, not
+ * introduced: `nodus_witness_v2_manifest_load_by_hash` answers -1 for
+ * both "not committed" and a local read fault, so a refusal here is
+ * classed by the CALLER exactly as it was before.
+ *
+ * @param out_target receives the manifest's target domain id.
+ * @return 0 with `out_nul` and `out_target` filled; -1 refused, with the
+ *         reason written into (reason, reason_size).
+ */
+static int claim_prescan_one(nodus_witness_t *w, const dna_claim_t *c,
+                             size_t idx, uint8_t out_nul[64],
+                             uint32_t *out_target,
+                             char *reason, size_t reason_size)
+{
+    dna_gman_t      m;
+    dna_dist_leaf_t leaf;
+    uint8_t         leaf_hash[64];
+
+    if (dna_claim_validate(c) != 0) {
+        V2AP_ENV_VERDICT("claim %llu failed dna_claim_validate "
+                         "(malformed shape)", (unsigned long long)idx);
+        return -1;
+    }
+    if (nodus_witness_v2_manifest_load_by_hash(w, c->manifest_hash, &m) != 0) {
+        char h[17];
+
+        V2AP_ENV_VERDICT("claim %llu names manifest %s, which is not "
+                         "committed here (helper conflates a read fault - "
+                         "honest label in the header)",
+                         (unsigned long long)idx,
+                         v2ap_hex8(c->manifest_hash, h));
+        return -1;
+    }
+    if (m.dist_present != 1) {
+        V2AP_ENV_VERDICT("claim %llu names a manifest with no distribution "
+                         "section (dist_present %u)",
+                         (unsigned long long)idx, (unsigned)m.dist_present);
+        return -1;
+    }
+    memset(&leaf, 0, sizeof(leaf));
+    leaf.leaf_version  = DNA_DIST_VERSION;
+    leaf.source_id_len = c->source_id_len;
+    memcpy(leaf.source_id, c->source_id, c->source_id_len);
+    leaf.source_amount = c->source_amount;
+    memcpy(leaf.dest_binding, c->dest_binding, 64);
+    if (dna_dist_leaf_hash(&leaf, leaf_hash) != 0) {
+        V2AP_ENV_VERDICT("claim %llu: distribution leaf hash could not be "
+                         "derived from its source/dest binding",
+                         (unsigned long long)idx);
+        return -1;
+    }
+    if (dna_claim_nullifier(c->chain_id, c->manifest_hash,
+                            m.target_domain_id, m.target_asset_ref,
+                            m.target_asset_len, leaf_hash, out_nul) != 0) {
+        V2AP_ENV_VERDICT("claim %llu: nullifier could not be derived for "
+                         "target domain %u", (unsigned long long)idx,
+                         (unsigned)m.target_domain_id);
+        return -1;
+    }
+    *out_target = m.target_domain_id;
+    return 0;
+}
+
+/**
+ * ONE CLAIM'S EXECUTION: admission, the derived-nullifier cross-check and
+ * the three write stages — target-runtime output, spent-claim insert,
+ * distribution-state decrement.
+ *
+ * FACTORED OUT of phase 6b, logic unchanged, for the same reason as the
+ * pre-scan: the legacy lane runs it for the whole block inside the one
+ * transaction, the cometbft lane runs it for ONE claim inside that
+ * claim's SAVEPOINT. The fault points fire exactly where they did.
+ *
+ * @return 0; -1 refused, reason written into (reason, reason_size).
+ */
+static int claim_execute_one(nodus_witness_t *w, const nodus_v2_block_t *blk,
+                             size_t idx, const uint8_t expect_nul[64],
+                             char *reason, size_t reason_size)
+{
+    const dna_claim_t      *c = &blk->claims[idx];
+    nodus_v2_claim_admit_t  adm;
+    uint8_t                 output_id[64];
+
+    if (nodus_witness_v2_claim_admit(w, c, blk->global_height, &adm) != 0) {
+        V2AP_ENV_VERDICT("phase 6b: claim %llu refused at admission "
+                         "(helper conflates a read fault - honest label in "
+                         "the header)", (unsigned long long)idx);
+        return -1;
+    }
+    if (memcmp(adm.nullifier, expect_nul, 64) != 0) {
+        char a[17], p[17];
+
+        V2AP_ENV_VERDICT("phase 6b: claim %llu nullifier %s from admission "
+                         "disagrees with the derivation %s",
+                         (unsigned long long)idx,
+                         v2ap_hex8(adm.nullifier, a),
+                         v2ap_hex8(expect_nul, p));
+        return -1;
+    }
+    if (nodus_witness_v2_claim_output_create(w, c, &adm, blk->global_height,
+                                             output_id) != 0) {
+        V2AP_ENV_VERDICT("phase 6b: claim %llu target-runtime output "
+                         "creation failed (helper conflates a read fault)",
+                         (unsigned long long)idx);
+        return -1;
+    }
+    if (blk->fail_at == V2AP_FAIL_AFTER_CLAIM_OUTPUT &&
+        blk->fail_claim_index == (uint32_t)idx) {
+        V2AP_ENV_VERDICT("fault-injection point V2AP_FAIL_AFTER_CLAIM_OUTPUT "
+                         "fired after claim %llu (test harness; no real "
+                         "check failed)", (unsigned long long)idx);
+        return -1;
+    }
+    if (nodus_witness_v2_claim_spend_insert(w, c, &adm, output_id,
+                                            blk->global_height) != 0) {
+        V2AP_ENV_VERDICT("phase 6b: claim %llu spent-claim insert failed "
+                         "(helper conflates a read fault)",
+                         (unsigned long long)idx);
+        return -1;
+    }
+    if (blk->fail_at == V2AP_FAIL_AFTER_CLAIM_SPEND &&
+        blk->fail_claim_index == (uint32_t)idx) {
+        V2AP_ENV_VERDICT("fault-injection point V2AP_FAIL_AFTER_CLAIM_SPEND "
+                         "fired after claim %llu (test harness; no real "
+                         "check failed)", (unsigned long long)idx);
+        return -1;
+    }
+    if (nodus_witness_v2_claim_state_update(w, adm.manifest_hash,
+                                            adm.converted) != 0) {
+        V2AP_ENV_VERDICT("phase 6b: claim %llu distribution-state decrement "
+                         "failed (helper conflates a read fault)",
+                         (unsigned long long)idx);
+        return -1;
+    }
+    if (blk->fail_at == V2AP_FAIL_AFTER_CLAIM_STATE &&
+        blk->fail_claim_index == (uint32_t)idx) {
+        V2AP_ENV_VERDICT("fault-injection point V2AP_FAIL_AFTER_CLAIM_STATE "
+                         "fired after claim %llu (test harness; no real "
+                         "check failed)", (unsigned long long)idx);
+        return -1;
+    }
+    return 0;
+}
+
+/**
+ * ONE APPLIED ITEM'S INDEX ROWS — the semantic index first
+ * (`v2_intent_index`: intent_id PK + its ONE accepted wire realization),
+ * then the wire indices (`v2_tx_index` + `v2_tx_local_index`), exactly
+ * as phase 12 writes them for the legacy lane.
+ *
+ * FACTORED OUT of phase 12 with the logic unchanged, for the same reason
+ * as the committee snapshot: the cometbft lane writes these rows INSIDE
+ * the item's own SAVEPOINT — so that a refused item leaves none — and
+ * two copies of an index writer could drift into two different committed
+ * index shapes.
+ *
+ * `gidx` is the item's GLOBAL INDEX in the block. In the legacy lane
+ * that is its position in the phase order; in the Comet lane it is its
+ * position among the APPLIED items, so a refused item consumes no index.
+ *
+ * A UNIQUE-constraint violation here means this node's replay guard and
+ * this write disagree — an engine/storage fault on THIS node, never a
+ * block property; every failure is therefore the caller's -2.
+ *
+ * @return 0; -1 with the reason written into (reason, reason_size).
+ */
+static int cmt_item_index(nodus_witness_t *w, uint64_t global_height,
+                          const dna_env_preflight_t *p, dom_ctx_t *doms,
+                          size_t n_dom, uint32_t gidx,
+                          char *reason, size_t reason_size)
+{
+    const dna_env_view_t *v = &p->view;
+    uint32_t touched_ids[DNA_ENV_MAX_LEGS];
+    uint8_t  tl[2 + 4 * DNA_TOUCHED_MAX];   /* domain_wire.h:450, :500-505 */
+    size_t   tw = 0;
+    uint32_t owner;
+    uint16_t t;
+    sqlite3_stmt *st = NULL;
+    int rc;
+
+    /* v2_intent_index */
+    if (sqlite3_prepare_v2(w->db,
+            "INSERT INTO v2_intent_index (intent_id, tx_id, "
+            "global_height, global_index) VALUES (?1,?2,?3,?4)",
+            -1, &st, NULL) != SQLITE_OK) {
+        V2AP_ENV_FAULT("index: could not prepare the v2_intent_index "
+                       "insert at global index %u", (unsigned)gidx);
+        return -1;
+    }
+    sqlite3_bind_blob(st, 1, p->intent_id, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(st, 2, p->wire_id, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 3, (sqlite3_int64)global_height);
+    sqlite3_bind_int64(st, 4, (sqlite3_int64)gidx);
+    rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) {
+        V2AP_ENV_FAULT("index: v2_intent_index insert at global index %u "
+                       "failed (sqlite rc %d)", (unsigned)gidx, rc);
+        return -1;
+    }
+
+    /* v2_tx_index. The touched list is built exactly as phase 12 builds
+     * it: the leg domains in leg order (an envelope's legs are strictly
+     * ascending by construction, which is what the canonical encoder
+     * requires — domain_wire.h:502-505). */
+    if (v->leg_count > DNA_TOUCHED_MAX) {
+        V2AP_ENV_FAULT("index: the item at global index %u declares %u "
+                       "legs; the touched-set encoding admits at most %u",
+                       (unsigned)gidx, (unsigned)v->leg_count,
+                       (unsigned)DNA_TOUCHED_MAX);
+        return -1;
+    }
+    for (t = 0; t < v->leg_count; t++) {
+        touched_ids[t] = v->leg[t].domain_id;
+    }
+    if (dna_touched_encode(touched_ids, (uint16_t)v->leg_count, tl,
+                           sizeof(tl), &tw) != 0) {
+        V2AP_ENV_FAULT("index: touched-set encoding for the item at "
+                       "global index %u (%u legs) failed",
+                       (unsigned)gidx, (unsigned)v->leg_count);
+        return -1;
+    }
+    owner = (v->leg_count == 1) ? v->leg[0].domain_id : DNA_TX_OWNER_NONE;
+    st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "INSERT INTO v2_tx_index (global_height, global_index, "
+            "tx_id, owner_domain, touched, wire_version) "
+            "VALUES (?1,?2,?3,?4,?5,3)", -1, &st, NULL) != SQLITE_OK) {
+        V2AP_ENV_FAULT("index: could not prepare the v2_tx_index insert "
+                       "at global index %u", (unsigned)gidx);
+        return -1;
+    }
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)global_height);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)gidx);
+    sqlite3_bind_blob(st, 3, p->wire_id, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 4, (sqlite3_int64)owner);
+    sqlite3_bind_blob(st, 5, tl, (int)tw, SQLITE_TRANSIENT);
+    rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) {
+        V2AP_ENV_FAULT("index: v2_tx_index insert at global index %u "
+                       "failed (sqlite rc %d)", (unsigned)gidx, rc);
+        return -1;
+    }
+
+    (void)doms;
+    (void)n_dom;
+    /* v2_tx_local_index is NOT written here, and cannot be: its
+     * `domain_height` column is `d->newhead.domain_height` (phase 12's
+     * own binding), a value the domain-head phase computes AFTER every
+     * item has executed. In the Comet lane the local rows are therefore
+     * written in phase 12 for the APPLIED items only — a refused item
+     * never enters `d->wire_ids`, so it gets no local row there either,
+     * and the two identity rows it did write went away with its
+     * SAVEPOINT. */
+    return 0;
+}
+
+/* The engine body. `nodus_witness_v2_apply_block` (below the body) is
+ * the public entry and is where the cometbft lane's ONE global rule is
+ * applied: a DECIDED block is never refused, so every -1 this body would
+ * return becomes -2 there. Splitting it that way keeps each refusal site
+ * below saying exactly WHY it refused — the reason text is unchanged —
+ * while the CLASS is corrected in one auditable place. */
+static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
     /* A NULL/misused argument is a LOCAL programming fault, not a
      * statement about a block — there is no block here to judge.
      * Reporting it as a verdict would make a node with a caller bug vote
@@ -1538,7 +2159,49 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
      * (O14 review R2-F1; the -1 predates O14, but O14 is what gives the
      * code a production relay that re-exports it as a verdict.) */
     uint32_t ver = 0;
-    if (nodus_witness_db_schema_version(w, &ver) != 0 ||
+    if (blk->cmt.on) {
+        /* ── THE COMETBFT LANE'S OWN PRECONDITIONS (D-23 rev 5) ───────
+         * S14 ONLY: this lane writes a `v2_blocks` row without `header`,
+         * `qc` or `commit_cert`, and at S12 `header` is NOT NULL, so the
+         * insert could not even be expressed. Nothing about the block is
+         * judged by either refusal — both are this node's shape. */
+        if (nodus_witness_db_schema_version(w, &ver) != 0 ||
+            ver != NODUS_V2_SCHEMA_VERSION_S14) {
+            V2AP_FAULT("cometbft lane: this node's schema version is %u, "
+                       "not %u - the Comet block row cannot be written "
+                       "here; nothing about the block was judged",
+                       (unsigned)ver,
+                       (unsigned)NODUS_V2_SCHEMA_VERSION_S14);
+            return -2;
+        }
+        /* The HOST owns the transaction (D-23 rev 5 (5)): this entry
+         * issues no BEGIN, no COMMIT and no ROLLBACK, so being called
+         * outside one would silently autocommit every statement below
+         * and make the block un-rollbackable. Node-local invariant. */
+        if (sqlite3_get_autocommit(w->db)) {
+            V2AP_FAULT("cometbft lane: called outside the host's "
+                       "transaction - this entry never opens one");
+            return -2;
+        }
+        if (blk->cmt.results == NULL ||
+            blk->cmt.results_cap < blk->n_envs + blk->n_claims) {
+            V2AP_FAULT("cometbft lane: the caller's result array holds "
+                       "%llu of the %llu items this block carries",
+                       (unsigned long long)blk->cmt.results_cap,
+                       (unsigned long long)(blk->n_envs + blk->n_claims));
+            return -2;
+        }
+        if (blk->expect_block_id || blk->expect_prev_block_id ||
+            blk->expect_vset_hash) {
+            V2AP_FAULT("cometbft lane: the identity assertions are the "
+                       "legacy lane's - here the identity is the "
+                       "caller's input, not a derivation to assert");
+            return -2;
+        }
+        memset(blk->cmt.results, 0,
+               (blk->n_envs + blk->n_claims) * sizeof(*blk->cmt.results));
+        blk->cmt.results_len = 0;
+    } else if (nodus_witness_db_schema_version(w, &ver) != 0 ||
         (ver != NODUS_V2_SCHEMA_VERSION_S9 &&
          ver != NODUS_V2_SCHEMA_VERSION_S10 &&
          ver != NODUS_V2_SCHEMA_VERSION_S11 &&
@@ -1692,8 +2355,19 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
 
         /* No genesis committed HERE yet. The block may be perfectly
          * valid; this node simply has no chain to link it onto. That is
-         * absent predecessor state, not a defect in the block. */
-        if (rows == 0) {
+         * absent predecessor state, not a defect in the block.
+         *
+         * NOT SO IN THE COMETBFT LANE: a version-3 chain writes NO
+         * height-0 `v2_blocks` row at all (D-19 rev 6 withdrew the
+         * genesis block; nodus_witness_v2_genesis_cmt, apply.h), so an
+         * EMPTY table is the normal state of a freshly derived chain and
+         * the block arriving here is simply its FIRST. Its
+         * `prev_block_id` is 64 zero bytes — block 1's LastBlockID is
+         * empty in the reference too (D-18 rev 3). The genesis the
+         * ledger applied is still proven to exist: the committed
+         * manifest and the domain heads are what phase 0a reads, and a
+         * chain without them fails there. */
+        if (rows == 0 && !blk->cmt.on) {
             V2AP_DEFER("phase 0: no genesis committed on this node, so "
                        "height %llu has no chain to link onto - NOTHING "
                        "was judged",
@@ -1726,6 +2400,18 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                        (unsigned long long)(maxh + 1));
             return NODUS_V2_NOT_YET_LINKABLE;
         }
+
+        /* THE COMETBFT LANE'S FIRST BLOCK. With no committed row there
+         * is no predecessor height to be continuous with: the chain's
+         * `initial_height` is a field of the genesis DOCUMENT (D-18
+         * rev 3) that this engine never reads, and consensus — which
+         * owns the height — has already decided this block. So the
+         * linkage checks below are skipped exactly once, and the
+         * `prev_block_id` is the reference's empty LastBlockID: 64 zero
+         * bytes. Every later Comet block takes the ordinary path. */
+        if (blk->cmt.on && rows == 0) {
+            memset(blk->out_prev_block_id, 0, 64);
+        } else {
 
         /* AT or BEHIND the head: evaluable right now, so it gets a real
          * verdict. In follower mode a block at a committed height was
@@ -1776,6 +2462,8 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                          (unsigned long long)maxh);
             return -1;
         }
+        }   /* end of the ordinary linkage path (see the Comet first
+             * block above) */
     }
 
     /* ── 0a. FROZEN BLOCK-START EXECUTION SNAPSHOT (read-only) ────────
@@ -1802,12 +2490,21 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
     }
 
     uint8_t chain_id[DNA_CHAIN_ID_LEN];
+    /* ONE derivation of the chain identity, for both lanes.
+     * `nodus_witness_v2_chain_id` answers from the committed height-0
+     * block row where there is one and from the STORED GENESIS DOCUMENT
+     * where there is not (nodus_witness_v2_claims.c:186-224), so a
+     * version-3 chain — which writes no block row at all (D-19 rev 6) —
+     * is served by the same call as every older chain. There is
+     * deliberately no lane branch here: two sources for one identity is
+     * how two builds end up binding different chains. */
     if (nodus_witness_v2_chain_id(w, chain_id) != 0) {
         free(doms);
-        V2AP_FAULT("phase 0a: chain id underivable on this node although "
-                   "linkage proved genesis exists");
-        return -2;   /* linkage proved genesis exists; an underivable
-                      * chain id here is a node-local read failure       */
+        V2AP_FAULT("phase 0a: chain id underivable on this node - neither "
+                   "a committed genesis block row nor a stored genesis "
+                   "document answered");
+        return -2;   /* an underivable chain id is a node-local read
+                      * failure, never a statement about the block       */
     }
 
     /* ── BLOCK-START VALIDATOR AUTHORITY (O14) ────────────────────────
@@ -1926,6 +2623,24 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
     }
 
 #define RET_VERDICT do { goto fail_verdict_pre; } while (0)
+
+    /* ══ PHASE 0b, THE LEGACY LANE ONLY ══════════════════════════════
+     * Preflight, reserve, replay guard, per-leg admission, the committee
+     * snapshot and authorization all run here for the WHOLE batch,
+     * before the transaction opens, and ANY refusal rejects the whole
+     * block. That is the legacy consensus's contract: a block is voted
+     * on before it is applied, so it must be all-or-nothing.
+     *
+     * The cometbft lane cannot use it. There a block is DECIDED before
+     * it reaches the application, every item is executed, and a bad item
+     * gets a nonzero code while the block goes on (D-23 rev 4/5). So the
+     * same work happens there PER ITEM, inside the item's own SAVEPOINT,
+     * in the Comet item loop below. Nothing here is duplicated: the loop
+     * calls the same `dna_env_preflight`, the same `dna_meter_reserve`,
+     * the same admission predicates and the same `exec_one_env`. */
+    if (blk->cmt.on) {
+        goto cmt_skip_batch_stage;
+    }
 
     if (blk->n_envs > 0) {
         size_t fidx = 0;
@@ -2145,67 +2860,19 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
          * flows into the view (the auth hook rejects kind-2 legs on
          * count == 0). */
         if (need_committee) {
-            nodus_committee_member_t *mem = NULL;
-            int cm_count = 0;
-            if (blk->global_height == 0) {           /* below genesis    */
+            int crc = committee_snapshot_for_height(
+                w, blk->global_height, &cmview, &cm_pubkeys, &cm_fps,
+                blk->out_reason, sizeof blk->out_reason);
+
+            if (crc == 1) {                          /* below genesis    */
                 V2AP_VERDICT("phase 0b: a leg carries a committee-indexed "
                              "authorization at height 0 - the governing "
                              "height would be below genesis");
                 RET_VERDICT;
             }
-            if (nodus_committee_get_for_block_alloc(
-                    w, blk->global_height - 1, &mem, &cm_count) != 0) {
-                V2AP_FAULT("phase 0b: governing committee lookup at "
-                           "height %llu failed on this node",
-                           (unsigned long long)(blk->global_height - 1));
-                goto fail_fault_pre;
+            if (crc != 0) {
+                goto fail_fault_pre;   /* the helper wrote the reason    */
             }
-            if (cm_count < 0 || cm_count > DNA_MAX_ACTIVE_VALIDATORS) {
-                free(mem);
-                V2AP_FAULT("phase 0b: committee resolution returned %d "
-                           "members, outside the contract [0,%u]",
-                           cm_count, (unsigned)DNA_MAX_ACTIVE_VALIDATORS);
-                goto fail_fault_pre;     /* out-of-contract resolution   */
-            }
-            if (cm_count > 0) {
-                cm_pubkeys = malloc((size_t)cm_count *
-                                    NODUS_CC_PUBKEY_SIZE);
-                cm_fps = malloc((size_t)cm_count * 64);
-                if (!cm_pubkeys || !cm_fps) {
-                    free(mem);
-                    V2AP_FAULT("phase 0b: allocation for the %d-member "
-                               "committee snapshot failed", cm_count);
-                    goto fail_fault_pre;
-                }
-                for (int ci = 0; ci < cm_count; ci++) {
-                    memcpy(cm_pubkeys +
-                               (size_t)ci * NODUS_CC_PUBKEY_SIZE,
-                           mem[ci].pubkey, NODUS_CC_PUBKEY_SIZE);
-                    if (qgp_sha3_512(mem[ci].pubkey,
-                                     NODUS_CC_PUBKEY_SIZE,
-                                     cm_fps[ci]) != 0) {
-                        free(mem);
-                        V2AP_FAULT("phase 0b: hash backend failed on "
-                                   "committee member %d of %d", ci,
-                                   cm_count);
-                        goto fail_fault_pre;
-                    }
-                }
-                if (nodus_rt_committee_set_hash(
-                        (const uint8_t (*)[64])cm_fps,
-                        (uint32_t)cm_count, cmview.set_hash) != 0) {
-                    free(mem);
-                    V2AP_FAULT("phase 0b: committee set-hash over %d "
-                               "members failed", cm_count);
-                    goto fail_fault_pre;
-                }
-                cmview.pubkeys = cm_pubkeys;
-                cmview.fps = (const uint8_t (*)[64])cm_fps;
-            }
-            free(mem);
-            cmview.count = (uint32_t)cm_count;
-            cmview.epoch =
-                nodus_v2_epoch_for_height(blk->global_height - 1);
             if (blk->fail_at == V2AP_FAIL_AFTER_CC_SNAPSHOT) {
                 V2AP_VERDICT("fault-injection point "
                              "V2AP_FAIL_AFTER_CC_SNAPSHOT fired (test "
@@ -2338,54 +3005,12 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             RET_VERDICT;
         }
         for (size_t i = 0; i < blk->n_claims; i++) {
-            const dna_claim_t *c = &blk->claims[i];
-            if (dna_claim_validate(c) != 0) {
-                V2AP_VERDICT("claim %llu failed dna_claim_validate "
-                             "(malformed shape)", (unsigned long long)i);
-                RET_VERDICT;
-            }
-            dna_gman_t m;
-            if (nodus_witness_v2_manifest_load_by_hash(w,
-                    c->manifest_hash, &m) != 0) {
-                char h[17];
-                V2AP_VERDICT("claim %llu names manifest %s, which is not "
-                             "committed here (helper conflates a read "
-                             "fault - honest label in the header)",
-                             (unsigned long long)i,
-                             v2ap_hex8(c->manifest_hash, h));
-                RET_VERDICT;
-            }
-            if (m.dist_present != 1) {
-                V2AP_VERDICT("claim %llu names a manifest with no "
-                             "distribution section (dist_present %u)",
-                             (unsigned long long)i,
-                             (unsigned)m.dist_present);
-                RET_VERDICT;
-            }
-            dna_dist_leaf_t leaf;
-            memset(&leaf, 0, sizeof(leaf));
-            leaf.leaf_version = DNA_DIST_VERSION;
-            leaf.source_id_len = c->source_id_len;
-            memcpy(leaf.source_id, c->source_id, c->source_id_len);
-            leaf.source_amount = c->source_amount;
-            memcpy(leaf.dest_binding, c->dest_binding, 64);
-            uint8_t leaf_hash[64];
-            if (dna_dist_leaf_hash(&leaf, leaf_hash) != 0) {
-                V2AP_VERDICT("claim %llu: distribution leaf hash could "
-                             "not be derived from its source/dest "
-                             "binding", (unsigned long long)i);
-                RET_VERDICT;
-            }
-            if (dna_claim_nullifier(c->chain_id, c->manifest_hash,
-                                    m.target_domain_id,
-                                    m.target_asset_ref,
-                                    m.target_asset_len, leaf_hash,
-                                    claim_nuls[i]) != 0) {
-                V2AP_VERDICT("claim %llu: nullifier could not be derived "
-                             "for target domain %u",
-                             (unsigned long long)i,
-                             (unsigned)m.target_domain_id);
-                RET_VERDICT;
+            uint32_t target = 0;
+
+            if (claim_prescan_one(w, &blk->claims[i], i, claim_nuls[i],
+                                  &target, blk->out_reason,
+                                  sizeof blk->out_reason) != 0) {
+                RET_VERDICT;         /* the helper owns the reason       */
             }
             for (size_t j = 0; j < i; j++)
                 if (memcmp(claim_nuls[i], claim_nuls[j], 64) == 0) {
@@ -2397,11 +3022,10 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                                  (unsigned long long)j);
                     RET_VERDICT;
                 }
-            dom_ctx_t *d = dom_for(doms, n_dom, m.target_domain_id);
+            dom_ctx_t *d = dom_for(doms, n_dom, target);
             if (!d || d->status != DNA_DOMST_ACTIVE || !d->rt) {
                 V2AP_VERDICT("claim %llu targets domain %u, which is %s",
-                             (unsigned long long)i,
-                             (unsigned)m.target_domain_id,
+                             (unsigned long long)i, (unsigned)target,
                              !d ? "not registered"
                                 : (!d->rt ? "registered with no "
                                             "resolvable runtime"
@@ -2464,10 +3088,17 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         }
     }
 
+cmt_skip_batch_stage:
 #undef RET_VERDICT
 
-    /* ── 1. THE transaction ─────────────────────────────────────────── */
-    if (exec_sql(w, "BEGIN IMMEDIATE") != 0) {
+    /* ── 1. THE transaction ─────────────────────────────────────────
+     * The legacy lane OWNS it. The cometbft lane JOINS the host's
+     * (D-23 rev 5 (5)): `apply_verified_block` opened one before
+     * `FinalizeBlock` and `app.commit` will close it, so this entry
+     * must not open, commit or roll back anything. The entry gate
+     * already refused to run outside a transaction, so reaching here
+     * with `cmt.on` means one is open. */
+    if (!blk->cmt.on && exec_sql(w, "BEGIN IMMEDIATE") != 0) {
         V2AP_FAULT("phase 1: BEGIN IMMEDIATE failed on this node's "
                    "database");
         goto fail_fault_pre;
@@ -2481,6 +3112,460 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                      "touched anything (gate helper conflates a read "
                      "fault: honest label in the header)");
         goto fail;
+    }
+
+    /* ══ 4-6b, THE COMETBFT LANE: ONE ITEM AT A TIME ════════════════
+     *
+     * D-23 rev 4/5. A decided block is applied, never re-judged, so the
+     * unit of failure is the ITEM, not the block. Each item runs inside
+     * its own SAVEPOINT nested in the host's transaction; an
+     * item-attributable refusal rolls that savepoint back — its
+     * mutations, its fee and its index rows go with it — records a
+     * nonzero `nodus_v2_tx_code_t`, and the block continues with the
+     * next item. A NODE-LOCAL fault is never an item verdict: it aborts
+     * the whole apply and the host rolls the block back.
+     *
+     * ORDER: the block's own order, envelopes then claims. The legacy
+     * lane's SYSTEM → cross-domain → domain-local phase order does NOT
+     * apply here (it is the legacy consensus's rule), which is why the
+     * two lanes can produce different roots for the same items — stated
+     * in apply.h.
+     *
+     * WHAT IS REUSED, not re-implemented: `dna_env_preflight` (the same
+     * derivation the batch seam runs, with the chain id passed in),
+     * `dna_meter_reserve`/`dna_meter_abort`, the admission predicates
+     * `dom_for` / `rt_owns_runtime_op`, the runtime's own `auth` hook,
+     * and `exec_one_env` — the per-envelope body the legacy phases call.
+     */
+    if (blk->cmt.on) {
+        uint32_t gidx = 0;          /* global index of the APPLIED items */
+
+        /* The governing committee snapshot, resolved ONCE for the block
+         * through the same function the legacy lane calls. It is
+         * resolved UNCONDITIONALLY here, where the legacy lane resolves
+         * it only when its batch scan saw a committee-indexed leg: that
+         * scan does not exist in this lane, and pre-decoding every item
+         * just to learn whether one does would be the scan again. The
+         * cost is one committed-state read per block; the alternative —
+         * verifying a kind-2 leg against an empty view — would refuse
+         * every chain-config transaction. A height-0 block cannot reach
+         * here (phase 0 refused it), so the helper's "below genesis"
+         * answer is a node-local invariant. */
+        {
+            int crc = committee_snapshot_for_height(
+                w, blk->global_height, &cmview, &cm_pubkeys, &cm_fps,
+                blk->out_reason, sizeof blk->out_reason);
+
+            if (crc != 0) {
+                if (crc == 1) {
+                    V2AP_FAULT("cometbft lane: the governing committee "
+                               "height would be below genesis at block "
+                               "height %llu",
+                               (unsigned long long)blk->global_height);
+                }
+                goto fail_fault;
+            }
+        }
+
+        for (size_t i = 0; i < blk->n_envs; i++) {
+            nodus_v2_tx_result_t *res = &blk->cmt.results[i];
+            const dna_env_view_t *v;
+            dna_env_leg_ctx_t lctx[DNA_ENV_MAX_LEGS];
+            dna_env_preflight_status_t pfst;
+            char sp[48];
+            uint32_t code = NODUS_V2_TX_OK;
+            uint16_t l;
+            int metered = 0;
+
+            res->code = NODUS_V2_TX_OK;
+            res->gas_wanted = 0;
+            res->gas_used = 0;
+
+            snprintf(sp, sizeof(sp), "cmt_item_%llu",
+                     (unsigned long long)i);
+            if (nodus_witness_db_savepoint(w, sp) != 0) {
+                V2AP_FAULT("cometbft item %llu: SAVEPOINT failed on this "
+                           "node", (unsigned long long)i);
+                goto fail_fault;
+            }
+
+            /* ── the item's own contextual ruleset table, POSITIONAL ──
+             * `dna_env_preflight` wants one entry per leg, in leg order
+             * (env_preflight.h step 5). The block-start table is by
+             * domain; a leg whose domain is absent from it is the
+             * CONTEXT class. The decode has to happen first to know the
+             * legs, and the codec is the same one preflight re-runs. */
+            {
+                dna_env_view_t probe;
+
+                memset(&probe, 0, sizeof(probe));
+                if (dna_env_decode(blk->envs[i].env_bytes,
+                                   blk->envs[i].env_len, &probe) != 0) {
+                    code = NODUS_V2_TX_ERR_DECODE;
+                    goto cmt_item_failed;
+                }
+                for (l = 0; l < probe.leg_count; l++) {
+                    size_t k;
+                    int found = 0;
+
+                    for (k = 0; k < bctx.n_rulesets; k++) {
+                        if (bctx.rulesets[k].domain_id ==
+                            probe.leg[l].domain_id) {
+                            lctx[l] = bctx.rulesets[k];
+                            found = 1;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        code = NODUS_V2_TX_ERR_CONTEXT;
+                        goto cmt_item_failed;
+                    }
+                }
+                pfst = dna_env_preflight(blk->envs[i].env_bytes,
+                                         blk->envs[i].env_len, chain_id,
+                                         blk->global_height, lctx,
+                                         probe.leg_count, &pf[i]);
+                if (pfst != DNA_ENV_PF_OK) {
+                    /* ERR_HASH is the hash backend failing on THIS node
+                     * — never a statement about the bytes (the
+                     * env_preflight.h ERR_HASH rule, engine-wide). */
+                    if (pfst == DNA_ENV_PF_ERR_HASH) {
+                        V2AP_FAULT("cometbft item %llu: the preflight's "
+                                   "hash backend failed on this node",
+                                   (unsigned long long)i);
+                        (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                        (void)cmt_savepoint_release(w, sp);
+                        goto fail_fault;
+                    }
+                    /* The ERR_CTX_* family says the envelope does not fit
+                     * the COMMITTED CONTEXT it was handed — a wrong leg
+                     * count, another domain, another ruleset version
+                     * (env_preflight.h:92-94) — which is class 2, not a
+                     * statement about the bytes. Everything else left
+                     * here (ERR_ARG, ERR_DECODE, ERR_EXPIRED,
+                     * env_preflight.h:89-91) is class 1. */
+                    code = (pfst == DNA_ENV_PF_ERR_CTX_COUNT ||
+                            pfst == DNA_ENV_PF_ERR_CTX_DOMAIN ||
+                            pfst == DNA_ENV_PF_ERR_CTX_VERSION)
+                               ? NODUS_V2_TX_ERR_CONTEXT
+                               : NODUS_V2_TX_ERR_DECODE;
+                    goto cmt_item_failed;
+                }
+            }
+            v = &pf[i].view;
+
+            /* ── REPLAY: the committed indices, then this block ───────
+             * The same two guards the legacy lane runs pre-BEGIN
+             * (:2064-2110 in the legacy region above), here per item and
+             * ALSO against the items this block already applied — an
+             * earlier item's rows are visible inside the transaction, so
+             * the committed check covers them, but an item that was
+             * rolled back must not block a later duplicate either, which
+             * is exactly what reading the live index gives. */
+            {
+                static const char *const guard_sql[2] = {
+                    "SELECT 1 FROM v2_intent_index WHERE intent_id = ?1",
+                    "SELECT 1 FROM v2_tx_index WHERE tx_id = ?1"
+                };
+                const uint8_t *guard_id[2] = { pf[i].intent_id,
+                                               pf[i].wire_id };
+                int g, hit = 0;
+
+                for (g = 0; g < 2 && !hit; g++) {
+                    sqlite3_stmt *st = NULL;
+                    int rc;
+
+                    if (sqlite3_prepare_v2(w->db, guard_sql[g], -1, &st,
+                                           NULL) != SQLITE_OK) {
+                        V2AP_FAULT("cometbft item %llu: the replay guard "
+                                   "could not be prepared on this node",
+                                   (unsigned long long)i);
+                        (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                        (void)cmt_savepoint_release(w, sp);
+                        goto fail_fault;
+                    }
+                    sqlite3_bind_blob(st, 1, guard_id[g], 64,
+                                      SQLITE_TRANSIENT);
+                    rc = sqlite3_step(st);
+                    sqlite3_finalize(st);
+                    if (rc == SQLITE_ROW) {
+                        hit = 1;
+                    } else if (rc != SQLITE_DONE) {
+                        V2AP_FAULT("cometbft item %llu: the replay guard "
+                                   "failed to step on this node (sqlite "
+                                   "rc %d)", (unsigned long long)i, rc);
+                        (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                        (void)cmt_savepoint_release(w, sp);
+                        goto fail_fault;
+                    }
+                }
+                if (hit) {
+                    code = NODUS_V2_TX_ERR_REPLAY;
+                    goto cmt_item_failed;
+                }
+            }
+
+            /* ── ADMISSION, per leg: the legacy scan's predicates ───── */
+            for (l = 0; l < v->leg_count; l++) {
+                dom_ctx_t *d = dom_for(doms, n_dom, v->leg[l].domain_id);
+                uint8_t ak = v->leg[l].auth_kind;
+
+                if (!d || !d->rt || !d->rt->exec || !d->rt->auth ||
+                    v->leg[l].access_mode != DNA_ENV_ACCESS_INVOKE ||
+                    !rt_owns_runtime_op(d->rt, v->leg[l].runtime_op) ||
+                    ak >= 32 ||
+                    (d->rt->allowed_auth_kinds &
+                     NODUS_RT_AUTHKIND_BIT(ak)) == 0) {
+                    code = NODUS_V2_TX_ERR_ADMISSION;
+                    goto cmt_item_failed;
+                }
+                /* the engine's own per-domain transaction bound and the
+                 * committed manifest's quota — both CAPACITY, because
+                 * both are about what is LEFT, not about the bytes */
+                if (d->n_tx >= MAX_OPS ||
+                    (d->man.quota_tx_per_block != 0 &&
+                     d->n_tx + 1 > (uint32_t)d->man.quota_tx_per_block)) {
+                    code = NODUS_V2_TX_ERR_CAPACITY;
+                    goto cmt_item_failed;
+                }
+            }
+
+            /* ── RESERVE against what is LEFT of the block's budget ── */
+            {
+                dna_meter_status_t mst =
+                    dna_meter_reserve(&meters[i], bctx.policy, v,
+                                      &bctx.budget);
+
+                if (mst == DNA_METER_ERR_FAULT) {
+                    V2AP_FAULT("cometbft item %llu: the meter reported an "
+                               "accounting fault on this node",
+                               (unsigned long long)i);
+                    (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                    (void)cmt_savepoint_release(w, sp);
+                    goto fail_fault;
+                }
+                if (mst != DNA_METER_OK) {
+                    code = NODUS_V2_TX_ERR_CAPACITY;
+                    goto cmt_item_failed;
+                }
+                metered = 1;
+                res->gas_wanted = meters[i].g_reserved;
+            }
+
+            /* ── AUTHORIZATION: the ONE stage, shared with CheckTx ──── */
+            {
+                int arc = env_authorize_legs(
+                    w, &pf[i], doms, n_dom, chain_id, blk->global_height,
+                    blk->epoch, &cmview, &auths[i * DNA_ENV_MAX_LEGS],
+                    blk->out_reason, sizeof blk->out_reason);
+
+                if (arc == -2) {
+                    (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                    (void)cmt_savepoint_release(w, sp);
+                    goto fail_fault;   /* the helper owns the reason     */
+                }
+                if (arc != 0) {
+                    code = NODUS_V2_TX_ERR_AUTH;
+                    goto cmt_item_failed;
+                }
+            }
+
+            /* ── EXECUTE: the same body the legacy phases call ──────── */
+            {
+                int rc = exec_one_env(w, blk, i, chain_id, blk->epoch,
+                                      doms, n_dom, &pf[i], &meters[i],
+                                      auths, reads, resbuf,
+                                      blk->out_reason,
+                                      sizeof blk->out_reason);
+                if (rc == -2) {
+                    (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                    (void)cmt_savepoint_release(w, sp);
+                    goto fail_fault;      /* exec_one_env owns the reason */
+                }
+                if (rc != 0) {
+                    blk->out_reason[0] = '\0';   /* an ITEM's refusal is
+                                                  * not the block's      */
+                    code = NODUS_V2_TX_ERR_EXEC;
+                    goto cmt_item_failed;
+                }
+                res->gas_used = meters[i].g_consumed;
+            }
+
+            /* ── the item's IDENTITY INDEX ROWS, inside its savepoint ─
+             * Both identities or neither: a refused item's rows go away
+             * with its SAVEPOINT, which is what makes "no index rows for
+             * a failed item" true rather than merely intended. The LOCAL
+             * index rows follow in phase 12 — see cmt_item_index. */
+            if (cmt_item_index(w, blk->global_height, &pf[i], doms, n_dom,
+                               gidx, blk->out_reason,
+                               sizeof blk->out_reason) != 0) {
+                (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                (void)cmt_savepoint_release(w, sp);
+                goto fail_fault;       /* the helper owns the reason     */
+            }
+
+            /* APPLIED. Only now does the item join the per-domain id
+             * lists and the touched set: a rolled-back item must not
+             * reach tx_root, a domain root or a local index. */
+            for (l = 0; l < v->leg_count; l++) {
+                dom_ctx_t *d = dom_for(doms, n_dom, v->leg[l].domain_id);
+
+                d->touched = 1;
+                memcpy(d->wire_ids[d->n_tx++], pf[i].wire_id, 64);
+            }
+            gidx++;
+            blk->cmt.results_len = i + 1;
+            if (cmt_savepoint_release(w, sp) != 0) {
+                V2AP_FAULT("cometbft item %llu: RELEASE SAVEPOINT failed "
+                           "on this node", (unsigned long long)i);
+                goto fail_fault;
+            }
+            continue;
+
+cmt_item_failed:
+            /* The item pays nothing and leaves nothing: its savepoint
+             * carries away every mutation it made, its fee with them,
+             * and its index rows were never written. The meter is
+             * ABORTED, which restores the block budget byte-identically
+             * (res_meter.h:506-509) so the NEXT item is judged against
+             * the budget as if this one had never been reserved. */
+            if (metered) {
+                res->gas_used = meters[i].g_consumed;
+                (void)dna_meter_abort(&meters[i]);
+            }
+            res->code = code;
+            blk->cmt.results_len = i + 1;
+            blk->out_reason[0] = '\0';
+            if (nodus_witness_db_rollback_to_savepoint(w, sp) != 0 ||
+                cmt_savepoint_release(w, sp) != 0) {
+                V2AP_FAULT("cometbft item %llu: its savepoint could not "
+                           "be rolled back on this node",
+                           (unsigned long long)i);
+                goto fail_fault;
+            }
+        }
+
+        /* ── POOL BATCHES ARE NOT ITEMS ──────────────────────────────
+         * A block does not carry them: the block message declares
+         * `pool_batch_count` must be zero (shared/dnac/blockmsg_v2.h),
+         * and the S7 surface is an INACTIVE test/fixture input the
+         * engine accepts only from a direct caller. A decided Comet
+         * block that somehow carries one is therefore not something to
+         * judge — it is this node being handed a shape consensus cannot
+         * produce: stop. */
+        if (blk->n_pool_muts > 0) {
+            V2AP_FAULT("cometbft lane: this block carries %llu pool "
+                       "batches; a block message cannot express one, so "
+                       "this is a node-local shape, not a verdict",
+                       (unsigned long long)blk->n_pool_muts);
+            goto fail_fault;
+        }
+
+        /* ── THE CLAIM ARRAY'S BOUNDS ────────────────────────────────
+         * The legacy lane checks these before its transaction opens
+         * (the `blk->n_claims > MAX_OPS` / NULL-array gate), and that
+         * gate is inside the region this lane skips — so without this
+         * the loop below would write `claim_nuls[i]` past a 16-slot
+         * array (declared with the engine's other per-block scratch) and
+         * smash the frame. `finalize_block` happens to bound a request
+         * at ten today, but the engine must not depend on ONE caller's
+         * arithmetic for its own memory safety: a direct caller (every
+         * V2 test is one) reaches this loop unfiltered.
+         *
+         * Neither refusal is a judgement about anyone's block: an array
+         * this engine cannot hold is this node's shape. */
+        if (blk->n_claims > MAX_OPS ||
+            (blk->n_claims > 0 && !blk->claims)) {
+            V2AP_FAULT("cometbft lane: the block declares %llu claims "
+                       "with %s array; this engine holds %u",
+                       (unsigned long long)blk->n_claims,
+                       blk->claims ? "an over-long" : "a NULL",
+                       (unsigned)MAX_OPS);
+            goto fail_fault;
+        }
+
+        /* ── CLAIMS ARE ITEMS, and take the same discipline ───────────
+         * Each claim runs in its own SAVEPOINT: the derivation the
+         * legacy lane does pre-BEGIN (`claim_prescan_one` — a pure
+         * function of the claim bytes and committed context), the
+         * in-block duplicate check against the claims this block has
+         * ALREADY applied, the target-domain check, then
+         * `claim_execute_one` (admission, the nullifier cross-check and
+         * the three write stages). Any refusal is code CLAIM, the
+         * savepoint is rolled back and the block continues.
+         *
+         * A claim reserves and consumes no metered units, so its
+         * `gas_wanted`/`gas_used` are 0/0 — apply.h's contract. */
+        for (size_t i = 0; i < blk->n_claims; i++) {
+            nodus_v2_tx_result_t *res =
+                &blk->cmt.results[blk->n_envs + i];
+            uint32_t  target = 0;
+            char      sp[48];
+            uint32_t  code = NODUS_V2_TX_OK;
+            dom_ctx_t *d;
+            size_t    j;
+
+            res->code = NODUS_V2_TX_OK;
+            res->gas_wanted = 0;
+            res->gas_used   = 0;
+            snprintf(sp, sizeof(sp), "cmt_claim_%llu",
+                     (unsigned long long)i);
+            if (nodus_witness_db_savepoint(w, sp) != 0) {
+                V2AP_FAULT("cometbft claim %llu: SAVEPOINT failed on this "
+                           "node", (unsigned long long)i);
+                goto fail_fault;
+            }
+            if (claim_prescan_one(w, &blk->claims[i], i, claim_nuls[i],
+                                  &target, blk->out_reason,
+                                  sizeof blk->out_reason) != 0) {
+                code = NODUS_V2_TX_ERR_CLAIM;
+                goto cmt_claim_failed;
+            }
+            for (j = 0; j < i; j++) {
+                if (blk->cmt.results[blk->n_envs + j].code ==
+                        NODUS_V2_TX_OK &&
+                    memcmp(claim_nuls[i], claim_nuls[j], 64) == 0) {
+                    code = NODUS_V2_TX_ERR_CLAIM;   /* duplicate in-block */
+                    goto cmt_claim_failed;
+                }
+            }
+            d = dom_for(doms, n_dom, target);
+            if (!d || d->status != DNA_DOMST_ACTIVE || !d->rt) {
+                code = NODUS_V2_TX_ERR_CLAIM;
+                goto cmt_claim_failed;
+            }
+            if (claim_execute_one(w, blk, i, claim_nuls[i],
+                                  blk->out_reason,
+                                  sizeof blk->out_reason) != 0) {
+                code = NODUS_V2_TX_ERR_CLAIM;
+                goto cmt_claim_failed;
+            }
+            /* APPLIED: only now is the target domain touched, so a
+             * refused claim moves no domain root. */
+            d->touched = 1;
+            blk->cmt.results_len = blk->n_envs + i + 1;
+            blk->out_reason[0] = '\0';
+            if (cmt_savepoint_release(w, sp) != 0) {
+                V2AP_FAULT("cometbft claim %llu: RELEASE SAVEPOINT failed "
+                           "on this node", (unsigned long long)i);
+                goto fail_fault;
+            }
+            continue;
+
+cmt_claim_failed:
+            res->code = code;
+            blk->cmt.results_len = blk->n_envs + i + 1;
+            blk->out_reason[0] = '\0';   /* an ITEM's refusal is not the
+                                          * block's                     */
+            if (nodus_witness_db_rollback_to_savepoint(w, sp) != 0 ||
+                cmt_savepoint_release(w, sp) != 0) {
+                V2AP_FAULT("cometbft claim %llu: its savepoint could not "
+                           "be rolled back on this node",
+                           (unsigned long long)i);
+                goto fail_fault;
+            }
+        }
+        goto cmt_items_done;
     }
 
     /* 4-6. ENVELOPE EXECUTION in the canonical phase order: SYSTEM-
@@ -2562,73 +3647,13 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
     FAIL_POINT(V2AP_FAIL_AFTER_UTXO);
 
     /* 6b. S6 generic claims — routed to each claim's COMMITTED target
-     * runtime inside THE txn (unchanged from S6). */
+     * runtime inside THE txn. The body is `claim_execute_one`, shared
+     * with the cometbft lane, which runs it per claim inside that
+     * claim's own SAVEPOINT. */
     for (size_t i = 0; i < blk->n_claims; i++) {
-        const dna_claim_t *c = &blk->claims[i];
-        nodus_v2_claim_admit_t adm;
-        if (nodus_witness_v2_claim_admit(w, c, blk->global_height, &adm)
-            != 0) {
-            V2AP_VERDICT("phase 6b: claim %llu refused at admission "
-                         "(helper conflates a read fault - honest label "
-                         "in the header)", (unsigned long long)i);
-            goto fail;
-        }
-        if (memcmp(adm.nullifier, claim_nuls[i], 64) != 0) {
-            char a[17], p[17];
-            V2AP_VERDICT("phase 6b: claim %llu nullifier %s from "
-                         "admission disagrees with the pre-BEGIN "
-                         "derivation %s",
-                         (unsigned long long)i,
-                         v2ap_hex8(adm.nullifier, a),
-                         v2ap_hex8(claim_nuls[i], p));
-            goto fail;
-        }
-        uint8_t output_id[64];
-        if (nodus_witness_v2_claim_output_create(w, c, &adm,
-                                                 blk->global_height,
-                                                 output_id) != 0) {
-            V2AP_VERDICT("phase 6b: claim %llu target-runtime output "
-                         "creation failed (helper conflates a read "
-                         "fault)", (unsigned long long)i);
-            goto fail;
-        }
-        if (blk->fail_at == V2AP_FAIL_AFTER_CLAIM_OUTPUT &&
-            blk->fail_claim_index == (uint32_t)i) {
-            V2AP_VERDICT("fault-injection point "
-                         "V2AP_FAIL_AFTER_CLAIM_OUTPUT fired after claim "
-                         "%llu (test harness; no real check failed)",
-                         (unsigned long long)i);
-            goto fail;
-        }
-        if (nodus_witness_v2_claim_spend_insert(w, c, &adm, output_id,
-                                                blk->global_height) != 0) {
-            V2AP_VERDICT("phase 6b: claim %llu spent-claim insert failed "
-                         "(helper conflates a read fault)",
-                         (unsigned long long)i);
-            goto fail;
-        }
-        if (blk->fail_at == V2AP_FAIL_AFTER_CLAIM_SPEND &&
-            blk->fail_claim_index == (uint32_t)i) {
-            V2AP_VERDICT("fault-injection point "
-                         "V2AP_FAIL_AFTER_CLAIM_SPEND fired after claim "
-                         "%llu (test harness; no real check failed)",
-                         (unsigned long long)i);
-            goto fail;
-        }
-        if (nodus_witness_v2_claim_state_update(w, adm.manifest_hash,
-                                                adm.converted) != 0) {
-            V2AP_VERDICT("phase 6b: claim %llu distribution-state "
-                         "decrement failed (helper conflates a read "
-                         "fault)", (unsigned long long)i);
-            goto fail;
-        }
-        if (blk->fail_at == V2AP_FAIL_AFTER_CLAIM_STATE &&
-            blk->fail_claim_index == (uint32_t)i) {
-            V2AP_VERDICT("fault-injection point "
-                         "V2AP_FAIL_AFTER_CLAIM_STATE fired after claim "
-                         "%llu (test harness; no real check failed)",
-                         (unsigned long long)i);
-            goto fail;
+        if (claim_execute_one(w, blk, i, claim_nuls[i], blk->out_reason,
+                              sizeof blk->out_reason) != 0) {
+            goto fail;               /* the helper owns the reason      */
         }
     }
 
@@ -2649,6 +3674,7 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         }
     }
 
+cmt_items_done:
     /* 6c. LIFECYCLE re-scan (unchanged from S5/S6: canonical DomainHead
      * lifecycle; execution authority stays the BLOCK-ENTRY status). */
     {
@@ -3134,9 +4160,92 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
      * neither does; the UNIQUE constraints are the fail-closed backstop
      * behind the pre-BEGIN replay guard (a violation here means the
      * guard's read and this write disagree — an engine/storage fault on
-     * THIS node, not a block property). */
+     * THIS node, not a block property).
+     *
+     * IN THE COMETBFT LANE the two IDENTITY rows of every APPLIED item
+     * were already written inside that item's own SAVEPOINT (so a
+     * refused item left none), and only the LOCAL index rows are left —
+     * they could not be written there because their `domain_height`
+     * column is the head height phases 9-10 compute. The loop below is
+     * therefore entered in that lane too, over the APPLIED items in
+     * block order, with the identity inserts skipped. */
     {
         uint32_t gidx = 0;
+        if (blk->cmt.on) {
+            uint32_t gi = 0;
+            size_t   i;
+
+            for (i = 0; i < blk->n_envs; i++) {
+                const dna_env_view_t *v;
+                uint16_t t;
+
+                if (blk->cmt.results[i].code != NODUS_V2_TX_OK) {
+                    continue;            /* refused: no rows at all      */
+                }
+                v = &pf[i].view;
+                for (t = 0; t < v->leg_count; t++) {
+                    dom_ctx_t *d = dom_for(doms, n_dom,
+                                           v->leg[t].domain_id);
+                    uint32_t lidx = 0;
+                    sqlite3_stmt *ls = NULL;
+                    int rc;
+
+                    if (!d) {
+                        V2AP_FAULT("phase 12: applied item %llu leg %u "
+                                   "names domain %u, absent from the "
+                                   "working set at index time",
+                                   (unsigned long long)i, (unsigned)t,
+                                   (unsigned)v->leg[t].domain_id);
+                        goto fail_fault;
+                    }
+                    if (nodus_witness_v2_local_index_find(
+                            (const uint8_t (*)[64])d->wire_ids, d->n_tx,
+                            pf[i].wire_id, &lidx) != 0) {
+                        V2AP_FAULT("phase 12: applied item %llu's wire id "
+                                   "is missing from domain %u's own "
+                                   "%u-entry id list - engine invariant "
+                                   "broken on THIS node",
+                                   (unsigned long long)i,
+                                   (unsigned)d->domain_id,
+                                   (unsigned)d->n_tx);
+                        goto fail_fault;
+                    }
+                    if (sqlite3_prepare_v2(w->db,
+                            "INSERT INTO v2_tx_local_index (tx_id, "
+                            "domain_id, domain_height, local_index) "
+                            "VALUES (?1,?2,?3,?4)", -1, &ls, NULL)
+                        != SQLITE_OK) {
+                        V2AP_FAULT("phase 12: could not prepare the "
+                                   "v2_tx_local_index insert for applied "
+                                   "item %llu domain %u",
+                                   (unsigned long long)i,
+                                   (unsigned)d->domain_id);
+                        goto fail_fault;
+                    }
+                    sqlite3_bind_blob(ls, 1, pf[i].wire_id, 64,
+                                      SQLITE_TRANSIENT);
+                    sqlite3_bind_int64(ls, 2,
+                        (sqlite3_int64)v->leg[t].domain_id);
+                    sqlite3_bind_int64(ls, 3,
+                        (sqlite3_int64)d->newhead.domain_height);
+                    sqlite3_bind_int64(ls, 4, (sqlite3_int64)lidx);
+                    rc = sqlite3_step(ls);
+                    sqlite3_finalize(ls);
+                    if (rc != SQLITE_DONE) {
+                        V2AP_FAULT("phase 12: v2_tx_local_index insert "
+                                   "for applied item %llu domain %u "
+                                   "(local index %u) failed (sqlite rc "
+                                   "%d)", (unsigned long long)i,
+                                   (unsigned)d->domain_id, (unsigned)lidx,
+                                   rc);
+                        goto fail_fault;
+                    }
+                }
+                gi++;
+            }
+            (void)gi;
+            goto cmt_index_done;
+        }
         for (int phase = 0; phase < 3; phase++) {
             for (size_t i = 0; i < blk->n_envs; i++) {
                 if (env_phase[i] != phase) continue;
@@ -3298,6 +4407,8 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                 }
             }
         }
+cmt_index_done:
+        (void)gidx;
     }
     FAIL_POINT(V2AP_FAIL_AFTER_TX_INDEX);
 
@@ -3463,10 +4574,31 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
     {
         uint8_t all_ids[NODUS_V2_ENV_BATCH_MAX][64];
         uint32_t n_all = 0;
-        for (int phase = 0; phase < 3; phase++)
+        if (blk->cmt.on) {
+            /* R3-C1a-7, and the ROW'S OWN RULE: `tx_root` commits the
+             * ids of the items this block APPLIED, in block order, and
+             * `tx_count` is the size of exactly that list. A refused
+             * item contributes neither — its effects went away with its
+             * SAVEPOINT, and committing its id would bind the block to
+             * a transaction whose state changes were rolled back. (A
+             * refused item's `pf[i]` is zeroed by the preflight's own
+             * reject path, so including it would commit a run of zero
+             * bytes, which is the same defect wearing a disguise.)
+             *
+             * This is NOT the block's `Data.Txs` count: that one is
+             * consensus's, it counts every item the block carries, and
+             * it lives in the Comet header's DataHash. The row's
+             * `tx_count` is the LEDGER's, and the two differ exactly by
+             * the refused items — by design. */
             for (size_t i = 0; i < blk->n_envs; i++)
-                if (env_phase[i] == phase)
+                if (blk->cmt.results[i].code == NODUS_V2_TX_OK)
                     memcpy(all_ids[n_all++], pf[i].wire_id, 64);
+        } else {
+            for (int phase = 0; phase < 3; phase++)
+                for (size_t i = 0; i < blk->n_envs; i++)
+                    if (env_phase[i] == phase)
+                        memcpy(all_ids[n_all++], pf[i].wire_id, 64);
+        }
         if (dna_v2_tx_batch_root(
                 n_all ? (const uint8_t (*)[64])all_ids : NULL, n_all,
                 blk->out_tx_root) != 0) {
@@ -3568,6 +4700,21 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
          * caller's `expect_block_id` is compared AFTER the fact and can
          * only reject; it can never become the stored value. */
         dna_block_header_v2_t hdr;
+        if (blk->cmt.on) {
+            /* ── THE COMETBFT LANE DERIVES NO IDENTITY (D-17 rev 7 (6))
+             * The identity a validator signed is cometbft's header hash,
+             * and consensus handed it to FinalizeBlock. The ledger
+             * stores it verbatim and derives nothing of its own: header
+             * v3 is withdrawn (D-19 rev 6), and the `header` column that
+             * would hold it does not exist at S14. `vset_hash` is
+             * likewise the block's Comet ValidatorsHash, passed in. The
+             * ledger's own global root goes into `global_root` as always
+             * and is bound by consensus as the NEXT header's AppHash. */
+            memcpy(blk->out_block_id, blk->cmt.block_hash, 64);
+            memcpy(blk->out_vset_hash, blk->cmt.validators_hash, 64);
+            memset(blk->out_header, 0, sizeof(blk->out_header));
+            goto cmt_identity_done;
+        }
         memset(&hdr, 0, sizeof(hdr));
         hdr.header_version = DNA_BH2_VERSION;
         memcpy(hdr.chain_id, chain_id, DNA_CHAIN_ID_LEN);
@@ -3615,10 +4762,14 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         }
         FAIL_POINT(V2AP_FAIL_AFTER_BLOCK_ID);
 
+cmt_identity_done:
         /* Same BlockID already committed at ANOTHER height? Checked here,
          * on the REAL id, rather than pre-BEGIN on a caller's claim. The
          * UNIQUE constraint backstops it; doing it explicitly keeps the
-         * classification a VERDICT instead of a constraint-shaped fault. */
+         * classification a VERDICT instead of a constraint-shaped fault.
+         * In the Comet lane the id is consensus's, so a duplicate means
+         * this node is being asked to commit a block it already has —
+         * the wrapper turns the verdict below into a fault there. */
         sqlite3_stmt *st = NULL;
         if (sqlite3_prepare_v2(w->db,
                 "SELECT 1 FROM v2_blocks WHERE block_id = ?1", -1, &st,
@@ -3644,7 +4795,26 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         }
 
         st = NULL;
-        if (sqlite3_prepare_v2(w->db,
+        /* THE ROW SHAPE, BY LANE. S14 drops `header`, `qc` and
+         * `commit_cert` (D-17 rev 5/7): under cometbft the header lives
+         * in the block store's BlockMeta, the seen commit under `SC:<h>`
+         * and the canonical commit under `C:<h>` — none of them is the
+         * ledger's to keep. So the Comet insert names TEN columns and
+         * the legacy one twelve; a single statement cannot serve both,
+         * because at S14 the two extra column NAMES do not resolve. */
+        if (blk->cmt.on) {
+            if (sqlite3_prepare_v2(w->db,
+                    "INSERT INTO v2_blocks (global_height, block_id, "
+                    "prev_block_id, epoch, tx_root, domain_updates_root, "
+                    "domains_root, global_root, vset_hash, tx_count) "
+                    "VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                    -1, &st, NULL) != SQLITE_OK) {
+                V2AP_FAULT("phase 13: could not prepare the Comet "
+                           "v2_blocks metadata insert for height %llu",
+                           (unsigned long long)blk->global_height);
+                goto fail_fault;
+            }
+        } else if (sqlite3_prepare_v2(w->db,
                 "INSERT INTO v2_blocks (global_height, block_id, "
                 "prev_block_id, epoch, tx_root, domain_updates_root, "
                 "domains_root, global_root, vset_hash, tx_count, header, "
@@ -3669,6 +4839,9 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                           SQLITE_TRANSIENT);
         sqlite3_bind_blob(st, 9, blk->out_vset_hash, 64, SQLITE_TRANSIENT);
         sqlite3_bind_int64(st, 10, (sqlite3_int64)n_all);
+        if (blk->cmt.on) {
+            goto cmt_bind_done;          /* ten columns, no header, no qc */
+        }
         sqlite3_bind_blob(st, 11, blk->out_header, DNA_BH2_ENC_SIZE,
                           SQLITE_TRANSIENT);
         /* qc_len is unvalidated caller input at THIS boundary — the
@@ -3691,6 +4864,8 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         } else {
             sqlite3_bind_null(st, 12);
         }
+cmt_bind_done:
+        ;
         int rc = sqlite3_step(st);
         sqlite3_finalize(st);
         if (rc != SQLITE_DONE) {
@@ -3713,7 +4888,19 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
     }
     FAIL_POINT(V2AP_FAIL_BEFORE_COMMIT);
 
-    /* 15. COMMIT (or the simulated commit failure) */
+    /* 15. COMMIT (or the simulated commit failure).
+     *
+     * THE COMETBFT LANE COMMITS NOTHING HERE. The host opened the
+     * transaction before FinalizeBlock and `app.commit` closes it
+     * (D-23 rev 5 (5)), so this entry returns with the transaction still
+     * OPEN and every row it wrote still uncommitted — which is exactly
+     * what lets `SaveFinalizeBlockResponse` and `updateState` join it. */
+    if (blk->cmt.on) {
+        free(pf); free(meters); free(reads); free(resbuf); free(auths);
+        free(cm_pubkeys); free(cm_fps);
+        free(doms);
+        return 0;
+    }
     if (blk->fail_at == V2AP_FAIL_COMMIT) {
         V2AP_VERDICT("fault-injection point V2AP_FAIL_COMMIT fired "
                      "(simulated COMMIT failure; no real check failed)");
@@ -3748,7 +4935,13 @@ fail:
     if (blk->out_reason[0] == '\0')
         V2AP_VERDICT("in-transaction rejection with no reason recorded "
                      "(`fail` label)");
-    (void)exec_sql(w, "ROLLBACK");
+    /* THE ROLLBACK IS THE TRANSACTION OWNER'S. In the cometbft lane the
+     * host owns it (D-23 rev 5 (5)) and rolls it back itself when this
+     * entry fails; issuing one here would close a transaction the host
+     * still believes is open. */
+    if (!blk->cmt.on) {
+        (void)exec_sql(w, "ROLLBACK");
+    }
     meters_abort_all(meters, blk->n_envs);
     free(pf); free(meters); free(reads); free(resbuf); free(auths);
     free(cm_pubkeys); free(cm_fps);
@@ -3756,7 +4949,9 @@ fail:
     return -1;
 
 fail_fault:
-    (void)exec_sql(w, "ROLLBACK");
+    if (!blk->cmt.on) {
+        (void)exec_sql(w, "ROLLBACK");   /* the owner's, as at `fail` */
+    }
 fail_fault_committed:
     /* Both the ROLLBACK path and the direct COMMIT-failure jump land
      * here, so the fallback lives at THIS label, not at `fail_fault`. */
@@ -3789,4 +4984,322 @@ fail_fault_pre:
     free(cm_pubkeys); free(cm_fps);
     free(doms);
     return -2;
+}
+
+int nodus_witness_v2_committed_global_root(nodus_witness_t *w,
+                                           uint8_t out[64]) {
+    sqlite3_stmt *st = NULL;
+    dom_ctx_t    *doms = NULL;
+    dna_v2_domain_head_t *heads = NULL;
+    uint8_t       domains_root[64];
+    size_t        n_dom = 0, n_heads = 0, i;
+    int           rc, ret = -1;
+
+    if (!w || !w->db || !out) {
+        return -1;
+    }
+    /* (1) the TIP row, if there is one. ORDER BY ... DESC LIMIT 1 rather
+     * than MAX(global_height) so the row and its column come from the
+     * same read. */
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT global_root FROM v2_blocks "
+            "ORDER BY global_height DESC LIMIT 1", -1, &st, NULL)
+        != SQLITE_OK) {
+        return -1;
+    }
+    rc = sqlite3_step(st);
+    if (rc == SQLITE_ROW && sqlite3_column_bytes(st, 0) == 64) {
+        memcpy(out, sqlite3_column_blob(st, 0), 64);
+        sqlite3_finalize(st);
+        return 0;
+    }
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) {
+        return -1;                       /* a read fault is not "empty"  */
+    }
+
+    /* (2) no block row — the cometbft lane's genesis state. Recompute
+     * exactly as nodus_witness_v2_genesis_cmt composed it: the COMMITTED
+     * heads of the ACTIVE domains, in domain_id order (doms_load's ORDER
+     * BY), through the same two functions. */
+    doms = calloc(MAX_DOMS, sizeof(*doms));
+    if (!doms) {
+        return -1;
+    }
+    if (doms_load(w, doms, &n_dom, /*strict_active=*/0) != 0) {
+        free(doms);
+        return -1;
+    }
+    heads = calloc(n_dom ? n_dom : 1, sizeof(*heads));
+    if (!heads) {
+        free(doms);
+        return -1;
+    }
+    for (i = 0; i < n_dom; i++) {
+        if (doms[i].status == DNA_DOMST_ACTIVE && doms[i].has_head) {
+            heads[n_heads++] = doms[i].head;
+        }
+    }
+    if (n_heads > 0 &&
+        dna_v2_domains_root(heads, n_heads, domains_root) == 0 &&
+        dna_v2_global_root(domains_root, out) == 0) {
+        ret = 0;
+    }
+    free(heads);
+    free(doms);
+    return ret;
+}
+
+int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
+    int rc = v2_apply_block_body(w, blk);
+
+    /* ── A DECIDED BLOCK IS NEVER REFUSED (D-23 rev 5 (6)) ────────────
+     * In the cometbft lane the block reached this engine only AFTER a
+     * quorum committed to it, and `ProcessProposal` ran the ledger's
+     * whole-block check BEFORE that vote. So a refusal here is not a
+     * judgement about the proposer — it is this node disagreeing with a
+     * decision the network already made, which is a node defect. Every
+     * class the body can still produce becomes INTERNAL_FAULT: the host
+     * rolls the transaction back and the node stops, exactly as the
+     * reference's `ApplyVerifiedBlock` error does (state.go:1783-1785,
+     * `panic("failed to apply block; error %v")`; :1790 is
+     * `recordMetrics`, and D-23 rev 5 carries the same wrong number).
+     *
+     * The body's REASON text is untouched, so an operator still reads
+     * WHICH check refused — only the class changes, and it changes here,
+     * once, rather than at fifty sites.
+     *
+     * ITEM-level verdicts are NOT affected: they never travel as a
+     * return code. They live in `blk->cmt.results[i].code` and the block
+     * committed around them. */
+    if (blk && blk->cmt.on && rc < 0 && rc != NODUS_V2_INTERNAL_FAULT) {
+        return NODUS_V2_INTERNAL_FAULT;
+    }
+    return rc;
+}
+
+/* ── the cometbft-lane genesis (FLEET-TM-R3 W2, R3-C1b) ───────────────
+ *
+ * Contract, and the ONE removal and ONE addition that separate it from
+ * nodus_witness_v2_genesis_ex: the header
+ * (nodus_witness_v2_apply.h, `nodus_witness_v2_genesis_cmt`).
+ *
+ * WHY THIS IS A SECOND FUNCTION AND NOT A BRANCH IN THE FIRST. The
+ * version-2 entry is the LIVE path: the legacy BFT lane keeps producing
+ * V2 blocks on schema S12 between W2 and W3, byte-unchanged (D-17
+ * rev 7). A branch inside it would put a conditional on every live
+ * genesis, and its idempotency probe — the height-0 row — is exactly
+ * what this lane does not have. Nothing above this line is edited; every
+ * step below calls the SAME static helpers the version-2 entry calls
+ * (domreg_init_genesis, nodus_witness_v2_manifest_commit, doms_load,
+ * head_activate, dna_v2_domains_root, dna_v2_global_root,
+ * nodus_witness_v2_supply_check), in the same order, so there is one
+ * implementation of each step and not two.
+ */
+int nodus_witness_v2_genesis_cmt(nodus_witness_t *w,
+                                 const uint8_t vset_hash[64],
+                                 const uint8_t *manifest_bytes,
+                                 size_t manifest_len,
+                                 uint8_t out_global_root[64]) {
+    if (!w || !w->db || !vset_hash || !out_global_root) return -1;
+    /* The manifest is REQUIRED — the same fail-closed rule the version-2
+     * entry states at :599-609. It is the chain's committed source
+     * binding; a genesis that cannot present it has no identity to bind
+     * to the document that names it. */
+    if (!manifest_bytes || manifest_len == 0) return -1;
+
+    /* SCHEMA GATE: S12 OR S14 IN W2 — S14 ALONE FROM W3.
+     *
+     * The destination is S14 and only S14: that is where the Comet
+     * stores live (D-17 rev 6). S12 is accepted for ONE release window,
+     * and for one reason that is not this function's: the ledger genesis
+     * below runs every runtime's `state_init`
+     * (nodus_witness_domreg.c:326-340), and the CORE hook gates itself
+     * on an equality list ending at S12
+     * (nodus_rt_core_state_init, nodus_witness_v2_pools.c:1174-1182), so
+     * a genesis applied at S14 fails there with no diagnosis. That gate
+     * is one of the five D-17 rev 7 (7) moves to W3 together with the
+     * live S14 flip, and pools.c is LIVE legacy-lane code — widening it
+     * in W2 is precisely what rev 7 forbids. So the derivation builds
+     * the ledger at S12 and climbs afterwards
+     * (nodus_witness_v2_gen.c, step 9), and this gate admits the moment
+     * in between.
+     *
+     * W3 NARROWS THIS BACK TO S14 in the same commit that widens the
+     * pool gate — the two edits belong together and neither is safe
+     * alone. The version-2 entry's own gate at :614-620 (S9-S12) is
+     * untouched either way and still decides the live path. */
+    uint32_t ver = 0;
+    if (nodus_witness_db_schema_version(w, &ver) != 0 ||
+        (ver != NODUS_V2_SCHEMA_VERSION_S12 &&
+         ver != NODUS_V2_SCHEMA_VERSION_S14)) {
+        QGP_LOG_ERROR(LOG_TAG, "cometbft genesis needs schema S12 (W2, "
+                      "before the climb) or S14, the database is at %u — "
+                      "refusing", (unsigned)ver);
+        return -1;
+    }
+
+    /* FAIL CLOSED ON AN EXISTING GENESIS. There is no height-0 row to
+     * decide "already done" from, so the committed genesis MANIFEST is
+     * the probe — and the verdict is a refusal, not an idempotent
+     * success: a node that restarts VERIFIES its committed genesis
+     * through InitChain (D-23 rev 5 (7)) and never re-applies it. A
+     * probe fault is a refusal too; it is never read as "absent". */
+    {
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "SELECT 1 FROM v2_manifests WHERE committed_height = 0",
+                -1, &st, NULL) != SQLITE_OK)
+            return -1;
+        int rc = sqlite3_step(st);
+        sqlite3_finalize(st);
+        if (rc == SQLITE_ROW) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "this database already carries a "
+                          "committed genesis manifest — the cometbft "
+                          "genesis is not idempotent and will not re-apply "
+                          "it (fail closed)");
+            return -1;
+        }
+        if (rc != SQLITE_DONE) return -1;
+    }
+    /* And no block may exist yet, on either lane. */
+    {
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(w->db, "SELECT COUNT(*) FROM v2_blocks",
+                               -1, &st, NULL) != SQLITE_OK)
+            return -1;
+        int rc = sqlite3_step(st);
+        sqlite3_int64 n = (rc == SQLITE_ROW) ? sqlite3_column_int64(st, 0)
+                                             : -1;
+        sqlite3_finalize(st);
+        if (rc != SQLITE_ROW || n != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "v2_blocks holds %lld rows before a "
+                          "cometbft genesis — refusing", (long long)n);
+            return -1;
+        }
+    }
+
+    if (exec_sql(w, "BEGIN IMMEDIATE") != 0) return -1;
+    int ok = 0;
+    dna_v2_domain_head_t *heads = NULL;
+    uint8_t global_root[64];
+    memset(global_root, 0, sizeof(global_root));
+    do {
+        /* :699 — the registry with REAL payload-root manifests. */
+        if (nodus_witness_domreg_init_genesis(w) != 0) break;
+
+        /* :710-713 — the canonical genesis manifest at seq 0, height 0,
+         * committed BEFORE the root computation. Non-circular for the
+         * same reason stated there. */
+        if (nodus_witness_v2_manifest_commit(w, manifest_bytes,
+                                             manifest_len, 0, 0) != 0)
+            break;
+
+        /* :722-759 — one canonical activation head per ACTIVE domain,
+         * built by the ONE activation constructor. An allocation failure
+         * here is a NODE-LOCAL FAULT and is reported as one, never
+         * folded into the generic refusal below (the rule this file
+         * states at :724-732). */
+        dom_ctx_t *doms = calloc(MAX_DOMS, sizeof(*doms));
+        if (!doms) {
+            (void)exec_sql(w, "ROLLBACK");
+            free(heads);
+            return NODUS_V2_INTERNAL_FAULT;
+        }
+        size_t n_dom = 0;
+        if (doms_load(w, doms, &n_dom, /*strict_active=*/0) != 0) {
+            free(doms);
+            break;
+        }
+        if (n_dom < 1 || doms[0].domain_id != DNA_DOMAIN_SYSTEM ||
+            doms[0].status != DNA_DOMST_ACTIVE) {
+            free(doms);                 /* ACTIVE SYSTEM is mandatory    */
+            break;
+        }
+        heads = calloc(n_dom, sizeof(*heads));
+        if (!heads) {
+            free(doms);
+            (void)exec_sql(w, "ROLLBACK");
+            return NODUS_V2_INTERNAL_FAULT;
+        }
+
+        int all_ok = 1;
+        size_t n_heads = 0;
+        for (size_t i = 0; i < n_dom; i++) {
+            if (doms[i].status != DNA_DOMST_ACTIVE) continue;
+            if (doms[i].has_head) { all_ok = 0; break; }   /* impossible
+                                         * pre-genesis — fail closed     */
+            if (head_activate(w, &doms[i], 0) != 0) { all_ok = 0; break; }
+            heads[n_heads++] = doms[i].head;
+        }
+        if (!all_ok || n_heads == 0) { free(doms); break; }
+
+        /* :761-769 — the roots, over the heads just activated and in the
+         * order they were activated (domain_id ASC, doms_load's ORDER
+         * BY). This is the value that becomes the document's app_hash. */
+        uint8_t domains_root[64];
+        if (dna_v2_domains_root(heads, n_heads, domains_root) != 0) {
+            free(doms);
+            break;
+        }
+        if (dna_v2_global_root(domains_root, global_root) != 0) {
+            free(doms);
+            break;
+        }
+
+        /* :816-857 — the committed-authority cross-check, verbatim in
+         * intent: `vset_hash` is an ASSERTION, never a source. When a
+         * genesis snapshot is already committed (the ordinary case: the
+         * builder seeds epoch 0 before genesis) the parameter MUST equal
+         * it; when none is committed there is nothing to check against
+         * and the parameter stands, which is an honestly labelled
+         * bootstrap gap rather than a silent one. A hash failure
+         * allocates, so it is a NODE-LOCAL FAULT, not a judgement. */
+        {
+            dna_vset_snapshot_t *gsnap = NULL;
+            uint32_t gn = 0, gq = 0;
+            int garc = nodus_witness_v2_epoch_authority_for_height(
+                           w, 0, &gsnap, &gn, &gq);
+            if (garc == 0 && gsnap) {
+                uint8_t committed_vsh[DNA_VSET_HASH_LEN];
+                int ghrc = dna_vset_hash(gsnap, committed_vsh);
+                dna_vset_free(&gsnap);
+                if (ghrc != 0) {
+                    free(doms);
+                    (void)exec_sql(w, "ROLLBACK");
+                    free(heads);
+                    return NODUS_V2_INTERNAL_FAULT;
+                }
+                if (memcmp(committed_vsh, vset_hash,
+                           DNA_VSET_HASH_LEN) != 0) {
+                    free(doms);
+                    break;      /* genesis named a foreign validator set */
+                }
+            } else {
+                dna_vset_free(&gsnap);
+                if (garc < 0) { free(doms); break; }   /* read fault */
+            }
+        }
+
+        free(doms);
+
+        /* NO v2_blocks INSERT. D-19 rev 6 withdrew the genesis block;
+         * the height-0 root-history rows were already written by
+         * head_activate — the ONE canonical activation path — so the
+         * ledger's committed state is complete without it. */
+
+        /* :906 — the conservation invariant must balance before this
+         * genesis is allowed to exist. */
+        if (nodus_witness_v2_supply_check(w) != 0) break;
+        ok = 1;
+    } while (0);
+    free(heads);
+
+    if (!ok) { (void)exec_sql(w, "ROLLBACK"); return -1; }
+    if (exec_sql(w, "COMMIT") != 0) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    memcpy(out_global_root, global_root, 64);
+    return 0;
 }

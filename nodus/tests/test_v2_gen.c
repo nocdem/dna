@@ -1105,14 +1105,99 @@ static int test_fail_closed(void) {
         cfg_free(&c);
     }
 
-    /* an unknown config version */
+    /* an unknown config version.
+     *
+     * ⚠ THE PREMISE OF THIS CASE MOVED IN W2 (R3-C1b) AND THE VALUE HAD
+     * TO CHANGE WITH IT. It used to say NODUS_V2_GEN_CONFIG_VERSION + 1,
+     * i.e. 3 — and 3 is now the cometbft genesis document's version, a
+     * schema this build DOES understand (nodus_witness_v2_gen.c:490-495
+     * accepts 2 or 3, because every rule gen_plan_build states is shared
+     * by both documents). The assertion still passed nothing: it read
+     * "an unknown version rejects" while feeding a known one. + 2 is a
+     * genuinely unknown schema and keeps the case meaning what its name
+     * says. The version-3 half is pinned directly below rather than
+     * left to this case. */
     {
         cfgbox_t c;
         CHECK(cfg_make(&c, 0, 1, 0) == 0, "cfg");
         OK();
-        c.cfg->config_version = NODUS_V2_GEN_CONFIG_VERSION + 1;
+        c.cfg->config_version = NODUS_V2_GEN_CONFIG_VERSION + 2;
         CHECK(nodus_witness_v2_gen_config_validate(c.cfg) != 0,
               "an unknown config_version REJECTS");
+        cfg_free(&c);
+    }
+
+    /* ── THE POSITIVE COUNTERPART: a version-2 BODY claiming version 3.
+     *
+     * This is the config the case above used to build by accident, so it
+     * gets asserted deliberately: every version-3 field is zero (the
+     * struct is calloc'd and cfg_make never touches them), which is a
+     * document with no consensus protocol and no genesis time.
+     *
+     * WHERE EACH REFUSAL COMES FROM, named so a future reader does not
+     * have to guess which function owns the rule:
+     *
+     *   nodus_witness_v2_gen_config_validate   ACCEPTS it — and that is
+     *       DELIBERATE, not a hole. Since W2 it answers one question:
+     *       "do the rules the two documents SHARE hold?"
+     *       (nodus_witness_v2_gen.c:490-495 and the @return note in
+     *       nodus_witness_v2_gen.h). For this config they do: the
+     *       validators, the allocations, the schedule constants and the
+     *       claim window are a perfectly good version-2 body. A 0 here
+     *       means "the shared rules pass", never "derivable". Asserting
+     *       the 0 pins that scope: if someone later makes this function
+     *       version-aware, this line fails and points them here.
+     *   nodus_witness_v2_gen_v3_validate       REFUSES, and for the
+     *       RIGHT reason — consensus_protocol is 0, not cometbft
+     *       (nodus_witness_v2_gen.c:2386-2392). It is the version-3
+     *       verdict, and nodus_witness_v2_gen_derive_v3 runs it first.
+     *   nodus_witness_v2_gen_config_encode     REFUSES (gen.c:957): the
+     *       version-2 layout writer must never produce bytes for a
+     *       version-3 config.
+     *   nodus_witness_v2_gen_source_commit     REFUSES (gen.c:970-979),
+     *       which is the choke point nodus_witness_v2_gen_derive passes
+     *       through — so the version-2 derivation refuses it too, with a
+     *       logged reason an operator can act on.
+     *
+     * Together those four are the whole lane split, asserted on ONE
+     * config. */
+    {
+        cfgbox_t c;
+        CHECK(cfg_make(&c, 0, 1, 0) == 0, "cfg");
+        OK();
+        c.cfg->config_version = NODUS_V2_GEN_CONFIG_VERSION_V3;
+
+        CHECK(c.cfg->consensus_protocol == 0 &&
+              c.cfg->genesis_time_ms == 0 &&
+              c.cfg->n_comet_validators == 0,
+              "the version-3 fields of a version-2 config are all zero");
+        CHECK(nodus_witness_v2_gen_config_validate(c.cfg) == 0,
+              "config_validate answers the SHARED rules only, and they "
+              "hold — it is not the version-3 verdict");
+        CHECK(nodus_witness_v2_gen_v3_validate(c.cfg) != 0,
+              "the version-3 verdict REFUSES it: consensus_protocol is 0, "
+              "and a genesis that does not name its consensus has no "
+              "validity rules");
+
+        uint8_t *enc = NULL;
+        size_t   enc_len = 0;
+        CHECK(nodus_witness_v2_gen_config_encode(c.cfg, &enc, &enc_len) != 0 &&
+              enc == NULL,
+              "the version-2 encoder REFUSES to write it");
+        uint8_t sc[NODUS_V2_GEN_SRCCOMMIT_LEN];
+        CHECK(nodus_witness_v2_gen_source_commit(c.cfg, sc) != 0,
+              "and so does the version-2 source binding — which is what "
+              "makes nodus_witness_v2_gen_derive refuse it");
+
+        char dir[128];
+        CHECK(mkdir_tmp(dir, "v2body_v3ver") == 0, "tmpdir");
+        OK();
+        CHECK(nodus_witness_v2_gen_derive(dir, c.cfg, NULL) != 0,
+              "the version-2 derivation is REFUSED");
+        CHECK(nodus_witness_v2_gen_derive_v3(dir, c.cfg, NULL) != 0,
+              "and so is the version-3 derivation");
+        CHECK(dir_is_clean(dir) == 1, "neither left anything behind");
+        rmrf(dir);
         cfg_free(&c);
     }
 
@@ -1154,6 +1239,1262 @@ static int test_fail_closed(void) {
     return 0;
 }
 
+/* ════════════════════════════════════════════════════════════════════
+ * §5-§11 — THE VERSION-3 GENESIS DOCUMENT (D-18 rev 4, W2 / R3-C1b)
+ *
+ * Every vector below comes from shared/dnac/tests/genesis_v3_oracle.py,
+ * which re-derives the layout in Python from the byte table in
+ * nodus_witness_v2_gen.h and NEVER calls this C.  Its stage-1 control leg
+ * is §5 here: the same constant, over the shipped version-2 encoder.  If
+ * §5 fails, the oracle's model of the container is wrong and no §6 vector
+ * means anything — which is exactly why §5 runs first and says so.
+ *
+ * ⚠ THE KAT SECTIONS DEPEND ON THE BUILD'S ECONOMIC CONSTANTS.
+ * DNAC_EPOCH_LENGTH, DNAC_BLOCKS_PER_YEAR and DNAC_DECIMAL_UNIT are
+ * `#ifndef`-guarded and reach the encoding, so a binary built with -D
+ * overrides (the Genesis Protocol short-epoch scenarios do exactly that)
+ * encodes different bytes.  Those sections then DO NOT RUN and say so on
+ * stdout and in the summary.  A skip is not a pass: the count is printed
+ * separately and the relative checks (§7 sensitivity, §8 rejects, §9
+ * document, §10 derivation, §11 row equality) run at ANY constants.
+ * ══════════════════════════════════════════════════════════════════ */
+
+static int g_kat_skipped = 0;
+
+/* The constants the vectors were generated at (the shipped defaults:
+ * dnac.h:72, :137, :172, :187 and nodus_witness_emission.h:34, :42). */
+static int kat_constants_match(void) {
+    return (uint64_t)DNAC_EPOCH_LENGTH        == 720ULL &&
+           (uint64_t)DNAC_BLOCKS_PER_YEAR     == 6307200ULL &&
+           (uint64_t)DNAC_DECIMAL_UNIT        == 100000000ULL &&
+           (uint64_t)DNAC_SELF_STAKE_AMOUNT   == 1000000000000000ULL &&
+           (uint64_t)DNAC_DEFAULT_TOTAL_SUPPLY == 100000000000000000ULL &&
+           (unsigned)DNAC_COMMITTEE_SIZE      == 7u;
+}
+
+static void kat_announce_skip(const char *section) {
+    g_kat_skipped++;
+    printf("  ⚠ %s NOT RUN — this binary's economic constants differ from "
+           "the vectors' (epoch=%llu blocks_per_year=%llu decimal=%llu). "
+           "That coverage did NOT happen.\n", section,
+           (unsigned long long)DNAC_EPOCH_LENGTH,
+           (unsigned long long)DNAC_BLOCKS_PER_YEAR,
+           (unsigned long long)DNAC_DECIMAL_UNIT);
+}
+
+/* Compare raw bytes against a lowercase-hex literal. */
+static int hex_eq(const uint8_t *b, size_t n, const char *hex) {
+    static const char d[] = "0123456789abcdef";
+    if (strlen(hex) != n * 2) return 0;
+    for (size_t i = 0; i < n; i++) {
+        if (hex[2 * i]     != d[b[i] >> 4])   return 0;
+        if (hex[2 * i + 1] != d[b[i] & 0x0F]) return 0;
+    }
+    return 1;
+}
+
+/* ── the oracle's vectors ────────────────────────────────────────────
+ * genesis_v3_oracle.py, stage 1 and stage 2 output, 2026-09-16. */
+
+#define KAT_GENESIS_TIME_MS  1767225600000ULL   /* 2026-01-01T00:00:00Z */
+#define KAT_V2_ENC_LEN       37481u
+#define KAT_A_ENC_LEN        56121u
+#define KAT_B_ENC_LEN        56130u
+#define KAT_C_ENC_LEN        56131u
+#define KAT_D_ENC_LEN        56121u
+
+static const char *KAT_V2_ENC_SHA =
+    "92bd62f51df63ebf30a68c4fde32c7965d72ebd1ca4c3d20649998abe5be69af"
+    "856534cccca070f4fc039ca523d31e53d877ca5d5ac18c9a3d04759fcd3ffca0";
+
+static const char *KAT_A_ENC_SHA =
+    "47d6c83089dd3f5616a782227872cea62171be6d8fb7dd30f056edbeee5dba08"
+    "057ac178ef1eefbab3b35178f1aa1607854744f809baf360e514d8c3af50768f";
+static const char *KAT_A_CHAIN_ID =
+    "47d6c83089dd3f5616a782227872cea62171be6d8fb7dd30f056edbeee5dba08";
+static const char *KAT_A_SRC_COMMIT =
+    "47d6c83089dd3f5616a782227872cea62171be6d8fb7dd30f056edbeee5dba08"
+    "057ac178ef1eefbab3b35178f1aa1607854744f809baf360e514d8c3af50768f";
+
+static const char *KAT_B_ENC_SHA =
+    "8d5b54e7123685eb3cde15e5ed193f53f1ec1e800b14772a65c295dfcbdaba32"
+    "9171a07ec6ae643f42336cc7152273c623fd30cdd63174efc99b72159f1a7b04";
+static const char *KAT_B_CHAIN_ID =
+    "96c5a7ceeb43249096a6e29ad423094c50139f30561eebcc52e5c26b90debc5d";
+static const char *KAT_B_SRC_COMMIT =
+    "999717b830021ec9cba8e79d0376cc454d38b01a7b25d033dfe592b63c76f3fc"
+    "7b74307ba178c9ffbfc50f648dd31fefd1d0ac5956a53fd44cc4c840d1d937bc";
+
+static const char *KAT_C_ENC_SHA =
+    "bb6ae4559057a42d8cc54bef6c5fbc00f8770fdf5bc6da106e6873709b09f5f9"
+    "761dc7487e7059dfe1075f5b0c6db22a6e04771a5ebad9eee0aa4b30679206e8";
+static const char *KAT_C_CHAIN_ID =
+    "bb6ae4559057a42d8cc54bef6c5fbc00f8770fdf5bc6da106e6873709b09f5f9";
+
+static const char *KAT_D_ENC_SHA =
+    "579d4820bd3193bd49ddc154236d89701775c9206894d5d69eb7a6f912916eef"
+    "590b7c8af21fc92fe051fee7c956558b4ece86cbb3d93b7b7f9fec17f8ecae51";
+static const char *KAT_D_CHAIN_ID =
+    "a1c16107b6744e705396d1c2c2156616c16c478f4b6691b233fe64be9772af96";
+
+/* ── the version-3 fixtures (the oracle's make_v3, transcribed) ─────── */
+
+/* A — the DEFAULTS document: default consensus params, default
+ * tokenomics, empty names, app_hash and chain_id still zero (an
+ * operator's config, before any derivation has completed it). */
+static int cfg_make_v3(cfgbox_t *b) {
+    if (cfg_make(b, 0x00, 1, 0) != 0) return -1;
+    if (nodus_witness_v2_gen_v3_defaults(b->cfg) != 0) { cfg_free(b); return -1; }
+    b->cfg->genesis_time_ms = KAT_GENESIS_TIME_MS;
+    b->cfg->initial_height  = 1;
+    if (nodus_witness_v2_gen_v3_fill_comet_rows(b->cfg) != 0) {
+        cfg_free(b);
+        return -1;
+    }
+    return 0;
+}
+
+/* B — EVERY appended field away from its default. */
+static int cfg_make_v3_b(cfgbox_t *b) {
+    if (cfg_make_v3(b) != 0) return -1;
+    nodus_v2_gen_config_t *c = b->cfg;
+    c->genesis_time_ms = 1234567890123ULL;
+    c->initial_height  = 12345ULL;
+    c->consensus_params.block.max_bytes              = 1234567;
+    c->consensus_params.block.max_gas                = 99;
+    c->consensus_params.evidence.max_age_num_blocks  = 7;
+    c->consensus_params.evidence.max_age_duration_ns =
+        (int64_t)3600 * 1000000000;
+    c->consensus_params.evidence.max_bytes           = 4096;
+    memset(c->consensus_params.validator.pub_key_types, 0,
+           sizeof(c->consensus_params.validator.pub_key_types));
+    snprintf(c->consensus_params.validator.pub_key_types[0],
+             CMT_PARAMS_PUBKEY_TYPE_MAX, "%s", "mldsa87");
+    snprintf(c->consensus_params.validator.pub_key_types[1],
+             CMT_PARAMS_PUBKEY_TYPE_MAX, "%s", "testkey");
+    c->consensus_params.validator.pub_key_types_len = 2;
+    c->consensus_params.version.app = 9;
+    c->consensus_params.abci.vote_extensions_enable_height = 5;
+    for (int i = 0; i < 64; i++) c->app_hash[i] = (uint8_t)(0x77 + i * 7);
+    for (int i = 0; i < 32; i++) c->chain_id[i] = (uint8_t)(0x99 + i * 5);
+    c->reward_pool_initial    = 123456789ULL;
+    c->reward_divisor_log2    = 15ULL;
+    c->payout_interval_epochs = 7ULL;
+    return 0;
+}
+
+/* C — two named rows and one explicitly empty. */
+static int cfg_make_v3_c(cfgbox_t *b) {
+    if (cfg_make_v3(b) != 0) return -1;
+    nodus_v2_gen_config_t *c = b->cfg;
+    snprintf(c->comet_validators[0].name, NODUS_V2_GEN_CMT_NAME_MAX,
+             "%s", "alpha");
+    c->comet_validators[0].name_len = 5;
+    snprintf(c->comet_validators[1].name, NODUS_V2_GEN_CMT_NAME_MAX,
+             "%s", "bravo");
+    c->comet_validators[1].name_len = 5;
+    c->comet_validators[2].name[0] = '\0';
+    c->comet_validators[2].name_len = 0;
+    return 0;
+}
+
+/* D — a COMPLETED document: app_hash present and chain_id holding its
+ * own value, the shape the derivation stores under "genesisDoc". */
+static int cfg_make_v3_d(cfgbox_t *b) {
+    if (cfg_make_v3(b) != 0) return -1;
+    for (int i = 0; i < 64; i++)
+        b->cfg->app_hash[i] = (uint8_t)(0x20 + i * 3);
+    uint8_t id[32];
+    if (nodus_witness_v2_gen_chain_id(b->cfg, id) != 0) {
+        cfg_free(b);
+        return -1;
+    }
+    memcpy(b->cfg->chain_id, id, 32);
+    return 0;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ * §5 — THE CONTROL LEG: the oracle reproduces the SHIPPED version-2
+ *      encoder byte for byte.
+ *
+ * PROVES  the Python model of the canonical container equals the C that
+ *         has been deriving chains since O15J. Without it, every §6
+ *         vector is an echo of an unverified model.
+ * SOURCE  genesis_v3_oracle.py stage 1 (CONTROL_V2_ENC_SHA / _LEN).
+ * LIES?   only if this build's economic constants differ — in which case
+ *         it DOES NOT RUN and says so.
+ * AT BASE red: the fixture is unchanged but this assertion is new.
+ * ══════════════════════════════════════════════════════════════════ */
+
+static int test_v3_control(void) {
+    printf("§5 the oracle reproduces the shipped version-2 encoding\n");
+    if (!kat_constants_match()) {
+        kat_announce_skip("§5 (and with it every §6 vector)");
+        return 0;
+    }
+    cfgbox_t box;
+    CHECK(cfg_make(&box, 0x00, 1, 0) == 0, "config");
+    OK();
+    uint8_t *enc = NULL;
+    size_t   len = 0;
+    CHECK(nodus_witness_v2_gen_config_encode(box.cfg, &enc, &len) == 0,
+          "the version-2 config encodes");
+    OK();
+    CHECK(len == KAT_V2_ENC_LEN, "the encoding is 37481 bytes");
+    uint8_t d[64];
+    CHECK(qgp_sha3_512(enc, len, d) == 0, "digest");
+    CHECK(hex_eq(d, 64, KAT_V2_ENC_SHA),
+          "SHA3-512(version-2 encoding) == the oracle's control constant");
+    /* source_commit IS that digest — stated by the header, asserted here
+     * so the two can never drift into two definitions. */
+    uint8_t sc[NODUS_V2_GEN_SRCCOMMIT_LEN];
+    CHECK(nodus_witness_v2_gen_source_commit(box.cfg, sc) == 0, "commit");
+    CHECK(memcmp(sc, d, 64) == 0,
+          "source_commit is SHA3-512 of exactly those bytes");
+    free(enc);
+    cfg_free(&box);
+    OK();
+    printf("  ok: the oracle and the shipped encoder agree\n");
+    return 0;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ * §6 — the version-3 KAT vectors.
+ *
+ * PROVES  the C writes the bytes D-18 rev 4 specifies: four documents,
+ *         their encodings, their chain ids and their source commits.
+ * SOURCE  genesis_v3_oracle.py stage 2 (A, B, C, D).
+ * LIES?   if the build's constants differ it does not run (see §5). A
+ *         and C carry a zero app_hash and a zero chain_id, so for them
+ *         the document, the chain-id preimage and the source-commit
+ *         preimage are the SAME bytes and the three numbers coincide —
+ *         that is a property, not a bug, and B and D are the vectors
+ *         where all three differ.
+ * AT BASE red: none of these functions exists.
+ * ══════════════════════════════════════════════════════════════════ */
+
+static int v3_vector(const char *tag, cfgbox_t *box, size_t want_len,
+                     const char *enc_sha, const char *chain_hex,
+                     const char *src_hex) {
+    uint8_t *enc = NULL;
+    size_t   len = 0;
+    if (nodus_witness_v2_gen_v3_encode(box->cfg, &enc, &len) != 0) {
+        fprintf(stderr, "vector %s: encode failed\n", tag);
+        g_fail = 1;
+        return -1;
+    }
+    g_checks++;
+    if (len != want_len) {
+        fprintf(stderr, "vector %s: length %zu != %zu\n", tag, len, want_len);
+        g_fail = 1;
+    }
+    uint8_t d[64];
+    g_checks++;
+    if (qgp_sha3_512(enc, len, d) != 0 || !hex_eq(d, 64, enc_sha)) {
+        fprintf(stderr, "vector %s: encoding digest mismatch\n", tag);
+        g_fail = 1;
+    }
+    free(enc);
+
+    uint8_t id[32];
+    g_checks++;
+    if (nodus_witness_v2_gen_chain_id(box->cfg, id) != 0 ||
+        !hex_eq(id, 32, chain_hex)) {
+        fprintf(stderr, "vector %s: chain id mismatch\n", tag);
+        g_fail = 1;
+    }
+    if (src_hex) {
+        uint8_t sc[NODUS_V2_GEN_SRCCOMMIT_LEN];
+        g_checks++;
+        if (nodus_witness_v2_gen_v3_source_commit(box->cfg, sc) != 0 ||
+            !hex_eq(sc, 64, src_hex)) {
+            fprintf(stderr, "vector %s: source_commit mismatch\n", tag);
+            g_fail = 1;
+        }
+    }
+    return 0;
+}
+
+static int test_v3_vectors(void) {
+    printf("§6 the version-3 KAT vectors\n");
+    if (!kat_constants_match()) {
+        kat_announce_skip("§6");
+        return 0;
+    }
+    cfgbox_t a, b, c, d;
+    CHECK(cfg_make_v3(&a)   == 0, "fixture A");
+    CHECK(cfg_make_v3_b(&b) == 0, "fixture B");
+    CHECK(cfg_make_v3_c(&c) == 0, "fixture C");
+    CHECK(cfg_make_v3_d(&d) == 0, "fixture D");
+    OK();
+
+    v3_vector("A", &a, KAT_A_ENC_LEN, KAT_A_ENC_SHA, KAT_A_CHAIN_ID,
+              KAT_A_SRC_COMMIT);
+    v3_vector("B", &b, KAT_B_ENC_LEN, KAT_B_ENC_SHA, KAT_B_CHAIN_ID,
+              KAT_B_SRC_COMMIT);
+    v3_vector("C", &c, KAT_C_ENC_LEN, KAT_C_ENC_SHA, KAT_C_CHAIN_ID, NULL);
+    v3_vector("D", &d, KAT_D_ENC_LEN, KAT_D_ENC_SHA, KAT_D_CHAIN_ID, NULL);
+
+    /* D differs from A ONLY in app_hash and chain_id — both blanked in
+     * the source-commit preimage — so their source commits MUST be the
+     * same value, and their chain ids must not be. */
+    {
+        uint8_t sa[64], sd[64], ia[32], id[32];
+        CHECK(nodus_witness_v2_gen_v3_source_commit(a.cfg, sa) == 0 &&
+              nodus_witness_v2_gen_v3_source_commit(d.cfg, sd) == 0,
+              "both source commits compute");
+        CHECK(memcmp(sa, sd, 64) == 0,
+              "app_hash and chain_id are outside the source_commit preimage");
+        CHECK(nodus_witness_v2_gen_chain_id(a.cfg, ia) == 0 &&
+              nodus_witness_v2_gen_chain_id(d.cfg, id) == 0, "both ids");
+        CHECK(memcmp(ia, id, 32) != 0,
+              "app_hash IS inside the chain-id preimage");
+    }
+
+    /* the version-2 encoder must refuse a version-3 config outright */
+    {
+        uint8_t *x = NULL;
+        size_t   xl = 0;
+        CHECK(nodus_witness_v2_gen_config_encode(a.cfg, &x, &xl) != 0 &&
+              x == NULL,
+              "the version-2 encoder REFUSES a version-3 config");
+        uint8_t sc[64];
+        CHECK(nodus_witness_v2_gen_source_commit(a.cfg, sc) != 0,
+              "and so does the version-2 source_commit");
+    }
+
+    cfg_free(&a); cfg_free(&b); cfg_free(&c); cfg_free(&d);
+    OK();
+    printf("  ok: four documents, their ids and their commits\n");
+    return 0;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ * §7 — every field reaches the chain id, and the two zeroing rules.
+ *
+ * PROVES  no appended field is decorative: flipping ANY one of them
+ *         alone changes the chain id, so two configs that differ
+ *         anywhere derive different chains. And the two rules the header
+ *         states: the chain_id field itself does not change the chain
+ *         id, app_hash does not change the source commit.
+ * SOURCE  D-18 rev 4 HASHES; the oracle's sensitivity table.
+ * LIES?   it would still pass if the encoder hashed the whole config
+ *         struct instead of the canonical bytes — §6 is what pins the
+ *         BYTES. The two together are the claim.
+ * AT BASE red: the functions do not exist.
+ * ══════════════════════════════════════════════════════════════════ */
+
+#define V3_SENS(label, mutation) do {                                     \
+    cfgbox_t m;                                                           \
+    if (cfg_make_v3(&m) != 0) { g_fail = 1; break; }                      \
+    { nodus_v2_gen_config_t *c = m.cfg; (void)c; mutation; }              \
+    uint8_t got[32];                                                      \
+    g_checks++;                                                           \
+    if (nodus_witness_v2_gen_chain_id(m.cfg, got) != 0 ||                 \
+        memcmp(got, base, 32) == 0) {                                     \
+        fprintf(stderr, "sensitivity: %s does NOT reach the chain id\n",  \
+                (label));                                                 \
+        g_fail = 1;                                                       \
+    }                                                                     \
+    cfg_free(&m);                                                         \
+} while (0)
+
+static int test_v3_sensitivity(void) {
+    printf("§7 every appended field reaches the chain id\n");
+
+    cfgbox_t a;
+    CHECK(cfg_make_v3(&a) == 0, "fixture A");
+    OK();
+    uint8_t base[32];
+    CHECK(nodus_witness_v2_gen_chain_id(a.cfg, base) == 0, "base id");
+    OK();
+
+    /* one version-2 field: inflation_start_block is the free one, so a
+     * flip stays inside the shared rules and isolates the encoding. */
+    V3_SENS("inflation_start_block", c->inflation_start_block = 2);
+
+    V3_SENS("consensus_protocol", c->consensus_protocol = 2);
+    V3_SENS("genesis_time_ms",    c->genesis_time_ms = KAT_GENESIS_TIME_MS + 1);
+    V3_SENS("initial_height",     c->initial_height = 2);
+    V3_SENS("block.max_bytes",    c->consensus_params.block.max_bytes = 22020097);
+    V3_SENS("block.max_gas",      c->consensus_params.block.max_gas = -2);
+    V3_SENS("evidence.max_age_num_blocks",
+            c->consensus_params.evidence.max_age_num_blocks = 100001);
+    V3_SENS("evidence.max_age_duration",
+            c->consensus_params.evidence.max_age_duration_ns += 1);
+    V3_SENS("evidence.max_bytes",
+            c->consensus_params.evidence.max_bytes = 1048577);
+    V3_SENS("pub_key_types", c->consensus_params.validator.pub_key_types[0][6] = '8');
+    V3_SENS("version.app",   c->consensus_params.version.app = 1);
+    V3_SENS("abci.vote_extensions_enable_height",
+            c->consensus_params.abci.vote_extensions_enable_height = 1);
+    V3_SENS("comet row power",   c->comet_validators[0].power = 1);
+    V3_SENS("comet row address", c->comet_validators[0].address[0] ^= 0xFF);
+    V3_SENS("comet row name",
+            { c->comet_validators[0].name[0] = 'x';
+              c->comet_validators[0].name[1] = '\0';
+              c->comet_validators[0].name_len = 1; });
+    V3_SENS("app_hash",          c->app_hash[0] ^= 0xFF);
+    V3_SENS("reward_pool_initial",    c->reward_pool_initial = 1);
+    V3_SENS("reward_divisor_log2",    c->reward_divisor_log2 = 17);
+    V3_SENS("payout_interval_epochs", c->payout_interval_epochs = 25);
+
+    /* THE TWO ZEROING RULES. */
+    {
+        cfgbox_t z;
+        CHECK(cfg_make_v3(&z) == 0, "fixture");
+        OK();
+        memset(z.cfg->chain_id, 0x42, 32);
+        uint8_t got[32];
+        CHECK(nodus_witness_v2_gen_chain_id(z.cfg, got) == 0 &&
+              memcmp(got, base, 32) == 0,
+              "the chain_id FIELD is blanked in its own preimage");
+        cfg_free(&z);
+    }
+    {
+        cfgbox_t p, q;
+        CHECK(cfg_make_v3(&p) == 0 && cfg_make_v3(&q) == 0, "fixtures");
+        OK();
+        memset(q.cfg->app_hash, 0x11, 64);
+        uint8_t sp[64], sq[64];
+        CHECK(nodus_witness_v2_gen_v3_source_commit(p.cfg, sp) == 0 &&
+              nodus_witness_v2_gen_v3_source_commit(q.cfg, sq) == 0,
+              "both commits");
+        CHECK(memcmp(sp, sq, 64) == 0,
+              "app_hash is blanked in the source_commit preimage");
+        /* and the source commit is NOT insensitive to everything else */
+        memset(q.cfg->app_hash, 0, 64);
+        q.cfg->reward_divisor_log2 = 17;
+        CHECK(nodus_witness_v2_gen_v3_source_commit(q.cfg, sq) == 0 &&
+              memcmp(sp, sq, 64) != 0,
+              "but every other field still reaches it");
+        cfg_free(&p);
+        cfg_free(&q);
+    }
+
+    cfg_free(&a);
+    OK();
+    printf("  ok: 19 fields reach the id; the two blankings hold\n");
+    return 0;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ * §8 — the decoder is strict.
+ *
+ * PROVES  a document round-trips exactly, and every malformed byte
+ *         sequence the layout forbids is REFUSED rather than read as a
+ *         prefix, a default or a truncation.
+ * SOURCE  the header's decoder contract (D-18 rev 4 + the port's own
+ *         bounds: CMT_PARAMS_MAX_PUBKEY_TYPES, name_len <= 63).
+ * LIES?   a decoder that refused EVERYTHING would pass every reject case
+ *         — the round-trip leg is what stops that, so it runs first and
+ *         its failure is fatal to the section.
+ * AT BASE red: the decoder does not exist.
+ * ══════════════════════════════════════════════════════════════════ */
+
+static int v3_reject(const char *what, const uint8_t *buf, size_t len) {
+    nodus_v2_gen_config_t *cfg = calloc(1, sizeof(*cfg));
+    nodus_v2_gen_alloc_t  *al  = NULL;
+    g_checks++;
+    if (!cfg) { g_fail = 1; return -1; }
+    int rc = nodus_witness_v2_gen_v3_decode(buf, len, cfg, &al);
+    if (rc == 0) {
+        fprintf(stderr, "decoder ACCEPTED what it must refuse: %s\n", what);
+        g_fail = 1;
+    }
+    free(al);
+    free(cfg);
+    return 0;
+}
+
+static int test_v3_decode(void) {
+    printf("§8 the version-3 decoder is strict\n");
+
+    cfgbox_t d;
+    CHECK(cfg_make_v3_d(&d) == 0, "fixture D (a completed document)");
+    OK();
+    uint8_t *enc = NULL;
+    size_t   len = 0;
+    CHECK(nodus_witness_v2_gen_v3_encode(d.cfg, &enc, &len) == 0, "encode");
+    OK();
+
+    /* ── round trip: decode, then RE-ENCODE and compare bytes. Field-by
+     * field equality would miss a field the decoder dropped; the bytes
+     * cannot. */
+    {
+        nodus_v2_gen_config_t *back = calloc(1, sizeof(*back));
+        nodus_v2_gen_alloc_t  *al = NULL;
+        CHECK(back != NULL, "alloc");
+        OK();
+        CHECK(nodus_witness_v2_gen_v3_decode(enc, len, back, &al) == 0,
+              "the document decodes");
+        OK();
+        uint8_t *again = NULL;
+        size_t   alen = 0;
+        CHECK(nodus_witness_v2_gen_v3_encode(back, &again, &alen) == 0,
+              "the decoded config re-encodes");
+        CHECK(alen == len && again && memcmp(again, enc, len) == 0,
+              "byte-for-byte the same document");
+        /* and the scalars a reader will actually act on */
+        CHECK(back->config_version == NODUS_V2_GEN_CONFIG_VERSION_V3 &&
+              back->consensus_protocol == NODUS_V2_GEN_CONSENSUS_COMETBFT &&
+              back->genesis_time_ms == KAT_GENESIS_TIME_MS &&
+              back->initial_height == 1 &&
+              back->n_validators == N_VAL &&
+              back->n_comet_validators == N_VAL &&
+              back->n_allocs == 1,
+              "the decoded scalars are the config's");
+        CHECK(memcmp(back->chain_id, d.cfg->chain_id, 32) == 0 &&
+              memcmp(back->app_hash, d.cfg->app_hash, 64) == 0,
+              "app_hash and chain_id survive the round trip");
+        CHECK(memcmp(&back->consensus_params, &d.cfg->consensus_params,
+                     sizeof(back->consensus_params)) == 0,
+              "and so do the consensus parameters, byte for byte");
+        free(again);
+        free(al);
+        free(back);
+        OK();
+    }
+
+    /* ── truncation at three boundaries ─────────────────────────────── */
+    v3_reject("one byte short", enc, len - 1);
+    v3_reject("the whole tail missing", enc, KAT_V2_ENC_LEN);
+    v3_reject("mid-tail", enc, KAT_V2_ENC_LEN + 10);
+
+    /* ── a trailing byte ────────────────────────────────────────────── */
+    {
+        uint8_t *longer = malloc(len + 1);
+        CHECK(longer != NULL, "alloc");
+        OK();
+        memcpy(longer, enc, len);
+        longer[len] = 0x00;
+        v3_reject("a trailing byte", longer, len + 1);
+        free(longer);
+    }
+
+    /* ── a version-2 encoding fed to the version-3 decoder ──────────── */
+    {
+        cfgbox_t v2;
+        CHECK(cfg_make(&v2, 0x00, 1, 0) == 0, "v2 config");
+        OK();
+        uint8_t *v2enc = NULL;
+        size_t   v2len = 0;
+        CHECK(nodus_witness_v2_gen_config_encode(v2.cfg, &v2enc, &v2len) == 0,
+              "v2 encodes");
+        OK();
+        v3_reject("a version-2 encoding", v2enc, v2len);
+        free(v2enc);
+        cfg_free(&v2);
+    }
+
+    /* ── values the encoder can write and a DOCUMENT may not carry ─── */
+    {
+        cfgbox_t m;
+        uint8_t *e = NULL;
+        size_t   l = 0;
+
+        CHECK(cfg_make_v3(&m) == 0, "fixture"); OK();
+        m.cfg->consensus_protocol = 0;
+        CHECK(nodus_witness_v2_gen_v3_encode(m.cfg, &e, &l) == 0,
+              "consensus_protocol 0 is WRITABLE (shape, not validity)");
+        if (e) { v3_reject("consensus_protocol 0", e, l); free(e); e = NULL; }
+        cfg_free(&m);
+
+        CHECK(cfg_make_v3(&m) == 0, "fixture"); OK();
+        m.cfg->genesis_time_ms = 0;
+        CHECK(nodus_witness_v2_gen_v3_encode(m.cfg, &e, &l) == 0, "writable");
+        if (e) { v3_reject("a zero genesis time", e, l); free(e); e = NULL; }
+        cfg_free(&m);
+
+        CHECK(cfg_make_v3(&m) == 0, "fixture"); OK();
+        m.cfg->initial_height = UINT64_MAX;
+        CHECK(nodus_witness_v2_gen_v3_encode(m.cfg, &e, &l) == 0, "writable");
+        if (e) { v3_reject("initial_height past INT64_MAX", e, l);
+                 free(e); e = NULL; }
+        cfg_free(&m);
+
+        CHECK(cfg_make_v3(&m) == 0, "fixture"); OK();
+        m.cfg->consensus_params.validator.pub_key_types_len = 0;
+        CHECK(nodus_witness_v2_gen_v3_encode(m.cfg, &e, &l) == 0, "writable");
+        if (e) { v3_reject("an empty key-type list", e, l);
+                 free(e); e = NULL; }
+        cfg_free(&m);
+
+        CHECK(cfg_make_v3(&m) == 0, "fixture"); OK();
+        m.cfg->consensus_params.validator.pub_key_types[0][2] = 0x01;
+        CHECK(nodus_witness_v2_gen_v3_encode(m.cfg, &e, &l) == 0, "writable");
+        if (e) { v3_reject("a control byte in a key type", e, l);
+                 free(e); e = NULL; }
+        cfg_free(&m);
+
+        CHECK(cfg_make_v3(&m) == 0, "fixture"); OK();
+        m.cfg->n_comet_validators = (uint16_t)(N_VAL - 1);
+        CHECK(nodus_witness_v2_gen_v3_encode(m.cfg, &e, &l) == 0, "writable");
+        if (e) { v3_reject("fewer comet rows than validators", e, l);
+                 free(e); e = NULL; }
+        cfg_free(&m);
+    }
+
+    /* ── a name_len the ENCODER refuses outright (storage bound) ───── */
+    {
+        cfgbox_t m;
+        CHECK(cfg_make_v3(&m) == 0, "fixture");
+        OK();
+        m.cfg->comet_validators[0].name_len =
+            (uint8_t)(NODUS_V2_GEN_CMT_NAME_LEN_MAX + 1);
+        uint8_t *e = NULL;
+        size_t   l = 0;
+        CHECK(nodus_witness_v2_gen_v3_encode(m.cfg, &e, &l) != 0 && e == NULL,
+              "a name longer than 63 is not writable at all");
+        cfg_free(&m);
+    }
+
+    /* ── a patched name_len inside otherwise valid bytes ─────────────
+     * The offset is computed from the LAYOUT, which makes it a second,
+     * independent statement of the table: body + protocol(4) + time(8) +
+     * height(8) + 5 params(40) + type count(2) + one type(2 + 7) +
+     * app(8) + abci(8) + row count(2) + address(32) + key(2592) +
+     * power(8) lands exactly on row 0's name_len. */
+    {
+        const size_t off = (size_t)KAT_V2_ENC_LEN + 4 + 8 + 8 + 40 + 2 +
+                           (2 + 7) + 8 + 8 + 2 + 32 + 2592 + 8;
+        uint8_t *m = malloc(len);
+        CHECK(m != NULL, "alloc");
+        OK();
+        memcpy(m, enc, len);
+        CHECK(off < len && m[off] == 0,
+              "the computed offset really is row 0's name_len (0 in D)");
+        m[off] = (uint8_t)200;
+        v3_reject("name_len 200", m, len);
+        free(m);
+    }
+
+    /* ── a patched allocation source_id_len ─────────────────────────── */
+    {
+        const size_t off = 78 + 7 * 5323 + 4;   /* head + 7 validators +
+                                                 * the allocation count  */
+        uint8_t *m = malloc(len);
+        CHECK(m != NULL, "alloc");
+        OK();
+        memcpy(m, enc, len);
+        CHECK(off + 1 < len && m[off] == 0 && m[off + 1] == 64,
+              "the computed offset really is source_id_len (64)");
+        m[off + 1] = 63;
+        v3_reject("source_id_len 63", m, len);
+        free(m);
+    }
+
+    /* ── a wrong domain tag ─────────────────────────────────────────── */
+    {
+        uint8_t *m = malloc(len);
+        CHECK(m != NULL, "alloc");
+        OK();
+        memcpy(m, enc, len);
+        m[0] ^= 0xFF;
+        v3_reject("a foreign domain tag", m, len);
+        free(m);
+    }
+
+    free(enc);
+    cfg_free(&d);
+    OK();
+    printf("  ok: the round trip, and every malformed document refused\n");
+    return 0;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ * §9 — the port's genesis document, and the parameter defaults.
+ *
+ * PROVES  a version-3 config projects onto cmt_genesis_doc_t and passes
+ *         the reference's ValidateAndComplete (types/genesis.go:69-106)
+ *         with every field equal to the config's; and that
+ *         _v3_defaults writes cmt_default_consensus_params VERBATIM.
+ * SOURCE  cmt_genesis.h:119-131, cmt_params.c:47-110.
+ * LIES?   the defaults comparison would pass trivially if both sides
+ *         were zero — the KAT in §6 pins the ENCODED default parameters,
+ *         which are not zero (22020096 / -1 / 100000 / 48h / 1MB).
+ * AT BASE red: to_cmt_doc does not exist.
+ * ══════════════════════════════════════════════════════════════════ */
+
+static int test_v3_cmt_doc(void) {
+    printf("§9 the document the port validates, and the defaults\n");
+
+    /* the defaults are the PORT's own, byte for byte */
+    {
+        cfgbox_t a;
+        CHECK(cfg_make_v3(&a) == 0, "fixture");
+        OK();
+        cmt_consensus_params_t want;
+        cmt_default_consensus_params(&want);
+        CHECK(memcmp(&a.cfg->consensus_params, &want, sizeof(want)) == 0,
+              "_v3_defaults installs cmt_default_consensus_params verbatim");
+        CHECK(want.block.max_bytes == 22020096 && want.block.max_gas == -1 &&
+              want.evidence.max_age_num_blocks == 100000 &&
+              want.evidence.max_age_duration_ns ==
+                  (int64_t)48 * 3600 * 1000000000 &&
+              want.evidence.max_bytes == 1048576 &&
+              want.validator.pub_key_types_len == 1 &&
+              strcmp(want.validator.pub_key_types[0],
+                     CMT_PUBKEY_TYPE_MLDSA87_NAME) == 0 &&
+              want.version.app == 0 &&
+              want.abci.vote_extensions_enable_height == 0,
+              "and those defaults are the reference's own values");
+        /* the tokenomics defaults of the APPROVED record */
+        CHECK(a.cfg->reward_pool_initial == 200000000ULL * 100000000ULL &&
+              a.cfg->reward_divisor_log2 == 16ULL &&
+              a.cfg->payout_interval_epochs == 24ULL,
+              "tokenomics v2: 200M reserve, pool >> 16, 24-epoch payout");
+        cfg_free(&a);
+    }
+
+    /* the document itself */
+    {
+        cfgbox_t d;
+        CHECK(cfg_make_v3_d(&d) == 0, "completed fixture");
+        OK();
+        cmt_genesis_doc_t doc;
+        cmt_genesis_validator_t vals[NODUS_V2_GEN_MAX_VALIDATORS];
+        memset(&doc, 0, sizeof(doc));
+        memset(vals, 0, sizeof(vals));
+        CHECK(nodus_witness_v2_gen_to_cmt_doc(d.cfg, &doc, vals,
+                                              NODUS_V2_GEN_MAX_VALIDATORS)
+              == 0, "the port accepts the document");
+        OK();
+        CHECK(doc.chain_id_len == 32 &&
+              memcmp(doc.chain_id, d.cfg->chain_id, 32) == 0,
+              "chain_id is the 32 raw bytes of the config's");
+        CHECK(doc.initial_height == 1, "initial_height");
+        CHECK(doc.genesis_time.seconds == 1767225600LL &&
+              doc.genesis_time.nanos == 0,
+              "the milliseconds become {seconds, nanos}");
+        CHECK(doc.has_consensus_params &&
+              memcmp(&doc.consensus_params, &d.cfg->consensus_params,
+                     sizeof(doc.consensus_params)) == 0,
+              "the consensus parameters are carried unchanged");
+        CHECK(doc.app_hash_len == 64 &&
+              memcmp(doc.app_hash, d.cfg->app_hash, 64) == 0, "app_hash");
+        CHECK(doc.validators_len == (size_t)N_VAL, "seven validators");
+        int rows_ok = 1;
+        for (uint16_t i = 0; i < N_VAL; i++) {
+            const nodus_v2_gen_cmt_validator_t *r =
+                &d.cfg->comet_validators[i];
+            if (vals[i].address_len != 32 ||
+                memcmp(vals[i].address, r->address, 32) != 0 ||
+                !vals[i].pub_key.present ||
+                memcmp(vals[i].pub_key.key, r->pub_key, 2592) != 0 ||
+                vals[i].power != r->power)
+                rows_ok = 0;
+        }
+        CHECK(rows_ok, "every row's address, key and power are the config's");
+        /* Power is the whole-NODUS stake. Computed from THIS BUILD's own
+         * constants — the same two values cfg_make seeds the config with
+         * — so it runs at any -D settings instead of skipping silently
+         * (which is what it did, and a silent skip reports coverage that
+         * did not happen). At the shipped constants the expectation is
+         * 10^15 / 10^8 = 10 000 000. */
+        {
+            int64_t want_power = (int64_t)((uint64_t)DNAC_SELF_STAKE_AMOUNT /
+                                           (uint64_t)DNAC_DECIMAL_UNIT);
+            CHECK(vals[0].power == want_power,
+                  "power is self_stake / decimal_unit, in whole NODUS");
+            CHECK(want_power > 0,
+                  "and the build's constants make that a positive power — "
+                  "a zero power would be refused by the port "
+                  "(types/genesis.go:90-92)");
+        }
+        cfg_free(&d);
+    }
+
+    /* an initial_height of 0 is COMPLETED to 1 — genesis.go:79-81 */
+    {
+        cfgbox_t z;
+        CHECK(cfg_make_v3(&z) == 0, "fixture");
+        OK();
+        z.cfg->initial_height = 0;
+        cmt_genesis_doc_t doc;
+        cmt_genesis_validator_t vals[NODUS_V2_GEN_MAX_VALIDATORS];
+        memset(&doc, 0, sizeof(doc));
+        memset(vals, 0, sizeof(vals));
+        CHECK(nodus_witness_v2_gen_to_cmt_doc(z.cfg, &doc, vals,
+                                              NODUS_V2_GEN_MAX_VALIDATORS)
+              == 0 && doc.initial_height == 1,
+              "a zero initial_height is completed to 1, as the reference "
+              "completes it");
+        cfg_free(&z);
+    }
+
+    /* refusals */
+    {
+        cfgbox_t z;
+        cmt_genesis_doc_t doc;
+        cmt_genesis_validator_t vals[NODUS_V2_GEN_MAX_VALIDATORS];
+
+        CHECK(cfg_make_v3(&z) == 0, "fixture");
+        OK();
+        z.cfg->genesis_time_ms = 0;
+        CHECK(nodus_witness_v2_gen_to_cmt_doc(z.cfg, &doc, vals,
+                                              NODUS_V2_GEN_MAX_VALIDATORS)
+              != 0,
+              "a zero genesis time is refused — never filled from a clock");
+        z.cfg->genesis_time_ms = KAT_GENESIS_TIME_MS;
+        CHECK(nodus_witness_v2_gen_to_cmt_doc(z.cfg, &doc, vals, 3) != 0,
+              "storage too small for the rows is refused, never truncated");
+        cfg_free(&z);
+
+        /* THE SHAPE GUARD, on the two fields that would otherwise write
+         * past a buffer. This is a PUBLIC function: a caller may hand it
+         * a hand-built config that never went through the decoder or the
+         * validator, and `name_len` is a uint8_t copied into a char[64].
+         * Neither case is reachable through decode→validate today —
+         * which is exactly why it is asserted here rather than assumed
+         * away. */
+        CHECK(cfg_make_v3(&z) == 0, "fixture");
+        OK();
+        z.cfg->comet_validators[0].name_len =
+            (uint8_t)(NODUS_V2_GEN_CMT_NAME_LEN_MAX + 1);
+        CHECK(nodus_witness_v2_gen_to_cmt_doc(z.cfg, &doc, vals,
+                                              NODUS_V2_GEN_MAX_VALIDATORS)
+              != 0,
+              "a name_len past the storage bound is REFUSED, never copied");
+        z.cfg->comet_validators[0].name_len = 0;
+        z.cfg->n_comet_validators =
+            (uint16_t)(NODUS_V2_GEN_MAX_VALIDATORS + 1);
+        {
+            /* Storage that REALLY holds one row more than the config
+             * array does, heap-allocated: the point is that the refusal
+             * comes from the config's own bound and not from the
+             * caller's capacity, so the capacity must genuinely be
+             * large enough. Passing a bigger `cap` than `vals` holds
+             * would be a lie to the API even though the function
+             * refuses before touching it. */
+            cmt_genesis_validator_t *big =
+                calloc(NODUS_V2_GEN_MAX_VALIDATORS + 1, sizeof(*big));
+            CHECK(big != NULL, "alloc");
+            if (big) {
+                CHECK(nodus_witness_v2_gen_to_cmt_doc(
+                          z.cfg, &doc, big,
+                          NODUS_V2_GEN_MAX_VALIDATORS + 1) != 0,
+                      "more rows than the config array holds is REFUSED "
+                      "even when the caller's storage would fit them");
+                free(big);
+            }
+        }
+        cfg_free(&z);
+    }
+
+    OK();
+    printf("  ok: the document, the completion, the defaults\n");
+    return 0;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ * §10 — the version-3 derivation, end to end.
+ *
+ * PROVES  a version-3 config derives a chain that ENDS at schema S14
+ *         with NO height-0 block row, whose completed genesis document
+ *         is stored under "genesisDoc", whose file name is the first 16
+ *         bytes of the chain id, and whose stored id reads back through
+ *         the accessor W3 will rewire the live chain id onto.
+ * SOURCE  D-18 rev 4 STORAGE; node/setup.go:551; D-17 rev 7 (S14).
+ * LIES?   TWO WAYS, both stated rather than hidden.
+ *         (1) It CANNOT use open_chain(): nodus_witness_create_chain_db
+ *         refuses a version-3 chain today, because its role derivation
+ *         calls nodus_witness_v2_chain_id, which reads the height-0 row
+ *         that no longer exists (nodus_witness.c:775-800,
+ *         nodus_witness_v2_claims.c:186-203). That is a W3 item and is
+ *         recorded as one; this test opens the database READ-ONLY, so a
+ *         green here is NOT a statement that a node can boot the chain.
+ *         (2) `user_version == 14` at the END does not mean the LEDGER
+ *         GENESIS ran at S14 — it did not, and cannot in W2: the CORE
+ *         `state_init` gate stops at S12
+ *         (nodus_witness_v2_pools.c:1174-1182, W3's to widen), so the
+ *         derivation applies the genesis at S12 and climbs afterwards.
+ *         What this section proves is the END STATE and the order's
+ *         losslessness, not that the Comet genesis works at S14. The
+ *         first run that proves THAT is W3's, after the pool gate moves.
+ * AT BASE red: derive_v3 does not exist.
+ * ══════════════════════════════════════════════════════════════════ */
+
+/* Open the single chain db in `dir` READ-ONLY, without the production
+ * open path — see the LIES? note above. */
+static sqlite3 *open_db_ro(const char *dir, uint8_t out16[16]) {
+    char path[600];
+    if (find_chain(dir, path, out16) != 0) return NULL;
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        if (db) sqlite3_close(db);
+        return NULL;
+    }
+    return db;
+}
+
+static int test_v3_derive(void) {
+    printf("§10 the version-3 derivation\n");
+
+    cfgbox_t box;
+    CHECK(cfg_make_v3(&box) == 0, "fixture A");
+    OK();
+    CHECK(nodus_witness_v2_gen_v3_validate(box.cfg) == 0,
+          "the fixture is a derivable version-3 config");
+    OK();
+
+    char dir[128];
+    CHECK(mkdir_tmp(dir, "v3") == 0, "tmpdir");
+    OK();
+
+    uint8_t chain32[32];
+    memset(chain32, 0, sizeof(chain32));
+    CHECK(nodus_witness_v2_gen_derive_v3(dir, box.cfg, chain32) == 0,
+          "the derivation succeeds");
+    OK();
+
+    uint8_t id16[16];
+    sqlite3 *db = open_db_ro(dir, id16);
+    CHECK(db != NULL, "the derived database opens read-only");
+    OK();
+
+    CHECK(memcmp(id16, chain32, 16) == 0,
+          "the file name is the first 16 bytes of the chain id");
+    CHECK(q1(db, "PRAGMA user_version") == (int64_t)NODUS_V2_SCHEMA_VERSION_S14,
+          "the chain is at schema S14 — the Comet stores exist");
+    CHECK(q1(db, "SELECT COUNT(*) FROM v2_blocks") == 0,
+          "there is NO genesis block row — of any height (D-19 rev 6)");
+    /* ⚠ THE KEY COLUMN IS A BLOB (schema S14: `key BLOB PRIMARY KEY`)
+     * and the store binds it with sqlite3_bind_blob, so a comparison
+     * against a TEXT literal would compare two different storage classes
+     * and match NOTHING — the query would report 0 rows for a row that is
+     * there. CAST(... AS BLOB) is what makes this assertion real. */
+    CHECK(q1(db, "SELECT COUNT(*) FROM cmt_state "
+                 "WHERE key = CAST('genesisDoc' AS BLOB)") == 1,
+          "the completed document is stored under the reference's key");
+    CHECK(q1(db, "SELECT COUNT(*) FROM cmt_state "
+                 "WHERE key = CAST('stateKey' AS BLOB)") == 0,
+          "and stateKey is NOT written at derivation — the node's first "
+          "start makes the State (node/setup.go:581)");
+    CHECK(q1(db, "SELECT COUNT(*) FROM validators") == (int64_t)N_VAL,
+          "seven validator rows");
+    CHECK(q1(db, "SELECT COUNT(*) FROM chain_config_history") == 4,
+          "the four committed economic parameters");
+    CHECK(q1(db, "SELECT COALESCE(SUM(remaining),-1) FROM v2_dist_state")
+              == (int64_t)TREASURY_RAW,
+          "the claim reserve holds the whole treasury");
+
+    /* the stored document IS the derived chain's identity.
+     *
+     * The accessor opens the store module on this READ-ONLY handle, and
+     * that module prepares its INSERT and DELETE statements up front.
+     * SQLite prepares them on a read-only connection without complaint
+     * and refuses only at execution (measured), so a reader never
+     * touches the write path — which is what lets this assertion run at
+     * all, given that the production open path cannot open a version-3
+     * chain yet (see the LIES? note above). */
+    {
+        nodus_witness_t *w = calloc(1, sizeof(*w));
+        CHECK(w != NULL, "alloc");
+        OK();
+        w->db = db;
+        uint8_t got[32];
+        CHECK(nodus_witness_v2_gen_stored_chain_id(w, got) == 0 &&
+              memcmp(got, chain32, 32) == 0,
+              "the accessor returns the document's own chain_id");
+        w->db = NULL;                 /* the db is closed below, not here */
+        free(w);
+    }
+
+    /* the stored bytes decode, and the id recomputes to itself */
+    {
+        sqlite3_stmt *st = NULL;
+        CHECK(sqlite3_prepare_v2(db,
+                  "SELECT value FROM cmt_state "
+                  "WHERE key = CAST('genesisDoc' AS BLOB)",
+                  -1, &st, NULL) == SQLITE_OK, "prepare");
+        CHECK(sqlite3_step(st) == SQLITE_ROW, "the row is there");
+        const uint8_t *blob = sqlite3_column_blob(st, 0);
+        size_t blen = (size_t)sqlite3_column_bytes(st, 0);
+        nodus_v2_gen_config_t *dec = calloc(1, sizeof(*dec));
+        nodus_v2_gen_alloc_t  *al = NULL;
+        CHECK(dec != NULL && blob != NULL, "alloc");
+        OK();
+        CHECK(nodus_witness_v2_gen_v3_decode(blob, blen, dec, &al) == 0,
+              "the stored document decodes STRICTLY");
+        OK();
+        uint8_t again[32];
+        CHECK(nodus_witness_v2_gen_chain_id(dec, again) == 0 &&
+              memcmp(again, chain32, 32) == 0 &&
+              memcmp(dec->chain_id, chain32, 32) == 0,
+              "its chain_id recomputes to itself");
+        CHECK(nodus_witness_v2_gen_v3_validate(dec) == 0,
+              "and its Comet rows still equal the derived rows");
+        /* app_hash is the ledger's global root, not zero */
+        uint8_t zero64[64];
+        memset(zero64, 0, sizeof(zero64));
+        CHECK(memcmp(dec->app_hash, zero64, 64) != 0,
+              "app_hash carries the ledger root the apply produced");
+        /* the genesis-time and tokenomics fields survived */
+        CHECK(dec->genesis_time_ms == KAT_GENESIS_TIME_MS &&
+              dec->reward_pool_initial == 200000000ULL * 100000000ULL,
+              "the document's own fields are the config's");
+        free(al);
+        free(dec);
+        sqlite3_finalize(st);
+    }
+
+    sqlite3_close(db);
+
+    /* idempotency: the same config again is a no-op, not a second chain */
+    {
+        uint8_t again[32];
+        memset(again, 0xEE, sizeof(again));
+        CHECK(nodus_witness_v2_gen_derive_v3(dir, box.cfg, again) == 0,
+              "a re-derivation from THIS config reports success");
+        char p2[600];
+        uint8_t id2[16];
+        CHECK(find_chain(dir, p2, id2) == 0 && memcmp(id2, chain32, 16) == 0,
+              "and left the SAME single chain db");
+    }
+
+    /* ── A TAMPERED genesisDoc ROW IS NOT AN IDENTITY ────────────────
+     *
+     * The accessor is the function W3 rewires the live chain id onto, so
+     * what it does with a row that has been EDITED is the whole question.
+     * Both cases run on a COPY of the derived database — the derivation
+     * itself is never weakened to make them reachable, and the real
+     * chain is untouched.
+     *
+     *   (a) one byte flipped inside the chain_id FIELD. It decodes, its
+     *       content rules hold, and it is in canonical form — the
+     *       flipped field round-trips through the encoder — so it
+     *       reaches and exercises check 4 alone: the field must hash to
+     *       its own document.
+     *   (b) two validator entries swapped in the body. This one is the
+     *       reason check 3 exists, and an earlier cut of this test
+     *       asserted the wrong mechanism for it. The document DECODES
+     *       (the decoder checks bounds, not order); its content rules
+     *       PASS, because gen_plan_build SORTS an unsorted array instead
+     *       of refusing it, so the Comet rows and the validators are
+     *       both normalised before they are compared; and its id
+     *       RE-HASHES to the stored field, because the re-encode sorts
+     *       them back too. It fails on check 3 and nothing else: the
+     *       stored bytes are not the canonical encoding of what they
+     *       decode to. A field-only checksum would miss it.
+     */
+    {
+        char src[600];
+        uint8_t id16b[16];
+        CHECK(find_chain(dir, src, id16b) == 0, "the derived db is there");
+        OK();
+
+        for (int tcase = 0; tcase < 2; tcase++) {
+            char cdir[128];
+            CHECK(mkdir_tmp(cdir, "v3tamper") == 0, "tmpdir");
+            OK();
+            char dst[700], cmd[1500];
+            snprintf(dst, sizeof(dst), "%s/witness_copy.db", cdir);
+            snprintf(cmd, sizeof(cmd), "cp '%s' '%s'", src, dst);
+            CHECK(system(cmd) == 0, "the database copies");
+            OK();
+
+            sqlite3 *cdb = NULL;
+            CHECK(sqlite3_open_v2(dst, &cdb, SQLITE_OPEN_READWRITE, NULL)
+                  == SQLITE_OK, "the copy opens read-write");
+            OK();
+
+            /* read the stored document out */
+            uint8_t *doc = NULL;
+            size_t   dlen = 0;
+            {
+                sqlite3_stmt *st = NULL;
+                CHECK(sqlite3_prepare_v2(cdb,
+                          "SELECT value FROM cmt_state "
+                          "WHERE key = CAST('genesisDoc' AS BLOB)",
+                          -1, &st, NULL) == SQLITE_OK, "prepare");
+                CHECK(sqlite3_step(st) == SQLITE_ROW, "the row is there");
+                dlen = (size_t)sqlite3_column_bytes(st, 0);
+                doc = malloc(dlen);
+                CHECK(doc != NULL && dlen > 0, "alloc");
+                if (doc) memcpy(doc, sqlite3_column_blob(st, 0), dlen);
+                sqlite3_finalize(st);
+            }
+            OK();
+
+            if (tcase == 0) {
+                /* The chain_id field is the 32 bytes that sit 24 bytes
+                 * (the three tokenomics u64s) before the end. The offset
+                 * is ASSERTED against the known id before anything is
+                 * flipped, so a layout drift fails here instead of
+                 * silently patching some other field. */
+                const size_t off = dlen - 24 - 32;
+                CHECK(memcmp(doc + off, chain32, 32) == 0,
+                      "the computed offset really is the chain_id field");
+                doc[off] ^= 0x01;
+            } else {
+                /* Validator entries 0 and 1 of the body, 5323 bytes each
+                 * from offset 78. Swapping them breaks the pubkey-ASC
+                 * order the encoding requires. */
+                const size_t v0 = 78, v1 = 78 + 5323, vlen = 5323;
+                CHECK(memcmp(doc + v0, doc + v1, vlen) != 0,
+                      "the two validator entries differ to begin with");
+                uint8_t *tmp = malloc(vlen);
+                CHECK(tmp != NULL, "alloc");
+                OK();
+                memcpy(tmp, doc + v0, vlen);
+                memcpy(doc + v0, doc + v1, vlen);
+                memcpy(doc + v1, tmp, vlen);
+                free(tmp);
+            }
+
+            {
+                sqlite3_stmt *st = NULL;
+                CHECK(sqlite3_prepare_v2(cdb,
+                          "UPDATE cmt_state SET value = ?1 "
+                          "WHERE key = CAST('genesisDoc' AS BLOB)",
+                          -1, &st, NULL) == SQLITE_OK, "prepare update");
+                sqlite3_bind_blob(st, 1, doc, (int)dlen, SQLITE_STATIC);
+                CHECK(sqlite3_step(st) == SQLITE_DONE, "the row is rewritten");
+                sqlite3_finalize(st);
+            }
+            OK();
+
+            nodus_witness_t *w = calloc(1, sizeof(*w));
+            CHECK(w != NULL, "alloc");
+            OK();
+            w->db = cdb;
+            uint8_t got[32];
+            memset(got, 0xAB, sizeof(got));
+            CHECK(nodus_witness_v2_gen_stored_chain_id(w, got) != 0,
+                  tcase == 0
+                      ? "a chain_id field that does not hash to its own "
+                        "document is REFUSED, not returned"
+                      : "a document that is not in CANONICAL FORM (its "
+                        "validators are stored out of order) is REFUSED, "
+                        "not returned");
+            {
+                uint8_t untouched[32];
+                memset(untouched, 0xAB, sizeof(untouched));
+                CHECK(memcmp(got, untouched, 32) == 0,
+                      "and the caller's buffer was not written");
+            }
+            w->db = NULL;
+            free(w);
+            free(doc);
+            sqlite3_close(cdb);
+            rmrf(cdir);
+        }
+
+        /* the UNTAMPERED database still answers, so the two refusals
+         * above are the tampering and not the copy */
+        {
+            char dst[700], cmd[1500], cdir[128];
+            CHECK(mkdir_tmp(cdir, "v3copy") == 0, "tmpdir");
+            OK();
+            snprintf(dst, sizeof(dst), "%s/witness_copy.db", cdir);
+            snprintf(cmd, sizeof(cmd), "cp '%s' '%s'", src, dst);
+            CHECK(system(cmd) == 0, "the database copies");
+            sqlite3 *cdb = NULL;
+            CHECK(sqlite3_open_v2(dst, &cdb, SQLITE_OPEN_READONLY, NULL)
+                  == SQLITE_OK, "the copy opens");
+            OK();
+            nodus_witness_t *w = calloc(1, sizeof(*w));
+            CHECK(w != NULL, "alloc");
+            OK();
+            w->db = cdb;
+            uint8_t got[32];
+            CHECK(nodus_witness_v2_gen_stored_chain_id(w, got) == 0 &&
+                  memcmp(got, chain32, 32) == 0,
+                  "an untouched copy still yields the chain id");
+            w->db = NULL;
+            free(w);
+            sqlite3_close(cdb);
+            rmrf(cdir);
+        }
+    }
+
+    rmrf(dir);
+    cfg_free(&box);
+    OK();
+    printf("  ok: S14, no block row, genesisDoc, the id from the document\n");
+    return 0;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ * §11 — a carried Comet row that disagrees with its stake entry.
+ *
+ * PROVES  the rows are carried but NOT authoritative: a document whose
+ *         committee does not equal the one the stake entries produce is
+ *         refused, and the refusal leaves nothing behind.
+ * SOURCE  D-18 rev 4 RULES ("a mismatch refuses derivation").
+ * LIES?   if the ENCODER refused such a config, §7's row-sensitivity
+ *         cases could not exist — so the split is asserted here too: the
+ *         same config ENCODES and is REFUSED by validate and derive.
+ * AT BASE red: v3_validate does not exist.
+ * ══════════════════════════════════════════════════════════════════ */
+
+static int test_v3_row_equality(void) {
+    printf("§11 a Comet row that disagrees with its stake entry\n");
+
+    struct { const char *what; int which; } cases[] = {
+        { "a power that is not the stake",  0 },
+        { "an address that is not the key", 1 },
+        { "a key that is not the validator at that position", 2 },
+        { "one row too few",                3 },
+    };
+
+    for (size_t k = 0; k < sizeof(cases) / sizeof(cases[0]); k++) {
+        cfgbox_t m;
+        CHECK(cfg_make_v3(&m) == 0, "fixture");
+        OK();
+        switch (cases[k].which) {
+            case 0: m.cfg->comet_validators[0].power += 1; break;
+            case 1: m.cfg->comet_validators[0].address[0] ^= 0xFF; break;
+            case 2: m.cfg->comet_validators[0].pub_key[0] ^= 0xFF; break;
+            default: m.cfg->n_comet_validators =
+                         (uint16_t)(m.cfg->n_comet_validators - 1); break;
+        }
+        CHECK(nodus_witness_v2_gen_v3_validate(m.cfg) != 0,
+              cases[k].what);
+
+        /* the ENCODER still writes it — shape, not validity */
+        uint8_t *e = NULL;
+        size_t   l = 0;
+        CHECK(nodus_witness_v2_gen_v3_encode(m.cfg, &e, &l) == 0 && e,
+              "and the encoder still writes those bytes (shape vs rule)");
+        free(e);
+
+        char dir[128];
+        CHECK(mkdir_tmp(dir, "v3rows") == 0, "tmpdir");
+        OK();
+        CHECK(nodus_witness_v2_gen_derive_v3(dir, m.cfg, NULL) != 0,
+              "the derivation is REFUSED");
+        CHECK(dir_is_clean(dir) == 1,
+              "and the data path is untouched — no chain db, no scratch");
+        rmrf(dir);
+        cfg_free(&m);
+    }
+
+    /* a version-2 config must NOT derive through the version-3 entry,
+     * and a version-3 config must not derive through the version-2 one */
+    {
+        cfgbox_t v2, v3;
+        char dir[128];
+        CHECK(cfg_make(&v2, 0x00, 1, 0) == 0 && cfg_make_v3(&v3) == 0,
+              "fixtures");
+        CHECK(mkdir_tmp(dir, "v3cross") == 0, "tmpdir");
+        OK();
+        CHECK(nodus_witness_v2_gen_derive_v3(dir, v2.cfg, NULL) != 0,
+              "the version-3 derivation refuses a version-2 config");
+        CHECK(nodus_witness_v2_gen_derive(dir, v3.cfg, NULL) != 0,
+              "the version-2 derivation refuses a version-3 config");
+        CHECK(dir_is_clean(dir) == 1, "neither left anything behind");
+        rmrf(dir);
+        cfg_free(&v2);
+        cfg_free(&v3);
+    }
+
+    OK();
+    printf("  ok: carried, checked, and refused when it lies\n");
+    return 0;
+}
+
 /* ════════════════════════════════════════════════════════════════════ */
 
 int main(void) {
@@ -1168,7 +2509,19 @@ int main(void) {
     if (test_defect_L1F1())   return 1;
     if (test_zero_amount_leaf()) return 1;   /* O15J review R1-F4 */
     if (test_fail_closed())   return 1;
-    printf("\nALL O15J FAZ 1 PURE-V2 GENESIS TESTS PASSED (%d checks)\n",
+    printf("\n=== W2 / R3-C1b — the version-3 genesis document ===\n\n");
+    if (test_v3_control())     return 1;
+    if (test_v3_vectors())     return 1;
+    if (test_v3_sensitivity()) return 1;
+    if (test_v3_decode())      return 1;
+    if (test_v3_cmt_doc())     return 1;
+    if (test_v3_derive())      return 1;
+    if (test_v3_row_equality()) return 1;
+    printf("\nALL O15J FAZ 1 + W2 GENESIS TESTS PASSED (%d checks)\n",
            g_checks);
+    if (g_kat_skipped > 0)
+        printf("⚠ %d KAT section(s) DID NOT RUN at this build's economic "
+               "constants — that coverage is ABSENT, not green.\n",
+               g_kat_skipped);
     return 0;
 }

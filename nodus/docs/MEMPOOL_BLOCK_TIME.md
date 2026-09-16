@@ -21,8 +21,22 @@
 > settings, not chain rules: `TimeoutCommit` 5 000 ms and `CreateEmptyBlocksInterval` 60 000 ms,
 > so a block under demand takes ≈ 5.3-5.5 s and an epoch of 720 blocks ≈ 1 hour.
 > **The Comet mempool has no runtime consumer yet** — W1 is dormant; the tier-3 verb that
-> carries `Txs` and the tick that drives the gossip land in W2/W3, and this note is rewritten
+> carries `Txs` and the tick that drives the gossip land in W3, and this note is rewritten
 > into the body of this document in the commit that makes them live.
+>
+> **W2 (2026-09-16, v0.19.60):** the APPLICATION behind the mempool now exists
+> (`nodus_witness_cmt_app.{h,c}`): `CheckTx` is the ledger's admission check PLUS the
+> envelope's authorization stage (nothing in the tree verified a V2 envelope's signatures at
+> admission before W2), and `PrepareProposal` carries the two ordering rules named above —
+> a STABLE fee-descending insertion sort (ties keep arrival order; a claim has no fee and
+> sorts last) and "a chain_config transaction rides alone". ⚠ One inherited cap: the
+> application reuses the O15I capacity seam, which still refuses more than
+> `NODUS_W_MAX_BLOCK_TXS` (10) items — the very rule D-4 rev 3 (2) retires for the Comet lane
+> — so `NODUS_CMT_APP_MAX_TXS` is 10 until W3 raises the seam (register row R3-C1a-4); a
+> DECIDED block above it stops the node rather than being silently truncated. The startup
+> table (`nodus_witness_cmt_node.c`) builds the Flood mempool with cometbft's defaults and
+> enables `TxsAvailable` (WaitForTxs is true under the 60 000 ms idle interval); the consumer
+> of that signal is W3's event loop.
 
 ---
 

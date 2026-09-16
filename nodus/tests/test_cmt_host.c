@@ -3590,6 +3590,14 @@ typedef struct {
     nodus_abci_request_process_proposal_t last_pp_req;
     nodus_abci_vote_info_t   pp_votes[CMT_VALSET_MAX];
     size_t                   prepare_calls;
+    /* ⚠ FLEET-TM-R3 W2 (R3-C1a), and an OVERSTEP of that package's
+     * literal whitelist for this file ("only tapp_commit"), REPORTED:
+     * `tapp_commit` has to CLOSE the transaction the host now opens
+     * before FinalizeBlock (D-23 rev 5 (5)), and it cannot reach the
+     * connection without a handle. This field and the one line that
+     * sets it in `exec_init` are the smallest way to give it one; both
+     * exist only so `tapp_commit` can do what it was granted. */
+    sqlite3                 *db;
 } tapp_t;
 
 static int tapp_init_chain(void *ctx, const nodus_abci_request_init_chain_t *req,
@@ -3640,7 +3648,30 @@ static int tapp_finalize_block(void *ctx, const nodus_abci_request_finalize_bloc
 /* :270-272 Commit */
 static int tapp_commit(void *ctx, nodus_abci_response_commit_t *resp)
 {
-    (void)ctx;
+    tapp_t *app = (tapp_t *)ctx;
+
+    /* D-23 rev 5 (5): `applyBlock` and `ExecCommitBlock` now open ONE
+     * transaction on the store's connection before `FinalizeBlock`, and
+     * `Commit` is what CLOSES it — the reference's order, made real.
+     * This mock owns no ledger, but it does share the fixture's
+     * connection through the store, so it must close what the host
+     * opened or the transaction would still be open when the next
+     * ApplyBlock tried to begin one (which the host refuses as a
+     * node-local invariant).
+     *
+     * The guard matters: `ExecCommitBlock`'s error paths roll back
+     * BEFORE calling Commit in some orders, and a COMMIT with no
+     * transaction open is an error, not a no-op. */
+    if (app && app->db && !sqlite3_get_autocommit(app->db)) {
+        char *err = NULL;
+
+        if (sqlite3_exec(app->db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
+            fprintf(stderr, "tapp_commit: COMMIT failed: %s\n",
+                    err ? err : "?");
+            sqlite3_free(err);
+            return CMT_FAULT;
+        }
+    }
     resp->retain_height = 1;
     return CMT_OK;
 }
@@ -3841,6 +3872,7 @@ static int exec_init(t_exec_t *x, t_env_t *e)
     if (!x->be || !x->slots || !x->app || !x->ext_arena.buf) {
         return -1;
     }
+    x->app->db = e->fx.w->db;      /* see tapp_t.db — the host's bracket */
     tapp_table(&x->app_if, x->app);
     tmp_table(&x->mp_if, &x->mp);
     x->ev_if = nodus_cmt_empty_evpool;

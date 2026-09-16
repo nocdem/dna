@@ -477,6 +477,200 @@ typedef enum {
  * and the price comes from the frozen policy snapshot.
  */
 
+/* ══ THE COMETBFT LANE (FLEET-TM-R3 W2, package R3-C1a) ══════════════
+ *
+ * D-23 rev 4/5. Under cometbft a DECIDED block is APPLIED, never
+ * re-judged: `FinalizeBlock` executes every item and returns one
+ * `ExecTxResult` per item, and an item that fails does NOT fail the
+ * block (abci/types/application.go's contract; state/execution.go:224-258
+ * — the reference's BaseApplication builds one result per tx and the
+ * block goes on). That is the whole difference between this lane and the
+ * legacy one, where any bad item rejects the block.
+ */
+
+/**
+ * The per-item verdict code that becomes `ExecTxResult.code`.
+ *
+ * ⚠ THIS ENUM IS CONSENSUS DATA. Each value is marshalled into the item's
+ * `ExecTxResult` and Merkle-hashed into the block's results hash
+ * (`cmt_abci_results_hash`, D-23 rev 4), which the NEXT header's
+ * `LastResultsHash` commits to (D-19 rev 6 (7)). RENUMBERING A VALUE, OR
+ * MOVING AN ITEM FROM ONE CLASS TO ANOTHER, IS A CONSENSUS CHANGE: two
+ * builds that disagree about a code produce different results hashes for
+ * the same block and the chain splits. Append at the end; never reorder.
+ *
+ * One value per refusal CLASS the engine can attribute to a single item.
+ * Every class names the construct it aggregates by NAME first and line
+ * second, because the line moves and the name does not — resolve the
+ * name if the two disagree.
+ *
+ *   1 DECODE     the codec refused the bytes, or the preflight rejected
+ *                them for something that is a property of the bytes
+ *                alone: `dna_env_decode` and every `dna_env_preflight`
+ *                status other than the ERR_CTX_* family and ERR_HASH —
+ *                ERR_ARG, ERR_DECODE, ERR_EXPIRED
+ *                (env_preflight.h:89-91). Also a claim whose bytes do
+ *                not decode, which the application codes before the
+ *                engine sees it.
+ *   2 CONTEXT    the item does not fit the COMMITTED CONTEXT: a leg
+ *                names a domain with no entry in the block-start
+ *                ruleset table, or one at a ruleset version the
+ *                committed registry does not carry. Both the table
+ *                build (the "item's own contextual ruleset table" block,
+ *                apply.c:3192-3240) and the preflight's ERR_CTX_COUNT /
+ *                ERR_CTX_DOMAIN / ERR_CTX_VERSION
+ *                (env_preflight.h:92-94) land here.
+ *                ⚠ "DOMAIN NOT REGISTERED / NOT ACTIVE" IS THIS CLASS,
+ *                not ADMISSION: the block-start table is built from the
+ *                ACTIVE domains only (`doms_load` with strict_active,
+ *                then `block_ctx_from_doms`), so a leg naming any other
+ *                domain finds no entry and is refused while the table is
+ *                being assembled — before any admission predicate runs.
+ *   3 REPLAY     the item's DERIVED identity is already committed
+ *                (`v2_intent_index` / `v2_tx_index`), or an EARLIER item
+ *                of this same block already committed it — the Comet
+ *                lane reads the live indices inside the transaction, so
+ *                one guard covers both (the "REPLAY" block,
+ *                apply.c:3257-3307).
+ *   4 ADMISSION  a per-leg admission PREDICATE refused, with the domain
+ *                present and ACTIVE: no exec hook, no auth hook,
+ *                access_mode not INVOKE, runtime_op not owned by the
+ *                committed ruleset, or auth_kind outside the runtime's
+ *                allowlist (the "ADMISSION, per leg" block,
+ *                apply.c:3308-3332).
+ *   5 CAPACITY   the item does not fit what is LEFT: the global unit
+ *                ceiling or a per-domain unit budget (`dna_meter_reserve`
+ *                statuses other than DNA_METER_ERR_FAULT, at the
+ *                "RESERVE" block, apply.c:3333-3357), the committed
+ *                manifest's per-domain transaction quota, or the
+ *                engine's own MAX_OPS per-domain bound (both in the
+ *                admission block above).
+ *   6 AUTH       the resolved runtime's `auth` hook refused a leg
+ *                against the engine-derived leg digest
+ *                (`env_authorize_legs`, apply.c:1665-1750).
+ *   7 EXEC       execution refused the item: the runtime's exec hook,
+ *                the strict effect decode, the adapter's validation, the
+ *                effect charge or the adapter's application
+ *                (`exec_one_env`, apply.c:1176-1505, every return other
+ *                than -2).
+ *   8 CLAIM      a claim's derivation, admission or target runtime
+ *                refused it (`claim_prescan_one` / `claim_execute_one`).
+ *
+ * ⚠ HONEST LABEL ON CODE 8, and an OPEN ROW FOR R3-C2 (operator ruling
+ * 2026-09-16: no change in W2). The helpers the claim stage calls —
+ * `nodus_witness_v2_manifest_load_by_hash` and the three claim write
+ * stages — answer -1 for BOTH "deterministically refused" and "this
+ * node could not read", a conflation this engine's header has always
+ * recorded. In the legacy lane that conflation costs a wrongly rejected
+ * block. HERE IT COSTS MORE: code 8 is hashed into the block's results
+ * hash, so a node-local read fault becomes CONSENSUS-VISIBLE DATA
+ * instead of stopping the node, and a node with a failing disk could
+ * commit a results hash its healthy peers do not compute. The named fix
+ * is to make those helpers TRI-STATE (refused / fault / ok) so the
+ * claim stage can route a fault to NODUS_V2_INTERNAL_FAULT the way the
+ * envelope stage already does; it is R3-C2's, not W2's.
+ *
+ * A NODE-LOCAL fault is NEVER one of these: it aborts the whole apply
+ * with NODUS_V2_INTERNAL_FAULT and the host rolls the block back.
+ */
+typedef enum {
+    NODUS_V2_TX_OK            = 0,
+    NODUS_V2_TX_ERR_DECODE    = 1,
+    NODUS_V2_TX_ERR_CONTEXT   = 2,
+    NODUS_V2_TX_ERR_REPLAY    = 3,
+    NODUS_V2_TX_ERR_ADMISSION = 4,
+    NODUS_V2_TX_ERR_CAPACITY  = 5,
+    NODUS_V2_TX_ERR_AUTH      = 6,
+    NODUS_V2_TX_ERR_EXEC      = 7,
+    NODUS_V2_TX_ERR_CLAIM     = 8
+} nodus_v2_tx_code_t;
+
+/**
+ * One item's result, in the shape D-23 rev 4 binds to cometbft's
+ * `ExecTxResult`: `code` = `nodus_v2_tx_code_t`; `gas_wanted` = the units
+ * the item RESERVED; `gas_used` = the units it CONSUMED (the value on an
+ * aborted meter is `g_consumed` at the abort — res_meter.h:427-428, and
+ * res_meter.h:506-509 says an ABORTED meter's released counters stay
+ * zero, so consumed is the only readable figure). A claim reserves and
+ * consumes nothing: 0/0. An item that never reached the meter reports
+ * 0/0 as well, which is honest — nothing was reserved.
+ *
+ * `data` (the canonical runtime effect bytes of D-23 rev 4) is NOT
+ * carried: the engine's effect bytes are consumed by the adapters and
+ * are not retained per item anywhere in this engine, so producing them
+ * would mean changing `exec_one_env`'s contract. Reported as a gap; the
+ * caller writes an EMPTY `data`, which is one of the two values rev 4
+ * allows ("canonical runtime effect bytes in leg order OR EMPTY").
+ */
+typedef struct {
+    uint32_t code;         /* nodus_v2_tx_code_t                        */
+    uint64_t gas_wanted;   /* reserved units                            */
+    uint64_t gas_used;     /* consumed units                            */
+} nodus_v2_tx_result_t;
+
+/**
+ * The cometbft-lane inputs and outputs of one apply.
+ *
+ * `on` selects the lane. With it FALSE every field here is ignored and
+ * the engine behaves exactly as it did before this struct existed.
+ */
+typedef struct {
+    bool on;
+
+    /** The cometbft block hash consensus passed to `FinalizeBlock`
+     *  (`RequestFinalizeBlock.Hash`, state/execution.go:224-232). It
+     *  becomes `v2_blocks.block_id` verbatim: the ledger derives no
+     *  identity of its own in this lane (D-17 rev 7 (6)). */
+    uint8_t block_hash[64];
+
+    /**
+     * The `NextValidatorsHash` the FinalizeBlock request carries
+     * (`RequestFinalizeBlock.NextValidatorsHash`, state/execution.go:226)
+     * — it becomes `v2_blocks.vset_hash` verbatim. The engine does NOT
+     * re-derive it in this lane.
+     *
+     * ⚠ REGISTER ROW R3-C1a-10. D-17 rev 7 (6) words this column as "the
+     * block's Comet ValidatorsHash", and `RequestFinalizeBlock` has NO
+     * such field: of the two validator hashes in the header, only
+     * `NextValidatorsHash` is passed to the application (execution.go:
+     * 222-232). In W2 the two COINCIDE, because `finalize_block` returns
+     * no validator updates (R3-T), so the set never changes and
+     * `NextValidatorsHash == ValidatorsHash` at every height. The moment
+     * validator updates land, they diverge by one block and this column
+     * will hold the NEXT set's hash unless the host is changed to pass
+     * the header's own `ValidatorsHash`. The VALUE stored here is the
+     * request's; only the naming is corrected.
+     */
+    uint8_t validators_hash[64];
+
+    /** OUT: one result per item, in BLOCK ORDER — every envelope in the
+     *  order the block carries them, then every claim. The caller sizes
+     *  the array; `n_envs + n_claims` entries are required and a smaller
+     *  capacity is a node-local fault. */
+    nodus_v2_tx_result_t *results;
+    size_t                results_cap;
+    size_t                results_len;   /* OUT */
+} nodus_v2_block_cmt_t;
+
+/* ── WHAT THE BLOCK ROW COUNTS IN THIS LANE (register row R3-C1a-7) ──
+ *
+ * `v2_blocks.tx_count` is the number of ids `v2_blocks.tx_root` commits
+ * to, and that list holds the items this block APPLIED — never the
+ * refused ones. The two facts are one fact: a refused item's state
+ * changes went away with its SAVEPOINT, so binding its id into the
+ * block's transaction root would commit the block to a transaction that
+ * did not happen.
+ *
+ * THIS IS NOT THE BLOCK'S TRANSACTION COUNT. The cometbft block carries
+ * `Data.Txs` — every item, refused or not — and consensus commits that
+ * count through the header's `DataHash`. The ledger's row counts what
+ * the ledger did. On a block with a refused item the two numbers differ,
+ * and that difference is the design, not a discrepancy: one is what was
+ * decided, the other is what was applied. Every node computes both
+ * identically, because the refusal set is a deterministic function of
+ * the block's bytes and the committed state.
+ */
+
 /**
  * One V2 global block for the engine.
  *
@@ -605,6 +799,10 @@ typedef struct {
      * id — never an input byte — is what `v2_blocks.block_id` stores. */
     uint8_t  out_header[DNA_BH2_ENC_SIZE];
     uint8_t  out_block_id[DNA_BH2_ID_LEN];
+    /* ── THE COMETBFT LANE (D-23 rev 4/5) ─────────────────────────────
+     * `cmt.on` false — the whole struct zeroed — is the legacy lane,
+     * unchanged in every observable way. See nodus_v2_block_cmt_t. */
+    nodus_v2_block_cmt_t cmt;
     /* ── WHY the engine refused (DIAGNOSTIC ONLY) ──────────────────────
      * NUL-terminated ASCII, written by the exact site that refused, so
      * an operator reading a log can tell WHICH check failed instead of
@@ -709,8 +907,117 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
  *         this node could not compute; a consensus caller fails its own
  *         operation (does not vote) and never converts -2 into a
  *         rejection (FAULT vs VERDICT block above).
+ *
+ * ── THE COMETBFT LANE (`blk->cmt.on`, D-23 rev 4/5) ───────────────────
+ * Everything above describes the LEGACY lane and is unchanged. With
+ * `cmt.on` the same entry behaves as cometbft's `FinalizeBlock`:
+ *
+ *   · SCHEMA. S14 only. At any other version the entry returns -2 — the
+ *     Comet row shape needs the three columns S14 drops to be gone.
+ *   · TRANSACTION. The entry opens NOTHING and closes NOTHING. It
+ *     REQUIRES the caller's transaction to be open already
+ *     (`sqlite3_get_autocommit(w->db) == 0`) and returns -2 otherwise;
+ *     the host's `apply_verified_block` owns the BEGIN and `app.commit`
+ *     owns the COMMIT (D-23 rev 5 (5)). Every failure leaves the
+ *     rollback to the host.
+ *   · IDENTITY. `v2_blocks.block_id` is `cmt.block_hash` verbatim,
+ *     `vset_hash` is `cmt.validators_hash`, `prev_block_id` is the
+ *     previous row's id or 64 zero bytes at the FIRST block (a version-3
+ *     chain has no height-0 row at all — D-18 rev 4), and NO header, qc
+ *     or commit_cert column is written. The engine derives no identity.
+ *   · ITEMS. Every item is executed in BLOCK ORDER — envelopes as the
+ *     block carries them, then claims — each inside its own SAVEPOINT
+ *     nested in the caller's transaction. An item-attributable refusal
+ *     rolls that SAVEPOINT back, pays no fee, writes no index row, and
+ *     records a nonzero `nodus_v2_tx_code_t` in `cmt.results[i]`; the
+ *     block CONTINUES. This replaces the legacy lane's phase order
+ *     (SYSTEM → cross-domain → domain-local) — a block with mixed phases
+ *     therefore produces DIFFERENT roots in the two lanes, which is
+ *     correct: the two lanes are two consensus protocols.
+ *   · REFUSAL. A decided block is never refused. EVERY negative the
+ *     engine would return in the legacy lane other than -2 becomes -2 in
+ *     this one — both -1 CONSENSUS_INVALID and -3 NOT_YET_LINKABLE —
+ *     including the refusals that are not attributable to one item
+ *     (SYSTEM not ACTIVE, an unreadable block context, an unreadable
+ *     authority snapshot). A node that cannot apply a decided block
+ *     stops.
+ *     WHY -3 FOLDS TOO: a deferral means "the predecessor state is
+ *     absent here, nothing was judged", which is a legitimate answer
+ *     when blocks arrive out of order from a peer. Under cometbft they
+ *     cannot: consensus drives heights strictly sequentially and hands
+ *     this engine height h only after committing h-1. A gap at
+ *     FinalizeBlock therefore is not "wait for more" — it is this node's
+ *     ledger disagreeing with the height consensus already decided, and
+ *     the only safe answer is to stop. Deferring instead would let the
+ *     node return CMT_OK-shaped success for a block it never applied.
+ *   · The whole-batch capacity seam
+ *     (`nodus_witness_v2_produce_batch_check_ex`) is NOT used here: it
+ *     belongs to PrepareProposal/ProcessProposal, which run BEFORE the
+ *     vote.
  */
 int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk);
+
+/**
+ * VERIFY ONE ENVELOPE'S AUTHORIZATION against committed state — the
+ * stage that turns every leg's authorization COMMITMENT into a VERDICT
+ * through the resolved runtime's own `auth` hook.
+ *
+ * ⚠ NOTHING ELSE IN THE TREE VERIFIES AN ENVELOPE'S SIGNATURES.
+ * `dna_env_preflight` derives commitments and identities and says so
+ * itself (env_preflight.h:57-63: it decides nothing about "whether any
+ * authorization is VALID"), and the admission lane
+ * (`verify_v2_successor_tx`, nodus_witness_verify.c:674-784) runs the
+ * wire-family marker, the contextual ruleset table, that preflight, a
+ * `wire_id` comparison and the committed-intent guard — and no
+ * signature check at all. A mempool that does not call this admits
+ * forged and corrupted authorizations and only discovers them when a
+ * block carrying them is applied, which is not what cometbft's CheckTx
+ * contract promises (D-4 rev 3 (1): "signature, format, double spend,
+ * size").
+ *
+ * The envelope is judged at the CANDIDATE height (tip + 1), against the
+ * committed registry's contextual rulesets and the governing committee
+ * snapshot for that height — the same inputs the apply engine resolves,
+ * through the same functions.
+ *
+ * @param reason optional; receives the class-tagged refusal text.
+ * @return 0 authorized; -1 a deterministic REFUSAL (bytes + committed
+ *         state only — every honest node agrees); -2 a node-local fault,
+ *         which a caller must never turn into a verdict.
+ */
+int nodus_witness_v2_env_authorize(nodus_witness_t *w, const uint8_t *bytes,
+                                   size_t len, char *reason,
+                                   size_t reason_size);
+
+/**
+ * THE LEDGER'S COMMITTED GLOBAL ROOT — the one quantity that answers
+ * "what is the ledger's state root after the last block it committed?".
+ *
+ * There are two committed sources and they must never be asked
+ * separately:
+ *   · a chain that has committed blocks: the TIP `v2_blocks` row's
+ *     `global_root` column — the exact bytes phase 13 computed and
+ *     wrote, which is what `FinalizeBlock` returned as `app_hash` and
+ *     what consensus bound as the next header's AppHash (D-19 rev 6 (1));
+ *   · a chain that has committed only its genesis: no row exists in the
+ *     cometbft lane at all (D-19 rev 6 withdrew the genesis block), so
+ *     the root is RECOMPUTED from the committed DomainHeads exactly as
+ *     `nodus_witness_v2_genesis_cmt` composed it — `dna_v2_domains_root`
+ *     over the heads in domain_id order, then `dna_v2_global_root`.
+ *
+ * WHY THIS EXISTS rather than `nodus_witness_global_root_v2`: that
+ * function RECOMPUTES from whatever the live tables hold now. It agrees
+ * with the stored row only while nothing has moved since the block was
+ * written, and it can never be the authority for "the root at height h"
+ * once h is in the past. The row is the authority; this helper reads it
+ * and falls back to the genesis composition only where there is no row
+ * to read.
+ *
+ * @return 0 with `out` filled; -1 when neither source answers (a chain
+ *         with no committed block row AND no committed head has no root).
+ */
+int nodus_witness_v2_committed_global_root(nodus_witness_t *w,
+                                           uint8_t out[64]);
 
 /**
  * ENGINE-INTERNAL, exposed for direct test: find `wire_id` (the
@@ -724,6 +1031,61 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk);
 int nodus_witness_v2_local_index_find(const uint8_t ids[][64], uint32_t n,
                                       const uint8_t wire_id[64],
                                       uint32_t *lidx_out);
+
+/**
+ * THE COMETBFT-LANE GENESIS (FLEET-TM-R3 W2, package R3-C1b).
+ *
+ * Everything nodus_witness_v2_genesis_ex does to the LEDGER's state —
+ * the registry's genesis initialisation, the committed genesis manifest,
+ * one canonical activation DomainHead per ACTIVE domain with its
+ * height-0 root-history row, the domains/global roots, the committed-
+ * authority cross-check of `vset_hash`, and the supply gate — in ONE
+ * transaction, with exactly one thing removed and one thing added:
+ *
+ *   REMOVED  the height-0 `v2_blocks` row, and with it the genesis
+ *            header, the derived genesis BlockID and the `header`/`qc`
+ *            columns S14 drops. D-19 rev 6 withdrew the genesis block:
+ *            under cometbft the chain's identity is the genesis
+ *            DOCUMENT's hash (D-18 rev 4), not a block's.
+ *   ADDED    `out_global_root` — the ledger's global state root after
+ *            this apply. It is the document's `app_hash` (D-19 rev 6
+ *            (1): AppHash carries the ledger's root), and the caller
+ *            cannot read it back from a block row that no longer exists.
+ *
+ * SCHEMA: S12 OR S14 in W2; S14 alone from W3. The destination is S14 —
+ * that is where the Comet stores live — but the ledger genesis below
+ * runs the CORE runtime's `state_init`, whose own gate stops at S12
+ * (nodus_witness_v2_pools.c:1174-1182), and that gate is one of the five
+ * D-17 rev 7 (7) assigns to W3 together with the live S14 flip. So the
+ * derivation builds the ledger at S12 and climbs to S14 afterwards
+ * (nodus_witness_v2_gen_derive_v3, step 9), and this entry admits both
+ * versions for that one window. W3 narrows it back to S14 in the same
+ * commit that widens the pool gate. The version-2 entry's gate (S9-S12)
+ * is untouched and stays the live path's.
+ *
+ * NOT IDEMPOTENT, and it cannot be: the version-2 entry decides "already
+ * done" from the height-0 row this one does not write. A database that
+ * already carries a committed genesis manifest is REFUSED here. Under
+ * D-23 rev 5 (7) that is the right shape anyway — a restarting node
+ * VERIFIES its committed genesis through InitChain, it never re-applies
+ * it.
+ *
+ * @param w                the open chain (S14), outside a transaction.
+ * @param vset_hash        the 64-byte genesis authority hash. An
+ *                         ASSERTION: when a genesis snapshot is already
+ *                         committed it MUST equal it.
+ * @param manifest_bytes   the canonical genesis manifest. REQUIRED.
+ * @param manifest_len     its length.
+ * @param out_global_root  receives the 64-byte global state root.
+ * @return 0 committed; -1 refused or failed (nothing partial);
+ *         NODUS_V2_INTERNAL_FAULT for a node-local fault (an allocation
+ *         failure), never reported as a judgement.
+ */
+int nodus_witness_v2_genesis_cmt(nodus_witness_t *w,
+                                 const uint8_t vset_hash[64],
+                                 const uint8_t *manifest_bytes,
+                                 size_t manifest_len,
+                                 uint8_t out_global_root[64]);
 
 #ifdef __cplusplus
 }

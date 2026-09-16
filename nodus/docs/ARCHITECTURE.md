@@ -176,7 +176,9 @@ nodus/
 │   ├── test_cmt_common.h      # cometbft port R2-T: the host fixture (C stand-in for common_test.go) — application, block store, MockPV signer, WAL ring, frozen clock, hand-fired timer; 10 "how it can lie" entries
 │   ├── test_cmt_cs.c          # cometbft port R2-T + R2-T2: 39 whole-height scenarios from state_test.go / byzantine_test.go / mempool_test.go (every state_test.go func a single-node fixture can drive; 4 remain BLOCKED, listed with reasons); asserts WHICH block was committed; "how it can lie" items 11-21 (the fixture's 1-12 are in test_cmt_common.h)
 │   ├── test_cmt_multinode.h   # cometbft port R2-BYZ: the reactor stand-in — N fixtures, connectivity matrix, router porting the three gossip routines as rules, step budget instead of wall clock
-│   └── test_cmt_byzantine.c   # cometbft port R2-BYZ: TestByzantineConflictingProposalsWithPartition — 4 nodes, byzantine proposer, partition heals, all honest nodes commit the SAME block; + 2 C-only scenarios
+│   ├── test_cmt_byzantine.c   # cometbft port R2-BYZ: TestByzantineConflictingProposalsWithPartition — 4 nodes, byzantine proposer, partition heals, all honest nodes commit the SAME block; + 2 C-only scenarios
+│   ├── test_cmt_app.c         # cometbft port R3-C1a: the application over a REAL version-3 chain — InitChain as a genesis check, FinalizeBlock with per-item SAVEPOINT isolation, both crash windows, Commit as the COMMIT, CheckTx (incl. the signature stage), PrepareProposal / ProcessProposal; 18 cases
+│   └── test_cmt_node.c        # cometbft port R3-C1c: the startup table — genesis document loader (row / provider / refusals), the Handshaker's height cases and BOTH crash windows healed (real app / mock app), LoadOrGenFilePV, init/start/release; 14 cases
 ├── CMakeLists.txt             # Build system
 └── docs/
     └── ARCHITECTURE.md        # This file
@@ -1574,6 +1576,27 @@ gate), `test_cmt_conr` 18/18 (535; the 10 001-bit ProposalPOL row is now drivabl
 run against the old files (`cmt_ps.c` in a plain build, `cmt_state.c` under UBSan); the
 `cmt_cs.c` items rest on the diff reading, the green run and the verifier. Still DORMANT:
 nothing in the running node calls any of it until W3.
+
+### cometbft @709fd12b literal port — R3 wave W2: the application, genesis v3, the startup table (`nodus_witness_cmt_app`, `nodus_witness_cmt_node`, `nodus_witness_v2_gen` v3, DORMANT)
+
+W2 (2026-09-16, v0.19.60) binds the consensus core to the Ledger V2 engine. Still DORMANT:
+`nodus-server` starts the legacy BFT lane, nothing constructs `nodus_cmt_node_t`, the reactor
+and the tick are W3's. The ONE live-path change is `nodus_witness_v2_chain_id`'s fallback to
+the stored genesis document on a chain with no height-0 block row — every chain that exists
+today has that row and takes the old branch unchanged.
+
+| Module | cometbft source | What it is |
+|---|---|---|
+| `nodus/src/witness/nodus_witness_cmt_app.{h,c}` | `abci/types/application.go`, `proxy/app_conn.go`, `consensus/replay.go:318-373`, `state/execution.go:101-323` | the APPLICATION behind `AppConnConsensus`/`AppConnMempool` over the ledger: InitChain as a genesis CHECK (chain id, committed global root == the document's `app_hash`, validators as a multiset), PrepareProposal (the ledger's fee order and chain_config-alone rules, the byte budget, the capacity seam), ProcessProposal, the vote-extension defaults, FinalizeBlock over the engine's Comet lane, Commit = the SQL `COMMIT` of the host's transaction, CheckTx = the ledger's admission check PLUS the envelope's authorization stage (D-23 rev 5, D-4 rev 3) |
+| `nodus/src/witness/nodus_witness_v2_apply.{h,c}` (Comet lane) | `state/execution.go:224-323` | `nodus_v2_block_t.cmt`: every item in its own SAVEPOINT inside the host's transaction, a per-item `nodus_v2_tx_code_t` (consensus data), claims as items, the ten-column S14 block row with consensus's own block hash, `tx_root`/`tx_count` over applied items only, the committed-global-root reader, `nodus_witness_v2_genesis_cmt` (no height-0 row) |
+| `nodus/src/witness/nodus_witness_v2_gen.{h,c}` (version 3), `nodus/tools/nodus_v2_gen_config.c` | `types/genesis.go`, `proto/tendermint/types/params.proto`, `node/setup.go:551` | the version-3 genesis DOCUMENT (D-18 rev 4): v2 body ‖ Comet tail; two hashes (chain id with its own field zeroed, source commit with `app_hash` zeroed too); `derive_v3` (ledger genesis at S12, climb to S14, store under "genesisDoc"); the CANONICAL-STRICT reader (four checks); the tool's v3 keys; an independent Python oracle |
+| `nodus/src/witness/nodus_witness_cmt_node.{h,c}` | `node/node.go:285-422`, `node/setup.go:551-611`, `consensus/replay.go:201-565`, `consensus/replay_stubs.go:60-79`, `consensus/state.go:318-405`, `privval/file.go:237-245` | THE STARTUP TABLE: `NewNodeWithContext` step for step, the Handshaker (InitChain branch, six edge cases, five height outcomes, replayBlocks/replayBlock), the mock application (its `commit` issues the COMMIT), the genesis document loader's three-way table, `LoadOrGenFilePV` on the state file, OnStart minus the file WAL; the first production caller of `cmt_cs_init` |
+
+Register rows R3-C1a-1..11, R3-C1b-1..8, R3-C1c-1..5 (`tasks/reference-deviation-register.md`,
+local); R3-AUD-17 closed. Tests: `test_cmt_app` (18 cases, real v3 chain, both crash windows,
+per-item rollback proven against a twin chain), `test_cmt_node` (14 cases, both crash windows
+healed through the REAL Handshaker, the tampered-row/provider table), `test_v2_gen` §5-§11
+(oracle KATs, strict decoder, derive end to end, tampered stored document refused).
 
 ### BFT Consensus Flow
 

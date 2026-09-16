@@ -117,10 +117,19 @@ extern "C" {
  * under ceremony conditions: a refusal that does not name the line is a
  * refusal that costs an hour.
  *
- * This function performs NO genesis validation. A successfully parsed
- * config is a WELL-FORMED one, not a derivable one; the genesis rules
- * belong to nodus_witness_v2_gen_config_validate and to
- * nodus_witness_v2_gen_derive, which are the single authority on them.
+ * For a VERSION-2 file this function performs NO genesis validation: a
+ * successfully parsed config is a WELL-FORMED one, not a derivable one;
+ * the genesis rules belong to nodus_witness_v2_gen_config_validate and
+ * to nodus_witness_v2_gen_derive, which are the single authority on them.
+ *
+ * For a VERSION-3 file (`config_version = 3`, W2 / R3-C1b) the contract
+ * is WIDER, and deliberately (register row R3-C1b-3): deriving the Comet
+ * validator rows (`nodus_witness_v2_gen_v3_fill_comet_rows`) runs the
+ * builder's SHARED genesis rules through `gen_plan_build`, so a
+ * well-formed version-3 file whose configuration is not derivable is
+ * refused HERE, with the builder's reason logged above the parser's line.
+ * The version-3-only rules (`nodus_witness_v2_gen_v3_validate`) are still
+ * the derivation's, not this parser's.
  *
  * @param path     the config file.
  * @param out_cfg  receives the parsed config on success.

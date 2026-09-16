@@ -117,7 +117,7 @@ Produces:
 
 ```bash
 cd nodus/build
-ctest --output-on-failure    # 256 registered tests (2026-09-11; 249 unit + 7 bench)
+ctest --output-on-failure    # 258 registered tests (2026-09-16; 251 unit + 7 bench)
 ```
 
 **Test coverage (representative areas — `ctest` runs all):**
@@ -136,6 +136,7 @@ ctest --output-on-failure    # 256 registered tests (2026-09-11; 249 unit + 7 be
 | cometbft literal port, R1 types (dormant) | `test_cmt_pb`, `test_cmt_merkle`, `test_cmt_bits`, `test_cmt_safemath`, `test_cmt_time`, `test_cmt_block`, `test_cmt_vote`, `test_cmt_part_set`, `test_cmt_validator_set`, `test_cmt_results`, `test_cmt_params`, `test_cmt_genesis`, `test_cmt_validation`, `test_cmt_evidence`, `test_cmt_state` |
 | cometbft literal port, R2 consensus core (dormant) | `test_cmt_vote_set`, `test_cmt_hvs`, `test_cmt_msgs`, `test_cmt_wal`, `test_cmt_ticker`, `test_cmt_privval`, `test_cmt_replay`, `test_cmt_cs_unit`, `test_cmt_cs` (39 whole-height scenarios — every `state_test.go` test a single-node fixture can drive), `test_cmt_byzantine` (4 nodes, byzantine proposer, partition — no fork) |
 | cometbft literal port, R3 wave W1 — reactor / host+stores / mempool (dormant) | `test_cmt_conr` (16 scenarios: the `reactor_test.go` ValidateBasic tables plus four multi-node runs over an in-memory switch), `test_cmt_host` (48 cases against a real SQLite database and real ML-DSA-87 keys: schema S14, the block and state stores, the WAL, the file privval, the BlockExecutor), `test_cmt_mem`, `test_cmt_memr`, `test_cmt_clist` |
+| cometbft literal port, R3 wave W2 — application / genesis v3 / startup table (dormant) | `test_cmt_app` (18 cases on a REAL version-3 chain: InitChain as a genesis check, FinalizeBlock with per-item SAVEPOINT isolation proven against a twin chain, both crash windows, CheckTx incl. the signature stage, PrepareProposal/ProcessProposal), `test_cmt_node` (14 cases: the genesis-document loader's row/provider table, the Handshaker's height cases, both crash windows healed through the real Handshaker, LoadOrGenFilePV, init/start/release), `test_v2_gen` §5-§11 (the version-3 document: oracle KATs, strict decoder, derive end to end, tampered stored rows refused) |
 | Merkle / state_root | `test_witness_merkle`, `test_merkle_proof`, `test_state_root_4subtree`, `test_merkle_scan_fail_close` |
 | Ledger V2 | `test_v2_apply`, `test_v2_native`, `test_v2_epoch`, `test_v2_finalize`, `test_v2_produce`, `test_block_v2`, `test_v2_qc_authority`, `test_domain_wire`, `test_v2_pools`, `test_v2_claims` |
 

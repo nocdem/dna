@@ -23,6 +23,7 @@
 #include "witness/nodus_witness_vset.h"
 #include "witness/nodus_witness_v2_apply.h"
 #include "witness/nodus_witness_v2_bundle.h"
+#include "witness/nodus_witness_cmt_store.h" /* W2: the genesisDoc row   */
 #include "witness/nodus_witness_v2_claims.h"
 #include "witness/nodus_witness_v2_econ.h"   /* the committed econ band
                                               * read-back (Block 2C)     */
@@ -486,11 +487,11 @@ static int gen_plan_build(const nodus_v2_gen_config_t *cfg, gen_plan_t *p) {
     if (!cfg || !p) return -1;
     memset(p, 0, sizeof(*p));
 
-    if (cfg->config_version != NODUS_V2_GEN_CONFIG_VERSION) {
-        QGP_LOG_ERROR(LOG_TAG, "config_version %u != %u — refusing",
-                      (unsigned)cfg->config_version,
-                      (unsigned)NODUS_V2_GEN_CONFIG_VERSION);
-        return -1;
+    if (cfg->config_version != NODUS_V2_GEN_CONFIG_VERSION &&
+        cfg->config_version != NODUS_V2_GEN_CONFIG_VERSION_V3) {
+        QGP_LOG_ERROR(LOG_TAG, "config_version %u is neither 2 nor 3 — "
+                      "refusing", (unsigned)cfg->config_version);
+        return -1;                     /* W2: the rules below are SHARED */
     }
 
     /* ── build identity: ALL THREE SCHEDULE CONSTANTS ─────────────────
@@ -953,6 +954,7 @@ int nodus_witness_v2_gen_config_encode(const nodus_v2_gen_config_t *cfg,
     if (!out || !out_len) return -1;
     *out = NULL;
     *out_len = 0;
+    if (!cfg || cfg->config_version != NODUS_V2_GEN_CONFIG_VERSION) return -1;
     gen_plan_t plan;
     if (gen_plan_build(cfg, &plan) != 0) return -1;
     int rc = gen_encode_planned(cfg, &plan, out, out_len);
@@ -963,6 +965,22 @@ int nodus_witness_v2_gen_config_encode(const nodus_v2_gen_config_t *cfg,
 static int gen_source_commit_planned(const nodus_v2_gen_config_t *cfg,
                                      const gen_plan_t *plan,
                                      uint8_t out[NODUS_V2_GEN_SRCCOMMIT_LEN]) {
+    /* VERSION 2 ONLY. This is the choke point for BOTH the public
+     * version-2 source_commit and nodus_witness_v2_gen_derive, so it is
+     * the one place a version-3 config meets the version-2 lane — and
+     * the operator CAN reach it: the config tool now parses a
+     * `config_version = 3` file and nodus-server's ceremony
+     * (nodus-server.c:314-345) still calls the version-2 derivation. It
+     * therefore says why, like every other refusal in this module. */
+    if (!cfg || cfg->config_version != NODUS_V2_GEN_CONFIG_VERSION) {
+        QGP_LOG_ERROR(LOG_TAG, "this is a version-%u config and the "
+                      "version-2 source binding is not defined for it — "
+                      "a version-3 chain is derived by "
+                      "nodus_witness_v2_gen_derive_v3 (W3 flips the "
+                      "ceremony onto it)",
+                      cfg ? (unsigned)cfg->config_version : 0u);
+        return -1;
+    }
     uint8_t *buf = NULL;
     size_t len = 0;
     if (gen_encode_planned(cfg, plan, &buf, &len) != 0) return -1;
@@ -1703,6 +1721,1595 @@ int nodus_witness_v2_gen_derive(const char *data_path,
     if (w2->db) { sqlite3_close(w2->db); w2->db = NULL; }
     gen_scratch_clear(w2->data_path);           /* nothing partial */
     free(w2);
+    gen_plan_free(&plan);
+    return ok;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * VERSION 3 — THE COMETBFT GENESIS DOCUMENT (D-18 rev 4, W2 / R3-C1b)
+ *
+ * The byte table, the two hash preimages and the reason they zero
+ * different fields: the header. What is worth stating HERE is the one
+ * structural property a reviewer should not have to take on trust:
+ *
+ *   THE VERSION-2 BODY IS PRODUCED BY THE VERSION-2 ENCODER. This layer
+ *   calls `gen_encode_planned` — the same function, over the same plan —
+ *   and APPENDS to what it returns. "The body is byte-identical except
+ *   config_version = 3" is therefore true by construction, not by
+ *   inspection, and it stays true if the body ever changes.
+ *
+ * ── WHAT A PRODUCTION BINARY CAN AND CANNOT REACH IN W2 ───────────────
+ * Stated precisely, because "nothing below is reachable from the live
+ * path" — which an earlier draft of this comment said — is FALSE:
+ *
+ *   REACHABLE. The genesis config tool is production code on the
+ *   ceremony path (nodus-server.c:321 and nodus-cli.c:2018 both call
+ *   nodus_v2_gen_config_parse_file), and on a file that says
+ *   `config_version = 3` the parser calls
+ *   `nodus_witness_v2_gen_v3_defaults` (nodus_v2_gen_config.c:1065) and
+ *   `nodus_witness_v2_gen_v3_fill_comet_rows` (:1118). An operator who
+ *   writes such a file therefore executes those two functions today.
+ *
+ *   REACHABLE ON ONE BRANCH ONLY. `nodus_witness_v2_chain_id`
+ *   (nodus_witness_v2_claims.c) is live code and, since W2 / R3-C1a,
+ *   falls back to `_stored_chain_id` (and so to `_stored_doc`, `_v3_decode`,
+ *   `_v3_validate`, `_v3_encode` and `_chain_id`) when the chain has NO
+ *   height-0 block row. Every chain derived by the version-2 path has
+ *   that row, so on every chain that exists today the fallback is never
+ *   taken and the answer is byte-for-byte the old one.
+ *
+ *   NOT REACHABLE. No production caller reaches
+ *   nodus_witness_v2_gen_derive_v3, nodus_witness_v2_genesis_cmt,
+ *   _v3_source_commit or _to_cmt_doc: the ceremony calls the VERSION-2
+ *   derivation, which refuses a version-3 config at
+ *   `gen_source_commit_planned` with a logged reason; the startup table
+ *   (nodus_witness_cmt_node.c) that reads the document has no production
+ *   caller yet. W3 flips the ceremony onto the version-3 derivation
+ *   (D-17 rev 7).
+ * ════════════════════════════════════════════════════════════════════ */
+
+/* Compile-time agreement with the port's own types. Deliberately at the
+ * END of this file: the assertion block at the top is line-cited, and a
+ * new line there would move every citation into this module. */
+_Static_assert(DNAC_PUBKEY_SIZE == CMT_PB_PUBKEY_LEN,
+               "the container carries the RAW ML-DSA-87 key the port's "
+               "PublicKey message carries");
+_Static_assert(NODUS_V2_GEN_CHAIN_ID_LEN == CMT_PB_ADDRESS_MAX,
+               "a Comet row's address is the port's 32-byte address");
+_Static_assert(NODUS_V2_GEN_CHAIN_ID_LEN == CMT_PB_CHAINID_MAX,
+               "the derived chain id must fit the port's chain-id field");
+_Static_assert(NODUS_V2_GEN_APP_HASH_LEN == CMT_PB_HASH_MAX,
+               "app_hash is the ledger's 64-byte global root and must fit "
+               "the port's hash field");
+_Static_assert(NODUS_V2_GEN_CMT_NAME_MAX == CMT_GENESIS_NAME_MAX,
+               "name storage must match the port's genesis validator");
+_Static_assert(NODUS_V2_GEN_CMT_NAME_LEN_MAX < NODUS_V2_GEN_CMT_NAME_MAX,
+               "the longest carried name must leave room for the NUL");
+_Static_assert(NODUS_V2_GEN_SRCCOMMIT_LEN == 64,
+               "the version-3 source_commit is a bare SHA3-512 digest too");
+
+/* Tokenomics v2 (atlas-dec-93ff0761d40f5bc16fbae607ab54f458, APPROVED):
+ * a 200 000 000 NODUS reserve of the fixed 1 000 000 000 supply, paying
+ * pool >> 16 at every epoch boundary, settled every 24 epochs. These are
+ * the values `_v3_defaults` writes; they are COMMITTED GENESIS DATA, not
+ * compiled policy — the chain obeys the number in its own document. */
+#define GEN_V3_REWARD_POOL_INITIAL     (200000000ULL * 100000000ULL)
+#define GEN_V3_REWARD_DIVISOR_LOG2     16ULL
+#define GEN_V3_PAYOUT_INTERVAL_EPOCHS  24ULL
+
+/* ── big-endian readers (the decoder's half of put_be*) ──────────────── */
+
+static uint16_t get_be16(const uint8_t *p) {
+    return (uint16_t)(((uint16_t)p[0] << 8) | (uint16_t)p[1]);
+}
+static uint32_t get_be32(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8)  | (uint32_t)p[3];
+}
+static uint64_t get_be64(const uint8_t *p) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++) v = (v << 8) | (uint64_t)p[i];
+    return v;
+}
+
+/* A bounded cursor. Every read goes through v3_take, so a truncated
+ * document can never be read as a short one: the first read past the end
+ * latches `err` and every later read returns NULL. */
+typedef struct {
+    const uint8_t *p;
+    size_t         len;
+    size_t         off;
+    int            err;
+} v3rd_t;
+
+static const uint8_t *v3_take(v3rd_t *r, size_t n) {
+    if (r->err) return NULL;
+    if (n > r->len - r->off) { r->err = 1; return NULL; }
+    const uint8_t *q = r->p + r->off;
+    r->off += n;
+    return q;
+}
+static uint16_t v3_u16(v3rd_t *r) {
+    const uint8_t *q = v3_take(r, 2);
+    return q ? get_be16(q) : 0;
+}
+static uint32_t v3_u32(v3rd_t *r) {
+    const uint8_t *q = v3_take(r, 4);
+    return q ? get_be32(q) : 0;
+}
+static uint64_t v3_u64(v3rd_t *r) {
+    const uint8_t *q = v3_take(r, 8);
+    return q ? get_be64(q) : 0;
+}
+
+/* ── the appended tail ───────────────────────────────────────────────── */
+
+/* WRITABILITY, not validity. A field whose VALUE is wrong (a consensus
+ * protocol this build does not implement, a zero genesis time, a Comet
+ * row that disagrees with its stake entry) still has an encoding, and a
+ * test that proves such a field reaches the chain id must be able to
+ * produce it. Those are `nodus_witness_v2_gen_v3_validate`'s, and the
+ * derivation runs that. What this refuses is a config whose bytes cannot
+ * be written at all, or could be written two ways. */
+static int gen_v3_shape_ok(const nodus_v2_gen_config_t *cfg) {
+    if (!cfg) return -1;
+    if (cfg->config_version != NODUS_V2_GEN_CONFIG_VERSION_V3) {
+        QGP_LOG_ERROR(LOG_TAG, "config_version %u is not the version-3 "
+                      "document's", (unsigned)cfg->config_version);
+        return -1;
+    }
+    if (cfg->n_comet_validators > NODUS_V2_GEN_MAX_VALIDATORS) {
+        QGP_LOG_ERROR(LOG_TAG, "%u comet validator rows exceeds the array "
+                      "bound %u", (unsigned)cfg->n_comet_validators,
+                      (unsigned)NODUS_V2_GEN_MAX_VALIDATORS);
+        return -1;
+    }
+    for (uint16_t i = 0; i < cfg->n_comet_validators; i++) {
+        const nodus_v2_gen_cmt_validator_t *r = &cfg->comet_validators[i];
+        if (r->name_len > NODUS_V2_GEN_CMT_NAME_LEN_MAX) {
+            QGP_LOG_ERROR(LOG_TAG, "comet row %u name_len %u > %u",
+                          (unsigned)i, (unsigned)r->name_len,
+                          (unsigned)NODUS_V2_GEN_CMT_NAME_LEN_MAX);
+            return -1;
+        }
+    }
+    const cmt_validator_params_t *vp = &cfg->consensus_params.validator;
+    if (vp->pub_key_types_len > CMT_PARAMS_MAX_PUBKEY_TYPES) {
+        QGP_LOG_ERROR(LOG_TAG, "%zu public key types exceeds the bound %u",
+                      vp->pub_key_types_len,
+                      (unsigned)CMT_PARAMS_MAX_PUBKEY_TYPES);
+        return -1;
+    }
+    for (size_t i = 0; i < vp->pub_key_types_len; i++) {
+        size_t l = strnlen(vp->pub_key_types[i],
+                           CMT_PARAMS_PUBKEY_TYPE_MAX);
+        if (l >= CMT_PARAMS_PUBKEY_TYPE_MAX) {
+            QGP_LOG_ERROR(LOG_TAG, "public key type %zu is not "
+                          "NUL-terminated within its storage", i);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* The exact length of the appended tail, computed from the same fields
+ * the writer walks — one formula, used by both, so the buffer cannot be
+ * one byte short of what is written. */
+static int gen_v3_tail_len(const nodus_v2_gen_config_t *cfg, size_t *out) {
+    if (!cfg || !out) return -1;
+    size_t n = 4 + 8 + 8;                    /* protocol, time, height   */
+    n += 8 + 8;                              /* block params             */
+    n += 8 + 8 + 8;                          /* evidence params          */
+    n += 2;                                  /* key type count           */
+    const cmt_validator_params_t *vp = &cfg->consensus_params.validator;
+    for (size_t i = 0; i < vp->pub_key_types_len; i++)
+        n += 2 + strnlen(vp->pub_key_types[i],
+                         CMT_PARAMS_PUBKEY_TYPE_MAX - 1);
+    n += 8;                                  /* version.app              */
+    n += 8;                                  /* abci enable height       */
+    n += 2;                                  /* comet validator count    */
+    for (uint16_t i = 0; i < cfg->n_comet_validators; i++)
+        n += NODUS_V2_GEN_CHAIN_ID_LEN + DNAC_PUBKEY_SIZE + 8 + 1 +
+             (size_t)cfg->comet_validators[i].name_len;
+    n += NODUS_V2_GEN_APP_HASH_LEN;
+    n += NODUS_V2_GEN_CHAIN_ID_LEN;
+    n += 8 + 8 + 8;                          /* the tokenomics fields    */
+    *out = n;
+    return 0;
+}
+
+/*
+ * The whole version-3 encoding over an already-built plan.
+ *
+ * `zero_chain_id` / `zero_app_hash` write 32 / 64 ZERO bytes in place of
+ * the field instead of its value — that IS the hash preimage rule, and
+ * expressing it as a flag on the one encoder is what makes "the chain id
+ * is the hash of the document with its own id blanked" impossible to get
+ * wrong in one place and right in another. The buffer is calloc'd, so a
+ * zeroed field is simply not written.
+ */
+static int gen_v3_encode_planned(const nodus_v2_gen_config_t *cfg,
+                                 const gen_plan_t *plan,
+                                 int zero_chain_id, int zero_app_hash,
+                                 uint8_t **out, size_t *out_len) {
+    if (!cfg || !plan || !out || !out_len) return -1;
+    if (gen_v3_shape_ok(cfg) != 0) return -1;
+
+    /* THE BODY IS THE VERSION-2 ENCODER'S OUTPUT, verbatim. It writes
+     * cfg->config_version, which reads 3 here — that single field is the
+     * whole difference D-18 rev 4 states between the two bodies. */
+    uint8_t *body = NULL;
+    size_t   body_len = 0;
+    if (gen_encode_planned(cfg, plan, &body, &body_len) != 0) return -1;
+
+    size_t tail_len = 0;
+    if (gen_v3_tail_len(cfg, &tail_len) != 0) { free(body); return -1; }
+
+    uint8_t *buf = calloc(1, body_len + tail_len);
+    if (!buf) { free(body); return -1; }
+    memcpy(buf, body, body_len);
+    free(body);
+
+    uint8_t *p = buf + body_len;
+
+    put_be32(p, cfg->consensus_protocol);                        p += 4;
+    put_be64(p, cfg->genesis_time_ms);                           p += 8;
+    put_be64(p, cfg->initial_height);                            p += 8;
+
+    /* Four of the five parameters below ARE `int64` on the reference's
+     * wire (proto/tendermint/types/params.proto:25, :28, :39, :52). The
+     * fifth is NOT, and the distinction is worth the line: MaxAgeDuration
+     * is a `google.protobuf.Duration` carrying
+     * `(gogoproto.stdduration) = true` (params.proto:46-47), so the WIRE
+     * form is a {seconds, nanos} message while the GO value gogoproto
+     * generates is a `time.Duration`, i.e. an int64 count of
+     * NANOSECONDS. What this container writes is that Go value — the
+     * same int64 `cmt_evidence_params_t.max_age_duration_ns` holds
+     * (shared/dnac/cmt_params.h:116-126) — never the proto encoding.
+     * All five are written as 8-byte two's complement, so MaxGas -1 and
+     * the 48-hour duration round-trip exactly. */
+    const cmt_consensus_params_t *cp = &cfg->consensus_params;
+    put_be64(p, (uint64_t)cp->block.max_bytes);                  p += 8;
+    put_be64(p, (uint64_t)cp->block.max_gas);                    p += 8;
+    put_be64(p, (uint64_t)cp->evidence.max_age_num_blocks);      p += 8;
+    put_be64(p, (uint64_t)cp->evidence.max_age_duration_ns);     p += 8;
+    put_be64(p, (uint64_t)cp->evidence.max_bytes);               p += 8;
+
+    put_be16(p, (uint16_t)cp->validator.pub_key_types_len);      p += 2;
+    for (size_t i = 0; i < cp->validator.pub_key_types_len; i++) {
+        size_t l = strnlen(cp->validator.pub_key_types[i],
+                           CMT_PARAMS_PUBKEY_TYPE_MAX - 1);
+        put_be16(p, (uint16_t)l);                                p += 2;
+        memcpy(p, cp->validator.pub_key_types[i], l);            p += l;
+    }
+
+    put_be64(p, cp->version.app);                                p += 8;
+    put_be64(p, (uint64_t)cp->abci.vote_extensions_enable_height); p += 8;
+
+    put_be16(p, cfg->n_comet_validators);                        p += 2;
+    for (uint16_t i = 0; i < cfg->n_comet_validators; i++) {
+        const nodus_v2_gen_cmt_validator_t *r = &cfg->comet_validators[i];
+        memcpy(p, r->address, NODUS_V2_GEN_CHAIN_ID_LEN);
+        p += NODUS_V2_GEN_CHAIN_ID_LEN;
+        memcpy(p, r->pub_key, DNAC_PUBKEY_SIZE);
+        p += DNAC_PUBKEY_SIZE;
+        put_be64(p, (uint64_t)r->power);                         p += 8;
+        *p++ = r->name_len;
+        memcpy(p, r->name, r->name_len);
+        p += r->name_len;
+    }
+
+    if (!zero_app_hash)
+        memcpy(p, cfg->app_hash, NODUS_V2_GEN_APP_HASH_LEN);
+    p += NODUS_V2_GEN_APP_HASH_LEN;
+    if (!zero_chain_id)
+        memcpy(p, cfg->chain_id, NODUS_V2_GEN_CHAIN_ID_LEN);
+    p += NODUS_V2_GEN_CHAIN_ID_LEN;
+
+    put_be64(p, cfg->reward_pool_initial);                       p += 8;
+    put_be64(p, cfg->reward_divisor_log2);                       p += 8;
+    put_be64(p, cfg->payout_interval_epochs);                    p += 8;
+
+    if ((size_t)(p - buf) != body_len + tail_len) {  /* the invariant */
+        free(buf);
+        return -1;
+    }
+    *out = buf;
+    *out_len = body_len + tail_len;
+    return 0;
+}
+
+/* One entry for all three preimages: the document, the chain-id preimage
+ * and the source-commit preimage differ ONLY by the two flags. */
+static int gen_v3_encode_flags(const nodus_v2_gen_config_t *cfg,
+                               int zero_chain_id, int zero_app_hash,
+                               uint8_t **out, size_t *out_len) {
+    if (!out || !out_len) return -1;
+    *out = NULL;
+    *out_len = 0;
+    if (!cfg || cfg->config_version != NODUS_V2_GEN_CONFIG_VERSION_V3)
+        return -1;
+    gen_plan_t plan;
+    if (gen_plan_build(cfg, &plan) != 0) return -1;
+    int rc = gen_v3_encode_planned(cfg, &plan, zero_chain_id, zero_app_hash,
+                                   out, out_len);
+    gen_plan_free(&plan);
+    return rc;
+}
+
+int nodus_witness_v2_gen_v3_encode(const nodus_v2_gen_config_t *cfg,
+                                   uint8_t **out, size_t *out_len) {
+    return gen_v3_encode_flags(cfg, 0, 0, out, out_len);
+}
+
+int nodus_witness_v2_gen_chain_id(const nodus_v2_gen_config_t *cfg,
+                                  uint8_t out32[NODUS_V2_GEN_CHAIN_ID_LEN]) {
+    if (!out32) return -1;
+    uint8_t *buf = NULL;
+    size_t   len = 0;
+    if (gen_v3_encode_flags(cfg, /*zero_chain_id=*/1, /*zero_app_hash=*/0,
+                            &buf, &len) != 0)
+        return -1;
+    uint8_t full[64];
+    int rc = qgp_sha3_512(buf, len, full);
+    free(buf);
+    if (rc != 0) return -1;
+    memcpy(out32, full, NODUS_V2_GEN_CHAIN_ID_LEN);
+    return 0;
+}
+
+int nodus_witness_v2_gen_v3_source_commit(
+        const nodus_v2_gen_config_t *cfg,
+        uint8_t out[NODUS_V2_GEN_SRCCOMMIT_LEN]) {
+    if (!out) return -1;
+    uint8_t *buf = NULL;
+    size_t   len = 0;
+    if (gen_v3_encode_flags(cfg, /*zero_chain_id=*/1, /*zero_app_hash=*/1,
+                            &buf, &len) != 0)
+        return -1;
+    int rc = qgp_sha3_512(buf, len, out);
+    free(buf);
+    return rc == 0 ? 0 : -1;
+}
+
+/* ── the strict decoder ──────────────────────────────────────────────── */
+
+/*
+ * STRICTER THAN THE ENCODER, deliberately. The encoder writes what is
+ * writable; this reads what is a DOCUMENT. Everything the encoder can
+ * emit but a genesis document may not contain — a consensus protocol
+ * that is not cometbft, a zero genesis time, an empty key-type list — is
+ * refused HERE, so a document that decodes is one whose fields a caller
+ * may act on. The asymmetry is the point and is stated in the header.
+ */
+int nodus_witness_v2_gen_v3_decode(const uint8_t *buf, size_t len,
+                                   nodus_v2_gen_config_t *cfg_out,
+                                   nodus_v2_gen_alloc_t **allocs_out) {
+    if (!buf || !cfg_out || !allocs_out) return -1;
+    *allocs_out = NULL;
+    memset(cfg_out, 0, sizeof(*cfg_out));
+
+    v3rd_t r = { buf, len, 0, 0 };
+
+    /* the 16-byte zero-padded domain tag */
+    {
+        const uint8_t *t = v3_take(&r, NODUS_V2_GEN_CFG_TAG_LEN);
+        uint8_t want[NODUS_V2_GEN_CFG_TAG_LEN];
+        memset(want, 0, sizeof(want));
+        memcpy(want, NODUS_V2_GEN_CFG_TAG, sizeof(NODUS_V2_GEN_CFG_TAG) - 1);
+        if (!t || memcmp(t, want, NODUS_V2_GEN_CFG_TAG_LEN) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "genesis document: wrong domain tag");
+            return -1;
+        }
+    }
+
+    cfg_out->config_version = v3_u32(&r);
+    if (r.err) return -1;
+    if (cfg_out->config_version != NODUS_V2_GEN_CONFIG_VERSION_V3) {
+        QGP_LOG_ERROR(LOG_TAG, "genesis document: config_version %u is not "
+                      "3 — a version-2 encoding is not a prefix of this "
+                      "document", (unsigned)cfg_out->config_version);
+        return -1;
+    }
+
+    cfg_out->total_supply_raw      = v3_u64(&r);
+    cfg_out->epoch_length          = v3_u64(&r);
+    cfg_out->blocks_per_year       = v3_u64(&r);
+    cfg_out->decimal_unit          = v3_u64(&r);
+    cfg_out->inflation_start_block = v3_u64(&r);
+    cfg_out->claim_start_height    = v3_u64(&r);
+    cfg_out->claim_end_height      = v3_u64(&r);
+    cfg_out->n_validators          = v3_u16(&r);
+    if (r.err) return -1;
+    if (cfg_out->n_validators == 0 ||
+        cfg_out->n_validators > NODUS_V2_GEN_MAX_VALIDATORS) {
+        QGP_LOG_ERROR(LOG_TAG, "genesis document: validator count %u out of "
+                      "[1, %u]", (unsigned)cfg_out->n_validators,
+                      (unsigned)NODUS_V2_GEN_MAX_VALIDATORS);
+        return -1;
+    }
+    for (uint16_t i = 0; i < cfg_out->n_validators; i++) {
+        nodus_v2_gen_validator_t *v = &cfg_out->validators[i];
+        const uint8_t *pk  = v3_take(&r, DNAC_PUBKEY_SIZE);
+        const uint8_t *upk = v3_take(&r, DNAC_PUBKEY_SIZE);
+        const uint8_t *fp  = v3_take(&r, DNAC_FINGERPRINT_SIZE);
+        uint64_t stake = v3_u64(&r);
+        uint16_t comm  = v3_u16(&r);
+        if (r.err) return -1;
+        memcpy(v->pubkey, pk, DNAC_PUBKEY_SIZE);
+        memcpy(v->unstake_destination_pubkey, upk, DNAC_PUBKEY_SIZE);
+        memcpy(v->unstake_destination_fp, fp, DNAC_FINGERPRINT_SIZE);
+        v->self_stake     = stake;
+        v->commission_bps = comm;
+    }
+
+    cfg_out->n_allocs = v3_u32(&r);
+    if (r.err) return -1;
+    if (cfg_out->n_allocs < 1 || cfg_out->n_allocs > NODUS_V2_GEN_MAX_ALLOCS) {
+        QGP_LOG_ERROR(LOG_TAG, "genesis document: allocation count %u out of "
+                      "[1, %u]", (unsigned)cfg_out->n_allocs,
+                      (unsigned)NODUS_V2_GEN_MAX_ALLOCS);
+        return -1;
+    }
+    nodus_v2_gen_alloc_t *allocs =
+        calloc((size_t)cfg_out->n_allocs, sizeof(*allocs));
+    if (!allocs) return -1;
+    for (uint32_t i = 0; i < cfg_out->n_allocs; i++) {
+        uint16_t sid_len = v3_u16(&r);
+        if (!r.err && sid_len != (uint16_t)NODUS_V2_GEN_SRCID_LEN) {
+            QGP_LOG_ERROR(LOG_TAG, "genesis document: allocation %u carries "
+                          "source_id_len %u, not %u", (unsigned)i,
+                          (unsigned)sid_len,
+                          (unsigned)NODUS_V2_GEN_SRCID_LEN);
+            free(allocs);
+            return -1;
+        }
+        const uint8_t *sid = v3_take(&r, NODUS_V2_GEN_SRCID_LEN);
+        uint64_t amount = v3_u64(&r);
+        const uint8_t *db = v3_take(&r, 64);
+        if (r.err) { free(allocs); return -1; }
+        memcpy(allocs[i].source_id, sid, NODUS_V2_GEN_SRCID_LEN);
+        allocs[i].amount = amount;
+        memcpy(allocs[i].dest_binding, db, 64);
+    }
+
+    /* ── the appended version-3 tail ─────────────────────────────────── */
+    cfg_out->consensus_protocol = v3_u32(&r);
+    cfg_out->genesis_time_ms    = v3_u64(&r);
+    cfg_out->initial_height     = v3_u64(&r);
+    if (r.err) { free(allocs); return -1; }
+    if (cfg_out->consensus_protocol != NODUS_V2_GEN_CONSENSUS_COMETBFT) {
+        QGP_LOG_ERROR(LOG_TAG, "genesis document: consensus_protocol %u is "
+                      "not cometbft (%u) — a genesis that does not name its "
+                      "consensus has no validity rules",
+                      (unsigned)cfg_out->consensus_protocol,
+                      (unsigned)NODUS_V2_GEN_CONSENSUS_COMETBFT);
+        free(allocs);
+        return -1;
+    }
+    if (cfg_out->genesis_time_ms == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "genesis document: genesis_time is 0 — "
+                      "the reference would fill it from a clock "
+                      "(types/genesis.go:101-103), which a derivation may "
+                      "not do");
+        free(allocs);
+        return -1;
+    }
+    if (cfg_out->initial_height > (uint64_t)INT64_MAX) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "genesis document: initial_height does "
+                      "not fit the document's int64 field");
+        free(allocs);
+        return -1;
+    }
+
+    cmt_consensus_params_t *cp = &cfg_out->consensus_params;
+    cp->block.max_bytes              = (int64_t)v3_u64(&r);
+    cp->block.max_gas                = (int64_t)v3_u64(&r);
+    cp->evidence.max_age_num_blocks  = (int64_t)v3_u64(&r);
+    cp->evidence.max_age_duration_ns = (int64_t)v3_u64(&r);
+    cp->evidence.max_bytes           = (int64_t)v3_u64(&r);
+    uint16_t n_types = v3_u16(&r);
+    if (r.err) { free(allocs); return -1; }
+    if (n_types < 1 || n_types > CMT_PARAMS_MAX_PUBKEY_TYPES) {
+        QGP_LOG_ERROR(LOG_TAG, "genesis document: %u public key types out of "
+                      "[1, %u]", (unsigned)n_types,
+                      (unsigned)CMT_PARAMS_MAX_PUBKEY_TYPES);
+        free(allocs);
+        return -1;
+    }
+    cp->validator.pub_key_types_len = n_types;
+    for (uint16_t i = 0; i < n_types; i++) {
+        uint16_t l = v3_u16(&r);
+        if (r.err) { free(allocs); return -1; }
+        if (l < 1 || l > CMT_PARAMS_PUBKEY_TYPE_MAX - 1) {
+            QGP_LOG_ERROR(LOG_TAG, "genesis document: key type %u length %u "
+                          "out of [1, %u]", (unsigned)i, (unsigned)l,
+                          (unsigned)(CMT_PARAMS_PUBKEY_TYPE_MAX - 1));
+            free(allocs);
+            return -1;
+        }
+        const uint8_t *s = v3_take(&r, l);
+        if (r.err) { free(allocs); return -1; }
+        for (uint16_t k = 0; k < l; k++) {
+            /* PRINTABLE ASCII. The layout says ASCII; a control byte in a
+             * type name would travel into a log line and into a
+             * membership comparison, and the reference's own names are
+             * lowercase words (types/params.go:24-25). */
+            if (s[k] < 0x20 || s[k] > 0x7E) {
+                QGP_LOG_ERROR(LOG_TAG, "genesis document: key type %u "
+                              "contains a non-printable byte", (unsigned)i);
+                free(allocs);
+                return -1;
+            }
+        }
+        memcpy(cp->validator.pub_key_types[i], s, l);
+        cp->validator.pub_key_types[i][l] = '\0';
+    }
+    cp->version.app                      = v3_u64(&r);
+    cp->abci.vote_extensions_enable_height = (int64_t)v3_u64(&r);
+
+    uint16_t n_rows = v3_u16(&r);
+    if (r.err) { free(allocs); return -1; }
+    if (n_rows != cfg_out->n_validators) {
+        QGP_LOG_ERROR(LOG_TAG, "genesis document: %u comet validator rows "
+                      "for %u validators — the committee IS the validator "
+                      "set", (unsigned)n_rows,
+                      (unsigned)cfg_out->n_validators);
+        free(allocs);
+        return -1;
+    }
+    cfg_out->n_comet_validators = n_rows;
+    for (uint16_t i = 0; i < n_rows; i++) {
+        nodus_v2_gen_cmt_validator_t *row = &cfg_out->comet_validators[i];
+        const uint8_t *addr = v3_take(&r, NODUS_V2_GEN_CHAIN_ID_LEN);
+        const uint8_t *pk   = v3_take(&r, DNAC_PUBKEY_SIZE);
+        uint64_t power = v3_u64(&r);
+        const uint8_t *nl = v3_take(&r, 1);
+        if (r.err) { free(allocs); return -1; }
+        if (*nl > NODUS_V2_GEN_CMT_NAME_LEN_MAX) {
+            QGP_LOG_ERROR(LOG_TAG, "genesis document: comet row %u name_len "
+                          "%u > %u", (unsigned)i, (unsigned)*nl,
+                          (unsigned)NODUS_V2_GEN_CMT_NAME_LEN_MAX);
+            free(allocs);
+            return -1;
+        }
+        const uint8_t *nm = v3_take(&r, *nl);
+        if (r.err) { free(allocs); return -1; }
+        memcpy(row->address, addr, NODUS_V2_GEN_CHAIN_ID_LEN);
+        memcpy(row->pub_key, pk, DNAC_PUBKEY_SIZE);
+        row->power    = (int64_t)power;   /* two's complement, as written */
+        row->name_len = *nl;
+        memcpy(row->name, nm, *nl);
+        row->name[*nl] = '\0';
+    }
+
+    {
+        const uint8_t *ah = v3_take(&r, NODUS_V2_GEN_APP_HASH_LEN);
+        const uint8_t *ci = v3_take(&r, NODUS_V2_GEN_CHAIN_ID_LEN);
+        if (r.err) { free(allocs); return -1; }
+        memcpy(cfg_out->app_hash, ah, NODUS_V2_GEN_APP_HASH_LEN);
+        memcpy(cfg_out->chain_id, ci, NODUS_V2_GEN_CHAIN_ID_LEN);
+    }
+    cfg_out->reward_pool_initial    = v3_u64(&r);
+    cfg_out->reward_divisor_log2    = v3_u64(&r);
+    cfg_out->payout_interval_epochs = v3_u64(&r);
+    if (r.err) { free(allocs); return -1; }
+
+    /* NO TRAILING BYTE. Two encodings of one document would be two chain
+     * ids for one chain; a decoder that ignored a suffix would accept the
+     * second of them. */
+    if (r.off != r.len) {
+        QGP_LOG_ERROR(LOG_TAG, "genesis document: %zu trailing byte(s)",
+                      r.len - r.off);
+        free(allocs);
+        return -1;
+    }
+
+    cfg_out->allocs = allocs;
+    *allocs_out = allocs;
+    return 0;
+}
+
+/* ── the version-3 rules ─────────────────────────────────────────────── */
+
+int nodus_witness_v2_gen_v3_defaults(nodus_v2_gen_config_t *cfg) {
+    if (!cfg) return -1;
+    cfg->config_version     = NODUS_V2_GEN_CONFIG_VERSION_V3;
+    cfg->consensus_protocol = NODUS_V2_GEN_CONSENSUS_COMETBFT;
+    /* The PORT's own constructor, not a copy of its values: the test that
+     * compares the encoded parameters with cmt_default_consensus_params
+     * then proves the ENCODING, not a transcription that could agree with
+     * itself while both are wrong (params.go:86-94). */
+    cmt_default_consensus_params(&cfg->consensus_params);
+    cfg->reward_pool_initial    = GEN_V3_REWARD_POOL_INITIAL;
+    cfg->reward_divisor_log2    = GEN_V3_REWARD_DIVISOR_LOG2;
+    cfg->payout_interval_epochs = GEN_V3_PAYOUT_INTERVAL_EPOCHS;
+    return 0;
+}
+
+/* address = SHA3-512(pubkey)[0..31], power = stake / decimal_unit.
+ * ONE computation, used by the filler and by the equality rule, so the
+ * rows a config carries and the rows it is checked against can never be
+ * produced by two different formulas. */
+static int gen_v3_row_derive(const nodus_v2_gen_config_t *cfg,
+                             const nodus_v2_gen_validator_t *v,
+                             uint8_t out_addr[NODUS_V2_GEN_CHAIN_ID_LEN],
+                             int64_t *out_power) {
+    if (!cfg || !v || !out_addr || !out_power) return -1;
+    if (cfg->decimal_unit == 0) return -1;
+    /* cmt_address_hash IS nodus_chain_config_derive_witness_id's
+     * computation — SHA3-512 truncated to 32 bytes (cmt_tmhash.h:240-259
+     * states the equality and why shared/ reproduces it rather than
+     * calling into nodus/). */
+    if (cmt_address_hash(v->pubkey, (size_t)DNAC_PUBKEY_SIZE,
+                         out_addr) != CMT_OK)
+        return -1;
+    /* delegated is 0 at genesis — see the header for why that is a read
+     * fact and not an assumption. */
+    uint64_t whole = v->self_stake / cfg->decimal_unit;
+    if (whole > (uint64_t)INT64_MAX) return -1;
+    *out_power = (int64_t)whole;
+    return 0;
+}
+
+int nodus_witness_v2_gen_v3_fill_comet_rows(nodus_v2_gen_config_t *cfg) {
+    if (!cfg) return -1;
+    gen_plan_t plan;
+    if (gen_plan_build(cfg, &plan) != 0) return -1;
+
+    nodus_v2_gen_cmt_validator_t *rows =
+        calloc(NODUS_V2_GEN_MAX_VALIDATORS, sizeof(*rows));
+    if (!rows) { gen_plan_free(&plan); return -1; }
+
+    int rc = 0;
+    for (uint16_t i = 0; i < cfg->n_validators; i++) {
+        const nodus_v2_gen_validator_t *v =
+            &cfg->validators[plan.val_idx[i]];
+        nodus_v2_gen_cmt_validator_t *row = &rows[i];
+        memcpy(row->pub_key, v->pubkey, DNAC_PUBKEY_SIZE);
+        if (gen_v3_row_derive(cfg, v, row->address, &row->power) != 0) {
+            rc = -1;
+            break;
+        }
+        /* Keep a name the caller already attached to THIS key. The scan
+         * is over the existing rows in array order and takes the first
+         * match, so it cannot depend on anything but the config. */
+        for (uint16_t k = 0; k < cfg->n_comet_validators &&
+                             k < NODUS_V2_GEN_MAX_VALIDATORS; k++) {
+            if (memcmp(cfg->comet_validators[k].pub_key, v->pubkey,
+                       DNAC_PUBKEY_SIZE) != 0)
+                continue;
+            if (cfg->comet_validators[k].name_len >
+                NODUS_V2_GEN_CMT_NAME_LEN_MAX) {
+                rc = -1;
+                break;
+            }
+            row->name_len = cfg->comet_validators[k].name_len;
+            memcpy(row->name, cfg->comet_validators[k].name, row->name_len);
+            row->name[row->name_len] = '\0';
+            break;
+        }
+        if (rc != 0) break;
+    }
+    if (rc == 0) {
+        memcpy(cfg->comet_validators, rows,
+               NODUS_V2_GEN_MAX_VALIDATORS * sizeof(*rows));
+        cfg->n_comet_validators = cfg->n_validators;
+    }
+    free(rows);
+    gen_plan_free(&plan);
+    return rc;
+}
+
+int nodus_witness_v2_gen_v3_validate(const nodus_v2_gen_config_t *cfg) {
+    if (!cfg) return -1;
+    if (cfg->config_version != NODUS_V2_GEN_CONFIG_VERSION_V3) {
+        QGP_LOG_ERROR(LOG_TAG, "config_version %u is not 3 — this is not a "
+                      "version-3 config", (unsigned)cfg->config_version);
+        return -1;
+    }
+    /* THE SHARED RULES FIRST, through their one authority. */
+    gen_plan_t plan;
+    if (gen_plan_build(cfg, &plan) != 0) return -1;
+
+    int rc = -1;
+    do {
+        if (gen_v3_shape_ok(cfg) != 0) break;
+
+        if (cfg->consensus_protocol != NODUS_V2_GEN_CONSENSUS_COMETBFT) {
+            QGP_LOG_ERROR(LOG_TAG, "consensus_protocol %u is not cometbft "
+                          "(%u)", (unsigned)cfg->consensus_protocol,
+                          (unsigned)NODUS_V2_GEN_CONSENSUS_COMETBFT);
+            break;
+        }
+        if (cfg->genesis_time_ms == 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "genesis_time is 0 — the producer "
+                          "supplies it; a derivation never reads a clock "
+                          "(D-18 rev 4)");
+            break;
+        }
+        if (cfg->initial_height > (uint64_t)INT64_MAX) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "initial_height does not fit the "
+                          "document's int64 field");
+            break;
+        }
+        /* The reference's own parameter rules (types/params.go:145-206),
+         * through the port, so there is one implementation of them. */
+        if (cmt_consensus_params_validate_basic(&cfg->consensus_params)
+            != CMT_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "the consensus parameters fail the "
+                          "reference's ValidateBasic");
+            break;
+        }
+        if (cfg->n_comet_validators != cfg->n_validators) {
+            QGP_LOG_ERROR(LOG_TAG, "%u comet rows for %u validators",
+                          (unsigned)cfg->n_comet_validators,
+                          (unsigned)cfg->n_validators);
+            break;
+        }
+
+        /* ROW EQUALITY, in the CANONICAL validator order (pubkey ASC —
+         * the order the encoding writes the validators in). Carrying the
+         * rows lets a transmitted document be read by eye; requiring them
+         * to equal the derived ones is what stops the document claiming a
+         * committee the stake entries do not produce. */
+        int bad = 0;
+        for (uint16_t i = 0; i < cfg->n_validators && !bad; i++) {
+            const nodus_v2_gen_validator_t *v =
+                &cfg->validators[plan.val_idx[i]];
+            const nodus_v2_gen_cmt_validator_t *row =
+                &cfg->comet_validators[i];
+            uint8_t want_addr[NODUS_V2_GEN_CHAIN_ID_LEN];
+            int64_t want_power = 0;
+            if (gen_v3_row_derive(cfg, v, want_addr, &want_power) != 0) {
+                bad = 1;
+                break;
+            }
+            if (memcmp(row->pub_key, v->pubkey, DNAC_PUBKEY_SIZE) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "comet row %u carries a key that is "
+                              "not the validator at that position — the rows "
+                              "must be in the canonical pubkey order",
+                              (unsigned)i);
+                bad = 1;
+                break;
+            }
+            if (memcmp(row->address, want_addr,
+                       NODUS_V2_GEN_CHAIN_ID_LEN) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "comet row %u address is not the "
+                              "witness id of its key", (unsigned)i);
+                bad = 1;
+                break;
+            }
+            if (row->power != want_power) {
+                QGP_LOG_ERROR(LOG_TAG, "comet row %u power %lld != the "
+                              "derived %lld", (unsigned)i,
+                              (long long)row->power, (long long)want_power);
+                bad = 1;
+                break;
+            }
+        }
+        if (bad) break;
+        rc = 0;
+    } while (0);
+
+    gen_plan_free(&plan);
+    return rc;
+}
+
+/* ── the port's genesis document ─────────────────────────────────────── */
+
+int nodus_witness_v2_gen_to_cmt_doc(const nodus_v2_gen_config_t *cfg,
+                                    cmt_genesis_doc_t *out,
+                                    cmt_genesis_validator_t *vals,
+                                    size_t cap) {
+    if (!cfg || !out || !vals) return -1;
+    /* THE SHAPE GUARD EVERY SIBLING RUNS, and this one needs it most:
+     * below, `row->name_len` bytes are copied into a char[64]. name_len
+     * is a uint8_t, so a config built by hand — this is a PUBLIC
+     * function, and nothing forces a caller to have gone through the
+     * decoder or the validator — can carry 255 and overflow the
+     * destination. gen_v3_shape_ok is the one authority on what is
+     * WRITABLE (version 3, n_comet_validators <= the array bound, every
+     * name_len <= NODUS_V2_GEN_CMT_NAME_LEN_MAX, key-type storage
+     * NUL-terminated), so it is called here rather than restated.
+     *
+     * The reachable paths were already safe — the decoder refuses
+     * name_len > 63 and n_comet_validators != n_validators, and
+     * _v3_validate refuses more — but "no current caller can do it" is
+     * not a bound, it is a coincidence, and this function is exported. */
+    if (gen_v3_shape_ok(cfg) != 0) return -1;
+    if ((size_t)cfg->n_comet_validators > cap) {
+        QGP_LOG_ERROR(LOG_TAG, "%u comet rows do not fit %zu slots",
+                      (unsigned)cfg->n_comet_validators, cap);
+        return -1;
+    }
+    if (cfg->genesis_time_ms == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "a zero genesis time would take the "
+                      "reference's clock branch (types/genesis.go:101-103) "
+                      "— refused here instead");
+        return -1;
+    }
+    if (cfg->initial_height > (uint64_t)INT64_MAX) return -1;
+
+    /* Milliseconds → {seconds, nanos}, then the RANGE CHECK. The
+     * reference's ValidateAndComplete tests a time only for Go's zero
+     * (:101), so an out-of-range instant would pass it and fail later
+     * inside the codec; cmt_time_validate is the same predicate the
+     * decoder applies (gogoproto validateTimestamp, cmt_time.h:144-150). */
+    cmt_time_t t;
+    t.seconds = (int64_t)(cfg->genesis_time_ms / 1000ULL);
+    t.nanos   = (int32_t)((cfg->genesis_time_ms % 1000ULL) * 1000000ULL);
+    if (cmt_time_validate(t) != CMT_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "genesis_time %llu ms is outside the "
+                      "representable range",
+                      (unsigned long long)cfg->genesis_time_ms);
+        return -1;
+    }
+
+    memset(out, 0, sizeof(*out));
+    out->genesis_time = t;
+    memcpy(out->chain_id, cfg->chain_id, NODUS_V2_GEN_CHAIN_ID_LEN);
+    out->chain_id_len = NODUS_V2_GEN_CHAIN_ID_LEN;
+    out->initial_height = (int64_t)cfg->initial_height;
+    out->has_consensus_params = true;
+    out->consensus_params = cfg->consensus_params;
+    out->validators = vals;
+    out->validators_cap = cap;
+    out->validators_len = cfg->n_comet_validators;
+    for (uint16_t i = 0; i < cfg->n_comet_validators; i++) {
+        const nodus_v2_gen_cmt_validator_t *row = &cfg->comet_validators[i];
+        cmt_genesis_validator_t *g = &vals[i];
+        memset(g, 0, sizeof(*g));
+        memcpy(g->address, row->address, NODUS_V2_GEN_CHAIN_ID_LEN);
+        g->address_len = NODUS_V2_GEN_CHAIN_ID_LEN;
+        g->pub_key.present = true;
+        memcpy(g->pub_key.key, row->pub_key, CMT_PB_PUBKEY_LEN);
+        g->power = row->power;
+        memcpy(g->name, row->name, row->name_len);
+        g->name[row->name_len] = '\0';
+    }
+    memcpy(out->app_hash, cfg->app_hash, NODUS_V2_GEN_APP_HASH_LEN);
+    out->app_hash_len = NODUS_V2_GEN_APP_HASH_LEN;
+
+    /* types/genesis.go:69-106 — the reference's own validation and
+     * completion, ported. `now` is NULL on purpose: the zero-time branch
+     * is unreachable (refused above) and a NULL callback makes it a FAULT
+     * rather than an invented time (cmt_genesis.h:191-194). */
+    int rc = cmt_genesis_doc_validate_and_complete(out, NULL, NULL);
+    if (rc != CMT_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "the port refused the genesis document "
+                      "(rc=%d)", rc);
+        return -1;
+    }
+    return 0;
+}
+
+/* ── the stored document ─────────────────────────────────────────────── */
+
+/* Does `needle` occur in `hay`? Used ONLY by the derivation's
+ * provisional-id post-condition; no consensus value depends on it. */
+static int gen_v3_contains(const uint8_t *hay, size_t hn,
+                           const uint8_t *needle, size_t nn) {
+    if (!hay || !needle || nn == 0 || hn < nn) return 0;
+    for (size_t i = 0; i + nn <= hn; i++)
+        if (memcmp(hay + i, needle, nn) == 0) return 1;
+    return 0;
+}
+
+/* Read the genesisDoc row into a caller-freed buffer. The store hands
+ * back a pointer into a live statement, so the bytes are COPIED before
+ * the statements are finalized. @return 0 found / -1 absent or fault. */
+static int gen_v3_load_doc(nodus_witness_t *w, uint8_t **out, size_t *out_len) {
+    if (!w || !w->db || !out || !out_len) return -1;
+    *out = NULL;
+    *out_len = 0;
+    nodus_cmt_store_t s;
+    if (nodus_cmt_store_init(&s, w->db, false) != CMT_OK) return -1;
+    const uint8_t *val = NULL;
+    size_t vlen = 0;
+    int rc = -1;
+    if (nodus_cmt_store_get(&s, /*state_table=*/true,
+                            NODUS_V2_GEN_GENESIS_DOC_KEY, &val, &vlen)
+        == CMT_OK && val && vlen > 0) {
+        uint8_t *copy = malloc(vlen);
+        if (copy) {
+            memcpy(copy, val, vlen);
+            *out = copy;
+            *out_len = vlen;
+            rc = 0;
+        }
+    }
+    nodus_cmt_store_release(&s);
+    return rc;
+}
+
+int nodus_witness_v2_gen_stored_doc(nodus_witness_t *w,
+                                    nodus_v2_gen_config_t *cfg_out,
+                                    nodus_v2_gen_alloc_t **allocs_out) {
+    if (!w || !cfg_out || !allocs_out) return -1;
+    *allocs_out = NULL;
+    uint8_t *doc = NULL;
+    size_t   dlen = 0;
+    if (gen_v3_load_doc(w, &doc, &dlen) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "no genesisDoc row — this chain has no "
+                      "stored genesis document to take an identity from");
+        return -1;
+    }
+    /* `cfg` is the CALLER's storage now; zeroing it here is what the
+     * calloc of the pre-refactor body did, so the four checks below run
+     * on exactly the same bytes they ran on before. */
+    nodus_v2_gen_config_t *cfg = cfg_out;
+    nodus_v2_gen_alloc_t  *allocs = NULL;
+    int rc = -1;
+    memset(cfg, 0, sizeof(*cfg));
+    do {
+        /* 1. STRICT DECODE — every bound, no trailing byte. */
+        if (nodus_witness_v2_gen_v3_decode(doc, dlen, cfg, &allocs) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "the stored genesis document does "
+                          "not decode — this chain has no readable "
+                          "identity");
+            break;
+        }
+        /* 2. THE DOCUMENT'S CONTENT RULES MUST HOLD. The decoder checks
+         * what the bytes ARE; this checks what they MEAN — the Comet
+         * rows equal the rows the stake entries produce, the supply
+         * equation balances, the claim window is the pinned one, every
+         * validator is writable-shaped and its payout fingerprint
+         * derives from its payout key.
+         *
+         * ⚠ IT DOES NOT CHECK ORDER, and believing it did is what let a
+         * swapped-validator document through an earlier cut of this
+         * function: gen_plan_build SORTS rather than refuses, so both
+         * sides of the row comparison are normalised before they meet.
+         * Order is check 3's, and check 3 exists because of that. It is
+         * kept ahead of check 3 because it names the precise rule that
+         * failed, which a byte comparison cannot. */
+        if (nodus_witness_v2_gen_v3_validate(cfg) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "the stored genesis document "
+                          "decodes but breaks a genesis rule — refusing to "
+                          "take an identity from it");
+            break;
+        }
+        /* 3. THE STORED BYTES MUST BE THE CANONICAL FORM — re-encode the
+         * decoded config and require the result to be IDENTICAL.
+         *
+         * WITHOUT THIS THE ACCESSOR IS NOT CANONICAL-STRICT, and the
+         * reason is worth writing down because it defeated check 2:
+         * gen_plan_build does not REFUSE an unsorted validator array, it
+         * SORTS it (the insertion sort at gen.c:723-735 builds val_idx,
+         * the pubkey-ASC permutation). The encoder writes through
+         * val_idx (:919-921) and check 2 compares the Comet rows against
+         * validators[val_idx[i]] (:2451) — so a document whose validator
+         * entries are SWAPPED in the body decodes into a swapped array,
+         * is normalised by the plan on both sides, passes check 2, and
+         * re-hashes to the same id in check 4. It was accepted. The same
+         * normalisation applies to the allocation list (the qsort at
+         * :783), so the hole was not limited to validators.
+         *
+         * Comparing the BYTES is the exact statement D-18 rev 4 needs —
+         * one document, one encoding, one id — and it subsumes every
+         * normalisation the plan performs, including any added later. */
+        {
+            uint8_t *again = NULL;
+            size_t   alen = 0;
+            if (nodus_witness_v2_gen_v3_encode(cfg, &again, &alen) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "%s", "the stored genesis document "
+                              "could not be re-encoded — refusing");
+                break;
+            }
+            int same = (alen == dlen && memcmp(again, doc, dlen) == 0);
+            free(again);
+            if (!same) {
+                QGP_LOG_ERROR(LOG_TAG,
+                    "the stored genesis document is NOT IN CANONICAL FORM "
+                    "(stored %zu bytes, canonical %zu) — its fields decode "
+                    "but its bytes are not the ones this builder would "
+                    "write for them, so it is not a document this chain "
+                    "could have produced", dlen, alen);
+                break;
+            }
+        }
+
+        /* 4. AND THE STORED FIELD MUST BE THE DOCUMENT'S OWN HASH.
+         * Returning the field as read would make the identity a value
+         * anyone who can write the row chooses; recomputing it makes the
+         * row's 32 bytes a CHECKSUM of the other ~56 KB rather than an
+         * assertion. A one-byte edit anywhere — including in the field
+         * itself — is a refusal, not a different chain id. */
+        uint8_t recomputed[NODUS_V2_GEN_CHAIN_ID_LEN];
+        if (nodus_witness_v2_gen_chain_id(cfg, recomputed) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "the stored genesis document's "
+                          "chain id could not be recomputed");
+            break;
+        }
+        if (memcmp(recomputed, cfg->chain_id,
+                   NODUS_V2_GEN_CHAIN_ID_LEN) != 0) {
+            char have[QGP_FP_HEX_BUFFER], want[QGP_FP_HEX_BUFFER];
+            uint8_t h64[64], w64[64];
+            memset(h64, 0, sizeof(h64));
+            memset(w64, 0, sizeof(w64));
+            memcpy(h64, cfg->chain_id, NODUS_V2_GEN_CHAIN_ID_LEN);
+            memcpy(w64, recomputed, NODUS_V2_GEN_CHAIN_ID_LEN);
+            qgp_fp_raw_to_hex(h64, have);
+            qgp_fp_raw_to_hex(w64, want);
+            QGP_LOG_ERROR(LOG_TAG,
+                "the stored genesis document's chain_id field does NOT "
+                "hash to the document — the row has been altered. "
+                "stored=%.64s recomputed=%.64s", have, want);
+            break;
+        }
+        /* The document carries the recomputed id, which the comparison
+         * above has just proved equal to the stored field; the wrapper
+         * below returns these very bytes, so the value it yields is
+         * byte-for-byte the one this function used to return. */
+        memcpy(cfg->chain_id, recomputed, NODUS_V2_GEN_CHAIN_ID_LEN);
+        rc = 0;
+    } while (0);
+    *allocs_out = allocs;     /* the caller frees it, success or not */
+    free(doc);
+    return rc;
+}
+
+int nodus_witness_v2_gen_stored_chain_id(
+        nodus_witness_t *w, uint8_t out32[NODUS_V2_GEN_CHAIN_ID_LEN]) {
+    if (!w || !out32) return -1;
+    nodus_v2_gen_config_t *cfg = calloc(1, sizeof(*cfg));   /* ~240 KB */
+    nodus_v2_gen_alloc_t  *allocs = NULL;
+    int rc;
+    if (!cfg) return -1;
+    rc = nodus_witness_v2_gen_stored_doc(w, cfg, &allocs);
+    if (rc == 0) {
+        memcpy(out32, cfg->chain_id, NODUS_V2_GEN_CHAIN_ID_LEN);
+    }
+    free(allocs);
+    free(cfg);
+    return rc;
+}
+
+/* ── the version-3 derivation ────────────────────────────────────────── */
+
+int nodus_witness_v2_gen_derive_v3(const char *data_path,
+                                   const nodus_v2_gen_config_t *cfg,
+                                   uint8_t out_chain32[NODUS_V2_GEN_CHAIN_ID_LEN]) {
+    if (!data_path || !data_path[0] || !cfg) return -1;
+
+    /* ── 1. The version-3 verdict — every shared rule AND every
+     * version-3 rule, before any filesystem or database work. ───────── */
+    if (nodus_witness_v2_gen_v3_validate(cfg) != 0) return -1;
+
+    gen_plan_t plan;
+    if (gen_plan_build(cfg, &plan) != 0) return -1;
+
+    uint8_t present_commit[NODUS_V2_GEN_SRCCOMMIT_LEN];
+    memset(present_commit, 0, sizeof(present_commit));
+    int pe = gen_chain_db_scan(data_path, present_commit);
+    if (pe < 0) {
+        QGP_LOG_ERROR(LOG_TAG, "%s",
+            "could not classify the chain databases already in the data "
+            "path — refusing to derive (fail closed)");
+        gen_plan_free(&plan);
+        return -1;
+    }
+    if (pe == 2) {
+        QGP_LOG_ERROR(LOG_TAG, "%s",
+            "a FOREIGN chain database is already present in the data path "
+            "— refusing to derive. Deriving beside it would leave two "
+            "chains and let each node boot a different one.");
+        gen_plan_free(&plan);
+        return -1;
+    }
+
+    /* ── 2. The source binding: the document with chain_id AND app_hash
+     * blanked — the genesis apply's INPUT. Computed before the
+     * idempotency branch, because "a chain already exists" is a success
+     * only if it is THIS config's chain (D4). ──────────────────────── */
+    uint8_t source_commit[NODUS_V2_GEN_SRCCOMMIT_LEN];
+    if (nodus_witness_v2_gen_v3_source_commit(cfg, source_commit) != 0) {
+        gen_plan_free(&plan);
+        return -1;
+    }
+
+    if (pe == 1) {
+        if (memcmp(present_commit, source_commit,
+                   NODUS_V2_GEN_SRCCOMMIT_LEN) == 0) {
+            QGP_LOG_INFO(LOG_TAG, "%s",
+                         "a chain derived from THIS config already exists — "
+                         "nothing to derive");
+            gen_plan_free(&plan);
+            return 0;
+        }
+        {
+            char have[QGP_FP_HEX_BUFFER], want[QGP_FP_HEX_BUFFER];
+            qgp_fp_raw_to_hex(present_commit, have);
+            qgp_fp_raw_to_hex(source_commit, want);
+            QGP_LOG_ERROR(LOG_TAG,
+                "the data path already holds a chain built from a DIFFERENT "
+                "config — refusing to report success. present "
+                "source_commit=%s config source_commit=%s", have, want);
+        }
+        gen_plan_free(&plan);
+        return -1;
+    }
+
+    /* ── 3. The distribution snapshot root (re-proves the leaf order). */
+    uint8_t snap_root[64];
+    if (dna_dist_snapshot_root(plan.leaves, plan.n_leaves, snap_root) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "distribution snapshot root failed");
+        gen_plan_free(&plan);
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "deriving a cometbft (version 3) chain: %u "
+                 "validators, %zu allocations, %llu raw claimable of %llu "
+                 "total", (unsigned)cfg->n_validators, plan.n_leaves,
+                 (unsigned long long)plan.total_claimable,
+                 (unsigned long long)cfg->total_supply_raw);
+
+    /* ── 4. Provisional database name. The chain id does not exist yet —
+     * it is a hash of a document that does not exist until the apply has
+     * produced app_hash — so the scratch database is named from the
+     * source commit and RENAMED once the id is known. The provisional
+     * value never reaches a stored byte; the post-conditions check it. */
+    uint8_t prov_full[64], prov16[16];
+    if (qgp_sha3_512(source_commit, sizeof(source_commit), prov_full) != 0) {
+        gen_plan_free(&plan);
+        return -1;
+    }
+    memcpy(prov16, prov_full, 16);
+
+    /* A MUTABLE copy: app_hash and chain_id are OUTPUTS of this
+     * derivation and the caller's config is const. The allocation array
+     * is shared by pointer and is never written through. */
+    nodus_v2_gen_config_t *work = calloc(1, sizeof(*work));
+    nodus_witness_t *w2 = calloc(1, sizeof(*w2));
+    if (!work || !w2) {
+        free(work);
+        free(w2);
+        gen_plan_free(&plan);
+        return -1;
+    }
+    memcpy(work, cfg, sizeof(*work));
+    w2->cached_committee_epoch_start = UINT64_MAX;
+
+    int pn = snprintf(w2->data_path, sizeof(w2->data_path), "%s/v2gen.tmp",
+                      data_path);
+    if (pn < 0 || (size_t)pn >= sizeof(w2->data_path)) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "data path too long (%zu bytes) to form a scratch directory "
+            "within %zu — refusing to derive rather than clearing a "
+            "truncated path", strlen(data_path), sizeof(w2->data_path));
+        free(work);
+        free(w2);
+        gen_plan_free(&plan);
+        return -1;
+    }
+    gen_scratch_clear(w2->data_path);           /* crashed prior attempt */
+    if (mkdir(w2->data_path, 0700) != 0 && errno != EEXIST) {
+        free(work);
+        free(w2);
+        gen_plan_free(&plan);
+        return -1;
+    }
+
+    char prov_path[600];
+    {
+        char hex[33];
+        for (int i = 0; i < 16; i++)
+            snprintf(hex + i * 2, 3, "%02x", prov16[i]);
+        snprintf(prov_path, sizeof(prov_path), "%s/witness_%s.db",
+                 w2->data_path, hex);
+    }
+
+    uint8_t  chain32[NODUS_V2_GEN_CHAIN_ID_LEN];
+    uint8_t *doc = NULL;
+    size_t   doc_len = 0;
+    int ok = -1;
+    do {
+        if (nodus_witness_create_chain_db(w2, prov16) != 0) break;
+        /* The flag before any validator-set seeding — the ordering rule
+         * the version-2 path states at its step 4. */
+        w2->v2_successor = 1;
+        /* ⚠ S12 HERE, S14 AFTER THE LEDGER GENESIS — AND THE ORDER IS
+         * NOT COSMETIC.
+         *
+         * The ledger's genesis runs every registered runtime's
+         * `state_init` hook (nodus_witness_domreg.c:326-340, generic
+         * dispatch, no domain branch), and the CORE hook —
+         * nodus_rt_core_state_init, nodus_witness_v2_pools.c:1174-1182 —
+         * gates itself on an EQUALITY LIST of schema versions that stops
+         * at S12: at S14 it returns -1, domreg_init_genesis propagates
+         * that without a log, and the derivation dies with no diagnosis.
+         *
+         * That gate is one of the five D-17 rev 7 (7) assigns to W3
+         * together with the live S14 flip, and nodus_witness_v2_pools.c
+         * is LIVE code on the legacy lane. Widening it here would flip a
+         * live gate in W2, which is exactly what rev 7 forbids — so the
+         * DERIVATION moves instead of the gate.
+         *
+         * The ledger is therefore built at S12, byte-for-byte the way
+         * the version-2 path builds it (gen.c:1462), and the database
+         * climbs to S14 only after the genesis has been applied and the
+         * document completed. W3 deletes this note along with the gate. */
+        if (nodus_witness_db_migrate_v2s12(w2) != 0) break;
+        if (nodus_chain_config_db_migrate(w2) != 0) break;
+
+        /* ── 5. SYSTEM state, from the config — the SAME seeder. ────── */
+        if (gen_seed_state(w2, cfg, &plan, source_commit) != 0) break;
+
+        /* ── 6. Authority + registry + manifest + genesis ───────────── */
+        {
+            sqlite3_int64 n_snap = -1;
+            if (gen_count(w2->db,
+                    "SELECT COUNT(*) FROM validator_set_snapshots",
+                    &n_snap) != 0) break;
+            if (n_snap != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "%s", "a fresh database already "
+                              "holds validator snapshots — refusing");
+                break;
+            }
+            if (nodus_witness_vset_commit_genesis(w2, 1) != 0) break;
+        }
+        if (nodus_witness_domreg_init_genesis(w2) != 0) break;
+
+        dna_domain_manifest_t dm;
+        uint8_t sys_h[64], core_h[64];
+        if (nodus_witness_domreg_get(w2, DNA_DOMAIN_SYSTEM, NULL, &dm,
+                                     NULL) != 0) break;
+        if (dna_domman_hash(&dm, sys_h) != 0) break;
+        if (nodus_witness_domreg_get(w2, DNA_DOMAIN_CORE, NULL, &dm,
+                                     NULL) != 0) break;
+        if (dna_domman_hash(&dm, core_h) != 0) break;
+
+        uint64_t gsupply = 0;
+        {
+            nodus_witness_supply_t sup;
+            memset(&sup, 0, sizeof(sup));
+            int src = nodus_witness_supply_get(w2, &sup);
+            if (src != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "supply row unreadable after seeding "
+                              "(rc=%d) — ABORT", src);
+                break;
+            }
+            gsupply = sup.genesis_supply;
+            if (gsupply != cfg->total_supply_raw) break;
+        }
+
+        dna_gman_t m;
+        memset(&m, 0, sizeof(m));
+        m.manifest_version = DNA_GMAN_VERSION;
+        m.genesis_supply_raw = gsupply;
+        m.domain_count = 2;
+        m.domains[0].domain_id = DNA_DOMAIN_SYSTEM;
+        memcpy(m.domains[0].manifest_hash, sys_h, 64);
+        m.domains[1].domain_id = DNA_DOMAIN_CORE;
+        memcpy(m.domains[1].manifest_hash, core_h, 64);
+        m.dist_present = 1;
+        m.dist_version = DNA_DIST_VERSION;
+        m.target_domain_id = DNA_DOMAIN_CORE;
+        m.target_asset_len = 64;               /* native token id: zeros */
+        m.source_tag_len = (uint16_t)NODUS_V2_GEN_SOURCE_TAG_LEN;
+        memcpy(m.source_tag, NODUS_V2_GEN_SOURCE_TAG,
+               NODUS_V2_GEN_SOURCE_TAG_LEN);
+        m.source_commit_len = (uint16_t)NODUS_V2_GEN_SRCCOMMIT_LEN;
+        memcpy(m.source_commit, source_commit, NODUS_V2_GEN_SRCCOMMIT_LEN);
+        memcpy(m.snapshot_root, snap_root, 64);
+        m.leaf_count = (uint64_t)plan.n_leaves;
+        m.conv_numerator = 1;
+        m.conv_denominator = 1;
+        m.rounding_mode = DNA_DISTROUND_FLOOR;
+        m.excluded_amount = 0;
+        m.total_claimable = plan.total_claimable;
+        m.claim_start_height = 0;
+        m.claim_end_height = UINT64_MAX;
+        m.auth_mode = DNA_CLAIMAUTH_DNA_NATIVE;
+        m.fee_mode = DNA_CLAIMFEE_NONE;
+        m.post_deadline_mode = DNA_POSTDL_RETAIN;
+
+        uint8_t mbytes[8192];
+        size_t mlen = 0;
+        if (dna_gman_encode(&m, mbytes, sizeof(mbytes), &mlen) != 0) break;
+
+        uint8_t vsh[DNA_VSET_HASH_LEN];
+        {
+            dna_vset_snapshot_t *s0 = NULL;
+            uint32_t sn = 0, sq = 0;
+            if (nodus_witness_v2_epoch_authority_for_height(w2, 0, &s0,
+                                                            &sn, &sq) != 0 ||
+                !s0) {
+                dna_vset_free(&s0);
+                break;
+            }
+            int hrc = dna_vset_hash(s0, vsh);
+            dna_vset_free(&s0);
+            if (hrc != 0) break;
+        }
+
+        /* ── 7. THE COMET GENESIS APPLY. No height-0 block row; the
+         * ledger's global root comes back as the document's app_hash. */
+        uint8_t global_root[64];
+        if (nodus_witness_v2_genesis_cmt(w2, vsh, mbytes, mlen,
+                                         global_root) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "cometbft genesis FAILED");
+            break;
+        }
+
+        /* ── 8. Complete the document: app_hash, then the chain id over
+         * the completed document with its own id blanked. ORDER IS THE
+         * SPEC — app_hash is inside the chain-id preimage and outside the
+         * source-commit one. */
+        memcpy(work->app_hash, global_root, NODUS_V2_GEN_APP_HASH_LEN);
+        memset(work->chain_id, 0, NODUS_V2_GEN_CHAIN_ID_LEN);
+        if (nodus_witness_v2_gen_chain_id(work, chain32) != 0) break;
+        memcpy(work->chain_id, chain32, NODUS_V2_GEN_CHAIN_ID_LEN);
+
+        if (nodus_witness_v2_gen_v3_encode(work, &doc, &doc_len) != 0) break;
+
+        /* ── 9. NOW climb to S14 — the Comet stores come into existence
+         * only after the ledger genesis has been applied, for the reason
+         * stated at step 4.
+         *
+         * WHAT THE RUNG DEMANDS OF THE DATABASE AT THIS MOMENT
+         * (nodus_witness_v2_schema.c:1412-1590, read, not assumed):
+         *   · the LINKED SQLite must be >= 3.35.0, asked first and
+         *     before anything is written (:1427-1434);
+         *   · `user_version` decides the path — 14 is an idempotent 0,
+         *     13 migrates, and ANYTHING ELSE runs the S13 rung first
+         *     (:1436-1441), which in turn climbs from S12 (:1301-1304).
+         *     An S12 database is therefore a supported starting point,
+         *     and test_cmt_host.c:1151-1152 exercises exactly that
+         *     ("0->12" then "12->14");
+         *   · after the DDL it verifies the SHAPE of all five new tables
+         *     and of v2_blocks minus the three dropped columns
+         *     (:1537-1565).
+         * It demands NOTHING about the CONTENTS of v2_blocks — no
+         * emptiness check exists, and `ALTER TABLE ... DROP COLUMN`
+         * rewrites whatever rows are there. What makes dropping `header`,
+         * `qc` and `commit_cert` here LOSSLESS is our own doing: the
+         * Comet genesis writes no block row at all, so the three columns
+         * hold nothing when they go. The post-condition below asserts
+         * that emptiness rather than trusting this sentence. */
+        if (nodus_witness_db_migrate_v2s14(w2) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "the climb to schema S14 FAILED "
+                          "after the genesis — ABORT");
+            break;
+        }
+
+        /* ── 10. Store the COMPLETED document under the reference's own
+         * key (node/setup.go:551, saveGenesisDoc :606-611) — possible
+         * only now, because `cmt_state` is an S14 table. `stateKey` is
+         * NOT written: the State is made on the node's first start
+         * (:581 LoadFromDBOrGenesisDoc), which is package C1c's. */
+        {
+            nodus_cmt_store_t s;
+            if (nodus_cmt_store_init(&s, w2->db, false) != CMT_OK) break;
+            int srv = nodus_cmt_store_set(&s, /*state_table=*/true,
+                                          NODUS_V2_GEN_GENESIS_DOC_KEY,
+                                          doc, doc_len);
+            nodus_cmt_store_release(&s);
+            if (srv != CMT_OK) {
+                QGP_LOG_ERROR(LOG_TAG, "%s", "the genesis document could not "
+                              "be stored — ABORT");
+                break;
+            }
+        }
+
+        /* ── 11. Post-conditions ─────────────────────────────────────
+         *
+         * ALL OF THEM RUN AT S14, and that is checked, not assumed.
+         * `grep -rn nodus_witness_db_schema_version --include=*.c
+         * nodus/src` returns 21 lines, ONE of which is this comment. Of
+         * the 20 call sites, 13 are inside nodus_witness_v2_schema.c —
+         * the migration ladder reading its own starting version, plus
+         * the reader's own definition at :81 — and gate nothing. The
+         * schema-version GATES, those 13 excluded, are exactly seven:
+         *   nodus_witness_v2_apply.c:615   (the version-2 genesis)
+         *   nodus_witness_v2_apply.c:1541  (block apply)
+         *   nodus_witness_v2_apply.c:3846  (this lane's genesis)
+         *   nodus_witness_v2_pools.c:900   (pool startup check)
+         *   nodus_witness_v2_pools.c:1175  (CORE state_init — the one
+         *                                   that forced this order)
+         *   nodus_witness_v2_preflight.c:110
+         *   nodus_witness_v2_sync2.c:386
+         * None of them is on the path of anything below:
+         * nodus_witness_v2_supply_check dispatches nodus_rt_core_invariant
+         * (nodus_witness_v2_claims.c:868), nodus_validator_get
+         * (nodus_witness_validator.c:197) and
+         * nodus_witness_v2_bundle_persist
+         * (nodus_witness_v2_bundle.c:313) are all plain queries with no
+         * version gate. Nothing had to move before the climb, and no
+         * gate was weakened to keep it here. */
+
+        /* (a) NO genesis block row — of any height. This is also what
+         * makes the three columns the S14 rung dropped above carry no
+         * committed value. */
+        {
+            sqlite3_int64 n_blk = -1;
+            if (gen_count(w2->db, "SELECT COUNT(*) FROM v2_blocks",
+                          &n_blk) != 0 || n_blk != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "v2_blocks holds %lld rows after a "
+                              "cometbft genesis — ABORT", (long long)n_blk);
+                break;
+            }
+        }
+
+        /* (b) The stored row IS the document, it decodes STRICTLY, its
+         * chain_id recomputes to itself, and its Comet rows still equal
+         * the derived ones (v3_validate re-run on the DECODED config —
+         * so a storage layer that mangled a byte cannot pass). */
+        {
+            uint8_t *back = NULL;
+            size_t   blen = 0;
+            if (gen_v3_load_doc(w2, &back, &blen) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "%s", "the genesis document does not "
+                              "read back — ABORT");
+                break;
+            }
+            int same = (blen == doc_len && memcmp(back, doc, doc_len) == 0);
+            nodus_v2_gen_config_t *dec = calloc(1, sizeof(*dec));
+            nodus_v2_gen_alloc_t  *dec_allocs = NULL;
+            int good = 0;
+            if (same && dec &&
+                nodus_witness_v2_gen_v3_decode(back, blen, dec,
+                                               &dec_allocs) == 0) {
+                uint8_t again[NODUS_V2_GEN_CHAIN_ID_LEN];
+                good = (nodus_witness_v2_gen_chain_id(dec, again) == 0 &&
+                        memcmp(again, chain32,
+                               NODUS_V2_GEN_CHAIN_ID_LEN) == 0 &&
+                        memcmp(dec->chain_id, chain32,
+                               NODUS_V2_GEN_CHAIN_ID_LEN) == 0 &&
+                        memcmp(dec->app_hash, global_root,
+                               NODUS_V2_GEN_APP_HASH_LEN) == 0 &&
+                        nodus_witness_v2_gen_v3_validate(dec) == 0);
+            }
+            free(dec_allocs);
+            free(dec);
+            /* (c) The provisional id must not have leaked into the stored
+             * document. It is a name for a file, never an identity. */
+            if (good && gen_v3_contains(back, blen, prov16, sizeof(prov16))) {
+                QGP_LOG_ERROR(LOG_TAG, "%s", "the provisional database id "
+                              "appears inside the stored genesis document — "
+                              "ABORT");
+                good = 0;
+            }
+            free(back);
+            if (!good) {
+                QGP_LOG_ERROR(LOG_TAG, "%s", "the stored genesis document is "
+                              "not the one this derivation produced — ABORT");
+                break;
+            }
+        }
+        if (gen_v3_contains(mbytes, mlen, prov16, sizeof(prov16))) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "the provisional database id "
+                          "appears inside the committed manifest — ABORT");
+            break;
+        }
+
+        /* (d) The version-2 derivation's own post-conditions, unchanged:
+         * no spendable value, the whole reserve claimable, exactly the
+         * configured bond, every committed validator row writable-shaped,
+         * and the conservation equation balancing. */
+        sqlite3_int64 n_utxo = -1;
+        if (gen_count(w2->db, "SELECT COUNT(*) FROM utxo_set",
+                      &n_utxo) != 0 || n_utxo != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s",
+                          "a genesis holds spendable UTXOs — ABORT");
+            break;
+        }
+        {
+            sqlite3_stmt *st = NULL;
+            sqlite3_int64 remaining = -1;
+            if (sqlite3_prepare_v2(w2->db,
+                    "SELECT COALESCE(SUM(remaining), -1) FROM v2_dist_state",
+                    -1, &st, NULL) != SQLITE_OK)
+                break;
+            int rc = sqlite3_step(st);
+            if (rc == SQLITE_ROW) remaining = sqlite3_column_int64(st, 0);
+            sqlite3_finalize(st);
+            if (rc != SQLITE_ROW || remaining < 0 ||
+                (uint64_t)remaining != plan.total_claimable) {
+                QGP_LOG_ERROR(LOG_TAG, "claim reserve %lld != claimable "
+                              "%llu — ABORT", (long long)remaining,
+                              (unsigned long long)plan.total_claimable);
+                break;
+            }
+        }
+        {
+            sqlite3_int64 bonded = -1;
+            if (gen_count(w2->db,
+                    "SELECT COALESCE(SUM(self_stake),0) FROM validators",
+                    &bonded) != 0) break;
+            if ((uint64_t)bonded != plan.stake_total) {
+                QGP_LOG_ERROR(LOG_TAG, "committed self-stake %lld != %llu "
+                              "— ABORT", (long long)bonded,
+                              (unsigned long long)plan.stake_total);
+                break;
+            }
+        }
+        {
+            int bad = 0;
+            for (uint16_t i = 0; i < cfg->n_validators && !bad; i++) {
+                dnac_validator_record_t got;
+                if (nodus_validator_get(w2, cfg->validators[i].pubkey,
+                                        &got) != 0 ||
+                    !nodus_witness_v2_epoch_val_rec_ok(&got))
+                    bad = 1;
+            }
+            if (bad) {
+                QGP_LOG_ERROR(LOG_TAG, "%s", "a COMMITTED validator row is "
+                              "not writable-shaped — ABORT (L2-F4)");
+                break;
+            }
+        }
+        if (nodus_witness_v2_supply_check(w2) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "the supply equation does not "
+                          "balance on the derived chain — ABORT");
+            break;
+        }
+
+        /* ── 12. The genesis bundle, persisted while the base tables
+         * still hold their exact genesis-time bytes. The PRODUCER side
+         * reads the committed manifest and the six base tables — never
+         * the height-0 block row — so it is carried unchanged here.
+         *
+         * ⚠ THE CONSUMER SIDE IS NOT YET SAFE FOR A VERSION-3 CHAIN, and
+         * naming it here is the point — it is an OBLIGATION of C1c/W3,
+         * not a hole this package may close.
+         *   nodus_witness_v2_bundle_apply (nodus_witness_v2_bundle.c:415)
+         *   calls nodus_witness_v2_genesis_ex at :482. A joiner handed
+         *   THIS bundle would therefore run the VERSION-2 genesis and
+         *   write a height-0 v2_blocks row — the very row D-19 rev 6
+         *   withdrew — producing a chain whose ledger state matches but
+         *   whose shape and identity do not. Nothing reaches that path in
+         *   W2 (no v3 chain serves a bundle yet), and
+         *   nodus_witness_v2_bundle.c is outside this package's whitelist,
+         *   so it is recorded rather than edited.
+         *   W3/C1c must route the Comet lane's bundle apply through
+         *   nodus_witness_v2_genesis_cmt and carry the genesis DOCUMENT
+         *   in the bundle — the joiner's out-of-band input is the chain
+         *   id and the document is what it checks against (D-24 rev 3),
+         *   and the bundle wire format changes with the document version.
+         */
+        if (nodus_witness_v2_bundle_persist(w2) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s",
+                          "genesis bundle persistence FAILED — ABORT");
+            break;
+        }
+
+        /* ── 13. Land the real name — rename only after a COMPLETE
+         * derivation. The FILE NAME is a selection convention; the
+         * identity is the document's chain_id (D-18 rev 4). */
+        sqlite3_close(w2->db);
+        w2->db = NULL;
+        char real_path[600];
+        {
+            char hex[33];
+            for (int i = 0; i < 16; i++)
+                snprintf(hex + i * 2, 3, "%02x", chain32[i]);
+            snprintf(real_path, sizeof(real_path), "%s/witness_%s.db",
+                     data_path, hex);
+        }
+        if (rename(prov_path, real_path) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "rename to %s failed: %s", real_path,
+                          strerror(errno));
+            break;
+        }
+
+        if (out_chain32)
+            memcpy(out_chain32, chain32, NODUS_V2_GEN_CHAIN_ID_LEN);
+        QGP_LOG_INFO(LOG_TAG, "cometbft (version 3) chain derived: %s "
+                     "(reserve=%llu raw across %zu claim leaves, "
+                     "bonded=%llu)", real_path,
+                     (unsigned long long)plan.total_claimable,
+                     plan.n_leaves,
+                     (unsigned long long)plan.stake_total);
+        ok = 0;
+    } while (0);
+
+    free(doc);
+    if (w2->db) { sqlite3_close(w2->db); w2->db = NULL; }
+    gen_scratch_clear(w2->data_path);           /* nothing partial */
+    free(w2);
+    free(work);
     gen_plan_free(&plan);
     return ok;
 }

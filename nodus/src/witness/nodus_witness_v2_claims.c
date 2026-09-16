@@ -20,6 +20,10 @@
 #include "witness/nodus_witness_domreg.h"
 #include "witness/nodus_witness_roots_v2.h"
 #include "witness/nodus_witness_v2_pools.h"
+#include "witness/nodus_witness_v2_gen.h"   /* the version-3 chain's
+                                             * identity lives in its
+                                             * stored genesis document
+                                             * (nodus_witness_v2_gen.h:786) */
 
 #include "dnac/block_v2.h"
 #include "dnac/domain_wire.h"
@@ -196,10 +200,37 @@ int nodus_witness_v2_chain_id(nodus_witness_t *w,
     if (rc == SQLITE_ROW && sqlite3_column_bytes(st, 0) == 64) {
         ret = dna_bh2_derive_chain_id(sqlite3_column_blob(st, 0), out);
     }
-    /* SQLITE_DONE (no genesis) and any fault both fail: a chain without
-     * a committed genesis has no identity to bind a claim to. */
     sqlite3_finalize(st);
-    return ret;
+    if (ret == 0 || rc != SQLITE_DONE) {
+        /* A row was there and answered, or the read itself faulted. Both
+         * are EXACTLY what this function did before the fallback below
+         * existed: every chain that has a height-0 block row — which is
+         * every chain derived by the version-2 path, i.e. every chain
+         * that exists today — takes this return and nothing about it
+         * changes. */
+        return ret;
+    }
+    /* ── NO HEIGHT-0 ROW: a VERSION-3 CHAIN (FLEET-TM-R3 W2, R3-C1a) ──
+     *
+     * D-19 rev 6 withdrew the genesis block, so the cometbft genesis
+     * writes no `v2_blocks` row of any height
+     * (nodus_witness_v2_genesis_cmt, nodus_witness_v2_apply.h) and the
+     * chain's identity is the hash of its stored genesis DOCUMENT
+     * (D-18 rev 4). `nodus_witness_v2_gen_stored_chain_id` reads exactly
+     * that, from `cmt_state`'s "genesisDoc" row.
+     *
+     * This is D-17 rev 7's W3 rewire BROUGHT FORWARD, deliberately and
+     * with the operator's grant: without it the Comet lane cannot run at
+     * all on the only chain shape it has. Every consumer of this
+     * function — the batch preflight (nodus_witness_v2_env.c:89), claim
+     * admission (:516 below), the apply engine's block-start snapshot —
+     * becomes correct on a version-3 chain by this one change, and no
+     * consumer sees a different answer on any chain that has the row.
+     *
+     * An absent document is still a failure: a chain with neither a
+     * genesis block row nor a stored genesis document has no identity to
+     * bind anything to, which is what this function has always said. */
+    return nodus_witness_v2_gen_stored_chain_id(w, out);
 }
 
 /* ── generic runtime resolution (registry → tuple → compiled table) ─── */

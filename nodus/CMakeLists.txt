@@ -211,6 +211,22 @@ set(NODUS_SOURCES
     src/witness/nodus_witness_cmt_privval.c
     src/witness/nodus_witness_cmt_host.c
 
+    # FLEET-TM-R3 W2 (R3-C1a) — the APPLICATION behind cometbft's
+    # AppConnConsensus/AppConnMempool, over the Ledger V2 engine
+    # (D-23 rev 5). Production-dormant: nothing constructs it yet, and its
+    # FinalizeBlock row is fail-closed until the Comet apply entry exists.
+    src/witness/nodus_witness_cmt_app.c
+
+    # FLEET-TM-R3 W2 (R3-C1c) — THE STARTUP TABLE: cometbft's node
+    # construction and start over the ledger (node/node.go:285-422,
+    # node/setup.go:551-611), the Handshaker with its replay branches and
+    # the mock application (consensus/replay.go:201-565,
+    # consensus/replay_stubs.go:60-79), and OnStart (consensus/state.go:
+    # 318-405). The FIRST PRODUCTION CALLER of cmt_cs_init (D-23 rev 5
+    # (8)). Production-dormant: nodus-server still starts the legacy BFT
+    # lane, and the consensus reactor and the tick are W3's.
+    src/witness/nodus_witness_cmt_node.c
+
     # Ledger V2 O12 S2 — INACTIVE engine-mandatory epoch-boundary
     # transition (pending-commission activation, RETIRING -> UNSTAKED
     # graduation with its canonical per-record release identity, then
@@ -1362,6 +1378,38 @@ add_executable(test_cmt_host tests/test_cmt_host.c)
 target_link_libraries(test_cmt_host nodus dsa nodus crypto)
 target_compile_definitions(test_cmt_host PRIVATE NODUS_WITNESS_INTERNAL_API)
 add_test(NAME test_cmt_host COMMAND test_cmt_host)
+
+# FLEET-TM-R3 W2 (R3-C1a) — the Comet application over the Ledger V2
+# engine, the engine's COMETBFT APPLY LANE and the host's
+# ledger-transaction bracket: InitChain as a genesis check, FinalizeBlock
+# applying a decided block with PER-ITEM SAVEPOINT isolation, the Comet
+# v2_blocks row shape, both crash windows, Commit as the COMMIT, plus
+# CheckTx/PrepareProposal/ProcessProposal. Two fixtures: a REAL version-3
+# chain from nodus_witness_v2_gen_derive_v3 for the apply lane, and a
+# version-2 successor chain at S14 for the seam-backed rows (which cannot
+# run on a version-3 chain — see the file header). Real ML-DSA-87 keys;
+# default build, no environment. A green does NOT cover claims or
+# validator updates — the file's "HOW IT CAN LIE" says why.
+add_executable(test_cmt_app tests/test_cmt_app.c)
+target_link_libraries(test_cmt_app nodus dsa nodus crypto)
+target_compile_definitions(test_cmt_app PRIVATE NODUS_WITNESS_INTERNAL_API)
+add_test(NAME test_cmt_app COMMAND test_cmt_app)
+
+# FLEET-TM-R3 W2 (R3-C1c) — THE STARTUP TABLE over a REAL version-3
+# chain: the genesis document loader (stored row, provider, refusals),
+# InitChain called exactly once and never again, the Handshaker's height
+# case analysis, and BOTH crash windows healed through the REAL
+# Handshaker — the pre-COMMIT one replayed with the real application and
+# the post-COMMIT one with the mock application over the stored
+# FinalizeBlock response, with the ledger tables proven untouched.
+# Real ML-DSA-87 keys, a real privval file, a real temporary SQLite
+# database; default build, no environment. A green does NOT cover a
+# signing node (raw_sign is the test's own, R3-C2 binds the production
+# one) — the file's "HOW IT CAN LIE" lists the rest.
+add_executable(test_cmt_node tests/test_cmt_node.c)
+target_link_libraries(test_cmt_node nodus dsa nodus crypto)
+target_compile_definitions(test_cmt_node PRIVATE NODUS_WITNESS_INTERNAL_API)
+add_test(NAME test_cmt_node COMMAND test_cmt_node)
 
 # Ledger V2 S5 — atomic apply engine: genesis-root cycle proof, heads/
 # updates, replay matrix, cross-domain atomicity, 15-point fault-injection

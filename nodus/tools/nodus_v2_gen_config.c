@@ -74,12 +74,60 @@ enum {
                              NV2GC_K_BLOCKS_YEAR  | NV2GC_K_DECIMAL_UNIT |
                              NV2GC_K_INFL_START,
 
+    /* ── the version-3 top-level keys (D-18 rev 4) ─────────────────────
+     * `config_version` decides which document the file expresses. It is
+     * OPTIONAL and absent means 2, which is what every file written
+     * before this change means — those files parse to exactly the struct
+     * they parsed to before, and NONE of the keys below may appear in
+     * one (naming a version-3 key in a version-2 file is a REFUSAL, not
+     * a field the builder would ignore).
+     *
+     * Of the version-3 keys only two are REQUIRED, and for the same
+     * reason the five above are: no defensible default exists.
+     *   genesis_time_ms  the producer's choice of when the chain starts;
+     *   initial_height   0 and 1 both produce a document whose height is
+     *                    1 (types/genesis.go:79-81) but DIFFERENT chain
+     *                    ids, because the config carries what was
+     *                    written. The operator must say which.
+     * The rest default to the builder's own defaults — the consensus
+     * parameters to cmt_default_consensus_params (the reference's
+     * params.go:86-94) and the three tokenomics fields to the APPROVED
+     * tokenomics-v2 values — through
+     * nodus_witness_v2_gen_v3_defaults, so this file states no value of
+     * its own. */
+    NV2GC_K_CONFIG_VERSION = 1u << 5,
+    NV2GC_K_CONSENSUS_PROTO= 1u << 6,
+    NV2GC_K_GENESIS_TIME   = 1u << 7,
+    NV2GC_K_INITIAL_HEIGHT = 1u << 8,
+    NV2GC_K_BLK_MAX_BYTES  = 1u << 9,
+    NV2GC_K_BLK_MAX_GAS    = 1u << 10,
+    NV2GC_K_EV_MAX_AGE_NB  = 1u << 11,
+    NV2GC_K_EV_MAX_AGE_NS  = 1u << 12,
+    NV2GC_K_EV_MAX_BYTES   = 1u << 13,
+    NV2GC_K_VERSION_APP    = 1u << 14,
+    NV2GC_K_ABCI_VE_HEIGHT = 1u << 15,
+    NV2GC_K_REWARD_POOL    = 1u << 16,
+    NV2GC_K_REWARD_DIV     = 1u << 17,
+    NV2GC_K_PAYOUT_EPOCHS  = 1u << 18,
+    NV2GC_V3_REQUIRED      = NV2GC_K_GENESIS_TIME | NV2GC_K_INITIAL_HEIGHT,
+    /* every key that only a version-3 document has */
+    NV2GC_V3_ANY           = NV2GC_K_CONSENSUS_PROTO | NV2GC_V3_REQUIRED |
+                             NV2GC_K_BLK_MAX_BYTES | NV2GC_K_BLK_MAX_GAS |
+                             NV2GC_K_EV_MAX_AGE_NB | NV2GC_K_EV_MAX_AGE_NS |
+                             NV2GC_K_EV_MAX_BYTES  | NV2GC_K_VERSION_APP |
+                             NV2GC_K_ABCI_VE_HEIGHT | NV2GC_K_REWARD_POOL |
+                             NV2GC_K_REWARD_DIV | NV2GC_K_PAYOUT_EPOCHS,
+
     /* NV2GC_SCOPE_VALIDATOR */
     NV2GC_K_PUBKEY         = 1u << 0,
     NV2GC_K_UNSTAKE_PK     = 1u << 1,
     NV2GC_K_UNSTAKE_FP     = 1u << 2,
     NV2GC_K_SELF_STAKE     = 1u << 3,
     NV2GC_K_COMMISSION     = 1u << 4,
+    /* version 3 only, OPTIONAL: the Comet row's display name. Absent is
+     * the empty name, which the reference allows (types/genesis.go:34 is
+     * a plain string and ValidateAndComplete never looks at it). */
+    NV2GC_K_NAME           = 1u << 5,
     NV2GC_VAL_REQUIRED     = NV2GC_K_PUBKEY     | NV2GC_K_UNSTAKE_PK |
                              NV2GC_K_UNSTAKE_FP | NV2GC_K_SELF_STAKE |
                              NV2GC_K_COMMISSION,
@@ -179,6 +227,71 @@ static int nv2gc_u64(const char *s, uint64_t *out) {
     return 0;
 }
 
+/* Base-10 int64, with an optional leading '-'. Everything the unsigned
+ * parser refuses is refused here too; the sign is the ONLY addition.
+ *
+ * It exists because two consensus parameters are legitimately negative
+ * or bounded below by -1 on the reference's own wire: Block.MaxGas is
+ * "-1 or positive" (proto/tendermint/types/params.proto:28,
+ * types/params.go:159-162), and every params scalar is an int64. Parsing
+ * them as unsigned and casting would turn a typo'd "-2" into
+ * 18446744073709551614 — a number the operator never typed, in a field
+ * that reaches the chain id. 0 / -1. */
+static int nv2gc_i64(const char *s, int64_t *out) {
+    if (!s || !s[0]) return -1;
+    int neg = (s[0] == '-');
+    const char *p = neg ? s + 1 : s;
+    if (!p[0]) return -1;                       /* a bare '-'            */
+    uint64_t v = 0;
+    for (; *p; p++) {
+        if (!nv2gc_is_digit(*p)) return -1;
+        uint64_t d = (uint64_t)(*p - '0');
+        if (v > UINT64_MAX / 10u) return -1;
+        v *= 10u;
+        if (v > UINT64_MAX - d) return -1;
+        v += d;
+    }
+    /* The bound is asymmetric, as two's complement is: INT64_MIN has no
+     * positive counterpart, and clamping either end would store a value
+     * the operator did not write. */
+    if (neg) {
+        if (v > (uint64_t)INT64_MAX + 1u) return -1;
+        *out = (v == (uint64_t)INT64_MAX + 1u)
+                   ? INT64_MIN : -(int64_t)v;
+    } else {
+        if (v > (uint64_t)INT64_MAX) return -1;
+        *out = (int64_t)v;
+    }
+    return 0;
+}
+
+/* A Comet validator's display name: 1..63 bytes of [A-Za-z0-9._-].
+ *
+ * The charset is narrow ON PURPOSE. The name is operator text that ends
+ * up inside a document every node hashes and inside log lines a human
+ * reads; a space would survive the line trim ambiguously, a '#' would
+ * have been eaten as a comment, and a control byte would reach a
+ * terminal. The reference's own field is an unbounded display string, so
+ * nothing here is a protocol rule — it is this parser refusing to be the
+ * place a byte nobody can see enters the chain id. 0 / -1. */
+static int nv2gc_name(const char *s, char *out, size_t out_cap,
+                      uint8_t *out_len) {
+    if (!s || !out || !out_len) return -1;
+    size_t n = strlen(s);
+    if (n < 1 || n > NODUS_V2_GEN_CMT_NAME_LEN_MAX || n >= out_cap) return -1;
+    for (size_t i = 0; i < n; i++) {
+        char c = s[i];
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-')
+            continue;
+        return -1;
+    }
+    memcpy(out, s, n);
+    out[n] = 0;
+    *out_len = (uint8_t)n;
+    return 0;
+}
+
 /* Exactly `want` bytes of LOWERCASE hex, decoded. Uppercase REFUSES:
  * accepting it here would let one file produce two byte strings
  * depending on how the operator's editor cased it. 0 / -1. */
@@ -275,6 +388,17 @@ typedef struct {
     uint32_t               n_allocs;
     nv2gc_scope_t          scope;
     unsigned               seen;     /* key bits of the OPEN scope      */
+    /* The top-level keys seen ANYWHERE in the file. `seen` is cleared on
+     * every scope change, so it cannot answer "was this key present?"
+     * after the first block header — and that is exactly the question
+     * the version-3 defaults depend on: a field that was NOT named takes
+     * the builder's default, and a field that was named must not be
+     * overwritten by it. */
+    unsigned               top_seen;
+    /* Was a version-3 key seen inside a BLOCK? Same question as
+     * `top_seen` asks for the top-level section, and it needs its own
+     * flag for the same reason: `seen` is cleared at every header. */
+    int                    saw_v3_block_key;
     size_t                 scope_line; /* where the open scope started  */
 } nv2gc_state_t;
 
@@ -422,6 +546,102 @@ static int nv2gc_assign_top(nv2gc_state_t *st, const char *key,
                 "An out-of-range value is REFUSED, never clamped.");
             return -1;
         }
+        st->top_seen |= tbl[i].bit;
+        return 0;
+    }
+
+    /* ── the version-3 top-level keys ─────────────────────────────────
+     * Same three-part shape as the table above: mark (which refuses a
+     * duplicate), parse strictly, record. They are accepted in ANY file;
+     * a version-2 file that names one is refused at EOF, where the
+     * version is finally known, with a message that says which key. */
+    {
+        struct { const char *name; unsigned bit; uint64_t *dst; } u3[] = {
+            { "genesis_time_ms",     NV2GC_K_GENESIS_TIME,
+              &st->cfg->genesis_time_ms },
+            { "initial_height",      NV2GC_K_INITIAL_HEIGHT,
+              &st->cfg->initial_height },
+            { "reward_pool_initial", NV2GC_K_REWARD_POOL,
+              &st->cfg->reward_pool_initial },
+            { "reward_divisor_log2", NV2GC_K_REWARD_DIV,
+              &st->cfg->reward_divisor_log2 },
+            { "payout_interval_epochs", NV2GC_K_PAYOUT_EPOCHS,
+              &st->cfg->payout_interval_epochs },
+            { "version_app",         NV2GC_K_VERSION_APP,
+              &st->cfg->consensus_params.version.app },
+        };
+        for (size_t i = 0; i < sizeof(u3) / sizeof(u3[0]); i++) {
+            if (strcmp(key, u3[i].name) != 0) continue;
+            if (nv2gc_mark(st, u3[i].bit, key, lineno) != 0) return -1;
+            if (nv2gc_u64(val, u3[i].dst) != 0) {
+                nv2gc_bad_value(lineno, key,
+                    "expected a base-10 unsigned 64-bit integer.");
+                return -1;
+            }
+            st->top_seen |= u3[i].bit;
+            return 0;
+        }
+    }
+    {
+        struct { const char *name; unsigned bit; int64_t *dst; } i3[] = {
+            { "block_max_bytes",     NV2GC_K_BLK_MAX_BYTES,
+              &st->cfg->consensus_params.block.max_bytes },
+            { "block_max_gas",       NV2GC_K_BLK_MAX_GAS,
+              &st->cfg->consensus_params.block.max_gas },
+            { "evidence_max_age_num_blocks", NV2GC_K_EV_MAX_AGE_NB,
+              &st->cfg->consensus_params.evidence.max_age_num_blocks },
+            { "evidence_max_age_duration_ns", NV2GC_K_EV_MAX_AGE_NS,
+              &st->cfg->consensus_params.evidence.max_age_duration_ns },
+            { "evidence_max_bytes",  NV2GC_K_EV_MAX_BYTES,
+              &st->cfg->consensus_params.evidence.max_bytes },
+            { "abci_vote_extensions_enable_height", NV2GC_K_ABCI_VE_HEIGHT,
+              &st->cfg->consensus_params.abci.vote_extensions_enable_height },
+        };
+        for (size_t i = 0; i < sizeof(i3) / sizeof(i3[0]); i++) {
+            if (strcmp(key, i3[i].name) != 0) continue;
+            if (nv2gc_mark(st, i3[i].bit, key, lineno) != 0) return -1;
+            if (nv2gc_i64(val, i3[i].dst) != 0) {
+                nv2gc_bad_value(lineno, key,
+                    "expected a base-10 signed 64-bit integer (a leading "
+                    "'-' is the only sign; -1 is the reference's "
+                    "'unlimited' for block_max_gas).");
+                return -1;
+            }
+            st->top_seen |= i3[i].bit;
+            return 0;
+        }
+    }
+    if (strcmp(key, "config_version") == 0) {
+        if (nv2gc_mark(st, NV2GC_K_CONFIG_VERSION, key, lineno) != 0)
+            return -1;
+        uint64_t v = 0;
+        if (nv2gc_u64(val, &v) != 0 ||
+            (v != (uint64_t)NODUS_V2_GEN_CONFIG_VERSION &&
+             v != (uint64_t)NODUS_V2_GEN_CONFIG_VERSION_V3)) {
+            nv2gc_bad_value(lineno, key,
+                "expected 2 (the pure-V2 chain this build has always "
+                "derived) or 3 (the cometbft genesis document). No other "
+                "value is a schema this build understands.");
+            return -1;
+        }
+        st->cfg->config_version = (uint32_t)v;
+        st->top_seen |= NV2GC_K_CONFIG_VERSION;
+        return 0;
+    }
+    if (strcmp(key, "consensus_protocol") == 0) {
+        if (nv2gc_mark(st, NV2GC_K_CONSENSUS_PROTO, key, lineno) != 0)
+            return -1;
+        uint64_t v = 0;
+        if (nv2gc_u64(val, &v) ||
+            v != (uint64_t)NODUS_V2_GEN_CONSENSUS_COMETBFT) {
+            nv2gc_bad_value(lineno, key,
+                "expected 1 — cometbft @709fd12b, the only consensus this "
+                "build implements. 0 is not 'unset': a genesis that does "
+                "not name its consensus has no validity rules.");
+            return -1;
+        }
+        st->cfg->consensus_protocol = (uint32_t)v;
+        st->top_seen |= NV2GC_K_CONSENSUS_PROTO;
         return 0;
     }
     return 1;                                     /* not a top-level key */
@@ -495,6 +715,26 @@ static int nv2gc_assign_validator(nv2gc_state_t *st, const char *key,
             return -1;
         }
         v->commission_bps = (uint16_t)tmp;
+        return 0;
+    }
+    /* VERSION 3 ONLY — the Comet row's display name. It is stored at the
+     * validator's FILE position; nodus_witness_v2_gen_v3_fill_comet_rows
+     * re-keys it by public key when it puts the rows into the canonical
+     * order, so the name follows its validator rather than its line. */
+    if (strcmp(key, "name") == 0) {
+        if (nv2gc_mark(st, NV2GC_K_NAME, key, lineno) != 0) return -1;
+        nodus_v2_gen_cmt_validator_t *row =
+            &st->cfg->comet_validators[st->cfg->n_validators - 1u];
+        if (nv2gc_name(val, row->name, NODUS_V2_GEN_CMT_NAME_MAX,
+                       &row->name_len) != 0) {
+            nv2gc_bad_value(lineno, key,
+                "expected 1 to 63 characters of [A-Za-z0-9._-]. The name "
+                "is carried inside the genesis document every node "
+                "hashes, so no byte a reader cannot see may enter it; "
+                "omit the key entirely for an empty name.");
+            return -1;
+        }
+        st->saw_v3_block_key = 1;
         return 0;
     }
     return 1;                                     /* not a validator key */
@@ -572,11 +812,13 @@ int nodus_v2_gen_config_parse_file(const char *path,
     st.scope = NV2GC_SCOPE_TOP;
     st.scope_line = 0;
 
-    /* ⚠ ~160 KB. calloc, never a stack instance — the type says so at
-     * nodus_witness_v2_gen.h:246-249 and a stack copy overflows the
-     * default thread stack the same way nodus_witness_t does. calloc
-     * also means every byte this parser does not write is zero, which
-     * matters for the pad the config encoder walks. */
+    /* ⚠ ROUGHLY 240 KB since the version-3 fields arrived (it was ~160
+     * KB). calloc, never a stack instance — the type says so in
+     * nodus_witness_v2_gen.h and a stack copy overflows the default
+     * thread stack the same way nodus_witness_t does. calloc also means
+     * every byte this parser does not write is zero, which matters both
+     * for the pad the config encoder walks and for the version-3 fields
+     * a version-2 file never names. */
     st.cfg = calloc(1, sizeof(*st.cfg));
     char *line = malloc(NV2GC_MAX_LINE);
     if (!st.cfg || !line) {
@@ -739,15 +981,22 @@ int nodus_v2_gen_config_parse_file(const char *path,
      * the one mask, so there is no second place for the rule to drift. */
     if (nv2gc_close_scope(&st, lineno) != 0) goto out;
 
-    /* ── the three forced constants ───────────────────────────────────
+    /* ── the two forced constants ─────────────────────────────────────
      * Set here and NOT settable from the file. Each has exactly one
-     * legal value and the builder refuses every other one — the version
-     * at nodus_witness_v2_gen.c:467-472, the claim window at :544-553 —
-     * so this is not a hidden default: there is no second value a
-     * default could be masking. Naming any of them in the file is an
-     * unknown key, which is how the operator learns they are not knobs.
+     * legal value and the builder refuses every other one — the claim
+     * window at nodus_witness_v2_gen.c:553-575 — so this is not a hidden
+     * default: there is no second value a default could be masking.
+     * Naming either of them in the file is an unknown key, which is how
+     * the operator learns they are not knobs.
+     *
+     * `config_version` LEFT THIS LIST when the version-3 document
+     * arrived: it now has two legal values, so a forced one would be a
+     * decision this parser has no business making. Absent still means 2
+     * — every file written before this change parses to exactly the
+     * struct it parsed to then.
      */
-    st.cfg->config_version     = NODUS_V2_GEN_CONFIG_VERSION;
+    if (!(st.top_seen & NV2GC_K_CONFIG_VERSION))
+        st.cfg->config_version = NODUS_V2_GEN_CONFIG_VERSION;
     st.cfg->claim_start_height = 0;
     st.cfg->claim_end_height   = UINT64_MAX;
 
@@ -770,9 +1019,118 @@ int nodus_v2_gen_config_parse_file(const char *path,
         goto out;
     }
 
+    /* The allocation array is LENT to the config here, before the
+     * version-3 step below, because deriving the Comet rows runs the
+     * builder's shared rules and those read the allocations. OWNERSHIP
+     * does not move until the very end, so the `out:` label still frees
+     * the array exactly once on every failure path. */
     st.cfg->n_allocs = st.n_allocs;
-    st.cfg->allocs   = st.allocs;      /* ownership moves to the config */
-    st.allocs = NULL;
+    st.cfg->allocs   = st.allocs;
+
+    /* ── a version-2 file may not carry a version-3 key ───────────────
+     * Silently ignoring one would be the worst available outcome: the
+     * operator writes genesis_time_ms, the builder never reads it, and a
+     * version-2 chain is derived from a file its author believed said
+     * something else. */
+    if (st.cfg->config_version == NODUS_V2_GEN_CONFIG_VERSION &&
+        ((st.top_seen & NV2GC_V3_ANY) != 0 || st.saw_v3_block_key)) {
+        fprintf(stderr,
+                "genesis config: this file carries a version-3 key but its "
+                "config_version is 2 (absent means 2). Either add "
+                "'config_version = 3' or remove the version-3 keys — a key "
+                "that the chosen document has no field for is REFUSED, "
+                "never ignored.\n");
+        goto out;
+    }
+
+    /* ── version 3: the required keys, the defaults, the Comet rows ─── */
+    if (st.cfg->config_version == NODUS_V2_GEN_CONFIG_VERSION_V3) {
+        if ((st.top_seen & NV2GC_V3_REQUIRED) != NV2GC_V3_REQUIRED) {
+            fprintf(stderr,
+                    "genesis config: a version-3 document must name BOTH "
+                    "genesis_time_ms (UTC milliseconds — the producer "
+                    "supplies it; a derivation never reads a clock) and "
+                    "initial_height (0 and 1 both start the chain at "
+                    "height 1 but are DIFFERENT chain ids, so the choice "
+                    "is yours to write down).\n");
+            goto out;
+        }
+
+        /* The defaults come from the BUILDER, never from a value typed
+         * here: nodus_witness_v2_gen_v3_defaults installs
+         * cmt_default_consensus_params (the reference's params.go:86-94)
+         * and the approved tokenomics-v2 numbers. Only the fields the
+         * file did NOT name are taken from it. */
+        nodus_v2_gen_config_t *dflt = calloc(1, sizeof(*dflt));
+        if (!dflt || nodus_witness_v2_gen_v3_defaults(dflt) != 0) {
+            fprintf(stderr, "genesis config: out of memory.\n");
+            free(dflt);
+            goto out;
+        }
+        if (!(st.top_seen & NV2GC_K_CONSENSUS_PROTO))
+            st.cfg->consensus_protocol = dflt->consensus_protocol;
+        if (!(st.top_seen & NV2GC_K_BLK_MAX_BYTES))
+            st.cfg->consensus_params.block.max_bytes =
+                dflt->consensus_params.block.max_bytes;
+        if (!(st.top_seen & NV2GC_K_BLK_MAX_GAS))
+            st.cfg->consensus_params.block.max_gas =
+                dflt->consensus_params.block.max_gas;
+        if (!(st.top_seen & NV2GC_K_EV_MAX_AGE_NB))
+            st.cfg->consensus_params.evidence.max_age_num_blocks =
+                dflt->consensus_params.evidence.max_age_num_blocks;
+        if (!(st.top_seen & NV2GC_K_EV_MAX_AGE_NS))
+            st.cfg->consensus_params.evidence.max_age_duration_ns =
+                dflt->consensus_params.evidence.max_age_duration_ns;
+        if (!(st.top_seen & NV2GC_K_EV_MAX_BYTES))
+            st.cfg->consensus_params.evidence.max_bytes =
+                dflt->consensus_params.evidence.max_bytes;
+        if (!(st.top_seen & NV2GC_K_VERSION_APP))
+            st.cfg->consensus_params.version.app =
+                dflt->consensus_params.version.app;
+        if (!(st.top_seen & NV2GC_K_ABCI_VE_HEIGHT))
+            st.cfg->consensus_params.abci.vote_extensions_enable_height =
+                dflt->consensus_params.abci.vote_extensions_enable_height;
+        /* The key-type list is NOT settable: this chain has exactly one
+         * signature scheme, and a second entry would be a key type no
+         * validator could present. It is the builder's every time. */
+        st.cfg->consensus_params.validator =
+            dflt->consensus_params.validator;
+        if (!(st.top_seen & NV2GC_K_REWARD_POOL))
+            st.cfg->reward_pool_initial = dflt->reward_pool_initial;
+        if (!(st.top_seen & NV2GC_K_REWARD_DIV))
+            st.cfg->reward_divisor_log2 = dflt->reward_divisor_log2;
+        if (!(st.top_seen & NV2GC_K_PAYOUT_EPOCHS))
+            st.cfg->payout_interval_epochs = dflt->payout_interval_epochs;
+        free(dflt);
+
+        /* app_hash and chain_id stay ZERO: they are OUTPUTS of the
+         * derivation (the ledger's global root, then the hash of the
+         * completed document) and no file may supply them. */
+
+        /* The Comet rows. Each [validator] block's name was stored at
+         * its FILE position; the public key is copied to the same
+         * position here, and the builder then puts the rows into the
+         * canonical pubkey order, keeping each name with its key. */
+        for (uint16_t i = 0; i < st.cfg->n_validators; i++)
+            memcpy(st.cfg->comet_validators[i].pub_key,
+                   st.cfg->validators[i].pubkey, DNAC_PUBKEY_SIZE);
+        st.cfg->n_comet_validators = st.cfg->n_validators;
+        if (nodus_witness_v2_gen_v3_fill_comet_rows(st.cfg) != 0) {
+            /* NOTE, because it widens this parser's contract: deriving
+             * the rows runs the builder's shared config rules, so a
+             * well-formed version-3 file that is not DERIVABLE is
+             * refused here rather than later. The builder has already
+             * logged which rule; this line says where the operator is. */
+            fprintf(stderr,
+                    "genesis config: the committee rows could not be "
+                    "derived from the [validator] blocks. The file parsed, "
+                    "but the configuration it expresses is not derivable — "
+                    "the builder's reason is logged above.\n");
+            goto out;
+        }
+    }
+
+    st.allocs = NULL;                  /* ownership moves to the config */
 
     *out_cfg = st.cfg;
     st.cfg = NULL;

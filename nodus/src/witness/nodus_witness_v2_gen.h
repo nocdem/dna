@@ -159,6 +159,8 @@
 #include "witness/nodus_witness.h"
 
 #include "dnac/dnac.h"              /* DNAC_PUBKEY_SIZE, DNAC_*_SIZE     */
+#include "dnac/cmt_genesis.h"       /* cmt_genesis_doc_t (version 3)     */
+#include "dnac/cmt_params.h"        /* cmt_consensus_params_t            */
 
 #include <stdint.h>
 #include <stddef.h>
@@ -175,6 +177,48 @@ extern "C" {
  *  than defaulted: the whole point of this change is that an economic
  *  parameter is never supplied by a structural default. */
 #define NODUS_V2_GEN_CONFIG_VERSION   2u
+
+/** The config schema the COMETBFT lane understands (D-18 rev 4).
+ *
+ *  3 — FLEET-TM-R3 W2 (R3-C1, package C1b). The version-2 body above is
+ *  carried BYTE-IDENTICALLY, with `config_version` reading 3, and the
+ *  cometbft `GenesisDoc` fields (types/genesis.go:38-46), the consensus
+ *  parameters (proto/tendermint/types/params.proto), the committee's
+ *  Comet validator rows, `app_hash`, `chain_id` and the tokenomics-v2
+ *  pool fields are APPENDED after it.
+ *
+ *  A version-2 config still derives a version-2 chain exactly as it does
+ *  today; version 3 is a SEPARATE path beside it (the `_v3_` functions
+ *  below). W3 refuses version 2 and flips the live gates (D-17 rev 7) —
+ *  nothing on the live path changes in W2. */
+#define NODUS_V2_GEN_CONFIG_VERSION_V3   3u
+
+/** `consensus_protocol` — the one accepted value: cometbft @709fd12b.
+ *  0 is invalid rather than "unset": a genesis that does not name its
+ *  consensus has no defined validity rules (D-18 rev 4). */
+#define NODUS_V2_GEN_CONSENSUS_COMETBFT  1u
+
+/** Storage for a Comet validator `Name` (types/genesis.go:34), INCLUDING
+ *  the NUL — the same bound cmt_genesis.h:93 uses. */
+#define NODUS_V2_GEN_CMT_NAME_MAX        64u
+/** The longest `name` the encoding carries: the length is a u8 and the
+ *  storage keeps room for the terminator. */
+#define NODUS_V2_GEN_CMT_NAME_LEN_MAX    63u
+
+/** The derived chain id: the first 32 bytes of SHA3-512 over the whole
+ *  version-3 encoding with the `chain_id` field itself all-zero. */
+#define NODUS_V2_GEN_CHAIN_ID_LEN        32u
+
+/** `app_hash` is the ledger's 64-byte global state root after the
+ *  genesis apply (D-19 rev 6 (1): AppHash carries the ledger root). */
+#define NODUS_V2_GEN_APP_HASH_LEN        64u
+
+/** The key the completed genesis document is stored under in `cmt_state`
+ *  — the REFERENCE's own key string, `genesisDocKey` at
+ *  cometbft@709fd12b node/setup.go:551 (written by saveGenesisDoc :606-611,
+ *  read by loadGenesisDoc :589-604). NOT `stateKey`: that one holds the
+ *  State (D-18 rev 4 corrects D-24 rev 3's wording). */
+#define NODUS_V2_GEN_GENESIS_DOC_KEY     "genesisDoc"
 
 /**
  * The manifest `source_tag` a pure-V2 genesis carries. Distinct from the
@@ -243,10 +287,43 @@ typedef struct {
 } nodus_v2_gen_alloc_t;
 
 /**
+ * VERSION 3 ONLY — one cometbft `GenesisValidator`
+ * (cometbft@709fd12b types/genesis.go:30-35), as the container carries it.
+ *
+ * `address` is the 32-byte witness id of `pub_key`
+ * (SHA3-512(pubkey)[0..31] — `cmt_address_hash`, cmt_tmhash.h:255, the
+ * same computation as `nodus_chain_config_derive_witness_id`,
+ * nodus_witness_chain_config.c:637-652, under the K-1 substitutions).
+ * `pub_key` is the RAW ML-DSA-87 key, NOT the proto3 `PublicKey`
+ * wrapper: this container is not proto3, and the params' key-type list
+ * already says what the reference's key oneof says (D-18 rev 4).
+ * `power` is int64 as the reference's field is (genesis.go:33).
+ * `name` is free — it may be empty — and display-only in the reference.
+ *
+ * These rows are CARRIED but not authoritative: the derivation refuses
+ * unless every row equals the row derived from the stake entries
+ * (address from the key, power = (self_stake + delegated) /
+ * decimal_unit). Carrying them is what lets a transmitted document be
+ * checked by eye; deriving them is what makes them true.
+ */
+typedef struct {
+    uint8_t  address[NODUS_V2_GEN_CHAIN_ID_LEN];   /* 32, genesis.go:31 */
+    uint8_t  pub_key[DNAC_PUBKEY_SIZE];            /* 2592, :32 RAW     */
+    int64_t  power;                                /* :33               */
+    uint8_t  name_len;                             /* 0 .. 63           */
+    char     name[NODUS_V2_GEN_CMT_NAME_MAX];      /* :34, NUL-term.    */
+} nodus_v2_gen_cmt_validator_t;
+
+/**
  * The whole genesis config.
  *
- * ⚠ ~160 KB. HEAP-ALLOCATE IT (calloc); a stack instance overflows the
- * default thread stack in the same way nodus_witness_t does.
+ * ⚠ ROUGHLY 240 KB since the version-3 fields arrived — computed from
+ * the field widths at the platform's natural alignment, not measured:
+ * 30 validator entries of about 5.3 KB (2 × 2592 + 129 + 8 + 2) plus 30
+ * Comet rows of about 2.7 KB (32 + 2592 + 8 + 1 + 64), the consensus
+ * parameters and the scalars. HEAP-ALLOCATE IT (calloc); a stack
+ * instance overflows the default thread stack in the same way
+ * nodus_witness_t does, and it does so sooner than before.
  */
 typedef struct {
     uint32_t config_version;     /* NODUS_V2_GEN_CONFIG_VERSION         */
@@ -277,6 +354,58 @@ typedef struct {
 
     uint32_t n_allocs;           /* 1 .. NODUS_V2_GEN_MAX_ALLOCS        */
     const nodus_v2_gen_alloc_t *allocs;  /* caller-owned, n_allocs long */
+
+    /* ══ VERSION 3 ONLY (D-18 rev 4) ══════════════════════════════════
+     * Every field below is written by the version-3 encoder and IGNORED
+     * by the version-2 one — `gen_encode_planned` stops at `allocs`, so
+     * a version-2 config encodes to exactly the bytes it always did even
+     * if a caller left rubbish here. They are all ZERO in a calloc'd
+     * config, and zero is a REFUSAL for the ones that have no legal zero
+     * (consensus_protocol, genesis_time_ms), never a default. */
+
+    uint32_t consensus_protocol; /* NODUS_V2_GEN_CONSENSUS_COMETBFT     */
+    uint64_t genesis_time_ms;    /* UTC milliseconds, producer-written.
+                                  * 0 is REFUSED: the reference fills a
+                                  * zero time from the clock
+                                  * (types/genesis.go:101-103) and a
+                                  * derivation that reads a clock is not
+                                  * deterministic (D-18 rev 4)          */
+    uint64_t initial_height;     /* types/genesis.go:41. 0 is legal and
+                                  * the DOCUMENT completes it to 1
+                                  * (:79-81) — but the CONFIG carries
+                                  * what was written, so 0 and 1 are two
+                                  * different chain ids for one completed
+                                  * document. State it, do not silently
+                                  * normalise: the encoding is the
+                                  * operator's bytes.                   */
+
+    /* proto/tendermint/types/params.proto — every scalar int64, `app`
+     * uint64. Defaults MUST be byte-equal to cmt_default_consensus_params
+     * (shared/dnac/cmt_params.c:47-110). */
+    cmt_consensus_params_t consensus_params;
+
+    /* The committee as cometbft sees it. MUST equal the rows derived
+     * from the validators above; a mismatch refuses derivation. */
+    uint16_t n_comet_validators;
+    nodus_v2_gen_cmt_validator_t
+             comet_validators[NODUS_V2_GEN_MAX_VALIDATORS];
+
+    /* The ledger's global state root after the genesis apply — an
+     * OUTPUT of the derivation, zero in an operator's config, written by
+     * nodus_witness_v2_gen_derive_v3 before the chain id is computed. */
+    uint8_t  app_hash[NODUS_V2_GEN_APP_HASH_LEN];
+
+    /* The derived chain id — also an OUTPUT, and zeroed in BOTH hash
+     * preimages (it cannot commit to itself). */
+    uint8_t  chain_id[NODUS_V2_GEN_CHAIN_ID_LEN];
+
+    /* Tokenomics v2 (atlas-dec-93ff0761d40f5bc16fbae607ab54f458):
+     * 200 000 000 NODUS reserve, payout = pool >> 16 per epoch,
+     * settlement every 24 epochs. Carried at genesis so the reserve is a
+     * committed fact rather than a compiled constant. */
+    uint64_t reward_pool_initial;
+    uint64_t reward_divisor_log2;
+    uint64_t payout_interval_epochs;
 } nodus_v2_gen_config_t;
 
 /**
@@ -313,9 +442,14 @@ typedef struct {
  * The config is FULLY VALIDATED before a byte is produced, so an encoded
  * config is by construction a derivable one.
  *
+ * VERSION 2 ONLY. A version-3 config is REFUSED here — its bytes are
+ * nodus_witness_v2_gen_v3_encode's, and producing the version-2 prefix
+ * of a version-3 config would be a second, wrong identity for it.
+ *
  * @param out      receives a malloc'd buffer the caller must free().
  * @param out_len  receives its length.
- * @return 0 / -1 (invalid config, overflow, or allocation failure).
+ * @return 0 / -1 (invalid config, wrong version, overflow, or allocation
+ *         failure).
  */
 int nodus_witness_v2_gen_config_encode(const nodus_v2_gen_config_t *cfg,
                                        uint8_t **out, size_t *out_len);
@@ -327,18 +461,31 @@ int nodus_witness_v2_gen_config_encode(const nodus_v2_gen_config_t *cfg,
  * value that binds the config into the chain identity transitively
  * (manifest → genesis BlockID → chain id).
  *
+ * VERSION 2 ONLY — a version-3 config is REFUSED; its manifest binding
+ * is nodus_witness_v2_gen_v3_source_commit, which zeroes `app_hash`
+ * (an OUTPUT of the apply the manifest is committed before).
+ *
  * @return 0 / -1.
  */
 int nodus_witness_v2_gen_source_commit(const nodus_v2_gen_config_t *cfg,
                                        uint8_t out[NODUS_V2_GEN_SRCCOMMIT_LEN]);
 
 /**
- * Validate a config against EVERY genesis rule, touching no filesystem
- * and no database. Exactly the checks nodus_witness_v2_gen_derive runs
- * first, exposed so an operator tool (and a test) can get the verdict
- * without deriving.
+ * Validate a config against every genesis rule the TWO VERSIONS SHARE,
+ * touching no filesystem and no database. Exactly the checks
+ * nodus_witness_v2_gen_derive runs first, exposed so an operator tool
+ * (and a test) can get the verdict without deriving.
  *
- * @return 0 the config is derivable; -1 it is not (the reason is logged).
+ * ⚠ SCOPE, since version 3 exists: this accepts a config whose
+ * `config_version` is 2 OR 3 and checks the rules that apply to both —
+ * the schedule constants, the claim window, Rule P.1/P.2/P.3, the
+ * validator shape and payout-fingerprint derivation, the allocation set.
+ * It does NOT check the version-3 fields; a 0 here for a version-3
+ * config means "the shared rules pass", not "derivable". The version-3
+ * verdict is nodus_witness_v2_gen_v3_validate, and
+ * nodus_witness_v2_gen_derive_v3 runs it.
+ *
+ * @return 0 the shared rules pass; -1 they do not (the reason is logged).
  */
 int nodus_witness_v2_gen_config_validate(const nodus_v2_gen_config_t *cfg);
 
@@ -377,6 +524,351 @@ int nodus_witness_v2_gen_derive(const char *data_path,
  * @return 1 yes, 0 no, -1 the database could not be probed.
  */
 int nodus_witness_v2_gen_is_pure(const char *db_path);
+
+/* ══════════════════════════════════════════════════════════════════════
+ * VERSION 3 — THE COMETBFT GENESIS DOCUMENT (D-18 rev 4, W2 / R3-C1b)
+ *
+ * ── THE CANONICAL ENCODING ────────────────────────────────────────────
+ * Every integer BIG-ENDIAN; a signed value is 8-byte two's complement.
+ * The version-2 body is byte-identical to the table above, with
+ * `config_version` reading 3 — it is produced by the SAME function
+ * (`gen_encode_planned`), never by a second copy of the layout.
+ * APPENDED after it, in this order:
+ *
+ *   consensus_protocol              u32be   1 = cometbft @709fd12b
+ *   genesis_time                    u64be   UTC milliseconds
+ *   initial_height                  u64be   types/genesis.go:41
+ *   block.max_bytes                 i64be   params.proto:25
+ *   block.max_gas                   i64be   params.proto:28
+ *   evidence.max_age_num_blocks     i64be   params.proto:39
+ *   evidence.max_age_duration       i64be   NANOSECONDS — the Go value,
+ *                                           NOT the proto wire: the
+ *                                           field is a
+ *                                           google.protobuf.Duration
+ *                                           carrying
+ *                                           (gogoproto.stdduration)
+ *                                           (params.proto:46-47), which
+ *                                           Go holds as a time.Duration
+ *                                           = int64 nanoseconds, and
+ *                                           that int64 is what this
+ *                                           container writes
+ *   evidence.max_bytes              i64be   params.proto:52
+ *   pub_key_type_count              u16be   1 .. 8
+ *     × count:  len                 u16be   1 .. 31
+ *               ascii                 len
+ *   version.app                     u64be   params.proto:69
+ *   abci.vote_extensions_enable_height  i64be  params.proto:81-92
+ *   comet_validator_count           u16be   == validator_count
+ *     × count, SAME ORDER as the validators above (pubkey ASC):
+ *               address               32
+ *               pub_key             2592    RAW ML-DSA-87
+ *               power               i64be
+ *               name_len             u8      <= 63
+ *               name            name_len
+ *   app_hash                          64
+ *   chain_id                          32
+ *   reward_pool_initial             u64be
+ *   reward_divisor_log2             u64be
+ *   payout_interval_epochs          u64be
+ *
+ * ── THE TWO HASHES, AND WHY THEY ZERO DIFFERENT FIELDS ────────────────
+ *   chain_id      = SHA3-512(the whole encoding, tag included, with the
+ *                   `chain_id` field all-zero)[0..31]. A field cannot
+ *                   commit to itself; zeroing it is the only
+ *                   non-circular form, and it is the operator's ruling
+ *                   S3 a.
+ *   source_commit = SHA3-512(the whole encoding with `chain_id` AND
+ *                   `app_hash` all-zero). This is the manifest binding,
+ *                   and the manifest is committed BEFORE the genesis
+ *                   apply whose global root BECOMES app_hash — so
+ *                   app_hash cannot be in its preimage without making
+ *                   the derivation circular.
+ *
+ * ORDER OF THE DERIVATION, therefore: source_commit → ledger genesis →
+ * app_hash → chain_id → store the completed document.
+ *
+ * ── WHAT IS NOT HERE ──────────────────────────────────────────────────
+ * The reference's `AppState` (types/genesis.go:45) has no counterpart:
+ * this chain's application state is the ledger the derivation builds,
+ * not a blob inside the document (the same reason cmt_genesis.h:113-118
+ * gives for omitting it).
+ * ════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Fill the version-3 fields that have a DEFAULT — and only those.
+ *
+ *   config_version         = 3
+ *   consensus_protocol     = cometbft
+ *   consensus_params       = cmt_default_consensus_params() verbatim
+ *                            (the function itself, never a copy of its
+ *                            values: the byte-equality test then proves
+ *                            the ENCODING, not a transcription)
+ *   reward_pool_initial    = 200 000 000 × 10^8
+ *   reward_divisor_log2    = 16
+ *   payout_interval_epochs = 24
+ *
+ * `genesis_time_ms`, `initial_height`, the validators, the allocations
+ * and the economic parameters are NOT touched: none of them has a
+ * defensible default and each reaches the chain id.
+ *
+ * @return 0 / -1 on NULL.
+ */
+int nodus_witness_v2_gen_v3_defaults(nodus_v2_gen_config_t *cfg);
+
+/**
+ * Derive the Comet validator rows from the stake entries, in the
+ * canonical validator order (pubkey ASC — the encoding's order).
+ *
+ *   address = SHA3-512(pubkey)[0..31]
+ *   power   = (self_stake + delegated) / decimal_unit, integer division
+ *
+ * DELEGATED IS ZERO AT GENESIS and this is not an assumption: the config
+ * has no delegation input at all, gen_seed_state writes every validator
+ * row with total_delegated = external_delegated = 0, and it ASSERTS the
+ * `delegations` table empty before genesis (nodus_witness_v2_gen.c's
+ * must_be_empty list). If a later version adds genesis delegations, this
+ * is the one place that changes.
+ *
+ * An existing row for the same pubkey KEEPS its `name`; every other
+ * field is overwritten. `n_comet_validators` becomes `n_validators`.
+ *
+ * @return 0 / -1 (NULL, a config the shared rules refuse, or a power
+ *         that does not fit int64).
+ */
+int nodus_witness_v2_gen_v3_fill_comet_rows(nodus_v2_gen_config_t *cfg);
+
+/**
+ * The VERSION-3 verdict: the shared rules (config_validate) plus every
+ * version-3 rule — consensus_protocol == cometbft, genesis_time_ms != 0,
+ * initial_height <= INT64_MAX, the consensus params' own ValidateBasic
+ * (cmt_consensus_params_validate_basic), at least one key type, every
+ * name_len <= 63, and ROW EQUALITY: every carried Comet row must equal
+ * the row derived from the stake entries.
+ *
+ * `app_hash` and `chain_id` are NOT constrained here — they are outputs,
+ * zero in an operator's config and set by the derivation.
+ *
+ * @return 0 derivable; -1 refused (the reason is logged).
+ */
+int nodus_witness_v2_gen_v3_validate(const nodus_v2_gen_config_t *cfg);
+
+/**
+ * The canonical version-3 encoding of `cfg`, exactly as the table above.
+ *
+ * SHAPE ONLY: this refuses a config whose bytes cannot be WRITTEN
+ * (wrong version, a count or length out of range, a name longer than 63)
+ * but NOT one whose Comet rows disagree with the stake entries — that is
+ * a derivation rule, and an encoder that enforced it could not produce
+ * the very vectors a test needs to prove the rows reach the chain id.
+ *
+ * @param out      receives a malloc'd buffer the caller must free().
+ * @param out_len  receives its length.
+ * @return 0 / -1.
+ */
+int nodus_witness_v2_gen_v3_encode(const nodus_v2_gen_config_t *cfg,
+                                   uint8_t **out, size_t *out_len);
+
+/**
+ * The STRICT inverse of the encoder: exact length, every count and
+ * length bound checked, no trailing byte, and a version field that must
+ * read 3 — a version-2 encoding is REFUSED here rather than read as a
+ * prefix.
+ *
+ * @param buf/len     the encoded document.
+ * @param cfg_out     caller-allocated (~240 KB — calloc it, never a
+ *                    stack instance), fully overwritten on success.
+ * @param allocs_out  receives a malloc'd allocation array the caller
+ *                    must free() AFTER it is done with `cfg_out`;
+ *                    `cfg_out->allocs` points into it.
+ * @return 0 / -1.
+ */
+int nodus_witness_v2_gen_v3_decode(const uint8_t *buf, size_t len,
+                                   nodus_v2_gen_config_t *cfg_out,
+                                   nodus_v2_gen_alloc_t **allocs_out);
+
+/**
+ * chain_id = SHA3-512(version-3 encoding with `chain_id` zeroed)[0..31].
+ * Identical whether `cfg->chain_id` holds the answer or zeros — that is
+ * what makes a stored document checkable against itself.
+ * @return 0 / -1.
+ */
+int nodus_witness_v2_gen_chain_id(const nodus_v2_gen_config_t *cfg,
+                                  uint8_t out32[NODUS_V2_GEN_CHAIN_ID_LEN]);
+
+/**
+ * source_commit = SHA3-512(version-3 encoding with `chain_id` AND
+ * `app_hash` zeroed) — the manifest's binding for a version-3 chain.
+ * @return 0 / -1.
+ */
+int nodus_witness_v2_gen_v3_source_commit(
+        const nodus_v2_gen_config_t *cfg,
+        uint8_t out[NODUS_V2_GEN_SRCCOMMIT_LEN]);
+
+/**
+ * Project a version-3 config onto the PORT's own genesis document
+ * (shared/dnac/cmt_genesis.h:119-131) and run the reference's
+ * `ValidateAndComplete` (types/genesis.go:69-106) over it.
+ *
+ * The milliseconds become a {seconds, nanos} pair and are range-checked
+ * with cmt_time_validate BEFORE the document is built: the reference's
+ * ValidateAndComplete tests a time only for Go's ZERO (:101), so an
+ * out-of-range instant would pass it and fail much later inside the
+ * codec. A zero `genesis_time_ms` is refused here for the same reason
+ * D-18 gives — the completion branch reads a clock.
+ *
+ * MUTATES `out` the way the reference mutates its document: an
+ * initial_height of 0 becomes 1, an absent address is filled from the
+ * key, absent params become the defaults.
+ *
+ * @param out   caller-owned document; `out->validators` is set to `vals`.
+ * @param vals  storage for at least `cfg->n_comet_validators` rows.
+ * @param cap   how many rows `vals` holds.
+ * @return 0; -1 on a refusal from either side (the reason is logged).
+ */
+int nodus_witness_v2_gen_to_cmt_doc(const nodus_v2_gen_config_t *cfg,
+                                    cmt_genesis_doc_t *out,
+                                    cmt_genesis_validator_t *vals,
+                                    size_t cap);
+
+/**
+ * Derive a complete VERSION-3 chain from `cfg` into `data_path`.
+ *
+ * The version-2 derivation's steps, with exactly four differences:
+ *   · the ledger is BUILT at schema S12, exactly as the version-2 path
+ *     builds it, and the database climbs to S14 — where the Comet
+ *     stores live — only AFTER the genesis has been applied and the
+ *     document completed. The order is forced, not stylistic: the
+ *     genesis runs the CORE runtime's `state_init`, which refuses any
+ *     schema past S12 (nodus_witness_v2_pools.c:1174-1182), and that
+ *     gate is W3's to widen (D-17 rev 7 (7)), not W2's;
+ *   · the genesis apply is the Comet entry
+ *     (nodus_witness_v2_genesis_cmt) — NO height-0 `v2_blocks` row is
+ *     written at all (D-19 rev 6 withdrew the genesis block), which is
+ *     also what makes the three columns the S14 rung drops carry no
+ *     committed value;
+ *   · `app_hash` is the global root that apply returns, `chain_id` is
+ *     the hash of the completed document, and the COMPLETED DOCUMENT
+ *     BYTES are stored in `cmt_state` under "genesisDoc" (the
+ *     reference's key, node/setup.go:551);
+ *   · the database is named witness_<chain_id[0..15] hex>.db — a file
+ *     SELECTION convention, never the identity.
+ *
+ * `stateKey` is NOT written here: in the reference the State is made on
+ * the node's FIRST START (node/setup.go:581 LoadFromDBOrGenesisDoc), and
+ * that startup table is package C1c's.
+ *
+ * Fail-closed and all-or-nothing exactly as the version-2 path: a
+ * scratch subdirectory, a rename only on COMPLETE, and the scratch
+ * cleared on every exit.
+ *
+ * ⚠ IDEMPOTENCY IS NARROWER THAN THE VERSION-2 PATH'S, and deliberately:
+ * a chain built from THIS config (same source_commit) is a success and
+ * derives nothing; a chain built from a different one refuses. Both
+ * verdicts come from the committed manifest, which is where they came
+ * from before — but the genesis APPLY below has no idempotent branch at
+ * all, because the row it used to decide on no longer exists.
+ *
+ * @param out_chain32 optional; on a fresh derivation receives the
+ *                    32-byte derived chain id.
+ * @return 0 derived (or already present); -1 refused / failed.
+ */
+int nodus_witness_v2_gen_derive_v3(const char *data_path,
+                                   const nodus_v2_gen_config_t *cfg,
+                                   uint8_t out_chain32[NODUS_V2_GEN_CHAIN_ID_LEN]);
+
+/**
+ * The stored genesis DOCUMENT of an OPEN version-3 chain —
+ * CANONICAL-STRICT, the four checks of `..._stored_chain_id` below.
+ *
+ * This is the accessor `..._stored_chain_id` is built on: the four checks
+ * are performed HERE, once, and that function is a wrapper that returns
+ * the id out of the document this one decoded. A caller that needs the
+ * whole document — the startup table's
+ * `LoadStateFromDBOrGenesisDocProvider` (node/setup.go:556-587,
+ * nodus_witness_cmt_node.c) — must not re-implement the checks, and a
+ * caller that needs only the id must not decode ~56 KB twice.
+ *
+ * Read the four checks, and WHY EACH IS LOAD-BEARING, at
+ * `..._stored_chain_id` — they are stated there once and not repeated.
+ * The `chain_id` field of `*cfg_out` is the RECOMPUTED hash, which check
+ * 4 has just proved equal to the stored field.
+ *
+ * @param cfg_out    caller-owned, ~240 KB: NEVER A STACK OBJECT. Filled
+ *                   only on success; its contents are undefined on -1.
+ * @param allocs_out receives the allocation list the decoder allocated,
+ *                   which `cfg_out->allocs` points at. The CALLER frees
+ *                   it with `free()` — on success and on failure alike;
+ *                   it is set to NULL when there is nothing to free.
+ * @return 0; -1 (no row, a row that does not decode, a document that
+ *         breaks a genesis rule, a document that is not in canonical
+ *         form, a chain_id field that does not hash to its own document,
+ *         or a DB fault — never a value).
+ */
+int nodus_witness_v2_gen_stored_doc(nodus_witness_t *w,
+                                    nodus_v2_gen_config_t *cfg_out,
+                                    nodus_v2_gen_alloc_t **allocs_out);
+
+/**
+ * The stored chain id of an OPEN version-3 chain — CANONICAL-STRICT.
+ *
+ * Load "genesisDoc" from `cmt_state`, then FOUR checks before a byte is
+ * returned, because this value names the chain a node believes it is on:
+ *   1. the document DECODES strictly (every bound, no trailing byte);
+ *   2. its CONTENT RULES hold — `nodus_witness_v2_gen_v3_validate`
+ *      passes: the Comet rows equal the rows the stake entries produce,
+ *      the supply equation balances, the claim window is the pinned one,
+ *      every validator is writable-shaped;
+ *   3. the stored bytes are the CANONICAL FORM — re-encoding the decoded
+ *      document reproduces them byte for byte;
+ *   4. the stored `chain_id` field EQUALS SHA3-512(the document with
+ *      that field blanked)[0..31], so those 32 bytes are a checksum of
+ *      the other ~56 KB and not an assertion whoever can write the row
+ *      gets to make.
+ * Any failure is -1 with a log naming which check failed; a one-byte
+ * edit anywhere in the row is a refusal, never a different chain id.
+ *
+ * ALL FOUR ARE LOAD-BEARING — none subsumes another, and check 3 exists
+ * because check 2 cannot do its job alone:
+ *   · a SWAPPED pair of validator entries passes 1, 2 and 4 and fails
+ *     only 3. It passes 2 because `gen_plan_build` SORTS an unsorted
+ *     array rather than refusing it, so both sides of the row comparison
+ *     are normalised before they meet; it passes 4 because the re-encode
+ *     that produces the hash sorts them back. Only comparing the stored
+ *     BYTES with the canonical ones sees it. The same normalisation
+ *     applies to the allocation list, and to any normalisation added
+ *     later — which is why 3 is a byte comparison and not a list of
+ *     order checks;
+ *   · a FLIPPED byte inside the chain_id field passes 1, 2 and 3 — it
+ *     round-trips through the encoder — and fails only 4;
+ *   · a Comet row whose power does not match its stake passes 1, 3 and 4
+ *     — it is carried verbatim and re-hashes to itself — and fails
+ *     only 2.
+ *
+ * ONE CONSEQUENCE WORTH KNOWING: check 2 runs the shared genesis rules,
+ * which include the equality of the document's economic parameters with
+ * the COMPILED ones. A binary built with different -DDNAC_EPOCH_LENGTH /
+ * BLOCKS_PER_YEAR / DECIMAL_UNIT therefore REFUSES to read an identity
+ * out of a document it could not have derived — the same fail-closed
+ * rule the derivation applies, moved to the reader.
+ *
+ * nodus_witness_v2_chain_id (nodus_witness_v2_claims.c) reads the
+ * height-0 block row where one exists and FALLS BACK to this accessor
+ * where none does (W2 / R3-C1a) — so a version-3 chain and every older
+ * chain are served by the same call, and no chain that has the row sees
+ * a different answer.
+ *
+ * Only `w->db` is used, so a read-only handle with nothing else set is
+ * enough — which matters, because nodus_witness_create_chain_db REFUSES
+ * a version-3 chain today (it derives the role, finds the pure-V2
+ * manifest tag and then calls the height-0 chain_id, which cannot
+ * answer). That refusal is a W3 item, recorded, not worked around here.
+ *
+ * @return 0; -1 (no row, a row that does not decode, a document that is
+ *         not canonical, a chain_id field that does not hash to its own
+ *         document, or a DB fault — never a value).
+ */
+int nodus_witness_v2_gen_stored_chain_id(
+        nodus_witness_t *w, uint8_t out32[NODUS_V2_GEN_CHAIN_ID_LEN]);
 
 #ifdef __cplusplus
 }

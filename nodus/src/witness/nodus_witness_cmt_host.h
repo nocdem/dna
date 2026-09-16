@@ -20,7 +20,7 @@
  *                      (proxy/app_conn.go:18-27 `AppConnConsensus`)
  *   eventBus   (:36)  YOK — `types.NopEventBus{}`; no consensus decision
  *                      reads an event
- *   mempool    (:40)  → nodus_cmt_mempool_if_t (mempool/mempool.go:30-101)
+ *   mempool    (:40)  → nodus_cmt_mempool_if_t (mempool/mempool.go:31-102)
  *   evpool     (:41)  → nodus_cmt_evpool_if_t (state/services.go:47-52)
  *   logger     (:43)  YOK — QGP_LOG
  *   metrics    (:45)  YOK
@@ -386,7 +386,7 @@ typedef struct {
     int (*commit)(void *ctx, nodus_abci_response_commit_t *resp);         /* :26 */
 } nodus_cmt_app_t;
 
-/* ══ mempool/mempool.go:30-101 — the rows the BlockExecutor calls ════ */
+/* ══ mempool/mempool.go:31-102 — the rows the BlockExecutor calls ════ */
 
 /** tx_filter.go:10-20 `TxPreCheck(state)` = `PreCheckMaxBytes(
  *  maxDataBytes)` (mempool.go:114-125) — the closure's captured value. */
@@ -402,21 +402,21 @@ typedef struct {
 
 typedef struct {
     void *ctx;
-    /** :49 ReapMaxBytesMaxGas(maxBytes, maxGas) Txs — into the caller's
+    /** :46 ReapMaxBytesMaxGas(maxBytes, maxGas) Txs — into the caller's
      *  `out` array (a capacity bound of this port); the bytes are the
      *  mempool's until `update` removes them; the host copies. */
     int (*reap_max_bytes_max_gas)(void *ctx, int64_t max_bytes, int64_t max_gas,
                                   cmt_pb_bytes_t *out, size_t out_cap,
                                   size_t *out_len);
-    void (*lock)(void *ctx);                                  /* :60 */
-    void (*unlock)(void *ctx);                                /* :63 */
-    /** :71-77 Update(height, txs, txResults, preFn, postFn) error */
+    void (*lock)(void *ctx);                                  /* :57 */
+    void (*unlock)(void *ctx);                                /* :60 */
+    /** :68-74 Update(height, txs, txResults, preFn, postFn) error */
     int (*update)(void *ctx, int64_t height, const cmt_pb_bytes_t *txs,
                   size_t txs_len,
                   const cmt_pb_stored_exec_tx_result_t *tx_results,
                   size_t tx_results_len, nodus_cmt_pre_check_t pre,
                   nodus_cmt_post_check_t post);
-    int (*flush_app_conn)(void *ctx);                         /* :84 */
+    int (*flush_app_conn)(void *ctx);                         /* :81 */
 } nodus_cmt_mempool_if_t;
 
 /** mempool/nop_mempool.go:24-75 — `NopMempool`, row for row for the five
@@ -514,6 +514,21 @@ typedef struct {
     cmt_merkle_item_t         *items;
     uint8_t                   *valset_hash_scratch; /* Validators.Hash()  */
     cmt_merkle_item_t         *valset_items;
+
+    /**
+     * TEST-ONLY fault point, runtime, off by default — the same
+     * discipline as the apply engine's `V2AP_FAIL_*`
+     * (nodus_witness_v2_apply.h:319-469): a field the tests set, never a
+     * production caller. When true, `applyBlock` returns CMT_FAULT in the
+     * ONE window between `Commit` returning (execution.go:290 — the
+     * ledger transaction is COMMITTED) and `store.Save(state)`
+     * (:302 — the state is not). That is the Handshaker's "we ran Commit
+     * but didn't save the state" branch (consensus/replay.go:437-453),
+     * and it is not reachable through `CMT_FAIL_POINT()` because that
+     * needs a build option and an environment variable
+     * (libs/fail/fail.go:9-47). No production path sets it.
+     */
+    bool test_fail_after_commit;
 } nodus_cmt_blockexec_t;
 
 /**

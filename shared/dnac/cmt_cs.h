@@ -876,6 +876,12 @@ struct cmt_cs_s {
  * (:201). Both happen here. It does NOT call `scheduleRound0` (:203) —
  * that is `cmt_cs_start`'s.
  *
+ * The FIRST PRODUCTION CONSTRUCTOR is the startup table's
+ * `nodus_cmt_node_init` (nodus/src/witness/nodus_witness_cmt_node.c,
+ * R3 wave W2 / package C1c — D-23 rev 5 (8)); it is still dormant until
+ * W3 wires the node into nodus-server, so the tests remain the only
+ * callers that run.
+ *
  * @param state_storage storage for `cs->state`; must not be shared with
  *        `scratch_storage`.
  * @param scratch_storage storage for the `stateCopy` of :1770. The

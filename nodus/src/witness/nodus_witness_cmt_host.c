@@ -1114,7 +1114,14 @@ int nodus_cmt_host_validate_block(void *vctx, const cmt_state_t *state,
     }
     rc = ctx->evpool->check_evidence(ctx->evpool->ctx, block->evidence.evidence,
                                      block->evidence.evidence_len);  /* :195 */
-    return rc == CMT_OK ? CMT_OK : CMT_REJECT;
+    /* R3-AUD-17's second half (tasks/reference-deviation-register.md:245,
+     * which cites this site as `:1116-1117`): the class is passed
+     * through, so an evidence pool reporting a NODE-LOCAL failure is not
+     * read as "the block's evidence is bad". */
+    if (rc == CMT_OK) {
+        return CMT_OK;
+    }
+    return rc == CMT_FAULT ? CMT_FAULT : CMT_REJECT;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -1364,6 +1371,73 @@ static int build_finalize_request(nodus_cmt_blockexec_t *ctx, cmt_block_t *block
     return CMT_OK;
 }
 
+/* ── THE ONE LEDGER TRANSACTION (D-23 rev 5 (5)) ─────────────────────
+ *
+ * `applyBlock` opens ONE SQLite transaction on the MAIN ledger connection
+ * BEFORE `app.finalize_block` and `app.commit` closes it. Inside it the
+ * application's ledger writes, `SaveFinalizeBlockResponse`'s
+ * `abciResponsesKey:<h>` row (:259) and whatever `updateState` (:284)
+ * persists are ONE atomic unit, so no crash can leave the reference's
+ * Handshaker a combination it does not handle: before the COMMIT is
+ * "we haven't run Commit" (consensus/replay.go:428-436) and after it,
+ * before `store.Save`, is "we ran Commit but didn't save the state"
+ * (:437-453).
+ *
+ * The connection is the store's, which BORROWS the witness's own handle
+ * (nodus_witness_cmt_store.h:208), and the store's batch JOINS an open
+ * transaction rather than nesting (nodus_witness_cmt_store.c:44-53) —
+ * the rule D-4 rev 3 point 5 relies on.
+ *
+ * UNCONDITIONAL, exactly as D-23 rev 5 (5) reads: every application
+ * bound to this executor must have a `commit` that CLOSES the
+ * transaction this opens. The ledger application does (it issues the
+ * COMMIT); so does the test fixture's mock (test_cmt_host.c's
+ * `tapp_commit`).
+ */
+
+static sqlite3 *blockexec_db(nodus_cmt_blockexec_t *ctx)
+{
+    return (ctx && ctx->store) ? ctx->store->db : NULL;
+}
+
+/** @return CMT_OK, or CMT_FAULT — a missing connection and an ALREADY
+ *  open transaction are both node-local invariants (umbrella rev 6's
+ *  panic rule); no peer can produce either. */
+static int ledger_txn_begin(nodus_cmt_blockexec_t *ctx)
+{
+    sqlite3 *db = blockexec_db(ctx);
+    char    *err = NULL;
+
+    if (!db) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "apply: no ledger connection");
+        return CMT_FAULT;
+    }
+    if (!sqlite3_get_autocommit(db)) {
+        QGP_LOG_ERROR(LOG_TAG, "%s",
+                      "apply: the ledger connection is already inside a "
+                      "transaction");
+        return CMT_FAULT;
+    }
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "apply: BEGIN IMMEDIATE failed: %s",
+                      err ? err : "?");
+        sqlite3_free(err);
+        return CMT_FAULT;
+    }
+    return CMT_OK;
+}
+
+/** Rolls back IFF a transaction is still open, so it is a no-op after
+ *  `app.commit` has executed the COMMIT. */
+static void ledger_txn_rollback(nodus_cmt_blockexec_t *ctx)
+{
+    sqlite3 *db = blockexec_db(ctx);
+
+    if (db && !sqlite3_get_autocommit(db)) {
+        (void)sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    }
+}
+
 static int apply_block(nodus_cmt_blockexec_t *ctx, const cmt_block_id_t *block_id,
                        cmt_block_t *block, cmt_state_t *in_out_state)
 {
@@ -1381,27 +1455,29 @@ static int apply_block(nodus_cmt_blockexec_t *ctx, const cmt_block_id_t *block_i
         free(resp);
         return CMT_FAULT;
     }
+    /* BEGIN IMMEDIATE — before :224, so everything below joins it. */
+    if (ledger_txn_begin(ctx) != CMT_OK) {
+        free(resp);
+        return CMT_FAULT;
+    }
     rc = ctx->app->finalize_block(ctx->app->ctx, &req, resp);       /* :224 */
     if (rc != CMT_OK) {                                              /* :236-239 */
         QGP_LOG_ERROR(LOG_TAG, "error in proxyAppConn.FinalizeBlock (rc %d)", rc);
-        free(resp);
-        return CMT_FAULT;                 /* state.go:1783-1785 panics */
+        goto fail;                        /* state.go:1783-1785 panics */
     }
     /* :249-251 */
     if (block->data.txs_len != resp->tx_results_len) {
         QGP_LOG_ERROR(LOG_TAG, "expected tx results length to match size of "
                       "transactions in block. Expected %zu, got %zu",
                       block->data.txs_len, resp->tx_results_len);
-        free(resp);
-        return CMT_FAULT;
+        goto fail;
     }
     CMT_FAIL_POINT();                                                /* :256 */
-    /* :259 SaveFinalizeBlockResponse */
+    /* :259 SaveFinalizeBlockResponse — joins the transaction */
     rc = nodus_cmt_ss_save_finalize_block_response(ctx->store,
                                                    block->header.height, resp);
     if (rc != CMT_OK) {
-        free(resp);
-        return CMT_FAULT;                                            /* :260 */
+        goto fail;                                                   /* :260 */
     }
     CMT_FAIL_POINT();                                                /* :263 */
     /* :266-269 validateValidatorUpdates */
@@ -1410,31 +1486,28 @@ static int apply_block(nodus_cmt_blockexec_t *ctx, const cmt_block_id_t *block_i
         &in_out_state->consensus_params.validator);
     if (rc != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG, "error in validator updates (rc %d)", rc);
-        free(resp);
-        return CMT_FAULT;                                            /* :268 */
+        goto fail;                                                   /* :268 */
     }
     /* :271-274 PB2TM.ValidatorUpdates */
     rc = nodus_cmt_pb2tm_validator_updates(resp->validator_updates,
                                            resp->validator_updates_len,
                                            ctx->changes, CMT_VALSET_MAX_CHANGES);
     if (rc != CMT_OK) {
-        free(resp);
-        return CMT_FAULT;                                            /* :273 */
+        goto fail;                                                   /* :273 */
     }
     /* :284-287 updateState */
     rc = nodus_cmt_update_state(ctx, in_out_state, block_id, &block->header, resp,
                                 ctx->changes, resp->validator_updates_len);
     if (rc != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG, "commit failed for application (rc %d)", rc);
-        free(resp);
-        return CMT_FAULT;                                            /* :286 */
+        goto fail;                                                   /* :286 */
     }
-    /* :290-293 Commit */
+    /* :290-293 Commit — `app.commit` IS the COMMIT of the transaction
+     * opened above (D-23 rev 5 (5)). */
     rc = blockexec_commit(ctx, &ctx->state_scratch, block, resp, &retain_height);
     if (rc != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG, "commit failed for application (rc %d)", rc);
-        free(resp);
-        return CMT_FAULT;                                            /* :292 */
+        goto fail;                                                   /* :292 */
     }
     /* :296 evpool.Update */
     (void)ctx->evpool->update(ctx->evpool->ctx, &ctx->state_scratch,
@@ -1443,11 +1516,20 @@ static int apply_block(nodus_cmt_blockexec_t *ctx, const cmt_block_id_t *block_i
     /* :301 state.AppHash = abciResponse.AppHash */
     memcpy(ctx->state_scratch.app_hash, resp->app_hash, resp->app_hash_len);
     ctx->state_scratch.app_hash_len = resp->app_hash_len;
-    /* :302-304 store.Save */
+    /* TEST-ONLY: the "ran Commit, didn't save the state" window
+     * (replay.go:437-453). The ledger and the response row are durable;
+     * `stateKey` still names h−1. */
+    if (ctx->test_fail_after_commit) {
+        QGP_LOG_WARN(LOG_TAG, "%s",
+                     "test fault point: stopping between Commit and "
+                     "store.Save(state)");
+        goto fail;
+    }
+    /* :302-304 store.Save — its own autocommit statement, AFTER the
+     * COMMIT (D-23 rev 5 (5)). */
     rc = nodus_cmt_ss_save(ctx->store, &ctx->state_scratch);
     if (rc != CMT_OK) {
-        free(resp);
-        return CMT_FAULT;                                            /* :303 */
+        goto fail;                                                   /* :303 */
     }
     CMT_FAIL_POINT();                                                /* :306 */
     /* :309-316 pruneBlocks — errors only logged */
@@ -1469,6 +1551,16 @@ static int apply_block(nodus_cmt_blockexec_t *ctx, const cmt_block_id_t *block_i
     /* :322 return state, nil — the reference's value; here the copy. */
     return cmt_state_copy(&ctx->state_scratch, in_out_state) == CMT_OK
                ? CMT_OK : CMT_FAULT;
+
+fail:
+    /* Every failure of the reference's `applyBlock` is state.go:1783-1785's
+     * panic class — the node stops — so the class is CMT_FAULT at every
+     * one of these exits, exactly as before the bracket existed. The
+     * rollback is conditional, so an exit AFTER `app.commit` (which
+     * already closed the transaction) does not attempt one. */
+    ledger_txn_rollback(ctx);
+    free(resp);
+    return CMT_FAULT;
 }
 
 /* :199-203 ApplyVerifiedBlock */
@@ -1525,16 +1617,31 @@ int nodus_cmt_exec_commit_block(nodus_cmt_blockexec_t *ctx, cmt_block_t *block,
         free(resp);
         return CMT_FAULT;
     }
+    /* The SAME bracket as `applyBlock` (D-23 rev 5 (5)): the Handshaker's
+     * replay applies blocks through this function, so a block it replays
+     * must become durable in ONE transaction too — `app.commit` is its
+     * COMMIT. No state is saved here (:731-771 touches no state store). */
+    if (ledger_txn_begin(ctx) != CMT_OK) {
+        free(resp);
+        return CMT_FAULT;
+    }
+    /* R3-AUD-17, same class as decode_block: these three sites used to
+     * narrow EVERY non-OK answer to CMT_REJECT, so an application's
+     * CMT_FAULT — this node failing to apply — was reported as "the
+     * block is bad". The class is passed through; only a genuine REJECT
+     * stays the reference's `:750-753` / `:756-758` / `:764-767` error. */
     rc = ctx->app->finalize_block(ctx->app->ctx, &req, resp);       /* :740 */
     if (rc != CMT_OK) {                                              /* :750-753 */
         QGP_LOG_ERROR(LOG_TAG, "error in proxyAppConn.FinalizeBlock (rc %d)", rc);
+        ledger_txn_rollback(ctx);
         free(resp);
-        return CMT_REJECT;
+        return rc == CMT_FAULT ? CMT_FAULT : CMT_REJECT;
     }
     if (block->data.txs_len != resp->tx_results_len) {               /* :756-758 */
         QGP_LOG_ERROR(LOG_TAG, "expected tx results length to match size of "
                       "transactions in block. Expected %zu, got %zu",
                       block->data.txs_len, resp->tx_results_len);
+        ledger_txn_rollback(ctx);
         free(resp);
         return CMT_REJECT;
     }
@@ -1543,8 +1650,9 @@ int nodus_cmt_exec_commit_block(nodus_cmt_blockexec_t *ctx, cmt_block_t *block,
     if (rc != CMT_OK) {                                              /* :764-767 */
         QGP_LOG_ERROR(LOG_TAG, "client error during proxyAppConn.Commit (rc %d)",
                       rc);
+        ledger_txn_rollback(ctx);
         free(resp);
-        return CMT_REJECT;
+        return rc == CMT_FAULT ? CMT_FAULT : CMT_REJECT;
     }
     memcpy(out_app_hash, resp->app_hash, resp->app_hash_len);        /* :770 */
     *out_app_hash_len = resp->app_hash_len;
@@ -1890,8 +1998,21 @@ static int host_decode_block(void *vctx, const uint8_t *bytes, size_t len,
         QGP_LOG_ERROR(LOG_TAG, "%s", "decode_block: out is not a slot");
         return CMT_FAULT;
     }
+    /* R3-AUD-17 (tasks/reference-deviation-register.md:245): this line
+     * used to narrow EVERY non-OK answer to CMT_REJECT, so a CMT_FAULT
+     * the decoder raises for a node-local failure (a NULL storage
+     * pointer, nodus_witness_cmt_store.h:195-201) would have been
+     * reported as a peer's bad bytes. The class is passed through: a
+     * REJECT stays the reference's "these bytes do not decode / fail
+     * ValidateBasic" (state.go:2007/:2013/:2018), a FAULT stays this
+     * node's. The evpool half of the same register row
+     * (`check_evidence` in `nodus_cmt_host_validate_block`) is passed
+     * through the same way — see that function. */
     rc = nodus_cmt_block_decode(bytes, len, &slot->dec, out);
-    return rc == CMT_OK ? CMT_OK : CMT_REJECT;                       /* :2007/:2013/:2018 */
+    if (rc == CMT_OK) {
+        return CMT_OK;
+    }
+    return rc == CMT_FAULT ? CMT_FAULT : CMT_REJECT;
 }
 
 /* ── the clock and the timer ───────────────────────────────────────── */
