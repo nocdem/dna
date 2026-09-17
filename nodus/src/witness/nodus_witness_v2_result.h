@@ -18,7 +18,9 @@
  *      accept the very same bytes
  *
  * `nodus_witness_v2_finalize.h` carried that hazard as a prose caveat,
- * because the type system had no way to say it. A caller that read -1 as
+ * because the type system had no way to say it (that header is deleted
+ * with the closed consensus lane, R3 W4 — the ambiguity it documented
+ * in prose is the reason this enum exists). A caller that read -1 as
  * proof of proposer misbehaviour — and blacklisted on it — would have been
  * punishing honest proposers for its own lag. This enum removes the
  * ambiguity at the seam instead of documenting it.

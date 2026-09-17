@@ -19,9 +19,11 @@
  * NOTHING RECEIVED IS AUTHORITY. This decoder produces bounded, structurally
  * valid BYTES and nothing else. It does not compute a BlockID, does not
  * verify a root, does not check a quorum, and never touches committed state.
- * Every authoritative commitment is re-derived downstream by the O14/O15A
- * engine and COMPARED against the header the sender claimed — see
- * `nodus_witness_v2_finalize.h`. If this file ever grows a function that
+ * Every authoritative commitment was meant to be re-derived downstream
+ * by the O14/O15A engine and COMPARED against the header the sender
+ * claimed, in `nodus_witness_v2_finalize.h` — deleted with the closed
+ * consensus lane (R3 W4), and this codec has no live production caller
+ * today to replace it with. If this file ever grows a function that
  * computes a consensus value, that is a second engine and a defect.
  *
  * ═══ CANONICAL LAYOUT (all integers BIG-ENDIAN, no padding) ═════════════
@@ -129,9 +131,11 @@ extern "C" {
  * maximal envelope) + claim_count + pool_count + proposer + timestamp.
  *
  * At the release ceilings this is large (16 × 1 MiB dominates), which is
- * exactly why the ingress layer applies its OWN, much smaller, frame budget
- * BEFORE allocating anything — see `nodus_witness_v2_ingress.h`. This
- * constant is the codec's structural ceiling, NOT a resource policy.
+ * exactly why the ingress layer was meant to apply its OWN, much smaller,
+ * frame budget BEFORE allocating anything, in `nodus_witness_v2_ingress.h`
+ * — deleted with the closed consensus lane (R3 W4); this codec has no
+ * live production caller today to apply that budget. This constant is
+ * the codec's structural ceiling, NOT a resource policy.
  */
 #define DNA_BLKW_MAX_ENC_LEN                                        \
     ((size_t)DNA_BLKW_PREFIX_LEN + (size_t)DNA_BH2_ENC_SIZE +       \

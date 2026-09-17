@@ -2521,9 +2521,11 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
      * (expect_vset_hash) but cannot supply it.
      *
      * An absent/unreadable snapshot is a NODE FAULT (-2), never a
-     * verdict — the O12 resolver contract and the same reasoning as
-     * nodus_witness_v2_qc.h: a node that cannot know who was permitted
-     * to sign must abstain, not declare a valid block invalid. */
+     * verdict — the O12 resolver contract and the same reasoning
+     * `nodus_witness_v2_qc.h` used to state before R3 W4 deleted it
+     * with the closed consensus lane: a node that cannot know who was
+     * permitted to sign must abstain, not declare a valid block
+     * invalid. */
     {
         dna_vset_snapshot_t *snap = NULL;
         uint32_t vn = 0, vq = 0;

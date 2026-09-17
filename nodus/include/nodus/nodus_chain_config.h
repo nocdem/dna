@@ -7,7 +7,9 @@
  * Public API for:
  *   - Active-override lookup (consumed by finalize_block in Stage D)
  *   - chain_config_root merkle tree construction
- *   - chain_config_tx apply logic (called from apply_tx_to_state)
+ *   - chain_config_tx apply logic (nodus_chain_config_apply; R3 W4
+ *     deleted apply_tx_to_state and nodus_witness_bft.c, its caller —
+ *     nodus_chain_config_apply currently has no production caller)
  *   - DB schema migration (CREATE TABLE chain_config_history)
  *
  * Copyright (c) 2026 nocdem
@@ -191,7 +193,9 @@ int nodus_chain_config_get_u64(nodus_witness_t *w,
 int nodus_chain_config_compute_root(nodus_witness_t *w, uint8_t out_root[64]);
 
 /* ============================================================================
- * chain_config_tx Apply (called from apply_tx_to_state)
+ * chain_config_tx Apply (nodus_chain_config_apply — R3 W4 deleted its
+ * former caller, apply_tx_to_state in nodus_witness_bft.c; no
+ * production caller replaces it today)
  * ========================================================================== */
 
 /**
@@ -221,9 +225,10 @@ int nodus_chain_config_compute_root(nodus_witness_t *w, uint8_t out_root[64]);
  *      set non-zero, reject new_value == 0 or new_value > current_block.
  *   8. INSERT row into chain_config_history (PK conflict = replay reject).
  *
- * Called from apply_tx_to_state in nodus_witness_bft.c. On any rule
- * violation, returns -1 and the enclosing DB transaction will be rolled
- * back by the caller.
+ * R3 W4 deleted apply_tx_to_state and nodus_witness_bft.c, the caller
+ * this function used to be reached from; it has no production caller
+ * today. On any rule violation, returns -1 and the enclosing DB
+ * transaction will be rolled back by the caller.
  *
  * @param w            Witness context.
  * @param tx_data      Serialized TX bytes (dnac_tx_serialize output).
