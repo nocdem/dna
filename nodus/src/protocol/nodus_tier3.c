@@ -9,6 +9,10 @@
 #include "protocol/nodus_tier3.h"
 #include "protocol/nodus_cbor.h"
 #include "crypto/nodus_sign.h"
+/* D-16 rev 5 — the cometbft envelope (verbs 35-39) ties its per-verb
+ * ceiling to the reactor's own maxMsgSize; this is the one place that
+ * number is pinned against its source. */
+#include "dnac/cmt_ps.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -53,20 +57,18 @@ const char *nodus_t3_type_to_method(nodus_t3_msg_type_t type) {
         case NODUS_T3_V2_GBUNDLE_RSP: return "w_v2_gbundle_r";
         case NODUS_T3_VIEWOK:     return "w_viewok";
         case NODUS_T3_VIEWOK_REQ: return "w_viewok_q";
-        /* Tendermint T3 (T2 wire design §4.2; D-16 rev 4). All seven verbs
-         * appear in BOTH tables and all seven have a codec — a verb named
-         * in one table only, or named without an encoder, would make
-         * nodus_t3_decode return 0 with a zeroed struct (the pass-2 switch
-         * falls through `default: break`). The comment in
-         * nodus_t3_method_to_type records what one-sided editing cost
-         * before. */
-        case NODUS_T3_TM_STEP:    return "w_tm_step";
-        case NODUS_T3_TM_PROP:    return "w_tm_prop";
-        case NODUS_T3_TM_POL:     return "w_tm_pol";
-        case NODUS_T3_TM_VOTE:    return "w_tm_vote";
-        case NODUS_T3_TM_HAS:     return "w_tm_has";
-        case NODUS_T3_TM_MAJ23:   return "w_tm_maj23";
-        case NODUS_T3_TM_BITS:    return "w_tm_bits";
+        /* cometbft envelope (D-16 rev 5). All five verbs appear in BOTH
+         * tables, in enc_args's dispatch, in pass-2's dispatch and in
+         * nodus_t3_verify's range test — a verb named in one table only
+         * would make nodus_t3_decode return 0 with a zeroed struct (the
+         * pass-2 switch falls through `default: break`). Verbs 28-34 are
+         * RETIRED: they fall to `default: return NULL` below, exactly
+         * like any other unknown type. */
+        case NODUS_T3_CMT_STATE:         return "w_cmt_state";
+        case NODUS_T3_CMT_DATA:          return "w_cmt_data";
+        case NODUS_T3_CMT_VOTE:          return "w_cmt_vote";
+        case NODUS_T3_CMT_VOTE_SET_BITS: return "w_cmt_bits";
+        case NODUS_T3_CMT_TXS:           return "w_cmt_txs";
         default:                 return NULL;
     }
 }
@@ -108,14 +110,12 @@ nodus_t3_msg_type_t nodus_t3_method_to_type(const char *method) {
      * frame encoded with an empty method string was undispatchable. */
     if (strcmp(method, "w_viewok") == 0)       return NODUS_T3_VIEWOK;
     if (strcmp(method, "w_viewok_q") == 0)     return NODUS_T3_VIEWOK_REQ;
-    /* Tendermint T3 — the same seven verbs as the table above. */
-    if (strcmp(method, "w_tm_step") == 0)      return NODUS_T3_TM_STEP;
-    if (strcmp(method, "w_tm_prop") == 0)      return NODUS_T3_TM_PROP;
-    if (strcmp(method, "w_tm_pol") == 0)       return NODUS_T3_TM_POL;
-    if (strcmp(method, "w_tm_vote") == 0)      return NODUS_T3_TM_VOTE;
-    if (strcmp(method, "w_tm_has") == 0)       return NODUS_T3_TM_HAS;
-    if (strcmp(method, "w_tm_maj23") == 0)     return NODUS_T3_TM_MAJ23;
-    if (strcmp(method, "w_tm_bits") == 0)      return NODUS_T3_TM_BITS;
+    /* cometbft envelope — the same five verbs as the table above. */
+    if (strcmp(method, "w_cmt_state") == 0)    return NODUS_T3_CMT_STATE;
+    if (strcmp(method, "w_cmt_data") == 0)     return NODUS_T3_CMT_DATA;
+    if (strcmp(method, "w_cmt_vote") == 0)     return NODUS_T3_CMT_VOTE;
+    if (strcmp(method, "w_cmt_bits") == 0)     return NODUS_T3_CMT_VOTE_SET_BITS;
+    if (strcmp(method, "w_cmt_txs") == 0)      return NODUS_T3_CMT_TXS;
     return 0;
 }
 
@@ -123,21 +123,41 @@ nodus_t3_msg_type_t nodus_t3_method_to_type(const char *method) {
 
 size_t nodus_t3_max_msg_size(nodus_t3_msg_type_t type) {
     switch (type) {
-        case NODUS_T3_TM_PROP:  return NODUS_T3_TM_PROP_MAX_MSG;
-        case NODUS_T3_TM_VOTE:  return NODUS_T3_TM_VOTE_MAX_MSG;
-        case NODUS_T3_TM_STEP:
-        case NODUS_T3_TM_POL:
-        case NODUS_T3_TM_HAS:
-        case NODUS_T3_TM_MAJ23:
-        case NODUS_T3_TM_BITS:  return NODUS_T3_TM_SMALL_MAX_MSG;
+        case NODUS_T3_CMT_STATE:
+        case NODUS_T3_CMT_DATA:
+        case NODUS_T3_CMT_VOTE:
+        case NODUS_T3_CMT_VOTE_SET_BITS:
+            return (size_t)NODUS_T3_CMT_CONS_M_MAX + NODUS_T3_CMT_ENVELOPE_OVERHEAD;
+        case NODUS_T3_CMT_TXS:
+            return (size_t)NODUS_T3_CMT_TXS_M_MAX + NODUS_T3_CMT_ENVELOPE_OVERHEAD;
         default:
             /* Every legacy verb: the bound the legacy path actually uses
              * today — nodus_t3_verify's fixed 1 MB heap allocation below.
-             * A type that is no verb at all has no ceiling to report. */
+             * A type that is no verb at all (including the RETIRED 28-34)
+             * has no ceiling to report. */
             return nodus_t3_type_to_method(type) ? (size_t)NODUS_W_MAX_SYNC_RSP_SIZE
                                                  : (size_t)0;
     }
 }
+
+/* D-16 rev 5 — the consensus channels' ceiling IS the reactor's own
+ * constant, pinned here so a drift in either fails the build. The
+ * mempool ceiling (NODUS_T3_CMT_TXS_M_MAX) cannot be pinned the same
+ * way: cmt_memr_get_channels computes it at runtime from
+ * cmt_mempool_config_t.max_tx_bytes, so it is not a compile-time
+ * constant on the cmt_memr side — test_tier3.c's
+ * test_tm_max_msg_size pins it against a live cmt_memr_get_channels()
+ * call instead. */
+_Static_assert(NODUS_T3_CMT_CONS_M_MAX == CMT_CONR_MAX_MSG_SIZE,
+               "T3 cmt consensus ceiling drifted from CMT_CONR_MAX_MSG_SIZE");
+/* The largest verb-39 frame this layer will ever try to send: its
+ * message ceiling, plus the 7-byte transport frame header
+ * (nodus_wire.c), plus one more ML-DSA-87 signature's worth of slack
+ * (NODUS_SIG_BYTES) so a future rounding of the envelope overhead does
+ * not silently approach NODUS_MAX_FRAME_TCP unnoticed. */
+_Static_assert((uint64_t)NODUS_T3_CMT_TXS_M_MAX + NODUS_T3_CMT_ENVELOPE_OVERHEAD
+               + 7u + NODUS_SIG_BYTES < (uint64_t)NODUS_MAX_FRAME_TCP,
+               "T3 cmt TXS ceiling exceeds NODUS_MAX_FRAME_TCP");
 
 /* ── PR 3 Yol B — bootstrap sig domain separator ─────────────────── */
 
@@ -637,7 +657,7 @@ static void enc_w_v2_gbundle_q_args(cbor_encoder_t *enc,
                                     const nodus_t3_w_v2_gbundle_q_t *m) {
     cbor_encode_map(enc, 3);
     cbor_encode_cstr(enc, "c"); cbor_encode_bstr(enc, m->chain, 32);
-    cbor_encode_cstr(enc, "p"); cbor_encode_bstr(enc, m->pin, 64);
+    cbor_encode_cstr(enc, "p"); cbor_encode_bstr(enc, m->pin, 32);
     cbor_encode_cstr(enc, "o"); cbor_encode_uint(enc, m->offset);
 }
 
@@ -645,102 +665,23 @@ static void enc_w_v2_gbundle_r_args(cbor_encoder_t *enc,
                                     const nodus_t3_w_v2_gbundle_r_t *m) {
     cbor_encode_map(enc, 5);
     cbor_encode_cstr(enc, "c"); cbor_encode_bstr(enc, m->chain, 32);
-    cbor_encode_cstr(enc, "p"); cbor_encode_bstr(enc, m->pin, 64);
+    cbor_encode_cstr(enc, "p"); cbor_encode_bstr(enc, m->pin, 32);
     cbor_encode_cstr(enc, "t"); cbor_encode_uint(enc, m->total);
     cbor_encode_cstr(enc, "o"); cbor_encode_uint(enc, m->offset);
     cbor_encode_cstr(enc, "d"); cbor_encode_bstr(enc, m->chunk, m->chunk_len);
 }
 
-/* ── Tendermint T3 wire constants ────────────────────────────────────
+/* ── cometbft envelope arg encoder (verbs 35-39; D-16 rev 5) ─────────
  *
- * The vote type byte takes the CometBFT SignedMsgType values — PREVOTE
- * 0x01, PRECOMMIT 0x02 — per APPROVED D-12
- * (atlas-dec-ae3830947ee947d1d9bea33ad259d70b, signing.md:21-25 @1c55dd4f).
- * These are deliberately NOT dna_cmsg_type_t's PREVOTE 2 / PRECOMMIT 3:
- * D-12 keeps the core enum unchanged and maps enum <-> wire byte in one
- * host-side table. 0x20 (ProposalType) is reserved and must never appear.
- *
- * File-scope rather than in the header on purpose: shared/dnac/tm_vote.h
- * owns the public names for these (wave 1 package (a)), and protocol/ must
- * not grow a dependency on bft/ to reach the core enum. */
-#define T3_TM_TY_PREVOTE     0x01u
-#define T3_TM_TY_PRECOMMIT   0x02u
+ * One encoder for all five verbs: the args map is exactly { m: bstr },
+ * the reactor's own already-marshalled bytes. The class ceiling (35-38
+ * vs 39) is checked in enc_args below, before any byte is emitted, the
+ * same H-2 / O15E discipline already used for cdb, the range response
+ * and the gbundle chunk. */
 
-static inline bool t3_tm_ty_ok(uint8_t ty) {
-    return ty == T3_TM_TY_PREVOTE || ty == T3_TM_TY_PRECOMMIT;
-}
-
-/* ── Tendermint T3 arg encoders (verbs 28-34) ─────────────────────
- *
- * T2 wire design §4.2 / D-16 rev 4. Key ORDER here is the canonical
- * emission order of that table; the decoders accept any order but demand
- * the exact key SET. Sender-side range refusals live in enc_args, before a
- * byte is emitted, following the H-2 / O15E discipline already used for
- * cdb, the range response and the gbundle chunk. */
-
-static void enc_tm_step_args(cbor_encoder_t *enc, const nodus_t3_tm_step_t *m) {
-    cbor_encode_map(enc, 5);
-    cbor_encode_cstr(enc, "h");   cbor_encode_uint(enc, m->h);
-    cbor_encode_cstr(enc, "r");   cbor_encode_uint(enc, m->r);
-    cbor_encode_cstr(enc, "s");   cbor_encode_uint(enc, m->s);
-    /* sst is written and never read back by the host (T2 §4.2); it is
-     * carried faithfully anyway so the twin test can prove two nodes whose
-     * sst differs still produce identical traces. */
-    cbor_encode_cstr(enc, "sst"); cbor_encode_int(enc, m->sst);
-    cbor_encode_cstr(enc, "lcr"); cbor_encode_int(enc, m->lcr);
-}
-
-static void enc_tm_prop_args(cbor_encoder_t *enc, const nodus_t3_tm_prop_t *m) {
-    cbor_encode_map(enc, 4);
-    cbor_encode_cstr(enc, "h");  cbor_encode_uint(enc, m->h);
-    cbor_encode_cstr(enc, "r");  cbor_encode_uint(enc, m->r);
-    cbor_encode_cstr(enc, "vr"); cbor_encode_int(enc, m->vr);
-    cbor_encode_cstr(enc, "v");  cbor_encode_bstr(enc, m->v, m->v_len);
-}
-
-static void enc_tm_pol_args(cbor_encoder_t *enc, const nodus_t3_tm_pol_t *m) {
-    cbor_encode_map(enc, 3);
-    cbor_encode_cstr(enc, "h");  cbor_encode_uint(enc, m->h);
-    cbor_encode_cstr(enc, "pr"); cbor_encode_uint(enc, m->pr);
-    cbor_encode_cstr(enc, "bm"); cbor_encode_bstr(enc, m->bm, m->bm_len);
-}
-
-static void enc_tm_vote_args(cbor_encoder_t *enc, const nodus_t3_tm_vote_t *m) {
-    cbor_encode_map(enc, 8);
-    cbor_encode_cstr(enc, "ty");  cbor_encode_uint(enc, m->ty);
-    cbor_encode_cstr(enc, "h");   cbor_encode_uint(enc, m->h);
-    cbor_encode_cstr(enc, "r");   cbor_encode_uint(enc, m->r);
-    cbor_encode_cstr(enc, "bi");  cbor_encode_bstr(enc, m->bi, 64);
-    cbor_encode_cstr(enc, "vid"); cbor_encode_bstr(enc, m->vid, 32);
-    cbor_encode_cstr(enc, "ix");  cbor_encode_uint(enc, m->ix);
-    cbor_encode_cstr(enc, "ts");  cbor_encode_uint(enc, m->ts);
-    cbor_encode_cstr(enc, "sig");
-    cbor_encode_bstr(enc, m->sig, QGP_DSA87_SIGNATURE_BYTES);
-}
-
-static void enc_tm_has_args(cbor_encoder_t *enc, const nodus_t3_tm_has_t *m) {
-    cbor_encode_map(enc, 4);
-    cbor_encode_cstr(enc, "h");  cbor_encode_uint(enc, m->h);
-    cbor_encode_cstr(enc, "r");  cbor_encode_uint(enc, m->r);
-    cbor_encode_cstr(enc, "ty"); cbor_encode_uint(enc, m->ty);
-    cbor_encode_cstr(enc, "ix"); cbor_encode_uint(enc, m->ix);
-}
-
-static void enc_tm_maj23_args(cbor_encoder_t *enc, const nodus_t3_tm_maj23_t *m) {
-    cbor_encode_map(enc, 4);
-    cbor_encode_cstr(enc, "h");  cbor_encode_uint(enc, m->h);
-    cbor_encode_cstr(enc, "r");  cbor_encode_uint(enc, m->r);
-    cbor_encode_cstr(enc, "ty"); cbor_encode_uint(enc, m->ty);
-    cbor_encode_cstr(enc, "bi"); cbor_encode_bstr(enc, m->bi, 64);
-}
-
-static void enc_tm_bits_args(cbor_encoder_t *enc, const nodus_t3_tm_bits_t *m) {
-    cbor_encode_map(enc, 5);
-    cbor_encode_cstr(enc, "h");  cbor_encode_uint(enc, m->h);
-    cbor_encode_cstr(enc, "r");  cbor_encode_uint(enc, m->r);
-    cbor_encode_cstr(enc, "ty"); cbor_encode_uint(enc, m->ty);
-    cbor_encode_cstr(enc, "bi"); cbor_encode_bstr(enc, m->bi, 64);
-    cbor_encode_cstr(enc, "bm"); cbor_encode_bstr(enc, m->bm, m->bm_len);
+static void enc_w_cmt_args(cbor_encoder_t *enc, const nodus_t3_w_cmt_t *m) {
+    cbor_encode_map(enc, 1);
+    cbor_encode_cstr(enc, "m"); cbor_encode_bstr(enc, m->m, m->m_len);
 }
 
 /* ── Args dispatch ───────────────────────────────────────────────── */
@@ -774,38 +715,19 @@ static int enc_args(cbor_encoder_t *enc, const nodus_t3_msg_t *msg) {
         (msg->w_v2_gbundle_r.chunk_len > NODUS_T3_V2_GBUNDLE_CHUNK_MAX ||
          (msg->w_v2_gbundle_r.chunk_len > 0 && !msg->w_v2_gbundle_r.chunk)))
         return -1;
-    /* Tendermint T3 (verbs 28-34) — the sender refuses out-of-range fields
-     * before emitting, so an encoder can never produce bytes its own
-     * decoder would reject (DG-13 bijection). The ranges are T2 §4.2's:
-     * s in 0..3, lcr and vr >= -1, ty in {1, 2} (D-12 SignedMsgType
-     * values), a bitmap of 1..16 bytes (ceil(DNA_MAX_ACTIVE_VALIDATORS/8))
-     * and a value of 1..DNA_TM_VALUE_MAX_LEN bytes. `sst` has no range:
-     * T2 §4.2 says any i64. */
-    if (msg->type == NODUS_T3_TM_STEP &&
-        (msg->tm_step.s > NODUS_T3_TM_STEP_NEW_HEIGHT ||
-         msg->tm_step.lcr < -1))
-        return -1;
-    if (msg->type == NODUS_T3_TM_PROP &&
-        (msg->tm_prop.vr < -1 ||
-         msg->tm_prop.v == NULL ||
-         msg->tm_prop.v_len == 0 ||
-         (size_t)msg->tm_prop.v_len > (size_t)DNA_TM_VALUE_MAX_LEN))
-        return -1;
-    if (msg->type == NODUS_T3_TM_POL &&
-        (msg->tm_pol.bm_len == 0 ||
-         msg->tm_pol.bm_len > NODUS_T3_TM_BITMAP_MAX))
-        return -1;
-    if (msg->type == NODUS_T3_TM_VOTE && !t3_tm_ty_ok(msg->tm_vote.ty))
-        return -1;
-    if (msg->type == NODUS_T3_TM_HAS && !t3_tm_ty_ok(msg->tm_has.ty))
-        return -1;
-    if (msg->type == NODUS_T3_TM_MAJ23 && !t3_tm_ty_ok(msg->tm_maj23.ty))
-        return -1;
-    if (msg->type == NODUS_T3_TM_BITS &&
-        (!t3_tm_ty_ok(msg->tm_bits.ty) ||
-         msg->tm_bits.bm_len == 0 ||
-         msg->tm_bits.bm_len > NODUS_T3_TM_BITMAP_MAX))
-        return -1;
+    /* cometbft envelope (verbs 35-39; D-16 rev 5) — the sender refuses an
+     * out-of-class `m` before emitting, so an encoder can never produce
+     * bytes its own decoder would reject (DG-13 bijection). The ceiling
+     * is the reactor's, not a T2 field range: 35-38 share the consensus
+     * reactor's class, 39 takes the (larger) mempool class. */
+    if (msg->type >= NODUS_T3_CMT_STATE && msg->type <= NODUS_T3_CMT_TXS) {
+        const nodus_t3_w_cmt_t *c = &msg->w_cmt;
+        size_t m_cap = (msg->type == NODUS_T3_CMT_TXS)
+                       ? (size_t)NODUS_T3_CMT_TXS_M_MAX
+                       : (size_t)NODUS_T3_CMT_CONS_M_MAX;
+        if ((c->m == NULL && c->m_len != 0) || c->m_len > m_cap)
+            return -1;
+    }
     cbor_encode_cstr(enc, "a");
     switch (msg->type) {
         case NODUS_T3_PROPOSE:   enc_propose_args(enc, &msg->propose);   break;
@@ -847,21 +769,13 @@ static int enc_args(cbor_encoder_t *enc, const nodus_t3_msg_t *msg) {
             enc_viewok_args(enc, &msg->viewok);               break;
         case NODUS_T3_VIEWOK_REQ:
             enc_viewok_q_args(enc, &msg->viewok_q);           break;
-        /* Tendermint T3. */
-        case NODUS_T3_TM_STEP:
-            enc_tm_step_args(enc, &msg->tm_step);             break;
-        case NODUS_T3_TM_PROP:
-            enc_tm_prop_args(enc, &msg->tm_prop);             break;
-        case NODUS_T3_TM_POL:
-            enc_tm_pol_args(enc, &msg->tm_pol);               break;
-        case NODUS_T3_TM_VOTE:
-            enc_tm_vote_args(enc, &msg->tm_vote);             break;
-        case NODUS_T3_TM_HAS:
-            enc_tm_has_args(enc, &msg->tm_has);               break;
-        case NODUS_T3_TM_MAJ23:
-            enc_tm_maj23_args(enc, &msg->tm_maj23);           break;
-        case NODUS_T3_TM_BITS:
-            enc_tm_bits_args(enc, &msg->tm_bits);             break;
+        /* cometbft envelope (verbs 35-39; D-16 rev 5). */
+        case NODUS_T3_CMT_STATE:
+        case NODUS_T3_CMT_DATA:
+        case NODUS_T3_CMT_VOTE:
+        case NODUS_T3_CMT_VOTE_SET_BITS:
+        case NODUS_T3_CMT_TXS:
+            enc_w_cmt_args(enc, &msg->w_cmt);                 break;
         default: return -1;
     }
     return 0;
@@ -2174,21 +2088,11 @@ static void dec_w_v2_gbundle_q_args(cbor_decoder_t *dec, size_t count,
                                     nodus_t3_w_v2_gbundle_q_t *m);
 static void dec_w_v2_gbundle_r_args(cbor_decoder_t *dec, size_t count,
                                     nodus_t3_w_v2_gbundle_r_t *m);
-/* Tendermint T3 decoders — same arrangement. */
-static void dec_tm_step_args(cbor_decoder_t *dec, size_t count,
-                             nodus_t3_tm_step_t *m);
-static void dec_tm_prop_args(cbor_decoder_t *dec, size_t count,
-                             nodus_t3_tm_prop_t *m);
-static void dec_tm_pol_args(cbor_decoder_t *dec, size_t count,
-                            nodus_t3_tm_pol_t *m);
-static void dec_tm_vote_args(cbor_decoder_t *dec, size_t count,
-                             nodus_t3_tm_vote_t *m);
-static void dec_tm_has_args(cbor_decoder_t *dec, size_t count,
-                            nodus_t3_tm_has_t *m);
-static void dec_tm_maj23_args(cbor_decoder_t *dec, size_t count,
-                              nodus_t3_tm_maj23_t *m);
-static void dec_tm_bits_args(cbor_decoder_t *dec, size_t count,
-                             nodus_t3_tm_bits_t *m);
+/* cometbft envelope decoder (verbs 35-39; D-16 rev 5) — same arrangement.
+ * `type` selects the class ceiling (35-38 vs 39, D-16 rev 5 "envelope
+ * overhead on top"). */
+static void dec_w_cmt_args(cbor_decoder_t *dec, size_t count,
+                           nodus_t3_msg_type_t type, nodus_t3_w_cmt_t *m);
 
 int nodus_t3_decode(const uint8_t *buf, size_t len, nodus_t3_msg_t *msg) {
     if (!buf || !msg) return -1;
@@ -2204,9 +2108,9 @@ int nodus_t3_decode(const uint8_t *buf, size_t len, nodus_t3_msg_t *msg) {
     /* Save position for second pass (args decode) */
     size_t entries_start = dec.pos;
 
-    /* D-22 rev 2 — set by the pass-1 walker if `a` contained a negative
-     * integer anywhere, at any nesting depth. Read by the type gate below,
-     * once the verb is known. */
+    /* D-22 rev 3 — set by the pass-1 walker if `a` contained a negative
+     * integer anywhere, at any nesting depth. The admitted set is now
+     * EMPTY: read below, unconditionally, once the verb is known. */
     bool a_negint = false;
 
     /* Pass 1: extract method, txn_id, header, wsig.
@@ -2250,17 +2154,16 @@ int nodus_t3_decode(const uint8_t *buf, size_t len, nodus_t3_msg_t *msg) {
         else if (KEY_IS(key, "a")) {
             /* args body — dispatched in pass 2; step over it here.
              *
-             * D-22 rev 2: this uses the SIGNED walker, not the shared
-             * cbor_decode_skip. Pass 1 reaches the method name and the wsig
-             * by walking past `a` without reading it, and the shared walker
-             * treats a major type 1 item as an error — so before this
-             * change every envelope carrying a negative integer anywhere in
-             * `a` died here, in pass 1, before its own arg decoder ever
-             * ran. The error is sticky (dec_has returns false once it is
-             * set), so the next key read returned ERROR and the function
-             * returned -1. Only this one call site changes; the shared
-             * walker and its ≈230 call sites are untouched, and the type gate
-             * below keeps the legacy acceptance set identical. */
+             * D-22 rev 3: this still uses the SIGNED walker, not the
+             * shared cbor_decode_skip — the shared walker treats a major
+             * type 1 item as an error, which would die here in pass 1
+             * before reaching the method name and the wsig. The admitted
+             * set for `a_negint` is now EMPTY for every verb (below), so
+             * the walker's only remaining job is recording that a
+             * negative was present so the gate can refuse it; it costs
+             * nothing to keep the same primitive rather than reverting to
+             * cbor_decode_skip for an identical outcome. The shared
+             * walker and its ≈230 call sites are untouched. */
             cbor_decode_skip_signed(&dec, &a_negint);
         }
         else if (KEY_IS(key, "y")) {
@@ -2277,12 +2180,14 @@ int nodus_t3_decode(const uint8_t *buf, size_t len, nodus_t3_msg_t *msg) {
     msg->type = nodus_t3_method_to_type(msg->method);
     if (msg->type == 0) return -1;
 
-    /* D-22 rev 2: a negative integer inside `a` is structurally admitted ONLY for the two
-     * verbs whose specification has signed fields (28 sst/lcr, 29 vr). For verbs 30-34 and
-     * every legacy verb 1-27 it is rejected here exactly as pass 1 rejected it before
-     * cbor_decode_skip_signed existed — both paths return -1; with no negative present the
-     * two walkers walk identically, so the legacy acceptance set is unchanged. */
-    if (a_negint && msg->type != NODUS_T3_TM_STEP && msg->type != NODUS_T3_TM_PROP)
+    /* D-22 rev 3: the admitted set is EMPTY — a negative integer anywhere
+     * inside `a` is refused for EVERY verb, including the new envelope
+     * verbs 35-39 (whose only field is a byte string and never carries
+     * one). This is the same refusal pass 1 gave before
+     * cbor_decode_skip_signed existed, now stated unconditionally rather
+     * than as a two-verb exception (the retired verbs 28/29 were the only
+     * exception, and they are gone). */
+    if (a_negint)
         return -1;
 
     /* Pass 2: decode args based on type */
@@ -2384,29 +2289,15 @@ int nodus_t3_decode(const uint8_t *buf, size_t len, nodus_t3_msg_t *msg) {
                 case NODUS_T3_VIEWOK_REQ:
                     dec_viewok_q_args(&dec, args.count, &msg->viewok_q);
                     break;
-                /* Tendermint T3 — all seven, so `default: break` (which
-                 * would return 0 with a zeroed struct) can never be
-                 * reached by a Tendermint verb. */
-                case NODUS_T3_TM_STEP:
-                    dec_tm_step_args(&dec, args.count, &msg->tm_step);
-                    break;
-                case NODUS_T3_TM_PROP:
-                    dec_tm_prop_args(&dec, args.count, &msg->tm_prop);
-                    break;
-                case NODUS_T3_TM_POL:
-                    dec_tm_pol_args(&dec, args.count, &msg->tm_pol);
-                    break;
-                case NODUS_T3_TM_VOTE:
-                    dec_tm_vote_args(&dec, args.count, &msg->tm_vote);
-                    break;
-                case NODUS_T3_TM_HAS:
-                    dec_tm_has_args(&dec, args.count, &msg->tm_has);
-                    break;
-                case NODUS_T3_TM_MAJ23:
-                    dec_tm_maj23_args(&dec, args.count, &msg->tm_maj23);
-                    break;
-                case NODUS_T3_TM_BITS:
-                    dec_tm_bits_args(&dec, args.count, &msg->tm_bits);
+                /* cometbft envelope (verbs 35-39; D-16 rev 5) — all five,
+                 * so `default: break` (which would return 0 with a zeroed
+                 * struct) can never be reached by one of these verbs. */
+                case NODUS_T3_CMT_STATE:
+                case NODUS_T3_CMT_DATA:
+                case NODUS_T3_CMT_VOTE:
+                case NODUS_T3_CMT_VOTE_SET_BITS:
+                case NODUS_T3_CMT_TXS:
+                    dec_w_cmt_args(&dec, args.count, msg->type, &msg->w_cmt);
                     break;
                 default:
                     break;
@@ -2573,9 +2464,21 @@ static void dec_w_v2_gbundle_q_args(cbor_decoder_t *dec, size_t count,
             if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 32)
                 memcpy(m->chain, val.bstr.ptr, 32);
         } else if (KEY_IS(key, "p")) {
+            /* D-24 rev 4 (1): the pin is EXACTLY the 32-byte chain id —
+             * unlike most fixed-width fields in this file, a wrong length
+             * here is a HARD DECODE ERROR, not a silently-zeroed field.
+             * The pin is the whole of a joiner's trust decision
+             * (nodus_witness_v2_join.c / D-24); leaving it zero-filled on
+             * a malformed wire value would let a 31- or 33-byte `p` decode
+             * "successfully" into an all-zero pin that then fails the
+             * comparison downstream for the wrong reason — a decode bug
+             * disguised as a routine mismatch. */
             cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 64)
-                memcpy(m->pin, val.bstr.ptr, 64);
+            if (val.type != CBOR_ITEM_BSTR || val.bstr.len != 32) {
+                dec->error = true;
+                return;
+            }
+            memcpy(m->pin, val.bstr.ptr, 32);
         } else if (KEY_IS(key, "o")) {
             cbor_item_t val = cbor_decode_next(dec);
             if (val.type == CBOR_ITEM_UINT) m->offset = val.uint_val;
@@ -2595,9 +2498,14 @@ static void dec_w_v2_gbundle_r_args(cbor_decoder_t *dec, size_t count,
             if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 32)
                 memcpy(m->chain, val.bstr.ptr, 32);
         } else if (KEY_IS(key, "p")) {
+            /* D-24 rev 4 (1) — see dec_w_v2_gbundle_q_args's "p" branch: a
+             * wrong-length pin is a hard decode error here too. */
             cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 64)
-                memcpy(m->pin, val.bstr.ptr, 64);
+            if (val.type != CBOR_ITEM_BSTR || val.bstr.len != 32) {
+                dec->error = true;
+                return;
+            }
+            memcpy(m->pin, val.bstr.ptr, 32);
         } else if (KEY_IS(key, "t")) {
             cbor_item_t val = cbor_decode_next(dec);
             if (val.type == CBOR_ITEM_UINT) m->total = val.uint_val;
@@ -2620,348 +2528,50 @@ static void dec_w_v2_gbundle_r_args(cbor_decoder_t *dec, size_t count,
     }
 }
 
-/* ── Tendermint T3 arg decoders (verbs 30-34) ────────────────────────
+/* ── cometbft envelope arg decoder (verbs 35-39; D-16 rev 5) ─────────
  *
- * STRICTER THAN EVERY DECODER ABOVE, AND THAT IS THE SPECIFICATION, not an
- * inconsistency: T2 wire design §4.2 requires the key set to be exact and
- * complete ("anahtar kümesi tam ve fazlasız, tip uyumsuz RED"). So, unlike
- * the legacy dec_*_args which skip an unknown key and leave a missing one
- * at zero, these five reject on
+ * STRICTER THAN THE LEGACY dec_*_args, AND THAT IS THE SPECIFICATION —
+ * the same discipline the retired verbs 28-34 introduced: unlike the
+ * legacy decoders that skip an unrecognised key and leave a missing one
+ * at zero, this rejects on
  *
- *   - a non-text key, an unknown key, or a key seen twice;
- *   - a value of the wrong CBOR type, or an integer that does not fit;
- *   - a byte string of the wrong length (bi 64, vid 32, sig 4627,
- *     bm 1..16);
- *   - a vote type byte other than D-12's 0x01 / 0x02;
- *   - a key set that is incomplete when the map ends.
+ *   - a non-text key, an unknown key, or "m" seen twice;
+ *   - a value that is not a byte string;
+ *   - a byte string above the verb's class ceiling (35-38 the consensus
+ *     reactor's, 39 the mempool's — D-16 rev 5 "envelope overhead on
+ *     top");
+ *   - a key set that is incomplete when the map ends (missing "m").
  *
- * That exactness is what makes the codec bijective — encode(decode(b)) == b
- * and decode(encode(x)) == x (DG-13) — which a skip-unknown decoder cannot
- * be, because it maps many byte strings onto one struct.
- *
- * Rejection is `dec->error = true` and an immediate return: the existing
- * dec_w_v2_range_r_args idiom, which nodus_t3_decode turns into -1. */
-
-/** Record that a key was present; a second sighting is a duplicate. */
-static bool tm_seen_mark(cbor_decoder_t *dec, uint32_t *seen, uint32_t bit) {
-    if (*seen & bit) { dec->error = true; return false; }
-    *seen |= bit;
-    return true;
-}
-
-static bool tm_get_u64(cbor_decoder_t *dec, uint64_t *out) {
-    cbor_item_t val = cbor_decode_next(dec);
-    if (val.type != CBOR_ITEM_UINT) { dec->error = true; return false; }
-    *out = val.uint_val;
-    return true;
-}
-
-static bool tm_get_u32(cbor_decoder_t *dec, uint32_t *out) {
-    cbor_item_t val = cbor_decode_next(dec);
-    if (val.type != CBOR_ITEM_UINT || val.uint_val > UINT32_MAX) {
-        dec->error = true;
-        return false;
-    }
-    *out = (uint32_t)val.uint_val;
-    return true;
-}
-
-/** The vote type byte: D-12's CometBFT SignedMsgType values, nothing else. */
-static bool tm_get_ty(cbor_decoder_t *dec, uint8_t *out) {
-    cbor_item_t val = cbor_decode_next(dec);
-    /* Range BEFORE the narrowing cast: 0x101 truncates to 0x01 and would
-     * otherwise look like a valid PREVOTE. */
-    if (val.type != CBOR_ITEM_UINT || val.uint_val > 0xFFu ||
-        !t3_tm_ty_ok((uint8_t)val.uint_val)) {
-        dec->error = true;
-        return false;
-    }
-    *out = (uint8_t)val.uint_val;
-    return true;
-}
-
-/** Exactly `want` bytes, copied out of the decode buffer. */
-static bool tm_get_bstr_exact(cbor_decoder_t *dec, size_t want, uint8_t *out) {
-    cbor_item_t val = cbor_decode_next(dec);
-    if (val.type != CBOR_ITEM_BSTR || val.bstr.len != want) {
-        dec->error = true;
-        return false;
-    }
-    memcpy(out, val.bstr.ptr, want);
-    return true;
-}
-
-/** A vote bitmap: 1..ceil(DNA_MAX_ACTIVE_VALIDATORS/8) bytes. The HOST
- *  checks bm_len == ceil(N/8) for the governing set; the codec only bounds
- *  it (T2 §4.2). */
-static bool tm_get_bitmap(cbor_decoder_t *dec, uint8_t *out, uint8_t *out_len) {
-    cbor_item_t val = cbor_decode_next(dec);
-    if (val.type != CBOR_ITEM_BSTR ||
-        val.bstr.len == 0 ||
-        val.bstr.len > (size_t)NODUS_T3_TM_BITMAP_MAX) {
-        dec->error = true;
-        return false;
-    }
-    memcpy(out, val.bstr.ptr, val.bstr.len);
-    *out_len = (uint8_t)val.bstr.len;
-    return true;
-}
-
-/** A signed field, read through the only door to CBOR major type 1, then
- *  bounded. Used for lcr and vr (min -1, the reference's "none"; max
- *  INT32_MAX because both fields are i32). `sst` does NOT come through
- *  here: T2 §4.2 leaves it unconstrained, and a range check against the
- *  full int64_t span is a comparison that is always false — which
- *  -Wtype-limits would rightly reject. It calls cbor_decode_int directly. */
-static bool tm_get_int_range(cbor_decoder_t *dec, int64_t min, int64_t max,
-                             int64_t *out) {
-    int64_t v = 0;
-    if (!cbor_decode_int(dec, &v)) return false;   /* already set dec->error */
-    if (v < min || v > max) {
-        dec->error = true;
-        return false;
-    }
-    *out = v;
-    return true;
-}
-
-static void dec_tm_step_args(cbor_decoder_t *dec, size_t count,
-                             nodus_t3_tm_step_t *m) {
-    enum { K_H = 1u << 0, K_R = 1u << 1, K_S = 1u << 2, K_SST = 1u << 3,
-           K_LCR = 1u << 4,
-           K_ALL = K_H | K_R | K_S | K_SST | K_LCR };
-    uint32_t seen = 0;
-    uint64_t u = 0;
-    int64_t  s = 0;
+ * That exactness is what keeps the codec bijective — encode(decode(b))
+ * == b and decode(encode(x)) == x (DG-13). `m` is ZERO-COPY: it points
+ * into the decode buffer and is valid only while that buffer is alive,
+ * the same idiom as w_v2_range_r's `frames` and dec_w_v2_gbundle_r_args's
+ * `chunk` above. The pass-2 cap follows dec_w_v2_gbundle_r_args's
+ * `NODUS_T3_V2_GBUNDLE_CHUNK_MAX` idiom (:2500-2503, this file). */
+static void dec_w_cmt_args(cbor_decoder_t *dec, size_t count,
+                           nodus_t3_msg_type_t type, nodus_t3_w_cmt_t *m) {
+    size_t m_cap = (type == NODUS_T3_CMT_TXS) ? (size_t)NODUS_T3_CMT_TXS_M_MAX
+                                              : (size_t)NODUS_T3_CMT_CONS_M_MAX;
+    bool seen_m = false;
 
     for (size_t i = 0; i < count; i++) {
         cbor_item_t key = cbor_decode_next(dec);
         if (key.type != CBOR_ITEM_TSTR) { dec->error = true; return; }
-        if (KEY_IS(key, "h")) {
-            if (!tm_seen_mark(dec, &seen, K_H))          return;
-            if (!tm_get_u64(dec, &m->h))                 return;
-        } else if (KEY_IS(key, "r")) {
-            if (!tm_seen_mark(dec, &seen, K_R))          return;
-            if (!tm_get_u32(dec, &m->r))                 return;
-        } else if (KEY_IS(key, "s")) {
-            if (!tm_seen_mark(dec, &seen, K_S))          return;
-            if (!tm_get_u64(dec, &u))                    return;
-            if (u > NODUS_T3_TM_STEP_NEW_HEIGHT) { dec->error = true; return; }
-            m->s = (uint8_t)u;
-        } else if (KEY_IS(key, "sst")) {
-            /* Any i64 (T2 §4.2: written, never read) — no range to apply,
-             * so cbor_decode_int's own int64 bound is the whole rule. */
-            if (!tm_seen_mark(dec, &seen, K_SST))        return;
-            if (!cbor_decode_int(dec, &m->sst))          return;
-        } else if (KEY_IS(key, "lcr")) {
-            if (!tm_seen_mark(dec, &seen, K_LCR))        return;
-            if (!tm_get_int_range(dec, -1, INT32_MAX, &s)) return;
-            m->lcr = (int32_t)s;
-        } else {
-            dec->error = true; return;
-        }
-    }
-    if (seen != (uint32_t)K_ALL) dec->error = true;   /* a key was missing */
-}
-
-static void dec_tm_prop_args(cbor_decoder_t *dec, size_t count,
-                             nodus_t3_tm_prop_t *m) {
-    enum { K_H = 1u << 0, K_R = 1u << 1, K_VR = 1u << 2, K_V = 1u << 3,
-           K_ALL = K_H | K_R | K_VR | K_V };
-    uint32_t seen = 0;
-    int64_t  s = 0;
-
-    for (size_t i = 0; i < count; i++) {
-        cbor_item_t key = cbor_decode_next(dec);
-        if (key.type != CBOR_ITEM_TSTR) { dec->error = true; return; }
-        if (KEY_IS(key, "h")) {
-            if (!tm_seen_mark(dec, &seen, K_H))          return;
-            if (!tm_get_u64(dec, &m->h))                 return;
-        } else if (KEY_IS(key, "r")) {
-            if (!tm_seen_mark(dec, &seen, K_R))          return;
-            if (!tm_get_u32(dec, &m->r))                 return;
-        } else if (KEY_IS(key, "vr")) {
-            if (!tm_seen_mark(dec, &seen, K_VR))         return;
-            if (!tm_get_int_range(dec, -1, INT32_MAX, &s)) return;
-            m->vr = (int32_t)s;
-        } else if (KEY_IS(key, "v")) {
-            /* ZERO-COPY, like w_v2_range_r.frames: `v` points INTO the
-             * decode buffer and is valid only while that buffer lives.
-             * 2.8 MB is not copied here, and the class buffer
-             * (NODUS_T3_TM_PROP_MAX_MSG) is what bounds it. */
-            if (!tm_seen_mark(dec, &seen, K_V))          return;
+        if (KEY_IS(key, "m")) {
+            if (seen_m) { dec->error = true; return; }
+            seen_m = true;
             cbor_item_t val = cbor_decode_next(dec);
-            if (val.type != CBOR_ITEM_BSTR ||
-                val.bstr.len == 0 ||
-                val.bstr.len > (size_t)DNA_TM_VALUE_MAX_LEN) {
+            if (val.type != CBOR_ITEM_BSTR || val.bstr.len > m_cap) {
                 dec->error = true;
                 return;
             }
-            m->v     = val.bstr.ptr;
-            m->v_len = (uint32_t)val.bstr.len;
+            m->m     = val.bstr.ptr;
+            m->m_len = val.bstr.len;
         } else {
             dec->error = true; return;
         }
     }
-    if (seen != (uint32_t)K_ALL) dec->error = true;   /* a key was missing */
-}
-
-static void dec_tm_pol_args(cbor_decoder_t *dec, size_t count,
-                            nodus_t3_tm_pol_t *m) {
-    enum { K_H = 1u << 0, K_PR = 1u << 1, K_BM = 1u << 2,
-           K_ALL = K_H | K_PR | K_BM };
-    uint32_t seen = 0;
-
-    for (size_t i = 0; i < count; i++) {
-        cbor_item_t key = cbor_decode_next(dec);
-        if (key.type != CBOR_ITEM_TSTR) { dec->error = true; return; }
-        if (KEY_IS(key, "h")) {
-            if (!tm_seen_mark(dec, &seen, K_H))          return;
-            if (!tm_get_u64(dec, &m->h))                 return;
-        } else if (KEY_IS(key, "pr")) {
-            if (!tm_seen_mark(dec, &seen, K_PR))         return;
-            if (!tm_get_u32(dec, &m->pr))                return;
-        } else if (KEY_IS(key, "bm")) {
-            if (!tm_seen_mark(dec, &seen, K_BM))         return;
-            if (!tm_get_bitmap(dec, m->bm, &m->bm_len))  return;
-        } else {
-            dec->error = true; return;
-        }
-    }
-    if (seen != (uint32_t)K_ALL) dec->error = true;   /* a key was missing */
-}
-
-static void dec_tm_vote_args(cbor_decoder_t *dec, size_t count,
-                             nodus_t3_tm_vote_t *m) {
-    enum { K_TY = 1u << 0, K_H = 1u << 1, K_R = 1u << 2, K_BI = 1u << 3,
-           K_VID = 1u << 4, K_IX = 1u << 5, K_TS = 1u << 6, K_SIG = 1u << 7,
-           K_ALL = K_TY | K_H | K_R | K_BI | K_VID | K_IX | K_TS | K_SIG };
-    uint32_t seen = 0;
-
-    for (size_t i = 0; i < count; i++) {
-        cbor_item_t key = cbor_decode_next(dec);
-        if (key.type != CBOR_ITEM_TSTR) { dec->error = true; return; }
-        if (KEY_IS(key, "ty")) {
-            if (!tm_seen_mark(dec, &seen, K_TY))         return;
-            if (!tm_get_ty(dec, &m->ty))                 return;
-        } else if (KEY_IS(key, "h")) {
-            if (!tm_seen_mark(dec, &seen, K_H))          return;
-            if (!tm_get_u64(dec, &m->h))                 return;
-        } else if (KEY_IS(key, "r")) {
-            if (!tm_seen_mark(dec, &seen, K_R))          return;
-            if (!tm_get_u32(dec, &m->r))                 return;
-        } else if (KEY_IS(key, "bi")) {
-            if (!tm_seen_mark(dec, &seen, K_BI))         return;
-            if (!tm_get_bstr_exact(dec, 64, m->bi))      return;
-        } else if (KEY_IS(key, "vid")) {
-            if (!tm_seen_mark(dec, &seen, K_VID))        return;
-            if (!tm_get_bstr_exact(dec, 32, m->vid))     return;
-        } else if (KEY_IS(key, "ix")) {
-            if (!tm_seen_mark(dec, &seen, K_IX))         return;
-            if (!tm_get_u32(dec, &m->ix))                return;
-        } else if (KEY_IS(key, "ts")) {
-            if (!tm_seen_mark(dec, &seen, K_TS))         return;
-            if (!tm_get_u64(dec, &m->ts))                return;
-        } else if (KEY_IS(key, "sig")) {
-            /* The INNER vote signature. Carried and length-checked here;
-             * VERIFIED by the host in wave 2 (D-16 rev 4, vote-admission
-             * step 3), never by this codec. */
-            if (!tm_seen_mark(dec, &seen, K_SIG))        return;
-            if (!tm_get_bstr_exact(dec, QGP_DSA87_SIGNATURE_BYTES, m->sig))
-                return;
-        } else {
-            dec->error = true; return;
-        }
-    }
-    if (seen != (uint32_t)K_ALL) dec->error = true;   /* a key was missing */
-}
-
-static void dec_tm_has_args(cbor_decoder_t *dec, size_t count,
-                            nodus_t3_tm_has_t *m) {
-    enum { K_H = 1u << 0, K_R = 1u << 1, K_TY = 1u << 2, K_IX = 1u << 3,
-           K_ALL = K_H | K_R | K_TY | K_IX };
-    uint32_t seen = 0;
-
-    for (size_t i = 0; i < count; i++) {
-        cbor_item_t key = cbor_decode_next(dec);
-        if (key.type != CBOR_ITEM_TSTR) { dec->error = true; return; }
-        if (KEY_IS(key, "h")) {
-            if (!tm_seen_mark(dec, &seen, K_H))          return;
-            if (!tm_get_u64(dec, &m->h))                 return;
-        } else if (KEY_IS(key, "r")) {
-            if (!tm_seen_mark(dec, &seen, K_R))          return;
-            if (!tm_get_u32(dec, &m->r))                 return;
-        } else if (KEY_IS(key, "ty")) {
-            if (!tm_seen_mark(dec, &seen, K_TY))         return;
-            if (!tm_get_ty(dec, &m->ty))                 return;
-        } else if (KEY_IS(key, "ix")) {
-            if (!tm_seen_mark(dec, &seen, K_IX))         return;
-            if (!tm_get_u32(dec, &m->ix))                return;
-        } else {
-            dec->error = true; return;
-        }
-    }
-    if (seen != (uint32_t)K_ALL) dec->error = true;   /* a key was missing */
-}
-
-static void dec_tm_maj23_args(cbor_decoder_t *dec, size_t count,
-                              nodus_t3_tm_maj23_t *m) {
-    enum { K_H = 1u << 0, K_R = 1u << 1, K_TY = 1u << 2, K_BI = 1u << 3,
-           K_ALL = K_H | K_R | K_TY | K_BI };
-    uint32_t seen = 0;
-
-    for (size_t i = 0; i < count; i++) {
-        cbor_item_t key = cbor_decode_next(dec);
-        if (key.type != CBOR_ITEM_TSTR) { dec->error = true; return; }
-        if (KEY_IS(key, "h")) {
-            if (!tm_seen_mark(dec, &seen, K_H))          return;
-            if (!tm_get_u64(dec, &m->h))                 return;
-        } else if (KEY_IS(key, "r")) {
-            if (!tm_seen_mark(dec, &seen, K_R))          return;
-            if (!tm_get_u32(dec, &m->r))                 return;
-        } else if (KEY_IS(key, "ty")) {
-            if (!tm_seen_mark(dec, &seen, K_TY))         return;
-            if (!tm_get_ty(dec, &m->ty))                 return;
-        } else if (KEY_IS(key, "bi")) {
-            if (!tm_seen_mark(dec, &seen, K_BI))         return;
-            if (!tm_get_bstr_exact(dec, 64, m->bi))      return;
-        } else {
-            dec->error = true; return;
-        }
-    }
-    if (seen != (uint32_t)K_ALL) dec->error = true;   /* a key was missing */
-}
-
-static void dec_tm_bits_args(cbor_decoder_t *dec, size_t count,
-                             nodus_t3_tm_bits_t *m) {
-    enum { K_H = 1u << 0, K_R = 1u << 1, K_TY = 1u << 2, K_BI = 1u << 3,
-           K_BM = 1u << 4,
-           K_ALL = K_H | K_R | K_TY | K_BI | K_BM };
-    uint32_t seen = 0;
-
-    for (size_t i = 0; i < count; i++) {
-        cbor_item_t key = cbor_decode_next(dec);
-        if (key.type != CBOR_ITEM_TSTR) { dec->error = true; return; }
-        if (KEY_IS(key, "h")) {
-            if (!tm_seen_mark(dec, &seen, K_H))          return;
-            if (!tm_get_u64(dec, &m->h))                 return;
-        } else if (KEY_IS(key, "r")) {
-            if (!tm_seen_mark(dec, &seen, K_R))          return;
-            if (!tm_get_u32(dec, &m->r))                 return;
-        } else if (KEY_IS(key, "ty")) {
-            if (!tm_seen_mark(dec, &seen, K_TY))         return;
-            if (!tm_get_ty(dec, &m->ty))                 return;
-        } else if (KEY_IS(key, "bi")) {
-            if (!tm_seen_mark(dec, &seen, K_BI))         return;
-            if (!tm_get_bstr_exact(dec, 64, m->bi))      return;
-        } else if (KEY_IS(key, "bm")) {
-            if (!tm_seen_mark(dec, &seen, K_BM))         return;
-            if (!tm_get_bitmap(dec, m->bm, &m->bm_len))  return;
-        } else {
-            dec->error = true; return;
-        }
-    }
-    if (seen != (uint32_t)K_ALL) dec->error = true;   /* a key was missing */
+    if (!seen_m) dec->error = true;   /* the key was missing */
 }
 
 /* ── Public verify ───────────────────────────────────────────────── */
@@ -2975,14 +2585,19 @@ int nodus_t3_verify(const nodus_t3_msg_t *msg, const nodus_pubkey_t *pk) {
      * matching sender caps in nodus_witness_sync.c:647 and
      * nodus_witness_bft.c — verify symmetrically.
      *
-     * D-14 rev 2 / G19: the Tendermint verbs 28-34 instead take their PER-
-     * CLASS bound, so a 2.8 MB PROPOSAL can be verified while a vote or a
-     * step announcement never reserves more than its class. The legacy
-     * branch is written as the literal it always was, not routed through
-     * nodus_t3_max_msg_size, so "legacy allocation unchanged" is visible in
-     * this function rather than inferred from another one. */
-    size_t sign_cap = (msg->type >= NODUS_T3_TM_STEP &&
-                       msg->type <= NODUS_T3_TM_BITS)
+     * D-16 rev 5: the cometbft envelope verbs 35-39 instead take their
+     * PER-CLASS bound (35-38 the consensus reactor's, 39 the larger
+     * mempool one), so a maximal mempool Txs message can be verified
+     * while a vote-set-bits reply never reserves more than its class.
+     * The legacy branch is written as the literal it always was, not
+     * routed through nodus_t3_max_msg_size, so "legacy allocation
+     * unchanged" is visible in this function rather than inferred from
+     * another one. This is the wire-walker's cross-component pair 4:
+     * send (enc_sign_payload's caller) and this verify are symmetric
+     * only because both read the SAME class for a given type — keep
+     * that property when adding a verb here. */
+    size_t sign_cap = (msg->type >= NODUS_T3_CMT_STATE &&
+                       msg->type <= NODUS_T3_CMT_TXS)
                       ? nodus_t3_max_msg_size(msg->type)
                       : (size_t)NODUS_W_MAX_SYNC_RSP_SIZE;
     if (sign_cap == 0) return -1;

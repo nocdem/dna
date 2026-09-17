@@ -287,12 +287,17 @@
  *  spread over two blocks adds a few. */
 #define R_STORE_MAX        32
 
-/** The receive arena per node (cmt_conr.h "THE RECEIVE ARENA"); never
- *  reset here — the fixture's own arena is never reset either
- *  (test_cmt_common.h HOW IT CAN LIE (6)). Sized from: ~23 KB per block
- *  part at four validators, up to three copies per height, thirteen
- *  heights ≈ 1 MB; 8 MiB is eight times that. Exhaustion is a decode
- *  failure → `stop_peer_for_error` → a LOUD failure (R13). */
+/** The receive arena per node (cmt_conr.h "THE RECEIVE ARENA"). PACKAGE
+ *  C2e, register R3-A-5: `cmt_conr_receive` now resets `.used` to 0 at
+ *  the top of every call, so this size is generous headroom rather than
+ *  a cumulative budget — sized from: ~23 KB per block part at four
+ *  validators, up to three copies per height, thirteen heights ≈ 1 MB;
+ *  8 MiB is eight times that. `s_recv_arena_resets_every_receive` proves
+ *  the reset directly by pushing several times this many bytes through
+ *  ONE node without ever approaching exhaustion. A decode failure still
+ *  reaches `stop_peer_for_error` → a LOUD failure (R13); it is no longer
+ *  reachable via arena exhaustion for a message the channel admitted
+ *  (cmt_conr.h "THE RECEIVE ARENA"). */
 #define R_ARENA_CAP        (8u * 1024u * 1024u)
 
 /** The clock quantum per network round (HOW IT CAN LIE (R3)):
@@ -852,7 +857,7 @@ static int r_decode_block(void *ctx, const uint8_t *bytes, size_t len,
 }
 
 /** Build the part set over record `k` of `node`'s registry (R5; as
- *  test_cmt_multinode.h:552-571). Idempotent. */
+ *  test_cmt_multinode.h:693 `mn_rec_ps_build`). Idempotent. */
 static int r_rec_ps_build(r_node_t *node, size_t k)
 {
     tc_block_rec_t *rec = &node->tc->recs[k];
@@ -1589,7 +1594,9 @@ static int r_start_consensus_net(r_net_t *net, size_t n_start)
 
 /* ══ the network: one round (R1) ══════════════════════════════════════ */
 
-/** The mock ticker's rule (R10; test_cmt_multinode.h:1510-1530 M5). */
+/** The mock ticker's rule (R10; test_cmt_multinode.h:1693 `mn_timers`, its
+ *  MN_TICKER_MOCK branch — M5; the driver's other two modes, M5's
+ *  when-idle and M16's quiescent, are not used here). */
 static int r_timers(r_node_t *node)
 {
     tc_t     *tc = node->tc;
@@ -2614,6 +2621,98 @@ static int s_receive_panics_if_init_peer_hasnt_been_called_yet(void)
 }
 
 /**
+ * PACKAGE C2e (register R3-A-5, CLOSING) — the production defect measured
+ * at `/tmp/stagef-20260917T024138Z` (seven nodes, production constants):
+ * the chain stopped at height 347 after ≈ 1 hour because `recv_arena` was
+ * never reset, exhausting after ≈ 380 heights' worth of block parts, at
+ * which point `r_copy_arena`'s CMT_REJECT was read by `cmt_conr_receive`
+ * as a DECODE error and stopped whichever honest peer's message hit the
+ * wall.
+ *
+ * NO REFERENCE TEST — Go allocates per message and has no arena to
+ * exhaust. This drives ≥ 3 × R_ARENA_CAP bytes of BlockPart messages
+ * (65 536 B payloads each, the channel's `CMT_BLOCK_PART_SIZE_BYTES`)
+ * through `cmt_conr_receive` directly, round-robining FOUR distinct mock
+ * peer ids the way several peers gossiping the same part would, and
+ * asserts `recv_arena.used` never exceeds one message's decoded size
+ * after any receive, and that no peer is EVER stopped for DECODE.
+ *
+ * RED ON THE OLD CODE (no reset at the top of `cmt_conr_receive`):
+ * `recv_arena.used` grows by 65 536 B per receive with nothing ever
+ * lowering it, so it exhausts R_ARENA_CAP (8 MiB) exactly at the 129th
+ * message (128 * 65536 = 8 388 608 = R_ARENA_CAP, leaving zero room for
+ * the 129th's `r_copy_arena` call) — the 129th receive (and every one
+ * after it) would return CMT_REJECT-turned-CMT_OK-with-a-log at
+ * `cmt_conr_receive`'s decode-error branch, `stop_peer_for_error
+ * (CMT_CONR_STOP_DECODE)` would fire for that call's peer, `stop_calls`
+ * would end this test in the hundreds rather than 0, and the very first
+ * `recv_arena.used` assertion at message 129 would already read
+ * R_ARENA_CAP, not "one message's size".
+ */
+static int s_recv_arena_resets_every_receive(void)
+{
+    r_net_t  *net = r_net_new(1u, 1u, true);
+    uint8_t   mock_id[4][CMT_PB_PEER_ID_MAX];
+    uint8_t  *fill;
+    cmt_msg_t *msg;
+    size_t    len          = 0u;
+    size_t    total_pushed = 0u;
+    size_t    n_messages   = (3u * (size_t)R_ARENA_CAP) /
+                             (size_t)CMT_BLOCK_PART_SIZE_BYTES + 8u;
+    size_t    i;
+
+    R_CHECK(net != NULL, "network");
+    R_STEP(r_start_consensus_net(net, 1u));
+
+    fill = (uint8_t *)malloc((size_t)CMT_BLOCK_PART_SIZE_BYTES);
+    R_CHECK(fill != NULL, "alloc the part payload buffer");
+    memset(fill, 0x37, (size_t)CMT_BLOCK_PART_SIZE_BYTES);
+
+    for (i = 0; i < 4u; i++) {
+        memset(mock_id[i], (int)(0x60 + i), sizeof(mock_id[i]));
+        R_CHECK(cmt_conr_init_peer(&net->nodes[0].conR, (int)(i + 1u),
+                                   mock_id[i]) == CMT_OK,
+                "InitPeer(mock peer)");
+    }
+
+    msg = net->msg_scratch;
+    for (i = 0; i < n_messages; i++) {
+        int peer_idx = (int)((i % 4u) + 1u);
+        int rc;
+
+        memset(msg, 0, sizeof(*msg));
+        msg->kind                          = CMT_PB_CONS_MSG_BLOCK_PART;
+        msg->u.block_part.height           = 1;
+        msg->u.block_part.round            = 0;
+        msg->u.block_part.part.index       = 0;
+        msg->u.block_part.part.bytes.data  = fill;
+        msg->u.block_part.part.bytes.len   = (size_t)CMT_BLOCK_PART_SIZE_BYTES;
+        R_CHECK(cmt_tmhash_sum((const uint8_t *)"leaf", 4u,
+                               msg->u.block_part.part.proof.leaf_hash) ==
+                    CMT_OK,
+                "tmhash.Sum(\"leaf\")");
+        msg->u.block_part.part.proof.leaf_hash_len = (size_t)CMT_TMHASH_SIZE;
+
+        R_STEP(r_marshal(net, msg, &len));
+        rc = cmt_conr_receive(&net->nodes[0].conR, peer_idx,
+                              CMT_CONR_DATA_CHANNEL, net->buf_scratch, len);
+        R_CHECK(rc == CMT_OK, "Receive of a well-formed BlockPart");
+        R_CHECK(net->nodes[0].recv_arena.used <=
+                    (size_t)CMT_BLOCK_PART_SIZE_BYTES + 4096u,
+                "recv_arena.used never exceeds one message's decoded size");
+        R_CHECK(net->nodes[0].stop_calls == 0,
+                "no peer is ever stopped for DECODE");
+        total_pushed += (size_t)CMT_BLOCK_PART_SIZE_BYTES;
+    }
+    R_CHECK(total_pushed >= 3u * (size_t)R_ARENA_CAP,
+            "pushed at least 3x the arena's old runway");
+
+    free(fill);
+    r_net_free(net);
+    return 0;
+}
+
+/**
  * NO REFERENCE TEST — this is a PORT-ONLY refusal (register R3-AUD-21).
  *
  * WHAT IT PROVES: that `SetHasProposal` (reactor.go:1096-1119) leaves the
@@ -3172,6 +3271,8 @@ int main(void)
           s_receive_does_not_panic_if_add_peer_hasnt_been_called_yet },
         { "receive_panics_if_init_peer_hasnt_been_called_yet",
           s_receive_panics_if_init_peer_hasnt_been_called_yet },
+        { "recv_arena_resets_every_receive",
+          s_recv_arena_resets_every_receive },
         { "set_has_proposal_applies_nothing_on_refusal",
           s_set_has_proposal_applies_nothing_on_refusal },
         { "start_after_stop_is_refused", s_start_after_stop_is_refused },

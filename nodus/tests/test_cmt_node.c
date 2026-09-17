@@ -183,6 +183,15 @@ static int g_checks = 0;
 #define TREASURY_RAW 93000000000000000ULL   /* test_cmt_app.c:155        */
 #define GEN_TIME_MS  1767225600000ULL       /* test_cmt_app.c:156        */
 
+/* ORCHESTRATOR delta 1, item B — a small, TEST-LOCAL executor bound, now
+ * that NODUS_CMT_APP_MAX_TXS is retired. Every fixture in this file
+ * carries at most a handful of transactions per block (most carry none
+ * at all), so a small capacity keeps the per-slot payload arenas modest
+ * — it says nothing about, and does not need to match, the byte-derived
+ * bounds the application itself computes at nodus_cmt_app_ledger_init
+ * (see that function's own comment, nodus_witness_cmt_app.c). */
+#define TEST_NODE_MAX_TXS ((size_t)16)
+
 typedef struct {
     uint8_t pk[QGP_DSA87_PUBLICKEYBYTES];
     uint8_t sk[QGP_DSA87_SECRETKEYBYTES];
@@ -462,7 +471,7 @@ static void opts_default(gfx_t *g, nodus_cmt_node_opts_t *o)
      * slots plus three executor arenas allocate hundreds of megabytes
      * per case. Named here because the header says the default is the
      * only value a PRODUCTION caller may use. */
-    o->limits.max_txs      = (size_t)NODUS_CMT_APP_MAX_TXS;
+    o->limits.max_txs      = TEST_NODE_MAX_TXS;
     o->limits.tx_arena_cap = 2u * 1024u * 1024u;
     o->limits.max_evidence = 4;
 }
@@ -807,7 +816,7 @@ static int bx_init_ex(bx_t *x, gfx_t *g, bool save_state)
     x->mp_if = nodus_cmt_nop_mempool;
     x->ev_if = nodus_cmt_empty_evpool;
     memset(&lim, 0, sizeof(lim));
-    lim.max_txs      = NODUS_CMT_APP_MAX_TXS;
+    lim.max_txs      = TEST_NODE_MAX_TXS;
     lim.tx_arena_cap = BX_SCRATCH_CAP;
     lim.max_evidence = 4;
     if (nodus_cmt_blockexec_init(x->be, x->store, &x->app_if, &x->mp_if,
@@ -1086,7 +1095,7 @@ static int run_handshake(gfx_t *g, bx_t *x, int *out_nblocks)
     int                     rc;
 
     memset(&lim, 0, sizeof(lim));
-    lim.max_txs      = NODUS_CMT_APP_MAX_TXS;
+    lim.max_txs      = TEST_NODE_MAX_TXS;
     lim.tx_arena_cap = BX_SCRATCH_CAP;
     lim.max_evidence = 4;
     shim_table(&shim, x->ledger);
@@ -1747,9 +1756,41 @@ static int t_genesis_doc_loader(void)
 
 /**
  * consensus/state.go:318-405 through `nodus_cmt_node_start`: the WAL is
- * opened OUTSIDE any transaction, seeded with EndHeight{0}
- * (wal.go:124-131), and `cmt_cs_start` is reached. Then everything
- * releases — ASan is what proves that, and the ORCHESTRATOR runs it.
+ * opened OUTSIDE any transaction and seeded with EndHeight{0}
+ * (wal.go:124-131).
+ *
+ * ORCHESTRATOR delta 1, item 2 / E — `cmt_cs_start` is DELIBERATELY NOT
+ * reached here any more (this comment used to claim it was): D-23 rev 7
+ * item 17 moves that call to `cmt_conr_start`, which the WITNESS builds
+ * and owns (nodus_witness.c's witness_cmt_live_init/witness_cmt_tick),
+ * not this module. The observable proof that `nodus_cmt_node_start`
+ * stops short of it: `scheduleRound0` (state.go:402, inside
+ * `cmt_cs_start`) arms the propose-timeout timer, so if `cmt_cs_start`
+ * had run, `nodus_cmt_host_next_deadline` would report one armed. It
+ * must not, here — see the assertion right after the start call below.
+ * `n->cs_started` — the field the WITNESS sets externally once
+ * `cmt_conr_start` actually reaches `cmt_cs_start` — must also stay
+ * false, for the same reason.
+ *
+ * Then everything releases — ASan is what proves that, and the
+ * ORCHESTRATOR runs it.
+ *
+ * ORCHESTRATOR delta 7, item A — the OBSERABLE proof of the nilWAL
+ * binding fix, not the log text: `cmt_cs_init` (inside
+ * `nodus_cmt_node_init`, called above) writes a round-state row through
+ * the SAME host `wal_write` row `nodus_cmt_node_start` seeds
+ * EndHeight{0} through later. Before this fix, `nodus_cmt_blockexec_init`
+ * bound `ctx->wal` to `&n->wal` — a non-NULL but UNOPENED wal object —
+ * so that write reached `nodus_cmt_wal_write` on an unopened WAL and
+ * FAILED (logging an error on every single init); the row still never
+ * landed (an unopened connection cannot write), so the row-count
+ * assertions above were already green even under the bug — only the
+ * host row's own RETURN CODE distinguishes fixed from broken. Calling
+ * `n->host.wal_write` DIRECTLY (the exact row `cmt_cs_init` itself
+ * calls, isolated from its own internals) proves both halves: CMT_OK
+ * with zero landed rows before start (the nilWAL-mirroring no-op), and
+ * a REAL row landing after start once the WAL is genuinely open and
+ * bound.
  */
 static int t_start_and_release(void)
 {
@@ -1770,6 +1811,25 @@ static int t_start_and_release(void)
           "a fresh chain directory has NO last-sign state file");
 
     CHECK(nodus_cmt_node_init(n, g.w, &o) == CMT_OK, "the node builds");
+    /* PACKAGE C2e, register R3-A-5: node_slots_alloc's part-set payload
+     * store, one per block slot, sized parts_cap[k] *
+     * CMT_BLOCK_PART_SIZE_BYTES — the same arithmetic node_slots_alloc's
+     * own comment states. ASan (a leak or a double-free in
+     * nodus_cmt_node_release, which this test reaches below) is what
+     * actually proves the free side; this proves the alloc side landed
+     * with the right size and every slot got one. */
+    {
+        int k;
+
+        CHECK(n->slots != NULL, "slots exist");
+        for (k = 0; k < CMT_CS_BLOCK_SLOTS; k++) {
+            CHECK(n->slots->part_bytes[k] != NULL,
+                  "every block slot has a part_bytes store");
+            CHECK(n->slots->part_bytes_cap[k] ==
+                      n->slots->parts_cap[k] * (size_t)CMT_BLOCK_PART_SIZE_BYTES,
+                  "part_bytes_cap is parts_cap * CMT_BLOCK_PART_SIZE_BYTES");
+        }
+    }
     {
         nodus_cmt_privval_t scratch;
         cmt_lss_t           back;
@@ -1800,11 +1860,68 @@ static int t_start_and_release(void)
           "no transaction is open across the start boundary "
           "(nodus_witness_cmt_wal.h's §B.4 caller contract)");
 
+    /* ORCHESTRATOR delta 7, item A — the DIRECT proof: the exact host
+     * row `cmt_cs_init` itself calls, isolated from its own internals.
+     * `nodus_cmt_blockexec_init` bound `ctx->wal = NULL` in
+     * `nodus_cmt_node_init` above (the port's own nilWAL,
+     * nodus_witness_cmt_host.c's `host_wal_write`), so a write reaching
+     * it BEFORE start returns CMT_OK and lands nowhere — RED before this
+     * fix: `ctx->wal` was `&n->wal` (non-NULL, unopened), so this exact
+     * call would have returned CMT_FAULT (nodus_cmt_wal_write failing
+     * against an unopened WAL) instead of CMT_OK. */
+    {
+        cmt_wal_message_t msg;
+
+        memset(&msg, 0, sizeof(msg));
+        msg.kind = CMT_PB_WAL_EVENT_DATA_ROUND_STATE;
+        msg.u.event_data_round_state.height = 1;
+        CHECK(n->host.wal_write(n->be, &msg) == CMT_OK,
+              "a WAL write reaching the host before start is the "
+              "nilWAL's silent no-op (CMT_OK), not a fault");
+        CHECK(q1(g.w->db, "SELECT COUNT(*) FROM cmt_wal") == 0,
+              "and it still landed NOWHERE — the row count is unchanged");
+    }
+
     CHECK(nodus_cmt_node_start(n) == CMT_OK, "the node starts");
     CHECK(q1(g.w->db, "SELECT COUNT(*) FROM cmt_wal") == 1,
           "start wrote EndHeight(0) exactly once (wal.go:124-131)");
     CHECK(sqlite3_get_autocommit(g.w->db) == 1,
           "and left no transaction open");
+
+    /* ORCHESTRATOR delta 7, item A — the SAME row, called the SAME way,
+     * now reaches the REAL bound-and-open WAL: a genuine second row
+     * lands. RED if `nodus_cmt_node_start` failed to bind the real WAL
+     * via `nodus_cmt_blockexec_set_wal` (the write would either fault
+     * again, or — if some future change silently restored a permanent
+     * no-op — return CMT_OK while the row count stayed at 1). */
+    {
+        cmt_wal_message_t msg;
+
+        memset(&msg, 0, sizeof(msg));
+        msg.kind = CMT_PB_WAL_EVENT_DATA_ROUND_STATE;
+        msg.u.event_data_round_state.height = 2;
+        CHECK(n->host.wal_write(n->be, &msg) == CMT_OK,
+              "a WAL write after start succeeds against the REAL, open "
+              "WAL");
+        CHECK(q1(g.w->db, "SELECT COUNT(*) FROM cmt_wal") == 2,
+              "and a genuine second row lands — the WAL is truly bound "
+              "now, not still silently discarding writes");
+    }
+    /* ORCHESTRATOR delta 1, item 2 / E — the state machine is NOT
+     * running after nodus_cmt_node_start: no armed propose timer (the
+     * scheduleRound0 side effect only cmt_cs_start produces), and
+     * n->cs_started stays the false the struct was calloc'd with (this
+     * module never sets it any more — see nodus_witness_cmt_node.h's
+     * comment on that field). Would go RED if cmt_cs_start were ever
+     * called from here again. */
+    {
+        int64_t dl = 0;
+        CHECK(!nodus_cmt_host_next_deadline(n->be, &dl),
+              "no propose timer armed — cmt_cs_start did not run");
+        CHECK(!n->cs_started, "cs_started stays false: only the caller "
+              "that reaches cmt_cs_start through cmt_conr_start may set "
+              "it");
+    }
     CHECK(nodus_cmt_node_start(n) == CMT_FAULT, "a second start is refused");
 
     nodus_cmt_node_release(n);
@@ -1894,7 +2011,15 @@ static int t_init_invariants(void)
     CHECK(n != NULL, "alloc");
 
     opts_default(&g, &o);
-    o.limits.max_txs = (size_t)NODUS_CMT_APP_MAX_TXS + 1u;
+    /* ORCHESTRATOR delta 1, item B/7 — the application's own bound is
+     * now the byte-derived env_bound (hundreds of thousands at this
+     * fixture's genesis Block.MaxBytes), not the retired
+     * NODUS_CMT_APP_MAX_TXS (10). A value comfortably above ANY
+     * plausible byte-derived bound — one million, far past what
+     * Block.MaxBytes / a 73-byte minimal envelope could ever yield —
+     * proves the SAME invariant without this test needing to know the
+     * fixture's exact derived figure. */
+    o.limits.max_txs = (size_t)1000000;
     CHECK(nodus_cmt_node_init(n, g.w, &o) == CMT_FAULT,
           "an executor sized above the application's own bound is refused");
 
@@ -1954,7 +2079,7 @@ static int t_mock_app_rows(void)
     m = (nodus_cmt_mock_app_t *)calloc(1, sizeof(*m));
     CHECK(m != NULL, "alloc");
     CHECK(nodus_cmt_mock_app_open(m, x.store, g.w->db, 1, NULL, 0,
-                                  (size_t)NODUS_CMT_APP_MAX_TXS) == CMT_OK,
+                                  TEST_NODE_MAX_TXS) == CMT_OK,
           "the stored FinalizeBlock response at height 1 loads "
           "(replay.go:439)");
     CHECK(m->resp.app_hash_len == 64 &&

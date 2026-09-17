@@ -105,6 +105,17 @@
  *     The blocks carry a one-signature test commit that is never
  *     verified (store_test.go's makeTestExtCommit), so the leg proves
  *     lock behaviour, not commit validity.
+ *  8. R3-W3-C2a-17 (delta 9) — `t_store_get_then_full_write_then_main_
+ *     write` reproduces the Genesis Protocol harness's SQLITE_BUSY_
+ *     SNAPSHOT stall with ONE `get`/one FULL-connection commit; it does
+ *     NOT reproduce the harness's own timing (many own-vote WriteSyncs
+ *     racing many stores reads under real network load) or prove the
+ *     fix holds under concurrency — SQLite access here is single-
+ *     threaded, as everywhere else in this file. It proves the
+ *     MECHANISM (a stepped-and-unreset SELECT statement pins a read
+ *     snapshot that a FULL-connection commit then makes stale for every
+ *     main-connection write), not a load-bearing guarantee under
+ *     contention.
  *  NOT PORTED — BLOCKED BY:
  *   · TestFinalizeBlockRecoveryUsingLegacyABCIResponses
  *     (state/store_test.go:309) — no legacy format in this chain (D-23).
@@ -408,11 +419,72 @@ static int dbfx_open(dbfx_t *fx)
     return 0;
 }
 
+/**
+ * ORCHESTRATOR delta 6, item B — RESTORED: a witness-level reopen
+ * through the REAL `nodus_witness_create_chain_db` path, exercising
+ * `witness_post_open_gate` itself. Removed as dead code in delta 2/3
+ * when its only caller (`t_s14_fresh_climb`) moved to the raw form
+ * below; `t_s14_half_present_catalogue_refused` (delta 6) is a second,
+ * legitimate caller — that case is specifically ABOUT the gate's new
+ * half-present-catalogue refusal, so it must reopen through the gate,
+ * not around it. */
 static int dbfx_reopen(dbfx_t *fx)
 {
     sqlite3_close(fx->w->db);
     fx->w->db = NULL;
     return nodus_witness_create_chain_db(fx->w, fx->chain_id16);
+}
+
+/**
+ * ORCHESTRATOR delta 2, item C — a RAW reopen of the underlying sqlite
+ * file, bypassing `nodus_witness_create_chain_db` entirely (and
+ * therefore `witness_post_open_gate` too). `t_s14_fresh_climb` uses
+ * this: it migrates a FRESH database straight to S14 by calling the
+ * migration function directly, never storing a genesis document (that
+ * is `nodus_witness_v2_gen_derive_v3`'s job — it writes the completed
+ * document's bytes into `cmt_state` under "genesisDoc",
+ * nodus_witness_v2_gen.h's own doc comment on that function), a shape
+ * the gate now correctly REFUSES at the witness level (D-17 rev 10 (9):
+ * "S14 stores present but no canonical stored genesis document" —
+ * refusing the database, fail closed). This helper proves only the
+ * NARROWER claim the migration itself makes — that the SCHEMA persists
+ * across a close and reopen of the raw sqlite file — and does NOT
+ * exercise `witness_post_open_gate` at all.
+ *
+ * NAMED GAP, not papered over: no fixture in this test suite currently
+ * drives `witness_post_open_gate`'s ACCEPT branch (S14 stores present
+ * AND a genuine stored document, `v2_successor` set true) through a REAL
+ * call to `nodus_witness_create_chain_db`. Every fixture that needs a
+ * genuine version-3 chain with a stored document
+ * (`nodus_witness_v2_gen_derive_v3`, used by both test_cmt_app.c's and
+ * test_cmt_node.c's own `gfx_open`) opens the resulting database BY HAND
+ * afterward — each says so in its own comment, because
+ * `nodus_witness_create_chain_db` cannot yet answer the height-0
+ * chain_id call its own role derivation makes for a version-3 chain.
+ * The gate's REFUSAL branches are exercised (this case, delta 6's
+ * half-present-catalogue case, and test_v2_gate_pure.c's legacy/
+ * pre-Comet coverage); its ACCEPT branch for a genuine version-3
+ * restart is not, and is reported as such rather than claimed here.
+ *
+ * The witness-level `dbfx_reopen` (above) was removed as dead code in
+ * delta 2/3 when its only caller moved to this raw form, and RESTORED
+ * in delta 6 for `t_s14_half_present_catalogue_refused`'s own, distinct
+ * need — a case specifically about `witness_post_open_gate`'s refusal
+ * behaviour, which must reopen THROUGH the gate, not around it.
+ */
+static int dbfx_reopen_raw(dbfx_t *fx)
+{
+    char hex[33];
+    char path[512];
+    int  i;
+
+    sqlite3_close(fx->w->db);
+    fx->w->db = NULL;
+    for (i = 0; i < 16; i++) {
+        snprintf(hex + i * 2, 3, "%02x", fx->chain_id16[i]);
+    }
+    snprintf(path, sizeof(path), "%s/witness_%s.db", fx->dir, hex);
+    return sqlite3_open(path, &fx->w->db) == SQLITE_OK ? 0 : -1;
 }
 
 static void dbfx_close(dbfx_t *fx)
@@ -1103,11 +1175,83 @@ static int t_s14_fresh_climb(void)
     CHECK(nodus_witness_db_migrate_v2s14(fx.w) == 0, "re-run 14");
     CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 14,
           "re-run moved version");
-    /* restart keeps it */
-    CHECK(dbfx_reopen(&fx) == 0, "reopen");
+    /* ORCHESTRATOR delta 2, item C — restart keeps it, proved at the
+     * SCHEMA level via a RAW reopen of the sqlite file
+     * (`dbfx_reopen_raw`), not through `nodus_witness_create_chain_db`.
+     * This fixture never stores a genesis document (only the migration
+     * ran), so a reopen through the real witness-level path would now
+     * correctly hit `witness_post_open_gate`'s S14-stores-but-no-
+     * document refusal (D-17 rev 10 (9)) — see `dbfx_reopen_raw`'s own
+     * doc comment for the full picture, including the NAMED GAP that no
+     * fixture in this suite currently drives the gate's ACCEPT branch
+     * through a real `nodus_witness_create_chain_db` call. What THIS
+     * case proves is narrower and still true: the S14 schema (tables,
+     * columns, the cmt_wal row shape) persists across a close and reopen
+     * of the raw database file, independent of any higher-level open
+     * policy; the gate itself is neither exercised nor weakened here. */
+    CHECK(dbfx_reopen_raw(&fx) == 0, "raw reopen");
     CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 14,
-          "restart lost 14");
-    CHECK(has_table(fx.w->db, "cmt_wal") == 1, "restart lost cmt_wal");
+          "raw restart lost 14");
+    CHECK(has_table(fx.w->db, "cmt_wal") == 1, "raw restart lost cmt_wal");
+    dbfx_close(&fx);
+    return 0;
+}
+
+/**
+ * ORCHESTRATOR delta 6, item B — `witness_post_open_gate`'s (a)/(c)
+ * boundary: EXACTLY ONE of `cmt_state`/`cmt_blockstore` existing must be
+ * REFUSED, not read as (b)'s pre-genesis case. The S14 rung creates both
+ * tables together in one migration transaction (D-17 rev 5), so a
+ * half-present catalogue can only be a corrupt database or a migration
+ * interrupted mid-transaction — this case simulates that directly (the
+ * migration itself cannot be interrupted from a test, since it is
+ * transactional by construction) by dropping ONE of the two tables
+ * after a clean S14 migration, then reopening through the REAL
+ * witness-level path (`dbfx_reopen`, NOT `dbfx_reopen_raw` —
+ * this case is specifically about `witness_post_open_gate`'s own new
+ * refusal branch, so it must go THROUGH the gate). Expects refusal and
+ * the database byte-identical to before the reopen attempt: a refused
+ * open must not mutate anything.
+ */
+static int t_s14_half_present_catalogue_refused(void)
+{
+    dbfx_t  fx;
+    uint32_t ver = 0;
+    uint8_t before[64], after[64];
+
+    CHECK(dbfx_open(&fx) == 0, "fixture");
+    CHECK(nodus_witness_db_migrate_v2s14(fx.w) == 0, "0->14");
+    CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 14,
+          "version 14");
+    CHECK(has_table(fx.w->db, "cmt_state") == 1 &&
+          has_table(fx.w->db, "cmt_blockstore") == 1,
+          "S14 created BOTH stores together");
+
+    /* Simulate the corruption/interruption directly: drop ONE table,
+     * leaving a half-present S14 catalogue no honest migration could
+     * produce on its own. */
+    CHECK(run_sql(fx.w->db, "DROP TABLE cmt_blockstore") == 0,
+          "cmt_blockstore dropped — cmt_state alone now survives");
+    CHECK(db_digest(fx.w->db, before) == 0, "digest before the reopen "
+          "attempt");
+
+    CHECK(dbfx_reopen(&fx) == -1,
+          "a half-present S14 catalogue is REFUSED, not silently read "
+          "as a fresh (pre-genesis) chain");
+    CHECK(fx.w->db == NULL, "the refused open leaves no handle behind "
+          "— witness_post_open_gate's own fail-closed convention");
+
+    /* The digest is read through a RAW reopen (dbfx_reopen_raw), not
+     * dbfx_reopen again — the point here is only that the refused
+     * attempt above mutated nothing, not a second exercise of the
+     * gate. */
+    CHECK(dbfx_reopen_raw(&fx) == 0, "raw reopen to read the digest back");
+    CHECK(db_digest(fx.w->db, after) == 0, "digest after the refused "
+          "reopen attempt");
+    CHECK(memcmp(before, after, 64) == 0,
+          "the refused reopen changed NOTHING — the database is "
+          "byte-identical to before the attempt");
+
     dbfx_close(&fx);
     return 0;
 }
@@ -2407,6 +2551,138 @@ static int t_wal_main_connection_interaction(void)
     return 0;
 }
 
+/**
+ * R3-W3-C2a-17 (delta 9) — the SQLITE_BUSY_SNAPSHOT regression the
+ * Genesis Protocol harness found at PRODUCTION constants: seven nodes,
+ * the mesh formed in seconds, height 1 committed on all seven, then
+ * EVERY node's Write-class WAL rows on the MAIN connection failed
+ * ("database is locked", ≈50 times) and finally the store's own `BEGIN
+ * IMMEDIATE` failed the same way, stopping `cmt_cs_step` on every node
+ * (`/tmp/stagef-20260917T032550Z`, torn down). `t_wal_main_connection_
+ * interaction` above never caught this — it never interleaves a
+ * MATERIALISED `get` (one that returned SQLITE_ROW and was never reset)
+ * with a FULL-connection commit. This case does exactly that:
+ * `nodus_cmt_store_get` used to leave its statement STEPPED across the
+ * return (the row pointer valid "until the next call" MEANT the
+ * statement stayed unreset that long), pinning an open READ transaction
+ * — a WAL snapshot — on the main connection. The moment the WAL's
+ * separate FULL connection commits (a WriteSync, in production every
+ * own-vote message), the main connection's snapshot is stale, and
+ * SQLite's rule that a read transaction can never be promoted to a
+ * write one once another connection has written since the snapshot was
+ * taken means EVERY subsequent main-connection write returns
+ * SQLITE_BUSY_SNAPSHOT — the busy handler is NOT invoked for it, so no
+ * timeout ever resolves it; it persists until the statement is reset.
+ *
+ * RED before the fix, at assertion (a): the `get` below leaves `bs_get`
+ * stepped; `nodus_cmt_wal_write_sync` then commits on the FULL
+ * connection; the very next main-connection write — `nodus_cmt_wal_
+ * write`, one `INSERT INTO cmt_wal` — hits SQLITE_BUSY_SNAPSHOT and
+ * `host_wal_write`/`nodus_cmt_wal_write`'s own error path logs "cmt_wal
+ * insert failed: database is locked" and returns CMT_FAULT, so
+ * assertion (a) reads CMT_FAULT where it expects CMT_OK — exactly the
+ * harness's own log line. GREEN after the fix: `get` copies the row and
+ * resets `bs_get` (+ clears its bindings) before returning, so the main
+ * connection holds no transaction across the FULL connection's commit,
+ * and (a)/(b)/(c) below all succeed normally; (d) confirms the COPY
+ * contract — the pointer `get` returned keeps reading the same bytes
+ * long after its own statement was reset and reused.
+ */
+static int t_store_get_then_full_write_then_main_write(void)
+{
+    t_env_t                    e;
+    nodus_cmt_wal_t           *w;
+    cmt_wal_message_t         *m;
+    cmt_block_t               *b;
+    cmt_commit_t              *empty, *commit;
+    cmt_commit_sig_t          *sigs;
+    cmt_part_set_t             ps;
+    cmt_extended_commit_t      ec;
+    cmt_extended_commit_sig_t  ecs[1];
+    cmt_data_t                 data;
+    cmt_validator_t            proposer;
+    const uint8_t             *got = NULL;
+    size_t                     got_len = 0;
+    static const uint8_t       blob[8] = { 'd','e','l','t','a','9','!','!' };
+
+    CHECK(env_make_state(&e, 1, 1) == 0, "makeState(1, 1): S14 fixture + store");
+    w = (nodus_cmt_wal_t *)calloc(1, sizeof(*w));
+    m = (cmt_wal_message_t *)calloc(1, sizeof(*m));
+    b = (cmt_block_t *)calloc(1, sizeof(*b));
+    empty = (cmt_commit_t *)calloc(1, sizeof(*empty));
+    commit = (cmt_commit_t *)calloc(1, sizeof(*commit));
+    sigs = (cmt_commit_sig_t *)calloc(CMT_VALSET_MAX, sizeof(*sigs));
+    CHECK(w && m && b && empty && commit && sigs, "alloc");
+    CHECK(nodus_cmt_wal_open(w, e.fx.w->db, t_now, NULL) == CMT_OK,
+          "wal open — the FULL connection, same file as the store's main");
+    {
+        cmt_validator_set_t vals;
+        cmt_validator_t *vstor = (cmt_validator_t *)
+            calloc(CMT_VALSET_MAX, sizeof(cmt_validator_t));
+
+        CHECK(vstor && cmt_validator_set_init(&vals, vstor, CMT_VALSET_MAX) == CMT_OK &&
+              cmt_validator_set_copy(&e.state->validators, &vals) == CMT_OK &&
+              cmt_validator_set_get_proposer(&vals, &proposer) == CMT_OK, "proposer");
+        free(vstor);
+    }
+
+    /* set a blockstore key, then get it and KEEP the returned pointer —
+     * on the OLD code this leaves bs_get stepped (an open read txn on
+     * the main connection, the exact state the harness's nodes were in
+     * between a store read and the next WAL write). */
+    CHECK(nodus_cmt_store_set(e.store, false, "delta9-key", blob, sizeof(blob))
+              == CMT_OK, "set");
+    CHECK(nodus_cmt_store_get(e.store, false, "delta9-key", &got, &got_len)
+              == CMT_OK && got_len == sizeof(blob) &&
+              memcmp(got, blob, sizeof(blob)) == 0,
+          "get reads back the value — keep this pointer live across "
+          "everything below");
+
+    /* the trigger: one FULL-connection commit (in production, any
+     * own-vote WriteSync). */
+    wal_round_state(m, 1, 0);
+    CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_OK,
+          "a FULL-connection commit — the trigger");
+
+    /* (a) RED on the old code: a Write-class row on the MAIN connection. */
+    CHECK(nodus_cmt_wal_write(w, m) == CMT_OK,
+          "(a) a main-connection WAL write after the FULL commit — "
+          "CMT_FAULT here (\"cmt_wal insert failed: database is "
+          "locked\", SQLITE_BUSY_SNAPSHOT) is exactly the harness's "
+          "stall");
+
+    /* (b) a plain store SET on main. */
+    CHECK(nodus_cmt_store_set(e.store, false, "delta9-key2", blob, sizeof(blob))
+              == CMT_OK, "(b) a store SET on main after the FULL commit");
+
+    /* (c) a REAL nodus_cmt_bs_save_block batch — its own BEGIN IMMEDIATE
+     * … COMMIT, the same multi-statement transaction the harness's own
+     * "SQL failed (BEGIN IMMEDIATE): database is locked" line names. */
+    CHECK(env_make_n_txs(&e, 1, 10, &data) == 0 &&
+          cmt_state_make_block(e.state, 1, &data, empty, NULL,
+                               proposer.address, proposer.address_len,
+                               e.bscratch, b) == CMT_OK &&
+          env_make_part_set(&e, b, &ps) == 0, "makeBlock(1) + part set");
+    make_test_ext_commit(1, g_now, 1, 0xC1u, ecs, &ec);
+    CHECK(cmt_extended_commit_to_commit(&ec, sigs, CMT_VALSET_MAX, commit)
+              == CMT_OK, "seenExtendedCommit.ToCommit()");
+    CHECK(nodus_cmt_bs_save_block(e.store, b, &ps, commit, e.size_scratch,
+                                  e.part_scratch_cap) == CMT_OK,
+          "(c) a REAL SaveBlock batch (its own BEGIN IMMEDIATE) on main");
+
+    /* (d) the FIRST get's pointer still reads its own value — the COPY
+     * contract: valid until the NEXT get on the SAME table, unaffected
+     * by anything else that ran on either connection above. */
+    CHECK(got_len == sizeof(blob) && memcmp(got, blob, sizeof(blob)) == 0,
+          "(d) the first get's pointer still reads its own value after "
+          "(a)/(b)/(c) — the copy contract holds");
+
+    nodus_cmt_wal_close(w);
+    free(w); free(m); free(b); free(empty); free(commit); free(sigs);
+    env_free(&e);
+    return 0;
+}
+
 /* ══════════════════════════════════════════════════════════════════════
  * store/store.go — BlockStore (store/store_test.go)
  * ══════════════════════════════════════════════════════════════════════ */
@@ -3475,11 +3751,22 @@ static int t_ss_int_conversion(void)
     CHECK(dbfx_open_s14(&fx) == 0, "fixture");
     s = (nodus_cmt_store_t *)calloc(1, sizeof(*s));
     CHECK(s && nodus_cmt_store_init(s, fx.w->db, false) == CMT_OK, "store");
-    CHECK(nodus_cmt_ss_get_offline_state_sync_height(s, &h) == CMT_REJECT, "value empty");
+    /* ORCHESTRATOR delta 1, item 8 / E (R3-C1c-2, CLOSED) — the tri-state
+     * contract: absent → CMT_OK with *out == 0, SILENTLY (state.go:397-
+     * 403's tolerance); a genuinely unreadable row stays CMT_FAULT
+     * (unchanged, not driven here — see the file's own honesty note);
+     * a NEGATIVE decoded height → CMT_FAULT (the reference's panic),
+     * where this test previously (and wrongly, before this fix)
+     * expected CMT_REJECT for BOTH the absent and the negative case. */
+    h = -12345;   /* poison, so "unset" is distinguishable from "unread" */
+    CHECK(nodus_cmt_ss_get_offline_state_sync_height(s, &h) == CMT_OK &&
+          h == 0, "value empty: CMT_OK, height silently 0");
     CHECK(nodus_cmt_ss_set_offline_state_sync_height(s, 77) == CMT_OK &&
           nodus_cmt_ss_get_offline_state_sync_height(s, &h) == CMT_OK && h == 77, "77");
     CHECK(nodus_cmt_ss_set_offline_state_sync_height(s, -3) == CMT_OK &&
-          nodus_cmt_ss_get_offline_state_sync_height(s, &h) == CMT_REJECT, "negative refused");
+          nodus_cmt_ss_get_offline_state_sync_height(s, &h) == CMT_FAULT,
+          "a negative stored height is CMT_FAULT (the reference's panic), "
+          "not CMT_REJECT");
     nodus_cmt_store_release(s);
     free(s);
     dbfx_close(&fx);
@@ -4899,12 +5186,20 @@ static int t_host_table_and_timer(void)
           "non-positive duration fires on the next tick");
     CHECK(h.timer_arm(x.be, 1) == CMT_OK && h.timer_disarm(x.be) == CMT_OK &&
           !nodus_cmt_host_timer_due(x.be, INT64_MAX), "disarm discards");
-    /* the WAL rows without a WAL bound are a FAULT, never a crash */
+    /* ORCHESTRATOR delta 1, item 8 / E (R3-C1c-6): host_wal_write on an
+     * UNOPENED WAL is now CMT_OK, not CMT_FAULT — the reference's
+     * `nilWAL` (state.go:174, wal.go:426 `func (nilWAL) Write(m
+     * WALMessage) {}`) is a SILENT no-op, because `cmt_cs_init` writes a
+     * newStep row before `nodus_cmt_node_start` ever opens the real WAL.
+     * This case used to assert the opposite (CMT_FAULT) before that fix;
+     * asserting CMT_OK here is what turns RED if the fix is ever
+     * reverted. */
     {
         cmt_wal_message_t m;
 
         wal_end_height(&m, 1);
-        CHECK(h.wal_write(x.be, &m) == CMT_FAULT, "no WAL bound");
+        CHECK(h.wal_write(x.be, &m) == CMT_OK, "nilWAL: no WAL bound is a "
+              "silent no-op, not a fault");
     }
     /* bs_height forwards the store */
     CHECK(h.bs_height(x.be, &dl) == CMT_OK && dl == 0, "bs_height");
@@ -4934,6 +5229,7 @@ int main(void)
 {
     static const t_case_t cases[] = {
         { "s14_fresh_climb",                       t_s14_fresh_climb },
+        { "s14_half_present_catalogue_refused",    t_s14_half_present_catalogue_refused },
         { "s14_from_13_with_fail_stages",          t_s14_from_13_with_fail_stages },
         { "s14_unknown_15_fails_closed",           t_s14_unknown_15_fails_closed },
         { "codec_small_vectors",                   t_codec_small_vectors },
@@ -4947,6 +5243,8 @@ int main(void)
         { "wal_start_and_search",                  t_wal_start_and_search },
         { "wal_corruption_faults",                 t_wal_corruption_faults },
         { "wal_main_connection_interaction",       t_wal_main_connection_interaction },
+        { "store_get_then_full_write_then_main_write",
+                                    t_store_get_then_full_write_then_main_write },
         { "store_load_block_store_state",          t_store_load_block_store_state },
         { "store_new_block_store",                 t_store_new_block_store },
         { "store_save_load_block",                 t_store_save_load_block },

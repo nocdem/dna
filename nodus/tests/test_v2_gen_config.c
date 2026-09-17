@@ -226,6 +226,28 @@ static int cfg_make(cfgbox_t *b, uint16_t c0_extra) {
     return 0;
 }
 
+/* R3 W3 (D-17 rev 10 (8)) — the SAME reference composition, completed to
+ * a version-3 document. §7 D8 needs this: the merged tree's post-open
+ * chain-role gate now refuses a version-2 chain on RESTART (the closed
+ * lane, D-17 rev 10 (9)), and the property that section proves — a node
+ * holding a real chain must not be told it has none — is
+ * lane-independent. */
+static int cfg_make_v3(cfgbox_t *b) {
+    if (cfg_make(b, 0) != 0) return -1;
+    b->cfg->config_version = NODUS_V2_GEN_CONFIG_VERSION_V3;
+    if (nodus_witness_v2_gen_v3_defaults(b->cfg) != 0) {
+        cfg_free(b);
+        return -1;
+    }
+    b->cfg->genesis_time_ms = 1700000000000ULL;
+    b->cfg->initial_height  = 1;
+    if (nodus_witness_v2_gen_v3_fill_comet_rows(b->cfg) != 0) {
+        cfg_free(b);
+        return -1;
+    }
+    return 0;
+}
+
 /* ── the reference config, as text ───────────────────────────────────── */
 
 /* Serialise a config to the operator text form.
@@ -1009,7 +1031,14 @@ static int test_derive_idempotency_and_marker(void) {
 }
 
 /* ════════════════════════════════════════════════════════════════════
- * §7 — D8: a node holding a V2 chain must not be told it has none
+ * §7 — D8: a node holding a chain must not be told it has none
+ *
+ * R3 W3 (D-17 rev 10 (8)/(9)): the merged tree's post-open chain-role
+ * gate now refuses a version-2 chain on RESTART too — the closed lane's
+ * own approved closure — so this section derives a VERSION-3 chain
+ * instead. The property it proves is lane-independent: a node holding a
+ * real chain must not be told it has none, whichever schema that chain
+ * is at.
  *
  * The production sequence, in order, with nothing stubbed: derive a real
  * chain, then RESTART on it — nodus_witness_scan_chain_db, which is the
@@ -1021,10 +1050,10 @@ static int test_derive_idempotency_and_marker(void) {
  * ══════════════════════════════════════════════════════════════════ */
 
 static int test_bootstrap_start_on_a_v2_chain(void) {
-    printf("§7 D8 a restart on a derived V2 chain reaches DONE\n");
+    printf("§7 D8 a restart on a derived version-3 chain reaches DONE\n");
 
     cfgbox_t A;
-    CHECK(cfg_make(&A, 0) == 0, "config A");
+    CHECK(cfg_make_v3(&A) == 0, "config A (version 3)");
     OK();
 
     char dir[128];
@@ -1033,8 +1062,8 @@ static int test_bootstrap_start_on_a_v2_chain(void) {
 
     /* out_chain32 is optional and not asserted here — the chain id is
      * §1-§2's subject; this section only needs the chain to exist. */
-    CHECK(nodus_witness_v2_gen_derive(dir, A.cfg, NULL) == 0,
-          "a real V2 chain is derived into the data directory");
+    CHECK(nodus_witness_v2_gen_derive_v3(dir, A.cfg, NULL) == 0,
+          "a real version-3 chain is derived into the data directory");
     cfg_free(&A);
     OK();
 
@@ -1060,10 +1089,11 @@ static int test_bootstrap_start_on_a_v2_chain(void) {
           "the derived chain reopens through the RESTART path");
     CHECK(w->db != NULL, "the restart leaves an open handle");
     CHECK(w->v2_successor,
-          "production's OWN role derivation calls it a pure V2 successor "
-          "— ASSERTED, never assigned: a scan that stopped recognising "
-          "the chain must fail here, not route the rest of this test "
-          "through the V1 path and report green");
+          "production's OWN role derivation calls it a V2-successor-lane "
+          "chain (version-2 or version-3 alike) — ASSERTED, never "
+          "assigned: a scan that stopped recognising the chain must fail "
+          "here, not route the rest of this test through the V1 path "
+          "and report green");
     OK();
 
     /* ── The two facts that make a HEIGHT test unusable as the
@@ -1072,16 +1102,17 @@ static int test_bootstrap_start_on_a_v2_chain(void) {
     {
         uint64_t v2_tip = UINT64_MAX;
         CHECK(nodus_witness_v2_tip_height(w, &v2_tip) == 0 && v2_tip == 0,
-              "V2 genesis sits at global_height 0, so the V2 tip of a "
-              "freshly derived chain is 0 — a tip test cannot tell it "
-              "from an empty table");
+              "a version-3 chain writes NO genesis block row at all "
+              "(D-19 rev 6) — COALESCE(MAX(global_height),0) over the "
+              "empty v2_blocks table answers 0 — so a tip test still "
+              "cannot tell a freshly derived chain from an empty table");
 
         sqlite3_stmt *st = NULL;
         int prc = sqlite3_prepare_v2(
             w->db, "SELECT COALESCE(MAX(height), 0) FROM blocks",
             -1, &st, NULL);
         CHECK(prc == SQLITE_OK,
-              "the legacy `blocks` table EXISTS on a derived V2 chain — "
+              "the legacy `blocks` table EXISTS on a derived chain — "
               "every open applies the full base schema "
               "(nodus_witness.c:63, exec at :516) — so chain_tip_height "
               "does not fault into the tip<0 refusal");
@@ -1101,7 +1132,7 @@ static int test_bootstrap_start_on_a_v2_chain(void) {
     OK();
 
     CHECK(nodus_witness_bootstrap_start(w) == 0,
-          "bootstrap_start accepts a node that holds a V2 chain");
+          "bootstrap_start accepts a node that holds a version-3 chain");
     CHECK(w->bootstrap_state == (int)NODUS_W_BOOTSTRAP_DONE,
           "and it ends at DONE. Asserting merely != DISCOVER would be "
           "vacuous: INIT satisfies that, and INIT is where it started");
@@ -1113,7 +1144,7 @@ static int test_bootstrap_start_on_a_v2_chain(void) {
     free(w);
     rmrf(dir);
     OK();
-    printf("  ok: a V2 chain is recognised as a chain\n");
+    printf("  ok: a version-3 chain is recognised as a chain\n");
     return 0;
 }
 

@@ -289,6 +289,25 @@ extern "C" {
 #define NODUS_V2_GLOBAL_UNIT_BUDGET  1000000u
 
 /**
+ * R3 W3 (ORCHESTRATOR, 2026-09-17) — THE ENGINE'S PER-BLOCK ITEM BOUND,
+ * exported. `nodus_witness_v2_apply.c` sizes its per-block scratch
+ * (`wire_ids[MAX_OPS][64]`, `claim_nuls[MAX_OPS][64]`, the per-domain
+ * `n_tx` walk) at this many items and FAULTS a block that declares more
+ * (`cometbft lane: the block declares N claims with an over-long array;
+ * this engine holds 16`). Until W3 the Comet application's own request
+ * cap (`NODUS_CMT_APP_MAX_TXS` = 10, retired in C2a delta 4 for the
+ * byte-bound seam) kept every DECIDED block inside it by accident; the
+ * Genesis Protocol harness then decided a 40-claim block at production
+ * constants and every node stopped at height 7 (`/tmp/stagef-
+ * 20260917T034259Z`). The application now derives its PrepareProposal
+ * pack cap and its ProcessProposal refusal from THIS number, so a block
+ * the engine cannot hold is never proposed by an honest node and never
+ * prevoted by one. A release RESOURCE bound of this engine — not a
+ * protocol maximum, exactly like `MAX_DOMS`.
+ */
+#define NODUS_V2_APPLY_MAX_OPS 16u
+
+/**
  * Bound on the engine's refusal-reason string (`nodus_v2_block_t
  * .out_reason`), NUL included. 256 is the size the witness layer already
  * uses for the same job — nodus_witness.h:236 `char reason[256]` and the

@@ -204,6 +204,29 @@ static int cfg_make(cfgbox_t *b) {
     return 0;
 }
 
+/* R3 W3 (D-17 rev 10 (8)/(9)) — the SAME §0 composition, completed to a
+ * version-3 document via the two builder calls the ceremony tool uses.
+ * The base fields (validators, allocation, economic parameters) are
+ * IDENTICAL to cfg_make's — only config_version and the v3-only fields
+ * differ — so §1's "a real chain opens the gate and arms" property is
+ * proven on the SAME composition this file has always used, just
+ * completed to the schema this build now accepts. */
+static int cfg_make_v3(cfgbox_t *b) {
+    if (cfg_make(b) != 0) return -1;
+    b->cfg->config_version = NODUS_V2_GEN_CONFIG_VERSION_V3;
+    if (nodus_witness_v2_gen_v3_defaults(b->cfg) != 0) {
+        cfg_free(b);
+        return -1;
+    }
+    b->cfg->genesis_time_ms = 1700000000000ULL;
+    b->cfg->initial_height  = 1;
+    if (nodus_witness_v2_gen_v3_fill_comet_rows(b->cfg) != 0) {
+        cfg_free(b);
+        return -1;
+    }
+    return 0;
+}
+
 /* ── chain-db discovery / open ───────────────────────────────────────── */
 
 /* 0 found, 1 none, -1 fault. Mirrors test_v2_gen.c's find_chain: the
@@ -250,6 +273,30 @@ static int derive_chain(const char *tag, char dir[128], char db_path[600]) {
     if (!mkdtemp(dir)) { cfg_free(&box); return -1; }
 
     int rc = nodus_witness_v2_gen_derive(dir, box.cfg, NULL);
+    cfg_free(&box);
+    if (rc != 0) return -1;
+
+    uint8_t id16[16];
+    return find_chain(dir, db_path, id16) == 0 ? 0 : -1;
+}
+
+/**
+ * Derive a fresh VERSION-3 chain into a fresh temp dir (D-17 rev 10 (8)).
+ *
+ * @param dir      [out] the temp directory (caller rmrf's it).
+ * @param db_path  [out] the derived chain database path.
+ * @param out_chain32 [out] the derived 32-byte chain id.
+ * @return 0 on success.
+ */
+static int derive_chain_v3(const char *tag, char dir[128], char db_path[600],
+                           uint8_t out_chain32[32]) {
+    cfgbox_t box;
+    if (cfg_make_v3(&box) != 0) return -1;
+
+    snprintf(dir, 128, "/tmp/test_v2_gate_pure_v3_%s_XXXXXX", tag);
+    if (!mkdtemp(dir)) { cfg_free(&box); return -1; }
+
+    int rc = nodus_witness_v2_gen_derive_v3(dir, box.cfg, out_chain32);
     cfg_free(&box);
     if (rc != 0) return -1;
 
@@ -397,24 +444,50 @@ static void dump_preflight(nodus_witness_t *w) {
 }
 
 /* ════════════════════════════════════════════════════════════════════
- * §1 — A REAL PURE-V2 CHAIN OPENS THE GATE AND ARMS
+ * §1 — A REAL CHAIN OPENS THE GATE AND ARMS
+ *
+ * R3 W3 (D-17 rev 10 (8)/(9)): the merged tree's post-open chain-role
+ * gate now REFUSES any POPULATED database that is not a version-3 chain
+ * ("chain role: PRE-COMET LEDGER V2 (schema below S14) … the old
+ * consensus lane is CLOSED in W3 … refusing the database") — the closed
+ * lane's own approved closure, applied at the open path C2a owns. A
+ * version-2-derived chain can therefore no longer be reopened through
+ * `nodus_witness_create_chain_db` at all, which is exactly what this
+ * section did. The PROPERTY this section proves — a chain born from its
+ * own config MUST be able to arm, or it boots, holds a genesis, and
+ * answers nothing — is LANE-INDEPENDENT, so it is proven here on a
+ * version-3 chain instead: the only chain shape this build's production
+ * open path still accepts.
  *
  * The anti-regression assertion. Everything else in this file is here to
  * stop this one from passing for the wrong reason.
  * ══════════════════════════════════════════════════════════════════ */
 
 static int test_pure_chain_opens(void) {
-    printf("§1 a real pure-V2 chain: gate OPEN, ingress ARMS\n");
+    printf("§1 a real version-3 chain: gate OPEN, ingress ARMS\n");
 
     char dir[128], db_path[600];
-    CHECK(derive_chain("open", dir, db_path) == 0,
-          "the REAL builder derives a pure-V2 chain");
+    uint8_t chain32[32];
+    CHECK(derive_chain_v3("open", dir, db_path, chain32) == 0,
+          "the REAL builder derives a version-3 chain");
     OK();
 
-    /* The production probe and the gate must agree about this database. */
+    /* The production probe and the gate must agree about this database.
+     * nodus_witness_v2_gen_is_pure reads the height-0 v2_manifests row's
+     * source_tag, which a version-3 derivation writes byte-identically
+     * to a version-2 one (NODUS_V2_GEN_SOURCE_TAG, "DNA.GENESIS.v1" —
+     * nodus_witness_v2_gen.c's manifest construction is the SAME step
+     * for both lanes), so this probe's verdict is unaffected by the
+     * schema flip. */
     CHECK(nodus_witness_v2_gen_is_pure(db_path) == 1,
           "the production probe classifies it PURE");
 
+    /* w->v2_successor is ASSERTED here, never assigned: it is checked
+     * INSIDE open_chain() itself (production's own role derivation,
+     * unchanged by this section — see open_chain's own doc comment). A
+     * version-3 chain is still the V2 successor LEDGER, just at its
+     * current schema, so the flag is expected true here exactly as it
+     * was for a version-2 chain. */
     nodus_witness_t *w = open_chain(dir);
     CHECK(w != NULL, "the derived chain opens through the production path");
     if (!w) { rmrf(dir); return 1; }
@@ -422,15 +495,16 @@ static int test_pure_chain_opens(void) {
     nodus_v2_gate_state_t s = nodus_witness_v2_gate_state(w);
     if (s != NODUS_V2_GATE_OPEN) {
         fprintf(stderr,
-            "\n  *** THE PURE-V2 CHAIN DID NOT OPEN THE GATE — it is %s.\n"
+            "\n  *** THE VERSION-3 CHAIN DID NOT OPEN THE GATE — it is %s.\n"
             "  *** A chain born from its own config MUST be able to arm;\n"
             "  *** otherwise it boots, holds a genesis, and answers nothing.\n",
             nodus_witness_v2_gate_state_name(s));
         dump_preflight(w);
     }
     CHECK(s == NODUS_V2_GATE_OPEN,
-          "A PURE-V2 CHAIN'S OWN COMMITTED GENESIS IS ACTIVATION AUTHORITY "
-          "— the gate must be OPEN in a DEFAULT build");
+          "A VERSION-3 CHAIN'S OWN COMMITTED GENESIS DOCUMENT IS "
+          "ACTIVATION AUTHORITY — the gate must be OPEN in a DEFAULT "
+          "build");
     CHECK(nodus_witness_v2_activation_permitted(w) == 1,
           "and activation is permitted");
 
@@ -443,13 +517,14 @@ static int test_pure_chain_opens(void) {
      * O15J Faz 3 that call could never succeed (authority was a
      * structural 0), so a node always came up unarmed and this test's
      * first assertion originally read `is_armed == 0`. That is precisely
-     * the behaviour Faz 3 exists to end: on a pure-V2 chain there is no
+     * the behaviour Faz 3 exists to end: on a chain with its own
+     * committed authority (version-2 or version-3 alike) there is no
      * ceremony, no activation event and no operator command that would
      * ever arm the node afterwards, so if the open path did not arm it,
      * nothing would, and the chain would hold a genesis and answer
      * nothing. ARMED-on-open IS the anti-inert property. */
     CHECK(nodus_witness_v2_ingress_is_armed(w) == 1,
-          "THE PRODUCTION OPEN PATH ARMS A PURE-V2 CHAIN BY ITSELF");
+          "THE PRODUCTION OPEN PATH ARMS A VERSION-3 CHAIN BY ITSELF");
     CHECK(nodus_witness_v2_ingress_arm(w) == 0,
           "and an explicit re-arm still succeeds (idempotent)");
     CHECK(nodus_witness_v2_ingress_is_armed(w) == 1,
@@ -484,9 +559,25 @@ static int test_pure_chain_opens(void) {
  *
  * NO_AUTHORITY no longer means "this binary has no ceremony compiled in".
  * It means "this database is not a chain this gate may open".
+ *
+ * R3 W3 NOTE ON SHAPE: neither (a) nor (b) below is a version-3 chain,
+ * and neither needs to become one. (a) is a BARE `create_chain_db`
+ * database with no genesis at all — no manifest, no schema past the
+ * baseline — which is not "a populated database" in the sense the
+ * merged tree's new chain-role gate cares about, so it is unaffected by
+ * that gate either way. (b) IS a real derived chain, but it reaches the
+ * gate through `open_db_raw` (a bare `sqlite3_open`, deliberately
+ * bypassing `nodus_witness_create_chain_db`'s production role
+ * derivation — see that helper's own doc comment), because §2b's whole
+ * point is a chain the production open path would legitimately REFUSE
+ * for an unrelated reason (a foreign source_tag); it stays on the
+ * version-2 derivation this file has always used for that shape, since
+ * the property under test (a foreign tag is a clean NO_AUTHORITY) does
+ * not depend on which lane produced the chain.
  * ══════════════════════════════════════════════════════════════════ */
 
-/* (a) A fresh chain database: no v2_manifests genesis row at all. */
+/* (a) A fresh chain database: no v2_manifests genesis row at all — NOT a
+ * version-2 OR version-3 shape, just a database with no genesis yet. */
 static int test_plain_db_no_authority(void) {
     printf("§2a a fresh (non-pure) chain database: NO_AUTHORITY\n");
 
@@ -599,6 +690,14 @@ static int test_foreign_tag_no_authority(void) {
  * absent-vs-failed conflation nodus_witness_v2_gen_is_pure() was fixed for
  * (O15J review R2-F4), where it silently produced a second chain beside a
  * damaged first one.
+ *
+ * R3 W3 NOTE ON SHAPE: like §2b, this derives a version-2 chain
+ * (`derive_chain`) and reaches it through `open_db_raw`, never through
+ * `nodus_witness_create_chain_db` — the property (an unreadable manifest
+ * is a FAULT, never a clean NO_AUTHORITY) is about the GATE's own
+ * reading of a damaged manifest, not about which lane produced the
+ * chain, and going through the raw path is what lets this section reach
+ * a database the production open path would refuse anyway.
  * ══════════════════════════════════════════════════════════════════ */
 
 static int fault_case(const char *tag, const uint8_t *blob, size_t len,

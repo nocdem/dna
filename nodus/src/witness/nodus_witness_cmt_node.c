@@ -30,6 +30,12 @@
 #include "dnac/cmt_params.h"
 #include "dnac/cmt_tmhash.h"
 #include "dnac/cmt_validator_set.h"
+/* ORCHESTRATOR delta 1, item B — DNA_ENV_FIXED_HEAD/DNA_ENV_LEG_HDR_LEN
+ * for the SAME byte-bound derivation nodus_witness_cmt_app.c runs (see
+ * that file's nodus_cmt_app_ledger_init for the arithmetic this mirrors
+ * and why it cannot simply READ ctx->env_bound instead — n->app_ctx is
+ * not built yet at this point in this function). */
+#include "dnac/env_wire.h"
 
 #include "server/nodus_server.h"                /* w->server->identity    */
 #include "witness/nodus_witness_v2_apply.h"    /* committed_global_root  */
@@ -1410,6 +1416,18 @@ void nodus_cmt_node_release(nodus_cmt_node_t *n)
     n->cs_scratch_storage = NULL;
 
     if (n->wal_open) {
+        /* delta 7, item A — UNBIND before CLOSE: `ctx->wal` must never
+         * point at a WAL object this call is about to close underneath
+         * it, even transiently. `nodus_cmt_blockexec_set_wal(n->be,
+         * NULL)` is the host's own nilWAL rebinding, mirroring the
+         * reference's construction-time state (state.go:174,
+         * `cs.wal = nilWAL{}`) — safe to call even before `n->be_ready`
+         * (the setter only NULL-checks `ctx` itself); if `n->be` is
+         * NULL entirely (an early init failure), there is nothing to
+         * unbind. */
+        if (n->be) {
+            (void)nodus_cmt_blockexec_set_wal(n->be, NULL);
+        }
         nodus_cmt_wal_close(&n->wal);          /* wal.go:164-173 OnStop,
                                                 * FlushAndSync at :166   */
         n->wal_open = false;
@@ -1426,6 +1444,7 @@ void nodus_cmt_node_release(nodus_cmt_node_t *n)
         for (k = 0; k < CMT_CS_BLOCK_SLOTS; k++) {
             free(n->slots->parts[k]);
             free(n->slots->payload[k]);
+            free(n->slots->part_bytes[k]);   /* package C2e, R3-A-5 */
         }
         free(n->slots->marshal_parts);
         free(n->slots->marshal_scratch);
@@ -1452,6 +1471,10 @@ void nodus_cmt_node_release(nodus_cmt_node_t *n)
     free(n->pv);
     n->pv = NULL;
 
+    /* ORCHESTRATOR delta 1, item B — the application context now owns
+     * heap arrays of its own (nodus_cmt_app_ledger_init); release them
+     * before freeing the context struct itself. NULL-safe. */
+    nodus_cmt_app_ledger_release(n->app_ctx);
     free(n->app_ctx);
     n->app_ctx = NULL;
 
@@ -1473,19 +1496,77 @@ void nodus_cmt_node_release(nodus_cmt_node_t *n)
     memset(n, 0, sizeof(*n));
 }
 
+/**
+ * ORCHESTRATOR delta 1, item B — the SAME byte-bound derivation
+ * nodus_witness_cmt_app.c's nodus_cmt_app_ledger_init runs for its own
+ * `env_bound`: MaxDataBytes (types/block.go:281-300, ported as
+ * cmt_max_data_bytes_no_evidence) at the smallest possible committee
+ * (vals_count = 1, the largest possible byte budget and therefore the
+ * safe upper bound for an array/limit sized once and never revisited as
+ * the committee grows), divided by an envelope's own framing minimum
+ * (DNA_ENV_FIXED_HEAD + DNA_ENV_LEG_HDR_LEN = 43 + 30 = 73 bytes,
+ * env_wire.h:198-199 — smaller by two orders of magnitude than a
+ * claim's own minimum, so envelope-only is always the worst case for
+ * TOTAL item count). Factored here, not duplicated, because
+ * `nodus_cmt_node_init` needs this value TWICE (the default and the
+ * ceiling check) before `n->app_ctx` exists to read it from.
+ * @return CMT_OK with `*out` the derived bound; CMT_FAULT on a
+ *         `block_max_bytes` too small to be believed or an arithmetic
+ *         failure.
+ */
+static int node_derive_env_bound(int64_t block_max_bytes, size_t *out)
+{
+    int64_t max_data_bytes = 0;
+    int64_t min_env_proto  = 0;
+
+    if (!out) {
+        return CMT_FAULT;
+    }
+    *out = 0;
+    if (block_max_bytes <= 0) {
+        return CMT_FAULT;
+    }
+    if (cmt_max_data_bytes_no_evidence(block_max_bytes, (int64_t)1,
+                                       &max_data_bytes) != CMT_OK ||
+        max_data_bytes <= 0) {
+        return CMT_FAULT;
+    }
+    min_env_proto = nodus_cmt_compute_proto_size_for_tx(
+        (size_t)(DNA_ENV_FIXED_HEAD + DNA_ENV_LEG_HDR_LEN));
+    if (min_env_proto <= 0) {
+        return CMT_FAULT;
+    }
+    *out = (size_t)(max_data_bytes / min_env_proto);
+    return (*out > 0) ? CMT_OK : CMT_FAULT;
+}
+
 /** The three block slots of cmt_cs.h "OWNERSHIP" (1) plus the proposer's
  *  own marshal target. `payload_cap` must cover `Block.MaxBytes`, which
  *  is what `limits.tx_arena_cap` is (see the header's DETERMINISM note
- *  on `nodus_cmt_node_opts_t.limits`). */
+ *  on `nodus_cmt_node_opts_t.limits`).
+ *
+ *  PACKAGE C2e (register R3-A-5): each of the three slots ALSO gets a
+ *  `part_bytes[k]` store, sized `parts_cap * CMT_BLOCK_PART_SIZE_BYTES`
+ *  (cmt_cs.h's field comment) — essentially the SAME size as `payload[k]`
+ *  (both are bounded by `payload_cap`, since `parts_cap` is derived from
+ *  it), so this roughly DOUBLES the per-slot memory: ≈ 22 MB
+ *  (`payload_cap`, this node's `tx_arena_cap`) for the assembled image
+ *  plus ≈ 22 MB for the per-part store, times three slots, ≈ 132 MB
+ *  total — against the 1 MiB the receive arena now costs (package C2e's
+ *  bound, down from the pre-package 64 MiB runway). Bound with
+ *  `cmt_part_set_bind_payload_store` by `cs_new_part_set_from_header`
+ *  (cmt_cs.c), never here directly. */
 static int node_slots_alloc(nodus_cmt_node_t *n)
 {
     size_t payload_cap = n->limits.tx_arena_cap;
     size_t parts_cap   = (payload_cap / (size_t)CMT_BLOCK_PART_SIZE_BYTES) + 1u;
+    size_t part_bytes_cap;
     int    k;
 
     if (parts_cap > (size_t)CMT_PART_SET_MAX_PARTS) {
         parts_cap = (size_t)CMT_PART_SET_MAX_PARTS;
     }
+    part_bytes_cap = parts_cap * (size_t)CMT_BLOCK_PART_SIZE_BYTES;
     n->slots = (cmt_cs_slots_t *)calloc(1, sizeof(*n->slots));
     if (!n->slots) {
         return CMT_FAULT;
@@ -1495,7 +1576,10 @@ static int node_slots_alloc(nodus_cmt_node_t *n)
         n->slots->parts_cap[k] = parts_cap;
         n->slots->payload[k] = (uint8_t *)malloc(payload_cap);
         n->slots->payload_cap[k] = payload_cap;
-        if (!n->slots->parts[k] || !n->slots->payload[k]) {
+        n->slots->part_bytes[k] = (uint8_t *)malloc(part_bytes_cap);
+        n->slots->part_bytes_cap[k] = part_bytes_cap;
+        if (!n->slots->parts[k] || !n->slots->payload[k] ||
+            !n->slots->part_bytes[k]) {
             return CMT_FAULT;
         }
     }
@@ -1562,9 +1646,6 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
 
     /* The capacity bounds every allocation below is sized from. */
     n->limits = opts->limits;
-    if (n->limits.max_txs == 0) {
-        n->limits.max_txs = (size_t)NODUS_CMT_APP_MAX_TXS;
-    }
     if (n->limits.tx_arena_cap == 0) {
         int64_t mb = n->doc.consensus_params.block.max_bytes;
 
@@ -1575,17 +1656,45 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
         }
         n->limits.tx_arena_cap = (size_t)mb;
     }
+    /* ── ORCHESTRATOR delta 1, item B — max_txs follows the SAME
+     * byte-bound derivation nodus_witness_cmt_app.c's
+     * nodus_cmt_app_ledger_init runs for its own env_bound: MaxDataBytes
+     * at the smallest possible committee, divided by an envelope's
+     * 73-byte framing minimum (node_derive_env_bound, above).
+     * Recomputed HERE rather than read from n->app_ctx->env_bound
+     * because the application is not built yet at this point in this
+     * function (node.go's own order: limits before
+     * createAndStartProxyAppConns). Both computations share the SAME
+     * static helper now, so there is no second formula to drift. */
+    {
+        size_t derived_env_bound = 0;
+
+        if (node_derive_env_bound(n->doc.consensus_params.block.max_bytes,
+                                  &derived_env_bound) != CMT_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "%s",
+                          "the byte-bound executor transaction bound could "
+                          "not be derived from this chain's Block.MaxBytes");
+            goto fail;
+        }
+        if (n->limits.max_txs == 0) {
+            n->limits.max_txs = derived_env_bound;
+        }
+        /* INVARIANT (found by C1a), delta 1 form: the application
+         * REFUSES a FinalizeBlock request above its OWN env_bound
+         * (the SAME derived_env_bound, since both call the same
+         * helper), so an executor sized larger would build blocks its
+         * own application faults on. This can only fail when a caller
+         * supplied opts->limits.max_txs explicitly with a value this
+         * chain's own consensus params could never produce. */
+        if (n->limits.max_txs > derived_env_bound) {
+            QGP_LOG_ERROR(LOG_TAG, "the executor's transaction bound %zu is "
+                          "above the application's derived bound %zu",
+                          n->limits.max_txs, derived_env_bound);
+            goto fail;
+        }
+    }
     if (n->limits.max_evidence == 0) {
         n->limits.max_evidence = NODE_DEFAULT_MAX_EVIDENCE;
-    }
-    /* INVARIANT (found by C1a): the application REFUSES a request above
-     * its own array bound, so an executor sized larger would build
-     * blocks its own application faults on. */
-    if (n->limits.max_txs > (size_t)NODUS_CMT_APP_MAX_TXS) {
-        QGP_LOG_ERROR(LOG_TAG, "the executor's transaction bound %zu is above "
-                      "the application's %u", n->limits.max_txs,
-                      (unsigned)NODUS_CMT_APP_MAX_TXS);
-        goto fail;
     }
 
     /* ── THE CONSENSUS CONFIG ─────────────────────────────────────────
@@ -1868,11 +1977,22 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
     n->ev_if = nodus_cmt_empty_evpool;
 
     /* ── 7c. node.go:386-395 — NewBlockExecutor + the host table ──────
-     * The WAL pointer is handed over here and OPENED in
-     * `nodus_cmt_node_start`: `nodus_cmt_blockexec_init` stores it
-     * without dereferencing (nodus_witness_cmt_host.c:389), and the
-     * first row that reads it runs inside the event loop, which cannot
-     * turn before `start`. */
+     * DELTA 7, ITEM A CORRECTION: the WAL is bound with NULL here, NOT
+     * `&n->wal` — mirroring the reference's `cs.wal = nilWAL{}` at
+     * CONSTRUCTION (state.go:174), not the unopened `n->wal` object this
+     * comment previously claimed was harmless to hand over early. It was
+     * not: `cmt_cs_init` below (step 9) runs `cs_wal_write_round_state`
+     * during INIT ITSELF (not "inside the event loop, which cannot turn
+     * before start" — that claim was the bug), so a bound-but-unopened
+     * WAL object made every `nodus_cmt_wal_write` on it fail and log an
+     * error on every single init. `nodus_cmt_node_start` now binds the
+     * REAL wal via `nodus_cmt_blockexec_set_wal` only AFTER
+     * `nodus_cmt_wal_open` + `nodus_cmt_wal_start` both succeed —
+     * mirroring the reference's OnStart (state.go:318-329's
+     * `loadWalFile`: `cs.OpenWAL` then `cs.wal = wal`). Every
+     * `host_wal_*` row (nodus_witness_cmt_host.c) already treats a NULL
+     * `ctx->wal` as the reference's nilWAL would (see each row's own
+     * comment). */
     n->ext_arena.cap = 64u * 1024u;
     n->ext_arena.buf = (uint8_t *)malloc(n->ext_arena.cap);
     n->be            = (nodus_cmt_blockexec_t *)calloc(1, sizeof(*n->be));
@@ -1883,7 +2003,7 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
         goto fail;
     }
     if (nodus_cmt_blockexec_init(n->be, &n->store, &n->app_if, &n->mem_if,
-                                 &n->ev_if, &n->wal, n->pv, n->now,
+                                 &n->ev_if, NULL, n->pv, n->now,
                                  n->now_ctx, n->slots, &n->ext_arena,
                                  &n->limits) != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG, "%s", "the block executor could not be built");
@@ -1896,18 +2016,22 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
 
     /* ── 8. node.go:397-403 — offlineStateSyncHeight ──────────────────
      * The reference reads it only when the block store is empty and
-     * tolerates exactly one error, the string "value empty" (:388).
+     * tolerates exactly one error, the string "value empty" (node.go:400
+     * — verified against the reference; the OLD comment here cited
+     * :388, which is wrong) — ANY other error PANICS (:401), including a
+     * negative stored height.
      *
-     * ⚠ DEVIATION R3-C1c-2, reported: this port's accessor returns
-     * CMT_REJECT for BOTH "value empty" (state/store.go:745-747, the
-     * port's nodus_witness_cmt_store.c:2222-2224) and a NEGATIVE stored
-     * height (state/store.go:750-752, store.c:2227-2230), and the return
-     * code cannot tell
-     * them apart. The reference PANICS on the second. Here both leave
-     * the height at 0, which is the answer for the first and a silent
-     * tolerance for the second. Distinguishing them needs a second
-     * return class from `nodus_cmt_ss_get_offline_state_sync_height`,
-     * which lives in a file this package may not edit. */
+     * R3-C1c-2 CLOSED (delta 1): `nodus_cmt_ss_get_offline_state_sync_
+     * height` (nodus_witness_cmt_store.c) now returns a THIRD-state
+     * contract that DOES distinguish the two: CMT_OK with `*out = 0` for
+     * "value empty" (state/store.go:745-747's silent tolerance), CMT_FAULT
+     * for a NEGATIVE stored height (state/store.go:750-752's panic,
+     * mapped to this port's node-local-fault convention) or any other
+     * store-read failure. The caller below already matches the
+     * reference's own branching exactly: CMT_OK is accepted (height 0 or
+     * the real value), CMT_FAULT stops node construction (`goto fail`) —
+     * this port's equivalent of the reference's panic, since a C
+     * constructor cannot panic the process out from under its caller. */
     n->offline_state_sync_height = 0;
     if (nodus_cmt_bs_height(&n->store) == 0) {                       /* :386 */
         int64_t h = 0;
@@ -1991,8 +2115,6 @@ fail:
 
 int nodus_cmt_node_start(nodus_cmt_node_t *n)
 {
-    int rc;
-
     if (!n || !n->cs_ready || !n->store_ready) {
         return CMT_FAULT;
     }
@@ -2025,22 +2147,47 @@ int nodus_cmt_node_start(nodus_cmt_node_t *n)
         QGP_LOG_ERROR(LOG_TAG, "%s", "the consensus WAL could not be started");
         return CMT_FAULT;
     }
-
-    /* ── state.go:332-402 ─────────────────────────────────────────────
-     * The ticker start (:332-334), the catch-up replay (:338-343 with
-     * the :344-350 classification), the double-sign check (:393-395) and
-     * `scheduleRound0` (:402) are all inside `cmt_cs_start` — read at
-     * shared/dnac/cmt_cs.h:960-982 ("PORTED: the catch-up replay …, the
-     * double-signing check … and scheduleRound0"). NOT ported there and
-     * not here: the WAL repair loop (:352-385), `evsw.Start` (:388) and
-     * `go cs.receiveRoutine` (:398) — the caller drives `cmt_cs_step`,
-     * which is W3's tick. */
-    rc = cmt_cs_start(n->cs);
-    if (rc != CMT_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "the consensus state machine refused to start "
-                      "(rc %d)", rc);
-        return rc;
+    /* delta 7, item A — BIND the real WAL only NOW, both `open` and
+     * `start` having succeeded: mirrors the reference's OnStart binding
+     * (state.go:318-329's `loadWalFile`, `cs.OpenWAL` then `cs.wal =
+     * wal`) exactly, replacing the construction-time nilWAL
+     * (`nodus_cmt_blockexec_init`'s own `wal = NULL`, step 7c above)
+     * with the opened-and-started one. Every `host_wal_*` row now reads
+     * the REAL WAL for the first time from here on. */
+    if (nodus_cmt_blockexec_set_wal(n->be, &n->wal) != CMT_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "the consensus WAL could not be bound "
+                      "to the block executor");
+        return CMT_FAULT;
     }
-    n->cs_started = true;
+
+    /* ── FLEET-TM-R3 W3 (D-23 rev 7 item 17, package C2a) — cmt_cs_start
+     * IS NO LONGER CALLED HERE ────────────────────────────────────────
+     *
+     * state.go:332-402's ticker start (:332-334), catch-up replay
+     * (:338-343 / :344-350), double-sign check (:393-395) and
+     * `scheduleRound0` (:402) all live inside `cmt_cs_start`
+     * (shared/dnac/cmt_cs.h:960-982), and the reference reaches it only
+     * through `conR.conS.Start()` — `(*Reactor) OnStart`
+     * (consensus/reactor.go:74-91), which this port's `cmt_conr_start`
+     * ports verbatim: it calls `cmt_cs_start(conR->cs)` itself, exactly
+     * once, when `!conR->wait_sync` (cmt_conr.c:464-470) — and D-23 rev 7
+     * item 18 keeps `wait_sync` false always (no-blocksync deviation), so
+     * that branch is always taken.
+     *
+     * `nodus_cmt_node_t` does not own a `cmt_conr_t`: the reactor's host
+     * table (`cmt_conr_host_t`) is a field of `nodus_cmt_net_t`
+     * (package C2b, nodus_witness_cmt_net.h), which this module has no
+     * reason to depend on. The caller (nodus_witness_init) therefore
+     * builds `cmt_conr_t` itself, over `n->cs`, AFTER this function
+     * returns, and starts it — which is what reaches `cmt_cs_start`. This
+     * is a discrepancy from D-23 rev 7 (17)'s literal text ("then calls
+     * cmt_conr_start and cmt_memr_start"), which was written before the
+     * glue's host-table ownership was fixed by C2b; flagged as a
+     * QUESTION for the ORCHESTRATOR, not resolved by editing that
+     * decision.
+     *
+     * NOT ported here and not by the caller either: the WAL repair loop
+     * (:352-385), `evsw.Start` (:388) and `go cs.receiveRoutine` (:398) —
+     * the caller drives `cmt_cs_step`, which is W3's tick. */
     return CMT_OK;
 }

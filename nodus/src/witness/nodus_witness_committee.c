@@ -21,7 +21,13 @@
 #include "nodus/nodus_chain_config.h" /* nodus_chain_config_get_u64 */
 #include "dnac/dnac.h"                /* DNAC_* constants */
 #include "dnac/validator.h"
-#include "dnac/block_v2.h"            /* O15E: successor seed row checks */
+#include "dnac/block_v2.h"            /* DNA_BH2_ID_LEN — the v2_blocks
+                                       * block_id column width, still the
+                                       * successor's committed identity
+                                       * column at S14 */
+#include "witness/nodus_witness_cmt_store.h" /* R3 W3 delta 10 — the Comet
+                                              * blockstore, the header's
+                                              * real home at S14 */
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_log.h"
 
@@ -115,7 +121,7 @@ static int committee_target_for_epoch(nodus_witness_t *w, uint64_t e_start,
     return 0;
 }
 
-/* ── O15E Faz A — the successor's committed seed row ──────────────────
+/* ── O15E Faz A, R3 W3 delta 10 — the successor's committed seed row ────
  *
  * On a SUCCESSOR chain the state_seed's authoritative block-identity
  * source is the committed `v2_blocks` BlockID at the lookback height
@@ -125,32 +131,57 @@ static int committee_target_for_epoch(nodus_witness_t *w, uint64_t e_start,
  * committee authority, and an unusable seed row FAILS CLOSED before any
  * committee is emitted.
  *
- * Fail-closed classes, each -1:
- *   - MISSING: no committed row at the height (a successor produces
- *     every height contiguously, so absence is a real fault);
- *   - MALFORMED: block_id not exactly 64 B, header not exactly the
- *     canonical 413 B, strict-decode reject (retired v2 and unknown
- *     versions are both rejects inside dna_bh2_decode), or a header
- *     height disagreeing with the row's key;
- *   - WRONG CHAIN / FORGED (height > 0): header chain_id must equal the
- *     node's derived successor chain id, and the BlockID recomputed
- *     from the stored canonical header must equal the stored block_id.
- *   - Height 0 (reachable only via a direct e_start == E+1 call — every
- *     real caller passes epoch starts that are multiples of E): the
- *     genesis header carries an ALL-ZERO chain_id by construction (the
- *     identity-circularity break, nodus_witness_v2_apply.c genesis
- *     path), and its block_id is dna_bh2_genesis_block_id over the
- *     manifest bytes, NOT header-recomputable here. The arm checks the
- *     zero chain_id + height and takes the stored id; the committed
- *     genesis row's authenticity is established by the post-open gate
- *     probe on every database open (witness_post_open_gate). */
+ * THE HEADER MOVED (R3 W3 delta 10, live defect found by the short-epoch
+ * harness at E=15, evidence /tmp/stagef-20260917T114650Z): this reader
+ * used to `SELECT block_id, header FROM v2_blocks` and strict-decode a
+ * 413-byte `dna_bh2` header out of the `header` column. Schema S14
+ * DROPPED `v2_blocks.header` (and `qc`, `commit_cert` — R3 W1's
+ * migration, nodus_witness_v2_schema.c, D-17 rev 5): on the Comet lane
+ * `v2_blocks.block_id` is the Comet HEADER HASH verbatim (R3-C1a-10,
+ * nodus_witness_v2_apply.c's ten-column insert), and the header itself
+ * lives in the Comet blockstore (`H:<height>` BlockMeta,
+ * nodus_witness_cmt_store.c) — so the old `SELECT ... header` prepare
+ * failed ("no such column: header") on every version-3 chain, and the
+ * first epoch boundary needing a lookback seed (`e_start = 2E`, lookback
+ * `E - 1`) halted every node. D-17 rev 10 (9) also closes the pre-Comet
+ * successor lane in this same wave — the `dna_bh2` decode this reader
+ * used to run is for a lane that no longer produces blocks — so the fix
+ * is not a branch, it is reading the identity from where it actually
+ * lives now: the Comet store, the same move the preflight's own check 5
+ * made this morning (delta 8) for the identical reason.
+ *
+ * Fail-closed classes, each -1, same shape as before, over the store
+ * that actually holds the header now:
+ *   - MISSING: no committed `v2_blocks` row at the height, OR no
+ *     BlockMeta at that height in the Comet blockstore (a successor
+ *     produces every height contiguously on both, so absence in either
+ *     is a real fault);
+ *   - MALFORMED: `v2_blocks.block_id` not exactly 64 B, or the loaded
+ *     BlockMeta's own header height disagreeing with the row's key;
+ *   - WRONG CHAIN: the BlockMeta header's `chain_id` (cmt_pb_header_t
+ *     field 2, `chain_id`/`chain_id_len`, shared/dnac/cmt_pb.h:258,
+ *     `CMT_PB_CHAINID_MAX` 32 at :131) must equal the node's derived
+ *     successor chain id (`w->v2_chain32`, exactly 32 bytes both sides);
+ *   - FORGED: the BlockMeta's own `block_id.hash` (cmt_pb_block_id_t
+ *     field 1, `hash`/`hash_len`, `CMT_PB_HASH_MAX` 64 at cmt_pb.h:129)
+ *     must equal `v2_blocks.block_id` — the same row, told twice, by two
+ *     different tables that are supposed to agree.
+ *   - Height 0: UNREACHABLE on this lane, and now genuinely so rather
+ *     than merely a comment's claim — every real caller passes a
+ *     multiple of E (`e_start`), and a version-3 chain writes NO
+ *     height-0 `v2_blocks` row at all (D-19 rev 6 withdraws the genesis
+ *     block; the genesis document is the identity instead,
+ *     nodus_witness_v2_gen.h). A height-0 request here therefore always
+ *     finds no row — MISSING, fail closed, the same class as any other
+ *     absent height. The old genesis special-case (an all-zero chain_id
+ *     branch reading a `dna_bh2` genesis header) is deleted with it. */
 static int v2_seed_block_id(nodus_witness_t *w, uint64_t height,
                             uint8_t out[64]) {
     if (!w || !w->db || !out) return -1;
 
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(w->db,
-            "SELECT block_id, header FROM v2_blocks WHERE global_height = ?",
+            "SELECT block_id FROM v2_blocks WHERE global_height = ?",
             -1, &st, NULL) != SQLITE_OK)
         return -1;
     sqlite3_bind_int64(st, 1, (int64_t)height);
@@ -160,39 +191,38 @@ static int v2_seed_block_id(nodus_witness_t *w, uint64_t height,
     }
     const void *id = sqlite3_column_blob(st, 0);
     int idl        = sqlite3_column_bytes(st, 0);
-    const void *hd = sqlite3_column_blob(st, 1);
-    int hdl        = sqlite3_column_bytes(st, 1);
-    if (!id || idl != DNA_BH2_ID_LEN ||
-        !hd || hdl != DNA_BH2_ENC_SIZE) {          /* MALFORMED */
+    uint8_t row_id[DNA_BH2_ID_LEN];
+    if (!id || idl != DNA_BH2_ID_LEN) {            /* MALFORMED */
         sqlite3_finalize(st);
         return -1;
     }
-
-    dna_block_header_v2_t hdr;
-    if (dna_bh2_decode(hd, (size_t)hdl, &hdr) != 0 ||   /* wrong type */
-        hdr.block_height != height) {                   /* wrong row  */
-        sqlite3_finalize(st);
-        return -1;
-    }
-
-    if (height == 0) {
-        static const uint8_t zero32[32] = {0};
-        if (memcmp(hdr.chain_id, zero32, sizeof(zero32)) != 0) {
-            sqlite3_finalize(st);
-            return -1;
-        }
-    } else {
-        uint8_t recomputed[DNA_BH2_ID_LEN];
-        if (memcmp(hdr.chain_id, w->v2_chain32, 32) != 0 ||  /* WRONG CHAIN */
-            dna_bh2_block_id(&hdr, recomputed) != 0 ||
-            memcmp(recomputed, id, DNA_BH2_ID_LEN) != 0) {   /* FORGED */
-            sqlite3_finalize(st);
-            return -1;
-        }
-    }
-
-    memcpy(out, id, DNA_BH2_ID_LEN);
+    memcpy(row_id, id, DNA_BH2_ID_LEN);
     sqlite3_finalize(st);
+
+    /* Height 0 always finds no BlockMeta on a version-3 chain (there is
+     * no block 0), so it would fail as MISSING below anyway — the
+     * explicit check just names why, rather than relying on the store
+     * lookup to fail closed for the right reason by accident. */
+    if (height == 0) return -1;
+
+    nodus_cmt_store_t s;
+    if (nodus_cmt_store_init(&s, w->db, false) != CMT_OK) return -1;
+    nodus_cmt_block_meta_t meta;
+    bool found = false;
+    memset(&meta, 0, sizeof(meta));
+    int rc = nodus_cmt_bs_load_block_meta(&s, (int64_t)height, &meta,
+                                          &found);
+    nodus_cmt_store_release(&s);
+    if (rc != CMT_OK || !found) return -1;                    /* MISSING */
+    if (meta.header.height != (int64_t)height) return -1;     /* MALFORMED */
+    if (meta.header.chain_id_len != 32 ||
+        memcmp(meta.header.chain_id, w->v2_chain32, 32) != 0)
+        return -1;                                            /* WRONG CHAIN */
+    if (meta.block_id.hash_len != DNA_BH2_ID_LEN ||
+        memcmp(meta.block_id.hash, row_id, DNA_BH2_ID_LEN) != 0)
+        return -1;                                            /* FORGED */
+
+    memcpy(out, row_id, DNA_BH2_ID_LEN);
     return 0;
 }
 

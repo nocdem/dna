@@ -123,12 +123,40 @@
  *     DESCRIPTOR and SHARES its bytes (cmt_vote.h:241, wave R2-A register
  *     row R2A-3). Every vote this module hands to `cmt_hvs_add_vote` or
  *     `cmt_vote_set_add_vote` therefore leaves a pointer inside the vote
- *     set. THE HOST SUPPLIES `ext_arena`, AND IT MUST BE PER-HEIGHT: it
- *     has to outlive every vote set of the height it serves, which means
- *     it may be reset only after `cmt_cs_update_to_state` has replaced the
- *     height vote set AND released the previous height's (see (3)). The
- *     host writes extension bytes into it from `extend_vote` (:2400) and
- *     from whatever decodes a peer's vote.
+ *     set. THE HOST SUPPLIES `ext_arena`. The host writes extension bytes
+ *     into it from `extend_vote` (:2400, `nodus_cmt_host_extend_vote`,
+ *     nodus_witness_cmt_host.c) for this node's OWN votes; PACKAGE C2e
+ *     (register R3-A-5) closes the other documented-but-missing half —
+ *     `cmt_cs_try_add_vote` now copies a PEER's vote's extension into
+ *     `ext_arena` too, before the vote reaches either vote set, because
+ *     the vote it is handed may point into a dequeued queue element or
+ *     the WAL replay's reused scratch, neither of which outlives the
+ *     call (see that function's own comment).
+ *
+ *     ⚠ RESET POLICY: NOT IMPLEMENTED, AND WHY. `ext_arena` is a single
+ *     bump allocator (cmt_pb_arena_t: buf/cap/used, reset by zeroing
+ *     `used`). At any moment the bytes live in it belong to the CURRENT
+ *     height's vote set AND the PREVIOUS height's (`prev_votes`, kept
+ *     alive one extra height because `create_proposal_block` for height
+ *     H+1 reads height H's LastCommit — `last_ext_commit`,
+ *     `cs_create_proposal_block`, :1279-1313). Those two heights' bytes
+ *     are written in chronological (height) order into the SAME linear
+ *     buffer, so the only bytes ever safe to reclaim are the OLDEST — a
+ *     PREFIX of the buffer — while the bytes that must survive are the
+ *     newest — a SUFFIX. A single `used = 0` reset cannot free the prefix
+ *     without also freeing the suffix; the only mechanically correct fix
+ *     is two arenas alternating by height parity, with each writer
+ *     picking the arena for the CURRENT height. That requires EVERY
+ *     writer to be parity-aware, including `nodus_cmt_host_extend_vote`
+ *     (nodus_witness_cmt_host.c:1725-1794), which hardcodes
+ *     `ctx->ext_arena` — a single, fixed target — and that file is
+ *     OUTSIDE package C2e's whitelist. Given that, `ext_arena` is left
+ *     UNRESET by this package, exactly as before: a documented, pre-
+ *     existing limitation, not a new regression, and inert in practice
+ *     because `VoteExtensionsEnableHeight` is unset on this chain (the
+ *     genesis params default), so `extension.len` is always 0 and neither
+ *     writer ever advances `used`. A future package that ports the reset
+ *     needs `nodus_witness_cmt_host.c` in its whitelist.
  *
  * (3) `LastCommit` HAS THREE POSSIBLE OWNERS. :701 points it INTO the
  *     current height vote set, which :743-746 then replaces; Go's GC keeps
@@ -643,6 +671,26 @@ typedef struct {
     size_t          parts_cap[CMT_CS_BLOCK_SLOTS];
     uint8_t        *payload[CMT_CS_BLOCK_SLOTS];
     size_t          payload_cap[CMT_CS_BLOCK_SLOTS];
+
+    /**
+     * PACKAGE C2e (register R3-A-5): the payload store `cs_new_part_set_
+     * from_header` binds to `part_sets[i]` via `cmt_part_set_bind_
+     * payload_store` (cmt_part_set.h) — sized `parts_cap[i] *
+     * CMT_BLOCK_PART_SIZE_BYTES` by the host (node_slots_alloc,
+     * nodus_witness_cmt_node.c), so every part index the set can ever
+     * hold has a slot. OPTIONAL: NULL means "no store", which
+     * `cs_new_part_set_from_header` reads as "old descriptor behaviour" —
+     * the contract a host that never sets this (an off-whitelist test's
+     * own `cmt_cs_slots_t`) keeps automatically, because the struct is
+     * zeroed before use exactly as every other field here is. THIS IS NOT
+     * `payload[i]` above: that is the ASSEMBLED block image a separate
+     * readback writes once the set is complete; this is the RECEIVED
+     * part bytes, written incrementally, one AddPart at a time, before
+     * completion — see cmt_part_set.h's field comment for why the two
+     * are kept apart.
+     */
+    uint8_t        *part_bytes[CMT_CS_BLOCK_SLOTS];
+    size_t          part_bytes_cap[CMT_CS_BLOCK_SLOTS];
 
     /** The proposer's own marshal target (:1223) — see above. */
     uint8_t        *marshal_scratch;
@@ -1248,9 +1296,16 @@ int cmt_cs_read_replay_message(cmt_cs_t *cs,
  * (:126-128). `replay_mode` is set for the duration (:97-98) so that
  * signing failures are not logged.
  *
- * ⚠ The reference APPENDS to the WAL during replay (wal.go:73-75) because
- * the ported core calls the same WAL callbacks it does live — D-15 rev 5
- * states the host must not suppress them. That is reproduced here.
+ * ⚠ The reference WRITES to the WAL during replay: the replayed messages
+ * go through the same `handleMsg`/`handleTimeout` paths as live ones, so
+ * the same `wal.Write` sites fire. wal.go:73-75's own TODO says the WAL
+ * is "currently … overwritten during replay catchup" and asks for a
+ * read-or-append mode that does not exist at the pin — it does NOT say
+ * the reference appends cleanly. The ported core calls the same WAL
+ * callbacks it does live — D-15 rev 5 states the host must not suppress
+ * them — and what the host does with a replay-time write is the host's
+ * (the SQLite WAL is keyed by (protocol, height, seq), so nothing is
+ * overwritten there). W1.7 audit-4 finding, corrected in W2.
  *
  * @return CMT_OK; CMT_REJECT when the END_HEIGHT rule is violated or the
  *         height is below the initial height (:122-124); CMT_FAULT on

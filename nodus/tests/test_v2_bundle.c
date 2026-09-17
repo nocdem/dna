@@ -14,6 +14,26 @@
  * (nodus_witness_v2_bundle_persist / _get / _apply) over real committed
  * fixtures — no parallel serializer.
  *
+ * HOW IT CAN LIE (R3 W3 delta 7): `nodus_witness_v2_bundle_apply`
+ * DELETEs, re-INSERTs and COMMITs the six base tables (its own BEGIN
+ * IMMEDIATE / COMMIT) BEFORE the pin precheck ever runs, because the
+ * document sits at the tail of the wire frame and must be fully parsed
+ * first — a rejected pin therefore still leaves the sender's rows
+ * planted in all six base tables on the scratch handle. The v3
+ * wrong-pin case (test_v3_bundle, "adopt with the WRONG pin") and the
+ * foreign-bundle case ("foreign bundle") each assert only
+ * `v3_has_doc(jw) == 0` afterwards — that proves NO GENESIS DOCUMENT
+ * was stored, i.e. adoption did not complete, NOT that the scratch
+ * database is byte-unchanged from before `bundle_apply` ran. Do not
+ * read a green result there as "zero trace inside this process" —
+ * "zero trace" is `nodus_witness_v2_join.c`'s (`join_adopt` /
+ * `join_scratch_clear`) property, not this function's, and this test
+ * never exercises that discard path (each joiner directory here is
+ * `rmrf`'d by the TEST itself, not by the production joiner). The
+ * old-magic case, by contrast, IS refused before its own BEGIN
+ * (bundle.c's magic check runs before any SQL), so it legitimately
+ * asserts a whole-DB digest is unchanged.
+ *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -23,6 +43,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sqlite3.h>
+#include <dirent.h>
 
 #include "crypto/hash/qgp_sha3.h"
 
@@ -33,7 +54,11 @@
 #include "witness/nodus_witness_vset.h"
 #include "witness/nodus_witness_v2_bundle.h"
 #include "witness/nodus_witness_v2_claims.h"
+#include "witness/nodus_witness_v2_gen.h"       /* R3 W3 — the v3 fixture */
+#include "witness/nodus_witness_emission.h"     /* DNAC_BLOCKS_PER_YEAR :34,
+                                                  * DNAC_DECIMAL_UNIT :42 */
 #include "nodus/nodus_chain_config.h"
+#include "protocol/nodus_tier3.h"                /* NODUS_T3_V2_GBUNDLE_CHUNK_MAX */
 
 #include "dnac/dnac.h"
 #include "dnac/validator.h"
@@ -64,6 +89,21 @@ static void rmrf(const char *path) {
     char cmd[256];
     snprintf(cmd, sizeof(cmd), "rm -rf '%s'", path);
     if (system(cmd) != 0) { /* best effort */ }
+}
+
+/* Plain substring search over bytes — NOT memmem(): that is a GNU
+ * extension (needs _GNU_SOURCE, absent on Windows), and this tree's
+ * tests must not depend on it. A naive O(hay*needle) scan is fine here;
+ * `hay` is one bundle (tens of KB), not a hot path.
+ * @return a pointer into `hay` at the first match, or NULL. */
+static const uint8_t *find_bytes(const uint8_t *hay, size_t hay_len,
+                                 const uint8_t *needle, size_t needle_len) {
+    if (!hay || !needle || needle_len == 0 || needle_len > hay_len)
+        return NULL;
+    for (size_t i = 0; i + needle_len <= hay_len; i++)
+        if (memcmp(hay + i, needle, needle_len) == 0)
+            return hay + i;
+    return NULL;
 }
 static int run_sql(sqlite3 *db, const char *sql) {
     char *e = NULL;
@@ -193,23 +233,51 @@ static int table_digest(nodus_witness_t *w, const char *name,
     return 0;
 }
 
-static const struct { const char *name; const char *order; } TBL[] = {
-    { "validators",           "pubkey_hash ASC" },
-    { "delegations",          "delegator_hash ASC, validator_hash ASC" },
-    { "epoch_state",          "epoch_start_height ASC" },
-    { "chain_config_history", "param_id ASC, effective_block ASC" },
-    { "supply_tracking",      "id ASC" },
-};
-#define N_TBL (int)(sizeof(TBL)/sizeof(TBL[0]))
-
-static int all_tables_equal(nodus_witness_t *a, nodus_witness_t *b) {
-    for (int i = 0; i < N_TBL; i++) {
-        uint8_t da[64], db[64];
-        if (table_digest(a, TBL[i].name, TBL[i].order, da) != 0) return -1;
-        if (table_digest(b, TBL[i].name, TBL[i].order, db) != 0) return -1;
-        if (memcmp(da, db, 64) != 0) return 0;
+/* Whole-database logical digest: every table, every row, in a stable
+ * order — the same idiom test_v2_preflight.c's db_digest uses, needed
+ * here to prove a REFUSED apply left the scratch DB byte-identical.
+ * R3 W3: the version-2-lane byte-for-byte table comparison this file
+ * used to run (all_tables_equal, over the five base tables) is REMOVED
+ * — it has no caller left now that the version-2 lane cannot produce a
+ * bundle to adopt (bundle_persist refuses), and an unused static
+ * function is a build error under -Werror=unused-function, not a style
+ * nit. `table_digest` itself stays: test_v3_bundle's per-table loop
+ * still calls it. */
+static int db_digest_all(nodus_witness_t *w, uint8_t out[64]) {
+    sqlite3_stmt *tq = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "ORDER BY name", -1, &tq, NULL) != SQLITE_OK)
+        return -1;
+    uint8_t acc[64];
+    memset(acc, 0, sizeof(acc));
+    while (sqlite3_step(tq) == SQLITE_ROW) {
+        const char *t = (const char *)sqlite3_column_text(tq, 0);
+        char sql[512];
+        snprintf(sql, sizeof(sql),
+                 "SELECT quote(t.*) FROM (SELECT * FROM \"%s\") t", t);
+        sqlite3_stmt *rq = NULL;
+        if (sqlite3_prepare_v2(w->db, sql, -1, &rq, NULL) != SQLITE_OK) {
+            snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM \"%s\"", t);
+            if (sqlite3_prepare_v2(w->db, sql, -1, &rq, NULL) != SQLITE_OK)
+                continue;
+        }
+        while (sqlite3_step(rq) == SQLITE_ROW) {
+            const unsigned char *v = sqlite3_column_text(rq, 0);
+            uint8_t buf[64];
+            if (v) {
+                qgp_sha3_512(v, strlen((const char *)v), buf);
+                for (int i = 0; i < 64; i++) acc[i] ^= buf[i];
+            }
+        }
+        sqlite3_finalize(rq);
+        uint8_t nb[64];
+        qgp_sha3_512((const uint8_t *)t, strlen(t), nb);
+        for (int i = 0; i < 64; i++) acc[i] ^= nb[i];
     }
-    return 1;
+    sqlite3_finalize(tq);
+    memcpy(out, acc, 64);
+    return 0;
 }
 
 /* Count rows across the whole DB (a wrong-pin apply must leave the
@@ -225,180 +293,490 @@ static int has_v2_block0(nodus_witness_t *w) {
     return n;
 }
 
-int main(void) {
-    /* ── source: derive genesis + persist the bundle ─────────────────── */
-    fixture_t src;
-    CHECK(fx_open(&src, "src", 1) == 0, "source fixture (genesis)"); OK();
+/* ════════════════════════════════════════════════════════════════════
+ * R3 W3 (D-24 rev 4 (2), D-17 rev 10 (9)) — THE VERSION-3 bundle: the
+ * genesis DOCUMENT travels after the base tables under the `DNA.
+ * GBUNDLE.v3` magic (nodus_witness_v2_bundle.h's layout comment); the
+ * version-2 lane cannot be bundled at all any more (bundle_persist
+ * refuses with no stored document). The joiner binds BOTH the document
+ * (chain_id) and the ledger it actually replanted (app_hash == the
+ * genesis_cmt-computed root) before adopting.
+ * ══════════════════════════════════════════════════════════════════ */
 
-    CHECK(nodus_witness_v2_bundle_persist(src.w) == 0,
-          "bundle persists (column names + serialize)"); OK();
-    /* idempotent re-persist is success */
-    CHECK(nodus_witness_v2_bundle_persist(src.w) == 0,
-          "re-persist is idempotent"); OK();
+/* A version-3 config's n_validators MUST equal DNAC_COMMITTEE_SIZE (7)
+ * — gen_plan_build's shared rule, checked whether the caller wanted a
+ * small committee or not (nodus_witness_v2_gen.c:582). The file's own
+ * N_VAL (3) is the LOW-LEVEL v2x_genesis_min fixture's count, which
+ * bypasses the config builder and this rule entirely — the two are not
+ * interchangeable, and reusing N_VAL here would refuse at v3_validate. */
+#define V3_N_VAL 7
+#define V3_TREASURY_RAW 93000000000000000ULL  /* V3_N_VAL self-bonds + this
+                                                * == DNAC_DEFAULT_TOTAL_SUPPLY,
+                                                * same arithmetic test_v2_gen.c
+                                                * pins as TREASURY_RAW */
+
+typedef struct {
+    nodus_v2_gen_config_t *cfg;
+    nodus_v2_gen_alloc_t  *allocs;
+} v3cfgbox_t;
+
+static void v3cfg_free(v3cfgbox_t *b) {
+    if (!b) return;
+    free(b->cfg);
+    free(b->allocs);
+    b->cfg = NULL;
+    b->allocs = NULL;
+}
+
+static void v3_hex_lower_fp(const uint8_t *src, size_t src_len,
+                            uint8_t *out129) {
+    static const char hexd[] = "0123456789abcdef";
+    uint8_t fpr[64];
+    qgp_sha3_512(src, src_len, fpr);
+    for (int i = 0; i < 64; i++) {
+        out129[2 * i]     = (uint8_t)hexd[fpr[i] >> 4];
+        out129[2 * i + 1] = (uint8_t)hexd[fpr[i] & 0xF];
+    }
+    out129[128] = '\0';
+}
+
+/* One-allocation, V3_N_VAL-validator config, completed to a version-3
+ * document via the SAME two builder calls the ceremony tool uses
+ * (nodus_v2_gen_config.c). `salt` perturbs every validator pubkey and
+ * the allocation's destination binding, so two calls derive DIFFERENT
+ * chains — used below to prove the pin, not the bundle, is authoritative. */
+static int v3cfg_make(v3cfgbox_t *b, uint8_t salt) {
+    memset(b, 0, sizeof(*b));
+    b->cfg    = calloc(1, sizeof(*b->cfg));
+    b->allocs = calloc(1, sizeof(*b->allocs));
+    if (!b->cfg || !b->allocs) { v3cfg_free(b); return -1; }
+
+    nodus_v2_gen_config_t *c = b->cfg;
+    c->config_version        = NODUS_V2_GEN_CONFIG_VERSION_V3;
+    c->total_supply_raw      = DNAC_DEFAULT_TOTAL_SUPPLY;
+    c->epoch_length          = (uint64_t)DNAC_EPOCH_LENGTH;
+    c->blocks_per_year       = (uint64_t)DNAC_BLOCKS_PER_YEAR;
+    c->decimal_unit          = (uint64_t)DNAC_DECIMAL_UNIT;
+    c->inflation_start_block = 1ULL;
+    c->claim_start_height    = 0;
+    c->claim_end_height      = UINT64_MAX;
+    c->n_validators          = V3_N_VAL;
+
+    for (uint16_t i = 0; i < V3_N_VAL; i++) {
+        nodus_v2_gen_validator_t *v = &c->validators[i];
+        for (size_t bb = 0; bb < DNAC_PUBKEY_SIZE; bb++) {
+            v->pubkey[bb] = (uint8_t)(0x11 * (i + 1) + (bb & 0x3F) + salt);
+            v->unstake_destination_pubkey[bb] =
+                (uint8_t)(v->pubkey[bb] ^ 0x5A);
+        }
+        v3_hex_lower_fp(v->unstake_destination_pubkey, DNAC_PUBKEY_SIZE,
+                        v->unstake_destination_fp);
+        v->self_stake     = DNAC_SELF_STAKE_AMOUNT;
+        v->commission_bps = (uint16_t)(100 * (i + 1));
+    }
+
+    memset(b->allocs[0].source_id, 0, sizeof(b->allocs[0].source_id));
+    b->allocs[0].source_id[0] = 0x30;
+    {
+        uint8_t owner[DNAC_PUBKEY_SIZE];
+        for (size_t bb = 0; bb < sizeof(owner); bb++)
+            owner[bb] = (uint8_t)(0xA0 + (bb & 0x1F) + salt);
+        qgp_sha3_512(owner, sizeof(owner), b->allocs[0].dest_binding);
+    }
+    b->allocs[0].amount = V3_TREASURY_RAW;
+    c->n_allocs = 1;
+    c->allocs   = b->allocs;
+
+    if (nodus_witness_v2_gen_v3_defaults(c) != 0) { v3cfg_free(b); return -1; }
+    c->genesis_time_ms = 1700000000000ULL;
+    c->initial_height  = 1;
+    if (nodus_witness_v2_gen_v3_fill_comet_rows(c) != 0) {
+        v3cfg_free(b);
+        return -1;
+    }
+    return 0;
+}
+
+static int v3_mkdir_tmp(char dir[128], const char *tag) {
+    snprintf(dir, 128, "/tmp/test_v2_bundle_v3_%s_XXXXXX", tag);
+    return mkdtemp(dir) ? 0 : -1;
+}
+
+/* Read-only raw open of the single chain database `derive_v3` landed in
+ * `dir`, WITHOUT going through nodus_witness_create_chain_db — that
+ * function's role-derivation refuses a version-3 chain on REOPEN today
+ * (nodus_witness_v2_gen.h's own doc comment on
+ * nodus_witness_v2_gen_stored_chain_id says so explicitly, and names it
+ * a W3/C1c obligation this package does not own). `nodus_witness_v2_
+ * bundle_get` and `nodus_witness_v2_gen_stored_chain_id` both need only
+ * `w->db` (their own doc comments), so this fixture sidesteps the whole
+ * question the same way nodus-server.c's read_genesis_chain_id does. */
+static nodus_witness_t *v3_open_readonly(const char *dir) {
+    DIR *d = opendir(dir);
+    if (!d) return NULL;
+    struct dirent *e;
+    char path[600];
+    int found = 0;
+    while ((e = readdir(d)) != NULL) {
+        if (strncmp(e->d_name, "witness_", 8) != 0) continue;
+        size_t len = strlen(e->d_name);
+        if (len < 4 || strcmp(e->d_name + len - 3, ".db") != 0) continue;
+        snprintf(path, sizeof(path), "%s/%s", dir, e->d_name);
+        found = 1;
+        break;
+    }
+    closedir(d);
+    if (!found) return NULL;
+
+    nodus_witness_t *w = calloc(1, sizeof(*w));
+    if (!w) return NULL;
+    if (sqlite3_open_v2(path, &w->db, SQLITE_OPEN_READONLY, NULL)
+        != SQLITE_OK) {
+        if (w->db) sqlite3_close(w->db);
+        free(w);
+        return NULL;
+    }
+    return w;
+}
+
+/* A FRESH (never-derived) chain database, exactly the shape
+ * nodus_witness_v2_join.c's join_adopt creates its scratch DB with —
+ * this is the FRESH-CREATE path, not the reopen-an-existing-v3-chain
+ * path v3_open_readonly above avoids. */
+static nodus_witness_t *v3_open_fresh(const char *dir, uint8_t fill) {
+    uint8_t id16[16];
+    memset(id16, fill, sizeof(id16));
+    nodus_witness_t *w = calloc(1, sizeof(*w));
+    if (!w) return NULL;
+    w->cached_committee_epoch_start = UINT64_MAX;
+    snprintf(w->data_path, sizeof(w->data_path), "%s", dir);
+    if (nodus_witness_create_chain_db(w, id16) != 0) { free(w); return NULL; }
+    return w;
+}
+
+/* Whether `w` has a readable, canonical-strict genesis document — the
+ * v3 analogue of has_v2_block0 (a wrong-pin apply must leave neither a
+ * block row nor a readable document). */
+static int v3_has_doc(nodus_witness_t *w) {
+    uint8_t id[NODUS_V2_GEN_CHAIN_ID_LEN];
+    return nodus_witness_v2_gen_stored_chain_id(w, id) == 0 ? 1 : 0;
+}
+
+static const struct { const char *name; const char *order; } V3_TBL[] = {
+    { "validators",           "pubkey_hash ASC" },
+    { "delegations",          "delegator_hash ASC, validator_hash ASC" },
+    { "epoch_state",          "epoch_start_height ASC" },
+    { "chain_config_history", "param_id ASC, effective_block ASC" },
+    { "supply_tracking",      "id ASC" },
+    { "validator_stats",      "key ASC" },
+};
+#define N_V3_TBL (int)(sizeof(V3_TBL) / sizeof(V3_TBL[0]))
+
+static int test_v3_bundle(void) {
+    printf("R3 W3 (D-24 rev 4) — version-3 bundle: document carriage + "
+           "ledger binding\n");
+
+    v3cfgbox_t src_cfg;
+    CHECK(v3cfg_make(&src_cfg, 0x00) == 0, "v3 source config"); OK();
+    char src_dir[128];
+    CHECK(v3_mkdir_tmp(src_dir, "src") == 0, "src tmpdir"); OK();
+    uint8_t src_chain32[NODUS_V2_GEN_CHAIN_ID_LEN];
+    CHECK(nodus_witness_v2_gen_derive_v3(src_dir, src_cfg.cfg, src_chain32)
+              == 0, "derive v3 source"); OK();
+
+    nodus_witness_t *src_w = v3_open_readonly(src_dir);
+    CHECK(src_w != NULL, "open v3 source read-only"); OK();
+    CHECK(v3_has_doc(src_w) == 1, "source has a readable genesis document");
+    OK();
 
     uint8_t *bundle = NULL;
     size_t blen = 0;
-    CHECK(nodus_witness_v2_bundle_get(src.w, &bundle, &blen) == 0 &&
-          bundle && blen > 0, "bundle_get returns bytes"); OK();
+    CHECK(nodus_witness_v2_bundle_get(src_w, &bundle, &blen) == 0 &&
+              bundle && blen > 0, "v3 bundle_get returns bytes"); OK();
+    fprintf(stderr,
+            "    v3 bundle size = %zu bytes; gbundle chunks of %u = %zu\n",
+            blen, (unsigned)NODUS_T3_V2_GBUNDLE_CHUNK_MAX,
+            (blen + NODUS_T3_V2_GBUNDLE_CHUNK_MAX - 1) /
+                NODUS_T3_V2_GBUNDLE_CHUNK_MAX);
 
-    /* ── joiner: adopt with the CORRECT pin ──────────────────────────── */
+    /* ── joiner: adopt with the CORRECT pin (the 32-byte chain id) ────── */
     {
-        fixture_t j;
-        CHECK(fx_open(&j, "ok", 0) == 0, "joiner fixture (empty)"); OK();
-        CHECK(has_v2_block0(j.w) == 0, "joiner starts with no genesis"); OK();
+        char jdir[128];
+        CHECK(v3_mkdir_tmp(jdir, "ok") == 0, "joiner tmpdir"); OK();
+        nodus_witness_t *jw = v3_open_fresh(jdir, 0xAA);
+        CHECK(jw != NULL, "joiner db"); OK();
+        CHECK(v3_has_doc(jw) == 0, "joiner starts with no document"); OK();
 
-        CHECK(nodus_witness_v2_bundle_apply(j.w, bundle, blen,
-                                            src.genesis_id) == 0,
-              "apply with correct pin ADOPTS"); OK();
-        CHECK(has_v2_block0(j.w) == 1, "joiner now has genesis"); OK();
+        CHECK(nodus_witness_v2_bundle_apply(jw, bundle, blen, src_chain32)
+                  == 0, "v3 apply with correct pin ADOPTS"); OK();
+        CHECK(v3_has_doc(jw) == 1, "joiner now has a genesis document"); OK();
 
-        /* the derived genesis identity equals the source's */
-        uint8_t jid[64];
-        {
-            sqlite3_stmt *st = NULL;
-            CHECK(sqlite3_prepare_v2(j.w->db,
-                      "SELECT block_id FROM v2_blocks WHERE global_height=0",
-                      -1, &st, NULL) == SQLITE_OK, "prep jid");
-            CHECK(sqlite3_step(st) == SQLITE_ROW &&
-                  sqlite3_column_bytes(st, 0) == 64, "jid row");
-            memcpy(jid, sqlite3_column_blob(st, 0), 64);
-            sqlite3_finalize(st);
+        uint8_t jchain[NODUS_V2_GEN_CHAIN_ID_LEN];
+        CHECK(nodus_witness_v2_gen_stored_chain_id(jw, jchain) == 0,
+              "joiner chain id readable"); OK();
+        CHECK(memcmp(jchain, src_chain32, NODUS_V2_GEN_CHAIN_ID_LEN) == 0,
+              "joiner derived the IDENTICAL chain id"); OK();
+
+        for (int i = 0; i < N_V3_TBL; i++) {
+            uint8_t da[64], db[64];
+            CHECK(table_digest(src_w, V3_TBL[i].name, V3_TBL[i].order, da)
+                      == 0, "digest source table"); OK();
+            CHECK(table_digest(jw, V3_TBL[i].name, V3_TBL[i].order, db)
+                      == 0, "digest joiner table"); OK();
+            CHECK(memcmp(da, db, 64) == 0, "table byte-identical to source");
             OK();
         }
-        CHECK(memcmp(jid, src.genesis_id, 64) == 0,
-              "joiner derived the IDENTICAL genesis BlockID"); OK();
 
-        /* every base table is byte-identical to the source */
-        CHECK(all_tables_equal(src.w, j.w) == 1,
-              "all five base tables byte-identical to source"); OK();
-
-        /* the joiner re-persisted its OWN bundle, byte-equal to received */
         uint8_t *jb = NULL; size_t jlen = 0;
-        CHECK(nodus_witness_v2_bundle_get(j.w, &jb, &jlen) == 0,
-              "joiner has its own bundle"); OK();
+        CHECK(nodus_witness_v2_bundle_get(jw, &jb, &jlen) == 0,
+              "joiner has its own v3 bundle"); OK();
         CHECK(jlen == blen && memcmp(jb, bundle, blen) == 0,
-              "joiner's bundle byte-equals the received one"); OK();
+              "joiner's v3 bundle byte-equals the received one"); OK();
         free(jb);
-        fx_close(&j);
+
+        sqlite3_close(jw->db);
+        free(jw);
+        rmrf(jdir);
     }
 
-    /* ── joiner: WRONG pin is rejected, NO adoption ──────────────────── */
+    /* ── joiner: WRONG pin (a byte flipped in the real chain id) ──────── */
     {
-        fixture_t j;
-        CHECK(fx_open(&j, "badpin", 0) == 0, "joiner fixture"); OK();
-        uint8_t wrong[64];
-        memcpy(wrong, src.genesis_id, 64);
-        wrong[0] ^= 0xFF;                       /* flip one bit           */
-        CHECK(nodus_witness_v2_bundle_apply(j.w, bundle, blen, wrong) != 0,
-              "wrong pin REJECTS"); OK();
-        CHECK(has_v2_block0(j.w) == 0,
-              "wrong pin left NO genesis (zero trace)"); OK();
-        fx_close(&j);
+        char jdir[128];
+        CHECK(v3_mkdir_tmp(jdir, "badpin") == 0, "joiner tmpdir"); OK();
+        nodus_witness_t *jw = v3_open_fresh(jdir, 0xAB);
+        CHECK(jw != NULL, "joiner db"); OK();
+
+        uint8_t wrong[NODUS_V2_GEN_CHAIN_ID_LEN];
+        memcpy(wrong, src_chain32, sizeof(wrong));
+        wrong[0] ^= 0xFF;
+        CHECK(nodus_witness_v2_bundle_apply(jw, bundle, blen, wrong) != 0,
+              "v3 wrong pin REJECTS"); OK();
+        /* This proves no genesis DOCUMENT was stored — adoption did not
+         * complete. It does NOT prove `jw`'s scratch database is
+         * byte-unchanged: bundle_apply's own BEGIN/COMMIT already
+         * planted the six base tables before the pin precheck runs (see
+         * this file's header, HOW IT CAN LIE). "Zero trace" in the
+         * message below is the production JOINER's guarantee
+         * (join_scratch_clear discards this whole directory), which
+         * this test does not exercise — this test's own `rmrf(jdir)`
+         * below is what actually removes the planted rows here. */
+        CHECK(v3_has_doc(jw) == 0,
+              "wrong pin left NO readable document (zero trace)"); OK();
+
+        sqlite3_close(jw->db);
+        free(jw);
+        rmrf(jdir);
     }
 
-    /* ── malformed bundles reject ────────────────────────────────────── */
+    /* ── joiner: a TAMPERED replanted table, CORRECT pin. The document
+     * is untouched and still hashes to `pin` (chain_id passes); what
+     * genesis_cmt actually computes from the REPLANTED tables no longer
+     * matches the document's claimed app_hash. Proves the LEDGER-BINDING
+     * check specifically (bundle.h's "what pin binds" note) — a
+     * self-consistent document is not enough.
+     *
+     * THE TAMPER, byte-precise: flip one byte of validator[0]'s
+     * self_stake field. Located by `find_bytes` (a plain byte-search
+     * helper — memmem() is a GNU extension this tree's tests must not
+     * depend on) on the validator's own pubkey bytes (the fixture
+     * generated that key, so they are known) rather than a guessed
+     * absolute offset, because the manifest's encoded length is not a
+     * fixed constant this test wants to hand-compute. The ROW LAYOUT is
+     * nodus_witness_v2_bundle.c's
+     * serialize_table over the validators table's OWN schema order
+     * (nodus_witness.c:168-171: pubkey_hash BLOB, pubkey BLOB,
+     * self_stake INTEGER — in that order, SELECT * emits columns in
+     * schema order). Each column is encoded `type(1B) ‖ value`
+     * (serialize_table's switch), so immediately after the pubkey
+     * BLOB's own bytes end comes ONE byte — self_stake's own type tag,
+     * asserted to read 1 (SQLITE_INTEGER) below — and then its 8-byte
+     * big-endian value. Flipping the value's high-order byte changes
+     * the stored self_stake by a large amount without touching any
+     * length or type field the table decoder parses, so the row still
+     * decodes as a normal, syntactically valid row with a different
+     * amount. */
     {
-        fixture_t j;
-        CHECK(fx_open(&j, "malf", 0) == 0, "joiner fixture"); OK();
+        char jdir[128];
+        CHECK(v3_mkdir_tmp(jdir, "tamper") == 0, "joiner tmpdir"); OK();
+        nodus_witness_t *jw = v3_open_fresh(jdir, 0xAD);
+        CHECK(jw != NULL, "joiner db"); OK();
 
-        /* bad magic */
-        uint8_t *m = malloc(blen); memcpy(m, bundle, blen);
-        m[0] ^= 0xFF;
-        CHECK(nodus_witness_v2_bundle_apply(j.w, m, blen,
-                                            src.genesis_id) != 0,
-              "bad magic rejects"); OK();
-        CHECK(has_v2_block0(j.w) == 0, "no trace"); OK();
-        free(m);
+        uint8_t *tampered = malloc(blen);
+        CHECK(tampered != NULL, "alloc tampered"); OK();
+        memcpy(tampered, bundle, blen);
 
-        /* truncated */
-        CHECK(nodus_witness_v2_bundle_apply(j.w, bundle, blen - 1,
-                                            src.genesis_id) != 0,
-              "truncated bundle rejects"); OK();
-        CHECK(has_v2_block0(j.w) == 0, "no trace"); OK();
+        const uint8_t *pk = src_cfg.cfg->validators[0].pubkey;
+        const uint8_t *found = find_bytes(tampered, blen, pk,
+                                          DNAC_PUBKEY_SIZE);
+        CHECK(found != NULL,
+              "validator[0]'s pubkey bytes found in the bundle"); OK();
+        size_t pubkey_off     = (size_t)(found - tampered);
+        size_t stake_type_off = pubkey_off + DNAC_PUBKEY_SIZE;
+        size_t stake_val_off  = stake_type_off + 1;
+        CHECK(stake_type_off < blen && tampered[stake_type_off] == 1,
+              "the byte immediately after the pubkey is self_stake's "
+              "own SQLITE_INTEGER type tag — the row layout assumption "
+              "above holds"); OK();
+        CHECK(stake_val_off + 8 <= blen, "the 8-byte stake value fits");
+        OK();
+        tampered[stake_val_off] ^= 0xFF;
 
-        /* trailing byte */
-        uint8_t *t = malloc(blen + 1); memcpy(t, bundle, blen); t[blen] = 0;
-        CHECK(nodus_witness_v2_bundle_apply(j.w, t, blen + 1,
-                                            src.genesis_id) != 0,
-              "trailing byte rejects"); OK();
-        CHECK(has_v2_block0(j.w) == 0, "no trace"); OK();
-        free(t);
-
-        fx_close(&j);
-    }
-
-    /* ── right pin, WRONG bundle: the PIN is the authority (spec §7,
-     * "network-supplied farklı pin/genesis reddi") ──────────────────────
-     * A DIFFERENT source (a distinct validator set) derives a DIFFERENT
-     * genesis. Feeding ITS bundle to a joiner holding the FIRST source's
-     * pin must be refused by genesis_ex — proving the pin, not the
-     * bundle, is authoritative. This is offset-independent and cannot be
-     * vacuous: the two sources provably differ (their genesis ids are
-     * compared and required unequal). */
-    {
-        fixture_t src2;
-        CHECK(fx_open(&src2, "src2", 0) == 0, "second source fixture"); OK();
-        /* seed a DIFFERENT validator set (shifted pubkeys) */
+        CHECK(nodus_witness_v2_bundle_apply(jw, tampered, blen, src_chain32)
+                  != 0,
+              "tampered validator stake + correct pin REJECTS (ledger "
+              "binding, not just the document)"); OK();
+        /* NOT v3_has_doc here: the pin precheck (document self-hash vs
+         * pin) PASSES for this tamper — only the tables differ, and the
+         * document is stored (migrate + store-doc) BEFORE genesis_cmt
+         * runs and the app_hash mismatch is caught, exactly the
+         * pre-existing "not fully atomic, caller discards the scratch
+         * DB" contract this file's version-2 lane always had (bundle.c's
+         * own comment: "Whole-adopt atomicity does NOT come from one
+         * wrapping SQL transaction"). What DID NOT happen is the final
+         * adoption: bundle_persist runs only after every check in
+         * bundle_apply passes, so no bundle row exists on the rejected
+         * handle. */
         {
-            static const char hexd[] = "0123456789abcdef";
-            for (int i = 0; i < N_VAL; i++) {
-                dnac_validator_record_t v;
-                memset(&v, 0, sizeof(v));
-                for (size_t b = 0; b < DNAC_PUBKEY_SIZE; b++)
-                    v.pubkey[b] = (uint8_t)(0x55 * (i + 2) + (b & 0x3F));
-                v.self_stake = 0; v.status = DNAC_VALIDATOR_ACTIVE;
-                v.active_since_block = 1;
-                uint8_t fpr[64];
-                CHECK(qgp_sha3_512(v.pubkey, DNAC_PUBKEY_SIZE, fpr) == 0,
-                      "fp");
-                for (int b = 0; b < 64; b++) {
-                    v.unstake_destination_fp[2*b]   = hexd[fpr[b] >> 4];
-                    v.unstake_destination_fp[2*b+1] = hexd[fpr[b] & 0xF];
-                }
-                v.unstake_destination_fp[128] = '\0';
-                CHECK(nodus_validator_insert(src2.w, &v) == 0, "insert2");
-            }
-            OK();
+            uint8_t *b3 = NULL; size_t b3len = 0;
+            CHECK(nodus_witness_v2_bundle_get(jw, &b3, &b3len) == 1,
+                  "tampered apply did not reach adoption — no bundle "
+                  "row on the rejected handle"); OK();
         }
-        CHECK(run_sql(src2.w->db,
-            "INSERT OR REPLACE INTO supply_tracking (id, genesis_supply, "
-            "total_burned, total_minted, current_supply, last_tx_hash, "
-            "last_sequence) VALUES (1,0,0,0,0,zeroblob(64),0)") == 0,
-            "src2 supply"); OK();
-        CHECK(nodus_witness_vset_commit_genesis(src2.w, 1) == 0,
-              "src2 vset"); OK();
-        uint8_t vset2[64]; memset(vset2, 0x77, 64);
-        CHECK(v2x_genesis_min(src2.w, vset2, src2.genesis_id, NULL) == 0,
-              "src2 genesis"); OK();
-        CHECK(memcmp(src2.genesis_id, src.genesis_id, 64) != 0,
-              "the two sources DERIVE DIFFERENT genesis ids"); OK();
-        CHECK(nodus_witness_v2_bundle_persist(src2.w) == 0,
-              "src2 bundle persists"); OK();
+        free(tampered);
 
+        sqlite3_close(jw->db);
+        free(jw);
+        rmrf(jdir);
+    }
+
+    /* ── right pin, WRONG (foreign) bundle: the PIN is the authority.
+     * A second source with a DIFFERENT validator/allocation salt derives
+     * a PROVABLY DIFFERENT chain id; its bundle against the FIRST
+     * chain's pin must reject, and the SAME bundle against its OWN pin
+     * must adopt — proving the reject was the pin/document check, not a
+     * broken bundle. ─────────────────────────────────────────────────── */
+    {
+        v3cfgbox_t src2_cfg;
+        CHECK(v3cfg_make(&src2_cfg, 0x40) == 0, "v3 source2 config"); OK();
+        char src2_dir[128];
+        CHECK(v3_mkdir_tmp(src2_dir, "src2") == 0, "src2 tmpdir"); OK();
+        uint8_t src2_chain32[NODUS_V2_GEN_CHAIN_ID_LEN];
+        CHECK(nodus_witness_v2_gen_derive_v3(src2_dir, src2_cfg.cfg,
+                                             src2_chain32) == 0,
+              "derive v3 source2"); OK();
+        CHECK(memcmp(src2_chain32, src_chain32, NODUS_V2_GEN_CHAIN_ID_LEN)
+                  != 0, "the two sources DERIVE DIFFERENT chain ids"); OK();
+
+        nodus_witness_t *src2_w = v3_open_readonly(src2_dir);
+        CHECK(src2_w != NULL, "open v3 source2 read-only"); OK();
         uint8_t *b2 = NULL; size_t b2len = 0;
-        CHECK(nodus_witness_v2_bundle_get(src2.w, &b2, &b2len) == 0 && b2,
+        CHECK(nodus_witness_v2_bundle_get(src2_w, &b2, &b2len) == 0 && b2,
               "src2 bundle bytes"); OK();
 
-        fixture_t j;
-        CHECK(fx_open(&j, "foreign", 0) == 0, "joiner fixture"); OK();
-        /* the FOREIGN bundle (src2) against the FIRST pin (src) */
-        CHECK(nodus_witness_v2_bundle_apply(j.w, b2, b2len,
-                                            src.genesis_id) != 0,
-              "foreign bundle + our pin REJECTS (pin is authority)"); OK();
-        CHECK(has_v2_block0(j.w) == 0,
-              "foreign bundle left NO genesis (zero trace)"); OK();
-        /* and the SAME foreign bundle with ITS OWN pin adopts — proving
-         * the reject above was the pin check, not a broken bundle */
-        CHECK(nodus_witness_v2_bundle_apply(j.w, b2, b2len,
-                                            src2.genesis_id) == 0,
-              "foreign bundle + its own pin ADOPTS"); OK();
+        char jdir[128];
+        CHECK(v3_mkdir_tmp(jdir, "foreign") == 0, "joiner tmpdir"); OK();
+        nodus_witness_t *jw = v3_open_fresh(jdir, 0xAC);
+        CHECK(jw != NULL, "joiner db"); OK();
+
+        CHECK(nodus_witness_v2_bundle_apply(jw, b2, b2len, src_chain32) != 0,
+              "foreign v3 bundle + our pin REJECTS (pin is authority)");
+        OK();
+        /* Same caveat as the wrong-pin case above: proves NO DOCUMENT was
+         * stored, not that `jw` is otherwise byte-unchanged — the
+         * foreign bundle's six base tables were already planted by
+         * bundle_apply's own BEGIN/COMMIT before this rejection (see
+         * this file's header, HOW IT CAN LIE). The very next line reuses
+         * this same `jw` handle successfully, which only works because
+         * `nodus_witness_v2_bundle_apply` re-plants (DELETE + re-INSERT)
+         * the base tables on every call, not because this one left them
+         * empty. */
+        CHECK(v3_has_doc(jw) == 0,
+              "foreign bundle left NO readable document (zero trace)"); OK();
+        CHECK(nodus_witness_v2_bundle_apply(jw, b2, b2len, src2_chain32)
+                  == 0, "foreign v3 bundle + its own pin ADOPTS"); OK();
+
         free(b2);
-        fx_close(&j);
-        fx_close(&src2);
+        sqlite3_close(src2_w->db);
+        free(src2_w);
+        sqlite3_close(jw->db);
+        free(jw);
+        rmrf(jdir);
+        rmrf(src2_dir);
+        v3cfg_free(&src2_cfg);
     }
 
     free(bundle);
+    sqlite3_close(src_w->db);
+    free(src_w);
+    rmrf(src_dir);
+    v3cfg_free(&src_cfg);
+    printf("test_v3_bundle: ALL CHECKS PASSED\n");
+    return 0;
+}
+
+int main(void) {
+    /* ── R3 W3 (D-17 rev 10 (9) / D-24 rev 4 (2)): THE VERSION-2 LANE
+     * CANNOT BE BUNDLED AT ALL any more — a chain with no stored genesis
+     * DOCUMENT cannot serve a correct bundle, so `bundle_persist` now
+     * refuses instead of producing a document-less one. Everything this
+     * file used to prove about the ADOPT/wrong-pin/malformed/foreign-
+     * bundle properties now lives on the version-3 path
+     * (test_v3_bundle, below) — this section proves only the CLOSURE
+     * itself: persist refuses, no bundle row exists, and an old-binary
+     * (`DNA.GBUNDLE.v1`) bundle is refused by its magic with the
+     * joiner's whole database left byte-identical. */
+    fixture_t src;
+    CHECK(fx_open(&src, "src", 1) == 0, "source fixture (genesis)"); OK();
+
+    CHECK(nodus_witness_v2_bundle_persist(src.w) != 0,
+          "persist REFUSES a chain with no genesis document"); OK();
+
+    {
+        uint8_t *bundle = NULL;
+        size_t blen = 0;
+        CHECK(nodus_witness_v2_bundle_get(src.w, &bundle, &blen) == 1,
+              "no bundle row — persist refused, nothing written"); OK();
+    }
+
+    /* an old-binary (version-1 magic) bundle is refused BY ITS MAGIC,
+     * before any mutation — the joiner's whole-DB digest is unchanged.
+     * The frame does not need to be a valid version-1 bundle past the
+     * magic: nodus_witness_v2_bundle_apply's first act is the magic
+     * comparison, so anything after it is never read. */
+    {
+        fixture_t j;
+        CHECK(fx_open(&j, "oldmagic", 0) == 0, "joiner fixture"); OK();
+
+        uint8_t old_bundle[64];
+        memcpy(old_bundle, NODUS_V2_GBUNDLE_MAGIC_V1_RETIRED,
+               NODUS_V2_GBUNDLE_MAGIC_LEN);
+        memset(old_bundle + NODUS_V2_GBUNDLE_MAGIC_LEN, 0x42,
+               sizeof(old_bundle) - NODUS_V2_GBUNDLE_MAGIC_LEN);
+        uint8_t any_pin[32];
+        memset(any_pin, 0x99, sizeof(any_pin));
+
+        uint8_t before[64], after[64];
+        CHECK(db_digest_all(j.w, before) == 0, "digest before"); OK();
+        CHECK(nodus_witness_v2_bundle_apply(j.w, old_bundle,
+                                            sizeof(old_bundle),
+                                            any_pin) != 0,
+              "version-1 magic REFUSED"); OK();
+        CHECK(db_digest_all(j.w, after) == 0, "digest after"); OK();
+        CHECK(memcmp(before, after, 64) == 0,
+              "the refused apply left the joiner's whole database "
+              "byte-identical"); OK();
+        CHECK(has_v2_block0(j.w) == 0, "no trace"); OK();
+
+        fx_close(&j);
+    }
+
     fx_close(&src);
+
+    /* R3 W3 (D-24 rev 4) — the version-3 lane: the only one that can
+     * actually produce and adopt a bundle now (see the closure section
+     * above). */
+    if (test_v3_bundle() != 0) return 1;
+
     printf("test_v2_bundle: ALL %d CHECKS PASSED\n", g_checks);
     return 0;
 }

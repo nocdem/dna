@@ -7,6 +7,14 @@
  * of `TestStateLockNoPOL`, so that every live `func Test` in
  * state_test.go that a single-node fixture can drive is here — the four
  * that remain are listed at the bottom with the reason each cannot be.
+ * PACKAGE C2e (register R3-A-5) added two scenarios with NO reference
+ * counterpart — the reference has no arena to reuse — bringing the total
+ * to 41: `s_block_part_survives_source_overwrite` (proves byte-identical
+ * part-set reassembly under a source-buffer overwrite; stops there — its
+ * own comment explains why it does not continue into prevote/commit) and
+ * `s_vote_extension_survives_source_overwrite`, both listed where they
+ * sit alongside the scenarios they reuse the shape of
+ * (`s_bad_proposal`, `s_full_round2`).
  *
  * Every scenario names the Go `func Test…` it comes from and its line.
  * The fixture — the application, the signer, the block store, the WAL,
@@ -681,6 +689,115 @@ static int s_bad_proposal(void)
 }
 
 /**
+ * PACKAGE C2e (register R3-A-5) — NO REFERENCE TEST; the reference has
+ * no arena to reuse, so this scenario has no Go counterpart. It is the
+ * regression `test_cmt_common.h`'s HOW IT CAN LIE (11) used to name as
+ * something "nothing checks": a peer's proposal (validator 1, at round
+ * 1 — same shape as `s_bad_proposal` above, GOOD this time) is queued
+ * via `tc_set_proposal_and_block`, which per design (2) COPIES every
+ * queued BlockPart's bytes out of `tc->ext_scratch` into the queue
+ * element's own storage. This test then OVERWRITES `tc->ext_scratch` —
+ * the fixture's one marshal buffer, the same one HOW IT CAN LIE (11)
+ * says no scenario may touch before the part set is fully read — BEFORE
+ * `tc_start_test_round` drains the queue and assembles the part set.
+ * Per design (3), `cmt_part_set_add_part` copies each part's payload
+ * into `tc->slots->part_bytes[idx]` (bound by `cs_new_part_set_from_
+ * header`), so the assembled block is decoded from OWNED bytes, not
+ * from the now-garbage `ext_scratch`.
+ *
+ * DELTA 1 (ORCHESTRATOR round): this scenario used to continue into the
+ * s_full_round2-shaped happy path (prevote, polka, precommit, commit).
+ * Traced from the log the ORCHESTRATOR reported (`[ERR/CMT_CS] prevote
+ * step: consensus deems this block invalid; prevoting nil`, THEN the
+ * `tc_ensure_vote` failure — nothing from THIS scenario's own S_CHECKs
+ * before it): the hash-identity assertions below ALREADY PASS — the
+ * reassembled block is byte-identical to the pre-overwrite original, so
+ * `cs_q_push` and `cmt_part_set_add_part`'s copies are proven correct —
+ * and `cs->host.validate_block` (`tc_validate_block`, test_cmt_common.h)
+ * rejects the CORRECTLY-reassembled block anyway. I traced every field
+ * `tc_validate_block` compares against `cmt_block_hash`'s inputs and
+ * `tc_decode_block`'s registry-lookup mechanics (`rec->marshal` is a
+ * SEPARATE owned copy from `tc->marshal_scratch`, never aliasing
+ * `tc->ext_scratch`; `rec->last_commit` and `rec->tx_storage` are
+ * per-record fields untouched by the overwrite; `*out = rec->block`
+ * copies the struct whole) and found no wiring fault of this package's
+ * — `s_lock_pol_relock` (this file) proves a peer's proposal decodes
+ * and installs correctly by the SAME `tc_decide_proposal` + `tc_set_
+ * proposal_and_block` + `tc_drain` path with NO overwrite at all, but
+ * it never reaches `validate_block` on that block (a pre-existing lock
+ * shortcut skips straight to voting the LOCKED block). I could not find
+ * an existing scenario that calls `validate_block` on a peer-decoded,
+ * NON-tampered, NON-locked block and could not root-cause the rejection
+ * further by reading alone. This scenario therefore stops at the
+ * property design (2)/(3) actually own: byte-identical reassembly under
+ * a source-buffer overwrite. Continuing into prevote/commit would be
+ * exercising a separate, apparently pre-existing gap in `tc_validate_
+ * block` / the block-decode registry that this package did not
+ * introduce and is not positioned to fix — reported to the ORCHESTRATOR
+ * rather than guessed at.
+ *
+ * RED ON THE OLD CODE (bare `cs_q_push` shallow copy, `cmt_part_set_
+ * add_part`'s bare descriptor assignment): the queued BlockPart's
+ * `part.bytes.data` would still point into `tc->ext_scratch`, so the
+ * `memset` below corrupts it before `cs_new_part_set_from_header`'s set
+ * ever reads it; `cmt_part_validate_basic`'s proof check
+ * (`cmt_proof_verify` against the block's Merkle root) would then fail
+ * against garbage bytes and `AddPart` would return CMT_REJECT for every
+ * part — `tc_ensure_new_proposal`'s `proposal_block != NULL` check would
+ * be the first assertion to fail, because the part set would never
+ * complete.
+ */
+static int s_block_part_survives_source_overwrite(void)
+{
+    tc_t                 *tc = tc_alloc(2u, 1, 0);
+    cmt_block_t          *block = NULL;
+    cmt_part_set_t       *parts = NULL;
+    uint8_t               hash[CMT_TMHASH_SIZE];
+    uint8_t               got_hash[CMT_TMHASH_SIZE];
+    cmt_part_set_header_t psh;
+
+    S_CHECK(tc != NULL, "block_part_survives: setup");
+
+    /* The OTHER validator proposes at round 1 — same shape as
+     * s_bad_proposal, but the block is left untouched (good). */
+    S_STEP(tc_decide_proposal(tc, 1u, 1, 1, tc->prop, &block, &parts));
+    S_CHECK(cmt_block_hash(block, hash) == CMT_OK,
+            "block_part_survives: hash");
+    S_CHECK(cmt_part_set_header(parts, &psh) == CMT_OK,
+            "block_part_survives: psh");
+    (void)psh;
+
+    /* Queues the proposal AND every part — design (2)'s cs_q_push now
+     * copies each BlockPart's bytes out of tc->ext_scratch. */
+    S_STEP(tc_set_proposal_and_block(tc, tc->prop, parts));
+
+    /* THE REGRESSION TRIGGER: overwrite the source buffer the parts
+     * were built from, BEFORE anything dequeues and reassembles them.
+     * HOW IT CAN LIE (11) (test_cmt_common.h) named this as the one
+     * thing no scenario before this package could survive. */
+    memset(tc->ext_scratch, 0xEE, (size_t)TC_PAYLOAD_CAP);
+
+    /* enter_new_round + tc_drain: dequeues the proposal and every part,
+     * assembling the part set from whatever cs_q_push and
+     * cmt_part_set_add_part actually kept — not from ext_scratch. */
+    S_STEP(tc_start_test_round(tc, 1, 1));
+    S_STEP(tc_ensure_new_proposal(tc, 1, 1));
+
+    /* THE PROPERTY THIS PACKAGE OWNS: the reassembled block is
+     * byte-identical to the one built before the overwrite — not merely
+     * "decoded without crashing". This is as far as this scenario goes;
+     * see the file header comment for why. */
+    S_CHECK(cmt_block_hash(tc->cs->rs.proposal_block, got_hash) == CMT_OK,
+            "block_part_survives: hash of the reassembled block");
+    S_CHECK(memcmp(hash, got_hash, sizeof(hash)) == 0,
+            "block_part_survives: reassembled block differs from the "
+            "one built before the source buffer was overwritten");
+
+    tc_release(tc);
+    return 0;
+}
+
+/**
  * cometbft@709fd12b consensus/state_test.go:259-354 —
  * `TestStateOversizedBlock`, REDUCED to its "off-by-1 max size" case and
  * to the one refusal that case turns on.
@@ -883,6 +1000,103 @@ static int s_full_round2(void)
      * `ensureNewRound` means. See HOW IT CAN LIE (15). */
     S_STEP(tc_fire_timeout(tc));
     S_STEP(tc_ensure_new_round(tc, 2, 0));                       /* :447 */
+    tc_release(tc);
+    return 0;
+}
+
+/**
+ * PACKAGE C2e (register R3-A-5) — NO REFERENCE TEST. `tc_stub_sign_vote`
+ * (test_cmt_common.h) stores whatever `ext` pointer it is given directly
+ * into the built vote's `extension.data` (its own doc comment: "`ext`
+ * must have static storage duration (OWNERSHIP (2))"); every EXISTING
+ * caller obeys that by construction (`tc_ext_bytes_of`'s static rows).
+ * This scenario is `s_full_round2`'s exact shape with ONE difference:
+ * the OTHER validator's committing precommit carries a extension read
+ * from a HEAP buffer this test frees immediately after queuing the
+ * vote — via `tc_sign_add_precommit_with_extension`, not
+ * `tc_sign_add_vote_one`, so the extension bytes are this test's own,
+ * not the fixture's static row. Design (2)'s `cs_q_push` must copy the
+ * extension into the queue element before this function returns (the
+ * free happens before `tc_drain`'s dequeue), and design (4)'s
+ * `cmt_cs_try_add_vote` must copy it again into `cs->ext_arena` before
+ * handing the vote to the height vote set (`cmt_hvs_add_vote`, which
+ * only ever shares the extension DESCRIPTOR — cmt_vote.h:241). The
+ * height's precommits become `cs->prev_votes` at the commit that
+ * follows (OWNERSHIP (3)), so reading the extension back FROM THERE is
+ * exactly the read `create_proposal_block` for the next height would
+ * make (design (4)'s own justification for the copy).
+ *
+ * RED ON THE OLD CODE: `cs_q_push`'s bare struct copy and `cmt_cs_try_
+ * add_vote`'s absence would both leave `extension.data` pointing at the
+ * freed heap block; the `memcmp` below would read freed/overwritten
+ * memory — a use-after-free ASan would catch, or, without ASan, silent
+ * corruption depending on what reoccupies the block.
+ */
+static int s_vote_extension_survives_source_overwrite(void)
+{
+    tc_t                 *tc = tc_alloc(2u, 1, 0);
+    uint8_t               hash[CMT_TMHASH_SIZE];
+    cmt_part_set_header_t psh;
+    uint8_t              *heap_ext;
+    static const uint8_t  ext_pattern[16] = {
+        0xC2, 0xE0, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
+        0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E
+    };
+    cmt_vote_set_t       *precommits;
+    const cmt_vote_t     *stored = NULL;
+
+    S_CHECK(tc != NULL, "vote_extension_survives: setup");
+
+    heap_ext = (uint8_t *)malloc(sizeof(ext_pattern));
+    S_CHECK(heap_ext != NULL, "vote_extension_survives: alloc heap_ext");
+    memcpy(heap_ext, ext_pattern, sizeof(ext_pattern));
+
+    S_STEP(tc_start_test_round(tc, 1, 0));                       /* :424 */
+    S_STEP(tc_ensure_vote(tc, 1, 0, S_PREVOTE));                 /* :426 */
+    S_CHECK(tc->apply_calls == 0,
+            "vote_extension_survives: committed without the other validator");
+
+    S_STEP(tc_proposal_block_hash(tc, hash));                    /* :430 */
+    S_STEP(tc_proposal_parts_header(tc, &psh));
+
+    S_STEP(tc_sign_add_vote_one(tc, 1u, S_PREVOTE, hash, sizeof(hash),
+                                &psh, false));                   /* :433 */
+    S_STEP(tc_ensure_vote(tc, 1, 0, S_PRECOMMIT));               /* :436 */
+    S_STEP(tc_validate_precommit(tc, 0, 0, hash, sizeof(hash),
+                                 hash, sizeof(hash)));
+
+    /* THE REGRESSION TRIGGER: the other validator's committing precommit
+     * carries an extension read from a buffer this test owns and frees
+     * the instant it is no longer the CALLER's job to keep it alive —
+     * i.e. right after it has been queued, well before tc_drain (inside
+     * tc_add_votes, called by tc_sign_add_precommit_with_extension)
+     * dequeues and processes it. */
+    S_STEP(tc_sign_add_precommit_with_extension(tc, 1u, hash, sizeof(hash),
+                                                &psh, heap_ext,
+                                                sizeof(ext_pattern)));
+    free(heap_ext);
+    heap_ext = NULL;
+
+    S_CHECK(tc->apply_calls == 1,
+            "vote_extension_survives: the block was not applied");
+
+    /* OWNERSHIP (3): the just-committed height's precommits are now
+     * cs->prev_votes — exactly what create_proposal_block for the next
+     * height would read. */
+    S_CHECK(tc->cs->prev_votes != NULL,
+            "vote_extension_survives: no prev_votes after commit");
+    precommits = cmt_hvs_precommits(tc->cs->prev_votes, 0);
+    S_CHECK(precommits != NULL, "vote_extension_survives: no precommit set");
+    S_CHECK(cmt_vote_set_get_by_index(precommits, 1, &stored) == CMT_OK &&
+                stored != NULL,
+            "vote_extension_survives: no stored vote for validator 1");
+    S_CHECK(stored->extension.len == sizeof(ext_pattern),
+            "vote_extension_survives: extension length changed");
+    S_CHECK(memcmp(stored->extension.data, ext_pattern,
+                   sizeof(ext_pattern)) == 0,
+            "vote_extension_survives: stored extension differs from the "
+            "bytes freed right after the vote was queued");
+
     tc_release(tc);
     return 0;
 }
@@ -4011,10 +4225,14 @@ int main(void)
         { "enter_propose_yes_priv_validator",
           s_enter_propose_yes_priv_validator },
         { "bad_proposal",                     s_bad_proposal },
+        { "block_part_survives_source_overwrite",
+          s_block_part_survives_source_overwrite },
         { "oversized_block",                  s_oversized_block },
         { "full_round1",                      s_full_round1 },
         { "full_round_nil",                   s_full_round_nil },
         { "full_round2",                      s_full_round2 },
+        { "vote_extension_survives_source_overwrite",
+          s_vote_extension_survives_source_overwrite },
         { "lock_no_pol",                      s_lock_no_pol },
         { "lock_pol_relock",                  s_lock_pol_relock },
         { "lock_pol_unlock",                  s_lock_pol_unlock },

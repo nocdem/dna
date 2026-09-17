@@ -858,10 +858,13 @@ int nodus_witness_v2_gen_stored_doc(nodus_witness_t *w,
  * a different answer.
  *
  * Only `w->db` is used, so a read-only handle with nothing else set is
- * enough — which matters, because nodus_witness_create_chain_db REFUSES
- * a version-3 chain today (it derives the role, finds the pure-V2
- * manifest tag and then calls the height-0 chain_id, which cannot
- * answer). That refusal is a W3 item, recorded, not worked around here.
+ * enough — which matters for the offline ceremony (nodus-server.c reads
+ * the landed chain id through this accessor with nothing but `db` set)
+ * and for the witness's own post-open gate: since R3 W3 (package C2a)
+ * `witness_post_open_gate` (nodus_witness.c) recognises a version-3
+ * chain by its S14 stores AND this accessor succeeding, and sets the
+ * chain role from the document's id — the W2-era refusal of a
+ * version-3 chain at open is gone (D-17 rev 10 (9), as built: rev 11).
  *
  * @return 0; -1 (no row, a row that does not decode, a document that is
  *         not canonical, a chain_id field that does not hash to its own

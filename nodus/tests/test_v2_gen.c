@@ -261,6 +261,33 @@ static int cfg_make(cfgbox_t *b, uint8_t salt, uint32_t n_alloc,
     return 0;
 }
 
+/* R3 W3 (D-17 rev 10 (8)) — the SAME §0 composition (any salt/n_alloc/
+ * reverse combination cfg_make accepts), completed to a version-3
+ * document. Defined here, next to cfg_make, rather than reusing the
+ * later cfg_make_v3 (§4's KAT fixture, fixed at salt=0x00/n_alloc=1/
+ * reverse=0): that one is defined much later in this file (it needs
+ * KAT_GENESIS_TIME_MS) and this general form is needed by earlier
+ * sections (§1, §2) that vary all three parameters — a forward
+ * declaration would work too, but a second small helper next to the
+ * composition it varies is clearer than forward-declaring into a KAT
+ * fixture. */
+static int cfg_make_v3_ex(cfgbox_t *b, uint8_t salt, uint32_t n_alloc,
+                          int reverse) {
+    if (cfg_make(b, salt, n_alloc, reverse) != 0) return -1;
+    b->cfg->config_version = NODUS_V2_GEN_CONFIG_VERSION_V3;
+    if (nodus_witness_v2_gen_v3_defaults(b->cfg) != 0) {
+        cfg_free(b);
+        return -1;
+    }
+    b->cfg->genesis_time_ms = 1700000000000ULL;
+    b->cfg->initial_height  = 1;
+    if (nodus_witness_v2_gen_v3_fill_comet_rows(b->cfg) != 0) {
+        cfg_free(b);
+        return -1;
+    }
+    return 0;
+}
+
 /* ── chain-db discovery / open ───────────────────────────────────────── */
 
 /* 0 found, 1 none, -1 fault. */
@@ -340,11 +367,20 @@ static int mkdir_tmp(char dir[128], const char *tag) {
  * §1 — the §0 composition derives a COMPLETE genesis
  * ══════════════════════════════════════════════════════════════════ */
 
+/* R3 W3 (D-17 rev 10 (8)/(9)): the merged tree's post-open chain-role
+ * gate now refuses a version-2 chain on REOPEN — the closed lane's own
+ * approved closure — so §1 derives a VERSION-3 chain instead. The
+ * property this section proves (a complete genesis: reserve, bonds,
+ * manifest, supply) is a property of the DERIVATION, not of which lane
+ * produced it, so it is lane-independent; the ONE assertion that was
+ * genuinely version-2-shaped (a committed height-0 `v2_blocks` row) is
+ * replaced by its version-3 equivalent (D-19 rev 6 withdrew the block;
+ * the identity is the stored genesis DOCUMENT instead). */
 static int test_happy_path(void) {
-    printf("§1 the §0 composition derives a complete pure-V2 genesis\n");
+    printf("§1 the §0 composition derives a complete version-3 genesis\n");
 
     cfgbox_t box;
-    CHECK(cfg_make(&box, 0x00, 1, 0) == 0, "config");
+    CHECK(cfg_make_v3_ex(&box, 0x00, 1, 0) == 0, "config (version 3)");
     OK();
 
     /* the composition IS the design's: 9.3e16 + 7 × 1e15 == 10^17 */
@@ -358,7 +394,7 @@ static int test_happy_path(void) {
 
     uint8_t chain32[32];
     memset(chain32, 0, sizeof(chain32));
-    CHECK(nodus_witness_v2_gen_derive(dir, box.cfg, chain32) == 0,
+    CHECK(nodus_witness_v2_gen_derive_v3(dir, box.cfg, chain32) == 0,
           "derive succeeds");
     OK();
 
@@ -368,7 +404,15 @@ static int test_happy_path(void) {
     OK();
 
     CHECK(q1(w->db, "SELECT COUNT(*) FROM v2_blocks WHERE global_height = 0")
-              == 1, "a genesis block is committed");
+              == 0,
+          "NO genesis block row — D-19 rev 6 withdrew it for version 3");
+    {
+        uint8_t got_chain[32];
+        CHECK(nodus_witness_v2_gen_stored_chain_id(w, got_chain) == 0 &&
+              memcmp(got_chain, chain32, 32) == 0,
+              "the stored genesis document's chain_id matches the "
+              "derived one — the document IS the genesis identity now");
+    }
     CHECK(q1(w->db, "SELECT COUNT(*) FROM utxo_set") == 0,
           "NO spendable UTXO exists at genesis");
     CHECK(q1(w->db, "SELECT COALESCE(SUM(remaining),-1) FROM v2_dist_state")
@@ -423,8 +467,8 @@ static int test_happy_path(void) {
         CHECK(m.source_commit_len == NODUS_V2_GEN_SRCCOMMIT_LEN,
               "source_commit is a 64-byte digest");
         uint8_t expect[NODUS_V2_GEN_SRCCOMMIT_LEN];
-        CHECK(nodus_witness_v2_gen_source_commit(box.cfg, expect) == 0,
-              "source_commit recomputes");
+        CHECK(nodus_witness_v2_gen_v3_source_commit(box.cfg, expect) == 0,
+              "source_commit recomputes (the version-3 binding)");
         CHECK(memcmp(m.source_commit, expect,
                      NODUS_V2_GEN_SRCCOMMIT_LEN) == 0,
               "the manifest binds SHA3-512(canonical config bytes)");
@@ -443,7 +487,10 @@ static int test_happy_path(void) {
     }
 
     CHECK(nodus_witness_v2_gen_is_pure(path) == 1,
-          "the pure-V2 probe recognises the derived chain");
+          "the pure-genesis probe recognises the derived chain (the "
+          "manifest's own source_tag check, unaffected by the schema "
+          "flip — nodus_witness_v2_gen.c's manifest construction is the "
+          "same step for both lanes)");
 
     close_chain(w);
 
@@ -451,7 +498,7 @@ static int test_happy_path(void) {
     {
         uint8_t again[32];
         memset(again, 0xEE, sizeof(again));
-        CHECK(nodus_witness_v2_gen_derive(dir, box.cfg, again) == 0,
+        CHECK(nodus_witness_v2_gen_derive_v3(dir, box.cfg, again) == 0,
               "re-derivation returns success");
         char p2[600];
         uint8_t id2[16];
@@ -470,29 +517,35 @@ static int test_happy_path(void) {
  * §2 — determinism
  * ══════════════════════════════════════════════════════════════════ */
 
-/* Derive `box` into a fresh dir and report chain id, genesis BlockID and
- * the whole-database logical digest. */
+/* R3 W3 (D-17 rev 10 (8)/(9)): derives a VERSION-3 chain — the merged
+ * tree's post-open chain-role gate now refuses a version-2 chain on
+ * reopen, and determinism is a lane-independent property. Reports chain
+ * id, the stored document's app_hash and the whole-database logical
+ * digest. app_hash (D-19 rev 6 (1): the ledger's global root) is the
+ * version-3 replacement for the version-2 probe's "genesis BlockID" —
+ * there is no block row to read one from any more, but app_hash is the
+ * same shape of fact: a 64-byte fingerprint of what genesis actually
+ * produced, which two independent derivations from equal configs must
+ * still agree on. */
 static int derive_probe(cfgbox_t *box, const char *tag, char dir[128],
-                        uint8_t chain32[32], uint8_t gid[64],
+                        uint8_t chain32[32], uint8_t app_hash[64],
                         uint8_t digest[64]) {
     if (mkdir_tmp(dir, tag) != 0) return -1;
-    if (nodus_witness_v2_gen_derive(dir, box->cfg, chain32) != 0) return -1;
+    if (nodus_witness_v2_gen_derive_v3(dir, box->cfg, chain32) != 0)
+        return -1;
     char path[600];
     nodus_witness_t *w = open_chain(dir, path);
     if (!w) return -1;
     int rc = -1;
     do {
-        sqlite3_stmt *st = NULL;
-        if (sqlite3_prepare_v2(w->db,
-                "SELECT block_id FROM v2_blocks WHERE global_height = 0",
-                -1, &st, NULL) != SQLITE_OK) break;
-        int srow = sqlite3_step(st);
-        if (srow != SQLITE_ROW || sqlite3_column_bytes(st, 0) != 64) {
-            sqlite3_finalize(st);
-            break;
-        }
-        memcpy(gid, sqlite3_column_blob(st, 0), 64);
-        sqlite3_finalize(st);
+        nodus_v2_gen_config_t *cfg = calloc(1, sizeof(*cfg));
+        nodus_v2_gen_alloc_t  *allocs = NULL;
+        if (!cfg) break;
+        int src = nodus_witness_v2_gen_stored_doc(w, cfg, &allocs);
+        if (src == 0) memcpy(app_hash, cfg->app_hash, 64);
+        free(allocs);
+        free(cfg);
+        if (src != 0) break;
         if (db_digest(w->db, digest) != 0) break;
         rc = 0;
     } while (0);
@@ -501,13 +554,14 @@ static int derive_probe(cfgbox_t *box, const char *tag, char dir[128],
 }
 
 static int test_determinism(void) {
-    printf("§2 determinism twins, caller-order independence, sensitivity\n");
+    printf("§2 determinism twins, caller-order independence, sensitivity "
+           "(version 3)\n");
 
     cfgbox_t a, b, r, s;
-    CHECK(cfg_make(&a, 0x00, 3, 0) == 0, "config a");
-    CHECK(cfg_make(&b, 0x00, 3, 0) == 0, "config b (independent, equal)");
-    CHECK(cfg_make(&r, 0x00, 3, 1) == 0, "config r (same set, REVERSED)");
-    CHECK(cfg_make(&s, 0x01, 3, 0) == 0, "config s (one salted pubkey set)");
+    CHECK(cfg_make_v3_ex(&a, 0x00, 3, 0) == 0, "config a");
+    CHECK(cfg_make_v3_ex(&b, 0x00, 3, 0) == 0, "config b (independent, equal)");
+    CHECK(cfg_make_v3_ex(&r, 0x00, 3, 1) == 0, "config r (same set, REVERSED)");
+    CHECK(cfg_make_v3_ex(&s, 0x01, 3, 0) == 0, "config s (one salted pubkey set)");
     OK();
 
     char da[128], db_[128], dr[128], ds[128];
@@ -525,7 +579,8 @@ static int test_determinism(void) {
           "TWIN: two independent derivations from equal configs produce "
           "the SAME chain id");
     CHECK(memcmp(ga, gb, 64) == 0,
-          "TWIN: … the SAME genesis BlockID");
+          "TWIN: … the SAME app_hash (the version-3 replacement for the "
+          "version-2 probe's genesis BlockID — D-19 rev 6)");
     CHECK(memcmp(ha, hb, 64) == 0,
           "TWIN: … and a byte-identical whole-database logical digest");
 
@@ -544,7 +599,7 @@ static int test_determinism(void) {
     CHECK(memcmp(ca, cs, 32) != 0,
           "SENSITIVITY: a different validator set derives a DIFFERENT "
           "chain id");
-    CHECK(memcmp(ga, gs, 64) != 0, "SENSITIVITY: … and BlockID");
+    CHECK(memcmp(ga, gs, 64) != 0, "SENSITIVITY: … and app_hash");
 
     rmrf(da); rmrf(db_); rmrf(dr); rmrf(ds);
     cfg_free(&a); cfg_free(&b); cfg_free(&r); cfg_free(&s);
@@ -825,14 +880,18 @@ static int test_defect_L2F1(void) {
         rmrf(dir);
     }
 
-    /* ── the defect half: a chain WITH a V2 genesis must fail ──────── */
+    /* ── the defect half: a chain WITH a genesis must fail ─────────────
+     * R3 W3 (D-17 rev 10 (8)/(9)): version 3 — the merged tree's
+     * post-open chain-role gate now refuses a version-2 chain on
+     * reopen, and nodus_witness_v2_supply_check's fail-closed property
+     * is lane-independent. */
     {
         cfgbox_t c;
-        CHECK(cfg_make(&c, 0, 1, 0) == 0, "cfg");
+        CHECK(cfg_make_v3_ex(&c, 0, 1, 0) == 0, "cfg (version 3)");
         char dir[128];
         CHECK(mkdir_tmp(dir, "f1_pure") == 0, "tmpdir");
         OK();
-        CHECK(nodus_witness_v2_gen_derive(dir, c.cfg, NULL) == 0, "derive");
+        CHECK(nodus_witness_v2_gen_derive_v3(dir, c.cfg, NULL) == 0, "derive");
         OK();
         nodus_witness_t *w = open_chain(dir, NULL);
         CHECK(w != NULL, "open");
@@ -860,8 +919,25 @@ static int test_defect_L2F1(void) {
     return 0;
 }
 
+/* R3 W3 (D-17 rev 10 (8)/(9)): this section is SPECIFICALLY about the
+ * closed version-2 lane (its bundle join), not a lane-independent
+ * property, so it keeps deriving version 2 — but the merged tree's
+ * post-open chain-role gate now refuses to REOPEN a version-2 chain at
+ * all ("chain role: PRE-COMET LEDGER V2 (schema below S14) … the old
+ * consensus lane is CLOSED in W3 (D-17 rev 10); refusing the
+ * database"), so the assertion this section makes changes from "the
+ * chain opens" to "the chain derives, but the production path refuses
+ * to reopen it, and refuses closed for the reason this closure names".
+ * The property this test ORIGINALLY proved — validator_stats and
+ * chain_config_history travel to a JOINER through the genesis bundle —
+ * cannot be exercised on this lane any more regardless (Delta 3 of this
+ * package already established that no version-2 chain gets a bundle at
+ * all any more); its coverage moved to test_v2_bundle.c's
+ * test_v3_bundle, which digests validator_stats (among V3_TBL) between
+ * a version-3 source and its joiner on every run. */
 static int test_defect_L1F1(void) {
-    printf("§3.6 L1-F1 — validator_stats travels in the genesis bundle\n");
+    printf("§3.6 L1-F1 — the closed version-2 lane derives, but the "
+           "production path refuses to reopen it\n");
 
     cfgbox_t c;
     CHECK(cfg_make(&c, 0, 1, 0) == 0, "cfg");
@@ -869,119 +945,26 @@ static int test_defect_L1F1(void) {
     CHECK(mkdir_tmp(sdir, "l1f1_src") == 0, "src dir");
     CHECK(mkdir_tmp(jdir, "l1f1_join") == 0, "joiner dir");
     OK();
-    CHECK(nodus_witness_v2_gen_derive(sdir, c.cfg, NULL) == 0, "derive");
+    CHECK(nodus_witness_v2_gen_derive(sdir, c.cfg, NULL) == 0,
+          "the closed lane still DERIVES — D-17 rev 10 (9) closes it, "
+          "the deletion wave removes it");
     OK();
 
     nodus_witness_t *src = open_chain(sdir, NULL);
-    CHECK(src != NULL, "open source");
+    CHECK(src == NULL,
+          "the production open path REFUSES to reopen a version-2 chain "
+          "— the merged tree's post-open chain-role gate (D-17 rev 10 "
+          "(9)): a populated database below S14 is the closed old "
+          "consensus lane");
     OK();
 
-    uint8_t *bundle = NULL;
-    size_t blen = 0;
-    CHECK(nodus_witness_v2_bundle_get(src, &bundle, &blen) == 0 &&
-              bundle && blen > 0,
-          "the derivation persisted a genesis bundle");
-    OK();
-
-    uint8_t pin[64];
-    {
-        sqlite3_stmt *st = NULL;
-        CHECK(sqlite3_prepare_v2(src->db,
-                  "SELECT block_id FROM v2_blocks WHERE global_height = 0",
-                  -1, &st, NULL) == SQLITE_OK, "pin prep");
-        CHECK(sqlite3_step(st) == SQLITE_ROW &&
-                  sqlite3_column_bytes(st, 0) == 64, "pin row");
-        memcpy(pin, sqlite3_column_blob(st, 0), 64);
-        sqlite3_finalize(st);
-    }
-    OK();
-
-    /* a fresh joiner, exactly as nodus_witness_v2_join.c builds one */
-    nodus_witness_t *j = calloc(1, sizeof(*j));
-    CHECK(j != NULL, "joiner handle");
-    OK();
-    j->cached_committee_epoch_start = UINT64_MAX;
-    snprintf(j->data_path, sizeof(j->data_path), "%s", jdir);
-    {
-        uint8_t jid16[16];
-        memset(jid16, 0xAA, sizeof(jid16));
-        CHECK(nodus_witness_create_chain_db(j, jid16) == 0, "joiner db");
-    }
-    j->v2_successor = 1;
-    CHECK(nodus_witness_db_migrate_v2s12(j) == 0, "joiner S12");
-    CHECK(nodus_chain_config_db_migrate(j) == 0, "joiner chain_config");
-    CHECK(q1(j->db, "SELECT value FROM validator_stats "
-                    "WHERE key='active_count'") == 0,
-          "the joiner starts with the create_chain_db seed of 0");
-    OK();
-
-    CHECK(nodus_witness_v2_bundle_apply(j, bundle, blen, pin) == 0,
-          "the joiner adopts the bundle against the pin");
-    OK();
-
-    /* THE KILL. With validator_stats absent from BUNDLE_TABLES the
-     * joiner keeps its seeded 0 while its genesis still matches the pin
-     * byte-for-byte — a SILENT divergence that surfaces as a -2 fault
-     * at the first graduation (v2ep_active_count_dec refuses a counter
-     * that cannot absorb a decrement). */
-    CHECK(q1(j->db, "SELECT value FROM validator_stats "
-                    "WHERE key='active_count'") == (int64_t)N_VAL,
-          "the joiner's active_count equals the producer's 7");
-    CHECK(q1(j->db, "SELECT COUNT(*) FROM validators") == (int64_t)N_VAL,
-          "and it carries every validator row");
-
-    /* Block 2C — THE JOINER HOLE, closed. A joiner never runs the
-     * builder, so the config→source_commit binding cannot protect it:
-     * before 2C a node built with a different DNAC_BLOCKS_PER_YEAR joined
-     * THIS chain cleanly and then minted a different amount, with nothing
-     * visible on the wire. Only a READABLE COMMITTED value catches that,
-     * and it only works if the band travels in the bundle.
-     * MUTANT KILLED: drop "chain_config_history" from BUNDLE_TABLES
-     * (nodus_witness_v2_bundle.c:47). */
-    {
-        nodus_v2_econ_params_t jp;
-        CHECK(nodus_witness_v2_econ_params_load(j, &jp) == 0 && jp.present,
-              "the joiner adopted the committed economic band");
-        CHECK(jp.blocks_per_year == (uint64_t)DNAC_BLOCKS_PER_YEAR &&
-              jp.decimal_unit    == (uint64_t)DNAC_DECIMAL_UNIT &&
-              jp.epoch_length    == (uint64_t)DNAC_EPOCH_LENGTH,
-              "carrying the PRODUCER's economic values, not its own "
-              "compiled defaults");
-        /* Three-valued since Block 2A: rc MUST be 0. An absent row here
-         * would mean the bundle did NOT carry the row, which is exactly
-         * the divergence this assertion exists to catch. */
-        uint64_t j_start = 0;
-        CHECK(nodus_chain_config_get_u64(
-                  j, (uint8_t)DNAC_CFG_INFLATION_START_BLOCK, 0,
-                  UINT64_MAX, &j_start) == 0 && j_start == 1ULL,
-              "and the inflation start arrived as committed state");
-    }
-    CHECK(q1(j->db, "SELECT COUNT(*) FROM v2_blocks WHERE global_height=0")
-              == 1, "the joiner derived a genesis");
-
-    /* the adopted genesis is byte-identical to the producer's */
-    {
-        uint8_t jid[64];
-        sqlite3_stmt *st = NULL;
-        CHECK(sqlite3_prepare_v2(j->db,
-                  "SELECT block_id FROM v2_blocks WHERE global_height = 0",
-                  -1, &st, NULL) == SQLITE_OK, "jid prep");
-        CHECK(sqlite3_step(st) == SQLITE_ROW &&
-                  sqlite3_column_bytes(st, 0) == 64, "jid row");
-        memcpy(jid, sqlite3_column_blob(st, 0), 64);
-        sqlite3_finalize(st);
-        CHECK(memcmp(jid, pin, 64) == 0,
-              "the joiner re-derived the IDENTICAL genesis BlockID");
-    }
-
-    free(bundle);
-    close_chain(j);
-    close_chain(src);
     rmrf(sdir);
     rmrf(jdir);
     cfg_free(&c);
     OK();
-    printf("  ok: the sixth base table crosses to the joiner\n");
+    printf("  ok: the closed lane derives but cannot be reopened "
+           "(coverage for the bundle property moved to "
+           "test_v2_bundle.c's test_v3_bundle)\n");
     return 0;
 }
 

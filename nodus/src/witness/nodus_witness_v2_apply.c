@@ -46,8 +46,11 @@
 
 #define LOG_TAG "W_V2APPLY"
 
-#define MAX_OPS 16      /* engine array bound; the GLOBAL tx cap (<= 10)
-                         * is enforced separately from chain config      */
+#define MAX_OPS NODUS_V2_APPLY_MAX_OPS  /* engine array bound — exported in
+                         * the header (R3 W3) so the Comet application's
+                         * PrepareProposal/ProcessProposal caps derive
+                         * from it; the GLOBAL tx cap (<= 10) is enforced
+                         * separately from chain config                  */
 #define MAX_DOMS 64     /* engine bound on registered domains per DB —
                          * a resource bound, never a protocol maximum    */
 
@@ -5111,31 +5114,30 @@ int nodus_witness_v2_genesis_cmt(nodus_witness_t *w,
     /* SCHEMA GATE: S12 OR S14 IN W2 — S14 ALONE FROM W3.
      *
      * The destination is S14 and only S14: that is where the Comet
-     * stores live (D-17 rev 6). S12 is accepted for ONE release window,
-     * and for one reason that is not this function's: the ledger genesis
-     * below runs every runtime's `state_init`
-     * (nodus_witness_domreg.c:326-340), and the CORE hook gates itself
+     * stores live (D-17 rev 6). S12 was accepted for ONE release window
+     * in W2, for a reason that was not this function's: the ledger
+     * genesis below runs every runtime's `state_init`
+     * (nodus_witness_domreg.c:326-340), and the CORE hook gated itself
      * on an equality list ending at S12
-     * (nodus_rt_core_state_init, nodus_witness_v2_pools.c:1174-1182), so
-     * a genesis applied at S14 fails there with no diagnosis. That gate
-     * is one of the five D-17 rev 7 (7) moves to W3 together with the
-     * live S14 flip, and pools.c is LIVE legacy-lane code — widening it
-     * in W2 is precisely what rev 7 forbids. So the derivation builds
-     * the ledger at S12 and climbs afterwards
-     * (nodus_witness_v2_gen.c, step 9), and this gate admits the moment
-     * in between.
+     * (nodus_rt_core_state_init, nodus_witness_v2_pools.c:1176-1193 as
+     * widened below), so a genesis applied at S14 failed there with no
+     * diagnosis. That gate was one of the five D-17 rev 7 (7) moved to W3
+     * together with the live S14 flip.
      *
-     * W3 NARROWS THIS BACK TO S14 in the same commit that widens the
-     * pool gate — the two edits belong together and neither is safe
-     * alone. The version-2 entry's own gate at :614-620 (S9-S12) is
-     * untouched either way and still decides the live path. */
+     * R3 W3 (D-17 rev 10 (8)) NARROWS THIS BACK TO S14 in the same commit
+     * that widens the pool gate (nodus_witness_v2_pools.c,
+     * nodus_rt_core_state_init and nodus_witness_v2_pools_startup_check)
+     * — the two edits belong together and neither is safe alone. With the
+     * pool gate now accepting S14, the derivation migrates to S14 BEFORE
+     * the ledger genesis runs (D-18 rev 5 (1)'s S12-then-climb order is
+     * withdrawn), so this function is never reached at S12 on the live
+     * path any more. The version-2 entry's own gate at :620-623 (S9-S12)
+     * is untouched — it belongs to the closed old lane. */
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0 ||
-        (ver != NODUS_V2_SCHEMA_VERSION_S12 &&
-         ver != NODUS_V2_SCHEMA_VERSION_S14)) {
-        QGP_LOG_ERROR(LOG_TAG, "cometbft genesis needs schema S12 (W2, "
-                      "before the climb) or S14, the database is at %u — "
-                      "refusing", (unsigned)ver);
+        ver != NODUS_V2_SCHEMA_VERSION_S14) {
+        QGP_LOG_ERROR(LOG_TAG, "cometbft genesis needs schema S14, the "
+                      "database is at %u — refusing", (unsigned)ver);
         return -1;
     }
 

@@ -6,11 +6,15 @@
 # WHAT IT PROVES
 #   That seven independent nodes, each handed the SAME genesis config
 #   file and each deriving its own chain locally, arrive at a
-#   BYTE-IDENTICAL chain — same chain id, same genesis BlockID — and
-#   then come up as Ledger V2 witnesses on it. The property that would
-#   be false if it failed: *a V2 chain's identity is a pure function of
-#   its config, so a fleet can be born without a genesis round and
-#   without copying a database between machines.*
+#   BYTE-IDENTICAL chain — same chain id, same genesis document — and
+#   then come up as COMETBFT witnesses on it (D-17 rev 10 item 9,
+#   atlas-dec-9d96e2ec31ad4840cf258df21732b67f, APPROVED: nodus-server
+#   never starts the legacy BFT or the pre-Comet V2 lane on ANY chain
+#   any more — the witness's post-open gate refuses a database that is
+#   not a version-3 chain, fail closed, logged). The property that would
+#   be false if it failed: *a version-3 chain's identity is a pure
+#   function of its config, so a fleet can be born without a genesis
+#   round and without copying a database between machines.*
 #
 #   This is the V2 counterpart of stagef_up.sh, and the two are born
 #   completely differently. stagef_up.sh submits a GENESIS TRANSACTION
@@ -89,7 +93,7 @@ echo "[ok] nodus-server: $STAGEF_NODUS_BIN"
 # a bring-up creates its own, exactly as stagef_up.sh:56 does. Done
 # AFTER sourcing so a stale pointer from a torn-down run cannot be
 # inherited.
-BASE_DIR="/tmp/stagef-$(date +%Y%m%dT%H%M%SZ)"
+BASE_DIR="/tmp/stagef-$(date -u +%Y%m%dT%H%M%SZ)"
 export BASE_DIR
 mkdir -p "$BASE_DIR"
 echo "$BASE_DIR" > "$STAGEF_POINTER"
@@ -238,6 +242,40 @@ BY="${STAGEF_BLOCKS_PER_YEAR:-6307200}"
 DU="${STAGEF_DECIMAL_UNIT:-100000000}"
 echo "[ok] econ parameters: epoch_length=$EL blocks_per_year=$BY decimal_unit=$DU"
 
+# ── R3 W3 (C2d) — THE VERSION-3 KEYS ────────────────────────────────
+# config_version = 3 is what routes the ceremony into the cometbft
+# derivation at all: nodus_witness_v2_gen_v3_validate REFUSES any other
+# value (nodus_witness_v2_gen.c:2416-2422), and run_derive_v2_genesis
+# (nodus-server.c) always calls the version-3 derivation now — an
+# omitted config_version defaults to 2 (nodus_v2_gen_config.c's own
+# parser comment) and is refused at the very first validation step, not
+# a value this build treats as "the version-2 chain we've always
+# derived". Without this key stagef_up_v2.sh cannot derive at all
+# against this worktree.
+#
+# genesis_time_ms is MANDATORY for a version-3 document
+# (nodus_v2_gen_config.c ~:1030-1045: "a version-3 document must name
+# BOTH genesis_time_ms ... and initial_height") and MUST be identical
+# bytes in every node's copy of the config — the chain id hashes the
+# whole document, so seven independently-derived genesis documents are
+# byte-identical only if they were built from byte-identical input.
+# Computed ONCE, here, before the loop that writes the file: the value
+# is fixed the moment this script decides it, not re-read at derive
+# time, so however long identity generation and the 7 derivations take,
+# every node hashes the SAME millisecond. A genesis time already in the
+# past is fine and expected: node.go:518-524 (ported at
+# witness_cmt_tick, nodus_witness.c:1655-1697) only ever WAITS for a
+# future genesis_time — a past one is satisfied on the very first tick.
+GENESIS_TIME_MS=$(($(date -u +%s%N) / 1000000))
+# initial_height: the reference treats 0 and 1 identically at the
+# ledger (both start the chain at height 1), but the RAW FIELD VALUE is
+# part of the hashed document, so 0 and 1 are two DIFFERENT chain ids
+# for the same effective start (nodus_v2_gen_config.c's own required-key
+# message says so explicitly). 1 is written down as the operator's
+# choice, not derived from anything.
+INITIAL_HEIGHT=1
+echo "[ok] version-3 keys: config_version=3 genesis_time_ms=$GENESIS_TIME_MS initial_height=$INITIAL_HEIGHT"
+
 SELF_STAKE=1000000000000000          # DNAC_SELF_STAKE_AMOUNT: 10M x 10^8
 # ONE ALLOCATION PER NODE, not one for the whole chain.
 #
@@ -264,6 +302,18 @@ TOTAL=$(( SELF_STAKE * C + ALLOC * (C + 1) + PUMP_ALLOC * PUMP_LEAVES \
 CONF="$BASE_DIR/v2_genesis.conf"
 {
     echo "# stagef V2 genesis — generated $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    # R3 W3 (C2d) — the version-3 keys, ONE VALUE, WRITTEN ONCE, and used
+    # by every node: the chain id hashes this document byte-for-byte, so
+    # a config assembled here and read seven times (never re-generated
+    # per node) is what makes seven independent derivations agree at
+    # all. The Comet consensus params (block size, evidence window,
+    # timeouts) are NOT written here — they come from the BUILDER
+    # (nodus_witness_v2_gen_v3_defaults, which installs
+    # cmt_default_consensus_params — nodus_witness_v2_gen.c:2327-2340),
+    # never from a value typed in this file.
+    echo "config_version        = 3"
+    echo "genesis_time_ms       = $GENESIS_TIME_MS"
+    echo "initial_height        = $INITIAL_HEIGHT"
     echo "total_supply_raw      = $TOTAL"
     echo "epoch_length          = $EL"
     echo "blocks_per_year       = $BY"
@@ -417,23 +467,91 @@ for n in $(seq 1 "$C"); do
 done
 echo "[ok] all $C nodes listening"
 
-# ── 5. every node must have come up AS A V2 WITNESS ─────────────────
+# ── 5. every node must have come up AS A COMETBFT WITNESS, AND GONE LIVE
 # Listening is not evidence: nodus keeps serving DHT traffic when the
 # witness module refuses to initialise, so a cluster of role-less nodes
 # would pass a port check and fail everything after it.
-sleep 5
+#
+# R3 W3 (C2d), DELTA 1 — ANTI-VACUITY, FOUR LINES PER NODE, NOT THREE.
+# The role line alone proves the post-open gate accepted a version-3
+# chain (nodus_witness.c witness_post_open_gate, D-17 rev 10/11 outcome
+# (a)); it does NOT prove the node ever tried to run consensus on it. A
+# node whose `witness_cmt_live_init` failed (nodus_witness.c:1502-1612)
+# would still print the role line and then never print either line
+# below — and a role+startup+live-only check would call that a green
+# bring-up even though the chain never produced anything. So every node
+# must ALSO show:
+#   "cometbft startup table built at height ..."   (witness_cmt_live_init,
+#       nodus_witness.c:1600-1603 — the startup table was built)
+#   "cometbft lane LIVE — genesis time reached"     (witness_cmt_tick,
+#       nodus_witness.c:1695-1696 — the reactors actually started)
+# AND, FOURTH — the chain PRODUCES: every node's own Comet tip reaches
+# height 1. The first sweep against this exact bring-up (DELTA 1) showed
+# why the first three are not enough on their own: every scenario failed
+# inside a second at its own PRE-action `stagef_cmt_diff_at_floor` with
+# "no node has a Comet block yet" — the floor stays -1 until the first
+# block commits, and nothing in bring-up had ever waited for that first
+# commit. A node that shows role+startup+live and STILL never reaches
+# height 1 is exactly the failure this fourth check exists to catch
+# (measured live: a real server-side defect — every node stopping after
+# height 1 on a SQLite snapshot lock, since fixed upstream — would have
+# produced this same silence, and the three-line check alone could not
+# have told "never started producing" apart from "still forming the
+# mesh"). A node that shows the role but never goes live, or never
+# produces, is a FAIL, not a slow pass: every wait below is bounded by
+# ATTEMPTS or by `stagef_cmt_wait_height`'s progress bound, never a bare
+# sleep — the CLAUDE.md "never tune a timeout" rule applies to bring-up
+# exactly as it does to a scenario.
 bad=0
 for n in $(seq 1 "$C"); do
     nd=$(stagef_node_dir "$n")
-    if grep -q 'chain role: LEDGER V2' "$nd/nodus.log"; then
-        echo "[ok] node $n role: LEDGER V2"
+    role_ok=0 startup_ok=0 live_ok=0
+    for _ in $(seq 1 90); do
+        if grep -q 'chain role: COMETBFT' "$nd/nodus.log"; then role_ok=1; fi
+        if grep -q 'cometbft startup table built' "$nd/nodus.log"; then startup_ok=1; fi
+        if grep -q 'cometbft lane LIVE' "$nd/nodus.log"; then live_ok=1; fi
+        if [ "$role_ok" = 1 ] && [ "$startup_ok" = 1 ] && [ "$live_ok" = 1 ]; then break; fi
+        sleep 1
+    done
+    if [ "$role_ok" = 1 ] && [ "$startup_ok" = 1 ] && [ "$live_ok" = 1 ]; then
+        echo "[ok] node $n role=COMETBFT startup-table=built lane=LIVE"
     else
-        echo "[FAIL] node $n did NOT report the Ledger V2 chain role" >&2
-        grep -E 'REFUSING|chain role|witness' "$nd/nodus.log" | tail -5 >&2
+        echo "[FAIL] node $n incomplete: role=$role_ok startup-table=$startup_ok lane-live=$live_ok" >&2
+        grep -E 'REFUSING|chain role|cometbft|CMT_FAULT' "$nd/nodus.log" | tail -10 >&2
         bad=1
     fi
 done
 [ "$bad" = 0 ] || exit 8
+
+# ── 6. FOURTH anti-vacuity line: the chain actually PRODUCES ────────
+# DELTA 1. Role + startup-table + lane-LIVE prove the reactors started;
+# they do not prove a single block ever committed. Bounded by
+# stagef_cmt_wait_height's progress detection (stall = 3 consecutive
+# 60s-equivalent intervals with no height increase) — the mesh that lets
+# the first proposal actually reach quorum forms from the seed list in
+# seconds (measured), so 3 intervals of headroom is generous, not tight.
+for n in $(seq 1 "$C"); do
+    nd=$(stagef_node_dir "$n")
+    db=$(stagef_node_chain_db "$n")
+    if [ -z "$db" ]; then
+        echo "[FAIL] node $n has no chain database file to read a tip from" >&2
+        bad=1
+        continue
+    fi
+    h=$(stagef_cmt_wait_height "$db" 1 3) || {
+        echo "[FAIL] node $n never reached height 1 (stuck at $h) — role/startup/LIVE all passed but the chain never produced" >&2
+        grep -E 'ERR|CMT|cometbft' "$nd/nodus.log" | tail -10 >&2
+        bad=1
+        continue
+    }
+    echo "[ok] node $n first block committed (height $h)"
+done
+[ "$bad" = 0 ] || exit 9
+
+# And the seven first blocks must be the SAME block — proven before any
+# scenario runs, not left for the first scenario's own pre-check to
+# discover (or, worse, to silently race).
+stagef_cmt_diff_at_floor "bring-up" || exit 10
 
 echo ""
 echo "=== Stage F V2 harness UP ==="

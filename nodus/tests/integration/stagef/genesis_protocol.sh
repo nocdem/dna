@@ -13,6 +13,33 @@
 #                                         # stagef already up)
 #
 # Exit: 0 if all PASS (SKIPs allowed), 1 if any FAIL.
+#
+# ════════════════════════════════════════════════════════════════════
+# R3 W3 package C2d — LEGACY LANE CLOSED (D-17 rev 10 item 9,
+# atlas-dec-9d96e2ec31ad4840cf258df21732b67f, APPROVED)
+#
+# "the old lane is CLOSED in W3 AND DELETED IN THE NEXT WAVE:
+# nodus-server never starts the legacy BFT on any chain; the witness's
+# post-open gate REFUSES a chain database that is not a version-3
+# chain ... fail closed, logged." A legacy-lane bring-up
+# (stagef_up.sh's genesis TRANSACTION, submitted to a running cluster)
+# can no longer produce a chain this build's witness will run at all —
+# every node would refuse its own database at open
+# (nodus_witness.c:928-935, "chain role: LEGACY V1 ... the old
+# consensus lane is CLOSED in W3 ... refusing the database"). Running
+# this runner's Phase 2/3 against that build would not exercise the
+# thing it is named for; it would exercise the refusal path on every
+# node and call that a "cluster up".
+#
+# Everything below this banner is UNCHANGED and UNREACHED for this
+# wave, kept for the deletion wave's own diff (D-17 rev 10 (9): "No
+# old-lane code is deleted in W3 ... it is unreachable and
+# byte-unchanged"). The Comet lane's own runner is
+# genesis_protocol_v2.sh (package C2d rewrites it against
+# stagef_up_v2.sh's version-3 ceremony).
+# ════════════════════════════════════════════════════════════════════
+echo "legacy lane CLOSED in R3 W3 (D-17 rev 10 (9)); deleted next wave" >&2
+exit 99
 
 set -uo pipefail
 

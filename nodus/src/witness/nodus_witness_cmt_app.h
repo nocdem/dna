@@ -92,72 +92,156 @@ extern "C" {
 #endif
 
 /**
- * How many transactions one request to this application may carry.
+ * ORCHESTRATOR delta 1+2, item B (D-23 rev 7 (24), APPROVED, CLOSED) —
+ * THE BYTE-BOUND CAPACITY SEAM, replacing NODUS_CMT_APP_MAX_TXS
+ * (= NODUS_W_MAX_BLOCK_TXS = 10, the old lane's per-block cap that D-4
+ * rev 3 (2) explicitly retires for the Comet lane).
  *
- * The reference bounds a proposal only by `ConsensusParams.Block.MaxBytes`
- * (D-25 rev 3); this port makes every wire-derived count explicit
- * (INVARIANT atlas-dec-7495d3372e004b24b4f6cc7bff5caf07), so the arrays
- * below are sized and a request above the bound is REFUSED rather than
- * silently truncated. The value is the block-transaction bound the ledger
- * seam this module calls already enforces —
- * `nodus_witness_v2_produce_batch_check_ex` refuses `count >
- * NODUS_W_MAX_BLOCK_TXS` (nodus_witness_v2_produce.c:358-360).
+ * delta 2 — PER-REQUEST, NOT INIT-TIME: the record's own words are "over
+ * heap-allocated PER-REQUEST arrays" (D-23 rev 7 (24)). delta 1's first
+ * pass pre-allocated every scratch array ONCE, at bind time, sized to
+ * the worst case — ≈118 MiB resident for the life of the node, always,
+ * whether or not a request ever approaches that size. delta 2 instead
+ * allocates every WORKING-SCRATCH array (`prep_fee`/`class`/`is_cc`/
+ * `order`, the seam's item view, `fb_class`/`of`/`env`/`claim`/`results`)
+ * fresh, INSIDE each ABCI row, sized to THAT REQUEST's own
+ * `req->txs_len` (or a classified subcount, where one is meaningful —
+ * `fb_claim`'s size is the number of CLAIM-classified items in the block,
+ * not the whole block), and frees it before returning on every path
+ * (goto-cleanup). Only TWO arrays remain context-owned across calls
+ * (`prep_txs`, `fb_pb` — see their own fields below): the ABCI ownership
+ * rule ("app-owned until the next call of the same method",
+ * proxy/app_conn.go) requires the RESPONSE the caller reads AFTER this
+ * row returns to stay valid, so those two are reallocated per request
+ * but never freed within the same call that fills them.
  *
- * ⚠ DEVIATION R3-C1a-4, reported: D-4 rev 3 (2) retires the old lane's
- * per-block transaction cap for the Comet lane, but the seam D-23 rev 5
- * (9) tells this module to reuse still enforces it. Until the seam's bound
- * is raised — a change to nodus_witness_v2_produce.c, outside this
- * package's whitelist — the Comet lane inherits it.
+ * THREE BOUNDS remain, now used as REFUSAL CEILINGS rather than array
+ * sizes — a request whose OWN count exceeds one is refused (a verdict,
+ * not a crash) before anything is allocated for it:
  *
- * ⚠ AND THE CONSEQUENCE, stated where the bound is rather than only in
- * the tests: a DECIDED block carrying more than this many items STOPS
- * THE NODE. `finalize_block` cannot answer it with a verdict —
- * consensus already committed to the block — so it returns CMT_FAULT,
- * the host rolls its transaction back and the node halts. That is the
- * honest behaviour for a limit this lane should not have, and it is why
- * raising the seam is W3 work rather than a nicety.
+ *   PREP_BOUND — `nodus_cmt_app_ledger_t.prep_bound`, from
+ *   `cmt_mempool_config_default()`'s own `.size` (5 000, config.go:796,
+ *   D-4 rev 3): the largest batch PrepareProposal can EVER be handed
+ *   (`ReapMaxBytesMaxGas` walks at most `mem.txs.Len()`, itself capped at
+ *   `size` — mempool/clist_mempool.go:536). `req->txs_len > prep_bound`
+ *   in PrepareProposal is CMT_FAULT (a node-local mempool/executor
+ *   mismatch, unchanged from delta 1). delta 2 DROPS this bound's use in
+ *   ProcessProposal: with per-request sizing there is no fixed array it
+ *   protects any more, and the reference imposes no such rule there —
+ *   ProcessProposal's own ceiling is env_bound (below), the true
+ *   byte-derived limit, exactly as FinalizeBlock's already was.
+ *
+ *   ENV_BOUND — `nodus_cmt_app_ledger_t.env_bound`. `MaxDataBytes`
+ *   (types/block.go:281-300, ported as `cmt_max_data_bytes_no_evidence`,
+ *   shared/dnac/cmt_block.c:1747-1752) divided by the SMALLEST canonical
+ *   item the chain's own codecs accept — an envelope of
+ *   `DNA_ENV_FIXED_HEAD + DNA_ENV_LEG_HDR_LEN` = 43 + 30 = 73 bytes
+ *   (shared/dnac/env_wire.h:198-199; a claim's own fixed minimum,
+ *   DNA_CLAIM_FIXED_LEN = 7 404 bytes, manifest_wire.h:452-454, is two
+ *   orders of magnitude larger, so an envelope-only block is always the
+ *   worst case for TOTAL item count). Computed at `vals_count = 1` — the
+ *   smallest possible committee, the largest possible byte budget, the
+ *   safe UPPER bound regardless of how large the committee grows toward
+ *   DNAC_MAX_ACTIVE_VALIDATORS. At Block.MaxBytes = 22 020 096 (D-4
+ *   rev 3) this is 293 525 (the arithmetic, every constant cited, is in
+ *   `nodus_cmt_app_ledger_init`). `req->txs_len > env_bound` in
+ *   ProcessProposal is REJECT (a malformed-block verdict — physically
+ *   impossible under this chain's own consensus params); in
+ *   FinalizeBlock it is CMT_FAULT (a decided block is never refused a
+ *   verdict, so a request that could not exist under the params is this
+ *   node's own invariant broken).
+ *
+ *   CLAIM_BOUND — `nodus_cmt_app_ledger_t.claim_bound`, `MaxDataBytes`
+ *   divided by a claim's own minimum wire size (DNA_CLAIM_FIXED_LEN),
+ *   ~2 972 at the same `vals_count = 1`. Used ONLY as FinalizeBlock's
+ *   defensive ceiling on the CLASSIFIED claim subcount within one
+ *   request (`fb_claim`'s per-request size), never as a whole-request
+ *   admission bound — a request could not exceed it in claims alone
+ *   without also exceeding env_bound in total items first.
+ *
+ * A FOURTH bound joins these three (ORCHESTRATOR delta 11,
+ * R3-W3-C2a-19), unlike them in kind: it is NOT one of the "three
+ * bounds" the paragraph above enumerates, NOT a `nodus_cmt_app_ledger_t`
+ * field, and NOT derived from this chain's genesis document at bind
+ * time —
+ *
+ *   ITEM_CAP — the compile-time constant `NODUS_V2_APPLY_MAX_OPS`
+ *   (nodus_witness_v2_apply.h, currently 16), the engine's own RELEASE
+ *   RESOURCE bound on its per-block scratch (`claim_nuls[MAX_OPS][64]`
+ *   and the universal envelope-batch cap `NODUS_V2_ENV_BATCH_MAX`,
+ *   nodus_witness_v2_env.h:121, sized to the same figure) — exactly
+ *   like `MAX_DOMS` elsewhere in this port, a property of THIS BUILD of
+ *   the engine, never a consensus parameter this chain's genesis could
+ *   set differently. `nodus_cmt_app_prepare_proposal` trims its KEPT
+ *   count to this bound (after the fee ordering and the byte budget,
+ *   before the engine's own admission seam); `nodus_cmt_app_
+ *   process_proposal` REJECTs any proposal above it before any per-item
+ *   work. Before delta 11 NEITHER gate existed: the Comet lane's own
+ *   count cap (the retired `NODUS_CMT_APP_MAX_TXS` = 10) happened to
+ *   keep every block inside this bound by accident until D-4 rev 3 (2)
+ *   retired it, and the Genesis Protocol harness then decided a 40-claim
+ *   block that FAULTED every node's FinalizeBlock at height 7
+ *   (`/tmp/stagef-20260917T034259Z`) — the live defect this bound
+ *   closes. The derived-bounds log line in `nodus_cmt_app_ledger_init`
+ *   reports it as `item_cap=%u` beside the three DERIVED bounds so an
+ *   operator reading the log sees all four together, even though only
+ *   three are computed there.
+ *
+ * NODUS_CMT_APP_MAX_TXS is RETIRED. It does not survive as a compile-
+ * time bound anywhere in this file, this file's tests, or
+ * nodus_witness_cmt_node.c's `limits.max_txs` derivation — replaced by
+ * the SAME three runtime bounds, read from the application context that
+ * already computed them once.
  */
-#define NODUS_CMT_APP_MAX_TXS  NODUS_W_MAX_BLOCK_TXS
 
 /**
- * The application's context: the ledger handle, the genesis document and
- * the scratch every row needs. One instance per node; the rows are
- * single-threaded (the consensus event loop calls them in line).
+ * The application's context: the ledger handle, the genesis document,
+ * the three derived bounds, and the TWO response buffers the ABCI
+ * ownership rule requires to persist past the call that fills them. One
+ * instance per node; the rows are single-threaded (the consensus event
+ * loop calls them in line).
  *
  * `w` and `gendoc` are BORROWED and must outlive the context.
  *
- * ⚠ SIZE: the seam's entry views dominate — `nodus_witness_mempool_entry_t`
- * carries a 2 592-byte public key and a 4 627-byte signature
- * (nodus_types.h:66, :68), so the struct is on the order of 85 KB.
- * Production callers heap-allocate it.
+ * delta 2 — PER-REQUEST, NOT PRE-ALLOCATED: every WORKING-SCRATCH array
+ * delta 1 kept here (`prep_fee`/`class`/`is_cc`/`order`, the seam's item
+ * view, `fb_class`/`of`/`env`/`claim`/`results`) is now a LOCAL variable
+ * inside the row that needs it, calloc'd at the top of the call sized to
+ * that request, freed via goto-cleanup before every return — see
+ * `nodus_cmt_app_prepare_proposal` / `_process_proposal` /
+ * `_finalize_block` in the .c file. Only `prep_txs` and `fb_pb` remain
+ * context fields, because the RESPONSE each row returns points into
+ * them and proxy/app_conn.go's ownership rule keeps that pointer valid
+ * until the NEXT call to the SAME method — each row frees its own
+ * previous buffer at the TOP of its next call (not at the bottom of the
+ * call that filled it) and reallocates sized to what THIS call
+ * produces. `nodus_cmt_app_ledger_init` no longer allocates anything;
+ * it only computes the three bounds. `nodus_cmt_app_ledger_release`
+ * frees whichever of `prep_txs` / `fb_pb` happen to be non-NULL at
+ * teardown.
  */
 typedef struct {
     nodus_witness_t         *w;       /* the ledger                       */
     const cmt_genesis_doc_t *gendoc;  /* BORROWED; InitChain's app_hash   */
 
-    /* ── prepare_proposal scratch (app-owned until the next call of the
-     * same method, proxy/app_conn.go's ownership rule) ──────────────── */
-    cmt_pb_bytes_t prep_txs[NODUS_CMT_APP_MAX_TXS];
-    size_t         prep_txs_len;
+    /* The three bounds this context was built for — see the block
+     * comment above. Set ONCE, at init; every row below trusts these
+     * over any compile-time constant. */
+    size_t prep_bound;
+    size_t env_bound;
+    size_t claim_bound;
 
-    /* ── the per-request working set, index-aligned to the request ───── */
-    uint64_t prep_fee[NODUS_CMT_APP_MAX_TXS];     /* ordering key         */
-    uint8_t  prep_class[NODUS_CMT_APP_MAX_TXS];   /* NODUS_W_TX_V2_*      */
-    bool     prep_is_cc[NODUS_CMT_APP_MAX_TXS];   /* a chain_config leg   */
-    size_t   prep_order[NODUS_CMT_APP_MAX_TXS];   /* request indices      */
+    /* ── prepare_proposal's RESPONSE (app-owned until the next call of
+     * the same method, proxy/app_conn.go's ownership rule) — REALLOCATED
+     * per request, sized to the KEPT count (after byte-budget trimming
+     * and the seam's own drops), never to prep_bound. `prep_txs_cap` is
+     * the capacity currently allocated, so the next call knows whether
+     * it must grow or may reuse — it always reallocates fresh, so this
+     * is bookkeeping for the free/alloc pair, not a growth heuristic. */
+    cmt_pb_bytes_t *prep_txs;
+    size_t          prep_txs_len;
+    size_t          prep_txs_cap;
 
-    /* ── the seam's entry views (bytes BORROWED from the request) ────── */
-    nodus_witness_mempool_entry_t  seam_entry[NODUS_CMT_APP_MAX_TXS];
-    nodus_witness_mempool_entry_t *seam_ptr[NODUS_CMT_APP_MAX_TXS];
-
-    /* ── finalize_block's working set (app-owned until the next call of
-     * the same method, proxy/app_conn.go's ownership rule) ─────────────
-     * `fb_results` holds TWICE the item bound because the engine writes
-     * envelopes then claims into one array and a block may be all of
-     * either; `fb_of` maps a block position to its slot in whichever
-     * list that item went to, or (size_t)-1 for bytes the engine never
-     * saw. `fb_claim` is ~5 KB per entry — the reason this context is
-     * heap-allocated. */
     /**
      * TEST-ONLY fault injection, runtime, off by default — the same
      * discipline as the engine's own `V2AP_FAIL_*`
@@ -170,21 +254,52 @@ typedef struct {
      * and which of its effects a point that takes an index fires on
      * (F27, F37, F38); they are the engine's own `fail_env_index` /
      * `fail_effect_index` and carry the same meaning.
+     *
+     * ⚠ delta 2 / register R3-C2a-B: THESE THREE FIELDS ARE STICKY. They
+     * are set by a test and never cleared by any production row, so a
+     * fixture that shares one `nodus_cmt_app_ledger_t` (or one block
+     * built from it) across cases MUST reset them itself before a case
+     * that expects an un-injected FinalizeBlock — see
+     * `test_cmt_app.c`'s own fix for exactly this (a shared `blk->cmt`
+     * fault field surviving into `t_byte_bound_prepare_and_process`).
      */
     nodus_v2_apply_fail_t          test_fail_at;
     uint32_t                       test_fail_env_index;
     uint32_t                       test_fail_effect_index;
 
-    uint8_t                        fb_class[NODUS_CMT_APP_MAX_TXS];
-    size_t                         fb_of[NODUS_CMT_APP_MAX_TXS];
-    nodus_v2_envelope_t            fb_env[NODUS_CMT_APP_MAX_TXS];
-    dna_claim_t                    fb_claim[NODUS_CMT_APP_MAX_TXS];
-    nodus_v2_tx_result_t           fb_results[NODUS_CMT_APP_MAX_TXS * 2];
-    cmt_pb_stored_exec_tx_result_t fb_pb[NODUS_CMT_APP_MAX_TXS];
+    /* ── finalize_block's RESPONSE (app-owned until the next call of the
+     * same method, same rule as prep_txs above) — REALLOCATED per
+     * request, sized to `req->txs_len` (one result per block position),
+     * never to env_bound. */
+    cmt_pb_stored_exec_tx_result_t *fb_pb;
+    size_t                          fb_pb_cap;
 } nodus_cmt_app_ledger_t;
 
 /**
+ * Frees `prep_txs` and `fb_pb` if either is non-NULL — the only two
+ * arrays this context still owns across calls (delta 2). Does NOT free
+ * `ctx` itself (production callers heap-allocate the context and free
+ * it themselves — nodus_witness_cmt_node.c's `nodus_cmt_node_release`).
+ * NULL-safe throughout; a partially-built or freshly-bound context (no
+ * row has run yet) is safe to release.
+ */
+void nodus_cmt_app_ledger_release(nodus_cmt_app_ledger_t *ctx);
+
+/**
  * Bind the application to a ledger.
+ *
+ * ORCHESTRATOR delta 1, item B (delta 2 narrows this): this is where
+ * `prep_bound` / `env_bound` / `claim_bound` are COMPUTED (from
+ * `gendoc`'s own `consensus_params.block.max_bytes` and a local
+ * `cmt_mempool_config_default()` call — the real mempool config is not
+ * built yet at this point in `nodus_cmt_node_init`'s sequence, but the
+ * default is a pure function of no state, so calling it here for the
+ * bound and again later for the real mempool yields the identical
+ * value). delta 2: NOTHING IS ALLOCATED HERE any more — `prep_txs` and
+ * `fb_pb` start NULL and are built by their own rows on first use, sized
+ * to that call's own request, exactly like every other row's now-local
+ * scratch. This function's only failure modes are the bound computation
+ * itself.
  *
  * @param ctx    zeroed and filled.
  * @param w      the witness handle; `w->db` must be open and the chain
@@ -207,8 +322,11 @@ typedef struct {
  *               document's app_hash — `..._stored_chain_id` loads and
  *               decodes it but yields only the chain id, and
  *               reproducing that load here would be a second reader of
- *               the same row.
- * @return CMT_OK, CMT_FAULT on NULL / a closed db / a non-successor chain.
+ *               the same row. ALSO now mandatory for `block.max_bytes`,
+ *               the byte-bound seam's own input.
+ * @return CMT_OK, CMT_FAULT on NULL / a closed db / a non-successor chain /
+ *         a `block.max_bytes` too small to be believed / the mempool
+ *         default config being unreadable.
  */
 int nodus_cmt_app_ledger_init(nodus_cmt_app_ledger_t *ctx, nodus_witness_t *w,
                               const cmt_genesis_doc_t *gendoc);

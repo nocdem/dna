@@ -18,6 +18,9 @@
 #include "witness/nodus_witness_v2_apply.h"
 #include "witness/nodus_witness_v2_epoch.h"
 #include "witness/nodus_witness_v2_claims.h"
+#include "witness/nodus_witness_v2_gen.h"
+#include "witness/nodus_witness_v2_schema.h"
+#include "witness/nodus_witness_cmt_store.h"
 
 #include "dnac/vset_wire.h"
 
@@ -297,6 +300,38 @@ done:
     return ok ? 0 : -1;
 }
 
+/* ── the version-3 genesis document (D-24 rev 4 (2)) ──────────────────── */
+
+/* Raw "genesisDoc" bytes from `cmt_state`, or -1 when the row is absent —
+ * absence is not a fault, it is what every version-2 chain looks like
+ * (the row was never written, D-19 rev 6 is v3-only). Mirrors gen.c's own
+ * static gen_v3_load_doc byte for byte (that one is not exported; this
+ * file is outside its whitelist package, so the read is repeated rather
+ * than shared). */
+static int load_genesis_doc(nodus_witness_t *w, uint8_t **out, size_t *out_len) {
+    if (!w || !w->db || !out || !out_len) return -1;
+    *out = NULL;
+    *out_len = 0;
+    nodus_cmt_store_t s;
+    if (nodus_cmt_store_init(&s, w->db, false) != CMT_OK) return -1;
+    const uint8_t *val = NULL;
+    size_t vlen = 0;
+    int rc = -1;
+    if (nodus_cmt_store_get(&s, /*state_table=*/true,
+                            NODUS_V2_GEN_GENESIS_DOC_KEY, &val, &vlen)
+        == CMT_OK && val && vlen > 0) {
+        uint8_t *copy = malloc(vlen);
+        if (copy) {
+            memcpy(copy, val, vlen);
+            *out = copy;
+            *out_len = vlen;
+            rc = 0;
+        }
+    }
+    nodus_cmt_store_release(&s);
+    return rc;
+}
+
 /* ── build + persist ─────────────────────────────────────────────────── */
 
 /* v2_genesis_bundle singleton (id CHECK = 1); created lazily here so no
@@ -351,6 +386,29 @@ int nodus_witness_v2_bundle_persist(nodus_witness_t *w) {
             free(s.buf);
             return -1;
         }
+    }
+
+    /* R3 W3 (D-24 rev 4 (2) / D-17 rev 10 (9)): a bundle carries the
+     * genesis DOCUMENT, unconditionally — there is no version-2 shape
+     * for this format any more (the header's layout comment). A chain
+     * with no stored "genesisDoc" row (a version-2 chain, D-19 rev 6 is
+     * v3-only; or a version-3 chain not yet migrated to S14) CANNOT be
+     * bundled: refusing here is D-17 rev 10 (9)'s closure of the old
+     * lane applied to this file — a chain that cannot serve a correct
+     * bundle must not claim to serve one. */
+    {
+        uint8_t *doc = NULL;
+        size_t doc_len = 0;
+        if (load_genesis_doc(w, &doc, &doc_len) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "no genesis document — this "
+                          "chain cannot be bundled (the version-2 lane "
+                          "is closed, D-17 rev 10 (9))");
+            free(s.buf);
+            return -1;
+        }
+        sink_u32(&s, (uint32_t)doc_len);
+        sink_put(&s, doc, doc_len);
+        free(doc);
     }
     if (s.err) { free(s.buf); return -1; }
 
@@ -414,54 +472,164 @@ int nodus_witness_v2_bundle_get(nodus_witness_t *w,
 
 int nodus_witness_v2_bundle_apply(nodus_witness_t *w2,
                                   const uint8_t *bytes, size_t len,
-                                  const uint8_t pin[64]) {
+                                  const uint8_t pin[32]) {
     if (!w2 || !w2->db || !bytes || !pin) return -1;
 
     rdr_t r = { bytes, len, 0, 0 };
     uint8_t magic[NODUS_V2_GBUNDLE_MAGIC_LEN];
     rd_take(&r, magic, NODUS_V2_GBUNDLE_MAGIC_LEN);
-    if (r.err ||
-        memcmp(magic, NODUS_V2_GBUNDLE_MAGIC, NODUS_V2_GBUNDLE_MAGIC_LEN) != 0)
+    if (r.err) return -1;
+    if (memcmp(magic, NODUS_V2_GBUNDLE_MAGIC, NODUS_V2_GBUNDLE_MAGIC_LEN)
+        != 0) {
+        /* R3 W3: an old-binary bundle is refused BY ITS MAGIC, never by
+         * a short read further into the frame — the version-1 layout
+         * has no doc_len/document tail at all, so reading this frame as
+         * a version-3 one would fail confusingly deep inside the table
+         * loop instead of here, at the one place that actually knows
+         * why. */
+        if (memcmp(magic, NODUS_V2_GBUNDLE_MAGIC_V1_RETIRED,
+                   NODUS_V2_GBUNDLE_MAGIC_LEN) == 0)
+            QGP_LOG_ERROR(LOG_TAG, "%s", "version-1 bundle format, refused");
         return -1;
+    }
     uint32_t mlen = rd_u32(&r);
     if (r.err || mlen == 0 || r.off + mlen > r.len) return -1;
     const uint8_t *manifest = r.p + r.off;
     r.off += mlen;
 
     /* Whole-adopt atomicity does NOT come from one wrapping SQL
-     * transaction — nodus_witness_v2_genesis_ex manages its OWN
-     * BEGIN/COMMIT and cannot be nested (the seam calls the derivation
-     * steps bare, seam.c:369-458). It comes from the scratch-DB-discard
-     * contract: nothing is durable until the caller renames the scratch
-     * file up, and the caller clears the scratch on ANY failure. So the
-     * base-table plant runs in its OWN self-contained transaction (the
-     * seam.c:342-363 carry shape), then the three derivation steps run
-     * outside any transaction, exactly as the seam runs them. */
+     * transaction — nodus_witness_v2_genesis_cmt manages its OWN
+     * BEGIN/COMMIT and cannot be nested. It comes from the
+     * scratch-DB-discard contract: nothing is durable until the caller
+     * renames the scratch file up, and the caller clears the scratch on
+     * ANY failure. So the base-table plant runs in its OWN
+     * self-contained transaction, then the derivation steps run outside
+     * any transaction. */
     if (sqlite3_exec(w2->db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK)
         return -1;
+    uint8_t *doc = NULL;
+    uint32_t doc_len = 0;
     {
         uint32_t ntab = rd_u32(&r);
         int bad = (r.err || ntab != BUNDLE_N_TABLES);
         for (uint32_t i = 0; !bad && i < ntab; i++)
             if (apply_table(w2->db, &r) != 0) bad = 1;
+        /* R3 W3: the document tail is MANDATORY — there is no
+         * version-2 shape for this format any more. */
+        if (!bad) {
+            doc_len = rd_u32(&r);
+            if (r.err || doc_len == 0 || r.off + doc_len > r.len) {
+                bad = 1;
+            } else {
+                doc = malloc(doc_len);
+                if (!doc) { bad = 1; }
+                else memcpy(doc, r.p + r.off, doc_len);
+                r.off += doc_len;
+            }
+        }
         if (!bad && r.off != r.len) bad = 1;   /* trailing bytes reject  */
         if (bad || r.err) {
             (void)sqlite3_exec(w2->db, "ROLLBACK", NULL, NULL, NULL);
+            free(doc);
             return -1;
         }
     }
     if (sqlite3_exec(w2->db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
         (void)sqlite3_exec(w2->db, "ROLLBACK", NULL, NULL, NULL);
+        free(doc);
         return -1;
     }
 
-    /* Re-derive the genesis in the SEAM's order (load-bearing): vset
-     * snapshots feed the SYSTEM payload root that domreg commits, so
-     * snapshots FIRST, domreg SECOND, genesis THIRD. Each manages its
-     * own transaction; a failure leaves the scratch DB for the caller
-     * to discard. */
-    if (nodus_witness_vset_commit_genesis(w2, 1) != 0) return -1;
-    if (nodus_witness_domreg_init_genesis(w2) != 0) return -1;
+    /* THE PIN IS CHECKED FIRST, BEFORE ANY GENESIS DERIVATION STEP
+     * (migration, document store, vset, domreg, genesis_cmt) — the
+     * base-table plant above has ALREADY been committed into the
+     * scratch database (its own BEGIN IMMEDIATE / COMMIT ran before
+     * this point, because the document sits at the tail of the wire
+     * frame and has to be fully parsed first); the scratch-discard
+     * contract is what makes a rejected bundle leave nothing behind,
+     * not this check by itself (see this function's own doc comment in
+     * nodus_witness_v2_bundle.h).
+     * nodus_witness_v2_genesis_cmt takes NO pin parameter — it does not
+     * know what identity it is being asked to produce — so the check
+     * cannot live inside it and must live here, before it is called:
+     * decode the CARRIED bytes and recompute their own hash — the same
+     * self-consistency check the canonical-strict reader performs
+     * (check 4 of nodus_witness_v2_gen_stored_doc's doc comment) — and
+     * compare against `pin`. genesis_cmt is NOT IDEMPOTENT and REFUSES a
+     * second application once a manifest is committed, so calling it on
+     * a pin that will turn out wrong would strand a correct retry on the
+     * same handle; checking first avoids ever calling it on a rejected
+     * pin. */
+    {
+        nodus_v2_gen_config_t *precheck = calloc(1, sizeof(*precheck));
+        nodus_v2_gen_alloc_t  *pre_allocs = NULL;
+        int pin_ok = 0;
+        if (precheck &&
+            nodus_witness_v2_gen_v3_decode(doc, doc_len, precheck,
+                                           &pre_allocs) == 0) {
+            uint8_t recomputed[NODUS_V2_GEN_CHAIN_ID_LEN];
+            pin_ok = (nodus_witness_v2_gen_chain_id(precheck, recomputed)
+                      == 0) &&
+                     (memcmp(recomputed, pin,
+                             NODUS_V2_GEN_CHAIN_ID_LEN) == 0);
+        }
+        free(pre_allocs);
+        free(precheck);
+        if (!pin_ok) { free(doc); return -1; }
+    }
+
+    /* R3 W3 fix (ORCHESTRATOR-caught, delta 6): migrate to S14 and store
+     * the carried document FIRST — before vset_commit_genesis /
+     * domreg_init_genesis / genesis_cmt run at all.
+     *
+     * Root cause, traced by reading the dispatch chain rather than
+     * assumed: nodus_witness_domreg_init_genesis (nodus_witness_domreg.c
+     * :319-340) dispatches every registered runtime's state_init hook;
+     * only CORE has one (nodus_witness_runtime.c:367,
+     * nodus_rt_core_state_init). That hook's own gate
+     * (nodus_witness_v2_pools.c:1194-1203) requires the schema to
+     * ALREADY be S7, S8, S9, S10, S11, S12 or S14 — and fails CLOSED
+     * with a bare `return -1`, no log line. In the order this function
+     * used before this fix, domreg_init_genesis ran BEFORE
+     * nodus_witness_db_migrate_v2s14, so on a freshly
+     * nodus_witness_create_chain_db'd scratch database (none of those
+     * seven versions) the gate silently refused and
+     * nodus_witness_domreg_init_genesis(w2) != 0 sent bundle_apply
+     * straight to `return -1` here — before migration, storage or
+     * genesis_cmt ever ran. (The "no such table: cmt_blockstore" /
+     * "no genesisDoc row" log lines reported alongside this failure
+     * come from the TEST's OWN precondition check one line above the
+     * CHECK that fails — test_v2_bundle.c:488's `v3_has_doc(jw)`, which
+     * deliberately probes the still-undocumented fresh joiner BEFORE
+     * calling bundle_apply — not from inside this function; correcting
+     * that misattribution here so the next reader does not go looking
+     * for a document read that direction does not take.)
+     *
+     * Fix: migrate to S14 (cascades from wherever the scratch DB
+     * already is — nodus_witness_v2_schema.c's ladder) and store the
+     * document FIRST, so the CORE gate already sees S14 by the time
+     * domreg_init_genesis dispatches to it — THEN snapshots, THEN
+     * domreg, THEN the Comet-lane genesis, matching the order
+     * nodus_witness_v2_gen.c's derive_v3 path already uses for the
+     * exact same reason (:2924-2947, D-17 rev 10 (8)). Each step
+     * manages its own transaction; a failure leaves the scratch DB for
+     * the caller to discard. */
+    if (nodus_witness_db_migrate_v2s14(w2) != 0) { free(doc); return -1; }
+    {
+        nodus_cmt_store_t s;
+        if (nodus_cmt_store_init(&s, w2->db, false) != CMT_OK) {
+            free(doc);
+            return -1;
+        }
+        int srv = nodus_cmt_store_set(&s, /*state_table=*/true,
+                                      NODUS_V2_GEN_GENESIS_DOC_KEY,
+                                      doc, doc_len);
+        nodus_cmt_store_release(&s);
+        if (srv != CMT_OK) { free(doc); return -1; }
+    }
+
+    if (nodus_witness_vset_commit_genesis(w2, 1) != 0) { free(doc); return -1; }
+    if (nodus_witness_domreg_init_genesis(w2) != 0) { free(doc); return -1; }
 
     uint8_t vsh[DNA_VSET_HASH_LEN];
     {
@@ -469,18 +637,40 @@ int nodus_witness_v2_bundle_apply(nodus_witness_t *w2,
         uint32_t sn = 0, sq = 0;
         if (nodus_witness_v2_epoch_authority_for_height(w2, 0, &s0,
                                                         &sn, &sq) != 0
-            || !s0) { dna_vset_free(&s0); return -1; }
+            || !s0) { dna_vset_free(&s0); free(doc); return -1; }
         int hrc = dna_vset_hash(s0, vsh);
         dna_vset_free(&s0);
-        if (hrc != 0) return -1;
+        if (hrc != 0) { free(doc); return -1; }
     }
 
-    /* THE PIN AS ASSERTION: genesis_ex re-derives the genesis BlockID
-     * from the replanted state + manifest and REFUSES if it is not
-     * byte-identical to `pin`. A wrong bundle dies here; the caller
-     * discards the scratch DB, so nothing is adopted. */
-    if (nodus_witness_v2_genesis_ex(w2, pin, vsh, 0, manifest, mlen) != 0)
+    uint8_t global_root[64];
+    if (nodus_witness_v2_genesis_cmt(w2, vsh, manifest, mlen,
+                                     global_root) != 0) {
+        free(doc);
         return -1;
+    }
+
+    /* THE PIN BINDS THE DOCUMENT; THIS BINDS THE LEDGER TOO. The
+     * canonical-strict reader proves the stored document's chain_id
+     * hashes to the document itself — it does NOT prove the REPLANTED
+     * TABLES produce that document's claimed ledger effect. Require
+     * BOTH: chain_id == pin, and app_hash == the root genesis_cmt just
+     * ACTUALLY computed from these tables. A bundle whose tables were
+     * tampered but whose untouched document still hashes to `pin` fails
+     * here, not silently adopts. */
+    {
+        nodus_v2_gen_config_t *cfg = calloc(1, sizeof(*cfg));
+        nodus_v2_gen_alloc_t  *allocs = NULL;
+        int ok = 0;
+        if (cfg && nodus_witness_v2_gen_stored_doc(w2, cfg, &allocs) == 0) {
+            ok = (memcmp(cfg->chain_id, pin, NODUS_V2_GEN_CHAIN_ID_LEN) == 0)
+                 && (memcmp(cfg->app_hash, global_root, 64) == 0);
+        }
+        free(allocs);
+        free(cfg);
+        free(doc);
+        if (!ok) return -1;
+    }
 
     /* The joiner persists its OWN bundle so it too can serve — and a
      * byte-mismatch vs what it received is a fault (proves the

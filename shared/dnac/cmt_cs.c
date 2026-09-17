@@ -193,19 +193,88 @@ static void cs_msg_set_peer(cmt_msg_info_t *mi, const cmt_peer_id_t *p)
 
 /* ── the two message rings (state.go:110, :111, :168, :169) ─────────── */
 
+/**
+ * PACKAGE C2e (register R3-A-5): the ONE variable-length payload a
+ * queued message's kind can carry, named so `cs_q_push` can copy it
+ * rather than merely repeat the descriptor it was handed — the arena the
+ * bytes were decoded into (`cmt_conr_receive`'s `recv_arena`) is reset on
+ * the VERY NEXT call, so nothing may still point into it once this
+ * message is queued. NULL for every other kind: nothing to copy.
+ */
+static const cmt_pb_bytes_t *cs_q_payload_of(const cmt_msg_info_t *mi)
+{
+    switch (mi->msg.kind) {
+    case CMT_PB_CONS_MSG_BLOCK_PART:
+        return &mi->msg.u.block_part.part.bytes;             /* :1680     */
+    case CMT_PB_CONS_MSG_VOTE:
+        if (!mi->msg.u.vote.has_vote) {
+            return NULL;                    /* :1706 — nil vote, nothing  */
+        }
+        return &mi->msg.u.vote.vote.extension;                /* field 9  */
+    default:
+        return NULL;
+    }
+}
+
+/** Repoints the SAME field `cs_q_payload_of` read. Kept beside it so the
+ *  getter and the setter can never disagree on which field they mean. */
+static void cs_q_payload_set(cmt_msg_info_t *mi, const uint8_t *data,
+                             size_t len)
+{
+    switch (mi->msg.kind) {
+    case CMT_PB_CONS_MSG_BLOCK_PART:
+        mi->msg.u.block_part.part.bytes.data = data;
+        mi->msg.u.block_part.part.bytes.len  = len;
+        return;
+    case CMT_PB_CONS_MSG_VOTE:
+        mi->msg.u.vote.vote.extension.data = data;
+        mi->msg.u.vote.vote.extension.len  = len;
+        return;
+    default:
+        return;
+    }
+}
+
+/**
+ * PACKAGE C2e (register R3-A-5): THE QUEUE OWNS WHAT IT QUEUES. One
+ * allocation, the payload bytes right after the struct — `mem_tx_new`'s
+ * own idiom (cmt_mem.c:240-262) — freed together with the element by
+ * whichever `cs_q_pop` caller frees it. `extra` is a length the wire
+ * already bounded (a BlockPart's `bytes` by CMT_BLOCK_PART_SIZE_BYTES,
+ * Part.ValidateBasic's ErrPartTooBig; a Vote's `extension` by the
+ * channel's own message cap), never attacker-controlled beyond that.
+ * Transient `malloc` failure here is CMT_FAULT, as elsewhere in this
+ * file. This is the ONE site every queue push goes through
+ * (`cs_input`, `cs_send_internal_message`), so no call site can forget
+ * the copy.
+ */
 static int cs_q_push(cmt_msg_info_t **ring, size_t *head, size_t *len,
                      const cmt_msg_info_t *mi)
 {
-    cmt_msg_info_t *copy;
+    cmt_msg_info_t       *copy;
+    const cmt_pb_bytes_t *payload;
+    size_t                extra;
 
     if (*len >= (size_t)CMT_CS_MSG_QUEUE_SIZE) {
         return CMT_REJECT;                        /* the caller decides   */
     }
-    copy = (cmt_msg_info_t *)malloc(sizeof(*copy));
+    payload = cs_q_payload_of(mi);
+    extra   = (payload != NULL) ? payload->len : 0u;
+    copy = (cmt_msg_info_t *)malloc(sizeof(*copy) + extra);
     if (copy == NULL) {
         return CMT_FAULT;             /* allocation failure = FAULT       */
     }
     *copy = *mi;
+    if (payload != NULL) {
+        if (extra != 0u) {
+            uint8_t *dst = (uint8_t *)(copy + 1);
+
+            memcpy(dst, payload->data, extra);
+            cs_q_payload_set(copy, dst, extra);
+        } else {
+            cs_q_payload_set(copy, NULL, 0u);
+        }
+    }
     ring[(*head + *len) % (size_t)CMT_CS_MSG_QUEUE_SIZE] = copy;
     *len += 1u;
     return CMT_OK;
@@ -310,6 +379,21 @@ static int cs_new_part_set_from_header(cmt_cs_t *cs,
                                       &cs->slots->part_sets[idx]);
     if (rc != CMT_OK) {
         return rc;
+    }
+    /* PACKAGE C2e, register R3-A-5: bind the slot's payload store when the
+     * host provided one (cmt_cs.h's field comment on `part_bytes`);
+     * `part_bytes[idx] == NULL` is "no store, old descriptor behaviour",
+     * NOT a fault — an off-whitelist caller with its own zeroed
+     * `cmt_cs_slots_t` (e.g. a unit test) never sets this and keeps
+     * today's contract unchanged. */
+    if (cs->slots->part_bytes[idx] != NULL) {
+        rc = cmt_part_set_bind_payload_store(&cs->slots->part_sets[idx],
+                                             cs->slots->part_bytes[idx],
+                                             cs->slots->part_bytes_cap[idx],
+                                             (uint32_t)CMT_BLOCK_PART_SIZE_BYTES);
+        if (rc != CMT_OK) {
+            return rc;
+        }
     }
     *out = &cs->slots->part_sets[idx];
     return CMT_OK;
@@ -3321,6 +3405,7 @@ int cmt_cs_try_add_vote(cmt_cs_t *cs, const cmt_vote_t *vote,
                         const cmt_peer_id_t *peer, bool *out_added)
 {
     cs_conflict_t *conflict;
+    cmt_vote_t    *ext_vote;
     uint8_t        my_addr[CMT_ADDRESS_SIZE];
     bool           added;
     int            rc;
@@ -3328,9 +3413,47 @@ int cmt_cs_try_add_vote(cmt_cs_t *cs, const cmt_vote_t *vote,
     if (cs == NULL || vote == NULL || peer == NULL) {
         return CMT_FAULT;
     }
+
+    /* PACKAGE C2e (register R3-A-5), OWNERSHIP (2): `cmt_vote_copy`
+     * shares a vote's extension DESCRIPTOR, never its bytes
+     * (cmt_vote.h:241) — whatever this function hands to `cs_add_vote`
+     * eventually reaches `cmt_hvs_add_vote` / `cmt_vote_set_add_vote` and
+     * leaves a pointer inside a vote set that OUTLIVES this call. `vote`
+     * here points into a dequeued queue element (freed by the caller once
+     * this step returns — cs_q_push's own C2e fix) or into the WAL
+     * replay's reused scratch (`cmt_cs_read_replay_message`, overwritten
+     * by the NEXT `wal_read_next`); neither is a height-scoped owner.
+     * Copy the extension into `cs->ext_arena` — the arena OWNERSHIP (2)
+     * already names as the destination "whatever decodes a peer's vote"
+     * writes to, alongside `extend_vote`'s own writes for this node's own
+     * votes — and use the repointed copy for everything below. Heap, not
+     * stack, matching this file's own ~9.5 KB single-vote convention
+     * (immediately below: `conflict` holds two of them). An empty
+     * extension (this chain: VoteExtensionsEnableHeight unset, so always
+     * true today) costs nothing beyond the struct copy. */
+    ext_vote = (cmt_vote_t *)calloc(1u, sizeof(*ext_vote));
+    if (ext_vote == NULL) {
+        return CMT_FAULT;
+    }
+    *ext_vote = *vote;
+    if (vote->extension.len != 0u) {
+        if (cs->ext_arena == NULL || cs->ext_arena->buf == NULL ||
+            cs->ext_arena->used > cs->ext_arena->cap ||
+            vote->extension.len > cs->ext_arena->cap - cs->ext_arena->used) {
+            free(ext_vote);
+            return CMT_FAULT;           /* capacity — OWNERSHIP (2) note  */
+        }
+        memcpy(cs->ext_arena->buf + cs->ext_arena->used,
+              vote->extension.data, vote->extension.len);
+        ext_vote->extension.data = cs->ext_arena->buf + cs->ext_arena->used;
+        cs->ext_arena->used += vote->extension.len;
+    }
+    vote = ext_vote;
+
     /* Heap: two whole votes, ~19 KB of Dilithium signatures. */
     conflict = (cs_conflict_t *)calloc(1u, sizeof(*conflict));
     if (conflict == NULL) {
+        free(ext_vote);
         return CMT_FAULT;
     }
     added = false;
@@ -3340,6 +3463,7 @@ int cmt_cs_try_add_vote(cmt_cs_t *cs, const cmt_vote_t *vote,
     }
     if (rc == CMT_FAULT) {
         free(conflict);
+        free(ext_vote);
         return CMT_FAULT;
     }
 
@@ -3359,10 +3483,12 @@ int cmt_cs_try_add_vote(cmt_cs_t *cs, const cmt_vote_t *vote,
     if (conflict->present) {                                     /* :2077 */
         if (!cs->priv_validator_pub_key_present) {               /* :2078 */
             free(conflict);
+            free(ext_vote);
             return CMT_REJECT;                       /* :2079 errPubKeyIsNotSet */
         }
         if (cs_priv_validator_address(cs, my_addr) != CMT_OK) {
             free(conflict);
+            free(ext_vote);
             return CMT_FAULT;
         }
         if (vote->validator_address_len == sizeof(my_addr) &&
@@ -3376,12 +3502,14 @@ int cmt_cs_try_add_vote(cmt_cs_t *cs, const cmt_vote_t *vote,
                                    "height %lld round %d",
                           (long long)vote->height, (int)vote->round);
             free(conflict);
+            free(ext_vote);
             return CMT_REJECT;                                   /* :2090 */
         }
         rc = cs->host.report_conflicting_votes(cs->host_ctx,
                                                &conflict->vote_a,
                                                &conflict->vote_b);/* :2094 */
         free(conflict);
+        free(ext_vote);
         if (rc != CMT_OK) {
             /* The reference's ReportConflictingVotes returns nothing and
              * cannot fail. A C host that failed here has an evidence pool
@@ -3393,6 +3521,7 @@ int cmt_cs_try_add_vote(cmt_cs_t *cs, const cmt_vote_t *vote,
         return CMT_REJECT;                                       /* :2101 */
     }
     free(conflict);
+    free(ext_vote);
     if (rc == CMT_OK) {
         return CMT_OK;                                           /* :2117 */
     }

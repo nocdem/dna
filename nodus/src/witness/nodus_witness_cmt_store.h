@@ -219,6 +219,15 @@ typedef struct {
     sqlite3_stmt *bs_get, *bs_set, *bs_del;
     sqlite3_stmt *ss_get, *ss_set, *ss_del;
 
+    /* R3-W3-C2a-17 (delta 9) — `nodus_cmt_store_get`'s own COPY buffers,
+     * one per table, grown by realloc as a wider value is read and freed
+     * in `nodus_cmt_store_release`. See `nodus_cmt_store_get`'s own doc
+     * comment for WHY a copy replaced the formerly-stepped statement's
+     * row pointer: a SQLite reader/writer snapshot rule this port must
+     * respect that the reference's goleveldb store never faces. */
+    uint8_t                   *bs_val;           size_t bs_val_cap;
+    uint8_t                   *ss_val;           size_t ss_val_cap;
+
     /* heap scratch: one marshal buffer sized for the widest value (a
      * State with three full sets), the proto-side storage of the three
      * validator sets, and the proto-side signature storage the commit
@@ -451,8 +460,13 @@ int nodus_cmt_ss_load_consensus_params(nodus_cmt_store_t *s, int64_t height,
 int nodus_cmt_ss_set_offline_state_sync_height(nodus_cmt_store_t *s,
                                                int64_t height);
 
-/** :738-754 GetOfflineStateSyncHeight — `binary.Varint` (:818-821);
- *  CMT_REJECT for "value empty" (:746) and a negative height (:751). */
+/** :738-754 GetOfflineStateSyncHeight — `binary.Varint` (:818-821).
+ *  R3 W3 (R3-C1c-2 CLOSED): an EMPTY value is absence — CMT_OK with
+ *  `*out = 0`, silently (:745-747; the caller, state/store.go:397-403,
+ *  tolerates it without a log); a NEGATIVE height is CMT_FAULT (:750-752,
+ *  the reference's panic — this node's own state contradicting itself);
+ *  an unreadable row stays CMT_FAULT. Never CMT_REJECT: nothing here is
+ *  a peer's input. */
 int nodus_cmt_ss_get_offline_state_sync_height(nodus_cmt_store_t *s,
                                                int64_t *out);
 
@@ -474,9 +488,31 @@ int64_t nodus_cmt_last_stored_height_for(int64_t height,
 size_t  nodus_cmt_int64_to_bytes(int64_t v, uint8_t out[10]);
 int64_t nodus_cmt_int64_from_bytes(const uint8_t *in, size_t len);
 
-/** Raw access to the two tables, for the tests and the host: `key` is
- *  the reference's byte string. `*out_len` 0 = not found. `value` is a
- *  pointer into a statement's row that is valid until the next call. */
+/**
+ * Raw access to the two tables, for the tests and the host: `key` is the
+ * reference's byte string. `*out_len` 0 = not found.
+ *
+ * R3-W3-C2a-17 (delta 9) — `*out_value` is a pointer into a STORE-OWNED
+ * COPY (`s->bs_val` / `s->ss_val`), valid until the next `get` ON THE
+ * SAME TABLE — the observable contract is unchanged from before, but
+ * the mechanism is: `get` used to leave `bs_get`/`ss_get` STEPPED
+ * (row materialised, statement not reset) until the following call
+ * reset it, which pins an open READ transaction on the MAIN connection
+ * for that whole span. This is HOST-SPECIFIC hardening, not a port
+ * deviation from anything the reference does with goleveldb (which has
+ * no reader/writer snapshot interaction of this kind): the Genesis
+ * Protocol harness (7 nodes, production constants, `/tmp/stagef-
+ * 20260917T032550Z`) measured every node stopping after height 1 —
+ * SQLite's SQLITE_BUSY_SNAPSHOT rule (a read transaction cannot be
+ * promoted to a write once another connection has committed since the
+ * snapshot was taken, and the busy handler is NOT invoked for it) made
+ * every Write-class WAL row and the store's own `BEGIN IMMEDIATE` on
+ * the main connection fail "database is locked" the moment the WAL's
+ * separate FULL connection committed anything. `get` now copies the
+ * row and resets the statement (`sqlite3_reset` + `sqlite3_clear_
+ * bindings`) BEFORE returning, so the main connection never holds an
+ * open read transaction past this call.
+ */
 int nodus_cmt_store_get(nodus_cmt_store_t *s, bool state_table,
                         const char *key, const uint8_t **out_value,
                         size_t *out_len);

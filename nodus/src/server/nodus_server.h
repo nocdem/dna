@@ -100,12 +100,17 @@ typedef struct {
     /* O15E Faz D — local successor genesis PIN for a fresh joiner. When
      * `has_v2_genesis_pin` is set and the node has no successor chain,
      * the joiner bootstrap pulls the canonical genesis bundle from a
-     * peer, re-derives the genesis, and adopts it ONLY if the derived
-     * BlockID equals `v2_genesis_pin`. Operator-supplied (CLI/config),
-     * NEVER wire-settable. Without it a fresh node is not a successor
-     * joiner. */
+     * peer, re-derives the genesis, and adopts it ONLY if the derivation
+     * matches `v2_genesis_pin`. Operator-supplied (CLI/config), NEVER
+     * wire-settable. Without it a fresh node is not a successor joiner.
+     *
+     * R3 W3 (D-24 rev 4 (1)): 32 bytes — the chain id, not a 64-byte
+     * genesis BlockID. A version-3 chain has no genesis BLOCK to pin to
+     * (D-19 rev 6 withdrew it); its only identity is the hash of its
+     * stored genesis DOCUMENT (D-18 rev 4), which is exactly what this
+     * field holds. */
     bool        has_v2_genesis_pin;
-    uint8_t     v2_genesis_pin[64];
+    uint8_t     v2_genesis_pin[32];
 } nodus_server_config_t;
 
 /* ── Inter-node session (lightweight — rate limiting only, no auth) ── */

@@ -26,8 +26,8 @@ extern "C" {
  * long time. Bump BOTH, together, every time. */
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  19
-#define NODUS_VERSION_PATCH  60
-#define NODUS_VERSION_STRING "0.19.60"
+#define NODUS_VERSION_PATCH  61
+#define NODUS_VERSION_STRING "0.19.61"
 
 /* Wire frame.
  *
@@ -171,6 +171,20 @@ extern "C" {
 #define NODUS_T3_EPOCH_DURATION_SEC 60      /* DNAC epoch = 60s */
 /* Witness BFT (Tier 3) protocol version — CLUSTER-INTERNAL ONLY.
  *
+ * 7 (R3 wave W3, package C2b, D-16 rev 5): the Tendermint reactor verbs
+ *   28-34 and shared/dnac/tm_bounds.h are RETIRED — deleted, not merely
+ *   unused — and replaced by five cometbft envelope verbs, 35-39
+ *   (NODUS_T3_CMT_STATE/DATA/VOTE/VOTE_SET_BITS/TXS). Each carries a
+ *   single field, `{m: bstr}`, holding the cometbft reactor's own
+ *   already-marshalled protobuf bytes verbatim; this tier never
+ *   interprets them. The five map to the reference's own channel ids
+ *   (State 0x20, Data 0x21, Vote 0x22, VoteSetBits 0x23 — all four
+ *   consensus/reactor.go's — and Mempool 0x30, mempool/reactor.go's). A
+ *   v6 node has no decoder for any of the five and no entry for them in
+ *   the version gate or the quarantine switch, so it can neither
+ *   validate nor safely ignore them — mixed v6/v7 operation is
+ *   therefore refused, the same rule the v5/v6 bump below states.
+ *
  * 6 (O15N Faz 2C1): two new consensus verbs carrying VIEW AUTHORITY —
  *   NODUS_T3_VIEWOK (26), a bundle of 1..N per-node statements that a
  *   view-change quorum was observed, and NODUS_T3_VIEWOK_REQ (27), the
@@ -227,7 +241,7 @@ extern "C" {
  *
  * Bootstrap messages deliberately carry version 1 and are NOT gated;
  * they run before a committee exists. */
-#define NODUS_T3_BFT_PROTOCOL_VER   6
+#define NODUS_T3_BFT_PROTOCOL_VER   7
 
 /* Token creation fee: 1% of genesis supply (10M DNAC = 10^15 raw for 1B supply) */
 #define NODUS_W_TOKEN_CREATE_FEE  1000000000000000ULL

@@ -255,6 +255,21 @@ typedef struct {
  * 32-byte witness id. `peer_id_len` is 0 for the node's OWN messages,
  * which is the reference's `PeerID: ""` (state.go:839), and 32 otherwise.
  * Nothing between those two lengths is accepted anywhere.
+ *
+ * OWNERSHIP OF THE ONE VARIABLE-LENGTH PAYLOAD (package C2e, register
+ * R3-A-5): `msg.u.block_part.part.bytes` or `msg.u.vote.vote.extension`
+ * — whichever `msg.kind` carries — is a `cmt_pb_bytes_t` DESCRIPTOR, not
+ * storage; the struct itself gains no new field for it. `cs_q_push`
+ * (cmt_cs.c) is the ONE place a `cmt_msg_info_t` is queued, and it now
+ * allocates the queue element with the payload's bytes copied into the
+ * SAME allocation, right after the struct (`mem_tx_new`'s idiom,
+ * cmt_mem.c:240-262), and repoints the descriptor there before returning
+ * — so a queued element OWNS its one payload and frees it with itself. A
+ * `cmt_msg_info_t` built OUTSIDE `cs_q_push` (a stack/heap temporary at a
+ * call site, or the WAL replay's reused scratch in
+ * `cmt_cs_read_replay_message`) carries NO such ownership — its
+ * descriptor points wherever its caller's did, valid only as long as
+ * that caller's own storage is, exactly as before this package.
  */
 typedef struct {
     cmt_msg_t msg;                              /* state.go:49 */

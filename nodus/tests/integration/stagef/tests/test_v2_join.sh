@@ -29,6 +29,22 @@
 #   here would be a second opinion about the chain's identity, and a
 #   scenario is supposed to check the fleet's, not form its own.
 #
+# R3 W3 (C2d) — THE PIN IS 32 BYTES, NOT 64 (D-24 rev 4 item 1,
+#   atlas-dec-8a88ea40d4ac8cd6d8c361dca9b7b2c7, APPROVED)
+#   "the pin is 32 BYTES everywhere: --v2-genesis-pin takes 64 hex
+#   characters = the chain id." nodus-server.c's parse_v2_pin refuses
+#   anything but exactly 64 hex characters (:93-104); this scenario's own
+#   length check is rewritten to match. And a version-3 chain never
+#   writes a global_height=0 row to v2_blocks (genesis is a stored
+#   DOCUMENT, not a block — nodus_v2_gen_config.c's required-key
+#   message: "0 and 1 both start the chain at height 1 but are DIFFERENT
+#   chain ids"), so "adopted" is read from the witness DB's FILENAME
+#   instead — it embeds the derived chain id's first 16 bytes in the
+#   SAME hex `join_adopt` itself writes (nodus_witness_v2_join.c
+#   `witness_%s.db` over `chain32[0..15]`), so comparing filenames IS
+#   comparing the derived identity, without a second read of the row
+#   that no longer exists.
+#
 # WHAT IT LEAVES BEHIND
 #   Node 6 has a brand-new data directory: its identity is preserved (the
 #   validator set is genesis-fixed and a new key would not be in it), but
@@ -54,6 +70,13 @@
 #   - **A pin mismatch cannot produce a false pass**, only a hang: the
 #     joiner refuses every bundle that does not re-derive to its pin, so
 #     a wrong pin leaves the node chainless until the timeout fails it.
+#   - **DELTA 1 (verifier CLAIM 20 note) — the adoption wait (120 x 1 s)
+#     and the role+LIVE wait (30 x 1 s) are ATTEMPT-bounded, not a single
+#     fixed timer deciding the verdict.** Each polls for a LOG LINE or a
+#     DB row to appear and dies if it never does within the bound — the
+#     same shape bring-up's own anti-vacuity loop uses, not the
+#     `test_v2_partial_wipe.sh` `sleep 8` shape (fixed in that script,
+#     DELTA 1 item 5) where one fixed sleep decided the whole outcome.
 #   - **rc=99 means the cluster was not V2.** Coverage that did not
 #     happen.
 #
@@ -77,13 +100,13 @@ if [ "${has_v2:-0}" = "0" ] || [ ! -s "$PINFILE" ]; then
 fi
 
 PIN=$(cat "$PINFILE")
-[ "${#PIN}" = 128 ] || die "recorded pin is not 128 hex chars"
+[ "${#PIN}" = 64 ] || die "recorded pin is not 64 hex chars (32-byte chain id, D-24 rev 4)"
 
-fleet_gid=$(sqlite3 "$ref_db" "SELECT hex(block_id) FROM v2_blocks WHERE global_height=0;")
+fleet_gid=$(basename "$ref_db")
 fleet_tip=$(sqlite3 "$ref_db" "SELECT MAX(global_height) FROM v2_blocks;")
-echo "[ok] fleet genesis=${fleet_gid:0:32} tip=$fleet_tip"
+echo "[ok] fleet chain_db=$fleet_gid tip=$fleet_tip"
 
-bash "$(dirname "$0")/../stagef_diff.sh" "pre-v2-join" || exit 2
+stagef_cmt_diff_at_floor "pre-v2-join" || exit 2
 
 # ── Wipe ────────────────────────────────────────────────────────────
 nd=$(stagef_node_dir "$VICTIM")
@@ -127,8 +150,7 @@ echo "[ok] node$VICTIM restarted with ONLY the genesis pin (pid $newpid)"
 adopted=0
 for _ in $(seq 1 120); do
     if ls "$nd/data/"witness_*.db >/dev/null 2>&1; then
-        gid=$(sqlite3 "$(stagef_node_chain_db "$VICTIM")" \
-              "SELECT hex(block_id) FROM v2_blocks WHERE global_height=0;" 2>/dev/null || true)
+        gid=$(basename "$(stagef_node_chain_db "$VICTIM")" 2>/dev/null || true)
         [ -n "$gid" ] && { adopted=1; break; }
     fi
     sleep 1
@@ -139,26 +161,41 @@ done
     die "node$VICTIM never adopted a chain — it is up and serving DHT with no witness role, which is exactly what 'it started' would have hidden"
 }
 [ "$gid" = "$fleet_gid" ] || die \
-  "node$VICTIM adopted a DIFFERENT genesis: ${gid:0:32} vs the fleet's ${fleet_gid:0:32}"
-echo "[ok] node$VICTIM adopted the fleet's chain (${gid:0:32})"
+  "node$VICTIM adopted a DIFFERENT chain: $gid vs the fleet's $fleet_gid"
+echo "[ok] node$VICTIM adopted the fleet's chain ($gid)"
 
-grep -q 'chain role: LEDGER V2' "$nd/nodus.log" || die \
-  "node$VICTIM has the chain but never reported the V2 witness role"
-echo "[ok] node$VICTIM reports the LEDGER V2 role"
-
-# ── And catches up ──────────────────────────────────────────────────
-caught=0
-for _ in $(seq 1 180); do
-    vt=$(sqlite3 "$(stagef_node_chain_db "$VICTIM")" \
-         "SELECT COALESCE(MAX(global_height),-1) FROM v2_blocks;" 2>/dev/null || echo -1)
-    [ "$vt" -ge "$fleet_tip" ] && { caught=1; break; }
+# ANTI-VACUITY: the role line AND lane-live, not just an open handle —
+# a chain DB existing again is not the same as this node actually
+# resuming consensus on it (nodus_witness.c's own bring-up gate applies
+# with no less force to a joiner than to a fresh derivation).
+role_ok=0 live_ok=0
+for _ in $(seq 1 30); do
+    if grep -q 'chain role: COMETBFT' "$nd/nodus.log"; then role_ok=1; fi
+    if grep -q 'cometbft lane LIVE' "$nd/nodus.log"; then live_ok=1; fi
+    if [ "$role_ok" = 1 ] && [ "$live_ok" = 1 ]; then break; fi
     sleep 1
 done
-[ "$caught" = 1 ] || die "node$VICTIM adopted but did not catch up (tip $vt < fleet $fleet_tip)"
+[ "$role_ok" = 1 ] && [ "$live_ok" = 1 ] || die \
+  "node$VICTIM has the chain but never reported COMETBFT role + lane LIVE (role=$role_ok live=$live_ok)"
+echo "[ok] node$VICTIM reports the COMETBFT role and is LIVE"
+
+# ── And catches up through the reactor's stored-part gossip ─────────
+# R3 W3 (C2d) — there is no separate blocksync reactor on this lane:
+# wait_sync is ALWAYS false (D-23 rev 7 item 18,
+# nodus_witness.c:1564-1572), so a node behind its peers catches up
+# through the CONSENSUS reactor's own stored-part gossip
+# (reactor.go:575-590, ported) — the same channel that carries live
+# votes and proposals, not a bulk block-fetch protocol. Bounded by
+# progress (stall detection), never a bare sleep.
+vt=$(stagef_cmt_wait_height "$(stagef_node_chain_db "$VICTIM")" "$fleet_tip" 3) \
+    || die "node$VICTIM adopted but did not catch up (stuck at $vt, fleet was $fleet_tip)"
 echo "[ok] node$VICTIM caught up to tip $vt"
 
-sleep 3
-bash "$(dirname "$0")/../stagef_diff.sh" "post-v2-join" || exit 2
+for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
+    stagef_cmt_wait_height "$(stagef_node_chain_db "$n")" "$vt" 2 >/dev/null \
+        || die "node$n never reached height $vt (mesh replication stalled)"
+done
+stagef_cmt_diff_at_floor "post-v2-join" || exit 2
 
 echo ""
 echo "[PASS] a wiped node rejoined a live Ledger V2 fleet with nothing but its"

@@ -75,15 +75,44 @@
  *     `derive_v3`'s own contract, so the comparison is meaningful only
  *     because that contract holds — it is not re-proven here.
  *  6. THE PER-REQUEST TRANSACTION BOUND. `finalize_block` refuses a
- *     block carrying more than `NODUS_CMT_APP_MAX_TXS` items, and that
- *     bound is `NODUS_W_MAX_BLOCK_TXS` (10) — the LEDGER SEAM's cap,
- *     which D-4 rev 3 (2) retires for the Comet lane and W3 raises
- *     (register row R3-C1a-4). Until then a DECIDED block above it
+ *     block carrying more than `env_bound` items — the byte-derived
+ *     count (MaxDataBytes / an envelope's framing minimum,
+ *     nodus_cmt_app_ledger_init), in the hundreds of thousands at this
+ *     fixture's genesis document. The retired `NODUS_CMT_APP_MAX_TXS`
+ *     (= `NODUS_W_MAX_BLOCK_TXS`, 10 — the legacy ledger seam's cap)
+ *     does not exist in the Comet lane any more (D-4 rev 3 (2); register
+ *     row R3-C1a-4, CLOSED delta 1). A DECIDED block above `env_bound`
  *     STOPS THE NODE. `t_finalize_block_bound` proves the refusal is
  *     real and fabricates nothing; it does NOT prove the bound is the
  *     right number, and nothing here exercises a block larger than it.
  *  7. Nothing here was RUN by its author: this package could not build
  *     or run tests. Every expectation is an expectation.
+ *  8. ORCHESTRATOR delta 4, item A — `t_finalize_block_empty` proves an
+ *     EMPTY decided block (D-4 rev 3's 60 s `create_empty_blocks_
+ *     interval`) applies through the real pipeline. It was RED before
+ *     its own fix: `blk->cmt.results` was NULL whenever `req->txs_len
+ *     == 0` (delta 2's per-request branch left every array NULL), and
+ *     the engine's own precondition refuses a NULL results array before
+ *     it ever checks the count — independently proven RED by
+ *     test_cmt_node.c's `progress_all_synced` case (test_cmt_node.c:
+ *     1308), which drives a real node through a real empty height.
+ *  9. ORCHESTRATOR delta 11 (R3-W3-C2a-19) — `t_prepare_proposal_item_cap`
+ *     and `t_process_proposal_item_cap` prove the engine's per-block
+ *     ITEM-COUNT bound (`NODUS_V2_APPLY_MAX_OPS`, 16) is enforced at
+ *     both proposal gates over 40/17/16 GENUINELY admissible claims
+ *     (`gfx_open_n`/`build_claim_n`, a real N-leaf genesis distribution
+ *     — not N copies of one claim, which the seam's own in-batch
+ *     nullifier dedup would have trimmed on its own and made RED
+ *     silently equal GREEN). They do NOT prove the per-domain `d->n_tx`
+ *     bound (apply.c ~:2842/:3328/:3417) is safe: that counter
+ *     increments once per LEG naming a domain, not once per item, and
+ *     one envelope may carry up to DNA_ENV_MAX_LEGS (64) legs, so an
+ *     item-count cap of 16 does not bound how many times ONE envelope's
+ *     own legs can touch ONE domain. Nothing in `env_wire.c`/
+ *     `env_preflight.c` was found (grepped) to forbid a repeated
+ *     `domain_id` across one envelope's legs — a real, separate gap,
+ *     recorded but not fixed here: it is inside `nodus_witness_v2_
+ *     apply.c`, outside this package's whitelist.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -344,6 +373,105 @@ static int cfg_make_v3_real(cfgbox_t *b)
     return 0;
 }
 
+/**
+ * ORCHESTRATOR delta 11 (R3-W3-C2a-19) — `cfg_make_v3_real`'s own logic,
+ * parameterized to `n` allocations instead of hardcoding one. Needed to
+ * build MORE than one genuinely, independently claimable distribution
+ * leaf: `nodus_witness_v2_claim_admit` (the seam PrepareProposal and
+ * ProcessProposal both run their claim candidates through) checks each
+ * claim against a REAL committed manifest leaf, so proving the new
+ * item-count cap against 40 (or 16, or 17) ADMISSIBLE claims — not 40
+ * copies of the same one, which the seam's in-batch nullifier dedup
+ * would reject as duplicates past the first — needs a distribution tree
+ * with that many leaves.
+ *
+ * Every leaf's `dest_binding` stays the SAME g_ks[0] binding
+ * `cfg_make_v3_real` uses (nodus_witness_v2_claims.c:510-517 binds
+ * SHA3-512(claimant pubkey) to this field), so every leaf this builds is
+ * claimable by the ONE claimant this file holds signing keys for;
+ * distinctness across leaves comes from `source_id` alone (byte 0 fixed
+ * at 0x30 as `cfg_make_v3_real`'s does, bytes 1-2 the big-endian index),
+ * which is enough: gen.c's own leaf order is ascending `source_id`
+ * (nodus_witness_v2_gen.c ~:781-788, `qsort` + `gen_leaf_qcmp`), and
+ * these source_ids are already in that order by construction, so no
+ * re-sort is needed to know leaf `i` here IS leaf `i` in the committed
+ * tree. `TREASURY_RAW` is split `n` ways, remainder folded into the
+ * LAST leaf, so Σ allocations == TREASURY_RAW exactly for any `n` (Rule
+ * P.2, nodus_witness_v2_gen.c's own supply-sum check) — `TREASURY_RAW`
+ * (93 000 000 000 000 000) divided by any `n` this file uses is always
+ * >= 1, the one thing an allocation amount must be.
+ *
+ * `cfg_make_v3_real` itself is left completely UNCHANGED: `t_claim_items`
+ * depends on its one-leaf, no-siblings shape (`good->n_siblings = 0`)
+ * and must stay on it, not on this.
+ */
+static int cfg_make_v3_real_n(cfgbox_t *b, uint32_t n)
+{
+    nodus_v2_gen_config_t *c;
+    uint16_t k;
+    uint32_t i;
+    uint64_t share, rem;
+
+    memset(b, 0, sizeof(*b));
+    if (n < 1) {
+        return -1;
+    }
+    b->cfg    = calloc(1, sizeof(*b->cfg));      /* ~240 KB: never stack */
+    b->allocs = calloc(n, sizeof(*b->allocs));
+    if (!b->cfg || !b->allocs) {
+        cfg_free(b);
+        return -1;
+    }
+    c = b->cfg;
+    c->config_version        = NODUS_V2_GEN_CONFIG_VERSION;
+    c->total_supply_raw      = DNAC_DEFAULT_TOTAL_SUPPLY;
+    c->epoch_length          = (uint64_t)DNAC_EPOCH_LENGTH;
+    c->blocks_per_year       = (uint64_t)DNAC_BLOCKS_PER_YEAR;
+    c->decimal_unit          = (uint64_t)DNAC_DECIMAL_UNIT;
+    c->inflation_start_block = 1ULL;
+    c->claim_start_height    = 0;
+    c->claim_end_height      = UINT64_MAX;
+    c->n_validators          = (uint16_t)N_KEYS;
+    for (k = 0; k < (uint16_t)N_KEYS; k++) {
+        nodus_v2_gen_validator_t *v = &c->validators[k];
+        size_t bb;
+
+        memcpy(v->pubkey, g_ks[k].pk, DNAC_PUBKEY_SIZE);
+        for (bb = 0; bb < DNAC_PUBKEY_SIZE; bb++) {
+            v->unstake_destination_pubkey[bb] = (uint8_t)(v->pubkey[bb] ^ 0x5A);
+        }
+        hex_lower_fp(v->unstake_destination_pubkey, DNAC_PUBKEY_SIZE,
+                     v->unstake_destination_fp);
+        v->self_stake     = DNAC_SELF_STAKE_AMOUNT;
+        v->commission_bps = (uint16_t)(100 * (k + 1));
+    }
+
+    share = TREASURY_RAW / n;
+    rem   = TREASURY_RAW % n;
+    for (i = 0; i < n; i++) {
+        memset(b->allocs[i].source_id, 0, sizeof(b->allocs[i].source_id));
+        b->allocs[i].source_id[0] = 0x30;
+        b->allocs[i].source_id[1] = (uint8_t)(i >> 8);
+        b->allocs[i].source_id[2] = (uint8_t)i;
+        qgp_sha3_512(g_ks[0].pk, DNAC_PUBKEY_SIZE, b->allocs[i].dest_binding);
+        b->allocs[i].amount = share + ((i == n - 1) ? rem : 0);
+    }
+    c->n_allocs = n;
+    c->allocs   = b->allocs;
+
+    if (nodus_witness_v2_gen_v3_defaults(c) != 0) {
+        cfg_free(b);
+        return -1;
+    }
+    c->genesis_time_ms = GEN_TIME_MS;
+    c->initial_height  = 1;
+    if (nodus_witness_v2_gen_v3_fill_comet_rows(c) != 0) {
+        cfg_free(b);
+        return -1;
+    }
+    return 0;
+}
+
 typedef struct {
     nodus_witness_t *w;
     nodus_server_t  *srv;
@@ -419,6 +547,167 @@ static int gfx_open(gfx_t *g, const char *tag)
     g->w->server = g->srv;
     memcpy(g->w->my_id, g_ks[0].voter, 32);
     return 0;
+}
+
+/**
+ * ORCHESTRATOR delta 11 (R3-W3-C2a-19) — `gfx_open`'s own body, with ONE
+ * substitution: `cfg_make_v3_real_n(&g->box, n_allocs)` in place of
+ * `cfg_make_v3_real(&g->box)`, so the derived chain's genesis commits an
+ * `n_allocs`-leaf distribution tree instead of one. `gfx_open` itself is
+ * untouched.
+ */
+static int gfx_open_n(gfx_t *g, const char *tag, uint32_t n_allocs)
+{
+    char path[600];
+    int  i;
+
+    memset(g, 0, sizeof(*g));
+    if (cfg_make_v3_real_n(&g->box, n_allocs) != 0) {
+        return -1;
+    }
+    if (nodus_witness_v2_gen_v3_validate(g->box.cfg) != 0) {
+        return -1;
+    }
+    snprintf(g->dir, sizeof(g->dir), "/tmp/test_cmt_app_%s_XXXXXX", tag);
+    if (!mkdtemp(g->dir)) {
+        return -1;
+    }
+    if (nodus_witness_v2_gen_derive_v3(g->dir, g->box.cfg, g->chain32) != 0) {
+        return -1;
+    }
+    {
+        char hex[33];
+
+        for (i = 0; i < 16; i++) {
+            snprintf(hex + 2 * i, 3, "%02x", g->chain32[i]);
+        }
+        hex[32] = '\0';
+        snprintf(path, sizeof(path), "%s/witness_%s.db", g->dir, hex);
+    }
+    g->w   = calloc(1, sizeof(*g->w));           /* multi-MB: never stack */
+    g->srv = calloc(1, sizeof(*g->srv));
+    if (!g->w || !g->srv) {
+        return -1;
+    }
+    if (sqlite3_open_v2(path, &g->w->db, SQLITE_OPEN_READWRITE, NULL)
+        != SQLITE_OK) {
+        return -1;
+    }
+    snprintf(g->w->data_path, sizeof(g->w->data_path), "%s", g->dir);
+    g->w->cached_committee_epoch_start = UINT64_MAX;
+    g->w->v2_successor     = true;
+    g->w->v2_ingress_armed = true;
+    memcpy(g->w->v2_chain32, g->chain32, 32);
+    memcpy(g->srv->identity.pk.bytes, g_ks[0].pk, NODUS_PK_BYTES);
+    memcpy(g->srv->identity.sk.bytes, g_ks[0].sk, QGP_DSA87_SECRETKEYBYTES);
+    memcpy(g->srv->identity.node_id.bytes, g_ks[0].voter, 32);
+    g->w->server = g->srv;
+    memcpy(g->w->my_id, g_ks[0].voter, 32);
+    return 0;
+}
+
+/**
+ * ORCHESTRATOR delta 11 (R3-W3-C2a-19) — build a REAL, independently
+ * admissible claim against leaf `index` of an `n`-leaf distribution
+ * tree derived by `cfg_make_v3_real_n`/`gfx_open_n` into `g`. Ports
+ * `t_claim_items`'s single-leaf construction (below, near its own use)
+ * to the general N-leaf case: it recomputes every leaf's hash from
+ * `g->box.allocs[]` (already in the ascending `source_id` order gen.c's
+ * own leaf sort produces — `cfg_make_v3_real_n`'s `source_id` bytes 1-2
+ * already run 0..n-1 in that order, so no re-sort is needed here) and
+ * calls `dna_dist_proof_build` (manifest_wire.h:420-428, "test/fixture
+ * helper — consensus only VERIFIES") for the one inclusion proof leaf
+ * `index` needs. Defined here, beside the two fixture openers it needs
+ * (`gfx_t`/`g->box`), so every case below can call it.
+ *
+ * Every leaf shares the SAME `dest_binding` (`cfg_make_v3_real_n` binds
+ * every leaf to `g_ks[0]`'s public key, exactly as `cfg_make_v3_real`
+ * binds its one leaf), so every claim this builds is claimable by the
+ * ONE claimant this file holds signing keys for; distinctness across
+ * indices comes from the LEAF ITSELF (`source_id`, hence `leaf_hash`,
+ * hence — manifest_wire.h:493-497 — the nullifier), never from the
+ * claimant, so N claims over N distinct leaves carry N distinct
+ * nullifiers and none collides in the seam's in-batch dedup.
+ *
+ * `out`/`out_cap`/`out_len` follow `dna_claim_encode`'s own contract
+ * (`cbytes`/`sizeof(cbytes)`/`&clen` in `t_claim_items`).
+ * @return 0 with `*out_len` set / -1 on any failure.
+ */
+static int build_claim_n(gfx_t *g, uint32_t n, uint32_t index,
+                         uint8_t *out, size_t out_cap, size_t *out_len)
+{
+    dna_gman_t       m;
+    uint8_t          mh[64];
+    dna_dist_leaf_t *leaves = NULL;
+    uint8_t        (*lh)[DNA_V2_ROOT_LEN] = NULL;
+    dna_claim_t     *c = NULL;
+    uint32_t         i;
+    int              rc = -1;
+
+    if (!g || index >= n) {
+        return -1;
+    }
+    if (nodus_witness_v2_manifest_load(g->w, 0, &m) != 0) {
+        return -1;
+    }
+    if (dna_gman_hash(&m, mh) != 0) {
+        return -1;
+    }
+    /* Heap: `n` can be in the tens, and `dna_claim_t` alone is ~5 KB
+     * (t_claim_items's own comment) — never on the stack. */
+    leaves = (dna_dist_leaf_t *)calloc(n, sizeof(*leaves));
+    lh     = calloc(n, sizeof(*lh));
+    c      = (dna_claim_t *)calloc(1, sizeof(*c));
+    if (!leaves || !lh || !c) {
+        goto done;
+    }
+    for (i = 0; i < n; i++) {
+        leaves[i].leaf_version  = DNA_DIST_VERSION;
+        leaves[i].source_id_len = (uint16_t)NODUS_V2_GEN_SRCID_LEN;
+        memcpy(leaves[i].source_id, g->box.allocs[i].source_id,
+               NODUS_V2_GEN_SRCID_LEN);
+        leaves[i].source_amount = g->box.allocs[i].amount;
+        memcpy(leaves[i].dest_binding, g->box.allocs[i].dest_binding, 64);
+        if (dna_dist_leaf_hash(&leaves[i], lh[i]) != 0) {
+            goto done;
+        }
+    }
+
+    c->claim_version = DNA_CLAIM_VERSION;
+    memcpy(c->chain_id, g->chain32, DNA_CHAIN_ID_LEN);
+    memcpy(c->manifest_hash, mh, 64);
+    c->leaf_index    = index;
+    c->source_id_len = leaves[index].source_id_len;
+    memcpy(c->source_id, leaves[index].source_id, leaves[index].source_id_len);
+    c->source_amount = leaves[index].source_amount;
+    memcpy(c->dest_binding, leaves[index].dest_binding, 64);
+    if (dna_dist_proof_build(lh, n, index, c->siblings, &c->n_siblings) != 0) {
+        goto done;
+    }
+    c->auth_mode = DNA_CLAIMAUTH_DNA_NATIVE;
+    memcpy(c->pubkey, g_ks[0].pk, QGP_DSA87_PUBLICKEYBYTES);
+    {
+        uint8_t pre[DNA_CLAIM_PREIMAGE_MAX];
+        size_t  pre_len = 0, siglen = 0;
+
+        if (dna_claim_preimage(c, pre, &pre_len) != 0) {
+            goto done;
+        }
+        if (qgp_dsa87_sign(c->signature, &siglen, pre, pre_len,
+                           g_ks[0].sk) != 0 || siglen != DNA_CLAIM_SIG_LEN) {
+            goto done;
+        }
+    }
+    if (dna_claim_encode(c, out, out_cap, out_len) != 0) {
+        goto done;
+    }
+    rc = 0;
+
+done:
+    free(leaves);
+    free(lh);
+    free(c);
+    return rc;
 }
 
 static void gfx_close(gfx_t *g)
@@ -744,6 +1033,36 @@ static const uint8_t POISON[20] = {
     0xFF, 0xFF, 0xFF, 0xFF
 };
 
+/* ORCHESTRATOR delta 1, item B — the FIXTURE's own transaction-descriptor
+ * capacity (exec_t.txs, exec_make_block's data.txs_cap, exec_init's
+ * executor `lim.max_txs`), now that NODUS_CMT_APP_MAX_TXS is retired.
+ * This is a TEST-LOCAL bound, unrelated to the application's own
+ * prep_bound / env_bound (both in the hundreds to hundreds-of-thousands
+ * now): every case in this file builds at most a handful of test blocks,
+ * so a small, cheap, stack-safe capacity is exactly right here — it says
+ * nothing about, and does not need to match, the production bounds the
+ * application itself derives at nodus_cmt_app_ledger_init. Sized to
+ * comfortably exceed TEST_APP_SMALL_N below. */
+#define TEST_APP_TXS_CAP 32u
+
+/* ORCHESTRATOR delta 1, item B — the byte-bound test's own "eleven small
+ * transactions" figure (t_byte_bound_prepare_and_process), the exact
+ * count D-23 rev 7 (24)'s test instruction names. UNCHANGED by delta 4's
+ * redesign of that case — only the envelopes' PRICING shape changed. */
+#define TEST_APP_SMALL_N 11u
+
+/* ORCHESTRATOR delta 4, item B — the reservation CEILING every byte-bound
+ * envelope declares (`res_max_total_units`, env_wire.h:52). Chosen large
+ * enough to clear the envelope's own actual `static_units` (verified IN
+ * THE TEST against the real committed policy, not assumed here) with
+ * generous margin, and small enough that reserving it TEST_APP_SMALL_N+1
+ * times over — the worst case if every envelope's FULL ceiling were ever
+ * taken from the global budget at once — still leaves the global unit
+ * budget (NODUS_V2_GLOBAL_UNIT_BUDGET, nodus_witness_v2_apply.h) mostly
+ * unspent. See t_byte_bound_prepare_and_process's own doc comment for
+ * the arithmetic this constant is checked against. */
+#define TEST_APP_ENV_CEILING 10000ull
+
 /* ══ the blockexec over a fixture, with the REAL application ═════════ */
 
 static int t_now(void *ctx, cmt_time_t *out)
@@ -773,7 +1092,7 @@ typedef struct {
     cmt_genesis_doc_t       doc;
     cmt_genesis_validator_t gvals[DNAC_COMMITTEE_SIZE];
     cmt_block_t            *blk;
-    cmt_pb_bytes_t          txs[NODUS_CMT_APP_MAX_TXS];
+    cmt_pb_bytes_t          txs[TEST_APP_TXS_CAP];
     /* ⚠ THE BLOCK BORROWS ITS LastCommit BY POINTER
      * (`cmt_block_t.last_commit`, cmt_block.h:783 — "a POINTER, as the
      * reference's is"; `cmt_state_make_block` stores what it is given,
@@ -808,6 +1127,10 @@ static void exec_free(exec_t *x)
         nodus_cmt_store_release(x->store);
         free(x->store);
     }
+    /* ORCHESTRATOR delta 1, item B — the ledger context now owns heap
+     * arrays of its own (nodus_cmt_app_ledger_init); release them before
+     * freeing the context struct. NULL-safe. */
+    nodus_cmt_app_ledger_release(x->ledger);
     free(x->ledger);
     free(x->stor);
     free(x->state);
@@ -832,7 +1155,13 @@ static int exec_init(exec_t *x, gfx_t *g)
     memset(x, 0, sizeof(*x));
     x->store    = calloc(1, sizeof(*x->store));
     x->be       = calloc(1, sizeof(*x->be));
-    x->ledger   = calloc(1, sizeof(*x->ledger));   /* ~85 KB            */
+    /* delta 2, item A: nodus_cmt_app_ledger_t dropped every fixed-size
+     * worst-case scratch array (fb_class/fb_of/fb_env/fb_claim/
+     * fb_results) in favour of per-request heap allocation — this
+     * struct is now a handful of pointers, size_t bounds and three
+     * TEST-ONLY fault fields, well under 200 bytes, not the ~85 KB the
+     * delta-1 fixed arrays made it. */
+    x->ledger   = calloc(1, sizeof(*x->ledger));
     x->stor     = calloc(1, sizeof(*x->stor));
     x->state    = calloc(1, sizeof(*x->state));
     x->vscratch = calloc(1, sizeof(*x->vscratch));
@@ -865,7 +1194,7 @@ static int exec_init(exec_t *x, gfx_t *g)
     x->mp_if = nodus_cmt_nop_mempool;
     x->ev_if = nodus_cmt_empty_evpool;
     memset(&lim, 0, sizeof(lim));
-    lim.max_txs      = NODUS_CMT_APP_MAX_TXS;
+    lim.max_txs      = TEST_APP_TXS_CAP;
     lim.tx_arena_cap = 2u * 1024u * 1024u;
     lim.max_evidence = 4;
     if (nodus_cmt_blockexec_init(x->be, x->store, &x->app_if, &x->mp_if,
@@ -1066,7 +1395,7 @@ static int exec_make_block(exec_t *x, int64_t height, size_t n)
 
     memset(&data, 0, sizeof(data));
     data.txs     = x->txs;
-    data.txs_cap = NODUS_CMT_APP_MAX_TXS;
+    data.txs_cap = TEST_APP_TXS_CAP;
     data.txs_len = n;
     if (height == x->state->initial_height) {
         memset(&x->last_commit, 0, sizeof(x->last_commit));
@@ -1212,6 +1541,7 @@ static int t_init_chain_match(void)
     CHECK(resp.validators_len == 0 && resp.validators == NULL,
           "no validator update");
     CHECK(resp.has_consensus_params == false, "no consensus-param update");
+    nodus_cmt_app_ledger_release(app);
     free(app);
     gfx_close(&g);
     return 0;
@@ -1258,6 +1588,7 @@ static int t_init_chain_mismatches(void)
 
     CHECK(nodus_cmt_app_init_chain(app, &req, &resp) == CMT_OK,
           "the restored inputs still match");
+    nodus_cmt_app_ledger_release(app);
     free(app);
     gfx_close(&g);
     return 0;
@@ -1668,17 +1999,20 @@ static int t_crash_window_before_commit(void)
 }
 
 /**
- * The application's per-request transaction BOUND (register row
- * R3-C1a-4). A decided block above it stops the node — the bound is the
- * ledger seam's `NODUS_W_MAX_BLOCK_TXS`, which D-4 rev 3 (2) retires for
- * the Comet lane and W3 raises. Until then this is a real refusal and
- * the node must not pretend otherwise.
- *
- * The request is built WITHOUT writing past `exec_t.txs` — the round-3
- * version of this case set `data.txs_len` one past the array and smashed
- * the stack, which is what produced the SIGSEGV in
- * `sqlite3_get_autocommit`: the handle it read had been overwritten, not
- * closed.
+ * ORCHESTRATOR delta 1, item B (R3-C1a-4, CLOSED) — the application's
+ * per-request transaction bound is now `env_bound`, the byte-derived
+ * count (MaxDataBytes / an envelope's framing minimum), not the retired
+ * `NODUS_CMT_APP_MAX_TXS` (= the ledger seam's old NODUS_W_MAX_BLOCK_TXS,
+ * 10). `env_bound` at this fixture's genesis document is in the hundreds
+ * of thousands (see nodus_cmt_app_ledger_init's own QGP_LOG_INFO line),
+ * so this case does NOT allocate an `env_bound + 1`-sized array — the
+ * bound check (`req->txs_len > ctx->env_bound`) is the FIRST thing
+ * `finalize_block` reads, before it ever dereferences `req->txs[i]`, so
+ * `req.txs_len` alone carries the test and `req.txs` can point at a
+ * single dummy descriptor never actually read. (The round-3 version of
+ * this case built a real N+1-sized stack array at N=10 and smashed the
+ * stack when N grew — the exact class of bug this rewrite avoids by
+ * construction, not by being careful.)
  */
 static int t_finalize_block_bound(void)
 {
@@ -1688,32 +2022,559 @@ static int t_finalize_block_bound(void)
     nodus_cmt_app_ledger_t              *app;
     nodus_abci_request_finalize_block_t  req;
     nodus_abci_response_finalize_block_t resp;
-    cmt_pb_bytes_t                       txs[NODUS_CMT_APP_MAX_TXS + 1];
-    size_t                               i;
+    cmt_pb_bytes_t                       dummy_tx;
 
     CHECK(gfx_open(&g, "bound") == 0, "version-3 fixture");
     app = calloc(1, sizeof(*app));
     CHECK(app != NULL, "alloc");
     CHECK(gfx_doc(&g, &doc, gvals) == 0, "the completed genesis document");
     CHECK(nodus_cmt_app_ledger_init(app, g.w, &doc) == CMT_OK, "bind");
+    CHECK(app->env_bound > 0, "the byte-bound seam derived a positive "
+          "env_bound");
 
-    for (i = 0; i < (size_t)NODUS_CMT_APP_MAX_TXS + 1; i++) {
-        txs[i].data = POISON;
-        txs[i].len  = sizeof(POISON);
-    }
+    dummy_tx.data = POISON;
+    dummy_tx.len  = sizeof(POISON);
     memset(&req, 0, sizeof(req));
-    req.txs     = txs;
-    req.txs_len = (size_t)NODUS_CMT_APP_MAX_TXS + 1;
+    req.txs     = &dummy_tx;      /* never dereferenced — see above */
+    req.txs_len = app->env_bound + 1;
     req.height  = 1;
     memset(&resp, 0, sizeof(resp));
     CHECK(nodus_cmt_app_finalize_block(app, &req, &resp) == CMT_FAULT,
-          "a decided block above the bound stops the node");
+          "a decided block above env_bound stops the node");
     CHECK(resp.tx_results_len == 0 && resp.app_hash_len == 0,
           "and it fabricates no results and no app_hash");
     CHECK(sqlite3_get_autocommit(g.w->db) != 0,
           "it opened no transaction of its own");
 
+    nodus_cmt_app_ledger_release(app);
     free(app);
+    gfx_close(&g);
+    return 0;
+}
+
+/**
+ * ORCHESTRATOR delta 4, item A (D-4 rev 3's `create_empty_blocks_interval`,
+ * 60 s) — AN EMPTY DECIDED BLOCK.
+ *
+ * RED against the code before this fix, proven independently:
+ * test_cmt_node.c's `progress_all_synced` case (test_cmt_node.c:1308,
+ * "block 1 saved and applied") drove a real node through a real height
+ * with zero transactions and failed with the ENGINE's own precondition —
+ * `[ERR/CMT-APP] FinalizeBlock: the ledger could not apply the decided
+ * block at height 1 (rc -2): FAULT: cometbft lane: the caller's result
+ * array holds 0 of the 0 items this block carries`. Root cause: delta 2's
+ * `req->txs_len == 0` branch (nodus_witness_cmt_app.c) left EVERY
+ * per-request array NULL, including `results_arr` — so `blk->cmt.results`
+ * (nodus_witness_cmt_app.c:1165, formerly :1141) was NULL, and the
+ * engine's own precondition (nodus_witness_v2_apply.c:2185-2191) refuses
+ * `blk->cmt.results == NULL` BEFORE it ever looks at the count. Under
+ * D-4 rev 3 a quiet chain produces an empty block every 60 s, so this was
+ * not a corner case — it was the FIRST block a quiet chain would ever
+ * apply, stopping the node at once. Fixed by allocating `results_arr`
+ * unconditionally (`calloc(req->txs_len ? req->txs_len : 1, …)` — never a
+ * bare `calloc(0, …)`, whose result is implementation-defined and this
+ * tree builds for Windows/Android too) while `results_cap` stays the
+ * TRUE `req->txs_len` (0 here), so the engine's count-based logic is
+ * unaffected and only the NULL-avoidance slot exists.
+ *
+ * Proves: a decided block with ZERO transactions, through the REAL
+ * pipeline (`exec_make_block` with 0 txs, `exec_block_id`,
+ * `nodus_cmt_host_apply_verified_block`), commits a `v2_blocks` row at
+ * height 1 with `tx_count == 0` and a stored `global_root` equal to the
+ * committed global root (`app_hash`, D-23 rev 4 (3)); and that a SECOND
+ * empty block at height 2 — the ordinary 60 s cadence, not a one-off —
+ * also applies, with its own stored `abciResponsesKey:2` row.
+ */
+static int t_finalize_block_empty(void)
+{
+    gfx_t          g;
+    exec_t         x;
+    cmt_block_id_t bid;
+    uint8_t        root[64], stored_root[64];
+
+    CHECK(gfx_open(&g, "empty") == 0, "version-3 fixture");
+    CHECK(exec_init(&x, &g) == 0, "blockexec + real application");
+
+    /* ── height 1: the FIRST block a quiet chain ever applies ────────── */
+    CHECK(exec_make_block(&x, 1, 0) == 0, "block 1 with ZERO transactions");
+    CHECK(exec_block_id(&x, x.blk, &bid) == 0 && block_id_is_complete(&bid),
+          "a COMPLETE BlockID even for an empty block");
+
+    CHECK(nodus_cmt_host_apply_verified_block(x.be, &bid, x.blk, x.state)
+              == CMT_OK, "an EMPTY decided block applies (was CMT_FAULT "
+          "before this fix)");
+    CHECK(q1(g.w->db, "SELECT COUNT(*) FROM v2_blocks") == 1,
+          "one block row committed");
+    CHECK(q1(g.w->db, "SELECT tx_count FROM v2_blocks "
+             "WHERE global_height = 1") == 0,
+          "tx_count is 0 for the empty block");
+    CHECK(nodus_witness_v2_committed_global_root(g.w, root) == 0,
+          "the committed global root");
+    CHECK(row_blob(g.w, "global_root", 1, stored_root) == 0,
+          "the stored row's global_root");
+    CHECK(memcmp(root, stored_root, 64) == 0,
+          "app_hash equals the committed global root — an empty block "
+          "still commits a real state root");
+    CHECK(has_state_key(g.w->db, "abciResponsesKey:1") == 1,
+          "the (empty) FinalizeBlock response is stored for height 1 — "
+          "an empty repeated field marshals fine (cmt_pb_store.c's "
+          "response_finalize_block_wr only rejects tx_results_len != 0 "
+          "paired with a NULL pointer)");
+
+    /* ── height 2: the ORDINARY 60 s cadence, not a one-off ──────────── */
+    CHECK(exec_make_last_commit(&x, 1, &bid) == 0,
+          "a precommit from every validator for block 1");
+    CHECK(exec_make_block(&x, 2, 0) == 0, "block 2 with ZERO transactions");
+    CHECK(exec_block_id(&x, x.blk, &bid) == 0 && block_id_is_complete(&bid),
+          "block 2's COMPLETE BlockID");
+    CHECK(nodus_cmt_host_apply_verified_block(x.be, &bid, x.blk, x.state)
+              == CMT_OK, "a SECOND empty decided block applies");
+    CHECK(q1(g.w->db, "SELECT COUNT(*) FROM v2_blocks") == 2,
+          "two block rows committed");
+    CHECK(has_state_key(g.w->db, "abciResponsesKey:2") == 1,
+          "the second empty block's response is stored too");
+
+    exec_free(&x);
+    gfx_close(&g);
+    return 0;
+}
+
+/**
+ * ORCHESTRATOR delta 1+2+4, item B — the byte-bound capacity seam's
+ * actual job: PrepareProposal bounds by BYTES (`req->max_tx_bytes`),
+ * never by count, and a batch that does not fit is trimmed from the
+ * TAIL, not refused outright (prepare_proposal's own "drop from the
+ * TAIL" byte loop).
+ *
+ * DELTA 4 REDESIGN — root cause of the delta-2/3 version's failure
+ * ("all eleven are kept" failed BEFORE the apply step even ran): its
+ * twelve envelopes used `leg.runtime_op = i + 1` (1..12) for
+ * distinctness, but the committed SYSTEM meter policy
+ * (nodus_witness_runtime.c's `sys_policy_build`) prices ONLY runtime_op
+ * 1..7 (CORE's own owned rule range, O11: "the rule list GREW to
+ * {1..7}") — ops 8..12 carry NO authoritative weight and fail
+ * `DNA_METER_ERR_OP_WEIGHT` (status 3) at `dna_meter_plan_build`. Worse,
+ * every envelope's declared reservation CEILING (200 000,
+ * `res_max_total_units`) is reserved WHOLE from the GLOBAL unit budget
+ * (`NODUS_V2_GLOBAL_UNIT_BUDGET`, 1 000 000) at RESERVE time — five such
+ * envelopes exhaust it EXACTLY (5 x 200 000 = 1 000 000), so the SIXTH
+ * (batch index 5) failed `DNA_METER_ERR_GLOBAL_BUDGET` (status 7) before
+ * ever reaching PrepareProposal's own byte-budget logic; the retry loop
+ * dropped it and re-hit GLOBAL_BUDGET once more at the new index 5 (2x
+ * status 7 in the log), then OP_WEIGHT for ops 8/9/10/11 in turn (4x
+ * status 3) — kept 5, not 11. The test's PREMISE was wrong, not the
+ * application.
+ *
+ * FIXED (delta 4): `runtime_op` is FIXED at 1 for every envelope (owned,
+ * priced, weight 1). `TEST_APP_ENV_CEILING` (10 000) is verified IN THIS
+ * TEST, not guessed: it runs the SAME `dna_meter_plan_build` the engine
+ * itself runs, and checks the built plan's `static_total` fits
+ * comfortably under it, and that reserving EVERY envelope's full ceiling
+ * TWICE OVER still leaves the global unit budget mostly unspent.
+ * `TEST_APP_SMALL_N` (11) is UNCHANGED — only the envelopes' pricing
+ * shape needed to change.
+ *
+ * DELTA 5 CORRECTION — delta 4's own distinctness mechanism (a mediated
+ * READ over a distinct 64-byte key, none of which existed) reached the
+ * apply step but the decided block's `tx_count` was not 11: admission
+ * (PrepareProposal / ProcessProposal, neither of which EXECUTES
+ * anything) accepted every envelope, but FinalizeBlock actually RUNS
+ * them, and delta 4's script carried a COMPLETELY EMPTY effect-result
+ * tail (`v2x_script_build(..., NULL, 0, NULL, 0)`, 0 bytes) for every
+ * envelope. `dna_effect_result_decode` REJECTS a 0-byte result as
+ * truncated (effect_wire.c: `src_len < DNA_EFFECT_FIXED_HEAD` fails
+ * before the count is ever read — "0 is a valid empty result" means the
+ * COUNT field may be 0, inside a full `DNA_EFFECT_FIXED_HEAD`-byte
+ * header, never that 0 TOTAL BYTES is valid) — every envelope's leg was
+ * therefore refused at EXECUTION with a nonzero `nodus_v2_tx_code_t`,
+ * on BOTH delta 4's design and the pre-delta-4 one (neither ever built
+ * a real result encoding; the earlier version never reached the apply
+ * step to expose it). ADMISSION DOES NOT EXECUTE — an item can pass
+ * PrepareProposal/ProcessProposal cleanly and still be refused at
+ * FinalizeBlock — which is why this case now asserts every applied
+ * item's own code, not only the block's `tx_count`.
+ *
+ * FIXED (delta 5): every envelope's script now carries a REAL, VALID,
+ * DECODABLE empty-effect-result (`v2x_effres(dst, cap, NULL, 0,
+ * &len)` — `effect_wire.c`'s own documented "n == 0 with a NULL array is
+ * ACCEPTED" rule — a `DNA_EFFECT_FIXED_HEAD`-byte header encoding ZERO
+ * effects), byte-IDENTICAL across every envelope; distinctness instead
+ * comes from `leg.max_effect_bytes` (`res_max_effect_bytes`, a per-leg
+ * WIRE HEADER field, encoded distinctly per envelope), which the
+ * scripted runtime never reads or acts on — it is consulted only as a
+ * DECLARED CEILING at reservation (`dna_meter_plan_build`) and at the
+ * effect-charge gate (`dna_meter_charge_effects`), both of which compare
+ * the ACTUAL effect byte count (0, always) against it, so varying it
+ * changes nothing about execution. Zero effects means the adapter is
+ * never called at all — no precondition, no mutation, nothing that could
+ * itself be refused.
+ *
+ * Proves, in order: (1) N envelopes fit a byte budget sized exactly for
+ * them — ALL kept; (2) the SAME budget, one further individually-
+ * ADMISSIBLE envelope appended — trimmed from the tail; (3) the SAME
+ * N+1, with the byte budget LIFTED to fit all of them — ALL N+1 kept,
+ * which is the direct proof that (2)'s trim was BYTES ALONE: nothing
+ * else changes between (2) and (3) except the byte ceiling, and the
+ * outcome flips completely; (4) ProcessProposal on the full N+1 batch
+ * ACCEPTS outright — confirmed directly by calling the SAME seam
+ * (`nodus_witness_v2_produce_batch_check_capped`) and reading
+ * `result.kind == NODUS_V2_BATCH_FAIL_NONE`, the direct "not METER, not
+ * BYTES either" evidence for a batch this size; (5) the FIRST N, from
+ * PrepareProposal's own kept response, actually APPLY: every applied
+ * item's `x.ledger->fb_pb[i].det.code` is individually asserted
+ * `NODUS_V2_TX_OK` — naming the refused item's index and code on
+ * failure rather than a bare count mismatch — and only then is
+ * `tx_count == N` checked, since a matching count with a wrong code
+ * inside it would prove nothing.
+ *
+ * DEVIATION from the dispatch's literal wording — reported, not
+ * silently substituted: "assert the seam's refusal KIND for the (N+1)th
+ * is the BLOCK_BYTES kind" cannot be built at this envelope count/size.
+ * `NODUS_V2_BATCH_FAIL_CAPACITY_BYTES` is real (nodus_witness_v2_env.h)
+ * but is checked against the policy's ABSOLUTE `max_block_env_bytes`
+ * (2 x `DNA_ENV_MAX_TOTAL_LEN` = 2 MiB, `sys_policy_build`) — a batch of
+ * a dozen envelopes at a few hundred bytes each cannot approach it;
+ * doing so honestly would need many thousands of envelopes, an
+ * unrelated scale from this per-request case (`ProcessProposal` has no
+ * `max_tx_bytes` input of its own — state/execution.go:162-188 — so
+ * ITS byte ceiling is this fixed policy constant, never the test's
+ * chosen `max_tx_bytes`). Steps (2)/(3) above prove the BYTES-ALONE
+ * claim the dispatch actually wants, over the mechanism that is really
+ * reachable — PrepareProposal's own `req->max_tx_bytes` — rather than
+ * over the seam's unreachable-at-this-scale absolute ceiling.
+ */
+static int t_byte_bound_prepare_and_process(void)
+{
+    gfx_t                                  g;
+    exec_t                                 x;
+    nodus_abci_request_prepare_proposal_t  preq;
+    nodus_abci_response_prepare_proposal_t presp;
+    nodus_abci_request_process_proposal_t  procreq;
+    nodus_abci_response_process_proposal_t procresp;
+    cmt_pb_bytes_t                         small_txs[TEST_APP_SMALL_N];
+    v2x_env_t                             *envs[TEST_APP_SMALL_N + 1];
+    uint8_t                                effres[DNA_EFFECT_FIXED_HEAD];
+    size_t                                 effres_len = 0;
+    uint8_t                                script[64];
+    uint32_t                               slen;
+    v2x_leg_t                              leg;
+    int64_t                                budget_for_eleven;
+    int64_t                                budget_for_twelve;
+    size_t                                 i;
+    int                                    ok = 1;
+
+    CHECK(gfx_open(&g, "bytebound") == 0, "version-3 fixture");
+    CHECK(v2x_table_init(g.w) == 0, "the scripted runtime table");
+    CHECK(exec_init(&x, &g) == 0, "app+host+state fixture (builds and "
+          "binds the completed genesis document internally)");
+
+    /* Twelve REAL, individually-admissible AND individually-EXECUTABLE
+     * envelopes, all sharing the SAME priced `runtime_op` (1) and the
+     * SAME real, valid, DECODABLE empty-effect-result script (delta 5:
+     * a 0-byte tail is truncated, not empty — effect_wire.c rejects it
+     * before the count is even read). Distinctness comes from
+     * `leg.max_effect_bytes` alone — a per-leg WIRE HEADER field the
+     * scripted runtime never reads, consulted only as a declared
+     * ceiling the actual (zero) effect bytes trivially stay under — so
+     * every envelope's WIRE BYTES differ (hence distinct commitments)
+     * while every envelope EXECUTES identically: zero effects, no
+     * adapter call, nothing to refuse. This case is about the
+     * BYTE-BUDGET path specifically, so every candidate must be
+     * genuinely admissible AND executable — a garbage byte string, or
+     * one that decodes to nothing at execution, would be refused
+     * before the byte-budget logic (or the apply step) is ever
+     * meaningfully exercised. */
+    CHECK(v2x_effres(effres, sizeof(effres), NULL, 0, &effres_len) == 0 &&
+          effres_len == DNA_EFFECT_FIXED_HEAD,
+          "a real, valid, header-only ZERO-effect result encodes — "
+          "\"n == 0 with a NULL array is ACCEPTED\" (effect_wire.c)");
+    slen = v2x_script_build(script, sizeof(script), NULL, 0,
+                            effres, effres_len);
+    CHECK(slen > 0, "the script (byte-identical for every envelope)");
+    memset(&leg, 0, sizeof(leg));
+    leg.domain_id   = DNA_DOMAIN_CORE;
+    leg.runtime_op  = 1;                   /* owned + priced, weight 1  */
+    leg.call        = script;
+    leg.call_len    = slen;
+    leg.max_effects = 1;                   /* ceiling; actual count 0   */
+    for (i = 0; i < TEST_APP_SMALL_N + 1; i++) {
+        envs[i] = calloc(1, sizeof(*envs[i]));
+        if (!envs[i]) { ok = 0; break; }
+        leg.max_effect_bytes = (uint32_t)(64 + i);  /* the ONLY thing
+                                                      * that varies      */
+        if (v2x_env_build_ex(envs[i], TEST_APP_ENV_CEILING, 0, 1, &leg, 1)
+                != 0) {
+            ok = 0;
+            break;
+        }
+    }
+    CHECK(ok, "twelve distinct, individually-executable envelopes");
+
+    /* ── the ceiling is VERIFIED against the real policy, not assumed ──
+     * the exact plan the engine itself would build for the LARGEST leg
+     * (the twelfth envelope, index N: the largest `max_effect_bytes`,
+     * hence the largest `static_units`). */
+    {
+        const nodus_domain_runtime_t *bt;
+        size_t                        nbt = 0;
+        dna_env_view_t                view;
+        dna_meter_plan_t              plan;
+
+        bt = nodus_runtime_builtin_table(&nbt);
+        CHECK(bt != NULL && nbt == 2 && bt[0].meter_policy != NULL,
+              "the committed SYSTEM meter policy is available");
+        memset(&view, 0, sizeof(view));
+        CHECK(dna_env_decode(envs[TEST_APP_SMALL_N]->bytes,
+                             envs[TEST_APP_SMALL_N]->len, &view) == 0,
+              "the largest (twelfth) envelope decodes");
+        memset(&plan, 0, sizeof(plan));
+        CHECK(dna_meter_plan_build(bt[0].meter_policy, &view, &plan)
+                  == DNA_METER_OK, "the plan the engine itself would build");
+        CHECK(plan.static_total <= TEST_APP_ENV_CEILING,
+              "the chosen ceiling covers this envelope's actual static "
+              "cost, verified from the real policy rather than assumed");
+        CHECK((uint64_t)(TEST_APP_SMALL_N + 1) * TEST_APP_ENV_CEILING * 2 <=
+                  NODUS_V2_GLOBAL_UNIT_BUDGET,
+              "even reserving EVERY envelope's full declared ceiling at "
+              "once, twice over, stays under the global unit budget — "
+              "this batch can never be meter-limited at this scale");
+    }
+
+    budget_for_eleven = 0;
+    for (i = 0; i < TEST_APP_SMALL_N; i++) {
+        small_txs[i].data = envs[i]->bytes;
+        small_txs[i].len  = envs[i]->len;
+        budget_for_eleven +=
+            nodus_cmt_compute_proto_size_for_tx(small_txs[i].len);
+    }
+    budget_for_twelve = budget_for_eleven +
+        nodus_cmt_compute_proto_size_for_tx(envs[TEST_APP_SMALL_N]->len);
+
+    /* ── (1) PrepareProposal: a budget that fits exactly the eleven ──── */
+    memset(&preq, 0, sizeof(preq));
+    preq.txs         = small_txs;
+    preq.txs_len     = TEST_APP_SMALL_N;
+    preq.max_tx_bytes = budget_for_eleven;
+    memset(&presp, 0, sizeof(presp));
+    CHECK(nodus_cmt_app_prepare_proposal(x.ledger, &preq, &presp) == CMT_OK,
+          "prepare_proposal accepts a byte-exact batch");
+    CHECK(presp.txs_len == TEST_APP_SMALL_N,
+          "all eleven are kept — the budget fits them exactly, and every "
+          "envelope reserves/prices identically (fixed, priced "
+          "runtime_op, a verified ceiling), so this proves the BYTE "
+          "path cleanly, not the count path (t_finalize_block_bound) or "
+          "an accidental meter rejection (delta 4's own root cause)");
+
+    /* ── (2)/(3) the same eleven plus one admissible twelfth: trimmed at
+     * the eleven-budget, kept whole once the budget is LIFTED to fit it —
+     * the direct proof that (2)'s trim is BYTES ALONE. ────────────────── */
+    {
+        cmt_pb_bytes_t twelve[TEST_APP_SMALL_N + 1];
+        memcpy(twelve, small_txs, sizeof(small_txs));
+        twelve[TEST_APP_SMALL_N].data = envs[TEST_APP_SMALL_N]->bytes;
+        twelve[TEST_APP_SMALL_N].len  = envs[TEST_APP_SMALL_N]->len;
+
+        memset(&preq, 0, sizeof(preq));
+        preq.txs          = twelve;
+        preq.txs_len      = TEST_APP_SMALL_N + 1;
+        preq.max_tx_bytes = budget_for_eleven;  /* no room for the 12th */
+        memset(&presp, 0, sizeof(presp));
+        CHECK(nodus_cmt_app_prepare_proposal(x.ledger, &preq, &presp)
+                  == CMT_OK, "prepare_proposal still returns cleanly");
+        CHECK(presp.txs_len == TEST_APP_SMALL_N,
+              "the twelfth candidate was trimmed from the tail, not the "
+              "eleven that fit");
+
+        memset(&preq, 0, sizeof(preq));
+        preq.txs          = twelve;
+        preq.txs_len      = TEST_APP_SMALL_N + 1;
+        preq.max_tx_bytes = budget_for_twelve;  /* room for all twelve  */
+        memset(&presp, 0, sizeof(presp));
+        CHECK(nodus_cmt_app_prepare_proposal(x.ledger, &preq, &presp)
+                  == CMT_OK, "prepare_proposal returns cleanly with the "
+              "budget lifted");
+        CHECK(presp.txs_len == TEST_APP_SMALL_N + 1,
+              "ALL TWELVE are now kept — the ONLY thing that changed "
+              "since the trim above is the byte budget, so the trim "
+              "was BYTES ALONE, not a meter or admission rejection");
+
+        /* ── (4) ProcessProposal: a PEER proposes the FULL twelve. Every
+         * envelope prices/reserves identically and the batch is nowhere
+         * near the seam's own absolute max_block_env_bytes ceiling
+         * (2 MiB; ProcessProposal has no max_tx_bytes input of its own —
+         * state/execution.go:162-188), so the whole batch ACCEPTS. */
+        memset(&procreq, 0, sizeof(procreq));
+        procreq.txs     = twelve;
+        procreq.txs_len = TEST_APP_SMALL_N + 1;
+        memset(&procresp, 0, sizeof(procresp));
+        CHECK(nodus_cmt_app_process_proposal(x.ledger, &procreq, &procresp)
+                  == CMT_OK, "process_proposal returns cleanly");
+        CHECK(procresp.status == NODUS_ABCI_PROPOSAL_STATUS_ACCEPT,
+              "process_proposal ACCEPTS the full twelve outright — a "
+              "batch this small cannot reach the seam's own absolute "
+              "byte ceiling, and every envelope prices identically, so "
+              "nothing in it can be refused");
+
+        /* direct seam evidence: the SAME call ACCEPT was derived from,
+         * with the classified kind read straight off the result — "not
+         * METER" stated as the struct the seam itself fills, not
+         * inferred from the ABCI verdict alone. */
+        {
+            nodus_witness_batch_item_t   view[TEST_APP_SMALL_N + 1];
+            nodus_v2_batch_check_result_t result;
+            int                            fail_index = 0;
+
+            for (i = 0; i < TEST_APP_SMALL_N + 1; i++) {
+                view[i].tx_type = nodus_witness_v2_classify_entry(
+                    twelve[i].data, (uint32_t)twelve[i].len);
+                view[i].tx_data = twelve[i].data;
+                view[i].tx_len  = twelve[i].len;
+            }
+            memset(&result, 0, sizeof(result));
+            CHECK(nodus_witness_v2_produce_batch_check_capped(
+                      g.w, view, (int)(TEST_APP_SMALL_N + 1),
+                      (int)(TEST_APP_SMALL_N + 1), &fail_index, &result)
+                      == 0, "the seam itself accepts the full twelve");
+            CHECK(result.kind == NODUS_V2_BATCH_FAIL_NONE,
+                  "and its classified kind is NONE — direct evidence "
+                  "this is not a meter rejection of any kind");
+        }
+    }
+
+    /* ── ORCHESTRATOR delta 2, item B — the decided block actually
+     * APPLIES, proving the doc comment's own claim rather than stopping
+     * at PrepareProposal's response. Drives PrepareProposal's OWN eleven
+     * kept transactions through the REAL host pipeline
+     * (exec_make_block + exec_block_id +
+     * nodus_cmt_host_apply_verified_block), the same shape t_finalize_
+     * block uses above. Run LAST, after both PrepareProposal/
+     * ProcessProposal calls above: the seam they call reads committed
+     * state and writes nothing (nodus_witness_cmt_app.h's own DETERMINISM
+     * guarantee), so applying these eleven here cannot perturb the
+     * byte-budget assertions already checked against the SAME envelopes.
+     * `presp` at this point is (2)/(3)'s LAST response (the lifted-
+     * budget, twelve-kept one) — re-run PrepareProposal ONE more time at
+     * the eleven-only budget so `presp` holds exactly the eleven this
+     * step means to apply.
+     *
+     * `x.ledger` is the ONE context `exec_init` built for this whole
+     * function — nothing in this test (or in prepare_proposal /
+     * process_proposal) ever writes `test_fail_at` /
+     * `test_fail_env_index` / `test_fail_effect_index`, so the block
+     * `finalize_block` constructs carries V2AP_FAIL_NONE (the calloc +
+     * memset inside nodus_cmt_app_ledger_init) and injects nothing. */
+    memset(&preq, 0, sizeof(preq));
+    preq.txs         = small_txs;
+    preq.txs_len     = TEST_APP_SMALL_N;
+    preq.max_tx_bytes = budget_for_eleven;
+    memset(&presp, 0, sizeof(presp));
+    CHECK(nodus_cmt_app_prepare_proposal(x.ledger, &preq, &presp) == CMT_OK,
+          "prepare_proposal re-run for the apply step, eleven only");
+    CHECK(presp.txs_len == TEST_APP_SMALL_N, "still all eleven");
+    for (i = 0; i < presp.txs_len; i++) {
+        x.txs[i] = presp.txs[i];
+    }
+    CHECK(exec_make_block(&x, 1, presp.txs_len) == 0,
+          "block 1 built from PrepareProposal's own eleven-tx response");
+    {
+        cmt_block_id_t bid11;
+
+        CHECK(exec_block_id(&x, x.blk, &bid11) == 0 &&
+              block_id_is_complete(&bid11), "a COMPLETE BlockID");
+        CHECK(nodus_cmt_host_apply_verified_block(x.be, &bid11, x.blk,
+                                                  x.state) == CMT_OK,
+              "the decided block APPLIES — no sticky fault injection "
+              "survives from any earlier case into this fresh context");
+    }
+    /* ORCHESTRATOR delta 5 — ADMISSION DOES NOT EXECUTE: PrepareProposal
+     * and ProcessProposal both accepted every one of these eleven, but
+     * neither one RUNS them — only FinalizeBlock does, and a decided
+     * block is never refused as a WHOLE, so an item the engine refuses
+     * per item is simply left OUT of `tx_count` with a nonzero
+     * `nodus_v2_tx_code_t` in its own result. Naming the offending
+     * item's index and code here is what turned delta 4's bare "tx_count
+     * is not 11" into the actual, fixable diagnosis (a truncated,
+     * undecodable empty effect-result, effect_wire.c) — asserted
+     * PER ITEM so any regression here names its offender the same way,
+     * rather than a bare count mismatch a reader has to re-derive. */
+    for (i = 0; i < presp.txs_len; i++) {
+        char msg[96];
+
+        snprintf(msg, sizeof(msg),
+                 "item %zu applied with code %u, expected "
+                 "NODUS_V2_TX_OK (0)",
+                 i, (unsigned)x.ledger->fb_pb[i].det.code);
+        CHECK(x.ledger->fb_pb[i].det.code == (uint32_t)NODUS_V2_TX_OK, msg);
+    }
+    CHECK(q1(g.w->db, "SELECT tx_count FROM v2_blocks "
+             "WHERE global_height = 1") == (int)TEST_APP_SMALL_N,
+          "and the Comet row records all eleven kept transactions — a "
+          "matching count with a wrong code inside it would have proven "
+          "nothing, which is why every item's code was checked above "
+          "first");
+
+    for (i = 0; i < TEST_APP_SMALL_N + 1; i++) {
+        free(envs[i]);
+    }
+    exec_free(&x);
+    gfx_close(&g);
+    return 0;
+}
+
+/**
+ * ORCHESTRATOR delta 4, item E — ProcessProposal's count-malformed guard
+ * is `env_bound`, NOT `prep_bound`. delta 1 narrowed this to `prep_bound`
+ * because the arrays it guarded (prep_class/prep_order/seam_entry/
+ * seam_ptr) were shared, ctx-owned, fixed-size, sized to `prep_bound` for
+ * memory reasons; delta 2 made every array here per-request and local
+ * (nodus_witness_cmt_app.h's own struct comment), so there is no fixed
+ * array left for a `prep_bound` narrowing to protect — the guard IS
+ * `req->txs_len > ctx->env_bound` (nodus_cmt_app_process_proposal, the
+ * byte-derived physical ceiling), and a count strictly BETWEEN
+ * `prep_bound` and `env_bound` (5 001..293 525) is NOT malformed on
+ * ProcessProposal any more: it is merely a proposal PrepareProposal
+ * itself could never have produced (that is `prep_bound`'s OWN guard,
+ * inside `nodus_cmt_app_prepare_proposal`), which is a different check
+ * at a different row. This case's `req.txs_len` must exceed `env_bound`
+ * itself to reach the ACTUAL guard — `prep_bound + 1` passes it silently
+ * and falls through into the per-item loop, reading `req->txs[i]` for
+ * `i` up to that count: over a single-element `dummy_tx`, an
+ * ASan-caught stack-buffer-overflow (delta 4 ADDENDUM item E), not the
+ * "never dereferenced" the previous version of this comment claimed.
+ */
+static int t_process_proposal_malformed_count(void)
+{
+    gfx_t                                  g;
+    exec_t                                 x;
+    nodus_abci_request_process_proposal_t  req;
+    nodus_abci_response_process_proposal_t resp;
+    cmt_pb_bytes_t                         dummy_tx;
+
+    CHECK(gfx_open(&g, "malformed") == 0, "version-3 fixture");
+    CHECK(exec_init(&x, &g) == 0, "app+host+state fixture (builds and "
+          "binds the completed genesis document internally)");
+    CHECK(x.ledger->env_bound > 0, "the byte-bound seam derived a "
+          "positive env_bound");
+
+    dummy_tx.data = POISON;
+    dummy_tx.len  = sizeof(POISON);
+    memset(&req, 0, sizeof(req));
+    /* txs_len alone carries this case: the guard
+     * (req->txs_len > ctx->env_bound) is the FIRST thing
+     * process_proposal reads, and it REJECTS before req->txs is ever
+     * dereferenced — so a single-element dummy_tx is safe ONLY because
+     * env_bound, not prep_bound, is what is exceeded here. */
+    req.txs     = &dummy_tx;
+    req.txs_len = x.ledger->env_bound + 1;
+    memset(&resp, 0, sizeof(resp));
+    resp.status = (nodus_abci_proposal_status_t)(-1);   /* poison */
+    CHECK(nodus_cmt_app_process_proposal(x.ledger, &req, &resp) == CMT_OK,
+          "process_proposal returns a verdict, not a fault, for a "
+          "malformed-count proposal");
+    CHECK(resp.status == NODUS_ABCI_PROPOSAL_STATUS_REJECT,
+          "and the verdict is REJECT");
+
+    exec_free(&x);
     gfx_close(&g);
     return 0;
 }
@@ -1819,6 +2680,7 @@ static int t_commit(void)
           "the joined write is durable");
     CHECK(nodus_cmt_app_commit(app, &resp) == CMT_FAULT,
           "a second Commit has no transaction to close");
+    nodus_cmt_app_ledger_release(app);
     free(app);
     gfx_close(&g);
     return 0;
@@ -1885,6 +2747,7 @@ static int t_check_tx(void)
     CHECK(mem.check_tx(mem.ctx, &req, &res) == CMT_OK, "served");
     CHECK(res.code != CMT_MEM_CODE_TYPE_OK, "undecodable bytes are refused");
 
+    nodus_cmt_app_ledger_release(app);
     free(env.bytes);
     free(app);
     gfx_close(&g);
@@ -1986,10 +2849,17 @@ static int t_prepare_proposal(void)
     CHECK(nodus_cmt_app_prepare_proposal(app, &req, &resp) == CMT_OK, "answers");
     CHECK(resp.txs_len == 0, "a transaction over the byte budget is dropped");
 
-    req.txs_len = (size_t)NODUS_CMT_APP_MAX_TXS + 1;
+    /* ORCHESTRATOR delta 1, item B — the bound is now app->prep_bound
+     * (the mempool's own configured size), not the retired
+     * NODUS_CMT_APP_MAX_TXS. `req.txs` stays the 2-element local array:
+     * the guard reads only `req.txs_len` before ever touching
+     * `req.txs[i]`. */
+    req.txs_len = app->prep_bound + 1;
     req.max_tx_bytes = 22020096;
     CHECK(nodus_cmt_app_prepare_proposal(app, &req, &resp) == CMT_FAULT,
           "a request above the bound faults");
+
+    nodus_cmt_app_ledger_release(app);
 
     free(env.bytes);
     free(app);
@@ -2036,14 +2906,198 @@ static int t_process_proposal(void)
     CHECK(resp.status == NODUS_ABCI_PROPOSAL_STATUS_ACCEPT,
           "an empty proposal is accepted");
 
-    req.txs_len = (size_t)NODUS_CMT_APP_MAX_TXS + 1;
+    /* ORCHESTRATOR delta 4, item E — ProcessProposal's guard is
+     * `env_bound`, NOT `prep_bound` (delta 2 dropped the `prep_bound`
+     * narrowing here — see t_process_proposal_malformed_count's own note
+     * for why). `app->prep_bound + 1` (5 001) is SMALLER than
+     * `env_bound` (in the hundreds of thousands), so it silently PASSES
+     * the real guard and falls into the per-item loop, reading
+     * `req.txs[i]` for `i` up to 5 000 over this case's 2-element `txs`
+     * array — an ASan-caught stack-buffer-overflow the -O2 ctest missed
+     * by stack luck. `env_bound + 1` is what actually exceeds the guard
+     * that exists, so the REJECT is decided before `req.txs` is ever
+     * read. */
+    req.txs_len = app->env_bound + 1;
     memset(&resp, 0, sizeof(resp));
     CHECK(nodus_cmt_app_process_proposal(app, &req, &resp) == CMT_OK,
           "an over-bound proposal does NOT stop the node");
     CHECK(resp.status == NODUS_ABCI_PROPOSAL_STATUS_REJECT,
           "it is rejected instead");
 
+    nodus_cmt_app_ledger_release(app);
     free(env.bytes);
+    free(app);
+    gfx_close(&g);
+    return 0;
+}
+
+/**
+ * ORCHESTRATOR delta 11 (R3-W3-C2a-19) — THE LIVE DEFECT, reproduced and
+ * closed: PrepareProposal packing more claims than the engine can hold.
+ *
+ * `/tmp/stagef-20260917T034259Z` (`test_v2_epoch_boundary.sh`, E=15): 40
+ * claims pumped at once, the proposer packed all 40 into block 7 (no
+ * item-count cap existed anywhere upstream), the block was DECIDED, and
+ * every node's FinalizeBlock FAULTED — `nodus_witness_v2_apply.c`'s
+ * `claim_nuls[MAX_OPS][64]` (a 16-slot array) cannot hold 40 — stopping
+ * consensus participation on all seven.
+ *
+ * 40 GENUINELY, INDEPENDENTLY ADMISSIBLE claims (not 40 copies of one):
+ * the engine's own seam (`nodus_witness_v2_produce_batch_check_capped`,
+ * called from `app_seam_check` below `nodus_cmt_app_prepare_proposal`'s
+ * new cap) runs each surviving candidate through
+ * `nodus_witness_v2_claim_admit` and rejects an in-batch duplicate
+ * nullifier — so if fewer than 40 were independently admissible, the
+ * seam's own drop-and-retry loop would trim toward the admissible core
+ * BEFORE delta 11's cap ever mattered, and RED-today would silently
+ * equal GREEN-after instead of proving the fix. All 40 here are real,
+ * distinct leaves of a 40-leaf genesis distribution (`gfx_open_n`),
+ * each independently claimable by `g_ks[0]` — so RED-today keeps all 40
+ * (there is no cap yet) and GREEN-after keeps exactly 16.
+ *
+ * RED-BEFORE-THIS-DELTA, STATED HONESTLY: before delta 11,
+ * `nodus_cmt_app_prepare_proposal` had a byte budget and the engine's own
+ * per-item admission seam, and NOTHING that counted ITEMS — the retired
+ * `NODUS_CMT_APP_MAX_TXS` (10) was gone (D-4 rev 3 (2), delta 4) and
+ * nothing replaced it at this gate. Handed 40 admissible claims well
+ * inside the byte budget, it kept all 40. This case's own log line
+ * (`resp.txs_len == NODUS_V2_APPLY_MAX_OPS`, i.e. 16) is RED against that
+ * prior behaviour: it would have read `resp.txs_len == 40`.
+ */
+static int t_prepare_proposal_item_cap(void)
+{
+    gfx_t                                    g;
+    cmt_genesis_doc_t                        doc;
+    nodus_cmt_app_ledger_t                  *app;
+    nodus_abci_request_prepare_proposal_t    req;
+    nodus_abci_response_prepare_proposal_t   resp;
+    cmt_pb_bytes_t                           *txs = NULL;
+    uint8_t                                (*claim_bytes)[DNA_CLAIM_MAX_WIRE] = NULL;
+    size_t                                   *claim_len = NULL;
+    cmt_genesis_validator_t                   gvals[DNAC_COMMITTEE_SIZE];
+    const uint32_t                            N = 40;
+    uint32_t                                  i;
+
+    CHECK(gfx_open_n(&g, "prep_cap", N) == 0, "40-leaf version-3 fixture");
+    app = calloc(1, sizeof(*app));
+    /* Heap: 40 x DNA_CLAIM_MAX_WIRE (each claim carries up to
+     * DNA_DIST_PROOF_MAX == 64 siblings, ~4 KB alone) is far too large
+     * for a stack frame — feedback_heap_alloc_test_fixture. */
+    txs         = (cmt_pb_bytes_t *)calloc(N, sizeof(*txs));
+    claim_bytes = calloc(N, sizeof(*claim_bytes));
+    claim_len   = (size_t *)calloc(N, sizeof(*claim_len));
+    CHECK(app && txs && claim_bytes && claim_len, "alloc");
+    CHECK(gfx_doc(&g, &doc, gvals) == 0, "the completed genesis document");
+    CHECK(nodus_cmt_app_ledger_init(app, g.w, &doc) == CMT_OK, "bind");
+
+    for (i = 0; i < N; i++) {
+        CHECK(build_claim_n(&g, N, i, claim_bytes[i], DNA_CLAIM_MAX_WIRE,
+                            &claim_len[i]) == 0,
+              "a real claim over its own genesis leaf");
+        txs[i].data = claim_bytes[i];
+        txs[i].len  = claim_len[i];
+    }
+    memset(&req, 0, sizeof(req));
+    req.txs          = txs;
+    req.txs_len      = N;
+    req.max_tx_bytes = 22020096;
+    memset(&resp, 0, sizeof(resp));
+    CHECK(nodus_cmt_app_prepare_proposal(app, &req, &resp) == CMT_OK,
+          "prepare answers");
+    CHECK(resp.txs_len == NODUS_V2_APPLY_MAX_OPS,
+          "delta 11: the engine's own per-block item bound trims 40 "
+          "admissible claims to 16 (RED before this delta: 40 — no "
+          "item-count cap existed at either proposal gate, and the "
+          "Genesis Protocol harness's 40-claim block FAULTED every "
+          "node's FinalizeBlock at height 7, "
+          "/tmp/stagef-20260917T034259Z)");
+    for (i = 0; i < NODUS_V2_APPLY_MAX_OPS; i++) {
+        CHECK(resp.txs[i].data == txs[i].data && resp.txs[i].len == txs[i].len,
+              "the KEPT 16 are the FIRST 16 in request order — fee-"
+              "descending is a stable sort and every claim's key is 0, so "
+              "arrival order survives, and the byte budget never trims "
+              "40 tiny claims");
+    }
+
+    nodus_cmt_app_ledger_release(app);
+    free(claim_len);
+    free(claim_bytes);
+    free(txs);
+    free(app);
+    gfx_close(&g);
+    return 0;
+}
+
+/**
+ * ORCHESTRATOR delta 11 (R3-W3-C2a-19) — ProcessProposal's own half of
+ * the same gate: a validator that receives a proposal ABOVE the engine's
+ * bound must refuse it (nil prevote), never merely hope the proposer
+ * behaved. 17 admissible claims are refused; the SAME 16 (the boundary
+ * itself, not one under it) are accepted — proving the check is `>`,
+ * never `>=`, against the exact bound PrepareProposal now enforces.
+ *
+ * RED-BEFORE-THIS-DELTA, STATED HONESTLY: before delta 11,
+ * `nodus_cmt_app_process_proposal`'s only ceiling was `env_bound` (in
+ * the hundreds of thousands) — 17 items were well inside it and reached
+ * the per-item seam, which admits every one of these 17 genuinely
+ * distinct, independently admissible claims and returns ACCEPT. This
+ * case's own log line (REJECT at 17) is RED against that prior
+ * behaviour: it would have read ACCEPT.
+ */
+static int t_process_proposal_item_cap(void)
+{
+    gfx_t                                    g;
+    cmt_genesis_doc_t                        doc;
+    nodus_cmt_app_ledger_t                  *app;
+    nodus_abci_request_process_proposal_t    req;
+    nodus_abci_response_process_proposal_t   resp;
+    cmt_pb_bytes_t                           *txs = NULL;
+    uint8_t                                (*claim_bytes)[DNA_CLAIM_MAX_WIRE] = NULL;
+    size_t                                   *claim_len = NULL;
+    cmt_genesis_validator_t                   gvals[DNAC_COMMITTEE_SIZE];
+    const uint32_t                            N = NODUS_V2_APPLY_MAX_OPS + 1; /* 17 */
+    uint32_t                                  i;
+
+    CHECK(gfx_open_n(&g, "proc_cap", N) == 0, "17-leaf version-3 fixture");
+    app = calloc(1, sizeof(*app));
+    txs         = (cmt_pb_bytes_t *)calloc(N, sizeof(*txs));
+    claim_bytes = calloc(N, sizeof(*claim_bytes));
+    claim_len   = (size_t *)calloc(N, sizeof(*claim_len));
+    CHECK(app && txs && claim_bytes && claim_len, "alloc");
+    CHECK(gfx_doc(&g, &doc, gvals) == 0, "the completed genesis document");
+    CHECK(nodus_cmt_app_ledger_init(app, g.w, &doc) == CMT_OK, "bind");
+
+    for (i = 0; i < N; i++) {
+        CHECK(build_claim_n(&g, N, i, claim_bytes[i], DNA_CLAIM_MAX_WIRE,
+                            &claim_len[i]) == 0,
+              "a real claim over its own genesis leaf");
+        txs[i].data = claim_bytes[i];
+        txs[i].len  = claim_len[i];
+    }
+    memset(&req, 0, sizeof(req));
+    req.txs     = txs;
+    req.txs_len = N;                      /* 17: one over the bound     */
+    memset(&resp, 0, sizeof(resp));
+    CHECK(nodus_cmt_app_process_proposal(app, &req, &resp) == CMT_OK,
+          "process_proposal returns a verdict, not a fault");
+    CHECK(resp.status == NODUS_ABCI_PROPOSAL_STATUS_REJECT,
+          "delta 11: 17 items exceed the engine's per-block item bound "
+          "(16) and are refused BEFORE any per-item work (RED before "
+          "this delta: ACCEPT — the only ceiling was env_bound, and all "
+          "17 of these claims are independently admissible)");
+
+    req.txs_len = NODUS_V2_APPLY_MAX_OPS;              /* 16: the bound  */
+    memset(&resp, 0, sizeof(resp));
+    CHECK(nodus_cmt_app_process_proposal(app, &req, &resp) == CMT_OK,
+          "process_proposal answers");
+    CHECK(resp.status == NODUS_ABCI_PROPOSAL_STATUS_ACCEPT,
+          "exactly 16 (the bound itself) is accepted — the check is "
+          "'>', never '>=', and all 16 are independently admissible");
+
+    nodus_cmt_app_ledger_release(app);
+    free(claim_len);
+    free(claim_bytes);
+    free(txs);
     free(app);
     gfx_close(&g);
     return 0;
@@ -2064,6 +3118,15 @@ static int t_vote_extensions(void)
     app = calloc(1, sizeof(*app));
     CHECK(app != NULL, "alloc");
     memset(&doc, 0, sizeof(doc));
+    /* ORCHESTRATOR delta 1, item B — nodus_cmt_app_ledger_init now
+     * derives the byte-bound seam's arrays from
+     * doc.consensus_params.block.max_bytes, so a FULLY zeroed document
+     * (this case's original doc — extend_vote/verify_vote_extension
+     * need nothing from it) no longer binds. A minimal, valid
+     * Block.MaxBytes (D-4 rev 3's own value) is enough; this case is
+     * about the vote-extension defaults, not the genesis document. */
+    doc.has_consensus_params = true;
+    doc.consensus_params.block.max_bytes = 22020096;
     CHECK(nodus_cmt_app_ledger_init(app, fx.w, &doc) == CMT_OK, "bind");
     memset(&evreq, 0, sizeof(evreq));
     memset(&evresp, 0xAA, sizeof(evresp));
@@ -2074,6 +3137,7 @@ static int t_vote_extensions(void)
     CHECK(nodus_cmt_app_verify_vote_extension(app, &vreq, &vresp) == CMT_OK,
           "verify");
     CHECK(vresp.status == NODUS_ABCI_VERIFY_STATUS_ACCEPT, "ACCEPT");
+    nodus_cmt_app_ledger_release(app);
     free(app);
     fx_close(&fx);
     return 0;
@@ -2241,10 +3305,25 @@ static int t_per_item_rollback_after_work(void)
 
     CHECK(nodus_cmt_host_apply_verified_block(x.be, &bid, x.blk, x.state)
               == CMT_OK, "an interrupted ITEM does not fail the block");
-    CHECK(x.ledger->fb_results[0].code == NODUS_V2_TX_ERR_EXEC,
+    /* ORCHESTRATOR delta 3, item A — `fb_results` (the engine's raw
+     * per-item nodus_v2_tx_result_t array) is delta 2's LOCAL
+     * `results_arr` inside `nodus_cmt_app_finalize_block`, freed via
+     * goto-cleanup before the call returns; it no longer survives on the
+     * ledger context. The SAME values this case needs (the mapped code
+     * and gas_wanted `finalize_block` itself computed from that array,
+     * `r->det.code = e->code; r->det.gas_wanted = (int64_t)e->gas_wanted;`)
+     * are what the ABCI response buffer `ctx->fb_pb` retains — the ONE
+     * array the ABCI ownership rule keeps ctx-owned across calls, valid
+     * until the NEXT `finalize_block` (proxy/app_conn.go's rule; see
+     * nodus_witness_cmt_app.h's struct comment). Reading `x.ledger->
+     * fb_pb[i].det.*` here proves the identical assertion — the mapped
+     * per-item result FinalizeBlock actually returned — through the
+     * surface that now legitimately carries it. */
+    CHECK(x.ledger->fb_pb[0].det.code == (uint32_t)NODUS_V2_TX_ERR_EXEC,
           "item A is coded EXEC (7)");
-    CHECK(x.ledger->fb_results[1].code == NODUS_V2_TX_OK, "item B applied");
-    CHECK(x.ledger->fb_results[1].gas_wanted > 0,
+    CHECK(x.ledger->fb_pb[1].det.code == (uint32_t)NODUS_V2_TX_OK,
+          "item B applied");
+    CHECK(x.ledger->fb_pb[1].det.gas_wanted > 0,
           "and B still reserved from the budget A's abort restored");
     CHECK(q1(g.w->db, "SELECT tx_count FROM v2_blocks "
                       "WHERE global_height = 1") == 1,
@@ -2358,6 +3437,7 @@ static int t_prepare_fee_order(void)
     free(e_hi);
     free(e_mid);
     free(e_lo);
+    nodus_cmt_app_ledger_release(app);
     free(app);
     gfx_close(&g);
     return 0;
@@ -2374,12 +3454,20 @@ static int t_bind_refuses_legacy(void)
     app = calloc(1, sizeof(*app));
     CHECK(app != NULL, "alloc");
     memset(&doc, 0, sizeof(doc));
+    /* ORCHESTRATOR delta 1, item B — a valid Block.MaxBytes so the
+     * v2_successor==true leg below reaches ITS verdict (CMT_OK) rather
+     * than the byte-bound seam's own precondition (this case is about
+     * v2_successor gating and the mandatory-doc check, not the genesis
+     * document's content). */
+    doc.has_consensus_params = true;
+    doc.consensus_params.block.max_bytes = 22020096;
     fx.w->v2_successor = false;
     CHECK(nodus_cmt_app_ledger_init(app, fx.w, &doc) == CMT_FAULT,
           "a legacy chain must be refused");
     fx.w->v2_successor = true;
     CHECK(nodus_cmt_app_ledger_init(app, fx.w, &doc) == CMT_OK,
           "a successor chain binds");
+    nodus_cmt_app_ledger_release(app);
     CHECK(nodus_cmt_app_ledger_init(app, fx.w, NULL) == CMT_FAULT,
           "the genesis document is mandatory");
     free(app);
@@ -2405,6 +3493,7 @@ int main(void)
         { "crash_window_before_commit", t_crash_window_before_commit },
         { "crash_window_after_commit",  t_crash_window_after_commit },
         { "finalize_block_bound",       t_finalize_block_bound },
+        { "finalize_block_empty",       t_finalize_block_empty },
         { "commit",                     t_commit },
         { "claim_items",                t_claim_items },
         { "check_tx",                   t_check_tx },
@@ -2413,6 +3502,13 @@ int main(void)
         { "prepare_fee_order",          t_prepare_fee_order },
         { "process_proposal",           t_process_proposal },
         { "vote_extensions",            t_vote_extensions },
+        /* ORCHESTRATOR delta 1, item B (D-23 rev 7 (24)) */
+        { "byte_bound_prepare_and_process", t_byte_bound_prepare_and_process },
+        { "process_proposal_malformed_count",
+          t_process_proposal_malformed_count },
+        /* ORCHESTRATOR delta 11 (R3-W3-C2a-19) */
+        { "prepare_proposal_item_cap",  t_prepare_proposal_item_cap },
+        { "process_proposal_item_cap",  t_process_proposal_item_cap },
     };
     size_t i, failed = 0, ncases = sizeof(cases) / sizeof(cases[0]);
 

@@ -23,13 +23,20 @@
  *     not exactly one part wide, and an index that disagrees with the
  *     proof;
  *   · a zero-length part set has total 0, is complete, and hashes to
- *     H(""), while a one-byte part set is a single leaf with no aunts.
+ *     H(""), while a one-byte part set is a single leaf with no aunts;
+ *   · (package C2e, register R3-A-5) `cmt_part_set_bind_payload_store`
+ *     makes AddPart COPY a part's bytes: mutating the caller's source
+ *     buffer after the add leaves a store-bound part's bytes unchanged,
+ *     while an otherwise-identical unbound part reads the mutation — the
+ *     "old descriptor behaviour" cmt_part_set.h documents.
  *
  * ── WHAT IT REQUIRES ───────────────────────────────────────────────────
  * A default build. No compile flags, no environment variables, no
  * network, no files, no clock, no RNG. Safe under `ctest -j`. It
- * allocates two 200 000-byte buffers on the heap and frees them; the
- * four `cmt_part_t` slots (~29 KB) are a local array.
+ * allocates two 200 000-byte buffers on the heap and frees them, plus
+ * `test_add_part_payload_store`'s own ≈ 131 KB source buffer and a
+ * ≈ 196 KB payload store (3 × 65 536 B), both freed before it returns;
+ * the four `cmt_part_t` slots (~29 KB) are a local array.
  *
  * ── WHAT IT LEAVES BEHIND ──────────────────────────────────────────────
  * Nothing. No files, no directories, no processes, no global state.
@@ -52,9 +59,13 @@
  *  3. Nothing here exercises a part set built from a REAL marshalled
  *     block; that is test_cmt_block.c's MakePartSet case. A green here
  *     says nothing about the block encoder.
- *  4. The part payloads are NOT copied into the part set (see
- *     cmt_part_set.h). This file keeps its buffers alive for the whole
- *     run, so it cannot catch a caller that does not.
+ *  4. Every scenario BEFORE `test_add_part_payload_store` (package C2e,
+ *     register R3-A-5) keeps its source buffer alive for the whole run,
+ *     so those scenarios alone cannot catch a caller that fails to copy a
+ *     part's payload when the reference says it must not outlive the
+ *     source. `test_add_part_payload_store` is the one that can: it
+ *     mutates its own source buffer after AddPart and only then reads
+ *     the parts back, once WITH a bound payload store and once without.
  *
  * @file test_cmt_part_set.c
  */
@@ -451,6 +462,118 @@ static int test_add_part(const cmt_part_t *src, cmt_part_t *slots)
     return 0;
 }
 
+/* ══ AddPart with a bound payload store — package C2e, register R3-A-5
+ * ═══════════════════════════════════════════════════════════════════════
+ * HOW IT CAN LIE item 4 (the file header) says the shared fixture above
+ * keeps its source buffer alive for the whole run and so cannot catch a
+ * caller that does not copy a part's payload. This scenario builds its
+ * OWN source buffer, adds every real part into a header-built set WITH a
+ * payload store bound, OVERWRITES the source buffer, and only THEN reads
+ * the parts back — proving the store, not the source buffer, answered. A
+ * second set built from the same real parts with NO store bound proves
+ * the old descriptor-only behaviour is unchanged for a caller that never
+ * asks for one. */
+#define V_STORE_DATA_LEN ((size_t)V_PARTSET_PART_SIZE * 2u + 111u)
+#define V_STORE_TOTAL    3u   /* ceil(V_STORE_DATA_LEN / PART_SIZE) */
+
+static int test_add_part_payload_store(void)
+{
+    uint8_t              *src_data;
+    cmt_part_t            src_parts[V_STORE_TOTAL];
+    cmt_part_set_t        src_ps;
+    cmt_part_set_header_t hdr;
+    cmt_part_t            store_slots[V_STORE_TOTAL];
+    cmt_part_set_t        store_ps;
+    uint8_t              *store_buf;
+    cmt_part_t            plain_slots[V_STORE_TOTAL];
+    cmt_part_set_t        plain_ps;
+    bool                  added;
+    size_t                i;
+    static uint8_t        saved[V_STORE_TOTAL][V_PARTSET_PART_SIZE];
+    size_t                saved_len[V_STORE_TOTAL];
+
+    src_data = (uint8_t *)malloc(V_STORE_DATA_LEN);
+    CHECK(src_data != NULL, "alloc src_data"); OK();
+    fill_payload(src_data, V_STORE_DATA_LEN);
+
+    CHECK(cmt_new_part_set_from_data(src_data, V_STORE_DATA_LEN,
+                                     (uint32_t)V_PARTSET_PART_SIZE, src_parts,
+                                     V_STORE_TOTAL, &src_ps) == CMT_OK,
+          "build the source part set"); OK();
+    CHECK(cmt_part_set_total(&src_ps) == V_STORE_TOTAL,
+          "the arithmetic gives the expected part count"); OK();
+
+    /* Save each real part's bytes BEFORE the source buffer is touched. */
+    for (i = 0; i < V_STORE_TOTAL; i++) {
+        const cmt_part_t *p = &src_parts[i];
+
+        CHECK(p->bytes.len <= (size_t)V_PARTSET_PART_SIZE,
+              "part fits one slot");
+        memcpy(saved[i], p->bytes.data, p->bytes.len);
+        saved_len[i] = p->bytes.len;
+    }
+    OK();
+
+    CHECK(cmt_part_set_header(&src_ps, &hdr) == CMT_OK,
+          "read the header back"); OK();
+
+    /* WITH a store bound: AddPart copies. */
+    CHECK(cmt_new_part_set_from_header(&hdr, store_slots, V_STORE_TOTAL,
+                                       &store_ps) == CMT_OK,
+          "an empty set from the source's own header"); OK();
+    store_buf = (uint8_t *)malloc((size_t)V_STORE_TOTAL *
+                                  (size_t)V_PARTSET_PART_SIZE);
+    CHECK(store_buf != NULL, "alloc store_buf"); OK();
+    CHECK(cmt_part_set_bind_payload_store(
+              &store_ps, store_buf,
+              (size_t)V_STORE_TOTAL * (size_t)V_PARTSET_PART_SIZE,
+              (uint32_t)V_PARTSET_PART_SIZE) == CMT_OK,
+          "bind the payload store"); OK();
+    for (i = 0; i < V_STORE_TOTAL; i++) {
+        CHECK(cmt_part_set_add_part(&store_ps, &src_parts[i], &added) ==
+                  CMT_OK && added,
+              "each real part is added to the store-bound set");
+    }
+    OK();
+
+    /* WITHOUT a store: the old descriptor behaviour — a second empty set
+     * fed the SAME real parts, unbound. */
+    CHECK(cmt_new_part_set_from_header(&hdr, plain_slots, V_STORE_TOTAL,
+                                       &plain_ps) == CMT_OK,
+          "a second empty set, no store bound"); OK();
+    for (i = 0; i < V_STORE_TOTAL; i++) {
+        CHECK(cmt_part_set_add_part(&plain_ps, &src_parts[i], &added) ==
+                  CMT_OK && added,
+              "each real part is added to the plain set");
+    }
+    OK();
+
+    /* Mutate the caller's source buffer AFTER both adds. */
+    memset(src_data, 0xEE, V_STORE_DATA_LEN);
+
+    for (i = 0; i < V_STORE_TOTAL; i++) {
+        const cmt_part_t *stored = cmt_part_set_get_part(&store_ps, i);
+        const cmt_part_t *plain  = cmt_part_set_get_part(&plain_ps, i);
+
+        CHECK(stored != NULL && plain != NULL, "both parts are present");
+        CHECK(stored->bytes.len == saved_len[i],
+              "store-bound length unchanged"); OK();
+        CHECK(memcmp(stored->bytes.data, saved[i], saved_len[i]) == 0,
+              "store-bound: the stored bytes survive the source buffer's "
+              "mutation — the store, not src_data, answered"); OK();
+        CHECK(plain->bytes.len == saved_len[i], "plain length unchanged");
+        OK();
+        CHECK(memcmp(plain->bytes.data, saved[i], saved_len[i]) != 0,
+              "plain: the descriptor still points into src_data, so it "
+              "now reads the mutated bytes — the old behaviour holds");
+        OK();
+    }
+
+    free(store_buf);
+    free(src_data);
+    return 0;
+}
+
 /* ══ the reader (part_set.go:343-383) ═════════════════════════════════ */
 
 static int test_reader(const uint8_t *data, cmt_part_t *parts,
@@ -585,6 +708,9 @@ int main(void)
     if (test_reader(data, parts, &ps) != 0)    { free(data); return 1; }
 
     free(data);
+
+    if (test_add_part_payload_store() != 0) return 1;
+
     printf("test_cmt_part_set: %d checks OK\n", g_checks);
     return 0;
 }

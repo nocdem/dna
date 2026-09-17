@@ -1648,15 +1648,27 @@ int nodus_witness_v2_gen_derive(const char *data_path,
         uint8_t chain32[32];
         if (nodus_witness_v2_chain_id(w2, chain32) != 0) break;
 
-        /* ── 7b. The canonical genesis bundle, persisted NOW while the
-         * base tables still hold their exact genesis-time bytes. A
-         * chain that cannot serialize its own genesis is not a valid
-         * bootstrap source, so the whole derivation aborts. */
-        if (nodus_witness_v2_bundle_persist(w2) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "%s",
-                          "genesis bundle persistence FAILED — ABORT");
-            break;
-        }
+        /* ── 7b. R3 W3 (D-17 rev 10 (9)): NO BUNDLE IS PERSISTED HERE
+         * ANY MORE. This step used to call nodus_witness_v2_bundle_persist
+         * while the base tables still held their exact genesis-time
+         * bytes, aborting the whole derivation if it failed. It cannot
+         * any more: bundle_persist itself now REFUSES a chain with no
+         * stored genesis DOCUMENT (nodus_witness_v2_bundle.c), and a
+         * version-2 chain never has one (D-19 rev 6 is v3-only) — so
+         * calling it here would abort EVERY version-2 derivation
+         * unconditionally, which is not this closure's intent: the old
+         * lane stays byte-unchanged and unreachable from the running
+         * node, but its OWN unit tests (test_v2_gen.c,
+         * test_v2_gen_config.c, test_v2_gate_pure.c,
+         * test_v2_econ_params.c) keep passing until the deletion wave
+         * removes the lane and its tests together. A version-2 chain
+         * therefore derives with NO genesis bundle — it was never a
+         * valid bootstrap source under D-17 rev 10 (9) regardless, so
+         * nothing that mattered to a live joiner is lost by not trying
+         * to serialize one. */
+        QGP_LOG_INFO(LOG_TAG, "%s",
+                     "closed lane (D-17 rev 10 (9)): version-2 chain, no "
+                     "genesis bundle is persisted — deleted next wave");
 
         /* ── 8. Land the real name in the REAL data_path — rename only
          * after a COMPLETE derivation (same filesystem, atomic). ───── */
@@ -2909,28 +2921,30 @@ int nodus_witness_v2_gen_derive_v3(const char *data_path,
         /* The flag before any validator-set seeding — the ordering rule
          * the version-2 path states at its step 4. */
         w2->v2_successor = 1;
-        /* ⚠ S12 HERE, S14 AFTER THE LEDGER GENESIS — AND THE ORDER IS
-         * NOT COSMETIC.
+        /* R3 W3 (D-17 rev 10 (8)) — S14 FIRST, THEN THE LEDGER GENESIS.
          *
-         * The ledger's genesis runs every registered runtime's
+         * W2 built the ledger at S12 and climbed to S14 only afterwards,
+         * because the ledger's genesis runs every registered runtime's
          * `state_init` hook (nodus_witness_domreg.c:326-340, generic
          * dispatch, no domain branch), and the CORE hook —
-         * nodus_rt_core_state_init, nodus_witness_v2_pools.c:1174-1182 —
-         * gates itself on an EQUALITY LIST of schema versions that stops
-         * at S12: at S14 it returns -1, domreg_init_genesis propagates
-         * that without a log, and the derivation dies with no diagnosis.
-         *
-         * That gate is one of the five D-17 rev 7 (7) assigns to W3
-         * together with the live S14 flip, and nodus_witness_v2_pools.c
-         * is LIVE code on the legacy lane. Widening it here would flip a
-         * live gate in W2, which is exactly what rev 7 forbids — so the
-         * DERIVATION moves instead of the gate.
-         *
-         * The ledger is therefore built at S12, byte-for-byte the way
-         * the version-2 path builds it (gen.c:1462), and the database
-         * climbs to S14 only after the genesis has been applied and the
-         * document completed. W3 deletes this note along with the gate. */
-        if (nodus_witness_db_migrate_v2s12(w2) != 0) break;
+         * `nodus_rt_core_state_init`, nodus_witness_v2_pools.c — gated
+         * itself on an equality list of schema versions that stopped at
+         * S12: at S14 it returned -1 with no diagnosis, and that gate
+         * belonged to the LIVE legacy lane, so W2 could not widen it
+         * (D-17 rev 7 (7)). W3 widens it in the SAME commit
+         * (nodus_witness_v2_pools.c, `nodus_rt_core_state_init` and
+         * `nodus_witness_v2_pools_startup_check`) and narrows
+         * `nodus_witness_v2_genesis_cmt`'s own gate back to S14 alone
+         * (nodus_witness_v2_apply.c) — the three edits are one change.
+         * With the pool gate now accepting S14, there is no longer a
+         * reason to defer the climb: the database migrates to S14 HERE,
+         * before `nodus_chain_config_db_migrate`, the seeder or any
+         * genesis step runs, exactly the order every other schema rung
+         * in this derivation uses (migrate first, then act on it).
+         * `nodus_witness_db_migrate_v2s14` cascades through S13 and S12
+         * on its own (nodus_witness_v2_schema.c:1436-1441, :1301-1304),
+         * so a freshly created database reaches S14 in this one call. */
+        if (nodus_witness_db_migrate_v2s14(w2) != 0) break;
         if (nodus_chain_config_db_migrate(w2) != 0) break;
 
         /* ── 5. SYSTEM state, from the config — the SAME seeder. ────── */
@@ -3044,39 +3058,19 @@ int nodus_witness_v2_gen_derive_v3(const char *data_path,
 
         if (nodus_witness_v2_gen_v3_encode(work, &doc, &doc_len) != 0) break;
 
-        /* ── 9. NOW climb to S14 — the Comet stores come into existence
-         * only after the ledger genesis has been applied, for the reason
-         * stated at step 4.
-         *
-         * WHAT THE RUNG DEMANDS OF THE DATABASE AT THIS MOMENT
-         * (nodus_witness_v2_schema.c:1412-1590, read, not assumed):
-         *   · the LINKED SQLite must be >= 3.35.0, asked first and
-         *     before anything is written (:1427-1434);
-         *   · `user_version` decides the path — 14 is an idempotent 0,
-         *     13 migrates, and ANYTHING ELSE runs the S13 rung first
-         *     (:1436-1441), which in turn climbs from S12 (:1301-1304).
-         *     An S12 database is therefore a supported starting point,
-         *     and test_cmt_host.c:1151-1152 exercises exactly that
-         *     ("0->12" then "12->14");
-         *   · after the DDL it verifies the SHAPE of all five new tables
-         *     and of v2_blocks minus the three dropped columns
-         *     (:1537-1565).
-         * It demands NOTHING about the CONTENTS of v2_blocks — no
-         * emptiness check exists, and `ALTER TABLE ... DROP COLUMN`
-         * rewrites whatever rows are there. What makes dropping `header`,
-         * `qc` and `commit_cert` here LOSSLESS is our own doing: the
-         * Comet genesis writes no block row at all, so the three columns
-         * hold nothing when they go. The post-condition below asserts
-         * that emptiness rather than trusting this sentence. */
-        if (nodus_witness_db_migrate_v2s14(w2) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "%s", "the climb to schema S14 FAILED "
-                          "after the genesis — ABORT");
-            break;
-        }
+        /* R3 W3 (D-17 rev 10 (8)) — the separate "climb to S14 after the
+         * genesis" step that used to live here is GONE: the database is
+         * already at S14 (migrated before step 4), so `cmt_state` has
+         * been a valid table since before the ledger genesis ran, and
+         * the document is stored directly below. What the S14 rung
+         * demands of the database and why the three dropped v2_blocks
+         * columns lose nothing (nodus_witness_v2_schema.c:1412-1590) is
+         * unchanged by moving the call earlier — a migration's
+         * post-conditions do not depend on how many other statements ran
+         * before it in the same transaction sequence. */
 
-        /* ── 10. Store the COMPLETED document under the reference's own
-         * key (node/setup.go:551, saveGenesisDoc :606-611) — possible
-         * only now, because `cmt_state` is an S14 table. `stateKey` is
+        /* ── 9. Store the COMPLETED document under the reference's own
+         * key (node/setup.go:551, saveGenesisDoc :606-611). `stateKey` is
          * NOT written: the State is made on the node's first start
          * (:581 LoadFromDBOrGenesisDoc), which is package C1c's. */
         {
@@ -3093,31 +3087,54 @@ int nodus_witness_v2_gen_derive_v3(const char *data_path,
             }
         }
 
-        /* ── 11. Post-conditions ─────────────────────────────────────
+        /* ── 10. Post-conditions ─────────────────────────────────────
          *
          * ALL OF THEM RUN AT S14, and that is checked, not assumed.
-         * `grep -rn nodus_witness_db_schema_version --include=*.c
-         * nodus/src` returns 21 lines, ONE of which is this comment. Of
-         * the 20 call sites, 13 are inside nodus_witness_v2_schema.c —
-         * the migration ladder reading its own starting version, plus
-         * the reader's own definition at :81 — and gate nothing. The
-         * schema-version GATES, those 13 excluded, are exactly seven:
-         *   nodus_witness_v2_apply.c:615   (the version-2 genesis)
-         *   nodus_witness_v2_apply.c:1541  (block apply)
-         *   nodus_witness_v2_apply.c:3846  (this lane's genesis)
-         *   nodus_witness_v2_pools.c:900   (pool startup check)
-         *   nodus_witness_v2_pools.c:1175  (CORE state_init — the one
-         *                                   that forced this order)
-         *   nodus_witness_v2_preflight.c:110
-         *   nodus_witness_v2_sync2.c:386
+         * `grep -n nodus_witness_db_schema_version` finds the reader
+         * referenced in SEVEN non-test files (nodus_witness_v2_apply.c,
+         * nodus_witness_v2_gen.c, nodus_witness_v2_pools.c,
+         * nodus_witness_v2_preflight.c, nodus_witness_v2_schema.c/.h,
+         * nodus_witness_v2_sync2.c — twelve counting tests), and that
+         * grep finds every schema-version GATE in the tree (this comment
+         * re-derives the count R3 W3 changed, rather than repeating
+         * W2's, since the flip touches three of them). The migration
+         * ladder inside nodus_witness_v2_schema.c reads its own starting
+         * version at every rung and gates nothing else; excluding it,
+         * the gates are exactly eight:
+         *   nodus_witness_v2_apply.c:619   (the version-2 genesis, S9-S12
+         *                                   — the closed old lane)
+         *   nodus_witness_v2_apply.c:2168  (Comet-lane block apply, S14
+         *                                   only — unchanged by this wave)
+         *   nodus_witness_v2_apply.c:2204  (legacy-lane block apply,
+         *                                   S9-S12 — the closed old lane)
+         *   nodus_witness_v2_apply.c:5134  (this lane's genesis, NARROWED
+         *                                   to S14 alone this wave)
+         *   nodus_witness_v2_pools.c:900   (pool startup check, WIDENED
+         *                                   to admit S14 this wave)
+         *   nodus_witness_v2_pools.c:1195  (CORE state_init, WIDENED to
+         *                                   admit S14 this wave — the one
+         *                                   that forced the old order)
+         *   nodus_witness_v2_preflight.c:114,129 (reader call at :114,
+         *                                   the equality gate at :129 —
+         *                                   NARROWED to S14 alone)
+         *   nodus_witness_v2_sync2.c:386   (nodus_witness_v2_sync_serve_block,
+         *                                   the OLD-LANE verb 20-23 block
+         *                                   server, `< S12` — UNCHANGED:
+         *                                   14 already is not < 12, and the
+         *                                   function SELECTs the `header`/
+         *                                   `qc` columns S14 dropped
+         *                                   earlier still, so this gate was
+         *                                   never the live defect for S14
+         *                                   and widening it would not fix
+         *                                   one — left for the deletion
+         *                                   wave, not this one)
          * None of them is on the path of anything below:
          * nodus_witness_v2_supply_check dispatches nodus_rt_core_invariant
          * (nodus_witness_v2_claims.c:868), nodus_validator_get
          * (nodus_witness_validator.c:197) and
          * nodus_witness_v2_bundle_persist
          * (nodus_witness_v2_bundle.c:313) are all plain queries with no
-         * version gate. Nothing had to move before the climb, and no
-         * gate was weakened to keep it here. */
+         * version gate. */
 
         /* (a) NO genesis block row — of any height. This is also what
          * makes the three columns the S14 rung dropped above carry no

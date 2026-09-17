@@ -31,15 +31,66 @@
  * The bundle format is therefore a CONTAINER of already-canonical row
  * bytes, not a crypto-committed structure — no KAFADAN gate applies.
  *
- * ═══ CANONICAL LAYOUT ═══════════════════════════════════════════════════
- *   magic "DNA.GBUNDLE.v1\0\0" (16 B) ‖ manifest_len u32 BE ‖ manifest ‖
+ * ═══ CANONICAL LAYOUT (R3 W3, D-24 rev 4 (2)) ═══════════════════════════
+ *   magic "DNA.GBUNDLE.v3\0\0" (16 B) ‖ manifest_len u32 BE ‖ manifest ‖
  *   table_count u32 BE ‖ per table:
  *     name_len u16 BE ‖ name ‖ row_count u32 BE ‖ col_count u16 BE ‖
  *     per row (row_count of them), per column (col_count of them):
  *       type u8 (0 NULL / 1 INT / 2 TEXT / 3 BLOB — FLOAT rejects) ‖
  *       INT: 8 B BE ; TEXT/BLOB: len u32 BE ‖ bytes ; NULL: nothing
+ *   ‖ doc_len u32 BE ‖ doc (the version-3 genesis DOCUMENT's canonical
+ *     bytes)
  *   Rows are emitted in PRIMARY-KEY order (the table's ORDER BY), so two
  *   nodes serialize the same committed state to the same bytes.
+ *
+ * ═══ R3 W3 — THE MAGIC MOVED; THE OLD LANE CANNOT BE BUNDLED ════════════
+ * The magic is now `DNA.GBUNDLE.v3\0\0`. A version-2 chain (no stored
+ * genesis DOCUMENT — D-19 rev 6 is v3-only) CANNOT be bundled at all:
+ * `nodus_witness_v2_bundle_persist` refuses when there is no document to
+ * carry, which is D-17 rev 10 (9)'s closure of the old lane applied here
+ * — a chain that cannot serve a correct bundle must not claim to serve
+ * one. `nodus_witness_v2_bundle_apply` refuses a bundle carrying the OLD
+ * `DNA.GBUNDLE.v1\0\0` magic outright, logging "version-1 bundle format,
+ * refused", before reading anything past it — an old-binary bundle is
+ * refused BY ITS MAGIC, never by a short read further in. There is no
+ * version-2 code path left in this file; `nodus_witness_v2_genesis_ex`
+ * is not called here (the deletion wave removes the function itself).
+ * CONSEQUENCE, stated plainly: `nodus_witness_v2_gen_derive` (the
+ * version-2 lane, nodus_witness_v2_gen.c step 7b) no longer calls
+ * `nodus_witness_v2_bundle_persist` at all — since that call would now
+ * unconditionally refuse (no document to carry) and there is no reason
+ * to make a document-less chain's derivation fail over a bundle it was
+ * never going to be able to serve, the step was replaced with a single
+ * INFO log line and the derivation continues. So a version-2 chain
+ * derives exactly as before EXCEPT that it now has NO persisted bundle
+ * row (`nodus_witness_v2_bundle_get` reports it absent) — every existing
+ * caller of `nodus_witness_v2_gen_derive` (including unit tests outside
+ * this package's whitelist, e.g. test_v2_econ_params.c) still derives
+ * successfully; the one whitelisted assertion that specifically checked
+ * a version-2 chain's bundle presence (test_v2_gen.c) was updated to
+ * expect absence, and that bundle-carriage property now has its own
+ * coverage under test_v2_bundle.c's version-3 tests instead. This is
+ * DEVNET: a wipe + stop-all deploy accompanies this wave regardless
+ * (`BREAKING-CHANGE POLICY`), and the version-2 lane is titled for
+ * deletion (an APPROVED OBLIGATION already assigns
+ * `nodus_witness_v2_gen_derive` to it) — that obligation is unaffected
+ * by this file and stays exactly as recorded.
+ *
+ * ═══ THE VERSION-3 PIN, AND WHAT IT BINDS ═══════════════════════════════
+ * `pin` is 32 bytes — the chain id (D-24 rev 4 (1); a version-3 chain has
+ * no genesis BLOCK to pin a 64-byte BlockID to, D-19 rev 6). Accepting a
+ * version-3 bundle requires TWO things to hold, not one: the stored
+ * document's own `chain_id` field equals `pin` (the canonical-strict
+ * reader, `nodus_witness_v2_gen_stored_doc`, already proves that field
+ * hashes to the document itself), AND the document's `app_hash` field
+ * equals the global root `nodus_witness_v2_genesis_cmt` ACTUALLY returned
+ * from replanting THIS bundle's tables. The first proves the document is
+ * intact; it does not prove the replanted rows produce that document's
+ * claimed ledger effect — a bundle whose tables are tampered (a delegation
+ * row edited) but whose untouched document still hashes to `pin` would
+ * pass the first check and fail only the second. Both are required before
+ * anything is renamed up; a wrong pin, a malformed bundle or a tampered
+ * table leaves the caller's scratch DB to discard, exactly as before.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -57,19 +108,27 @@
 extern "C" {
 #endif
 
-#define NODUS_V2_GBUNDLE_MAGIC   "DNA.GBUNDLE.v1\0\0"
+#define NODUS_V2_GBUNDLE_MAGIC   "DNA.GBUNDLE.v3\0\0"
 #define NODUS_V2_GBUNDLE_MAGIC_LEN 16
+
+/** The RETIRED version-2 magic, kept only so `nodus_witness_v2_bundle_
+ * apply` can name the reason a pre-R3-W3 bundle is refused ("version-1
+ * bundle format, refused") instead of failing on a generic short read
+ * further into the frame. Never written by this build. */
+#define NODUS_V2_GBUNDLE_MAGIC_V1_RETIRED "DNA.GBUNDLE.v1\0\0"
 
 /**
  * Build the canonical genesis bundle for the committed successor genesis
  * on `w` and persist it into the `v2_genesis_bundle` singleton row.
  *
- * Called by the seam ONCE, after v2_genesis_ex commits and before any
- * block production. Fails closed and writes nothing if the genesis
- * manifest or any base table cannot be serialized, or the row already
- * exists with different bytes.
+ * Called ONCE, after the genesis commits and before any block production.
+ * Fails closed and writes nothing if the genesis manifest or any base
+ * table cannot be serialized, the row already exists with different
+ * bytes, OR — R3 W3 — `w` has no stored genesis DOCUMENT under
+ * "genesisDoc" (a version-2 chain, or a version-3 chain not yet at S14):
+ * a chain that cannot carry a document cannot serve a correct bundle.
  *
- * @return 0 persisted (or idempotent match); -1 fault.
+ * @return 0 persisted (or idempotent match); -1 fault / refused.
  */
 int nodus_witness_v2_bundle_persist(nodus_witness_t *w);
 
@@ -84,25 +143,51 @@ int nodus_witness_v2_bundle_get(nodus_witness_t *w,
 
 /**
  * Apply a received bundle to a FRESH successor DB `w2` (empty base
- * tables), re-derive the genesis, and require the derived genesis
- * BlockID to equal `pin` (the operator's local anchor). On success the
- * DB carries the committed successor genesis and its own persisted
- * bundle row; on any mismatch nothing is left committed (the caller
- * discards the scratch DB).
+ * tables), re-derive the genesis, and require it to match `pin` — the
+ * 32-byte chain id (D-24 rev 4 (1)). On success the DB carries the
+ * committed successor genesis and its own persisted bundle row.
  *
- * ORDER (mirrors the seam, load-bearing): plant base rows →
- * vset_commit_genesis → domreg_init_genesis → v2_genesis_ex(pin
- * assertion). The vset snapshots feed the SYSTEM payload root that
- * domreg commits, so snapshots precede domreg precede genesis.
+ * On a rejection (wrong magic, malformed frame, wrong pin, or a
+ * tampered table caught by the app_hash check) this function guarantees
+ * only that no genesis derivation step runs and no genesis document is
+ * stored — it does NOT guarantee the scratch database is otherwise
+ * unchanged: the base-table plant (its own BEGIN IMMEDIATE / COMMIT,
+ * before the pin precheck even runs) is already durably committed by
+ * the time any rejection can be detected, so a rejected `w2` still
+ * holds the sender's rows in the six base tables. "Zero trace" is a
+ * property of the CALLER, not of this function: `nodus_witness_v2_join.c`
+ * (`join_adopt`) provides it by discarding the whole scratch directory
+ * (`join_scratch_clear`) on every failure exit. A direct caller that
+ * does not discard the scratch DB on a nonzero return keeps those
+ * planted rows.
  *
- * @param w2   fresh successor witness (chain DB created, S11 migrated).
+ * A bundle carrying the RETIRED version-2 magic is refused immediately,
+ * logged "version-1 bundle format, refused" — there is no version-2
+ * code path in this function; `nodus_witness_v2_genesis_ex` is never
+ * called here.
+ *
+ * ORDER: plant base rows → migrate the scratch database to S14
+ * (cascades up from wherever it already is,
+ * nodus_witness_v2_schema.c's ladder) → store the carried document
+ * under "genesisDoc" → vset_commit_genesis → domreg_init_genesis →
+ * nodus_witness_v2_genesis_cmt → ACCEPT only if BOTH the stored
+ * document's `chain_id` equals `pin` AND its `app_hash` equals the
+ * global root genesis_cmt just returned (the header's "what pin binds"
+ * note explains why both are required). The pin's OWN self-consistency
+ * (the carried document decodes and hashes to `pin`) is checked BEFORE
+ * any of that runs, because genesis_cmt takes no pin parameter and is
+ * not idempotent-safe to call on a pin that will turn out wrong.
+ *
+ * @param w2   fresh successor witness (chain DB created; any schema the
+ *             migration ladder can reach S14 from).
  * @param bytes/len  the received bundle.
- * @param pin  the 64-byte locally-pinned successor genesis BlockID.
- * @return 0 adopted; -1 rejected (wrong pin / malformed / fault).
+ * @param pin  the 32-byte chain id this joiner is pinned to.
+ * @return 0 adopted; -1 rejected (wrong magic / wrong pin / malformed /
+ *         tampered table / fault).
  */
 int nodus_witness_v2_bundle_apply(nodus_witness_t *w2,
                                   const uint8_t *bytes, size_t len,
-                                  const uint8_t pin[64]);
+                                  const uint8_t pin[32]);
 
 #ifdef __cplusplus
 }

@@ -84,3 +84,6 @@ nodus/deploy/nodus.conf.example
 CLAUDE.md
 **/CLAUDE.md
 .claude/
+
+# clangd per-project compilation-database pointers (local dev tooling)
+.clangd

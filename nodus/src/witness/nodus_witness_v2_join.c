@@ -4,9 +4,15 @@
  *
  * Contract and the trust model are in the header. The joiner pulls the
  * canonical genesis bundle, re-derives the genesis in a scratch DB, and
- * adopts it in place ONLY when the derived BlockID equals the local pin.
- * There is ONE derivation engine (nodus_witness_v2_bundle_apply →
- * nodus_witness_v2_genesis_ex); this module is transport + lifecycle.
+ * adopts it in place ONLY when the derivation matches the local pin — a
+ * 32-byte chain id (R3 W3, D-24 rev 4 (1)). There is ONE derivation
+ * engine, nodus_witness_v2_bundle_apply, and ONE bundle shape it
+ * accepts: version-3 (magic "DNA.GBUNDLE.v3\0\0"). Any other magic,
+ * including the closed version-2 lane's retired one, is refused by the
+ * magic check itself (nodus_witness_v2_bundle.c:476-494) before any
+ * table is touched — there is no internal branch to a version-2 path;
+ * this module is transport + lifecycle and hands the bytes straight to
+ * that one engine.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -72,7 +78,7 @@ int nodus_witness_v2_join_arm(nodus_witness_t *w) {
      * NOT a fresh joiner — the pin is inert. */
     if (w->db) return 0;
 
-    memcpy(w->v2_join.pin, w->server->config.v2_genesis_pin, 64);
+    memcpy(w->v2_join.pin, w->server->config.v2_genesis_pin, 32);
     w->v2_join.active    = 1;
     w->v2_join.acc       = NULL;
     w->v2_join.acc_len   = 0;
@@ -131,20 +137,29 @@ static int join_adopt(nodus_witness_t *w) {
     do {
         if (nodus_witness_create_chain_db(w2, prov16) != 0) break;
         /* O15F Task 5 (defence-in-depth): mark the scratch handle a V2
-         * chain before its genesis re-derivation (bundle_apply →
-         * vset_commit_genesis → genesis_ex), the same way every chain
-         * builder does immediately after create_chain_db. This makes the
-         * D1 max-30 target clamp fire during the joiner's re-derivation
-         * too; correctness is already backstopped by the byte-identical
-         * pin check below, but the guard is now uniform across the
-         * builder and the joiner. */
+         * chain before its genesis re-derivation — bundle_apply's real
+         * order (R3 W3 delta 6 fix) is: migrate to S14, store the
+         * carried document, THEN vset_commit_genesis, THEN
+         * domreg_init_genesis, THEN genesis_cmt, THEN the canonical-strict
+         * reader confirms chain_id == pin && app_hash == the recomputed
+         * global root — the same way every chain builder does immediately
+         * after create_chain_db. This makes the D1 max-30 target clamp
+         * fire during the joiner's re-derivation too; correctness is
+         * already backstopped by the byte-identical pin check below, but
+         * the guard is now uniform across the builder and the joiner. */
         w2->v2_successor = 1;
-        /* O15F Task 4: the joiner re-derives its OWN V2 database and MUST
-         * land at the same schema the chain builder produces (S12,
-         * nodus_witness_v2_gen.c) — otherwise it would lack
-         * v2_claim_counts and could serve no height under the
-         * count-row-driven serving seam. */
-        if (nodus_witness_db_migrate_v2s12(w2) != 0) break;
+        /* R3 W3 (D-24 rev 4 (2)): the joiner re-derives its OWN chain and
+         * MUST land at the same schema the chain builder produces — S14,
+         * where the Comet stores live (nodus_witness_v2_gen_derive_v3).
+         * O15F Task 4's original reason (v2_claim_counts, the S12-era
+         * count-row-driven serving seam) still holds AS A LOWER BOUND:
+         * S14 is a structural superset of S12 (the migration ladder
+         * cascades through it), so nothing that reason needed is lost.
+         * `nodus_witness_v2_bundle_apply`'s own version-3 branch also
+         * migrates to S14 before storing the document, so this call is
+         * not load-bearing for that path — but the chain_config table it
+         * plants IS needed before that branch runs, so it stays here. */
+        if (nodus_witness_db_migrate_v2s14(w2) != 0) break;
         if (nodus_chain_config_db_migrate(w2) != 0) break;
 
         if (nodus_witness_v2_bundle_apply(w2, bytes, len,
@@ -156,8 +171,13 @@ static int join_adopt(nodus_witness_t *w) {
 
         uint8_t chain32[32];
         if (nodus_witness_v2_chain_id(w2, chain32) != 0) break;
-        /* chain id = genesis BlockID[0..31] = pin[0..31] (genesis_ex
-         * asserted the full id). Verify the coupling explicitly. */
+        /* R3 W3 (D-24 rev 4 (1)): chain id == pin directly — a version-3
+         * chain's identity IS the 32-byte pin, not a genesis BlockID's
+         * first half. bundle_apply's own version-3 branch already
+         * required this (chain_id == pin, app_hash == the computed
+         * root); this re-checks the coupling explicitly on the SAME
+         * accessor the rest of the witness uses
+         * (nodus_witness_v2_chain_id), the way the pre-flip code did. */
         if (memcmp(chain32, w->v2_join.pin, 32) != 0) break;
 
         sqlite3_close(w2->db);
@@ -189,10 +209,54 @@ static int join_adopt(nodus_witness_t *w) {
                       "fatal joiner state");
         return -1;
     }
+
+    /* R3 W3 delta 9 (register row R3-W3-C2c-15) — the cometbft server
+     * binding, immediately, on THIS live `w`. The reference has no
+     * mid-life adoption (a node starts with its genesis document already
+     * on disk); the honest port of "this node now starts with this
+     * genesis" is to run, right here, the SAME construction a process
+     * start runs (`nodus_witness_init`'s `if (witness->v2_successor)`
+     * block, nodus_witness.c) — `nodus_witness_cmt_live_init`, exported
+     * for exactly this second call site (nodus_witness.h, right after
+     * `nodus_witness_create_chain_db`).
+     *
+     * MEASURED without this call (Genesis Protocol harness,
+     * `test_v2_join.sh` and `test_v2_partial_wipe.sh`'s restore, same
+     * shape): the joiner received the bundle, re-derived, adopted, and
+     * the post-open gate printed the COMETBFT role — then NOTHING. No
+     * startup table was ever built, so `witness_cmt_tick`
+     * (nodus_witness.c) found `cmt_node == NULL` and returned INT64_MAX
+     * every tick, forever; there is no blocksync in this port, so the
+     * node also never caught up any other way.
+     *
+     * PRECONDITIONS, proven by reading, not assumed: the scan just above
+     * has already run `witness_post_open_gate` on `w` (the SAME gate
+     * `nodus_witness_create_chain_db` runs at process start), so
+     * `w->v2_successor` is true and `w->v2_chain32` is populated —
+     * `nodus_cmt_live_init`'s own precondition. `w->server` and
+     * `w->data_path` are the LIVE witness's, set once at process start;
+     * `join_adopt` never touches either — it only set them on the
+     * throwaway SCRATCH handle `w2` above (:114/:117), which is already
+     * closed and freed by this point. And no tick can land between the
+     * scan and this call: `join_adopt` runs synchronously inside
+     * `nodus_witness_v2_join_tick`, itself called synchronously from
+     * `nodus_witness_tick`'s own body — one function call inside one
+     * tick, no thread, no re-entrant call, no yield point. */
+    if (nodus_witness_cmt_live_init(w) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "adopted successor opened but the "
+                      "cometbft server binding could not be built — "
+                      "fatal joiner state");
+        return -1;
+    }
+
     w->v2_join.active = 0;
     join_reset_acc(w);
     QGP_LOG_INFO(LOG_TAG, "%s", "successor genesis adopted from a peer "
-                 "bundle (pin matched) — now catching up to head");
+                 "bundle (pin matched) — the cometbft server binding is "
+                 "built and will go live at the next tick (genesis time "
+                 "is already in the past for a joiner), catching up "
+                 "through the consensus reactor's own stored-part "
+                 "gossip");
     return 0;
 }
 
@@ -204,11 +268,12 @@ void nodus_witness_v2_join_handle_gbundle_r(nodus_witness_t *w,
 
     const nodus_t3_w_v2_gbundle_r_t *r = &msg->w_v2_gbundle_r;
 
-    /* The bundle is FOR our pin, and its chain field must equal
-     * pin[0..31] (chain id derives from the genesis id). A response for
-     * anything else is ignored — the pin is the only anchor. */
-    if (memcmp(r->pin, w->v2_join.pin, 64) != 0) return;
-    if (memcmp(r->chain, w->v2_join.pin, 32) != 0) return;
+    /* R3 W3 (D-24 rev 4 (1)): the pin IS the 32-byte chain id — `r->pin`
+     * and `r->chain` now name the same identity (nodus_witness_v2_sync2.c
+     * answers both with `w->v2_chain32`), so the two separate comparisons
+     * this used to be collapse into ONE. A response for anything else is
+     * ignored — the pin is the only anchor. */
+    if (memcmp(r->pin, w->v2_join.pin, 32) != 0) return;
     if (r->total == 0 || r->total > (64u * 1024u * 1024u)) return;
     if (r->chunk_len == 0) return;
 
@@ -312,7 +377,7 @@ void nodus_witness_v2_join_tick(nodus_witness_t *w) {
     memset(&req, 0, sizeof(req));
     req.type = NODUS_T3_V2_GBUNDLE_REQ;
     memcpy(req.w_v2_gbundle_q.chain, w->v2_join.pin, 32);
-    memcpy(req.w_v2_gbundle_q.pin, w->v2_join.pin, 64);
+    memcpy(req.w_v2_gbundle_q.pin, w->v2_join.pin, 32);
     req.w_v2_gbundle_q.offset = (uint64_t)w->v2_join.acc_len;
 
     const char *method = nodus_t3_type_to_method(req.type);

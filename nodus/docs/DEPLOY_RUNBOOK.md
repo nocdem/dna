@@ -239,14 +239,19 @@ to be absent between the derivation and the first successful start.**
 ### Joining a node to an existing V2 chain
 
 Not the ceremony — this is for a node added later, or one rebuilt from scratch.
-Give it the genesis BlockID the ceremony printed:
+Give it the chain id the ceremony printed (since R3 W3 the pin IS the 32-byte
+chain id — a version-3 chain has no genesis block to pin a BlockID to; the
+`chain-id` and `v2-genesis-pin` lines the ceremony prints carry the same
+64-hex value):
 
 ```
-nodus-server --v2-genesis-pin <128 hex chars> -d "$DATA_DIR"
+nodus-server --v2-genesis-pin <64 hex chars> -d "$DATA_DIR"
 ```
 
-It pulls the genesis bundle from peers and adopts it only if the re-derived
-BlockID matches the pin. `--derive-v2-genesis` and `--v2-genesis-pin` are
+It pulls the genesis bundle (format v3: the six base tables plus the genesis
+document) from peers and adopts it only if the bundle re-derives to the pinned
+chain id AND its document's `app_hash` equals the ledger root the re-derivation
+actually produced; a 128-hex value is refused outright. `--derive-v2-genesis` and `--v2-genesis-pin` are
 mutually exclusive and the binary refuses both together — deriving and joining
 are opposite intents.
 

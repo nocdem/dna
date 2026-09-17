@@ -12,10 +12,20 @@
  *      (w_v2_gbundle_q/r) from any peer whose committed genesis equals
  *      the pin;
  *   3. it re-derives the genesis from the bundle bytes and requires the
- *      engine-derived genesis BlockID to EQUAL the LOCAL pin
- *      (nodus_witness_v2_bundle_apply); a wrong bundle leaves zero trace;
- *   4. it adopts the derived successor DB in place and, from then on, is
- *      an ordinary successor node whose Faz B catch-up brings it to head.
+ *      chain id the engine recomputes from those bytes to EQUAL the
+ *      LOCAL pin (nodus_witness_v2_bundle_apply) — a version-3 chain has
+ *      no genesis BlockID; the pin IS the 32-byte chain id (D-24 rev 4
+ *      (1)); a wrong bundle leaves zero trace;
+ *   4. it adopts the derived successor DB in place, opens the main
+ *      witness on it (the SAME path a restart takes), and — R3 W3 delta 9
+ *      — immediately builds the cometbft server binding on that live
+ *      handle (`nodus_witness_cmt_live_init`, nodus_witness.h): the
+ *      reference has no mid-life adoption, so the honest port of "this
+ *      node now starts with this genesis" is to run, right here, the
+ *      SAME construction a process start runs. From the next tick on it
+ *      is an ordinary successor node whose catch-up runs through the
+ *      consensus reactor's own stored-part gossip — there is no
+ *      blocksync in this port (D-23 rev 7 item 18).
  *
  * THE PIN IS THE ONLY TRUST ANCHOR, and it is LOCAL: it arrives through
  * node configuration / CLI (nodus_server_config.v2_genesis_pin), never
@@ -70,9 +80,15 @@ void nodus_witness_v2_join_tick(nodus_witness_t *w);
 /**
  * verb 25 — accumulate a genesis-bundle chunk. On the final chunk,
  * re-derive the genesis against the local pin and, on a match, adopt the
- * successor DB in place (the node becomes an ordinary successor). A pin
- * mismatch or any malformed bundle leaves the node an unadopted joiner
- * with zero durable trace, free to retry.
+ * successor DB in place, open the main witness on it and build its
+ * cometbft server binding (R3 W3 delta 9 — the node becomes an ordinary,
+ * LIVE successor, not merely a chain-holding one). A pin mismatch or any
+ * malformed bundle is caught BEFORE the successor DB is renamed into
+ * place, so it leaves the node an unadopted joiner with zero durable
+ * trace, free to retry. A failure to build the cometbft server binding
+ * happens AFTER that rename — the successor DB is already durably
+ * adopted and open — so it is fatal joiner state, not a retryable one;
+ * see `join_adopt`'s own comment (nodus_witness_v2_join.c) for why.
  */
 void nodus_witness_v2_join_handle_gbundle_r(nodus_witness_t *w,
                                             struct nodus_tcp_conn *conn,

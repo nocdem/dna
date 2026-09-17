@@ -1284,7 +1284,11 @@ typedef struct nodus_witness {
      * NOT propose or vote (role safety). Nothing here is persisted. */
     struct {
         int      active;                 /* 1 = fetching/deriving        */
-        uint8_t  pin[64];                /* local trust anchor (copy)    */
+        /* R3 W3 (D-24 rev 4 (1)): 32 bytes — the chain id. A version-3
+         * chain has no genesis BLOCK to pin a 64-byte BlockID to (D-19
+         * rev 6 withdrew it); the chain's only identity is the hash of
+         * its stored genesis DOCUMENT (D-18 rev 4). */
+        uint8_t  pin[32];                /* local trust anchor (copy)    */
         uint8_t *acc;                    /* bundle accumulator           */
         size_t   acc_len;                /* bytes received contiguously  */
         size_t   acc_total;              /* expected total (0 = unknown) */
@@ -1302,6 +1306,49 @@ typedef struct nodus_witness {
          * of never (its logs showed the arm line and then silence). */
         uint64_t last_diag_ms;
     } v2_join;
+
+    /* ── FLEET-TM-R3 W3 package C2a — the cometbft server binding ──────
+     *
+     * `void *` here, DELIBERATELY, not the real pointer types
+     * (`nodus_cmt_node_t *`, `nodus_cmt_net_t *`, `cmt_conr_t *`,
+     * `cmt_memr_t *`): `nodus_witness_cmt_node.h` and
+     * `nodus_witness_cmt_net.h` both `#include "witness/nodus_witness.h"`
+     * for `nodus_witness_t`, and `nodus_cmt_net_t` / `cmt_conr_t` /
+     * `cmt_memr_t` are anonymous struct typedefs with no tag this header
+     * could forward-declare — a real pointer field here would be a
+     * circular include. Every site that dereferences these includes the
+     * real headers first and casts back (nodus_witness.c, nodus_server.c
+     * — never this header).
+     *
+     * Heap-allocated because none of it belongs on this already-large
+     * struct or on any stack: `nodus_cmt_node_t` alone carries three
+     * ~1 MB `cmt_state_storage_t` and an ~85 KB application context
+     * (nodus_witness_cmt_node.h's own warning), and `nodus_cmt_net_t`
+     * embeds several `NODUS_T3_MAX_WITNESSES`-sized arrays plus a 64 MiB
+     * receive arena.
+     *
+     * NULL/false until `nodus_witness_init` constructs them — which it
+     * does only when `v2_successor` is true, i.e. only on a chain the
+     * post-open gate above accepted as version-3. `cmt_live` becomes true
+     * once the tick has started the two reactors (node.go:518-524's
+     * genesis-time wait, checked on the tick — see witness_cmt_tick). */
+    void    *cmt_node;   /* nodus_cmt_node_t*, owned                      */
+    void    *cmt_net;    /* nodus_cmt_net_t*,  owned                      */
+    void    *cmt_conr;   /* cmt_conr_t*,       owned                      */
+    void    *cmt_memr;   /* cmt_memr_t*,       owned                      */
+    bool     cmt_live;
+    /* ORCHESTRATOR delta 1, item C (D-23 rev 7 (19)) — the earliest of
+     * the glue's and the timer's next deadline, as witness_cmt_tick last
+     * returned it (host-clock nanoseconds, cmt_time_unix_nano's units).
+     * Read by nodus_witness_tick to narrow the NEXT call's witness TCP
+     * poll wait below 50 ms when a deadline is closer than that ("poll
+     * wait = min(50 ms, the earliest deadline)"). RUNTIME ONLY: never
+     * persisted, never hashed, never a consensus input — it only shapes
+     * how promptly THIS node's own event loop notices its own timers,
+     * never what it decides. INT64_MAX (nodus_witness_init's explicit
+     * set, not the struct's zero-init) means "no deadline yet / lane not
+     * live" and leaves the poll at its ordinary fixed 50 ms. */
+    int64_t  cmt_next_deadline_ns;
 } nodus_witness_t;
 
 /* ── O15G — genesis chain_id derivation (shared by commit_genesis and the
@@ -1916,6 +1963,38 @@ int nodus_witness_scan_chain_db(nodus_witness_t *witness);
 
 int nodus_witness_create_chain_db(nodus_witness_t *witness,
                                     const uint8_t *chain_id);
+
+/**
+ * ORCHESTRATOR delta 10 (R3-W3-C2a-18) — EXPORTED, was `static
+ * witness_cmt_live_init` (nodus_witness.c). Constructs the cometbft
+ * startup table and transport glue for a version-3 chain: the SAME
+ * construction `nodus_witness_init` runs on a version-3 chain at process
+ * start, now also callable a second way — by the pinned-genesis joiner,
+ * immediately after its own `nodus_witness_scan_chain_db(w)` (above)
+ * adopts a chain mid-life. Without this second call, an adopted joiner
+ * holds the chain (role set by the SAME post-open gate this scan runs)
+ * but never runs consensus and never catches up — there is no blocksync
+ * in this port; catch-up is the reactor's own stored-part gossip, which
+ * needs the reactor this function builds. See the function's own doc
+ * comment in nodus_witness.c for the full precondition proof (both
+ * callers reach it only after `v2_successor`/`v2_chain32` are set by the
+ * SAME gate, with `w->server`/`w->data_path` already populated at
+ * process start either way) and why no tick can land between a caller's
+ * scan and its call to this function.
+ *
+ * The entry guard (an already-populated `cmt_node`/`cmt_net`/`cmt_conr`/
+ * `cmt_memr` refuses with -1, logged) makes a second call over an
+ * existing construction safe to attempt — it will never silently leak
+ * or double-construct — but no caller is expected to actually trigger
+ * it: each of the two callers reaches this function on a path that runs
+ * at most once per witness lifetime.
+ *
+ * @return 0 on success (`witness->cmt_node`/`net`/`conr`/`memr`
+ *         populated, `cmt_live` false); -1 on any failure (including the
+ *         entry guard), with every partial allocation released and the
+ *         witness fields left NULL.
+ */
+int nodus_witness_cmt_live_init(nodus_witness_t *witness);
 
 /**
  * PR 3 / E0 — Orphan bootstrap sentinel check (H-7 startup-side closure).

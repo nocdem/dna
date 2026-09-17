@@ -203,13 +203,11 @@ grounded V1↔V2 reference). On the client side:
 
 - the canonical V2 codecs (envelope, block header, QC, claims, pools,
   activation records) live in `shared/dnac/` and compile into `libdna`;
-- the Tendermint consensus codecs of the T3 season (`shared/dnac/tm_vote.{h,c}`
-  — the 229-byte `nodus.vote.v1` vote preimage; `tm_commit.{h,c}` — the
-  `nodus.commit.v1` commit certificate with its BFT-time median;
-  `tm_bounds.h` — the derived size bounds) are DORMANT: zero consumers, compiled
-  into `libnodus` only (libdna does not list them yet), byte layouts normative in
-  the local T2 wire design; they carry the previous height's certificate INSIDE
-  the next block, so header v4 / body v2 land with a chain wipe in T3 wave 2;
+- the Tendermint consensus codecs of the T3 season (`shared/dnac/tm_vote.{h,c}`,
+  `tm_commit.{h,c}`) were DELETED in cometbft port R2 (2026-09-11) and
+  `tm_bounds.h` (the derived size bounds) in R3 W3 C2b (2026-09-16); the
+  cometbft port under `shared/dnac/cmt_*` is the one consensus implementation
+  and its block, vote and commit codecs are cometbft's own proto3 forms;
 - the **cometbft @709fd12b literal port, R1 types layer** (`shared/dnac/cmt_*`,
   2026-09-10: `cmt_pb` proto3 codec, `cmt_merkle`, `cmt_bits`, `cmt_safemath`,
   `cmt_time`, `cmt_tmhash`, `cmt_canonical`, `cmt_vote`, `cmt_proposal`,

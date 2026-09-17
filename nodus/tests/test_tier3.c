@@ -5,26 +5,62 @@
  * Tests: encode → decode → verify field equality.
  * Also tests sign/verify round-trip.
  *
- * ── Tendermint T3 sections (verbs 28-34, T2 wire design §4.2) ────────
+ * ── cometbft envelope sections (verbs 35-39, D-16 rev 5, W3) ─────────
  *
- * WHAT THEY PROVE. That the Tendermint reactor codec is a bijection over
- * its declared domain and rejects everything outside it: each encodable
- * verb survives encode → decode with every field equal; the method tables
- * agree in both directions; a message that differs from the specification
- * in ANY single way — a range, a byte-string length, a missing key, an
- * extra key, a repeated key, a wrong CBOR type — is refused rather than
- * silently zero-filled. They also prove the per-verb class buffer (D-14
- * rev 2) is large enough to verify the largest message its class can
- * carry, and that NODUS_T3_TM_ENVELOPE_OVERHEAD is an over-estimate of the
- * envelope's real cost, measured rather than asserted.
+ * The legacy Tendermint reactor verbs 28-34 (T2 wire design §4.2, D-16
+ * rev 4) were RETIRED in W3 and their tests deleted with them — the
+ * per-verb CBOR structs they exercised no longer exist. This file's W3
+ * sections replace them.
  *
- * AND ONE MORE, WHICH IS A PIN RATHER THAN A FEATURE:
- * test_tm_legacy_negint_pin proves that teaching pass 1 to step over
- * negative integers (D-22 rev 2) did NOT widen what a legacy verb accepts
- * — a negative anywhere in `a` still returns -1 for verbs 1-27 and 30-34,
- * under a known key, an unknown key, or nested in an array. It would fail
- * if the type gate in nodus_t3_decode were dropped or widened, or if the
- * shared cbor_decode_skip were made tolerant.
+ * WHAT THEY PROVE. That the cometbft envelope codec ({m: bstr}, one
+ * shape for all five verbs, D-16 rev 5) is a bijection over its
+ * declared domain: each verb survives encode → decode → verify with
+ * `m` unchanged; the method tables agree in both directions; the
+ * retired verbs 28-34 answer NULL/0 everywhere; a message that departs
+ * from the exact-key-set spec — a missing "m", an extra key, "m" of
+ * the wrong CBOR type — is refused; `m` exactly at its class ceiling
+ * is accepted THROUGH THE SAME HAND-BUILT FRAME the oversize case uses
+ * (the CONTROL that makes the oversize refusal mean something — see HOW
+ * THEY CAN LIE (1)) and one byte above is refused by the DECODER's own
+ * pass-2 cap (dec_w_cmt_args), never merely by the ENCODER'S buffer
+ * running out first. They also prove
+ * NODUS_T3_CMT_ENVELOPE_OVERHEAD is an over-estimate of the envelope's
+ * real cost (measured, not asserted) and pin the mempool ceiling
+ * (NODUS_T3_CMT_TXS_M_MAX) against `cmt_memr_get_channels` at the
+ * DEFAULT mempool config — the only place that number is tied to its
+ * source, since cmt_memr computes it at runtime, not as a compile-time
+ * constant.
+ *
+ * AND ONE MORE, WHICH IS A PIN RATHER THAN A FEATURE, WITH A CAVEAT
+ * READ THE WHOLE PARAGRAPH BEFORE TRUSTING IT:
+ * test_universal_negint_pin proves the D-22 rev 3 admission set is
+ * EMPTY — a negative integer anywhere in `a` returns -1 for every verb,
+ * legacy or new, under a known key, an unknown key, or nested in an
+ * array. THE MECHANISM IS TWO LAYERS, NOT ONE, and dropping either
+ * layer ALONE flips NOTHING today: pass 2 resets `dec.error` before
+ * re-walking `a` (nodus_tier3.c:2195) through the ordinary
+ * cbor_decode_next / cbor_decode_skip, and cbor_decode_next's own
+ * `default:` branch sets `dec->error = true` on ANY major-type-1 byte
+ * it reads, unconditionally (nodus_cbor.c:274-278) — so even with the
+ * `if (a_negint) return -1;` gate deleted, every one of this file's five
+ * cases is STILL refused, by pass 2's own error propagation, not by the
+ * gate. The gate is the SECOND layer: it is what stays load-bearing if
+ * the FIRST layer ALSO changes — specifically for the legacy shapes,
+ * cases (i)-(iii), whose decoders read a negative's value with
+ * `val.type == CBOR_ITEM_UINT` checks that ignore the type rather than
+ * reject it (case i, nodus_tier3.c's dec_sync_req_args) or skip an
+ * unknown key's value outright (cases ii/iii) — if `cbor_decode_next`
+ * or the legacy skip idiom ever stopped erroring on a negative, ONLY
+ * the gate would still refuse those three. Cases (iv)/(v), the cometbft
+ * envelope verbs, are NOT in that set: `dec_w_cmt_args` (nodus_tier3.c)
+ * refuses ANY key but "m" outright, before reading its value at all
+ * (case v), and refuses "m"'s own value on a bare TYPE mismatch,
+ * independent of sign (case iv) — {m: bstr} has no position where a
+ * negative could otherwise pass, with or without the gate, with or
+ * without a tolerant walker. So this test's real claim is REGRESSION
+ * INSURANCE on the layer that would survive a walker change (i)-(iii),
+ * and cases (iv)/(v) additionally confirm the strict decoder still
+ * refuses those specific frames — see each case's own comment.
  *
  * WHAT THEY REQUIRE. Nothing beyond a default build: no compile flag, no
  * environment variable, no network, no filesystem. Keys come from
@@ -34,36 +70,35 @@
  * WHAT THEY LEAVE BEHIND. Nothing. No files, no processes, no global state
  * beyond this process's own static buffers; every heap buffer is freed.
  *
- * HOW THEY CAN LIE. (1) The negative cases drive a HAND-BUILT envelope, so
- * a mistake in the builder would make every negative "pass" by rejecting
- * for the wrong reason. test_tm_decode_control, and the two controls at the
- * top of test_tm_signed_decode_negatives, exist solely to prove the builder
- * can produce a message the decoder ACCEPTS; a failure in any of them
- * invalidates every negative that follows. (2) A green run says nothing
- * about the host rules — the inner vote signature, the wh.cid gate and the
- * gossip predicates are wave 2 and are not exercised by this codec at all;
- * `sst` and the D-19 value are carried as opaque bytes, never interpreted.
- * (3) The maximal-proposal section proves the 2.8 MB class buffer holds a
- * maximal message on THIS host's allocator; it says nothing about the
- * frame layer or about peer.c's receive buffers, which are still 128 KB.
- * (4) Nothing here enforces CBOR shortest-argument form on decode, so a
- * non-minimal encoding of a signed field would round-trip its VALUE while
- * changing its BYTES — the T2 wave-2 red-team item. (5) The legacy pin
- * drives ONE legacy verb (w_sync_req) and one of 30-34 (w_tm_has). The gate
- * it gates is type-based and therefore verb-independent, but this file
- * demonstrates it on two verbs, not on all thirty-two. (6) THE DECODED
- * MESSAGE IS ONLY AS VALID AS THE BUFFER IT WAS DECODED FROM, in two ways:
- * verb 29's `v` is zero-copy, and `out.wsig` points into the buffer for
- * EVERY verb because it sits outside the union (nodus_tier3.h:913). So any
- * test that reads `v`, reads `wsig`, or calls nodus_t3_verify after the
- * fixture returns must own the buffer and free it afterwards. Both
- * instances of getting this wrong were real and both were in this file:
- * the `v` one crashed ctest outright, because the 2.8 MB PROP-class buffer
- * is above glibc's mmap threshold and free() unmaps it; the `wsig` one, in
- * the 8 KB SMALL class, was recycled rather than unmapped, so it PASSED and
- * was found by the verifier reading the code, not by the suite. A green run
- * of this file is therefore not evidence that its own memory discipline is
- * sound — only ASan or a reviewer is.
+ * HOW THEY CAN LIE. (1) The negative and strict-key-set cases, AND the
+ * oversize half of the at-ceiling sections, drive a HAND-BUILT envelope,
+ * so a mistake in the builder would make every one of them "pass" by
+ * rejecting for the wrong reason; each such test runs a CONTROL first
+ * (a hand-built frame the decoder must ACCEPT — for the negative/strict
+ * cases, an ordinary frame; for one_cmt_ceiling, `m` at EXACTLY m_cap
+ * through the SAME builder) so a builder defect fails loudly instead of
+ * silently strengthening the assertion that follows. Before this
+ * control existed, one_cmt_ceiling's oversize case was VACUOUS for
+ * verbs 35/39: its buffer gave the builder only 4096 B of slack, ~4.7 KB
+ * short of what wsig plus the fixed fields cost, so the encoder
+ * overflowed (`w3_frame_end` returned -99) and `nodus_t3_decode` was
+ * NEVER CALLED — the test read -99 as "refused" and passed without
+ * exercising `dec_w_cmt_args`'s pass-2 cap at all. (2) A green run says
+ * nothing about the host rules — ValidateBasic, the wh.cid
+ * derived-identity gate and the vote admission rules live in cmt_msgs /
+ * cmt_conr / cmt_memr and are not exercised by this codec at all; `m`'s
+ * bytes are carried opaque, never interpreted. (3) The at-ceiling
+ * sections prove the class buffer holds a maximal message on THIS
+ * host's allocator; they say nothing about the frame layer beyond the
+ * one static assert in nodus_tier3.c, or about peer.c's receive
+ * buffers, which are still sized for legacy verbs. (4) THE DECODED
+ * MESSAGE IS ONLY AS VALID AS THE BUFFER IT WAS
+ * DECODED FROM: `out.w_cmt.m` is zero-copy for every one of the five
+ * verbs, and `out.wsig` points into the buffer too, for EVERY verb,
+ * because it sits outside the union (nodus_tier3.h). So any test that
+ * reads `m`, reads `wsig`, or calls nodus_t3_verify after the fixture
+ * returns must own the buffer and free it afterwards — the `keep`
+ * parameter on cmt_roundtrip states which caller needs to.
  */
 
 #include "protocol/nodus_tier3.h"
@@ -71,6 +106,8 @@
 #include "crypto/nodus_sign.h"
 #include "crypto/nodus_identity.h"
 #include "crypto/sign/qgp_dilithium.h"   /* qgp_dsa87_keypair_derand */
+#include "dnac/cmt_mem.h"                /* cmt_mempool_config_default */
+#include "dnac/cmt_memr.h"               /* cmt_memr_get_channels — the TXS ceiling pin */
 
 #include <stdio.h>
 #include <string.h>
@@ -946,25 +983,26 @@ static void test_propose_zero_nullifiers(void) {
 }
 
 /* ══════════════════════════════════════════════════════════════════
- * Tendermint T3 — verbs 28-34 (T2 wire design §4.2, D-16 rev 4)
+ * cometbft envelope — verbs 35-39 (D-16 rev 5, W3)
  * ══════════════════════════════════════════════════════════════════ */
 
 /* Deterministic keypair — qgp_dsa87_keypair_derand with a fixed seed (the
- * test_qc_v2.c idiom). Deliberately NOT ensure_identity() above, which
- * draws from the RNG: these sections must be reproducible. */
-static nodus_pubkey_t tm_pk;
-static nodus_seckey_t tm_sk;
-static int            tm_keys_ready = 0;
+ * test_qc_v2.c idiom, unchanged from wave 1). Deliberately NOT
+ * ensure_identity() above, which draws from the RNG: these sections must
+ * be reproducible. */
+static nodus_pubkey_t cmt_pk;
+static nodus_seckey_t cmt_sk;
+static int            cmt_keys_ready = 0;
 
-static void tm_ensure_keys(void) {
-    if (tm_keys_ready) return;
+static void cmt_ensure_keys(void) {
+    if (cmt_keys_ready) return;
     uint8_t seed[32];
     memset(seed, 0x5A, sizeof(seed));
-    if (qgp_dsa87_keypair_derand(tm_pk.bytes, tm_sk.bytes, seed) != 0) {
+    if (qgp_dsa87_keypair_derand(cmt_pk.bytes, cmt_sk.bytes, seed) != 0) {
         fprintf(stderr, "FATAL: derand keypair failed\n");
         exit(1);
     }
-    tm_keys_ready = 1;
+    cmt_keys_ready = 1;
 }
 
 /* Encode through the type's OWN class buffer, then decode. Using
@@ -973,29 +1011,28 @@ static void tm_ensure_keys(void) {
 /* ⚠ BUFFER LIFETIME IS PART OF THE CONTRACT — for TWO reasons, and the
  * second one applies to every verb:
  *
- *   1. Verb 29's `v` points INTO the buffer this helper allocates
- *      (zero-copy, the w_v2_range_r.frames idiom — nodus_t3_tm_prop_t in
- *      nodus_tier3.h).
+ *   1. `w_cmt.m` points INTO the buffer this helper allocates (zero-copy,
+ *      the same idiom the retired nodus_t3_tm_prop_t's `v` and
+ *      w_v2_range_r's `frames` use — nodus_t3_w_cmt_t in nodus_tier3.h).
  *   2. `out.wsig` points into it too, for EVERY verb. It lives OUTSIDE the
- *      union (nodus_tier3.h:913) and is set to a pointer into the decode
- *      buffer in pass 1 (nodus_tier3.c:2248); nodus_t3_verify memcpy's
- *      4627 bytes from it (nodus_tier3.c:3000).
+ *      union (nodus_tier3.h) and is set to a pointer into the decode
+ *      buffer in pass 1; nodus_t3_verify memcpy's NODUS_SIG_BYTES from it.
  *
  * So `out` is only as valid as the buffer, and the rule is:
  *
  * keep == NULL  → the buffer is freed here. Safe ONLY for a caller that
  *                 neither reads out.wsig nor calls nodus_t3_verify after
- *                 the return, and does not read out.tm_prop.v. Reading the
- *                 copied union fields (scalars and fixed arrays) is fine.
+ *                 the return, and does not read out.w_cmt.m. Reading the
+ *                 copied scalar fields (type, header, m_len) is fine.
  *                 The helper's own verify below is the only verify such a
  *                 caller gets, and it runs while the buffer is alive.
  * keep != NULL  → the buffer is handed over on success and *keep is the
  *                 caller's to free, after its last read of `out`. On every
  *                 failure path *keep is NULL and the buffer is already
  *                 freed, so the caller can free(*keep) unconditionally. */
-static int tm_roundtrip(nodus_t3_msg_t *in, nodus_t3_msg_t *out,
-                        size_t *enc_len_out, uint8_t **keep) {
-    tm_ensure_keys();
+static int cmt_roundtrip(nodus_t3_msg_t *in, nodus_t3_msg_t *out,
+                         size_t *enc_len_out, uint8_t **keep) {
+    cmt_ensure_keys();
     if (keep) *keep = NULL;
 
     size_t cap = nodus_t3_max_msg_size(in->type);
@@ -1004,12 +1041,12 @@ static int tm_roundtrip(nodus_t3_msg_t *in, nodus_t3_msg_t *out,
     if (!buf) return -4;
 
     size_t len = 0;
-    int rc = nodus_t3_encode(in, &tm_sk, buf, cap, &len);
+    int rc = nodus_t3_encode(in, &cmt_sk, buf, cap, &len);
     if (rc != 0 || len == 0) { free(buf); return -1; }
     if (nodus_t3_decode(buf, len, out) != 0) { free(buf); return -2; }
     /* Verify inside the class buffer — a failure here would mean the
      * bound nodus_t3_verify allocates cannot hold this message. */
-    if (nodus_t3_verify(out, &tm_pk) != 0) { free(buf); return -5; }
+    if (nodus_t3_verify(out, &cmt_pk) != 0) { free(buf); return -5; }
 
     if (enc_len_out) *enc_len_out = len;
     if (keep) *keep = buf;      /* caller owns it now */
@@ -1017,19 +1054,64 @@ static int tm_roundtrip(nodus_t3_msg_t *in, nodus_t3_msg_t *out,
     return 0;
 }
 
-/* ── Test: method ↔ type table for the Tendermint verbs ──────────── */
+/* ── The generic hand-built envelope, shared by every W3 structural
+ *    test below ────────────────────────────────────────────────────
+ *
+ * The builder writes a complete {t, y, q, wh, a, wsig} frame so the
+ * decoder sees a well-formed envelope and the ONLY thing under test is
+ * the `a` map the caller supplies between the two halves; wsig is
+ * filler because nodus_t3_decode does not verify it. Renamed and
+ * generalized from wave 1's tm_frame_begin/tm_frame_end (same idiom,
+ * no longer Tendermint-specific): w3_frame_begin_buf takes an explicit
+ * buffer so the class-ceiling tests can use one far larger than the
+ * 64 KiB default; w3_frame_begin is the small-buffer convenience the
+ * structural and negint-pin tests use. */
+static uint8_t w3_filler[QGP_DSA87_SIGNATURE_BYTES];
+static uint8_t w3_small_frame[64 * 1024];
 
-static void test_tm_method_table(void) {
-    const char *name = "tm_method_table";
+static void w3_frame_begin_buf(cbor_encoder_t *enc, const char *method,
+                               uint8_t *buf, size_t cap) {
+    cbor_encoder_init(enc, buf, cap);
+    cbor_encode_map(enc, 6);
+    cbor_encode_cstr(enc, "t"); cbor_encode_uint(enc, 42);
+    cbor_encode_cstr(enc, "y"); cbor_encode_cstr(enc, "q");
+    cbor_encode_cstr(enc, "q"); cbor_encode_cstr(enc, method);
+    /* wh — the 7 keys enc_wh emits, same order */
+    cbor_encode_cstr(enc, "wh");
+    cbor_encode_map(enc, 7);
+    cbor_encode_cstr(enc, "v");   cbor_encode_uint(enc, NODUS_T3_BFT_PROTOCOL_VER);
+    cbor_encode_cstr(enc, "rnd"); cbor_encode_uint(enc, 0);
+    cbor_encode_cstr(enc, "vw");  cbor_encode_uint(enc, 0);
+    cbor_encode_cstr(enc, "sid"); cbor_encode_bstr(enc, w3_filler, 32);
+    cbor_encode_cstr(enc, "ts");  cbor_encode_uint(enc, 1);
+    cbor_encode_cstr(enc, "nc");  cbor_encode_uint(enc, 2);
+    cbor_encode_cstr(enc, "cid"); cbor_encode_bstr(enc, w3_filler, 32);
+    cbor_encode_cstr(enc, "a");
+}
+
+static void w3_frame_begin(cbor_encoder_t *enc, const char *method) {
+    w3_frame_begin_buf(enc, method, w3_small_frame, sizeof(w3_small_frame));
+}
+
+static int w3_frame_end(cbor_encoder_t *enc, nodus_t3_msg_t *out) {
+    cbor_encode_cstr(enc, "wsig");
+    cbor_encode_bstr(enc, w3_filler, QGP_DSA87_SIGNATURE_BYTES);
+    size_t len = cbor_encoder_len(enc);
+    if (len == 0) return -99;               /* builder overflowed */
+    return nodus_t3_decode(enc->buf, len, out);
+}
+
+/* ── Test: method ↔ type table for the cometbft envelope verbs ────── */
+
+static void test_cmt_method_table(void) {
+    const char *name = "cmt_method_table";
 
     static const struct { nodus_t3_msg_type_t t; const char *m; } tbl[] = {
-        { NODUS_T3_TM_STEP,  "w_tm_step"  },
-        { NODUS_T3_TM_PROP,  "w_tm_prop"  },
-        { NODUS_T3_TM_POL,   "w_tm_pol"   },
-        { NODUS_T3_TM_VOTE,  "w_tm_vote"  },
-        { NODUS_T3_TM_HAS,   "w_tm_has"   },
-        { NODUS_T3_TM_MAJ23, "w_tm_maj23" },
-        { NODUS_T3_TM_BITS,  "w_tm_bits"  },
+        { NODUS_T3_CMT_STATE,         "w_cmt_state" },
+        { NODUS_T3_CMT_DATA,          "w_cmt_data"  },
+        { NODUS_T3_CMT_VOTE,          "w_cmt_vote"  },
+        { NODUS_T3_CMT_VOTE_SET_BITS, "w_cmt_bits"  },
+        { NODUS_T3_CMT_TXS,           "w_cmt_txs"   },
     };
 
     for (size_t i = 0; i < sizeof(tbl) / sizeof(tbl[0]); i++) {
@@ -1042,18 +1124,24 @@ static void test_tm_method_table(void) {
         }
     }
 
-    /* Values do not move: 27 is still the last legacy verb and 28..34 are
-     * the Tendermint block. */
-    if (NODUS_T3_VIEWOK_REQ != 27 || NODUS_T3_TM_STEP != 28 ||
-        NODUS_T3_TM_PROP != 29 || NODUS_T3_TM_POL != 30 ||
-        NODUS_T3_TM_VOTE != 31 || NODUS_T3_TM_HAS != 32 ||
-        NODUS_T3_TM_MAJ23 != 33 || NODUS_T3_TM_BITS != 34) {
+    /* Values do not move: 27 is still the last pre-existing verb, 28-34
+     * are RETIRED (never reused), and 35-39 are the new envelope block. */
+    if (NODUS_T3_VIEWOK_REQ != 27 || NODUS_T3_CMT_STATE != 35 ||
+        NODUS_T3_CMT_DATA != 36 || NODUS_T3_CMT_VOTE != 37 ||
+        NODUS_T3_CMT_VOTE_SET_BITS != 38 || NODUS_T3_CMT_TXS != 39) {
         TEST_FAIL(name, "enum values moved"); return;
+    }
+
+    /* A retired number is recognised by NEITHER table. */
+    for (int v = 28; v <= 34; v++) {
+        if (nodus_t3_type_to_method((nodus_t3_msg_type_t)v) != NULL) {
+            TEST_FAIL(name, "a retired verb still has a method string"); return;
+        }
     }
 
     /* Every method string must fit nodus_t3_msg_t.method[16] with its NUL,
      * or pass 1 truncates it and method_to_type silently returns 0. The
-     * longest Tendermint name is "w_tm_maj23" (10). */
+     * longest name here is "w_cmt_state" (11). */
     for (size_t i = 0; i < sizeof(tbl) / sizeof(tbl[0]); i++) {
         if (strlen(tbl[i].m) > 15) {
             TEST_FAIL(name, "method string would be truncated at decode"); return;
@@ -1065,811 +1153,288 @@ static void test_tm_method_table(void) {
 
 /* ── Test: per-verb round-trip ───────────────────────────────────── */
 
-static void test_tm_step_roundtrip(void) {
-    const char *name = "tm_step_roundtrip";
-
-    /* sst is an unconstrained i64 (T2 §4.2) — both edges must survive.
-     * lcr is >= -1, where -1 is the reference's "no last commit round". */
-    static const struct { int64_t sst; int32_t lcr; uint8_t s; } cases[] = {
-        { INT64_MIN,  -1, NODUS_T3_TM_STEP_PROPOSE    },
-        {        -1,   0, NODUS_T3_TM_STEP_PREVOTE    },
-        {         0,   7, NODUS_T3_TM_STEP_PRECOMMIT  },
-        { INT64_MAX, INT32_MAX, NODUS_T3_TM_STEP_NEW_HEIGHT },
+static void test_cmt_roundtrip(void) {
+    const char *name = "cmt_roundtrip";
+    static const nodus_t3_msg_type_t verbs[] = {
+        NODUS_T3_CMT_STATE, NODUS_T3_CMT_DATA, NODUS_T3_CMT_VOTE,
+        NODUS_T3_CMT_VOTE_SET_BITS, NODUS_T3_CMT_TXS
+    };
+    static const uint8_t payload[32] = {
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+        17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32
     };
 
-    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
-        nodus_t3_msg_t in, out;
-        memset(&in, 0, sizeof(in));
-        in.type = NODUS_T3_TM_STEP;
-        in.txn_id = 2800;
-        fill_header(&in.header);
-        in.tm_step.h   = 77;
-        in.tm_step.r   = 3;
-        in.tm_step.s   = cases[i].s;
-        in.tm_step.sst = cases[i].sst;
-        in.tm_step.lcr = cases[i].lcr;
-
-        /* keep = NULL: verb 28 has no pointer field. */
-        if (tm_roundtrip(&in, &out, NULL, NULL) != 0) {
-            fprintf(stderr, "    case sst=%lld lcr=%ld\n",
-                    (long long)cases[i].sst, (long)cases[i].lcr);
-            TEST_FAIL(name, "roundtrip"); return;
-        }
-        check_header(&in.header, &out.header, name);
-        if (out.tm_step.h != 77 || out.tm_step.r != 3 ||
-            out.tm_step.s != cases[i].s) {
-            TEST_FAIL(name, "scalar mismatch"); return;
-        }
-        if (out.tm_step.sst != cases[i].sst) {
-            fprintf(stderr, "    sst want %lld got %lld\n",
-                    (long long)cases[i].sst, (long long)out.tm_step.sst);
-            TEST_FAIL(name, "sst"); return;
-        }
-        if (out.tm_step.lcr != cases[i].lcr) {
-            TEST_FAIL(name, "lcr"); return;
-        }
-    }
-    TEST_PASS(name);
-}
-
-/* The `sst` twin (T2 §4.2): two frames identical but for sst must decode to
- * structs identical but for sst. It is written and never read by the host,
- * so it may never leak into another field. */
-static void test_tm_step_sst_twin(void) {
-    const char *name = "tm_step_sst_twin";
-    nodus_t3_msg_t a_in, a_out, b_in, b_out;
-
-    memset(&a_in, 0, sizeof(a_in));
-    a_in.type = NODUS_T3_TM_STEP;
-    a_in.txn_id = 2801;
-    fill_header(&a_in.header);
-    a_in.tm_step.h = 900; a_in.tm_step.r = 12;
-    a_in.tm_step.s = NODUS_T3_TM_STEP_PREVOTE;
-    a_in.tm_step.lcr = 4;
-
-    b_in = a_in;
-    a_in.tm_step.sst = 0;
-    b_in.tm_step.sst = -6148914691236517206LL;   /* an arbitrary negative i64 */
-
-    /* keep = NULL: verb 28 has no pointer field. */
-    if (tm_roundtrip(&a_in, &a_out, NULL, NULL) != 0 ||
-        tm_roundtrip(&b_in, &b_out, NULL, NULL) != 0) {
-        TEST_FAIL(name, "roundtrip"); return;
-    }
-    if (a_out.tm_step.sst == b_out.tm_step.sst) {
-        TEST_FAIL(name, "the two sst values did not survive as distinct"); return;
-    }
-    if (a_out.tm_step.h   != b_out.tm_step.h   ||
-        a_out.tm_step.r   != b_out.tm_step.r   ||
-        a_out.tm_step.s   != b_out.tm_step.s   ||
-        a_out.tm_step.lcr != b_out.tm_step.lcr) {
-        TEST_FAIL(name, "sst leaked into another field"); return;
-    }
-    if (a_out.tm_step.sst != a_in.tm_step.sst ||
-        b_out.tm_step.sst != b_in.tm_step.sst) {
-        TEST_FAIL(name, "sst value not carried faithfully"); return;
-    }
-    TEST_PASS(name);
-}
-
-static void test_tm_prop_roundtrip(void) {
-    const char *name = "tm_prop_roundtrip";
-    static const uint8_t v[64] = { 0x02, 0xDE, 0xAD, 0xBE, 0xEF };
-    static const int32_t vrs[] = { -1, 0, 5 };
-
-    for (size_t i = 0; i < sizeof(vrs) / sizeof(vrs[0]); i++) {
+    for (size_t i = 0; i < sizeof(verbs) / sizeof(verbs[0]); i++) {
         nodus_t3_msg_t in, out;
         uint8_t *keep = NULL;
         memset(&in, 0, sizeof(in));
-        in.type = NODUS_T3_TM_PROP;
-        in.txn_id = 2900;
+        in.type = verbs[i];
+        in.txn_id = 3500;
         fill_header(&in.header);
-        in.tm_prop.h     = 42;
-        in.tm_prop.r     = 1;
-        in.tm_prop.vr    = vrs[i];
-        in.tm_prop.v     = v;
-        in.tm_prop.v_len = (uint32_t)sizeof(v);
+        in.w_cmt.m     = payload;
+        in.w_cmt.m_len = sizeof(payload);
 
-        /* `keep` because out.tm_prop.v points into the encode buffer; every
-         * read of `out` below happens while that buffer is still mapped,
-         * and the free is the last statement on every path out. */
-        if (tm_roundtrip(&in, &out, NULL, &keep) != 0) {
+        /* `keep`: w_cmt.m is zero-copy, so it must still point at live
+         * memory for the memcmp below. */
+        if (cmt_roundtrip(&in, &out, NULL, &keep) != 0) {
             TEST_FAIL(name, "roundtrip"); return;
         }
         check_header(&in.header, &out.header, name);
-        if (out.tm_prop.h != 42 || out.tm_prop.r != 1) {
-            free(keep); TEST_FAIL(name, "scalar mismatch"); return;
+        if (out.type != verbs[i]) {
+            free(keep); TEST_FAIL(name, "type mismatch"); return;
         }
-        if (out.tm_prop.vr != vrs[i]) {
-            free(keep); TEST_FAIL(name, "vr"); return;
-        }
-        if (out.tm_prop.v_len != sizeof(v)) {
-            free(keep); TEST_FAIL(name, "v_len"); return;
-        }
-        if (!out.tm_prop.v || memcmp(out.tm_prop.v, v, sizeof(v)) != 0) {
-            free(keep); TEST_FAIL(name, "v bytes"); return;
+        if (out.w_cmt.m_len != sizeof(payload) ||
+            memcmp(out.w_cmt.m, payload, sizeof(payload)) != 0) {
+            free(keep); TEST_FAIL(name, "m mismatch"); return;
         }
         free(keep);
     }
     TEST_PASS(name);
 }
 
-/* The one that actually exercises the 2.8 MB class buffer. */
-static void test_tm_prop_maximal_value(void) {
-    const char *name = "tm_prop_maximal_value";
-    tm_ensure_keys();
+/* ── Test: strict key set — exactly "m", no more and no fewer ──────── */
 
-    const size_t v_len = (size_t)DNA_TM_VALUE_MAX_LEN;
-    uint8_t *v = malloc(v_len);
-    if (!v) { TEST_FAIL(name, "alloc value"); return; }
-    for (size_t i = 0; i < v_len; i++) v[i] = (uint8_t)(i & 0xFF);
+static void test_cmt_strict_key_set(void) {
+    const char *name = "cmt_strict_key_set";
+    nodus_t3_msg_t out;
+    cbor_encoder_t enc;
 
-    size_t cap = nodus_t3_max_msg_size(NODUS_T3_TM_PROP);
-    if (cap != NODUS_T3_TM_PROP_MAX_MSG) {
-        TEST_FAIL(name, "PROP class bound"); free(v); return;
+    /* CONTROL: a legitimate {m: bstr} — must be ACCEPTED, or the three
+     * negatives below prove nothing. */
+    w3_frame_begin(&enc, "w_cmt_state");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "m"); cbor_encode_bstr(&enc, w3_filler, 8);
+    if (w3_frame_end(&enc, &out) != 0) {
+        TEST_FAIL(name, "the valid control frame was REJECTED"); return;
     }
-    uint8_t *buf = malloc(cap);
-    if (!buf) { TEST_FAIL(name, "alloc buffer"); free(v); return; }
-
-    nodus_t3_msg_t in, out;
-    memset(&in, 0, sizeof(in));
-    in.type = NODUS_T3_TM_PROP;
-    in.txn_id = 2901;
-    fill_header(&in.header);
-    in.tm_prop.h = 1; in.tm_prop.r = 0; in.tm_prop.vr = -1;
-    in.tm_prop.v = v; in.tm_prop.v_len = (uint32_t)v_len;
-
-    size_t len = 0;
-    if (nodus_t3_encode(&in, &tm_sk, buf, cap, &len) != 0 || len == 0) {
-        TEST_FAIL(name, "a maximal value did not fit its own class buffer");
-        free(buf); free(v); return;
-    }
-    if (nodus_t3_decode(buf, len, &out) != 0) {
-        TEST_FAIL(name, "decode"); free(buf); free(v); return;
-    }
-    if (out.tm_prop.v_len != v_len ||
-        memcmp(out.tm_prop.v, v, v_len) != 0) {
-        TEST_FAIL(name, "maximal value bytes"); free(buf); free(v); return;
-    }
-    /* Verify allocates the class bound internally — a bound too small
-     * makes this fail, which is the property under test. */
-    if (nodus_t3_verify(&out, &tm_pk) != 0) {
-        TEST_FAIL(name, "wsig verify of a maximal proposal");
-        free(buf); free(v); return;
+    if (out.type != NODUS_T3_CMT_STATE || out.w_cmt.m_len != 8) {
+        TEST_FAIL(name, "control decoded to the wrong fields"); return;
     }
 
-    /* MEASURED envelope overhead at maximal value size (design §6 (c)). */
-    if (len <= v_len) {
-        TEST_FAIL(name, "encoded no larger than its value"); free(buf); free(v); return;
-    }
-    size_t overhead = len - v_len;
-    if (overhead >= (size_t)NODUS_T3_TM_ENVELOPE_OVERHEAD) {
-        fprintf(stderr, "    measured overhead %llu >= %llu\n",
-                (unsigned long long)overhead,
-                (unsigned long long)NODUS_T3_TM_ENVELOPE_OVERHEAD);
-        TEST_FAIL(name, "NODUS_T3_TM_ENVELOPE_OVERHEAD is not an over-estimate");
-        free(buf); free(v); return;
-    }
-    fprintf(stderr, "    prop: value %llu B, encoded %llu B, overhead %llu B (< %llu)\n",
-            (unsigned long long)v_len, (unsigned long long)len,
-            (unsigned long long)overhead,
-            (unsigned long long)NODUS_T3_TM_ENVELOPE_OVERHEAD);
-
-    free(buf);
-    free(v);
-    TEST_PASS(name);
-}
-
-static void test_tm_pol_roundtrip(void) {
-    const char *name = "tm_pol_roundtrip";
-    nodus_t3_msg_t in, out;
-    memset(&in, 0, sizeof(in));
-
-    in.type = NODUS_T3_TM_POL;
-    in.txn_id = 3000;
-    fill_header(&in.header);
-    in.tm_pol.h  = 0x0102030405060708ULL;
-    in.tm_pol.pr = 7;
-    for (int i = 0; i < NODUS_T3_TM_BITMAP_MAX; i++)
-        in.tm_pol.bm[i] = (uint8_t)(0xA0 + i);
-    in.tm_pol.bm_len = NODUS_T3_TM_BITMAP_MAX;
-
-    /* keep = NULL: this verb copies every field out of the buffer. */
-    if (tm_roundtrip(&in, &out, NULL, NULL) != 0) { TEST_FAIL(name, "roundtrip"); return; }
-    check_header(&in.header, &out.header, name);
-
-    if (out.tm_pol.h != in.tm_pol.h)   { TEST_FAIL(name, "h"); return; }
-    if (out.tm_pol.pr != in.tm_pol.pr) { TEST_FAIL(name, "pr"); return; }
-    if (out.tm_pol.bm_len != in.tm_pol.bm_len) { TEST_FAIL(name, "bm_len"); return; }
-    if (memcmp(out.tm_pol.bm, in.tm_pol.bm, in.tm_pol.bm_len) != 0) {
-        TEST_FAIL(name, "bm"); return;
-    }
-    TEST_PASS(name);
-}
-
-static void test_tm_vote_roundtrip(void) {
-    const char *name = "tm_vote_roundtrip";
-    nodus_t3_msg_t in, out;
-    memset(&in, 0, sizeof(in));
-
-    in.type = NODUS_T3_TM_VOTE;
-    in.txn_id = 3100;
-    fill_header(&in.header);
-    in.tm_vote.ty = 2;                       /* PRECOMMIT (D-12) */
-    in.tm_vote.h  = 0xFFFFFFFFFFFFFFFFULL;   /* u64 upper edge */
-    in.tm_vote.r  = 0xFFFFFFFFu;             /* u32 upper edge */
-    memset(in.tm_vote.bi,  0xCC, 64);
-    memset(in.tm_vote.vid, 0xDD, 32);
-    in.tm_vote.ix = 127;
-    in.tm_vote.ts = 1800000000000ULL;        /* T2 §4.1 KAT timestamp */
-    for (int i = 0; i < QGP_DSA87_SIGNATURE_BYTES; i++)
-        in.tm_vote.sig[i] = (uint8_t)(i & 0xFF);
-
-    size_t enc_len = 0;
-    /* keep = NULL: verb 31 copies bi/vid/sig into the struct. */
-    if (tm_roundtrip(&in, &out, &enc_len, NULL) != 0) {
-        TEST_FAIL(name, "roundtrip"); return;
-    }
-    check_header(&in.header, &out.header, name);
-
-    if (out.tm_vote.ty != in.tm_vote.ty) { TEST_FAIL(name, "ty"); return; }
-    if (out.tm_vote.h  != in.tm_vote.h)  { TEST_FAIL(name, "h");  return; }
-    if (out.tm_vote.r  != in.tm_vote.r)  { TEST_FAIL(name, "r");  return; }
-    if (memcmp(out.tm_vote.bi, in.tm_vote.bi, 64) != 0)   { TEST_FAIL(name, "bi"); return; }
-    if (memcmp(out.tm_vote.vid, in.tm_vote.vid, 32) != 0) { TEST_FAIL(name, "vid"); return; }
-    if (out.tm_vote.ix != in.tm_vote.ix) { TEST_FAIL(name, "ix"); return; }
-    if (out.tm_vote.ts != in.tm_vote.ts) { TEST_FAIL(name, "ts"); return; }
-    if (memcmp(out.tm_vote.sig, in.tm_vote.sig, QGP_DSA87_SIGNATURE_BYTES) != 0) {
-        TEST_FAIL(name, "sig"); return;
+    /* missing "m" — an empty args map. */
+    w3_frame_begin(&enc, "w_cmt_state");
+    cbor_encode_map(&enc, 0);
+    if (w3_frame_end(&enc, &out) == 0) {
+        TEST_FAIL(name, "missing m accepted"); return;
     }
 
-    /* MEASURED envelope overhead: everything the wire costs on top of the
-     * inner signature — the CBOR envelope, the 7-key wh, the method
-     * string, the fixed fields and the 4627-byte frame wsig. The class
-     * macro must be an over-estimate of it, not a guess that happens to
-     * hold. */
-    if (enc_len <= (size_t)QGP_DSA87_SIGNATURE_BYTES) {
-        TEST_FAIL(name, "encoded shorter than its own inner signature"); return;
+    /* an extra key beside "m". */
+    w3_frame_begin(&enc, "w_cmt_state");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "m");   cbor_encode_bstr(&enc, w3_filler, 8);
+    cbor_encode_cstr(&enc, "zzz"); cbor_encode_uint(&enc, 1);
+    if (w3_frame_end(&enc, &out) == 0) {
+        TEST_FAIL(name, "extra key accepted"); return;
     }
-    size_t overhead = enc_len - (size_t)QGP_DSA87_SIGNATURE_BYTES;
-    if (overhead >= (size_t)NODUS_T3_TM_ENVELOPE_OVERHEAD) {
-        fprintf(stderr, "    measured envelope overhead %llu >= %llu\n",
-                (unsigned long long)overhead,
-                (unsigned long long)NODUS_T3_TM_ENVELOPE_OVERHEAD);
-        TEST_FAIL(name, "NODUS_T3_TM_ENVELOPE_OVERHEAD is not an over-estimate");
-        return;
+
+    /* "m" a duplicate key. */
+    w3_frame_begin(&enc, "w_cmt_state");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "m"); cbor_encode_bstr(&enc, w3_filler, 8);
+    cbor_encode_cstr(&enc, "m"); cbor_encode_bstr(&enc, w3_filler, 4);
+    if (w3_frame_end(&enc, &out) == 0) {
+        TEST_FAIL(name, "duplicate m accepted"); return;
     }
-    if (enc_len > nodus_t3_max_msg_size(NODUS_T3_TM_VOTE)) {
-        TEST_FAIL(name, "maximal vote exceeds its class bound"); return;
+
+    /* "m" as the wrong CBOR type — a mempool verb this time, for a
+     * second reactor's coverage. */
+    w3_frame_begin(&enc, "w_cmt_txs");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "m"); cbor_encode_uint(&enc, 7);
+    if (w3_frame_end(&enc, &out) == 0) {
+        TEST_FAIL(name, "m as uint accepted"); return;
     }
-    fprintf(stderr, "    vote: encoded %llu B, envelope overhead %llu B (< %llu)\n",
-            (unsigned long long)enc_len, (unsigned long long)overhead,
-            (unsigned long long)NODUS_T3_TM_ENVELOPE_OVERHEAD);
 
     TEST_PASS(name);
 }
 
-static void test_tm_has_roundtrip(void) {
-    const char *name = "tm_has_roundtrip";
-    nodus_t3_msg_t in, out;
-    memset(&in, 0, sizeof(in));
+/* ── Test: the two class ceilings, at the boundary on both sides ──── */
 
-    in.type = NODUS_T3_TM_HAS;
-    in.txn_id = 3200;
-    fill_header(&in.header);
-    in.tm_has.h  = 9;
-    in.tm_has.r  = 4;
-    in.tm_has.ty = 1;                        /* PREVOTE */
-    in.tm_has.ix = 63;
+/* `m` exactly at the class max is ACCEPTED through the real encode/verify
+ * path (D-16 rev 5's own numbers, not a guess); one byte above is REFUSED
+ * by pass 2 (dec_w_cmt_args), proven with a HAND-BUILT frame so the
+ * assertion is about the DECODER's own cap, never merely that the
+ * encoder happens to refuse the same input first (enc_args's cap is the
+ * SAME macro, so testing only the encoder would not distinguish the two
+ * — a hostile peer does not go through nodus_t3_encode). */
+static void one_cmt_ceiling(nodus_t3_msg_type_t type, size_t m_cap,
+                            const char *label) {
+    char name[64];
+    snprintf(name, sizeof(name), "cmt_ceiling_%s", label);
 
-    /* keep = NULL: this verb copies every field out of the buffer. */
-    if (tm_roundtrip(&in, &out, NULL, NULL) != 0) { TEST_FAIL(name, "roundtrip"); return; }
-    check_header(&in.header, &out.header, name);
-    if (out.tm_has.h != 9 || out.tm_has.r != 4 ||
-        out.tm_has.ty != 1 || out.tm_has.ix != 63) {
-        TEST_FAIL(name, "field mismatch"); return;
-    }
-    TEST_PASS(name);
-}
+    {
+        nodus_t3_msg_t in, out;
+        uint8_t *keep = NULL;
+        uint8_t *payload = (uint8_t *)malloc(m_cap);
+        if (!payload) { TEST_FAIL(name, "alloc payload"); return; }
+        memset(payload, 0x42, m_cap);
 
-static void test_tm_maj23_roundtrip(void) {
-    const char *name = "tm_maj23_roundtrip";
-    nodus_t3_msg_t in, out;
-    memset(&in, 0, sizeof(in));
+        memset(&in, 0, sizeof(in));
+        in.type = type;
+        fill_header(&in.header);
+        in.w_cmt.m     = payload;
+        in.w_cmt.m_len = m_cap;
 
-    in.type = NODUS_T3_TM_MAJ23;
-    in.txn_id = 3300;
-    fill_header(&in.header);
-    in.tm_maj23.h  = 11;
-    in.tm_maj23.r  = 2;
-    in.tm_maj23.ty = 2;
-    memset(in.tm_maj23.bi, 0x5C, 64);
-
-    /* keep = NULL: this verb copies every field out of the buffer. */
-    if (tm_roundtrip(&in, &out, NULL, NULL) != 0) { TEST_FAIL(name, "roundtrip"); return; }
-    check_header(&in.header, &out.header, name);
-    if (out.tm_maj23.h != 11 || out.tm_maj23.r != 2 || out.tm_maj23.ty != 2) {
-        TEST_FAIL(name, "scalar mismatch"); return;
-    }
-    if (memcmp(out.tm_maj23.bi, in.tm_maj23.bi, 64) != 0) {
-        TEST_FAIL(name, "bi"); return;
-    }
-    TEST_PASS(name);
-}
-
-static void test_tm_bits_roundtrip(void) {
-    const char *name = "tm_bits_roundtrip";
-    nodus_t3_msg_t in, out;
-    memset(&in, 0, sizeof(in));
-
-    in.type = NODUS_T3_TM_BITS;
-    in.txn_id = 3400;
-    fill_header(&in.header);
-    in.tm_bits.h  = 12;
-    in.tm_bits.r  = 0;
-    in.tm_bits.ty = 1;
-    memset(in.tm_bits.bi, 0x77, 64);
-    in.tm_bits.bm[0] = 0x0F;
-    in.tm_bits.bm_len = 1;                   /* lower edge: 1 byte */
-
-    /* keep = NULL: this verb copies every field out of the buffer. */
-    if (tm_roundtrip(&in, &out, NULL, NULL) != 0) { TEST_FAIL(name, "roundtrip"); return; }
-    check_header(&in.header, &out.header, name);
-    if (out.tm_bits.h != 12 || out.tm_bits.r != 0 || out.tm_bits.ty != 1) {
-        TEST_FAIL(name, "scalar mismatch"); return;
-    }
-    if (memcmp(out.tm_bits.bi, in.tm_bits.bi, 64) != 0) { TEST_FAIL(name, "bi"); return; }
-    if (out.tm_bits.bm_len != 1 || out.tm_bits.bm[0] != 0x0F) {
-        TEST_FAIL(name, "bm"); return;
-    }
-    TEST_PASS(name);
-}
-
-/* ── Test: encoder refuses out-of-range fields ───────────────────── */
-
-static void test_tm_encode_range_negatives(void) {
-    const char *name = "tm_encode_range_negatives";
-    tm_ensure_keys();
-
-    /* Sized to the LARGEST Tendermint class that can encode, so a refusal
-     * can only come from the range check under test and never from a
-     * buffer that was too small. */
-    const size_t cap = NODUS_T3_TM_VOTE_MAX_MSG;
-    uint8_t *buf = malloc(cap);
-    if (!buf) { TEST_FAIL(name, "alloc"); return; }
-    size_t len = 0;
-
-    /* ONE message, rebuilt per case: nodus_t3_msg_t carries the 128-entry
-     * certificate arrays of the legacy union members and is ~600 KB, so an
-     * array of them would be megabytes of stack. */
-    static const uint8_t small_v[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
-
-    static const struct {
-        const char         *what;
-        nodus_t3_msg_type_t type;
-        uint8_t             ty;       /* vote type byte to plant    */
-        uint8_t             bm_len;   /* bitmap length to plant     */
-        uint8_t             s;        /* step value to plant (28)   */
-        int32_t             signed_v; /* lcr (28) or vr (29)        */
-        uint32_t            v_len;    /* value length to plant (29) */
-        int                 v_null;   /* plant a NULL value pointer */
-    } cases[] = {
-        /* bitmap length 0 and 17 on both bitmap-carrying verbs */
-        { "pol bm_len 0",    NODUS_T3_TM_POL,   0,    0,  0, 0,  0, 0 },
-        { "pol bm_len 17",   NODUS_T3_TM_POL,   0,    NODUS_T3_TM_BITMAP_MAX + 1,
-                                                          0, 0,  0, 0 },
-        { "bits bm_len 0",   NODUS_T3_TM_BITS,  1,    0,  0, 0,  0, 0 },
-        { "bits bm_len 17",  NODUS_T3_TM_BITS,  1,    NODUS_T3_TM_BITMAP_MAX + 1,
-                                                          0, 0,  0, 0 },
-        /* vote type byte outside D-12's {1, 2}, on every verb carrying it */
-        { "vote ty 0",       NODUS_T3_TM_VOTE,  0,    0,  0, 0,  0, 0 },
-        { "vote ty 3",       NODUS_T3_TM_VOTE,  3,    0,  0, 0,  0, 0 },
-        { "has ty 0",        NODUS_T3_TM_HAS,   0,    0,  0, 0,  0, 0 },
-        { "maj23 ty 0x20",   NODUS_T3_TM_MAJ23, 0x20, 0,  0, 0,  0, 0 },
-        { "bits ty 0",       NODUS_T3_TM_BITS,  0,    1,  0, 0,  0, 0 },
-        /* verb 28: step outside 0..3, lcr below -1 */
-        { "step s 4",        NODUS_T3_TM_STEP,  0,    0,  4, 0,  0, 0 },
-        { "step s 255",      NODUS_T3_TM_STEP,  0,    0,  255, 0, 0, 0 },
-        { "step lcr -2",     NODUS_T3_TM_STEP,  0,    0,  0, -2, 0, 0 },
-        { "step lcr INT32_MIN", NODUS_T3_TM_STEP, 0,  0,  0, INT32_MIN, 0, 0 },
-        /* verb 29: vr below -1, empty value, oversize value, NULL value */
-        { "prop vr -2",      NODUS_T3_TM_PROP,  0,    0,  0, -2, 8, 0 },
-        { "prop v_len 0",    NODUS_T3_TM_PROP,  0,    0,  0, -1, 0, 0 },
-        { "prop v NULL",     NODUS_T3_TM_PROP,  0,    0,  0, -1, 8, 1 },
-        /* One byte past the derived ceiling. enc_args refuses on the
-         * LENGTH before enc_tm_prop_args ever dereferences v, so an
-         * 8-byte buffer is safe to name here. */
-        { "prop v_len VALUE_MAX+1", NODUS_T3_TM_PROP, 0, 0, 0, -1,
-          (uint32_t)DNA_TM_VALUE_MAX_LEN + 1u, 0 },
-    };
-
-    nodus_t3_msg_t m;
-    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
-        memset(&m, 0, sizeof(m));
-        m.type = cases[i].type;
-        fill_header(&m.header);
-        switch (cases[i].type) {
-            case NODUS_T3_TM_POL:   m.tm_pol.bm_len   = cases[i].bm_len; break;
-            case NODUS_T3_TM_VOTE:  m.tm_vote.ty      = cases[i].ty;     break;
-            case NODUS_T3_TM_HAS:   m.tm_has.ty       = cases[i].ty;     break;
-            case NODUS_T3_TM_MAJ23: m.tm_maj23.ty     = cases[i].ty;     break;
-            case NODUS_T3_TM_BITS:  m.tm_bits.ty      = cases[i].ty;
-                                    m.tm_bits.bm_len  = cases[i].bm_len; break;
-            case NODUS_T3_TM_STEP:  m.tm_step.s       = cases[i].s;
-                                    m.tm_step.lcr     = cases[i].signed_v; break;
-            case NODUS_T3_TM_PROP:  m.tm_prop.vr      = cases[i].signed_v;
-                                    m.tm_prop.v_len   = cases[i].v_len;
-                                    m.tm_prop.v       = cases[i].v_null ? NULL
-                                                                        : small_v;
-                                    break;
-            default: break;
+        if (cmt_roundtrip(&in, &out, NULL, &keep) != 0) {
+            free(payload);
+            TEST_FAIL(name, "at-ceiling m REFUSED"); return;
         }
-        if (nodus_t3_encode(&m, &tm_sk, buf, cap, &len) == 0) {
-            fprintf(stderr, "    ACCEPTED: %s\n", cases[i].what);
-            TEST_FAIL(name, "encoder accepted what it must refuse");
-            free(buf);
+        if (out.w_cmt.m_len != m_cap) {
+            free(keep); free(payload);
+            TEST_FAIL(name, "at-ceiling m_len mismatch"); return;
+        }
+        free(keep);
+        free(payload);
+    }
+
+    {
+        const char *method = nodus_t3_type_to_method(type);
+        /* NODUS_T3_CMT_ENVELOPE_OVERHEAD (8192), not a smaller hand-picked
+         * slack: the wsig alone is QGP_DSA87_SIGNATURE_BYTES == 4627 B,
+         * plus its bstr header, plus the {t,y,q,wh} fields
+         * w3_frame_begin_buf writes ahead of "a" — comfortably over the
+         * 4096 this test used to give itself, which is EXACTLY what made
+         * the case below vacuous (see the CONTROL immediately after). */
+        size_t      cap    = m_cap + (size_t)NODUS_T3_CMT_ENVELOPE_OVERHEAD;
+        uint8_t    *frame  = (uint8_t *)malloc(cap);
+        uint8_t    *over   = (uint8_t *)malloc(m_cap + 1u);
+        cbor_encoder_t enc;
+        nodus_t3_msg_t out;
+        int rc;
+
+        if (!frame || !over) {
+            free(frame); free(over);
+            TEST_FAIL(name, "alloc oversize"); return;
+        }
+        memset(over, 0x42, m_cap + 1u);
+
+        /* CONTROL: `m` at EXACTLY m_cap, through the SAME hand-built
+         * frame this test uses for the oversize case, must be ACCEPTED —
+         * this proves `cap` actually holds the frame, so a refusal below
+         * is dec_w_cmt_args's pass-2 cap (nodus_tier3.c:2547), never the
+         * encoder overflowing first. Without this control the REFUTED
+         * defect recurs by construction: shrink `cap` and w3_frame_end
+         * returns -99 (the builder overflowed, nodus_cbor.c:127-128)
+         * before nodus_t3_decode ever runs, and `rc == 0` below stays
+         * false for the wrong reason — the m_cap+1 case would "pass" by
+         * never exercising the decoder at all. */
+        w3_frame_begin_buf(&enc, method, frame, cap);
+        cbor_encode_map(&enc, 1);
+        cbor_encode_cstr(&enc, "m");
+        cbor_encode_bstr(&enc, over, m_cap);
+        rc = w3_frame_end(&enc, &out);
+        if (rc != 0) {
+            free(frame); free(over);
+            TEST_FAIL(name, "at-ceiling m through the hand-built frame "
+                            "was REFUSED (cap is too small for the builder)");
+            return;
+        }
+        if (out.w_cmt.m_len != m_cap) {
+            free(frame); free(over);
+            TEST_FAIL(name, "at-ceiling m_len mismatch (hand-built frame)");
+            return;
+        }
+
+        /* THE CASE UNDER TEST: m_cap+1, same builder, same cap. Must be
+         * refused BY THE DECODER — rc must be neither 0 (accepted) nor
+         * -99 (the builder overflowed, w3_frame_end's own escape hatch).
+         * A -99 here, with the control above green, would mean this
+         * specific value of m_cap+1 needs one byte more slack than `cap`
+         * gives it — still a builder-sizing defect, not proof of
+         * dec_w_cmt_args's cap. */
+        w3_frame_begin_buf(&enc, method, frame, cap);
+        cbor_encode_map(&enc, 1);
+        cbor_encode_cstr(&enc, "m");
+        cbor_encode_bstr(&enc, over, m_cap + 1u);
+        rc = w3_frame_end(&enc, &out);
+
+        free(frame);
+        free(over);
+        if (rc == 0) { TEST_FAIL(name, "m_cap+1 accepted"); return; }
+        if (rc == -99) {
+            TEST_FAIL(name, "m_cap+1 case is VACUOUS: the builder "
+                            "overflowed (-99) before the decoder ever ran");
             return;
         }
     }
 
-    free(buf);
     TEST_PASS(name);
 }
 
-/* ── Decoder negatives: a hand-built envelope, one deviation each ──
- *
- * The builder writes a complete {t, y, q, wh, a, wsig} frame so the
- * decoder sees a well-formed envelope and the ONLY thing under test is the
- * `a` map. wsig is filler — nodus_t3_decode does not verify it. */
+/* ── Test: verify fails under the wrong key ────────────────────────── */
 
-typedef struct {
-    size_t   map_count;      /* the map header the decoder is told to expect */
-    uint64_t ty;             /* vote type byte                              */
-    int      ty_as_bstr;     /* emit ty as a byte string (type mismatch)    */
-    uint64_t h;
-    int      h_as_bstr;
-    uint64_t r;              /* > UINT32_MAX exercises the u32 clamp        */
-    size_t   bi_len, vid_len, sig_len;
-    int      omit_ts;        /* leave the ts key out entirely               */
-    int      dup_h;          /* emit h a second time                        */
-    int      extra_key;      /* emit a key the verb does not define         */
-} vote_tweak_t;
-
-static void tm_default_vote_tweak(vote_tweak_t *t) {
-    memset(t, 0, sizeof(*t));
-    t->map_count = 8;
-    t->ty = 1;
-    t->h  = 5;
-    t->r  = 1;
-    t->bi_len  = 64;
-    t->vid_len = 32;
-    t->sig_len = QGP_DSA87_SIGNATURE_BYTES;
-}
-
-static uint8_t tm_filler[QGP_DSA87_SIGNATURE_BYTES];
-
-static void tm_enc_vote_map(cbor_encoder_t *enc, const vote_tweak_t *t) {
-    cbor_encode_map(enc, t->map_count);
-
-    cbor_encode_cstr(enc, "ty");
-    if (t->ty_as_bstr) cbor_encode_bstr(enc, tm_filler, 1);
-    else               cbor_encode_uint(enc, t->ty);
-
-    cbor_encode_cstr(enc, "h");
-    if (t->h_as_bstr) cbor_encode_bstr(enc, tm_filler, 8);
-    else              cbor_encode_uint(enc, t->h);
-
-    cbor_encode_cstr(enc, "r");   cbor_encode_uint(enc, t->r);
-    cbor_encode_cstr(enc, "bi");  cbor_encode_bstr(enc, tm_filler, t->bi_len);
-    cbor_encode_cstr(enc, "vid"); cbor_encode_bstr(enc, tm_filler, t->vid_len);
-    cbor_encode_cstr(enc, "ix");  cbor_encode_uint(enc, 3);
-    if (!t->omit_ts) {
-        cbor_encode_cstr(enc, "ts"); cbor_encode_uint(enc, 1800000000000ULL);
-    }
-    cbor_encode_cstr(enc, "sig"); cbor_encode_bstr(enc, tm_filler, t->sig_len);
-    if (t->dup_h)     { cbor_encode_cstr(enc, "h");   cbor_encode_uint(enc, 6); }
-    if (t->extra_key) { cbor_encode_cstr(enc, "zzz"); cbor_encode_uint(enc, 1); }
-}
-
-/* The envelope, written once. The caller supplies the `a` map between the
- * two halves; wsig is filler because nodus_t3_decode does not verify it. */
-static uint8_t tm_frame[64 * 1024];
-
-static void tm_frame_begin(cbor_encoder_t *enc, const char *method) {
-    cbor_encoder_init(enc, tm_frame, sizeof(tm_frame));
-    cbor_encode_map(enc, 6);
-    cbor_encode_cstr(enc, "t"); cbor_encode_uint(enc, 42);
-    cbor_encode_cstr(enc, "y"); cbor_encode_cstr(enc, "q");
-    cbor_encode_cstr(enc, "q"); cbor_encode_cstr(enc, method);
-    /* wh — the 7 keys enc_wh emits, same order */
-    cbor_encode_cstr(enc, "wh");
-    cbor_encode_map(enc, 7);
-    cbor_encode_cstr(enc, "v");   cbor_encode_uint(enc, NODUS_T3_BFT_PROTOCOL_VER);
-    cbor_encode_cstr(enc, "rnd"); cbor_encode_uint(enc, 0);
-    cbor_encode_cstr(enc, "vw");  cbor_encode_uint(enc, 0);
-    cbor_encode_cstr(enc, "sid"); cbor_encode_bstr(enc, tm_filler, 32);
-    cbor_encode_cstr(enc, "ts");  cbor_encode_uint(enc, 1);
-    cbor_encode_cstr(enc, "nc");  cbor_encode_uint(enc, 2);
-    cbor_encode_cstr(enc, "cid"); cbor_encode_bstr(enc, tm_filler, 32);
-    cbor_encode_cstr(enc, "a");
-}
-
-static int tm_frame_end(cbor_encoder_t *enc, nodus_t3_msg_t *out) {
-    cbor_encode_cstr(enc, "wsig");
-    cbor_encode_bstr(enc, tm_filler, QGP_DSA87_SIGNATURE_BYTES);
-    size_t len = cbor_encoder_len(enc);
-    if (len == 0) return -99;               /* builder overflowed */
-    return nodus_t3_decode(tm_frame, len, out);
-}
-
-/* Build the whole frame around a vote `a` map and decode it. */
-static int tm_decode_vote(const vote_tweak_t *t, nodus_t3_msg_t *out) {
-    cbor_encoder_t enc;
-    tm_frame_begin(&enc, "w_tm_vote");
-    tm_enc_vote_map(&enc, t);
-    return tm_frame_end(&enc, out);
-}
-
-/* The control. If this fails, every negative below is meaningless. */
-static void test_tm_decode_control(void) {
-    const char *name = "tm_decode_control";
-    vote_tweak_t t;
-    nodus_t3_msg_t out;
-
-    tm_default_vote_tweak(&t);
-    if (tm_decode_vote(&t, &out) != 0) {
-        TEST_FAIL(name, "the hand-built valid frame was REJECTED — every "
-                        "negative in this file is now unproven");
-        return;
-    }
-    if (out.type != NODUS_T3_TM_VOTE || out.tm_vote.ty != 1 ||
-        out.tm_vote.h != 5 || out.tm_vote.ix != 3) {
-        TEST_FAIL(name, "control decoded to the wrong fields"); return;
-    }
-    TEST_PASS(name);
-}
-
-static void test_tm_decode_negatives(void) {
-    const char *name = "tm_decode_negatives";
-    nodus_t3_msg_t out;
-    vote_tweak_t t;
-    int i;
-
-    struct { const char *what; vote_tweak_t t; } cases[10];
-    memset(cases, 0, sizeof(cases));
-    int n = 0;
-
-    tm_default_vote_tweak(&t); t.ty = 0;
-    cases[n].what = "ty 0";            cases[n].t = t; n++;
-    tm_default_vote_tweak(&t); t.ty = 3;
-    cases[n].what = "ty 3";            cases[n].t = t; n++;
-    tm_default_vote_tweak(&t); t.bi_len = 63;
-    cases[n].what = "bi 63";           cases[n].t = t; n++;
-    tm_default_vote_tweak(&t); t.bi_len = 65;
-    cases[n].what = "bi 65";           cases[n].t = t; n++;
-    tm_default_vote_tweak(&t); t.vid_len = 31;
-    cases[n].what = "vid 31";          cases[n].t = t; n++;
-    tm_default_vote_tweak(&t); t.sig_len = QGP_DSA87_SIGNATURE_BYTES - 1;
-    cases[n].what = "sig 4626";        cases[n].t = t; n++;
-    tm_default_vote_tweak(&t); t.omit_ts = 1; t.map_count = 7;
-    cases[n].what = "missing ts key";  cases[n].t = t; n++;
-    tm_default_vote_tweak(&t); t.extra_key = 1; t.map_count = 9;
-    cases[n].what = "unknown key";     cases[n].t = t; n++;
-    tm_default_vote_tweak(&t); t.dup_h = 1; t.map_count = 9;
-    cases[n].what = "duplicate key";   cases[n].t = t; n++;
-    tm_default_vote_tweak(&t); t.h_as_bstr = 1;
-    cases[n].what = "h wrong type";    cases[n].t = t; n++;
-
-    for (i = 0; i < n; i++) {
-        int rc = tm_decode_vote(&cases[i].t, &out);
-        if (rc == -99) {
-            fprintf(stderr, "    builder overflow on: %s\n", cases[i].what);
-            TEST_FAIL(name, "frame builder overflowed"); return;
-        }
-        if (rc == 0) {
-            fprintf(stderr, "    ACCEPTED: %s\n", cases[i].what);
-            TEST_FAIL(name, "decoder accepted a malformed message"); return;
-        }
-    }
-
-    /* r above UINT32_MAX: the field is a u32 on the wire and in the
-     * struct, so a larger value must reject rather than truncate. */
-    tm_default_vote_tweak(&t);
-    t.r = 0x1FFFFFFFFULL;
-    if (tm_decode_vote(&t, &out) == 0) {
-        TEST_FAIL(name, "r > UINT32_MAX accepted"); return;
-    }
-
-    TEST_PASS(name);
-}
-
-/* ── Decode negatives for the SIGNED fields (verbs 28/29, D-22) ──── */
-
-static void test_tm_signed_decode_negatives(void) {
-    const char *name = "tm_signed_decode_negatives";
-    nodus_t3_msg_t out;
-    cbor_encoder_t enc;
+static void test_cmt_verify_wrong_key(void) {
+    const char *name = "cmt_verify_wrong_key";
+    nodus_t3_msg_t in, out;
+    uint8_t *keep = NULL;
+    static const uint8_t payload[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+    nodus_pubkey_t other_pk;
+    nodus_seckey_t other_sk;
+    uint8_t seed[32];
     int rc;
 
-    /* CONTROLS FIRST: both builders must be able to produce something the
-     * decoder ACCEPTS, or the negatives below prove nothing. */
-    tm_frame_begin(&enc, "w_tm_step");
-    cbor_encode_map(&enc, 5);
-    cbor_encode_cstr(&enc, "h");   cbor_encode_uint(&enc, 5);
-    cbor_encode_cstr(&enc, "r");   cbor_encode_uint(&enc, 1);
-    cbor_encode_cstr(&enc, "s");   cbor_encode_uint(&enc, 3);
-    cbor_encode_cstr(&enc, "sst"); cbor_encode_int(&enc, INT64_MIN);
-    cbor_encode_cstr(&enc, "lcr"); cbor_encode_int(&enc, -1);
-    if (tm_frame_end(&enc, &out) != 0) {
-        TEST_FAIL(name, "the valid step control was REJECTED"); return;
-    }
-    if (out.tm_step.sst != INT64_MIN || out.tm_step.lcr != -1 ||
-        out.tm_step.s != 3) {
-        TEST_FAIL(name, "step control decoded to the wrong fields"); return;
+    memset(seed, 0x77, sizeof(seed));
+    if (qgp_dsa87_keypair_derand(other_pk.bytes, other_sk.bytes, seed) != 0) {
+        TEST_FAIL(name, "derand keypair"); return;
     }
 
-    tm_frame_begin(&enc, "w_tm_prop");
-    cbor_encode_map(&enc, 4);
-    cbor_encode_cstr(&enc, "h");  cbor_encode_uint(&enc, 5);
-    cbor_encode_cstr(&enc, "r");  cbor_encode_uint(&enc, 1);
-    cbor_encode_cstr(&enc, "vr"); cbor_encode_int(&enc, -1);
-    cbor_encode_cstr(&enc, "v");  cbor_encode_bstr(&enc, tm_filler, 4);
-    if (tm_frame_end(&enc, &out) != 0) {
-        TEST_FAIL(name, "the valid prop control was REJECTED"); return;
+    memset(&in, 0, sizeof(in));
+    in.type = NODUS_T3_CMT_STATE;
+    fill_header(&in.header);
+    in.w_cmt.m     = payload;
+    in.w_cmt.m_len = sizeof(payload);
+
+    /* `keep`: nodus_t3_verify below runs AFTER the helper returns, and
+     * reads out.wsig, which points into the encode buffer for every
+     * verb (nodus_tier3.h). */
+    if (cmt_roundtrip(&in, &out, NULL, &keep) != 0) {
+        TEST_FAIL(name, "roundtrip"); return;
     }
-    if (out.tm_prop.vr != -1 || out.tm_prop.v_len != 4) {
-        TEST_FAIL(name, "prop control decoded to the wrong fields"); return;
-    }
-
-    /* lcr = -2 — below the reference's "none". */
-    tm_frame_begin(&enc, "w_tm_step");
-    cbor_encode_map(&enc, 5);
-    cbor_encode_cstr(&enc, "h");   cbor_encode_uint(&enc, 5);
-    cbor_encode_cstr(&enc, "r");   cbor_encode_uint(&enc, 1);
-    cbor_encode_cstr(&enc, "s");   cbor_encode_uint(&enc, 0);
-    cbor_encode_cstr(&enc, "sst"); cbor_encode_int(&enc, 0);
-    cbor_encode_cstr(&enc, "lcr"); cbor_encode_int(&enc, -2);
-    if (tm_frame_end(&enc, &out) == 0) { TEST_FAIL(name, "lcr -2 accepted"); return; }
-
-    /* lcr above INT32_MAX — a legal CBOR uint that the i32 field cannot
-     * hold; it must reject rather than truncate. */
-    tm_frame_begin(&enc, "w_tm_step");
-    cbor_encode_map(&enc, 5);
-    cbor_encode_cstr(&enc, "h");   cbor_encode_uint(&enc, 5);
-    cbor_encode_cstr(&enc, "r");   cbor_encode_uint(&enc, 1);
-    cbor_encode_cstr(&enc, "s");   cbor_encode_uint(&enc, 0);
-    cbor_encode_cstr(&enc, "sst"); cbor_encode_int(&enc, 0);
-    cbor_encode_cstr(&enc, "lcr"); cbor_encode_int(&enc, (int64_t)INT32_MAX + 1);
-    if (tm_frame_end(&enc, &out) == 0) {
-        TEST_FAIL(name, "lcr above INT32_MAX accepted"); return;
-    }
-
-    /* s = 4 — outside 0..3 (D-16 rev 4 F6 added 3 = new_height). */
-    tm_frame_begin(&enc, "w_tm_step");
-    cbor_encode_map(&enc, 5);
-    cbor_encode_cstr(&enc, "h");   cbor_encode_uint(&enc, 5);
-    cbor_encode_cstr(&enc, "r");   cbor_encode_uint(&enc, 1);
-    cbor_encode_cstr(&enc, "s");   cbor_encode_uint(&enc, 4);
-    cbor_encode_cstr(&enc, "sst"); cbor_encode_int(&enc, 0);
-    cbor_encode_cstr(&enc, "lcr"); cbor_encode_int(&enc, -1);
-    if (tm_frame_end(&enc, &out) == 0) { TEST_FAIL(name, "s 4 accepted"); return; }
-
-    /* sst as a byte string — type mismatch on a signed field. */
-    tm_frame_begin(&enc, "w_tm_step");
-    cbor_encode_map(&enc, 5);
-    cbor_encode_cstr(&enc, "h");   cbor_encode_uint(&enc, 5);
-    cbor_encode_cstr(&enc, "r");   cbor_encode_uint(&enc, 1);
-    cbor_encode_cstr(&enc, "s");   cbor_encode_uint(&enc, 0);
-    cbor_encode_cstr(&enc, "sst"); cbor_encode_bstr(&enc, tm_filler, 8);
-    cbor_encode_cstr(&enc, "lcr"); cbor_encode_int(&enc, -1);
-    if (tm_frame_end(&enc, &out) == 0) {
-        TEST_FAIL(name, "sst as a bstr accepted"); return;
-    }
-
-    /* step: a key short. */
-    tm_frame_begin(&enc, "w_tm_step");
-    cbor_encode_map(&enc, 4);
-    cbor_encode_cstr(&enc, "h");   cbor_encode_uint(&enc, 5);
-    cbor_encode_cstr(&enc, "r");   cbor_encode_uint(&enc, 1);
-    cbor_encode_cstr(&enc, "s");   cbor_encode_uint(&enc, 0);
-    cbor_encode_cstr(&enc, "sst"); cbor_encode_int(&enc, 0);
-    if (tm_frame_end(&enc, &out) == 0) {
-        TEST_FAIL(name, "step missing lcr accepted"); return;
-    }
-
-    /* vr = -2. */
-    tm_frame_begin(&enc, "w_tm_prop");
-    cbor_encode_map(&enc, 4);
-    cbor_encode_cstr(&enc, "h");  cbor_encode_uint(&enc, 5);
-    cbor_encode_cstr(&enc, "r");  cbor_encode_uint(&enc, 1);
-    cbor_encode_cstr(&enc, "vr"); cbor_encode_int(&enc, -2);
-    cbor_encode_cstr(&enc, "v");  cbor_encode_bstr(&enc, tm_filler, 4);
-    if (tm_frame_end(&enc, &out) == 0) { TEST_FAIL(name, "vr -2 accepted"); return; }
-
-    /* v empty — the value has no meaningful zero length. */
-    tm_frame_begin(&enc, "w_tm_prop");
-    cbor_encode_map(&enc, 4);
-    cbor_encode_cstr(&enc, "h");  cbor_encode_uint(&enc, 5);
-    cbor_encode_cstr(&enc, "r");  cbor_encode_uint(&enc, 1);
-    cbor_encode_cstr(&enc, "vr"); cbor_encode_int(&enc, -1);
-    cbor_encode_cstr(&enc, "v");  cbor_encode_bstr(&enc, tm_filler, 0);
-    if (tm_frame_end(&enc, &out) == 0) { TEST_FAIL(name, "empty v accepted"); return; }
-
-    /* v as an unsigned integer — type mismatch. */
-    tm_frame_begin(&enc, "w_tm_prop");
-    cbor_encode_map(&enc, 4);
-    cbor_encode_cstr(&enc, "h");  cbor_encode_uint(&enc, 5);
-    cbor_encode_cstr(&enc, "r");  cbor_encode_uint(&enc, 1);
-    cbor_encode_cstr(&enc, "vr"); cbor_encode_int(&enc, -1);
-    cbor_encode_cstr(&enc, "v");  cbor_encode_uint(&enc, 7);
-    if (tm_frame_end(&enc, &out) == 0) { TEST_FAIL(name, "v as uint accepted"); return; }
-
-    /* prop: an unknown key. */
-    tm_frame_begin(&enc, "w_tm_prop");
-    cbor_encode_map(&enc, 5);
-    cbor_encode_cstr(&enc, "h");   cbor_encode_uint(&enc, 5);
-    cbor_encode_cstr(&enc, "r");   cbor_encode_uint(&enc, 1);
-    cbor_encode_cstr(&enc, "vr");  cbor_encode_int(&enc, -1);
-    cbor_encode_cstr(&enc, "v");   cbor_encode_bstr(&enc, tm_filler, 4);
-    cbor_encode_cstr(&enc, "zzz"); cbor_encode_uint(&enc, 1);
-    if (tm_frame_end(&enc, &out) == 0) {
-        TEST_FAIL(name, "prop unknown key accepted"); return;
-    }
-
-    /* prop: a duplicate key. */
-    tm_frame_begin(&enc, "w_tm_prop");
-    cbor_encode_map(&enc, 5);
-    cbor_encode_cstr(&enc, "h");  cbor_encode_uint(&enc, 5);
-    cbor_encode_cstr(&enc, "r");  cbor_encode_uint(&enc, 1);
-    cbor_encode_cstr(&enc, "vr"); cbor_encode_int(&enc, -1);
-    cbor_encode_cstr(&enc, "v");  cbor_encode_bstr(&enc, tm_filler, 4);
-    cbor_encode_cstr(&enc, "vr"); cbor_encode_int(&enc, 0);
-    if (tm_frame_end(&enc, &out) == 0) {
-        TEST_FAIL(name, "prop duplicate key accepted"); return;
-    }
-
-    /* A NEGATIVE where an UNSIGNED field lives: `h` is a u64, and the only
-     * door to major type 1 is cbor_decode_int, which tm_get_u64 does not
-     * use — so this must reject exactly as any legacy field would. */
-    tm_frame_begin(&enc, "w_tm_prop");
-    cbor_encode_map(&enc, 4);
-    cbor_encode_cstr(&enc, "h");  cbor_encode_int(&enc, -5);
-    cbor_encode_cstr(&enc, "r");  cbor_encode_uint(&enc, 1);
-    cbor_encode_cstr(&enc, "vr"); cbor_encode_int(&enc, -1);
-    cbor_encode_cstr(&enc, "v");  cbor_encode_bstr(&enc, tm_filler, 4);
-    rc = tm_frame_end(&enc, &out);
-    if (rc == 0) { TEST_FAIL(name, "a negative height was accepted"); return; }
-
+    rc = nodus_t3_verify(&out, &other_pk);
+    free(keep);
+    if (rc == 0) { TEST_FAIL(name, "verified under the wrong key"); return; }
     TEST_PASS(name);
 }
 
-/* ── THE LEGACY PIN (D-22 rev 2) ─────────────────────────────────────
+/* ── THE UNIVERSAL PIN (D-22 rev 3) ────────────────────────────────
  *
- * This test is the pin on the equivalence claim behind teaching pass 1 to
- * step over negative integers. Pass 1 now walks `a` with
- * cbor_decode_skip_signed, which does NOT error on major type 1; what keeps
- * a legacy verb's acceptance set unchanged is the type gate that follows —
- * a negative in `a` is admitted for verbs 28 and 29 only.
+ * Rev 2 admitted a negative integer in `a` for the two retired signed
+ * verbs (28 sst/lcr, 29 vr) only. Rev 3 (W3) makes the admitted set
+ * EMPTY: no verb, retired, legacy or new, may carry a negative
+ * anywhere in `a`. Pass 1 walks `a` with cbor_decode_skip_signed, which
+ * does NOT error on major type 1, then nodus_t3_decode's unconditional
+ * gate ("if (a_negint) return -1;") refuses the frame before pass 2
+ * ever runs.
  *
- * IT WOULD FAIL if anyone later made the shared cbor_decode_skip tolerant
- * of negatives, or dropped the gate, or widened it past 28/29. That is the
- * whole point: the safety here is one `if`, and an `if` with no test on it
- * is one refactor away from gone.
+ * THE PIN IS REGRESSION INSURANCE ON A SECOND LAYER, NOT A SINGLE
+ * FAULT DETECTOR — read the file header's negint-pin paragraph for the
+ * full mechanism. Dropping the gate ALONE flips nothing below today:
+ * pass 2 resets dec.error and re-walks `a` through the ordinary
+ * cbor_decode_next, whose `default:` branch sets dec->error on ANY
+ * major-type-1 byte unconditionally (nodus_cbor.c:274-278), so every
+ * case here is still refused by pass 2 itself. The gate is what stays
+ * load-bearing if cbor_decode_next (or the legacy unknown-key skip
+ * idiom) ALSO stopped erroring on a negative — true for cases (i)-(iii)
+ * below, whose legacy decoders would then silently accept or ignore
+ * the negative; NOT true for (iv)/(v), the cometbft envelope verbs,
+ * where dec_w_cmt_args refuses those specific frames for a completely
+ * sign-independent reason (see each case's own comment).
  *
- * The control runs FIRST. If a hand-built w_sync_req frame carrying an
- * ordinary unsigned integer is not accepted, the three negatives below
- * prove nothing at all. */
-static void test_tm_legacy_negint_pin(void) {
-    const char *name = "tm_legacy_negint_pin";
+ * Each case's CONTROL runs first. If a hand-built frame carrying only
+ * ordinary unsigned integers is not accepted, the negative that
+ * follows it proves nothing at all. */
+static void test_universal_negint_pin(void) {
+    const char *name = "universal_negint_pin";
     nodus_t3_msg_t out;
     cbor_encoder_t enc;
 
-    /* CONTROL: w_sync_req with an unsigned `h` — must be ACCEPTED. */
-    tm_frame_begin(&enc, "w_sync_req");
+    /* CONTROL 1: a legacy verb (w_sync_req) with an unsigned `h` —
+     * must be ACCEPTED. */
+    w3_frame_begin(&enc, "w_sync_req");
     cbor_encode_map(&enc, 1);
     cbor_encode_cstr(&enc, "h"); cbor_encode_uint(&enc, 7);
-    if (tm_frame_end(&enc, &out) != 0) {
-        TEST_FAIL(name, "the legacy control frame was REJECTED — the three "
+    if (w3_frame_end(&enc, &out) != 0) {
+        TEST_FAIL(name, "the legacy control frame was REJECTED — the "
                         "negatives below would prove nothing");
         return;
     }
@@ -1877,62 +1442,81 @@ static void test_tm_legacy_negint_pin(void) {
         TEST_FAIL(name, "legacy control decoded to the wrong fields"); return;
     }
 
-    /* (i) a negative under a key this verb's decoder KNOWS */
-    tm_frame_begin(&enc, "w_sync_req");
+    /* CONTROL 2: verb 35 (w_cmt_state) with a legitimate {m: bstr} —
+     * must be ACCEPTED. */
+    w3_frame_begin(&enc, "w_cmt_state");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "m"); cbor_encode_bstr(&enc, w3_filler, 8);
+    if (w3_frame_end(&enc, &out) != 0) {
+        TEST_FAIL(name, "the cmt control frame was REJECTED"); return;
+    }
+    if (out.type != NODUS_T3_CMT_STATE || out.w_cmt.m_len != 8) {
+        TEST_FAIL(name, "cmt control decoded to the wrong fields"); return;
+    }
+
+    /* (i) legacy verb — a negative under a key its decoder KNOWS. */
+    w3_frame_begin(&enc, "w_sync_req");
     cbor_encode_map(&enc, 1);
     cbor_encode_cstr(&enc, "h"); cbor_encode_int(&enc, -7);
-    if (tm_frame_end(&enc, &out) == 0) {
+    if (w3_frame_end(&enc, &out) == 0) {
         TEST_FAIL(name, "legacy verb accepted a negative under a known key"); return;
     }
 
-    /* (ii) a negative under a key it does NOT know — the dangerous one,
-     * because the legacy arg decoder's own idiom is "unknown key -> skip". */
-    tm_frame_begin(&enc, "w_sync_req");
+    /* (ii) legacy verb — a negative under a key it does NOT know — the
+     * dangerous one, because the legacy arg decoder's own idiom is
+     * "unknown key -> skip". */
+    w3_frame_begin(&enc, "w_sync_req");
     cbor_encode_map(&enc, 2);
     cbor_encode_cstr(&enc, "h");   cbor_encode_uint(&enc, 7);
     cbor_encode_cstr(&enc, "zzz"); cbor_encode_int(&enc, -1);
-    if (tm_frame_end(&enc, &out) == 0) {
+    if (w3_frame_end(&enc, &out) == 0) {
         TEST_FAIL(name, "legacy verb accepted a negative under an unknown key"); return;
     }
 
-    /* (iii) a negative NESTED inside an array under an unknown key —
-     * proves the flag propagates through the signed walker's recursion. */
-    tm_frame_begin(&enc, "w_sync_req");
+    /* (iii) legacy verb — a negative NESTED inside an array under an
+     * unknown key — proves the flag propagates through the signed
+     * walker's recursion. */
+    w3_frame_begin(&enc, "w_sync_req");
     cbor_encode_map(&enc, 2);
     cbor_encode_cstr(&enc, "h");   cbor_encode_uint(&enc, 7);
     cbor_encode_cstr(&enc, "zzz");
     cbor_encode_array(&enc, 2);
     cbor_encode_uint(&enc, 1);
     cbor_encode_int(&enc, -5);
-    if (tm_frame_end(&enc, &out) == 0) {
+    if (w3_frame_end(&enc, &out) == 0) {
         TEST_FAIL(name, "legacy verb accepted a negative nested in an array"); return;
     }
 
-    /* And one of the NEW verbs that has no signed field either: 30-34 are
-     * gated exactly like the legacy ones. */
-    tm_frame_begin(&enc, "w_tm_has");
-    cbor_encode_map(&enc, 5);
-    cbor_encode_cstr(&enc, "h");   cbor_encode_uint(&enc, 1);
-    cbor_encode_cstr(&enc, "r");   cbor_encode_uint(&enc, 0);
-    cbor_encode_cstr(&enc, "ty");  cbor_encode_uint(&enc, 1);
-    cbor_encode_cstr(&enc, "ix");  cbor_encode_uint(&enc, 0);
-    cbor_encode_cstr(&enc, "zzz"); cbor_encode_int(&enc, -1);
-    if (tm_frame_end(&enc, &out) == 0) {
-        TEST_FAIL(name, "verb 32 accepted a negative in `a`"); return;
+    /* (iv) verb 35 (w_cmt_state) — a negative under its OWN key "m",
+     * wrong type and negative at once. DOES NOT ISOLATE THE GATE: the
+     * gate refuses it (a_negint set in pass 1), but so, independently,
+     * does dec_w_cmt_args's own `val.type != CBOR_ITEM_BSTR` check —
+     * `cbor_decode_next` returns CBOR_ITEM_ERROR for -1 regardless of
+     * sign-tolerance, so this frame is refused on a bare TYPE mismatch,
+     * with or without the gate. See the file header's negint-pin
+     * paragraph. */
+    w3_frame_begin(&enc, "w_cmt_state");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "m"); cbor_encode_int(&enc, -1);
+    if (w3_frame_end(&enc, &out) == 0) {
+        TEST_FAIL(name, "verb 35 accepted a negative under its own key"); return;
     }
 
-    /* Sanity in the other direction: the SAME unknown key with an
-     * UNSIGNED value is still rejected by verb 32's exact-key-set rule,
-     * so the previous case is not passing merely because of the gate. */
-    tm_frame_begin(&enc, "w_tm_has");
-    cbor_encode_map(&enc, 5);
-    cbor_encode_cstr(&enc, "h");   cbor_encode_uint(&enc, 1);
-    cbor_encode_cstr(&enc, "r");   cbor_encode_uint(&enc, 0);
-    cbor_encode_cstr(&enc, "ty");  cbor_encode_uint(&enc, 1);
-    cbor_encode_cstr(&enc, "ix");  cbor_encode_uint(&enc, 0);
-    cbor_encode_cstr(&enc, "zzz"); cbor_encode_uint(&enc, 1);
-    if (tm_frame_end(&enc, &out) == 0) {
-        TEST_FAIL(name, "verb 32 accepted an unknown key"); return;
+    /* (v) verb 39 (w_cmt_txs), the OTHER reactor's channel — a negative
+     * under an unknown key. DOES NOT ISOLATE THE GATE EITHER:
+     * dec_w_cmt_args's exact-key-set enforcement refuses ANY key but
+     * "m" outright (`else { dec->error = true; return; }`) WITHOUT EVER
+     * READING "zzz"'s value — the frame is refused for being the wrong
+     * shape, never for what sign that value carries. D-22 rev 3's
+     * admitted set is still empty for every verb; this case just does
+     * not prove that fact on its own. See the file header's negint-pin
+     * paragraph. */
+    w3_frame_begin(&enc, "w_cmt_txs");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "m");   cbor_encode_bstr(&enc, w3_filler, 8);
+    cbor_encode_cstr(&enc, "zzz"); cbor_encode_int(&enc, -1);
+    if (w3_frame_end(&enc, &out) == 0) {
+        TEST_FAIL(name, "verb 39 accepted a negative under an unknown key"); return;
     }
 
     TEST_PASS(name);
@@ -1940,27 +1524,36 @@ static void test_tm_legacy_negint_pin(void) {
 
 /* ── Test: the per-verb ceiling table ────────────────────────────── */
 
-static void test_tm_max_msg_size(void) {
-    const char *name = "tm_max_msg_size";
+static void test_cmt_max_msg_size(void) {
+    const char *name = "cmt_max_msg_size";
 
-    if (nodus_t3_max_msg_size(NODUS_T3_TM_PROP) != NODUS_T3_TM_PROP_MAX_MSG) {
-        TEST_FAIL(name, "29 not the PROP class"); return;
-    }
-    if (nodus_t3_max_msg_size(NODUS_T3_TM_VOTE) != NODUS_T3_TM_VOTE_MAX_MSG) {
-        TEST_FAIL(name, "31 not the VOTE class"); return;
-    }
-    const nodus_t3_msg_type_t small[] = {
-        NODUS_T3_TM_STEP, NODUS_T3_TM_POL, NODUS_T3_TM_HAS,
-        NODUS_T3_TM_MAJ23, NODUS_T3_TM_BITS
+    static const struct { nodus_t3_msg_type_t t; size_t want; } tbl[] = {
+        { NODUS_T3_CMT_STATE,
+          (size_t)NODUS_T3_CMT_CONS_M_MAX + NODUS_T3_CMT_ENVELOPE_OVERHEAD },
+        { NODUS_T3_CMT_DATA,
+          (size_t)NODUS_T3_CMT_CONS_M_MAX + NODUS_T3_CMT_ENVELOPE_OVERHEAD },
+        { NODUS_T3_CMT_VOTE,
+          (size_t)NODUS_T3_CMT_CONS_M_MAX + NODUS_T3_CMT_ENVELOPE_OVERHEAD },
+        { NODUS_T3_CMT_VOTE_SET_BITS,
+          (size_t)NODUS_T3_CMT_CONS_M_MAX + NODUS_T3_CMT_ENVELOPE_OVERHEAD },
+        { NODUS_T3_CMT_TXS,
+          (size_t)NODUS_T3_CMT_TXS_M_MAX + NODUS_T3_CMT_ENVELOPE_OVERHEAD },
     };
-    for (size_t i = 0; i < sizeof(small) / sizeof(small[0]); i++) {
-        if (nodus_t3_max_msg_size(small[i]) != NODUS_T3_TM_SMALL_MAX_MSG) {
-            TEST_FAIL(name, "small class mismatch"); return;
+    for (size_t i = 0; i < sizeof(tbl) / sizeof(tbl[0]); i++) {
+        if (nodus_t3_max_msg_size(tbl[i].t) != tbl[i].want) {
+            TEST_FAIL(name, "class ceiling mismatch"); return;
+        }
+    }
+
+    /* Retired verbs 28-34: no ceiling to report. */
+    for (int v = 28; v <= 34; v++) {
+        if (nodus_t3_max_msg_size((nodus_t3_msg_type_t)v) != 0) {
+            TEST_FAIL(name, "a retired verb still has a ceiling"); return;
         }
     }
 
     /* Legacy verbs keep the bound the legacy path uses today. */
-    const nodus_t3_msg_type_t legacy[] = {
+    static const nodus_t3_msg_type_t legacy[] = {
         NODUS_T3_PROPOSE, NODUS_T3_COMMIT, NODUS_T3_SYNC_RSP,
         NODUS_T3_VIEWOK, NODUS_T3_V2_RANGE_RSP
     };
@@ -1971,67 +1564,331 @@ static void test_tm_max_msg_size(void) {
     }
 
     /* Not a verb at all → no ceiling to report. */
-    if (nodus_t3_max_msg_size((nodus_t3_msg_type_t)0) != 0 ||
-        nodus_t3_max_msg_size((nodus_t3_msg_type_t)35) != 0) {
+    if (nodus_t3_max_msg_size((nodus_t3_msg_type_t)0) != 0) {
         TEST_FAIL(name, "non-verb must report 0"); return;
     }
 
-    /* The derived bounds are the T2 §4.8 numbers. tm_bounds.h asserts this
-     * at compile time; restating it here makes the value visible in the
-     * test log rather than only in a build that did not fail. */
-    if ((size_t)DNA_TM_VALUE_MAX_LEN != 2807586u ||
-        (size_t)DNA_TM_COMMIT_MAX_LEN != 593502u) {
-        TEST_FAIL(name, "derived bounds drifted from T2 §4.8"); return;
-    }
-    if (NODUS_T3_TM_PROP_MAX_MSG + 4u + DNA_TM_COMMIT_MAX_LEN >=
-        (size_t)NODUS_MAX_FRAME_TCP) {
-        TEST_FAIL(name, "T3_TM_HEAP no longer fits the TCP frame"); return;
-    }
-    fprintf(stderr, "    VALUE_MAX %llu, CERT_MAX %llu, PROP class %llu\n",
-            (unsigned long long)DNA_TM_VALUE_MAX_LEN,
-            (unsigned long long)DNA_TM_COMMIT_MAX_LEN,
-            (unsigned long long)NODUS_T3_TM_PROP_MAX_MSG);
+    fprintf(stderr, "    CONS class %u, TXS class %u, overhead %u\n",
+            NODUS_T3_CMT_CONS_M_MAX, NODUS_T3_CMT_TXS_M_MAX,
+            NODUS_T3_CMT_ENVELOPE_OVERHEAD);
 
     TEST_PASS(name);
 }
 
-/* ── Test: wrong key still fails for a Tendermint verb ───────────── */
+/* ── Test: the MEASURED envelope overhead at a maximal message ─────── */
 
-static void test_tm_verify_wrong_key(void) {
-    const char *name = "tm_verify_wrong_key";
+static void test_cmt_envelope_overhead(void) {
+    const char *name = "cmt_envelope_overhead";
+    const size_t m_cap = (size_t)NODUS_T3_CMT_TXS_M_MAX;
+    uint8_t *payload = (uint8_t *)malloc(m_cap);
     nodus_t3_msg_t in, out;
+    size_t enc_len = 0;
     uint8_t *keep = NULL;
+    size_t overhead;
+
+    if (!payload) { TEST_FAIL(name, "alloc"); return; }
+    memset(payload, 0x11, m_cap);
+
     memset(&in, 0, sizeof(in));
-
-    /* The foreign keypair is derived FIRST, deliberately: it removes the
-     * only early return that would otherwise sit between the buffer
-     * hand-over and its free, so this test has exactly one free site. */
-    nodus_pubkey_t other_pk;
-    nodus_seckey_t other_sk;
-    uint8_t seed[32];
-    memset(seed, 0x77, sizeof(seed));
-    if (qgp_dsa87_keypair_derand(other_pk.bytes, other_sk.bytes, seed) != 0) {
-        TEST_FAIL(name, "derand keypair"); return;
-    }
-
-    in.type = NODUS_T3_TM_HAS;
-    in.txn_id = 3500;
+    in.type = NODUS_T3_CMT_TXS;
     fill_header(&in.header);
-    in.tm_has.h = 1; in.tm_has.r = 0; in.tm_has.ty = 1; in.tm_has.ix = 0;
+    in.w_cmt.m     = payload;
+    in.w_cmt.m_len = m_cap;
 
-    /* `keep`, even though verb 32 copies every UNION field out: this test
-     * calls nodus_t3_verify AFTER the helper returns, and verify memcpy's
-     * 4627 bytes from out.wsig — which points into the encode buffer for
-     * EVERY verb (nodus_tier3.h:913, set at nodus_tier3.c:2248). */
-    if (tm_roundtrip(&in, &out, NULL, &keep) != 0) {
-        TEST_FAIL(name, "roundtrip"); return;
+    if (cmt_roundtrip(&in, &out, &enc_len, &keep) != 0) {
+        free(payload); TEST_FAIL(name, "roundtrip"); return;
+    }
+    free(keep);
+    free(payload);
+
+    if (enc_len <= m_cap) {
+        TEST_FAIL(name, "encoded no larger than its own m"); return;
+    }
+    overhead = enc_len - m_cap;
+    fprintf(stderr, "    TXS: m %zu B, encoded %zu B, overhead %zu B (<= %u)\n",
+            m_cap, enc_len, overhead, NODUS_T3_CMT_ENVELOPE_OVERHEAD);
+    if (overhead > (size_t)NODUS_T3_CMT_ENVELOPE_OVERHEAD) {
+        TEST_FAIL(name, "NODUS_T3_CMT_ENVELOPE_OVERHEAD is not an over-estimate");
+        return;
+    }
+    TEST_PASS(name);
+}
+
+/* ── Test: the mempool ceiling pin ─────────────────────────────────
+ *
+ * NODUS_T3_CMT_TXS_M_MAX (1 048 584) is NOT a compile-time constant on
+ * the cmt_memr side — cmt_memr_get_channels computes it at runtime
+ * from cmt_mempool_config_t.max_tx_bytes (Message{Txs{[MaxTxBytes]}}
+ * .Size()) — so it cannot be _Static_assert'd against its source the
+ * way NODUS_T3_CMT_CONS_M_MAX is against CMT_CONR_MAX_MSG_SIZE
+ * (nodus_tier3.c). This is the only place the two numbers are tied
+ * together: a bare `cmt_memr_t` whose `config` is the library's own
+ * DEFAULT, asked for its channel descriptor. */
+static void test_cmt_memr_ceiling_pin(void) {
+    const char *name = "cmt_memr_ceiling_pin";
+    cmt_mempool_config_t cfg;
+    cmt_memr_t memr;
+    cmt_memr_channel_descriptor_t desc;
+
+    if (cmt_mempool_config_default(&cfg) != CMT_OK) {
+        TEST_FAIL(name, "cmt_mempool_config_default"); return;
+    }
+    memset(&memr, 0, sizeof(memr));
+    memr.config = &cfg;
+
+    if (cmt_memr_get_channels(&memr, &desc) != CMT_OK) {
+        TEST_FAIL(name, "cmt_memr_get_channels"); return;
+    }
+    fprintf(stderr, "    memr recv_message_capacity = %zu, want %u\n",
+            desc.recv_message_capacity, NODUS_T3_CMT_TXS_M_MAX);
+    if (desc.recv_message_capacity != (size_t)NODUS_T3_CMT_TXS_M_MAX) {
+        TEST_FAIL(name, "TXS ceiling drifted from cmt_memr_get_channels"); return;
+    }
+    TEST_PASS(name);
+}
+
+/* ── Test: verbs 24/25 (genesis bundle), the R3 W3 32-byte pin flip ────
+ *
+ * WHAT THIS PROVES. D-24 rev 4 (1): `pin` on both nodus_t3_w_v2_gbundle_q_t
+ * and _r_t is 32 bytes, not 64 — the chain id, because a version-3 chain
+ * has no genesis BLOCK to pin a 64-byte BlockID to (D-19 rev 6). A
+ * correctly-shaped REQUEST and RESPONSE round-trip through the real
+ * encoder/decoder with every field surviving exactly; a `p` of the wrong
+ * length (31 or 33 bytes) is a HARD DECODE ERROR (dec->error = true),
+ * not a silently-zeroed field — the deliberate departure from this
+ * file's usual "wrong length leaves the field zero" convention for most
+ * fixed bstrs, because the pin is the whole of a joiner's trust decision
+ * and an ambiguous decode of it is unacceptable (nodus_tier3.c's "p"
+ * branches say so). The RESPONSE's `d` chunk is proven at exactly
+ * NODUS_T3_V2_GBUNDLE_CHUNK_MAX (accepted) and one byte over (refused by
+ * the DECODER itself, through a hand-built frame using the SAME buffer
+ * capacity for both the control and the oversize case — the
+ * one_cmt_ceiling discipline this file already uses, so a refusal here
+ * cannot be the builder overflowing first).
+ *
+ * WHAT IT REQUIRES. Nothing beyond a default build; no environment.
+ *
+ * WHAT IT LEAVES BEHIND. Nothing — every allocation is freed on every
+ * path, heap-allocated per this project's fixture rule (a 48 KB+ chunk
+ * buffer does not belong on a test's stack).
+ *
+ * HOW IT CAN LIE. If nodus_t3_verify ever grew a length check for verbs
+ * 24/25 that happened to also reject 31/33-byte input for an unrelated
+ * reason (e.g. a total-message-size coincidence), the "refused" assertion
+ * would pass without the DECODER's own strict-length branch ever running.
+ * Guarded against here the same way one_cmt_ceiling guards its own claim:
+ * the CONTROL (exactly 32 bytes) is proven ACCEPTED through the identical
+ * code path first, so the fixture is known to reach the decoder's "p"
+ * branch before the negative cases run against it. */
+
+static void test_v2_gbundle_roundtrip(void) {
+    const char *name = "v2_gbundle_roundtrip";
+    nodus_t3_msg_t in, out;
+
+    /* REQUEST (verb 24): chain[32], pin[32], offset. */
+    memset(&in, 0, sizeof(in));
+    in.type = NODUS_T3_V2_GBUNDLE_REQ;
+    fill_header(&in.header);
+    memset(in.w_v2_gbundle_q.chain, 0x11, 32);
+    memset(in.w_v2_gbundle_q.pin,   0x22, 32);
+    in.w_v2_gbundle_q.offset = 4096;
+
+    memset(&out, 0, sizeof(out));
+    if (roundtrip(&in, &out) != 0) {
+        TEST_FAIL(name, "w_v2_gbundle_q round trip REFUSED"); return;
+    }
+    if (memcmp(out.w_v2_gbundle_q.chain, in.w_v2_gbundle_q.chain, 32) != 0 ||
+        memcmp(out.w_v2_gbundle_q.pin,   in.w_v2_gbundle_q.pin,   32) != 0 ||
+        out.w_v2_gbundle_q.offset != in.w_v2_gbundle_q.offset) {
+        TEST_FAIL(name, "w_v2_gbundle_q field mismatch"); return;
     }
 
-    int rc = nodus_t3_verify(&out, &other_pk);
-    free(keep);                       /* last read of `out` is done */
-    if (rc == 0) {
-        TEST_FAIL(name, "verified under the wrong key"); return;
+    /* RESPONSE (verb 25): chain[32], pin[32], total, offset, chunk. */
+    size_t chunk_len = 4096;
+    uint8_t *chunk = malloc(chunk_len);
+    if (!chunk) { TEST_FAIL(name, "alloc chunk"); return; }
+    for (size_t i = 0; i < chunk_len; i++) chunk[i] = (uint8_t)(i & 0xFF);
+
+    memset(&in, 0, sizeof(in));
+    in.type = NODUS_T3_V2_GBUNDLE_RSP;
+    fill_header(&in.header);
+    memset(in.w_v2_gbundle_r.chain, 0x33, 32);
+    memset(in.w_v2_gbundle_r.pin,   0x44, 32);
+    in.w_v2_gbundle_r.total     = 90000;
+    in.w_v2_gbundle_r.offset    = 4096;
+    in.w_v2_gbundle_r.chunk     = chunk;
+    in.w_v2_gbundle_r.chunk_len = (uint32_t)chunk_len;
+
+    memset(&out, 0, sizeof(out));
+    if (roundtrip(&in, &out) != 0) {
+        free(chunk);
+        TEST_FAIL(name, "w_v2_gbundle_r round trip REFUSED"); return;
     }
+    if (memcmp(out.w_v2_gbundle_r.chain, in.w_v2_gbundle_r.chain, 32) != 0 ||
+        memcmp(out.w_v2_gbundle_r.pin,   in.w_v2_gbundle_r.pin,   32) != 0 ||
+        out.w_v2_gbundle_r.total  != in.w_v2_gbundle_r.total ||
+        out.w_v2_gbundle_r.offset != in.w_v2_gbundle_r.offset ||
+        out.w_v2_gbundle_r.chunk_len != (uint32_t)chunk_len ||
+        memcmp(out.w_v2_gbundle_r.chunk, chunk, chunk_len) != 0) {
+        free(chunk);
+        TEST_FAIL(name, "w_v2_gbundle_r field mismatch"); return;
+    }
+    free(chunk);
+
+    TEST_PASS(name);
+}
+
+/* A `p` of exactly `plen` bytes in a hand-built verb-24 frame; 0 decoded
+ * ok / -1 refused. `method`/`extra_keys` let the same builder serve both
+ * the REQUEST (3 keys: c, p, o) and RESPONSE (5 keys: c, p, t, o, d)
+ * shapes without duplicating the frame plumbing. */
+static int gbundle_pin_len_probe(const char *method, int is_rsp,
+                                 size_t plen, nodus_t3_msg_t *out) {
+    cbor_encoder_t enc;
+    uint8_t pinbuf[64];
+    memset(pinbuf, 0x55, sizeof(pinbuf));
+
+    w3_frame_begin(&enc, method);
+    cbor_encode_map(&enc, is_rsp ? 5 : 3);
+    cbor_encode_cstr(&enc, "c"); cbor_encode_bstr(&enc, w3_filler, 32);
+    cbor_encode_cstr(&enc, "p"); cbor_encode_bstr(&enc, pinbuf, plen);
+    if (is_rsp) {
+        cbor_encode_cstr(&enc, "t"); cbor_encode_uint(&enc, 100);
+        cbor_encode_cstr(&enc, "o"); cbor_encode_uint(&enc, 0);
+        cbor_encode_cstr(&enc, "d"); cbor_encode_bstr(&enc, w3_filler, 8);
+    } else {
+        cbor_encode_cstr(&enc, "o"); cbor_encode_uint(&enc, 0);
+    }
+    return w3_frame_end(&enc, out);
+}
+
+static void test_v2_gbundle_pin_length(void) {
+    const char *name = "v2_gbundle_pin_length";
+    nodus_t3_msg_t out;
+
+    /* CONTROL: exactly 32 bytes, both verbs — must be ACCEPTED, or the
+     * refusals below prove nothing. */
+    if (gbundle_pin_len_probe("w_v2_gbundle_q", 0, 32, &out) != 0) {
+        TEST_FAIL(name, "control REQUEST (32-byte p) was REFUSED"); return;
+    }
+    {
+        /* 0x55, the probe's fill byte — confirms the pin actually decoded
+         * rather than the check passing on a zeroed field. */
+        uint8_t want[32];
+        memset(want, 0x55, sizeof(want));
+        if (memcmp(out.w_v2_gbundle_q.pin, want, sizeof(want)) != 0) {
+            TEST_FAIL(name, "control REQUEST pin bytes not as encoded");
+            return;
+        }
+    }
+    if (gbundle_pin_len_probe("w_v2_gbundle_r", 1, 32, &out) != 0) {
+        TEST_FAIL(name, "control RESPONSE (32-byte p) was REFUSED"); return;
+    }
+
+    /* 31 and 33 bytes, both verbs — HARD REFUSED (dec->error), not a
+     * zero-filled pin. */
+    if (gbundle_pin_len_probe("w_v2_gbundle_q", 0, 31, &out) == 0) {
+        TEST_FAIL(name, "REQUEST with a 31-byte p was ACCEPTED"); return;
+    }
+    if (gbundle_pin_len_probe("w_v2_gbundle_q", 0, 33, &out) == 0) {
+        TEST_FAIL(name, "REQUEST with a 33-byte p was ACCEPTED"); return;
+    }
+    if (gbundle_pin_len_probe("w_v2_gbundle_r", 1, 31, &out) == 0) {
+        TEST_FAIL(name, "RESPONSE with a 31-byte p was ACCEPTED"); return;
+    }
+    if (gbundle_pin_len_probe("w_v2_gbundle_r", 1, 33, &out) == 0) {
+        TEST_FAIL(name, "RESPONSE with a 33-byte p was ACCEPTED"); return;
+    }
+
+    TEST_PASS(name);
+}
+
+/* The RESPONSE's `d` chunk at exactly NODUS_T3_V2_GBUNDLE_CHUNK_MAX
+ * (ACCEPTED) and one byte over (REFUSED by the decoder itself) — the
+ * one_cmt_ceiling discipline: both cases use the SAME hand-built-frame
+ * buffer capacity, so the oversize refusal cannot be the builder
+ * overflowing first. */
+static void test_v2_gbundle_chunk_ceiling(void) {
+    const char *name = "v2_gbundle_chunk_ceiling";
+    /* NODUS_T3_CMT_ENVELOPE_OVERHEAD (8192), not a smaller hand-picked
+     * slack — the one_cmt_ceiling discipline (see its comment above):
+     * the wsig alone is QGP_DSA87_SIGNATURE_BYTES == 4627 B, plus its
+     * bstr header, plus the {t,y,q,wh} fields w3_frame_begin_buf writes
+     * ahead of "a", plus this function's own c/p/t/o fields ahead of
+     * "d" — comfortably over a hand-picked 4096, which is exactly what
+     * made the +1 case below vacuous before this fix (see the CONTROL
+     * immediately after). */
+    size_t cap = (size_t)NODUS_T3_V2_GBUNDLE_CHUNK_MAX +
+                 (size_t)NODUS_T3_CMT_ENVELOPE_OVERHEAD;
+    uint8_t *frame = malloc(cap);
+    uint8_t *data  = malloc((size_t)NODUS_T3_V2_GBUNDLE_CHUNK_MAX + 1u);
+    if (!frame || !data) {
+        free(frame); free(data);
+        TEST_FAIL(name, "alloc"); return;
+    }
+    memset(data, 0x66, (size_t)NODUS_T3_V2_GBUNDLE_CHUNK_MAX + 1u);
+
+    /* CONTROL: exactly CHUNK_MAX, through the SAME cap the oversize case
+     * below uses — must be ACCEPTED. */
+    {
+        cbor_encoder_t enc;
+        nodus_t3_msg_t out;
+        w3_frame_begin_buf(&enc, "w_v2_gbundle_r", frame, cap);
+        cbor_encode_map(&enc, 5);
+        cbor_encode_cstr(&enc, "c"); cbor_encode_bstr(&enc, w3_filler, 32);
+        cbor_encode_cstr(&enc, "p"); cbor_encode_bstr(&enc, w3_filler, 32);
+        cbor_encode_cstr(&enc, "t"); cbor_encode_uint(&enc, 999);
+        cbor_encode_cstr(&enc, "o"); cbor_encode_uint(&enc, 0);
+        cbor_encode_cstr(&enc, "d");
+        cbor_encode_bstr(&enc, data, (size_t)NODUS_T3_V2_GBUNDLE_CHUNK_MAX);
+        if (w3_frame_end(&enc, &out) != 0) {
+            free(frame); free(data);
+            TEST_FAIL(name, "at-ceiling chunk (through the hand-built "
+                            "frame) was REFUSED — cap too small for the "
+                            "builder, not a decoder claim"); return;
+        }
+        if (out.w_v2_gbundle_r.chunk_len !=
+            (uint32_t)NODUS_T3_V2_GBUNDLE_CHUNK_MAX) {
+            free(frame); free(data);
+            TEST_FAIL(name, "at-ceiling chunk_len mismatch"); return;
+        }
+    }
+
+    /* CHUNK_MAX + 1, the SAME cap — must be refused BY THE DECODER: rc
+     * must be neither 0 (accepted) nor -99 (w3_frame_end's own "the
+     * builder overflowed" escape hatch, nodus_cbor.c:127-128). A -99
+     * here, with the control above green, would mean this specific
+     * value of CHUNK_MAX+1 needs one byte more slack than `cap` gives
+     * it — still a builder-sizing defect in THIS test, not proof of
+     * dec_w_v2_gbundle_r_args's cap. */
+    {
+        cbor_encoder_t enc;
+        nodus_t3_msg_t out;
+        int rc;
+        w3_frame_begin_buf(&enc, "w_v2_gbundle_r", frame, cap);
+        cbor_encode_map(&enc, 5);
+        cbor_encode_cstr(&enc, "c"); cbor_encode_bstr(&enc, w3_filler, 32);
+        cbor_encode_cstr(&enc, "p"); cbor_encode_bstr(&enc, w3_filler, 32);
+        cbor_encode_cstr(&enc, "t"); cbor_encode_uint(&enc, 999);
+        cbor_encode_cstr(&enc, "o"); cbor_encode_uint(&enc, 0);
+        cbor_encode_cstr(&enc, "d");
+        cbor_encode_bstr(&enc, data,
+                         (size_t)NODUS_T3_V2_GBUNDLE_CHUNK_MAX + 1u);
+        rc = w3_frame_end(&enc, &out);
+        if (rc == 0) {
+            free(frame); free(data);
+            TEST_FAIL(name, "CHUNK_MAX+1 was ACCEPTED"); return;
+        }
+        if (rc == -99) {
+            free(frame); free(data);
+            TEST_FAIL(name, "CHUNK_MAX+1 case is VACUOUS: the builder "
+                            "overflowed (-99) before the decoder ever ran");
+            return;
+        }
+    }
+
+    free(frame);
+    free(data);
     TEST_PASS(name);
 }
 
@@ -2061,26 +1918,24 @@ int main(void) {
     test_verify_wrong_key();
     test_propose_zero_nullifiers();
 
-    /* Tendermint T3 — verbs 28-34 (T2 wire design §4.2, D-16 rev 4).
-     * The control runs BEFORE the negatives it underwrites. */
-    fprintf(stderr, "--- Tendermint T3 (verbs 28-34) ---\n");
-    test_tm_method_table();
-    test_tm_step_roundtrip();
-    test_tm_step_sst_twin();
-    test_tm_prop_roundtrip();
-    test_tm_prop_maximal_value();
-    test_tm_pol_roundtrip();
-    test_tm_vote_roundtrip();
-    test_tm_has_roundtrip();
-    test_tm_maj23_roundtrip();
-    test_tm_bits_roundtrip();
-    test_tm_encode_range_negatives();
-    test_tm_decode_control();
-    test_tm_decode_negatives();
-    test_tm_signed_decode_negatives();
-    test_tm_legacy_negint_pin();
-    test_tm_max_msg_size();
-    test_tm_verify_wrong_key();
+    /* cometbft envelope — verbs 35-39 (D-16 rev 5, W3). */
+    fprintf(stderr, "--- cometbft envelope (verbs 35-39) ---\n");
+    test_cmt_method_table();
+    test_cmt_roundtrip();
+    test_cmt_strict_key_set();
+    one_cmt_ceiling(NODUS_T3_CMT_STATE, (size_t)NODUS_T3_CMT_CONS_M_MAX, "cons");
+    one_cmt_ceiling(NODUS_T3_CMT_TXS,   (size_t)NODUS_T3_CMT_TXS_M_MAX,  "txs");
+    test_cmt_verify_wrong_key();
+    test_universal_negint_pin();
+    test_cmt_max_msg_size();
+    test_cmt_envelope_overhead();
+    test_cmt_memr_ceiling_pin();
+
+    /* genesis bundle verbs 24/25 — the R3 W3 32-byte pin flip (D-24 rev 4). */
+    fprintf(stderr, "--- genesis bundle (verbs 24/25, D-24 rev 4) ---\n");
+    test_v2_gbundle_roundtrip();
+    test_v2_gbundle_pin_length();
+    test_v2_gbundle_chunk_ceiling();
 
     fprintf(stderr, "\n%d test(s) failed\n", failures);
     return failures > 0 ? 1 : 0;

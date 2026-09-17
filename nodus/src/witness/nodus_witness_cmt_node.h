@@ -529,6 +529,16 @@ typedef struct {
     cmt_state_storage_t *cs_scratch_storage;
     cmt_cs_t            *cs;
     bool                 cs_ready;
+    /** FLEET-TM-R3 W3 (D-23 rev 7 item 17) — `nodus_cmt_node_start` no
+     *  longer sets this itself: it stops at the WAL open, and `cs`'s
+     *  actual start happens only inside `cmt_conr_start(conr)`, which the
+     *  caller (nodus_witness_init) builds and owns because the reactor's
+     *  host table lives on `nodus_cmt_net_t`, not on this struct (package
+     *  C2b). The caller sets `n->cs_started = true` itself, directly,
+     *  right after `cmt_conr_start` returns CMT_OK — this field is
+     *  public exactly so it can. `nodus_cmt_node_release`'s cleanup order
+     *  depends on it being accurate: an unset `cs_started` on a node
+     *  whose reactor DID start would skip `cmt_cs_stop` on release. */
     bool                 cs_started;
     int64_t              offline_state_sync_height;
 
@@ -548,19 +558,25 @@ typedef struct {
  * arrives through `opts->genesis_doc_bytes`). `w->db` is BORROWED and
  * must outlive the node.
  *
- * DEFAULTS when `opts->limits` is zeroed: `max_txs` =
- * NODUS_CMT_APP_MAX_TXS (the bound the application itself enforces, so a
- * larger executor bound could not be used), `tx_arena_cap` = the genesis
- * document's `Block.MaxBytes`, `max_evidence` = 8.
+ * DEFAULTS when `opts->limits` is zeroed: `max_txs` = the SAME
+ * byte-bound derivation the application uses for its own `env_bound`
+ * (ORCHESTRATOR delta 1, item B — node_derive_env_bound, the .c file:
+ * MaxDataBytes at the smallest possible committee, divided by an
+ * envelope's framing minimum; NODUS_CMT_APP_MAX_TXS is RETIRED and no
+ * longer exists as a compile-time bound anywhere in this pair of
+ * files), `tx_arena_cap` = the genesis document's `Block.MaxBytes`,
+ * `max_evidence` = 8.
  *
  * INVARIANTS enforced here, each a named FAULT (found by C1a):
  *   · the application's ledger connection and the store's are the SAME
  *     `sqlite3 *` — the host's transaction bracket opens on the store's
  *     connection and the ledger apply runs on the application's, and two
  *     handles would make the bracket a lie;
- *   · `limits.max_txs <= NODUS_CMT_APP_MAX_TXS` — the application
- *     REFUSES a request above its own array bound, so an executor sized
- *     larger would produce blocks its own application faults on.
+ *   · `limits.max_txs <= ` the application's derived `env_bound` (the
+ *     SAME formula, recomputed here because the application is not
+ *     built yet at this point) — the application REFUSES a request
+ *     above its own array bound, so an executor sized larger would
+ *     produce blocks its own application faults on.
  *
  * @return CMT_OK or CMT_FAULT, and CMT_FAULT for EVERY failure — a
  *         startup has no peer input, so nothing it can see is a verdict
@@ -574,20 +590,32 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
                         const nodus_cmt_node_opts_t *opts);
 
 /**
- * `(cs *State) OnStart()` (consensus/state.go:318-405), with the HOST's
- * WAL: `nodus_cmt_wal_open` + `nodus_cmt_wal_start` (:319-336 — the
- * EndHeight{0} seed of wal.go:124-131), then `cmt_cs_start`, which
- * already carries the catch-up replay (:338-343), the double-signing
- * check (:393) and `scheduleRound0` (:402) — verified at
- * shared/dnac/cmt_cs.h:966-982 and cmt_cs.c's `cmt_cs_start`.
+ * The HOST's half of `(cs *State) OnStart()` (consensus/state.go:318-336
+ * only): `nodus_cmt_wal_open` + `nodus_cmt_wal_start` (the EndHeight{0}
+ * seed of wal.go:124-131).
+ *
+ * FLEET-TM-R3 W3 (D-23 rev 7 item 17) — THIS FUNCTION NO LONGER REACHES
+ * `cmt_cs_start`. state.go:332-402 (the ticker start, the catch-up
+ * replay, the double-sign check at :393-395, `scheduleRound0` at :402 —
+ * all inside `cmt_cs_start`, shared/dnac/cmt_cs.h:966-982) is reached
+ * only through `cmt_conr_start(conr)` (consensus/reactor.go:74-91,
+ * `OnStart`), which this port's `cmt_conr_start` calls when
+ * `!conr->wait_sync` — always true under D-23 rev 7 item 18's
+ * no-blocksync deviation. The caller (nodus_witness_init) builds and
+ * starts `cmt_conr_t` AFTER this function returns, because the reactor's
+ * host table is a field of `nodus_cmt_net_t` (package C2b), which this
+ * module does not depend on. See `nodus_cmt_node_start`'s own comment
+ * (the .c file) for the discrepancy this leaves against D-23 rev 7 (17)'s
+ * literal text.
  *
  * The WAL open happens OUTSIDE any ledger transaction: nothing here has
  * one open, and the Handshaker's applies all committed during
  * `nodus_cmt_node_init`. That is the reference's own order.
  *
- * @return CMT_OK; CMT_REJECT from `cmt_cs_start`'s double-sign refusal
- *         (:393-395); CMT_FAULT on NULL, a node not built, a WAL that
- *         cannot open, or a second call.
+ * @return CMT_OK; CMT_FAULT on NULL, a node not built, a WAL that cannot
+ *         open, or a second call. `cmt_cs_start`'s own CMT_REJECT
+ *         (double-sign refusal, :393-395) is the CALLER's return now,
+ *         from `cmt_conr_start`, not this function's.
  */
 int nodus_cmt_node_start(nodus_cmt_node_t *n);
 

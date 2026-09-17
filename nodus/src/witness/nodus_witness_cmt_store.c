@@ -80,17 +80,28 @@ int nodus_cmt_store_get(nodus_cmt_store_t *s, bool state_table,
                         const char *key, const uint8_t **out_value,
                         size_t *out_len)
 {
-    sqlite3_stmt *st;
-    int           rc;
+    sqlite3_stmt  *st;
+    uint8_t      **val_buf;
+    size_t        *val_cap;
+    int            rc;
 
     if (!s || !s->db || !key || !out_value || !out_len) {
         return CMT_FAULT;
     }
-    st = state_table ? s->ss_get : s->bs_get;
+    st      = state_table ? s->ss_get : s->bs_get;
+    val_buf = state_table ? &s->ss_val : &s->bs_val;
+    val_cap = state_table ? &s->ss_val_cap : &s->bs_val_cap;
     sqlite3_reset(st);
     sqlite3_bind_blob(st, 1, key, (int)strlen(key), SQLITE_TRANSIENT);
     rc = sqlite3_step(st);
     if (rc == SQLITE_DONE) {
+        /* R3-W3-C2a-17 (delta 9) — reset HERE too, not only on the next
+         * call's top-of-function reset: a statement that reached DONE
+         * without ever returning ROW still holds the same deferred
+         * read-transaction snapshot open until it is reset, exactly as
+         * the ROW case below did before this fix. */
+        sqlite3_reset(st);
+        sqlite3_clear_bindings(st);
         *out_value = NULL;
         *out_len = 0;
         return CMT_OK;
@@ -98,14 +109,57 @@ int nodus_cmt_store_get(nodus_cmt_store_t *s, bool state_table,
     if (rc != SQLITE_ROW) {
         QGP_LOG_ERROR(LOG_TAG, "get %s failed: %s", key, sqlite3_errmsg(s->db));
         sqlite3_reset(st);
+        sqlite3_clear_bindings(st);
         return CMT_FAULT;
     }
-    /* The row stays materialised until the statement is reset — by the
-     * NEXT call on the same table; the header says so. */
-    *out_value = (const uint8_t *)sqlite3_column_blob(st, 0);
-    *out_len = (size_t)sqlite3_column_bytes(st, 0);
-    if (*out_len == 0) {
-        *out_value = NULL;                /* the reference's len(bz) == 0 */
+    /* R3-W3-C2a-17 (delta 9) — COPY the row into this table's store-owned
+     * buffer and reset the statement IMMEDIATELY, rather than leaving it
+     * stepped (row materialised) until the NEXT call resets it at the
+     * top of this function. Leaving it stepped pins an open READ
+     * transaction (a WAL snapshot) on the MAIN connection for the whole
+     * span between calls: the moment ANY other connection commits
+     * (the WAL module's own separate FULL connection, in production),
+     * SQLite's SQLITE_BUSY_SNAPSHOT rule makes every subsequent WRITE on
+     * this connection fail "database is locked" — NOT retried by the
+     * busy handler, because a read transaction can never be promoted to
+     * a write one once another connection has written since the
+     * snapshot was taken. Measured on the Genesis Protocol harness
+     * (7 nodes, production constants): every node's WAL writes and its
+     * own `BEGIN IMMEDIATE` failed this way after height 1, stopping
+     * consensus participation on all seven. See this function's own doc
+     * comment in nodus_witness_cmt_store.h for the full citation. The
+     * OBSERVABLE contract is unchanged: `*out_value` is still valid
+     * until the next `get` on the SAME table — it is now a copy, not a
+     * row pointer, but nothing outside this file can tell the
+     * difference. */
+    {
+        const uint8_t *col = (const uint8_t *)sqlite3_column_blob(st, 0);
+        size_t         n   = (size_t)sqlite3_column_bytes(st, 0);
+
+        if (n == 0) {
+            sqlite3_reset(st);
+            sqlite3_clear_bindings(st);
+            *out_value = NULL;            /* the reference's len(bz) == 0 */
+            *out_len = 0;
+            return CMT_OK;
+        }
+        if (n > *val_cap) {
+            uint8_t *grown = (uint8_t *)realloc(*val_buf, n);
+            if (!grown) {
+                QGP_LOG_ERROR(LOG_TAG, "%s", "get: out of memory copying "
+                              "the row out of the statement");
+                sqlite3_reset(st);
+                sqlite3_clear_bindings(st);
+                return CMT_FAULT;
+            }
+            *val_buf = grown;
+            *val_cap = n;
+        }
+        memcpy(*val_buf, col, n);
+        sqlite3_reset(st);
+        sqlite3_clear_bindings(st);
+        *out_value = *val_buf;
+        *out_len = n;
     }
     return CMT_OK;
 }
@@ -495,6 +549,15 @@ static void store_free_scratch(nodus_cmt_store_t *s)
 {
     int k;
 
+    /* R3-W3-C2a-17 (delta 9) — nodus_cmt_store_get's own per-table copy
+     * buffers; see nodus_cmt_store_t's own struct comment and
+     * nodus_cmt_store_get's doc comment for why they exist. */
+    free(s->bs_val);
+    s->bs_val = NULL;
+    s->bs_val_cap = 0;
+    free(s->ss_val);
+    s->ss_val = NULL;
+    s->ss_val_cap = 0;
     free(s->buf);
     s->buf = NULL;
     s->buf_cap = 0;
@@ -2206,6 +2269,21 @@ int nodus_cmt_ss_set_offline_state_sync_height(nodus_cmt_store_t *s,
     return nodus_cmt_store_set(s, true, KEY_OFFLINE_SS, bz, n);     /* :729 */
 }
 
+/**
+ * FLEET-TM-R3 W3 (item 8, R3-C1c-2, CLOSED — was "REPORTED" as both
+ * cases returning CMT_REJECT). state/store.go:397-403 (the caller,
+ * ported in nodus_witness_cmt_node.c) treats an EMPTY value as absence
+ * and tolerates it SILENTLY (height 0, no log, :400) and PANICS on a
+ * NEGATIVE stored height (:750-752). The two cases now have distinct
+ * returns so the caller can tell them apart without a second store read:
+ *   - absent (`n == 0`, store.go:745-747's "value empty"): CMT_OK,
+ *     `*out = 0`, no log — the caller's ordinary "no state-sync height
+ *     recorded" path, unchanged in outcome from before this fix.
+ *   - a genuinely unreadable store row: CMT_FAULT, as before.
+ *   - a NEGATIVE decoded height (store.go:750-752): CMT_FAULT — the
+ *     reference's panic, translated as this node's own state
+ *     contradicting itself, not a peer's doing.
+ */
 int nodus_cmt_ss_get_offline_state_sync_height(nodus_cmt_store_t *s,
                                                int64_t *out)
 {
@@ -2220,14 +2298,14 @@ int nodus_cmt_ss_get_offline_state_sync_height(nodus_cmt_store_t *s,
         return CMT_FAULT;                                            /* :740-743 */
     }
     if (n == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "%s", "value empty");
-        return CMT_REJECT;                                           /* :745-747 */
+        *out = 0;                                                    /* :745-747, silent */
+        return CMT_OK;
     }
     h = nodus_cmt_int64_from_bytes(v, n);                            /* :749 */
     if (h < 0) {
         QGP_LOG_ERROR(LOG_TAG, "%s", "invalid value for height: height "
                       "cannot be negative");
-        return CMT_REJECT;                                           /* :750-752 */
+        return CMT_FAULT;                                            /* :750-752, panic */
     }
     *out = h;
     return CMT_OK;

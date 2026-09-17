@@ -23,6 +23,10 @@
 #include "witness/nodus_witness_validator.h"
 #include "witness/nodus_witness_delegation.h"
 #include "witness/nodus_witness_committee.h"
+/* FLEET-TM-R3 W3 (package C2a, item 6) — the cometbft startup table's
+ * mempool, for the CheckTx-immediate client-submit lane. */
+#include "witness/nodus_witness_cmt_node.h"
+#include "dnac/cmt_mem.h"
 #include "protocol/nodus_cbor.h"
 #include "protocol/nodus_tier2.h"
 #include "dnac/transaction.h"   /* DNAC_TX_HEADER_SIZE (v0.17.1) */
@@ -2037,6 +2041,94 @@ static void handle_dnac_spend(nodus_witness_t *w,
     if (tx_len > nodus_t3_tx_size_limit(tx_data, tx_len)) {
         send_error(conn, txn_id, NODUS_ERR_TOO_LARGE,
                     "transaction too large");
+        return;
+    }
+
+    /* ── FLEET-TM-R3 W3 (D-23 rev 7 item 22, package C2a) — ON A
+     * VERSION-3 CHAIN, THE COMET MEMPOOL'S CheckTx IS THE WHOLE ANSWER.
+     * The reference's `broadcast_tx_sync` shape: the client learns the
+     * CheckTx code AT ONCE — APPROVED means accepted into the mempool,
+     * REJECTED carries the reason — and NOTHING BELOW THIS BLOCK RUNS:
+     * no leader/follower branch, no forward-to-leader (there is no
+     * leader; the mempool reactor floods), no pending-forward slot, no
+     * committed-block receipt. The client learns the commit by query
+     * (dnac_tx, block height) — this response carries no `bnr`/`ti`/
+     * `wsig`: there is no committed block yet to certify, and signing a
+     * receipt for one would be inventing a fact. `witness->cmt_node`
+     * NULL here would mean `v2_successor` is true but the startup
+     * table failed to build at init (already refused init in that
+     * case) or has not finished constructing (unreachable on a running
+     * server) — refuse defensively rather than fall through to the
+     * legacy lane below, which a v3 chain must never reach. */
+    if (w->v2_successor) {
+        nodus_cmt_node_t *node = (nodus_cmt_node_t *)w->cmt_node;
+        if (!node || !node->mem_ready) {
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                        "the cometbft mempool is not available");
+            return;
+        }
+
+        cmt_mem_tx_info_t          info;
+        cmt_mem_response_check_tx_t res;
+        cmt_mem_error_t             err;
+        memset(&info, 0, sizeof(info));   /* sender_id 0 = unknown (RPC) */
+
+        int rc = cmt_mem_check_tx(node->mem, tx_data, tx_len, &info,
+                                  &res, &err);
+        if (rc == CMT_FAULT) {
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                        "CheckTx faulted");
+            return;
+        }
+        if (rc == CMT_REJECT) {
+            /* Same wording the legacy leader branch already sends for
+             * the equivalent admission outcomes, so an existing client
+             * sees familiar text. */
+            switch (err.kind) {
+            case CMT_MEM_ERR_TX_TOO_LARGE:
+                send_error(conn, txn_id, NODUS_ERR_TOO_LARGE,
+                            "transaction too large");
+                break;
+            case CMT_MEM_ERR_TX_IN_CACHE:
+                send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                            "duplicate transaction");
+                break;
+            case CMT_MEM_ERR_MEMPOOL_IS_FULL:
+                send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                            "mempool full");
+                break;
+            default:
+                send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                            "CheckTx admission refused");
+                break;
+            }
+            return;
+        }
+        /* rc == CMT_OK: the application WAS called. res.code == 0 is
+         * acceptance; any other code is the application's own refusal
+         * (nodus_witness_cmt_app.c's check_tx row), never a mempool
+         * error — both are answered here, at once. */
+        if (res.code != CMT_MEM_CODE_TYPE_OK) {
+            char msg[64];
+            snprintf(msg, sizeof(msg), "CheckTx code %u",
+                     (unsigned)res.code);
+            send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR, msg);
+            return;
+        }
+
+        uint8_t buf[128];
+        cbor_encoder_t enc;
+        cbor_encoder_init(&enc, buf, sizeof(buf));
+        enc_dnac_response(&enc, txn_id, "dnac_spend", 1);
+        cbor_encode_cstr(&enc, "status");
+        cbor_encode_uint(&enc, (uint64_t)DNAC_STATUS_APPROVED);
+        size_t rlen = cbor_encoder_len(&enc);
+        if (rlen > 0) {
+            nodus_tcp_send(conn, buf, rlen);
+        } else {
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                        "response buffer overflow");
+        }
         return;
     }
 

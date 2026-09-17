@@ -742,6 +742,17 @@ int cmt_conr_receive(cmt_conr_t *conR, int peer_idx, uint8_t channel_id,
     cs  = conR->cs;
     msg = conR->recv_msg;
 
+    /* PACKAGE C2e (register R3-A-5, closing): the mempool reactor's own
+     * pattern (`cmt_memr_receive`, cmt_memr.c:392 `memR->arena.used = 0`)
+     * — reset the receive arena HERE, before the decode, on every call.
+     * After this the arena holds ONE decoded message and nothing may keep
+     * a pointer into it past this function's return; see the file
+     * header's "THE RECEIVE ARENA" section for the two owners
+     * (`cmt_cs_add_proposal_block_part_input` / `cs_q_push`,
+     * `cmt_cs_try_add_vote`) that now copy what they need to keep BEFORE
+     * this arena is next reset. */
+    conR->recv_arena->used = 0;
+
     /* :236 — MsgFromProto(e.Message): here the p2p layer's decode of the
      * envelope's bytes (cmt_pb_cons_message_unmarshal into recv_arena)
      * and msgs.go:121-231's conversion, as one step. */
@@ -755,9 +766,20 @@ int cmt_conr_receive(cmt_conr_t *conR, int peer_idx, uint8_t channel_id,
         return CMT_FAULT;
     }
     if (rc != CMT_OK) {                                          /* :237 */
-        /* ⚠ Also reached when `recv_arena` is EXHAUSTED (r_copy_arena →
-         * CMT_REJECT), which the reference cannot hit and which blames the
-         * wrong peer — register R3-A-5; R3-C2 separates the two. */
+        /* PACKAGE C2e closes register R3-A-5: `recv_arena` is reset to
+         * `used = 0` at the top of this function (above), and
+         * `NODUS_CMT_NET_RECV_ARENA_BYTES` is `CMT_CONR_MAX_MSG_SIZE`
+         * (cmt_conr.h "THE RECEIVE ARENA") — the channel's own
+         * RecvMessageCapacity, which the tier-3 wire decoder already
+         * refuses to exceed before a message reaches here
+         * (nodus_tier3.c's `dec_w_cmt_args`, `m_cap`). Since
+         * `r_copy_arena` (cmt_pb_wire.h) only ever copies a SUB-SLICE of
+         * `bytes`, the total copied by one decode can never exceed `len`,
+         * so an admitted message can never exhaust an arena sized to the
+         * bound its own channel enforces. This branch is therefore no
+         * longer reachable via arena exhaustion — only via a malformed
+         * or oversized-field wire message, which is exactly what it is
+         * named for. */
         QGP_LOG_ERROR(LOG_TAG, "Error decoding message from peer %d on chId %02x",
                       peer_idx, (unsigned)channel_id);           /* :238 */
         if (conR->host.stop_peer_for_error == NULL) {

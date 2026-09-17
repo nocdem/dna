@@ -343,50 +343,102 @@ int nodus_witness_v2_claim_entry_nullifier(nodus_witness_t *w,
  * in the same index order, so honest nodes handed the same proposal on
  * the same committed state reach the same answer.
  */
-int nodus_witness_v2_produce_batch_check_ex(
+/**
+ * ORCHESTRATOR delta 1, item B / delta 2, item A (register row
+ * R3-C1a-4, CLOSED for the Comet lane) — the shared body behind
+ * `nodus_witness_v2_produce_batch_check_ex` (unchanged export, still
+ * capped at NODUS_W_MAX_BLOCK_TXS for its one legacy caller,
+ * nodus_witness_bft.c:5286, which never runs on a version-3 chain —
+ * D-17 rev 10 item 9) and the NEW
+ * `nodus_witness_v2_produce_batch_check_capped` the Comet application
+ * calls with its own, larger, byte-budget-derived capacity.
+ *
+ * delta 2 — LIGHTWEIGHT ITEMS: takes `nodus_witness_batch_item_t`
+ * (24 B: {tx_type, tx_data, tx_len}), not
+ * `nodus_witness_mempool_entry_t **` — that type is ~8.4 KB per item
+ * (a 2 592-byte pubkey plus a 4 627-byte signature this seam never
+ * reads), so sizing scratch to it at Comet-lane counts (hundreds of
+ * thousands) would cost gigabytes. The legacy `_ex` wrapper converts
+ * its own `nodus_witness_mempool_entry_t **` into this view ON THE
+ * STACK (its own cap is 10, trivially small); the Comet caller
+ * (`nodus_witness_cmt_app.c`'s `app_seam_check`) builds the view array
+ * itself, per request, and passes it straight in.
+ *
+ * `cap` is the ADMISSION ceiling (`count > cap` refuses before any
+ * allocation); every scratch array below is sized to `count` itself
+ * (delta 2: per-request, not to `cap`'s worst case) — HEAP, never a
+ * stack array of the caller's `count`, since a Comet-lane batch can be
+ * in the thousands. Every exit path frees everything it allocated;
+ * none of the returns below leaks.
+ *
+ * NOT exported: `nodus_witness_v2_produce_batch_check_ex` is declared in
+ * nodus_witness_v2_env.h, which is outside this package's whitelist, so
+ * its signature is UNCHANGED — this function is `static` and reached
+ * only through the two public wrappers below it.
+ */
+static int produce_batch_check_impl(
         nodus_witness_t *w,
-        nodus_witness_mempool_entry_t **entries,
+        const nodus_witness_batch_item_t *items,
         int count,
+        int cap,
         int *fail_index_out,
         nodus_v2_batch_check_result_t *result_out) {
+    nodus_v2_envelope_t *envs      = NULL;
+    int                  *env_idx  = NULL;
+    int                  *claim_idx = NULL;
+    uint8_t             (*nuls)[64] = NULL;
+    int rc_out = -2;
+
     if (fail_index_out) *fail_index_out = 0;
     if (result_out) {
         memset(result_out, 0, sizeof(*result_out));
         result_out->kind = NODUS_V2_BATCH_FAIL_FAULT;
     }
-    if (!w || !w->db || !w->v2_successor || !entries || count <= 0 ||
-        count > NODUS_W_MAX_BLOCK_TXS)
+    if (!w || !w->db || !w->v2_successor || !items || count <= 0 ||
+        cap <= 0 || count > cap)
         return -2;
 
     /* Split by class; keep each subset entry's ORIGINAL batch index so a
-     * seam failure names the offender in the caller's array. */
-    nodus_v2_envelope_t envs[NODUS_W_MAX_BLOCK_TXS];
-    int env_idx[NODUS_W_MAX_BLOCK_TXS];
+     * seam failure names the offender in the caller's array. Heap,
+     * sized to `count` (delta 2: per-request, not to `cap`'s worst
+     * case). */
+    envs      = (nodus_v2_envelope_t *)calloc((size_t)count, sizeof(*envs));
+    env_idx   = (int *)calloc((size_t)count, sizeof(*env_idx));
+    claim_idx = (int *)calloc((size_t)count, sizeof(*claim_idx));
+    nuls      = calloc((size_t)count, sizeof(*nuls));
+    if (!envs || !env_idx || !claim_idx || !nuls) {
+        rc_out = -2;
+        goto done;
+    }
     int n_env = 0;
-    int claim_idx[NODUS_W_MAX_BLOCK_TXS];
     int n_claim = 0;
     for (int i = 0; i < count; i++) {
-        if (!entries[i] || !entries[i]->tx_data || entries[i]->tx_len == 0) {
+        if (!items[i].tx_data || items[i].tx_len == 0) {
             if (fail_index_out) *fail_index_out = i;
             if (result_out) result_out->kind = NODUS_V2_BATCH_FAIL_ENTRY_INVALID;
-            return -1;
+            rc_out = -1;
+            goto done;
         }
-        if (entries[i]->tx_type == NODUS_W_TX_V2_ENVELOPE) {
-            envs[n_env].env_bytes = entries[i]->tx_data;
-            envs[n_env].env_len   = entries[i]->tx_len;
+        if (items[i].tx_type == NODUS_W_TX_V2_ENVELOPE) {
+            envs[n_env].env_bytes = items[i].tx_data;
+            envs[n_env].env_len   = items[i].tx_len;
             env_idx[n_env]        = i;
             n_env++;
-        } else if (entries[i]->tx_type == NODUS_W_TX_V2_CLAIM) {
+        } else if (items[i].tx_type == NODUS_W_TX_V2_CLAIM) {
             claim_idx[n_claim++] = i;
         } else {
             if (fail_index_out) *fail_index_out = i;
             if (result_out) result_out->kind = NODUS_V2_BATCH_FAIL_ENTRY_INVALID;
-            return -1;                          /* unknown entry class    */
+            rc_out = -1;                          /* unknown entry class    */
+            goto done;
         }
     }
 
     uint64_t candidate = 0;
-    if (nodus_witness_v2_tip_height(w, &candidate) != 0) return -2;
+    if (nodus_witness_v2_tip_height(w, &candidate) != 0) {
+        rc_out = -2;
+        goto done;
+    }
     candidate += 1;
 
     /* ── ENVELOPE subset: the METERED seam (the engine's own entry) ──── */
@@ -401,7 +453,10 @@ int nodus_witness_v2_produce_batch_check_ex(
          * then killed the whole block at apply with ERR_CTX_MISSING.
          * ~5.7 KB — heap, like every other buffer on this path. */
         nodus_witness_v2_block_ctx_t *bctx = calloc(1, sizeof(*bctx));
-        if (!bctx) return -2;
+        if (!bctx) {
+            rc_out = -2;
+            goto done;
+        }
         int bcrc = nodus_witness_v2_block_ctx_build(w, bctx);
         if (bcrc != 0) {
             /* -1 (SYSTEM unusable) is a chain-state condition no entry in
@@ -411,7 +466,8 @@ int nodus_witness_v2_produce_batch_check_ex(
             QGP_LOG_ERROR(LOG_TAG, "batch pre-check could not build the "
                           "block-start context (rc=%d) — no verdict", bcrc);
             free(bctx);
-            return -2;
+            rc_out = -2;
+            goto done;
         }
 
         dna_env_preflight_t *pf =
@@ -421,7 +477,8 @@ int nodus_witness_v2_produce_batch_check_ex(
             free(pf);
             free(meters);
             free(bctx);
-            return -2;
+            rc_out = -2;
+            goto done;
         }
         size_t fail_i = 0;
         dna_env_preflight_status_t pst = DNA_ENV_PF_OK;
@@ -452,7 +509,8 @@ int nodus_witness_v2_produce_batch_check_ex(
                 QGP_LOG_ERROR(LOG_TAG, "batch pre-check FAULTED on the "
                               "envelope subset (seam=%d pf=%d meter=%d) — "
                               "no verdict", (int)est, (int)pst, (int)mst);
-                return -2;
+                rc_out = -2;
+                goto done;
             }
             /* fail_i maps back to the ORIGINAL batch index. On
              * CAPACITY_BYTES the seam reports 0 for the whole batch and
@@ -464,7 +522,8 @@ int nodus_witness_v2_produce_batch_check_ex(
             QGP_LOG_WARN(LOG_TAG, "batch pre-check rejected the envelope "
                          "subset at %zu (kind=%d seam=%d pf=%d meter=%d)",
                          fail_i, (int)kind, (int)est, (int)pst, (int)mst);
-            return -1;
+            rc_out = -1;
+            goto done;
         }
     }
 
@@ -473,16 +532,21 @@ int nodus_witness_v2_produce_batch_check_ex(
      * only (its budget is handed to the envelope seam and to nothing
      * else), so a claim can never be the entry a capacity failure names.
      * That is what makes truncating at a capacity fail_index safe — the
-     * surviving prefix is exactly the envelope set that reserved. */
+     * surviving prefix is exactly the envelope set that reserved. `nuls`
+     * is heap, sized to `count` (delta 8, item B: wording corrected —
+     * it was a NODUS_W_MAX_BLOCK_TXS stack array before the seam moved
+     * to a per-request view). */
     if (n_claim > 0) {
-        uint8_t nuls[NODUS_W_MAX_BLOCK_TXS][64];
         for (int ci = 0; ci < n_claim; ci++) {
             int oi = claim_idx[ci];
             dna_claim_t *c = calloc(1, sizeof(*c));   /* large — heap */
-            if (!c) return -2;
+            if (!c) {
+                rc_out = -2;
+                goto done;
+            }
             nodus_v2_claim_admit_t adm;
-            int ok = (dna_claim_decode(entries[oi]->tx_data,
-                                       entries[oi]->tx_len, c) == 0) &&
+            int ok = (dna_claim_decode(items[oi].tx_data,
+                                       items[oi].tx_len, c) == 0) &&
                      (nodus_witness_v2_claim_admit(w, c, candidate,
                                                    &adm) == 0);
             free(c);
@@ -492,7 +556,8 @@ int nodus_witness_v2_produce_batch_check_ex(
                     result_out->kind = NODUS_V2_BATCH_FAIL_ENTRY_INVALID;
                 QGP_LOG_WARN(LOG_TAG, "batch pre-check rejected claim entry "
                              "%d (admission)", oi);
-                return -1;
+                rc_out = -1;
+                goto done;
             }
             for (int p = 0; p < ci; p++) {
                 if (memcmp(nuls[p], adm.nullifier, 64) == 0) {
@@ -501,7 +566,8 @@ int nodus_witness_v2_produce_batch_check_ex(
                         result_out->kind = NODUS_V2_BATCH_FAIL_ENTRY_INVALID;
                     QGP_LOG_WARN(LOG_TAG, "batch pre-check: duplicate claim "
                                  "nullifier in one batch (entry %d)", oi);
-                    return -1;
+                    rc_out = -1;
+                    goto done;
                 }
             }
             memcpy(nuls[ci], adm.nullifier, 64);
@@ -509,7 +575,84 @@ int nodus_witness_v2_produce_batch_check_ex(
     }
 
     if (result_out) result_out->kind = NODUS_V2_BATCH_FAIL_NONE;
-    return 0;
+    rc_out = 0;
+
+done:
+    free(envs);
+    free(env_idx);
+    free(claim_idx);
+    free(nuls);
+    return rc_out;
+}
+
+/**
+ * The unchanged export (nodus_witness_v2_env.h's declaration, outside
+ * this package's whitelist): still capped at NODUS_W_MAX_BLOCK_TXS, for
+ * its one caller (nodus_witness_bft.c:5286, the legacy leader — never
+ * reached on a version-3 chain, D-17 rev 10 item 9). Behaviour
+ * byte-identical to before delta 1: same cap, same verdicts.
+ *
+ * ORCHESTRATOR delta 2, item A — converts its `nodus_witness_mempool_entry_t
+ * **` into the lightweight `nodus_witness_batch_item_t` view ON THE
+ * STACK: NODUS_W_MAX_BLOCK_TXS is 10, so a 10-element, 24-byte-per-item
+ * stack array is trivial — no heap needed for the legacy caller's own
+ * conversion.
+ */
+int nodus_witness_v2_produce_batch_check_ex(
+        nodus_witness_t *w,
+        nodus_witness_mempool_entry_t **entries,
+        int count,
+        int *fail_index_out,
+        nodus_v2_batch_check_result_t *result_out) {
+    nodus_witness_batch_item_t view[NODUS_W_MAX_BLOCK_TXS];
+    int i;
+
+    if (!entries || count <= 0 || count > NODUS_W_MAX_BLOCK_TXS) {
+        if (fail_index_out) *fail_index_out = 0;
+        if (result_out) {
+            memset(result_out, 0, sizeof(*result_out));
+            result_out->kind = NODUS_V2_BATCH_FAIL_FAULT;
+        }
+        return -2;
+    }
+    memset(view, 0, sizeof(view));
+    for (i = 0; i < count; i++) {
+        if (entries[i]) {
+            view[i].tx_type = entries[i]->tx_type;
+            view[i].tx_data = entries[i]->tx_data;
+            view[i].tx_len  = entries[i]->tx_len;
+        }
+        /* a NULL entries[i] leaves view[i] zeroed — tx_data NULL, which
+         * produce_batch_check_impl's own per-item check already refuses
+         * (ENTRY_INVALID), exactly as `!entries[i]` did before. */
+    }
+    return produce_batch_check_impl(w, view, count, NODUS_W_MAX_BLOCK_TXS,
+                                    fail_index_out, result_out);
+}
+
+/**
+ * ORCHESTRATOR delta 1, item B / delta 2, item A — the Comet lane's own
+ * seam call, with a CALLER-SUPPLIED capacity and a CALLER-BUILT
+ * lightweight item view: the Comet application
+ * (`nodus_witness_cmt_app.c`'s `app_seam_check`) builds `items` itself,
+ * per request, sized to `count` — never a
+ * `nodus_witness_mempool_entry_t **` conversion here, since that type is
+ * what made the pre-delta-2 design cost gigabytes at Comet-lane scale.
+ * `cap` is the caller's own admission ceiling (`env_bound` for
+ * FinalizeBlock-scale callers; PrepareProposal's own `prep_bound` for
+ * its own call).
+ * @return 0 clean / -1 entry (or capacity) rejected / -2 node-local
+ *         fault or a bad `cap`/`count`.
+ */
+int nodus_witness_v2_produce_batch_check_capped(
+        nodus_witness_t *w,
+        const nodus_witness_batch_item_t *items,
+        int count,
+        int cap,
+        int *fail_index_out,
+        nodus_v2_batch_check_result_t *result_out) {
+    return produce_batch_check_impl(w, items, count, cap, fail_index_out,
+                                    result_out);
 }
 
 /*

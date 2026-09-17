@@ -175,20 +175,25 @@
  *     per height with the header, the seen commit and the seen extended
  *     commit, and nothing else. `store/store.go`'s pruning, its batch
  *     writes and every panic it has are not modelled.
- * 11. A PART SET THE STATE MACHINE ASSEMBLED BORROWS THE SENDER'S BYTES.
- *     `cmt_part_set_add_part` stores the part STRUCT, whose `bytes` is a
- *     pointer (cmt_part_set.c:457, `ps->parts[part->index] = *part`), so a
- *     part set built from `tc_set_proposal_and_block` points into THIS
- *     FIXTURE'S `ext_scratch` — the one buffer `tc_decide_proposal_from`
- *     and `tc_make_part_set` marshal into, and which the NEXT call to
- *     either overwrites. The bytes are read at exactly two moments: when
- *     the set completes (the reader, state.go:2005) and when a VALID block
- *     is RE-PROPOSED (state.go:1211 hands `ValidBlockParts` to :1246-1249).
- *     Every scenario drains before it rebuilds, so the first read is safe;
- *     NO scenario re-proposes a fixture-made valid block after a second
- *     fixture-made block, so the second never sees a stale pointer. A
- *     scenario that did would queue parts whose proofs no longer match and
- *     the block would never complete. Named here because nothing checks it.
+ * 11. (CLOSED BY PACKAGE C2e, register R3-A-5 — WAS "A PART SET THE STATE
+ *     MACHINE ASSEMBLED BORROWS THE SENDER'S BYTES".) Through R3-C2e,
+ *     `cmt_part_set_add_part` stored the part STRUCT as a bare
+ *     descriptor (`ps->parts[part->index] = *part`), so a part set built
+ *     from `tc_set_proposal_and_block` pointed into THIS FIXTURE'S
+ *     `ext_scratch` — the one buffer `tc_decide_proposal_from` and
+ *     `tc_make_part_set` marshal into, and which the NEXT call to either
+ *     overwrote — and a scenario that reused `ext_scratch` before the
+ *     part set was fully read would queue parts whose proofs no longer
+ *     matched, so the block would never complete. `tc->slots->part_bytes`
+ *     (the payload store `cs_new_part_set_from_header` now binds to
+ *     every `NewPartSetFromHeader`-built set, cmt_cs.h's field comment)
+ *     closes this: `cmt_part_set_add_part` COPIES the payload into that
+ *     store, so the part set no longer depends on `ext_scratch` — or any
+ *     other caller buffer — surviving past the call. Proven directly by
+ *     `s_block_part_survives_source_overwrite` (test_cmt_cs.c), which
+ *     does the thing this note used to say no scenario should do —
+ *     overwrites the source buffer between queuing a part and the state
+ *     machine reading it back — and asserts the block still completes.
  * 12. THE EXTENDED-COMMIT CAPTURE RECORDS THE FIXTURE'S OWN CALLS TOO.
  *     `tc_create_proposal_block` remembers the `last_ext_commit` it was
  *     handed (`cap_ext*`, the C answer to state_test.go:1669-1674's
@@ -1629,7 +1634,18 @@ static int tc_setup(tc_t *tc, size_t nvals,
         tc->slots->payload[i]     = (uint8_t *)calloc((size_t)TC_PAYLOAD_CAP,
                                                       1u);
         tc->slots->payload_cap[i] = (size_t)TC_PAYLOAD_CAP;
-        if (tc->slots->parts[i] == NULL || tc->slots->payload[i] == NULL) {
+        /* PACKAGE C2e, register R3-A-5: the part-set payload store
+         * (cmt_cs.h's field comment on `part_bytes`) — without this the
+         * fixture's part sets would keep the pre-C2e "borrows the
+         * sender's bytes" contract HOW IT CAN LIE (11) above documents,
+         * and `s_block_part_survives_source_overwrite` below could not
+         * be green. Sized like `payload[i]`: TC_PARTS_CAP *
+         * CMT_BLOCK_PART_SIZE_BYTES, which is exactly TC_PAYLOAD_CAP. */
+        tc->slots->part_bytes[i] = (uint8_t *)calloc((size_t)TC_PAYLOAD_CAP,
+                                                     1u);
+        tc->slots->part_bytes_cap[i] = (size_t)TC_PAYLOAD_CAP;
+        if (tc->slots->parts[i] == NULL || tc->slots->payload[i] == NULL ||
+            tc->slots->part_bytes[i] == NULL) {
             tc_teardown(tc);
             return 1;
         }
@@ -1858,6 +1874,7 @@ static void tc_teardown(tc_t *tc)
         for (i = 0u; i < (size_t)CMT_CS_BLOCK_SLOTS; i++) {
             free(tc->slots->parts[i]);
             free(tc->slots->payload[i]);
+            free(tc->slots->part_bytes[i]);   /* package C2e, R3-A-5 */
         }
         free(tc->slots->marshal_parts);
         free(tc->slots->marshal_scratch);

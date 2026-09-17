@@ -123,34 +123,80 @@
  * out-parameter, including pointing any list at storage the host owns,
  * and that storage stays valid until the next call of the same row.
  *
- * ── THE RECEIVE ARENA ──────────────────────────────────────────────────
+ * ── THE RECEIVE ARENA — PACKAGE C2e, CLOSING REGISTER R3-A-5 ────────────
  * `cmt_conr_receive` takes a peer's BYTES and decodes them with
  * `cmt_pb_cons_message_unmarshal` into `recv_arena` (cmt_pb.h:62-66: a
  * decoded part's payload and a vote's extension are COPIED there and the
- * message points at them). Those pointers OUTLIVE the call:
- * `cmt_cs_add_proposal_block_part_input` copies the part STRUCT
- * (cmt_cs.c, `mi->msg.u.block_part.part = *part`), the queued message is
- * re-read when it is dequeued (the WAL write of state.go:831), and
- * `cmt_part_set_add_part` stores the struct into the height's part set
- * (cmt_part_set.h:46-50), which lives until `updateToState` releases it.
- * THE ARENA MAY THEREFORE BE RESET ONLY WHEN (a) the state machine's peer
- * queue holds no message decoded into it AND (b) every part set and vote
- * set of the height those bytes belong to has been released — the same
- * rule as `cs->ext_arena`'s (cmt_cs.h OWNERSHIP (2), whose text already
- * names "whatever decodes a peer's vote" as a writer) plus clause (a).
- * Passing `cs->ext_arena` itself is the designed wiring; a host that
- * wants two arenas must give both the same lifetime. The reset policy is
- * the host's (R3-C2) and is raised as a QUESTION in the wave report.
- * ⚠ WHAT HAPPENS IF IT IS NEVER RESET — register R3-A-5 (verifier A,
- * 2026-09-14): the arena is ONE for all peers, the decode consumes it
- * BEFORE ValidateBasic, before the `wait_sync` drop and before any height
- * check, and `r_copy_arena` answers exhaustion with the same CMT_REJECT
- * as malformed bytes, so `cmt_conr_receive` stops WHICHEVER peer's message
- * hit the wall as a DECODE error. A peer that fills the arena with
- * decodable junk parts (`Part.ValidateBasic` checks shape, not the block
- * root) therefore gets an HONEST peer disconnected. The reference has no
- * analogue (Go allocates per message). R3-C2 must both choose the reset
- * policy and make exhaustion a distinct outcome from a bad message.
+ * message points at them). THE POLICY (operator-approved 2026-09-17,
+ * replacing both the original wiring note this section used to carry and
+ * the tree's later deviation to a separate, never-reset host arena —
+ * register R3-W3-C2b-5): the mempool reactor's own pattern.
+ * `cmt_conr_receive` resets `recv_arena->used = 0` at the TOP of every
+ * call, before the decode (`cmt_memr_receive`, cmt_memr.c:392 does the
+ * same for its own arena). After the reset the arena holds ONE decoded
+ * message and NOTHING may keep a pointer into it past this function's
+ * return — every consumer that used to rely on the arena outliving the
+ * call now OWNS a copy of what it keeps:
+ *   · `cs_q_push` (cmt_cs.c) copies the ONE variable-length payload a
+ *     queued message can carry — a BlockPart's `part.bytes` or a Vote's
+ *     `extension` — into the SAME allocation as the queue element
+ *     (`mem_tx_new`'s idiom, cmt_mem.c:240-262), freed with it.
+ *   · `cmt_part_set_add_part` (cmt_part_set.c), when the part set was
+ *     built with a bound payload store (`cmt_part_set_bind_payload_store`,
+ *     called by `cs_new_part_set_from_header`), copies the part's bytes
+ *     into that store and stores the part pointing THERE instead of into
+ *     the (now-recycled) arena.
+ *   · `cmt_cs_try_add_vote` (cmt_cs.c) copies a vote's extension into
+ *     `cs->ext_arena` before handing the vote to `cmt_hvs_add_vote` /
+ *     `cmt_vote_set_add_vote`, which only ever share the extension
+ *     DESCRIPTOR (cmt_cs.h OWNERSHIP (2)).
+ *
+ * THE BOUND: `NODUS_CMT_NET_RECV_ARENA_BYTES` (nodus_witness_cmt_net.h) is
+ * exactly `CMT_CONR_MAX_MSG_SIZE` (1 048 576, tied by a `_Static_assert`),
+ * the SAME bound the tier-3 wire decoder already enforces on every
+ * consensus-channel envelope before it reaches this function
+ * (`nodus_tier3.c`'s `dec_w_cmt_args`, `NODUS_T3_CMT_CONS_M_MAX`). Every
+ * `r_copy_arena` call reachable from `cmt_pb_cons_message_unmarshal`
+ * (cmt_pb.c: the BlockPart's `bytes` field at `part_merge`, the Vote's
+ * `extension` field at `vote_merge`) copies a SUB-SLICE of the message it
+ * is decoding, so the total bytes one decode can copy into the arena can
+ * never exceed the message's own wire length — which the channel already
+ * bounded to `CMT_CONR_MAX_MSG_SIZE`. AN ARENA OF THAT SIZE CAN THEREFORE
+ * NEVER EXHAUST FOR A MESSAGE THE CHANNEL ADMITTED. (Two other
+ * `r_copy_arena` sites in the same file — `data_merge`'s `Data.Txs[]` and
+ * `ecs_merge`'s `ExtendedCommitSig.extension` — decode a whole Block and
+ * an ExtendedCommit respectively, neither of which is one of the nine
+ * reactor message kinds `cons_message_merge` can produce; they are not
+ * reachable from this arena at all.)
+ *
+ * DUPLICATES cost one decode each and are dropped by `AddPart`'s
+ * "already held" check (part_set.go:311-313, cmt_part_set.c) — nothing
+ * accumulates across the several peers that gossip the same part; no
+ * pre-decode dedup is added (the reference has none).
+ *
+ * ⚠ WHAT USED TO HAPPEN IF IT WAS NEVER RESET — register R3-A-5
+ * (verifier A, 2026-09-14; measured in production at
+ * `/tmp/stagef-20260917T024138Z`, seven nodes: the chain stopped at
+ * height 347 after ≈ 1 hour): the arena was ONE for all peers, the decode
+ * consumed it BEFORE ValidateBasic, before the `wait_sync` drop and
+ * before any height check, and `r_copy_arena` answered exhaustion with
+ * the same CMT_REJECT as malformed bytes, so `cmt_conr_receive` stopped
+ * WHICHEVER peer's message hit the wall as a DECODE error — one block's
+ * worth of parts (≈ 174 KB, one part gossiped from ≈ 5 peers) against a
+ * 64 MiB runway exhausted it in ≈ 380 heights, and every honest peer that
+ * gossiped after that point was disconnected as if it had sent garbage.
+ * The reference has no analogue (Go allocates per message). This package
+ * closes that: the arena is per-message and the bound above proves
+ * exhaustion unreachable.
+ *
+ * WHY THE DECODE-ERROR RETURN AT `cmt_conr_receive`'s "Error decoding
+ * message" branch DOES NOT NEED A SEPARATE CODE FOR "arena exhausted":
+ * that outcome is now UNREACHABLE for a message the channel admitted (the
+ * bound proof above), so the branch it used to share with arena
+ * exhaustion is once again exactly what its name and its reference line
+ * (:237-241) say it is — a malformed or field-oversized message. A
+ * distinct return code would name an outcome that cannot occur; adding
+ * one would be dead code the moment it was written.
  *
  * ── THE ValidateBasic GATE (msgs.go:232-234) ───────────────────────────
  * The reference's `Receive` calls `MsgFromProto` (:236), whose last act
@@ -361,7 +407,13 @@ typedef enum {
  * not the state machine: the transport (p2p) and the block store.
  *
  * ⚠ EVERY POINTER IS REQUIRED; a NULL row reached at run time is
- * CMT_FAULT. A callback MUST NOT re-enter this module or `cs`.
+ * CMT_FAULT. A callback MUST NOT re-enter this module or `cs` — with
+ * ONE exception, the one `stop_peer_for_error`'s own row text below
+ * requires: that row MAY call `cmt_conr_remove_peer` for the slot it
+ * was called about, because every one of its four call sites returns
+ * at once after the row (cmt_conr.c:766-768, :789-791, :824-826,
+ * :873-875) and reads neither the slot nor its PeerState afterwards
+ * (verified R3 W3 C2b, 2026-09-16 — the first host to do it).
  */
 typedef struct {
     /* ── p2p.Peer (p2p/peer.go:22-48) ──────────────────────────────── */
@@ -379,7 +431,7 @@ typedef struct {
 
     /** p2p/switch.go:335-358 — `StopPeerForError(peer, reason)`, reached
      *  from reactor.go:239, :245, :266, :285. The host disconnects the
-     *  peer (:341 `stopAndRemovePeer`, whose :373-375 calls every
+     *  peer (:341 `stopAndRemovePeer`, whose :372-374 calls every
      *  reactor's `RemovePeer` — the host therefore calls
      *  `cmt_conr_remove_peer` for this slot, before or after returning);
      *  reconnection (:343-357 `reconnectToPeer`) is the host's peer

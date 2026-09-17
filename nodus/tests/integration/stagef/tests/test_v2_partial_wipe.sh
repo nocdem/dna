@@ -26,6 +26,18 @@
 #   work here in the first place. Recovery here is the V2 one: wipe
 #   everything and rejoin on the genesis pin.
 #
+# R3 W3 (C2d) — THE GATE ITSELF DID NOT MOVE
+#   `nodus_server_check_partial_wipe` (nodus_server.c:5700-5796) and the
+#   marker write after a successful open
+#   (nodus_server.c:6233-6252, gated only on `srv->witness &&
+#   srv->witness->db`) are lane-agnostic: file presence and an open chain
+#   handle, nothing about which consensus runs on it. Read for this
+#   package and confirmed unchanged — this scenario's core mechanism
+#   needed NO rewrite. What changed is the RESTORE step below: it is
+#   still the pin-based join, but the joined node now comes up as a
+#   COMETBFT witness, not a Ledger V2 one, and the anti-vacuity check
+#   added below reads for that role.
+#
 # WHAT IT REQUIRES
 #   Compile flags: NONE. A default nodus/build binary.
 #   Environment: none. Needs $BASE_DIR/v2_genesis_pin for the restore,
@@ -46,10 +58,24 @@
 #     different code (two by name, the witness DB by a directory scan).
 #   - **The marker's absence must be tried too, or the gate could be
 #     passing for the wrong reason.** The scenario removes the marker and
-#     asserts the SAME half-wiped directory now BOOTS — which is what
-#     proves the refusals above came from the marker being armed rather
-#     than from the missing file alone. Without that half, a node that
-#     refused to start for any reason at all would read as a pass.
+#     asserts the SAME half-wiped directory now demonstrably BOOTS (the
+#     TCP port actually accepts a connection, not merely "the process
+#     did not exit") — which is what proves the refusals above came from
+#     the marker being armed rather than from the missing file alone.
+#   - **DELTA 1 (verifier UNCOVERED FINDING 5, fixed).** `try_boot` used
+#     to decide the whole verdict off one fixed `sleep 8` — a gate that
+#     refused correctly but later than 8 s read as "booted", and the
+#     negative control's `!= "refused"` check would then misread that
+#     late refusal as proof the gate was disarmed. Replaced with a
+#     bounded 30 s POLL for either real outcome (the refusal line, or the
+#     TCP port actually listening); the negative control now requires the
+#     POSITIVE "booted" result specifically, not merely "anything but
+#     refused".
+#   - **The attempt-loop bounds elsewhere in this script (the restore's
+#     rejoin wait) are LOG-LINE / height bounds, the same shape as
+#     bring-up's own anti-vacuity loop — bounded by ATTEMPTS, not by a
+#     single fixed sleep deciding a verdict. `try_boot`'s old `sleep 8`
+#     was the one exception, and DELTA 1 above is what removed it.**
 #   - **rc=99 means the cluster was not V2.** Coverage that did not
 #     happen.
 #
@@ -96,6 +122,16 @@ stop_victim() {
 # Start the victim and report whether the gate refused it. The log is
 # TRUNCATED first: a `PARTIAL WIPE DETECTED` line from a previous attempt
 # would otherwise make every later attempt look like a refusal.
+#
+# DELTA 1 (verifier UNCOVERED FINDING 5, CONFIRMED) — a bare `sleep 8`
+# used to decide the ENTIRE verdict: a gate that refuses correctly but
+# takes longer than 8 s to print its line would read as "booted", and
+# the negative control's `[ "$r" != "refused" ]` check would then read
+# that late refusal as proof the gate was disarmed — a false GREEN in
+# BOTH directions. Replaced with a bounded POLL (up to 30 s) for either
+# real outcome: the refusal line appearing, or the TCP port actually
+# accepting connections (not merely "the process is still alive", which
+# a hung boot could satisfy without ever becoming a witness).
 try_boot() {
     : > "$nd/boot.log"
     # shellcheck disable=SC2086
@@ -105,22 +141,37 @@ try_boot() {
         -W "$(stagef_witness_port "$VICTIM")" \
         -i "$nd/identity" -d "$data" $SEEDS \
         > "$nd/boot.log" 2>&1 &
-    local bp=$!
-    sleep 8
-    if grep -q 'PARTIAL WIPE DETECTED' "$nd/boot.log"; then
-        kill -9 "$bp" 2>/dev/null || true
-        wait "$bp" 2>/dev/null || true
-        echo "refused"; return 0
-    fi
-    # Not refused: is it actually up?
-    if kill -0 "$bp" 2>/dev/null; then
-        kill -9 "$bp" 2>/dev/null || true; wait "$bp" 2>/dev/null || true
-        echo "booted"; return 0
-    fi
-    echo "died-other"; return 0
+    local bp=$! tcp result=""
+    tcp=$(stagef_tcp_port "$VICTIM")
+    for _ in $(seq 1 60); do
+        if grep -q 'PARTIAL WIPE DETECTED' "$nd/boot.log"; then
+            result="refused"; break
+        fi
+        if ss -lt 2>/dev/null | grep -Eq "[:.]${tcp}\\b"; then
+            result="booted"; break
+        fi
+        if ! kill -0 "$bp" 2>/dev/null; then
+            # ORCHESTRATOR (sweep 5): the refusal prints its line and exits
+            # within the same half-second, so a poll that grepped BEFORE
+            # the write and tested liveness AFTER the exit misclassified a
+            # correct refusal as "died-other" (measured: boot.log held
+            # "PARTIAL WIPE DETECTED … REFUSING START", verdict died-other).
+            # Once the process is gone its log is final — read it once more
+            # before deciding.
+            if grep -q 'PARTIAL WIPE DETECTED' "$nd/boot.log"; then
+                result="refused"; break
+            fi
+            result="died-other"; break
+        fi
+        sleep 0.5
+    done
+    kill -9 "$bp" 2>/dev/null || true
+    wait "$bp" 2>/dev/null || true
+    echo "${result:-timeout}"
+    return 0
 }
 
-bash "$(dirname "$0")/../stagef_diff.sh" "pre-v2-partial-wipe" || exit 2
+stagef_cmt_diff_at_floor "pre-v2-partial-wipe" || exit 2
 stop_victim
 
 # ── Each of the three, one at a time ────────────────────────────────
@@ -155,8 +206,12 @@ mv "$data/.witness_db_seen" "$BASE_DIR/pw_probe_marker"
 r=$(try_boot)
 mv "$BASE_DIR/pw_probe_nodus.db" "$data/nodus.db"
 mv "$BASE_DIR/pw_probe_marker" "$data/.witness_db_seen"
-[ "$r" != "refused" ] || die \
-  "the node refused even with NO marker — the gate is firing for some other reason and the three results above prove nothing about it"
+# DELTA 1 (finding 5) — requires the POSITIVE outcome "booted", not
+# merely "not refused". A "timeout" or "died-other" result is NEITHER a
+# refusal NOR proof the same directory boots — `!= "refused"` let either
+# one through as if it were.
+[ "$r" = "booted" ] || die \
+  "the node did not demonstrably BOOT with no marker (result: '$r') — either it refused (the gate is firing for some other reason and the three results above prove nothing about it) or it neither refused nor came up listening within the bound"
 echo "[ok] same half-wiped directory with NO marker -> boots ($r): the refusals above were the ARMED gate"
 
 # ── Restore, the V2 way ─────────────────────────────────────────────
@@ -178,18 +233,42 @@ PIN=$(cat "$PINFILE")
 echo "$!" >> "$BASE_DIR/pids.txt"
 
 fleet_tip=$(sqlite3 "$ref_db" "SELECT MAX(global_height) FROM v2_blocks;")
-back=0
+# stagef_cmt_wait_height takes a fixed DB PATH; the victim has none until
+# it adopts (stagef_node_chain_db globs for whatever witness_*.db exists
+# right now, which is nothing before adoption), so this loop re-resolves
+# the path on every poll instead of calling the helper once.
+vt=-1
 for _ in $(seq 1 180); do
-    vt=$(sqlite3 "$(stagef_node_chain_db "$VICTIM")" \
-         "SELECT COALESCE(MAX(global_height),-1) FROM v2_blocks;" 2>/dev/null || echo -1)
-    [ "$vt" -ge "$fleet_tip" ] && { back=1; break; }
+    vdb=$(stagef_node_chain_db "$VICTIM")
+    if [ -n "$vdb" ]; then
+        vt=$(sqlite3 "$vdb" "SELECT COALESCE(MAX(global_height),-1) FROM v2_blocks;" 2>/dev/null || echo -1)
+        [ "$vt" -ge "$fleet_tip" ] && break
+    fi
     sleep 1
 done
-[ "$back" = 1 ] || die "node$VICTIM did not rejoin after the restore (tip $vt < fleet $fleet_tip)"
+[ "$vt" -ge "$fleet_tip" ] || die "node$VICTIM did not rejoin after the restore (tip $vt < fleet $fleet_tip)"
 echo "[ok] node$VICTIM restored by rejoining on its pin (tip $vt)"
 
-sleep 3
-bash "$(dirname "$0")/../stagef_diff.sh" "post-v2-partial-wipe" || exit 2
+# ANTI-VACUITY: it must have come back as a COMETBFT witness, not merely
+# a DHT-only process with a chain file on disk (nodus keeps serving DHT
+# when the witness module never armed — stagef_up_v2.sh's own bring-up
+# gate exists for exactly that reason; this restore path deserves no less).
+role_ok=0 live_ok=0
+for _ in $(seq 1 30); do
+    if grep -q 'chain role: COMETBFT' "$nd/nodus.log"; then role_ok=1; fi
+    if grep -q 'cometbft lane LIVE' "$nd/nodus.log"; then live_ok=1; fi
+    if [ "$role_ok" = 1 ] && [ "$live_ok" = 1 ]; then break; fi
+    sleep 1
+done
+[ "$role_ok" = 1 ] && [ "$live_ok" = 1 ] || die \
+  "node$VICTIM adopted a chain but never reported COMETBFT role + lane LIVE (role=$role_ok live=$live_ok) — it may be up as a DHT-only process"
+echo "[ok] node$VICTIM re-established the COMETBFT role and went LIVE"
+
+for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
+    stagef_cmt_wait_height "$(stagef_node_chain_db "$n")" "$vt" 2 >/dev/null \
+        || die "node$n never reached height $vt (mesh replication stalled)"
+done
+stagef_cmt_diff_at_floor "post-v2-partial-wipe" || exit 2
 
 echo ""
 echo "[PASS] the H-10 boot gate is ARMED on a Ledger V2 node and refused all"

@@ -327,12 +327,22 @@ void nodus_cmt_blockexec_release(nodus_cmt_blockexec_t *ctx)
     free(ctx->ext_load_arena.buf);
     free(ctx->tocommit_sigs);
     free(ctx->marshal_scratch);
-    free(ctx->det_results);
-    free(ctx->leaf_scratch);
-    free(ctx->items);
+    /* delta 3, item B: det_results/results/leaf_scratch/items are no
+     * longer ctx fields — nodus_cmt_update_state allocates and frees
+     * them per apply, locally. Nothing to release here. */
     free(ctx->valset_hash_scratch);
     free(ctx->valset_items);
     memset(ctx, 0, sizeof(*ctx));
+}
+
+int nodus_cmt_blockexec_set_wal(nodus_cmt_blockexec_t *ctx,
+                                nodus_cmt_wal_t *wal)
+{
+    if (!ctx) {
+        return CMT_FAULT;
+    }
+    ctx->wal = wal;
+    return CMT_OK;
 }
 
 static int slot_alloc(nodus_cmt_slot_storage_t *s,
@@ -428,17 +438,10 @@ int nodus_cmt_blockexec_init(nodus_cmt_blockexec_t *ctx,
     ctx->tocommit_sigs = (cmt_commit_sig_t *)calloc(CMT_VALSET_MAX, sizeof(cmt_commit_sig_t));
     ctx->marshal_scratch_cap = (size_t)CMT_MAX_BLOCK_SIZE_BYTES;
     ctx->marshal_scratch = (uint8_t *)malloc(ctx->marshal_scratch_cap);
-    ctx->det_results = (cmt_pb_exec_tx_result_t *)
-        calloc(limits->max_txs ? limits->max_txs : 1, sizeof(cmt_pb_exec_tx_result_t));
-    ctx->results.results = ctx->det_results;
-    ctx->results.results_cap = limits->max_txs;
-    /* A deterministic result marshals to at most 1+5 + 1+2+data + 2×11;
-     * the data is application bytes of unbounded length in the reference
-     * and of tx_arena_cap in this port's arena. */
-    ctx->leaf_scratch_cap = limits->tx_arena_cap + limits->max_txs * 32u + 64u;
-    ctx->leaf_scratch = (uint8_t *)malloc(ctx->leaf_scratch_cap);
-    ctx->items = (cmt_merkle_item_t *)
-        calloc(limits->max_txs ? limits->max_txs : 1, sizeof(cmt_merkle_item_t));
+    /* delta 3, item B: det_results/results/leaf_scratch/items dropped
+     * from this init — nodus_cmt_update_state now allocates them per
+     * apply, sized to that apply's own item count. Nothing to allocate
+     * here. */
     ctx->valset_hash_scratch = (uint8_t *)
         malloc((size_t)CMT_VALSET_MAX * (size_t)CMT_VALIDATOR_BYTES_MAX);
     ctx->valset_items = (cmt_merkle_item_t *)
@@ -449,9 +452,8 @@ int nodus_cmt_blockexec_init(nodus_cmt_blockexec_t *ctx,
         !ctx->ext_votes || !ctx->misbehavior || !ctx->reap_txs ||
         !ctx->reap_arena.buf || !ctx->tmp_block || !ctx->commit_sigs ||
         !ctx->seen_sigs || !ctx->ext_sigs || !ctx->ext_load_arena.buf ||
-        !ctx->tocommit_sigs || !ctx->marshal_scratch || !ctx->det_results ||
-        !ctx->leaf_scratch || !ctx->items || !ctx->valset_hash_scratch ||
-        !ctx->valset_items) {
+        !ctx->tocommit_sigs || !ctx->marshal_scratch ||
+        !ctx->valset_hash_scratch || !ctx->valset_items) {
         nodus_cmt_blockexec_release(ctx);
         return CMT_FAULT;
     }
@@ -1229,20 +1231,76 @@ int nodus_cmt_update_state(nodus_cmt_blockexec_t *ctx, const cmt_state_t *state,
     ns->last_height_validators_changed = last_height_vals_changed;   /* :655 */
     ns->consensus_params = next_params;                              /* :656 */
     ns->last_height_consensus_params_changed = last_height_params_changed; /* :657 */
-    /* :658 LastResultsHash: TxResultsHash(abciResponse.TxResults) */
-    if (resp->tx_results_len > ctx->results.results_cap) {
-        return CMT_FAULT;                 /* capacity */
-    }
-    for (i = 0; i < resp->tx_results_len; i++) {
-        ctx->det_results[i] = resp->tx_results[i].det;
-    }
-    rc = nodus_cmt_ss_tx_results_hash(ctx->det_results, resp->tx_results_len,
-                                      &ctx->results, ctx->leaf_scratch,
-                                      ctx->leaf_scratch_cap, ctx->items,
-                                      ctx->results.results_cap,
-                                      ns->last_results_hash);
-    if (rc != CMT_OK) {
-        return CMT_FAULT;
+    /* :658 LastResultsHash: TxResultsHash(abciResponse.TxResults)
+     *
+     * ORCHESTRATOR delta 3, item B — PER-APPLY, not bind-time: refuse a
+     * count above `limits.max_txs` (the node's own configured ceiling,
+     * unchanged derivation in nodus_cmt_node.c) BEFORE allocating
+     * anything — a decided block above it is a node-local invariant
+     * broken, the same class FinalizeBlock's own env_bound guard is —
+     * then allocate `det_results`/`items` sized to THIS apply's actual
+     * `resp->tx_results_len`, and `leaf_scratch` sized the same way the
+     * bind-time version was (the marshal-size formula is unchanged; only
+     * the item-count term now uses this apply's own count instead of the
+     * compile-time ceiling). All three are LOCAL and freed INLINE
+     * before every return (delta 8, item B: wording corrected — this
+     * block has no `goto`; the three frees are duplicated at the early
+     * failure return and again right after the hash call, covering both
+     * the hash-failure and success paths) — verified (whole-tree grep) that
+     * nothing outside this function ever reads them, so unlike the
+     * application layer's `fb_pb` there is no ABCI-response reason to
+     * keep them ctx-owned between calls. An allocation failure is
+     * CMT_FAULT (node-local, umbrella panic rule). */
+    {
+        cmt_pb_exec_tx_result_t *det_results = NULL;
+        cmt_merkle_item_t       *items       = NULL;
+        uint8_t                 *leaf_scratch = NULL;
+        size_t                   leaf_scratch_cap;
+        cmt_abci_results_t       results;
+        int                      hash_rc;
+
+        if (resp->tx_results_len > ctx->limits.max_txs) {
+            return CMT_FAULT;                 /* capacity */
+        }
+        memset(&results, 0, sizeof(results));
+        if (resp->tx_results_len > 0) {
+            det_results = (cmt_pb_exec_tx_result_t *)
+                calloc(resp->tx_results_len, sizeof(*det_results));
+            items = (cmt_merkle_item_t *)
+                calloc(resp->tx_results_len, sizeof(*items));
+        }
+        /* A deterministic result marshals to at most 1+5 + 1+2+data +
+         * 2×11; the data is application bytes of unbounded length in the
+         * reference and of tx_arena_cap in this port's arena — that term
+         * is a fixed byte-budget config, not item-count-scaled, so it is
+         * unchanged from the bind-time formula. */
+        leaf_scratch_cap = ctx->limits.tx_arena_cap +
+                           resp->tx_results_len * 32u + 64u;
+        leaf_scratch = (uint8_t *)malloc(leaf_scratch_cap);
+        if (!leaf_scratch ||
+            (resp->tx_results_len > 0 && (!det_results || !items))) {
+            free(det_results);
+            free(items);
+            free(leaf_scratch);
+            return CMT_FAULT;
+        }
+        for (i = 0; i < resp->tx_results_len; i++) {
+            det_results[i] = resp->tx_results[i].det;
+        }
+        results.results     = det_results;
+        results.results_cap = resp->tx_results_len;
+        hash_rc = nodus_cmt_ss_tx_results_hash(det_results,
+                                               resp->tx_results_len,
+                                               &results, leaf_scratch,
+                                               leaf_scratch_cap, items,
+                                               resp->tx_results_len,
+                                               ns->last_results_hash);
+        free(det_results);
+        free(items);
+        free(leaf_scratch);
+        if (hash_rc != CMT_OK) {
+            return CMT_FAULT;
+        }
     }
     ns->last_results_hash_len = CMT_TMHASH_SIZE;
     ns->app_hash_len = 0;                                            /* :659 nil */
@@ -1934,8 +1992,24 @@ static int host_wal_write(void *vctx, const cmt_wal_message_t *msg)
 {
     nodus_cmt_blockexec_t *ctx = (nodus_cmt_blockexec_t *)vctx;
 
-    if (!ctx || !ctx->wal) {
+    if (!ctx) {
         return CMT_FAULT;
+    }
+    /* FLEET-TM-R3 W3 (item 8, R3-C1c-6), delta 7 item A (delta 8, item B:
+     * citation corrected) — `ctx->wal == NULL` is the reference's
+     * `nilWAL` (state.go:174 `cs.wal = nilWAL{}`, installed BEFORE
+     * OnStart's real WAL open, state.go:319-336), a SILENT no-op here
+     * too (wal.go:426 `func (nilWAL) Write(WALMessage) error { return
+     * nil }`), not a fault: `cmt_cs_init` writes a newStep row before
+     * `nodus_cmt_node_start` ever opens the
+     * real WAL (delta 7: `nodus_cmt_blockexec_init` is now called with
+     * `wal = NULL`, exactly mirroring nilWAL's construction-time binding;
+     * `nodus_cmt_node_start` binds the real WAL only after it opens), so
+     * this path is reached on the very first `cmt_cs_init` and must not
+     * refuse it. A WAL that exists but fails to WRITE is still this
+     * node's own fault, unchanged below. */
+    if (!ctx->wal) {
+        return CMT_OK;
     }
     return nodus_cmt_wal_write(ctx->wal, msg);
 }
@@ -1944,8 +2018,15 @@ static int host_wal_write_sync(void *vctx, const cmt_wal_message_t *msg)
 {
     nodus_cmt_blockexec_t *ctx = (nodus_cmt_blockexec_t *)vctx;
 
-    if (!ctx || !ctx->wal) {
+    if (!ctx) {
         return CMT_FAULT;
+    }
+    /* delta 7 item A (delta 8, item B: citation corrected) — wal.go:427
+     * `func (nilWAL) WriteSync(WALMessage) error { return nil }` is ALSO
+     * a silent no-op, the same nilWAL binding as `host_wal_write`
+     * above. */
+    if (!ctx->wal) {
+        return CMT_OK;
     }
     return nodus_cmt_wal_write_sync(ctx->wal, msg);
 }
@@ -1954,8 +2035,14 @@ static int host_wal_flush_and_sync(void *vctx)
 {
     nodus_cmt_blockexec_t *ctx = (nodus_cmt_blockexec_t *)vctx;
 
-    if (!ctx || !ctx->wal) {
+    if (!ctx) {
         return CMT_FAULT;
+    }
+    /* delta 7 item A (delta 8, item B: citation corrected) — wal.go:428
+     * `func (nilWAL) FlushAndSync() error { return nil }` is ALSO a
+     * silent no-op. */
+    if (!ctx->wal) {
+        return CMT_OK;
     }
     return nodus_cmt_wal_flush_and_sync(ctx->wal);
 }
@@ -1964,12 +2051,36 @@ static int host_wal_search_end_height(void *vctx, int64_t height, bool *out_foun
 {
     nodus_cmt_blockexec_t *ctx = (nodus_cmt_blockexec_t *)vctx;
 
-    if (!ctx || !ctx->wal) {
+    if (!ctx) {
         return CMT_FAULT;
+    }
+    /* delta 7 item A (delta 8, item B: citation added) — wal.go:429-431
+     * `func (nilWAL) SearchForEndHeight(...) (rd io.ReadCloser, found
+     * bool, err error) { return nil, false, nil }`: a SUCCESSFUL "not
+     * found" answer, never an error, so this reports CMT_OK with
+     * *out_found = false rather than CMT_FAULT. `height` is unused on
+     * this path — a nilWAL has nothing to search regardless of which
+     * height is asked for. */
+    if (!ctx->wal) {
+        if (out_found) {
+            *out_found = false;
+        }
+        return CMT_OK;
     }
     return nodus_cmt_wal_search_end_height(ctx->wal, height, out_found);
 }
 
+/* delta 7 item A — `read_next` stays a FAULT on a NULL wal, unlike the
+ * four rows above: the `WAL` interface itself (wal.go:58-69) declares
+ * only Write/WriteSync/FlushAndSync/SearchForEndHeight plus the service
+ * methods Start/Stop/Wait — there is no ReadNext row for nilWAL
+ * (wal.go:422-434) to answer at all. A replay read is reached only
+ * through `catchupReplay`, which OnStart runs strictly AFTER binding the
+ * real WAL (state.go:318-329's `loadWalFile`: `cs.OpenWAL` then
+ * `cs.wal = wal`, BEFORE the `cs.doWALCatchup` block at :338), never
+ * before it — so the reference has no path that reads before opening,
+ * and reaching this row with no WAL open is this node's own invariant
+ * broken, not a case the reference has an answer for. */
 static int host_wal_read_next(void *vctx, cmt_timed_wal_message_t *out,
                               bool *out_eof)
 {

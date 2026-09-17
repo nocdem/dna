@@ -171,8 +171,9 @@
  *      `mn_pick_send_vote` consults only what IT sent, so a vote the peer
  *      got from a third party is sent again. Same effect. Neither changes
  *      what a node DECIDES; both make the driver chattier than the reactor.
- * M10. VOTE EXTENSIONS MUST BE DISABLED. `cmt_cs_add_vote` copies the vote
- *      STRUCT (cmt_cs.c:651) and an extension is a pointer into the
+ * M10. VOTE EXTENSIONS MUST BE DISABLED. `cmt_cs_add_vote` (cmt_cs.c:681)
+ *      copies the vote STRUCT (the copy itself at cmt_cs.c:700) and an
+ *      extension is a pointer into the
  *      sender's arena; routing one would point across fixtures.
  *      `mn_deliver_vote` refuses a vote with an extension. The reference
  *      test runs with extensions disabled too (randGenesisDoc passes nil
@@ -217,6 +218,88 @@
  *      loud failure if reached. In the scenarios here partition B stalls
  *      at height 2 because the height-2 proposer is the partition-A node,
  *      so no node ever lags by two.
+ * M16. MN_TICKER_QUIESCENT IS A THIRD TIMER RULE M5 DOES NOT HAVE, ADDED
+ *      FOR R3 W3 PACKAGE P0's OBLIGATION SCENARIOS (test_cmt_byzantine.c)
+ *      — NO GO LINE, because the reference's honest tickers are wall
+ *      clocks (byzantine_test.go:308-314) and M5's mock/when-idle pair
+ *      already covers every scenario where every honest node completes a
+ *      REAL proposal on messages alone. Neither M5 rule survives a
+ *      scenario whose round 0 cannot: the mock rule never fires a
+ *      non-NEW_HEIGHT timeout at all, so round 0 stalls forever; the
+ *      byzantine "when idle" rule fires per node the instant that ONE
+ *      node's own queues are empty, with no regard for what the REST of
+ *      the network still has in flight — fine for round 0 alone, and a
+ *      liveness bug in every later round of a topology where a message
+ *      can take more than one `mn_round` to cross (M3, M6): a
+ *      non-proposer with nothing locally queued fires its timeoutPropose
+ *      before a proposal that is still correctly one or more hops away
+ *      ever gets the chance to arrive.
+ *      An armed timeout on a MN_TICKER_QUIESCENT node fires immediately
+ *      at NEW_HEIGHT (M5's mock rule, unchanged, so post-commit behaviour
+ *      matches every other scenario); at any other step it fires only
+ *      when `mn_net_t.activity_this_round` reads false for the round
+ *      just finished. FOUR sources set it, none of them a bare
+ *      assertion: (a) a `cmt_cs_step` that reported `worked`, set inline
+ *      in `mn_round`; (b) a timer that fired, `mn_timers`' own
+ *      `out_fired`, likewise set inline in `mn_round`; (c) a message
+ *      QUEUED by `mn_deliver_vote` / `mn_deliver_proposal` / `mn_deliver_
+ *      part` on the CMT_OK path — this is the one that matters for the
+ *      NINE by-hand byzantine sends (`mn_byz_send_set`, `mn_byz_decide_
+ *      bad_header`) that never call `mn_sent_add` at all, so hooking
+ *      THOSE three functions, not `mn_sent_add`, is what makes "a
+ *      message queued is activity" true regardless of caller; and (d) a
+ *      NEW entry appended to a link's sent log by `mn_sent_add`, whose
+ *      own dedup is what "NEW" means — this is what makes a repeated
+ *      `mn_announce_maj23` correction (M9) correctly NOT count, since
+ *      that call site corrects the sent log directly, without going
+ *      through a `mn_deliver_*` call at all.
+ *      THE BRANCH ITSELF CONSULTS ONLY THIS PRECEDING ROUND'S VERDICT —
+ *      it does NOT re-check `cmt_cs_has_work` on the firing node or on
+ *      anyone else in the CURRENT round. The guarantee that a quiescent
+ *      timeout therefore never pre-empts a message still in flight holds
+ *      anyway, for a reason the mechanism supplies: after a round with NO
+ *      activity, nothing changed anywhere, so the FOLLOWING round has
+ *      nothing new for any node to gossip and no queue holds anything
+ *      unconsumed — `mn_round`'s own per-node order is step, THEN timers,
+ *      THEN mirror, THEN gossip (test_cmt_multinode.h:1786-1863). The
+ *      only events that following round can produce are the quiescent
+ *      timers themselves firing, and each of those queues a tock on its
+ *      OWN node's timer queue, which `cmt_cs_step` does not consume until
+ *      the round AFTER THAT. So the earliest a message can be newly
+ *      produced is one full round after the timers that produced it
+ *      fired — never in the same round as a message it might otherwise
+ *      have raced.
+ *      THIS ARGUMENT ASSUMES `cs->quit` IS NEVER SET. `quit` is one of
+ *      `cmt_cs_has_work`'s own terms (cmt_cs.c:1398-1399) but has no case
+ *      of its own in `cmt_cs_step`'s four-source poll walk; it is only
+ *      checked as a POST-loop fallback (cmt_cs.c:1567-1572) once none of
+ *      the four polled sources had anything ready — and at THAT point it
+ *      DOES report `worked = true`. `cmt_cs_quit` (cmt_cs.c:818-823) is
+ *      the only thing that sets it, and nothing ever clears it again, so
+ *      once set, EVERY later `cmt_cs_step` call on that node reports
+ *      `worked` this same way, forever, and `activity_this_round` could
+ *      never read false again for the rest of the run. Neither test file
+ *      calls `cmt_cs_quit` anywhere, so this never arises here — but the
+ *      argument's own soundness rests on that fact, not on the mechanism
+ *      excluding the case.
+ *      The flag is reset and re-accumulated at the top of every
+ *      `mn_round`; nodes are polled in the fixed index order M3 already
+ *      establishes, so more than one node reaching quiescence in the
+ *      same round is deterministic, not a race. `mn_net_new` initialises
+ *      the flag to true (not-yet-proven-quiet), so a QUIESCENT node's
+ *      non-NEW_HEIGHT timeout cannot fire before at least one full
+ *      `mn_round` has actually been OBSERVED empty — never on the
+ *      unobserved assumption that nothing has happened yet.
+ *      M13's OWN notion of "quiescence" (`mn_node_start`'s settle, a
+ *      single node stepping to a local fixed point BEFORE it has any
+ *      peer at all) is NOT reused: it is per-node and pre-gossip, with no
+ *      notion of a link's sent log or of any OTHER node's state, so it
+ *      cannot express "the network has nothing left to deliver" — a
+ *      genuinely different definition of quiescence, not a special case
+ *      of this one. No scenario before the OBLIGATION pair needs
+ *      MN_TICKER_QUIESCENT; `real_ticker` (bool) is replaced by
+ *      `ticker_mode` (`mn_ticker_mode_t`) everywhere so the three rules
+ *      are one switch, not a bool plus a second, unrelated bool.
  *
  * Reference @709fd12b (SHA-256 verified before use):
  *   consensus/byzantine_test.go  596 lines
@@ -334,6 +417,27 @@ typedef struct {
 
 /* ══ one node ═════════════════════════════════════════════════════════ */
 
+/**
+ * How a node's armed timeout gets serviced — M5's two rules plus R3 W3
+ * package P0's third (M16). One field, not a bool plus a second bool,
+ * so the three rules are mutually exclusive by construction.
+ */
+typedef enum {
+    /** M5: fires only when the armed timeout is RoundStepNewHeight, the
+     *  instant it is scheduled. Every scenario before the OBLIGATION
+     *  pair uses this for every honest node. */
+    MN_TICKER_MOCK,
+    /** M5: the byzantine node's own rule — fires whenever armed and the
+     *  node has no queued work (`cmt_cs_has_work`), with no regard for
+     *  the rest of the network. */
+    MN_TICKER_WHEN_IDLE,
+    /** M16: like MOCK at RoundStepNewHeight; at any other step, fires
+     *  only when the WHOLE network produced no activity during the
+     *  immediately preceding `mn_round` (`mn_net_t.activity_this_round`,
+     *  read as the previous round's verdict). */
+    MN_TICKER_QUIESCENT
+} mn_ticker_mode_t;
+
 typedef struct {
     size_t    index;
     tc_t     *tc;
@@ -343,8 +447,9 @@ typedef struct {
     /** byzantine_test.go:335-346 and :362-364. */
     bool      byzantine;
     /** byzantine_test.go:311-314 — `css[0].SetTimeoutTicker(NewTimeoutTicker())`;
-     *  every other node keeps the mock ticker of :308. See M5. */
-    bool      real_ticker;
+     *  every other node keeps the mock ticker of :308 unless a scenario
+     *  moves it to MN_TICKER_QUIESCENT (M16). See M5, M16. */
+    mn_ticker_mode_t ticker_mode;
     /** Per registry record: a part set over THIS node's copy of the
      *  marshalled block, so a part delivered here points into this
      *  node's own storage (M7). */
@@ -374,6 +479,15 @@ typedef struct {
     size_t     mirrored[MN_MAX_NODES][MN_MAX_NODES];
     /** Network rounds run so far, for the report. */
     int64_t    rounds;
+    /** M16: whether the round now in progress has seen any activity yet
+     *  (a `cmt_cs_step` that `worked`, a timer that fired, or a NEW entry
+     *  in some link's sent log). `mn_round` reads the value left over
+     *  from the PREVIOUS round as that round's verdict, then resets this
+     *  to false before accumulating the CURRENT round's own activity.
+     *  `mn_net_new` sets it true (not-yet-proven-quiet) so a
+     *  MN_TICKER_QUIESCENT node's non-NEW_HEIGHT timeout cannot fire
+     *  before at least one full `mn_round` has been OBSERVED empty. */
+    bool       activity_this_round;
 } mn_net_t;
 
 /** The network alive right now — see WHAT IT LEAVES BEHIND. */
@@ -478,6 +592,26 @@ static bool mn_sent_has(const mn_link_t *link, uint8_t kind, int64_t height,
     return false;
 }
 
+/**
+ * @note M16 — this function is NOT where every delivery is caught; it is
+ *       where a REPEATED announcement is caught. `mn_sent_add`'s four
+ *       call sites (`mn_send_part`, `mn_gossip_data`'s proposal branch,
+ *       `mn_pick_send_vote`, `mn_announce_maj23`'s own per-validator
+ *       loop) are all GOSSIP paths, each already followed by an
+ *       `mn_deliver_*` call whose own CMT_OK already counts as activity
+ *       (`mn_deliver_vote`, `mn_deliver_proposal`, `mn_deliver_part` —
+ *       search their own M16 notes). `mn_announce_maj23`'s loop is the
+ *       ONE case that calls this function WITHOUT a preceding
+ *       `mn_deliver_*`: it corrects the sent log directly, bookkeeping
+ *       rather than a delivery. The dedup check just above
+ *       means a REPEATED, identical correction — bits already recorded —
+ *       appends NOTHING and is therefore correctly NOT counted as
+ *       activity. Nine BY-HAND byzantine sends (`mn_byz_send_set`,
+ *       `mn_byz_decide_bad_header`) never call `mn_sent_add` at all —
+ *       they rely entirely on `mn_deliver_*`'s own hook, which is why
+ *       that hook, not this one, is what makes "a message queued is
+ *       activity" true BY CONSTRUCTION regardless of caller.
+ */
 static int mn_sent_add(mn_link_t *link, uint8_t kind, int64_t height,
                        int32_t round, int32_t vote_type, int32_t index,
                        const uint8_t *hash, size_t hash_len)
@@ -501,6 +635,9 @@ static int mn_sent_add(mn_link_t *link, uint8_t kind, int64_t height,
     e->hash_len  = hash_len;
     if (hash_len > 0u) {
         memcpy(e->hash, hash, hash_len);
+    }
+    if (g_mn_net != NULL) {
+        g_mn_net->activity_this_round = true;
     }
     return 0;
 }
@@ -795,28 +932,48 @@ static bool mn_part_equal(const cmt_part_t *a, const cmt_part_t *b)
 
 /**
  * reactor.go:341-350 → state.go:477-486 — a vote arrives at `to` with
- * `from`'s id. The struct is COPIED by `cmt_cs_add_vote` (cmt_cs.c:651);
- * an extension would be a pointer into `from`'s arena (M10), refused.
+ * `from`'s id. The struct is COPIED by `cmt_cs_add_vote` (cmt_cs.c:681,
+ * the copy itself at :700); an extension would be a pointer into `from`'s
+ * arena (M10), refused.
+ * M16 — a CMT_OK here is a message QUEUED on `to`, regardless of which
+ * caller reached this function: gossip (already followed by its own
+ * `mn_sent_add`) or one of the by-hand byzantine sends, which are not.
+ * Setting the activity flag HERE, at the one choke point every vote
+ * delivery passes through, makes "a message was queued" true by
+ * construction instead of depending on every caller remembering to say
+ * so.
  * @return CMT_OK queued; CMT_REJECT the receiver's queue is full (M6);
  *         CMT_FAULT anything else.
  */
 static int mn_deliver_vote(const mn_node_t *from, mn_node_t *to,
                            const cmt_vote_t *v)
 {
+    int rc;
+
     if (v->extension.len != 0u) {
         fprintf(stderr, "DRIVER: a vote with an extension cannot be routed "
                         "(M10)\n");
         return CMT_FAULT;
     }
-    return cmt_cs_add_vote(mn_cs(to), v, from->id, (size_t)CMT_PB_PEER_ID_MAX);
+    rc = cmt_cs_add_vote(mn_cs(to), v, from->id, (size_t)CMT_PB_PEER_ID_MAX);
+    if (rc == CMT_OK && g_mn_net != NULL) {
+        g_mn_net->activity_this_round = true;                        /* M16 */
+    }
+    return rc;
 }
 
-/** reactor.go:322-324 → state.go:489-498. No pointers in a proposal. */
+/** reactor.go:322-324 → state.go:489-498. No pointers in a proposal.
+ *  M16 — see `mn_deliver_vote`'s own note: a CMT_OK here is activity. */
 static int mn_deliver_proposal(const mn_node_t *from, mn_node_t *to,
                                const cmt_proposal_t *p)
 {
-    return cmt_cs_set_proposal_input(mn_cs(to), p, from->id,
-                                     (size_t)CMT_PB_PEER_ID_MAX);
+    int rc = cmt_cs_set_proposal_input(mn_cs(to), p, from->id,
+                                       (size_t)CMT_PB_PEER_ID_MAX);
+
+    if (rc == CMT_OK && g_mn_net != NULL) {
+        g_mn_net->activity_this_round = true;                        /* M16 */
+    }
+    return rc;
 }
 
 /**
@@ -826,6 +983,7 @@ static int mn_deliver_proposal(const mn_node_t *from, mn_node_t *to,
  * index is byte-compared with `part` (payload AND proof), and THAT part
  * is queued, so the payload the receiver's part set will point at
  * (cmt_part_set.h:56-61) is the receiver's own.
+ * M16 — see `mn_deliver_vote`'s own note: a CMT_OK here is activity.
  * @return CMT_OK, CMT_REJECT (queue full), CMT_FAULT (a driver defect:
  *         the block is not mirrored, or the copies disagree).
  */
@@ -836,6 +994,7 @@ static int mn_deliver_part(const mn_node_t *from, mn_node_t *to,
 {
     size_t            k = 0u;
     const cmt_part_t *own;
+    int               rc;
 
     if (mn_rec_by_psh(to, psh, &k) != 0) {
         fprintf(stderr, "DRIVER: node %zu has no registry copy of the block "
@@ -855,9 +1014,13 @@ static int mn_deliver_part(const mn_node_t *from, mn_node_t *to,
                 from->index, (unsigned)part->index, to->index);
         return CMT_FAULT;
     }
-    return cmt_cs_add_proposal_block_part_input(mn_cs(to), height, round, own,
-                                                from->id,
-                                                (size_t)CMT_PB_PEER_ID_MAX);
+    rc = cmt_cs_add_proposal_block_part_input(mn_cs(to), height, round, own,
+                                              from->id,
+                                              (size_t)CMT_PB_PEER_ID_MAX);
+    if (rc == CMT_OK && g_mn_net != NULL) {
+        g_mn_net->activity_this_round = true;                        /* M16 */
+    }
+    return rc;
 }
 
 /* ══ the reactor's rules, evaluated against exact peer state (M1) ═════ */
@@ -1498,40 +1661,70 @@ static int mn_query_maj23(mn_node_t *i, mn_node_t *j, mn_link_t *link)
     return 0;
 }
 
-/* ══ timers (M5) ══════════════════════════════════════════════════════ */
+/* ══ timers (M5, M16) ═════════════════════════════════════════════════ */
 
 /**
  * Fire the node's armed timer if its ticker would have.
- *   · mock ticker (common_test.go:945-955): only a RoundStepNewHeight
- *     timeout, and it is put on the channel at schedule time — so it
- *     fires the first time this runs after it was armed;
- *   · real ticker (ticker.go): whatever is armed, once the node has
- *     nothing else to do (the determinization of "its duration elapsed").
+ *   · MOCK (common_test.go:945-955): only a RoundStepNewHeight timeout,
+ *     and it is put on the channel at schedule time — so it fires the
+ *     first time this runs after it was armed;
+ *   · WHEN_IDLE (ticker.go, M5's byzantine rule): whatever is armed, once
+ *     the node has nothing else to do (the determinization of "its
+ *     duration elapsed"), with no regard for the rest of the network;
+ *   · QUIESCENT (M16, no Go line): like MOCK at RoundStepNewHeight;
+ *     otherwise, only when `quiet_prev_round` says the WHOLE network
+ *     produced no activity during the immediately preceding `mn_round`.
  * `cmt_cs_on_timer_expired` queues up to CMT_CS_TOCK_QUEUE_SIZE tocks
  * (ticker.go:11) and FAULTs on the eleventh. This harness delivers ONE
  * timeout per turn and lets the node consume it before arming again, so
  * it never queues a second; the `tock_q_len` test keeps that property
  * explicit rather than relying on it. The fixture's own `tc_fire_timeout`
  * is NOT used: it drains, and a turn is one step.
+ * @param quiet_prev_round M16's verdict on the round before this call's
+ *        own round (`mn_net_t.activity_this_round` as `mn_round` read it
+ *        before resetting it); ignored by MOCK and WHEN_IDLE nodes.
+ *        `mn_node_start`'s per-node settle, which runs before any
+ *        `mn_round` and before a scenario ever sets MN_TICKER_QUIESCENT,
+ *        always passes false — inert, since no node is quiescent yet.
+ * @param out_fired set true iff a timer actually fired this call — M16's
+ *        OWN activity source, alongside `worked` and a new sent-log
+ *        entry (`mn_sent_add`). May be NULL.
  */
-static int mn_timers(mn_node_t *node)
+static int mn_timers(mn_node_t *node, bool quiet_prev_round, bool *out_fired)
 {
     tc_t     *tc = node->tc;
     cmt_cs_t *cs = tc->cs;
 
+    if (out_fired != NULL) {
+        *out_fired = false;
+    }
     if (!tc->armed || cs->tock_q_len != 0u) {
         return 0;
     }
-    if (node->real_ticker) {
+    switch (node->ticker_mode) {
+    case MN_TICKER_MOCK:
+        if (cs->ticker.ti.step != CMT_ROUND_STEP_NEW_HEIGHT) {
+            return 0;                                /* :951 dropped     */
+        }
+        break;
+    case MN_TICKER_WHEN_IDLE:
         if (cmt_cs_has_work(cs)) {
             return 0;
         }
-    } else if (cs->ticker.ti.step != CMT_ROUND_STEP_NEW_HEIGHT) {
-        return 0;                                    /* :951 dropped     */
+        break;
+    case MN_TICKER_QUIESCENT:
+        if (cs->ticker.ti.step != CMT_ROUND_STEP_NEW_HEIGHT &&
+            !quiet_prev_round) {
+            return 0;
+        }
+        break;
     }
     tc->armed = false;
     if (cmt_cs_on_timer_expired(cs) != CMT_OK) {
         MN_FAIL("cmt_cs_on_timer_expired failed");
+    }
+    if (out_fired != NULL) {
+        *out_fired = true;
     }
     return 0;
 }
@@ -1597,15 +1790,33 @@ static void mn_dump(const mn_net_t *net, const char *why)
  * timer rule, the registry mirror, then — unless the node is byzantine
  * (M4) — the three gossip routines once per connected peer in
  * peer-index order. A non-OK step is recorded and fails the round.
+ *
+ * M16 — quiescence bookkeeping: `quiet_prev_round` is this round's
+ * consumer-facing value, snapshotted from `net->activity_this_round`
+ * BEFORE it is reset; every MN_TICKER_QUIESCENT node's `mn_timers` call
+ * this round reads the SAME snapshot (M3's fixed order, so which nodes
+ * fire is deterministic, not a race). `net->activity_this_round` is then
+ * reset and re-accumulated from THIS round's own `worked` / timer-fired
+ * results (the loop below), ready to be read as `quiet_prev_round` by the
+ * NEXT round; the other two sources — a message QUEUED by `mn_deliver_
+ * vote` / `mn_deliver_proposal` / `mn_deliver_part`, and a NEW entry
+ * appended to a link's sent log by `mn_sent_add` — are set directly
+ * inside those functions themselves (search `activity_this_round` there
+ * for why a per-round out-parameter was not threaded through every
+ * gossip call instead; M16's own item above lists all four sources).
  */
 static int mn_round(mn_net_t *net)
 {
     size_t i;
     size_t j;
+    bool   quiet_prev_round = !net->activity_this_round;
+
+    net->activity_this_round = false;
 
     for (i = 0u; i < net->n; i++) {
         mn_node_t *node = &net->nodes[i];
         cmt_cs_t  *cs   = mn_cs(node);
+        bool       fired = false;
 
         if (cmt_cs_has_work(cs)) {
             bool worked = false;
@@ -1617,9 +1828,15 @@ static int mn_round(mn_net_t *net)
                         i, rc);
                 return 1;
             }
+            if (worked) {
+                net->activity_this_round = true;
+            }
         }
-        if (mn_timers(node) != 0) {
+        if (mn_timers(node, quiet_prev_round, &fired) != 0) {
             return 1;
+        }
+        if (fired) {
+            net->activity_this_round = true;
         }
         if (mn_mirror(net) != 0) {
             return 1;
@@ -1897,6 +2114,297 @@ static int mn_byz_decide_proposal(cmt_cs_t *cs, int64_t height, int32_t round)
     return CMT_OK;
 }
 
+/* ══ OBLIGATION atlas-dec-247e5c0e9c6a5d02b258a026c34870cd: the
+ * part-set-bound multi-node scenarios (test_cmt_byzantine.c, R3 wave W3
+ * package P0) ═══════════════════════════════════════════════════════ */
+
+/**
+ * Set by the scenario, before `mn_net_start`, to also forge PRECOMMITS
+ * for validators 1 and 2 (not just prevotes) in `mn_byz_decide_bad_
+ * header` below — scenario `b_part_set_bound_commit_site_stalls` only.
+ * One network at a time (like `g_mn_net`), so one flag suffices; each
+ * scenario that cares sets it explicitly rather than relying on a
+ * default, exactly because the default persists across scenarios in the
+ * same process.
+ */
+static bool g_mn_forge_precommits_too = false;
+
+/**
+ * The bad `part_set_header.total` `mn_byz_decide_bad_header` below signs
+ * into its proposal — set by the scenario, before `mn_net_start`, EXACTLY
+ * like `g_mn_forge_precommits_too` above and for the same reason (one
+ * network at a time, no default relied on). The obligation names TWO
+ * independent bound clauses (`cmt_part_set.c:276-281`): Total above
+ * CMT_PART_SET_MAX_PARTS (1601, cmt_bits.h:113-117) is refused INSIDE
+ * `cmt_new_part_set_from_header` and is UNREACHABLE from setProposal's
+ * own bound site — this fixture's `max_parts` gate at setProposal itself
+ * (cmt_cs.c:3060-3068: `(max_bytes-1)/BlockPartSizeBytes + 1` = 336 for
+ * this fixture's default 21 MB block; state.go:1931-1936) refuses
+ * anything above 336 BEFORE `rs.proposal` is ever assigned, and 1601 is
+ * bigger than 336; Total above the HOST's `parts_cap` (this fixture's
+ * `TC_PARTS_CAP` = 8, test_cmt_common.h:304, :1628) is the only clause a
+ * SMALL Total can drive, and the only one that reaches setProposal's own
+ * bound site at all (cmt_cs.c:3078-3096). `b_part_set_bound_round_
+ * recovers` sets `TC_PARTS_CAP + 1` (9, the parts_cap clause — every
+ * honest node reaches setProposal, addVote/prevote and enterPrecommit);
+ * `b_part_set_bound_commit_site_stalls` sets `CMT_PART_SET_MAX_PARTS + 1`
+ * (1602, the MAX_PARTS clause — the proposal is refused before
+ * setProposal's own bound is ever reached; see that scenario's own
+ * header for the four sites it drives instead). `cs_part_set_bound_
+ * refused`'s own log line names all three of `cmt_new_part_set_from_
+ * header`'s tests (Total above CMT_PART_SET_MAX_PARTS, Total above the
+ * slot's parts_cap, or a bad hash length) without saying which fired,
+ * because the constructor does not say which (cmt_cs.c:337-342); for
+ * Total = 9 the one that ACTUALLY fires is the parts_cap test — this
+ * comment is the record of that, the log line itself will not say so.
+ * Zero is not a valid value; a scenario that forgets to set it gets a
+ * FAULT below, never a silent reuse of whatever a PRIOR scenario left
+ * behind.
+ */
+static uint32_t g_mn_bad_total = 0u;
+
+/**
+ * OBLIGATION atlas-dec-247e5c0e9c6a5d02b258a026c34870cd — the multi-node
+ * counterpart of test_cmt_cs.c's `s_part_set_bound_continues_the_round`.
+ * Installed as node 0's `decide_proposal` IN PLACE OF `mn_byz_decide_
+ * proposal` by an EXPLICIT assignment the two scenarios below make AFTER
+ * `mn_net_new` returns — `mn_net_new` itself is UNCHANGED, so the three
+ * existing scenarios (which never touch `decide_proposal` again after it
+ * runs) are unaffected byte-for-byte.
+ *
+ * Unlike `mn_byz_decide_proposal`, this override builds ONE block (there
+ * is only ever one byzantine BlockID in these two scenarios, not two)
+ * with `tc_decide_proposal`, then does what the single-node scenario's
+ * own setup does (test_cmt_cs.c:3820-3825): keeps the block's REAL
+ * merkle root but bumps `part_set_header.total` to `g_mn_bad_total`
+ * (set by the scenario before `mn_net_start` — see that variable's own
+ * doc comment for the two independent bound clauses a chosen value can
+ * drive, and which scenario drives which). The proposal's signature
+ * covers the BlockID (`cmt_proposal_sign_bytes`), so it is RE-SIGNED
+ * with node 0's key after the header is mutated — the same signing call
+ * `tc_decide_proposal` used (`tc_stub_sign_proposal`, test_cmt_common.h:
+ * 2309-2328).
+ *
+ * The real block has exactly ONE part; `g_mn_bad_total` (9 or 1602,
+ * whichever scenario) names parts 2 and up that never exist, so nothing
+ * beyond the first part is ever sent, and no honest node can ever
+ * complete the header by any means other than the refusal sites it
+ * drives — the single-node test's own mechanism, reproduced across a
+ * network.
+ *
+ * To every connected peer: the proposal, and node 0's own prevote and
+ * precommit for the bad BlockID (mirroring `mn_byz_send_set`'s vote pair,
+ * byzantine_test.go:541-553 — signed with `tc->vss[tc->self]`, the same
+ * stub `mn_byz_send_set` uses). To node 3 ONLY, additionally: PREVOTES
+ * for the SAME BlockID signed with validator 1's and validator 2's real
+ * keys — `tc_sign_vote` on `tc->vss[1]` and `tc->vss[2]` OF NODE 0's OWN
+ * fixture, which holds them because every fixture in a network is built
+ * over the SAME derandomised keys (`mn_net_new`'s own doc, above). This
+ * is the obligation's "byzantine voters": a forged signature is
+ * cryptographically indistinguishable from validator 1's or validator
+ * 2's own, so any node that receives it accepts it exactly as it would
+ * accept the real one.
+ *
+ * When `g_mn_forge_precommits_too` is set (scenario `b_part_set_bound_
+ * commit_site_stalls` only), node 3 ALSO receives forged PRECOMMITS from
+ * validators 1 and 2 for the same BlockID, in the SAME call, after the
+ * two forged prevotes. The order matters: the third precommit (node 0's
+ * own is the first, already sent above) completes a +2/3 PRECOMMIT
+ * majority and drives `cs_add_vote_precommit`'s own state.go:2342-2346
+ * chain (enterNewRound, enterPrecommit, enterCommit — cmt_cs.c:
+ * 3690-3719); `cmt_cs_enter_precommit`, reached from there, reads
+ * whatever PREVOTE majority is ALREADY in the vote set (cmt_cs.c:2444),
+ * so the two forged prevotes must already have been delivered and
+ * processed before the second forged precommit is.
+ *
+ * Does NOT forge a THIRD validator's vote, and sends node 0's own vote
+ * pair to each peer exactly once. Both scenarios reset `g_mn_bad_total`
+ * to 0 immediately after their own `byz_hash_set` check (right after
+ * `mn_net_start`, once this override has already fired once and its
+ * value is consumed) — so a SECOND call, were node 0 ever proposer again,
+ * would hit the zero guard above and FAULT loudly, BY DESIGN, rather than
+ * building a fresh block and running again silently. It simply never HAS
+ * run twice in either scenario's own trace — scenario 1 commits an
+ * honest block at round 1, where node 0 is not the proposer, and scenario
+ * 2 never leaves round 0 at all (the ORCHESTRATOR's own runs). Nothing
+ * here touches node 0's own
+ * state machine — the same M11 rule `mn_byz_decide_proposal` keeps.
+ */
+static int mn_byz_decide_bad_header(cmt_cs_t *cs, int64_t height, int32_t round)
+{
+    mn_net_t       *net = g_mn_net;
+    mn_node_t      *node;
+    tc_t           *tc;
+    cmt_proposal_t *prop;
+    cmt_vote_t     *v;
+    size_t          peers[MN_MAX_NODES];
+    size_t          npeers = 0u;
+    size_t          p;
+    const size_t    node3_index = 3u;
+
+    if (net == NULL) {
+        return CMT_FAULT;
+    }
+    if (g_mn_bad_total == 0u) {
+        fprintf(stderr, "mn_byz_decide_bad_header: g_mn_bad_total was never "
+                        "set by the scenario\n");
+        return CMT_FAULT;
+    }
+    node = mn_node_of_cs(net, cs);
+    if (node == NULL) {
+        return CMT_FAULT;
+    }
+    tc = node->tc;
+
+    prop = (cmt_proposal_t *)calloc(1u, sizeof(*prop));
+    v    = (cmt_vote_t *)calloc(1u, sizeof(*v));
+    if (prop == NULL || v == NULL) {
+        free(prop);
+        free(v);
+        return CMT_FAULT;
+    }
+
+    /* One block; the mempool holds nothing (this scenario never needs a
+     * second, different block the way `mn_byz_decide_proposal` does); the
+     * block pointer itself is not needed here (unlike that function, which
+     * keeps both for its two-block bookkeeping). */
+    tc->next_txs_n = 0u;
+    if (tc_decide_proposal(tc, tc->self, height, round, prop, NULL,
+                           NULL) != 0) {
+        free(prop);
+        free(v);
+        return CMT_FAULT;
+    }
+
+    /* test_cmt_cs.c:3820-3825's own move: keep the real root hash, bump
+     * only the count past the bound the SCENARIO chose (`g_mn_bad_total`'s
+     * own doc comment above names the two clauses). */
+    prop->block_id.part_set_header.total = g_mn_bad_total;
+    if (tc_stub_sign_proposal(tc, tc->self, prop) != 0) {
+        fprintf(stderr, "mn_byz_decide_bad_header: could not re-sign the "
+                        "bad-header proposal\n");
+        free(prop);
+        free(v);
+        return CMT_FAULT;
+    }
+
+    /* M7 — mirror before anything is routed, even though no part of THIS
+     * block is ever sent. NOT for `byz_hash[0]` below: that copies
+     * `prop->block_id.hash` directly, no registry lookup involved. The
+     * real reason is `mn_mirror`'s own contract (:818-821): "a block
+     * exists in every registry before any part of it is routed" — kept
+     * here uniformly with the sibling `mn_byz_decide_proposal`, which
+     * DOES route real parts and needs it; skipping it here would leave
+     * this call the one place in the driver where a new record is made
+     * without the per-step mirror invariant holding, which every LATER
+     * round (including the honest one that eventually commits) is
+     * written assuming always holds. */
+    if (mn_mirror(net) != 0) {
+        free(prop);
+        free(v);
+        return CMT_FAULT;
+    }
+    memcpy(node->byz_hash[0], prop->block_id.hash, (size_t)CMT_TMHASH_SIZE);
+    node->byz_hash_set = true;
+
+    for (p = 0u; p < net->n; p++) {
+        if (p != node->index && net->connected[node->index][p]) {
+            peers[npeers++] = p;
+        }
+    }
+
+    for (p = 0u; p < npeers; p++) {
+        mn_node_t *peer = &net->nodes[peers[p]];
+
+        if (mn_deliver_proposal(node, peer, prop) != CMT_OK) {
+            fprintf(stderr, "mn_byz_decide_bad_header: bad-header proposal "
+                            "was not accepted onto a peer queue\n");
+            free(prop);
+            free(v);
+            return CMT_FAULT;
+        }
+        /* No parts: the real block has one, and `g_mn_bad_total` never
+         * matches it, so nothing beyond the first ever exists to send. */
+        tc->vss[tc->self].height   = height;
+        tc->vss[tc->self].round    = round;
+        tc->vss[tc->self].has_last = false;
+        if (tc_sign_vote(tc, &tc->vss[tc->self],
+                         (int32_t)CMT_PB_MSG_TYPE_PREVOTE, prop->block_id.hash,
+                         prop->block_id.hash_len,
+                         &prop->block_id.part_set_header, false, v) != 0 ||
+            mn_deliver_vote(node, peer, v) != CMT_OK) {
+            fprintf(stderr, "mn_byz_decide_bad_header: node 0's own prevote "
+                            "was not signed and queued\n");
+            free(prop);
+            free(v);
+            return CMT_FAULT;
+        }
+        if (tc_sign_vote(tc, &tc->vss[tc->self],
+                         (int32_t)CMT_PB_MSG_TYPE_PRECOMMIT, prop->block_id.hash,
+                         prop->block_id.hash_len,
+                         &prop->block_id.part_set_header, false, v) != 0 ||
+            mn_deliver_vote(node, peer, v) != CMT_OK) {
+            fprintf(stderr, "mn_byz_decide_bad_header: node 0's own "
+                            "precommit was not signed and queued\n");
+            free(prop);
+            free(v);
+            return CMT_FAULT;
+        }
+    }
+
+    /* The obligation's "byzantine voters": forged PREVOTES (and, in
+     * scenario 2, PRECOMMITS) for validators 1 and 2, to node 3 only. */
+    if (node3_index < net->n &&
+        net->connected[node->index][node3_index]) {
+        mn_node_t   *n3 = &net->nodes[node3_index];
+        const size_t forged[2] = { 1u, 2u };
+        size_t       f;
+
+        for (f = 0u; f < 2u; f++) {
+            size_t val = forged[f];
+
+            tc->vss[val].height   = height;
+            tc->vss[val].round    = round;
+            tc->vss[val].has_last = false;
+            if (tc_sign_vote(tc, &tc->vss[val],
+                             (int32_t)CMT_PB_MSG_TYPE_PREVOTE,
+                             prop->block_id.hash, prop->block_id.hash_len,
+                             &prop->block_id.part_set_header, false, v) != 0 ||
+                mn_deliver_vote(node, n3, v) != CMT_OK) {
+                fprintf(stderr, "mn_byz_decide_bad_header: a forged prevote "
+                                "was not signed and queued\n");
+                free(prop);
+                free(v);
+                return CMT_FAULT;
+            }
+        }
+        if (g_mn_forge_precommits_too) {
+            for (f = 0u; f < 2u; f++) {
+                size_t val = forged[f];
+
+                tc->vss[val].height   = height;
+                tc->vss[val].round    = round;
+                tc->vss[val].has_last = false;
+                if (tc_sign_vote(tc, &tc->vss[val],
+                                 (int32_t)CMT_PB_MSG_TYPE_PRECOMMIT,
+                                 prop->block_id.hash, prop->block_id.hash_len,
+                                 &prop->block_id.part_set_header, false,
+                                 v) != 0 ||
+                    mn_deliver_vote(node, n3, v) != CMT_OK) {
+                    fprintf(stderr, "mn_byz_decide_bad_header: a forged "
+                                    "precommit was not signed and queued\n");
+                    free(prop);
+                    free(v);
+                    return CMT_FAULT;
+                }
+            }
+        }
+    }
+    free(prop);
+    free(v);
+    return CMT_OK;
+}
+
 /* ══ construction, connection, start, teardown ════════════════════════ */
 
 /** Release everything `mn_net_new` allocated. Safe on a partly built
@@ -1938,9 +2446,11 @@ static void mn_net_free(mn_net_t *net)
  * same chain id in every node (test_cmt_common.h:1642-1709, :1733-1737);
  * `vote_extensions_enable_height` 0 because the reference's genesis has
  * nil params (common_test.go:770 → genesis.go:83-84 → params.go:127-132;
- * M10). The fixture memoises validator 0's key (test_cmt_common.h:1546,
- * :1823); node i re-points `self` and re-runs `SetPrivValidator` so the
- * memoised key is its own (cmt_cs.c:573-583).
+ * M10). The fixture memoises validator 0's key (test_cmt_common.h:1830,
+ * the `cmt_cs_set_priv_validator` call taken while `tc->self` is still
+ * its own default of 0; :1823 is `cmt_cs_init` moments before it); node i
+ * re-points `self` and re-runs `SetPrivValidator` so the memoised key is
+ * its own (`cmt_cs_set_priv_validator`, cmt_cs.c:622-632).
  *
  * The validators' power is the fixture's testMinPower = 10 where the
  * reference's `randGenesisDoc(nValidators, false, 30, nil)` (:770) gives
@@ -1970,6 +2480,10 @@ static mn_net_t *mn_net_new(size_t n, int byz_index)
     }
     net->n   = n;
     g_mn_net = net;
+    /* M16 — not-yet-proven-quiet until a full `mn_round` is observed
+     * empty; inert for every scenario that never sets MN_TICKER_QUIESCENT
+     * on any node. */
+    net->activity_this_round = true;
 
     for (i = 0u; i < n; i++) {
         mn_node_t *node = &net->nodes[i];
@@ -2009,8 +2523,11 @@ static mn_net_t *mn_net_new(size_t n, int byz_index)
         }
         node->byzantine   = (byz_index >= 0 && (size_t)byz_index == i);
         /* byzantine_test.go:308 gives every node the mock ticker and
-         * :311-314 replaces node 0's with a real one. */
-        node->real_ticker = node->byzantine;
+         * :311-314 replaces node 0's with a real one (M5's "when idle"
+         * rule here); a scenario may later move an honest node to
+         * MN_TICKER_QUIESCENT (M16). */
+        node->ticker_mode = node->byzantine ? MN_TICKER_WHEN_IDLE
+                                            : MN_TICKER_MOCK;
         if (node->byzantine) {                                /* :335-346 */
             tc->cs->decide_proposal = mn_byz_decide_proposal; /* :340     */
             tc->cs->do_prevote      = mn_byz_do_prevote;      /* :345     */
@@ -2065,7 +2582,11 @@ static int mn_node_start(mn_node_t *node)
     for (n = 0; n < MN_SETTLE_STEPS; n++) {
         bool worked = false;
 
-        if (mn_timers(node) != 0) {
+        /* M16 — no node is ever MN_TICKER_QUIESCENT this early (a
+         * scenario sets that mode, if at all, only after `mn_net_start`
+         * returns), so `quiet_prev_round` is inert here; passed false
+         * rather than threading `mn_net_t` into this per-node function. */
+        if (mn_timers(node, false, NULL) != 0) {
             return 1;
         }
         if (!cmt_cs_has_work(cs)) {

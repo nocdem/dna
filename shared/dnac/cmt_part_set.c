@@ -304,6 +304,23 @@ int cmt_new_part_set_from_header(const cmt_part_set_header_t *header,
     }
     out->count     = 0u;                         /* :231                 */
     out->byte_size = 0;                          /* :232                 */
+    /* out->payload_buf / payload_cap / part_size stay at the memset(0)
+     * above — package C2e, register R3-A-5: "no store" until the caller
+     * binds one. */
+    return CMT_OK;
+}
+
+/* PACKAGE C2e, register R3-A-5 — see cmt_part_set.h's field comment on
+ * cmt_part_set_t for the contract this implements. */
+int cmt_part_set_bind_payload_store(cmt_part_set_t *ps, uint8_t *payload_buf,
+                                    size_t payload_cap, uint32_t part_size)
+{
+    if (ps == NULL || payload_buf == NULL || part_size == 0u) {
+        return CMT_FAULT;
+    }
+    ps->payload_buf = payload_buf;
+    ps->payload_cap = payload_cap;
+    ps->part_size   = part_size;
     return CMT_OK;
 }
 
@@ -454,7 +471,42 @@ int cmt_part_set_add_part(cmt_part_set_t *ps, const cmt_part_t *part,
         return CMT_REJECT;                       /* :321-323 InvalidProof*/
     }
 
-    ps->parts[part->index] = *part;              /* :326                 */
+    /* PACKAGE C2e, register R3-A-5: with a payload store bound
+     * (cmt_part_set_bind_payload_store), COPY the payload into it and
+     * store the part pointing THERE — the caller's `part->bytes.data` may
+     * point into a per-message arena that is reset before this part set
+     * is next read (cmt_conr.h "THE RECEIVE ARENA"). Both bounds are
+     * checked explicitly (INVARIANT 7495d337) rather than trusted from
+     * `cmt_part_set_bind_payload_store`'s one-time call. Without a store
+     * (the proposer's `NewPartSetFromData` path, or a caller that never
+     * bound one) the old descriptor-only assignment runs unchanged. */
+    if (ps->payload_buf != NULL) {
+        cmt_part_t stored  = *part;
+        size_t     slot_off;
+
+        if (part->bytes.len > (size_t)ps->part_size) {
+            /* NODE-LOCAL: cmt_part_validate_basic already bounds a part's
+             * payload to CMT_BLOCK_PART_SIZE_BYTES (ErrPartTooBig) and
+             * cs_new_part_set_from_header binds this store with that same
+             * constant as part_size; reaching here means the two have
+             * disagreed, which is this node's own construction, not a
+             * peer's message. */
+            return CMT_FAULT;
+        }
+        slot_off = (size_t)part->index * (size_t)ps->part_size;
+        if (slot_off > ps->payload_cap ||
+            part->bytes.len > ps->payload_cap - slot_off) {
+            return CMT_FAULT;         /* NODE-LOCAL: the store is undersized */
+        }
+        if (part->bytes.len != 0u) {
+            memcpy(ps->payload_buf + slot_off, part->bytes.data,
+                  part->bytes.len);
+        }
+        stored.bytes.data = ps->payload_buf + slot_off;
+        ps->parts[part->index] = stored;
+    } else {
+        ps->parts[part->index] = *part;              /* :326 old behaviour */
+    }
     if (!ps->parts_bit_array_nil) {
         (void)cmt_bits_set_index(&ps->parts_bit_array,
                                  (int)part->index, true);       /* :327  */

@@ -210,6 +210,10 @@ set(NODUS_SOURCES
     src/witness/nodus_witness_cmt_wal.c
     src/witness/nodus_witness_cmt_privval.c
     src/witness/nodus_witness_cmt_host.c
+    # FLEET-TM-R3 W3 (C2b) — the transport glue: the p2p.Switch/Peer
+    # stand-in over the witness peer table (host tables for cmt_conr and
+    # cmt_memr, the peer-set scan tick, the verb 35-39 receive router).
+    src/witness/nodus_witness_cmt_net.c
 
     # FLEET-TM-R3 W2 (R3-C1a) — the APPLICATION behind cometbft's
     # AppConnConsensus/AppConnMempool, over the Ledger V2 engine
@@ -326,8 +330,9 @@ set(NODUS_SOURCES
     # (The T3 wave-1 codecs tm_vote.c / tm_commit.c and the T1 core under
     # src/bft/ were deleted in R2 — atlas-dec-a309a65984f1709149b40db9cb5b38a7
     # — as a second, dead implementation of what the cometbft port below
-    # provides. shared/dnac/tm_bounds.h stays until R3 rewrites the tier-3
-    # verbs; nodus_tier3.h:37 still includes it.)
+    # provides. shared/dnac/tm_bounds.h and the wave-1 tier-3 verbs 28-34
+    # were retired in R3 W3 (C2b, D-16 rev 5): the reactor's own marshalled
+    # messages ride the envelope verbs 35-39.)
 
     # cometbft @709fd12b → C port, wave R1-A (FLEET-TM-R1) — INACTIVE
     # encoding/hashing foundation: proto3 wire codec (K-1 rev 2 / K-2),
@@ -1202,6 +1207,19 @@ add_test(NAME test_cmt_mem COMMAND test_cmt_mem)
 add_executable(test_cmt_memr tests/test_cmt_memr.c)
 target_link_libraries(test_cmt_memr nodus dsa nodus crypto)
 add_test(NAME test_cmt_memr COMMAND test_cmt_memr)
+
+# cometbft @709fd12b → C port, R3 W3 (C2b) — the transport glue
+# (nodus_witness_cmt_net): channel↔verb mapping, the peer-set scan over a
+# hand-built witness peer table driving a REAL cmt_conr/cmt_memr pair,
+# send refused for a down slot, the verb 35/39 receive routing.
+add_executable(test_cmt_net tests/test_cmt_net.c)
+target_link_libraries(test_cmt_net nodus dsa nodus crypto)
+add_test(NAME test_cmt_net COMMAND test_cmt_net)
+
+# R3 W3 C2a — the live flip: nodus_witness_init -> tick -> dispatch over a real version-3 chain
+add_executable(test_cmt_live tests/test_cmt_live.c)
+target_link_libraries(test_cmt_live nodus dsa nodus crypto)
+add_test(NAME test_cmt_live COMMAND test_cmt_live)
 
 # Ledger V2 O15A — obligation 1: an allocation failure in or beneath the
 # QC path is a NODE FAULT, never a consensus verdict. malloc/calloc are

@@ -1717,6 +1717,64 @@ static int t_corr_startup(void) {
     return 0;
 }
 
+/* R3 W3 (D-17 rev 10 (8)) — THE LIVE S14 FLIP: nodus_witness_v2_pools_
+ * startup_check must actually RUN at S14, not silently return 0 (green)
+ * the way it did for any schema outside its old S7-S12 equality list.
+ *
+ * THE RED THIS PROVES: with the pre-flip equality list, forcing
+ * user_version to 14 and then corrupting a committed nullifier row still
+ * returned 0 from this function — the corruption was invisible because
+ * the check never looked at S14. This is a bare PRAGMA to 14, not a real
+ * S13/S14 migration: the property under test is the GATE's own version
+ * list, not the migration ladder (exercised elsewhere, t_migration), and
+ * the pool tables this check reads (v2_pools, v2_pool_notes,
+ * v2_pool_nullifiers, v2_pool_roots) are untouched by the real S12->S14
+ * migration — only v2_blocks columns and the new Comet stores change —
+ * so the bare PRAGMA is a faithful probe of the gate alone. */
+static int t_s14_flip(void) {
+    printf("11c: R3 W3 — the check RUNS at S14 (D-17 rev 10 (8))\n");
+    fixture_t fx;
+    CHECK(fx_open(&fx) == 0 && genesis(&fx) == 0, "fixture");
+
+    nodus_v2_pool_out_t oo[1];
+    nodus_v2_pool_in_t ii[1];
+    mk_out(&oo[0], 0xB10, 0, 0);
+    mk_in(&ii[0], 0xB20, 1, 0);
+    nodus_v2_pool_mut_t m;
+    mut_init(&m, 1, 1);
+    m.outs = oo; m.n_outs = 1;
+    m.ins = ii; m.n_ins = 1;
+    CHECK(apply_txn(&fx, &m, 1) == 0, "seed one nullifier"); OK();
+
+    CHECK(nodus_witness_v2_pools_startup_check(fx.w) == 0,
+          "valid S12 state green before the flip"); OK();
+
+    CHECK(run_sql(fx.w->db, "PRAGMA user_version = 14") == 0,
+          "force user_version=14"); OK();
+    CHECK(nodus_witness_v2_pools_startup_check(fx.w) == 0,
+          "valid state at S14 is STILL green (the flip does not make a "
+          "clean chain fail)"); OK();
+
+    /* THE KILL. */
+    uint8_t d1[64], d2[64];
+    CHECK(run_sql(fx.w->db, "BEGIN IMMEDIATE") == 0, "begin");
+    CHECK(run_sql(fx.w->db,
+        "UPDATE v2_pool_nullifiers SET nullifier=zeroblob(31)||x'02' "
+        "WHERE domain_id=1 AND pool_id=1 AND position=0") == 0, "corrupt");
+    CHECK(db_state_digest(fx.w, d1) == 0, "digest");
+    CHECK(nodus_witness_v2_pools_startup_check(fx.w) == -1,
+          "corruption at S14 tolerated — the old silent-skip is back");
+    OK();
+    CHECK(db_state_digest(fx.w, d2) == 0 && memcmp(d1, d2, 64) == 0,
+          "startup check mutated/repaired state at S14"); OK();
+    CHECK(run_sql(fx.w->db, "ROLLBACK") == 0, "rollback");
+    CHECK(nodus_witness_v2_pools_startup_check(fx.w) == 0,
+          "state not restored at S14"); OK();
+
+    fx_close(&fx);
+    return 0;
+}
+
 int main(void) {
     /* O15J Faz 2 — this file pins POOL-ROOT ISOLATION ("a pool block must
      * not move the SYSTEM root"). A mint moves epoch_state, a SYSTEM leg,
@@ -1736,6 +1794,7 @@ int main(void) {
     if (t_inactivity()) return 1;
     if (t_corr_preimage()) return 1;
     if (t_corr_startup()) return 1;
+    if (t_s14_flip()) return 1;
     printf("test_v2_pools: ALL OK (%d checks)\n", g_checks);
     return 0;
 }

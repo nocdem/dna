@@ -579,8 +579,8 @@ int nodus_witness_bootstrap_start(nodus_witness_t *w) {
                 "chain, so the legacy DISCOVER state machine is NOT "
                 "started. The pinned-genesis joiner is the only thing "
                 "that may produce a chain here; it adopts a peer bundle "
-                "only when the re-derived genesis BlockID equals the "
-                "local pin.\n");
+                "only when the bundle re-derives to the pinned chain id "
+                "(D-24 rev 4: the pin IS the 32-byte chain id).\n");
         return 0;
     }
 

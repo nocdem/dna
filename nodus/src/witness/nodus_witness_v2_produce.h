@@ -61,6 +61,10 @@
 
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_mempool.h"
+/* ORCHESTRATOR delta 1, item B — nodus_v2_batch_check_result_t, for
+ * nodus_witness_v2_produce_batch_check_capped's result_out parameter.
+ * Included, not edited: this header's own declarations are untouched. */
+#include "witness/nodus_witness_v2_env.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -74,6 +78,27 @@ typedef struct {
     int     have_cert;          /* 0 when signing failed (rare fault) —
                                  * the block is still committed          */
 } nodus_v2_produce_out_t;
+
+/**
+ * ORCHESTRATOR delta 2, item A — the LIGHTWEIGHT view
+ * `nodus_witness_v2_produce_batch_check_capped` (below) and its shared
+ * implementation actually read: `tx_type`, `tx_data`, `tx_len`, nothing
+ * else (nodus_witness_v2_produce.c's own citation:
+ * nodus_witness_v2_produce.c:369-386 in the pre-delta-2 form). 24 bytes
+ * per item (on a 64-bit build: 1 byte + 7 padding + 8-byte pointer +
+ * 8-byte size_t), against `nodus_witness_mempool_entry_t`'s ~8.4 KB
+ * (dominated by a 2 592-byte public key and a 4 627-byte signature this
+ * seam never touches). At the Comet lane's worst case (293 525 items)
+ * this view costs ≈ 7 MiB transiently; the heavyweight type at the same
+ * count would have cost ≈ 2.3 GiB. `tx_data`/`tx_len` are BORROWED from
+ * whatever the caller's own request bytes are — never copied, never
+ * owned here.
+ */
+typedef struct {
+    uint8_t        tx_type;
+    const uint8_t *tx_data;
+    size_t         tx_len;
+} nodus_witness_batch_item_t;
 
 /**
  * Execute and commit ONE successor block from the agreed BFT batch,
@@ -194,6 +219,43 @@ int nodus_witness_v2_produce_batch_check(nodus_witness_t *w,
                                          nodus_witness_mempool_entry_t **entries,
                                          int count,
                                          int *fail_index_out);
+
+/**
+ * ORCHESTRATOR delta 1, item B / delta 2, item A (register row
+ * R3-C1a-4, CLOSED for the Comet lane) — the SAME seam as
+ * `nodus_witness_v2_produce_batch_check_ex` (nodus_witness_v2_env.h),
+ * with a CALLER-SUPPLIED capacity AND a CALLER-BUILT lightweight item
+ * view (`nodus_witness_batch_item_t`, above) instead of the legacy
+ * lane's fixed NODUS_W_MAX_BLOCK_TXS and its heavyweight
+ * `nodus_witness_mempool_entry_t **`. Every scratch array behind this
+ * call is heap-allocated, sized to `count` itself (delta 2: per-request,
+ * never to `cap`'s worst case) — the Comet application
+ * (`nodus_witness_cmt_app.c`'s `app_seam_check`) builds `items` itself,
+ * per request, from whatever it is currently checking (a PrepareProposal
+ * candidate list or a ProcessProposal/FinalizeBlock request), and frees
+ * it once this call returns.
+ *
+ * The legacy `_ex` export is UNCHANGED (still capped at
+ * NODUS_W_MAX_BLOCK_TXS, still declared in nodus_witness_v2_env.h,
+ * outside this package's whitelist, still takes
+ * `nodus_witness_mempool_entry_t **` and converts it to this same view
+ * on the stack internally) — this is an ADDITIVE new entry point, not a
+ * signature change to anything already shipped.
+ *
+ * @param cap the admission ceiling; count > cap is CMT-style refused as
+ *            -2 (a caller error / malformed input, not a batch verdict
+ *            about a valid-shaped request — the caller turns THAT into
+ *            its own verdict, e.g. ProcessProposal's REJECT).
+ * @return 0 clean / -1 entry (or capacity) rejected / -2 node-local
+ *         fault or a bad `cap`/`count`.
+ */
+int nodus_witness_v2_produce_batch_check_capped(
+        nodus_witness_t *w,
+        const nodus_witness_batch_item_t *items,
+        int count,
+        int cap,
+        int *fail_index_out,
+        nodus_v2_batch_check_result_t *result_out);
 
 #ifdef __cplusplus
 }

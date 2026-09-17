@@ -42,12 +42,17 @@
  *    reference error it stands for in a comment. The port has no error
  *    objects and no caller distinguishes them in the ported code.
  *
- * ⚠ PART PAYLOADS ARE NOT COPIED. `cmt_part_t.bytes` is a descriptor. In
- * NewPartSetFromData the parts point INTO the caller's `data` buffer,
- * exactly as the reference's `data[i*partSize : …]` slices point into
- * theirs (part_set.go:203). In AddPart the part struct is copied but its
- * payload is not, exactly as the reference stores the caller's `*Part`
- * (:326). The payload must outlive the part set.
+ * ⚠ PART PAYLOADS ARE NOT COPIED, UNLESS A PAYLOAD STORE IS BOUND.
+ * `cmt_part_t.bytes` is a descriptor. In NewPartSetFromData the parts
+ * point INTO the caller's `data` buffer, exactly as the reference's
+ * `data[i*partSize : …]` slices point into theirs (part_set.go:203). In
+ * AddPart the part struct is copied but its payload is not, exactly as
+ * the reference stores the caller's `*Part` (:326), UNLESS
+ * `cmt_part_set_bind_payload_store` has bound one — package C2e, register
+ * R3-A-5, added because a part received over the wire points into a
+ * per-message arena that is reset before the next receive, and "the
+ * payload must outlive the part set" no longer holds for that source. See
+ * `cmt_part_set_t`'s field comment for the exact contract.
  *
  * ── Determinism ────────────────────────────────────────────────────────
  * Every function here is a pure function of its arguments. No clock, no
@@ -228,7 +233,43 @@ typedef struct {
     bool            parts_bit_array_nil;
     uint32_t        count;                       /* :185 */
     int64_t         byte_size;                   /* :188 */
+
+    /**
+     * OPTIONAL payload store (package C2e, register R3-A-5) — NULL by
+     * default (every constructor below zeroes the struct), which is the
+     * OLD descriptor-only behaviour this header already documents: parts
+     * point into caller-owned bytes that must outlive the set. Bound with
+     * `cmt_part_set_bind_payload_store` AFTER `cmt_new_part_set_from_header`
+     * returns (never by `cmt_new_part_set_from_data`, whose parts already
+     * point into a stable, caller-owned `data` buffer — the proposer's own
+     * path, untouched). With a store present, `cmt_part_set_add_part`
+     * COPIES the part's bytes into `payload_buf + index * part_size` and
+     * stores the part pointing THERE instead of wherever the caller's
+     * descriptor pointed — the fix for a part received over the wire,
+     * whose bytes live in a per-message arena reset before the next
+     * receive (cmt_conr.h "THE RECEIVE ARENA"). This is NOT `payload[i]`
+     * of `cmt_cs_slots_t` (cmt_cs.h) — that is the ASSEMBLED block image a
+     * separate readback writes once the set is COMPLETE; this store is
+     * written INCREMENTALLY, one part at a time, before completion, and
+     * keeping the two apart avoids making the readback's timing part of
+     * this store's contract.
+     */
+    uint8_t        *payload_buf;
+    size_t          payload_cap;
+    uint32_t        part_size;                   /* CMT_BLOCK_PART_SIZE_BYTES */
 } cmt_part_set_t;
+
+/**
+ * Binds a payload store to a part set built by `cmt_new_part_set_from_header`
+ * (package C2e, register R3-A-5) — see `cmt_part_set_t`'s field comment
+ * for the contract. `payload_cap` must cover `ps->total * part_size`
+ * (checked again per-part by `cmt_part_set_add_part`, never trusted from
+ * one call).
+ * @return CMT_OK; CMT_FAULT on NULL `ps` or `payload_buf`, or a `part_size`
+ *         of 0.
+ */
+int cmt_part_set_bind_payload_store(cmt_part_set_t *ps, uint8_t *payload_buf,
+                                    size_t payload_cap, uint32_t part_size);
 
 /**
  * cometbft@709fd12b types/part_set.go:194-222 — `NewPartSetFromData()`.

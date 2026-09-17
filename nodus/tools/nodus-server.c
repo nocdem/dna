@@ -15,8 +15,6 @@
 #include "nodus_v2_gen_config.h"          /* O16A / D2 — its text config     */
 #include "nodus/nodus_types.h"
 
-#include "dnac/block_v2.h"                /* dna_bh2_derive_chain_id         */
-
 #include <dirent.h>
 #include <sys/stat.h>                     /* O16A — derive-time sentinel check */
 #include <stdio.h>
@@ -60,17 +58,16 @@ static void usage(const char *prog) {
     fprintf(stderr, "                    ONE node with this flag during full-cluster\n");
     fprintf(stderr, "                    cold disaster recovery; setting it on more\n");
     fprintf(stderr, "                    than one node re-creates the cabal vector.\n");
-    fprintf(stderr, "  --v2-genesis-pin <128hex>\n");
-    fprintf(stderr, "                    JOIN an existing Ledger V2 chain: the local\n");
-    fprintf(stderr, "                    trust anchor (a 64-byte genesis BlockID) a\n");
-    fprintf(stderr, "                    pulled genesis bundle must re-derive to.\n");
+    fprintf(stderr, "  --v2-genesis-pin <64hex>\n");
+    fprintf(stderr, "                    JOIN an existing chain: the local trust\n");
+    fprintf(stderr, "                    anchor (the 32-byte chain id) a pulled\n");
+    fprintf(stderr, "                    genesis bundle must re-derive to.\n");
     fprintf(stderr, "  --derive-v2-genesis <config-file>\n");
-    fprintf(stderr, "                    CREATE a Ledger V2 chain in -d <data_dir>\n");
-    fprintf(stderr, "                    from an operator genesis config, print the\n");
-    fprintf(stderr, "                    chain id and the genesis BlockID, and EXIT.\n");
-    fprintf(stderr, "                    Offline one-shot: no socket is opened and no\n");
-    fprintf(stderr, "                    server is constructed. Mutually exclusive\n");
-    fprintf(stderr, "                    with --v2-genesis-pin.\n");
+    fprintf(stderr, "                    CREATE a chain in -d <data_dir> from an\n");
+    fprintf(stderr, "                    operator genesis config, print the chain\n");
+    fprintf(stderr, "                    id, and EXIT. Offline one-shot: no socket\n");
+    fprintf(stderr, "                    is opened and no server is constructed.\n");
+    fprintf(stderr, "                    Mutually exclusive with --v2-genesis-pin.\n");
     fprintf(stderr, "  -h                Show this help\n");
 }
 
@@ -89,10 +86,13 @@ static const struct option g_longopts[] = {
     {0, 0, 0, 0}
 };
 
-/* O15E Faz D — parse a 128-hex-char successor genesis BlockID pin. */
-static int parse_v2_pin(const char *hex, uint8_t out[64]) {
-    if (!hex || strlen(hex) != 128) return -1;
-    for (int i = 0; i < 64; i++) {
+/* R3 W3 (D-24 rev 4 (1)) — parse a 64-hex-char successor chain-id pin.
+ * Was 128 hex / 64 bytes (a genesis BlockID); a version-3 chain has no
+ * genesis BLOCK to pin one to (D-19 rev 6), so the pin is the 32-byte
+ * chain id instead. */
+static int parse_v2_pin(const char *hex, uint8_t out[32]) {
+    if (!hex || strlen(hex) != 64) return -1;
+    for (int i = 0; i < 32; i++) {
         unsigned v;
         char b[3] = { hex[i * 2], hex[i * 2 + 1], 0 };
         char *end = NULL;
@@ -178,45 +178,43 @@ static int find_single_chain_db(const char *dir, char *out, size_t out_len) {
     return -1;
 }
 
-/* Read the committed genesis BlockID out of a landed chain database.
+/* Read the committed chain id out of a landed version-3 chain database.
  *
- * ⚠ This duplicates v2sync_genesis_id (nodus_witness_v2_sync2.c:532-546)
- * because that function is static and NO 64-byte accessor is exported
- * anywhere: nodus_witness_v2_chain_id (nodus_witness_v2_claims.c:186-203)
- * returns only the 32-byte chain id derived from it. The clean fix is to
- * export one beside it; that touches nodus_witness_v2_claims.{c,h}, which
- * this change is not scoped to. Recorded here so the duplication is a
- * known debt rather than a discovery.
+ * R3 W3 (D-17 rev 10 (8) / D-18 rev 4): a version-3 chain writes no
+ * height-0 `v2_blocks` row (D-19 rev 6 withdrew the genesis block) — its
+ * identity is the hash of its stored genesis DOCUMENT, read through the
+ * canonical-strict accessor `nodus_witness_v2_gen_stored_chain_id`
+ * (nodus_witness_v2_gen.h), the same reader the preflight and the join
+ * pipeline use. `nodus_witness_v2_gen_stored_chain_id`'s own doc comment
+ * says only `w->db` is used, so a read-only handle with nothing else set
+ * is enough — no full witness-open ceremony is needed for an offline
+ * tool.
  *
  * @return 0 / -1. */
-static int read_genesis_block_id(const char *db_path,
-                                 uint8_t out[DNA_BH2_ID_LEN]) {
-    sqlite3 *db = NULL;
-    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL)
+static int read_genesis_chain_id(const char *db_path,
+                                 uint8_t out[NODUS_V2_GEN_CHAIN_ID_LEN]) {
+    /* Heap-allocated, never on the stack — the project convention for
+     * every nodus_witness_t instance (it is far larger than a fixture
+     * needs to be to overflow a default thread stack). */
+    nodus_witness_t *w = calloc(1, sizeof(*w));
+    if (!w) return -1;
+    if (sqlite3_open_v2(db_path, &w->db, SQLITE_OPEN_READONLY, NULL)
         != SQLITE_OK) {
-        if (db) sqlite3_close(db);
+        if (w->db) sqlite3_close(w->db);
+        free(w);
         fprintf(stderr, "cannot open the derived chain database %s\n",
                 db_path);
         return -1;
     }
-    sqlite3_stmt *st = NULL;
-    int ok = -1;
-    if (sqlite3_prepare_v2(db,
-            "SELECT block_id FROM v2_blocks WHERE global_height = 0",
-            -1, &st, NULL) == SQLITE_OK) {
-        if (sqlite3_step(st) == SQLITE_ROW &&
-            sqlite3_column_bytes(st, 0) == DNA_BH2_ID_LEN) {
-            memcpy(out, sqlite3_column_blob(st, 0), DNA_BH2_ID_LEN);
-            ok = 0;
-        }
-        sqlite3_finalize(st);
-    }
-    sqlite3_close(db);
-    if (ok != 0)
+    int rc = nodus_witness_v2_gen_stored_chain_id(w, out);
+    sqlite3_close(w->db);
+    free(w);
+    if (rc != 0)
         fprintf(stderr,
-                "the derived chain database %s has no readable height-0 "
-                "genesis block\n", db_path);
-    return ok;
+                "the derived chain database %s has no readable genesis "
+                "document identity — the W_V2GEN lines above name the "
+                "reason\n", db_path);
+    return rc;
 }
 
 /* Parse the config, derive the chain into `data_path`, print the two
@@ -325,25 +323,23 @@ static int run_derive_v2_genesis(const char *cfg_path, const char *data_path) {
     }
 
     fprintf(stderr,
-            "deriving a pure Ledger V2 chain from %s into %s\n"
+            "deriving a cometbft (version 3) chain from %s into %s\n"
             "(offline one-shot: no socket is opened, no server is started)\n",
             cfg_path, data_path);
 
-    /* out_chain32 is passed as NULL ON PURPOSE, and the printed values
-     * come from the committed database instead.
-     *
-     * nodus_witness_v2_gen_derive is idempotent and returns 0 WITHOUT
-     * writing out_chain32 when a chain built from this same config is
-     * already present (nodus_witness_v2_gen.h:353-354). Printing from
-     * that buffer would therefore print whatever it held on exactly the
-     * re-run an operator is most likely to perform — and a WRONG pin
-     * handed to six other nodes is the failure this whole change exists
-     * to make impossible. The database is the one source that is correct
-     * on both paths, so both values are read back from it, and the
-     * genesis BlockID has to be read from there in any case: nothing
-     * exports a 64-byte accessor. */
-    int derived_ok = (nodus_witness_v2_gen_derive(data_path, cfg,
-                                                  NULL) == 0);
+    /* R3 W3 (D-17 rev 10 (9)): the ceremony derives version 3 only. The
+     * version-2 entry (nodus_witness_v2_gen_derive) is CLOSED — no code
+     * path in this tool reaches it any more. out_chain32 is still passed
+     * as NULL on purpose, and the printed value comes from the committed
+     * database instead: nodus_witness_v2_gen_derive_v3 is idempotent and
+     * returns 0 WITHOUT writing out_chain32 when a chain built from this
+     * same config is already present, so printing from that buffer would
+     * print whatever it held on exactly the re-run an operator is most
+     * likely to perform — and a WRONG pin handed to six other nodes is
+     * the failure this whole change exists to make impossible. The
+     * database is the one source that is correct on both paths. */
+    int derived_ok = (nodus_witness_v2_gen_derive_v3(data_path, cfg,
+                                                     NULL) == 0);
     nodus_v2_gen_config_free(cfg);
     cfg = NULL;
 
@@ -358,28 +354,24 @@ static int run_derive_v2_genesis(const char *cfg_path, const char *data_path) {
     if (find_single_chain_db(data_path, db_path, sizeof(db_path)) != 0)
         return 1;
 
-    uint8_t gid[DNA_BH2_ID_LEN];
-    if (read_genesis_block_id(db_path, gid) != 0) return 1;
-
-    uint8_t chain_from_gid[DNA_CHAIN_ID_LEN];
-    if (dna_bh2_derive_chain_id(gid, chain_from_gid) != 0) {
-        fprintf(stderr, "could not derive the chain id from the genesis "
-                        "BlockID\n");
-        return 1;
-    }
+    /* R3 W3 (D-18 rev 4 / D-24 rev 4 (1)): the chain id IS the pin — a
+     * version-3 chain has no 64-byte genesis BlockID to derive one from
+     * (D-19 rev 6). One identity, read once. */
+    uint8_t chain_id[NODUS_V2_GEN_CHAIN_ID_LEN];
+    if (read_genesis_chain_id(db_path, chain_id) != 0) return 1;
 
     printf("chain-id       ");
-    print_hex(chain_from_gid, sizeof(chain_from_gid));
+    print_hex(chain_id, sizeof(chain_id));
     printf("\n");
     printf("v2-genesis-pin ");
-    print_hex(gid, sizeof(gid));
+    print_hex(chain_id, sizeof(chain_id));
     printf("\n");
 
     fprintf(stderr,
             "\nThe chain-id above MUST be identical on every node of the "
             "fleet — compare them before starting anything. Hand the\n"
             "v2-genesis-pin value to a joining node as\n"
-            "  nodus-server --v2-genesis-pin <that 128-hex string> ...\n"
+            "  nodus-server --v2-genesis-pin <that 64-hex string> ...\n"
             "It is that node's LOCAL trust anchor: it adopts a peer's "
             "genesis bundle only if the bundle re-derives to it.\n");
     return 0;
@@ -513,8 +505,8 @@ int main(int argc, char **argv) {
             break;
         case LONGOPT_V2_GENESIS_PIN:
             if (parse_v2_pin(optarg, config.v2_genesis_pin) != 0) {
-                fprintf(stderr, "invalid --v2-genesis-pin (need 128 hex "
-                        "chars = a 64-byte successor genesis BlockID)\n");
+                fprintf(stderr, "invalid --v2-genesis-pin (need 64 hex "
+                        "chars = the 32-byte successor chain id)\n");
                 return 1;
             }
             config.has_v2_genesis_pin = true;

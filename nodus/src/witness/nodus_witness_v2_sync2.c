@@ -708,13 +708,19 @@ void nodus_witness_v2_sync_handle_gbundle_q(nodus_witness_t *w,
                                             const nodus_t3_msg_t *msg) {
     if (!v2sync_ready(w) || !msg || !conn) return;
 
-    /* The chain field AND the pin must both name THIS successor: the pin
-     * is the joiner's requested genesis BlockID, and we only serve the
-     * bundle for the genesis WE committed. */
+    /* D-24 rev 4 (1): THE PIN IS THE 32-BYTE CHAIN ID. A version-3 chain
+     * has no genesis BLOCK to pin a joiner to (D-19 rev 6 withdrew it) —
+     * the chain's only identity is the stored genesis DOCUMENT's hash
+     * (D-18 rev 4), which is exactly `w->v2_chain32`. `v2sync_genesis_id`
+     * (the height-0 `v2_blocks.block_id` reader) is DEAD on a version-3
+     * chain and is no longer called here; its other three callers are the
+     * closed old lane (verbs 20-23) and are unchanged. The `chain` field
+     * and the `pin` field now name the SAME identity — `chain` picks
+     * which chain this request is about, `pin` is the requester's own
+     * expectation of it — and we serve only when both agree with what we
+     * actually run. */
     if (memcmp(msg->w_v2_gbundle_q.chain, w->v2_chain32, 32) != 0) return;
-    uint8_t gid[64];
-    if (v2sync_genesis_id(w, gid) != 0) return;
-    if (memcmp(msg->w_v2_gbundle_q.pin, gid, 64) != 0) return;
+    if (memcmp(msg->w_v2_gbundle_q.pin, w->v2_chain32, 32) != 0) return;
 
     /* Rate-limit (H-1 sign-amplification). */
     uint64_t now = v2sync_monotonic_ms();
@@ -737,7 +743,7 @@ void nodus_witness_v2_sync_handle_gbundle_q(nodus_witness_t *w,
     memset(&rsp, 0, sizeof(rsp));
     rsp.type = NODUS_T3_V2_GBUNDLE_RSP;
     memcpy(rsp.w_v2_gbundle_r.chain, w->v2_chain32, 32);
-    memcpy(rsp.w_v2_gbundle_r.pin, gid, 64);
+    memcpy(rsp.w_v2_gbundle_r.pin, w->v2_chain32, 32);
     rsp.w_v2_gbundle_r.total     = (uint64_t)blen;
     rsp.w_v2_gbundle_r.offset    = off;
     rsp.w_v2_gbundle_r.chunk     = bundle + off;

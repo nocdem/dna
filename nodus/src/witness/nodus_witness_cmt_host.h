@@ -507,11 +507,20 @@ typedef struct {
     cmt_commit_sig_t          *tocommit_sigs;   /* ExtendedCommit.ToCommit */
     uint8_t                   *marshal_scratch; /* block.Size()           */
     size_t                     marshal_scratch_cap;
-    cmt_pb_exec_tx_result_t   *det_results;     /* TxResultsHash          */
-    cmt_abci_results_t         results;
-    uint8_t                   *leaf_scratch;
-    size_t                     leaf_scratch_cap;
-    cmt_merkle_item_t         *items;
+    /* ORCHESTRATOR delta 3, item B — TxResultsHash's `det_results`/
+     * `results`/`leaf_scratch`/`items` are GONE from this struct: they
+     * were allocated ONCE at bind time, sized to `limits.max_txs`
+     * (≈293 525 after round 1 raised it from 10), costing ≈26 MiB
+     * resident forever for a worst case ordinary blocks never approach.
+     * Verified (whole-tree grep) that nothing reads them outside
+     * `nodus_cmt_update_state`'s own body — no cross-call reader exists,
+     * unlike the application layer's `fb_pb` (an actual ABCI response
+     * the CALLER reads after return) — so they are now fully LOCAL to
+     * that function: calloc'd per apply, sized to `resp->tx_results_len`
+     * (refused above `limits.max_txs` before anything is allocated,
+     * the same rule as the application layer's byte-bound seam), and
+     * freed via goto-cleanup before every return. See
+     * `nodus_cmt_update_state`'s own comment for the per-apply sizing. */
     uint8_t                   *valset_hash_scratch; /* Validators.Hash()  */
     cmt_merkle_item_t         *valset_items;
 
@@ -551,6 +560,23 @@ int nodus_cmt_blockexec_init(nodus_cmt_blockexec_t *ctx,
 
 /** Frees the scratch; the collaborators stay the caller's. */
 void nodus_cmt_blockexec_release(nodus_cmt_blockexec_t *ctx);
+
+/**
+ * ORCHESTRATOR delta 7, item A — bind (or unbind) the WAL AFTER
+ * construction, mirroring the reference's `cs.wal = nilWAL{}` at
+ * construction (state.go:174) followed by the REAL wal installed only
+ * in `OnStart` (state.go:318-329's `loadWalFile`: `cs.OpenWAL` then
+ * `cs.wal = wal`). `nodus_cmt_blockexec_init` is called with `wal =
+ * NULL` (the port's own nilWAL — every `host_wal_*` row above treats a
+ * NULL `ctx->wal` as the reference's nilWAL would); the caller
+ * (`nodus_cmt_node_start`) calls this ONLY after `nodus_cmt_wal_open` +
+ * `nodus_cmt_wal_start` both succeed, and `nodus_cmt_node_release` calls
+ * it with `wal = NULL` to UNBIND before closing the WAL object itself —
+ * so nothing can reach a freed WAL through `ctx->wal` during teardown.
+ * @return CMT_OK, CMT_FAULT on a NULL `ctx`.
+ */
+int nodus_cmt_blockexec_set_wal(nodus_cmt_blockexec_t *ctx,
+                                nodus_cmt_wal_t *wal);
 
 /** Fills all 26 rows of `out` with this module's functions; `ctx` is the
  *  `host_ctx` for `cmt_cs_init`. @return CMT_OK, CMT_FAULT on NULL. */

@@ -52,12 +52,54 @@
  * version being ACCEPTED and changing observable BFT state. Without that
  * pairing a test could pass because nothing ever reached the handler.
  *
+ * ── FLEET-TM-R3 W3 (package C2a) — §1-§4 REWRITTEN, D-16 rev 5 /
+ * D-17 rev 10 (9), both APPROVED ─────────────────────────────────────
+ *
+ * The version-gate's SCOPE moved: PROPOSE/PREVOTE/PRECOMMIT/COMMIT/
+ * VIEWCHG/NEWVIEW/FWD_REQ/FWD_RSP/VIEWOK/VIEWOK_REQ are no longer in the
+ * gate at all — nodus_witness_dispatch_t3's routing switch log-and-drops
+ * every one of them UNCONDITIONALLY now (D-17 rev 10 (9): the old
+ * consensus lane is closed, not deleted, on every chain, not only a
+ * version-3 one), and the gate's list becomes EXACTLY verbs 35-39 (the
+ * cometbft envelope, D-16 rev 5). §1's ORIGINAL claim — "the current
+ * version is accepted and changes BFT state" — is therefore false for
+ * PREVOTE after this wave: a v2_successor is never derived for this
+ * fixture, so nodus_witness_bft_handle_vote is provably unreachable
+ * from dispatch any more, at ANY header version. §1-§4 below now prove
+ * exactly that (the closed-lane regression this wave must not
+ * reintroduce), reusing the SAME lightweight fixture and PREVOTE frame
+ * the original sections built — no reactor needed, because there is
+ * nothing left for a PREVOTE frame to reach.
+ *
+ * ⚠ HOW THIS FILE CAN LIE, going forward: it does NOT itself exercise
+ * the NEW gate (whether a genuine w_cmt_state frame at version 7 is
+ * accepted and version 6/8 refused). That property needs a live
+ * cmt_conr_t/cmt_memr_t pair (nodus_cmt_net_receive's peer-admission
+ * side effect, conr->peers[i].in_set, is the only observable this
+ * dispatch path produces for an accepted verb-35 frame) — building one
+ * SAFELY needs either the full nodus_cmt_node_init stack (real cs/mem,
+ * as test_cmt_node.c's fixture() builds) or a verified-safe shortcut
+ * over zeroed cmt_cs_t/cmt_mem_t, which THIS file does not attempt.
+ * DELTA 7: that coverage now exists elsewhere — `test_cmt_live.c`'s
+ * `version_gate_verb35` drives a real signed `w_cmt_state` frame through
+ * `nodus_witness_dispatch_t3` at version 7 (accepted, the peer's round
+ * state moves) and at versions 6 and 8 (refused), the two refusals
+ * distinguished by distinct heights so the case is non-vacuous. A green
+ * run of THIS file alone still proves only that the OLD lane stays
+ * closed; the NEW gate's own proof is `test_cmt_live.c`'s, not this
+ * file's.
+ *
  * Sections:
- *   §1 current version is accepted and DOES change BFT state
- *   §2 older version (the shipped legacy value) is rejected, no state
- *   §3 unknown newer version is rejected, no state
- *   §4 rejection happens for every consensus-affecting type
- *   §5 bootstrap-class traffic is NOT gated (version 1 by design)
+ *   §1 the closed lane stays closed at the CURRENT header version too —
+ *      a PREVOTE changes NOTHING, at any version (was: "is accepted")
+ *   §2 older version (the shipped legacy value) — also no state change
+ *   §3 unknown newer version — also no state change
+ *   §4 rejection happens across repeated attempts and version values
+ *   §5 ABSENT — pre-existing at HEAD (`main()` runs §1-§4 then §6-§7;
+ *      there never was a §5 case in this file). Delta 8, item B: named
+ *      here rather than silently dropped or invented, so the numbering
+ *      gap is not mistaken for a missing case in THIS package's own
+ *      rewrite.
  *   §6 a current-version header carrying v2-shaped NEW_VIEW args (no
  *      certificate) is rejected by name
  *   §7 unknown NON-critical arg keys are still skipped — additive
@@ -229,21 +271,31 @@ int main(void) {
     memset(TX, 0x5A, sizeof(TX));
     const uint64_t H = 7;
 
-    /* ── §1 current version is accepted AND changes BFT state ──────── */
+    /* ── §1 the closed lane stays closed at the CURRENT header version
+     * too — a PREVOTE is UNCONDITIONALLY log-and-dropped by the routing
+     * switch now (D-17 rev 10 (9)), so it must change NOTHING even when
+     * its header carries this node's own protocol version. This is the
+     * regression the rewrite must catch: were PREVOTE ever accidentally
+     * left in nodus_witness_dispatch_t3's routing switch (rather than
+     * its "old lane" drop-list), this assertion would fail. ────────── */
     {
         nodus_witness_t *w = fixture(&val[0], &val[1], NVAL - 1);
         enter_round(w, &val[0], 6, H, TX);
         int before = w->round_state.prevote_approve_count;
         dispatch_prevote(w, &val[1], NODUS_T3_BFT_PROTOCOL_VER, 6, 0, H, TX);
         int after = w->round_state.prevote_approve_count;
-        CHECK_EQ(after, before + 1);
-        printf("[ok] §1 v%u PREVOTE ACCEPTED and counted (%d -> %d) — the "
-               "handler really is reachable\n",
+        CHECK_EQ(after, before);
+        CHECK_EQ(w->peer_count, 0);
+        printf("[ok] §1 v%u PREVOTE — closed lane, NOT counted (%d -> %d): "
+               "the old consensus lane stays closed even at this node's "
+               "own protocol version\n",
                (unsigned)NODUS_T3_BFT_PROTOCOL_VER, before, after);
         free_fixture(w);
     }
 
-    /* ── §2 the legacy version is rejected, with NO state change ───── */
+    /* ── §2 the legacy version — also no state change (now redundant
+     * with §1's unconditional drop, kept so a future re-opening of the
+     * old lane at the WRONG version is still caught here too) ──────── */
     {
         nodus_witness_t *w = fixture(&val[0], &val[1], NVAL - 1);
         enter_round(w, &val[0], 6, H, TX);
@@ -252,12 +304,12 @@ int main(void) {
         CHECK_EQ(w->round_state.prevote_approve_count, before);
         /* And no peer residue: the gate sits before peer_ensure. */
         CHECK_EQ(w->peer_count, 0);
-        printf("[ok] §2 v%d (legacy) PREVOTE REJECTED — vote not counted, "
+        printf("[ok] §2 v%d (legacy) PREVOTE — closed lane, not counted, "
                "no peer registered\n", LEGACY_BFT_VER);
         free_fixture(w);
     }
 
-    /* ── §3 unknown NEWER version is rejected too ──────────────────── */
+    /* ── §3 unknown NEWER version — also no state change ───────────── */
     {
         nodus_witness_t *w = fixture(&val[0], &val[1], NVAL - 1);
         enter_round(w, &val[0], 6, H, TX);
@@ -265,16 +317,15 @@ int main(void) {
         dispatch_prevote(w, &val[1],
                          (uint8_t)(NODUS_T3_BFT_PROTOCOL_VER + 1), 6, 0, H, TX);
         CHECK_EQ(w->round_state.prevote_approve_count, before);
-        printf("[ok] §3 v%u (unknown newer) REJECTED — fails closed in BOTH "
-               "directions\n", (unsigned)NODUS_T3_BFT_PROTOCOL_VER + 1);
+        printf("[ok] §3 v%u (unknown newer) — closed lane, not counted\n",
+               (unsigned)NODUS_T3_BFT_PROTOCOL_VER + 1);
         free_fixture(w);
     }
 
-    /* ── §4 a legacy peer stays rejected across repeated attempts ──── */
+    /* ── §4 rejection holds across repeated attempts AND version values,
+     * including this node's own version — the closed lane has no
+     * version at which it reopens. ─────────────────────────────────── */
     {
-        /* §E.9 — reconnecting or retrying changes nothing: the gate is a
-         * per-message property of authenticated content, not a
-         * per-session handshake that could be replayed past. */
         nodus_witness_t *w = fixture(&val[0], &val[1], NVAL - 1);
         enter_round(w, &val[0], 6, H, TX);
         int before = w->round_state.prevote_approve_count;
@@ -282,12 +333,14 @@ int main(void) {
             dispatch_prevote(w, &val[1], LEGACY_BFT_VER, 6, 0, H, TX);
         CHECK_EQ(w->round_state.prevote_approve_count, before);
         CHECK_EQ(w->peer_count, 0);
-        /* ...and a current-version message from the SAME peer still works,
-         * proving the peer was never blacklisted — only its messages. */
+        /* ...and the CURRENT version from the SAME peer STILL changes
+         * nothing — unlike before this wave, there is no version at
+         * which this verb is accepted any more. */
         dispatch_prevote(w, &val[1], NODUS_T3_BFT_PROTOCOL_VER, 6, 0, H, TX);
-        CHECK_EQ(w->round_state.prevote_approve_count, before + 1);
-        printf("[ok] §4 repeated legacy attempts stay rejected; the same "
-               "peer at v%u is still accepted\n",
+        CHECK_EQ(w->round_state.prevote_approve_count, before);
+        CHECK_EQ(w->peer_count, 0);
+        printf("[ok] §4 repeated attempts at every version stay rejected — "
+               "including v%u, this node's own\n",
                (unsigned)NODUS_T3_BFT_PROTOCOL_VER);
         free_fixture(w);
     }

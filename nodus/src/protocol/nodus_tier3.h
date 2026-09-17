@@ -30,11 +30,6 @@
  * by its own rule (it may include ledger_ids.h and nothing from nodus),
  * so this direction of the include is the safe one. */
 #include "dnac/env_wire.h"
-/* Tendermint T3 wave 1 — the DERIVED size bounds (T2 wire design §4.8;
- * D-19 rev 3). Like env_wire.h above, tm_bounds.h is dependency-free in the
- * nodus direction: it reads only shared/dnac headers and the Dilithium
- * signature length, so including it here adds no nodus -> nodus edge. */
-#include "dnac/tm_bounds.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
@@ -149,32 +144,41 @@ typedef enum {
     /* O15E Faz D — successor genesis bundle transfer (pinned-genesis
      * joiner bootstrap). Offset-chunked because a 20-validator bundle
      * exceeds the 128 KB T3 message bound. */
-    NODUS_T3_V2_GBUNDLE_REQ = 24, /* {chain32, pin64, offset}             */
-    NODUS_T3_V2_GBUNDLE_RSP = 25, /* {chain32, pin64, total, offset, chunk} */
+    NODUS_T3_V2_GBUNDLE_REQ = 24, /* {chain32, pin32, offset}             */
+    NODUS_T3_V2_GBUNDLE_RSP = 25, /* {chain32, pin32, total, offset, chunk} */
     /* O15N Faz 2C1 — VIEW AUTHORITY. One message shape serves two uses:
      * a broadcast carries n_entries = 1 (this node's own statement), a
      * proof response carries f+1. Fewer verbs, one decoder, one clamp. */
     NODUS_T3_VIEWOK     = 26,   /* bundle of 1..N VIEW_OK statements     */
     NODUS_T3_VIEWOK_REQ = 27,   /* "what view can you prove?"            */
-    /* ── Tendermint T3 (T2 wire design §4.2; D-16 rev 4) — APPENDED, dormant
-     *    until the wave-2 host dispatches them; NODUS_T3_BFT_PROTOCOL_VER
-     *    unchanged in wave 1. Values 1-27 do not move.
+    /* ── Tendermint T3 legacy verbs 28-34 (T2 wire design §4.2; D-16 rev 4)
+     *    were RETIRED in W3 (D-16 rev 5, atlas-dec-0c86593601db977cd5af648b78910004
+     *    rev 5). They were field-by-field CBOR copies of the reactor's nine
+     *    messages, written before cmt_conr / cmt_memr existed to marshal
+     *    the reactor's own bytes. THE NUMBERS 28-34 ARE RETIRED AND NEVER
+     *    REUSED — see nodus_t3_max_msg_size and nodus_t3_type_to_method,
+     *    which both answer "not a verb" for them.
      *
-     * TM_STEP (28) and TM_PROP (29) carry SIGNED fields (sst i64, lcr i32
-     * >= -1, vr i32 >= -1; -1 means "none", the reference's value). The
-     * codec reads and writes them with cbor_encode_int / cbor_decode_int,
-     * added to nodus_cbor for this purpose per RFC 8949 §3.1 (D-22,
-     * operator decision 2026-09-09). cbor_decode_next still refuses major
-     * type 1, so no legacy decoder's behaviour moved; nodus_t3_decode's
-     * pass-1 envelope walk uses cbor_decode_skip_signed and admits a
-     * negative in `a` for these two verbs only (D-22 rev 2). */
-    NODUS_T3_TM_STEP  = 28,   /* w_tm_step  — round/step announcement                 */
-    NODUS_T3_TM_PROP  = 29,   /* w_tm_prop  — proposal carrying the D-19 value          */
-    NODUS_T3_TM_POL   = 30,   /* w_tm_pol   — proposal POL bitmap                       */
-    NODUS_T3_TM_VOTE  = 31,   /* w_tm_vote  — ONE vote with its 4627-byte inner sig     */
-    NODUS_T3_TM_HAS   = 32,   /* w_tm_has   — has-vote                                  */
-    NODUS_T3_TM_MAJ23 = 33,   /* w_tm_maj23 — +2/3 hint                                 */
-    NODUS_T3_TM_BITS  = 34,   /* w_tm_bits  — vote-set bits reply                       */
+     * ── cometbft envelope verbs 35-39 (D-16 rev 5) — the VERB IS THE
+     *    CHANNEL. Args = { m: bstr }, exactly the bytes cmt_conr / cmt_memr
+     *    already marshalled (cmt_pb_cons_message for 35-38, the mempool
+     *    Message for 39); this tier-3 layer decodes NOTHING inside `m`.
+     *    Channel mapping (shared/dnac/cmt_conr.h / cmt_ps.h channel ids,
+     *    cometbft@709fd12b consensus/reactor.go:24-30 and
+     *    mempool/reactor.go:81):
+     *      35 w_cmt_state -> consensus State channel        0x20
+     *      36 w_cmt_data  -> consensus Data channel          0x21
+     *      37 w_cmt_vote  -> consensus Vote channel           0x22
+     *      38 w_cmt_bits  -> consensus VoteSetBits channel  0x23
+     *      39 w_cmt_txs   -> mempool channel                  0x30
+     * Frame gate (D-16 rev 5 F10): wh.cid is the derived 32-byte chain id;
+     * wh.rnd and wh.vw are written 0 and never read.
+     * NODUS_T3_BFT_PROTOCOL_VER moves 6 -> 7 in W3 (nodus_types.h). */
+    NODUS_T3_CMT_STATE         = 35,  /* w_cmt_state — State channel 0x20         */
+    NODUS_T3_CMT_DATA          = 36,  /* w_cmt_data  — Data channel  0x21         */
+    NODUS_T3_CMT_VOTE          = 37,  /* w_cmt_vote  — Vote channel  0x22         */
+    NODUS_T3_CMT_VOTE_SET_BITS = 38,  /* w_cmt_bits  — VoteSetBits channel 0x23   */
+    NODUS_T3_CMT_TXS           = 39,  /* w_cmt_txs   — mempool channel 0x30       */
 } nodus_t3_msg_type_t;
 
 /* ── Common witness header ───────────────────────────────────────── */
@@ -737,10 +741,17 @@ typedef struct {
 } nodus_t3_w_v2_range_r_t;
 
 /** O15E Faz D — genesis bundle REQUEST (verb 24). Offset-chunked pull.
- * Wire keys: "c" (32B), "p" (64B pinned genesis id), "o" (uint offset). */
+ *
+ * D-24 rev 4 (1): `pin` is 32 bytes, not 64 — the joiner's ONLY input is
+ * the 32-byte chain id (D-17 rev 10 / D-18 rev 4: a version-3 chain's
+ * identity is the hash of its stored genesis DOCUMENT, not a genesis
+ * BLOCK; there is no 64-byte genesis BlockID left to pin to). `chain` and
+ * `pin` now name the same identity from two angles — which chain this
+ * request is about, and the requester's own expectation of it.
+ * Wire keys: "c" (32B), "p" (32B, the chain id), "o" (uint offset). */
 typedef struct {
     uint8_t     chain[32];
-    uint8_t     pin[64];
+    uint8_t     pin[32];
     uint64_t    offset;
 } nodus_t3_w_v2_gbundle_q_t;
 
@@ -748,12 +759,14 @@ typedef struct {
  * canonical bundle at `offset`; `total` is the full bundle length so the
  * requester knows when it is complete. `chunk` is a zero-copy pointer
  * into the decode buffer (the w_genesis_rsp cdb pattern).
- * Wire keys: "c" (32B), "p" (64B), "t" (uint total), "o" (uint offset),
+ *
+ * D-24 rev 4 (1): `pin` is 32 bytes — see the REQUEST's doc comment.
+ * Wire keys: "c" (32B), "p" (32B), "t" (uint total), "o" (uint offset),
  * "d" (bstr chunk). */
 #define NODUS_T3_V2_GBUNDLE_CHUNK_MAX 49152u   /* 48 KB — under 128KB T3  */
 typedef struct {
     uint8_t         chain[32];
-    uint8_t         pin[64];
+    uint8_t         pin[32];
     uint64_t        total;
     uint64_t        offset;
     const uint8_t  *chunk;          /* ptr into decode buf              */
@@ -794,114 +807,72 @@ typedef struct {
     nodus_t3_sync_cert_t certs[NODUS_T3_MAX_WITNESSES];
 } nodus_t3_sync_rsp_t;
 
-/* ── Tendermint T3 reactor payloads (verbs 28-34) ─────────────────────
+/* ── cometbft envelope payload (verbs 35-39; D-16 rev 5) ───────────────
  *
- * T2 wire design §4.2, D-16 rev 4 (Atlas atlas-dec-0c86593601db977cd5af648b78910004).
- * The CBOR key names in each comment are NORMATIVE — they are the map keys
- * the decoders below require exactly, no more and no fewer.
+ * atlas-dec-0c86593601db977cd5af648b78910004 rev 5. All five verbs share
+ * ONE struct: the verb IS the channel, and the ONLY field is the
+ * reactor's own already-marshalled bytes. This layer never looks inside
+ * `m` — it is opaque here, exactly as p2p/peer.go:277-280 hands the
+ * transport bytes it has already marshalled. Wire key: "m" (bstr) —
+ * exact key set (no other key admitted), same discipline as the legacy
+ * verbs 28-34 this replaces.
  *
- * STRICTER THAN THE LEGACY ARG DECODERS, DELIBERATELY. Every legacy
- * dec_*_args above skips an unrecognised key and leaves a missing one at
- * zero. The verbs 28-34 decoders instead demand the EXACT key set: a
- * missing key, a duplicate key, an unknown key or a type mismatch is -1.
- * That is what §4.2's "anahtar kümesi tam ve fazlasız" requires, and it is
- * what makes the codec bijective (DG-13: decode(encode(x)) == x and
- * encode(decode(b)) == b). It is not an inconsistency with the code above
- * it; it is the strictness the top-level envelope already uses (the Phase 9
- * / Task 9.3 rule at nodus_t3_decode) pushed down into `a`.
+ * ZERO-COPY ON DECODE: `m` points into the input CBOR buffer — the same
+ * idiom the retired nodus_t3_tm_prop_t's `v` field and w_v2_range_r's
+ * `frames` used (a large bstr is never copied, only bounded and
+ * pointed-at; see dec_w_v2_gbundle_r_args's `chunk`, still present in
+ * the .c file). It is valid only while that buffer is alive. On ENCODE,
+ * `m` is caller-owned for the duration of the nodus_t3_encode call.
  *
- * NOTHING IS VERIFIED HERE. The inner Dilithium5 `sig` of verb 31 is NOT
- * checked by this codec (host, wave 2 — D-16 rev 4 vote-admission step 3),
- * and neither is the `wh.cid` derived-identity gate (D-16 rev 4 F10). This
- * layer only encodes and decodes.
- *
- * SIGNED FIELDS. `sst`, `lcr` and `vr` are the only signed integers on any
- * nodus wire. They travel as RFC 8949 §3.1 integers (major type 0 when
- * >= 0, major type 1 when < 0) through cbor_encode_int / cbor_decode_int
- * (D-22). -1 is the reference's "none" for lcr and vr, so it is a value,
- * not a sentinel for absent — the key is always present.
- *
- * A negative integer also has to survive the ENVELOPE walk, not just the
- * arg decoder: nodus_t3_decode's pass 1 steps over `a` to reach the method
- * name and the wsig, and the shared cbor_decode_skip treats major type 1
- * as an error. Pass 1 therefore uses cbor_decode_skip_signed and records
- * whether it stepped over a negative; once the verb is known, a negative
- * in `a` is admitted for verbs 28 and 29 ONLY and rejected for verbs 30-34
- * and every legacy verb — which is what those verbs did before the signed
- * walker existed (D-22 rev 2). The shared walker is untouched. */
+ * NOTHING IS VALIDATED HERE beyond the byte-string length ceiling. The
+ * reactor's own ValidateBasic gate (cmt_msgs.c) and the `wh.cid`
+ * derived-identity gate run on the DECODED bytes, downstream of this
+ * codec, never inside it. */
+typedef struct {
+    const uint8_t *m;       /* ptr into decode buf (rx) / caller buf (tx) */
+    size_t         m_len;
+} nodus_t3_w_cmt_t;
 
-/** Bitmap byte count: n bits, ceil(n/8) bytes, bit i = i-th ascending
- *  voter_id (T2 §4.2). 128 validators -> 16 bytes. */
-#define NODUS_T3_TM_BITMAP_MAX        ((DNA_MAX_ACTIVE_VALIDATORS + 7) / 8)   /* 16 */
-#define NODUS_T3_TM_STEP_PROPOSE      0
-#define NODUS_T3_TM_STEP_PREVOTE      1
-#define NODUS_T3_TM_STEP_PRECOMMIT    2
-#define NODUS_T3_TM_STEP_NEW_HEIGHT   3                                        /* D-16 rev 4 F6 */
-
-typedef struct { uint64_t h; uint32_t r; uint8_t s; int64_t sst; int32_t lcr; }              nodus_t3_tm_step_t;   /* keys h r s sst lcr */
-typedef struct { uint64_t h; uint32_t r; int32_t vr; const uint8_t *v; uint32_t v_len; }     nodus_t3_tm_prop_t;   /* keys h r vr v  — v: ptr into decode buf (rx) / caller-owned (tx), 1..DNA_TM_VALUE_MAX_LEN (same ownership idiom as w_v2_range_r.frames, above) */
-typedef struct { uint64_t h; uint32_t pr; uint8_t bm[NODUS_T3_TM_BITMAP_MAX]; uint8_t bm_len; } nodus_t3_tm_pol_t; /* keys h pr bm — bm 1..16 bytes; host checks bm_len == ceil(N/8) */
-typedef struct { uint8_t ty; uint64_t h; uint32_t r; uint8_t bi[64]; uint8_t vid[32]; uint32_t ix; uint64_t ts;
-                 uint8_t sig[QGP_DSA87_SIGNATURE_BYTES]; }                                   nodus_t3_tm_vote_t;   /* keys ty h r bi vid ix ts sig */
-typedef struct { uint64_t h; uint32_t r; uint8_t ty; uint32_t ix; }                          nodus_t3_tm_has_t;    /* keys h r ty ix */
-typedef struct { uint64_t h; uint32_t r; uint8_t ty; uint8_t bi[64]; }                       nodus_t3_tm_maj23_t;  /* keys h r ty bi */
-typedef struct { uint64_t h; uint32_t r; uint8_t ty; uint8_t bi[64]; uint8_t bm[NODUS_T3_TM_BITMAP_MAX]; uint8_t bm_len; } nodus_t3_tm_bits_t; /* keys h r ty bi bm */
-
-/* ── Per-verb message classes (D-14 rev 2; threat-model goal G19) ─────
+/* ── Per-verb message classes (D-16 rev 5 "envelope overhead on top") ──
  *
- * The buffer a Tendermint verb encodes and verifies through is a function
- * of its TYPE, not of the length that arrived — so every node allocates
- * identically for identical input (DG-19). Only verb 29 can be large; a
- * vote is ~13 KB and everything else ~8.5 KB, so the 2.8 MB heap is never
- * taken for a message that cannot need it.
- *
- * The overhead figure covers the CBOR envelope: the {t,y,q,wh,a,wsig} map,
- * the 7-key `wh`, the method string, the per-key headers and the 4627-byte
- * frame wsig. It is an over-estimate on purpose and test_tier3.c MEASURES
- * the real overhead of a maximal message and asserts it stays below. */
-#define NODUS_T3_TM_ENVELOPE_OVERHEAD  8192u   /* wh + wsig 4627 + CBOR keys + slack; test asserts real overhead < this */
-#define NODUS_T3_TM_PROP_MAX_MSG       (DNA_TM_VALUE_MAX_LEN + NODUS_T3_TM_ENVELOPE_OVERHEAD)
-#define NODUS_T3_TM_VOTE_MAX_MSG       (QGP_DSA87_SIGNATURE_BYTES + 256u + NODUS_T3_TM_ENVELOPE_OVERHEAD)
-#define NODUS_T3_TM_SMALL_MAX_MSG      (256u + NODUS_T3_TM_ENVELOPE_OVERHEAD)          /* 28, 30, 32, 33, 34 */
+ * `m`'s ceiling comes from the reactor that marshalled it, not from this
+ * layer: verbs 35-38 share the consensus reactor's `maxMsgSize`
+ * (cometbft@709fd12b consensus/reactor.go:30, CMT_CONR_MAX_MSG_SIZE,
+ * shared/dnac/cmt_ps.h:164); verb 39 takes the mempool reactor's
+ * RecvMessageCapacity at the default MaxTxBytes
+ * (Message{Txs{[MaxTxBytes]}}.Size(), cmt_memr_get_channels,
+ * shared/dnac/cmt_memr.h:114-116) — EIGHT BYTES LARGER than the
+ * consensus ceiling, so one shared constant would be wrong for one of
+ * the two. The envelope overhead figure is the retired
+ * NODUS_T3_TM_ENVELOPE_OVERHEAD's, unchanged: the {t,y,q,wh,a,wsig} map,
+ * the 7-key `wh`, the method string, the per-key CBOR headers and the
+ * 4627-byte frame wsig. test_tier3.c MEASURES the real overhead of a
+ * maximal message and asserts it stays below. */
+#define NODUS_T3_CMT_ENVELOPE_OVERHEAD  8192u      /* wh + wsig 4627 + CBOR keys + slack */
+#define NODUS_T3_CMT_CONS_M_MAX         1048576u   /* verbs 35-38: CMT_CONR_MAX_MSG_SIZE */
+#define NODUS_T3_CMT_TXS_M_MAX          1048584u   /* verb 39: mempool RecvMessageCapacity at default MaxTxBytes */
 
 /**
  * Per-type message ceiling — the size nodus_t3_encode/nodus_t3_verify must
  * be able to hold for `type`.
  *
- * Verbs 28-34 return their class bound above. EVERY legacy type returns
+ * Verbs 35-38 return NODUS_T3_CMT_CONS_M_MAX + the envelope overhead;
+ * verb 39 returns NODUS_T3_CMT_TXS_M_MAX + the envelope overhead. Verbs
+ * 28-34 are RETIRED and return 0 (nodus_t3_type_to_method(28..34) is
+ * NULL — they are not a verb any more). EVERY legacy type returns
  * NODUS_W_MAX_SYNC_RSP_SIZE, which is the bound the legacy path uses
- * today: nodus_t3_verify (nodus_tier3.c) allocates exactly that, for every
- * type. Reporting anything smaller here would describe a ceiling the tree
- * does not actually apply.
+ * today: nodus_t3_verify (nodus_tier3.c) allocates exactly that, for
+ * every type. Reporting anything smaller here would describe a ceiling
+ * the tree does not actually apply.
  *
- * READ THIS BEFORE WAVE 2 SIZES peer.c's RECEIVE BUFFERS FROM IT. Design
- * §4.D describes the legacy answer as "NODUS_T3_MAX_MSG_SIZE, or the
- * sync/range bound where the code already special-cases it" — i.e. the
- * SEND-side bound, 128 KB for most verbs. This function answers from the
- * VERIFY side instead, which is uniform 1 MB, because that is the single
- * bound provable from one line rather than from a survey of send sites.
- * The consequence is real: if wave 2 sizes peer.c's three 128 KB buffers
- * (w_ident / w_rost_q / w_rost_r) by calling this, they become 1 MB. That
- * is a choice for the ORCHESTRATOR, not a property to be inherited by
- * accident.
+ * READ THIS BEFORE SIZING peer.c's RECEIVE BUFFERS FROM IT — unchanged
+ * warning from wave 1: this answers from the VERIFY side, which is
+ * uniform for every legacy verb, not the smaller SEND-side bound most
+ * of them actually use.
  *
  * @return the ceiling in bytes; 0 for a type that is not a T3 verb.
  */
 size_t nodus_t3_max_msg_size(nodus_t3_msg_type_t type);
-
-_Static_assert(DNA_TM_MAX_CLAIMS_PER_VALUE == NODUS_W_MAX_BLOCK_TXS, "claim ceiling drifted (nodus_types.h)");
-_Static_assert(NODUS_T3_TM_PROP_MAX_MSG + 4u + DNA_TM_COMMIT_MAX_LEN < NODUS_MAX_FRAME_TCP, "T3_TM_HEAP exceeds NODUS_MAX_FRAME_TCP");
-/* The third assert of design §4.D — vote type byte == core enum — is
- * DELIBERATELY ABSENT, and its absence is the correct reading of the
- * approved record, not an omission. APPROVED D-12
- * (atlas-dec-ae3830947ee947d1d9bea33ad259d70b) decides the opposite of what
- * that assert claims: the wire byte takes the CometBFT SignedMsgType values
- * (PREVOTE 0x01, PRECOMMIT 0x02) while "the core enum dna_cmsg_type_t keeps
- * its values 1/2/3", the two being joined by a host-side mapping table.
- * dna_consensus.h:27 is dna_cmsg_type_t { PROPOSAL = 1, PREVOTE = 2,
- * PRECOMMIT = 3 }, so an equality assert between them would be FALSE; the
- * names the design spells (DNA_CONSENSUS_PREVOTE/PRECOMMIT) exist nowhere
- * in the tree. The decoders below enforce D-12 directly: ty must be 1 or 2. */
 
 /* ── Full decoded message ────────────────────────────────────────── */
 
@@ -939,14 +910,8 @@ typedef struct {
         nodus_t3_w_v2_gbundle_r_t w_v2_gbundle_r;
         nodus_t3_viewok_t         viewok;
         nodus_t3_viewok_q_t       viewok_q;
-        /* Tendermint T3 (verbs 28-34). */
-        nodus_t3_tm_step_t        tm_step;
-        nodus_t3_tm_prop_t        tm_prop;
-        nodus_t3_tm_pol_t         tm_pol;
-        nodus_t3_tm_vote_t        tm_vote;
-        nodus_t3_tm_has_t         tm_has;
-        nodus_t3_tm_maj23_t       tm_maj23;
-        nodus_t3_tm_bits_t        tm_bits;
+        /* cometbft envelope (verbs 35-39; D-16 rev 5). */
+        nodus_t3_w_cmt_t          w_cmt;
     };
 } nodus_t3_msg_t;
 
