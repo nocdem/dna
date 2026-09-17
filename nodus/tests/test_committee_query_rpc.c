@@ -168,7 +168,12 @@ int main(void) {
     CHECK(count >= 2);
 
     /* Flip v2 to RETIRING directly in the validators table (simulates
-     * the state post-UNSTAKE apply, same as test_retiring_committee_membership). */
+     * the state post-UNSTAKE apply — test_retiring_committee_membership.c
+     * used to exercise the same flip and is deleted with the closed
+     * consensus lane, R3 W4; the RETIRING-membership property is now
+     * structural, via the frozen validator_set_snapshots row, and no
+     * version-3 test asserts it directly — a coverage gap, not
+     * something this file substitutes for). */
     v2.status = DNAC_VALIDATOR_RETIRING;
     CHECK_EQ(nodus_validator_update(&w, &v2), 0);
 

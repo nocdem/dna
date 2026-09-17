@@ -303,6 +303,34 @@ static int cfg_make(cfgbox_t *b, uint8_t salt, uint64_t inflation_start) {
     return 0;
 }
 
+/* R3 W4-D — the SAME §0 composition, completed to a version-3 document,
+ * for t_path_b_committed_root: the post-open gate every ordinary
+ * restart runs (O15A obligation 6, closed-consensus-lane deletion)
+ * refuses a version-2 chain on reopen, so that case's open_chain call
+ * needs a version-3 chain instead. Shape copied from test_v2_gen.c's
+ * cfg_make_v3_ex (not included — this file builds its own). Verified by
+ * reading, not assumed: gen_seed_state (nodus_witness_v2_gen.c), the
+ * function that writes the chain_config_history rows param_id 200/201/
+ * 202 assert on, is called identically from both nodus_witness_v2_gen_
+ * derive (line 1466) and nodus_witness_v2_gen_derive_v3 (line 2951) —
+ * the same shared helper, so those three rows do not depend on which
+ * derive path built the chain. */
+static int cfg_make_v3(cfgbox_t *b, uint8_t salt, uint64_t inflation_start) {
+    if (cfg_make(b, salt, inflation_start) != 0) return -1;
+    b->cfg->config_version = NODUS_V2_GEN_CONFIG_VERSION_V3;
+    if (nodus_witness_v2_gen_v3_defaults(b->cfg) != 0) {
+        cfg_free(b);
+        return -1;
+    }
+    b->cfg->genesis_time_ms = 1700000000000ULL;
+    b->cfg->initial_height  = 1;
+    if (nodus_witness_v2_gen_v3_fill_comet_rows(b->cfg) != 0) {
+        cfg_free(b);
+        return -1;
+    }
+    return 0;
+}
+
 /* ── chain-db discovery / open ───────────────────────────────────────── */
 
 /* 0 found, 1 none, -1 fault. */
@@ -510,14 +538,21 @@ static int t_path_a_encoding(void) {
  * would have had a different chain id even if path A did not exist.
  *
  * This is the SECOND half of the compound mutant. §1.1 and §1.2 both
- * survive deleting the seeded rows; this one does not. */
+ * survive deleting the seeded rows; this one does not.
+ *
+ * R3 W4-D — this case now derives and opens a VERSION-3 chain, not
+ * version-2: open_chain reopens through nodus_witness_create_chain_db,
+ * whose post-open gate (O15A obligation 6) now refuses a version-2
+ * chain the same way every ordinary restart does. The three committed-
+ * row assertions below are unchanged from the version-2 form — see
+ * cfg_make_v3's own comment for why that is grounded, not assumed. */
 static int t_path_b_committed_root(void) {
     char dir[128];
     CHECK(mkdir_tmp(dir, "b") == 0, "tmpdir");
     OK();
     cfgbox_t c;
-    CHECK(cfg_make(&c, 0x00, 1ULL) == 0, "cfg");
-    CHECK(nodus_witness_v2_gen_derive(dir, c.cfg, NULL) == 0, "derive");
+    CHECK(cfg_make_v3(&c, 0x00, 1ULL) == 0, "cfg (version 3)");
+    CHECK(nodus_witness_v2_gen_derive_v3(dir, c.cfg, NULL) == 0, "derive v3");
     OK();
 
     nodus_witness_t *w = open_chain(dir);
@@ -648,8 +683,13 @@ static int t_join_refuses_mismatch(void) {
     CHECK(mkdir_tmp(dir, "j") == 0, "tmpdir");
     OK();
     cfgbox_t c;
-    CHECK(cfg_make(&c, 0x00, 1ULL) == 0, "cfg");
-    CHECK(nodus_witness_v2_gen_derive(dir, c.cfg, NULL) == 0, "derive");
+    /* R3 W4 — a version-3 chain: the production open path (open_chain →
+     * nodus_witness_create_chain_db → the post-open gate) refuses every
+     * pre-Comet chain, and this case is about what the RUNTIME reads on a
+     * chain it has OPENED. The committed band rows are written by the
+     * same gen_seed_state either way (nodus_witness_v2_gen.c). */
+    CHECK(cfg_make_v3(&c, 0x00, 1ULL) == 0, "cfg (version 3)");
+    CHECK(nodus_witness_v2_gen_derive_v3(dir, c.cfg, NULL) == 0, "derive v3");
     OK();
 
     nodus_witness_t *w = open_chain(dir);
@@ -759,8 +799,10 @@ static int t_preexisting_chain_unchanged(void) {
     CHECK(mkdir_tmp(dir, "p") == 0, "tmpdir");
     OK();
     cfgbox_t c;
-    CHECK(cfg_make(&c, 0x00, 1ULL) == 0, "cfg");
-    CHECK(nodus_witness_v2_gen_derive(dir, c.cfg, NULL) == 0, "derive");
+    /* R3 W4 — version-3 chain (see t_join_refuses_mismatch); the band is
+     * stripped by hand below, which is the shape under test. */
+    CHECK(cfg_make_v3(&c, 0x00, 1ULL) == 0, "cfg (version 3)");
+    CHECK(nodus_witness_v2_gen_derive_v3(dir, c.cfg, NULL) == 0, "derive v3");
     OK();
     nodus_witness_t *w = open_chain(dir);
     CHECK(w != NULL, "open");
@@ -806,8 +848,10 @@ static int t_inflation_start_from_genesis(void) {
         CHECK(mkdir_tmp(dir, "i0") == 0, "tmpdir");
         OK();
         cfgbox_t c;
-        CHECK(cfg_make(&c, 0x00, 0ULL) == 0, "cfg start=0");
-        CHECK(nodus_witness_v2_gen_derive(dir, c.cfg, NULL) == 0, "derive");
+        /* R3 W4 — version-3 chain (see t_join_refuses_mismatch). */
+        CHECK(cfg_make_v3(&c, 0x00, 0ULL) == 0, "cfg start=0 (version 3)");
+        CHECK(nodus_witness_v2_gen_derive_v3(dir, c.cfg, NULL) == 0,
+              "derive v3");
         OK();
         nodus_witness_t *w = open_chain(dir);
         CHECK(w != NULL, "open");
@@ -844,8 +888,10 @@ static int t_inflation_start_from_genesis(void) {
         CHECK(mkdir_tmp(dir, "i4") == 0, "tmpdir");
         OK();
         cfgbox_t c;
-        CHECK(cfg_make(&c, 0x00, START) == 0, "cfg start=4");
-        CHECK(nodus_witness_v2_gen_derive(dir, c.cfg, NULL) == 0, "derive");
+        /* R3 W4 — version-3 chain (see t_join_refuses_mismatch). */
+        CHECK(cfg_make_v3(&c, 0x00, START) == 0, "cfg start=4 (version 3)");
+        CHECK(nodus_witness_v2_gen_derive_v3(dir, c.cfg, NULL) == 0,
+              "derive v3");
         OK();
         nodus_witness_t *w = open_chain(dir);
         CHECK(w != NULL, "open");
@@ -900,13 +946,18 @@ static int t_determinism_twin(void) {
     OK();
 
     cfgbox_t c1, c2;
-    CHECK(cfg_make(&c1, 0x00, 4ULL) == 0, "cfg 1");
-    CHECK(cfg_make(&c2, 0x00, 4ULL) == 0, "cfg 2 (independent, identical)");
+    /* R3 W4 — version-3 twins (see t_join_refuses_mismatch): cfg_make_v3
+     * stamps the SAME genesis_time_ms / initial_height into both, so the
+     * identity claim below still compares two independently-built,
+     * byte-identical documents. */
+    CHECK(cfg_make_v3(&c1, 0x00, 4ULL) == 0, "cfg 1 (version 3)");
+    CHECK(cfg_make_v3(&c2, 0x00, 4ULL) == 0,
+          "cfg 2 (independent, identical, version 3)");
     OK();
 
     uint8_t id1[32], id2[32];
-    CHECK(nodus_witness_v2_gen_derive(d1, c1.cfg, id1) == 0, "derive 1");
-    CHECK(nodus_witness_v2_gen_derive(d2, c2.cfg, id2) == 0, "derive 2");
+    CHECK(nodus_witness_v2_gen_derive_v3(d1, c1.cfg, id1) == 0, "derive 1");
+    CHECK(nodus_witness_v2_gen_derive_v3(d2, c2.cfg, id2) == 0, "derive 2");
     OK();
     CHECK(memcmp(id1, id2, 32) == 0,
           "identical configs derive an identical chain id");

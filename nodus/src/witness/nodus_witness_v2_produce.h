@@ -19,35 +19,18 @@
  * back onto the round. It computes no root, no BlockID and no header of
  * its own, and it opens no transaction.
  *
- * ═══ QC FORMATION — the shipped post-commit certificate shape ═══════════
- * The QC V2 preimage binds the BlockID, which binds the global state root
- * (execution results), so a QC certificate can only be SIGNED after
- * execution — while the BFT round votes BEFORE execution (the legacy
- * PREVOTE/PRECOMMIT machinery binds the batch digest, unchanged here).
- * The legacy lane resolves the same tension the same way: it commits in
- * commit_batch and stores/broadcasts its finalization certificates
- * afterwards (nodus_witness_bft.c cert_store + the COMMIT broadcast), so
- * a committed-but-not-yet-certified window is the SHIPPED production
- * behavior, not a new shape — and `qc IS NULL` on a fresh row is
- * explicitly contract-legal (nodus_witness_v2_apply.h, qc_bytes).
- *
- * Flow: after its local engine commit each validator signs the 216-byte
- * DNA.CERT.v2 preimage over ITS OWN derived BlockID and carries the
- * signature on its ordinary COMMIT broadcast (two successor-only fields).
- * Every node collects incoming certificates into a bounded per-height
- * pool, verifies each against the committed authority snapshot for that
- * height (the O12 resolver — never against roster or wire input), and at
- * `dna_bft_quorum(N)` matching certificates assembles the canonical QC,
- * verifies it through `nodus_witness_v2_qc_verify` (the ONE verifier),
- * and attaches it: UPDATE v2_blocks SET qc WHERE the height's stored
- * block_id matches AND qc IS NULL. Idempotent; never stores unverified
- * bytes; QC bytes are NOT part of any cross-node identity comparison
- * (each node may hold a different valid >=quorum subset).
- *
- * HONEST LIMIT: certificates ride the round's COMMIT frames only. A node
- * that never completes the round holds no pool, and a block finalized
- * immediately before a shutdown may persist with qc NULL on some nodes.
- * Certificate re-request / backfill is a named open item, not built here.
+ * ═══ QC FORMATION — R3 W4: DELETED with the closed consensus lane ═══════
+ * This module used to also assemble the shipped post-commit DNA.CERT.v2
+ * QC (nodus_witness_v2_cert_note / _qc_try_attach, pooled in
+ * `w->v2_certpool`): the legacy PBFT round voted BEFORE execution, so a
+ * QC certificate — which binds the engine-derived BlockID and therefore
+ * can only be signed AFTER execution — was assembled from per-node
+ * COMMIT-broadcast certificates once a committed height had them. A
+ * version-3 chain has no PBFT round and no COMMIT broadcast to ride, and
+ * this build assembles no replacement DNA.CERT.v2 QC for it — grep
+ * confirms nodus_witness_cmt_app.c has no QC handling of its own.
+ * `w->v2_certpool` and every function that read or wrote it are deleted;
+ * see nodus_witness_v2_produce.c's own deletion notes at the same names.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -60,7 +43,6 @@
 #include <stdint.h>
 
 #include "witness/nodus_witness.h"
-#include "witness/nodus_witness_mempool.h"
 /* ORCHESTRATOR delta 1, item B — nodus_v2_batch_check_result_t, for
  * nodus_witness_v2_produce_batch_check_capped's result_out parameter.
  * Included, not edited: this header's own declarations are untouched. */
@@ -70,14 +52,9 @@
 extern "C" {
 #endif
 
-/** Outputs of one successful successor commit, for the COMMIT broadcast. */
-typedef struct {
-    uint8_t block_id[64];       /* engine-derived BlockID                */
-    uint8_t global_root[64];    /* engine-derived global state root      */
-    uint8_t cert_sig[NODUS_SIG_BYTES];  /* our DNA.CERT.v2 signature     */
-    int     have_cert;          /* 0 when signing failed (rare fault) —
-                                 * the block is still committed          */
-} nodus_v2_produce_out_t;
+/* R3 W4 — nodus_v2_produce_out_t (the output shape of
+ * nodus_witness_v2_produce_commit) is DELETED with the closed consensus
+ * lane: its only production user is deleted below. */
 
 /**
  * ORCHESTRATOR delta 2, item A — the LIGHTWEIGHT view
@@ -100,58 +77,13 @@ typedef struct {
     size_t         tx_len;
 } nodus_witness_batch_item_t;
 
-/**
- * Execute and commit ONE successor block from the agreed BFT batch,
- * through the one engine.
- *
- * Every entry MUST be a successor envelope entry (tx_type
- * NODUS_W_TX_V2_ENVELOPE, bytes classified by the wire-family marker at
- * admission). `expected_global_root` is the C3-analog follower assertion
- * (the COMMIT frame's state_root field) — NULL on the own-quorum path.
- *
- * On success fills `out`, stamps each entry's committed_block_height /
- * committed_tx_index (client receipts), records our own certificate in
- * the pool and tries QC assembly.
- *
- * @return 0 committed (or idempotent replay of the identical block),
- *        -1 deterministic verdict (the batch is invalid — round fails,
- *           mirrors the legacy batch_failed handling),
- *        -2 node-local fault OR not-yet-linkable (this node could not
- *           compute/sequence — the caller must NOT broadcast a COMMIT
- *           and must NOT blame the batch).
- */
-int nodus_witness_v2_produce_commit(nodus_witness_t *w,
-                                    nodus_witness_mempool_entry_t **entries,
-                                    int count,
-                                    uint64_t height,
-                                    uint64_t timestamp,
-                                    const uint8_t *proposer_id,
-                                    const uint8_t *expected_global_root,
-                                    nodus_v2_produce_out_t *out);
-
-/**
- * Record one peer certificate (from a successor COMMIT frame).
- *
- * Bounded, dedup-by-voter, height-scoped: accepted only for the pool's
- * height, or (when the pool is empty/behind) for exactly the next height
- * this node would commit — anything else is dropped. Verification is
- * deferred until our own block at that height is committed, then runs
- * against the committed authority snapshot. Triggers QC assembly when
- * quorum is reached. Never a consensus verdict — a bad certificate is
- * simply not counted.
- */
-void nodus_witness_v2_cert_note(nodus_witness_t *w,
-                                uint64_t height,
-                                const uint8_t voter_id[32],
-                                const uint8_t block_id[64],
-                                const uint8_t sig[NODUS_SIG_BYTES]);
-
-/**
- * Try to assemble and attach the QC for the pool's committed height.
- * Idempotent; safe to call any time. @return 0 attached-or-already,
- * 1 not yet (quorum not reached / nothing committed), -1 fault.
- */
-int nodus_witness_v2_qc_try_attach(nodus_witness_t *w);
+/* R3 W4 — nodus_witness_v2_produce_commit (the commit handoff),
+ * nodus_witness_v2_cert_note (peer certificate recording) and
+ * nodus_witness_v2_qc_try_attach (QC assembly) are DELETED with the
+ * closed consensus lane: all three read or wrote `w->v2_certpool`,
+ * itself deleted, and their only production trigger was the legacy BFT
+ * round's COMMIT path. See nodus_witness_v2_produce.c's own deletion
+ * notes at the same names. */
 
 /**
  * The authoritative successor tip height (MAX(global_height) of
@@ -172,58 +104,31 @@ int nodus_witness_v2_tip_height(nodus_witness_t *w, uint64_t *height_out);
  */
 uint8_t nodus_witness_v2_classify_entry(const uint8_t *bytes, uint32_t len);
 
-/**
- * Derive the committed nullifier of a class-201 CLAIM entry from its wire
- * bytes (READ-ONLY): strict decode then the ONE admission function
- * (nodus_witness_v2_claim_admit), whose adm.nullifier is exactly the
- * value the apply engine binds. Used to record the nullifier on the
- * class-201 mempool entry so batch selection dedups claims semantically.
- * Fail-closed — a caller MUST NOT enqueue a claim entry if this fails.
- * @return 0 with out_nullifier filled / -1.
- */
-int nodus_witness_v2_claim_entry_nullifier(nodus_witness_t *w,
-                                           const uint8_t *bytes, uint32_t len,
-                                           uint8_t out_nullifier[64]);
-
-/**
- * Run the engine's own pre-commit seam over a candidate BATCH of
- * envelope entries at the next successor height: strict decode,
- * contextual ruleset match against the committed registry, chain
- * binding, expiry, canonical commitments, and wire- AND intent-level
- * duplicate rejection. The leader runs it before proposing (a duplicate
- * intent in one batch is a whole-block verdict at apply — better to
- * drop the offender than burn the round); followers run it on a
- * received proposal (deterministic: bytes + committed state only).
+/* R3 W4-D (Delta B) — nodus_witness_v2_claim_entry_nullifier is DELETED:
+ * its three production callers (nodus_witness_pool_local_demand,
+ * handle_dnac_spend's legacy body, nodus_witness_peer_handle_fwd_req)
+ * were all removed with the closed consensus lane in Delta A, leaving it
+ * a test-only orphan (test_bft_view_change_hardening.c, itself deleted
+ * this delta). nodus_witness_v2_claim_admit stays the one admission
+ * function surviving code uses directly (produce_batch_check_impl,
+ * below).
  *
- * IT ALSO METERS. Until O15I this ran the BARE preflight — no policy, no
- * budget, no meters — while the reserve variant (the one that charges the
- * global and per-domain unit budgets and enforces max_block_env_bytes)
- * had a single caller: the commit engine. So a batch that no budget could
- * pay for passed here, won its votes, and died at apply as
- * "BATCH COMMIT FAILED", answering every client with DNAC_STATUS_ERROR.
- * Measured cost before the fix: 120 failed blocks in one 20-node
- * rehearsal, 71 of them DNA_METER_ERR_GLOBAL_BUDGET at batch index 5.
- * The check now builds the SAME block context the engine builds and runs
- * the reserve seam against a scratch budget.
- *
- * This wrapper keeps the original tri-state for callers that only need a
- * verdict. `..._batch_check_ex` additionally reports the refusal KIND, so
- * the leader can tell "this batch is too big" (truncate and requeue the
- * tail) from "this entry is invalid" (drop it) — see
- * nodus_witness_bft_shape_successor_batch.
- *
- * @param fail_index_out on -1, the index of the offending entry.
- * @return 0 clean / -1 entry rejected / -2 node-local fault.
- */
-int nodus_witness_v2_produce_batch_check(nodus_witness_t *w,
-                                         nodus_witness_mempool_entry_t **entries,
-                                         int count,
-                                         int *fail_index_out);
+ * R3 W4 — nodus_witness_v2_produce_batch_check and
+ * nodus_witness_v2_produce_batch_check_ex (nodus_witness_v2_env.h; that
+ * stale prototype was deleted in Delta A' once it was found to be in this
+ * package's whitelist after all) are DELETED with the closed consensus
+ * lane: both took `nodus_witness_mempool_entry_t **`, a type
+ * from nodus_witness_mempool.h, itself deleted, and existed only for
+ * their one caller, nodus_witness_bft.c's leader batch shaping — also
+ * deleted. `_capped` below is the surviving seam call, used by the
+ * cometbft application layer. Full seam behavior (strict decode,
+ * contextual ruleset match, metering) is documented on this file's own
+ * shared implementation, produce_batch_check_impl, in
+ * nodus_witness_v2_produce.c. */
 
 /**
  * ORCHESTRATOR delta 1, item B / delta 2, item A (register row
- * R3-C1a-4, CLOSED for the Comet lane) — the SAME seam as
- * `nodus_witness_v2_produce_batch_check_ex` (nodus_witness_v2_env.h),
+ * R3-C1a-4, CLOSED for the Comet lane) — the engine's pre-commit seam
  * with a CALLER-SUPPLIED capacity AND a CALLER-BUILT lightweight item
  * view (`nodus_witness_batch_item_t`, above) instead of the legacy
  * lane's fixed NODUS_W_MAX_BLOCK_TXS and its heavyweight
@@ -234,13 +139,6 @@ int nodus_witness_v2_produce_batch_check(nodus_witness_t *w,
  * per request, from whatever it is currently checking (a PrepareProposal
  * candidate list or a ProcessProposal/FinalizeBlock request), and frees
  * it once this call returns.
- *
- * The legacy `_ex` export is UNCHANGED (still capped at
- * NODUS_W_MAX_BLOCK_TXS, still declared in nodus_witness_v2_env.h,
- * outside this package's whitelist, still takes
- * `nodus_witness_mempool_entry_t **` and converts it to this same view
- * on the stack internally) — this is an ADDITIVE new entry point, not a
- * signature change to anything already shipped.
  *
  * @param cap the admission ceiling; count > cap is CMT-style refused as
  *            -2 (a caller error / malformed input, not a batch verdict

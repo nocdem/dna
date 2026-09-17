@@ -760,9 +760,10 @@ int nodus_cmt_app_prepare_proposal(
     /* ── fee-descending, STABLE (ties keep arrival order) ────────────
      * Insertion sort with a strict `>` test: an element moves past an
      * earlier one only when its fee is strictly greater, so equal fees
-     * stay in request order. This is the legacy mempool's own ordering
-     * discipline (nodus_witness_mempool.c:59-73 inserts before the FIRST
-     * entry with a strictly smaller fee). */
+     * stay in request order. This was the legacy mempool's own ordering
+     * discipline (its insert went before the FIRST entry with a strictly
+     * smaller fee; that module was deleted in R3 W4 — the rule lives
+     * here now). */
     for (k = 1; k < n; k++) {
         size_t cur = order[k];
         size_t j   = k;

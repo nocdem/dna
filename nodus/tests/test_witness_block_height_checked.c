@@ -130,8 +130,7 @@ static void exec_or_die(sqlite3 *db, const char *sql) {
     }
 }
 
-/* nodus_witness_t is multi-MB — heap, never stack (repo discipline;
- * mirrors tests/test_bft_liveness.c:107). */
+/* nodus_witness_t is multi-MB — heap, never stack (repo discipline). */
 static nodus_witness_t *witness_new(const char *schema) {
     nodus_witness_t *w = calloc(1, sizeof(*w));
     CHECK(w != NULL);
@@ -317,23 +316,18 @@ int main(void) {
     /* ── 7. NO DATABASE, chain_id ZERO — GENUINE PRE-GENESIS, SUCCESS ──
      *
      * THIS IS THE CASE THAT KEEPS A FRESH CLUSTER ABLE TO START. A node
-     * running the genesis round has no chain database yet, because
-     * nodus_witness_commit_genesis is what creates it
-     * (nodus_witness_bft.c, nodus_witness_commit_genesis' opening
-     * `if (!w->db)` bootstrap — named by FUNCTION, not by line, because
-     * that file's comment blocks move its line numbers constantly).
-     * If this answered -1, every converted
-     * consumer would refuse at once — is_leader would not lead,
-     * start_round would not open, handle_propose and handle_commit would
-     * reject the genesis proposal — on every node simultaneously, and the
-     * chain would never produce block 0.
+     * running the genesis round has no chain database yet — R3 W4
+     * deleted the legacy genesis-commit path this comment used to name
+     * (nodus_witness_commit_genesis, nodus_witness_bft.c) along with the
+     * whole closed consensus lane; a version-3 chain's genesis path is
+     * nodus_witness_v2_gen_derive_v3 (out of this package's whitelist),
+     * which also has no chain database until it creates one. If this
+     * answered -1, every converted consumer would refuse at once — on
+     * every node simultaneously, and the chain would never produce
+     * block 0.
      *
-     * The rule is the O15L DG-1 matrix, and it is deliberately the SAME
-     * rule nodus_witness_bft.c's load_committee_at_height applies at
-     * :673-683 with the same 32-byte comparison. If one of those two gates
-     * is ever changed without the other, a node takes its height from one
-     * row of the matrix and its committee from the other; this case and
-     * case 8 are the pair that pins them together. */
+     * The rule is the O15L DG-1 matrix. This case and case 8 are the
+     * pair that pins its two rows together. */
     {
         uint64_t out = SENTINEL;
         CHECK_EQ(nodus_witness_block_height_checked(NULL, &out), -1);

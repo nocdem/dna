@@ -16,12 +16,14 @@
 #   function of its config, so a fleet can be born without a genesis
 #   round and without copying a database between machines.*
 #
-#   This is the V2 counterpart of stagef_up.sh, and the two are born
-#   completely differently. stagef_up.sh submits a GENESIS TRANSACTION
-#   to a running cluster and the chain is created by consensus. Here
-#   there is no transaction and no cluster: each node runs an OFFLINE
-#   one-shot before anything is listening, and agreement is CHECKED
-#   rather than negotiated.
+#   R3 W4-D deleted stagef_up.sh (the legacy runner's bring-up script,
+#   along with genesis_protocol.sh and its 23 scenarios) — this script
+#   is this harness's only bring-up path now. Historical contrast, kept
+#   for the reasoning it explains: stagef_up.sh used to submit a GENESIS
+#   TRANSACTION to a running cluster and the chain was created by
+#   consensus. Here there is no transaction and no cluster: each node
+#   runs an OFFLINE one-shot before anything is listening, and agreement
+#   is CHECKED rather than negotiated.
 #
 # WHAT IT REQUIRES
 #   Compile flags: NONE beyond a default `nodus/build`.
@@ -38,7 +40,8 @@
 # WHAT IT LEAVES BEHIND
 #   A full 7-node cluster running under $BASE_DIR, its path in
 #   /tmp/stagef_current, pids in $BASE_DIR/pids.txt — the same contract
-#   stagef_up.sh leaves, so stagef_down.sh tears this down unchanged.
+#   the now-deleted stagef_up.sh left, so stagef_down.sh tears this down
+#   unchanged.
 #   The genesis config used is kept at $BASE_DIR/v2_genesis.conf; it is
 #   the only artifact that would need to travel to another machine. The
 #   chain id and genesis pin are written to $BASE_DIR/v2_chain_id and
@@ -90,9 +93,9 @@ C=${STAGEF_COMMITTEE_SIZE:-7}
 echo "[ok] nodus-server: $STAGEF_NODUS_BIN"
 
 # stagef_env.sh takes BASE_DIR from the pointer file when one exists;
-# a bring-up creates its own, exactly as stagef_up.sh:56 does. Done
-# AFTER sourcing so a stale pointer from a torn-down run cannot be
-# inherited.
+# a bring-up creates its own, the same way the now-deleted stagef_up.sh
+# did. Done AFTER sourcing so a stale pointer from a torn-down run cannot
+# be inherited.
 BASE_DIR="/tmp/stagef-$(date -u +%Y%m%dT%H%M%SZ)"
 export BASE_DIR
 mkdir -p "$BASE_DIR"
@@ -105,9 +108,9 @@ done
 echo "[ok] dir layout created"
 
 # ── 1. identities ───────────────────────────────────────────────────
-# Same short-lived spawn stagef_up.sh uses: the server generates its
-# Dilithium5 identity on first run, we wait for the three files and
-# kill it. Nothing is listening long enough to matter.
+# The same short-lived spawn the now-deleted stagef_up.sh used: the
+# server generates its Dilithium5 identity on first run, we wait for the
+# three files and kill it. Nothing is listening long enough to matter.
 for n in $(seq 1 "$C"); do
     node_dir=$(stagef_node_dir "$n")
     "$STAGEF_NODUS_BIN" -b 127.0.0.1 \
@@ -185,11 +188,15 @@ echo "[ok] pump identity generated ($PUMP_DIR/identity)"
 # only way to test that the committee can grow at all.
 #
 # They live under $BASE_DIR/cand<N>/, NOT under node<N>/, deliberately:
-# running_nodes() enumerates node* DIRECTORIES, so materialising them as
-# nodes here would make every other scenario count 20 participants that
-# hold no chain. The growth scenario starts them itself when it wants
-# them. (That directory-counting trap is exactly what the legacy suite's
-# residue list records about test_bootstrap_join_live.sh's node8.)
+# every Comet-lane script that counts participants iterates a FIXED
+# range (`seq 1 "$STAGEF_COMMITTEE_SIZE"`), never a `node*` directory
+# glob, so this naming choice no longer guards against the specific
+# mechanism it used to (R3 W4-D deleted running_nodes(), the legacy
+# stagef_env.sh function that DID enumerate `node*` directories — it had
+# no surviving caller). The separation is kept anyway as the same
+# discipline: the growth scenario starts these candidates itself when it
+# wants them, and nothing else should ever count them as active
+# committee members by accident of naming.
 CANDIDATES="${STAGEF_V2_CANDIDATES:-0}"
 if [ "$CANDIDATES" -gt 0 ]; then
     for i in $(seq 1 "$CANDIDATES"); do

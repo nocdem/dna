@@ -13,13 +13,9 @@
  */
 
 #include "witness/nodus_witness_peer.h"
-#include "witness/nodus_witness_bft.h"
 #include "witness/nodus_witness_committee.h"   /* Task 59 — committee roster */
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_merkle.h"
-#include "witness/nodus_witness_handlers.h"
-#include "witness/nodus_witness_verify.h"      /* O15D successor admission */
-#include "witness/nodus_witness_v2_produce.h"  /* O15F class 201 helpers */
 #include "protocol/nodus_tier3.h"
 #include "protocol/nodus_tier2.h"
 #include "server/nodus_server.h"
@@ -28,9 +24,7 @@
 #include "protocol/nodus_cbor.h"
 #include "core/nodus_storage.h"
 #include "core/nodus_value.h"
-#include "witness/nodus_witness_sync.h"
 #include "crypto/utils/qgp_log.h"
-#include "dnac/transaction.h"   /* DNAC_TX_HEADER_SIZE (v0.17.1) */
 
 #include <stdio.h>
 #include <string.h>
@@ -65,6 +59,54 @@ static int send_rost_q(nodus_witness_t *w, struct nodus_tcp_conn *conn);
 /* Reconnect timing */
 #define RECONNECT_BASE_SEC   5
 #define RECONNECT_MAX_SHIFT  5      /* Max exponential backoff: 2^5 = 32x */
+
+/* ── Roster ──────────────────────────────────────────────────────── */
+
+/* R3 W4 — moved verbatim from nodus_witness_bft.c (deleted with the closed
+ * consensus lane, bft.c:1300 and :1353). F17 A4 — roster is transport-only
+ * (peer discovery + witness_id<->pubkey map); the committee is the frozen
+ * epoch validator set the cometbft application state reads, not derived
+ * from this roster. */
+
+int nodus_witness_roster_find(const nodus_witness_roster_t *roster,
+                                const uint8_t *witness_id) {
+    if (!roster || !witness_id) return -1;
+
+    for (uint32_t i = 0; i < roster->n_witnesses; i++) {
+        if (memcmp(roster->witnesses[i].witness_id, witness_id,
+                   NODUS_T3_WITNESS_ID_LEN) == 0)
+            return (int)i;
+    }
+    return -1;
+}
+
+int nodus_witness_roster_add(nodus_witness_t *w,
+                               const nodus_witness_roster_entry_t *entry) {
+    if (!w || !entry) return -1;
+
+    if (w->roster.n_witnesses >= NODUS_T3_MAX_WITNESSES)
+        return -1;
+
+    /* Duplicate check */
+    if (nodus_witness_roster_find(&w->roster, entry->witness_id) >= 0)
+        return 0;
+
+    memcpy(&w->roster.witnesses[w->roster.n_witnesses], entry,
+           sizeof(nodus_witness_roster_entry_t));
+    w->roster.n_witnesses++;
+    w->roster.version++;
+
+    /* F17 A4 — roster is now transport-only (peer discovery +
+     * witness_id↔pubkey map). The committee is the frozen epoch
+     * validator set the cometbft application state reads, not derived
+     * from this roster. No my_index tracking needed: self-identity in
+     * consensus paths is resolved via w->server->identity.pk against
+     * the committee pubkey list. */
+
+    fprintf(stderr, "%s: roster add (now %u witnesses, transport)\n",
+            LOG_TAG, w->roster.n_witnesses);
+    return 0;
+}
 
 /* ── Address parsing ─────────────────────────────────────────────── */
 
@@ -489,7 +531,12 @@ int nodus_witness_peer_send_ident(nodus_witness_t *w,
                 (unsigned long long)msg.ident.block_height);
         }
     }
-    msg.ident.current_view = w->current_view;
+    /* R3 W4 — `w->current_view` no longer exists: the legacy view counter
+     * was deleted with the closed consensus lane. The wire field stays
+     * (byte-identical IDENT frame) and is written 0; the receive side
+     * already never acts on it (see nodus_witness_peer_handle_ident's own
+     * comment below). */
+    msg.ident.current_view = 0;
     msg.ident.roster_size = w->roster.n_witnesses;
     msg.ident.ts_local = (uint64_t)time(NULL);  /* Phase 10 / Task 10.4 */
     msg.ident.has_block_height = true;
@@ -552,30 +599,16 @@ int nodus_witness_peer_send_ident(nodus_witness_t *w,
  */
 #define WITNESS_CHAIN_QUORUM_WINDOW_SEC  300
 
-/* Non-static so test_v2_restart_gate.c can pin the DG-2 matrix directly.
- * Same rationale as the de-staticed BFT primitives (see the header block
- * of nodus_witness_bft_internal.h): static + test linkage do not compose
- * under CMake's normal flow, and the protection is "no production-facing
- * header references it" rather than the qualifier.
- *
- * O15L Faz 5 — the canonical prototype now lives in
- * nodus_witness_bft_internal.h (alongside verify_chain_id, its twin in
- * nodus_witness_bft.c: the two implement the same (chain_id, db) matrix
- * and must move together), and test_v2_restart_gate.c includes that
- * header rather than repeating the declaration. The protection is
- * ASYMMETRIC: this translation unit does NOT include the header. That
- * header's #error gate demands NODUS_WITNESS_INTERNAL_API, which the
- * build system attaches to test executables via
- * target_compile_definitions and to no library target — the single
- * library TU that has the macro, nodus_witness_fault.c, #defines it for
- * itself under QGP_FAULT_INJECT, so reaching in is never silent — and
- * whose name CMakeLists.txt turns into a FATAL_ERROR if it is set as a
- * CMake variable in a Release configure.
- * The same avoidance is why nodus_witness_bft.c forward-declares
- * its Phase 6 commit wrappers by hand. Consequence: changing this
- * signature breaks the TEST's compile — the intended alarm — but the
- * definition and the header are still held in agreement by review, not
- * by the compiler. */
+/* R3 W4 — non-static so a test can still pin the DG-2 matrix directly, but
+ * this function's former shared declaration site (nodus_witness_bft_internal.h,
+ * alongside its twin verify_chain_id) is DELETED with the rest of the closed
+ * consensus lane; verify_chain_id was bft.c's own and went with it.
+ * QUESTION for the CONVERT resolution (test_v2_restart_gate.c, package
+ * W4-P): that test currently includes nodus_witness_bft_internal.h for this
+ * prototype under NODUS_WITNESS_INTERNAL_API — it needs a new declaration
+ * site (this file's own header, gated the same way, is the natural one) once
+ * its surviving cases are decided. Not resolved here: this package does not
+ * touch test files. */
 void witness_chain_quorum_observe(nodus_witness_t *w,
                                     const uint8_t *peer_id,
                                     const uint8_t *peer_chain_id) {
@@ -871,28 +904,17 @@ int nodus_witness_peer_handle_ident(nodus_witness_t *w,
             memcpy(w->peers[pi].remote_checksum, ident->state_root,
                    NODUS_KEY_BYTES);
 
-            /* `ident->current_view` is received and DELIBERATELY not
-             * acted on: it stays on the wire as a gossip / observability
-             * field only. IDENT is EXEMPT from the wsig verify
-             * (nodus_witness.c:2011), and that dispatcher's own comment
-             * says an IDENT's version claim "is unauthenticated and must
-             * not be acted on" (nodus_witness.c:2055-2056) — adopting this
-             * number let ONE unauthenticated peer move our leader
-             * election AND the bytes we sign. The deleted block's stated
-             * premise was FALSE besides: it claimed "current_view is not
-             * persisted — resets to 0 on restart", but H-5 persists it
-             * (nodus_witness_db.c:2130 save, :2176 load), so that
-             * restart argument has not held since H-5. MODEL: CometBFT /
-             * Tendermint writes this same peer announcement to
-             * PeerRoundState and never to `cs.Round`. ACCEPTED COST,
-             * MEASURED: a wiped-DB node stays at view 0. P2 cannot help
-             * — BOTH its arm sites (bft.c:7784, :8230) need a COMPLETED
-             * view change. Recovery is P3: TWO round_timeout windows. */
+            /* R3 W4 — `ident->current_view` is received and not acted on:
+             * it stays on the wire as a gossip / observability field only
+             * (this node's own send side writes it 0, see
+             * nodus_witness_peer_send_ident above). There is no local
+             * `w->current_view` left to adopt it into — the legacy view
+             * counter and the round machinery that read it were deleted
+             * with the closed consensus lane. IDENT is also EXEMPT from
+             * the wsig verify (nodus_witness.c dispatch_t3), so its claims
+             * are unauthenticated regardless. */
         }
     }
-
-    /* Trigger sync check — peer may be ahead of us */
-    nodus_witness_sync_check(w);
 
     /* Roster gossip: request peer's roster if their roster size differs.
      * This is the root cause fix for roster inconsistency after restart:
@@ -924,444 +946,14 @@ int nodus_witness_peer_handle_ident(nodus_witness_t *w,
     return 0;
 }
 
-/* ── Forward request (non-leader → leader) ───────────────────────── */
-
-int nodus_witness_peer_handle_fwd_req(nodus_witness_t *w,
-                                      const nodus_t3_msg_t *msg) {
-    if (!w || !msg) return -1;
-
-    const nodus_t3_fwd_req_t *fwd = &msg->fwd_req;
-
-    /* F17 A2 — transport-layer roster swap (no BFT config copy). */
-    if (w->pending_roster_ready &&
-        w->pending_roster.n_witnesses != w->roster.n_witnesses) {
-        memcpy(&w->roster, &w->pending_roster, sizeof(w->roster));
-        w->pending_roster_ready = false;
-    }
-
-    /* ── O15K §3.2 — WHO MAY POOL A FORWARDED ENTRY ──────────────────
-     *
-     * There is no longer a leadership test here, and its absence is the
-     * edit without which the rest of this season is a no-op.
-     *
-     * A forwarded transaction goes to the leader and NOWHERE ELSE, so
-     * when the leader is dead the demand exists on exactly one node —
-     * the client's submission target — and one is far below the f+1
-     * threshold at which peers join a view change (bft_vc_join_threshold
-     * in nodus_witness_bft.c, floor 2). A legacy chain therefore stalls
-     * indefinitely: the deadman fires, the demand rebroadcast goes out,
-     * every legacy recipient refuses it AT THIS DOOR, f+1 never
-     * assembles, and the elected leader stays the dead node because the
-     * view only advances on quorum. Pooling on non-leaders is what puts
-     * the work where the NEXT leader can find it.
-     *
-     * ── WHAT THIS BLOCK USED TO ARGUE, AND WHY IT NO LONGER HOLDS ──
-     *
-     * O15I opened this gate to the SUCCESSOR lane only and gave two
-     * reasons, quoted so the change of contract is visible rather than
-     * quietly deleted:
-     *
-     *   (1) "A LEGACY forward's handling at this site is STRUCTURAL only
-     *       … so pooling one on a non-leader would let any roster member
-     *       push unverified bytes into every peer's mempool — a trust
-     *       boundary this change did not analyse and must not widen."
-     *
-     *   (2) "Legacy therefore keeps the original refusal, byte-identical,
-     *       and recovers through the rotation itself: once P3(a) elects a
-     *       live leader, the ordinary client retry reaches it."
-     *
-     * (1) was TRUE OF THE CODE AS IT THEN STOOD, and it is ANSWERED here
-     * rather than ignored. What made legacy pooling unsafe was that the
-     * legacy intake verified nothing; §3.2 adds exactly that verification
-     * at this door, ahead of mempool_add, for every recipient. The trust
-     * boundary is no longer held by the refusal — it is held by the
-     * verify, which is a stronger place to hold it, because it also
-     * covers the LEADER, whose intake this argument never protected.
-     *
-     * (2) WAS NEVER TRUE, and it is the assumption this season exists to
-     * correct. "Recovers through the rotation" presumes a rotation
-     * happens. A forwarded transaction lives on exactly one node, so that
-     * node's view change recruits nobody — bft_vc_join_threshold floors
-     * the join at 2 — and it escalates alone while the client's retry
-     * lands on the same dead leader, forever: a halted chain has a frozen
-     * tip and therefore a frozen epoch, and the view advances only on
-     * quorum. Nothing in the legacy lane was ever going to elect the live
-     * leader that sentence waits for.
-     *
-     * THE VERDICT ON A FORWARD IS ADMISSION'S, NOT LEADERSHIP'S — and
-     * that also closes V-1, which was live on the devnet: the legacy
-     * LEADER's own intake was unverified, so one remote client, with no
-     * roster membership at all, could plant a badly-signed transaction
-     * in the leader's mempool and every follower would then reject the
-     * whole proposed batch it appeared in. One mempool, ONE intake gate.
-     *
-     * A NON-LEADER STILL NEVER STARTS A ROUND. The one branch below that
-     * does — the batch-of-1 genesis path — is left exactly as it was
-     * found: a non-leader that reaches it is refused inside
-     * nodus_witness_bft_start_round_from_entries ("batch start_round but
-     * not leader"), which is where that rule has always lived and where
-     * it is enforced for every other caller too.
-     *
-     * Mempool content is per-node INPUT, not consensus state: the block
-     * is still chosen by ONE leader and agreed by PREVOTE/PRECOMMIT with
-     * an independent state_root recompute, so two nodes holding
-     * different pools cannot diverge state. The existing guards are
-     * untouched — NODUS_W_MAX_MEMPOOL bounds the pool, mempool_add
-     * rejects duplicates by tx_hash, and fee ordering is unchanged. */
-
-    /* O15H D8 — family-aware (see nodus_t3_tx_size_limit). A non-leader
-     * forwards the client's transaction here; refusing a V2 envelope
-     * against the legacy ceiling would break governance on exactly the
-     * path a client that reached a follower has to take. */
-    if (!fwd->tx_data || fwd->tx_len == 0 ||
-        fwd->tx_len > nodus_t3_tx_size_limit(fwd->tx_data, fwd->tx_len)) {
-        fprintf(stderr, "%s: w_fwd_req invalid tx_data\n", LOG_TAG);
-        return -1;
-    }
-
-    fprintf(stderr, "%s: w_fwd_req (tx_len=%u, fee=%lu)\n",
-            LOG_TAG, fwd->tx_len, (unsigned long)fwd->fee);
-
-    /* Extract nullifiers from tx_data for mempool entry.
-     * DNAC v0.17.1 serialization:
-     *   [version(1)] [type(1)] [timestamp(8)] [tx_hash(64)] [committed_fee(8)]
-     *   [input_count(1)] [inputs...]
-     * Each input: [nullifier(64)] [amount(8)] [token_id(64)]. */
-    const size_t input_count_offset = DNAC_TX_HEADER_SIZE;
-
-    if (fwd->tx_len < 2) return -1;
-    uint8_t tx_type = fwd->tx_data[1];
-    uint8_t nullifiers[NODUS_T3_MAX_TX_INPUTS][NODUS_T3_NULLIFIER_LEN];
-    uint8_t nullifier_count = 0;
-
-    /* ── ALREADY OURS? (O15K V-5) ────────────────────────────────────
-     * Asked BEFORE either verify lane, on the same tx_hash key
-     * nodus_witness_mempool_add dedups on, and mirroring the pre-check
-     * nodus_witness_pool_local_demand already runs on local demand
-     * (nodus_witness_handlers.c).
-     *
-     * Without it the §3.3 demand rebroadcast makes every recipient pay a
-     * full per-signer ML-DSA-87 verify for every duplicate it is sent —
-     * once per rebroadcasting peer, once per window, on entries it
-     * already holds. That cost is V-5 and it is charged on the SUCCESSOR
-     * path TODAY: the verify below has no pre-check of its own, and
-     * mempool_add's duplicate rejection only answers AFTER the whole
-     * admission lane has run (nodus_witness_mempool.c). The two lanes
-     * ask the same question, so they share one check.
-     *
-     * `1`, not a refusal: the entry IS pooled, which is what the sender
-     * wanted, and it is the code pool_local_demand answers a retry with.
-     *
-     * The read is of this node's own mempool and so is node-LOCAL — the
-     * same class as mempool_add's dedup. It can only short-circuit an
-     * entry this node already holds; it can never admit one, and no
-     * consensus output depends on it.
-     *
-     * ⚠ THE GENESIS BRANCH SITS BEHIND THIS CHECK, deliberately, rather
-     * than duplicating the check into each lane: a forwarded genesis
-     * whose claimed tx_hash matched a pooled entry would answer here
-     * instead of starting its batch-of-1 round. That needs a SHA3-512
-     * collision to reach — a genesis entry never enters the mempool (it
-     * goes to nodus_witness_bft_start_round_from_entries), and every
-     * pooled legacy entry's tx_hash is bound to its own bytes by the
-     * verify's Check 2. */
-    for (int i = 0; i < w->mempool.count; i++) {
-        const nodus_witness_mempool_entry_t *held = w->mempool.entries[i];
-        if (held && memcmp(held->tx_hash, fwd->tx_hash,
-                           NODUS_T3_TX_HASH_LEN) == 0)
-            return 1;
-    }
-
-    /* O15D/O15F — SUCCESSOR chain: forwarded submissions are V2 ENVELOPE
-     * (200) or CLAIM (201) entries, BYTE-classified by the wire-family
-     * marker; no legacy genesis lane, no legacy nullifier layout. Verified
-     * through the ONE admission lane before the leader's mempool accepts
-     * them — an invalid forward must die here, not take a whole proposed
-     * block down with it. */
-    if (w->v2_successor) {
-        char v2_reject[256] = {0};
-        tx_type = nodus_witness_v2_classify_entry(fwd->tx_data, fwd->tx_len);
-        if (nodus_witness_verify_transaction(w, fwd->tx_data, fwd->tx_len,
-                fwd->tx_hash, tx_type, NULL, 0, NULL, NULL, fwd->fee,
-                NODUS_WITNESS_VERIFY_ADMISSION,
-                v2_reject, sizeof(v2_reject)) != 0) {
-            fprintf(stderr, "%s: forwarded V2 entry rejected: %s\n",
-                    LOG_TAG, v2_reject);
-            return -1;
-        }
-    }
-
-    if (!w->v2_successor && tx_type != NODUS_W_TX_GENESIS) {
-        if (fwd->tx_len < input_count_offset + 1) return -1;
-        nullifier_count = fwd->tx_data[input_count_offset];
-        if (nullifier_count > NODUS_T3_MAX_TX_INPUTS) return -1;
-
-        size_t offset = input_count_offset + 1;
-        for (int i = 0; i < nullifier_count; i++) {
-            if (offset + NODUS_T3_NULLIFIER_LEN > fwd->tx_len)
-                return -1;
-            memcpy(nullifiers[i], fwd->tx_data + offset,
-                   NODUS_T3_NULLIFIER_LEN);
-            offset += NODUS_T3_NULLIFIER_LEN + 8 + 64; /* nullifier + amount + token_id */
-        }
-    }
-
-    /* ── O15K §3.4 — V-8: a legacy forward that declares NO inputs ───
-     *
-     * The walk above reads `nullifier_count = tx_data[input_count_offset]`
-     * straight off the wire and loops. A byte of 0 skips the loop, and
-     * until this guard nothing refused it: the entry was pooled with
-     * nullifier_count == 0, and such an entry is PERMANENTLY unremovable
-     * on this node. The P3(c) reaper's nullifier walk has nothing to
-     * iterate; nodus_witness_v2_entry_verdict answers UNJUDGED for any
-     * legacy chain, so the second half keeps it too; mempool_pop_batch is
-     * leader-only, and remove_by_conn needs a client_conn a forwarded
-     * entry does not have. bft_p3_live_demand therefore reads it as live
-     * demand FOREVER and the node initiates a view change every
-     * round_timeout_ms against a perfectly healthy leader, until the
-     * process restarts — the O15I V1 churn re-entering by the legacy
-     * door, and live on the devnet today.
-     *
-     * The verify below refuses the same shape at its Check 4 ("no inputs
-     * for non-genesis TX", nodus_witness_verify.c), so this guard is not
-     * the only thing standing between V-8 and the pool. It is kept, and
-     * kept FIRST, because this is the door where the shape is actually
-     * REACHABLE: the invariant is then stated where it is enforced
-     * instead of being inferred from another file's check order.
-     *
-     * It belongs to the DOOR, not to one role. Putting it inside the
-     * leader branch would leave the path §3.2 just opened admitting
-     * exactly the shape this closes. */
-    if (!w->v2_successor && tx_type != NODUS_W_TX_GENESIS &&
-        nullifier_count == 0) {
-        fprintf(stderr, "%s: w_fwd_req refused — legacy entry declares no "
-                "inputs (wire input_count = 0)\n", LOG_TAG);
-        return -1;
-    }
-
-    /* ── O15K §3.2/§3.3a — the LEGACY forward's ADMISSION verify ─────
-     *
-     * The gate this function used to open on leadership alone now opens
-     * on this call, and it runs for ALL recipients — the leader included.
-     * The leader's own legacy intake was never verified (V-1), so this is
-     * not merely the price of opening the non-leader path: it is the fix
-     * for a defect that let one remote client stall legacy block
-     * production with a single badly-signed transaction.
-     *
-     * PLACEMENT IS THE WHOLE RISK, and there are two halves to it.
-     *
-     * AFTER the structural walk, and passed ITS nullifiers. The legacy
-     * lane USES this parameter: Check 4 refuses outright on `!nullifiers
-     * || nullifier_count == 0` and then looks each one up in the UTXO
-     * set for the balance, ownership and Rule-D lock tests, and Check 6
-     * walks the same array for the committed double-spend test
-     * (nodus_witness_verify.c). Copying the successor call's `NULL, 0`
-     * arguments — correct THERE, because verify_v2_successor_tx casts
-     * both to void — would make legacy admission refuse EVERYTHING and
-     * turn this whole change into a silent no-op that still returns -1
-     * everywhere a refusal is expected.
-     *
-     * BEFORE mempool_add on every path that reaches it, so the opened
-     * door can never push unverified bytes into a peer's mempool. The
-     * genesis branch below is deliberately NOT covered: it returns before
-     * mempool_add, it pools nothing, and a non-leader reaching it is
-     * refused inside nodus_witness_bft_start_round_from_entries. Its
-     * bytes are verified on the ordinary propose/commit paths like any
-     * other block content.
-     *
-     * VALIDATION, NOT ADMISSION (§3.3a). The two modes differ on the
-     * legacy lane by exactly one thing: the Check-5 fee SURGE, which
-     * scales the minimum fee with this node's own mempool.count. §3.3's
-     * dissemination deliberately fills every node's pool with the same
-     * demand, so at NODUS_W_FEE_SURGE_STEP pooled entries the ADMISSION
-     * floor doubles and new demand at the base fee is refused
-     * cluster-wide — the recovery mechanism throttling itself at exactly
-     * the moment it is needed. A forwarded entry is the cluster
-     * REPLICATING known demand, not a client choosing a queue, so the
-     * node-local surcharge asks the wrong question of it. Nothing else
-     * is relaxed: Check 0's deterministic fee floor, the in-TX duplicate
-     * nullifiers, tx_hash integrity, every signer's ML-DSA-87 signature,
-     * balance, UTXO ownership, the Rule-D lock and the committed
-     * double-spend all still run, in both modes.
-     *
-     * The SUCCESSOR branch above stays on ADMISSION on purpose: its
-     * class-201 claim path carries a pending-mempool dedup that runs in
-     * ADMISSION mode only (nodus_witness_verify.c), and switching that
-     * branch to VALIDATION would silently drop the dedup. This exemption
-     * is legacy-scoped.
-     *
-     * Every non-zero verdict collapses to -1, including the -2 the
-     * double-spend check returns: a forwarder is not a client and gets no
-     * error taxonomy back — the refusal is the whole answer, and it is
-     * the same code the successor reject above gives. */
-    if (!w->v2_successor && tx_type != NODUS_W_TX_GENESIS) {
-        char reject_reason[256] = {0};
-        if (nodus_witness_verify_transaction(w, fwd->tx_data, fwd->tx_len,
-                fwd->tx_hash, tx_type,
-                (const uint8_t *)nullifiers, nullifier_count,
-                fwd->client_pubkey, fwd->client_sig, fwd->fee,
-                NODUS_WITNESS_VERIFY_VALIDATION,
-                reject_reason, sizeof(reject_reason)) != 0) {
-            fprintf(stderr, "%s: forwarded legacy entry rejected: %s\n",
-                    LOG_TAG, reject_reason);
-            return -1;
-        }
-    }
-
-    /* Phase 7 / Task 7.5 — forwarded genesis goes through batch-of-1
-     * BFT round. Phase 6 commit_genesis dispatch (Task 7.6) handles
-     * chain DB bootstrap at commit time. */
-    if (tx_type == NODUS_W_TX_GENESIS) {
-        fprintf(stderr, "%s: forwarded genesis TX — batch-of-1 BFT path\n",
-                LOG_TAG);
-
-        nodus_witness_mempool_entry_t *e = calloc(1, sizeof(*e));
-        if (!e) return -1;
-        memcpy(e->tx_hash, fwd->tx_hash, NODUS_T3_TX_HASH_LEN);
-        e->tx_type = tx_type;
-        e->nullifier_count = nullifier_count;
-        for (int i = 0; i < nullifier_count; i++)
-            memcpy(e->nullifiers[i], nullifiers[i], NODUS_T3_NULLIFIER_LEN);
-        e->tx_data = malloc(fwd->tx_len);
-        if (!e->tx_data) { free(e); return -1; }
-        memcpy(e->tx_data, fwd->tx_data, fwd->tx_len);
-        e->tx_len = fwd->tx_len;
-        if (fwd->client_pubkey)
-            memcpy(e->client_pubkey, fwd->client_pubkey, NODUS_PK_BYTES);
-        if (fwd->client_sig)
-            memcpy(e->client_sig, fwd->client_sig, NODUS_SIG_BYTES);
-        e->fee = fwd->fee;
-        e->client_conn = NULL;
-        e->is_forwarded = true;
-        memcpy(e->forwarder_id, fwd->forwarder_id, NODUS_T3_WITNESS_ID_LEN);
-
-        nodus_witness_mempool_entry_t *entries[1] = { e };
-        int rc = nodus_witness_bft_start_round_from_entries(w, entries, 1);
-        if (rc != 0) {
-            nodus_witness_mempool_entry_free(e);
-        }
-        return rc;
-    }
-
-    /* Add forwarded TX to mempool instead of immediate BFT round */
-    nodus_witness_mempool_entry_t *entry = calloc(1, sizeof(*entry));
-    if (!entry) return -1;
-
-    memcpy(entry->tx_hash, fwd->tx_hash, NODUS_T3_TX_HASH_LEN);
-    entry->nullifier_count = nullifier_count;
-    for (int i = 0; i < nullifier_count; i++)
-        memcpy(entry->nullifiers[i], nullifiers[i], NODUS_T3_NULLIFIER_LEN);
-    entry->tx_type = tx_type;
-    entry->tx_data = malloc(fwd->tx_len);
-    if (!entry->tx_data) { free(entry); return -1; }
-    memcpy(entry->tx_data, fwd->tx_data, fwd->tx_len);
-    entry->tx_len = fwd->tx_len;
-    /* O15F Task 3 — record a forwarded CLAIM's committed nullifier so batch
-     * selection dedups it (verify above already admitted it; a re-derive
-     * failure is fail-closed — never enqueue a 201 entry with count 0). */
-    if (w->v2_successor && tx_type == NODUS_W_TX_V2_CLAIM) {
-        if (nodus_witness_v2_claim_entry_nullifier(w, entry->tx_data,
-                entry->tx_len, entry->nullifiers[0]) != 0) {
-            nodus_witness_mempool_entry_free(entry);
-            return -1;
-        }
-        entry->nullifier_count = 1;
-    }
-    if (fwd->client_pubkey)
-        memcpy(entry->client_pubkey, fwd->client_pubkey, NODUS_PK_BYTES);
-    if (fwd->client_sig)
-        memcpy(entry->client_sig, fwd->client_sig, NODUS_SIG_BYTES);
-    entry->fee = fwd->fee;
-    entry->client_conn = NULL;  /* No direct client conn for forwarded TX */
-    entry->is_forwarded = true;
-    memcpy(entry->forwarder_id, fwd->forwarder_id, NODUS_T3_WITNESS_ID_LEN);
-
-    int rc = nodus_witness_mempool_add(&w->mempool, entry);
-    if (rc != 0) {
-        fprintf(stderr, "%s: fwd_req mempool add failed: %d\n", LOG_TAG, rc);
-        nodus_witness_mempool_entry_free(entry);
-    }
-
-    return rc;
-}
-
-/* ── Forward response (leader → forwarder) ───────────────────────── */
-
-int nodus_witness_peer_handle_fwd_rsp(nodus_witness_t *w,
-                                      const nodus_t3_msg_t *msg) {
-    if (!w || !msg) return -1;
-
-    const nodus_t3_fwd_rsp_t *rsp = &msg->fwd_rsp;
-
-    fprintf(stderr, "%s: w_fwd_rsp status=%u (%u witness sigs)\n",
-            LOG_TAG, rsp->status, rsp->witness_count);
-
-    /* Match pending forward by tx_hash.
-     *
-     * O15C-D — the same tx_hash can occupy more than one slot: nothing
-     * on the forwarder dedups a client that submits the identical spend
-     * twice (the leader's mempool dedups, but only after the forward).
-     * One w_fwd_rsp is the terminal answer for ALL of them, so resolve
-     * every match; stopping at the first left the rest to expire on the
-     * 30 s timeout. */
-    int matched = 0;
-
-    for (int pf_idx = 0; pf_idx < NODUS_W_MAX_PENDING_FWD; pf_idx++) {
-        if (!w->pending_forwards[pf_idx].active) continue;
-        if (memcmp(w->pending_forwards[pf_idx].tx_hash, rsp->tx_hash,
-                   NODUS_T3_TX_HASH_LEN) != 0) continue;
-
-        struct nodus_tcp_conn *client_conn =
-            w->pending_forwards[pf_idx].client_conn;
-        uint32_t client_txn_id = w->pending_forwards[pf_idx].client_txn_id;
-
-        /* Clear pending forward slot */
-        w->pending_forwards[pf_idx].active = false;
-        w->pending_forwards[pf_idx].client_conn = NULL;
-        if (w->pending_forward_count > 0) w->pending_forward_count--;
-        matched++;
-
-        if (!client_conn) {
-            fprintf(stderr, "%s: w_fwd_rsp client conn gone (slot %d)\n",
-                    LOG_TAG, pf_idx);
-            continue;
-        }
-
-        /* Send spend result to original client. Phase 13 / Task 13.2 —
-         * the fwd_rsp wire now carries block_height / tx_index /
-         * chain_id from the leader, so the forwarder can pass the full
-         * receipt through to the client instead of hardcoding 0/0. */
-        if (rsp->status == 0) {
-            nodus_witness_mempool_entry_t stack_entry;
-            memset(&stack_entry, 0, sizeof(stack_entry));
-            memcpy(stack_entry.tx_hash, rsp->tx_hash, NODUS_T3_TX_HASH_LEN);
-            stack_entry.client_conn = client_conn;
-            stack_entry.client_txn_id = client_txn_id;
-            stack_entry.committed_block_height = rsp->block_height;
-            stack_entry.committed_tx_index = rsp->tx_index;
-            nodus_witness_send_spend_result(w, &stack_entry, 0, NULL);
-        } else {
-            /* Send error response */
-            uint8_t err_buf[512];
-            size_t err_len = 0;
-            nodus_t2_error(client_txn_id, NODUS_ERR_PROTOCOL_ERROR,
-                            "consensus rejected",
-                            err_buf, sizeof(err_buf), &err_len);
-            if (err_len > 0)
-                nodus_tcp_send(client_conn, err_buf, err_len);
-        }
-
-        fprintf(stderr, "%s: forwarded spend result to client (txn=%u)\n",
-                LOG_TAG, client_txn_id);
-    }
-
-    if (matched == 0) {
-        fprintf(stderr, "%s: w_fwd_rsp no matching pending forward\n",
-                LOG_TAG);
-        return -1;
-    }
-    return 0;
-}
+/* R3 W4 — nodus_witness_peer_handle_fwd_req (the FWD_REQ intake, O15K
+ * pool-then-forward, the legacy admission/validation verify calls) and
+ * nodus_witness_peer_handle_fwd_rsp (the FWD_RSP receipt path) are DELETED
+ * with the closed consensus lane: verbs FWD_REQ/FWD_RSP are dropped by the
+ * dispatcher (D-16 rev 5) and never reach a handler; their only callers —
+ * nodus_witness_bft_start_round_from_entries, nodus_witness_send_spend_result,
+ * the legacy pending_forwards table, the legacy mempool — are deleted
+ * with them. */
 
 /* ── Send roster query ──────────────────────────────────────────── */
 
@@ -1660,9 +1252,10 @@ int nodus_witness_peer_init(nodus_witness_t *w) {
      * At init time, witness TCP connections may not be established yet.
      * Full roster will be built on first epoch tick (60s).
      *
-     * F17 A2/A4 — roster is transport-only; BFT config is refreshed
-     * from the chain committee at round-start, and self-identity
-     * queries resolve through the committee pubkey lookup. */
+     * F17 A2/A4 — roster is transport-only; the committee is the frozen
+     * epoch validator set the cometbft application state reads, and
+     * self-identity queries resolve through the committee pubkey
+     * lookup. */
     nodus_witness_rebuild_roster_from_peers(w, &w->roster);
 
     /* Bootstrap: connect to all seed nodes on witness TCP port (4004).
@@ -1906,59 +1499,6 @@ void nodus_witness_peer_conn_closed(nodus_witness_t *w,
             w->peers[i].identified = false;
         }
     }
-
-    /* Also clear any BFT round state referencing this conn */
-    if (w->round_state.client_conn == conn)
-        w->round_state.client_conn = NULL;
-
-    /* H-15: Clear pending forwards referencing this connection */
-    for (int pfi = 0; pfi < NODUS_W_MAX_PENDING_FWD; pfi++) {
-        if (w->pending_forwards[pfi].active &&
-            w->pending_forwards[pfi].client_conn == conn) {
-            w->pending_forwards[pfi].active = false;
-            w->pending_forwards[pfi].client_conn = NULL;
-            if (w->pending_forward_count > 0) w->pending_forward_count--;
-        }
-    }
-
-    /* Remove mempool entries for this connection */
-    nodus_witness_mempool_remove_by_conn(&w->mempool, conn);
-
-    /* Clear batch_entries refs to this conn (active round) */
-    for (int bi = 0; bi < w->round_state.batch_count; bi++) {
-        if (w->round_state.batch_entries[bi] &&
-            w->round_state.batch_entries[bi]->client_conn == conn) {
-            w->round_state.batch_entries[bi]->client_conn = NULL;
-        }
-    }
-}
-
-/* ── Phase 13 / Task 59 — Committee-snapshot BFT roster ──────────── */
-
-/**
- * Return the BFT peer set (committee) authoritative for a given block
- * height. Thin pass-through over the Task 53 committee cache.
- *
- * Invariants:
- *   - For every block height within a single epoch, all 7 witnesses
- *     derive bit-identical committees from the same committed DB state
- *     (design §3.6: post-commit lookback + state_seed tiebreak).
- *   - The underlying cache is keyed on e_start; the transition to a
- *     new epoch is observed transparently on the first query whose
- *     block_height crosses the boundary.
- *   - Mid-epoch STAKE / DELEGATE / UNSTAKE mutate the validator table
- *     but NOT the frozen committee membership — the cache intentionally
- *     ignores them. BFT quorum on block N therefore never races a
- *     mid-block stake change.
- */
-int nodus_witness_peer_current_set(nodus_witness_t *w,
-                                     uint64_t block_height,
-                                     nodus_committee_member_t *out,
-                                     int max_entries,
-                                     int *count_out) {
-    if (!w || !out || !count_out || max_entries <= 0) return -1;
-    return nodus_committee_get_for_block(w, block_height, out,
-                                           max_entries, count_out);
 }
 
 /* ── Close ───────────────────────────────────────────────────────── */

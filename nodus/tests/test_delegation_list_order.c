@@ -50,8 +50,10 @@
  * WHAT IT REQUIRES.
  *   Compile flags: NONE beyond a default nodus build. Registered through
  *   register_witness_test, which supplies NODUS_WITNESS_INTERNAL_API (the
- *   file defines it too, matching test_delegator_cap.c). No
- *   QGP_FAULT_INJECT, no O15H_DIAG, no NODUS_V2_* gate macro. Nothing
+ *   file defines it too, matching test_v2_native.c, whose
+ *   test_delegator_cap_v2 is test_delegator_cap.c's version-3
+ *   successor — that file is deleted with the closed consensus lane).
+ *   No QGP_FAULT_INJECT, no O15H_DIAG, no NODUS_V2_* gate macro. Nothing
  *   here reads DNAC_EPOCH_LENGTH or any other tunable constant, so the
  *   assertions hold identically at production and harness parameters.
  *   Environment: NONE. No STAGEF_*, no NODUS_FAULT_*, no network, no node
@@ -98,8 +100,10 @@
  *   - IT PINS THE QUERY, NOT THE SETTLEMENT. Nothing here runs
  *     nodus_witness_epoch_snapshot_apply or pays anyone. That the
  *     snapshot consumes this order correctly is argued in that file's
- *     docblock and covered by test_delegator_cap L6/L7; this file proves
- *     only that the order exists and is total.
+ *     docblock and covered by test_delegator_cap_v2 in test_v2_native.c
+ *     (test_delegator_cap.c's version-3 successor — that file is
+ *     deleted with the closed consensus lane); this file proves only
+ *     that the order exists and is total.
  *   - THE SCHEMA IS A COPY. The DDL below is copied from the production
  *     WITNESS_DB_SCHEMA (nodus_witness.c:189-199), INCLUDING BOTH
  *     INDEXES, because the unfixed scan order is index-scan order and a
@@ -193,7 +197,9 @@ static nodus_witness_t *fixture(void) {
 
 /* A bare CRUD fixture never ran nodus_witness_open, so it must not be
  * handed to nodus_witness_close: the database handle is the only resource
- * it owns. Same teardown shape as test_delegator_cap.c. */
+ * it owns. Same teardown shape as test_delegator_cap.c (deleted with
+ * the closed consensus lane; its version-3 successor is
+ * test_delegator_cap_v2 in test_v2_native.c). */
 static void fixture_free(nodus_witness_t *w) {
     if (!w) return;
     if (w->db) sqlite3_close(w->db);
@@ -208,7 +214,8 @@ static void fixture_free(nodus_witness_t *w) {
  * nothing. The expectations below are still derived by SORTING these
  * keys rather than by assuming that index order is byte order, so this
  * layout is a readability convenience and not a load-bearing assumption.
- * Shape copied from synth_pubkey in test_delegator_cap.c. */
+ * Shape copied from synth_pubkey in test_delegator_cap.c (deleted with
+ * the closed consensus lane). */
 static void synth_pubkey(uint8_t out[DNAC_PUBKEY_SIZE], uint32_t idx) {
     memset(out, 0, DNAC_PUBKEY_SIZE);
     out[0] = 0xD0;

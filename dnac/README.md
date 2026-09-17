@@ -56,7 +56,7 @@ The chain is implemented in three layers of the monorepo:
                              ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  WITNESS CLUSTER (nodus-server, embedded witness)           │
-│  chain-derived committee · PBFT rounds on TCP 4004          │
+│  epoch validator set · cometbft consensus on TCP 4004       │
 │  authoritative UTXO set + block storage                     │
 └─────────────────────────────────────────────────────────────┘
 ```

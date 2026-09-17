@@ -20,7 +20,6 @@
 #define NODUS_WITNESS_HANDLERS_H
 
 #include "witness/nodus_witness.h"
-#include "witness/nodus_witness_mempool.h"
 
 #include "dnac/dnac.h"       /* DNAC_PUBKEY_SIZE */
 
@@ -45,30 +44,6 @@ void nodus_witness_handle_dnac(nodus_witness_t *w,
                                 struct nodus_tcp_conn *conn,
                                 const uint8_t *payload, size_t len,
                                 const char *method, uint32_t txn_id);
-
-/**
- * Phase 12 / Task 12.5 — per-entry spend_result sender.
- *
- * Sends the witness attestation receipt for a single TX after the
- * commit path lands the block. The entry MUST have been populated by
- * commit_batch (committed_block_height + committed_tx_index set,
- * client_conn / client_txn_id from when the TX was admitted).
- *
- * The signed preimage carries an 8-byte 'spndrslt' domain tag,
- * tx_hash, witness_id, SHA3-512(witness_pubkey), chain_id, status,
- * timestamp, block_height, and tx_index — 221 bytes, fixed layout —
- * fixing the legacy TOCTOU bug where time(NULL) was called twice and
- * the wpk was wire-only (not bound by the signature).
- *
- * @param w         Witness context
- * @param entry     Mempool entry that just committed
- * @param status    0=approved, 1=rejected, 2=error
- * @param error_msg Optional error message (NULL if approved)
- */
-void nodus_witness_send_spend_result(nodus_witness_t *w,
-                                      nodus_witness_mempool_entry_t *entry,
-                                      int status,
-                                      const char *error_msg);
 
 #ifdef __cplusplus
 }

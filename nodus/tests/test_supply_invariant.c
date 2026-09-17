@@ -7,16 +7,17 @@
  * machine and asserts the conservation invariant at every step.
  *
  * Why simplified state machine:
- *   apply_tx_to_state requires fully-signed, serialized TXs with
- *   Dilithium5 sigs + 4627-byte signatures. Generating 1000 of
- *   those for a property test is (a) slow and (b) exercises the
- *   signer/verifier rather than the conservation math. The
- *   apply_* unit tests (test_apply_stake / _delegate / _unstake /
- *   _undelegate / _validator_update) ALREADY cover
- *   the wire-format -> state-mutation path per type. What they do
- *   NOT cover is "applied in a random interleaving across 1000
- *   steps, does total supply stay == 1e17 raw?" — that is exactly
- *   what this test adds.
+ *   the legacy PBFT apply path this comment used to name
+ *   (apply_tx_to_state, nodus_witness_bft.c) is DELETED with the closed
+ *   consensus lane (R3 W4) — it required fully-signed, serialized TXs
+ *   with Dilithium5 sigs + 4627-byte signatures. Generating 1000 of
+ *   those for a property test would be (a) slow and (b) exercise the
+ *   signer/verifier rather than the conservation math, which is why this
+ *   test drives its OWN simplified state machine instead of any
+ *   production apply path — a choice that does not depend on which
+ *   production apply path exists. What it adds over any per-type
+ *   wire-format -> state-mutation test is "applied in a random
+ *   interleaving across 1000 steps, does total supply stay == 1e17 raw?"
  *
  * Invariant checked at every step of every sequence:
  *

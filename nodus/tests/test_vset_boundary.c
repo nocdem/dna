@@ -10,13 +10,12 @@
  *   3. selection sizing from DNAC_CFG_TARGET_ACTIVE_COUNT
  *
  * WHY THE TWO FUNCTIONS ARE CALLED DIRECTLY rather than through
- * apply_epoch_boundary_transitions: that function is `static` in
- * nodus_witness_bft.c and has no internal-API prototype (unlike
- * finalize_block / commit_batch, which nodus_witness_bft_internal.h
- * exposes). The two vset entry points ARE public in
- * witness/nodus_witness_vset.h and carry the whole behaviour under test;
- * their wiring into finalize_block's order is a two-line call site
- * reviewed in the diff.
+ * apply_epoch_boundary_transitions: that function, and the whole legacy
+ * commit path that called it, were `static` in nodus_witness_bft.c —
+ * deleted whole with the closed consensus lane (R3 W4). The two vset
+ * entry points ARE public in witness/nodus_witness_vset.h and carry the
+ * whole behaviour under test; nothing in this file drives the legacy
+ * commit path any more.
  *
  * nodus_witness_t is multi-MB — every fixture is calloc'd, never a stack
  * object.
@@ -28,7 +27,6 @@
 
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_db.h"
-#include "witness/nodus_witness_bft.h"
 #include "witness/nodus_witness_vset.h"
 #include "witness/nodus_witness_validator.h"
 #include "witness/nodus_witness_committee.h"
@@ -647,22 +645,21 @@ static int test_pending_and_extra_bond(void) {
 
 /* ── 4. One validator, one vote ─────────────────────────────────────── */
 
+/* R3 W4-D — nodus_witness_bft_config_t / _init (nodus_witness_bft.h) are
+ * DELETED with the closed consensus lane. This case's property was
+ * always "quorum(n) is a pure function of the committee COUNT, with no
+ * stake input" — nodus_witness_bft_config_init's only argument was `n`,
+ * and it did nothing but wrap dna_bft_quorum(n) (shared/dnac/
+ * ledger_ids.h) in a struct. The live vset needs nothing from the
+ * deleted wrapper: dna_bft_quorum(n) is the formula itself, and it is
+ * already used directly and extensively in production (nodus_witness_
+ * v2_epoch.c, nodus_witness_domreg.c, nodus_witness_chain_config.c,
+ * shared/dnac/qc_v2.c) — this case now pins the same two values
+ * directly against it, with nothing left to wrap. */
 static int test_one_validator_one_vote(void) {
-    nodus_witness_bft_config_t cfg;
-    memset(&cfg, 0, sizeof(cfg));
-    nodus_witness_bft_config_init(&cfg, 9);
-    CHECK(cfg.quorum == 7, "quorum(9) != 7");
-    CHECK(cfg.n_witnesses == 9, "n_witnesses(9) != 9");
-    CHECK(cfg.quorum == dna_bft_quorum(9), "witness quorum != shared formula");
-
-    /* The config is a function of the COUNT alone — there is no stake
-     * input to derive it from. nodus_witness_bft_config_init's only
-     * argument is `n`, so a stake-weighted quorum is not expressible
-     * without changing the signature. */
-    nodus_witness_bft_config_t cfg7;
-    memset(&cfg7, 0, sizeof(cfg7));
-    nodus_witness_bft_config_init(&cfg7, DNAC_COMMITTEE_SIZE);
-    CHECK(cfg7.quorum == 5, "live cluster quorum moved");
+    CHECK(dna_bft_quorum(9) == 7, "quorum(9) != 7");
+    CHECK(dna_bft_quorum(DNAC_COMMITTEE_SIZE) == 5,
+          "live cluster quorum moved");
     return 0;
 }
 

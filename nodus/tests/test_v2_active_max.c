@@ -45,7 +45,6 @@
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_vset.h"
 #include "witness/nodus_witness_committee.h"
-#include "witness/nodus_witness_bft.h"
 #include "witness/nodus_witness_validator.h"
 #include "witness/nodus_witness_v2_epoch.h"
 #include "witness/nodus_witness_v2_schema.h"
@@ -382,12 +381,13 @@ static int test_live_serve(void) {
     CHECK(count == 20, "exactly 20 members served");
     free(m);
 
-    CHECK(refresh_bft_config_from_committee(w, 0) == 0,
-          "refresh_bft_config_from_committee");
-    CHECK(w->bft_config.quorum == 14,
-          "quorum = dna_bft_quorum(20) = 14");
-    CHECK(w->bft_config.quorum == dna_bft_quorum(20),
-          "quorum literal matches the formula");
+    /* R3 W4-D — refresh_bft_config_from_committee / w->bft_config
+     * (nodus_witness_bft.c / nodus_witness_t) are DELETED with the
+     * closed consensus lane. The two deleted lines re-derived
+     * dna_bft_quorum(20) == 14 through the legacy wrapper struct; the
+     * count assertion above already proves the committee-get path
+     * serves 20 members, and dna_bft_quorum(20) == 14 is the same
+     * formula every live caller reads directly (no wrapper needed). */
 
     /* Invariant closure: the write reject (§3) guarantees no >30 row can
      * ever be present to serve here, so the raw serve is always <=30. */

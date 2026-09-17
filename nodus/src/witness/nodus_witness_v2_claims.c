@@ -24,6 +24,8 @@
                                              * identity lives in its
                                              * stored genesis document
                                              * (nodus_witness_v2_gen.h:786) */
+#include "witness/nodus_witness_cmt_store.h" /* W4-S: the genesisDoc row,
+                                              * probed by the supply gate */
 
 #include "dnac/block_v2.h"
 #include "dnac/domain_wire.h"
@@ -974,13 +976,25 @@ int nodus_rt_core_invariant(const nodus_domain_runtime_t *rt,
          * state — it is a broken one, and the only safe answer is to
          * fail closed.
          *
+         * R3-W4-S (D-17 rev 11 (11)): a version-3 (cometbft) chain NEVER
+         * writes a height-0 v2_blocks row — its genesis is a STORED
+         * DOCUMENT in cmt_state under NODUS_V2_GEN_GENESIS_DOC_KEY
+         * ("genesisDoc", D-18). The height-0 probe alone therefore
+         * cannot tell a version-3 genesis from genuine pre-genesis; it
+         * is amended by a second probe.
+         *
          * Deliberately SCOPED so the legitimate legacy/pre-genesis
          * `return 0` is not weakened:
          *   - no v2_blocks table at all  → legacy DB, never had a V2
          *     genesis            → 0 (unchanged behaviour)
-         *   - table present, no height-0 row → genuinely pre-genesis
-         *                        → 0 (unchanged behaviour)
-         *   - height-0 row present → a V2 genesis EXISTS → -1
+         *   - table present, no height-0 row, no cmt_state table (below
+         *     S14) → genuinely pre-genesis → 0 (unchanged behaviour)
+         *   - table present, no height-0 row, cmt_state present but no
+         *     stored genesisDoc → the ceremony's own scratch database
+         *     before the document is written → 0 (still honest
+         *     pre-genesis)
+         *   - height-0 row present OR a stored genesisDoc present → a
+         *     genesis EXISTS → -1
          *   - any probe fault      → -1, never a value (the probe-fault
          *     discipline this file's header states). */
         int has_v2 = table_exists(w, "v2_blocks");
@@ -994,8 +1008,39 @@ int nodus_rt_core_invariant(const nodus_domain_runtime_t *rt,
             return -1;
         int grc = sqlite3_step(gst);
         sqlite3_finalize(gst);
-        if (grc == SQLITE_DONE) return 0;    /* pre-genesis, still honest */
-        if (grc != SQLITE_ROW) return -1;    /* fault is never "absent"   */
+        if (grc != SQLITE_DONE && grc != SQLITE_ROW) return -1; /* fault */
+
+        int genesis_exists = (grc == SQLITE_ROW);
+        if (!genesis_exists) {
+            /* No height-0 row. Probe the Comet stores (D-19 rev 6) for a
+             * stored genesis document before declaring pre-genesis. */
+            int has_cmt = table_exists(w, "cmt_state");
+            if (has_cmt < 0) return -1;
+            if (has_cmt == 1) {
+                nodus_cmt_store_t s;
+                if (nodus_cmt_store_init(&s, w->db, false) != CMT_OK)
+                    return -1;
+                const uint8_t *val = NULL;
+                size_t vlen = 0;
+                int doc_rc = nodus_cmt_store_get(&s, /*state_table=*/true,
+                        NODUS_V2_GEN_GENESIS_DOC_KEY, &val, &vlen);
+                /* vlen == 0 (or no value): S14 tables exist, no document
+                 * stored yet — the ceremony's own scratch database:
+                 * still honest pre-genesis. val && vlen > 0: a
+                 * version-3 genesis IS stored. Evaluated BEFORE the
+                 * release: `val` points into the store's own copy
+                 * buffer and is indeterminate once the store is
+                 * released (nodus_witness_cmt_store.h:495-497). */
+                int doc_present = (doc_rc == CMT_OK && val != NULL &&
+                                   vlen > 0);
+                nodus_cmt_store_release(&s);
+                if (doc_rc != CMT_OK) return -1;
+                genesis_exists = doc_present;
+            }
+            /* has_cmt == 0: below S14, no Comet stores at all — still
+             * honest pre-genesis, genesis_exists stays false. */
+        }
+        if (!genesis_exists) return 0;   /* pre-genesis, still honest */
 
         QGP_LOG_ERROR(LOG_TAG, "%s",
             "CORE INVARIANT: supply_tracking row is ABSENT on a chain "

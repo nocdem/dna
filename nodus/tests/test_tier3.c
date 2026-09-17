@@ -1,16 +1,35 @@
 /**
  * Nodus — Tier 3 Protocol Unit Test
  *
- * Round-trip encode/decode test for all 11 BFT message types.
- * Tests: encode → decode → verify field equality.
- * Also tests sign/verify round-trip.
+ * Round-trip encode/decode test for the SURVIVING message types this
+ * file exercises directly: the peer mesh (9-11: w_rost_q, w_rost_r,
+ * w_ident), the genesis bundle (24-25) and the cometbft envelope
+ * (35-39). Tests: encode -> decode -> verify field equality. Also tests
+ * sign/verify round-trip.
+ *
+ * The chain_config vote-collect RPC (14-15, kept per register
+ * R3-W4-D-8) has NO round-trip encode/decode test anywhere today — not
+ * in this file (its only appearances here are the live_verbs /
+ * method-name table rows below, never an actual encode-decode-verify
+ * cycle) and not in test_cc_client.c either, which only exercises
+ * argument validation and timeouts against a dead peer and never
+ * decodes a `w_cc_vote_rsp`. This was already true at 4a43e3a9, before
+ * this delta touched either file — it is a pre-existing coverage gap,
+ * not something this delta introduced or a substitute this delta can
+ * name.
+ *
+ * R3 W4-D (Delta B) retired verbs 1-8, 12-13, 16-23 and 26-27 (the
+ * legacy PBFT propose/vote/commit/view-change/forward round, block
+ * sync, bootstrap discovery/genesis-fetch and view authority) with the
+ * closed consensus lane — their tests are deleted with them, per-verb
+ * struct by per-verb struct, the same way the legacy Tendermint reactor
+ * verbs 28-34 (T2 wire design §4.2, D-16 rev 4) were RETIRED in W3.
  *
  * ── cometbft envelope sections (verbs 35-39, D-16 rev 5, W3) ─────────
  *
- * The legacy Tendermint reactor verbs 28-34 (T2 wire design §4.2, D-16
- * rev 4) were RETIRED in W3 and their tests deleted with them — the
- * per-verb CBOR structs they exercised no longer exist. This file's W3
- * sections replace them.
+ * The legacy Tendermint reactor verbs 28-34 were RETIRED in W3 and their
+ * tests deleted with them — the per-verb CBOR structs they exercised no
+ * longer exist. This file's W3 sections replace them.
  *
  * WHAT THEY PROVE. That the cometbft envelope codec ({m: bstr}, one
  * shape for all five verbs, D-16 rev 5) is a bijection over its
@@ -46,9 +65,9 @@
  * cases is STILL refused, by pass 2's own error propagation, not by the
  * gate. The gate is the SECOND layer: it is what stays load-bearing if
  * the FIRST layer ALSO changes — specifically for the legacy shapes,
- * cases (i)-(iii), whose decoders read a negative's value with
- * `val.type == CBOR_ITEM_UINT` checks that ignore the type rather than
- * reject it (case i, nodus_tier3.c's dec_sync_req_args) or skip an
+ * cases (i)-(iii), whose decoder reads a negative's value with a
+ * `val.type == CBOR_ITEM_UINT` check that ignores the type rather than
+ * reject it (case i, nodus_tier3.c's dec_rost_q_args) or skip an
  * unknown key's value outright (cases ii/iii) — if `cbor_decode_next`
  * or the legacy skip idiom ever stopped erroring on a negative, ONLY
  * the gate would still refuse those three. Cases (iv)/(v), the cometbft
@@ -179,11 +198,26 @@ static void init_test_data(void) {
 
 /* ── Test: method ↔ type mapping ─────────────────────────────────── */
 
+/* R3 W4-D (Delta B) — the LIVE verb set is no longer a contiguous range:
+ * retirement leaves gaps (1-8, 12-13, 16-23, 26-34 are all "not a verb"
+ * numbers, never reused). This test now names every surviving verb
+ * explicitly rather than looping a range, so a future retirement or
+ * addition must touch this array by hand instead of silently widening
+ * or narrowing what gets checked. */
+static const nodus_t3_msg_type_t live_verbs[] = {
+    NODUS_T3_ROST_Q, NODUS_T3_ROST_R, NODUS_T3_IDENT,
+    NODUS_T3_CC_VOTE_REQ, NODUS_T3_CC_VOTE_RSP,
+    NODUS_T3_V2_GBUNDLE_REQ, NODUS_T3_V2_GBUNDLE_RSP,
+    NODUS_T3_CMT_STATE, NODUS_T3_CMT_DATA, NODUS_T3_CMT_VOTE,
+    NODUS_T3_CMT_VOTE_SET_BITS, NODUS_T3_CMT_TXS,
+};
+
 static void test_method_type_mapping(void) {
     const char *name = "method_type_mapping";
 
-    for (int t = NODUS_T3_PROPOSE; t <= NODUS_T3_IDENT; t++) {
-        const char *method = nodus_t3_type_to_method((nodus_t3_msg_type_t)t);
+    for (size_t i = 0; i < sizeof(live_verbs) / sizeof(live_verbs[0]); i++) {
+        nodus_t3_msg_type_t t = live_verbs[i];
+        const char *method = nodus_t3_type_to_method(t);
         if (!method) { TEST_FAIL(name, "type_to_method returned NULL"); return; }
         nodus_t3_msg_type_t back = nodus_t3_method_to_type(method);
         if (back != t) { TEST_FAIL(name, "round-trip type mismatch"); return; }
@@ -217,461 +251,12 @@ static int roundtrip(nodus_t3_msg_t *in, nodus_t3_msg_t *out) {
     return 0;
 }
 
-/* ── Test: w_propose round-trip ──────────────────────────────────── */
-
-static void test_propose(void) {
-    const char *name = "w_propose";
-    nodus_t3_msg_t in, out;
-    memset(&in, 0, sizeof(in));
-
-    in.type = NODUS_T3_PROPOSE;
-    in.txn_id = 100;
-    fill_header(&in.header);
-
-    /* Phase 9 / Task 9.1 — propose is now batch-shaped only. Build a
-     * 1-entry batch round-trip. */
-    memcpy(in.propose.tx_root, test_tx_hash, NODUS_T3_TX_HASH_LEN);
-    in.propose.batch_count = 1;
-    nodus_t3_batch_tx_t *btx = &in.propose.batch_txs[0];
-    memcpy(btx->tx_hash, test_tx_hash, NODUS_T3_TX_HASH_LEN);
-    btx->nullifier_count = 3;
-    for (int i = 0; i < 3; i++)
-        btx->nullifiers[i] = test_nullifiers[i];
-    btx->tx_type = 2;
-    btx->tx_data = test_tx_data;
-    btx->tx_len = 128;
-    btx->client_pubkey = test_pubkey;
-    btx->client_sig = test_sig;
-    btx->fee = 500;
-
-    int rc = roundtrip(&in, &out);
-    if (rc != 0) { TEST_FAIL(name, rc == -1 ? "encode failed" : "decode failed"); return; }
-
-    check_header(&in.header, &out.header, name);
-
-    if (out.txn_id != 100) { TEST_FAIL(name, "txn_id"); return; }
-    if (out.type != NODUS_T3_PROPOSE) { TEST_FAIL(name, "type"); return; }
-    if (memcmp(out.propose.tx_root, test_tx_hash, NODUS_T3_TX_HASH_LEN) != 0) {
-        TEST_FAIL(name, "block_hash"); return;
-    }
-    if (out.propose.batch_count != 1) { TEST_FAIL(name, "batch_count"); return; }
-    const nodus_t3_batch_tx_t *obtx = &out.propose.batch_txs[0];
-    if (memcmp(obtx->tx_hash, test_tx_hash, NODUS_T3_TX_HASH_LEN) != 0) {
-        TEST_FAIL(name, "btx tx_hash"); return;
-    }
-    if (obtx->nullifier_count != 3) { TEST_FAIL(name, "btx nlc"); return; }
-    if (obtx->tx_type != 2) { TEST_FAIL(name, "btx tx_type"); return; }
-    if (obtx->tx_len != 128) { TEST_FAIL(name, "btx tx_len"); return; }
-    if (obtx->fee != 500) { TEST_FAIL(name, "btx fee"); return; }
-
-    /* Verify signature */
-    if (nodus_t3_verify(&out, &test_id.pk) != 0) {
-        TEST_FAIL(name, "wsig verify failed"); return;
-    }
-
-    TEST_PASS(name);
-}
-
-/* ── Test: w_prevote round-trip ──────────────────────────────────── */
-
-static void test_prevote(void) {
-    const char *name = "w_prevote";
-    nodus_t3_msg_t in, out;
-    memset(&in, 0, sizeof(in));
-
-    in.type = NODUS_T3_PREVOTE;
-    in.txn_id = 101;
-    fill_header(&in.header);
-
-    memcpy(in.vote.vote_target, test_tx_hash, NODUS_T3_TX_HASH_LEN);
-    in.vote.vote = 0; /* approve */
-    snprintf(in.vote.reason, sizeof(in.vote.reason), "valid transaction");
-
-    int rc = roundtrip(&in, &out);
-    if (rc != 0) { TEST_FAIL(name, rc == -1 ? "encode failed" : "decode failed"); return; }
-
-    check_header(&in.header, &out.header, name);
-    if (out.type != NODUS_T3_PREVOTE) { TEST_FAIL(name, "type"); return; }
-    if (memcmp(out.vote.vote_target, test_tx_hash, NODUS_T3_TX_HASH_LEN) != 0) {
-        TEST_FAIL(name, "tx_hash"); return;
-    }
-    if (out.vote.vote != 0) { TEST_FAIL(name, "vote"); return; }
-    if (strcmp(out.vote.reason, "valid transaction") != 0) {
-        TEST_FAIL(name, "reason"); return;
-    }
-    if (nodus_t3_verify(&out, &test_id.pk) != 0) {
-        TEST_FAIL(name, "wsig verify"); return;
-    }
-
-    TEST_PASS(name);
-}
-
-/* ── Test: w_precommit round-trip ────────────────────────────────── */
-
-static void test_precommit(void) {
-    const char *name = "w_precommit";
-    nodus_t3_msg_t in, out;
-    memset(&in, 0, sizeof(in));
-
-    in.type = NODUS_T3_PRECOMMIT;
-    in.txn_id = 102;
-    fill_header(&in.header);
-
-    memcpy(in.vote.vote_target, test_tx_hash, NODUS_T3_TX_HASH_LEN);
-    in.vote.vote = 1; /* reject */
-    snprintf(in.vote.reason, sizeof(in.vote.reason), "invalid nullifier");
-
-    int rc = roundtrip(&in, &out);
-    if (rc != 0) { TEST_FAIL(name, rc == -1 ? "encode failed" : "decode failed"); return; }
-
-    if (out.type != NODUS_T3_PRECOMMIT) { TEST_FAIL(name, "type"); return; }
-    if (out.vote.vote != 1) { TEST_FAIL(name, "vote"); return; }
-    if (strcmp(out.vote.reason, "invalid nullifier") != 0) {
-        TEST_FAIL(name, "reason"); return;
-    }
-    if (nodus_t3_verify(&out, &test_id.pk) != 0) {
-        TEST_FAIL(name, "wsig verify"); return;
-    }
-
-    TEST_PASS(name);
-}
-
-/* ── Test: w_commit round-trip ───────────────────────────────────── */
-
-static void test_commit(void) {
-    const char *name = "w_commit";
-    nodus_t3_msg_t in, out;
-    memset(&in, 0, sizeof(in));
-
-    in.type = NODUS_T3_COMMIT;
-    in.txn_id = 103;
-    fill_header(&in.header);
-
-    /* Phase 9 / Task 9.1 — commit is batch-shaped only. */
-    memcpy(in.commit.tx_root, test_tx_hash, NODUS_T3_TX_HASH_LEN);
-    in.commit.batch_count = 1;
-    nodus_t3_batch_tx_t *cbtx = &in.commit.batch_txs[0];
-    memcpy(cbtx->tx_hash, test_tx_hash, NODUS_T3_TX_HASH_LEN);
-    cbtx->nullifier_count = 2;
-    cbtx->nullifiers[0] = test_nullifiers[0];
-    cbtx->nullifiers[1] = test_nullifiers[1];
-    cbtx->tx_type = 1;
-    cbtx->tx_data = test_tx_data;
-    cbtx->tx_len = 64;
-    cbtx->client_pubkey = test_pubkey;
-    cbtx->client_sig = test_sig;
-    in.commit.proposal_timestamp = 1709300100;
-    memset(in.commit.proposer_id, 0xCC, NODUS_T3_WITNESS_ID_LEN);
-    in.commit.n_precommits = 3;
-
-    int rc = roundtrip(&in, &out);
-    if (rc != 0) { TEST_FAIL(name, rc == -1 ? "encode failed" : "decode failed"); return; }
-
-    check_header(&in.header, &out.header, name);
-    if (out.type != NODUS_T3_COMMIT) { TEST_FAIL(name, "type"); return; }
-    if (out.commit.batch_count != 1) { TEST_FAIL(name, "batch_count"); return; }
-    if (memcmp(out.commit.tx_root, test_tx_hash, NODUS_T3_TX_HASH_LEN) != 0) {
-        TEST_FAIL(name, "block_hash"); return;
-    }
-    if (out.commit.proposal_timestamp != 1709300100) {
-        TEST_FAIL(name, "pts"); return;
-    }
-    if (memcmp(out.commit.proposer_id, in.commit.proposer_id,
-               NODUS_T3_WITNESS_ID_LEN) != 0) {
-        TEST_FAIL(name, "proposer_id"); return;
-    }
-    if (out.commit.n_precommits != 3) { TEST_FAIL(name, "npc"); return; }
-    if (nodus_t3_verify(&out, &test_id.pk) != 0) {
-        TEST_FAIL(name, "wsig verify"); return;
-    }
-
-    TEST_PASS(name);
-}
-
-/* ── Test: w_viewchg round-trip ──────────────────────────────────── */
-
-static void test_viewchg(void) {
-    const char *name = "w_viewchg";
-    nodus_t3_msg_t in, out;
-    memset(&in, 0, sizeof(in));
-
-    in.type = NODUS_T3_VIEWCHG;
-    in.txn_id = 104;
-    fill_header(&in.header);
-    in.viewchg.new_view = 5;
-    in.viewchg.last_committed_round = 41;
-    /* has_prepared defaults to false (memset) — legacy 2-key wire. */
-
-    int rc = roundtrip(&in, &out);
-    if (rc != 0) { TEST_FAIL(name, rc == -1 ? "encode failed" : "decode failed"); return; }
-
-    if (out.type != NODUS_T3_VIEWCHG) { TEST_FAIL(name, "type"); return; }
-    if (out.viewchg.new_view != 5) { TEST_FAIL(name, "new_view"); return; }
-    if (out.viewchg.last_committed_round != 41) { TEST_FAIL(name, "lcr"); return; }
-    if (out.viewchg.has_prepared) {
-        TEST_FAIL(name, "has_prepared should be false"); return;
-    }
-    if (nodus_t3_verify(&out, &test_id.pk) != 0) {
-        TEST_FAIL(name, "wsig verify"); return;
-    }
-
-    TEST_PASS(name);
-}
-
-/* ── Test: w_newview round-trip ──────────────────────────────────── */
-
-static void test_newview(void) {
-    const char *name = "w_newview";
-    nodus_t3_msg_t in, out;
-    memset(&in, 0, sizeof(in));
-
-    in.type = NODUS_T3_NEWVIEW;
-    in.txn_id = 105;
-    fill_header(&in.header);
-    in.newview.new_view = 5;
-    in.newview.n_proofs = 3;
-    /* has_reproposal defaults to false (memset) — legacy 2-key wire. */
-
-    int rc = roundtrip(&in, &out);
-    if (rc != 0) { TEST_FAIL(name, rc == -1 ? "encode failed" : "decode failed"); return; }
-
-    if (out.type != NODUS_T3_NEWVIEW) { TEST_FAIL(name, "type"); return; }
-    if (out.newview.new_view != 5) { TEST_FAIL(name, "new_view"); return; }
-    if (out.newview.n_proofs != 3) { TEST_FAIL(name, "n_proofs"); return; }
-    if (out.newview.has_reproposal) {
-        TEST_FAIL(name, "has_reproposal should be false"); return;
-    }
-    if (nodus_t3_verify(&out, &test_id.pk) != 0) {
-        TEST_FAIL(name, "wsig verify"); return;
-    }
-
-    TEST_PASS(name);
-}
-
-/* ── Test: w_viewchg with prepared-cert (C5) ─────────────────────── */
-
-static void test_viewchg_with_prepared(void) {
-    const char *name = "w_viewchg (prepared)";
-    nodus_t3_msg_t in, out;
-    memset(&in, 0, sizeof(in));
-
-    in.type = NODUS_T3_VIEWCHG;
-    in.txn_id = 120;
-    fill_header(&in.header);
-    in.viewchg.new_view = 7;
-    in.viewchg.last_committed_round = 99;
-    in.viewchg.has_prepared = true;
-    in.viewchg.prepared_height = 42;
-    in.viewchg.prepared_view = 6;
-    memset(in.viewchg.prepared_tx_hash, 0x55, NODUS_T3_TX_HASH_LEN);
-    in.viewchg.prepared_n_sigs = 3;
-    for (uint32_t i = 0; i < 3; i++) {
-        memset(in.viewchg.prepared_sigs[i].voter_id,
-               0x60 + (int)i, NODUS_T3_WITNESS_ID_LEN);
-        memset(in.viewchg.prepared_sigs[i].signature,
-               0x70 + (int)i, NODUS_SIG_BYTES);
-    }
-
-    int rc = roundtrip(&in, &out);
-    if (rc != 0) { TEST_FAIL(name, rc == -1 ? "encode failed" : "decode failed"); return; }
-
-    if (out.type != NODUS_T3_VIEWCHG) { TEST_FAIL(name, "type"); return; }
-    if (out.viewchg.new_view != 7) { TEST_FAIL(name, "new_view"); return; }
-    if (out.viewchg.last_committed_round != 99) { TEST_FAIL(name, "lcr"); return; }
-    if (!out.viewchg.has_prepared) {
-        TEST_FAIL(name, "has_prepared not set"); return;
-    }
-    if (out.viewchg.prepared_height != 42) {
-        TEST_FAIL(name, "prepared_height"); return;
-    }
-    if (out.viewchg.prepared_view != 6) {
-        TEST_FAIL(name, "prepared_view"); return;
-    }
-    if (memcmp(out.viewchg.prepared_tx_hash, in.viewchg.prepared_tx_hash,
-               NODUS_T3_TX_HASH_LEN) != 0) {
-        TEST_FAIL(name, "prepared_tx_hash"); return;
-    }
-    if (out.viewchg.prepared_n_sigs != 3) {
-        TEST_FAIL(name, "prepared_n_sigs"); return;
-    }
-    for (uint32_t i = 0; i < 3; i++) {
-        if (memcmp(out.viewchg.prepared_sigs[i].voter_id,
-                   in.viewchg.prepared_sigs[i].voter_id,
-                   NODUS_T3_WITNESS_ID_LEN) != 0) {
-            TEST_FAIL(name, "prepared voter_id"); return;
-        }
-        if (memcmp(out.viewchg.prepared_sigs[i].signature,
-                   in.viewchg.prepared_sigs[i].signature,
-                   NODUS_SIG_BYTES) != 0) {
-            TEST_FAIL(name, "prepared signature"); return;
-        }
-    }
-    if (nodus_t3_verify(&out, &test_id.pk) != 0) {
-        TEST_FAIL(name, "wsig verify"); return;
-    }
-
-    TEST_PASS(name);
-}
-
-/* ── Test: w_newview with re-proposal (C5) ───────────────────────── */
-
-static void test_newview_with_reproposal(void) {
-    const char *name = "w_newview (reproposal)";
-    nodus_t3_msg_t in, out;
-    memset(&in, 0, sizeof(in));
-
-    in.type = NODUS_T3_NEWVIEW;
-    in.txn_id = 121;
-    fill_header(&in.header);
-    in.newview.new_view = 8;
-    in.newview.n_proofs = 5;
-    in.newview.has_reproposal = true;
-    in.newview.reproposal_height = 42;
-    memset(in.newview.reproposal_tx_hash, 0x88, NODUS_T3_TX_HASH_LEN);
-    /* O15C-D.3 — the message now also carries the CERTIFICATE proving
-     * the reproposal (prepared view + per-voter sigs), so followers
-     * verify the same decision instead of consulting their own frozen
-     * VIEW_CHANGE subset. Round-trip those fields too. */
-    in.newview.reproposal_prepared_view = 3;
-    in.newview.reproposal_n_sigs = 5;
-    for (uint32_t i = 0; i < in.newview.reproposal_n_sigs; i++) {
-        memset(in.newview.reproposal_sigs[i].voter_id,
-               (int)(0xC0 + i), NODUS_T3_WITNESS_ID_LEN);
-        memset(in.newview.reproposal_sigs[i].signature,
-               (int)(0x40 + i), NODUS_SIG_BYTES);
-    }
-
-    int rc = roundtrip(&in, &out);
-    if (rc != 0) { TEST_FAIL(name, rc == -1 ? "encode failed" : "decode failed"); return; }
-
-    if (out.type != NODUS_T3_NEWVIEW) { TEST_FAIL(name, "type"); return; }
-    if (out.newview.new_view != 8) { TEST_FAIL(name, "new_view"); return; }
-    if (out.newview.n_proofs != 5) { TEST_FAIL(name, "n_proofs"); return; }
-    if (!out.newview.has_reproposal) {
-        TEST_FAIL(name, "has_reproposal not set"); return;
-    }
-    if (out.newview.reproposal_height != 42) {
-        TEST_FAIL(name, "reproposal_height"); return;
-    }
-    if (memcmp(out.newview.reproposal_tx_hash, in.newview.reproposal_tx_hash,
-               NODUS_T3_TX_HASH_LEN) != 0) {
-        TEST_FAIL(name, "reproposal_tx_hash"); return;
-    }
-    /* O15C-D.3 — carried certificate must survive the round trip byte
-     * for byte, or a follower would reject an honest leader's proof. */
-    if (out.newview.reproposal_prepared_view != 3) {
-        TEST_FAIL(name, "reproposal_prepared_view"); return;
-    }
-    if (out.newview.reproposal_n_sigs != in.newview.reproposal_n_sigs) {
-        TEST_FAIL(name, "reproposal_n_sigs"); return;
-    }
-    for (uint32_t i = 0; i < in.newview.reproposal_n_sigs; i++) {
-        if (memcmp(out.newview.reproposal_sigs[i].voter_id,
-                   in.newview.reproposal_sigs[i].voter_id,
-                   NODUS_T3_WITNESS_ID_LEN) != 0) {
-            TEST_FAIL(name, "reproposal_sigs voter_id"); return;
-        }
-        if (memcmp(out.newview.reproposal_sigs[i].signature,
-                   in.newview.reproposal_sigs[i].signature,
-                   NODUS_SIG_BYTES) != 0) {
-            TEST_FAIL(name, "reproposal_sigs signature"); return;
-        }
-    }
-    if (nodus_t3_verify(&out, &test_id.pk) != 0) {
-        TEST_FAIL(name, "wsig verify"); return;
-    }
-
-    TEST_PASS(name);
-}
-
-/* ── Test: w_fwd_req round-trip ──────────────────────────────────── */
-
-static void test_fwd_req(void) {
-    const char *name = "w_fwd_req";
-    nodus_t3_msg_t in, out;
-    memset(&in, 0, sizeof(in));
-
-    in.type = NODUS_T3_FWD_REQ;
-    in.txn_id = 106;
-    fill_header(&in.header);
-
-    memcpy(in.fwd_req.tx_hash, test_tx_hash, NODUS_T3_TX_HASH_LEN);
-    in.fwd_req.tx_data = test_tx_data;
-    in.fwd_req.tx_len = 200;
-    in.fwd_req.client_pubkey = test_pubkey;
-    in.fwd_req.client_sig = test_sig;
-    in.fwd_req.fee = 1000;
-    memset(in.fwd_req.forwarder_id, 0xDD, NODUS_T3_WITNESS_ID_LEN);
-
-    int rc = roundtrip(&in, &out);
-    if (rc != 0) { TEST_FAIL(name, rc == -1 ? "encode failed" : "decode failed"); return; }
-
-    if (out.type != NODUS_T3_FWD_REQ) { TEST_FAIL(name, "type"); return; }
-    if (out.fwd_req.tx_len != 200) { TEST_FAIL(name, "tx_len"); return; }
-    if (!out.fwd_req.tx_data ||
-        memcmp(out.fwd_req.tx_data, test_tx_data, 200) != 0) {
-        TEST_FAIL(name, "tx_data"); return;
-    }
-    if (out.fwd_req.fee != 1000) { TEST_FAIL(name, "fee"); return; }
-    if (memcmp(out.fwd_req.forwarder_id, in.fwd_req.forwarder_id,
-               NODUS_T3_WITNESS_ID_LEN) != 0) {
-        TEST_FAIL(name, "forwarder_id"); return;
-    }
-    if (nodus_t3_verify(&out, &test_id.pk) != 0) {
-        TEST_FAIL(name, "wsig verify"); return;
-    }
-
-    TEST_PASS(name);
-}
-
-/* ── Test: w_fwd_rsp round-trip ──────────────────────────────────── */
-
-static void test_fwd_rsp(void) {
-    const char *name = "w_fwd_rsp";
-    nodus_t3_msg_t in, out;
-    memset(&in, 0, sizeof(in));
-
-    /* Need static buffers for pointer fields */
-    static uint8_t wid1[NODUS_T3_WITNESS_ID_LEN];
-    static uint8_t wsig1[NODUS_SIG_BYTES];
-    static uint8_t wpk1[NODUS_PK_BYTES];
-
-    memset(wid1, 0xE1, NODUS_T3_WITNESS_ID_LEN);
-    memset(wsig1, 0xE2, NODUS_SIG_BYTES);
-    memset(wpk1, 0xE3, NODUS_PK_BYTES);
-
-    in.type = NODUS_T3_FWD_RSP;
-    in.txn_id = 107;
-    fill_header(&in.header);
-
-    in.fwd_rsp.status = 1; /* success */
-    memcpy(in.fwd_rsp.tx_hash, test_tx_hash, NODUS_T3_TX_HASH_LEN);
-    in.fwd_rsp.witness_count = 1;
-    in.fwd_rsp.witnesses[0].witness_id = wid1;
-    in.fwd_rsp.witnesses[0].signature = wsig1;
-    in.fwd_rsp.witnesses[0].pubkey = wpk1;
-    in.fwd_rsp.witnesses[0].timestamp = 1709300200;
-
-    int rc = roundtrip(&in, &out);
-    if (rc != 0) { TEST_FAIL(name, rc == -1 ? "encode failed" : "decode failed"); return; }
-
-    if (out.type != NODUS_T3_FWD_RSP) { TEST_FAIL(name, "type"); return; }
-    if (out.fwd_rsp.status != 1) { TEST_FAIL(name, "status"); return; }
-    if (out.fwd_rsp.witness_count != 1) { TEST_FAIL(name, "wc"); return; }
-    if (!out.fwd_rsp.witnesses[0].witness_id ||
-        memcmp(out.fwd_rsp.witnesses[0].witness_id, wid1,
-               NODUS_T3_WITNESS_ID_LEN) != 0) {
-        TEST_FAIL(name, "witness_id"); return;
-    }
-    if (out.fwd_rsp.witnesses[0].timestamp != 1709300200) {
-        TEST_FAIL(name, "witness timestamp"); return;
-    }
-    if (nodus_t3_verify(&out, &test_id.pk) != 0) {
-        TEST_FAIL(name, "wsig verify"); return;
-    }
-
-    TEST_PASS(name);
-}
+/* R3 W4-D (Delta B) — test_propose, test_prevote, test_precommit,
+ * test_commit, test_viewchg, test_newview, test_viewchg_with_prepared,
+ * test_newview_with_reproposal, test_fwd_req and test_fwd_rsp (verbs
+ * 1-8, the legacy PBFT propose/vote/commit/view-change/forward round)
+ * are DELETED with the closed consensus lane: their subject enum values,
+ * arg structs and codec are all gone (nodus_tier3.h/.c). */
 
 /* ── Test: w_rost_q round-trip ───────────────────────────────────── */
 
@@ -793,140 +378,27 @@ static void test_ident(void) {
     TEST_PASS(name);
 }
 
-/* ── Test: w_sync_req round-trip ─────────────────────────────────── */
-
-static void test_sync_req(void) {
-    const char *name = "w_sync_req";
-    nodus_t3_msg_t in, out;
-    memset(&in, 0, sizeof(in));
-
-    in.type = NODUS_T3_SYNC_REQ;
-    in.txn_id = 42;
-    fill_header(&in.header);
-    in.sync_req.height = 7;
-
-    int rc = roundtrip(&in, &out);
-    if (rc != 0) { TEST_FAIL(name, rc == -1 ? "encode failed" : "decode failed"); return; }
-
-    check_header(&in.header, &out.header, name);
-    if (out.type != NODUS_T3_SYNC_REQ) { TEST_FAIL(name, "type"); return; }
-    if (out.sync_req.height != 7) { TEST_FAIL(name, "height"); return; }
-    if (out.txn_id != 42) { TEST_FAIL(name, "txn_id"); return; }
-    if (nodus_t3_verify(&out, &test_id.pk) != 0) {
-        TEST_FAIL(name, "wsig verify"); return;
-    }
-
-    TEST_PASS(name);
-}
-
-/* ── Test: w_sync_rsp round-trip ────────────────────────────────── */
-
-static void test_sync_rsp(void) {
-    const char *name = "w_sync_rsp";
-
-    ensure_identity();
-
-    /* Test 1: not-found response */
-    {
-        nodus_t3_msg_t in, out;
-        memset(&in, 0, sizeof(in));
-
-        in.type = NODUS_T3_SYNC_RSP;
-        in.txn_id = 50;
-        fill_header(&in.header);
-        in.sync_rsp.found = false;
-        in.sync_rsp.height = 99;
-
-        int rc = roundtrip(&in, &out);
-        if (rc != 0) { TEST_FAIL(name, rc == -1 ? "encode failed" : "decode failed (not-found)"); return; }
-
-        if (out.type != NODUS_T3_SYNC_RSP) { TEST_FAIL(name, "type (not-found)"); return; }
-        if (out.sync_rsp.found != false) { TEST_FAIL(name, "found should be false"); return; }
-        if (out.sync_rsp.height != 99) { TEST_FAIL(name, "height (not-found)"); return; }
-        if (nodus_t3_verify(&out, &test_id.pk) != 0) {
-            TEST_FAIL(name, "wsig verify (not-found)"); return;
-        }
-    }
-
-    /* Test 2: found response with multi-tx batch (Phase 11 / Task 11.1) */
-    {
-        nodus_t3_msg_t in, out;
-        memset(&in, 0, sizeof(in));
-
-        in.type = NODUS_T3_SYNC_RSP;
-        in.txn_id = 99;
-        fill_header(&in.header);
-
-        in.sync_rsp.found = true;
-        in.sync_rsp.height = 3;
-        in.sync_rsp.timestamp = 1700000001;
-        memset(in.sync_rsp.proposer_id, 0xCC, NODUS_T3_WITNESS_ID_LEN);
-        memset(in.sync_rsp.prev_hash, 0xDD, NODUS_T3_TX_HASH_LEN);
-        memset(in.sync_rsp.tx_root, 0xAA, NODUS_T3_TX_HASH_LEN);
-
-        /* One TX in the batch */
-        in.sync_rsp.tx_count = 1;
-        nodus_t3_batch_tx_t *btx = &in.sync_rsp.batch_txs[0];
-        memset(btx->tx_hash, 0xAB, NODUS_T3_TX_HASH_LEN);
-        btx->tx_type = 1;  /* SPEND */
-        uint8_t fake_tx[128];
-        memset(fake_tx, 0xBB, sizeof(fake_tx));
-        btx->tx_data = fake_tx;
-        btx->tx_len = sizeof(fake_tx);
-        uint8_t nul[NODUS_T3_NULLIFIER_LEN];
-        memset(nul, 0xEE, NODUS_T3_NULLIFIER_LEN);
-        btx->nullifiers[0] = nul;
-        btx->nullifier_count = 1;
-        btx->client_pubkey = test_pubkey;
-        btx->client_sig = test_sig;
-
-        /* One cert */
-        in.sync_rsp.cert_count = 1;
-        memset(in.sync_rsp.certs[0].voter_id, 0x11, NODUS_T3_WITNESS_ID_LEN);
-        memset(in.sync_rsp.certs[0].signature, 0x22, NODUS_SIG_BYTES);
-
-        int rc = roundtrip(&in, &out);
-        if (rc != 0) { TEST_FAIL(name, rc == -1 ? "encode failed" : "decode failed (found)"); return; }
-
-        if (out.type != NODUS_T3_SYNC_RSP) { TEST_FAIL(name, "type (found)"); return; }
-        if (out.sync_rsp.found != true) { TEST_FAIL(name, "found should be true"); return; }
-        if (out.sync_rsp.height != 3) { TEST_FAIL(name, "height"); return; }
-        if (out.sync_rsp.tx_count != 1) { TEST_FAIL(name, "tx_count"); return; }
-        if (memcmp(out.sync_rsp.tx_root, in.sync_rsp.tx_root,
-                   NODUS_T3_TX_HASH_LEN) != 0) {
-            TEST_FAIL(name, "tx_root"); return;
-        }
-        if (out.sync_rsp.batch_txs[0].tx_type != 1) { TEST_FAIL(name, "btx tx_type"); return; }
-        if (out.sync_rsp.batch_txs[0].tx_len != 128) { TEST_FAIL(name, "btx tx_len"); return; }
-        if (memcmp(out.sync_rsp.proposer_id, in.sync_rsp.proposer_id,
-                   NODUS_T3_WITNESS_ID_LEN) != 0) {
-            TEST_FAIL(name, "proposer_id"); return;
-        }
-        if (out.sync_rsp.cert_count != 1) { TEST_FAIL(name, "cert_count"); return; }
-        if (out.sync_rsp.certs[0].signature[0] != 0x22) {
-            TEST_FAIL(name, "cert signature"); return;
-        }
-
-        if (nodus_t3_verify(&out, &test_id.pk) != 0) {
-            TEST_FAIL(name, "wsig verify (found)"); return;
-        }
-    }
-
-    TEST_PASS(name);
-}
+/* R3 W4-D (Delta B) — test_sync_req and test_sync_rsp (verbs 12-13, the
+ * legacy block-sync request/response) are DELETED with the closed
+ * consensus lane: NODUS_T3_SYNC_REQ / _RSP and their arg structs are
+ * gone (nodus_tier3.h/.c). */
 
 /* ── Test: verify with wrong key fails ───────────────────────────── */
 
+/* R3 W4-D (Delta B) — this case used to build a w_viewchg (verb 5,
+ * retired). The wrong-key rejection it proves is verb-agnostic
+ * (nodus_t3_verify checks the Dilithium5 signature the same way for
+ * every type), so it is rewritten onto a LIVE verb, w_rost_q, rather
+ * than deleted. */
 static void test_verify_wrong_key(void) {
     const char *name = "verify_wrong_key";
     nodus_t3_msg_t in, out;
     memset(&in, 0, sizeof(in));
 
-    in.type = NODUS_T3_VIEWCHG;
+    in.type = NODUS_T3_ROST_Q;
     in.txn_id = 200;
     fill_header(&in.header);
-    in.viewchg.new_view = 1;
-    in.viewchg.last_committed_round = 0;
+    in.rost_q.version = 1;
 
     int rc = roundtrip(&in, &out);
     if (rc != 0) { TEST_FAIL(name, "roundtrip"); return; }
@@ -945,42 +417,12 @@ static void test_verify_wrong_key(void) {
     TEST_PASS(name);
 }
 
-/* ── Test: zero nullifiers ───────────────────────────────────────── */
-
-static void test_propose_zero_nullifiers(void) {
-    const char *name = "propose_zero_nullifiers";
-    nodus_t3_msg_t in, out;
-    memset(&in, 0, sizeof(in));
-
-    in.type = NODUS_T3_PROPOSE;
-    in.txn_id = 300;
-    fill_header(&in.header);
-
-    /* Phase 9 / Task 9.1 — genesis is now batch-of-1 with zero nullifiers. */
-    memcpy(in.propose.tx_root, test_tx_hash, NODUS_T3_TX_HASH_LEN);
-    in.propose.batch_count = 1;
-    nodus_t3_batch_tx_t *btx = &in.propose.batch_txs[0];
-    memcpy(btx->tx_hash, test_tx_hash, NODUS_T3_TX_HASH_LEN);
-    btx->nullifier_count = 0;
-    btx->tx_type = 0; /* genesis */
-    btx->tx_data = test_tx_data;
-    btx->tx_len = 32;
-    btx->client_pubkey = test_pubkey;
-    btx->client_sig = test_sig;
-    btx->fee = 0;
-
-    int rc = roundtrip(&in, &out);
-    if (rc != 0) { TEST_FAIL(name, rc == -1 ? "encode failed" : "decode failed"); return; }
-
-    if (out.propose.batch_count != 1) { TEST_FAIL(name, "batch_count"); return; }
-    if (out.propose.batch_txs[0].nullifier_count != 0) { TEST_FAIL(name, "btx nlc"); return; }
-    if (out.propose.batch_txs[0].tx_len != 32) { TEST_FAIL(name, "btx tx_len"); return; }
-    if (nodus_t3_verify(&out, &test_id.pk) != 0) {
-        TEST_FAIL(name, "wsig verify"); return;
-    }
-
-    TEST_PASS(name);
-}
+/* R3 W4-D (Delta B) — test_propose_zero_nullifiers (w_propose's
+ * batch-of-1, zero-nullifier genesis entry, verb 1) is DELETED with the
+ * closed consensus lane: nodus_t3_batch_tx_t, the struct whose
+ * nullifier_count this test pinned, is gone (nodus_tier3.h), and no
+ * surviving verb (9-11, 14-15, 24-25, 35-39) carries a batch-of-txs
+ * shape for this property to attach to. */
 
 /* ══════════════════════════════════════════════════════════════════
  * cometbft envelope — verbs 35-39 (D-16 rev 5, W3)
@@ -1124,16 +566,20 @@ static void test_cmt_method_table(void) {
         }
     }
 
-    /* Values do not move: 27 is still the last pre-existing verb, 28-34
-     * are RETIRED (never reused), and 35-39 are the new envelope block. */
-    if (NODUS_T3_VIEWOK_REQ != 27 || NODUS_T3_CMT_STATE != 35 ||
+    /* Values do not move: 35-39 are the new envelope block, fixed at
+     * these numbers. R3 W4-D retired 26-27 (view authority) along with
+     * 1-8/12-23 — this check no longer anchors on the last pre-existing
+     * verb before them, since NODUS_T3_VIEWOK_REQ (formerly 27) is
+     * deleted; 35-39's own values are the only thing left to pin. */
+    if (NODUS_T3_CMT_STATE != 35 ||
         NODUS_T3_CMT_DATA != 36 || NODUS_T3_CMT_VOTE != 37 ||
         NODUS_T3_CMT_VOTE_SET_BITS != 38 || NODUS_T3_CMT_TXS != 39) {
         TEST_FAIL(name, "enum values moved"); return;
     }
 
-    /* A retired number is recognised by NEITHER table. */
-    for (int v = 28; v <= 34; v++) {
+    /* A retired number is recognised by NEITHER table — 26-34 now, not
+     * just 28-34, since this delta retires 26-27 too. */
+    for (int v = 26; v <= 34; v++) {
         if (nodus_t3_type_to_method((nodus_t3_msg_type_t)v) != NULL) {
             TEST_FAIL(name, "a retired verb still has a method string"); return;
         }
@@ -1415,10 +861,20 @@ static void test_cmt_verify_wrong_key(void) {
  * case here is still refused by pass 2 itself. The gate is what stays
  * load-bearing if cbor_decode_next (or the legacy unknown-key skip
  * idiom) ALSO stopped erroring on a negative — true for cases (i)-(iii)
- * below, whose legacy decoders would then silently accept or ignore
+ * below, whose decoder would then silently accept or ignore
  * the negative; NOT true for (iv)/(v), the cometbft envelope verbs,
  * where dec_w_cmt_args refuses those specific frames for a completely
  * sign-independent reason (see each case's own comment).
+ *
+ * R3 W4-D (Delta B) — cases (i)-(iii) and their control used to build
+ * w_sync_req (verb 12), retired with the closed consensus lane. A
+ * retired method string now decodes as "not a verb" regardless of what
+ * `a` carries, which would make these cases pass VACUOUSLY (rejected
+ * for the wrong reason) rather than exercising the negint gate at all.
+ * Rewritten onto w_rost_q (verb 9, LIVE): dec_rost_q_args
+ * (nodus_tier3.c) still uses the exact "known key / unknown key -> skip"
+ * idiom the retired sync_req decoder had, so the property these three
+ * cases guard is unchanged.
  *
  * Each case's CONTROL runs first. If a hand-built frame carrying only
  * ordinary unsigned integers is not accepted, the negative that
@@ -1428,18 +884,18 @@ static void test_universal_negint_pin(void) {
     nodus_t3_msg_t out;
     cbor_encoder_t enc;
 
-    /* CONTROL 1: a legacy verb (w_sync_req) with an unsigned `h` —
-     * must be ACCEPTED. */
-    w3_frame_begin(&enc, "w_sync_req");
+    /* CONTROL 1: a live legacy-shaped verb (w_rost_q) with an unsigned
+     * `v` — must be ACCEPTED. */
+    w3_frame_begin(&enc, "w_rost_q");
     cbor_encode_map(&enc, 1);
-    cbor_encode_cstr(&enc, "h"); cbor_encode_uint(&enc, 7);
+    cbor_encode_cstr(&enc, "v"); cbor_encode_uint(&enc, 7);
     if (w3_frame_end(&enc, &out) != 0) {
-        TEST_FAIL(name, "the legacy control frame was REJECTED — the "
-                        "negatives below would prove nothing");
+        TEST_FAIL(name, "the legacy-shaped control frame was REJECTED — "
+                        "the negatives below would prove nothing");
         return;
     }
-    if (out.type != NODUS_T3_SYNC_REQ || out.sync_req.height != 7) {
-        TEST_FAIL(name, "legacy control decoded to the wrong fields"); return;
+    if (out.type != NODUS_T3_ROST_Q || out.rost_q.version != 7) {
+        TEST_FAIL(name, "legacy-shaped control decoded to the wrong fields"); return;
     }
 
     /* CONTROL 2: verb 35 (w_cmt_state) with a legitimate {m: bstr} —
@@ -1454,37 +910,40 @@ static void test_universal_negint_pin(void) {
         TEST_FAIL(name, "cmt control decoded to the wrong fields"); return;
     }
 
-    /* (i) legacy verb — a negative under a key its decoder KNOWS. */
-    w3_frame_begin(&enc, "w_sync_req");
+    /* (i) legacy-shaped verb — a negative under a key its decoder KNOWS. */
+    w3_frame_begin(&enc, "w_rost_q");
     cbor_encode_map(&enc, 1);
-    cbor_encode_cstr(&enc, "h"); cbor_encode_int(&enc, -7);
+    cbor_encode_cstr(&enc, "v"); cbor_encode_int(&enc, -7);
     if (w3_frame_end(&enc, &out) == 0) {
-        TEST_FAIL(name, "legacy verb accepted a negative under a known key"); return;
+        TEST_FAIL(name, "legacy-shaped verb accepted a negative under a "
+                        "known key"); return;
     }
 
-    /* (ii) legacy verb — a negative under a key it does NOT know — the
-     * dangerous one, because the legacy arg decoder's own idiom is
-     * "unknown key -> skip". */
-    w3_frame_begin(&enc, "w_sync_req");
+    /* (ii) legacy-shaped verb — a negative under a key it does NOT know —
+     * the dangerous one, because dec_rost_q_args's own idiom is "unknown
+     * key -> skip". */
+    w3_frame_begin(&enc, "w_rost_q");
     cbor_encode_map(&enc, 2);
-    cbor_encode_cstr(&enc, "h");   cbor_encode_uint(&enc, 7);
+    cbor_encode_cstr(&enc, "v");   cbor_encode_uint(&enc, 7);
     cbor_encode_cstr(&enc, "zzz"); cbor_encode_int(&enc, -1);
     if (w3_frame_end(&enc, &out) == 0) {
-        TEST_FAIL(name, "legacy verb accepted a negative under an unknown key"); return;
+        TEST_FAIL(name, "legacy-shaped verb accepted a negative under an "
+                        "unknown key"); return;
     }
 
-    /* (iii) legacy verb — a negative NESTED inside an array under an
-     * unknown key — proves the flag propagates through the signed
+    /* (iii) legacy-shaped verb — a negative NESTED inside an array under
+     * an unknown key — proves the flag propagates through the signed
      * walker's recursion. */
-    w3_frame_begin(&enc, "w_sync_req");
+    w3_frame_begin(&enc, "w_rost_q");
     cbor_encode_map(&enc, 2);
-    cbor_encode_cstr(&enc, "h");   cbor_encode_uint(&enc, 7);
+    cbor_encode_cstr(&enc, "v");   cbor_encode_uint(&enc, 7);
     cbor_encode_cstr(&enc, "zzz");
     cbor_encode_array(&enc, 2);
     cbor_encode_uint(&enc, 1);
     cbor_encode_int(&enc, -5);
     if (w3_frame_end(&enc, &out) == 0) {
-        TEST_FAIL(name, "legacy verb accepted a negative nested in an array"); return;
+        TEST_FAIL(name, "legacy-shaped verb accepted a negative nested in "
+                        "an array"); return;
     }
 
     /* (iv) verb 35 (w_cmt_state) — a negative under its OWN key "m",
@@ -1545,21 +1004,30 @@ static void test_cmt_max_msg_size(void) {
         }
     }
 
-    /* Retired verbs 28-34: no ceiling to report. */
-    for (int v = 28; v <= 34; v++) {
+    /* Retired numbers 26-34: no ceiling to report (extended from 28-34 —
+     * R3 W4-D retires 26-27 too). */
+    for (int v = 26; v <= 34; v++) {
         if (nodus_t3_max_msg_size((nodus_t3_msg_type_t)v) != 0) {
             TEST_FAIL(name, "a retired verb still has a ceiling"); return;
         }
     }
 
-    /* Legacy verbs keep the bound the legacy path uses today. */
-    static const nodus_t3_msg_type_t legacy[] = {
-        NODUS_T3_PROPOSE, NODUS_T3_COMMIT, NODUS_T3_SYNC_RSP,
-        NODUS_T3_VIEWOK, NODUS_T3_V2_RANGE_RSP
+    /* R3 W4-D — every LIVE verb outside the explicit CMT case list falls
+     * into nodus_t3_max_msg_size's `default:` branch and gets the generic
+     * bound the legacy path used (NODUS_W_MAX_SYNC_RSP_SIZE), same as
+     * before this delta. Rewritten off the deleted verbs (w_propose,
+     * w_commit, w_sync_rsp, w_viewok, w_v2_range_rsp — all retired) onto
+     * the surviving non-CMT verbs: roster/ident (9-11), the chain_config
+     * vote-collect RPC (14-15, register R3-W4-D-8) and the genesis
+     * bundle (24-25). */
+    static const nodus_t3_msg_type_t non_cmt_live[] = {
+        NODUS_T3_ROST_Q, NODUS_T3_ROST_R, NODUS_T3_IDENT,
+        NODUS_T3_CC_VOTE_REQ, NODUS_T3_CC_VOTE_RSP,
+        NODUS_T3_V2_GBUNDLE_REQ, NODUS_T3_V2_GBUNDLE_RSP
     };
-    for (size_t i = 0; i < sizeof(legacy) / sizeof(legacy[0]); i++) {
-        if (nodus_t3_max_msg_size(legacy[i]) != (size_t)NODUS_W_MAX_SYNC_RSP_SIZE) {
-            TEST_FAIL(name, "legacy bound changed"); return;
+    for (size_t i = 0; i < sizeof(non_cmt_live) / sizeof(non_cmt_live[0]); i++) {
+        if (nodus_t3_max_msg_size(non_cmt_live[i]) != (size_t)NODUS_W_MAX_SYNC_RSP_SIZE) {
+            TEST_FAIL(name, "non-CMT live verb bound changed"); return;
         }
     }
 
@@ -1900,23 +1368,10 @@ int main(void) {
     init_test_data();
 
     test_method_type_mapping();
-    test_propose();
-    test_prevote();
-    test_precommit();
-    test_commit();
-    test_viewchg();
-    test_viewchg_with_prepared();
-    test_newview();
-    test_newview_with_reproposal();
-    test_fwd_req();
-    test_fwd_rsp();
     test_rost_q();
     test_rost_r();
     test_ident();
-    test_sync_req();
-    test_sync_rsp();
     test_verify_wrong_key();
-    test_propose_zero_nullifiers();
 
     /* cometbft envelope — verbs 35-39 (D-16 rev 5, W3). */
     fprintf(stderr, "--- cometbft envelope (verbs 35-39) ---\n");

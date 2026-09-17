@@ -22,14 +22,14 @@
  *   signatures, nullifier state, fee, ownership) — no field is trusted
  *   from the leader's PROPOSE message without independent recompute.
  *
- *   Post-commit state_root binding is enforced separately in
- *   nodus_witness_bft.c::nodus_witness_bft_handle_commit, where each
- *   follower independently computes state_root via
- *   nodus_witness_merkle_compute_state_root() and compares the result
- *   against the leader's COMMIT-message state_root. A compromised
- *   leader therefore cannot force followers to adopt an invalid
- *   post-block state. See tests/test_prevote_state_root_mutation.c for
- *   the regression guard.
+ *   R3 W4 — the post-commit state_root binding this paragraph used to
+ *   describe (nodus_witness_bft_handle_commit's independent
+ *   nodus_witness_merkle_compute_state_root recompute against the
+ *   leader's COMMIT-message state_root) is DELETED with the closed
+ *   consensus lane: nodus_witness_bft.c, and the legacy COMMIT message
+ *   it verified, are both gone. A version-3 chain's post-block state
+ *   binding is the cometbft application layer's own concern, outside
+ *   this file.
  *
  * @file nodus_witness_verify.c
  */
@@ -50,7 +50,6 @@
 #include "witness/nodus_witness_v2_gate.h"    /* armed probe             */
 #include "witness/nodus_witness_v2_claims.h"  /* claim admit (class 201) */
 #include "witness/nodus_witness_v2_produce.h" /* class + nullifier helper*/
-#include "witness/nodus_witness_mempool.h"    /* pending-claim scan      */
 #include "witness/nodus_witness_domreg.h"     /* committed ruleset ctx   */
 #include <sqlite3.h>                          /* v2_intent_index lookup  */
 
@@ -318,8 +317,11 @@ static uint64_t be64_read(const uint8_t *p) {
  * (D7.1), NO signers (spend authority IS the proof's ak/nk binding —
  * signer_count pinned 0), and its nullifiers live in the shielded section
  * only (G-SEC-8 — never routed through the transparent Check-4 walk).
- * Returning here also structurally guarantees the per-node mempool-dependent
- * Check 5 never runs for type-11 (G-DET-1 / MED-1).
+ * Returning here also structurally guarantees Check 5 never runs for
+ * type-11 (G-DET-1 / MED-1). R3 W4 — Check 5's own mempool-dependent
+ * surge is separately deleted with the closed consensus lane, so this
+ * guarantee is now belt-and-braces rather than the only reason type-11
+ * cannot see node-local state through Check 5.
  *
  * ⚠ ADMISSION IS UNCONDITIONALLY REJECT THROUGH ALL OF C2 (CRIT-2/G-SEC-7/
  * G-SEC-9): even a fully-VALID proof cannot be admitted pre-C3 — the apply
@@ -522,11 +524,11 @@ static int verify_shielded_tx(nodus_witness_t *w,
  *   - nodus_witness_v2_claim_admit (chain binding, committed manifest,
  *     height window, Merkle membership, converted amount, sig+dest, target
  *     runtime, spent set incl. cross-block, remaining cover);
- *   - SEMANTIC DEDUP: the spent set is covered by claim_admit; the
- *     pending-mempool nullifier scan is ADMISSION-ONLY — a follower's
- *     VALIDATION verdict must depend on bytes + committed state alone,
- *     never on this node's mempool depth (the F02 discipline), or two
- *     honest nodes with different pending sets would vote differently.
+ *   - SEMANTIC DEDUP: the spent set is covered by claim_admit alone.
+ *     R3 W4 — the ADMISSION-only pending-mempool nullifier scan that used
+ *     to run in addition (a local intake gate over w->mempool, now
+ *     deleted with the closed consensus lane) is removed; cross-block
+ *     dedup never depended on it.
  */
 static int verify_v2_successor_claim(nodus_witness_t *w,
                                      const uint8_t *tx_data, uint32_t tx_len,
@@ -590,25 +592,16 @@ static int verify_v2_successor_claim(nodus_witness_t *w,
             snprintf(reject_reason, reason_size, "claim admission rejected");
             break;
         }
-        /* Pending-mempool dedup — ADMISSION mode ONLY (local intake gate).
-         * Cross-block dedup (v2_claims_spent) already ran inside
-         * claim_admit and is unconditional. */
-        if (mode == NODUS_WITNESS_VERIFY_ADMISSION) {
-            for (int i = 0; i < w->mempool.count; i++) {
-                const nodus_witness_mempool_entry_t *e = w->mempool.entries[i];
-                if (e && e->tx_type == NODUS_W_TX_V2_CLAIM &&
-                    e->nullifier_count >= 1 &&
-                    memcmp(e->nullifiers[0], adm.nullifier,
-                           NODUS_T3_NULLIFIER_LEN) == 0) {
-                    snprintf(reject_reason, reason_size,
-                             "claim nullifier already pending in mempool");
-                    goto done;
-                }
-            }
-        }
+        /* R3 W4 — the pending-mempool dedup that used to run here in
+         * ADMISSION mode (a local intake gate over w->mempool, now
+         * deleted) is removed with the closed consensus lane. Cross-block
+         * dedup (v2_claims_spent) still runs unconditionally inside
+         * claim_admit above and is unaffected: this deletion only drops
+         * the additional same-height, not-yet-committed duplicate check
+         * a local in-memory pool made possible. */
+        (void)mode;
         rc = 0;
     } while (0);
-done:
     free(reenc);
     free(c);
     return rc;
@@ -969,8 +962,9 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
      * from 11, so this reorder cannot capture a genuine genesis (C2.4
      * red-team, 2026-07-22: closes the ordering wart the fail-close comment
      * had overclaimed). In C2 every shielded path rejects unconditionally.
-     * Returning here also guarantees the per-node mempool read in Check 5
-     * never touches a type-11 verdict (G-DET-1). */
+     * Returning here also guarantees Check 5 never touches a type-11
+     * verdict. R3 W4 — Check 5 no longer reads any per-node mempool state
+     * for ANY type, so this guarantee is now belt-and-braces (G-DET-1). */
     if (tx_type == NODUS_W_TX_SHIELDED || tx_data[1] == NODUS_W_TX_SHIELDED) {
         return verify_shielded_tx(w, tx_data, tx_len,
                                   reject_reason, reason_size);
@@ -1148,60 +1142,28 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
         /* ── Check 5: Dynamic fee (DNAC-only) ─────────────────── */
         uint64_t actual_fee = total_input - total_output;
 
-        /* Check 5 is TWO gates, in this order:
-         *   (a) a deterministic FLOOR on actual_fee  -- both modes, below;
-         *   (b) the mempool SURGE above that floor   -- ADMISSION only.
+        /* Check 5 is a deterministic FLOOR on actual_fee, in both modes.
          *
-         * Why (b) is ADMISSION-ONLY (G-DET-2): w->mempool.count is node-LOCAL and
-         * arrival-order dependent, so two honest witnesses compute
-         * different min_fee for the SAME TX. This function also runs on
-         * the block VALIDATION paths (nodus_witness_bft.c:4118 propose,
-         * :4878 F02 commit re-verify) where a single TX reject drops the
-         * ENTIRE batch (bft.c:4126-4132) — a follower holding 8 pending
-         * TXs would reject the honest block of a leader holding 7.
-         * Evaluating it there is a chain-liveness split with no attacker.
+         * R3 W4 — the ADMISSION-only mempool SURGE that used to run above
+         * this floor is DELETED with the closed consensus lane: it read
+         * w->mempool.count, node-LOCAL and arrival-order dependent state
+         * that no longer exists. The floor below is unaffected — it never
+         * depended on the surge or on `mode` — and this function's
+         * behavior in ADMISSION and VALIDATION is now identical for
+         * Check 5, closing the only place the two modes used to diverge.
          *
-         * VALIDATION does not merely skip the comparison: it never READS
-         * w->mempool.count, so the deterministic path has no dependency
-         * on node-local state at all.
-         *
-         * The floor on actual_fee is kept BELOW, in both modes. It is NOT
-         * covered by Check 0: Check 0 bounds the header field
-         * committed_fee@74 (line 796), whereas the surge bounded
-         * actual_fee = Sum(inputs) - Sum(outputs). Nothing in this
+         * The floor on actual_fee is NOT covered by Check 0: Check 0 bounds
+         * the header field committed_fee@74 (line 796), whereas this floor
+         * bounds actual_fee = Sum(inputs) - Sum(outputs). Nothing in this
          * function binds those two quantities for a transparent TX --
          * declared_fee is a caller parameter (the wire btx->fee on the
-         * propose path) and is only ever compared to actual_fee. Dropping
-         * the surge without a replacement floor would therefore let
-         * actual_fee == declared_fee == 1 pass VALIDATION. That is caught
-         * later and deterministically by check_supply_invariant_v016
-         * (nodus_witness_bft.c:3304) -- route_tx_fee burns committed_fee
-         * while the UTXO delta only removes actual_fee -- but "caught" then
-         * means the WHOLE BLOCK is rolled back at finalize instead of one
-         * TX being dropped here. Hence the explicit deterministic floor. */
+         * propose path) and is only ever compared to actual_fee below. */
         if (actual_fee < NODUS_W_BASE_TX_FEE) {
             snprintf(reject_reason, reason_size,
                      "fee too low: actual=%lu < min=%lu",
                      (unsigned long)actual_fee,
                      (unsigned long)NODUS_W_BASE_TX_FEE);
             return -1;
-        }
-
-        /* Surge ABOVE that floor -- ADMISSION only. Same base constant, so
-         * this branch is a strict superset of the floor above and can only
-         * ever raise the bar, never lower it. */
-        if (mode == NODUS_WITNESS_VERIFY_ADMISSION) {
-            int mp_count = w->mempool.count;
-            uint64_t min_fee = NODUS_W_BASE_TX_FEE *
-                               (1 + (uint64_t)mp_count / NODUS_W_FEE_SURGE_STEP);
-
-            if (actual_fee < min_fee) {
-                snprintf(reject_reason, reason_size,
-                         "fee too low: actual=%lu < min=%lu (mempool=%d)",
-                         (unsigned long)actual_fee, (unsigned long)min_fee,
-                         mp_count);
-                return -1;
-            }
         }
 
         /* Deterministic in BOTH modes: fee identity is a property of the

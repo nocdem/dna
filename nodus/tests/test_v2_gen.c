@@ -849,7 +849,9 @@ static int test_defect_L2F2(void) {
 }
 
 static int test_defect_L2F1(void) {
-    printf("§3.5 L2-F1 — an absent supply row is a FAILURE, not a skip\n");
+    printf("§3.5 L2-F1 — an absent supply row is a FAILURE, not a skip "
+           "(version-3 rule: a height-0 row OR a stored genesis document "
+           "means a genesis EXISTS)\n");
 
     /* ── the scoping half: a legacy / pre-genesis DB is UNCHANGED ──── */
     {
@@ -876,6 +878,20 @@ static int test_defect_L2F1(void) {
               "no block committed");
         CHECK(nodus_witness_v2_supply_check(w) == 0,
               "SCOPE: v2_blocks present but empty still returns 0");
+
+        /* R3-W4-S: climb the SAME handle straight to S14 (the Comet
+         * stores). No genesis document is ever stored here — only the
+         * migration ran, never nodus_witness_v2_gen_derive_v3 — so this
+         * is the version-3-schema analogue of the S12 case just above:
+         * a fresh S14 catalogue with no stored genesisDoc row must stay
+         * honest pre-genesis, not be mistaken for a committed genesis
+         * merely because the Comet stores now exist. */
+        CHECK(nodus_witness_db_migrate_v2s14(w) == 0, "migrate to S14");
+        CHECK(q1(w->db, "SELECT COUNT(*) FROM v2_blocks") == 0,
+              "still no block committed");
+        CHECK(nodus_witness_v2_supply_check(w) == 0,
+              "SCOPE: S14 tables (cmt_state included) present, no stored "
+              "genesisDoc, no supply row: still honest pre-genesis");
         close_chain(w);
         rmrf(dir);
     }
@@ -884,7 +900,16 @@ static int test_defect_L2F1(void) {
      * R3 W3 (D-17 rev 10 (8)/(9)): version 3 — the merged tree's
      * post-open chain-role gate now refuses a version-2 chain on
      * reopen, and nodus_witness_v2_supply_check's fail-closed property
-     * is lane-independent. */
+     * is lane-independent.
+     *
+     * R3-W4-S (D-17 rev 11 (11), the obligation this closes): a
+     * version-3 chain never writes the height-0 v2_blocks row this
+     * probe used to depend on exclusively — its genesis lives ONLY as
+     * the stored "genesisDoc" document in cmt_state. Before this fix
+     * the assertion below was RED: nodus_rt_core_invariant's genesis
+     * probe saw no height-0 row, never looked at cmt_state, and
+     * returned 0 (SKIPPED) instead of -1 — fail-OPEN on the exact chain
+     * shape this whole test derives. */
     {
         cfgbox_t c;
         CHECK(cfg_make_v3_ex(&c, 0, 1, 0) == 0, "cfg (version 3)");
@@ -902,20 +927,26 @@ static int test_defect_L2F1(void) {
         /* Delete the row the whole invariant is evaluated against.
          * KILL: with the old unconditional `return 0` this check
          * returns 0 and the assertion below FAILS — the invariant was
-         * skipped, not failed, for the life of the chain. */
+         * skipped, not failed, for the life of the chain. On a
+         * version-3 chain this stayed true even after L2-F1's original
+         * fix, because that fix only ever looked for the height-0
+         * v2_blocks row, which THIS chain shape never writes. */
         CHECK(run_sql(w->db, "DELETE FROM supply_tracking") == 0, "delete");
         CHECK(q1(w->db, "SELECT COUNT(*) FROM supply_tracking") == 0,
               "the row is gone");
         CHECK(nodus_witness_v2_supply_check(w) != 0,
-              "an absent supply row on a chain that HAS a V2 genesis "
-              "FAILS CLOSED (it is no longer silently skipped)");
+              "an absent supply row on a version-3 chain that HAS a "
+              "stored genesis document FAILS CLOSED (it is no longer "
+              "silently skipped just because no height-0 row exists)");
         close_chain(w);
         rmrf(dir);
         cfg_free(&c);
     }
 
     OK();
-    printf("  ok: absent row fails post-genesis, unchanged pre-genesis\n");
+    printf("  ok: absent row fails post-genesis (both a height-0 row and a "
+           "stored genesis document count as \"genesis exists\"), "
+           "unchanged pre-genesis (including a bare S14 climb)\n");
     return 0;
 }
 

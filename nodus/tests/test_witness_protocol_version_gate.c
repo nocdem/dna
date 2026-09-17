@@ -1,122 +1,81 @@
 /**
  * Nodus — O15C-D.4 — consensus protocol version gate.
  *
- * ── The defect this closes ────────────────────────────────────────────
+ * ── R3 W4-D REWRITE — WHY THE ORIGINAL FILE IS GONE ───────────────────
  *
- * O15C-D.3 added three proof-bearing NEW_VIEW keys (rpv/rns/rsg). CBOR
- * arg decoders SKIP unknown keys, and NOTHING on the receive path read
- * `hdr->version` — it was decoded and never used again. So a v2 binary
- * silently processed a v3 NEW_VIEW under the pre-D.3 local-subset
- * semantics: two versions, same message, different rules.
+ * O15C-D.4 closed a defect where nodus_witness_dispatch_t3 accepted a
+ * PREVOTE / NEW_VIEW at an out-of-date protocol version and silently
+ * counted its vote under the wrong semantics — reproduced on real
+ * binaries (bc0ff148 vs c65c8cd1), where a legacy node's vote was
+ * essential to a quorum the current-version nodes could not reach
+ * without it.
  *
- * Reproduced on REAL binaries before the fix (bc0ff148 vs c65c8cd1,
- * 6 current + 1 legacy): the legacy node committed byte-identical blocks,
- * and with two current nodes stopped the live set was 4 current + 1
- * legacy = 5 = quorum and the chain ADVANCED. Its vote was counted and
- * was essential. Silent mixed-version participation, not a theory.
+ * R3 W4-D deletes the closed consensus lane entirely: PROPOSE, PREVOTE,
+ * PRECOMMIT, COMMIT, VIEWCHG, NEWVIEW, FWD_REQ, FWD_RSP (verbs 1-8),
+ * SYNC_REQ/RSP (12-13), the bootstrap CHAIN_Q/CHAIN_R/GENESIS_REQ/
+ * GENESIS_RSP (16-19), the old-lane V2_BLOCK/V2_HEAD/V2_RANGE_REQ/
+ * V2_RANGE_RSP (20-23) and VIEWOK/VIEWOK_REQ (26-27) — 20 method
+ * strings in all — no longer decode to anything: nodus_t3_method_to_
+ * type answers 0 for every one of them, and nodus_t3_decode refuses the
+ * envelope before any argument is looked at (nodus_tier3.c: "msg->type
+ * = nodus_t3_method_to_type(msg->method); if (msg->type == 0) return
+ * -1;"). Their arg structs, their dispatch cases and the round_state /
+ * bft_config machinery the old test drove through nodus_witness_
+ * dispatch_t3 are all deleted with them (nodus_witness_bft.c and
+ * nodus_witness_bft_internal.h, whole files).
  *
- * ── The enforced contract ─────────────────────────────────────────────
+ * The property this file exists to prove is therefore no longer "the
+ * dispatcher gates a live verb by version" — there is no live verb left
+ * in the retired set to gate. It is the STRONGER, simpler guarantee
+ * that subsumes it: a retired method string does not even decode,
+ * regardless of what protocol version its header claims, so there is no
+ * way to reach a dispatch-level version check for it at all. §6/§7's
+ * "a current-version header carrying legacy-shaped NEW_VIEW args" case
+ * is subsumed by the same fact: the method itself is refused before any
+ * argument, legacy-shaped or not, is ever read.
  *
- * `NODUS_T3_BFT_PROTOCOL_VER` is bumped, and
- * `nodus_witness_dispatch_t3` gates the consensus-affecting message set
- * on an EXACT version match.
+ * ── WHAT THIS FILE PROVES ──────────────────────────────────────────────
  *
- * ⚠ The constant has MOVED since this test was written; the gate has not.
- * Real history: 2 -> 3 at O15C-D.4 (this test's own season, the NEW_VIEW
- * certificate keys), 3 -> 4 at O15G (the cert ACCEPTANCE RULE moved to
- * the committed committee snapshot), 4 -> 5 at O15N Faz 2A (the PREPARED
- * signature domain — a 116-byte preimage carrying chain_id, and purpose
- * 0x07 made strict). See nodus_types.h for the per-value rationale. Every
- * section below reads the constant SYMBOLICALLY, so the test tracks the
- * bump without edits; only this prose had to be corrected, and it was
- * wrong until O15N Faz 2A because it named the 2 -> 3 step as if it were
- * the current one.
+ *   1. Every one of the 20 retired method strings, hand-built into an
+ *      otherwise well-formed envelope carrying this node's OWN current
+ *      protocol version, is REFUSED by nodus_t3_decode (return -1), and
+ *      nodus_t3_method_to_type answers 0 (not-a-verb) for the same
+ *      string directly.
+ *   2. CONTROL: the identical envelope SHAPE, naming a LIVE method
+ *      (w_rost_q, verb 9) with valid args, DECODES successfully. Without
+ *      this control, a decoder that refused every envelope regardless of
+ *      content would pass every case above for the wrong reason.
  *
- * Placement is load-bearing:
- *   * AFTER wsig verification — `hdr->version` sits inside the Dilithium5
- *     envelope preimage (nodus_tier3.c enc_wh via enc_sign_payload), so
- *     the value gated on is authenticated and a peer signs version and
- *     args together;
- *   * BEFORE nodus_witness_peer_ensure — the first state mutation on the
- *     path, so a rejected message leaves no residue.
- * Older AND unknown-newer versions both fail closed on the exact match.
+ * ── WHAT THIS FILE DOES NOT PROVE ──────────────────────────────────────
  *
- * Separately, `handle_newview` has a NAMED check rejecting a v3 header
- * that carries v2-shaped args (has_reproposal with no certificate), so
- * that case has a branch of its own instead of dying incidentally inside
- * verify_prepared_cert.
+ * The NEW gate — whether a genuine w_cmt_state frame (verb 35) is
+ * accepted at this node's protocol version and refused at a version one
+ * off in either direction — is `test_cmt_live.c`'s claim, not this
+ * file's: its case 2 (`version_gate_verb35`) drives a real signed
+ * w_cmt_state frame through nodus_witness_dispatch_t3 at the current
+ * version (accepted, the peer's round state moves) and at versions one
+ * below and one above (both refused), the two refusals distinguished by
+ * distinct heights so neither case is vacuous.
  *
- * ── Non-vacuity ───────────────────────────────────────────────────────
+ * ── WHAT IT REQUIRES / LEAVES BEHIND ───────────────────────────────────
  *
- * Every rejection case is paired with the SAME message at the current
- * version being ACCEPTED and changing observable BFT state. Without that
- * pairing a test could pass because nothing ever reached the handler.
+ * Nothing beyond a default build: no compile flags, no environment, no
+ * network, no filesystem, no witness handle, no signing key. Every case
+ * drives nodus_t3_decode / nodus_t3_method_to_type directly on an
+ * in-memory buffer; nothing is left behind.
  *
- * ── FLEET-TM-R3 W3 (package C2a) — §1-§4 REWRITTEN, D-16 rev 5 /
- * D-17 rev 10 (9), both APPROVED ─────────────────────────────────────
+ * ── HOW IT COULD LIE ───────────────────────────────────────────────────
  *
- * The version-gate's SCOPE moved: PROPOSE/PREVOTE/PRECOMMIT/COMMIT/
- * VIEWCHG/NEWVIEW/FWD_REQ/FWD_RSP/VIEWOK/VIEWOK_REQ are no longer in the
- * gate at all — nodus_witness_dispatch_t3's routing switch log-and-drops
- * every one of them UNCONDITIONALLY now (D-17 rev 10 (9): the old
- * consensus lane is closed, not deleted, on every chain, not only a
- * version-3 one), and the gate's list becomes EXACTLY verbs 35-39 (the
- * cometbft envelope, D-16 rev 5). §1's ORIGINAL claim — "the current
- * version is accepted and changes BFT state" — is therefore false for
- * PREVOTE after this wave: a v2_successor is never derived for this
- * fixture, so nodus_witness_bft_handle_vote is provably unreachable
- * from dispatch any more, at ANY header version. §1-§4 below now prove
- * exactly that (the closed-lane regression this wave must not
- * reintroduce), reusing the SAME lightweight fixture and PREVOTE frame
- * the original sections built — no reactor needed, because there is
- * nothing left for a PREVOTE frame to reach.
- *
- * ⚠ HOW THIS FILE CAN LIE, going forward: it does NOT itself exercise
- * the NEW gate (whether a genuine w_cmt_state frame at version 7 is
- * accepted and version 6/8 refused). That property needs a live
- * cmt_conr_t/cmt_memr_t pair (nodus_cmt_net_receive's peer-admission
- * side effect, conr->peers[i].in_set, is the only observable this
- * dispatch path produces for an accepted verb-35 frame) — building one
- * SAFELY needs either the full nodus_cmt_node_init stack (real cs/mem,
- * as test_cmt_node.c's fixture() builds) or a verified-safe shortcut
- * over zeroed cmt_cs_t/cmt_mem_t, which THIS file does not attempt.
- * DELTA 7: that coverage now exists elsewhere — `test_cmt_live.c`'s
- * `version_gate_verb35` drives a real signed `w_cmt_state` frame through
- * `nodus_witness_dispatch_t3` at version 7 (accepted, the peer's round
- * state moves) and at versions 6 and 8 (refused), the two refusals
- * distinguished by distinct heights so the case is non-vacuous. A green
- * run of THIS file alone still proves only that the OLD lane stays
- * closed; the NEW gate's own proof is `test_cmt_live.c`'s, not this
- * file's.
- *
- * Sections:
- *   §1 the closed lane stays closed at the CURRENT header version too —
- *      a PREVOTE changes NOTHING, at any version (was: "is accepted")
- *   §2 older version (the shipped legacy value) — also no state change
- *   §3 unknown newer version — also no state change
- *   §4 rejection happens across repeated attempts and version values
- *   §5 ABSENT — pre-existing at HEAD (`main()` runs §1-§4 then §6-§7;
- *      there never was a §5 case in this file). Delta 8, item B: named
- *      here rather than silently dropped or invented, so the numbering
- *      gap is not mistaken for a missing case in THIS package's own
- *      rewrite.
- *   §6 a current-version header carrying v2-shaped NEW_VIEW args (no
- *      certificate) is rejected by name
- *   §7 unknown NON-critical arg keys are still skipped — additive
- *      evolution stays possible while required fields are enforced
+ * Every hand-built envelope is otherwise well-formed (the same 6-key
+ * top-level shape and 7-key header the live encoder emits), so a
+ * rejection can only be attributed to the METHOD NAME, not to some
+ * other malformation the builder introduced by mistake — the control
+ * case (w_rost_q) closes this: if the builder itself produced a
+ * malformed frame, the control would fail closed too, and it does not.
  */
 
-#define NODUS_WITNESS_INTERNAL_API 1
-
-#include "witness/nodus_witness.h"
-#include "witness/nodus_witness_bft.h"
 #include "protocol/nodus_tier3.h"
 #include "protocol/nodus_cbor.h"
-#include "crypto/nodus_sign.h"
-#include "transport/nodus_tcp.h"
-#include "server/nodus_server.h"
-#include "crypto/sign/qgp_dilithium.h"
-#include "crypto/hash/qgp_sha3.h"
 #include "nodus/nodus_types.h"
 
 #include <stdbool.h>
@@ -132,298 +91,124 @@
         exit(1); \
     } } while (0)
 
-#define CHECK_EQ(a, b) do { \
-    long long _a = (long long)(a), _b = (long long)(b); \
-    if (_a != _b) { \
-        fprintf(stderr, "CHECK_EQ fail at %s:%d: %lld != %lld\n", \
-                __FILE__, __LINE__, _a, _b); \
-        exit(1); \
-    } } while (0)
+static int checks;
 
-#define NVAL   7
-#define QUORUM 5
-/* The value the legacy binaries in the mixed-cluster reproduction emit.
- * It is NOT "the previous version" — the constant has since moved to 4
- * and then 5, so 2 is now several steps back. That is fine and is the
- * point: the gate is an EXACT match, so any non-current value must be
- * rejected, and pinning a fixed old one keeps §2 meaningful across bumps. */
-#define LEGACY_BFT_VER 2
+/* The 20 method strings retired with the closed consensus lane (R3 W4),
+ * exactly as nodus_t3_type_to_method answered them before their enum
+ * members were deleted (verified against git history at 4a43e3a9). The
+ * numbers behind them are never reused (nodus_tier3.h's own "RETIRED
+ * numbers" comment). */
+static const char *const RETIRED_METHODS[] = {
+    "w_propose", "w_prevote", "w_precommit", "w_commit",
+    "w_viewchg", "w_newview", "w_fwd_req", "w_fwd_rsp",
+    "w_sync_req", "w_sync_rsp",
+    "w_chain_q", "w_chain_r", "w_genesis_req", "w_genesis_rsp",
+    "w_v2_block", "w_v2_head", "w_v2_range_q", "w_v2_range_r",
+    "w_viewok", "w_viewok_q",
+};
+#define N_RETIRED (sizeof(RETIRED_METHODS) / sizeof(RETIRED_METHODS[0]))
 
-typedef struct {
-    uint8_t pk[NODUS_PK_BYTES];
-    uint8_t sk[4896];
-    uint8_t id[NODUS_T3_WITNESS_ID_LEN];
-} peer_t;
+/* A filler value reused for every bstr field this file's hand-built
+ * frames need (sender_id, chain_id) — none of these cases calls
+ * nodus_t3_verify, so no real signing key or wsig content is needed;
+ * only nodus_t3_decode's method-name gate is under test. */
+static uint8_t FILLER[32];
 
-static void peer_make(peer_t *p) {
-    CHECK(qgp_dsa87_keypair(p->pk, p->sk) == 0);
-    uint8_t d[64];
-    CHECK(qgp_sha3_512(p->pk, NODUS_PK_BYTES, d) == 0);
-    memcpy(p->id, d, NODUS_T3_WITNESS_ID_LEN);
+/* The generic hand-built envelope every case below shares — the SAME
+ * 6-key top-level shape and 7-key header nodus_t3_encode emits (matching
+ * test_tier3.c's w3_frame_begin idiom), so the ONLY thing that varies
+ * between a retired-method case and the control is the `q` string and
+ * the `a` map's content. */
+static void frame_begin(cbor_encoder_t *enc, uint8_t *buf, size_t cap,
+                        const char *method) {
+    cbor_encoder_init(enc, buf, cap);
+    cbor_encode_map(enc, 6);
+    cbor_encode_cstr(enc, "t"); cbor_encode_uint(enc, 1);
+    cbor_encode_cstr(enc, "y"); cbor_encode_cstr(enc, "q");
+    cbor_encode_cstr(enc, "q"); cbor_encode_cstr(enc, method);
+    cbor_encode_cstr(enc, "wh");
+    cbor_encode_map(enc, 7);
+    cbor_encode_cstr(enc, "v");   cbor_encode_uint(enc, NODUS_T3_BFT_PROTOCOL_VER);
+    cbor_encode_cstr(enc, "rnd"); cbor_encode_uint(enc, 0);
+    cbor_encode_cstr(enc, "vw");  cbor_encode_uint(enc, 0);
+    cbor_encode_cstr(enc, "sid"); cbor_encode_bstr(enc, FILLER, sizeof(FILLER));
+    cbor_encode_cstr(enc, "ts");  cbor_encode_uint(enc, 1);
+    cbor_encode_cstr(enc, "nc");  cbor_encode_uint(enc, 2);
+    cbor_encode_cstr(enc, "cid"); cbor_encode_bstr(enc, FILLER, sizeof(FILLER));
+    cbor_encode_cstr(enc, "a");
 }
 
-static void roster_put(nodus_witness_t *w, const peer_t *p) {
-    uint32_t i = w->roster.n_witnesses++;
-    memcpy(w->roster.witnesses[i].witness_id, p->id, NODUS_T3_WITNESS_ID_LEN);
-    memcpy(w->roster.witnesses[i].pubkey, p->pk, NODUS_PK_BYTES);
-    w->roster.witnesses[i].active = true;
-}
-
-static nodus_witness_t *fixture(const peer_t *self, const peer_t *peers,
-                                int n_peers) {
-    nodus_witness_t *w = calloc(1, sizeof(*w));
-    CHECK(w != NULL);
-    nodus_server_t *srv = calloc(1, sizeof(*srv));
-    CHECK(srv != NULL);
-    memcpy(srv->identity.pk.bytes, self->pk, NODUS_PK_BYTES);
-    memcpy(srv->identity.sk.bytes, self->sk, sizeof(srv->identity.sk.bytes));
-    w->server = srv;
-    memcpy(w->my_id, self->id, NODUS_T3_WITNESS_ID_LEN);
-    roster_put(w, self);
-    for (int i = 0; i < n_peers; i++) roster_put(w, &peers[i]);
-    w->bft_config.n_witnesses = w->roster.n_witnesses;
-    w->bft_config.quorum = QUORUM;
-    w->bft_config.round_timeout_ms = 16000;
-    w->bft_config.viewchg_timeout_ms = 16000;
-    w->running = true;
-    return w;
-}
-
-static void free_fixture(nodus_witness_t *w) { free(w->server); free(w); }
-
-/* O15N Faz 2A — 116-byte PREPARED preimage: "prepared"(8) ‖ chain_id(32) ‖
- * view(4 BE) ‖ height(8 BE) ‖ tx_hash(64), mirroring
- * compute_prepared_preimage. Only §1's ACCEPT leg actually needs this
- * signature to verify — the rejection legs never reach the tally — but it
- * must be right there, or §1's non-vacuity pairing (the vote must CHANGE
- * observable state) would silently stop holding. */
-static void sign_prepared(uint8_t out[NODUS_SIG_BYTES], const peer_t *p,
-                          uint32_t view, uint64_t height,
-                          const uint8_t *tx_hash, const uint8_t *chain_id) {
-    uint8_t pre[116];
-    memcpy(pre, "prepared", 8);
-    memcpy(pre + 8, chain_id, 32);
-    pre[40] = (uint8_t)(view >> 24); pre[41] = (uint8_t)(view >> 16);
-    pre[42] = (uint8_t)(view >> 8);  pre[43] = (uint8_t)view;
-    for (int i = 0; i < 8; i++)
-        pre[44 + i] = (uint8_t)(height >> ((7 - i) * 8));
-    memcpy(pre + 52, tx_hash, NODUS_T3_TX_HASH_LEN);
-    nodus_sig_t sig;
-    nodus_seckey_t sk;
-    memcpy(sk.bytes, p->sk, sizeof(sk.bytes));
-    CHECK(nodus_sign_prepared_vote(&sig, pre, sizeof(pre), &sk) == 0);
-    memcpy(out, sig.bytes, NODUS_SIG_BYTES);
-}
-
-static void enter_round(nodus_witness_t *w, const peer_t *self,
-                        uint64_t round, uint64_t height,
-                        const uint8_t *tx_hash) {
-    w->current_round = round;
-    memset(&w->round_state, 0, sizeof(w->round_state));
-    w->round_state.round = round;
-    w->round_state.view = w->current_view;
-    w->round_state.phase = NODUS_W_PHASE_PREVOTE;
-    w->round_state.block_height = height;
-    memcpy(w->round_state.tx_hash, tx_hash, NODUS_T3_TX_HASH_LEN);
-    memcpy(w->round_state.prevotes[0].voter_id, self->id,
-           NODUS_T3_WITNESS_ID_LEN);
-    memcpy(w->round_state.prevotes[0].pubkey, self->pk, NODUS_PK_BYTES);
-    w->round_state.prevotes[0].vote = NODUS_W_VOTE_APPROVE;
-    w->round_state.prevote_count = 1;
-    w->round_state.prevote_approve_count = 1;
-}
-
-/* Encode a signed PREVOTE at an arbitrary protocol version and push it
- * through the REAL dispatch entry point. */
-static void dispatch_prevote(nodus_witness_t *w, const peer_t *from,
-                             uint8_t version, uint64_t round, uint32_t view,
-                             uint64_t height, const uint8_t *tx_hash) {
-    nodus_t3_msg_t m;
-    memset(&m, 0, sizeof(m));
-    m.type = NODUS_T3_PREVOTE;
-    m.txn_id = 1;
-    m.header.version = version;
-    m.header.round = round;
-    m.header.view = view;
-    memcpy(m.header.sender_id, from->id, NODUS_T3_WITNESS_ID_LEN);
-    m.header.timestamp = nodus_time_now();
-    nodus_random((uint8_t *)&m.header.nonce, sizeof(m.header.nonce));
-    memcpy(m.vote.vote_target, tx_hash, NODUS_T3_TX_HASH_LEN);
-    m.vote.vote = 0;
-    sign_prepared(m.vote.cert_sig, from, view, height, tx_hash, w->chain_id);
-
-    static uint8_t buf[NODUS_T3_MAX_MSG_SIZE];
-    size_t len = 0;
-    nodus_seckey_t sk;
-    memcpy(sk.bytes, from->sk, sizeof(sk.bytes));
-    CHECK(nodus_t3_encode(&m, &sk, buf, sizeof(buf), &len) == 0);
-    CHECK(len > 0);
-    /* conn == NULL: peer_ensure is conn-guarded, so this exercises the
-     * gate without needing a socket. */
-    nodus_witness_dispatch_t3(w, NULL, buf, len);
+static size_t frame_end(cbor_encoder_t *enc) {
+    cbor_encode_cstr(enc, "wsig");
+    cbor_encode_bstr(enc, FILLER, sizeof(FILLER));
+    return cbor_encoder_len(enc);
 }
 
 int main(void) {
-    static peer_t val[NVAL];
-    for (int i = 0; i < NVAL; i++) peer_make(&val[i]);
+    printf("=== Consensus protocol version gate (R3 W4-D rewrite) ===\n");
 
-    uint8_t TX[NODUS_T3_TX_HASH_LEN];
-    memset(TX, 0x5A, sizeof(TX));
-    const uint64_t H = 7;
+    /* ── §1 every retired method string refuses to decode ────────────
+     * §1a: nodus_t3_method_to_type answers 0 (not-a-verb) directly.
+     * §1b: a hand-built envelope naming it, at THIS NODE'S OWN current
+     * protocol version, is refused by nodus_t3_decode — the method gate
+     * fires before the version could ever matter. */
+    for (size_t i = 0; i < N_RETIRED; i++) {
+        const char *m = RETIRED_METHODS[i];
 
-    /* ── §1 the closed lane stays closed at the CURRENT header version
-     * too — a PREVOTE is UNCONDITIONALLY log-and-dropped by the routing
-     * switch now (D-17 rev 10 (9)), so it must change NOTHING even when
-     * its header carries this node's own protocol version. This is the
-     * regression the rewrite must catch: were PREVOTE ever accidentally
-     * left in nodus_witness_dispatch_t3's routing switch (rather than
-     * its "old lane" drop-list), this assertion would fail. ────────── */
-    {
-        nodus_witness_t *w = fixture(&val[0], &val[1], NVAL - 1);
-        enter_round(w, &val[0], 6, H, TX);
-        int before = w->round_state.prevote_approve_count;
-        dispatch_prevote(w, &val[1], NODUS_T3_BFT_PROTOCOL_VER, 6, 0, H, TX);
-        int after = w->round_state.prevote_approve_count;
-        CHECK_EQ(after, before);
-        CHECK_EQ(w->peer_count, 0);
-        printf("[ok] §1 v%u PREVOTE — closed lane, NOT counted (%d -> %d): "
-               "the old consensus lane stays closed even at this node's "
-               "own protocol version\n",
-               (unsigned)NODUS_T3_BFT_PROTOCOL_VER, before, after);
-        free_fixture(w);
+        CHECK(nodus_t3_method_to_type(m) == 0);
+
+        uint8_t buf[512];
+        cbor_encoder_t enc;
+        frame_begin(&enc, buf, sizeof(buf), m);
+        cbor_encode_map(&enc, 0);   /* empty args — never reached */
+        size_t len = frame_end(&enc);
+        CHECK(len > 0);
+
+        nodus_t3_msg_t out;
+        int rc = nodus_t3_decode(buf, len, &out);
+        CHECK(rc != 0);
+        checks++;
+
+        printf("[ok] §1 \"%s\" (retired) refused at v%u — "
+               "method_to_type == 0, decode == %d\n",
+               m, (unsigned)NODUS_T3_BFT_PROTOCOL_VER, rc);
     }
 
-    /* ── §2 the legacy version — also no state change (now redundant
-     * with §1's unconditional drop, kept so a future re-opening of the
-     * old lane at the WRONG version is still caught here too) ──────── */
+    /* ── §2 CONTROL — the identical shape, a LIVE method, DECODES ─────
+     * w_rost_q (verb 9) with valid args {v: uint}. Without this control,
+     * every refusal above could mean "this builder never produces a
+     * frame nodus_t3_decode accepts", proving nothing about the method
+     * name specifically. */
     {
-        nodus_witness_t *w = fixture(&val[0], &val[1], NVAL - 1);
-        enter_round(w, &val[0], 6, H, TX);
-        int before = w->round_state.prevote_approve_count;
-        dispatch_prevote(w, &val[1], LEGACY_BFT_VER, 6, 0, H, TX);
-        CHECK_EQ(w->round_state.prevote_approve_count, before);
-        /* And no peer residue: the gate sits before peer_ensure. */
-        CHECK_EQ(w->peer_count, 0);
-        printf("[ok] §2 v%d (legacy) PREVOTE — closed lane, not counted, "
-               "no peer registered\n", LEGACY_BFT_VER);
-        free_fixture(w);
-    }
+        uint8_t buf[512];
+        cbor_encoder_t enc;
+        frame_begin(&enc, buf, sizeof(buf), "w_rost_q");
+        cbor_encode_map(&enc, 1);
+        cbor_encode_cstr(&enc, "v"); cbor_encode_uint(&enc, 7);
+        size_t len = frame_end(&enc);
+        CHECK(len > 0);
 
-    /* ── §3 unknown NEWER version — also no state change ───────────── */
-    {
-        nodus_witness_t *w = fixture(&val[0], &val[1], NVAL - 1);
-        enter_round(w, &val[0], 6, H, TX);
-        int before = w->round_state.prevote_approve_count;
-        dispatch_prevote(w, &val[1],
-                         (uint8_t)(NODUS_T3_BFT_PROTOCOL_VER + 1), 6, 0, H, TX);
-        CHECK_EQ(w->round_state.prevote_approve_count, before);
-        printf("[ok] §3 v%u (unknown newer) — closed lane, not counted\n",
-               (unsigned)NODUS_T3_BFT_PROTOCOL_VER + 1);
-        free_fixture(w);
-    }
-
-    /* ── §4 rejection holds across repeated attempts AND version values,
-     * including this node's own version — the closed lane has no
-     * version at which it reopens. ─────────────────────────────────── */
-    {
-        nodus_witness_t *w = fixture(&val[0], &val[1], NVAL - 1);
-        enter_round(w, &val[0], 6, H, TX);
-        int before = w->round_state.prevote_approve_count;
-        for (int i = 0; i < 5; i++)
-            dispatch_prevote(w, &val[1], LEGACY_BFT_VER, 6, 0, H, TX);
-        CHECK_EQ(w->round_state.prevote_approve_count, before);
-        CHECK_EQ(w->peer_count, 0);
-        /* ...and the CURRENT version from the SAME peer STILL changes
-         * nothing — unlike before this wave, there is no version at
-         * which this verb is accepted any more. */
-        dispatch_prevote(w, &val[1], NODUS_T3_BFT_PROTOCOL_VER, 6, 0, H, TX);
-        CHECK_EQ(w->round_state.prevote_approve_count, before);
-        CHECK_EQ(w->peer_count, 0);
-        printf("[ok] §4 repeated attempts at every version stay rejected — "
-               "including v%u, this node's own\n",
-               (unsigned)NODUS_T3_BFT_PROTOCOL_VER);
-        free_fixture(w);
-    }
-
-    /* ── §6 v3 header carrying v2-shaped NEW_VIEW args ─────────────── */
-    {
-        /* The self-signed inconsistency the dispatch gate cannot catch:
-         * a current-version HEADER whose ARGS are the legacy digest-only
-         * shape. handle_newview must reject it by NAME, not incidentally. */
-        nodus_witness_t *w = fixture(&val[0], &val[1], NVAL - 1);
-        w->view_change_target = 1;
-        w->view_change_in_progress = true;
-
-        nodus_t3_msg_t nv;
-        memset(&nv, 0, sizeof(nv));
-        nv.type = NODUS_T3_NEWVIEW;
-        nv.header.version = NODUS_T3_BFT_PROTOCOL_VER;
-        nv.header.view = 1;
-        {
-            int slot = nodus_witness_bft_leader_index(0, 1, NVAL);
-            int idx = nodus_witness_roster_sorted_at(&w->roster, slot);
-            CHECK(idx >= 0);
-            memcpy(nv.header.sender_id, w->roster.witnesses[idx].witness_id,
-                   NODUS_T3_WITNESS_ID_LEN);
-        }
-        nv.header.timestamp = nodus_time_now();
-        nodus_random((uint8_t *)&nv.header.nonce, sizeof(nv.header.nonce));
-        nv.newview.new_view = 1;
-        nv.newview.has_reproposal = true;
-        nv.newview.reproposal_height = H;
-        memset(nv.newview.reproposal_tx_hash, 0x77, NODUS_T3_TX_HASH_LEN);
-        nv.newview.reproposal_n_sigs = 0;      /* legacy shape */
-
-        CHECK_EQ(nodus_witness_bft_handle_newview(w, &nv), -1);
-        printf("[ok] §6 v%u header with legacy digest-only NEW_VIEW args "
-               "REJECTED by the named schema check\n",
-               (unsigned)NODUS_T3_BFT_PROTOCOL_VER);
-        free_fixture(w);
-    }
-
-    /* ── §7 additive evolution still possible ──────────────────────── */
-    {
-        /* Required fields are enforced (§6); unknown NON-critical arg
-         * keys must still be skipped, or no future field could ever be
-         * added. The encoder emits 7 keys with a reproposal and the
-         * decoder round-trips them (test_tier3), while the trailing
-         * `else cbor_decode_skip` in dec_newview_args keeps unknown keys
-         * harmless. Pin the property that matters here: a fully-formed
-         * current NEW_VIEW survives encode/decode with its certificate
-         * fields intact. */
-        nodus_t3_msg_t in, out;
-        memset(&in, 0, sizeof(in));
-        in.type = NODUS_T3_NEWVIEW;
-        in.txn_id = 9;
-        in.header.version = NODUS_T3_BFT_PROTOCOL_VER;
-        memcpy(in.header.sender_id, val[0].id, NODUS_T3_WITNESS_ID_LEN);
-        in.header.timestamp = nodus_time_now();
-        in.newview.new_view = 4;
-        in.newview.has_reproposal = true;
-        in.newview.reproposal_height = 11;
-        in.newview.reproposal_prepared_view = 2;
-        memset(in.newview.reproposal_tx_hash, 0x21, NODUS_T3_TX_HASH_LEN);
-        in.newview.reproposal_n_sigs = 3;
-        for (int i = 0; i < 3; i++) {
-            memset(in.newview.reproposal_sigs[i].voter_id, 0x30 + i,
-                   NODUS_T3_WITNESS_ID_LEN);
-            memset(in.newview.reproposal_sigs[i].signature, 0x50 + i,
-                   NODUS_SIG_BYTES);
-        }
-        static uint8_t buf[NODUS_T3_MAX_MSG_SIZE];
-        size_t len = 0;
-        nodus_seckey_t sk;
-        memcpy(sk.bytes, val[0].sk, sizeof(sk.bytes));
-        CHECK(nodus_t3_encode(&in, &sk, buf, sizeof(buf), &len) == 0);
-        memset(&out, 0, sizeof(out));
+        nodus_t3_msg_t out;
         CHECK(nodus_t3_decode(buf, len, &out) == 0);
-        CHECK_EQ(out.header.version, NODUS_T3_BFT_PROTOCOL_VER);
-        CHECK_EQ(out.newview.reproposal_n_sigs, 3);
-        CHECK_EQ(out.newview.reproposal_prepared_view, 2);
-        printf("[ok] §7 version travels on the wire and the certificate "
-               "fields round-trip intact\n");
+        CHECK(out.type == NODUS_T3_ROST_Q);
+        CHECK(out.header.version == NODUS_T3_BFT_PROTOCOL_VER);
+        CHECK(out.rost_q.version == 7);
+        checks++;
+
+        printf("[ok] §2 CONTROL \"w_rost_q\" (live) decodes at v%u — "
+               "the builder itself is not what refused §1\n",
+               (unsigned)NODUS_T3_BFT_PROTOCOL_VER);
     }
 
+    /* The version gate on the LIVE cometbft envelope verbs (35-39) —
+     * whether a genuine w_cmt_state frame is accepted at this node's own
+     * protocol version and refused one version off in either direction —
+     * is test_cmt_live.c's claim (its version_gate_verb35 case), not
+     * this file's: proving it needs a real dispatch through a live
+     * nodus_witness_t and cmt_conr_t/cmt_memr_t pair, which this file
+     * deliberately does not build. */
+
+    printf("\n%d checks passed\n", checks);
     printf("PASS test_witness_protocol_version_gate\n");
     return 0;
 }

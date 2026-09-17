@@ -21,18 +21,26 @@
  *   §6  D3 / G6: a derivation leaves the partial-wipe marker in the
  *       REAL data directory and leaves no scratch directory behind
  *   §7  D8: a node that RESTARTS on a derived V2 chain is recognised
- *       as holding one — nodus_witness_bootstrap_start reaches DONE
- *       and never enters the legacy DISCOVER state machine
+ *       as holding one — w->v2_successor comes back true from the same
+ *       scan nodus_witness_init runs, never routed through a bootstrap
+ *       state machine (R3 W4-D: nodus_witness_bootstrap_start and the
+ *       whole legacy DISCOVER/HAVE_CHAIN machine are DELETED with the
+ *       closed consensus lane; there is no second opinion left to consult)
  *
  * §7 — WHAT IT PROVES, WHAT IT NEEDS, WHAT IT LEAVES, HOW IT COULD LIE.
  *
- * PROVES: on a pure-V2 chain, bootstrap_start takes the HAVE_CHAIN
- * branch. If it failed, a V2 node would enter legacy DISCOVER, where it
- * either fails the C-1 seed-count gate (init returns -1) or burns ten
- * attempts and calls exit(2) — every node, at once, on the same rule.
- * It also pins the two facts that make a HEIGHT test unusable as the
- * discriminator: the V2 tip is 0 at genesis, and the legacy `blocks`
- * table exists-and-answers-0 rather than faulting.
+ * PROVES: on a pure-V2 chain, the RESTART scan (nodus_witness_scan_chain_db)
+ * recognises the chain and sets w->v2_successor — the only fact a node
+ * bringing itself up needs, now that no separate bootstrap state machine
+ * exists to disagree with it. It also pins the two facts that make a
+ * HEIGHT test unusable as the discriminator: the V2 tip is 0 at genesis,
+ * and the legacy `blocks` table exists-and-answers-0 rather than faulting.
+ * Separately (read, not executed by this file): nodus_witness_v2_join_arm's
+ * own precondition (`if (w->db) return 0;`, nodus_witness_v2_join.c:79)
+ * means a node in exactly this state — a chain already open — is
+ * architecturally excluded from the pinned-joiner path before its pin is
+ * even consulted, which is the "fact that stands" in place of the deleted
+ * bootstrap machine's HAVE_CHAIN branch.
  *
  * REQUIRES: nothing beyond a default build. No compile flag, no
  * environment variable, no network, no second process. It derives its
@@ -41,16 +49,13 @@
  * LEAVES BEHIND: nothing. Its own mkdtemp directory, removed on the way
  * out; it does not ride §5/§6's directory.
  *
- * HOW IT COULD LIE: two ways, both closed by an assertion. (1) If the
- * scan silently failed to mark the chain a successor, the node would go
- * down the V1 path and a green would mean nothing — so `w->v2_successor`
- * is ASSERTED after the scan, never assigned (the same discipline
- * test_v2_gen.c:305-324 adopted after this exact masking was found).
- * (2) `bootstrap_state != DISCOVER` is satisfied by INIT and by every
- * other state, so the assertion is `== DONE`, and the pre-call state is
- * checked to be INIT — the restart path does not write DONE (only
- * nodus_witness_create_chain_db does, nodus_witness.c:1163), so the
- * result can only have come from bootstrap_start itself.
+ * HOW IT COULD LIE: if the scan silently failed to mark the chain a
+ * successor, the node would go down the V1 path and a green would mean
+ * nothing — so `w->v2_successor` is ASSERTED after the scan, never
+ * assigned (the same discipline test_v2_gen.c:305-324 adopted after this
+ * exact masking was found). R3 W4-D removed this section's second lie
+ * vector along with its subject: the bootstrap_state INIT/DONE dance no
+ * longer exists to be checked either way.
  *
  * ANTI-VACUITY. §3's cases are constructed so that each isolates ONE
  * rule: the over-long-line case, for example, is a line that would
@@ -84,10 +89,10 @@
 #include <sqlite3.h>
 
 #include "nodus_v2_gen_config.h"
-/* §7 — the restart path (scan), the state machine it feeds, and the V2
- * tip accessor the D8 branch now reads. */
+/* §7 — the restart path (scan) and the V2 tip accessor the D8 branch
+ * reads. R3 W4-D dropped nodus_witness_bootstrap.h: the bootstrap state
+ * machine it declared is deleted with the closed consensus lane. */
 #include "witness/nodus_witness.h"
-#include "witness/nodus_witness_bootstrap.h"
 #include "witness/nodus_witness_v2_produce.h"
 #include "witness/nodus_witness_emission.h"  /* DNAC_BLOCKS_PER_YEAR,
                                               * DNAC_DECIMAL_UNIT       */
@@ -1041,16 +1046,16 @@ static int test_derive_idempotency_and_marker(void) {
  * is at.
  *
  * The production sequence, in order, with nothing stubbed: derive a real
- * chain, then RESTART on it — nodus_witness_scan_chain_db, which is the
- * same function nodus_witness_init calls at nodus_witness.c:1380 — and
- * then run nodus_witness_bootstrap_start, which init calls at :1443.
- * Deliberately NOT nodus_witness_create_chain_db: that path writes
- * bootstrap_state = DONE itself (nodus_witness.c:1163) and would hand
- * this test its own answer.
+ * chain, then RESTART on it through nodus_witness_scan_chain_db, the same
+ * function nodus_witness_init calls. R3 W4-D deleted the bootstrap state
+ * machine (nodus_witness_bootstrap_start) that used to run after the scan
+ * and re-confirm the same fact through its own HAVE_CHAIN branch; the scan
+ * result is now the only opinion there is, so this section stops at it.
  * ══════════════════════════════════════════════════════════════════ */
 
 static int test_bootstrap_start_on_a_v2_chain(void) {
-    printf("§7 D8 a restart on a derived version-3 chain reaches DONE\n");
+    printf("§7 D8 a restart on a derived version-3 chain is recognised "
+           "as holding one\n");
 
     cfgbox_t A;
     CHECK(cfg_make_v3(&A) == 0, "config A (version 3)");
@@ -1072,18 +1077,19 @@ static int test_bootstrap_start_on_a_v2_chain(void) {
      * cosmetic: a calloc'd handle carries cached_committee_epoch_start
      * == 0, which the committee cache reads as a VALID hit for epoch 0
      * with count 0 (nodus_witness_committee.c:512-529). The witness
-     * itself installs UINT64_MAX for exactly this reason
-     * (nodus_witness.c:1287; the hazard is spelt out at
-     * nodus_witness_v2_gen.c:1361), and without it the refresh inside
-     * the HAVE_CHAIN branch would take a fabricated cache hit instead of
-     * reading the epoch-0 snapshot the derivation seeded. */
+     * itself installs UINT64_MAX for exactly this reason (nodus_witness.c;
+     * the hazard is spelt out at nodus_witness_v2_gen.c:1361), and without
+     * it any committee-cache read on this handle would take a fabricated
+     * cache hit instead of reading the epoch-0 snapshot the derivation
+     * seeded — this fixture matches that same precaution even though
+     * nothing in this section calls the committee cache directly. */
     nodus_witness_t *w = calloc(1, sizeof(*w));
     CHECK(w != NULL, "witness alloc");
     OK();
     w->cached_committee_epoch_start = UINT64_MAX;
     snprintf(w->data_path, sizeof(w->data_path), "%s", dir);
-    /* w->server stays NULL — a bootstrap_start that needed a server on
-     * this path would fault here rather than pass quietly. */
+    /* w->server stays NULL — the restart path under test
+     * (nodus_witness_scan_chain_db) does not read it. */
 
     CHECK(nodus_witness_scan_chain_db(w) == 0,
           "the derived chain reopens through the RESTART path");
@@ -1125,20 +1131,12 @@ static int test_bootstrap_start_on_a_v2_chain(void) {
         }
     }
 
-    CHECK(w->bootstrap_state == (int)NODUS_W_BOOTSTRAP_INIT,
-          "the restart path leaves bootstrap_state at INIT — only "
-          "nodus_witness_create_chain_db writes DONE (:1163) — so a DONE "
-          "below can only have come from bootstrap_start itself");
-    OK();
-
-    CHECK(nodus_witness_bootstrap_start(w) == 0,
-          "bootstrap_start accepts a node that holds a version-3 chain");
-    CHECK(w->bootstrap_state == (int)NODUS_W_BOOTSTRAP_DONE,
-          "and it ends at DONE. Asserting merely != DISCOVER would be "
-          "vacuous: INIT satisfies that, and INIT is where it started");
-    CHECK(w->bootstrap_settle_until_ms > 0,
-          "the H-4 settle window was armed, so the HAVE_CHAIN branch ran "
-          "in full — refresh included — rather than being short-circuited");
+    /* R3 W4-D — the bootstrap_state INIT/DONE dance that used to run here
+     * (nodus_witness_bootstrap_start) is DELETED with the closed consensus
+     * lane. The property this section proves — a node holding a chain
+     * must not be told it has none — is already fully established by the
+     * scan + w->v2_successor assertion above: there is no second opinion
+     * left to consult, so there is nothing further to assert here. */
 
     if (w->db) { sqlite3_close(w->db); w->db = NULL; }
     free(w);

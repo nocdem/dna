@@ -52,12 +52,6 @@ static void usage(const char *prog) {
     fprintf(stderr, "  -i <identity_dir> Identity directory\n");
     fprintf(stderr, "  -d <data_dir>     Data directory (default: /var/lib/nodus)\n");
     fprintf(stderr, "  -s <ip:port>      Add seed node (repeatable)\n");
-    fprintf(stderr, "  --cold-bootstrap  PR 3 / Yol B: bypass C-2 cabal protection\n");
-    fprintf(stderr, "                    so this node responds to w_chain_q from\n");
-    fprintf(stderr, "                    DISCOVER peers. Operator MUST start exactly\n");
-    fprintf(stderr, "                    ONE node with this flag during full-cluster\n");
-    fprintf(stderr, "                    cold disaster recovery; setting it on more\n");
-    fprintf(stderr, "                    than one node re-creates the cabal vector.\n");
     fprintf(stderr, "  --v2-genesis-pin <64hex>\n");
     fprintf(stderr, "                    JOIN an existing chain: the local trust\n");
     fprintf(stderr, "                    anchor (the 32-byte chain id) a pulled\n");
@@ -72,14 +66,15 @@ static void usage(const char *prog) {
 }
 
 /* PR 3 / E1 — long-option IDs for getopt_long. Numeric > 255 to avoid
- * collision with single-char short options. */
-#define LONGOPT_COLD_BOOTSTRAP    1000
+ * collision with single-char short options.
+ * R3 W4 — LONGOPT_COLD_BOOTSTRAP (and the "cold-bootstrap" option it
+ * named) is DELETED with the closed consensus lane: its one reader,
+ * nodus_witness_bootstrap.c, is deleted. */
 #define LONGOPT_MOCK_NODUS_VER    1001
 #define LONGOPT_V2_GENESIS_PIN    1002
 #define LONGOPT_DERIVE_V2_GENESIS 1003
 
 static const struct option g_longopts[] = {
-    {"cold-bootstrap",     no_argument,       NULL, LONGOPT_COLD_BOOTSTRAP},
     {"mock-nodus-version", required_argument, NULL, LONGOPT_MOCK_NODUS_VER},
     {"v2-genesis-pin",     required_argument, NULL, LONGOPT_V2_GENESIS_PIN},
     {"derive-v2-genesis",  required_argument, NULL, LONGOPT_DERIVE_V2_GENESIS},
@@ -229,9 +224,12 @@ static int read_genesis_chain_id(const char *db_path,
  * WIPE: the runbook removes `witness_*`, and a name beginning with a dot
  * does not match that glob.
  *
- *   .bootstrap_in_progress — written by the LEGACY FETCH_GENESIS handler
- *     before it creates a chain database, unlinked on its success path.
- *     Present at boot, it means a previous bootstrap died mid-write.
+ *   .bootstrap_in_progress — written by the LEGACY FETCH_GENESIS handler,
+ *     which used to create it before deriving a chain database and unlink
+ *     it on success. R3 W4 deleted that handler (and the DISCOVER branch
+ *     that reached it) with the closed consensus lane, so a binary built
+ *     from this tree can no longer write this file; present at boot, it
+ *     means an OLDER binary died mid-write before this delta.
  *
  *   .recovery_in_progress — armed by halt recovery between dropping the
  *     witness database and replaying the first block.
@@ -264,10 +262,15 @@ static int read_genesis_chain_id(const char *db_path,
  * per ceremony and puts the message in front of the operator at the one
  * moment they are present, with nothing derived yet to lose.
  *
- * And the window closes behind us: after the ceremony a V2 node cannot
- * write .bootstrap_in_progress again, because reaching FETCH_GENESIS
- * requires the legacy DISCOVER branch, which a node holding a pure-V2
- * chain no longer enters (nodus_witness_bootstrap_start, v0.19.37).
+ * And the window is now closed for every node, not just a pure-V2 one:
+ * R3 W4 deleted the legacy DISCOVER/FETCH_GENESIS bootstrap path
+ * (nodus_witness_bootstrap_start and the verbs it drove) outright, so
+ * no binary built from this tree can write .bootstrap_in_progress
+ * again. The reader side this precheck guards against —
+ * nodus_witness_check_orphan_bootstrap_sentinel and
+ * witness_archive_stale_chain_dbs, both still live in nodus_witness.c
+ * — is unchanged, which is why a sentinel left by an older binary is
+ * still worth refusing on here.
  *
  * @return 0 clean, -1 refuse. */
 static int derive_precheck_sentinels(const char *data_path) {
@@ -424,10 +427,10 @@ static int load_config_json(const char *path, nodus_server_config_t *cfg) {
         snprintf(cfg->data_path, sizeof(cfg->data_path), "%s",
                  json_object_get_string(val));
 
-    /* Witness module config — Faz 4C 2026-05-02. */
-    if (json_object_object_get_ex(root, "halt_auto_recover", &val))
-        cfg->witness.halt_auto_recover = json_object_get_boolean(val);
-    /* Default: false (kept by memset in main()). */
+    /* R3 W4 — the "halt_auto_recover" witness-config key is DELETED with
+     * the closed consensus lane: nodus_witness_config_t's halt_auto_recover
+     * field is replaced by a reserved byte (nodus_witness.h), and its only
+     * reader, the legacy safety_halt recovery check, is deleted. */
 
     if (json_object_object_get_ex(root, "seed_nodes", &val) &&
         json_object_is_type(val, json_type_array)) {
@@ -448,10 +451,10 @@ static int load_config_json(const char *path, nodus_server_config_t *cfg) {
     if (json_object_object_get_ex(root, "require_peer_auth", &val))
         cfg->require_peer_auth = json_object_get_boolean(val);
 
-    /* PR 3 / E1 — cold-bootstrap operator override (Yol B C-2 escape).
-     * MUST NOT be set on more than one node concurrently. */
-    if (json_object_object_get_ex(root, "cold_bootstrap", &val))
-        cfg->is_cold_bootstrap = json_object_get_boolean(val);
+    /* R3 W4 — the "cold_bootstrap" config key is DELETED with the closed
+     * consensus lane: is_cold_bootstrap's one reader
+     * (nodus_witness_bootstrap.c) is deleted (see nodus_server.h's own
+     * deletion note at the field). */
 
     json_object_put(root);
     return 0;
@@ -499,9 +502,6 @@ int main(int argc, char **argv) {
                            &config.seed_ports[config.seed_count]);
                 config.seed_count++;
             }
-            break;
-        case LONGOPT_COLD_BOOTSTRAP:
-            config.is_cold_bootstrap = true;
             break;
         case LONGOPT_V2_GENESIS_PIN:
             if (parse_v2_pin(optarg, config.v2_genesis_pin) != 0) {
@@ -574,9 +574,6 @@ int main(int argc, char **argv) {
                                &config.seed_ports[config.seed_count]);
                     config.seed_count++;
                 }
-                break;
-            case LONGOPT_COLD_BOOTSTRAP:
-                config.is_cold_bootstrap = true;
                 break;
             case LONGOPT_MOCK_NODUS_VER: {
                 uint32_t mock = (uint32_t)strtoul(optarg, NULL, 0);

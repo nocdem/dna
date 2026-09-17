@@ -21,11 +21,19 @@
  *
  *   §A the strict set is exactly {0x07, 0x08} and nothing else
  *   §B the 116-byte PREPARED preimage, byte for byte (layout KAT)
- *   §C production rebuilds that same preimage (binds §B to the real code)
- *   §D substitution matrix — chain_id, view, height, tx_hash each bound
  *   §E cross-domain — 0x07 and 0x08 do not interchange
  *   §F the bypass is really lifted — a RAW signature is refused for both
  *   §G the compat bridge is EXACTLY as wide as before (0x01 still raw-OK)
+ *
+ * R3 W4-D — §C (production rebuilds §B's preimage) and §D (the
+ * chain_id/view/height/tx_hash substitution matrix) are DELETED with
+ * the closed consensus lane: both bound the preimage to
+ * nodus_witness_bft_verify_prepared_cert, the witness-BFT wrapper
+ * around the PREPARED purpose byte, defined only in the deleted
+ * nodus_witness_bft.c. §A/§B/§E/§F/§G test the generic nodus_sign /
+ * nodus_verify crypto layer directly and do not depend on which
+ * consensus lane's wrapper, if any, consumes purpose 0x07 — they are
+ * unaffected.
  *
  * ⚠ §E and §F are not the same assertion twice. §F goes red from
  * reverting the VERIFY half alone; §E needs BOTH halves reverted. The
@@ -40,47 +48,36 @@
  * (4 -> 5), enforced in test_witness_protocol_version_gate. Nothing about
  * VIEWOK's message plumbing either — 0x08 has no producer on the wire
  * yet; this file pins its DOMAIN so the plumbing cannot later land on an
- * unseparated purpose.
+ * unseparated purpose. Nothing, any more, about a witness-BFT wrapper
+ * binding that preimage to a real certificate — that was §C/§D's claim,
+ * and no successor exists on the version-3 lane in this file's scope.
  *
  * ── What it requires ──────────────────────────────────────────────────
  *
- * Nothing beyond a default build: no compile flags, no environment.
- * §C/§D create two witness fixtures with REAL chain databases under
- * /tmp, close both sqlite handles and remove both directories, so the
- * run leaves nothing behind.
- *
- * ── How it could lie ──────────────────────────────────────────────────
- *
- * A quorum of ZERO. With a roster below NODUS_T3_MIN_WITNESSES,
- * nodus_witness_bft_config_init takes its "below minimum — consensus
- * disabled" branch and zeroes the quorum, at which point EVERY
- * certificate verifies and §C/§D pass while measuring nothing. The
- * fixture seats 5 and the quorum is ASSERTED to be 4 before any
- * certificate is offered.
+ * Nothing beyond a default build: no compile flags, no environment, no
+ * filesystem, no database. Every surviving section drives the generic
+ * sign/verify layer on in-memory buffers only.
  */
 
-#define NODUS_WITNESS_INTERNAL_API 1
-
+/* R3 W4-D — NODUS_WITNESS_INTERNAL_API, witness/nodus_witness.h,
+ * witness/nodus_witness_bft.h and server/nodus_server.h are DROPPED:
+ * their only user in this file was the deleted §C/§D fixture cluster
+ * (nodus_witness_t, nodus_server_t, nodus_witness_create_chain_db,
+ * nodus_witness_bft_config_init, nodus_witness_bft_verify_prepared_
+ * cert). Nothing surviving in this file needs the internal-API gate or
+ * a witness/server handle at all. */
 #include "crypto/nodus_sign.h"
 #include "crypto/sign/qgp_dilithium.h"
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_platform.h"
-#include "witness/nodus_witness.h"
-#include "witness/nodus_witness_bft.h"
 #include "protocol/nodus_tier3.h"
-#include "server/nodus_server.h"
 #include "nodus/nodus_types.h"
 
-#include <dirent.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <assert.h>
-#include <sqlite3.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <unistd.h>
 
 #define TEST(name) do { printf("  %-60s", name); } while(0)
 #define PASS()     do { printf("PASS\n"); passed++; } while(0)
@@ -396,222 +393,16 @@ static void test_prepared_preimage_kat(void) {
     PASS();
 }
 
-/* ── Fixture for §C/§D — a REAL chain database ────────────────────── */
-
-typedef struct {
-    uint8_t pk[NODUS_PK_BYTES];
-    uint8_t sk[4896];
-    uint8_t id[NODUS_T3_WITNESS_ID_LEN];
-} dsep_peer_t;
-
-static void dsep_rmrf(const char *path) {
-    struct stat st;
-    if (lstat(path, &st) != 0) return;
-    if (S_ISDIR(st.st_mode)) {
-        DIR *d = opendir(path);
-        if (d) {
-            struct dirent *e;
-            while ((e = readdir(d)) != NULL) {
-                if (strcmp(e->d_name, ".") == 0 ||
-                    strcmp(e->d_name, "..") == 0) continue;
-                char child[4096];
-                snprintf(child, sizeof(child), "%s/%s", path, e->d_name);
-                dsep_rmrf(child);
-            }
-            closedir(d);
-        }
-        (void)rmdir(path);
-    } else {
-        (void)unlink(path);
-    }
-}
-
-/* members[0] is US. The chain database is REAL and its validator table is
- * EMPTY — the (rc 0, count 0) pre-genesis answer that resolves voter keys
- * through the documented gossip roster while the chain_id stays NON-ZERO.
- *
- * ⚠ A DB-LESS FIXTURE CANNOT BE USED HERE. With no `w->db` and a non-zero
- * chain_id, load_committee_at_height returns -1 (the DG-1 "holds a chain,
- * cannot read it" row) and verify_prepared_cert fails closed before it
- * looks at any signature — every leg below would then pass vacuously. */
-static nodus_witness_t *dsep_fixture(const dsep_peer_t *members, int n,
-                                      const char *dir,
-                                      const uint8_t cid16[16]) {
-    nodus_witness_t *w = calloc(1, sizeof(*w));
-    if (!w) return NULL;
-    nodus_server_t *srv = calloc(1, sizeof(*srv));
-    if (!srv) { free(w); return NULL; }
-    memcpy(srv->identity.pk.bytes, members[0].pk, NODUS_PK_BYTES);
-    memcpy(srv->identity.sk.bytes, members[0].sk,
-           sizeof(srv->identity.sk.bytes));
-    w->server = srv;
-    memcpy(w->my_id, members[0].id, NODUS_T3_WITNESS_ID_LEN);
-
-    for (int i = 0; i < n; i++) {
-        uint32_t s = w->roster.n_witnesses++;
-        memcpy(w->roster.witnesses[s].witness_id, members[i].id,
-               NODUS_T3_WITNESS_ID_LEN);
-        memcpy(w->roster.witnesses[s].pubkey, members[i].pk,
-               DNAC_PUBKEY_SIZE);
-        w->roster.witnesses[s].active = true;
-    }
-
-    snprintf(w->data_path, sizeof(w->data_path), "%s", dir);
-    if (nodus_witness_create_chain_db(w, cid16) != 0 || !w->db) {
-        free(srv); free(w); return NULL;
-    }
-
-    /* Cache sentinel, and it is load-bearing: a calloc'd witness has
-     * cached_committee_epoch_start == 0 and every lookup below queries
-     * epoch 0, so leaving the zero takes the cache-HIT branch and never
-     * reads the table. Production sets UINT64_MAX at init for the same
-     * reason. */
-    w->cached_committee_epoch_start = UINT64_MAX;
-    w->cached_committee_count = 0;
-
-    nodus_witness_bft_config_init(&w->bft_config, w->roster.n_witnesses);
-    return w;
-}
-
-static void dsep_fixture_free(nodus_witness_t *w, const char *dir) {
-    if (w) {
-        if (w->db) { sqlite3_close(w->db); w->db = NULL; }
-        free(w->server);
-        free(w);
-    }
-    dsep_rmrf(dir);
-}
-
-/* Sign through the SAME wrapper production uses, so purpose 0x07's
- * strictness applies here exactly as it applies to a validator. */
-static int dsep_sign_prepared(uint8_t out[NODUS_SIG_BYTES],
-                               const dsep_peer_t *p,
-                               const uint8_t pre[PREP_LEN]) {
-    nodus_sig_t sig;
-    nodus_seckey_t sk;
-    memcpy(sk.bytes, p->sk, sizeof(sk.bytes));
-    if (nodus_sign_prepared_vote(&sig, pre, PREP_LEN, &sk) != 0) return -1;
-    memcpy(out, sig.bytes, NODUS_SIG_BYTES);
-    return 0;
-}
-
-/* ── §C + §D — production binding and the substitution matrix ─────── */
-
-static void test_prepared_cert_production_binding(void) {
-    TEST("§C/§D production preimage + chain_id/view/height/hash binding");
-
-    static dsep_peer_t members[5];
-    for (int i = 0; i < 5; i++) {
-        if (qgp_dsa87_keypair(members[i].pk, members[i].sk) != 0) {
-            FAIL("keygen"); return; }
-        uint8_t d[64];
-        if (qgp_sha3_512(members[i].pk, NODUS_PK_BYTES, d) != 0) {
-            FAIL("witness id hash"); return; }
-        memcpy(members[i].id, d, NODUS_T3_WITNESS_ID_LEN);
-    }
-
-    char dir_a[] = "/tmp/test_sign_domain_sep_a_XXXXXX";
-    char dir_b[] = "/tmp/test_sign_domain_sep_b_XXXXXX";
-    if (mkdtemp(dir_a) == NULL) { FAIL("temp dir A"); return; }
-    if (mkdtemp(dir_b) == NULL) { dsep_rmrf(dir_a); FAIL("temp dir B"); return; }
-
-    uint8_t cid_a[16]; memset(cid_a, 0xE9, sizeof(cid_a));
-    uint8_t cid_b[16]; memset(cid_b, 0xA5, sizeof(cid_b));
-
-    nodus_witness_t *w  = dsep_fixture(members, 5, dir_a, cid_a);
-    nodus_witness_t *w2 = dsep_fixture(members, 5, dir_b, cid_b);
-
-#define DSEP_BAIL(msg) do { \
-        dsep_fixture_free(w2, dir_b); \
-        dsep_fixture_free(w, dir_a); \
-        FAIL(msg); \
-        return; \
-    } while (0)
-
-    if (!w || !w2) DSEP_BAIL("fixture");
-
-    /* THE ANTI-VACUITY GATE. A quorum of 0 makes every certificate verify
-     * and everything below would measure nothing. */
-    if (w->roster.n_witnesses != 5)  DSEP_BAIL("roster must seat 5");
-    if (w->bft_config.quorum == 0)
-        DSEP_BAIL("quorum 0 — bft_config_init took its consensus-disabled "
-                  "branch and nothing below is being measured");
-    if (w->bft_config.quorum != 4)   DSEP_BAIL("quorum must be (2*5)/3+1 = 4");
-    if (w2->bft_config.quorum != 4)  DSEP_BAIL("w2 quorum must be 4");
-
-    /* The fixture's chain_id really is the padded 32-byte value §B pinned,
-     * otherwise the chain_id leg would be exercising the wrong field. */
-    if (memcmp(w->chain_id, KAT_CHAIN_ID, 32) != 0)
-        DSEP_BAIL("create_chain_db must zero-pad the 16-byte id to 32");
-    if (memcmp(w->chain_id, w2->chain_id, 32) == 0)
-        DSEP_BAIL("the two fixtures must hold DIFFERENT chains");
-
-    /* A height inside the bootstrap range, so the committee lookup gives
-     * the (rc 0, count 0) pre-genesis answer. */
-    const uint64_t H = 5;
-    const uint32_t V = 2;
-    uint8_t txh[NODUS_T3_TX_HASH_LEN];
-    memset(txh, 0x77, sizeof(txh));
-
-    uint8_t pre[PREP_LEN];
-    build_prepared_preimage(pre, w->chain_id, V, H, txh);
-
-    nodus_t3_cert_entry_t cert[4];
-    memset(cert, 0, sizeof(cert));
-    for (int i = 0; i < 4; i++) {
-        memcpy(cert[i].voter_id, members[i].id, NODUS_T3_WITNESS_ID_LEN);
-        if (dsep_sign_prepared(cert[i].signature, &members[i], pre) != 0)
-            DSEP_BAIL("prepared sign");
-    }
-
-    /* §C — production must accept signatures made over THIS FILE's bytes.
-     * If it does not, the two layouts have diverged, and §B's explicit
-     * KAT is no longer a statement about production. */
-    if (!nodus_witness_bft_verify_prepared_cert(w, H, V, txh, cert, 4))
-        DSEP_BAIL("§C production rejected a certificate over the "
-                  "independently built 116-byte preimage");
-
-    /* §D — each field bound on its own. */
-    if (nodus_witness_bft_verify_prepared_cert(w, H, V + 1, txh, cert, 4))
-        DSEP_BAIL("§D view: the same sigs must not prove another view");
-    if (nodus_witness_bft_verify_prepared_cert(w, H + 1, V, txh, cert, 4))
-        DSEP_BAIL("§D height: nor another height");
-
-    uint8_t other_txh[NODUS_T3_TX_HASH_LEN];
-    memset(other_txh, 0x78, sizeof(other_txh));
-    if (nodus_witness_bft_verify_prepared_cert(w, H, V, other_txh, cert, 4))
-        DSEP_BAIL("§D tx_hash: nor another value");
-
-    /* chain_id — the leg that exists only because of Faz 2A. chain_id is
-     * NOT an argument of the verify call; it is read from the witness. So
-     * the only way to vary it is a second witness holding a different
-     * chain, with the SAME roster so voter resolution is unchanged and
-     * the chain identity is the ONLY difference. Before Faz 2A this
-     * certificate verified on both — the post-wipe replay. */
-    if (nodus_witness_bft_verify_prepared_cert(w2, H, V, txh, cert, 4))
-        DSEP_BAIL("§D chain_id: a certificate harvested from one chain "
-                  "must NOT verify on another");
-
-    /* Anti-vacuity for that leg: w2 is not simply refusing everything. */
-    uint8_t pre_b[PREP_LEN];
-    build_prepared_preimage(pre_b, w2->chain_id, V, H, txh);
-    nodus_t3_cert_entry_t cert_b[4];
-    memset(cert_b, 0, sizeof(cert_b));
-    for (int i = 0; i < 4; i++) {
-        memcpy(cert_b[i].voter_id, members[i].id, NODUS_T3_WITNESS_ID_LEN);
-        if (dsep_sign_prepared(cert_b[i].signature, &members[i], pre_b) != 0)
-            DSEP_BAIL("prepared sign (chain B)");
-    }
-    if (!nodus_witness_bft_verify_prepared_cert(w2, H, V, txh, cert_b, 4))
-        DSEP_BAIL("§D anti-vacuity: w2 must ACCEPT a certificate over its "
-                  "OWN chain_id, or the refusal above is not about chains");
-
-#undef DSEP_BAIL
-
-    dsep_fixture_free(w2, dir_b);
-    dsep_fixture_free(w, dir_a);
-    PASS();
-}
+/* R3 W4-D — the §C/§D fixture cluster (dsep_peer_t, dsep_rmrf,
+ * dsep_fixture, dsep_fixture_free, dsep_sign_prepared) and
+ * test_prepared_cert_production_binding are DELETED with the closed
+ * consensus lane: their subject, nodus_witness_bft_verify_prepared_cert
+ * (and the nodus_witness_bft_config_t/_init wrapper the fixture used to
+ * build a quorum), was defined only in nodus_witness_bft.c, deleted
+ * whole. Every other section in this file (§A, §B, §E, §F, §G — the
+ * generic nodus_sign/nodus_verify domain-separation and KAT coverage
+ * for purposes 0x07 PREPARED and 0x08 VIEWOK) is UNRELATED to which
+ * consensus lane consumes those purpose bytes and stays untouched. */
 
 /* ── §E — 0x07 and 0x08 do not interchange ────────────────────────── */
 
@@ -794,7 +585,6 @@ int main(void) {
     printf("---------------------------------------------------------\n");
     test_strict_set_is_exactly_07_08();
     test_prepared_preimage_kat();
-    test_prepared_cert_production_binding();
     test_strict_cross_domain_rejects();
     test_strict_raw_signature_refused();
     test_compat_bridge_unchanged();

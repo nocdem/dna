@@ -10,16 +10,16 @@
  *   - Duplicate nullifiers → reject
  *   - Genesis TX → skips sig/balance/fee checks
  *   - Truncated tx_data → reject
- *   - Fee-surge determinism: VALIDATION verdict is independent of
- *     w->mempool.count; ADMISSION still applies the surge
+ *   - Fee floor: the base fee floor rejects a TX below NODUS_W_BASE_TX_FEE
  *
  * Uses in-memory SQLite DB and real Dilithium5 keypairs.
  *
  * Mode note: the pre-existing cases below pass NODUS_WITNESS_VERIFY_ADMISSION
- * because that is the strictest surface (all checks incl. the mempool fee
- * surge) and reproduces the behaviour they were written against — every one
- * of them runs with mempool.count == 0, where surge min_fee collapses to
- * NODUS_W_BASE_TX_FEE. test_fee_surge_determinism() covers both modes.
+ * because that was historically the strictest surface. R3 W4 deleted the
+ * ADMISSION-only mempool fee surge (Check 5's w->mempool.count read) with
+ * the closed consensus lane — nodus_witness_verify_transaction's behavior
+ * in ADMISSION and VALIDATION modes is now identical — so this note is a
+ * record of why ADMISSION was chosen, not a live behavioral distinction.
  */
 
 #include "witness/nodus_witness_verify.h"
@@ -752,57 +752,42 @@ static void test_double_spend(void) {
 }
 
 /* ══════════════════════════════════════════════════════════════════
- * Test: fee-surge determinism + the deterministic fee floor
+ * R3 W4-D (Delta B) — TRIMMED. This section used to run three legs:
+ * two proving fee-surge determinism (a VALIDATION-mode verdict that
+ * stayed byte-identical regardless of w->mempool.count, and an
+ * ADMISSION-mode surge that still fired at high mempool depth) and one
+ * proving the plain fee floor. Legs 1-2 are DELETED: the ADMISSION-only
+ * mempool fee surge itself is deleted with the closed consensus lane
+ * (Check 5 no longer reads any per-node mempool state,
+ * nodus_witness_verify.c), and the `mempool` field they assigned is
+ * deleted from nodus_witness_t — there is nothing left for either leg
+ * to assert.
  *
- * Three legs. Legs 1-2 use TX-A (input 2,000,000 − output 1,000,000 →
- * actual_fee = 1,000,000 == NODUS_W_BASE_TX_FEE, exactly the un-surged
- * minimum, so mempool depth is the ONLY thing that can change the
- * answer). Leg 3 uses its own TX-B and its own UTXO.
- *
- *   1. VALIDATION → verdict MUST be byte-identical for TX-A at mempool 0
- *      and mempool 64. Before the mode split, a follower holding 64
- *      pending TXs computed min_fee = 9,000,000 and rejected the honest
- *      block a leader holding 0 pending TXs had proposed at min_fee =
- *      1,000,000; one TX reject drops the whole batch
- *      (nodus_witness_bft.c:4126-4132).
- *
- *   2. ADMISSION → the surge is still live: the SAME TX-A is accepted at
- *      mempool 0 and rejected at mempool 64.
- *
- *   3. VALIDATION still enforces the fee FLOOR. Leg 1 alone would also
- *      pass if the fee check had been deleted outright, so this leg pins
- *      the floor the surge removal could otherwise have taken with it
- *      (nodus_witness_verify.c:1066-1072, both modes). TX-B pays
- *      actual_fee = 500,000 < NODUS_W_BASE_TX_FEE while its header
- *      committed_fee@74 is a healthy DNAC_MIN_FEE_RAW — precisely the
- *      gap Check 0 cannot see, because Check 0 bounds the header field
- *      and the floor bounds Sum(inputs) − Sum(outputs). declared_fee is
- *      set EQUAL to actual_fee (500,000) so the reject must come from
- *      the floor branch and not from the actual_fee != declared_fee
- *      branch (:1093). Without the floor this TX returns 0 here and the
- *      divergence is only caught at finalize by the supply invariant,
- *      where the cost is the whole block rather than one TX.
+ * Leg 3 survives, renamed, with its now-inert `w->mempool.count = 0`
+ * assignments removed: it never depended on the surge (its own comment
+ * said so — "the ADMISSION-only surge would be inert here even if the
+ * mode were wrong"), and pins a property that still holds: the base fee
+ * floor rejects a TX whose actual_fee is below NODUS_W_BASE_TX_FEE even
+ * though its header's committed_fee@74 is healthy — the gap Check 0
+ * cannot see (Check 0 bounds the header field; the floor bounds
+ * Sum(inputs) − Sum(outputs)). declared_fee is set EQUAL to actual_fee
+ * so the reject must come from the floor branch and not from the
+ * actual_fee != declared_fee branch. Without the floor this TX returns
+ * 0 here and the divergence is only caught at finalize by the supply
+ * invariant, where the cost is the whole block rather than one TX.
  * ══════════════════════════════════════════════════════════════════ */
 
-static void test_fee_surge_determinism(void) {
-    /* nodus_witness_t carries the full round_state / peers / view_change
-     * arrays — heap-allocate it here rather than adding a second large
-     * frame on top of the existing per-test stack copies. */
+static void test_fee_floor_below_base(void) {
+    /* nodus_witness_t carries the full peer / committee arrays —
+     * heap-allocate it here rather than adding a second large frame on
+     * top of the existing per-test stack copies. */
     nodus_witness_t *w = calloc(1, sizeof(*w));
     if (!w) {
-        TEST("fee surge: VALIDATION verdict independent of mempool depth");
-        FAIL("alloc");
-        TEST("fee surge: ADMISSION still applies the surge");
-        FAIL("alloc");
         TEST("fee floor: VALIDATION rejects below-base actual_fee");
         FAIL("alloc");
         return;
     }
     if (setup_witness(w) != 0) {
-        TEST("fee surge: VALIDATION verdict independent of mempool depth");
-        FAIL("db setup");
-        TEST("fee surge: ADMISSION still applies the surge");
-        FAIL("db setup");
         TEST("fee floor: VALIDATION rejects below-base actual_fee");
         FAIL("db setup");
         free(w);
@@ -817,113 +802,14 @@ static void test_fee_surge_determinism(void) {
     char sender_fp[129];
     nodus_fingerprint_hex(&sender.pk, sender_fp);
 
-    /* TX-A input (legs 1-2). Leg 3 gets its own UTXO/nullifier below so
-     * neither TX can disturb the other's balance or double-spend check. */
-    uint8_t nullifier[NULLIFIER_LEN];
-    memset(nullifier, 0x5A, NULLIFIER_LEN);
-    add_utxo(w, nullifier, sender_fp, 2000000);
-
-    uint64_t in_amt = 2000000;
-    uint64_t out_amt = 1000000;
-    uint64_t fee = 1000000;          /* == NODUS_W_BASE_TX_FEE */
     uint8_t out_fp[FP_LEN];
     memset(out_fp, 0x3C, FP_LEN);
 
-    uint32_t tx_len;
-    uint8_t *tx_data = build_tx_data(DNAC_PROTOCOL_VERSION, 1, 777000ULL,
-                                      nullifier, 1, &in_amt,
-                                      out_fp, 1, &out_amt,
-                                      sender.pk.bytes, DNAC_MIN_FEE_RAW, &tx_len);
-    if (!tx_data) {
-        TEST("fee surge: VALIDATION verdict independent of mempool depth");
-        FAIL("build_tx_data");
-        TEST("fee surge: ADMISSION still applies the surge");
-        FAIL("build_tx_data");
-        TEST("fee floor: VALIDATION rejects below-base actual_fee");
-        FAIL("build_tx_data");
-        nodus_identity_clear(&sender);
-        cleanup_witness(w);
-        free(w);
-        return;
-    }
-
-    uint8_t tx_hash[64];
-    memcpy(tx_hash, tx_data + 10, 64);
-
-    nodus_sig_t sig;
-    nodus_sign(&sig, tx_hash, 64, &sender.sk);
-    embed_signer_sig(tx_data, tx_len, sig.bytes);
-
-    /* ── VALIDATION: mempool 0 vs 64 ───────────────────────────────
-     * mempool.count is set directly; entries[] stays NULL because the
-     * verify path reads the counter only (nodus_witness_verify.c
-     * Check 5), never dereferences an entry. */
-    char reason_empty[256] = {0};
-    w->mempool.count = 0;
-    int rc_val_empty = nodus_witness_verify_transaction(w, tx_data, tx_len,
-                           tx_hash, 1, nullifier, 1,
-                           sender.pk.bytes, sig.bytes, fee,
-                           NODUS_WITNESS_VERIFY_VALIDATION,
-                           reason_empty, sizeof(reason_empty));
-
-    char reason_full[256] = {0};
-    w->mempool.count = 64;   /* NODUS_W_MAX_MEMPOOL — surge would demand 9,000,000 */
-    int rc_val_full = nodus_witness_verify_transaction(w, tx_data, tx_len,
-                          tx_hash, 1, nullifier, 1,
-                          sender.pk.bytes, sig.bytes, fee,
-                          NODUS_WITNESS_VERIFY_VALIDATION,
-                          reason_full, sizeof(reason_full));
-
-    TEST("fee surge: VALIDATION verdict independent of mempool depth");
-    if (rc_val_empty == 0 && rc_val_full == 0 &&
-        strcmp(reason_empty, reason_full) == 0) {
-        PASS();
-    } else {
-        char msg[600];
-        snprintf(msg, sizeof(msg),
-                 "mempool0 rc=%d '%s' vs mempool64 rc=%d '%s'",
-                 rc_val_empty, reason_empty, rc_val_full, reason_full);
-        FAIL(msg);
-    }
-
-    /* ── ADMISSION: same TX, same DB, surge MUST still bite ──────── */
-    char adm_empty[256] = {0};
-    w->mempool.count = 0;
-    int rc_adm_empty = nodus_witness_verify_transaction(w, tx_data, tx_len,
-                           tx_hash, 1, nullifier, 1,
-                           sender.pk.bytes, sig.bytes, fee,
-                           NODUS_WITNESS_VERIFY_ADMISSION,
-                           adm_empty, sizeof(adm_empty));
-
-    char adm_full[256] = {0};
-    w->mempool.count = 64;
-    int rc_adm_full = nodus_witness_verify_transaction(w, tx_data, tx_len,
-                          tx_hash, 1, nullifier, 1,
-                          sender.pk.bytes, sig.bytes, fee,
-                          NODUS_WITNESS_VERIFY_ADMISSION,
-                          adm_full, sizeof(adm_full));
-
-    TEST("fee surge: ADMISSION still applies the surge");
-    if (rc_adm_empty == 0 && rc_adm_full == -1 &&
-        strstr(adm_full, "fee too low") != NULL) {
-        PASS();
-    } else {
-        char msg[600];
-        snprintf(msg, sizeof(msg),
-                 "mempool0 rc=%d '%s' vs mempool64 rc=%d '%s'",
-                 rc_adm_empty, adm_empty, rc_adm_full, adm_full);
-        FAIL(msg);
-    }
-
-    /* ── Leg 3: the deterministic floor, VALIDATION mode ────────────
-     * TX-B: own UTXO (0xA7), input 2,000,000 − output 1,500,000 →
+    /* TX-B: own UTXO (0xA7), input 2,000,000 − output 1,500,000 →
      * actual_fee = 500,000 < NODUS_W_BASE_TX_FEE. committed_fee@74 is
-     * DNAC_MIN_FEE_RAW so Check 0 (nodus_witness_verify.c:796) PASSES
-     * and the verdict is decided at Check 5; declared_fee == actual_fee
-     * so the mismatch branch (:1093) cannot be what fires. mempool.count
-     * is 0, so the ADMISSION-only surge would be inert here even if the
-     * mode were wrong — the only thing that can reject this TX is the
-     * floor at :1066-1072. */
+     * DNAC_MIN_FEE_RAW so Check 0 passes and the verdict is decided at
+     * Check 5; declared_fee == actual_fee so the mismatch branch cannot
+     * be what fires. */
     uint8_t nullifier_low[NULLIFIER_LEN];
     memset(nullifier_low, 0xA7, NULLIFIER_LEN);
     add_utxo(w, nullifier_low, sender_fp, 2000000);
@@ -950,7 +836,6 @@ static void test_fee_surge_determinism(void) {
         embed_signer_sig(tx_low, tx_low_len, sig_low.bytes);
 
         char reason_low[256] = {0};
-        w->mempool.count = 0;
         int rc_low = nodus_witness_verify_transaction(w, tx_low, tx_low_len,
                          tx_hash_low, 1, nullifier_low, 1,
                          sender.pk.bytes, sig_low.bytes, fee_low,
@@ -967,8 +852,6 @@ static void test_fee_surge_determinism(void) {
         free(tx_low);
     }
 
-    w->mempool.count = 0;   /* no entries were ever installed */
-    free(tx_data);
     nodus_identity_clear(&sender);
     cleanup_witness(w);
     free(w);
@@ -1129,7 +1012,7 @@ int main(void) {
     test_genesis_skips_checks();
     test_truncated_tx_data();
     test_double_spend();
-    test_fee_surge_determinism();
+    test_fee_floor_below_base();
     test_shielded_admission();
 
     printf("\n=== Results: %d passed, %d failed ===\n", passed, failed);

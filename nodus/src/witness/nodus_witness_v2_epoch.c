@@ -424,8 +424,9 @@ done:
 
 /* ── O15C: the V2 attendance writer ─────────────────────────────────
  *
- * The mirror of nodus_witness_record_attendance (nodus_witness_bft.c
- * :3356-3428) for the V2 lane: credits ONLY the committed header
+ * The V2 lane's attendance writer (its legacy twin,
+ * nodus_witness_record_attendance in nodus_witness_bft.c, was deleted
+ * with the closed lane in R3 W4): credits ONLY the committed header
  * proposer (proposer_id = SHA3-512(pubkey)[0..31], a BlockID-bound
  * field), ACTIVE/RETIRING rows only, monotonic. Runs inside the apply
  * engine's single block transaction BEFORE any root computation — the

@@ -4,9 +4,11 @@
 # ════════════════════════════════════════════════════════════════════
 #
 # R3 W3 package C2d (D-17 rev 10 item 9, D-23 rev 7/8, D-24 rev 4, all
-# atlas APPROVED): THE LEGACY RUNNER (genesis_protocol.sh) IS CLOSED —
-# it prints the closure banner and exits 99, unconditionally. This is
-# now the harness's ONLY live lane: nodus-server never starts the
+# atlas APPROVED); R3 W4-D deletes what W3 only closed: THE LEGACY
+# RUNNER (genesis_protocol.sh, which used to print a closure banner and
+# exit 99 unconditionally) is gone from the tree, along with its 23
+# legacy scenarios and stagef_up.sh. This is now the harness's ONLY live
+# lane: nodus-server never starts the
 # legacy BFT or the pre-Comet V2 lane on any chain any more (the
 # witness's post-open gate refuses a database that is not a version-3
 # chain, fail closed). "The V2 lane" in the scenario names below means

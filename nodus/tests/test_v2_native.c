@@ -6312,8 +6312,9 @@ static int test_system_delegate(void) {
  *
  * These tests pin the ADMISSION gate that makes the truncation
  * unreachable: rtn_delegate_read_plan's third mediated read and the
- * verdict in rtn_delegate_exec. The legacy half of the same rule lives
- * in test_delegator_cap.c (apply_delegate). */
+ * verdict in rtn_delegate_exec. R3 W4-D deleted test_delegator_cap.c
+ * (the legacy half of the same rule, apply_delegate) with the closed
+ * consensus lane — this section is now the property's only coverage. */
 
 /* Seed `n` synthetic delegation rows against validator `val`.
  *
@@ -8096,9 +8097,10 @@ static int test_o11_global(void) {
 
 /* ══ 17. SYSTEM slice — VALIDATOR_UPDATE (O12 S1) ══════════════════
  *
- * The validator's own commission change, migrated from
- * apply_validator_update (nodus_witness_bft.c:1934-2003) onto the 2-leg
- * validator-record envelope. It is the first record op whose funding leg
+ * The validator's own commission change, migrated from the legacy
+ * apply_validator_update (nodus_witness_bft.c, deleted with the closed
+ * consensus lane, R3 W4) onto the 2-leg validator-record envelope. It is
+ * the first record op whose funding leg
  * moves NO value at all: lock = release = 0, so the CORE sibling is a
  * pure fee payment.
  *

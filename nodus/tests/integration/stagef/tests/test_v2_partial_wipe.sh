@@ -20,7 +20,8 @@
 #   into the bootstrap state machine.
 #
 # WHY THIS IS NOT test_bootstrap_partial_wipe.sh WITH A DIFFERENT NAME
-#   That scenario RESTORES the victim by letting it re-bootstrap from
+#   (that legacy scenario was deleted with the legacy lane in R3 W4)
+#   That scenario RESTORED the victim by letting it re-bootstrap from
 #   peers, which is the legacy recovery path and does not exist on V2 —
 #   it fails at its restore step on a V2 cluster, which is what sent this
 #   work here in the first place. Recovery here is the V2 one: wipe

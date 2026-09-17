@@ -5,7 +5,8 @@
 #
 # R3 W3 (C2d) — REPLACES test_v2_view_change.sh, NOT A RENAME IN PLACE.
 #   That scenario derived a specific "epoch leader" positionally out of
-#   `validator_set_snapshots` (`stagef_leader_entry`, stagef_env.sh:512),
+#   `validator_set_snapshots` (`stagef_leader_entry`, a stagef_env.sh helper
+#   deleted with the legacy lane in R3 W4),
 #   read `pbft_state.current_view` and grepped for "view change quorum" /
 #   "P3 committed tip frozen" — all legacy PBFT machinery. NONE of it
 #   exists on this lane: a version-3 chain never reaches the legacy tick

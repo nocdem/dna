@@ -482,53 +482,12 @@ nodus_v2_env_status_t nodus_witness_v2_env_preflight_reserve_batch(
     dna_env_preflight_status_t *pf_status_out,
     dna_meter_status_t *meter_status_out);
 
-/**
- * The METER-AWARE successor batch pre-check — the producer-facing entry.
- * Implemented in nodus_witness_v2_produce.c beside the plain
- * nodus_witness_v2_produce_batch_check, which is now a thin wrapper over
- * this function (same inputs, classification discarded, contract
- * byte-identical for every existing caller).
- *
- * PLACEMENT NOTE: declared here rather than in nodus_witness_v2_produce.h
- * because its distinguishing output — nodus_v2_batch_check_result_t — is a
- * classification of THIS header's statuses, and putting the declaration
- * beside the classifier keeps one reading order. Callers already include
- * this header for nodus_v2_envelope_t.
- *
- * Runs the ENTIRE commit-time admission the engine runs over a candidate
- * batch, at the next successor height: for the ENVELOPE subset, the
- * block-start execution context (nodus_witness_v2_block_ctx_build) fed
- * into nodus_witness_v2_env_preflight_reserve_batch — strict decode,
- * committed contextual rulesets, chain binding, expiry, canonical
- * commitments, wire- AND intent-level dedup, the ABSOLUTE block-byte
- * bound, and the sequential unit RESERVATION against a SCRATCH copy of
- * the engine's budget; for the CLAIM subset, per-claim admission plus
- * in-batch nullifier dedup.
- *
- * The reservation outputs are discarded: this asks the engine's question,
- * it does not pre-authorize anything. Nothing is written, and the budget
- * mutated is the caller-invisible scratch inside the context.
- *
- * Determinism: the answer is a pure function of the entry bytes, their
- * ORDER, and committed state. Reservation is sequential and order-
- * dependent, so the envelope subset must be presented in the same
- * relative order the engine will see — which it is, because both derive
- * that order from the same batch array.
- *
- * @param fail_index_out on -1, the offending entry's index in `entries`.
- *                       MEANINGFUL ONLY when result_out->kind is
- *                       ENTRY_INVALID or CAPACITY_UNITS; on
- *                       CAPACITY_BYTES it reads 0 by construction and
- *                       accuses nobody.
- * @param result_out     OPTIONAL. The classified refusal (kind NONE on 0).
- * @return 0 clean / -1 deterministic batch refusal / -2 node-local fault.
- */
-int nodus_witness_v2_produce_batch_check_ex(
-    nodus_witness_t *w,
-    nodus_witness_mempool_entry_t **entries,
-    int count,
-    int *fail_index_out,
-    nodus_v2_batch_check_result_t *result_out);
+/* R3 W4 — nodus_witness_v2_produce_batch_check_ex is DELETED with the
+ * closed consensus lane: it took nodus_witness_mempool_entry_t **, a type
+ * from nodus_witness_mempool.h, itself deleted, and its only production
+ * caller (the legacy leader's batch shaping, nodus_witness_bft.c) is
+ * gone. nodus_witness_v2_produce_batch_check_capped
+ * (nodus_witness_v2_produce.h) is the surviving seam call. */
 
 #ifdef __cplusplus
 }

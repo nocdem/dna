@@ -10,8 +10,6 @@
 
 #include "witness/nodus_witness_v2_produce.h"
 #include "witness/nodus_witness_v2_apply.h"
-#include "witness/nodus_witness_v2_epoch.h"
-#include "witness/nodus_witness_v2_qc.h"
 #include "witness/nodus_witness_v2_result.h"
 #include "witness/nodus_witness_v2_env.h"     /* the pre-commit seam    */
 #include "witness/nodus_witness_v2_claims.h"  /* claim admit (class 201)*/
@@ -20,18 +18,18 @@
  * domreg lookups, and that private assembly is exactly what drifted from
  * the engine. The table now arrives inside the block-start context
  * (nodus_witness_v2_env.h), built by the engine's own body. */
-#include "witness/nodus_witness_db.h"
-#include "server/nodus_server.h"       /* w->server->identity (sign key) */
 
-#include "dnac/block_v2.h"
-#include "dnac/qc_v2.h"
-#include "dnac/ledger_ids.h"
-#include "dnac/vset_wire.h"
+/* R3 W4 — nodus_witness_v2_epoch.h, nodus_witness_v2_qc.h (file deleted),
+ * server/nodus_server.h, dnac/block_v2.h, dnac/qc_v2.h, dnac/ledger_ids.h,
+ * dnac/vset_wire.h, crypto/hash/qgp_sha3.h and crypto/sign/qgp_dilithium.h
+ * are DROPPED with the closed consensus lane: every symbol they supplied
+ * (epoch/authority resolution, QC assembly and verify, w->server signing
+ * identity, the block-header-v2 decode, DNA_CERT_V2_* preimages, the
+ * vset snapshot type, SHA3-512 and Dilithium5 dsa87 sign/verify) was used
+ * exclusively by the deleted pool/QC/commit functions above. */
 #include "dnac/env_wire.h"                    /* family marker length   */
 #include "dnac/manifest_wire.h"               /* claim codec (class 201)*/
 
-#include "crypto/hash/qgp_sha3.h"
-#include "crypto/sign/qgp_dilithium.h"
 #include "crypto/utils/qgp_log.h"
 
 #include <sqlite3.h>
@@ -56,199 +54,15 @@ int nodus_witness_v2_tip_height(nodus_witness_t *w, uint64_t *height_out) {
     return 0;
 }
 
-/* ── pool helpers ───────────────────────────────────────────────────── */
-
-/* Our snapshot-convention voter id: SHA3-512(pubkey)[0..31] — the
- * DNA.VSET.v1 entry derivation (vset_wire.h), never the roster id. */
-static int prod_my_voter_id(nodus_witness_t *w, uint8_t out[32]) {
-    uint8_t full[64];
-    if (!w->server) return -1;
-    if (qgp_sha3_512(w->server->identity.pk.bytes, NODUS_PK_BYTES,
-                     full) != 0)
-        return -1;
-    memcpy(out, full, 32);
-    return 0;
-}
-
-static void prod_pool_reset(nodus_witness_t *w, uint64_t height) {
-    memset(&w->v2_certpool, 0, sizeof(w->v2_certpool));
-    w->v2_certpool.height = height;
-}
-
-/* Insert (dedup by voter). Returns 1 inserted, 0 duplicate/full. */
-static int prod_pool_insert(nodus_witness_t *w, const uint8_t voter_id[32],
-                            const uint8_t block_id[64],
-                            const uint8_t sig[NODUS_SIG_BYTES]) {
-    for (uint32_t i = 0; i < w->v2_certpool.n; i++) {
-        if (memcmp(w->v2_certpool.slots[i].voter_id, voter_id, 32) == 0)
-            return 0;                       /* keep-first, one per voter */
-    }
-    if (w->v2_certpool.n >= DNAC_MAX_ACTIVE_VALIDATORS) return 0;
-    uint32_t i = w->v2_certpool.n++;
-    memcpy(w->v2_certpool.slots[i].voter_id, voter_id, 32);
-    memcpy(w->v2_certpool.slots[i].block_id, block_id, 64);
-    memcpy(w->v2_certpool.slots[i].sig, sig, NODUS_SIG_BYTES);
-    return 1;
-}
-
-static int prod_cert_cmp(const void *a, const void *b) {
-    return memcmp(((const dna_qc_v2_cert_t *)a)->voter_id,
-                  ((const dna_qc_v2_cert_t *)b)->voter_id,
-                  DNA_CERT_V2_VOTER_ID_LEN);
-}
-
-/* ── QC assembly ────────────────────────────────────────────────────── */
-
-int nodus_witness_v2_qc_try_attach(nodus_witness_t *w) {
-    if (!w || !w->db || !w->v2_successor) return -1;
-    if (!w->v2_certpool.committed || w->v2_certpool.height == 0) return 1;
-    if (w->v2_certpool.qc_attached) return 0;
-
-    uint64_t h = w->v2_certpool.height;
-
-    /* Committed authority for this height — the O12 resolver. Absent
-     * authority here is a node-local condition; never a verdict. */
-    dna_vset_snapshot_t *snap = NULL;
-    uint32_t n = 0, quorum = 0;
-    if (nodus_witness_v2_epoch_authority_for_height(w, h, &snap, &n,
-                                                    &quorum) != 0 || !snap)
-        return -1;
-
-    /* Verify every pooled cert that matches OUR committed BlockID against
-     * the snapshot's frozen pubkeys. Bad entries are skipped, not judged. */
-    dna_qc_v2_cert_t *valid = calloc((size_t)n, sizeof(*valid));
-    if (!valid) { dna_vset_free(&snap); return -1; }
-    uint32_t n_valid = 0;
-
-    for (uint32_t i = 0; i < w->v2_certpool.n && n_valid < n; i++) {
-        if (memcmp(w->v2_certpool.slots[i].block_id,
-                   w->v2_certpool.local_block_id, 64) != 0)
-            continue;                       /* diverged sender — skip    */
-        const uint8_t *pk = NULL;
-        for (uint16_t e = 0; e < snap->active_count; e++) {
-            if (memcmp(snap->entries[e].voter_id,
-                       w->v2_certpool.slots[i].voter_id, 32) == 0) {
-                pk = snap->entries[e].pubkey;
-                break;
-            }
-        }
-        if (!pk) continue;                  /* not a member — skip       */
-        uint8_t pre[DNA_CERT_V2_PREIMAGE_LEN];
-        if (dna_cert_v2_preimage(w->v2_certpool.local_block_id,
-                                 w->v2_certpool.slots[i].voter_id, h,
-                                 w->v2_chain32, w->v2_certpool.vset_hash,
-                                 pre) != 0)
-            continue;
-        if (qgp_dsa87_verify(w->v2_certpool.slots[i].sig,
-                             DNA_CERT_V2_SIG_LEN, pre, sizeof(pre),
-                             pk) != 0)
-            continue;                       /* invalid — skip            */
-        /* dedup among valid (pool already dedups by voter) */
-        memcpy(valid[n_valid].voter_id,
-               w->v2_certpool.slots[i].voter_id, 32);
-        memcpy(valid[n_valid].sig, w->v2_certpool.slots[i].sig,
-               DNA_CERT_V2_SIG_LEN);
-        n_valid++;
-    }
-
-    if (n_valid < quorum) {
-        free(valid);
-        dna_vset_free(&snap);
-        return 1;                           /* not yet                   */
-    }
-
-    /* Canonical QC: strictly ascending voter ids. */
-    qsort(valid, (size_t)n_valid, sizeof(valid[0]), prod_cert_cmp);
-
-    int ret = -1;
-    dna_qc_v2_t *qc = dna_qc_v2_alloc((uint16_t)n_valid);
-    uint8_t *qc_bytes = NULL;
-    sqlite3_stmt *st = NULL;
-    do {
-        if (!qc) break;
-        memcpy(qc->certs, valid, (size_t)n_valid * sizeof(valid[0]));
-
-        /* The stored canonical header — decode, then hand the assembled
-         * QC to the ONE verifier before anything durable happens. */
-        uint8_t hdr_bytes[DNA_BH2_ENC_SIZE];
-        if (sqlite3_prepare_v2(w->db,
-                "SELECT header, block_id FROM v2_blocks "
-                "WHERE global_height = ?1", -1, &st, NULL) != SQLITE_OK)
-            break;
-        sqlite3_bind_int64(st, 1, (sqlite3_int64)h);
-        if (sqlite3_step(st) != SQLITE_ROW ||
-            sqlite3_column_bytes(st, 0) != DNA_BH2_ENC_SIZE ||
-            sqlite3_column_bytes(st, 1) != 64 ||
-            memcmp(sqlite3_column_blob(st, 1),
-                   w->v2_certpool.local_block_id, 64) != 0)
-            break;
-        memcpy(hdr_bytes, sqlite3_column_blob(st, 0), DNA_BH2_ENC_SIZE);
-        sqlite3_finalize(st);
-        st = NULL;
-
-        dna_block_header_v2_t hdr;
-        if (dna_bh2_decode(hdr_bytes, sizeof(hdr_bytes), &hdr) != 0) break;
-        if (nodus_witness_v2_qc_verify(w, &hdr, qc) != 0) break;
-
-        size_t cap = dna_qc_v2_encoded_len(qc);
-        size_t used = 0;
-        if (cap == 0) break;
-        qc_bytes = malloc(cap);
-        if (!qc_bytes) break;
-        if (dna_qc_v2_encode(qc, qc_bytes, cap, &used) != 0) break;
-
-        if (sqlite3_prepare_v2(w->db,
-                "UPDATE v2_blocks SET qc = ?1 WHERE global_height = ?2 "
-                "AND block_id = ?3 AND qc IS NULL", -1, &st, NULL)
-            != SQLITE_OK)
-            break;
-        sqlite3_bind_blob(st, 1, qc_bytes, (int)used, SQLITE_STATIC);
-        sqlite3_bind_int64(st, 2, (sqlite3_int64)h);
-        sqlite3_bind_blob(st, 3, w->v2_certpool.local_block_id, 64,
-                          SQLITE_STATIC);
-        if (sqlite3_step(st) != SQLITE_DONE) break;
-        /* changes 0 = a QC is already there (attached earlier / by a
-         * replayed drain) — same terminal state, idempotent. */
-        w->v2_certpool.qc_attached = true;
-        QGP_LOG_INFO(LOG_TAG, "QC attached at height %llu (%u certs, "
-                     "quorum %u of %u)", (unsigned long long)h,
-                     (unsigned)n_valid, (unsigned)quorum, (unsigned)n);
-        ret = 0;
-    } while (0);
-
-    if (st) sqlite3_finalize(st);
-    free(qc_bytes);
-    if (qc) dna_qc_v2_free(&qc);
-    free(valid);
-    dna_vset_free(&snap);
-    return ret == 0 ? 0 : (w->v2_certpool.qc_attached ? 0 : -1);
-}
-
-/* ── cert collection ────────────────────────────────────────────────── */
-
-void nodus_witness_v2_cert_note(nodus_witness_t *w,
-                                uint64_t height,
-                                const uint8_t voter_id[32],
-                                const uint8_t block_id[64],
-                                const uint8_t sig[NODUS_SIG_BYTES]) {
-    if (!w || !w->v2_successor || !voter_id || !block_id || !sig) return;
-    if (height == 0) return;
-
-    if (w->v2_certpool.height != height) {
-        /* Accept only the next height this node would commit — bounded
-         * by construction; anything else is noise or far drift. */
-        uint64_t tip = 0;
-        if (nodus_witness_v2_tip_height(w, &tip) != 0) return;
-        if (height != tip + 1) return;
-        /* A superseded pool gets one last assembly chance before reset. */
-        if (w->v2_certpool.committed && !w->v2_certpool.qc_attached)
-            (void)nodus_witness_v2_qc_try_attach(w);
-        prod_pool_reset(w, height);
-    }
-    (void)prod_pool_insert(w, voter_id, block_id, sig);
-    if (w->v2_certpool.committed)
-        (void)nodus_witness_v2_qc_try_attach(w);
-}
+/* R3 W4 — the pool helpers (prod_my_voter_id, prod_pool_reset,
+ * prod_pool_insert, prod_cert_cmp), the QC assembly
+ * (nodus_witness_v2_qc_try_attach) and cert collection
+ * (nodus_witness_v2_cert_note) are DELETED with the closed consensus
+ * lane: all five read or wrote `w->v2_certpool`, the bounded per-height
+ * DNA.CERT.v2 collection pool, which no longer exists on nodus_witness_t
+ * (see its own deletion note in nodus_witness.h). QC assembly for a
+ * version-3 chain's committed blocks is now the cometbft reactor's own
+ * concern — this file no longer participates in it. */
 
 /* ── transport-local classification + claim nullifier (class 201) ───── */
 
@@ -265,39 +79,10 @@ uint8_t nodus_witness_v2_classify_entry(const uint8_t *bytes, uint32_t len) {
     return NODUS_W_TX_V2_CLAIM;
 }
 
-int nodus_witness_v2_claim_entry_nullifier(nodus_witness_t *w,
-                                           const uint8_t *bytes, uint32_t len,
-                                           uint8_t out_nullifier[64]) {
-    if (!w || !w->db || !w->v2_successor || !bytes || len == 0 ||
-        !out_nullifier)
-        return -1;
-    dna_claim_t *c = calloc(1, sizeof(*c));   /* large — heap */
-    if (!c) return -1;
-    int rc = -1;
-    if (dna_claim_decode(bytes, (size_t)len, c) == 0) {
-        nodus_v2_claim_admit_t adm;
-        /* O15O Faz 1 — the candidate height claim_admit judges the
-         * claim's height window at. A fault answering 0 would derive the
-         * nullifier from an admission decided at height 1; this
-         * nullifier is what the mempool and the in-batch dedup key on.
-         * Leave rc at its -1 initialiser — this function's existing fault
-         * path (the calloc failure above) is the same refusal. */
-        uint64_t claim_tip = 0;
-        if (nodus_witness_block_height_checked(w, &claim_tip) == 0) {
-            uint64_t candidate = claim_tip + 1;
-            if (nodus_witness_v2_claim_admit(w, c, candidate, &adm) == 0) {
-                memcpy(out_nullifier, adm.nullifier, 64);
-                rc = 0;
-            }
-        } else {
-            QGP_LOG_ERROR(LOG_TAG, "claim_entry_nullifier: chain-height "
-                          "read faulted — refusing to derive a nullifier "
-                          "from an admission at height 1");
-        }
-    }
-    free(c);
-    return rc;
-}
+/* R3 W4-D (Delta B) — nodus_witness_v2_claim_entry_nullifier is DELETED:
+ * see the deletion note in nodus_witness_v2_produce.h. Its only DB-reading
+ * call, nodus_witness_block_height_checked, was the sole reason this file
+ * included witness/nodus_witness_db.h; that include is dropped with it. */
 
 /* ── batch pre-check (the engine's seam, at the candidate height) ───── */
 
@@ -346,21 +131,23 @@ int nodus_witness_v2_claim_entry_nullifier(nodus_witness_t *w,
 /**
  * ORCHESTRATOR delta 1, item B / delta 2, item A (register row
  * R3-C1a-4, CLOSED for the Comet lane) — the shared body behind
- * `nodus_witness_v2_produce_batch_check_ex` (unchanged export, still
- * capped at NODUS_W_MAX_BLOCK_TXS for its one legacy caller,
- * nodus_witness_bft.c:5286, which never runs on a version-3 chain —
- * D-17 rev 10 item 9) and the NEW
- * `nodus_witness_v2_produce_batch_check_capped` the Comet application
- * calls with its own, larger, byte-budget-derived capacity.
+ * `nodus_witness_v2_produce_batch_check_capped`, the Comet application's
+ * own seam call with its larger, byte-budget-derived capacity.
+ *
+ * R3 W4 — `nodus_witness_v2_produce_batch_check_ex` and its thin wrapper
+ * `nodus_witness_v2_produce_batch_check` (the legacy, NODUS_W_MAX_BLOCK_
+ * TXS-capped callers this body used to also serve, converting their own
+ * `nodus_witness_mempool_entry_t **` into the lightweight view ON THE
+ * STACK) are DELETED with the closed consensus lane — see their own
+ * deletion note below. This function is now reached through exactly one
+ * public wrapper, `_capped`.
  *
  * delta 2 — LIGHTWEIGHT ITEMS: takes `nodus_witness_batch_item_t`
  * (24 B: {tx_type, tx_data, tx_len}), not
  * `nodus_witness_mempool_entry_t **` — that type is ~8.4 KB per item
  * (a 2 592-byte pubkey plus a 4 627-byte signature this seam never
  * reads), so sizing scratch to it at Comet-lane counts (hundreds of
- * thousands) would cost gigabytes. The legacy `_ex` wrapper converts
- * its own `nodus_witness_mempool_entry_t **` into this view ON THE
- * STACK (its own cap is 10, trivially small); the Comet caller
+ * thousands) would cost gigabytes. The Comet caller
  * (`nodus_witness_cmt_app.c`'s `app_seam_check`) builds the view array
  * itself, per request, and passes it straight in.
  *
@@ -370,11 +157,6 @@ int nodus_witness_v2_claim_entry_nullifier(nodus_witness_t *w,
  * stack array of the caller's `count`, since a Comet-lane batch can be
  * in the thousands. Every exit path frees everything it allocated;
  * none of the returns below leaks.
- *
- * NOT exported: `nodus_witness_v2_produce_batch_check_ex` is declared in
- * nodus_witness_v2_env.h, which is outside this package's whitelist, so
- * its signature is UNCHANGED — this function is `static` and reached
- * only through the two public wrappers below it.
  */
 static int produce_batch_check_impl(
         nodus_witness_t *w,
@@ -585,50 +367,15 @@ done:
     return rc_out;
 }
 
-/**
- * The unchanged export (nodus_witness_v2_env.h's declaration, outside
- * this package's whitelist): still capped at NODUS_W_MAX_BLOCK_TXS, for
- * its one caller (nodus_witness_bft.c:5286, the legacy leader — never
- * reached on a version-3 chain, D-17 rev 10 item 9). Behaviour
- * byte-identical to before delta 1: same cap, same verdicts.
- *
- * ORCHESTRATOR delta 2, item A — converts its `nodus_witness_mempool_entry_t
- * **` into the lightweight `nodus_witness_batch_item_t` view ON THE
- * STACK: NODUS_W_MAX_BLOCK_TXS is 10, so a 10-element, 24-byte-per-item
- * stack array is trivial — no heap needed for the legacy caller's own
- * conversion.
- */
-int nodus_witness_v2_produce_batch_check_ex(
-        nodus_witness_t *w,
-        nodus_witness_mempool_entry_t **entries,
-        int count,
-        int *fail_index_out,
-        nodus_v2_batch_check_result_t *result_out) {
-    nodus_witness_batch_item_t view[NODUS_W_MAX_BLOCK_TXS];
-    int i;
-
-    if (!entries || count <= 0 || count > NODUS_W_MAX_BLOCK_TXS) {
-        if (fail_index_out) *fail_index_out = 0;
-        if (result_out) {
-            memset(result_out, 0, sizeof(*result_out));
-            result_out->kind = NODUS_V2_BATCH_FAIL_FAULT;
-        }
-        return -2;
-    }
-    memset(view, 0, sizeof(view));
-    for (i = 0; i < count; i++) {
-        if (entries[i]) {
-            view[i].tx_type = entries[i]->tx_type;
-            view[i].tx_data = entries[i]->tx_data;
-            view[i].tx_len  = entries[i]->tx_len;
-        }
-        /* a NULL entries[i] leaves view[i] zeroed — tx_data NULL, which
-         * produce_batch_check_impl's own per-item check already refuses
-         * (ENTRY_INVALID), exactly as `!entries[i]` did before. */
-    }
-    return produce_batch_check_impl(w, view, count, NODUS_W_MAX_BLOCK_TXS,
-                                    fail_index_out, result_out);
-}
+/* R3 W4 — nodus_witness_v2_produce_batch_check_ex and its thin wrapper
+ * nodus_witness_v2_produce_batch_check (below the capped variant) are
+ * DELETED with the closed consensus lane: both took
+ * `nodus_witness_mempool_entry_t **`, a type from nodus_witness_mempool.h,
+ * itself deleted, and both existed only for their one caller
+ * (nodus_witness_bft.c:5286, the legacy leader — never reached on a
+ * version-3 chain, D-17 rev 10 item 9), also deleted. The declaration in
+ * nodus_witness_v2_env.h is outside this package's whitelist and is left
+ * as an orphaned prototype for a follow-up pass. */
 
 /**
  * ORCHESTRATOR delta 1, item B / delta 2, item A — the Comet lane's own
@@ -655,181 +402,17 @@ int nodus_witness_v2_produce_batch_check_capped(
                                     result_out);
 }
 
-/*
- * The classification-free entry, contract unchanged (produce.h): 0 clean,
- * -1 entry rejected, -2 node-local fault. Every caller that only needs
- * "is this batch admissible" — the FOLLOWER proposal check above all —
- * keeps calling this and keeps its exact verdict semantics: any seam
- * refusal, now including over-budget, is a non-zero return and therefore
- * a REJECT vote. A follower has no batch to shape, so the kind buys it
- * nothing; it must reject a proposal the engine would refuse regardless
- * of WHY the engine would refuse it.
- */
-int nodus_witness_v2_produce_batch_check(nodus_witness_t *w,
-                                         nodus_witness_mempool_entry_t **entries,
-                                         int count,
-                                         int *fail_index_out) {
-    return nodus_witness_v2_produce_batch_check_ex(w, entries, count,
-                                                   fail_index_out, NULL);
-}
+/* R3 W4 — nodus_witness_v2_produce_batch_check (the classification-free
+ * entry over the now-deleted _ex) is DELETED with the closed consensus
+ * lane, for the same reason as _ex above. */
 
-/* ── the commit handoff ─────────────────────────────────────────────── */
-
-int nodus_witness_v2_produce_commit(nodus_witness_t *w,
-                                    nodus_witness_mempool_entry_t **entries,
-                                    int count,
-                                    uint64_t height,
-                                    uint64_t timestamp,
-                                    const uint8_t *proposer_id,
-                                    const uint8_t *expected_global_root,
-                                    nodus_v2_produce_out_t *out) {
-    if (!w || !w->db || !w->v2_successor || !entries || count <= 0 ||
-        count > NODUS_W_MAX_BLOCK_TXS || !proposer_id || !out)
-        return -2;
-    memset(out, 0, sizeof(*out));
-
-    /* Split the agreed batch by transport-local class, preserving batch
-     * order within each channel: ENVELOPEs (200) feed blk->envs[] (doubly
-     * bound via tx_root), CLAIMs (201) are strict-decoded into a heap
-     * dna_claim_t array feeding blk->claims[] (bound transitively via each
-     * target's claims_root). The engine re-admits and executes; claim
-     * order = batch order (canonical, identical on leader and followers
-     * via the voted batch + COMMIT frame). */
-    nodus_v2_envelope_t envs[NODUS_W_MAX_BLOCK_TXS];
-    size_t n_env = 0, n_claim = 0;
-    dna_claim_t *claims = NULL;
-    int rc = -2;
-    for (int i = 0; i < count; i++) {
-        nodus_witness_mempool_entry_t *e = entries[i];
-        if (!e || !e->tx_data || e->tx_len == 0)
-            return -1;                      /* not a successor batch     */
-        if (e->tx_type == NODUS_W_TX_V2_ENVELOPE) {
-            envs[n_env].env_bytes = e->tx_data;
-            envs[n_env].env_len   = e->tx_len;
-            n_env++;
-        } else if (e->tx_type == NODUS_W_TX_V2_CLAIM) {
-            n_claim++;
-        } else {
-            return -1;                      /* unknown entry class        */
-        }
-    }
-    if (n_claim > NODUS_W_MAX_BLOCK_TXS) return -1;
-
-    if (n_claim > 0) {
-        claims = calloc(n_claim, sizeof(*claims));   /* large — heap */
-        if (!claims) return -2;
-        size_t ci = 0;
-        for (int i = 0; i < count; i++) {
-            if (entries[i]->tx_type != NODUS_W_TX_V2_CLAIM) continue;
-            if (dna_claim_decode(entries[i]->tx_data, entries[i]->tx_len,
-                                 &claims[ci]) != 0) {
-                free(claims);
-                return -1;                  /* strict decode is a verdict */
-            }
-            ci++;
-        }
-    }
-
-    /* The engine block: identity is ENGINE-derived; the only header
-     * material supplied is what it cannot derive (proposer, timestamp —
-     * both agreed by the round, identical on every node). The follower
-     * assertion channel carries the COMMIT frame's global root. */
-    nodus_v2_block_t *blk = calloc(1, sizeof(*blk));
-    if (!blk) { free(claims); return -2; }
-    blk->global_height = height;
-    blk->epoch         = nodus_v2_epoch_for_height(height);
-    memcpy(blk->proposer_id, proposer_id, 32);
-    blk->timestamp     = timestamp;
-    blk->envs          = n_env ? envs : NULL;
-    blk->n_envs        = n_env;
-    blk->claims        = claims;            /* NULL when n_claim == 0     */
-    blk->n_claims      = n_claim;
-    blk->expect_global_root = expected_global_root;
-
-    rc = nodus_witness_v2_apply_block(w, blk);
-
-    /* The engine's own words for WHY it refused. Diagnostic only — it
-     * never changes what this function returns. The existing message
-     * text is kept verbatim and the reason APPENDED, so log greps that
-     * already match "REJECTED by the engine (deterministic verdict)"
-     * keep matching. An empty reason is reported as such rather than
-     * printed as a blank tail. */
-    const char *why = blk->out_reason[0] ? blk->out_reason
-                                         : "(no reason recorded)";
-
-    if (rc == NODUS_V2_CONSENSUS_INVALID) {
-        QGP_LOG_ERROR(LOG_TAG, "successor block %llu REJECTED by the "
-                      "engine (deterministic verdict): %s",
-                      (unsigned long long)height, why);
-        free(blk);
-        free(claims);
-        return -1;
-    }
-    if (rc != NODUS_V2_ACCEPTED && rc != NODUS_V2_ACCEPTED_PRECACHE) {
-        /* -2 fault, -3 not-yet-linkable, retired/unsupported cannot
-         * arise here — all: this NODE could not commit; stay silent.
-         * NOTE the engine's rc 1 (idempotent replay) is UNREACHABLE on
-         * this path by construction: it is unlocked only by an
-         * expect_block_id assertion, which produce never supplies (the
-         * round machinery's already-committed guards sit in front of
-         * this call — bft.c handle_vote/handle_commit round checks). */
-        QGP_LOG_ERROR(LOG_TAG, "successor block %llu did not commit "
-                      "(engine rc=%d — node-local, no verdict): %s",
-                      (unsigned long long)height, rc, why);
-        free(blk);
-        free(claims);
-        return -2;
-    }
-
-    const uint8_t *global_root = blk->out_global_root;
-
-    for (int i = 0; i < count; i++) {
-        entries[i]->committed_block_height = height;
-        entries[i]->committed_tx_index     = (uint32_t)i;
-    }
-
-    memcpy(out->block_id, blk->out_block_id, 64);
-    memcpy(out->global_root, global_root, 64);
-
-    /* Pool: adopt this height (keeping any certs that raced ahead). */
-    if (w->v2_certpool.height != height) {
-        if (w->v2_certpool.committed && !w->v2_certpool.qc_attached)
-            (void)nodus_witness_v2_qc_try_attach(w);
-        prod_pool_reset(w, height);
-    }
-    w->v2_certpool.committed = true;
-    memcpy(w->v2_certpool.local_block_id, blk->out_block_id, 64);
-    memcpy(w->v2_certpool.vset_hash, blk->out_vset_hash, 64);
-
-    /* Our own DNA.CERT.v2 certificate over the id we DERIVED. A signing
-     * failure loses only our certificate — the block stays committed. */
-    uint8_t my_voter[32];
-    uint8_t pre[DNA_CERT_V2_PREIMAGE_LEN];
-    if (prod_my_voter_id(w, my_voter) == 0 &&
-        dna_cert_v2_preimage(blk->out_block_id, my_voter, height,
-                             w->v2_chain32, blk->out_vset_hash, pre) == 0) {
-        uint8_t sig[NODUS_SIG_BYTES];
-        size_t  siglen = 0;
-        memset(sig, 0, sizeof(sig));
-        if (qgp_dsa87_sign(sig, &siglen, pre, sizeof(pre),
-                           w->server->identity.sk.bytes) == 0 &&
-            siglen <= NODUS_SIG_BYTES) {
-            memcpy(out->cert_sig, sig, NODUS_SIG_BYTES);
-            out->have_cert = 1;
-            (void)prod_pool_insert(w, my_voter, blk->out_block_id, sig);
-        }
-    }
-    if (!out->have_cert)
-        QGP_LOG_ERROR(LOG_TAG, "own QC cert signing failed at height "
-                      "%llu — block committed, certificate missing",
-                      (unsigned long long)height);
-
-    (void)nodus_witness_v2_qc_try_attach(w);
-
-    QGP_LOG_INFO(LOG_TAG, "successor block %llu committed through the V2 "
-                 "engine (%zu envelope(s), %zu claim(s))",
-                 (unsigned long long)height, n_env, n_claim);
-    free(blk);
-    free(claims);
-    return 0;
-}
+/* R3 W4 — nodus_witness_v2_produce_commit (the legacy PBFT-successor
+ * commit handoff: batch split, engine apply, QC-cert-pool adoption and
+ * self-signing) is DELETED with the closed consensus lane: it took
+ * `nodus_witness_mempool_entry_t **` (mempool.h, deleted), read/wrote
+ * `w->v2_certpool` (deleted) and called nodus_witness_v2_qc_try_attach /
+ * prod_pool_reset / prod_pool_insert (all deleted above). A version-3
+ * chain's block commit now runs through the cometbft application layer
+ * (nodus_witness_cmt_app.c), which calls nodus_witness_v2_apply_block
+ * directly and does not route through this function or through any QC
+ * cert pool. */

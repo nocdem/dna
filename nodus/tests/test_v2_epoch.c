@@ -488,11 +488,42 @@ static void fx_close(fixture_t *fx) {
     rmrf(fx->dir);
 }
 
+/* R3 W4-D — this used to reopen through nodus_witness_create_chain_db,
+ * which now runs the SAME post-open integrity gate every ordinary
+ * restart runs (O15A obligation 6): a fixture seeded via seed_legacy_
+ * block plants rows in the legacy `blocks` table, and the gate refuses
+ * to treat that as a version-3 chain — outcome (c), "non-empty legacy
+ * blocks table" — exactly as test_v2_restart_gate.c's own cases pin.
+ * That refusal is correct production behaviour, but it is not this
+ * file's subject: these fixtures test ENGINE PERSISTENCE across a
+ * restart (does previously-written v2_blocks / validator / snapshot
+ * data survive a close and reopen), not the chain-role gate. The
+ * fixture itself is the version-2 engine's (package W4-G converts it to
+ * version-3); until then, reopen the SAME file directly — the same
+ * PRAGMAs witness_db_open_attempt (nodus_witness.c) sets that the
+ * engine depends on, and nothing else: no schema exec, no migration, no
+ * gate. Read directly: journal_mode=WAL, synchronous=NORMAL and a busy
+ * timeout are the only settings that function applies; there is no
+ * foreign_keys pragma anywhere in the witness sources to replicate. */
 static int fx_reopen(fixture_t *fx) {
     sqlite3_close(fx->w->db);
     fx->w->db = NULL;
+
+    char hex[33];
+    for (int i = 0; i < 16; i++)
+        snprintf(hex + i * 2, 3, "%02x", fx->chain_id16[i]);
+    char db_path[512];
+    snprintf(db_path, sizeof(db_path), "%s/witness_%s.db", fx->dir, hex);
+
+    int rc = sqlite3_open_v2(db_path, &fx->w->db, SQLITE_OPEN_READWRITE, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    sqlite3_busy_timeout(fx->w->db, NODUS_W_DB_BUSY_TIMEOUT_MS);
+    sqlite3_exec(fx->w->db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
+    sqlite3_exec(fx->w->db, "PRAGMA synchronous=NORMAL;", NULL, NULL, NULL);
+
     fx->w->cached_committee_epoch_start = UINT64_MAX;
-    return nodus_witness_create_chain_db(fx->w, fx->chain_id16);
+    return 0;
 }
 
 /* Apply one zero-envelope block at the next height. Plants the legacy

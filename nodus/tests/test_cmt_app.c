@@ -147,7 +147,6 @@
 #include "witness/nodus_witness_runtime.h"
 #include "witness/nodus_witness_roots_v2.h"
 #include "witness/nodus_witness_emission.h"      /* DNAC_DECIMAL_UNIT   */
-#include "witness/nodus_witness_mempool.h"
 #include "witness/nodus_witness_cmt_store.h"
 #include "witness/nodus_witness_cmt_host.h"
 #include "witness/nodus_witness_cmt_app.h"
@@ -205,7 +204,10 @@ static int g_checks = 0;
  * case; it is not made unasked.
  */
 
-/* ══ deterministic REAL keys — test_v2_produce.c:83-102's shape ══════ */
+/* ══ deterministic REAL keys — test_v2_produce.c:83-102's shape ══════
+ * test_v2_produce.c is deleted with the closed consensus lane (R3 W4);
+ * this shape is kept here and this behaviour is now proven only in
+ * this file and test_cmt_live.c. */
 
 #define N_KEYS ((int)DNAC_COMMITTEE_SIZE)
 #define TREASURY_RAW 93000000000000000ULL   /* test_v2_gen.c:66          */
@@ -768,10 +770,11 @@ static int seed_validators(fixture_t *fx)
     return 0;
 }
 
-/* test_v2_produce.c:149-192, then the S14 rung. ORDER IS LOAD-BEARING:
- * the V2 genesis runs at S9 (the engine's genesis gate accepts S9-S12)
- * and the S9 rung REFUSES a populated v2_blocks, so the climb to S14
- * comes after. */
+/* test_v2_produce.c:149-192's shape (that file is deleted with the
+ * closed consensus lane, R3 W4), then the S14 rung. ORDER IS
+ * LOAD-BEARING: the V2 genesis runs at S9 (the engine's genesis gate
+ * accepts S9-S12) and the S9 rung REFUSES a populated v2_blocks, so the
+ * climb to S14 comes after. */
 static int fx_open(fixture_t *fx, const char *tag)
 {
     uint8_t cid16[16];
@@ -838,9 +841,12 @@ static void fx_close(fixture_t *fx)
     rmrf(fx->dir);
 }
 
-/* ══ a REAL chain_config envelope — test_v2_produce.c:256-410 ════════
+/* ══ a REAL chain_config envelope — test_v2_produce.c:256-410's shape
+ * ═══════════════════════════════════════════════════════════════════
  * Copied (that file's copy is static and its fixture type differs); the
- * logic is that function's, retyped over a `nodus_witness_t *`. */
+ * logic is that function's, retyped over a `nodus_witness_t *`.
+ * test_v2_produce.c is deleted with the closed consensus lane (R3 W4);
+ * this behaviour is now proven only here and in test_cmt_live.c. */
 
 #define CC_CALL_LEN 41u
 #define CC_UNITS    200000u

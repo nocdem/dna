@@ -19,8 +19,8 @@
 #include <string.h>
 #include <time.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <limits.h>
-#include <openssl/evp.h>
 
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 #include "crypto/utils/qgp_bench.h"         /* perf harness — ((void)0) in production */
@@ -529,102 +529,13 @@ uint64_t nodus_witness_ledger_count(nodus_witness_t *w) {
 
 /* ── Block operations ────────────────────────────────────────────── */
 
-int nodus_witness_block_add(nodus_witness_t *w, const uint8_t *tx_root,
-                               uint32_t tx_count, uint64_t timestamp,
-                               const uint8_t *proposer_id,
-                               const uint8_t *state_root,
-                               const uint8_t *chain_def_blob,
-                               size_t chain_def_blob_len) {
-    if (!w || !w->db || !tx_root || !state_root) return -1;
-    /* chain_def_blob is optional: non-NULL + non-zero only for genesis
-     * blocks (height 0). See header comment for details. */
-    if (chain_def_blob && chain_def_blob_len == 0) return -1;
-    if (!chain_def_blob && chain_def_blob_len != 0) return -1;
-
-    /* Phase 5 / Task 5.2: prev_hash via the shared compute_block_hash
-     * helper. Single source of truth with nodus_witness_sync.c. */
-    uint8_t prev_hash[NODUS_T3_TX_HASH_LEN] = {0};
-    nodus_witness_block_t prev_block;
-    if (nodus_witness_block_get_latest(w, &prev_block) == 0) {
-        /* If prev_block is genesis (height 0), its block hash includes
-         * chain_def. Load the stored chain_def_blob so the prev_hash
-         * computation matches. For non-genesis prev blocks, pass NULL. */
-        const uint8_t *prev_cd_blob = NULL;
-        size_t prev_cd_len = 0;
-        uint8_t *prev_cd_alloc = NULL;
-        if (prev_block.height == 0) {
-            /* One-shot query: SELECT chain_def_blob FROM blocks WHERE height = 0 */
-            sqlite3_stmt *cdst;
-            if (sqlite3_prepare_v2(w->db,
-                    "SELECT chain_def_blob FROM blocks WHERE height = 0",
-                    -1, &cdst, NULL) == SQLITE_OK) {
-                if (sqlite3_step(cdst) == SQLITE_ROW) {
-                    const void *blob = sqlite3_column_blob(cdst, 0);
-                    int blen = sqlite3_column_bytes(cdst, 0);
-                    if (blob && blen > 0) {
-                        prev_cd_alloc = malloc((size_t)blen);
-                        if (prev_cd_alloc) {
-                            memcpy(prev_cd_alloc, blob, (size_t)blen);
-                            prev_cd_blob = prev_cd_alloc;
-                            prev_cd_len = (size_t)blen;
-                        }
-                    }
-                }
-                sqlite3_finalize(cdst);
-            }
-        }
-        nodus_witness_compute_block_hash_ex(prev_block.height,
-                                              prev_block.prev_hash,
-                                              prev_block.state_root,
-                                              prev_block.tx_root,
-                                              prev_block.tx_count,
-                                              prev_block.proposer_id,
-                                              prev_cd_blob, prev_cd_len,
-                                              prev_hash);
-        free(prev_cd_alloc);
-    }
-    /* Genesis block: prev_hash stays all zeros */
-
-    /* Phase 2 / Task 11 — chain_def_blob column added in schema v14.
-     * Nullable; only genesis blocks populate it. NOTE: this write site
-     * is the sole producer for now. Readers (block_get*, block_get_range)
-     * intentionally skip the column until Task 36 adds handle_dnac_genesis. */
-    sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(w->db,
-        "INSERT INTO blocks (tx_root, tx_count, timestamp, proposer_id, prev_hash, state_root, created_at, chain_def_blob) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr, "%s: block add prepare failed: %s\n",
-                LOG_TAG, sqlite3_errmsg(w->db));
-        return -1;
-    }
-
-    sqlite3_bind_blob(stmt, 1, tx_root, NODUS_T3_TX_HASH_LEN, SQLITE_STATIC);
-    sqlite3_bind_int(stmt, 2, (int)tx_count);
-    sqlite3_bind_int64(stmt, 3, (int64_t)timestamp);
-    if (proposer_id)
-        sqlite3_bind_blob(stmt, 4, proposer_id, NODUS_T3_WITNESS_ID_LEN, SQLITE_STATIC);
-    else
-        sqlite3_bind_null(stmt, 4);
-    sqlite3_bind_blob(stmt, 5, prev_hash, NODUS_T3_TX_HASH_LEN, SQLITE_STATIC);
-    sqlite3_bind_blob(stmt, 6, state_root, NODUS_T3_TX_HASH_LEN, SQLITE_STATIC);
-    sqlite3_bind_int64(stmt, 7, (int64_t)time(NULL));
-    if (chain_def_blob && chain_def_blob_len > 0)
-        sqlite3_bind_blob(stmt, 8, chain_def_blob, (int)chain_def_blob_len,
-                          SQLITE_STATIC);
-    else
-        sqlite3_bind_null(stmt, 8);
-
-    rc = sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
-
-    if (rc != SQLITE_DONE) {
-        fprintf(stderr, "%s: block add failed: %s\n",
-                LOG_TAG, sqlite3_errmsg(w->db));
-        return -1;
-    }
-    return 0;
-}
+/* R3 W4 — nodus_witness_block_add (the legacy commit path's block-row
+ * writer) is DELETED with the closed consensus lane: it has zero
+ * surviving callers — the version-3 apply path writes committed blocks
+ * through its own engine (nodus_witness_v2_apply.c), not through this
+ * legacy INSERT. The getters below (block_get / _get_latest / _get_range
+ * / genesis fetch) are hub/spoke query handlers and stay, reading
+ * whatever this build's active writer populated. */
 
 /* SELECT column order is: height, tx_root, tx_count, timestamp,
  * proposer_id, prev_hash, state_root. Schema v12 (Phase 1 / Task 1.2)
@@ -802,11 +713,12 @@ int nodus_witness_block_height_checked(nodus_witness_t *w, uint64_t *out) {
     /* ── A MISSING HANDLE IS NOT ALWAYS A FAULT — the O15L DG-1 matrix ──
      *
      * `w->db == NULL` does NOT mean one thing, and answering it with a
-     * single verdict is wrong in one direction or the other. The split
-     * below is the SAME one nodus_witness_bft.c's load_committee_at_height
-     * makes at :673-683, drawn with the SAME 32-byte comparison, so the
-     * two gates cannot disagree about which row of the matrix a node is
-     * in:
+     * single verdict is wrong in one direction or the other. R3 W4 — this
+     * split used to have a sibling drawn with the SAME 32-byte comparison
+     * in nodus_witness_bft.c's load_committee_at_height, so the two gates
+     * could not disagree about which row of the matrix a node was in; that
+     * function is deleted with the closed consensus lane it served, and
+     * this function's own two-armed answer stands on its own:
      *
      *   chain_id == 0, db == NULL   GENUINE PRE-GENESIS. There is no
      *                               chain, so height 0 is a TRUE COMMITTED
@@ -826,34 +738,28 @@ int nodus_witness_block_height_checked(nodus_witness_t *w, uint64_t *out) {
      *                               height 1.
      *
      * WHY THE FIRST ARM IS LOAD-BEARING, not a courtesy. A node running
-     * the genesis round is in it BY CONSTRUCTION:
-     * nodus_witness_commit_genesis is what CREATES the chain database
-     * (nodus_witness_bft.c, nodus_witness_commit_genesis — its opening
-     * `if (!w->db)` bootstrap, which calls nodus_witness_create_chain_db;
-     * cited by FUNCTION because comments of this length are exactly what
-     * shifts the line numbers around them), so `db` is
-     * NULL until genesis commits.
-     * Answering -1 there makes nodus_witness_bft_is_leader refuse to lead,
-     * bft_start_round_internal refuse to open the round, and
-     * handle_propose / handle_commit refuse the genesis proposal — on
-     * EVERY node at once, because every node is in that state at the same
-     * moment. A fresh cluster would never produce genesis and the chain
-     * would never start. load_committee_at_height's comment (:622-655)
-     * calls this arm "preserved BYTE-IDENTICALLY" for exactly that reason.
+     * the genesis round is in it BY CONSTRUCTION: the chain database did
+     * not exist yet, so `db` is NULL until genesis commits. R3 W4 — the
+     * BFT-era callers this arm protected (nodus_witness_bft_is_leader,
+     * bft_start_round_internal, handle_propose / handle_commit refusing
+     * the genesis proposal on a NULL db) are deleted with that lane; a
+     * version-3 chain's genesis and committee resolution run through the
+     * cometbft reactor's own path instead, which this function does not
+     * gate. The historical argument is kept because the DG-1 matrix
+     * itself — a missing handle is not always a fault — still applies to
+     * every remaining caller of this function.
      *
-     * ⚠ THESE TWO GATES ARE ONE RULE IN TWO PLACES. A change to either
-     * MUST change the other. If this function ever says "pre-genesis" for
-     * a node load_committee_at_height calls row 2 (or the reverse), a node
-     * gets its height from one row of the matrix and its committee from
-     * the other — the two would then disagree about whether the node has
-     * a chain at all. Grep DG-1 before touching either. */
+     * The paired gate this comment used to cross-reference
+     * (nodus_witness_bft.c's load_committee_at_height) is deleted; grep
+     * DG-1 before assuming any live sibling still exists. */
     if (!w->db) {
         static const uint8_t zero_chain[32] = {0};
         if (memcmp(w->chain_id, zero_chain, 32) == 0) {
             /* Deliberately NOT logged. This is a normal, expected state
              * on a fresh cluster, and the consumers reading it run at
-             * tick rate — the sibling gate declines to log here for the
-             * same reason (nodus_witness_bft.c:657-661). */
+             * tick rate — R3 W4: the sibling gate that used to decline to
+             * log here for the same reason (nodus_witness_bft.c) is
+             * deleted with the closed consensus lane. */
             *out = 0;
             return 0;
         }
@@ -956,32 +862,17 @@ int nodus_witness_block_height_checked(nodus_witness_t *w, uint64_t *out) {
  * shifts line numbers: if the two disagree, the function name wins and
  * the line is stale.
  *
- *   bft.c supply_invariant_violated (:1634)
- *       — advisory; that site's own comment says the invariant stays
- *         advisory until the lock/pool aggregation lands.
- *   bft.c bft_handle_vote_inner, commit tail (:6755)
- *       — labels a legacy commit-certificate row.
- *   bft.c nodus_witness_bft_handle_commit cert store (:7322)
- *       — same, on the remote-COMMIT path.
- *   bft.c nodus_witness_bft_check_timeout, P1 round release (:10863)
- *       — fail-safe at 0: the block is gated on `block_height != 0`, so
- *         `0 >= round_height` is false and no round is released. This is
- *         the LAST remaining fail-open in check_timeout; its sibling, the
- *         P3 tip-frozen window, was CONVERTED (see the O15O comment
- *         there), because P3's 0 was NOT fail-safe under a sustained
- *         fault and could rotate the view against an unread tip.
- *   nodus_witness_sync.c 471, 698, 989, 1425, 1510
- *       — a bogus 0 makes this node believe it is empty and sync from
- *         scratch: wasteful, and the conservative direction.
  *   nodus_witness_handlers.c 475, 1214, 2896 — RPC / display.
  *   nodus_witness_peer.c:435 — the height advertised in IDENT.
  *   nodus_server.c:3800      — RPC status field.
  *
- * NOT CLASSIFIED by O15O Faz 1, and therefore untouched rather than
- * deliberately left: nodus_witness_bft.c nodus_witness_bft_handle_commit
- * (:7406), which fills the client-visible committed_block_height on the
- * remote-COMMIT reply path, and nodus_witness_cert.c:169, outside this
- * phase's file whitelist. */
+ * R3 W4 — every caller this list once named in nodus_witness_bft.c
+ * (supply_invariant_violated, bft_handle_vote_inner's commit tail,
+ * nodus_witness_bft_handle_commit's cert store and P1 round release in
+ * nodus_witness_bft_check_timeout) and in nodus_witness_sync.c is
+ * DELETED with the closed consensus lane. Neither file exists any more,
+ * so neither line-number citation is checkable; the classification
+ * itself is moot for a caller that no longer exists. */
 uint64_t nodus_witness_block_height(nodus_witness_t *w) {
     uint64_t h = 0;
     if (nodus_witness_block_height_checked(w, &h) != 0) {
@@ -996,59 +887,12 @@ uint64_t nodus_witness_block_height(nodus_witness_t *w) {
 
 /* ── Genesis state ───────────────────────────────────────────────── */
 
-bool nodus_witness_genesis_exists(nodus_witness_t *w) {
-    if (!w || !w->db) return false;
-
-    sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(w->db,
-        "SELECT 1 FROM genesis_state WHERE id = 1", -1, &stmt, NULL);
-    if (rc != SQLITE_OK) return false;
-
-    bool exists = (sqlite3_step(stmt) == SQLITE_ROW);
-    sqlite3_finalize(stmt);
-    return exists;
-}
-
-int nodus_witness_genesis_set(nodus_witness_t *w, const uint8_t *tx_hash,
-                                 uint64_t total_supply,
-                                 const uint8_t *commitment) {
-    if (!w || !w->db || !tx_hash) return -1;
-
-    if (nodus_witness_genesis_exists(w)) {
-        fprintf(stderr, "%s: genesis already exists\n", LOG_TAG);
-        return -2;
-    }
-
-    sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(w->db,
-        "INSERT INTO genesis_state (id, tx_hash, total_supply, commitment, created_at) "
-        "VALUES (1, ?, ?, ?, ?)", -1, &stmt, NULL);
-    if (rc != SQLITE_OK) return -1;
-
-    sqlite3_bind_blob(stmt, 1, tx_hash, NODUS_T3_TX_HASH_LEN, SQLITE_STATIC);
-    sqlite3_bind_int64(stmt, 2, (int64_t)total_supply);
-    if (commitment)
-        sqlite3_bind_blob(stmt, 3, commitment, NODUS_T3_TX_HASH_LEN, SQLITE_STATIC);
-    else
-        sqlite3_bind_null(stmt, 3);
-    /* created_at deterministic = 0 (informational only; was time(NULL)
-     * which produces different values on each node — bootstrap-replayed
-     * nodes ran genesis at a later wall-clock moment than original BFT
-     * nodes, diverging this row. Even though the field is not in
-     * state_root today, the row content is read by debug/forensic
-     * queries that downstream code may eventually fold into consensus.
-     * Determinism-by-default per PRIMARY OBJECTIVE: DETERMINISM. */
-    sqlite3_bind_int64(stmt, 4, 0);
-
-    rc = sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
-
-    if (rc != SQLITE_DONE) return -1;
-
-    fprintf(stderr, "%s: genesis recorded: supply=%llu\n",
-            LOG_TAG, (unsigned long long)total_supply);
-    return 0;
-}
+/* R3 W4 — nodus_witness_genesis_exists and nodus_witness_genesis_set
+ * (the legacy genesis-row writer and its existence guard) are DELETED
+ * with the closed consensus lane: zero surviving callers. Left the
+ * reader, nodus_witness_genesis_get, untouched below: this delta's
+ * mandate is the closed consensus lane, and its own caller count is a
+ * separate, pre-existing question this package does not resolve. */
 
 int nodus_witness_genesis_get(nodus_witness_t *w,
                                  nodus_witness_genesis_t *out) {
@@ -1251,8 +1095,9 @@ int nodus_witness_supply_add_burned(nodus_witness_t *w, uint64_t fee,
 /* Parse memos out of a raw committed TX blob and stamp them onto the
  * outputs of `entry` by matching output_index. Silently tolerates
  * malformed blobs — missing memo leaves output memo_len at 0. Blob
- * layout mirrors the writer in nodus_witness_bft.c (TX wire format).
- */
+ * layout mirrors the TX wire format the legacy commit path once wrote
+ * (nodus_witness_bft.c, DELETED R3 W4); this reader stays for existing
+ * committed_transactions rows regardless of which lane produced them. */
 static void fill_memos_from_raw_tx(nodus_witness_t *w,
                                     nodus_witness_tx_history_entry_t *entry) {
     if (!w || !entry) return;
@@ -1635,35 +1480,14 @@ int nodus_witness_block_txs_get(nodus_witness_t *w, uint64_t block_height,
 
 /* ── Commit certificate operations ──────────────────────────────── */
 
-int nodus_witness_cert_store(nodus_witness_t *w, uint64_t block_height,
-                               const nodus_witness_vote_record_t *votes,
-                               int vote_count) {
-    if (!w || !w->db || !votes) return -1;
-
-    for (int i = 0; i < vote_count; i++) {
-        if (votes[i].vote != NODUS_W_VOTE_APPROVE) continue;
-
-        sqlite3_stmt *stmt;
-        int rc = sqlite3_prepare_v2(w->db,
-            "INSERT OR IGNORE INTO commit_certificates "
-            "(block_height, voter_id, vote, signature) VALUES (?, ?, ?, ?)",
-            -1, &stmt, NULL);
-        if (rc != SQLITE_OK) return -1;
-
-        sqlite3_bind_int64(stmt, 1, (int64_t)block_height);
-        sqlite3_bind_blob(stmt, 2, votes[i].voter_id,
-                          NODUS_T3_WITNESS_ID_LEN, SQLITE_STATIC);
-        sqlite3_bind_int(stmt, 3, votes[i].vote);
-        sqlite3_bind_blob(stmt, 4, votes[i].signature,
-                          NODUS_SIG_BYTES, SQLITE_STATIC);
-
-        rc = sqlite3_step(stmt);
-        sqlite3_finalize(stmt);
-        if (rc != SQLITE_DONE) return -1;
-    }
-    return 0;
-}
-
+/* R3 W4 — nodus_witness_cert_store (the WRITER) is deleted with the
+ * closed consensus lane: its only callers were the legacy COMMIT path
+ * (bft.c) and the legacy sync replay (sync.c), both gone, so nothing
+ * writes a row to commit_certificates again. nodus_witness_cert_get (the
+ * READER) stays: handle_dnac_block (nodus_witness_handlers.c, a client
+ * query handler explicitly kept by this package) still calls it, and on
+ * a version-3 chain it now always answers an empty cert list — the
+ * table exists (schema, nodus_witness.c) but nothing populates it. */
 int nodus_witness_cert_get(nodus_witness_t *w, uint64_t block_height,
                              nodus_witness_vote_record_t *votes_out,
                              int max_votes, int *count_out) {
@@ -1944,80 +1768,11 @@ int nodus_witness_db_rollback_to_savepoint(nodus_witness_t *w, const char *name)
     return 0;
 }
 
-/* Block hash computation (Phase 5 / Task 5.1).
- *
- * Canonical preimage shared by block_add (writer side) and
- * sync compute_prev_hash (verifier side). Before Phase 5 each side
- * had its own inline SHA3-512 with the same formula — two copies of
- * the same logic is a bug magnet. Now both call this helper. */
-static void enc_u64_le(uint64_t v, uint8_t out[8]) {
-    for (int i = 0; i < 8; i++) out[i] = (uint8_t)((v >> (i * 8)) & 0xff);
-}
-static void enc_u32_le_v(uint32_t v, uint8_t out[4]) {
-    for (int i = 0; i < 4; i++) out[i] = (uint8_t)((v >> (i * 8)) & 0xff);
-}
-
-void nodus_witness_compute_block_hash(uint64_t height,
-                                       const uint8_t prev_hash[64],
-                                       const uint8_t state_root[64],
-                                       const uint8_t tx_root[64],
-                                       uint32_t tx_count,
-                                       const uint8_t proposer_id[32],
-                                       uint8_t out[64]) {
-    nodus_witness_compute_block_hash_ex(height, prev_hash, state_root,
-                                          tx_root, tx_count,
-                                          proposer_id, NULL, 0, out);
-}
-
-void nodus_witness_compute_block_hash_ex(uint64_t height,
-                                           const uint8_t prev_hash[64],
-                                           const uint8_t state_root[64],
-                                           const uint8_t tx_root[64],
-                                           uint32_t tx_count,
-                                           const uint8_t proposer_id[32],
-                                           const uint8_t *chain_def_blob,
-                                           size_t chain_def_blob_len,
-                                           uint8_t out[64]) {
-    /* PR 2 (2026-05-03): timestamp dropped from preimage. Buffer shrunk
-     * from 244 to 236 bytes. See header comment for rationale. */
-    uint8_t buf[8 + 64 + 64 + 64 + 4 + 32];  /* 236 bytes standard header */
-    uint8_t *p = buf;
-
-    enc_u64_le(height, p);        p += 8;
-    memcpy(p, prev_hash, 64);     p += 64;
-    /* state_root may be NULL on the cert-preimage path (sync_handle_rsp
-     * recomputes block_hash before knowing state_root, then verifies
-     * against the wire's certs). The original sync.c comment claimed
-     * this helper accepts NULL but the implementation here was missing
-     * the guard, segfaulting on the first sync that took the
-     * cert-preimage branch. Treat NULL as 64 zero bytes — same hash
-     * input as the all-zero case the legacy code wrote into the buffer
-     * stack-memory before this fix when it happened to be zeroed. */
-    if (state_root)
-        memcpy(p, state_root, 64);
-    else
-        memset(p, 0, 64);
-    p += 64;
-    memcpy(p, tx_root, 64);       p += 64;
-    enc_u32_le_v(tx_count, p);    p += 4;
-    memcpy(p, proposer_id, 32);
-
-    EVP_MD_CTX *md = EVP_MD_CTX_new();
-    EVP_DigestInit_ex(md, EVP_sha3_512(), NULL);
-    EVP_DigestUpdate(md, buf, sizeof(buf));
-
-    /* Anchored genesis: append chain_def bytes verbatim to the preimage.
-     * These bytes are produced by dnac_chain_def_encode and are byte-
-     * identical to the sub-sequence dnac_block_compute_hash appends for
-     * genesis blocks. Both sides hash the same bytes → same block_hash. */
-    if (chain_def_blob && chain_def_blob_len > 0) {
-        EVP_DigestUpdate(md, chain_def_blob, chain_def_blob_len);
-    }
-
-    unsigned int n = 0;
-    EVP_DigestFinal_ex(md, out, &n);
-    EVP_MD_CTX_free(md);
-}
+/* R3 W4 — nodus_witness_compute_block_hash / _ex (the block-hash
+ * preimage shared by the legacy block_add writer and the legacy sync
+ * verifier) are DELETED with the closed consensus lane: block_add above
+ * and nodus_witness_sync.c's compute_prev_hash, its only two callers,
+ * are both gone. */
 
 /* Schema v12 migration (Phase 1 / Task 1.1).
  *
@@ -2030,7 +1785,10 @@ void nodus_witness_compute_block_hash_ex(uint64_t height,
 static void nodus_witness_db_migrate_v13_client_fields(nodus_witness_t *w);
 static void nodus_witness_db_migrate_v14_chain_def(nodus_witness_t *w);
 static void nodus_witness_db_migrate_v15_stake_delegation(nodus_witness_t *w);
-static void nodus_witness_db_migrate_v16_pbft_state(nodus_witness_t *w);
+/* R3 W4 — nodus_witness_db_migrate_v16_pbft_state (schema v16, the
+ * singleton pbft_state table) is DELETED with the closed consensus lane:
+ * nodus_witness_db_save_pbft_state / _load_pbft_state, its only writer
+ * and reader, are both deleted below and the table is never read again. */
 static void nodus_witness_db_migrate_v17_supply_total_minted(nodus_witness_t *w);
 
 /* Does `table` already have a column called `column`? 1 / 0 / -1 fault.
@@ -2077,9 +1835,10 @@ int nodus_witness_db_migrate_v12(nodus_witness_t *w) {
      *      documented interface and there is no distinct result code for
      *      this case, so the check could only ever be a string match.
      *   2. This function runs on EVERY chain-database open
-     *      (nodus_witness.c witness_db_open_attempt, and the joining path
-     *      in nodus_witness_bootstrap.c) — a fresh V2 chain included. If a
-     *      future SQLite reworded that sentence, the substring would stop
+     *      (nodus_witness.c witness_db_open_attempt — R3 W4: the other
+     *      joining path this once ran on, nodus_witness_bootstrap.c, is
+     *      deleted with the closed consensus lane) — a fresh V2 chain
+     *      included. If a future SQLite reworded that sentence, the substring would stop
      *      matching, the normal re-run would be classified as a real
      *      failure, and EVERY NODE WOULD abort() ON STARTUP the moment the
      *      library was upgraded. Low probability, fleet-wide blast radius,
@@ -2155,9 +1914,6 @@ int nodus_witness_db_migrate_v12(nodus_witness_t *w) {
 
     /* Hard-Fork v1 — chain_config_history table (CREATE TABLE IF NOT EXISTS). */
     nodus_chain_config_db_migrate(w);
-
-    /* PR 3 Yol B — pbft_state singleton table (current_view + last_prepared). */
-    nodus_witness_db_migrate_v16_pbft_state(w);
 
     /* 2026-07-31 — supply_tracking.total_minted back-fill, made reachable
      * on every open (it was unreachable inside supply_init). */
@@ -2240,63 +1996,6 @@ static void nodus_witness_db_migrate_v15_stake_delegation(nodus_witness_t *w) {
     }
 }
 
-/* ── PR 3 Yol B / H-5 PBFT state persistence ─────────────────────── */
-
-/* Schema v16 migration: singleton pbft_state table.
- *
- * Holds two pieces of BFT runtime state. They are written together and
- * read back together, but as of O15P Faz 1 only ONE of them is restored
- * into consensus state — see nodus_witness_db_load_pbft_state below,
- * which carries the argument:
- *
- *   current_view       INTEGER  BFT view number. WRITTEN on every view
- *                               move and READ by operators and by the
- *                               stagef harness as the "a view change
- *                               completed" probe — but NOT loaded back
- *                               into w->current_view. A witness comes up
- *                               at view 0 and pulls a VIEW_OK proof from
- *                               a peer that is ahead.
- *   last_prepared_blob BLOB     Serialized PBFT-prepared certificate
- *                               from the most recent PREVOTE quorum
- *                               this witness observed locally. RESTORED,
- *                               and it MUST stay that way: it is the
- *                               prepared-value lock's memory, and the
- *                               quorum-intersection safety argument
- *                               depends on that lock surviving a restart.
- *
- * The original H-5 reasoning — recorded because the column outlived it:
- * without persistence a HAVE_CHAIN restart re-entered consensus at view
- * 0 and found its votes rejected by peers that had already advanced past
- * it (A15 in the PR 3 design threat model), and the cluster stalled until
- * that node re-entered via VIEW_CHANGE. O15N Faz 2C2 removed the stall by
- * giving the counter a single write site behind a verified VIEW_OK proof
- * and a pull path for a node that is behind (nodus_witness_bft.c:5746,
- * :10411), so "behind" became a state the protocol recovers from rather
- * than one it hangs on. That is what makes discarding the stored view
- * safe; the blob's half of the argument is untouched and still stands.
- *
- * Singleton via CHECK(id = 1) — same pattern as genesis_state. The
- * UPSERT in nodus_witness_db_save_pbft_state ensures only one row
- * ever exists. Idempotent: CREATE TABLE IF NOT EXISTS. */
-static void nodus_witness_db_migrate_v16_pbft_state(nodus_witness_t *w) {
-    if (!w || !w->db) return;
-    char *err = NULL;
-    int rc = sqlite3_exec(w->db,
-        "CREATE TABLE IF NOT EXISTS pbft_state ("
-        "  id INTEGER PRIMARY KEY CHECK(id = 1),"
-        "  current_view INTEGER,"
-        "  last_prepared_blob BLOB"
-        ")",
-        NULL, NULL, &err);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr,
-                "MIGRATION FAILURE: CREATE TABLE pbft_state "
-                "sqlite error %d: %s\n", rc, err ? err : "(null)");
-        if (err) sqlite3_free(err);
-        abort();
-    }
-}
-
 /* Schema v17 migration (2026-07-31) — supply_tracking.total_minted.
  *
  * The column arrived in v0.16 with an ALTER inside
@@ -2314,9 +2013,12 @@ static void nodus_witness_db_migrate_v16_pbft_state(nodus_witness_t *w) {
  *
  * Running it here makes it reachable on EVERY chain-DB open. Inside
  * supply_init it would only be reachable on a genesis (re-)commit —
- * commit_genesis is supply_init's sole production caller
- * (nodus_witness_bft.c:5924), so a plain restart would never repair the
- * DB.
+ * supply_init's current sole production caller is the version-3 genesis
+ * path (nodus_witness_v2_gen.c), so a plain restart would never repair
+ * the DB. R3 W4 — the legacy commit_genesis caller this comment used to
+ * cite (nodus_witness_bft.c:5924) is deleted with the closed consensus
+ * lane; the "sole caller, only reachable on genesis" argument itself is
+ * unaffected, since it never depended on which lane called it.
  *
  * HONEST SCOPE: I could not prove such a DB still exists — the chain was
  * wiped. This is a cheap guard, not the repair of a demonstrated
@@ -2356,179 +2058,12 @@ static void nodus_witness_db_migrate_v17_supply_total_minted(nodus_witness_t *w)
     }
 }
 
-/* Save current BFT runtime state (current_view + last_prepared) into
- * the pbft_state singleton row.
- *
- * Serialization: w->last_prepared is dumped as raw struct bytes. This
- * is acceptable because the BLOB never crosses a binary version
- * boundary — it is written and read back by the SAME nodus binary
- * across a restart. If a future schema change resizes/reorders
- * last_prepared fields, that change MUST also bump the BLOB encoding
- * (e.g., add a 4-byte version prefix and tolerate version mismatch by
- * loading present=false). For now, raw bytes keep the implementation
- * minimal. last_prepared.present == false is encoded as a NULL BLOB
- * to avoid persisting stale slot bytes. */
-int nodus_witness_db_save_pbft_state(nodus_witness_t *w) {
-    if (!w || !w->db) return -1;
-
-    sqlite3_stmt *stmt = NULL;
-    int rc = sqlite3_prepare_v2(w->db,
-        "INSERT INTO pbft_state (id, current_view, last_prepared_blob) "
-        "VALUES (1, ?, ?) "
-        "ON CONFLICT(id) DO UPDATE SET "
-        "  current_view = excluded.current_view, "
-        "  last_prepared_blob = excluded.last_prepared_blob",
-        -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr, "[H-5] prepare save_pbft_state failed: %s\n",
-                sqlite3_errmsg(w->db));
-        return -1;
-    }
-    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)w->current_view);
-    if (w->last_prepared.present) {
-        sqlite3_bind_blob(stmt, 2, &w->last_prepared,
-                          (int)sizeof(w->last_prepared), SQLITE_TRANSIENT);
-    } else {
-        sqlite3_bind_null(stmt, 2);
-    }
-    rc = sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
-    if (rc != SQLITE_DONE) {
-        fprintf(stderr, "[H-5] save_pbft_state step failed: %s\n",
-                sqlite3_errmsg(w->db));
-        return -1;
-    }
-    return 0;
-}
-
-/* Load BFT runtime state from the pbft_state singleton row.
- *
- * TWO FIELDS, TWO OPPOSITE ANSWERS — and the asymmetry is the point:
- * `last_prepared` IS restored, `current_view` is NOT. Idempotent for
- * fresh DBs (no row → view 0 and w->last_prepared.present at false).
- * The intended call site is the chain-DB open (nodus_witness.c
- * witness_db_open_attempt) AFTER schema migration but BEFORE the witness
- * registers for any T3 dispatch.
- *
- * ── O15P Faz 1 — THE VIEW COUNTER COMES UP AT 0, ALWAYS ──────────────
- *
- * WHAT THIS REPLACES, AND WHY IT IS NOT A TIDY-UP. Every node coming up
- * at the same view is what makes a fleet-wide restart converge, and until
- * now that guarantee was a HUMAN REMEMBERING A MANUAL STEP: the mandatory
- * stop-all deploy tells the operator to `DELETE FROM pbft_state`
- * (docs/DEPLOY_RUNBOOK.md §2.1), so every node came up at 0 together and
- * nobody needed rescuing. That step is load-bearing TOGETHER with a
- * second fact — `w->viewok_proof`, the evidence that justified this
- * node's last view move, is memory-only (nodus/BUGS.md O15N-R2), so a
- * restarted node holds no proof and can rescue nobody. Drop the runbook
- * step without persisting the proof and the fleet comes up split across
- * views with nothing able to serve a proof, converging only through the
- * slow escalation ladder. Resetting here makes "everyone starts from the
- * same point" a property the CODE owns, and the runbook step becomes
- * belt-and-braces instead of the whole belt.
- *
- * WHY DISCARDING IT IS SAFE IN BOTH DIRECTIONS — the whole argument:
- *
- *   A NODE RESTARTING ALONE drops to view 0, is therefore BEHIND its
- *   peers, and PULLS the proof from one of them. That path already
- *   exists and is driven by ordinary traffic, at two call sites, each
- *   gated on the sender being strictly ahead of us:
- *     - nodus_witness_bft.c:5746 — handle_propose, when a PROPOSE names a
- *       view above ours;
- *     - nodus_witness_bft.c:10411 — handle_newview, on the same condition.
- *   Both call bft_viewok_send_request; a verified VIEW_OK proof then
- *   moves the counter through bft_viewok_apply, which is its ONLY other
- *   write site. Being behind is the state the recovery machinery is
- *   built for, so this hands it the case it already handles.
- *
- *   A NODE RESTARTING WITH EVERYONE ELSE finds every peer at 0 too.
- *   Nobody is ahead, nobody needs a proof, and the fleet is already
- *   converged — which is exactly the outcome the runbook step was buying.
- *
- * `last_prepared` IS STILL LOADED, and that is not incidental. It is the
- * prepared-value lock's memory, consulted by
- * nodus_witness_bft_prepared_lock_blocks (nodus_witness_bft.c:10961) —
- * the refusal the quorum-intersection safety argument depends on. That
- * function gates on `present`, `height` and `tx_hash` ONLY; it never
- * reads `current_view`, so zeroing the counter cannot disable it. Nor
- * does it degrade C5: the cert's own `view` travels inside the blob and
- * is what feeds `view_changes[].prepared.view` (:8351) and the outbound
- * VIEW_CHANGE (:8519), so the canonical (height, view, tx_hash)
- * selection still ranks on the view the certificate was PREPARED in,
- * never on the counter this node happens to hold.
- *
- * THE ROW IS NOT TOUCHED — READ-ONLY, DELIBERATELY. This function must
- * not become the runbook's DELETE. witness_db_open_attempt documents its
- * own re-entry after a failed attempt as safe because "load_pbft_state
- * only reads" (nodus_witness.c:454), and the stagef harness reads the
- * stored column as its view-change-completed probe
- * (tests/integration/stagef/tests/test_vset_grow_shrink.sh:129). The
- * SAVE side is likewise unchanged: bft_view_move_finish still persists
- * every view move (:9377). The column keeps its writer and its reader;
- * it simply stops being an INPUT to this node's consensus state.
- *
- * WHAT A RESTART NOW COSTS: one round in which this node declines a
- * PROPOSE for a view it no longer holds and asks for the proof. That is
- * a liveness cost, the same trade every fail-closed gate in the consensus
- * path makes, and it is paid only by a node restarting alone. */
-int nodus_witness_db_load_pbft_state(nodus_witness_t *w) {
-    if (!w || !w->db) return -1;
-
-    /* Before the query, so "comes up at 0" holds even when the SELECT
-     * itself fails: a node that cannot read the row must not be left
-     * holding whatever view happened to be in memory. */
-    w->current_view = 0;
-
-    sqlite3_stmt *stmt = NULL;
-    int rc = sqlite3_prepare_v2(w->db,
-        "SELECT current_view, last_prepared_blob "
-        "FROM pbft_state WHERE id = 1",
-        -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr, "[H-5] prepare load_pbft_state failed: %s\n",
-                sqlite3_errmsg(w->db));
-        return -1;
-    }
-    rc = sqlite3_step(stmt);
-    if (rc == SQLITE_ROW) {
-        if (sqlite3_column_type(stmt, 0) != SQLITE_NULL) {
-            /* READ AND DISCARDED. The column is still selected because
-             * the operator is owed the number: without this line a node
-             * that had reached view 9 would come up at 0 in silence, and
-             * the persisted row — which the harness and the runbook both
-             * read — would disagree with the node's live view with
-             * nothing in the log explaining why. */
-            uint32_t stored = (uint32_t)sqlite3_column_int64(stmt, 0);
-            if (stored != 0) {
-                fprintf(stderr,
-                    "[O15P] stored view %u DISCARDED — this node enters "
-                    "consensus at view 0 and pulls a VIEW_OK proof from a "
-                    "peer that is ahead; the counter moves only on a "
-                    "verified proof\n", stored);
-            }
-        }
-        if (sqlite3_column_type(stmt, 1) != SQLITE_NULL) {
-            const void *blob = sqlite3_column_blob(stmt, 1);
-            int blob_len = sqlite3_column_bytes(stmt, 1);
-            if (blob && blob_len == (int)sizeof(w->last_prepared)) {
-                memcpy(&w->last_prepared, blob, sizeof(w->last_prepared));
-            } else if (blob && blob_len > 0) {
-                /* Size mismatch — likely a schema change between this
-                 * binary and the one that wrote the row. Treat as
-                 * absent to avoid corrupting in-memory state. */
-                fprintf(stderr,
-                    "[H-5] last_prepared blob size mismatch (%d vs %zu) "
-                    "— ignoring, present=false\n",
-                    blob_len, sizeof(w->last_prepared));
-                memset(&w->last_prepared, 0, sizeof(w->last_prepared));
-            }
-        }
-    } else if (rc != SQLITE_DONE) {
-        fprintf(stderr, "[H-5] load_pbft_state step failed: %s\n",
-                sqlite3_errmsg(w->db));
-        sqlite3_finalize(stmt);
-        return -1;
-    }
-    sqlite3_finalize(stmt);
-    return 0;
-}
+/* R3 W4 — nodus_witness_db_save_pbft_state and nodus_witness_db_load_
+ * pbft_state (the PR 3 Yol B / H-5 persistence pair for the legacy BFT
+ * view counter and PREVOTE-prepared certificate) are DELETED with the
+ * closed consensus lane: `w->current_view` and `w->last_prepared`, the
+ * only fields either function read or wrote, no longer exist on
+ * nodus_witness_t, and their only caller (nodus_witness.c's
+ * witness_db_open_attempt) no longer calls them. The pbft_state table
+ * itself is left un-migrated (see the v16 migration's own deletion note
+ * above) and is never read again by this build. */

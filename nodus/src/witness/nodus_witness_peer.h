@@ -26,6 +26,20 @@
 extern "C" {
 #endif
 
+/* ── Roster ──────────────────────────────────────────────────────── */
+
+/* R3 W4 — moved verbatim from nodus_witness_bft.h (deleted with the closed
+ * consensus lane). Transport-only lookups: witness_id <-> pubkey mapping
+ * for the peer mesh, not a consensus authority. */
+
+/** Find witness in roster by ID. Returns index or -1. */
+int  nodus_witness_roster_find(const nodus_witness_roster_t *roster,
+                                 const uint8_t *witness_id);
+
+/** Add witness to roster (no-op if already present). */
+int  nodus_witness_roster_add(nodus_witness_t *w,
+                                const nodus_witness_roster_entry_t *entry);
+
 /* ── Lifecycle ───────────────────────────────────────────────────── */
 
 /** Initialize peer mesh: build initial roster, connect seeds on witness port. */
@@ -50,14 +64,6 @@ uint32_t nodus_witness_peer_get_mock_version(void);
 int nodus_witness_peer_handle_ident(nodus_witness_t *w,
                                     struct nodus_tcp_conn *conn,
                                     const nodus_t3_msg_t *msg);
-
-/** Handle w_fwd_req: accept forwarded client request (leader only). */
-int nodus_witness_peer_handle_fwd_req(nodus_witness_t *w,
-                                      const nodus_t3_msg_t *msg);
-
-/** Handle w_fwd_rsp: receive forward response from leader. */
-int nodus_witness_peer_handle_fwd_rsp(nodus_witness_t *w,
-                                      const nodus_t3_msg_t *msg);
 
 /** Handle w_rost_q: respond with current roster. */
 int nodus_witness_peer_handle_rost_q(nodus_witness_t *w,
@@ -90,48 +96,31 @@ int nodus_witness_peer_connected_count(const nodus_witness_t *w);
 void nodus_witness_peer_conn_closed(nodus_witness_t *w,
                                      struct nodus_tcp_conn *conn);
 
-/* ── Phase 13 / Task 59 — Committee-snapshot BFT roster ─────────── */
-
-/**
- * Return the BFT peer set (committee) authoritative for a given block
- * height. Wraps nodus_committee_get_for_block(), which hits the per-epoch
- * cache populated by Task 53 — so this is a cheap O(committee_size)
- * memcpy for every call within the same epoch.
+/* R3 W4-D — witness_chain_quorum_observe's only prototype site,
+ * nodus_witness_bft_internal.h, is deleted with the closed consensus
+ * lane. The function itself is NOT deleted (nodus_witness_peer_handle_
+ * ident is its one production caller, in this same file); only its
+ * test-reachable declaration needed a new home. Gated the same way
+ * bft_internal.h gated its whole file, so this declaration is invisible
+ * to production translation units that do not opt in — NODUS_WITNESS_
+ * INTERNAL_API is defined only by test targets (nodus/CMakeLists.txt's
+ * register_witness_test macro / explicit test targets that request it),
+ * never by a Release configure.
  *
- * The returned committee is defined by design §3.6:
- *   - frozen per epoch (cache key = e_start = (h / EPOCH) * EPOCH)
- *   - not affected by STAKE / DELEGATE / UNSTAKE mid-epoch
- *   - re-resolved on the first query after block_height crosses an
- *     epoch boundary (cache miss triggers compute_committee_for_epoch)
- *
- * Callers decide which block's committee they need:
- *   - BFT PROPOSAL / PREVOTE / PRECOMMIT quorum for block N:
- *       pass block_height = N (the block being proposed).
- *   - Per-block reward accumulator / attendance record after commit:
- *       pass block_height = N (the block just committed).
- *   - Pre-proposal leader election for "next" block:
- *       pass nodus_witness_block_height(w) + 1.
- *
- * This supersedes the legacy w->roster source (DHT nodus:pk registry +
- * peer mesh) for consensus-roster purposes. The DHT roster is still used
- * for w_ident / w_rost_q peer discovery and TCP-4004 reconnection — it
- * answers "who do I open a BFT socket to" rather than "who has a vote
- * on block N". The two sources converge once the registry and the
- * committee cache both reflect the post-genesis validator set.
- *
- * @param w             Witness context (DB must be open)
- * @param block_height  Block to look up the committee for
- * @param out           Caller-allocated array of >= max_entries members
- * @param max_entries   out[] capacity (heap-size it to
- *                      DNAC_MAX_ACTIVE_VALIDATORS — S3 dynamic set)
- * @param count_out     [out] Number of members populated (may be 0)
- * @return 0 on success, -1 on error
- */
-int nodus_witness_peer_current_set(nodus_witness_t *w,
-                                     uint64_t block_height,
-                                     nodus_committee_member_t *out,
-                                     int max_entries,
-                                     int *count_out);
+ * The startup chain-id quorum detector: called from handle_ident for
+ * every peer w_ident inside the first 300 s after witness activation,
+ * it counts distinct dissenters and agreers and self-quarantines the
+ * node on a strict majority of dissent (min 2 dissenters). Sticky —
+ * agreement evidence never clears a quarantine. Takes the same
+ * (chain_id, db) matrix verify_chain_id used to (that gate is deleted
+ * with nodus_witness_bft.c). nodus_witness_peer_handle_ident is the ONLY
+ * production caller (one call site, verified tree-wide). Consumed by
+ * test_v2_restart_gate.c to pin the DG-2 matrix. */
+#ifdef NODUS_WITNESS_INTERNAL_API
+void witness_chain_quorum_observe(nodus_witness_t *w,
+                                    const uint8_t *peer_id,
+                                    const uint8_t *peer_chain_id);
+#endif
 
 #ifdef __cplusplus
 }

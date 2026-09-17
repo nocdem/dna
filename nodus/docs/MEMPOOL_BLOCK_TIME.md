@@ -1,624 +1,162 @@
-# Mempool & Block Time — Implementation Summary
+# Mempool & Block Time — the cometbft lane
 
-**Shipped in:** Nodus v0.10.14 | **Branch:** `feat/mempool-block-time` (merged) | **Date:** 2026-04-08 | **Last Reviewed:** 2026-04-24
+**Rewritten:** 2026-09-17 (R3 wave W4, v0.19.62) | **Applies to:** every chain this build can open (a version-3 / cometbft chain — the post-open gate refuses everything else, `nodus_witness.c` `witness_post_open_gate`)
 
-> **Status (2026-04-24):** Mempool + 5s batch-BFT timer described below is live since v0.10.14. Block proposal / BFT flow below reflects the model at merge time; the F17 committee enforcement (v0.15.1) and stake-delegation v1 added chain-derived top-7 committee as the voting roster but preserved the mempool and batching described here.
-
-> **⚠ SUPERSEDED FOR THE COMET LANE (2026-09-11, R3 wave W1, v0.19.55).** Everything below
-> describes the LEGACY lane's mempool and is still true of it. The cometbft port has its own,
-> and it is a different thing: `shared/dnac/cmt_mem.{h,c}` is a literal port of
-> cometbft @709fd12b's **Flood** mempool (D-4 rev 3, `atlas-dec-d5ddcba654eb48d861c03a0ecd170718`),
-> and it is **FIFO, not fee-sorted** — a transaction enters through the application's CheckTx
-> (which is the ledger's existing admission check), is kept in arrival order in a CList, is
-> forwarded to every peer that did not send it, is removed when a block commits it and the
-> remainder is rechecked. The ledger's two ordering rules — fee-descending, and "a chain_config
-> transaction rides alone in its block" — move to the application's **PrepareProposal** step,
-> which is where the reference lets an application reorder. "Forward to the leader" is retired:
-> Tendermint has a proposer per round, and every node gossips. The block's content is bounded by
-> cometbft's ConsensusParams (`Block.MaxBytes` 22 020 096, `MaxGas` −1), never by the old lane's
-> ten-transaction rule, and mempool config is cometbft's defaults (size 5 000, cache 10 000,
-> `MaxTxBytes` 1 MiB, `MaxTxsBytes` 1 GiB, recheck on, mempool WAL off). Cadence is two NODE
-> settings, not chain rules: `TimeoutCommit` 5 000 ms and `CreateEmptyBlocksInterval` 60 000 ms,
-> so a block under demand takes ≈ 5.3-5.5 s and an epoch of 720 blocks ≈ 1 hour.
-> **The Comet mempool has no runtime consumer yet** — W1 is dormant; the tier-3 verb that
-> carries `Txs` and the tick that drives the gossip land in W3, and this note is rewritten
-> into the body of this document in the commit that makes them live.
->
-> **W2 (2026-09-16, v0.19.60):** the APPLICATION behind the mempool now exists
-> (`nodus_witness_cmt_app.{h,c}`): `CheckTx` is the ledger's admission check PLUS the
-> envelope's authorization stage (nothing in the tree verified a V2 envelope's signatures at
-> admission before W2), and `PrepareProposal` carries the two ordering rules named above —
-> a STABLE fee-descending insertion sort (ties keep arrival order; a claim has no fee and
-> sorts last) and "a chain_config transaction rides alone". ⚠ One inherited cap: the
-> application reuses the O15I capacity seam, which still refuses more than
-> `NODUS_W_MAX_BLOCK_TXS` (10) items — the very rule D-4 rev 3 (2) retires for the Comet lane
-> — so `NODUS_CMT_APP_MAX_TXS` is 10 until W3 raises the seam (register row R3-C1a-4); a
-> DECIDED block above it stops the node rather than being silently truncated. The startup
-> table (`nodus_witness_cmt_node.c`) builds the Flood mempool with cometbft's defaults and
-> enables `TxsAvailable` (WaitForTxs is true under the 60 000 ms idle interval); the consumer
-> of that signal is W3's event loop.
+> **History.** Until R3 wave W4 this document described the LEGACY lane's
+> mempool: a fee-sorted in-memory pool (`nodus_witness_mempool.c`), a 5 s
+> batch timer in the witness tick, forward-to-leader for non-leader nodes,
+> pending-forward slots, the MED-28 retained batch, the O15H round /
+> view-change clock and the O15I follower reaper. **All of that code is
+> deleted** (OBLIGATION `atlas-dec-71525f3b4918f710b660707ac6bb5a3a`,
+> D-17 rev 10 (9), D-16 rev 5): the files no longer exist and nothing in
+> the tree implements those mechanisms. The register
+> (`tasks/reference-deviation-register.md`, section "W4 — R3 W4 paket D")
+> and the git history hold the old text. What follows is the ONLY mempool
+> and the ONLY block cadence this build has.
 
 ---
 
-## Overview
+## The mempool is cometbft's Flood mempool, ported literally
 
-Replaces the 1-TX-per-block model with a mempool + periodic block timer that batches multiple transactions into a single BFT consensus round.
+`shared/dnac/cmt_mem.{h,c}` is a literal port of cometbft @709fd12b's
+`mempool/clist_mempool.go` (D-4 rev 3,
+`atlas-dec-d5ddcba654eb48d861c03a0ecd170718`), driven by the mempool
+reactor `shared/dnac/cmt_memr.{h,c}` (`mempool/reactor.go`). Its
+properties, each with the line that pins it:
 
-**Before:** Client TX → immediate BFT round → 1 block (3-5 TX/s)
-**After:** Client TX → mempool → 5s timer → batch BFT round → N blocks (up to 20+ TX/s peak)
-
----
-
-## Architecture
-
-```
-Client → dnac_spend → Leader?
-  ├─ YES (non-genesis) → mempool_add (fee-sorted)
-  ├─ YES (genesis)     → legacy single-TX BFT (bypass mempool)
-  └─ NO               → forward to leader → leader mempool_add
-                        (leader resolved by SORTED RANK — see below)
-                        O15I P3(b) / O15K: on BOTH lanes the forward is
-                        also POOLED by non-leaders, after a verification
-                        at that intake — ADMISSION on a successor,
-                        VALIDATION on legacy (O15K added the legacy one;
-                        that site had none) — see "Demand dissemination"
-
-witness_tick (every ~50ms):
-  └─ is_leader? + IDLE? + mempool.count > 0? + 5s elapsed?
-      └─ propose_batch():
-          1. Pop up to 10 TXs (highest fee first)
-          2. Re-verify (remove stale double-spends)
-          3. Compute block_hash = SHA3-512(tx_hash_1 || ... || tx_hash_n)
-          4. bft_start_round_batch → PROPOSE + PREVOTE broadcast
-
-BFT Flow (unchanged phases, batch-aware):
-  PROPOSE → PREVOTE → PRECOMMIT → COMMIT
-  - Votes reference block_hash (not individual tx_hash)
-  - Follower verifies each TX independently
-  - Reject any TX → reject entire batch
-
-COMMIT:
-  - Atomic SQLite transaction: BEGIN → [N × commit_block_inner] → COMMIT
-  - Each TX creates its own block (sequential heights, prev_hash chain)
-  - Commit certificates stored for EACH block (state sync compatible)
-  - Per-TX client response (direct or forwarded)
-```
-
-### Leader resolution on the forwarding path (O15C-D)
-
-`nodus_witness_bft_leader_index(epoch, view, n)` returns a slot in the
-witness set **ordered by `witness_id`**, not a position in any local
-array. Resolving that slot back to a witness MUST go through
-`nodus_witness_roster_sorted_find` / `nodus_witness_roster_sorted_at`.
-
-The gossip roster is arrival-ordered between the 60 s epoch rebuilds —
-`nodus_witness_roster_add` appends and only the rebuild qsorts — so two
-nodes holding the *same* witness set can hold it in different array
-orders. Indexing `roster.witnesses[leader_slot]` directly therefore made
-nodes disagree about who the leader was: the forwarder sent `w_fwd_req`
-to a witness that was not the leader, which accepted the TX into its
-mempool and never proposed it. No `w_fwd_rsp` was produced and the
-`pending_forward` expired 30 s later. See `nodus/BUGS.md`, O15C-D.
-
-### Pending-forward expiry (O15C-D)
-
-A forwarded spend that draws no `w_fwd_rsp` within
-`NODUS_W_PENDING_FWD_TIMEOUT_S` (30 s) is answered with an explicit
-`NODUS_ERR_TIMEOUT`, never dropped silently — `dnac_spend` owes the
-caller exactly one terminal answer. The bound MUST stay below the
-client's 60 s `dnac_spend` wait (`nodus_client_dnac_spend`), or the error
-reaches a caller that has already given up and only produces an
-"unknown txn" warning. Enforced by
-`nodus_witness_pending_forward_expire(w, now_s)`, which takes `now_s` as
-a parameter so the contract is testable without a clock.
-
-### View-change batch retention (O15C-D, MED-28)
-
-On round timeout the proposed batch is **moved** into
-`w->retained_batch` (`nodus_witness_retained_batch_take`) rather than
-freed. The C5 reproposal rule binds the new view's first PROPOSE to a
-`(height, tx_root)` *digest*, and `last_prepared` carries the
-certificate but no transaction bytes — so freeing the batch left no copy
-anywhere and the bound height could never be satisfied by anyone.
-
-The new leader calls `nodus_witness_try_repropose_retained()`, handing
-the exact entries to `bft_start_round_from_entries`, which recomputes the
-block hash from the same tx_hashes in the same order — the re-proposed
-`tx_root` therefore equals the bound digest by construction. A leader
-that does not hold the bytes stays silent; its round times out and the
-view rotates. Retention is released when the chain passes the height,
-when a newer timeout supersedes it, and at teardown.
-
-### The round / view-change clock (O15H)
-
-`nodus_witness_bft_check_timeout` measures **one** clock,
-`round_state.phase_start_time`, against **two** budgets:
-`round_timeout_ms` (15 s) while a round is in flight, and
-`viewchg_timeout_ms` (10 s) once the phase is
-`NODUS_W_PHASE_VIEW_CHANGE`. Because the second budget is the SMALLER of
-the two, the stamp must be reset at every transition or the second budget
-is already spent before it starts. It is re-stamped at four points:
-
-| Event | Site | Why |
+| Property | Value | Where |
 |---|---|---|
-| Round entry (propose / accept / PREVOTE quorum) | `bft_start_round*`, `handle_propose`, the PREVOTE-quorum hook | the round budget |
-| **Entering the view change** | `nodus_witness_bft_initiate_view_change`, beside the write that moves the phase | **O15M** — see below |
-| Round timeout → `NODUS_W_PHASE_VIEW_CHANGE` | `check_timeout` | **O15H D2** — without it the view change inherits the round's 15 s and is aborted on the next ~150 ms tick, wiping `view_change_count` |
-| Adopting a HIGHER view-change target | `handle_viewchg` | **O15H D2** — the tally restarts at zero votes, so the window must restart too |
+| Ordering | **FIFO** — arrival order in a CList; no fee sort in the pool | `cmt_mem.c` (CList) |
+| Size | 5 000 transactions | `shared/dnac/cmt_mem.c:37` (`cmt_mempool_config_default`, config.go:796) |
+| Cache | 10 000 hashes (duplicate refusal) | `cmt_mem.c:39` |
+| `MaxTxBytes` | 1 MiB | `cmt_mem.c:40` |
+| `MaxTxsBytes` | 1 GiB | `cmt_mem.c:38` |
+| Recheck after a commit | on | `cmt_mem.c:33` |
+| Gossip | every peer that did not send the transaction receives it (the sender id is reserved per peer by `cmt_memr_init_peer`; id 0 is the RPC / client sender) | `cmt_memr.c`, `nodus_witness_cmt_net.c` `net_scan_peers` (R3-W3-C2b-15) |
 
-**O15M — the stamp moved to where the phase changes.** The invariant is:
-*while the phase is `NODUS_W_PHASE_VIEW_CHANGE`, `phase_start_time` is the
-age of the CURRENT target's window, never one inherited from a round that
-already ended.* It used to depend on every caller remembering. Four of
-the five callers of `initiate_view_change` stamped by hand; the **f+1
-join** did not, so a node pulled into a view change by a peer's
-VIEW_CHANGE measured its 10 s budget from whatever its last round left
-behind — and a previous round that ran its full 15 s makes that budget
-already spent, so the escalation fired on the very next tick and walked
-the target away from the one the cluster was converging on. That is the
-O15H D2 shape reached through the join door. The stamp now sits beside
-the phase write itself.
+There is no leader and no forward: every node gossips what its clients
+submit, and the round's proposer takes its block from its own pool.
 
-**The four hand-stamps are KEPT, not deleted as redundant.**
-`initiate_view_change` returns early when `view_change_in_progress &&
-view_change_voted`, and both flags can be left true by an episode that is
-already over: the round-equality reset in `handle_commit` returns the
-phase to IDLE and writes neither flag. In that state the function returns
-before reaching its own stamp, and the caller's stamp is the only thing
-keeping the escalation's budget honest.
+### Admission — `CheckTx`
 
-Two consequences worth stating plainly. On the join path the escalation
-now waits a full `viewchg_timeout_ms` instead of firing on the next tick
-— that is the fix, but it does mean a joiner that genuinely cannot
-assemble quorum escalates ~10 s later than it used to. And the four
-callers that hand-stamp now stamp twice; `time_ms()` has one-second
-resolution, so the two values differ by 0 or exactly 1000 ms, and
-`phase_start_time` is never hashed, persisted, or put on the wire.
+A client's `dnac_spend` on the witness port runs `cmt_mem_check_tx`
+(`nodus_witness_handlers.c` `handle_dnac_spend`, the version-3 block) and
+answers the client AT ONCE with the CheckTx verdict (D-23 rev 7 (22)):
+`{status: APPROVED}` means "accepted into the mempool" — it is NOT a block
+receipt, carries no height, no index and no witness signature. The client
+learns the commit by query. `CheckTx` itself is the application's row
+(`nodus_witness_cmt_app.c`, `check_tx`): the ledger's admission check
+(`nodus_witness_verify_transaction` in `NODUS_WITNESS_VERIFY_ADMISSION`
+mode, `nodus_witness_cmt_app.c:360`) followed by the envelope's
+authorization stage (`nodus_witness_v2_env_authorize`, R3-C1a-11).
 
-Regression: `ctest test_bft_view_change_hardening` §11c. It ages the
-phase clock 12 s BEFORE the f+1 join and then asserts
-`view_change_target == 1` after one tick. Removing the stamp makes that
-assertion fail with `view change timeout (12000 ms) … escalating target
-1 -> 2` — verified by running it both ways, not by reading.
+Since W4 the ADMISSION and VALIDATION modes of
+`nodus_witness_verify_transaction` are behaviourally identical: the
+node-local fee surge that used to read the legacy pool's depth in
+ADMISSION mode is deleted with the pool (`nodus_witness_verify.c`, Check 5
+keeps only its deterministic floor). The `dnac_fee_info` query's surge
+term is therefore always 0 and `min_fee == base_fee`
+(`nodus_witness_handlers.c` `handle_dnac_fee_info`).
 
-Resolution is **one second**, not one millisecond: `time_ms()` is
-`nodus_time_now() * 1000`. A 15 s budget therefore fires at an observed
-elapsed of 16000 ms. Any timeout budget added here must be a comfortable
-multiple of one second.
+**Measured, not promised:** admission does not mean next-block inclusion.
+A stake envelope APPROVED at tip 2 landed at tip 4; a claim submitted to
+one node landed when a proposer's pool held it. The harness therefore
+waits for the transaction's LEDGER EFFECT with a progress bound
+(`stagef_env.sh` `stagef_cmt_wait_row`), never for `submission_tip + 1`
+(register R3-W3-C2d-3).
 
-**A stalled view change escalates, it does not abort (O15H D5).** When the
-10 s budget expires without quorum, the node clears the collected
-records, raises `view_change_target` by one and re-broadcasts. It does
-**not** return to IDLE: from IDLE `check_timeout` returns immediately, the
-leader is unchanged (this path writes no view), and nothing would ever
-re-initiate. `current_view` is deliberately untouched on this path, so
-leader election and the C5 binding keep their existing preconditions —
-but see **Who writes `current_view`** below: "untouched here" is a
-statement about this path, not a global invariant. The retry interval is
-FIXED rather than backed off — per-node backoff is per-node timing state,
-and divergent timing state between witnesses is the failure class this
-file's rules exist to avoid.
+## What goes into a block — `PrepareProposal` / `ProcessProposal`
 
----
+The reference lets the application reorder and drop in
+`PrepareProposal`; that is where the ledger's two ordering rules live now
+(`nodus_witness_cmt_app.c` `nodus_cmt_app_prepare_proposal`):
 
-## Constants
+1. a **stable fee-descending** sort (ties keep arrival order; a claim
+   carries no fee and sorts last);
+2. **a chain_config transaction rides alone** in its block.
 
-| Constant | Value | Location |
-|----------|-------|----------|
-| `NODUS_W_BLOCK_INTERVAL_MS` | 5000 (5s) | `nodus_types.h` |
-| `NODUS_W_MAX_MEMPOOL` | 64 | `nodus_types.h` |
-| `NODUS_W_MAX_BLOCK_TXS` | 10 | `nodus_types.h` |
-| `NODUS_W_MAX_PENDING_FWD` | 16 | `nodus_types.h` |
+Then three bounds, in this order:
 
----
+| Bound | Value | Derived from | Where |
+|---|---|---|---|
+| Byte budget | cometbft's `Block.MaxBytes` 22 020 096 → `MaxDataBytes` for the round | ConsensusParams from the genesis document | `nodus_witness_cmt_app.c` (`max_tx_bytes`) |
+| Unit budget | the ledger's own meter (the O15I capacity seam, `nodus_witness_v2_produce_batch_check_capped`) | `nodus_witness_v2_produce.c` | `app_seam_check` |
+| **Item cap** | **`NODUS_V2_APPLY_MAX_OPS` = 16 items (envelopes + claims together)** — a release resource bound of the apply engine's per-block scratch, NOT a protocol number and NOT derived from the genesis document | `nodus_witness_v2_apply.h` | `nodus_witness_cmt_app.c:845-846` (pack), `:949-953` (refuse) |
 
-## Files Changed
+`PrepareProposal` packs at most 16 items (dropping from the tail of the fee
+order); `ProcessProposal` REFUSES a proposal above 16 before any per-item
+work (ABCI REJECT → a nil prevote); `FinalizeBlock`'s engine FAULT on a
+larger DECIDED block is the last line (register R3-W3-C2a-19). Throughput
+is therefore **16 items per block** until the engine's scratch moves to
+the heap (package W4-C). The request-side arrays are sized per request
+from the derived bounds `prep_bound` 5 000 (the mempool size), `env_bound`
+293 525 and `claim_bound` 2 972 (`nodus_witness_cmt_app.c:125-171`,
+logged at bind time with `item_cap=16`, `:181-182`).
 
-| File | Change |
-|------|--------|
-| `nodus/include/nodus/nodus_types.h` | Block production constants + version bump |
-| `nodus/src/witness/nodus_witness_mempool.h` | **NEW** — mempool entry + mempool struct |
-| `nodus/src/witness/nodus_witness_mempool.c` | **NEW** — fee-sorted add, pop_batch, remove, clear |
-| `nodus/src/witness/nodus_witness.h` | Extended round_state (batch fields), pending_forwards array, mempool in witness_t |
-| `nodus/src/witness/nodus_witness.c` | Block timer, propose_batch, mempool drain, cleanup |
-| `nodus/src/witness/nodus_witness_bft.h` | `bft_start_round_batch()` declaration |
-| `nodus/src/witness/nodus_witness_bft.c` | Batch BFT: start_round_batch, handle_propose batch, atomic batch commit, batch client response, commit_block_inner, round_state_free_batch |
-| `nodus/src/witness/nodus_witness_handlers.c` | handle_spend → mempool, genesis bypass, verify include |
-| `nodus/src/witness/nodus_witness_peer.c` | fwd_req → mempool, multi-forward array, conn cleanup |
-| `nodus/src/protocol/nodus_tier3.h` | `nodus_t3_batch_tx_t`, extended propose_t/commit_t |
-| `nodus/src/protocol/nodus_tier3.c` | Batch encode/decode (enc_batch_tx, dec_batch_tx_entry) |
-| `nodus/CMakeLists.txt` | Added `nodus_witness_mempool.c` |
+## Block time
 
----
+Cadence is two NODE settings, not chain rules (D-4 rev 3;
+`nodus_witness_cmt_node.c:1717-1718`):
 
-## Wire Protocol Extension
-
-### Batch Proposal (`w_propose`)
-```cbor
-{
-  "bh": bstr(64),           // block_hash = SHA3-512(all tx_hashes)
-  "btx": [                  // batch TX array
-    {
-      "txh": bstr(64),      // tx_hash
-      "tty": uint,          // tx_type
-      "txd": bstr,          // tx_data
-      "txl": uint,          // tx_len (deprecated — derived from txd length)
-      "nlc": uint,          // nullifier_count
-      "nls": [bstr(64)],    // nullifiers
-      "pk":  bstr(2592),    // client_pubkey (Dilithium5)
-      "csig": bstr(4627),   // client_sig
-      "fee": uint           // fee amount
-    }, ...
-  ]
-}
-```
-
-When `btx` is absent, falls back to legacy single-TX fields (backward compat).
-
-### Batch Commit (`w_commit`)
-Same `btx`/`bh` extension, plus existing cert/timestamp fields.
-
-### Votes (`w_prevote`, `w_precommit`)
-`tx_hash` field carries `block_hash` in batch mode. No structural change.
-
----
-
-## Key Design Decisions
-
-| Decision | Rationale |
-|----------|-----------|
-| Max 10 TX/batch | Wire limit: 128KB / ~9KB per TX ≈ 14, margin to 10 |
-| No empty blocks | No information to consensus about |
-| 1 batch = N blocks (not 1 block) | Preserves state sync compatibility |
-| Genesis bypasses mempool | Batch commit_block_inner cannot create chain DB |
-| Votes on block_hash | Single hash for entire batch, no vote struct change |
-| Atomic batch commit | Single BEGIN/COMMIT wraps all N TXs |
-| Per-block commit certificates | State sync verifies certs per block |
-| Epoch-boundary mempool drain | Prevents leadership flap from dropping TXs |
-
----
-
-## Demand dissemination and the follower reaper (O15I P3)
-
-A forwarded transaction used to reach the leader and **nowhere else**, so
-when the leader was dead the demand existed on exactly one node — the
-submission target. One node is far below the f+1 threshold at which peers
-join a view change (`bft_vc_join_threshold` = max(2, (quorum−1)/2+1) = 7
-at quorum 14), so nothing rotated and the chain halted for the whole
-epoch. `leader = (epoch + view) % n` with `epoch = height /
-DNAC_EPOCH_LENGTH` gives ONE node an entire epoch — **720 heights in
-production** (`dnac/include/dnac/dnac.h:172`).
-
-**P3(a) — demand-armed deadman.** In `check_timeout`'s IDLE branch a
-non-leader that holds live work and whose own committed tip has not moved
-for more than `round_timeout_ms` initiates an ordinary `current_view + 1`
-view change. BOTH halves are required: without the demand half a quiet
-chain would rotate forever; without the frozen-tip half a busy chain would
-rotate away from a healthy leader. Every verdict at the would-fire point
-re-stamps the window, so the DB scan and the `is_leader` call cost once per
-`round_timeout_ms`, not once per tick. `current_view` is untouched on this
-path — it arms a target, it does not write the counter.
-
-### Who writes `current_view`
-
-The two paragraphs above each make a LOCAL point that is correct: neither
-the stalled-view-change escalation nor the P3(a) deadman writes the view
-counter. Both used to go further and assert a GLOBAL invariant —
-"`current_view` only moves on quorum" — and that has never been true.
-
-**It is true now, and it is stronger than "on quorum".** As of O15N Faz
-2C2 the counter is written in exactly **three** places, and only one of
-them takes anything off the wire:
-
-| Site | What authorises it |
+| Setting | Value |
 |---|---|
-| `bft_viewok_apply` (`nodus_witness_bft.c`) | A **VIEW_OK proof**: f+1 distinct, signature-verified statements for a view strictly above the one held, judged against the committee governing the height the proof carries |
-| `bft_vc_check_quorum`, **pre-genesis bootstrap path only** | This node's own observed quorum, and ONLY while no committee exists at the height — see below |
-| restore from disk, H-5 (`nodus_witness_db.c`) | This node's **own** previously proven value. An attacker cannot write to another node's disk |
+| `TimeoutCommit` | 5 000 ms |
+| `CreateEmptyBlocks` | true |
+| `CreateEmptyBlocksInterval` | 60 000 ms |
 
-**The pre-genesis path is a scoped exception, not a hole, and leaving it
-out would have been the defect.** Before genesis commits there is no
-committee, so `nodus_witness_bft_sign_view_ok` cannot produce a statement
-— not on this node and not on any other. With the proof as the only
-writer, that made the counter immovable: a fresh cluster whose genesis
-round landed on a silent leader could never rotate away from it and the
-chain would simply never start. Two shipped unit tests said so out loud
-(`test_bft_liveness`, `test_witness_newview_convergence`) and the Genesis
-Protocol harness builds exactly that state on every run.
+**Measured pace: one block per ≈ 6 s, always, idle or not.** The interval
+never applies on this ledger because every block is a *proof block*:
+Rule N attendance writes the proposer's `last_signed_block` into the
+validators leaf on every block, so the global root changes at every
+height and cometbft's `needProofBlock` (`shared/dnac/cmt_cs.c:1825`,
+`:1939`, state.go:1106-1129) is true at every height. Consequences,
+recorded for the operator (not defects of the port):
 
-In that window the node's own observed quorum moves the view, which is
-what this code did before Faz 2C2. It is not a weaker authority than the
-tree already uses there: pre-genesis the gossip roster IS the documented
-authority, for leader election (`nodus_witness_bft_is_leader`'s count-0
-branch) and for prepared-certificate voter resolution
-(`verify_prepared_cert`'s count-0 branch) alike. The window closes the
-instant the genesis block commits and seats a committee, after which
-`sign_view_ok` stops answering 1 and the proof rule is the only rule.
+- an idle chain grows by ≈ 14 000 blocks a day (an epoch of 720 blocks ≈
+  72 minutes);
+- the 60 s interval is an upper bound the harness's stall detectors use,
+  not the observed pace (`stagef_env.sh` `stagef_cmt_wait_height`);
+- a round with demand takes the same ≈ 5-6 s — a transaction's latency is
+  "wait for a proposer whose pool holds it", one to a few blocks.
 
-Three message-driven writers were **deleted** in the same slice. Each was
-a path by which one node's signature moved another node's leader
-election:
+## What a client sees
 
-| Deleted writer | What it allowed |
+| Step | Answer | Where |
+|---|---|---|
+| submit (`dnac_spend`) | CheckTx verdict at once: APPROVED / a mapped refusal (`TX_TOO_LARGE`, `TX_IN_CACHE` "duplicate transaction", `MEMPOOL_IS_FULL`, the application's own code) | `nodus_witness_handlers.c` `handle_dnac_spend` |
+| inclusion | by query — the transaction's ledger effect (`utxo_set` row for a claim, `v2_intent_index` row for an envelope) | `dnac_utxo`, `dnac_tx` queries |
+| `nodus-cli`'s "committed: height=… index=…" line | **prints zeros on this lane** — the fields are not in the version-3 response; reworded in package W4-H | `nodus/tools/nodus-cli.c` |
+
+## Files
+
+| File | Role |
 |---|---|
-| `handle_propose` — copied the proposal's view UNCONDITIONALLY | The correct leader **for any view** could set this node's counter, in **either direction**. Lowering was the worse half: the leader for a view the cluster had already left could drag a node back to it |
-| `handle_newview` — `>` accept | One signature raised the counter. This handler has no replay guard and cannot safely be given one — the measured O15M note in `nodus_witness_bft_handle_newview` records why adding the obvious `is_replay` line stalled the chain — so a captured frame stayed usable forever |
-| view-change quorum, `bft_vc_check_quorum` | Backed by a real majority, but by a majority **this node alone observed**. Nothing it could show a peer, so a node that missed the votes had no way to be brought along except by the two unproven writes above |
+| `shared/dnac/cmt_mem.{h,c}`, `cmt_memr.{h,c}`, `cmt_clist.{h,c}` | the Flood mempool, its reactor, the CList (literal ports) |
+| `nodus/src/witness/nodus_witness_cmt_app.{h,c}` | CheckTx, PrepareProposal, ProcessProposal, FinalizeBlock (the application) |
+| `nodus/src/witness/nodus_witness_cmt_net.{h,c}` | the transport glue that gives the mempool reactor its peers (verb 39 `w_cmt_txs`) |
+| `nodus/src/witness/nodus_witness_handlers.c` | the client lane (`dnac_spend` → CheckTx, the queries) |
+| `nodus/src/witness/nodus_witness_v2_produce.{h,c}` | the capacity seam the application meters with (`nodus_witness_v2_produce_batch_check_capped`) |
+| `nodus/src/witness/nodus_witness_cmt_node.c` | the node config (`TimeoutCommit`, `CreateEmptyBlocksInterval`, the mempool config) |
 
-A **fourth** writer was removed earlier, in v0.19.24: the IDENT handshake
-in `nodus_witness_peer.c` adopted a peer's advertised `current_view`
-directly. T3 IDENT is exempt from the wsig signature verify, so that
-value was never authenticated. The field is still carried on the wire,
-now as gossip/observability only.
+## Tests
 
-### When the view moves now
+`test_cmt_mem` (the reference's `clist_mempool_test.go` cases),
+`test_cmt_memr` (reactor: no-echo-to-sender, the sleep sites as
+deadlines), `test_cmt_net` (peer ids reserved, a client transaction
+leaves the node — `memr_peer_ids_reserved_and_rpc_tx_gossiped`),
+`test_cmt_app` (the ordering rules, the byte bound, the item cap 40 → 16 /
+17 refused), `test_cmt_live` (CheckTx through the real dispatcher). The
+Genesis Protocol harness proves the gossip end to end
+(`test_cmt_mempool_flood.sh`: a transaction submitted to one node commits
+on all seven; three back-to-back claims land within two heights) and the
+empty-block cadence (`test_cmt_empty_blocks.sh`).
 
-**Reaching your own view-change quorum makes you SPEAK, not move.** At
-the instant `bft_vc_tally(target) >= bft_config.quorum` first holds, the
-node signs ONE `VIEW_OK` statement and broadcasts it
-(`nodus_t3_viewok_t`, verb 26). The statement certifies an **outcome** —
-"I observed a view-change quorum for this view, at this height, under
-this committee set hash" — never a vote. It is signed over a 148-byte
-purpose-0x08 preimage that binds `chain_id`, `height`, `view`, the
-committee set hash and the signer's own id.
+## Limitations, named
 
-**f+1 statements are a proof.** An honest node emits one only after
-observing 2f+1 committee members ask for the view, so a single honest
-statement already testifies to the quorum; f+1 distinct statements
-contain at least one honest one. `f` is derived from the committee
-governing the height the proof carries, never from the reader's own
-`bft_config` — two authorities for one decision disagree across every
-committee change.
-
-**Exactly one statement per (height, view).** The whole f+1 argument
-rests on it, so the producer enforces it: the node's own slot in the
-accumulator is the latch, and the quorum check re-runs on every
-VIEW_CHANGE that arrives afterwards.
-
-**Catch-up.** A node that refuses a PROPOSE or a NEW_VIEW because the
-view does not match, and whose sender is **ahead**, sends `w_viewok_q`
-(verb 27) to that sender — after the leader/committee checks that message
-already performs, so a bare roster member cannot drive a victim into
-asking peers instead of participating. The answer is the retained proof,
-rate-limited per roster slot in both directions. A node that has never
-moved holds no proof and answers nothing; that is the correct answer, not
-an error.
-
-**While it waits, it keeps the next view's traffic instead of destroying
-it.** Because nodes cross a boundary at different instants and every
-consensus frame is broadcast **exactly once** — there is no re-send path
-— a node one view behind used to lose everything addressed to the view it
-was about to enter. Two things are now held rather than dropped:
-
-- **The PROPOSE**, one slot, and only for **exactly the next view**
-  (`current_view + 1`) and only from **that view's expected leader**. The
-  decision is made below the leader/committee block, so the sender has
-  already been ranked with `leader_index(epoch, hdr->view, count)` at the
-  *proposal's* view; a bare roster member cannot fill the slot. The raw
-  frame bytes are kept, not the decoded message, whose batch entries alias
-  a transport buffer that does not outlive the dispatch call. On the view
-  move the frame is replayed through every gate except the replay check
-  and the nonce record — both of which already ran on its first pass — and
-  the slot is released whatever the outcome.
-- **Votes for the next view**, in the existing bounded vote buffer, under
-  a third admission rule alongside the near-future-round one. A vote is
-  parked when its view is above the round we hold, at or above our own
-  `current_view`, and no more than one view ahead. Its round is
-  deliberately **not** range-tested: the next view's leader may open from
-  its own counter and so carry a round number equal to, above, or below
-  ours. Parking never counts a vote — a parked vote reaches a tally only
-  through the ordinary handler, after this node holds that view and a live
-  round, where the committee gate and the certificate check run exactly as
-  they do for a frame off the wire. One sender may hold at most two
-  entries per vote type, and the entry evicted is the one with the lowest
-  `(view, round)`; a lower view is staler whatever its round.
-
-Anything **two or more views ahead** is unchanged: refused outright, and
-the proof ladder above is the only way forward.
-
-**Three consequences worth stating plainly:**
-
-1. **A node behind in view parks the next view's PROPOSE and votes and
-   replays them once the proof arrives; it still declines rounds for any
-   view further ahead.** Declining remains a liveness cost, not a safety
-   one — its persisted `last_prepared` lock still refuses conflicting
-   values while it waits.
-   *Known residual, accepted:* a NEW_VIEW arriving while this node is
-   behind only triggers the proof request; the leader's carried
-   certificate is adopted only at an **equal** view. The replayed PROPOSE
-   therefore meets the C5 gate against the binding this node computed for
-   itself from its own VIEW_CHANGE records, not against the leader's. At
-   exact quorum every node holds the same records and the two bindings
-   agree. Where the quorum has slack they can differ, the replay is
-   refused and the view rotates — fail-closed, and still better than
-   losing the round outright.
-2. **On a chain with NO committee snapshot the view still moves — by the
-   bootstrap path above, never by a proof.** `sign_view_ok` still refuses
-   to SIGN over an empty set (a set hash over no set is not a statement)
-   and `verify_view_proof` still answers -2 there (there is nothing to
-   measure a carried proof against), so no VIEW_OK can exist pre-genesis.
-   The counter moves on the node's own observed quorum instead, and the
-   window closes at the genesis commit.
-3. **The value already on disk was written under the old rules**, so a
-   cutover step is required — see
-   [DEPLOY_RUNBOOK.md §2.1](DEPLOY_RUNBOOK.md).
-
-The `"view change quorum! new view: %u"` log line still fires where a
-node observes its own quorum, and its text is **load-bearing**:
-`tests/integration/stagef/tests/test_vset_grow_shrink.sh` section G
-counts it. What it now means is "this node observed a quorum"; section
-G's other half, the persisted `pbft_state.current_view`, is what
-witnesses the actual move.
-
-### Pool-then-forward (O15I follow-up)
-
-The 20-node rehearsal proved P3's demand predicate **structurally blind in
-the exact case it exists for**. On the submission target with an
-unreachable leader BOTH halves of `mempool.count > 0 ||
-pending_forward_count > 0` are permanently 0: a non-leader does not pool
-its own client transaction (it forwards it), and the `!leader_conn` path
-answered the client and released the slot in the same breath, discarding
-the work. Measured: after the boundary block committed, the submitter made
-44 forward attempts with 0 successes and the deadman fired **zero** times.
-
-This is PBFT's own mechanism, half-missing. Castro & Liskov OSDI 1999
-§4.1: *"If the client does not receive replies soon enough, it broadcasts
-the request to all replicas. … If the primary does not multicast the
-request to the group, it will eventually be suspected to be faulty by
-enough replicas to cause a view change."* §4.4 gives the timer; §4.1 gives
-the request reaching enough replicas. We had only the first.
-
-A successor non-leader now runs the SAME `NODUS_WITNESS_VERIFY_ADMISSION`
-gate the leader branch runs and **pools the entry before, and
-independently of, the forward** — on every non-leader intake, not only when
-the leader is unreachable, because a leader whose TCP is alive but whose
-witness is wedged accepts the forward and never proposes.
-
-The entry is pooled in the **orphan form** (`client_conn = NULL`,
-`is_forwarded = true`, `forwarder_id = my_id`) — byte-identically the shape
-`nodus_witness_peer_handle_fwd_req` already uses. That is load-bearing, not
-stylistic: `nodus_witness_peer_conn_closed` runs for client connections and
-calls `nodus_witness_mempool_remove_by_conn`, which matches
-`client_conn == conn`, so pooling with the live connection would have the
-client's disconnect delete the entry one step later.
-
-Class-201 claims re-derive their committed nullifier at pool time, exactly
-as the leader branch and the forward intake do. Without it a claim would be
-invisible to the reaper's nullifier walk AND unjudgeable by the entry
-verdict, so nothing could remove it after the chain committed it — the
-quiet-chain churn defect through a new door.
-
-⚠ **O15K SUPERSEDED THIS PARAGRAPH.** It used to read: *"Legacy chains are
-unchanged: a legacy peer refuses a non-leader `w_fwd_req` byte-identically
-because its forward intake is structural-only, so pooled legacy demand
-could never recruit the f+1 backers a rotation needs."*
-
-Both halves were true and together they were the bug. Leaving legacy
-unpooled is exactly why a dead leader halted a legacy chain indefinitely:
-P3(a) arms on `mempool.count > 0 || pending_forward_count > 0`, and on
-legacy both were structurally zero — `pool_local_demand` returned −1, and
-an unreachable leader released the `pending_forwards` slot in the same
-call. The deadman could never arm, so it never fired, so nothing rotated.
-
-O15K opens the lane and answers the objection rather than working around
-it: the reason legacy could not pool was that its forward intake did no
-verification, so O15K **adds that verification at that intake**, for every
-recipient including the leader — which also closed a live defect where the
-leader pooled forwarded bytes with no signature check at all. The f+1
-argument falls with it, because the peer-side refusal it depended on is
-removed in the same change.
-
-**Client answer on the unreachable-leader path:** the error CODE is
-unchanged (`NODUS_ERR_*` is wire surface); only the message differs, and
-only when the entry really was pooled — the work is queued locally and will
-be proposed once a reachable leader is elected.
-
-**P3(b) — dissemination.** At fire (never at intake, so steady-state
-traffic is unchanged) the node re-broadcasts its mempool entries as
-`w_fwd_req` to the peer set, skipping entries already decided (same
-per-entry rule the demand predicate applies). `nodus_witness_peer_handle_fwd_req` pools
-on a non-leader **on BOTH lanes since O15K** — the successor entry passes
-the full `NODUS_WITNESS_VERIFY_ADMISSION` lane, and the legacy entry now
-passes a verification of its own, added by O15K at that site because it
-had none. Two details of the legacy call are load-bearing and were each
-flagged independently by three reviewers:
-
-- it runs in `NODUS_WITNESS_VERIFY_VALIDATION`, **not** ADMISSION. The two
-  modes differ on the legacy lane by the fee surge alone, and the surge
-  reads node-local `mempool.count` — so ADMISSION would let dissemination,
-  whose whole job is to fill every peer's pool with the same demand,
-  throttle the recovery it exists to produce. Direct client submissions
-  keep ADMISSION; the successor forward keeps ADMISSION too, because its
-  claim dedup is ADMISSION-only;
-- it is placed **after** the structural nullifier parse and is passed the
-  parsed nullifiers. Copying the successor call's `NULL, 0` would make
-  legacy Check 4 refuse everything and turn the whole fix into a silent
-  no-op.
-
-A RAW, pre-admission forward is never pooled. `pending_forwards` carries no
-transaction bytes (only hash / conn / txn_id / started_at), which is why
-the rebroadcast is sourced from the mempool.
-
-**P3(c) — the epoch drain became a reaper.** The drain used to
-`nodus_witness_mempool_clear()` the whole pool once per epoch tick. Under
-P3(b) a follower legitimately holds forwarded work, and that work is
-exactly what arms P3(a) — so a blind wipe deleted the evidence of the
-stall, once a minute, while the stall was happening. Cadence and gates are
-unchanged; only the verdict is: `nodus_witness_mempool_evict_committed`
-drops an entry only when the chain has already decided one of its
-nullifiers, the same test the leader's batch selection applies. This also
-closes a pre-existing gap — nothing previously removed a follower's copy of
-a transaction after it committed.
-
-**Known residual, deliberately not papered over:** a successor class-200
-envelope is pooled with `nullifier_count == 0` (the legacy nullifier walk
-is gated on `!v2_successor`), so the committed-nullifier predicate cannot
-evict it. Such an entry is dropped and freed — not requeued — by the
-successor batch pre-check (`v2_intent_index` dedup) the next time this node
-leads, so the churn is bounded, not unbounded. The leader's own batch
-selection has the identical blind spot.
-
----
-
-## Review History (5 rounds, 18 fixes)
-
-### Round 1 (initial review)
-| # | Issue | Fix |
-|---|-------|-----|
-| 1 | Non-atomic batch commit | `commit_block_inner` extracted, single BEGIN/COMMIT |
-| 2 | Memory leak on timeout/view change | `round_state_free_batch()` helper — **superseded for the round-timeout path by O15C-D**: freeing there destroyed the only copy of a batch a NEW_VIEW could still bind to, so it is now retained (see "View-change batch retention" above). Other call sites unchanged. |
-| 3 | Stale forwarded mempool entries | Drain on epoch boundary |
-| 4 | Stale TX clients no error response | **CLOSED by O15C-D** for the forwarded path: expiry now sends `NODUS_ERR_TIMEOUT` (see "Pending-forward expiry" above). |
-| 5 | fprintf instead of QGP_LOG | Replaced in mempool.c |
-
-### Round 2 (architecture fixes)
-| # | Issue | Fix |
-|---|-------|-----|
-| 6 | `block_add` outside SQLite TX | Moved into `commit_block_inner` |
-| 7 | Cert only for last block in batch | Per-block cert store loop |
-| 8 | `fee` passed as `total_supply` | Pass 0 for batch spends |
-| 9 | Aggressive mempool drain (every tick) | Epoch-boundary only |
-| 10 | fprintf in propose_batch | QGP_LOG |
-| 11 | Missing QGP_LOG include | Added to witness.c |
-
-### Round 3 (correctness blockers)
-| # | Issue | Fix |
-|---|-------|-----|
-| 12 | **BLOCKER**: Follower PREVOTE used `prop->tx_hash` (zeroed in batch) | Use `w->round_state.tx_hash` |
-| 13 | Genesis TX enters mempool but batch can't handle it | Genesis bypasses mempool → legacy BFT |
-| 14 | Cert store runs after batch rollback | Guard with `!batch_failed` |
-| 15 | Cert underflow at pre-genesis | Guard: `top_bh >= batch_count` |
-| 16 | `handle_newview` doesn't free batch entries | Added `round_state_free_batch` |
-| 17 | 3 `memset` sites lack `round_state_free_batch` | Added guards at lines 748, 882, 989 |
-| 18 | Forward declaration needed | Added at top of file |
-
-### Round 4
-No new issues found. All 6 verification items passed.
-
-### Round 5 (adversarial security review)
-| # | Issue | Fix |
-|---|-------|-----|
-| 19 | **CRITICAL**: Intra-batch double-spend — two TXs spending same nullifier both pass individual verification | Added cross-TX nullifier tracking in propose_batch (leader) and handle_propose (follower) |
-
----
-
-## Backward Compatibility
-
-- **Wire protocol:** Legacy single-TX proposal/commit still supported. Batch mode uses `btx` key — absent means legacy.
-- **State sync:** Unchanged — each TX produces its own block.
-- **Client API:** Unchanged — `dnac_spend` still sends single TXs. Server batches transparently.
-- **Deploy:** All 7 nodes must be updated simultaneously (cluster restart).
-- **Database:** No schema changes.
-
----
-
-## Limitations & Future Work
-
-- Max batch size limited by 128KB wire message (10 TXs at ~9KB each)
-- Theoretical 64KB TX could overflow batch encoding — add size check at mempool insertion
-- Empty blocks not produced — no heartbeat mechanism
-- Mempool has no TTL/age-based eviction. Since O15I P3(c) the epoch pass
-  is a committed-nullifier reaper rather than an unconditional drain, so a
-  never-decidable entry is bounded by the 64-slot cap and fee ordering, not
-  by a timer.
-- `send_spend_result` uses save/restore pattern (fragile) — parameterized version cleaner
+- 16 items per block (the engine's scratch bound) — W4-C.
+- `PrepareProposal`'s drop loop is O(`prep_bound`²) in the worst case on a
+  pool full of budget-exceeding envelopes (register R3-W3-C2a-11).
+- No blocksync: a node far behind catches up only through the consensus
+  reactor's stored-part gossip (D-23 rev 7 (18)) — W4-B.
+- The per-domain leg count is not covered by the item cap (register
+  R3-W3-C2a-19, RISK) — W4-C.

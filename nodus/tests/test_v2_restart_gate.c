@@ -22,14 +22,12 @@
  * The archive helper's own comment records that first-match-wins once
  * activated the wrong chain in production (EU-6, 2026-04-10).
  *
- * ── AND, SINCE O15L FAZ 4, THE OTHER DIRECTION (case 12) ─────────────
- * The same file also owns the reverse transition: what a node keeps when
- * its chain database is DROPPED. drop_witness_db zeroed `chain_id` but
- * left `v2_successor` and `v2_chain32` behind, so a dropped successor
- * chain left the node claiming to be a successor of a chain it no longer
- * had. Case 12 pins that the legacy identity and the V2 identity are
- * cleared together. It needs nothing beyond a default build and leaves
- * its mkdtemp directory (with the armed recovery sentinel) behind.
+ * ── R3 W4-D — THE OTHER DIRECTION IS GONE ────────────────────────────
+ * The reverse transition this file used to also own — what a node keeps
+ * when its chain database is DROPPED via drop_witness_db /
+ * nodus_witness_halt_recovery_check — is DELETED with the closed
+ * consensus lane: both functions were file-static in the now-deleted
+ * nodus_witness_sync.c. See the deletion note where that case stood.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -39,53 +37,34 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <unistd.h>   /* access/F_OK — case 12 proves the drop unlinked */
+#include <unistd.h>   /* mkdtemp — every case in this file uses one */
 #include <sqlite3.h>
 
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_v2_schema.h"
-/* O15L Faz 4 / F-6 — the halt-recovery entry is the ONLY caller-visible
- * door to drop_witness_db (which is file-static in nodus_witness_sync.c),
- * and deriving a peer's witness_id is how the recovery quorum matches a
- * peer to the halt-time committee snapshot. */
-#include "witness/nodus_witness_sync.h"
-#include "nodus/nodus_chain_config.h"
 
-/* ── O15L Faz 1 — the two chain-identity gates under test ─────────────
+/* ── O15L Faz 1 — the chain-identity gate still under test ────────────
  *
- *   verify_chain_id               defined in nodus_witness_bft.c
  *   witness_chain_quorum_observe  defined in nodus_witness_peer.c
  *
- * Both are non-static in the library for exactly the reason the header
- * block of nodus_witness_bft_internal.h already records for this
- * project: "static + test linkage is incompatible in CMake's normal
- * flow ... the protection is 'no public header references them' rather
- * than 'static qualifier'." Production code reaching for either symbol
- * is a code-review failure, not a linker error.
+ * R3 W4-D — verify_chain_id (nodus_witness_bft.c) is DELETED with the
+ * closed consensus lane; only witness_chain_quorum_observe survives.
+ * It is non-static in the library for exactly the reason
+ * nodus_witness_peer.h's own gated declaration comment records:
+ * "static + test linkage is incompatible in CMake's normal flow ... the
+ * protection is 'no public header references them' rather than 'static
+ * qualifier'." Production code reaching for it is a code-review
+ * failure, not a linker error.
  *
- * O15L Faz 5 — this file used to REPEAT both prototypes locally, and C
- * accepts that silently: linkage does not compare signatures, so a local
- * copy that drifted from its definition would surface as a wrong-ABI
- * call at run time, never as a compile error. The canonical prototypes
- * now live in nodus_witness_bft_internal.h, and the test_v2_restart_gate
- * target carries NODUS_WITNESS_INTERNAL_API (nodus/CMakeLists.txt), which
- * is what opens that header's #error gate for this translation unit.
- * Including it makes every call below signature-checked against the one
- * declaration instead of against a copy.
- *
- * The check runs in ONE direction only, and the two definitions say so
- * in their own comments: nodus_witness_bft.c and nodus_witness_peer.c do
- * NOT include this header. Its gate demands a macro the build system
- * attaches to test executables and to no library target — the single
- * library TU that has it, nodus_witness_fault.c, #defines it for itself
- * under QGP_FAULT_INJECT, so reaching in is never silent — and whose
- * name CMakeLists.txt additionally turns into a FATAL_ERROR if set as a
- * CMake variable in a Release configure. So a signature change breaks
- * the compile of THIS test, which is the intended alarm; it does not
- * make the definitions and the header agree, and that pairing stays a
- * review obligation. */
-#include "witness/nodus_witness_bft_internal.h"
+ * The canonical prototype now lives in nodus_witness_peer.h, gated on
+ * NODUS_WITNESS_INTERNAL_API (nodus/CMakeLists.txt's register_witness_
+ * test macro defines it for this target) exactly as
+ * nodus_witness_bft_internal.h used to gate its own whole file before
+ * that file was deleted. Including peer.h (below) makes the call
+ * signature-checked against the one declaration instead of against a
+ * locally repeated copy. */
+#include "witness/nodus_witness_peer.h"
 
 /* ── O15L Faz 2 — the scan's THREE outcomes, MIRRORED ─────────────────
  *
@@ -425,113 +404,26 @@ int main(void) {
         sqlite3_close(hold);
     }
 
-    /* ── 6. O15L Faz 1 / DG-1 · G1, G2 — THE CHAIN-IDENTITY DECISION IS
-     *      A TOTAL FUNCTION OF (chain_id, db).
-     *
-     * WHAT THIS PROVES. verify_chain_id is CRITICAL-2, the cross-chain
-     * replay guard on all five BFT handlers. It used to exempt itself
-     * whenever the local chain_id was all-zero — "absence of an answer"
-     * treated as "an answer that permits", which is the shape that forks
-     * a chain. The replacement is the four-state matrix of the O15L
-     * design §1 DG-1:
-     *
-     *   id != 0, db != NULL  healthy                 -> ENFORCE
-     *   id != 0, db == NULL  open failed, id kept    -> ENFORCE
-     *   id == 0, db == NULL  genuine pre-genesis     -> EXEMPT (the only one)
-     *   id == 0, db != NULL  invariant violation     -> FAIL CLOSED
-     *
-     * ⚠ ROW 2 IS THE REGRESSION PIN. nodus/BUGS.md option B proposed
-     * "the sound test is w->db == NULL". Applied literally that INVERTS
-     * O15K's fix A: a node whose open failed holds exactly
-     * (db == NULL, chain_id != 0) — the state fix A exists to produce —
-     * and a bare `db == NULL -> exempt` re-exempts precisely that node.
-     * The identity is the authority; the handle only disambiguates a
-     * ZERO identity. An implementation that gets this backwards passes
-     * rows 1, 3 and 4 and fails row 2 alone.
-     *
-     * HOW IT COULD LIE. If the matrix were read as "always enforce",
-     * row 3 would fail — so the exemption is asserted positively, not
-     * merely left untested. And each ENFORCE row asserts BOTH the
-     * matching verdict and the mismatching one, so a gate stuck at
-     * `return false` cannot pass. */
-    {
-        uint8_t mine[16], other[16];
-        memset(mine, 0x11, sizeof(mine));
-        memset(other, 0x22, sizeof(other));
+    /* R3 W4-D — the case that used to occupy slot 6, the O15L Faz 1 /
+     * DG-1 chain-identity decision, is DELETED with the closed consensus
+     * lane: its subject, verify_chain_id, was defined in
+     * nodus_witness_bft.c and is gone (there is no cometbft-lane
+     * successor for the "reject a foreign chain_id on a BFT message"
+     * property — the version-3 lane's own chain-id derivation and
+     * cross-chain replay protection is a different mechanism, out of
+     * this file's scope). The matrix_witness fixture stays: the next
+     * case still uses it. Every case number from here on is renumbered
+     * down by one to close the gap. */
 
-        uint8_t mine32[32], other32[32], zero32[32];
-        memset(mine32, 0, sizeof(mine32));
-        memset(other32, 0, sizeof(other32));
-        memset(zero32, 0, sizeof(zero32));
-        memcpy(mine32, mine, 16);
-        memcpy(other32, other, 16);
-
-        /* Row 1 — (id != 0, db != NULL): ENFORCE. */
-        {
-            nodus_witness_t *w = matrix_witness(mine, 1);
-            CHECK(w != NULL, "alloc row 1");
-            CHECK(verify_chain_id(w, mine32) == true,
-                  "row 1: a matching chain_id must be accepted");
-            CHECK(verify_chain_id(w, other32) == false,
-                  "row 1: a foreign chain_id must be rejected");
-            close_witness(w);
-        }
-
-        /* Row 2 — (id != 0, db == NULL): ENFORCE ANYWAY.  ← THE PIN */
-        {
-            nodus_witness_t *w = matrix_witness(mine, 0);
-            CHECK(w != NULL, "alloc row 2");
-            CHECK(verify_chain_id(w, other32) == false,
-                  "ROW 2: A NODE WHOSE OPEN FAILED STILL HOLDS ITS "
-                  "IDENTITY AND MUST STILL ENFORCE IT — a bare "
-                  "'db == NULL -> exempt' test reverts O15K fix A here");
-            CHECK(verify_chain_id(w, mine32) == true,
-                  "row 2: ENFORCE means COMPARE, not refuse everything");
-            close_witness(w);
-        }
-
-        /* Row 3 — (id == 0, db == NULL): the ONE exemption.
-         * Structurally load-bearing: genesis flows through these same
-         * handlers, so a node with no chain must accept those frames or
-         * no chain can ever start (O15L design §8, Q1 -> option 1). */
-        {
-            nodus_witness_t *w = matrix_witness(NULL, 0);
-            CHECK(w != NULL, "alloc row 3");
-            CHECK(verify_chain_id(w, other32) == true,
-                  "row 3: genuine pre-genesis is exempt — without this a "
-                  "new node could never join");
-            CHECK(verify_chain_id(w, zero32) == true,
-                  "row 3: exempt for an all-zero message id too");
-            close_witness(w);
-        }
-
-        /* Row 4 — (id == 0, db != NULL): FAIL CLOSED.
-         * Unreachable through the ordinary open paths, but reachable
-         * with write access to the data directory: a planted
-         * witness_000...0.db parses as a valid name and yields
-         * set_chain_id(0) on a SUCCESSFUL open (O15L design §4, F-5).
-         * That is why this arm is kept rather than treated as dead. */
-        {
-            nodus_witness_t *w = matrix_witness(NULL, 1);
-            CHECK(w != NULL, "alloc row 4");
-            CHECK(verify_chain_id(w, other32) == false,
-                  "ROW 4: A ZERO IDENTITY WITH AN OPEN DATABASE IS AN "
-                  "INVARIANT VIOLATION AND MUST NOT PERMIT ANYTHING");
-            CHECK(verify_chain_id(w, zero32) == false,
-                  "row 4: fail closed unconditionally, including for an "
-                  "all-zero message id");
-            close_witness(w);
-        }
-    }
-
-    /* ── 7. O15L Faz 1 / DG-2 · G3 — THE SELF-QUARANTINE DETECTOR TAKES
+    /* ── 6. O15L Faz 1 / DG-2 · G3 — THE SELF-QUARANTINE DETECTOR TAKES
      *      THE SAME MATRIX.
      *
-     * WHAT THIS PROVES. witness_chain_quorum_observe carried the identical
-     * `chain_id == 0 -> return` exemption. Fixing only verify_chain_id
-     * would leave a node able to reject foreign messages but unable to
-     * notice that IT is the diverged one — the detector blinded by the
-     * very condition it exists to catch. Both consumers move together.
+     * WHAT THIS PROVES. witness_chain_quorum_observe carries the
+     * `chain_id == 0 -> return` exemption for genuine pre-genesis, and
+     * fails closed / enforces exactly as verify_chain_id (deleted along
+     * with the rest of the closed consensus lane) used to, so a node can
+     * still notice that IT is the diverged one even though the BFT-side
+     * gate it once mirrored is gone.
      *
      * The function returns void, so the observable is whether the
      * observation was COUNTED: chain_agree_count / chain_dissent_count.
@@ -638,7 +530,7 @@ int main(void) {
         }
     }
 
-    /* ── 8. O15L Faz 1 item 3 / DG-1 · F-4 — THE CREATE PATH INSTALLS
+    /* ── 7. O15L Faz 1 item 3 / DG-1 · F-4 — THE CREATE PATH INSTALLS
      *      THE IDENTITY BEFORE THE OPEN, AS THE SCAN PATH DOES.
      *
      * WHAT THIS PROVES. nodus_witness_create_chain_db opened first and
@@ -685,7 +577,7 @@ int main(void) {
         close_witness(w);
     }
 
-    /* ── 9. O15L Faz 2 / G2, G6 — A CHAIN DB THAT IS PRESENT AND
+    /* ── 8. O15L Faz 2 / G2, G6 — A CHAIN DB THAT IS PRESENT AND
      *      UNREADABLE IS NEVER REPORTED AS ABSENT.
      *
      * WHAT THIS PROVES. Every non-zero return of the scanner used to be
@@ -754,7 +646,7 @@ int main(void) {
         close_witness(w);
     }
 
-    /* ── 10. O15L Faz 2 / G2 — GENUINE ABSENCE IS STILL ABSENCE, AND AN
+    /* ── 9. O15L Faz 2 / G2 — GENUINE ABSENCE IS STILL ABSENCE, AND AN
      *       UNREADABLE DIRECTORY IS NOT ABSENCE.
      *
      * WHAT THIS PROVES. Two halves of the same separation. A fresh node
@@ -763,12 +655,12 @@ int main(void) {
      * DG-1 row 3 is structurally load-bearing (design §8, Q1). And a data
      * directory that cannot be read at all is an operator fault, not an
      * observation: reporting it as "no chain DB found" would let a node
-     * that owns a chain announce it has none, which is the case-9 lie
+     * that owns a chain announce it has none, which is the case-8 lie
      * arriving through opendir instead of sqlite3_open.
      *
      * HOW IT COULD LIE. The absence half alone would pass on a scanner
      * that returns ABSENT for everything, so the unreadable half is
-     * asserted beside it, and case 9 pins the third code. The identity is
+     * asserted beside it, and case 8 pins the third code. The identity is
      * asserted to stay all-zero on the absence path — a pre-genesis node
      * whose chain_id were non-zero would fail closed at both O15L Faz 1
      * gates and could never join. */
@@ -801,7 +693,7 @@ int main(void) {
         close_witness(w2);
     }
 
-    /* ── 11. O15L Faz 2 — A LOCKED CHAIN DB IS CLASSIFIED TRANSIENT, AND
+    /* ── 10. O15L Faz 2 — A LOCKED CHAIN DB IS CLASSIFIED TRANSIENT, AND
      *       AN EXHAUSTED RETRY IS STILL 'PRESENT AND UNUSABLE'.
      *
      * WHAT THIS PROVES. The error classes are not cosmetic: SQLITE_BUSY /
@@ -892,148 +784,13 @@ int main(void) {
         sqlite3_close(hold);
     }
 
-    /* ── 12. O15L Faz 4 / F-6 — DROPPING THE CHAIN DROPS THE V2 IDENTITY
-     *       WITH IT.
-     *
-     * WHAT THIS PROVES. drop_witness_db closes the handle, unlinks the
-     * file and zeroes chain_id — and used to leave `v2_successor` true
-     * and `v2_chain32` populated. The resulting triple
-     * (chain_id == 0, db == NULL, v2_successor == true) is read by the
-     * O15L DG-1 matrix as row 3, "genuine pre-genesis, exempt", while
-     * every bare `if (w->v2_successor)` branch still steers the successor
-     * lane at a NULL handle: one node holding two irreconcilable answers
-     * about which chain it is on. This case pins that all three are
-     * cleared together, so the node lands in exactly one cell of the
-     * matrix. After the Faz 4 loader change the stake is higher still —
-     * the committee lookup keys on chain_id and would call this node
-     * pre-genesis while the V2 lanes called it a successor.
-     *
-     * HOW THE DROP IS REACHED. drop_witness_db is file-static in
-     * nodus_witness_sync.c, so this drives it through its production
-     * caller, nodus_witness_halt_recovery_check, by satisfying that
-     * function's real preconditions rather than by reaching around them:
-     * safety_halt latched, halt_auto_recover opted IN (it is OFF by
-     * default and that default is asserted elsewhere — see
-     * test_halt_auto_recover_default_off), a one-member halt-time
-     * committee snapshot (so dna_bft_quorum(1) == 1), and one identified
-     * peer whose witness_id derives from that snapshot's pubkey and whose
-     * remote_checksum disagrees with ours. cached_state_root_valid short-
-     * circuits the Merkle recompute, which is not this case's subject.
-     *
-     * WHAT IT REQUIRES. A default build; no compile flag, no environment
-     * variable. WHAT IT LEAVES BEHIND: its own mkdtemp directory,
-     * containing the armed .recovery_in_progress sentinel that the
-     * production drop path writes before dropping — the drop deletes the
-     * chain database, not the sentinel.
-     *
-     * HOW IT COULD LIE, AND WHAT IT DOES ABOUT IT. The three "cleared"
-     * assertions would all pass vacuously on a fixture that never set the
-     * fields in the first place, and they would ALSO pass on a
-     * halt_recovery_check that declined to drop anything at all. Both
-     * doors are closed: the stale V2 state is asserted PRESENT
-     * immediately before the call, and the drop is asserted to have
-     * actually happened (handle gone, file gone, halt cleared) — so a
-     * no-op recovery check fails this case rather than passing it.
-     *
-     * NO TIMING. The cooldown is passed by leaving halt_timestamp at 0,
-     * which halt_recovery_check reads as "not in the future and not
-     * within the window", never by sleeping or by measuring elapsed
-     * time. */
-    {
-        char d9[256];
-        snprintf(d9, sizeof(d9), "/tmp/test_v2_restart_drop_XXXXXX");
-        CHECK(mkdtemp(d9) != NULL, "tmpdir 9");
-
-        uint8_t dcid[16];
-        memset(dcid, 0x3e, sizeof(dcid));
-
-        nodus_witness_t *w = fresh_witness(d9);
-        CHECK(w != NULL, "alloc");
-        CHECK(nodus_witness_create_chain_db(w, dcid) == 0, "seed drop chain");
-        CHECK(w->db != NULL, "the drop needs an OPEN database to close");
-
-        char dpath[512];
-        {
-            char hex[33];
-            for (int i = 0; i < 16; i++)
-                snprintf(hex + i * 2, 3, "%02x", dcid[i]);
-            snprintf(dpath, sizeof(dpath), "%s/witness_%s.db", d9, hex);
-        }
-
-        /* The stale V2 identity a successor chain carries at runtime.
-         * Planted directly because the production deriver needs a
-         * committed successor genesis manifest, which is a different
-         * subject from what happens to the fields when the chain goes
-         * away. */
-        w->v2_successor = true;
-        memset(w->v2_chain32, 0xC2, sizeof(w->v2_chain32));
-
-        /* Halt state + the one-member halt-time committee. */
-        w->safety_halt = true;
-        w->halt_block_height = 10;
-        w->halt_timestamp = 0;          /* cooldown already elapsed */
-        w->config.halt_auto_recover = true;
-        memset(w->halt_committee_pubkeys[0], 0x41, DNAC_PUBKEY_SIZE);
-        w->halt_committee_count = 1;
-
-        /* Our own state root, and one committee peer that disagrees with
-         * it — the disagree-quorum the recovery check requires. */
-        w->cached_state_root_valid = true;
-        memset(w->cached_state_root, 0x01, sizeof(w->cached_state_root));
-
-        w->peer_count = 1;
-        w->peers[0].identified = true;
-        memset(w->peers[0].remote_checksum, 0x02,
-               sizeof(w->peers[0].remote_checksum));
-        CHECK(nodus_chain_config_derive_witness_id(
-                  w->halt_committee_pubkeys[0], w->peers[0].witness_id) == 0,
-              "derive the peer's witness_id from the halt-time snapshot — "
-              "a peer outside that snapshot is ignored as a phantom and "
-              "the quorum would never be reached");
-
-        /* The premises, asserted rather than assumed: without these the
-         * three post-conditions below would be vacuous. */
-        CHECK(w->v2_successor,
-              "premise: the fixture really is carrying successor state");
-        {
-            int nonzero = 0;
-            for (size_t i = 0; i < sizeof(w->v2_chain32); i++)
-                if (w->v2_chain32[i]) nonzero = 1;
-            CHECK(nonzero, "premise: v2_chain32 really is populated");
-        }
-
-        nodus_witness_halt_recovery_check(w);
-
-        /* The drop ACTUALLY happened — otherwise every assertion after
-         * this one is about a fixture nobody touched. */
-        CHECK(w->db == NULL, "the drop closed and NULLed the handle");
-        CHECK(access(dpath, F_OK) != 0,
-              "the drop unlinked the chain database file");
-        CHECK(!w->safety_halt,
-              "the recovery path cleared the halt after a successful drop");
-
-        for (int i = 0; i < 32; i++)
-            CHECK(w->chain_id[i] == 0,
-                  "the drop zeroed the legacy chain identity (pre-existing "
-                  "behaviour, asserted so the V2 half below is measured "
-                  "against a known baseline)");
-
-        CHECK(w->v2_successor == false,
-              "F-6: A DROPPED CHAIN LEAVES NO SUCCESSOR CLAIM BEHIND — "
-              "(chain_id == 0, db == NULL, v2_successor == true) reads as "
-              "genuine pre-genesis at the identity matrix while every "
-              "successor branch still fires at a NULL database");
-        for (size_t i = 0; i < sizeof(w->v2_chain32); i++)
-            CHECK(w->v2_chain32[i] == 0,
-                  "F-6: the cached V2 chain id goes with the chain it was "
-                  "derived from — it authenticates QC certs and envelope "
-                  "admission, and a stale one authenticates them for a "
-                  "chain this node no longer has");
-        CHECK(!w->cached_state_root_valid,
-              "the cached state root of a deleted chain is not a value");
-
-        close_witness(w);
-    }
+    /* R3 W4-D — the case that used to occupy the last slot, O15L Faz 4 /
+     * F-6 "dropping the chain drops the V2 identity with it", is DELETED
+     * with the closed consensus lane: it drove drop_witness_db through
+     * its one production caller, nodus_witness_halt_recovery_check —
+     * both file-static in nodus_witness_sync.c, deleted whole. There is
+     * no successor halt-recovery drop path on the version-3 lane in this
+     * package's scope. */
 
     printf("test_v2_restart_gate: ALL %d checks passed\n", checks);
     return 0;

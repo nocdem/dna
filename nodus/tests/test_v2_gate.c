@@ -1,7 +1,6 @@
 /**
  * @file nodus/tests/test_v2_gate.c
- * @brief O15B — the activation gate, ingress reachability, and the network
- *        result algebra.
+ * @brief O15B — the activation gate and the network result algebra.
  *
  * ── WHAT THIS TEST IS FOR ─────────────────────────────────────────────
  * The claim that makes the Ledger V2 network surface safe is narrow and
@@ -9,14 +8,23 @@
  *
  *   1. The gate stays SHUT on a database that is not a Ledger V2 chain,
  *      and no input reaches it that could change that.
- *   2. Ingress is unreachable unless the gate opened.
- *   3. A V2 frame on an unarmed node produces NOT_ACTIVE with no peer
- *      judgement, no acknowledgement, no queue entry and no state change.
- *   4. NOT_ACTIVE, INTERNAL_FAULT and NOT_YET_LINKABLE never blame a peer.
+ *   2. Ingress-arming (the gate's own arm/disarm/is_armed mechanism, NOT
+ *      the deleted block-ingress path below) is unreachable unless the
+ *      gate opened.
+ *   3. NOT_ACTIVE, INTERNAL_FAULT and NOT_YET_LINKABLE never blame a
+ *      peer, per the result-algebra predicates.
  *
- * Each is asserted against the real production entry points, and the
- * "no state change" half is proven by a whole-database digest across the
- * call rather than by inspection.
+ * R3 W4-D — the closed consensus lane's deletion removes this file's
+ * OWN "ingress reachability" half: claims 2 and 3 as originally written
+ * here asserted a V2 frame reaching nodus_witness_v2_ingress_block (the
+ * old-lane block-ingress entry point, deleted with
+ * nodus_witness_v2_ingress.c) produces NOT_ACTIVE with no side effect.
+ * That entry point no longer exists on the version-3 lane — Comet block
+ * application does not go through it — so those two cases are deleted,
+ * not rewritten onto a substitute; see the register for what remains
+ * (the gate's own arm/disarm mechanism, and the result-algebra
+ * predicates on the enum values directly, which need no live call to
+ * assert).
  *
  * ⚠ WHAT NO_AUTHORITY MEANS SINCE O15J Faz 3 ──────────────────────────
  * The activation ceremony is GONE, and with it the reading of
@@ -58,13 +66,17 @@
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_v2_gate.h"
-#include "witness/nodus_witness_v2_ingress.h"
-#include "witness/nodus_witness_v2_sync2.h"
 #include "witness/nodus_witness_v2_preflight.h"
-#include "witness/nodus_witness_v2_schema.h"
 #include "witness/nodus_witness_v2_result.h"
-#include "dnac/blockmsg_v2.h"
-#include "v2_genesis_fixture.h"   /* the shipped whole-DB digest oracle */
+/* R3 W4-D — nodus_witness_v2_ingress.h (file deleted; ingress_block /
+ * _queue_stats / _queue_clear were this file's only users here),
+ * nodus_witness_v2_sync2.h (its sync-range/restart-check symbols this
+ * file called are all deleted with the old-lane half of that file),
+ * nodus_witness_v2_schema.h (nodus_witness_db_migrate_v2s9, used only by
+ * the deleted restart-integrity case), dnac/blockmsg_v2.h and
+ * v2_genesis_fixture.h (make_frame / db_digest, both deleted — their
+ * only callers were the two deleted ingress-block cases) are DROPPED
+ * with the closed consensus lane. */
 
 static int checks;
 #define CHECK(c, msg)                                                     \
@@ -96,63 +108,17 @@ static int fx_open(fx_t *f, const char *tag) {
 
 static void fx_close(fx_t *f) {
     if (f->w) {
-        nodus_witness_v2_ingress_queue_clear(f->w);
         if (f->w->db) sqlite3_close(f->w->db);
         free(f->w);
         f->w = NULL;
     }
 }
 
-/* Whole-database digest.
- *
- * Uses the SHIPPED oracle `v2x_db_digest` (v2_genesis_fixture.h), which
- * hashes every user table's rows ORDERED, column by column, with storage
- * types, plus `sqlite_sequence`.
- *
- * An earlier version of this file rolled its own and was WRONG in a way
- * that mattered: it built `SELECT quote(*) FROM (SELECT * FROM "t")`, but
- * `quote()` takes exactly one argument and `*` is legal only for
- * `count()`. Every prepare failed, control always fell to the `COUNT(*)`
- * fallback, and the "whole-DB digest" was really a table-name-and-row-count
- * digest — blind to any in-place UPDATE. A NOT_ACTIVE path that bumped a
- * counter or stamped a column would have passed the side-effect assertion.
- * Review R3 caught it; the correct oracle already existed in this tree and
- * simply was not used. */
-static unsigned long long db_digest(nodus_witness_t *w) {
-    uint8_t d[64];
-    if (v2x_db_digest(w, d) != 0) return 0;
-    unsigned long long h = 1469598103934665603ULL;   /* FNV-1a offset */
-    for (int i = 0; i < 64; i++) { h ^= d[i]; h *= 1099511628211ULL; }
-    return h;
-}
-
-/* A structurally valid BlockMessage v1 whose CONTENT is meaningless.
- *
- * That is exactly right for these tests: every assertion here is about
- * what happens BEFORE content matters. A frame that decodes proves the
- * refusal came from the gate and not from the codec — a malformed frame
- * would be rejected either way and would prove nothing. */
-static size_t make_frame(uint8_t *buf, size_t cap) {
-    static uint8_t header[DNA_BH2_ENC_SIZE];
-    static uint8_t qc[DNA_QC_V2_HDR_LEN];
-    memset(header, 0, sizeof(header));
-    header[0] = 3;                       /* header_version v3            */
-    memset(qc, 0, sizeof(qc));           /* n_certs = 0                  */
-
-    dnac_blkmsg_v2_t m;
-    memset(&m, 0, sizeof(m));
-    m.msg_version  = DNA_BLKW_VERSION;
-    m.body_version = DNA_BLKW_BODY_VERSION;
-    m.header       = header;
-    m.qc           = qc;
-    m.qc_len       = (uint32_t)sizeof(qc);
-    m.env_count    = 0;
-    m.timestamp    = 1234;
-
-    size_t n = 0;
-    if (dnac_blkmsg_v2_encode(&m, buf, cap, &n) != DNAC_BLKW_OK) return 0;
-    return n;
-}
+/* R3 W4-D — db_digest (the whole-database FNV digest oracle wrapper) and
+ * make_frame (the structurally-valid-but-meaningless BlockMessage v1
+ * builder) are DELETED: their only callers were the cases that used to
+ * occupy slots 5 and 11, both deleted with the closed consensus lane
+ * (nodus_witness_v2_ingress_block, their common subject, is gone). */
 
 int main(void) {
     printf("=== O15B — activation gate, ingress reachability, result algebra ===\n");
@@ -223,51 +189,14 @@ int main(void) {
         fx_close(&f);
     }
 
-    /* ── 5. A V2 FRAME ON A PRODUCTION NODE: NOT_ACTIVE, AND NOTHING ELSE
-     *
-     * The whole dormancy claim, asserted at the real entry point. The
-     * frame is well-formed on purpose (see make_frame): the refusal must
-     * come from the gate, not from the codec.
-     *
-     * "No database mutation" is proven by a whole-DB digest across the
-     * call, not by reading the code. */
-    {
-        fx_t f = {0};
-        CHECK(fx_open(&f, "notactive") == 0, "fixture open");
+    /* R3 W4-D — the case that used to occupy slot 5, "a V2 frame on a
+     * production node: NOT_ACTIVE, and nothing else", is DELETED with
+     * the closed consensus lane: it drove nodus_witness_v2_ingress_
+     * block / _queue_stats, both defined only in the deleted
+     * nodus_witness_v2_ingress.c. Every case number from here on is
+     * renumbered down by one to close the gap. */
 
-        uint8_t frame[4096];
-        size_t flen = make_frame(frame, sizeof(frame));
-        CHECK(flen > 0, "fixture frame encodes");
-
-        unsigned long long before = db_digest(f.w);
-        CHECK(before != 0, "the digest oracle produced a value (a 0 would "
-                           "mean it failed, and two failures compare equal)");
-
-        uint8_t peer[32];
-        memset(peer, 0x77, sizeof(peer));
-        nodus_v2_ingress_outcome_t oc;
-        int rc = nodus_witness_v2_ingress_block(f.w, peer, frame, flen, &oc);
-
-        CHECK(rc == NODUS_V2_NOT_ACTIVE, "result is NOT_ACTIVE");
-        CHECK(oc.result == NODUS_V2_NOT_ACTIVE, "outcome carries NOT_ACTIVE");
-        CHECK(oc.peer == NODUS_V2_PEER_NONE,
-              "THE PEER MUST NOT BE BLAMED for our own inactivity");
-        CHECK(oc.ack == 0, "nothing is acknowledged");
-        CHECK(oc.queued == 0,
-              "an inactive node must not spend memory queueing V2 traffic");
-        CHECK(oc.want_catchup == 0, "an inactive node does not want catch-up");
-
-        uint32_t qn = 99; uint64_t qb = 99;
-        nodus_witness_v2_ingress_queue_stats(f.w, &qn, &qb);
-        CHECK(qn == 0 && qb == 0, "the queue is empty");
-
-        unsigned long long after = db_digest(f.w);
-        CHECK(before == after,
-              "NOT_ACTIVE MUST NOT TOUCH THE DATABASE (whole-DB digest)");
-        fx_close(&f);
-    }
-
-    /* ── 6. NOT_ACTIVE IS NOT ANY OTHER CLASS ─────────────────────────
+    /* ── 5. NOT_ACTIVE IS NOT ANY OTHER CLASS ─────────────────────────
      * The classifiers are the contract every network caller routes on, so
      * the separations are pinned by value rather than trusted. */
     {
@@ -291,7 +220,7 @@ int main(void) {
               "the O15A result values are UNMOVED");
     }
 
-    /* ── 7. WHO MAY BE BLAMED — the single peer-policy predicate ───────
+    /* ── 6. WHO MAY BE BLAMED — the single peer-policy predicate ───────
      * The three "never blame" rows of the ingress table are the point of
      * the whole algebra, so they are asserted directly. */
     {
@@ -311,64 +240,17 @@ int main(void) {
               "an accepted block blames nobody");
     }
 
-    /* ── 8. SYNC AND RESTART ARE GATED TOO ─────────────────────────────
-     * §12 requires that no production path advertises, accepts, syncs or
-     * replays while the gate is shut — not merely the live-block path. */
-    {
-        fx_t f = {0};
-        CHECK(fx_open(&f, "sync") == 0, "fixture open");
-
-        nodus_v2_head_hint_t hint;
-        memset(&hint, 0, sizeof(hint));
-        hint.protocol_version = DNA_BLKW_VERSION;
-        hint.head_height      = 1000;
-
-        uint64_t from = 0; uint32_t cnt = 0;
-        CHECK(nodus_witness_v2_sync_plan_range(f.w, &hint, &from, &cnt)
-                  == NODUS_V2_NOT_ACTIVE,
-              "range planning is gated");
-        CHECK(cnt == 0, "a gated plan requests nothing");
-
-        nodus_v2_sync_range_result_t rr;
-        const uint8_t *frames[1] = { NULL };
-        const size_t   lens[1]   = { 0 };
-        CHECK(nodus_witness_v2_sync_apply_range(f.w, NULL, frames, lens, 1, &rr)
-                  == NODUS_V2_NOT_ACTIVE,
-              "range application is gated");
-        CHECK(rr.applied == 0 && rr.duplicates == 0,
-              "a gated range applies nothing");
-
-        CHECK(nodus_witness_v2_sync_restart_check(f.w, NULL)
-                  == NODUS_V2_NOT_ACTIVE,
-              "the restart check is gated");
-        fx_close(&f);
-    }
-
-    /* ── 9. AN INCOMPATIBLE PEER IS NEVER WORTH SYNCING FROM ───────────
-     * Compatibility is established before any block is exchanged, and an
-     * inability to establish it is NOT compatibility. */
-    {
-        fx_t f = {0};
-        CHECK(fx_open(&f, "peer") == 0, "fixture open");
-        nodus_v2_head_hint_t hint;
-        memset(&hint, 0, sizeof(hint));
-
-        CHECK(nodus_witness_v2_sync_peer_compatible(f.w, NULL) == 0,
-              "a NULL hint is not compatible");
-        hint.protocol_version = DNA_BLKW_VERSION + 1u;
-        CHECK(nodus_witness_v2_sync_peer_compatible(f.w, &hint) == 0,
-              "an unimplemented protocol version is not compatible");
-        hint.protocol_version = DNA_BLKW_VERSION;
-        memset(hint.genesis_block_id, 0xab, sizeof(hint.genesis_block_id));
-        memset(hint.chain_id, 0xcd, sizeof(hint.chain_id));
-        CHECK(nodus_witness_v2_sync_peer_compatible(f.w, &hint) == 0,
-              "a hint whose chain_id does not derive from its genesis id "
-              "is not compatible");
-        fx_close(&f);
-    }
+    /* R3 W4-D — the cases that used to occupy slots 8 and 9, "sync and
+     * restart are gated too" and "an incompatible peer is never worth
+     * syncing from", are DELETED with the closed consensus lane: both
+     * drove nodus_witness_v2_sync_plan_range / _apply_range / _restart_
+     * check / _peer_compatible, all defined only in the old-lane half of
+     * nodus_witness_v2_sync2.c, itself deleted this delta (verbs 20-23
+     * and the restart integrity check). Every case number from here on
+     * is renumbered down by two to close the gap. */
 
 #ifdef NODUS_V2_TEST_AUTHORITY
-    /* ── 10. THE ARMED PATH ON A DATABASE THAT COULD NEVER OPEN ────────
+    /* ── 7. THE ARMED PATH ON A DATABASE THAT COULD NEVER OPEN ────────
      *
      * This fixture is NOT a Ledger V2 chain, so the only way it reaches
      * the armed ingress/queue/sync code is the synthetic fixture — and
@@ -438,183 +320,21 @@ int main(void) {
         fx_close(&f);
     }
 
-    /* ── 11. AN ARMED NODE STILL REFUSES A MALFORMED FRAME, AND SAYS SO
-     * WITHOUT CONFUSING IT WITH A CONSENSUS VERDICT.
-     *
-     * Also the proof that section 5's NOT_ACTIVE came from the GATE: the
-     * same well-formed frame now gets past the gate and fails later, so
-     * the two refusals are genuinely different code paths. */
-    {
-        fx_t f = {0};
-        CHECK(fx_open(&f, "malformed") == 0, "fixture open");
-        nodus_witness_v2_gate_test_arm(f.w, 1);
-        CHECK(nodus_witness_v2_ingress_arm(f.w) == 0, "armed");
-
-        nodus_v2_ingress_outcome_t oc;
-
-        /* Truncated. */
-        uint8_t tiny[3] = { DNA_BLKW_VERSION, DNA_BLKW_BODY_VERSION, 0 };
-        (void)nodus_witness_v2_ingress_block(f.w, NULL, tiny, sizeof(tiny), &oc);
-        CHECK(oc.peer == NODUS_V2_PEER_MALFORMED,
-              "a truncated frame is MALFORMED, not a consensus verdict");
-        CHECK(oc.ack == 0 && oc.queued == 0, "and nothing is acked or queued");
-
-        /* Over the LOCAL frame budget — refused BEFORE decode, and
-         * WITHOUT judging the peer.
-         *
-         * NODUS_V2_ING_MAX_FRAME_BYTES is this node's resource policy, not
-         * consensus: a node with a larger budget accepts the same block.
-         * Reporting it as a verdict would let two honest nodes issue
-         * different peer judgements for identical bytes — the same defect
-         * class as blaming a peer for our own lag. Review R2 found the
-         * original code doing exactly that. */
-        static uint8_t big[NODUS_V2_ING_MAX_FRAME_BYTES + 16];
-        memset(big, 0, sizeof(big));
-        (void)nodus_witness_v2_ingress_block(f.w, NULL, big, sizeof(big), &oc);
-        CHECK(oc.result == NODUS_V2_INTERNAL_FAULT,
-              "an over-budget frame is OUR refusal, not a verdict");
-        CHECK(oc.peer == NODUS_V2_PEER_NONE,
-              "AN OVER-BUDGET FRAME MUST NOT BLAME THE PEER — the cap is "
-              "local policy, not a property of the bytes");
-        CHECK(oc.ack == 0 && oc.queued == 0,
-              "and nothing is acked or queued");
-
-        /* Trailing garbage after a valid message. */
-        uint8_t frame[4096];
-        size_t flen = make_frame(frame, sizeof(frame) - 1);
-        CHECK(flen > 0, "fixture frame encodes");
-        frame[flen] = 0xff;
-        (void)nodus_witness_v2_ingress_block(f.w, NULL, frame, flen + 1, &oc);
-        CHECK(oc.peer == NODUS_V2_PEER_MALFORMED,
-              "TRAILING BYTES ARE REJECTED");
-        CHECK(oc.codec_status != DNAC_BLKW_OK, "and the codec says why");
-
-        nodus_witness_v2_gate_test_clear(f.w);
-        fx_close(&f);
-    }
+    /* R3 W4-D — the case that used to occupy slot 11, "an armed node
+     * still refuses a malformed frame", is DELETED with the closed
+     * consensus lane: it drove nodus_witness_v2_ingress_block, defined
+     * only in the deleted nodus_witness_v2_ingress.c. */
 #endif /* NODUS_V2_TEST_AUTHORITY */
 
 #ifdef NODUS_V2_TEST_AUTHORITY
-    /* ── 12. RESTART INTEGRITY — the armed path ───────────────────────
-     *
-     * Added because the §17 mutation campaign showed this code had NO
-     * coverage at all: `restart_check` is gated, so every earlier section
-     * stopped at NOT_ACTIVE and the whole scan — including the row-key and
-     * parent-linkage checks review R2 asked for — was never executed by
-     * any test. A defence nothing exercises is a defence nobody can trust.
-     */
-    {
-        fx_t f = {0};
-        CHECK(fx_open(&f, "restart") == 0, "fixture open");
-        nodus_witness_v2_gate_test_arm(f.w, 1);
+    /* R3 W4-D — the case that used to occupy slot 12, "restart
+     * integrity — the armed path", is DELETED with the closed consensus
+     * lane: it drove nodus_witness_v2_sync_restart_check, deleted this
+     * delta once its production callers were confirmed gone (register
+     * R3-W4-D-10). Every case number from here on is renumbered down by
+     * one. */
 
-        /* The V2 tables must exist before a V2 integrity check means
-         * anything. On a database WITHOUT them the check returns -2 ("could
-         * not be performed"), which is the correct fail-closed answer and
-         * is itself worth pinning: "we could not look" must never be
-         * reported as "intact". */
-        {
-            uint64_t nb = 0;
-            CHECK(nodus_witness_v2_sync_restart_check(f.w, &nb) == -2,
-                  "a database with no v2_blocks reports COULD-NOT-PERFORM, "
-                  "never 'intact'");
-        }
-        CHECK(nodus_witness_db_migrate_v2s9(f.w) == 0, "migrate to schema v9");
-
-        /* A chain with no V2 blocks is INTACT, not broken — the check must
-         * not invent corruption out of an empty table. */
-        uint64_t bad = 999;
-        CHECK(nodus_witness_v2_sync_restart_check(f.w, &bad) == 0,
-              "an empty v2_blocks is intact");
-        CHECK(bad == 0, "and reports no bad height");
-
-        /* A row whose stored header is the wrong WIDTH is corrupt. This is
-         * the first thing the scan checks, and it must stop rather than
-         * skip — a skipped bad record is a silent acceptance. */
-        {
-            sqlite3_stmt *st = NULL;
-            const char *sql =
-                "INSERT INTO v2_blocks (global_height, block_id, "
-                " prev_block_id, epoch, tx_root, domain_updates_root, "
-                " domains_root, global_root, vset_hash, tx_count, header) "
-                "VALUES (1, ?1, ?2, 0, ?2, ?2, ?2, ?2, ?2, 0, ?3)";
-            if (sqlite3_prepare_v2(f.w->db, sql, -1, &st, NULL) == SQLITE_OK) {
-                uint8_t id[64], zero[64], shorthdr[10];
-                memset(id, 0x11, sizeof(id));
-                memset(zero, 0, sizeof(zero));
-                memset(shorthdr, 0, sizeof(shorthdr));
-                sqlite3_bind_blob(st, 1, id, 64, SQLITE_STATIC);
-                sqlite3_bind_blob(st, 2, zero, 64, SQLITE_STATIC);
-                sqlite3_bind_blob(st, 3, shorthdr, (int)sizeof(shorthdr),
-                                  SQLITE_STATIC);
-                int rc = sqlite3_step(st);
-                sqlite3_finalize(st);
-                CHECK(rc == SQLITE_DONE, "planted a malformed v2_blocks row");
-            } else {
-                CHECK(0, "could not prepare the v2_blocks insert");
-            }
-
-            bad = 0;
-            CHECK(nodus_witness_v2_sync_restart_check(f.w, &bad) == -1,
-                  "A WRONG-WIDTH STORED HEADER IS CORRUPTION — the scan "
-                  "stops rather than skipping the record");
-            CHECK(bad == 1, "and names the first bad height");
-        }
-
-        /* A VALID, well-formed header filed under the WRONG ROW KEY.
-         *
-         * This case exists because the mutation campaign showed the
-         * row-key check had no coverage: the wrong-WIDTH row above dies at
-         * the width guard, so deleting `hdr.block_height != h` changed
-         * nothing any test could see. Here the header is a real 413-byte
-         * encode that decodes cleanly and reproduces its own BlockID — the
-         * ONLY thing wrong is where it is stored. Review R2 asked for this
-         * check; this is what makes it real. */
-        {
-            (void)sqlite3_exec(f.w->db, "DELETE FROM v2_blocks", NULL, NULL, NULL);
-
-            dna_block_header_v2_t h;
-            memset(&h, 0, sizeof(h));
-            h.header_version = 3;
-            h.block_height   = 7;          /* the header says 7 ...        */
-            h.epoch          = 7 / DNAC_EPOCH_LENGTH;
-            uint8_t enc[DNA_BH2_ENC_SIZE], hid[DNA_BH2_ID_LEN];
-            CHECK(dna_bh2_encode(&h, enc) == 0, "encoded a valid v3 header");
-            CHECK(dna_bh2_block_id(&h, hid) == 0, "derived its real BlockID");
-
-            sqlite3_stmt *st = NULL;
-            const char *sql =
-                "INSERT INTO v2_blocks (global_height, block_id, "
-                " prev_block_id, epoch, tx_root, domain_updates_root, "
-                " domains_root, global_root, vset_hash, tx_count, header) "
-                "VALUES (1, ?1, ?2, 0, ?2, ?2, ?2, ?2, ?2, 0, ?3)";
-            if (sqlite3_prepare_v2(f.w->db, sql, -1, &st, NULL) == SQLITE_OK) {
-                uint8_t zero[64];
-                memset(zero, 0, sizeof(zero));
-                sqlite3_bind_blob(st, 1, hid, DNA_BH2_ID_LEN, SQLITE_STATIC);
-                sqlite3_bind_blob(st, 2, zero, 64, SQLITE_STATIC);
-                sqlite3_bind_blob(st, 3, enc, (int)sizeof(enc), SQLITE_STATIC);
-                int rc = sqlite3_step(st);
-                sqlite3_finalize(st);
-                CHECK(rc == SQLITE_DONE,
-                      "planted a valid height-7 header under row key 1");
-            } else {
-                CHECK(0, "could not prepare the row-key-mismatch insert");
-            }
-
-            bad = 0;
-            CHECK(nodus_witness_v2_sync_restart_check(f.w, &bad) == -1,
-                  "A VALID HEADER FILED UNDER THE WRONG KEY IS CORRUPTION — "
-                  "reproducing its own BlockID is not enough; where it is "
-                  "stored is part of the claim");
-            CHECK(bad == 1, "and names the offending row key");
-        }
-
-        nodus_witness_v2_gate_test_clear(f.w);
-        fx_close(&f);
-    }
-
-    /* ── 13. THE WITNESS UTXO READ FAILS CLOSED ON A MALFORMED ROW ────
+    /* ── 8. THE WITNESS UTXO READ FAILS CLOSED ON A MALFORMED ROW ────
      *
      * Also added from the mutation campaign: nothing exercised the
      * negative-height guard, so a mutant that let a negative stored

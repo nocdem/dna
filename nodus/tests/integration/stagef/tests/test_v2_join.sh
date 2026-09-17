@@ -13,8 +13,9 @@
 #
 #   This is the V2 answer to a question the legacy lane answers
 #   differently, and the difference is the reason this scenario had to be
-#   written instead of pointing test_bootstrap_partial_wipe.sh at a V2
-#   cluster. A legacy node with no chain asks its peers for the genesis
+#   written instead of pointing test_bootstrap_partial_wipe.sh (deleted
+#   with the legacy lane in R3 W4) at a V2 cluster. A legacy node with no
+#   chain asked its peers for the genesis
 #   and adopts whatever a quorum agrees on. A V2 node does not: it adopts
 #   a peer's genesis bundle ONLY if the bundle re-derives to the pin it
 #   was given locally. The pin is a local trust anchor, so recovery is

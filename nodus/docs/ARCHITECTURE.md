@@ -122,8 +122,12 @@ nodus/
 │   └── witness/               # DNAC BFT witness module (embedded)
 │       ├── nodus_witness.c          # Witness init, DB schema, lifecycle
 │       ├── nodus_witness_db.c/h     # SQLite ops (nullifiers, ledger, UTXOs, TXs, blocks)
-│       ├── nodus_witness_bft.c/h    # BFT consensus state machine (PBFT)
-│       ├── nodus_witness_peer.c/h   # TCP peer mesh management
+│       ├── nodus_witness_cmt_*.c/h  # the cometbft server binding: application (ABCI rows), host
+│       │                            #   (stores/WAL/privval/BlockExecutor), startup table, transport
+│       │                            #   glue — the ONLY consensus lane since R3 W3; the legacy PBFT
+│       │                            #   lane (nodus_witness_bft/sync/cert/bootstrap/mempool) was
+│       │                            #   DELETED in R3 W4
+│       ├── nodus_witness_peer.c/h   # TCP peer mesh management + the transport roster (find/add)
 │       ├── nodus_witness_handlers.c/h # DNAC message dispatch (spend, query, block)
 │       ├── nodus_witness_verify.c/h # TX verification (hash, sig, balance, fee, nullifiers)
 │       └── nodus_witness_v2_schema.c/h # Ledger V2 versioned schema S5..S13 (S13 = tm_wal, tm_state, v2_blocks.commit_cert;
@@ -1317,12 +1321,17 @@ to `/usr/local/bin/`, and restarts the systemd service.
 
 ### Integration Tests
 
-Genesis Protocol harness (`tests/integration/stagef/stagef_up.sh`) runs
-a 7-node localhost cluster end-to-end:
-- Identity bootstrap, genesis commit, witness BFT round
-- DHT replication (PUT/GET/LISTEN) across all 7 nodes
-- Cross-node state_root convergence (7/7 identical proof)
-- Failover / round skip / recovery paths
+Genesis Protocol harness (`tests/integration/stagef/genesis_protocol_v2.sh`,
+bring-up `stagef_up_v2.sh`) runs a 7-node localhost cluster end-to-end on
+the cometbft lane — the only lane since R3 W3 (R3 W4 deleted the legacy
+runner, bring-up and scenarios):
+- the OFFLINE version-3 genesis ceremony, seven identical chain ids checked
+- block production, claim / stake inclusion read from the ledger effect
+- join (pinned bundle), partial-wipe gate, restart (ABCI Handshake replay)
+- dead proposer, mempool flood, epoch boundary (short-epoch build), receive arena
+- cross-node `global_root` + `block_id` identity at every floor (7/7)
+See `tests/integration/stagef/README.md` for what each scenario proves and
+how it can lie.
 
 ### Build & Run
 
@@ -1372,9 +1381,14 @@ The ported reactors hand the host MARSHALLED proto3 bytes per channel (`cmt_ps_s
 `cmt_conr_receive`, `cmt_memr_host_t.send`, `cmt_memr_receive`), so the tier-3 layer now
 carries those bytes unchanged inside Nodus's own signed envelope: five ENVELOPE verbs, one per
 channel, appended after 34. `NODUS_T3_BFT_PROTOCOL_VER` 6 → 7; a v6 node has no decoder for
-them, so mixed v6/v7 operation is refused. Values 1-27 do not move. The dispatcher that routes
-them (`nodus_witness_dispatch_t3` → `nodus_cmt_net_receive`) is package C2a's; until it lands
-nothing in the running node sends or receives them.
+them, so mixed v6/v7 operation is refused. The dispatcher that routes them
+(`nodus_witness_dispatch_t3` → `nodus_cmt_net_receive`) is package C2a's (W3). **R3 W4:** the
+legacy verbs 1-8, 12-13, 16-23 and 26-27 are DELETED with the closed lane — enum values,
+structs, codecs and method rows; the numbers are RETIRED and never reused, exactly like 28-34.
+The tier-3 verb set is now: 9-11 (roster, ident — the peer mesh), 14-15 (`w_cc_vote_req/rsp`,
+the chain_config governance signature-collection RPC — codec kept, dropped at dispatch until
+package W4-CC re-wires it onto this lane), 24-25 (genesis bundle), 35-39 (the cometbft
+envelope). `NODUS_T3_BFT_PROTOCOL_VER` stays 7: no surviving frame changed a byte.
 
 | Verb | Method | Channel | Args | `m` ceiling | `nodus_t3_max_msg_size` |
 |------|--------|---------|------|-------------|--------------------------|
@@ -1414,10 +1428,11 @@ clears both reactors' tables at once but DEFERS the socket close to the next tic
 connection `try_parse_frames` still reads after the callback (nodus_tcp.c:501-519) — the
 reference tears the peer down on its own goroutines. Contract for the binding: call
 `nodus_cmt_net_tick` from the server loop after the witness transport's poll, never from inside
-a frame callback. The reactor's receive arena is a 64 MiB RUNWAY owned by the glue
-(`NODUS_CMT_NET_RECV_ARENA_BYTES` ≈ 3 maximal blocks of parts), never reset (register R3-A-5,
-reset policy = R3-C2), with one-shot warnings at 50 % and 90 % and an accessor for the live
-test. Known residual: the deferred close compares connection POINTERS; a same-witness
+a frame callback. The reactor's receive arena is owned by the glue
+(`NODUS_CMT_NET_RECV_ARENA_BYTES`); as C2b shipped it it was a 64 MiB never-reset runway
+(register R3-A-5), and package C2e (below, "THE LIVE FLIP") made it a PER-MESSAGE scratch of
+`CMT_CONR_MAX_MSG_SIZE` (1 MiB) reset before every decode — the 50 % / 90 % latches and the
+accessor stay as regression guards. Known residual: the deferred close compares connection POINTERS; a same-witness
 reconnect inside one poll batch that reuses the freed address gets one spurious disconnect
 (no memory unsafety). Test: `test_cmt_net` (9 cases since the W3 harness run — see "THE LIVE FLIP" below for the mempool InitPeer defect the ninth case pins).
 
@@ -1674,26 +1689,53 @@ W3 makes the port the running consensus. Three packages landed after P0 and C2b 
 
 **A harness shape defect, from the same runs:** a CheckTx-accepted transaction is not promised the very next block (the stake envelope admitted at tip 2 was applied at 4); every "wait tip+1 then assert the row" site was flaky by construction. `stagef_cmt_wait_row` now waits for the ledger effect itself, progress-bounded by the chain's tip, and the three transaction scenarios read the effect's height before comparing at the floor; the flood's three back-to-back claims are asserted within a two-height spread, not in one block (three separate submits can legitimately straddle a proposal).
 
-### BFT Consensus Flow
+### cometbft @709fd12b literal port — R3 wave W4, package D: THE DELETION of the closed lane, and package S: the supply probe (2026-09-17)
+
+W3 closed the legacy lane; W4-D deletes it (OBLIGATION `atlas-dec-71525f3b4918f710b660707ac6bb5a3a`, D-17 rev 10 (9)). One Sonnet writer in four deltas (sources / tests / harness / the ten conversion verdicts), one Opus verifier, five ORCHESTRATOR repairs (register ORC-5..9); every gate run by the ORCHESTRATOR.
+
+**Gone (20 files, `git rm`):** `nodus_witness_bft.{c,h}` + `bft_internal.h` (the PBFT round, view change, NEW_VIEW, forward-to-leader, the replay-nonce cache, the V1 `apply_tx_to_state`/`commit_batch`/`finalize_block`/`replay_block` path, the retained batch, the parked PROPOSE, the C5 binding), `nodus_witness_sync.{c,h}` (legacy block sync, halt recovery, the recovery sentinel's writer), `nodus_witness_cert.{c,h}` (the 144-byte cert preimage and the sync-cert verifiers), `nodus_witness_bootstrap.{c,h}` (the DISCOVER / FETCH_GENESIS / HAVE_CHAIN state machine — a version-3 node's role is decided once by the post-open gate; the pinned joiner is armed by `nodus_witness_v2_join_arm` and driven by `nodus_witness_v2_join_tick`), `nodus_witness_mempool.{c,h}` (the fee-sorted local pool — the Comet mempool is `cmt_mem`), `nodus_witness_v2_finalize.{c,h}` / `v2_qc.{c,h}` / `v2_ingress.{c,h}` (the pre-Comet Ledger V2 acceptance seam, QC pool and block ingress), `nodus_witness_o15h_diag.{c,h}`, `nodus_witness_fault.c` (+ CMake's `QGP_FAULT_INJECT`). **Gone from surviving files:** the legacy tick body, `handle_dnac_spend`'s leader/forward/receipt path (the version-3 CheckTx answer is the handler's only lane; a non-version-3 chain is answered with one `send_error`), `nodus_witness_pool_local_demand`, `send_spend_result`, the FWD_REQ/FWD_RSP intakes and `nodus_witness_peer_current_set` in peer.c, `cert_store` / `block_add` / `genesis_set` / `genesis_exists` / `compute_block_hash(_ex)` / the `pbft_state` save-load and its CREATE TABLE in db.c, `produce_commit` / `cert_note` / `qc_try_attach` / the mempool-entry `batch_check(_ex)` in produce.c, verbs 20-23 and `sync_tick` / `serve_block` / `apply_range` / `restart_check` in sync2.c, tier-3 verbs 1-8 / 12-13 / 16-23 / 26-27 with their structs, codecs and method rows, `--cold-bootstrap` and `halt_auto_recover`, the ADMISSION-mode fee surge and pending-pool dedup in verify.c (both read the deleted pool; `cmt_app` calls verify in ADMISSION mode with a pool that was always empty on this lane — an observable no-op), every `nodus_witness_t` field only the deleted code read (`round_state`, `mempool`, `bft_config`, `current_view`, `view_changes`, `pending_forwards`, `retained_batch`, `parked_propose`, `reproposal_*`, `bootstrap_*`, `safety_halt`, …). `nodus_witness.h` 2 032 → 770 lines.
+
+**Moved, kept, converted:** `nodus_witness_roster_find` / `_add` moved verbatim from bft.c into `nodus_witness_peer.{c,h}` (their PROVEN callers are the mesh: `dispatch_t3`, `peer_ensure`, `rebuild_roster_from_peers`, `handle_ident`, `handle_rost_r`); the recovery sentinel's READ half moved into nodus_witness.c as a static boot gate (a sentinel left by an older binary still refuses to boot; nothing can write one now); `witness_chain_quorum_observe` gained its declaration in `nodus_witness_peer.h`. The tick is `poll → witness_mesh_tick (unconditional: both roles need identified peers) → version-3: witness_cmt_tick | pre-genesis: nodus_witness_v2_join_tick`. The IDENT frame is byte-identical (its `current_view` field is written 0 and received-but-ignored); protocol version 7 stands. KEPT and named: `nodus_witness_cert_get` + the `commit_certificates` table (read by the `dnac_block` query handler — the hub/spoke query surface over the legacy tables `blocks`/`genesis_state`/`committed_transactions`, which a version-3 chain never fills, is a product question, recorded), the four legacy base tables, verbs 14/15's codec (the chain_config governance RPC — the operator chose to RE-WIRE it onto this lane, package W4-CC; until then the dispatcher drops it as W3 did), and the version-2 genesis path (`nodus_witness_v2_gen_derive`, `nodus_witness_v2_genesis_ex`, the height-0 row readers, apply.c's non-cmt branch — the ledger-engine unit tests' shared fixture `tests/v2_genesis_fixture.h` sits on it; package W4-G, the obligation's second half, needs the operator's whitelist).
+
+**Tests:** 72 deleted (their subject was the old lane; two coverage notes for the operator — "a RETIRING validator stays in the frozen committee until the boundary" is structural on this lane and has no direct test; the V1 supply gate's fail-close test lost its subject, the version-3 counterpart is `test_v2_gen` L2-F1 + `test_v2_pools`), 12 trimmed, 10 converted: `test_v2_restart_gate` / `test_v2_gate` keep their live post-open-gate and arm/is_armed cases; `test_vset_boundary` §4 asserts `dna_bft_quorum(n)` directly; `test_witness_protocol_version_gate` now proves every retired method string is REFUSED by `nodus_t3_decode` (a control on `w_rost_q` decodes; the live verb-35 gate is `test_cmt_live`'s); `test_v2_epoch`'s `fx_reopen` reopens its pre-Comet fixture RAW (the production gate refuses it by design — the fixture is W4-G's); `test_v2_econ_params`'s five reopening cases derive VERSION-3 chains (`cfg_make_v3` + `derive_v3`; the band rows are written by the same `gen_seed_state`). `test_v2_seam_linked` is now an `nm` ABSENCE gate: no `nodus_witness_bft_|_sync_|_bootstrap_|_mempool_|cert_store|v2_finalize_|v2_qc_|produce_commit|sync_tick|ingress_block` symbol may be linked into `nodus-server`. ctest 260 → 188, all green.
+
+**Harness:** `stagef_up.sh`, `genesis_protocol.sh` and the 23 legacy scenarios deleted; `stagef_env.sh` lost the leader-derivation helpers, `stagef_diff.sh` its `blocks`/`state_root` branch, `test_v2_restart_convergence.sh` its `branch=HAVE_CHAIN` delta (the ABCI Handshake delta is its restart proof). The README was rewritten for one lane (1 113 → 687 lines) with two drift repairs on the way: the arena row still said 64 MiB (C2e made it 1 MiB per message) and "what flips" rule 4 still said 2 972 claims per block (the item cap is 16). Recorded gap for W4-H: `genesis_protocol_v2.sh` reads no reachability sentinels, so a scenario that exits 0 without reaching its assertion is a PASS.
+
+**W4-S — the supply probe (D-17 rev 11 (11), the obligation closes):** `nodus_rt_core_invariant`'s absent-supply-row branch decided "does a genesis exist" from a height-0 `v2_blocks` row alone — a version-3 chain never writes one, so the refusal was SKIPPED (fail-open; `test_v2_gen` L2-F1 RED since W3). Now, with no height-0 row, it probes `cmt_state` (`table_exists` → `nodus_cmt_store_get(genesisDoc)`, evaluated BEFORE the store is released): table absent → pre-genesis (0); document absent → the ceremony's own scratch (0); document present → the same ERROR + −1; any store fault → −1. The branch runs ONLY when the supply row is absent, so the healthy block path pays nothing. RED on the old code at exactly `test_v2_gen.c:937`, GREEN after (346 checks), ASan clean; a new scoping case climbs a bare database to S14 with no document and stays 0.
+
+**Gates:** build 0 warnings; ctest 188/188 (0 failed, 0 skipped — the five W3 reds are gone by deletion, conversion and the supply fix); Genesis Protocol at production constants 9/9 + epoch SKIP; short-epoch run (E=15/BPY=20/grace 15/15) 10/10 incl. `test_v2_epoch_boundary` (logic, not magnitude); `nm nodus-server` free of the old lane. Register `tasks/reference-deviation-register.md` "W4 — R3 W4 paket D/S" (writer rows R3-W4-D-1..17, R3-W4-S-1, ORCHESTRATOR repairs ORC-5..9). Version 0.19.61 → **0.19.62**.
+
+### Consensus flow (cometbft @709fd12b, the only lane)
 
 ```
-Client → Any Witness → Forward to Leader → Consensus Round → Response
+Client → any witness → CheckTx (mempool admission) → answered AT ONCE
+                              │
+                              └─ mempool reactor floods the tx to every peer (verb 39)
 
-PROPOSE → PREVOTE → PRECOMMIT → COMMIT
-  │         │          │          │
-  └─ Leader creates proposal with TX data
-            └─ Witnesses verify TX (6 checks) and vote
-                      └─ Quorum (2/3) reached
-                                 └─ Atomic commit: nullifiers + UTXOs + TX storage
+every ≈ 6 s, the round's PROPOSER (weighted round-robin over the frozen epoch validator set):
+  PrepareProposal (fee-descending, chain_config alone, byte budget, item cap 16)
+  → Proposal + BlockParts (verbs 35/36) → Prevote → Precommit (verb 37) → +2/3
+  → FinalizeBlock (the Ledger V2 apply engine, per-item SAVEPOINTs) → Commit (SQL COMMIT)
+  → the next height
 ```
 
-**TX Verification (6 checks before PREVOTE):**
-1. tx_hash integrity (recompute SHA3-512)
-2. Sender signature verification (Dilithium5)
-3. UTXO balance validation (sum(inputs) >= sum(outputs))
-4. Fee validation (>= minimum fee rate)
-5. Duplicate nullifier detection
-6. Double-spend check against committed nullifiers
+There is no leader, no forward-to-leader and no view change: the proposer
+rotates per height by accumulated priority (`shared/dnac/cmt_validator_set.c`),
+a round that does not reach +2/3 times out into the next round, and every
+step is `shared/dnac/cmt_cs.c` — the literal port of `consensus/state.go`.
+The full account is "R3 wave W3: THE LIVE FLIP" above; the legacy PBFT
+round (PROPOSE/PREVOTE/PRECOMMIT/COMMIT over the witness port, the 6-check
+V1 transaction verification at PREVOTE, forward-to-leader, view changes)
+was CLOSED in R3 W3 and DELETED in R3 W4 (`nodus_witness_bft.c` and its
+family no longer exist; OBLIGATION `atlas-dec-71525f3b4918f710b660707ac6bb5a3a`).
+
+**Admission (CheckTx) on the version-3 lane:** the ledger's admission
+check (`nodus_witness_verify_transaction`, ADMISSION mode — identical to
+VALIDATION since R3 W4) plus the envelope's authorization stage
+(`nodus_witness_v2_env_authorize`); a claim is admitted through
+`nodus_witness_v2_claim_admit`. Double-spend and replay are decided at
+apply by the engine's committed indexes (`v2_claims_spent`,
+`v2_intent_index`), never by a node-local pool.
 
 ### Witness Database Schema
 

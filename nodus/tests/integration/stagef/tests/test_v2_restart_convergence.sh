@@ -24,19 +24,16 @@
 #   have no chain" and walked into the legacy DISCOVER machine, which
 #   ends in exit(2).
 #
-#   DELTA 1 (verifier CLAIM 12, REFUTED on the point below — CORRECTED,
-#   not removed): the bootstrap machine is NOT unreachable on a
-#   version-3 chain. `nodus_witness_bootstrap_start` runs unconditionally
-#   (nodus_witness.c:1951), seven lines before the `v2_successor` gate,
-#   and `nodus_witness_bootstrap.c:457,480-482` deliberately ROUTES a
-#   version-3 chain into the HAVE_CHAIN branch (`v2_chain || tip >= 1`) —
-#   the O16A/D8 fix this scenario was always meant to witness. It logs
-#   `"WITNESS-BOOTSTRAP: state=DONE branch=HAVE_CHAIN tip=%lld ..."`
-#   (`:519-523`, `fprintf(stderr, ...)`, confirmed reaching `nodus.log`
-#   live). This scenario therefore keeps BOTH deltas, not one instead of
-#   the other: the HAVE_CHAIN branch line (the original, still-accurate
-#   assertion) AND the ABCI Handshake lines (D-23 rev 7/8's own
-#   contribution, additional evidence the Handshaker specifically ran).
+#   R3 W4-D — the HAVE_CHAIN bootstrap-branch delta this scenario used
+#   to also assert is DELETED: `nodus_witness_bootstrap_start` and the
+#   whole auto-bootstrap state machine it drove (`nodus_witness_
+#   bootstrap.c`, the file that logged `"WITNESS-BOOTSTRAP: state=DONE
+#   branch=HAVE_CHAIN ..."`) are deleted with the closed consensus lane
+#   — there is no successor log line on the version-3 lane for a restart
+#   to take. What remains is the ABCI Handshake delta alone (D-23 rev
+#   7/8's contribution): the reference's own Handshaker reconciling the
+#   ledger height against the Comet block store and state store, which
+#   is the property this scenario now proves in full on its own.
 #
 # WHAT IT REQUIRES
 #   Compile flags: NONE. A default nodus/build binary.
@@ -65,15 +62,13 @@
 #   ("chain role: LEDGER V2") is gone; the version-3 line is
 #   "chain role: COMETBFT" (nodus_witness.c:892-893).
 #
-#   The HAVE_CHAIN / DISCOVER bootstrap-branch check STAYS — it was
-#   wrongly removed in the first cut of this package on the mistaken
-#   premise that the bootstrap machine never runs on a version-3 chain.
-#   It does run, and is deliberately routed into HAVE_CHAIN (see the
-#   header above); the delta (`hc_after > hc_before`) is exactly as
-#   satisfiable as it was on the pre-Comet lane. ADDED alongside it, not
-#   instead of it: the ABCI Handshake's own lines, which name all three
-#   heights it reconciled and are D-23's own contribution beyond what the
-#   pre-Comet scenario could ever check.
+#   R3 W4-D — the HAVE_CHAIN / DISCOVER bootstrap-branch check is now
+#   DELETED, not merely re-routed: the bootstrap module that produced it
+#   is gone from the tree entirely, along with the closed consensus lane
+#   it belonged to. What stands alone now is the ABCI Handshake's own
+#   lines, which name all three heights it reconciled and are D-23's own
+#   contribution — already a complete, self-sufficient restart proof on
+#   this lane.
 #
 # HOW IT CAN LIE
 #   - **A restarted node still LISTENS even when its witness role fails.**
@@ -168,14 +163,8 @@ role_before=$(grep -c 'chain role: COMETBFT' "$vlog" || true)
 [ "$role_before" -ge 1 ] || die "node$VICTIM never reported the COMETBFT role before the kill"
 hs_before=$(grep -c 'ABCI replay blocks:' "$vlog" || true)
 [ "$hs_before" -ge 1 ] || die "node$VICTIM has no ABCI handshake line from its first boot — cannot take a delta"
-# DELTA 1 (verifier CLAIM 12, restored) — the bootstrap machine DOES run
-# on a version-3 chain and IS routed into HAVE_CHAIN
-# (nodus_witness_bootstrap.c:457,480-482); this delta is exactly as
-# satisfiable here as it always was on the pre-Comet lane.
-hc_before=$(grep -c 'branch=HAVE_CHAIN' "$vlog" || true)
-[ "$hc_before" -ge 1 ] || die "node$VICTIM never logged branch=HAVE_CHAIN on its first boot — cannot take a delta"
 tip_before=$(stagef_cmt_tip "$(db_of "$VICTIM")")
-echo "[ok] node$VICTIM baseline: chain_db=$chain_before role_lines=$role_before handshake_lines=$hs_before have_chain_lines=$hc_before tip=$tip_before"
+echo "[ok] node$VICTIM baseline: chain_db=$chain_before role_lines=$role_before handshake_lines=$hs_before tip=$tip_before"
 
 # ── Kill ────────────────────────────────────────────────────────────
 # The victim's own spawn line is reconstructed from stagef_env, not
@@ -235,18 +224,10 @@ done
   "node$VICTIM did NOT report the COMETBFT role after restart (before=$role_before after=$role_after)"
 echo "[ok] node$VICTIM re-established the COMETBFT role ($role_before -> $role_after)"
 
-# 2. AND IT TOOK THE HAVE_CHAIN BRANCH — DELTA 1 (verifier CLAIM 12):
-#    restored, not removed. The bootstrap machine runs on a version-3
-#    chain and is deliberately routed here (nodus_witness_bootstrap.c
-#    :457,480-482). A BEFORE/AFTER delta, because the first boot already
-#    logged one.
-hc_after=$(grep -c 'branch=HAVE_CHAIN' "$vlog" || true)
-[ "$hc_after" -gt "$hc_before" ] || die \
-  "node$VICTIM did not take the HAVE_CHAIN branch after restart (before=$hc_before after=$hc_after)"
-echo "[ok] node$VICTIM took the HAVE_CHAIN branch ($hc_before -> $hc_after)"
-
-# 3. AND THE ABCI HANDSHAKE RAN AND RECONCILED — D-23's own contribution
-#    beyond the HAVE_CHAIN check above: the reference's own Handshaker
+# 2. AND THE ABCI HANDSHAKE RAN AND RECONCILED — D-23's own contribution,
+#    now this scenario's sole restart-reconciliation proof (the HAVE_
+#    CHAIN bootstrap-branch delta this used to run alongside is deleted
+#    with the closed consensus lane, R3 W4-D): the reference's own Handshaker
 #    (node.go:242-280, ported at nodus_witness_cmt_node.c:1090-1130) is
 #    what proves the restarted node read its OWN ledger height correctly
 #    rather than assuming a fresh chain. A BEFORE/AFTER delta, because
@@ -331,7 +312,7 @@ echo "[ok] post-restart floor $post_floor is strictly past the pre-kill baseline
 
 echo ""
 echo "[PASS] a Comet node was killed and restarted: it re-established its"
-echo "       COMETBFT role, took the HAVE_CHAIN branch, ran the ABCI Handshake,"
+echo "       COMETBFT role, ran and completed the ABCI Handshake,"
 echo "       reopened the SAME chain file, kept the partial-wipe marker, caught"
 echo "       up to tip $vt2 and KEPT PRODUCING past it, and all $STAGEF_COMMITTEE_SIZE nodes agree"
 echo "       on block identity at a height strictly past the pre-kill baseline."

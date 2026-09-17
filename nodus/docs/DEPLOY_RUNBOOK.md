@@ -34,7 +34,7 @@ One node at a time for a rolling deploy; all nodes at once for a stop-all.
 |---|---|
 | Anything that changes **which blocks are valid** (verify/admission rules, fee gates, consensus checks) | **STOP-ALL** |
 | `state_root` format / wire format / DB schema | **STOP-ALL + chain wipe** |
-| Changes to **when the PBFT view counter may move** | **STOP-ALL + `pbft_state` reset, NO chain wipe** — see §2.1 |
+| Any consensus change (the cometbft port's `cmt_*`, the application's ABCI rows, the genesis document) | **STOP-ALL + fresh chain** — a version-3 chain has no migration; §2.1 explains why there is no `pbft_state` step any more |
 | Logging, metrics, non-consensus tooling | Rolling, one node at a time |
 
 **Why stop-all for validity changes:** during a rolling window the cluster runs mixed
@@ -281,116 +281,29 @@ inside a loop is very hard to reason about afterwards.
 
 ---
 
-## 2.1 View-authority cutover (O15N Faz 2C2)
+## 2.1 View-authority cutover — DOES NOT APPLY to a version-3 (cometbft) chain
 
-**This is a STOP-ALL deploy with NO chain wipe.** The blocks on disk stay. What
-changes is the RULE for moving `w->current_view`, and one persisted row was
-written under the old rule.
+This section used to describe the O15N Faz 2C2 stop-all cutover: quiesce the
+fleet, then clear the `pbft_state` row (`current_view` + `last_prepared_blob`)
+on every stopped node so that no node wakes on a view counter written under
+the old rules. **R3 W4 (2026-09-17) deleted the mechanism the step served**
+(OBLIGATION `atlas-dec-71525f3b4918f710b660707ac6bb5a3a`): there is no PBFT
+view counter, no `nodus_witness_db_load_pbft_state`, no prepared-value lock
+of that kind, and a fresh database no longer creates the `pbft_state` table.
+A version-3 chain's round state lives in the cometbft WAL (`cmt_wal`,
+`cmt_wal_sync`) and its last-sign state file, and it is replayed by the
+Handshaker at every start (`nodus_witness_cmt_node.c`, "ABCI replay blocks")
+— there is nothing to clear by hand, and clearing anything by hand there
+would be the defect, not the fix.
 
-**What changed.** Before this build the PBFT view counter had three
-message-driven writers, none of which needed a proof: a PROPOSE copied the
-leader's claimed view unconditionally (in *either* direction), a NEW_VIEW raised
-it on one signature, and reaching your own view-change quorum set it. After it,
-the counter moves in exactly one place — on a **VIEW_OK proof**: f+1 distinct,
-signature-verified statements for a strictly higher view, judged against the
-committee governing the height the proof carries. A PROPOSE at any other view is
-now REFUSED, in both directions. (Mechanism: `nodus/docs/MEMPOOL_BLOCK_TIME.md`,
-"Who writes `current_view`".)
-
-Two ordered steps. **Do them in this order; the reasons are different.**
-
-### Step 1 — QUIESCE the fleet BEFORE stopping it
-
-No transaction in flight, last block committed, on every node.
-
-**Why, and it is not tidiness.** Step 2 clears the `pbft_state` row, and that row
-holds **two** things: `current_view` and `last_prepared_blob`. `last_prepared` is
-the prepared-value lock — the record of a value this node PREVOTE-quorum'd but
-has not yet committed — and it is what makes a node refuse a conflicting value at
-that height. That refusal is the quorum intersection safety relies on. Clearing
-it on ONE node is harmless (the other holders still refuse). Clearing it on
-**every node at the same moment** removes the protection entirely, and a value
-that reached PREVOTE quorum without committing could then be replaced. Quiescing
-first means no such value exists to lose.
-
-```bash
-# On each node: confirm nothing is in flight and the tip is stable.
-nodus/build/nodus-cli cluster-status <host1:4001> <host2:4001> ...
-# Sample twice, ~30 s apart, with NO client traffic being submitted.
-# Required: every node UP, every node the SAME HEIGHT and SAME STATE_ROOT,
-# and the height IDENTICAL between the two samples.
-```
-
-Do not proceed while heights differ or are still advancing.
-
-### Step 2 — Clear the `pbft_state` row on every node, while it is stopped
-
-**Why.** The `current_view` on disk was written under the OLD rules, where an
-unproven message could move it. Every node restores its own value at startup
-(`nodus_witness_db_load_pbft_state`), and those values need not agree — one node
-may have been pushed up by a PROPOSE or a NEW_VIEW that no proof ever backed.
-With the equality gate now in force, a fleet that wakes split across views does
-not converge on its own: **no node accepts another's proposal at all** until the
-escalation ladder happens to land a majority on the same rung. Starting every
-node at view 0 is byte-identical to a fresh cluster, which is the best-tested
-path in the tree.
-
-Run **after** `systemctl stop nodus` on that node and **before** starting it
-again (step 5 of §2). The database must not be open.
-
-```bash
-# Find the real data directory first — do not assume it (see §1).
-grep -E '"?data_path"?' /etc/nodus.conf || echo "not set — default /var/lib/nodus"
-DATA_DIR=<the path you just confirmed>
-
-systemctl is-active nodus            # MUST print "inactive" before touching the DB
-ls "$DATA_DIR"/witness_*.db          # confirm exactly which file you are about to edit
-DB=<the witness_<chain_id>.db you just listed>
-
-# Show the row BEFORE, so the change is recorded rather than assumed:
-sqlite3 "$DB" "SELECT id, current_view FROM pbft_state;"
-
-sqlite3 "$DB" "DELETE FROM pbft_state WHERE id = 1;"
-
-# Verify: zero rows. load_pbft_state with no row leaves current_view at 0
-# and last_prepared absent, which is the fresh-cluster default.
-sqlite3 "$DB" "SELECT COUNT(*) FROM pbft_state;"      # MUST print 0
-```
-
-`pbft_state` is a singleton table (`id` is always 1) created by the schema-v16
-migration. Deleting the row is not a schema change and does not touch blocks,
-nullifiers, UTXOs or validator snapshots.
-
-**If `sqlite3` is not installed on the node**, install it or stop — do not
-improvise with a partial cluster, and do not start a node whose row you could not
-clear. A single node restoring a stale view is the split this step exists to
-prevent.
-
-### After starting: what "correct" looks like
-
-Run §3 as usual, and additionally:
-
-```bash
-journalctl -u nodus -n 500 | grep -i "VIEW_OK"
-```
-
-- `VIEW_OK — statement emitted for view N` on a node that reached its own
-  view-change quorum: expected, and it means the node SPOKE without moving.
-- `VIEW_OK PROOF ACCEPTED — view A -> B`: the counter moved on a proof. This is
-  the only line that means a rotation happened.
-- `VIEW_OK — no committee at height H`: **not** expected on a chain that has
-  committed its genesis. If it appears, the node cannot resolve its committee and
-  its view can never move — diagnose before continuing.
-- A quiet, healthy chain prints none of these. Their absence is not a fault.
-
-### The one behaviour this cutover cannot fix
-
-On a chain with **no committee snapshot at all** — a fleet that has not yet
-committed its genesis block — no VIEW_OK statement can be signed, so no proof can
-exist, so the view cannot move. A brand-new cluster whose genesis round lands on
-a silent leader will not rotate away from it. This does not affect an existing
-chain, which has a committee from its genesis onward; it is recorded here because
-it changes how a **fresh** bring-up must be handled.
+A `pbft_state` table left on disk by an older binary is inert: nothing reads
+it. A stop-all deploy of a consensus change on this lane is §2 exactly as
+written — stop every node, deploy, start; with a **fresh chain** (no V1/V2
+ancestor) the ceremony in §1.5 births it, and the harness's restart scenario
+(`test_v2_restart_convergence.sh`) is the model of what a correct restart
+looks like: `chain role: COMETBFT`, `cometbft startup table built`,
+`ABCI replay blocks: app H, store H, state H`, `cometbft lane LIVE`, then
+the node catches up through the reactor's stored-part gossip.
 
 ---
 
@@ -401,21 +314,43 @@ nodus/build/nodus-cli cluster-status <host1:4001> <host2:4001> ...
 ```
 
 `cluster-status` prints, per node, `STATUS / HEIGHT / PEERS / UPTIME / DF% /
-WALL_CLOCK / STATE_ROOT` (`nodus/tools/nodus-cli.c:505-535`).
+WALL_CLOCK / STATE_ROOT` (`nodus/tools/nodus-cli.c:500-560`).
+
+**⚠ R3 W4 — `STATE_ROOT` in that table is the LEGACY cached root**
+(`nodus_server.c` `handle_t2_status` copies `cached_state_root`, which a
+version-3 chain never fills — so on this lane every node prints an empty
+root). `HEIGHT` IS the version-3 tip: `nodus_witness_block_height` reads
+`MAX(global_height)` from `v2_blocks` on a version-3 chain
+(`nodus_witness_db.c`, the `v2_successor` branch of
+`nodus_witness_block_height_checked`). `UP` / `PEERS` / `UPTIME` / `DF%` are
+meaningful too. Re-wiring the root column to the version-3 tip
+(`v2_blocks.global_root`, `block_id`) is package W4-H's; until then the
+AGREEMENT check — the same height on every node is not the same chain — is
+the per-node database read the harness uses:
+
+```bash
+# on every node, the same three values must agree at the same height
+sqlite3 /var/lib/nodus/data/witness_*.db \
+  "SELECT global_height, hex(global_root), hex(block_id) FROM v2_blocks \
+   ORDER BY global_height DESC LIMIT 1;"
+```
 
 **The pass condition is agreement, not liveness:**
 
 - every node `UP`;
-- **every node reporting the SAME `HEIGHT` and the SAME `STATE_ROOT`** — a node that is
-  up and advancing while disagreeing is exactly the failure a consensus deploy can
-  introduce;
-- height advancing over successive samples once traffic exists.
+- **every node reporting the SAME `global_root` and `block_id` at the same
+  height** — a node that is up and advancing while disagreeing is exactly
+  the failure a consensus deploy can introduce;
+- height advancing over successive samples — on this lane a block every
+  ≈ 6 s whether or not there is traffic (every block is a proof block).
 
-Then check logs for divergence. The real log string is `state_root DIVERGED`
-(`nodus/src/witness/nodus_witness_bft.c:3251`):
+Then check logs. A version-3 node that stops participating says so with
+`CMT_FAULT` (the W1.7 rule: log + stop, never a peer blame); a decided
+block the engine refuses says `FinalizeBlock`; the readiness and
+quarantine lines keep their names:
 
 ```bash
-journalctl -u nodus -n 200 | grep -i "DIVERGED\|SUPPLY INVARIANT\|QUARANTINED"
+journalctl -u nodus -n 200 | grep -i "CMT_FAULT\|FinalizeBlock\|SUPPLY\|QUARANTINED\|REFUSING START"
 ```
 
 The same checks are automated by `nodus/tests/smoke_post_deploy.sh`, **rewritten

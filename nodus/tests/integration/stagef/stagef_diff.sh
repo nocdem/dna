@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 #
-# Stage F harness — state_root assertion helper.
+# Stage F harness — global_root + block_id assertion helper.
 #
-# Reads the latest block's state_root from each node's witness DB and
-# asserts all are identical. Prints per-node (height, first-8-bytes)
-# for human review.
+# R3 W4-D deleted the legacy `blocks`-table state_root fallback this file
+# used to hold beside the V2 read: every surviving scenario runs a V2 or
+# V3 successor chain, so v2_blocks is the only table this script reads.
+# Reads the latest block's global_root + block_id from each node's
+# witness DB and asserts all are identical. Prints per-node (height,
+# first-8-bytes of each) for human review.
 #
 # Usage:
 #   bash stagef_diff.sh              # silent on pass, verbose on fail
@@ -53,74 +56,42 @@ if [ -z "${BASE_DIR:-}" ] || [ ! -d "$BASE_DIR" ]; then
     exit 1
 fi
 
-# ── WHICH LANE IS THIS CHAIN ON, AND WHY THE QUESTION IS NOT OPTIONAL
+# ── R3 W4-D — THE LEGACY `blocks` FALLBACK IS DELETED ─────────────────
 #
-# A pure Ledger V2 chain never writes the legacy `blocks` table — its
-# only writer is the legacy finalize path, which a V2 successor does not
-# execute. So the original query, `SELECT … FROM blocks ORDER BY height
-# DESC LIMIT 1`, returns an EMPTY STRING on every node of a V2 cluster.
-# Seven empty strings compare equal, and this script printed
-#
-#     [ok] label: 7/7 state_root identical (|)
-#
-# — a green with no height and no root in it, from a comparison that
-# read nothing. Every scenario ends with a call to this script, so the
-# whole suite would have reported agreement it never measured. Observed
-# on the first V2 bring-up, 2026-09-03.
-#
-# Two independent repairs, and the second matters on the legacy lane too:
-#   1. read v2_blocks when the chain is V2;
-#   2. an EMPTY read is a FAILURE. "No block to compare" is not
-#      "identical" — that is the harness-false-positive class the
-#      Genesis Protocol memory names, and it was live here.
+# This function used to check whether a chain was V2 (v2_blocks holds
+# rows) or legacy (fall back to the `blocks` table's state_root) before
+# every read, because both lanes existed side by side. The closed
+# consensus lane is deleted: every surviving scenario (the 11
+# test_cmt_*/test_v2_* scripts) runs a V2 or V3 successor chain, and
+# every one of them writes v2_blocks on its very first commit. The
+# `blocks`-table branch this comment used to describe is gone; only the
+# Comet global_root+block_id read remains.
 lane_query() {
     local db="$1"
     local at="${2:-}"
-    local has_v2 n_v2
-    has_v2=$(sqlite3 "$db" \
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='v2_blocks';" 2>/dev/null || echo 0)
-    if [ "${has_v2:-0}" != "0" ]; then
-        n_v2=$(sqlite3 "$db" "SELECT COUNT(*) FROM v2_blocks;" 2>/dev/null || echo 0)
-        if [ "${n_v2:-0}" != "0" ]; then
-            # R3 W3 (C2d) — THE COMET LANE ADDS block_id TO THE COMPARISON.
-            #
-            # global_root alone was the whole story for the pre-Comet V2
-            # lane (one applier, one root per height). On the Comet lane
-            # the row also carries block_id — the Comet BlockID's hash,
-            # covering the header (last_commit_hash, validators_hash,
-            # consensus_hash, evidence_hash, proposer address, time) that
-            # global_root does NOT cover (nodus_witness_v2_apply.c:4805-
-            # 4816 — the Comet insert names ten columns, dropping `header`
-            # and `qc`; block_id is the one column that still speaks for
-            # that dropped header). Two nodes could in principle agree on
-            # every domain root while committing a different header (a
-            # different proposer, a different BFT-time) — global_root
-            # alone would not catch that; block_id does. Folded into the
-            # SAME '|'-joined string the legacy branch already used, so a
-            # lane mismatch (a v2 row vs a legacy row) still cannot compare
-            # equal, exactly as the comment below always said.
-            if [ -n "$at" ]; then
-                sqlite3 "$db" \
-                  "SELECT global_height || '|v2:' || hex(substr(global_root,1,8)) \
-                   || '|bid:' || hex(substr(block_id,1,8)) \
-                   FROM v2_blocks WHERE global_height = $at"
-            else
-                sqlite3 "$db" \
-                  "SELECT global_height || '|v2:' || hex(substr(global_root,1,8)) \
-                   || '|bid:' || hex(substr(block_id,1,8)) \
-                   FROM v2_blocks ORDER BY global_height DESC LIMIT 1"
-            fi
-            return
-        fi
-    fi
+    # R3 W3 (C2d) — THE COMET LANE ADDS block_id TO THE COMPARISON.
+    #
+    # global_root alone was the whole story for the pre-Comet V2 lane
+    # (one applier, one root per height). On the Comet lane the row also
+    # carries block_id — the Comet BlockID's hash, covering the header
+    # (last_commit_hash, validators_hash, consensus_hash, evidence_hash,
+    # proposer address, time) that global_root does NOT cover
+    # (nodus_witness_v2_apply.c:4805-4816 — the Comet insert names ten
+    # columns, dropping `header` and `qc`; block_id is the one column
+    # that still speaks for that dropped header). Two nodes could in
+    # principle agree on every domain root while committing a different
+    # header (a different proposer, a different BFT-time) — global_root
+    # alone would not catch that; block_id does.
     if [ -n "$at" ]; then
         sqlite3 "$db" \
-          "SELECT height || '|' || hex(substr(state_root,1,8)) \
-           FROM blocks WHERE height = $at"
+          "SELECT global_height || '|v2:' || hex(substr(global_root,1,8)) \
+           || '|bid:' || hex(substr(block_id,1,8)) \
+           FROM v2_blocks WHERE global_height = $at"
     else
         sqlite3 "$db" \
-          "SELECT height || '|' || hex(substr(state_root,1,8)) \
-           FROM blocks ORDER BY height DESC LIMIT 1"
+          "SELECT global_height || '|v2:' || hex(substr(global_root,1,8)) \
+           || '|bid:' || hex(substr(block_id,1,8)) \
+           FROM v2_blocks ORDER BY global_height DESC LIMIT 1"
     fi
 }
 
@@ -146,10 +117,10 @@ for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
         continue
     fi
     ROWS+=("node$n  $row")
-    # R3 W3 (C2d) — compare EVERYTHING after the height, not just field 2.
-    # A legacy row has one field there ('<hex>'); a Comet row now has two
-    # ('v2:<hex>|bid:<hex>') — cutting only field 2 would silently drop
-    # block_id from the comparison and defeat the column just added above.
+    # R3 W3 (C2d) — compare EVERYTHING after the height, not just field 2:
+    # a Comet row has two fields there ('v2:<hex>|bid:<hex>') — cutting
+    # only field 2 would silently drop block_id from the comparison and
+    # defeat the column added above.
     height=$(echo "$row" | cut -d'|' -f1)
     root=$(echo "$row" | cut -d'|' -f2-)
     if [ "$seen_any" = 0 ]; then
@@ -157,9 +128,6 @@ for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
         first_root="$root"
         first_height="$height"
     else
-        # Root only, exactly as before. The lane tag lives inside the
-        # root string, so two nodes on different lanes cannot compare
-        # equal — the correct verdict, reached without a new check.
         if [ "$root" != "$first_root" ]; then divergent=1; fi
     fi
     if [ -n "$EXPECT_HEIGHT" ] && [ "$height" != "$EXPECT_HEIGHT" ]; then

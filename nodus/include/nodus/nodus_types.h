@@ -26,8 +26,8 @@ extern "C" {
  * long time. Bump BOTH, together, every time. */
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  19
-#define NODUS_VERSION_PATCH  61
-#define NODUS_VERSION_STRING "0.19.61"
+#define NODUS_VERSION_PATCH  62
+#define NODUS_VERSION_STRING "0.19.62"
 
 /* Wire frame.
  *
@@ -162,12 +162,11 @@ extern "C" {
 #define NODUS_T3_MAX_TX_INPUTS      16
 #define NODUS_T3_MAX_TX_OUTPUTS     16
 #define NODUS_T3_MAX_TX_WITNESSES   3
-#define NODUS_T3_ROUND_TIMEOUT_MS   15000
-#define NODUS_T3_VIEWCHG_TIMEOUT_MS 10000
-/* O15H — NODUS_T3_MAX_VIEW_CHANGES removed with the dead
- * bft_config.max_view_changes field it initialised; nothing read either.
- * A view change that misses its window escalates to the next view
- * (nodus_witness_bft_check_timeout), it is not capped. */
+/* R3 W4 — NODUS_T3_ROUND_TIMEOUT_MS and NODUS_T3_VIEWCHG_TIMEOUT_MS are
+ * DELETED with the closed consensus lane: their only reader, the legacy
+ * PBFT round/view-change timeout check (nodus_witness_bft_check_timeout),
+ * is deleted. O15H's NODUS_T3_MAX_VIEW_CHANGES removal note, which cited
+ * that same function, is superseded by this same deletion. */
 #define NODUS_T3_EPOCH_DURATION_SEC 60      /* DNAC epoch = 60s */
 /* Witness BFT (Tier 3) protocol version — CLUSTER-INTERNAL ONLY.
  *
@@ -254,16 +253,13 @@ extern "C" {
 
 /* Block production (mempool + batch) */
 #define NODUS_W_BLOCK_INTERVAL_MS   5000    /* 5s between block proposals */
-#define NODUS_W_MAX_MEMPOOL         64      /* max pending TXs in mempool */
 #define NODUS_W_MAX_BLOCK_TXS       10      /* max TXs per batch/block */
-#define NODUS_W_MAX_PENDING_FWD     16      /* max pending forward slots */
-/* MED-27 (O15C-D) — a forwarded spend that draws no w_fwd_rsp within
- * this many seconds is answered with an explicit error. MUST stay well
- * below the client's dnac_spend RPC timeout (60 s, nodus_client.c) so
- * the error reaches a pending slot that is still live; otherwise the
- * reply arrives after the caller gave up and only produces an
- * "unknown txn" warning. */
-#define NODUS_W_PENDING_FWD_TIMEOUT_S 30
+/* R3 W4 — NODUS_W_MAX_MEMPOOL (the legacy in-memory mempool's capacity)
+ * and NODUS_W_MAX_PENDING_FWD / NODUS_W_PENDING_FWD_TIMEOUT_S (the
+ * non-leader forward-response routing table and its MED-27 timeout) are
+ * DELETED with the closed consensus lane: the mempool and
+ * pending_forwards fields they sized no longer exist on
+ * nodus_witness_t. */
 
 /* O15K E1 — how long the chain-DB open waits out a lock before calling it
  * permanent. A witness restarted immediately after `kill -9` races the

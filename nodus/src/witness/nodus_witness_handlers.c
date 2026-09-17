@@ -5,21 +5,18 @@
  * Each handler decodes CBOR args from the raw payload, queries
  * witness DB, and sends a CBOR response via TCP.
  *
- * Spend requests are asynchronous — the response is sent after
- * BFT consensus COMMIT via nodus_witness_send_spend_result().
+ * R3 W4 — dnac_spend is now SYNCHRONOUS on a version-3 chain: the Comet
+ * mempool's CheckTx verdict IS the answer (see handle_dnac_spend below).
+ * The closed lane's async COMMIT-triggered receipt (send_spend_result,
+ * the leader/forward machinery) is deleted with it.
  *
  * Ported from dnac/src/witness/bft_main.c handler functions.
  */
 
 #include "witness/nodus_witness_handlers.h"
-#include "witness/nodus_witness_bft.h"
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_peer.h"
-#include "witness/nodus_witness_verify.h"
-#include "witness/nodus_witness_v2_produce.h"  /* O15F class 201 helpers */
-#include "witness/nodus_witness_mempool.h"
 #include "witness/nodus_witness_merkle.h"
-#include "witness/nodus_witness_o15h_diag.h"  /* O15H TEMPORARY — revert list in that header */
 #include "witness/nodus_witness_validator.h"
 #include "witness/nodus_witness_delegation.h"
 #include "witness/nodus_witness_committee.h"
@@ -29,7 +26,6 @@
 #include "dnac/cmt_mem.h"
 #include "protocol/nodus_cbor.h"
 #include "protocol/nodus_tier2.h"
-#include "dnac/transaction.h"   /* DNAC_TX_HEADER_SIZE (v0.17.1) */
 #include "transport/nodus_tcp.h"
 #include "server/nodus_server.h"
 #include "crypto/nodus_sign.h"
@@ -353,7 +349,15 @@ static void handle_dnac_supply(nodus_witness_t *w,
 static void handle_dnac_fee_info(nodus_witness_t *w,
                                   struct nodus_tcp_conn *conn,
                                   uint32_t txn_id) {
-    int mp_count = w->mempool.count;
+    /* R3 W4 — there is no local mempool on the version-3 lane (the Comet
+     * mempool replaces it, and its depth is not a fee input — CheckTx
+     * admission does not read it either). The surge term is therefore
+     * always 0 and min_fee always equals base_fee; kept as a formula
+     * rather than folded to a constant so the wire shape (the "mempool"
+     * key) and the surge-step constant stay meaningful if a future engine
+     * re-derives this from the Comet mempool's own size. */
+    int mp_count = 0;
+    (void)w;
     uint64_t base_fee = NODUS_W_BASE_TX_FEE;
     uint64_t min_fee = base_fee * (1 + (uint64_t)mp_count / NODUS_W_FEE_SURGE_STEP);
 
@@ -945,8 +949,11 @@ static void handle_dnac_spend_replay(nodus_witness_t *w,
         return;
     }
 
-    /* Committed → rebuild the spndrslt preimage and sign it fresh.
-     * Fields sourced identically to nodus_witness_send_spend_result(). */
+    /* Committed → rebuild the spndrslt preimage and sign it fresh: the
+     * same 8-byte 'spndrslt' domain tag, tx_hash, witness_id,
+     * SHA3-512(witness_pubkey), chain_id, status, timestamp, block_height
+     * and tx_index the closed lane's COMMIT-triggered receipt used to
+     * sign (221-byte fixed layout, dnac_compute_spend_result_preimage). */
     uint64_t ts = (uint64_t)time(NULL);
 
     uint8_t wpk_hash[64];
@@ -1101,11 +1108,16 @@ static void handle_dnac_block(nodus_witness_t *w,
          * PRECOMMIT APPROVE signer. Empty array if no cert was stored
          * (e.g., pre-BFT seeded genesis).
          *
-         * 2026-07-29: adds "state_root" so read-only clients (explorer)
-         * can recompute the block's own hash via the canonical preimage
-         * (nodus_witness_compute_block_hash_ex) without waiting for the
-         * child block's prev_hash. The client decoder has parsed this
-         * key since Phase 7 (nodus_client.c dnac_block state_root arm).
+         * 2026-07-29: adds "state_root", read straight from the stored
+         * `blocks` row (`blk.state_root`, below) — this handler does not
+         * compute it. R3 W4 deleted nodus_witness_compute_block_hash_ex,
+         * the V1 block-hash helper that used to PRODUCE this value at
+         * legacy commit time, along with the legacy commit path itself;
+         * a version-3 chain never writes this legacy table, so the field
+         * this handler serves is frozen historical data on chains that
+         * ran the closed lane, not a live value. The client decoder has
+         * parsed this key since Phase 7 (nodus_client.c dnac_block
+         * state_root arm).
          *
          * 2026-08-04: adds an explicit "tx_root" key. The client decoder
          * fills result.tx_root ONLY from a key named "tx_root"
@@ -1580,8 +1592,8 @@ static void handle_dnac_history(nodus_witness_t *w,
  *
  * validator_fp in the response is derived server-side from the stored
  * validator_pubkey BLOB via SHA3-512(validator_pubkey), rendered as
- * 128 lowercase hex. Matches the fp formula used in BFT roster code
- * (nodus_witness_bft.c:1379) so downstream UI can correlate against
+ * 128 lowercase hex — the same fingerprint formula the validator_list /
+ * committee query handlers use, so downstream UI can correlate against
  * validator list entries.
  * ════════════════════════════════════════════════════════════════════ */
 
@@ -1732,237 +1744,15 @@ static void handle_dnac_delegations(nodus_witness_t *w,
 }
 
 /* ════════════════════════════════════════════════════════════════════
- * O15J A — POOL-THEN-FORWARD
- *
- * The full contract, the PBFT §4.1 citation and the determinism argument
- * live on the declaration in witness/nodus_witness.h. What follows is why
- * the CODE is shaped this way.
- *
- * IT IS THE LEADER BRANCH'S CONSTRUCTION, not a second one. The admission
- * call, the class-201 nullifier re-derivation and the entry fill below are
- * the same steps handle_dnac_spend's leader branch performs; only the
- * three routing fields differ, and they differ deliberately — see the
- * ORPHAN block. A second, subtly different construction is exactly how the
- * pooled shape would drift away from what the commit path expects.
- * ════════════════════════════════════════════════════════════════════ */
-
-int nodus_witness_pool_local_demand(nodus_witness_t *w,
-                                      const uint8_t *tx_data, uint32_t tx_len,
-                                      const uint8_t *tx_hash, uint8_t tx_type,
-                                      const uint8_t *nullifiers,
-                                      uint8_t nullifier_count,
-                                      const uint8_t *client_pk,
-                                      const uint8_t *client_sig,
-                                      uint64_t fee,
-                                      char *reject_reason, size_t reason_size) {
-    if (!w || !tx_data || tx_len == 0 || !tx_hash) {
-        if (reject_reason && reason_size)
-            snprintf(reject_reason, reason_size, "null parameter");
-        return -2;
-    }
-
-    /* ── O15K §3.1 — THE SUCCESSOR-ONLY GATE IS GONE ──────────────────
-     * `if (!w->v2_successor) return -1;` stood here. Its argument: a
-     * legacy peer refuses a non-leader w_fwd_req byte-identically
-     * (nodus_witness_peer.c:883), so legacy demand pooled here could
-     * never recruit the f+1 backers a rotation needs, and would only
-     * drive lone view changes nobody joins.
-     *
-     * THE PREMISE WAS THE BUG, NOT A SAFEGUARD. That peer-side refusal is
-     * removed in this same change, and leaving legacy unpooled is exactly
-     * what let a dead leader wedge the chain INDEFINITELY rather than for
-     * one epoch: a halted tip freezes the epoch, and the leader is
-     * `(epoch + view) % n` (nodus_witness_bft.c:461,504), so leadership
-     * stays pinned on the dead node until a view change — which nothing
-     * could start, because the P3 deadman arms on
-     * `mempool.count > 0 || pending_forward_count > 0`
-     * (nodus_witness_bft.c:8682) and BOTH inputs read zero on the one
-     * node the client was actually talking to: this gate zeroed the
-     * first, and the `!leader_conn` branch in handle_dnac_spend below
-     * releases the forward slot in the same call, zeroing the second.
-     *
-     * THE MODE STAYS NODUS_WITNESS_VERIFY_ADMISSION (below), and that is
-     * a decision, not an oversight. This is a DIRECT client submission —
-     * the client chose this node, so the node-local fee surge
-     * (nodus_witness_verify.c:1154) is a meaningful intake policy here.
-     * §3.3a's VALIDATION exemption is scoped to FORWARDED / rebroadcast
-     * intake, where the surge would throttle the cluster's own
-     * replication; that is a different door, in a different file.
-     *
-     * ── O15K §3.4 — A LEGACY ENTRY WITH NO NULLIFIER IS NOT DEMAND ────
-     * A legacy entry's ONLY handle is its nullifiers. The O15I P3(c)
-     * reaper evicts through a committed-nullifier walk, and
-     * nodus_witness_v2_entry_verdict answers UNJUDGED for every legacy
-     * chain (nodus_witness.c:1112-1114). Pool one with no nullifier and
-     * NOTHING can ever remove it: it reads as live demand forever and
-     * fires a view change every round_timeout_ms against a HEALTHY
-     * leader — the O15I V1 defect class, re-entering through the legacy
-     * door. The orphan shape below makes it worse, deliberately:
-     * remove_by_conn cannot reach a client_conn == NULL entry either.
-     *
-     * ⚠ THIS IS NOT PURELY BELT-AND-BRACES ON THIS PATH. For an ordinary
-     * legacy type the admission call below refuses the shape itself
-     * (Check 4, nodus_witness_verify.c:989-991) and the guard is
-     * redundant — but a legacy GENESIS returns 0 from admission BEFORE
-     * Check 4 ever runs (nodus_witness_verify.c:952-955), carries no
-     * nullifiers by construction (handle_dnac_spend's extraction skips
-     * it), and a NON-LEADER is reachable with one while the chain is
-     * still pre-genesis. For that entry this guard is the only refusal
-     * there is. The condition mirrors Check 4's exactly, `!nullifiers`
-     * included, so the two cannot drift and the copy loop below can
-     * never walk a NULL array on this lane.
-     *
-     * SCOPED TO LEGACY, AND THAT IS LOAD-BEARING. A successor class-200
-     * ENVELOPE is pooled with nullifier_count == 0 by contract, and a
-     * class-201 CLAIM re-derives its committed nullifier further down.
-     * An unscoped guard would revert O15I and O15J.
-     *
-     * REFUSED AS -2, NEVER THE RETIRED -1. The caller's -1 branch was
-     * deliberately silent so legacy logs stayed byte-identical, so a
-     * repurposed -1 would make a real refusal invisible; -2 is also what
-     * admission itself answers for this shape on every path that runs
-     * Check 4 (verify returns -1, mapped to -2 below). The forward is
-     * NOT stopped — an admission refusal never stopped it — so a
-     * pre-genesis GENESIS submission still reaches the leader exactly as
-     * it did before. */
-    if (!w->v2_successor && (!nullifiers || nullifier_count == 0)) {
-        if (reject_reason && reason_size)
-            snprintf(reject_reason, reason_size,
-                     "legacy entry carries no usable nullifier — nothing "
-                     "could ever evict it from the pool");
-        return -2;
-    }
-
-    /* ── ALREADY OURS? ────────────────────────────────────────────────
-     * Asked FIRST, on the same tx_hash key nodus_witness_mempool_add
-     * dedups on, and it is not merely an optimisation.
-     *
-     * ⚠ THE DISPATCH'S ASSUMPTION DOES NOT HOLD FOR EVERY ENTRY CLASS.
-     * "A client retry meets mempool_add's duplicate rejection" is true
-     * only on the ENVELOPE lane. For a class-201 CLAIM the successor
-     * admission lane has its OWN pending-mempool dedup, in ADMISSION mode
-     * only, keyed on the claim NULLIFIER rather than on tx_hash
-     * (nodus_witness_verify.c, "claim nullifier already pending in
-     * mempool") — so a retry is refused THERE and never reaches
-     * mempool_add at all. Without this pre-check the two classes would
-     * answer a retry differently: 1 (already held) for an envelope, -2
-     * (admission refused) for a claim, and O15J B would then tell a
-     * retrying claim client that its work was NOT queued when it is.
-     *
-     * It also removes real work: a client retrying in a loop during a
-     * stall would otherwise re-run the full claim admission — decode,
-     * canonical re-encode, SHA3-512, distribution proof, ML-DSA-87 leaf
-     * verify — on every attempt, for an entry we already hold. */
-    for (int i = 0; i < w->mempool.count; i++) {
-        const nodus_witness_mempool_entry_t *held = w->mempool.entries[i];
-        if (held && memcmp(held->tx_hash, tx_hash,
-                           NODUS_T3_TX_HASH_LEN) == 0)
-            return 1;
-    }
-
-    /* THE SAME ADMISSION GATE the leader branch runs on a direct client
-     * submission, and the same one a successor peer runs on a forward. It
-     * is what keeps this from widening any trust boundary: nothing
-     * unverified ever reaches a follower's pool. On a successor the lane
-     * ignores pk/sig/fee/nullifiers by contract
-     * (nodus_witness_verify.c), so this node's verdict on these bytes is
-     * identical to the one every other successor node reaches. */
-    char local_reason[256] = {0};
-    int vrc = nodus_witness_verify_transaction(w, tx_data, tx_len,
-                  tx_hash, tx_type,
-                  nullifiers, nullifier_count,
-                  client_pk, client_sig, fee,
-                  NODUS_WITNESS_VERIFY_ADMISSION,
-                  local_reason, sizeof(local_reason));
-    if (vrc != 0) {
-        if (reject_reason && reason_size)
-            snprintf(reject_reason, reason_size, "%s", local_reason);
-        return (vrc == -2) ? -3 : -2;
-    }
-
-    nodus_witness_mempool_entry_t *entry = calloc(1, sizeof(*entry));
-    if (!entry) return -4;
-
-    memcpy(entry->tx_hash, tx_hash, NODUS_T3_TX_HASH_LEN);
-    entry->nullifier_count = nullifier_count;
-    for (int i = 0; i < nullifier_count; i++)
-        memcpy(entry->nullifiers[i], nullifiers + (size_t)i * NODUS_T3_NULLIFIER_LEN,
-               NODUS_T3_NULLIFIER_LEN);
-    entry->tx_type = tx_type;
-    entry->tx_data = malloc(tx_len);
-    if (!entry->tx_data) {
-        free(entry);
-        return -4;
-    }
-    memcpy(entry->tx_data, tx_data, tx_len);
-    entry->tx_len = tx_len;
-
-    /* O15F Task 3 — record the CLAIM's committed nullifier, the same
-     * re-derivation the leader branch and the forward intake both do.
-     * WITHOUT IT THIS WHOLE CHANGE WOULD LEAK: a 201 pooled with
-     * nullifier_count == 0 is invisible to the P3(c) reaper's nullifier
-     * walk AND unjudgeable by nodus_witness_v2_entry_verdict (whose class
-     * gate answers UNJUDGED for everything that is not a class-200
-     * envelope), so nothing could ever remove it once the chain committed
-     * it — the O15I V1 shape, re-entering through a new door. Fail-closed:
-     * a derivation failure pools nothing at all. */
-    if (tx_type == NODUS_W_TX_V2_CLAIM) {
-        if (nodus_witness_v2_claim_entry_nullifier(w, entry->tx_data,
-                entry->tx_len, entry->nullifiers[0]) != 0) {
-            nodus_witness_mempool_entry_free(entry);
-            return -4;
-        }
-        entry->nullifier_count = 1;
-    }
-
-    if (client_pk)
-        memcpy(entry->client_pubkey, client_pk, NODUS_PK_BYTES);
-    if (client_sig)
-        memcpy(entry->client_sig, client_sig, NODUS_SIG_BYTES);
-    entry->fee = fee;
-
-    /* ── THE ORPHAN SHAPE — the three fields that are not the leader's ──
-     * client_conn = NULL is what makes the entry SURVIVE the client
-     * disconnect this function exists to outlive.
-     * nodus_witness_peer_conn_closed runs for client connections and calls
-     * nodus_witness_mempool_remove_by_conn, which matches
-     * `client_conn == conn` and early-returns on a NULL conn. Pooling with
-     * the live conn would have the CLI's disconnect delete this entry one
-     * step after we created it, and the demand would vanish again.
-     *
-     * is_forwarded + forwarder_id = OUR id: this is the routing the commit
-     * path already understands (bft_emit_batch_replies answers
-     * forwarder_id), and WE are the node holding the client connection, so
-     * a w_fwd_rsp from whichever node commits this comes back here. It is
-     * byte-identically the shape nodus_witness_peer_handle_fwd_req pools
-     * a forwarded entry in, so nothing downstream meets a new kind of
-     * entry. */
-    entry->client_conn  = NULL;
-    entry->client_txn_id = 0;
-    entry->is_forwarded = true;
-    memcpy(entry->forwarder_id, w->my_id, NODUS_T3_WITNESS_ID_LEN);
-
-    int rc = nodus_witness_mempool_add(&w->mempool, entry);
-    if (rc == -2) {
-        /* A client retry for work we are ALREADY carrying. The demand is
-         * visible either way, so this is not a failure — it is the
-         * duplicate rejection doing its job. */
-        nodus_witness_mempool_entry_free(entry);
-        return 1;
-    }
-    if (rc != 0) {
-        nodus_witness_mempool_entry_free(entry);
-        return -4;
-    }
-    return 0;
-}
-
-/* ════════════════════════════════════════════════════════════════════
  * dnac_spend — Submit TX for BFT consensus
  *
  * Request:  "a": {"tx":bstr, "hash":bstr(64), "pk":bstr(2592),
  *                  "sig":bstr(4627), "fee":uint}
- * Response: (async, sent on BFT COMMIT via nodus_witness_send_spend_result)
+ * Response: on a version-3 chain, SYNCHRONOUS — the Comet mempool's
+ * CheckTx verdict is the whole answer (see the early return below).
+ * On any other chain: refused — this node runs no consensus lane for it
+ * (R3 W4 — the closed lane's pool-then-forward / leader-forward /
+ * COMMIT-triggered async receipt are deleted).
  * ════════════════════════════════════════════════════════════════════ */
 
 static void handle_dnac_spend(nodus_witness_t *w,
@@ -2058,8 +1848,9 @@ static void handle_dnac_spend(nodus_witness_t *w,
      * NULL here would mean `v2_successor` is true but the startup
      * table failed to build at init (already refused init in that
      * case) or has not finished constructing (unreachable on a running
-     * server) — refuse defensively rather than fall through to the
-     * legacy lane below, which a v3 chain must never reach. */
+     * server) — refuse defensively rather than fall through to what
+     * follows this block, which R3 W4 reduced to a single unreachable
+     * defensive error once the legacy lane it used to run was deleted. */
     if (w->v2_successor) {
         nodus_cmt_node_t *node = (nodus_cmt_node_t *)w->cmt_node;
         if (!node || !node->mem_ready) {
@@ -2081,9 +1872,10 @@ static void handle_dnac_spend(nodus_witness_t *w,
             return;
         }
         if (rc == CMT_REJECT) {
-            /* Same wording the legacy leader branch already sends for
-             * the equivalent admission outcomes, so an existing client
-             * sees familiar text. */
+            /* Same wording the legacy leader branch used to send for the
+             * equivalent admission outcomes (that branch is deleted with
+             * the closed consensus lane, R3 W4) — kept here so an
+             * existing client still sees familiar text. */
             switch (err.kind) {
             case CMT_MEM_ERR_TX_TOO_LARGE:
                 send_error(conn, txn_id, NODUS_ERR_TOO_LARGE,
@@ -2132,669 +1924,18 @@ static void handle_dnac_spend(nodus_witness_t *w,
         return;
     }
 
-    /* Note: tx_hash is computed by the DNAC client from structured fields
-     * (version, type, timestamp, inputs, outputs) — NOT from the serialized
-     * blob. The client signs tx_hash with Dilithium5. BFT prevote verifies
-     * the signature. We trust the client-provided tx_hash here because:
-     * 1) It is signed (integrity guaranteed by sig verification)
-     * 2) DNAC hashing is deterministic from the TX fields */
-
-    /* Extract tx_type from tx_data.
-     * DNAC serialization: [version(1)] [type(1)] [timestamp(8)] ... */
-    if (tx_len < 2) {
-        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
-                    "tx_data too short for header");
-        return;
-    }
-    uint8_t tx_type = tx_data[1];
-
-    /* ── Ledger V2 O15D — SUCCESSOR submission lane ───────────────────
-     * A successor chain has its genesis in v2_blocks, not in the legacy
-     * genesis_state table, so the legacy genesis prechecks below would
-     * refuse everything ("no genesis yet") — or worse, admit a LEGACY
-     * GENESIS into the successor database. Neither lane exists here:
-     * every submission is classified as a V2 envelope entry and the
-     * successor admission lane (nodus_witness_verify_transaction's
-     * divert) is the sole authority — it verifies the wire-family
-     * marker, the derived wire_id and the committed-state bindings.
-     * Legacy nullifier extraction is skipped (envelopes carry none).
-     *
-     * O15F Task 3 — the entry class is BYTE-DRIVEN: the wire-family marker
-     * at offset 0 selects ENVELOPE (200), everything else CLAIM (201).
-     * The successor admission lane decides validity for both. */
-    if (w->v2_successor) {
-        tx_type = nodus_witness_v2_classify_entry(tx_data, (uint32_t)tx_len);
-    } else {
-    /* Genesis pre-check */
-    bool genesis_exists = nodus_witness_genesis_exists(w);
-    if (!genesis_exists && tx_type != NODUS_W_TX_GENESIS) {
-        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
-                    "no genesis yet — only GENESIS transactions allowed");
-        return;
-    }
-    if (genesis_exists && tx_type == NODUS_W_TX_GENESIS) {
-        send_error(conn, txn_id, NODUS_ERR_ALREADY_EXISTS,
-                    "genesis already exists");
-        return;
-    }
-    }
-
-    /* Extract nullifiers from tx_data.
-     * DNAC v0.17.1 serialization:
-     *   [version(1)] [type(1)] [timestamp(8)] [tx_hash(64)] [committed_fee(8)]
-     *   [input_count(1)] [inputs...]
-     * Each input: [nullifier(64)] [amount(8)] [token_id(64)]
-     * For GENESIS: input_count == 0. Offset comes from the canonical
-     * dnac/transaction.h DNAC_TX_HEADER_SIZE so libnodus and libdna stay
-     * wire-identical. */
-    uint8_t nullifiers[NODUS_T3_MAX_TX_INPUTS][NODUS_T3_NULLIFIER_LEN];
-    uint8_t nullifier_count = 0;
-
-    const size_t input_count_offset = DNAC_TX_HEADER_SIZE;
-
-    if (!w->v2_successor && tx_type != NODUS_W_TX_GENESIS) {
-        if (tx_len < input_count_offset + 1) {
-            send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
-                        "tx_data too short for inputs");
-            return;
-        }
-
-        nullifier_count = tx_data[input_count_offset];
-        if (nullifier_count > NODUS_T3_MAX_TX_INPUTS) {
-            send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
-                        "too many nullifiers");
-            return;
-        }
-
-        /* Extract nullifiers from input data */
-        size_t offset = input_count_offset + 1;  /* past header + input_count */
-        for (int i = 0; i < nullifier_count; i++) {
-            if (offset + NODUS_T3_NULLIFIER_LEN > tx_len) {
-                send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
-                            "tx_data truncated");
-                return;
-            }
-            memcpy(nullifiers[i], tx_data + offset,
-                   NODUS_T3_NULLIFIER_LEN);
-            /* Skip rest of input: nullifier(64) + amount(8) + token_id(64) */
-            offset += NODUS_T3_NULLIFIER_LEN + 8 + 64;
-        }
-    }
-
-    /* F17 A2 — transport-layer roster swap. BFT config is refreshed
-     * from the chain-derived committee at round-start, not here. */
-    if (w->pending_roster_ready &&
-        w->pending_roster.n_witnesses != w->roster.n_witnesses) {
-        memcpy(&w->roster, &w->pending_roster, sizeof(w->roster));
-        w->pending_roster_ready = false;
-        fprintf(stderr, "%s: force roster swap on spend: %u witnesses "
-                "(transport)\n", LOG_TAG, w->roster.n_witnesses);
-    }
-
-    /* Check if we are leader */
-    bool is_leader = nodus_witness_bft_is_leader(w);
-
-    if (is_leader) {
-        /* Phase 7 / Task 7.5 — genesis goes through the same batch-of-1
-         * BFT round as every other TX. The Phase 6 commit_genesis
-         * dispatch (Task 7.6) bootstraps the chain DB at commit time,
-         * so genesis no longer needs its own round entrypoint. */
-        if (tx_type == NODUS_W_TX_GENESIS) {
-            fprintf(stderr, "%s: dnac_spend — genesis TX, batch-of-1 BFT path\n",
-                    LOG_TAG);
-
-            nodus_witness_mempool_entry_t *e = calloc(1, sizeof(*e));
-            if (!e) {
-                send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
-                            "out of memory");
-                return;
-            }
-            memcpy(e->tx_hash, tx_hash, NODUS_T3_TX_HASH_LEN);
-            e->tx_type = tx_type;
-            e->nullifier_count = nullifier_count;
-            for (int i = 0; i < nullifier_count; i++)
-                memcpy(e->nullifiers[i], nullifiers[i],
-                       NODUS_T3_NULLIFIER_LEN);
-            e->tx_data = malloc(tx_len);
-            if (!e->tx_data) {
-                free(e);
-                send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
-                            "out of memory");
-                return;
-            }
-            memcpy(e->tx_data, tx_data, tx_len);
-            e->tx_len = (uint32_t)tx_len;
-            if (client_pk)
-                memcpy(e->client_pubkey, client_pk, NODUS_PK_BYTES);
-            if (client_sig)
-                memcpy(e->client_sig, client_sig, NODUS_SIG_BYTES);
-            e->fee = fee;
-            e->client_conn = conn;
-            e->client_txn_id = txn_id;
-            e->is_forwarded = false;
-
-            nodus_witness_mempool_entry_t *entries[1] = { e };
-            int rc = nodus_witness_bft_start_round_from_entries(w, entries, 1);
-            if (rc != 0) {
-                /* On failure, free the entry — round didn't take ownership */
-                nodus_witness_mempool_entry_free(e);
-                send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
-                            "genesis BFT round failed");
-            }
-            /* On success, ownership transfers to round_state.batch_entries
-             * and the commit path frees it. */
-            return;
-        }
-
-        fprintf(stderr, "%s: dnac_spend — we are leader, adding to mempool\n",
-                LOG_TAG);
-
-        /* Pre-verify TX before adding to mempool.
-         * ADMISSION mode: this is the leader's local intake gate for a
-         * client-submitted TX, the one place where the node-local
-         * mempool fee surge is meaningful (and where the client can
-         * still be told to raise its fee). No peer's verdict depends on
-         * the outcome here. */
-        char reject_reason[256] = {0};
-        int vrc = nodus_witness_verify_transaction(w, tx_data, (uint32_t)tx_len,
-                      tx_hash, tx_type,
-                      (const uint8_t *)nullifiers, nullifier_count,
-                      client_pk, client_sig, fee,
-                      NODUS_WITNESS_VERIFY_ADMISSION,
-                      reject_reason, sizeof(reject_reason));
-        if (vrc == -2) {
-            send_error(conn, txn_id, NODUS_ERR_DOUBLE_SPEND,
-                        "nullifier already spent (double-spend)");
-            return;
-        }
-        if (vrc != 0) {
-            send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR, reject_reason);
-            return;
-        }
-
-        /* Create mempool entry */
-        nodus_witness_mempool_entry_t *entry = calloc(1, sizeof(*entry));
-        if (!entry) {
-            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
-                        "allocation failed");
-            return;
-        }
-
-        memcpy(entry->tx_hash, tx_hash, NODUS_T3_TX_HASH_LEN);
-        entry->nullifier_count = nullifier_count;
-        for (int i = 0; i < nullifier_count; i++)
-            memcpy(entry->nullifiers[i], nullifiers[i], NODUS_T3_NULLIFIER_LEN);
-        entry->tx_type = tx_type;
-        entry->tx_data = malloc(tx_len);
-        if (!entry->tx_data) {
-            free(entry);
-            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
-                        "allocation failed");
-            return;
-        }
-        memcpy(entry->tx_data, tx_data, tx_len);
-        entry->tx_len = (uint32_t)tx_len;
-        /* O15F Task 3 — record the CLAIM's committed nullifier so batch
-         * selection dedups claims semantically. Verify already admitted it
-         * (so this re-derivation cannot fail on an honest submission); a
-         * failure here is fail-closed — never enqueue a class-201 entry
-         * with nullifier_count == 0 (batch dedup would silently lose it). */
-        if (w->v2_successor && tx_type == NODUS_W_TX_V2_CLAIM) {
-            if (nodus_witness_v2_claim_entry_nullifier(w, entry->tx_data,
-                    entry->tx_len, entry->nullifiers[0]) != 0) {
-                nodus_witness_mempool_entry_free(entry);
-                send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
-                            "claim nullifier derivation failed");
-                return;
-            }
-            entry->nullifier_count = 1;
-        }
-        if (client_pk)
-            memcpy(entry->client_pubkey, client_pk, NODUS_PK_BYTES);
-        if (client_sig)
-            memcpy(entry->client_sig, client_sig, NODUS_SIG_BYTES);
-        entry->fee = fee;
-        entry->client_conn = conn;
-        entry->client_txn_id = txn_id;
-        entry->is_forwarded = false;
-
-        int rc = nodus_witness_mempool_add(&w->mempool, entry);
-        if (rc != 0) {
-            const char *msg = (rc == -2) ? "duplicate transaction" : "mempool full";
-            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR, msg);
-            nodus_witness_mempool_entry_free(entry);
-        }
-        /* Response sent asynchronously when block timer fires and COMMIT completes */
-    } else {
-        fprintf(stderr, "%s: dnac_spend — forwarding to leader\n", LOG_TAG);
-
-        /* ── O15J A — POOL, THEN FORWARD ──────────────────────────────
-         *
-         * BEFORE the forward and INDEPENDENTLY of whether it succeeds.
-         * Full rationale + the PBFT §4.1 citation: the contract on
-         * nodus_witness_pool_local_demand in witness/nodus_witness.h.
-         *
-         * THE ORDERING IS LOAD-BEARING, and not only for the
-         * !leader_conn exit below. EVERY early return between here and
-         * the send is a path that used to DISCARD the client's work: the
-         * pending_forwards table being full, "no leader available", the
-         * empty roster, the encode failure, the send failure. Pooling
-         * first makes the demand visible on all of them.
-         *
-         * ON EVERY NON-LEADER INTAKE, not only when the leader is
-         * unreachable. A leader whose TCP is alive but whose witness is
-         * WEDGED accepts the forward and never proposes — that is the
-         * trapped-validator shape the 20-node rehearsal actually
-         * produced (three validators at DB tip 42 with
-         * round_state.block_height frozen at 36, rejecting every
-         * PROPOSE), and a `!leader_conn`-only pool would miss it
-         * entirely.
-         *
-         * AN ADMISSION REFUSAL DOES NOT STOP THE FORWARD. This node may
-         * simply be behind: converting a follower's local verdict into a
-         * client-visible rejection would refuse transactions the LEADER
-         * would have accepted. The leader stays the authority for the
-         * client's answer; all that is lost is our local copy. */
-        char pool_reason[256] = {0};
-        int pool_rc = nodus_witness_pool_local_demand(w, tx_data,
-                          (uint32_t)tx_len, tx_hash, tx_type,
-                          (const uint8_t *)nullifiers, nullifier_count,
-                          client_pk, client_sig, fee,
-                          pool_reason, sizeof(pool_reason));
-        bool pooled_locally = (pool_rc >= 0);
-        if (pool_rc == 0)
-            fprintf(stderr, "%s: pooled the client's entry locally before "
-                    "forwarding — a dead or wedged leader is no longer the "
-                    "only node that knows a client is waiting "
-                    "(mempool=%d)\n", LOG_TAG, w->mempool.count);
-        else if (pool_rc == 1)
-            fprintf(stderr, "%s: client retry for an entry we already hold "
-                    "(mempool=%d)\n", LOG_TAG, w->mempool.count);
-        else if (pool_rc == -2 || pool_rc == -3)
-            fprintf(stderr, "%s: not pooled locally (admission: %s) — "
-                    "forwarding anyway; the leader is the authority for "
-                    "the client's answer\n", LOG_TAG,
-                    pool_rc == -3 ? "nullifier already spent" : pool_reason);
-        else if (pool_rc == -4)
-            fprintf(stderr, "%s: not pooled locally (pool full or "
-                    "allocation failed) — forwarding anyway\n", LOG_TAG);
-        /* O15K §3.1 — there is no -1 branch to write any more. The
-         * successor-only gate that produced it is deleted, so a legacy
-         * chain no longer declines silently: it now either pools (0 / 1
-         * above) or reports admission's own verdict (-2 / -3), and the
-         * legacy log gains exactly the lines the successor lane already
-         * had. -1 is retired, not reassigned. */
-
-        /* Find a free pending_forward slot */
-        int pf_slot = -1;
-        for (int i = 0; i < NODUS_W_MAX_PENDING_FWD; i++) {
-            if (!w->pending_forwards[i].active) {
-                pf_slot = i;
-                break;
-            }
-        }
-        if (pf_slot < 0) {
-            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
-                        "too many pending forwards");
-            return;
-        }
-
-        /* Track pending forward so we can route response back */
-        w->pending_forwards[pf_slot].active = true;
-        memcpy(w->pending_forwards[pf_slot].tx_hash, tx_hash, NODUS_T3_TX_HASH_LEN);
-        w->pending_forwards[pf_slot].client_conn = conn;
-        w->pending_forwards[pf_slot].client_txn_id = txn_id;
-        w->pending_forwards[pf_slot].started_at = (uint64_t)time(NULL);
-        w->pending_forward_count++;
-
-        /* F17 A4 — find the chain-committee-derived leader for the next
-         * block, then resolve its peer connection. F17 A5 bootstrap —
-         * if committee empty (pre-genesis), fall back to gossip-roster-
-         * based leader lookup so genesis forwarding works. */
-        struct nodus_tcp_conn *leader_conn = NULL;
-#ifdef O15H_DIAG_ENABLED
-        /* O15H TEMPORARY DIAGNOSTIC — see nodus_witness_o15h_diag.h.
-         * Every failure branch below answers the client with the same
-         * NODUS_ERR_INTERNAL_ERROR (rc=8) and prints nothing, so the
-         * observed "44 forwards, 0 successes" could not be attributed to
-         * a branch. This local carries the elected slot out to the
-         * emit point. */
-        int o15h_slot = -1;
-#endif
-        {
-            /* ── O15O Faz 1 — CONVERTED FAIL-CLOSED, and the reason is
-             * that this height is not a label here: it feeds
-             * nodus_committee_get_for_block_alloc below (committee
-             * resolution) AND, through
-             * `epoch = next_bh / DNAC_EPOCH_LENGTH`, the leader index
-             * that decides which peer receives the client's transaction
-             * — including the "we are the leader, nothing to forward"
-             * verdict. A fault answering 0 would elect the height-1
-             * committee's leader at epoch 0 on a chain thousands of
-             * blocks along, and forward a client's spend to a node that
-             * is not the leader (or refuse to forward at all).
-             *
-             * The exit is the one every other failure in this block
-             * takes: answer the client, release the pending_forward slot
-             * we just claimed, return. The entry was already pooled
-             * locally above, so the work is not lost — same reasoning as
-             * the unreachable-leader path below. */
-            uint64_t fwd_tip = 0;
-            if (nodus_witness_block_height_checked(w, &fwd_tip) != 0) {
-                fprintf(stderr,
-                        "%s: w_fwd_req — chain-height read faulted; "
-                        "refusing to elect a leader from the height-1 "
-                        "committee\n", LOG_TAG);
-                send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
-                            "chain height unavailable — cannot resolve the "
-                            "leader");
-                w->pending_forwards[pf_slot].active = false;
-                w->pending_forward_count--;
-                return;
-            }
-            uint64_t next_bh = fwd_tip + 1;
-            /* S3: heap — a DNAC_MAX_ACTIVE_VALIDATORS committee is
-             * ~334 KB. Freed on every exit path in this block. */
-            nodus_committee_member_t *committee = NULL;
-            int cm_count = 0;
-            (void)nodus_committee_get_for_block_alloc(w, next_bh, &committee,
-                                                        &cm_count);
-
-            /* C7 fix: block-height epoch — cluster-agreed, no clock-skew fork risk */
-            uint64_t epoch = next_bh / (uint64_t)DNAC_EPOCH_LENGTH;
-            const uint8_t *leader_pk = NULL;
-            int leader_roster_idx = -1;
-
-            if (cm_count > 0) {
-                /* Post-genesis: committee-derived leader. */
-                int leader_slot = nodus_witness_bft_leader_index(
-                    epoch, w->current_view, cm_count);
-                if (leader_slot < 0) {
-                    free(committee);
-                    send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
-                                "no leader available");
-                    w->pending_forwards[pf_slot].active = false;
-                    w->pending_forward_count--;
-                    return;
-                }
-                /* NOTE: leader_pk borrows the heap committee below, so the
-                 * free() has to wait until the peer-lookup loop is done. */
-                leader_pk = committee[leader_slot].pubkey;
-#ifdef O15H_DIAG_ENABLED
-                o15h_slot = leader_slot;
-#endif
-                if (memcmp(leader_pk, w->server->identity.pk.bytes,
-                            DNAC_PUBKEY_SIZE) == 0) {
-                    free(committee);
-                    send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
-                                "we are the leader, nothing to forward");
-                    w->pending_forwards[pf_slot].active = false;
-                    w->pending_forward_count--;
-                    return;
-                }
-            } else {
-                /* Pre-genesis bootstrap: gossip-roster-based leader. */
-                int gossip_count = (int)w->roster.n_witnesses;
-                if (gossip_count == 0) {
-                    free(committee);
-                    send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
-                                "no witnesses known");
-                    w->pending_forwards[pf_slot].active = false;
-                    w->pending_forward_count--;
-                    return;
-                }
-                /* O15C-D — leader_index yields a SLOT in the sorted set,
-                 * not an array position. Resolving it with the arrival
-                 * index made this the last leader-selection site that
-                 * disagreed with nodus_witness_bft_is_leader: a node
-                 * whose roster had a different arrival order forwarded
-                 * the spend to a non-leader, which mempooled it and
-                 * never proposed, so the pending_forward expired with
-                 * no w_fwd_rsp (MED-27's observed symptom). */
-                int leader_slot = nodus_witness_bft_leader_index(
-                    epoch, w->current_view, gossip_count);
-                leader_roster_idx = nodus_witness_roster_sorted_at(
-                    &w->roster, leader_slot);
-                int my_slot = nodus_witness_roster_sorted_find(
-                    &w->roster, w->my_id);
-                if (leader_roster_idx < 0 || leader_slot < 0 ||
-                    leader_slot == my_slot) {
-                    free(committee);
-                    send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
-                                "we are the leader (bootstrap)");
-                    w->pending_forwards[pf_slot].active = false;
-                    w->pending_forward_count--;
-                    return;
-                }
-                leader_pk = w->roster.witnesses[leader_roster_idx].pubkey;
-            }
-
-            /* Find peer connection whose roster pubkey matches leader_pk. */
-            for (int i = 0; i < w->peer_count; i++) {
-                int ri = nodus_witness_roster_find(
-                    &w->roster, w->peers[i].witness_id);
-                if (ri < 0) continue;
-                if (memcmp(w->roster.witnesses[ri].pubkey, leader_pk,
-                            DNAC_PUBKEY_SIZE) == 0 &&
-                    w->peers[i].conn && w->peers[i].identified) {
-                    leader_conn = w->peers[i].conn;
-                    break;
-                }
-            }
-            /* O15H TEMPORARY DIAGNOSTIC — who the elected leader for
-             * next_bh is, and whether this node can reach it. `tally`
-             * carries the committee size and `quorum` the elected slot;
-             * both are borrowed fields, not their production meaning. */
-            O15H_DIAG(w, "fwd_leader", leader_pk, next_bh, w->current_view,
-                      w->view_change_target, w->round_state.phase,
-                      epoch, 0, "w_fwd_req", 0,
-                      (unsigned)cm_count, (unsigned)(o15h_slot + 1),
-                      leader_conn ? "leader resolved and connected"
-                                  : "leader NOT connected — forward fails");
-
-            /* leader_pk is dead from here on. */
-            free(committee);
-            committee = NULL;
-            leader_pk = NULL;
-        }
-
-        if (!leader_conn) {
-            /* O15J B — the CLIENT'S ANSWER on the unreachable-leader
-             * path. The work is no longer discarded here (it was pooled
-             * above), so the message that says it was is now false. The
-             * ERROR CODE IS DELIBERATELY UNCHANGED: NODUS_ERR_* is wire
-             * surface, every deployed client maps these numerically, and
-             * a new code would be a breaking change for a message-only
-             * improvement. Only the human-readable text differs.
-             *
-             * CONDITIONAL ON HAVING ACTUALLY POOLED, and claiming
-             * otherwise would be telling the client something untrue.
-             * O15K §3.1 opened this lane to legacy chains too, so the
-             * true branch is now the ordinary one on BOTH lanes; the
-             * false branch is what admission refused (-2 / -3) or what
-             * would not fit (-4), never a whole chain class.
-             *
-             * The client is answered IMMEDIATELY rather than left on the
-             * 30 s pending_forwards timeout: the slot is released on this
-             * path, so nothing would ever answer it. A retry while the
-             * entry sits in our pool meets the ordinary duplicate
-             * rejection in nodus_witness_mempool_add, which is correct
-             * and needs no special case. */
-            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
-                        pooled_locally
-                          ? "leader not reachable — request accepted and "
-                            "queued on this node; it will be proposed once "
-                            "the cluster elects a reachable leader"
-                          : "leader not connected");
-            w->pending_forwards[pf_slot].active = false;
-            w->pending_forward_count--;
-            return;
-        }
-
-        /* Build and send w_fwd_req T3 message */
-        nodus_t3_msg_t fwd;
-        memset(&fwd, 0, sizeof(fwd));
-        fwd.type = NODUS_T3_FWD_REQ;
-        fwd.txn_id = ++w->next_txn_id;
-        snprintf(fwd.method, sizeof(fwd.method), "w_fwd_req");
-
-        memcpy(fwd.fwd_req.tx_hash, tx_hash, NODUS_T3_TX_HASH_LEN);
-        fwd.fwd_req.tx_data = (uint8_t *)tx_data;
-        fwd.fwd_req.tx_len = (uint32_t)tx_len;
-        fwd.fwd_req.client_pubkey = (uint8_t *)client_pk;
-        fwd.fwd_req.client_sig = (uint8_t *)client_sig;
-        fwd.fwd_req.fee = fee;
-        memcpy(fwd.fwd_req.forwarder_id, w->my_id,
-               NODUS_T3_WITNESS_ID_LEN);
-
-        /* Fill header and sign */
-        fwd.header.version = NODUS_T3_BFT_PROTOCOL_VER;
-        fwd.header.round = w->current_round;
-        fwd.header.view = w->current_view;
-        memcpy(fwd.header.sender_id, w->my_id, NODUS_T3_WITNESS_ID_LEN);
-        fwd.header.timestamp = (uint64_t)time(NULL);
-        nodus_random((uint8_t *)&fwd.header.nonce,
-                      sizeof(fwd.header.nonce));
-        memcpy(fwd.header.chain_id, w->chain_id, 32);
-
-        /* O15H D8 — HEAP, at the 1 MB bound, not a 128 KB stack array.
-         * This is the ONE stack buffer in the tree that encodes a
-         * message CARRYING a transaction, so it is the one that has to
-         * grow with the family-aware limit above; a V2 envelope may now
-         * legitimately exceed NODUS_T3_MAX_MSG_SIZE, and 1 MB of stack
-         * is not an option. The bound is the same one
-         * nodus_witness_bft_broadcast and nodus_t3_verify already use
-         * for PROPOSE/COMMIT, so producer and verifier agree. */
-        uint8_t *fwd_buf = malloc(NODUS_W_MAX_SYNC_RSP_SIZE);
-        if (!fwd_buf) {
-            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
-                        "failed to allocate forward request");
-            w->pending_forwards[pf_slot].active = false;
-            w->pending_forward_count--;
-            return;
-        }
-        size_t fwd_len = 0;
-
-        if (nodus_t3_encode(&fwd, &w->server->identity.sk,
-                             fwd_buf, NODUS_W_MAX_SYNC_RSP_SIZE,
-                             &fwd_len) != 0) {
-            free(fwd_buf);
-            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
-                        "failed to encode forward request");
-            w->pending_forwards[pf_slot].active = false;
-            w->pending_forward_count--;
-            return;
-        }
-
-        int send_rc = nodus_tcp_send(leader_conn, fwd_buf, fwd_len);
-        free(fwd_buf);          /* O15H D8 — heap buffer, every path */
-        if (send_rc != 0) {
-            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
-                        "failed to send to leader");
-            w->pending_forwards[pf_slot].active = false;
-            w->pending_forward_count--;
-            return;
-        }
-
-        fprintf(stderr, "%s: forwarded spend to committee leader (slot %d)\n",
-                LOG_TAG, pf_slot);
-        /* Response will arrive via w_fwd_rsp */
-    }
-}
-
-/* ════════════════════════════════════════════════════════════════════
- * Spend result — sent on BFT COMMIT (async response to dnac_spend)
- * ════════════════════════════════════════════════════════════════════ */
-
-/* Phase 12 / Task 12.2 spec moved to nodus_witness_spend_preimage.h
- * along with the testable preimage builder. The live signer below
- * uses dnac_compute_spend_result_preimage(); the spec stays exported
- * so test fixtures bind to the same authoritative layout. */
-
-void nodus_witness_send_spend_result(nodus_witness_t *w,
-                                       nodus_witness_mempool_entry_t *entry,
-                                       int status,
-                                       const char *error_msg) {
-    if (!w || !entry) return;
-
-    struct nodus_tcp_conn *conn = entry->client_conn;
-    uint32_t txn_id = entry->client_txn_id;
-
-    if (!conn) return;
-
-    if (status != DNAC_STATUS_APPROVED && error_msg) {
-        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR, error_msg);
-        return;
-    }
-
-    /* Phase 12 / Task 12.1 — single time(NULL) call reused for wire field
-     * AND signed preimage. Eliminates TOCTOU between the two values. */
-    uint64_t ts = (uint64_t)time(NULL);
-
-    /* Phase 12 / Task 12.3 — bind the wire wpk field via SHA3-512(wpk).
-     * Without this, an attacker could swap the pk field in the response
-     * and the sig would still validate over the bare tx_hash/wid/ts. */
-    uint8_t wpk_hash[64];
-    qgp_sha3_512(w->server->identity.pk.bytes, NODUS_PK_BYTES, wpk_hash);
-
-    uint8_t preimage[DNAC_SPEND_RESULT_PREIMAGE_LEN];
-    dnac_compute_spend_result_preimage(entry->tx_hash, w->my_id, wpk_hash,
-                                         w->chain_id, ts,
-                                         entry->committed_block_height,
-                                         entry->committed_tx_index,
-                                         (uint8_t)status, preimage);
-
-    nodus_sig_t sig;
-    memset(&sig, 0, sizeof(sig));
-    /* CERT domain kept RAW — see dnac_spend_replay handler above for rationale
-     * (DNAC client cross-repo coupling, deferred to future migration). */
-    nodus_sign(&sig, preimage, sizeof(preimage), &w->server->identity.sk);
-
-    /* Build response with extended fields (status, wid, wpk, ts, bnr, ti,
-     * cid, wsig). Phase 13 / Task 13.2 pulls block_height + tx_index +
-     * chain_id onto the client API. */
-    uint8_t buf[8192];
-    cbor_encoder_t enc;
-    cbor_encoder_init(&enc, buf, sizeof(buf));
-    enc_dnac_response(&enc, txn_id, "dnac_spend", 8);
-
-    cbor_encode_cstr(&enc, "status");
-    cbor_encode_uint(&enc, (uint64_t)status);
-
-    cbor_encode_cstr(&enc, "wid");
-    cbor_encode_bstr(&enc, w->my_id, NODUS_T3_WITNESS_ID_LEN);
-
-    cbor_encode_cstr(&enc, "wpk");
-    cbor_encode_bstr(&enc, w->server->identity.pk.bytes, NODUS_PK_BYTES);
-
-    cbor_encode_cstr(&enc, "ts");
-    cbor_encode_uint(&enc, ts);
-
-    cbor_encode_cstr(&enc, "bnr");
-    cbor_encode_uint(&enc, entry->committed_block_height);
-
-    cbor_encode_cstr(&enc, "ti");
-    cbor_encode_uint(&enc, (uint64_t)entry->committed_tx_index);
-
-    cbor_encode_cstr(&enc, "cid");
-    cbor_encode_bstr(&enc, w->chain_id, 32);
-
-    cbor_encode_cstr(&enc, "wsig");
-    cbor_encode_bstr(&enc, sig.bytes, NODUS_SIG_BYTES);
-
-    size_t rlen = cbor_encoder_len(&enc);
-    if (rlen > 0) {
-        nodus_tcp_send(conn, buf, rlen);
-    } else {
-        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
-                    "response buffer overflow");
-    }
-
-    fprintf(stderr, "%s: sent spend result (status=%d, txn_id=%u, "
-            "block=%llu, tx_index=%u)\n",
-            LOG_TAG, status, txn_id,
-            (unsigned long long)entry->committed_block_height,
-            entry->committed_tx_index);
+    /* R3 W4 — on a non-version-3 chain this node runs no consensus lane
+     * for it: the gate at open (witness_post_open_gate) already refused
+     * every chain that is not version-3, so this is unreachable defence,
+     * not a live path. Everything the legacy genesis precheck, nullifier
+     * extraction, leader/follower branch, forward-to-leader and the
+     * legacy mempool add used to do below this point is deleted with
+     * the closed consensus lane. */
+    send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                "this node runs no consensus lane for this chain");
+    (void)client_pk;
+    (void)client_sig;
+    (void)fee;
 }
 
 /* ════════════════════════════════════════════════════════════════════

@@ -506,10 +506,15 @@ typedef struct {
  * Derive a real 7-validator version-3 chain under a fresh temp directory
  * and bring up ONE live witness (validator 0's identity) through the REAL
  * `nodus_witness_init` path — `witness_post_open_gate`,
- * `nodus_witness_scan_chain_db`, `nodus_witness_bootstrap_start`,
- * `nodus_witness_peer_init` and, because this chain IS version-3,
- * `nodus_witness_cmt_live_init` all run for real. `witness->tcp` is left NULL
- * ("read how nodus_witness_tick tolerates it" — nodus_witness.c:2342's
+ * `nodus_witness_scan_chain_db`, `nodus_witness_peer_init` and, because
+ * this chain IS version-3, `nodus_witness_cmt_live_init` all run for real.
+ * R3 W4 deleted the auto-bootstrap state machine
+ * (`nodus_witness_bootstrap_start`) that used to run between the scan and
+ * the peer init: nothing replaces it (a pinned-successor node's joiner is
+ * armed by `nodus_witness_v2_join_arm`, which this fixture's chain never
+ * needs since `cfg_make_v3_real` derives the chain directly).
+ * `witness->tcp` is left NULL
+ * ("read how nodus_witness_tick tolerates it" — nodus_witness.c's
  * `if (witness->tcp)` guard) and `server->config.seed_count` is 0, so
  * `nodus_witness_peer_init`'s seed-dial loop never executes and no real
  * socket is ever opened by this fixture.

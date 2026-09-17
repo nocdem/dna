@@ -6,17 +6,11 @@
  */
 
 #include "witness/nodus_witness.h"
-#include "witness/nodus_witness_bft.h"
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_peer.h"
 #include "witness/nodus_witness_handlers.h"
-#include "witness/nodus_witness_sync.h"
-#include "witness/nodus_witness_mempool.h"
-#include "witness/nodus_witness_bootstrap.h"
 #include "witness/nodus_witness_v2_pools.h"  /* S7 startup check      */
-#include "witness/nodus_witness_v2_finalize.h" /* O14 version firewall */
 #include "witness/nodus_witness_v2_gate.h"      /* O15B activation gate  */
-#include "witness/nodus_witness_v2_ingress.h"   /* O15B ingress arming   */
 #include "witness/nodus_witness_v2_preflight.h" /* O15A readiness report */
 /* O15J Faz 3 — chain-role derivation is what makes a Ledger V2 database
  * refuse every legacy lane. With the activation ceremony gone there is
@@ -168,6 +162,15 @@ static const char *WITNESS_DB_SCHEMA =
     "',"
     "  PRIMARY KEY (tx_hash, output_index)"
     ");"
+    /* R3 W4 — this table's only WRITER (nodus_witness_cert_store) is
+     * deleted with the closed consensus lane: nothing commits a row to
+     * it again. The table itself stays: nodus_witness_cert_get, the
+     * READER, is still called by handle_dnac_block (dnac_block query
+     * handler, explicitly kept — the client query surface, not
+     * consensus), so the table must still exist for that query to run
+     * (rather than fail) — it answers an empty cert list on every
+     * version-3 chain, which is the honest legacy-table answer the
+     * hub/spoke handlers are recorded as giving. */
     "CREATE TABLE IF NOT EXISTS commit_certificates ("
     "  block_height INTEGER NOT NULL,"
     "  voter_id BLOB NOT NULL,"
@@ -480,8 +483,8 @@ static int witness_db_open_fail(nodus_witness_t *witness) {
  * Re-entering this function after a failed attempt is safe because every
  * step in it is idempotent by construction: the ALTERs ignore their
  * duplicate-column errors, the schema is CREATE TABLE IF NOT EXISTS
- * throughout, nodus_witness_db_migrate_v12's own header records it as
- * idempotent, and load_pbft_state only reads. */
+ * throughout, and nodus_witness_db_migrate_v12's own header records it
+ * as idempotent. */
 static int witness_db_open_attempt(nodus_witness_t *witness,
                                    const char *db_path) {
     int rc = sqlite3_open(db_path, &witness->db);
@@ -555,44 +558,11 @@ static int witness_db_open_attempt(nodus_witness_t *witness,
      * unrecoverable error. */
     nodus_witness_db_migrate_v12(witness);
 
-    /* PR 3 Yol B / H-5: restore the prepared certificate across restart,
-     * and — O15P Faz 1 — RESET THE VIEW COUNTER TO 0 while doing it.
-     * MUST happen after migrate_v12 (which creates the pbft_state
-     * table) and BEFORE this witness participates in any consensus
-     * round. Fresh DB, NULL row and stored-view-of-9 all leave
-     * current_view at 0; only last_prepared is carried over.
-     *
-     * THE RESET LIVES IN THE CALLEE, NOT ON THE LINE BELOW, and the
-     * reason is that this call site is not the whole story:
-     * nodus_witness_db_load_pbft_state has exactly one production caller
-     * — this one — but this function is itself reached from BOTH database
-     * entrances (the restart scan and nodus_witness_create_chain_db), and
-     * re-entered on a retried open attempt. Putting the reset inside the
-     * loader means every one of those, and any future third entrance,
-     * inherits it instead of having to copy a line from here.
-     *
-     * WHAT THE CREATION ENTRANCE MEANS FOR IT, enumerated rather than
-     * waved at — nodus_witness_create_chain_db has four callers:
-     *   - nodus_witness_v2_join.c:132 and nodus_witness_v2_gen.c:1208
-     *     pass a freshly calloc'd SCRATCH witness (:105, :1159), which is
-     *     already at view 0. The reset is a no-op.
-     *   - nodus_witness_bootstrap.c:998 passes the LIVE witness while it
-     *     is still bootstrapping onto a chain it does not yet have, so it
-     *     has taken part in no round on that chain.
-     *   - nodus_witness_bft.c:12358, inside nodus_witness_commit_genesis,
-     *     passes the LIVE witness — and is guarded by `if (!w->db)`, so it
-     *     runs only for a node that has no chain database at all.
-     *
-     * The last one is NOT guaranteed to be a no-op, and saying otherwise
-     * would be wrong: if the genesis round itself passed through a view
-     * change, the node reaches commit_genesis holding a non-zero view and
-     * this zeroes it. That is still correct, for the reason the whole
-     * change rests on — every node committing genesis runs the same
-     * reset, so they move together; and a node that lands at 0 while a
-     * peer is still ahead is simply BEHIND, which is the case the VIEW_OK
-     * pull already handles. Nothing here depends on the reset being
-     * invisible; it depends on being behind being recoverable. */
-    nodus_witness_db_load_pbft_state(witness);
+    /* R3 W4 — the H-5 restore of the pbft_state singleton row
+     * (last_prepared + the discarded current_view) stood here. Both the
+     * row and the counter it partly restored are deleted with the closed
+     * consensus lane: nodus_witness_db_load_pbft_state, the pbft_state
+     * table itself, and `w->current_view`/`w->last_prepared` are gone. */
 
     fprintf(stderr, "%s: opened database %s\n", LOG_TAG, db_path);
     return SQLITE_OK;
@@ -730,18 +700,11 @@ static int witness_post_open_gate(nodus_witness_t *witness,
         return -1;
     }
 
-    /* Ledger V2 O14 — assert this build's V2 version firewall at open:
-     * a RETIRED (v2) header and an UNKNOWN header must both be verdicts
-     * and must never be reinterpreted under the v3 layout, and a NULL
-     * argument must stay a node fault. */
-    if (nodus_witness_v2_finalize_selfcheck(witness) != 0) {
-        fprintf(stderr, "%s: V2 header version firewall SELFCHECK FAILED "
-                "for %s — refusing the database (fail closed)\n",
-                LOG_TAG, db_path);
-        sqlite3_close(witness->db);
-        witness->db = NULL;
-        return -1;
-    }
+    /* R3 W4 — the O14 "V2 version firewall" selfcheck stood here. It
+     * existed to prove nodus_witness_v2_finalize_block (and, through it,
+     * nodus_witness_v2_qc_verify) stayed linked into the binary; both are
+     * deleted with the closed consensus lane's QC-verified block-commit
+     * path, so there is nothing left for a selfcheck to selfcheck. */
 
     /* ── Ledger V2 O15B — ACTIVATION ORDERING, ENFORCED HERE ──────────
      *
@@ -860,7 +823,6 @@ static int witness_post_open_gate(nodus_witness_t *witness,
      * "chain role undeterminable" must never be read as (b)'s absence. */
     witness->v2_successor = false;
     memset(witness->v2_chain32, 0, sizeof(witness->v2_chain32));
-    memset(&witness->v2_certpool, 0, sizeof(witness->v2_certpool));
 
     int cmt_state_present = witness_gate_table_exists(witness->db,
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='cmt_state'");
@@ -1303,27 +1265,6 @@ int nodus_witness_create_chain_db(nodus_witness_t *witness,
      * only, which is exactly how an ordinary restart came to skip them. */
     if (witness_post_open_gate(witness, db_path) != 0) return -1;
 
-    /* PR 3 Yol B — transition bootstrap state to DONE the moment a
-     * valid chain DB exists, regardless of which path created it.
-     *
-     * Two call sites:
-     *   1. nodus_witness_bft.c:commit_genesis — legacy genesis BFT
-     *      path. Without this transition, every node in a freshly
-     *      bootstrapped cluster stays in DISCOVER permanently. The
-     *      C-2 cabal protection in handle_chain_q then drops every
-     *      CHAIN_Q from any later joiner, breaking auto-bootstrap
-     *      recovery (caught by stagef test_bootstrap_join_live).
-     *   2. nodus_witness_bootstrap.c:handle_genesis_rsp — the
-     *      bootstrap FETCH_GENESIS path's own create. The handler
-     *      also re-asserts state=DONE a few lines later, which
-     *      becomes a redundant-but-harmless write.
-     *
-     * settle_until_ms is intentionally NOT set here: the legacy
-     * caller has already participated in the BFT round committing
-     * genesis, so no settle window applies; the bootstrap caller
-     * sets it explicitly after this returns. */
-    witness->bootstrap_state = (int)NODUS_W_BOOTSTRAP_DONE;
-
     /* PR 3 / E5 (revised) — drop the genesis marker that gates the
      * server-side partial-wipe XOR check. The marker's presence tells
      * a future boot "this node has crossed the genesis boundary at
@@ -1404,6 +1345,57 @@ int nodus_witness_check_orphan_bootstrap_sentinel(const char *data_path) {
     return 1;
 }
 
+/* ── Recovery sentinel boot gate (audit B-2, 2026-05-02) ─────────────
+ *
+ * R3 W4 — moved verbatim (the read-only half only) from
+ * nodus_witness_sync.c, deleted with the closed consensus lane. The
+ * writer half (nodus_witness_recovery_sentinel_create/_clear) armed and
+ * cleared this sentinel only from nodus_witness_halt_recovery_check,
+ * which is deleted with it — no code path can create a NEW sentinel file
+ * going forward. This check stays: a data directory carrying a sentinel
+ * left by an OLDER binary that crashed mid halt-recovery must still
+ * refuse to boot silently (nodus_witness_init calls this before the
+ * chain-DB scan), so the file's meaning is preserved even though nothing
+ * in this tree can write one again. Made static and file-local: nothing
+ * else in the tree references it now that the writer is gone. */
+#define NODUS_W_RECOVERY_SENTINEL_NAME ".recovery_in_progress"
+#define NODUS_W_RECOVERY_SENTINEL_LEN  40
+
+static void witness_recovery_sentinel_path(const char *data_path,
+                                            char *out, size_t out_len) {
+    snprintf(out, out_len, "%s/" NODUS_W_RECOVERY_SENTINEL_NAME, data_path);
+}
+
+/* Returns 0 if absent (clean boot), 1 if present (admin clear required),
+ * -1 on read error. Reads halt_height into *out_halt_height when present. */
+static int nodus_witness_recovery_sentinel_check(const char *data_path,
+                                                  uint64_t *out_halt_height) {
+    char path[512];
+    witness_recovery_sentinel_path(data_path, path, sizeof(path));
+    FILE *fp = fopen(path, "rb");
+    if (!fp) {
+        if (errno == ENOENT) return 0;
+        fprintf(stderr, "%s: sentinel check open failed at %s: %s\n",
+                LOG_TAG, path, strerror(errno));
+        return -1;
+    }
+    uint8_t buf[NODUS_W_RECOVERY_SENTINEL_LEN];
+    size_t got = fread(buf, 1, sizeof(buf), fp);
+    fclose(fp);
+    if (got != NODUS_W_RECOVERY_SENTINEL_LEN) {
+        fprintf(stderr, "%s: sentinel truncated at %s (got %zu, need %d)\n",
+                LOG_TAG, path, got, NODUS_W_RECOVERY_SENTINEL_LEN);
+        return -1;
+    }
+    if (out_halt_height) {
+        uint64_t h = 0;
+        for (int i = 0; i < 8; i++)
+            h |= ((uint64_t)buf[32 + i]) << (i * 8);
+        *out_halt_height = h;
+    }
+    return 1;
+}
+
 /* ── Identity setup ──────────────────────────────────────────────── */
 
 static void witness_setup_identity(nodus_witness_t *witness) {
@@ -1418,13 +1410,6 @@ static void witness_init_roster(nodus_witness_t *witness) {
     memset(&witness->roster, 0, sizeof(witness->roster));
     witness->roster.version = 1;
     witness->last_epoch = 0;
-    /* O15I V1 — the reaper latch is defined RELATIVE to last_epoch, so it
-     * is reset with it. Not load-bearing (a stale stamp can never equal
-     * the fresh `now` the next epoch tick writes) but leaving the pair
-     * out of step would be state carried across a lifecycle boundary for
-     * no reason. */
-    witness->last_evict_epoch = 0;
-    witness->pending_roster_ready = false;
 }
 
 /* ── FLEET-TM-R3 W3 package C2a — the cometbft server binding ────────── */
@@ -1853,17 +1838,6 @@ int nodus_witness_init(nodus_witness_t *witness,
     /* Setup identity from server keys */
     witness_setup_identity(witness);
 
-#ifdef QGP_FAULT_INJECT
-    /* O15C-D.1 — install the env-described T3 drop predicate, if this
-     * process was launched for a fault-injection run. The predicate is
-     * inert until the harness creates its arm file, so genesis (view 0)
-     * commits normally during bring-up.
-     * O15C-D.3 — placed AFTER witness_setup_identity because the
-     * per-node VIEW_CHANGE drop set derives from our own witness id.
-     * See nodus_witness_fault.c. */
-    nodus_witness_fault_init_from_env(witness->my_id);
-#endif
-
     /* Save data path for chain DB creation on genesis */
     snprintf(witness->data_path, sizeof(witness->data_path), "%s",
              server->config.data_path);
@@ -1987,28 +1961,18 @@ int nodus_witness_init(nodus_witness_t *witness,
     /* Initialize peer mesh (builds roster, connects seeds on witness port) */
     nodus_witness_peer_init(witness);
 
-    /* PR 3 Yol B / C6 — kick off the auto-bootstrap state machine.
-     *
-     * - HAVE_CHAIN branch: refresh bft_config from the on-chain
-     *   committee, set H-4 settle window, transition to DONE
-     *   immediately. The existing sync_check + replay path catches up
-     *   to the actual tip.
-     * - DISCOVER branch (chain DB absent): C-1 startup gate first
-     *   (seed_count >= committee_size); on pass schedules round 1 to
-     *   fire on the next nodus_witness_tick. On C-1 fail returns -1
-     *   so init aborts cleanly with an explicit operator-facing log.
-     * - DB error: returns -1, init aborts.
-     *
-     * Pre-PR-3 behaviour was "silent pre-genesis wait". The new fail-
-     * fast on C-1 is intentional: a misconfigured fresh node is
-     * better stopped at startup than running in a partially-bootstrapped
-     * state. */
-    if (nodus_witness_bootstrap_start(witness) != 0) {
-        fprintf(stderr,
-                "%s: bootstrap_start returned -1 — refusing init\n",
-                LOG_TAG);
-        return -1;
-    }
+    /* R3 W4 — the PR 3 Yol B / C6 auto-bootstrap state machine
+     * (nodus_witness_bootstrap_start, DISCOVER/HAVE_CHAIN/FETCH_GENESIS)
+     * stood here. It is deleted with the closed consensus lane: its
+     * HAVE_CHAIN branch only refreshed the legacy bft_config and logged
+     * "state=DONE branch=HAVE_CHAIN"; its pinned-joiner branch only
+     * logged and returned — the joiner itself is armed above by
+     * nodus_witness_v2_join_arm, which already logs "fresh successor
+     * joiner armed" on its own (nodus_witness_v2_join.c). Nothing
+     * replaces the DISCOVER round-1 scheduling: a fresh node with no
+     * pin and no chain simply has no role (witness_post_open_gate's
+     * outcome (b)) until an operator drives the version-3 genesis
+     * ceremony or a pin arrives. */
 
     /* FLEET-TM-R3 W3 (D-23 rev 7, package C2a) — on a version-3 chain,
      * build the cometbft server binding. witness->v2_successor is true
@@ -2032,447 +1996,39 @@ int nodus_witness_init(nodus_witness_t *witness,
     return 0;
 }
 
-/* ── Block timer: propose batch from mempool ────────────────────── */
-
-/* Phase 7 / Task 7.2 — body moved to nodus_witness_bft.c as
- * nodus_witness_bft_start_round_from_mempool. The static helpers
- * nodus_compute_output_nullifier and nodus_extract_output_nullifiers
- * moved with it. The block timer at line ~654 below now calls the
- * public API directly. */
-
+/* R3 W4 — the epoch-tick roster rebuild interval. Named alongside the
+ * legacy block timer for historical reasons; the block timer itself
+ * (mempool-driven batch proposal) is deleted with the closed consensus
+ * lane, but the transport-mesh epoch rebuild in witness_mesh_tick still
+ * uses this constant. */
 #define WITNESS_EPOCH_SECS  60
 
-/* H-15 / MED-27 (O15C-D) — expire pending forwards older than
- * NODUS_W_PENDING_FWD_TIMEOUT_S and answer the waiting clients.
- *
- * Extracted from nodus_witness_tick so the contract is reachable from a
- * regression without a live cluster: `now_s` is injected rather than
- * read from the clock. Returns the number of slots expired.
- *
- * The contract being enforced: dnac_spend owes the caller EXACTLY ONE
- * terminal answer. Before this, expiry dropped the slot silently — the
- * client stayed blocked until its own 60 s RPC timeout
- * (nodus_client.c, nodus_client_dnac_spend) with no reason to report,
- * and pending_forward_count was never decremented here even though
- * every other clear path decrements it. The 30 s expiry sits well
- * inside the client's 60 s window, so the error lands on a pending slot
- * that is still live. */
-int nodus_witness_pending_forward_expire(nodus_witness_t *witness,
-                                           uint64_t now_s) {
-    if (!witness) return 0;
-
-    int expired = 0;
-    for (int pfi = 0; pfi < NODUS_W_MAX_PENDING_FWD; pfi++) {
-        if (!witness->pending_forwards[pfi].active) continue;
-        if (now_s - witness->pending_forwards[pfi].started_at <=
-            NODUS_W_PENDING_FWD_TIMEOUT_S)
-            continue;
-
-        struct nodus_tcp_conn *cc = witness->pending_forwards[pfi].client_conn;
-        uint32_t ctxn = witness->pending_forwards[pfi].client_txn_id;
-
-        fprintf(stderr, "WITNESS: pending_forward[%d] timed out after %ds "
-                "(txn=%u, client=%s)\n", pfi,
-                (int)NODUS_W_PENDING_FWD_TIMEOUT_S, ctxn,
-                cc ? "notified" : "gone");
-
-        witness->pending_forwards[pfi].active = false;
-        witness->pending_forwards[pfi].client_conn = NULL;
-        if (witness->pending_forward_count > 0)
-            witness->pending_forward_count--;
-        expired++;
-
-        if (cc) {
-            uint8_t err_buf[512];
-            size_t err_len = 0;
-            if (nodus_t2_error(ctxn, NODUS_ERR_TIMEOUT,
-                                "leader did not answer forwarded spend "
-                                "in time",
-                                err_buf, sizeof(err_buf), &err_len) == 0 &&
-                err_len > 0)
-                nodus_tcp_send(cc, err_buf, err_len);
-        }
-    }
-    return expired;
-}
-
-/* O15I V1 — see the contract on nodus_witness.h.
- *
- * THE FAIL DIRECTION IS PER-CAUSE, not blanket. The first cut of this
- * function collapsed every non-OK outcome to "not committed", which was
- * right for ERR_HASH and wrong for the rest: it left an EXPIRED envelope
- * permanently undeletable and permanently counted as demand, i.e. the
- * exact churn V1 exists to remove, re-entered through a different door.
- * The line the source itself draws is the line used here —
- *   - ERR_HASH is "THIS NODE could not compute", and a consensus caller
- *     "MUST NOT translate it into a transaction rejection"
- *     (env_preflight.h:100-110) -> UNJUDGED, keep;
- *   - ERR_EXPIRED is "expiry_height below the candidate"
- *     (env_preflight.h:91), a verdict about the ENVELOPE derived from its
- *     own bytes against a tip that only advances -> EXPIRED, finished;
- *   - ERR_DECODE comes from a codec that allocates nothing and is a pure
- *     function of its input (env_wire.h:401-403), so it cannot be
- *     node-local either -> MALFORMED, finished.
- * Everything else stays UNJUDGED, which is the conservative side. */
-nodus_witness_entry_verdict_t nodus_witness_v2_entry_verdict(
-        nodus_witness_t *witness, const uint8_t *tx_data, uint32_t tx_len) {
-    if (!witness || !witness->db || !witness->v2_successor ||
-        !tx_data || tx_len == 0)
-        return NODUS_W_ENTRY_UNJUDGED;
-
-    /* Class gate FIRST, and it is what keeps every legacy chain and every
-     * class-201 claim byte-identical to the pre-V1 behaviour: only the
-     * wire-family-marked ENVELOPE has an intent id at all, and only it
-     * reaches the derivation cost below. */
-    if (nodus_witness_v2_classify_entry(tx_data, tx_len) !=
-        NODUS_W_TX_V2_ENVELOPE)
-        return NODUS_W_ENTRY_UNJUDGED;
-
-    /* A local view, used ONLY to learn which domains the legs address so
-     * the POSITIONAL contextual table can be built. ~2.6 KB automatic, no
-     * recursion, exactly as nodus_witness_v2_env.c declares it.
-     *
-     * This private per-leg assembly used to be shared with
-     * nodus_witness_v2_produce_batch_check. It is NOT any more, and the
-     * divergence is deliberate: the batch check decides what a BLOCK may
-     * contain, so it must ask the engine's own block-start context
-     * (nodus_witness_v2_block_ctx_build) or it admits what the engine
-     * rejects. This function decides only whether a POOLED ENTRY is
-     * FINISHED, and every contextual mismatch it can hit collapses to
-     * UNJUDGED — "keep it" — which is the conservative side of a reaper.
-     * Using the engine's ACTIVE-only table here would turn a domain that
-     * is merely not ACTIVE YET into a reason to evict, which is exactly
-     * the wrong direction. See the ORDERING CAVEAT below.
-     *
-     * A rejection here is the SAME verdict the seam would return for the
-     * same bytes (it is the same strict decoder, called deterministically
-     * on the same input — the equivalence nodus_witness_v2_env.c documents
-     * at its own pre-decode), so it is reported directly. */
-    dna_env_view_t view;
-    if (dna_env_decode(tx_data, (size_t)tx_len, &view) != 0)
-        return NODUS_W_ENTRY_MALFORMED;
-
-    dna_env_leg_ctx_t rulesets[DNA_ENV_MAX_LEGS];
-    size_t n_rulesets = 0;
-    for (uint16_t l = 0; l < view.leg_count; l++) {
-        uint32_t dom = view.leg[l].domain_id;
-        /* Insertion sort into STRICTLY ASCENDING order — the seam rejects
-         * any other order, and a duplicate domain must collapse to one
-         * entry rather than appear twice. */
-        size_t k = 0;
-        while (k < n_rulesets && rulesets[k].domain_id < dom) k++;
-        if (k < n_rulesets && rulesets[k].domain_id == dom) continue;
-        if (n_rulesets >= DNA_ENV_MAX_LEGS) return NODUS_W_ENTRY_UNJUDGED;
-
-        dna_domain_manifest_t man;
-        if (nodus_witness_domreg_get(witness, dom, NULL, &man, NULL) != 0)
-            return NODUS_W_ENTRY_UNJUDGED;  /* unregistered domain, or a
-                                             * registry fault — and see
-                                             * the ORDERING CAVEAT on the
-                                             * contract: this is reached
-                                             * BEFORE expiry, so it is
-                                             * deliberately the more
-                                             * conservative answer */
-        memmove(&rulesets[k + 1], &rulesets[k],
-                (n_rulesets - k) * sizeof(rulesets[0]));
-        rulesets[k].domain_id       = dom;
-        rulesets[k].ruleset_version = man.ruleset_version;
-        memcpy(rulesets[k].ruleset_hash, man.ruleset_hash,
-               DNA_ENV_RULESET_HASH_LEN);
-        n_rulesets++;
-    }
-    if (n_rulesets == 0) return NODUS_W_ENTRY_UNJUDGED;
-
-    /* The CANDIDATE height, exactly as the producer derives it: the
-     * height this envelope would be included in, never the parent's. It
-     * is the expiry gate's only input, so it must not be guessed. */
-    uint64_t candidate = 0;
-    if (nodus_witness_v2_tip_height(witness, &candidate) != 0)
-        return NODUS_W_ENTRY_UNJUDGED;
-    candidate += 1;
-
-    /* dna_env_preflight_t is ~15 KB (env_preflight.h size audit) — heap,
-     * never the stack, which is the discipline every other caller of this
-     * seam already follows. */
-    dna_env_preflight_t *pf = calloc(1, sizeof(*pf));
-    if (!pf) return NODUS_W_ENTRY_UNJUDGED;
-
-    nodus_v2_envelope_t env;
-    env.env_bytes = tx_data;
-    env.env_len   = (size_t)tx_len;
-
-    size_t fail_i = 0;
-    dna_env_preflight_status_t pst = DNA_ENV_PF_OK;
-    nodus_witness_entry_verdict_t verdict = NODUS_W_ENTRY_UNJUDGED;
-
-    nodus_v2_env_status_t est = nodus_witness_v2_env_preflight_batch(
-            witness, candidate, rulesets, n_rulesets, &env, 1, pf,
-            &fail_i, &pst);
-
-    if (est == NODUS_V2_ENV_OK) {
-        /* BYTE-IDENTICAL to the apply engine's replay guard — one
-         * authority for "this intent is already committed", asked the
-         * same way from both sides. A query that cannot run leaves the
-         * verdict UNJUDGED rather than claiming the entry is live: this
-         * node has no answer, and the fail-closed side is "keep". */
-        sqlite3_stmt *st = NULL;
-        if (sqlite3_prepare_v2(witness->db,
-                "SELECT 1 FROM v2_intent_index WHERE intent_id = ?1",
-                -1, &st, NULL) == SQLITE_OK) {
-            sqlite3_bind_blob(st, 1, pf->intent_id, DNA_ENV_HASH_LEN,
-                              SQLITE_STATIC);
-            int rc = sqlite3_step(st);
-            sqlite3_finalize(st);
-            if (rc == SQLITE_ROW)       verdict = NODUS_W_ENTRY_COMMITTED;
-            else if (rc == SQLITE_DONE) verdict = NODUS_W_ENTRY_LIVE;
-        }
-    } else if (est == NODUS_V2_ENV_ERR_PREFLIGHT) {
-        /* The seam's status is the ONLY place expiry is decided; the
-         * comparison env_preflight.h locks is not re-implemented here. */
-        if (pst == DNA_ENV_PF_ERR_EXPIRED)     verdict = NODUS_W_ENTRY_EXPIRED;
-        else if (pst == DNA_ENV_PF_ERR_DECODE) verdict = NODUS_W_ENTRY_MALFORMED;
-        /* ERR_HASH and the contextual mismatches stay UNJUDGED. */
-    }
-    /* ERR_ARG / ERR_CHAIN / ERR_RULESETS / ERR_CTX_MISSING stay UNJUDGED.
-     * The two duplicate statuses cannot arise: both dedup loops compare
-     * j = i+1 over a batch of one. */
-
-    free(pf);
-    return verdict;
-}
-
-/* O15I V1 — THE ONE collapse rule. See the contract on nodus_witness.h:
- * open-coding this list at either consumer is how the reaper and the P3
- * demand predicate would fall out of step. */
-bool nodus_witness_v2_entry_is_decided(nodus_witness_entry_verdict_t v) {
-    return v == NODUS_W_ENTRY_COMMITTED ||
-           v == NODUS_W_ENTRY_EXPIRED   ||
-           v == NODUS_W_ENTRY_MALFORMED;
-}
-
-/* O15I P3(c) — see the contract on nodus_witness.h. */
-int nodus_witness_mempool_evict_committed(nodus_witness_t *witness) {
-    if (!witness) return 0;
-
-    nodus_witness_mempool_t *mp = &witness->mempool;
-    int evicted = 0;
-    int write_idx = 0;
-
-    for (int i = 0; i < mp->count; i++) {
-        nodus_witness_mempool_entry_t *e = mp->entries[i];
-        if (!e) continue;
-
-        /* An entry NEITHER predicate can judge is KEPT: "I have no
-         * evidence" must never read as "already committed", which would
-         * turn this reaper back into the unconditional wipe it replaces.
-         *
-         * nodus_witness_nullifier_exists is FAIL-CLOSED (it answers
-         * "spent" on a missing DB or a query error, nodus_witness_db.c).
-         * That inherited posture is deliberate and kept: on a broken DB
-         * this reaper drops rather than accumulates, which is the safe
-         * direction for a bounded 64-slot pool. ⚠ That sentence describes
-         * the LEGACY walk ONLY — since O15K V-3 a class-201 claim is
-         * judged by a different table and fails the OTHER way (keep), for
-         * the reason spelled out on the branch below. */
-        bool decided = false;
-
-        /* O15K V-3 — ROUTE THE QUESTION BY ENTRY CLASS, because the two
-         * lanes commit a nullifier to two different tables.
-         *
-         * A class-201 CLAIM's nullifier is written to `v2_claims_spent`
-         * (nodus_witness_v2_claim_spend_insert); the legacy walk below
-         * reads `nullifiers`, whose only writer is the legacy commit path
-         * a successor commit bypasses. Asking the legacy table about a
-         * claim therefore always answered "not decided", and the class
-         * gate in nodus_witness_v2_entry_verdict answers UNJUDGED for a
-         * 201, so BOTH halves stayed silent: the entry was never reaped,
-         * read as live demand forever, and rotated the view every
-         * round_timeout_ms against a healthy leader until the pool
-         * filled at NODUS_W_MAX_MEMPOOL and real demand was refused.
-         *
-         * ⚠ THE TWO BRANCHES FAIL IN OPPOSITE DIRECTIONS, DELIBERATELY.
-         * DO NOT UNIFY THEM. nodus_witness_nullifier_exists is
-         * fail-closed to SPENT (drop) — correct for its own callers and
-         * kept byte-identical here. The claim lookup is a TRI-STATE and
-         * ONLY 1 means decided: a -1 fault maps to NOT SPENT, i.e. KEEP.
-         * This branch DELETES, and a wrong deletion silently loses a
-         * transaction a client is waiting on, so the unknown answer must
-         * leave the entry alone. See the table on
-         * nodus_witness_v2_claim_nullifier_spent.
-         *
-         * The claims table is NEVER consulted for a non-claim entry and
-         * the legacy table is never consulted for a claim: the two
-         * nullifier namespaces are distinct, and conflating them could
-         * manufacture a false "spent" verdict on the legacy
-         * double-spend path — worse than the defect this closes. */
-        if (e->tx_type == NODUS_W_TX_V2_CLAIM) {
-            for (int j = 0; j < e->nullifier_count; j++) {
-                if (nodus_witness_v2_claim_nullifier_spent(
-                        witness, e->nullifiers[j]) == 1) {
-                    decided = true;
-                    break;
-                }
-            }
-        } else {
-            for (int j = 0; j < e->nullifier_count; j++) {
-                if (nodus_witness_nullifier_exists(witness, e->nullifiers[j])) {
-                    decided = true;
-                    break;
-                }
-            }
-        }
-
-        /* O15I V1 — THE SECOND HALF, and the only one that can judge a
-         * successor class-200 envelope. Those are pooled with
-         * nullifier_count == 0 (the legacy nullifier walk is skipped on a
-         * successor, nodus_witness_peer.c), so the loop above never even
-         * runs for them and NOTHING could ever remove one: mempool_pop_
-         * batch is leader-only, remove_by_conn needs a client_conn a
-         * forwarded entry does not have, and mempool_clear is teardown.
-         * A finished envelope therefore sat in a follower's pool forever
-         * and armed the P3 deadman against a healthy leader.
-         *
-         * Asked SECOND and only when the cheap predicate said nothing:
-         * the derivation is a decode plus the full commitment chain.
-         * The collapse is the SHARED rule, never open-coded here — that
-         * is what keeps this reaper and bft_p3_live_demand agreeing on
-         * exactly which entries are finished. */
-        if (!decided &&
-            nodus_witness_v2_entry_is_decided(
-                nodus_witness_v2_entry_verdict(witness, e->tx_data,
-                                               e->tx_len)))
-            decided = true;
-
-        if (decided) {
-            nodus_witness_mempool_entry_free(e);
-            mp->entries[i] = NULL;
-            evicted++;
-        } else {
-            /* Stable compaction — survivors keep their relative order,
-             * so the fee ranking mempool_add established is untouched. */
-            mp->entries[write_idx++] = e;
-        }
-    }
-
-    for (int i = write_idx; i < mp->count; i++)
-        mp->entries[i] = NULL;
-    mp->count = write_idx;
-
-    return evicted;
-}
-
-/*
- * Drain DECIDED mempool entries, once per epoch.
- *
- * Forwarded entries (client_conn == NULL) would otherwise be stranded
- * forever, since no client disconnect triggers remove_by_conn for them.
- *
- * O15I P3(c) — the VERDICT: this used to nodus_witness_mempool_clear()
- * the whole mempool. Under P3(b) a follower legitimately holds forwarded
- * work so a dead leader's demand exists on more than one node, and those
- * entries are exactly what arms the P3(a) deadman — a blind wipe deleted
- * the evidence of the stall, once a minute, while the stall was still
- * happening. The reaper now drops an entry only when it is FINISHED —
- * its nullifier already committed, or (O15I V1, successor class-200)
- * nodus_witness_v2_entry_verdict saying its intent is committed, its
- * expiry has passed, or its bytes no longer decode. Every one of those
- * is a test the leader's own batch selection applies too. Full
- * rationale: nodus_witness.h.
- *
- * O15I V1 — THE LATCH. The epoch gate is a ~2 s WINDOW, not an edge, and
- * the tick runs ~20x/s, so the scan ran ~40 times per epoch. The verdict
- * now includes the successor entry derivation (a decode plus the full
- * commitment chain per class-200 entry, which cannot be cached on the
- * entry), so ~40 passes is no longer a rounding error. `last_evict_epoch`
- * records the epoch stamp this reaper last ran FOR, collapsing the window
- * back to one scan. It is set INSIDE the body, after the pool gate: an
- * epoch in which this node holds nothing must not burn the latch for an
- * epoch in which it later holds work.
- *
- * ── capacity season: THE ROLE GATE IS GONE ────────────────────────────
- * This used to require `!nodus_witness_bft_is_leader(witness)`, so a node
- * never cleaned its pool while it was leading — and a leader is precisely
- * the node whose pool matters, because it is the one selecting batches
- * from it. The only remover left for a leader's stale entries was batch
- * selection itself: the entry had to be POPPED into a candidate batch and
- * BURNED through the seam before it could be freed. Measured in the
- * 164744Z rehearsal, node1 pooled 26 entries, proposed exactly ONCE, and
- * that single proposal had to drop 13 stale claims through the seam
- * before it could form a block. Reaping is read-only over committed state
- * and cannot touch a round in flight — entries in a live batch were
- * removed from the pool by mempool_pop_batch — so there was never a
- * reason for the role to gate it. Every OTHER gate (a non-empty pool, the
- * epoch window, the last_evict_epoch latch) is unchanged.
- *
- * Non-static so test executables (compiled with NODUS_WITNESS_INTERNAL_API
- * via register_witness_test) can drive the GATE, not just the body — the
- * removed role condition is only provable by calling this with a witness
- * that IS the leader. Not declared in any public header; the one
- * production caller is nodus_witness_tick.
- *
- * @return the number of entries evicted, or -1 when a gate declined.
- */
-int nodus_witness_mempool_reap_epoch(nodus_witness_t *witness) {
-    if (!witness) return -1;
-    if (witness->mempool.count <= 0) return -1;
-    if (nodus_time_now() - witness->last_epoch >= 2) return -1;
-    if (witness->last_evict_epoch == witness->last_epoch) return -1;
-
-    /* Runs once right after the epoch tick rebuilds the roster. */
-    witness->last_evict_epoch = witness->last_epoch;
-    int before = witness->mempool.count;
-    int dropped = nodus_witness_mempool_evict_committed(witness);
-    if (dropped > 0)
-        fprintf(stderr, "WITNESS: evicted %d/%d decided mempool entries "
-                "(%d still pending)\n",
-                dropped, before, witness->mempool.count);
-    return dropped;
-}
+/* R3 W4 — nodus_witness_pending_forward_expire, nodus_witness_v2_entry_verdict,
+ * nodus_witness_v2_entry_is_decided, nodus_witness_mempool_evict_committed and
+ * nodus_witness_mempool_reap_epoch are DELETED with the closed consensus
+ * lane: they judged and drained the legacy `pending_forwards` table and the
+ * legacy in-memory mempool, both deleted (the version-3 lane's mempool is
+ * the Comet reactor's own, cmt_mem.c). The full contracts, including the
+ * class-routed nullifier-vs-claims judgement O15K V-3 and O15I V1 built up,
+ * are gone with the state they judged. */
 
 /**
- * ORCHESTRATOR delta 6, item A (a live-node defect fix) — MESH
- * MAINTENANCE, factored into a helper called from TWO SITES in
- * `nodus_witness_tick`: once EARLY, for the Comet lane (right after the
- * transport poll, before `witness_cmt_tick` — run order poll -> peer
- * tick -> roster refresh -> witness_cmt_tick, so a peer identified in
- * THIS tick's poll is scanned by the transport glue in the SAME tick),
- * and once at its ORIGINAL position in the legacy body, UNCHANGED, so
- * the legacy lane's own call order and "no roster change -> return"
- * behaviour stay byte-for-byte what they are today.
- *
- * Before this fix, NOTHING below the transport poll ever ran on a
- * version-3 chain — `nodus_witness_tick`'s own early return on
- * `v2_successor` skipped straight to `witness_cmt_tick`, so
- * `nodus_witness_peer_tick` (dead-connection cleanup, dialing every
- * roster witness with backoff, the IDENT exchange that sets
- * `peers[i].identified`) and the 60 s epoch roster rebuild below never
- * ran either. Consequence: `net_slot_up` (nodus_witness_cmt_net.c:
- * 489-493, `conn && identified`) was never true, `net_scan_peers` never
- * added a slot, both reactors ran with ZERO peers forever, and no block
- * could ever be committed on a real multi-node fleet — the live test
- * did not catch it because its peer fixture sets `identified`/`conn` by
- * hand rather than through a real dial.
- *
- * Verified before writing this fix: `nodus_witness_peer_tick` (peer.c
- * :1704-1900) has NO legacy-BFT dependency (its only extra path is the
- * seed-bootstrap retry); `witness->peers[]` is an upsert table keyed by
- * `witness_id` (peer.c `witness_peer_upsert` / `find_peer_by_id`), so a
- * roster swap never re-indexes a peer — the transport glue's
- * slot-by-index contract holds regardless of which lane calls this.
+ * MESH MAINTENANCE. Called unconditionally, once per tick, before the
+ * role-specific branch: dead-connection cleanup, dialing every roster
+ * witness with backoff, the IDENT exchange that sets `peers[i].identified`
+ * (`nodus_witness_peer_tick`), then the 60 s epoch roster rebuild below.
+ * Both surviving roles need it — a version-3 successor needs identified
+ * peers for the Comet transport glue's `net_scan_peers`, and a pre-genesis
+ * node needs them for the pinned joiner's gbundle fetch — so it no longer
+ * has a legacy-only call site to be unchanged at.
  *
  * @return true when there was NO roster change this tick (the epoch
  *         timer fired and the rebuilt roster is identical to the
- *         current one). The LEGACY call site returns on true, exactly
- *         reproducing the pre-refactor inline `if (!changed) return;`.
- *         THE COMET CALL SITE MUST IGNORE THIS RETURN VALUE: there is
- *         no legacy round phase to defer a swap for on that lane —
- *         `round_state.phase` stays `NODUS_W_PHASE_IDLE` forever there
- *         (nothing reachable on the Comet lane ever mutates it, since
- *         the entire legacy BFT round machinery below is unreachable
- *         from it), so the swap below is always the IMMEDIATE branch on
- *         that lane, never the deferred one, and "no change" is simply
- *         nothing left to do this tick — never a reason to skip
- *         draining the Comet state machine.
+ *         current one). THE CALLER MUST IGNORE THIS RETURN VALUE ON A
+ *         VERSION-3 CHAIN: there is no legacy round phase left to defer
+ *         a swap for, so the swap below is always the IMMEDIATE branch,
+ *         and "no change" is simply nothing left to do this tick — never
+ *         a reason to skip draining the Comet state machine.
  */
 static bool witness_mesh_tick(nodus_witness_t *witness) {
     /* Peer mesh: reconnection, IDENT exchange */
@@ -2507,42 +2063,16 @@ static bool witness_mesh_tick(nodus_witness_t *witness) {
             return true;
         }
 
-        /* Try to swap immediately if IDLE */
-        if (witness->round_state.phase == NODUS_W_PHASE_IDLE) {
-            /* F17 A2 — transport-only swap. BFT config is now refreshed
-             * from the chain committee at round-start (no gossip-driven
-             * quorum changes). On the Comet lane this IMMEDIATE branch
-             * is the only one ever taken (round_state.phase is IDLE
-             * forever there, per this function's own doc comment); the
-             * "defer" branch below exists for the legacy lane's
-             * round-active window only. */
-            memcpy(&witness->roster, &witness->pending_roster,
-                   sizeof(nodus_witness_roster_t));
-            witness->pending_roster_ready = false;
-
-            fprintf(stderr, "WITNESS: epoch roster swap: %u witnesses "
-                    "(transport)\n",
-                    witness->roster.n_witnesses);
-        } else {
-            /* Round active — defer swap to next IDLE */
-            witness->pending_roster_ready = true;
-            fprintf(stderr, "WITNESS: epoch roster pending (round active, "
-                    "phase=%d, pending=%u witnesses)\n",
-                    witness->round_state.phase,
-                    witness->pending_roster.n_witnesses);
-        }
-    }
-
-    /* Check if deferred roster swap can happen now */
-    if (witness->pending_roster_ready &&
-        witness->round_state.phase == NODUS_W_PHASE_IDLE) {
-        /* F17 A2 — transport-only swap (see comment at immediate-swap
-         * branch above). */
+        /* R3 W4 — always immediate: there is no legacy round-active
+         * window left to defer a swap for (the legacy round_state and
+         * its phase are deleted with the closed consensus lane). F17
+         * A2 — transport-only swap; BFT config is refreshed from the
+         * chain committee at round-start (no gossip-driven quorum
+         * changes). */
         memcpy(&witness->roster, &witness->pending_roster,
                sizeof(nodus_witness_roster_t));
-        witness->pending_roster_ready = false;
 
-        fprintf(stderr, "WITNESS: deferred roster swap: %u witnesses "
+        fprintf(stderr, "WITNESS: epoch roster swap: %u witnesses "
                 "(transport)\n",
                 witness->roster.n_witnesses);
     }
@@ -2587,267 +2117,29 @@ void nodus_witness_tick(nodus_witness_t *witness) {
     if (witness->tcp)
         nodus_tcp_poll((nodus_tcp_t *)witness->tcp, witness_poll_timeout_ms);
 
-    /* ── FLEET-TM-R3 W3 (D-17 rev 10 item 9), delta 6 item A — ON A
-     * VERSION-3 CHAIN, mesh maintenance runs FIRST (see witness_mesh_tick's
-     * own doc comment for why its "no roster change" return is IGNORED
-     * here), THEN the Comet drain — poll -> peer tick -> roster refresh ->
-     * witness_cmt_tick, so a peer identified in this tick's poll is
-     * scanned by the transport glue in the SAME tick. Nothing else of the
-     * legacy tick below this point runs on a version-3 chain: the old
-     * lane is closed, not deleted — its body is untouched and unreachable
-     * rather than individually re-audited for v2_successor guards it may
-     * or may not already carry. */
+    /* R3 W4 — THE OLD LANE IS DELETED, NOT MERELY CLOSED. Mesh
+     * maintenance runs unconditionally (poll -> peer tick -> roster
+     * refresh), because BOTH remaining roles need it: a version-3
+     * successor needs identified peers for the Comet transport glue's
+     * net_scan_peers, and a pre-genesis node needs them for the pinned
+     * joiner's gbundle fetch (see witness_mesh_tick's own doc comment).
+     * What runs next is role-exclusive: a successor drains the Comet
+     * lane; anything else (pre-genesis, no role assigned yet —
+     * witness_post_open_gate's outcome (b)) drives the pinned-genesis
+     * joiner tick instead. There is no third role: the post-open gate
+     * refuses every chain that is not version-3 at open. */
+    (void)witness_mesh_tick(witness);
     if (witness->v2_successor) {
-        (void)witness_mesh_tick(witness);
         witness->cmt_next_deadline_ns = witness_cmt_tick(witness);
-        return;
+    } else {
+        /* O15E Faz D — pinned-genesis joiner: pull the genesis bundle
+         * while a fresh node has a pin but no successor chain yet.
+         * No-op once adopted or when this node is not a joiner. */
+        nodus_witness_v2_join_tick(witness);
     }
-
-    /* BFT timeout checks */
-    nodus_witness_bft_check_timeout(witness);
-
-        /* PR 3 Yol B — bootstrap state machine retry/timeout. */
-    nodus_witness_bootstrap_tick(witness);
-
-    /* H-15: Pending forward timeout (30s) */
-    (void)nodus_witness_pending_forward_expire(witness, nodus_time_now());
-
-    /* O15E Faz B — successor sync driver: head-hint broadcast +
-     * in-flight range expiry. Self-throttled; a no-op on legacy chains
-     * and on unarmed nodes (the gate is asked inside). */
-    nodus_witness_v2_sync_tick(witness);
-
-    /* O15E Faz D — pinned-genesis joiner: pull the genesis bundle while
-     * a fresh node has a pin but no successor chain yet. No-op once
-     * adopted or when this node is not a joiner. */
-    nodus_witness_v2_join_tick(witness);
-
-    /* MED-28: drop the retained reproposal batch once the chain has
-     * advanced past its height — the C5 binding it exists to satisfy can
-     * no longer be issued, so holding the entries would leak them. */
-    /* O15O Faz 1 — RELEASING AGAINST A BOGUS TIP IS THE HARM, so a
-     * faulted height read holds the batch instead of dropping it. These
-     * entries are the reproposal the C5 binding may still have to be
-     * satisfied with; a fault answering 0 cannot make the release
-     * condition true for a non-zero retained height, but stating the
-     * refusal explicitly keeps the guarantee independent of that
-     * arithmetic accident. The read stays behind the `present` test so an
-     * idle tick still costs no DB round trip. */
-    if (witness->retained_batch.present) {
-        uint64_t tip = 0;
-        if (nodus_witness_block_height_checked(witness, &tip) != 0) {
-            fprintf(stderr, "%s: MED-28 — chain-height read faulted; "
-                    "HOLDING the retained batch at height %llu rather "
-                    "than releasing it against an unknown tip\n", LOG_TAG,
-                    (unsigned long long)witness->retained_batch.height);
-        } else if (witness->retained_batch.height <= tip) {
-            fprintf(stderr, "WITNESS: MED-28 retained batch superseded "
-                    "(height=%llu committed) — releasing\n",
-                    (unsigned long long)witness->retained_batch.height);
-            nodus_witness_retained_batch_clear(witness);
-        }
-    }
-
-    /* ── O15R B′ — release a parked PROPOSE that can no longer be used ──
-     *
-     * The ordinary release is the replay itself, in bft_view_move_finish.
-     * Two states never reach it and would otherwise hold the frame's heap
-     * buffer indefinitely:
-     *   - the chain reached the height the frame proposes, by SYNC or by
-     *     another node's block, so the round it describes is settled;
-     *   - our view moved past the view it names by a route that did not
-     *     match the replay (the same reason the C5 binding above needs a
-     *     tick release: a node that learns the outcome instead of voting
-     *     on it never runs the handler that clears the state).
-     *
-     * The height read is behind the `present` test, so an idle tick still
-     * costs no DB round trip. A FAULTED read HOLDS the frame, matching
-     * both releases above: dropping it against an unknown tip would throw
-     * away a proposal that is still replayable, which is the harm — and
-     * the view half of the test needs no DB at all. */
-    if (witness->parked_propose.present) {
-        if (witness->current_view > witness->parked_propose.view) {
-            fprintf(stderr, "WITNESS: the PROPOSE parked for view %u is "
-                    "behind our view %u — releasing\n",
-                    witness->parked_propose.view, witness->current_view);
-            nodus_witness_parked_propose_clear(witness);
-        } else {
-            uint64_t tip = 0;
-            if (nodus_witness_block_height_checked(witness, &tip) != 0) {
-                fprintf(stderr, "%s: parked PROPOSE — chain-height read "
-                        "faulted; HOLDING the frame parked for view %u "
-                        "rather than releasing it against an unknown tip\n",
-                        LOG_TAG, witness->parked_propose.view);
-            } else if (tip >= witness->parked_propose.height) {
-                fprintf(stderr, "WITNESS: the PROPOSE parked at height %llu "
-                        "is superseded by the committed chain (tip=%llu) — "
-                        "releasing\n",
-                        (unsigned long long)witness->parked_propose.height,
-                        (unsigned long long)tip);
-                nodus_witness_parked_propose_clear(witness);
-            }
-        }
-    }
-
-    /* O15C-D.1 — release a C5 binding whose height the chain has already
-     * reached. handle_propose clears the binding when the matching
-     * PROPOSE arrives, but a node that instead learns the block through
-     * SYNC never runs that gate, and the stale binding would then reject
-     * every proposal at every later height. */
-    /* O15O Faz 1 — CLEARING THE BINDING AGAINST A BOGUS TIP IS THE HARM.
-     * The C5 binding is the safety property a view change carries
-     * forward; dropping it because a DB read failed would let the next
-     * leader propose a value the cluster's prepared certificate forbids.
-     * On a fault we keep the binding — the conservative direction, and
-     * the same one the release condition's arithmetic already favours.
-     * Read stays behind the `reproposal_required` test. */
-    if (witness->reproposal_required) {
-        uint64_t tip = 0;
-        if (nodus_witness_block_height_checked(witness, &tip) != 0) {
-            fprintf(stderr, "%s: C5 — chain-height read faulted; KEEPING "
-                    "the binding at height %llu rather than releasing it "
-                    "against an unknown tip\n", LOG_TAG,
-                    (unsigned long long)witness->reproposal_height);
-        } else if (tip >= witness->reproposal_height) {
-            fprintf(stderr, "WITNESS: C5 binding at height %llu satisfied by "
-                    "committed chain — releasing\n",
-                    (unsigned long long)witness->reproposal_height);
-            witness->reproposal_required = false;
-            witness->reproposal_height = 0;
-            witness->reproposal_prepared_view = 0;
-            memset(witness->reproposal_tx_hash, 0, NODUS_T3_TX_HASH_LEN);
-        }
-    }
-
-    /* Block timer: propose batch if mempool has TXs and interval elapsed */
-    if (nodus_witness_bft_is_leader(witness) &&
-        witness->round_state.phase == NODUS_W_PHASE_IDLE &&
-        witness->mempool.count > 0) {
-
-        uint64_t now_ms = nodus_time_now() * 1000ULL;
-        if (now_ms - witness->mempool.last_block_time_ms >=
-            NODUS_W_BLOCK_INTERVAL_MS) {
-            (void)nodus_witness_bft_start_round_from_mempool(witness);
-        }
-    }
-
-    (void)nodus_witness_mempool_reap_epoch(witness);
-
-    /* Peer mesh + epoch roster refresh (delta 6, item A) — factored into
-     * witness_mesh_tick so the SAME code also runs, early, on the Comet
-     * lane above. Here, at its ORIGINAL position, this is byte-for-byte
-     * what it always was: peer_tick, then the epoch rebuild, and "no
-     * roster change" returns out of this tick exactly as the pre-
-     * refactor inline `if (!changed) return;` always did. */
-    if (witness_mesh_tick(witness)) {
-        return;
-    }
-
-    /* State sync: check if behind peers and need to catch up */
-    nodus_witness_sync_check(witness);
-    /* Faz 4D 2026-05-02 — halt recovery (Hybrid model). No-op unless
-     * safety_halt latched AND config.halt_auto_recover enabled AND
-     * historical committee snapshot present. Default: false / no-op. */
-    nodus_witness_halt_recovery_check(witness);
 }
 
 /* ── Tier 3 dispatch (BFT message routing) ───────────────────────── */
-
-#ifdef QGP_FAULT_INJECT
-/* Faz 5.4 — fault-inject drop predicate (test-build-only). */
-static nodus_witness_drop_predicate_t g_drop_pred = NULL;
-
-void nodus_witness_test_inject_drop(nodus_witness_drop_predicate_t pred) {
-    g_drop_pred = pred;
-}
-#endif
-
-/* ── O15R B′ — the parked next-view PROPOSE slot ──────────────────── */
-
-void nodus_witness_parked_propose_clear(nodus_witness_t *witness) {
-    if (!witness) return;
-    free(witness->parked_propose.bytes);
-    memset(&witness->parked_propose, 0, sizeof(witness->parked_propose));
-}
-
-bool nodus_witness_parked_propose_store(nodus_witness_t *witness,
-                                        uint32_t view, uint64_t height,
-                                        const uint8_t *sender_id,
-                                        const uint8_t *payload, size_t len) {
-    if (!witness || !sender_id || !payload || len == 0) return false;
-
-    /* The frame already passed the decoder, which enforces this bound
-     * itself — so this is a restatement at the point of ALLOCATION rather
-     * than a new rule, and it keeps the one heap buffer this slot owns
-     * bounded by something visible at the malloc. */
-    if (len > NODUS_T3_MAX_MSG_SIZE) {
-        fprintf(stderr, "%s: refusing to park a %zu-byte PROPOSE for view "
-                "%u — above the T3 frame limit\n", LOG_TAG, len, view);
-        return false;
-    }
-
-    if (witness->parked_propose.present) {
-        /* KEEP-FIRST at an equal (view, height). The first frame from
-         * that view's leader is the one a C5 binding would have been
-         * computed against; a second arrival is a duplicate or a leader
-         * equivocating, and neither should displace it. */
-        if (witness->parked_propose.view == view &&
-            witness->parked_propose.height == height)
-            return false;
-        /* A frame parked for a LOWER view can no longer be replayed into
-         * any view we will enter, so the newer one takes the slot. A
-         * frame for a HIGHER view is not replaced: it is the one still
-         * ahead of us, and this one is already stale by comparison. */
-        if (witness->parked_propose.view >= view)
-            return false;
-        nodus_witness_parked_propose_clear(witness);
-    }
-
-    uint8_t *copy = malloc(len);
-    if (!copy) {
-        fprintf(stderr, "%s: cannot park the PROPOSE for view %u — out of "
-                "memory; the round will be lost as it is today\n",
-                LOG_TAG, view);
-        return false;
-    }
-    memcpy(copy, payload, len);
-
-    witness->parked_propose.present = true;
-    witness->parked_propose.view    = view;
-    witness->parked_propose.height  = height;
-    witness->parked_propose.len     = len;
-    witness->parked_propose.bytes   = copy;
-    memcpy(witness->parked_propose.sender_id, sender_id,
-           NODUS_T3_WITNESS_ID_LEN);
-
-    fprintf(stderr, "%s: parked the PROPOSE for view %u (height %llu, "
-            "%zu bytes) — we hold a lower view, and it is broadcast only "
-            "once\n", LOG_TAG, view, (unsigned long long)height, len);
-    return true;
-}
-
-/* FLEET-TM-R3 W3 (D-17 rev 10 (9)) — the old consensus lane is CLOSED,
- * not deleted: every handler for the dropped verbs still exists,
- * byte-unchanged, for the deletion wave; this node simply never reaches
- * them. A peer still running the pre-W3 lane (or an old build) may keep
- * sending them, so the WARN is rate-limited per verb type rather than
- * silent — silent would make a stuck peer invisible, and unthrottled
- * would let that peer flood this node's log. */
-#define NODUS_W_CLOSED_LANE_LOG_INTERVAL_S 60u
-
-static void witness_cmt_drop_closed_lane(nodus_t3_msg_type_t type,
-                                         const char *method) {
-    static uint64_t last_log_s[40];
-    unsigned idx = (unsigned)type;
-    uint64_t now_s = (uint64_t)time(NULL);
-
-    if (idx >= (sizeof(last_log_s) / sizeof(last_log_s[0]))) return;
-    if (now_s - last_log_s[idx] < NODUS_W_CLOSED_LANE_LOG_INTERVAL_S) return;
-    last_log_s[idx] = now_s;
-    fprintf(stderr, "%s: closed lane — dropping %s (D-17 rev 10 (9): the "
-            "old consensus lane is closed in W3, never started on any "
-            "chain)\n", LOG_TAG, method);
-}
 
 void nodus_witness_dispatch_t3(nodus_witness_t *witness,
                                struct nodus_tcp_conn *conn,
@@ -2869,15 +2161,6 @@ void nodus_witness_dispatch_t3(nodus_witness_t *witness,
                 conn ? conn->ip : "?", conn ? conn->port : 0, hex);
         return;
     }
-
-#ifdef QGP_FAULT_INJECT
-    /* Faz 5.4 — drop predicate check (post-decode, pre-handler).
-     * The drop is silent: no log spam, no state mutation, no peer
-     * upsert. Tests can install a predicate scoped to specific
-     * msg.type / sender_id combinations to simulate partition. */
-    if (g_drop_pred && g_drop_pred(&msg, msg.header.sender_id))
-        return;
-#endif
 
     /* Look up sender in roster to get public key for verification */
     int sender_idx = nodus_witness_roster_find(&witness->roster,
@@ -2902,10 +2185,11 @@ void nodus_witness_dispatch_t3(nodus_witness_t *witness,
          * therefore costs one Dilithium keypair plus one DHT put.
          *
          * O15O Faz 4 closed the consequence that mattered: every
-         * consensus-affecting T3 consumer now re-authorizes the sender
-         * against the chain-derived committee inside its own handler, the
-         * COMMIT handler included (nodus_witness_bft.c, the O15O Faz 4 gate
-         * above nodus_witness_v2_cert_note).
+         * consensus-affecting T3 consumer re-authorizes the sender against
+         * the chain-derived committee inside its own handler. The closed
+         * lane's COMMIT handler did this at bft.c's own gate; on the
+         * version-3 lane the equivalent authority is the Comet reactor's
+         * own validator-set check, inside the transport glue below.
          *
          * BINDING THIS VERIFY ITSELF TO THE COMMITTEE IS NOT DONE, AND NOT
          * AN OVERSIGHT. Resolving a committee requires a height, and no
@@ -2952,25 +2236,29 @@ void nodus_witness_dispatch_t3(nodus_witness_t *witness,
      *
      * SCOPE. Exactly the consensus-affecting set the quarantine switch
      * below already treats as such — that list is the source's own
-     * definition, not a new judgement. Bootstrap (version 1, runs before
-     * a committee exists), IDENT, roster and sync traffic are NOT gated:
+     * definition, not a new judgement. R3 W4 deleted the legacy
+     * bootstrap/sync verbs this comment used to name; the gate list is
+     * now exactly verbs 35-39. IDENT and roster (9-11) are NOT gated:
      * IDENT is not wsig-verified at this point, so its version claim is
      * unauthenticated and must not be acted on. A stale peer may still
      * become known to the mesh; it simply cannot influence consensus.
+     * The chain_config vote-collect RPC (14-15) and the genesis bundle
+     * (24-25) are not gated either — 14-15 decode but fall to the
+     * dispatcher's `default:` log-and-drop (register R3-W4-D-8), and
+     * 24-25 is pre-consensus bootstrap traffic, not a live BFT round.
      *
      * BOTH directions fail closed: an older version and an unknown newer
      * version are equally rejected by the exact-match test.
      *
-     * FLEET-TM-R3 W3 (D-16 rev 5, atlas-dec-0c86593601db977cd5af648b78910004
-     * rev 5, APPROVED) — THIS LIST BECOMES EXACTLY VERBS 35-39. The old
-     * lane's eight consensus-affecting verbs (PROPOSE/PREVOTE/PRECOMMIT/
-     * COMMIT/VIEWCHG/NEWVIEW/FWD_REQ/FWD_RSP) and the two view-authority
-     * verbs (VIEWOK/VIEWOK_REQ) are no longer gated HERE: they are
-     * log-and-dropped by the routing switch below before this authenticated
-     * version even matters — nodus-server never starts the legacy BFT on
-     * any chain (D-17 rev 10 (9)), so there is no protocol version of the
-     * OLD lane left to protect. The identical list in the quarantine
-     * switch below must move with this one. */
+     * FLEET-TM-R3 W3/W4 (D-16 rev 5, atlas-dec-0c86593601db977cd5af648b78910004
+     * rev 5, APPROVED) — THIS LIST IS EXACTLY VERBS 35-39. The old lane's
+     * eight consensus-affecting verbs (PROPOSE/PREVOTE/PRECOMMIT/COMMIT/
+     * VIEWCHG/NEWVIEW/FWD_REQ/FWD_RSP) and the two view-authority verbs
+     * (VIEWOK/VIEWOK_REQ) are DELETED, not merely unheld here: their enum
+     * values are retired and their decoders are gone, so a frame naming
+     * one never reaches this authenticated gate at all — there is no
+     * protocol version of the OLD lane left to protect. The identical
+     * list in the quarantine switch below must move with this one. */
     switch (msg.type) {
     case NODUS_T3_CMT_STATE:
     case NODUS_T3_CMT_DATA:
@@ -2999,9 +2287,13 @@ void nodus_witness_dispatch_t3(nodus_witness_t *witness,
 
     /* Fix 3: if we have self-quarantined due to chain_id disagreement with a
      * majority of peers on startup, refuse to participate in BFT consensus.
-     * Still accept IDENT / ROST_Q/R (so the peer mesh stays alive) and SYNC
-     * messages (read-only, can't affect chain state) so an operator can
-     * diagnose and recover without tearing the node down. */
+     * R3 W4 deleted the legacy sync verbs this comment used to name; the
+     * quarantine switch below refuses exactly verbs 35-39 (the only
+     * consensus-affecting set) and lets everything else through — IDENT /
+     * ROST_Q/R (so the peer mesh stays alive), the chain_config
+     * vote-collect RPC (14-15, dropped at `default:` regardless) and the
+     * genesis bundle (24-25) — so an operator can diagnose and recover
+     * without tearing the node down. */
     if (witness->quarantined) {
         switch (msg.type) {
         /* FLEET-TM-R3 W3 (D-16 rev 5) — the same list as the version gate
@@ -3022,44 +2314,29 @@ void nodus_witness_dispatch_t3(nodus_witness_t *witness,
 
     /* Route to appropriate handler.
      *
-     * FLEET-TM-R3 W3 (D-16 rev 5, D-17 rev 10 (9), both APPROVED) — THE
-     * TABLE BELOW REPLACES THE PRE-W3 ROUTING. Verbs 1-8 (legacy
-     * consensus + forward), 12-15 (legacy sync, chain_config vote), 16-19
-     * (bootstrap discovery, genesis fetch), 20-23 (old-lane V2 block
-     * sync) and 26-27 (view authority) are log-and-dropped: their
-     * handlers are UNCHANGED below this switch and untouched in the
-     * source, kept for the deletion wave, simply unreached from here.
+     * R3 W4 — verbs 1-8 (legacy consensus + forward), 12-13/16-23
+     * (legacy sync, bootstrap discovery/genesis fetch, old-lane V2 block
+     * sync) and 26-27 (view authority) are DELETED, not merely dropped:
+     * their enum values are retired numbers (see nodus_tier3.h) and
+     * their decoders are gone, so a frame naming one never reaches
+     * nodus_t3_decode successfully and never reaches this switch at all
+     * — the `default:` case below is what answers it.
+     *
+     * Verbs 14-15 (chain_config vote-collect, register R3-W4-D-8) are
+     * the one exception in that range: their codec is KEPT (live
+     * consumers outside this file's own set — nodus_witness_chain_
+     * config.c, nodus_cc_client.c, nodus-cli.c), so a frame naming one
+     * DOES decode successfully and DOES reach this switch — it has no
+     * case here and falls to `default:`, which logs and drops it,
+     * unchanged since W3. The codec compiling is not the same thing as
+     * the RPC being reachable.
+     *
      * Verbs 9-11 (roster, ident — the transport mesh) and 24-25 (genesis
-     * bundle, package C2c's) are KEPT, byte-identical to before. Verbs
-     * 35-39 (the cometbft envelope) are NEW: the verb IS the channel, and
-     * this layer decodes nothing inside it — nodus_cmt_net_receive routes
-     * by channel to the reactor that marshalled the bytes. */
+     * bundle) are KEPT, byte-identical to before. Verbs 35-39 (the
+     * cometbft envelope) are the verb IS the channel: this layer decodes
+     * nothing inside it — nodus_cmt_net_receive routes by channel to the
+     * reactor that marshalled the bytes. */
     switch (msg.type) {
-    case NODUS_T3_PROPOSE:
-    case NODUS_T3_PREVOTE:
-    case NODUS_T3_PRECOMMIT:
-    case NODUS_T3_COMMIT:
-    case NODUS_T3_VIEWCHG:
-    case NODUS_T3_NEWVIEW:
-    case NODUS_T3_FWD_REQ:
-    case NODUS_T3_FWD_RSP:
-    case NODUS_T3_SYNC_REQ:
-    case NODUS_T3_SYNC_RSP:
-    case NODUS_T3_CC_VOTE_REQ:
-    case NODUS_T3_CC_VOTE_RSP:
-    case NODUS_T3_CHAIN_Q:
-    case NODUS_T3_CHAIN_R:
-    case NODUS_T3_GENESIS_REQ:
-    case NODUS_T3_GENESIS_RSP:
-    case NODUS_T3_V2_BLOCK:
-    case NODUS_T3_V2_HEAD:
-    case NODUS_T3_V2_RANGE_REQ:
-    case NODUS_T3_V2_RANGE_RSP:
-    case NODUS_T3_VIEWOK:
-    case NODUS_T3_VIEWOK_REQ:
-        witness_cmt_drop_closed_lane(msg.type, msg.method);
-        break;
-
     /* Peer mesh messages — KEPT (D-16 rev 5): the transport mesh, not
      * consensus. */
     case NODUS_T3_ROST_Q:
@@ -3129,34 +2406,11 @@ void nodus_witness_close(nodus_witness_t *witness) {
 
     witness->running = false;
 
-    /* Free any in-flight batch entries (prevents leak / corruption on shutdown) */
-    for (int i = 0; i < witness->round_state.batch_count; i++) {
-        if (witness->round_state.batch_entries[i]) {
-            nodus_witness_mempool_entry_free(witness->round_state.batch_entries[i]);
-            witness->round_state.batch_entries[i] = NULL;
-        }
-    }
-    witness->round_state.batch_count = 0;
-
-    /* MED-28 — same for the retained reproposal batch. */
-    nodus_witness_retained_batch_clear(witness);
-
-    /* O15R B′ — and for the parked next-view PROPOSE, whose one heap
-     * buffer would otherwise leak on a shutdown that lands mid-boundary. */
-    nodus_witness_parked_propose_clear(witness);
-
-    /* Clear mempool */
-    nodus_witness_mempool_clear(&witness->mempool);
-
-    /* S3 — drain the view-change records' heap-owned prepared-sig arrays.
-     * nodus_witness_vc_record_t::prepared::sigs became a heap pointer when
-     * the array grew to DNAC_MAX_ACTIVE_VALIDATORS records (an in-struct
-     * sigs[128] would have been ~76 MB); the whole array is swept here so
-     * a shutdown mid-view-change does not leak. Idempotent — clearing an
-     * already-empty record is a free(NULL) plus a memset. */
-    for (int i = 0; i < DNAC_MAX_ACTIVE_VALIDATORS; i++)
-        nodus_witness_vc_record_clear(&witness->view_changes[i]);
-    witness->view_change_count = 0;
+    /* R3 W4 — the in-flight batch_entries sweep, the retained reproposal
+     * batch, the parked next-view PROPOSE and the view-change records'
+     * heap-owned prepared-sig arrays are deleted with the closed
+     * consensus lane: round_state, retained_batch, parked_propose and
+     * view_changes[] no longer exist on nodus_witness_t. */
 
     /* Close peer mesh (clears conn references) */
     nodus_witness_peer_close(witness);

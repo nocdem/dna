@@ -1,6 +1,6 @@
 /*
  * Nodus — witness fail-close: state_root subtree faults + supply-gate
- * ambiguity (D1-D4, 2026-07-31).
+ * ambiguity (D1-D3, 2026-07-31).
  *
  * The defect class this pins: a transient DB failure used to be converted
  * into a legitimate "empty" or "zero" value and then fed into state_root.
@@ -13,6 +13,15 @@
  *       sentinel fallbacks are gone.
  *   D3  load_epoch_state_leaves zeroes the supply counters only when D1
  *       reports 1 (genuinely absent); a -1 propagates out.
+ *
+ *   R3 W4-D (Delta B): D4 — the v0.16 hard supply gate,
+ *   check_supply_invariant_v016, rejecting on a DB error rather than
+ *   silently passing — is DELETED here: the gate's only production
+ *   definition was nodus_witness_bft.c, deleted whole with the closed
+ *   consensus lane, and it has no version-2 successor. Its version-3
+ *   counterpart, nodus_witness_v2_supply_check -> nodus_rt_core_invariant,
+ *   is already pinned fail-closed by test_v2_gen.c §3.5 (L2-F1) and by
+ *   test_v2_pools.c.
  *
  * DETERMINISM: fault injection here is purely structural — DROP TABLE /
  * DELETE FROM against a temp DB. No sleeps, no timing, no randomness, no
@@ -34,13 +43,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-
-/* The v0.16 Stage F.1 hard supply gate. Non-static in the library for the
- * same reason as the other BFT primitives tests reach into (see the header
- * block of nodus_witness_bft_internal.h). Its canonical prototype belongs
- * in that header; it is declared locally here because that file was
- * outside this change's approved file whitelist. */
-int check_supply_invariant_v016(nodus_witness_t *w);
 
 static int g_fail = 0;
 static int g_checks = 0;
@@ -76,8 +78,10 @@ static int g_checks = 0;
  * in the open-time schema. supply_init is still called explicitly below,
  * because the table being present says nothing about the id = 1 ROW: the
  * schema deliberately seeds no row, and it is that row these tests need.
- * That is exactly what the genesis commit path does before it reaches
- * finalize_block (nodus_witness_bft.c:5924). */
+ * That is exactly what the genesis commit path did before reaching
+ * finalize_block — the legacy commit path this comment cited
+ * (nodus_witness_bft.c) is deleted with the closed consensus lane
+ * (R3 W4); nodus_witness_supply_init's own contract is unchanged. */
 static nodus_witness_t *fixture_new(const char *label, uint64_t genesis_supply) {
     nodus_witness_t *w = calloc(1, sizeof(*w));   /* multi-MB — never on the stack */
     if (!w) return NULL;
@@ -271,34 +275,17 @@ static void test_supply_get_three_valued(void) {
     fixture_free(w);
 }
 
-/* ── (c) The supply gate is no longer skipped on a DB error ─────────── */
-
-static void test_supply_gate_rejects_db_error(void) {
-    printf("  (c) check_supply_invariant_v016 on a DB error\n");
-
-    /* genesis_supply = 0 so expected == observed == 0 on the healthy DB;
-     * the gate therefore PASSES and a later -1 is unambiguously the fault
-     * we injected, not a real invariant violation. */
-    nodus_witness_t *w = fixture_new("supplygate", 0);
-    CHECK(w != NULL);
-    if (!w) return;
-
-    /* Healthy: the gate runs and holds. */
-    CHECK_EQ(check_supply_invariant_v016(w), 0);
-
-    /* Genuinely absent row (pre-genesis) — UNCHANGED behaviour: nothing
-     * to conserve yet, so the gate legitimately passes. */
-    CHECK_EQ(sqlite3_exec(w->db, "DELETE FROM supply_tracking WHERE id = 1",
-                          NULL, NULL, NULL), SQLITE_OK);
-    CHECK_EQ(check_supply_invariant_v016(w), 0);
-
-    /* DB error — the pin. Pre-D1 this returned 0 and finalize_block
-     * committed the block with the supply invariant never evaluated. */
-    CHECK_EQ(drop_table(w, "supply_tracking"), 0);
-    CHECK_EQ(check_supply_invariant_v016(w), -1);
-
-    fixture_free(w);
-}
+/* R3 W4-D (Delta B) — test_supply_gate_rejects_db_error, the "(c)" case
+ * pinning check_supply_invariant_v016 (the v0.16 hard supply gate), is
+ * DELETED: the gate's only production definition was nodus_witness_bft.c,
+ * deleted whole with the closed consensus lane. Per the orchestrator's
+ * answer to this file's Q1 finding: the gate has NO version-2 successor;
+ * its version-3 counterpart is nodus_witness_v2_supply_check (apply.c) ->
+ * nodus_rt_core_invariant (claims.c), already pinned fail-closed by
+ * test_v2_gen.c §3.5 (L2-F1) and by test_v2_pools. The two remaining
+ * "(c)"-family cases below do not call the deleted gate — they call the
+ * surviving nodus_witness_merkle_compute_epoch_state_root and
+ * nodus_witness_supply_get directly — and stay. */
 
 /* D3 in isolation: the counters that go into every epoch_state leaf must
  * not be silently zeroed on a DB error. With supply_tracking dropped, the
@@ -328,7 +315,7 @@ static void test_epoch_state_root_fails_on_supply_error(void) {
 /* ── main ───────────────────────────────────────────────────────────── */
 
 int main(void) {
-    printf("\nWitness fail-close: state_root subtrees + supply gate (D1-D4)\n");
+    printf("\nWitness fail-close: state_root subtrees + supply gate (D1-D3)\n");
 
     test_healthy_root_unchanged();
 
@@ -344,7 +331,6 @@ int main(void) {
     test_no_sentinel_substitution();
 
     test_supply_get_three_valued();
-    test_supply_gate_rejects_db_error();
     test_epoch_state_root_fails_on_supply_error();
 
     if (g_fail == 0) {

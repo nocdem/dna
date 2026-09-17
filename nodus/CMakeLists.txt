@@ -247,9 +247,11 @@ set(NODUS_SOURCES
     # (the O15J red-team's L2-F5). The spec is the shipped V1
     # implementation, cited line by line in the source.
     src/witness/nodus_witness_v2_econ.c
-    src/witness/nodus_witness_v2_qc.c
     src/witness/nodus_witness_v2_preflight.c
-    src/witness/nodus_witness_v2_finalize.c
+    # R3 W4 — nodus_witness_v2_qc.c and nodus_witness_v2_finalize.c are
+    # DELETED with the closed consensus lane: QC assembly and the legacy
+    # per-round finalize entry they provided served only the pre-Comet
+    # production/commit path, itself deleted (nodus_witness_v2_produce.c).
     # Ledger V2 O15B — the ONE production activation gate, the ingress
     # adapter it guards, and bounded sync.
     #
@@ -266,7 +268,11 @@ set(NODUS_SOURCES
     # which proves with `nm` that the fixture symbols are absent from
     # libnodus and nodus-server.
     src/witness/nodus_witness_v2_gate.c
-    src/witness/nodus_witness_v2_ingress.c
+    # R3 W4 — nodus_witness_v2_ingress.c is DELETED with the closed
+    # consensus lane: its ingress adapter (nodus_witness_v2_ingress_block)
+    # and blkframe codec were the old-lane range-apply path's only
+    # consumers, itself deleted (nodus_witness_v2_sync2.c's old-lane
+    # driver).
     src/witness/nodus_witness_v2_sync2.c
 
     # Ledger V2 — successor-chain block production, the genesis bundle
@@ -322,8 +328,11 @@ set(NODUS_SOURCES
 
     # Ledger V2 S3 — INACTIVE validator-set snapshot codec + QC V2
     # (certificate codec and historical verification). No consensus path
-    # calls either; the live 144-byte cert path (nodus_witness_cert.c)
-    # is untouched. Same ownership pattern as ledger_roots_v2.c.
+    # calls either. R3 W4 deleted nodus_witness_cert.c — the compact
+    # 144-byte quorum-cert path this comment used to contrast against —
+    # with the closed consensus lane; block finality now runs on the
+    # cometbft per-vote signature model instead of a compact cert.
+    # Same ownership pattern as ledger_roots_v2.c.
     ${SHARED_DIR}/dnac/vset_wire.c
     ${SHARED_DIR}/dnac/qc_v2.c
 
@@ -446,20 +455,18 @@ if(NOT WIN32)
         src/server/nodus_auth.c
         src/server/nodus_presence.c
         src/witness/nodus_witness.c
-        # O15C-D.1 — env-driven fault-injection predicate installer.
-        # Entire TU is #ifdef QGP_FAULT_INJECT; compiles to nothing in
-        # every normal build (and CMake rejects that flag for Release).
-        src/witness/nodus_witness_fault.c
-        src/witness/nodus_witness_o15h_diag.c   # O15H TEMPORARY — see header
+        # R3 W4 — nodus_witness_fault.c (the QGP_FAULT_INJECT drop-predicate
+        # installer), nodus_witness_o15h_diag.c, nodus_witness_bft.c,
+        # nodus_witness_sync.c, nodus_witness_mempool.c, nodus_witness_cert.c
+        # and nodus_witness_bootstrap.c are DELETED with the closed
+        # consensus lane: the legacy PBFT round, its sync/mempool/bootstrap
+        # support and its own fault-injection hook. The QGP_FAULT_INJECT
+        # option itself is deleted too (Delta B).
         src/witness/nodus_witness_db.c
-        src/witness/nodus_witness_bft.c
         src/witness/nodus_witness_merkle.c
         src/witness/nodus_witness_verify.c
         src/witness/nodus_witness_peer.c
         src/witness/nodus_witness_handlers.c
-        src/witness/nodus_witness_sync.c
-        src/witness/nodus_witness_mempool.c
-        src/witness/nodus_witness_cert.c
         src/witness/nodus_witness_spend_preimage.c
         src/witness/nodus_witness_validator.c
         src/witness/nodus_witness_delegation.c
@@ -472,7 +479,6 @@ if(NOT WIN32)
         src/witness/nodus_witness_vset.c
         src/witness/nodus_witness_genesis_seed.c
         src/witness/nodus_witness_chain_config.c
-        src/witness/nodus_witness_bootstrap.c
     )
 
     # ── Phase-C C1 (2026-07-21): shielded-pool ZK verify stack ─────────
@@ -681,39 +687,6 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NODUS_WITNESS_TEST_HOOKS)
         "production checks would be bypassable in the shipped binary")
 endif()
 
-# Faz 5.4 fault injection (M5). QGP_FAULT_INJECT enables the
-# nodus_witness_test_inject_drop predicate hook in dispatch_t3.
-# Same Release guard as the other test hooks above — a Release
-# binary with this flag would let a runtime caller silently drop
-# any T3 message via a stale predicate pointer.
-option(QGP_FAULT_INJECT "Enable T3 drop-predicate hook (test builds only)" OFF)
-if(CMAKE_BUILD_TYPE STREQUAL "Release" AND QGP_FAULT_INJECT)
-    message(FATAL_ERROR
-        "QGP_FAULT_INJECT must not be set in Release builds — "
-        "the drop predicate hook would be live in the shipped binary")
-endif()
-if(QGP_FAULT_INJECT)
-    add_compile_definitions(QGP_FAULT_INJECT)
-endif()
-
-# O15H — TEMPORARY diagnostic instrumentation (nodus_witness_o15h_diag.*).
-# Default OFF, so a build without this flag is byte-identical in behaviour
-# to a tree with the instrumentation deleted. Same Release guard as the
-# hooks above: a Release binary has no business writing a per-node
-# diagnostic trace. REVERT: delete this block, the source entry, the two
-# o15h_diag files and every O15H_DIAG(...) call site.
-option(O15H_DIAG "O15H temporary view-change causal tracing (test only)" OFF)
-if(CMAKE_BUILD_TYPE STREQUAL "Release" AND O15H_DIAG)
-    message(FATAL_ERROR
-        "O15H_DIAG must not be set in Release builds — it is temporary "
-        "diagnostic instrumentation, not a product feature")
-endif()
-if(O15H_DIAG)
-    # The gate macro is deliberately NOT named O15H_DIAG: that name is the
-    # call macro in nodus_witness_o15h_diag.h, and defining both collides.
-    add_compile_definitions(O15H_DIAG_ENABLED)
-endif()
-
 function(register_witness_test name)
     add_executable(${name} tests/${name}.c)
     target_link_libraries(${name} nodus dsa nodus)
@@ -902,29 +875,6 @@ target_link_libraries(test_batch_real_data nodus dsa nodus)
 add_executable(test_tier3 tests/test_tier3.c)
 target_link_libraries(test_tier3 nodus dsa nodus)
 add_test(NAME test_tier3 COMMAND test_tier3)
-
-# Tier 3 oversize sync_rsp wsig verify regression
-# (Regression for the 2026-05-03 production halt: receiver verify cap
-#  < sender sync_rsp cap, see nodus_t3_verify in nodus_tier3.c.)
-# O15N Faz 2C1 — the VIEW_OK wire (verbs 26/27). Codec level only:
-# nothing sends or handles them yet. Pins the round-trip at N=1 and at
-# the ceiling, BOTH method tables in BOTH directions, the decoder's hard
-# reject of an oversized entry array, and that both sides of the
-# bootstrap-domain predicate are live.
-add_executable(test_viewok_wire tests/test_viewok_wire.c)
-target_link_libraries(test_viewok_wire nodus dsa nodus)
-add_test(NAME test_viewok_wire COMMAND test_viewok_wire)
-
-add_executable(test_tier3_oversize tests/test_tier3_oversize.c)
-target_link_libraries(test_tier3_oversize nodus dsa nodus)
-add_test(NAME test_tier3_oversize COMMAND test_tier3_oversize)
-
-# PR 3 Yol B — witness auto-bootstrap wire format regression.
-# Covers w_chain_q / w_chain_r / w_genesis_req / w_genesis_rsp roundtrip,
-# nonce echo invariant, and 64 KB chain_def_blob cap. RED until A3 lands.
-add_executable(test_t3_bootstrap_wire tests/test_t3_bootstrap_wire.c)
-target_link_libraries(test_t3_bootstrap_wire nodus dsa nodus)
-add_test(NAME test_t3_bootstrap_wire COMMAND test_t3_bootstrap_wire)
 
 # Channel storage test
 add_executable(test_channel_store tests/test_channel_store.c)
@@ -1251,16 +1201,21 @@ add_test(NAME test_v2_migration_toctou COMMAND test_v2_migration_toctou)
 # network result algebra.
 #
 # NODUS_V2_TEST_AUTHORITY is defined ONLY on test targets that deliberately
-# compile the gate TU in — today this one and test_v2_sync_claims (:1237) —
-# and on NO library or server target. It compiles in the test-only fixture
-# that can grant synthetic activation authority, which is the only way the
-# ARMED ingress/sync paths can be exercised without deriving a real chain.
+# compile the gate TU in, and on NO library or server target. It compiles in
+# the test-only fixture that can grant synthetic activation authority, which
+# is the only way the ARMED ingress/sync paths can be exercised without
+# deriving a real chain.
 #
 # O15J Faz 3 corrected the older wording here, which claimed "HERE AND
-# NOWHERE ELSE": test_v2_sync_claims has carried the macro alongside this
-# target, so the sentence was false where it mattered most. What is true —
-# and what test_v2_gate_linked actually proves — is the absence from every
-# SHIPPED artefact, which is the claim the gate exists to defend.
+# NOWHERE ELSE": test_v2_sync_claims used to carry the macro alongside this
+# target too, so the sentence was false where it mattered most at the time.
+# R3 W4 deleted test_v2_sync_claims.c with the closed consensus lane
+# (nodus_witness_v2_sync_serve_block, its last live dependency, is gone) —
+# this target is once again the only one carrying the macro, but the
+# sentence stays corrected rather than reverting to the disproven claim.
+# What is true — and what test_v2_gate_linked actually proves — is the
+# absence from every SHIPPED artefact, which is the claim the gate exists to
+# defend.
 #
 # The symbol's ABSENCE from libnodus and nodus-server is not argued from
 # this line; test_v2_gate_linked proves it with `nm` against the linked
@@ -1340,12 +1295,15 @@ add_test(NAME test_v2_supply_linked
 # chain in production — see witness_archive_stale_chain_dbs).
 #
 # O15L Faz 5 — NODUS_WITNESS_INTERNAL_API is added so this executable can
-# see nodus_witness_bft_internal.h, which now carries the canonical
-# prototypes for the two chain-identity gates this test drives
-# (verify_chain_id, witness_chain_quorum_observe). NOT migrated to the
-# register_witness_test macro: that macro links `nodus dsa nodus` and
-# this target additionally needs `crypto`, so the migration would drop a
-# library. One define is the whole delta.
+# see witness_chain_quorum_observe's declaration, now in
+# nodus_witness_peer.h (R3 W4 deleted nodus_witness_bft_internal.h,
+# which used to carry that prototype, along with verify_chain_id, its
+# now-deleted twin gate — see nodus_witness_peer.h's own note at the
+# declaration). witness_chain_quorum_observe is the one chain-identity
+# gate this test still drives. NOT migrated to the register_witness_test
+# macro: that macro links `nodus dsa nodus` and this target additionally
+# needs `crypto`, so the migration would drop a library. One define is
+# the whole delta.
 add_executable(test_v2_restart_gate tests/test_v2_restart_gate.c)
 target_link_libraries(test_v2_restart_gate nodus dsa nodus crypto)
 target_compile_definitions(test_v2_restart_gate PRIVATE NODUS_WITNESS_INTERNAL_API)
@@ -1511,45 +1469,6 @@ register_witness_test(test_v2_econ)
 # repealable by a later governance vote.
 register_witness_test(test_v2_econ_params)
 
-# O15J Block 2 — the per-validator delegator CAP, LEGACY lane.
-# Drives apply_delegate directly through the NODUS_WITNESS_INTERNAL_API
-# surface (the apply_tx_to_state precedent). The Ledger V2 half of the
-# same rule is test_delegator_cap() inside test_v2_native, which owns the
-# envelope fixture.
-#
-# RESTORED during integration: Block 2C's worktree was branched BEFORE
-# Block 2B landed, so copying C's CMakeLists.txt over the tree silently
-# reverted this registration and the suite count stayed flat instead of
-# growing. Caught by counting tests rather than by reading the diff.
-register_witness_test(test_delegator_cap)
-
-register_witness_test(test_v2_qc_authority)
-register_witness_test(test_v2_finalize)
-register_witness_test(test_v2_produce)
-
-# O15G — cert verification bound to the committed committee snapshot: the
-# roster-free Layer-A resolvers, order-free unique Layer-B, snapshot-integrity
-# faults, resolver-only quorum, and roster-immunity determinism twin.
-register_witness_test(test_cert_verify_snapshot)
-
-# O15G Round 2 — HIGH-2 genesis bootstrap-anchor binding
-# (nodus_witness_sync_genesis_anchor_check + verify_certs_chain_def): forged
-# chain_def reject, roster-sybil immunity, chain_id/cert-shortfall/malformed.
-register_witness_test(test_sync_genesis_anchor)
-
-# O15G Round 2 — HIGH-1 per-peer invalid-cert cooldown
-# (nodus_witness_sync_find_peer / _rotate_peer): byzantine height-inflating peer
-# skipped, honest lower-index peer selected, cooldown expiry re-admits.
-register_witness_test(test_sync_peer_cooldown)
-
-# Ledger V2 O15F Task 3 — successor CLAIM ingress (transport-local class
-# 201): the verify divert (admission incl. canonicality, tx_hash, spent
-# and mempool-pending dedup), produce_batch_check duplicate-nullifier
-# rejection, and a mixed [envelope, claim, claim] produce_commit with
-# leader/follower BlockID identity. Drives the REAL production functions;
-# the successor role is set directly on the handle (the flag wiring is
-# rehearsal-covered), so it runs in both build variants.
-register_witness_test(test_v2_claim_ingress)
 
 # Ledger V2 O15E Faz A — the successor committee seed source (activation
 # obligation 2): committed v2_blocks BlockID at the lookback height,
@@ -1633,45 +1552,16 @@ add_test(NAME test_v2_gate_pure COMMAND test_v2_gate_pure)
 # byte-identical (128 ceiling) on legacy.
 register_witness_test(test_v2_active_max)
 
-# Ledger V2 O15F Task 5 — sync/joiner CLAIM carriage (blkframe v2). Two
-# successor twins A (producer) + B (empty at genesis): A commits a claim
-# block + a claim-free block with real QCs; serve yields a 0x02 container
-# for the claim block and a BARE v1 blockmsg for the claim-free one;
-# adversarial containers (claim omitted / extra valid / truncated /
-# trailing) reject with the DB digest byte-unchanged; the honest range
-# brings B to A's head with byte-identical BlockID/roots and equal
-# v2_claim_bytes rows; a reordered-claim container is ACCEPTED on a fresh
-# twin B2 with the identical BlockID (claim order is not consensus-bound);
-# a pre-S12 height (count row absent) serves rc 1.
-#
-# Like test_v2_gate, this compiles the gate TU in WITH NODUS_V2_TEST_AUTHORITY
-# — the ARMED serve/ingress/sync paths cannot answer at all without a gate
-# that opens, and the fixture's synthetic authority exists in this binary
-# and NOWHERE else (test_v2_gate_linked proves the absence from libnodus /
-# nodus-server).
-add_executable(test_v2_sync_claims
-               tests/test_v2_sync_claims.c
-               src/witness/nodus_witness_v2_gate.c)
-target_compile_definitions(test_v2_sync_claims PRIVATE
-               NODUS_WITNESS_INTERNAL_API NODUS_V2_TEST_AUTHORITY=1)
-target_link_libraries(test_v2_sync_claims nodus dsa nodus crypto)
-add_test(NAME test_v2_sync_claims COMMAND test_v2_sync_claims)
-
-# Ledger V2 O14 — LINK GATE for the production V2 acceptance seam.
-#
-# A source-level test cannot prove this: the test binaries link libnodus
-# directly and call the seam themselves, so they stay green even if
-# nothing in the SERVER references it and the linker drops the object.
-# This asserts the property that actually matters — that
-# nodus_witness_v2_finalize_block is present in the linked production
-# server AND that its machine code calls nodus_witness_v2_qc_verify.
-# Removing the startup selfcheck (or the TU from the link) makes this
-# test fail by name rather than silently making the seam dead code.
+# R3 W4 — LINK GATE for the closed lane's ABSENCE. The O14 seam
+# (nodus_witness_v2_finalize_block → nodus_witness_v2_qc_verify) was the
+# pre-Comet acceptance path and is deleted with the closed consensus lane;
+# the gate that used to prove its PRESENCE now proves that no symbol of
+# the old lane is linked into the production server. The version-3
+# acceptance path is cometbft's own (nodus_witness_cmt_app.c FinalizeBlock),
+# whose presence test_cmt_live drives end to end.
 add_test(NAME test_v2_seam_linked
          COMMAND sh -c
-         "objdump -t '$<TARGET_FILE:nodus-server>' | grep -q 'nodus_witness_v2_finalize_block' \
-          && objdump -t '$<TARGET_FILE:nodus-server>' | grep -q 'nodus_witness_v2_qc_verify' \
-          && objdump -d '$<TARGET_FILE:nodus-server>' | grep -q 'call.*<nodus_witness_v2_qc_verify>'")
+         "! nm '$<TARGET_FILE:nodus-server>' | grep -qE ' T (nodus_witness_bft_|nodus_witness_sync_|nodus_witness_bootstrap_|nodus_witness_mempool_|nodus_witness_cert_store|nodus_witness_v2_finalize_|nodus_witness_v2_qc_|nodus_witness_v2_produce_commit|nodus_witness_v2_sync_tick|nodus_witness_v2_ingress_block)'")
 
 # Ledger V2 — generic typed-effect + compiled storage-adapter boundary
 # (INACTIVE): adapter registration through the five-axis runtime lookup,
@@ -1718,49 +1608,6 @@ add_executable(test_schema_migration tests/test_schema_migration.c)
 target_link_libraries(test_schema_migration nodus dsa nodus)
 add_test(NAME test_schema_migration COMMAND test_schema_migration)
 
-# PR 3 Yol B — schema v16 PBFT-state migration regression.
-# Verifies migrate_v12 dispatches into the new sub-step that creates the
-# singleton pbft_state table with current_view + last_prepared_blob
-# columns. RED until B2 lands the migration.
-add_executable(test_witness_pbft_state_persist
-                tests/test_witness_pbft_state_persist.c)
-target_link_libraries(test_witness_pbft_state_persist nodus dsa nodus)
-add_test(NAME test_witness_pbft_state_persist
-         COMMAND test_witness_pbft_state_persist)
-
-# O15C-C — BFT liveness regressions: out-of-order vote buffering (D2)
-# and view-change join suppression (D1). Root-caused from the frozen
-# 2026-08-19 activation-rehearsal round-20 stall evidence.
-add_executable(test_bft_liveness tests/test_bft_liveness.c)
-target_link_libraries(test_bft_liveness nodus dsa nodus)
-add_test(NAME test_bft_liveness COMMAND test_bft_liveness)
-
-# O15H — boundary view-change hardening (D1/D2/D5/D5b). Deterministic
-# regressions for defects the 20-node grow rehearsal cannot discriminate.
-add_executable(test_bft_view_change_hardening
-               tests/test_bft_view_change_hardening.c)
-target_link_libraries(test_bft_view_change_hardening nodus dsa nodus)
-add_test(NAME test_bft_view_change_hardening
-         COMMAND test_bft_view_change_hardening)
-
-# O15R B′/D — the view boundary. A vote or a PROPOSE addressed to the very
-# next view used to be discarded, and at a committee where the quorum
-# equals the number of live nodes that loss made every round unwinnable.
-# These are the deterministic regressions the 20-node run cannot isolate.
-add_executable(test_bft_view_boundary tests/test_bft_view_boundary.c)
-target_link_libraries(test_bft_view_boundary nodus dsa nodus)
-add_test(NAME test_bft_view_boundary COMMAND test_bft_view_boundary)
-
-# PR 3 Yol B — bootstrap state machine regression.
-# Covers HAVE_CHAIN branch: chain DB present → reaches DONE without
-# network I/O, sets bootstrap_settle_until_ms in the future (H-4).
-# RED until C2 implementation lands.
-add_executable(test_witness_bootstrap_state_machine
-                tests/test_witness_bootstrap_state_machine.c)
-target_link_libraries(test_witness_bootstrap_state_machine nodus dsa nodus)
-add_test(NAME test_witness_bootstrap_state_machine
-         COMMAND test_witness_bootstrap_state_machine)
-
 # O15B.1 — the seed placeholder node_id must identify an ENDPOINT.
 # Deriving it from the IP alone deduplicated every co-located seed down
 # to one cluster peer, which collapsed the Kademlia routing table and the
@@ -1781,19 +1628,6 @@ target_link_libraries(test_server_stop_latch nodus dsa nodus)
 add_test(NAME test_server_stop_latch
          COMMAND test_server_stop_latch)
 
-# O15B.1 — replay/live attendance parity at an epoch boundary. The sync
-# path used to credit attendance a SECOND time after replay_block had
-# already computed and committed that block's state_root, mutating two
-# columns inside the validator merkle leaf. A node that crashed near a
-# boundary then diverged on the next block and safety-halted forever.
-add_executable(test_replay_attendance_parity
-                tests/test_replay_attendance_parity.c)
-target_compile_definitions(test_replay_attendance_parity
-                PRIVATE NODUS_WITNESS_INTERNAL_API)
-target_link_libraries(test_replay_attendance_parity nodus dsa nodus)
-add_test(NAME test_replay_attendance_parity
-         COMMAND test_replay_attendance_parity)
-
 # PR 3 / E0 — Orphan bootstrap sentinel cleanup at startup.
 # RED until the GREEN commit replaces the no-op stub in nodus_witness.c.
 add_executable(test_witness_bootstrap_orphan_sentinel
@@ -1809,35 +1643,6 @@ add_executable(test_server_partial_wipe_xor
 target_link_libraries(test_server_partial_wipe_xor nodus dsa nodus)
 add_test(NAME test_server_partial_wipe_xor
          COMMAND test_server_partial_wipe_xor)
-
-# PR 3 / E4 — H-9 mixed-version cluster detection at bootstrap.
-# RED until the GREEN commit replaces the no-op stub in
-# nodus_witness_bootstrap.c with the per-peer remote_nodus_version scan.
-add_executable(test_witness_bootstrap_mixed_version
-                tests/test_witness_bootstrap_mixed_version.c)
-target_link_libraries(test_witness_bootstrap_mixed_version nodus dsa nodus)
-add_test(NAME test_witness_bootstrap_mixed_version
-         COMMAND test_witness_bootstrap_mixed_version)
-
-# PR 3 / E3 — H-1 per-source rate limit on incoming w_chain_q.
-# RED until the GREEN commit replaces the always-allow stub with
-# the real (now - last >= min_interval) check.
-add_executable(test_witness_bootstrap_chain_q_rate_limit
-                tests/test_witness_bootstrap_chain_q_rate_limit.c)
-target_link_libraries(test_witness_bootstrap_chain_q_rate_limit nodus dsa nodus)
-add_test(NAME test_witness_bootstrap_chain_q_rate_limit
-         COMMAND test_witness_bootstrap_chain_q_rate_limit)
-
-# C-4 nonce-stale filter (PR 3 / F6 — replaces SKIP-by-default
-# integration replay scenario with unit-level coverage of the same
-# security property: handle_chain_r drops responses whose nonce
-# does not match the current bootstrap_round_nonce, so a captured
-# w_chain_r from round N cannot be replayed into round N+1.
-add_executable(test_witness_bootstrap_nonce_stale
-                tests/test_witness_bootstrap_nonce_stale.c)
-target_link_libraries(test_witness_bootstrap_nonce_stale nodus dsa nodus)
-add_test(NAME test_witness_bootstrap_nonce_stale
-         COMMAND test_witness_bootstrap_nonce_stale)
 
 # RFC 6962 Merkle domain tag tests (Phase 2 / Tasks 2.1, 2.2, 2.4)
 add_executable(test_merkle_domain_tags tests/test_merkle_domain_tags.c)
@@ -1966,43 +1771,8 @@ add_executable(test_merkle_tx_proof tests/test_merkle_tx_proof.c)
 target_link_libraries(test_merkle_tx_proof nodus dsa nodus)
 add_test(NAME test_merkle_tx_proof COMMAND test_merkle_tx_proof)
 
-# apply_tx_to_state + finalize_block isolation tests (Phase 3 / Task 3.6)
-register_witness_test(test_apply_finalize)
-
-# Intra-batch chained UTXO defense tests (Phase 4 / Task 4.5)
-register_witness_test(test_chained_utxo)
-
-# compute_block_hash helper tests (Phase 5 / Task 5.4)
-add_executable(test_compute_block_hash tests/test_compute_block_hash.c)
-target_link_libraries(test_compute_block_hash nodus dsa nodus crypto)
-add_test(NAME test_compute_block_hash COMMAND test_compute_block_hash)
-
-# Phase 6 commit wrapper tests (Phase 6 / Task 6.4)
-register_witness_test(test_commit_wrappers)
-
-# Phase 7 / Task 7.1 — bft_start_round_from_entries guard tests
-register_witness_test(test_bft_start_round_from_entries)
-
-# Phase 7 / Task 7.2 — bft_start_round_from_mempool guard tests
-register_witness_test(test_bft_start_round_from_mempool)
-
 # Witness peer table dedup / slot leak regression tests
 register_witness_test(test_witness_peer_dedup)
-
-# Phase 7.5 / Task 7.5.1 — witness cert preimage layout tests
-add_executable(test_witness_cert_preimage tests/test_witness_cert_preimage.c)
-target_link_libraries(test_witness_cert_preimage nodus dsa nodus crypto)
-add_test(NAME test_witness_cert_preimage COMMAND test_witness_cert_preimage)
-
-# Phase 7.5 / Task 7.5.5 — sync cert sign/verify tamper tests
-add_executable(test_witness_cert_verify tests/test_witness_cert_verify.c)
-target_link_libraries(test_witness_cert_verify nodus dsa nodus crypto)
-add_test(NAME test_witness_cert_verify COMMAND test_witness_cert_verify)
-
-# Phase 11 / Task 11.6 — multi-tx sync_rsp wire guard tests
-add_executable(test_sync_rsp_guards tests/test_sync_rsp_guards.c)
-target_link_libraries(test_sync_rsp_guards nodus dsa nodus crypto)
-add_test(NAME test_sync_rsp_guards COMMAND test_sync_rsp_guards)
 
 # Phase 11 follow-up — block_txs_get DB query test
 register_witness_test(test_block_txs_get)
@@ -2024,11 +1794,6 @@ add_test(NAME test_strict_decoder COMMAND test_strict_decoder)
 add_executable(test_spend_signed_roundtrip tests/test_spend_signed_roundtrip.c)
 target_link_libraries(test_spend_signed_roundtrip nodus dsa nodus crypto)
 add_test(NAME test_spend_signed_roundtrip COMMAND test_spend_signed_roundtrip)
-
-# BFT quorum formula tests (Phase 8)
-add_executable(test_bft_quorum_formula tests/test_bft_quorum_formula.c)
-target_link_libraries(test_bft_quorum_formula nodus dsa nodus)
-add_test(NAME test_bft_quorum_formula COMMAND test_bft_quorum_formula)
 
 # Witness Merkle state_root test
 add_executable(test_witness_merkle tests/test_witness_merkle.c)
@@ -2068,15 +1833,6 @@ target_compile_definitions(test_chain_config_failclose PRIVATE
                            NODUS_WITNESS_INTERNAL_API)
 add_test(NAME test_chain_config_failclose
          COMMAND test_chain_config_failclose)
-
-# K2 — spend-result failure-path contract: a rolled-back block never
-# produces an APPROVED receipt, and the handlers.c:2161 NULL-message
-# trap stays pinned
-add_executable(test_spend_result_error_status
-    tests/test_spend_result_error_status.c)
-target_link_libraries(test_spend_result_error_status nodus dsa nodus)
-add_test(NAME test_spend_result_error_status
-         COMMAND test_spend_result_error_status)
 
 # Spend replay DB helper test (Fix #4 B)
 add_executable(test_spend_replay tests/test_spend_replay.c)
@@ -2270,26 +2026,12 @@ register_witness_test(test_min_tenure_boundary)
 # reward-state-touching unit tests are superseded by the Stage E/F
 # push-settlement test suite.
 
-# Task 47 — single-SQLite-transaction block commit + rollback on abort
-register_witness_test(test_commit_atomicity)
-
-# Task 50 — F-CONS-06 mandatory independent state_root recompute on PREVOTE
-register_witness_test(test_prevote_state_root_mutation)
-
 # D1-D4 (2026-07-31) — witness fail-close: every state_root subtree fault
 # returns -1 instead of a substituted tagged-empty sentinel, and
 # supply_get's three-valued contract keeps a DB error from masquerading as
 # pre-genesis. Deterministic fault injection (DROP TABLE on a temp DB).
 # See nodus/docs/plans/2026-07-31-witness-failclose-state-root-design.md
 register_witness_test(test_witness_state_root_failclose)
-
-# F1a (2026-07-31) — the PRODUCER of those same rows. A mid-scan step
-# error must not become "the proposer is not a validator" in
-# record_attendance. Same structural fault injection as
-# test_merkle_scan_fail_close. Also carries healthy-path
-# characterisation for nodus_validator_top_n, whose identical fix is
-# PARKED pending its consumers (see the test file's header).
-register_witness_test(test_witness_attendance_scan_failclose)
 
 # Task 51 — committee election (post-commit lookback + state_seed tiebreak)
 register_witness_test(test_committee_election)
@@ -2303,58 +2045,9 @@ register_witness_test(test_committee_cache)
 # 2026-04-19 — Genesis ghost-stake fix: parse_cd_supply helper for Rule P.2
 register_witness_test(test_parse_cd_supply)
 
-# Task 59 — BFT roster sourced from committee snapshot (chain-authoritative)
-register_witness_test(test_bft_roster_committee)
-register_witness_test(test_witness_roster_sorted_leader)
-# O15C-D — the forwarding path's leader slot must resolve by rank, not
-# by arrival index (the mis-forward behind MED-27's silent timeout).
-register_witness_test(test_witness_forward_leader_rank)
-# O15C-D — MED-28: the timed-out batch must survive so the NEW_VIEW
-# reproposal binding can actually be satisfied.
-register_witness_test(test_witness_retained_batch)
-# O15C-D.1 — the C5 reproposal rule must arm on the self-advance path a
-# node actually takes through a view change, not only via NEW_VIEW.
-register_witness_test(test_witness_c5_self_bind)
-# O15C-D.2 — the C5 selection must be a canonical total order
-# (height, view, tx_hash), never arrival order. Includes a two-instance
-# real-signature proof that opposite arrival orders bind identically.
-register_witness_test(test_witness_c5_tiebreak)
-# O15C-D.3 — a node's own prepared evidence must reach its own decision
-# on BOTH view-entry paths, and a conflicting value at a height it
-# prepared must be refused (the quorum-intersection refusal).
-register_witness_test(test_witness_newview_convergence)
 # O15C-D.4 — consensus messages from an incompatible protocol version
 # must be rejected before they can change any BFT state.
 register_witness_test(test_witness_protocol_version_gate)
-# v0.19.24 — IDENT is exempt from the wsig verify, so a peer's advertised
-# current_view is unauthenticated: it must never move this node's PBFT
-# view counter (which decides leader election AND the signed preimage).
-register_witness_test(test_witness_ident_no_view_adopt)
-# O15N Faz 2B — the VIEW_OK view-authority primitives (purpose 0x08):
-# the 148-byte preimage, the committee set hash the statement is measured
-# against, the producer, and the f+1 proof verifier. PRIMITIVES ONLY —
-# nothing here is on a handler, tick or commit path, and nothing moves
-# w->current_view. Pins the layout, the field bindings, the f+1
-# derivation (from the committee governing the CARRIED height, NOT this
-# node's bft_config) and the fault-vs-verdict split (-2 vs -1).
-register_witness_test(test_view_proof)
-# O15C-D — MED-27: an accepted dnac_spend must never end without an
-# answer; the 30 s expiry replies instead of dropping the client.
-register_witness_test(test_witness_pending_forward_timeout)
-
-# Task 60 — RETIRING validator stays in epoch committee until graduation
-register_witness_test(test_retiring_committee_membership)
-
-# ── Faz 1A — commit_t block_height bundle fix (RED state) ────────────
-# See nodus/docs/plans/2026-05-02-commit-t-block-height-fix-design.md
-# Bug ref: project_witness_commit_height_asymmetry (live cluster
-# 2026-05-01: US-1 halted at h=114 — round skip → state_root divergence)
-# These tests are stubs returning failure; concrete assertions land
-# after Faz 2 (wire format) and Faz 3 (handler updates).
-register_witness_test(test_witness_commit_height_skip)
-register_witness_test(test_witness_commit_height_match)
-register_witness_test(test_witness_commit_height_zero_legacy)
-register_witness_test(test_witness_sync_rsp_state_root_verify)
 
 # ── O15O Faz 1 — a DB failure is never a height ──────────────────────
 # Bug ref: nodus/BUGS.md O15N-L2. nodus_witness_block_height answered 0
@@ -2368,365 +2061,6 @@ register_witness_test(test_witness_sync_rsp_state_root_verify)
 # a held-but-unreadable chain is a fault. Needs no compile flag and no
 # environment; the fault is a real DROP TABLE, not a mock.
 register_witness_test(test_witness_block_height_checked)
-
-# ── O15O Faz 1 — the CONSUMERS of the checked chain-height accessor ──
-# The sibling of the test above, and the half that was missing. That one
-# pins the ACCESSOR's two-valued contract; this one pins the call sites
-# READING it. Measured, not assumed: reverting every fault return in
-# nodus_witness_block_height_checked to the old fail-open turned only the
-# accessor's own test red — all 214 other tests, every converted consumer
-# among them, stayed green. A build that discarded the whole substance of
-# the phase was indistinguishable from one that kept it.
-# Each consumer gets a PAIR on one fixture — healthy (leads / opens the
-# round / accepts) and faulted (refuses) — the fault being a real DROP
-# TABLE so sqlite3_prepare_v2 genuinely fails. The healthy leg is the
-# anti-vacuity control: "returns -1" proves nothing on its own. The
-# fixture chain is EMPTY on purpose, so a fail-open build's 0 equals the
-# true tip and no downstream height comparison can mask the difference.
-# Bug ref: nodus/BUGS.md O15N-L2. Needs no compile flag and no
-# environment; leaves nothing behind (mkdtemp dirs are removed).
-register_witness_test(test_witness_height_fault_consumers)
-
-# ── O15O Faz 3 — a lost pbft_state write is never silent ─────────────
-# Bug ref: nodus/BUGS.md O15N-L6. nodus_witness_db_save_pbft_state returns
-# -1 on a failed prepare or step, and all FOUR of its callers in
-# nodus_witness_bft.c discarded that code. The connection runs
-# synchronous=NORMAL under WAL (nodus_witness.c:486-487), so the write is
-# durable across a process crash but not across a power loss — and a write
-# that never ran is lost either way. A node could therefore come back at a
-# LOWER view than it reached, or without the prepared certificate it was
-# protecting a value with, with no signal that anything was lost. That
-# silence was the defect.
-# The fix is a LOUD LOG AT ALL FOUR SITES AND NOTHING ELSE — the owner
-# decided explicitly that a transient disk fault must not remove a node
-# from consensus, so there is no halt, no retry and no control-flow
-# change. Each line names WHICH of the four facts was lost: the cleared
-# slot after a successor commit, the C5 prepared certificate, the new
-# view, and the cleared slot after a legacy commit.
-# Each site gets a PAIR on one fixture — healthy (the save runs and the
-# pbft_state row lands, and nothing is reported lost) and faulted (a real
-# DROP TABLE pbft_state, the line is emitted and names the specific fact).
-# The faulted leg additionally re-asserts the healthy leg's control-flow
-# facts — the round still advances, the view still moves, the commit still
-# returns 0, safety_halt stays false — which is what proves "log, not
-# halt" was implemented rather than "halt".
-# ALL FOUR SITES ARE COVERED: no UNREACHED row, no rc=99 skip.
-# Needs no compile flag and no environment; every fixture chain stays in
-# epoch 0, so the assertions hold at DNAC_EPOCH_LENGTH 720 and 15 alike.
-# Leaves nothing behind (mkdtemp dirs are removed, capture files are
-# unlinked at creation, §4's database is in memory).
-register_witness_test(test_witness_pbft_save_fault)
-
-# ── O15O Faz 4 — a COMMIT is authorized by the COMMITTEE ─────────────
-# Bug ref: nodus/BUGS.md O15N-L4. Five of the six T3 consumers in
-# nodus_witness_bft.c already resolved the chain-derived committee and
-# measured the sender against it; nodus_witness_bft_handle_commit had no
-# sender check of any kind. It verifies the PRECOMMIT CERTIFICATES against
-# the committed authority snapshot (O15G), which is what stops a forged
-# batch from committing — but the SENDER was authorized by w->roster alone,
-# at the dispatch layer, and the roster admits any self-published DHT
-# `nodus:pk` record with a valid signature (no committee filter). A T3
-# sender identity therefore cost one Dilithium keypair plus one DHT put,
-# and such an identity reached nodus_witness_v2_cert_note — the first state
-# mutation on that path — and the round/height bookkeeping above the
-# certificate check.
-# The gate resolves the committee at the height the message CARRIES, not
-# at this node's tip, so two nodes at different tips cannot reach different
-# verdicts on identical bytes. It mirrors handle_propose's three outcomes:
-# a LOAD FAULT fails closed, a genuinely EMPTY committee takes the F17 A5
-# roster bootstrap, and a populated committee must contain the sender. It
-# is MEMBERSHIP, not rank — a COMMIT is not leader-gated, every witness
-# broadcasts its own.
-# Four sections, each a PAIR on one fixture with exactly one thing moving
-# between the legs: §1 the sender (member admitted, roster-outsider
-# refused), §2 the carried height (the same sender refused at a far epoch
-# and admitted at the local-tip epoch — the only section that separates the
-# carried height from the local tip, since inside epoch 0 the two are
-# indistinguishable), §3 the pre-genesis bootstrap, §4 an armed committee
-# load fault with a disarm that restores the admitted path.
-# ⚠ §3 IS THE LOAD-BEARING ROW: the GENESIS block's COMMIT flows through
-# this handler, so a gate that dropped on an empty committee would stop
-# every node from reaching block 1 at the same moment. §3 pins that the
-# bootstrap admits.
-# ⚠ "cert_note was not reached" IS PROVEN INDIRECTLY. The direct
-# observable (w->v2_certpool) needs w->v2_successor, which is legitimately
-# reachable only by opening a pure-V2 genesis chain; hand-setting it is the
-# masking nodus_witness.c:736-738 records. Instead the admitted leg prints
-# a line from a site strictly BELOW cert_note (the F02 batch re-verify) and
-# the refused leg prints the gate's line and none below it. Named in the
-# test header; it would NOT catch an edit that moved cert_note above the
-# gate.
-# Every admitted leg still returns -1 — that is the PRE-EXISTING outcome, a
-# genuine ACCEPT being out of reach for a unit fixture (same limit
-# test_witness_height_fault_consumers.c §4 documents). "Admitted" here
-# means "reached the F02 verify", never "committed a block".
-# Needs no compile flag and no environment. DNAC_EPOCH_LENGTH is READ, not
-# assumed (§2 computes its far height from the macro), so the assertions
-# hold at the shipped 720 and at the harness's 15 alike.
-# Leaves nothing behind (mkdtemp dirs are removed, capture files are
-# unlinked at creation).
-register_witness_test(test_witness_commit_committee_gate)
-
-# ── O15O Faz 6 — the PREPARED-VALUE LOCK is CONSULTED ────────────────
-# Bug ref: nodus/BUGS.md O15N-L3. nodus_witness_bft_prepared_lock_blocks —
-# whose own header calls it "the refusal the quorum-intersection safety
-# argument depends on" — had ZERO production callers. It was defined,
-# declared (nodus_witness_bft.h:116) and unit-tested in isolation
-# (test_witness_newview_convergence), and no consensus path consulted it.
-# Faz 6 adds ONE call, in handle_propose, between the A2 height block and
-# the round-state initialisation.
-# The state is reachable, not hypothetical: both batch-abort branches set
-# phase = IDLE and DELIBERATELY leave last_prepared armed. Phase IDLE also
-# silences check_timeout, so no view change arms reproposal_required and
-# the C5 gate is skipped. The same leader can then propose a DIFFERENT
-# value at the same height and pass every remaining gate.
-# Four rows on one fixture shape, one thing moving between them: prepared
-# at H + conflicting proposal at H is REFUSED (the defect); prepared at H +
-# MATCHING proposal is accepted; the lock RELEASED (the commit-success
-# clear of `present` alone) accepts the SAME conflicting proposal; and
-# prepared at a DIFFERENT height accepts it too, which pins the height gate
-# so a block learned through SYNC cannot strand the node. The last three
-# are the anti-vacuity controls and each asserts the lock's refusal line is
-# ABSENT.
-# last_prepared is armed by the PRODUCTION capture — a real prevote quorum
-# through handle_vote; the test never assigns that struct.
-# ⚠ THE ABORT BRANCH ITSELF IS NOT DRIVEN BY THIS FILE. The reset to IDLE
-# is performed by hand. O15P Faz 3 —
-# test_witness_prepared_lock_survives_abort, registered below — is what
-# drives the real commit_batch failure and proves the premise; until it
-# existed that claim rested only on the source comments at the two abort
-# branches.
-# "Accepted" means the ROUND WAS ENTERED (rc 0, phase PREVOTE), never that
-# a block committed — handle_propose returns 0 even on an unverifiable
-# batch.
-# Needs no compile flag and no environment; every fixture chain stays in
-# epoch 0 (tip 3, heights 4 and 5), so the assertions hold at
-# DNAC_EPOCH_LENGTH 720 and 15 alike. Leaves nothing behind (mkdtemp dirs
-# are removed, capture files are unlinked at creation).
-register_witness_test(test_witness_prepared_lock)
-
-# ── O15P Faz 3 — a COLLAPSED ROUND leaves the PREPARED-VALUE LOCK ARMED ─
-# THE PREMISE test_witness_prepared_lock could not reach. That file proves
-# the lock refuses a conflicting value ONCE THE MEMORY IS ARMED and the
-# phase is IDLE, but it resets the phase BY HAND and says so. Without this
-# file the O15O Faz 6 safety argument rests on two source comments.
-# WHAT IT PROVES: when nodus_witness_commit_batch fails and the block is
-# rolled back, the round is reset to NODUS_W_PHASE_IDLE *and*
-# w->last_prepared is STILL ARMED — same height, same value. That state is
-# exactly the one the lock's refusal exists for: PRECOMMITTER => CARRIER,
-# so >= f+1 honest carriers must refuse a conflicting value at that height
-# or the chain forks; if the collapse cleared the lock the refusal could
-# never fire.
-# TWO SECTIONS, TWO FAILURE EXITS INSIDE commit_batch, ONE ABORT BRANCH:
-# §1 the attendance write fails (a real `DROP TABLE validators`, so
-# record_attendance's prepare fails and it returns its documented block-
-# REJECT -1); §2 the M-1 TOCTOU height guard fires (the round anchor is
-# tip+2, so expected_height != local_next under the transaction). Each
-# section asserts its OWN exit fired and the OTHER section's did NOT, so
-# neither can pass for the other's reason.
-# ⚠ THE HARD PART IS LANDING *INSIDE* commit_batch. bft_handle_vote_inner
-# has one more gate between the phase advance and the call — the O15L Faz 3
-# OWN-QUORUM CERT GATE — and that gate ALSO sets phase IDLE and ALSO leaves
-# last_prepared alone, so it would make both assertions pass for the wrong
-# reason. Both sections therefore assert "OWN-QUORUM CERT GATE" is ABSENT
-# and commit_batch's own message is PRESENT.
-# The cert gate is SATISFIED, not bypassed: the fixture primes a seven-
-# member committee and every PRECOMMIT carries a real Dilithium5 signature
-# over the 144-byte cert preimage (ours is signed by the production path
-# itself). dna_bft_quorum(7) == 5 == the five precommits collected, so one
-# bad signature would fail the gate loudly instead of passing quietly.
-# The rollback is asserted on the DATABASE (chain tip unchanged) as well as
-# on stderr, and the batch entries are asserted released — the abort branch
-# frees them through bft_emit_batch_replies, so the test must not.
-# ⚠ NO CLEARING PATH IS EXERCISED. commit_batch clears last_prepared only
-# after a successful db_commit, which would need finalize_block to pass on
-# a hand-seeded chain. This file pins the CURRENT behaviour of the abort
-# branch; if a later change makes an abort CLEAR the lock, it goes red, and
-# that is the intended alarm.
-# Needs no compile flag and no environment. DNAC_EPOCH_LENGTH is READ (each
-# section primes the committee for the epoch containing its own anchor), so
-# it holds at 720 and 15 alike. Leaves nothing on disk; it does leave
-# entries in the process-global replay-nonce table, which is harmless
-# because every message carries a freshly randomised nonce.
-register_witness_test(test_witness_prepared_lock_survives_abort)
-
-# ── O15O Faz 5 — the replay cache is PER SENDER, its order NODE-LOCAL ─
-# Bug refs: nodus/BUGS.md O15N-L1 (the attacker half) and "the replay
-# cache can be exhausted by HONEST traffic" (the sizing half). One
-# mechanism, two sides.
-# The shipped cache held 10000 entries GLOBALLY and, at capacity, freed an
-# ENTIRE BUCKET chosen by the smallest `timestamp` — a field written from
-# hdr->timestamp, which the SENDER chooses and signs. One sender could
-# therefore decide which HONEST entries left the table, re-opening replay
-# of captured frames. All six T3 consumers also inserted ABOVE their own
-# chain_id and committee checks, so an unauthorised sender consumed the
-# capacity meant to protect authorised ones. Separately, and with no
-# attacker at all, the global 10000 does not hold honest traffic: at the
-# governance minimum 1 s block interval and ~4 broadcasts per node per
-# round, one sender produces ~1200 nonces per 300 s TTL window, so 9 seats
-# already overflow.
-# Faz 5 splits CHECK from RECORD (is_replay is now pure; nonce_record runs
-# after each handler's committee gate), makes the budget PER SENDER
-# (NONCE_MAX_PER_SENDER 2048, the total DERIVED as per_sender x
-# NODUS_T3_MAX_WITNESSES), and ranks "oldest" by a node-local sequence
-# instead of the wire timestamp.
-# Five sections, in EXECUTION order, each a pair with one thing moving:
-# §1 the anti-vacuity floor (a genuine repeat refused, a fresh nonce
-# accepted); §2 record-after-the-gates — the SAME (sender, nonce) refused
-# by the committee gate and then ADMITTED once the sender is seated, with
-# a third delivery proving the admission did record; §3 the ordering key —
-# two entries from one sender with INVERTED wire stamps, and the one
-# inserted FIRST is the one evicted; §4 a flooder evicts only itself; §5
-# THE ATTACK — a 10500-frame flood cannot evict the victim's nonce.
-# ⚠ THE SECTION ORDER IS REQUIRED, and only for the REVERTED direction.
-# The nonce table is a process-global static with no reset hook (it is
-# `static` in nodus_witness_bft.c and this phase's whitelist has no header
-# to export one through), so the file uses a documented ordering plus
-# disjoint sender identities and deterministic nonces instead. Under the
-# FIXED code the order is irrelevant — budgets are per sender. Under a
-# reverted build a preceding big flood would leave the shared table at its
-# global cap and later sections would evict for reasons unrelated to their
-# subject; small floods first and the one big flood last removes that.
-# ⚠ THE FLOOD IS STAMPED AT `now`, NOT IN THE FUTURE, and the header says
-# why: the TTL comparison `now - n->timestamp >= NONCE_TTL_SECS` is on
-# uint64, so a FUTURE stamp underflows and the entry is treated as already
-# expired. A far-future flood is purged as fast as it is written, never
-# fills a reverted table, and would make §5 pass while proving nothing.
-# O15N-L1's write-up names far-future stamps as the mechanism; that half
-# does not survive contact with the TTL line, while its conclusion does.
-# ⚠ "REFUSED AS A REPLAY" IS OBSERVED INDIRECTLY — rc -1 with an EMPTY
-# stderr window, because the check prints nothing and every other guard on
-# this path prints. No production log line was added for the test, since a
-# line on the replay path is attacker-triggerable log amplification. Named
-# in the test header.
-# Every admitted leg still returns -1: "admitted" means "reached the F02
-# batch re-verify", never "committed a block" — the same wall
-# test_witness_commit_committee_gate.c documents.
-# CAP_MIRROR in the test MUST equal NONCE_MAX_PER_SENDER in
-# nodus_witness_bft.c. A divergence fails loudly (too small a flood ->
-# no eviction; too large -> a second eviction), never quietly.
-#
-# ── O15P Faz 2 — §6..§11 close the "only one record site is driven" gap ─
-# Until Faz 2 exactly ONE of the six nonce_record call sites was exercised
-# (handle_commit, by §1..§5); the other five were placed by inspection
-# below the same committee gate and a misplaced one would have shipped
-# silently. §6..§10 drive them — one section per handler: PROPOSE, VOTE,
-# VIEW_CHANGE, VIEW_OK, VIEW_OK_REQUEST.
-# Each is the same three legs and all three are required: a well-formed
-# frame is ADMITTED below the record (identified POSITIVELY, by a line the
-# next guard prints or by rc == 0), the IDENTICAL frame is then REFUSED AS
-# A REPLAY, and the same frame with a FRESH nonce is ADMITTED again — the
-# last leg is what excludes "this handler refuses everything".
-# §8, §9 and §10 do NOT rest on silence: every exit above their record
-# returns -1 and every path below it returns 0, so rc alone discriminates.
-# §10 has a second, non-stderr witness — the per-roster-slot response
-# stamp — and CLEARS that stamp before the replay leg, because the limiter
-# also refuses with a SILENT -1 and would otherwise make a build with the
-# record site DELETED still pass.
-# §11 drives the 128-slot SENDER TABLE past capacity and asserts what
-# nonce_sender_claim actually does, not what would be nice: nothing
-# crashes, the newcomer IS recorded, every other sender keeps its entries,
-# and EXACTLY ONE — the least recently active — has all of its freed (the
-# LRU drop, which the production comment calls an accepted node-local
-# residual). It needs TWO roster seatings because the roster, the committee
-# cache and NONCE_MAX_SENDERS are all NODUS_T3_MAX_WITNESSES = 128, so one
-# seating can authorise at most 128 distinct senders.
-# ⚠ §11 MUST RUN LAST. It fills all 128 slots with its own identities,
-# which EVICTS everything the earlier sections left in the table; anything
-# scheduled after it would run against an empty cache. Its own step C also
-# has an internal order requirement (survivors asserted BEFORE the victim
-# is re-delivered, because re-delivering re-records and evicts the next
-# LRU) — the same trap §3 documents one level up.
-# ⚠ THE malloc-FAILURE BRANCH IN nonce_record IS DELIBERATELY UNEXERCISED
-# and the test header says why: proving it needs on-demand allocation
-# failure at one call site, which does not exist in this tree, and a global
-# interposer would break SQLite, Dilithium and the fixture itself. Its only
-# effect is a missed record — fail-open on a cache, not on a gate.
-# handle_newview is NOT a seventh site: it has neither a replay check nor a
-# record, deliberately (its own O15M block records that adding the bare
-# is_replay line stalled the chain on the harness and was reverted).
-# Needs no compile flag and no environment; every fixture chain stays at
-# tip 0 in epoch 0, so the assertions hold at DNAC_EPOCH_LENGTH 720 and 15
-# alike. §6 solves for its view at RUNTIME from the epoch the macro puts
-# height 1 in, so its "the sender is the leader" precondition does not
-# depend on the epoch length. Runtime is ~14750 handler calls plus 148
-# ML-DSA-87 keypairs, expected low seconds.
-# Leaves nothing behind on disk (mkdtemp dirs are removed, capture files
-# are unlinked at creation); it DOES leave the process-global nonce table
-# holding §11's 128 senders, which is why the ordering above is stated.
-register_witness_test(test_witness_replay_cache)
-
-# ── O15P Faz 1 — the view counter comes up at 0 ──────────────────────
-# Bug ref: nodus/BUGS.md O15N-R2. `w->viewok_proof` — the evidence that
-# justified this node's last view move — is memory-only, so a restarted
-# node holds none and can rescue nobody. That was survivable only because
-# the mandatory stop-all deploy ALSO clears the pbft_state row
-# (docs/DEPLOY_RUNBOOK.md §2.1), bringing the whole fleet up at view 0
-# together. The two facts held each other up, and one of them was a human
-# remembering a manual step: drop the runbook step without persisting the
-# proof and the fleet comes up split across views with nothing able to
-# serve a proof.
-# The fix is one line of consensus state and no wire change:
-# nodus_witness_db_load_pbft_state discards the stored `current_view` and
-# leaves the witness at 0. A node restarting ALONE is then simply BEHIND,
-# which is a state the protocol already recovers from — it pulls a VIEW_OK
-# proof from a peer that is ahead (nodus_witness_bft.c:5746 in
-# handle_propose, :10411 in handle_newview) and the counter moves only on
-# a verified proof. A node restarting WITH EVERYONE ELSE finds every peer
-# at 0 too. Safe in both directions.
-# `last_prepared` IS STILL LOADED and that is half of what this test
-# guards: it is the prepared-value lock's memory
-# (nodus_witness_bft_prepared_lock_blocks, the O15O Faz 6 refusal), and
-# that lock gates on present/height/tx_hash only — it never reads
-# current_view — so §1 asserts the lock is still armed after the restart,
-# not merely that the struct fields survived.
-# The loader stays READ-ONLY: it never becomes the runbook's DELETE. §1
-# and §4 assert the row still holds its non-zero number afterwards, which
-# is also the only direct evidence that a row was read and that column
-# ignored. The SAVE path is untouched, so the operator's and the stagef
-# harness's view-change evidence keeps landing on disk.
-# Five sections, each a pair on one fixture shape: stored 9 -> 0 with the
-# certificate byte-identical and the lock armed; stored 0 -> 0; no row at
-# all; the loader pulling a LIVE non-zero view down (pinning the reset in
-# the callee rather than at its call site); and a DROP TABLE proving the
-# reset sits BEFORE the query, so an unreadable row still yields 0.
-# No UNREACHED row, no rc=99 skip.
-# Needs no compile flag and no environment; no committee is resolved and
-# no block is committed, so the assertions hold at DNAC_EPOCH_LENGTH 720
-# and 15 alike. Leaves nothing behind (each section's mkdtemp dir is
-# removed, every sqlite handle is closed through nodus_witness_close).
-register_witness_test(test_witness_view_reset_on_start)
-
-# ── O15O Faz 2 — a quorum of 0 is refused, not obeyed ────────────────
-# Bug ref: nodus/BUGS.md (the view-change threshold row), widened by grep
-# from one site to six. nodus_witness_bft_config_init writes quorum = 0
-# below NODUS_T3_MIN_WITNESSES and calls it "consensus disabled" — but
-# every threshold is written `x < quorum`, and `x < 0` is FALSE for every
-# x, so the value meaning "I take no part" was the most PERMISSIVE input
-# the consensus code could receive: vote quorum on the first vote, a
-# view-change quorum on one message, any prepared certificate, a NEW_VIEW
-# claiming a reproposal with zero signatures, and a synced block with no
-# valid certs.
-# Each site gets a PAIR on one fixture — healthy (the threshold is
-# reached only AT its real value) and vacuum (quorum forced to 0, the
-# site refuses). The healthy leg is the anti-vacuity control, and several
-# sections carry TWO of them (below the threshold and at it) so a guard
-# that refused unconditionally cannot pass. §4 reaches quorum 0 through
-# the PRODUCTION initialiser (a four-member roster), not a hand-set
-# field.
-# ⚠ FIVE OF SIX SITES ARE COVERED. §2 (the fork-detection DB drop in
-# nodus_witness_sync_check) cannot be driven from a fixture: find_peer
-# only returns peers STRICTLY ahead of local_height, so the same-height
-# branch guarding drop_witness_db is not entered. It is not provably
-# dead — a TRANSIENT fault between the function's two fail-open height
-# reads would open it — but no fixture can inject one there. The test
-# prints an explicit UNREACHED notice rather than hand-calling an inlined
-# branch; do not count that row as tested.
-# Needs no compile flag and no environment; every fixture chain stays in
-# epoch 0, so the assertions hold at DNAC_EPOCH_LENGTH 720 and 15 alike.
-# Leaves nothing behind (mkdtemp dirs are removed, capture files are
-# unlinked at creation).
-register_witness_test(test_witness_quorum_vacuum)
 
 # ── O15O Faz 7 — the delegation LIMIT truncates against a TOTAL ORDER ─
 # delegation_list_by_hash (nodus_witness_delegation.c) is the only way
@@ -2758,45 +2092,11 @@ register_witness_test(test_witness_quorum_vacuum)
 # alike. Leaves nothing behind — every fixture is an `:memory:` database.
 register_witness_test(test_delegation_list_order)
 
-# ── PR 1 (2026-05-03) — bft_config follower-path refresh (C-3 fix) ───
-# See docs/plans/2026-05-03-witness-auto-bootstrap-design.md
-register_witness_test(test_witness_bft_config_refresh)
-
-# ── PR 2 (2026-05-03) — timestamp determinism (drop from hash preimage) ─
-# See docs/plans/2026-05-03-pr2-timestamp-determinism-impl.md
-register_witness_test(test_block_hash_timestamp_excluded)
-
-# ── Faz 1B — BLOCKERS (audit B-1, B-2, B-3 + C-4) ────────────────────
-register_witness_test(test_block_hash_includes_state_root)
-register_witness_test(test_recovery_sentinel_crash_safety)
-register_witness_test(test_halt_auto_recover_default_off)
-register_witness_test(test_halt_recovery_historical_committee)
-
 # ── Faz 1C — CRITICAL (audit C-1..C-5) ────────────────────────────────
 register_witness_test(test_heartbeat_signed_checksum)
-register_witness_test(test_precommit_cert_verify_lazy)
-register_witness_test(test_sync_check_dos_rate_limit)
 
-# O15J Faz 3 — the `syncing` latch must not be one-way. Every clear of
-# sync_state.syncing lives on a response path, so a response that never
-# arrives used to wedge a node out of sync permanently and silently.
-# Locks: no chain DB never latches · a stalled latch is released · a
-# HEALTHY catch-up is not interrupted (the direction a naive watchdog
-# breaks) · progress is tracked separately from the rate-limit stamp.
-register_witness_test(test_sync_stall_watchdog)
 register_witness_test(test_replay_block_historical_committee)
 register_witness_test(test_wire_protocol_version_reject)
-
-# ── Faz 1D — MAJOR (audit M-1..M-4, M-6) ─────────────────────────────
-register_witness_test(test_commit_batch_toctou)
-register_witness_test(test_multi_round_skip_silent_drop)
-register_witness_test(test_halt_cooldown_expedite)
-register_witness_test(test_halt_entry_phase_reset)
-register_witness_test(test_fault_inject_round_skip)
-# Faz 5.4 — concrete only when -DQGP_FAULT_INJECT=ON; default build
-# returns rc=99 (SKIP). ctest treats rc=99 as Skipped via this prop.
-set_tests_properties(test_fault_inject_round_skip
-    PROPERTIES SKIP_RETURN_CODE 99)
 
 # (The T1 core tests test_tm_core / test_tm_proposer / test_tm_sim and the
 # T3 wave-1 test_tm_wal were deleted in R2 with the modules they tested —

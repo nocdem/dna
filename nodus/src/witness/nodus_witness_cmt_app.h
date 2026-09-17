@@ -83,7 +83,8 @@
 
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_cmt_host.h"
-#include "witness/nodus_witness_mempool.h"
+/* R3 W4 — nodus_witness_mempool.h is DROPPED with the closed consensus
+ * lane: nothing in this file used a mempool.h symbol. */
 #include "witness/nodus_witness_v2_apply.h"   /* the Comet apply lane   */
 #include "witness/nodus_witness_v2_env.h"     /* nodus_v2_envelope_t    */
 

@@ -64,9 +64,11 @@
  *
  * `nodus_witness_v2_gate_state()` takes ONE argument, a witness handle, and
  * there is no second argument through which a caller could propose that the
- * lane is active. That is the same discipline
- * `nodus_witness_v2_qc_verify()` uses for validator authority: the absence
- * of a parameter is the guarantee.
+ * lane is active: the absence of a parameter is the guarantee. R3 W4 — this
+ * comment used to name a second function sharing that discipline
+ * (nodus_witness_v2_qc_verify(), validator authority for the closed
+ * consensus lane's QC path); that function is deleted with the lane it
+ * served, so the point stands on this function alone now.
  *
  * ═══ UNKNOWN IS NOT "NO" ════════════════════════════════════════════════
  * The authority probe is THREE-VALUED. A prepare failure on a table that
