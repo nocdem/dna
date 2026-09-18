@@ -23,7 +23,7 @@
 #include "core/nodus_media_storage.h"
 #include "channel/nodus_channel_store.h"
 #include "crypto/nodus_channel_crypto.h"
-#include "protocol/nodus_tier3.h"    /* Stage E.2 — cc_vote_{req,rsp} types */
+#include "protocol/nodus_tier3.h"    /* D-16 rev 7 — cc_appr_{req,rsp} types */
 #include <pthread.h>
 #include <stdatomic.h>
 
@@ -734,6 +734,30 @@ int nodus_client_dnac_supply(nodus_client_t *client,
                                nodus_dnac_supply_result_t *result_out);
 
 /**
+ * Read this node's own 32-byte derived chain id via the dnac_supply RPC
+ * (D-16 rev 7, W4-CC — operator ruling "kendisi alsın", 2026-09-18).
+ *
+ * A THIN accessor over the SAME dnac_supply request nodus_client_dnac_supply
+ * sends: it does its own short round trip and reads only the ADDITIVE
+ * "chain_id32" key (nodus_witness_handlers.c handle_dnac_supply), rather
+ * than growing nodus_dnac_supply_result_t (defined in nodus_types.h,
+ * outside this package's whitelist) — every existing caller of
+ * nodus_client_dnac_supply is therefore untouched. A legacy (pre-version-3)
+ * node's reply carries no such key; `*has_out` distinguishes that case
+ * from a transport/RPC failure.
+ *
+ * @param has_out         [out] true iff the additive key was present
+ *                        (the node is on a version-3 chain).
+ * @param chain_id32_out  [out] the 32-byte derived chain id when
+ *                        *has_out is true; untouched otherwise.
+ * @return 0 on success (*has_out is still meaningful either way),
+ *         error code on transport/RPC failure.
+ */
+int nodus_client_dnac_chain_id32(nodus_client_t *client,
+                                 bool *has_out,
+                                 uint8_t chain_id32_out[32]);
+
+/**
  * @brief Query current dynamic fee info from witness
  * @param client Connected nodus client
  * @param result_out Output fee info
@@ -939,17 +963,20 @@ int nodus_client_dnac_committee(nodus_client_t *client,
                                   nodus_dnac_committee_result_t *result_out);
 
 /**
- * Hard-Fork v1 Stage E.2 — proposer-side helper to ask ONE committee peer
- * to sign a chain_config proposal preimage.
+ * D-16 rev 7 (W4-CC) — proposer-side helper to ask ONE committee peer to
+ * approve a pre-auth SYSTEM-governance envelope. Replaces the retired
+ * Stage E.2 helper (nodus_client_cc_vote_send, verbs 14-15) over the
+ * pre-auth envelope carrier (verbs 40-41).
  *
  * Opens a short-lived TCP connection to `peer_address` (format "ip:port";
  * port defaults to NODUS_DEFAULT_WITNESS_PORT when omitted), sends a
- * single w_cc_vote_req signed with `caller_sk`, waits up to `timeout_ms`
- * for the corresponding w_cc_vote_rsp, verifies the response wsig against
- * `expected_peer_pk`, and writes the decoded response to `*rsp_out`.
+ * single w_cc_appr_req signed with `caller_sk` carrying `env_bytes`, waits
+ * up to `timeout_ms` for the corresponding w_cc_appr_rsp, verifies the
+ * response wsig against `expected_peer_pk`, and writes the decoded
+ * response to `*rsp_out`.
  *
- * The CLI proposer must be a committee member — the receiving peer drops
- * any tier-3 request from an unknown sender_id (see
+ * The caller must be a committee member — the receiving peer drops any
+ * tier-3 request from an unknown sender_id (see
  * nodus/src/witness/nodus_witness.c dispatch guard). Out-of-committee
  * callers surface as a timeout (-2) rather than a visible error.
  *
@@ -958,27 +985,28 @@ int nodus_client_dnac_committee(nodus_client_t *client,
  * @param caller_sk          Proposer Dilithium5 secret key (wsig source)
  * @param caller_witness_id  first 32B of SHA3-512(caller_pk) — t3 sender_id
  * @param expected_peer_pk   Target member's Dilithium5 pubkey (rsp verify)
- * @param chain_id           Current chain_id (32 bytes) — t3 header cid
- * @param req                Proposal fields to sign
+ * @param chain_id32         The 32-byte derived chain id — t3 header cid
+ * @param env_bytes          The pre-auth envelope bytes
+ * @param env_len            Their length (<= NODUS_T3_CC_APPR_E_MAX)
  * @param timeout_ms         Total deadline (handshake + send + recv combined)
  * @param rsp_out            Decoded response on success
  *
- * @return  0   on verified response (callers check rsp_out->accepted
- *              to distinguish accept vs reject)
+ * @return  0   on verified response (callers check rsp_out->ok to
+ *              distinguish approval vs refusal)
  *         -1   invalid args / encode / transport failure
  *         -2   timeout at any phase
  *         -3   response decoded but wsig verification failed
  *         -4   peer rejected T2 auth (see stderr for code+msg)
  */
-int nodus_client_cc_vote_send(const char *peer_address,
-                                const nodus_pubkey_t *caller_pk,
-                                const nodus_seckey_t *caller_sk,
-                                const uint8_t caller_witness_id[32],
-                                const nodus_pubkey_t *expected_peer_pk,
-                                const uint8_t chain_id[32],
-                                const nodus_t3_cc_vote_req_t *req,
-                                uint32_t timeout_ms,
-                                nodus_t3_cc_vote_rsp_t *rsp_out);
+int nodus_client_cc_appr_send(const char *peer_address,
+                              const nodus_pubkey_t *caller_pk,
+                              const nodus_seckey_t *caller_sk,
+                              const uint8_t caller_witness_id[32],
+                              const nodus_pubkey_t *expected_peer_pk,
+                              const uint8_t chain_id32[32],
+                              const uint8_t *env_bytes, size_t env_len,
+                              uint32_t timeout_ms,
+                              nodus_t3_cc_appr_rsp_t *rsp_out);
 
 /**
  * Page through the full validator table on the witness (all statuses).

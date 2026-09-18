@@ -25,8 +25,16 @@ The chain is implemented in three layers of the monorepo:
   chain state
 - **TX builders** for every live transaction type: SPEND, BURN,
   TOKEN_CREATE, STAKE, UNSTAKE, DELEGATE, UNDELEGATE,
-  VALIDATOR_UPDATE, CHAIN_CONFIG (committee-voted hard-fork parameters),
-  GENESIS
+  VALIDATOR_UPDATE, CHAIN_CONFIG (committee-voted hard-fork parameters —
+  **R3 W4-C delta 2, operator "kaldır" 2026-09-18:** parameter id 1
+  (`MAX_TXS_PER_BLOCK`) is RETIRED from the governed set and refused
+  unconditionally by the witness's vote rules; a block's capacity is
+  bytes and units only now (cometbft's own `Block.MaxBytes`, the meter
+  policy's per-block byte/unit budgets, and the engine's own derived
+  memory ceiling on envelope-scratch allocation — never a governed
+  count). Ids 2-4 (BLOCK_INTERVAL_SEC, INFLATION_START_BLOCK,
+  TARGET_ACTIVE_COUNT) are unaffected and keep their numbers — id 1 is
+  never reused), GENESIS
 - **Explicit committed fee** on the wire (v2 header) with a min-fee gate
   and a fee-burn model (fees are removed from circulation, not paid to
   witnesses)
@@ -190,6 +198,21 @@ season O15J Faz 3. The witness rejects all three by name
 refuses every type above 11 — the same freeze that already covers
 SHIELD/UNSHIELD. Recycling a burned id would let an old signed
 transaction be reinterpreted under a new meaning.
+
+**CHAIN_CONFIG(10) is "live" on the LEGACY wire only.** On a version-3
+(Ledger V2 / cometbft) chain the classifier treats every type-10 body as
+a CLAIM and refuses it (`nodus_witness_v2_classify_entry`,
+`nodus/src/witness/nodus_witness_v2_produce.c:75-80`) — a version-3
+chain's chain-config change is a single-leg SYSTEM CHAIN_CONFIG
+**envelope** instead (call v2, 41 bytes; `auth_kind` 2, committee
+approvals by seat against the resolved snapshot — D-16 rev 7, W4-CC),
+built and submitted by `nodus-cli chain-config propose` (collects
+committee approvals over the network, verbs 40-41) or, offline, by
+`nodus-cli v2-envelope chain-config --keys <dirs>`. Neither builder is
+part of `dna-connect-cli` / `libdna` — both live in `nodus/tools/
+nodus-cli.c`. See `nodus/README.md`'s test table (D-16 rev 7 row) and
+`nodus/docs/ARCHITECTURE.md`'s W4 section for the wire and the
+responder.
 
 ## Ledger V2 (successor chain)
 

@@ -268,11 +268,12 @@
 #include "witness/nodus_witness_v2_env.h"   /* nodus_v2_envelope_t + the
                                              * preflight/reserve seam    */
 #include "dnac/domain_wire.h"
-#include "dnac/manifest_wire.h"
+#include "dnac/manifest_wire.h"             /* DNA_CLAIM_FIXED_LEN       */
 #include "dnac/block_v2.h"                  /* O14: the engine OWNS the
                                              * canonical header v3 and
                                              * the BlockID it persists   */
 #include "dnac/dnac.h"                      /* DNAC_EPOCH_LENGTH         */
+#include "dnac/cmt_params.h"                /* CMT_MAX_BLOCK_SIZE_BYTES  */
 
 #include <stdint.h>
 #include <stddef.h>
@@ -289,23 +290,202 @@ extern "C" {
 #define NODUS_V2_GLOBAL_UNIT_BUDGET  1000000u
 
 /**
- * R3 W3 (ORCHESTRATOR, 2026-09-17) — THE ENGINE'S PER-BLOCK ITEM BOUND,
- * exported. `nodus_witness_v2_apply.c` sizes its per-block scratch
- * (`wire_ids[MAX_OPS][64]`, `claim_nuls[MAX_OPS][64]`, the per-domain
- * `n_tx` walk) at this many items and FAULTS a block that declares more
- * (`cometbft lane: the block declares N claims with an over-long array;
- * this engine holds 16`). Until W3 the Comet application's own request
- * cap (`NODUS_CMT_APP_MAX_TXS` = 10, retired in C2a delta 4 for the
- * byte-bound seam) kept every DECIDED block inside it by accident; the
- * Genesis Protocol harness then decided a 40-claim block at production
- * constants and every node stopped at height 7 (`/tmp/stagef-
- * 20260917T034259Z`). The application now derives its PrepareProposal
- * pack cap and its ProcessProposal refusal from THIS number, so a block
- * the engine cannot hold is never proposed by an honest node and never
- * prevoted by one. A release RESOURCE bound of this engine — not a
- * protocol maximum, exactly like `MAX_DOMS`.
+ * R3 W4-C delta 2 (operator "kaldır" 2026-09-18;
+ * atlas-dec-5b7568512b95e6d2e671c4eaad2c1879 rev 1) — THE ENGINE'S
+ * PER-BLOCK ENVELOPE-SCRATCH ALLOCATION BUDGET.
+ *
+ * The chain-config governance parameter that used to bound envelopes
+ * per block (`MAX_TXS_PER_BLOCK`, id 1) is RETIRED — the operator's
+ * ruling is that a block's capacity is bytes and units only, matching
+ * the pinned reference (cometbft @709fd12b bounds blocks by
+ * `Block.MaxBytes` alone, no transaction-count parameter). This engine
+ * still needs SOME ceiling on how many envelopes' worth of per-block
+ * scratch it will allocate in one call (`pf`/`meters`/`env_phase`/
+ * `auths`/`auth_off`, all sized by `blk->n_envs` since R3 W4-C delta 1)
+ * — a RELEASE RESOURCE CHOICE, exactly the same kind of number as
+ * `NODUS_V2_GLOBAL_UNIT_BUDGET` above and the W3 receive arena's 64 MiB
+ * (nodus_witness_cmt_net.h) — not a consensus parameter, never governed,
+ * never voted. 64 MiB. */
+#define NODUS_V2_APPLY_SCRATCH_BUDGET_BYTES \
+    ((size_t)64u * 1024u * 1024u)
+
+/**
+ * THE ENGINE'S OWN MEMORY COST OF ONE ENVELOPE'S PER-BLOCK SCRATCH.
+ *
+ * Three components, each sized by `sizeof()` (the compiler's own
+ * measurement, never a hardcoded guess), plus the wire-id bytes a
+ * touched domain's `wire_ids` entry costs:
+ *   - `dna_env_preflight_t` — ONE per envelope (`pf[i]`). MEASURED on
+ *     this build (env_preflight.h:159-161, `test_env_preflight`'s own
+ *     printed figure): 15 096 B.
+ *   - `dna_meter_t` — ONE per envelope (`meters[i]`). AUDITED ceiling
+ *     `sizeof(dna_meter_t) <= 4096` (res_meter.h:437-438); no build ran
+ *     in this session to print the exact figure, so `sizeof()` is used
+ *     directly here rather than a guessed literal — whatever the real
+ *     compiled size is, it is what this macro adds.
+ *   - `nodus_rt_auth_verdict_t` — one per REAL leg, but this is a
+ *     compile-time COST BOUND, which cannot see a block's real leg
+ *     counts. Priced for TWO legs — the largest shape any shipped
+ *     runtime op produces today: every cross-domain op in
+ *     `nodus_witness_rt_native.c` hard-refuses any leg_count other than
+ *     2 for its cross-domain forms (e.g. `if (env->leg_count != 2 ||
+ *     leg_index != 0) return -1;` and the SYSFUND sibling's
+ *     `leg_index != 1` twin, nodus_witness_rt_native.c) — there is no
+ *     third registered domain today, so no shipped op can address more
+ *     than 2. A future 64-leg envelope (env_wire.h's own DNA_ENV_MAX_LEGS
+ *     ceiling) would cost more scratch than this bound prices, but
+ *     cannot exist while only SYSTEM and CORE are registered; the
+ *     `_Static_assert` below is the trip-wire if that ever changes
+ *     without this cost formula being revisited. Computed from the
+ *     struct layout (`nodus_witness_runtime.h:250`'s own
+ *     `NODUS_RT_AUTH_MAX_SIGNERS` = 15 — not env_wire.h):
+ *     2 + 15×64 + 2 + 2 = 966 B exactly (no padding — every member is
+ *     `uint16_t`/`uint8_t`, naturally 2-aligned, and 966 is already
+ *     even).
+ *   - 2 × 64 B — the `wire_ids` entry each of those (up to) two touched
+ *     domains gets (`nodus_witness_v2_apply.c`'s `dom_ctx_t.wire_ids`,
+ *     delta 1: heap, lazily allocated, 64 B per touched domain).
  */
-#define NODUS_V2_APPLY_MAX_OPS 16u
+#define NODUS_V2_APPLY_ENV_COST_BYTES \
+    (sizeof(dna_env_preflight_t) + sizeof(dna_meter_t) + \
+     2u * sizeof(nodus_rt_auth_verdict_t) + 2u * 64u)
+
+/**
+ * Largest ENVELOPE batch the engine will allocate per-block scratch
+ * for, derived: `NODUS_V2_APPLY_SCRATCH_BUDGET_BYTES /
+ * NODUS_V2_APPLY_ENV_COST_BYTES` (integer division floors, the SAFE
+ * direction — it under-counts, never over-counts, how many envelopes'
+ * worth of scratch 64 MiB actually buys).
+ *
+ * PROVABLY ABOVE what the surviving bounds allow for AUTHORIZABLE
+ * envelopes in practice (the operator's decision's own requirement),
+ * verified by the two `_Static_assert`s below rather than asserted by
+ * fiat:
+ *   - The smallest AUTHORIZABLE envelope (one that could actually pass
+ *     the auth boundary, not merely decode) is `DNA_ENV_FIXED_HEAD` +
+ *     `DNA_ENV_LEG_HDR_LEN` (43 + 30 = 73 B, env_wire.h:198-199) + a
+ *     real call payload (>= 41 B, the smallest shipped op's own call
+ *     encoding) + a kind-1 (single-signer ML-DSA-87) auth blob (1 +
+ *     `DNA_CLAIM_PUBKEY_LEN` 2592 + `DNA_CLAIM_SIG_LEN` 4627 = 7220 B,
+ *     manifest_wire.h:283-284) = 7 334 B.
+ *   - At this chain's own configured genesis `Block.MaxBytes` (22 020
+ *     096, D-4 rev 3's default — nodus_witness_cmt_app.c cites the same
+ *     figure), the most such envelopes ANY block could carry is
+ *     22 020 096 / 7 334 = 3 002 (floor) — a byte-derived ceiling no
+ *     block will ever exceed regardless of this engine's own bound.
+ *   - Using ONLY the documented, already-`_Static_assert`-enforced
+ *     ceilings (`dna_env_preflight_t` MEASURED 15 096 B, `dna_meter_t`
+ *     audited <= 4096 B), the WORST-CASE per-envelope cost is 15 096 +
+ *     4 096 + 2x966 + 128 = 21 252 B, giving a WORST-CASE
+ *     `NODUS_V2_ENV_BATCH_MAX` of 67 108 864 / 21 252 = 3 157 — already
+ *     above the 3 002 byte-derived practical ceiling. The REAL compiled
+ *     value (using the true, possibly-smaller `sizeof(dna_meter_t)`)
+ *     can only be EQUAL OR LARGER, so it is provably above 3 002 too.
+ *   - MEASURED (ORCHESTRATOR build, 2026-09-18): `sizeof(dna_meter_t)`
+ *     = 3 752, so the cost is 20 908 B and this bound is 3 209 — the
+ *     pins below hold exactly these figures.
+ */
+#define NODUS_V2_ENV_BATCH_MAX \
+    (NODUS_V2_APPLY_SCRATCH_BUDGET_BYTES / NODUS_V2_APPLY_ENV_COST_BYTES)
+
+_Static_assert(NODUS_V2_APPLY_ENV_COST_BYTES <= 32768,
+               "NODUS_V2_APPLY_ENV_COST_BYTES exceeded the 32 KiB working "
+               "ceiling this header's arithmetic assumed — re-derive "
+               "NODUS_V2_ENV_BATCH_MAX's worst-case margin over the "
+               "3 002-envelope byte-derived practical ceiling");
+_Static_assert(NODUS_V2_ENV_BATCH_MAX > 3002,
+               "NODUS_V2_ENV_BATCH_MAX must stay ABOVE the byte-derived "
+               "practical ceiling (this chain's default Block.MaxBytes "
+               "22020096 / the smallest authorizable envelope 7334 B = "
+               "3002) — the operator's decision requires this bound to "
+               "never decide a block's validity in practice; if this "
+               "fires, NODUS_V2_APPLY_SCRATCH_BUDGET_BYTES needs raising");
+
+/**
+ * R3 W4 package C (ORCHESTRATOR, 2026-09-18) — THE MOST CLAIMS ANY
+ * COMETBFT BLOCK CAN CARRY, derived.
+ *
+ * A claim is not chain-config-metered (MAX_TXS_PER_BLOCK governs
+ * envelopes only — NODUS_V2_ENV_BATCH_MAX above), so the only thing that
+ * bounds how many can fit in one block is the block's own byte ceiling:
+ * cometbft's `MaxBlockSizeBytes` (`CMT_MAX_BLOCK_SIZE_BYTES`,
+ * `shared/dnac/cmt_params.h:83` -> `shared/dnac/cmt_bits.h:110`, 100 MiB =
+ * 104 857 600) divided by the smallest possible encoded claim
+ * (`DNA_CLAIM_FIXED_LEN`, `shared/dnac/manifest_wire.h:452-454`, 7 404
+ * bytes — the fixed claim fields plus a full ML-DSA-87 pubkey and
+ * signature, zero proof siblings and a one-byte source id). Integer
+ * division floors, which is the SAFE direction: it under-counts, never
+ * over-counts, how many claims of the smallest possible size could ever
+ * be packed side by side, so this bound can never let through more than
+ * the block format itself allows.
+ *
+ * 104 857 600 / 7 404 = 14 162 (the `_Static_assert` below pins the
+ * actual value so a change to either input trips it instead of silently
+ * moving this bound).
+ */
+#define NODUS_V2_APPLY_MAX_CLAIMS \
+    ((size_t)(CMT_MAX_BLOCK_SIZE_BYTES / DNA_CLAIM_FIXED_LEN))
+
+_Static_assert(NODUS_V2_APPLY_MAX_CLAIMS == 14162,
+               "NODUS_V2_APPLY_MAX_CLAIMS drifted — CMT_MAX_BLOCK_SIZE_BYTES "
+               "or DNA_CLAIM_FIXED_LEN changed; re-derive the per-block "
+               "claim-scratch sizing and every citation of 14162");
+
+/**
+ * R3 W3/W4 (ORCHESTRATOR) — THE ENGINE'S PER-BLOCK ITEM CEILING, exported.
+ *
+ * W3 (2026-09-17) introduced this as a flat, chosen 16 — the size of the
+ * per-block scratch arrays the engine held on the stack/heap at the time
+ * (`wire_ids[MAX_OPS][64]`, `claim_nuls[MAX_OPS][64]`) — and used it to
+ * cap BOTH envelopes and claims together at the two Comet proposal gates,
+ * because a 40-claim block decided at production constants FAULTED every
+ * node's FinalizeBlock at height 7 (`/tmp/stagef-20260917T034259Z`): the
+ * engine could not hold what an honest proposer packed.
+ *
+ * W4 package C (2026-09-18) replaces the flat 16 with the SUM of the two
+ * bounds now derived independently above: the envelope batch max
+ * (`NODUS_V2_ENV_BATCH_MAX`, the 64 MiB scratch budget over the measured
+ * per-envelope cost — 3 209 on this build; delta 1 briefly tied it to the
+ * governance hard cap of 10, retired in delta 2) plus the most claims one
+ * cometbft block can carry (`NODUS_V2_APPLY_MAX_CLAIMS`, 14 162) =
+ * 17 371. The per-block scratch this bounded
+ * (`wire_ids`/`claim_nuls`/`env_phase`/`all_ids`/`auths`) is no longer
+ * fixed-size at this number — it is heap-allocated and sized by the
+ * BLOCK's own `n_envs`/`n_claims`/leg counts (see the per-field comments
+ * in nodus_witness_v2_apply.c). What THIS bound still does: it is the
+ * ITEM ceiling the Comet application's mixed PrepareProposal trim and
+ * ProcessProposal refusal keep using (`n_pool_muts` keeps this as its own
+ * verdict bound too — a block message cannot express pool batches on the
+ * live lane, so that check is defense in depth, never reached), in
+ * ADDITION to the per-class caps the application now also enforces
+ * (`NODUS_V2_ENV_BATCH_MAX` for envelopes, `min(claim_bound,
+ * NODUS_V2_APPLY_MAX_CLAIMS)` for claims — nodus_witness_cmt_app.c). A
+ * release RESOURCE bound of this engine — not a protocol maximum, exactly
+ * like `MAX_DOMS`.
+ */
+#define NODUS_V2_APPLY_MAX_OPS \
+    ((size_t)(NODUS_V2_ENV_BATCH_MAX + NODUS_V2_APPLY_MAX_CLAIMS))
+
+/* ORCHESTRATOR (W4-C delta 2, ORC-3) — the writer could not compile, so
+ * the exact figures were MEASURED by the ORCHESTRATOR's build on
+ * 2026-09-18 (x86-64, gcc): sizeof(dna_env_preflight_t) 15 096,
+ * sizeof(dna_meter_t) 3 752, sizeof(nodus_rt_auth_verdict_t) 966 ⇒
+ * NODUS_V2_APPLY_ENV_COST_BYTES = 15 096 + 3 752 + 2×966 + 128 = 20 908;
+ * NODUS_V2_ENV_BATCH_MAX = 67 108 864 / 20 908 = 3 209;
+ * NODUS_V2_APPLY_MAX_OPS = 3 209 + 14 162 = 17 371. The pins below are
+ * the trip-wires: a struct layout or budget change moves them and must
+ * move every citation of these numbers with it. */
+_Static_assert(NODUS_V2_APPLY_ENV_COST_BYTES == 20908,
+               "NODUS_V2_APPLY_ENV_COST_BYTES drifted — a struct in the "
+               "per-envelope scratch changed size; re-derive "
+               "NODUS_V2_ENV_BATCH_MAX and re-check every citation of 20908");
+_Static_assert(NODUS_V2_ENV_BATCH_MAX == 3209,
+               "NODUS_V2_ENV_BATCH_MAX drifted — re-derive from the scratch "
+               "budget / per-envelope cost and re-check every citation of 3209");
+_Static_assert(NODUS_V2_APPLY_MAX_OPS == 17371,
+               "NODUS_V2_APPLY_MAX_OPS drifted — re-derive from "
+               "NODUS_V2_ENV_BATCH_MAX + NODUS_V2_APPLY_MAX_CLAIMS and "
+               "re-check every citation of 17371");
 
 /**
  * Bound on the engine's refusal-reason string (`nodus_v2_block_t
@@ -560,10 +740,14 @@ typedef enum {
  *   5 CAPACITY   the item does not fit what is LEFT: the global unit
  *                ceiling or a per-domain unit budget (`dna_meter_reserve`
  *                statuses other than DNA_METER_ERR_FAULT, at the
- *                "RESERVE" block, apply.c:3333-3357), the committed
- *                manifest's per-domain transaction quota, or the
- *                engine's own MAX_OPS per-domain bound (both in the
- *                admission block above).
+ *                "RESERVE" block, apply.c:3333-3357), or the committed
+ *                manifest's per-domain transaction quota (the admission
+ *                block above). ⚠ R3 W4 package C: the admission block's
+ *                per-domain `n_tx` array-bound check is NO LONGER part of
+ *                this class — it is now a proven-unreachable FAULT (a
+ *                domain cannot appear twice in one envelope's leg list,
+ *                env_wire.c:364-365/:276), split from the quota check it
+ *                used to share a verdict with.
  *   6 AUTH       the resolved runtime's `auth` hook refused a leg
  *                against the engine-derived leg digest
  *                (`env_authorize_legs`, apply.c:1665-1750).

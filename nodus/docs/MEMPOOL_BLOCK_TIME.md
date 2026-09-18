@@ -75,23 +75,36 @@ The reference lets the application reorder and drop in
    carries no fee and sorts last);
 2. **a chain_config transaction rides alone** in its block.
 
-Then three bounds, in this order:
+**R3 W4-C delta 2 (operator "kaldır" 2026-09-18;
+atlas-dec-5b7568512b95e6d2e671c4eaad2c1879 rev 1): the chain-config
+governance parameter `MAX_TXS_PER_BLOCK` (id 1) is RETIRED** — a
+block's capacity was never meant to be a governed count on the pinned
+reference (cometbft bounds blocks by bytes alone), and the parameter
+throttled the chain to ~10 transactions per ~6 s block for no stated
+reason. The witness's vote rules now refuse id 1 unconditionally
+(`nodus_witness_chain_config.c`); a block's capacity is bytes and units
+only. Three bounds, in this order:
 
 | Bound | Value | Derived from | Where |
 |---|---|---|---|
 | Byte budget | cometbft's `Block.MaxBytes` 22 020 096 → `MaxDataBytes` for the round | ConsensusParams from the genesis document | `nodus_witness_cmt_app.c` (`max_tx_bytes`) |
 | Unit budget | the ledger's own meter (the O15I capacity seam, `nodus_witness_v2_produce_batch_check_capped`) | `nodus_witness_v2_produce.c` | `app_seam_check` |
-| **Item cap** | **`NODUS_V2_APPLY_MAX_OPS` = 16 items (envelopes + claims together)** — a release resource bound of the apply engine's per-block scratch, NOT a protocol number and NOT derived from the genesis document | `nodus_witness_v2_apply.h` | `nodus_witness_cmt_app.c:845-846` (pack), `:949-953` (refuse) |
+| **Per-class item caps** | **envelopes ≤ `min(env_bound, NODUS_V2_ENV_BATCH_MAX)`; claims ≤ `min(claim_bound, NODUS_V2_APPLY_MAX_CLAIMS)`** — `NODUS_V2_ENV_BATCH_MAX` (a per-block MEMORY ceiling on envelope-scratch allocation, 3 209 at this build — `nodus_witness_v2_apply.h`'s `_Static_assert`-pinned arithmetic: 64 MiB / ~21 KB per envelope) and `NODUS_V2_APPLY_MAX_CLAIMS` (14 162, cometbft's own 100 MiB block ceiling / the smallest encoded claim) are BOTH release resource bounds of the apply engine, NOT protocol numbers and NOT derived from the genesis document | `nodus_witness_v2_apply.h` | `nodus_witness_cmt_app.c` (PrepareProposal's per-class compaction pass, ProcessProposal's per-class classify-and-reject pass) |
+| Mixed item cap (defense-in-depth) | `NODUS_V2_APPLY_MAX_OPS` = the SUM of the two per-class bounds above (17 371 at this build) | `nodus_witness_v2_apply.h` | `nodus_witness_cmt_app.c` (kept as a belt-and-braces trim/refusal AFTER the per-class ones; redundant in practice once they hold) |
 
-`PrepareProposal` packs at most 16 items (dropping from the tail of the fee
-order); `ProcessProposal` REFUSES a proposal above 16 before any per-item
-work (ABCI REJECT → a nil prevote); `FinalizeBlock`'s engine FAULT on a
-larger DECIDED block is the last line (register R3-W3-C2a-19). Throughput
-is therefore **16 items per block** until the engine's scratch moves to
-the heap (package W4-C). The request-side arrays are sized per request
-from the derived bounds `prep_bound` 5 000 (the mempool size), `env_bound`
-293 525 and `claim_bound` 2 972 (`nodus_witness_cmt_app.c:125-171`,
-logged at bind time with `item_cap=16`, `:181-182`).
+`PrepareProposal` packs, per class, the highest-fee entries up to each
+class's own cap (dropping from the tail of the fee order within that
+class); `ProcessProposal` REFUSES a proposal exceeding either class's
+cap before any per-item work (ABCI REJECT → a nil prevote);
+`FinalizeBlock`'s engine FAULT on a larger DECIDED block is the last
+line (register R3-W3-C2a-19, superseded by R3-W4-C delta 2). Throughput
+is therefore **3 209 envelopes OR ~14 162 claims per block** (whichever
+class is filled), a release-resource ceiling now sized in the
+low-to-mid thousands rather than the flat 16 W3 shipped as an interim
+fix. The request-side arrays are sized per request from the derived
+bounds `prep_bound` 5 000 (the mempool size), `env_bound` 293 525 and
+`claim_bound` 2 972 (`nodus_witness_cmt_app.c:125-190`, logged at bind
+time with `env_batch_max`/`env_cap`/`claim_cap`/`mixed_item_cap`).
 
 ## Block time
 
@@ -125,7 +138,7 @@ recorded for the operator (not defects of the port):
 |---|---|---|
 | submit (`dnac_spend`) | CheckTx verdict at once: APPROVED / a mapped refusal (`TX_TOO_LARGE`, `TX_IN_CACHE` "duplicate transaction", `MEMPOOL_IS_FULL`, the application's own code) | `nodus_witness_handlers.c` `handle_dnac_spend` |
 | inclusion | by query — the transaction's ledger effect (`utxo_set` row for a claim, `v2_intent_index` row for an envelope) | `dnac_utxo`, `dnac_tx` queries |
-| `nodus-cli`'s "committed: height=… index=…" line | **prints zeros on this lane** — the fields are not in the version-3 response; reworded in package W4-H | `nodus/tools/nodus-cli.c` |
+| `nodus-cli`'s submit print | FIXED in R3 W4-C delta 4: the old "committed: height=… index=…" line printed zeros on this lane (the fields are not in the version-3 response); it now prints "accepted: mempool CheckTx approved (query dnac_tx for the eventual commit height)", and `v2-claim --submit` reuses ONE client session for the whole batch (`t6_submit_on`) instead of one Kyber handshake per leaf | `nodus/tools/nodus-cli.c` |
 
 ## Files
 
@@ -144,8 +157,10 @@ recorded for the operator (not defects of the port):
 `test_cmt_memr` (reactor: no-echo-to-sender, the sleep sites as
 deadlines), `test_cmt_net` (peer ids reserved, a client transaction
 leaves the node — `memr_peer_ids_reserved_and_rpc_tx_gossiped`),
-`test_cmt_app` (the ordering rules, the byte bound, the item cap 40 → 16 /
-17 refused), `test_cmt_live` (CheckTx through the real dispatcher). The
+`test_cmt_app` (the ordering rules, the byte bound, the per-class item
+caps — 40 claims all APPLY since delta 2 retired the flat 16-item cap;
+`NODUS_V2_ENV_BATCH_MAX + 1` envelope-classified entries refused),
+`test_cmt_live` (CheckTx through the real dispatcher). The
 Genesis Protocol harness proves the gossip end to end
 (`test_cmt_mempool_flood.sh`: a transaction submitted to one node commits
 on all seven; three back-to-back claims land within two heights) and the
@@ -153,10 +168,23 @@ empty-block cadence (`test_cmt_empty_blocks.sh`).
 
 ## Limitations, named
 
-- 16 items per block (the engine's scratch bound) — W4-C.
+- 3 209 envelopes OR ~14 162 claims per block (the engine's derived
+  memory-ceiling resource bounds, `NODUS_V2_ENV_BATCH_MAX` /
+  `NODUS_V2_APPLY_MAX_CLAIMS`) — W4-C delta 2, superseding the flat
+  16-item cap delta 1 shipped as an interim fix.
 - `PrepareProposal`'s drop loop is O(`prep_bound`²) in the worst case on a
   pool full of budget-exceeding envelopes (register R3-W3-C2a-11).
 - No blocksync: a node far behind catches up only through the consensus
   reactor's stored-part gossip (D-23 rev 7 (18)) — W4-B.
-- The per-domain leg count is not covered by the item cap (register
-  R3-W3-C2a-19, RISK) — W4-C.
+- The per-domain leg count RISK register R3-W3-C2a-19 flagged ("one
+  envelope with many legs on one domain is not covered by the item
+  cap") is CLOSED, not open: `dna_env_decode`/`dna_env_encode`
+  (`shared/dnac/env_wire.c:364-365`/`:276`) both refuse a leg list that
+  is not strictly ascending by `domain_id`, so a domain_id cannot repeat
+  across one envelope's legs at all — the engine's per-domain `d->n_tx`
+  bound is a proven-unreachable FAULT, not a live risk (W4-C delta 1).
+- `test_cmt_env_flood.sh` (W4-C delta 2's own harness scenario for "a
+  block beyond the old 10-envelope cap, 7/7 agreement") is currently a
+  SKIP: `nodus-cli` has no generic CORE spend/transfer envelope command
+  to drive it — a CLI tooling gap, not a consensus rule, reported to
+  the ORCHESTRATOR rather than worked around.

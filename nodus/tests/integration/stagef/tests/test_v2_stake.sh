@@ -174,6 +174,7 @@ if [ "${has_v2:-0}" = "0" ] || [ ! -f "$CONF" ] || [ ! -s "$STAKER_DIR/identity/
     echo "       non-validator user identity — use stagef_up_v2.sh"
     exit 99
 fi
+stagef_sentinel SETUP_OK   # W4-H: the runner turns PASS-without-ASSERT_RUN into FAIL
 
 # The chain database is read READ-ONLY by the builders, so any node's
 # copy serves; node1's is the reference everything else in this suite
@@ -344,8 +345,10 @@ for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
 done
 echo "[ok] validator table identical on all $STAGEF_COMMITTEE_SIZE nodes ($first)"
 
+stagef_sentinel ASSERT_RUN   # the terminal assertion is next
 stagef_cmt_diff_at_floor "post-v2-stake" || exit 2
 
+stagef_sentinel PASS
 echo ""
 echo "[PASS] a Ledger V2 STAKE envelope spent a claimed output, wrote validator"
 echo "       state and bonded value at height $t2, and all $STAGEF_COMMITTEE_SIZE nodes agreed on both"

@@ -130,15 +130,22 @@ this wave. Read this before any Comet-lane scenario's own header.
    queues many transactions in the mempool before the next
    `PrepareProposal` fires, and `PrepareProposal` drains what fits
    under its bounds into ONE block — the byte budget (`Block.MaxBytes`
-   22 020 096 — D-23 rev 9 item 24) and, since the short-epoch run that
-   found it, the apply engine's ITEM CAP: at most `NODUS_V2_APPLY_MAX_OPS`
-   = 16 items (envelopes + claims) per block, packed from the head of the
-   fee order (register R3-W3-C2a-19). A batch of 40 pump leaves therefore
-   lands in THREE blocks (16 + 16 + 8), never forty and never one.
-   `test_cmt_mempool_flood.sh` measures the batching
-   directly; `test_v2_epoch_boundary.sh`'s reachability check no longer
-   counts leaves for exactly this reason (see that script's own
-   header).
+   22 020 096 — D-23 rev 9 item 24) and the apply engine's PER-CLASS
+   ITEM CAPS (R3 W4 package C, replacing the short-epoch run's original
+   flat `NODUS_V2_APPLY_MAX_OPS` = 16-items-of-either-class fix,
+   register R3-W3-C2a-19): envelopes ≤ `NODUS_V2_ENV_BATCH_MAX` (3 209,
+   a derived MEMORY ceiling since delta 2 — 64 MiB scratch budget /
+   20 908 B per envelope; NOT the governance hard cap of 10 delta 1
+   briefly tied it to),
+   claims ≤ `NODUS_V2_APPLY_MAX_CLAIMS` (14 162, derived from cometbft's
+   own `MaxBlockSizeBytes` — `nodus_witness_v2_apply.h`), packed from the
+   head of the fee order. A batch of 40 pump leaves (all claims) therefore
+   lands in ONE block again, not three and not forty separate ones —
+   `test_cmt_claim_flood.sh` proves exactly that, over the WHOLE batch in
+   one call. `test_cmt_mempool_flood.sh` measures the smaller-scale
+   batching directly; `test_v2_epoch_boundary.sh`'s reachability check
+   still does not count leaves, because by the time it runs the pump
+   batch is ordinarily already spent (see that script's own header).
 
 Chain identity is also affected, though it is not a behavioural flip:
 the pin and the derived chain id are the 32-byte document hash (64 hex
@@ -150,17 +157,31 @@ not a block; `initial_height` starts the real block sequence, and 0 vs
 still comparing a 128-hex pin or reading a height-0 row is reading
 pre-Comet assumptions.
 
-**⚠ THE CLI PRINTS LIE ON THIS LANE, RECORDED HERE, NOT FIXED HERE.**
-`nodus-cli.c`'s `v2-envelope`/`v2-claim` submit sites (`cmd_v2_envelope`
-~:1797, `t6_submit` ~:1888) print `"...committed: height=... index=..."`
-from receipt fields (`sres.block_height`, `sres.tx_index`) that are
-always ZERO on this lane — the version-3 response carries only `status`
+**⚠ THE CLI PRINT WAS WRONG ON THIS LANE — FIXED IN R3 W4-C DELTA 4,
+PULLED FORWARD FROM THE "package W4-H" NOTE THIS WARNING USED TO CARRY.**
+`nodus-cli.c`'s `t6_submit_on` (the shared submit path both `v2-envelope
+stake` and `v2-claim` funnel through since delta 4's session-reuse
+split) used to print `"...committed: height=... index=..."` from
+receipt fields (`sres.block_height`, `sres.tx_index`) that are always
+ZERO on this lane — the version-3 response carries only `status`
 (`nodus_witness_handlers.c` `handle_dnac_spend`, the `cbor_encode_cstr(&enc,
 "status")` answer after CheckTx), and `nodus_client_dnac_spend` `memset`s
 the result struct to zero before decoding it (`nodus_client.c:2065-2076`),
-so nothing ever overwrites those two fields. **No Comet-lane scenario in
-this suite parses that line for a height.** The reword ("accepted into the
-mempool; commit is learned by query") is package W4-H's.
+so nothing ever overwrote those two fields. It now prints `"accepted:
+mempool CheckTx approved (query dnac_tx for the eventual commit
+height)"` instead — what the field actually answers, not a fabricated
+commit position. **No Comet-lane scenario THIS RUNNER RUNS parses that
+line for a height** (`test_v2_claim.sh`, `test_v2_stake.sh`,
+`test_cmt_mempool_flood.sh` all say so in their own headers and use the
+ledger's own tables instead — those headers still quote the OLD string
+as the thing they deliberately don't parse; harmless, but now a stale
+quote, out of this delta's whitelist to fix). **`test_v2_grow_7_20.sh`
+is the one exception and IS newly broken by this**: it is not in this
+runner and not converted to the Comet lane (own row below), but it
+still `grep -q '^committed: height='`s three of its own log files as a
+pass signal (`:248`, `:449`, `:469`) — that grep can no longer match.
+Also outside this delta's whitelist; flagged here and in the register
+for whoever next runs or converts it.
 
 ## `genesis_protocol_v2.sh` — the runner
 
@@ -185,7 +206,7 @@ Phases:
 2. **Phase 2** — `stagef_up_v2.sh`: the OFFLINE version-3 ceremony, 7 nodes,
    four anti-vacuity lines per node (role, startup table, LIVE, height ≥ 1),
    then one 7/7 comparison of the first block.
-3. **Phase 3** — the ten Comet scenarios in the EXPLICIT order the script's
+3. **Phase 3** — the twelve Comet scenarios in the EXPLICIT order the script's
    own header gives (`test_cmt_empty_blocks.sh` first, `test_cmt_arena_runway.sh`
    last — see "Order matters on the Comet lane"). **It does not glob
    `tests/*.sh`**: the list is explicit, so a red run means a red scenario.
@@ -193,13 +214,22 @@ Phases:
    are stopped and `$BASE_DIR` (logs, DBs, config) is KEPT and its path
    printed.
 
-⚠ **Known gap (R3 W4, recorded for package W4-H):** unlike the deleted
-legacy runner, this runner reads NO reachability sentinels
-(`ASSERT_RUN` etc.) — a scenario that exits 0 without reaching its
-terminal assertion is reported as PASS. Every Comet scenario is written
-with progress-bounded waits and ledger-effect assertions for exactly this
-reason; the runner-side conversion of a vacuous PASS into a FAIL is not
-built.
+**Reachability sentinels (R3 W4 package H — the gap the previous version
+of this paragraph recorded is CLOSED).** Every Comet scenario records three
+marks through `stagef_sentinel` (files under `$BASE_DIR/sentinels/`, the
+first mark truncating the file so repeated `--scenarios` runs start
+clean): `SETUP_OK` once its preconditions hold (right after its skip
+gate), `ASSERT_RUN` immediately before its terminal assertion (the final
+`stagef_cmt_diff_at_floor "post-…"` comparison, or the latch scan in
+`test_cmt_arena_runway.sh`), and `PASS` at its end. The runner reads them
+back: an rc-0 scenario with `SETUP_OK` but no `ASSERT_RUN` is reported as
+**FAIL (VACUOUS pass)** and an rc-0 scenario with no mark at all as **FAIL
+(UNINSTRUMENTED)** — a new scenario does not count until it carries the
+three marks. A green line prints its marks, e.g. `PASS  test_v2_claim.sh
+[SETUP_OK ASSERT_RUN PASS ]`. RED-proven: a sweep with `test_cmt_arena_
+runway.sh`'s `ASSERT_RUN` line deleted ends `FAIL … a VACUOUS pass` and
+keeps `$BASE_DIR`. rc 99 (SKIP) is decided by the exit code alone, marks
+or not — `test_cmt_env_flood.sh` carries none.
 
 ### Environment
 
@@ -222,7 +252,7 @@ built.
 | `STAGEF_DECIMAL_UNIT` | 100000000 (`stagef_up_v2.sh:249`) | `-DDNAC_DECIMAL_UNIT` | Written into the genesis config; the shipped value is the only one this project ships. |
 | `STAGEF_CC_GRACE_SAFETY` / `STAGEF_CC_GRACE_ERGONOMIC` | 17280 / 720 (`stagef_env.sh:61-62`) | `-DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS` / `_ERGONOMIC_BLOCKS` | Blocks a chain_config change must wait before taking effect. No Comet scenario proposes a chain_config change today (the governance signature-collection RPC is being re-wired onto the Comet lane — package W4-CC); the variables are kept for `test_v2_grow_7_20.sh` (not in the sweep) and for the coming scenario. |
 | `STAGEF_V2_CANDIDATES` | 0 | — | Additionally mints N funded identities under `$BASE_DIR/cand1..N` for a growth scenario (`test_v2_grow_7_20.sh`, not in the sweep). |
-| `STAGEF_V2_PUMP_LEAVES` | (script default) | — | Size of the PUMP leaf batch `test_v2_epoch_boundary.sh` may spend to drive height. |
+| `STAGEF_V2_PUMP_LEAVES` | (script default) | — | Size of the PUMP leaf batch `test_cmt_claim_flood.sh` spends in one call (R3 W4 package C); `test_v2_epoch_boundary.sh` only submits whatever, if anything, is left. |
 | `STAGEF_EPOCH_BOUNDARY_BUDGET_S` | 1800 | — | Wall-clock budget `test_v2_epoch_boundary.sh` uses to decide reachability (SKIP when the boundary cannot be reached inside it). |
 | `STAGEF_NODUS_BIN` / `STAGEF_NODUSCLI_BIN` / `STAGEF_DNACLI_BIN` | `nodus/build/...`, `messenger/build/cli/dna-connect-cli` | — | Point the harness at a differently-configured build (e.g. `nodus/build-shortepoch/`) without disturbing the default one. `STAGEF_DNACLI_BIN` must name a built `dna-connect-cli` (the messenger build), which a git worktree does not carry. |
 
@@ -271,7 +301,7 @@ production (4000-4004) so both can run simultaneously.
 
 | Script | Purpose |
 |---|---|
-| `genesis_protocol_v2.sh` | The runner (above): `stagef_up_v2.sh` + ten explicit scenarios + teardown. `--scenarios` runs against an already-up cluster. Reports SKIPs separately and says in as many words that a skip is not a pass. **Leaf budget:** claim/stake consume single-use node/user leaves each; mempool_flood spends node 4/5/6/7's own leaves; `test_v2_epoch_boundary.sh` is the only scenario that reaches for PUMP leaves. A second run against the SAME cluster fails on the leaf-spending scenarios — correctly. **Phase 4:** a FAILED sweep stops the processes but keeps `$BASE_DIR` for inspection; only an all-green sweep tears down. |
+| `genesis_protocol_v2.sh` | The runner (above): `stagef_up_v2.sh` + twelve explicit scenarios + teardown. `--scenarios` runs against an already-up cluster. Reports SKIPs separately and says in as many words that a skip is not a pass. **Leaf budget:** claim/stake consume single-use node/user leaves each; mempool_flood spends node 4/5/6/7's own leaves; `test_cmt_claim_flood.sh` (R3 W4 package C) is the only scenario that reaches for the PUMP batch, in one call; `test_v2_epoch_boundary.sh` runs after it and ordinarily finds nothing left. A second run against the SAME cluster fails on the leaf-spending scenarios — correctly. **Phase 4:** a FAILED sweep stops the processes but keeps `$BASE_DIR` for inspection; only an all-green sweep tears down. |
 | `stagef_up_v2.sh` | The version-3 (**cometbft**) ceremony: no transaction and no cluster. The generated config carries `config_version = 3`, one shared `genesis_time_ms` (UTC ms, computed ONCE and written into every node's identical copy — the chain id hashes the whole document) and `initial_height = 1`. Each node runs the OFFLINE one-shot `nodus-server --derive-v2-genesis` against that one shared file **before anything is listening**, and agreement is CHECKED (all 7 chain ids must be identical, 64 hex / 32 bytes) rather than negotiated. Then spawns the 7 and asserts, per node, bounded by ATTEMPTS not a bare sleep, **FOUR** anti-vacuity lines: `chain role: COMETBFT`, `cometbft startup table built`, `cometbft lane LIVE`, AND that its Comet tip reaches height 1 (`stagef_cmt_wait_height <db> 1 3`) — every node can show role+startup+LIVE and still never produce. Once all seven have their first block, ONE `stagef_cmt_diff_at_floor "bring-up"` proves the seven first blocks are identical BEFORE any scenario runs. A node that shows the role but never goes live, or never produces, is a FAIL. Writes `pids.txt`, the pointer file and `$BASE_DIR/v2_genesis.conf` / `v2_genesis_pin` (64 hex). **What it does NOT prove:** that the seven can commit a block together under demand — that is the scenario suite's job. A green bring-up is a green BIRTH, not a green Comet lane. |
 | `stagef_down.sh` | Kill PIDs + rm -rf the run dir |
 | `stagef_diff.sh` | Read `global_root` + `block_id` from each node's witness DB (`v2_blocks`), assert identical across the 7, print. `--expect-height N` additionally requires each node's OWN latest height to equal N. **`--at-height N`** compares the ROW AT height N instead of each node's current latest — necessary because CreateEmptyBlocks means the chain keeps committing on its own, so "each node's own latest" races that ongoing production (seven sequential reads spanning even a fraction of a second can catch one node one idle block ahead of another and misreport it as divergence). Every scenario calls this through `stagef_env.sh`'s `stagef_cmt_diff_at_floor` wrapper, never bare. The legacy `blocks`/`state_root` branch is gone (R3 W4). |
@@ -285,7 +315,7 @@ binary and a freshly brought-up Comet cluster, nothing else.**
 
 #### The Comet lane — needs a cluster from `stagef_up_v2.sh` (the only lane)
 
-**These ten scenarios are the harness's entire coverage.** Read "What
+**These twelve scenarios are the harness's entire coverage.** Read "What
 flips on the Comet lane" near the top of this file FIRST: four standing
 rules the deleted legacy suite relied on are false here.
 
@@ -293,12 +323,16 @@ Each exits **99 on a non-Comet cluster** rather than pretending to have
 tested a Comet property. `genesis_protocol_v2.sh`'s order is EXPLICIT,
 not alphabetical (see that script's own header) — `test_cmt_empty_blocks.sh`
 must run first, `test_cmt_arena_runway.sh` must run last, and
-`test_cmt_mempool_flood.sh` runs before `test_v2_epoch_boundary.sh`
-simply because it is quick and cheap. **DELTA 1 correction (verifier
-CLAIM 5):** the two do NOT share the PUMP batch — `test_cmt_mempool_flood.sh`
-spends node 4/5/6/7's own genesis leaves and never touches it;
-`test_v2_epoch_boundary.sh` is the only scenario that reaches for PUMP
-leaves.
+`test_cmt_mempool_flood.sh` runs before `test_cmt_claim_flood.sh` and
+`test_v2_epoch_boundary.sh` simply because it is quick and cheap.
+**DELTA 1 correction (verifier CLAIM 5), UPDATED for R3 W4 package C:**
+`test_cmt_mempool_flood.sh` does NOT touch the PUMP batch — it spends
+node 4/5/6/7's own genesis leaves. `test_cmt_claim_flood.sh` (package C)
+is now the ONLY scenario that reaches for the PUMP batch: one `v2-claim`
+call over the WHOLE thing, proving a single block can carry more claims
+than the retired 16-item cap. `test_v2_epoch_boundary.sh` runs after it
+and finds the batch ordinarily already spent — its own pump submission is
+opportunistic leftovers only.
 
 ⚠ **A genesis leaf can be claimed exactly once.** Re-running a claiming
 scenario on the same cluster FAILS, correctly. Bring the cluster up fresh —
@@ -323,23 +357,26 @@ should tick every interval on a healthy chain.
 | `test_cmt_empty_blocks.sh` | An idle Comet chain still commits — CreateEmptyBlocks is really on. Every block in the observed window shows `tx_count=0` AND no claim landed (`utxo_set` has no row in that height range). | Default build. **Must run FIRST** in the sweep — needs a window with no transaction of ITS OWN or anyone else's in flight. DELTA 1 measured pace: ~2 x timeout_commit (~10-12 s) in practice, not the 60 s interval — see "What flips" rule 1. | The chain a few blocks further on. Nothing claimed, killed, or restarted. | A leftover mempool tx from elsewhere would make height-advanced vacuous. **DELTA 1 (verifier UNCOVERED FINDING 2, fixed):** `tx_count=0` alone is BLIND to a claim — `v2_blocks.tx_count` counts applied ENVELOPES only, never `blk->claims[]`, and a claim is the only transaction a fresh harness identity can submit. Closed with a second guard: no `utxo_set` row may exist with `block_height` inside the window either. BFT-time monotonicity is **NOT asserted** — `v2_blocks` carries no timestamp column on this lane (`nodus_witness_v2_apply.c:4798-4816` drops `header`); the value lives only in opaque Comet protobuf blobs this harness cannot decode. |
 | `test_v2_claim.sh` | A genesis allocation is claimed and the V2 apply engine agrees across all 7 nodes. On a pure Comet chain a claim is the only transaction that can come FIRST. | Default build. Uses node 2's leaf. | Node 2's leaf claimed; chain one (or more) blocks higher. | Never parses `committed: height=` (always 0 on this lane). CheckTx APPROVED is admission, not inclusion — closed by the claim's own `utxo_set` row, keyed by the nullifier a `--dry-run` prints in full — matched against the `tx_hash` COLUMN, not `nullifier` (DELTA 1, verifier UNCOVERED FINDING 1: `nodus_rt_core_claim_apply` binds the claim's nullifier into `tx_hash` and a derived hash of it into `nullifier` — the first cut named the wrong column and was always RED on a healthy chain). A claim gets no `v2_tx_index` row (envelope-only index, Comet writer `cmt_item_index` at `nodus_witness_v2_apply.c:2085-2099`). **DELTA 2, MEASURED:** inclusion is asserted by the ledger effect itself, waited for with a PROGRESS bound (`stagef_cmt_wait_row`), then read at ITS OWN height — never at `submission_tip + 1`; the interval between CheckTx and inclusion is not asserted (measured elsewhere on this lane: 2 heights). **DELTA 3 — confirmed safe from Defect 1** (the nullifier used here is derived from the leaf and the manifest, never a signature — `shared/dnac/manifest_wire.c:624-648` — so a `--dry-run` capture is safe to match against the real submission, unlike `test_v2_stake.sh`'s `wire_id`). **DELTA 3, Defect 2:** the wait is also bounded by height (`MAX_HEIGHTS=20`), distinct from a stall. |
 | `test_v2_stake.sh` | A `v2-envelope stake` SPENDS a claimed output and writes validator state — reaching state a claim never touches. Self-funds first (claims the non-validator user's leaf), so order-independent of `test_v2_claim.sh`. | Default build. Uses the non-validator `v2user` identity — all 7 nodes are already validators and would be refused. | `v2user`'s leaf claimed; a bond locked; two blocks (funding + stake). | Never parses `committed: height=`. A stake IS an envelope, so it DOES get an identity row — Comet writer `cmt_item_index`, `nodus_witness_v2_apply.c:2040-2099`. **DELTA 3, DEFECT 1, THE MEASUREMENT SITE (fixed):** the first cut keyed the wait on `wire_id`, which commits the ML-DSA-87 signature — RANDOMIZED per signing — so the dry-run capture could NEVER match the real submission's committed value (measured: `wire_id=c945d0cf…` vs committed `tx_id=781d6534…`, at a height where the stake HAD been applied). Fixed to key on `v2_intent_index.intent_id`, the signature-independent identity (`shared/dnac/env_wire.h:121-131`). **DELTA 2 — a separate defect, ALSO real:** a stake envelope was APPROVED at tip 2 and its row did not appear until tip 4 — both the funding claim and the stake wait for their OWN ledger effect and read ITS height, never `submission_tip+1`. **DELTA 3, DEFECT 2 (fixed):** the wait is now ALSO bounded by height (`MAX_HEIGHTS=20`), distinct from a stall — measured need: this exact wait sat 34 minutes at a healthy tip before Defect 1 was found. |
-| `test_v2_partial_wipe.sh` | The H-10 boot gate is unchanged and still armed on a Comet node (confirmed lane-agnostic: `nodus_server_check_partial_wipe` reads only file presence): each of the three SQLite files removed in turn REFUSES START; without the marker the SAME half-wiped directory demonstrably boots (the negative control). | Default build. Needs `$BASE_DIR/v2_genesis_pin` (64 hex) from bring-up. | Node 5 rebuilt via wipe + pin-rejoin; new pid. | "It did not come up" is not "the gate refused it" — the assertion greps `PARTIAL WIPE DETECTED` from a log truncated before each attempt. Restore now ALSO checks `chain role: COMETBFT` + `cometbft lane LIVE`, not just an open handle. **DELTA 1 (verifier UNCOVERED FINDING 5, fixed):** the verdict used to be decided by one fixed `sleep 8` — a gate refusing correctly but later than 8 s read as "booted", and the negative control's `!= "refused"` check then misread that late refusal as a disarmed gate (false GREEN in both directions). Replaced with a bounded 30 s poll for either real outcome; the negative control now requires the POSITIVE "booted" result specifically. |
+| `test_v2_partial_wipe.sh` | The H-10 boot gate is unchanged and still armed on a Comet node (confirmed lane-agnostic: `nodus_server_check_partial_wipe` reads only file presence): each of the three SQLite files removed in turn REFUSES START; without the marker the SAME half-wiped directory demonstrably boots (the negative control). | Default build. Needs `$BASE_DIR/v2_genesis_pin` (64 hex) from bring-up. | Node 5 rebuilt via wipe + pin-rejoin; new pid. **W4-H: an EXIT trap restores node 5 on ANY non-zero exit** — the moved database files are put back and the node restarted (with the pin, inert when a chain is present), so a mid-scenario `die` no longer leaves the rest of the sweep on six nodes (sweep 5, 2026-09-17). Proven live: an injected abort after the witness-DB move → node 5 back at the fleet tip within 20 s, the real scenario then PASSes on it. | "It did not come up" is not "the gate refused it" — the assertion greps `PARTIAL WIPE DETECTED` from a log truncated before each attempt. Restore now ALSO checks `chain role: COMETBFT` + `cometbft lane LIVE`, not just an open handle. **DELTA 1 (verifier UNCOVERED FINDING 5, fixed):** the verdict used to be decided by one fixed `sleep 8` — a gate refusing correctly but later than 8 s read as "booted", and the negative control's `!= "refused"` check then misread that late refusal as a disarmed gate (false GREEN in both directions). Replaced with a bounded 30 s poll for either real outcome; the negative control now requires the POSITIVE "booted" result specifically. |
 | `test_v2_restart_convergence.sh` | A `kill -9`'d Comet node comes back on the SAME chain file, runs and completes the ABCI Handshake (the `ABCI replay blocks` line count rises by one), resumes AND KEEPS producing, and re-converges. | Default build. Victim is node 4, FIXED (no leader concept to derive from on this lane). | Node 4 restarted under a new pid; log appended, not truncated. | **R3 W4:** the `branch=HAVE_CHAIN` delta is gone with the legacy bootstrap state machine (`nodus_witness_bootstrap.c` deleted; a version-3 node's role is decided once by the post-open gate) — the ABCI Handshake delta is the scenario's sole restart-reconciliation proof. **DELTA 1 (item 4, CONFIRMED live and fixed):** "producing again" used to require ZERO progress — the catch-up wait targeted a fleet-tip snapshot the victim had often already reached by the time the wait started (measured: "tip 29 -> 29"), a vacuous pass. Fixed with an explicit second wait strictly past that snapshot and a floor-strictly-greater-than-baseline check before the final diff. |
 | `test_v2_join.sh` | A WIPED node (identity kept) rejoins on nothing but its 64-hex genesis pin, adopts the fleet's exact chain, and catches up through the reactor's stored-part gossip (there is no separate blocksync — `wait_sync` is always false, D-23 rev 7 item 18). | Default build. Needs `$BASE_DIR/v2_genesis_pin`. | Node 6 rebuilt via wipe + rejoin; new pid; truncated log. | Pin length check is now 64 hex (was 128 — D-24 rev 4 item 1). "Adopted" is read from the witness DB's FILENAME (embeds the derived chain id's first 16 bytes), never a `global_height=0` row — a version-3 chain writes none (genesis is a document, not a block). |
 | `test_cmt_dead_proposer.sh` | A stopped validator proposes NOTHING for >= 7 heights while OTHERS keep committing, and it resumes and re-converges after `SIGCONT`. **Replaces `test_v2_view_change.sh`** — see this row's script header for why the legacy leader-derivation cannot be ported at all. | Default build. No leaf needed — CreateEmptyBlocks means demand is not required. Victim is node 2, FIXED. ⏱ Needs >= 7 intervals of wall time; DELTA 1's measured pace (~6 s/block, not 60 s) means this is usually well under a minute in practice, though the stall bound stays generous. | Node 2 `SIGSTOP`ped then `SIGCONT`ed; an EXIT trap resumes it on any early failure. | **No log line proves a round left round 0** — `cmt_cs.c` carries zero `QGP_LOG_INFO` calls; every transition function logs only on FAULT. The assertion is a PIGEONHOLE argument instead (>= CommitteeSize heights under exact round-robin at equal stake guarantees the victim's turn was hit at least once — CONFIRMED against the pinned reference's own tests, `types/validator_set_test.go` `TestProposerSelection2/3`) — read from the ported selection code's structure, not measured empirically this session; flagged as a QUESTION. Closed with a direct DB check: the victim's `validators.last_signed_block` provably did not move; some other validator's did. **DELTA 1 (verifier UNCOVERED FINDING 6, fixed):** the baseline reads used to happen BEFORE `kill -STOP`, racing the chain's own ongoing production in both directions (a block the victim proposed in that window read as a false RED; a block from another validator shrinking the observed window read as a false GREEN). The signal is now sent FIRST, synchronously, before either baseline DB read. |
-| `test_cmt_mempool_flood.sh` | (A) A tx submitted to ONE node (3) commits on all 7, AND its own UTXO lands there — the mempool channel (verb 39, `NODUS_T3_CMT_TXS`) gossips it; there is no leader/forward-to-leader step to do it instead. (B) Several claims submitted back-to-back apply within a BOUNDED spread of heights (typically, and in the common case exactly, the SAME `block_height`) — PrepareProposal batches what is waiting when it runs, since CheckTx no longer blocks the client one-at-a-time. | Default build. Uses node 4's leaf (part A) and node 5/6/7's leaves (part B). Deliberately does NOT touch the PUMP batch. | Node 4/5/6/7 leaves claimed. PUMP batch untouched for `test_v2_epoch_boundary.sh`. | **DELTA 1 (verifier UNCOVERED FINDINGS 2 and 4, fixed).** `tx_count` counts APPLIED ENVELOPES only (`nodus_witness_v2_apply.c:4593-4595`); a raw claim never increments it, so the first cut's `tx_count > 1` assertion was structurally ALWAYS RED. Part A used to assert only height agreement, which a completely broken mempool gossip could still satisfy via idle CreateEmptyBlocks production alone — closed by asserting node4's own claim's `utxo_set` row exists. **DELTA 2, MEASURED:** both parts now wait for their ledger effect(s) with a progress bound and read the ACTUAL height(s), never `submission_tip + 1`. Part B's "same block" is no longer a hard requirement — three separate CLI submissions can legitimately land on different rounds (the same mechanism DELTA 2 measured for a single transaction); the assertion is a bounded spread (2 heights), logging an exact batch as the common case. Inclusion is asserted by the ledger effect, waited for with progress bounds — the interval between CheckTx and inclusion is not asserted. **DELTA 3 — confirmed safe from Defect 1** (both parts key on claim nullifiers, never `wire_id`). **DELTA 3, Defect 2:** both waits are also bounded by height (`MAX_HEIGHTS=20`), distinct from a stall — the same bound `test_v2_stake.sh` measured sitting 34 minutes without. |
-| `test_v2_epoch_boundary.sh` | The chain crosses an epoch boundary at height `H=k*E_LEN` and freezes the snapshot for `epoch_start = H + E_LEN` (the one THIS crossing produces) byte-identically on all 7. | **Short-epoch binary, both halves:** `-DDNAC_EPOCH_LENGTH=<E>` + `STAGEF_EPOCH_LENGTH=<E>`. SKIPS at the shipped 720. | Whatever remains of the PUMP batch, opportunistically spent. Chain past >= 1 boundary. LAST leaf-spending scenario in the sweep. | **Reachability is now a WALL-CLOCK BUDGET (1 800 s default), not a leaf count** — pumped claims no longer land 1:1 per block (see "What flips" rule 4), so counting leaves cannot say whether the boundary is reachable in this harness's patience. Never parses `committed:`. Can take MINUTES even at the short-epoch convention if the pump batch is already spent — bounded by CreateEmptyBlocksInterval alone in that case. **DELTA 1 (verifier CLAIM 16, fixed):** the cross-node comparison used to read `epoch_start = next_boundary` — the row GENESIS ALREADY SEEDED on every node identically, which can never differ and proved nothing about the crossing (`nodus_witness_vset.c:658-659`: crossing H writes `epoch_start = H + E_LEN`, not `H`). Fixed to compare at `next_boundary + E_LEN`. |
+| `test_cmt_chain_config.sh` (D-16 rev 7, W4-CC) | `nodus-cli chain-config propose`, run from a validator's OWN identity against ITS OWN node, collects committee approvals OVER THE NETWORK (verbs 40-41, the SYSTEM-governance approval-collection RPC replacing the retired vote-collect pair 14-15) and lands a `chain_config_history` row byte-identical on all 7 nodes — the FIRST networked exercise of verbs 40-41 anywhere (test_cc_appr.c drives the responder directly, no network; test_tier3.c is wire-codec-only). | ⚠ **SHORT-GRACE BUILD ONLY.** compile: `-DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15 -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=15`; env: `STAGEF_CC_GRACE_SAFETY=15 STAGEF_CC_GRACE_ERGONOMIC=15` exported BEFORE `stagef_up_v2.sh`. SKIPS (99) at the shipped grace (17280 blocks). No leaf needed — a governance proposal, not a spend. | One committed `chain_config_history` row (BLOCK_INTERVAL_SEC -> 6) on every node. Nothing killed or restarted. | The CLI's exit code / "proposal accepted" line is CheckTx admission, never inclusion — the row is asserted from the CHAIN via `stagef_cmt_wait_row`, never CLI stdout. **The per-proposer rate limit is real** (`NODUS_CC_RATE_LIMIT_WINDOW_MS`=5000 ms) — this scenario asks all 7 seats in round 1 so it only reaches the CLI's round 2 if a real hiccup refuses a seat; a round-2 refusal of a previously-accepting seat is this design tension surfacing live, not a harness defect (register R3-W4-CC-writer's own BLOCKED ON). Does **NOT** prove the effective-height cutover (nothing waits for the chain to reach the proposal's effective height and read back the new interval) — only that the proposal round-trips and commits identically everywhere. |
+| `test_cmt_mempool_flood.sh` | (A) A tx submitted to ONE node (3) commits on all 7, AND its own UTXO lands there — the mempool channel (verb 39, `NODUS_T3_CMT_TXS`) gossips it; there is no leader/forward-to-leader step to do it instead. (B) Several claims submitted back-to-back apply within a BOUNDED spread of heights (typically, and in the common case exactly, the SAME `block_height`) — PrepareProposal batches what is waiting when it runs, since CheckTx no longer blocks the client one-at-a-time. | Default build. Uses node 4's leaf (part A) and node 5/6/7's leaves (part B). Deliberately does NOT touch the PUMP batch. | Node 4/5/6/7 leaves claimed. PUMP batch untouched for `test_cmt_claim_flood.sh` / `test_v2_epoch_boundary.sh`. | **DELTA 1 (verifier UNCOVERED FINDINGS 2 and 4, fixed).** `tx_count` counts APPLIED ENVELOPES only (`nodus_witness_v2_apply.c:4593-4595`); a raw claim never increments it, so the first cut's `tx_count > 1` assertion was structurally ALWAYS RED. Part A used to assert only height agreement, which a completely broken mempool gossip could still satisfy via idle CreateEmptyBlocks production alone — closed by asserting node4's own claim's `utxo_set` row exists. **DELTA 2, MEASURED:** both parts now wait for their ledger effect(s) with a progress bound and read the ACTUAL height(s), never `submission_tip + 1`. Part B's "same block" is no longer a hard requirement — three separate CLI submissions can legitimately land on different rounds (the same mechanism DELTA 2 measured for a single transaction); the assertion is a bounded spread (2 heights), logging an exact batch as the common case. Inclusion is asserted by the ledger effect, waited for with progress bounds — the interval between CheckTx and inclusion is not asserted. **DELTA 3 — confirmed safe from Defect 1** (both parts key on claim nullifiers, never `wire_id`). **DELTA 3, Defect 2:** both waits are also bounded by height (`MAX_HEIGHTS=20`), distinct from a stall — the same bound `test_v2_stake.sh` measured sitting 34 minutes without. |
+| `test_cmt_claim_flood.sh` | **R3 W4 package C.** ONE `v2-claim` call over the WHOLE pump batch (however many leaves this genesis config actually gave it, read from `v2_genesis.conf`) applies every leaf within 20 heights, AND at least one carrying block holds MORE than the retired flat 16-item cap — the engine's claim scratch is heap now, sized to the block's own `n_claims`, bounded by cometbft's own block-byte ceiling (`NODUS_V2_APPLY_MAX_CLAIMS`, 14 162, `nodus_witness_v2_apply.h`) rather than a flat item count. | Default build. The ONLY scenario that spends the PUMP batch — must run before `test_v2_epoch_boundary.sh`. | The WHOLE PUMP batch claimed and spent. Chain some number of blocks higher. | **NOT measured through `v2_blocks.tx_count`** — same structural reason `test_cmt_empty_blocks.sh`/`test_cmt_mempool_flood.sh` disclose: `tx_count` counts applied ENVELOPES only, never claims, so an all-claims block always shows `tx_count=0` regardless of this fix. Uses `v2_claims_spent.claimed_height` (one row per applied claim, with its own height column) instead. Does not capture each leaf's own nullifier before submitting (impractical for dozens of leaves) — reads `v2_claims_spent` rows newer than the submission's own starting tip instead, which assumes no OTHER scenario is spending claims concurrently (true here — this harness runs scenarios sequentially). The per-block wall-clock gap it prints is HARNESS-OBSERVED (polled from `v2_blocks`, ~1 s granularity), NOT the block's own committed header time (`cmt_blockstore`'s value column is an opaque encoded blob no bash+sqlite3 harness can decode) — printed for cost estimation, asserted on nowhere. **DELTA 4 (root cause was the CLI, not the engine):** at production constants this scenario FAILED — 40 leaves carried as 26:7, 27:16, 28:15, 29:2 across FOUR blocks, `max_in_one=16` never exceeding the retired cap (`/tmp/stagef-20260917T231618Z`). Read, not assumed: `cmd_v2_claim --submit`'s loop opened a NEW client session (Kyber1024 handshake + T2 auth) per leaf (`nodus-cli.c`'s old `t6_submit`), tens of seconds for 40 leaves against a chain committing every ~1-5 s — the batch never accumulated in one block, regardless of the engine fix above. Fixed in `nodus-cli.c`: the loop now opens ONE session (`t6_submit_on`) for the whole batch and prints the submission's own wall-clock duration so a future regression measures itself instead of being silently reintroduced (see the script's own "HOW IT CAN LIE"). |
+| `test_cmt_env_flood.sh` | **R3 W4-C delta 2 — CURRENTLY A SKIP, not yet runnable.** Intended to prove a block beyond 10 ENVELOPES (not claims) applies with 7/7 agreement, measuring wall-clock cost per envelope. | Default build. Would need the PUMP identity's 40 claim-created UTXOs spendable via a generic CORE envelope. | Nothing — it exits 99 before submitting anything. | **THIS IS A CLI TOOLING GAP, GROUNDED BY GREP, NOT A NULLIFIER/INTENT RULE:** `nodus-cli` has no generic CORE spend/transfer envelope command (`grep -n '"spend"' nodus/tools/nodus-cli.c` is empty; `v2-envelope`'s only implemented non-stake subcommand is `chain-config`, a governance proposal, not a value transfer — `cmd_v2_envelope`, nodus-cli.c:1551). Adding one is outside this delta's whitelist for that file (name-table + usage lines only). Reported to the ORCHESTRATOR rather than worked around. |
+| `test_v2_epoch_boundary.sh` | The chain crosses an epoch boundary at height `H=k*E_LEN` and freezes the snapshot for `epoch_start = H + E_LEN` (the one THIS crossing produces) byte-identically on all 7. | **Short-epoch binary, both halves:** `-DDNAC_EPOCH_LENGTH=<E>` + `STAGEF_EPOCH_LENGTH=<E>`. SKIPS at the shipped 720. | Ordinarily NOTHING of the PUMP batch — `test_cmt_claim_flood.sh` (package C), placed immediately before this scenario, already spent all of it; this scenario's own pump submission finds an already-fully-claimed identity and `v2-claim` SKIPS it. Chain past >= 1 boundary regardless. LAST leaf-spending scenario in the sweep. | **Reachability is now a WALL-CLOCK BUDGET (1 800 s default), not a leaf count** — pumped claims no longer land 1:1 per block (see "What flips" rule 4), so counting leaves cannot say whether the boundary is reachable in this harness's patience; since package C this scenario's own pump submission ordinarily finds nothing left at all, so in the sweep's normal order this is ALWAYS the idle-production case, not merely the worst case. Never parses `committed:`. Can take MINUTES even at the short-epoch convention. **DELTA 1 (verifier CLAIM 16, fixed):** the cross-node comparison used to read `epoch_start = next_boundary` — the row GENESIS ALREADY SEEDED on every node identically, which can never differ and proved nothing about the crossing (`nodus_witness_vset.c:658-659`: crossing H writes `epoch_start = H + E_LEN`, not `H`). Fixed to compare at `next_boundary + E_LEN`. |
 | `test_cmt_arena_runway.sh` | The Comet receive arena's two one-shot latches (50% WARN, 90% ERROR) never fired on any node across the WHOLE sweep. Since R3 W3 package C2e the arena is a PER-MESSAGE scratch of `CMT_CONR_MAX_MSG_SIZE` (1 MiB, `nodus_witness_cmt_net.h:102`), reset before every decode, and exhaustion is unreachable for an admitted message — the latches are regression guards. **Must run LAST** — its subject is cumulative history. | Default build. Read-only; submits nothing. | Nothing. | **No per-block usage NUMBER exists to read from nodus-server** — `nodus_cmt_net_recv_arena_used()`'s only callers are the test binaries (`nodus/tests/test_cmt_net.c`, `test_cmt_live.c`); only the two one-shot latches are checked. A latch is one-shot PER PROCESS LIFETIME, so a node restarted mid-sweep (4, 5, 6) has a fresh flag from its last restart onward, not the whole sweep — disclosed, not hidden. **History (closed):** on the fourth W3 sweep, with the pre-C2e 64 MiB never-released runway, both latches fired on node 1 by height ~347 (≈174 KB per empty block) — that defect is register R3-A-5, CLOSED by C2e; a RED here today is a real regression. |
 
 #### Not in the sweep
 
 | Script | Requires | Exercises |
 |---|---|---|
-| `test_v2_grow_7_20.sh` | `-DDNAC_EPOCH_LENGTH=15` + `-DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15`, `STAGEF_V2_CANDIDATES=13` exported BEFORE bring-up (0 → skips). ~30 min. **Run standalone**: it leaves 13 extra nodes running, a permanent 20-node committee, every candidate leaf spent. | The committee grows 7 → 14 → 20 by governance. **NOT converted to the Comet lane yet** — it still parses the CLI's `committed: height=` line (always 0 on this lane) and it is not in the runner; package W4-H decides convert-or-delete. Its FLAKY history (v0.19.48, a legacy view-boundary loss) belongs to the deleted lane. |
+| `test_v2_grow_7_20.sh` | `-DDNAC_EPOCH_LENGTH=15` + `-DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15`, `STAGEF_V2_CANDIDATES=13` exported BEFORE bring-up (0 → skips). ~30 min. **Run standalone**: it leaves 13 extra nodes running, a permanent 20-node committee, every candidate leaf spent. | The committee grows 7 → 14 → 20 by governance. **NOT converted to the Comet lane yet** — it still parses the CLI's `committed: height=` line (always 0 on this lane) and it is not in the runner; package W4-H decides convert-or-delete. Its FLAKY history (v0.19.48, a legacy view-boundary loss) belongs to the deleted lane. **R3 W4-C delta 4 (out-of-whitelist finding, NOT fixed here):** `nodus-cli.c`'s print this script greps for (`:248`, `:449`, `:469`, `grep -q '^committed: height='`) no longer exists — delta 4 reworded it to `"accepted: mempool CheckTx approved..."` because it was factually wrong on the Comet lane (see the README's own warning section above). This script is not in the runner and this file is outside delta 4's whitelist, so it was not touched; whoever runs or converts it next needs to update this grep too. |
 
 #### Order matters on the Comet lane too (R3 W3, C2d)
 
-The ten Comet scenarios are order-INDEPENDENT of each other's LEAVES by
+The twelve Comet scenarios are order-INDEPENDENT of each other's LEAVES by
 construction (each spends only its own genesis allocation), but not of
 each other's TIMING or LOG STATE. `genesis_protocol_v2.sh`'s list is an
 explicit order for exactly these reasons — see its own header for the
@@ -364,11 +401,13 @@ full reasoning; the residue worth knowing if you run scenarios by hand:
   header discloses this; it is not a defect in that scenario, just a
   boundary on what "across the sweep" can mean for a node that was
   itself relaunched mid-sweep.
-- **DELTA 1 correction:** `test_cmt_mempool_flood.sh` does NOT share the
-  PUMP identity's leaf batch with `test_v2_epoch_boundary.sh` — it
-  spends node 4/5/6/7's own leaves. The two do not compete for anything;
-  `test_v2_epoch_boundary.sh` is the only scenario that reaches for PUMP
-  leaves at all.
+- **DELTA 1 correction, updated for R3 W4 package C:** `test_cmt_
+  mempool_flood.sh` does NOT share the PUMP identity's leaf batch with
+  `test_cmt_claim_flood.sh` or `test_v2_epoch_boundary.sh` — it spends
+  node 4/5/6/7's own leaves. `test_cmt_claim_flood.sh` is now the only
+  scenario that reaches for the PUMP batch at all (one call, the whole
+  thing); `test_v2_epoch_boundary.sh` runs after it and ordinarily finds
+  nothing left. None of the three compete for anything.
 - `test_cmt_arena_runway.sh` must run LAST, unconditionally — its
   subject is the CUMULATIVE usage every other scenario in the sweep has
   already produced on every node. Running it earlier reads a partial

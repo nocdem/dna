@@ -291,7 +291,16 @@ static void handle_dnac_ledger(nodus_witness_t *w,
  * dnac_supply — Query supply state
  *
  * Request:  "a": {}
- * Response: "r": {"genesis":N, "burned":N, "current":N, "last_seq":N, "chain_id":bstr}
+ * Response: "r": {"genesis":N, "burned":N, "current":N, "last_seq":N,
+ *                 "chain_id":bstr[32] (legacy, 16 real bytes + 16 zeros),
+ *                 "chain_id32":bstr[32] (D-16 rev 7, W4-CC — ADDITIVE,
+ *                 present only when w->v2_successor: the full 32-byte
+ *                 derived chain id, the SAME value the T3 wire's
+ *                 verbs 35-41 bind as their frame's chain_id. This is a
+ *                 client-server RPC field only — no consensus wire
+ *                 carries it. nodus-cli's `chain-config propose` reads
+ *                 it so the operator never has to paste a chain id by
+ *                 hand.)}
  * ════════════════════════════════════════════════════════════════════ */
 
 static void handle_dnac_supply(nodus_witness_t *w,
@@ -299,13 +308,14 @@ static void handle_dnac_supply(nodus_witness_t *w,
                                  uint32_t txn_id) {
     nodus_witness_supply_t supply;
     int rc = nodus_witness_supply_get(w, &supply);
+    size_t rcount = w->v2_successor ? 6 : 5;
 
     uint8_t buf[512];
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, sizeof(buf));
 
     if (rc != 0) {
-        enc_dnac_response(&enc, txn_id, "dnac_supply", 5);
+        enc_dnac_response(&enc, txn_id, "dnac_supply", rcount);
         cbor_encode_cstr(&enc, "genesis");
         cbor_encode_uint(&enc, 0);
         cbor_encode_cstr(&enc, "burned");
@@ -317,7 +327,7 @@ static void handle_dnac_supply(nodus_witness_t *w,
         cbor_encode_cstr(&enc, "chain_id");
         cbor_encode_bstr(&enc, w->chain_id, 32);
     } else {
-        enc_dnac_response(&enc, txn_id, "dnac_supply", 5);
+        enc_dnac_response(&enc, txn_id, "dnac_supply", rcount);
         cbor_encode_cstr(&enc, "genesis");
         cbor_encode_uint(&enc, supply.genesis_supply);
         cbor_encode_cstr(&enc, "burned");
@@ -328,6 +338,10 @@ static void handle_dnac_supply(nodus_witness_t *w,
         cbor_encode_uint(&enc, supply.last_sequence);
         cbor_encode_cstr(&enc, "chain_id");
         cbor_encode_bstr(&enc, w->chain_id, 32);
+    }
+    if (w->v2_successor) {
+        cbor_encode_cstr(&enc, "chain_id32");
+        cbor_encode_bstr(&enc, w->v2_chain32, 32);
     }
 
     size_t rlen = cbor_encoder_len(&enc);

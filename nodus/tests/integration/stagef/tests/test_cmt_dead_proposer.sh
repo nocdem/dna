@@ -132,6 +132,7 @@ if [ "${has_v2:-0}" = "0" ]; then
     echo "[SKIP] not a Comet cluster — use stagef_up_v2.sh"
     exit 99
 fi
+stagef_sentinel SETUP_OK   # W4-H: the runner turns PASS-without-ASSERT_RUN into FAIL
 
 stagef_cmt_diff_at_floor "pre-cmt-dead-proposer" || exit 2
 
@@ -198,8 +199,10 @@ for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
     stagef_cmt_wait_height "$(stagef_node_chain_db "$n")" "$vt" 2 >/dev/null \
         || die "node$n never reached height $vt (mesh replication stalled)"
 done
+stagef_sentinel ASSERT_RUN   # the terminal assertion is next
 stagef_cmt_diff_at_floor "post-cmt-dead-proposer" || exit 2
 
+stagef_sentinel PASS
 echo ""
 echo "[PASS] node$VICTIM was stopped for >= $STAGEF_COMMITTEE_SIZE heights, proposed"
 echo "       nothing in that window while other validators kept committing,"

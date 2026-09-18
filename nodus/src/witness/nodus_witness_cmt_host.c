@@ -382,7 +382,7 @@ int nodus_cmt_blockexec_init(nodus_cmt_blockexec_t *ctx,
                              cmt_file_pv_t *pv,
                              cmt_now_fn now, void *now_ctx,
                              cmt_cs_slots_t *slots,
-                             cmt_pb_arena_t *ext_arena,
+                             cmt_pb_arena_t *ext_arena[2],
                              const nodus_cmt_host_limits_t *limits)
 {
     int k;
@@ -401,7 +401,17 @@ int nodus_cmt_blockexec_init(nodus_cmt_blockexec_t *ctx,
     ctx->now = now;
     ctx->now_ctx = now_ctx;
     ctx->slots = slots;
-    ctx->ext_arena = ext_arena;
+    /* PACKAGE W4-X (register R3-W3-C2e-4): a plain NULL means "no arenas
+     * at all" (the replay handshaker's throwaway executor, hs_exec_open,
+     * node.c — extend_vote is never reached on that path); a non-NULL
+     * pointer names both halves. */
+    if (ext_arena != NULL) {
+        ctx->ext_arena[0] = ext_arena[0];
+        ctx->ext_arena[1] = ext_arena[1];
+    } else {
+        ctx->ext_arena[0] = NULL;
+        ctx->ext_arena[1] = NULL;
+    }
     ctx->limits = *limits;
 
     for (k = 0; k < CMT_CS_BLOCK_SLOTS; k++) {
@@ -1729,6 +1739,7 @@ int nodus_cmt_host_extend_vote(void *vctx, const cmt_vote_t *vote,
     nodus_cmt_blockexec_t *ctx = (nodus_cmt_blockexec_t *)vctx;
     nodus_abci_request_extend_vote_t  req;
     nodus_abci_response_extend_vote_t resp;
+    cmt_pb_arena_t *arena;
     int rc;
 
     if (!ctx || !vote || !block || !state || !out_ext) {
@@ -1774,22 +1785,28 @@ int nodus_cmt_host_extend_vote(void *vctx, const cmt_vote_t *vote,
         QGP_LOG_ERROR(LOG_TAG, "ExtendVote call failed (rc %d)", rc);
         return CMT_FAULT;                                            /* :351 panic */
     }
-    /* :353 — the bytes into the per-height extension arena (cmt_cs.h
-     * OWNERSHIP (2)); an empty extension is the reference's nil. */
+    /* :353 — the bytes into the per-height-parity extension arena
+     * (cmt_cs.h OWNERSHIP (2)); an empty extension is the reference's
+     * nil. PACKAGE W4-X (register R3-W3-C2e-4): picked by THIS vote's
+     * own height (already proven == block->header.height above), never
+     * by any notion of the "current" height — this row has no `cs` to
+     * read one from, and the vote being extended is always for the
+     * height it names. */
     if (resp.vote_extension.len == 0) {
         out_ext->data = NULL;
         out_ext->len = 0;
         return CMT_OK;
     }
-    if (!ctx->ext_arena || !ctx->ext_arena->buf ||
-        resp.vote_extension.len > ctx->ext_arena->cap - ctx->ext_arena->used) {
+    arena = ctx->ext_arena[(uint64_t)vote->height & 1u];
+    if (!arena || !arena->buf ||
+        resp.vote_extension.len > arena->cap - arena->used) {
         return CMT_FAULT;                 /* capacity */
     }
-    memcpy(ctx->ext_arena->buf + ctx->ext_arena->used, resp.vote_extension.data,
+    memcpy(arena->buf + arena->used, resp.vote_extension.data,
            resp.vote_extension.len);
-    out_ext->data = ctx->ext_arena->buf + ctx->ext_arena->used;
+    out_ext->data = arena->buf + arena->used;
     out_ext->len = resp.vote_extension.len;
-    ctx->ext_arena->used += resp.vote_extension.len;
+    arena->used += resp.vote_extension.len;
     return CMT_OK;
 }
 

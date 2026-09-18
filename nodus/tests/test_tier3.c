@@ -3,20 +3,17 @@
  *
  * Round-trip encode/decode test for the SURVIVING message types this
  * file exercises directly: the peer mesh (9-11: w_rost_q, w_rost_r,
- * w_ident), the genesis bundle (24-25) and the cometbft envelope
- * (35-39). Tests: encode -> decode -> verify field equality. Also tests
- * sign/verify round-trip.
+ * w_ident), the genesis bundle (24-25), the cometbft envelope (35-39)
+ * and the SYSTEM-governance approval-collection RPC (40-41). Tests:
+ * encode -> decode -> verify field equality. Also tests sign/verify
+ * round-trip.
  *
- * The chain_config vote-collect RPC (14-15, kept per register
- * R3-W4-D-8) has NO round-trip encode/decode test anywhere today — not
- * in this file (its only appearances here are the live_verbs /
- * method-name table rows below, never an actual encode-decode-verify
- * cycle) and not in test_cc_client.c either, which only exercises
- * argument validation and timeouts against a dead peer and never
- * decodes a `w_cc_vote_rsp`. This was already true at 4a43e3a9, before
- * this delta touched either file — it is a pre-existing coverage gap,
- * not something this delta introduced or a substitute this delta can
- * name.
+ * D-16 rev 7 (W4-CC) retires the chain_config vote-collect RPC (14-15,
+ * which register D-11 / R3-W4-D-8 note had NO round-trip test anywhere)
+ * and rebuilds it on the pre-auth envelope as verbs 40-41. Unlike its
+ * predecessor, THIS pair gets real round-trip coverage below
+ * (test_cc_appr_roundtrip, test_cc_appr_strict_key_set) — the gap the
+ * two register entries above named is closed, not merely moved.
  *
  * R3 W4-D (Delta B) retired verbs 1-8, 12-13, 16-23 and 26-27 (the
  * legacy PBFT propose/vote/commit/view-change/forward round, block
@@ -206,10 +203,10 @@ static void init_test_data(void) {
  * or narrowing what gets checked. */
 static const nodus_t3_msg_type_t live_verbs[] = {
     NODUS_T3_ROST_Q, NODUS_T3_ROST_R, NODUS_T3_IDENT,
-    NODUS_T3_CC_VOTE_REQ, NODUS_T3_CC_VOTE_RSP,
     NODUS_T3_V2_GBUNDLE_REQ, NODUS_T3_V2_GBUNDLE_RSP,
     NODUS_T3_CMT_STATE, NODUS_T3_CMT_DATA, NODUS_T3_CMT_VOTE,
     NODUS_T3_CMT_VOTE_SET_BITS, NODUS_T3_CMT_TXS,
+    NODUS_T3_CC_APPR_REQ, NODUS_T3_CC_APPR_RSP,
 };
 
 static void test_method_type_mapping(void) {
@@ -1017,12 +1014,16 @@ static void test_cmt_max_msg_size(void) {
      * bound the legacy path used (NODUS_W_MAX_SYNC_RSP_SIZE), same as
      * before this delta. Rewritten off the deleted verbs (w_propose,
      * w_commit, w_sync_rsp, w_viewok, w_v2_range_rsp — all retired) onto
-     * the surviving non-CMT verbs: roster/ident (9-11), the chain_config
-     * vote-collect RPC (14-15, register R3-W4-D-8) and the genesis
-     * bundle (24-25). */
+     * the surviving non-CMT verbs that keep the LEGACY 1 MB bound:
+     * roster/ident (9-11) and the genesis bundle (24-25). R3 W4-CC
+     * (ORCHESTRATOR, ORC-1): the chain_config vote-collect RPC (14-15)
+     * that used to sit in this list is RETIRED, and its successor pair
+     * 40/41 (`w_cc_appr_req/rsp`) carries its OWN per-class ceilings
+     * (NODUS_T3_CC_APPR_E_MAX / _RSP_MAX) — so it does NOT belong in a
+     * list that asserts the legacy default; its bounds are pinned by
+     * test_cc_appr_roundtrip / test_cc_appr_strict_key_set below. */
     static const nodus_t3_msg_type_t non_cmt_live[] = {
         NODUS_T3_ROST_Q, NODUS_T3_ROST_R, NODUS_T3_IDENT,
-        NODUS_T3_CC_VOTE_REQ, NODUS_T3_CC_VOTE_RSP,
         NODUS_T3_V2_GBUNDLE_REQ, NODUS_T3_V2_GBUNDLE_RSP
     };
     for (size_t i = 0; i < sizeof(non_cmt_live) / sizeof(non_cmt_live[0]); i++) {
@@ -1360,6 +1361,367 @@ static void test_v2_gbundle_chunk_ceiling(void) {
     TEST_PASS(name);
 }
 
+/* ── SYSTEM-governance approval collection (verbs 40-41; D-16 rev 7,
+ *    W4-CC) — REPLACES the retired verbs 14-15, which never had a
+ *    round-trip test anywhere (register D-11, this file's own header
+ *    note above at 4a43e3a9). These sections are that missing coverage,
+ *    for the new pair. ─────────────────────────────────────────────── */
+
+static void test_cc_appr_method_table(void) {
+    const char *name = "cc_appr_method_table";
+
+    if (nodus_t3_type_to_method(NODUS_T3_CC_APPR_REQ) == NULL ||
+        strcmp(nodus_t3_type_to_method(NODUS_T3_CC_APPR_REQ),
+               "w_cc_appr_req") != 0) {
+        TEST_FAIL(name, "40 type_to_method mismatch"); return;
+    }
+    if (nodus_t3_type_to_method(NODUS_T3_CC_APPR_RSP) == NULL ||
+        strcmp(nodus_t3_type_to_method(NODUS_T3_CC_APPR_RSP),
+               "w_cc_appr_rsp") != 0) {
+        TEST_FAIL(name, "41 type_to_method mismatch"); return;
+    }
+    if (nodus_t3_method_to_type("w_cc_appr_req") != NODUS_T3_CC_APPR_REQ ||
+        nodus_t3_method_to_type("w_cc_appr_rsp") != NODUS_T3_CC_APPR_RSP) {
+        TEST_FAIL(name, "method_to_type round-trip"); return;
+    }
+    if (NODUS_T3_CC_APPR_REQ != 40 || NODUS_T3_CC_APPR_RSP != 41) {
+        TEST_FAIL(name, "enum values moved"); return;
+    }
+    /* Retired verbs 14-15 are recognised by NEITHER table any more —
+     * the direct behavioural proof (not just "no case here") that they
+     * are gone, not merely unreachable. */
+    if (nodus_t3_type_to_method((nodus_t3_msg_type_t)14) != NULL ||
+        nodus_t3_type_to_method((nodus_t3_msg_type_t)15) != NULL) {
+        TEST_FAIL(name, "a retired verb (14/15) still has a method string");
+        return;
+    }
+    if (nodus_t3_method_to_type("w_cc_vote_req") != 0 ||
+        nodus_t3_method_to_type("w_cc_vote_rsp") != 0) {
+        TEST_FAIL(name, "a retired method string (w_cc_vote_req/rsp) "
+                        "still resolves to a type"); return;
+    }
+
+    TEST_PASS(name);
+}
+
+static void test_cc_appr_roundtrip(void) {
+    const char *name = "cc_appr_roundtrip";
+    static uint8_t small_e[41];
+    memset(small_e, 0x11, sizeof(small_e));
+
+    /* verb 40: a modest `e`. */
+    {
+        nodus_t3_msg_t in, out;
+        uint8_t *keep = NULL;
+        memset(&in, 0, sizeof(in));
+        in.type = NODUS_T3_CC_APPR_REQ;
+        in.txn_id = 9001;
+        fill_header(&in.header);
+        in.cc_appr_req.e     = small_e;
+        in.cc_appr_req.e_len = sizeof(small_e);
+
+        if (cmt_roundtrip(&in, &out, NULL, &keep) != 0) {
+            TEST_FAIL(name, "verb 40 roundtrip"); return;
+        }
+        check_header(&in.header, &out.header, name);
+        if (out.type != NODUS_T3_CC_APPR_REQ ||
+            out.cc_appr_req.e_len != sizeof(small_e) ||
+            memcmp(out.cc_appr_req.e, small_e, sizeof(small_e)) != 0) {
+            free(keep); TEST_FAIL(name, "verb 40 e mismatch"); return;
+        }
+        free(keep);
+    }
+
+    /* verb 40 at its maximal `e` (DNA_ENV_MAX_TOTAL_LEN) — proves the
+     * per-class ceiling actually holds the envelope this verb exists to
+     * carry, the same "own class buffer" discipline cmt_roundtrip
+     * applies to every verb via nodus_t3_max_msg_size. */
+    {
+        size_t e_cap = (size_t)NODUS_T3_CC_APPR_E_MAX;
+        uint8_t *big_e = malloc(e_cap);
+        nodus_t3_msg_t in, out;
+        uint8_t *keep = NULL;
+        if (!big_e) { TEST_FAIL(name, "alloc big_e"); return; }
+        memset(big_e, 0x22, e_cap);
+
+        memset(&in, 0, sizeof(in));
+        in.type = NODUS_T3_CC_APPR_REQ;
+        fill_header(&in.header);
+        in.cc_appr_req.e     = big_e;
+        in.cc_appr_req.e_len = e_cap;
+
+        if (cmt_roundtrip(&in, &out, NULL, &keep) != 0) {
+            free(big_e); TEST_FAIL(name, "verb 40 at-ceiling roundtrip"); return;
+        }
+        if (out.cc_appr_req.e_len != e_cap) {
+            free(keep); free(big_e);
+            TEST_FAIL(name, "verb 40 at-ceiling e_len mismatch"); return;
+        }
+        free(keep);
+        free(big_e);
+    }
+
+    /* verb 41, ok=true shape. */
+    {
+        nodus_t3_msg_t in, out;
+        uint8_t *keep = NULL;
+        memset(&in, 0, sizeof(in));
+        in.type = NODUS_T3_CC_APPR_RSP;
+        fill_header(&in.header);
+        in.cc_appr_rsp.ok    = true;
+        in.cc_appr_rsp.seat  = 5;
+        memset(in.cc_appr_rsp.sig, 0x33, NODUS_SIG_BYTES);
+        memset(in.cc_appr_rsp.set_hash, 0x44, 64);
+        in.cc_appr_rsp.epoch = 123456789ULL;
+
+        if (cmt_roundtrip(&in, &out, NULL, &keep) != 0) {
+            TEST_FAIL(name, "verb 41 ok=true roundtrip"); return;
+        }
+        if (!out.cc_appr_rsp.ok || out.cc_appr_rsp.seat != 5 ||
+            memcmp(out.cc_appr_rsp.sig, in.cc_appr_rsp.sig, NODUS_SIG_BYTES) != 0 ||
+            memcmp(out.cc_appr_rsp.set_hash, in.cc_appr_rsp.set_hash, 64) != 0 ||
+            out.cc_appr_rsp.epoch != 123456789ULL) {
+            free(keep); TEST_FAIL(name, "verb 41 ok=true field mismatch"); return;
+        }
+        free(keep);
+    }
+
+    /* verb 41, ok=false shape. */
+    {
+        nodus_t3_msg_t in, out;
+        uint8_t *keep = NULL;
+        memset(&in, 0, sizeof(in));
+        in.type = NODUS_T3_CC_APPR_RSP;
+        fill_header(&in.header);
+        in.cc_appr_rsp.ok = false;
+        snprintf(in.cc_appr_rsp.reason, sizeof(in.cc_appr_rsp.reason),
+                 "%s", "not a committee seat");
+
+        if (cmt_roundtrip(&in, &out, NULL, &keep) != 0) {
+            TEST_FAIL(name, "verb 41 ok=false roundtrip"); return;
+        }
+        if (out.cc_appr_rsp.ok ||
+            strcmp(out.cc_appr_rsp.reason, "not a committee seat") != 0) {
+            free(keep); TEST_FAIL(name, "verb 41 ok=false field mismatch"); return;
+        }
+        free(keep);
+    }
+
+    TEST_PASS(name);
+}
+
+static void test_cc_appr_strict_key_set(void) {
+    const char *name = "cc_appr_strict_key_set";
+    nodus_t3_msg_t out;
+    cbor_encoder_t enc;
+
+    /* CONTROL: a legitimate verb-40 {e: bstr} — must be ACCEPTED. */
+    w3_frame_begin(&enc, "w_cc_appr_req");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "e"); cbor_encode_bstr(&enc, w3_filler, 8);
+    if (w3_frame_end(&enc, &out) != 0) {
+        TEST_FAIL(name, "the valid verb-40 control frame was REJECTED"); return;
+    }
+    if (out.type != NODUS_T3_CC_APPR_REQ || out.cc_appr_req.e_len != 8) {
+        TEST_FAIL(name, "verb-40 control decoded to the wrong fields"); return;
+    }
+
+    /* verb 40: missing "e". */
+    w3_frame_begin(&enc, "w_cc_appr_req");
+    cbor_encode_map(&enc, 0);
+    if (w3_frame_end(&enc, &out) == 0) {
+        TEST_FAIL(name, "verb 40: missing e accepted"); return;
+    }
+
+    /* verb 40: an extra key beside "e". */
+    w3_frame_begin(&enc, "w_cc_appr_req");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "e");   cbor_encode_bstr(&enc, w3_filler, 8);
+    cbor_encode_cstr(&enc, "zzz"); cbor_encode_uint(&enc, 1);
+    if (w3_frame_end(&enc, &out) == 0) {
+        TEST_FAIL(name, "verb 40: extra key accepted"); return;
+    }
+
+    /* verb 40: "e" as the wrong CBOR type. */
+    w3_frame_begin(&enc, "w_cc_appr_req");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "e"); cbor_encode_uint(&enc, 7);
+    if (w3_frame_end(&enc, &out) == 0) {
+        TEST_FAIL(name, "verb 40: e as uint accepted"); return;
+    }
+
+    /* verb 40: "e" TWICE (ORCHESTRATOR ORC-12, the verifier's uncovered
+     * branch): the decoder refuses a duplicate key rather than letting
+     * the second value silently win — two well-formed values in one
+     * frame would otherwise leave "which envelope was signed for?" to
+     * key order. */
+    w3_frame_begin(&enc, "w_cc_appr_req");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "e"); cbor_encode_bstr(&enc, w3_filler, 8);
+    cbor_encode_cstr(&enc, "e"); cbor_encode_bstr(&enc, w3_filler, 9);
+    if (w3_frame_end(&enc, &out) == 0) {
+        TEST_FAIL(name, "verb 40: duplicate e accepted"); return;
+    }
+
+    /* verb 40: "e" one byte over NODUS_T3_CC_APPR_E_MAX — refused by
+     * dec_cc_appr_req_args's own cap, proven through a hand-built frame
+     * large enough to hold it (the oversize proof, one_cmt_ceiling's
+     * discipline). */
+    {
+        size_t e_cap = (size_t)NODUS_T3_CC_APPR_E_MAX;
+        size_t cap = e_cap + (size_t)NODUS_T3_CMT_ENVELOPE_OVERHEAD;
+        uint8_t *frame = malloc(cap);
+        uint8_t *over  = malloc(e_cap + 1u);
+        int rc;
+        if (!frame || !over) {
+            free(frame); free(over);
+            TEST_FAIL(name, "alloc oversize e"); return;
+        }
+        memset(over, 0x55, e_cap + 1u);
+
+        /* CONTROL: exactly the ceiling, through the SAME cap — accepted. */
+        w3_frame_begin_buf(&enc, "w_cc_appr_req", frame, cap);
+        cbor_encode_map(&enc, 1);
+        cbor_encode_cstr(&enc, "e");
+        cbor_encode_bstr(&enc, over, e_cap);
+        rc = w3_frame_end(&enc, &out);
+        if (rc != 0) {
+            free(frame); free(over);
+            TEST_FAIL(name, "verb 40: at-ceiling e (hand-built frame) "
+                            "was REFUSED"); return;
+        }
+
+        w3_frame_begin_buf(&enc, "w_cc_appr_req", frame, cap);
+        cbor_encode_map(&enc, 1);
+        cbor_encode_cstr(&enc, "e");
+        cbor_encode_bstr(&enc, over, e_cap + 1u);
+        rc = w3_frame_end(&enc, &out);
+        free(frame); free(over);
+        if (rc == 0) { TEST_FAIL(name, "verb 40: e_max+1 accepted"); return; }
+        if (rc == -99) {
+            TEST_FAIL(name, "verb 40: e_max+1 case is VACUOUS (builder "
+                            "overflowed, not the decoder's cap)"); return;
+        }
+    }
+
+    /* CONTROL: a legitimate verb-41 ok=true shape — must be ACCEPTED. */
+    w3_frame_begin(&enc, "w_cc_appr_rsp");
+    cbor_encode_map(&enc, 5);
+    cbor_encode_cstr(&enc, "ok"); cbor_encode_bool(&enc, true);
+    cbor_encode_cstr(&enc, "i");  cbor_encode_uint(&enc, 3);
+    cbor_encode_cstr(&enc, "s");  cbor_encode_bstr(&enc, w3_filler, NODUS_SIG_BYTES);
+    cbor_encode_cstr(&enc, "sh"); cbor_encode_bstr(&enc, w3_filler, 64);
+    cbor_encode_cstr(&enc, "ep"); cbor_encode_uint(&enc, 1);
+    if (w3_frame_end(&enc, &out) != 0) {
+        TEST_FAIL(name, "the valid verb-41 ok=true control was REJECTED"); return;
+    }
+
+    /* verb 41: ok=true but carrying "r" too (the ok=false-only key) —
+     * refused by the ok/false cross-check, not merely an unknown key. */
+    w3_frame_begin(&enc, "w_cc_appr_rsp");
+    cbor_encode_map(&enc, 6);
+    cbor_encode_cstr(&enc, "ok"); cbor_encode_bool(&enc, true);
+    cbor_encode_cstr(&enc, "i");  cbor_encode_uint(&enc, 3);
+    cbor_encode_cstr(&enc, "s");  cbor_encode_bstr(&enc, w3_filler, NODUS_SIG_BYTES);
+    cbor_encode_cstr(&enc, "sh"); cbor_encode_bstr(&enc, w3_filler, 64);
+    cbor_encode_cstr(&enc, "ep"); cbor_encode_uint(&enc, 1);
+    cbor_encode_cstr(&enc, "r");  cbor_encode_cstr(&enc, "unexpected");
+    if (w3_frame_end(&enc, &out) == 0) {
+        TEST_FAIL(name, "verb 41: ok=true admitted the ok=false-only key r");
+        return;
+    }
+
+    /* verb 41: ok=true but missing "ep" — a required key under ok=true. */
+    w3_frame_begin(&enc, "w_cc_appr_rsp");
+    cbor_encode_map(&enc, 4);
+    cbor_encode_cstr(&enc, "ok"); cbor_encode_bool(&enc, true);
+    cbor_encode_cstr(&enc, "i");  cbor_encode_uint(&enc, 3);
+    cbor_encode_cstr(&enc, "s");  cbor_encode_bstr(&enc, w3_filler, NODUS_SIG_BYTES);
+    cbor_encode_cstr(&enc, "sh"); cbor_encode_bstr(&enc, w3_filler, 64);
+    if (w3_frame_end(&enc, &out) == 0) {
+        TEST_FAIL(name, "verb 41: ok=true accepted without ep"); return;
+    }
+
+    /* verb 41: "ok" TWICE (ORCHESTRATOR ORC-12) — a duplicate "ok"
+     * carrying true then false would let key order decide whether the
+     * proposer reads a signature or a refusal; the decoder refuses the
+     * repeat before the cross-check can be fooled. */
+    w3_frame_begin(&enc, "w_cc_appr_rsp");
+    cbor_encode_map(&enc, 6);
+    cbor_encode_cstr(&enc, "ok"); cbor_encode_bool(&enc, true);
+    cbor_encode_cstr(&enc, "i");  cbor_encode_uint(&enc, 3);
+    cbor_encode_cstr(&enc, "s");  cbor_encode_bstr(&enc, w3_filler, NODUS_SIG_BYTES);
+    cbor_encode_cstr(&enc, "sh"); cbor_encode_bstr(&enc, w3_filler, 64);
+    cbor_encode_cstr(&enc, "ep"); cbor_encode_uint(&enc, 1);
+    cbor_encode_cstr(&enc, "ok"); cbor_encode_bool(&enc, false);
+    if (w3_frame_end(&enc, &out) == 0) {
+        TEST_FAIL(name, "verb 41: duplicate ok accepted"); return;
+    }
+
+    /* verb 41: "i" TWICE — the seat index is what the proposer places
+     * the signature under; a second value must not be able to move it. */
+    w3_frame_begin(&enc, "w_cc_appr_rsp");
+    cbor_encode_map(&enc, 6);
+    cbor_encode_cstr(&enc, "ok"); cbor_encode_bool(&enc, true);
+    cbor_encode_cstr(&enc, "i");  cbor_encode_uint(&enc, 3);
+    cbor_encode_cstr(&enc, "i");  cbor_encode_uint(&enc, 4);
+    cbor_encode_cstr(&enc, "s");  cbor_encode_bstr(&enc, w3_filler, NODUS_SIG_BYTES);
+    cbor_encode_cstr(&enc, "sh"); cbor_encode_bstr(&enc, w3_filler, 64);
+    cbor_encode_cstr(&enc, "ep"); cbor_encode_uint(&enc, 1);
+    if (w3_frame_end(&enc, &out) == 0) {
+        TEST_FAIL(name, "verb 41: duplicate i accepted"); return;
+    }
+
+    /* verb 41: ok=false, the valid shape — must be ACCEPTED. */
+    w3_frame_begin(&enc, "w_cc_appr_rsp");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "ok"); cbor_encode_bool(&enc, false);
+    cbor_encode_cstr(&enc, "r");  cbor_encode_cstr(&enc, "refused");
+    if (w3_frame_end(&enc, &out) != 0) {
+        TEST_FAIL(name, "the valid verb-41 ok=false control was REJECTED"); return;
+    }
+
+    /* verb 41: ok=false but missing "r". */
+    w3_frame_begin(&enc, "w_cc_appr_rsp");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "ok"); cbor_encode_bool(&enc, false);
+    if (w3_frame_end(&enc, &out) == 0) {
+        TEST_FAIL(name, "verb 41: ok=false accepted without r"); return;
+    }
+
+    /* verb 41: "ok" as the wrong CBOR type (uint, the RETIRED verb 15
+     * convention) — must be refused now that "ok" is a real CBOR bool. */
+    w3_frame_begin(&enc, "w_cc_appr_rsp");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "ok"); cbor_encode_uint(&enc, 0);
+    cbor_encode_cstr(&enc, "r");  cbor_encode_cstr(&enc, "refused");
+    if (w3_frame_end(&enc, &out) == 0) {
+        TEST_FAIL(name, "verb 41: ok as uint (legacy verb-15 shape) accepted");
+        return;
+    }
+
+    /* verb 41: "r" at exactly 128 characters — the D-16 rev 7 "<= 128"
+     * bound (nodus_tier3.h's reason[129], not the un-fixed [128], which
+     * would have refused this exact length). */
+    {
+        char reason128[129];
+        memset(reason128, 'a', 128);
+        reason128[128] = '\0';
+        w3_frame_begin(&enc, "w_cc_appr_rsp");
+        cbor_encode_map(&enc, 2);
+        cbor_encode_cstr(&enc, "ok"); cbor_encode_bool(&enc, false);
+        cbor_encode_cstr(&enc, "r");  cbor_encode_cstr(&enc, reason128);
+        if (w3_frame_end(&enc, &out) != 0) {
+            TEST_FAIL(name, "verb 41: a 128-char reason was REFUSED"); return;
+        }
+        if (strlen(out.cc_appr_rsp.reason) != 128) {
+            TEST_FAIL(name, "verb 41: 128-char reason truncated"); return;
+        }
+    }
+
+    TEST_PASS(name);
+}
+
 /* ── Main ────────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -1391,6 +1753,13 @@ int main(void) {
     test_v2_gbundle_roundtrip();
     test_v2_gbundle_pin_length();
     test_v2_gbundle_chunk_ceiling();
+
+    /* SYSTEM-governance approval collection — verbs 40-41 (D-16 rev 7,
+     * W4-CC), replacing the retired vote-collect pair (14-15). */
+    fprintf(stderr, "--- cc_appr (verbs 40-41, D-16 rev 7) ---\n");
+    test_cc_appr_method_table();
+    test_cc_appr_roundtrip();
+    test_cc_appr_strict_key_set();
 
     fprintf(stderr, "\n%d test(s) failed\n", failures);
     return failures > 0 ? 1 : 0;

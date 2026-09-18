@@ -13,15 +13,28 @@
 #include "nodus/nodus_chain_config.h"
 #include "nodus/nodus_types.h"        /* NODUS_TREE_TAG_CHAIN_CONFIG */
 #include "dnac/chain_config_wire.h"   /* shared CHAIN_CONFIG extension codec */
-#include "dnac/ledger_ids.h"          /* DNA_MAX_ACTIVE_VALIDATORS, dna_bft_quorum */
+#include "dnac/ledger_ids.h"          /* DNA_MAX_ACTIVE_VALIDATORS, dna_bft_quorum,
+                                       * DNA_DOMAIN_SYSTEM                    */
 #include "dnac/transaction.h"         /* DNAC_TX_HEADER_SIZE (v0.17.1) */
+#include "dnac/dnac.h"                /* DNAC_CFG_* governance param ids      */
+#include "dnac/env_wire.h"            /* dna_env_view_t, DNA_ENV_MAX_TOTAL_LEN */
+#include "dnac/env_preflight.h"       /* dna_env_preflight_status_t           */
+#include "dnac/res_meter.h"           /* dna_ck_add_u64                       */
 
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_committee.h"
 #include "witness/nodus_witness_merkle.h"
+#include "witness/nodus_witness_runtime.h"    /* NODUS_RT_AUTHKIND_DSA87_CC_V1,
+                                               * DNA_SYSRULE_CHAIN_CONFIG,
+                                               * nodus_rt_committee_set_hash,
+                                               * nodus_rt_cc_approval_digest   */
+#include "witness/nodus_witness_v2_env.h"     /* block_ctx_build, env_preflight_batch */
+#include "witness/nodus_witness_v2_produce.h" /* nodus_witness_v2_tip_height          */
+#include "witness/nodus_witness_v2_claims.h"  /* nodus_witness_v2_chain_id            */
+#include "witness/nodus_witness_v2_apply.h"   /* nodus_v2_epoch_for_height            */
 
-#include "protocol/nodus_tier3.h"     /* NODUS_T3_NULLIFIER_LEN, cc_vote_{req,rsp} */
-#include "transport/nodus_tcp.h"      /* nodus_tcp_send — Stage C.2 reply path */
+#include "protocol/nodus_tier3.h"     /* NODUS_T3_NULLIFIER_LEN, cc_appr_{req,rsp} */
+#include "transport/nodus_tcp.h"      /* nodus_tcp_send — reply path */
 #include "server/nodus_server.h"      /* w->server->identity fields */
 #include "crypto/nodus_sign.h"        /* nodus_random for header nonce */
 
@@ -71,7 +84,8 @@
 /* Number of per-param cache rows dimensions: param ids are 1..CC_PARAM_MAX_ID
  * and index 0 is unused, so the arrays are CC_PARAM_MAX_ID + 1 wide. */
 #define CC_PARAM_SLOTS              (CC_PARAM_MAX_ID + 1)
-#define CC_MAX_TXS_HARD_CAP         10ULL
+/* CC_MAX_TXS_HARD_CAP RETIRED (R3 W4-C delta 2) with CC_PARAM_MAX_TXS —
+ * no live consumer; the id space stays 1..CC_PARAM_MAX_ID unchanged. */
 #define CC_MIN_BLOCK_INTERVAL_SEC   1ULL
 #define CC_MAX_BLOCK_INTERVAL_SEC   15ULL
 #define CC_MAX_INFLATION_START      281474976710656ULL  /* 2^48 */
@@ -562,9 +576,14 @@ int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
 
     switch (param_id) {
         case CC_PARAM_MAX_TXS:
-            if (new_value < 1ULL || new_value > CC_MAX_TXS_HARD_CAP)
-                return -1;
-            break;
+            /* RETIRED (R3 W4-C delta 2, operator "kaldır" 2026-09-18;
+             * atlas-dec-5b7568512b95e6d2e671c4eaad2c1879 rev 1): the
+             * per-block transaction-count cap left governance — a
+             * block's capacity is bytes and units only now
+             * (nodus_witness_v2_apply.h's derived envelope ceiling).
+             * This id is NEVER accepted again; ids 2-4 keep their
+             * numbers. */
+            return -1;
         case CC_PARAM_BLOCK_INTERVAL:
             if (new_value < CC_MIN_BLOCK_INTERVAL_SEC ||
                 new_value > CC_MAX_BLOCK_INTERVAL_SEC) return -1;
@@ -596,6 +615,14 @@ uint64_t nodus_chain_config_grace_for_param(uint8_t param_id) {
         case CC_PARAM_TARGET_ACTIVE:
             return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS;
         case CC_PARAM_MAX_TXS:
+            /* RETIRED (R3 W4-C delta 2) — `scalar_rules` above already
+             * refuses id 1 with -1 before any caller reaches a grace
+             * check, so this is defense in depth: UINT64_MAX makes the
+             * "effective gap >= this many blocks" test unsatisfiable by
+             * construction, never merely a long wait, for a caller that
+             * somehow reaches this function directly with the retired
+             * id. */
+            return (uint64_t)-1;
         default:
             return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS;
     }
@@ -789,152 +816,434 @@ void nodus_cc_rate_limit_record(nodus_cc_rate_limit_table_t *t,
 }
 
 /* ============================================================================
- * Stage C.2 — committee vote-collect RPC server-side handler.
- * ========================================================================== */
+ * D-16 rev 7 (W4-CC) — SYSTEM-governance approval-collection RPC
+ * server-side handler (verbs 40-41), replacing the retired Stage C.2
+ * vote-collect pair (14-15).
+ * ============================================================================ */
 
-/* Rule check shared with verify_cc_local_rules (without the full-TX
- * fields like signer_count). Returns NULL on accept, else a short
- * human-readable reason string. */
-static const char *vote_req_local_check(const nodus_t3_cc_vote_req_t *r) {
-    if (r->param_id < 1 || r->param_id > CC_PARAM_MAX_ID)
-        return "param_id out of range";
-    switch (r->param_id) {
-        case CC_PARAM_MAX_TXS:
-            if (r->new_value < 1ULL || r->new_value > CC_MAX_TXS_HARD_CAP)
-                return "MAX_TXS out of [1..10]";
-            break;
-        case CC_PARAM_BLOCK_INTERVAL:
-            if (r->new_value < CC_MIN_BLOCK_INTERVAL_SEC ||
-                r->new_value > CC_MAX_BLOCK_INTERVAL_SEC)
-                return "BLOCK_INTERVAL out of [1..15]";
-            break;
-        case CC_PARAM_INFLATION_START:
-            if (r->new_value > CC_MAX_INFLATION_START)
-                return "INFLATION_START > 2^48";
-            break;
-        case CC_PARAM_TARGET_ACTIVE:
-            if (r->new_value < CC_MIN_TARGET_ACTIVE ||
-                r->new_value > CC_MAX_TARGET_ACTIVE)
-                return "TARGET_ACTIVE_COUNT out of [7..128]";
-            break;
-        default: return "unknown param_id";
-    }
-    if (r->signed_at_block == 0)
-        return "signed_at_block == 0";
-    if (r->valid_before_block <= r->effective_block_height)
-        return "valid_before <= effective";
-    if (r->valid_before_block <= r->signed_at_block)
-        return "valid_before <= signed_at";
-    return NULL;
+/* Mirror of nodus_witness_rt_native.c's RTN_CC_CALL_LEN (internal
+ * linkage there, in a file this package does not touch, so it cannot be
+ * pinned by a _Static_assert from here): the v2 CHAIN_CONFIG call is
+ * EXACTLY param_id(1) || new_value_BE(8) || effective_BE(8) ||
+ * nonce_BE(8) || signed_at_BE(8) || valid_before_BE(8) = 41 bytes
+ * (nodus_witness_rt_native.c:2692-2709 rtn_cc_parse — the SAME layout
+ * nodus-cli.c's shared cc_appr_build_pass1 builds, :901-906). A width
+ * change to either site must update this mirror by hand. */
+#define CC_APPR_CHAIN_CONFIG_CALL_LEN  41u
+
+typedef struct {
+    uint8_t  param_id;
+    uint64_t new_value, effective, nonce, signed_at, valid_before;
+} cc_appr_cc_call_t;
+
+static uint64_t cc_appr_get64(const uint8_t *p) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++) v = (v << 8) | p[i];
+    return v;
 }
 
-int nodus_witness_handle_cc_vote_req(nodus_witness_t *w,
-                                      struct nodus_tcp_conn *conn,
-                                      const void *imsg) {
+static void cc_appr_parse_cc_call(const uint8_t *p, cc_appr_cc_call_t *c) {
+    c->param_id     = p[0];
+    c->new_value    = cc_appr_get64(p + 1);
+    c->effective    = cc_appr_get64(p + 9);
+    c->nonce        = cc_appr_get64(p + 17);
+    c->signed_at    = cc_appr_get64(p + 25);
+    c->valid_before = cc_appr_get64(p + 33);
+}
+
+/* Per-op approval rule: applies EXACTLY the checks
+ * nodus_rt_system_exec's CHAIN_CONFIG branch applies at exec time
+ * (nodus_witness_rt_native.c:3755-3819), at the CANDIDATE height `h`
+ * (tip+1, the same candidate the responder's preflight used) instead of
+ * the eventual commit height — a proposal approved now may commit at a
+ * different height, and every one of these gates is re-checked there by
+ * the same exec function; this is a pre-signature sanity gate, not a
+ * second authority. Quorum/signer checks are NOT here: those are the
+ * chain's own auth-hook verdict once the envelope is assembled, and
+ * this handler contributes exactly one seat's worth of evidence toward
+ * them. @return 0 accept; -1/-2 reject — `reason` is always filled. */
+static int cc_appr_rules_chain_config(nodus_witness_t *w,
+                                     const uint8_t *call, uint32_t call_len,
+                                     uint64_t h, char *reason,
+                                     size_t reason_size) {
+    if (call_len != CC_APPR_CHAIN_CONFIG_CALL_LEN) {
+        snprintf(reason, reason_size, "CHAIN_CONFIG call length mismatch");
+        return -1;
+    }
+    cc_appr_cc_call_t c;
+    cc_appr_parse_cc_call(call, &c);
+
+    /* the SAME scalar authority the legacy apply and the V2 exec hook
+     * both consume — id 1 (MAX_TXS_PER_BLOCK) is refused here exactly
+     * as it is everywhere else once W4-C retires it. */
+    if (nodus_chain_config_scalar_rules(c.param_id, c.new_value,
+                                        c.signed_at, c.valid_before,
+                                        c.effective) != 0) {
+        snprintf(reason, reason_size, "scalar rules rejected");
+        return -1;
+    }
+    /* O15F D2 — the V2-lane TARGET_ACTIVE_COUNT ceiling (30), the same
+     * narrowing nodus_rt_system_exec applies beyond scalar_rules' wider
+     * [7..128]. */
+    if (c.param_id == DNAC_CFG_TARGET_ACTIVE_COUNT &&
+        c.new_value > NODUS_V2_ACTIVE_SET_MAX) {
+        snprintf(reason, reason_size,
+                 "TARGET_ACTIVE_COUNT exceeds the V2 active-set ceiling");
+        return -1;
+    }
+    /* freshness (CC-G) */
+    if (h > c.valid_before) {
+        snprintf(reason, reason_size, "valid_before has already passed");
+        return -1;
+    }
+    /* per-param grace (CC-C) */
+    {
+        uint64_t floor_h;
+        if (dna_ck_add_u64(h, nodus_chain_config_grace_for_param(c.param_id),
+                           &floor_h) != 0) {
+            snprintf(reason, reason_size, "grace floor overflowed");
+            return -1;
+        }
+        if (c.effective < floor_h) {
+            snprintf(reason, reason_size, "effective is below the grace floor");
+            return -1;
+        }
+    }
+    /* INFLATION_START_BLOCK monotonicity (Q5 / CC-GOV-001). ORCHESTRATOR
+     * correction (W4-CC ORC-6): the exec hook decides "is a start already
+     * set?" through the SYSTEM adapter's op 3 read — the LATEST NONZERO
+     * row by commit_block, ANY effective height
+     * (nodus_witness_rt_native.c RTN_SYS_OP_CCLATEST, the SELECT below is
+     * that statement verbatim). The first draft asked
+     * nodus_chain_config_get_u64 instead, which answers a different
+     * question — "the row ACTIVE at h" — and the two disagree on every
+     * version-3 chain: genesis seeds param 3 with the config's
+     * inflation_start_block (0 = off) at effective 0, so get_u64 found a
+     * zero row, called it an active override, and refused any proposal
+     * to START inflation at a future height (new_value > h) that the
+     * exec hook would have applied. This handler runs outside any block
+     * apply transaction (no mediated read to ride), so the adapter's SQL
+     * is issued directly. A read fault is a NODE fault: never sign on a
+     * guess. */
+    if (c.param_id == DNAC_CFG_INFLATION_START_BLOCK) {
+        int present = 0;
+        sqlite3_stmt *st = NULL;
+        if (!w->db ||
+            sqlite3_prepare_v2(w->db,
+                "SELECT new_value FROM chain_config_history "
+                "WHERE param_id = ?1 AND new_value > 0 "
+                "ORDER BY commit_block DESC LIMIT 1", -1, &st, NULL)
+                != SQLITE_OK) {
+            snprintf(reason, reason_size, "fault");
+            return -2;
+        }
+        sqlite3_bind_int64(st, 1, (sqlite3_int64)DNAC_CFG_INFLATION_START_BLOCK);
+        int src = sqlite3_step(st);
+        sqlite3_finalize(st);
+        if (src == SQLITE_ROW) {
+            present = 1;
+        } else if (src != SQLITE_DONE) {
+            snprintf(reason, reason_size, "fault");
+            return -2;
+        }
+        if (present) {    /* a start is already set: monotonic-only */
+            if (c.new_value == 0) {
+                snprintf(reason, reason_size,
+                         "cannot disable INFLATION_START_BLOCK once set");
+                return -1;
+            }
+            if (c.new_value > h) {
+                snprintf(reason, reason_size,
+                         "cannot move INFLATION_START_BLOCK past the candidate height");
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
+typedef int (*cc_appr_rule_fn)(nodus_witness_t *w, const uint8_t *call,
+                               uint32_t call_len, uint64_t h,
+                               char *reason, size_t reason_size);
+
+typedef struct {
+    uint32_t         domain_id;
+    uint32_t         runtime_op;
+    uint32_t         call_len;
+    cc_appr_rule_fn  rule;
+} cc_appr_table_row_t;
+
+/* The APPROVAL TABLE (D-16 rev 7 (4)): the SYSTEM governance ops whose
+ * authority rule is committee approval. Today exactly CHAIN_CONFIG; a
+ * future domain-registration op is a NEW ROW here, never a new verb
+ * pair (that is the whole reason this is a table and not a hardcoded
+ * single check). */
+static const cc_appr_table_row_t CC_APPR_TABLE[] = {
+    { DNA_DOMAIN_SYSTEM, DNA_SYSRULE_CHAIN_CONFIG,
+      CC_APPR_CHAIN_CONFIG_CALL_LEN, cc_appr_rules_chain_config },
+};
+#define CC_APPR_TABLE_LEN \
+    (sizeof(CC_APPR_TABLE) / sizeof(CC_APPR_TABLE[0]))
+
+/* Build a refusal reply and send it (never a signature — the caller's
+ * `rsp` is otherwise zeroed). */
+static int cc_appr_send_refusal(nodus_witness_t *w, struct nodus_tcp_conn *conn,
+                                nodus_t3_msg_t *rsp, const char *reason) {
+    rsp->cc_appr_rsp.ok = false;
+    snprintf(rsp->cc_appr_rsp.reason, sizeof(rsp->cc_appr_rsp.reason),
+             "%s", reason ? reason : "fault");
+    uint8_t *buf = malloc(NODUS_T3_MAX_MSG_SIZE);
+    if (!buf) return -1;
+    size_t len = 0;
+    int rc = nodus_t3_encode(rsp, &w->server->identity.sk, buf,
+                             NODUS_T3_MAX_MSG_SIZE, &len);
+    if (rc != 0) { free(buf); return -1; }
+    rc = nodus_tcp_send((nodus_tcp_conn_t *)conn, buf, len);
+    free(buf);
+    return rc;
+}
+
+int nodus_witness_handle_cc_appr_req(nodus_witness_t *w,
+                                     struct nodus_tcp_conn *conn,
+                                     const void *imsg) {
     if (!w || !conn || !imsg) return -1;
     const nodus_t3_msg_t *in = (const nodus_t3_msg_t *)imsg;
+    const nodus_t3_cc_appr_req_t *req = &in->cc_appr_req;
 
     nodus_t3_msg_t rsp;
     memset(&rsp, 0, sizeof(rsp));
-    rsp.type = NODUS_T3_CC_VOTE_RSP;
-    /* Echo the request's txn_id so the proposer's short-lived RPC can
-     * correlate response-to-request on its single connection. Without
-     * this, the proposer's cc_on_frame filter drops every response and
-     * the CLI reports TIMEOUT even though voting succeeded server-side. */
-    rsp.txn_id = in->txn_id;
+    rsp.type = NODUS_T3_CC_APPR_RSP;
+    rsp.txn_id = in->txn_id;   /* correlate response to request */
     rsp.header.version = NODUS_T3_BFT_PROTOCOL_VER;
     memcpy(rsp.header.sender_id, w->my_id, NODUS_T3_WITNESS_ID_LEN);
     rsp.header.timestamp = (uint64_t)time(NULL);
     nodus_random((uint8_t *)&rsp.header.nonce, sizeof(rsp.header.nonce));
-    memcpy(rsp.header.chain_id, w->chain_id, 32);
+    /* w->v2_chain32 (never the legacy half-zero w->chain_id) — the same
+     * derived 32-byte chain id verbs 35-39's frame gate uses; explicitly
+     * zeroed when !v2_successor (nodus_witness.h:492), which the (i)
+     * check right below refuses anyway. */
+    memcpy(rsp.header.chain_id, w->v2_chain32, 32);
 
-    const nodus_t3_cc_vote_req_t *req = &in->cc_vote_req;
-
-    /* Local-rule check. */
-    const char *reject = vote_req_local_check(req);
-    if (reject) {
-        rsp.cc_vote_rsp.accepted = false;
-        snprintf(rsp.cc_vote_rsp.reject_reason,
-                 sizeof(rsp.cc_vote_rsp.reject_reason),
-                 "%s", reject);
-        goto send;
+    /* (i) refuse unless this is a version-3 chain. */
+    if (!w->v2_successor) {
+        return cc_appr_send_refusal(w, conn, &rsp,
+                                    "this node is not on a version-3 chain");
     }
 
-    /* CC-OPS-003 / Stage C.3 — per-proposer cooldown. Check before the
-     * expensive digest + Dilithium5 sign so a hostile proposer cannot
-     * burn CPU by spamming. */
-    {
-        uint64_t now_ms = nodus_time_now_ms();
-        uint64_t elapsed_ms = 0;
-        if (nodus_cc_rate_limit_check(&w->cc_rate_limit,
-                                        in->header.sender_id,
-                                        now_ms, &elapsed_ms) != 0) {
-            w->cc_rate_limit.rate_limited_count++;
-            rsp.cc_vote_rsp.accepted = false;
-            snprintf(rsp.cc_vote_rsp.reject_reason,
-                     sizeof(rsp.cc_vote_rsp.reject_reason),
-                     "rate-limited (cooldown %ums, elapsed %llums)",
-                     (unsigned)NODUS_CC_RATE_LIMIT_WINDOW_MS,
-                     (unsigned long long)elapsed_ms);
-            goto send;
+    /* Frame gate (matches D-16 rev 5 F10's wh.cid discipline for verbs
+     * 35-39): the T3 header's chain_id must be THIS chain's derived id
+     * before anything else runs. */
+    if (memcmp(in->header.chain_id, w->v2_chain32, 32) != 0) {
+        return cc_appr_send_refusal(w, conn, &rsp, "foreign chain id");
+    }
+
+    /* (v) per-proposer rate limit — unchanged (nodus_cc_rate_limit_check
+     * / _record), keyed on the T3 header's authenticated sender_id.
+     * ORCHESTRATOR correction (W4-CC ORC-7): checked HERE, before the
+     * preflight — the retired handler ran it "before the expensive
+     * digest + Dilithium5 sign so a hostile proposer cannot burn CPU by
+     * spamming", and this handler's expensive work now starts one step
+     * earlier, at the engine seam's decode + SHA3 over an envelope of up
+     * to DNA_ENV_MAX_TOTAL_LEN. The check has no side effect (the slot is
+     * recorded on the accept path only, at the end), so its position
+     * changes no verdict — only which refusal a cooled-down proposer
+     * reads, and how much work a refused request costs this node. */
+    uint64_t now_ms = nodus_time_now_ms();
+    uint64_t elapsed_ms = 0;
+    if (nodus_cc_rate_limit_check(&w->cc_rate_limit, in->header.sender_id,
+                                  now_ms, &elapsed_ms) != 0) {
+        w->cc_rate_limit.rate_limited_count++;
+        char rl_reason[128];
+        snprintf(rl_reason, sizeof(rl_reason),
+                 "rate-limited (cooldown %ums, elapsed %llums)",
+                 (unsigned)NODUS_CC_RATE_LIMIT_WINDOW_MS,
+                 (unsigned long long)elapsed_ms);
+        return cc_appr_send_refusal(w, conn, &rsp, rl_reason);
+    }
+
+    /* (ii) decode `e` with the ENGINE'S OWN preflight seam — never a
+     * private decoder. This is the SAME two-call sequence CheckTx uses
+     * (nodus_witness_cmt_app.c:276-305 nodus_cmt_app_entry_identity):
+     * nodus_witness_v2_block_ctx_build for the committed ruleset table,
+     * then nodus_witness_v2_env_preflight_batch for the candidate
+     * height's structural preflight. dna_env_preflight (which this
+     * seam calls) does NOT validate signatures — env_preflight.h:57-63
+     * says so explicitly — so it succeeds on a zero-filled auth blob
+     * exactly as the proposer's own pass-1 build does
+     * (nodus-cli.c:944-946), which is what makes it usable BEFORE
+     * anyone has signed. */
+    uint64_t tip = 0;
+    if (nodus_witness_v2_tip_height(w, &tip) != 0) {
+        return cc_appr_send_refusal(w, conn, &rsp, "fault");
+    }
+    uint64_t h = tip + 1;
+
+    nodus_witness_v2_block_ctx_t *bctx = calloc(1, sizeof(*bctx));
+    dna_env_preflight_t          *pf   = calloc(1, sizeof(*pf));
+    if (!bctx || !pf) {
+        free(bctx); free(pf);
+        return cc_appr_send_refusal(w, conn, &rsp, "fault");
+    }
+    int bcrc = nodus_witness_v2_block_ctx_build(w, bctx);
+    if (bcrc != 0) {
+        free(bctx); free(pf);
+        return cc_appr_send_refusal(w, conn, &rsp,
+                                    bcrc == -1 ? "SYSTEM is not ACTIVE"
+                                               : "fault");
+    }
+    nodus_v2_envelope_t env;
+    env.env_bytes = req->e;
+    env.env_len   = req->e_len;
+    size_t                     fail_idx = 0;
+    dna_env_preflight_status_t pf_status = DNA_ENV_PF_OK;
+    nodus_v2_env_status_t pbrc = nodus_witness_v2_env_preflight_batch(
+        w, h, bctx->rulesets, bctx->n_rulesets, &env, 1, pf,
+        &fail_idx, &pf_status);
+    free(bctx);
+    if (pbrc != NODUS_V2_ENV_OK) {
+        free(pf);
+        return cc_appr_send_refusal(w, conn, &rsp,
+                                    "the envelope failed preflight");
+    }
+
+    /* (iii) the APPROVAL TABLE: exactly one leg, matching a row, under
+     * auth_kind 2, fee 0. */
+    const dna_env_view_t *v = &pf->view;
+    if (v->leg_count != 1 || v->fee_amount != 0 ||
+        v->leg[0].auth_kind != NODUS_RT_AUTHKIND_DSA87_CC_V1) {
+        free(pf);
+        return cc_appr_send_refusal(w, conn, &rsp,
+                                    "not a single-leg auth_kind-2 zero-fee envelope");
+    }
+    const cc_appr_table_row_t *row = NULL;
+    for (size_t i = 0; i < CC_APPR_TABLE_LEN; i++) {
+        if (CC_APPR_TABLE[i].domain_id == v->leg[0].domain_id &&
+            CC_APPR_TABLE[i].runtime_op == v->leg[0].runtime_op) {
+            row = &CC_APPR_TABLE[i];
+            break;
         }
     }
-
-    /* Compute proposal digest binding the sender's chain_id (from the
-     * incoming header, which the caller's wsig already authenticated). */
-    uint8_t digest[NODUS_CC_DIGEST_SIZE];
-    if (nodus_chain_config_compute_digest(in->header.chain_id,
-                                            req->param_id,
-                                            req->new_value,
-                                            req->effective_block_height,
-                                            req->proposal_nonce,
-                                            req->signed_at_block,
-                                            req->valid_before_block,
-                                            digest) != 0) {
-        rsp.cc_vote_rsp.accepted = false;
-        snprintf(rsp.cc_vote_rsp.reject_reason,
-                 sizeof(rsp.cc_vote_rsp.reject_reason),
-                 "digest compute failed");
-        goto send;
+    if (!row || v->leg[0].call_len != row->call_len) {
+        free(pf);
+        return cc_appr_send_refusal(w, conn, &rsp,
+                                    "operation is not in the approval table");
     }
 
-    /* Sign with local witness identity. */
+    /* (iv) the op's own rules, at the SAME candidate height `h`. */
+    char reason[128];
+    reason[0] = '\0';
+    int rulerc = row->rule(w, v->buf + v->call_off[0], v->leg[0].call_len,
+                          h, reason, sizeof(reason));
+    if (rulerc != 0) {
+        free(pf);
+        return cc_appr_send_refusal(w, conn, &rsp, reason);
+    }
+
+    /* (v) the per-proposer rate limit ran above, before the preflight
+     * (ORC-7); it is recorded on the accept path at the end. */
+
+    /* (vi) resolve the governing committee — the ENGINE's own
+     * expression is nodus_committee_get_for_block at H-1 with H the
+     * EXECUTION height; here H = tip+1, so H-1 = tip (matches the
+     * offline CLI builder's own committee query, nodus-cli.c:1834). */
+    nodus_committee_member_t *committee = NULL;
+    int cm_count = 0;
+    if (nodus_committee_get_for_block_alloc(w, tip, &committee, &cm_count) != 0 ||
+        cm_count < 1) {
+        free(pf);
+        free(committee);
+        return cc_appr_send_refusal(w, conn, &rsp, "fault");
+    }
+
+    /* find this node's own seat by direct pubkey comparison against the
+     * resolved snapshot — the same comparison the offline CLI builder
+     * uses to find ITS signers' seats (nodus-cli.c:1898-1900). */
+    int seat = -1;
+    for (int i = 0; i < cm_count; i++) {
+        if (memcmp(committee[i].pubkey, w->server->identity.pk.bytes,
+                   NODUS_CC_PUBKEY_SIZE) == 0) {
+            seat = i;
+            break;
+        }
+    }
+    if (seat < 0) {
+        free(committee);
+        free(pf);
+        return cc_appr_send_refusal(w, conn, &rsp, "not a committee seat");
+    }
+
+    /* (vii) the resolved-set hash + epoch + the digest ITSELF, computed
+     * from the seam-derived leg auth_digest — never a digest this node
+     * did not compute. */
+    uint8_t (*fps)[64] = malloc((size_t)cm_count * 64);
+    if (!fps) {
+        free(committee); free(pf);
+        return cc_appr_send_refusal(w, conn, &rsp, "fault");
+    }
+    int hash_fault = 0;
+    for (int i = 0; i < cm_count; i++) {
+        if (qgp_sha3_512(committee[i].pubkey, NODUS_CC_PUBKEY_SIZE, fps[i]) != 0) {
+            hash_fault = 1;
+            break;
+        }
+    }
+    uint8_t set_hash[64];
+    if (hash_fault ||
+        nodus_rt_committee_set_hash((const uint8_t (*)[64])fps,
+                                    (uint32_t)cm_count, set_hash) != 0) {
+        free(fps); free(committee); free(pf);
+        return cc_appr_send_refusal(w, conn, &rsp, "fault");
+    }
+    uint64_t epoch = nodus_v2_epoch_for_height(tip);
+
+    uint8_t adigest[64];
+    if (nodus_rt_cc_approval_digest(pf->auth_digest[0], set_hash, epoch,
+                                    (uint16_t)seat, adigest) != 0) {
+        free(fps); free(committee); free(pf);
+        return cc_appr_send_refusal(w, conn, &rsp, "fault");
+    }
+
+    uint8_t scratch_witness_id[NODUS_CC_WITNESS_ID_SIZE];
     if (nodus_chain_config_sign_vote(w->server->identity.pk.bytes,
-                                       w->server->identity.sk.bytes,
-                                       digest,
-                                       rsp.cc_vote_rsp.witness_id,
-                                       rsp.cc_vote_rsp.signature) != 0) {
-        rsp.cc_vote_rsp.accepted = false;
-        snprintf(rsp.cc_vote_rsp.reject_reason,
-                 sizeof(rsp.cc_vote_rsp.reject_reason),
-                 "sign failed");
-        goto send;
+                                     w->server->identity.sk.bytes,
+                                     adigest, scratch_witness_id,
+                                     rsp.cc_appr_rsp.sig) != 0) {
+        free(fps); free(committee); free(pf);
+        return cc_appr_send_refusal(w, conn, &rsp, "sign failed");
     }
-    rsp.cc_vote_rsp.accepted = true;
 
-    /* Stage C.3 — record on the accept path. Rate-limiter must only
-     * track proposers that passed every other rule, so a buggy peer
-     * whose requests keep failing local rules doesn't lock its own
-     * slot and starve a retry. */
-    nodus_cc_rate_limit_record(&w->cc_rate_limit,
-                                 in->header.sender_id,
-                                 nodus_time_now_ms());
+    rsp.cc_appr_rsp.ok    = true;
+    rsp.cc_appr_rsp.seat  = (uint16_t)seat;
+    memcpy(rsp.cc_appr_rsp.set_hash, set_hash, 64);
+    rsp.cc_appr_rsp.epoch = epoch;
 
     QGP_LOG_INFO(LOG_TAG,
-        "CC_VOTE_SIGNED param=%u value=%llu effective=%llu",
-        (unsigned)req->param_id,
-        (unsigned long long)req->new_value,
-        (unsigned long long)req->effective_block_height);
+        "CC_APPR_SIGNED domain=%u op=%u seat=%d epoch=%llu",
+        (unsigned)v->leg[0].domain_id, (unsigned)v->leg[0].runtime_op,
+        seat, (unsigned long long)epoch);
 
-send:
-    {
-        uint8_t buf[NODUS_T3_MAX_MSG_SIZE];
-        size_t len = 0;
-        if (nodus_t3_encode(&rsp, &w->server->identity.sk,
-                             buf, sizeof(buf), &len) != 0)
-            return -1;
-        return nodus_tcp_send((nodus_tcp_conn_t *)conn, buf, len);
-    }
+    free(fps);
+    free(committee);
+    free(pf);
+
+    uint8_t *buf = malloc(NODUS_T3_MAX_MSG_SIZE);
+    if (!buf) return -1;
+    size_t len = 0;
+    int rc = nodus_t3_encode(&rsp, &w->server->identity.sk, buf,
+                             NODUS_T3_MAX_MSG_SIZE, &len);
+    if (rc != 0) { free(buf); return -1; }
+    rc = nodus_tcp_send((nodus_tcp_conn_t *)conn, buf, len);
+    free(buf);
+    if (rc != 0) return rc;
+
+    /* Stage C.3 — record on the accept path only, and only once the
+     * reply has actually been handed to the transport (ORCHESTRATOR
+     * ORC-11, verifier finding F4): recording before the encode/send
+     * would cool the proposer down for NODUS_CC_RATE_LIMIT_WINDOW_MS
+     * over a signature it never received. */
+    nodus_cc_rate_limit_record(&w->cc_rate_limit, in->header.sender_id,
+                               nodus_time_now_ms());
+    return 0;
 }
 
 /* Q17 / CC-OPS-005 — observability dump. Single-line structured log

@@ -273,15 +273,24 @@ int main(void) {
     uint8_t *e2 = mk_env(1, 1, 0, c2, 8, &l2);
     CHECK(e0 && e1 && e2, "envelope encode"); OK();
 
-    nodus_v2_envelope_t envs[NODUS_V2_ENV_BATCH_MAX];
+    /* R3 W4-C delta 2 RE-ANCHOR: this section only ever uses 3 of
+     * whatever NODUS_V2_ENV_BATCH_MAX allows — sized to a small,
+     * TEST-LOCAL cap instead of the (now low-thousands) engine memory
+     * ceiling. A stack array sized by the literal constant would have
+     * been fine at delta 1's value (10) but is the wrong shape now that
+     * the constant is a per-block MEMORY budget, not a small governed
+     * count. */
+#define ENV_HAPPY_CAP 8u
+    nodus_v2_envelope_t envs[ENV_HAPPY_CAP];
     memset(envs, 0, sizeof(envs));
     envs[0].env_bytes = e0; envs[0].env_len = l0;
     envs[1].env_bytes = e1; envs[1].env_len = l1;
     envs[2].env_bytes = e2; envs[2].env_len = l2;
 
-    /* HEAP: each entry is ~11 KB, so a 16-entry array is ~175 KB */
+    /* HEAP: each entry is ~11 KB; ENV_HAPPY_CAP entries is well under
+     * 100 KB. */
     dna_env_preflight_t *out =
-        calloc(NODUS_V2_ENV_BATCH_MAX, sizeof(*out));
+        calloc(ENV_HAPPY_CAP, sizeof(*out));
     CHECK(out != NULL, "out alloc"); OK();
 
     size_t fail_idx = 999;
@@ -512,8 +521,26 @@ int main(void) {
 
     /* ── 5. DUPLICATES (identical bytes => identical derived id) ────── */
     {
-        /* FIRST pair (0,1 of 4), MIDDLE (1,2 of 5), FINAL pair, and the
-         * MAX batch with the duplicate at 14/15. */
+        /* FIRST pair (0,1 of 4), MIDDLE (1,2 of 5), FINAL pair, and a
+         * representative "large-ish" batch with the duplicate at its
+         * own LAST two slots.
+         *
+         * R3 W4-C delta 2 RE-ANCHOR: NODUS_V2_ENV_BATCH_MAX is no longer
+         * a small governance-derived number (10) — it is now a per-block
+         * MEMORY ceiling in the low thousands (nodus_witness_v2_apply.h),
+         * so a case literally sized `NODUS_V2_ENV_BATCH_MAX` would build
+         * that many real envelopes and run preflight over all of them —
+         * correct, but pointlessly slow for a unit test whose actual
+         * subject (pairwise/non-adjacent duplicate detection) does not
+         * depend on hitting the engine's own resource ceiling. This case
+         * is re-expressed at a small, fixed, TEST-LOCAL scale
+         * (DUP_CASE_MAX_N) instead — "a batch bigger than the other
+         * cases above, duplicate at its last two slots", not literally
+         * "the largest batch the engine will ever accept". Delta 1's own
+         * re-anchor (16 -> 10, closing a real stack-buffer-overflow) is
+         * superseded by this one, which removes the coupling to the
+         * constant's exact value entirely. */
+#define DUP_CASE_MAX_N 16u
         static const struct { size_t n, a, b; } cases[] = {
             { 4,  0,  1 },
             { 5,  1,  2 },
@@ -523,15 +550,15 @@ int main(void) {
              * (independent test-review catch, 2026-08-07) — this is the
              * case that kills it. */
             { 5,  0,  3 },
-            { NODUS_V2_ENV_BATCH_MAX, 14, 15 },
+            { DUP_CASE_MAX_N, DUP_CASE_MAX_N - 2, DUP_CASE_MAX_N - 1 },
         };
         for (size_t k = 0; k < sizeof(cases) / sizeof(cases[0]); k++) {
             size_t n = cases[k].n;
             /* n distinct envelopes, then position b overwritten with a
              * byte-identical copy of position a */
-            uint8_t *bufs[NODUS_V2_ENV_BATCH_MAX];
-            size_t   lens[NODUS_V2_ENV_BATCH_MAX];
-            nodus_v2_envelope_t ev[NODUS_V2_ENV_BATCH_MAX];
+            uint8_t *bufs[DUP_CASE_MAX_N];
+            size_t   lens[DUP_CASE_MAX_N];
+            nodus_v2_envelope_t ev[DUP_CASE_MAX_N];
             memset(ev, 0, sizeof(ev));
             for (size_t i = 0; i < n; i++) {
                 uint8_t body[8];
@@ -574,6 +601,7 @@ int main(void) {
             free(ob);
             for (size_t i = 0; i < n; i++) free(bufs[i]);
         }
+#undef DUP_CASE_MAX_N
     }
 
     /* ── 7. EXPIRY THROUGH THE SEAM ─────────────────────────────────── */
@@ -713,8 +741,16 @@ int main(void) {
     /* ── 12. ARG MATRIX ─────────────────────────────────────────────── */
     {
         nodus_v2_envelope_t one = { e0, l0 };
-        /* n_envs = 17 gets a 17-entry array, so the case is safe under
-         * either clear-then-check or check-then-clear ordering. */
+        /* n_envs = NODUS_V2_ENV_BATCH_MAX + 1 gets an array of that same
+         * size, so the case is safe under either clear-then-check or
+         * check-then-clear ordering — HEAP, never stack, for exactly
+         * this reason: the symbolic expression tracks whatever the
+         * constant is. R3 W4-C delta 2 RE-ANCHOR: the constant is no
+         * longer a small governance-derived number (16, then 10) — it
+         * is now a per-block MEMORY ceiling in the low thousands
+         * (nodus_witness_v2_apply.h), so this ONE-TIME allocation is
+         * tens of MB, not a few hundred bytes; still safe (heap, one
+         * call) and still proves the same ARG-gate property. */
         dna_env_preflight_t *big =
             calloc(NODUS_V2_ENV_BATCH_MAX + 1, sizeof(*big));
         CHECK(big != NULL, "big alloc");
@@ -725,7 +761,7 @@ int main(void) {
         CHECK(nodus_witness_v2_env_preflight_batch(
                   fx.w, 1, &tab, 1, &one, NODUS_V2_ENV_BATCH_MAX + 1, big,
                   NULL, NULL) == NODUS_V2_ENV_ERR_ARG,
-              "n_envs 17 accepted"); OK();
+              "n_envs NODUS_V2_ENV_BATCH_MAX+1 accepted"); OK();
         CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 1, &tab, 1, &one, 1,
                                                    NULL, NULL, NULL)
               == NODUS_V2_ENV_ERR_ARG, "NULL out accepted"); OK();
@@ -802,6 +838,7 @@ int main(void) {
 
     free(out);
     free(e2); free(e1); free(e0);
+#undef ENV_HAPPY_CAP
     fx_close(&fx);
 
     printf("test_v2_env_preflight: all %d checks passed\n", g_checks);

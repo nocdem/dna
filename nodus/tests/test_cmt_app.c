@@ -96,23 +96,26 @@
  *     it ever checks the count — independently proven RED by
  *     test_cmt_node.c's `progress_all_synced` case (test_cmt_node.c:
  *     1308), which drives a real node through a real empty height.
- *  9. ORCHESTRATOR delta 11 (R3-W3-C2a-19) — `t_prepare_proposal_item_cap`
- *     and `t_process_proposal_item_cap` prove the engine's per-block
- *     ITEM-COUNT bound (`NODUS_V2_APPLY_MAX_OPS`, 16) is enforced at
- *     both proposal gates over 40/17/16 GENUINELY admissible claims
- *     (`gfx_open_n`/`build_claim_n`, a real N-leaf genesis distribution
- *     — not N copies of one claim, which the seam's own in-batch
- *     nullifier dedup would have trimmed on its own and made RED
- *     silently equal GREEN). They do NOT prove the per-domain `d->n_tx`
- *     bound (apply.c ~:2842/:3328/:3417) is safe: that counter
- *     increments once per LEG naming a domain, not once per item, and
- *     one envelope may carry up to DNA_ENV_MAX_LEGS (64) legs, so an
- *     item-count cap of 16 does not bound how many times ONE envelope's
- *     own legs can touch ONE domain. Nothing in `env_wire.c`/
- *     `env_preflight.c` was found (grepped) to forbid a repeated
- *     `domain_id` across one envelope's legs — a real, separate gap,
- *     recorded but not fixed here: it is inside `nodus_witness_v2_
- *     apply.c`, outside this package's whitelist.
+ *  9. ORCHESTRATOR delta 11 (R3-W3-C2a-19) / R3 W4 package C —
+ *     `t_prepare_proposal_item_cap` proves the CLAIM class cap
+ *     (`min(claim_bound, NODUS_V2_APPLY_MAX_CLAIMS)`) keeps 40 GENUINELY
+ *     admissible claims (`gfx_open_n`/`build_claim_n`, a real 40-leaf
+ *     genesis distribution — not 40 copies of one claim, which the
+ *     seam's own in-batch nullifier dedup would have trimmed on its own
+ *     and made RED silently equal GREEN) and that FinalizeBlock applies
+ *     the resulting 40-claim block for real; `t_process_proposal_item_
+ *     cap` proves ProcessProposal's own envelope-class refusal at
+ *     `NODUS_V2_ENV_BATCH_MAX` + 1 (11) over independently admissible
+ *     AND executable envelopes.
+ *     ⚠ CORRECTED CLAIM (this row was wrong through W3): "one envelope
+ *     may carry many legs on one domain, unbounded by any item cap" is
+ *     NOT a real gap. `dna_env_decode` (shared/dnac/env_wire.c:364-365)
+ *     and `dna_env_encode` (:276) both refuse a leg list that is not
+ *     STRICTLY ascending by `domain_id`, so a domain_id CANNOT repeat
+ *     across one envelope's legs — the per-domain `d->n_tx` bound
+ *     (apply.c's admission block) is therefore a PROVEN-UNREACHABLE
+ *     FAULT in the engine, never a live risk this test suite needs to
+ *     cover.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -1047,9 +1050,14 @@ static const uint8_t POISON[20] = {
  * now): every case in this file builds at most a handful of test blocks,
  * so a small, cheap, stack-safe capacity is exactly right here — it says
  * nothing about, and does not need to match, the production bounds the
- * application itself derives at nodus_cmt_app_ledger_init. Sized to
- * comfortably exceed TEST_APP_SMALL_N below. */
-#define TEST_APP_TXS_CAP 32u
+ * application itself derives at nodus_cmt_app_ledger_init. R3 W4 package
+ * C bumped this 32 -> 48: `t_prepare_proposal_item_cap` now drives a
+ * real 40-claim decided block through this same `exec_t`, and 40 no
+ * longer fits the old 32-entry capacity (it used to only exercise
+ * PrepareProposal's response, never `exec_make_block`). Still sized to
+ * comfortably exceed every fixture in this file, never to a production
+ * bound. */
+#define TEST_APP_TXS_CAP 48u
 
 /* ORCHESTRATOR delta 1, item B — the byte-bound test's own "eleven small
  * transactions" figure (t_byte_bound_prepare_and_process), the exact
@@ -1121,7 +1129,14 @@ typedef struct {
     size_t                  parts_cap;
 } exec_t;
 
-#define APP_PARTS_CAP 8u
+/* R3 W4 package C bumped this 8 -> 16 (512 KiB -> 1 MiB of 64 KiB
+ * `CMT_BLOCK_PART_SIZE_BYTES` parts): `t_prepare_proposal_item_cap`'s
+ * 40-claim block encodes to roughly 40 x ~7.8 KB (DNA_CLAIM_FIXED_LEN
+ * plus a handful of merkle-proof siblings for a 40-leaf tree) =~ 310 KiB
+ * of tx bytes alone, which would have been tight against the old 512 KiB
+ * ceiling once header/proto framing is added. Still a TEST-LOCAL bound
+ * (see TEST_APP_TXS_CAP above), not a production figure. */
+#define APP_PARTS_CAP 16u
 
 static void exec_free(exec_t *x)
 {
@@ -2938,63 +2953,72 @@ static int t_process_proposal(void)
 }
 
 /**
- * ORCHESTRATOR delta 11 (R3-W3-C2a-19) — THE LIVE DEFECT, reproduced and
- * closed: PrepareProposal packing more claims than the engine can hold.
+ * R3 W4 package C — THE LIVE DEFECT'S ACTUAL FIX, proven end to end:
+ * PrepareProposal packs ALL 40 admissible claims (no longer trimmed to
+ * the old flat 16), ProcessProposal accepts the resulting proposal, and
+ * FinalizeBlock APPLIES the decided 40-claim block for real.
  *
  * `/tmp/stagef-20260917T034259Z` (`test_v2_epoch_boundary.sh`, E=15): 40
  * claims pumped at once, the proposer packed all 40 into block 7 (no
  * item-count cap existed anywhere upstream), the block was DECIDED, and
  * every node's FinalizeBlock FAULTED — `nodus_witness_v2_apply.c`'s
- * `claim_nuls[MAX_OPS][64]` (a 16-slot array) cannot hold 40 — stopping
- * consensus participation on all seven.
+ * `claim_nuls[MAX_OPS][64]` (a 16-slot STACK array) could not hold 40 —
+ * stopping consensus participation on all seven. R3-W3-C2a-19 (delta 11)
+ * then trimmed the proposal to 16 to make the array bound unreachable;
+ * THIS package instead moved the array to the heap, sized to the BLOCK's
+ * own claim count, and re-derived the item bounds so 40 (and up to
+ * NODUS_V2_APPLY_MAX_CLAIMS, 14 162) fit for real — the harness's own
+ * scenario becomes reachable in full again, cited at every anchor below.
  *
  * 40 GENUINELY, INDEPENDENTLY ADMISSIBLE claims (not 40 copies of one):
  * the engine's own seam (`nodus_witness_v2_produce_batch_check_capped`,
  * called from `app_seam_check` below `nodus_cmt_app_prepare_proposal`'s
- * new cap) runs each surviving candidate through
+ * caps) runs each surviving candidate through
  * `nodus_witness_v2_claim_admit` and rejects an in-batch duplicate
  * nullifier — so if fewer than 40 were independently admissible, the
  * seam's own drop-and-retry loop would trim toward the admissible core
- * BEFORE delta 11's cap ever mattered, and RED-today would silently
- * equal GREEN-after instead of proving the fix. All 40 here are real,
- * distinct leaves of a 40-leaf genesis distribution (`gfx_open_n`),
- * each independently claimable by `g_ks[0]` — so RED-today keeps all 40
- * (there is no cap yet) and GREEN-after keeps exactly 16.
+ * regardless of any item-count cap, and RED-today would silently equal
+ * GREEN-after instead of proving the fix. All 40 here are real, distinct
+ * leaves of a 40-leaf genesis distribution (`gfx_open_n`), each
+ * independently claimable by `g_ks[0]`.
  *
- * RED-BEFORE-THIS-DELTA, STATED HONESTLY: before delta 11,
- * `nodus_cmt_app_prepare_proposal` had a byte budget and the engine's own
- * per-item admission seam, and NOTHING that counted ITEMS — the retired
- * `NODUS_CMT_APP_MAX_TXS` (10) was gone (D-4 rev 3 (2), delta 4) and
- * nothing replaced it at this gate. Handed 40 admissible claims well
- * inside the byte budget, it kept all 40. This case's own log line
- * (`resp.txs_len == NODUS_V2_APPLY_MAX_OPS`, i.e. 16) is RED against that
- * prior behaviour: it would have read `resp.txs_len == 40`.
+ * RED-BEFORE-THIS-PACKAGE, STATED HONESTLY, THREE WAYS:
+ *   1. `resp.txs_len == N` (40): RED at R3-W3-C2a-19 (it read 16 — the
+ *      flat mixed cap trimmed every claims-only proposal to it).
+ *   2. `nodus_cmt_app_process_proposal(...) == ACCEPT` on the 40-item
+ *      proposal: RED before this package for the SAME reason bullet 1 is
+ *      — a 40-item proposal never existed for it to accept.
+ *   3. `nodus_cmt_host_apply_verified_block(...) == CMT_OK`, every item
+ *      coded OK, `v2_blocks.tx_count == 40`: RED on e72d8cb5 — FAULT at
+ *      `claim_nuls[i]` past the old 16-slot array (exactly the harness's
+ *      own height-7 stall), never reached with the 16-item trim in place
+ *      either (there was nothing left to apply beyond item 16).
  */
 static int t_prepare_proposal_item_cap(void)
 {
     gfx_t                                    g;
-    cmt_genesis_doc_t                        doc;
-    nodus_cmt_app_ledger_t                  *app;
-    nodus_abci_request_prepare_proposal_t    req;
-    nodus_abci_response_prepare_proposal_t   resp;
+    exec_t                                   x;
+    nodus_abci_request_prepare_proposal_t    preq;
+    nodus_abci_response_prepare_proposal_t   presp;
+    nodus_abci_request_process_proposal_t    procreq;
+    nodus_abci_response_process_proposal_t   procresp;
+    cmt_block_id_t                           bid;
     cmt_pb_bytes_t                           *txs = NULL;
     uint8_t                                (*claim_bytes)[DNA_CLAIM_MAX_WIRE] = NULL;
     size_t                                   *claim_len = NULL;
-    cmt_genesis_validator_t                   gvals[DNAC_COMMITTEE_SIZE];
     const uint32_t                            N = 40;
     uint32_t                                  i;
 
     CHECK(gfx_open_n(&g, "prep_cap", N) == 0, "40-leaf version-3 fixture");
-    app = calloc(1, sizeof(*app));
+    CHECK(exec_init(&x, &g) == 0, "app+host+state fixture (builds and "
+          "binds the completed genesis document internally)");
     /* Heap: 40 x DNA_CLAIM_MAX_WIRE (each claim carries up to
      * DNA_DIST_PROOF_MAX == 64 siblings, ~4 KB alone) is far too large
      * for a stack frame — feedback_heap_alloc_test_fixture. */
     txs         = (cmt_pb_bytes_t *)calloc(N, sizeof(*txs));
     claim_bytes = calloc(N, sizeof(*claim_bytes));
     claim_len   = (size_t *)calloc(N, sizeof(*claim_len));
-    CHECK(app && txs && claim_bytes && claim_len, "alloc");
-    CHECK(gfx_doc(&g, &doc, gvals) == 0, "the completed genesis document");
-    CHECK(nodus_cmt_app_ledger_init(app, g.w, &doc) == CMT_OK, "bind");
+    CHECK(txs && claim_bytes && claim_len, "alloc");
 
     for (i = 0; i < N; i++) {
         CHECK(build_claim_n(&g, N, i, claim_bytes[i], DNA_CLAIM_MAX_WIRE,
@@ -3003,52 +3027,131 @@ static int t_prepare_proposal_item_cap(void)
         txs[i].data = claim_bytes[i];
         txs[i].len  = claim_len[i];
     }
-    memset(&req, 0, sizeof(req));
-    req.txs          = txs;
-    req.txs_len      = N;
-    req.max_tx_bytes = 22020096;
-    memset(&resp, 0, sizeof(resp));
-    CHECK(nodus_cmt_app_prepare_proposal(app, &req, &resp) == CMT_OK,
+
+    /* ── (1) PrepareProposal packs ALL 40 ─────────────────────────────*/
+    memset(&preq, 0, sizeof(preq));
+    preq.txs          = txs;
+    preq.txs_len      = N;
+    preq.max_tx_bytes = 22020096;
+    memset(&presp, 0, sizeof(presp));
+    CHECK(nodus_cmt_app_prepare_proposal(x.ledger, &preq, &presp) == CMT_OK,
           "prepare answers");
-    CHECK(resp.txs_len == NODUS_V2_APPLY_MAX_OPS,
-          "delta 11: the engine's own per-block item bound trims 40 "
-          "admissible claims to 16 (RED before this delta: 40 — no "
-          "item-count cap existed at either proposal gate, and the "
-          "Genesis Protocol harness's 40-claim block FAULTED every "
-          "node's FinalizeBlock at height 7, "
-          "/tmp/stagef-20260917T034259Z)");
-    for (i = 0; i < NODUS_V2_APPLY_MAX_OPS; i++) {
-        CHECK(resp.txs[i].data == txs[i].data && resp.txs[i].len == txs[i].len,
-              "the KEPT 16 are the FIRST 16 in request order — fee-"
+    CHECK(presp.txs_len == N,
+          "R3 W4 package C: the per-class claim cap (min(claim_bound, "
+          "NODUS_V2_APPLY_MAX_CLAIMS) = 14 162 at this fixture's genesis "
+          "document) keeps all 40 admissible claims — RED at "
+          "R3-W3-C2a-19's flat mixed cap, which read 16");
+    for (i = 0; i < N; i++) {
+        CHECK(presp.txs[i].data == txs[i].data &&
+              presp.txs[i].len == txs[i].len,
+              "the KEPT 40 are the FIRST 40 in request order — fee-"
               "descending is a stable sort and every claim's key is 0, so "
               "arrival order survives, and the byte budget never trims "
               "40 tiny claims");
     }
 
-    nodus_cmt_app_ledger_release(app);
+    /* ── (2) ProcessProposal ACCEPTS the 40-item proposal ─────────────*/
+    memset(&procreq, 0, sizeof(procreq));
+    procreq.txs     = presp.txs;
+    procreq.txs_len = presp.txs_len;
+    memset(&procresp, 0, sizeof(procresp));
+    CHECK(nodus_cmt_app_process_proposal(x.ledger, &procreq, &procresp)
+              == CMT_OK, "process_proposal returns a verdict, not a fault");
+    CHECK(procresp.status == NODUS_ABCI_PROPOSAL_STATUS_ACCEPT,
+          "40 claims are within both the per-class claim cap and the "
+          "mixed item cap — accepted, never refused for mere COUNT");
+
+    /* ── (3) FinalizeBlock APPLIES the decided 40-claim block ─────────*/
+    for (i = 0; i < presp.txs_len; i++) {
+        x.txs[i] = presp.txs[i];
+    }
+    CHECK(exec_make_block(&x, 1, presp.txs_len) == 0,
+          "block 1 built from PrepareProposal's own 40-claim response");
+    CHECK(exec_block_id(&x, x.blk, &bid) == 0 && block_id_is_complete(&bid),
+          "a COMPLETE BlockID");
+    CHECK(nodus_cmt_host_apply_verified_block(x.be, &bid, x.blk, x.state)
+              == CMT_OK,
+          "the decided 40-claim block APPLIES — RED on e72d8cb5: the "
+          "engine's claim_nuls[MAX_OPS][64] STACK array (MAX_OPS was 16) "
+          "could not hold a 40th claim, exactly the harness's height-7 "
+          "stall (/tmp/stagef-20260917T034259Z); claim_nuls is heap now, "
+          "sized to the block's own n_claims (nodus_witness_v2_apply.c)");
+    for (i = 0; i < presp.txs_len; i++) {
+        char msg[96];
+
+        snprintf(msg, sizeof(msg),
+                 "claim %u applied with code %u, expected NODUS_V2_TX_OK "
+                 "(0)", i, (unsigned)x.ledger->fb_pb[i].det.code);
+        CHECK(x.ledger->fb_pb[i].det.code == (uint32_t)NODUS_V2_TX_OK, msg);
+    }
+    /* NOT `v2_blocks.tx_count`: that column counts `tx_root`'s members,
+     * and claims are bound into a block's identity TRANSITIVELY ONLY
+     * (through `claims_root`, a leg of the target domain's state root) —
+     * they are not transactions and never enter `tx_root` (apply.h,
+     * "HOW THE THREE CONTENT CHANNELS REACH THE BLOCK IDENTITY"). The
+     * ledger-level proof that all 40 applied is the spent-claim table
+     * itself, exactly as `t_claim_items` above checks it. */
+    CHECK(q1(g.w->db, "SELECT COUNT(*) FROM v2_claims_spent") == (int)N,
+          "all 40 claims were spent — the ledger's own record of what "
+          "applied, independent of tx_root/tx_count");
+
     free(claim_len);
     free(claim_bytes);
     free(txs);
-    free(app);
+    exec_free(&x);
     gfx_close(&g);
     return 0;
 }
 
 /**
- * ORCHESTRATOR delta 11 (R3-W3-C2a-19) — ProcessProposal's own half of
- * the same gate: a validator that receives a proposal ABOVE the engine's
- * bound must refuse it (nil prevote), never merely hope the proposer
- * behaved. 17 admissible claims are refused; the SAME 16 (the boundary
- * itself, not one under it) are accepted — proving the check is `>`,
- * never `>=`, against the exact bound PrepareProposal now enforces.
+ * R3 W4-C delta 2 (operator "kaldır" 2026-09-18) — ProcessProposal's
+ * ENVELOPE class-cap REFUSAL, re-anchored to the new DERIVED ceiling.
  *
- * RED-BEFORE-THIS-DELTA, STATED HONESTLY: before delta 11,
- * `nodus_cmt_app_process_proposal`'s only ceiling was `env_bound` (in
- * the hundreds of thousands) — 17 items were well inside it and reached
- * the per-item seam, which admits every one of these 17 genuinely
- * distinct, independently admissible claims and returns ACCEPT. This
- * case's own log line (REJECT at 17) is RED against that prior
- * behaviour: it would have read ACCEPT.
+ * `NODUS_V2_ENV_BATCH_MAX` is no longer 10 (delta 1's chain-config-
+ * derived value) — it is now a per-block MEMORY ceiling in the low
+ * thousands (nodus_witness_v2_apply.h, delta 2), because the operator
+ * retired the governance parameter it used to derive from. Building
+ * `NODUS_V2_ENV_BATCH_MAX + 1` GENUINELY ADMISSIBLE, EXECUTABLE
+ * envelopes (delta 1's approach, practical at 11) is NOT practical at
+ * this scale — so this case proves the REFUSAL genuinely, at the REAL
+ * bound, a different way: `nodus_witness_v2_classify_entry`
+ * (nodus_witness_v2_produce.c:75-80) classifies an entry as an
+ * ENVELOPE from a 16-byte WIRE-FAMILY-MARKER PREFIX ALONE ("DNA.
+ * ENVWIRE.v1\0\0") — no seam, no decode, no admission, no signature —
+ * and ProcessProposal's per-class COUNT check runs on exactly that
+ * classification, BEFORE the per-item seam is ever reached (this
+ * function's own early-return shape, matching the pre-existing mixed-
+ * cap check's "checked FIRST and alone: nothing read from req->txs
+ * beyond the classify pass" contract). A buffer that is JUST the
+ * marker therefore classifies identically to a real envelope for THIS
+ * check, without needing to be individually admissible — proven below
+ * before relying on it.
+ *
+ * NOT PROVEN HERE, STATED HONESTLY: "exactly AT the bound is accepted"
+ * (delta 1's second assertion) is NOT re-tested at the new, much larger
+ * scale — that would need `NODUS_V2_ENV_BATCH_MAX` (thousands) of
+ * GENUINELY ADMISSIBLE envelopes to reach ACCEPT for real (a marker-
+ * only buffer fails real decode at the per-item seam, which DOES run
+ * once the count is within bound), which is exactly the construction
+ * this case's own header says is impractical. The ACCEPT side of "a
+ * count within the new, larger bound is still accepted" is covered at
+ * small scale by `t_byte_bound_prepare_and_process` above (11 real
+ * envelopes, ACCEPT) — RED under delta 1's 10-item cap, GREEN here,
+ * per the ORCHESTRATOR's own note on landing this delta. The `>` vs
+ * `>=` boundary EXACTNESS at the new scale is therefore an open gap,
+ * named rather than silently dropped.
+ *
+ * RED-BEFORE-THIS-PACKAGE, STATED HONESTLY: before it, ProcessProposal
+ * had no per-CLASS ceiling at all — only the byte-derived `env_bound`
+ * (in the hundreds of thousands) and the flat mixed item cap, neither
+ * of which `NODUS_V2_ENV_BATCH_MAX + 1` marker-only buffers would have
+ * approached — so the request would have reached the per-item seam,
+ * which decodes each entry for real and REJECTS every one of them for
+ * being too short to be a real envelope (a DIFFERENT reason than the
+ * one this case exists to prove) rather than the per-class COUNT this
+ * case targets. That distinction is exactly why the classification
+ * self-check below (proving these buffers count AS envelopes without
+ * needing to decode as one) matters.
  */
 static int t_process_proposal_item_cap(void)
 {
@@ -3057,52 +3160,49 @@ static int t_process_proposal_item_cap(void)
     nodus_cmt_app_ledger_t                  *app;
     nodus_abci_request_process_proposal_t    req;
     nodus_abci_response_process_proposal_t   resp;
-    cmt_pb_bytes_t                           *txs = NULL;
-    uint8_t                                (*claim_bytes)[DNA_CLAIM_MAX_WIRE] = NULL;
-    size_t                                   *claim_len = NULL;
     cmt_genesis_validator_t                   gvals[DNAC_COMMITTEE_SIZE];
-    const uint32_t                            N = NODUS_V2_APPLY_MAX_OPS + 1; /* 17 */
-    uint32_t                                  i;
+    cmt_pb_bytes_t                            *txs = NULL;
+    uint8_t                                  (*bufs)[16] = NULL;
+    const size_t                               N =
+        (size_t)NODUS_V2_ENV_BATCH_MAX + 1;
+    size_t                                     i;
 
-    CHECK(gfx_open_n(&g, "proc_cap", N) == 0, "17-leaf version-3 fixture");
+    CHECK(gfx_open(&g, "proc_cap") == 0, "version-3 fixture");
     app = calloc(1, sizeof(*app));
-    txs         = (cmt_pb_bytes_t *)calloc(N, sizeof(*txs));
-    claim_bytes = calloc(N, sizeof(*claim_bytes));
-    claim_len   = (size_t *)calloc(N, sizeof(*claim_len));
-    CHECK(app && txs && claim_bytes && claim_len, "alloc");
+    CHECK(app != NULL, "alloc");
     CHECK(gfx_doc(&g, &doc, gvals) == 0, "the completed genesis document");
     CHECK(nodus_cmt_app_ledger_init(app, g.w, &doc) == CMT_OK, "bind");
 
+    txs  = (cmt_pb_bytes_t *)calloc(N, sizeof(*txs));
+    bufs = calloc(N, sizeof(*bufs));
+    CHECK(txs && bufs, "alloc");
     for (i = 0; i < N; i++) {
-        CHECK(build_claim_n(&g, N, i, claim_bytes[i], DNA_CLAIM_MAX_WIRE,
-                            &claim_len[i]) == 0,
-              "a real claim over its own genesis leaf");
-        txs[i].data = claim_bytes[i];
-        txs[i].len  = claim_len[i];
+        memcpy(bufs[i], "DNA.ENVWIRE.v1", 14);
+        bufs[i][14] = 0;
+        bufs[i][15] = 0;
+        txs[i].data = bufs[i];
+        txs[i].len  = sizeof(*bufs);
     }
+    CHECK(nodus_witness_v2_classify_entry(bufs[0], 16) ==
+              NODUS_W_TX_V2_ENVELOPE,
+          "the marker-only buffer must classify as an envelope, or this "
+          "case proves nothing about the envelope class cap");
+
     memset(&req, 0, sizeof(req));
     req.txs     = txs;
-    req.txs_len = N;                      /* 17: one over the bound     */
+    req.txs_len = N;                 /* NODUS_V2_ENV_BATCH_MAX + 1     */
     memset(&resp, 0, sizeof(resp));
     CHECK(nodus_cmt_app_process_proposal(app, &req, &resp) == CMT_OK,
           "process_proposal returns a verdict, not a fault");
     CHECK(resp.status == NODUS_ABCI_PROPOSAL_STATUS_REJECT,
-          "delta 11: 17 items exceed the engine's per-block item bound "
-          "(16) and are refused BEFORE any per-item work (RED before "
-          "this delta: ACCEPT — the only ceiling was env_bound, and all "
-          "17 of these claims are independently admissible)");
-
-    req.txs_len = NODUS_V2_APPLY_MAX_OPS;              /* 16: the bound  */
-    memset(&resp, 0, sizeof(resp));
-    CHECK(nodus_cmt_app_process_proposal(app, &req, &resp) == CMT_OK,
-          "process_proposal answers");
-    CHECK(resp.status == NODUS_ABCI_PROPOSAL_STATUS_ACCEPT,
-          "exactly 16 (the bound itself) is accepted — the check is "
-          "'>', never '>=', and all 16 are independently admissible");
+          "R3 W4-C delta 2: NODUS_V2_ENV_BATCH_MAX + 1 envelope-"
+          "classified entries must be refused BEFORE any per-item work "
+          "(RED before this delta's classify-count check existed: these "
+          "would have reached the per-item seam and been rejected for "
+          "malformed bytes instead — the WRONG reason)");
 
     nodus_cmt_app_ledger_release(app);
-    free(claim_len);
-    free(claim_bytes);
+    free(bufs);
     free(txs);
     free(app);
     gfx_close(&g);

@@ -98,6 +98,7 @@ if [ "${has_v2:-0}" = "0" ] || [ ! -s "$PINFILE" ]; then
     echo "[SKIP] not a Ledger V2 cluster with a recorded genesis pin — use stagef_up_v2.sh"
     exit 99
 fi
+stagef_sentinel SETUP_OK   # W4-H: the runner turns PASS-without-ASSERT_RUN into FAIL
 
 nd=$(stagef_node_dir "$VICTIM")
 data="$nd/data"
@@ -119,6 +120,52 @@ stop_victim() {
     [ -n "$p" ] && { kill -9 "$p"; sleep 2; }
     return 0
 }
+
+# ── R3 W4 package H: the victim is restored on EVERY exit ────────────
+# Sweep 5 (2026-09-17) aborted this scenario mid-way with node5 stopped
+# and one of its database files moved into a backup directory; the five
+# scenarios after it then ran on SIX nodes and reported that as their
+# own failure. Under `set -e` a `die` (or any failing command) leaves the
+# victim exactly like that. This trap runs on a NON-ZERO exit only: it
+# puts back whatever this scenario moved out of the victim's data
+# directory (the per-target backups and the two marker-probe files) and
+# restarts the victim from its now-intact directory — the ordinary
+# restart `test_v2_restart_convergence.sh` performs, not the pin
+# rejoin (nothing was wiped). It does NOT wait for the victim to catch
+# up: the next scenario's own height waits do that. On a clean exit the
+# scenario has already restored the victim itself (below) and this trap
+# does nothing. `PW_DOWN` is raised at the first stop and cleared once
+# the pin rejoin has been asserted.
+PW_DOWN=0
+pw_cleanup() {
+    local rc=$?
+    [ "$rc" -ne 0 ] || return 0
+    [ "$PW_DOWN" -eq 1 ] || return 0
+    echo "[cleanup] rc=$rc with node$VICTIM down — restoring its files and restarting it" >&2
+    stop_victim
+    for b in "$BASE_DIR"/pw_backup_*; do
+        [ -d "$b" ] || continue
+        mv "$b"/* "$data"/ 2>/dev/null || true
+        rmdir "$b" 2>/dev/null || true
+    done
+    [ -f "$BASE_DIR/pw_probe_nodus.db" ] && mv "$BASE_DIR/pw_probe_nodus.db" "$data/nodus.db"
+    [ -f "$BASE_DIR/pw_probe_marker" ]   && mv "$BASE_DIR/pw_probe_marker" "$data/.witness_db_seen"
+    # The pin is passed on EVERY restart here: with a chain database
+    # present it is inert (nodus_witness_v2_join_arm returns before
+    # arming when `w->db` is open), and if the failure happened AFTER the
+    # wipe below (the rejoin never completed) the directory is empty and
+    # the pin is exactly what lets the victim adopt again.
+    # shellcheck disable=SC2086
+    "$STAGEF_NODUS_BIN" -c "$BASE_DIR/nodus.json" -b 127.0.0.1 \
+        -u "$(stagef_udp_port "$VICTIM")" -t "$(stagef_tcp_port "$VICTIM")" \
+        -p "$(stagef_peer_port "$VICTIM")" -C "$(stagef_chan_port "$VICTIM")" \
+        -W "$(stagef_witness_port "$VICTIM")" --v2-genesis-pin "$(cat "$PINFILE")" \
+        -i "$nd/identity" -d "$data" $SEEDS \
+        >> "$nd/nodus.log" 2>&1 &
+    echo "$!" >> "$BASE_DIR/pids.txt"
+    echo "[cleanup] node$VICTIM restarted (pid $!); the next scenario's height wait covers its catch-up" >&2
+}
+trap pw_cleanup EXIT
 
 # Start the victim and report whether the gate refused it. The log is
 # TRUNCATED first: a `PARTIAL WIPE DETECTED` line from a previous attempt
@@ -174,6 +221,7 @@ try_boot() {
 
 stagef_cmt_diff_at_floor "pre-v2-partial-wipe" || exit 2
 stop_victim
+PW_DOWN=1   # from here on, an abnormal exit must put node$VICTIM back
 
 # ── Each of the three, one at a time ────────────────────────────────
 # Found by different code: nodus.db and channels.db by name, the witness
@@ -249,6 +297,7 @@ for _ in $(seq 1 180); do
 done
 [ "$vt" -ge "$fleet_tip" ] || die "node$VICTIM did not rejoin after the restore (tip $vt < fleet $fleet_tip)"
 echo "[ok] node$VICTIM restored by rejoining on its pin (tip $vt)"
+PW_DOWN=0   # the victim is back on its own; the EXIT trap has nothing to do
 
 # ANTI-VACUITY: it must have come back as a COMETBFT witness, not merely
 # a DHT-only process with a chain file on disk (nodus keeps serving DHT
@@ -269,8 +318,10 @@ for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
     stagef_cmt_wait_height "$(stagef_node_chain_db "$n")" "$vt" 2 >/dev/null \
         || die "node$n never reached height $vt (mesh replication stalled)"
 done
+stagef_sentinel ASSERT_RUN   # the terminal assertion is next
 stagef_cmt_diff_at_floor "post-v2-partial-wipe" || exit 2
 
+stagef_sentinel PASS
 echo ""
 echo "[PASS] the H-10 boot gate is ARMED on a Ledger V2 node and refused all"
 echo "       three single-file wipes; with the marker removed the same directory"

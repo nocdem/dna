@@ -145,10 +145,13 @@ struct nodus_domain_adapter;
  * the engine-derived context and the engine-mediated read results, all
  * of which are byte-identical on every honest node. */
 
-/** Largest mediated-read request list one leg may emit. Mirrors the
- *  engine's own batch bound (NODUS_V2_ENV_BATCH_MAX == the apply
- *  engine's MAX_OPS == 16) — an engine array bound, not a priced
- *  policy; a plan exceeding it is rejected, never truncated. */
+/** Largest mediated-read request list one leg may emit — an engine
+ *  array bound, not a priced policy; a plan exceeding it is rejected,
+ *  never truncated. R3 W4-C: this used to be described as "mirroring"
+ *  NODUS_V2_ENV_BATCH_MAX / MAX_OPS while all three happened to be 16;
+ *  those two are now derived bounds (3 209 / 17 371, apply.h) and this
+ *  one is its own number — the read budget that sized CORE SPEND at 15
+ *  inputs + 1 supply read (nodus_witness_rt_native.c). */
 #define NODUS_RT_MAX_READS 16
 
 /** One typed mediated-read request: a compiled adapter operation id plus

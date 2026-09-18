@@ -121,6 +121,7 @@ if [ "${has_v2:-0}" = "0" ] || [ ! -f "$CONF" ]; then
     echo "[SKIP] not a Comet cluster with a genesis config — use stagef_up_v2.sh"
     exit 99
 fi
+stagef_sentinel SETUP_OK   # W4-H: the runner turns PASS-without-ASSERT_RUN into FAIL
 
 stagef_cmt_diff_at_floor "pre-cmt-mempool-flood" || exit 2
 
@@ -272,8 +273,10 @@ for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
     stagef_cmt_wait_height "$(stagef_node_chain_db "$n")" "$after_b" 2 >/dev/null \
         || die "node$n never reached height $after_b (mesh replication stalled)"
 done
+stagef_sentinel ASSERT_RUN   # the terminal assertion is next
 stagef_cmt_diff_at_floor "post-cmt-mempool-flood-partB" || exit 2
 
+stagef_sentinel PASS
 echo ""
 echo "[PASS] a claim submitted to a single node (3) was gossiped, applied, and"
 echo "       reached all $STAGEF_COMMITTEE_SIZE (its own UTXO exists, not just an agreed height);"

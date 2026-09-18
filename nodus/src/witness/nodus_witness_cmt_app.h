@@ -154,38 +154,63 @@ extern "C" {
  *
  *   CLAIM_BOUND — `nodus_cmt_app_ledger_t.claim_bound`, `MaxDataBytes`
  *   divided by a claim's own minimum wire size (DNA_CLAIM_FIXED_LEN),
- *   ~2 972 at the same `vals_count = 1`. Used ONLY as FinalizeBlock's
+ *   ~2 972 at the same `vals_count = 1`. Used as FinalizeBlock's
  *   defensive ceiling on the CLASSIFIED claim subcount within one
- *   request (`fb_claim`'s per-request size), never as a whole-request
- *   admission bound — a request could not exceed it in claims alone
- *   without also exceeding env_bound in total items first.
+ *   request (`fb_claim`'s per-request size) AND, since R3 W4 package C,
+ *   as one half of the PER-CLASS admission ceiling `nodus_cmt_app_
+ *   prepare_proposal`/`process_proposal` enforce (`min(claim_bound,
+ *   NODUS_V2_APPLY_MAX_CLAIMS)` — this chain's own byte-derived claim
+ *   capacity is the smaller of the two at `Block.MaxBytes` = 22 020 096,
+ *   D-4 rev 3, so it is the binding figure in practice; the engine's own
+ *   14 162 only binds a chain whose genesis document permits a bigger
+ *   block than D-4 rev 3's default).
  *
- * A FOURTH bound joins these three (ORCHESTRATOR delta 11,
- * R3-W3-C2a-19), unlike them in kind: it is NOT one of the "three
- * bounds" the paragraph above enumerates, NOT a `nodus_cmt_app_ledger_t`
- * field, and NOT derived from this chain's genesis document at bind
- * time —
+ * A FOURTH AND FIFTH bound join these three (ORCHESTRATOR delta 11,
+ * R3-W3-C2a-19; R3-W4 package C split the fourth into a per-class pair
+ * and re-derived the fifth), unlike them in kind: neither is a
+ * `nodus_cmt_app_ledger_t` field or derived from this chain's genesis
+ * document at bind time — both are compile-time properties of THIS
+ * BUILD of the engine, exactly like `MAX_DOMS` elsewhere in this port —
  *
- *   ITEM_CAP — the compile-time constant `NODUS_V2_APPLY_MAX_OPS`
- *   (nodus_witness_v2_apply.h, currently 16), the engine's own RELEASE
- *   RESOURCE bound on its per-block scratch (`claim_nuls[MAX_OPS][64]`
- *   and the universal envelope-batch cap `NODUS_V2_ENV_BATCH_MAX`,
- *   nodus_witness_v2_env.h:121, sized to the same figure) — exactly
- *   like `MAX_DOMS` elsewhere in this port, a property of THIS BUILD of
- *   the engine, never a consensus parameter this chain's genesis could
- *   set differently. `nodus_cmt_app_prepare_proposal` trims its KEPT
- *   count to this bound (after the fee ordering and the byte budget,
- *   before the engine's own admission seam); `nodus_cmt_app_
- *   process_proposal` REJECTs any proposal above it before any per-item
- *   work. Before delta 11 NEITHER gate existed: the Comet lane's own
- *   count cap (the retired `NODUS_CMT_APP_MAX_TXS` = 10) happened to
- *   keep every block inside this bound by accident until D-4 rev 3 (2)
- *   retired it, and the Genesis Protocol harness then decided a 40-claim
- *   block that FAULTED every node's FinalizeBlock at height 7
- *   (`/tmp/stagef-20260917T034259Z`) — the live defect this bound
- *   closes. The derived-bounds log line in `nodus_cmt_app_ledger_init`
- *   reports it as `item_cap=%u` beside the three DERIVED bounds so an
- *   operator reading the log sees all four together, even though only
+ *   PER-CLASS CAPS — `NODUS_V2_ENV_BATCH_MAX` (nodus_witness_v2_apply.h,
+ *   moved here from nodus_witness_v2_env.h in delta 2 — 3 209, DERIVED
+ *   from a MEMORY budget: `NODUS_V2_APPLY_SCRATCH_BUDGET_BYTES` 64 MiB /
+ *   `NODUS_V2_APPLY_ENV_COST_BYTES` 20 908 B; NOT the chain-config hard
+ *   cap delta 1 briefly tied it to — `MAX_TXS_PER_BLOCK` (id 1) and its
+ *   `DNAC_CFG_MAX_TXS_HARD_CAP` are RETIRED/deleted as of delta 2/3)
+ *   bounds envelopes; `min(claim_bound, NODUS_V2_APPLY_MAX_
+ *   CLAIMS)` (14 162 — the most claims cometbft's own `MaxBlockSizeBytes`
+ *   can carry, nodus_witness_v2_apply.h) bounds claims. Both are
+ *   PER-CLASS, unlike the single mixed cap below: `nodus_cmt_app_
+ *   prepare_proposal` keeps, for each class, only its own highest-fee
+ *   entries up to its cap (a single fee-order pass, after the byte
+ *   budget, before the mixed cap and the engine's own admission seam);
+ *   `nodus_cmt_app_process_proposal` REJECTs any proposal exceeding
+ *   either class's cap, before any per-item work.
+ *
+ *   MIXED ITEM_CAP — the compile-time constant `NODUS_V2_APPLY_MAX_OPS`
+ *   (nodus_witness_v2_apply.h, the SUM of the two per-class caps above,
+ *   17 371), the engine's own RELEASE RESOURCE bound on its per-block
+ *   scratch — heap since R3 W4 package C, sized to the BLOCK's own
+ *   n_envs/n_claims/leg counts, never to this compile-time figure; the
+ *   figure itself survives as the ceiling that scratch must never be
+ *   asked to exceed. Kept as DEFENSE-IN-DEPTH after the per-class caps:
+ *   with both classes already within their own bound, their sum can
+ *   never exceed this one, so in practice this trim/REJECT is a no-op —
+ *   it existed FIRST (delta 11, R3-W3-C2a-19) as the ONLY gate, before
+ *   the per-class split. Before delta 11 NEITHER gate existed: the
+ *   Comet lane's own count cap (the retired `NODUS_CMT_APP_MAX_TXS` = 10)
+ *   happened to keep every block inside this bound by accident until
+ *   D-4 rev 3 (2) retired it, and the Genesis Protocol harness then
+ *   decided a 40-claim block that FAULTED every node's FinalizeBlock at
+ *   height 7 (`/tmp/stagef-20260917T034259Z`) — the live defect this
+ *   bound closes, and the reason a fixed MAX_OPS-sized array could not
+ *   simply grow to cover it (17 371 × 64 domains × 64 bytes alone would
+ *   have been tens of megabytes of ALWAYS-RESIDENT stack/heap; package C
+ *   made the scratch track the block instead). The derived-bounds log
+ *   line in `nodus_cmt_app_ledger_init` reports `env_batch_max`,
+ *   `claim_cap` and `mixed_item_cap` beside the three DERIVED bounds so
+ *   an operator reading the log sees all five together, even though only
  *   three are computed there.
  *
  * NODUS_CMT_APP_MAX_TXS is RETIRED. It does not survive as a compile-

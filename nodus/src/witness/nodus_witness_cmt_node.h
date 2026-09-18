@@ -517,7 +517,12 @@ typedef struct {
     nodus_cmt_wal_t         wal;
     bool                    wal_open;
     cmt_cs_slots_t         *slots;
-    cmt_pb_arena_t          ext_arena;
+    /* PACKAGE W4-X (register R3-W3-C2e-4): two arenas alternating by
+     * height parity — cmt_cs.h "OWNERSHIP" (2). Both allocated by
+     * nodus_cmt_node_init (64 KiB each), both freed by
+     * nodus_cmt_node_release; borrowed by both `n->be` and `n->cs` as the
+     * shared pair. */
+    cmt_pb_arena_t          ext_arena[2];
     nodus_cmt_host_limits_t limits;
     nodus_cmt_blockexec_t  *be;
     bool                    be_ready;

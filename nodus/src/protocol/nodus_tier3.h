@@ -106,26 +106,19 @@ typedef enum {
      * Tendermint T3 legacy verbs 28-34 below. THE NUMBERS ARE RETIRED
      * AND NEVER REUSED — see nodus_t3_max_msg_size and
      * nodus_t3_type_to_method, which both answer "not a verb" for every
-     * one of them. Values are NEVER renumbered; 9-11, 14-15, 24-25 and
-     * 35-39 keep their assigned numbers exactly. */
+     * one of them. Values are NEVER renumbered; 9-11, 24-25, 35-39 and
+     * 40-41 keep their assigned numbers exactly. */
     NODUS_T3_ROST_Q     = 9,
     NODUS_T3_ROST_R     = 10,
     NODUS_T3_IDENT      = 11,
-    /* R3 W4 (register R3-W4-D-8) — verbs 14-15 (Hard-Fork v1 Stage C.2,
-     * the chain_config vote-collect RPC) are KEPT, deliberately, and are
-     * the one exception to this delta's retirement of 12-23: the codec
-     * still has live production consumers outside the closed consensus
-     * lane's own file set (nodus_witness_chain_config.c server-side
-     * handler, nodus_cc_client.c + the public nodus.h SDK declaration
-     * client-side, and nodus-cli.c's `chain-config propose` command) —
-     * a governance surface, not a BFT round primitive. The witness T3
-     * dispatch table (nodus_witness.c) still drops both verbs on
-     * arrival, unchanged since W3: the codec compiling does not make the
-     * RPC reachable again. Deleting those four consumers, or re-wiring
-     * the RPC onto a live verb, is a product decision for the operator;
-     * until made, the codec stays and the verbs stay dropped. */
-    NODUS_T3_CC_VOTE_REQ = 14,  /* proposer asks peer to sign a proposal */
-    NODUS_T3_CC_VOTE_RSP = 15,  /* peer returns (witness_id, signature) or reject */
+    /* R3 W4-CC (D-16 rev 7, atlas-dec-0c86593601db977cd5af648b78910004) —
+     * verbs 14 (w_cc_vote_req) and 15 (w_cc_vote_rsp) are RETIRED, exactly
+     * like 1-8/12-13/16-23/26-27/28-34: their struct types, union members,
+     * codecs and method-table rows are gone. R3-W4-D (register R3-W4-D-8)
+     * kept the codec compiling with no reachable RPC behind it, pending
+     * this operator decision; that decision is now made — the RPC is
+     * REBUILT on the pre-auth envelope as verbs 40-41 below, never as a
+     * revival of 14-15. THE NUMBERS 14 AND 15 ARE NEVER REUSED. */
     /* O15E Faz D — successor genesis bundle transfer (pinned-genesis
      * joiner bootstrap). Offset-chunked because a 20-validator bundle
      * exceeds the 128 KB T3 message bound. */
@@ -159,6 +152,32 @@ typedef enum {
     NODUS_T3_CMT_VOTE          = 37,  /* w_cmt_vote  — Vote channel  0x22         */
     NODUS_T3_CMT_VOTE_SET_BITS = 38,  /* w_cmt_bits  — VoteSetBits channel 0x23   */
     NODUS_T3_CMT_TXS           = 39,  /* w_cmt_txs   — mempool channel 0x30       */
+
+    /* ── SYSTEM-governance approval collection (verbs 40-41; D-16 rev 7,
+     * W4-CC) — a GOVERNANCE RPC, not a consensus verb: NOT on the version
+     * gate or the quarantine list (those stay exactly verbs 35-39), and
+     * NODUS_T3_BFT_PROTOCOL_VER is unchanged at 7.
+     *
+     * 40 w_cc_appr_req: a proposer asks ONE committee peer to approve a
+     * PRE-AUTH single-leg SYSTEM-governance envelope (today exactly
+     * CHAIN_CONFIG, runtime_op 6) — the envelope's auth blob is
+     * zero-filled at its FINAL length (submitter + the proposer's chosen
+     * N approvals; N is fixed BEFORE anyone signs, since the approval
+     * COUNT is bound into the leg auth_digest through auth_len). Args
+     * { e: bstr }, e <= DNA_ENV_MAX_TOTAL_LEN — zero-copy on decode, the
+     * same idiom as verb 39's `m`.
+     *
+     * 41 w_cc_appr_rsp: the peer's answer — one signed committee-seat
+     * approval, or a refusal with a reason. Args { ok: bool, i: uint
+     * (seat, u16), s: bstr(4627), sh: bstr(64), ep: uint, r: tstr <=128 }.
+     * ok=true: i/s/sh/ep are the signed approval, r is absent. ok=false:
+     * only r is meaningful.
+     *
+     * A server never RECEIVES 41 (it is a client-only reply, like 15 was)
+     * — dispatch drops it exactly like the retired 14-15 dropped:
+     * log-and-drop at `default:`, unchanged shape. */
+    NODUS_T3_CC_APPR_REQ = 40,  /* w_cc_appr_req — collect one committee approval */
+    NODUS_T3_CC_APPR_RSP = 41,  /* w_cc_appr_rsp — one seat's signed approval or refusal */
 } nodus_t3_msg_type_t;
 
 /* ── Common witness header ───────────────────────────────────────── */
@@ -248,35 +267,9 @@ typedef struct {
  * the closed consensus lane they served: the legacy single-block sync
  * request/response pair (verbs 12-13). Neither is a verb any more. */
 
-/** w_cc_vote_req: Proposer asks a committee peer to sign a chain_config
- *  proposal preimage. Hard-Fork v1 Stage C.2. The peer runs its local
- *  signing-policy check (params-in-range + other soft rules) before
- *  deciding to sign; see nodus_witness_handle_cc_vote_req.
- *  R3 W4 (register R3-W4-D-8) — KEPT: see this verb's own enum comment
- *  above for why. */
-typedef struct {
-    uint8_t     param_id;
-    uint64_t    new_value;
-    uint64_t    effective_block_height;
-    uint64_t    proposal_nonce;
-    uint64_t    signed_at_block;
-    uint64_t    valid_before_block;
-    /* chain_id lives in the T3 header "cid" field — same binding as
-     * proposal preimage (see nodus_chain_config_compute_digest). Not
-     * duplicated here. */
-} nodus_t3_cc_vote_req_t;
-
-/** w_cc_vote_rsp: Peer's response to a vote request. Either carries a
- *  signed vote (accepted=true) or a reject with a human-readable reason
- *  (accepted=false). */
-typedef struct {
-    bool            accepted;
-    /* Valid only when accepted == true: */
-    uint8_t         witness_id[32];
-    uint8_t         signature[NODUS_SIG_BYTES];
-    /* Valid only when accepted == false (UTF-8, NUL-terminated): */
-    char            reject_reason[128];
-} nodus_t3_cc_vote_rsp_t;
+/* R3 W4-CC — nodus_t3_cc_vote_req_t / nodus_t3_cc_vote_rsp_t (the retired
+ * verbs 14-15) are DELETED with the legacy vote-collect RPC; see the
+ * verb 40-41 structs below for the pre-auth-envelope replacement. */
 
 /* ── PR 3 Yol B — witness auto-bootstrap (chain discovery + fetch) ── */
 
@@ -372,13 +365,55 @@ typedef struct {
 #define NODUS_T3_CMT_CONS_M_MAX         1048576u   /* verbs 35-38: CMT_CONR_MAX_MSG_SIZE */
 #define NODUS_T3_CMT_TXS_M_MAX          1048584u   /* verb 39: mempool RecvMessageCapacity at default MaxTxBytes */
 
+/* ── SYSTEM-governance approval collection payload (verbs 40-41; D-16
+ * rev 7, W4-CC) — see the two verbs' own enum comments above. */
+
+/** w_cc_appr_req (verb 40): the pre-auth envelope. Zero-copy on decode —
+ *  the same idiom as verb 39's `m` (nodus_t3_w_cmt_t) and w_v2_range_r's
+ *  `frames`: `e` points into the decode buffer and is valid only while
+ *  that buffer is alive; on encode it is caller-owned for the duration
+ *  of the nodus_t3_encode call. This layer decodes NOTHING inside `e` —
+ *  the responder's own engine seam does (nodus_witness_v2_block_ctx_build
+ *  + nodus_witness_v2_env_preflight_batch, the same seam CheckTx uses). */
+typedef struct {
+    const uint8_t *e;       /* ptr into decode buf (rx) / caller buf (tx) */
+    size_t         e_len;
+} nodus_t3_cc_appr_req_t;
+
+/** w_cc_appr_rsp (verb 41): one committee seat's answer.
+ *  ok=true: seat/sig/set_hash/epoch are the signed "DNA.CCAPPR.v1"
+ *  approval (nodus_rt_cc_approval_digest); reason is empty.
+ *  ok=false: only reason is meaningful (UTF-8, NUL-terminated). */
+typedef struct {
+    bool     ok;
+    uint16_t seat;
+    uint8_t  sig[NODUS_SIG_BYTES];
+    uint8_t  set_hash[64];
+    uint64_t epoch;
+    char     reason[129];   /* <= 128 chars + NUL, matches D-16 rev 7's
+                             * "r: tstr <= 128" exactly (not 127) */
+} nodus_t3_cc_appr_rsp_t;
+
+/** Verb 40's `e` ceiling: the largest pre-auth envelope this layer will
+ *  carry — the same versioned capacity bound the engine's own envelope
+ *  codec enforces (shared/dnac/env_wire.h), so this transport layer can
+ *  never refuse an envelope the engine would otherwise accept. Verb 41's
+ *  ceiling is its three variable-length fields' worst case: a 4627-byte
+ *  Dilithium5 signature, a 64-byte set hash, and headroom for the
+ *  refusal string (128 declared, 256 to leave slack for future reasons
+ *  without moving this ceiling again). */
+#define NODUS_T3_CC_APPR_E_MAX    DNA_ENV_MAX_TOTAL_LEN
+#define NODUS_T3_CC_APPR_RSP_MAX  (4627u + 64u + 256u)
+
 /**
  * Per-type message ceiling — the size nodus_t3_encode/nodus_t3_verify must
  * be able to hold for `type`.
  *
  * Verbs 35-38 return NODUS_T3_CMT_CONS_M_MAX + the envelope overhead;
- * verb 39 returns NODUS_T3_CMT_TXS_M_MAX + the envelope overhead. Verbs
- * 28-34 are RETIRED and return 0 (nodus_t3_type_to_method(28..34) is
+ * verb 39 returns NODUS_T3_CMT_TXS_M_MAX + the envelope overhead. Verb 40
+ * returns NODUS_T3_CC_APPR_E_MAX + the envelope overhead; verb 41 returns
+ * NODUS_T3_CC_APPR_RSP_MAX + the envelope overhead. Verbs 14-15 and 28-34
+ * are RETIRED and return 0 (nodus_t3_type_to_method(14/15/28..34) is
  * NULL — they are not a verb any more). EVERY legacy type returns
  * NODUS_W_MAX_SYNC_RSP_SIZE, which is the bound the legacy path uses
  * today: nodus_t3_verify (nodus_tier3.c) allocates exactly that, for
@@ -408,14 +443,15 @@ typedef struct {
      * w_chain_q, w_chain_r, w_genesis_req, w_genesis_rsp, w_v2_block_q,
      * w_v2_head, w_v2_range_q, w_v2_range_r, viewok, viewok_q) are
      * DELETED with the closed consensus lane; their struct types no
-     * longer exist. cc_vote_req/cc_vote_rsp (verbs 14-15) are the one
-     * exception — KEPT, register R3-W4-D-8. */
+     * longer exist. R3 W4-CC deletes cc_vote_req/cc_vote_rsp (verbs
+     * 14-15) the same way — cc_appr_req/cc_appr_rsp (verbs 40-41) below
+     * are their replacement, not a revival. */
     union {
         nodus_t3_rost_q_t   rost_q;
         nodus_t3_rost_r_t   rost_r;
         nodus_t3_ident_t    ident;
-        nodus_t3_cc_vote_req_t cc_vote_req;
-        nodus_t3_cc_vote_rsp_t cc_vote_rsp;
+        nodus_t3_cc_appr_req_t cc_appr_req;
+        nodus_t3_cc_appr_rsp_t cc_appr_rsp;
         nodus_t3_w_v2_gbundle_q_t w_v2_gbundle_q;
         nodus_t3_w_v2_gbundle_r_t w_v2_gbundle_r;
         /* cometbft envelope (verbs 35-39; D-16 rev 5). */

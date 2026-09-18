@@ -136,6 +136,7 @@ if [ "${has_v2:-0}" = "0" ] || [ ! -f "$CONF" ]; then
     echo "[SKIP] not a Ledger V2 cluster with a genesis config — use stagef_up_v2.sh"
     exit 99
 fi
+stagef_sentinel SETUP_OK   # W4-H: the runner turns PASS-without-ASSERT_RUN into FAIL
 echo "[ok] Ledger V2 cluster with its genesis config present"
 
 tip_before=$(sqlite3 "$ref_db" "SELECT COALESCE(MAX(global_height),-1) FROM v2_blocks;")
@@ -253,8 +254,10 @@ for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
     stagef_cmt_wait_height "$(stagef_node_chain_db "$n")" "$claim_height" 2 >/dev/null \
         || die "node$n never reached height $claim_height (mesh replication stalled)"
 done
+stagef_sentinel ASSERT_RUN   # the terminal assertion is next
 stagef_cmt_diff_at_floor "post-v2-claim" || exit 2
 
+stagef_sentinel PASS
 echo ""
 echo "[PASS] a Ledger V2 genesis claim committed at height $claim_height and all"
 echo "       $STAGEF_COMMITTEE_SIZE nodes produced the SAME state_root for it."

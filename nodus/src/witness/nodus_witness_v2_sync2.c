@@ -73,11 +73,30 @@ static uint64_t v2sync_monotonic_ms(void) {
 
 /* ── O15E Faz D — the surviving genesis-bundle serve path ────────────── */
 
-/* Successor + open gate + armed: the ONE predicate every handler and
- * the driver ask first. Anything else answers nothing (no residue). */
+/* Successor + armed: the ONE predicate the surviving handler asks first.
+ * Anything else answers nothing (no residue).
+ *
+ * R3 W4 package P (the preflight-per-request cost): this predicate used
+ * to ALSO call `nodus_witness_v2_activation_permitted(w)`, which is
+ * `nodus_witness_v2_gate_state(w) == OPEN` — the authority probe plus the
+ * WHOLE O15A preflight (five S14 store opens, the canonical-strict
+ * document decode, the app_hash recomputation against block 1's
+ * BlockMeta) — on EVERY genesis-bundle request. `v2_ingress_armed` is
+ * already that gate's answer: `nodus_witness_v2_ingress_arm` sets it
+ * ONLY when the gate is OPEN (nodus_witness_v2_gate.c) and it is set at
+ * exactly one place, the post-open gate (`witness_post_open_gate`,
+ * nodus_witness.c — at database open and, since W3 C2a-18, after a
+ * joiner's adopt), and cleared by `nodus_witness_v2_ingress_disarm`. The
+ * reference decides a node's role ONCE (node.go's startup table); a
+ * per-request re-decision is a C-only cost with no reference line. What
+ * the re-check incidentally provided — refusing to serve once the
+ * preflight has drifted after arming — is not a guarantee anything
+ * relied on: the joiner never trusts the served bytes, it re-derives the
+ * genesis and adopts only on a byte-identical pin match
+ * (nodus_witness_v2_join.c), so a stale or corrupt bundle is refused at
+ * the joiner, not here. */
 static int v2sync_ready(nodus_witness_t *w) {
     return w && w->db && w->v2_successor &&
-           nodus_witness_v2_activation_permitted(w) &&
            nodus_witness_v2_ingress_is_armed(w);
 }
 

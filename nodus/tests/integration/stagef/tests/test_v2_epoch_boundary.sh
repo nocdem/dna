@@ -42,34 +42,52 @@
 #   `dnac_spend` answers CheckTx immediately now (D-23 rev 7 item 22),
 #   so a `v2-claim` call over the whole pump batch queues every leaf in
 #   the mempool before the client's own loop finishes submitting them,
-#   and the NEXT PrepareProposal drains as many as fit under its claim
-#   bound (~2 972, D-23 rev 8 item 24) into ONE block — 40 pump leaves
-#   should be expected to land in ONE block, not forty (see
-#   test_cmt_mempool_flood.sh, which proves this batching directly).
+#   and the NEXT PrepareProposal drains as many as fit under its bounds
+#   into ONE block. THAT SENTENCE'S TRUTH VALUE MOVED TWICE since it was
+#   first written: R3-W3-C2a-19 (the SAME wave, landed after this
+#   paragraph was) capped the engine at a flat 16 ITEMS per block
+#   regardless of class, so for the few days that cap stood, 40 pump
+#   leaves would NOT have landed in one block — they would have needed
+#   at least three. R3 W4 package C replaced that flat cap with a
+#   per-class one — claims now bound by `NODUS_V2_APPLY_MAX_CLAIMS`
+#   (14 162, nodus_witness_v2_apply.h, derived from cometbft's own
+#   `MaxBlockSizeBytes`) — so "40 pump leaves land in ONE block" is true
+#   again, and stays true up to 14 162. `test_cmt_claim_flood.sh` (placed
+#   immediately before this scenario in the sweep, package C) is what
+#   actually proves that batching now, over the WHOLE pump batch in one
+#   call; this scenario no longer needs to.
 #   Reaching a height target is therefore bounded by TIME
 #   (CreateEmptyBlocksInterval, 60 000 ms of idle production per block,
-#   nodus_witness_cmt_node.c:1700), not by how many leaves exist. The
-#   pump batch still helps — it can turn what would otherwise be several
-#   idle intervals into one quick block — but it can no longer be relied
-#   on to multiply blocks 1:1, so the SKIP threshold below is expressed
-#   in WALL-CLOCK FEASIBILITY (blocks needed x the interval, against a
-#   fixed harness patience budget), not in leaves-on-hand. At E=15 that
-#   budget check passes exactly as the old leaf-count check did (both
-#   converge on "15 is fine, 720 is not"); the reasoning underneath
-#   is now honest about why.
+#   nodus_witness_cmt_node.c:1700), not by how many leaves exist — and,
+#   since package C, THIS SCENARIO'S OWN pump submission will typically
+#   find NOTHING LEFT to submit at all (see "WHAT IT LEAVES BEHIND"
+#   below), so in the sweep's normal order this scenario reaches the
+#   boundary on idle production ALONE, every time, not merely in the
+#   worst case. The SKIP threshold below is expressed in WALL-CLOCK
+#   FEASIBILITY (blocks needed x the interval, against a fixed harness
+#   patience budget) for exactly that reason — it was never really about
+#   leaves-on-hand, and now provably never will be. At E=15 that budget
+#   check passes exactly as the old leaf-count check did (both converge
+#   on "15 is fine, 720 is not"); the reasoning underneath is now honest
+#   about why.
 #
 # WHAT IT LEAVES BEHIND
-#   Whatever remains of the PUMP identity's leaves gets submitted once,
-#   opportunistically — spent if it lands, unclaimed if the earlier
-#   test_cmt_mempool_flood.sh already used them (that scenario
-#   deliberately does NOT touch the pump batch, so ordinarily there is
-#   still a full batch here; if run standalone after something else that
-#   drained it, this scenario still reaches the boundary on idle
-#   production alone, just more slowly). The chain is at least E blocks
-#   further on, past at least one epoch boundary. Nothing is killed or
-#   restarted. This is the last leaf-spending scenario in the sweep —
-#   genesis_protocol_v2.sh's explicit order places it after
-#   test_cmt_mempool_flood.sh for exactly that reason.
+#   Ordinarily NOTHING of the PUMP identity's batch is left by the time
+#   this scenario runs: `test_cmt_claim_flood.sh` (package C, placed
+#   immediately before this one) submits the WHOLE batch in one call and
+#   waits for every leaf to apply, so this scenario's own best-effort
+#   pump submission below finds an already-fully-spent identity and
+#   `v2-claim` SKIPS it rather than failing. If run standalone, or after
+#   some other change reorders the sweep, whatever the pump identity
+#   still holds is submitted here instead, opportunistically — spent if
+#   it lands, and if the batch is genuinely empty this scenario reaches
+#   the boundary on idle production alone, just more slowly, exactly as
+#   the paragraph above describes. The chain is at least E blocks further
+#   on, past at least one epoch boundary. Nothing is killed or restarted.
+#   genesis_protocol_v2.sh's explicit order places this scenario after
+#   BOTH test_cmt_mempool_flood.sh (which deliberately does not touch the
+#   pump batch) AND test_cmt_claim_flood.sh (which deliberately drains
+#   all of it) for exactly the reasons above.
 #
 # HOW IT CAN LIE
 #   - **Advancing is not crossing.** A height delta proves the chain
@@ -121,6 +139,7 @@ if [ "${has_v2:-0}" = "0" ] || [ ! -f "$CONF" ] || [ ! -s "$PUMP/nodus.pk" ]; th
     echo "[SKIP] not a Ledger V2 cluster with a pump identity — use stagef_up_v2.sh"
     exit 99
 fi
+stagef_sentinel SETUP_OK   # W4-H: the runner turns PASS-without-ASSERT_RUN into FAIL
 
 # R3 W3 (C2d) — REACHABILITY IS NOW A WALL-CLOCK BUDGET, NOT A LEAF
 # COUNT. See this script's header: submitted claims no longer land one
@@ -212,8 +231,10 @@ done
 case "$first" in 0:*|ERR) die "no epoch-$frozen_epoch_start snapshot row on any node";; esac
 echo "[ok] the epoch-$frozen_epoch_start snapshot is byte-identical on all $STAGEF_COMMITTEE_SIZE nodes"
 
+stagef_sentinel ASSERT_RUN   # the terminal assertion is next
 stagef_cmt_diff_at_floor "post-v2-epoch" || exit 2
 
+stagef_sentinel PASS
 echo ""
 echo "[PASS] a Ledger V2 chain crossed the epoch boundary at $next_boundary, froze the"
 echo "       next validator-set snapshot (epoch_start=$frozen_epoch_start) byte-identically"

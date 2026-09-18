@@ -26,7 +26,15 @@
 
 static void build_signed_chain_config(dnac_transaction_t *tx, uint8_t n_sigs) {
     memset(tx, 0, sizeof(*tx));
-    tx->version = 1;
+    /* R3 W4 (ORCHESTRATOR, found by RUNNING this test in a scratch build
+     * against the current libdna — dnac/build's prebuilt binaries are
+     * never rebuilt): `tx->version = 1` had made this test RED since
+     * 2026-04-22 (`6151629e`, v0.17.1), when dnac_tx_deserialize gained
+     * the SEC-02 version gate `buffer[0] != DNAC_PROTOCOL_VERSION →
+     * INVALID_PARAM` (serialize.c:455-459). A v1 byte fails at the FIRST
+     * check, before the CHAIN_CONFIG codec this file exists to prove is
+     * ever reached. Nothing else in the fixture changed. */
+    tx->version = DNAC_PROTOCOL_VERSION;
     tx->type = DNAC_TX_CHAIN_CONFIG;
     tx->timestamp = 1745000000ULL;
     for (int i = 0; i < 32; i++) tx->chain_id[i] = 0xC1;
@@ -38,7 +46,13 @@ static void build_signed_chain_config(dnac_transaction_t *tx, uint8_t n_sigs) {
         tx->signers[0].signature[i] = (uint8_t)((i * 3) & 0xff);
 
     dnac_tx_chain_config_fields_t *cc = &tx->chain_config_fields;
-    cc->param_id               = DNAC_CFG_MAX_TXS_PER_BLOCK;
+    /* R3 W4-C delta 3: this fixture only exercises the WIRE codec
+     * (serialize/deserialize/hash-binding) — it never calls
+     * dnac_tx_verify_chain_config_rules, so id 1's retirement at the
+     * validation layer does not change what this file proves. Moved off
+     * the retired id anyway (id 2, DNAC_CFG_BLOCK_INTERVAL_SEC) so no
+     * fixture in the tree still names it, per the operator's ruling. */
+    cc->param_id               = DNAC_CFG_BLOCK_INTERVAL_SEC;
     cc->new_value              = 7ULL;
     cc->effective_block_height = 10000ULL;
     cc->proposal_nonce         = 0x0123456789ABCDEFULL;
@@ -118,9 +132,14 @@ int main(void) {
     dnac_transaction_t m;
     uint8_t h[DNAC_TX_HASH_SIZE];
 
-    /* param_id */
+    /* param_id — the mutation must DIFFER from the base fixture's id. The
+     * base moved from the retired id 1 to BLOCK_INTERVAL_SEC (id 2) in
+     * R3 W4-C, which made this mutation a no-op (same id ⇒ same hash ⇒
+     * a RED assertion nobody ran — dnac tests are prebuilt); the
+     * ORCHESTRATOR found it by running this file in a scratch build.
+     * TARGET_ACTIVE_COUNT (id 4) is a different, still-governable id. */
     m = base;
-    m.chain_config_fields.param_id = DNAC_CFG_BLOCK_INTERVAL_SEC;
+    m.chain_config_fields.param_id = DNAC_CFG_TARGET_ACTIVE_COUNT;
     compute_hash_or_die(&m, h);
     CHECK(memcmp(base_hash, h, DNAC_TX_HASH_SIZE) != 0);
 

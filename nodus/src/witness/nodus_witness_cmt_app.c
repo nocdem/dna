@@ -176,13 +176,22 @@ int nodus_cmt_app_ledger_init(nodus_cmt_app_ledger_t *ctx, nodus_witness_t *w,
                           "item");
             return CMT_FAULT;
         }
-        QGP_LOG_INFO(LOG_TAG, "byte-bound capacity seam (per-request, delta "
-                     "2): max_bytes=%" PRId64 " max_data_bytes=%" PRId64
-                     " prep_bound=%zu env_bound=%zu claim_bound=%zu "
-                     "item_cap=%u",
+        QGP_LOG_INFO(LOG_TAG, "byte-bound capacity seam (per-request, R3 "
+                     "W4-C delta 2): max_bytes=%" PRId64 " max_data_bytes="
+                     "%" PRId64 " prep_bound=%zu env_bound=%zu "
+                     "claim_bound=%zu env_batch_max(engine)=%zu "
+                     "env_cap(effective)=%zu claim_cap(effective)=%zu "
+                     "mixed_item_cap=%zu",
                      max_bytes, max_data_bytes, ctx->prep_bound,
                      ctx->env_bound, ctx->claim_bound,
-                     (unsigned)NODUS_V2_APPLY_MAX_OPS);
+                     (size_t)NODUS_V2_ENV_BATCH_MAX,
+                     (ctx->env_bound < (size_t)NODUS_V2_ENV_BATCH_MAX
+                          ? ctx->env_bound
+                          : (size_t)NODUS_V2_ENV_BATCH_MAX),
+                     (ctx->claim_bound < NODUS_V2_APPLY_MAX_CLAIMS
+                          ? ctx->claim_bound
+                          : NODUS_V2_APPLY_MAX_CLAIMS),
+                     (size_t)NODUS_V2_APPLY_MAX_OPS);
     }
 
     /* ── delta 2: NOTHING IS ALLOCATED HERE. prep_txs/fb_pb start NULL
@@ -806,28 +815,72 @@ int nodus_cmt_app_prepare_proposal(
     }
     n = kept;
 
-    /* ── ORCHESTRATOR delta 11 — the engine's own per-block ARRAY bound
-     * (R3-W3-C2a-19). `n` here is envelopes AND claims mixed by request
-     * position (`order[]` was built from every entry, unconditional of
-     * class, at the classify step above), so capping it here bounds the
-     * WHOLE proposal, not one class of it. That is enough for the
-     * engine's own bounds it must never exceed: its total-claims scratch
-     * (`claim_nuls[MAX_OPS][64]`, nodus_witness_v2_apply.c ~:2608, the
-     * bound this delta's harness run actually broke — 40 claims in one
-     * block, every node FAULTED FinalizeBlock at height 7,
-     * `/tmp/stagef-20260917T034259Z`) and the universal envelope-batch
-     * cap (`NODUS_V2_ENV_BATCH_MAX`, nodus_witness_v2_env.h:121, also
-     * this engine's release size). It is NOT enough for the per-domain
-     * `d->n_tx` bound (apply.c ~:2842/:3328/:3417): that counter
-     * increments once per LEG naming a domain, not once per envelope,
-     * and one envelope may carry up to DNA_ENV_MAX_LEGS (64,
-     * env_wire.h:290) legs — so a single envelope with many legs on one
-     * domain is not made safe by a bound on ITEM count. Nothing found
-     * in `env_wire.c`/`env_preflight.c` forbids a repeated `domain_id`
-     * across one envelope's legs (grepped, not found) — a real gap, but
-     * apply.c's own array (`d->wire_ids[MAX_OPS][64]`) and its per-item
-     * admission ordering are outside this package's whitelist; reported
-     * as a RISK, not fixed here.
+    /* ── R3 W4 package C — PER-CLASS caps, now that the engine's own
+     * scratch is heap and sized per-block (nodus_witness_v2_apply.c):
+     * envelopes ≤ `NODUS_V2_ENV_BATCH_MAX` (delta 2 on: a derived MEMORY
+     * ceiling, 64 MiB scratch budget / 20 908 B per envelope = 3 209 —
+     * NOT the chain-config hard cap of 10 delta 1 briefly tied it to;
+     * MAX_TXS_PER_BLOCK is RETIRED, apply.h) and claims ≤ `min(ctx->claim_bound,
+     * NODUS_V2_APPLY_MAX_CLAIMS)` (the smaller of this chain's own
+     * byte-derived claim capacity and the most claims any cometbft block
+     * can carry, 14 162 — nodus_witness_v2_apply.h). A single forward
+     * pass over the still fee-descending `order[]` keeps, for each
+     * class, exactly the first (highest-fee) entries up to that class's
+     * cap and drops the rest — which are that class's OWN lowest-fee
+     * remainder, because the scan visits `order[]` in fee order and only
+     * advances a class's counter when it sees a member of that class. ⚠
+     * CORRECTED CLAIM (was wrong here through W3, R3-W3-C2a-19): a
+     * domain_id CANNOT repeat across one envelope's legs —
+     * `dna_env_decode` (shared/dnac/env_wire.c:364-365) and
+     * `dna_env_encode` (:276) both refuse a leg list that is not
+     * STRICTLY ascending by domain_id, so "one envelope with many legs
+     * on one domain" is not a reachable shape at all. The per-domain
+     * `d->n_tx` bound this used to flag as an open gap is now itself a
+     * proven-unreachable FAULT in the engine (apply.c, the admission
+     * block's `d->n_tx >= blk->n_envs` check), not a live risk. */
+    {
+        size_t env_kept = 0, claim_kept = 0, out_n = 0;
+        /* R3 W4-C delta 2: the envelope cap is ALSO a min(), matching
+         * the claim cap's own shape — this chain's own byte-derived
+         * env_bound (from Block.MaxBytes) can only ever be SMALLER than
+         * the engine's memory ceiling on a genesis document configured
+         * with an unusually small block size; taking the min keeps this
+         * correct in that case instead of silently trusting the larger
+         * of the two. */
+        size_t env_cap = ctx->env_bound < NODUS_V2_ENV_BATCH_MAX
+                              ? ctx->env_bound
+                              : NODUS_V2_ENV_BATCH_MAX;
+        size_t claim_cap = ctx->claim_bound < NODUS_V2_APPLY_MAX_CLAIMS
+                                ? ctx->claim_bound
+                                : NODUS_V2_APPLY_MAX_CLAIMS;
+
+        for (k = 0; k < n; k++) {
+            uint8_t cls = class_arr[order[k]];
+
+            if (cls == NODUS_W_TX_V2_ENVELOPE) {
+                if (env_kept >= env_cap) {
+                    continue;              /* this class's own overflow */
+                }
+                env_kept++;
+            } else if (cls == NODUS_W_TX_V2_CLAIM) {
+                if (claim_kept >= claim_cap) {
+                    continue;              /* this class's own overflow */
+                }
+                claim_kept++;
+            }
+            order[out_n++] = order[k];
+        }
+        n = out_n;
+    }
+
+    /* ── ORCHESTRATOR delta 11 — the engine's own per-block MIXED ARRAY
+     * bound (R3-W3-C2a-19; R3-W4 package C repointed the value to the
+     * DERIVED sum, `NODUS_V2_ENV_BATCH_MAX + NODUS_V2_APPLY_MAX_CLAIMS`).
+     * Kept as defense-in-depth AFTER the per-class caps above: with both
+     * classes already within their own bound, their sum can never exceed
+     * this one, so this trim is now a no-op in practice — but it is the
+     * belt to the per-class caps' braces, in case a future class is ever
+     * added here without its own cap.
      *
      * Dropping the same TAIL the byte budget just dropped needs no new
      * decision: the list is still fee-descending with chain_config alone
@@ -972,6 +1025,51 @@ int nodus_cmt_app_process_proposal(
                      "consensus params", req->txs_len, ctx->env_bound);
         return CMT_OK;                       /* status stays REJECT        */
     }
+
+    /* ── R3 W4 package C — PER-CLASS refusal, the same caps
+     * PrepareProposal enforces above (an honest proposer never trips
+     * this either, for the same coherence reason as the mixed cap). A
+     * classify pass over `req->txs` — cheap (byte-prefix inspection,
+     * one call per item), no allocation — run BEFORE the per-item
+     * seam loop below so an over-count-by-class proposal is refused
+     * without ever building `order[]` or touching committed state. */
+    {
+        size_t env_n = 0, claim_n = 0;
+        size_t env_cap = ctx->env_bound < NODUS_V2_ENV_BATCH_MAX
+                             ? ctx->env_bound
+                             : NODUS_V2_ENV_BATCH_MAX;
+        size_t claim_cap = ctx->claim_bound < NODUS_V2_APPLY_MAX_CLAIMS
+                                ? ctx->claim_bound
+                                : NODUS_V2_APPLY_MAX_CLAIMS;
+
+        for (i = 0; i < req->txs_len; i++) {
+            const cmt_pb_bytes_t *t = &req->txs[i];
+            uint8_t cls;
+
+            if (!t->data || t->len == 0) {
+                continue;      /* the empty-item REJECT below catches it */
+            }
+            cls = nodus_witness_v2_classify_entry(t->data, (uint32_t)t->len);
+            if (cls == NODUS_W_TX_V2_ENVELOPE) {
+                env_n++;
+            } else if (cls == NODUS_W_TX_V2_CLAIM) {
+                claim_n++;
+            }
+        }
+        if (env_n > env_cap) {
+            QGP_LOG_WARN(LOG_TAG, "ProcessProposal: %zu envelopes exceed "
+                         "the envelope batch cap %zu — refused before "
+                         "any per-item work", env_n, env_cap);
+            return CMT_OK;                   /* status stays REJECT       */
+        }
+        if (claim_n > claim_cap) {
+            QGP_LOG_WARN(LOG_TAG, "ProcessProposal: %zu claims exceed "
+                         "this chain's claim capacity %zu — refused "
+                         "before any per-item work", claim_n, claim_cap);
+            return CMT_OK;                   /* status stays REJECT       */
+        }
+    }
+
     if (req->txs_len > 0) {
         order = (size_t *)calloc(req->txs_len, sizeof(*order));
         if (!order) {
@@ -1247,14 +1345,19 @@ int nodus_cmt_app_finalize_block(void *vctx,
          * the host must roll back and stop. The engine's own reason is
          * logged because it names the check that failed.
          *
-         * ORCHESTRATOR delta 11 (R3-W3-C2a-19): the engine's own
-         * per-block ARRAY bound (`nodus_witness_v2_apply.c`'s FAULT
-         * naming `MAX_OPS`) is the LAST line of defence, never the
-         * first — an honest proposer/validator pair never reaches it,
-         * because `nodus_cmt_app_prepare_proposal` (above) never packs
-         * more than `NODUS_V2_APPLY_MAX_OPS` items and
-         * `nodus_cmt_app_process_proposal` (above) REJECTs any proposal
-         * that carries more before doing any per-item work. A decided
+         * ORCHESTRATOR delta 11 (R3-W3-C2a-19; R3-W4 package C moved the
+         * per-block scratch this bound protects to the heap, sized by
+         * the block's own counts, and added the per-CLASS caps below it):
+         * the engine's own per-block ARRAY bound (`nodus_witness_v2_
+         * apply.c`'s FAULT naming `MAX_OPS`) is the LAST line of defence,
+         * never the first — an honest proposer/validator pair never
+         * reaches it, because `nodus_cmt_app_prepare_proposal` (above)
+         * never packs more than `NODUS_V2_ENV_BATCH_MAX` envelopes or
+         * `min(ctx->claim_bound, NODUS_V2_APPLY_MAX_CLAIMS)` claims (and,
+         * defense-in-depth, never more than `NODUS_V2_APPLY_MAX_OPS`
+         * items total) and `nodus_cmt_app_process_proposal` (above)
+         * REJECTs any proposal that carries more of either class before
+         * doing any per-item work. A decided
          * block reaching this FAULT with more than that bound means
          * both of those gates were bypassed — +2/3 of the validators
          * decided a block no honest node running this application could

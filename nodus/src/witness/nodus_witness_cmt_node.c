@@ -421,7 +421,14 @@ static int hs_assert_app_hash_from_state(const uint8_t *app_hash, size_t len,
  * released immediately after. `slots`, `ext_arena`, `wal` and `pv` are
  * NULL: none of the rows reached on a replay path touches them
  * (nodus_witness_cmt_host.c:366-390 stores them without dereferencing,
- * and test_cmt_app.c:804 drives the same construction).
+ * and test_cmt_app.c:804 drives the same construction). PACKAGE W4-X
+ * (register R3-W3-C2e-4): `ext_arena` is now a two-element array
+ * parameter, and this call still passes a single NULL for the whole
+ * pair — not `{NULL, NULL}` — which `nodus_cmt_blockexec_init` treats as
+ * "no arenas at all" (both `ctx->ext_arena[0]` and `[1]` stay NULL); this
+ * handshaker's throwaway executor never calls `extend_vote`, so the
+ * invariant that held before this package (no arena reachable here)
+ * still holds after it.
  *
  * THE CLOCK IS NOT NULL, and it is not read either. `blockexec_init`
  * refuses a NULL `now` outright (host.c:381), so one must be passed; the
@@ -1451,9 +1458,13 @@ void nodus_cmt_node_release(nodus_cmt_node_t *n)
         free(n->slots);
         n->slots = NULL;
     }
-    free(n->ext_arena.buf);
-    n->ext_arena.buf = NULL;
-    n->ext_arena.cap = 0;
+    /* PACKAGE W4-X (register R3-W3-C2e-4): two arenas, freed both. */
+    free(n->ext_arena[0].buf);
+    n->ext_arena[0].buf = NULL;
+    n->ext_arena[0].cap = 0;
+    free(n->ext_arena[1].buf);
+    n->ext_arena[1].buf = NULL;
+    n->ext_arena[1].cap = 0;
 
     if (n->mem_ready) {
         cmt_mem_free(n->mem);
@@ -1599,6 +1610,10 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
     nodus_cmt_handshaker_t *hs = NULL;
     cmt_valset_scratch_t   *scratch = NULL;
     cmt_lss_t              *lss = NULL;
+    /* PACKAGE W4-X (register R3-W3-C2e-4): the two arenas' addresses,
+     * handed to both the block executor and cmt_cs so they share the
+     * identical pair — the storage itself is `n->ext_arena[2]`. */
+    cmt_pb_arena_t         *ext_arena_pair[2];
     int                     rc = CMT_FAULT;
 
     if (!n || !w || !w->db || !opts || !opts->now ||
@@ -1993,18 +2008,24 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
      * `host_wal_*` row (nodus_witness_cmt_host.c) already treats a NULL
      * `ctx->wal` as the reference's nilWAL would (see each row's own
      * comment). */
-    n->ext_arena.cap = 64u * 1024u;
-    n->ext_arena.buf = (uint8_t *)malloc(n->ext_arena.cap);
-    n->be            = (nodus_cmt_blockexec_t *)calloc(1, sizeof(*n->be));
-    if (!n->ext_arena.buf || !n->be) {
+    /* PACKAGE W4-X (register R3-W3-C2e-4): two arenas alternating by
+     * height parity, each sized as the single arena was before. */
+    n->ext_arena[0].cap = 64u * 1024u;
+    n->ext_arena[0].buf = (uint8_t *)malloc(n->ext_arena[0].cap);
+    n->ext_arena[1].cap = 64u * 1024u;
+    n->ext_arena[1].buf = (uint8_t *)malloc(n->ext_arena[1].cap);
+    n->be               = (nodus_cmt_blockexec_t *)calloc(1, sizeof(*n->be));
+    if (!n->ext_arena[0].buf || !n->ext_arena[1].buf || !n->be) {
         goto fail;
     }
     if (node_slots_alloc(n) != CMT_OK) {
         goto fail;
     }
+    ext_arena_pair[0] = &n->ext_arena[0];
+    ext_arena_pair[1] = &n->ext_arena[1];
     if (nodus_cmt_blockexec_init(n->be, &n->store, &n->app_if, &n->mem_if,
                                  &n->ev_if, NULL, n->pv, n->now,
-                                 n->now_ctx, n->slots, &n->ext_arena,
+                                 n->now_ctx, n->slots, ext_arena_pair,
                                  &n->limits) != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG, "%s", "the block executor could not be built");
         goto fail;
@@ -2063,7 +2084,7 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
      * into `state_storage`, so the node's own `n->state` stays the
      * node's (cmt_cs.h:877-892). */
     rc = cmt_cs_init(n->cs, &n->config, n->state, &n->host, n->be, n->slots,
-                     n->cs_storage, n->cs_scratch_storage, &n->ext_arena,
+                     n->cs_storage, n->cs_scratch_storage, ext_arena_pair,
                      n->offline_state_sync_height);
     if (rc != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG, "the consensus state could not be built (rc %d)",

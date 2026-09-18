@@ -79,6 +79,7 @@ if [ "${has_v2:-0}" = "0" ]; then
     echo "[SKIP] not a Comet cluster — use stagef_up_v2.sh"
     exit 99
 fi
+stagef_sentinel SETUP_OK   # W4-H: the runner turns PASS-without-ASSERT_RUN into FAIL
 
 # DELTA 1 (verifier CLAIM 17, REFUTED as originally worded) — "no
 # caller" over-claimed: nodus_cmt_net_recv_arena_used() DOES have callers
@@ -94,6 +95,7 @@ echo "       nodus/tools (it is called from this build's own test binaries"
 echo "       only). Asserting the two one-shot latches only (50% WARN, 90% ERROR)."
 
 bad=0
+stagef_sentinel ASSERT_RUN   # the terminal assertion (the latch scan) is next
 for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
     log="$(stagef_node_dir "$n")/nodus.log"
     [ -f "$log" ] || { echo "[FAIL] node$n has no nodus.log" >&2; bad=1; continue; }
@@ -109,6 +111,7 @@ for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
 done
 [ "$bad" = 0 ] || die "at least one node's receive-arena latch fired during this sweep"
 
+stagef_sentinel PASS
 echo ""
 echo "[PASS] no node's Comet receive-arena runway latch (50% or 90% of"
 echo "       its 64 MiB fixed size) fired at any point across the sweep."

@@ -1371,6 +1371,24 @@ target_link_libraries(test_cmt_app nodus dsa nodus crypto)
 target_compile_definitions(test_cmt_app PRIVATE NODUS_WITNESS_INTERNAL_API)
 add_test(NAME test_cmt_app COMMAND test_cmt_app)
 
+# D-16 rev 7 (W4-CC) — the SYSTEM-governance approval-collection
+# responder (nodus_witness_handle_cc_appr_req, verbs 40-41) over a REAL
+# derived version-3 chain with 7 REAL ML-DSA-87 committee keys: happy
+# path from every seat through nodus_witness_v2_env_authorize AND the
+# Comet apply lane (the chain_config_history row committed), an
+# independent digest recomputation, a refusal matrix (foreign chain id
+# in the T3 header, non-member, wrong auth_kind, nonzero fee, TARGET
+# above the V2 ceiling, effective below the grace floor, the
+# per-proposer rate limit) and the INFLATION_START pair (inflation-off
+# chain signs a future start; a set start refuses moving past the
+# candidate height). Default build, no environment. See the file's own
+# "HOW IT CAN LIE" for what is NOT covered (two legs; valid_before-past,
+# unreachable at tip == 0).
+add_executable(test_cc_appr tests/test_cc_appr.c)
+target_link_libraries(test_cc_appr nodus dsa nodus crypto)
+target_compile_definitions(test_cc_appr PRIVATE NODUS_WITNESS_INTERNAL_API)
+add_test(NAME test_cc_appr COMMAND test_cc_appr)
+
 # FLEET-TM-R3 W2 (R3-C1c) — THE STARTUP TABLE over a REAL version-3
 # chain: the genesis document loader (stored row, provider, refusals),
 # InitChain called exactly once and never again, the Handshaker's height

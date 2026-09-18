@@ -215,7 +215,14 @@ int main(void) {
     uint8_t *e2 = mk_env(c2, 8, 200, 0, &l2);
     CHECK(e0 && e1 && e2, "envelope encode"); OK();
 
-    nodus_v2_envelope_t envs[NODUS_V2_ENV_BATCH_MAX];
+    /* R3 W4-C delta 2 RE-ANCHOR: only 3 of whatever NODUS_V2_ENV_BATCH_MAX
+     * allows are ever used here — a STACK array sized by the literal
+     * constant was fine at delta 1's value (10) but is the wrong shape
+     * now that it is a per-block MEMORY ceiling in the low thousands
+     * (nodus_witness_v2_apply.h). `out`/`meters` below stay HEAP-sized
+     * by the full constant (safe, just a larger one-time allocation);
+     * this one was the STACK risk. */
+    nodus_v2_envelope_t envs[8];
     memset(envs, 0, sizeof(envs));
     envs[0].env_bytes = e0; envs[0].env_len = l0;
     envs[1].env_bytes = e1; envs[1].env_len = l1;

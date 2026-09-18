@@ -316,17 +316,20 @@ nodus/build/nodus-cli cluster-status <host1:4001> <host2:4001> ...
 `cluster-status` prints, per node, `STATUS / HEIGHT / PEERS / UPTIME / DF% /
 WALL_CLOCK / STATE_ROOT` (`nodus/tools/nodus-cli.c:500-560`).
 
-**⚠ R3 W4 — `STATE_ROOT` in that table is the LEGACY cached root**
-(`nodus_server.c` `handle_t2_status` copies `cached_state_root`, which a
-version-3 chain never fills — so on this lane every node prints an empty
-root). `HEIGHT` IS the version-3 tip: `nodus_witness_block_height` reads
-`MAX(global_height)` from `v2_blocks` on a version-3 chain
-(`nodus_witness_db.c`, the `v2_successor` branch of
-`nodus_witness_block_height_checked`). `UP` / `PEERS` / `UPTIME` / `DF%` are
-meaningful too. Re-wiring the root column to the version-3 tip
-(`v2_blocks.global_root`, `block_id`) is package W4-H's; until then the
-AGREEMENT check — the same height on every node is not the same chain — is
-the per-node database read the harness uses:
+**R3 W4 package H — on a version-3 chain `STATE_ROOT` is the committed
+GLOBAL ROOT of the tip** (`nodus_server.c` `handle_t2_status`: on a
+`v2_successor` chain it reads `nodus_witness_v2_committed_global_root`, the
+stored `v2_blocks.global_root` at `MAX(global_height)` — never a recompute;
+before W4-H it copied the legacy `cached_state_root`, which a version-3
+chain never fills, so the column printed empty). `HEIGHT` is the version-3
+tip: `nodus_witness_block_height` reads `MAX(global_height)` from
+`v2_blocks` (`nodus_witness_db.c`, the `v2_successor` branch of
+`nodus_witness_block_height_checked`). So the table's AGREEMENT check is
+now what it was on the legacy lane: every node at the same `HEIGHT` must
+print the same `STATE_ROOT` (a node one height behind prints the previous
+root — compare at equal heights). The per-node database read the harness
+uses (`stagef_cmt_diff_at_floor`) additionally compares `block_id`; use it
+when the CLI's table is not enough:
 
 ```bash
 # on every node, the same three values must agree at the same height

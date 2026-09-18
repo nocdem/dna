@@ -46,7 +46,7 @@
 #include "dnac/cmt_conr.h"
 #include "dnac/cmt_memr.h"
 #include "crypto/sign/qgp_dilithium.h"          /* ML-DSA-87 raw_sign    */
-#include "nodus/nodus_chain_config.h"  /* Stage C.2 vote-req handler */
+#include "nodus/nodus_chain_config.h"  /* w_cc_appr_req handler (D-16 rev 7) */
 #include "crypto/utils/qgp_log.h"
 #include "crypto/hash/qgp_sha3.h"
 #include "protocol/nodus_tier3.h"
@@ -2242,10 +2242,13 @@ void nodus_witness_dispatch_t3(nodus_witness_t *witness,
      * IDENT is not wsig-verified at this point, so its version claim is
      * unauthenticated and must not be acted on. A stale peer may still
      * become known to the mesh; it simply cannot influence consensus.
-     * The chain_config vote-collect RPC (14-15) and the genesis bundle
-     * (24-25) are not gated either — 14-15 decode but fall to the
-     * dispatcher's `default:` log-and-drop (register R3-W4-D-8), and
-     * 24-25 is pre-consensus bootstrap traffic, not a live BFT round.
+     * The SYSTEM-governance approval-collection RPC (40-41, D-16 rev 7,
+     * W4-CC — replacing the retired vote-collect pair 14-15) and the
+     * genesis bundle (24-25) are not gated either — 40 is routed to its
+     * own handler below regardless of version (it is a governance RPC,
+     * not a BFT round primitive) and 41 falls to the dispatcher's
+     * `default:` log-and-drop (a server never receives it), while 24-25
+     * is pre-consensus bootstrap traffic, not a live BFT round.
      *
      * BOTH directions fail closed: an older version and an unknown newer
      * version are equally rejected by the exact-match test.
@@ -2290,10 +2293,11 @@ void nodus_witness_dispatch_t3(nodus_witness_t *witness,
      * R3 W4 deleted the legacy sync verbs this comment used to name; the
      * quarantine switch below refuses exactly verbs 35-39 (the only
      * consensus-affecting set) and lets everything else through — IDENT /
-     * ROST_Q/R (so the peer mesh stays alive), the chain_config
-     * vote-collect RPC (14-15, dropped at `default:` regardless) and the
-     * genesis bundle (24-25) — so an operator can diagnose and recover
-     * without tearing the node down. */
+     * ROST_Q/R (so the peer mesh stays alive), the SYSTEM-governance
+     * approval-collection RPC (40-41, W4-CC — 40 routed normally, 41
+     * dropped at `default:` regardless, a server never receives it) and
+     * the genesis bundle (24-25) — so an operator can diagnose and
+     * recover without tearing the node down. */
     if (witness->quarantined) {
         switch (msg.type) {
         /* FLEET-TM-R3 W3 (D-16 rev 5) — the same list as the version gate
@@ -2322,14 +2326,14 @@ void nodus_witness_dispatch_t3(nodus_witness_t *witness,
      * nodus_t3_decode successfully and never reaches this switch at all
      * — the `default:` case below is what answers it.
      *
-     * Verbs 14-15 (chain_config vote-collect, register R3-W4-D-8) are
-     * the one exception in that range: their codec is KEPT (live
-     * consumers outside this file's own set — nodus_witness_chain_
-     * config.c, nodus_cc_client.c, nodus-cli.c), so a frame naming one
-     * DOES decode successfully and DOES reach this switch — it has no
-     * case here and falls to `default:`, which logs and drops it,
-     * unchanged since W3. The codec compiling is not the same thing as
-     * the RPC being reachable.
+     * D-16 rev 7 (W4-CC) retires verbs 14-15 (chain_config vote-collect)
+     * and REBUILDS the RPC as verbs 40-41 over the pre-auth envelope: 40
+     * (w_cc_appr_req) has a live case below, routed to
+     * nodus_witness_handle_cc_appr_req regardless of chain version (a
+     * governance RPC, not a BFT round primitive — NOT gated above); 41
+     * (w_cc_appr_rsp) is a client-only reply a server never receives —
+     * it has no case here and falls to `default:`, which logs and drops
+     * it, the same shape 14-15 fell to before this rewire.
      *
      * Verbs 9-11 (roster, ident — the transport mesh) and 24-25 (genesis
      * bundle) are KEPT, byte-identical to before. Verbs 35-39 (the
@@ -2380,6 +2384,15 @@ void nodus_witness_dispatch_t3(nodus_witness_t *witness,
          * committed successor node has nothing to do with a bundle
          * response. */
         nodus_witness_v2_join_handle_gbundle_r(witness, conn, &msg);
+        break;
+
+    /* ── SYSTEM-governance approval collection (verb 40; D-16 rev 7,
+     * W4-CC) — a governance RPC, not a consensus verb: routed regardless
+     * of chain version or quarantine state (neither switch above gates
+     * it). Verb 41 (the reply) is client-only and falls to `default:`
+     * below, unchanged from how 14-15 fell there before this rewire. */
+    case NODUS_T3_CC_APPR_REQ:
+        nodus_witness_handle_cc_appr_req(witness, conn, &msg);
         break;
 
     default:

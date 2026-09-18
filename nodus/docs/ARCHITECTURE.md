@@ -1385,10 +1385,9 @@ them, so mixed v6/v7 operation is refused. The dispatcher that routes them
 (`nodus_witness_dispatch_t3` → `nodus_cmt_net_receive`) is package C2a's (W3). **R3 W4:** the
 legacy verbs 1-8, 12-13, 16-23 and 26-27 are DELETED with the closed lane — enum values,
 structs, codecs and method rows; the numbers are RETIRED and never reused, exactly like 28-34.
-The tier-3 verb set is now: 9-11 (roster, ident — the peer mesh), 14-15 (`w_cc_vote_req/rsp`,
-the chain_config governance signature-collection RPC — codec kept, dropped at dispatch until
-package W4-CC re-wires it onto this lane), 24-25 (genesis bundle), 35-39 (the cometbft
-envelope). `NODUS_T3_BFT_PROTOCOL_VER` stays 7: no surviving frame changed a byte.
+The tier-3 verb set is now: 9-11 (roster, ident — the peer mesh), 24-25 (genesis bundle),
+35-39 (the cometbft envelope), 40-41 (SYSTEM-governance approval collection, package W4-CC —
+see below). `NODUS_T3_BFT_PROTOCOL_VER` stays 7: no surviving frame changed a byte.
 
 | Verb | Method | Channel | Args | `m` ceiling | `nodus_t3_max_msg_size` |
 |------|--------|---------|------|-------------|--------------------------|
@@ -1404,8 +1403,98 @@ are `_Static_assert`-pinned to the reactors' own constants; `NODUS_T3_CMT_ENVELO
 8192 is a bound on the envelope's cost over `m`, and `test_tier3` MEASURES the real cost
 (4 774 B for a maximal TXS frame). `nodus_t3_encode` signs into the CALLER's buffer (no
 internal 1 MiB buffer) and `nodus_t3_verify` sizes its sign buffer from the verb's class for
-35-39 and the 1 MB literal otherwise. Pass 1 of `nodus_t3_decode` still steps over `a` with
-`cbor_decode_skip_signed`, and the negative-integer admission set is EMPTY (D-22 rev 3).
+35-39 (and, since W4-CC, 40-41) and the 1 MB literal otherwise. Pass 1 of `nodus_t3_decode`
+still steps over `a` with `cbor_decode_skip_signed`, and the negative-integer admission set is
+EMPTY (D-22 rev 3).
+
+### SYSTEM-governance approval collection — package W4-CC, verbs 40-41 (D-16 rev 7, 2026-09-18)
+
+Verbs 14-15 (`w_cc_vote_req`/`w_cc_vote_rsp`, the Hard-Fork v1 Stage C.2 chain_config
+vote-collect RPC — kept compiling but unreachable since R3 W4-D, register R3-W4-D-8) are
+RETIRED: struct types, union members, codecs and method-table rows deleted, the numbers never
+reused. The RPC is REBUILT over the pre-auth SYSTEM-governance envelope as a NEW verb pair,
+appended after 39 — a governance RPC, not a consensus verb: **not** on the version gate or the
+quarantine list (those stay exactly verbs 35-39), and `NODUS_T3_BFT_PROTOCOL_VER` is unchanged.
+
+| Verb | Method | Args | Ceiling |
+|------|--------|------|---------|
+| 40 | `w_cc_appr_req` | `{e: bstr}` — the pre-auth envelope (zero-copy, like verb 39's `m`) | `NODUS_T3_CC_APPR_E_MAX` = `DNA_ENV_MAX_TOTAL_LEN` (1 048 576) + 8192 overhead |
+| 41 | `w_cc_appr_rsp` | `{ok: bool, i: uint, s: bstr(4627), sh: bstr(64), ep: uint, r: tstr<=128}` — `ok=true`: `i/s/sh/ep` present, `r` absent; `ok=false`: only `r` | `NODUS_T3_CC_APPR_RSP_MAX` = 4627+64+256 + 8192 overhead |
+
+The request carries a **single-leg SYSTEM CHAIN_CONFIG envelope** (call v2, 41 bytes) under
+`auth_kind` 2 (`NODUS_RT_AUTHKIND_DSA87_CC_V1`), whose auth blob is zero-filled at its FINAL
+length — the approval COUNT is bound into the leg `auth_digest` through `auth_len`
+(`env_preflight.h`), so the signer set is fixed before anyone signs. The responder
+(`nodus_witness_handle_cc_appr_req`, `nodus_witness_chain_config.c`) decodes `e` through the
+ENGINE's own seam — `nodus_witness_v2_block_ctx_build` + `nodus_witness_v2_env_preflight_batch`,
+the SAME two calls `nodus_cmt_app_entry_identity` (CheckTx) makes — never a private decoder;
+applies an APPROVAL TABLE (today one row: `DNA_DOMAIN_SYSTEM` / `DNA_SYSRULE_CHAIN_CONFIG` / 41
+bytes / `cc_appr_rules_chain_config`, which runs EXACTLY `nodus_rt_system_exec`'s CHAIN_CONFIG
+checks at the candidate height); rate-limits per proposer (unchanged, `nodus_cc_rate_limit_
+check`/`_record`, 5000 ms cooldown); resolves the governing committee at `H-1` (`H` = tip+1,
+matching the engine's own `committee_snapshot_for_height` expression); finds its OWN seat by
+direct pubkey comparison; computes the "DNA.CCAPPR.v1" approval digest ITSELF from the
+seam-derived leg `auth_digest` (`nodus_rt_cc_approval_digest`, never a digest it did not
+compute); signs (`nodus_chain_config_sign_vote`, reused generically) and replies with
+`(seat, sig, resolved-set hash, epoch)` or a refusal reason. Chain binding, stated precisely
+(the verifier's finding on this package): the envelope WIRE carries no chain id — `chain_id` is
+CONTEXTUAL in `env_wire.h`, hashed into the AUTHCTX preimage — so there is nothing in `e` to
+compare; the preflight seam derives THIS node's own chain id into `auth_digest[0]`, and the
+approval signature therefore verifies only where the auth hook derives the same commitment,
+i.e. on this chain. The one chain-id REFUSAL is the T3 header frame gate (`chain_id ==
+w->v2_chain32` before anything else runs, the discipline verbs 35-39 use); a foreign chain is
+defended by digest BINDING, not by an envelope check (D-16 rev 7 (4)'s literal "envelope
+chain_id == w->v2_chain32" cannot be implemented as written — register R3-W4-CC-ORC-1).
+ORCHESTRATOR corrections after running the package: the INFLATION_START monotonicity read is
+the SYSTEM adapter's op-3 SELECT verbatim (latest NONZERO row by `commit_block`, any
+effective) — the first draft asked `nodus_chain_config_get_u64` ("the row active at h"), which
+on every version-3 chain (genesis seeds param 3 with the config's `inflation_start_block`, 0 =
+off, at effective 0) read the zero row as an active override and REFUSED any proposal to start
+inflation at a future height that the exec hook would have applied (ORC-6, RED-first); the
+per-proposer rate-limit check runs BEFORE the preflight (ORC-7) and its slot is recorded only
+after the reply has been handed to the transport (ORC-11); the CLI's `valid_before` is raised
+to `effective + GRACE_ERGONOMIC` when it would not exceed `effective`, restoring the retired
+command's own adjustment — without it `nodus_chain_config_scalar_rules`' `valid_before <=
+effective` refusal killed EVERY floor-passing proposal at the CLI's own step 9 (ORC-8).
+
+The proposer (`nodus-cli chain-config propose`, `nodus/tools/nodus-cli.c`, fully rewritten —
+the legacy type-10 `DNAC_TX_CHAIN_CONFIG` body it used to build is REJECTED at CheckTx on a
+version-3 chain) reads the 32-byte chain id from ITS OWN NODE (`dnac_supply`'s additive
+`chain_id32` key — operator ruling 2026-09-18, "kendisi alsın" — never pasted by the operator;
+an optional `--chain-id` is a cross-check, never a source), asks EVERY committee seat in round
+1 (self signs locally), and — if `k` refuse but the accepting set still reaches quorum —
+REBUILDS the envelope with exactly that count and re-asks ONLY the accepting seats in round 2
+(the approval count changing the leg `auth_digest` invalidates round 1's signatures,
+INCLUDING self's); any round-2 refusal aborts the whole proposal, there is no round 3. Both the
+CLI's builder and `v2-envelope chain-config`'s offline all-keys builder now share ONE encoder
+(`cc_appr_build_pass1`/`_pass2`, extracted from the offline builder's own two-pass shape) so
+they cannot drift apart.
+
+**Known design tension, not fixed here (BLOCKED ON, register R3-W4-CC-writer):** the
+per-proposer rate limit (`NODUS_CC_RATE_LIMIT_WINDOW_MS` = 5000 ms, keyed on the SAME proposer
+asking the SAME witness) can make round 2 refuse a seat that accepted seconds earlier in round
+1, since both rounds run from the same proposer identity. The design is implemented exactly as
+specified; loosening the rate limit to accommodate it would be a security-check bypass this
+package refused to make. `test_cc_appr.c`'s `rate_limited_second_request` case pins the
+mechanism directly. It does NOT bite the all-accept path (round 2 runs only when some seat
+refused); which way to resolve it is the operator's product rule.
+
+**Tests:** `test_tier3` (+3 sections: both method tables both directions with 14/15 refused,
+verb 40/41 round trips incl. the maximal pre-auth envelope and both `ok` shapes, the
+`ok`-conditional strict key set incl. a duplicate `e` / `ok` / `i` refused — ORC-12, RED-first
+against the decoder with the duplicate branch disabled), `test_witness_protocol_version_gate`
+(`w_cc_vote_req` / `w_cc_vote_rsp` refused at decode), `test_cc_client` (renamed onto
+`nodus_client_cc_appr_send`), `test_cc_appr` (NEW, 10 cases / 154 checks over a REAL derived
+version-3 chain with 7 REAL ML-DSA-87 keys and a REAL loopback `nodus_tcp_conn_t`: every seat
+asked THROUGH the responder, the `DNA.CCSET.v1` / `DNA.CCAPPR.v1` preimages recomputed
+independently and one seat's signature verified over them, the assembled envelope through
+`nodus_witness_v2_env_authorize` AND committed through the Comet apply lane with the
+`chain_config_history` row asserted — ORC-5; the refusal matrix; the INFLATION_START pair —
+ORC-6; the rate limit). The fixture clears the responder's rate-limit table before each seat
+(ORC-4: one witness plays seven nodes). Harness: `test_cmt_chain_config.sh` (short-grace
+build only) — measured on a 7-node cluster at E=15/grace 15: "Round 1: 7/7 approved" with six
+seats over the network, a 39 739-byte envelope, the row committed at height 3 and
+byte-identical on all seven nodes.
 
 **The transport glue — `src/witness/nodus_witness_cmt_net.{h,c}`** is the C stand-in for
 `p2p.Switch` / `p2p.Peer`: it fills BOTH reactors' host tables (`cmt_conr_host_t`,
@@ -1665,7 +1754,7 @@ W3 makes the port the running consensus. Three packages landed after P0 and C2b 
 
 **The dispatcher (D-16 rev 5):** the version gate and the quarantine switch list exactly verbs 35-39; verbs 1-8, 12-23 and 26-27 are log-and-dropped (rate-limited per verb, 60 s), their handlers untouched in the source; 9-11 (roster, ident) and 24-25 (genesis bundle) are kept; 35-39 are routed whole to `nodus_cmt_net_receive` only while `witness->running` and the lane exists.
 
-**The client lane (D-23 rev 7 (22)):** on a version-3 chain `handle_dnac_spend` runs `cmt_mem_check_tx` and answers the CheckTx result AT ONCE — `{status: APPROVED}` means accepted into the mempool (no block receipt, no `bnr`/`ti`/`wsig`); a refusal is mapped from the mempool's error kind or the application's code. The client learns the commit by query. There is no leader and no forward: the mempool reactor floods. `nodus-cli`'s "ENVELOPE committed: height=… index=…" prints now show zeros on this lane (package C2d's item).
+**The client lane (D-23 rev 7 (22)):** on a version-3 chain `handle_dnac_spend` runs `cmt_mem_check_tx` and answers the CheckTx result AT ONCE — `{status: APPROVED}` means accepted into the mempool (no block receipt, no `bnr`/`ti`/`wsig`); a refusal is mapped from the mempool's error kind or the application's code. The client learns the commit by query. There is no leader and no forward: the mempool reactor floods. `nodus-cli`'s submit print used to show zeros under a "committed: height=… index=…" label on this lane (package C2d's item, at the time reworded to "package W4-H"); package C delta 4 did the reword instead — see below.
 
 **The bounds (D-23 rev 7 (24)):** derived at bind time from the genesis document, never hardcoded — `prep_bound` = the mempool's configured size (5 000), `env_bound` = MaxDataBytes at one validator divided by an envelope's 73-byte framing minimum (293 525 at Block.MaxBytes 22 020 096), `claim_bound` = MaxDataBytes / `DNA_CLAIM_FIXED_LEN` (2 972); the executor's `max_txs` uses the same helper; `NODUS_CMT_APP_MAX_TXS` is retired. Every working array is per-request; only the two ABCI response buffers persist across calls. FinalizeBlock hands the engine a non-NULL results array even for an EMPTY block (the engine's precondition refuses NULL before the count; a quiet chain's first block is empty). PrepareProposal's seam drop loop is bounded by `prep_bound` passes — worst case O(prep_bound²) item evaluations on a mempool full of budget-exceeding envelopes (a liveness/cost note for R3-T, register R3-W3-C2a-11).
 
@@ -1705,6 +1794,58 @@ W3 closed the legacy lane; W4-D deletes it (OBLIGATION `atlas-dec-71525f3b4918f7
 
 **Gates:** build 0 warnings; ctest 188/188 (0 failed, 0 skipped — the five W3 reds are gone by deletion, conversion and the supply fix); Genesis Protocol at production constants 9/9 + epoch SKIP; short-epoch run (E=15/BPY=20/grace 15/15) 10/10 incl. `test_v2_epoch_boundary` (logic, not magnitude); `nm nodus-server` free of the old lane. Register `tasks/reference-deviation-register.md` "W4 — R3 W4 paket D/S" (writer rows R3-W4-D-1..17, R3-W4-S-1, ORCHESTRATOR repairs ORC-5..9). Version 0.19.61 → **0.19.62**.
 
+### cometbft @709fd12b literal port — R3 wave W4, package C: the engine's per-block scratch moves to the heap, and the item bounds are DERIVED (2026-09-18)
+
+The flat 16-item cap R3-W3-C2a-19 introduced (envelopes AND claims counted together, against the engine's own MAX_OPS-sized STACK/heap scratch) closed a live defect but was itself a chosen, not derived, number — its own rev-9 record said so ("moving them to the heap is a later season's change"). Package C is that season: `nodus_witness_v2_apply.c`'s per-block scratch (`wire_ids` per domain, `claim_nuls`, `env_phase`, the tx_root-building `all_ids`, and the auth-verdict array `auths`) is HEAP now, sized by the BLOCK's own `n_envs`/`n_claims`/leg counts — never a compile-time worst case. Two bounds replace the one flat cap, each derived from something the engine or cometbft already enforces, with a `_Static_assert` pinning the arithmetic:
+
+- **`NODUS_V2_ENV_BATCH_MAX`** — CURRENT definition (`nodus_witness_v2_apply.h`, delta 2 below): `NODUS_V2_APPLY_SCRATCH_BUDGET_BYTES / NODUS_V2_APPLY_ENV_COST_BYTES` = 64 MiB / 20 908 = **3 209**, a derived MEMORY ceiling. This bullet described delta 1's OWN first cut, now superseded: `nodus_witness_v2_env.h` := `DNAC_CFG_MAX_TXS_HARD_CAP` (dnac.h, 10) — the chain-config governance ceiling `MAX_TXS_PER_BLOCK` enforced as a VERDICT on every envelope batch at the time, so an array bound above it was unreachable and one below it would have refused a valid block. 16 (R3-W3-C2a-19) → 10 (delta 1) → 3 209 (delta 2, once the governance parameter itself was retired — see delta 2's section below).
+- **`NODUS_V2_APPLY_MAX_CLAIMS`** (`nodus_witness_v2_apply.h`, new) := `CMT_MAX_BLOCK_SIZE_BYTES / DNA_CLAIM_FIXED_LEN` = 104 857 600 / 7 404 = **14 162** — the most claims of the smallest possible size cometbft's own 100 MiB block ceiling could ever carry side by side. A claim is not chain-config-metered, so this is the only thing that bounds it.
+- **`NODUS_V2_APPLY_MAX_OPS`** := their SUM, **17 371** after delta 2 (14 172 for the hours delta 1 tied the envelope bound to the governance hard cap of 10) — kept as the engine's release-resource bound and as a mixed, defense-in-depth cap at the Comet application's two proposal gates, now redundant in practice once the per-class caps below hold.
+
+**The proven-unreachable gap the harness's own register (R3-W3-C2a-19) and `test_cmt_app.c`'s header both recorded as an open RISK — "one envelope's many legs on one domain is not bounded by an item cap" — is closed by READING, not by a new check:** `dna_env_decode` (`shared/dnac/env_wire.c:364-365`) and `dna_env_encode` (`:276`) both refuse a leg list that is not STRICTLY ascending by `domain_id`, so a domain_id cannot repeat across one envelope's legs at all; the wire codec forecloses the shape the recorded risk worried about. The engine's per-domain `d->n_tx >= blk->n_envs` check (replacing the old `>= MAX_OPS` VERDICT) is therefore a proven-unreachable FAULT, not a live defense — and the two register-row comments and one test-file header that repeated the wrong "nothing forbids it" claim (`nodus_witness_cmt_app.c`, `test_cmt_app.c`) are corrected in place.
+
+**The Comet application** (`nodus_witness_cmt_app.c`) gained PER-CLASS admission at both proposal gates, in addition to the mixed cap: `nodus_cmt_app_prepare_proposal` keeps, for each class, only its own highest-fee entries up to its cap (one fee-order pass); `nodus_cmt_app_process_proposal` REJECTs a proposal exceeding either class's cap, before any per-item work. Claims are capped by `min(ctx->claim_bound, NODUS_V2_APPLY_MAX_CLAIMS)` — this chain's own byte-derived claim capacity, which at `Block.MaxBytes` = 22 020 096 (D-4 rev 3) is the smaller, binding figure in practice.
+
+**`auths`** (the engine-owned authorization-verdict array) no longer sizes each envelope's slot range by a fixed `DNA_ENV_MAX_LEGS` multiplication: the legacy lane sizes it to the SUM of every envelope's REAL leg count, with a per-envelope offset table (`auth_off`) built once the whole batch is preflighted; the Comet lane, where only one item is ever live at a time inside its own SAVEPOINT, reuses one small `DNA_ENV_MAX_LEGS`-sized buffer per item. `exec_one_env` now indexes `auths[l]` — never `auths[env_index * DNA_ENV_MAX_LEGS + l]` — because every caller hands it a pointer already advanced to the envelope's own base.
+
+**Tests (delta 1 shape, HISTORICAL — superseded by delta 2 below where noted):** `test_cmt_app.c`'s `t_prepare_proposal_item_cap` now proves the ORIGINAL scenario the live defect was measured on — 40 admissible claims, packed whole, decided, and APPLIED through FinalizeBlock (red on `e72d8cb5`: FAULT at the old 16-slot `claim_nuls`) — instead of merely proving the trim-to-16 workaround; `t_process_proposal_item_cap` moved to the ENVELOPE class (11 envelopes, refused; 10, the bound itself, accepted) *as delta 1 shipped it* — delta 2 rewrites this case again, see below, once `NODUS_V2_ENV_BATCH_MAX` stopped being 10. `test_v2_apply.c` gained a mixed 2-leg-plus-1-leg-plus-1-leg block proving the `auth_off` table routes every leg to its own verdict, and a re-anchoring note on its existing 11-envelope global-tx-cap case (delta 1: coincidentally also the engine's own `NODUS_V2_ENV_BATCH_MAX + 1` VERDICT case, since the two bounds were DERIVED equal at 10 — delta 2 changes this case's OWN meaning again, see below). `test_v2_env_preflight.c` had a latent stack-buffer-overflow the constant's move from 16 to 10 would have opened (a literal `{16,14,15}` duplicate-pair test case indexing past a 10-slot array) — found and fixed as part of the re-anchor, not a new behavior. Harness: `test_cmt_claim_flood.sh` (NEW) submits the WHOLE pump batch in one call and proves a single block can carry more than the retired 16-item cap; placed before `test_v2_epoch_boundary.sh`, whose own header and the harness README are corrected to say the pump batch is ordinarily already spent by the time it runs.
+
+### cometbft @709fd12b literal port — R3 wave W4, package C delta 2: the per-block TRANSACTION COUNT cap leaves governance entirely (operator "kaldır", 2026-09-18)
+
+Delta 1 derived `NODUS_V2_ENV_BATCH_MAX` FROM the chain-config governance parameter `MAX_TXS_PER_BLOCK` (id 1, hard cap 10) — a real improvement over a flat 16, but still ultimately bounded by a governed count the pinned reference does not have (cometbft bounds blocks by bytes only, `types/params.go`). Put to the operator with the causal chain and three options ("keep 10 / raise to 128 / remove" — atlas-dec-5b7568512b95e6d2e671c4eaad2c1879 rev 1), the ruling was **REMOVE**: a block's capacity is bytes and units only.
+
+**Governance (`dnac/include/dnac/dnac.h`, `nodus_witness_chain_config.c`):** parameter id 1 (`DNAC_CFG_MAX_TXS_PER_BLOCK`) keeps its enumerator (ids never renumber — 2-4 stay BLOCK_INTERVAL_SEC/INFLATION_START_BLOCK/TARGET_ACTIVE_COUNT) marked `/* RETIRED */`; `DNAC_CFG_MAX_TXS_HARD_CAP` is deleted from `dnac.h` and its `nodus_witness_chain_config.c` mirror (`CC_MAX_TXS_HARD_CAP`); `nodus_chain_config_scalar_rules` and `nodus_chain_config_grace_for_param` both refuse id 1 unconditionally (the latter returns `UINT64_MAX` defensively, since its return type cannot express "refuse"); the CLI's `chain-config propose` name table and usage text lose the `MAX_TXS_PER_BLOCK` row entirely. **BLOCKED AT DELTA 2 TIME, RESOLVED IN DELTA 3 (do not read the rest of this paragraph as current):** at delta 2, `dnac/src/transaction/verify.c:404/439-444` (the CLIENT-side mirror of this SAME scalar rule, `dnac_tx_verify_chain_config_rules`) and `dnac/tests/test_chain_config_verify.c` / `test_chain_config_serialize.c` still accepted id 1 in `[1,10]` and still referenced `DNAC_CFG_MAX_TXS_HARD_CAP` directly — outside delta 2's whitelist (which named only the witness-side `nodus_witness_chain_config.c`), so the macro was kept defined rather than deleted, deviating from delta 2's own dispatch instruction, specifically so those out-of-whitelist files kept compiling. **Delta 3 closed this**, once its own whitelist was extended to include exactly those files: `verify.c:447-459`'s `DNAC_CFG_MAX_TXS_PER_BLOCK` case now logs "is retired" and returns `DNAC_ERROR_INVALID_PARAM` unconditionally (no range check against the cap at all), `DNAC_CFG_MAX_TXS_HARD_CAP` is DELETED from `dnac.h` (grep + `atlas_code_impact` both confirmed zero remaining consumers), and both `dnac/tests/test_chain_config_*` files were updated to stop referencing the retired id and the deleted macro. No client-vs-witness inconsistency remains.
+
+**The engine (`nodus_witness_v2_apply.c`, `nodus_witness_v2_apply.h`, `nodus_witness_v2_env.h`, `nodus_witness_v2_env.c`):** the "global tx-count cap (chain config)" block and its `nodus_chain_config_get_u64` read are DELETED (per-domain tx quotas, an unrelated committed-manifest policy, are UNCHANGED). `NODUS_V2_ENV_BATCH_MAX` moves from `nodus_witness_v2_env.h` to `nodus_witness_v2_apply.h` (env.h no longer needs `dnac/dnac.h` at all) and is re-derived from a MEMORY budget instead of a governance value: `NODUS_V2_APPLY_SCRATCH_BUDGET_BYTES` = 64 MiB (a release resource choice, the same class as `NODUS_V2_GLOBAL_UNIT_BUDGET` and the W3 receive arena's own 64 MiB) divided by `NODUS_V2_APPLY_ENV_COST_BYTES` = `sizeof(dna_env_preflight_t)` (15 096 B, MEASURED) + `sizeof(dna_meter_t)` (audited ceiling ≤ 4 096 B) + 2 × `sizeof(nodus_rt_auth_verdict_t)` (966 B each, computed exactly from `NODUS_RT_AUTH_MAX_SIGNERS`=15's layout — no padding) + 2 × 64 B (two `wire_ids` entries) — "two" because no shipped runtime op produces a leg count other than 1 or 2 (every cross-domain op in `nodus_witness_rt_native.c` hard-refuses any `leg_count` but 2; there is no third registered domain). Result: `NODUS_V2_ENV_BATCH_MAX` = **3 209**, MEASURED (`NODUS_V2_APPLY_ENV_COST_BYTES` = 20 908 B, from the compiler's own `sizeof(dna_meter_t)` = 3 752 on this build; 67 108 864 / 20 908 = 3 209, ORC-3, delta 2's build-verified pins). 3 157 is NOT a second live value — it is only the WORST-CASE FLOOR this bound is `_Static_assert`-proven to clear even under `sizeof(dna_meter_t)`'s AUDITED ceiling (≤ 4 096 B, never actually reached on any build), a bound-on-a-bound, not an alternate measurement. Both 3 209 and the 3 157 floor are `_Static_assert`-PROVEN above 3 002, the most AUTHORIZABLE envelopes (73 B header + ≥41 B call + 7 220 B kind-1 ML-DSA-87 auth = 7 334 B each) this chain's own default `Block.MaxBytes` (22 020 096) could ever carry, so the memory ceiling is provably never the binding constraint in practice — the operator's decision's own requirement. Every per-block scratch array delta 1 already moved to the heap needed NO further change (already sized by the block's real counts); one PRODUCTION site (`nodus_witness_v2_env.c`'s block-byte-admission `lens[NODUS_V2_ENV_BATCH_MAX]`) and several TEST-file stack arrays sized by the literal constant were found and converted (heap or a small test-local cap) — the same class of stack risk delta 1 fixed for claims now recurring for envelopes, since the constant itself moved from a small governed number (10) to a memory ceiling in the thousands.
+
+**The application (`nodus_witness_cmt_app.c`):** the envelope class cap becomes `min(ctx->env_bound, NODUS_V2_ENV_BATCH_MAX)` (matching the claim cap's own `min()` shape) at both PrepareProposal and ProcessProposal; the derived-bounds INFO log line reports the engine's raw ceiling AND the effective (min'd) cap separately.
+
+**Tests (delta 2):** `test_v2_apply.c`'s section 6 "global tx cap" case is rewritten to prove 11 envelopes now APPLY (RED on delta 1: VERDICT -1); the engine's OWN surviving memory ceiling is proven separately with a STUB one-real-envelope array (`n_envs = NODUS_V2_ENV_BATCH_MAX + 1`) — the pre-BEGIN count gate rejects before decoding envelope 0, so building thousands of real envelopes to reach it would prove nothing more. Height numbering through the rest of section 6 and the delta-1 mixed-leg auth-offset test shifts by one to make room for the new real commit. `test_cmt_app.c`'s `t_process_proposal_item_cap` is rewritten again: `nodus_witness_v2_classify_entry` (`nodus_witness_v2_produce.c:75-80`) classifies an entry as an envelope from a 16-byte wire-family-marker PREFIX ALONE, before any seam/decode work, so `NODUS_V2_ENV_BATCH_MAX + 1` marker-only buffers (not genuinely admissible envelopes — impractical to build at this scale) prove the REFUSAL genuinely; the "exactly at the bound is accepted" half of delta 1's case is NOT re-proven at the new scale (named as an open gap, not silently dropped — `t_byte_bound_prepare_and_process`'s existing 11-real-envelope ACCEPT case is the closest complementary coverage). Harness: `test_cmt_env_flood.sh` (NEW, intended to prove a block beyond 10 envelopes with 7/7 agreement) is currently a SKIP — `nodus-cli` has no generic CORE spend/transfer envelope command to drive it (grep-verified), a CLI tooling gap outside this delta's whitelist, reported rather than worked around.
+
+### cometbft @709fd12b literal port — R3 wave W4, package C delta 4: the harness failure was the CLI, not the engine — one client session per batch, and an honest "accepted" print (2026-09-18)
+
+The Genesis Protocol sweep at production constants FAILED `test_cmt_claim_flood.sh`: the 40-leaf pump batch carried 26:7, 27:16, 28:15, 29:2 across FOUR blocks (`/tmp/stagef-20260917T231618Z`), `max_in_one=16` never exceeding the retired flat cap the scenario exists to prove gone. Root cause READ, not the engine: `nodus-cli.c`'s `cmd_v2_claim --submit` loop called `t6_submit` — which opened a brand-new client session (Kyber1024 handshake + T2 auth), submitted ONE leaf, then closed it — per leaf. Node 1's log showed one `CLIENT_DISCONNECT` per leaf with 0-1 s of idle time between them; the 40-leaf batch took tens of seconds while the chain, with transactions pending, commits a block every ≈1-5 s. The batch never accumulated in the mempool at once, regardless of the derived per-class caps package C's earlier deltas landed — the CLI's own submission pace decided how many blocks the batch spread across, not the engine.
+
+**`nodus-cli.c`:** `t6_submit` (connect → submit → close, unchanged external contract for `v2-envelope stake`'s single-shot use) is now a thin wrapper over a new `t6_submit_on(client, id, tx_hash, bytes, len)`, which submits on an ALREADY-CONNECTED session the caller owns — no connect, no close. `cmd_v2_claim`'s `--submit` loop opens ONE session before the leaf loop, submits every matching, not-already-claimed leaf through `t6_submit_on`, and closes once after the loop; a per-batch summary line reports leaves submitted / accepted (CheckTx approved) / refused (CheckTx rejected, session still usable — the loop continues) / skipped (already claimed). A session/RPC-level fault (as opposed to a per-item CheckTx refusal) still aborts the remaining batch, printing the partial tally first.
+
+**The print itself was also wrong, independent of the session-reuse fix:** `t6_submit`/`t6_submit_on`'s old `"committed: height=… index=…"` line read `sres.block_height`/`sres.tx_index`, which are always zero on a version-3 chain — `handle_dnac_spend` (`nodus_witness_handlers.c:1836-1910`) answers with CheckTx's verdict alone and sends no `bnr`/`ti`/`wsig` ("there is no committed block yet to certify"), so `nodus_client_dnac_spend`'s `memset`-to-zero result (`nodus_client.c:2076`) is never overwritten. This was already recorded — stagef README's own "⚠ THE CLI PRINTS LIE ON THIS LANE" section and `MEMPOOL_BLOCK_TIME.md`'s known-gaps table both named the reword as a separate package, "W4-H" — package C delta 4 does it now instead, having found the actual mechanism while fixing the session-reuse defect in the same function. The line now reads `"accepted: mempool CheckTx approved (query dnac_tx for the eventual commit height)"`. **Consequence outside this delta's whitelist, reported not fixed:** `test_v2_grow_7_20.sh` (not in the runner, not converted to the Comet lane, own conversion decision pending) `grep -q`s the old exact string as its own pass signal at three sites; that grep can no longer match. `test_v2_claim.sh` / `test_v2_stake.sh` / `test_cmt_mempool_flood.sh` all explicitly document never parsing that line, so they are unaffected, but their headers still quote the retired string.
+
+**Tests:** `test_cmt_claim_flood.sh` keeps its `max_in_one > 16` assertion unchanged; it now also prints the `v2-claim` call's own wall-clock duration (start/end `date +%s`) so a future regression toward per-item session overhead is MEASURED, not merely assumed fixed, and its "HOW IT CAN LIE" section names the historical 7/16/15/2 spread as what this scenario would (and did) misreport as "the retired cap still binds" when the actual cause was the CLI's pace.
+
+### cometbft @709fd12b literal port — R3 wave W4, package X: the vote-extension arena's per-height reset, and the overflow that stopped a node (2026-09-18)
+
+**W4-X — the vote-extension arena's per-height reset (register R3-W3-C2e-4, closed; 2026-09-18):** package C2e (W3) left `ext_arena` a single bump allocator, deliberately unreset, because a plain `used = 0` frees a PREFIX while the bytes that must survive — the previous height's LastCommit — are the newest SUFFIX; the fix it named was two arenas alternating by height parity, with the host's `extend_vote` writer (outside C2e's whitelist) also made parity-aware. Both are now built: `cmt_cs_t.ext_arena` and `nodus_cmt_blockexec_t.ext_arena` are each `cmt_pb_arena_t *ext_arena[2]` (`shared/dnac/cmt_cs.{h,c}`, `nodus_witness_cmt_host.{h,c}`); `nodus_witness_cmt_node.c` allocates two 64 KiB arenas in `nodus_cmt_node_init` and frees both at release (`nodus_witness_cmt_node.h`'s `ext_arena` field becomes `[2]`); `cmt_cs_update_to_state` zeroes `ext_arena[N & 1]`'s `used` immediately after `cs_update_height` moves the machine to height N — the arena that shares N's parity last held N-2's bytes, which `cs_release_last_commit` already freed earlier in the same call before `prev_votes` was reassigned to N-1's set, so nothing referenced is lost; N-1's bytes (`prev_votes` / the LastCommit the next proposal embeds) live in the OTHER arena and are untouched. Both writers — `cmt_cs_try_add_vote`'s copy of a peer's vote and `nodus_cmt_host_extend_vote`'s copy of this node's own — pick the arena by the VOTE's own height, never `cs->rs.height`: `cmt_cs_try_add_vote`'s copy runs BEFORE the height branch that would route a height-H vote onto the LastCommit path while the machine is already at H+1, so picking by the live height there would misfile an H-vote into the arena H+2's entry resets. Overflow has two classes since the ORCHESTRATOR's correction from the verifier's round (W4-X ORC-2): a QUEUED vote whose extension does not fit its height's arena is a logged `CMT_REJECT` at `cmt_cs_try_add_vote`'s copy site — the reference has no such bound (`Vote.ValidateBasic`, types/vote.go:318-350, bounds only `ExtensionSignature`), the check runs on a peer's bytes before signature verification and before the extensions-disabled refusal, so the umbrella's rule makes it peer-reachable → REJECT; before ORC-2 it was `CMT_FAULT`, and one 65 KiB precommit from any authenticated cluster peer stopped the node (RED-first scenario `s_oversized_peer_extension_is_rejected_not_fault`). The node's OWN extension not fitting at `nodus_cmt_host_extend_vote` stays `CMT_FAULT`. Sizing the arena for a whole committee's honest extended precommits is the obligation of the season that sets `VoteExtensionsEnableHeight` (today unset, so every non-empty extension is refused after the copy anyway). DEVIATION (`tasks/r3-w4/register-x-writer.md`): this two-arena scheme has no reference counterpart at all — Go's `ExtendedCommit`/`Vote.Extension` are collector-managed byte slices (state.go:1279-1313, :610-624) with no arena, no parity and no reset call to port; it exists only because this port trades the collector for a bump allocator. Tests: three new RED-first scenarios in `test_cmt_cs.c` (`s_ext_arena_reset_across_three_heights`, `s_ext_arena_survives_across_parity`, `s_late_last_commit_vote_lands_in_its_own_height_arena`; a fourth, `s_oversized_peer_extension_is_rejected_not_fault`, from ORC-2), plus the fixture's own two-arena wiring in `test_cmt_common.h`.
+
+Gates: worktree build 0 warnings; `test_cmt_cs` 48/48 (1 321 checks); the consensus set (`test_cmt_cs_unit`, `_host`, `_node`, `_live`, `_replay`, `_byzantine`, `_conr`, `_net`, `_app`) green; ASan+UBSan with leak detection clean on `test_cmt_cs`; full ctest 188/188 in two single-threaded halves; Opus verifier 11 CONFIRMED / 0 REFUTED / 1 UNVERIFIABLE (compilation — run by the ORCHESTRATOR). The RED proof of the reset scenario was re-derived by the ORCHESTRATOR (register R3-W4-X-ORC-1): the writer's 80-byte cap was VACUOUS with two arenas; at 48 bytes the scenario FAULTs at height 3 with the reset statement deleted (46/47) and passes with it (47/47). Open, named: the OWNED reconstructed LastCommit's extension descriptors point into the host's single `ext_load_arena`, which a lagging peer's catch-up gossip resets on every call — stale bytes, no effect while extensions are disabled (register R3-W4-X-OPEN-1, the vote-extensions season's).
+
+### cometbft @709fd12b literal port — R3 wave W4, package P: the genesis-bundle server stops re-running the preflight per request (2026-09-18)
+
+ORCHESTRATOR delta, no agent. `nodus_witness_v2_sync2.c`'s `v2sync_ready` — the one predicate the surviving genesis-bundle handler (`nodus_witness_v2_sync_handle_gbundle_q`, verbs 24/25) asks first — used to call `nodus_witness_v2_activation_permitted(w)` on EVERY request, i.e. `nodus_witness_v2_gate_state(w) == OPEN`: the authority probe plus the whole O15A preflight (five S14 store opens, the canonical-strict document decode, the app_hash recomputation against block 1's BlockMeta). The reference decides a node's role once (node.go's startup table); the per-request re-decision was a C-only cost with no reference line. `v2_ingress_armed` is already the gate's answer — `nodus_witness_v2_ingress_arm` sets it only when the gate is OPEN, at exactly one site (`witness_post_open_gate`: database open, and a joiner's adopt via the same scan since W3 C2a-18), and `nodus_witness_v2_ingress_disarm` clears it — so the predicate is now `db && v2_successor && ingress_is_armed`. What the re-check incidentally provided (refusing to serve once the preflight drifts after arming) protected nothing: the joiner never trusts served bytes, it re-derives the genesis and adopts only on a byte-identical pin match (`nodus_witness_v2_join.c`). `nodus_witness_v2_activation_permitted` stays (public, tested by `test_v2_gate*`, pinned by `v2_gate_linked.cmake`). Gates: build 0 warnings; `test_v2_gate`, `test_v2_gate_pure`, `test_v2_gate_linked`, `test_v2_preflight`, `test_v2_bundle`, `test_v2_restart_gate`, `test_cmt_live` green; the live proof is `test_v2_join.sh` (a wiped node pulls the bundle from an armed peer) in the production sweep recorded in `tasks/orchestration.md`.
+
+### cometbft @709fd12b literal port — R3 wave W4, package F: the fixture gap — a PEER's proposal, prevoted and committed (2026-09-18)
+
+ORCHESTRATOR delta, no agent (the W4 prompt allowed one read-only diagnosis agent; the diagnosis had already fallen out of W4-X's run). The W4 prompt recorded that `test_cmt_common.h`'s `tc_validate_block` "refuses a genuinely byte-identical, untampered, UNLOCKED peer block" and that no `test_cmt_cs` scenario proved the positive prevote path for a peer's proposal. Root cause, found by running: the fixture's clock is FROZEN, and with two equal-power validators `cmt_weighted_median` selects the EARLIER precommit stamp — this node's own precommit carries `voteTime`'s block time + 1 ms (the port of state.go:2423-2434) but the stub signs `tc->now`, still block 1's time — so the peer-proposed height's block time EQUALS the previous one and validation.go:120-123's strict `time > last_block_time` refuses it. The refusal is the reference's rule over the fixture's input; `tc_validate_block` was never wrong. The cure is one line per peer-proposed height: advance `tc->now` by one second between this node's precommit and the stub's (every W4-X scenario carries it). New scenario `s_full_round_peer_proposal` (`test_cmt_cs.c`, `s_full_round2`'s shape): height 1 by this node; height 2 proposed by the stub through `tc_decide_proposal_from`; this node validates the peer's bytes (`validate_calls` grows), prevotes THE PEER'S BLOCK (asserted by hash, not nil), locks, precommits, commits it (`apply_calls` 2), and the committed header is the peer's. RED with the clock line deleted (`validatePrevote: prevote is for the wrong block` — this node prevoted nil), GREEN with it: 49/49 (1 358 checks), ASan+UBSan clean.
+
 ### Consensus flow (cometbft @709fd12b, the only lane)
 
 ```
@@ -1713,7 +1854,9 @@ Client → any witness → CheckTx (mempool admission) → answered AT ONCE
                               └─ mempool reactor floods the tx to every peer (verb 39)
 
 every ≈ 6 s, the round's PROPOSER (weighted round-robin over the frozen epoch validator set):
-  PrepareProposal (fee-descending, chain_config alone, byte budget, item cap 16)
+  PrepareProposal (fee-descending, chain_config alone, byte budget,
+                   per-class caps: envelopes <= 3 209 (memory ceiling),
+                   claims <= 14 162 (cometbft byte ceiling), mixed <= 17 371)
   → Proposal + BlockParts (verbs 35/36) → Prevote → Precommit (verb 37) → +2/3
   → FinalizeBlock (the Ledger V2 apply engine, per-item SAVEPOINTs) → Commit (SQL COMMIT)
   → the next height

@@ -1229,6 +1229,31 @@ int cmt_cs_reconstruct_last_commit(cmt_cs_t *cs, const cmt_state_t *state)
 }
 
 /* ══════════════════════════════════════════════════════════════════════
+ * C ONLY — the vote extension arena's per-height parity (PACKAGE W4-X,
+ * register R3-W3-C2e-4; cmt_cs.h "OWNERSHIP" (2))
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/** Which of `cs->ext_arena`'s two arenas holds bytes for `height`.
+ *  arena[p] holds every height whose `height & 1 == p`; consecutive
+ *  heights therefore always land in different arenas, which is what lets
+ *  `cmt_cs_update_to_state` reset the arena that held height N-2
+ *  immediately after moving to height N without touching the arena that
+ *  still holds N-1 (`prev_votes` / the LastCommit `cs_create_proposal_
+ *  block` embeds into N+1's proposal) or N's own live votes.
+ *
+ *  `(uint64_t)height` before the mask: a peer-supplied vote height is not
+ *  yet bounded to `> 0` on every path that reaches here (cs_add_vote's own
+ *  comment, below), and masking the signed value directly would leave the
+ *  low bit's meaning to the platform's representation of negative
+ *  integers. The unsigned cast is a value-preserving conversion (modulo
+ *  2^64) on every conforming implementation, so the parity it yields is
+ *  identical on every node regardless of sign. */
+static cmt_pb_arena_t *cs_ext_arena_for(cmt_cs_t *cs, int64_t height)
+{
+    return cs->ext_arena[(uint64_t)height & 1u];
+}
+
+/* ══════════════════════════════════════════════════════════════════════
  * state.go:647-774 — updateToState and newStep
  * ══════════════════════════════════════════════════════════════════════ */
 
@@ -1414,6 +1439,29 @@ int cmt_cs_update_to_state(cmt_cs_t *cs, const cmt_state_t *state)
     }
 
     cs_update_height(cs, height);                                  /* :719 */
+
+    /* PACKAGE W4-X (register R3-W3-C2e-4), C ONLY: arena[p] holds every
+     * height of parity p; we have just entered `height` (call it N), so
+     * the arena that now shares N's parity is the one that held N-2's
+     * bytes. N-2 is referenced by nothing at this point: whatever vote
+     * set `prev_votes` pointed at going INTO this call (N-2's, since it
+     * was set one transition ago when the machine moved from N-2 to
+     * N-1) was already freed above by `cs_release_last_commit` before
+     * `prev_votes` was reassigned to N-1's set a few lines up. N-1's
+     * bytes (prev_votes / the LastCommit `cs_create_proposal_block` will
+     * embed into N+1's proposal) live in the OTHER arena — N and N-1
+     * always differ in parity — and are untouched here. No
+     * `cmt_pb_arena_reset` exists in this tree (cmt_pb.h documents the
+     * convention as "reset by setting `used` to 0"; every other arena in
+     * this file and its host uses the same direct assignment), so this
+     * follows house style rather than adding a one-line wrapper.
+     *
+     * NULL-checked: `ext_arena` (both halves) is NULL on a chain that
+     * never enables vote extensions (cmt_cs_init's own contract). */
+    if (cs_ext_arena_for(cs, height) != NULL) {
+        cs_ext_arena_for(cs, height)->used = 0u;
+    }
+
     cs_update_round_step(cs, 0, CMT_ROUND_STEP_NEW_HEIGHT);        /* :720 */
 
     if (cmt_time_is_zero(cs->rs.commit_time)) {                    /* :722 */
@@ -3404,11 +3452,12 @@ static int cs_add_vote(cmt_cs_t *cs, const cmt_vote_t *vote,
 int cmt_cs_try_add_vote(cmt_cs_t *cs, const cmt_vote_t *vote,
                         const cmt_peer_id_t *peer, bool *out_added)
 {
-    cs_conflict_t *conflict;
-    cmt_vote_t    *ext_vote;
-    uint8_t        my_addr[CMT_ADDRESS_SIZE];
-    bool           added;
-    int            rc;
+    cs_conflict_t  *conflict;
+    cmt_vote_t     *ext_vote;
+    cmt_pb_arena_t *arena;
+    uint8_t         my_addr[CMT_ADDRESS_SIZE];
+    bool            added;
+    int             rc;
 
     if (cs == NULL || vote == NULL || peer == NULL) {
         return CMT_FAULT;
@@ -3430,23 +3479,65 @@ int cmt_cs_try_add_vote(cmt_cs_t *cs, const cmt_vote_t *vote,
      * stack, matching this file's own ~9.5 KB single-vote convention
      * (immediately below: `conflict` holds two of them). An empty
      * extension (this chain: VoteExtensionsEnableHeight unset, so always
-     * true today) costs nothing beyond the struct copy. */
+     * true today) costs nothing beyond the struct copy.
+     *
+     * PACKAGE W4-X (register R3-W3-C2e-4): the arena is picked by
+     * `vote->height`, NEVER `cs->rs.height`. This copy runs BEFORE
+     * `cs_add_vote` (below) branches on height (:2137's `vote->height ==
+     * cs->rs.height - 1` — the LastCommit path), so a height-H vote
+     * arriving while the machine is already at H+1 must still land in
+     * arena[H&1] here, not arena[(H+1)&1]: picking by `cs->rs.height`
+     * would put an H-vote's bytes in the arena that H+2's entry resets,
+     * freeing them while H's LastCommit still needs them. */
     ext_vote = (cmt_vote_t *)calloc(1u, sizeof(*ext_vote));
     if (ext_vote == NULL) {
         return CMT_FAULT;
     }
     *ext_vote = *vote;
     if (vote->extension.len != 0u) {
-        if (cs->ext_arena == NULL || cs->ext_arena->buf == NULL ||
-            cs->ext_arena->used > cs->ext_arena->cap ||
-            vote->extension.len > cs->ext_arena->cap - cs->ext_arena->used) {
+        arena = cs_ext_arena_for(cs, vote->height);
+        if (arena == NULL || arena->buf == NULL ||
+            arena->used > arena->cap) {
+            /* A broken arena (unallocated, or `used` past `cap`) is this
+             * node's own invariant, not the peer's doing. */
             free(ext_vote);
-            return CMT_FAULT;           /* capacity — OWNERSHIP (2) note  */
+            return CMT_FAULT;
         }
-        memcpy(cs->ext_arena->buf + cs->ext_arena->used,
-              vote->extension.data, vote->extension.len);
-        ext_vote->extension.data = cs->ext_arena->buf + cs->ext_arena->used;
-        cs->ext_arena->used += vote->extension.len;
+        if (vote->extension.len > arena->cap - arena->used) {
+            /* CAPACITY — a refusal the PORT invented: the reference
+             * heap-allocates every vote's extension and bounds it only
+             * by the reactor's message size (`Vote.ValidateBasic`,
+             * types/vote.go:318-350, bounds `ExtensionSignature` at
+             * MaxSignatureSize and never `len(Extension)`). The check
+             * runs on every queued vote — a peer's, or this node's own
+             * re-entering through the internal queue (:4239-4243; the
+             * host's `extend_vote` bounds the OWN extension itself and
+             * keeps its FAULT) — BEFORE signature verification,
+             * before the extensions-disabled refusal (:2223-2225,
+             * below) and before the height discard — so on the
+             * umbrella's rule (rev 4) it is PEER-REACHABLE → CMT_REJECT.
+             * Before ORCHESTRATOR correction W4-X ORC-2 (the independent
+             * verifier's finding A) this was CMT_FAULT, and one 65 KiB
+             * precommit from any authenticated cluster peer stopped the
+             * node. An HONEST overflow — a committee whose extended
+             * precommits together exceed the arena — is refused the
+             * same way; sizing the arena for that is the obligation of
+             * the season that sets VoteExtensionsEnableHeight (today
+             * unset, so every non-empty extension is refused at
+             * :2223-2225 anyway). */
+            QGP_LOG_ERROR(LOG_TAG,
+                          "vote extension of %zu bytes does not fit the "
+                          "height-%lld arena (%zu of %zu used); refusing "
+                          "the vote",
+                          vote->extension.len, (long long)vote->height,
+                          arena->used, arena->cap);
+            free(ext_vote);
+            return CMT_REJECT;
+        }
+        memcpy(arena->buf + arena->used, vote->extension.data,
+              vote->extension.len);
+        ext_vote->extension.data = arena->buf + arena->used;
+        arena->used += vote->extension.len;
     }
     vote = ext_vote;
 
@@ -4474,7 +4565,7 @@ int cmt_cs_init(cmt_cs_t *cs,
                 cmt_cs_slots_t *slots,
                 cmt_state_storage_t *state_storage,
                 cmt_state_storage_t *scratch_storage,
-                cmt_pb_arena_t *ext_arena,
+                cmt_pb_arena_t *ext_arena[2],
                 int64_t offline_state_sync_height)
 {
     int rc;
@@ -4535,7 +4626,17 @@ int cmt_cs_init(cmt_cs_t *cs,
     cs->host                      = *host;
     cs->host_ctx                  = host_ctx;
     cs->slots                     = slots;
-    cs->ext_arena                 = ext_arena;
+    /* PACKAGE W4-X (register R3-W3-C2e-4): `ext_arena` (both halves) is
+     * NULL only on a chain that never enables vote extensions — a plain
+     * NULL for the whole pair, not a pair of NULLs the caller built,
+     * matching the single-arena contract this replaces. */
+    if (ext_arena != NULL) {
+        cs->ext_arena[0] = ext_arena[0];
+        cs->ext_arena[1] = ext_arena[1];
+    } else {
+        cs->ext_arena[0] = NULL;
+        cs->ext_arena[1] = NULL;
+    }
     cs->do_wal_catchup            = true;                         /* :173 */
     cs->offline_state_sync_height = offline_state_sync_height;    /* :230 */
     cs->last_commit_owner         = CMT_CS_LC_NONE;

@@ -118,6 +118,7 @@ if [ "${has_v2:-0}" = "0" ]; then
     echo "[SKIP] not a Comet cluster — use stagef_up_v2.sh"
     exit 99
 fi
+stagef_sentinel SETUP_OK   # W4-H: the runner turns PASS-without-ASSERT_RUN into FAIL
 
 stagef_cmt_diff_at_floor "pre-cmt-empty-blocks" || exit 2
 
@@ -161,8 +162,10 @@ if [ "${claim_rows:-0}" != "0" ]; then
 fi
 echo "[ok] no claim landed inside the window either (utxo_set has no row in that height range)"
 
+stagef_sentinel ASSERT_RUN   # the terminal assertion is next
 stagef_cmt_diff_at_floor "post-cmt-empty-blocks" || exit 2
 
+stagef_sentinel PASS
 echo ""
 echo "[PASS] the idle Comet chain committed $(( after - baseline )) block(s) with"
 echo "       zero transactions in ${STAGEF_CMT_EMPTY_INTERVAL_MS}ms-interval cadence, and every node"

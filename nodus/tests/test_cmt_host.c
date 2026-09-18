@@ -4135,7 +4135,11 @@ static void tmp_table(nodus_cmt_mempool_if_t *t, tmp_t *mp)
 typedef struct {
     nodus_cmt_blockexec_t  *be;
     cmt_cs_slots_t         *slots;
-    cmt_pb_arena_t          ext_arena;
+    /* PACKAGE W4-X (register R3-W3-C2e-4): two arenas alternating by
+     * height parity, mirroring nodus_witness_cmt_node.h's ext_arena[2]
+     * — value fields, the pair's addresses collected into a local
+     * pointer array at the one call site that needs it. */
+    cmt_pb_arena_t          ext_arena[2];
     nodus_cmt_app_t         app_if;
     nodus_cmt_mempool_if_t  mp_if;
     nodus_cmt_evpool_if_t   ev_if;
@@ -4149,22 +4153,28 @@ static int exec_init(t_exec_t *x, t_env_t *e)
      * MaxDataBytes(60 KiB)/3 + 2 ≈ 18.6 k three-byte txs, and every one
      * must reach the size check, not a capacity bound. */
     nodus_cmt_host_limits_t lim = { 32768, 2u * 1024u * 1024u, 4 };
+    cmt_pb_arena_t          *ext_arena_pair[2];
 
     memset(x, 0, sizeof *x);
     x->be = (nodus_cmt_blockexec_t *)calloc(1, sizeof(*x->be));
     x->slots = (cmt_cs_slots_t *)calloc(1, sizeof(*x->slots));
     x->app = tapp_new();
-    x->ext_arena.buf = (uint8_t *)malloc(65536);
-    x->ext_arena.cap = 65536;
-    if (!x->be || !x->slots || !x->app || !x->ext_arena.buf) {
+    x->ext_arena[0].buf = (uint8_t *)malloc(65536);
+    x->ext_arena[0].cap = 65536;
+    x->ext_arena[1].buf = (uint8_t *)malloc(65536);
+    x->ext_arena[1].cap = 65536;
+    if (!x->be || !x->slots || !x->app || !x->ext_arena[0].buf ||
+        !x->ext_arena[1].buf) {
         return -1;
     }
     x->app->db = e->fx.w->db;      /* see tapp_t.db — the host's bracket */
     tapp_table(&x->app_if, x->app);
     tmp_table(&x->mp_if, &x->mp);
     x->ev_if = nodus_cmt_empty_evpool;
+    ext_arena_pair[0] = &x->ext_arena[0];
+    ext_arena_pair[1] = &x->ext_arena[1];
     return nodus_cmt_blockexec_init(x->be, e->store, &x->app_if, &x->mp_if, &x->ev_if, NULL, NULL,
-                                    t_now, NULL, x->slots, &x->ext_arena, &lim) == CMT_OK ? 0 : -1;
+                                    t_now, NULL, x->slots, ext_arena_pair, &lim) == CMT_OK ? 0 : -1;
 }
 
 static void exec_free(t_exec_t *x)
@@ -4175,7 +4185,8 @@ static void exec_free(t_exec_t *x)
     }
     free(x->slots);
     tapp_free(x->app);
-    free(x->ext_arena.buf);
+    free(x->ext_arena[0].buf);
+    free(x->ext_arena[1].buf);
     memset(x, 0, sizeof *x);
 }
 

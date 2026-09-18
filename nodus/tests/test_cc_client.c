@@ -1,13 +1,20 @@
 /**
  * @file tests/test_cc_client.c
- * @brief Stage E.2 — unit tests for nodus_client_cc_vote_send guard paths.
+ * @brief D-16 rev 7 (W4-CC) — unit tests for nodus_client_cc_appr_send
+ *        guard paths.
+ *
+ * Renamed from the retired nodus_client_cc_vote_send (verbs 14-15,
+ * Stage E.2) onto its replacement (verbs 40-41) — same transport-layer
+ * guard-path coverage, over the new signature (a pre-auth envelope
+ * `env_bytes`/`env_len` in place of the retired `nodus_t3_cc_vote_req_t`,
+ * a 32-byte `chain_id32` in place of the legacy `chain_id`, and
+ * `nodus_t3_cc_appr_rsp_t` in place of `nodus_t3_cc_vote_rsp_t`).
  *
  * Scope: argument validation + timeout behavior against a dead peer. The
- * full connect → send → recv → verify round trip is covered by the Stage F
- * integration harness (3 loopback nodus-server processes, separate commit);
- * duplicating that here would require reimplementing the witness-side
- * w_cc_vote_req handler in-test, which is already tested via
- * test_chain_config_votes.c and the witness cascade.
+ * full connect -> send -> recv -> verify round trip over a REAL
+ * witness-side responder is test_cc_appr.c's claim, not this file's —
+ * duplicating that here would require reimplementing
+ * nodus_witness_handle_cc_appr_req in-test.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -40,35 +47,49 @@ static int failures = 0;
     }                                                                    \
 } while (0)
 
+/* A stand-in pre-auth envelope. Its bytes are never parsed by any peer
+ * in this file (every peer here is either absent, dead, or a fake that
+ * tears the connection down before/at auth) — only the TRANSPORT-layer
+ * guard paths (null args, malformed address, dead peer, mid-session
+ * teardown, timeout) are under test, so any nonzero-length buffer
+ * exercises them identically. */
+static const uint8_t DUMMY_ENV[41] = {
+    4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+};
+
 static void test_null_args_rejected(void) {
     nodus_seckey_t sk;
     nodus_pubkey_t pk;
     uint8_t wid[32] = {0};
     uint8_t cid[32] = {0};
-    nodus_t3_cc_vote_req_t req;
-    nodus_t3_cc_vote_rsp_t rsp;
+    nodus_t3_cc_appr_rsp_t rsp;
 
     memset(&sk, 0, sizeof(sk));
     memset(&pk, 0, sizeof(pk));
-    memset(&req, 0, sizeof(req));
     memset(&rsp, 0, sizeof(rsp));
 
-    CHECK(nodus_client_cc_vote_send(NULL, &pk, &sk, wid, &pk, cid,
-                                     &req, 100, &rsp) == -1);
-    CHECK(nodus_client_cc_vote_send("127.0.0.1:4004", NULL, &sk, wid, &pk, cid,
-                                     &req, 100, &rsp) == -1);
-    CHECK(nodus_client_cc_vote_send("127.0.0.1:4004", &pk, NULL, wid, &pk, cid,
-                                     &req, 100, &rsp) == -1);
-    CHECK(nodus_client_cc_vote_send("127.0.0.1:4004", &pk, &sk, NULL, &pk, cid,
-                                     &req, 100, &rsp) == -1);
-    CHECK(nodus_client_cc_vote_send("127.0.0.1:4004", &pk, &sk, wid, NULL, cid,
-                                     &req, 100, &rsp) == -1);
-    CHECK(nodus_client_cc_vote_send("127.0.0.1:4004", &pk, &sk, wid, &pk, NULL,
-                                     &req, 100, &rsp) == -1);
-    CHECK(nodus_client_cc_vote_send("127.0.0.1:4004", &pk, &sk, wid, &pk, cid,
-                                     NULL, 100, &rsp) == -1);
-    CHECK(nodus_client_cc_vote_send("127.0.0.1:4004", &pk, &sk, wid, &pk, cid,
-                                     &req, 100, NULL) == -1);
+    CHECK(nodus_client_cc_appr_send(NULL, &pk, &sk, wid, &pk, cid,
+                                    DUMMY_ENV, sizeof(DUMMY_ENV), 100, &rsp) == -1);
+    CHECK(nodus_client_cc_appr_send("127.0.0.1:4004", NULL, &sk, wid, &pk, cid,
+                                    DUMMY_ENV, sizeof(DUMMY_ENV), 100, &rsp) == -1);
+    CHECK(nodus_client_cc_appr_send("127.0.0.1:4004", &pk, NULL, wid, &pk, cid,
+                                    DUMMY_ENV, sizeof(DUMMY_ENV), 100, &rsp) == -1);
+    CHECK(nodus_client_cc_appr_send("127.0.0.1:4004", &pk, &sk, NULL, &pk, cid,
+                                    DUMMY_ENV, sizeof(DUMMY_ENV), 100, &rsp) == -1);
+    CHECK(nodus_client_cc_appr_send("127.0.0.1:4004", &pk, &sk, wid, NULL, cid,
+                                    DUMMY_ENV, sizeof(DUMMY_ENV), 100, &rsp) == -1);
+    CHECK(nodus_client_cc_appr_send("127.0.0.1:4004", &pk, &sk, wid, &pk, NULL,
+                                    DUMMY_ENV, sizeof(DUMMY_ENV), 100, &rsp) == -1);
+    CHECK(nodus_client_cc_appr_send("127.0.0.1:4004", &pk, &sk, wid, &pk, cid,
+                                    NULL, sizeof(DUMMY_ENV), 100, &rsp) == -1);
+    CHECK(nodus_client_cc_appr_send("127.0.0.1:4004", &pk, &sk, wid, &pk, cid,
+                                    DUMMY_ENV, 0, 100, &rsp) == -1);
+    CHECK(nodus_client_cc_appr_send("127.0.0.1:4004", &pk, &sk, wid, &pk, cid,
+                                    DUMMY_ENV, (size_t)NODUS_T3_CC_APPR_E_MAX + 1,
+                                    100, &rsp) == -1);
+    CHECK(nodus_client_cc_appr_send("127.0.0.1:4004", &pk, &sk, wid, &pk, cid,
+                                    DUMMY_ENV, sizeof(DUMMY_ENV), 100, NULL) == -1);
 }
 
 static void test_malformed_address_rejected(void) {
@@ -76,38 +97,37 @@ static void test_malformed_address_rejected(void) {
     nodus_pubkey_t pk;
     uint8_t wid[32] = {0};
     uint8_t cid[32] = {0};
-    nodus_t3_cc_vote_req_t req;
-    nodus_t3_cc_vote_rsp_t rsp;
+    nodus_t3_cc_appr_rsp_t rsp;
 
     memset(&sk, 0, sizeof(sk));
     memset(&pk, 0, sizeof(pk));
-    memset(&req, 0, sizeof(req));
     memset(&rsp, 0, sizeof(rsp));
 
     /* Empty string, no port number, port out of range. */
-    CHECK(nodus_client_cc_vote_send("", &pk, &sk, wid, &pk, cid,
-                                     &req, 100, &rsp) == -1);
-    CHECK(nodus_client_cc_vote_send("127.0.0.1:99999", &pk, &sk, wid, &pk, cid,
-                                     &req, 100, &rsp) == -1);
-    CHECK(nodus_client_cc_vote_send("127.0.0.1:0", &pk, &sk, wid, &pk, cid,
-                                     &req, 100, &rsp) == -1);
-    CHECK(nodus_client_cc_vote_send("127.0.0.1:-5", &pk, &sk, wid, &pk, cid,
-                                     &req, 100, &rsp) == -1);
-    CHECK(nodus_client_cc_vote_send(":4004", &pk, &sk, wid, &pk, cid,
-                                     &req, 100, &rsp) == -1);
+    CHECK(nodus_client_cc_appr_send("", &pk, &sk, wid, &pk, cid,
+                                    DUMMY_ENV, sizeof(DUMMY_ENV), 100, &rsp) == -1);
+    CHECK(nodus_client_cc_appr_send("127.0.0.1:99999", &pk, &sk, wid, &pk, cid,
+                                    DUMMY_ENV, sizeof(DUMMY_ENV), 100, &rsp) == -1);
+    CHECK(nodus_client_cc_appr_send("127.0.0.1:0", &pk, &sk, wid, &pk, cid,
+                                    DUMMY_ENV, sizeof(DUMMY_ENV), 100, &rsp) == -1);
+    CHECK(nodus_client_cc_appr_send("127.0.0.1:-5", &pk, &sk, wid, &pk, cid,
+                                    DUMMY_ENV, sizeof(DUMMY_ENV), 100, &rsp) == -1);
+    CHECK(nodus_client_cc_appr_send(":4004", &pk, &sk, wid, &pk, cid,
+                                    DUMMY_ENV, sizeof(DUMMY_ENV), 100, &rsp) == -1);
 }
 
 /* ── Conn-lifetime regression suite ─────────────────────────────────
  *
- * nodus_client_cc_vote_send BORROWS its nodus_tcp_conn_t from the
+ * nodus_client_cc_appr_send BORROWS its nodus_tcp_conn_t from the
  * transport, and any nodus_tcp_poll may free it (connect refusal, peer
- * close, read/write error, bad frame). Pre-fix, the connect-wait loop
- * read conn->state after handle_connect_complete freed the conn — the
- * O11 ASan finding (heap-use-after-free, nodus_cc_client.c:233). These
- * tests drive every teardown path a unit test can construct without a
- * full witness peer; each must complete without a sanitizer finding and
+ * close, read/write error, bad frame). Pre-fix (O11, on the retired
+ * nodus_client_cc_vote_send this function replaces), the connect-wait
+ * loop read conn->state after handle_connect_complete freed the conn —
+ * heap-use-after-free, nodus_cc_client.c:233 at the time. These tests
+ * drive every teardown path a unit test can construct without a full
+ * witness peer; each must complete without a sanitizer finding and
  * return a failure code with *rsp_out still zeroed. The full success
- * round trip stays Stage F integration scope (see file header).
+ * round trip stays test_cc_appr.c's scope (see file header).
  */
 
 typedef enum {
@@ -209,23 +229,19 @@ static void *fake_peer_main(void *arg) {
     return NULL;
 }
 
-/* Run one cc_vote_send call against a loopback fake peer. Returns the
+/* Run one cc_appr_send call against a loopback fake peer. Returns the
  * call's rc; *rsp is pre-filled with 0xAA so the caller can assert the
  * zeroed-on-failure output contract. */
 static int run_against_fake_peer(peer_mode_t mode, uint32_t timeout_ms,
-                                  nodus_t3_cc_vote_rsp_t *rsp) {
+                                  nodus_t3_cc_appr_rsp_t *rsp) {
     nodus_seckey_t sk;
     nodus_pubkey_t pk;
     uint8_t wid[32] = {0};
     uint8_t cid[32] = {0};
-    nodus_t3_cc_vote_req_t req;
 
     memset(&sk, 0, sizeof(sk));
     memset(&pk, 0, sizeof(pk));
-    memset(&req, 0, sizeof(req));
     memset(rsp, 0xAA, sizeof(*rsp));
-    req.param_id  = 1;
-    req.new_value = 5;
 
     int lfd = socket(AF_INET, SOCK_STREAM, 0);
     if (lfd < 0) { CHECK(lfd >= 0); return -100; }
@@ -260,8 +276,9 @@ static int run_against_fake_peer(peer_mode_t mode, uint32_t timeout_ms,
 
     nodus_seckey_t sk2;      /* separate copy: keep call args symmetric */
     memset(&sk2, 0, sizeof(sk2));
-    int rc = nodus_client_cc_vote_send(peer_addr, &pk, &sk2, wid, &pk, cid,
-                                        &req, timeout_ms, rsp);
+    int rc = nodus_client_cc_appr_send(peer_addr, &pk, &sk2, wid, &pk, cid,
+                                       DUMMY_ENV, sizeof(DUMMY_ENV),
+                                       timeout_ms, rsp);
 
     pthread_join(tid, NULL);
     close(lfd);
@@ -283,19 +300,16 @@ static void test_dead_peer_repeated(void) {
     nodus_pubkey_t pk;
     uint8_t wid[32] = {0};
     uint8_t cid[32] = {0};
-    nodus_t3_cc_vote_req_t req;
-    nodus_t3_cc_vote_rsp_t rsp;
+    nodus_t3_cc_appr_rsp_t rsp;
 
     memset(&sk, 0, sizeof(sk));
     memset(&pk, 0, sizeof(pk));
-    memset(&req, 0, sizeof(req));
-    req.param_id  = 1;
-    req.new_value = 5;
 
     for (int i = 0; i < 25; i++) {
         memset(&rsp, 0xAA, sizeof(rsp));
-        int rc = nodus_client_cc_vote_send("127.0.0.1:1", &pk, &sk, wid,
-                                            &pk, cid, &req, 200, &rsp);
+        int rc = nodus_client_cc_appr_send("127.0.0.1:1", &pk, &sk, wid,
+                                           &pk, cid, DUMMY_ENV,
+                                           sizeof(DUMMY_ENV), 200, &rsp);
         CHECK(rc == -1 || rc == -2);
         CHECK(all_zero(&rsp, sizeof(rsp)));   /* zeroed-on-failure contract */
     }
@@ -304,8 +318,8 @@ static void test_dead_peer_repeated(void) {
 /* Peer accepts, then tears the conn down mid-session in five different
  * ways. Every path must return a failure code — never 0, never -3 (no
  * verified response exists) — with rsp zeroed, and must be sanitizer-
- * clean: pre-fix, the challenge-then-close shape could reach the
- * phase-2/3 sends with a freed conn. */
+ * clean: pre-fix (on the retired predecessor), the challenge-then-close
+ * shape could reach the phase-2/3 sends with a freed conn. */
 static void test_peer_teardown_paths(void) {
     static const peer_mode_t modes[] = {
         PEER_CLOSE_ON_ACCEPT,
@@ -315,7 +329,7 @@ static void test_peer_teardown_paths(void) {
         PEER_RST_ON_ACCEPT,
     };
     for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
-        nodus_t3_cc_vote_rsp_t rsp;
+        nodus_t3_cc_appr_rsp_t rsp;
         int rc = run_against_fake_peer(modes[i], 800, &rsp);
         CHECK(rc == -1 || rc == -2);
         CHECK(all_zero(&rsp, sizeof(rsp)));
@@ -327,7 +341,7 @@ static void test_peer_teardown_paths(void) {
  * final release. Exact rc pin (-2): this is the documented timeout
  * classification and must not drift. */
 static void test_peer_silent_timeout(void) {
-    nodus_t3_cc_vote_rsp_t rsp;
+    nodus_t3_cc_appr_rsp_t rsp;
     int rc = run_against_fake_peer(PEER_SILENT, 500, &rsp);
     CHECK(rc == -2);
     CHECK(all_zero(&rsp, sizeof(rsp)));
@@ -339,7 +353,7 @@ static void test_peer_silent_timeout(void) {
  * coverage under ASan. */
 static void test_challenge_close_repeated(void) {
     for (int i = 0; i < 10; i++) {
-        nodus_t3_cc_vote_rsp_t rsp;
+        nodus_t3_cc_appr_rsp_t rsp;
         int rc = run_against_fake_peer(PEER_CHALLENGE_THEN_CLOSE, 800, &rsp);
         CHECK(rc == -1 || rc == -2);
         CHECK(all_zero(&rsp, sizeof(rsp)));
@@ -354,20 +368,16 @@ static void test_timeout_on_dead_peer(void) {
     nodus_pubkey_t pk;
     uint8_t wid[32] = {0};
     uint8_t cid[32] = {0};
-    nodus_t3_cc_vote_req_t req;
-    nodus_t3_cc_vote_rsp_t rsp;
+    nodus_t3_cc_appr_rsp_t rsp;
 
     memset(&sk, 0, sizeof(sk));
     memset(&pk, 0, sizeof(pk));
-    memset(&req, 0, sizeof(req));
     memset(&rsp, 0, sizeof(rsp));
-    req.param_id      = 1;
-    req.new_value     = 5;
 
     /* Port 1 is reserved and never has a listener on Linux. */
     time_t t0 = time(NULL);
-    int rc = nodus_client_cc_vote_send("127.0.0.1:1", &pk, &sk, wid, &pk, cid,
-                                        &req, 200, &rsp);
+    int rc = nodus_client_cc_appr_send("127.0.0.1:1", &pk, &sk, wid, &pk, cid,
+                                       DUMMY_ENV, sizeof(DUMMY_ENV), 200, &rsp);
     time_t t1 = time(NULL);
     CHECK(rc == -1 || rc == -2);
     CHECK((t1 - t0) < 2);  /* well under the 200ms deadline in real time */

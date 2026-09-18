@@ -12,6 +12,9 @@
 
 #include "witness/nodus_witness_v2_env.h"
 #include "witness/nodus_witness_v2_claims.h"
+#include "witness/nodus_witness_v2_apply.h"   /* R3 W4-C delta 2:
+                                               * NODUS_V2_ENV_BATCH_MAX,
+                                               * now derived here        */
 
 #include "crypto/utils/qgp_log.h"
 
@@ -342,11 +345,30 @@ nodus_v2_env_status_t nodus_witness_v2_env_preflight_reserve_batch(
      * summed are the DECODE-ACCEPTED exact lengths, not the caller's
      * claims: preflight proved env_len == the length the bytes imply. */
     {
-        size_t lens[NODUS_V2_ENV_BATCH_MAX];
+        /* R3 W4-C delta 2 — HEAP, sized to the BATCH's own n_envs, not
+         * the compile-time NODUS_V2_ENV_BATCH_MAX (a ~3 000+ derived
+         * memory ceiling since the chain-config item cap retired — a
+         * fixed `[NODUS_V2_ENV_BATCH_MAX]` stack array here would have
+         * been tens of KB on every call, exactly the class of scratch
+         * delta 1 already moved off the stack elsewhere). n_envs is
+         * already proven <= NODUS_V2_ENV_BATCH_MAX by the step-1 gate
+         * above. */
+        size_t *lens = calloc(n_envs, sizeof(*lens));
+        if (!lens) {
+            QGP_LOG_ERROR(LOG_TAG, "allocation of the %zu-entry byte-"
+                          "length scratch failed", n_envs);
+            memset(out, 0, n_envs * sizeof(*out));
+            memset(meters_out, 0, n_envs * sizeof(*meters_out));
+            if (fail_index_out)   *fail_index_out   = 0;
+            if (meter_status_out) *meter_status_out = DNA_METER_ERR_FAULT;
+            return NODUS_V2_ENV_ERR_METER;
+        }
         for (size_t i = 0; i < n_envs; i++)
             lens[i] = out[i].view.env_len;
-        if (nodus_witness_v2_block_bytes_check(lens, n_envs,
-                policy->max_block_env_bytes) != 0) {
+        int brc = nodus_witness_v2_block_bytes_check(lens, n_envs,
+                policy->max_block_env_bytes);
+        free(lens);
+        if (brc != 0) {
             QGP_LOG_ERROR(LOG_TAG, "block byte bound rejected the batch "
                           "(%zu envelope(s), bound %llu)", n_envs,
                           (unsigned long long)policy->max_block_env_bytes);

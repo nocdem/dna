@@ -31,9 +31,13 @@
                                                 * (D-18 rev 4)           */
 #include "witness/nodus_witness_committee.h"   /* capacity season: the
                                         * governing snapshot resolution */
-#include "nodus/nodus_chain_config.h"
+/* R3 W4-C delta 2: nodus/nodus_chain_config.h dropped — its only use in
+ * this file was nodus_chain_config_get_u64(DNAC_CFG_MAX_TXS_PER_BLOCK),
+ * deleted with the retired parameter (the global tx-count cap block,
+ * "global tx-count cap (chain config) + per-domain tx quotas"). */
 
-#include "dnac/dnac.h"                 /* DNAC_CFG_* */
+#include "dnac/dnac.h"                 /* DNAC_EPOCH_LENGTH (via apply.h,
+                                        * kept explicit here too)       */
 #include "dnac/qc_v2.h"                /* DNA_QC_V2_MAX_ENC_LEN bound  */
 #include "crypto/hash/qgp_sha3.h"      /* committee member fingerprints */
 #include "crypto/utils/qgp_log.h"
@@ -277,9 +281,23 @@ typedef struct {
     int      activated;                 /* head CREATED in this block    */
     dna_v2_domain_head_t head;          /* pre-block (or activation) head*/
     int      touched;
-    uint8_t  wire_ids[MAX_OPS][64];     /* local order — FULL-WIRE ids
-                                         * (feeds tx_batch_root + the
-                                         * local index, wire by design)  */
+    /* R3 W4 package C — HEAP, sized to the BLOCK's own `n_envs` and
+     * allocated LAZILY, on this domain's first leg (see the two write
+     * sites: the legacy phase-0b admission scan and the Comet per-item
+     * loop). Bounded by `blk->n_envs` because a domain cannot appear
+     * twice in one envelope's leg list — env_wire.c:364-365 (decode) and
+     * :276 (encode) both refuse a non-strictly-ascending domain_id — so
+     * `n_tx` (LEGS naming this domain) can never exceed the number of
+     * ENVELOPES in the block; a MAX_OPS-sized array (now up to 17 371
+     * entries x 64 domains) would have been over four orders of
+     * magnitude larger than this bound ever requires. NULL until first
+     * touched, which is fine: `dna_v2_tx_batch_root` (domain_wire.c:545)
+     * accepts (NULL, 0) by contract — a domain touched only by a claim
+     * (n_tx stays 0) reads its own root over zero wire ids exactly as it
+     * did when this was a fixed all-zero array. Ownership transfers
+     * (never copies) across the phase-6c lifecycle re-scan — see the
+     * `post`/`pre` loop below — and is freed by `doms_free`. */
+    uint8_t  (*wire_ids)[64];
     uint32_t n_tx;
     uint64_t res_cost;                  /* checked accumulation of ACTUAL
                                          * consumed units (the
@@ -291,6 +309,24 @@ typedef struct {
     dna_domain_update_t upd;
     uint8_t  upd_hash[64];
 } dom_ctx_t;
+
+/**
+ * Free a `doms`/`post` array allocated by `calloc(MAX_DOMS, sizeof(*doms))`
+ * — every per-domain heap sub-allocation (today: `wire_ids`) FIRST, then
+ * the array itself. Always walks the FULL `MAX_DOMS` span, never just the
+ * loaded count: the whole array was `calloc`'d (every unloaded entry's
+ * `wire_ids` is therefore NULL, and `free(NULL)` is a no-op), so this is
+ * correct at every early-exit call site regardless of how far `doms_load`
+ * got before failing. NULL-safe (mirrors plain `free`). R3 W4 package C —
+ * replaces the bare `free(doms)` this file used before `wire_ids` became
+ * heap-owned. */
+static void doms_free(dom_ctx_t *doms) {
+    if (!doms) return;
+    for (size_t i = 0; i < MAX_DOMS; i++) {
+        free(doms[i].wire_ids);
+    }
+    free(doms);
+}
 
 /*
  * Load EVERY registered domain (ORDER BY domain_id ASC — fail-closed):
@@ -576,7 +612,7 @@ int nodus_witness_v2_block_ctx_build(nodus_witness_t *w,
     int rc = (doms_load(w, doms, &n_dom, /*strict_active=*/1) != 0)
                  ? -2
                  : block_ctx_from_doms(doms, n_dom, ctx);
-    free(doms);
+    doms_free(doms);
     if (rc != 0) memset(ctx, 0, sizeof(*ctx));
     return rc;
 }
@@ -738,18 +774,18 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
             return NODUS_V2_INTERNAL_FAULT;
         }
         if (doms_load(w, doms, &n_dom, /*strict_active=*/0) != 0) {
-            free(doms);
+            doms_free(doms);
             break;
         }
         if (n_dom < 1 || doms[0].domain_id != DNA_DOMAIN_SYSTEM ||
             doms[0].status != DNA_DOMST_ACTIVE) {
-            free(doms);                 /* ACTIVE SYSTEM is mandatory    */
+            doms_free(doms);                 /* ACTIVE SYSTEM is mandatory    */
             break;
         }
         heads = calloc(n_dom, sizeof(*heads));
         /* Same class as `doms` above: allocation failure is a fault. */
         if (!heads) {
-            free(doms);
+            doms_free(doms);
             (void)exec_sql(w, "ROLLBACK");
             return NODUS_V2_INTERNAL_FAULT;
         }
@@ -763,25 +799,25 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
             if (head_activate(w, &doms[i], 0) != 0) { all_ok = 0; break; }
             heads[n_heads++] = doms[i].head;
         }
-        if (!all_ok || n_heads == 0) { free(doms); break; }
+        if (!all_ok || n_heads == 0) { doms_free(doms); break; }
 
         uint8_t domains_root[64], global_root[64];
         if (dna_v2_domains_root(heads, n_heads, domains_root) != 0) {
-            free(doms);
+            doms_free(doms);
             break;
         }
         if (dna_v2_global_root(domains_root, global_root) != 0) {
-            free(doms);
+            doms_free(doms);
             break;
         }
 
         uint8_t tx_root[64], dupd_root[64];
         if (dna_v2_tx_batch_root(NULL, 0, tx_root) != 0) {
-            free(doms);
+            doms_free(doms);
             break;
         }
         if (dna_v2_domain_updates_root(NULL, 0, dupd_root) != 0) {
-            free(doms);
+            doms_free(doms);
             break;
         }
 
@@ -804,7 +840,7 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
          * caller handed it, which is the whole point of this season.
          * The no-manifest convenience form now rejects. */
         if (!manifest_bytes || manifest_len == 0) {
-            free(doms);
+            doms_free(doms);
             break;
         }
 
@@ -848,18 +884,18 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
                  * this season closes in the QC verifier. Genesis has no
                  * verdict-class input for this condition at all. */
                 if (ghrc != 0) {
-                    free(doms);
+                    doms_free(doms);
                     (void)exec_sql(w, "ROLLBACK");
                     return NODUS_V2_INTERNAL_FAULT;
                 }
                 if (memcmp(committed_vsh, vset_hash,
                            DNA_VSET_HASH_LEN) != 0) {
-                    free(doms);
+                    doms_free(doms);
                     break;      /* genesis named a foreign validator set */
                 }
             } else {
                 dna_vset_free(&gsnap);
-                if (garc < 0) { free(doms); break; }   /* read fault */
+                if (garc < 0) { doms_free(doms); break; }   /* read fault */
             }
         }
         memcpy(ghdr.validator_set_hash,  vset_hash,   64);
@@ -868,17 +904,17 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
 
         uint8_t gen_hdr_enc[DNA_BH2_ENC_SIZE];
         uint8_t derived_gid[DNA_BH2_ID_LEN];
-        if (dna_bh2_encode(&ghdr, gen_hdr_enc) != 0) { free(doms); break; }
+        if (dna_bh2_encode(&ghdr, gen_hdr_enc) != 0) { doms_free(doms); break; }
         if (dna_bh2_genesis_block_id(&ghdr, manifest_bytes, manifest_len,
                                      derived_gid) != 0) {
-            free(doms);
+            doms_free(doms);
             break;
         }
         /* The parameter is an ASSERTION, never the stored value. NULL =
          * leader mode: derive and commit, the caller reads it back. */
         if (genesis_block_id &&
             memcmp(genesis_block_id, derived_gid, 64) != 0) {
-            free(doms);
+            doms_free(doms);
             break;
         }
 
@@ -890,7 +926,7 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
                 "qc) "
                 "VALUES (0,?1,?2,?3,?4,?5,?6,?7,?8,0,?9,NULL)",
                 -1, &st, NULL) != SQLITE_OK) {
-            free(doms);
+            doms_free(doms);
             break;
         }
         sqlite3_bind_blob(st, 1, derived_gid, 64, SQLITE_TRANSIENT);
@@ -905,7 +941,7 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
                           SQLITE_TRANSIENT);
         int rc = sqlite3_step(st);
         sqlite3_finalize(st);
-        free(doms);
+        doms_free(doms);
         if (rc != SQLITE_DONE) break;
         /* (height-0 root-history rows were written by head_activate —
          * the ONE canonical activation path.) */
@@ -1164,8 +1200,12 @@ static int read_req_cmp(const nodus_rt_read_req_t *a,
  * transaction: activate → per leg (verified-verdict bind → reads →
  * native exec → strict decode → charge → adapter apply) → finalize →
  * per-domain consumed-unit accounting. `auths` is the engine-owned
- * verdict array the pre-BEGIN authorization stage filled (one slot per
- * (envelope, leg), indexed env_index * DNA_ENV_MAX_LEGS + leg).
+ * verdict array the pre-BEGIN (legacy) or per-item (Comet) authorization
+ * stage filled, ALREADY ADVANCED to THIS envelope's own base — indexed
+ * by leg alone (`auths[l]`), never `env_index * DNA_ENV_MAX_LEGS + leg`
+ * (R3 W4 package C: the legacy lane sizes `auths` to the block's real
+ * total leg count and passes `&auths[auth_off[env_index]]`; the Comet
+ * lane passes its one per-item, DNA_ENV_MAX_LEGS-sized buffer directly).
  *
  * `reason`/`reason_size` are the caller's blk->out_reason (this `blk` is
  * const, so the buffer arrives separately). The CALLEE OWNS the reason:
@@ -1211,9 +1251,17 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
         /* The ENGINE-owned verified verdict for THIS leg. The pre-BEGIN
          * authorization stage rejected the block unless every leg
          * verified, so an empty slot here is an engine invariant broken
-         * on this node — a fault, never a verdict. */
-        const nodus_rt_auth_verdict_t *av =
-            &auths[env_index * DNA_ENV_MAX_LEGS + l];
+         * on this node — a fault, never a verdict.
+         *
+         * R3 W4 package C — `auths` arrives ALREADY ADVANCED to this
+         * envelope's own base (the legacy lane passes `&auths[auth_off
+         * [env_index]]`; the Comet lane passes its one per-item buffer
+         * directly, which IS this envelope's base since only one item is
+         * ever live at a time). This callee therefore indexes by leg
+         * alone — no `env_index * DNA_ENV_MAX_LEGS` multiplication, which
+         * would have been the wrong offset once callers stopped sizing
+         * `auths` uniformly per envelope. */
+        const nodus_rt_auth_verdict_t *av = &auths[l];
         if (av->n_signers < 1) {
             V2AP_ENV_FAULT("env %u leg %u: empty authorization verdict "
                            "slot (pre-BEGIN auth stage invariant broken "
@@ -1840,7 +1888,7 @@ done:
     free(cm_fps);
     free(verdicts);
     free(pf);
-    free(doms);
+    doms_free(doms);
     free(bctx);
     return ret;
 }
@@ -2484,7 +2532,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
     }
     size_t n_dom = 0;
     if (doms_load(w, doms, &n_dom, /*strict_active=*/1) != 0) {
-        free(doms);
+        doms_free(doms);
         V2AP_FAULT("phase 0a: the domain registry / heads / runtime "
                    "tuples are unreadable or broken on THIS node - never "
                    "a statement about the block");
@@ -2502,7 +2550,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
      * deliberately no lane branch here: two sources for one identity is
      * how two builds end up binding different chains. */
     if (nodus_witness_v2_chain_id(w, chain_id) != 0) {
-        free(doms);
+        doms_free(doms);
         V2AP_FAULT("phase 0a: chain id underivable on this node - neither "
                    "a committed genesis block row nor a stored genesis "
                    "document answered");
@@ -2532,7 +2580,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
         if (nodus_witness_v2_epoch_authority_for_height(
                 w, blk->global_height, &snap, &vn, &vq) != 0 || !snap) {
             dna_vset_free(&snap);
-            free(doms);
+            doms_free(doms);
             V2AP_FAULT("phase 0a: no committed validator-set snapshot "
                        "governs height %llu on this node - cannot know "
                        "who was permitted to sign, so abstain",
@@ -2542,7 +2590,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
         int hrc = dna_vset_hash(snap, blk->out_vset_hash);
         dna_vset_free(&snap);
         if (hrc != 0) {
-            free(doms);
+            doms_free(doms);
             V2AP_FAULT("phase 0a: hashing the governing validator-set "
                        "snapshot (%u members, quorum %u) failed",
                        (unsigned)vn, (unsigned)vq);
@@ -2557,7 +2605,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
                          v2ap_hex8(blk->expect_vset_hash, e),
                          (unsigned long long)blk->global_height,
                          v2ap_hex8(blk->out_vset_hash, d), (unsigned)vn);
-            free(doms);
+            doms_free(doms);
             return -1;      /* asserted a foreign validator set          */
         }
     }
@@ -2585,7 +2633,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
                 V2AP_FAULT("phase 0a: block context build failed on this "
                            "node (rc %d, %llu registered domains)",
                            bcrc, (unsigned long long)n_dom);
-            free(doms);
+            doms_free(doms);
             return bcrc;    /* -1 chain-state verdict / -2 node fault,
                              * both unchanged from the inline original  */
         }
@@ -2599,7 +2647,23 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
     dna_meter_t *meters = NULL;
     nodus_rt_read_res_t *reads = NULL;
     uint8_t *resbuf = NULL;
-    nodus_rt_auth_verdict_t *auths = NULL;   /* [n_envs × MAX_LEGS]      */
+    /* R3 W4 package C — auths is no longer sized `n_envs × DNA_ENV_MAX_LEGS`
+     * (a fixed per-leg-cap multiplication). Each lane sizes and fills it
+     * differently, both AFTER this point, once real leg counts are known:
+     *   · LEGACY: sized to the SUM of every envelope's real leg count,
+     *     with `auth_off[i]` the running per-envelope base offset into it
+     *     (built right after the batch preflight succeeds — the "0b.
+     *     envelope preflight" block below).
+     *   · COMET: one item is ever live at a time (its own SAVEPOINT), so
+     *     ONE small reusable buffer sized DNA_ENV_MAX_LEGS (never touching
+     *     n_envs) serves every item in turn — see the `if (blk->cmt.on)`
+     *     block.
+     * Both call sites hand `exec_one_env`/`env_authorize_legs` a pointer
+     * ALREADY ADVANCED to the envelope's own base, so neither callee
+     * multiplies by DNA_ENV_MAX_LEGS any more (exec_one_env indexes
+     * `auths[l]`, never `auths[env_index * DNA_ENV_MAX_LEGS + l]`). */
+    nodus_rt_auth_verdict_t *auths = NULL;
+    size_t *auth_off = NULL;                 /* LEGACY lane only          */
     /* capacity season: the ENGINE-resolved governing committee snapshot
      * for auth_kind-2 legs — resolved lazily ONCE per block (heap: up to
      * 128 × 2592 B of pubkeys; never on the stack). */
@@ -2607,21 +2671,45 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
     uint8_t (*cm_fps)[64] = NULL;
     nodus_rt_committee_t cmview;
     memset(&cmview, 0, sizeof(cmview));
-    uint8_t claim_nuls[MAX_OPS][64];
-    int env_phase[NODUS_V2_ENV_BATCH_MAX];
-    memset(env_phase, 0, sizeof(env_phase));
+    /* R3 W4 package C — HEAP, sized to the BLOCK's own n_claims/n_envs,
+     * not the engine's release bound (NODUS_V2_APPLY_MAX_OPS is now
+     * 17 371; a `claim_nuls[MAX_OPS][64]` STACK array at that size would
+     * be a ~907 KB frame). Allocated where each lane first needs it (the
+     * S6 claims block below, once for whichever lane runs) — NULL/0 for
+     * a claim-free block is exactly the DNA_ENV_MAX_LEGS-independent,
+     * always-safe starting state. */
+    uint8_t (*claim_nuls)[64] = NULL;
+    /* R3 W4 package C — HEAP, sized to blk->n_envs (LEGACY lane only; the
+     * Comet lane never fills or reads this — its own item loop replaces
+     * the legacy phase order entirely). NULL/0 for a zero-envelope or
+     * Comet-lane block.
+     *
+     * R3 W4-C delta 5 (verifier finding E5, harmless, decided not fixed):
+     * the allocation below is unconditional on `blk->n_envs > 0` — it
+     * does NOT check `blk->cmt.on` first, so a Comet-lane block with
+     * envelopes allocates and immediately wastes `n_envs * sizeof(int)`
+     * bytes (this array is written only inside "PHASE 0b, THE LEGACY
+     * LANE ONLY" below, e.g. :2862, which the Comet lane never reaches).
+     * Left as-is rather than gated on the lane: `pf`, `meters`, `reads`
+     * and `resbuf` in this same allocation block are ALSO unconditional
+     * on the lane and cost far more per envelope (`dna_env_preflight_t`
+     * alone is 15 096 B; `env_phase`'s waste is 4 B per envelope,
+     * ~0.03% of that) — `env_phase` is consistent with its neighbors,
+     * not an outlier, and a lane-conditional branch here would trade a
+     * few bytes for a new branch in a per-block hot path for no
+     * measurable gain. */
+    int *env_phase = NULL;
     int need_committee = 0;              /* any leg carries auth_kind 2  */
 
     if (blk->n_envs > 0) {
-        pf     = calloc(blk->n_envs, sizeof(*pf));
-        meters = calloc(blk->n_envs, sizeof(*meters));
-        reads  = calloc(NODUS_RT_MAX_READS, sizeof(*reads));
-        resbuf = calloc(1, DNA_EFFECT_MAX_TOTAL_LEN);
-        auths  = calloc((size_t)blk->n_envs * DNA_ENV_MAX_LEGS,
-                        sizeof(*auths));
-        if (!pf || !meters || !reads || !resbuf || !auths) {
+        pf        = calloc(blk->n_envs, sizeof(*pf));
+        meters    = calloc(blk->n_envs, sizeof(*meters));
+        reads     = calloc(NODUS_RT_MAX_READS, sizeof(*reads));
+        resbuf    = calloc(1, DNA_EFFECT_MAX_TOTAL_LEN);
+        env_phase = calloc(blk->n_envs, sizeof(*env_phase));
+        if (!pf || !meters || !reads || !resbuf || !env_phase) {
             V2AP_FAULT("phase 0b: allocation of the preflight/meter/read/"
-                       "result/auth working set for %llu envelopes failed",
+                       "result/phase working set for %llu envelopes failed",
                        (unsigned long long)blk->n_envs);
             goto fail_fault_pre;
         }
@@ -2687,6 +2775,35 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
                          "V2AP_FAIL_AFTER_ENV_RESERVE fired (test "
                          "harness; no real check failed)");
             RET_VERDICT;
+        }
+
+        /* R3 W4 package C — `auths`, sized to the SUM of every envelope's
+         * REAL leg count, not `n_envs × DNA_ENV_MAX_LEGS`. Every envelope
+         * in `pf[0..n_envs)` is now fully preflighted, so `view.leg_count`
+         * is known for each; `auth_off[i]` is envelope i's running base
+         * offset into the flat `auths` array (`auth_off[n_envs]` is the
+         * total, kept for symmetry with a one-past-the-end bound). */
+        {
+            size_t total_legs = 0;
+            auth_off = calloc(blk->n_envs + 1, sizeof(*auth_off));
+            if (!auth_off) {
+                V2AP_FAULT("phase 0b: allocation of the %llu-entry "
+                           "auth-offset table failed",
+                           (unsigned long long)blk->n_envs);
+                goto fail_fault_pre;
+            }
+            for (size_t k = 0; k < blk->n_envs; k++) {
+                auth_off[k] = total_legs;
+                total_legs += pf[k].view.leg_count;
+            }
+            auth_off[blk->n_envs] = total_legs;
+            auths = calloc(total_legs, sizeof(*auths));
+            if (!auths) {
+                V2AP_FAULT("phase 0b: allocation of the %zu-slot "
+                           "(total real legs) auth-verdict scratch failed",
+                           total_legs);
+                goto fail_fault_pre;
+            }
         }
 
         /* ── COMMITTED-IDENTITY REPLAY GUARD (intent season, pre-BEGIN,
@@ -2841,12 +2958,36 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
                         need_committee = 1;
                 }
                 d->touched = 1;
-                if (d->n_tx >= MAX_OPS) {
-                    V2AP_VERDICT("phase 0b admission: domain %u would "
-                                 "carry more than the engine bound of %u "
-                                 "transactions in one block",
-                                 (unsigned)d->domain_id, (unsigned)MAX_OPS);
-                    RET_VERDICT;
+                /* R3 W4 package C — PROVEN, not policy: a domain cannot
+                 * appear twice in one envelope's leg list (env_wire.c
+                 * :364-365 decode / :276 encode both refuse a domain_id
+                 * that is not strictly ascending), so this domain's
+                 * `n_tx` — incremented once per LEG naming it — can never
+                 * exceed the block's own `n_envs`. Reaching this branch
+                 * means that invariant broke on THIS node: a FAULT, never
+                 * a judgement about the block (the old MAX_OPS-sized
+                 * array bound this used to be a VERDICT against no longer
+                 * exists — `wire_ids` is heap, sized to `n_envs` below). */
+                if (d->n_tx >= blk->n_envs) {
+                    V2AP_FAULT("phase 0b admission: domain %u's n_tx "
+                               "reached the block's own n_envs (%llu) - "
+                               "the one-leg-per-domain-per-envelope "
+                               "invariant (env_wire.c:364-365) broke on "
+                               "this node",
+                               (unsigned)d->domain_id,
+                               (unsigned long long)blk->n_envs);
+                    goto fail_fault_pre;
+                }
+                if (!d->wire_ids) {
+                    d->wire_ids = calloc(blk->n_envs, sizeof(*d->wire_ids));
+                    if (!d->wire_ids) {
+                        V2AP_FAULT("phase 0b admission: allocation of "
+                                   "domain %u's %llu-entry wire-id "
+                                   "scratch failed",
+                                   (unsigned)d->domain_id,
+                                   (unsigned long long)blk->n_envs);
+                        goto fail_fault_pre;
+                    }
                 }
                 memcpy(d->wire_ids[d->n_tx++], pf[i].wire_id, 64);
             }
@@ -2926,7 +3067,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
                     v->leg[l].auth_kind == NODUS_RT_AUTHKIND_DSA87_CC_V1
                         ? &cmview : NULL;
                 int arc = d->rt->auth(d->rt, v, l, &actx,
-                                      &auths[i * DNA_ENV_MAX_LEGS + l]);
+                                      &auths[auth_off[i] + l]);
                 if (arc == -2) {
                     V2AP_FAULT("phase 0b auth: verification backend "
                                "failed for env %llu leg %u domain %u "
@@ -2955,35 +3096,17 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
         }
     }
 
-    /* global tx-count cap (chain config) + per-domain tx quotas */
-    {
-        /* O15J Block 2 (A2) — the cap decides a VERDICT on someone else's
-         * block, so an unreadable cap must be a node FAULT, never a
-         * verdict: a node that answered "invalid" here on a local disk
-         * error would be rejecting a block the rest of the cluster
-         * commits. rc == 1 (genuinely no governance row) still yields the
-         * hard cap, exactly as before. */
-        uint64_t cap = 0;
-        if (nodus_chain_config_get_u64(w,
-                DNAC_CFG_MAX_TXS_PER_BLOCK, blk->global_height,
-                DNAC_CFG_MAX_TXS_HARD_CAP, &cap) < 0) {
-            V2AP_FAULT("the MAX_TXS_PER_BLOCK chain-config override at "
-                       "height %llu is unreadable — this node cannot judge "
-                       "the block's transaction count",
-                       (unsigned long long)blk->global_height);
-            goto fail_fault_pre;
-        }
-        if (cap == 0 || cap > DNAC_CFG_MAX_TXS_HARD_CAP)
-            cap = DNAC_CFG_MAX_TXS_HARD_CAP;
-        if ((uint64_t)blk->n_envs > cap) {
-            V2AP_VERDICT("block carries %llu envelopes; the chain-config "
-                         "cap at height %llu is %llu",
-                         (unsigned long long)blk->n_envs,
-                         (unsigned long long)blk->global_height,
-                         (unsigned long long)cap);
-            RET_VERDICT;
-        }
-    }
+    /* R3 W4-C delta 2 (operator "kaldır" 2026-09-18;
+     * atlas-dec-5b7568512b95e6d2e671c4eaad2c1879 rev 1): the global
+     * tx-count cap (chain-config MAX_TXS_PER_BLOCK) is DELETED — a
+     * block's capacity is decided by cometbft's own Block.MaxBytes, the
+     * meter policy's max_block_env_bytes and NODUS_V2_GLOBAL_UNIT_BUDGET
+     * only. The pre-BEGIN `blk->n_envs > NODUS_V2_ENV_BATCH_MAX` gate
+     * (this function's very first check) is the engine's own surviving
+     * envelope-count ceiling — a derived MEMORY bound, never a consensus
+     * parameter (nodus_witness_v2_apply.h). Per-domain tx quotas are
+     * UNCHANGED — a committed manifest's own `quota_tx_per_block` is a
+     * per-domain policy choice, not the retired global count cap. */
     for (size_t i = 0; i < n_dom; i++) {
         dom_ctx_t *d = &doms[i];
         if (!d->touched) continue;
@@ -3001,13 +3124,26 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
      * TARGET domains (pre-txn, read-only) — unchanged from S6; its
      * helpers keep the conflated -1 (header HONEST LABEL). ──────────── */
     if (blk->n_claims > 0) {
-        if (!blk->claims || blk->n_claims > MAX_OPS) {
+        if (!blk->claims || blk->n_claims > NODUS_V2_APPLY_MAX_CLAIMS) {
             V2AP_VERDICT("block declares %llu claims with %s array (engine "
-                         "bound %u)",
+                         "bound %zu)",
                          (unsigned long long)blk->n_claims,
                          blk->claims ? "an over-long" : "a NULL",
-                         (unsigned)MAX_OPS);
+                         NODUS_V2_APPLY_MAX_CLAIMS);
             RET_VERDICT;
+        }
+        /* R3 W4 package C — HEAP, sized to the BLOCK's own n_claims (the
+         * bound above just proved it fits cometbft's own block-byte
+         * ceiling; a MAX_OPS-sized (17 371-entry) array regardless of the
+         * block's real count would have been wasteful and, before this
+         * package, was a fixed STACK array of that same size — a
+         * ~907 KB frame. */
+        claim_nuls = calloc(blk->n_claims, sizeof(*claim_nuls));
+        if (!claim_nuls) {
+            V2AP_FAULT("phase 0b: allocation of the %llu-entry claim-"
+                       "nullifier scratch failed",
+                       (unsigned long long)blk->n_claims);
+            goto fail_fault_pre;
         }
         for (size_t i = 0; i < blk->n_claims; i++) {
             uint32_t target = 0;
@@ -3172,6 +3308,24 @@ cmt_skip_batch_stage:
             }
         }
 
+        /* R3 W4 package C — the Comet lane's own `auths`: ONE item is
+         * ever live at a time (each runs inside its own SAVEPOINT, in
+         * block order), so a single reusable buffer sized DNA_ENV_MAX_LEGS
+         * — the per-envelope leg cap, independent of `n_envs` — serves
+         * every item in turn. No offset table is needed here (unlike the
+         * legacy lane's whole-batch `auths`): index `l` is always
+         * relative to THIS item, and `env_authorize_legs` never writes
+         * past `v->leg_count <= DNA_ENV_MAX_LEGS` slots. */
+        if (blk->n_envs > 0) {
+            auths = calloc(DNA_ENV_MAX_LEGS, sizeof(*auths));
+            if (!auths) {
+                V2AP_FAULT("cometbft lane: allocation of the per-item "
+                           "%u-slot auth-verdict scratch failed",
+                           (unsigned)DNA_ENV_MAX_LEGS);
+                goto fail_fault;
+            }
+        }
+
         for (size_t i = 0; i < blk->n_envs; i++) {
             nodus_v2_tx_result_t *res = &blk->cmt.results[i];
             const dna_env_view_t *v;
@@ -3324,12 +3478,34 @@ cmt_skip_batch_stage:
                     code = NODUS_V2_TX_ERR_ADMISSION;
                     goto cmt_item_failed;
                 }
-                /* the engine's own per-domain transaction bound and the
-                 * committed manifest's quota — both CAPACITY, because
-                 * both are about what is LEFT, not about the bytes */
-                if (d->n_tx >= MAX_OPS ||
-                    (d->man.quota_tx_per_block != 0 &&
-                     d->n_tx + 1 > (uint32_t)d->man.quota_tx_per_block)) {
+                /* R3 W4 package C — PROVEN, not policy, and split from
+                 * the quota check below (they used to share one `||` and
+                 * one CAPACITY verdict). A domain cannot appear twice in
+                 * one envelope's leg list (env_wire.c:364-365 decode /
+                 * :276 encode both refuse a domain_id that is not
+                 * strictly ascending), so this domain's `n_tx` —
+                 * incremented once per LEG naming it — can never reach
+                 * the block's own `n_envs`. Reaching this branch means
+                 * that invariant broke on THIS node: a FAULT, never the
+                 * CAPACITY verdict the quota half below still is. */
+                if (d->n_tx >= blk->n_envs) {
+                    V2AP_FAULT("cometbft item %llu leg %u: domain %u's "
+                               "n_tx reached the block's own n_envs "
+                               "(%llu) - the one-leg-per-domain-per-"
+                               "envelope invariant (env_wire.c:364-365) "
+                               "broke on this node",
+                               (unsigned long long)i, (unsigned)l,
+                               (unsigned)d->domain_id,
+                               (unsigned long long)blk->n_envs);
+                    (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                    (void)cmt_savepoint_release(w, sp);
+                    goto fail_fault;
+                }
+                /* the committed manifest's own per-domain quota —
+                 * CAPACITY, because it is about what is LEFT, not about
+                 * the bytes */
+                if (d->man.quota_tx_per_block != 0 &&
+                    d->n_tx + 1 > (uint32_t)d->man.quota_tx_per_block) {
                     code = NODUS_V2_TX_ERR_CAPACITY;
                     goto cmt_item_failed;
                 }
@@ -3361,7 +3537,7 @@ cmt_skip_batch_stage:
             {
                 int arc = env_authorize_legs(
                     w, &pf[i], doms, n_dom, chain_id, blk->global_height,
-                    blk->epoch, &cmview, &auths[i * DNA_ENV_MAX_LEGS],
+                    blk->epoch, &cmview, auths,
                     blk->out_reason, sizeof blk->out_reason);
 
                 if (arc == -2) {
@@ -3416,6 +3592,24 @@ cmt_skip_batch_stage:
                 dom_ctx_t *d = dom_for(doms, n_dom, v->leg[l].domain_id);
 
                 d->touched = 1;
+                /* R3 W4 package C — HEAP, lazily, sized to the block's
+                 * own n_envs (the admission-phase FAULT check above
+                 * already proved n_tx < n_envs for this leg, so the write
+                 * below is in-bounds by construction). */
+                if (!d->wire_ids) {
+                    d->wire_ids = calloc(blk->n_envs, sizeof(*d->wire_ids));
+                    if (!d->wire_ids) {
+                        V2AP_FAULT("cometbft item %llu leg %u: allocation "
+                                   "of domain %u's %llu-entry wire-id "
+                                   "scratch failed",
+                                   (unsigned long long)i, (unsigned)l,
+                                   (unsigned)d->domain_id,
+                                   (unsigned long long)blk->n_envs);
+                        (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                        (void)cmt_savepoint_release(w, sp);
+                        goto fail_fault;
+                    }
+                }
                 memcpy(d->wire_ids[d->n_tx++], pf[i].wire_id, 64);
             }
             gidx++;
@@ -3467,26 +3661,37 @@ cmt_item_failed:
         }
 
         /* ── THE CLAIM ARRAY'S BOUNDS ────────────────────────────────
-         * The legacy lane checks these before its transaction opens
-         * (the `blk->n_claims > MAX_OPS` / NULL-array gate), and that
-         * gate is inside the region this lane skips — so without this
-         * the loop below would write `claim_nuls[i]` past a 16-slot
-         * array (declared with the engine's other per-block scratch) and
-         * smash the frame. `finalize_block` happens to bound a request
-         * at ten today, but the engine must not depend on ONE caller's
-         * arithmetic for its own memory safety: a direct caller (every
-         * V2 test is one) reaches this loop unfiltered.
+         * The legacy lane checks these before its transaction opens (the
+         * `blk->n_claims > NODUS_V2_APPLY_MAX_CLAIMS` / NULL-array gate),
+         * and that gate is inside the region this lane skips (this lane
+         * never allocates `claim_nuls` there either) — so without this
+         * the loop below would write into a NULL `claim_nuls`. R3 W4
+         * package C: the array is heap now, sized to THIS block's own
+         * n_claims, not a fixed MAX_OPS-sized (17 371-entry) frame — but
+         * the engine still must not depend on ONE caller's arithmetic for
+         * its own memory safety: a direct caller (every V2 test is one)
+         * reaches this loop unfiltered, and an absurd n_claims must not
+         * become an absurd allocation attempt either.
          *
          * Neither refusal is a judgement about anyone's block: an array
          * this engine cannot hold is this node's shape. */
-        if (blk->n_claims > MAX_OPS ||
+        if (blk->n_claims > NODUS_V2_APPLY_MAX_CLAIMS ||
             (blk->n_claims > 0 && !blk->claims)) {
             V2AP_FAULT("cometbft lane: the block declares %llu claims "
-                       "with %s array; this engine holds %u",
+                       "with %s array; this engine holds %zu",
                        (unsigned long long)blk->n_claims,
                        blk->claims ? "an over-long" : "a NULL",
-                       (unsigned)MAX_OPS);
+                       NODUS_V2_APPLY_MAX_CLAIMS);
             goto fail_fault;
+        }
+        if (blk->n_claims > 0) {
+            claim_nuls = calloc(blk->n_claims, sizeof(*claim_nuls));
+            if (!claim_nuls) {
+                V2AP_FAULT("cometbft lane: allocation of the %llu-entry "
+                           "claim-nullifier scratch failed",
+                           (unsigned long long)blk->n_claims);
+                goto fail_fault;
+            }
         }
 
         /* ── CLAIMS ARE ITEMS, and take the same discipline ───────────
@@ -3585,8 +3790,8 @@ cmt_claim_failed:
     for (size_t i = 0; i < blk->n_envs; i++) {          /* SYSTEM-local  */
         if (env_phase[i] != 0) continue;
         int rc = exec_one_env(w, blk, i, chain_id, blk->epoch, doms,
-                              n_dom, &pf[i], &meters[i], auths, reads,
-                              resbuf, blk->out_reason,
+                              n_dom, &pf[i], &meters[i], &auths[auth_off[i]],
+                              reads, resbuf, blk->out_reason,
                               sizeof blk->out_reason);
         if (rc == -2) goto fail_fault;
         if (rc != 0) goto fail;
@@ -3603,8 +3808,8 @@ cmt_claim_failed:
     for (size_t i = 0; i < blk->n_envs; i++) {          /* cross-domain  */
         if (env_phase[i] != 1) continue;
         int rc = exec_one_env(w, blk, i, chain_id, blk->epoch, doms,
-                              n_dom, &pf[i], &meters[i], auths, reads,
-                              resbuf, blk->out_reason,
+                              n_dom, &pf[i], &meters[i], &auths[auth_off[i]],
+                              reads, resbuf, blk->out_reason,
                               sizeof blk->out_reason);
         if (rc == -2) goto fail_fault;
         if (rc != 0) goto fail;
@@ -3625,8 +3830,8 @@ cmt_claim_failed:
             if (pf[i].view.leg[0].domain_id != d->domain_id) continue;
             int rc = exec_one_env(w, blk, i, chain_id, blk->epoch,
                                   doms, n_dom, &pf[i], &meters[i],
-                                  auths, reads, resbuf, blk->out_reason,
-                                  sizeof blk->out_reason);
+                                  &auths[auth_off[i]], reads, resbuf,
+                                  blk->out_reason, sizeof blk->out_reason);
             if (rc == -2) goto fail_fault;
             if (rc != 0) goto fail;
             if (blk->fail_at == V2AP_FAIL_AFTER_ENV_EXEC &&
@@ -3691,7 +3896,7 @@ cmt_items_done:
             goto fail_fault;
         }
         if (doms_load(w, post, &n_post, /*strict_active=*/0) != 0) {
-            free(post);
+            doms_free(post);
             V2AP_FAULT("phase 6c: the domain registry became unreadable "
                        "on this node during the lifecycle re-scan");
             goto fail_fault;
@@ -3703,7 +3908,16 @@ cmt_items_done:
                 p->pre_status = pre->status;
                 p->touched = pre->touched;
                 p->n_tx = pre->n_tx;
-                memcpy(p->wire_ids, pre->wire_ids, sizeof(p->wire_ids));
+                /* TRANSFER, never copy: `wire_ids` is heap-owned and
+                 * sized to `pre`'s own allocation (R3 W4 package C). `pre`
+                 * (in the OLD `doms`) gives up ownership immediately so
+                 * `doms_free(doms)` — reached later at the
+                 * `doms_free(doms); doms = post;` pair closing this
+                 * re-scan (:3986-3987) and at every failure label —
+                 * cannot double-free what `post`
+                 * (soon the function's `doms`) now owns. */
+                p->wire_ids = pre->wire_ids;
+                pre->wire_ids = NULL;
                 p->res_cost = pre->res_cost;
                 if (pre->status == DNA_DOMST_RETIRED &&
                     p->status != DNA_DOMST_RETIRED) {
@@ -3716,7 +3930,7 @@ cmt_items_done:
                                  "RETIRED state (now status %u)",
                                  (unsigned)p->domain_id,
                                  (unsigned)p->status);
-                    free(post);
+                    doms_free(post);
                     goto fail;
                 }
             } else {
@@ -3727,7 +3941,7 @@ cmt_items_done:
                                  "this block already carrying a "
                                  "committed head",
                                  (unsigned)p->domain_id);
-                    free(post);
+                    doms_free(post);
                     goto fail;
                 }
                 if (p->status == DNA_DOMST_ACTIVE)
@@ -3751,7 +3965,7 @@ cmt_items_done:
                                "node (conflated seam - classified "
                                "node-local, the SAFE direction)",
                                (unsigned)p->domain_id);
-                    free(post);
+                    doms_free(post);
                     goto fail_fault;
                 }
                 if (!p->has_head) {
@@ -3762,7 +3976,7 @@ cmt_items_done:
                                      "head - heads are never synthesized "
                                      "here",
                                      (unsigned)p->domain_id);
-                        free(post);
+                        doms_free(post);
                         goto fail;
                     }
                     if (head_activate(w, p, blk->global_height) != 0) {
@@ -3774,7 +3988,7 @@ cmt_items_done:
                                      (unsigned)p->domain_id,
                                      (unsigned long long)
                                          blk->global_height);
-                        free(post);
+                        doms_free(post);
                         goto fail;
                     }
                 }
@@ -3782,13 +3996,13 @@ cmt_items_done:
         }
         for (size_t i = 0; i < n_dom; i++)
             if (!dom_for(post, n_post, doms[i].domain_id)) {
-                free(post);
+                doms_free(post);
                 V2AP_VERDICT("phase 6c: domain %u vanished from the "
                              "registry during this block",
                              (unsigned)doms[i].domain_id);
                 goto fail;
             }
-        free(doms);
+        doms_free(doms);
         doms = post;
         n_dom = n_post;
     }
@@ -4577,8 +4791,25 @@ cmt_index_done:
 
     /* 13. block-level roots + expectation compare + metadata */
     {
-        uint8_t all_ids[NODUS_V2_ENV_BATCH_MAX][64];
+        /* R3 W4 package C — HEAP, sized to the block's own n_envs (not
+         * the release bound NODUS_V2_ENV_BATCH_MAX, which has moved
+         * several times — 16 originally, 10 at delta 1, now 3 209 as a
+         * derived memory ceiling since delta 2 — but the point stands
+         * regardless of its value: this array's true size has always
+         * been n_envs, never the engine's compile-time cap). Self-
+         * contained: allocated and freed within this one nested block,
+         * on every exit from it. */
+        uint8_t (*all_ids)[64] = NULL;
         uint32_t n_all = 0;
+        if (blk->n_envs > 0) {
+            all_ids = calloc(blk->n_envs, sizeof(*all_ids));
+            if (!all_ids) {
+                V2AP_FAULT("phase 13: allocation of the %llu-entry "
+                           "tx_root id scratch failed",
+                           (unsigned long long)blk->n_envs);
+                goto fail_fault;
+            }
+        }
         if (blk->cmt.on) {
             /* R3-C1a-7, and the ROW'S OWN RULE: `tx_root` commits the
              * ids of the items this block APPLIED, in block order, and
@@ -4609,8 +4840,10 @@ cmt_index_done:
                 blk->out_tx_root) != 0) {
             V2AP_FAULT("phase 13: tx_root over %u derived ids could not "
                        "be computed", (unsigned)n_all);
+            free(all_ids);
             goto fail_fault;
         }
+        free(all_ids);
 
         dna_domain_update_t upd_sorted[MAX_DOMS];
         size_t n_upd = 0;
@@ -4902,8 +5135,9 @@ cmt_bind_done:
      * what lets `SaveFinalizeBlockResponse` and `updateState` join it. */
     if (blk->cmt.on) {
         free(pf); free(meters); free(reads); free(resbuf); free(auths);
+        free(auth_off); free(claim_nuls); free(env_phase);
         free(cm_pubkeys); free(cm_fps);
-        free(doms);
+        doms_free(doms);
         return 0;
     }
     if (blk->fail_at == V2AP_FAIL_COMMIT) {
@@ -4919,8 +5153,9 @@ cmt_bind_done:
         goto fail_fault_committed;      /* commit itself failed: node    */
     }
     free(pf); free(meters); free(reads); free(resbuf); free(auths);
+    free(auth_off); free(claim_nuls); free(env_phase);
     free(cm_pubkeys); free(cm_fps);
-    free(doms);
+    doms_free(doms);
     if (blk->fail_at == V2AP_FAIL_AFTER_COMMIT)
         return 2;                        /* committed; pre-cache window  */
     return 0;
@@ -4949,8 +5184,9 @@ fail:
     }
     meters_abort_all(meters, blk->n_envs);
     free(pf); free(meters); free(reads); free(resbuf); free(auths);
+    free(auth_off); free(claim_nuls); free(env_phase);
     free(cm_pubkeys); free(cm_fps);
-    free(doms);
+    doms_free(doms);
     return -1;
 
 fail_fault:
@@ -4965,8 +5201,9 @@ fail_fault_committed:
                    "(`fail_fault` label)");
     meters_abort_all(meters, blk->n_envs);
     free(pf); free(meters); free(reads); free(resbuf); free(auths);
+    free(auth_off); free(claim_nuls); free(env_phase);
     free(cm_pubkeys); free(cm_fps);
-    free(doms);
+    doms_free(doms);
     return -2;
 
 /* pre-transaction exits (nothing to roll back in the database) */
@@ -4976,8 +5213,9 @@ fail_verdict_pre:
                      "(`fail_verdict_pre` label)");
     meters_abort_all(meters, blk->n_envs);
     free(pf); free(meters); free(reads); free(resbuf); free(auths);
+    free(auth_off); free(claim_nuls); free(env_phase);
     free(cm_pubkeys); free(cm_fps);
-    free(doms);
+    doms_free(doms);
     return -1;
 
 fail_fault_pre:
@@ -4986,8 +5224,9 @@ fail_fault_pre:
                    "(`fail_fault_pre` label)");
     meters_abort_all(meters, blk->n_envs);
     free(pf); free(meters); free(reads); free(resbuf); free(auths);
+    free(auth_off); free(claim_nuls); free(env_phase);
     free(cm_pubkeys); free(cm_fps);
-    free(doms);
+    doms_free(doms);
     return -2;
 }
 
@@ -5032,12 +5271,12 @@ int nodus_witness_v2_committed_global_root(nodus_witness_t *w,
         return -1;
     }
     if (doms_load(w, doms, &n_dom, /*strict_active=*/0) != 0) {
-        free(doms);
+        doms_free(doms);
         return -1;
     }
     heads = calloc(n_dom ? n_dom : 1, sizeof(*heads));
     if (!heads) {
-        free(doms);
+        doms_free(doms);
         return -1;
     }
     for (i = 0; i < n_dom; i++) {
@@ -5051,7 +5290,7 @@ int nodus_witness_v2_committed_global_root(nodus_witness_t *w,
         ret = 0;
     }
     free(heads);
-    free(doms);
+    doms_free(doms);
     return ret;
 }
 
@@ -5212,17 +5451,17 @@ int nodus_witness_v2_genesis_cmt(nodus_witness_t *w,
         }
         size_t n_dom = 0;
         if (doms_load(w, doms, &n_dom, /*strict_active=*/0) != 0) {
-            free(doms);
+            doms_free(doms);
             break;
         }
         if (n_dom < 1 || doms[0].domain_id != DNA_DOMAIN_SYSTEM ||
             doms[0].status != DNA_DOMST_ACTIVE) {
-            free(doms);                 /* ACTIVE SYSTEM is mandatory    */
+            doms_free(doms);                 /* ACTIVE SYSTEM is mandatory    */
             break;
         }
         heads = calloc(n_dom, sizeof(*heads));
         if (!heads) {
-            free(doms);
+            doms_free(doms);
             (void)exec_sql(w, "ROLLBACK");
             return NODUS_V2_INTERNAL_FAULT;
         }
@@ -5236,18 +5475,18 @@ int nodus_witness_v2_genesis_cmt(nodus_witness_t *w,
             if (head_activate(w, &doms[i], 0) != 0) { all_ok = 0; break; }
             heads[n_heads++] = doms[i].head;
         }
-        if (!all_ok || n_heads == 0) { free(doms); break; }
+        if (!all_ok || n_heads == 0) { doms_free(doms); break; }
 
         /* :761-769 — the roots, over the heads just activated and in the
          * order they were activated (domain_id ASC, doms_load's ORDER
          * BY). This is the value that becomes the document's app_hash. */
         uint8_t domains_root[64];
         if (dna_v2_domains_root(heads, n_heads, domains_root) != 0) {
-            free(doms);
+            doms_free(doms);
             break;
         }
         if (dna_v2_global_root(domains_root, global_root) != 0) {
-            free(doms);
+            doms_free(doms);
             break;
         }
 
@@ -5269,23 +5508,23 @@ int nodus_witness_v2_genesis_cmt(nodus_witness_t *w,
                 int ghrc = dna_vset_hash(gsnap, committed_vsh);
                 dna_vset_free(&gsnap);
                 if (ghrc != 0) {
-                    free(doms);
+                    doms_free(doms);
                     (void)exec_sql(w, "ROLLBACK");
                     free(heads);
                     return NODUS_V2_INTERNAL_FAULT;
                 }
                 if (memcmp(committed_vsh, vset_hash,
                            DNA_VSET_HASH_LEN) != 0) {
-                    free(doms);
+                    doms_free(doms);
                     break;      /* genesis named a foreign validator set */
                 }
             } else {
                 dna_vset_free(&gsnap);
-                if (garc < 0) { free(doms); break; }   /* read fault */
+                if (garc < 0) { doms_free(doms); break; }   /* read fault */
             }
         }
 
-        free(doms);
+        doms_free(doms);
 
         /* NO v2_blocks INSERT. D-19 rev 6 withdrew the genesis block;
          * the height-0 root-history rows were already written by

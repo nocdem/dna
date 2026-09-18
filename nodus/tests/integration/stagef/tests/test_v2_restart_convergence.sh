@@ -136,6 +136,7 @@ if [ "${has_v2:-0}" = "0" ]; then
     echo "[SKIP] not a Ledger V2 cluster — bring it up with stagef_up_v2.sh"
     exit 99
 fi
+stagef_sentinel SETUP_OK   # W4-H: the runner turns PASS-without-ASSERT_RUN into FAIL
 n_v2=$(sqlite3 "$ref_db" "SELECT COUNT(*) FROM v2_blocks;" 2>/dev/null || echo 0)
 [ "${n_v2:-0}" != "0" ] || { echo "[SKIP] V2 schema present but no V2 block"; exit 99; }
 echo "[ok] cluster is on the Ledger V2 lane ($n_v2 block(s))"
@@ -307,9 +308,11 @@ for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
 done
 [ "$post_floor" -gt "$tip_before" ] || die \
   "the post-restart floor ($post_floor) is not strictly greater than the pre-kill baseline ($tip_before) — the chain did not demonstrably advance"
+stagef_sentinel ASSERT_RUN   # the terminal assertion is next
 stagef_cmt_diff_at_floor "post-v2-restart" || exit 2
 echo "[ok] post-restart floor $post_floor is strictly past the pre-kill baseline $tip_before"
 
+stagef_sentinel PASS
 echo ""
 echo "[PASS] a Comet node was killed and restarted: it re-established its"
 echo "       COMETBFT role, ran and completed the ABCI Handshake,"

@@ -14,7 +14,24 @@
  * own comment explains why it does not continue into prevote/commit) and
  * `s_vote_extension_survives_source_overwrite`, both listed where they
  * sit alongside the scenarios they reuse the shape of
- * (`s_bad_proposal`, `s_full_round2`).
+ * (`s_bad_proposal`, `s_full_round2`). PACKAGE W4-X (register
+ * R3-W3-C2e-4) added three more, for the same reason — the reference's
+ * arena is the garbage collector, which has no per-height reset to port —
+ * all three sitting right after C2e's own two:
+ * `s_ext_arena_reset_across_three_heights` (three heights of extensions
+ * through a capacity that holds two but not three — RED on one
+ * never-reset arena, GREEN once the reset reclaims the shared parity),
+ * `s_ext_arena_survives_across_parity` (the surviving parity's bytes are
+ * still exactly what was signed after the other parity has been written)
+ * and `s_late_last_commit_vote_lands_in_its_own_height_arena` (a vote for
+ * height H added while the machine is already at H+1 — the LastCommit
+ * path — grows `arena[H & 1]`'s `used`, never the live height's); the
+ * ORCHESTRATOR added a fourth from the verifier's round (W4-X ORC-2),
+ * `s_oversized_peer_extension_is_rejected_not_fault`, and package W4-F
+ * added `s_full_round_peer_proposal` (the positive prevote path for a
+ * PEER's proposal, with the fixture-clock diagnosis in its header). The
+ * `main()` table is the count of record (49 at W4-F); this sentence is
+ * not.
  *
  * Every scenario names the Go `func Test…` it comes from and its line.
  * The fixture — the application, the signer, the block store, the WAL,
@@ -1096,6 +1113,563 @@ static int s_vote_extension_survives_source_overwrite(void)
                    sizeof(ext_pattern)) == 0,
             "vote_extension_survives: stored extension differs from the "
             "bytes freed right after the vote was queued");
+
+    tc_release(tc);
+    return 0;
+}
+
+/**
+ * PACKAGE W4-X (register R3-W3-C2e-4) — NO REFERENCE TEST, exactly as
+ * C2e's two arena scenarios above have none: the reference's arena is
+ * Go's garbage collector, which has no reset call to port (cmt_cs.h
+ * OWNERSHIP (2), the DEVIATION paragraph).
+ *
+ * WHAT ONE HEIGHT COSTS: every height writes THIS node's own precommit
+ * extension TWICE — once from `tc_extend_vote` (the `extend_vote` row
+ * itself) and once more when that same already-signed vote is re-added
+ * to the vote set through the internal message queue, where
+ * `cmt_cs_try_add_vote` copies it again because that function does not
+ * distinguish a self-originated vote from a peer's (cmt_cs.c
+ * ~3452-3500) — plus the stub's precommit extension once, also via
+ * `cmt_cs_try_add_vote`. 3 * TC_EXT_OF_LEN = 33 bytes every height,
+ * exactly.
+ *
+ * WHAT THE CAP MUST BE (ORCHESTRATOR correction, W4-X ORC-1): the
+ * writer's first draft used 80 bytes with the arithmetic "66 fit, 99 do
+ * not" — true for ONE arena, but this package has TWO, and the parity
+ * split ALONE puts heights 1 and 3 in `ext_arena[1]` and height 2 in
+ * `ext_arena[0]`, so without any reset arena[1] holds 33 + 33 = 66 ≤ 80
+ * and the scenario passed with the reset line deleted (measured by the
+ * ORCHESTRATOR, 2026-09-18: 47/47 with `->used = 0u` removed). The cap
+ * must hold ONE height's 33 bytes and refuse TWO: 33 < cap < 66. 48 it
+ * is.
+ *
+ * RED WITHOUT THE RESET: height 3 lands in arena[1] on top of height 1's
+ * 33 bytes → 66 > 48 → the third height's second arena write returns
+ * CMT_FAULT and whichever `S_STEP` triggers it fails this scenario.
+ * GREEN WITH IT: entering height 3 zeroes `used` on `ext_arena[3 & 1] =
+ * ext_arena[1]`, which by then holds only height 1's bytes, unreferenced
+ * since `update_to_state` released `prev_votes` for the last time it
+ * pointed at them (cmt_cs.c's own comment at the reset site; fact 3 of
+ * this package's dispatch). Height 3 therefore starts that arena at 0
+ * and its 33 bytes fit the 48-byte cap, regardless of how many heights
+ * preceded it.
+ *
+ * Two validators: every height needs both to commit (`s_full_round2`'s
+ * shape). Proposer arithmetic ((height-1+round) mod nvals,
+ * `tc_expected_proposer`) puts the STUB at height 2 round 0, so that
+ * height is driven through `tc_decide_proposal_from` exactly as
+ * `common_test.go` lets a non-self validator propose; height 3 returns
+ * the proposer to this node, so its round is entered automatically by
+ * height 2's own commit timeout, the same way height 2 itself was.
+ */
+static int s_ext_arena_reset_across_three_heights(void)
+{
+    tc_t                 *tc = tc_alloc(2u, 1, 0);
+    uint8_t               hash[CMT_TMHASH_SIZE];
+    cmt_part_set_header_t psh;
+    cmt_proposal_t        prop2;
+    cmt_block_t          *block2 = NULL;
+    cmt_part_set_t       *parts2 = NULL;
+    const size_t          cap = 48u;   /* 33 < cap < 66 — see the header */
+
+    S_CHECK(tc != NULL, "ext_arena_reset: setup");
+
+    /* The fixture's own arenas are a resource this scenario is entitled
+     * to resize, unlike `cs->rs` (test_cmt_common.h's own HOW IT CAN LIE
+     * header, item 6's replacement below). */
+    free(tc->arena[0]->buf);
+    tc->arena[0]->buf = (uint8_t *)malloc(cap);
+    tc->arena[0]->cap = cap;
+    tc->arena[0]->used = 0u;
+    free(tc->arena[1]->buf);
+    tc->arena[1]->buf = (uint8_t *)malloc(cap);
+    tc->arena[1]->cap = cap;
+    tc->arena[1]->used = 0u;
+    S_CHECK(tc->arena[0]->buf != NULL && tc->arena[1]->buf != NULL,
+            "ext_arena_reset: shrink alloc");
+    tc->extend_ext     = tc_ext_bytes_of[0];
+    tc->extend_ext_len = (size_t)TC_EXT_OF_LEN;
+
+    /* ── height 1, round 0: this node proposes ((1-1+0) mod 2 == 0). ── */
+    S_STEP(tc_start_test_round(tc, 1, 0));
+    S_STEP(tc_ensure_vote(tc, 1, 0, S_PREVOTE));
+    S_CHECK(tc->apply_calls == 0, "ext_arena_reset: h1 committed early");
+    S_STEP(tc_proposal_block_hash(tc, hash));
+    S_STEP(tc_proposal_parts_header(tc, &psh));
+    S_STEP(tc_sign_add_vote_one(tc, 1u, S_PREVOTE, hash, sizeof(hash),
+                                &psh, false));
+    S_STEP(tc_ensure_vote(tc, 1, 0, S_PRECOMMIT));
+    /* THE CLOCK MOVES FORWARD BY ONE SECOND — same technique and same
+     * reason as `s_reset_timeout_precommit_upon_new_height`: this node's
+     * OWN precommit above already carries `voteTime`'s stamp (block 1's
+     * time + 1 ms, cmt_cs.c:2390's clock read, state.go:2423-2434), but
+     * the stub signs whatever `tc->now` says (`tc_stub_sign_vote`, no
+     * voteTime rule) and the clock is otherwise frozen at block 1's own
+     * time. With exactly TWO EQUAL-power validators, `cmt_weighted_
+     * median` selects the EARLIER of the two timestamps (median =
+     * total_power / 2 = 1, and the first sorted entry alone already
+     * meets `median <= weight`) — so height 2's block time is whichever
+     * of {this node's, the stub's} sorts first. Advancing the clock HERE,
+     * after this node's stamp and before the stub's, keeps this node's
+     * (block time + 1 ms) the earlier one; without it the stub's
+     * unmoved stamp (EQUAL to block 1's time) sorts first and height 2's
+     * block time equals block 1's — `tc_validate_block`'s strict `time >
+     * last_block_time` (:954-956) then REJECTS it, this node prevotes
+     * nil, and no polka ever forms. RED without this line: exactly the
+     * failure the coordinator's log showed. */
+    tc->now.seconds += 1;
+    S_STEP(tc_sign_add_precommit_with_extension(tc, 1u, hash, sizeof(hash),
+                                                &psh, tc_ext_bytes_of[1],
+                                                (size_t)TC_EXT_OF_LEN));
+    S_CHECK(tc->apply_calls == 1, "ext_arena_reset: h1 did not commit");
+    S_STEP(tc_ensure_new_block_header(tc, 1, hash, sizeof(hash)));
+    tc_increment_height(tc, 1u, 2u);
+    S_STEP(tc_fire_timeout(tc));
+    S_STEP(tc_ensure_new_round(tc, 2, 0));
+
+    /* ── height 2, round 0: the stub proposes ((2-1+0) mod 2 == 1). ── */
+    S_STEP(tc_check_proposer(tc, 2, 0));
+    S_STEP(tc_decide_proposal_from(tc, 1u, 2, 0, -1, &prop2,
+                                   &block2, &parts2));
+    S_STEP(tc_set_proposal_and_block(tc, &prop2, parts2));
+    S_STEP(tc_drain(tc));
+    S_STEP(tc_ensure_new_proposal(tc, 2, 0));
+    S_STEP(tc_ensure_vote(tc, 2, 0, S_PREVOTE));
+    S_CHECK(tc->apply_calls == 1, "ext_arena_reset: h2 committed early");
+    S_STEP(tc_proposal_block_hash(tc, hash));
+    S_STEP(tc_proposal_parts_header(tc, &psh));
+    S_STEP(tc_sign_add_vote_one(tc, 1u, S_PREVOTE, hash, sizeof(hash),
+                                &psh, false));
+    S_STEP(tc_ensure_vote(tc, 2, 0, S_PRECOMMIT));
+    /* Same clock advance, same reason, for height 3's block-time check
+     * against height 2's. */
+    tc->now.seconds += 1;
+    S_STEP(tc_sign_add_precommit_with_extension(tc, 1u, hash, sizeof(hash),
+                                                &psh, tc_ext_bytes_of[1],
+                                                (size_t)TC_EXT_OF_LEN));
+    S_CHECK(tc->apply_calls == 2, "ext_arena_reset: h2 did not commit");
+    S_STEP(tc_ensure_new_block_header(tc, 2, hash, sizeof(hash)));
+    tc_increment_height(tc, 1u, 2u);
+    S_STEP(tc_fire_timeout(tc));
+    S_STEP(tc_ensure_new_round(tc, 3, 0));
+
+    /* ── height 3, round 0: this node proposes again ((3-1+0) mod 2 == 0),
+     * entered automatically by height 2's own commit timeout — no
+     * `tc_start_test_round` here, exactly as height 2 needed none of its
+     * own once height 1's timeout had entered it. THE RED/GREEN LINE. ── */
+    S_STEP(tc_ensure_vote(tc, 3, 0, S_PREVOTE));
+    S_CHECK(tc->apply_calls == 2, "ext_arena_reset: h3 committed early");
+    S_STEP(tc_proposal_block_hash(tc, hash));
+    S_STEP(tc_proposal_parts_header(tc, &psh));
+    S_STEP(tc_sign_add_vote_one(tc, 1u, S_PREVOTE, hash, sizeof(hash),
+                                &psh, false));
+    S_STEP(tc_ensure_vote(tc, 3, 0, S_PRECOMMIT));
+    S_STEP(tc_sign_add_precommit_with_extension(tc, 1u, hash, sizeof(hash),
+                                                &psh, tc_ext_bytes_of[1],
+                                                (size_t)TC_EXT_OF_LEN));
+    S_CHECK(tc->apply_calls == 3, "ext_arena_reset: h3 did not commit");
+
+    tc_release(tc);
+    return 0;
+}
+
+/**
+ * PACKAGE W4-X (register R3-W3-C2e-4) — NO REFERENCE TEST.
+ *
+ * PROVES: the extension bytes of height 1's LastCommit are still exactly
+ * what was signed AFTER height 2's own precommit has been written — i.e.
+ * the reset that fires on ENTERING height 2 (`ext_arena[2 & 1] =
+ * ext_arena[0]`, a no-op the first time arena[0] is ever touched) and
+ * height 2's own writes into that arena never reach arena[1], where
+ * height 1's surviving LastCommit lives (OWNERSHIP (3): `cs->prev_votes`
+ * is height 1's own vote set once the machine is at height 2).
+ */
+static int s_ext_arena_survives_across_parity(void)
+{
+    tc_t                 *tc = tc_alloc(2u, 1, 0);
+    uint8_t               hash[CMT_TMHASH_SIZE];
+    cmt_part_set_header_t psh;
+    cmt_proposal_t        prop2;
+    cmt_block_t          *block2 = NULL;
+    cmt_part_set_t       *parts2 = NULL;
+    cmt_vote_set_t       *precommits1;
+    const cmt_vote_t     *stub_h1 = NULL;
+
+    S_CHECK(tc != NULL, "ext_arena_survives: setup");
+    tc->extend_ext     = tc_ext_bytes_of[0];
+    tc->extend_ext_len = (size_t)TC_EXT_OF_LEN;
+
+    S_STEP(tc_start_test_round(tc, 1, 0));
+    S_STEP(tc_ensure_vote(tc, 1, 0, S_PREVOTE));
+    S_STEP(tc_proposal_block_hash(tc, hash));
+    S_STEP(tc_proposal_parts_header(tc, &psh));
+    S_STEP(tc_sign_add_vote_one(tc, 1u, S_PREVOTE, hash, sizeof(hash),
+                                &psh, false));
+    S_STEP(tc_ensure_vote(tc, 1, 0, S_PRECOMMIT));
+    /* THE CLOCK MOVES FORWARD BY ONE SECOND — same technique and reason
+     * as `s_reset_timeout_precommit_upon_new_height` and
+     * `s_ext_arena_reset_across_three_heights`'s own comment: with
+     * exactly two equal-power validators, `cmt_weighted_median` picks
+     * the EARLIER of this node's precommit stamp (already block 1's
+     * time + 1 ms, the voteTime rule) and the stub's (`tc->now`,
+     * otherwise frozen at block 1's own time). Moving the clock here,
+     * before the stub signs, keeps this node's the earlier one; without
+     * it the stub's unmoved stamp ties block 1's time exactly and height
+     * 2's proposal fails `tc_validate_block`'s strict `time >
+     * last_block_time` — this node prevotes nil and never precommits. */
+    tc->now.seconds += 1;
+    S_STEP(tc_sign_add_precommit_with_extension(tc, 1u, hash, sizeof(hash),
+                                                &psh, tc_ext_bytes_of[1],
+                                                (size_t)TC_EXT_OF_LEN));
+    S_CHECK(tc->apply_calls == 1, "ext_arena_survives: h1 did not commit");
+    tc_increment_height(tc, 1u, 2u);
+    S_STEP(tc_fire_timeout(tc));
+    S_STEP(tc_ensure_new_round(tc, 2, 0));
+
+    /* The baseline: height 1's LastCommit, read BEFORE height 2 writes
+     * anything. */
+    S_CHECK(tc->cs->prev_votes != NULL,
+            "ext_arena_survives: no prev_votes after h1 commit");
+    precommits1 = cmt_hvs_precommits(tc->cs->prev_votes, 0);
+    S_CHECK(precommits1 != NULL, "ext_arena_survives: no h1 precommit set");
+    S_CHECK(cmt_vote_set_get_by_index(precommits1, 1, &stub_h1) == CMT_OK &&
+                stub_h1 != NULL,
+            "ext_arena_survives: no stored h1 vote for the stub");
+    S_CHECK(stub_h1->extension.len == (size_t)TC_EXT_OF_LEN &&
+                memcmp(stub_h1->extension.data, tc_ext_bytes_of[1],
+                       (size_t)TC_EXT_OF_LEN) == 0,
+            "ext_arena_survives: h1 extension already wrong before h2");
+
+    /* height 2, round 0: the stub proposes; this node prevotes and
+     * precommits WITH an extension — the write lands in arena[2 & 1] =
+     * arena[0], never arena[1]. */
+    S_STEP(tc_check_proposer(tc, 2, 0));
+    S_STEP(tc_decide_proposal_from(tc, 1u, 2, 0, -1, &prop2,
+                                   &block2, &parts2));
+    S_STEP(tc_set_proposal_and_block(tc, &prop2, parts2));
+    S_STEP(tc_drain(tc));
+    S_STEP(tc_ensure_new_proposal(tc, 2, 0));
+    S_STEP(tc_ensure_vote(tc, 2, 0, S_PREVOTE));
+    S_STEP(tc_proposal_block_hash(tc, hash));
+    S_STEP(tc_proposal_parts_header(tc, &psh));
+    S_STEP(tc_sign_add_vote_one(tc, 1u, S_PREVOTE, hash, sizeof(hash),
+                                &psh, false));
+    S_STEP(tc_ensure_vote(tc, 2, 0, S_PRECOMMIT));    /* writes arena[0] */
+
+    /* PROOF: the SAME stored height-1 vote, same pointer, is untouched. */
+    S_CHECK(stub_h1->extension.len == (size_t)TC_EXT_OF_LEN,
+            "ext_arena_survives: h1 extension length changed after h2");
+    S_CHECK(memcmp(stub_h1->extension.data, tc_ext_bytes_of[1],
+                   (size_t)TC_EXT_OF_LEN) == 0,
+            "ext_arena_survives: h1 extension corrupted by h2's writes");
+
+    tc_release(tc);
+    return 0;
+}
+
+/**
+ * PACKAGE W4-X (register R3-W3-C2e-4) — NO REFERENCE TEST. Reuses
+ * `s_prepare_proposal_receives_vote_extensions`'s own shape through its
+ * comment's "the third arrives at height 2 and takes the LastCommit path
+ * (state.go:2137-2167)": four validators, so self + vs2 + vs3 (index 1
+ * and 2) already reach 3-of-4 and commit height 1 — synchronously, inside
+ * the SAME loop that has not yet reached vs4 (index 3) — before vs4's
+ * precommit is added, landing while `cs->rs.height` is already 2.
+ *
+ * PROVES: `cmt_cs_try_add_vote`'s arena pick uses the VOTE's own height
+ * (1, vs4's), never `cs->rs.height` (already 2) — asserted directly on
+ * each arena's `used`, not inferred from a byte compare. A version that
+ * picked by `cs->rs.height` would grow `arena[0]->used` (2 & 1) here
+ * instead of `arena[1]->used` (1 & 1), and this scenario would fail on
+ * exactly that line.
+ */
+static int s_late_last_commit_vote_lands_in_its_own_height_arena(void)
+{
+    tc_t                 *tc = tc_alloc(4u, 1, 0);
+    uint8_t               hash[CMT_TMHASH_SIZE];
+    cmt_part_set_header_t psh;
+    size_t                i;
+    size_t                used0_before;
+    size_t                used1_before;
+
+    S_CHECK(tc != NULL, "late_lc_vote_arena: setup");
+    tc->extend_ext     = tc_ext_bytes_of[0];
+    tc->extend_ext_len = (size_t)TC_EXT_OF_LEN;
+
+    S_STEP(tc_start_test_round(tc, 1, 0));                       /* :1690 */
+    S_STEP(tc_ensure_new_round(tc, 1, 0));                       /* :1691 */
+    S_STEP(tc_ensure_new_proposal(tc, 1, 0));                    /* :1692 */
+    S_STEP(tc_proposal_block_hash(tc, hash));                    /* :1696 */
+    S_STEP(tc_proposal_parts_header(tc, &psh));                  /* :1697 */
+
+    S_STEP(tc_sign_add_votes_range(tc, S_PREVOTE, hash, sizeof(hash),
+                                   &psh, false, 1u, 4u));        /* :1699 */
+    S_STEP(tc_ensure_vote(tc, 1, 0, S_PREVOTE));                 /* :1706 */
+
+    /* self's own precommit plus vs2's and vs3's (index 1, 2) commit the
+     * block — three of four. vs4 (index 3) has not voted yet. */
+    for (i = 1u; i < 3u; i++) {
+        S_STEP(tc_sign_add_precommit_with_extension(tc, i, hash, sizeof(hash),
+                                                    &psh, tc_ext_bytes_of[i],
+                                                    (size_t)TC_EXT_OF_LEN));
+    }
+    S_STEP(tc_ensure_vote(tc, 1, 0, S_PRECOMMIT));
+    S_CHECK(tc->apply_calls == 1,
+            "late_lc_vote_arena: height 1 did not commit");
+    S_CHECK(tc->cs->rs.height == 2,
+            "late_lc_vote_arena: the machine did not advance to height 2");
+
+    /* arena[0] (height 2's — reset on entry, a no-op, nothing has used it
+     * yet) and arena[1] (height 1's — self written TWICE, extend_vote and
+     * the internal-queue re-add, plus vs2 and vs3: 4 × 11 = 44 bytes),
+     * BEFORE vs4's late height-1 precommit lands. The assertions below
+     * are RELATIVE (`+ TC_EXT_OF_LEN`, `== before`), so the exact count
+     * is not load-bearing. */
+    used0_before = tc->arena[0]->used;
+    used1_before = tc->arena[1]->used;
+
+    /* vs4's stub height is untouched (still 1) — this signs and adds a
+     * PRECOMMIT FOR HEIGHT 1 while `cs->rs.height` is already 2: the
+     * LastCommit path (cmt_cs.c:3986-3988, `vote->height ==
+     * cs->rs.height - 1`). */
+    S_STEP(tc_sign_add_precommit_with_extension(tc, 3u, hash, sizeof(hash),
+                                                &psh, tc_ext_bytes_of[3],
+                                                (size_t)TC_EXT_OF_LEN));
+
+    S_CHECK(tc->arena[1]->used == used1_before + (size_t)TC_EXT_OF_LEN,
+            "late_lc_vote_arena: the late height-1 vote did not land in "
+            "arena[1]");
+    S_CHECK(tc->arena[0]->used == used0_before,
+            "late_lc_vote_arena: the late height-1 vote touched arena[0], "
+            "the height-2 arena");
+
+    tc_release(tc);
+    return 0;
+}
+
+/**
+ * C only — no Go counterpart. ORCHESTRATOR addition (W4-X ORC-2), from
+ * the independent verifier's finding A on the package.
+ *
+ * WHAT IT PROVES. A PEER's precommit whose extension does not fit the
+ * receiving node's arena is REFUSED and the node goes on — it is never
+ * a CMT_FAULT (which stops consensus participation,
+ * nodus_witness.c's tick: `witness->running = false`). The arena is a
+ * C-only construct: the reference heap-allocates every vote's
+ * extension and bounds it only by the reactor's message size
+ * (`Vote.ValidateBasic`, types/vote.go:318-350, bounds
+ * `ExtensionSignature` at MaxSignatureSize and never `len(Extension)`),
+ * so "the extension does not fit" is a refusal the port INVENTED, and
+ * the umbrella panic rule (rev 4) puts a peer-reachable refusal in the
+ * REJECT class. Before this correction cmt_cs.c's copy site returned
+ * CMT_FAULT for every overflow — one 65 KiB precommit from any
+ * authenticated cluster peer stopped the node, BEFORE the
+ * extensions-disabled REJECT (:3688-3694), before signature
+ * verification, before the height discard.
+ *
+ * HOW IT IS DRIVEN. Extensions ENABLED (tc_alloc's ve_height 1) so the
+ * capacity check is the ONLY thing that can refuse the vote: the stub's
+ * height-1 precommit is well formed and signed, and carries an
+ * extension of exactly `arena[1]->cap + 1` bytes. Then the stub's
+ * HONEST precommit commits height 1 and the machine enters height 2 —
+ * the liveness the FAULT used to destroy.
+ *
+ * RED on the package's own bytes (the copy site returned CMT_FAULT;
+ * `tc_drain` reported "cmt_cs_step returned -2" and the first S_STEP
+ * failed); GREEN once the overflow is CMT_REJECT.
+ *
+ * HOW IT CAN LIE. It drives one node with one oversized vote; it does
+ * not size the arena for a full committee of extended precommits — that
+ * sizing (128 validators × 2 copies × the application's extension) is
+ * an OPEN item for the season that sets VoteExtensionsEnableHeight, and
+ * an HONEST overflow would be refused the same way (liveness, not
+ * safety; recorded at the site).
+ */
+static int s_oversized_peer_extension_is_rejected_not_fault(void)
+{
+    tc_t                 *tc = tc_alloc(2u, 1, 0);
+    uint8_t               hash[CMT_TMHASH_SIZE];
+    cmt_part_set_header_t psh;
+    uint8_t              *big = NULL;
+    size_t                big_len;
+    size_t                used1_before;
+
+    S_CHECK(tc != NULL, "oversized_ext: setup");
+    S_CHECK(tc->arena[1] != NULL && tc->arena[1]->buf != NULL,
+            "oversized_ext: the height-1 arena exists");
+
+    /* ── height 1, round 0: this node proposes. ── */
+    S_STEP(tc_start_test_round(tc, 1, 0));
+    S_STEP(tc_ensure_vote(tc, 1, 0, S_PREVOTE));
+    S_STEP(tc_proposal_block_hash(tc, hash));
+    S_STEP(tc_proposal_parts_header(tc, &psh));
+    S_STEP(tc_sign_add_vote_one(tc, 1u, S_PREVOTE, hash, sizeof(hash),
+                                &psh, false));
+    S_STEP(tc_ensure_vote(tc, 1, 0, S_PRECOMMIT));
+    S_CHECK(tc->apply_calls == 0, "oversized_ext: h1 committed early");
+    used1_before = tc->arena[1]->used;
+
+    /* THE ATTACK: one byte more than the arena can ever hold. The vote
+     * is signed over a SMALL extension (the fixture's mock signer keeps
+     * its sign bytes on the stack — `tc_mock_sign_vote`'s `esb[]` — and
+     * cannot sign a 64 KiB one) and the extension is then swapped for
+     * the big buffer. That is exactly the attacker's shape: the vote
+     * signature does not cover the extension (`cmt_vote_sign_bytes`
+     * canonicalises without it), `Vote.ValidateBasic` only requires a
+     * NON-EMPTY extension signature, and the capacity refusal under test
+     * runs BEFORE the extension signature is ever verified — so a
+     * forged extension signature costs the attacker nothing. */
+    big_len = tc->arena[1]->cap + 1u;
+    big = (uint8_t *)malloc(big_len);
+    S_CHECK(big != NULL, "oversized_ext: alloc");
+    memset(big, 0xEE, big_len);
+    tc->now.seconds += 1;   /* same clock rule as s_ext_arena_reset_… */
+    {
+        cmt_vote_t *bad = (cmt_vote_t *)calloc(1u, sizeof(*bad));
+        int         arc;
+
+        S_CHECK(bad != NULL, "oversized_ext: vote alloc");
+        S_CHECK(tc_stub_sign_vote(tc, &tc->vss[1], S_PRECOMMIT, hash,
+                                  sizeof(hash), &psh, tc_ext_bytes_of[1],
+                                  (size_t)TC_EXT_OF_LEN, true, bad) == 0,
+                "oversized_ext: sign the carrier vote");
+        S_CHECK(bad->extension_signature_len > 0u,
+                "oversized_ext: the carrier has an extension signature");
+        bad->extension.data = big;
+        bad->extension.len  = big_len;
+        arc = tc_add_votes(tc, bad, 1u);
+        free(bad);
+        S_CHECK(arc == 0,
+                "oversized_ext: an oversized PEER extension must be a "
+                "logged REJECT that the event loop absorbs — the drain "
+                "reported a FAULT");
+    }
+    S_CHECK(tc->apply_calls == 0,
+            "oversized_ext: the oversized precommit must not have counted");
+    S_CHECK(tc->arena[1]->used == used1_before,
+            "oversized_ext: a refused extension must copy nothing");
+    S_CHECK(tc->cs->rs.height == 1,
+            "oversized_ext: the machine is still at height 1");
+
+    /* The stub's HONEST precommit: height 1 commits, height 2 is entered
+     * — the node is alive. */
+    S_STEP(tc_sign_add_precommit_with_extension(tc, 1u, hash, sizeof(hash),
+                                                &psh, tc_ext_bytes_of[1],
+                                                (size_t)TC_EXT_OF_LEN));
+    S_CHECK(tc->apply_calls == 1, "oversized_ext: h1 did not commit");
+    S_STEP(tc_ensure_new_block_header(tc, 1, hash, sizeof(hash)));
+    tc_increment_height(tc, 1u, 2u);
+    S_STEP(tc_fire_timeout(tc));
+    S_STEP(tc_ensure_new_round(tc, 2, 0));
+
+    free(big);
+    tc_release(tc);
+    return 0;
+}
+
+/**
+ * PACKAGE W4-F (the fixture gap) — NO REFERENCE TEST; `s_full_round2`'s
+ * shape for a PEER's proposal. ORCHESTRATOR, 2026-09-18.
+ *
+ * WHAT IT PROVES. The POSITIVE prevote path for a block this node did
+ * not build: the other validator proposes height 2 (proposer arithmetic
+ * `(height-1+round) mod nvals` puts the stub there), this node runs the
+ * fixture's `tc_validate_block` (state/validation.go:16-150's port)
+ * over the peer's bytes, prevotes THE BLOCK (not nil), locks on the
+ * polka, precommits it, and commits it — and the committed header is
+ * the peer's, not one of this node's own. Package C2e's scenario stops
+ * at hash identity; the W4-X scenarios cross a peer-proposed height as
+ * a means to their arena assertions; this one asserts the path itself.
+ *
+ * THE DIAGNOSIS W4-F ASKED FOR. The W4 prompt recorded that
+ * `tc_validate_block` "refuses a genuinely byte-identical, untampered,
+ * UNLOCKED peer block". Root cause, found by RUNNING (the W4-X writer,
+ * then re-derived here): the fixture's clock is FROZEN, and with two
+ * EQUAL-power validators `cmt_weighted_median` (cmt_time.c) selects the
+ * EARLIER of the two precommit stamps — this node's own precommit
+ * carries `voteTime`'s `block time + 1 ms` (cmt_cs.c's port of
+ * state.go:2423-2434) but the stub signs whatever `tc->now` says, which
+ * is still block 1's own time. Height 2's block time therefore EQUALS
+ * height 1's, and validation.go:120-123's strict `time >
+ * last_block_time` refuses it — correctly: the refusal is the
+ * reference's rule, the input was the fixture's. Nothing in
+ * `tc_validate_block` was wrong. The cure is the one line every
+ * peer-proposed height in this file now carries: advance `tc->now` by
+ * one second between this node's precommit and the stub's. RED with
+ * that line deleted (this node prevotes NIL at height 2 and the
+ * `validate_prevote` below fails), GREEN with it.
+ *
+ * HOW IT CAN LIE. Two validators, one round each; it does not exercise
+ * a peer proposal at round > 0, nor a proposal that arrives AFTER this
+ * node's prevote timeout. `tc_validate_block` still skips the two
+ * checks its own HOW IT CAN LIE (3) names.
+ */
+static int s_full_round_peer_proposal(void)
+{
+    tc_t                 *tc = tc_alloc(2u, 1, 0);
+    uint8_t               hash1[CMT_TMHASH_SIZE];
+    uint8_t               hash2[CMT_TMHASH_SIZE];
+    cmt_part_set_header_t psh;
+    cmt_proposal_t        prop2;
+    cmt_block_t          *block2 = NULL;
+    cmt_part_set_t       *parts2 = NULL;
+    int                   validate_before;
+
+    S_CHECK(tc != NULL, "peer_proposal: setup");
+
+    /* ── height 1: this node proposes and, with the stub, commits. ── */
+    S_STEP(tc_start_test_round(tc, 1, 0));
+    S_STEP(tc_ensure_vote(tc, 1, 0, S_PREVOTE));
+    S_STEP(tc_proposal_block_hash(tc, hash1));
+    S_STEP(tc_proposal_parts_header(tc, &psh));
+    S_STEP(tc_sign_add_vote_one(tc, 1u, S_PREVOTE, hash1, sizeof(hash1),
+                                &psh, false));
+    S_STEP(tc_ensure_vote(tc, 1, 0, S_PRECOMMIT));
+    tc->now.seconds += 1;   /* THE DIAGNOSIS — see the header */
+    S_STEP(tc_sign_add_vote_one(tc, 1u, S_PRECOMMIT, hash1, sizeof(hash1),
+                                &psh, true));
+    S_CHECK(tc->apply_calls == 1, "peer_proposal: h1 did not commit");
+    S_STEP(tc_ensure_new_block_header(tc, 1, hash1, sizeof(hash1)));
+    tc_increment_height(tc, 1u, 2u);
+    S_STEP(tc_fire_timeout(tc));
+    S_STEP(tc_ensure_new_round(tc, 2, 0));
+
+    /* ── height 2: the STUB proposes ((2-1+0) mod 2 == 1). ── */
+    S_STEP(tc_check_proposer(tc, 2, 0));
+    S_STEP(tc_decide_proposal_from(tc, 1u, 2, 0, -1, &prop2,
+                                   &block2, &parts2));
+    S_CHECK(block2 != NULL, "peer_proposal: the stub built no block");
+    S_CHECK(cmt_block_hash(block2, hash2) == CMT_OK,
+            "peer_proposal: hash of the peer's block");
+    S_CHECK(memcmp(hash2, hash1, sizeof(hash2)) != 0,
+            "peer_proposal: the peer's block must differ from block 1");
+    validate_before = tc->validate_calls;
+    S_STEP(tc_set_proposal_and_block(tc, &prop2, parts2));
+    S_STEP(tc_drain(tc));
+    S_STEP(tc_ensure_new_proposal(tc, 2, 0));
+    S_STEP(tc_ensure_vote(tc, 2, 0, S_PREVOTE));
+    S_CHECK(tc->validate_calls > validate_before,
+            "peer_proposal: this node never validated the peer's block");
+    /* THE ASSERTION: a prevote for THE PEER'S BLOCK, not for nil. */
+    S_STEP(tc_validate_prevote(tc, 0, hash2, sizeof(hash2)));
+    S_CHECK(tc->apply_calls == 1, "peer_proposal: h2 committed early");
+
+    S_STEP(tc_proposal_block_hash(tc, hash2));
+    S_STEP(tc_proposal_parts_header(tc, &psh));
+    S_STEP(tc_sign_add_vote_one(tc, 1u, S_PREVOTE, hash2, sizeof(hash2),
+                                &psh, false));
+    S_STEP(tc_ensure_vote(tc, 2, 0, S_PRECOMMIT));
+    S_STEP(tc_validate_precommit(tc, 0, 0, hash2, sizeof(hash2),
+                                 hash2, sizeof(hash2)));
+    tc->now.seconds += 1;
+    S_STEP(tc_sign_add_vote_one(tc, 1u, S_PRECOMMIT, hash2, sizeof(hash2),
+                                &psh, true));
+    S_CHECK(tc->apply_calls == 2, "peer_proposal: the peer's block was not "
+                                  "applied");
+    S_STEP(tc_ensure_new_block_header(tc, 2, hash2, sizeof(hash2)));
+    S_STEP(tc_fire_timeout(tc));
+    S_STEP(tc_ensure_new_round(tc, 3, 0));
 
     tc_release(tc);
     return 0;
@@ -4233,6 +4807,15 @@ int main(void)
         { "full_round2",                      s_full_round2 },
         { "vote_extension_survives_source_overwrite",
           s_vote_extension_survives_source_overwrite },
+        { "ext_arena_reset_across_three_heights",
+          s_ext_arena_reset_across_three_heights },
+        { "ext_arena_survives_across_parity",
+          s_ext_arena_survives_across_parity },
+        { "late_last_commit_vote_lands_in_its_own_height_arena",
+          s_late_last_commit_vote_lands_in_its_own_height_arena },
+        { "oversized_peer_extension_is_rejected_not_fault",
+          s_oversized_peer_extension_is_rejected_not_fault },
+        { "full_round_peer_proposal",         s_full_round_peer_proposal },
         { "lock_no_pol",                      s_lock_no_pol },
         { "lock_pol_relock",                  s_lock_pol_relock },
         { "lock_pol_unlock",                  s_lock_pol_unlock },

@@ -37,13 +37,12 @@ const char *nodus_t3_type_to_method(nodus_t3_msg_type_t type) {
          * VIEWOK_REQ) are DELETED with the closed consensus lane; none
          * of their enum values exists any more — they fall to
          * `default: return NULL` below, exactly like verbs 28-34.
-         * CC_VOTE_REQ/CC_VOTE_RSP (14-15) are KEPT — register
-         * R3-W4-D-8. */
+         * R3 W4-CC retires CC_VOTE_REQ/CC_VOTE_RSP (14-15) the same way
+         * — CC_APPR_REQ/CC_APPR_RSP (40-41) below are their
+         * replacement. */
         case NODUS_T3_ROST_Q:    return "w_rost_q";
         case NODUS_T3_ROST_R:    return "w_rost_r";
         case NODUS_T3_IDENT:     return "w_ident";
-        case NODUS_T3_CC_VOTE_REQ: return "w_cc_vote_req";
-        case NODUS_T3_CC_VOTE_RSP: return "w_cc_vote_rsp";
         case NODUS_T3_V2_GBUNDLE_REQ: return "w_v2_gbundle_q";
         case NODUS_T3_V2_GBUNDLE_RSP: return "w_v2_gbundle_r";
         /* cometbft envelope (D-16 rev 5). All five verbs appear in BOTH
@@ -58,6 +57,11 @@ const char *nodus_t3_type_to_method(nodus_t3_msg_type_t type) {
         case NODUS_T3_CMT_VOTE:          return "w_cmt_vote";
         case NODUS_T3_CMT_VOTE_SET_BITS: return "w_cmt_bits";
         case NODUS_T3_CMT_TXS:           return "w_cmt_txs";
+        /* SYSTEM-governance approval collection (verbs 40-41; D-16
+         * rev 7, W4-CC) — same both-tables discipline as the cometbft
+         * envelope above. */
+        case NODUS_T3_CC_APPR_REQ: return "w_cc_appr_req";
+        case NODUS_T3_CC_APPR_RSP: return "w_cc_appr_rsp";
         default:                 return NULL;
     }
 }
@@ -72,12 +76,11 @@ nodus_t3_msg_type_t nodus_t3_method_to_type(const char *method) {
      * consensus lane; none of their method names is recognised any more
      * — an incoming frame naming one falls through to the final
      * `return 0` below, exactly like any other unknown method.
-     * w_cc_vote_req/w_cc_vote_rsp are KEPT — register R3-W4-D-8. */
+     * R3 W4-CC retires w_cc_vote_req/w_cc_vote_rsp the same way —
+     * w_cc_appr_req/w_cc_appr_rsp below are their replacement. */
     if (strcmp(method, "w_rost_q") == 0)     return NODUS_T3_ROST_Q;
     if (strcmp(method, "w_rost_r") == 0)     return NODUS_T3_ROST_R;
     if (strcmp(method, "w_ident") == 0)      return NODUS_T3_IDENT;
-    if (strcmp(method, "w_cc_vote_req") == 0) return NODUS_T3_CC_VOTE_REQ;
-    if (strcmp(method, "w_cc_vote_rsp") == 0) return NODUS_T3_CC_VOTE_RSP;
     if (strcmp(method, "w_v2_gbundle_q") == 0) return NODUS_T3_V2_GBUNDLE_REQ;
     if (strcmp(method, "w_v2_gbundle_r") == 0) return NODUS_T3_V2_GBUNDLE_RSP;
     /* cometbft envelope — the same five verbs as the table above. */
@@ -86,6 +89,9 @@ nodus_t3_msg_type_t nodus_t3_method_to_type(const char *method) {
     if (strcmp(method, "w_cmt_vote") == 0)     return NODUS_T3_CMT_VOTE;
     if (strcmp(method, "w_cmt_bits") == 0)     return NODUS_T3_CMT_VOTE_SET_BITS;
     if (strcmp(method, "w_cmt_txs") == 0)      return NODUS_T3_CMT_TXS;
+    /* SYSTEM-governance approval collection (verbs 40-41; W4-CC). */
+    if (strcmp(method, "w_cc_appr_req") == 0)  return NODUS_T3_CC_APPR_REQ;
+    if (strcmp(method, "w_cc_appr_rsp") == 0)  return NODUS_T3_CC_APPR_RSP;
     return 0;
 }
 
@@ -100,6 +106,10 @@ size_t nodus_t3_max_msg_size(nodus_t3_msg_type_t type) {
             return (size_t)NODUS_T3_CMT_CONS_M_MAX + NODUS_T3_CMT_ENVELOPE_OVERHEAD;
         case NODUS_T3_CMT_TXS:
             return (size_t)NODUS_T3_CMT_TXS_M_MAX + NODUS_T3_CMT_ENVELOPE_OVERHEAD;
+        case NODUS_T3_CC_APPR_REQ:
+            return (size_t)NODUS_T3_CC_APPR_E_MAX + NODUS_T3_CMT_ENVELOPE_OVERHEAD;
+        case NODUS_T3_CC_APPR_RSP:
+            return (size_t)NODUS_T3_CC_APPR_RSP_MAX + NODUS_T3_CMT_ENVELOPE_OVERHEAD;
         default:
             /* Every legacy verb: the bound the legacy path actually uses
              * today — nodus_t3_verify's fixed 1 MB heap allocation below.
@@ -128,6 +138,11 @@ _Static_assert(NODUS_T3_CMT_CONS_M_MAX == CMT_CONR_MAX_MSG_SIZE,
 _Static_assert((uint64_t)NODUS_T3_CMT_TXS_M_MAX + NODUS_T3_CMT_ENVELOPE_OVERHEAD
                + 7u + NODUS_SIG_BYTES < (uint64_t)NODUS_MAX_FRAME_TCP,
                "T3 cmt TXS ceiling exceeds NODUS_MAX_FRAME_TCP");
+/* D-16 rev 7 (W4-CC) — the same frame-size proof for verb 40, the larger
+ * of the two new governance verbs (verb 41's ceiling is a few KB). */
+_Static_assert((uint64_t)NODUS_T3_CC_APPR_E_MAX + NODUS_T3_CMT_ENVELOPE_OVERHEAD
+               + 7u + NODUS_SIG_BYTES < (uint64_t)NODUS_MAX_FRAME_TCP,
+               "T3 cc_appr_req ceiling exceeds NODUS_MAX_FRAME_TCP");
 
 /* R3 W4 — the PR 3 Yol B bootstrap sig domain separator
  * (NODUS_T3_BOOTSTRAP_SIG_DOMAIN, is_bootstrap_type) is DELETED with the
@@ -202,36 +217,29 @@ static void enc_rost_r_args(cbor_encoder_t *enc, const nodus_t3_rost_r_t *r) {
     }
 }
 
-/* ── w_cc_vote_req / w_cc_vote_rsp args (Hard-Fork v1 Stage C.2) ────
- * R3 W4 (register R3-W4-D-8) — KEPT: the chain_config vote-collect RPC
- * still has live production consumers outside this delta's file set
- * (nodus_witness_chain_config.c, nodus_cc_client.c, nodus-cli.c). The
- * witness T3 dispatch table still drops both verbs on arrival,
- * unchanged since W3. */
+/* ── w_cc_appr_req / w_cc_appr_rsp args (D-16 rev 7, W4-CC) ──────────
+ * R3 W4-CC replaces the retired verbs 14-15 (Hard-Fork v1 Stage C.2)
+ * with this pair, over the pre-auth SYSTEM-governance envelope. */
 
-static void enc_cc_vote_req_args(cbor_encoder_t *enc,
-                                   const nodus_t3_cc_vote_req_t *r) {
-    cbor_encode_map(enc, 6);
-    cbor_encode_cstr(enc, "pid"); cbor_encode_uint(enc, r->param_id);
-    cbor_encode_cstr(enc, "nv");  cbor_encode_uint(enc, r->new_value);
-    cbor_encode_cstr(enc, "eb");  cbor_encode_uint(enc, r->effective_block_height);
-    cbor_encode_cstr(enc, "pn");  cbor_encode_uint(enc, r->proposal_nonce);
-    cbor_encode_cstr(enc, "sab"); cbor_encode_uint(enc, r->signed_at_block);
-    cbor_encode_cstr(enc, "vbb"); cbor_encode_uint(enc, r->valid_before_block);
+static void enc_cc_appr_req_args(cbor_encoder_t *enc,
+                                 const nodus_t3_cc_appr_req_t *r) {
+    cbor_encode_map(enc, 1);
+    cbor_encode_cstr(enc, "e"); cbor_encode_bstr(enc, r->e, r->e_len);
 }
 
-static void enc_cc_vote_rsp_args(cbor_encoder_t *enc,
-                                   const nodus_t3_cc_vote_rsp_t *r) {
-    if (r->accepted) {
-        cbor_encode_map(enc, 3);
-        cbor_encode_cstr(enc, "ok");  cbor_encode_uint(enc, 1);
-        cbor_encode_cstr(enc, "wid"); cbor_encode_bstr(enc, r->witness_id, 32);
-        cbor_encode_cstr(enc, "sig"); cbor_encode_bstr(enc, r->signature,
-                                                         NODUS_SIG_BYTES);
+static void enc_cc_appr_rsp_args(cbor_encoder_t *enc,
+                                 const nodus_t3_cc_appr_rsp_t *r) {
+    if (r->ok) {
+        cbor_encode_map(enc, 5);
+        cbor_encode_cstr(enc, "ok"); cbor_encode_bool(enc, true);
+        cbor_encode_cstr(enc, "i");  cbor_encode_uint(enc, r->seat);
+        cbor_encode_cstr(enc, "s");  cbor_encode_bstr(enc, r->sig, NODUS_SIG_BYTES);
+        cbor_encode_cstr(enc, "sh"); cbor_encode_bstr(enc, r->set_hash, 64);
+        cbor_encode_cstr(enc, "ep"); cbor_encode_uint(enc, r->epoch);
     } else {
         cbor_encode_map(enc, 2);
-        cbor_encode_cstr(enc, "ok");  cbor_encode_uint(enc, 0);
-        cbor_encode_cstr(enc, "rr");  cbor_encode_cstr(enc, r->reject_reason);
+        cbor_encode_cstr(enc, "ok"); cbor_encode_bool(enc, false);
+        cbor_encode_cstr(enc, "r");  cbor_encode_cstr(enc, r->reason);
     }
 }
 
@@ -324,6 +332,15 @@ static int enc_args(cbor_encoder_t *enc, const nodus_t3_msg_t *msg) {
         if ((c->m == NULL && c->m_len != 0) || c->m_len > m_cap)
             return -1;
     }
+    /* SYSTEM-governance approval collection (verbs 40-41; D-16 rev 7,
+     * W4-CC) — same out-of-class refusal-before-emit discipline as the
+     * cometbft envelope above (DG-13 bijection). */
+    if (msg->type == NODUS_T3_CC_APPR_REQ) {
+        const nodus_t3_cc_appr_req_t *r = &msg->cc_appr_req;
+        if ((r->e == NULL && r->e_len != 0) ||
+            r->e_len > (size_t)NODUS_T3_CC_APPR_E_MAX)
+            return -1;
+    }
     cbor_encode_cstr(enc, "a");
     switch (msg->type) {
         /* R3 W4 — the case arms for every retired verb (PROPOSE, PREVOTE,
@@ -331,13 +348,12 @@ static int enc_args(cbor_encoder_t *enc, const nodus_t3_msg_t *msg) {
          * SYNC_REQ, SYNC_RSP, CHAIN_Q, CHAIN_R, GENESIS_REQ, GENESIS_RSP,
          * V2_BLOCK, V2_HEAD, V2_RANGE_REQ, V2_RANGE_RSP, VIEWOK,
          * VIEWOK_REQ) are DELETED with the closed consensus lane; none
-         * of their enum values exists any more. CC_VOTE_REQ/CC_VOTE_RSP
-         * are KEPT — register R3-W4-D-8. */
+         * of their enum values exists any more. R3 W4-CC retires
+         * CC_VOTE_REQ/CC_VOTE_RSP the same way — CC_APPR_REQ/CC_APPR_RSP
+         * below are their replacement. */
         case NODUS_T3_ROST_Q:    enc_rost_q_args(enc, &msg->rost_q);     break;
         case NODUS_T3_ROST_R:    enc_rost_r_args(enc, &msg->rost_r);     break;
         case NODUS_T3_IDENT:     enc_ident_args(enc, &msg->ident);       break;
-        case NODUS_T3_CC_VOTE_REQ: enc_cc_vote_req_args(enc, &msg->cc_vote_req); break;
-        case NODUS_T3_CC_VOTE_RSP: enc_cc_vote_rsp_args(enc, &msg->cc_vote_rsp); break;
         case NODUS_T3_V2_GBUNDLE_REQ:
             enc_w_v2_gbundle_q_args(enc, &msg->w_v2_gbundle_q); break;
         case NODUS_T3_V2_GBUNDLE_RSP:
@@ -349,6 +365,11 @@ static int enc_args(cbor_encoder_t *enc, const nodus_t3_msg_t *msg) {
         case NODUS_T3_CMT_VOTE_SET_BITS:
         case NODUS_T3_CMT_TXS:
             enc_w_cmt_args(enc, &msg->w_cmt);                 break;
+        /* SYSTEM-governance approval collection (verbs 40-41; W4-CC). */
+        case NODUS_T3_CC_APPR_REQ:
+            enc_cc_appr_req_args(enc, &msg->cc_appr_req);     break;
+        case NODUS_T3_CC_APPR_RSP:
+            enc_cc_appr_rsp_args(enc, &msg->cc_appr_rsp);     break;
         default: return -1;
     }
     return 0;
@@ -665,65 +686,111 @@ static void dec_ident_args(cbor_decoder_t *dec, size_t count,
  * See nodus_t3_decode's own deletion note below for the full dispatch
  * case list. */
 
-/* ── w_cc_vote_req / w_cc_vote_rsp decoders (Hard-Fork v1 Stage C.2) ──
- * R3 W4 (register R3-W4-D-8) — KEPT: see the encoder pair's own note
- * above. */
+/* ── w_cc_appr_req / w_cc_appr_rsp decoders (D-16 rev 7, W4-CC) ──────
+ * Replace the retired verbs 14-15's loose decoders with the STRICT
+ * exact-key-set discipline the newer verbs (w_cmt, gbundle) use: an
+ * unrecognized key, a wrong-typed value, an oversize `e`, or a key the
+ * `ok` value does not admit are all `dec->error = true`, never a
+ * silently-skipped field. */
 
-static void dec_cc_vote_req_args(cbor_decoder_t *dec, size_t count,
-                                   nodus_t3_cc_vote_req_t *r) {
+static void dec_cc_appr_req_args(cbor_decoder_t *dec, size_t count,
+                                 nodus_t3_cc_appr_req_t *r) {
+    bool seen_e = false;
     for (size_t i = 0; i < count; i++) {
         cbor_item_t key = cbor_decode_next(dec);
-        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
-        if (KEY_IS(key, "pid")) {
+        if (key.type != CBOR_ITEM_TSTR) { dec->error = true; return; }
+        if (KEY_IS(key, "e")) {
+            if (seen_e) { dec->error = true; return; }
+            seen_e = true;
             cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) r->param_id = (uint8_t)val.uint_val;
-        } else if (KEY_IS(key, "nv")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) r->new_value = val.uint_val;
-        } else if (KEY_IS(key, "eb")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) r->effective_block_height = val.uint_val;
-        } else if (KEY_IS(key, "pn")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) r->proposal_nonce = val.uint_val;
-        } else if (KEY_IS(key, "sab")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) r->signed_at_block = val.uint_val;
-        } else if (KEY_IS(key, "vbb")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) r->valid_before_block = val.uint_val;
+            if (val.type != CBOR_ITEM_BSTR ||
+                val.bstr.len > (size_t)NODUS_T3_CC_APPR_E_MAX) {
+                dec->error = true;
+                return;
+            }
+            r->e     = val.bstr.ptr;
+            r->e_len = val.bstr.len;
         } else {
-            cbor_decode_skip(dec);
+            dec->error = true; return;
         }
     }
+    if (!seen_e) dec->error = true;   /* the key was missing */
 }
 
-static void dec_cc_vote_rsp_args(cbor_decoder_t *dec, size_t count,
-                                   nodus_t3_cc_vote_rsp_t *r) {
+/* `ok` gates which OTHER keys are legal: ok=true admits exactly
+ * {ok,i,s,sh,ep} (r absent); ok=false admits exactly {ok,r} (i/s/sh/ep
+ * absent). Every key is parsed once regardless of `ok`'s value (order on
+ * the wire is not load-bearing), and the cross-check runs after the
+ * loop — so a peer naming a key its own `ok` does not admit is refused,
+ * not silently accepted. */
+static void dec_cc_appr_rsp_args(cbor_decoder_t *dec, size_t count,
+                                 nodus_t3_cc_appr_rsp_t *r) {
+    bool seen_ok = false, ok_val = false;
+    bool seen_i = false, seen_s = false, seen_sh = false;
+    bool seen_ep = false, seen_r = false;
+
     for (size_t i = 0; i < count; i++) {
         cbor_item_t key = cbor_decode_next(dec);
-        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
+        if (key.type != CBOR_ITEM_TSTR) { dec->error = true; return; }
         if (KEY_IS(key, "ok")) {
+            if (seen_ok) { dec->error = true; return; }
+            seen_ok = true;
             cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) r->accepted = (val.uint_val != 0);
-        } else if (KEY_IS(key, "wid")) {
+            if (val.type != CBOR_ITEM_BOOL) { dec->error = true; return; }
+            ok_val = val.bool_val;
+            r->ok = ok_val;
+        } else if (KEY_IS(key, "i")) {
+            if (seen_i) { dec->error = true; return; }
+            seen_i = true;
             cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 32)
-                memcpy(r->witness_id, val.bstr.ptr, 32);
-        } else if (KEY_IS(key, "sig")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_SIG_BYTES)
-                memcpy(r->signature, val.bstr.ptr, NODUS_SIG_BYTES);
-        } else if (KEY_IS(key, "rr")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_TSTR) {
-                size_t clen = val.tstr.len < sizeof(r->reject_reason) - 1
-                            ? val.tstr.len : sizeof(r->reject_reason) - 1;
-                memcpy(r->reject_reason, val.tstr.ptr, clen);
-                r->reject_reason[clen] = '\0';
+            if (val.type != CBOR_ITEM_UINT || val.uint_val > UINT16_MAX) {
+                dec->error = true; return;
             }
+            r->seat = (uint16_t)val.uint_val;
+        } else if (KEY_IS(key, "s")) {
+            if (seen_s) { dec->error = true; return; }
+            seen_s = true;
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type != CBOR_ITEM_BSTR || val.bstr.len != NODUS_SIG_BYTES) {
+                dec->error = true; return;
+            }
+            memcpy(r->sig, val.bstr.ptr, NODUS_SIG_BYTES);
+        } else if (KEY_IS(key, "sh")) {
+            if (seen_sh) { dec->error = true; return; }
+            seen_sh = true;
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type != CBOR_ITEM_BSTR || val.bstr.len != 64) {
+                dec->error = true; return;
+            }
+            memcpy(r->set_hash, val.bstr.ptr, 64);
+        } else if (KEY_IS(key, "ep")) {
+            if (seen_ep) { dec->error = true; return; }
+            seen_ep = true;
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type != CBOR_ITEM_UINT) { dec->error = true; return; }
+            r->epoch = val.uint_val;
+        } else if (KEY_IS(key, "r")) {
+            if (seen_r) { dec->error = true; return; }
+            seen_r = true;
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type != CBOR_ITEM_TSTR ||
+                val.tstr.len > sizeof(r->reason) - 1) {
+                dec->error = true; return;
+            }
+            memcpy(r->reason, val.tstr.ptr, val.tstr.len);
+            r->reason[val.tstr.len] = '\0';
         } else {
-            cbor_decode_skip(dec);
+            dec->error = true; return;
+        }
+    }
+    if (!seen_ok) { dec->error = true; return; }
+    if (ok_val) {
+        if (!seen_i || !seen_s || !seen_sh || !seen_ep || seen_r) {
+            dec->error = true; return;
+        }
+    } else {
+        if (!seen_r || seen_i || seen_s || seen_sh || seen_ep) {
+            dec->error = true; return;
         }
     }
 }
@@ -862,8 +929,9 @@ int nodus_t3_decode(const uint8_t *buf, size_t len, nodus_t3_msg_t *msg) {
                  * enum values exists any more — a decoded method can
                  * never resolve to one (nodus_t3_method_to_type returns 0
                  * for their method strings), so this switch can never see
-                 * one. CC_VOTE_REQ/CC_VOTE_RSP are KEPT — register
-                 * R3-W4-D-8. */
+                 * one. R3 W4-CC retires CC_VOTE_REQ/CC_VOTE_RSP the same
+                 * way — CC_APPR_REQ/CC_APPR_RSP below are their
+                 * replacement. */
                 case NODUS_T3_ROST_Q:
                     dec_rost_q_args(&dec, args.count, &msg->rost_q);
                     break;
@@ -872,12 +940,6 @@ int nodus_t3_decode(const uint8_t *buf, size_t len, nodus_t3_msg_t *msg) {
                     break;
                 case NODUS_T3_IDENT:
                     dec_ident_args(&dec, args.count, &msg->ident);
-                    break;
-                case NODUS_T3_CC_VOTE_REQ:
-                    dec_cc_vote_req_args(&dec, args.count, &msg->cc_vote_req);
-                    break;
-                case NODUS_T3_CC_VOTE_RSP:
-                    dec_cc_vote_rsp_args(&dec, args.count, &msg->cc_vote_rsp);
                     break;
                 case NODUS_T3_V2_GBUNDLE_REQ:
                     dec_w_v2_gbundle_q_args(&dec, args.count,
@@ -896,6 +958,15 @@ int nodus_t3_decode(const uint8_t *buf, size_t len, nodus_t3_msg_t *msg) {
                 case NODUS_T3_CMT_VOTE_SET_BITS:
                 case NODUS_T3_CMT_TXS:
                     dec_w_cmt_args(&dec, args.count, msg->type, &msg->w_cmt);
+                    break;
+                /* SYSTEM-governance approval collection (verbs 40-41;
+                 * D-16 rev 7, W4-CC) — both, so `default: break` can
+                 * never be reached by one of these verbs either. */
+                case NODUS_T3_CC_APPR_REQ:
+                    dec_cc_appr_req_args(&dec, args.count, &msg->cc_appr_req);
+                    break;
+                case NODUS_T3_CC_APPR_RSP:
+                    dec_cc_appr_rsp_args(&dec, args.count, &msg->cc_appr_rsp);
                     break;
                 default:
                     break;
@@ -1055,17 +1126,23 @@ int nodus_t3_verify(const nodus_t3_msg_t *msg, const nodus_pubkey_t *pk) {
      * PER-CLASS bound (35-38 the consensus reactor's, 39 the larger
      * mempool one), so a maximal mempool Txs message can be verified
      * while a vote-set-bits reply never reserves more than its class.
-     * The legacy branch is written as the literal it always was, not
-     * routed through nodus_t3_max_msg_size, so "legacy allocation
-     * unchanged" is visible in this function rather than inferred from
-     * another one. This is the wire-walker's cross-component pair 4:
-     * send (enc_sign_payload's caller) and this verify are symmetric
-     * only because both read the SAME class for a given type — keep
-     * that property when adding a verb here. */
-    size_t sign_cap = (msg->type >= NODUS_T3_CMT_STATE &&
-                       msg->type <= NODUS_T3_CMT_TXS)
-                      ? nodus_t3_max_msg_size(msg->type)
-                      : (size_t)NODUS_W_MAX_SYNC_RSP_SIZE;
+     * D-16 rev 7 (W4-CC): verbs 40-41 take their own per-class bound the
+     * same way — verb 40's ceiling (DNA_ENV_MAX_TOTAL_LEN + overhead) is
+     * LARGER than NODUS_W_MAX_SYNC_RSP_SIZE, so routing it through the
+     * legacy branch would under-allocate the sign buffer for a maximal
+     * pre-auth envelope. The legacy branch is written as the literal it
+     * always was, not routed through nodus_t3_max_msg_size, so "legacy
+     * allocation unchanged" is visible in this function rather than
+     * inferred from another one. This is the wire-walker's
+     * cross-component pair 4: send (enc_sign_payload's caller) and this
+     * verify are symmetric only because both read the SAME class for a
+     * given type — keep that property when adding a verb here. */
+    bool is_per_class = (msg->type >= NODUS_T3_CMT_STATE &&
+                        msg->type <= NODUS_T3_CMT_TXS) ||
+                       msg->type == NODUS_T3_CC_APPR_REQ ||
+                       msg->type == NODUS_T3_CC_APPR_RSP;
+    size_t sign_cap = is_per_class ? nodus_t3_max_msg_size(msg->type)
+                                   : (size_t)NODUS_W_MAX_SYNC_RSP_SIZE;
     if (sign_cap == 0) return -1;
 
     uint8_t *sign_buf = malloc(sign_cap);

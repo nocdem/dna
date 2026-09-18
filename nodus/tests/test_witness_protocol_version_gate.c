@@ -15,7 +15,9 @@
  * SYNC_REQ/RSP (12-13), the bootstrap CHAIN_Q/CHAIN_R/GENESIS_REQ/
  * GENESIS_RSP (16-19), the old-lane V2_BLOCK/V2_HEAD/V2_RANGE_REQ/
  * V2_RANGE_RSP (20-23) and VIEWOK/VIEWOK_REQ (26-27) — 20 method
- * strings in all — no longer decode to anything: nodus_t3_method_to_
+ * strings in all, plus w_cc_vote_req/w_cc_vote_rsp (verbs 14-15,
+ * retired separately by D-16 rev 7 / W4-CC, rebuilt as verbs 40-41) —
+ * 22 in total — no longer decode to anything: nodus_t3_method_to_
  * type answers 0 for every one of them, and nodus_t3_decode refuses the
  * envelope before any argument is looked at (nodus_tier3.c: "msg->type
  * = nodus_t3_method_to_type(msg->method); if (msg->type == 0) return
@@ -95,9 +97,12 @@ static int checks;
 
 /* The 20 method strings retired with the closed consensus lane (R3 W4),
  * exactly as nodus_t3_type_to_method answered them before their enum
- * members were deleted (verified against git history at 4a43e3a9). The
- * numbers behind them are never reused (nodus_tier3.h's own "RETIRED
- * numbers" comment). */
+ * members were deleted (verified against git history at 4a43e3a9), PLUS
+ * w_cc_vote_req/w_cc_vote_rsp (verbs 14-15), retired by D-16 rev 7
+ * (W4-CC) and rebuilt on the pre-auth envelope as verbs 40-41
+ * (w_cc_appr_req/w_cc_appr_rsp — LIVE, not in this list). The numbers
+ * behind every retired string here are never reused (nodus_tier3.h's own
+ * "RETIRED numbers" comment). */
 static const char *const RETIRED_METHODS[] = {
     "w_propose", "w_prevote", "w_precommit", "w_commit",
     "w_viewchg", "w_newview", "w_fwd_req", "w_fwd_rsp",
@@ -105,6 +110,7 @@ static const char *const RETIRED_METHODS[] = {
     "w_chain_q", "w_chain_r", "w_genesis_req", "w_genesis_rsp",
     "w_v2_block", "w_v2_head", "w_v2_range_q", "w_v2_range_r",
     "w_viewok", "w_viewok_q",
+    "w_cc_vote_req", "w_cc_vote_rsp",
 };
 #define N_RETIRED (sizeof(RETIRED_METHODS) / sizeof(RETIRED_METHODS[0]))
 

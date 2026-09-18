@@ -123,40 +123,75 @@
  *     DESCRIPTOR and SHARES its bytes (cmt_vote.h:241, wave R2-A register
  *     row R2A-3). Every vote this module hands to `cmt_hvs_add_vote` or
  *     `cmt_vote_set_add_vote` therefore leaves a pointer inside the vote
- *     set. THE HOST SUPPLIES `ext_arena`. The host writes extension bytes
- *     into it from `extend_vote` (:2400, `nodus_cmt_host_extend_vote`,
- *     nodus_witness_cmt_host.c) for this node's OWN votes; PACKAGE C2e
- *     (register R3-A-5) closes the other documented-but-missing half —
- *     `cmt_cs_try_add_vote` now copies a PEER's vote's extension into
- *     `ext_arena` too, before the vote reaches either vote set, because
- *     the vote it is handed may point into a dequeued queue element or
- *     the WAL replay's reused scratch, neither of which outlives the
- *     call (see that function's own comment).
+ *     set. THE HOST SUPPLIES `ext_arena` — now TWO arenas, `ext_arena[2]`,
+ *     alternating by HEIGHT PARITY (PACKAGE W4-X, register R3-W3-C2e-4,
+ *     closing the reset gap C2e opened). The host writes extension bytes
+ *     into arena[vote's height & 1] from `extend_vote` (:2400,
+ *     `nodus_cmt_host_extend_vote`, nodus_witness_cmt_host.c) for this
+ *     node's OWN votes; `cmt_cs_try_add_vote` copies a PEER's vote's
+ *     extension into arena[vote's height & 1] too (register R3-A-5),
+ *     before the vote reaches either vote set, because the vote it is
+ *     handed may point into a dequeued queue element or the WAL replay's
+ *     reused scratch, neither of which outlives the call (see that
+ *     function's own comment). BOTH writers pick by the VOTE's OWN
+ *     height, never `cs->rs.height`: `cmt_cs_try_add_vote` copies before
+ *     `cs_add_vote` branches on height (:2137's LastCommit path, a
+ *     height-H vote arriving while the machine is at H+1), so picking by
+ *     `cs->rs.height` there would put an H-vote's bytes in the arena that
+ *     H+2's entry resets — freeing them while H's LastCommit still needs
+ *     them.
  *
- *     ⚠ RESET POLICY: NOT IMPLEMENTED, AND WHY. `ext_arena` is a single
- *     bump allocator (cmt_pb_arena_t: buf/cap/used, reset by zeroing
- *     `used`). At any moment the bytes live in it belong to the CURRENT
- *     height's vote set AND the PREVIOUS height's (`prev_votes`, kept
+ *     RESET POLICY. `ext_arena` (either half) is a bump allocator
+ *     (cmt_pb_arena_t: buf/cap/used, reset by zeroing `used` — no
+ *     `cmt_pb_arena_reset` function exists in this tree; every arena here
+ *     and in its host is reset by direct assignment). arena[p] holds
+ *     every height whose `height & 1 == p`. At any moment the bytes live
+ *     in the CURRENT height's arena AND the PREVIOUS height's — kept
  *     alive one extra height because `create_proposal_block` for height
- *     H+1 reads height H's LastCommit — `last_ext_commit`,
- *     `cs_create_proposal_block`, :1279-1313). Those two heights' bytes
- *     are written in chronological (height) order into the SAME linear
- *     buffer, so the only bytes ever safe to reclaim are the OLDEST — a
- *     PREFIX of the buffer — while the bytes that must survive are the
- *     newest — a SUFFIX. A single `used = 0` reset cannot free the prefix
- *     without also freeing the suffix; the only mechanically correct fix
- *     is two arenas alternating by height parity, with each writer
- *     picking the arena for the CURRENT height. That requires EVERY
- *     writer to be parity-aware, including `nodus_cmt_host_extend_vote`
- *     (nodus_witness_cmt_host.c:1725-1794), which hardcodes
- *     `ctx->ext_arena` — a single, fixed target — and that file is
- *     OUTSIDE package C2e's whitelist. Given that, `ext_arena` is left
- *     UNRESET by this package, exactly as before: a documented, pre-
- *     existing limitation, not a new regression, and inert in practice
- *     because `VoteExtensionsEnableHeight` is unset on this chain (the
- *     genesis params default), so `extension.len` is always 0 and neither
- *     writer ever advances `used`. A future package that ports the reset
- *     needs `nodus_witness_cmt_host.c` in its whitelist.
+ *     H+1 reads height H's LastCommit (`last_ext_commit`,
+ *     `cs_create_proposal_block`, :1279-1313) — and since H and H+1
+ *     always differ in parity, those two heights are ALWAYS in different
+ *     arenas. `cmt_cs_update_to_state` (state.go:647-774's port) resets
+ *     `ext_arena[N & 1]` immediately after moving the machine to height
+ *     N: that arena last held N-2's bytes, which are referenced by
+ *     nothing at that point (`cs_release_last_commit` already freed the
+ *     vote set `prev_votes` pointed at, one call earlier, before
+ *     `prev_votes` was reassigned to N-1's set — cmt_cs.c's own comment
+ *     at the reset site); N-1's bytes (prev_votes / the LastCommit N+1's
+ *     proposal will embed) live in the OTHER arena and are untouched.
+ *     OVERFLOW has two classes (ORCHESTRATOR correction W4-X ORC-2, the
+ *     independent verifier's finding A): a QUEUED vote whose extension
+ *     does not fit its height's arena is a logged CMT_REJECT at
+ *     `cmt_cs_try_add_vote`'s copy site — the vote is refused, the
+ *     event loop goes on — because that check runs on a PEER's bytes
+ *     before any signature is verified and before the extensions-
+ *     disabled refusal, and the reference has no such bound at all
+ *     (`Vote.ValidateBasic`, types/vote.go:318-350, never bounds
+ *     `len(Extension)`), so the umbrella's rule (rev 4) puts it in the
+ *     REJECT class; the node's OWN extension not fitting at
+ *     `nodus_cmt_host_extend_vote` stays CMT_FAULT (node-local). NOT
+ *     inert today: `VoteExtensionsEnableHeight` is unset on this chain,
+ *     so every non-empty extension is refused anyway (:2223-2225) — but
+ *     that refusal comes AFTER the copy, so a peer could still reach the
+ *     capacity check with a 65 KiB extension, and before ORC-2 that
+ *     stopped the node. Sizing the arena for a whole committee's honest
+ *     extended precommits is the obligation of the season that sets
+ *     VoteExtensionsEnableHeight (an honest overflow is refused the same
+ *     way: liveness, never a wrong vote). The parity must be correct
+ *     before then, since a wrong parity is silent-looking memory
+ *     corruption, not a refusal.
+ *
+ *     DEVIATION FROM THE REFERENCE (register `tasks/r3-w4/
+ *     register-x-writer.md`): this two-arena scheme is a HOST-side memory
+ *     policy the reference does not have at all. Go's `ExtendedCommit`
+ *     and `Vote.Extension` are garbage-collected byte slices
+ *     (state.go:1279-1313, :610-624's `votesFromExtendedCommit`); the
+ *     collector frees an old commit's extension bytes whenever nothing
+ *     references them, with no arena, no parity and no reset call
+ *     anywhere in the reference to port. The parity scheme exists only
+ *     because this port trades the collector for one bump allocator per
+ *     height-class, and is this package's own invention, not a line of
+ *     Go translated.
  *
  * (3) `LastCommit` HAS THREE POSSIBLE OWNERS. :701 points it INTO the
  *     current height vote set, which :743-746 then replaces; Go's GC keeps
@@ -897,10 +932,14 @@ struct cmt_cs_s {
      * HOST's arena, exactly as "OWNERSHIP" (2) states. */
     cmt_proposal_t      proposal_storage;
 
-    /** The extension arena of "OWNERSHIP" (2). BORROWED from the host and
-     *  never touched here; it is recorded so that the contract has a
-     *  place to live and so the host can be asked for it once. */
-    cmt_pb_arena_t     *ext_arena;
+    /** The two extension arenas of "OWNERSHIP" (2), alternating by height
+     *  parity: `ext_arena[p]` holds every height whose `height & 1 == p`.
+     *  BORROWED from the host and never touched here except for the
+     *  per-height reset (`cs_ext_arena_for`, cmt_cs.c); recorded so the
+     *  contract has a place to live and so the host can be asked for it
+     *  once. Either or both may be NULL only on a chain where vote
+     *  extensions are never enabled. */
+    cmt_pb_arena_t     *ext_arena[2];
 
     /** state.go:113 — `evsw`, reduced to its one listener (see
      *  `cmt_cs_listener_t`). Zeroed by `cmt_cs_init`'s memset, which is
@@ -937,9 +976,10 @@ struct cmt_cs_s {
  *        still EMPTY when `updateToState` runs its :655-685 checks — the
  *        reference's `cs.state` is the OLD state at that point and a
  *        pre-copied one would trip the panic at :659.
- * @param ext_arena the per-height vote extension arena; see "OWNERSHIP"
- *        (2). May be NULL only on a chain where vote extensions are never
- *        enabled, and then `extend_vote` is never reached.
+ * @param ext_arena the two per-height-parity vote extension arenas; see
+ *        "OWNERSHIP" (2). A plain NULL (not a pair of NULLs) is accepted
+ *        only on a chain where vote extensions are never enabled, and
+ *        then `extend_vote` is never reached.
  * @return CMT_OK; CMT_REJECT from the state or vote sets it builds;
  *         CMT_FAULT on NULL, on allocation failure, or at the reference's
  *         panics in `reconstruct*Commit` (:588, :605) and `updateToState`.
@@ -951,7 +991,7 @@ int cmt_cs_init(cmt_cs_t *cs,
                 cmt_cs_slots_t *slots,
                 cmt_state_storage_t *state_storage,
                 cmt_state_storage_t *scratch_storage,
-                cmt_pb_arena_t *ext_arena,
+                cmt_pb_arena_t *ext_arena[2],
                 int64_t offline_state_sync_height);
 
 /** C only — releases everything `cs` allocated: both message queues, the

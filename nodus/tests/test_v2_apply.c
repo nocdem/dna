@@ -252,6 +252,40 @@ static int env_core_utxo_create(v2x_env_t *e, uint8_t keylast,
     return v2x_env_build(e, &leg, 1);
 }
 
+/* R3 W4-C delta 3: same leg shape as env_core_utxo_create, but with a
+ * caller-chosen res_max_total_units instead of v2x_env_build's default
+ * 200000. Needed because NODUS_V2_GLOBAL_UNIT_BUDGET
+ * (nodus_witness_v2_apply.h) is 1000000 and the reservation formula
+ * (res_meter.h:84-87) takes the FULL declared ceiling from the global
+ * budget at reserve — 200000 x 5 envelopes already exhausts it, so a
+ * block of 11 such envelopes needs a smaller per-envelope ceiling to fit
+ * at all. The floor this ceiling must clear is static_units(envelope):
+ * sys_policy_build's seven weights are all 1
+ * (nodus_witness_runtime.c:120-121), and this leg's cost is w_base(1) +
+ * w_op(1) + w_callbyte*call_len + w_authbyte*auth_len(1) +
+ * w_effect*max_effects(4) + w_effectbyte*max_effect_bytes(2048), where
+ * call_len is 2 (the read-count header) plus the ONE-effect result's
+ * wire size DNA_EFFECT_FIXED_HEAD(23) + DNA_EFFECT_RECORD_LEN(84) +
+ * key(64) + value(8) = 179 (effect_wire.h:169-170) — call_len 181,
+ * total 2236 units. `ceiling` must stay above that floor. */
+static int env_core_utxo_create_ceiling(v2x_env_t *e, uint8_t keylast,
+                                        uint64_t amount, uint64_t ceiling) {
+    uint8_t key[64] = { 0 };
+    key[63] = keylast;
+    uint8_t val[8];
+    v2x_put64(val, amount);
+    uint8_t res[512];
+    size_t rl = 0;
+    if (v2x_eff1(res, sizeof(res), V2X_OP_UTXO, DNA_EFFECT_CREATE,
+                 DNA_EFFECT_PRE_ABSENT, key, 64, val, 8, &rl) != 0)
+        return -1;
+    uint8_t call[600];
+    uint32_t cl = v2x_script_build(call, sizeof(call), NULL, 0, res, rl);
+    if (!cl) return -1;
+    v2x_leg_t leg = { 1, 1, call, cl, 4, 2048 };
+    return v2x_env_build_ex(e, ceiling, 0, 0, &leg, 1);
+}
+
 /* One CORE UTXO SET envelope (absolute amount). */
 static int env_core_utxo_set(v2x_env_t *e, uint8_t keylast,
                              uint64_t amount) {
@@ -973,19 +1007,71 @@ int main(void) {
 
     /* ── 6. resource limits ─────────────────────────────────────────── */
     CHECK(db_state_digest(fx.w, dg) == 0, "digest");
-    {   /* global tx cap (10) */
+    {   /* R3 W4-C delta 2 (operator "kaldır" 2026-09-18;
+         * atlas-dec-5b7568512b95e6d2e671c4eaad2c1879 rev 1): the global
+         * tx-count cap (chain-config MAX_TXS_PER_BLOCK, the retired
+         * parameter) is DELETED from the engine (apply.c's "global
+         * tx-count cap" block is gone). 11 envelopes — one MORE than the
+         * old hard cap of 10 — now APPLY: RED on delta 1, which asserted
+         * `== -1` ("global tx cap ignored") for this exact same block
+         * shape. This block COMMITS at height 6, becoming the first
+         * real height-6 row in this fixture (delta 1's own mixed-leg
+         * test below moves to height 7 to make room).
+         *
+         * R3 W4-C delta 3 fix: the default ceiling (200000,
+         * v2x_env_build) is what actually binds 11 envelopes now — NOT
+         * a count. dna_meter_reserve takes the FULL declared
+         * res_max_total_units from NODUS_V2_GLOBAL_UNIT_BUDGET (1000000)
+         * at reserve time, so 5 x 200000 already exhausts it and the
+         * 6th reservation faults with DNA_METER_ERR_GLOBAL_BUDGET — this
+         * is the UNIT BUDGET binding, not the retired count cap, and it
+         * is the wrong thing for this case to prove. Each envelope here
+         * uses env_core_utxo_create_ceiling with 80000 instead: 11 x
+         * 80000 = 880000 < 1000000, comfortably under the global unit
+         * budget, and 80000 is comfortably above the ~2236-unit floor
+         * this leg's own static_units cost (see the helper's comment). */
         static v2x_env_t many[11];
         nodus_v2_envelope_t vm[11];
         for (int i = 0; i < 11; i++) {
-            CHECK(env_core_utxo_create(&many[i], (uint8_t)(0x70 + i), 1)
+            CHECK(env_core_utxo_create_ceiling(&many[i],
+                      (uint8_t)(0x70 + i), 1, 80000)
                       == 0, "env many");
             vm[i].env_bytes = many[i].bytes;
             vm[i].env_len = many[i].len;
         }
         nodus_v2_block_t bm;
         mk_block(&bm, 6, vm, 11);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &bm) == -1,
-              "global tx cap ignored"); OK();
+        CHECK(nodus_witness_v2_apply_block(fx.w, &bm) == 0,
+              "R3 W4-C delta 2: 11 envelopes did not apply — the retired "
+              "chain-config item cap must no longer bind them (RED on "
+              "delta 1: -1, \"global tx cap ignored\")"); OK();
+    }
+    CHECK(db_state_digest(fx.w, dg) == 0, "digest after the height-6 "
+          "commit — the baseline for the rejections below"); OK();
+    {   /* the engine's OWN surviving envelope-count ceiling
+         * (`NODUS_V2_ENV_BATCH_MAX`, a derived MEMORY bound — never a
+         * consensus parameter, R3 W4-C delta 2), proven with a STUB
+         * array: `v2_apply_block_body`'s SECOND check (apply.c, right
+         * after the NULL-envs FAULT and BEFORE schema/epoch/replay)
+         * rejects on `blk->n_envs` ALONE, before decoding envelope 0 —
+         * env.c's own ARG gate (`nodus_witness_v2_env_preflight_
+         * reserve_batch`, :59/:305) is the identical shape one layer
+         * down. Building NODUS_V2_ENV_BATCH_MAX + 1 (thousands) of REAL
+         * distinct envelopes to reach a VERDICT that fires before any of
+         * them are read would prove nothing more than this one real,
+         * valid, non-NULL entry does — it clears the NULL-envs FAULT and
+         * is never actually indexed. */
+        static v2x_env_t stub_env;
+        nodus_v2_envelope_t stub[1];
+        nodus_v2_block_t bx;
+        CHECK(env_core_utxo_create(&stub_env, 0x7B, 1) == 0, "stub env");
+        stub[0].env_bytes = stub_env.bytes;
+        stub[0].env_len   = stub_env.len;
+        mk_block(&bx, 7, stub, NODUS_V2_ENV_BATCH_MAX + 1);
+        CHECK(nodus_witness_v2_apply_block(fx.w, &bx) == -1,
+              "NODUS_V2_ENV_BATCH_MAX + 1 declared envelopes accepted — "
+              "the engine's own memory-ceiling VERDICT must reject on "
+              "the count alone"); OK();
     }
     {   /* global UNIT budget: a reservation ceiling the block budget
          * cannot cover rejects at reserve */
@@ -1008,7 +1094,7 @@ int main(void) {
                                + 1, 0, 0, &leg, 1) == 0, "ebig");
         nodus_v2_envelope_t vb = { ebig.bytes, ebig.len };
         nodus_v2_block_t bb;
-        mk_block(&bb, 6, &vb, 1);
+        mk_block(&bb, 7, &vb, 1);
         CHECK(nodus_witness_v2_apply_block(fx.w, &bb) == -1,
               "global unit budget ignored"); OK();
     }
@@ -1046,7 +1132,7 @@ int main(void) {
             { eq1.bytes, eq1.len }, { eq2.bytes, eq2.len }
         };
         nodus_v2_block_t bq;
-        mk_block(&bq, 6, vq, 2);
+        mk_block(&bq, 7, vq, 2);
         CHECK(nodus_witness_v2_apply_block(fx.w, &bq) == -1,
               "per-domain tx quota ignored"); OK();
 
@@ -1059,7 +1145,7 @@ int main(void) {
         static v2x_env_t eqc;
         CHECK(env_core_utxo_create(&eqc, 0x83, 1) == 0, "eqc");
         nodus_v2_envelope_t vqc = { eqc.bytes, eqc.len };
-        mk_block(&bq, 6, &vqc, 1);
+        mk_block(&bq, 7, &vqc, 1);
         CHECK(nodus_witness_v2_apply_block(fx.w, &bq) == -1,
               "per-domain unit budget ignored"); OK();
         /* restore the genesis manifest (consistent again) */
@@ -1068,6 +1154,65 @@ int main(void) {
     }
     CHECK(db_state_digest(fx.w, dg2) == 0 && memcmp(dg, dg2, 64) == 0,
           "resource rejections leaked state"); OK();
+
+    /* ── 6b. R3 W4 package C: the auth-offset table ───────────────────
+     * `auths` no longer sizes each envelope's slot range by a fixed
+     * `DNA_ENV_MAX_LEGS` multiplication (`i * DNA_ENV_MAX_LEGS + l`); it
+     * is now the SUM of every envelope's REAL leg count, with
+     * `auth_off[i]` the running per-envelope base
+     * (nodus_witness_v2_apply.c). A block mixing a TWO-leg envelope with
+     * ONE-leg envelopes stresses exactly that: if `auth_off` were wrong
+     * (e.g. reintroducing a fixed per-envelope stride), the second
+     * envelope's single leg would read a slot belonging to the first
+     * envelope's second leg (or, worse, an out-of-bounds slot an ASan
+     * build would catch) — either an empty/garbage verdict (`n_signers
+     * < 1`, a FAULT in `exec_one_env`) or, if that slot happened to hold
+     * a plausible-looking verdict, a MISAUTHORIZED leg. `env0` (SYSTEM+
+     * CORE cross-domain, 2 legs, `auth_off[0] == 0`) followed by `env1`/
+     * `env2` (CORE-only, 1 leg each, `auth_off[1] == 2`, `auth_off[2] ==
+     * 3`) applying cleanly, with every one of the three envelopes'
+     * derived identities committed, is the proof: every leg found ITS
+     * OWN verdict, not a neighbour's. */
+    CHECK(db_state_digest(fx.w, dg) == 0, "digest"); OK();
+    {
+        static v2x_env_t emix_cross, emix_a, emix_b;
+        nodus_v2_envelope_t vmix[3];
+        nodus_v2_block_t bmix;
+        uint64_t h_sys6 = 0, h_core6 = 0;
+
+        /* ORCHESTRATOR (W4-C ORC-1): the writer's first draft reused
+         * effblock 999994 — already committed by er1 at :912 — so the
+         * SYSTEM leg's CREATE/ABSENT precondition refused the block
+         * (status 7) and the section was RED for the wrong reason. Every
+         * key here is fresh (grep: 999996 / 0xa1-0xa3 unused elsewhere). */
+        CHECK(env_cross_cc_utxo(&emix_cross, 999996, 0xa1, 7) == 0,
+              "emix_cross (2 legs: SYSTEM+CORE)");
+        CHECK(env_core_utxo_create(&emix_a, 0xa2, 1) == 0,
+              "emix_a (1 leg: CORE)");
+        CHECK(env_core_utxo_create(&emix_b, 0xa3, 1) == 0,
+              "emix_b (1 leg: CORE)");
+        vmix[0].env_bytes = emix_cross.bytes;
+        vmix[0].env_len   = emix_cross.len;
+        vmix[1].env_bytes = emix_a.bytes;
+        vmix[1].env_len   = emix_a.len;
+        vmix[2].env_bytes = emix_b.bytes;
+        vmix[2].env_len   = emix_b.len;
+
+        /* R3 W4-C delta 2: height 7, not 6 — section 6's own first case
+         * ("11 envelopes now apply") now commits height 6 for real. */
+        mk_block(&bmix, 7, vmix, 3);
+        CHECK(nodus_witness_v2_apply_block(fx.w, &bmix) == 0,
+              "mixed 2-leg + 1-leg + 1-leg block did not apply — a wrong "
+              "auth_off entry would misauthorize or FAULT a later "
+              "envelope's leg"); OK();
+        CHECK(head_height(fx.w, 0, &h_sys6) == 0 &&
+              head_height(fx.w, 1, &h_core6) == 0,
+              "post-mix heads readable"); OK();
+        CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_tx_index WHERE "
+                       "global_height=7") == 3,
+              "all three envelopes' identities committed — none lost to "
+              "a misrouted auth verdict"); OK();
+    }
     fx_close(&fx);
 
     /* ── 7. supply (official DNA numbers) ───────────────────────────── */

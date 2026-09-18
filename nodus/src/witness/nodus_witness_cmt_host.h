@@ -475,7 +475,8 @@ typedef struct {
     cmt_now_fn              now;
     void                   *now_ctx;
     cmt_cs_slots_t         *slots;      /* the block slots the rows write */
-    cmt_pb_arena_t         *ext_arena;  /* cmt_cs.h "OWNERSHIP" (2)     */
+    cmt_pb_arena_t         *ext_arena[2]; /* cmt_cs.h "OWNERSHIP" (2), by
+                                             height parity (PACKAGE W4-X) */
 
     nodus_cmt_host_limits_t limits;
 
@@ -555,7 +556,7 @@ int nodus_cmt_blockexec_init(nodus_cmt_blockexec_t *ctx,
                              cmt_file_pv_t *pv,
                              cmt_now_fn now, void *now_ctx,
                              cmt_cs_slots_t *slots,
-                             cmt_pb_arena_t *ext_arena,
+                             cmt_pb_arena_t *ext_arena[2],
                              const nodus_cmt_host_limits_t *limits);
 
 /** Frees the scratch; the collaborators stay the caller's. */

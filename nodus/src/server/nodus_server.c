@@ -9,6 +9,7 @@
 #include "server/nodus_media_handler.h"
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_peer.h"
+#include "witness/nodus_witness_v2_apply.h"   /* nodus_witness_v2_committed_global_root (W4-H) */
 #include "channel/nodus_channel_server.h"
 #include "channel/nodus_channel_replication.h"
 #include "channel/nodus_channel_ring.h"
@@ -3798,7 +3799,21 @@ static void handle_t2_status(nodus_server_t *srv, nodus_session_t *sess,
 
     if (srv->witness && srv->witness->db) {
         info.block_height = nodus_witness_block_height(srv->witness);
-        if (srv->witness->cached_state_root_valid) {
+        if (srv->witness->v2_successor) {
+            /* R3 W4 package H: on a version-3 chain the legacy cached
+             * state root is never written (the Comet apply lane keeps
+             * no `blocks` row), so the column was EMPTY while HEIGHT
+             * already reported the `v2_blocks` tip. Report the committed
+             * GLOBAL ROOT of that tip instead — the row the engine wrote
+             * (`nodus_witness_v2_committed_global_root`: the authority is
+             * the stored `v2_blocks.global_root`, never a recompute), the
+             * same quantity `stagef_cmt_diff_at_floor` compares across
+             * nodes. A chain with no committed row yet leaves it zero. */
+            if (nodus_witness_v2_committed_global_root(srv->witness,
+                                                       info.state_root) != 0) {
+                memset(info.state_root, 0, sizeof(info.state_root));
+            }
+        } else if (srv->witness->cached_state_root_valid) {
             memcpy(info.state_root, srv->witness->cached_state_root, 64);
         }
         memcpy(info.chain_id, srv->witness->chain_id, 32);

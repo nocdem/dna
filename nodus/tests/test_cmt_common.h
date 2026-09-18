@@ -139,12 +139,18 @@
  *     timestamp-restoration and "conflicting data" paths, ported from
  *     `privval/file_test.go`. The right place for that coverage is the
  *     module's own test, which is where the reference keeps it too.
- *  6. THE VOTE-EXTENSION ARENA IS NEVER RESET. `cmt_cs.h`'s OWNERSHIP (2)
- *     requires the arena to be per-height and reset only after
- *     `updateToState` has released the previous height's vote set. This
- *     fixture allocates one arena for the whole scenario and never resets
- *     it, which satisfies the contract trivially and therefore PROVES
- *     NOTHING about a host that does reset it.
+ *  6. THE VOTE-EXTENSION ARENAS ARE THE FULL TWO-ARENA PAIR, AT THE
+ *     FIXTURE'S OWN CAPACITY. PACKAGE W4-X (register R3-W3-C2e-4): `tc->
+ *     arena[0]`/`[1]` are wired through `cmt_cs_init` exactly as
+ *     production's pair is, so `cmt_cs_update_to_state`'s reset runs on
+ *     every height transition this fixture drives — this is no longer a
+ *     trivial pass. What is STILL a fixture limit: `tc->arena[p]->cap` is
+ *     `TC_ARENA_CAP` (65536) by default, far larger than any scenario's
+ *     real usage, so ONLY a scenario that deliberately shrinks it (as
+ *     `s_ext_arena_reset_across_three_heights` does, a fixture-owned
+ *     resource a scenario is entitled to resize) ever reaches the
+ *     capacity FAULT path; every other scenario in this file exercises
+ *     the reset's bookkeeping but never its overflow refusal.
  *  7. THE PEER QUEUE IS FED WITH A SYNTHETIC PEER ID. Go's `addVotes`
  *     (common_test.go:255-259) puts a stub's vote on the PEER queue
  *     carrying an EMPTY PeerID. In this port an empty id means "our own
@@ -456,7 +462,11 @@ typedef struct {
     cmt_cs_t                 *cs;
     cmt_cs_slots_t           *slots;
     cmt_config_t              config;
-    cmt_pb_arena_t           *arena;
+    /** PACKAGE W4-X (register R3-W3-C2e-4): two arenas alternating by
+     *  height parity, matching `cmt_cs_t.ext_arena`/`nodus_cmt_blockexec_t
+     *  .ext_arena` (cmt_cs.h OWNERSHIP (2)). `arena[p]` holds every
+     *  height whose `height & 1 == p`. */
+    cmt_pb_arena_t           *arena[2];
 
     /* ── the clock (cmt_cs.h: the ONLY clock in the module) ───────── */
     cmt_time_t            now;
@@ -558,19 +568,26 @@ typedef struct {
 
 /* ══ small utilities ══════════════════════════════════════════════════ */
 
-/** Bump-allocate from the vote-extension arena (cmt_pb.h:165-169). */
-static const uint8_t *tc_arena_put(tc_t *tc, const uint8_t *src, size_t len)
+/** Bump-allocate from the vote-extension arena of `height`'s parity
+ *  (cmt_pb.h:165-169; PACKAGE W4-X, register R3-W3-C2e-4). Picked by the
+ *  VOTE's own height, never any notion of "the current height" — this is
+ *  the fixture's stand-in for `nodus_cmt_host_extend_vote`'s own pick
+ *  (nodus_witness_cmt_host.c), which the reference has no counterpart of
+ *  at all. */
+static const uint8_t *tc_arena_put(tc_t *tc, int64_t height,
+                                   const uint8_t *src, size_t len)
 {
-    uint8_t *p;
+    cmt_pb_arena_t *arena = tc->arena[(uint64_t)height & 1u];
+    uint8_t        *p;
 
-    if (tc->arena == NULL || tc->arena->used + len > tc->arena->cap) {
+    if (arena == NULL || arena->used + len > arena->cap) {
         return NULL;
     }
-    p = tc->arena->buf + tc->arena->used;
+    p = arena->buf + arena->used;
     if (len > 0u) {
         memcpy(p, src, len);
     }
-    tc->arena->used += len;
+    arena->used += len;
     return p;
 }
 
@@ -1021,7 +1038,8 @@ static int tc_apply_verified_block(void *ctx, const cmt_block_id_t *block_id,
  * or, for the one scenario that installs a different answer
  * (:1664-1666, `voteExtensions[0]`), whatever `tc->extend_ext` names.
  *
- * The bytes go in the ARENA, which is what cmt_cs.h's OWNERSHIP (2)
+ * The bytes go in the arena OF THIS VOTE'S OWN HEIGHT'S PARITY (PACKAGE
+ * W4-X, register R3-W3-C2e-4), which is what cmt_cs.h's OWNERSHIP (2)
  * requires: `cmt_vote_copy` shares an extension's bytes into every vote
  * set the vote reaches.
  */
@@ -1032,11 +1050,10 @@ static int tc_extend_vote(void *ctx, const cmt_vote_t *vote,
     tc_t          *tc = (tc_t *)ctx;
     const uint8_t *p;
 
-    (void)vote;
     (void)block;
     (void)state;
     tc->extend_calls++;
-    p = tc_arena_put(tc, tc->extend_ext, tc->extend_ext_len);
+    p = tc_arena_put(tc, vote->height, tc->extend_ext, tc->extend_ext_len);
     if (p == NULL) {
         return CMT_FAULT;
     }
@@ -1572,7 +1589,8 @@ static int tc_setup(tc_t *tc, size_t nvals,
     tc->genesis      = (cmt_state_t *)calloc(1u, sizeof(*tc->genesis));
     tc->cs           = (cmt_cs_t *)calloc(1u, sizeof(*tc->cs));
     tc->slots        = (cmt_cs_slots_t *)calloc(1u, sizeof(*tc->slots));
-    tc->arena        = (cmt_pb_arena_t *)calloc(1u, sizeof(*tc->arena));
+    tc->arena[0]     = (cmt_pb_arena_t *)calloc(1u, sizeof(*tc->arena[0]));
+    tc->arena[1]     = (cmt_pb_arena_t *)calloc(1u, sizeof(*tc->arena[1]));
     tc->recs         = (tc_block_rec_t *)calloc((size_t)TC_BLOCK_RECS,
                             sizeof(*tc->recs));
     tc->store        = (tc_store_ent_t *)calloc((size_t)TC_STORE_MAX,
@@ -1600,7 +1618,8 @@ static int tc_setup(tc_t *tc, size_t nvals,
         tc->blkscratch == NULL || tc->stor_gen == NULL ||
         tc->stor_cs == NULL || tc->stor_scratch == NULL ||
         tc->genesis == NULL || tc->cs == NULL || tc->slots == NULL ||
-        tc->arena == NULL || tc->recs == NULL || tc->store == NULL ||
+        tc->arena[0] == NULL || tc->arena[1] == NULL || tc->recs == NULL ||
+        tc->store == NULL ||
         tc->wal == NULL || tc->sv == NULL || tc->val == NULL ||
         tc->prop == NULL || tc->tmp_block == NULL || tc->ecsigs == NULL ||
         tc->cap_ecsigs == NULL || tc->conflict_a == NULL ||
@@ -1612,10 +1631,15 @@ static int tc_setup(tc_t *tc, size_t nvals,
         return 1;
     }
 
-    tc->arena->buf = (uint8_t *)calloc((size_t)TC_ARENA_CAP, 1u);
-    tc->arena->cap = (size_t)TC_ARENA_CAP;
-    tc->arena->used = 0u;
-    if (tc->arena->buf == NULL) {
+    /* PACKAGE W4-X (register R3-W3-C2e-4): two arenas, same per-arena
+     * capacity the single arena had. */
+    tc->arena[0]->buf = (uint8_t *)calloc((size_t)TC_ARENA_CAP, 1u);
+    tc->arena[0]->cap = (size_t)TC_ARENA_CAP;
+    tc->arena[0]->used = 0u;
+    tc->arena[1]->buf = (uint8_t *)calloc((size_t)TC_ARENA_CAP, 1u);
+    tc->arena[1]->cap = (size_t)TC_ARENA_CAP;
+    tc->arena[1]->used = 0u;
+    if (tc->arena[0]->buf == NULL || tc->arena[1]->buf == NULL) {
         tc_teardown(tc);
         return 1;
     }
@@ -1883,8 +1907,12 @@ static void tc_teardown(tc_t *tc)
         free(tc->vss[i].last);
         tc->vss[i].last = NULL;
     }
-    if (tc->arena != NULL) {
-        free(tc->arena->buf);
+    /* PACKAGE W4-X (register R3-W3-C2e-4): two arenas, freed both. */
+    if (tc->arena[0] != NULL) {
+        free(tc->arena[0]->buf);
+    }
+    if (tc->arena[1] != NULL) {
+        free(tc->arena[1]->buf);
     }
     free(tc->pk);
     free(tc->sk);
@@ -1896,7 +1924,8 @@ static void tc_teardown(tc_t *tc)
     free(tc->genesis);
     free(tc->cs);
     free(tc->slots);
-    free(tc->arena);
+    free(tc->arena[0]);
+    free(tc->arena[1]);
     free(tc->recs);
     free(tc->store);
     free(tc->wal);

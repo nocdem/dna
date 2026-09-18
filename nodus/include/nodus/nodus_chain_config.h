@@ -147,9 +147,15 @@ int nodus_chain_config_db_migrate(nodus_witness_t *w);
  *                               nodus_witness_vset.c (snapshot builder)
  *   - proposer batch cap:       nodus_witness_bft.c (abstain from the
  *                               round; no block on a guessed cap)
- *   - block tx-count validation: nodus_witness_v2_apply.c (node FAULT,
- *                               never a verdict on the block)
- * There is NO production reader of DNAC_CFG_BLOCK_INTERVAL_SEC through
+ * R3 W4-C delta 2 (operator "kaldır" 2026-09-18): the former
+ * "block tx-count validation: nodus_witness_v2_apply.c" consumer is
+ * GONE — DNAC_CFG_MAX_TXS_PER_BLOCK (param id 1) is retired from
+ * governance entirely (nodus_witness_chain_config.c's scalar_rules and
+ * grace_for_param both refuse id 1 unconditionally now); the engine's
+ * envelope-count ceiling is a derived MEMORY bound
+ * (NODUS_V2_ENV_BATCH_MAX, nodus_witness_v2_apply.h), never read
+ * through this function. There is NO production reader of
+ * DNAC_CFG_BLOCK_INTERVAL_SEC through
  * this function — the "proposer timer" consumer this docblock used to
  * list does not exist in the tree (grep, O15J Block 2 A2). Only
  * nodus-cli names the param, as a proposal argument.
@@ -206,11 +212,15 @@ int nodus_chain_config_compute_root(nodus_witness_t *w, uint8_t out_root[64]);
  *   2. Re-verify local rules via dnac_tx_verify_chain_config_rules.
  *   3. Freshness: commit_block <= valid_before_block (Rule CC-G).
  *   4. Grace: effective_block >= commit_block + grace_period_for_param
- *      (Rule CC-C). Ergonomic params (MAX_TXS) use
- *      DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS (1 hour); safety-critical
- *      params (BLOCK_INTERVAL_SEC, INFLATION_START_BLOCK, and — since
- *      Ledger V2 S3 — TARGET_ACTIVE_COUNT) use
- *      DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS (24 hours).
+ *      (Rule CC-C). Safety-critical params (BLOCK_INTERVAL_SEC,
+ *      INFLATION_START_BLOCK, and — since Ledger V2 S3 —
+ *      TARGET_ACTIVE_COUNT) use DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS
+ *      (24 hours); every other (unassigned) id falls back to
+ *      DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS (1 hour), an ergonomic
+ *      class with NO current member — R3 W4-C delta 2 retired MAX_TXS,
+ *      its one occupant (`nodus_chain_config_grace_for_param` now
+ *      refuses id 1 outright, returning UINT64_MAX defensively rather
+ *      than reaching this default case in practice).
  *   5. Committee membership + quorum (Rule CC-F). The committee governing
  *      commit_block - 1 is read from chain state; its SIZE is whatever the
  *      snapshot returns, never a compile-time constant. Two bounds:
@@ -341,31 +351,48 @@ int nodus_chain_config_derive_witness_id(const uint8_t pubkey[NODUS_CC_PUBKEY_SI
 void nodus_chain_config_log_stats(nodus_witness_t *w);
 
 /* Forward decl — full definitions in nodus_tier3.h / nodus_tcp.h;
- * callers that actually invoke nodus_witness_handle_cc_vote_req must
+ * callers that actually invoke nodus_witness_handle_cc_appr_req must
  * include those headers too (this avoids a deep include-chain for
  * chain_config consumers that only need the primitive API above). */
 struct nodus_t3_msg_t_tag;  /* nodus_t3_msg_t is an anonymous-struct typedef */
 struct nodus_tcp_conn;
 
 /**
- * Handle an incoming w_cc_vote_req (Stage C.2). Peer-side of the
- * committee vote-collect RPC: proposer sends a proposal, this handler
- * runs local-rule checks, signs the proposal digest with the local
- * Dilithium5 key, and replies with a w_cc_vote_rsp carrying
- * (witness_id, signature). Rejection returns a reason string.
+ * Handle an incoming w_cc_appr_req (D-16 rev 7, W4-CC). Peer-side of the
+ * SYSTEM-governance approval-collection RPC that replaces the retired
+ * Stage C.2 vote-collect pair (verbs 14-15): the request carries a
+ * PRE-AUTH single-leg SYSTEM-governance envelope (today exactly
+ * CHAIN_CONFIG); this handler decodes it through the engine's own
+ * preflight seam (never a private decoder), applies the SAME rules the
+ * op's exec applies at the local tip, rate-limits per proposer, resolves
+ * the governing committee, finds this node's own seat, computes the
+ * "DNA.CCAPPR.v1" approval digest itself from the seam-derived leg
+ * auth_digest, signs it, and replies with a w_cc_appr_rsp carrying
+ * (seat, signature, resolved-set hash, epoch) — or a refusal with a
+ * reason. It never signs a digest it did not compute. CHAIN BINDING
+ * (verifier finding on W4-CC, ORCHESTRATOR ORC-10): the envelope WIRE
+ * carries no chain id (shared/dnac/env_wire.h — `chain_id` is
+ * CONTEXTUAL, hashed into the AUTHCTX preimage), so there is nothing
+ * in `e` to compare against; the preflight seam derives THIS node's
+ * own chain id and hashes it into `auth_digest[0]`, and the signature
+ * below therefore verifies ONLY where the auth hook derives the same
+ * commitment — on this chain. The one chain-id REFUSAL is the T3
+ * header frame gate (`in->header.chain_id == w->v2_chain32`); a foreign
+ * chain is defended by digest BINDING, not by an envelope check.
  *
  * msg is declared `const void *` to avoid a circular include with
  * nodus_tier3.h; callers pass `&nodus_t3_msg_t_instance`.
  */
-int nodus_witness_handle_cc_vote_req(nodus_witness_t *w,
-                                      struct nodus_tcp_conn *conn,
-                                      const void *msg);
+int nodus_witness_handle_cc_appr_req(nodus_witness_t *w,
+                                     struct nodus_tcp_conn *conn,
+                                     const void *msg);
 
 /* ============================================================================
- * Stage C.3 — per-proposer rate-limit on w_cc_vote_req (CC-OPS-003 / Q15)
+ * Stage C.3 — per-proposer rate-limit on w_cc_appr_req (CC-OPS-003 / Q15;
+ * written for the retired w_cc_vote_req, unchanged by W4-CC's rewire)
  *
  * Prevents a hostile or buggy committee peer from amplifying load by
- * spamming w_cc_vote_req. Per-sender cooldown of NODUS_CC_RATE_LIMIT_
+ * spamming w_cc_appr_req. Per-sender cooldown of NODUS_CC_RATE_LIMIT_
  * WINDOW_MS milliseconds between accepted requests.
  *
  * Scope note: the design doc (§Q15) calls for BOTH a 5s timeout AND
@@ -403,7 +430,7 @@ typedef struct {
 } nodus_cc_rate_limit_table_t;
 
 /**
- * Decide whether to accept a new w_cc_vote_req from `sender_id` at `now_ms`.
+ * Decide whether to accept a new w_cc_appr_req from `sender_id` at `now_ms`.
  *
  * Side-effect-free: no slot mutation. Call nodus_cc_rate_limit_record() on
  * the accept path AFTER all other validation passes, so rejected-by-rule
@@ -425,7 +452,7 @@ int nodus_cc_rate_limit_check(nodus_cc_rate_limit_table_t *t,
                                uint64_t *elapsed_ms_out);
 
 /**
- * Record an accepted w_cc_vote_req. Upserts into an existing slot if
+ * Record an accepted w_cc_appr_req. Upserts into an existing slot if
  * `sender_id` is already tracked, else claims the first free slot, else
  * evicts the oldest entry (LRU) — the table is sized to the maximum active
  * validator set, so eviction only happens if a non-committee witness_id

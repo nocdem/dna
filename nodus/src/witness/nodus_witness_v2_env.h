@@ -110,15 +110,28 @@ extern "C" {
 #endif
 
 /**
- * Largest batch this seam preflights in one call.
+ * Largest ENVELOPE batch this seam preflights in one call.
  *
- * Aligned with the apply engine's own op bound MAX_OPS
- * (nodus_witness_v2_apply.c:36), so a batch that passes here can never be
- * larger than the block the engine could accept. Both are array bounds,
- * not policy: the GLOBAL per-block transaction cap is chain-config
- * (MAX_TXS_PER_BLOCK) and is enforced by the engine, not here.
+ * R3 W4-C delta 2 (operator "kaldır" 2026-09-18;
+ * atlas-dec-5b7568512b95e6d2e671c4eaad2c1879 rev 1): NO LONGER derived
+ * from the chain-config governance parameter `MAX_TXS_PER_BLOCK` — that
+ * parameter is RETIRED (nodus_witness_chain_config.c refuses id 1
+ * unconditionally now), so a block's capacity is bytes and units only.
+ * `NODUS_V2_ENV_BATCH_MAX` moved to `nodus_witness_v2_apply.h`, derived
+ * instead from a per-block MEMORY budget (`NODUS_V2_APPLY_SCRATCH_
+ * BUDGET_BYTES` / `NODUS_V2_APPLY_ENV_COST_BYTES`) — a release resource
+ * bound, never a consensus parameter. Defined there (not here) because
+ * the cost formula needs `dna_meter_t` and `nodus_rt_auth_verdict_t`,
+ * both already visible wherever `nodus_witness_v2_apply.h` is included
+ * — which every production and test consumer of this bound already
+ * does. See that header for the full derivation.
+ *
+ * This is an ENVELOPE-only bound. CLAIMS have their own, much larger,
+ * bound — NODUS_V2_APPLY_MAX_CLAIMS (nodus_witness_v2_apply.h) —
+ * because a claim is not a chain-config-metered transaction and
+ * cometbft's own block-size ceiling is the only thing that limits how
+ * many can fit in one block.
  */
-#define NODUS_V2_ENV_BATCH_MAX 16
 
 /**
  * One candidate envelope: bytes and length, nothing else.

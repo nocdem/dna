@@ -401,7 +401,15 @@ int dnac_tx_verify_validator_update_rules_internal(const dnac_transaction_t *tx)
  *   - signer_count == 1
  *   - chain_config_fields.param_id ∈ {1..DNAC_CFG_PARAM_MAX_ID}
  *   - chain_config_fields.new_value in per-param range (§5.2):
- *       MAX_TXS_PER_BLOCK      : [1, DNAC_CFG_MAX_TXS_HARD_CAP=10]
+ *       MAX_TXS_PER_BLOCK      : RETIRED (R3 W4-C delta 2, operator
+ *                                "kaldır" 2026-09-18;
+ *                                atlas-dec-5b7568512b95e6d2e671c4eaad2c1879
+ *                                rev 1) — id 1 is refused unconditionally,
+ *                                mirroring nodus_witness_chain_config.c's
+ *                                scalar_rules; a block's capacity is
+ *                                bytes and units only now
+ *                                (nodus_witness_v2_apply.h's derived
+ *                                envelope ceiling)
  *       BLOCK_INTERVAL_SEC     : [1, 15]
  *       INFLATION_START_BLOCK  : [0, 2^48]  (0 allowed at design-time —
  *                                 witness-side monotonicity rule Q5 kicks
@@ -437,14 +445,18 @@ static int verify_chain_config_rules(const dnac_transaction_t *tx) {
     /* new_value in per-param range (Rule CC-B). */
     switch ((dnac_chain_config_param_id_t)cc->param_id) {
         case DNAC_CFG_MAX_TXS_PER_BLOCK:
-            if (cc->new_value < 1ULL || cc->new_value > DNAC_CFG_MAX_TXS_HARD_CAP) {
-                QGP_LOG_ERROR(LOG_TAG,
-                              "CHAIN_CONFIG: MAX_TXS_PER_BLOCK=%llu out of [1,%llu]",
-                              (unsigned long long)cc->new_value,
-                              (unsigned long long)DNAC_CFG_MAX_TXS_HARD_CAP);
-                return DNAC_ERROR_INVALID_PARAM;
-            }
-            break;
+            /* RETIRED (R3 W4-C delta 3, whitelist extension over delta
+             * 2's operator "kaldır" ruling;
+             * atlas-dec-5b7568512b95e6d2e671c4eaad2c1879 rev 1): the
+             * per-block transaction-count cap left governance entirely —
+             * this client-side mirror now refuses id 1 unconditionally,
+             * the same way nodus_witness_chain_config.c's scalar_rules
+             * already does witness-side. This id is NEVER accepted
+             * again; ids 2-4 keep their numbers. */
+            QGP_LOG_ERROR(LOG_TAG,
+                          "CHAIN_CONFIG: param_id=1 (MAX_TXS_PER_BLOCK) "
+                          "is retired");
+            return DNAC_ERROR_INVALID_PARAM;
         case DNAC_CFG_BLOCK_INTERVAL_SEC:
             if (cc->new_value < DNAC_CFG_MIN_BLOCK_INTERVAL_SEC ||
                 cc->new_value > DNAC_CFG_MAX_BLOCK_INTERVAL_SEC) {

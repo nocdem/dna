@@ -218,7 +218,14 @@ extern "C" {
  *  recent liveness required. */
 #define DNAC_SETTLEMENT_ATTENDANCE_WINDOW_BLOCKS  120
 
-/** chain_config_tx grace — ergonomic params (MAX_TXS).
+/** chain_config_tx grace — ergonomic params.
+ *  R3 W4-C delta 2 (operator "kaldır", 2026-09-18; atlas-dec-5b7568512b
+ *  95e6d2e671c4eaad2c1879 rev 1): MAX_TXS was this class's one member
+ *  and is RETIRED (DNAC_CFG_MAX_TXS_PER_BLOCK below) — no ergonomic
+ *  parameter is currently governed, so this constant has no live
+ *  consumer in `nodus_chain_config_grace_for_param` any more; kept
+ *  (not deleted) because a FUTURE ergonomic parameter needs a grace
+ *  value to fall back to, and the id space (1..4) is unchanged.
  *  Propose → effective gap must be >= this many blocks.
  *
  *  The #ifndef is a test-harness compile-time override (e.g.
@@ -327,7 +334,15 @@ typedef enum {
 
 /** Parameter IDs allowed by DNAC_TX_CHAIN_CONFIG (v1 allowlist, design §5.2). */
 typedef enum {
-    DNAC_CFG_MAX_TXS_PER_BLOCK     = 1,  /**< overrides chain_def.max_txs_per_block */
+    DNAC_CFG_MAX_TXS_PER_BLOCK     = 1,  /**< RETIRED (R3 W4-C delta 2, operator
+                                          *   "kaldır" 2026-09-18; atlas-dec-
+                                          *   5b7568512b95e6d2e671c4eaad2c1879
+                                          *   rev 1) — refused unconditionally
+                                          *   by both the witness-side scalar
+                                          *   rules and this client-side
+                                          *   mirror (verify.c); the id NEVER
+                                          *   activates again and is never
+                                          *   reassigned. */
     DNAC_CFG_BLOCK_INTERVAL_SEC    = 2,  /**< overrides chain_def.block_interval_sec */
     DNAC_CFG_INFLATION_START_BLOCK = 3,  /**< overrides default 1 (0 = inflation off) */
     DNAC_CFG_TARGET_ACTIVE_COUNT   = 4,  /**< S3: target size of the active validator set */
@@ -335,9 +350,24 @@ typedef enum {
 } dnac_chain_config_param_id_t;
 
 /** Value range bounds — consensus-critical (client + witness reject out-of-range).
- *  The compile-time cap mirrors NODUS_W_MAX_BLOCK_TXS in nodus_types.h so
- *  on-wire-wire values never exceed the committed buffer sizes witness-side. */
-#define DNAC_CFG_MAX_TXS_HARD_CAP           10ULL
+ *
+ * R3 W4-C delta 2 (operator "kaldır" 2026-09-18;
+ * atlas-dec-5b7568512b95e6d2e671c4eaad2c1879 rev 1): the parameter this
+ * bound governed (`DNAC_CFG_MAX_TXS_PER_BLOCK`, id 1) is RETIRED —
+ * `nodus_witness_chain_config.c`'s scalar rules and grace lookup both
+ * refuse id 1 unconditionally now, and the engine's own count VERDICT
+ * (`nodus_witness_v2_apply.c`'s former "global tx-count cap" block) is
+ * deleted. `DNAC_CFG_MAX_TXS_HARD_CAP` (the bound this parameter used to
+ * be checked against) is DELETED here in delta 3, once its last two
+ * consumers — `dnac/src/transaction/verify.c` (the CLIENT-side mirror,
+ * `dnac_tx_verify_chain_config_rules`, now refuses id 1 unconditionally
+ * instead of range-checking it) and
+ * `dnac/tests/test_chain_config_verify.c` — stopped referencing it
+ * (grep-verified across the whole tree; Atlas `atlas_code_impact` on the
+ * symbol returned zero remaining candidates). It had NO live consumer
+ * left on the witness side; `NODUS_W_MAX_BLOCK_TXS` (nodus_types.h) it
+ * used to mirror is itself only read by the legacy merkle helpers
+ * (`nodus_witness_merkle.c`), not the version-3 path. */
 #define DNAC_CFG_MIN_BLOCK_INTERVAL_SEC     1ULL
 #define DNAC_CFG_MAX_BLOCK_INTERVAL_SEC     15ULL   /* Q6 default — tightened from 60 */
 #define DNAC_CFG_MAX_INFLATION_START_BLOCK  281474976710656ULL  /* 2^48 */
