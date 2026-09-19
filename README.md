@@ -22,6 +22,7 @@ DNA is a suite of decentralized applications built on **NIST-approved post-quant
 | [**DNA Connect**](messenger/) | End-to-end encrypted communication with multi-chain crypto wallet | RC |
 | [**Nodus**](nodus/) | Post-quantum Kademlia DHT server with embedded BFT witness | RC |
 | [**DNAC**](dnac/) | DNA Chain — post-quantum UTXO blockchain with BFT witness consensus | Testnet |
+| [**Nodus Web Wallet**](web-wallet/) | Accountless browser multichain wallet and temporary CPUNK balance reader | Development preview |
 | [**CPUNK Platform**](cpunk/) | Quantum-safe community platform | Live |
 
 ---
