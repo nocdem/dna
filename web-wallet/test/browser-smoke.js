@@ -34,6 +34,7 @@ await page.route('**/*', async route => {
 });
 try {
   await page.goto(url);
+  await page.waitForFunction(() => typeof document.querySelector('#restore').onclick === 'function' && typeof document.querySelector('#cpunk-form').onsubmit === 'function');
   await page.locator('#restore').click(); await page.locator('#phrase').fill(phrase); await page.locator('#backup-confirm').check(); await page.locator('#phrase-submit').click();
   await page.locator('#wallet-open').waitFor({ state: 'visible' });
   assert.equal(await page.locator('#receive-address').innerText(), '0x9858EfFD232B4033E47d90003D41EC34EcaEda94');
@@ -55,8 +56,10 @@ try {
   networkId = '0x38'; await page.locator('#review-button').click(); await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('wrong network')); assert.equal(broadcasts.length, 2);
   await page.locator('#cpunk-address').fill('Rj7J7MiX2bWy8sNybZfJFiwvEcU44PH89JnTmBXGREmPgVHvx8j5XvXFDNmV5RYdB3MzvgCTAY3RimZ7DWkV2zwBDTSjJNCvroNW2Tps'); await page.locator('#cpunk-endpoint').fill('https://eth.llamarpc.com/cpunk'); await page.locator('#cpunk-read').click();
   await page.waitForFunction(() => document.querySelector('#cpunk-result').textContent.includes('123.000000000000000001'));
+  assert.match(await page.locator('#cpunk-connection').innerText(), /Connected/);
   cpunkMode = 'malformed'; await page.locator('#cpunk-read').click(); await page.waitForFunction(() => document.querySelector('#cpunk-result').textContent.includes('unrecognized')); assert.ok(!(await page.locator('#cpunk-result').innerText()).includes('123.'));
   cpunkMode = 'network'; await page.locator('#cpunk-read').click(); await page.waitForFunction(() => document.querySelector('#cpunk-result').textContent.includes('unavailable'));
+  assert.match(await page.locator('#cpunk-connection').innerText(), /Read failed/);
   await page.locator('#lock').click(); await page.locator('#welcome').waitFor({ state: 'visible' }); assert.equal(await page.locator('#receive-address').innerText(), '');
   assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
   await page.locator('#create').click(); const created = await page.locator('#phrase').inputValue(); assert.equal(created.split(' ').length, 24); await page.locator('#backup-confirm').check(); await page.locator('#phrase-submit').click();

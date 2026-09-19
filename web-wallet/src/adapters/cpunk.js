@@ -1,21 +1,22 @@
-// Temporary CF-20 module. No keys, signing, transfer, claim, or multichain dependencies.
-import { request, endpointUrl } from '../core.js';
-export function validateCellframeAddress(address) {
-  // Structural validation only. Ownership/checksum is NOT established by this check.
-  if (!/^[1-9A-HJ-NP-Za-km-z]{100,110}$/.test(address)) throw new Error('Enter a Cellframe public address (Base58, 100–110 characters).');
-  return address;
-}
-export function parseCpunkBalance(response) {
-  const row = response?.result?.[0]?.[0];
-  if (response?.error || (row?.token && row.token !== 'CPUNK')) throw new Error('RPC did not return a CPUNK balance.');
-  const balance = row?.balance;
-  // Existing cell_chain.c treats this as an already formatted coin amount.
-  if (typeof balance !== 'string' || !/^\d+(\.\d{1,18})?$/.test(balance)) throw new Error('RPC returned an unrecognized CPUNK balance; no balance can be shown.');
-  return balance;
-}
-export async function readCpunk({ address, endpoint, signal, fetcher }) {
+// Temporary CF-20 module: no keys, signing, transfer or claim functionality.
+import { endpointUrl } from '../core.js';
+import { CPUNK_ENDPOINT, CPUNK_PATH, cpunkQuery, validateCellframeAddress, parseCpunkBalance, boundedJson } from '../cpunk-protocol.js';
+export { validateCellframeAddress, parseCpunkBalance } from '../cpunk-protocol.js';
+export async function readCpunk({ address, endpoint = '', signal, fetcher = fetch }) {
   validateCellframeAddress(address);
-  if (!endpoint) throw new Error('A browser-accessible HTTPS Cellframe RPC is required.');
-  const response = await request(endpointUrl(endpoint), { method: 'wallet', subcommand: 'info', arguments: { net: 'Backbone', addr: address, token: 'CPUNK' }, id: 1 }, { signal, fetcher });
+  const gateway = endpoint === CPUNK_PATH;
+  const url = gateway ? CPUNK_PATH : endpointUrl(endpoint || CPUNK_ENDPOINT);
+  const combined = signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000);
+  let response;
+  try {
+    response = await fetcher(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(gateway ? { address } : cpunkQuery(address)), signal: combined, credentials: 'omit', referrerPolicy: 'no-referrer', redirect: 'error', cache: 'no-store' });
+    response = await boundedJson(response);
+  } catch (error) {
+    if (signal?.aborted) throw new Error('Request cancelled.');
+    if (combined.aborted) throw new Error('CPUNK connection timed out. Try again later.');
+    if (error instanceof TypeError) throw new Error('CPUNK connection unavailable. Check the site service, HTTPS endpoint and browser access.');
+    throw error;
+  }
+  if (response?.result?.[0]?.[0]?.addr !== undefined && response.result[0][0].addr !== address) throw new Error('RPC returned a different address.');
   return { balance: parseCpunkBalance(response), address, network: 'Backbone', observedAt: new Date().toISOString() };
 }

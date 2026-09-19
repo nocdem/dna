@@ -29,13 +29,12 @@ test('exact units reject floats, negative, excessive precision, overflow and mal
 });
 test('CPUNK uses public-address query only and distinguishes errors from exact zero', async () => {
   let sent;
-  const result = await readCpunk({ address, endpoint: 'https://rpc.example/connect', fetcher: async (url, options) => { sent = JSON.parse(options.body); return { ok: true, json: async () => ({ result: [[{ balance: '1234.000000000000000001' }]] }) }; } });
+  const result = await readCpunk({ address, endpoint: 'https://rpc.example/connect', fetcher: async (url, options) => { sent = JSON.parse(options.body); return Response.json({ result: [[{ balance: '1234.000000000000000001' }]] }); } });
   assert.equal(result.balance, '1234.000000000000000001');
   assert.deepEqual(sent, { method: 'wallet', subcommand: 'info', arguments: { net: 'Backbone', addr: address, token: 'CPUNK' }, id: 1 });
   assert.equal(parseCpunkBalance({ result: [[{ balance: '0' }]] }), '0');
   for (const bad of [{}, { result: [] }, { result: [[{ balance: 0 }]] }, { result: [[{ balance: '0', token: 'CELL' }]] }, { error: {}, result: [[{ balance: '1' }]] }]) assert.throws(() => parseCpunkBalance(bad));
   await assert.rejects(readCpunk({ address: phrase, endpoint: 'https://rpc.example' }), /public address/);
-  await assert.rejects(readCpunk({ address, endpoint: '' }), /required/);
   await assert.rejects(request('https://rpc.example', {}, { fetcher: async () => { throw new Error('network'); } }), /unavailable/);
 });
 test('review only sends on confirmation, once, and rejects expired/cancelled/ambiguous retries', async () => {

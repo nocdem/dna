@@ -98,13 +98,13 @@ if (import.meta.env.VITE_ENABLE_CPUNK !== 'false') {
 import('./adapters/cpunk.js').then(({ readCpunk }) => {
 $('cpunk-form').onsubmit = async event => {
   event.preventDefault(); cpunkRequest?.abort(); const controller = new AbortController(); cpunkRequest = controller;
-  $('cpunk-result').textContent = 'Reading CPUNK…';
+  $('cpunk-connection').textContent = 'Connecting…'; $('cpunk-result').textContent = 'Reading CPUNK…';
   try {
-    const result = await readCpunk({ address: $('cpunk-address').value.trim(), endpoint: $('cpunk-endpoint').value.trim(), signal: controller.signal });
-    if (!controller.signal.aborted) $('cpunk-result').textContent = `${result.balance} CPUNK · Backbone · Read at ${new Date(result.observedAt).toLocaleTimeString()}`;
-  } catch (error) { if (!controller.signal.aborted) $('cpunk-result').textContent = error.message; }
+    const result = await readCpunk({ address: $('cpunk-address').value.trim(), endpoint: $('cpunk-endpoint').value.trim() || import.meta.env.VITE_CPUNK_ENDPOINT || '', signal: controller.signal });
+    if (!controller.signal.aborted) { $('cpunk-connection').textContent = 'Connected · last read succeeded.'; $('cpunk-result').textContent = `${result.balance} CPUNK · Backbone · Read at ${new Date(result.observedAt).toLocaleTimeString()}`; }
+  } catch (error) { if (!controller.signal.aborted) { $('cpunk-connection').textContent = 'Read failed · connection not verified.'; $('cpunk-result').textContent = error.message; } }
 };
-for (const id of ['cpunk-address', 'cpunk-endpoint']) $(id).addEventListener('input', () => { cpunkRequest?.abort(); $('cpunk-result').textContent = 'Input changed. Read the balance again.'; });
+for (const id of ['cpunk-address', 'cpunk-endpoint']) $(id).addEventListener('input', () => { cpunkRequest?.abort(); $('cpunk-connection').textContent = 'Connection not checked for this input.'; $('cpunk-result').textContent = 'Input changed. Read the balance again.'; });
 
 }).catch(() => { $('cpunk-result').textContent = 'CPUNK module could not load. Reload to retry.'; });
 } else { document.querySelector('.cpunk').remove(); document.querySelector('.layout').classList.add('single'); }

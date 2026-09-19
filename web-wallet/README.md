@@ -23,13 +23,28 @@ Open the localhost URL printed by Vite. For a production bundle, run `npm run bu
 - EVM gas estimation with a 20% gas-limit margin and legacy gas-price transactions; Solana fee/rent estimation and idempotent recipient token account creation, including spending across multiple source token accounts; TRON native/TRC-20 transaction intent and protobuf consistency validation. TRON token energy has a 100 TRX limit; bandwidth/activation charges are network dependent and not falsely presented as an exact fee estimate. TRON sending uses only the configured default mainnet provider; there is no testnet fallback.
 - Temporary **CPUNK-only, read-only** Cellframe/Backbone query using a public address. No seed import, wallet creation, signing, sending, trading or claim execution in the Cellframe module. Its balance is not proof of ownership, a snapshot, or airdrop eligibility.
 
-## CPUNK availability is an unresolved live integration dependency
+## CPUNK connection
 
-The repository uses `http://rpc.cellframe.net/connect`, which is unsuitable for a production HTTPS browser app because of mixed-content restrictions. This implementation deliberately does not silently invent a working HTTPS replacement or proxy. The CPUNK form requires a trusted HTTPS endpoint implementing the same RPC and allowing the app origin through CORS. It has no default endpoint until an operator verifies one.
+The default is `https://rpc.cellframe.net/connect`. On 2026-09-19 a read-only POST using the repository's public DNA registration address returned HTTP 200, `Access-Control-Allow-Origin: *`, POST/OPTIONS allowed, and the full CellframeNode 5.7-44 JSON response. CPUNK was `0.00000000000000001` coins / `10` datoshi; the response also contained CELL. This is an observation, not a current balance guarantee. An earlier 12-second HTTPS probe received headers but timed out before the body; HTTP also timed out. These observations do not establish a network outage. Browser preflight and live access from the final deployment origin still require verification.
 
-The source contract is `messenger/blockchain/cellframe/cellframe_rpc.c` (`wallet`, `info`, `{net:'Backbone', addr, token:'CPUNK'}`) and `cell_chain.c` (`result[0][0].balance`, an already formatted decimal string). Responses are parsed strictly; missing/malformed data and connectivity failures are errors, never inferred zero balances. Address validation is structural Base58/length checking only, not checksum or ownership verification.
+The native query contract is `messenger/blockchain/cellframe/cellframe_rpc.c`: `wallet`, `info`, `{net:'Backbone', addr, token:'CPUNK'}`. The live response uses `result[0][0].tokens[]`, `token.ticker`, `coins` and `datoshi`. The parser selects exactly one CPUNK entry, checks Backbone and matching returned address, and verifies coins against integer datoshi with 18 decimal places. The older native `result[0][0].balance` format is also supported. Missing tokens, malformed data, mismatched amounts and connectivity failures are errors, never inferred zero balances. Address validation remains structural Base58/length checking, not checksum or ownership verification. UI status reports the last read outcome and resets when input changes.
 
-On 2026-09-19, this environment's `curl -IL --max-time 15 https://rpc.cellframe.net/connect` timed out with no upstream response. This does **not** establish a Cellframe-wide outage. Real CPUNK access and browser CORS compatibility remain unverified. No claim system, snapshot rule or ownership proof has been supplied or implemented.
+A custom trusted HTTPS endpoint may be entered for this tab. An optional same-origin gateway is available for deployments needing an operator connection:
+
+```sh
+# Terminal 1: Node 22.12+, binds loopback only
+npm run cpunk:gateway
+# Terminal 2: Vite forwards /api/cpunk/ to that service
+VITE_CPUNK_ENDPOINT=/api/cpunk/balance npm run dev
+# Read-only verification: public address from cellframe_rpc.h
+npm run cpunk:verify
+# Verify the default remote HTTPS endpoint directly instead
+npm run cpunk:verify -- --direct
+```
+
+For production, run the gateway under your service manager, build with `VITE_CPUNK_ENDPOINT=/api/cpunk/balance npm run build`, and use `deploy/Caddyfile` with `WALLET_HOST` set to your domain and `WALLET_DIST` set to the absolute `dist` directory. Caddy terminates HTTPS and forwards only `/api/cpunk/*` to the loopback gateway. Keep port 8787 private; if changing `CPUNK_PORT`, update the proxy target too. For direct-only static hosting, use ordinary `npm run build` without the gateway environment setting. No service is deployed by these files.
+
+After deployment run `npm run cpunk:verify -- https://YOUR_DOMAIN` for gateway deployments, then use the page's public-address read to verify browser access. The command fails on missing setup, upstream errors or malformed responses. It does not test browser CORS. Gateway requests accept **only** `{address}` at `/api/cpunk/balance`; the server constructs the fixed CPUNK query to the fixed HTTPS upstream. Arbitrary RPC methods, upstream URLs, signing, credentials and secrets are not supported. Request bodies are capped at 512 bytes, upstream responses at 64 KiB, upstream operations at 10 seconds and browser operations at 15 seconds; redirects are refused and balances are not cached. Apply ordinary edge rate limits appropriate to your public deployment. No claim system, snapshot rule or ownership proof is implemented.
 
 ## Permanent chain RPC limitations
 
@@ -43,7 +58,7 @@ Chain SDKs, not the existing native C binaries, implement browser signing; exist
 VITE_ENABLE_CPUNK=false npm run build
 ```
 
-The CPUNK panel is removed and the lazy-loaded adapter is excluded from the bundle. The reusable `src/wallet.js`, permanent adapters and key derivation do not import CPUNK. For final source removal, delete `src/adapters/cpunk.js`, its isolated UI block/form and corresponding tests. No permanent-chain changes are needed.
+The CPUNK panel is removed and the lazy-loaded adapter is excluded from the bundle. The reusable `src/wallet.js`, permanent adapters and key derivation do not import CPUNK. For final source removal, delete `src/adapters/cpunk.js`, `src/cpunk-protocol.js`, `server/cpunk-gateway.js`, `scripts/verify-cpunk.js`, the optional proxy configuration, its isolated UI block/form and corresponding tests. No permanent-chain changes are needed.
 
 ## Verification
 
