@@ -96,6 +96,20 @@ $('confirm-send').onclick = async () => {
 };
 if (import.meta.env.VITE_ENABLE_CPUNK !== 'false') {
 import('./adapters/cpunk.js').then(({ readCpunk }) => {
+$('cpunk-derive').onclick = async () => {
+  if (!wallet || wallet.locked) { $('cpunk-result').textContent = 'Create or restore your wallet first.'; return; }
+  const current = revision, source = wallet;
+  $('cpunk-derive').disabled = true;
+  try {
+    const { deriveCpunkAddress } = await import('./cpunk/derive.js');
+    if (current !== revision || source !== wallet || source.locked) return;
+    const address = await deriveCpunkAddress(source.recoveryPhrase);
+    if (current !== revision || source !== wallet || source.locked) return;
+    $('cpunk-address').value = address; $('cpunk-address').dispatchEvent(new Event('input'));
+    $('cpunk-result').textContent = 'Address derived locally. Select Read CPUNK balance to query it.';
+  } catch (error) { if (current === revision) $('cpunk-result').textContent = error.message; }
+  finally { $('cpunk-derive').disabled = false; }
+};
 $('cpunk-form').onsubmit = async event => {
   event.preventDefault(); cpunkRequest?.abort(); const controller = new AbortController(); cpunkRequest = controller;
   $('cpunk-connection').textContent = 'Connecting…'; $('cpunk-result').textContent = 'Reading CPUNK…';

@@ -21,7 +21,7 @@ Open the localhost URL printed by Vite. For a production bundle, run `npm run bu
 - Receive/copy address, explicit balance refresh, native and preset token transfers on Ethereum, BSC, Solana and TRON mainnets. Preset token contracts/decimals are copied from the C headers: ETH USDT/USDC/DAI; BSC USDT/USDC; SOL USDT/USDC; TRON USDT/USDC/USDD. Token listing is not an endorsement or statement of current issuer support.
 - Exact integer amount handling, address validation by chain libraries, EVM chain-ID and Solana genesis checks, explicit review of network/sender/recipient/asset/amount/fee before local signing and broadcast, expiring single-use reviews, and transaction explorer links. Broadcast submission is shown as pending, never as confirmed. Ambiguous failures are not automatically retried.
 - EVM gas estimation with a 20% gas-limit margin and legacy gas-price transactions; Solana fee/rent estimation and idempotent recipient token account creation, including spending across multiple source token accounts; TRON native/TRC-20 transaction intent and protobuf consistency validation. TRON token energy has a 100 TRX limit; bandwidth/activation charges are network dependent and not falsely presented as an exact fee estimate. TRON sending uses only the configured default mainnet provider; there is no testnet fallback.
-- Temporary **CPUNK-only, read-only** Cellframe/Backbone query using a public address. No seed import, wallet creation, signing, sending, trading or claim execution in the Cellframe module. Its balance is not proof of ownership, a snapshot, or airdrop eligibility.
+- Temporary **CPUNK-only, read-only** Cellframe/Backbone query using a public address. Local address derivation from the open wallet’s phrase is available; Cellframe signing, sending, trading and claiming are unavailable. Its balance is not proof of ownership, a snapshot, or airdrop eligibility.
 
 ## CPUNK connection
 
@@ -83,3 +83,11 @@ The browser test starts its own preview server and intercepts **all external HTT
 - `src/adapters/cpunk.js`: isolated temporary public balance adapter.
 - `src/app.js`, `index.html`, `src/style.css`: accountless responsive UI.
 - `test/`: offline and fully intercepted browser verification.
+
+## Connect-compatible Cellframe address derivation
+
+Open a BIP39 wallet, then select **Use my open wallet’s address**. Derivation stays in the browser; reading the derived public balance is a separate action. This mode accepts the same normalized, checksum-valid English BIP39 phrase as the multichain wallet. Arbitrary non-BIP39 Cellframe strings are not supported. No recovery phrase is sent to the gateway or RPC.
+
+The temporary `src/cpunk/` module compiles the repository's unchanged legacy Cellframe Dilithium MODE_1 C, not modern ML-DSA. It matches native `EVP_sha3_256(mnemonic)` (not Keccak), the key generator’s subsequent SHA3, 1196-byte serialized public key and 77-byte Backbone address/checksum. A fresh WASM instance is used per derivation and its memory is overwritten afterward; JavaScript string erasure cannot be guaranteed. The open wallet retains its phrase in RAM until lock to support derivation.
+
+Rebuild with Zig 0.13.0: `ZIG_BIN=/path/to/zig bash scripts/build-cpunk-wasm.sh`. Native reference verification (GCC/OpenSSL development headers): `bash scripts/build-native-vector.sh`, then `CPUNK_NATIVE_CHECK=/tmp/nodus-cpunk-native-vector npm test`. Three public BIP39 vectors crosscheck the actual native wallet/address functions against the browser module. The committed WASM allows normal builds without installing a compiler. `VITE_ENABLE_CPUNK=false` excludes this module and WASM from the production bundle.

@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' https:; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'"><title>Nodus · Web Wallet</title><link rel="stylesheet" href="/src/style.css"></head>
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self' https:; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'"><title>Nodus · Web Wallet</title><link rel="stylesheet" href="/src/style.css"></head>
 <body>
 <header><a class="brand" href="#">◈ <strong>NODUS</strong><span>WEB WALLET</span></a><span class="pill">Mainnet · Preview</span></header>
 <main>
@@ -8,7 +8,7 @@
 <div class="layout">
 <section class="card cpunk" aria-labelledby="cpunk-title"><div class="section-head"><span class="icon">C</span><div><p class="eyebrow">CELLFRAME · BACKBONE</p><h2 id="cpunk-title">Check CPUNK</h2></div><span class="pill">Read only</span></div>
 <p>Use your public Cellframe address. No recovery phrase is needed.</p>
-<form id="cpunk-form"><label for="cpunk-address">Cellframe public address</label><textarea id="cpunk-address" rows="3" spellcheck="false" autocomplete="off" required placeholder="Paste your public address"></textarea>
+<button id="cpunk-derive" class="secondary" type="button">Use my open wallet’s address</button><p class="hint">Create or restore your wallet below, then derive its Cellframe address locally.</p><form id="cpunk-form"><label for="cpunk-address">Cellframe public address</label><textarea id="cpunk-address" rows="3" spellcheck="false" autocomplete="off" required placeholder="Paste your public address"></textarea>
 <label for="cpunk-endpoint">Custom HTTPS endpoint (optional)</label><input id="cpunk-endpoint" type="url" placeholder="Default Cellframe connection"><p class="hint">Leave blank to use the configured Cellframe connection. A custom Cellframe endpoint must allow browser access.</p><button id="cpunk-read" type="submit">Read CPUNK balance <span>↗</span></button></form>
 <p id="cpunk-connection" role="status">Connection not checked.</p><div id="cpunk-result" class="result" role="status" aria-live="polite">No address checked.</div><p class="notice">A live balance is not proof of ownership, an airdrop snapshot, or confirmation of eligibility. Claiming is not available here.</p></section>
 <section class="card" aria-labelledby="wallet-title"><div class="section-head"><span class="icon">◇</span><div><p class="eyebrow">ETH · BNB · SOL · TRX</p><h2 id="wallet-title">Your multichain wallet</h2></div></div>

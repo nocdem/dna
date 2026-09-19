@@ -27,14 +27,14 @@ export function deriveWallet(phrase) {
     const tron = root.derivePath("m/44'/195'/0'/0/0");
     const solSeed = solanaSeed(seed);
     const solana = Keypair.fromSeed(solSeed); solSeed.fill(0);
-    return { evm, solana, tronPrivateKey: tron.privateKey.slice(2), addresses: { ethereum: evm.address, bsc: evm.address, solana: solana.publicKey.toBase58(), tron: TronWeb.address.fromPrivateKey(tron.privateKey.slice(2)) } };
+    return { recoveryPhrase: normalized, evm, solana, tronPrivateKey: tron.privateKey.slice(2), addresses: { ethereum: evm.address, bsc: evm.address, solana: solana.publicKey.toBase58(), tron: TronWeb.address.fromPrivateKey(tron.privateKey.slice(2)) } };
   } finally { seed.fill(0); }
 }
 // Keys live only in this tab. JS strings cannot be reliably wiped; locking drops references.
 export function assertWalletActive(wallet) { if (!wallet || wallet.locked) throw new Error('Wallet is locked.'); }
 export function disposeWallet(wallet) {
   if (!wallet) return;
-  wallet.locked = true;
+  wallet.locked = true; wallet.recoveryPhrase = null;
   wallet.solana?.secretKey.fill(0);
   wallet.solana = null; wallet.evm = null; wallet.tronPrivateKey = null;
 }

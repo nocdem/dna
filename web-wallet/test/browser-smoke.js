@@ -39,6 +39,10 @@ try {
   await page.locator('#wallet-open').waitFor({ state: 'visible' });
   assert.equal(await page.locator('#receive-address').innerText(), '0x9858EfFD232B4033E47d90003D41EC34EcaEda94');
   assert.equal(await page.locator('#phrase').inputValue(), '');
+  await page.locator('#cpunk-derive').click();
+  await page.waitForFunction(() => document.querySelector('#cpunk-result').textContent.includes('Address derived locally'));
+  assert.ok((await page.locator('#cpunk-address').inputValue()).startsWith('R'));
+  assert.equal(calls.length, 0);
   for (const [chain, expected] of [['bsc','0x9858EfFD232B4033E47d90003D41EC34EcaEda94'],['solana','HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk'],['tron','TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH'],['ethereum','0x9858EfFD232B4033E47d90003D41EC34EcaEda94']]) {
     await page.selectOption('#chain', chain); assert.equal(await page.locator('#receive-address').innerText(), expected);
   }
