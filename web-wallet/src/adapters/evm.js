@@ -2,6 +2,7 @@ import { assertWalletActive } from '../keys.js';
 import { JsonRpcProvider, FetchRequest, Interface, getAddress, keccak256, formatUnits } from 'ethers';
 import { CHAINS } from '../config.js';
 import { rawInteger, rpc } from '../core.js';
+import { ethersGetUrl } from '../rpc-transport.js';
 const erc20 = new Interface(['function balanceOf(address) view returns (uint256)', 'function transfer(address,uint256) returns (bool)']);
 export async function balances(chain, address, endpoint) {
   getAddress(address);
@@ -18,6 +19,7 @@ export async function prepare({ chain, wallet, to, asset, units, endpoint }) {
   to = getAddress(to);
   await checkNetwork(chain, endpoint);
   const transport = new FetchRequest(endpoint); transport.timeout = 15000;
+  transport.getUrlFunc = ethersGetUrl;
   const provider = new JsonRpcProvider(transport, undefined, { batchMaxCount: 1 });
   try {
     const from = wallet.addresses[chain];
@@ -35,7 +37,8 @@ export async function prepare({ chain, wallet, to, asset, units, endpoint }) {
         assertWalletActive(wallet);
         const signed = await wallet.evm.signTransaction(unsigned);
         assertWalletActive(wallet);
-        const hash = keccak256(signed); onBroadcast?.({ hash });
+        const hash = keccak256(signed); await onBroadcast?.({ hash });
+        assertWalletActive(wallet);
         const returned = await rpc(endpoint, 'eth_sendRawTransaction', [signed]);
         if (returned?.toLowerCase() !== hash.toLowerCase()) throw new Error('RPC returned a different transaction identifier.');
         return hash;

@@ -9,11 +9,13 @@
     "preview": "vite preview --host 127.0.0.1",
     "test": "node --test test/*.test.js",
     "test:browser": "node test/browser-smoke.js",
+    "test:security": "node test/browser-security.js",
     "cpunk:gateway": "node server/cpunk-gateway.js",
     "cpunk:verify": "node scripts/verify-cpunk.js",
     "verify:networks": "node scripts/verify-networks.js"
   },
   "dependencies": {
+    "@noble/curves": "1.9.7",
     "@noble/hashes": "1.8.0",
     "@solana-program/token": "0.16.1",
     "@solana/web3.js": "1.99.0",

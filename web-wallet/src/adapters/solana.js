@@ -4,6 +4,7 @@ import { Connection, PublicKey, Transaction, SystemProgram } from '@solana/web3.
 import { getAssociatedTokenAddress, createAssociatedTokenAccountIdempotentInstruction, createTransferCheckedInstruction } from './solana-token.js';
 import { CHAINS } from '../config.js';
 import { rpc, rawInteger, formatUnits } from '../core.js';
+import { rpcFetch } from '../rpc-transport.js';
 const GENESIS = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
 export async function checkNetwork(endpoint) {
   if (await rpc(endpoint, 'getGenesisHash', []) !== GENESIS) throw new Error('RPC is not Solana mainnet.');
@@ -23,7 +24,7 @@ export async function prepare({ wallet, to, asset, units, endpoint }) {
   const recipient = new PublicKey(to); await checkNetwork(endpoint);
   if (units > 2n ** 64n - 1n) throw new Error('Amount exceeds Solana token limits.');
   const connection = new Connection(endpoint, { commitment: 'confirmed', disableRetryOnRateLimit: true,
-    fetch: (url, options) => fetch(url, { ...options, signal: options?.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000) }) });
+    fetch: rpcFetch });
   const owner = wallet.solana.publicKey;
   const tx = new Transaction();
   let rent = 0;
@@ -60,7 +61,8 @@ export async function prepare({ wallet, to, asset, units, endpoint }) {
       assertWalletActive(wallet);
       tx.sign(wallet.solana);
       const hash = encodeBase58(tx.signature);
-      onBroadcast?.({ hash, lastValidBlockHeight: latest.lastValidBlockHeight });
+      await onBroadcast?.({ hash, lastValidBlockHeight: latest.lastValidBlockHeight });
+      assertWalletActive(wallet);
       const returned = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 0 });
       if (returned !== hash) throw new Error('RPC returned a different transaction identifier.');
       return hash;

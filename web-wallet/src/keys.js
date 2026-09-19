@@ -1,7 +1,8 @@
 import { HDNodeWallet, Mnemonic, randomBytes, getBytes } from 'ethers';
 import { hmac } from '@noble/hashes/hmac';
 import { sha512 } from '@noble/hashes/sha512';
-import { Keypair } from '@solana/web3.js';
+import { PublicKey } from '@solana/web3.js';
+import { ed25519 } from '@noble/curves/ed25519';
 import { TronWeb } from 'tronweb';
 export function newPhrase() { return Mnemonic.entropyToPhrase(randomBytes(32)); }
 export function normalizePhrase(value) { return value.normalize('NFKD').trim().toLowerCase().split(/\s+/).join(' '); }
@@ -26,7 +27,14 @@ export function deriveWallet(phrase) {
     const evm = root.derivePath("m/44'/60'/0'/0/0");
     const tron = root.derivePath("m/44'/195'/0'/0/0");
     const solSeed = solanaSeed(seed);
-    const solana = Keypair.fromSeed(solSeed); solSeed.fill(0);
+    // Keypair.secretKey returns a copy. Own the long-lived Signer buffer so
+    // disposal overwrites the material actually used by tx.sign().
+    let solana;
+    try {
+      const publicBytes = ed25519.getPublicKey(solSeed), secretKey = new Uint8Array(64);
+      secretKey.set(solSeed); secretKey.set(publicBytes, 32);
+      solana = { publicKey: new PublicKey(publicBytes), secretKey };
+    } finally { solSeed.fill(0); }
     return { recoveryPhrase: normalized, evm, solana, tronPrivateKey: tron.privateKey.slice(2), addresses: { ethereum: evm.address, bsc: evm.address, solana: solana.publicKey.toBase58(), tron: TronWeb.address.fromPrivateKey(tron.privateKey.slice(2)) } };
   } finally { seed.fill(0); }
 }

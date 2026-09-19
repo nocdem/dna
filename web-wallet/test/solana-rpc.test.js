@@ -6,7 +6,7 @@ import { Transaction, Keypair, SystemInstruction, PublicKey } from '@solana/web3
 import { TOKEN_PROGRAM_ID, getAssociatedTokenAddress } from '../src/adapters/solana-token.js';
 import { encodeBase58 } from 'ethers';
 import { prepare } from '../src/adapters/solana.js';
-import { deriveWallet } from '../src/keys.js';
+import { deriveWallet, disposeWallet } from '../src/keys.js';
 import { CHAINS } from '../src/config.js';
 const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 test('updated Solana SDK transport and token codecs preserve native/SPL signed transactions with one broadcast', async t => {
@@ -48,6 +48,9 @@ test('updated Solana SDK transport and token codecs preserve native/SPL signed t
     assert.equal(ix.keys[3].pubkey.toBase58(), wallet.addresses.solana); assert.equal(ix.keys[3].isSigner, true);
     assert.equal(ix.keys[2].pubkey.toBase58(), (await getAssociatedTokenAddress(ix.keys[1].pubkey, to)).toBase58());
   }
+  assert.equal(broadcasts.length, 2);
+  const cancelled = await prepare({ wallet, to: to.toBase58(), asset: currentAsset, units: 1n, endpoint: CHAINS.solana.endpoint });
+  await assert.rejects(cancelled.send(async () => { await Promise.resolve(); disposeWallet(wallet); }), /locked/);
   assert.equal(broadcasts.length, 2);
 });
 

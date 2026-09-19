@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { encryptVault, decryptVault, parseVault } from '../src/vault.js';
-import { serializeActivity, parseActivity } from '../src/activity-storage.js';
+import { serializeActivity, parseActivity, activityKeyFor } from '../src/activity-storage.js';
 const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 const password = 'public-test-password-123';
 test('vault uses randomized authenticated encryption, rejects wrong password and metadata/ciphertext tampering', async () => {
@@ -15,18 +15,19 @@ test('vault uses randomized authenticated encryption, rejects wrong password and
   }
   for (const field of ['version', 'iterations', 'cipher', 'kdf']) { const changed = JSON.parse(a); changed[field] = 0; assert.throws(() => parseVault(JSON.stringify(changed))); }
   assert.throws(() => parseVault(' '.repeat(6001)));
-  await assert.rejects(encryptVault(phrase, 'short'), /12/);
+  await assert.rejects(encryptVault(phrase, 'short'), /16/);
   const changed = await encryptVault(phrase, 'changed-password-123', parseVault(a).id);
   assert.equal((await decryptVault(changed, 'changed-password-123')).id, parseVault(a).id);
   await assert.rejects(decryptVault(changed, password), /Incorrect password/);
 });
-test('public history is bounded, scoped, rechecked after reload and does not persist provider credentials', () => {
+test('encrypted history is bounded, scoped, rechecked after reload and excludes provider credentials', async () => {
   const addresses = { ethereum: '0xabc' };
   const row = { chain: 'ethereum', address: '0xabc', to: '0xdef', symbol: 'ETH', amount: '1', hash: '0x' + 'a'.repeat(64), endpoint: 'https://rpc.example/private-api-key?secret=abc', createdAt: new Date().toISOString(), status: 'confirmed', recoveryPhrase: phrase };
-  const text = serializeActivity('test', Array(101).fill(row));
+  const id = btoa('0123456789abcdef'), key = await activityKeyFor(phrase, id);
+  const text = await serializeActivity(id, Array(101).fill(row), key);
   assert.ok(!text.includes('private-api-key')); assert.ok(!text.includes(phrase));
-  const parsed = parseActivity(text, 'test', addresses); assert.equal(parsed.length, 100); assert.equal(parsed[0].status, 'pending');
+  const parsed = await parseActivity(text, id, addresses, key); assert.equal(parsed.length, 100); assert.equal(parsed[0].status, 'pending');
   assert.equal(parsed[0].endpoint, 'https://eth.llamarpc.com');
-  assert.throws(() => parseActivity(text, 'wrong', addresses));
-  assert.throws(() => parseActivity(text, 'test', { ethereum: 'other' }));
+  await assert.rejects(parseActivity(text, 'wrong', addresses, key));
+  await assert.rejects(parseActivity(text, id, { ethereum: 'other' }, key));
 });

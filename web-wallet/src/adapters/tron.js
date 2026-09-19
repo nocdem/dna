@@ -1,8 +1,22 @@
 import { assertWalletActive } from '../keys.js';
-import { TronWeb, utils } from 'tronweb';
+import { TronWeb, utils, providers } from 'tronweb';
 import { CHAINS } from '../config.js';
 import { request, rawInteger, formatUnits } from '../core.js';
 const FEE_LIMIT = 100_000_000;
+export function createTronClient(endpoint) {
+  const provider = new providers.HttpProvider(endpoint, 15000);
+  provider.request = (path, payload = {}, method = 'get') => {
+    const url = new URL(path, endpoint.replace(/\/$/, '') + '/');
+    if (url.origin !== new URL(endpoint).origin) throw new Error('Unexpected TRON RPC origin.');
+    if (method.toLowerCase() === 'get') {
+      for (const [key, value] of Object.entries(payload)) url.searchParams.set(key, value);
+      return request(url.href);
+    }
+    if (method.toLowerCase() !== 'post') throw new Error('Unsupported TRON RPC method.');
+    return request(url.href, payload);
+  };
+  return new TronWeb({ fullNode: provider, solidityNode: provider, eventServer: provider });
+}
 export async function balances(chain, address, endpoint) {
   if (!TronWeb.isAddress(address)) throw new Error('Invalid TRON address.');
   const result = await request(`${endpoint.replace(/\/$/, '')}/v1/accounts/${address}`);
@@ -31,7 +45,7 @@ export async function prepare({ wallet, to, asset, units, endpoint }) {
   if (!TronWeb.isAddress(to)) throw new Error('Invalid TRON recipient.');
   // Keep signing on the repository's mainnet provider. Never silently fall back to Shasta.
   if (endpoint.replace(/\/$/, '') !== CHAINS.tron.endpoint) throw new Error('TRON sending requires the configured mainnet provider.');
-  const tron = new TronWeb({ fullHost: endpoint, timeout: 15000 });
+  const tron = createTronClient(endpoint);
   const from = wallet.addresses.tron;
   let tx;
   if (!asset.address) {
@@ -49,7 +63,8 @@ export async function prepare({ wallet, to, asset, units, endpoint }) {
       validateTransaction(tx, { from, to, asset, units });
       const signed = await tron.trx.sign(tx, wallet.tronPrivateKey);
       assertWalletActive(wallet);
-      onBroadcast?.({ hash: signed.txID, expiration: tx.raw_data.expiration });
+      await onBroadcast?.({ hash: signed.txID, expiration: tx.raw_data.expiration });
+      assertWalletActive(wallet);
       const result = await tron.trx.sendRawTransaction(signed);
       if (!result.result) throw new Error('TRON rejected the broadcast. Check the explorer before retrying.');
       return signed.txID;

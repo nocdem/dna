@@ -12,6 +12,15 @@ function passwordBytes(password) {
   if (typeof password !== 'string' || password.length < 12 || password.length > 1024) throw new Error('Use a local password of 12–1024 characters.');
   return new TextEncoder().encode(password);
 }
+export function validateNewPassword(password) {
+  // New saves/changes only: existing v1 wallets must remain unlockable.
+  if (typeof password !== 'string' || password.length < 16 || password.length > 1024) throw new Error('Use a unique local password of 16–1024 characters. A password manager can generate one.');
+  const folded = password.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+  const common = /^(password|passphrase|qwerty|letmein|welcome|admin|administrator|iloveyou|changeme|nodus|wallet|1234567890)[0-9]*$/;
+  const repeated = /^(.{1,8})\1+$/u.test(password.toLowerCase());
+  const sequence = ['0123456789', '1234567890', 'abcdefghijklmnopqrstuvwxyz', 'qwertyuiopasdfghjklzxcvbnm'].some(value => value.repeat(4).includes(folded) || value.split('').reverse().join('').repeat(4).includes(folded));
+  if (folded.length < 8 || common.test(folded) || repeated || sequence) throw new Error('This password is too easy to guess. Use a unique generated password or several unrelated words.');
+}
 function header(vault) { return { version: vault.version, id: vault.id, kdf: vault.kdf, iterations: vault.iterations, salt: vault.salt, cipher: vault.cipher, iv: vault.iv }; }
 export function parseVault(text) {
   if (typeof text !== 'string' || text.length > 6000) throw new Error('Saved wallet is too large or invalid.');
@@ -29,6 +38,7 @@ async function keyFor(password, salt, usage) {
   } finally { bytes.fill(0); }
 }
 export async function encryptVault(phrase, password, id) {
+  validateNewPassword(password);
   if (typeof phrase !== 'string' || phrase.length > 1024 || !Mnemonic.isValidMnemonic(phrase)) throw new Error('Invalid recovery phrase.');
   const vault = { version: 1, id: id || encode(crypto.getRandomValues(new Uint8Array(16))), kdf: 'PBKDF2-SHA256', iterations: ITERATIONS, salt: encode(crypto.getRandomValues(new Uint8Array(16))), cipher: 'AES-256-GCM', iv: encode(crypto.getRandomValues(new Uint8Array(12))) };
   decode(vault.id, 16);

@@ -1,23 +1,34 @@
-import { VAULT_KEY, ACTIVITY_KEY, parseVault, encryptVault, decryptVault } from './vault.js';
-import { serializeActivity, parseActivity } from './activity-storage.js';
+import { VAULT_KEY, ACTIVITY_KEY, parseVault, encryptVault, decryptVault, validateNewPassword } from './vault.js';
+import { serializeActivity, parseActivity, activityKeyFor } from './activity-storage.js';
 import { recordActivity, watchActivity } from './activity.js';
 import { CHAINS } from './config.js';
 import { deriveWallet, disposeWallet, newPhrase, normalizePhrase } from './keys.js';
 import { adapters, prepareTransfer } from './wallet.js';
 import { endpointUrl } from './core.js';
 const $ = id => document.getElementById(id);
-let wallet, pending, generatedPhrase, phraseStep, revision = 0, busy = false, lockTimer;
+let wallet, pending, generatedPhrase, phraseStep, revision = 0, busy = false, lockTimer, idleDeadline = 0;
 let cpunkRequest;
-let activeVaultId = null, vaultOperation = 0;
+let activitySession = null, activityBlocked = false, historyWrites = Promise.resolve(), vaultOperation = 0;
 const history = []; let stopTracking = () => {};
 function visibleActivity() { return wallet ? history.filter(row => row.chain === $('chain').value && row.address === wallet.addresses[row.chain]) : []; }
-function persistActivity() {
-  if (!activeVaultId || !wallet) return;
-  try { localStorage.setItem(ACTIVITY_KEY, serializeActivity(activeVaultId, history.filter(row => row.address === wallet.addresses[row.chain]))); }
-  catch { $('vault-status').textContent = 'Activity could not be saved. Keep the transaction ID before closing.'; }
+function persistActivity({ required = false } = {}) {
+  const session = activitySession, source = wallet;
+  if (!session || !source) return Promise.resolve();
+  const rows = history.filter(row => row.address === source.addresses[row.chain]).map(row => ({ ...row }));
+  const current = () => session === activitySession && source === wallet && !source.locked && localStorage.getItem(VAULT_KEY) === session.vault;
+  const changed = () => { if (required) throw new Error('Wallet storage changed before broadcast. Review the transfer again.'); };
+  // Serialize writes; an older encryption must not overwrite a newer record.
+  historyWrites = historyWrites.catch(() => {}).then(async () => {
+    if (!current()) return changed();
+    if (activityBlocked) throw new Error('Saved activity is unverified. Check the explorer and discard the unreadable history before sending.');
+    const encrypted = await serializeActivity(session.id, rows, session.key);
+    if (!current()) return changed();
+    localStorage.setItem(ACTIVITY_KEY, encrypted);
+  });
+  return historyWrites;
 }
-function renderActivity() {
-  persistActivity();
+function renderActivity(save = true) {
+  if (save) void persistActivity().catch(error => { $('vault-status').textContent = error.message; });
   $('activity').replaceChildren(...visibleActivity().map(row => {
     const div = document.createElement('div'), link = document.createElement('a');
     div.textContent = `${row.amount} ${row.symbol} → ${row.to} · ${row.status} · ${row.readError || row.note} `;
@@ -28,11 +39,23 @@ function trackActivity() { stopTracking(); renderActivity(); if (wallet) stopTra
 const endpoints = Object.fromEntries(Object.entries(CHAINS).map(([key, chain]) => [key, chain.endpoint]));
 const message = text => { $('wallet-status').textContent = text; };
 for (const [key, chain] of Object.entries(CHAINS)) $('chain').add(new Option(chain.name, key));
-function activity() { clearTimeout(lockTimer); if (wallet) lockTimer = setTimeout(lock, 10 * 60 * 1000); }
-for (const event of ['pointerdown', 'keydown']) document.addEventListener(event, activity);
+function expireIdle() {
+  if (idleDeadline && Date.now() >= idleDeadline) { lock(); return true; }
+  return false;
+}
+function activity() {
+  if (expireIdle()) return;
+  clearTimeout(lockTimer);
+  const sensitive = wallet || !$('phrase-form').hidden || $('unlock-wallet').disabled || $('vault-save').disabled || ['unlock-password', 'vault-password', 'vault-old-password'].some(id => $(id).value);
+  if (sensitive) { idleDeadline = Date.now() + 10 * 60 * 1000; lockTimer = setTimeout(lock, 10 * 60 * 1000); }
+}
+for (const event of ['pointerdown', 'keydown', 'input']) document.addEventListener(event, activity);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) expireIdle(); });
+window.addEventListener('focus', expireIdle);
 function closeReview() { pending?.cancel(); pending = undefined; $('review-dialog').close(); }
 function lock() {
-  revision++; vaultOperation++; activeVaultId = null; stopTracking(); closeReview(); disposeWallet(wallet); wallet = undefined; generatedPhrase = undefined; $('phrase').value = '';
+  revision++; vaultOperation++; activitySession = null; activityBlocked = false; idleDeadline = 0; stopTracking(); closeReview(); disposeWallet(wallet); wallet = undefined; generatedPhrase = undefined; $('phrase').value = '';
+  $('discard-activity').hidden = true;
   $('phrase-form').hidden = true; $('wallet-open').hidden = true; $('welcome').hidden = false;
   $('activity').replaceChildren(); $('receive-address').textContent = ''; $('balances').replaceChildren(); $('recipient').value = ''; $('amount').value = '';
   for (const id of ['unlock-password', 'vault-password', 'vault-old-password']) $(id).value = '';
@@ -46,8 +69,9 @@ function phraseForm(create) {
   $('welcome').hidden = true; $('phrase-form').hidden = false; $('backup-confirm').checked = false;
   $('phrase').value = generatedPhrase || ''; $('phrase').readOnly = create;
   $('phrase-label').textContent = create ? 'Write down your recovery phrase privately' : 'Enter your recovery phrase';
-  $('phrase-help').textContent = 'This phrase controls your funds. It is never sent to an RPC or stored by this app. Keep an offline backup; we cannot recover it.';
+  $('phrase-help').textContent = 'This phrase controls your funds. It stays local; an encrypted copy is stored only if you choose to save it. Keep an offline backup. This screen clears after 10 minutes of inactivity.';
   $('phrase-submit').textContent = create ? 'I saved it — verify backup' : 'Open wallet'; message(''); $('phrase').focus();
+  activity();
 }
 $('create').onclick = () => phraseForm(true);
 $('restore').onclick = () => phraseForm(false);
@@ -108,7 +132,11 @@ $('confirm-send').onclick = async () => {
   busy = true; const transfer = pending, current = revision; pending = undefined; let record;
   $('confirm-send').disabled = true; $('cancel-send').disabled = true; $('review-error').textContent = 'Signing locally and broadcasting…';
   try {
-    const hash = await transfer.confirm(details => { record = recordActivity(transfer, details); history.push(record); if (current === revision) renderActivity(); });
+    const hash = await transfer.confirm(async details => {
+      record = recordActivity(transfer, details); history.push(record); if (current === revision) renderActivity(false);
+      // The signed hash must be durable before the first network submission.
+      await persistActivity({ required: true });
+    });
     if (record) { record.note = 'Broadcast submitted; awaiting confirmation.'; if (current === revision) trackActivity(); }
     $('review-dialog').close();
     if (current !== revision) return;
@@ -155,18 +183,23 @@ function updateVaultUI() {
 }
 updateVaultUI();
 $('unlock-form').onsubmit = async event => {
+  if (expireIdle()) { event.preventDefault(); return; }
   event.preventDefault(); const operation = ++vaultOperation;
   const password = $('unlock-password').value; $('unlock-password').value = ''; $('unlock-wallet').disabled = true;
   try {
     const text = localStorage.getItem(VAULT_KEY); if (!text) throw new Error('No saved wallet on this device.');
     const saved = await decryptVault(text, password);
     if (operation !== vaultOperation || text !== localStorage.getItem(VAULT_KEY)) return;
-    const restored = deriveWallet(saved.phrase);
-    if (operation !== vaultOperation) { disposeWallet(restored); return; }
-    disposeWallet(wallet); wallet = restored; activeVaultId = saved.id;
-    history.length = 0;
-    try { history.push(...parseActivity(localStorage.getItem(ACTIVITY_KEY), saved.id, wallet.addresses)); }
-    catch { $('vault-status').textContent = 'Saved activity could not be loaded. Check account history on the explorer.'; }
+    const restored = deriveWallet(saved.phrase); let key, rows = [], problem = '';
+    try {
+      key = await activityKeyFor(saved.phrase, saved.id);
+      try { rows = await parseActivity(localStorage.getItem(ACTIVITY_KEY), saved.id, restored.addresses, key); }
+      catch (error) { problem = error.message; }
+      if (operation !== vaultOperation || text !== localStorage.getItem(VAULT_KEY)) { disposeWallet(restored); return; }
+    } catch (error) { disposeWallet(restored); throw error; }
+    disposeWallet(wallet); wallet = restored; activitySession = { id: saved.id, key, vault: text }; activityBlocked = !!problem;
+    history.length = 0; history.push(...rows);
+    $('discard-activity').hidden = !problem; $('vault-status').textContent = problem || 'Saved activity authenticated.';
     $('welcome').hidden = true; $('phrase-form').hidden = true; $('wallet-open').hidden = false; updateVaultUI(); selectChain(); activity(); message('Saved wallet unlocked locally.');
   } catch (error) { if (operation === vaultOperation) $('vault-status').textContent = error.message; }
   finally { $('unlock-wallet').disabled = false; }
@@ -179,6 +212,8 @@ async function saveVault(change) {
   $('vault-save').disabled = true; $('vault-change').disabled = true;
   try {
     const previous = localStorage.getItem(VAULT_KEY); let id;
+    validateNewPassword(password);
+    if (activityBlocked) throw new Error('Check the explorer and discard the unreadable history before changing the saved wallet.');
     if (previous && !change) throw new Error('A wallet is already saved. Unlock it to change its password, or explicitly delete it first.');
     if (change) {
       if (!previous) throw new Error('No saved wallet to change.');
@@ -188,17 +223,31 @@ async function saveVault(change) {
     }
     if (operation !== vaultOperation || wallet !== source || source.locked) return;
     const encrypted = await encryptVault(source.recoveryPhrase, password, id);
+    const newId = parseVault(encrypted).id, key = await activityKeyFor(source.recoveryPhrase, newId);
     if (operation !== vaultOperation || wallet !== source || source.locked || localStorage.getItem(VAULT_KEY) !== previous) return;
-    localStorage.setItem(VAULT_KEY, encrypted); activeVaultId = parseVault(encrypted).id; persistActivity(); updateVaultUI();
+    localStorage.setItem(VAULT_KEY, encrypted); activitySession = { id: newId, key, vault: encrypted }; updateVaultUI();
+    await persistActivity();
+    if (operation !== vaultOperation || wallet !== source || source.locked) return;
     $('vault-status').textContent = change ? 'Local password changed.' : 'Encrypted wallet saved on this device. Keep your recovery backup.';
   } catch (error) { if (operation === vaultOperation) $('vault-status').textContent = error.message; }
   finally { $('vault-save').disabled = false; $('vault-change').disabled = false; }
 }
 $('vault-save').onclick = () => saveVault(false);
 $('vault-change').onclick = () => saveVault(true);
+$('vault-password').addEventListener('input', () => {
+  try { validateNewPassword($('vault-password').value); $('password-hint').textContent = 'Meets the minimum checks. Use a unique password and keep your recovery backup.'; }
+  catch (error) { $('password-hint').textContent = error.message; }
+});
+$('discard-activity').onclick = async () => {
+  if (!wallet || !activitySession || !activityBlocked) return;
+  try {
+    localStorage.removeItem(ACTIVITY_KEY); activityBlocked = false; $('discard-activity').hidden = true;
+    await persistActivity(); $('vault-status').textContent = 'Unreadable local history discarded. Check the account explorer before resending any previous payment.';
+  } catch (error) { $('vault-status').textContent = error.message; }
+};
 $('vault-delete').onclick = () => {
   if (!$('vault-delete-confirm').checked) { $('vault-status').textContent = 'Confirm that you have your backup before deleting.'; return; }
-  vaultOperation++; activeVaultId = null;
+  vaultOperation++; activitySession = null; activityBlocked = false; $('discard-activity').hidden = true;
   try { localStorage.removeItem(VAULT_KEY); localStorage.removeItem(ACTIVITY_KEY); $('vault-status').textContent = 'Saved wallet and saved activity deleted from this device.'; updateVaultUI(); }
   catch { $('vault-status').textContent = 'Device storage could not be deleted.'; }
   $('vault-delete-confirm').checked = false;
