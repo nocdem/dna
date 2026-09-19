@@ -15,8 +15,8 @@
   },
   "dependencies": {
     "@noble/hashes": "1.8.0",
-    "@solana/spl-token": "0.4.14",
-    "@solana/web3.js": "1.98.4",
+    "@solana-program/token": "0.16.1",
+    "@solana/web3.js": "1.99.0",
     "buffer": "6.0.3",
     "ethers": "6.17.0",
     "tronweb": "6.5.1"
@@ -27,5 +27,10 @@
   },
   "engines": {
     "node": ">=22.12.0"
+  },
+  "overrides": {
+    "@solana/web3.js": {
+      "jayson": "5.0.0"
+    }
   }
 }

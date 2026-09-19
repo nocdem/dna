@@ -1,7 +1,7 @@
 import { encodeBase58 } from 'ethers';
 import { assertWalletActive } from '../keys.js';
 import { Connection, PublicKey, Transaction, SystemProgram } from '@solana/web3.js';
-import { getAssociatedTokenAddressSync, createAssociatedTokenAccountIdempotentInstruction, createTransferCheckedInstruction } from '@solana/spl-token';
+import { getAssociatedTokenAddress, createAssociatedTokenAccountIdempotentInstruction, createTransferCheckedInstruction } from './solana-token.js';
 import { CHAINS } from '../config.js';
 import { rpc, rawInteger, formatUnits } from '../core.js';
 const GENESIS = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
@@ -30,7 +30,7 @@ export async function prepare({ wallet, to, asset, units, endpoint }) {
   if (!asset.address) tx.add(SystemProgram.transfer({ fromPubkey: owner, toPubkey: recipient, lamports: units }));
   else {
     const mint = new PublicKey(asset.address);
-    const dest = getAssociatedTokenAddressSync(mint, recipient);
+    const dest = await getAssociatedTokenAddress(mint, recipient);
     const accounts = await connection.getParsedTokenAccountsByOwner(owner, { mint });
     let remaining = units;
     tx.add(createAssociatedTokenAccountIdempotentInstruction(owner, dest, recipient, mint));

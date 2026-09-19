@@ -96,5 +96,5 @@ try {
   await page.locator('#lock').click();
   await page.setViewportSize({ width: 390, height: 844 }); assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   assert.deepEqual(errors, []);
-  console.log('Browser smoke passed: create/backup/restore, 4 chain addresses, ETH/ERC20 signed mocked broadcasts, wrong-network guard, CPUNK success/error, lock, no persistence, mobile layout. No external request reached a blockchain.');
+  console.log('Browser smoke passed: create/backup/restore, 4 chain addresses, ETH/ERC20 signed mocked broadcasts, wrong-network guard, CPUNK derivation/success/error, finalized scoped activity, encrypted save/unlock/change/reload/delete, KDF cancellation, temporary storage behavior, mobile layout. No external request reached a blockchain.');
 } catch (error) { console.error('UI status:', await page.locator('#wallet-status').textContent(), 'CPUNK:', await page.locator('#cpunk-result').textContent(), 'Page errors:', errors, 'Methods:', calls.map(c => c?.method)); throw error; } finally { await browser.close(); server?.kill(); }
