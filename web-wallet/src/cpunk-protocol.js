@@ -1,6 +1,5 @@
-// Isolated public, read-only CPUNK contract shared by browser and gateway.
+// Isolated public, read-only CPUNK contract for direct Cellframe RPC requests.
 export const CPUNK_ENDPOINT = 'https://rpc.cellframe.net/connect';
-export const CPUNK_PATH = '/api/cpunk/balance';
 export function validateCellframeAddress(address) {
   // Structural only: does not establish checksum validity or ownership.
   if (typeof address !== 'string' || !/^[1-9A-HJ-NP-Za-km-z]{100,110}$/.test(address)) throw new Error('Enter a Cellframe public address (Base58, 100–110 characters).');
@@ -27,11 +26,11 @@ export function parseCpunkBalance(response) {
   return balance;
 }
 export async function boundedJson(response, limit = 65536) {
-  if (!response.ok) throw new Error(`CPUNK connection unavailable (HTTP ${response.status}). Check the site's CPUNK service or HTTPS endpoint.`);
-  if (!/^application\/json(?:\s*;|$)/i.test(response.headers.get('content-type') || '')) throw new Error('CPUNK service returned an unrecognized response. Check the site configuration.');
+  if (!response.ok) throw new Error(`CPUNK connection unavailable (HTTP ${response.status}). Check the HTTPS endpoint.`);
+  if (!/^application\/json(?:\s*;|$)/i.test(response.headers.get('content-type') || '')) throw new Error('CPUNK endpoint returned an unrecognized response. Check the HTTPS endpoint.');
   if (Number(response.headers.get('content-length')) > limit) { void response.body?.cancel().catch(() => {}); throw new Error('CPUNK response is too large.'); }
   const reader = response.body?.getReader();
-  if (!reader) throw new Error('CPUNK service returned no response.');
+  if (!reader) throw new Error('CPUNK endpoint returned no response.');
   const chunks = []; let size = 0;
   try {
     while (true) {
@@ -43,5 +42,5 @@ export async function boundedJson(response, limit = 65536) {
   } catch (error) { void reader.cancel().catch(() => {}); throw error; } finally { reader.releaseLock(); }
   const bytes = new Uint8Array(size); let offset = 0;
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
-  try { return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); } catch { throw new Error('CPUNK service returned invalid JSON.'); }
+  try { return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); } catch { throw new Error('CPUNK endpoint returned invalid JSON.'); }
 }

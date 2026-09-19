@@ -168,7 +168,7 @@ $('cpunk-form').onsubmit = async event => {
   event.preventDefault(); cpunkRequest?.abort(); const controller = new AbortController(); cpunkRequest = controller;
   $('cpunk-connection').textContent = 'Connecting…'; $('cpunk-result').textContent = 'Reading CPUNK…';
   try {
-    const result = await readCpunk({ address: $('cpunk-address').value.trim(), endpoint: $('cpunk-endpoint').value.trim() || import.meta.env.VITE_CPUNK_ENDPOINT || '', signal: controller.signal });
+    const result = await readCpunk({ address: $('cpunk-address').value.trim(), endpoint: $('cpunk-endpoint').value.trim(), signal: controller.signal });
     if (!controller.signal.aborted) { $('cpunk-connection').textContent = 'Connected · last read succeeded.'; $('cpunk-result').textContent = `${result.balance} CPUNK · Backbone · Read at ${new Date(result.observedAt).toLocaleTimeString()}`; }
   } catch (error) { if (!controller.signal.aborted) { $('cpunk-connection').textContent = 'Read failed · connection not verified.'; $('cpunk-result').textContent = error.message; } }
 };

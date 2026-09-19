@@ -14,6 +14,12 @@ npm run dev
 
 Open the localhost URL printed by Vite. For a production bundle, run `npm run build`; `npm run preview` serves `dist` locally. Production hosting must use HTTPS and a restrictive `frame-ancestors 'none'` response header (it cannot be enforced by a CSP meta tag). Dependencies are bundled locally; no third-party script CDN is used.
 
+## Publish
+
+Run `npm ci`, `npm test` and `npm run build`, then serve only `web-wallet/dist` from `https://wallet.nodusnetwork.io` using the existing HTTPS web server. Node.js is needed for building and local verification, not as a production application service. All blockchain requests go directly from the browser to their HTTPS RPC endpoints.
+
+For Caddy, `deploy/Caddyfile` serves the static files and supplies the response headers: set `WALLET_HOST` to your domain and `WALLET_DIST` to the absolute `dist` directory. Use equivalent settings with an existing web server. Do not serve production through Vite preview. After publication, verify HTTPS, response headers and direct RPC access in a browser on the actual wallet domain. No service is deployed by these files.
+
 ## Implemented
 
 - Create a 24-word BIP39 recovery phrase, verify the entire backup, or restore a valid English BIP39 phrase. Recovery phrases and keys stay local and are never sent to RPCs. Optional device persistence stores only an authenticated encrypted phrase; temporary wallets do not persist secrets. Lock, page exit and ten minutes of inactivity discard the wallet; the same timeout clears phrase creation, backup verification, restore and password entry screens. Focus/visibility checks also enforce the deadline after tab suspension. There is no account service or automatic recovery; an optional local password unlocks the encrypted device copy. JavaScript cannot guarantee erasure of immutable strings or garbage-collected copies.
@@ -29,22 +35,15 @@ The default is `https://rpc.cellframe.net/connect`. On 2026-09-19 a read-only PO
 
 The native query contract is `messenger/blockchain/cellframe/cellframe_rpc.c`: `wallet`, `info`, `{net:'Backbone', addr, token:'CPUNK'}`. The live response uses `result[0][0].tokens[]`, `token.ticker`, `coins` and `datoshi`. The parser selects exactly one CPUNK entry, checks Backbone and matching returned address, and verifies coins against integer datoshi with 18 decimal places. The older native `result[0][0].balance` format is also supported. Missing tokens, malformed data, mismatched amounts and connectivity failures are errors, never inferred zero balances. Manually entered addresses receive structural Base58/length checking; locally derived addresses additionally verify the Backbone network, signature type and SHA3 checksum. Neither establishes ownership to a server. UI status reports the last read outcome and resets when input changes.
 
-A custom trusted HTTPS endpoint may be entered for this tab. An optional same-origin gateway is available for deployments needing an operator connection:
+A custom trusted HTTPS endpoint may be entered for this tab. The default and custom endpoints are contacted directly by the browser and must allow browser access (CORS). Read-only command-line verification uses the public address from `cellframe_rpc.h`:
 
 ```sh
-# Terminal 1: Node 22.12+, binds loopback only
-npm run cpunk:gateway
-# Terminal 2: Vite forwards /api/cpunk/ to that service
-VITE_CPUNK_ENDPOINT=/api/cpunk/balance npm run dev
-# Read-only verification: public address from cellframe_rpc.h
 npm run cpunk:verify
-# Verify the default remote HTTPS endpoint directly instead
-npm run cpunk:verify -- --direct
+# Optional direct HTTPS RPC endpoint
+npm run cpunk:verify -- https://rpc.cellframe.net/connect
 ```
 
-For production, run the gateway under your service manager, build with `VITE_CPUNK_ENDPOINT=/api/cpunk/balance npm run build`, and use `deploy/Caddyfile` with `WALLET_HOST` set to your domain and `WALLET_DIST` set to the absolute `dist` directory. Caddy terminates HTTPS and forwards only `/api/cpunk/*` to the loopback gateway. Keep port 8787 private; if changing `CPUNK_PORT`, update the proxy target too. For direct-only static hosting, use ordinary `npm run build` without the gateway environment setting. No service is deployed by these files.
-
-After deployment run `npm run cpunk:verify -- https://YOUR_DOMAIN` for gateway deployments, then use the page's public-address read to verify browser access. The command fails on missing setup, upstream errors or malformed responses. It does not test browser CORS. Gateway requests accept **only** `{address}` at `/api/cpunk/balance`; the server constructs the fixed CPUNK query to the fixed HTTPS upstream. Arbitrary RPC methods, upstream URLs, signing, credentials and secrets are not supported. Request bodies are capped at 512 bytes, upstream responses at 64 KiB, upstream operations at 10 seconds and browser operations at 15 seconds; redirects are refused and balances are not cached. Apply ordinary edge rate limits appropriate to your public deployment. No claim system, snapshot rule or ownership proof is implemented.
+The command fails on connection errors or malformed responses; it does not test browser CORS. After deployment, use the page's public-address read to verify access from the actual wallet origin. Only the public address and fixed CPUNK query fields are sent to the RPC. Responses are capped at 64 KiB and browser operations at 15 seconds; redirects are refused and balances are not cached. No claim system, snapshot rule or ownership proof is implemented.
 
 ## Permanent chain RPC limitations
 
@@ -58,7 +57,7 @@ Chain SDKs, not the existing native C binaries, implement browser signing; exist
 VITE_ENABLE_CPUNK=false npm run build
 ```
 
-The CPUNK panel is removed and the lazy-loaded adapter is excluded from the bundle. The reusable `src/wallet.js`, permanent adapters and key derivation do not import CPUNK. For final source removal, delete `src/adapters/cpunk.js`, `src/cpunk-protocol.js`, `server/cpunk-gateway.js`, `scripts/verify-cpunk.js`, `src/cpunk/` (including WASM), `crypto/`, `scripts/build-cpunk-wasm.sh`, `scripts/build-native-vector.sh`, the optional proxy configuration, its isolated UI block/form and corresponding tests. No permanent-chain changes are needed.
+The CPUNK panel is removed and the lazy-loaded adapter is excluded from the bundle. The reusable `src/wallet.js`, permanent adapters and key derivation do not import CPUNK. For final source removal, delete `src/adapters/cpunk.js`, `src/cpunk-protocol.js`, `scripts/verify-cpunk.js`, `src/cpunk/` (including WASM), `crypto/`, `scripts/build-cpunk-wasm.sh`, `scripts/build-native-vector.sh`, its isolated UI block/form and corresponding tests. No permanent-chain changes are needed.
 
 ## Verification
 
@@ -92,7 +91,7 @@ A scoped `@solana/web3.js` dependency override uses Jayson 5.0.0, removing vulne
 
 ## Connect-compatible Cellframe address derivation
 
-Open a BIP39 wallet, then select **Use my open wallet’s address**. Derivation stays in the browser; reading the derived public balance is a separate action. This mode accepts the same normalized, checksum-valid English BIP39 phrase as the multichain wallet. Arbitrary non-BIP39 Cellframe strings are not supported. No recovery phrase is sent to the gateway or RPC.
+Open a BIP39 wallet, then select **Use my open wallet’s address**. Derivation stays in the browser; reading the derived public balance is a separate action. This mode accepts the same normalized, checksum-valid English BIP39 phrase as the multichain wallet. Arbitrary non-BIP39 Cellframe strings are not supported. No recovery phrase is sent to the RPC.
 
 The temporary `src/cpunk/` module compiles the repository's unchanged legacy Cellframe Dilithium MODE_1 C, not modern ML-DSA. It matches native `EVP_sha3_256(mnemonic)` (not Keccak), the key generator’s subsequent SHA3, 1196-byte serialized public key and 77-byte Backbone address/checksum. A fresh WASM instance is used per derivation and its memory is overwritten afterward; JavaScript string erasure cannot be guaranteed. The open wallet retains its phrase in RAM until lock to support derivation.
 

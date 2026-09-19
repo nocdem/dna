@@ -20,7 +20,8 @@ await page.route('**/*', async route => {
   if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': '*' } });
   const body = req.postDataJSON(); calls.push(body);
   assert.ok(!JSON.stringify(body).includes(phrase));
-  if (req.url().includes('/cpunk')) {
+  if (req.url() === 'https://rpc.cellframe.net/connect') {
+    assert.deepEqual(body, { method: 'wallet', subcommand: 'info', arguments: { net: 'Backbone', addr: 'Rj7J7MiX2bWy8sNybZfJFiwvEcU44PH89JnTmBXGREmPgVHvx8j5XvXFDNmV5RYdB3MzvgCTAY3RimZ7DWkV2zwBDTSjJNCvroNW2Tps', token: 'CPUNK' }, id: 1 });
     if (cpunkMode === 'network') return route.abort();
     return route.fulfill({ json: cpunkMode === 'success' ? { result: [[{ balance: '123.000000000000000001' }]] } : { result: [] } });
   }
@@ -63,7 +64,7 @@ try {
   await page.waitForFunction(() => document.querySelector('#activity').textContent.includes('confirmed'));
   await page.locator('#recipient').fill('0x0000000000000000000000000000000000000001'); await page.locator('#amount').fill('0.01');
   networkId = '0x38'; await page.locator('#review-button').click(); await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('wrong network')); assert.equal(broadcasts.length, 2);
-  await page.locator('#cpunk-address').fill('Rj7J7MiX2bWy8sNybZfJFiwvEcU44PH89JnTmBXGREmPgVHvx8j5XvXFDNmV5RYdB3MzvgCTAY3RimZ7DWkV2zwBDTSjJNCvroNW2Tps'); await page.locator('#cpunk-endpoint').fill('https://eth.llamarpc.com/cpunk'); await page.locator('#cpunk-read').click();
+  await page.locator('#cpunk-address').fill('Rj7J7MiX2bWy8sNybZfJFiwvEcU44PH89JnTmBXGREmPgVHvx8j5XvXFDNmV5RYdB3MzvgCTAY3RimZ7DWkV2zwBDTSjJNCvroNW2Tps'); assert.equal(await page.locator('#cpunk-endpoint').inputValue(), ''); await page.locator('#cpunk-read').click();
   await page.waitForFunction(() => document.querySelector('#cpunk-result').textContent.includes('123.000000000000000001'));
   assert.match(await page.locator('#cpunk-connection').innerText(), /Connected/);
   cpunkMode = 'malformed'; await page.locator('#cpunk-read').click(); await page.waitForFunction(() => document.querySelector('#cpunk-result').textContent.includes('unrecognized')); assert.ok(!(await page.locator('#cpunk-result').innerText()).includes('123.'));
