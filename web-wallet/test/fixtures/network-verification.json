@@ -1,0 +1,43 @@
+{
+  "observedAt": "2026-09-19T12:35:53.157Z",
+  "origin": "http://127.0.0.1:4174",
+  "mode": "Public reads only; no signing or broadcast",
+  "finalDeploymentOrigin": "unverified",
+  "results": [
+    {
+      "chain": "ethereum",
+      "endpoint": "https://eth.llamarpc.com",
+      "status": "BLOCKED",
+      "error": "RPC unavailable. Check the HTTPS endpoint, browser CORS access and connection.",
+      "browserCors": "not established"
+    },
+    {
+      "chain": "bsc",
+      "endpoint": "https://bsc-dataseed.binance.org",
+      "status": "BLOCKED",
+      "error": "RPC unavailable. Check the HTTPS endpoint, browser CORS access and connection.",
+      "browserCors": "not established"
+    },
+    {
+      "chain": "solana",
+      "endpoint": "https://api.mainnet-beta.solana.com",
+      "status": "BLOCKED",
+      "error": "RPC unavailable. Check the HTTPS endpoint, browser CORS access and connection.",
+      "browserCors": "not established"
+    },
+    {
+      "chain": "tron",
+      "endpoint": "https://api.trongrid.io",
+      "status": "BLOCKED",
+      "error": "RPC unavailable. Check the HTTPS endpoint, browser CORS access and connection.",
+      "browserCors": "not established"
+    },
+    {
+      "chain": "cpunk",
+      "endpoint": "https://rpc.cellframe.net/connect",
+      "status": "BLOCKED",
+      "error": "CPUNK connection unavailable. Check the site service, HTTPS endpoint and browser access.",
+      "browserCors": "not established"
+    }
+  ]
+}
