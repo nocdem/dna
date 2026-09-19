@@ -13,7 +13,7 @@ const page = await browser.newPage({ viewport: { width: 1280, height: 960 } });
 page.setDefaultTimeout(10000);
 const errors = [], broadcasts = [], calls = [];
 page.on('pageerror', error => errors.push(error.message));
-let cpunkMode = 'success', networkId = '0x1';
+let cpunkMode = 'success', networkId = '0x1', finalized = false;
 await page.route('**/*', async route => {
   const req = route.request();
   if (req.url().startsWith(url + '/')) return route.continue();
@@ -25,8 +25,9 @@ await page.route('**/*', async route => {
     return route.fulfill({ json: cpunkMode === 'success' ? { result: [[{ balance: '123.000000000000000001' }]] } : { result: [] } });
   }
   const process = call => {
-    const result = { eth_chainId: networkId, eth_getBalance: '0x8ac7230489e80000', eth_call: '0x' + '0'.repeat(64), eth_estimateGas: '0x5208', eth_gasPrice: '0x3b9aca00', eth_maxPriorityFeePerGas: '0x3b9aca00', eth_getTransactionCount: '0x0', eth_getBlockByNumber: { hash: '0x' + 'a'.repeat(64), parentHash: '0x' + 'b'.repeat(64), number: '0x1', timestamp: '0x65000000', nonce: '0x0000000000000000', difficulty: '0x0', gasLimit: '0x1c9c380', gasUsed: '0x5208', miner: '0x0000000000000000000000000000000000000001', extraData: '0x', transactions: [] } }[call.method];
-    if (call.method === 'eth_sendRawTransaction') { broadcasts.push(Transaction.from(call.params[0])); return { jsonrpc: '2.0', id: call.id, result: '0x' + 'a'.repeat(64) }; }
+    if (call.method === 'eth_getTransactionReceipt') return { jsonrpc: '2.0', id: call.id, result: finalized ? { transactionHash: call.params[0], blockHash: '0x' + 'a'.repeat(64), blockNumber: '0x1', status: '0x1' } : null };
+    const result = { eth_getTransactionReceipt: null, eth_chainId: networkId, eth_getBalance: '0x8ac7230489e80000', eth_call: '0x' + '0'.repeat(64), eth_estimateGas: '0x5208', eth_gasPrice: '0x3b9aca00', eth_maxPriorityFeePerGas: '0x3b9aca00', eth_getTransactionCount: '0x0', eth_getBlockByNumber: { hash: '0x' + 'a'.repeat(64), parentHash: '0x' + 'b'.repeat(64), number: '0x1', timestamp: '0x65000000', nonce: '0x0000000000000000', difficulty: '0x0', gasLimit: '0x1c9c380', gasUsed: '0x5208', miner: '0x0000000000000000000000000000000000000001', extraData: '0x', transactions: [] } }[call.method];
+    if (call.method === 'eth_sendRawTransaction') { broadcasts.push(Transaction.from(call.params[0])); return { jsonrpc: '2.0', id: call.id, result: Transaction.from(call.params[0]).hash }; }
     assert.notEqual(result, undefined, `Unexpected RPC method ${call.method}`);
     return { jsonrpc: '2.0', id: call.id, result };
   };
@@ -57,6 +58,10 @@ try {
   await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('Broadcast submitted'));
   assert.equal(broadcasts.length, 2); assert.equal(broadcasts[1].to, '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'); assert.equal(broadcasts[1].value, 0n);
   const erc = new Interface(['function transfer(address,uint256)']); assert.equal(erc.decodeFunctionData('transfer', broadcasts[1].data)[1], 1000001n);
+  assert.match(await page.locator('#activity').innerText(), /pending/);
+  finalized = true; await page.selectOption('#chain', 'bsc'); assert.equal(await page.locator('#activity').innerText(), ''); await page.selectOption('#chain', 'ethereum');
+  await page.waitForFunction(() => document.querySelector('#activity').textContent.includes('confirmed'));
+  await page.locator('#recipient').fill('0x0000000000000000000000000000000000000001'); await page.locator('#amount').fill('0.01');
   networkId = '0x38'; await page.locator('#review-button').click(); await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('wrong network')); assert.equal(broadcasts.length, 2);
   await page.locator('#cpunk-address').fill('Rj7J7MiX2bWy8sNybZfJFiwvEcU44PH89JnTmBXGREmPgVHvx8j5XvXFDNmV5RYdB3MzvgCTAY3RimZ7DWkV2zwBDTSjJNCvroNW2Tps'); await page.locator('#cpunk-endpoint').fill('https://eth.llamarpc.com/cpunk'); await page.locator('#cpunk-read').click();
   await page.waitForFunction(() => document.querySelector('#cpunk-result').textContent.includes('123.000000000000000001'));

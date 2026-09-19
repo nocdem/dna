@@ -1,5 +1,5 @@
 import { assertWalletActive } from '../keys.js';
-import { JsonRpcProvider, FetchRequest, Interface, getAddress, formatUnits } from 'ethers';
+import { JsonRpcProvider, FetchRequest, Interface, getAddress, keccak256, formatUnits } from 'ethers';
 import { CHAINS } from '../config.js';
 import { rawInteger, rpc } from '../core.js';
 const erc20 = new Interface(['function balanceOf(address) view returns (uint256)', 'function transfer(address,uint256) returns (bool)']);
@@ -29,13 +29,16 @@ export async function prepare({ chain, wallet, to, asset, units, endpoint }) {
     const unsigned = { ...tx, chainId: CHAINS[chain].chainId, nonce, gasLimit, gasPrice, type: 0 };
     delete unsigned.from;
     return { fee: `Up to ${formatUnits(gasLimit * gasPrice, 18)} ${CHAINS[chain].symbol}`, expiresAt: Date.now() + 60000,
-      async send() {
+      async send(onBroadcast) {
         assertWalletActive(wallet);
         await checkNetwork(chain, endpoint);
         assertWalletActive(wallet);
         const signed = await wallet.evm.signTransaction(unsigned);
         assertWalletActive(wallet);
-        return await rpc(endpoint, 'eth_sendRawTransaction', [signed]);
+        const hash = keccak256(signed); onBroadcast?.({ hash });
+        const returned = await rpc(endpoint, 'eth_sendRawTransaction', [signed]);
+        if (returned?.toLowerCase() !== hash.toLowerCase()) throw new Error('RPC returned a different transaction identifier.');
+        return hash;
       } };
   } finally { provider.destroy(); }
 }

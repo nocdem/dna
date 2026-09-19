@@ -1,3 +1,4 @@
+import { recordActivity, watchActivity } from './activity.js';
 import { CHAINS } from './config.js';
 import { deriveWallet, disposeWallet, newPhrase, normalizePhrase } from './keys.js';
 import { adapters, prepareTransfer } from './wallet.js';
@@ -5,6 +6,16 @@ import { endpointUrl } from './core.js';
 const $ = id => document.getElementById(id);
 let wallet, pending, generatedPhrase, phraseStep, revision = 0, busy = false, lockTimer;
 let cpunkRequest;
+const history = []; let stopTracking = () => {};
+function visibleActivity() { return wallet ? history.filter(row => row.chain === $('chain').value && row.address === wallet.addresses[row.chain]) : []; }
+function renderActivity() {
+  $('activity').replaceChildren(...visibleActivity().map(row => {
+    const div = document.createElement('div'), link = document.createElement('a');
+    div.textContent = `${row.amount} ${row.symbol} → ${row.to} · ${row.status} · ${row.readError || row.note} `;
+    link.href = CHAINS[row.chain].explorer + encodeURIComponent(row.hash); link.textContent = 'View transaction'; link.target = '_blank'; link.rel = 'noopener noreferrer'; div.append(link); return div;
+  }));
+}
+function trackActivity() { stopTracking(); renderActivity(); if (wallet) stopTracking = watchActivity(visibleActivity, renderActivity); }
 const endpoints = Object.fromEntries(Object.entries(CHAINS).map(([key, chain]) => [key, chain.endpoint]));
 const message = text => { $('wallet-status').textContent = text; };
 for (const [key, chain] of Object.entries(CHAINS)) $('chain').add(new Option(chain.name, key));
@@ -12,9 +23,9 @@ function activity() { clearTimeout(lockTimer); if (wallet) lockTimer = setTimeou
 for (const event of ['pointerdown', 'keydown']) document.addEventListener(event, activity);
 function closeReview() { pending?.cancel(); pending = undefined; $('review-dialog').close(); }
 function lock() {
-  revision++; closeReview(); disposeWallet(wallet); wallet = undefined; generatedPhrase = undefined; $('phrase').value = '';
+  revision++; stopTracking(); closeReview(); disposeWallet(wallet); wallet = undefined; generatedPhrase = undefined; $('phrase').value = '';
   $('phrase-form').hidden = true; $('wallet-open').hidden = true; $('welcome').hidden = false;
-  $('receive-address').textContent = ''; $('balances').replaceChildren(); $('recipient').value = ''; $('amount').value = '';
+  $('activity').replaceChildren(); $('receive-address').textContent = ''; $('balances').replaceChildren(); $('recipient').value = ''; $('amount').value = '';
   clearTimeout(lockTimer); message('Wallet locked. Restore with your recovery phrase to reopen.');
 }
 window.addEventListener('pagehide', lock);
@@ -46,6 +57,8 @@ function selectChain() {
   revision++; closeReview(); const chain = $('chain').value; const c = CHAINS[chain];
   $('receive-address').textContent = wallet.addresses[chain]; $('rpc-endpoint').value = endpoints[chain];
   $('asset').replaceChildren(...[c.symbol, ...c.tokens.map(t => t.symbol)].map(s => new Option(s, s)));
+  const explorers = { ethereum: 'https://etherscan.io/address/', bsc: 'https://bscscan.com/address/', solana: 'https://solscan.io/account/', tron: 'https://tronscan.org/#/address/' };
+  $('account-explorer').href = explorers[chain] + encodeURIComponent(wallet.addresses[chain]); trackActivity();
   $('balances').textContent = 'Select Refresh to read balances.'; $('recipient').value = ''; $('amount').value = '';
 }
 $('chain').onchange = selectChain;
@@ -81,15 +94,17 @@ $('cancel-send').onclick = closeReview;
 $('review-dialog').addEventListener('cancel', event => { if (busy) event.preventDefault(); else closeReview(); });
 $('confirm-send').onclick = async () => {
   if (!pending || busy) return;
-  busy = true; const transfer = pending, current = revision; pending = undefined;
+  busy = true; const transfer = pending, current = revision; pending = undefined; let record;
   $('confirm-send').disabled = true; $('cancel-send').disabled = true; $('review-error').textContent = 'Signing locally and broadcasting…';
   try {
-    const hash = await transfer.confirm();
+    const hash = await transfer.confirm(details => { record = recordActivity(transfer, details); history.push(record); if (current === revision) renderActivity(); });
+    if (record) { record.note = 'Broadcast submitted; awaiting confirmation.'; if (current === revision) trackActivity(); }
     $('review-dialog').close();
     if (current !== revision) return;
     message('Broadcast submitted; confirmation is pending. ');
     const link = document.createElement('a'); link.href = CHAINS[transfer.chain].explorer + encodeURIComponent(hash); link.textContent = `View transaction ${hash}`; link.target = '_blank'; link.rel = 'noopener noreferrer'; $('wallet-status').append(link);
   } catch (error) {
+    if (record) { record.status = 'unknown'; record.note = 'Broadcast outcome uncertain. Tracking the signed transaction; do not resend automatically.'; if (current === revision) trackActivity(); }
     $('review-dialog').close();
     if (current === revision) message(`${error.message} A broadcast failure can have an uncertain outcome. Check your address on the chain explorer before creating another transfer.`);
   } finally { busy = false; $('cancel-send').disabled = false; }

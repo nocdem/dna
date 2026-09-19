@@ -10,12 +10,12 @@ export async function prepareTransfer({ wallet, chain, symbol, to, amount, endpo
   endpoint = endpointUrl(endpoint || CHAINS[chain].endpoint);
   const prepared = await implementations[chain].prepare({ wallet, chain, to: to.trim(), asset, units, endpoint });
   let used = false;
-  return { chain, symbol, to: to.trim(), amount, from: wallet.addresses[chain], fee: prepared.fee, expiresAt: prepared.expiresAt,
+  return { endpoint, chain, symbol, to: to.trim(), amount, from: wallet.addresses[chain], fee: prepared.fee, expiresAt: prepared.expiresAt,
     cancel() { used = true; },
-    async confirm() {
+    async confirm(onBroadcast) {
       if (used) throw new Error('This review is already closed.');
       used = true; // A failed/ambiguous broadcast must never be retried automatically.
       if (!Number.isFinite(prepared.expiresAt) || Date.now() >= prepared.expiresAt) throw new Error('Review expired. Prepare the transfer again.');
-      return prepared.send();
+      return prepared.send(onBroadcast);
     } };
 }

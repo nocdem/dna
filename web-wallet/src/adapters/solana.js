@@ -1,3 +1,4 @@
+import { encodeBase58 } from 'ethers';
 import { assertWalletActive } from '../keys.js';
 import { Connection, PublicKey, Transaction, SystemProgram } from '@solana/web3.js';
 import { getAssociatedTokenAddressSync, createAssociatedTokenAccountIdempotentInstruction, createTransferCheckedInstruction } from '@solana/spl-token';
@@ -52,12 +53,16 @@ export async function prepare({ wallet, to, asset, units, endpoint }) {
   const balance = await connection.getBalance(owner);
   if (rawInteger(balance) < BigInt(fee + rent) + (asset.address ? 0n : units)) throw new Error('Insufficient SOL for amount, fee and account rent.');
   return { fee: `${formatUnits(BigInt(fee), 9)} SOL fee${rent ? ` + ${formatUnits(BigInt(rent), 9)} SOL account rent` : ''}`, expiresAt: Date.now() + 45000,
-    async send() {
+    async send(onBroadcast) {
         assertWalletActive(wallet);
       await checkNetwork(endpoint);
       if (await connection.getBlockHeight() > latest.lastValidBlockHeight) throw new Error('Transaction expired. Review a fresh transaction.');
       assertWalletActive(wallet);
       tx.sign(wallet.solana);
-      return connection.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 0 });
+      const hash = encodeBase58(tx.signature);
+      onBroadcast?.({ hash, lastValidBlockHeight: latest.lastValidBlockHeight });
+      const returned = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 0 });
+      if (returned !== hash) throw new Error('RPC returned a different transaction identifier.');
+      return hash;
     } };
 }

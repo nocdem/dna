@@ -44,11 +44,12 @@ export async function prepare({ wallet, to, asset, units, endpoint }) {
   }
   validateTransaction(tx, { from, to, asset, units });
   return { fee: asset.address ? 'Energy fee limit: 100 TRX. Bandwidth fees may also apply.' : 'TRON bandwidth and recipient activation fees may apply; final charge is set by the network.', expiresAt: Math.min(Date.now() + 45000, tx.raw_data.expiration),
-    async send() {
+    async send(onBroadcast) {
         assertWalletActive(wallet);
       validateTransaction(tx, { from, to, asset, units });
       const signed = await tron.trx.sign(tx, wallet.tronPrivateKey);
       assertWalletActive(wallet);
+      onBroadcast?.({ hash: signed.txID, expiration: tx.raw_data.expiration });
       const result = await tron.trx.sendRawTransaction(signed);
       if (!result.result) throw new Error('TRON rejected the broadcast. Check the explorer before retrying.');
       return signed.txID;
