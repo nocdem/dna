@@ -6,6 +6,11 @@ A standalone, accountless browser client alongside the existing DNA applications
 
 Requires Node.js 22.12+ and a modern browser with Web Crypto and BigInt.
 
+The lockfile includes Jayson's optional `ws` peer `utf-8-validate` 5.0.10 separately
+from `rpc-websockets`' 6.x dependency. Both records are needed for a clean
+`npm ci` with npm 10.9.4 (verified with Node.js 22.22.1); do not remove the 5.x
+record just because a 6.x copy is also present.
+
 ```sh
 cd web-wallet
 npm ci
