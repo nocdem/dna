@@ -3,6 +3,28 @@
 Reviewed baseline: `f48968bd3b669edea302a5d1bbf0c25fcd2add30` on `feat/nodus-web-wallet`.
 Scope: browser wallet only. Existing native applications and consensus are unchanged.
 
+## Explicit device-storage consent (0.1.10)
+
+New saves and password changes now require an explicit, initially unchecked
+acknowledgement of encrypted browser-storage risks. The existing minimum of
+16 characters and weak-password rejection still apply. The save path checks
+consent again inside the storage lock before writing; withdrawing it during
+encryption prevents the write. Lock and successful saving clear the checkbox.
+Creating/restoring remains temporary by default, and existing encrypted copies
+are not deleted or migrated by this change.
+
+The open-wallet layout now separates identity, assets/receive, send, activity
+and device settings. Send/Receive shortcuts only focus their respective
+sections. Network names follow the selector in both flows; the storage label
+distinguishes a temporary session from an authenticated saved copy.
+
+All 41 Node tests, the production build, browser smoke, browser security and
+Nodus browser checks passed. Added browser coverage verifies absent/withdrawn
+consent, short passwords, consent reset, blocked password change without consent,
+network labels and dashboard navigation. Responsive checks cover 320–1440px.
+All test blockchain traffic was intercepted. This is regression verification,
+not a new independent security audit.
+
 ## Numbered recovery fields and branding (0.1.5)
 
 Creation, restore and backup verification now use 24 separate numbered inputs.

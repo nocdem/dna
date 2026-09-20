@@ -212,3 +212,111 @@ dd { margin: 0; font-size: 13px; overflow-wrap: anywhere; }
   .brand-group { gap: 12px; }
   .product-name { padding-left: 12px; }
 }
+
+/* Open wallet: identity, network actions, transfers and device controls. */
+body:has(#wallet-open:not([hidden])) .wallet-layout { grid-template-columns: minmax(0, 1fr); }
+body:has(#wallet-open:not([hidden])) .hero { padding-block: 24px; align-items: center; }
+body:has(#wallet-open:not([hidden])) .hero h1 { font-size: 32px; margin: 12px 0 0; }
+body:has(#wallet-open:not([hidden])) .hero-copy > p:last-child { display: none; }
+body:has(#wallet-open:not([hidden])) .privacy-card { position: static; }
+body:has(#wallet-open:not([hidden])) .privacy-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 28px; }
+body:has(#wallet-open:not([hidden])) .privacy-facts > div + div { margin: 0; padding: 0 0 0 28px; border-top: 0; border-left: 1px solid var(--line); }
+body:has(#wallet-open:not([hidden])) .wallet-card { background: #171c13; }
+.wallet-card, .dashboard-panel, .receive-panel { scroll-margin-top: 24px; }
+.wallet-session { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
+.wallet-session > div { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; color: #c6d7b4; }
+.session-indicator { width: 6px; height: 6px; background: var(--lime); border-radius: 50%; }
+.session-timeout { color: var(--muted); border-left: 1px solid var(--line); margin-left: 6px; padding-left: 14px; }
+.wallet-session button { flex-shrink: 0; }
+.wallet-navigation { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 24px; }
+.wallet-navigation a { padding: 10px 15px; font-size: 12px; color: #c9cdbe; border: 1px solid var(--line); border-radius: 7px; text-decoration: none; }
+.wallet-navigation a:hover { color: var(--lime); border-color: #76885f; background: #d5f99806; }
+.nodus-address-panel { padding: 24px; margin: 0 0 24px; border: 1px solid #d5f99838; border-radius: 12px; background: linear-gradient(120deg, #29351e, #1c2518); }
+.nodus-identity { display: flex; align-items: center; gap: 12px; }
+.nodus-identity img { border-radius: 9px; }
+.nodus-identity h3 { font-size: 21px; letter-spacing: -.035em; margin: 5px 0 0; }
+.nodus-address-panel .address-row { background: #11150f80; border: 1px solid #d5f9981f; }
+.nodus-address-panel code { font-size: 13px; line-height: 1.8; letter-spacing: .025em; }
+.nodus-address-panel .hint { margin-bottom: 8px; }
+.native-availability { font-size: 11px; line-height: 1.6; margin: 0; }
+.transfer-actions { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin: 28px 0 20px; }
+.transfer-actions .eyebrow { margin-bottom: 6px; }
+.transfer-actions p:last-child { font-size: 12px; margin: 0; }
+.transfer-actions strong { font-weight: 500; color: var(--text); }
+.transfer-buttons { display: flex; gap: 12px; }
+.transfer-buttons button { min-width: 130px; border-radius: 9px; }
+.transfer-buttons button span { float: none; font-size: 18px; margin-right: 10px; line-height: 1; }
+.dashboard-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 22px; }
+.dashboard-panel { min-width: 0; padding: 24px; border: 1px solid var(--line); border-radius: 12px; background: #1c2218; }
+.panel-heading { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+.panel-heading h3 { font-size: 18px; letter-spacing: -.035em; margin: 0; }
+.section-number { color: #94a580; font-size: 10px; letter-spacing: .08em; }
+.panel-heading button, .panel-heading > a { margin-left: auto; }
+.panel-heading > a { font-size: 12px; text-underline-offset: 4px; }
+.network-select { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+.network-select label { margin: 0; }
+.network-select > span { color: var(--muted); font-size: 11px; }
+.network-select select { grid-column: 1 / -1; }
+.balance-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 24px 0 12px; }
+.balance-heading h4, .receive-panel h4 { font-size: 12px; font-weight: 500; margin: 0; }
+.balance-heading > span { font-size: 10px; color: var(--muted); }
+.assets-panel .balances { min-height: 90px; line-height: 1.7; padding: 14px 16px; background: #11150f70; border-color: #d5f99814; }
+.assets-panel .balances > div { padding: 12px 0; align-items: baseline; }
+.assets-panel .balances > div + div { border-top: 1px solid #d5f99814; }
+.assets-panel .balances > div > span { color: var(--text); font-weight: 500; }
+.assets-panel .balances strong { color: #cad8ba; font-variant-numeric: tabular-nums; }
+.receive-panel { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--line); }
+.receive-panel h4 { margin-bottom: 12px; }
+.receive-panel .hint { margin-bottom: 0; }
+.network-context { color: var(--muted); font-size: 12px; margin: 0; }
+.network-context strong { color: var(--lime); font-weight: 500; }
+.network-context span { white-space: nowrap; }
+.send-panel { display: flex; flex-direction: column; }
+.send-panel .hint { margin-bottom: 0; }
+.send-panel #review-button { margin-top: 24px; }
+.send-footnote { font-size: 11px; text-align: center; margin: 12px 0 0; }
+.activity-panel, .device-panel { margin-top: 22px; }
+.activity-panel .hint { max-width: 740px; }
+.activity-empty { text-align: center; padding: 24px 12px; margin: 0; border: 1px dashed #d5f99826; border-radius: 8px; font-size: 12px; }
+#activity:not(:empty) + .activity-empty { display: none; }
+#activity { padding-top: 0; }
+#activity > div { padding: 16px; border-radius: 7px; background: #11150f70; }
+#activity > div + div { margin-top: 10px; }
+.device-panel .panel-heading { margin-bottom: 10px; }
+.storage-state { color: #c6d7b4; font-size: 12px; margin: 0 0 20px; }
+.device-panel > details { border-top: 1px solid var(--line); padding-top: 18px; }
+.device-panel > details:last-child { margin-bottom: 0; }
+.device-panel > details > summary { color: var(--text); }
+#vault-password + .hint { max-width: 650px; }
+#cpunk-assets { padding: 18px 24px; margin: 22px 0 0; border: 1px solid var(--line); border-radius: 10px; }
+#cpunk-assets > summary { color: var(--text); }
+#cpunk-assets label { line-height: 1.5; }
+@media (max-width: 900px) {
+  .dashboard-grid { grid-template-columns: minmax(0, 1fr); }
+  body:has(#wallet-open:not([hidden])) .privacy-facts { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  body:has(#wallet-open:not([hidden])) .privacy-facts > div + div { border-left: 0; padding: 18px 0 0; border-top: 1px solid var(--line); }
+}
+@media (max-width: 760px) {
+  .wallet-session { align-items: start; }
+  .session-timeout { flex-basis: 100%; border: 0; margin: 4px 0 0; padding: 0; font-size: 11px; }
+  .wallet-navigation { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .wallet-navigation a { font-size: 11px; padding: 10px; text-align: center; }
+  .nodus-address-panel, .dashboard-panel { padding: 18px; }
+  .nodus-identity h3 { font-size: 19px; }
+  .nodus-address-panel .section-head .pill { margin: 0; }
+  .nodus-address-panel code { font-size: 11px; }
+  .nodus-address-panel .address-row { flex-wrap: wrap; }
+  .nodus-address-panel .address-row code { flex-basis: 100%; }
+  .nodus-address-panel .address-row button { width: 100%; }
+  .transfer-actions { flex-direction: column; align-items: stretch; gap: 16px; }
+  .transfer-buttons button { flex: 1; min-width: 0; padding: 13px 10px; }
+  .panel-heading h3 { font-size: 17px; }
+  .activity-panel .panel-heading > a { flex-basis: 100%; margin: 4px 0 0; }
+  .receive-panel .address-row { flex-wrap: wrap; }
+  .receive-panel .address-row code { flex-basis: 100%; line-height: 1.6; }
+  .receive-panel .address-row button { width: 100%; }
+  #vault-storage-controls > label { line-height: 1.7; }
+  #cpunk-assets { padding: 18px; }
+}
+.storage-consent { padding: 16px; margin: 22px 0 14px; border: 1px solid #d5f99840; border-radius: 8px; background: #d5f99806; }
+.storage-consent input { flex-shrink: 0; margin: 3px 0 0; }

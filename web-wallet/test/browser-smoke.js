@@ -47,6 +47,15 @@ try {
   await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#nodus-address').textContent));
   assert.equal(await page.locator('#receive-address').innerText(), '0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb');
   assert.equal(await page.locator('#nodus-address').innerText(), nodusAddress);
+  assert.match(await page.locator('#wallet-storage-state').innerText(), /Temporary session/);
+  await page.locator('#quick-send').click();
+  assert.equal(await page.locator('#send-title').evaluate(el => el === document.activeElement), true);
+  await page.locator('#quick-receive').click();
+  assert.equal(await page.locator('#receive-title').evaluate(el => el === document.activeElement), true);
+  for (const width of [320, 390, 820, 1280]) {
+    await page.setViewportSize({ width, height: 960 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `Dashboard overflow at ${width}px`);
+  }
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
   await page.locator('#copy-nodus-address').click();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), nodusAddress);
@@ -58,6 +67,8 @@ try {
   assert.equal(calls.length, 0);
   for (const [chain, expected] of [['bsc','0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb'],['solana','3Cy3YNTFywCmxoxt8n7UH6hg6dLo5uACowX3CFceaSnx'],['tron','TEfhiqsW1SdN44DeHrAWVmbyr8ZbvChrtS'],['ethereum','0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb']]) {
     await page.selectOption('#chain', chain); assert.equal(await page.locator('#receive-address').innerText(), expected);
+    const selectedName = await page.locator('#chain option:checked').innerText();
+    assert.ok((await page.locator('.selected-network-name').allTextContents()).every(name => name === selectedName));
   }
   await page.locator('#refresh').click(); await page.waitForFunction(() => document.querySelector('#balances').textContent.includes('10.0'));
   await page.locator('#recipient').fill('0x0000000000000000000000000000000000000001'); await page.locator('#amount').fill('0.01');
@@ -85,14 +96,19 @@ try {
   assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
   networkId = '0x1';
   await page.getByText('Save wallet on this device (optional)', { exact: true }).click();
-  await page.locator('#vault-password').fill('public-test-password-123'); await page.locator('#vault-save').click();
+  await page.locator('#vault-password').fill('public-test-password-123'); await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click();
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('Encrypted wallet saved'));
   const stored = await page.evaluate(() => JSON.stringify({ ...localStorage })); assert.ok(!stored.includes(phrase)); assert.ok(!stored.includes('public-test-password-123'));
   await page.locator('#lock').click(); assert.equal(await page.locator('#nodus-address').innerText(), ''); assert.equal(await page.locator('#cpunk-address').inputValue(), ''); assert.equal(await page.locator('#cpunk-assets').isVisible(), false); await page.locator('#unlock-password').fill('incorrect-password-123'); await page.locator('#unlock-wallet').click();
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('Incorrect password'));
   await page.locator('#unlock-password').fill('public-test-password-123'); await page.locator('#unlock-wallet').click(); await page.locator('#wallet-open').waitFor({ state: 'visible' });
   await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#nodus-address').textContent));
-  await page.locator('#vault-password').fill('changed-test-password-123'); await page.locator('#vault-old-password').fill('public-test-password-123'); await page.locator('#vault-change').click();
+  await page.locator('#vault-password').fill('changed-test-password-123'); await page.locator('#vault-old-password').fill('public-test-password-123');
+  assert.equal(await page.locator('#vault-risk-confirm').isChecked(), false);
+  await page.locator('#vault-change').click();
+  assert.match(await page.locator('#vault-status').innerText(), /read and accept the risks/);
+  assert.equal(await page.evaluate(() => localStorage.getItem('nodus.wallet.v1')), JSON.parse(stored)['nodus.wallet.v1']);
+  await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-change').click();
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('Local password changed'));
   await page.reload(); await page.waitForFunction(() => typeof document.querySelector('#restore').onclick === 'function');
   await page.locator('#unlock-password').fill('changed-test-password-123'); await page.locator('#unlock-wallet').click(); await page.locator('#wallet-open').waitFor({ state: 'visible' });
@@ -103,7 +119,7 @@ try {
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('saved activity deleted'));
   assert.equal(await page.evaluate(() => localStorage.length), 0);
   await page.getByText('Save wallet on this device (optional)', { exact: true }).click();
-  await page.locator('#vault-password').fill('public-test-password-123'); await page.locator('#vault-save').click(); await page.locator('#lock').click(); assert.equal(await page.locator('#nodus-address').innerText(), '');
+  await page.locator('#vault-password').fill('public-test-password-123'); await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click(); await page.locator('#lock').click(); assert.equal(await page.locator('#nodus-address').innerText(), '');
   await page.waitForFunction(() => !document.querySelector('#vault-save').disabled); assert.equal(await page.evaluate(() => localStorage.length), 0);
   await page.locator('#welcome').waitFor({ state: 'visible' }); assert.equal(await page.locator('#receive-address').innerText(), '');
   assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);

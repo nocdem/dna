@@ -36,6 +36,23 @@ For Caddy, `deploy/Caddyfile` serves the static files and supplies the response 
 - EVM gas estimation with a 20% gas-limit margin and legacy gas-price transactions; Solana fee/rent estimation and idempotent recipient token account creation, spending only from the sender’s locally derived associated token account; TRON native/TRC-20 transaction intent and protobuf consistency validation. TRON token energy has a 100 TRX limit; bandwidth/activation charges are network dependent and not falsely presented as an exact fee estimate. Solana balances can include other token accounts, but those accounts cannot be spent here. TRON reads and sends require the configured default mainnet provider and matching genesis; there is no testnet fallback.
 - Temporary **CPUNK-only, read-only** Cellframe/Backbone query using a public address. Local address derivation from the open wallet’s phrase is available; Cellframe signing, sending, trading and claiming are unavailable. Its balance is not proof of ownership, a snapshot, or airdrop eligibility.
 
+## Open-wallet sections and storage consent (0.1.10)
+
+The open wallet separates native Nodus identity, external-network assets/receive,
+sending, activity and device settings. Send and Receive shortcuts bring the
+relevant section into view without submitting a transfer. The selected external
+network appears beside both flows; unrequested or failed balance reads are not
+presented as zero. The layout keeps the Nodus website's fonts and colors and uses
+the DNA Connect wallet's identity/actions/assets hierarchy as a reference.
+
+Creation and restore still default to temporary memory-only use. Saving a new
+encrypted copy or changing its password requires an unchecked-by-default risk
+acknowledgement alongside the storage warnings and a valid password of at least
+16 characters. The label explains the offline-guessing reason for the minimum;
+length alone is not a strength guarantee. Consent is rechecked before writing
+and cleared after saving or locking. Existing saved wallets can still unlock
+without a new save acknowledgement. No consent record or new secret is stored.
+
 ## Recovery phrase warning (0.1.8)
 
 The page precautions and the top of the create/restore word form explicitly state

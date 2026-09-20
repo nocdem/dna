@@ -84,6 +84,7 @@ function lock() {
   history.length = 0; $('account-explorer').removeAttribute('href');
   $('activity').replaceChildren(); $('receive-address').textContent = ''; $('balances').replaceChildren(); $('recipient').value = ''; $('amount').value = '';
   for (const id of ['unlock-password', 'vault-password', 'vault-old-password']) $(id).value = '';
+  $('vault-risk-confirm').checked = false;
   updateVaultUI(); clearTimeout(lockTimer); message('Wallet locked. Restore your recovery phrase or unlock your saved wallet.');
 }
 window.addEventListener('pagehide', lock);
@@ -115,7 +116,7 @@ $('phrase-form').onsubmit = event => {
     const phrase = phraseFields.read();
     if (phraseStep === 'verify' && normalizePhrase(phrase) !== generatedPhrase) throw new Error('The phrase does not match. Re-enter your saved backup.');
     wallet = deriveWallet(phrase); generatedPhrase = undefined; phraseFields.clear();
-    $('phrase-form').hidden = true; $('wallet-open').hidden = false; message('Wallet open. Balances are fetched only when you select Refresh.'); selectChain(); activity(); void showNodusAddress();
+    $('phrase-form').hidden = true; $('wallet-open').hidden = false; message('Wallet open. Balances are fetched only when you select Refresh.'); selectChain(); activity(); void showNodusAddress(); focusOpenWallet();
   } catch (error) { message(error.message); }
 };
 async function showNodusAddress() {
@@ -145,6 +146,7 @@ $('copy-nodus-address').onclick = async () => {
 };
 function selectChain() {
   revision++; closeReview(); const chain = $('chain').value; const c = CHAINS[chain];
+  for (const label of document.querySelectorAll('.selected-network-name')) label.textContent = c.name;
   $('receive-address').textContent = wallet.addresses[chain]; $('rpc-endpoint').value = endpoints[chain];
   $('asset').replaceChildren(...[c.symbol, ...c.tokens.map(t => t.symbol)].map(s => new Option(s, s)));
   $('solana-send-hint').hidden = chain !== 'solana';
@@ -153,6 +155,14 @@ function selectChain() {
   $('balances').textContent = 'Select Refresh to read balances.'; $('recipient').value = ''; $('amount').value = '';
 }
 $('chain').onchange = selectChain;
+$('quick-send').onclick = () => {
+  $('send-title').focus({ preventScroll: true });
+  $('send-form').scrollIntoView({ block: 'start' });
+};
+$('quick-receive').onclick = () => {
+  $('receive-title').focus({ preventScroll: true });
+  $('receive-panel').scrollIntoView({ block: 'start' });
+};
 $('lock').onclick = lock;
 $('copy-address').onclick = async () => { try { await navigator.clipboard.writeText(wallet.addresses[$('chain').value]); message('Address copied.'); } catch { message('Copy unavailable. Select and copy the address above.'); } };
 $('save-rpc').onclick = () => { try { const chain = $('chain').value, endpoint = endpointUrl($('rpc-endpoint').value); if (chain === 'tron' && endpoint !== endpointUrl(CHAINS.tron.endpoint)) throw new Error('TRON requires the mainnet provider.'); endpoints[chain] = endpoint; revision++; closeReview(); stopTracking(); for (const row of visibleActivity()) row.endpoint = endpoints[$('chain').value]; trackActivity(); $('balances').textContent = 'Endpoint changed. Refresh to read balances.'; message('RPC updated for this tab.'); } catch (error) { message(error.message); } };
@@ -236,8 +246,22 @@ for (const id of ['cpunk-address', 'cpunk-endpoint']) $(id).addEventListener('in
 } else { document.querySelector('.cpunk').remove(); }
 
 function updateVaultUI() {
-  try { $('unlock-form').hidden = !!wallet || !localStorage.getItem(VAULT_KEY); }
-  catch { $('vault-status').textContent = 'Device storage is unavailable. Use a temporary wallet in this tab.'; }
+  try {
+    const saved = localStorage.getItem(VAULT_KEY);
+    $('unlock-form').hidden = !!wallet || !saved;
+    $('wallet-storage-state').textContent = saved && activitySession?.vault === saved
+      ? 'Encrypted copy saved in this browser.'
+      : saved ? 'Temporary session · the saved copy has not been unlocked here.' : 'Temporary session · this wallet has not been saved on this device.';
+  }
+  catch {
+    $('vault-status').textContent = 'Device storage is unavailable. Use a temporary wallet in this tab.';
+    $('wallet-storage-state').textContent = 'Device storage is unavailable.';
+  }
+}
+function focusOpenWallet() {
+  updateVaultUI();
+  $('wallet-title').focus({ preventScroll: true });
+  document.querySelector('.wallet-card').scrollIntoView({ block: 'start' });
 }
 updateVaultUI();
 $('unlock-form').onsubmit = async event => {
@@ -258,12 +282,17 @@ $('unlock-form').onsubmit = async event => {
     disposeWallet(wallet); wallet = restored; activitySession = { id: saved.id, key, vault: text }; activityBlocked = !!problem;
     history.length = 0; history.push(...rows);
     $('discard-activity').hidden = !problem; $('vault-status').textContent = problem || 'Saved activity authenticated.';
-    $('welcome').hidden = true; $('phrase-form').hidden = true; $('wallet-open').hidden = false; updateVaultUI(); selectChain(); activity(); void showNodusAddress(); message('Saved wallet unlocked locally.');
+    $('welcome').hidden = true; $('phrase-form').hidden = true; $('wallet-open').hidden = false; updateVaultUI(); selectChain(); activity(); void showNodusAddress(); message('Saved wallet unlocked locally.'); focusOpenWallet();
   } catch (error) { if (operation === vaultOperation) $('vault-status').textContent = error.message; }
   finally { $('unlock-wallet').disabled = false; }
 };
 async function saveVault(change) {
   if (!wallet || wallet.locked) return;
+  if (!$('vault-risk-confirm').checked) {
+    $('vault-status').textContent = 'Before saving, read and accept the risks of storing an encrypted wallet on this device.';
+    $('vault-risk-confirm').reportValidity();
+    return;
+  }
   const source = wallet, operation = ++vaultOperation;
   const password = $('vault-password').value, oldPassword = $('vault-old-password').value;
   $('vault-password').value = ''; $('vault-old-password').value = '';
@@ -286,13 +315,17 @@ async function saveVault(change) {
     const newId = parseVault(encrypted).id, key = await activityKeyFor(source.recoveryPhrase, newId);
     if (operation !== vaultOperation || wallet !== source || source.locked || localStorage.getItem(VAULT_KEY) !== previous) return;
     const stored = await withActivityLock(() => {
-      if (operation !== vaultOperation || wallet !== source || source.locked || localStorage.getItem(VAULT_KEY) !== previous) return false;
+      if (operation !== vaultOperation || wallet !== source || source.locked || !$('vault-risk-confirm').checked || localStorage.getItem(VAULT_KEY) !== previous) return false;
       localStorage.setItem(VAULT_KEY, encrypted); activitySession = { id: newId, key, vault: encrypted }; return true;
     });
-    if (!stored) return;
+    if (!stored) {
+      if (operation === vaultOperation && wallet === source && !source.locked && !$('vault-risk-confirm').checked) $('vault-status').textContent = 'Save canceled. The storage risks were not accepted; no new copy was saved.';
+      return;
+    }
     updateVaultUI();
     await persistActivity();
     if (operation !== vaultOperation || wallet !== source || source.locked) return;
+    $('vault-risk-confirm').checked = false;
     $('vault-status').textContent = change ? 'Local password changed.' : 'Encrypted wallet saved on this device. Keep your recovery backup.';
   } catch (error) { if (operation === vaultOperation) $('vault-status').textContent = error.message; }
   finally { $('vault-save').disabled = false; $('vault-change').disabled = false; }

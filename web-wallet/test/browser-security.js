@@ -55,11 +55,39 @@ try {
   console.log('RT-01: create, verify, restore and suspended-tab expiry clear secrets.');
 
   page = await fresh(); await restore(page); await page.getByText('Save wallet on this device (optional)', { exact: true }).click();
-  await page.locator('#vault-password').fill('aaaaaaaaaaaaaaaa'); await page.locator('#vault-save').click();
+  assert.equal(await page.locator('#vault-risk-confirm').isChecked(), false);
+  await page.locator('#vault-password').fill(password); await page.locator('#vault-save').click();
+  assert.match(await page.locator('#vault-status').innerText(), /read and accept the risks/);
+  assert.equal(await page.evaluate(() => localStorage.length), 0);
+  // Withdrawing consent while encryption is pending must prevent persistence.
+  await page.evaluate(() => {
+    const original = crypto.subtle.encrypt.bind(crypto.subtle);
+    globalThis.restoreEncryption = () => { crypto.subtle.encrypt = original; };
+    crypto.subtle.encrypt = async (...args) => {
+      const result = await original(...args); globalThis.consentEncryptionHeld = true;
+      await new Promise(resolve => { globalThis.releaseConsentEncryption = resolve; });
+      return result;
+    };
+  });
+  await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click();
+  await page.waitForFunction(() => globalThis.consentEncryptionHeld);
+  await page.locator('#vault-risk-confirm').uncheck();
+  await page.evaluate(() => { globalThis.restoreEncryption(); globalThis.releaseConsentEncryption(); });
+  await page.waitForFunction(() => !document.querySelector('#vault-save').disabled);
+  assert.equal(await page.evaluate(() => localStorage.length), 0);
+  assert.match(await page.locator('#vault-status').innerText(), /Save canceled/);
+  await page.locator('#vault-password').fill('Example-pass-15');
+  await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click();
+  assert.match(await page.locator('#vault-status').innerText(), /16/);
+  assert.equal(await page.evaluate(() => localStorage.length), 0);
+  await page.locator('#vault-password').fill('aaaaaaaaaaaaaaaa'); await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click();
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('easy to guess'));
   assert.equal(await page.evaluate(() => localStorage.length), 0);
-  await page.locator('#vault-password').fill(password); await page.locator('#vault-save').click();
+  await page.locator('#vault-password').fill(password); await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click();
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('Encrypted wallet saved'));
+  assert.equal(await page.locator('#vault-risk-confirm').isChecked(), false);
+  assert.match(await page.locator('#wallet-storage-state').innerText(), /Encrypted copy saved/);
+  console.log('Storage is opt-in: unchecked or withdrawn risk consent writes nothing; short and weak passwords are rejected; saving resets consent.');
   const peer = await fresh();
   await peer.locator('#unlock-password').fill(password); await peer.locator('#restore').click();
   assert.equal(await peer.locator('#unlock-password').inputValue(), '');
@@ -99,7 +127,7 @@ try {
   assert.equal(combinedRows.length, 2); assert.deepEqual(combinedRows.map(row => row.amount).sort(), ['0.01', '0.02']);
   await peer.close();
   await restore(page);
-  await page.locator('#vault-password').fill('different-public-test-password'); await page.locator('#vault-old-password').fill(password); await page.locator('#vault-change').click();
+  await page.locator('#vault-password').fill('different-public-test-password'); await page.locator('#vault-old-password').fill(password); await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-change').click();
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('unlock the saved wallet'));
   assert.equal(await page.evaluate(() => localStorage.getItem('nodus.wallet.v1')), preserved.vault);
   assert.equal(await page.evaluate(() => localStorage.getItem('nodus.activity.v1')), preserved.activity);
