@@ -58,6 +58,12 @@ function closeReview() { pending?.cancel(); pending = undefined; $('review-dialo
 function lock() {
   clearPhraseSuggestions();
   nodusDerivation?.abort(); nodusDerivation = undefined;
+  cpunkRequest?.abort(); cpunkRequest = undefined;
+  if ($('cpunk-assets')) {
+    $('cpunk-assets').open = false; $('cpunk-address').value = '';
+    $('cpunk-result').textContent = 'No address selected.';
+    $('cpunk-connection').textContent = 'Connection not checked.';
+  }
   $('nodus-address').textContent = ''; $('nodus-status').textContent = ''; $('copy-nodus-address').disabled = true;
   revision++; vaultOperation++; activitySession = null; activityBlocked = false; idleDeadline = 0; stopTracking(); closeReview(); disposeWallet(wallet); wallet = undefined; generatedPhrase = undefined; $('phrase').value = '';
   $('discard-activity').hidden = true;
@@ -192,7 +198,7 @@ $('cpunk-derive').onclick = async () => {
     const address = await deriveCpunkAddress(source.recoveryPhrase);
     if (current !== revision || source !== wallet || source.locked) return;
     $('cpunk-address').value = address; $('cpunk-address').dispatchEvent(new Event('input'));
-    $('cpunk-result').textContent = 'Address derived locally. Select Read CPUNK balance to query it.';
+    $('cpunk-result').textContent = 'Address derived locally. Select Refresh CPUNK balance to query it.';
   } catch (error) { if (current === revision) $('cpunk-result').textContent = error.message; }
   finally { $('cpunk-derive').disabled = false; }
 };
@@ -207,7 +213,7 @@ $('cpunk-form').onsubmit = async event => {
 for (const id of ['cpunk-address', 'cpunk-endpoint']) $(id).addEventListener('input', () => { cpunkRequest?.abort(); $('cpunk-connection').textContent = 'Connection not checked for this input.'; $('cpunk-result').textContent = 'Input changed. Read the balance again.'; });
 
 }).catch(() => { $('cpunk-result').textContent = 'CPUNK module could not load. Reload to retry.'; });
-} else { document.querySelector('.cpunk').remove(); document.querySelector('.layout').classList.add('single'); }
+} else { document.querySelector('.cpunk').remove(); }
 
 function updateVaultUI() {
   try { $('unlock-form').hidden = !!wallet || !localStorage.getItem(VAULT_KEY); }

@@ -34,7 +34,7 @@ npm run test:browser
 npm run test:security
 ```
 
-Browser scripts intercept every external request and use public, unfunded test mnemonics. Set `CHROMIUM_PATH` if Chromium is already installed elsewhere. No real-chain transfer is needed for these checks.
+Browser scripts intercept every external request and use public test mnemonics; their accounts must never be assumed unfunded. Set `CHROMIUM_PATH` if Chromium is already installed elsewhere. No real-chain transfer is needed for these checks.
 
 ## Deployment boundary
 
@@ -58,3 +58,13 @@ loading failure, address copy and encrypted reopen. Local word suggestions read
 only the bundled BIP39 dictionary and are cleared on lock/cancel. There is no
 server-side seed processing. This extends the original review scope with two
 independent read-only bridge reviews; it is not a new audit of the primitives.
+
+## Public RPC and UI follow-up (0.1.3)
+
+The Solana default changes to keyless Solana Vibe Station. Reads are paced to
+avoid the observed burst limit; the existing timeout includes queueing. A
+regression checks cancellation before fetch, spacing, unchanged other endpoints
+and exactly one broadcast attempt even on HTTP 429. No retry, key or relay is
+added. CPUNK controls now live inside the open wallet; lock aborts reads and
+clears the public address/result. Landing-page and lock behavior are checked
+in the intercepted browser smoke suite.

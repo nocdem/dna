@@ -8,7 +8,7 @@ export const CHAINS = {
   bsc: { name: 'BNB Smart Chain', symbol: 'BNB', decimals: 18, chainId: 56, endpoint: 'https://bsc-dataseed.binance.org', explorer: 'https://bscscan.com/tx/', tokens: [
     { symbol: 'USDT', decimals: 18, address: '0x55d398326f99059fF775485246999027B3197955' },
     { symbol: 'USDC', decimals: 18, address: '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d' }] },
-  solana: { genesisHash: '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d', name: 'Solana', symbol: 'SOL', decimals: 9, endpoint: 'https://solana-rpc.publicnode.com', explorer: 'https://solscan.io/tx/', tokens: [
+  solana: { genesisHash: '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d', name: 'Solana', symbol: 'SOL', decimals: 9, endpoint: 'https://public.rpc.solanavibestation.com', explorer: 'https://solscan.io/tx/', tokens: [
     { symbol: 'USDT', decimals: 6, address: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB' },
     { symbol: 'USDC', decimals: 6, address: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' }] },
   tron: { name: 'TRON', symbol: 'TRX', decimals: 6, endpoint: 'https://api.trongrid.io', explorer: 'https://tronscan.org/#/transaction/', tokens: [

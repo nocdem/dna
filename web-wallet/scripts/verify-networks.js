@@ -28,7 +28,10 @@ try {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json(); if (data.error || data.Error) throw new Error('RPC rejected request'); return data;
     }
-    const rpc = async (url, method, params) => (await request(url, { jsonrpc: '2.0', id: 1, method, params })).result;
+    const rpc = async (url, method, params) => {
+      if (url === 'https://public.rpc.solanavibestation.com') await new Promise(resolve => setTimeout(resolve, 1200));
+      return (await request(url, { jsonrpc: '2.0', id: 1, method, params })).result;
+    };
     const publicAddresses = { ethereum: '0x9858EfFD232B4033E47d90003D41EC34EcaEda94', bsc: '0x9858EfFD232B4033E47d90003D41EC34EcaEda94', solana: 'HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk', tron: 'TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH', cpunk: 'Rj7J7MiX2bWy8sNybZfJFiwvEcU44PH89JnTmBXGREmPgVHvx8j5XvXFDNmV5RYdB3MzvgCTAY3RimZ7DWkV2zwBDTSjJNCvroNW2Tps' };
     return Promise.all([...Object.keys(CHAINS), 'cpunk'].map(async chain => {
       const endpoint = CHAINS[chain]?.endpoint || 'https://rpc.cellframe.net/connect';
@@ -41,6 +44,19 @@ try {
           identity = await rpc(endpoint, 'getGenesisHash', []); if (identity !== CHAINS.solana.genesisHash) throw new Error('Wrong network');
           balances = (await rpc(endpoint, 'getBalance', [publicAddresses[chain], { commitment: 'confirmed' }]))?.value;
           if (!Number.isSafeInteger(balances) || balances < 0) throw new Error('Invalid balance');
+          const nativeLamports = balances, tokens = [];
+          for (const token of CHAINS.solana.tokens) {
+            const data = await rpc(endpoint, 'getTokenAccountsByOwner', [publicAddresses[chain], { mint: token.address }, { encoding: 'jsonParsed', commitment: 'confirmed' }]);
+            if (!Array.isArray(data?.value)) throw new Error('Invalid token accounts');
+            let amount = 0n;
+            for (const account of data.value) {
+              const raw = account?.account?.data?.parsed?.info?.tokenAmount?.amount;
+              if (typeof raw !== 'string' || !/^\d{1,78}$/.test(raw)) throw new Error('Invalid token amount');
+              amount += BigInt(raw);
+            }
+            tokens.push({ symbol: token.symbol, rawAmount: String(amount), decimals: token.decimals });
+          }
+          balances = { nativeLamports, tokens };
         } else if (chain === 'tron') {
           identity = (await request(endpoint + '/wallet/getblockbynum', { num: 0 })).blockID;
           if (identity !== '00000000000000001ebf88508a03865c71d452e25f4d51194196a1d22b6653dc') throw new Error('Wrong network');

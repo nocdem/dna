@@ -39,6 +39,8 @@ await page.route('**/*', async route => {
 try {
   await page.goto(url);
   await page.waitForFunction(() => typeof document.querySelector('#restore').onclick === 'function' && typeof document.querySelector('#cpunk-form').onsubmit === 'function');
+  assert.equal(await page.locator('#cpunk-assets').isVisible(), false);
+  assert.doesNotMatch(await page.locator('body').innerText(), /Check CPUNK|CF-20|Cellframe|CPUNK/);
   await page.locator('#restore').click(); await page.locator('#phrase').fill(phrase); await page.locator('#backup-confirm').check(); await page.locator('#phrase-submit').click();
   await page.locator('#wallet-open').waitFor({ state: 'visible' });
   await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#nodus-address').textContent));
@@ -48,6 +50,7 @@ try {
   await page.locator('#copy-nodus-address').click();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), nodusAddress);
   assert.equal(await page.locator('#phrase').inputValue(), '');
+  await page.locator('#cpunk-assets > summary').click();
   await page.locator('#cpunk-derive').click();
   await page.waitForFunction(() => document.querySelector('#cpunk-result').textContent.includes('Address derived locally'));
   assert.ok((await page.locator('#cpunk-address').inputValue()).startsWith('R'));
@@ -84,7 +87,7 @@ try {
   await page.locator('#vault-password').fill('public-test-password-123'); await page.locator('#vault-save').click();
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('Encrypted wallet saved'));
   const stored = await page.evaluate(() => JSON.stringify({ ...localStorage })); assert.ok(!stored.includes(phrase)); assert.ok(!stored.includes('public-test-password-123'));
-  await page.locator('#lock').click(); assert.equal(await page.locator('#nodus-address').innerText(), ''); await page.locator('#unlock-password').fill('incorrect-password-123'); await page.locator('#unlock-wallet').click();
+  await page.locator('#lock').click(); assert.equal(await page.locator('#nodus-address').innerText(), ''); assert.equal(await page.locator('#cpunk-address').inputValue(), ''); assert.equal(await page.locator('#cpunk-assets').isVisible(), false); await page.locator('#unlock-password').fill('incorrect-password-123'); await page.locator('#unlock-wallet').click();
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('Incorrect password'));
   await page.locator('#unlock-password').fill('public-test-password-123'); await page.locator('#unlock-wallet').click(); await page.locator('#wallet-open').waitFor({ state: 'visible' });
   await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#nodus-address').textContent));

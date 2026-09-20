@@ -131,7 +131,7 @@ The command fails on connection errors or malformed responses; it does not test 
 
 ## Permanent chain RPC limitations
 
-Ethereum and Solana use public, keyless PublicNode HTTPS endpoints; BSC and TRON retain the native repository providers. Actual production availability, quotas and CORS access must be verified from the deployment origin. Ethereum/BSC and Solana endpoints may be changed for this tab; network identities are checked before reads and sends. A user-selected RPC sees public addresses and signed transactions. No seed or private key is transmitted. There is no backend relay or API-key service, and no silent endpoint fallback.
+Ethereum uses keyless PublicNode and Solana uses the keyless Solana Vibe Station public HTTPS endpoint; BSC and TRON retain the native repository providers. Actual production availability, quotas and CORS access must be verified from the deployment origin. Ethereum/BSC and Solana endpoints may be changed for this tab; network identities are checked before reads and sends. A user-selected RPC sees public addresses and signed transactions. No seed or private key is transmitted. There is no backend relay or API-key service, and no silent endpoint fallback.
 
 Chain SDKs, not the existing native C binaries, implement browser signing; existing Connect/Nodus code is unchanged. Real mainnet transfers have not been executed during development. This slice derives and displays the native Nodus address locally; it does not query a Nodus balance or send native transactions. Global transaction history indexing, custom-token discovery, ZK, claims, DEX/swap and tokenomics changes are outside this release.
 
@@ -176,7 +176,7 @@ A scoped `@solana/web3.js` dependency override uses Jayson 5.0.0, removing vulne
 
 ## Connect-compatible Cellframe address derivation
 
-Open a BIP39 wallet, then select **Use my open wallet’s address**. Derivation stays in the browser; reading the derived public balance is a separate action. This mode accepts the same normalized, checksum-valid English BIP39 phrase as the multichain wallet. Arbitrary non-BIP39 Cellframe strings are not supported. No recovery phrase is sent to the RPC.
+Open your Nodus wallet, expand **CPUNK (CF-20)**, then select **Use this wallet’s address**. Derivation stays in the browser; reading the derived public balance is a separate action. This mode accepts the same normalized, checksum-valid English BIP39 phrase as the multichain wallet. Arbitrary non-BIP39 Cellframe strings are not supported. No recovery phrase is sent to the RPC.
 
 The temporary `src/cpunk/` module compiles the repository's unchanged legacy Cellframe Dilithium MODE_1 C, not modern ML-DSA. It matches native `EVP_sha3_256(mnemonic)` (not Keccak), the key generator’s subsequent SHA3, 1196-byte serialized public key and 77-byte Backbone address/checksum. A fresh WASM instance is used per derivation and its memory is overwritten afterward; JavaScript string erasure cannot be guaranteed. The open wallet retains its phrase in RAM until lock to support derivation.
 
@@ -222,7 +222,7 @@ The five findings from the 2026-09-19 local review are covered by these regressi
 
 The initial production-origin read checks found browser access failures at
 `eth.llamarpc.com` (CORS) and `api.mainnet-beta.solana.com` (HTTP 403).
-Defaults now use the endpoints published by [PublicNode Ethereum](https://ethereum.publicnode.com/)
+Version 0.1.1 selected the endpoints published by [PublicNode Ethereum](https://ethereum.publicnode.com/)
 and [PublicNode Solana](https://solana.publicnode.com/), with no API key or gateway.
 These defaults remain user-changeable and no silent fallback is introduced.
 
@@ -237,3 +237,22 @@ The malformed DAI preset is corrected to
 the [issuer's Dai guide](https://github.com/sky-ecosystem/developerguides/blob/master/dai/dai-token/dai-token.md).
 The native C header is unchanged. The historical September 19 probe fixtures above
 remain evidence of that earlier environment, not results for this release.
+
+## Public Solana RPC and wallet layout (0.1.3, 2026-09-20)
+
+PublicNode accepted SOL reads but refused indexed USDT/USDC queries with HTTP
+403 requiring a personal token. Solana now defaults to the provider-published
+[Solana Vibe Station public endpoint](https://solanavibestation.com/)
+`https://public.rpc.solanavibestation.com`. Production-origin Chromium reads
+verified the full mainnet genesis, SOL, USDT and USDC without an API key.
+A burst hit HTTP 429; reads to this exact default URL are spaced by 1.2 seconds
+per tab, including SDK and activity reads. Waiting is included in the existing
+15-second timeout, cancellation prevents a queued fetch, and failed reads remain
+errors. Other RPC URLs and broadcasts are not queued; nothing is automatically
+retried. Shared public capacity and access policies can still change.
+
+The landing page is solely the Nodus wallet. The separate CPUNK card and its
+Cellframe/airdrop promotion are removed. Existing CPUNK read-only support is a
+collapsed asset option inside the open wallet. Lock closes it, aborts pending
+reads and clears its address/result. No CELL balance or transfer support is
+claimed. The CF-20 code remains isolated and removable with the existing flag.

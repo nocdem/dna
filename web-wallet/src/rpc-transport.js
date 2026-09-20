@@ -1,5 +1,30 @@
 const DEFAULT_LIMIT = 256 * 1024;
 const LARGE_METHODS = { eth_getBlockByNumber: 2 * 1024 * 1024, getTokenAccountsByOwner: 4 * 1024 * 1024 };
+// The public endpoint throttles bursts. Space reads across helpers and SDKs in
+// this tab; never queue or retry a signed broadcast, or substitute a provider.
+const publicReadPolicy = new Map([
+  ['https://public.rpc.solanavibestation.com/', { interval: 1200, nextAt: 0, queue: Promise.resolve() }]
+]);
+async function pacePublicRead(url, body, signal) {
+  const policy = publicReadPolicy.get(url);
+  if (!policy) return;
+  let method;
+  try { method = JSON.parse(body).method; } catch { return; }
+  if (typeof method !== 'string' || !method.startsWith('get')) return;
+  const turn = policy.queue.then(async () => {
+    signal.throwIfAborted();
+    const delay = policy.nextAt - Date.now();
+    if (delay > 0) await new Promise((resolve, reject) => {
+      const cancel = () => { clearTimeout(timer); reject(signal.reason); };
+      const timer = setTimeout(() => { signal.removeEventListener('abort', cancel); resolve(); }, delay);
+      signal.addEventListener('abort', cancel, { once: true });
+    });
+    signal.throwIfAborted();
+    policy.nextAt = Date.now() + policy.interval;
+  });
+  policy.queue = turn.catch(() => {});
+  await turn;
+}
 export function endpointUrl(value) {
   let url;
   try { url = new URL(value); } catch { throw new Error('Enter a valid HTTPS RPC URL.'); }
@@ -56,7 +81,10 @@ function validateJsonShape(value) {
 // SDK adapters use this too: bounding only the common JSON-RPC helper is insufficient.
 export async function rpcFetch(url, options = {}, { fetcher = fetch } = {}) {
   const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000);
-  const response = await fetcher(endpointUrl(url), { ...options, signal, redirect: 'error', credentials: 'omit', referrerPolicy: 'no-referrer' });
+  const endpoint = endpointUrl(url);
+  await pacePublicRead(endpoint, options.body, signal);
+  signal.throwIfAborted();
+  const response = await fetcher(endpoint, { ...options, signal, redirect: 'error', credentials: 'omit', referrerPolicy: 'no-referrer' });
   const bytes = await boundedBytes(response, responseLimit(options.body), signal);
   if (response.ok) {
     let data;
