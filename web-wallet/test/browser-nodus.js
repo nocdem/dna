@@ -13,6 +13,42 @@ let browser;
 try {
   for (let i = 0; i < 100; i++) { try { if ((await fetch(url)).ok) break; } catch {} await delay(50); }
   browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH || undefined });
+  for (const mode of ['delayed', 'failed']) {
+    const startup = await browser.newPage();
+    const requested = Promise.withResolvers(), release = Promise.withResolvers();
+    const external = [], startupErrors = [];
+    startup.on('pageerror', error => startupErrors.push(error.message));
+    await startup.route('**/*', async route => {
+      const req = route.request();
+      if (!req.url().startsWith(url + '/') || req.method() !== 'GET' || req.postData()) {
+        external.push(req.url()); return route.abort();
+      }
+      if (/\/assets\/app-[^/]+\.js$/.test(new URL(req.url()).pathname)) {
+        requested.resolve(); await release.promise;
+        if (mode === 'failed') return route.fulfill({ status: 503, body: 'Unavailable' });
+      }
+      return route.continue();
+    });
+    try {
+      await startup.goto(url, { waitUntil: 'commit' }); await requested.promise;
+      for (const id of ['create', 'restore', 'unlock-wallet']) assert.equal(await startup.locator(`#${id}`).isDisabled(), true);
+      assert.match(await startup.locator('#wallet-boot-status').innerText(), /Loading wallet/);
+      release.resolve();
+      if (mode === 'delayed') {
+        await startup.waitForFunction(() => !document.querySelector('#restore').disabled);
+        assert.equal(await startup.locator('#wallet-boot-status').isVisible(), false);
+        await startup.locator('#restore').click();
+        await startup.locator('#phrase-form').waitFor({ state: 'visible' });
+        await startup.locator('#phrase-cancel').click();
+      } else {
+        await startup.waitForFunction(() => document.querySelector('#wallet-boot-status').textContent.includes('could not load'));
+        for (const id of ['create', 'restore', 'unlock-wallet']) assert.equal(await startup.locator(`#${id}`).isDisabled(), true);
+      }
+      assert.equal(await startup.evaluate(() => localStorage.length + sessionStorage.length), 0);
+      assert.deepEqual(external, []); assert.deepEqual(startupErrors, []);
+    } finally { release.resolve(); await startup.close(); }
+  }
+  console.log('Startup checks passed: entry controls wait for initialization; delayed loading recovers and failed loading gives a visible error without enabling controls.');
   const page = await browser.newPage(); page.setDefaultTimeout(10000);
   const seen = Promise.withResolvers(), release = Promise.withResolvers(), completed = Promise.withResolvers();
   let wasmRequests = 0, failLoad = false;

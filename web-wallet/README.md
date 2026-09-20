@@ -36,6 +36,22 @@ For Caddy, `deploy/Caddyfile` serves the static files and supplies the response 
 - EVM gas estimation with a 20% gas-limit margin and legacy gas-price transactions; Solana fee/rent estimation and idempotent recipient token account creation, spending only from the sender’s locally derived associated token account; TRON native/TRC-20 transaction intent and protobuf consistency validation. TRON token energy has a 100 TRX limit; bandwidth/activation charges are network dependent and not falsely presented as an exact fee estimate. Solana balances can include other token accounts, but those accounts cannot be spent here. TRON reads and sends require the configured default mainnet provider and matching genesis; there is no testnet fallback.
 - Temporary **CPUNK-only, read-only** Cellframe/Backbone query using a public address. Local address derivation from the open wallet’s phrase is available; Cellframe signing, sending, trading and claiming are unavailable. Its balance is not proof of ownership, a snapshot, or airdrop eligibility.
 
+## Planned Earn and Trade areas
+
+Earn is specifically for delegating native NODUS to witnesses and managing those
+delegations, using DNA Connect's witness selection/delegation flow as a reference.
+Trade is the separate future DEX/swap area. Neither integration is enabled in
+this release. The web wallet currently derives and displays the native Nodus
+address; native balance reads and transactions require a separate integration.
+
+## Wallet loading (0.1.11)
+
+Create, Restore and Unlock stay disabled until the application module has
+initialized. A loading message is shown while waiting; a module load failure
+shows a reload instruction and leaves the controls disabled. Browser checks
+hold or fail the module request to verify both outcomes without blockchain
+requests or recovery words.
+
 ## Open-wallet sections and storage consent (0.1.10)
 
 The open wallet separates native Nodus identity, external-network assets/receive,
