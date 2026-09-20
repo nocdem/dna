@@ -3,6 +3,24 @@
 Reviewed baseline: `f48968bd3b669edea302a5d1bbf0c25fcd2add30` on `feat/nodus-web-wallet`.
 Scope: browser wallet only. Existing native applications and consensus are unchanged.
 
+## Numbered recovery fields and branding (0.1.5)
+
+Creation, restore and backup verification now use 24 separate numbered inputs.
+Full-phrase paste fills all positions even when initiated in a middle field;
+shorter pastes preserve neighboring positions, overflow is rejected, and an
+empty field cannot be collapsed into a different phrase. Generated fields are
+read-only. Every input and suggestion is cleared on cancel, idle expiry and
+successful open. The existing derivation, vault and signing implementations
+are unchanged. Main-site fonts and logo are self-hosted without CSP changes.
+
+One independent read-only agent reviewed the input/paste and cleanup code and
+reported no blocking finding; this is a scoped static review, not a new audit
+of the wallet. Chromium verification covers full, partial and excess paste,
+real clipboard paste, read-only generation, empty middle fields, checksum
+rejection, suggestions, 320px layout and the existing secret-lifecycle flows.
+All 41 Node tests and the browser smoke, security and Nodus suites passed.
+Browser blockchain traffic remained intercepted; no real transfer was sent.
+
 ## Additional review and remediation (0.1.4)
 
 Eight independent read-only agent reviews examined deployed baseline

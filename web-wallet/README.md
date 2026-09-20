@@ -51,10 +51,19 @@ BIP39/SHAKE256 derivation, not a new phrase encoding. CF-20 is not involved.
 The application cannot infer which product originally generated a valid BIP39
 phrase; it validates 24 words and checksum, then derives the Nodus identity.
 
-Restore and backup verification offer local BIP39 word suggestions for the word
-at the cursor. Typing `a` or `ab` narrows the list; mouse/touch or arrow keys and
-Enter complete just that word. Suggestions never make network calls or persist
-entered text. Lock/cancel clears the suggestion state with the phrase.
+Create, restore and backup verification use 24 individually numbered word boxes.
+Generated words are read-only until backup verification. Pasting a full 24-word
+phrase into any box fills the entire grid in order; shorter pastes fill from the
+selected box, and excess words are rejected without truncation. Empty boxes and
+invalid checksums cannot open a wallet. Local BIP39 suggestions complete only the
+selected word and move focus to the next box. Lock, cancel, idle expiry and a
+successful open clear every input and suggestion. No recovery text is persisted
+by the input component or sent over the network.
+
+The wallet uses the main site's Nodus SVG mark, self-hosted Inter variable fonts,
+and shared colors/typography. Assets were byte-matched to nodusnetwork.io on
+2026-09-20; the font license is included under `public/assets/fonts/OFL.txt`.
+No external font/CDN requests or additional CSP permissions are needed.
 
 ### Determinism and native references
 

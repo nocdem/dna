@@ -1,3 +1,4 @@
+import { pastePhrase, readPhrase } from './browser-phrase.js';
 // Production bundle; all external traffic is intercepted. Public test phrase only.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -35,22 +36,22 @@ await context.route('**/*', async route => {
   await route.fulfill({ json: Array.isArray(body) ? await Promise.all(body.map(process)) : await process(body) });
 });
 async function fresh() { const p = await context.newPage(); p.setDefaultTimeout(10000); p.on('pageerror', error => errors.push(error.message)); await p.goto(url); await p.waitForFunction(() => typeof document.querySelector('#restore').onclick === 'function'); return p; }
-async function restore(p) { await p.locator('#restore').click(); await p.locator('#phrase').fill(phrase); await p.locator('#backup-confirm').check(); await p.locator('#phrase-submit').click(); await p.locator('#wallet-open').waitFor({ state: 'visible' }); }
+async function restore(p) { await p.locator('#restore').click(); await pastePhrase(p, phrase); await p.locator('#backup-confirm').check(); await p.locator('#phrase-submit').click(); await p.locator('#wallet-open').waitFor({ state: 'visible' }); }
 async function unlock(p) { await p.locator('#unlock-password').fill(password); await p.locator('#unlock-wallet').click(); await p.locator('#wallet-open').waitFor({ state: 'visible' }); }
 async function review(p) { await p.locator('#recipient').fill('0x0000000000000000000000000000000000000001'); await p.locator('#amount').fill('0.01'); await p.locator('#review-button').click(); await p.locator('#review-dialog').waitFor({ state: 'visible' }); }
 try {
   page = await fresh(); await page.clock.install();
   for (const stage of ['create', 'verify', 'restore']) {
     await page.locator(stage === 'restore' ? '#restore' : '#create').click();
-    if (stage === 'verify') { await page.locator('#backup-confirm').check(); await page.locator('#phrase-submit').click(); await page.locator('#phrase').fill(phrase); }
-    if (stage === 'restore') await page.locator('#phrase').fill(phrase);
+    if (stage === 'verify') { await page.locator('#backup-confirm').check(); await page.locator('#phrase-submit').click(); await pastePhrase(page, phrase); }
+    if (stage === 'restore') await pastePhrase(page, phrase);
     await page.clock.fastForward(11 * 60 * 1000);
-    assert.equal(await page.locator('#phrase').inputValue(), ''); assert.equal(await page.locator('#phrase-form').isVisible(), false);
+    assert.equal(await readPhrase(page), ''); assert.equal(await page.locator('#phrase-form').isVisible(), false);
   }
-  await page.locator('#restore').click(); await page.locator('#phrase').fill(phrase);
+  await page.locator('#restore').click(); await pastePhrase(page, phrase);
   // Simulate a suspended timer: visibility/focus must check the absolute deadline.
   await page.clock.setSystemTime(Date.now() + 24 * 60 * 60 * 1000); await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-  assert.equal(await page.locator('#phrase').inputValue(), ''); await page.close();
+  assert.equal(await readPhrase(page), ''); await page.close();
   console.log('RT-01: create, verify, restore and suspended-tab expiry clear secrets.');
 
   page = await fresh(); await restore(page); await page.getByText('Save wallet on this device (optional)', { exact: true }).click();

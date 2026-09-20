@@ -1,3 +1,4 @@
+import { pastePhrase, readPhrase } from './browser-phrase.js';
 // Production assets, public test phrases, and no external network requests.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -37,27 +38,74 @@ try {
   await page.goto(url);
   await page.waitForFunction(() => typeof document.querySelector('#restore').onclick === 'function');
   await page.locator('#restore').click();
-  const phraseInput = page.locator('#phrase'), suggestions = page.locator('#phrase-suggestions');
+  const phraseInput = page.locator('#phrase-1'), suggestions = page.locator('#phrase-suggestions-1');
+  assert.equal(await page.locator('#phrase-grid input').count(), 24);
+  assert.deepEqual(await page.locator('#phrase-grid label').allTextContents(), Array.from({ length: 24 }, (_, i) => `${i + 1}.`));
   await phraseInput.fill('a');
-  assert.ok((await suggestions.locator('button').allTextContents()).every(word => word.startsWith('a')));
+  const aWords = await suggestions.locator('button').allTextContents();
+  assert.ok(aWords.length > 1 && aWords.every(word => word.startsWith('a')));
   await phraseInput.fill('ab');
   const abWords = await suggestions.locator('button').allTextContents();
-  assert.ok(abWords.length > 1); assert.ok(abWords.every(word => word.startsWith('ab')));
+  assert.ok(abWords.length > 1 && abWords.every(word => word.startsWith('ab')));
   await phraseInput.press('ArrowDown'); await phraseInput.press('Enter');
-  assert.equal(await phraseInput.inputValue(), 'abandon ');
-  await phraseInput.fill('ab ability');
-  await phraseInput.evaluate(input => { input.setSelectionRange(2, 2); input.dispatchEvent(new Event('input', { bubbles: true })); });
+  assert.equal(await phraseInput.inputValue(), 'abandon');
+  assert.equal(await page.locator('#phrase-2').evaluate(input => input === document.activeElement), true);
+  await page.locator('#phrase-2').fill('ability'); await phraseInput.fill('ab');
   await suggestions.getByRole('option', { name: 'about', exact: true }).click();
-  assert.equal(await phraseInput.inputValue(), 'about ability');
-  await phraseInput.fill('abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about');
+  assert.equal(await phraseInput.inputValue(), 'about');
+  assert.equal(await page.locator('#phrase-2').inputValue(), 'ability');
+  // Full paste from a middle box replaces every numbered position.
+  await pastePhrase(page, vectors[0].phrase.toUpperCase().split(' ').join(' \n\t'), 13);
+  assert.equal(await readPhrase(page), vectors[0].phrase);
+  await pastePhrase(page, vectors[0].phrase + ' extra', 7);
+  assert.equal(await readPhrase(page), vectors[0].phrase);
+  assert.match(await page.locator('#phrase-error').innerText(), /Too many/);
+  await pastePhrase(page, 'ability able about', 24);
+  assert.equal(await readPhrase(page), vectors[0].phrase);
+  await pastePhrase(page, 'ability able', 12);
+  assert.equal(await page.locator('#phrase-11').inputValue(), 'abandon');
+  assert.equal(await page.locator('#phrase-12').inputValue(), 'ability');
+  assert.equal(await page.locator('#phrase-13').inputValue(), 'able');
+  assert.equal(await page.locator('#phrase-14').inputValue(), 'abandon');
+  await pastePhrase(page, vectors[0].phrase);
+  await page.locator('#phrase-12').fill('');
   await page.locator('#backup-confirm').check(); await page.locator('#phrase-submit').click();
   assert.match(await page.locator('#wallet-status').innerText(), /24-word/);
   assert.equal(await page.locator('#wallet-open').isVisible(), false);
   await page.locator('#phrase-cancel').click();
-  assert.equal(await phraseInput.inputValue(), '');
-  assert.equal(await suggestions.innerText(), '');
+  assert.equal(await readPhrase(page), '');
+  assert.deepEqual(await page.locator('.phrase-suggestions').allTextContents(), Array(24).fill(''));
+  // Exercise a real browser clipboard paste with the public fixture only.
+  await page.locator('#restore').click();
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.evaluate(text => navigator.clipboard.writeText(text), vectors[0].phrase);
+  await page.locator('#phrase-9').focus(); await page.keyboard.press('Control+V');
+  assert.equal(await readPhrase(page), vectors[0].phrase);
+  await page.locator('#phrase-24').fill('abandon');
+  await page.locator('#backup-confirm').check(); await page.locator('#phrase-submit').click();
+  assert.match(await page.locator('#wallet-status').innerText(), /invalid/);
+  assert.equal(await page.locator('#wallet-open').isVisible(), false);
+  await page.locator('#phrase-cancel').click();
+  await page.locator('#restore').click();
+  await pastePhrase(page, 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about');
+  await page.locator('#backup-confirm').check(); await page.locator('#phrase-submit').click();
+  assert.match(await page.locator('#wallet-status').innerText(), /24-word/);
+  await page.locator('#phrase-cancel').click();
+  await page.locator('#create').click();
+  const generated = await readPhrase(page);
+  assert.equal(generated.split(' ').length, 24);
+  assert.equal(await page.locator('#phrase-grid input').evaluateAll(inputs => inputs.every(input => input.readOnly)), true);
+  await pastePhrase(page, vectors[0].phrase, 5);
+  assert.equal(await readPhrase(page), generated);
+  await page.setViewportSize({ width: 320, height: 740 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await page.locator('#backup-confirm').check(); await page.locator('#phrase-submit').click();
+  assert.equal(await readPhrase(page), '');
+  assert.equal(await page.locator('#phrase-grid input').evaluateAll(inputs => inputs.every(input => !input.readOnly)), true);
+  await page.locator('#phrase-cancel').click();
+  await page.setViewportSize({ width: 1280, height: 960 });
   async function restore(phrase) {
-    await page.locator('#restore').click(); await page.locator('#phrase').fill(phrase);
+    await page.locator('#restore').click(); await pastePhrase(page, phrase);
     await page.locator('#backup-confirm').check(); await page.locator('#phrase-submit').click();
     await page.locator('#wallet-open').waitFor({ state: 'visible' });
   }
@@ -79,5 +127,5 @@ try {
   assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
   assert.equal(wasmRequests, 3);
   assert.deepEqual(unexpected, []); assert.deepEqual(errors, []);
-  console.log('Nodus browser checks passed: 24-word-only restore, local a/ab suggestions, keyboard/click completion, editing a word preserves its neighbors; late derivation cannot replace a reopened wallet; lock clears address; external-chain switch preserves native identity; failed module load shows unavailable; no external requests or storage.');
+  console.log('Nodus browser checks passed: 24 numbered boxes, read-only generation, full/partial/overflow and real clipboard paste, blank-word/checksum rejection, mobile layout, local a/ab suggestions and keyboard/click completion; late derivation cannot replace a reopened wallet; lock clears address; external-chain switch preserves native identity; failed module load shows unavailable; no external requests or storage.');
 } finally { await browser?.close(); server?.kill(); }

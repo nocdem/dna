@@ -5,9 +5,9 @@ import { CHAINS } from './config.js';
 import { deriveWallet, disposeWallet, newPhrase, normalizePhrase } from './keys.js';
 import { adapters, prepareTransfer } from './wallet.js';
 import { endpointUrl } from './core.js';
-import { attachPhraseSuggestions } from './phrase-suggestions.js';
+import { createPhraseFields } from './phrase-fields.js';
 const $ = id => document.getElementById(id);
-const clearPhraseSuggestions = attachPhraseSuggestions($('phrase'), $('phrase-suggestions'));
+const phraseFields = createPhraseFields($('phrase-grid'), $('phrase-error'));
 let wallet, pending, generatedPhrase, phraseStep, revision = 0, busy = false, lockTimer, idleDeadline = 0;
 let cpunkRequest, cpunkDerivation, nodusDerivation;
 let activitySession = null, activityBlocked = false, historyWrites = Promise.resolve(), vaultOperation = 0;
@@ -68,7 +68,7 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) expi
 window.addEventListener('focus', expireIdle);
 function closeReview() { pending?.cancel(); pending = undefined; $('review-dialog').close(); $('review-details').replaceChildren(); $('review-error').textContent = ''; }
 function lock() {
-  clearPhraseSuggestions();
+  phraseFields.clear();
   nodusDerivation?.abort(); nodusDerivation = undefined;
   cpunkDerivation?.abort(); cpunkDerivation = undefined;
   cpunkRequest?.abort(); cpunkRequest = undefined;
@@ -78,7 +78,7 @@ function lock() {
     $('cpunk-connection').textContent = 'Connection not checked.';
   }
   $('nodus-address').textContent = ''; $('nodus-status').textContent = ''; $('copy-nodus-address').disabled = true;
-  revision++; vaultOperation++; activitySession = null; activityBlocked = false; idleDeadline = 0; stopTracking(); closeReview(); disposeWallet(wallet); wallet = undefined; generatedPhrase = undefined; $('phrase').value = '';
+  revision++; vaultOperation++; activitySession = null; activityBlocked = false; idleDeadline = 0; stopTracking(); closeReview(); disposeWallet(wallet); wallet = undefined; generatedPhrase = undefined;
   $('discard-activity').hidden = true;
   $('phrase-form').hidden = true; $('wallet-open').hidden = true; $('welcome').hidden = false;
   history.length = 0; $('account-explorer').removeAttribute('href');
@@ -88,15 +88,15 @@ function lock() {
 }
 window.addEventListener('pagehide', lock);
 function phraseForm(create) {
-  clearPhraseSuggestions();
+  phraseFields.clear();
   vaultOperation++; $('unlock-password').value = ''; $('unlock-form').hidden = true;
   phraseStep = create ? 'backup' : 'restore';
   generatedPhrase = create ? newPhrase() : undefined;
   $('welcome').hidden = true; $('phrase-form').hidden = false; $('backup-confirm').checked = false;
-  $('phrase').value = generatedPhrase || ''; $('phrase').readOnly = create;
+  phraseFields.set(generatedPhrase || '', create);
   $('phrase-label').textContent = create ? 'Write down your 24-word recovery phrase privately' : 'Enter your 24-word Nodus recovery phrase';
   $('phrase-help').textContent = 'This phrase controls your funds. It stays local; an encrypted copy is stored only if you choose to save it. Keep an offline backup. This screen clears after 10 minutes of inactivity.';
-  $('phrase-submit').textContent = create ? 'I saved it — verify backup' : 'Open wallet'; message(''); $('phrase').focus();
+  $('phrase-submit').textContent = create ? 'I saved it — verify backup' : 'Open wallet'; message(''); phraseFields.focus();
   activity();
 }
 $('create').onclick = () => phraseForm(true);
@@ -105,13 +105,13 @@ $('phrase-cancel').onclick = lock;
 $('phrase-form').onsubmit = event => {
   event.preventDefault();
   if (phraseStep === 'backup') {
-    clearPhraseSuggestions();
-    phraseStep = 'verify'; $('phrase').value = ''; $('phrase').readOnly = false;
-    $('phrase-label').textContent = 'Re-enter your saved recovery phrase'; $('phrase-submit').textContent = 'Open wallet'; $('phrase').focus(); return;
+    phraseStep = 'verify'; phraseFields.set();
+    $('phrase-label').textContent = 'Re-enter your saved recovery phrase'; $('phrase-submit').textContent = 'Open wallet'; phraseFields.focus(); return;
   }
   try {
-    if (phraseStep === 'verify' && normalizePhrase($('phrase').value) !== generatedPhrase) throw new Error('The phrase does not match. Re-enter your saved backup.');
-    wallet = deriveWallet($('phrase').value); generatedPhrase = undefined; $('phrase').value = ''; clearPhraseSuggestions();
+    const phrase = phraseFields.read();
+    if (phraseStep === 'verify' && normalizePhrase(phrase) !== generatedPhrase) throw new Error('The phrase does not match. Re-enter your saved backup.');
+    wallet = deriveWallet(phrase); generatedPhrase = undefined; phraseFields.clear();
     $('phrase-form').hidden = true; $('wallet-open').hidden = false; message('Wallet open. Balances are fetched only when you select Refresh.'); selectChain(); activity(); void showNodusAddress();
   } catch (error) { message(error.message); }
 };

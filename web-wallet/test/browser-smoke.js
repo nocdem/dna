@@ -1,3 +1,4 @@
+import { pastePhrase, readPhrase } from './browser-phrase.js';
 // Run after npm run build + npm run preview. Every external request is intercepted.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -41,7 +42,7 @@ try {
   await page.waitForFunction(() => typeof document.querySelector('#restore').onclick === 'function' && typeof document.querySelector('#cpunk-form').onsubmit === 'function');
   assert.equal(await page.locator('#cpunk-assets').isVisible(), false);
   assert.doesNotMatch(await page.locator('body').innerText(), /Check CPUNK|CF-20|Cellframe|CPUNK/);
-  await page.locator('#restore').click(); await page.locator('#phrase').fill(phrase); await page.locator('#backup-confirm').check(); await page.locator('#phrase-submit').click();
+  await page.locator('#restore').click(); await pastePhrase(page, phrase); await page.locator('#backup-confirm').check(); await page.locator('#phrase-submit').click();
   await page.locator('#wallet-open').waitFor({ state: 'visible' });
   await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#nodus-address').textContent));
   assert.equal(await page.locator('#receive-address').innerText(), '0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb');
@@ -49,7 +50,7 @@ try {
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
   await page.locator('#copy-nodus-address').click();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), nodusAddress);
-  assert.equal(await page.locator('#phrase').inputValue(), '');
+  assert.equal(await readPhrase(page), '');
   await page.locator('#cpunk-assets > summary').click();
   await page.locator('#cpunk-derive').click();
   await page.waitForFunction(() => document.querySelector('#cpunk-result').textContent.includes('Address derived locally'));
@@ -106,9 +107,9 @@ try {
   await page.waitForFunction(() => !document.querySelector('#vault-save').disabled); assert.equal(await page.evaluate(() => localStorage.length), 0);
   await page.locator('#welcome').waitFor({ state: 'visible' }); assert.equal(await page.locator('#receive-address').innerText(), '');
   assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
-  await page.locator('#create').click(); const created = await page.locator('#phrase').inputValue(); assert.equal(created.split(' ').length, 24); await page.locator('#backup-confirm').check(); await page.locator('#phrase-submit').click();
-  await page.locator('#phrase').fill(phrase); await page.locator('#phrase-submit').click(); await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('does not match'));
-  await page.locator('#phrase').fill(created); await page.locator('#phrase-submit').click(); await page.locator('#wallet-open').waitFor({ state: 'visible' });
+  await page.locator('#create').click(); const created = await readPhrase(page); assert.equal(created.split(' ').length, 24); await page.locator('#backup-confirm').check(); await page.locator('#phrase-submit').click();
+  await pastePhrase(page, phrase); await page.locator('#phrase-submit').click(); await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('does not match'));
+  await pastePhrase(page, created); await page.locator('#phrase-submit').click(); await page.locator('#wallet-open').waitFor({ state: 'visible' });
   await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#nodus-address').textContent));
   await page.locator('#lock').click(); assert.equal(await page.locator('#nodus-address').innerText(), '');
   await page.setViewportSize({ width: 390, height: 844 }); assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
