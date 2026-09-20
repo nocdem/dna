@@ -99,6 +99,9 @@ p { color: var(--muted); font-size: 14px; line-height: 1.7; margin: 12px 0 20px;
 .storage-questions p { font-size: 12px; line-height: 1.8; max-width: 900px; margin: 14px 0 0; }
 .phrase-caution { padding: 12px 14px; border: 1px solid #d5f99836; border-radius: 7px; font-size: 12px; line-height: 1.7; background: #d5f99806; overflow-wrap: anywhere; }
 .phrase-caution strong { color: var(--text); font-weight: 500; }
+.recovery-warning h3 { font-size: 15px; line-height: 1.5; margin: 8px 0 12px; }
+.recovery-warning p { font-size: 12px; line-height: 1.75; margin: 10px 0 0; }
+.recovery-warning .eyebrow { font-size: 9px; margin: 0; }
 .wallet-care { margin-top: 54px; padding: 32px 0 40px; border-top: 1px solid var(--line); }
 .care-heading { display: flex; justify-content: space-between; gap: 30px; align-items: end; margin-bottom: 32px; }
 .care-heading h2 { margin: 0; font-size: clamp(24px, 2.5vw, 32px); letter-spacing: -.045em; line-height: 1.2; }
@@ -108,6 +111,8 @@ p { color: var(--muted); font-size: 14px; line-height: 1.7; margin: 12px 0 20px;
 .care-number { color: var(--lime); font-size: 10px; letter-spacing: .1em; }
 .care-list h3 { font-size: 17px; letter-spacing: -.025em; margin: 16px 0 10px; }
 .care-list p { font-size: 12px; line-height: 1.8; margin: 0; }
+.care-list p + p { margin-top: 12px; }
+.care-list strong { color: var(--text); font-weight: 500; overflow-wrap: anywhere; }
 .skip-link { position: fixed; left: 12px; top: -100px; z-index: 100; padding: 12px; border-radius: 5px; background: var(--lime); color: var(--dark); }
 .skip-link:focus { top: 12px; }
 .section-head { display: flex; align-items: center; gap: 14px; margin: 0 0 20px; }

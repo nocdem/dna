@@ -36,6 +36,16 @@ For Caddy, `deploy/Caddyfile` serves the static files and supplies the response 
 - EVM gas estimation with a 20% gas-limit margin and legacy gas-price transactions; Solana fee/rent estimation and idempotent recipient token account creation, spending only from the sender’s locally derived associated token account; TRON native/TRC-20 transaction intent and protobuf consistency validation. TRON token energy has a 100 TRX limit; bandwidth/activation charges are network dependent and not falsely presented as an exact fee estimate. Solana balances can include other token accounts, but those accounts cannot be spent here. TRON reads and sends require the configured default mainnet provider and matching genesis; there is no testnet fallback.
 - Temporary **CPUNK-only, read-only** Cellframe/Backbone query using a public address. Local address derivation from the open wallet’s phrase is available; Cellframe signing, sending, trading and claiming are unavailable. Its balance is not proof of ownership, a snapshot, or airdrop eligibility.
 
+## Recovery phrase warning (0.1.8)
+
+The page precautions and the top of the create/restore word form explicitly state
+that nobody from Nodus will ask for recovery words. They explain that verification,
+activation, syncing and repair do not require sharing a phrase: this wallet restores
+locally in the browser. Before any word entry, users are directed to check the exact
+`https://wallet.nodusnetwork.io` address themselves and never send words to anyone,
+including a person claiming to represent Nodus. The warning is visible above the
+fields; it does not introduce a new acceptance checkbox or send any data.
+
 ## Recovery storage explanations (0.1.7)
 
 The landing page and optional save controls explain temporary memory use versus
