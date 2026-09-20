@@ -3,9 +3,9 @@ import { TronWeb, utils, providers } from 'tronweb';
 import { CHAINS } from '../config.js';
 import { request, rawInteger, formatUnits, endpointUrl } from '../core.js';
 const FEE_LIMIT = 100_000_000;
-export async function checkNetwork(endpoint) {
+export async function checkNetwork(endpoint, options) {
   if (endpointUrl(endpoint) !== endpointUrl(CHAINS.tron.endpoint)) throw new Error('TRON requires the configured mainnet provider.');
-  const genesis = await request(`${endpoint.replace(/\/$/, '')}/wallet/getblockbynum`, { num: 0 });
+  const genesis = await request(`${endpoint.replace(/\/$/, '')}/wallet/getblockbynum`, { num: 0 }, options);
   if (genesis.blockID !== CHAINS.tron.genesisHash) throw new Error('RPC is not TRON mainnet.');
 }
 export function createTronClient(endpoint) {
@@ -22,10 +22,10 @@ export function createTronClient(endpoint) {
   };
   return new TronWeb({ fullNode: provider, solidityNode: provider, eventServer: provider });
 }
-export async function balances(chain, address, endpoint) {
+export async function balances(chain, address, endpoint, options = {}) {
   if (!TronWeb.isAddress(address)) throw new Error('Invalid TRON address.');
-  await checkNetwork(endpoint);
-  const result = await request(`${endpoint.replace(/\/$/, '')}/v1/accounts/${address}`);
+  await checkNetwork(endpoint, options);
+  const result = await request(`${endpoint.replace(/\/$/, '')}/v1/accounts/${address}`, undefined, options);
   if (!Array.isArray(result.data)) throw new Error('Invalid TRON account response.');
   const account = result.data[0];
   return [{ symbol: 'TRX', balance: formatUnits(rawInteger(account?.balance ?? 0), 6) }, ...CHAINS.tron.tokens.map(t => {

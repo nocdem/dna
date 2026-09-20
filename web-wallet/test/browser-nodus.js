@@ -1,3 +1,4 @@
+import { portfolioRead } from './portfolio-routes.js';
 import { pastePhrase, readPhrase } from './browser-phrase.js';
 // Production assets, public test phrases, and no external network requests.
 import assert from 'node:assert/strict';
@@ -56,6 +57,7 @@ try {
   page.on('pageerror', error => errors.push(error.message));
   await page.route('**/*', async route => {
     const req = route.request();
+    if (await portfolioRead(route)) return;
     if (!req.url().startsWith(url + '/') || req.method() !== 'GET' || req.postData()) {
       unexpected.push({ url: req.url(), method: req.method() }); return route.abort();
     }
@@ -171,5 +173,5 @@ try {
   assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
   assert.equal(wasmRequests, 3);
   assert.deepEqual(unexpected, []); assert.deepEqual(errors, []);
-  console.log('Nodus browser checks passed: 24 numbered boxes, read-only generation, full/partial/overflow and real clipboard paste, blank-word/checksum rejection, mobile layout, local a/ab suggestions and keyboard/click completion; late derivation cannot replace a reopened wallet; lock clears address; external-chain switch preserves native identity; failed module load shows unavailable; no external requests or storage.');
+  console.log('Nodus browser checks passed: 24 numbered boxes, read-only generation, full/partial/overflow and real clipboard paste, blank-word/checksum rejection, mobile layout, local a/ab suggestions and keyboard/click completion; late derivation cannot replace a reopened wallet; lock clears address; external-chain switch preserves native identity; failed module load shows unavailable; no unmocked external requests or storage.');
 } finally { await browser?.close(); server?.kill(); }

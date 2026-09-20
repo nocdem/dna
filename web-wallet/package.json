@@ -1,6 +1,6 @@
 {
   "name": "nodus-web-wallet",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,7 +11,8 @@
     "test:browser": "node test/browser-smoke.js",
     "test:security": "node test/browser-security.js && node test/browser-nodus.js",
     "cpunk:verify": "node scripts/verify-cpunk.js",
-    "verify:networks": "node scripts/verify-networks.js"
+    "verify:networks": "node scripts/verify-networks.js",
+    "test:portfolio": "node test/browser-portfolio.js"
   },
   "dependencies": {
     "@noble/curves": "1.9.7",

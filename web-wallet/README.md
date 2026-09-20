@@ -31,10 +31,52 @@ For Caddy, `deploy/Caddyfile` serves the static files and supplies the response 
 
 - Create a 24-word BIP39 recovery phrase, verify the entire backup, or restore a valid 24-word English BIP39 Nodus phrase. Recovery phrases and keys stay local and are never sent to RPCs. Optional device persistence stores only an authenticated encrypted phrase; temporary wallets do not persist secrets. Lock, page exit and ten minutes of inactivity discard the wallet; the same timeout clears phrase creation, backup verification, restore and password entry screens. Focus/visibility checks also enforce the deadline after tab suspension. There is no account service or automatic recovery; an optional local password unlocks the encrypted device copy. JavaScript cannot guarantee erasure of immutable strings or garbage-collected copies.
 - First-account addresses and local signing matching Connect: ETH/BSC `m/44'/60'/0'/0/0`, Solana SLIP-10 `m/44'/501'/0'/0'`, TRON `m/44'/195'/0'/0/0`. Empty BIP39 passphrase matches Connect. Other account indices, hardware wallets and BIP39 passphrases are not included.
-- Receive/copy address, explicit balance refresh, native and preset token transfers on Ethereum, BSC, Solana and TRON mainnets. Preset token contracts/decimals are based on the C headers, with DAI corrected against the issuer's documentation: ETH USDT/USDC/DAI; BSC USDT/USDC; SOL USDT/USDC; TRON USDT/USDC/USDD. Token listing is not an endorsement or statement of current issuer support.
+- Receive/copy address, automatic balance reads on opening the wallet, manual refresh, native and preset token transfers on Ethereum, BSC, Solana and TRON mainnets. Preset token contracts/decimals are based on the C headers, with DAI corrected against the issuer's documentation: ETH USDT/USDC/DAI; BSC USDT/USDC; SOL USDT/USDC; TRON USDT/USDC/USDD. Token listing is not an endorsement or statement of current issuer support.
 - Exact integer amount handling, address validation by chain libraries, EVM chain-ID and Solana genesis checks, explicit review of network/sender/recipient/asset/amount/fee before local signing and broadcast, expiring single-use reviews, and transaction explorer links. Broadcast submission is shown as pending, never as confirmed. Ambiguous failures are not automatically retried.
 - EVM gas estimation with a 20% gas-limit margin and legacy gas-price transactions; Solana fee/rent estimation and idempotent recipient token account creation, spending only from the sender’s locally derived associated token account; TRON native/TRC-20 transaction intent and protobuf consistency validation. TRON token energy has a 100 TRX limit; bandwidth/activation charges are network dependent and not falsely presented as an exact fee estimate. Solana balances can include other token accounts, but those accounts cannot be spent here. TRON reads and sends require the configured default mainnet provider and matching genesis; there is no testnet fallback.
 - Temporary **CPUNK-only, read-only** Cellframe/Backbone query using a public address. Local address derivation from the open wallet’s phrase is available; Cellframe signing, sending, trading and claiming are unavailable. Its balance is not proof of ownership, a snapshot, or airdrop eligibility.
+
+## Multichain portfolio (0.1.12)
+
+Create, restore and saved-wallet unlock automatically read balances across all
+four supported external networks. Like Connect, the dashboard shows an estimated
+USD total and groups preset assets such as USDT across networks. Expand a token
+to see its network amounts and choose Send or Receive on that exact network.
+Network filters affect the asset list; the hero total always spans all four
+networks. Hide balances masks the portfolio amounts until shown again or locked.
+
+The keyless [DefiLlama prices API](https://github.com/DefiLlama/api-docs/blob/main/llms.txt)
+provides indicative USD prices, requested directly by the browser for fixed
+native-coin IDs and exact chain/token contracts. Metadata, timestamps and
+confidence are validated. Stablecoins use their returned price, not an assumed
+$1 peg. There is no Bitcointry dependency, API key, gateway, analytics or remote
+script. The price request contains asset identifiers but no wallet address;
+RPC balance requests contain public addresses. Both providers see connection
+information such as the browser's IP. No seed, private key or password is sent.
+
+The estimate covers only the 14 configured native/token balances. **NODUS and
+CPUNK are excluded**: Nodus remains address-only and CPUNK has no price display.
+Custom tokens, other accounts and unsupported networks are not discovered.
+Amounts and aggregation use integers; display rounds only the USD value. This
+is not an executable sale quote or proof that a provider reported honest data.
+
+Failed, missing or wrong-network balance reads are unavailable, never zero.
+Missing/invalid prices leave token quantities visible but omit their USD value.
+Partial totals are explicitly marked incomplete; no known positive value means
+an unavailable total rather than a misleading $0. A verified all-zero portfolio
+can display $0 without prices. Balances expire after five minutes and quotes
+after fifteen; a 30-second display check removes stale values. Refresh all
+requests new data; there are no background polling requests or automatic retries.
+Lock cancels in-flight reads, clears the portfolio and rejects late replies.
+Endpoint changes invalidate the old snapshot and require Refresh all. Nothing
+from the portfolio is written to browser storage; saving remains explicit opt-in.
+
+`npm run test:portfolio` exercises the production bundle with all external
+traffic intercepted: automatic reads, grouped holdings and totals, filters,
+network-specific actions, hiding, partial errors, wrong networks, missing/stale
+prices, balance expiry, locking/reopening and 320–1440px layouts. Set
+`SCREENSHOT_DIR` to capture public-fixture screenshots. These are regression
+tests, not a new independent security audit; no real transfers are made.
 
 ## Planned Earn and Trade areas
 
@@ -194,6 +236,7 @@ npm test
 npm run build
 npm run test:browser
 npm run test:security
+npm run test:portfolio
 ```
 
 ## CPUNK connection
@@ -234,6 +277,7 @@ npm run build
 npx playwright install chromium
 npm run test:browser
 npm run test:security
+npm run test:portfolio
 ```
 
 The browser test starts its own preview server and intercepts **all external HTTPS requests**, so it never broadcasts to a real chain. Set `CHROMIUM_PATH` to use an existing Chromium binary or `WALLET_URL` to test an already running preview. Offline tests cover deterministic recovery addresses, exact amounts, malformed responses, CPUNK public-only requests, review lifecycle, ETH/SOL signatures and TRON transaction tampering. Browser smoke covers create/backup/restore, chain selection, mocked ETH/ERC-20 send review/finality/scoped activity, network mismatch, local CPUNK derivation and balance errors/success, lock, temporary no-storage mode, encrypted save/unlock/password change/delete, reload/history recovery, KDF-lock cancellation and mobile overflow.

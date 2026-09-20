@@ -5,14 +5,14 @@ import { TOKEN_PROGRAM_ID, getAssociatedTokenAddress, createAssociatedTokenAccou
 import { CHAINS } from '../config.js';
 import { rpc, rawInteger, formatUnits } from '../core.js';
 import { rpcFetch } from '../rpc-transport.js';
-export async function checkNetwork(endpoint) {
-  if (await rpc(endpoint, 'getGenesisHash', []) !== CHAINS.solana.genesisHash) throw new Error('RPC is not Solana mainnet.');
+export async function checkNetwork(endpoint, options) {
+  if (await rpc(endpoint, 'getGenesisHash', [], options) !== CHAINS.solana.genesisHash) throw new Error('RPC is not Solana mainnet.');
 }
-export async function balances(chain, address, endpoint) {
-  new PublicKey(address); await checkNetwork(endpoint);
-  const native = await rpc(endpoint, 'getBalance', [address, { commitment: 'confirmed' }]);
+export async function balances(chain, address, endpoint, options = {}) {
+  new PublicKey(address); await checkNetwork(endpoint, options);
+  const native = await rpc(endpoint, 'getBalance', [address, { commitment: 'confirmed' }], options);
   const tokens = await Promise.allSettled(CHAINS.solana.tokens.map(async t => {
-    const data = await rpc(endpoint, 'getTokenAccountsByOwner', [address, { mint: t.address }, { encoding: 'jsonParsed', commitment: 'confirmed' }]);
+    const data = await rpc(endpoint, 'getTokenAccountsByOwner', [address, { mint: t.address }, { encoding: 'jsonParsed', commitment: 'confirmed' }], options);
     if (!Array.isArray(data?.value)) throw new Error('Invalid token accounts.');
     const amount = data.value.reduce((sum, a) => sum + rawInteger(a.account.data.parsed.info.tokenAmount.amount), 0n);
     return { ...t, balance: formatUnits(amount, t.decimals) };

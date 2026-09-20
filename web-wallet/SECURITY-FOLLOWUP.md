@@ -3,6 +3,27 @@
 Reviewed baseline: `f48968bd3b669edea302a5d1bbf0c25fcd2add30` on `feat/nodus-web-wallet`.
 Scope: browser wallet only. Existing native applications and consensus are unchanged.
 
+## Public portfolio reads (0.1.12)
+
+Opening a wallet now automatically reads all four external networks and requests
+fixed asset prices directly from DefiLlama. The portfolio controller receives
+only public addresses and endpoints; it never receives the wallet or signing
+keys. Price requests include no wallet addresses. All reads use the existing
+bounded transport, and network identity checks precede balance reads. Lock
+aborts pending requests and a session guard rejects late responses. No new
+persistence, backend, API key or script origin is introduced.
+
+Values are keyed by chain and configured contract, validated and aggregated with
+integers. Missing, stale, malformed and failed reads cannot become a complete
+zero total. Partial totals are labeled incomplete; token amounts remain visible
+when only prices fail. Quotes do not influence transfer amounts, fees or signing.
+Recovery, vault formats and transfer preparation/signing are unchanged.
+
+Six model/transport regressions and an intercepted production-browser portfolio
+suite cover these behaviors. Existing wallet, secret-lifecycle and signing
+regressions remain part of verification. This is implementation testing, not an
+independent audit or a guarantee of provider accuracy/availability.
+
 ## Explicit device-storage consent (0.1.10)
 
 New saves and password changes now require an explicit, initially unchecked

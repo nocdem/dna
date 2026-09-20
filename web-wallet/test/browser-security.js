@@ -1,3 +1,4 @@
+import { portfolioRead } from './portfolio-routes.js';
 import { pastePhrase, readPhrase } from './browser-phrase.js';
 // Production bundle; all external traffic is intercepted. Public test phrase only.
 import assert from 'node:assert/strict';
@@ -20,6 +21,7 @@ const context = await browser.newContext();
 await context.route('**/*', async route => {
   const req = route.request(); if (req.url().startsWith(url + '/')) return route.continue();
   if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': '*' } });
+  if (await portfolioRead(route, { ethereum: false })) return;
   const body = req.postDataJSON(); assert.ok(!JSON.stringify(body).includes(phrase));
   const process = async call => {
     if (call.method === 'eth_sendRawTransaction') {

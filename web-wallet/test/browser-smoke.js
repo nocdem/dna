@@ -1,3 +1,4 @@
+import { portfolioRead } from './portfolio-routes.js';
 import { pastePhrase, readPhrase } from './browser-phrase.js';
 // Run after npm run build + npm run preview. Every external request is intercepted.
 import assert from 'node:assert/strict';
@@ -21,6 +22,7 @@ await page.route('**/*', async route => {
   const req = route.request();
   if (req.url().startsWith(url + '/')) return route.continue();
   if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': '*' } });
+  if (await portfolioRead(route, { ethereum: false })) return;
   const body = req.postDataJSON(); calls.push(body);
   assert.ok(!JSON.stringify(body).includes(phrase));
   if (req.url() === 'https://rpc.cellframe.net/connect') {
@@ -64,7 +66,7 @@ try {
   await page.locator('#cpunk-derive').click();
   await page.waitForFunction(() => document.querySelector('#cpunk-result').textContent.includes('Address derived locally'));
   assert.ok((await page.locator('#cpunk-address').inputValue()).startsWith('R'));
-  assert.equal(calls.length, 0);
+  assert.equal(broadcasts.length, 0);
   for (const [chain, expected] of [['bsc','0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb'],['solana','3Cy3YNTFywCmxoxt8n7UH6hg6dLo5uACowX3CFceaSnx'],['tron','TEfhiqsW1SdN44DeHrAWVmbyr8ZbvChrtS'],['ethereum','0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb']]) {
     await page.selectOption('#chain', chain); assert.equal(await page.locator('#receive-address').innerText(), expected);
     const selectedName = await page.locator('#chain option:checked').innerText();

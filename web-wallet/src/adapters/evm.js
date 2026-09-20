@@ -4,16 +4,16 @@ import { CHAINS } from '../config.js';
 import { rawInteger, rpc } from '../core.js';
 import { ethersGetUrl } from '../rpc-transport.js';
 const erc20 = new Interface(['function balanceOf(address) view returns (uint256)', 'function transfer(address,uint256) returns (bool)']);
-export async function balances(chain, address, endpoint) {
+export async function balances(chain, address, endpoint, options = {}) {
   getAddress(address);
-  await checkNetwork(chain, endpoint);
+  await checkNetwork(chain, endpoint, options);
   const c = CHAINS[chain];
-  const native = rawInteger(await rpc(endpoint, 'eth_getBalance', [address, 'latest']));
-  const tokens = await Promise.allSettled(c.tokens.map(async t => ({ ...t, balance: formatUnits(rawInteger(await rpc(endpoint, 'eth_call', [{ to: t.address, data: erc20.encodeFunctionData('balanceOf', [address]) }, 'latest'])), t.decimals) })));
+  const native = rawInteger(await rpc(endpoint, 'eth_getBalance', [address, 'latest'], options));
+  const tokens = await Promise.allSettled(c.tokens.map(async t => ({ ...t, balance: formatUnits(rawInteger(await rpc(endpoint, 'eth_call', [{ to: t.address, data: erc20.encodeFunctionData('balanceOf', [address]) }, 'latest'], options)), t.decimals) })));
   return [{ symbol: c.symbol, balance: formatUnits(native, 18) }, ...tokens.map((r, i) => r.status === 'fulfilled' ? r.value : { symbol: c.tokens[i].symbol, error: 'Balance unavailable' })];
 }
-export async function checkNetwork(chain, endpoint) {
-  if (rawInteger(await rpc(endpoint, 'eth_chainId', [])) !== BigInt(CHAINS[chain].chainId)) throw new Error('RPC is connected to the wrong network.');
+export async function checkNetwork(chain, endpoint, options) {
+  if (rawInteger(await rpc(endpoint, 'eth_chainId', [], options)) !== BigInt(CHAINS[chain].chainId)) throw new Error('RPC is connected to the wrong network.');
 }
 export async function prepare({ chain, wallet, to, asset, units, endpoint }) {
   to = getAddress(to);

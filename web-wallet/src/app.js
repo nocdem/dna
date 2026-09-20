@@ -6,6 +6,7 @@ import { deriveWallet, disposeWallet, newPhrase, normalizePhrase } from './keys.
 import { adapters, prepareTransfer } from './wallet.js';
 import { endpointUrl } from './core.js';
 import { createPhraseFields } from './phrase-fields.js';
+import { createPortfolio } from './portfolio-view.js';
 const $ = id => document.getElementById(id);
 const phraseFields = createPhraseFields($('phrase-grid'), $('phrase-error'));
 let wallet, pending, generatedPhrase, phraseStep, revision = 0, busy = false, lockTimer, idleDeadline = 0;
@@ -51,6 +52,14 @@ function renderActivity(save = true) {
 }
 function trackActivity() { stopTracking(); renderActivity(); if (wallet) stopTracking = watchActivity(visibleActivity, renderActivity); }
 const endpoints = Object.fromEntries(Object.entries(CHAINS).map(([key, chain]) => [key, chain.endpoint]));
+const portfolio = createPortfolio({
+  readBalances: (chain, address, endpoint, options) => adapters[chain].balances(chain, address, endpoint, options),
+  selectAsset(chain, symbol, action) {
+    if (!wallet) return;
+    $('chain').value = chain; selectChain(); $('asset').value = symbol;
+    $(action === 'send' ? 'quick-send' : 'quick-receive').click();
+  }
+});
 const message = text => { $('wallet-status').textContent = text; };
 for (const [key, chain] of Object.entries(CHAINS)) $('chain').add(new Option(chain.name, key));
 function expireIdle() {
@@ -68,6 +77,7 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) expi
 window.addEventListener('focus', expireIdle);
 function closeReview() { pending?.cancel(); pending = undefined; $('review-dialog').close(); $('review-details').replaceChildren(); $('review-error').textContent = ''; }
 function lock() {
+  portfolio.clear();
   phraseFields.clear();
   nodusDerivation?.abort(); nodusDerivation = undefined;
   cpunkDerivation?.abort(); cpunkDerivation = undefined;
@@ -116,7 +126,7 @@ $('phrase-form').onsubmit = event => {
     const phrase = phraseFields.read();
     if (phraseStep === 'verify' && normalizePhrase(phrase) !== generatedPhrase) throw new Error('The phrase does not match. Re-enter your saved backup.');
     wallet = deriveWallet(phrase); generatedPhrase = undefined; phraseFields.clear();
-    $('phrase-form').hidden = true; $('wallet-open').hidden = false; message('Wallet open. Balances are fetched only when you select Refresh.'); selectChain(); activity(); void showNodusAddress(); focusOpenWallet();
+    $('phrase-form').hidden = true; $('wallet-open').hidden = false; message('Wallet open. Portfolio balances load automatically.'); selectChain(); activity(); void showNodusAddress(); focusOpenWallet();
   } catch (error) { message(error.message); }
 };
 async function showNodusAddress() {
@@ -152,7 +162,7 @@ function selectChain() {
   $('solana-send-hint').hidden = chain !== 'solana';
   const explorers = { ethereum: 'https://etherscan.io/address/', bsc: 'https://bscscan.com/address/', solana: 'https://solscan.io/account/', tron: 'https://tronscan.org/#/address/' };
   $('account-explorer').href = explorers[chain] + encodeURIComponent(wallet.addresses[chain]); trackActivity();
-  $('balances').textContent = 'Select Refresh to read balances.'; $('recipient').value = ''; $('amount').value = '';
+  $('recipient').value = ''; $('amount').value = '';
 }
 $('chain').onchange = selectChain;
 $('quick-send').onclick = () => {
@@ -165,17 +175,7 @@ $('quick-receive').onclick = () => {
 };
 $('lock').onclick = lock;
 $('copy-address').onclick = async () => { try { await navigator.clipboard.writeText(wallet.addresses[$('chain').value]); message('Address copied.'); } catch { message('Copy unavailable. Select and copy the address above.'); } };
-$('save-rpc').onclick = () => { try { const chain = $('chain').value, endpoint = endpointUrl($('rpc-endpoint').value); if (chain === 'tron' && endpoint !== endpointUrl(CHAINS.tron.endpoint)) throw new Error('TRON requires the mainnet provider.'); endpoints[chain] = endpoint; revision++; closeReview(); stopTracking(); for (const row of visibleActivity()) row.endpoint = endpoints[$('chain').value]; trackActivity(); $('balances').textContent = 'Endpoint changed. Refresh to read balances.'; message('RPC updated for this tab.'); } catch (error) { message(error.message); } };
-$('refresh').onclick = async () => {
-  const current = ++revision, chain = $('chain').value, address = wallet.addresses[chain];
-  $('balances').textContent = 'Reading balances…';
-  try {
-    const rows = await adapters[chain].balances(chain, address, endpoints[chain]);
-    if (current !== revision || !wallet) return;
-    $('balances').replaceChildren(...rows.map(row => { const line = document.createElement('div'); const name = document.createElement('span'); name.textContent = row.symbol; const amount = document.createElement('strong'); amount.textContent = row.error || row.balance; line.append(name, amount); return line; }));
-    message(`Balances read at ${new Date().toLocaleTimeString()}.`);
-  } catch (error) { if (current === revision) $('balances').textContent = error.message; }
-};
+$('save-rpc').onclick = () => { try { const chain = $('chain').value, endpoint = endpointUrl($('rpc-endpoint').value); if (chain === 'tron' && endpoint !== endpointUrl(CHAINS.tron.endpoint)) throw new Error('TRON requires the mainnet provider.'); endpoints[chain] = endpoint; revision++; closeReview(); stopTracking(); for (const row of visibleActivity()) row.endpoint = endpoints[$('chain').value]; trackActivity(); portfolio.changeEndpoint(chain, endpoint); message('RPC updated for this tab.'); } catch (error) { message(error.message); } };
 $('send-form').onsubmit = async event => {
   event.preventDefault(); if (busy) return;
   busy = true; $('review-button').disabled = true; const current = revision;
@@ -260,6 +260,7 @@ function updateVaultUI() {
 }
 function focusOpenWallet() {
   updateVaultUI();
+  portfolio.open(wallet.addresses, endpoints);
   $('wallet-title').focus({ preventScroll: true });
   document.querySelector('.wallet-card').scrollIntoView({ block: 'start' });
 }
