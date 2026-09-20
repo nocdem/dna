@@ -29,12 +29,89 @@ For Caddy, `deploy/Caddyfile` serves the static files and supplies the response 
 
 ## Implemented
 
-- Create a 24-word BIP39 recovery phrase, verify the entire backup, or restore a valid English BIP39 phrase. Recovery phrases and keys stay local and are never sent to RPCs. Optional device persistence stores only an authenticated encrypted phrase; temporary wallets do not persist secrets. Lock, page exit and ten minutes of inactivity discard the wallet; the same timeout clears phrase creation, backup verification, restore and password entry screens. Focus/visibility checks also enforce the deadline after tab suspension. There is no account service or automatic recovery; an optional local password unlocks the encrypted device copy. JavaScript cannot guarantee erasure of immutable strings or garbage-collected copies.
+- Create a 24-word BIP39 recovery phrase, verify the entire backup, or restore a valid 24-word English BIP39 Nodus phrase. Recovery phrases and keys stay local and are never sent to RPCs. Optional device persistence stores only an authenticated encrypted phrase; temporary wallets do not persist secrets. Lock, page exit and ten minutes of inactivity discard the wallet; the same timeout clears phrase creation, backup verification, restore and password entry screens. Focus/visibility checks also enforce the deadline after tab suspension. There is no account service or automatic recovery; an optional local password unlocks the encrypted device copy. JavaScript cannot guarantee erasure of immutable strings or garbage-collected copies.
 - First-account addresses and local signing matching Connect: ETH/BSC `m/44'/60'/0'/0/0`, Solana SLIP-10 `m/44'/501'/0'/0'`, TRON `m/44'/195'/0'/0/0`. Empty BIP39 passphrase matches Connect. Other account indices, hardware wallets and BIP39 passphrases are not included.
 - Receive/copy address, explicit balance refresh, native and preset token transfers on Ethereum, BSC, Solana and TRON mainnets. Preset token contracts/decimals are based on the C headers, with DAI corrected against the issuer's documentation: ETH USDT/USDC/DAI; BSC USDT/USDC; SOL USDT/USDC; TRON USDT/USDC/USDD. Token listing is not an endorsement or statement of current issuer support.
 - Exact integer amount handling, address validation by chain libraries, EVM chain-ID and Solana genesis checks, explicit review of network/sender/recipient/asset/amount/fee before local signing and broadcast, expiring single-use reviews, and transaction explorer links. Broadcast submission is shown as pending, never as confirmed. Ambiguous failures are not automatically retried.
 - EVM gas estimation with a 20% gas-limit margin and legacy gas-price transactions; Solana fee/rent estimation and idempotent recipient token account creation, including spending across multiple source token accounts; TRON native/TRC-20 transaction intent and protobuf consistency validation. TRON token energy has a 100 TRX limit; bandwidth/activation charges are network dependent and not falsely presented as an exact fee estimate. TRON sending uses only the configured default mainnet provider; there is no testnet fallback.
 - Temporary **CPUNK-only, read-only** Cellframe/Backbone query using a public address. Local address derivation from the open wallet’s phrase is available; Cellframe signing, sending, trading and claiming are unavailable. Its balance is not proof of ownership, a snapshot, or airdrop eligibility.
+
+## Native Nodus address (0.1.2)
+
+New wallets create **24 BIP39 words** and automatically show the **Nodus address**
+as the primary address. Restore and encrypted unlock reproduce it from the same
+phrase. The native coin is **NODUS**. The separate external-network selector does
+not change the native address. Copy is available only after derivation succeeds;
+lock clears the address and cancels pending work. This release displays the
+address only: no native balance, sending, registration or claim is implied.
+
+Creation and restore accept only the 24-word Nodus base phrase. Other mnemonic
+lengths and BIP39 passphrases are unsupported. This is the project’s existing
+BIP39/SHAKE256 derivation, not a new phrase encoding. CF-20 is not involved.
+The application cannot infer which product originally generated a valid BIP39
+phrase; it validates 24 words and checksum, then derives the Nodus identity.
+
+Restore and backup verification offer local BIP39 word suggestions for the word
+at the cursor. Typing `a` or `ab` narrows the list; mouse/touch or arrow keys and
+Enter complete just that word. Suggestions never make network calls or persist
+entered text. Lock/cancel clears the suggestion state with the phrase.
+
+### Determinism and native references
+
+The implementation uses the unchanged repository C key generator, compiled as a
+small standalone WASM with Emscripten 4.0.16. The native sources below are pinned
+at `b9a1a813a46223cf5ff0226d461721f35bbfae17` and are also unchanged in this release:
+
+1. `shared/crypto/key/bip39/{bip39_pbkdf2,seed_derivation}.c`: BIP39 PBKDF2-HMAC-SHA512
+   (2048 iterations, empty passphrase) gives 64 bytes; SHAKE256 of that seed followed
+   by the exact UTF-8 bytes `qgp-signing-v1` gives the 32-byte signing seed.
+2. `shared/crypto/sign/qgp_dilithium.c::qgp_dsa87_keypair_derand`: native ML-DSA-87
+   public key, 2592 bytes. Primitive reference: [NIST FIPS 204](https://csrc.nist.gov/pubs/fips/204/final).
+3. `messenger/messenger/keygen.c` and `messenger/dht/keyserver/keyserver_helpers.c`:
+   SHA3-512 of that public key, rendered as 128 lowercase hexadecimal characters.
+   `dnac/src/wallet/wallet.c::dnac_init` uses this fingerprint as ledger owner.
+
+The compatibility domain `qgp-signing-v1` is unchanged by the Nodus product name.
+No random key generation, signing, Cellframe encoding, prefix or checksum is
+invented for the native address.
+
+### Threat model and security boundaries
+
+Only a same-origin static WASM file is fetched; phrase, seeds and keys never enter
+an HTTP request. Each derivation owns a fresh WASM instance with no imports. The
+bridge exposes only input/public-key pointers and derivation; the private key is
+wiped internally. The JS caller wipes its mutable seed buffers and the entire
+WASM memory in `finally`, including cancellation. Lock and wallet replacement
+reject late results. Public address display does not prove network connectivity
+or airdrop eligibility. Immutable JS strings and library internals still have the
+existing best-effort erasure limitation; hostile same-origin code/extensions are
+outside this protection.
+
+### Verification and independent review
+
+`test/fixtures/nodus-addresses.json` contains only public test phrases. Its four 24-word
+addresses were generated by native C BIP39/SHAKE256/key-generation functions and
+OpenSSL SHA3-512, then compared with the browser derivation. Tests cover 24-word
+native vectors, rejection of other lengths, normalization, invalid phrases, zeroed WASM memory, cancellation,
+create/restore/copy/lock/unlock/reload, stale results after reopening a different
+wallet, external-network switching, and explicit module-loading errors. External
+blockchain calls stay intercepted in automated browser suites.
+
+Two independent read-only reviews checked native compatibility and UI/secret
+lifecycle. They found no blocking bridge defect; their CF-20 removal-documentation
+finding is corrected here. This is a scoped compatibility/security review, not
+a new audit of the underlying primitives.
+
+```sh
+EMCC_BIN=/path/to/emcc bash scripts/build-nodus-wasm.sh
+bash scripts/build-nodus-native-vector.sh
+# Public test mnemonic on stdin only; never use personal recovery phrases:
+# /tmp/nodus-wallet-native-vector < public-test-phrase.txt
+npm test
+npm run build
+npm run test:browser
+npm run test:security
+```
 
 ## CPUNK connection
 
@@ -56,7 +133,7 @@ The command fails on connection errors or malformed responses; it does not test 
 
 Ethereum and Solana use public, keyless PublicNode HTTPS endpoints; BSC and TRON retain the native repository providers. Actual production availability, quotas and CORS access must be verified from the deployment origin. Ethereum/BSC and Solana endpoints may be changed for this tab; network identities are checked before reads and sends. A user-selected RPC sees public addresses and signed transactions. No seed or private key is transmitted. There is no backend relay or API-key service, and no silent endpoint fallback.
 
-Chain SDKs, not the existing native C binaries, implement browser signing; existing Connect/Nodus code is unchanged. Real mainnet transfers have not been executed during development. This slice does not include global transaction history indexing, custom-token discovery, Nodus Network integration, ZK, claims, DEX/swap or tokenomics changes.
+Chain SDKs, not the existing native C binaries, implement browser signing; existing Connect/Nodus code is unchanged. Real mainnet transfers have not been executed during development. This slice derives and displays the native Nodus address locally; it does not query a Nodus balance or send native transactions. Global transaction history indexing, custom-token discovery, ZK, claims, DEX/swap and tokenomics changes are outside this release.
 
 ## Remove temporary Cellframe support
 
@@ -64,7 +141,7 @@ Chain SDKs, not the existing native C binaries, implement browser signing; exist
 VITE_ENABLE_CPUNK=false npm run build
 ```
 
-The CPUNK panel is removed and the lazy-loaded adapter is excluded from the bundle. The reusable `src/wallet.js`, permanent adapters and key derivation do not import CPUNK. For final source removal, delete `src/adapters/cpunk.js`, `src/cpunk-protocol.js`, `scripts/verify-cpunk.js`, `src/cpunk/` (including WASM), `crypto/`, `scripts/build-cpunk-wasm.sh`, `scripts/build-native-vector.sh`, its isolated UI block/form and corresponding tests. No permanent-chain changes are needed.
+The CPUNK panel is removed and the lazy-loaded adapter is excluded from the bundle. The reusable `src/wallet.js`, permanent adapters and key derivation do not import CPUNK. For final source removal, delete `src/adapters/cpunk.js`, `src/cpunk-protocol.js`, `scripts/verify-cpunk.js`, `src/cpunk/` (including WASM), `crypto/cpunk-wasm.c`, `crypto/native-vector.c`, `scripts/build-cpunk-wasm.sh`, `scripts/build-native-vector.sh`, its isolated UI block/form and corresponding tests. Keep `src/nodus/`, `crypto/nodus-*.c` and `scripts/build-nodus-*.sh`: native Nodus address derivation is permanent and independent of CF-20. No permanent-chain changes are needed.
 
 ## Verification
 
@@ -85,12 +162,13 @@ A scoped `@solana/web3.js` dependency override uses Jayson 5.0.0, removing vulne
 ## Source layout
 
 - `src/config.js`: permanent mainnet/token registry, browser RPC defaults and full Solana genesis hash.
-- `src/keys.js`: local recovery/generation and compatible derivation.
+- `src/keys.js`: local 24-word generation, recovery and external-chain derivation.
+- `src/nodus/`, `crypto/nodus-*.c`, `scripts/build-nodus-*.sh`: permanent native Nodus address derivation and native compatibility verifier.
 - `src/core.js`, `src/rpc-transport.js`: exact units, bounded JSON/stream parsing and shared timeout-limited transport for direct RPC plus Ethers, Solana and TRON SDK calls.
 - `src/wallet.js`: common adapter routing and single-use transfer review.
 - `src/adapters/{evm,solana,tron}.js`: permanent balance and send adapters.
 - `src/adapters/cpunk.js`, `src/cpunk-protocol.js`: isolated temporary public balance adapter and bounded protocol parser.
-- `src/cpunk/`, `crypto/`, `scripts/build-*-vector.sh`, `scripts/build-cpunk-wasm.sh`: temporary legacy Cellframe address derivation, native reference bridge and reproducible build.
+- `src/cpunk/`, `crypto/cpunk-wasm.c`, `crypto/native-vector.c`, `scripts/build-native-vector.sh`, `scripts/build-cpunk-wasm.sh`: temporary legacy Cellframe address derivation, native reference bridge and reproducible build.
 - `src/activity.js`, `src/activity-storage.js`: public confirmation tracking and bounded, authenticated encrypted activity storage.
 - `src/vault.js`: optional authenticated local encryption.
 - `src/app.js`, `index.html`, `src/style.css`: accountless responsive UI.

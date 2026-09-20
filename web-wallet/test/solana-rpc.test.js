@@ -8,7 +8,7 @@ import { encodeBase58 } from 'ethers';
 import { prepare } from '../src/adapters/solana.js';
 import { deriveWallet, disposeWallet } from '../src/keys.js';
 import { CHAINS } from '../src/config.js';
-const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art';
 test('updated Solana SDK transport and token codecs preserve native/SPL signed transactions with one broadcast', async t => {
   const wallet = deriveWallet(phrase), to = Keypair.fromSeed(new Uint8Array(32).fill(2)).publicKey;
   const accounts = [Keypair.fromSeed(new Uint8Array(32).fill(3)).publicKey, Keypair.fromSeed(new Uint8Array(32).fill(4)).publicKey];

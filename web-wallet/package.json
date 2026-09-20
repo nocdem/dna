@@ -1,6 +1,6 @@
 {
   "name": "nodus-web-wallet",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,7 +9,7 @@
     "preview": "vite preview --host 127.0.0.1",
     "test": "node --test test/*.test.js",
     "test:browser": "node test/browser-smoke.js",
-    "test:security": "node test/browser-security.js",
+    "test:security": "node test/browser-security.js && node test/browser-nodus.js",
     "cpunk:verify": "node scripts/verify-cpunk.js",
     "verify:networks": "node scripts/verify-networks.js"
   },

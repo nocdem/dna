@@ -8,13 +8,13 @@ import { amountUnits, rawInteger, endpointUrl, request } from '../src/core.js';
 import { readCpunk, parseCpunkBalance } from '../src/adapters/cpunk.js';
 import { prepareTransfer } from '../src/wallet.js';
 import { validateTransaction } from '../src/adapters/tron.js';
-const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art';
 const address = 'Rj7J7MiX2bWy8sNybZfJFiwvEcU44PH89JnTmBXGREmPgVHvx8j5XvXFDNmV5RYdB3MzvgCTAY3RimZ7DWkV2zwBDTSjJNCvroNW2Tps';
-test('Connect derivation paths produce fixed, independently known first-account addresses', () => {
+test('24-word Nodus root produces fixed first-account external addresses', () => {
   const wallet = deriveWallet(phrase);
-  assert.deepEqual(wallet.addresses, { ethereum: '0x9858EfFD232B4033E47d90003D41EC34EcaEda94', bsc: '0x9858EfFD232B4033E47d90003D41EC34EcaEda94', solana: 'HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk', tron: 'TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH' });
+  assert.deepEqual(wallet.addresses, { ethereum: '0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb', bsc: '0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb', solana: '3Cy3YNTFywCmxoxt8n7UH6hg6dLo5uACowX3CFceaSnx', tron: 'TEfhiqsW1SdN44DeHrAWVmbyr8ZbvChrtS' });
   disposeWallet(wallet); assert.equal(wallet.locked, true); assert.equal(wallet.evm, null); assert.equal(wallet.solana, null); assert.equal(wallet.tronPrivateKey, null);
-  assert.throws(() => deriveWallet('abandon '.repeat(12)), /invalid/);
+  assert.throws(() => deriveWallet('abandon '.repeat(12)), /24-word/);
   const generated = newPhrase(); assert.equal(generated.split(' ').length, 24); assert.ok(deriveWallet(generated).addresses.ethereum);
 });
 test('exact units reject floats, negative, excessive precision, overflow and malformed RPC balances', () => {

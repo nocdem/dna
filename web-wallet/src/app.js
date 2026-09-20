@@ -5,9 +5,11 @@ import { CHAINS } from './config.js';
 import { deriveWallet, disposeWallet, newPhrase, normalizePhrase } from './keys.js';
 import { adapters, prepareTransfer } from './wallet.js';
 import { endpointUrl } from './core.js';
+import { attachPhraseSuggestions } from './phrase-suggestions.js';
 const $ = id => document.getElementById(id);
+const clearPhraseSuggestions = attachPhraseSuggestions($('phrase'), $('phrase-suggestions'));
 let wallet, pending, generatedPhrase, phraseStep, revision = 0, busy = false, lockTimer, idleDeadline = 0;
-let cpunkRequest;
+let cpunkRequest, nodusDerivation;
 let activitySession = null, activityBlocked = false, historyWrites = Promise.resolve(), vaultOperation = 0;
 const history = []; let stopTracking = () => {};
 function visibleActivity() { return wallet ? history.filter(row => row.chain === $('chain').value && row.address === wallet.addresses[row.chain]) : []; }
@@ -54,6 +56,9 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) expi
 window.addEventListener('focus', expireIdle);
 function closeReview() { pending?.cancel(); pending = undefined; $('review-dialog').close(); }
 function lock() {
+  clearPhraseSuggestions();
+  nodusDerivation?.abort(); nodusDerivation = undefined;
+  $('nodus-address').textContent = ''; $('nodus-status').textContent = ''; $('copy-nodus-address').disabled = true;
   revision++; vaultOperation++; activitySession = null; activityBlocked = false; idleDeadline = 0; stopTracking(); closeReview(); disposeWallet(wallet); wallet = undefined; generatedPhrase = undefined; $('phrase').value = '';
   $('discard-activity').hidden = true;
   $('phrase-form').hidden = true; $('wallet-open').hidden = true; $('welcome').hidden = false;
@@ -63,12 +68,13 @@ function lock() {
 }
 window.addEventListener('pagehide', lock);
 function phraseForm(create) {
+  clearPhraseSuggestions();
   vaultOperation++; $('unlock-form').hidden = true;
   phraseStep = create ? 'backup' : 'restore';
   generatedPhrase = create ? newPhrase() : undefined;
   $('welcome').hidden = true; $('phrase-form').hidden = false; $('backup-confirm').checked = false;
   $('phrase').value = generatedPhrase || ''; $('phrase').readOnly = create;
-  $('phrase-label').textContent = create ? 'Write down your recovery phrase privately' : 'Enter your recovery phrase';
+  $('phrase-label').textContent = create ? 'Write down your 24-word recovery phrase privately' : 'Enter your 24-word Nodus recovery phrase';
   $('phrase-help').textContent = 'This phrase controls your funds. It stays local; an encrypted copy is stored only if you choose to save it. Keep an offline backup. This screen clears after 10 minutes of inactivity.';
   $('phrase-submit').textContent = create ? 'I saved it — verify backup' : 'Open wallet'; message(''); $('phrase').focus();
   activity();
@@ -79,14 +85,40 @@ $('phrase-cancel').onclick = lock;
 $('phrase-form').onsubmit = event => {
   event.preventDefault();
   if (phraseStep === 'backup') {
+    clearPhraseSuggestions();
     phraseStep = 'verify'; $('phrase').value = ''; $('phrase').readOnly = false;
     $('phrase-label').textContent = 'Re-enter your saved recovery phrase'; $('phrase-submit').textContent = 'Open wallet'; $('phrase').focus(); return;
   }
   try {
     if (phraseStep === 'verify' && normalizePhrase($('phrase').value) !== generatedPhrase) throw new Error('The phrase does not match. Re-enter your saved backup.');
-    wallet = deriveWallet($('phrase').value); generatedPhrase = undefined; $('phrase').value = '';
-    $('phrase-form').hidden = true; $('wallet-open').hidden = false; message('Wallet open. Balances are fetched only when you select Refresh.'); selectChain(); activity();
+    wallet = deriveWallet($('phrase').value); generatedPhrase = undefined; $('phrase').value = ''; clearPhraseSuggestions();
+    $('phrase-form').hidden = true; $('wallet-open').hidden = false; message('Wallet open. Balances are fetched only when you select Refresh.'); selectChain(); activity(); void showNodusAddress();
   } catch (error) { message(error.message); }
+};
+async function showNodusAddress() {
+  nodusDerivation?.abort();
+  const operation = new AbortController(), source = wallet;
+  nodusDerivation = operation;
+  $('nodus-address').textContent = ''; $('copy-nodus-address').disabled = true;
+  $('nodus-status').textContent = 'Calculating your Nodus address locally…';
+  const current = () => nodusDerivation === operation && source === wallet && !source.locked && !operation.signal.aborted;
+  try {
+    const { deriveNodusAddress } = await import('./nodus/derive.js');
+    if (!current()) return;
+    const address = await deriveNodusAddress(source.recoveryPhrase, { signal: operation.signal });
+    if (!current()) return;
+    source.nodusAddress = address;
+    $('nodus-address').textContent = address; $('copy-nodus-address').disabled = false;
+    $('nodus-status').textContent = 'Derived locally from this wallet’s recovery phrase.';
+  } catch {
+    if (current()) $('nodus-status').textContent = 'Nodus address unavailable. Lock and reopen your wallet to retry.';
+  }
+}
+$('copy-nodus-address').onclick = async () => {
+  const source = wallet;
+  if (!source || source.locked || !source.nodusAddress) return;
+  try { await navigator.clipboard.writeText(source.nodusAddress); if (source === wallet && !source.locked) $('nodus-status').textContent = 'Nodus address copied.'; }
+  catch { if (source === wallet && !source.locked) $('nodus-status').textContent = 'Copy unavailable. Select and copy the address above.'; }
 };
 function selectChain() {
   revision++; closeReview(); const chain = $('chain').value; const c = CHAINS[chain];
@@ -200,7 +232,7 @@ $('unlock-form').onsubmit = async event => {
     disposeWallet(wallet); wallet = restored; activitySession = { id: saved.id, key, vault: text }; activityBlocked = !!problem;
     history.length = 0; history.push(...rows);
     $('discard-activity').hidden = !problem; $('vault-status').textContent = problem || 'Saved activity authenticated.';
-    $('welcome').hidden = true; $('phrase-form').hidden = true; $('wallet-open').hidden = false; updateVaultUI(); selectChain(); activity(); message('Saved wallet unlocked locally.');
+    $('welcome').hidden = true; $('phrase-form').hidden = true; $('wallet-open').hidden = false; updateVaultUI(); selectChain(); activity(); void showNodusAddress(); message('Saved wallet unlocked locally.');
   } catch (error) { if (operation === vaultOperation) $('vault-status').textContent = error.message; }
   finally { $('unlock-wallet').disabled = false; }
 };

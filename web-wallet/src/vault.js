@@ -1,4 +1,5 @@
 import { Mnemonic } from 'ethers';
+import { validateNodusPhrase } from './recovery.js';
 export const VAULT_KEY = 'nodus.wallet.v1', ACTIVITY_KEY = 'nodus.activity.v1';
 const ITERATIONS = 600000;
 const encode = bytes => btoa(String.fromCharCode(...bytes));
@@ -39,7 +40,7 @@ async function keyFor(password, salt, usage) {
 }
 export async function encryptVault(phrase, password, id) {
   validateNewPassword(password);
-  if (typeof phrase !== 'string' || phrase.length > 1024 || !Mnemonic.isValidMnemonic(phrase)) throw new Error('Invalid recovery phrase.');
+  phrase = validateNodusPhrase(phrase);
   const vault = { version: 1, id: id || encode(crypto.getRandomValues(new Uint8Array(16))), kdf: 'PBKDF2-SHA256', iterations: ITERATIONS, salt: encode(crypto.getRandomValues(new Uint8Array(16))), cipher: 'AES-256-GCM', iv: encode(crypto.getRandomValues(new Uint8Array(12))) };
   decode(vault.id, 16);
   const key = await keyFor(password, decode(vault.salt), 'encrypt'), bytes = new TextEncoder().encode(phrase);

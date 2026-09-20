@@ -4,8 +4,9 @@ import { sha512 } from '@noble/hashes/sha512';
 import { PublicKey } from '@solana/web3.js';
 import { ed25519 } from '@noble/curves/ed25519';
 import { TronWeb } from 'tronweb';
+import { validateNodusPhrase } from './recovery.js';
+export { normalizePhrase } from './recovery.js';
 export function newPhrase() { return Mnemonic.entropyToPhrase(randomBytes(32)); }
-export function normalizePhrase(value) { return value.normalize('NFKD').trim().toLowerCase().split(/\s+/).join(' '); }
 export function solanaSeed(seed) {
   let digest = hmac(sha512, new TextEncoder().encode('ed25519 seed'), seed);
   for (const index of [44, 501, 0, 0]) {
@@ -18,8 +19,7 @@ export function solanaSeed(seed) {
   const key = digest.slice(0, 32); digest.fill(0); return key;
 }
 export function deriveWallet(phrase) {
-  const normalized = normalizePhrase(phrase);
-  if (!Mnemonic.isValidMnemonic(normalized)) throw new Error('Recovery phrase is invalid. Check the words and order.');
+  const normalized = validateNodusPhrase(phrase);
   const mnemonic = Mnemonic.fromPhrase(normalized);
   const seed = getBytes(mnemonic.computeSeed());
   try {

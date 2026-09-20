@@ -11,7 +11,7 @@ import { rpcFetch, boundedBytes, ethersGetUrl } from '../src/rpc-transport.js';
 import { rawInteger, request } from '../src/core.js';
 import { createTronClient, prepare as prepareTron } from '../src/adapters/tron.js';
 import { CHAINS } from '../src/config.js';
-const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art';
 const endpoint = 'https://rpc.example';
 test('RT-02 disposal wipes the original Solana signer buffer, including retained references', () => {
   const wallet = deriveWallet(phrase), retained = wallet.solana, bytes = retained.secretKey;
@@ -25,7 +25,10 @@ test('RT-03 weak new passwords fail while legacy weak-password vaults still unlo
   }
   assert.doesNotThrow(() => validateNewPassword('violet river telescope orchard'));
   const legacy = readFileSync(new URL('./fixtures/legacy-weak-vault.json', import.meta.url), 'utf8');
-  assert.equal((await decryptVault(legacy, 'aaaaaaaaaaaa')).phrase, phrase);
+  const legacyPhrase = (await decryptVault(legacy, 'aaaaaaaaaaaa')).phrase;
+  assert.equal(legacyPhrase, 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about');
+  // Preserve the old encrypted data, but the new Nodus UI only accepts 24 words.
+  assert.throws(() => deriveWallet(legacyPhrase), /24-word/);
 });
 test('RT-04 encrypted activity rejects tampering, different wallet keys and forged v1 history', async () => {
   const id = btoa('0123456789abcdef'), key = await activityKeyFor(phrase, id), wallet = deriveWallet(phrase);

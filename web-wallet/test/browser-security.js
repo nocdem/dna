@@ -8,7 +8,7 @@ import { Transaction } from 'ethers';
 import { activityKeyFor, parseActivity } from '../src/activity-storage.js';
 import { deriveWallet } from '../src/keys.js';
 const app = fileURLToPath(new URL('..', import.meta.url)), url = 'http://127.0.0.1:4189';
-const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art';
 const password = 'public-security-test-password-2026', addresses = deriveWallet(phrase).addresses;
 const server = spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'preview', '--host', '127.0.0.1', '--port', '4189', '--strictPort'], { cwd: app, stdio: 'pipe' });
 for (let i = 0; i < 100; i++) { try { if ((await fetch(url)).ok) break; } catch {} await delay(50); }

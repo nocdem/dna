@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { encryptVault, decryptVault, parseVault } from '../src/vault.js';
 import { serializeActivity, parseActivity, activityKeyFor } from '../src/activity-storage.js';
-const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art';
 const password = 'public-test-password-123';
 test('vault uses randomized authenticated encryption, rejects wrong password and metadata/ciphertext tampering', async () => {
   const a = await encryptVault(phrase, password), b = await encryptVault(phrase, password);
