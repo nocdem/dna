@@ -38,7 +38,7 @@ try {
           identity = await rpc(endpoint, 'eth_chainId', []); if (BigInt(identity) !== BigInt(CHAINS[chain].chainId)) throw new Error('Wrong network');
           balances = await rpc(endpoint, 'eth_getBalance', [publicAddresses[chain], 'latest']); if (!/^0x[0-9a-f]+$/i.test(balances)) throw new Error('Invalid balance');
         } else if (chain === 'solana') {
-          identity = await rpc(endpoint, 'getGenesisHash', []); if (identity !== '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp') throw new Error('Wrong network');
+          identity = await rpc(endpoint, 'getGenesisHash', []); if (identity !== CHAINS.solana.genesisHash) throw new Error('Wrong network');
           balances = (await rpc(endpoint, 'getBalance', [publicAddresses[chain], { commitment: 'confirmed' }]))?.value;
           if (!Number.isSafeInteger(balances) || balances < 0) throw new Error('Invalid balance');
         } else if (chain === 'tron') {

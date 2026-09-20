@@ -4,7 +4,7 @@ eth='0x9858EfFD232B4033E47d90003D41EC34EcaEda94'
 sol='HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk'
 tron='TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH'
 plans=[]
-for name,url,checks in [('ethereum','https://eth.llamarpc.com',[('eth_chainId',[]),('eth_getBalance',[eth,'latest'])]),('bsc','https://bsc-dataseed.binance.org',[('eth_chainId',[]),('eth_getBalance',[eth,'latest'])]),('solana','https://api.mainnet-beta.solana.com',[('getGenesisHash',[]),('getBalance',[sol,{'commitment':'confirmed'}])])]:
+for name,url,checks in [('ethereum','https://ethereum-rpc.publicnode.com',[('eth_chainId',[]),('eth_getBalance',[eth,'latest'])]),('bsc','https://bsc-dataseed.binance.org',[('eth_chainId',[]),('eth_getBalance',[eth,'latest'])]),('solana','https://solana-rpc.publicnode.com',[('getGenesisHash',[]),('getBalance',[sol,{'commitment':'confirmed'}])])]:
     for method,params in checks: plans.append((name,url,{'jsonrpc':'2.0','id':1,'method':method,'params':params}))
 plans.extend([('tron','https://api.trongrid.io/wallet/getblockbynum',{'num':0}),('tron','https://api.trongrid.io/wallet/getaccount',{'address':tron,'visible':True})])
 def run(plan):

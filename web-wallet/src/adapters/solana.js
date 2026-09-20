@@ -5,9 +5,8 @@ import { getAssociatedTokenAddress, createAssociatedTokenAccountIdempotentInstru
 import { CHAINS } from '../config.js';
 import { rpc, rawInteger, formatUnits } from '../core.js';
 import { rpcFetch } from '../rpc-transport.js';
-const GENESIS = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
 export async function checkNetwork(endpoint) {
-  if (await rpc(endpoint, 'getGenesisHash', []) !== GENESIS) throw new Error('RPC is not Solana mainnet.');
+  if (await rpc(endpoint, 'getGenesisHash', []) !== CHAINS.solana.genesisHash) throw new Error('RPC is not Solana mainnet.');
 }
 export async function balances(chain, address, endpoint) {
   new PublicKey(address); await checkNetwork(endpoint);

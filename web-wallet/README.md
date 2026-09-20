@@ -1,6 +1,8 @@
 # Nodus Web Wallet — first-stage browser implementation
 
-A standalone, accountless browser client alongside the existing DNA applications. No Connect installation, extension, identity registration, email, phone, or account backend is required. This is a development preview, not a deployed or audited custody product.
+A standalone, accountless browser client alongside the existing DNA applications. No Connect installation, extension, identity registration, email, phone, or account backend is required. This is a development preview; it is not an audited custody product.
+
+The product is Nodus Wallet. CPUNK is the temporary CF-20 integration until the airdrop; it is not a permanent chain module or the wallet identity. Airdrop eligibility and claims are outside this release.
 
 ## Run
 
@@ -29,7 +31,7 @@ For Caddy, `deploy/Caddyfile` serves the static files and supplies the response 
 
 - Create a 24-word BIP39 recovery phrase, verify the entire backup, or restore a valid English BIP39 phrase. Recovery phrases and keys stay local and are never sent to RPCs. Optional device persistence stores only an authenticated encrypted phrase; temporary wallets do not persist secrets. Lock, page exit and ten minutes of inactivity discard the wallet; the same timeout clears phrase creation, backup verification, restore and password entry screens. Focus/visibility checks also enforce the deadline after tab suspension. There is no account service or automatic recovery; an optional local password unlocks the encrypted device copy. JavaScript cannot guarantee erasure of immutable strings or garbage-collected copies.
 - First-account addresses and local signing matching Connect: ETH/BSC `m/44'/60'/0'/0/0`, Solana SLIP-10 `m/44'/501'/0'/0'`, TRON `m/44'/195'/0'/0/0`. Empty BIP39 passphrase matches Connect. Other account indices, hardware wallets and BIP39 passphrases are not included.
-- Receive/copy address, explicit balance refresh, native and preset token transfers on Ethereum, BSC, Solana and TRON mainnets. Preset token contracts/decimals are copied from the C headers: ETH USDT/USDC/DAI; BSC USDT/USDC; SOL USDT/USDC; TRON USDT/USDC/USDD. Token listing is not an endorsement or statement of current issuer support.
+- Receive/copy address, explicit balance refresh, native and preset token transfers on Ethereum, BSC, Solana and TRON mainnets. Preset token contracts/decimals are based on the C headers, with DAI corrected against the issuer's documentation: ETH USDT/USDC/DAI; BSC USDT/USDC; SOL USDT/USDC; TRON USDT/USDC/USDD. Token listing is not an endorsement or statement of current issuer support.
 - Exact integer amount handling, address validation by chain libraries, EVM chain-ID and Solana genesis checks, explicit review of network/sender/recipient/asset/amount/fee before local signing and broadcast, expiring single-use reviews, and transaction explorer links. Broadcast submission is shown as pending, never as confirmed. Ambiguous failures are not automatically retried.
 - EVM gas estimation with a 20% gas-limit margin and legacy gas-price transactions; Solana fee/rent estimation and idempotent recipient token account creation, including spending across multiple source token accounts; TRON native/TRC-20 transaction intent and protobuf consistency validation. TRON token energy has a 100 TRX limit; bandwidth/activation charges are network dependent and not falsely presented as an exact fee estimate. TRON sending uses only the configured default mainnet provider; there is no testnet fallback.
 - Temporary **CPUNK-only, read-only** Cellframe/Backbone query using a public address. Local address derivation from the open wallet’s phrase is available; Cellframe signing, sending, trading and claiming are unavailable. Its balance is not proof of ownership, a snapshot, or airdrop eligibility.
@@ -52,7 +54,7 @@ The command fails on connection errors or malformed responses; it does not test 
 
 ## Permanent chain RPC limitations
 
-RPC defaults are taken from the repository's providers. Actual production availability, quotas and CORS access must be verified from the deployment origin. Ethereum/BSC and Solana endpoints may be changed for this tab; network identities are checked before reads and sends. A user-selected RPC sees public addresses and signed transactions. No seed or private key is transmitted. There is no backend relay or API-key service, and no silent endpoint fallback.
+Ethereum and Solana use public, keyless PublicNode HTTPS endpoints; BSC and TRON retain the native repository providers. Actual production availability, quotas and CORS access must be verified from the deployment origin. Ethereum/BSC and Solana endpoints may be changed for this tab; network identities are checked before reads and sends. A user-selected RPC sees public addresses and signed transactions. No seed or private key is transmitted. There is no backend relay or API-key service, and no silent endpoint fallback.
 
 Chain SDKs, not the existing native C binaries, implement browser signing; existing Connect/Nodus code is unchanged. Real mainnet transfers have not been executed during development. This slice does not include global transaction history indexing, custom-token discovery, Nodus Network integration, ZK, claims, DEX/swap or tokenomics changes.
 
@@ -82,7 +84,7 @@ A scoped `@solana/web3.js` dependency override uses Jayson 5.0.0, removing vulne
 
 ## Source layout
 
-- `src/config.js`: permanent mainnet/token registry sourced from C headers.
+- `src/config.js`: permanent mainnet/token registry, browser RPC defaults and full Solana genesis hash.
 - `src/keys.js`: local recovery/generation and compatible derivation.
 - `src/core.js`, `src/rpc-transport.js`: exact units, bounded JSON/stream parsing and shared timeout-limited transport for direct RPC plus Ethers, Solana and TRON SDK calls.
 - `src/wallet.js`: common adapter routing and single-use transfer review.
@@ -137,3 +139,23 @@ Solana uses an application-owned mutable `Signer.secretKey` buffer, which is ove
 Permanent-chain transport limits are 256 KiB per response by default, 2 MiB for EVM block reads and 4 MiB for Solana token-account lists, with 4,096 entries per object/array, 65,536 characters per string and depth/node limits. Numeric balances are bounded before BigInt conversion. Streams are counted independently of Content-Length, redirects are refused and the 15-second timeout covers body reads. Very large legitimate account lists can therefore produce an explicit error instead of a partial balance.
 
 The five findings from the 2026-09-19 local review are covered by these regressions; this is not an independent security certification. See [security follow-up](SECURITY-FOLLOWUP.md) for scope and remaining deployment checks.
+
+## Deployment corrections (0.1.1, 2026-09-20)
+
+The initial production-origin read checks found browser access failures at
+`eth.llamarpc.com` (CORS) and `api.mainnet-beta.solana.com` (HTTP 403).
+Defaults now use the endpoints published by [PublicNode Ethereum](https://ethereum.publicnode.com/)
+and [PublicNode Solana](https://solana.publicnode.com/), with no API key or gateway.
+These defaults remain user-changeable and no silent fallback is introduced.
+
+Solana's `getGenesisHash` returns the full genesis hash
+`5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d`, not the truncated
+[CAIP-2 reference](https://namespaces.chainagnostic.org/solana/caip2).
+Balance, send and activity paths use the same full expected hash; regression
+tests accept the full mainnet value and reject its truncated prefix and other networks.
+
+The malformed DAI preset is corrected to
+`0x6B175474E89094C44Da98b954EedeAC495271d0F` with 18 decimals, as documented in
+the [issuer's Dai guide](https://github.com/sky-ecosystem/developerguides/blob/master/dai/dai-token/dai-token.md).
+The native C header is unchanged. The historical September 19 probe fixtures above
+remain evidence of that earlier environment, not results for this release.

@@ -18,7 +18,7 @@ test('EVM waits for canonical finality, distinguishes execution failure and reor
 test('Solana requires finalized status, preserves error, and checks expiry only after history lookup', async () => {
   const sol = { ...row, chain: 'solana', hash: '1'.repeat(88), lastValidBlockHeight: 100 };
   let status = null, height = 99;
-  const call = async (_, method) => ({ getGenesisHash: '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', getSignatureStatuses: { value: [status] }, getBlockHeight: height })[method];
+  const call = async (_, method) => ({ getGenesisHash: '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d', getSignatureStatuses: { value: [status] }, getBlockHeight: height })[method];
   assert.equal((await checkActivity(sol, { call })).status, 'pending');
   height = 101; assert.equal((await checkActivity(sol, { call })).status, 'expired');
   status = { err: null, confirmationStatus: 'confirmed' }; assert.equal((await checkActivity(sol, { call })).status, 'included');

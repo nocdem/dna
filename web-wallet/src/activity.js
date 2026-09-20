@@ -26,7 +26,7 @@ export async function checkActivity(row, { signal, call = rpc, post = request } 
     return { status: receipt.status === '0x1' ? 'confirmed' : 'failed', note: 'Receipt is in a finalized canonical block.' };
   }
   if (row.chain === 'solana') {
-    if (await rpcCall('getGenesisHash', []) !== '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp') throw new Error('Wrong network.');
+    if (await rpcCall('getGenesisHash', []) !== CHAINS.solana.genesisHash) throw new Error('Wrong network.');
     const result = await rpcCall('getSignatureStatuses', [[row.hash], { searchTransactionHistory: true }]);
     if (!Array.isArray(result?.value) || result.value.length !== 1) throw new Error('Invalid signature status.');
     const status = result.value[0];

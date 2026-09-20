@@ -17,7 +17,7 @@ test('updated Solana SDK transport and token codecs preserve native/SPL signed t
   globalThis.fetch = async (_, options) => {
     const body = JSON.parse(options.body); assert.ok(!options.body.includes(phrase));
     const result = {
-      getGenesisHash: '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
+      getGenesisHash: '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d',
       getLatestBlockhash: { context: { slot: 1 }, value: { blockhash: '11111111111111111111111111111111', lastValidBlockHeight: 100 } },
       getFeeForMessage: { context: { slot: 1 }, value: 5000 }, getBalance: { context: { slot: 1 }, value: 1000000000 }, getBlockHeight: 50,
       getAccountInfo: { context: { slot: 1 }, value: null }, getMinimumBalanceForRentExemption: 2039280,

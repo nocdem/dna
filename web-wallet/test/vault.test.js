@@ -27,7 +27,7 @@ test('encrypted history is bounded, scoped, rechecked after reload and excludes 
   const text = await serializeActivity(id, Array(101).fill(row), key);
   assert.ok(!text.includes('private-api-key')); assert.ok(!text.includes(phrase));
   const parsed = await parseActivity(text, id, addresses, key); assert.equal(parsed.length, 100); assert.equal(parsed[0].status, 'pending');
-  assert.equal(parsed[0].endpoint, 'https://eth.llamarpc.com');
+  assert.equal(parsed[0].endpoint, 'https://ethereum-rpc.publicnode.com');
   await assert.rejects(parseActivity(text, 'wrong', addresses, key));
   await assert.rejects(parseActivity(text, id, { ethereum: 'other' }, key));
 });
