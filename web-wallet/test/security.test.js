@@ -9,7 +9,7 @@ import { validateNewPassword, encryptVault, decryptVault } from '../src/vault.js
 import { activityKeyFor, serializeActivity, parseActivity } from '../src/activity-storage.js';
 import { rpcFetch, boundedBytes, ethersGetUrl } from '../src/rpc-transport.js';
 import { rawInteger, request } from '../src/core.js';
-import { createTronClient, prepare as prepareTron } from '../src/adapters/tron.js';
+import { createTronClient, prepare as prepareTron, checkNetwork as checkTronNetwork } from '../src/adapters/tron.js';
 import { CHAINS } from '../src/config.js';
 const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art';
 const endpoint = 'https://rpc.example';
@@ -90,6 +90,7 @@ test('bounded TRON transport preserves native/TRC20 signing and rechecks lock af
   globalThis.fetch = async (url, options) => {
     const body = options.body ? JSON.parse(options.body) : {};
     assert.ok(!JSON.stringify(body).includes(phrase)); assert.ok(!JSON.stringify(body).includes(wallet.tronPrivateKey || 'never-a-key'));
+    if (url.endsWith('/wallet/getblockbynum')) return Response.json({ blockID: CHAINS.tron.genesisHash });
     if (url.endsWith('/wallet/getblock')) return Response.json({ blockID: 'a'.repeat(64), block_header: { raw_data: { number: 100, timestamp } } });
     if (url.endsWith('/wallet/triggersmartcontract')) {
       const transaction = { visible: false, raw_data: { ref_block_bytes: '0064', ref_block_hash: 'a'.repeat(16), timestamp, expiration: timestamp + 60000, fee_limit: body.fee_limit, contract: [{ type: 'TriggerSmartContract', parameter: { type_url: 'type.googleapis.com/protocol.TriggerSmartContract', value: { owner_address: body.owner_address, contract_address: body.contract_address, data: 'a9059cbb' + body.parameter, call_value: 0 } } }] } };
@@ -111,4 +112,22 @@ test('bounded TRON transport preserves native/TRC20 signing and rechecks lock af
   const transfer = await prepareTron({ wallet, to, asset: { symbol: 'TRX' }, units: 1000000n, endpoint: CHAINS.tron.endpoint });
   await assert.rejects(transfer.send(async () => { await Promise.resolve(); disposeWallet(wallet); }), /locked/);
   assert.equal(broadcasts, 2);
+});
+test('TRON checks mainnet identity before preparing and immediately before signing', async t => {
+  const old = globalThis.fetch; t.after(() => { globalThis.fetch = old; });
+  const wallet = deriveWallet(phrase), to = TronWeb.address.fromPrivateKey('2'.repeat(64));
+  t.after(() => disposeWallet(wallet));
+  const timestamp = Date.now(); let genesis = 'wrong', builds = 0, broadcasts = 0, persisted = 0;
+  globalThis.fetch = async url => {
+    if (url.endsWith('/wallet/getblockbynum')) return Response.json({ blockID: genesis });
+    if (url.endsWith('/wallet/getblock')) { builds++; return Response.json({ blockID: 'a'.repeat(64), block_header: { raw_data: { number: 100, timestamp } } }); }
+    broadcasts++; throw new Error('Unexpected request');
+  };
+  const args = { wallet, to, asset: { symbol: 'TRX' }, units: 1n, endpoint: CHAINS.tron.endpoint + '/' };
+  await assert.rejects(prepareTron(args), /not TRON mainnet/); assert.equal(builds, 0);
+  genesis = CHAINS.tron.genesisHash;
+  await checkTronNetwork(args.endpoint);
+  const transfer = await prepareTron(args); genesis = 'wrong';
+  await assert.rejects(transfer.send(() => { persisted++; }), /not TRON mainnet/);
+  assert.equal(persisted, 0); assert.equal(broadcasts, 0);
 });

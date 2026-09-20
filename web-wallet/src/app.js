@@ -9,9 +9,13 @@ import { attachPhraseSuggestions } from './phrase-suggestions.js';
 const $ = id => document.getElementById(id);
 const clearPhraseSuggestions = attachPhraseSuggestions($('phrase'), $('phrase-suggestions'));
 let wallet, pending, generatedPhrase, phraseStep, revision = 0, busy = false, lockTimer, idleDeadline = 0;
-let cpunkRequest, nodusDerivation;
+let cpunkRequest, cpunkDerivation, nodusDerivation;
 let activitySession = null, activityBlocked = false, historyWrites = Promise.resolve(), vaultOperation = 0;
 const history = []; let stopTracking = () => {};
+function withActivityLock(write) {
+  if (!navigator.locks) return Promise.reject(new Error('This browser cannot safely save wallet activity across tabs. Use a browser with Web Locks support.'));
+  return navigator.locks.request('nodus.wallet.storage', write);
+}
 function visibleActivity() { return wallet ? history.filter(row => row.chain === $('chain').value && row.address === wallet.addresses[row.chain]) : []; }
 function persistActivity({ required = false } = {}) {
   const session = activitySession, source = wallet;
@@ -19,14 +23,22 @@ function persistActivity({ required = false } = {}) {
   const rows = history.filter(row => row.address === source.addresses[row.chain]).map(row => ({ ...row }));
   const current = () => session === activitySession && source === wallet && !source.locked && localStorage.getItem(VAULT_KEY) === session.vault;
   const changed = () => { if (required) throw new Error('Wallet storage changed before broadcast. Review the transfer again.'); };
-  // Serialize writes; an older encryption must not overwrite a newer record.
-  historyWrites = historyWrites.catch(() => {}).then(async () => {
+  // WARNING: a per-tab queue alone loses other tabs' signed transaction records.
+  // Read, authenticate, merge and write under one origin-wide browser lock.
+  historyWrites = historyWrites.catch(() => {}).then(() => withActivityLock(async () => {
     if (!current()) return changed();
     if (activityBlocked) throw new Error('Saved activity is unverified. Check the explorer and discard the unreadable history before sending.');
-    const encrypted = await serializeActivity(session.id, rows, session.key);
+    const saved = await parseActivity(localStorage.getItem(ACTIVITY_KEY), session.id, source.addresses, session.key);
+    if (!current()) return changed();
+    const merged = new Map([...saved, ...rows].map(row => [`${row.chain}:${row.hash}`, row]));
+    const combined = [...merged.values()].sort((a, b) => {
+      const time = Date.parse(a.createdAt) - Date.parse(b.createdAt), aKey = `${a.chain}:${a.hash}`, bKey = `${b.chain}:${b.hash}`;
+      return time || (aKey < bKey ? -1 : aKey > bKey ? 1 : 0);
+    });
+    const encrypted = await serializeActivity(session.id, combined, session.key);
     if (!current()) return changed();
     localStorage.setItem(ACTIVITY_KEY, encrypted);
-  });
+  }));
   return historyWrites;
 }
 function renderActivity(save = true) {
@@ -54,10 +66,11 @@ function activity() {
 for (const event of ['pointerdown', 'keydown', 'input']) document.addEventListener(event, activity);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) expireIdle(); });
 window.addEventListener('focus', expireIdle);
-function closeReview() { pending?.cancel(); pending = undefined; $('review-dialog').close(); }
+function closeReview() { pending?.cancel(); pending = undefined; $('review-dialog').close(); $('review-details').replaceChildren(); $('review-error').textContent = ''; }
 function lock() {
   clearPhraseSuggestions();
   nodusDerivation?.abort(); nodusDerivation = undefined;
+  cpunkDerivation?.abort(); cpunkDerivation = undefined;
   cpunkRequest?.abort(); cpunkRequest = undefined;
   if ($('cpunk-assets')) {
     $('cpunk-assets').open = false; $('cpunk-address').value = '';
@@ -68,6 +81,7 @@ function lock() {
   revision++; vaultOperation++; activitySession = null; activityBlocked = false; idleDeadline = 0; stopTracking(); closeReview(); disposeWallet(wallet); wallet = undefined; generatedPhrase = undefined; $('phrase').value = '';
   $('discard-activity').hidden = true;
   $('phrase-form').hidden = true; $('wallet-open').hidden = true; $('welcome').hidden = false;
+  history.length = 0; $('account-explorer').removeAttribute('href');
   $('activity').replaceChildren(); $('receive-address').textContent = ''; $('balances').replaceChildren(); $('recipient').value = ''; $('amount').value = '';
   for (const id of ['unlock-password', 'vault-password', 'vault-old-password']) $(id).value = '';
   updateVaultUI(); clearTimeout(lockTimer); message('Wallet locked. Restore your recovery phrase or unlock your saved wallet.');
@@ -75,7 +89,7 @@ function lock() {
 window.addEventListener('pagehide', lock);
 function phraseForm(create) {
   clearPhraseSuggestions();
-  vaultOperation++; $('unlock-form').hidden = true;
+  vaultOperation++; $('unlock-password').value = ''; $('unlock-form').hidden = true;
   phraseStep = create ? 'backup' : 'restore';
   generatedPhrase = create ? newPhrase() : undefined;
   $('welcome').hidden = true; $('phrase-form').hidden = false; $('backup-confirm').checked = false;
@@ -130,6 +144,7 @@ function selectChain() {
   revision++; closeReview(); const chain = $('chain').value; const c = CHAINS[chain];
   $('receive-address').textContent = wallet.addresses[chain]; $('rpc-endpoint').value = endpoints[chain];
   $('asset').replaceChildren(...[c.symbol, ...c.tokens.map(t => t.symbol)].map(s => new Option(s, s)));
+  $('solana-send-hint').hidden = chain !== 'solana';
   const explorers = { ethereum: 'https://etherscan.io/address/', bsc: 'https://bscscan.com/address/', solana: 'https://solscan.io/account/', tron: 'https://tronscan.org/#/address/' };
   $('account-explorer').href = explorers[chain] + encodeURIComponent(wallet.addresses[chain]); trackActivity();
   $('balances').textContent = 'Select Refresh to read balances.'; $('recipient').value = ''; $('amount').value = '';
@@ -137,7 +152,7 @@ function selectChain() {
 $('chain').onchange = selectChain;
 $('lock').onclick = lock;
 $('copy-address').onclick = async () => { try { await navigator.clipboard.writeText(wallet.addresses[$('chain').value]); message('Address copied.'); } catch { message('Copy unavailable. Select and copy the address above.'); } };
-$('save-rpc').onclick = () => { try { const chain = $('chain').value, endpoint = endpointUrl($('rpc-endpoint').value); if (chain === 'tron' && endpoint !== CHAINS.tron.endpoint) throw new Error('TRON requires the mainnet provider.'); endpoints[chain] = endpoint; revision++; closeReview(); stopTracking(); for (const row of visibleActivity()) row.endpoint = endpoints[$('chain').value]; trackActivity(); $('balances').textContent = 'Endpoint changed. Refresh to read balances.'; message('RPC updated for this tab.'); } catch (error) { message(error.message); } };
+$('save-rpc').onclick = () => { try { const chain = $('chain').value, endpoint = endpointUrl($('rpc-endpoint').value); if (chain === 'tron' && endpoint !== endpointUrl(CHAINS.tron.endpoint)) throw new Error('TRON requires the mainnet provider.'); endpoints[chain] = endpoint; revision++; closeReview(); stopTracking(); for (const row of visibleActivity()) row.endpoint = endpoints[$('chain').value]; trackActivity(); $('balances').textContent = 'Endpoint changed. Refresh to read balances.'; message('RPC updated for this tab.'); } catch (error) { message(error.message); } };
 $('refresh').onclick = async () => {
   const current = ++revision, chain = $('chain').value, address = wallet.addresses[chain];
   $('balances').textContent = 'Reading balances…';
@@ -176,13 +191,13 @@ $('confirm-send').onclick = async () => {
       await persistActivity({ required: true });
     });
     if (record) { record.note = 'Broadcast submitted; awaiting confirmation.'; if (current === revision) trackActivity(); }
-    $('review-dialog').close();
+    closeReview();
     if (current !== revision) return;
     message('Broadcast submitted; confirmation is pending. ');
     const link = document.createElement('a'); link.href = CHAINS[transfer.chain].explorer + encodeURIComponent(hash); link.textContent = `View transaction ${hash}`; link.target = '_blank'; link.rel = 'noopener noreferrer'; $('wallet-status').append(link);
   } catch (error) {
     if (record) { record.status = 'unknown'; record.note = 'Broadcast outcome uncertain. Tracking the signed transaction; do not resend automatically.'; if (current === revision) trackActivity(); }
-    $('review-dialog').close();
+    closeReview();
     if (current === revision) message(`${error.message} A broadcast failure can have an uncertain outcome. Check your address on the chain explorer before creating another transfer.`);
   } finally { busy = false; $('cancel-send').disabled = false; }
 };
@@ -190,17 +205,19 @@ if (import.meta.env.VITE_ENABLE_CPUNK !== 'false') {
 import('./adapters/cpunk.js').then(({ readCpunk }) => {
 $('cpunk-derive').onclick = async () => {
   if (!wallet || wallet.locked) { $('cpunk-result').textContent = 'Create or restore your wallet first.'; return; }
-  const current = revision, source = wallet;
+  cpunkDerivation?.abort();
+  const operation = new AbortController(), current = revision, source = wallet;
+  cpunkDerivation = operation;
   $('cpunk-derive').disabled = true;
   try {
     const { deriveCpunkAddress } = await import('./cpunk/derive.js');
     if (current !== revision || source !== wallet || source.locked) return;
-    const address = await deriveCpunkAddress(source.recoveryPhrase);
+    const address = await deriveCpunkAddress(source.recoveryPhrase, { signal: operation.signal });
     if (current !== revision || source !== wallet || source.locked) return;
     $('cpunk-address').value = address; $('cpunk-address').dispatchEvent(new Event('input'));
     $('cpunk-result').textContent = 'Address derived locally. Select Refresh CPUNK balance to query it.';
-  } catch (error) { if (current === revision) $('cpunk-result').textContent = error.message; }
-  finally { $('cpunk-derive').disabled = false; }
+  } catch (error) { if (current === revision && !operation.signal.aborted) $('cpunk-result').textContent = error.message; }
+  finally { if (cpunkDerivation === operation) cpunkDerivation = undefined; $('cpunk-derive').disabled = false; }
 };
 $('cpunk-form').onsubmit = async event => {
   event.preventDefault(); cpunkRequest?.abort(); const controller = new AbortController(); cpunkRequest = controller;
@@ -255,6 +272,8 @@ async function saveVault(change) {
     if (previous && !change) throw new Error('A wallet is already saved. Unlock it to change its password, or explicitly delete it first.');
     if (change) {
       if (!previous) throw new Error('No saved wallet to change.');
+      // A phrase-only restore has not authenticated or loaded saved activity.
+      if (activitySession?.vault !== previous) throw new Error('Lock and unlock the saved wallet before changing its password.');
       const saved = await decryptVault(previous, oldPassword);
       if (saved.phrase !== source.recoveryPhrase) throw new Error('Unlock the saved wallet before changing its password.');
       id = saved.id;
@@ -263,7 +282,12 @@ async function saveVault(change) {
     const encrypted = await encryptVault(source.recoveryPhrase, password, id);
     const newId = parseVault(encrypted).id, key = await activityKeyFor(source.recoveryPhrase, newId);
     if (operation !== vaultOperation || wallet !== source || source.locked || localStorage.getItem(VAULT_KEY) !== previous) return;
-    localStorage.setItem(VAULT_KEY, encrypted); activitySession = { id: newId, key, vault: encrypted }; updateVaultUI();
+    const stored = await withActivityLock(() => {
+      if (operation !== vaultOperation || wallet !== source || source.locked || localStorage.getItem(VAULT_KEY) !== previous) return false;
+      localStorage.setItem(VAULT_KEY, encrypted); activitySession = { id: newId, key, vault: encrypted }; return true;
+    });
+    if (!stored) return;
+    updateVaultUI();
     await persistActivity();
     if (operation !== vaultOperation || wallet !== source || source.locked) return;
     $('vault-status').textContent = change ? 'Local password changed.' : 'Encrypted wallet saved on this device. Keep your recovery backup.';
@@ -278,17 +302,29 @@ $('vault-password').addEventListener('input', () => {
 });
 $('discard-activity').onclick = async () => {
   if (!wallet || !activitySession || !activityBlocked) return;
+  const source = wallet, session = activitySession, previous = localStorage.getItem(ACTIVITY_KEY);
   try {
-    localStorage.removeItem(ACTIVITY_KEY); activityBlocked = false; $('discard-activity').hidden = true;
-    await persistActivity(); $('vault-status').textContent = 'Unreadable local history discarded. Check the account explorer before resending any previous payment.';
+    await withActivityLock(async () => {
+      const encrypted = await serializeActivity(session.id, [], session.key);
+      if (wallet !== source || source.locked || activitySession !== session || localStorage.getItem(VAULT_KEY) !== session.vault || localStorage.getItem(ACTIVITY_KEY) !== previous) throw new Error('Wallet or history changed. Unlock again before discarding history.');
+      localStorage.setItem(ACTIVITY_KEY, encrypted); history.length = 0; activityBlocked = false; $('discard-activity').hidden = true;
+    });
+    renderActivity(false); $('vault-status').textContent = 'Unreadable local history discarded. Check the account explorer before resending any previous payment.';
   } catch (error) { $('vault-status').textContent = error.message; }
 };
-$('vault-delete').onclick = () => {
+$('vault-delete').onclick = async () => {
   if (!$('vault-delete-confirm').checked) { $('vault-status').textContent = 'Confirm that you have your backup before deleting.'; return; }
   vaultOperation++; activitySession = null; activityBlocked = false; $('discard-activity').hidden = true;
-  try { localStorage.removeItem(VAULT_KEY); localStorage.removeItem(ACTIVITY_KEY); $('vault-status').textContent = 'Saved wallet and saved activity deleted from this device.'; updateVaultUI(); }
+  try {
+    const previous = localStorage.getItem(VAULT_KEY);
+    await withActivityLock(() => {
+      if (localStorage.getItem(VAULT_KEY) !== previous) throw new Error('Saved wallet changed before deletion.');
+      localStorage.removeItem(VAULT_KEY); localStorage.removeItem(ACTIVITY_KEY);
+    });
+    $('vault-status').textContent = 'Saved wallet and saved activity deleted from this device.'; updateVaultUI();
+  }
   catch { $('vault-status').textContent = 'Device storage could not be deleted.'; }
   $('vault-delete-confirm').checked = false;
 };
 
-window.addEventListener('storage', event => { if (event.key === VAULT_KEY) { lock(); $('vault-status').textContent = 'Saved wallet changed in another tab. Unlock again to continue.'; } });
+window.addEventListener('storage', event => { if (event.key === VAULT_KEY || event.key === null) { lock(); $('vault-status').textContent = 'Saved wallet changed in another tab. Unlock again to continue.'; } });

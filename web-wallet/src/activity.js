@@ -1,6 +1,5 @@
 import { CHAINS } from './config.js';
-import { rpc, request } from './core.js';
-const TRON_GENESIS = '00000000000000001ebf88508a03865c71d452e25f4d51194196a1d22b6653dc';
+import { rpc, request, endpointUrl } from './core.js';
 export const terminal = status => ['confirmed', 'failed', 'expired'].includes(status);
 export function validHash(chain, hash) {
   return typeof hash === 'string' && (chain === 'solana' ? /^[1-9A-HJ-NP-Za-km-z]{80,90}$/.test(hash) : chain === 'tron' ? /^[0-9a-f]{64}$/i.test(hash) : /^0x[0-9a-f]{64}$/i.test(hash));
@@ -12,16 +11,19 @@ export function recordActivity(transfer, details) {
 export async function checkActivity(row, { signal, call = rpc, post = request } = {}) {
   const c = CHAINS[row.chain], endpoint = row.endpoint;
   const rpcCall = (method, params) => call(endpoint, method, params, { signal });
-  const tron = (path, body) => post(`${endpoint}${path}`, body, { signal });
+  const tron = (path, body) => post(`${endpoint.replace(/\/$/, '')}${path}`, body, { signal });
   if (!c || !validHash(row.chain, row.hash)) throw new Error('Invalid activity record.');
   if (row.chain === 'ethereum' || row.chain === 'bsc') {
     if (BigInt(await rpcCall('eth_chainId', [])) !== BigInt(c.chainId)) throw new Error('Wrong network.');
     const receipt = await rpcCall('eth_getTransactionReceipt', [row.hash]);
     if (receipt === null) return { status: 'pending', note: 'Not included, or previous inclusion was reorganized. Check explorer before resending.' };
     if (receipt.transactionHash?.toLowerCase() !== row.hash.toLowerCase() || !/^0x[0-9a-f]+$/i.test(receipt.blockNumber) || !/^0x[0-9a-f]{64}$/i.test(receipt.blockHash) || !['0x0', '0x1'].includes(receipt.status)) throw new Error('Invalid transaction receipt.');
+    // Observe finality before the last canonical lookup: a reorg between these
+    // reads must not turn a stale receipt into a terminal success.
+    const finalized = await rpcCall('eth_getBlockByNumber', ['finalized', false]);
     const block = await rpcCall('eth_getBlockByNumber', [receipt.blockNumber, false]);
     if (!block || block.hash?.toLowerCase() !== receipt.blockHash.toLowerCase()) return { status: 'pending', note: 'Inclusion changed; waiting for a canonical receipt.' };
-    const finalized = await rpcCall('eth_getBlockByNumber', ['finalized', false]);
+    if (finalized?.number && BigInt(finalized.number) === BigInt(receipt.blockNumber) && finalized.hash?.toLowerCase() !== receipt.blockHash.toLowerCase()) return { status: 'pending', note: 'Finalized block disagrees with the receipt; waiting for consistent network state.' };
     if (!finalized?.number || BigInt(finalized.number) < BigInt(receipt.blockNumber)) return { status: 'included', note: receipt.status === '0x0' ? 'Execution failed; awaiting finality.' : 'Included; awaiting finality.' };
     return { status: receipt.status === '0x1' ? 'confirmed' : 'failed', note: 'Receipt is in a finalized canonical block.' };
   }
@@ -38,12 +40,12 @@ export async function checkActivity(row, { signal, call = rpc, post = request } 
     if (Number.isSafeInteger(row.lastValidBlockHeight)) {
       const height = await rpcCall('getBlockHeight', [{ commitment: 'finalized' }]);
       if (!Number.isSafeInteger(height)) throw new Error('Invalid block height.');
-      if (height > row.lastValidBlockHeight) return { status: 'expired', note: 'Not found in history after the finalized blockhash validity window. Verify explorer before resending.' };
+      if (height > row.lastValidBlockHeight) return { status: 'unknown', note: 'Blockhash validity ended, but absence from this lookup does not prove failure. Tracking continues; check the explorer before resending.' };
     }
     return { status: 'pending', note: 'No finalized signature found yet.' };
   }
-  if (endpoint !== CHAINS.tron.endpoint) throw new Error('TRON tracking requires the mainnet provider.');
-  if ((await tron('/wallet/getblockbynum', { num: 0 })).blockID !== TRON_GENESIS) throw new Error('Wrong TRON network.');
+  if (endpointUrl(endpoint) !== endpointUrl(CHAINS.tron.endpoint)) throw new Error('TRON tracking requires the mainnet provider.');
+  if ((await tron('/wallet/getblockbynum', { num: 0 })).blockID !== c.genesisHash) throw new Error('Wrong TRON network.');
   const tx = await tron('/walletsolidity/gettransactionbyid', { value: row.hash });
   if (tx.txID) {
     if (tx.txID.toLowerCase() !== row.hash.toLowerCase() || !Array.isArray(tx.ret) || tx.ret.length !== 1 || typeof tx.ret[0].contractRet !== 'string') throw new Error('Invalid solidified transaction.');

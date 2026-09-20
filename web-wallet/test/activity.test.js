@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { checkActivity, watchActivity } from '../src/activity.js';
+import { checkActivity, watchActivity, terminal } from '../src/activity.js';
+import { endpointUrl } from '../src/core.js';
 const hash = '0x' + 'a'.repeat(64), blockHash = '0x' + 'b'.repeat(64);
 const row = { chain: 'ethereum', hash, endpoint: 'https://rpc.example', status: 'pending' };
 test('EVM waits for canonical finality, distinguishes execution failure and reorg', async () => {
@@ -15,22 +16,52 @@ test('EVM waits for canonical finality, distinguishes execution failure and reor
   receipt = null; assert.equal((await checkActivity(row, { call })).status, 'pending');
   await assert.rejects(checkActivity(row, { call: async () => '0x38' }), /Wrong network/);
 });
-test('Solana requires finalized status, preserves error, and checks expiry only after history lookup', async () => {
+test('Solana requires finalized status and never treats an absent expired signature as terminal', async () => {
   const sol = { ...row, chain: 'solana', hash: '1'.repeat(88), lastValidBlockHeight: 100 };
   let status = null, height = 99;
   const call = async (_, method) => ({ getGenesisHash: '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d', getSignatureStatuses: { value: [status] }, getBlockHeight: height })[method];
   assert.equal((await checkActivity(sol, { call })).status, 'pending');
-  height = 101; assert.equal((await checkActivity(sol, { call })).status, 'expired');
+  height = 101; const absent = await checkActivity(sol, { call }); assert.equal(absent.status, 'unknown'); assert.equal(terminal(absent.status), false);
   status = { err: null, confirmationStatus: 'confirmed' }; assert.equal((await checkActivity(sol, { call })).status, 'included');
   status.confirmationStatus = 'finalized'; assert.equal((await checkActivity(sol, { call })).status, 'confirmed');
   status.err = { InstructionError: [0, 'failed'] }; assert.equal((await checkActivity(sol, { call })).status, 'failed');
 });
 test('TRON uses solidified transaction execution result, never infers failure from absence', async () => {
-  const tron = { ...row, chain: 'tron', hash: 'a'.repeat(64), endpoint: 'https://api.trongrid.io' }; let tx = {};
-  const post = async path => path.endsWith('getblockbynum') ? { blockID: '00000000000000001ebf88508a03865c71d452e25f4d51194196a1d22b6653dc' } : tx;
+  const tron = { ...row, chain: 'tron', hash: 'a'.repeat(64), endpoint: endpointUrl('https://api.trongrid.io') }; let tx = {};
+  const post = async path => { assert.ok(path.startsWith('https://api.trongrid.io/wallet')); return path.endsWith('getblockbynum') ? { blockID: '00000000000000001ebf88508a03865c71d452e25f4d51194196a1d22b6653dc' } : tx; };
   assert.equal((await checkActivity(tron, { post })).status, 'pending');
   tx = { txID: tron.hash, ret: [{ contractRet: 'SUCCESS' }] }; assert.equal((await checkActivity(tron, { post })).status, 'confirmed');
   tx.ret[0].contractRet = 'REVERT'; assert.equal((await checkActivity(tron, { post })).status, 'failed');
+});
+test('EVM rechecks canonical inclusion after observing finality', async () => {
+  let canonical = blockHash;
+  const call = async (_, method, params) => {
+    if (method === 'eth_chainId') return '0x1';
+    if (method === 'eth_getTransactionReceipt') return { transactionHash: hash, blockHash, blockNumber: '0xa', status: '0x1' };
+    if (params[0] === 'finalized') { canonical = '0x' + 'c'.repeat(64); return { number: '0xb', hash: '0x' + 'd'.repeat(64) }; }
+    return { hash: canonical };
+  };
+  assert.equal((await checkActivity(row, { call })).status, 'pending');
+});
+test('EVM same-height finalized hash must agree with the receipt', async () => {
+  const call = async (_, method, params) => ({ eth_chainId: '0x1', eth_getTransactionReceipt: { transactionHash: hash, blockHash, blockNumber: '0xa', status: '0x1' }, eth_getBlockByNumber: params[0] === 'finalized' ? { number: '0xa', hash: '0x' + 'c'.repeat(64) } : { hash: blockHash } })[method];
+  assert.equal((await checkActivity(row, { call })).status, 'pending');
+});
+test('Solana continues tracking after an absent lookup beyond the validity window', async () => {
+  const sol = { ...row, chain: 'solana', hash: '1'.repeat(88), lastValidBlockHeight: 100 };
+  let lookups = 0, stop;
+  const call = async (_, method) => {
+    if (method === 'getGenesisHash') return '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';
+    if (method === 'getBlockHeight') return 101;
+    return { value: [++lookups === 1 ? null : { err: null, confirmationStatus: 'finalized' }] };
+  };
+  await new Promise((resolve, reject) => {
+    const deadline = setTimeout(() => { stop(); reject(new Error('Tracking stopped before later inclusion')); }, 1000);
+    stop = watchActivity(() => [sol], () => {
+      if (sol.status === 'confirmed') { stop(); clearTimeout(deadline); resolve(); }
+    }, { interval: 1, check: record => checkActivity(record, { call }) });
+  });
+  assert.equal(lookups, 2); assert.equal(sol.status, 'confirmed');
 });
 test('tracking preserves state on transient failure and ignores results after cancellation', async () => {
   let updates = 0, finish;

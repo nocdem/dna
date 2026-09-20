@@ -3,6 +3,48 @@
 Reviewed baseline: `f48968bd3b669edea302a5d1bbf0c25fcd2add30` on `feat/nodus-web-wallet`.
 Scope: browser wallet only. Existing native applications and consensus are unchanged.
 
+## Additional review and remediation (0.1.4)
+
+Eight independent read-only agent reviews examined deployed baseline
+`c3656eedeccfc2ba4adc277204950df3d6f09a49` on 2026-09-20. The resulting
+patches are verified by the implementing session; this is not an external
+security certification or a fresh audit of the cryptographic primitives.
+
+| Finding | Change | Regression coverage |
+|---|---|---|
+| One tab can overwrite another tab's authenticated transaction history | Web Locks serialize storage mutations across tabs; writes authenticate and merge current history | Concurrent writes from two unlocked browser tabs preserve both signed records before broadcast; a later stale-tab write preserves both |
+| Password change after phrase-only restore can replace unread history | Password change requires an authenticated saved-wallet session | Browser rejects the change and preserves both encrypted records |
+| Hidden unlock password and review metadata survive flow changes/lock | Clear the password when leaving unlock; clear review DOM, explorer URL and in-memory history on lock | Browser checks hidden input, dialog contents and explorer link |
+| CPUNK module loading can continue derivation after lock | Abort on lock, bound module fetch to 15 seconds, derive mutable secrets only after loading and cancellation checks | Browser lock aborts the fetch; unit tests cover cancellation during fetch/instantiation and whole-instance memory erasure |
+| Normalized TRON URL prevents tracking and applying the default RPC | Compare normalized URLs and construct paths without duplicate slashes | Tracking accepts the same endpoint produced by transfer preparation |
+| TRON identity was checked only during tracking | Check mainnet genesis before balance reads, preparation and signing | Wrong genesis prevents preparation and signing/broadcast |
+| EVM finality lookup can follow an obsolete canonical check | Observe finality before the final canonical lookup; check same-height finalized hash | A simulated reorganization never becomes confirmed |
+| Solana absence after blockhash expiry prematurely stops tracking | Keep the outcome unknown and continue polling | Later finalized inclusion is still observed |
+| RPC-selected SPL source can refer to an unrelated delegated account | Sign only the locally derived associated token account; validate returned account metadata | Serialized transfer uses that exact account; substituted/mismatched/insufficient source rejected |
+| Clearing browser storage does not lock other tabs | Handle the storage-clear event as a wallet change | Browser clears storage in one tab and verifies the other locks |
+
+The Solana change intentionally removes spending across arbitrary source token
+accounts. Balance reads can include those accounts, and the send screen explains
+that only the primary associated account is spendable here. This does not turn
+RPC replies into cryptographic proofs of account state. Saved-wallet operations
+require Web Locks; there is no unsafe per-tab fallback. Existing vault/activity
+encryption formats and all recovery/address derivation paths remain unchanged.
+
+Verification commands below run against the production bundle, with external
+blockchain traffic intercepted in browser suites. No real-funded transfer is
+part of remediation testing. Publication is a separate operation; these source
+changes do not establish that the production domain has been updated.
+
+Local results for 0.1.4 on 2026-09-20: `npm ci` succeeded with zero reported
+dependency advisories; 41/41 Node tests, production build, browser smoke,
+browser security and Nodus browser checks passed with Node 22.22.1, npm 10.9.4
+and Chromium 146. Five activity regressions fail against the deployed baseline
+and pass with the changes. The existing Vite bundle-size and dependency
+`punycode` deprecation warnings remain. Tests used public fixtures and made no
+real-chain broadcasts. No production publication is claimed by these results.
+
+## Original September 19 findings
+
 | Finding | Change | Regression evidence |
 |---|---|---|
 | RT-01: phrase screens never time out | Idle lock covers create, backup verification, restore, password entry and in-flight vault operations; focus/visibility enforce the absolute deadline | Production-browser create/verify/restore expiry and simulated suspended timer |

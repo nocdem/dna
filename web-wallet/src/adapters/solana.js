@@ -1,7 +1,7 @@
 import { encodeBase58 } from 'ethers';
 import { assertWalletActive } from '../keys.js';
 import { Connection, PublicKey, Transaction, SystemProgram } from '@solana/web3.js';
-import { getAssociatedTokenAddress, createAssociatedTokenAccountIdempotentInstruction, createTransferCheckedInstruction } from './solana-token.js';
+import { TOKEN_PROGRAM_ID, getAssociatedTokenAddress, createAssociatedTokenAccountIdempotentInstruction, createTransferCheckedInstruction } from './solana-token.js';
 import { CHAINS } from '../config.js';
 import { rpc, rawInteger, formatUnits } from '../core.js';
 import { rpcFetch } from '../rpc-transport.js';
@@ -31,20 +31,18 @@ export async function prepare({ wallet, to, asset, units, endpoint }) {
   else {
     const mint = new PublicKey(asset.address);
     const dest = await getAssociatedTokenAddress(mint, recipient);
+    const source = await getAssociatedTokenAddress(mint, owner);
     const accounts = await connection.getParsedTokenAccountsByOwner(owner, { mint });
-    let remaining = units;
+    // WARNING: an RPC-selected source could spend an unrelated delegated account.
+    // Only the wallet's locally derived associated account may be signed here.
+    const matches = accounts.value.filter(account => account.pubkey.equals(source));
+    if (matches.length !== 1) throw new Error('Primary token account unavailable. Transfers require the wallet’s associated token account.');
+    const account = matches[0].account, info = account.data.parsed?.info;
+    if (!account.owner.equals(TOKEN_PROGRAM_ID) || account.data.parsed?.type !== 'account' || info?.owner !== owner.toBase58() || info?.mint !== mint.toBase58() || info?.state !== 'initialized' || info?.tokenAmount?.decimals !== asset.decimals) throw new Error('Invalid primary token account.');
+    if (rawInteger(info.tokenAmount.amount) < units) throw new Error('Insufficient balance in the primary token account. Other token accounts are not used for transfers.');
     tx.add(createAssociatedTokenAccountIdempotentInstruction(owner, dest, recipient, mint));
     if (!await connection.getAccountInfo(dest)) rent = await connection.getMinimumBalanceForRentExemption(165);
-    for (const account of accounts.value) {
-      const info = account.account.data.parsed.info;
-      if (info.state !== 'initialized') continue;
-      const available = rawInteger(info.tokenAmount.amount);
-      const part = available < remaining ? available : remaining;
-      if (part > 0n) tx.add(createTransferCheckedInstruction(account.pubkey, mint, dest, owner, part, asset.decimals));
-      remaining -= part;
-      if (!remaining) break;
-    }
-    if (remaining) throw new Error('Insufficient spendable token balance.');
+    tx.add(createTransferCheckedInstruction(source, mint, dest, owner, units, asset.decimals));
   }
   const latest = await connection.getLatestBlockhash();
   tx.recentBlockhash = latest.blockhash; tx.feePayer = owner;

@@ -11,7 +11,7 @@ export const CHAINS = {
   solana: { genesisHash: '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d', name: 'Solana', symbol: 'SOL', decimals: 9, endpoint: 'https://public.rpc.solanavibestation.com', explorer: 'https://solscan.io/tx/', tokens: [
     { symbol: 'USDT', decimals: 6, address: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB' },
     { symbol: 'USDC', decimals: 6, address: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' }] },
-  tron: { name: 'TRON', symbol: 'TRX', decimals: 6, endpoint: 'https://api.trongrid.io', explorer: 'https://tronscan.org/#/transaction/', tokens: [
+  tron: { genesisHash: '00000000000000001ebf88508a03865c71d452e25f4d51194196a1d22b6653dc', name: 'TRON', symbol: 'TRX', decimals: 6, endpoint: 'https://api.trongrid.io', explorer: 'https://tronscan.org/#/transaction/', tokens: [
     { symbol: 'USDT', decimals: 6, address: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t' },
     { symbol: 'USDC', decimals: 6, address: 'TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8' },
     { symbol: 'USDD', decimals: 18, address: 'TPYmHEhy5n8TCEfYGqW2rPxsghSfzghPDn' }] },

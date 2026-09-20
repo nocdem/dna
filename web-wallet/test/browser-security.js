@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
-import { Transaction } from 'ethers';
+import { Transaction, formatEther } from 'ethers';
 import { activityKeyFor, parseActivity } from '../src/activity-storage.js';
 import { deriveWallet } from '../src/keys.js';
 const app = fileURLToPath(new URL('..', import.meta.url)), url = 'http://127.0.0.1:4189';
@@ -26,7 +26,7 @@ await context.route('**/*', async route => {
       const stored = await page.evaluate(() => ({ vault: JSON.parse(localStorage.getItem('nodus.wallet.v1')), activity: localStorage.getItem('nodus.activity.v1') }));
       const key = await activityKeyFor(phrase, stored.vault.id);
       const rows = await parseActivity(stored.activity, stored.vault.id, addresses, key);
-      assert.ok(rows.some(row => row.hash === tx.hash && row.amount === '0.01')); durable++;
+      assert.ok(rows.some(row => row.hash === tx.hash && row.amount === formatEther(tx.value))); durable++;
       return { jsonrpc: '2.0', id: call.id, result: tx.hash };
     }
     const results = { eth_chainId: '0x1', eth_getBalance: '0x8ac7230489e80000', eth_call: '0x' + '0'.repeat(64), eth_estimateGas: '0x5208', eth_gasPrice: '0x3b9aca00', eth_maxPriorityFeePerGas: '0x3b9aca00', eth_getTransactionCount: '0x0', eth_getTransactionReceipt: null, eth_getBlockByNumber: { hash: '0x' + 'a'.repeat(64), parentHash: '0x' + 'b'.repeat(64), number: '0x1', timestamp: '0x65000000', nonce: '0x0000000000000000', difficulty: '0x0', gasLimit: '0x1c9c380', gasUsed: '0x5208', miner: '0x0000000000000000000000000000000000000001', extraData: '0x', transactions: [] } };
@@ -59,12 +59,51 @@ try {
   assert.equal(await page.evaluate(() => localStorage.length), 0);
   await page.locator('#vault-password').fill(password); await page.locator('#vault-save').click();
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('Encrypted wallet saved'));
+  const peer = await fresh();
+  await peer.locator('#unlock-password').fill(password); await peer.locator('#restore').click();
+  assert.equal(await peer.locator('#unlock-password').inputValue(), '');
+  await peer.locator('#phrase-cancel').click(); await unlock(peer);
+  await page.evaluate(() => {
+    const encrypt = crypto.subtle.encrypt.bind(crypto.subtle); let held = false;
+    crypto.subtle.encrypt = async (...args) => {
+      const result = await encrypt(...args);
+      if (!held && new TextDecoder().decode(args[0].additionalData).startsWith('nodus.wallet.activity.v2') && JSON.parse(new TextDecoder().decode(args[2])).length) {
+        held = true; globalThis.concurrentWriteHeld = true;
+        await new Promise(resolve => { globalThis.releaseConcurrentWrite = resolve; });
+      }
+      return result;
+    };
+  });
   await review(page); await page.locator('#confirm-send').click();
+  await page.waitForFunction(() => globalThis.concurrentWriteHeld);
+  await peer.locator('#recipient').fill('0x0000000000000000000000000000000000000001'); await peer.locator('#amount').fill('0.02');
+  await peer.locator('#review-button').click(); await peer.locator('#review-dialog').waitFor({ state: 'visible' }); await peer.locator('#confirm-send').click();
+  await peer.waitForFunction(async () => (await navigator.locks.query()).pending.some(lock => lock.name === 'nodus.wallet.storage'));
+  assert.equal(broadcasts, 0);
+  await page.evaluate(() => globalThis.releaseConcurrentWrite());
   await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('Broadcast submitted'));
-  assert.equal(broadcasts, 1); assert.equal(durable, 1);
+  await peer.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('Broadcast submitted'));
+  assert.equal(broadcasts, 2); assert.equal(durable, 2);
   const original = await page.evaluate(() => localStorage.getItem('nodus.activity.v1'));
   assert.ok(!original.includes(addresses.ethereum)); assert.ok(!original.includes('rows'));
   await page.locator('#lock').click();
+  assert.equal(await page.locator('#review-details').textContent(), '');
+  assert.equal(await page.locator('#review-error').textContent(), '');
+  assert.equal(await page.locator('#account-explorer').getAttribute('href'), null);
+  await peer.selectOption('#chain', 'bsc');
+  await peer.waitForFunction(previous => localStorage.getItem('nodus.activity.v1') !== previous, original);
+  const preserved = await page.evaluate(() => ({ vault: localStorage.getItem('nodus.wallet.v1'), activity: localStorage.getItem('nodus.activity.v1') }));
+  const vaultId = JSON.parse(preserved.vault).id, activityKey = await activityKeyFor(phrase, vaultId);
+  const combinedRows = await parseActivity(preserved.activity, vaultId, addresses, activityKey);
+  assert.equal(combinedRows.length, 2); assert.deepEqual(combinedRows.map(row => row.amount).sort(), ['0.01', '0.02']);
+  await peer.close();
+  await restore(page);
+  await page.locator('#vault-password').fill('different-public-test-password'); await page.locator('#vault-old-password').fill(password); await page.locator('#vault-change').click();
+  await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('unlock the saved wallet'));
+  assert.equal(await page.evaluate(() => localStorage.getItem('nodus.wallet.v1')), preserved.vault);
+  assert.equal(await page.evaluate(() => localStorage.getItem('nodus.activity.v1')), preserved.activity);
+  await page.locator('#lock').click();
+  console.log('Concurrent signed records serialized across tabs and both durable before broadcast; stale-tab writes preserve both. Phrase-only password change blocked; hidden password and locked review metadata cleared.');
   await page.evaluate(() => { const data = JSON.parse(localStorage.getItem('nodus.activity.v1')); data.ciphertext = (data.ciphertext[0] === 'A' ? 'B' : 'A') + data.ciphertext.slice(1); localStorage.setItem('nodus.activity.v1', JSON.stringify(data)); });
   const tampered = await page.evaluate(() => localStorage.getItem('nodus.activity.v1'));
   await unlock(page); assert.equal(await page.locator('#discard-activity').isVisible(), true); assert.equal(await page.locator('#activity').innerText(), '');
@@ -88,11 +127,34 @@ try {
     };
   });
   await page.locator('#confirm-send').click(); await page.waitForFunction(() => globalThis.historyWait);
-  assert.equal(broadcasts, 1);
+  assert.equal(broadcasts, 2);
   await page.evaluate(() => { window.dispatchEvent(new PageTransitionEvent('pagehide')); localStorage.clear(); globalThis.releaseHistory(); });
   await page.waitForFunction(() => !document.querySelector('#cancel-send').disabled);
-  assert.equal(broadcasts, 1); assert.equal(await page.evaluate(() => localStorage.length), 0); staleWriteCompleted = true;
+  assert.equal(broadcasts, 2); assert.equal(await page.evaluate(() => localStorage.length), 0); staleWriteCompleted = true;
   console.log('Lock while activity encryption is pending: no broadcast and no stale write after delete.');
+  const clearingPeer = await fresh();
+  await restore(page);
+  await clearingPeer.evaluate(() => { localStorage.setItem('public-test-marker', '1'); localStorage.clear(); });
+  await page.locator('#welcome').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#wallet-open').isVisible(), false);
+  await clearingPeer.close();
+  console.log('Clearing local storage in another tab locks the open wallet.');
+  await restore(page);
+  await page.evaluate(() => {
+    const original = globalThis.fetch;
+    globalThis.fetch = (input, options) => {
+      if (!String(input).includes('legacy-dilithium')) return original(input, options);
+      globalThis.cpunkFetchSignal = options.signal;
+      return new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }));
+    };
+  });
+  await page.locator('#cpunk-assets > summary').click(); await page.locator('#cpunk-derive').click();
+  await page.waitForFunction(() => !!globalThis.cpunkFetchSignal);
+  await page.locator('#lock').click();
+  await page.waitForFunction(() => !document.querySelector('#cpunk-derive').disabled);
+  assert.equal(await page.evaluate(() => globalThis.cpunkFetchSignal.aborted), true);
+  assert.equal(await page.locator('#cpunk-address').inputValue(), '');
+  console.log('Lock aborts an in-flight CPUNK module fetch and leaves no derived address.');
   assert.deepEqual(errors, []); assert.ok(staleWriteCompleted);
   console.log('Browser security regressions passed. All blockchain traffic was intercepted.');
 } finally { await browser.close(); server.kill(); }

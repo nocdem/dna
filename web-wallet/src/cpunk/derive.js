@@ -19,21 +19,25 @@ export function validateDerivedAddress(address) {
   if (!checksum.every((byte, i) => byte === raw[45 + i])) throw new Error('Cellframe address checksum does not match.');
   return address;
 }
-export async function deriveCpunkAddress(phrase, { wasmBytes } = {}) {
+export async function deriveCpunkAddress(phrase, { wasmBytes, signal } = {}) {
+  signal?.throwIfAborted();
   const normalized = normalizePhrase(phrase);
   if (!Mnemonic.isValidMnemonic(normalized)) throw new Error('Open a wallet with a valid recovery phrase first.');
-  const input = new TextEncoder().encode(normalized), seed = sha3_256(input); input.fill(0);
-  let instance;
+  let instance, input, seed;
   try {
     let binary = wasmBytes;
     if (!binary) {
-      const response = await fetch(new URL('./legacy-dilithium.wasm', import.meta.url));
+      const timeout = AbortSignal.timeout(15000);
+      const response = await fetch(new URL('./legacy-dilithium.wasm', import.meta.url), { credentials: 'omit', redirect: 'error', signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
       if (!response.ok) throw new Error('Cellframe address module could not load. Reload to retry.');
       binary = await response.arrayBuffer();
     }
+    signal?.throwIfAborted();
     const fail = () => { throw new Error('Cellframe derivation failed.'); };
     ({ instance } = await WebAssembly.instantiate(binary, { wasi_snapshot_preview1: { proc_exit: fail, fd_write: fail, fd_close: fail, fd_seek: fail, fd_fdstat_get: fail, random_get: (ptr, len) => { if (!instance || len > 65536) return 28; crypto.getRandomValues(new Uint8Array(instance.exports.memory.buffer, ptr, len)); return 0; } } }));
+    signal?.throwIfAborted();
     instance.exports._initialize?.();
+    input = new TextEncoder().encode(normalized); seed = sha3_256(input); input.fill(0);
     const memory = new Uint8Array(instance.exports.memory.buffer);
     memory.set(seed, instance.exports.cpunk_input());
     if (instance.exports.cpunk_derive() !== 0) throw new Error('Cellframe derivation failed.');
@@ -44,5 +48,5 @@ export async function deriveCpunkAddress(phrase, { wasmBytes } = {}) {
     raw[0] = 1; view.setBigUint64(1, 0x0404202200000000n, true); view.setUint32(9, 0x0102, true);
     raw.set(sha3_256(serialized), 13); raw.set(sha3_256(raw.subarray(0, 45)), 45);
     return validateDerivedAddress(encodeAddress(raw));
-  } finally { seed.fill(0); if (instance) new Uint8Array(instance.exports.memory.buffer).fill(0); }
+  } finally { input?.fill(0); seed?.fill(0); if (instance) new Uint8Array(instance.exports.memory.buffer).fill(0); }
 }

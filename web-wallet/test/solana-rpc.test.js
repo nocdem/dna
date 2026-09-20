@@ -11,9 +11,10 @@ import { CHAINS } from '../src/config.js';
 const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art';
 test('updated Solana SDK transport and token codecs preserve native/SPL signed transactions with one broadcast', async t => {
   const wallet = deriveWallet(phrase), to = Keypair.fromSeed(new Uint8Array(32).fill(2)).publicKey;
-  const accounts = [Keypair.fromSeed(new Uint8Array(32).fill(3)).publicKey, Keypair.fromSeed(new Uint8Array(32).fill(4)).publicKey];
+  const associated = await getAssociatedTokenAddress(new PublicKey(CHAINS.solana.tokens[1].address), wallet.solana.publicKey);
+  const accounts = [Keypair.fromSeed(new Uint8Array(32).fill(3)).publicKey, Keypair.fromSeed(new Uint8Array(32).fill(4)).publicKey, associated];
   const oldFetch = globalThis.fetch; t.after(() => { globalThis.fetch = oldFetch; });
-  let currentAsset, broadcasts = [], noted;
+  let currentAsset, broadcasts = [], noted, omitAssociated = false, wrongOwner = false, primaryBalance = '2000000';
   globalThis.fetch = async (_, options) => {
     const body = JSON.parse(options.body); assert.ok(!options.body.includes(phrase));
     const result = {
@@ -21,7 +22,7 @@ test('updated Solana SDK transport and token codecs preserve native/SPL signed t
       getLatestBlockhash: { context: { slot: 1 }, value: { blockhash: '11111111111111111111111111111111', lastValidBlockHeight: 100 } },
       getFeeForMessage: { context: { slot: 1 }, value: 5000 }, getBalance: { context: { slot: 1 }, value: 1000000000 }, getBlockHeight: 50,
       getAccountInfo: { context: { slot: 1 }, value: null }, getMinimumBalanceForRentExemption: 2039280,
-      getTokenAccountsByOwner: { context: { slot: 1 }, value: accounts.map((key, i) => ({ pubkey: key.toBase58(), account: { executable: false, owner: TOKEN_PROGRAM_ID.toBase58(), lamports: 2039280, rentEpoch: 0, data: { program: 'spl-token', space: 165, parsed: { type: 'account', info: { state: 'initialized', mint: currentAsset?.address, owner: wallet.addresses.solana, tokenAmount: { amount: i ? '700000' : '400000', decimals: 6, uiAmount: 0.4, uiAmountString: '0.4' } } } } } })) },
+      getTokenAccountsByOwner: { context: { slot: 1 }, value: accounts.filter(key => !omitAssociated || !key.equals(associated)).map((key, i) => ({ pubkey: key.toBase58(), account: { executable: false, owner: TOKEN_PROGRAM_ID.toBase58(), lamports: 2039280, rentEpoch: 0, data: { program: 'spl-token', space: 165, parsed: { type: 'account', info: { state: 'initialized', mint: currentAsset?.address, owner: wrongOwner ? to.toBase58() : wallet.addresses.solana, tokenAmount: { amount: key.equals(associated) ? primaryBalance : i ? '700000' : '400000', decimals: 6, uiAmount: 0.4, uiAmountString: '0.4' } } } } } })) },
     }[body.method];
     if (body.method === 'sendTransaction') {
       assert.deepEqual(body.params[1], { encoding: 'base64', maxRetries: 0, preflightCommitment: 'confirmed' });
@@ -40,14 +41,24 @@ test('updated Solana SDK transport and token codecs preserve native/SPL signed t
   currentAsset = CHAINS.solana.tokens[1];
   const spl = await prepare({ wallet, to: to.toBase58(), asset: currentAsset, units: 1000000n, endpoint: CHAINS.solana.endpoint });
   assert.match(spl.fee, /account rent/); await spl.send();
-  const tx = broadcasts[1]; assert.equal(tx.instructions.length, 3); assert.equal(tx.instructions[0].data[0], 1);
+  const tx = broadcasts[1]; assert.equal(tx.instructions.length, 2); assert.equal(tx.instructions[0].data[0], 1);
   const transfers = tx.instructions.slice(1);
-  assert.deepEqual(transfers.map(ix => ix.data.readBigUInt64LE(1)), [400000n, 600000n]);
+  assert.deepEqual(transfers.map(ix => ix.data.readBigUInt64LE(1)), [1000000n]);
   for (const ix of transfers) {
     assert.equal(ix.data[0], 12); assert.equal(ix.data[9], 6);
+    assert.equal(ix.keys[0].pubkey.toBase58(), associated.toBase58());
     assert.equal(ix.keys[3].pubkey.toBase58(), wallet.addresses.solana); assert.equal(ix.keys[3].isSigner, true);
     assert.equal(ix.keys[2].pubkey.toBase58(), (await getAssociatedTokenAddress(ix.keys[1].pubkey, to)).toBase58());
   }
+  assert.equal(broadcasts.length, 2);
+  const tokenArgs = { wallet, to: to.toBase58(), asset: currentAsset, units: 1000000n, endpoint: 'https://rpc.example' };
+  omitAssociated = true;
+  await assert.rejects(prepare(tokenArgs), /Primary token account unavailable/);
+  omitAssociated = false; primaryBalance = '400000';
+  await assert.rejects(prepare(tokenArgs), /Insufficient balance in the primary/);
+  primaryBalance = '2000000'; wrongOwner = true;
+  await assert.rejects(prepare(tokenArgs), /Invalid primary/);
+  wrongOwner = false;
   assert.equal(broadcasts.length, 2);
   const cancelled = await prepare({ wallet, to: to.toBase58(), asset: currentAsset, units: 1n, endpoint: CHAINS.solana.endpoint });
   await assert.rejects(cancelled.send(async () => { await Promise.resolve(); disposeWallet(wallet); }), /locked/);

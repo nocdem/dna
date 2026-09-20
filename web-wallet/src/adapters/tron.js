@@ -1,8 +1,13 @@
 import { assertWalletActive } from '../keys.js';
 import { TronWeb, utils, providers } from 'tronweb';
 import { CHAINS } from '../config.js';
-import { request, rawInteger, formatUnits } from '../core.js';
+import { request, rawInteger, formatUnits, endpointUrl } from '../core.js';
 const FEE_LIMIT = 100_000_000;
+export async function checkNetwork(endpoint) {
+  if (endpointUrl(endpoint) !== endpointUrl(CHAINS.tron.endpoint)) throw new Error('TRON requires the configured mainnet provider.');
+  const genesis = await request(`${endpoint.replace(/\/$/, '')}/wallet/getblockbynum`, { num: 0 });
+  if (genesis.blockID !== CHAINS.tron.genesisHash) throw new Error('RPC is not TRON mainnet.');
+}
 export function createTronClient(endpoint) {
   const provider = new providers.HttpProvider(endpoint, 15000);
   provider.request = (path, payload = {}, method = 'get') => {
@@ -19,6 +24,7 @@ export function createTronClient(endpoint) {
 }
 export async function balances(chain, address, endpoint) {
   if (!TronWeb.isAddress(address)) throw new Error('Invalid TRON address.');
+  await checkNetwork(endpoint);
   const result = await request(`${endpoint.replace(/\/$/, '')}/v1/accounts/${address}`);
   if (!Array.isArray(result.data)) throw new Error('Invalid TRON account response.');
   const account = result.data[0];
@@ -44,7 +50,7 @@ export function validateTransaction(tx, { from, to, asset, units }) {
 export async function prepare({ wallet, to, asset, units, endpoint }) {
   if (!TronWeb.isAddress(to)) throw new Error('Invalid TRON recipient.');
   // Keep signing on the repository's mainnet provider. Never silently fall back to Shasta.
-  if (endpoint.replace(/\/$/, '') !== CHAINS.tron.endpoint) throw new Error('TRON sending requires the configured mainnet provider.');
+  await checkNetwork(endpoint);
   const tron = createTronClient(endpoint);
   const from = wallet.addresses.tron;
   let tx;
@@ -60,6 +66,8 @@ export async function prepare({ wallet, to, asset, units, endpoint }) {
   return { fee: asset.address ? 'Energy fee limit: 100 TRX. Bandwidth fees may also apply.' : 'TRON bandwidth and recipient activation fees may apply; final charge is set by the network.', expiresAt: Math.min(Date.now() + 45000, tx.raw_data.expiration),
     async send(onBroadcast) {
         assertWalletActive(wallet);
+      await checkNetwork(endpoint);
+      assertWalletActive(wallet);
       validateTransaction(tx, { from, to, asset, units });
       const signed = await tron.trx.sign(tx, wallet.tronPrivateKey);
       assertWalletActive(wallet);

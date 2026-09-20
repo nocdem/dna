@@ -99,6 +99,7 @@ try {
   await page.waitForFunction(() => document.querySelector('#activity').textContent.includes('confirmed'));
   assert.equal(await page.locator('#nodus-address').innerText(), nodusAddress);
   await page.getByText('Delete saved wallet from this device', { exact: true }).click(); await page.locator('#vault-delete-confirm').check(); await page.locator('#vault-delete').click();
+  await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('saved activity deleted'));
   assert.equal(await page.evaluate(() => localStorage.length), 0);
   await page.getByText('Save wallet on this device (optional)', { exact: true }).click();
   await page.locator('#vault-password').fill('public-test-password-123'); await page.locator('#vault-save').click(); await page.locator('#lock').click(); assert.equal(await page.locator('#nodus-address').innerText(), '');
