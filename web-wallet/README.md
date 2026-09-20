@@ -63,7 +63,12 @@ by the input component or sent over the network.
 The wallet uses the main site's Nodus SVG mark, self-hosted Inter variable fonts,
 and shared colors/typography. Assets were byte-matched to nodusnetwork.io on
 2026-09-20; the font license is included under `public/assets/fonts/OFL.txt`.
-No external font/CDN requests or additional CSP permissions are needed.
+No external font/CDN requests or additional CSP permissions are needed. The
+wallet layout includes a privacy summary and precautions: verify the exact wallet
+domain in the browser address bar, keep recovery words private/offline, and use a
+trusted device. It distinguishes local secret processing from the public address
+and connection information visible to network and hosting providers. These are
+user instructions, not an origin-verification badge or anonymity guarantee.
 
 ### Determinism and native references
 
