@@ -81,6 +81,22 @@ p { color: var(--muted); font-size: 14px; line-height: 1.7; margin: 12px 0 20px;
 .privacy-facts dt { margin: 0 0 7px; font-size: 13px; font-weight: 500; color: var(--text); }
 .privacy-facts dd { color: var(--muted); font-size: 12px; line-height: 1.75; }
 .privacy-footnote { font-size: 11px; line-height: 1.7; margin: 22px 0 0; padding-top: 18px; border-top: 1px solid #d5f99814; }
+.privacy-facts a { display: inline-block; margin-top: 7px; text-underline-offset: 3px; }
+.storage-guide { margin-top: 48px; padding-top: 32px; border-top: 1px solid var(--line); scroll-margin-top: 24px; }
+.storage-modes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+.storage-modes article { padding: 24px; border: 1px solid #d5f99826; border-radius: 12px; background: #171c13; }
+.storage-label { color: var(--lime); font-size: 9px; letter-spacing: .1em; }
+.storage-modes h3 { font-size: 22px; letter-spacing: -.035em; margin: 16px 0 12px; }
+.storage-modes p { font-size: 13px; line-height: 1.8; margin: 0; }
+.storage-modes .hint { font-size: 12px; margin-top: 12px; }
+.storage-modes strong { color: var(--text); font-weight: 500; }
+.storage-modes code { font-size: 12px; overflow-wrap: anywhere; }
+.storage-risk { padding: 20px 22px; margin: 24px 0; background: #d5f99805; border-left: 2px solid #d5f99875; }
+.storage-risk h3 { font-size: 15px; margin: 0 0 8px; }
+.storage-risk p { font-size: 12px; line-height: 1.8; margin: 0; }
+.storage-questions details { padding: 17px 0; margin: 0; border-top: 1px solid var(--line); }
+.storage-questions summary { color: var(--text); font-size: 13px; }
+.storage-questions p { font-size: 12px; line-height: 1.8; max-width: 900px; margin: 14px 0 0; }
 .phrase-caution { padding: 12px 14px; border: 1px solid #d5f99836; border-radius: 7px; font-size: 12px; line-height: 1.7; background: #d5f99806; overflow-wrap: anywhere; }
 .phrase-caution strong { color: var(--text); font-weight: 500; }
 .wallet-care { margin-top: 54px; padding: 32px 0 40px; border-top: 1px solid var(--line); }
@@ -168,6 +184,9 @@ dd { margin: 0; font-size: 13px; overflow-wrap: anywhere; }
   .site-check .site-address { font-size: 16px; }
   .wallet-layout { grid-template-columns: minmax(0, 1fr); gap: 20px; }
   .privacy-card { position: static; padding: 24px; }
+  .storage-guide { margin-top: 36px; padding-top: 28px; }
+  .storage-modes { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .storage-modes article { padding: 22px; }
   .wallet-care { margin-top: 36px; padding-top: 28px; }
   .care-heading { display: block; margin-bottom: 24px; }
   .care-heading > p { margin-top: 14px; }

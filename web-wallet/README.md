@@ -36,6 +36,29 @@ For Caddy, `deploy/Caddyfile` serves the static files and supplies the response 
 - EVM gas estimation with a 20% gas-limit margin and legacy gas-price transactions; Solana fee/rent estimation and idempotent recipient token account creation, spending only from the sender’s locally derived associated token account; TRON native/TRC-20 transaction intent and protobuf consistency validation. TRON token energy has a 100 TRX limit; bandwidth/activation charges are network dependent and not falsely presented as an exact fee estimate. Solana balances can include other token accounts, but those accounts cannot be spent here. TRON reads and sends require the configured default mainnet provider and matching genesis; there is no testnet fallback.
 - Temporary **CPUNK-only, read-only** Cellframe/Backbone query using a public address. Local address derivation from the open wallet’s phrase is available; Cellframe signing, sending, trading and claiming are unavailable. Its balance is not proof of ownership, a snapshot, or airdrop eligibility.
 
+## Recovery storage explanations (0.1.7)
+
+The landing page and optional save controls explain temporary memory use versus
+an encrypted copy in this origin’s browser-profile `localStorage`. No automatic
+save, app-provided cloud sync or password reset is implied. The encryption facts
+are read from `src/vault.js` and the save/lock paths in `src/app.js`: AES-256-GCM,
+PBKDF2-HMAC-SHA-256 with 600,000 iterations, a fresh random salt and nonce per save,
+and no password persistence by the app. Existing encrypted activity storage is
+also described next to the save control.
+
+The copy states the limits: offline password guessing against stolen ciphertext,
+exposure during use to malicious code/extensions/device compromise, best-effort
+memory cleanup, loss of browser data, and old encrypted copies remaining usable
+with their original passwords. Users are directed to keep a private offline
+24-word backup and choose a unique long password. These explanations do not
+change encryption, storage formats, idle locking or signing behavior, and do not
+claim security certification.
+
+Browser-storage facts were checked against [MDN localStorage](https://developer.mozilla.org/en-US/docs/Web/API/Window/localStorage)
+and the [OWASP storage guidance](https://cheatsheetseries.owasp.org/cheatsheets/HTML5_Security_Cheat_Sheet.html#storage-apis).
+These references explain browser boundaries; they are not an endorsement or audit
+of this wallet.
+
 ## Native Nodus address (0.1.2)
 
 New wallets create **24 BIP39 words** and automatically show the **Nodus address**
