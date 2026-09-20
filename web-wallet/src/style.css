@@ -99,6 +99,7 @@ p { color: var(--muted); font-size: 14px; line-height: 1.7; margin: 12px 0 20px;
 .storage-questions p { font-size: 12px; line-height: 1.8; max-width: 900px; margin: 14px 0 0; }
 .phrase-caution { padding: 12px 14px; border: 1px solid #d5f99836; border-radius: 7px; font-size: 12px; line-height: 1.7; background: #d5f99806; overflow-wrap: anywhere; }
 .phrase-caution strong { color: var(--text); font-weight: 500; }
+.recovery-warning { scroll-margin-top: 24px; }
 .recovery-warning h3 { font-size: 15px; line-height: 1.5; margin: 8px 0 12px; }
 .recovery-warning p { font-size: 12px; line-height: 1.75; margin: 10px 0 0; }
 .recovery-warning .eyebrow { font-size: 9px; margin: 0; }

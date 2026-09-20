@@ -38,6 +38,14 @@ try {
   await page.goto(url);
   await page.waitForFunction(() => typeof document.querySelector('#restore').onclick === 'function');
   await page.locator('#restore').click();
+  for (const width of [320, 390, 1280]) {
+    await page.locator('#phrase-cancel').click();
+    await page.setViewportSize({ width, height: 844 });
+    await page.locator('#restore').click();
+    const warning = await page.locator('#recovery-warning').boundingBox();
+    assert.ok(warning.y >= 0 && warning.y + warning.height <= 844, `Recovery warning must be visible on entry at ${width}px`);
+    assert.equal(await page.locator('#phrase-grid').evaluate(grid => grid.contains(document.activeElement)), false);
+  }
   const phraseInput = page.locator('#phrase-1'), suggestions = page.locator('#phrase-suggestions-1');
   assert.equal(await page.locator('#phrase-grid input').count(), 24);
   assert.deepEqual(await page.locator('#phrase-grid label').allTextContents(), Array.from({ length: 24 }, (_, i) => `${i + 1}.`));

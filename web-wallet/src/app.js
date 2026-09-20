@@ -96,7 +96,10 @@ function phraseForm(create) {
   phraseFields.set(generatedPhrase || '', create);
   $('phrase-label').textContent = create ? 'Write down your 24-word recovery phrase privately' : 'Enter your 24-word Nodus recovery phrase';
   $('phrase-help').textContent = 'This phrase controls your funds. It stays local; an encrypted copy is stored only if you choose to save it. Keep an offline backup. This screen clears after 10 minutes of inactivity.';
-  $('phrase-submit').textContent = create ? 'I saved it — verify backup' : 'Open wallet'; message(''); phraseFields.focus();
+  $('phrase-submit').textContent = create ? 'I saved it — verify backup' : 'Open wallet'; message('');
+  // Show the recovery warning before focusing a word field, including on narrow screens.
+  $('recovery-warning-title').focus({ preventScroll: true });
+  $('recovery-warning').scrollIntoView({ block: 'start' });
   activity();
 }
 $('create').onclick = () => phraseForm(true);

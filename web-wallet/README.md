@@ -44,7 +44,10 @@ activation, syncing and repair do not require sharing a phrase: this wallet rest
 locally in the browser. Before any word entry, users are directed to check the exact
 `https://wallet.nodusnetwork.io` address themselves and never send words to anyone,
 including a person claiming to represent Nodus. The warning is visible above the
-fields; it does not introduce a new acceptance checkbox or send any data.
+fields; it does not introduce a new acceptance checkbox or send any data. In
+0.1.9, opening create/restore focuses and scrolls to the warning first. Focusing
+the first word had scrolled its heading off screen at 320px; browser regression
+checks cover initial warning visibility at 320px, 390px and desktop widths.
 
 ## Recovery storage explanations (0.1.7)
 
