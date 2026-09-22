@@ -274,6 +274,10 @@ body:has(#wallet-open:not([hidden])) .wallet-card { background: #171c13; }
 .send-panel { display: flex; flex-direction: column; }
 .send-panel .hint { margin-bottom: 0; }
 .send-panel #review-button { margin-top: 24px; }
+/* #review-button moved from a direct form child into #send-fields (so the
+   whole group can be hidden at once for a receive-only network); restore the
+   width the "form > button" rule no longer reaches at this depth. */
+#send-fields > button { width: 100%; }
 .send-footnote { font-size: 11px; text-align: center; margin: 12px 0 0; }
 .activity-panel, .device-panel { margin-top: 22px; }
 .activity-panel .hint { max-width: 740px; }
@@ -288,9 +292,6 @@ body:has(#wallet-open:not([hidden])) .wallet-card { background: #171c13; }
 .device-panel > details:last-child { margin-bottom: 0; }
 .device-panel > details > summary { color: var(--text); }
 #vault-password + .hint { max-width: 650px; }
-#cpunk-assets { padding: 18px 24px; margin: 22px 0 0; border: 1px solid var(--line); border-radius: 10px; }
-#cpunk-assets > summary { color: var(--text); }
-#cpunk-assets label { line-height: 1.5; }
 @media (max-width: 900px) {
   .dashboard-grid { grid-template-columns: minmax(0, 1fr); }
   body:has(#wallet-open:not([hidden])) .privacy-facts { grid-template-columns: minmax(0, 1fr); gap: 18px; }
@@ -316,7 +317,6 @@ body:has(#wallet-open:not([hidden])) .wallet-card { background: #171c13; }
   .receive-panel .address-row code { flex-basis: 100%; line-height: 1.6; }
   .receive-panel .address-row button { width: 100%; }
   #vault-storage-controls > label { line-height: 1.7; }
-  #cpunk-assets { padding: 18px; }
 }
 .storage-consent { padding: 16px; margin: 22px 0 14px; border: 1px solid #d5f99840; border-radius: 8px; background: #d5f99806; }
 .storage-consent input { flex-shrink: 0; margin: 3px 0 0; }

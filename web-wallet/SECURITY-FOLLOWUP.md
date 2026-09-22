@@ -171,3 +171,27 @@ and exactly one broadcast attempt even on HTTP 429. No retry, key or relay is
 added. CPUNK controls now live inside the open wallet; lock aborts reads and
 clears the public address/result. Landing-page and lock behavior are checked
 in the intercepted browser smoke suite.
+
+## Web portfolio placement (0.1.13)
+
+CPUNK moved from a separate collapsed panel with a manual derive button and a
+manual address/endpoint form into one row of the wallet's own asset list,
+alongside ETH/BNB/SOL/TRX, with only a Receive action. Its address now derives
+automatically as soon as the wallet opens (create, restore or saved-wallet
+unlock), the same trigger point and the same AbortController/`current()`
+late-result-guard pattern as the existing Nodus address, instead of waiting for
+a button click. Its balance read is likewise automatic, started only once that
+address is known, through the same portfolio refresh cycle used for the other
+four networks; a CPUNK read failure shows "Balance unavailable" on its own row
+and never an inferred zero, and never affects the other networks' reads. What
+did **not** change: `src/adapters/cpunk.js`'s request shape, its 64 KiB/15 s
+bounds, and `src/cpunk-protocol.js`'s response parsing; `src/cpunk/derive.js`'s
+WASM bridge, its per-derivation fresh instance and memory wipe; `src/vault.js`
+and the encrypted-activity code path; and transfer preparation/signing for the
+four permanent chains. Sending on Cellframe remains impossible: `src/wallet.js`
+still has no `cellframe` adapter entry, so `prepareTransfer()` rejects it
+before reaching a chain implementation, independent of the UI now also hiding
+and disabling the send form for a receive-only network. `VITE_ENABLE_CPUNK=false`
+continues to exclude the adapter, the derivation module and its WASM from the
+bundle; the Cellframe network option, its automatic derivation call and its
+CPUNK asset row are gated by the same flag, checked once at bundle build time.

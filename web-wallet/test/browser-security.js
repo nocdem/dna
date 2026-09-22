@@ -1,4 +1,4 @@
-import { portfolioRead } from './portfolio-routes.js';
+import { portfolioRead, cellframeRead } from './portfolio-routes.js';
 import { pastePhrase, readPhrase } from './browser-phrase.js';
 // Production bundle; all external traffic is intercepted. Public test phrase only.
 import assert from 'node:assert/strict';
@@ -21,6 +21,7 @@ const context = await browser.newContext();
 await context.route('**/*', async route => {
   const req = route.request(); if (req.url().startsWith(url + '/')) return route.continue();
   if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': '*' } });
+  if (await cellframeRead(route)) return;
   if (await portfolioRead(route, { ethereum: false })) return;
   const body = req.postDataJSON(); assert.ok(!JSON.stringify(body).includes(phrase));
   const process = async call => {
@@ -170,7 +171,9 @@ try {
   assert.equal(await page.locator('#wallet-open').isVisible(), false);
   await clearingPeer.close();
   console.log('Clearing local storage in another tab locks the open wallet.');
-  await restore(page);
+  // Cellframe derivation now starts automatically as soon as the wallet opens
+  // (like the Nodus address), so the fetch patch must be installed before
+  // restore(), not triggered by a manual button afterwards.
   await page.evaluate(() => {
     const original = globalThis.fetch;
     globalThis.fetch = (input, options) => {
@@ -179,13 +182,12 @@ try {
       return new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }));
     };
   });
-  await page.locator('#cpunk-assets > summary').click(); await page.locator('#cpunk-derive').click();
+  await restore(page);
   await page.waitForFunction(() => !!globalThis.cpunkFetchSignal);
   await page.locator('#lock').click();
-  await page.waitForFunction(() => !document.querySelector('#cpunk-derive').disabled);
+  await page.locator('#welcome').waitFor({ state: 'visible' });
   assert.equal(await page.evaluate(() => globalThis.cpunkFetchSignal.aborted), true);
-  assert.equal(await page.locator('#cpunk-address').inputValue(), '');
-  console.log('Lock aborts an in-flight CPUNK module fetch and leaves no derived address.');
+  console.log('Lock aborts an in-flight Cellframe address fetch.');
   assert.deepEqual(errors, []); assert.ok(staleWriteCompleted);
   console.log('Browser security regressions passed. All blockchain traffic was intercepted.');
 } finally { await browser.close(); server.kill(); }

@@ -1,7 +1,7 @@
 import { CHAINS } from './config.js';
 import { ASSETS, chainBalances, readPrices, portfolioSnapshot, groupAssets, usdText } from './portfolio.js';
 
-const names = { ETH: 'Ethereum', BNB: 'BNB', SOL: 'Solana', TRX: 'TRON', USDT: 'Tether', USDC: 'USD Coin', DAI: 'Dai', USDD: 'USDD' };
+const names = { ETH: 'Ethereum', BNB: 'BNB', SOL: 'Solana', TRX: 'TRON', USDT: 'Tether', USDC: 'USD Coin', DAI: 'Dai', USDD: 'USDD', CPUNK: 'CPUNK' };
 const icons = new Set(['ETH', 'BNB', 'SOL', 'TRX', 'USDT']);
 const $ = id => document.getElementById(id);
 function el(tag, className, text) { const node = document.createElement(tag); node.className = className; if (text !== undefined) node.textContent = text; return node; }
@@ -11,12 +11,21 @@ function icon(symbol) {
 }
 
 // This controller receives only public addresses, never a wallet or signing key.
-export function createPortfolio({ readBalances, selectAsset }) {
+// `cellframe`, when given, is `{ network: { name, symbol, receiveOnly, ... }, asset: CPUNK_ASSET }`:
+// one extra, unpriced, receive-only network (CPUNK/Cellframe) merged alongside the
+// permanent CHAINS/ASSETS registry. Its address is derived later than the others
+// (asynchronous local derivation, not part of deriveWallet()), so its balance read
+// is not started at open() alongside the rest; it starts once setAddress() reports
+// the derived address, or is marked errored if derivation fails.
+export function createPortfolio({ readBalances, selectAsset, cellframe }) {
+  const networks = { ...CHAINS, ...(cellframe ? { [cellframe.asset.chain]: cellframe.network } : {}) };
+  const assets = cellframe ? [...ASSETS, cellframe.asset] : ASSETS;
+  const chains = Object.keys(networks);
   let addresses, endpoints, balances = {}, quotes = {}, filter = 'all', hidden = false, session = 0, timer, priceJob;
   const jobs = new Map();
   const text = value => hidden ? '••••' : value;
   function render() {
-    const snap = portfolioSnapshot(balances, quotes);
+    const snap = portfolioSnapshot(balances, quotes, Date.now(), assets);
     $('portfolio-total').textContent = text(usdText(snap.total, snap.positive));
     $('portfolio-label').textContent = snap.state === 'partial' ? 'Known value · incomplete' : snap.state === 'loading' ? 'Updating portfolio' : 'Estimated portfolio value';
     $('portfolio-status').textContent = snap.state === 'idle' ? 'Refresh all to read your balances and prices.'
@@ -27,7 +36,7 @@ export function createPortfolio({ readBalances, selectAsset }) {
     $('refresh').disabled = jobs.size > 0 || !!priceJob;
     $('portfolio-hide').textContent = hidden ? 'Show balances' : 'Hide balances';
     $('portfolio-hide').setAttribute('aria-pressed', String(hidden));
-    $('portfolio-networks').replaceChildren(...Object.entries(CHAINS).map(([chain, c]) => {
+    $('portfolio-networks').replaceChildren(...Object.entries(networks).map(([chain, c]) => {
       const rows = snap.rows.filter(r => r.chain === chain), ready = rows.every(r => r.balance !== null);
       const status = rows.some(r => r.state === 'loading') ? 'Reading' : ready ? 'Balances read' : rows.every(r => r.state === 'idle') ? 'Not read' : 'Incomplete';
       const badge = el('span', 'network-health'); badge.append(icon(c.symbol), el('span', '', `${c.name} · ${status}`)); return badge;
@@ -39,22 +48,22 @@ export function createPortfolio({ readBalances, selectAsset }) {
     $('balances').replaceChildren(...groupAssets(snap.rows, filter).map(group => {
       const detail = el('details', 'asset-group'); detail.dataset.symbol = group.symbol; detail.open = opened.has(group.symbol);
       const summary = el('summary', 'asset-summary'), name = el('span', 'asset-name');
-      name.append(el('strong', '', group.symbol), el('small', '', `${names[group.symbol]} · ${group.rows.length === 1 ? CHAINS[group.rows[0].chain].name : `${group.rows.length} networks`}`));
+      name.append(el('strong', '', group.symbol), el('small', '', `${names[group.symbol]} · ${group.rows.length === 1 ? networks[group.rows[0].chain].name : `${group.rows.length} networks`}`));
       const value = el('span', 'asset-value');
       value.append(el('strong', '', text(group.balance === null ? '—' : `${group.balance}${group.partialBalance ? ' known' : ''}`)),
         el('small', '', text(`${usdText(group.usd, group.positive)}${group.partialValue && group.usd !== null ? ' known' : ''}`)));
       summary.append(icon(group.symbol), name, value, el('span', 'asset-chevron', '⌄')); detail.append(summary);
       for (const row of group.rows) {
         const entry = el('div', 'chain-holding'), identity = el('span', 'holding-network');
-        identity.append(icon(CHAINS[row.chain].symbol), el('span', '', CHAINS[row.chain].name));
+        identity.append(icon(networks[row.chain].symbol), el('span', '', networks[row.chain].name));
         const value = el('span', 'holding-value');
         const state = row.state === 'loading' ? 'Reading…' : row.state === 'stale' ? 'Balance out of date' : row.state === 'idle' ? 'Not read' : 'Balance unavailable';
         value.append(el('strong', '', text(row.balance === null ? state : `${row.balance} ${row.symbol}`)),
           el('small', '', text(row.priceMissing ? 'Price unavailable' : usdText(row.usd, row.positive))));
         const actions = el('span', 'holding-actions');
-        for (const action of ['Send', 'Receive']) {
+        for (const action of networks[row.chain].receiveOnly ? ['Receive'] : ['Send', 'Receive']) {
           const button = el('button', 'secondary small', action); button.type = 'button';
-          button.setAttribute('aria-label', `${action} ${row.symbol} on ${CHAINS[row.chain].name}`);
+          button.setAttribute('aria-label', `${action} ${row.symbol} on ${networks[row.chain].name}`);
           button.onclick = () => selectAsset(row.chain, row.symbol, action.toLowerCase()); actions.append(button);
         }
         entry.append(identity, value, actions); detail.append(entry);
@@ -69,23 +78,29 @@ export function createPortfolio({ readBalances, selectAsset }) {
       control?.focus({ preventScroll: true });
     }
   }
+  async function readChainBalances(chain, current) {
+    // No address yet (Cellframe derivation still pending): stay "Reading…"
+    // rather than issuing a request or reporting a false error.
+    if (!addresses[chain]) { for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'loading' }; render(); return; }
+    const controller = new AbortController(); jobs.set(chain, controller);
+    for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'loading' };
+    render();
+    try {
+      const rows = await readBalances(chain, addresses[chain], endpoints[chain], { signal: controller.signal });
+      if (session === current) Object.assign(balances, chainBalances(chain, rows, Date.now(), assets));
+    } catch {
+      if (session === current) for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'error' };
+    } finally { if (session === current) { jobs.delete(chain); render(); } }
+  }
   async function refresh() {
     if (!addresses || jobs.size || priceJob) return;
     const current = session;
     quotes = {};
-    for (const asset of ASSETS) balances[asset.key] = { state: 'loading' };
+    for (const asset of assets) balances[asset.key] = { state: 'loading' };
     const controller = new AbortController(); priceJob = controller;
-    for (const chain of Object.keys(CHAINS)) jobs.set(chain, new AbortController());
     $('portfolio-updated').textContent = 'Reading balances and market prices…'; render();
     const priceRead = readPrices({ signal: controller.signal }).then(value => { if (session === current) quotes = value; }).catch(() => {});
-    const reads = [...jobs].map(async ([chain, job]) => {
-      try {
-        const rows = await readBalances(chain, addresses[chain], endpoints[chain], { signal: job.signal });
-        if (session === current) Object.assign(balances, chainBalances(chain, rows));
-      } catch {
-        if (session === current) for (const asset of ASSETS.filter(a => a.chain === chain)) balances[asset.key] = { state: 'error' };
-      } finally { if (session === current) { jobs.delete(chain); render(); } }
-    });
+    const reads = chains.map(chain => readChainBalances(chain, current));
     await Promise.allSettled([priceRead, ...reads]);
     if (session !== current) return;
     priceJob = undefined;
@@ -108,13 +123,23 @@ export function createPortfolio({ readBalances, selectAsset }) {
     open(savedAddresses, savedEndpoints, { automatic: false });
     $('portfolio-status').textContent = 'Network endpoint changed. Refresh all to read balances again.';
   }
+  // Reports a late-arriving address (Cellframe), or its failure (falsy address),
+  // once local derivation settles. A session guard is unnecessary here beyond the
+  // `addresses` check: open()/clear() always run before a stale wallet's caller
+  // could reach this, and readChainBalances re-checks `session` itself.
+  function setAddress(chain, address) {
+    if (!addresses) return;
+    addresses[chain] = address;
+    if (!address) { for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'error' }; render(); return; }
+    void readChainBalances(chain, session);
+  }
   $('portfolio-refresh').onclick = refresh;
   $('refresh').onclick = refresh;
   $('portfolio-hide').onclick = () => { hidden = !hidden; render(); };
-  $('portfolio-filters').replaceChildren(...[['all', 'All networks'], ...Object.entries(CHAINS).map(([key, c]) => [key, c.name])].map(([chain, name]) => {
+  $('portfolio-filters').replaceChildren(...[['all', 'All networks'], ...Object.entries(networks).map(([key, c]) => [key, c.name])].map(([chain, name]) => {
     const button = el('button', 'network-filter', name); button.type = 'button'; button.dataset.chain = chain;
     button.onclick = () => { filter = chain; render(); }; return button;
   }));
   render();
-  return { open, clear, refresh, changeEndpoint };
+  return { open, clear, refresh, changeEndpoint, setAddress };
 }

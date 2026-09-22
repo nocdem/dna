@@ -1,4 +1,4 @@
-import { portfolioRead } from './portfolio-routes.js';
+import { portfolioRead, cellframeRead } from './portfolio-routes.js';
 import { pastePhrase, readPhrase } from './browser-phrase.js';
 // Production assets, public test phrases, and no external network requests.
 import assert from 'node:assert/strict';
@@ -53,10 +53,17 @@ try {
   const page = await browser.newPage(); page.setDefaultTimeout(10000);
   const seen = Promise.withResolvers(), release = Promise.withResolvers(), completed = Promise.withResolvers();
   let wasmRequests = 0, failLoad = false;
-  const unexpected = [], errors = [];
+  const unexpected = [], errors = [], cellframeRequests = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.route('**/*', async route => {
     const req = route.request();
+    // The wallet now derives its Cellframe/CPUNK address and reads its balance
+    // automatically alongside the Nodus address on every restore below.
+    // cellframeRead() validates the request shape (method, body fields, and
+    // the address by format, same as portfolioRead's Solana/EVM checks) before
+    // fulfilling it, so a malformed or secret-carrying request here fails this
+    // test rather than being silently accepted.
+    if (await cellframeRead(route)) { cellframeRequests.push(req.url()); return; }
     if (await portfolioRead(route)) return;
     if (!req.url().startsWith(url + '/') || req.method() !== 'GET' || req.postData()) {
       unexpected.push({ url: req.url(), method: req.method() }); return route.abort();
@@ -172,6 +179,14 @@ try {
   assert.equal(await page.locator('#copy-nodus-address').isDisabled(), true);
   assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
   assert.equal(wasmRequests, 3);
+  // No request other than the mocked, shape-checked Cellframe balance reads
+  // reached an external origin: every entry actually observed here is that
+  // exact endpoint (the exact count is not asserted — each restore's
+  // derive-then-read chain races the lock() calls above by design, so how
+  // many complete before being aborted is not deterministic; only that none
+  // of them was ever anything else, and that the wiring fired at least once).
+  assert.ok(cellframeRequests.length >= 1, 'expected at least one automatic Cellframe balance read to be observed and mocked');
+  assert.ok(cellframeRequests.every(u => u === 'https://rpc.cellframe.net/connect'));
   assert.deepEqual(unexpected, []); assert.deepEqual(errors, []);
-  console.log('Nodus browser checks passed: 24 numbered boxes, read-only generation, full/partial/overflow and real clipboard paste, blank-word/checksum rejection, mobile layout, local a/ab suggestions and keyboard/click completion; late derivation cannot replace a reopened wallet; lock clears address; external-chain switch preserves native identity; failed module load shows unavailable; no unmocked external requests or storage.');
+  console.log('Nodus browser checks passed: 24 numbered boxes, read-only generation, full/partial/overflow and real clipboard paste, blank-word/checksum rejection, mobile layout, local a/ab suggestions and keyboard/click completion; late derivation cannot replace a reopened wallet; lock clears address; external-chain switch preserves native identity; failed module load shows unavailable; automatic Cellframe balance reads are mocked and shape-checked; no other unmocked external requests or storage.');
 } finally { await browser?.close(); server?.kill(); }

@@ -1,5 +1,6 @@
 // Mainnet definitions based on native headers, with browser RPCs and issuer-verified DAI.
 // Provider/identity references and deployment corrections: README.md.
+import { CPUNK_ENDPOINT } from './cpunk-protocol.js';
 export const CHAINS = {
   ethereum: { name: 'Ethereum', symbol: 'ETH', decimals: 18, chainId: 1, endpoint: 'https://ethereum-rpc.publicnode.com', explorer: 'https://etherscan.io/tx/', tokens: [
     { symbol: 'USDT', decimals: 6, address: '0xdAC17F958D2ee523a2206206994597C13D831ec7' },
@@ -16,6 +17,12 @@ export const CHAINS = {
     { symbol: 'USDC', decimals: 6, address: 'TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8' },
     { symbol: 'USDD', decimals: 18, address: 'TPYmHEhy5n8TCEfYGqW2rPxsghSfzghPDn' }] },
 };
+// Read-only Cellframe network, shown alongside the sendable chains above but kept
+// out of CHAINS: src/wallet.js's adapter map has no 'cellframe' entry, so
+// prepareTransfer() cannot route a send to it (it rejects before assetFor() is
+// reached), and this network carries no priced token list. `receiveOnly` drives
+// the UI's send-form disabling and single Receive button for its assets.
+export const CELLFRAME = { name: 'Cellframe', symbol: 'CPUNK', decimals: 18, endpoint: CPUNK_ENDPOINT, tokens: [], receiveOnly: true };
 export function assetFor(chain, symbol) {
   const c = CHAINS[chain];
   if (!c) throw new Error('Unsupported chain.');

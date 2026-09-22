@@ -1,9 +1,27 @@
 // Fully intercepted read-only portfolio fixtures. Never forward a blockchain request.
 import assert from 'node:assert/strict';
 import { ASSETS, PRICE_URL } from '../src/portfolio.js';
-import { CHAINS } from '../src/config.js';
+import { CHAINS, CELLFRAME } from '../src/config.js';
 export function priceFixture(price = 2, timestamp = Math.floor(Date.now() / 1000)) {
   return { coins: Object.fromEntries(ASSETS.map(a => [a.priceId, { symbol: a.symbol, decimals: a.decimals, price, timestamp, confidence: .99 }])) };
+}
+// Cellframe/CPUNK is derived locally (not part of deriveWallet()'s fixed test
+// vectors), so — matching how portfolioRead validates other chains' addresses
+// by format rather than by exact value (see the Solana/EVM regex checks below)
+// — this checks the request shape and the address format, not a specific
+// address string. `balance` is the RPC's decimal "coins" string, not raw units.
+export async function cellframeRead(route, { balance = '10', fail = false } = {}) {
+  const req = route.request();
+  if (req.url() !== CELLFRAME.endpoint) return false;
+  assert.equal(req.method(), 'POST');
+  const body = req.postDataJSON();
+  assert.equal(body.method, 'wallet'); assert.equal(body.subcommand, 'info'); assert.equal(body.id, 1);
+  assert.deepEqual(Object.keys(body.arguments).sort(), ['addr', 'net', 'token']);
+  assert.equal(body.arguments.net, 'Backbone'); assert.equal(body.arguments.token, 'CPUNK');
+  assert.match(body.arguments.addr, /^[1-9A-HJ-NP-Za-km-z]{100,110}$/);
+  if (fail) { await route.abort(); return true; }
+  await route.fulfill({ json: { result: [[{ addr: body.arguments.addr, balance }]] } });
+  return true;
 }
 export async function portfolioRead(route, { ethereum = true, holdings = {}, failures = [], wrongNetwork } = {}) {
   const req = route.request(), url = new URL(req.url());

@@ -9,6 +9,12 @@ export const ASSETS = Object.entries(CHAINS).flatMap(([chain, c]) => [
   ...c.tokens.map(t => ({ chain, ...t, priceId: `${chain}:${t.address}` }))
 ].map(asset => ({ ...asset, key: `${chain}:${asset.symbol}` })));
 export const PRICE_URL = `https://coins.llama.fi/prices/current/${ASSETS.map(a => a.priceId).join(',')}`;
+// Read-only Cellframe/CPUNK balance row. Unpriced by design: no priceId, so it
+// never enters PRICE_URL and is always excluded from the USD total (see the
+// `priced` scoping in portfolioSnapshot below), matching the README promise
+// that CPUNK has no price display. Merged into the live app's asset list only
+// by portfolio-view.js when the CPUNK module is enabled.
+export const CPUNK_ASSET = { chain: 'cellframe', symbol: 'CPUNK', decimals: 18, key: 'cellframe:CPUNK' };
 const USD_SCALE = 100000000n;
 
 export function balanceUnits(value, decimals) {
@@ -19,8 +25,8 @@ export function balanceUnits(value, decimals) {
   if (units >= 2n ** 256n) throw new Error('Balance out of range.');
   return units;
 }
-export function chainBalances(chain, rows, observedAt = Date.now()) {
-  const expected = ASSETS.filter(a => a.chain === chain);
+export function chainBalances(chain, rows, observedAt = Date.now(), assets = ASSETS) {
+  const expected = assets.filter(a => a.chain === chain);
   if (!Array.isArray(rows) || rows.length > 100) throw new Error('Invalid balance response.');
   return Object.fromEntries(expected.map(asset => {
     const matches = rows.filter(row => row?.symbol === asset.symbol);
@@ -52,23 +58,31 @@ export function parsePrices(data, now = Date.now()) {
 export async function readPrices({ signal, fetcher } = {}) {
   return parsePrices(await request(PRICE_URL, undefined, { signal, fetcher }));
 }
-export function portfolioSnapshot(balances, quotes, now = Date.now()) {
-  const rows = ASSETS.map(asset => {
+export function portfolioSnapshot(balances, quotes, now = Date.now(), assets = ASSETS) {
+  const rows = assets.map(asset => {
     const balance = balances[asset.key] || { state: 'idle' }, quote = quotes[asset.key];
+    const priced = asset.priceId !== undefined;
     const freshBalance = balance.state === 'ready' && now - balance.observedAt <= BALANCE_MAX_AGE && balance.observedAt <= now;
     const freshPrice = quote && now - quote.observedAt <= PRICE_MAX_AGE && quote.observedAt <= now + 60000;
-    const usd = freshBalance && (balance.units === 0n || freshPrice)
+    // Unpriced assets (e.g. CPUNK) never resolve a USD value, even at a known zero
+    // balance: there is no price feed for them to be consistent against.
+    const usd = priced && freshBalance && (balance.units === 0n || freshPrice)
       ? balance.units * (quote?.units || 0n) / (10n ** BigInt(asset.decimals)) : null;
     return { ...asset, ...balance, state: balance.state === 'ready' && !freshBalance ? 'stale' : balance.state,
       balance: freshBalance ? formatUnits(balance.units, asset.decimals) : null, usd,
-      positive: freshBalance && balance.units > 0n, priceMissing: freshBalance && balance.units > 0n && !freshPrice };
+      positive: freshBalance && balance.units > 0n, priceMissing: priced && freshBalance && balance.units > 0n && !freshPrice };
   });
-  const known = rows.filter(row => row.usd !== null), total = known.reduce((sum, row) => sum + row.usd, 0n);
-  const complete = known.length === rows.length;
+  const priced = rows.filter(row => row.priceId !== undefined);
+  const known = priced.filter(row => row.usd !== null), total = known.reduce((sum, row) => sum + row.usd, 0n);
+  const complete = known.length === priced.length;
   const state = rows.every(r => r.state === 'idle') ? 'idle' : rows.some(r => r.state === 'loading') ? 'loading' : complete ? 'complete' : 'partial';
+  // The "X balances / Y prices unavailable" hero summary, like the total and
+  // completeness above, is scoped to the priced assets only: an unpriced
+  // asset's own load state is already visible on its own row and never was
+  // part of "the estimate covers only the 14 configured balances".
   return { rows, complete, state, known: known.length, total: complete || total > 0n ? total : null,
-    positive: known.some(row => row.positive), missingBalances: rows.filter(r => r.balance === null).length,
-    missingPrices: rows.filter(r => r.priceMissing).length };
+    positive: known.some(row => row.positive), missingBalances: priced.filter(r => r.balance === null).length,
+    missingPrices: priced.filter(r => r.priceMissing).length };
 }
 export function groupAssets(rows, filter = 'all') {
   const groups = new Map();
@@ -80,11 +94,12 @@ export function groupAssets(rows, filter = 'all') {
     const known = entries.filter(row => row.balance !== null);
     const units = known.reduce((sum, row) => sum + row.units * (10n ** BigInt(18 - row.decimals)), 0n);
     const valued = entries.filter(row => row.usd !== null), usd = valued.reduce((sum, row) => sum + row.usd, 0n);
+    const priced = entries.some(row => row.priceId !== undefined);
     return { symbol, rows: entries, balance: known.length ? formatUnits(units, 18) : null,
       partialBalance: known.length !== entries.length, partialValue: valued.length !== entries.length,
-      usd: valued.length === entries.length || usd > 0n ? usd : null, positive: valued.some(row => row.positive) };
+      usd: priced ? (valued.length === entries.length || usd > 0n ? usd : null) : null, positive: valued.some(row => row.positive) };
   }).sort((a, b) => {
-    const order = ['USDT', 'USDC', 'ETH', 'BNB', 'SOL', 'TRX', 'DAI', 'USDD'];
+    const order = ['USDT', 'USDC', 'ETH', 'BNB', 'SOL', 'TRX', 'DAI', 'USDD', 'CPUNK'];
     return order.indexOf(a.symbol) - order.indexOf(b.symbol);
   });
 }

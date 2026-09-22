@@ -34,7 +34,7 @@ For Caddy, `deploy/Caddyfile` serves the static files and supplies the response 
 - Receive/copy address, automatic balance reads on opening the wallet, manual refresh, native and preset token transfers on Ethereum, BSC, Solana and TRON mainnets. Preset token contracts/decimals are based on the C headers, with DAI corrected against the issuer's documentation: ETH USDT/USDC/DAI; BSC USDT/USDC; SOL USDT/USDC; TRON USDT/USDC/USDD. Token listing is not an endorsement or statement of current issuer support.
 - Exact integer amount handling, address validation by chain libraries, EVM chain-ID and Solana genesis checks, explicit review of network/sender/recipient/asset/amount/fee before local signing and broadcast, expiring single-use reviews, and transaction explorer links. Broadcast submission is shown as pending, never as confirmed. Ambiguous failures are not automatically retried.
 - EVM gas estimation with a 20% gas-limit margin and legacy gas-price transactions; Solana fee/rent estimation and idempotent recipient token account creation, spending only from the sender’s locally derived associated token account; TRON native/TRC-20 transaction intent and protobuf consistency validation. TRON token energy has a 100 TRX limit; bandwidth/activation charges are network dependent and not falsely presented as an exact fee estimate. Solana balances can include other token accounts, but those accounts cannot be spent here. TRON reads and sends require the configured default mainnet provider and matching genesis; there is no testnet fallback.
-- Temporary **CPUNK-only, read-only** Cellframe/Backbone query using a public address. Local address derivation from the open wallet’s phrase is available; Cellframe signing, sending, trading and claiming are unavailable. Its balance is not proof of ownership, a snapshot, or airdrop eligibility.
+- Temporary **CPUNK-only, read-only** Cellframe/Backbone integration (0.1.13): CPUNK sits inside the wallet's own asset list like any other network, no separate panel. Its address is derived automatically as soon as the wallet opens, from the same recovery phrase, the same way as the Nodus address; there is no manual derive step. Cellframe signing, sending, trading and claiming are unavailable, and the send form is disabled with a plain-language note when Cellframe is selected. Its balance is not proof of ownership, a snapshot, or airdrop eligibility.
 
 ## Multichain portfolio (0.1.12)
 
@@ -54,9 +54,12 @@ script. The price request contains asset identifiers but no wallet address;
 RPC balance requests contain public addresses. Both providers see connection
 information such as the browser's IP. No seed, private key or password is sent.
 
-The estimate covers only the 14 configured native/token balances. **NODUS and
-CPUNK are excluded**: Nodus remains address-only and CPUNK has no price display.
-Custom tokens, other accounts and unsupported networks are not discovered.
+The estimate's USD total covers only the 14 configured native/token balances.
+**NODUS and CPUNK are excluded from the total**: Nodus remains address-only
+(no balance at all), and CPUNK's balance is shown alongside the other assets
+but has no price display or USD value, so it never affects the total or the
+"all balances included" completeness message. Custom tokens, other accounts
+and unsupported networks are not discovered.
 Amounts and aggregation use integers; display rounds only the USD value. This
 is not an executable sale quote or proof that a provider reported honest data.
 
@@ -243,9 +246,9 @@ npm run test:portfolio
 
 The default is `https://rpc.cellframe.net/connect`. On 2026-09-19 a read-only POST using the repository's public DNA registration address returned HTTP 200, `Access-Control-Allow-Origin: *`, POST/OPTIONS allowed, and the full CellframeNode 5.7-44 JSON response. CPUNK was `0.00000000000000001` coins / `10` datoshi; the response also contained CELL. This is an observation, not a current balance guarantee. An earlier 12-second HTTPS probe received headers but timed out before the body; HTTP also timed out. These observations do not establish a network outage. Browser preflight and live access from the final deployment origin still require verification.
 
-The native query contract is `messenger/blockchain/cellframe/cellframe_rpc.c`: `wallet`, `info`, `{net:'Backbone', addr, token:'CPUNK'}`. The live response uses `result[0][0].tokens[]`, `token.ticker`, `coins` and `datoshi`. The parser selects exactly one CPUNK entry, checks Backbone and matching returned address, and verifies coins against integer datoshi with 18 decimal places. The older native `result[0][0].balance` format is also supported. Missing tokens, malformed data, mismatched amounts and connectivity failures are errors, never inferred zero balances. Manually entered addresses receive structural Base58/length checking; locally derived addresses additionally verify the Backbone network, signature type and SHA3 checksum. Neither establishes ownership to a server. UI status reports the last read outcome and resets when input changes.
+The native query contract is `messenger/blockchain/cellframe/cellframe_rpc.c`: `wallet`, `info`, `{net:'Backbone', addr, token:'CPUNK'}`. The live response uses `result[0][0].tokens[]`, `token.ticker`, `coins` and `datoshi`. The parser selects exactly one CPUNK entry, checks Backbone and matching returned address, and verifies coins against integer datoshi with 18 decimal places. The older native `result[0][0].balance` format is also supported. Missing tokens, malformed data, mismatched amounts and connectivity failures are errors, never inferred zero balances. The address is always the one derived locally from the open wallet's phrase (0.1.13: there is no manual address-entry field); derivation itself verifies the Backbone network, signature type and SHA3 checksum before the address is ever queried. Neither establishes ownership to a server. The Cellframe row shows the last read outcome for its balance and updates automatically on refresh, like every other network.
 
-A custom trusted HTTPS endpoint may be entered for this tab. The default and custom endpoints are contacted directly by the browser and must allow browser access (CORS). Read-only command-line verification uses the public address from `cellframe_rpc.h`:
+A custom trusted HTTPS endpoint for Cellframe may be entered through the same per-network **HTTPS RPC endpoint** field used for the other chains (select Cellframe, then expand Device & settings), not a dedicated CPUNK field. The default and custom endpoints are contacted directly by the browser and must allow browser access (CORS). Read-only command-line verification uses the public address from `cellframe_rpc.h`:
 
 ```sh
 npm run cpunk:verify
@@ -267,7 +270,9 @@ Chain SDKs, not the existing native C binaries, implement browser signing; exist
 VITE_ENABLE_CPUNK=false npm run build
 ```
 
-The CPUNK panel is removed and the lazy-loaded adapter is excluded from the bundle. The reusable `src/wallet.js`, permanent adapters and key derivation do not import CPUNK. For final source removal, delete `src/adapters/cpunk.js`, `src/cpunk-protocol.js`, `scripts/verify-cpunk.js`, `src/cpunk/` (including WASM), `crypto/cpunk-wasm.c`, `crypto/native-vector.c`, `scripts/build-cpunk-wasm.sh`, `scripts/build-native-vector.sh`, its isolated UI block/form and corresponding tests. Keep `src/nodus/`, `crypto/nodus-*.c` and `scripts/build-nodus-*.sh`: native Nodus address derivation is permanent and independent of CF-20. No permanent-chain changes are needed.
+The Cellframe network option, its automatic address derivation and its CPUNK asset row disappear from the network list, the network selector and the portfolio; the lazy-loaded adapter and derivation module (and their WASM) are excluded from the bundle, verified by inspecting `dist/assets` after a disabled build. The reusable `src/wallet.js`, permanent adapters and key derivation do not import CPUNK. `src/config.js`'s `CELLFRAME` export and `src/portfolio.js`'s `CPUNK_ASSET` export remain defined either way (plain data, no import of the adapter/derivation/WASM), but nothing renders or uses them when the flag is off.
+
+For final source removal, delete `src/adapters/cpunk.js`, `src/cpunk-protocol.js`, `scripts/verify-cpunk.js`, `src/cpunk/` (including WASM), `crypto/cpunk-wasm.c`, `crypto/native-vector.c`, `scripts/build-cpunk-wasm.sh`, `scripts/build-native-vector.sh`, and the corresponding CPUNK-specific tests. Also remove: `CELLFRAME` from `src/config.js`; `CPUNK_ASSET` from `src/portfolio.js`; the `cellframe`-specific branches in `src/portfolio-view.js` (the `cellframe` constructor option, `networks`/`assets` merge, `setAddress`, the receive-only Send-button omission); and, in `src/app.js`, `showCellframeAddress`/`doShowCellframeAddress`, `cellframeDerivation`/`cellframeReader`, the top-level `if (import.meta.env.VITE_ENABLE_CPUNK...)` block, the `cellframe` branches in `selectChain()`/`readBalances`/`lock()`/the send-form guard, and the `#cellframe-address-status`/`#send-fields`/`#send-disabled-note` wiring (the `#send-fields` wrapper and its compensating `#send-fields > button` CSS rule may stay or be flattened back, since no other network currently needs the split). Keep `src/nodus/`, `crypto/nodus-*.c` and `scripts/build-nodus-*.sh`: native Nodus address derivation is permanent and independent of CF-20. No permanent-chain changes are needed.
 
 ## Verification
 
@@ -280,7 +285,7 @@ npm run test:security
 npm run test:portfolio
 ```
 
-The browser test starts its own preview server and intercepts **all external HTTPS requests**, so it never broadcasts to a real chain. Set `CHROMIUM_PATH` to use an existing Chromium binary or `WALLET_URL` to test an already running preview. Offline tests cover deterministic recovery addresses, exact amounts, malformed responses, CPUNK public-only requests, review lifecycle, ETH/SOL signatures and TRON transaction tampering. Browser smoke covers create/backup/restore, chain selection, mocked ETH/ERC-20 send review/finality/scoped activity, network mismatch, local CPUNK derivation and balance errors/success, lock, temporary no-storage mode, encrypted save/unlock/password change/delete, reload/history recovery, KDF-lock cancellation and mobile overflow.
+The browser test starts its own preview server and intercepts **all external HTTPS requests**, so it never broadcasts to a real chain. Set `CHROMIUM_PATH` to use an existing Chromium binary or `WALLET_URL` to test an already running preview. Offline tests cover deterministic recovery addresses, exact amounts, malformed responses, CPUNK public-only requests, review lifecycle, ETH/SOL signatures and TRON transaction tampering. Browser smoke covers create/backup/restore, chain selection (including Cellframe), mocked ETH/ERC-20 send review/finality/scoped activity, network mismatch, automatic Cellframe address derivation and CPUNK balance display/error, send disabled on Cellframe, lock, temporary no-storage mode, encrypted save/unlock/password change/delete, reload/history recovery, KDF-lock cancellation and mobile overflow. Browser portfolio checks additionally cover the CPUNK row's grouping, its exclusion from the USD total and completeness, and its receive-only actions.
 
 `npm audit --json` on 2026-09-19 reports **0 vulnerabilities** across all severities; the recorded result is `test/fixtures/dependency-audit.json`. `@solana/web3.js` is pinned to 1.99.0. Legacy `@solana/spl-token` and its vulnerable `bigint-buffer` tree were removed in favor of the maintained generated `@solana-program/token` 0.16.1 instruction client. A small adapter converts standard instruction account roles to the existing web3.js signer; golden prior-SPL instruction bytes/account roles, ATA derivation, rejection of substituted source accounts and signed native/SPL RPC flows are regression-tested.
 
@@ -288,13 +293,13 @@ A scoped `@solana/web3.js` dependency override uses Jayson 5.0.0, removing vulne
 
 ## Source layout
 
-- `src/config.js`: permanent mainnet/token registry, browser RPC defaults and full Solana genesis hash.
+- `src/config.js`: permanent mainnet/token registry, browser RPC defaults, full Solana genesis hash, and the temporary read-only `CELLFRAME` network definition (name/symbol/decimals/endpoint, `receiveOnly: true`; kept out of the sendable `CHAINS` registry).
 - `src/keys.js`: local 24-word generation, recovery and external-chain derivation.
 - `src/nodus/`, `crypto/nodus-*.c`, `scripts/build-nodus-*.sh`: permanent native Nodus address derivation and native compatibility verifier.
 - `src/core.js`, `src/rpc-transport.js`: exact units, bounded JSON/stream parsing and shared timeout-limited transport for direct RPC plus Ethers, Solana and TRON SDK calls.
 - `src/wallet.js`: common adapter routing and single-use transfer review.
 - `src/adapters/{evm,solana,tron}.js`: permanent balance and send adapters.
-- `src/adapters/cpunk.js`, `src/cpunk-protocol.js`: isolated temporary public balance adapter and bounded protocol parser.
+- `src/adapters/cpunk.js`, `src/cpunk-protocol.js`: isolated temporary public balance adapter and bounded protocol parser, called from `src/app.js`'s portfolio wiring like the permanent chain adapters (0.1.13: no longer a separate manual-entry panel).
 - `src/cpunk/`, `crypto/cpunk-wasm.c`, `crypto/native-vector.c`, `scripts/build-native-vector.sh`, `scripts/build-cpunk-wasm.sh`: temporary legacy Cellframe address derivation, native reference bridge and reproducible build.
 - `src/activity.js`, `src/activity-storage.js`: public confirmation tracking and bounded, authenticated encrypted activity storage.
 - `src/vault.js`: optional authenticated local encryption.
@@ -303,7 +308,7 @@ A scoped `@solana/web3.js` dependency override uses Jayson 5.0.0, removing vulne
 
 ## Connect-compatible Cellframe address derivation
 
-Open your Nodus wallet, expand **CPUNK (CF-20)**, then select **Use this wallet’s address**. Derivation stays in the browser; reading the derived public balance is a separate action. This mode accepts the same normalized, checksum-valid English BIP39 phrase as the multichain wallet. Arbitrary non-BIP39 Cellframe strings are not supported. No recovery phrase is sent to the RPC.
+Open or restore your Nodus wallet: the Cellframe (CPUNK) address derives automatically in the browser, right alongside the Nodus address, with no separate panel or button (0.1.13). Select **Cellframe** from the network list to see it in the receive panel; reading the derived public balance for the portfolio's CPUNK row is a separate, automatic step that starts once the address is ready. This mode accepts the same normalized, checksum-valid English BIP39 phrase as the multichain wallet. Arbitrary non-BIP39 Cellframe strings are not supported; there is no field to paste one. No recovery phrase is sent to the RPC.
 
 The temporary `src/cpunk/` module compiles the repository's unchanged legacy Cellframe Dilithium MODE_1 C, not modern ML-DSA. It matches native `EVP_sha3_256(mnemonic)` (not Keccak), the key generator’s subsequent SHA3, 1196-byte serialized public key and 77-byte Backbone address/checksum. A fresh WASM instance is used per derivation and its memory is overwritten afterward; JavaScript string erasure cannot be guaranteed. The open wallet retains its phrase in RAM until lock to support derivation.
 
@@ -379,7 +384,9 @@ errors. Other RPC URLs and broadcasts are not queued; nothing is automatically
 retried. Shared public capacity and access policies can still change.
 
 The landing page is solely the Nodus wallet. The separate CPUNK card and its
-Cellframe/airdrop promotion are removed. Existing CPUNK read-only support is a
-collapsed asset option inside the open wallet. Lock closes it, aborts pending
-reads and clears its address/result. No CELL balance or transfer support is
-claimed. The CF-20 code remains isolated and removable with the existing flag.
+Cellframe/airdrop promotion are removed. Existing CPUNK read-only support
+(0.1.13) is one row in the wallet's own asset list, next to ETH/BNB/SOL/TRX,
+not a separate collapsed panel. Lock aborts its pending address derivation and
+balance read and clears its displayed address. No CELL balance or transfer
+support is claimed. The CF-20 code remains isolated and removable with the
+existing flag.

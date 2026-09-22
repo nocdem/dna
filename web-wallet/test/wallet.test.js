@@ -48,6 +48,11 @@ test('review only sends on confirmation, once, and rejects expired/cancelled/amb
   const failure = await prepareTransfer(args, { ethereum: { prepare: async () => ({ expiresAt: Date.now() + 10000, send: async () => { throw new Error('ambiguous'); } }) } });
   await assert.rejects(failure.confirm(), /ambiguous/); await assert.rejects(failure.confirm(), /closed/);
   await assert.rejects(prepareTransfer({ ...args, symbol: 'CPUNK' }), /Unsupported asset/);
+  // Cellframe/CPUNK has no send adapter (src/wallet.js's real adapter map is
+  // unchanged: ethereum, bsc, solana, tron only), so a send attempt on it is
+  // rejected by the same generic guard as an unopened wallet, before ever
+  // reaching assetFor() or a chain implementation.
+  await assert.rejects(prepareTransfer({ ...args, chain: 'cellframe', symbol: 'CPUNK' }), /Open a wallet first/);
   assert.equal(sends, 1);
 });
 test('offline ETH and SOL signatures serialize and recover the intended sender and amount', async () => {

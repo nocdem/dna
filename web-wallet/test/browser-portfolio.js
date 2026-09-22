@@ -5,13 +5,13 @@ import { mkdirSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { chromium } from 'playwright';
 import { ASSETS, PRICE_URL } from '../src/portfolio.js';
-import { priceFixture, portfolioRead } from './portfolio-routes.js';
+import { priceFixture, portfolioRead, cellframeRead } from './portfolio-routes.js';
 import { pastePhrase } from './browser-phrase.js';
 const url = process.env.WALLET_URL || 'http://127.0.0.1:4192';
 const server = process.env.WALLET_URL ? null : spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'preview', '--host', '127.0.0.1', '--port', '4192', '--strictPort'], { stdio: 'pipe' });
 const phrase = Array(23).fill('abandon').concat('art').join(' ');
 const holdings = Object.fromEntries(ASSETS.map(a => [a.key, String(10n ** BigInt(a.decimals))]));
-let browser, priceMode = 'valid', failures = [], wrongNetwork, gate, requested, completed;
+let browser, priceMode = 'valid', failures = [], wrongNetwork, gate, requested, completed, cellframeFail = false;
 const unexpected = [], errors = [], reads = new Set();
 try {
   for (let i = 0; i < 100; i++) { try { if ((await fetch(url)).ok) break; } catch {} await delay(50); }
@@ -33,6 +33,7 @@ try {
       return mode === 'failed' ? route.fulfill({ status: 503, body: 'Unavailable' })
         : route.fulfill({ json: priceFixture(2, Math.floor(Date.now() / 1000) - (mode === 'stale' ? 901 : 0)) });
     }
+    if (await cellframeRead(route, { balance: '10', fail: cellframeFail })) { reads.add(new URL(req.url()).origin); return; }
     if (await portfolioRead(route, { holdings, failures, wrongNetwork })) { reads.add(new URL(req.url()).origin); return; }
     unexpected.push({ url: req.url(), method: req.method() }); return route.abort();
   });
@@ -44,11 +45,24 @@ try {
   }
   async function done() { await page.waitForFunction(() => !document.querySelector('#portfolio-refresh').disabled && document.querySelector('#portfolio-updated').textContent.startsWith('Last refresh:')); }
   async function refresh() { await page.locator('#portfolio-refresh').click(); await done(); }
-  await restore(); await done();
-  assert.equal(reads.size, 4); assert.equal(await page.locator('#portfolio-total').innerText(), '$28.00');
+  // Cellframe's address (and so its balance read) arrives asynchronously, after
+  // the other four networks' automatic refresh has already settled; wait for
+  // its row to leave the "Reading…" placeholder before asserting on it.
+  async function cpunkSettled() { await page.waitForFunction(() => { const strong = document.querySelector('.asset-group[data-symbol="CPUNK"] .holding-value strong'); return strong && strong.textContent !== 'Reading…'; }); }
+  const cpunk = page.locator('.asset-group[data-symbol="CPUNK"]');
+  await restore(); await done(); await cpunkSettled();
+  assert.equal(reads.size, 5); assert.equal(await page.locator('#portfolio-total').innerText(), '$28.00');
   assert.match(await page.locator('#portfolio-status').innerText(), /All supported asset balances/);
+  // CPUNK: shown alongside the priced assets, but with no USD value and no
+  // effect on the total, and receive-only (no Send button).
+  assert.equal(await cpunk.locator('.asset-value small').innerText(), '—');
+  await cpunk.locator('summary').click();
+  assert.equal(await cpunk.locator('.holding-value strong').innerText(), '10.0 CPUNK');
+  assert.equal(await cpunk.locator('.holding-value small').innerText(), '—');
+  assert.deepEqual(await cpunk.locator('.holding-actions button').allTextContents(), ['Receive']);
+  await cpunk.locator('summary').click();
   const usdt = page.locator('.asset-group[data-symbol="USDT"]');
-  assert.equal(await page.locator('.asset-group').count(), 8);
+  assert.equal(await page.locator('.asset-group').count(), 9);
   assert.equal(await usdt.locator('.asset-value strong').innerText(), '4.0');
   await usdt.locator('summary').click(); assert.equal(await usdt.locator('.chain-holding').count(), 4);
   assert.equal(await usdt.locator('.holding-value strong').allTextContents().then(a => a.every(v => v === '1.0 USDT')), true);
@@ -85,6 +99,17 @@ try {
   assert.equal(await page.locator('#portfolio-total').innerText(), '$22.00');
   assert.match(await page.locator('#portfolio-status').innerText(), /3 balances/);
   wrongNetwork = undefined;
+  // A CPUNK read failure never becomes an inferred zero, never joins the
+  // priced-only "X balances unavailable" hero count, and does not stop the
+  // portfolio from being reported complete.
+  await cpunk.locator('summary').click();
+  cellframeFail = true; await refresh(); await cpunkSettled();
+  assert.match(await cpunk.innerText(), /Balance unavailable/);
+  assert.equal(await page.locator('#portfolio-total').innerText(), '$28.00');
+  assert.match(await page.locator('#portfolio-status').innerText(), /All supported asset balances/);
+  cellframeFail = false; await refresh(); await cpunkSettled();
+  assert.match(await cpunk.innerText(), /10\.0 CPUNK/);
+  await cpunk.locator('summary').click();
   for (const mode of ['failed', 'stale']) {
     priceMode = mode; await refresh();
     assert.equal(await page.locator('#portfolio-total').innerText(), '—');

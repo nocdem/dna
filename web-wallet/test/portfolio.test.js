@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ASSETS, PRICE_URL, BALANCE_MAX_AGE, PRICE_MAX_AGE, balanceUnits, chainBalances, parsePrices, readPrices, portfolioSnapshot, groupAssets, usdText } from '../src/portfolio.js';
+import { ASSETS, CPUNK_ASSET, PRICE_URL, BALANCE_MAX_AGE, PRICE_MAX_AGE, balanceUnits, chainBalances, parsePrices, readPrices, portfolioSnapshot, groupAssets, usdText } from '../src/portfolio.js';
 const now = 1789918200000;
 const coins = () => Object.fromEntries(ASSETS.map(a => [a.priceId, { price: 2, symbol: a.symbol, decimals: a.decimals, timestamp: now / 1000, confidence: .99 }]));
 const ready = () => Object.fromEntries(ASSETS.map(a => [a.key, { state: 'ready', units: 0n, observedAt: now }]));
@@ -52,6 +52,30 @@ test('balance rows cannot silently disappear, duplicate or exceed token precisio
   for(const token of ['USDT','USDC','DAI'])assert.equal(result[`ethereum:${token}`].state,'error');
   for(const value of ['NaN','1e3','-1','0x1', '9'.repeat(80)])assert.throws(()=>balanceUnits(value,18));
   assert.equal(usdText(0n,true),'<$0.01'); assert.equal(usdText(1n),'<$0.01'); assert.equal(usdText(0n),'$0.00');
+});
+test('CPUNK is an unpriced, opt-in row: no priceId, no PRICE_URL entry, never counted in the USD total or completeness', () => {
+  assert.equal(CPUNK_ASSET.priceId, undefined);
+  assert.equal(CPUNK_ASSET.chain, 'cellframe'); assert.equal(CPUNK_ASSET.key, 'cellframe:CPUNK');
+  assert.ok(!PRICE_URL.includes('cellframe')); assert.ok(!PRICE_URL.includes('CPUNK'));
+  const withCpunk = [...ASSETS, CPUNK_ASSET];
+  const result = chainBalances('cellframe', [{ symbol: 'CPUNK', balance: '5.5' }], now, withCpunk);
+  assert.equal(result['cellframe:CPUNK'].units, balanceUnits('5.5', 18));
+  // Priced assets all known and zero; CPUNK itself known and zero. The portfolio
+  // is still reported complete (matches the 14-asset-only promise) and CPUNK
+  // contributes nothing to the total even at a known, non-error balance.
+  const balances = { ...ready(), 'cellframe:CPUNK': { state: 'ready', units: 0n, observedAt: now } };
+  let snap = portfolioSnapshot(balances, parsePrices({ coins: coins() }, now), now, withCpunk);
+  assert.equal(snap.complete, true); assert.equal(snap.total, 0n);
+  const cpunkRow = snap.rows.find(r => r.key === 'cellframe:CPUNK');
+  assert.equal(cpunkRow.usd, null); assert.equal(usdText(cpunkRow.usd), '—');
+  // A CPUNK read failure does not block completeness of the priced portfolio,
+  // and does not silently become a zero balance either.
+  balances['cellframe:CPUNK'] = { state: 'error' };
+  snap = portfolioSnapshot(balances, parsePrices({ coins: coins() }, now), now, withCpunk);
+  assert.equal(snap.complete, true); assert.equal(snap.rows.find(r => r.key === 'cellframe:CPUNK').balance, null);
+  // Grouping sorts CPUNK after the other configured symbols.
+  const grouped = groupAssets(snap.rows);
+  assert.equal(grouped.at(-1).symbol, 'CPUNK'); assert.equal(grouped.find(g => g.symbol === 'CPUNK').usd, null);
 });
 test('price requests contain only pinned asset identifiers and honor cancellation', async () => {
   let called=false;

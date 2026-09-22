@@ -1,7 +1,8 @@
 import { VAULT_KEY, ACTIVITY_KEY, parseVault, encryptVault, decryptVault, validateNewPassword } from './vault.js';
 import { serializeActivity, parseActivity, activityKeyFor } from './activity-storage.js';
 import { recordActivity, watchActivity } from './activity.js';
-import { CHAINS } from './config.js';
+import { CHAINS, CELLFRAME } from './config.js';
+import { CPUNK_ASSET } from './portfolio.js';
 import { deriveWallet, disposeWallet, newPhrase, normalizePhrase } from './keys.js';
 import { adapters, prepareTransfer } from './wallet.js';
 import { endpointUrl } from './core.js';
@@ -9,8 +10,14 @@ import { createPhraseFields } from './phrase-fields.js';
 import { createPortfolio } from './portfolio-view.js';
 const $ = id => document.getElementById(id);
 const phraseFields = createPhraseFields($('phrase-grid'), $('phrase-error'));
+// Build-time flag: whether Cellframe/CPUNK appears in the network list, the
+// endpoint map and the portfolio at all. This is a plain boolean used only for
+// data (an <option>, an endpoint entry, a constructor argument) and never
+// gates a dynamic import directly — see the top-level `if (import.meta.env...)`
+// block further down for why that distinction matters for bundle size.
+const CPUNK_ENABLED = import.meta.env.VITE_ENABLE_CPUNK !== 'false';
 let wallet, pending, generatedPhrase, phraseStep, revision = 0, busy = false, lockTimer, idleDeadline = 0;
-let cpunkRequest, cpunkDerivation, nodusDerivation;
+let cellframeDerivation, cellframeReader, nodusDerivation;
 let activitySession = null, activityBlocked = false, historyWrites = Promise.resolve(), vaultOperation = 0;
 const history = []; let stopTracking = () => {};
 function withActivityLock(write) {
@@ -52,16 +59,29 @@ function renderActivity(save = true) {
 }
 function trackActivity() { stopTracking(); renderActivity(); if (wallet) stopTracking = watchActivity(visibleActivity, renderActivity); }
 const endpoints = Object.fromEntries(Object.entries(CHAINS).map(([key, chain]) => [key, chain.endpoint]));
+if (CPUNK_ENABLED) endpoints.cellframe = CELLFRAME.endpoint;
 const portfolio = createPortfolio({
-  readBalances: (chain, address, endpoint, options) => adapters[chain].balances(chain, address, endpoint, options),
+  // cellframeReader is set by showCellframeAddress() before it ever reports an
+  // address to the portfolio, so it is always ready by the time this branch runs.
+  readBalances: (chain, address, endpoint, options) => chain === 'cellframe'
+    ? cellframeReader(address, endpoint, options)
+    : adapters[chain].balances(chain, address, endpoint, options),
   selectAsset(chain, symbol, action) {
     if (!wallet) return;
     $('chain').value = chain; selectChain(); $('asset').value = symbol;
     $(action === 'send' ? 'quick-send' : 'quick-receive').click();
-  }
+  },
+  cellframe: CPUNK_ENABLED ? { network: CELLFRAME, asset: CPUNK_ASSET } : undefined
 });
 const message = text => { $('wallet-status').textContent = text; };
 for (const [key, chain] of Object.entries(CHAINS)) $('chain').add(new Option(chain.name, key));
+if (CPUNK_ENABLED) {
+  $('chain').add(new Option(CELLFRAME.name, 'cellframe'));
+  // The default HTML text (kept for a disabled build, where it stays true
+  // unedited) says CPUNK is "not included"; with the module enabled its
+  // balance IS shown here, just never priced into the total.
+  $('portfolio-scope').textContent = 'Supported assets on Ethereum, BNB Smart Chain, Solana, TRON and Cellframe. NODUS and CPUNK balances are shown, but only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total.';
+}
 function expireIdle() {
   if (idleDeadline && Date.now() >= idleDeadline) { lock(); return true; }
   return false;
@@ -80,13 +100,8 @@ function lock() {
   portfolio.clear();
   phraseFields.clear();
   nodusDerivation?.abort(); nodusDerivation = undefined;
-  cpunkDerivation?.abort(); cpunkDerivation = undefined;
-  cpunkRequest?.abort(); cpunkRequest = undefined;
-  if ($('cpunk-assets')) {
-    $('cpunk-assets').open = false; $('cpunk-address').value = '';
-    $('cpunk-result').textContent = 'No address selected.';
-    $('cpunk-connection').textContent = 'Connection not checked.';
-  }
+  cellframeDerivation?.abort(); cellframeDerivation = undefined;
+  $('cellframe-address-status').textContent = '';
   $('nodus-address').textContent = ''; $('nodus-status').textContent = ''; $('copy-nodus-address').disabled = true;
   revision++; vaultOperation++; activitySession = null; activityBlocked = false; idleDeadline = 0; stopTracking(); closeReview(); disposeWallet(wallet); wallet = undefined; generatedPhrase = undefined;
   $('discard-activity').hidden = true;
@@ -126,7 +141,7 @@ $('phrase-form').onsubmit = event => {
     const phrase = phraseFields.read();
     if (phraseStep === 'verify' && normalizePhrase(phrase) !== generatedPhrase) throw new Error('The phrase does not match. Re-enter your saved backup.');
     wallet = deriveWallet(phrase); generatedPhrase = undefined; phraseFields.clear();
-    $('phrase-form').hidden = true; $('wallet-open').hidden = false; message('Wallet open. Portfolio balances load automatically.'); selectChain(); activity(); void showNodusAddress(); focusOpenWallet();
+    $('phrase-form').hidden = true; $('wallet-open').hidden = false; message('Wallet open. Portfolio balances load automatically.'); selectChain(); activity(); void showNodusAddress(); void showCellframeAddress(); focusOpenWallet();
   } catch (error) { message(error.message); }
 };
 async function showNodusAddress() {
@@ -148,6 +163,53 @@ async function showNodusAddress() {
     if (current()) $('nodus-status').textContent = 'Nodus address unavailable. Lock and reopen your wallet to retry.';
   }
 }
+// Same pattern as showNodusAddress(): AbortController, current() guard, aborted
+// on lock, late results dropped. The address is stored on the wallet object
+// (source.addresses.cellframe) only once current() passes.
+//
+// Both dynamic imports (and the WASM they pull in via cpunk/derive.js) must
+// stay behind a *top-level* `if (import.meta.env.VITE_ENABLE_CPUNK !== 'false')`
+// block for `VITE_ENABLE_CPUNK=false npm run build` to drop them from the
+// bundle: Vite's static-asset-URL scan for `new URL(..., import.meta.url)`
+// (used by cpunk/derive.js to fetch legacy-dilithium.wasm) runs over the whole
+// module graph before Rollup's tree-shaking removes unreachable branches, so a
+// guard written as an early return *inside* a function does not prevent the
+// wasm file from being emitted — verified empirically: with the guard as a
+// function-body `if (!CPUNK_ENABLED) return;`, `legacy-dilithium.wasm` still
+// appeared in a disabled build. Only the literal top-level `if` (as used for
+// ./adapters/cpunk.js below, matching the pre-existing code) eliminates it.
+let doShowCellframeAddress;
+if (import.meta.env.VITE_ENABLE_CPUNK !== 'false') {
+  Promise.all([import('./adapters/cpunk.js'), import('./cpunk/derive.js')]).then(([{ readCpunk }, { deriveCpunkAddress }]) => {
+    cellframeReader = (address, endpoint, options) => readCpunk({ address, endpoint, signal: options.signal }).then(result => [{ symbol: 'CPUNK', balance: result.balance }]);
+    doShowCellframeAddress = async () => {
+      cellframeDerivation?.abort();
+      const operation = new AbortController(), source = wallet;
+      cellframeDerivation = operation;
+      const current = () => cellframeDerivation === operation && source === wallet && !source.locked && !operation.signal.aborted;
+      $('cellframe-address-status').textContent = 'Calculating your Cellframe address locally…';
+      try {
+        const address = await deriveCpunkAddress(source.recoveryPhrase, { signal: operation.signal });
+        if (!current()) return;
+        source.addresses.cellframe = address;
+        if ($('chain').value === 'cellframe') $('receive-address').textContent = address;
+        $('cellframe-address-status').textContent = 'Derived locally from this wallet’s recovery phrase.';
+        portfolio.setAddress('cellframe', address);
+      } catch {
+        if (current()) {
+          $('cellframe-address-status').textContent = 'Cellframe address unavailable. Lock and reopen your wallet to retry.';
+          portfolio.setAddress('cellframe', undefined);
+        }
+      }
+    };
+    // The module can resolve after a wallet is already open (or after a lock/
+    // reopen raced ahead of it); start derivation for whichever wallet is
+    // current once it is ready, exactly as a direct showCellframeAddress()
+    // call would have.
+    if (wallet && !wallet.locked) void doShowCellframeAddress();
+  }).catch(() => { if (wallet && !wallet.locked) $('cellframe-address-status').textContent = 'Cellframe address unavailable. Lock and reopen your wallet to retry.'; });
+}
+function showCellframeAddress() { void doShowCellframeAddress?.(); }
 $('copy-nodus-address').onclick = async () => {
   const source = wallet;
   if (!source || source.locked || !source.nodusAddress) return;
@@ -155,14 +217,19 @@ $('copy-nodus-address').onclick = async () => {
   catch { if (source === wallet && !source.locked) $('nodus-status').textContent = 'Copy unavailable. Select and copy the address above.'; }
 };
 function selectChain() {
-  revision++; closeReview(); const chain = $('chain').value; const c = CHAINS[chain];
+  revision++; closeReview(); const chain = $('chain').value; const c = CHAINS[chain] || CELLFRAME;
   for (const label of document.querySelectorAll('.selected-network-name')) label.textContent = c.name;
-  $('receive-address').textContent = wallet.addresses[chain]; $('rpc-endpoint').value = endpoints[chain];
+  const address = wallet.addresses[chain];
+  $('receive-address').textContent = address || ''; $('rpc-endpoint').value = endpoints[chain];
   $('asset').replaceChildren(...[c.symbol, ...c.tokens.map(t => t.symbol)].map(s => new Option(s, s)));
   $('solana-send-hint').hidden = chain !== 'solana';
   const explorers = { ethereum: 'https://etherscan.io/address/', bsc: 'https://bscscan.com/address/', solana: 'https://solscan.io/account/', tron: 'https://tronscan.org/#/address/' };
-  $('account-explorer').href = explorers[chain] + encodeURIComponent(wallet.addresses[chain]); trackActivity();
+  if (explorers[chain]) { $('account-explorer').href = explorers[chain] + encodeURIComponent(address); $('account-explorer').hidden = false; }
+  else { $('account-explorer').removeAttribute('href'); $('account-explorer').hidden = true; }
+  trackActivity();
   $('recipient').value = ''; $('amount').value = '';
+  $('send-fields').hidden = !!c.receiveOnly; $('send-disabled-note').hidden = !c.receiveOnly;
+  $('cellframe-address-status').hidden = chain !== 'cellframe';
 }
 $('chain').onchange = selectChain;
 $('quick-send').onclick = () => {
@@ -174,10 +241,20 @@ $('quick-receive').onclick = () => {
   $('receive-panel').scrollIntoView({ block: 'start' });
 };
 $('lock').onclick = lock;
-$('copy-address').onclick = async () => { try { await navigator.clipboard.writeText(wallet.addresses[$('chain').value]); message('Address copied.'); } catch { message('Copy unavailable. Select and copy the address above.'); } };
+$('copy-address').onclick = async () => {
+  const address = wallet.addresses[$('chain').value];
+  if (!address) { message('Address not available yet.'); return; }
+  try { await navigator.clipboard.writeText(address); message('Address copied.'); }
+  catch { message('Copy unavailable. Select and copy the address above.'); }
+};
 $('save-rpc').onclick = () => { try { const chain = $('chain').value, endpoint = endpointUrl($('rpc-endpoint').value); if (chain === 'tron' && endpoint !== endpointUrl(CHAINS.tron.endpoint)) throw new Error('TRON requires the mainnet provider.'); endpoints[chain] = endpoint; revision++; closeReview(); stopTracking(); for (const row of visibleActivity()) row.endpoint = endpoints[$('chain').value]; trackActivity(); portfolio.changeEndpoint(chain, endpoint); message('RPC updated for this tab.'); } catch (error) { message(error.message); } };
 $('send-form').onsubmit = async event => {
   event.preventDefault(); if (busy) return;
+  // Belt-and-suspenders: the send fields are hidden/disabled for a receive-only
+  // network already, and prepareTransfer() has no 'cellframe' adapter to route
+  // to either (src/wallet.js is unchanged), so this can only be reached by a
+  // script bypassing the UI, not a real user.
+  if ($('chain').value === 'cellframe') { message('Sending CPUNK is not available in this release. You can receive to the address above.'); return; }
   busy = true; $('review-button').disabled = true; const current = revision;
   message('Preparing transfer and network fee…');
   try {
@@ -214,37 +291,6 @@ $('confirm-send').onclick = async () => {
     if (current === revision) message(`${error.message} A broadcast failure can have an uncertain outcome. Check your address on the chain explorer before creating another transfer.`);
   } finally { busy = false; $('cancel-send').disabled = false; }
 };
-if (import.meta.env.VITE_ENABLE_CPUNK !== 'false') {
-import('./adapters/cpunk.js').then(({ readCpunk }) => {
-$('cpunk-derive').onclick = async () => {
-  if (!wallet || wallet.locked) { $('cpunk-result').textContent = 'Create or restore your wallet first.'; return; }
-  cpunkDerivation?.abort();
-  const operation = new AbortController(), current = revision, source = wallet;
-  cpunkDerivation = operation;
-  $('cpunk-derive').disabled = true;
-  try {
-    const { deriveCpunkAddress } = await import('./cpunk/derive.js');
-    if (current !== revision || source !== wallet || source.locked) return;
-    const address = await deriveCpunkAddress(source.recoveryPhrase, { signal: operation.signal });
-    if (current !== revision || source !== wallet || source.locked) return;
-    $('cpunk-address').value = address; $('cpunk-address').dispatchEvent(new Event('input'));
-    $('cpunk-result').textContent = 'Address derived locally. Select Refresh CPUNK balance to query it.';
-  } catch (error) { if (current === revision && !operation.signal.aborted) $('cpunk-result').textContent = error.message; }
-  finally { if (cpunkDerivation === operation) cpunkDerivation = undefined; $('cpunk-derive').disabled = false; }
-};
-$('cpunk-form').onsubmit = async event => {
-  event.preventDefault(); cpunkRequest?.abort(); const controller = new AbortController(); cpunkRequest = controller;
-  $('cpunk-connection').textContent = 'Connecting…'; $('cpunk-result').textContent = 'Reading CPUNK…';
-  try {
-    const result = await readCpunk({ address: $('cpunk-address').value.trim(), endpoint: $('cpunk-endpoint').value.trim(), signal: controller.signal });
-    if (!controller.signal.aborted) { $('cpunk-connection').textContent = 'Connected · last read succeeded.'; $('cpunk-result').textContent = `${result.balance} CPUNK · Backbone · Read at ${new Date(result.observedAt).toLocaleTimeString()}`; }
-  } catch (error) { if (!controller.signal.aborted) { $('cpunk-connection').textContent = 'Read failed · connection not verified.'; $('cpunk-result').textContent = error.message; } }
-};
-for (const id of ['cpunk-address', 'cpunk-endpoint']) $(id).addEventListener('input', () => { cpunkRequest?.abort(); $('cpunk-connection').textContent = 'Connection not checked for this input.'; $('cpunk-result').textContent = 'Input changed. Read the balance again.'; });
-
-}).catch(() => { $('cpunk-result').textContent = 'CPUNK module could not load. Reload to retry.'; });
-} else { document.querySelector('.cpunk').remove(); }
-
 function updateVaultUI() {
   try {
     const saved = localStorage.getItem(VAULT_KEY);
@@ -283,7 +329,7 @@ $('unlock-form').onsubmit = async event => {
     disposeWallet(wallet); wallet = restored; activitySession = { id: saved.id, key, vault: text }; activityBlocked = !!problem;
     history.length = 0; history.push(...rows);
     $('discard-activity').hidden = !problem; $('vault-status').textContent = problem || 'Saved activity authenticated.';
-    $('welcome').hidden = true; $('phrase-form').hidden = true; $('wallet-open').hidden = false; updateVaultUI(); selectChain(); activity(); void showNodusAddress(); message('Saved wallet unlocked locally.'); focusOpenWallet();
+    $('welcome').hidden = true; $('phrase-form').hidden = true; $('wallet-open').hidden = false; updateVaultUI(); selectChain(); activity(); void showNodusAddress(); void showCellframeAddress(); message('Saved wallet unlocked locally.'); focusOpenWallet();
   } catch (error) { if (operation === vaultOperation) $('vault-status').textContent = error.message; }
   finally { $('unlock-wallet').disabled = false; }
 };
