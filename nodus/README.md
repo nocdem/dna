@@ -18,7 +18,7 @@ Nodus is the distributed hash table (DHT) infrastructure for the DNA ecosystem. 
 
 - **Pure C** — No C++ dependencies, minimal footprint
 - **Dilithium5 signatures** — All stored values cryptographically signed (FIPS 204)
-- **Kyber1024 channel encryption** — All client connections encrypted (Kyber round-3 key exchange + AES-256-GCM; *not* ML-KEM/FIPS 203 — see `shared/crypto/enc/qgp_kyber.h`)
+- **Kyber round-3 / ML-KEM-1024 channel encryption** — All client connections encrypted (AES-256-GCM after a KEM key exchange). Faz 1 KEM migration (`docs/plans/decisions/2026-09-23-kem-mlkem-migration.md`) in progress: a node opportunistically upgrades to ML-KEM-1024 (FIPS 203) whenever its peer has one and signs it, falling back to Kyber round-3 otherwise — see `shared/crypto/enc/qgp_kyber.h` (legacy) and `shared/crypto/enc/qgp_mlkem.h` (FIPS 203).
 - **Cluster management** — Heartbeat-based health monitoring with Kademlia replication
 - **512-bit keyspace** — Kademlia routing with k=8 buckets
 - **7-day TTL** — Values persist across restarts with SQLite storage
@@ -239,9 +239,11 @@ nodus_client_media_get(client, key, callback, userdata);
 
 ---
 
-## Kyber Channel Encryption
+## Channel Encryption (Kyber round-3 / ML-KEM-1024)
 
-All TCP connections (ports 4001 and 4002) are encrypted with Kyber1024 key exchange (Kyber **round-3**, NIST Level 5 — this is *not* ML-KEM-1024 and *not* FIPS 203; the divergences are documented in `shared/crypto/enc/qgp_kyber.h`) followed by AES-256-GCM symmetric encryption. The handshake occurs immediately after TCP connection, before any protocol messages are exchanged. This ensures all client operations, inter-node replication, and circuit relay traffic are protected against quantum adversaries.
+All TCP connections (ports 4001 and 4002) are encrypted with a KEM key exchange followed by AES-256-GCM symmetric encryption. The handshake occurs immediately after TCP connection, before any protocol messages are exchanged. This ensures all client operations, inter-node replication, and circuit relay traffic are protected against quantum adversaries.
+
+**Faz 1 KEM migration** (`docs/plans/decisions/2026-09-23-kem-mlkem-migration.md`, rolling-compatible, no wire version bump): a node that has generated an ML-KEM-1024 (FIPS 203) keypair signs and advertises its public key (`mpk`/`mpk_sig`) in AUTH_OK, alongside the existing Kyber round-3 `kpk`/`kpk_sig` — unconditional, unchanged. A peer uses ML-KEM-1024 (`alg=1` on KEY_INIT) only when it has verified the OTHER side's signed `mpk`; a node never sends an ML-KEM ciphertext to a peer that did not itself advertise one. Every peer without an ML-KEM keypair still talks Kyber round-3 (NIST Level 5), exactly as before this migration — the divergences from FIPS 203 in that legacy path are documented in `shared/crypto/enc/qgp_kyber.h` (the wrapper API; the underlying implementation is `shared/crypto/enc/kyber_r3_legacy.h`); the FIPS 203 implementation is `shared/crypto/enc/qgp_mlkem.h`. The `mpk`/`mpk_sig` binding uses a new purpose byte, `NODUS_PURPOSE_MLKEM_BIND` (0x09) — the first **tier-2** purpose to be STRICT (no raw-signature fallback either side), because its preimage is the same shape as `KYBER_BIND`'s and a non-strict signature here would be swappable with a `kpk_sig`. Circuits (VPN mesh) carry the same optional `alg`, but `alg=1` is Faz-2-only: it must not be used until every relay on the path forwards the tag, or an old relay silently drops it and the far end decapsulates with the wrong algorithm. An inbound E2E circuit whose `alg` this client cannot decapsulate is refused outright, never accepted with encryption silently disabled. See `docs/ARCHITECTURE.md` §5 ("Faz 1 KEM migration") for the wire format and the four handshake sites' exact fallback rule.
 
 ---
 

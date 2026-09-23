@@ -592,6 +592,17 @@ int nodus_auth_handle_key_init(nodus_server_t *srv, nodus_session_t *sess,
                                 const uint8_t *kyber_ct, const uint8_t *nonce_c,
                                 uint32_t txn_id);
 
+/**
+ * Faz 1 KEM migration (docs/plans/decisions/2026-09-23-kem-mlkem-
+ * migration.md) — algorithm-aware KEY_INIT handler. key_alg: 0 = round-3
+ * Kyber (delegates to nodus_auth_handle_key_init() above, byte-identical
+ * to pre-Faz-1 behaviour), 1 = ML-KEM-1024. D11, N1 delta 1.
+ */
+int nodus_auth_handle_key_init_alg(nodus_server_t *srv, nodus_session_t *sess,
+                                    uint8_t key_alg,
+                                    const uint8_t *ct, const uint8_t *nonce_c,
+                                    uint32_t txn_id);
+
 #ifdef __cplusplus
 }
 #endif

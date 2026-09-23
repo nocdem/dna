@@ -22,9 +22,10 @@ Core messenger functionality including identity management, key generation, mess
 | Function | Description |
 |----------|-------------|
 | `int messenger_generate_keys(messenger_context_t*, const char*)` | Generate new keypair for identity |
-| `int messenger_generate_keys_from_seeds(...)` | Generate keys from BIP39 seeds (non-interactive) |
-| `int messenger_register_name(...)` | Register human-readable name for fingerprint |
-| `int messenger_restore_keys(messenger_context_t*, const char*)` | Restore keypair from BIP39 mnemonic |
+| `int messenger_generate_keys_from_seeds(const char *name, const uint8_t *signing_seed, const uint8_t *encryption_seed, const uint8_t *master_seed, const char *mnemonic, const char *data_dir, const char *password, char *fingerprint_out)` | Generate keys from BIP39 seeds (non-interactive). **Signature UNCHANGED. Behavior CHANGED (KEM Faz 1):** if `master_seed` is non-NULL, ALSO generates `identity.mlkem` (own domain-separated coins, independent of `encryption_seed`) and writes `mnemonic.v2.enc`. If `master_seed` is NULL — the ONLY caller that does this is the async `dna_engine_create_identity` path (`dna_handle_create_identity`, never sets `master_seed`; reachable from Android JNI) — ML-KEM creation is skipped with a WARN; the KEM Faz 1 migration path derives `identity.mlkem` from the mnemonic on the next identity load instead. |
+| `int messenger_register_name(...)` | Register human-readable name for fingerprint. **Behavior CHANGED (KEM Faz 1):** loads `identity.mlkem` beside `identity.kem` (absent -> NULL, no error) and passes its pubkey to `dht_keyserver_publish` and `keyserver_cache_put` |
+| `int messenger_restore_keys(messenger_context_t*, const char*)` | Restore keypair from BIP39 mnemonic (prompts via stdin) — calls `cmd_restore_key_from_seed` below |
+| `int cmd_restore_key_from_seed(const char *name, const char *algo, const char *output_dir)` | Restore `<name>.dsa`/`<name>.kem` from a BIP39 mnemonic entered via stdin. **Signature UNCHANGED. Behavior CHANGED (KEM Faz 1):** now uses `qgp_derive_seeds_with_master()` (was `qgp_derive_seeds_from_mnemonic()`) to also obtain `master_seed`, and ALSO generates + saves `<name>.mlkem` (ML-KEM-1024) alongside; non-fatal on ML-KEM failure |
 | `int messenger_restore_keys_from_file(...)` | Restore keys from seed file |
 
 ### 3.3 Fingerprint Utilities
@@ -40,8 +41,8 @@ Core messenger functionality including identity management, key generation, mess
 
 | Function | Description |
 |----------|-------------|
-| `int messenger_store_pubkey(...)` | Store public key in DHT keyserver |
-| `int messenger_load_pubkey(...)` | Load public key from cache or DHT |
+| `int messenger_store_pubkey(...)` | Store public key in DHT keyserver, via `dht_keyserver_publish` (KEM Faz 1: passes `mlkem_pubkey=NULL` — this restore-from-`.pub`-bundle path predates ML-KEM, no local ML-KEM key available at this call site) |
+| `int messenger_load_pubkey(messenger_context_t*, const char*, uint8_t**, size_t*, uint8_t**, size_t*, char*)` | Load Dilithium5 + Kyber1024 (round-3) public key from cache or DHT. **Signature UNCHANGED — does NOT return mlkem_pubkey.** Callers that need it read it separately from `keyserver_cache_get()` (the cache was just warmed by this call) — see `messenger_send_message`/`messenger_flush_recipient_outbox` in `messages.c` (KEM Faz 1 sender-side alg gating) |
 | `int messenger_get_contact_list(...)` | Get contact list |
 | `int messenger_sync_contacts_to_dht(messenger_context_t*)` | Sync contacts to DHT |
 | `int messenger_sync_contacts_from_dht(messenger_context_t*)` | Sync contacts from DHT |
@@ -51,7 +52,8 @@ Core messenger functionality including identity management, key generation, mess
 
 | Function | Description |
 |----------|-------------|
-| `int messenger_send_message(...)` | Send message to recipients |
+| `int messenger_send_message(...)` | Send message to recipients. **Behavior CHANGED (KEM Faz 1):** after resolving pubkeys via `messenger_load_pubkey`, ALSO checks `keyserver_cache_get()` (just warmed) for each recipient's `mlkem_pubkey`; alg 3 (ML-KEM-1024) is used ONLY if EVERY recipient (including self) has one, else alg 2 (round-3), all-or-nothing |
+| `int messenger_flush_recipient_outbox(messenger_context_t *ctx, const char *recipient)` | Re-encrypt pending messages for a recipient and PUT the outbox blob. **Behavior CHANGED (KEM Faz 1):** same all-or-nothing alg gate as `messenger_send_message`, applied to the (sender, recipient) pair |
 | `int messenger_list_messages(messenger_context_t*)` | List messages for current user |
 | `int messenger_list_sent_messages(messenger_context_t*)` | List sent messages |
 | `int messenger_read_message(messenger_context_t*, int)` | Read and decrypt message |
@@ -62,6 +64,14 @@ Core messenger functionality including identity management, key generation, mess
 | `int messenger_get_conversation(...)` | Get conversation messages (pre-decrypted, key loaded once) |
 | `void messenger_free_messages(message_info_t*, int)` | Free message array |
 | `int messenger_search_by_date(...)` | Search messages by date range |
+
+**Internal (KEM Faz 1):** `messenger_encrypt_multi_recipient()` (`static`,
+`messages.c`) gained a `uint8_t alg` parameter (`QGP_KEY_TYPE_KEM1024` or
+`QGP_KEY_TYPE_MLKEM1024`) — writes it into the Seal header's `enc_key_type`
+byte and selects `qgp_kem1024_encapsulate` vs `qgp_mlkem1024_encapsulate` per
+recipient entry. Both callers above (`messenger_send_message`,
+`messenger_flush_recipient_outbox`) compute `alg` from the keyserver cache
+before calling it.
 
 ### 3.5a Message Deletion
 
@@ -118,34 +128,48 @@ GEKs are encrypted at rest using Kyber1024 KEM + AES-256-GCM.
 | Function | Description |
 |----------|-------------|
 | `int gek_init(void *backup_ctx)` | Initialize GEK subsystem |
-| `int gek_set_kem_keys(const uint8_t*, const uint8_t*)` | Set KEM keys for GEK encryption |
-| `void gek_clear_kem_keys(void)` | Clear KEM keys from memory |
+| `int gek_set_kem_keys(const uint8_t*, const uint8_t*)` | Set round-3 (legacy) KEM keys for GEK encryption |
+| `int gek_set_mlkem_keys(const uint8_t *mlkem_pubkey, const uint8_t *mlkem_privkey)` | **NEW (KEM Faz 1).** Set ML-KEM-1024 keys for GEK encryption; independent of `gek_set_kem_keys` |
+| `int gek_get_mlkem_keys(uint8_t pub[1568], uint8_t priv[3168])` | **NEW (D17, M1 delta 1b-2).** Copy out the session ML-KEM-1024 keys `gek_set_mlkem_keys` populated; 0 on success, -1 if unset. Used by `gek_sync_to_dht`/`gek_sync_from_dht` to forward the session key into `dht_geks_publish`/`_fetch` (D12) instead of those functions doing their own by-path load |
+| `void gek_clear_kem_keys(void)` | **CHANGED (KEM Faz 1):** clears BOTH the round-3 keys AND the ML-KEM-1024 keys |
 | `int gek_generate(const char*, uint32_t, uint8_t[32])` | Generate new random GEK |
-| `int gek_store(const char*, uint32_t, const uint8_t[32])` | Store GEK (encrypted with KEM) |
-| `int gek_load(const char*, uint32_t, uint8_t[32])` | Load GEK by version (decrypted) |
+| `int gek_store(const char*, uint32_t, const uint8_t[32])` | Store GEK (encrypted with round-3 KEM, via `gek_encrypt`) |
+| `int gek_load(const char*, uint32_t, uint8_t[32])` | Load GEK by version (decrypted, round-3) |
 | `int gek_load_active(const char*, uint8_t[32], uint32_t*)` | Load latest active GEK |
 | `int gek_rotate(const char*, uint32_t*, uint8_t[32])` | Rotate GEK (generate new version) |
 | `int gek_get_current_version(const char*, uint32_t*)` | Get current GEK version |
 | `int gek_cleanup_expired(void)` | Delete expired GEKs |
-| `int gek_rotate_on_member_add(void *ctx, const char*, const char*)` | Rotate GEK when member added (ctx for session_password key load) |
-| `int gek_rotate_on_member_remove(void *ctx, const char*, const char*)` | Rotate GEK when member removed (ctx for session_password key load) |
-| `int gek_encrypt(const uint8_t[32], const uint8_t*, uint8_t*)` | Encrypt GEK with KEM |
-| `int gek_decrypt(const uint8_t*, size_t, const uint8_t*, uint8_t[32])` | Decrypt GEK with KEM |
+| `int gek_rotate_on_member_add(void *ctx, const char*, const char*)` | Rotate GEK when member added (ctx for session_password key load); builds IKP v3 iff every member has published ML-KEM (KEM Faz 1) |
+| `int gek_rotate_on_member_remove(void *ctx, const char*, const char*)` | Rotate GEK when member removed (ctx for session_password key load); same v3 gate |
+| `int gek_encrypt(const uint8_t[32], const uint8_t*, uint8_t*)` | Encrypt GEK with round-3 KEM. **Now a thin wrapper:** `gek_encrypt_alg(IKP_ALG_KYBER_R3, ...)` |
+| `int gek_decrypt(const uint8_t*, size_t, const uint8_t*, uint8_t[32])` | Decrypt GEK with round-3 KEM. **Now a thin wrapper:** `gek_decrypt_alg(IKP_ALG_KYBER_R3, ...)` |
+| `int gek_encrypt_alg(uint8_t alg, const uint8_t gek[32], const uint8_t pubkey[1568], uint8_t encrypted_out[GEK_ENC_TOTAL_SIZE])` | **NEW (KEM Faz 1).** `alg` = `IKP_ALG_KYBER_R3` (2) or `IKP_ALG_MLKEM1024` (3); wire layout unchanged (ct‖nonce‖tag‖enc, sizes byte-identical between algs) |
+| `int gek_decrypt_alg(uint8_t alg, const uint8_t *encrypted, size_t encrypted_len, const uint8_t privkey[3168], uint8_t gek_out[32])` | **NEW (KEM Faz 1).** Counterpart decrypt |
 
 ### 3.9 Initial Key Packet (IKP)
 
 **File:** `messenger/gek.h`
 
-IKP functions for distributing GEK to group members via Kyber1024 encryption.
+IKP functions for distributing GEK to group members. **v2** (unchanged, magic
+`0x47454B32` "GEK2") encrypts every member entry with round-3 Kyber1024.
+**v3** (KEM Faz 1, magic `0x47454B33` "GEK3") adds a per-member `alg` byte
+(entry = fp(64)‖alg(1)‖ct(1568)‖wrapped(40), `IKP_MEMBER_ENTRY_SIZE_V3` =
+1673) and is emitted by `ikp_build()` ONLY when EVERY `gek_member_entry_t` in
+the call has a non-NULL `mlkem_pubkey` (all-or-nothing; one member without
+one keeps the whole packet on v2). `gek_member_entry_t` gained a
+`const uint8_t *mlkem_pubkey` field (nullable) alongside `kyber_pubkey`.
 
 | Function | Description |
 |----------|-------------|
-| `int ikp_build(...)` | Build Initial Key Packet for GEK distribution |
-| `int ikp_extract(...)` | Extract GEK from received IKP |
-| `int ikp_verify(...)` | Verify IKP signature (Dilithium5) |
-| `size_t ikp_calculate_size(size_t member_count)` | Calculate expected IKP size |
-| `int ikp_get_version(...)` | Get GEK version from IKP header |
-| `int ikp_get_member_count(...)` | Get member count from IKP header |
+| `int ikp_build(const char *group_uuid, uint32_t version, const uint8_t gek[GEK_KEY_SIZE], const uint8_t dht_salt[IKP_DHT_SALT_SIZE], const gek_member_entry_t *members, size_t member_count, const uint8_t *owner_dilithium_privkey, uint8_t **packet_out, size_t *packet_size_out)` | Build IKP; **CHANGED (KEM Faz 1):** chooses v2 or v3 per the all-or-nothing gate above (signature unchanged) |
+| `int ikp_extract(...)` | Extract GEK from a received IKP. **Signature UNCHANGED** (kept for existing callers) — now a thin wrapper: `ikp_extract_alg(..., NULL)`. Still parses v2 AND v3 headers, but can only decapsulate a v3 entry whose alg is round-3 (no ML-KEM key slot in this signature) |
+| `int ikp_extract_alg(const uint8_t *packet, size_t packet_size, const uint8_t *my_fingerprint_bin, const uint8_t *my_kyber_privkey, const uint8_t *my_mlkem_privkey, uint8_t gek_out[GEK_KEY_SIZE], uint32_t *version_out, uint8_t dht_salt_out[IKP_DHT_SALT_SIZE])` | **NEW (KEM Faz 1).** Accepts v2 and v3; dispatches decapsulation by the found entry's alg byte (v2 entries are implicitly alg 2). `my_mlkem_privkey` nullable — an alg=3 entry without it fails with -1, same as a v2 entry would without `my_kyber_privkey` |
+| `int ikp_verify(...)` | Verify IKP signature (Dilithium5). **CHANGED (KEM Faz 1):** accepts both magics, computes the signed-data length from the version-specific entry size |
+| `size_t ikp_calculate_size(size_t member_count)` | Calculate expected IKP size — **v2 sizing only** (unchanged); v3 sizing is `IKP_HEADER_SIZE + IKP_MEMBER_ENTRY_SIZE_V3 * member_count + IKP_SIGNATURE_SIZE`, computed inline in `ikp_build` |
+| `int ikp_get_version(...)` | Get GEK version from IKP header. **CHANGED:** accepts both magics (version is at the same offset in v2/v3) |
+| `int ikp_get_member_count(...)` | Get member count from IKP header. **CHANGED:** accepts both magics |
+
+**Constants (KEM Faz 1):** `IKP_MAGIC_V3 = 0x47454B33`, `IKP_MEMBER_ENTRY_SIZE_V3 = 1673`, `IKP_ALG_KYBER_R3 = 2`, `IKP_ALG_MLKEM1024 = 3`.
 
 ### 3.10 GEK DHT Sync (Multi-Device) - v0.6.49+
 

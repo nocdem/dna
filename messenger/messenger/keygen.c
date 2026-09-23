@@ -22,6 +22,7 @@
 #include "crypto/utils/qgp_types.h"
 #include "crypto/sign/qgp_dilithium.h"
 #include "crypto/enc/qgp_kyber.h"
+#include "crypto/enc/qgp_mlkem.h"
 #include "crypto/hash/qgp_sha3.h"
 #include "../qgp.h"
 #include "crypto/key/bip39/bip39.h"
@@ -86,6 +87,10 @@ int messenger_generate_keys_from_seeds(
     uint8_t *kyber_pk = NULL;
     uint8_t *kyber_sk = NULL;
     uint8_t *kyber_pubkey_copy = NULL;
+    qgp_key_t *mlkem_key = NULL;
+    uint8_t *mlkem_pk = NULL;
+    uint8_t *mlkem_sk = NULL;
+    uint8_t *mlkem_pubkey_copy = NULL;
 
     // Generate Dilithium5 (ML-DSA-87) signing key from seed FIRST (need fingerprint for directory)
     sign_key = qgp_key_new(QGP_KEY_TYPE_DSA87, QGP_KEY_PURPOSE_SIGNING);
@@ -246,6 +251,80 @@ int messenger_generate_keys_from_seeds(
     }
     memcpy(kyber_pubkey_copy, enc_key->public_key, enc_key->public_key_size);
 
+    // KEM Faz 1 (R1/R2/R3): generate the ML-KEM-1024 key at creation time too,
+    // derived from master_seed (own domain-separated context, INDEPENDENT of
+    // encryption_seed — design G3, no shared tohum between the two KEM
+    // schemes). master_seed is a parameter of this function (see keygen.h);
+    // the ONLY caller that passes NULL is the async dna_engine_create_identity
+    // path (dna_handle_create_identity, dna_engine_identity.c:37-68 — its task
+    // params never populate create_identity.master_seed).
+    //
+    // D16 (M1 delta 1, verifier C4/MED): this comment previously claimed
+    // that path is "reachable from Android JNI, jni/dna_jni.c:795" and that
+    // identity.mlkem then arrives "on the next load" — BOTH are wrong.
+    // jni/dna_jni.c:795 calls dna_engine_create_identity(g_engine, NULL, ...)
+    // — name=NULL — and dna_engine_create_identity's own guard
+    // (dna_engine_identity.c:1476-1478, `if (!engine || !name || ...)
+    // return DNA_REQUEST_ID_INVALID;`) rejects that call BEFORE
+    // params.create_identity is ever populated or dna_submit_task() runs,
+    // i.e. before master_seed being NULL matters at all. This JNI path is
+    // therefore NOT reachable today. It also would not self-heal "on the
+    // next load" if it somehow ran: dna_handle_create_identity() never
+    // writes mnemonic.enc, so dna_kem_f1_migrate_to_mlkem()'s own guard
+    // (mnemonic_storage_exists() == false) takes the K2 branch — legacy
+    // round-3 forever, not a deferred migration. Skip ML-KEM creation with
+    // a WARN below; this is dead-parameter defense (master_seed could be
+    // NULL from some future caller), not a live gap today.
+    if (master_seed) {
+        mlkem_key = qgp_key_new(QGP_KEY_TYPE_MLKEM1024, QGP_KEY_PURPOSE_ENCRYPTION);
+        if (!mlkem_key) {
+            QGP_LOG_WARN(LOG_TAG, "Memory allocation failed for ML-KEM-1024 key (non-fatal, legacy round-3 still works)");
+        } else {
+            mlkem_pk = calloc(1, QGP_MLKEM1024_PUBLICKEYBYTES);
+            mlkem_sk = calloc(1, QGP_MLKEM1024_SECRETKEYBYTES);
+            uint8_t mlkem_coins[QGP_MLKEM1024_COINS_BYTES];
+
+            if (!mlkem_pk || !mlkem_sk ||
+                qgp_derive_mlkem1024_coins(master_seed, mlkem_coins) != 0 ||
+                qgp_mlkem1024_keypair_derand(mlkem_pk, mlkem_sk, mlkem_coins) != 0) {
+                QGP_LOG_WARN(LOG_TAG, "ML-KEM-1024 key generation from seed failed (non-fatal, legacy round-3 still works)");
+                qgp_secure_memzero(mlkem_coins, sizeof(mlkem_coins));
+                free(mlkem_pk); mlkem_pk = NULL;
+                free(mlkem_sk); mlkem_sk = NULL;
+                qgp_key_free(mlkem_key);
+                mlkem_key = NULL;
+            } else {
+                qgp_secure_memzero(mlkem_coins, sizeof(mlkem_coins));
+                mlkem_key->public_key = mlkem_pk;
+                mlkem_key->public_key_size = QGP_MLKEM1024_PUBLICKEYBYTES;
+                mlkem_key->private_key = mlkem_sk;
+                mlkem_key->private_key_size = QGP_MLKEM1024_SECRETKEYBYTES;
+                mlkem_pk = NULL;
+                mlkem_sk = NULL;
+
+                char mlkem_path[512];
+                snprintf(mlkem_path, sizeof(mlkem_path), "%s/identity.mlkem", keys_dir);
+
+                if (qgp_key_save_encrypted(mlkem_key, mlkem_path, password) != 0) {
+                    QGP_LOG_WARN(LOG_TAG, "Failed to save ML-KEM-1024 key (non-fatal, legacy round-3 still works)");
+                    qgp_key_free(mlkem_key);
+                    mlkem_key = NULL;
+                } else {
+                    printf("✓ ML-KEM-1024 (FIPS 203) encryption key generated from seed\n");
+                    mlkem_pubkey_copy = malloc(mlkem_key->public_key_size);
+                    if (mlkem_pubkey_copy) {
+                        memcpy(mlkem_pubkey_copy, mlkem_key->public_key, mlkem_key->public_key_size);
+                    } else {
+                        QGP_LOG_WARN(LOG_TAG, "Memory allocation failed for ML-KEM pubkey copy (non-fatal)");
+                    }
+                }
+            }
+        }
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "No master_seed provided - identity.mlkem not created now; "
+                              "will be derived from the mnemonic on next identity load (KEM Faz 1 migration)");
+    }
+
     // Create nodus identity from signing_seed (same key as messenger identity)
     {
         nodus_identity_t nid;
@@ -288,6 +367,16 @@ int messenger_generate_keys_from_seeds(
         } else {
             QGP_LOG_WARN(LOG_TAG, "Warning: Failed to save encrypted mnemonic\n");
         }
+
+        // KEM Faz 1 (R4): also write mnemonic.v2.enc (ML-KEM) when we have a
+        // fresh ML-KEM pubkey. Legacy mnemonic.enc is kept as-is until Faz 3.
+        if (mlkem_pubkey_copy) {
+            if (mnemonic_storage_save_v2(mnemonic, mlkem_pubkey_copy, data_dir) == 0) {
+                QGP_LOG_INFO(LOG_TAG, "✓ Encrypted mnemonic (v2, ML-KEM-1024) saved\n");
+            } else {
+                QGP_LOG_WARN(LOG_TAG, "Warning: Failed to save mnemonic.v2.enc\n");
+            }
+        }
     } else {
         QGP_LOG_WARN(LOG_TAG, "No mnemonic provided - wallet recovery will not be possible\n");
     }
@@ -309,12 +398,16 @@ cleanup:
     if (enc_key) qgp_key_free(enc_key);
     free(kyber_pk);
     free(kyber_sk);
+    if (mlkem_key) qgp_key_free(mlkem_key);
+    free(mlkem_pk);
+    free(mlkem_sk);
     if (dilithium_privkey_copy) {
         qgp_secure_memzero(dilithium_privkey_copy, dilithium_privkey_size);
         free(dilithium_privkey_copy);
     }
     free(dilithium_pubkey_copy);
     free(kyber_pubkey_copy);
+    free(mlkem_pubkey_copy);
     return ret;
 }
 
@@ -395,6 +488,19 @@ int messenger_register_name(
         return -1;
     }
 
+    // KEM Faz 1 (R1/R5): identity.mlkem is loaded the same way right beside
+    // identity.kem — absent file -> NULL, never an error (identity has not
+    // migrated yet, K2: stays on legacy round-3).
+    qgp_key_t *mlkem_key = NULL;
+    {
+        char mlkem_path[512];
+        if (messenger_find_key_path(data_dir, fingerprint, ".mlkem", mlkem_path) == 0) {
+            if (qgp_key_load(mlkem_path, &mlkem_key) != 0) {
+                mlkem_key = NULL;
+            }
+        }
+    }
+
     // Derive wallet addresses from mnemonic (on-demand derivation)
     // Wallet files are no longer stored - addresses are derived when needed
     char wallet_address[128] = {0};
@@ -406,10 +512,25 @@ int messenger_register_name(
     // Check if mnemonic exists and derive wallet addresses
     if (mnemonic_storage_exists(data_dir)) {
         char mnemonic[512] = {0};
+        int mnemonic_rc = -1;
 
-        // Decrypt mnemonic using Kyber private key
-        if (mnemonic_storage_load(mnemonic, sizeof(mnemonic),
-                                   enc_key->private_key, data_dir) == 0) {
+        // D10 (M1 delta 1): try mnemonic.v2.enc (ML-KEM-1024) first when
+        // this identity has migrated - mlkem_key was already loaded above
+        // (R1/R5), so the dk is in hand here without any extra by-path
+        // load. Legacy mnemonic.enc stays until Faz 3 (K5); fall back to
+        // it on any v2 miss/failure, unchanged from before this fix.
+        if (mlkem_key && mlkem_key->private_key &&
+            mlkem_key->private_key_size == QGP_MLKEM1024_SECRETKEYBYTES &&
+            mnemonic_storage_v2_exists(data_dir)) {
+            mnemonic_rc = mnemonic_storage_load_v2(mnemonic, sizeof(mnemonic),
+                                                   mlkem_key->private_key, data_dir);
+        }
+        if (mnemonic_rc != 0) {
+            // Decrypt mnemonic using Kyber private key (legacy)
+            mnemonic_rc = mnemonic_storage_load(mnemonic, sizeof(mnemonic),
+                                       enc_key->private_key, data_dir);
+        }
+        if (mnemonic_rc == 0) {
             QGP_LOG_DEBUG(LOG_TAG, "Mnemonic loaded for wallet derivation");
 
             // Convert mnemonic to 64-byte master seed for ETH/SOL
@@ -480,23 +601,27 @@ int messenger_register_name(
         wallet_address[0] ? wallet_address : NULL,
         eth_address[0] ? eth_address : NULL,
         sol_address[0] ? sol_address : NULL,
-        trx_address[0] ? trx_address : NULL
+        trx_address[0] ? trx_address : NULL,
+        mlkem_key ? mlkem_key->public_key : NULL   /* KEM Faz 1, R5 */
     );
 
     if (publish_result == -2) {
         QGP_LOG_ERROR(LOG_TAG, "Name '%s' is already taken", desired_name);
         qgp_key_free(sign_key);
         qgp_key_free(enc_key);
+        if (mlkem_key) qgp_key_free(mlkem_key);
         return -1;
     } else if (publish_result == -3) {
         QGP_LOG_ERROR(LOG_TAG, "DHT network not ready - cannot register name '%s'", desired_name);
         qgp_key_free(sign_key);
         qgp_key_free(enc_key);
+        if (mlkem_key) qgp_key_free(mlkem_key);
         return -1;
     } else if (publish_result != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to publish identity to DHT");
         qgp_key_free(sign_key);
         qgp_key_free(enc_key);
+        if (mlkem_key) qgp_key_free(mlkem_key);
         return -1;
     }
 
@@ -530,9 +655,12 @@ int messenger_register_name(
         QGP_LOG_WARN(LOG_TAG, "Read-back verification failed for name lookup (may still propagate)");
     }
 
-    // Cache public keys locally
+    // Cache public keys locally (KEM Faz 1, R6: mlkem_pubkey alongside)
     if (keyserver_cache_put(fingerprint, sign_key->public_key, sign_key->public_key_size,
-                            enc_key->public_key, enc_key->public_key_size, 365*24*60*60) == 0) {
+                            enc_key->public_key, enc_key->public_key_size,
+                            mlkem_key ? mlkem_key->public_key : NULL,
+                            mlkem_key ? mlkem_key->public_key_size : 0,
+                            365*24*60*60) == 0) {
         QGP_LOG_INFO(LOG_TAG, "✓ Public keys cached locally\n");
     }
 
@@ -546,6 +674,7 @@ int messenger_register_name(
 
     qgp_key_free(sign_key);
     qgp_key_free(enc_key);
+    if (mlkem_key) qgp_key_free(mlkem_key);
 
     printf("✓ Name '%s' registered successfully!\n", desired_name);
     printf("✓ Others can now find you by searching for '%s' or by fingerprint\n", desired_name);
@@ -722,11 +851,15 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
     char *enc_key_path = NULL;
     int ret = -1;
 
+    qgp_key_t *mlkem_key = NULL;
+    char *mlkem_key_path = NULL;
+
     char mnemonic[BIP39_MAX_MNEMONIC_LENGTH];
     char passphrase[256];
     char key_password[256];
     uint8_t signing_seed[32];
     uint8_t encryption_seed[32];
+    uint8_t master_seed[64];   /* KEM Faz 1 (R3): needed for the ML-KEM coins */
 
     printf("Restoring keypair from BIP39 recovery seed for: %s\n", name);
     printf("  Signing algorithm: %s\n", algo);
@@ -776,9 +909,14 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
         passphrase[len - 1] = '\0';
     }
 
-    /* Step 4: Derive seeds */
+    /* Step 4: Derive seeds.
+     * KEM Faz 1 (R2/R3): use qgp_derive_seeds_with_master() instead of
+     * qgp_derive_seeds_from_mnemonic() — same derivation, ALSO returns the
+     * 64-byte master seed this function needs for the ML-KEM-1024 coins
+     * (qgp_derive_mlkem1024_coins), with the SAME passphrase already entered
+     * above (no new passphrase policy introduced). */
     printf("\n[Step 4/4] Deriving seeds from mnemonic...\n");
-    if (qgp_derive_seeds_from_mnemonic(mnemonic, passphrase, signing_seed, encryption_seed) != 0) {
+    if (qgp_derive_seeds_with_master(mnemonic, passphrase, signing_seed, encryption_seed, master_seed) != 0) {
         fprintf(stderr, "Error: Seed derivation failed\n");
         qgp_secure_memzero(mnemonic, sizeof(mnemonic));
         qgp_secure_memzero(passphrase, sizeof(passphrase));
@@ -933,18 +1071,73 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
            (strlen(key_password) > 0) ? " (encrypted)" : "",
            enc_key_path);
 
+    /* KEM Faz 1 (R1/R2/R3): generate + save the ML-KEM-1024 key alongside,
+     * same naming convention (<name>.mlkem next to <name>.dsa / <name>.kem).
+     * Non-fatal on failure — this restore flow already produced a working
+     * legacy-round-3 identity; ML-KEM is a dual-key addition, not a
+     * requirement of restoration. */
+    printf("\n  [+] Regenerating ML-KEM-1024 key from seed (KEM Faz 1)...\n");
+
+    char mlkem_filename[512];
+    snprintf(mlkem_filename, sizeof(mlkem_filename), "%s.mlkem", name);
+    mlkem_key_path = qgp_platform_join_path(output_dir, mlkem_filename);
+
+    if (!mlkem_key_path) {
+        fprintf(stderr, "Warning: Memory allocation failed for ML-KEM path (non-fatal)\n");
+    } else if (qgp_platform_file_exists(mlkem_key_path)) {
+        fprintf(stderr, "Warning: ML-KEM key already exists, skipping: %s (non-fatal)\n", mlkem_key_path);
+    } else {
+        mlkem_key = qgp_key_new(QGP_KEY_TYPE_MLKEM1024, QGP_KEY_PURPOSE_ENCRYPTION);
+        if (!mlkem_key) {
+            fprintf(stderr, "Warning: Memory allocation failed for ML-KEM key (non-fatal)\n");
+        } else {
+            strncpy(mlkem_key->name, name, sizeof(mlkem_key->name) - 1);
+
+            uint8_t *mlkem_pk = calloc(1, QGP_MLKEM1024_PUBLICKEYBYTES);
+            uint8_t *mlkem_sk = calloc(1, QGP_MLKEM1024_SECRETKEYBYTES);
+            uint8_t mlkem_coins[QGP_MLKEM1024_COINS_BYTES];
+
+            if (!mlkem_pk || !mlkem_sk ||
+                qgp_derive_mlkem1024_coins(master_seed, mlkem_coins) != 0 ||
+                qgp_mlkem1024_keypair_derand(mlkem_pk, mlkem_sk, mlkem_coins) != 0) {
+                fprintf(stderr, "Warning: ML-KEM-1024 key regeneration failed (non-fatal)\n");
+                free(mlkem_pk);
+                free(mlkem_sk);
+                qgp_key_free(mlkem_key);
+                mlkem_key = NULL;
+            } else {
+                mlkem_key->public_key = mlkem_pk;
+                mlkem_key->public_key_size = QGP_MLKEM1024_PUBLICKEYBYTES;
+                mlkem_key->private_key = mlkem_sk;
+                mlkem_key->private_key_size = QGP_MLKEM1024_SECRETKEYBYTES;
+
+                if (qgp_key_save_encrypted(mlkem_key, mlkem_key_path, key_password) != 0) {
+                    fprintf(stderr, "Warning: Failed to save ML-KEM-1024 key (non-fatal)\n");
+                } else {
+                    printf("  ML-KEM-1024 key saved%s: %s\n",
+                           (strlen(key_password) > 0) ? " (encrypted)" : "",
+                           mlkem_key_path);
+                }
+            }
+            qgp_secure_memzero(mlkem_coins, sizeof(mlkem_coins));
+        }
+    }
+
     printf("\nKeys successfully restored from recovery seed!\n");
     ret = 0;
 
 cleanup:
     qgp_secure_memzero(signing_seed, sizeof(signing_seed));
     qgp_secure_memzero(encryption_seed, sizeof(encryption_seed));
+    qgp_secure_memzero(master_seed, sizeof(master_seed));
     qgp_secure_memzero(key_password, sizeof(key_password));
 
     if (sign_key_path) free(sign_key_path);
     if (enc_key_path) free(enc_key_path);
+    if (mlkem_key_path) free(mlkem_key_path);
     if (sign_key) qgp_key_free(sign_key);
     if (enc_key) qgp_key_free(enc_key);
+    if (mlkem_key) qgp_key_free(mlkem_key);
 
     return ret;
 }

@@ -230,6 +230,34 @@ DNA_API int qgp_derive_shielded_enc_seed(
 );
 
 /**
+ * Derive the ML-KEM-1024 deterministic-keygen coins (KEM Faz 1, R2) from a
+ * BIP39 master seed.
+ *
+ * coins = SHAKE256(master_seed || "nodus-mlkem-1024", 64)
+ *
+ * Same block shape as qgp_derive_seeds_from_mnemonic()'s per-context derivation
+ * (seed_derivation.c) but operating directly on an already-derived 64-byte
+ * master seed (bip39_mnemonic_to_seed() output) rather than re-deriving it from
+ * a mnemonic — every call site already has master_seed on hand (either as a
+ * parameter or via its own bip39_mnemonic_to_seed() call), so this avoids a
+ * second, redundant PBKDF2 pass and needs no passphrase of its own (K3,
+ * docs/plans/decisions/2026-09-23-kem-mlkem-migration.md).
+ *
+ * The output feeds qgp_mlkem1024_keypair_derand() (shared/crypto/enc/qgp_mlkem.h)
+ * directly as the 64-byte coins buffer (d(32) || z(32), FIPS 203 Algorithm 16).
+ * The ML-KEM key is intentionally derived from a DIFFERENT domain-separated
+ * input than the round-3 Kyber key (qgp-encryption-v1) — see design §4.3 / G3.
+ *
+ * @param master_seed  Input 64-byte BIP39 master seed (BIP39_SEED_SIZE)
+ * @param coins        Output 64-byte coins buffer (d || z)
+ * @return 0 on success, -1 on error
+ */
+DNA_API int qgp_derive_mlkem1024_coins(
+    const uint8_t master_seed[64],
+    uint8_t coins[64]
+);
+
+/**
  * Display BIP39 mnemonic in a user-friendly format
  *
  * @param mnemonic BIP39 mnemonic phrase

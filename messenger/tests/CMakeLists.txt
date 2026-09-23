@@ -115,6 +115,7 @@ message(STATUS "  - test_key_encryption  : Key encryption (PBKDF2 + AES-256-GCM)
 message(STATUS "  - test_kyber1024       : Kyber1024 round-3 (LEGACY) KAT")
 message(STATUS "  - test_mlkem1024       : ML-KEM-1024 (FIPS 203) known-answer tests")
 message(STATUS "  - test_bip39_bip32     : BIP39/BIP32 mnemonic and HD key derivation")
+message(STATUS "  - test_mlkem_rollout   : KEM Faz 1 (M1) dual-key ML-KEM-1024 rollout")
 message(STATUS "  - test_db_encryption   : Database encryption (SQLCipher)")
 message(STATUS "")
 
@@ -459,6 +460,23 @@ add_test(NAME test_fp_converter COMMAND test_fp_converter)
 add_executable(test_cli_send_bench test_cli_send_bench.c)
 add_test(NAME test_cli_send_bench COMMAND test_cli_send_bench)
 set_tests_properties(test_cli_send_bench PROPERTIES SKIP_RETURN_CODE 77)
+
+# =============================================================================
+# Test: KEM Faz 1 (M1) — dual-key ML-KEM-1024 rollout
+# =============================================================================
+# Seal alg 2/3 matrix, identity record mlkem_pubkey (signature preimage
+# exclusion + old-client compat), keyserver_cache migration, IKP v2/v3/mixed,
+# salt agreement (partial, DHT-dependent — see the comment in the test file),
+# call INVITE "alg" field, mnemonic.v2.enc round-trip.
+# dna_call_crypto.c is compiled directly (same pattern as test_call_signal.c
+# etc.) so dna_call_build_body/dna_call_parse_body's "alg" field additions
+# are exercised even though the header is also resolved via TEST_LIBS.
+add_executable(test_mlkem_rollout
+    test_mlkem_rollout.c
+    ${DNA_ROOT}/src/api/engine/dna_call_crypto.c)
+target_include_directories(test_mlkem_rollout PRIVATE ${DNA_ROOT}/src/api/engine)
+target_link_libraries(test_mlkem_rollout ${TEST_LIBS})
+add_test(NAME test_mlkem_rollout COMMAND test_mlkem_rollout)
 
 # =============================================================================
 # CTest integration

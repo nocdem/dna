@@ -1,8 +1,8 @@
 # DHT System Documentation
 
-**Last Updated:** 2026-08-27 (constants/version pass; body largely from the 2026-04-24 audit)
+**Last Updated:** 2026-09-23 (KEM Faz 1: identity record mlkem_pubkey, dht_keyserver_publish/_update signatures corrected + extended; body otherwise largely from the 2026-04-24 audit)
 **Phase:** 7 (Flutter UI)
-**Versions:** Messenger v0.11.18 | Nodus v0.19.19
+**Versions:** Messenger v0.11.20 | Nodus v0.19.64
 
 Comprehensive documentation of the DNA Connect DHT (Distributed Hash Table) system. The DHT layer is powered by **Nodus**, a pure C Kademlia DHT. OpenDHT has been completely removed.
 
@@ -484,7 +484,9 @@ int dht_message_backup_publish(
     const uint8_t *kyber_privkey,
     const uint8_t *dilithium_pubkey,
     const uint8_t *dilithium_privkey,
-    int *message_count_out
+    int *message_count_out,
+    const uint8_t *mlkem_pubkey    // KEM Faz 1, D12 (M1 delta 1b-2): nullable,
+                                    // session-loaded — see Usage Notes below
 );
 
 // Restore messages from DHT backup (see header for the full current signature)
@@ -494,7 +496,9 @@ int dht_message_backup_restore(
     const uint8_t *kyber_privkey,
     const uint8_t *dilithium_pubkey,
     int *restored_count_out,
-    int *skipped_count_out
+    int *skipped_count_out,
+    const uint8_t *mlkem_privkey   // KEM Faz 1, D12 (M1 delta 1b-2): nullable,
+                                    // session-loaded
 );
 ```
 
@@ -504,6 +508,26 @@ int dht_message_backup_restore(
 - **Restore triggers**: Manual only (Settings → Data → Restore Messages)
 - **Duplicate handling**: Uses `message_backup_exists_ciphertext()` to skip existing messages
 - **Expiry**: User must restore within 7 days of backup
+- **KEM Faz 1 (2026-09-23), corrected D12 (M1 delta 1b-2):** this is Seal
+  self-encryption (recipient == sender). `dht_message_backup_publish`/
+  `_restore` gained trailing nullable `mlkem_pubkey`/`mlkem_privkey`
+  parameters — self-encrypts with alg 3 (ML-KEM-1024) when the caller
+  passes a key, else alg 2 (round-3), same as before. **This used to be a
+  by-path `qgp_key_load` of `identity.mlkem` done INSIDE this file, with
+  NO session password** — that is now DELETED. The caller
+  (`dna_engine_backup.c`) supplies the SAME session-password-loaded key
+  (`dna_load_mlkem_key(engine)`) the rest of the session uses, because
+  each identity has exactly ONE backup slot in the DHT (overwritten on
+  every publish): a by-path load on a password-protected identity could
+  silently produce a different key (or none) than a fresh device of the
+  same identity would derive, making the WHOLE backup unreadable on that
+  other device — a data-loss bug (verifier G6), not a decrypt failure on
+  one message. The same pattern and the same fix apply to
+  `dht/client/dht_geks.c`'s GEK-sync self-encryption
+  (`dht_geks_publish`/`_fetch` gained the same two nullable parameters;
+  the caller is `gek.c`'s `gek_sync_to_dht`/`gek_sync_from_dht`, via the
+  new `gek_get_mlkem_keys()` accessor reading the key
+  `gek_set_mlkem_keys()` already loaded at identity load time).
 
 ### 4.5 dna_channels.h/c (Channel Post Daily Buckets)
 
@@ -828,25 +852,62 @@ All entries are self-signed with the owner's Dilithium5 key.
 ### Data Type: `dna_unified_identity_t`
 
 ```c
+// Actual current struct — dht/client/dna_profile.h. The field list below
+// corrects earlier drift in this doc (registration_tx_hash/registration_network
+// do not exist on this struct; registered_name is 256 bytes not 64; several
+// profile fields — avatar, bio, location, website, display_name — were
+// missing here). Wallets/socials are dna_wallets_t/dna_socials_t (flat
+// per-network fields), not a list type.
 typedef struct {
-    char fingerprint[129];                    // SHA3-512 of Dilithium5 pubkey
-    uint8_t dilithium_pubkey[2592];          // Dilithium5 public key
-    uint8_t kyber_pubkey[1568];              // Kyber1024 public key
+    // ===== MESSENGER KEYS =====
+    char fingerprint[129];               // SHA3-512 of Dilithium5 pubkey, hex
+    uint8_t dilithium_pubkey[2592];      // ML-DSA-87 public key
+    uint8_t kyber_pubkey[1568];          // Kyber1024 round-3 public key (legacy)
+
+    // ===== ML-KEM-1024 (KEM Faz 1, 2026-09-23) =====
+    uint8_t mlkem_pubkey[1568];          // ML-KEM-1024 public key, valid only if has_mlkem_pubkey.
+                                          // OUTSIDE the signature preimage — see note below.
+    bool has_mlkem_pubkey;
+
+    // ===== DNA NAME REGISTRATION =====
     bool has_registered_name;
-    char registered_name[64];                 // DNA name (3-20 chars)
+    char registered_name[256];           // DNA name (3-20 chars)
     uint64_t name_registered_at;
-    uint64_t name_expires_at;
-    char registration_tx_hash[128];           // Blockchain tx hash
-    char registration_network[32];            // e.g., "Backbone"
+    uint64_t name_expires_at;             // +365 days
     uint32_t name_version;
-    dna_wallet_list_t wallets;                // Linked wallet addresses
-    dna_social_list_t socials;                // Social links
+
+    // ===== PROFILE DATA =====
+    char display_name[256];              // LEGACY, kept for old-signature compat only
     char bio[512];
+    char avatar_hash[128];
+    char avatar_base64[20484];           // ~20KB max
+    char location[128];
+    char website[256];
+
+    dna_wallets_t wallets;               // backbone/alvin/eth/sol/trx/bsc (flat fields)
+    dna_socials_t socials;               // telegram/x/github/facebook/instagram/linkedin/google
+
+    // ===== METADATA =====
+    uint64_t created_at;
+    uint64_t updated_at;
     uint64_t timestamp;
     uint32_t version;
-    uint8_t signature[4627];                  // Dilithium5 signature over JSON
+
+    // ===== SIGNATURE =====
+    uint8_t signature[4627];             // Dilithium5 signature over unsigned JSON
 } dna_unified_identity_t;
 ```
+
+**`mlkem_pubkey` is outside the signature preimage (KEM Faz 1).** It is present
+in the stored/transmitted JSON (`dna_identity_to_json`) but NEVER in the JSON
+the signature is computed/verified over (`dna_identity_to_json_unsigned`) — an
+old client that has never heard of this field drops it on re-serialize and its
+verification of the (unchanged) main signature is unaffected. No separate
+binding signature (operator decision K4,
+`docs/plans/decisions/2026-09-23-kem-mlkem-migration.md` §5.2) — integrity
+comes from DHT write ownership (authenticated session identity + value
+signature + EXCLUSIVE key on the `fingerprint:profile` key), not a second
+signature.
 
 ### Signature Method (JSON-based)
 
@@ -884,27 +945,43 @@ This ensures users don't need to manually re-publish after updates.
 ### API
 
 ```c
-// Publish identity (name required, wallet optional)
+// Publish identity (name required, wallet optional).
+// Actual current signature — dht/core/dht_keyserver.h. No dht_context_t
+// parameter (this doc's earlier version showed one that does not exist);
+// mlkem_pubkey added KEM Faz 1 (2026-09-23), nullable — omit when the local
+// identity has not migrated yet.
 int dht_keyserver_publish(
-    dht_context_t *dht_ctx,
     const char *fingerprint,
     const char *name,              // REQUIRED
     const uint8_t *dilithium_pubkey,
     const uint8_t *kyber_pubkey,
     const uint8_t *dilithium_privkey,
-    const char *wallet_address     // Optional - Cellframe wallet address
+    const char *wallet_address,    // Optional - Cellframe wallet address
+    const char *eth_address,       // Optional
+    const char *sol_address,       // Optional
+    const char *trx_address,       // Optional
+    const uint8_t *mlkem_pubkey    // Optional, NULL if not migrated (KEM Faz 1)
+);
+
+// Update keys in DHT (version-bump re-sign; also used by the KEM Faz 1
+// migration path to attach mlkem_pubkey without rotating Dilithium/Kyber —
+// pass the SAME current pubkeys as "new" to keep the fingerprint unchanged).
+int dht_keyserver_update(
+    const char *identity,
+    const uint8_t *new_dilithium_pubkey,
+    const uint8_t *new_kyber_pubkey,
+    const uint8_t *new_dilithium_privkey,
+    const uint8_t *mlkem_pubkey     // Optional, NULL to leave untouched (KEM Faz 1)
 );
 
 // Lookup identity (returns full unified identity)
 int dht_keyserver_lookup(
-    dht_context_t *dht_ctx,
     const char *name_or_fingerprint,
     dna_unified_identity_t **identity_out  // Caller must call dna_identity_free()
 );
 
 // Reverse lookup: fingerprint → name
 int dht_keyserver_reverse_lookup(
-    dht_context_t *dht_ctx,
     const char *fingerprint,
     char **name_out                // Caller must free()
 );

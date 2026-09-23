@@ -11,6 +11,7 @@
  */
 
 #include "gek.h"
+#include <stdbool.h>
 #include "group_database.h"
 #include "../messenger.h"
 #include "crypto/utils/qgp_types.h"
@@ -18,6 +19,7 @@
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/enc/qgp_kyber.h"
+#include "crypto/enc/qgp_mlkem.h"
 #include "crypto/enc/qgp_aes.h"
 #include "crypto/sign/qgp_dilithium.h"
 #include "crypto/enc/aes_keywrap.h"
@@ -52,48 +54,64 @@
 static sqlite3 *msg_db = NULL;
 
 // KEM keys for GEK encryption (set via gek_set_kem_keys)
-static uint8_t *gek_kem_pubkey = NULL;   // 1568 bytes (Kyber1024)
-static uint8_t *gek_kem_privkey = NULL;  // 3168 bytes (Kyber1024)
+static uint8_t *gek_kem_pubkey = NULL;   // 1568 bytes (Kyber1024 round-3, legacy)
+static uint8_t *gek_kem_privkey = NULL;  // 3168 bytes (Kyber1024 round-3, legacy)
 
-/* CONCURRENCY.md L2: gek_lock protects gek_kem_pubkey and gek_kem_privkey.
- * Read sites take rdlock, copy contents to a stack buffer, release the lock,
- * then work with the copy. Write sites (gek_set_kem_keys, gek_clear_kem_keys)
- * take wrlock. Do NOT call into nodus_*, dht_*, or sqlite3_* while holding
- * this lock — those are L3/L4/L5 and acquiring them after L2 is allowed only
- * if the call site documents the ordering. Keep the critical section flat:
- * no recursion into other gek_* functions that re-enter the lock.
+// ML-KEM-1024 keys for GEK encryption (set via gek_set_mlkem_keys, KEM Faz 1)
+static uint8_t *gek_mlkem_pubkey = NULL;   // 1568 bytes (ML-KEM-1024)
+static uint8_t *gek_mlkem_privkey = NULL;  // 3168 bytes (ML-KEM-1024)
+
+/* CONCURRENCY.md L2: gek_lock protects gek_kem_pubkey/gek_kem_privkey AND
+ * (KEM Faz 1) gek_mlkem_pubkey/gek_mlkem_privkey. Read sites take rdlock,
+ * copy contents to a stack buffer, release the lock, then work with the
+ * copy. Write sites (gek_set_kem_keys, gek_set_mlkem_keys,
+ * gek_clear_kem_keys) take wrlock. Do NOT call into nodus_*, dht_*, or
+ * sqlite3_* while holding this lock — those are L3/L4/L5 and acquiring them
+ * after L2 is allowed only if the call site documents the ordering. Keep the
+ * critical section flat: no recursion into other gek_* functions that
+ * re-enter the lock.
  * Default POSIX rwlock policy (glibc writer-preference attrs are non-portable
  * to llvm-mingw winpthreads, see Phase 2 CONTEXT correction C-04). */
 static pthread_rwlock_t gek_lock = PTHREAD_RWLOCK_INITIALIZER;
 
-#define GEK_KEM_PUBKEY_SIZE  1568  /* Kyber1024 public key size  */
-#define GEK_KEM_PRIVKEY_SIZE 3168  /* Kyber1024 private key size */
+#define GEK_KEM_PUBKEY_SIZE  1568  /* Kyber1024 round-3 public key size (legacy) */
+#define GEK_KEM_PRIVKEY_SIZE 3168  /* Kyber1024 round-3 private key size (legacy) */
+/* ML-KEM-1024 sizes are byte-identical (QGP_MLKEM1024_PUBLICKEYBYTES/
+ * SECRETKEYBYTES == 1568/3168) — reuse the same size constants, KEM Faz 1. */
 
 /* ============================================================================
  * ENCRYPTION / DECRYPTION
  * ============================================================================ */
 
-int gek_encrypt(
+int gek_encrypt_alg(
+    uint8_t alg,
     const uint8_t gek[32],
-    const uint8_t kem_pubkey[1568],
+    const uint8_t pubkey[1568],
     uint8_t encrypted_out[GEK_ENC_TOTAL_SIZE]
 ) {
-    if (!gek || !kem_pubkey || !encrypted_out) {
-        QGP_LOG_ERROR(LOG_TAG, "gek_encrypt: NULL parameter");
+    if (!gek || !pubkey || !encrypted_out) {
+        QGP_LOG_ERROR(LOG_TAG, "gek_encrypt_alg: NULL parameter");
+        return -1;
+    }
+    if (alg != IKP_ALG_KYBER_R3 && alg != IKP_ALG_MLKEM1024) {
+        QGP_LOG_ERROR(LOG_TAG, "gek_encrypt_alg: unknown alg %u", (unsigned)alg);
         return -1;
     }
 
     /* Buffers for KEM and AES */
     uint8_t kem_ciphertext[GEK_ENC_KEM_CT_SIZE];
-    uint8_t shared_secret[32];  /* Kyber1024 shared secret is 32 bytes */
+    uint8_t shared_secret[32];  /* Kyber1024 / ML-KEM-1024 shared secret is 32 bytes */
     uint8_t nonce[GEK_ENC_NONCE_SIZE];
     uint8_t tag[GEK_ENC_TAG_SIZE];
     uint8_t encrypted_gek[GEK_ENC_KEY_SIZE];
     size_t encrypted_len = 0;
 
-    /* Step 1: Kyber1024 encapsulation */
-    QGP_LOG_DEBUG(LOG_TAG, "Performing KEM encapsulation for GEK...");
-    if (qgp_kem1024_encapsulate(kem_ciphertext, shared_secret, kem_pubkey) != 0) {
+    /* Step 1: KEM encapsulation (round-3 or ML-KEM-1024, same ct/ss sizes) */
+    QGP_LOG_DEBUG(LOG_TAG, "Performing KEM encapsulation for GEK (alg=%u)...", (unsigned)alg);
+    int encaps_rc = (alg == IKP_ALG_MLKEM1024)
+        ? qgp_mlkem1024_encapsulate(kem_ciphertext, shared_secret, pubkey)
+        : qgp_kem1024_encapsulate(kem_ciphertext, shared_secret, pubkey);
+    if (encaps_rc != 0) {
         QGP_LOG_ERROR(LOG_TAG, "KEM encapsulation failed");
         return -1;
     }
@@ -137,14 +155,27 @@ int gek_encrypt(
     return 0;
 }
 
-int gek_decrypt(
+int gek_encrypt(
+    const uint8_t gek[32],
+    const uint8_t kem_pubkey[1568],
+    uint8_t encrypted_out[GEK_ENC_TOTAL_SIZE]
+) {
+    return gek_encrypt_alg(IKP_ALG_KYBER_R3, gek, kem_pubkey, encrypted_out);
+}
+
+int gek_decrypt_alg(
+    uint8_t alg,
     const uint8_t *encrypted,
     size_t encrypted_len,
-    const uint8_t kem_privkey[3168],
+    const uint8_t privkey[3168],
     uint8_t gek_out[32]
 ) {
-    if (!encrypted || !kem_privkey || !gek_out) {
-        QGP_LOG_ERROR(LOG_TAG, "gek_decrypt: NULL parameter");
+    if (!encrypted || !privkey || !gek_out) {
+        QGP_LOG_ERROR(LOG_TAG, "gek_decrypt_alg: NULL parameter");
+        return -1;
+    }
+    if (alg != IKP_ALG_KYBER_R3 && alg != IKP_ALG_MLKEM1024) {
+        QGP_LOG_ERROR(LOG_TAG, "gek_decrypt_alg: unknown alg %u", (unsigned)alg);
         return -1;
     }
 
@@ -168,9 +199,12 @@ int gek_decrypt(
     offset += GEK_ENC_TAG_SIZE;
     const uint8_t *encrypted_gek = encrypted + offset;
 
-    /* Step 1: Kyber1024 decapsulation */
-    QGP_LOG_DEBUG(LOG_TAG, "Performing KEM decapsulation for GEK...");
-    if (qgp_kem1024_decapsulate(shared_secret, kem_ciphertext, kem_privkey) != 0) {
+    /* Step 1: KEM decapsulation (round-3 or ML-KEM-1024) */
+    QGP_LOG_DEBUG(LOG_TAG, "Performing KEM decapsulation for GEK (alg=%u)...", (unsigned)alg);
+    int decaps_rc = (alg == IKP_ALG_MLKEM1024)
+        ? qgp_mlkem1024_decapsulate(shared_secret, kem_ciphertext, privkey)
+        : qgp_kem1024_decapsulate(shared_secret, kem_ciphertext, privkey);
+    if (decaps_rc != 0) {
         QGP_LOG_ERROR(LOG_TAG, "KEM decapsulation failed");
         return -1;
     }
@@ -202,6 +236,15 @@ int gek_decrypt(
 
     QGP_LOG_DEBUG(LOG_TAG, "GEK decrypted successfully");
     return 0;
+}
+
+int gek_decrypt(
+    const uint8_t *encrypted,
+    size_t encrypted_len,
+    const uint8_t kem_privkey[3168],
+    uint8_t gek_out[32]
+) {
+    return gek_decrypt_alg(IKP_ALG_KYBER_R3, encrypted, encrypted_len, kem_privkey, gek_out);
 }
 
 /* ============================================================================
@@ -629,13 +672,78 @@ int gek_set_kem_keys(const uint8_t *kem_pubkey, const uint8_t *kem_privkey) {
     return 0;
 }
 
+int gek_set_mlkem_keys(const uint8_t *mlkem_pubkey, const uint8_t *mlkem_privkey) {
+    if (!mlkem_pubkey || !mlkem_privkey) {
+        QGP_LOG_ERROR(LOG_TAG, "gek_set_mlkem_keys: NULL parameter\n");
+        return -1;
+    }
+
+    /* Pre-allocate outside the lock — same pattern as gek_set_kem_keys. */
+    uint8_t *new_pub = malloc(GEK_KEM_PUBKEY_SIZE);
+    if (!new_pub) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate ML-KEM pubkey\n");
+        return -1;
+    }
+    uint8_t *new_priv = malloc(GEK_KEM_PRIVKEY_SIZE);
+    if (!new_priv) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate ML-KEM privkey\n");
+        free(new_pub);
+        return -1;
+    }
+    memcpy(new_pub, mlkem_pubkey, GEK_KEM_PUBKEY_SIZE);
+    memcpy(new_priv, mlkem_privkey, GEK_KEM_PRIVKEY_SIZE);
+
+    /* CONCURRENCY.md L2: gek_lock wrlock — atomically swap pointers. */
+    pthread_rwlock_wrlock(&gek_lock);
+    if (gek_mlkem_pubkey) {
+        qgp_secure_memzero(gek_mlkem_pubkey, GEK_KEM_PUBKEY_SIZE);
+        free(gek_mlkem_pubkey);
+    }
+    if (gek_mlkem_privkey) {
+        qgp_secure_memzero(gek_mlkem_privkey, GEK_KEM_PRIVKEY_SIZE);
+        free(gek_mlkem_privkey);
+    }
+    gek_mlkem_pubkey = new_pub;
+    gek_mlkem_privkey = new_priv;
+    pthread_rwlock_unlock(&gek_lock);
+
+    QGP_LOG_INFO(LOG_TAG, "ML-KEM-1024 keys set for GEK encryption (KEM Faz 1)\n");
+    return 0;
+}
+
+/* D17 (M1 delta 1b-2, D12 approved branch): copy out the session ML-KEM-1024
+ * keys that gek_set_mlkem_keys() populated at identity load/migration time,
+ * for gek_sync_to_dht()/gek_sync_from_dht() to forward into
+ * dht_geks_publish()/dht_geks_fetch() (D12) — so the DHT layer gets the
+ * SAME key the session already loaded under the session password, never a
+ * fresh by-path load. Same rdlock/memcpy/unlock pattern as the other
+ * gek_kem_* and gek_mlkem_* readers above (gek.c:284-291 etc.); -1 and
+ * outputs untouched when unset (pre-migration or K2 identity, absent is
+ * fine). */
+int gek_get_mlkem_keys(uint8_t pub[GEK_KEM_PUBKEY_SIZE], uint8_t priv[GEK_KEM_PRIVKEY_SIZE]) {
+    if (!pub || !priv) {
+        QGP_LOG_ERROR(LOG_TAG, "gek_get_mlkem_keys: NULL parameter\n");
+        return -1;
+    }
+    pthread_rwlock_rdlock(&gek_lock);
+    if (!gek_mlkem_pubkey || !gek_mlkem_privkey) {
+        pthread_rwlock_unlock(&gek_lock);
+        return -1;
+    }
+    memcpy(pub, gek_mlkem_pubkey, GEK_KEM_PUBKEY_SIZE);
+    memcpy(priv, gek_mlkem_privkey, GEK_KEM_PRIVKEY_SIZE);
+    pthread_rwlock_unlock(&gek_lock);
+    return 0;
+}
+
 void gek_cleanup(void) {
     msg_db = NULL;  /* Borrowed pointer from group_database - don't close */
     QGP_LOG_DEBUG(LOG_TAG, "Cleanup complete\n");
 }
 
 void gek_clear_kem_keys(void) {
-    /* CONCURRENCY.md L2: gek_lock wrlock — zero + free both pointers. */
+    /* CONCURRENCY.md L2: gek_lock wrlock — zero + free all four pointers
+     * (legacy round-3 pair + KEM Faz 1 ML-KEM pair). */
     pthread_rwlock_wrlock(&gek_lock);
     if (gek_kem_pubkey) {
         qgp_secure_memzero(gek_kem_pubkey, GEK_KEM_PUBKEY_SIZE);
@@ -646,6 +754,16 @@ void gek_clear_kem_keys(void) {
         qgp_secure_memzero(gek_kem_privkey, GEK_KEM_PRIVKEY_SIZE);
         free(gek_kem_privkey);
         gek_kem_privkey = NULL;
+    }
+    if (gek_mlkem_pubkey) {
+        qgp_secure_memzero(gek_mlkem_pubkey, GEK_KEM_PUBKEY_SIZE);
+        free(gek_mlkem_pubkey);
+        gek_mlkem_pubkey = NULL;
+    }
+    if (gek_mlkem_privkey) {
+        qgp_secure_memzero(gek_mlkem_privkey, GEK_KEM_PRIVKEY_SIZE);
+        free(gek_mlkem_privkey);
+        gek_mlkem_privkey = NULL;
     }
     pthread_rwlock_unlock(&gek_lock);
     QGP_LOG_DEBUG(LOG_TAG, "KEM keys cleared\n");
@@ -788,6 +906,12 @@ static int gek_rotate_and_publish(void *ctx_ptr, const char *group_uuid, const c
         return -1;
     }
 
+    // KEM Faz 1 (R8): each entry is a COMBINED buffer — kyber_pubkey (1568
+    // bytes) followed by mlkem_pubkey (1568 bytes, only meaningful when the
+    // member's DHT record has one). member_entries[].kyber_pubkey and
+    // .mlkem_pubkey point into the SAME allocation so every existing
+    // free(kyber_pubkeys[i])/free(kyber_pubkeys) cleanup site below still
+    // frees exactly what it always freed — no new cleanup sites needed.
     uint8_t **kyber_pubkeys = (uint8_t **)calloc(meta->member_count, sizeof(uint8_t *));
     if (!kyber_pubkeys) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to allocate kyber pubkey array\n");
@@ -815,8 +939,8 @@ static int gek_rotate_and_publish(void *ctx_ptr, const char *group_uuid, const c
             continue;
         }
 
-        // Allocate Kyber pubkey buffer
-        kyber_pubkeys[valid_members] = (uint8_t *)malloc(1568);  // Kyber1024 pubkey size
+        // Allocate combined pubkey buffer (kyber_pubkey || mlkem_pubkey)
+        kyber_pubkeys[valid_members] = (uint8_t *)malloc(1568 * 2);
         if (!kyber_pubkeys[valid_members]) {
             QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed\n");
             dna_identity_free(member_id);
@@ -829,6 +953,16 @@ static int gek_rotate_and_publish(void *ctx_ptr, const char *group_uuid, const c
         // Populate member entry
         memcpy(member_entries[valid_members].fingerprint, fingerprint, 64);
         member_entries[valid_members].kyber_pubkey = kyber_pubkeys[valid_members];
+
+        // KEM Faz 1 (R8): copy ML-KEM pubkey when the member has migrated;
+        // ikp_build's all-or-nothing gate checks mlkem_pubkey != NULL.
+        if (member_id->has_mlkem_pubkey) {
+            memcpy(kyber_pubkeys[valid_members] + 1568, member_id->mlkem_pubkey, 1568);
+            member_entries[valid_members].mlkem_pubkey = kyber_pubkeys[valid_members] + 1568;
+        } else {
+            member_entries[valid_members].mlkem_pubkey = NULL;
+        }
+
         valid_members++;
 
         dna_identity_free(member_id);
@@ -1013,6 +1147,8 @@ int gek_rotate_on_member_remove(void *ctx, const char *group_uuid, const char *o
         return -1;
     }
 
+    // KEM Faz 1 (R8): combined buffer per entry, same rationale as
+    // gek_rotate_and_publish above.
     uint8_t **kyber_pubkeys = (uint8_t **)calloc(meta->member_count, sizeof(uint8_t *));
     if (!kyber_pubkeys) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to allocate kyber pubkey array\n");
@@ -1040,7 +1176,7 @@ int gek_rotate_on_member_remove(void *ctx, const char *group_uuid, const char *o
             continue;
         }
 
-        kyber_pubkeys[valid_members] = (uint8_t *)malloc(1568);
+        kyber_pubkeys[valid_members] = (uint8_t *)malloc(1568 * 2);
         if (!kyber_pubkeys[valid_members]) {
             QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed\n");
             dna_identity_free(member_id);
@@ -1050,6 +1186,14 @@ int gek_rotate_on_member_remove(void *ctx, const char *group_uuid, const char *o
         memcpy(kyber_pubkeys[valid_members], member_id->kyber_pubkey, 1568);
         memcpy(member_entries[valid_members].fingerprint, fingerprint, 64);
         member_entries[valid_members].kyber_pubkey = kyber_pubkeys[valid_members];
+
+        if (member_id->has_mlkem_pubkey) {
+            memcpy(kyber_pubkeys[valid_members] + 1568, member_id->mlkem_pubkey, 1568);
+            member_entries[valid_members].mlkem_pubkey = kyber_pubkeys[valid_members] + 1568;
+        } else {
+            member_entries[valid_members].mlkem_pubkey = NULL;
+        }
+
         valid_members++;
 
         dna_identity_free(member_id);
@@ -1187,8 +1331,22 @@ int ikp_build(const char *group_uuid,
         return -1;
     }
 
+    // KEM Faz 1 (R8): use IKP v3 (per-member alg byte, ML-KEM-1024) ONLY
+    // when EVERY member entry carries a non-NULL mlkem_pubkey; otherwise
+    // fall back to the unchanged v2 packet (design §5.4, all-or-nothing —
+    // one member without a published ML-KEM key is enough to keep the
+    // whole packet on v2, since a v2-only reader cannot parse v3 entries).
+    bool use_v3 = true;
+    for (size_t i = 0; i < member_count; i++) {
+        if (!members[i].mlkem_pubkey) {
+            use_v3 = false;
+            break;
+        }
+    }
+    size_t entry_size = use_v3 ? IKP_MEMBER_ENTRY_SIZE_V3 : IKP_MEMBER_ENTRY_SIZE;
+
     // Calculate packet size
-    size_t packet_size = ikp_calculate_size(member_count);
+    size_t packet_size = IKP_HEADER_SIZE + (entry_size * member_count) + IKP_SIGNATURE_SIZE;
     uint8_t *packet = (uint8_t *)malloc(packet_size);
     if (!packet) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to allocate packet buffer\n");
@@ -1198,8 +1356,8 @@ int ikp_build(const char *group_uuid,
     size_t offset = 0;
 
     // === HEADER ===
-    // Magic bytes: "GEK " (4 bytes)
-    uint32_t magic = htonl(IKP_MAGIC);
+    // Magic bytes: "GEK2" (v2) or "GEK3" (v3, KEM Faz 1) — 4 bytes
+    uint32_t magic = htonl(use_v3 ? IKP_MAGIC_V3 : IKP_MAGIC);
     memcpy(packet + offset, &magic, 4);
     offset += 4;
 
@@ -1220,8 +1378,8 @@ int ikp_build(const char *group_uuid,
     memcpy(packet + offset, dht_salt, IKP_DHT_SALT_SIZE);
     offset += IKP_DHT_SALT_SIZE;
 
-    QGP_LOG_INFO(LOG_TAG, "Building IKP v2 for group %.8s... v%u with %zu members (salted)\n",
-           group_uuid, version, member_count);
+    QGP_LOG_INFO(LOG_TAG, "Building IKP %s for group %.8s... v%u with %zu members (salted)\n",
+           use_v3 ? "v3" : "v2", group_uuid, version, member_count);
 
     // === PER-MEMBER ENTRIES ===
     for (size_t i = 0; i < member_count; i++) {
@@ -1231,33 +1389,50 @@ int ikp_build(const char *group_uuid,
         memcpy(packet + offset, member->fingerprint, 64);
         offset += 64;
 
-        // Kyber1024 encapsulation: (GEK -> KEK, ciphertext)
-        uint8_t kyber_ct[QGP_KEM1024_CIPHERTEXTBYTES];  // 1568 bytes
-        uint8_t kek[QGP_KEM1024_SHAREDSECRET_BYTES];     // 32 bytes
+        // v3: alg byte, ML-KEM-1024 pubkey (use_v3 implies every member has one)
+        // v2: implicitly alg 2, Kyber1024 round-3 pubkey (unchanged)
+        uint8_t alg = IKP_ALG_KYBER_R3;
+        const uint8_t *member_pubkey = member->kyber_pubkey;
+        if (use_v3) {
+            alg = IKP_ALG_MLKEM1024;
+            member_pubkey = member->mlkem_pubkey;
+            packet[offset] = alg;
+            offset += 1;
+        }
 
-        int ret = qgp_kem1024_encapsulate(kyber_ct, kek, member->kyber_pubkey);
+        // KEM encapsulation: (GEK -> KEK, ciphertext). ct/ss sizes are
+        // byte-identical between round-3 and ML-KEM-1024 (1568/32).
+        uint8_t kem_ct[QGP_KEM1024_CIPHERTEXTBYTES];  // 1568 bytes
+        uint8_t kek[QGP_KEM1024_SHAREDSECRET_BYTES];  // 32 bytes
+
+        int ret = (alg == IKP_ALG_MLKEM1024)
+            ? qgp_mlkem1024_encapsulate(kem_ct, kek, member_pubkey)
+            : qgp_kem1024_encapsulate(kem_ct, kek, member_pubkey);
 
         if (ret != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Kyber1024 encapsulation failed for member %zu\n", i);
+            QGP_LOG_ERROR(LOG_TAG, "KEM encapsulation failed for member %zu (alg=%u)\n", i, (unsigned)alg);
+            qgp_secure_memzero(kek, sizeof(kek));
             free(packet);
             return -1;
         }
 
-        memcpy(packet + offset, kyber_ct, 1568);
+        memcpy(packet + offset, kem_ct, 1568);
         offset += 1568;
 
         // AES key wrap: Wrap GEK with KEK
         uint8_t wrapped_gek[40];  // AES-wrap output: 32-byte key -> 40 bytes
         if (aes256_wrap_key(gek, GEK_KEY_SIZE, kek, wrapped_gek) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "AES key wrap failed for member %zu\n", i);
+            qgp_secure_memzero(kek, sizeof(kek));
             free(packet);
             return -1;
         }
+        qgp_secure_memzero(kek, sizeof(kek));
 
         memcpy(packet + offset, wrapped_gek, 40);
         offset += 40;
 
-        QGP_LOG_DEBUG(LOG_TAG, "Member %zu: Kyber+Wrap OK\n", i);
+        QGP_LOG_DEBUG(LOG_TAG, "Member %zu: KEM(alg=%u)+Wrap OK\n", i, (unsigned)alg);
     }
 
     // === SIGNATURE ===
@@ -1295,32 +1470,43 @@ int ikp_build(const char *group_uuid,
     return 0;
 }
 
-int ikp_extract(const uint8_t *packet,
-                size_t packet_size,
-                const uint8_t *my_fingerprint_bin,
-                const uint8_t *my_kyber_privkey,
-                uint8_t gek_out[GEK_KEY_SIZE],
-                uint32_t *version_out,
-                uint8_t dht_salt_out[IKP_DHT_SALT_SIZE]) {
+int ikp_extract_alg(const uint8_t *packet,
+                    size_t packet_size,
+                    const uint8_t *my_fingerprint_bin,
+                    const uint8_t *my_kyber_privkey,
+                    const uint8_t *my_mlkem_privkey,
+                    uint8_t gek_out[GEK_KEY_SIZE],
+                    uint32_t *version_out,
+                    uint8_t dht_salt_out[IKP_DHT_SALT_SIZE]) {
+    // D1 (M1 delta 1): a v3 alg-3 entry is decapsulated with my_mlkem_privkey
+    // only — my_kyber_privkey may legitimately be absent for that call
+    // (gek.h documents this for the ML-KEM-only case). Require at least one
+    // of the two keys here; the alg-specific branch below enforces that the
+    // key matching THIS entry's alg is actually present.
     if (!packet || packet_size < IKP_HEADER_SIZE ||
-        !my_fingerprint_bin || !my_kyber_privkey || !gek_out) {
-        QGP_LOG_ERROR(LOG_TAG, "ikp_extract: Invalid parameter\n");
+        !my_fingerprint_bin || (!my_kyber_privkey && !my_mlkem_privkey) || !gek_out) {
+        QGP_LOG_ERROR(LOG_TAG, "ikp_extract_alg: Invalid parameter\n");
         return -1;
     }
 
     size_t offset = 0;
 
     // === PARSE HEADER ===
-    // Magic bytes (4 bytes)
+    // Magic bytes (4 bytes) — accept v2 (IKP_MAGIC) and v3 (IKP_MAGIC_V3,
+    // KEM Faz 1). The header layout after magic is IDENTICAL between the
+    // two; only the per-member entry size/shape differs.
     uint32_t magic;
     memcpy(&magic, packet + offset, 4);
     magic = ntohl(magic);
     offset += 4;
 
-    if (magic != IKP_MAGIC) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid IKP magic: 0x%08X (expected 0x%08X)\n", magic, IKP_MAGIC);
+    bool is_v3 = (magic == IKP_MAGIC_V3);
+    if (magic != IKP_MAGIC && !is_v3) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid IKP magic: 0x%08X (expected 0x%08X or 0x%08X)\n",
+                      magic, IKP_MAGIC, IKP_MAGIC_V3);
         return -1;
     }
+    size_t entry_size = is_v3 ? IKP_MEMBER_ENTRY_SIZE_V3 : IKP_MEMBER_ENTRY_SIZE;
 
     // Group UUID (36 bytes)
     char group_uuid[37];
@@ -1344,7 +1530,7 @@ int ikp_extract(const uint8_t *packet,
 
     // Validate member count to prevent malicious packets
     if (member_count == 0 || member_count > IKP_MAX_MEMBERS) {
-        QGP_LOG_ERROR(LOG_TAG, "ikp_extract: invalid member_count %u (max=%d)\n",
+        QGP_LOG_ERROR(LOG_TAG, "ikp_extract_alg: invalid member_count %u (max=%d)\n",
                       member_count, IKP_MAX_MEMBERS);
         return -1;
     }
@@ -1355,8 +1541,8 @@ int ikp_extract(const uint8_t *packet,
     }
     offset += IKP_DHT_SALT_SIZE;
 
-    QGP_LOG_INFO(LOG_TAG, "Extracting from IKP v2: group=%.8s... v%u members=%u (salted)\n",
-           group_uuid, version, member_count);
+    QGP_LOG_INFO(LOG_TAG, "Extracting from IKP %s: group=%.8s... v%u members=%u (salted)\n",
+           is_v3 ? "v3" : "v2", group_uuid, version, member_count);
 
     // === SEARCH FOR MY ENTRY ===
     for (size_t i = 0; i < member_count; i++) {
@@ -1372,48 +1558,94 @@ int ikp_extract(const uint8_t *packet,
         if (memcmp(entry_fingerprint, my_fingerprint_bin, 64) == 0) {
             QGP_LOG_INFO(LOG_TAG, "Found my entry at position %zu\n", i);
 
-            offset += 64;
+            size_t entry_offset = offset + 64;
 
-            // Kyber1024 ciphertext (1568 bytes)
-            if (offset + 1568 > packet_size) {
-                QGP_LOG_ERROR(LOG_TAG, "Packet truncated at kyber_ct\n");
+            // v3: alg byte selects the decapsulation key; v2: implicitly
+            // alg 2 (round-3), same as before.
+            uint8_t alg = IKP_ALG_KYBER_R3;
+            if (is_v3) {
+                if (entry_offset + 1 > packet_size) {
+                    QGP_LOG_ERROR(LOG_TAG, "Packet truncated at alg byte\n");
+                    return -1;
+                }
+                alg = packet[entry_offset];
+                entry_offset += 1;
+            }
+
+            // KEM ciphertext (1568 bytes)
+            if (entry_offset + 1568 > packet_size) {
+                QGP_LOG_ERROR(LOG_TAG, "Packet truncated at kem_ct\n");
                 return -1;
             }
-            const uint8_t *kyber_ct = packet + offset;
-            offset += 1568;
+            const uint8_t *kem_ct = packet + entry_offset;
+            entry_offset += 1568;
 
             // Wrapped GEK (40 bytes)
-            if (offset + 40 > packet_size) {
+            if (entry_offset + 40 > packet_size) {
                 QGP_LOG_ERROR(LOG_TAG, "Packet truncated at wrapped_gek\n");
                 return -1;
             }
-            const uint8_t *wrapped_gek = packet + offset;
+            const uint8_t *wrapped_gek = packet + entry_offset;
 
-            // Kyber1024 decapsulation: ciphertext -> KEK
+            // KEM decapsulation: ciphertext -> KEK, using the alg's key.
+            const uint8_t *decap_key = NULL;
+            int decaps_rc;
             uint8_t kek[QGP_KEM1024_SHAREDSECRET_BYTES];  // 32 bytes
-            int ret = qgp_kem1024_decapsulate(kek, kyber_ct, my_kyber_privkey);
+            if (alg == IKP_ALG_MLKEM1024) {
+                if (!my_mlkem_privkey) {
+                    QGP_LOG_ERROR(LOG_TAG, "My entry is alg=ML-KEM but no local ML-KEM key available\n");
+                    return -1;
+                }
+                decap_key = my_mlkem_privkey;
+                decaps_rc = qgp_mlkem1024_decapsulate(kek, kem_ct, decap_key);
+            } else if (alg == IKP_ALG_KYBER_R3) {
+                if (!my_kyber_privkey) {
+                    QGP_LOG_ERROR(LOG_TAG, "My entry is alg=Kyber-r3 but no local Kyber key available\n");
+                    return -1;
+                }
+                decap_key = my_kyber_privkey;
+                decaps_rc = qgp_kem1024_decapsulate(kek, kem_ct, decap_key);
+            } else {
+                QGP_LOG_ERROR(LOG_TAG, "Unknown alg byte %u in my entry\n", (unsigned)alg);
+                return -1;
+            }
 
-            if (ret != 0) {
-                QGP_LOG_ERROR(LOG_TAG, "Kyber1024 decapsulation failed\n");
+            if (decaps_rc != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "KEM decapsulation failed (alg=%u)\n", (unsigned)alg);
+                qgp_secure_memzero(kek, sizeof(kek));
                 return -1;
             }
 
             // AES key unwrap: wrapped_gek + KEK -> GEK
             if (aes256_unwrap_key(wrapped_gek, 40, kek, gek_out) != 0) {
                 QGP_LOG_ERROR(LOG_TAG, "AES key unwrap failed\n");
+                qgp_secure_memzero(kek, sizeof(kek));
                 return -1;
             }
+            qgp_secure_memzero(kek, sizeof(kek));
 
-            QGP_LOG_INFO(LOG_TAG, "Successfully extracted GEK\n");
+            QGP_LOG_INFO(LOG_TAG, "Successfully extracted GEK (alg=%u)\n", (unsigned)alg);
             return 0;
         }
 
         // Not my entry, skip to next
-        offset += 64 + 1568 + 40;  // fingerprint + kyber_ct + wrapped_gek
+        offset += entry_size;
     }
 
     QGP_LOG_ERROR(LOG_TAG, "My fingerprint not found in packet\n");
     return -1;
+}
+
+int ikp_extract(const uint8_t *packet,
+                size_t packet_size,
+                const uint8_t *my_fingerprint_bin,
+                const uint8_t *my_kyber_privkey,
+                uint8_t gek_out[GEK_KEY_SIZE],
+                uint32_t *version_out,
+                uint8_t dht_salt_out[IKP_DHT_SALT_SIZE]) {
+    return ikp_extract_alg(packet, packet_size, my_fingerprint_bin,
+                           my_kyber_privkey, NULL,
+                           gek_out, version_out, dht_salt_out);
 }
 
 int ikp_verify(const uint8_t *packet,
@@ -1425,17 +1657,19 @@ int ikp_verify(const uint8_t *packet,
         return -1;
     }
 
-    // Verify magic
+    // Verify magic — accept v2 (IKP_MAGIC) and v3 (IKP_MAGIC_V3, KEM Faz 1).
     uint32_t magic;
     memcpy(&magic, packet, 4);
     magic = ntohl(magic);
-    if (magic != IKP_MAGIC) {
+    bool is_v3 = (magic == IKP_MAGIC_V3);
+    if (magic != IKP_MAGIC && !is_v3) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid IKP magic\n");
         return -1;
     }
 
     // Parse header to get member count
     // Offset: magic(4) + uuid(36) + version(4) = 44; member_count at byte 44
+    // (identical in v2 and v3 — only the per-member entry size differs)
     uint8_t member_count = packet[44];
 
     // Validate member count
@@ -1446,7 +1680,8 @@ int ikp_verify(const uint8_t *packet,
     }
 
     // Calculate where signature starts
-    size_t signature_offset = IKP_HEADER_SIZE + (IKP_MEMBER_ENTRY_SIZE * member_count);
+    size_t entry_size = is_v3 ? IKP_MEMBER_ENTRY_SIZE_V3 : IKP_MEMBER_ENTRY_SIZE;
+    size_t signature_offset = IKP_HEADER_SIZE + (entry_size * member_count);
 
     if (signature_offset + 3 > packet_size) {
         QGP_LOG_ERROR(LOG_TAG, "Packet too small for signature\n");
@@ -1489,11 +1724,12 @@ int ikp_get_version(const uint8_t *packet, size_t packet_size, uint32_t *version
         return -1;
     }
 
-    // Verify magic
+    // Verify magic — accept v2 and v3 (KEM Faz 1); version is at the same
+    // offset in both (only the per-member entry size differs).
     uint32_t magic;
     memcpy(&magic, packet, 4);
     magic = ntohl(magic);
-    if (magic != IKP_MAGIC) {
+    if (magic != IKP_MAGIC && magic != IKP_MAGIC_V3) {
         return -1;
     }
 
@@ -1509,11 +1745,12 @@ int ikp_get_member_count(const uint8_t *packet, size_t packet_size, uint8_t *cou
         return -1;
     }
 
-    // Verify magic
+    // Verify magic — accept v2 and v3 (KEM Faz 1); member_count is at the
+    // same offset in both.
     uint32_t magic;
     memcpy(&magic, packet, 4);
     magic = ntohl(magic);
-    if (magic != IKP_MAGIC) {
+    if (magic != IKP_MAGIC && magic != IKP_MAGIC_V3) {
         return -1;
     }
 
@@ -1925,6 +2162,14 @@ int gek_sync_to_dht(
         return 0;
     }
 
+    // D17/D12 (M1 delta 1b-2): forward the session-loaded ML-KEM-1024
+    // pubkey (if this identity has migrated) so dht_geks_publish()
+    // self-encrypts with alg 3 instead of alg 2 — same key
+    // gek_set_mlkem_keys() populated at identity load, never a fresh
+    // by-path load (that bypassed the session password, D12).
+    uint8_t mlkem_pub_buf[GEK_KEM_PUBKEY_SIZE], mlkem_priv_buf[GEK_KEM_PRIVKEY_SIZE];
+    bool have_session_mlkem = (gek_get_mlkem_keys(mlkem_pub_buf, mlkem_priv_buf) == 0);
+
     // Publish to DHT
     int result = dht_geks_publish(
         identity,
@@ -1934,8 +2179,12 @@ int gek_sync_to_dht(
         kyber_privkey,
         dilithium_pubkey,
         dilithium_privkey,
-        0  // Use default TTL
+        0,  // Use default TTL
+        have_session_mlkem ? mlkem_pub_buf : NULL
     );
+    if (have_session_mlkem) {
+        qgp_secure_memzero(mlkem_priv_buf, sizeof(mlkem_priv_buf));
+    }
 
     // Secure wipe and free entries
     for (size_t i = 0; i < count; i++) {
@@ -1973,13 +2222,23 @@ int gek_sync_from_dht(
     dht_gek_entry_t *entries = NULL;
     size_t count = 0;
 
+    // D17/D12 (M1 delta 1b-2): forward the session-loaded ML-KEM-1024
+    // privkey (if set) so a GEK sync blob self-encrypted with alg 3 can
+    // still be decrypted — same source as the publish side above.
+    uint8_t mlkem_pub_buf[GEK_KEM_PUBKEY_SIZE], mlkem_priv_buf[GEK_KEM_PRIVKEY_SIZE];
+    bool have_session_mlkem = (gek_get_mlkem_keys(mlkem_pub_buf, mlkem_priv_buf) == 0);
+
     int result = dht_geks_fetch(
         identity,
         &entries,
         &count,
         kyber_privkey,
-        dilithium_pubkey
+        dilithium_pubkey,
+        have_session_mlkem ? mlkem_priv_buf : NULL
     );
+    if (have_session_mlkem) {
+        qgp_secure_memzero(mlkem_priv_buf, sizeof(mlkem_priv_buf));
+    }
 
     if (result == -2) {
         QGP_LOG_INFO(LOG_TAG, "No GEKs found in DHT for this identity\n");

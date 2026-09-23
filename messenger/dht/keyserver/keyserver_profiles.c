@@ -18,7 +18,8 @@ int dna_update_profile(
     const dna_profile_t *profile,
     const uint8_t *dilithium_privkey,
     const uint8_t *dilithium_pubkey,
-    const uint8_t *kyber_pubkey
+    const uint8_t *kyber_pubkey,
+    const uint8_t *mlkem_pubkey
 ) {
     if (!fingerprint || !profile || !dilithium_privkey || !dilithium_pubkey || !kyber_pubkey) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to dna_update_profile\n");
@@ -90,6 +91,36 @@ int dna_update_profile(
             strncpy(identity->registered_name, cached_name, sizeof(identity->registered_name) - 1);
             QGP_LOG_INFO(LOG_TAG, "Recovered registered_name '%s' from cache during update\n", cached_name);
         }
+    }
+
+    // D6 (M1 delta 1b-2, HIGH — verifier/lens A/lens B convergent finding):
+    // set mlkem_pubkey on the CONVERGED identity, before serializing —
+    // "before signing" here means before dna_identity_to_json_unsigned()
+    // below, not literally before qgp_dsa87_sign(); mlkem_pubkey is
+    // deliberately OUTSIDE the signed payload (dna_profile.c's
+    // identity_to_json_internal guards its emission by
+    // include_signature && has_mlkem_pubkey), so it does not change what
+    // gets signed either way. Applies identically on all three branches
+    // above (DHT copy, cache fallback, first-time create) because they all
+    // converge on `identity` by this point.
+    //
+    // - mlkem_pubkey != NULL (caller's device has migrated): attach it
+    //   regardless of what the loaded record had — this is what lets an
+    //   otherwise-routine update (bio edit, wallet refresh) carry the key
+    //   once ANY device of this identity has migrated, instead of
+    //   requiring a dedicated migration republish that a race (D4) could
+    //   never actually reach.
+    // - mlkem_pubkey == NULL (caller's device has NOT migrated, or is an
+    //   old build): leave identity->mlkem_pubkey/has_mlkem_pubkey exactly
+    //   as loaded — an old device must never ERASE a field it does not
+    //   know about. This is the failure lens B found (an old device's
+    //   profile edit silently dropped mlkem_pubkey); the fix is "do
+    //   nothing" here, and dna_auto_republish_own_profile's new D6 branch
+    //   repairs the case where the record ends up missing it while a
+    //   migrated device is the one that notices.
+    if (mlkem_pubkey) {
+        memcpy(identity->mlkem_pubkey, mlkem_pubkey, sizeof(identity->mlkem_pubkey));
+        identity->has_mlkem_pubkey = true;
     }
 
     // Update profile data from flat dna_profile_t

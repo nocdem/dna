@@ -71,7 +71,7 @@ static size_t build_tagged_preimage(uint8_t *buf, size_t buf_cap,
 
 /* ───── Strictness predicate ────────────────────────────────────────── */
 
-/* The witness-to-witness purposes where the NDS1 tag is MANDATORY.
+/* The purposes where the NDS1 tag is MANDATORY.
  *
  * ⚠ BOTH SIDES OR IT IS THEATRE. nodus_sign_tagged() and
  * nodus_verify_tagged() below each consult THIS ONE predicate. Making only
@@ -82,10 +82,29 @@ static size_t build_tagged_preimage(uint8_t *buf, size_t buf_cap,
  * that indivisibility is the point of routing both through one function.
  *
  * Purposes 0x01-0x05 are deliberately NOT here: the compat bridge for
- * clients shipped before 11467980 stays exactly as wide as it was. */
+ * clients shipped before 11467980 stays exactly as wide as it was.
+ *
+ * NODUS_PURPOSE_MLKEM_BIND (0x09) IS here, unlike its sibling KYBER_BIND
+ * (0x02) — this is a DELIBERATE divergence from the "mirror kyber_bind"
+ * plan, corrected 2026-09-23 (N1 delta 1, D2): without this, non-strict
+ * nodus_sign_tagged() signs the RAW (mlkem_pk || nonce) bytes with no
+ * purpose tag at all (see the COMPAT branch below), which is the EXACT
+ * same 1600-byte preimage shape (1568 + 32) that KYBER_BIND signs. That
+ * makes kpk_sig and mpk_sig interchangeable ciphertext-independent
+ * signatures over the same bytes — an on-path attacker can swap one for
+ * the other and force a verify failure (DoS on the handshake), and the
+ * "new purpose byte = domain separation" claim documented elsewhere for
+ * mpk_sig would be false. Adding 0x09 here is SAFE for the rolling
+ * deploy this migration depends on: MLKEM_BIND is BRAND NEW in this same
+ * change — no shipped binary has ever produced or verified a 0x09
+ * signature, so there is no pre-existing wide compat behaviour to
+ * preserve (unlike 0x01-0x05, which predate the NDS1 tag itself). An old
+ * peer that doesn't understand `mpk`/`mpk_sig` never calls into this
+ * purpose at all; it just skips those CBOR keys (nodus_t2_decode()). */
 bool nodus_sign_purpose_is_strict(uint8_t purpose) {
     return purpose == NODUS_PURPOSE_PREPARED ||
-           purpose == NODUS_PURPOSE_VIEWOK;
+           purpose == NODUS_PURPOSE_VIEWOK ||
+           purpose == NODUS_PURPOSE_MLKEM_BIND;
 }
 
 /* ───── Tagged sign/verify (internal engine) ────────────────────────── */
@@ -99,9 +118,14 @@ int nodus_sign_tagged(nodus_sig_t *sig_out,
     if (nodus_sign_purpose_is_strict(purpose)) {
         /* STRICT: sign the NDS1-tagged preimage. Its verify counterpart
          * refuses the raw fallback for exactly these purposes, so signer
-         * and verifier move together. No compat concern — these domains
-         * are witness-to-witness on port 4004 and never reach a shipped
-         * client; the wire break rides NODUS_T3_BFT_PROTOCOL_VER. */
+         * and verifier move together. No compat concern for
+         * PREPARED/VIEWOK — those domains are witness-to-witness on port
+         * 4004 and never reach a shipped client; the wire break rides
+         * NODUS_T3_BFT_PROTOCOL_VER. MLKEM_BIND (0x09) IS tier-2 (ports
+         * 4001/4002/4004) and DOES reach every client — but it is brand
+         * new in this same migration (N1 delta 1, D2/D8), so there is no
+         * shipped verifier expecting a raw signature for it to break;
+         * "no compat concern" holds for it too, for that reason instead. */
         if (data_len > (SIZE_MAX - NODUS_SIGN_HEADER_LEN)) return -1;
 
         const size_t preimage_len = NODUS_SIGN_HEADER_LEN + data_len;
@@ -232,6 +256,20 @@ int nodus_verify_kyber_bind(const nodus_sig_t *sig,
                             const uint8_t *sign_data, size_t sign_data_len,
                             const nodus_pubkey_t *pk) {
     return nodus_verify_tagged(sig, NODUS_PURPOSE_KYBER_BIND,
+                                sign_data, sign_data_len, pk);
+}
+
+int nodus_sign_mlkem_bind(nodus_sig_t *sig_out,
+                          const uint8_t *sign_data, size_t sign_data_len,
+                          const nodus_seckey_t *sk) {
+    return nodus_sign_tagged(sig_out, NODUS_PURPOSE_MLKEM_BIND,
+                              sign_data, sign_data_len, sk);
+}
+
+int nodus_verify_mlkem_bind(const nodus_sig_t *sig,
+                            const uint8_t *sign_data, size_t sign_data_len,
+                            const nodus_pubkey_t *pk) {
+    return nodus_verify_tagged(sig, NODUS_PURPOSE_MLKEM_BIND,
                                 sign_data, sign_data_len, pk);
 }
 

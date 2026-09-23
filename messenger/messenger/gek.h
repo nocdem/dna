@@ -76,10 +76,17 @@ typedef struct {
 
 /**
  * Member entry for IKP building
+ *
+ * KEM Faz 1 (R8): mlkem_pubkey is nullable — the caller populates it from
+ * the member's cache/DHT record when present. ikp_build() emits IKP v3 (with
+ * a per-member alg byte) ONLY when EVERY member entry has a non-NULL
+ * mlkem_pubkey; otherwise it falls back to the unchanged v2 packet using
+ * kyber_pubkey for all members (design §5.4, all-or-nothing).
  */
 typedef struct {
     uint8_t fingerprint[64];        // SHA3-512 fingerprint (binary)
-    const uint8_t *kyber_pubkey;    // Kyber1024 public key (1568 bytes)
+    const uint8_t *kyber_pubkey;    // Kyber1024 round-3 public key (1568 bytes, legacy)
+    const uint8_t *mlkem_pubkey;    // ML-KEM-1024 public key (1568 bytes), or NULL
 } gek_member_entry_t;
 
 /* ============================================================================
@@ -126,6 +133,28 @@ typedef struct {
  */
 #define IKP_MAGIC 0x47454B32
 
+/**
+ * IKP v3 magic bytes: "GEK3" (0x47454B33) — KEM Faz 1, R8.
+ *
+ * Same header shape as v2 (magic || group_uuid(36) || version(4) ||
+ * member_count(1) || dht_salt(32)); each member entry gains a 1-byte alg
+ * field: fingerprint(64) || alg(1) || ct(1568) || wrapped_gek(40). Emitted
+ * ONLY when every member has a published ML-KEM key (ikp_build's
+ * all-or-nothing gate); readers accept BOTH IKP_MAGIC (v2, alg implicitly 2)
+ * and IKP_MAGIC_V3.
+ */
+#define IKP_MAGIC_V3 0x47454B33
+
+/**
+ * Per-member entry size in a v3 Initial Key Packet
+ * fingerprint(64) + alg(1) + ct(1568) + wrapped_gek(40) = 1673 bytes
+ */
+#define IKP_MEMBER_ENTRY_SIZE_V3 1673
+
+/* Per-member alg byte values (v3 only; v2 members are implicitly alg 2). */
+#define IKP_ALG_KYBER_R3   2   /* round-3 Kyber1024 (legacy) */
+#define IKP_ALG_MLKEM1024  3   /* ML-KEM-1024 (FIPS 203) */
+
 /* ============================================================================
  * INITIALIZATION
  * ============================================================================ */
@@ -166,10 +195,42 @@ void gek_cleanup(void);
 int gek_set_kem_keys(const uint8_t *kem_pubkey, const uint8_t *kem_privkey);
 
 /**
+ * Set ML-KEM-1024 keys for GEK encryption/decryption (KEM Faz 1, R7/R8).
+ *
+ * Same contract as gek_set_kem_keys(), for the FIPS-203 key pair
+ * (identity.mlkem). Keys are copied internally - caller may free original
+ * buffers. Independent of gek_set_kem_keys()/gek_clear_kem_keys() — an
+ * identity that has not migrated yet simply never calls this, and every
+ * gek_*_alg() call with alg=2 (round-3) is unaffected.
+ *
+ * @param mlkem_pubkey    1568-byte ML-KEM-1024 public key (for encryption)
+ * @param mlkem_privkey   3168-byte ML-KEM-1024 private key (for decryption)
+ * @return 0 on success, -1 on error
+ */
+int gek_set_mlkem_keys(const uint8_t *mlkem_pubkey, const uint8_t *mlkem_privkey);
+
+/**
+ * Copy out the session ML-KEM-1024 keys previously set by
+ * gek_set_mlkem_keys() (D17, M1 delta 1b-2 — D12-approved branch).
+ *
+ * Used by gek_sync_to_dht()/gek_sync_from_dht() to forward the SAME
+ * session-loaded key to dht_geks_publish()/dht_geks_fetch(), instead of
+ * those DHT-layer functions doing their own by-path load (which bypassed
+ * the session password on a protected identity — D12).
+ *
+ * @param pub   Output 1568-byte ML-KEM-1024 public key buffer
+ * @param priv  Output 3168-byte ML-KEM-1024 private key buffer
+ * @return 0 on success (both copied), -1 if NULL args or not yet set
+ *         (pre-migration or K2 identity — outputs left untouched)
+ */
+int gek_get_mlkem_keys(uint8_t pub[1568], uint8_t priv[3168]);
+
+/**
  * Clear KEM keys from GEK subsystem
  *
  * Should be called when identity is unloaded or on shutdown.
- * Securely wipes the stored keys from memory.
+ * Securely wipes the stored keys from memory. Clears BOTH the legacy
+ * round-3 keys AND the ML-KEM-1024 keys (KEM Faz 1, R8).
  */
 void gek_clear_kem_keys(void);
 
@@ -287,6 +348,46 @@ int gek_decrypt(
     const uint8_t *encrypted,
     size_t encrypted_len,
     const uint8_t kem_privkey[3168],
+    uint8_t gek_out[32]
+);
+
+/**
+ * Encrypt GEK with the given KEM algorithm + AES-256-GCM (KEM Faz 1, R8).
+ *
+ * Same wire layout as gek_encrypt() (kem_ciphertext(1568) || nonce(12) ||
+ * tag(16) || encrypted_gek(32) = GEK_ENC_TOTAL_SIZE) — ML-KEM-1024 and
+ * round-3 Kyber1024 ciphertext/pubkey/privkey sizes are byte-identical, so
+ * the blob format does not change, only which KEM primitive is called.
+ *
+ * @param alg           IKP_ALG_KYBER_R3 (2) or IKP_ALG_MLKEM1024 (3)
+ * @param gek           32-byte GEK to encrypt
+ * @param pubkey        1568-byte public key of the given alg
+ * @param encrypted_out Output buffer (must be GEK_ENC_TOTAL_SIZE bytes)
+ * @return              0 on success, -1 on error (including unknown alg)
+ */
+int gek_encrypt_alg(
+    uint8_t alg,
+    const uint8_t gek[32],
+    const uint8_t pubkey[1568],
+    uint8_t encrypted_out[GEK_ENC_TOTAL_SIZE]
+);
+
+/**
+ * Decrypt GEK with the given KEM algorithm + AES-256-GCM (KEM Faz 1, R8).
+ * See gek_encrypt_alg() for the wire layout (unchanged from gek_decrypt()).
+ *
+ * @param alg           IKP_ALG_KYBER_R3 (2) or IKP_ALG_MLKEM1024 (3)
+ * @param encrypted     GEK_ENC_TOTAL_SIZE-byte encrypted blob
+ * @param encrypted_len Size of encrypted blob (must be GEK_ENC_TOTAL_SIZE)
+ * @param privkey       Private key of the given alg (3168 bytes)
+ * @param gek_out       Output buffer for decrypted GEK (32 bytes)
+ * @return              0 on success, -1 on error (including unknown alg)
+ */
+int gek_decrypt_alg(
+    uint8_t alg,
+    const uint8_t *encrypted,
+    size_t encrypted_len,
+    const uint8_t privkey[3168],
     uint8_t gek_out[32]
 );
 
@@ -419,6 +520,29 @@ int ikp_extract(const uint8_t *packet,
                 uint8_t gek_out[GEK_KEY_SIZE],
                 uint32_t *version_out,
                 uint8_t dht_salt_out[IKP_DHT_SALT_SIZE]);
+
+/**
+ * Extract GEK from a received Initial Key Packet, v2 OR v3 (KEM Faz 1, R8).
+ *
+ * Accepts both IKP_MAGIC (v2 — my_kyber_privkey only) and IKP_MAGIC_V3 (v3 —
+ * my entry's alg byte selects which of my_kyber_privkey / my_mlkem_privkey
+ * is used). ikp_extract() is a thin wrapper: ikp_extract_alg(..., NULL) —
+ * so a v3 packet whose entry for me is alg=2 still extracts fine through the
+ * old entry point; only an alg=3 entry needs my_mlkem_privkey.
+ *
+ * @param my_mlkem_privkey  My ML-KEM-1024 private key (3168 bytes), or NULL
+ *        if not available (identity has not migrated — an alg=3 entry for
+ *        me then fails with -1, exactly like a missing my_kyber_privkey
+ *        would for an alg=2 entry).
+ */
+int ikp_extract_alg(const uint8_t *packet,
+                    size_t packet_size,
+                    const uint8_t *my_fingerprint_bin,
+                    const uint8_t *my_kyber_privkey,
+                    const uint8_t *my_mlkem_privkey,
+                    uint8_t gek_out[GEK_KEY_SIZE],
+                    uint32_t *version_out,
+                    uint8_t dht_salt_out[IKP_DHT_SALT_SIZE]);
 
 /**
  * Verify Initial Key Packet signature

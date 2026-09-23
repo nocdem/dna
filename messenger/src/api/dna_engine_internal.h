@@ -1238,6 +1238,9 @@ int dna_engine_check_channel_day_rotation(dna_engine_t *engine);
 /* dna_get_dht_ctx() removed — use nodus_ops_is_ready() directly */
 qgp_key_t* dna_load_private_key(dna_engine_t *engine);
 qgp_key_t* dna_load_encryption_key(dna_engine_t *engine);
+/* KEM Faz 1 (D6/D12, M1 delta 1b-2): NULL when the identity has not
+ * migrated (K2 or pre-migration) — not an error, absent is fine. */
+qgp_key_t* dna_load_mlkem_key(dna_engine_t *engine);
 bool dht_wait_for_stabilization(dna_engine_t *engine);
 
 /* ============================================================================

@@ -15,6 +15,7 @@
 #include "crypto/nodus_sign.h"
 #include "crypto/nodus_channel_crypto.h"
 #include "crypto/enc/qgp_kyber.h"
+#include "crypto/enc/qgp_mlkem.h"
 #include "crypto/nodus_identity.h"
 #include "core/nodus_value.h"
 
@@ -392,22 +393,65 @@ static void client_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
             nodus_t2_msg_free(&tmp);
             return;
         }
-        /* E2E: if circ_inbound has e2e_ct, decapsulate and init per-circuit crypto */
-        if (h && tmp.has_e2e_ct && client->identity.has_kyber) {
-            uint8_t e2e_ss[NODUS_KYBER_SS_BYTES];
-            if (qgp_kem1024_decapsulate(e2e_ss, tmp.e2e_ct, client->identity.kyber_sk) == 0) {
-                uint8_t nc[32], ns[32];
-                memcpy(nc, tmp.circ_peer_fp.bytes, 32);  /* src = peer */
-                memcpy(ns, client->identity.node_id.bytes, 32);  /* dst = us */
-                /* We ACCEPTED this circuit (circ_inbound) → responder. */
-                nodus_channel_crypto_init(&h->e2e_crypto, e2e_ss, nc, ns,
-                                          NODUS_CHANNEL_ROLE_RESPONDER);
-                h->e2e_active = true;
-                QGP_LOG_INFO(LOG_TAG, "Circuit E2E: inbound onion layer active (cid=%llu)",
-                             (unsigned long long)h->cid);
+        /* E2E: if circ_inbound has e2e_ct, decapsulate and init per-circuit
+         * crypto. e2e_alg (Faz 1 KEM migration) selects the algorithm the
+         * ORIGINATOR encapsulated with — it was relayed opaquely by the
+         * server, so it must match here.
+         *
+         * D4 (N1 delta 1) — FAIL CLOSED, never plaintext: if e2e_ct is
+         * present but this identity has no matching key, OR decapsulation
+         * fails, the circuit is REFUSED (same circuit_reject() path as the
+         * "no handler" / "table full" refusals above), never delivered to
+         * on_circuit_inbound with e2e_active left false. Before this fix,
+         * that fall-through case reached on_circuit_inbound() with
+         * e2e_active=false, and nodus_circuit_send()'s encrypt gate
+         * (`if (h->e2e_active)`) only skips encryption — it never blocks
+         * sending — so the responder's own replies on that "E2E" circuit
+         * would go out as PLAINTEXT. Pre-existing for a missing Kyber key;
+         * Faz 1 makes it the common case once a peer starts sending
+         * e2e_alg=1 to a client that has no ML-KEM identity yet. */
+        bool e2e_refuse = false;
+        if (tmp.has_e2e_ct) {
+            bool e2e_have_key = (tmp.e2e_alg == 1) ? client->identity.has_mlkem
+                                                     : client->identity.has_kyber;
+            if (!e2e_have_key) {
+                e2e_refuse = true;
+            } else {
+                uint8_t e2e_ss[NODUS_KYBER_SS_BYTES];
+                int dec_rc = (tmp.e2e_alg == 1)
+                    ? qgp_mlkem1024_decapsulate(e2e_ss, tmp.e2e_ct, client->identity.mlkem_sk)
+                    : qgp_kem1024_decapsulate(e2e_ss, tmp.e2e_ct, client->identity.kyber_sk);
+                if (dec_rc == 0) {
+                    uint8_t nc[32], ns[32];
+                    memcpy(nc, tmp.circ_peer_fp.bytes, 32);  /* src = peer */
+                    memcpy(ns, client->identity.node_id.bytes, 32);  /* dst = us */
+                    /* We ACCEPTED this circuit (circ_inbound) → responder. */
+                    nodus_channel_crypto_init(&h->e2e_crypto, e2e_ss, nc, ns,
+                                              NODUS_CHANNEL_ROLE_RESPONDER);
+                    h->e2e_active = true;
+                    QGP_LOG_INFO(LOG_TAG, "Circuit E2E: inbound onion layer active (cid=%llu)",
+                                 (unsigned long long)h->cid);
+                } else {
+                    e2e_refuse = true;
+                }
+                qgp_secure_memzero(e2e_ss, sizeof(e2e_ss));
             }
-            qgp_secure_memzero(e2e_ss, sizeof(e2e_ss));
         }
+
+        if (e2e_refuse) {
+            QGP_LOG_ERROR(LOG_TAG,
+                          "Circuit E2E: inbound e2e_ct present (alg=%u) but no "
+                          "matching local key or decapsulation failed (cid=%llu) "
+                          "— refusing (never falling back to plaintext)",
+                          (unsigned)tmp.e2e_alg, (unsigned long long)h->cid);
+            pthread_mutex_lock(&client->circuits_mutex);
+            h->in_use = false;
+            pthread_mutex_unlock(&client->circuits_mutex);
+            circuit_reject(client, tmp.circ_cid);
+            nodus_t2_msg_free(&tmp);
+            return;
+        }
+
         if (h && client->on_circuit_inbound) {
             client->on_circuit_inbound(client, &tmp.circ_peer_fp, h,
                                         client->circuit_inbound_user);
@@ -820,9 +864,14 @@ static int do_auth(nodus_client_t *client) {
     QGP_LOG_INFO(LOG_TAG, "Auth: success");
     memcpy(client->token, resp->token, NODUS_SESSION_TOKEN_LEN);
 
-    /* Channel encryption: use server Kyber pubkey (from auth_ok or cache) */
+    /* Channel encryption: use server Kyber pubkey (from auth_ok or cache),
+     * upgraded to ML-KEM-1024 when the server advertised + signed one
+     * (Faz 1 KEM migration, docs/plans/decisions/2026-09-23-kem-mlkem-
+     * migration.md). */
     bool has_kpk = resp->has_kyber_pk;
     uint8_t server_kyber_pk[NODUS_KYBER_PK_BYTES];
+    bool has_mpk = false;
+    uint8_t server_mlkem_pk[NODUS_MLKEM_PK_BYTES];
     if (has_kpk) {
         memcpy(server_kyber_pk, resp->kyber_pk, NODUS_KYBER_PK_BYTES);
 
@@ -846,6 +895,45 @@ static int do_auth(nodus_client_t *client) {
             /* Cache server's Dilithium PK for TOFU */
             client->server_dil_pk = resp->server_pk;
             client->has_server_dil_pk = true;
+
+            /* Faz 1 KEM migration: if the server ALSO advertised a signed
+             * ML-KEM-1024 pubkey, verify it under MLKEM_BIND against the
+             * SAME server_pk (just trusted above via kpk_sig) and prefer
+             * it over Kyber round-3. Any failure here (missing fields, bad
+             * signature) falls back to Kyber — never fails the connection. */
+            if (resp->has_mlkem_pk && resp->has_mpk_sig) {
+                uint8_t msign_data[NODUS_MLKEM_PK_BYTES + NODUS_NONCE_LEN];
+                memcpy(msign_data, resp->mlkem_pk, NODUS_MLKEM_PK_BYTES);
+                memcpy(msign_data + NODUS_MLKEM_PK_BYTES, auth_nonce, NODUS_NONCE_LEN);
+                if (nodus_verify_mlkem_bind(&resp->mpk_sig, msign_data, sizeof(msign_data),
+                                             &resp->server_pk) == 0) {
+                    memcpy(server_mlkem_pk, resp->mlkem_pk, NODUS_MLKEM_PK_BYTES);
+                    has_mpk = true;
+                    QGP_LOG_INFO(LOG_TAG, "Auth: server ML-KEM PK signature verified ✓");
+                } else {
+                    QGP_LOG_WARN(LOG_TAG,
+                                 "Auth: server ML-KEM PK signature INVALID — "
+                                 "falling back to Kyber round-3");
+                }
+            }
+
+            /* D5 (N1 delta 1) — cache hygiene: this AUTH_OK is FRESH
+             * (server sent kpk directly, not read from our own cache) and
+             * SIGNED (kpk_sig just verified above). If it did not also
+             * carry a verified mpk, the live server is the authority here
+             * — clear any stale cached ML-KEM pubkey from a previous
+             * session rather than silently keep using it. Two legitimate
+             * ways to reach this: the server was rolled back to a
+             * pre-Faz-1 build (identity.has_mlkem reverted to false), or
+             * this connection landed on a DIFFERENT cluster server
+             * (server_idx failover) that has not generated an ML-KEM key
+             * yet. The reconnect-only cache branch below
+             * (!resp->has_kyber_pk) is unaffected — it never heard from a
+             * live server this round, so it keeps whatever it cached
+             * last time. */
+            if (!has_mpk) {
+                client->has_cached_server_mlkem = false;
+            }
         } else {
             QGP_LOG_WARN(LOG_TAG, "Auth: server did not sign Kyber PK (legacy server)");
         }
@@ -854,18 +942,31 @@ static int do_auth(nodus_client_t *client) {
         memcpy(server_kyber_pk, client->cached_server_kyber_pk, NODUS_KYBER_PK_BYTES);
         has_kpk = true;
         QGP_LOG_INFO(LOG_TAG, "Auth: using cached server Kyber pubkey");
+        if (client->has_cached_server_mlkem) {
+            memcpy(server_mlkem_pk, client->cached_server_mlkem_pk, NODUS_MLKEM_PK_BYTES);
+            has_mpk = true;
+            QGP_LOG_INFO(LOG_TAG, "Auth: using cached server ML-KEM pubkey");
+        }
     }
 
     free_pending(client, req);
 
     if (has_kpk) {
-        QGP_LOG_INFO(LOG_TAG, "Auth: server supports channel encryption, initiating Kyber handshake");
+        uint8_t alg = has_mpk ? 1 : 0;
+        QGP_LOG_INFO(LOG_TAG, "Auth: server supports channel encryption, initiating %s handshake",
+                     has_mpk ? "ML-KEM-1024" : "Kyber round-3");
 
-        /* Encapsulate: shared_secret = Kyber_encap(ct, server_pk) */
+        /* Encapsulate: shared_secret = KEM_encap(ct, server_pk). Ciphertext
+         * and shared-secret sizes are byte-identical between the two KEMs
+         * (NODUS_KYBER_* == NODUS_MLKEM_* today), so one buffer pair
+         * serves both. */
         uint8_t ct[NODUS_KYBER_CT_BYTES];
         uint8_t shared_secret[NODUS_KYBER_SS_BYTES];
-        if (qgp_kem1024_encapsulate(ct, shared_secret, server_kyber_pk) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Auth: Kyber encapsulation failed");
+        int enc_rc = has_mpk
+            ? qgp_mlkem1024_encapsulate(ct, shared_secret, server_mlkem_pk)
+            : qgp_kem1024_encapsulate(ct, shared_secret, server_kyber_pk);
+        if (enc_rc != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Auth: KEM encapsulation failed");
             free(buf);
             return -1;
         }
@@ -884,7 +985,7 @@ static int do_auth(nodus_client_t *client) {
             return -1;
         }
 
-        nodus_t2_key_init(txn, ct, nonce_c, buf, CLIENT_BUF_SIZE, &len);
+        nodus_t2_key_init(txn, ct, nonce_c, alg, buf, CLIENT_BUF_SIZE, &len);
         if (send_request(client, buf, len) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Auth: KEY_INIT send failed");
             qgp_secure_memzero(shared_secret, sizeof(shared_secret));
@@ -927,11 +1028,16 @@ static int do_auth(nodus_client_t *client) {
         qgp_secure_memzero(shared_secret, sizeof(shared_secret));
         free_pending(client, req);
 
-        /* Cache server Kyber pubkey for reconnect */
+        /* Cache server pubkey(s) for reconnect */
         memcpy(client->cached_server_kyber_pk, server_kyber_pk, NODUS_KYBER_PK_BYTES);
         client->has_cached_server_kyber = true;
+        if (has_mpk) {
+            memcpy(client->cached_server_mlkem_pk, server_mlkem_pk, NODUS_MLKEM_PK_BYTES);
+            client->has_cached_server_mlkem = true;
+        }
 
-        QGP_LOG_INFO(LOG_TAG, "Auth: channel encrypted (Kyber1024+AES-256-GCM)");
+        QGP_LOG_INFO(LOG_TAG, "Auth: channel encrypted (%s+AES-256-GCM)",
+                     has_mpk ? "ML-KEM-1024" : "Kyber1024");
     }
 
     result = 0;
@@ -5127,19 +5233,25 @@ int nodus_circuit_open_keyed(nodus_client_t *client, const nodus_key_t *peer_fp,
     return circuit_open_impl(client, peer_fp, k_call, on_data, on_close, user, out);
 }
 
-int nodus_circuit_open_e2e(nodus_client_t *client, const nodus_key_t *peer_fp,
-                            const uint8_t *peer_kyber_pk,
-                            nodus_circuit_data_cb on_data,
-                            nodus_circuit_close_cb on_close,
-                            void *user,
-                            nodus_circuit_handle_t **out) {
-    if (!client || !peer_fp || !peer_kyber_pk || !out) return -1;
+int nodus_circuit_open_e2e_alg(nodus_client_t *client, const nodus_key_t *peer_fp,
+                                const uint8_t *peer_pk, uint8_t peer_alg,
+                                nodus_circuit_data_cb on_data,
+                                nodus_circuit_close_cb on_close,
+                                void *user,
+                                nodus_circuit_handle_t **out) {
+    if (!client || !peer_fp || !peer_pk || !out) return -1;
     if (!nodus_client_is_ready(client)) return -1;
 
-    /* Kyber encapsulate → per-circuit shared secret */
+    /* KEM encapsulate → per-circuit shared secret. Ciphertext and
+     * shared-secret sizes are byte-identical between the two KEMs
+     * (NODUS_KYBER_* == NODUS_MLKEM_* today), so one buffer pair serves
+     * both (Faz 1 KEM migration). */
     uint8_t e2e_ct[NODUS_KYBER_CT_BYTES];
     uint8_t e2e_ss[NODUS_KYBER_SS_BYTES];
-    if (qgp_kem1024_encapsulate(e2e_ct, e2e_ss, peer_kyber_pk) != 0)
+    int enc_rc = (peer_alg == 1)
+        ? qgp_mlkem1024_encapsulate(e2e_ct, e2e_ss, peer_pk)
+        : qgp_kem1024_encapsulate(e2e_ct, e2e_ss, peer_pk);
+    if (enc_rc != 0)
         return -1;
 
     /* Allocate handle */
@@ -5192,7 +5304,7 @@ int nodus_circuit_open_e2e(nodus_client_t *client, const nodus_key_t *peer_fp,
     }
 
     uint8_t buf[4096]; size_t blen = 0;
-    if (nodus_t2_circ_open_e2e(txn, client->token, cid, peer_fp, e2e_ct,
+    if (nodus_t2_circ_open_e2e(txn, client->token, cid, peer_fp, e2e_ct, peer_alg,
                                 buf, sizeof(buf), &blen) != 0) {
         free_pending(client, req);
         pthread_mutex_lock(&client->circuits_mutex);
@@ -5241,6 +5353,19 @@ int nodus_circuit_open_e2e(nodus_client_t *client, const nodus_key_t *peer_fp,
     QGP_LOG_INFO(LOG_TAG, "Circuit E2E opened (cid=%llu, onion layer active)",
                  (unsigned long long)cid);
     return 0;
+}
+
+int nodus_circuit_open_e2e(nodus_client_t *client, const nodus_key_t *peer_fp,
+                            const uint8_t *peer_kyber_pk,
+                            nodus_circuit_data_cb on_data,
+                            nodus_circuit_close_cb on_close,
+                            void *user,
+                            nodus_circuit_handle_t **out) {
+    /* Faz 1 KEM migration: unchanged behaviour, always Kyber round-3
+     * (alg 0). Existing callers (nodus/tools/nodus-circ.c and three tests)
+     * are untouched by this dispatch. */
+    return nodus_circuit_open_e2e_alg(client, peer_fp, peer_kyber_pk, 0,
+                                       on_data, on_close, user, out);
 }
 
 void nodus_circuit_set_inbound_cb(nodus_client_t *client,

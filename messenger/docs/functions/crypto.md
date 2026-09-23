@@ -140,9 +140,12 @@ re-hosted on the new ML-KEM K-PKE primitives (§6). Removal: Faz 3
 | `int seed_storage_load(...)` | Load master seed decrypted with Kyber1024 KEM |
 | `bool seed_storage_exists(const char *identity_dir)` | Check if encrypted seed file exists |
 | `int seed_storage_delete(const char *identity_dir)` | Delete encrypted seed file |
-| `int mnemonic_storage_save(...)` | Save mnemonic encrypted with Kyber1024 KEM |
-| `int mnemonic_storage_load(...)` | Load mnemonic decrypted with Kyber1024 KEM |
-| `bool mnemonic_storage_exists(const char *identity_dir)` | Check if encrypted mnemonic file exists |
+| `int mnemonic_storage_save(...)` | Save mnemonic encrypted with Kyber1024 round-3 KEM (legacy, `mnemonic.enc`) |
+| `int mnemonic_storage_load(...)` | Load mnemonic decrypted with Kyber1024 round-3 KEM (legacy) |
+| `bool mnemonic_storage_exists(const char *identity_dir)` | **CHANGED (KEM Faz 1):** true if EITHER `mnemonic.enc` (legacy) OR `mnemonic.v2.enc` (ML-KEM) exists |
+| `int mnemonic_storage_save_v2(const char *mnemonic, const uint8_t mlkem_pubkey[1568], const char *identity_dir)` | **NEW (KEM Faz 1).** Save mnemonic encrypted with ML-KEM-1024 (`mnemonic.v2.enc`); same tag-less blob layout as `mnemonic_storage_save` (ct‖nonce‖tag‖enc) |
+| `int mnemonic_storage_load_v2(char *mnemonic_out, size_t mnemonic_size, const uint8_t mlkem_privkey[3168], const char *identity_dir)` | **NEW (KEM Faz 1).** Load mnemonic decrypted with ML-KEM-1024 |
+| `bool mnemonic_storage_v2_exists(const char *identity_dir)` | **NEW (KEM Faz 1).** Check if `mnemonic.v2.enc` specifically exists |
 
 ### 5.12 Platform Abstraction (`crypto/utils/qgp_platform.h`)
 
@@ -193,6 +196,13 @@ Abstract API for hardware-backed key wrapping. Android uses TEE via Android Keys
 **New error code:** `DNA_ENGINE_ERROR_TEE_FAILED` (-119) — TEE key invalidated (OS update, factory reset, etc.). User must restore from mnemonic phrase.
 
 ### 5.13 QGP Types (`crypto/utils/qgp_types.h`)
+
+`qgp_key_type_t`: `QGP_KEY_TYPE_INVALID=0`, `QGP_KEY_TYPE_DSA87=1` (ML-DSA-87),
+`QGP_KEY_TYPE_KEM1024=2` (Kyber1024 round-3, legacy),
+`QGP_KEY_TYPE_MLKEM1024=3` (ML-KEM-1024, FIPS 203 — **NEW, KEM Faz 1,
+2026-09-23**). `qgp_key_save`/`qgp_key_load`/`_encrypted` all work unchanged
+for type 3 — `shared/crypto/key/qgp_key.c`'s per-type size table gained a row
+(`QGP_MLKEM1024_PUBLICKEYBYTES`/`SECRETKEYBYTES`, same 1568/3168 as type 2).
 
 | Function | Description |
 |----------|-------------|
@@ -543,6 +553,8 @@ BIP39 mnemonic generation and BIP32 hierarchical deterministic key derivation.
 |----------|-------------|
 | `int qgp_derive_seeds_from_mnemonic(...)` | Derive signing, encryption, wallet seeds |
 | `int qgp_derive_seeds_with_master(...)` | Derive seeds + 64-byte master seed |
+| `int qgp_derive_shielded_enc_seed(const char *mnemonic, const char *passphrase, uint8_t shielded_enc_seed[32])` | Derive the dual-mode shielded-pool viewing seed (`qgp-shielded-enc-v1`) |
+| `int qgp_derive_mlkem1024_coins(const uint8_t master_seed[64], uint8_t coins[64])` | **NEW (KEM Faz 1, 2026-09-23).** `coins = SHAKE256(master_seed \|\| "nodus-mlkem-1024", 64)` — same block shape as the signing-seed/encryption-seed derivations above, but takes an already-derived master_seed directly (every call site already has one) rather than re-deriving from a mnemonic. Feeds `qgp_mlkem1024_keypair_derand()` (`crypto/enc/qgp_mlkem.h`) directly. |
 | `void qgp_display_mnemonic(const char *mnemonic)` | Display mnemonic with word numbers |
 | `void test_hmac_sha512(...)` | Test HMAC-SHA512 implementation |
 

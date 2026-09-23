@@ -255,6 +255,44 @@ int qgp_derive_shielded_enc_seed(
 }
 
 /**
+ * Derive the ML-KEM-1024 deterministic-keygen coins (KEM Faz 1, R2) from an
+ * already-derived 64-byte BIP39 master seed.
+ *
+ * coins = SHAKE256(master_seed || "nodus-mlkem-1024", 64)
+ *
+ * Same block shape as the qgp-signing-v1 / qgp-encryption-v1 derivations
+ * above, new domain-separated context string, operating on master_seed
+ * directly (see bip39.h for why: every call site already holds master_seed).
+ */
+int qgp_derive_mlkem1024_coins(
+    const uint8_t master_seed[64],
+    uint8_t coins[64]
+) {
+    if (!master_seed || !coins) {
+        return -1;
+    }
+
+    const char *mlkem_context = "nodus-mlkem-1024";
+    size_t context_len = strlen(mlkem_context);
+    size_t input_len = BIP39_SEED_SIZE + context_len;
+
+    uint8_t *input = malloc(input_len);
+    if (!input) {
+        QGP_LOG_ERROR("SEED", "Memory allocation failed");
+        return -1;
+    }
+
+    memcpy(input, master_seed, BIP39_SEED_SIZE);
+    memcpy(input + BIP39_SEED_SIZE, mlkem_context, context_len);
+
+    shake256(coins, 64, input, input_len);
+    qgp_secure_memzero(input, input_len);
+    free(input);
+
+    return 0;
+}
+
+/**
  * Display BIP39 mnemonic in a user-friendly format
  *
  * Prints mnemonic with word numbers for easy verification and backup.

@@ -211,6 +211,12 @@ typedef struct nodus_client {
     uint8_t                   cached_server_kyber_pk[1568];
     bool                      has_cached_server_kyber;
 
+    /* Cached server ML-KEM-1024 pubkey (Faz 1 KEM migration — same role as
+     * cached_server_kyber_pk above, docs/plans/decisions/2026-09-23-kem-
+     * mlkem-migration.md) */
+    uint8_t                   cached_server_mlkem_pk[1568];
+    bool                      has_cached_server_mlkem;
+
     /* Cached server Dilithium5 pubkey (TOFU — set on first auth_ok with sig) */
     nodus_pubkey_t             server_dil_pk;
     bool                       has_server_dil_pk;
@@ -1143,6 +1149,27 @@ int nodus_circuit_open_e2e(nodus_client_t *client, const nodus_key_t *peer_fp,
                             nodus_circuit_close_cb on_close,
                             void *user,
                             nodus_circuit_handle_t **out);
+
+/**
+ * Open outbound circuit with E2E encryption (onion layer), algorithm-aware
+ * (Faz 1 KEM migration, docs/plans/decisions/2026-09-23-kem-mlkem-
+ * migration.md). peer_pk: target's KEM pubkey (1568 bytes, from DHT
+ * keyserver) — Kyber round-3 when peer_alg == 0, ML-KEM-1024 when
+ * peer_alg == 1; the caller decides based on what the target published
+ * there. nodus_circuit_open_e2e() above is unchanged and always uses
+ * peer_alg == 0 (its existing callers are untouched by this dispatch).
+ *
+ * peer_alg=1 must not be used until every relay on the path runs a build
+ * that forwards `alg` — an old relay drops the key and the far end
+ * decapsulates with the wrong algorithm (silent dead circuit). The
+ * messenger switches circuits to alg=1 in Faz 2, not Faz 1.
+ */
+int nodus_circuit_open_e2e_alg(nodus_client_t *client, const nodus_key_t *peer_fp,
+                                const uint8_t *peer_pk, uint8_t peer_alg,
+                                nodus_circuit_data_cb on_data,
+                                nodus_circuit_close_cb on_close,
+                                void *user,
+                                nodus_circuit_handle_t **out);
 
 /**
  * Open a circuit keyed by an EXTERNALLY-agreed 32-byte secret (K_call from call

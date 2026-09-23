@@ -384,14 +384,20 @@ Client                              Server
   │                                    │
   │─── AUTH(SIGN(nonce, sk)) ─────────►│  3. Client signs nonce with secret key
   │                                    │     Server verifies signature with pk
-  │◄── AUTH_OK(token, kpk, spk, sig) ─│  4. Server returns:
-  │                                    │     - 32-byte session token
-  │                                    │     - Kyber1024 public key (kpk)
+  │◄─ AUTH_OK(token,kpk,spk,sig,      │  4. Server returns:
+  │           [mpk,mpk_sig]) ─────────│     - 32-byte session token
+  │                                    │     - Kyber round-3 public key (kpk)
   │                                    │     - Server Dilithium5 public key (spk)
-  │                                    │     - Dilithium5 signature over (kpk || nonce)
+  │                                    │     - Dilithium5 sign(kpk || nonce) (kpk_sig)
+  │                                    │     - OPTIONAL: ML-KEM-1024 pubkey (mpk) +
+  │                                    │       Dilithium5 sign(mpk || nonce) (mpk_sig),
+  │                                    │       present only if the server has one
   │                                    │     Client verifies sig with spk (MITM protection)
-  │─── KEY_INIT(ct, nonce_c) ─────────►│  5. Client encapsulates to server's Kyber PK
-  │◄── KEY_ACK(nonce_s) ──────────────│  6. Shared secret established
+  │─── KEY_INIT(ct,nonce_c,[alg]) ───►│  5. Client encapsulates to server's KEM pubkey —
+  │                                    │     ML-KEM-1024 (alg=1) if mpk/mpk_sig verified,
+  │                                    │     else Kyber round-3 (alg absent/0, default)
+  │◄── KEY_ACK(nonce_s) ──────────────│  6. Shared secret established (either algorithm
+  │                                    │     yields the same 32-byte secret shape)
   │    ═══ AES-256-GCM channel ═══    │     All subsequent traffic encrypted
 ```
 
@@ -414,14 +420,123 @@ Client                              Server
 ```
 {"t": txn, "y": "r", "q": "auth_ok", "r": {
     "tok": <bytes[32]>,
-    "kpk": <bytes[1568]>,       // Server's Kyber1024 public key
+    "kpk": <bytes[1568]>,       // Server's Kyber round-3 public key
     "spk": <bytes[2592]>,       // Server's Dilithium5 public key
-    "kpk_sig": <bytes[4627]>    // Dilithium5 sign(kpk || nonce, server_sk)
+    "kpk_sig": <bytes[4627]>,   // Dilithium5 sign(kpk || nonce, server_sk)
+    "mpk": <bytes[1568]>,       // OPTIONAL (Faz 1 KEM migration): server's ML-KEM-1024
+                                //   public key, present only when the server has one
+    "mpk_sig": <bytes[4627]>    // OPTIONAL: Dilithium5 sign(mpk || nonce, server_sk) under
+                                //   the STRICT MLKEM_BIND purpose (NDS1-tagged, no raw
+                                //   fallback either side) — unlike kpk_sig/KYBER_BIND, which
+                                //   is non-strict; see "Faz 1 KEM migration" below
 }}
 ```
 The `kpk_sig` binds the Kyber public key to this auth session via the challenge nonce,
 preventing MITM key substitution. Client MUST verify this signature before encapsulating.
 Legacy servers (proto < v0.10.10) omit `spk` and `kpk_sig` — client logs a warning.
+
+**KEY_INIT** (`"q": "key_init"`):
+```
+{"t": txn, "y": "q", "q": "key_init", "a": {
+    "ct": <bytes[1568]>,        // KEM ciphertext (round-3 or ML-KEM-1024)
+    "nc": <bytes[32]>,          // Client nonce
+    "alg": 1                    // OPTIONAL (Faz 1 KEM migration): 1 = ML-KEM-1024.
+                                 //   Omitted entirely (not just 0) when alg=0 — an
+                                 //   alg=0 KEY_INIT is byte-identical to every
+                                 //   KEY_INIT ever sent before this migration.
+}}
+```
+
+#### Faz 1 KEM migration (ML-KEM-1024, rolling-compatible)
+
+Governing decision: `docs/plans/decisions/2026-09-23-kem-mlkem-migration.md` (K1-K6);
+design: `docs/plans/2026-09-23-mlkem-fips203-migration-design.md` §5.8-§5.10.
+
+Kyber round-3 (`kpk`/`kpk_sig`/`ct` with no `alg`, the wire this section originally
+documented) and ML-KEM-1024 (FIPS 203) coexist during the migration. Every new field
+is **optional** and the CBOR decoder **silently skips unknown keys**
+(`nodus_t2_decode()`, both the top-level `"a"` args map and the `"r"` results map) —
+this is what makes the rollout rolling, one node at a time, with no stop-all and no
+wire version bump:
+
+- A node with no ML-KEM keypair (`identity.has_mlkem == false` — true for every node
+  before it has generated or loaded one) never emits `mpk`/`mpk_sig`; its AUTH_OK is
+  the pre-migration 4-key map, byte-for-byte.
+- A pre-migration client/server build simply does not recognise `mpk`, `mpk_sig`, or
+  `alg` and skips them — it behaves exactly as it did before this migration shipped,
+  talking Kyber round-3 to any peer.
+- A migrated node **never sends an ML-KEM ciphertext to a peer that did not
+  advertise a signed `mpk`.** The decision rule at every one of the four handshake
+  sites is the same: *see the peer's own signed ML-KEM pubkey → use it; otherwise
+  fall back to Kyber round-3.* Concretely:
+  1. **Client auth** (`nodus_client.c` `do_auth()`): uses `mpk`/`mpk_sig` from
+     AUTH_OK only if both are present AND `nodus_verify_mlkem_bind()` succeeds
+     against the server's already-kpk_sig-trusted `spk`; else Kyber, exactly as
+     before this migration.
+  2. **Server auth** (`nodus_auth.c` `nodus_auth_handle_auth()`): includes
+     `mpk`/`mpk_sig` in AUTH_OK only when `identity.has_mlkem`; `kpk`/`kpk_sig` are
+     unconditional and unchanged either way.
+  3. **Inter-node send** (`nodus_server.c`, the INTER AUTH_OK receiver and the
+     bootstrap-forward path): after the existing Kyber CRIT-1 bind/pin check
+     passes, additionally verifies the peer's `mpk_sig` under the SAME pinned
+     `server_pk`; uses ML-KEM only if that also verifies.
+  4. **Inter-node receive** (`nodus_server.c:4483-4487`, the INTER KEY_INIT
+     receiver): decapsulates by the incoming `alg` (`msg.key_alg`) **inline**
+     — `use_mlkem ? qgp_mlkem1024_decapsulate(...) : qgp_kem1024_decapsulate(...)`
+     — both branches live directly in `dispatch_inter()`, neither calls out to a
+     separate handler function. (This is unlike the CLIENT-facing KEY_INIT path,
+     `nodus_auth.c`'s `nodus_auth_handle_key_init_alg()`, which DOES delegate —
+     `key_alg != 1` calls the byte-for-byte-unchanged `nodus_auth_handle_key_init()`
+     — do not conflate the two sites.)
+
+  A fifth site, the bootstrap-forward (`bf_*`) client role, follows rule 3's logic
+  on receipt of the peer's AUTH_OK.
+
+  **Inbound E2E circuits fail closed, never plaintext** (`nodus_client.c`,
+  `client_on_frame()`'s `circ_inbound` handler): if an inbound circuit carries
+  `e2e_ct` for an `alg` this client has no key for, or whose decapsulation
+  fails, the circuit is REFUSED via `circuit_reject()` (the same close path
+  used for "no inbound-circuit handler registered" and "circuit table full")
+  and is **never** delivered to `on_circuit_inbound()`. Before this fix, that
+  fall-through case left `e2e_active=false` and the circuit ACCEPTED —
+  `nodus_circuit_send()`'s encrypt gate (`if (h->e2e_active)`) only *skips*
+  encryption, it never *blocks* sending, so a responder's replies on that
+  circuit would go out as plaintext.
+
+- Circuits (`circ_open`/`circ_inbound`/`ri_open`, VPN mesh Faz 1 onion layer) carry
+  the same optional `alg` next to their existing `ect` (E2E KEM ciphertext) field;
+  the server relays both opaquely — it never decapsulates a circuit's E2E
+  ciphertext, only the tag that says which algorithm the endpoints must use.
+  **`alg=1` (ML-KEM) must not be used until every relay on the path runs a build
+  that forwards `alg`** — an old relay's own encoder has no `alg` parameter at
+  all, so it drops the tag on relay regardless of what it read, and the far end
+  decapsulates a genuinely-ML-KEM ciphertext as round-3 (silent dead circuit —
+  the CRIT-3 AEAD-completeness gate drops the resulting garbage frames without
+  a wire error). The messenger switches circuits to `alg=1` in Faz 2, not
+  Faz 1 (`nodus_circuit_open_e2e_alg()`, `nodus.h`).
+- New purpose byte `NODUS_PURPOSE_MLKEM_BIND` (0x09, `nodus_sign.h`) signs
+  `(mlkem_pk ‖ nonce)`. Same ROLE as `NODUS_PURPOSE_KYBER_BIND` (0x02, tier-2
+  client/inter-node auth-time KEM-pubkey binding), but **strict**
+  (`nodus_sign_purpose_is_strict()` — corrected 2026-09-23, N1 delta 1 D2): its
+  preimage `(mlkem_pk ‖ nonce)` is the same length/shape as KYBER_BIND's
+  `(kyber_pk ‖ nonce)`, so a non-strict raw signature here would be
+  interchangeable with a `kpk_sig` and an on-path attacker could swap them to
+  force a spurious verify failure (handshake DoS). MLKEM_BIND always
+  signs/verifies the NDS1-tagged preimage, both sides, no raw fallback — the
+  same discipline as `NODUS_PURPOSE_PREPARED`/`NODUS_PURPOSE_VIEWOK`. Being
+  brand new in this migration (no shipped binary has ever produced or checked
+  a 0x09 signature), this has no pre-existing wide-compat behaviour to break.
+- Seed derivation for a node's own ML-KEM identity (`nodus_identity_from_seed()`)
+  uses the same construction the messenger uses for its own ML-KEM identity
+  seed (`shared/crypto/key/bip39/seed_derivation.c:86-102` shape): `coins[64] =
+  SHAKE256(seed[32] ‖ "nodus-mlkem-1024", 64)`, then
+  `qgp_mlkem1024_keypair_derand(mlkem_pk, mlkem_sk, coins)`. This is NOT HKDF —
+  the shared `hkdf_sha3_256()` primitive caps output at 32 bytes (one
+  hash-length, `shared/crypto/hash/hkdf_sha3.c`) and cannot produce the 64
+  bytes ML-KEM-1024 keygen needs; the operator's 2026-09-23 decision (K3,
+  amended) picked the messenger's SHAKE256 shape instead of extending that
+  primitive. The Kyber round-3 HKDF derivation directly above it in
+  `nodus_identity_from_seed()` is unchanged.
 
 ### Authenticated DHT Operations
 
@@ -1014,6 +1129,17 @@ injection is out of scope, consistent with the honest-cluster-membership
 assumption). A peer that legitimately rotates its identity is refused until
 routing refreshes — a bounded replication-liveness gap; witness BFT (4004) carries
 no channel crypto and is unaffected.
+
+**Faz 1 KEM migration (ML-KEM-1024) on this same gate.** All three gates above are
+UNCHANGED — they still run against `kyber_pk`/`kpk_sig`/`server_pk` exactly as
+before. Only AFTER gate 3 (`bind_ok`) passes does the dialer additionally check
+whether the acceptor's AUTH_OK also carried `mpk`/`mpk_sig`; if `mpk_sig` verifies
+under the SAME already-pinned `server_pk`, the dialer encapsulates with ML-KEM-1024
+(`alg=1` on the outgoing KEY_INIT) instead of Kyber round-3 — never the reverse, and
+never against an unpinned identity. A dialer never sends an ML-KEM ciphertext to an
+acceptor that did not itself advertise a signed `mpk` (see the Faz 1 KEM migration
+subsection under Tier 2, §5 above, for the full four-site rule and the governing
+decision record).
 
 Data is stored in:
 - `<data_path>/nodus.db` — DHT value storage (SQLite)

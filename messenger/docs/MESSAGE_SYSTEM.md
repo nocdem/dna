@@ -1,8 +1,8 @@
 # DNA Connect - Message System Documentation
 
-**Version:** v0.13 (Message Deletion + Cross-Device Sync + SQLCipher + Media + enforced sender auth)
-**Last Updated:** 2026-08-27
-**Library:** v0.11.18 | **Nodus:** v0.19.19
+**Version:** v0.14 (KEM Faz 1: dual-key ML-KEM-1024 rollout, backward compatible)
+**Last Updated:** 2026-09-23
+**Library:** v0.11.20 | **Nodus:** v0.19.64
 **Security Level:** NIST Category 5 (256-bit quantum)
 
 This document describes how the DNA Connect message system works, with all facts verified directly from source code.
@@ -363,7 +363,7 @@ Note: v9 added GEK group tables (groups, group_members, group_geks, pending_invi
 │  ├──────┬─────────┬────────────────────────────────────────────────────┤    │
 │  │  0   │    8    │ magic[8] = "PQSIGENC"                              │    │
 │  │  8   │    1    │ version = 0x08                                     │    │
-│  │  9   │    1    │ enc_key_type = 2 (QGP_KEY_TYPE_KEM1024)            │    │
+│  │  9   │    1    │ enc_key_type = 2 (round-3, legacy) or 3 (ML-KEM-1024, KEM Faz 1) │    │
 │  │  10  │    1    │ recipient_count (1-255)                            │    │
 │  │  11  │    1    │ message_type (0=direct, 1=group)                   │    │
 │  │  12  │    4    │ encrypted_size (uint32_t, little-endian)           │    │
@@ -373,10 +373,11 @@ Note: v9 added GEK group tables (groups, group_members, group_geks, pending_invi
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │ RECIPIENT ENTRIES (1608 bytes × recipient_count)                     │    │
 │  ├──────┬─────────┬────────────────────────────────────────────────────┤    │
-│  │  0   │  1568   │ kyber_ciphertext[1568] (Kyber1024 encapsulation)   │    │
+│  │  0   │  1568   │ kyber_ciphertext[1568] (encapsulation, per header.enc_key_type) │    │
 │  │ 1568 │   40    │ wrapped_dek[40] (AES-wrapped DEK: 32+8 bytes)      │    │
 │  └──────┴─────────┴────────────────────────────────────────────────────┘    │
-│  (Repeated for each recipient)                                              │
+│  (Repeated for each recipient — ALL recipients in one message use the SAME  │
+│  algorithm; header.enc_key_type is recipient-general, not per-entry)        │
 │                                                                              │
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │ NONCE (12 bytes)                                                     │    │
@@ -416,7 +417,7 @@ Note: v9 added GEK group tables (groups, group_members, group_geks, pending_invi
 typedef struct {
     char magic[8];              // "PQSIGENC"
     uint8_t version;            // 0x08 (Category 5 + encrypted timestamp)
-    uint8_t enc_key_type;       // QGP_KEY_TYPE_KEM1024 (2)
+    uint8_t enc_key_type;       // QGP_KEY_TYPE_KEM1024 (2, round-3 legacy) or QGP_KEY_TYPE_MLKEM1024 (3, KEM Faz 1) — validated on decrypt since KEM Faz 1
     uint8_t recipient_count;    // Number of recipients (1-255)
     uint8_t message_type;       // MSG_TYPE_DIRECT_PQC or MSG_TYPE_GROUP_GEK
     uint32_t encrypted_size;    // Size of encrypted data
@@ -1208,13 +1209,61 @@ CREATE TABLE IF NOT EXISTS group_messages (
 ~/.dna/
 ├── keys/
 │   └── identity.dsa      # Dilithium5 private key (4896 bytes)
-│   └── identity.kem      # Kyber1024 private key (3168 bytes)
+│   └── identity.kem      # Kyber1024 round-3 private key (3168 bytes, legacy — always present, always readable)
+│   └── identity.mlkem    # ML-KEM-1024 (FIPS 203) private key (3168 bytes, KEM Faz 1 — absent until migrated)
+├── mnemonic.enc          # Recovery phrase, encrypted with identity.kem (legacy)
+├── mnemonic.v2.enc       # Recovery phrase, encrypted with identity.mlkem (KEM Faz 1, present once migrated)
 ├── db/
 │   ├── messages.db       # SQLCipher - Direct messages only (v0.4.63+, encrypted v0.9.161+)
 │   ├── groups.db         # SQLCipher - All group data (v0.4.63+, encrypted v0.9.161+)
-│   └── keyserver_cache.db    # Public key cache (7-day TTL)
+│   └── keyserver_cache.db    # Public key cache (7-day TTL; mlkem_pubkey column added KEM Faz 1)
 └── ...
 ```
+
+**KEM Faz 1 migration (2026-09-23, updated M1 delta 1b-2 D4/D6):** on first
+load after this ships, if `identity.mlkem` is absent and a mnemonic file
+exists, the engine derives it from the mnemonic
+(`SHAKE256(master_seed || "nodus-mlkem-1024", 64)` ->
+`qgp_mlkem1024_keypair_derand`), writes `identity.mlkem` + `mnemonic.v2.enc`,
+refreshes the SELF keyserver-cache row immediately (D2), and feeds the new
+key into the GEK subsystem for this session. It does NOT attempt a DHT
+republish itself (that attempt was deleted, D4 — it ran before the DHT was
+connected and could never succeed). The DHT record is attached separately,
+later, from the post-stabilization callback
+(`dna_auto_republish_own_profile`, D6): if the record already verifies but
+lacks `mlkem_pubkey` while this device has migrated, it is attached via a
+version-bump re-sign (no Dilithium/Kyber rotation); any OTHER profile
+update (bio edit, wallet refresh, etc.) also carries `mlkem_pubkey` from
+then on, via `dna_update_profile`'s new trailing parameter. Idempotent — a
+no-op on every later start. Identities with neither a mnemonic file
+(pre-RC alpha, before 2025-12-11) stay on legacy round-3 with no UI prompt
+(operator decision K2, `docs/plans/decisions/2026-09-23-kem-mlkem-migration.md`).
+
+**Self-encryption (message backup + GEK sync) and the session password
+(D12, M1 delta 1b-2):** the DHT-facing self-encryption paths
+(`dht_message_backup_publish`/`_restore` and `dht_geks_publish`/`_fetch`)
+take `mlkem_pubkey`/`mlkem_privkey` as parameters — they never load
+`identity.mlkem` from disk themselves. The caller (`dna_engine_backup.c`
+for message backup, via `dna_load_mlkem_key(engine)`; `gek.c`'s
+`gek_sync_to_dht`/`gek_sync_from_dht` for GEK sync, via
+`gek_get_mlkem_keys()`, which reads the key `gek_set_mlkem_keys()` already
+loaded under the session password at identity load) supplies the SAME
+key the rest of the session uses. Before this fix, both DHT-facing
+functions loaded `identity.mlkem` by its well-known path with NO password
+at all. The ML-KEM key itself is the same on every device of an identity
+(it is derived deterministically from the mnemonic, §4.3 of the design);
+the failure was in WHO could open the file: on a device with no password
+the by-path load succeeded and the blob went out under alg 3, while on a
+password-protected device of the same identity the by-path load failed,
+the DHT layer got a NULL key, and `dna_decrypt_message_raw_alg` returned
+DECRYPT for every alg-3 blob. Since each identity has
+exactly ONE backup slot and ONE GEKS slot in the DHT (overwritten on every
+publish), a device without a password publishing under alg 3 could make
+the entire message history and every group key UNREADABLE on a
+password-protected device of the same identity — a data-loss bug (verifier
+G6), not merely a decrypt failure. The fix removes the by-path load
+entirely; the alg-3 blob is now only ever produced or read using the
+key the CALLING device's own session already has in hand.
 
 **Database Separation (v0.4.63):**
 - **messages.db**: Direct user-to-user messages only
@@ -1307,6 +1356,23 @@ On every engine startup, before listener setup, each contact's salt is verified:
 - **No unsalted fallback** (CORE-04, v0.9.196+): `dht_dm_outbox_make_key` returns -1 on
   `salt == NULL` — a contact without an agreed salt cannot be queued to at all; the
   pre-CORE-04 "try unsalted key" backward-compat branch was deleted.
+
+### 9.7 KEM Faz 1 — v2 packet DEFINED but NOT EMITTED (D7, M1 delta 1)
+
+A v2 packet format exists (per-entry 1-byte `alg` field, 2=round-3/3=ML-KEM-1024;
+full layout in `PROTOCOL.md`'s salt appendix) and `salt_agreement_publish_v2()`/
+`salt_agreement_fetch_v2()` are implemented and unit-tested, but **neither is
+called from either real integration point above** — both `dna_engine_contacts.c`
+and `dna_engine_listeners.c` still call the v1-only
+`salt_agreement_publish()`/`salt_agreement_fetch()`. This is an ORCHESTRATOR
+decision, not an oversight: the §9.4 tiebreaker picks the lowest SHA3 hash over
+the salts each party can decrypt; a Faz-0 device of the SAME identity (an
+accepted mixed-device state, K1) cannot decrypt a v2 value at all, so the two
+parties would compute the tiebreak over different candidate sets and could
+converge on DIFFERENT salts instead of the same one — the only Faz-1 surface
+where a mixed read set breaks a deterministic AGREEMENT, not just one blob's
+decode. `_v2` is the Faz-2 hook, wired only once every device of an identity is
+expected to carry an ML-KEM key.
 
 **Source:** `dht/shared/dht_salt_agreement.h`, `dht/shared/dht_salt_agreement.c`
 
@@ -1451,10 +1517,16 @@ CREATE TABLE IF NOT EXISTS group_members (
 );
 
 -- Group Encryption Keys (GEK) per version
+-- D13c (M1 delta 1): stays round-3 Kyber1024-encrypted in KEM Faz 1 even
+-- for an identity that has migrated. gek_store()/gek_load() (gek.c:270-430)
+-- always call gek_encrypt()/gek_decrypt() — the round-3-only wrappers —
+-- never gek_encrypt_alg()/gek_decrypt_alg() with alg=3, so this LOCAL
+-- at-rest blob has no alg byte and is never ML-KEM. At-rest migration of
+-- these rows to ML-KEM is a Faz 3 item.
 CREATE TABLE IF NOT EXISTS group_geks (
   group_uuid TEXT NOT NULL,
   version INTEGER NOT NULL,
-  encrypted_key BLOB NOT NULL,   -- Kyber1024-encrypted (1628 bytes)
+  encrypted_key BLOB NOT NULL,   -- Kyber1024-encrypted (1628 bytes), round-3 only (Faz 1)
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
   PRIMARY KEY (group_uuid, version)

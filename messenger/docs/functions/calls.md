@@ -64,6 +64,25 @@ base64 checks; malformed/truncated/non-JSON rejected). `dna_call_signal_t` /
 `dna_call_parsed_t` carry `kind`, `call_id`, `seq`, and per-kind `caller`/`eph_pk`/`eph_ct`/
 `static_ct`/`reason`. Kinds: `INVITE`, `RINGING`, `ACCEPT`, `REJECT`, `BUSY`, `END`.
 
+**KEM Faz 1, `alg` field (R10; D18, M1 delta 1) — INVITE only.** Both structs carry an
+`int alg` (0 = round-3/Kyber1024, default; 1 = ML-KEM-1024). On the wire it is
+`"alg":"mlkem1024"` — a STRING, per the approved decision record
+(`docs/plans/decisions/2026-09-23-kem-mlkem-migration.md`, "Yeni adlar") and design §5.7
+— emitted ONLY when non-zero (an old parser that has never heard of `alg` sees the exact
+same bytes as before this feature). The parser maps exactly that string to 1; absent or
+any other value maps to 0 (never a hard parse error, so a future alg name this build does
+not recognize degrades to round-3 instead of rejecting the whole INVITE).
+
+`dna_engine_call_invite` sets `alg=1` only when BOTH the callee's cached `mlkem_pubkey`
+is present AND this device's own `keys/identity.mlkem` exists (D3a — the caller needs its
+own ML-KEM static key to complete `CALL_ACT_OPEN_MEDIA` later, not just the callee's).
+`dna_calls_handle_incoming` refreshes the SENDER's cached `mlkem_pubkey` from the DHT at
+INVITE arrival if it is stale/absent for an `alg=1` INVITE (D3d) — this runs on the
+transport/receive thread, before the calls mutex, not on the Dart UI thread. If, at
+Answer time, the caller's key is still not cached, `dna_engine_call_accept` logs an
+ERROR and refuses (rc -1) rather than silently downgrading to a round-3 encapsulation
+against an ML-KEM ephemeral (D3b/D3c).
+
 ---
 
 ## 2. Call State Machine (`dna_call_fsm.h`)

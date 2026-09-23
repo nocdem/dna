@@ -222,11 +222,30 @@ int dna_call_build_body(const dna_call_signal_t *sig,
         size_t b64len = 0;
         char *eph_b64 = qgp_base64_encode(sig->eph_pk, DNA_CALL_KYBER_PK_LEN, &b64len);
         if (!eph_b64) return DNA_CALL_ERR_CRYPTO;
-        int n = snprintf(out, out_cap,
-                         CALL_BASE_FMT ",\"caller\":\"%s\",\"eph_pk\":\"%s\",\"cap\":%s}",
-                         sig->call_id_hex, sig->seq, sig->kind,
-                         sig->caller_fp_hex, eph_b64,
-                         sig->cap_json ? sig->cap_json : "{}");
+        /* KEM Faz 1 (R10): "alg" is emitted ONLY when non-zero (ML-KEM),
+         * keeping the wire byte-identical to before for round-3 (an old
+         * parser simply never looks for "alg" and defaults to 0).
+         *
+         * D18 (M1 delta 1): the approved decision record ("Yeni adlar",
+         * docs/plans/decisions/2026-09-23-kem-mlkem-migration.md:59) and
+         * design §5.7 specify "alg":"mlkem1024" as a STRING; the brief's
+         * R10 text and this code previously emitted the integer "alg":1 —
+         * the record is the contract, not the brief. Nothing shipped
+         * speaks the integer form. */
+        int n;
+        if (sig->alg != 0) {
+            n = snprintf(out, out_cap,
+                        CALL_BASE_FMT ",\"caller\":\"%s\",\"eph_pk\":\"%s\",\"alg\":\"mlkem1024\",\"cap\":%s}",
+                        sig->call_id_hex, sig->seq, sig->kind,
+                        sig->caller_fp_hex, eph_b64,
+                        sig->cap_json ? sig->cap_json : "{}");
+        } else {
+            n = snprintf(out, out_cap,
+                        CALL_BASE_FMT ",\"caller\":\"%s\",\"eph_pk\":\"%s\",\"cap\":%s}",
+                        sig->call_id_hex, sig->seq, sig->kind,
+                        sig->caller_fp_hex, eph_b64,
+                        sig->cap_json ? sig->cap_json : "{}");
+        }
         free(eph_b64);
         return finish(out, out_cap, out_len, n);
     }
@@ -359,6 +378,22 @@ int dna_call_parse_body(const char *body, size_t body_len,
             !decode_exact(v, vl, out->eph_pk, DNA_CALL_KYBER_PK_LEN))
             return DNA_CALL_ERR_FORMAT;
         out->has_eph_pk = 1;
+
+        /* KEM Faz 1 (R10): "alg" absent -> 0 (round-3) — out->alg is
+         * already 0 from the memset(out, 0, ...) at function entry.
+         *
+         * D18 (M1 delta 1): the wire form is the STRING "mlkem1024" (design
+         * §5.7, docs/plans/decisions/2026-09-23-kem-mlkem-migration.md:59
+         * "Yeni adlar"), not an integer — map exactly that string to 1;
+         * absent OR any other value -> 0 (round-3), never a hard parse
+         * error, so a future alg name this parser does not recognize
+         * degrades to round-3 instead of rejecting the whole INVITE. */
+        const char *algv = NULL;
+        size_t algv_len = 0;
+        if (find_str(body, body_len, "alg", &algv, &algv_len) &&
+            algv_len == 9 && memcmp(algv, "mlkem1024", 9) == 0) {
+            out->alg = 1;
+        }
     } else if (strcmp(out->kind, DNA_CALL_KIND_ACCEPT) == 0) {
         if (!find_str(body, body_len, "eph_ct", &v, &vl) ||
             !decode_exact(v, vl, out->eph_ct, DNA_CALL_KYBER_PK_LEN))

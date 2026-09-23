@@ -26,8 +26,8 @@ extern "C" {
  * long time. Bump BOTH, together, every time. */
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  19
-#define NODUS_VERSION_PATCH  65
-#define NODUS_VERSION_STRING "0.19.65"
+#define NODUS_VERSION_PATCH  66
+#define NODUS_VERSION_STRING "0.19.66"
 
 /* Wire frame.
  *
@@ -68,11 +68,26 @@ extern "C" {
 #define NODUS_SIG_BYTES         4627        /* Signature */
 #define NODUS_SEED_BYTES        32          /* Identity seed */
 
-/* Crypto sizes (Kyber1024 / ML-KEM-1024) — channel encryption */
+/* Crypto sizes (Kyber round-3 — legacy channel encryption, see
+ * crypto/enc/kyber_r3_legacy.h). Kept for backward-compatible peers during
+ * the Faz 1 KEM migration (docs/plans/decisions/2026-09-23-kem-mlkem-
+ * migration.md). */
 #define NODUS_KYBER_PK_BYTES    1568        /* Kyber public key */
 #define NODUS_KYBER_SK_BYTES    3168        /* Kyber secret key */
 #define NODUS_KYBER_CT_BYTES    1568        /* Kyber ciphertext */
 #define NODUS_KYBER_SS_BYTES    32          /* Kyber shared secret */
+
+/* Crypto sizes (ML-KEM-1024 / FIPS 203 — crypto/enc/qgp_mlkem.h). Faz 1 KEM
+ * migration (docs/plans/decisions/2026-09-23-kem-mlkem-migration.md, K1-K6).
+ * Byte-identical to the NODUS_KYBER_* sizes above (same parameter set,
+ * K=4) — distinct names on purpose: the two algorithms are NOT
+ * interchangeable at the wire level (different FO wrapper, F1-F6 in the
+ * migration design doc §2), so nothing may assume the constants are
+ * aliases of each other even though their values match today. */
+#define NODUS_MLKEM_PK_BYTES    1568        /* ML-KEM-1024 encapsulation key */
+#define NODUS_MLKEM_SK_BYTES    3168        /* ML-KEM-1024 decapsulation key */
+#define NODUS_MLKEM_CT_BYTES    1568        /* ML-KEM-1024 ciphertext */
+#define NODUS_MLKEM_SS_BYTES    32          /* ML-KEM-1024 shared secret */
 
 /* Networking */
 #define NODUS_DEFAULT_UDP_PORT  4000
@@ -368,10 +383,16 @@ typedef struct {
     nodus_seckey_t sk;
     nodus_key_t    node_id;     /* SHA3-512(pk) */
     char           fingerprint[NODUS_KEY_HEX_LEN];
-    /* Kyber1024 for channel encryption (optional — backward compat) */
+    /* Kyber round-3 for channel encryption (legacy — backward compat during
+     * the Faz 1 KEM migration; see kyber_r3_legacy.h) */
     uint8_t        kyber_pk[NODUS_KYBER_PK_BYTES];
     uint8_t        kyber_sk[NODUS_KYBER_SK_BYTES];
     bool           has_kyber;
+    /* ML-KEM-1024 for channel encryption (Faz 1 KEM migration — optional,
+     * a node may not have generated one yet; see qgp_mlkem.h) */
+    uint8_t        mlkem_pk[NODUS_MLKEM_PK_BYTES];
+    uint8_t        mlkem_sk[NODUS_MLKEM_SK_BYTES];
+    bool           has_mlkem;
 } nodus_identity_t;
 
 /** DHT value type */

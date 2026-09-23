@@ -10,6 +10,7 @@
 
 #include "crypto/nodus_channel_crypto.h"
 #include "crypto/enc/qgp_kyber.h"
+#include "crypto/enc/qgp_mlkem.h"
 
 extern void qgp_secure_memzero(void *ptr, size_t len);
 
@@ -101,6 +102,62 @@ static void test_real_kyber_handshake(void)
 
     /* Server -> Client */
     const char *response = "DHT GET response (encrypted)";
+    size_t rlen = strlen(response);
+    CHECK(nodus_channel_encrypt(&server_cc, (const uint8_t *)response, rlen,
+                                 enc_buf, sizeof(enc_buf), &enc_len) == 0, "server encrypt");
+    CHECK(nodus_channel_decrypt(&client_cc, enc_buf, enc_len,
+                                 dec_buf, sizeof(dec_buf), &dec_len) == 0, "client decrypt");
+    CHECK(dec_len == rlen && memcmp(dec_buf, response, rlen) == 0, "server->client mismatch");
+
+    nodus_channel_crypto_clear(&client_cc);
+    nodus_channel_crypto_clear(&server_cc);
+    PASS();
+}
+
+/* ── Test 2b: Real ML-KEM-1024 KEM handshake (Faz 1 KEM migration,
+ * docs/plans/decisions/2026-09-23-kem-mlkem-migration.md) — mirrors
+ * test_real_kyber_handshake() exactly, swapping the KEM. Both algorithms
+ * feed the SAME nodus_channel_crypto_init() with a 32-byte shared secret;
+ * this pins that the channel-crypto layer is genuinely KEM-agnostic. ── */
+static void test_real_mlkem_handshake(void)
+{
+    TEST("real ML-KEM-1024 KEM -> channel crypto");
+
+    uint8_t server_pk[QGP_MLKEM1024_PUBLICKEYBYTES], server_sk[QGP_MLKEM1024_SECRETKEYBYTES];
+    CHECK(qgp_mlkem1024_keypair(server_pk, server_sk) == 0, "keygen");
+
+    uint8_t ct[QGP_MLKEM1024_CIPHERTEXTBYTES], client_ss[QGP_MLKEM1024_SHAREDSECRET_BYTES];
+    CHECK(qgp_mlkem1024_encapsulate(ct, client_ss, server_pk) == 0, "encapsulate");
+
+    uint8_t server_ss[QGP_MLKEM1024_SHAREDSECRET_BYTES];
+    CHECK(qgp_mlkem1024_decapsulate(server_ss, ct, server_sk) == 0, "decapsulate");
+    CHECK(memcmp(client_ss, server_ss, QGP_MLKEM1024_SHAREDSECRET_BYTES) == 0,
+          "shared secrets mismatch");
+
+    uint8_t nonce_c[32], nonce_s[32];
+    memset(nonce_c, 0x33, 32);
+    memset(nonce_s, 0x44, 32);
+
+    nodus_channel_crypto_t client_cc, server_cc;
+    CHECK(nodus_channel_crypto_init(&client_cc, client_ss, nonce_c, nonce_s,
+                                     NODUS_CHANNEL_ROLE_INITIATOR) == 0, "client init");
+    CHECK(nodus_channel_crypto_init(&server_cc, server_ss, nonce_c, nonce_s,
+                                     NODUS_CHANNEL_ROLE_RESPONDER) == 0, "server init");
+
+    const char *payload = "DHT GET request (encrypted, ML-KEM-1024)";
+    size_t plen = strlen(payload);
+    uint8_t enc_buf[256];
+    size_t enc_len = 0;
+    CHECK(nodus_channel_encrypt(&client_cc, (const uint8_t *)payload, plen,
+                                 enc_buf, sizeof(enc_buf), &enc_len) == 0, "client encrypt");
+
+    uint8_t dec_buf[256];
+    size_t dec_len = 0;
+    CHECK(nodus_channel_decrypt(&server_cc, enc_buf, enc_len,
+                                 dec_buf, sizeof(dec_buf), &dec_len) == 0, "server decrypt");
+    CHECK(dec_len == plen && memcmp(dec_buf, payload, plen) == 0, "client->server mismatch");
+
+    const char *response = "DHT GET response (encrypted, ML-KEM-1024)";
     size_t rlen = strlen(response);
     CHECK(nodus_channel_encrypt(&server_cc, (const uint8_t *)response, rlen,
                                  enc_buf, sizeof(enc_buf), &enc_len) == 0, "server encrypt");
@@ -353,6 +410,7 @@ int main(void)
 
     test_basic_roundtrip();
     test_real_kyber_handshake();
+    test_real_mlkem_handshake();
     test_tamper_detection();
     test_wrong_key();
     test_counter_increment();

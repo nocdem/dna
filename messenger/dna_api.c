@@ -15,6 +15,7 @@
 #include "crypto/utils/qgp_random.h"
 #include "crypto/enc/qgp_aes.h"
 #include "crypto/enc/qgp_kyber.h"
+#include "crypto/enc/qgp_mlkem.h"
 #include "crypto/sign/qgp_dilithium.h"
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/enc/aes_keywrap.h"
@@ -187,7 +188,8 @@ void dna_buffer_free(dna_buffer_t *buffer) {
 
 /**
  * Encrypt message with raw keys (for offline delivery)
- * Single recipient version
+ * Single recipient version. Thin wrapper: alg 2 (round-3, legacy) —
+ * KEM Faz 1, R7.
  */
 dna_error_t dna_encrypt_message_raw(
     dna_context_t *ctx,
@@ -200,8 +202,34 @@ dna_error_t dna_encrypt_message_raw(
     uint8_t **ciphertext_out,
     size_t *ciphertext_len_out)
 {
+    return dna_encrypt_message_raw_alg(ctx, plaintext, plaintext_len,
+                                       recipient_enc_pubkey, sender_sign_pubkey,
+                                       sender_sign_privkey, timestamp,
+                                       (uint8_t)QGP_KEY_TYPE_KEM1024,
+                                       ciphertext_out, ciphertext_len_out);
+}
+
+/**
+ * Encrypt message with raw keys, algorithm-aware (KEM Faz 1, R7).
+ */
+dna_error_t dna_encrypt_message_raw_alg(
+    dna_context_t *ctx,
+    const uint8_t *plaintext,
+    size_t plaintext_len,
+    const uint8_t *recipient_enc_pubkey,
+    const uint8_t *sender_sign_pubkey,
+    const uint8_t *sender_sign_privkey,
+    uint64_t timestamp,
+    uint8_t kem_alg,
+    uint8_t **ciphertext_out,
+    size_t *ciphertext_len_out)
+{
     if (!ctx || !plaintext || !recipient_enc_pubkey || !sender_sign_pubkey ||
         !sender_sign_privkey || !ciphertext_out || !ciphertext_len_out) {
+        return DNA_ERROR_INVALID_ARG;
+    }
+    if (kem_alg != (uint8_t)QGP_KEY_TYPE_KEM1024 && kem_alg != (uint8_t)QGP_KEY_TYPE_MLKEM1024) {
+        QGP_LOG_WARN(LOG_TAG, "dna_encrypt_message_raw_alg: unknown kem_alg %u", (unsigned)kem_alg);
         return DNA_ERROR_INVALID_ARG;
     }
 
@@ -278,7 +306,7 @@ dna_error_t dna_encrypt_message_raw(
     memset(&header_for_aad, 0, sizeof(header_for_aad));
     memcpy(header_for_aad.magic, DNA_ENC_MAGIC, 8);
     header_for_aad.version = DNA_ENC_VERSION;
-    header_for_aad.enc_key_type = QGP_KEY_TYPE_KEM1024;
+    header_for_aad.enc_key_type = kem_alg;
     header_for_aad.recipient_count = 1;
     header_for_aad.message_type = MSG_TYPE_DIRECT_PQC;
     header_for_aad.encrypted_size = (uint32_t)payload_len;  // v0.08: encrypt fingerprint + timestamp + plaintext
@@ -306,11 +334,15 @@ dna_error_t dna_encrypt_message_raw(
     qgp_secure_memzero(payload, payload_len);
     free(payload);
 
-    // Create recipient entry (wrap DEK for recipient)
+    // Create recipient entry (wrap DEK for recipient). ct/ss sizes are
+    // byte-identical between round-3 (alg 2) and ML-KEM-1024 (alg 3).
     uint8_t kyber_ct[QGP_KEM1024_CIPHERTEXTBYTES];
     uint8_t kek[QGP_KEM1024_SHAREDSECRET_BYTES];
 
-    if (qgp_kem1024_encapsulate(kyber_ct, kek, recipient_enc_pubkey) != 0) {
+    int encaps_rc = (kem_alg == (uint8_t)QGP_KEY_TYPE_MLKEM1024)
+        ? qgp_mlkem1024_encapsulate(kyber_ct, kek, recipient_enc_pubkey)
+        : qgp_kem1024_encapsulate(kyber_ct, kek, recipient_enc_pubkey);
+    if (encaps_rc != 0) {
         qgp_secure_memzero(kek, QGP_KEM1024_SHAREDSECRET_BYTES);
         result = DNA_ERROR_CRYPTO;
         goto cleanup;
@@ -393,7 +425,8 @@ cleanup:
 }
 
 /**
- * Decrypt message with raw keys (for offline delivery)
+ * Decrypt message with raw keys (for offline delivery). Thin wrapper:
+ * no ML-KEM key available — KEM Faz 1, R7.
  */
 dna_error_t dna_decrypt_message_raw(
     dna_context_t *ctx,
@@ -408,7 +441,45 @@ dna_error_t dna_decrypt_message_raw(
     size_t *signature_len_out,
     uint64_t *timestamp_out)
 {
-    if (!ctx || !ciphertext || !recipient_enc_privkey ||
+    /* D14 (M1 delta 1, verifier LOW): this wrapper's ONLY key parameter is
+     * recipient_enc_privkey (it has no mlkem parameter to fall back to),
+     * so a NULL here is always a caller error, not a decrypt-time fact —
+     * restore the parent's upfront DNA_ERROR_INVALID_ARG (pre-KEM-Faz-1
+     * dna_api.c:410) instead of letting it fall through to
+     * dna_decrypt_message_raw_alg()'s own enc_key_type-specific check,
+     * which now answers DNA_ERROR_DECRYPT for this same NULL (correct for
+     * THAT function's callers, which may legitimately omit the legacy key
+     * while supplying an ML-KEM one instead — but not for this wrapper's
+     * callers, who have no such option and would see a different code
+     * than before this feature shipped). */
+    if (!recipient_enc_privkey) {
+        return DNA_ERROR_INVALID_ARG;
+    }
+    return dna_decrypt_message_raw_alg(ctx, ciphertext, ciphertext_len,
+                                       recipient_enc_privkey, NULL,
+                                       plaintext_out, plaintext_len_out,
+                                       sender_sign_pubkey_out, sender_sign_pubkey_len_out,
+                                       signature_out, signature_len_out, timestamp_out);
+}
+
+/**
+ * Decrypt message with raw keys, algorithm-aware (KEM Faz 1, R7).
+ */
+dna_error_t dna_decrypt_message_raw_alg(
+    dna_context_t *ctx,
+    const uint8_t *ciphertext,
+    size_t ciphertext_len,
+    const uint8_t *recipient_enc_privkey,
+    const uint8_t *recipient_mlkem_privkey,
+    uint8_t **plaintext_out,
+    size_t *plaintext_len_out,
+    uint8_t **sender_sign_pubkey_out,
+    size_t *sender_sign_pubkey_len_out,
+    uint8_t **signature_out,
+    size_t *signature_len_out,
+    uint64_t *timestamp_out)
+{
+    if (!ctx || !ciphertext ||
         !plaintext_out || !plaintext_len_out ||
         !sender_sign_pubkey_out || !sender_sign_pubkey_len_out) {
         return DNA_ERROR_INVALID_ARG;
@@ -445,6 +516,25 @@ dna_error_t dna_decrypt_message_raw(
         return DNA_ERROR_DECRYPT;
     }
 
+    // KEM Faz 1 (R7): validate enc_key_type — this byte was parsed but
+    // NEVER checked before this change (any value silently fell through to
+    // round-3 decapsulation below). 2 = round-3 (legacy), 3 = ML-KEM-1024,
+    // anything else is rejected.
+    if (header.enc_key_type != (uint8_t)QGP_KEY_TYPE_KEM1024 &&
+        header.enc_key_type != (uint8_t)QGP_KEY_TYPE_MLKEM1024) {
+        QGP_LOG_WARN(LOG_TAG, "Decrypt failed: unknown enc_key_type (got %u)",
+                     (unsigned)header.enc_key_type);
+        return DNA_ERROR_DECRYPT;
+    }
+    if (header.enc_key_type == (uint8_t)QGP_KEY_TYPE_KEM1024 && !recipient_enc_privkey) {
+        QGP_LOG_WARN(LOG_TAG, "Decrypt failed: enc_key_type=round-3 but no legacy key available");
+        return DNA_ERROR_DECRYPT;
+    }
+    if (header.enc_key_type == (uint8_t)QGP_KEY_TYPE_MLKEM1024 && !recipient_mlkem_privkey) {
+        QGP_LOG_WARN(LOG_TAG, "Decrypt failed: enc_key_type=ML-KEM but no local ML-KEM key available");
+        return DNA_ERROR_DECRYPT;
+    }
+
     uint8_t recipient_count = header.recipient_count;
     size_t encrypted_size = header.encrypted_size;
     size_t signature_size = header.signature_size;
@@ -472,12 +562,23 @@ dna_error_t dna_decrypt_message_raw(
         goto cleanup;
     }
 
+    // KEM Faz 1 (R7): header.enc_key_type selects which key/algorithm every
+    // recipient entry in THIS message was encapsulated with (the header is
+    // recipient-general — design §5.3). ct/ss sizes are byte-identical
+    // between the two algorithms.
+    const uint8_t *decap_privkey = (header.enc_key_type == (uint8_t)QGP_KEY_TYPE_MLKEM1024)
+        ? recipient_mlkem_privkey
+        : recipient_enc_privkey;
+
     int found_entry = -1;
     for (int i = 0; i < recipient_count; i++) {
         uint8_t kek[QGP_KEM1024_SHAREDSECRET_BYTES];
 
-        if (qgp_kem1024_decapsulate(kek, recipient_entries[i].kyber_ciphertext,
-                            recipient_enc_privkey) == 0) {
+        int decaps_rc = (header.enc_key_type == (uint8_t)QGP_KEY_TYPE_MLKEM1024)
+            ? qgp_mlkem1024_decapsulate(kek, recipient_entries[i].kyber_ciphertext, decap_privkey)
+            : qgp_kem1024_decapsulate(kek, recipient_entries[i].kyber_ciphertext, decap_privkey);
+
+        if (decaps_rc == 0) {
             if (aes256_unwrap_key(recipient_entries[i].wrapped_dek, 40, kek, dek) == 0) {
                 found_entry = i;
                 qgp_secure_memzero(kek, QGP_KEM1024_SHAREDSECRET_BYTES);

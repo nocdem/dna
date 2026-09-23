@@ -98,7 +98,9 @@ int dna_call_derive_key(
  * Emits the canonical pre-sign signal body — a fixed-order JSON string with an
  * empty "sig":"" slot ready for dna_call_sign_body. Built by hand (single C
  * encoder, no json-c) so the byte layout is fully deterministic; all values are
- * hex / base64 / ints, which need no JSON string-escaping (F-JSON). Field order:
+ * hex / base64 / ints / the one fixed literal string "mlkem1024" (D18, M1
+ * delta 1 — never derived from input, so it still needs no JSON
+ * string-escaping (F-JSON)). Field order:
  *   {"type":"call_signal","v":1,"call":"<id>","sig":"","seq":<n>,"kind":"<K>"<,per-kind>}
  */
 
@@ -117,8 +119,14 @@ typedef struct {
 
     /* INVITE-only: */
     const char   *caller_fp_hex; /* 128 hex chars (64 B fingerprint) */
-    const uint8_t *eph_pk;       /* 1568-byte ML-KEM-1024 ephemeral public key */
+    const uint8_t *eph_pk;       /* 1568-byte ephemeral public key, of alg */
     const char   *cap_json;      /* pre-sorted "{...}" capabilities, or NULL -> "{}" */
+    int           alg;           /* KEM Faz 1 (R10): 0 = round-3 (default,
+                                   * omitted from the wire), 1 = ML-KEM-1024
+                                   * (emitted as "alg":"mlkem1024" — a
+                                   * STRING, per the approved decision
+                                   * record, D18/M1 delta 1). Builder only
+                                   * emits the field when alg != 0. */
 
     /* ACCEPT-only: */
     const uint8_t *eph_ct;       /* 1568-byte ephemeral ciphertext */
@@ -152,6 +160,11 @@ typedef struct {
 
     int      has_eph_pk;
     uint8_t  eph_pk[DNA_CALL_KYBER_PK_LEN];          /* INVITE */
+    int      alg;                                     /* KEM Faz 1 (R10):
+                                                        * "alg":"mlkem1024" (string)
+                                                        * -> 1; absent or any
+                                                        * other value -> 0
+                                                        * (round-3); INVITE only */
 
     int      has_eph_ct;
     uint8_t  eph_ct[DNA_CALL_KYBER_PK_LEN];          /* ACCEPT */

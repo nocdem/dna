@@ -32,6 +32,15 @@ extern "C" {
 /* Version for the agreement packet */
 #define SALT_AGREEMENT_VERSION 1
 
+/* Version 2 (KEM Faz 1, R9): per-entry alg byte, ML-KEM-1024 encryption.
+ * Published only when BOTH parties have a published ML-KEM key; readers
+ * accept v1 and v2. See salt_agreement_publish_v2/salt_agreement_fetch_v2. */
+#define SALT_AGREEMENT_VERSION_V2 2
+
+/* v2 per-entry alg byte values */
+#define SALT_AGREEMENT_ALG_KYBER_R3   2   /* round-3 Kyber1024 (legacy) */
+#define SALT_AGREEMENT_ALG_MLKEM1024  3   /* ML-KEM-1024 (FIPS 203) */
+
 /* TTL for salt agreement DHT value (30 days) */
 #define SALT_AGREEMENT_TTL (30 * 24 * 3600)
 
@@ -77,6 +86,32 @@ int salt_agreement_publish(
 );
 
 /**
+ * Publish salt to the DHT agreement key, v2-aware (KEM Faz 1, R9).
+ *
+ * Emits packet v2 (per-entry alg byte, ML-KEM-1024 encryption for BOTH
+ * parties) ONLY when my_mlkem_pub AND contact_mlkem_pub are both non-NULL;
+ * otherwise falls back to the unchanged v1 packet (same as
+ * salt_agreement_publish() — this is what salt_agreement_publish()
+ * delegates to internally with NULL/NULL).
+ *
+ * @param my_mlkem_pub      Publisher's ML-KEM-1024 public key (1568 bytes),
+ *        or NULL if not migrated
+ * @param contact_mlkem_pub Contact's ML-KEM-1024 public key (1568 bytes),
+ *        or NULL if not migrated
+ * @return 0 on success, -1 on error
+ */
+int salt_agreement_publish_v2(
+    const char *my_fp,
+    const char *contact_fp,
+    const uint8_t salt[SALT_AGREEMENT_SIZE],
+    const uint8_t *my_kyber_pub,
+    const uint8_t *contact_kyber_pub,
+    const uint8_t *my_mlkem_pub,
+    const uint8_t *contact_mlkem_pub,
+    const uint8_t *my_dilithium_priv
+);
+
+/**
  * Fetch and decrypt salt from the DHT agreement key (authenticated).
  *
  * Fetches ALL values on the agreement key, verifies Dilithium signatures
@@ -96,6 +131,31 @@ int salt_agreement_fetch(
     const char *my_fp,
     const char *contact_fp,
     const uint8_t *my_kyber_priv,
+    const uint8_t *my_sign_pub,
+    const uint8_t *contact_sign_pub,
+    uint8_t salt_out[SALT_AGREEMENT_SIZE]
+);
+
+/**
+ * Fetch and decrypt salt, v2-aware (KEM Faz 1, R9).
+ *
+ * Accepts BOTH v1 and v2 values on the agreement key (a real DHT read may
+ * see either, or both, depending on when each party last published).
+ * my_mlkem_priv is used to decrypt a v2 entry whose alg byte is
+ * SALT_AGREEMENT_ALG_MLKEM1024; a v2 entry with alg
+ * SALT_AGREEMENT_ALG_KYBER_R3 (or any v1 value) still decrypts with
+ * my_kyber_priv. salt_agreement_fetch() is a thin wrapper: this function
+ * called with my_mlkem_priv = NULL — so it can verify/read v2 packets, it
+ * just can't decrypt an alg=ML-KEM entry without the key.
+ *
+ * @param my_mlkem_priv  My ML-KEM-1024 private key (3168 bytes), or NULL
+ * @return 0 on success, -1 on error, -2 if not found in DHT
+ */
+int salt_agreement_fetch_v2(
+    const char *my_fp,
+    const char *contact_fp,
+    const uint8_t *my_kyber_priv,
+    const uint8_t *my_mlkem_priv,
     const uint8_t *my_sign_pub,
     const uint8_t *contact_sign_pub,
     uint8_t salt_out[SALT_AGREEMENT_SIZE]

@@ -607,6 +607,15 @@ static void transport_message_received_internal(
     char kyber_path[512];
     snprintf(kyber_path, sizeof(kyber_path), "%s/keys/identity.kem", app_data);
 
+    // KEM Faz 1 (R1/R7): identity.mlkem is loaded the same way right beside
+    // identity.kem — absent file -> NULL, never an error.
+    char mlkem_path[512];
+    snprintf(mlkem_path, sizeof(mlkem_path), "%s/keys/identity.mlkem", app_data);
+    qgp_key_t *mlkem_key = NULL;
+    if (qgp_key_load(mlkem_path, &mlkem_key) != 0) {
+        mlkem_key = NULL;
+    }
+
     qgp_key_t *kyber_key = NULL;
     uint8_t *plaintext = NULL;
     size_t plaintext_len = 0;
@@ -618,11 +627,12 @@ static void transport_message_received_internal(
         uint8_t *signature = NULL;
         size_t signature_len = 0;
 
-        decrypt_result = dna_decrypt_message_raw(
+        decrypt_result = dna_decrypt_message_raw_alg(
             ctx->dna_ctx,
             message,
             message_len,
             kyber_key->private_key,
+            mlkem_key ? mlkem_key->private_key : NULL,
             &plaintext,
             &plaintext_len,
             &sender_fp_from_msg,
@@ -685,6 +695,7 @@ static void transport_message_received_internal(
                 if (sender_fp_from_msg) free(sender_fp_from_msg);
                 if (signature) free(signature);
                 qgp_key_free(kyber_key);
+                if (mlkem_key) qgp_key_free(mlkem_key);
                 free(plaintext);
                 free(sender_identity);
                 return;
@@ -699,6 +710,7 @@ static void transport_message_received_internal(
                 if (sender_fp_from_msg) free(sender_fp_from_msg);
                 if (signature) free(signature);
                 qgp_key_free(kyber_key);
+                if (mlkem_key) qgp_key_free(mlkem_key);
                 free(plaintext);
                 return;
             }
@@ -710,6 +722,7 @@ static void transport_message_received_internal(
     } else {
         if (kyber_key) qgp_key_free(kyber_key);
     }
+    if (mlkem_key) qgp_key_free(mlkem_key);
 
     if (decrypt_result == DNA_OK && plaintext && plaintext_len > 0) {
         uint8_t *plaintext_z = realloc(plaintext, plaintext_len + 1);

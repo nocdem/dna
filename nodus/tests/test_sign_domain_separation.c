@@ -17,9 +17,15 @@
  *
  * Faz 2A makes two purposes STRICT — PREPARED (0x07) and VIEWOK (0x08),
  * both witness-to-witness on port 4004 where no shipped client can reach
- * them — and gives PREPARED a chain-bound preimage:
+ * them — and gives PREPARED a chain-bound preimage. (E4, N1 delta 2: this
+ * is no longer true of the WHOLE strict set — KEM Faz 1 added MLKEM_BIND
+ * (0x09) to it, and MLKEM_BIND is tier-2, reachable on ports 4001/4002/
+ * 4004 by every client. It is strict for a different reason: it is brand
+ * new in that migration, so no shipped client has ever produced or
+ * verified a raw 0x09 signature — see §A below.):
  *
- *   §A the strict set is exactly {0x07, 0x08} and nothing else
+ *   §A the strict set is exactly {0x07, 0x08, 0x09} and nothing else
+ *      (0x09 MLKEM_BIND joined in KEM Faz 1, 2026-09-23 — tier-2, brand new)
  *   §B the 116-byte PREPARED preimage, byte for byte (layout KAT)
  *   §E cross-domain — 0x07 and 0x08 do not interchange
  *   §F the bypass is really lifted — a RAW signature is refused for both
@@ -317,14 +323,20 @@ static const uint8_t KAT_CHAIN_ID[32] = {
 /* ── §A — the strictness predicate itself ─────────────────────────── */
 
 static void test_strict_set_is_exactly_07_08(void) {
-    TEST("§A strict set is exactly {PREPARED 0x07, VIEWOK 0x08}");
+    TEST("§A strict set is exactly {PREPARED 0x07, VIEWOK 0x08, MLKEM_BIND 0x09}");
     if (!nodus_sign_purpose_is_strict(NODUS_PURPOSE_PREPARED)) {
         FAIL("PREPARED (0x07) must be strict"); return; }
     if (!nodus_sign_purpose_is_strict(NODUS_PURPOSE_VIEWOK)) {
         FAIL("VIEWOK (0x08) must be strict"); return; }
+    /* KEM Faz 1 (N1 delta 1, D2): MLKEM_BIND is the first tier-2 purpose in
+     * the strict set — a brand-new purpose no shipped client produces or
+     * verifies, so it can be strict from its first byte on the wire; a raw
+     * kpk_sig presented as mpk_sig must not verify (test_mlkem_handshake). */
+    if (!nodus_sign_purpose_is_strict(NODUS_PURPOSE_MLKEM_BIND)) {
+        FAIL("MLKEM_BIND (0x09) must be strict"); return; }
     /* The shipped-client bridge must stay EXACTLY as wide as it was:
      * none of 0x01-0x05 may become strict by accident. 0x06 is
-     * reserved-unimplemented, 0x09 unassigned. */
+     * reserved-unimplemented, 0x0A unassigned. */
     if (nodus_sign_purpose_is_strict(NODUS_PURPOSE_AUTH_CHALLENGE)) {
         FAIL("AUTH_CHALLENGE (0x01) must NOT be strict"); return; }
     if (nodus_sign_purpose_is_strict(NODUS_PURPOSE_KYBER_BIND)) {
@@ -337,7 +349,7 @@ static void test_strict_set_is_exactly_07_08(void) {
         FAIL("CERT (0x05) must NOT be strict"); return; }
     if (nodus_sign_purpose_is_strict(0x00)) { FAIL("0x00 strict"); return; }
     if (nodus_sign_purpose_is_strict(0x06)) { FAIL("0x06 strict"); return; }
-    if (nodus_sign_purpose_is_strict(0x09)) { FAIL("0x09 strict"); return; }
+    if (nodus_sign_purpose_is_strict(0x0A)) { FAIL("0x0A strict"); return; }
     PASS();
 }
 

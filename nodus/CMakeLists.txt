@@ -1917,6 +1917,13 @@ add_executable(test_channel_crypto tests/test_channel_crypto.c)
 target_link_libraries(test_channel_crypto nodus dsa kem nodus)
 add_test(NAME test_channel_crypto COMMAND test_channel_crypto)
 
+# Faz 1 KEM migration (docs/plans/decisions/2026-09-23-kem-mlkem-migration.md)
+# — three real-handler drives: new<->new (ML-KEM), legacy-wire<->new server
+# (round-3), new client<->server-without-mlkem (Kyber fallback).
+add_executable(test_mlkem_handshake tests/test_mlkem_handshake.c)
+target_link_libraries(test_mlkem_handshake nodus dsa kem nodus)
+add_test(NAME test_mlkem_handshake COMMAND test_mlkem_handshake)
+
 # CRIT-3 — AEAD completeness boundary regression test.
 # Pins '>= NODUS_CHANNEL_OVERHEAD -> decrypt' / '< OVERHEAD -> fail-closed drop':
 # a 28-byte empty AEAD frame is legitimate and MUST decrypt (so "drop <=28" is

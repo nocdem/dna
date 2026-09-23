@@ -51,6 +51,11 @@ static const char *CACHE_SCHEMA =
 static const char *MIGRATION_ADD_AVATAR =
     "ALTER TABLE name_cache ADD COLUMN avatar_base64 TEXT;";
 
+// Migration: Add mlkem_pubkey column if missing (KEM Faz 1, R6).
+// Nullable — additive, same idempotent pattern as MIGRATION_ADD_AVATAR.
+static const char *MIGRATION_ADD_MLKEM =
+    "ALTER TABLE keyserver_cache ADD COLUMN mlkem_pubkey BLOB;";
+
 // Helper: Get default cache path (<data_dir>/keyserver_cache.db)
 // Returns 0 on success, -1 on failure
 static int get_default_cache_path(char *path_out, size_t path_size) {
@@ -112,6 +117,10 @@ int keyserver_cache_init(const char *db_path) {
     // This will fail silently if column already exists (expected)
     sqlite3_exec(g_cache_db, MIGRATION_ADD_AVATAR, NULL, NULL, NULL);
 
+    // Run migration: add mlkem_pubkey column if missing (KEM Faz 1, R6)
+    // Fails silently if column already exists (expected).
+    sqlite3_exec(g_cache_db, MIGRATION_ADD_MLKEM, NULL, NULL, NULL);
+
     QGP_LOG_INFO(LOG_TAG, "Initialized: %s\n", db_path);
     return 0;
 }
@@ -139,7 +148,7 @@ int keyserver_cache_get(const char *identity, keyserver_cache_entry_t **entry_ou
 
     *entry_out = NULL;
 
-    const char *sql = "SELECT dilithium_pubkey, kyber_pubkey, cached_at, ttl_seconds "
+    const char *sql = "SELECT dilithium_pubkey, kyber_pubkey, cached_at, ttl_seconds, mlkem_pubkey "
                      "FROM keyserver_cache WHERE identity = ?";
 
     sqlite3_stmt *stmt = NULL;
@@ -164,6 +173,13 @@ int keyserver_cache_get(const char *identity, keyserver_cache_entry_t **entry_ou
     int kyber_len = sqlite3_column_bytes(stmt, 1);
     uint64_t cached_at = sqlite3_column_int64(stmt, 2);
     uint64_t ttl_seconds = sqlite3_column_int64(stmt, 3);
+    /* KEM Faz 1 (R6): mlkem_pubkey is nullable. sqlite3_column_blob returns
+     * NULL and sqlite3_column_bytes returns 0 for a NULL column — cache
+     * symmetry: a row cached before the migration (or refreshed from a
+     * pre-migration record) reads back mlkem_pubkey=NULL, identical to a
+     * cache miss for that field. */
+    const void *mlkem_blob = sqlite3_column_blob(stmt, 4);
+    int mlkem_len = sqlite3_column_bytes(stmt, 4);
 
     // Check if expired
     uint64_t now = time(NULL);
@@ -204,6 +220,21 @@ int keyserver_cache_get(const char *identity, keyserver_cache_entry_t **entry_ou
     memcpy(entry->kyber_pubkey, kyber_blob, kyber_len);
     entry->kyber_pubkey_len = kyber_len;
 
+    /* KEM Faz 1 (R6): copy mlkem_pubkey if present; NULL/0 otherwise
+     * (entry was memset to 0 above, so this is already the default). */
+    if (mlkem_blob && mlkem_len > 0) {
+        entry->mlkem_pubkey = malloc((size_t)mlkem_len);
+        if (!entry->mlkem_pubkey) {
+            free(entry->dilithium_pubkey);
+            free(entry->kyber_pubkey);
+            free(entry);
+            sqlite3_finalize(stmt);
+            return -1;
+        }
+        memcpy(entry->mlkem_pubkey, mlkem_blob, (size_t)mlkem_len);
+        entry->mlkem_pubkey_len = (size_t)mlkem_len;
+    }
+
     entry->cached_at = cached_at;
     entry->ttl_seconds = ttl_seconds;
 
@@ -221,6 +252,8 @@ int keyserver_cache_put(
     size_t dilithium_pubkey_len,
     const uint8_t *kyber_pubkey,
     size_t kyber_pubkey_len,
+    const uint8_t *mlkem_pubkey,
+    size_t mlkem_pubkey_len,
     uint64_t ttl_seconds
 ) {
     if (!g_cache_db || !identity || !dilithium_pubkey || !kyber_pubkey) {
@@ -235,8 +268,8 @@ int keyserver_cache_put(
     }
 
     const char *sql = "INSERT OR REPLACE INTO keyserver_cache "
-                     "(identity, dilithium_pubkey, kyber_pubkey, cached_at, ttl_seconds) "
-                     "VALUES (?, ?, ?, ?, ?)";
+                     "(identity, dilithium_pubkey, kyber_pubkey, cached_at, ttl_seconds, mlkem_pubkey) "
+                     "VALUES (?, ?, ?, ?, ?, ?)";
 
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(g_cache_db, sql, -1, &stmt, NULL);
@@ -250,6 +283,14 @@ int keyserver_cache_put(
     sqlite3_bind_blob(stmt, 3, kyber_pubkey, kyber_pubkey_len, SQLITE_STATIC);
     sqlite3_bind_int64(stmt, 4, time(NULL));
     sqlite3_bind_int64(stmt, 5, ttl_seconds);
+    /* KEM Faz 1 (R6): cache symmetry — a fetch WITHOUT mlkem_pubkey stores
+     * NULL explicitly (never leaves a stale value from a previous put), so
+     * a hit and a miss on this field always agree. */
+    if (mlkem_pubkey && mlkem_pubkey_len > 0) {
+        sqlite3_bind_blob(stmt, 6, mlkem_pubkey, mlkem_pubkey_len, SQLITE_STATIC);
+    } else {
+        sqlite3_bind_null(stmt, 6);
+    }
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -413,6 +454,9 @@ void keyserver_cache_free_entry(keyserver_cache_entry_t *entry) {
     }
     if (entry->kyber_pubkey) {
         free(entry->kyber_pubkey);
+    }
+    if (entry->mlkem_pubkey) {
+        free(entry->mlkem_pubkey);
     }
 
     free(entry);

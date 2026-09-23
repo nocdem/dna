@@ -101,12 +101,21 @@ Local SQLite databases for contacts, caching, and profiles. Per-identity databas
 
 ## 13.4 Keyserver Cache (`keyserver_cache.h`)
 
+**KEM Faz 1 (2026-09-23):** `keyserver_cache_init()` now ALSO runs
+`MIGRATION_ADD_MLKEM` (`ALTER TABLE keyserver_cache ADD COLUMN mlkem_pubkey
+BLOB`), same idempotent pattern as the pre-existing `MIGRATION_ADD_AVATAR`.
+`keyserver_cache_entry_t` gained `uint8_t *mlkem_pubkey; size_t
+mlkem_pubkey_len;` — NULL/0 when the identity has not migrated. Cache
+symmetry: a fetch that finds no ML-KEM key stores NULL explicitly (never a
+stale value from a previous put), so a hit and a miss on this field always
+agree.
+
 | Function | Description |
 |----------|-------------|
-| `int keyserver_cache_init(const char*)` | Initialize keyserver cache |
+| `int keyserver_cache_init(const char*)` | Initialize keyserver cache; runs the `mlkem_pubkey` column migration |
 | `void keyserver_cache_cleanup(void)` | Cleanup keyserver cache |
-| `int keyserver_cache_get(const char*, keyserver_cache_entry_t**)` | Get cached public key |
-| `int keyserver_cache_put(const char*, const uint8_t*, size_t, const uint8_t*, size_t, uint64_t)` | Store public key |
+| `int keyserver_cache_get(const char*, keyserver_cache_entry_t**)` | Get cached public key. **Signature UNCHANGED. Behavior CHANGED (KEM Faz 1):** the returned entry now also carries `mlkem_pubkey`/`mlkem_pubkey_len` (NULL/0 if absent) |
+| `int keyserver_cache_put(const char *identity, const uint8_t *dilithium_pubkey, size_t dilithium_pubkey_len, const uint8_t *kyber_pubkey, size_t kyber_pubkey_len, const uint8_t *mlkem_pubkey, size_t mlkem_pubkey_len, uint64_t ttl_seconds)` | Store public key. **CHANGED (KEM Faz 1):** gained `mlkem_pubkey`/`mlkem_pubkey_len` (nullable/0) before the trailing `ttl_seconds`. Callers updated: `keys.c:221` (`messenger_load_pubkey`, passes the DHT record's mlkem_pubkey when present), `keygen.c:659` (`messenger_register_name`, passes the freshly-created local `identity.mlkem` ek when present); `dna_engine_identity.c`'s `dna_kem_f1_migrate_to_mlkem` also calls it directly (D2, M1 delta 1) to refresh the SELF row immediately after migration, ahead of the 365-day-TTL row `messenger_register_name` wrote before migration |
 | `int keyserver_cache_delete(const char*)` | Delete cached entry |
 | `int keyserver_cache_expire_old(void)` | Clear expired entries |
 | `bool keyserver_cache_exists(const char*)` | Check if entry exists |

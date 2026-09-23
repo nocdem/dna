@@ -229,17 +229,20 @@ int nodus_t2_circ_open(uint32_t txn, const uint8_t *token,
 
 int nodus_t2_circ_open_e2e(uint32_t txn, const uint8_t *token,
                             uint64_t cid, const nodus_key_t *peer_fp,
-                            const uint8_t *e2e_ct,
+                            const uint8_t *e2e_ct, uint8_t alg,
                             uint8_t *buf, size_t cap, size_t *out_len) {
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, cap);
     enc_query_header(&enc, 5, txn, "circ_open");
     enc_token(&enc, token);
     cbor_encode_cstr(&enc, "a");
-    cbor_encode_map(&enc, 3);
+    cbor_encode_map(&enc, (alg == 1) ? 4 : 3);
     cbor_encode_cstr(&enc, "cid"); cbor_encode_uint(&enc, cid);
     cbor_encode_cstr(&enc, "fp");  cbor_encode_bstr(&enc, peer_fp->bytes, NODUS_KEY_BYTES);
     cbor_encode_cstr(&enc, "ect"); cbor_encode_bstr(&enc, e2e_ct, NODUS_KYBER_CT_BYTES);
+    if (alg == 1) {
+        cbor_encode_cstr(&enc, "alg"); cbor_encode_uint(&enc, alg);
+    }
     return finish(&enc, out_len);
 }
 
@@ -279,16 +282,19 @@ int nodus_t2_circ_inbound(uint32_t txn, uint64_t cid, const nodus_key_t *peer_fp
 }
 
 int nodus_t2_circ_inbound_e2e(uint32_t txn, uint64_t cid, const nodus_key_t *peer_fp,
-                               const uint8_t *e2e_ct,
+                               const uint8_t *e2e_ct, uint8_t alg,
                                uint8_t *buf, size_t cap, size_t *out_len) {
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, cap);
     enc_query_header(&enc, 4, txn, "circ_inbound");
     cbor_encode_cstr(&enc, "a");
-    cbor_encode_map(&enc, 3);
+    cbor_encode_map(&enc, (alg == 1) ? 4 : 3);
     cbor_encode_cstr(&enc, "cid"); cbor_encode_uint(&enc, cid);
     cbor_encode_cstr(&enc, "fp");  cbor_encode_bstr(&enc, peer_fp->bytes, NODUS_KEY_BYTES);
     cbor_encode_cstr(&enc, "ect"); cbor_encode_bstr(&enc, e2e_ct, NODUS_KYBER_CT_BYTES);
+    if (alg == 1) {
+        cbor_encode_cstr(&enc, "alg"); cbor_encode_uint(&enc, alg);
+    }
     return finish(&enc, out_len);
 }
 
@@ -337,17 +343,20 @@ int nodus_t2_ri_open(uint32_t txn, uint64_t ups_cid,
 
 int nodus_t2_ri_open_e2e(uint32_t txn, uint64_t ups_cid,
                           const nodus_key_t *src_fp, const nodus_key_t *dst_fp,
-                          const uint8_t *e2e_ct,
+                          const uint8_t *e2e_ct, uint8_t alg,
                           uint8_t *buf, size_t cap, size_t *out_len) {
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, cap);
     enc_query_header(&enc, 4, txn, "ri_open");
     cbor_encode_cstr(&enc, "a");
-    cbor_encode_map(&enc, 4);
+    cbor_encode_map(&enc, (alg == 1) ? 5 : 4);
     cbor_encode_cstr(&enc, "ups"); cbor_encode_uint(&enc, ups_cid);
     cbor_encode_cstr(&enc, "src"); cbor_encode_bstr(&enc, src_fp->bytes, NODUS_KEY_BYTES);
     cbor_encode_cstr(&enc, "dst"); cbor_encode_bstr(&enc, dst_fp->bytes, NODUS_KEY_BYTES);
     cbor_encode_cstr(&enc, "ect"); cbor_encode_bstr(&enc, e2e_ct, NODUS_KYBER_CT_BYTES);
+    if (alg == 1) {
+        cbor_encode_cstr(&enc, "alg"); cbor_encode_uint(&enc, alg);
+    }
     return finish(&enc, out_len);
 }
 
@@ -844,12 +853,15 @@ int nodus_t2_auth_ok_kyber(uint32_t txn, const uint8_t *token,
                             const uint8_t *kyber_pk,
                             const nodus_pubkey_t *server_pk,
                             const nodus_sig_t *kpk_sig,
+                            const uint8_t *mlkem_pk,
+                            const nodus_sig_t *mpk_sig,
                             uint8_t *buf, size_t cap, size_t *out_len) {
+    bool has_mlkem = (mlkem_pk != NULL && mpk_sig != NULL);
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, cap);
     enc_response_header(&enc, 4, txn, "auth_ok");
     cbor_encode_cstr(&enc, "r");
-    cbor_encode_map(&enc, 4);
+    cbor_encode_map(&enc, has_mlkem ? 6 : 4);
     cbor_encode_cstr(&enc, "tok");
     cbor_encode_bstr(&enc, token, NODUS_SESSION_TOKEN_LEN);
     cbor_encode_cstr(&enc, "kpk");
@@ -858,21 +870,30 @@ int nodus_t2_auth_ok_kyber(uint32_t txn, const uint8_t *token,
     cbor_encode_bstr(&enc, server_pk->bytes, NODUS_PK_BYTES);
     cbor_encode_cstr(&enc, "kpk_sig");
     cbor_encode_bstr(&enc, kpk_sig->bytes, NODUS_SIG_BYTES);
+    if (has_mlkem) {
+        cbor_encode_cstr(&enc, "mpk");
+        cbor_encode_bstr(&enc, mlkem_pk, NODUS_MLKEM_PK_BYTES);
+        cbor_encode_cstr(&enc, "mpk_sig");
+        cbor_encode_bstr(&enc, mpk_sig->bytes, NODUS_SIG_BYTES);
+    }
     return finish(&enc, out_len);
 }
 
-int nodus_t2_key_init(uint32_t txn, const uint8_t *kyber_ct,
-                       const uint8_t *nonce_c,
+int nodus_t2_key_init(uint32_t txn, const uint8_t *kem_ct,
+                       const uint8_t *nonce_c, uint8_t alg,
                        uint8_t *buf, size_t cap, size_t *out_len) {
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, cap);
     enc_query_header(&enc, 4, txn, "key_init");
     cbor_encode_cstr(&enc, "a");
-    cbor_encode_map(&enc, 2);
+    cbor_encode_map(&enc, (alg == 1) ? 3 : 2);
     cbor_encode_cstr(&enc, "ct");
-    cbor_encode_bstr(&enc, kyber_ct, NODUS_KYBER_CT_BYTES);
+    cbor_encode_bstr(&enc, kem_ct, NODUS_KYBER_CT_BYTES);
     cbor_encode_cstr(&enc, "nc");
     cbor_encode_bstr(&enc, nonce_c, NODUS_NONCE_LEN);
+    if (alg == 1) {
+        cbor_encode_cstr(&enc, "alg"); cbor_encode_uint(&enc, alg);
+    }
     return finish(&enc, out_len);
 }
 
@@ -1722,12 +1743,33 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                     if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_SIG_BYTES)
                         memcpy(msg->sig.bytes, val.bstr.ptr, NODUS_SIG_BYTES);
                 }
-                /* ect (circ_open/circ_inbound/ri_open: E2E Kyber ciphertext) */
+                /* ect (circ_open/circ_inbound/ri_open: E2E KEM ciphertext) */
                 else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "ect", 3) == 0) {
                     cbor_item_t val = cbor_decode_next(&dec);
                     if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_KYBER_CT_BYTES) {
                         memcpy(msg->e2e_ct, val.bstr.ptr, NODUS_KYBER_CT_BYTES);
                         msg->has_e2e_ct = true;
+                    }
+                }
+                /* alg (Faz 1 KEM migration — key_init: key_alg; circ_open /
+                 * circ_inbound / ri_open: e2e_alg. Dispatch on method, same
+                 * pattern as "cid"/"code" above. Absent → 0 (round-3) via
+                 * the memset() at decode start.
+                 *
+                 * D6 (N1 delta 1): only the literal value 1 selects
+                 * ML-KEM; anything else (including out-of-range values
+                 * like 257, which a bare (uint8_t) cast would truncate to
+                 * 1) decodes as 0 (round-3) — never truncate-and-accept a
+                 * value this protocol has not defined. */
+                else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "alg", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT) {
+                        uint8_t alg = (val.uint_val == 1) ? 1 : 0;
+                        if (strcmp(msg->method, "key_init") == 0) {
+                            msg->key_alg = alg;
+                        } else if (IS_CIRC_METHOD(msg->method) || IS_RI_METHOD(msg->method)) {
+                            msg->e2e_alg = alg;
+                        }
                     }
                 }
                 /* v (hello: protocol version) */
@@ -2092,6 +2134,22 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                     if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_SIG_BYTES) {
                         memcpy(msg->kpk_sig.bytes, val.bstr.ptr, NODUS_SIG_BYTES);
                         msg->has_kpk_sig = true;
+                    }
+                }
+                /* mpk (auth_ok: server ML-KEM-1024 pubkey — Faz 1 KEM migration) */
+                else if (rkey.tstr.len == 3 && memcmp(rkey.tstr.ptr, "mpk", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_MLKEM_PK_BYTES) {
+                        memcpy(msg->mlkem_pk, val.bstr.ptr, NODUS_MLKEM_PK_BYTES);
+                        msg->has_mlkem_pk = true;
+                    }
+                }
+                /* mpk_sig (auth_ok: Dilithium5 sig over mlkem_pk || nonce) */
+                else if (rkey.tstr.len == 7 && memcmp(rkey.tstr.ptr, "mpk_sig", 7) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_SIG_BYTES) {
+                        memcpy(msg->mpk_sig.bytes, val.bstr.ptr, NODUS_SIG_BYTES);
+                        msg->has_mpk_sig = true;
                     }
                 }
                 /* ns (key_ack: server nonce) */

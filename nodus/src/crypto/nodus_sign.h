@@ -48,6 +48,15 @@ extern "C" {
  *  observed a view-change quorum. 0x08 is the next free value after
  *  PREPARED; nothing above it is assigned. */
 #define NODUS_PURPOSE_VIEWOK         0x08
+/** Faz 1 KEM migration (docs/plans/decisions/2026-09-23-kem-mlkem-
+ *  migration.md) — nonce + server mlkem_pk bind. Same ROLE as KYBER_BIND
+ *  (0x02, tier-2 auth-time KEM-pubkey binding) but, unlike it, IS in the
+ *  strict set (nodus_sign_purpose_is_strict(), corrected 2026-09-23 — N1
+ *  delta 1, D2): its preimage shape (mlkem_pk || nonce) collides with
+ *  KYBER_BIND's (kyber_pk || nonce) at the same length, so without the
+ *  NDS1 tag a kpk_sig and an mpk_sig would be interchangeable. 0x09 is
+ *  the next free value after VIEWOK. */
+#define NODUS_PURPOSE_MLKEM_BIND     0x09
 
 /** Tagged preimage layout:
  *    MAGIC (4) || purpose (1) || data_len_be (4) || data (data_len)
@@ -80,11 +89,21 @@ int nodus_verify(const nodus_sig_t *sig,
 /* ───── Domain-separated wrappers (preferred API) ───────────────────── */
 
 /**
- * True for the witness-to-witness purposes whose NDS1 domain tag is
- * MANDATORY on both sides — no raw signing, no raw-verify fallback.
+ * True for the purposes whose NDS1 domain tag is MANDATORY on both sides —
+ * no raw signing, no raw-verify fallback.
  *
- * Strict today: NODUS_PURPOSE_PREPARED (0x07), NODUS_PURPOSE_VIEWOK (0x08).
- * Everything else keeps the pre-11467980 compat behaviour byte-for-byte.
+ * Strict today: NODUS_PURPOSE_PREPARED (0x07), NODUS_PURPOSE_VIEWOK (0x08),
+ * NODUS_PURPOSE_MLKEM_BIND (0x09, Faz 1 KEM migration, corrected 2026-09-23
+ * — N1 delta 1, D2). MLKEM_BIND is strict DESPITE being a tier-2 client/
+ * inter-node auth-time binding like its non-strict sibling KYBER_BIND
+ * (0x02): without the tag, its preimage (mlkem_pk || nonce, 1600 bytes) is
+ * byte-shape-identical to KYBER_BIND's (kyber_pk || nonce), so a raw
+ * kpk_sig and a raw mpk_sig would verify against EACH OTHER's data — an
+ * on-path attacker could swap them and force a spurious verify failure.
+ * Being brand new in this same migration (no shipped binary has ever
+ * produced or checked a 0x09 signature), it has no pre-existing wide-
+ * compat behaviour to preserve, unlike 0x01-0x05. See nodus_sign.c for
+ * the full citation.
  *
  * ⚠ Both sides or it is theatre: lifting the bypass on the signing half
  * alone changes nothing an attacker has to defeat, because the verifier
@@ -128,6 +147,20 @@ int nodus_sign_kyber_bind(nodus_sig_t *sig_out,
                           const uint8_t *sign_data, size_t sign_data_len,
                           const nodus_seckey_t *sk);
 int nodus_verify_kyber_bind(const nodus_sig_t *sig,
+                            const uint8_t *sign_data, size_t sign_data_len,
+                            const nodus_pubkey_t *pk);
+
+/** MLKEM_BIND domain (Faz 1 KEM migration) — nonce + server mlkem_pk
+ *  binding signature. Same ROLE as KYBER_BIND (tier-2 client/inter-node
+ *  auth-time KEM-pubkey binding), but IS in nodus_sign_purpose_is_strict()
+ *  — corrected 2026-09-23 (N1 delta 1, D2): see the comment at that
+ *  predicate's definition for why (preimage-shape collision with
+ *  KYBER_BIND). Always signs/verifies the NDS1-tagged preimage; no raw
+ *  fallback either direction. */
+int nodus_sign_mlkem_bind(nodus_sig_t *sig_out,
+                          const uint8_t *sign_data, size_t sign_data_len,
+                          const nodus_seckey_t *sk);
+int nodus_verify_mlkem_bind(const nodus_sig_t *sig,
                             const uint8_t *sign_data, size_t sign_data_len,
                             const nodus_pubkey_t *pk);
 

@@ -19,6 +19,7 @@
 #include "database/keyserver_cache.h"
 #include "database/contacts_db.h"
 #include "crypto/enc/qgp_kyber.h"
+#include "crypto/enc/qgp_mlkem.h"
 #include "crypto/sign/qgp_dilithium.h"
 #include "crypto/utils/qgp_random.h"
 #include "crypto/utils/qgp_types.h"   /* qgp_key_t, qgp_key_load, qgp_key_load_encrypted */
@@ -43,6 +44,13 @@ typedef struct {
     int      have_eph;
     uint8_t  eph_pk[QGP_KEM1024_PUBLICKEYBYTES];  /* 1568 */
     uint8_t  eph_sk[QGP_KEM1024_SECRETKEYBYTES];  /* 3168 (caller only) */
+    int      alg;                                 /* KEM Faz 1 (R10): 0 =
+                                                    * round-3, 1 = ML-KEM-1024.
+                                                    * Set from the INVITE
+                                                    * (either side) — both the
+                                                    * ACCEPT encaps and the
+                                                    * caller's OPEN_MEDIA
+                                                    * decaps use this. */
     int      have_kcall;
     uint8_t  k_call[32];
 } call_keys_t;
@@ -245,6 +253,48 @@ void dna_calls_handle_incoming(dna_engine_t *engine, const char *sender_fp, cons
         }
     }
 
+    /* D3d (M1 delta 1b-1, moved from dna_engine_call_accept/D3b): refresh
+     * the SENDER's cached mlkem_pubkey HERE, at INVITE arrival, not at
+     * Answer time. This thread is the transport/receive thread (NOT the
+     * Dart main isolate that dna_engine_call_accept runs on via
+     * dna_engine.dart:2893-2900's synchronous callAccept FFI call) and is
+     * NOT holding pthread_mutex_lock(&c->mu) yet (taken below) — it already
+     * does DHT lookups today from this same call path
+     * (messenger_transport.c:116/138, messenger_load_pubkey) and already
+     * reads this sender's cache row just above (:234-246) to verify the
+     * signature, so one more bounded lookup here costs nothing new and
+     * blocks neither the UI nor the calls mutex. If the row is still
+     * absent afterward, the INVITE still rings (CALL_ACT_SEND_RINGING
+     * below is unconditional) — the user gets the ERROR + refusal at
+     * Answer (dna_engine_call_accept, D3b/D3c) instead of a silent no-op. */
+    if (strcmp(p.kind, DNA_CALL_KIND_INVITE) == 0 && p.alg == 1) {
+        keyserver_cache_entry_t *mk = NULL;
+        int has_mlkem = (keyserver_cache_get(sender_fp, &mk) == 0 && mk &&
+                         mk->mlkem_pubkey && mk->mlkem_pubkey_len == QGP_MLKEM1024_PUBLICKEYBYTES);
+        if (mk) keyserver_cache_free_entry(mk);
+        if (!has_mlkem) {
+            dna_unified_identity_t *fresh = NULL;
+            if (dht_keyserver_lookup(sender_fp, &fresh) == 0 && fresh) {
+                keyserver_cache_put(sender_fp,
+                                     fresh->dilithium_pubkey, sizeof(fresh->dilithium_pubkey),
+                                     fresh->kyber_pubkey, sizeof(fresh->kyber_pubkey),
+                                     fresh->has_mlkem_pubkey ? fresh->mlkem_pubkey : NULL,
+                                     fresh->has_mlkem_pubkey ? sizeof(fresh->mlkem_pubkey) : 0,
+                                     0);
+                if (!fresh->has_mlkem_pubkey) {
+                    QGP_LOG_WARN(LOG_TAG,
+                        "INVITE from %.20s...: alg=ML-KEM but refreshed DHT record still has no mlkem_pubkey - ACCEPT will fail\n",
+                        sender_fp);
+                }
+                dna_identity_free(fresh);
+            } else {
+                QGP_LOG_WARN(LOG_TAG,
+                    "INVITE from %.20s...: alg=ML-KEM, cache stale/absent, DHT refresh failed - ACCEPT will fail\n",
+                    sender_fp);
+            }
+        }
+    }
+
     uint8_t sraw[64], idraw[16];
     if (hex_to_bytes(sender_fp, sraw, 64) != 0) return;
     if (hex_to_bytes(p.call_id_hex, idraw, 16) != 0) return;
@@ -261,9 +311,16 @@ void dna_calls_handle_incoming(dna_engine_t *engine, const char *sender_fp, cons
 
     switch (action) {
     case CALL_ACT_SEND_RINGING: {
-        /* New inbound INVITE: stash the caller's ephemeral pk + peer fp. */
+        /* New inbound INVITE: stash the caller's ephemeral pk + peer fp
+         * + alg (KEM Faz 1, R10 — the INVITE's alg governs both this
+         * ACCEPT's encapsulations and, on the caller's side, its
+         * OPEN_MEDIA decapsulations). */
         call_keys_t *k = ks_alloc(c, idraw, sraw);
-        if (k && p.has_eph_pk) { memcpy(k->eph_pk, p.eph_pk, sizeof(k->eph_pk)); k->have_eph = 1; }
+        if (k && p.has_eph_pk) {
+            memcpy(k->eph_pk, p.eph_pk, sizeof(k->eph_pk));
+            k->have_eph = 1;
+            k->alg = p.alg;
+        }
         if (k) {
             out.kind = DNA_CALL_KIND_RINGING;
             out.call_id_hex = p.call_id_hex;
@@ -275,14 +332,25 @@ void dna_calls_handle_incoming(dna_engine_t *engine, const char *sender_fp, cons
         break;
     }
     case CALL_ACT_OPEN_MEDIA: {
-        /* Caller received ACCEPT: derive K_call for Faz B media. */
+        /* Caller received ACCEPT: derive K_call for Faz B media.
+         * KEM Faz 1 (R10): k->alg (set when we sent the INVITE) selects
+         * both the decapsulation primitive and the local static key file
+         * (identity.kem for round-3, identity.mlkem for ML-KEM-1024). */
         call_keys_t *k = ks_find(c, idraw);
         if (k && k->have_eph && p.has_eph_ct && p.has_static_ct) {
+            int use_mlkem = (k->alg == 1);
+            const char *static_key_fname = use_mlkem ? "identity.mlkem" : "identity.kem";
+            size_t static_key_size = use_mlkem ? QGP_MLKEM1024_SECRETKEYBYTES : QGP_KEM1024_SECRETKEYBYTES;
+
             uint8_t ss_eph[32], ss_static[32], *kem_sk = NULL;
-            int ok = (qgp_kem1024_decapsulate(ss_eph, p.eph_ct, k->eph_sk) == 0);
-            if (ok && load_local_privkey(engine, "identity.kem",
-                                         QGP_KEM1024_SECRETKEYBYTES, &kem_sk) == 0) {
-                ok = (qgp_kem1024_decapsulate(ss_static, p.static_ct, kem_sk) == 0);
+            int ok = use_mlkem
+                ? (qgp_mlkem1024_decapsulate(ss_eph, p.eph_ct, k->eph_sk) == 0)
+                : (qgp_kem1024_decapsulate(ss_eph, p.eph_ct, k->eph_sk) == 0);
+            if (ok && load_local_privkey(engine, static_key_fname,
+                                         static_key_size, &kem_sk) == 0) {
+                ok = use_mlkem
+                    ? (qgp_mlkem1024_decapsulate(ss_static, p.static_ct, kem_sk) == 0)
+                    : (qgp_kem1024_decapsulate(ss_static, p.static_ct, kem_sk) == 0);
                 if (ok) {
                     uint8_t my_fp[64];
                     hex_to_bytes(engine->fingerprint, my_fp, 64);
@@ -290,10 +358,11 @@ void dna_calls_handle_incoming(dna_engine_t *engine, const char *sender_fp, cons
                                             k->call_id, k->eph_pk, k->k_call) == DNA_CALL_OK)
                         k->have_kcall = 1;
                 }
-                qgp_secure_memzero(kem_sk, QGP_KEM1024_SECRETKEYBYTES); free(kem_sk);
+                qgp_secure_memzero(kem_sk, static_key_size); free(kem_sk);
             }
             qgp_secure_memzero(ss_eph, 32); qgp_secure_memzero(ss_static, 32);
-            QGP_LOG_INFO(LOG_TAG, "call %.16s... connected (K_call agreed, media=Faz B)", p.call_id_hex);
+            QGP_LOG_INFO(LOG_TAG, "call %.16s... connected (K_call agreed, alg=%d, media=Faz B)",
+                        p.call_id_hex, k->alg);
         }
         emit_type = DNA_EVENT_CALL_STATE;
         emit_state = DNA_CALL_UI_ACTIVE;   /* our outgoing call connected */
@@ -328,19 +397,50 @@ int dna_engine_call_invite(dna_engine_t *engine, const char *peer_fp)
     if (hex_to_bytes(peer_fp, praw, 64) != 0) return -1;
     char id_hex[33]; bytes_to_hex(id, 16, id_hex);
 
+    /* KEM Faz 1 (R10): mint the ephemeral key with ML-KEM-1024 when the
+     * callee has published one (checked via the keyserver cache); "alg":
+     * "mlkem1024" is emitted on the wire only in that case (design §5.3
+     * gate, same pattern as Seal/GEK/salt — "the callee's cache entry has
+     * mlkem_pubkey").
+     *
+     * D3a (M1 delta 1, HIGH — verifier C12, lens A F3, lens B F2): the
+     * callee having a key is not enough — CALL_ACT_OPEN_MEDIA (above) loads
+     * OUR OWN keys/identity.mlkem to decapsulate the callee's ACCEPT, so
+     * without that local file an ML-KEM INVITE can never be completed on
+     * this end either. Gate on both. */
+    int invite_alg = 0;
+    {
+        char mlkem_key_path[512];
+        snprintf(mlkem_key_path, sizeof(mlkem_key_path), "%s/keys/identity.mlkem", engine->data_dir);
+        if (qgp_platform_file_exists(mlkem_key_path)) {
+            keyserver_cache_entry_t *ks = NULL;
+            if (keyserver_cache_get(peer_fp, &ks) == 0 && ks &&
+                ks->mlkem_pubkey && ks->mlkem_pubkey_len == QGP_MLKEM1024_PUBLICKEYBYTES) {
+                invite_alg = 1;
+            }
+            if (ks) keyserver_cache_free_entry(ks);
+        }
+    }
+
     pthread_mutex_lock(&c->mu);
     dna_call_action_t action = dna_call_orch_start(c->orch, id, praw, now_ms(), DNA_CALL_WINDOW_MS);
     dna_call_signal_t out = {0};
     int do_send = 0;
     if (action == CALL_ACT_SEND_INVITE) {
         call_keys_t *k = ks_alloc(c, id, praw);
-        if (k && qgp_kem1024_keypair(k->eph_pk, k->eph_sk) == 0) {
+        int kp_rc = k
+            ? (invite_alg ? qgp_mlkem1024_keypair(k->eph_pk, k->eph_sk)
+                          : qgp_kem1024_keypair(k->eph_pk, k->eph_sk))
+            : -1;
+        if (k && kp_rc == 0) {
             k->have_eph = 1;
+            k->alg = invite_alg;
             out.kind = DNA_CALL_KIND_INVITE;
             out.call_id_hex = id_hex;
             out.seq = k->tx_seq++;
             out.caller_fp_hex = engine->fingerprint;
             out.eph_pk = k->eph_pk;
+            out.alg = invite_alg;
             do_send = 1;
         }
     }
@@ -373,12 +473,51 @@ int dna_engine_call_accept(dna_engine_t *engine, const char *call_id_hex)
         call_keys_t *k = ks_find(c, id);
         if (k && k->have_eph) {
             bytes_to_hex(k->peer_fp, 64, peer_hex);
+            /* KEM Faz 1 (R10): encapsulate both eph and static with the
+             * INVITE's alg (k->alg, stashed in CALL_ACT_SEND_RINGING) — the
+             * static key is the CALLER's cache entry of that same alg (D3c,
+             * M1 delta 1: this comment previously said "the callee's OWN
+             * cache entry" — wrong, peer_hex here is k->peer_fp, the remote
+             * CALLER; the code was already correct, only the comment lied).
+             *
+             * D3d (M1 delta 1b-1): a DHT refresh of this cache row used to
+             * live HERE (D3b, M1 delta 1) when it was stale/absent for an
+             * ML-KEM INVITE. Moved to dna_calls_handle_incoming, at INVITE
+             * arrival (right after the contacts-only gate, before
+             * pthread_mutex_lock(&c->mu)) — this function is reached
+             * directly and SYNCHRONOUSLY from the Dart main isolate
+             * (dna_engine.dart:2893-2900's callAccept is a plain FFI call,
+             * no task-queue hop), so a DHT round-trip here freezes the UI
+             * for up to the nodus get timeout; it also ran INSIDE the calls
+             * mutex taken just above, so the receive thread's
+             * dna_calls_handle_incoming would block on that same mutex for
+             * the whole round-trip too. dna_calls_handle_incoming already
+             * does a keyserver_cache_get for the SENDER before taking that
+             * mutex (:234-246, to verify the signature) and already
+             * performs DHT lookups from that thread today
+             * (messenger_transport.c:116/138, messenger_load_pubkey), so
+             * refreshing there costs nothing new. If the row is STILL
+             * absent by the time we reach here, that refresh already
+             * failed or the peer genuinely has no key — log ERROR and
+             * refuse; never fall back to a round-3 encapsulation against
+             * an ML-KEM ephemeral (k->eph_pk), that would produce garbage
+             * shared secrets on both ends. */
+            int use_mlkem = (k->alg == 1);
+            size_t expect_pk_len = use_mlkem ? QGP_MLKEM1024_PUBLICKEYBYTES : QGP_KEM1024_PUBLICKEYBYTES;
             keyserver_cache_entry_t *ks = NULL;
-            if (keyserver_cache_get(peer_hex, &ks) == 0 && ks &&
-                ks->kyber_pubkey && ks->kyber_pubkey_len == QGP_KEM1024_PUBLICKEYBYTES) {
+            int ks_rc = keyserver_cache_get(peer_hex, &ks);
+            const uint8_t *static_pk = (ks_rc == 0 && ks) ? (use_mlkem ? ks->mlkem_pubkey : ks->kyber_pubkey) : NULL;
+            size_t static_pk_len = (ks_rc == 0 && ks) ? (use_mlkem ? ks->mlkem_pubkey_len : ks->kyber_pubkey_len) : 0;
+
+            if (static_pk && static_pk_len == expect_pk_len) {
                 uint8_t ss_eph[32], ss_static[32];
-                if (qgp_kem1024_encapsulate(eph_ct, ss_eph, k->eph_pk) == 0 &&
-                    qgp_kem1024_encapsulate(static_ct, ss_static, ks->kyber_pubkey) == 0) {
+                int eph_ok = use_mlkem
+                    ? (qgp_mlkem1024_encapsulate(eph_ct, ss_eph, k->eph_pk) == 0)
+                    : (qgp_kem1024_encapsulate(eph_ct, ss_eph, k->eph_pk) == 0);
+                int static_ok = eph_ok && (use_mlkem
+                    ? (qgp_mlkem1024_encapsulate(static_ct, ss_static, static_pk) == 0)
+                    : (qgp_kem1024_encapsulate(static_ct, ss_static, static_pk) == 0));
+                if (eph_ok && static_ok) {
                     uint8_t my_fp[64];
                     hex_to_bytes(engine->fingerprint, my_fp, 64);
                     if (dna_call_derive_key(ss_eph, ss_static, k->peer_fp, my_fp,
@@ -394,6 +533,10 @@ int dna_engine_call_accept(dna_engine_t *engine, const char *call_id_hex)
                     }
                 }
                 qgp_secure_memzero(ss_eph, 32); qgp_secure_memzero(ss_static, 32);
+            } else {
+                QGP_LOG_ERROR(LOG_TAG,
+                    "call %.16s...: cannot ACCEPT - INVITE alg=%d but no matching static key cached for caller %.16s... (after DHT refresh attempt)\n",
+                    call_id_hex, k->alg, peer_hex);
             }
             if (ks) keyserver_cache_free_entry(ks);
         }

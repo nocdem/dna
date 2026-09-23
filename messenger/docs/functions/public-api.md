@@ -28,8 +28,8 @@ The main public API for DNA Connect. All UI/FFI bindings use these functions.
 | `int dna_engine_restore_identity_sync(...)` | Restore identity from BIP39 seeds without DHT name |
 | `int dna_engine_delete_identity_sync(...)` | Delete identity and all local data |
 | `bool dna_engine_has_identity(...)` | Check if identity exists (v0.3.0 single-user) |
-| `dna_request_id_t dna_engine_load_identity(...)` | Load and activate identity, bootstrap DHT |
-| `dna_request_id_t dna_engine_load_identity_minimal(...)` | Load identity with minimal init - DHT + polling only, no presence/listeners (v0.6.15+) |
+| `dna_request_id_t dna_engine_load_identity(...)` | Load and activate identity, bootstrap DHT. **Behavior CHANGED (KEM Faz 1, 2026-09-23), signature UNCHANGED:** `dna_load_identity_internal()` now also loads `identity.mlkem` beside `identity.kem` (absent -> NULL, no error), and — if `identity.mlkem` is absent AND a mnemonic file exists — runs the one-time migration (derive ML-KEM-1024 from the mnemonic, save `identity.mlkem` + `mnemonic.v2.enc`, republish the identity record if one exists). Idempotent: a no-op on every later load. Identities with no mnemonic file at all (pre-RC alpha, before 2025-12-11) stay on legacy round-3 (K2 — RC/no UI). See `docs/plans/decisions/2026-09-23-kem-mlkem-migration.md`. |
+| `dna_request_id_t dna_engine_load_identity_minimal(...)` | Load identity with minimal init - DHT + polling only, no presence/listeners (v0.6.15+). Same KEM Faz 1 migration as above (shared internal path) |
 | `bool dna_engine_is_identity_loaded(...)` | Check if identity is currently loaded (v0.5.24+) |
 | `bool dna_engine_is_transport_ready(...)` | Check if transport layer is initialized (v0.5.26+) |
 | `dna_request_id_t dna_engine_register_name(...)` | Register human-readable name in DHT |

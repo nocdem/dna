@@ -1,8 +1,8 @@
 # DNA Connect - Protocol Specifications
 
-**Version:** 1.2
-**Last Updated:** 2026-08-27
-**Library:** v0.11.18 | **Nodus:** v0.19.19
+**Version:** 1.3
+**Last Updated:** 2026-09-23
+**Library:** v0.11.20 | **Nodus:** v0.19.64
 **Security Level:** NIST Category 5 (256-bit quantum)
 
 This document specifies all wire formats and protocols used by DNA Connect.
@@ -53,21 +53,25 @@ All protocols use NIST Category 5 post-quantum cryptography.
 
 **Source:** `crypto/utils/qgp_types.h`
 
-> ⚠ **Migration status (Faz 0 port, 2026-09-23).** `shared/crypto/enc/kem/` is now
-> the pq-crystals/kyber `standard`@d5b791c reference (ML-KEM-1024, FIPS 203
-> input-output conformant) — replacing the round-3 snapshot this note used to
-> describe. Every EXISTING caller still uses the round-3 wire format and behaviour
-> unchanged (`shared/crypto/enc/qgp_kyber.h` -> `kyber_r3_legacy.h`, a verbatim
-> transplant of the old direct implementation). The new FIPS-203-conformant API
-> (`shared/crypto/enc/qgp_mlkem.h`) has NO caller yet — nothing in this document's
-> wire formats uses `enc_key_type=3` yet. Wire sizes are identical between the two
+> ⚠ **Migration status (Faz 1 dual-key rollout, 2026-09-23).** `shared/crypto/enc/kem/`
+> is the pq-crystals/kyber `standard`@d5b791c reference (ML-KEM-1024, FIPS 203
+> input-output conformant); the pre-existing round-3 implementation moved to
+> `shared/crypto/enc/kyber_r3_legacy.c` (`shared/crypto/enc/qgp_kyber.h`) and is kept
+> for backward compatibility (decrypt always; ENCRYPT only while a peer has not
+> published an ML-KEM key). Every identity now holds TWO KEM keypairs
+> (`keys/identity.kem` type 2 round-3, `keys/identity.mlkem` type 3 ML-KEM-1024,
+> `shared/crypto/enc/qgp_mlkem.h`). Wire sizes are identical between the two
 > (1568/3168/1568/32) — algorithms cannot be told apart by size, only by the
-> explicit tag each format carries. See
+> explicit `alg`/`enc_key_type` tag each format below carries. **Sender rule
+> (all formats, all-or-nothing):** if EVERY recipient has published an ML-KEM key
+> (checked via the local keyserver cache), use alg/enc_key_type 3 with ML-KEM keys;
+> otherwise use alg/enc_key_type 2 with round-3 keys. See
 > `docs/plans/decisions/2026-09-23-kem-mlkem-migration.md` (K1-K6) and
 > `docs/plans/2026-09-23-mlkem-fips203-migration-design.md` for the phased rollout
-> that will, in later phases, change the wire formats below. Until Faz 1 lands,
-> every "ML-KEM-1024" label in the wire sections below denotes the LEGACY round-3
-> KEM (`enc_key_type = 2`); `enc_key_type = 3` is not yet defined.
+> (Faz 1 = this dual-key period, `release`; Faz 2 = `release enforced`, round-3
+> ENCAPSULATION removed; Faz 3 = round-3 DECAPSULATION removed). Faz 2/3 have not
+> shipped — round-3 remains fully readable and remains the fallback for any peer
+> who has not migrated.
 
 ---
 
@@ -95,7 +99,7 @@ The Seal Protocol defines the wire format for encrypted messages. Each message i
   +--------+--------+-----------------------------------------------------+
   |   0    |    8   | magic[8] = "PQSIGENC"                               |
   |   8    |    1   | version = 0x08                                      |
-  |   9    |    1   | enc_key_type = 2 (KEM1024)                          |
+  |   9    |    1   | enc_key_type = 2 (round-3, legacy) or 3 (ML-KEM-1024, KEM Faz 1) |
   |  10    |    1   | recipient_count (1-255)                             |
   |  11    |    1   | message_type (0=direct, 1=nexus)                    |
   |  12    |    4   | encrypted_size (uint32_t LE)                        |
@@ -103,8 +107,10 @@ The Seal Protocol defines the wire format for encrypted messages. Each message i
   +--------+--------+-----------------------------------------------------+
 
   RECIPIENT ENTRIES (1608 bytes x recipient_count)
+  All entries in a message use the SAME algorithm (header enc_key_type is
+  recipient-general — the header byte, not the entry, carries the tag).
   +--------+--------+-----------------------------------------------------+
-  |   0    |  1568  | kyber_ciphertext[1568] (ML-KEM-1024)                |
+  |   0    |  1568  | kyber_ciphertext[1568] (round-3 or ML-KEM-1024, per header enc_key_type) |
   | 1568   |   40   | wrapped_dek[40] (AES-wrapped DEK)                   |
   +--------+--------+-----------------------------------------------------+
 
@@ -139,7 +145,7 @@ The Seal Protocol defines the wire format for encrypted messages. Each message i
 typedef struct {
     char magic[8];              // "PQSIGENC"
     uint8_t version;            // 0x08
-    uint8_t enc_key_type;       // 2 (KEM1024)
+    uint8_t enc_key_type;       // 2 (round-3, legacy) or 3 (ML-KEM-1024, KEM Faz 1) — validated on decrypt since KEM Faz 1; any other value -> DNA_ERROR_DECRYPT
     uint8_t recipient_count;    // 1-255
     uint8_t message_type;       // 0=direct (Seal), 1=group (Nexus)
     uint32_t encrypted_size;    // Little-endian
@@ -148,7 +154,7 @@ typedef struct {
 
 // Recipient entry (1608 bytes)
 typedef struct {
-    uint8_t kyber_ciphertext[1568];  // ML-KEM-1024 ciphertext
+    uint8_t kyber_ciphertext[1568];  // round-3 or ML-KEM-1024 ciphertext, per header.enc_key_type
     uint8_t wrapped_dek[40];         // AES-wrapped DEK (32+8)
 } messenger_recipient_entry_t;
 
@@ -193,8 +199,9 @@ Example (1 recipient, 100-byte plaintext):
 |---------|---------|
 | v0.07 | Added fingerprint inside encrypted payload (identity privacy) |
 | v0.08 | Added encrypted timestamp (replay protection) |
+| — (KEM Faz 1, 2026-09-23) | Header byte stays 0x08; `enc_key_type` gains value 3 (ML-KEM-1024) alongside 2 (round-3, legacy) and is now VALIDATED on decrypt (previously parsed but never checked). No header version bump — v0x09 (per-recipient alg byte) is deferred to Faz 3. |
 
-**Source:** `messenger/messages.c`
+**Source:** `messenger/messages.c`, `messenger/dna_api.c` (`dna_encrypt_message_raw_alg`/`dna_decrypt_message_raw_alg`)
 
 ---
 
@@ -353,7 +360,11 @@ typedef struct {
     // ===== MESSENGER KEYS =====
     char fingerprint[129];           // SHA3-512 hex (128 chars + null)
     uint8_t dilithium_pubkey[2592];  // ML-DSA-87 public key
-    uint8_t kyber_pubkey[1568];      // ML-KEM-1024 public key
+    uint8_t kyber_pubkey[1568];      // round-3 Kyber1024 public key (legacy)
+
+    // ===== ML-KEM-1024 (KEM Faz 1, 2026-09-23) =====
+    uint8_t mlkem_pubkey[1568];      // ML-KEM-1024 public key, valid only if has_mlkem_pubkey
+    bool has_mlkem_pubkey;           // true once the identity has migrated (identity.mlkem exists)
 
     // ===== DNA NAME REGISTRATION =====
     bool has_registered_name;        // true if name registered
@@ -420,6 +431,22 @@ typedef struct {
 - **Size:** ~25-30 KB serialized
 - **Signature:** Computed over JSON without signature field
 - **TTL:** 365 days
+
+**`mlkem_pubkey` (hex) is deliberately OUTSIDE the signature preimage (KEM Faz 1).**
+It is present in the stored/transmitted JSON (`dna_identity_to_json`) but NEVER in
+the JSON the signature is computed/verified over (`dna_identity_to_json_unsigned`).
+This lets a client that has never heard of the field drop it, re-serialize, and
+still verify the UNCHANGED main signature — required because verifiers
+re-serialize from the parsed struct rather than checking the raw received bytes
+(`keyserver_lookup.c:112-121`). There is intentionally NO separate binding
+signature over `mlkem_pubkey` (operator decision K4,
+`docs/plans/decisions/2026-09-23-kem-mlkem-migration.md` §5.2) — integrity comes
+from server-side write ownership on the DHT value (authenticated session
+identity + value signature + EXCLUSIVE key), not from a second signature.
+Accepted risk: a malicious/compromised nodus node could serve a reader a
+tampered `mlkem_pubkey`; the deterrent is witness slashing, not a wire-level
+check. A reader who never sees a `mlkem_pubkey` field for a peer sends that
+peer round-3 (§1 sender rule).
 
 ### 4.6 Fingerprint Derivation
 
@@ -507,8 +534,57 @@ The Nexus Protocol provides efficient group encryption using a shared symmetric 
 
 - **Key Size:** 32 bytes (AES-256)
 - **Generation:** Random on group creation
-- **Distribution:** Kyber1024 encrypted per-member on join
-- **Storage:** Encrypted in local SQLite
+- **Distribution:** Per-member Initial Key Packet (IKP, §6.2a) on join/rotation
+- **Storage:** Encrypted in local SQLite (`gek_encrypt`/`gek_decrypt`, round-3 alg 2)
+
+### 6.2a Initial Key Packet (IKP) — GEK distribution
+
+Distributes a group's GEK to every member. Built by `ikp_build()`, read by
+`ikp_extract()`/`ikp_extract_alg()` (`messenger/gek.c`, `messenger/gek.h`).
+
+```
++-----------------------------------------------------------------------------+
+|                  IKP HEADER (77 bytes, identical in v2 and v3)              |
++--------+--------+-----------------------------------------------------+
+| Offset |  Size  | Field                                               |
++--------+--------+-----------------------------------------------------+
+|   0    |    4   | magic = 0x47454B32 "GEK2" (v2) or 0x47454B33 "GEK3" (v3, KEM Faz 1) |
+|   4    |   36   | group_uuid (36 bytes, no null terminator)           |
+|  40    |    4   | version (uint32_t, network byte order)             |
+|  44    |    1   | member_count (1-16, IKP_MAX_MEMBERS)                |
+|  45    |   32   | dht_salt (per-group DHT privacy salt, CORE-04)      |
++--------+--------+-----------------------------------------------------+
+
+  PER-MEMBER ENTRY, v2 (1672 bytes x member_count) — unchanged, alg implicitly 2
+  +--------+--------+-----------------------------------------------------+
+  |   0    |   64   | fingerprint (SHA3-512 of member's Dilithium5 pubkey) |
+  |  64    | 1568   | kyber_ciphertext (round-3 Kyber1024 encapsulation of KEK) |
+  | 1632   |   40   | wrapped_gek (GEK AES-key-wrapped with KEK)          |
+  +--------+--------+-----------------------------------------------------+
+
+  PER-MEMBER ENTRY, v3 (1673 bytes x member_count, KEM Faz 1)
+  +--------+--------+-----------------------------------------------------+
+  |   0    |   64   | fingerprint                                        |
+  |  64    |    1   | alg (2 = round-3, 3 = ML-KEM-1024)                  |
+  |  65    | 1568   | kem_ciphertext (encapsulation of KEK, per alg)      |
+  | 1633   |   40   | wrapped_gek                                        |
+  +--------+--------+-----------------------------------------------------+
+
+  SIGNATURE (variable, ~4630 bytes, identical in v2 and v3)
+  +--------+--------+-----------------------------------------------------+
+  |   0    |    1   | sig_type = 23 (Dilithium5 / ML-DSA-87)              |
+  |   1    |    2   | sig_size (uint16_t, network byte order)             |
+  |   3    |  var   | dilithium5_signature over everything before this block |
+  +--------+--------+-----------------------------------------------------+
+```
+
+**v3 all-or-nothing gate:** `ikp_build()` emits v3 ONLY when EVERY member entry
+carries a non-NULL ML-KEM pubkey (checked from the keyserver cache/DHT record);
+one member without one keeps the WHOLE packet on v2 (a v2 reader cannot parse
+the longer v3 entry). Readers (`ikp_extract_alg()`, `ikp_verify()`,
+`ikp_get_version()`, `ikp_get_member_count()`) accept both magics; the OLD
+`ikp_extract()` (v2-only signature, kept unchanged for existing callers) still
+parses a v3 packet's header but can only decapsulate entries whose alg is 2.
 
 ### 6.3 Message Format
 
@@ -605,7 +681,7 @@ typedef struct {
   +--------+--------+-----------------------------------------------------+
   |   0    |    8   | magic = "PQSIGNUM"                                  |
   |   8    |    1   | version = 1                                         |
-  |   9    |    1   | key_type (1=DSA87, 2=KEM1024)                       |
+  |   9    |    1   | key_type (1=DSA87, 2=KEM1024 round-3 legacy, 3=MLKEM1024) |
   |  10    |    1   | purpose (1=signing, 2=encryption)                   |
   |  11    |    1   | reserved = 0                                        |
   |  12    |    4   | public_key_size (uint32_t)                          |
@@ -617,8 +693,9 @@ typedef struct {
 
   Header size: 276 bytes
 
-  DSA87:   276 + 2592 + 4896 = 7764 bytes
-  KEM1024: 276 + 1568 + 3168 = 5012 bytes
+  DSA87:     276 + 2592 + 4896 = 7764 bytes
+  KEM1024:   276 + 1568 + 3168 = 5012 bytes (round-3, legacy — keys/identity.kem)
+  MLKEM1024: 276 + 1568 + 3168 = 5012 bytes (FIPS 203, same sizes — keys/identity.mlkem, KEM Faz 1)
 ```
 
 ### 8.2 Public Key File
@@ -633,7 +710,7 @@ typedef struct {
   +--------+--------+-----------------------------------------------------+
   |   0    |    8   | magic = "QGPPUBKY"                                  |
   |   8    |    1   | version = 1                                         |
-  |   9    |    1   | key_type (1=DSA87, 2=KEM1024)                       |
+  |   9    |    1   | key_type (1=DSA87, 2=KEM1024 round-3 legacy, 3=MLKEM1024) |
   |  10    |    1   | purpose (1=signing, 2=encryption)                   |
   |  11    |    1   | reserved = 0                                        |
   |  12    |    4   | public_key_size (uint32_t)                          |
@@ -643,8 +720,9 @@ typedef struct {
 
   Header size: 272 bytes
 
-  DSA87:   272 + 2592 = 2864 bytes
-  KEM1024: 272 + 1568 = 1840 bytes
+  DSA87:     272 + 2592 = 2864 bytes
+  KEM1024:   272 + 1568 = 1840 bytes (round-3, legacy)
+  MLKEM1024: 272 + 1568 = 1840 bytes (FIPS 203, same size, KEM Faz 1)
 ```
 
 ### 8.3 Constants
@@ -656,9 +734,10 @@ typedef struct {
 #define QGP_PUBKEY_VERSION  1
 
 typedef enum {
-    QGP_KEY_TYPE_INVALID = 0,
-    QGP_KEY_TYPE_DSA87   = 1,  // ML-DSA-87 (Dilithium5)
-    QGP_KEY_TYPE_KEM1024 = 2   // ML-KEM-1024 (Kyber1024)
+    QGP_KEY_TYPE_INVALID   = 0,
+    QGP_KEY_TYPE_DSA87     = 1,  // ML-DSA-87 (Dilithium5)
+    QGP_KEY_TYPE_KEM1024   = 2,  // Kyber1024 round-3 (legacy) — NOT ML-KEM/FIPS 203
+    QGP_KEY_TYPE_MLKEM1024 = 3   // ML-KEM-1024, FIPS 203 (KEM Faz 1, 2026-09-23)
 } qgp_key_type_t;
 
 typedef enum {
@@ -688,6 +767,67 @@ Media attachments (voice messages, video clips, images) are stored in DHT using 
 **Supported types:** Voice messages, video, images
 
 **Source:** `dht/shared/nodus_ops.c` (`nodus_ops_media_put/get/exists`), server side `nodus/src/core/nodus_media_storage.c`
+
+### Salt Agreement Protocol (per-contact DHT outbox privacy)
+
+Agrees and stores a per-contact-pair 32-byte salt (used to derive the DM outbox
+DHT key, keeping it unlinkable without knowing both parties) at a deterministic
+DHT key `SHA3-512(min(fp_a,fp_b) + ":" + max(fp_a,fp_b) + ":salt_agreement")`.
+Dual-encrypted (once per party) with a Dilithium5 signature over the data
+portion. `dht/shared/dht_salt_agreement.c`, `dht/shared/dht_salt_agreement.h`.
+
+```
++-----------------------------------------------------------------------------+
+|                    SALT AGREEMENT PACKET, v1                                |
++--------+--------+-----------------------------------------------------+
+| Offset |  Size  | Field                                               |
++--------+--------+-----------------------------------------------------+
+|   0    |    2   | version = 1 (uint16_t, network byte order)          |
+|   2    |   64   | entry[0].fingerprint (lower of the two, binary)     |
+|  66    | 1628   | entry[0].gek_enc (round-3 KEM ct[1568] || nonce[12] || tag[16] || enc_salt[32]) |
+| 1694   |   64   | entry[1].fingerprint (higher of the two, binary)    |
+| 1758   | 1628   | entry[1].gek_enc                                    |
+| 3386   |  var   | dilithium5_signature over bytes [0, 3386)           |
++--------+--------+-----------------------------------------------------+
+
+  SALT AGREEMENT PACKET, v2 (KEM Faz 1, 2026-09-23)
+  Same layout, each entry gains a 1-byte alg field between fingerprint and
+  the encrypted blob:
++--------+--------+-----------------------------------------------------+
+|   0    |    2   | version = 2                                         |
+|   2    |   64   | entry[0].fingerprint                                |
+|  66    |    1   | entry[0].alg (2 = round-3, 3 = ML-KEM-1024)         |
+|  67    | 1628   | entry[0].gek_enc                                    |
+| 1695   |   64   | entry[1].fingerprint                                |
+| 1759   |    1   | entry[1].alg                                        |
+| 1760   | 1628   | entry[1].gek_enc                                    |
+| 3388   |  var   | dilithium5_signature over bytes [0, 3388)           |
++--------+--------+-----------------------------------------------------+
+```
+
+**Faz 1 status (D7, M1 delta 1 — ORCHESTRATOR decision): v2 is DEFINED but
+NOT EMITTED.** The v2 packet layout above, `salt_agreement_publish_v2()` and
+`salt_agreement_fetch_v2()` exist and are unit-tested, but neither is called
+from any production code path — the two real callers
+(`dna_engine_contacts.c`, `dna_engine_listeners.c`) still call the v1-only
+`salt_agreement_publish()`/`salt_agreement_fetch()` exclusively. Reason: the
+tiebreak picks the lowest SHA3 hash over the salts each party could decrypt;
+a Faz-0 device of the SAME identity (an accepted mixed-device state, K1)
+cannot decrypt any v2 value and discards them all, so the two parties would
+compute the tiebreak over different candidate sets and could pick DIFFERENT
+salts — the only Faz-1 surface where a mixed read set changes a
+deterministic AGREEMENT (not just a decode failure on one blob). The `_v2`
+entry points are the Faz-2 hook, wired only once every device of an
+identity is expected to have an ML-KEM key.
+<!-- was, until M1 delta 1 (D7): "v2 gate: published ONLY when BOTH parties
+have a published ML-KEM key (own file + the contact's cache entry);
+otherwise the unchanged v1 packet is published." That description matches
+the *_v2 functions' own internal logic but was never wired to any caller —
+see above. -->
+The signature covers the data portion exactly as in v1 — only its length
+changes when v2 IS used. `salt_agreement_publish()`/`salt_agreement_fetch()`
+keep their original signatures (v1-only, unchanged); `salt_agreement_publish_v2()`/
+`salt_agreement_fetch_v2()` add the ML-KEM pubkey/privkey parameters.
 
 ---
 
@@ -735,10 +875,19 @@ as media references). On updated clients the receive-path router intercepts
 
 | Kind | Extra fields |
 |------|--------------|
-| `INVITE` | `"caller":"<128 hex fp>"`, `"eph_pk":"<base64 1568B ML-KEM-1024 pk>"`, `"cap":{...}` |
+| `INVITE` | `"caller":"<128 hex fp>"`, `"eph_pk":"<base64 1568B pk, of alg>"`, `"alg":1` (KEM Faz 1, OMITTED when 0/round-3), `"cap":{...}` |
 | `ACCEPT` | `"eph_ct":"<base64 1568B>"`, `"static_ct":"<base64 1568B>"` |
 | `REJECT` / `BUSY` / `END` | `"reason":<int>` |
 | `RINGING` | (base fields only) |
+
+**`alg` (KEM Faz 1, 2026-09-23).** The caller emits `"alg":1` in the INVITE
+ONLY when the callee has a published ML-KEM-1024 key (checked via the
+keyserver cache); when absent, an old parser defaults to 0 (round-3) —
+byte-identical wire output to before this field existed, so this is not a
+breaking change. The caller mints its ephemeral keypair with that same alg;
+ACCEPT encapsulates BOTH the ephemeral and the callee's static key with the
+INVITE's alg (ACCEPT carries no `alg` field of its own — both sides already
+agree on it from the INVITE).
 
 **Signature (`sig`).** Computed by Dilithium5 over the body bytes with an **empty** `"sig":""`
 slot, then base64-spliced into that slot. Verification runs over the exact received bytes
@@ -750,9 +899,10 @@ fetched for the dialed fingerprint, asserting `fp == SHA3-512(pk)`.
 
 ### 9.3 Per-call key agreement (K_call)
 
-The caller mints a per-call **ephemeral** ML-KEM-1024 keypair (in the signed INVITE). The callee
-encapsulates to both the ephemeral pk and the caller's static pk (from the DHT profile),
-returning `eph_ct` + `static_ct` in the signed ACCEPT. Both sides derive:
+The caller mints a per-call **ephemeral** keypair (in the signed INVITE) — round-3 Kyber1024 by
+default, or ML-KEM-1024 when the callee has published one (`"alg":1`, KEM Faz 1, §9.2). The callee
+encapsulates to both the ephemeral pk and the caller's static pk (from the DHT profile), with
+THAT SAME alg, returning `eph_ct` + `static_ct` in the signed ACCEPT. Both sides derive:
 
 ```
 K_call = HKDF-SHA3-256(

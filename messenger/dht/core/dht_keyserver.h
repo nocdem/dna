@@ -49,6 +49,8 @@ extern "C" {
  * @param wallet_address: Cellframe wallet address (optional, can be NULL)
  * @param eth_address: Ethereum wallet address (optional, can be NULL)
  * @param sol_address: Solana wallet address (optional, can be NULL)
+ * @param mlkem_pubkey: ML-KEM-1024 public key (1568 bytes, optional, can be
+ *        NULL — identity has not migrated to KEM Faz 1 yet). KEM Faz 1, R5.
  * @return: 0 on success, -1 on error, -2 if name already taken
  */
 int dht_keyserver_publish(
@@ -60,7 +62,8 @@ int dht_keyserver_publish(
     const char *wallet_address,
     const char *eth_address,
     const char *sol_address,
-    const char *trx_address
+    const char *trx_address,
+    const uint8_t *mlkem_pubkey
 );
 
 /**
@@ -84,7 +87,12 @@ int dht_keyserver_publish_alias(
  *
  * @param name_or_fingerprint: DNA name OR fingerprint (128 hex chars)
  * @param identity_out: Output identity (caller must free with dna_identity_free)
- * @return: 0 on success, -1 on error, -2 if not found, -3 if signature verification failed
+ * @return: 0 on success, -1 on error, -2 if not found OR NOT CONNECTED (D5, M1
+ *          delta 1 — keyserver_lookup.c's nodus_ops_get_str() call returns a
+ *          non-zero rc for "no such record" and for "DHT not ready yet" alike;
+ *          this function maps BOTH to -2, so a caller cannot tell "the record
+ *          does not exist" from "ask again once connected" from this code
+ *          alone), -3 if signature verification failed
  */
 int dht_keyserver_lookup(
     const char *name_or_fingerprint,
@@ -99,13 +107,28 @@ int dht_keyserver_lookup(
  * @param new_dilithium_pubkey: New Dilithium5 public key (2592 bytes)
  * @param new_kyber_pubkey: New Kyber1024 public key (1568 bytes)
  * @param new_dilithium_privkey: New Dilithium5 private key for signing (4896 bytes)
- * @return: 0 on success, -1 on error, -2 if not authorized
+ * @param mlkem_pubkey: ML-KEM-1024 public key (1568 bytes, optional, can be
+ *        NULL to leave the identity's mlkem_pubkey field untouched/absent).
+ *        KEM Faz 1, R5 — used by the migration republish path
+ *        (dna_engine_identity.c) to attach mlkem_pubkey without rotating the
+ *        Dilithium/Kyber keys (pass the identity's own current pubkeys as
+ *        new_dilithium_pubkey/new_kyber_pubkey to keep the fingerprint
+ *        unchanged).
+ * @return: 0 on success, -1 on error, -2 if not authorized / not found OR NOT
+ *          CONNECTED (D5, M1 delta 1 — same -2 conflation as
+ *          dht_keyserver_lookup() above: this function looks the record up
+ *          first, so "DHT not ready yet" reaches the caller as -2 too. A
+ *          caller that treats -2 as a permanent fact ("no record exists")
+ *          right after startup is wrong; see dna_kem_f1_migrate_to_mlkem's
+ *          own comment in dna_engine_identity.c for the concrete failure this
+ *          caused, D4)
  */
 int dht_keyserver_update(
     const char *identity,
     const uint8_t *new_dilithium_pubkey,
     const uint8_t *new_kyber_pubkey,
-    const uint8_t *new_dilithium_privkey
+    const uint8_t *new_dilithium_privkey,
+    const uint8_t *mlkem_pubkey
 );
 
 /**
@@ -192,6 +215,18 @@ int dna_register_name(
  * @param fingerprint: Fingerprint (128 hex chars)
  * @param profile: Profile data to update
  * @param dilithium_privkey: Private key for signing
+ * @param mlkem_pubkey: Owner's ML-KEM-1024 public key (1568 bytes), or NULL
+ *        if the identity has not migrated (KEM Faz 1, D6, M1 delta 1b-2).
+ *        When non-NULL, set on the identity on EVERY branch (DHT copy,
+ *        cache fallback, first-time create) before serializing — this is
+ *        what lets a device that HAS migrated attach mlkem_pubkey even
+ *        when the update is otherwise routine (bio edit, wallet refresh).
+ *        When NULL, the field is left as whatever the loaded record
+ *        already had (never erased) — this is what protects the field
+ *        when an OLD (unmigrated) device of the SAME identity edits the
+ *        profile: it does not know about mlkem_pubkey and must not wipe
+ *        it (this is also the mechanism dna_auto_republish_own_profile
+ *        below repairs when it finds the opposite case, D6).
  * @return: 0 on success, -1 on error
  */
 int dna_update_profile(
@@ -199,7 +234,8 @@ int dna_update_profile(
     const dna_profile_t *profile,
     const uint8_t *dilithium_privkey,
     const uint8_t *dilithium_pubkey,
-    const uint8_t *kyber_pubkey
+    const uint8_t *kyber_pubkey,
+    const uint8_t *mlkem_pubkey
 );
 
 /**

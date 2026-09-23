@@ -3,6 +3,7 @@
  */
 
 #include "messages.h"
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,6 +31,8 @@
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/sign/qgp_dilithium.h"
 #include "crypto/enc/qgp_kyber.h"
+#include "crypto/enc/qgp_mlkem.h"
+#include "../database/keyserver_cache.h"
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/enc/qgp_aes.h"
 #include "crypto/utils/qgp_random.h"
@@ -81,9 +84,14 @@ typedef struct {
  *
  * @param plaintext: Message to encrypt
  * @param plaintext_len: Message length
- * @param recipient_enc_pubkeys: Array of recipient Kyber1024 public keys (1568 bytes each)
+ * @param recipient_enc_pubkeys: Array of recipient public keys (1568 bytes
+ *        each) OF THE GIVEN alg — round-3 Kyber1024 pubkeys for alg 2, or
+ *        ML-KEM-1024 pubkeys for alg 3 (KEM Faz 1, R7)
  * @param recipient_count: Number of recipients (including sender)
  * @param sender_sign_key: Sender's Dilithium5 signing key (ML-DSA-87)
+ * @param alg: QGP_KEY_TYPE_KEM1024 (2) or QGP_KEY_TYPE_MLKEM1024 (3) —
+ *        written into the header's enc_key_type byte and selects the
+ *        encapsulation primitive (KEM Faz 1, R7)
  * @param ciphertext_out: Output ciphertext (caller must free)
  * @param ciphertext_len_out: Output ciphertext length
  * @return: 0 on success, -1 on error
@@ -95,6 +103,7 @@ static int messenger_encrypt_multi_recipient(
     size_t recipient_count,
     qgp_key_t *sender_sign_key,
     uint64_t timestamp,
+    uint8_t alg,
     uint8_t **ciphertext_out,
     size_t *ciphertext_len_out
 ) {
@@ -199,7 +208,7 @@ static int messenger_encrypt_multi_recipient(
     memset(&header_for_aad, 0, sizeof(header_for_aad));
     memcpy(header_for_aad.magic, "PQSIGENC", 8);
     header_for_aad.version = 0x08;  // v0.08: encrypted timestamp
-    header_for_aad.enc_key_type = (uint8_t)QGP_KEY_TYPE_KEM1024;
+    header_for_aad.enc_key_type = alg;
     header_for_aad.recipient_count = (uint8_t)recipient_count;
     header_for_aad.encrypted_size = (uint32_t)payload_len;  // fingerprint + timestamp + plaintext
     header_for_aad.signature_size = (uint32_t)signature_size;
@@ -230,12 +239,15 @@ static int messenger_encrypt_multi_recipient(
     }
 
     for (size_t i = 0; i < recipient_count; i++) {
-        uint8_t kyber_ciphertext[1568];  // Kyber1024 ciphertext size
-        uint8_t kek[32];  // KEK = shared secret from Kyber
+        uint8_t kyber_ciphertext[1568];  // ct size, identical for both algs
+        uint8_t kek[32];  // KEK = shared secret from the KEM
 
-        // Kyber1024 encapsulation (ML-KEM-1024)
-        if (qgp_kem1024_encapsulate(kyber_ciphertext, kek, recipient_enc_pubkeys[i]) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "KEM-1024 encapsulation failed for recipient %zu", i+1);
+        // KEM encapsulation — round-3 (alg 2) or ML-KEM-1024 (alg 3, KEM Faz 1)
+        int encaps_rc = (alg == (uint8_t)QGP_KEY_TYPE_MLKEM1024)
+            ? qgp_mlkem1024_encapsulate(kyber_ciphertext, kek, recipient_enc_pubkeys[i])
+            : qgp_kem1024_encapsulate(kyber_ciphertext, kek, recipient_enc_pubkeys[i]);
+        if (encaps_rc != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "KEM encapsulation failed for recipient %zu (alg=%u)", i+1, (unsigned)alg);
             qgp_secure_memzero(kek, 32);
             goto cleanup;
         }
@@ -275,9 +287,9 @@ static int messenger_encrypt_multi_recipient(
     memset(&header, 0, sizeof(header));
     memcpy(header.magic, "PQSIGENC", 8);
     header.version = 0x08;  // v0.08: fingerprint + timestamp + plaintext
-    header.enc_key_type = (uint8_t)QGP_KEY_TYPE_KEM1024;
+    header.enc_key_type = alg;
     header.recipient_count = (uint8_t)recipient_count;
-    header.message_type = MSG_TYPE_DIRECT_PQC;  // Per-recipient Kyber1024
+    header.message_type = MSG_TYPE_DIRECT_PQC;  // Per-recipient KEM
     header.encrypted_size = (uint32_t)encrypted_size;
     header.signature_size = (uint32_t)signature_size;
 
@@ -412,17 +424,53 @@ int messenger_send_message(
         }
     }
 
+    // KEM Faz 1 (R7): resolve every recipient's ML-KEM pubkey from the
+    // keyserver cache (just warmed by messenger_load_pubkey above);
+    // all-or-nothing (design §5.3) — alg 3 only if EVERY recipient
+    // (including self, index 0) has a cached ML-KEM key, else alg 2.
+    uint8_t **mlkem_pubkeys = calloc(total_recipients, sizeof(uint8_t *));
+    bool all_have_mlkem = (mlkem_pubkeys != NULL);
+    if (mlkem_pubkeys) {
+        for (size_t i = 0; i < total_recipients && all_have_mlkem; i++) {
+            keyserver_cache_entry_t *cache_entry = NULL;
+            if (keyserver_cache_get(all_recipients[i], &cache_entry) == 0 && cache_entry &&
+                cache_entry->mlkem_pubkey && cache_entry->mlkem_pubkey_len == 1568) {
+                mlkem_pubkeys[i] = malloc(1568);
+                if (mlkem_pubkeys[i]) {
+                    memcpy(mlkem_pubkeys[i], cache_entry->mlkem_pubkey, 1568);
+                } else {
+                    all_have_mlkem = false;
+                }
+            } else {
+                all_have_mlkem = false;
+            }
+            if (cache_entry) keyserver_cache_free_entry(cache_entry);
+        }
+    }
+    uint8_t send_alg = (uint8_t)QGP_KEY_TYPE_KEM1024;
+    uint8_t **send_pubkeys = enc_pubkeys;
+    if (all_have_mlkem) {
+        send_alg = (uint8_t)QGP_KEY_TYPE_MLKEM1024;
+        send_pubkeys = mlkem_pubkeys;
+    }
+
     // Multi-recipient encryption implementation
     uint8_t *ciphertext = NULL;
     size_t ciphertext_len = 0;
     uint64_t send_timestamp = (uint64_t)time(NULL);
     int ret = messenger_encrypt_multi_recipient(
         message, strlen(message),
-        enc_pubkeys, total_recipients,
+        send_pubkeys, total_recipients,
         sender_sign_key,
         send_timestamp,
+        send_alg,
         &ciphertext, &ciphertext_len
     );
+
+    if (mlkem_pubkeys) {
+        for (size_t i = 0; i < total_recipients; i++) free(mlkem_pubkeys[i]);
+        free(mlkem_pubkeys);
+    }
 
     // Cleanup keys
     for (size_t i = 0; i < total_recipients; i++) {
@@ -634,11 +682,50 @@ int messenger_flush_recipient_outbox(messenger_context_t *ctx, const char *recip
     /* Two recipients for multi-recipient encrypt: sender (index 0) + recipient (index 1) */
     uint8_t *enc_pubkeys[2] = { sender_enc_pk, recip_enc_pk };
 
+    /* KEM Faz 1 (R7): resolve BOTH sender's and recipient's ML-KEM pubkey
+     * from the keyserver cache (warmed by messenger_load_pubkey above);
+     * all-or-nothing (design §5.3). */
+    uint8_t *sender_mlkem_pk = NULL, *recip_mlkem_pk = NULL;
+    bool all_have_mlkem = true;
+    {
+        keyserver_cache_entry_t *ce = NULL;
+        if (keyserver_cache_get(ctx->identity, &ce) == 0 && ce &&
+            ce->mlkem_pubkey && ce->mlkem_pubkey_len == 1568) {
+            sender_mlkem_pk = malloc(1568);
+            if (sender_mlkem_pk) memcpy(sender_mlkem_pk, ce->mlkem_pubkey, 1568);
+            else all_have_mlkem = false;
+        } else {
+            all_have_mlkem = false;
+        }
+        if (ce) keyserver_cache_free_entry(ce);
+    }
+    if (all_have_mlkem) {
+        keyserver_cache_entry_t *ce = NULL;
+        if (keyserver_cache_get(recipient_fp, &ce) == 0 && ce &&
+            ce->mlkem_pubkey && ce->mlkem_pubkey_len == 1568) {
+            recip_mlkem_pk = malloc(1568);
+            if (recip_mlkem_pk) memcpy(recip_mlkem_pk, ce->mlkem_pubkey, 1568);
+            else all_have_mlkem = false;
+        } else {
+            all_have_mlkem = false;
+        }
+        if (ce) keyserver_cache_free_entry(ce);
+    }
+    uint8_t flush_alg = (uint8_t)QGP_KEY_TYPE_KEM1024;
+    uint8_t *mlkem_pubkeys[2] = { sender_mlkem_pk, recip_mlkem_pk };
+    uint8_t **flush_pubkeys = enc_pubkeys;
+    if (all_have_mlkem && sender_mlkem_pk && recip_mlkem_pk) {
+        flush_alg = (uint8_t)QGP_KEY_TYPE_MLKEM1024;
+        flush_pubkeys = mlkem_pubkeys;
+    }
+
     /* 5. Re-encrypt each pending message and build offline message array */
     dht_offline_message_t *offline_msgs = calloc(pending_count, sizeof(dht_offline_message_t));
     if (!offline_msgs) {
         free(sender_enc_pk);
         free(recip_enc_pk);
+        free(sender_mlkem_pk);
+        free(recip_mlkem_pk);
         qgp_key_free(sender_sign_key);
         message_backup_free_messages(pending, pending_count);
         return -1;
@@ -652,9 +739,10 @@ int messenger_flush_recipient_outbox(messenger_context_t *ctx, const char *recip
 
         int enc_rc = messenger_encrypt_multi_recipient(
             pending[i].plaintext, strlen(pending[i].plaintext),
-            enc_pubkeys, 2,
+            flush_pubkeys, 2,
             sender_sign_key,
             send_ts,
+            flush_alg,
             &ciphertext, &ciphertext_len
         );
 
@@ -675,6 +763,8 @@ int messenger_flush_recipient_outbox(messenger_context_t *ctx, const char *recip
 
     free(sender_enc_pk);
     free(recip_enc_pk);
+    free(sender_mlkem_pk);
+    free(recip_mlkem_pk);
     qgp_key_free(sender_sign_key);
 
     if (built_count == 0) {

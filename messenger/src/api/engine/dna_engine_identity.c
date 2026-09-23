@@ -22,6 +22,7 @@
 #include "database/channel_subscriptions_db.h"
 #include "database/db_encryption.h"
 #include "crypto/utils/platform_keystore.h"
+#include "crypto/enc/qgp_mlkem.h"   /* KEM Faz 1 — qgp_mlkem1024_keypair_derand */
 
 /* Forward declaration — implemented in dna_engine_wall_poll.c */
 void dna_engine_start_wall_poll(dna_engine_t *engine);
@@ -64,6 +65,184 @@ void dna_handle_create_identity(dna_engine_t *engine, dna_task_t *task) {
         fingerprint,
         task->user_data
     );
+}
+
+/**
+ * KEM Faz 1 migration (R3): derive identity.mlkem from the mnemonic on
+ * first load after this feature ships, exactly once — the file exists on
+ * every later start, so this whole function becomes a no-op (idempotent).
+ *
+ * Preconditions checked by the caller: identity.mlkem is absent, keys are
+ * already loaded/decrypted for this session (engine->keys_encrypted /
+ * engine->session_password are set).
+ *
+ * If no mnemonic.enc exists either: log once, stay on legacy round-3 (K2,
+ * docs/plans/decisions/2026-09-23-kem-mlkem-migration.md — RC identities
+ * all have mnemonic.enc since 2025-12-11; only pre-RC alpha identities can
+ * lack it, and operator decided there is no UI for this case).
+ *
+ * Steps (R1-R4, R6): load mnemonic with the LEGACY key (same pattern as
+ * dna_engine_get_mnemonic, below) -> bip39_mnemonic_to_seed(m,"") (same as
+ * keygen.c does) -> R2 coins -> ML-KEM keypair -> save identity.mlkem ->
+ * refresh the SELF keyserver-cache row immediately (R6, D2) -> write
+ * mnemonic ALSO under ML-KEM (R4) -> feed the new key into GEK for this
+ * session (R1).
+ *
+ * R5 (DHT republish) does NOT happen here. D4 (M1 delta 1b-2) deleted a
+ * synchronous dht_keyserver_update() attempt that used to live at the end
+ * of this function: it ran microseconds after messenger_load_dht_identity
+ * had only SPAWNED, never awaited, the nodus connect thread, so
+ * dht_keyserver_lookup always saw "not connected" and misreported it as
+ * -2 "not found" (D5) — the republish could never succeed at this call
+ * site. The republish now happens later, from the post-stabilization
+ * callback (dna_engine.c:362 -> dna_auto_republish_own_profile, D6), which
+ * runs once the DHT is actually connected and attaches mlkem_pubkey to an
+ * already-valid record without a full profile republish.
+ */
+static void dna_kem_f1_migrate_to_mlkem(dna_engine_t *engine) {
+    if (!mnemonic_storage_exists(engine->data_dir)) {
+        /* D15 (M1 delta 1, verifier LOW — log noise): a genuine K2 identity
+         * (no mnemonic.enc, no UI to create one — operator decision,
+         * docs/plans/decisions/2026-09-23-kem-mlkem-migration.md) hits this
+         * branch on EVERY start, since it can never migrate. Once per
+         * process is enough; a static flag is safe here because this
+         * function only ever runs on dna_load_identity_internal's single
+         * call path for the one identity this process has loaded. */
+        static bool logged_k2_once = false;
+        if (!logged_k2_once) {
+            QGP_LOG_INFO(LOG_TAG,
+                "KEM-F1: no identity.mlkem and no mnemonic.enc - staying on legacy Kyber round-3 (K2, no UI)");
+            logged_k2_once = true;
+        }
+        return;
+    }
+
+    qgp_key_t *legacy_kem = NULL;
+    qgp_key_t *new_mlkem_key = NULL;
+    qgp_key_t *dsa_key = NULL;
+    uint8_t *new_ek = NULL;
+    uint8_t *new_dk = NULL;
+    char mnemonic_buf[BIP39_MAX_MNEMONIC_LENGTH] = {0};
+    uint8_t master_seed[BIP39_SEED_SIZE] = {0};
+    uint8_t coins[QGP_MLKEM1024_COINS_BYTES] = {0};
+
+    char legacy_kem_path[512];
+    snprintf(legacy_kem_path, sizeof(legacy_kem_path), "%s/keys/identity.kem", engine->data_dir);
+    int legacy_rc = (engine->keys_encrypted && engine->session_password)
+        ? qgp_key_load_encrypted(legacy_kem_path, engine->session_password, &legacy_kem)
+        : qgp_key_load(legacy_kem_path, &legacy_kem);
+    if (legacy_rc != 0 || !legacy_kem || !legacy_kem->private_key || !legacy_kem->public_key) {
+        QGP_LOG_WARN(LOG_TAG, "KEM-F1: could not load legacy identity.kem for migration - skipping");
+        goto cleanup;
+    }
+
+    if (mnemonic_storage_load(mnemonic_buf, sizeof(mnemonic_buf),
+                              legacy_kem->private_key, engine->data_dir) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "KEM-F1: failed to decrypt mnemonic.enc for migration - skipping");
+        goto cleanup;
+    }
+
+    if (bip39_mnemonic_to_seed(mnemonic_buf, "", master_seed) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "KEM-F1: master seed derivation failed - skipping migration");
+        goto cleanup;
+    }
+
+    new_ek = malloc(QGP_MLKEM1024_PUBLICKEYBYTES);
+    new_dk = malloc(QGP_MLKEM1024_SECRETKEYBYTES);
+    if (!new_ek || !new_dk ||
+        qgp_derive_mlkem1024_coins(master_seed, coins) != 0 ||
+        qgp_mlkem1024_keypair_derand(new_ek, new_dk, coins) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "KEM-F1: ML-KEM-1024 keypair derivation failed");
+        goto cleanup;
+    }
+
+    new_mlkem_key = qgp_key_new(QGP_KEY_TYPE_MLKEM1024, QGP_KEY_PURPOSE_ENCRYPTION);
+    if (!new_mlkem_key) {
+        QGP_LOG_ERROR(LOG_TAG, "KEM-F1: allocation failed for new key struct");
+        goto cleanup;
+    }
+    new_mlkem_key->public_key = new_ek;
+    new_mlkem_key->public_key_size = QGP_MLKEM1024_PUBLICKEYBYTES;
+    new_mlkem_key->private_key = new_dk;
+    new_mlkem_key->private_key_size = QGP_MLKEM1024_SECRETKEYBYTES;
+    new_ek = NULL;  /* ownership transferred to new_mlkem_key */
+    new_dk = NULL;
+
+    {
+        char mlkem_save_path[512];
+        snprintf(mlkem_save_path, sizeof(mlkem_save_path), "%s/keys/identity.mlkem", engine->data_dir);
+        const char *save_password = (engine->keys_encrypted && engine->session_password)
+            ? engine->session_password : NULL;
+        if (qgp_key_save_encrypted(new_mlkem_key, mlkem_save_path, save_password) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "KEM-F1: failed to save identity.mlkem");
+            goto cleanup;
+        }
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "KEM-F1: migrated identity to dual-key (identity.mlkem written)");
+
+    /* D2 (M1 delta 1, HIGH — verifier C7a, lens A F2, lens B F4): refresh
+     * OUR OWN keyserver-cache row for this fingerprint immediately.
+     * messenger_send_message / messenger_flush_recipient_outbox read the
+     * sender's own mlkem_pubkey from this cache row (index 0 of the
+     * recipient list) via messenger_load_pubkey, which returns a cache HIT
+     * without touching the DHT (keys.c:152-178). That row was written by
+     * messenger_register_name with a 365-day TTL BEFORE this migration ran,
+     * so without this refresh the all-or-nothing alg-3 gate would fail at
+     * index 0 and this device would keep sending alg 2 for up to a year —
+     * a stale cache hit answering differently from a fresh miss, which
+     * violates cache symmetry (design D3).
+     *
+     * Uses the function-scope dsa_key (declared above, freed at cleanup:
+     * below) — D4 (M1 delta 1b-2) deleted the OTHER dsa_key load that used
+     * to live further down in this function (the R5 synchronous DHT
+     * republish attempt), so this is now the ONLY load of identity.dsa
+     * here; no more duplicate load across two blocks. */
+    {
+        char dsa_path[512];
+        snprintf(dsa_path, sizeof(dsa_path), "%s/keys/identity.dsa", engine->data_dir);
+        int dsa_rc = (engine->keys_encrypted && engine->session_password)
+            ? qgp_key_load_encrypted(dsa_path, engine->session_password, &dsa_key)
+            : qgp_key_load(dsa_path, &dsa_key);
+        if (dsa_rc == 0 && dsa_key && dsa_key->public_key) {
+            if (keyserver_cache_put(engine->fingerprint,
+                                     dsa_key->public_key, dsa_key->public_key_size,
+                                     legacy_kem->public_key, legacy_kem->public_key_size,
+                                     new_mlkem_key->public_key, new_mlkem_key->public_key_size,
+                                     365 * 24 * 60 * 60) != 0) {
+                QGP_LOG_WARN(LOG_TAG, "KEM-F1: failed to refresh self keyserver-cache row (non-fatal)");
+            }
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "KEM-F1: could not load identity.dsa to refresh self keyserver-cache row (non-fatal)");
+        }
+    }
+
+    /* R4: write mnemonic ALSO under ML-KEM (mnemonic.v2.enc). Legacy
+     * mnemonic.enc is left in place until Faz 3 (K5). */
+    if (mnemonic_storage_save_v2(mnemonic_buf, new_mlkem_key->public_key, engine->data_dir) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "KEM-F1: failed to write mnemonic.v2.enc (non-fatal)");
+    }
+
+    /* Feed the new key into GEK for this session (R1) — same role as the
+     * gek_set_kem_keys() call for identity.kem right above this function. */
+    if (gek_set_mlkem_keys(new_mlkem_key->public_key, new_mlkem_key->private_key) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "KEM-F1: gek_set_mlkem_keys failed (non-fatal)");
+    }
+
+    /* D4 (M1 delta 1b-2): the R5 synchronous DHT republish attempt that
+     * used to live here is DELETED — see the function header comment
+     * above for why it could never succeed at this call site, and where
+     * the republish happens instead (dna_auto_republish_own_profile, D6). */
+
+cleanup:
+    qgp_secure_memzero(master_seed, sizeof(master_seed));
+    qgp_secure_memzero(mnemonic_buf, sizeof(mnemonic_buf));
+    qgp_secure_memzero(coins, sizeof(coins));
+    if (new_ek) free(new_ek);
+    if (new_dk) free(new_dk);
+    if (new_mlkem_key) qgp_key_free(new_mlkem_key);
+    if (dsa_key) qgp_key_free(dsa_key);
+    if (legacy_kem) qgp_key_free(legacy_kem);
 }
 
 /* Internal identity load — no callbacks, no events.
@@ -246,6 +425,46 @@ int dna_load_identity_internal(dna_engine_t *engine, const char *fingerprint,
         } else {
             QGP_LOG_WARN(LOG_TAG, "Warning: Failed to load KEM keys for GEK encryption");
             if (kem_key) qgp_key_free(kem_key);
+        }
+    }
+
+    /* KEM Faz 1 (R1/R3): identity.mlkem is loaded the same way right
+     * beside identity.kem — absent file -> NULL, never an error. If it is
+     * absent, run the one-time migration (idempotent: on every later start
+     * the file exists and this becomes a no-op).
+     *
+     * D15 (M1 delta 1, verifier LOW — log noise): a pre-migration or K2
+     * identity has no identity.mlkem file at all, so qgp_key_load(_encrypted)
+     * below used to be CALLED anyway and print "Cannot open file" as an
+     * ERROR on every single start — check qgp_platform_file_exists() first
+     * and skip straight to the migration decision when it is absent; no
+     * loader call, no ERROR log, for a state that is not an error. */
+    {
+        char mlkem_path[512];
+        snprintf(mlkem_path, sizeof(mlkem_path), "%s/keys/identity.mlkem", engine->data_dir);
+
+        if (!qgp_platform_file_exists(mlkem_path)) {
+            dna_kem_f1_migrate_to_mlkem(engine);
+        } else {
+            qgp_key_t *mlkem_key = NULL;
+            int mlkem_load_rc;
+            if (engine->keys_encrypted && engine->session_password) {
+                mlkem_load_rc = qgp_key_load_encrypted(mlkem_path, engine->session_password, &mlkem_key);
+            } else {
+                mlkem_load_rc = qgp_key_load(mlkem_path, &mlkem_key);
+            }
+
+            if (mlkem_load_rc == 0 && mlkem_key && mlkem_key->public_key && mlkem_key->private_key) {
+                if (gek_set_mlkem_keys(mlkem_key->public_key, mlkem_key->private_key) == 0) {
+                    QGP_LOG_INFO(LOG_TAG, "GEK ML-KEM keys set successfully");
+                } else {
+                    QGP_LOG_WARN(LOG_TAG, "Warning: Failed to set GEK ML-KEM keys");
+                }
+                qgp_key_free(mlkem_key);
+            } else {
+                if (mlkem_key) qgp_key_free(mlkem_key);
+                dna_kem_f1_migrate_to_mlkem(engine);
+            }
         }
     }
 
@@ -682,15 +901,19 @@ populate_wallets:
             if (sign_key) {
                 qgp_key_t *enc_key = dna_load_encryption_key(engine);
                 if (enc_key) {
+                    /* D6 (M1 delta 1b-2): NULL when unmigrated (fine). */
+                    qgp_key_t *mlkem_key = dna_load_mlkem_key(engine);
                     /* Update profile in DHT - profile is already a dna_profile_t* */
                     int update_rc = dna_update_profile(engine->fingerprint, profile,
                                                        sign_key->private_key, sign_key->public_key,
-                                                       enc_key->public_key);
+                                                       enc_key->public_key,
+                                                       mlkem_key ? mlkem_key->public_key : NULL);
                     if (update_rc == 0) {
                         QGP_LOG_INFO(LOG_TAG, "Profile auto-published with wallet addresses");
                     } else {
                         QGP_LOG_WARN(LOG_TAG, "Failed to auto-publish profile: %d", update_rc);
                     }
+                    if (mlkem_key) qgp_key_free(mlkem_key);
                     qgp_key_free(enc_key);
                 }
                 qgp_key_free(sign_key);
@@ -727,8 +950,41 @@ void dna_auto_republish_own_profile(dna_engine_t *engine) {
     int verify_rc = dna_load_identity(engine->fingerprint, &dht_identity);
 
     if (verify_rc == 0 && dht_identity) {
-        /* Profile exists in DHT with valid signature — no republish needed */
-        QGP_LOG_INFO(LOG_TAG, "[AUTO-REPUBLISH] Profile signature valid (version=%u), skipping republish",
+        /* D6 (M1 delta 1b-2, HIGH — the fix three independent reviewers
+         * converged on for the migration republish that could never
+         * succeed where it used to be attempted, D4): the record verifies
+         * and is otherwise fine — but if THIS device has migrated
+         * (dna_load_mlkem_key succeeds) and the DHT record does not yet
+         * carry mlkem_pubkey, attach it now via the existing version-bump
+         * re-sign (dht_keyserver_update), same DSA/Kyber pubkeys (no
+         * rotation, fingerprint unchanged), signed with our own privkey.
+         * This function runs from the post-stabilization callback
+         * (dna_engine.c:362, dna_auto_republish_own_profile), i.e. AFTER
+         * the DHT is actually connected — unlike dna_kem_f1_migrate_to_
+         * mlkem's old synchronous attempt (D4), which ran microseconds
+         * after messenger_load_dht_identity had only SPAWNED, never
+         * awaited, the nodus connect thread and so always saw "not
+         * connected" misreported as -2 "not found" (D5). */
+        if (!dht_identity->has_mlkem_pubkey) {
+            qgp_key_t *mlkem_key = dna_load_mlkem_key(engine);
+            if (mlkem_key) {
+                qgp_key_t *sign_key = dna_load_private_key(engine);
+                if (sign_key) {
+                    int attach_rc = dht_keyserver_update(engine->fingerprint,
+                        sign_key->public_key, dht_identity->kyber_pubkey,
+                        sign_key->private_key, mlkem_key->public_key);
+                    if (attach_rc == 0) {
+                        QGP_LOG_INFO(LOG_TAG, "[AUTO-REPUBLISH] Attached mlkem_pubkey to existing valid record");
+                    } else {
+                        QGP_LOG_WARN(LOG_TAG, "[AUTO-REPUBLISH] Failed to attach mlkem_pubkey (rc=%d)", attach_rc);
+                    }
+                    qgp_key_free(sign_key);
+                }
+                qgp_key_free(mlkem_key);
+            }
+        }
+        /* Profile exists in DHT with valid signature — no full republish needed */
+        QGP_LOG_INFO(LOG_TAG, "[AUTO-REPUBLISH] Profile signature valid (version=%u), skipping full republish",
                      dht_identity->version);
         dna_identity_free(dht_identity);
         return;
@@ -809,13 +1065,20 @@ void dna_auto_republish_own_profile(dna_engine_t *engine) {
         return;
     }
 
+    /* D6 (M1 delta 1b-2): NULL when unmigrated (fine) — this full
+     * republish path also carries mlkem_pubkey, same as the attach-only
+     * branch above. */
+    qgp_key_t *mlkem_key = dna_load_mlkem_key(engine);
+
     /* Republish with fresh signature */
     int rc = dna_update_profile(engine->fingerprint, &profile,
                                 sign_key->private_key, sign_key->public_key,
-                                enc_key->public_key);
+                                enc_key->public_key,
+                                mlkem_key ? mlkem_key->public_key : NULL);
 
     qgp_key_free(sign_key);
     qgp_key_free(enc_key);
+    if (mlkem_key) qgp_key_free(mlkem_key);
 
     if (rc == 0) {
         QGP_LOG_INFO(LOG_TAG, "[AUTO-REPUBLISH] Profile republished successfully");
@@ -1022,6 +1285,9 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
+    /* D6 (M1 delta 1b-2): NULL when unmigrated (fine). */
+    qgp_key_t *mlkem_key = dna_load_mlkem_key(engine);
+
     /* Copy profile from Flutter — we'll overwrite wallet fields with seed-derived addresses.
      * Flutter only controls: bio, avatar, location, website, socials.
      * Wallet addresses are ALWAYS derived from seed to prevent accidental overwrites. */
@@ -1125,7 +1391,8 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
     /* Update profile in DHT */
     int rc = dna_update_profile(engine->fingerprint, p,
                                  sign_key->private_key, sign_key->public_key,
-                                 enc_key->public_key);
+                                 enc_key->public_key,
+                                 mlkem_key ? mlkem_key->public_key : NULL);
 
     /* Save public keys before freeing (needed for cache entry creation) */
     uint8_t dilithium_pubkey_copy[2592];
@@ -1135,6 +1402,7 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
 
     qgp_key_free(sign_key);
     qgp_key_free(enc_key);
+    if (mlkem_key) qgp_key_free(mlkem_key);
 
     if (rc != 0) {
         error = DNA_ENGINE_ERROR_NETWORK;
@@ -1698,6 +1966,35 @@ int dna_engine_get_mnemonic(
         return DNA_ENGINE_ERROR_NOT_FOUND;
     }
 
+    /* D10 (M1 delta 1): try mnemonic.v2.enc (ML-KEM-1024) first when this
+     * identity has migrated (both the v2 file and identity.mlkem exist).
+     * The engine has the session password in hand here (same as the
+     * legacy load right below), so this is a proper decrypted-key load,
+     * never a by-path load without it. Legacy mnemonic.enc is kept until
+     * Faz 3 (K5), so falling through to it below on any v2 failure is
+     * safe and changes nothing for identities that have not migrated. */
+    char mlkem_path[512];
+    snprintf(mlkem_path, sizeof(mlkem_path), "%s/keys/identity.mlkem", engine->data_dir);
+    if (mnemonic_storage_v2_exists(engine->data_dir) && qgp_platform_file_exists(mlkem_path)) {
+        qgp_key_t *mlkem_key = NULL;
+        int mlkem_load_rc = (engine->keys_encrypted && engine->session_password)
+            ? qgp_key_load_encrypted(mlkem_path, engine->session_password, &mlkem_key)
+            : qgp_key_load(mlkem_path, &mlkem_key);
+        if (mlkem_load_rc == 0 && mlkem_key && mlkem_key->private_key &&
+            mlkem_key->private_key_size == QGP_MLKEM1024_SECRETKEYBYTES) {
+            int v2_rc = mnemonic_storage_load_v2(mnemonic_out, mnemonic_size,
+                                                 mlkem_key->private_key, engine->data_dir);
+            qgp_key_free(mlkem_key);
+            if (v2_rc == 0) {
+                QGP_LOG_INFO(LOG_TAG, "Mnemonic retrieved successfully (v2/ML-KEM)");
+                return DNA_OK;
+            }
+            QGP_LOG_WARN(LOG_TAG, "mnemonic.v2.enc present but failed to decrypt - falling back to legacy");
+        } else if (mlkem_key) {
+            qgp_key_free(mlkem_key);
+        }
+    }
+
     /* Load Kyber private key (use password if keys are encrypted) */
     qgp_key_t *kem_key = NULL;
     int load_rc;
@@ -1748,10 +2045,12 @@ int dna_engine_change_password_sync(
     /* v0.3.0: Flat structure - keys/identity.{dsa,kem}, mnemonic.enc in root */
     char dsa_path[512];
     char kem_path[512];
+    char mlkem_path[512];
     char mnemonic_path[512];
 
     snprintf(dsa_path, sizeof(dsa_path), "%s/keys/identity.dsa", engine->data_dir);
     snprintf(kem_path, sizeof(kem_path), "%s/keys/identity.kem", engine->data_dir);
+    snprintf(mlkem_path, sizeof(mlkem_path), "%s/keys/identity.mlkem", engine->data_dir);
     snprintf(mnemonic_path, sizeof(mnemonic_path), "%s/mnemonic.enc", engine->data_dir);
 
     /* Verify old password is correct by trying to load a key */
@@ -1794,13 +2093,29 @@ int dna_engine_change_password_sync(
         qgp_key_free(kem_tmp);
     }
 
-    /* Change password on mnemonic file if it exists.
-     * mnemonic.enc is NOT in DNAK format and NOT TEE-wrapped — leave using
-     * key_change_password (legacy path handles mnemonic blob as-is). */
-    if (qgp_platform_file_exists(mnemonic_path)) {
-        if (key_change_password(mnemonic_path, old_password, new_password) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Failed to change password on mnemonic file");
-            /* Try to rollback DSA and KEM keys via TEE-aware path */
+    /* D11 (M1 delta 1, HIGH — verifier own finding: R1 violated). Re-key
+     * identity.mlkem too, with the same absent-is-fine rule used
+     * everywhere else in KEM Faz 1 (K2: a pre-migration identity has no
+     * ML-KEM key yet — nothing to re-key, not an error). Without this
+     * step, an Unprotected -> Protected password change left the ML-KEM dk
+     * PLAINTEXT on disk forever: qgp_key_load_encrypted() accepts a raw
+     * unencrypted file under ANY password (key_encryption.c), so the load
+     * "succeeds" silently on every later start and the migration path
+     * never repairs it (identity.mlkem already existing is exactly what
+     * skips dna_kem_f1_migrate_to_mlkem() at its call site).
+     *
+     * mnemonic.v2.enc (below, if present) is encrypted under the ML-KEM
+     * PUBLIC key via KEM encapsulation, not a password-derived key, so it
+     * needs no change on a password change — same reason mnemonic.enc's
+     * own Kyber1024 KEM encapsulation is untouched by this function; only
+     * the private-key FILE's password wrapper changes here. */
+    if (qgp_platform_file_exists(mlkem_path)) {
+        qgp_key_t *mlkem_tmp = NULL;
+        if (qgp_key_load_encrypted(mlkem_path, old_password, &mlkem_tmp) != 0 ||
+            qgp_key_save_encrypted(mlkem_tmp, mlkem_path, new_password) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to change password on ML-KEM key");
+            if (mlkem_tmp) qgp_key_free(mlkem_tmp);
+            /* Rollback DSA and KEM keys */
             qgp_key_t *dsa_rollback = NULL;
             if (qgp_key_load_encrypted(dsa_path, new_password, &dsa_rollback) == 0) {
                 qgp_key_save_encrypted(dsa_rollback, dsa_path, old_password);
@@ -1810,6 +2125,35 @@ int dna_engine_change_password_sync(
             if (qgp_key_load_encrypted(kem_path, new_password, &kem_rollback) == 0) {
                 qgp_key_save_encrypted(kem_rollback, kem_path, old_password);
                 qgp_key_free(kem_rollback);
+            }
+            return DNA_ERROR_CRYPTO;
+        }
+        qgp_key_free(mlkem_tmp);
+    }
+
+    /* Change password on mnemonic file if it exists.
+     * mnemonic.enc is NOT in DNAK format and NOT TEE-wrapped — leave using
+     * key_change_password (legacy path handles mnemonic blob as-is). */
+    if (qgp_platform_file_exists(mnemonic_path)) {
+        if (key_change_password(mnemonic_path, old_password, new_password) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to change password on mnemonic file");
+            /* Try to rollback DSA, KEM and ML-KEM keys via TEE-aware path */
+            qgp_key_t *dsa_rollback = NULL;
+            if (qgp_key_load_encrypted(dsa_path, new_password, &dsa_rollback) == 0) {
+                qgp_key_save_encrypted(dsa_rollback, dsa_path, old_password);
+                qgp_key_free(dsa_rollback);
+            }
+            qgp_key_t *kem_rollback = NULL;
+            if (qgp_key_load_encrypted(kem_path, new_password, &kem_rollback) == 0) {
+                qgp_key_save_encrypted(kem_rollback, kem_path, old_password);
+                qgp_key_free(kem_rollback);
+            }
+            if (qgp_platform_file_exists(mlkem_path)) {
+                qgp_key_t *mlkem_rollback = NULL;
+                if (qgp_key_load_encrypted(mlkem_path, new_password, &mlkem_rollback) == 0) {
+                    qgp_key_save_encrypted(mlkem_rollback, mlkem_path, old_password);
+                    qgp_key_free(mlkem_rollback);
+                }
             }
             return DNA_ERROR_CRYPTO;
         }
