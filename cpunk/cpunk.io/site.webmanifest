@@ -1,7 +1,7 @@
 {
-  "name": "CPUNK — Post-Quantum Identity & Messaging",
+  "name": "CPUNK",
   "short_name": "CPUNK",
-  "description": "Post-quantum identity, encrypted messaging, and multi-chain wallet. Privacy-first, decentralized, open source.",
+  "description": "A community-driven CF-20 token on Cellframe.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
