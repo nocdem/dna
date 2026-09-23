@@ -2,13 +2,23 @@ import { CHAINS } from './config.js';
 import { ASSETS, chainBalances, readPrices, portfolioSnapshot, groupAssets, usdText } from './portfolio.js';
 
 const names = { ETH: 'Ethereum', BNB: 'BNB', SOL: 'Solana', TRX: 'TRON', USDT: 'Tether', USDC: 'USD Coin', DAI: 'Dai', USDD: 'USDD', CPUNK: 'CPUNK' };
-const icons = new Set(['ETH', 'BNB', 'SOL', 'TRX', 'USDT']);
+// Asset symbol -> its own icon file. Keyed by symbol, not guessed from it, so an
+// asset can carry a different file extension/name than its lowercase symbol
+// (CPUNK's icon is a PNG, not a same-named SVG).
+const icons = { ETH: 'eth.svg', BNB: 'bnb.svg', SOL: 'sol.svg', TRX: 'trx.svg', USDT: 'usdt.svg', CPUNK: 'cpunk.png' };
 const $ = id => document.getElementById(id);
 function el(tag, className, text) { const node = document.createElement(tag); node.className = className; if (text !== undefined) node.textContent = text; return node; }
+function iconImg(file) { const img = el('img', 'coin-icon'); img.src = `/assets/coins/${file}`; img.alt = ''; img.width = 36; img.height = 36; return img; }
 function icon(symbol) {
-  if (!icons.has(symbol)) return el('span', 'coin-icon coin-letter', symbol === 'USDC' ? '$' : symbol[0]);
-  const img = el('img', 'coin-icon'); img.src = `/assets/coins/${symbol.toLowerCase()}.svg`; img.alt = ''; img.width = 36; img.height = 36; return img;
+  const file = icons[symbol];
+  if (!file) return el('span', 'coin-icon coin-letter', symbol === 'USDC' ? '$' : symbol[0]);
+  return iconImg(file);
 }
+// A network's own icon (from config.js) takes priority over its symbol's asset
+// icon: Cellframe's network symbol is CPUNK, but its network identity (the
+// health badge, the per-chain holding row) must show the Cellframe logo, not
+// the CPUNK asset icon shown in the asset summary.
+function networkIcon(c) { return c.icon ? iconImg(c.icon) : icon(c.symbol); }
 
 // This controller receives only public addresses, never a wallet or signing key.
 // `cellframe`, when given, is `{ network: { name, symbol, receiveOnly, ... }, asset: CPUNK_ASSET }`:
@@ -39,7 +49,7 @@ export function createPortfolio({ readBalances, selectAsset, cellframe }) {
     $('portfolio-networks').replaceChildren(...Object.entries(networks).map(([chain, c]) => {
       const rows = snap.rows.filter(r => r.chain === chain), ready = rows.every(r => r.balance !== null);
       const status = rows.some(r => r.state === 'loading') ? 'Reading' : ready ? 'Balances read' : rows.every(r => r.state === 'idle') ? 'Not read' : 'Incomplete';
-      const badge = el('span', 'network-health'); badge.append(icon(c.symbol), el('span', '', `${c.name} · ${status}`)); return badge;
+      const badge = el('span', 'network-health'); badge.append(networkIcon(c), el('span', '', `${c.name} · ${status}`)); return badge;
     }));
     for (const button of $('portfolio-filters').querySelectorAll('button')) button.setAttribute('aria-pressed', String(button.dataset.chain === filter));
     const opened = new Set([...$('balances').querySelectorAll('details[open]')].map(d => d.dataset.symbol));
@@ -55,7 +65,7 @@ export function createPortfolio({ readBalances, selectAsset, cellframe }) {
       summary.append(icon(group.symbol), name, value, el('span', 'asset-chevron', '⌄')); detail.append(summary);
       for (const row of group.rows) {
         const entry = el('div', 'chain-holding'), identity = el('span', 'holding-network');
-        identity.append(icon(networks[row.chain].symbol), el('span', '', networks[row.chain].name));
+        identity.append(networkIcon(networks[row.chain]), el('span', '', networks[row.chain].name));
         const value = el('span', 'holding-value');
         const state = row.state === 'loading' ? 'Reading…' : row.state === 'stale' ? 'Balance out of date' : row.state === 'idle' ? 'Not read' : 'Balance unavailable';
         value.append(el('strong', '', text(row.balance === null ? state : `${row.balance} ${row.symbol}`)),

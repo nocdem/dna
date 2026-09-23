@@ -53,6 +53,17 @@ try {
   await restore(); await done(); await cpunkSettled();
   assert.equal(reads.size, 5); assert.equal(await page.locator('#portfolio-total').innerText(), '$28.00');
   assert.match(await page.locator('#portfolio-status').innerText(), /All supported asset balances/);
+  // Coin icons: CPUNK's own file in the asset summary, the Cellframe network's
+  // own logo (not the CPUNK asset icon) on its network badge, ETH unaffected,
+  // and every rendered coin-icon actually decodes from the served file (a
+  // missing/404'd icon still reports `complete: true, naturalWidth: 0`).
+  assert.ok((await cpunk.locator('summary img.coin-icon').getAttribute('src')).endsWith('/assets/coins/cpunk.png'));
+  assert.ok((await page.locator('#portfolio-networks .network-health', { hasText: 'Cellframe' }).locator('img.coin-icon').getAttribute('src')).endsWith('/assets/coins/cellframe.svg'));
+  assert.ok((await page.locator('#portfolio-networks .network-health', { hasText: 'Ethereum' }).locator('img.coin-icon').getAttribute('src')).endsWith('/assets/coins/eth.svg'));
+  await page.waitForFunction(() => [...document.querySelectorAll('img.coin-icon')].every(i => i.complete));
+  const iconState = await page.evaluate(() => [...document.querySelectorAll('img.coin-icon')].map(i => ({ src: i.getAttribute('src'), naturalWidth: i.naturalWidth })));
+  assert.ok(iconState.length > 0);
+  assert.ok(iconState.every(i => !!i.src && i.naturalWidth > 0), JSON.stringify(iconState.filter(i => !i.src || i.naturalWidth === 0)));
   // CPUNK: shown alongside the priced assets, but with no USD value and no
   // effect on the total, and receive-only (no Send button).
   assert.equal(await cpunk.locator('.asset-value small').innerText(), '—');
@@ -136,5 +147,5 @@ try {
   assert.equal(await page.locator('#portfolio-total').innerText(), '$28.00');
   await page.locator('#lock').click();
   assert.deepEqual(unexpected, []); assert.deepEqual(errors, []);
-  console.log('Portfolio browser checks passed: automatic four-network reads; exact grouped holdings/total; filters; hide; per-network send/receive; 320–1440px layout; partial RPC failure; wrong network; failed/stale quotes; balance expiry; lock cancels late replies; reopening refreshes; no persistence or unmocked external requests.');
+  console.log('Portfolio browser checks passed: automatic four-network reads; exact grouped holdings/total; filters; hide; per-network send/receive; 320–1440px layout; partial RPC failure; wrong network; failed/stale quotes; balance expiry; lock cancels late replies; reopening refreshes; no persistence or unmocked external requests; CPUNK/Cellframe/ETH coin icons resolve to their own files and decode.');
 } finally { gate?.resolve(); await browser?.close(); server?.kill(); }
