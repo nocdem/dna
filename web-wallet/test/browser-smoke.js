@@ -72,6 +72,24 @@ try {
     const selectedName = await page.locator('#chain option:checked').innerText();
     assert.ok((await page.locator('.selected-network-name').allTextContents()).every(name => name === selectedName));
   }
+  // Paket C: RPC provider select — populated per network, TRON has no custom
+  // option, and picking "Custom HTTPS endpoint..." reveals the free-text box.
+  await page.selectOption('#chain', 'tron');
+  assert.deepEqual(await page.locator('#rpc-choice option').allTextContents(), ['TronGrid']);
+  assert.equal(await page.locator('#rpc-endpoint').isVisible(), false);
+  await page.selectOption('#chain', 'bsc');
+  assert.equal(await page.locator('#rpc-choice option').count(), 9);
+  assert.equal(await page.locator('#rpc-choice option').last().innerText(), 'Custom HTTPS endpoint…');
+  await page.selectOption('#chain', 'solana');
+  assert.equal(await page.locator('#rpc-choice option').count(), 2);
+  await page.selectOption('#chain', 'ethereum');
+  assert.equal(await page.locator('#rpc-choice option').count(), 6);
+  assert.equal(await page.locator('#rpc-endpoint').isVisible(), false);
+  await page.selectOption('#rpc-choice', 'custom');
+  assert.equal(await page.locator('#rpc-endpoint').isVisible(), true);
+  assert.equal(await page.locator('#rpc-endpoint').inputValue(), '');
+  await page.selectOption('#rpc-choice', '0');
+  assert.equal(await page.locator('#rpc-endpoint').isVisible(), false);
   await page.locator('#refresh').click(); await page.waitForFunction(() => document.querySelector('#balances').textContent.includes('10.0'));
   await page.waitForFunction(() => { const strong = document.querySelector('.asset-group[data-symbol="CPUNK"] .holding-value strong'); return strong && strong.textContent.includes('CPUNK'); });
   assert.equal(await page.locator('.asset-group[data-symbol="CPUNK"] .asset-value small').innerText(), '—');

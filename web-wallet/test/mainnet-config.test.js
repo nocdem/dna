@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { getAddress } from 'ethers';
-import { CHAINS } from '../src/config.js';
+import { CHAINS, CELLFRAME } from '../src/config.js';
+import { endpointUrl } from '../src/core.js';
 import { balances } from '../src/adapters/solana.js';
 import { checkActivity } from '../src/activity.js';
 
@@ -46,4 +47,22 @@ test('EVM token destinations are valid addresses and DAI matches the issuer depl
   const dai = CHAINS.ethereum.tokens.find(token => token.symbol === 'DAI');
   assert.equal(getAddress(dai.address), '0x6B175474E89094C44Da98b954EedeAC495271d0F');
   assert.equal(dai.decimals, 18);
+});
+
+test('every rpcOptions entry is a valid, unique HTTPS URL, and index 0 matches the chain\'s endpoint', () => {
+  for (const [chain, c] of [...Object.entries(CHAINS), ['cellframe', CELLFRAME]]) {
+    assert.ok(Array.isArray(c.rpcOptions) && c.rpcOptions.length > 0, `${chain} has no rpcOptions`);
+    assert.equal(c.rpcOptions[0].url, c.endpoint, `${chain} rpcOptions[0].url must equal endpoint`);
+    const seen = new Set();
+    for (const option of c.rpcOptions) {
+      assert.doesNotThrow(() => endpointUrl(option.url), `${chain} ${option.url} is not a valid HTTPS RPC URL`);
+      assert.equal(typeof option.label, 'string'); assert.ok(option.label.length > 0, `${chain} rpc option missing a label`);
+      assert.ok(!seen.has(option.url), `${chain} has a duplicate rpcOptions URL: ${option.url}`);
+      seen.add(option.url);
+      if (Object.hasOwn(option, 'note')) assert.ok(typeof option.note === 'string' && option.note.length > 0, `${chain} ${option.url} has an empty note`);
+    }
+  }
+  assert.equal(CHAINS.tron.rpcOptions.length, 1);
+  assert.equal(CHAINS.solana.rpcOptions.length, 1);
+  assert.equal(CELLFRAME.rpcOptions.length, 1);
 });

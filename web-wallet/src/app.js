@@ -238,7 +238,7 @@ function selectChain() {
   revision++; closeReview(); const chain = $('chain').value; const c = CHAINS[chain] || CELLFRAME;
   for (const label of document.querySelectorAll('.selected-network-name')) label.textContent = c.name;
   const address = wallet.addresses[chain];
-  $('receive-address').textContent = address || ''; $('rpc-endpoint').value = endpoints[chain];
+  $('receive-address').textContent = address || ''; populateRpcChoice(chain, c);
   $('asset').replaceChildren(...[c.symbol, ...c.tokens.map(t => t.symbol)].map(s => new Option(s, s)));
   $('solana-send-hint').hidden = chain !== 'solana';
   const explorers = { ethereum: 'https://etherscan.io/address/', bsc: 'https://bscscan.com/address/', solana: 'https://solscan.io/account/', tron: 'https://tronscan.org/#/address/' };
@@ -264,6 +264,34 @@ $('copy-address').onclick = async () => {
   if (!address) { message('Address not available yet.'); return; }
   try { await navigator.clipboard.writeText(address); message('Address copied.'); }
   catch { message('Copy unavailable. Select and copy the address above.'); }
+};
+// Custom HTTPS endpoint is offered for every network except TRON, which keeps
+// its single restricted provider (checked again below in save-rpc's onclick).
+// #rpc-endpoint always mirrors the currently resolved URL — hidden and synced
+// to the picked option's url, or shown empty for the user to type into — so
+// save-rpc's existing endpointUrl($('rpc-endpoint').value) read needs no change.
+const CUSTOM_RPC = 'custom';
+function setRpcCustomVisible(visible) { $('rpc-endpoint-label').hidden = !visible; $('rpc-endpoint').hidden = !visible; }
+function setRpcNote(note) { $('rpc-choice-note').hidden = !note; $('rpc-choice-note').textContent = note || ''; }
+function populateRpcChoice(chain, c) {
+  const options = c.rpcOptions;
+  $('rpc-choice').replaceChildren(...options.map((option, index) => new Option(option.label, String(index))));
+  if (chain !== 'tron') $('rpc-choice').add(new Option('Custom HTTPS endpoint…', CUSTOM_RPC));
+  const current = endpoints[chain];
+  const matchIndex = options.findIndex(option => endpointUrl(option.url) === endpointUrl(current));
+  if (matchIndex >= 0) {
+    $('rpc-choice').value = String(matchIndex); $('rpc-endpoint').value = options[matchIndex].url;
+    setRpcCustomVisible(false); setRpcNote(options[matchIndex].note);
+  } else {
+    $('rpc-choice').value = CUSTOM_RPC; $('rpc-endpoint').value = current;
+    setRpcCustomVisible(true); setRpcNote(undefined);
+  }
+}
+$('rpc-choice').onchange = () => {
+  const chain = $('chain').value, c = CHAINS[chain] || CELLFRAME, value = $('rpc-choice').value;
+  if (value === CUSTOM_RPC) { setRpcCustomVisible(true); $('rpc-endpoint').value = ''; $('rpc-endpoint').focus(); setRpcNote(undefined); return; }
+  const option = c.rpcOptions[Number(value)];
+  setRpcCustomVisible(false); $('rpc-endpoint').value = option.url; setRpcNote(option.note);
 };
 $('save-rpc').onclick = () => { try { const chain = $('chain').value, endpoint = endpointUrl($('rpc-endpoint').value); if (chain === 'tron' && endpoint !== endpointUrl(CHAINS.tron.endpoint)) throw new Error('TRON requires the mainnet provider.'); endpoints[chain] = endpoint; revision++; closeReview(); stopTracking(); for (const row of visibleActivity()) row.endpoint = endpoints[$('chain').value]; trackActivity(); portfolio.changeEndpoint(chain, endpoint); message('RPC updated for this tab.'); } catch (error) { message(error.message); } };
 $('send-form').onsubmit = async event => {
