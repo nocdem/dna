@@ -554,3 +554,23 @@ behaviour is removed:
 - Tests mock the Ixios RPC (`test/portfolio-routes.js` `ixiosRead`,
   `test/ixios-balance.test.js`); `browser-nodus.js` now routes Ixios reads to
   that mock instead of counting them as unexpected requests.
+- Live note (2026-09-23): browsers cannot read `ixios-rpc.innova.limited` yet —
+  its POST responses carry `Access-Control-Allow-Origin: *` twice, which Chromium
+  rejects ("multiple values '*, *'"); the row shows "Balance unavailable" until
+  Ixios fixes the header. No client-side workaround (a relay would break the
+  no-backend design).
+
+## One open wallet per browser (0.1.20)
+
+Operator decision `docs/plans/decisions/2026-09-23-web-wallet-single-tab.md`
+closes the cross-tab record-loss issue (`SECURITY-FOLLOWUP.md`). Opening a wallet
+(restore, create after verification, unlock) first takes the exclusive Web Lock
+`nodus.wallet.session` (`ifAvailable`); no key is derived and no password KDF runs
+before the lock is granted. The tab holds it until Lock, idle timeout or page
+exit; the browser releases it if the tab closes or crashes (no timers or storage
+flags). A second tab is refused with "Wallet is open in another tab." and
+"Use it here instead", which takes the lock with `steal`; the first tab locks
+itself and says "Wallet was opened in another tab. This tab was locked." The
+activity write lock `nodus.wallet.storage` is unchanged. Covered by
+`test/browser-security.js` (refuse / take over / reopen after close) and
+`test/browser-smoke.js` (hold, release, failed unlock gives the lock back).

@@ -37,6 +37,50 @@ function withActivityLock(write) {
   if (!navigator.locks) return Promise.reject(new Error('This browser cannot safely save wallet activity across tabs. Use a browser with Web Locks support.'));
   return navigator.locks.request('nodus.wallet.storage', write);
 }
+// Single-tab rule (decision 2026-09-23-web-wallet-single-tab): a wallet opens
+// only in the tab holding the exclusive `nodus.wallet.session` Web Lock, and
+// that tab holds it until lock(). The browser releases it when the tab closes
+// or crashes, so no timer, storage flag or heartbeat is involved.
+// sessionRelease: resolves the promise that keeps this tab's lock held.
+// sessionRequest: an in-flight request shared by concurrent open attempts.
+// sessionClaims: open attempts in flight; the last one to finish without an
+// open wallet gives the lock back, so a failed open never keeps it.
+// sessionEnded: settles once this tab's previous request is over — for a held
+// lock, after the lock manager has released it — so a lock-then-reopen in this
+// tab never finds its own just-released hold still in place and refuses itself.
+let sessionRelease, sessionRequest, sessionClaims = 0, sessionConflictFlow, sessionEnded = Promise.resolve();
+function releaseSession() { const release = sessionRelease; sessionRelease = undefined; release?.(); }
+function requestSession({ steal = false } = {}) {
+  if (sessionRelease) return Promise.resolve(sessionRelease);
+  if (sessionRequest && !steal) return sessionRequest;
+  if (!navigator.locks) return Promise.reject(new Error('This browser cannot keep the wallet open in only one tab. Use a browser with Web Locks support.'));
+  const request = sessionEnded.then(() => new Promise((granted, failed) => {
+    let mine;
+    // steal cannot be combined with ifAvailable.
+    sessionEnded = navigator.locks.request('nodus.wallet.session', steal ? { steal: true } : { ifAvailable: true }, held => {
+      if (!held) { granted(undefined); return undefined; }
+      return new Promise(release => { mine = sessionRelease = release; granted(release); });
+    }).then(() => {}, error => {
+      failed(error); // no-op once granted
+      // A hold this tab still has can only end in a rejection when another tab stole it.
+      if (mine && sessionRelease === mine) { sessionRelease = undefined; lock(); message('Wallet was opened in another tab. This tab was locked.'); }
+    });
+  }));
+  sessionRequest = request;
+  const settled = () => { if (sessionRequest === request) sessionRequest = undefined; };
+  request.then(settled, settled);
+  return request;
+}
+// Every open path claims before any key derivation and unclaims in its finally.
+// The claim resolves to this tab's hold, or undefined when another tab has it;
+// the caller must still check `session === sessionRelease` before deriving.
+function claimSession() { sessionClaims++; return requestSession(); }
+function unclaimSession() { if (--sessionClaims === 0 && !wallet) releaseSession(); }
+function refuseOpen(flow) {
+  // Clears every entered secret, exactly as locking does; nothing was opened.
+  lock(); message('');
+  sessionConflictFlow = flow; $('session-conflict').hidden = false; $('session-takeover').focus();
+}
 function visibleActivity() { return wallet ? history.filter(row => row.chain === $('chain').value && row.address === wallet.addresses[row.chain]) : []; }
 function persistActivity({ required = false } = {}) {
   const session = activitySession, source = wallet;
@@ -133,7 +177,9 @@ function expireIdle() {
 function activity() {
   if (expireIdle()) return;
   clearTimeout(lockTimer);
-  const sensitive = wallet || !$('phrase-form').hidden || $('unlock-wallet').disabled || $('vault-save').disabled || ['unlock-password', 'vault-password', 'vault-old-password'].some(id => $(id).value);
+  // A tab that took the session over holds it before the wallet is reopened;
+  // the same idle lock gives it back if nobody reopens it here.
+  const sensitive = wallet || sessionRelease || !$('phrase-form').hidden || $('unlock-wallet').disabled || $('vault-save').disabled || ['unlock-password', 'vault-password', 'vault-old-password'].some(id => $(id).value);
   if (sensitive) { idleDeadline = Date.now() + 10 * 60 * 1000; lockTimer = setTimeout(lock, 10 * 60 * 1000); }
 }
 for (const event of ['pointerdown', 'keydown', 'input']) document.addEventListener(event, activity);
@@ -150,6 +196,7 @@ function lock() {
   stopIxiosAddress();
   $('nodus-address').textContent = ''; $('nodus-status').textContent = ''; $('copy-nodus-address').disabled = true;
   revision++; vaultOperation++; activitySession = null; activityBlocked = false; idleDeadline = 0; stopTracking(); closeReview(); disposeWallet(wallet); wallet = undefined; generatedPhrase = undefined;
+  releaseSession(); $('session-conflict').hidden = true;
   $('discard-activity').hidden = true;
   $('phrase-form').hidden = true; $('wallet-open').hidden = true; $('welcome').hidden = false;
   history.length = 0; $('account-explorer').removeAttribute('href');
@@ -161,7 +208,7 @@ function lock() {
 window.addEventListener('pagehide', lock);
 function phraseForm(create) {
   phraseFields.clear();
-  vaultOperation++; $('unlock-password').value = ''; $('unlock-form').hidden = true;
+  vaultOperation++; $('unlock-password').value = ''; $('unlock-form').hidden = true; $('session-conflict').hidden = true;
   phraseStep = create ? 'backup' : 'restore';
   generatedPhrase = create ? newPhrase() : undefined;
   $('welcome').hidden = true; $('phrase-form').hidden = false; $('backup-confirm').checked = false;
@@ -178,7 +225,7 @@ function phraseForm(create) {
 $('create').onclick = () => phraseForm(true);
 $('restore').onclick = () => phraseForm(false);
 $('phrase-cancel').onclick = lock;
-$('phrase-form').onsubmit = event => {
+$('phrase-form').onsubmit = async event => {
   event.preventDefault();
   if (phraseStep === 'backup') {
     phraseStep = 'verify'; phraseFields.set(undefined, false, { allowPaste: false });
@@ -186,12 +233,19 @@ $('phrase-form').onsubmit = event => {
     $('phrase-entry-help').textContent = 'Type each word from your written backup; pasting is disabled here.';
     phraseFields.focus(); return;
   }
+  const operation = ++vaultOperation; let claimed = false;
   try {
     const phrase = phraseFields.read();
     if (phraseStep === 'verify' && normalizePhrase(phrase) !== generatedPhrase) throw new Error('The phrase does not match. Re-enter your saved backup.');
+    // No key is derived until this tab holds the single-tab session lock.
+    claimed = true; const session = await claimSession();
+    if (operation !== vaultOperation) return;
+    if (!session) { refuseOpen('phrase'); return; }
+    if (session !== sessionRelease) return;
     wallet = deriveWallet(phrase); generatedPhrase = undefined; phraseFields.clear();
     $('phrase-form').hidden = true; $('wallet-open').hidden = false; message('Wallet open. Portfolio balances load automatically.'); selectChain(); activity(); void showNodusAddress(); void showCellframeAddress(); showIxiosAddress(); focusOpenWallet();
-  } catch (error) { message(error.message); }
+  } catch (error) { if (operation === vaultOperation) message(error.message); }
+  finally { if (claimed) unclaimSession(); }
 };
 async function showNodusAddress() {
   nodusDerivation?.abort();
@@ -458,25 +512,47 @@ function focusOpenWallet() {
 updateVaultUI();
 $('unlock-form').onsubmit = async event => {
   if (expireIdle()) { event.preventDefault(); return; }
-  event.preventDefault(); const operation = ++vaultOperation;
-  const password = $('unlock-password').value; $('unlock-password').value = ''; $('unlock-wallet').disabled = true;
+  event.preventDefault(); const operation = ++vaultOperation; let claimed = false;
+  const password = $('unlock-password').value; $('unlock-password').value = ''; $('unlock-wallet').disabled = true; $('session-conflict').hidden = true;
   try {
     const text = localStorage.getItem(VAULT_KEY); if (!text) throw new Error('No saved wallet on this device.');
+    // The password is not even tried until this tab holds the single-tab session lock.
+    claimed = true; const session = await claimSession();
+    if (operation !== vaultOperation) return;
+    if (!session) { refuseOpen('unlock'); return; }
+    if (session !== sessionRelease) return;
     const saved = await decryptVault(text, password);
-    if (operation !== vaultOperation || text !== localStorage.getItem(VAULT_KEY)) return;
+    if (operation !== vaultOperation || session !== sessionRelease || text !== localStorage.getItem(VAULT_KEY)) return;
     const restored = deriveWallet(saved.phrase); let key, rows = [], problem = '';
     try {
       key = await activityKeyFor(saved.phrase, saved.id);
       try { rows = await parseActivity(localStorage.getItem(ACTIVITY_KEY), saved.id, restored.addresses, key); }
       catch (error) { problem = error.message; }
-      if (operation !== vaultOperation || text !== localStorage.getItem(VAULT_KEY)) { disposeWallet(restored); return; }
+      if (operation !== vaultOperation || session !== sessionRelease || text !== localStorage.getItem(VAULT_KEY)) { disposeWallet(restored); return; }
     } catch (error) { disposeWallet(restored); throw error; }
     disposeWallet(wallet); wallet = restored; activitySession = { id: saved.id, key, vault: text }; activityBlocked = !!problem;
     history.length = 0; history.push(...rows);
     $('discard-activity').hidden = !problem; $('vault-status').textContent = problem || 'Saved activity authenticated.';
     $('welcome').hidden = true; $('phrase-form').hidden = true; $('wallet-open').hidden = false; updateVaultUI(); selectChain(); activity(); void showNodusAddress(); void showCellframeAddress(); showIxiosAddress(); message('Saved wallet unlocked locally.'); focusOpenWallet();
   } catch (error) { if (operation === vaultOperation) $('vault-status').textContent = error.message; }
-  finally { $('unlock-wallet').disabled = false; }
+  finally { $('unlock-wallet').disabled = false; if (claimed) unclaimSession(); }
+};
+$('session-takeover').onclick = async () => {
+  const operation = ++vaultOperation, flow = sessionConflictFlow;
+  $('session-conflict').hidden = true;
+  try {
+    // The other tab's hold is aborted and that tab locks itself. Nothing entered
+    // before the refusal was kept, so the wallet is reopened here from scratch.
+    const session = await requestSession({ steal: true });
+    if (operation !== vaultOperation || session !== sessionRelease) { if (!sessionClaims && !wallet && session === sessionRelease) releaseSession(); return; }
+    if (flow === 'unlock' && !$('unlock-form').hidden) {
+      activity(); $('unlock-password').focus();
+      message('This tab now has the wallet. Enter your local password again to open it here.');
+    } else {
+      phraseForm(false);
+      message('This tab now has the wallet. Enter your recovery phrase again to open it here.');
+    }
+  } catch (error) { if (operation === vaultOperation) message(error.message); }
 };
 async function saveVault(change) {
   if (!wallet || wallet.locked) return;

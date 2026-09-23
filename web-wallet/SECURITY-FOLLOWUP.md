@@ -258,6 +258,15 @@ All eight are **fixed in 0.1.15**:
 
 ## Known issue — cross-tab record loss (found 2026-09-23, pre-existing, NOT fixed in 0.1.15)
 
+> **FIXED in 0.1.20 (2026-09-23)** by the single-tab rule (operator decision
+> `docs/plans/decisions/2026-09-23-web-wallet-single-tab.md`): a wallet opens only
+> in the tab holding the exclusive `nodus.wallet.session` Web Lock, so two tabs can
+> no longer send concurrently. A second tab is refused ("Wallet is open in another
+> tab.") and derives nothing; "Use it here instead" takes the lock over and the
+> first tab locks itself. `test/browser-security.js`'s concurrent-send scenario was
+> replaced by the refuse / take-over / reopen scenario; the security suite passed
+> 3 of 3 rounds afterwards. The description below is kept as history.
+
 Two tabs of the same saved wallet sending within milliseconds of each other can
 lose one tab's activity record even though its broadcast still goes out. The
 Web Lock that serializes `nodus.activity.v1` writes only serializes execution:

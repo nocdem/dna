@@ -136,6 +136,8 @@ button span { float: right; }
 .actions button { flex: 1; }
 .hint { font-size: 12px; color: var(--muted); line-height: 1.6; margin: 10px 0 18px; }
 .notice { font-size: 12px; padding: 13px 15px; background: #d5f99808; border-left: 2px solid var(--lime); margin: 18px 0 0; }
+.session-conflict { margin: 0 0 18px; }
+.session-conflict p { margin: 0 0 10px; }
 .result { font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; color: var(--text); padding-top: 18px; }
 .result:empty, .field-error:empty { display: none; }
 footer { display: flex; justify-content: space-between; gap: 24px; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); line-height: 1.9; padding: 24px 0 32px; }

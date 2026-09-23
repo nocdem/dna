@@ -35,12 +35,19 @@ await page.route('**/*', async route => {
   };
   return route.fulfill({ json: Array.isArray(body) ? body.map(process) : process(body) });
 });
+// A grant is observed by the page before it opens the wallet, so "held" can be
+// read once; a release reaches the browser's lock manager asynchronously, so
+// "released" is waited for (the 10 s page timeout fails it if it never happens).
+const sessionHeld = () => page.evaluate(async () => (await navigator.locks.query()).held.some(lock => lock.name === 'nodus.wallet.session'));
+const sessionReleased = () => page.waitForFunction(async () => !(await navigator.locks.query()).held.some(lock => lock.name === 'nodus.wallet.session'));
 try {
   await page.goto(url);
   await page.waitForFunction(() => typeof document.querySelector('#restore').onclick === 'function');
   assert.doesNotMatch(await page.locator('body').innerText(), /Check CPUNK|CF-20|Cellframe|CPUNK/);
   await page.locator('#restore').click(); await pastePhrase(page, phrase); await page.locator('#backup-confirm').check(); await page.locator('#phrase-submit').click();
   await page.locator('#wallet-open').waitFor({ state: 'visible' });
+  // Single-tab rule: an open wallet holds the session lock; one tab alone is never refused.
+  assert.equal(await sessionHeld(), true); assert.equal(await page.locator('#session-conflict').isVisible(), false);
   await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#nodus-address').textContent));
   assert.equal(await page.locator('#receive-address').innerText(), '0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb');
   assert.equal(await page.locator('#nodus-address').innerText(), nodusAddress);
@@ -130,9 +137,13 @@ try {
   await page.locator('#vault-password').fill('public-test-password-123'); await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click();
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('Encrypted wallet saved'));
   const stored = await page.evaluate(() => JSON.stringify({ ...localStorage })); assert.ok(!stored.includes(phrase)); assert.ok(!stored.includes('public-test-password-123'));
-  await page.locator('#lock').click(); assert.equal(await page.locator('#nodus-address').innerText(), ''); assert.equal(await page.locator('#cellframe-address-status').innerText(), ''); await page.locator('#unlock-password').fill('incorrect-password-123'); await page.locator('#unlock-wallet').click();
+  await page.locator('#lock').click(); assert.equal(await page.locator('#nodus-address').innerText(), ''); assert.equal(await page.locator('#cellframe-address-status').innerText(), ''); await sessionReleased();
+  await page.locator('#unlock-password').fill('incorrect-password-123'); await page.locator('#unlock-wallet').click();
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('Incorrect password'));
+  // A failed unlock gives the session lock back.
+  await page.waitForFunction(() => !document.querySelector('#unlock-wallet').disabled); await sessionReleased();
   await page.locator('#unlock-password').fill('public-test-password-123'); await page.locator('#unlock-wallet').click(); await page.locator('#wallet-open').waitFor({ state: 'visible' });
+  assert.equal(await sessionHeld(), true); assert.equal(await page.locator('#session-conflict').isVisible(), false);
   await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#nodus-address').textContent));
   await page.locator('#vault-password').fill('changed-test-password-123'); await page.locator('#vault-old-password').fill('public-test-password-123');
   assert.equal(await page.locator('#vault-risk-confirm').isChecked(), false);

@@ -91,55 +91,79 @@ try {
   assert.equal(await page.locator('#vault-risk-confirm').isChecked(), false);
   assert.match(await page.locator('#wallet-storage-state').innerText(), /Encrypted copy saved/);
   console.log('Storage is opt-in: unchecked or withdrawn risk consent writes nothing; short and weak passwords are rejected; saving resets consent.');
+  // Single-tab rule (decision 2026-09-23-web-wallet-single-tab.md): the saved
+  // wallet is open in `page` (tab A). A second tab of the same browser context
+  // (B, `peer`) is refused and derives nothing; B's takeover opens it in B and
+  // locks A; A cannot send or reopen while B holds it; closing B lets A reopen.
+  // This replaces the former two-tabs-sending-at-once scenario, which the rule
+  // makes unreachable (SECURITY-FOLLOWUP "cross-tab record loss").
+  const sessionHeld = p => p.evaluate(async () => (await navigator.locks.query()).held.some(lock => lock.name === 'nodus.wallet.session'));
+  assert.equal(await sessionHeld(page), true);
+  await review(page); await page.locator('#confirm-send').click();
+  await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('Broadcast submitted'));
+  assert.equal(broadcasts, 1); assert.equal(durable, 1);
+  const original = await page.evaluate(() => localStorage.getItem('nodus.activity.v1'));
+  assert.ok(!original.includes(addresses.ethereum)); assert.ok(!original.includes('rows'));
+  async function refused(p) {
+    assert.equal(await p.locator('#session-conflict').isVisible(), true);
+    assert.match(await p.locator('#session-conflict').innerText(), /Wallet is open in another tab\./);
+    assert.equal(await p.locator('#session-takeover').innerText(), 'Use it here instead');
+    assert.equal(await p.locator('#wallet-open').isVisible(), false); assert.equal(await p.locator('#phrase-form').isVisible(), false);
+    assert.equal(await readPhrase(p), ''); assert.equal(await p.locator('#unlock-password').inputValue(), '');
+    assert.equal(await p.locator('#nodus-address').textContent(), ''); assert.equal(await p.locator('#receive-address').textContent(), '');
+    assert.equal(await p.locator('#cellframe-address-status').textContent(), '');
+  }
+  // Waits for an unlock attempt to finish: the handler disables the button and
+  // hides the conflict notice synchronously, before its first await.
+  const unlockSettled = p => p.waitForFunction(() => !document.querySelector('#unlock-wallet').disabled && !document.querySelector('#session-conflict').hidden);
   const peer = await fresh();
   await peer.locator('#unlock-password').fill(password); await peer.locator('#restore').click();
   assert.equal(await peer.locator('#unlock-password').inputValue(), '');
-  await peer.locator('#phrase-cancel').click(); await unlock(peer);
-  await page.evaluate(() => {
-    const encrypt = crypto.subtle.encrypt.bind(crypto.subtle); let held = false;
-    crypto.subtle.encrypt = async (...args) => {
-      const result = await encrypt(...args);
-      if (!held && new TextDecoder().decode(args[0].additionalData).startsWith('nodus.wallet.activity.v2') && JSON.parse(new TextDecoder().decode(args[2])).length) {
-        held = true; globalThis.concurrentWriteHeld = true;
-        await new Promise(resolve => { globalThis.releaseConcurrentWrite = resolve; });
-      }
-      return result;
-    };
-  });
-  await review(page); await page.locator('#confirm-send').click();
-  await page.waitForFunction(() => globalThis.concurrentWriteHeld);
-  await peer.locator('#recipient').fill('0x0000000000000000000000000000000000000001'); await peer.locator('#amount').fill('0.02');
-  await peer.locator('#review-button').click(); await peer.locator('#review-dialog').waitFor({ state: 'visible' }); await peer.locator('#confirm-send').click();
-  await peer.waitForFunction(async () => (await navigator.locks.query()).pending.some(lock => lock.name === 'nodus.wallet.storage'));
-  assert.equal(broadcasts, 0);
-  await page.evaluate(() => globalThis.releaseConcurrentWrite());
-  await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('Broadcast submitted'));
-  await peer.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('Broadcast submitted'));
-  assert.equal(broadcasts, 2); assert.equal(durable, 2);
-  const original = await page.evaluate(() => localStorage.getItem('nodus.activity.v1'));
-  assert.ok(!original.includes(addresses.ethereum)); assert.ok(!original.includes('rows'));
-  await page.locator('#lock').click();
+  await pastePhrase(peer, phrase); await peer.locator('#backup-confirm').check(); await peer.locator('#phrase-submit').click();
+  await peer.locator('#session-conflict').waitFor({ state: 'visible' });
+  await refused(peer);
+  await peer.locator('#unlock-password').fill(password); await peer.locator('#unlock-wallet').click(); await unlockSettled(peer);
+  await refused(peer);
+  assert.equal(await page.locator('#wallet-open').isVisible(), true);
+  assert.equal(broadcasts, 1);
+  await peer.locator('#session-takeover').click();
+  await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('Wallet was opened in another tab. This tab was locked.'));
+  assert.equal(await page.locator('#wallet-open').isVisible(), false); assert.equal(await page.locator('#welcome').isVisible(), true);
+  assert.equal(await page.locator('#send-form').isVisible(), false); assert.equal(await page.locator('#review-button').isVisible(), false);
+  assert.equal(await page.locator('#nodus-address').textContent(), '');
   assert.equal(await page.locator('#review-details').textContent(), '');
   assert.equal(await page.locator('#review-error').textContent(), '');
   assert.equal(await page.locator('#account-explorer').getAttribute('href'), null);
-  await peer.selectOption('#chain', 'bsc');
-  await peer.waitForFunction(previous => localStorage.getItem('nodus.activity.v1') !== previous, original);
-  // Close the peer before capturing: it keeps writing (each tracker change
-  // re-persists with a fresh IV) after the waitFunction above resolves on the
-  // first change, so reading localStorage while it is still open is a race.
-  // With the peer closed, the only remaining tab (page, locked) cannot write.
+  await peer.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('Enter your local password again'));
+  await unlock(peer);
+  await peer.waitForFunction(() => document.querySelector('#activity').textContent.includes('0.01'));
+  assert.equal(await peer.locator('#session-conflict').isVisible(), false);
+  await page.locator('#unlock-password').fill(password); await page.locator('#unlock-wallet').click(); await unlockSettled(page);
+  await refused(page);
+  assert.equal(await peer.locator('#wallet-open').isVisible(), true);
+  assert.equal(broadcasts, 1);
   await peer.close();
+  // Tab close and lock release are not ordered as seen from Playwright; wait
+  // for the release itself rather than for time.
+  await page.waitForFunction(async () => !(await navigator.locks.query()).held.some(lock => lock.name === 'nodus.wallet.session'));
+  await unlock(page);
+  assert.equal(await page.locator('#session-conflict').isVisible(), false);
+  await page.waitForFunction(() => document.querySelector('#activity').textContent.includes('0.01'));
+  await page.locator('#lock').click();
+  // A release reaches the browser's lock manager asynchronously: wait for it.
+  await page.waitForFunction(async () => !(await navigator.locks.query()).held.some(lock => lock.name === 'nodus.wallet.session'));
+  // Both tabs are now locked or closed; locked tabs never write, so storage is stable.
   const preserved = await page.evaluate(() => ({ vault: localStorage.getItem('nodus.wallet.v1'), activity: localStorage.getItem('nodus.activity.v1') }));
   const vaultId = JSON.parse(preserved.vault).id, activityKey = await activityKeyFor(phrase, vaultId);
-  const combinedRows = await parseActivity(preserved.activity, vaultId, addresses, activityKey);
-  assert.equal(combinedRows.length, 2); assert.deepEqual(combinedRows.map(row => row.amount).sort(), ['0.01', '0.02']);
+  const savedRows = await parseActivity(preserved.activity, vaultId, addresses, activityKey);
+  assert.deepEqual(savedRows.map(row => row.amount), ['0.01']);
   await restore(page);
   await page.locator('#vault-password').fill('different-public-test-password'); await page.locator('#vault-old-password').fill(password); await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-change').click();
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('unlock the saved wallet'));
   assert.equal(await page.evaluate(() => localStorage.getItem('nodus.wallet.v1')), preserved.vault);
   assert.equal(await page.evaluate(() => localStorage.getItem('nodus.activity.v1')), preserved.activity);
   await page.locator('#lock').click();
-  console.log('Concurrent signed records serialized across tabs and both durable before broadcast; stale-tab writes preserve both. Phrase-only password change blocked; hidden password and locked review metadata cleared.');
+  console.log('Single-tab rule: a second tab is refused and derives nothing; its takeover opens it there and locks the first tab, which cannot send or reopen until the second tab closes. Signed record durable before broadcast and saved encrypted. Phrase-only password change blocked; hidden password and locked review metadata cleared.');
   await page.evaluate(() => { const data = JSON.parse(localStorage.getItem('nodus.activity.v1')); data.ciphertext = (data.ciphertext[0] === 'A' ? 'B' : 'A') + data.ciphertext.slice(1); localStorage.setItem('nodus.activity.v1', JSON.stringify(data)); });
   const tampered = await page.evaluate(() => localStorage.getItem('nodus.activity.v1'));
   await unlock(page); assert.equal(await page.locator('#discard-activity').isVisible(), true); assert.equal(await page.locator('#activity').innerText(), '');
@@ -163,10 +187,10 @@ try {
     };
   });
   await page.locator('#confirm-send').click(); await page.waitForFunction(() => globalThis.historyWait);
-  assert.equal(broadcasts, 2);
+  assert.equal(broadcasts, 1);
   await page.evaluate(() => { window.dispatchEvent(new PageTransitionEvent('pagehide')); localStorage.clear(); globalThis.releaseHistory(); });
   await page.waitForFunction(() => !document.querySelector('#cancel-send').disabled);
-  assert.equal(broadcasts, 2); assert.equal(await page.evaluate(() => localStorage.length), 0); staleWriteCompleted = true;
+  assert.equal(broadcasts, 1); assert.equal(await page.evaluate(() => localStorage.length), 0); staleWriteCompleted = true;
   console.log('Lock while activity encryption is pending: no broadcast and no stale write after delete.');
   const clearingPeer = await fresh();
   await restore(page);
