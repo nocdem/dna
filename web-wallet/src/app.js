@@ -23,8 +23,9 @@ const CPUNK_ENABLED = import.meta.env.VITE_ENABLE_CPUNK !== 'false';
 let wallet, pending, generatedPhrase, phraseStep, revision = 0, busy = false, lockTimer, idleDeadline = 0, confirmEnableTimer;
 const DEFAULT_PHRASE_ENTRY_HELP = '24 words, in order. Paste your full phrase into any box to fill all 24. Start typing for local word suggestions; choose with the arrow keys and Enter, or tap a word.';
 let cellframeDerivation, cellframeReader, nodusDerivation;
-// Set only inside the VITE_ENABLE_IXIOS derivation block below; no-ops in a disabled build.
-let doShowIxiosAddress, stopIxiosAddress = () => {};
+// Set only inside the VITE_ENABLE_IXIOS blocks below; undefined/no-ops in a
+// disabled build (so no Ixios string literal is needed outside those blocks).
+let doShowIxiosAddress, stopIxiosAddress = () => {}, ixiosChain, ixiosReader;
 // Receive-panel derivation status line per receive-only network, shown only
 // while that network is selected. The Ixios entry is added by its flag block.
 const addressStatus = { cellframe: $('cellframe-address-status') };
@@ -88,18 +89,21 @@ const endpoints = Object.fromEntries(Object.entries(CHAINS).map(([key, chain]) =
 // has no adapter for them.
 const extraNetworks = [];
 if (CPUNK_ENABLED) { endpoints.cellframe = CELLFRAME.endpoint; extraNetworks.push({ network: CELLFRAME, asset: CPUNK_ASSET }); }
-// Ixios: receive-only and not active — its balance is never read, so its
-// endpoint serves only the network-settings UI (see src/ixios/network.js).
+// Ixios: receive-only, like Cellframe (see src/ixios/network.js).
 if (import.meta.env.VITE_ENABLE_IXIOS === 'true') {
-  endpoints[IXIOS_ASSET.chain] = IXIOS_NETWORK.endpoint; extraNetworks.push({ network: IXIOS_NETWORK, asset: IXIOS_ASSET });
+  ixiosChain = IXIOS_ASSET.chain;
+  endpoints[ixiosChain] = IXIOS_NETWORK.endpoint; extraNetworks.push({ network: IXIOS_NETWORK, asset: IXIOS_ASSET });
 }
 const receiveOnlyNetworks = Object.fromEntries(extraNetworks.map(({ network, asset }) => [asset.chain, network]));
 function networkFor(chain) { return CHAINS[chain] || receiveOnlyNetworks[chain]; }
 const portfolio = createPortfolio({
-  // cellframeReader is set by showCellframeAddress() before it ever reports an
-  // address to the portfolio, so it is always ready by the time this branch runs.
+  // cellframeReader / ixiosReader are set, in the same module-load callback as
+  // their address derivation, before either ever reports an address to the
+  // portfolio, so each is ready by the time its branch runs. In a disabled
+  // Ixios build ixiosChain is undefined and never matches.
   readBalances: (chain, address, endpoint, options) => chain === 'cellframe'
     ? cellframeReader(address, endpoint, options)
+    : chain === ixiosChain ? ixiosReader(address, endpoint, options)
     : adapters[chain].balances(chain, address, endpoint, options),
   selectAsset(chain, symbol, action) {
     if (!wallet) return;
@@ -118,10 +122,9 @@ if (CPUNK_ENABLED) {
   $('portfolio-scope').textContent = 'Supported assets on Ethereum, BNB Smart Chain, Solana, TRON and Cellframe. NODUS and CPUNK balances are shown, but only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total.';
 }
 if (import.meta.env.VITE_ENABLE_IXIOS === 'true') {
-  const ixiosScope = 'IXIOS is listed without a balance or price because the Ixios network is not active yet; it does not count toward the estimated total.';
   $('portfolio-scope').textContent = CPUNK_ENABLED
-    ? `Supported assets on Ethereum, BNB Smart Chain, Solana, TRON, Cellframe and Ixios. NODUS and CPUNK balances are shown, but only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total. ${ixiosScope}`
-    : `Supported assets on Ethereum, BNB Smart Chain, Solana, TRON and Ixios. NODUS and CPUNK are not included. ${ixiosScope}`;
+    ? 'Supported assets on Ethereum, BNB Smart Chain, Solana, TRON, Cellframe and Ixios. NODUS, CPUNK and IXIOS balances are shown, but only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total.'
+    : 'Supported assets on Ethereum, BNB Smart Chain, Solana, TRON and Ixios. The IXIOS balance is shown, but only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total. NODUS and CPUNK are not included.';
 }
 function expireIdle() {
   if (idleDeadline && Date.now() >= idleDeadline) { lock(); return true; }
@@ -267,13 +270,15 @@ $('copy-nodus-address').onclick = async () => {
 // showNodusAddress() and doShowCellframeAddress(): AbortController, current()
 // guard, aborted and cleared on lock, late results dropped; the address is
 // stored on the wallet (source.addresses.ixios) and reported to the portfolio
-// only once current() passes. The portfolio never reads its balance (notActive).
-// Everything Ixios-specific — both dynamic imports (derive.js fetches
-// nodus/mldsa87.wasm through `new URL(..., import.meta.url)`), the status
-// element and the UI text — stays inside this literal top-level `if`, for the
-// reason given above the VITE_ENABLE_CPUNK block: only then does a disabled
-// build carry no Ixios code or text in its JavaScript. lock() and the open
-// paths reach it only through stopIxiosAddress / doShowIxiosAddress.
+// only once current() passes; the portfolio then reads its balance through
+// ixiosReader, as it does Cellframe's through cellframeReader.
+// Everything Ixios-specific — the dynamic imports (derive.js fetches
+// nodus/mldsa87.wasm through `new URL(..., import.meta.url)`; balance.js reads
+// the balance), the status element and the UI text — stays inside this literal
+// top-level `if`, for the reason given above the VITE_ENABLE_CPUNK block: only
+// then does a disabled build carry no Ixios code or text in its JavaScript.
+// lock(), the open paths and readBalances reach it only through
+// stopIxiosAddress / doShowIxiosAddress / ixiosChain + ixiosReader.
 if (import.meta.env.VITE_ENABLE_IXIOS === 'true') {
   let ixiosDerivation;
   const chain = IXIOS_ASSET.chain;
@@ -284,7 +289,8 @@ if (import.meta.env.VITE_ENABLE_IXIOS === 'true') {
   status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
   $('cellframe-address-status').after(status); addressStatus[chain] = status;
   stopIxiosAddress = () => { ixiosDerivation?.abort(); ixiosDerivation = undefined; status.textContent = ''; };
-  Promise.all([import('./ixios/derive.js'), import('./ixios/address.js')]).then(([{ deriveIxiosAddress }, { ixiosChecksumAddress }]) => {
+  Promise.all([import('./ixios/derive.js'), import('./ixios/address.js'), import('./ixios/balance.js')]).then(([{ deriveIxiosAddress }, { ixiosChecksumAddress }, { readIxiosBalance }]) => {
+    ixiosReader = (address, endpoint, options) => readIxiosBalance(address, endpoint, { signal: options.signal });
     doShowIxiosAddress = async () => {
       ixiosDerivation?.abort();
       const operation = new AbortController(), source = wallet;

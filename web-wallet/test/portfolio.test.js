@@ -78,27 +78,36 @@ test('CPUNK is an unpriced, opt-in row: no priceId, no PRICE_URL entry, never co
   const grouped = groupAssets(snap.rows);
   assert.equal(grouped.at(-1).symbol, 'CPUNK'); assert.equal(grouped.find(g => g.symbol === 'CPUNK').usd, null);
 });
-test('IXIOS is an unpriced, never-read row: no priceId, no PRICE_URL entry, an unread row never becomes a zero, sorts last', () => {
+test('IXIOS is an unpriced, receive-only row like CPUNK: no priceId, no PRICE_URL entry, never counted in the USD total or completeness, sorts last', () => {
   assert.equal(IXIOS_ASSET.priceId, undefined);
   assert.equal(IXIOS_ASSET.chain, 'ixios'); assert.equal(IXIOS_ASSET.key, 'ixios:IXIOS'); assert.equal(IXIOS_ASSET.decimals, 18);
   assert.equal(IXIOS_NETWORK.symbol, IXIOS_ASSET.symbol); assert.equal(IXIOS_NETWORK.icon, 'ixios.png');
-  assert.equal(IXIOS_NETWORK.receiveOnly, true); assert.equal(IXIOS_NETWORK.notActive, true);
-  assert.equal(IXIOS_NETWORK.rpcOptions[0].url, IXIOS_NETWORK.endpoint); assert.deepEqual(IXIOS_NETWORK.tokens, []);
-  assert.match(IXIOS_NETWORK.sendNote, /^Do not send IXIOS to this address yet\./);
+  assert.equal(IXIOS_NETWORK.receiveOnly, true); assert.equal(Object.hasOwn(IXIOS_NETWORK, 'notActive'), false);
+  assert.equal(IXIOS_NETWORK.endpoint, 'https://ixios-rpc.innova.limited');
+  assert.deepEqual(IXIOS_NETWORK.rpcOptions, [{ url: IXIOS_NETWORK.endpoint, label: 'Ixios public RPC' }]); assert.deepEqual(IXIOS_NETWORK.tokens, []);
+  assert.equal(IXIOS_NETWORK.sendNote, 'Sending IXIOS is not available in this release. The Ixios network does not accept this address type yet.');
   assert.ok(!/ixios/i.test(PRICE_URL));
-  // The portfolio view never stores a balance for a not-active network, so its
-  // row stays idle: no balance, no USD value, and the priced portfolio is still complete.
   const withBoth = [...ASSETS, CPUNK_ASSET, IXIOS_ASSET];
-  const balances = { ...ready(), 'cellframe:CPUNK': { state: 'ready', units: 0n, observedAt: now } };
-  const snap = portfolioSnapshot(balances, parsePrices({ coins: coins() }, now), now, withBoth);
+  const result = chainBalances('ixios', [{ symbol: 'IXIOS', balance: '7.25' }], now, withBoth);
+  assert.equal(result['ixios:IXIOS'].units, balanceUnits('7.25', 18));
+  // Priced assets all known and zero; IXIOS known and non-zero. The portfolio is
+  // still complete, and IXIOS contributes nothing to the total.
+  const balances = { ...ready(), 'cellframe:CPUNK': { state: 'ready', units: 0n, observedAt: now }, ...result };
+  let snap = portfolioSnapshot(balances, parsePrices({ coins: coins() }, now), now, withBoth);
   assert.equal(snap.complete, true); assert.equal(snap.total, 0n); assert.equal(snap.state, 'complete');
-  const row = snap.rows.find(r => r.key === 'ixios:IXIOS');
-  assert.equal(row.state, 'idle'); assert.equal(row.balance, null); assert.equal(row.usd, null); assert.equal(row.positive, false);
+  let row = snap.rows.find(r => r.key === 'ixios:IXIOS');
+  assert.equal(row.balance, '7.25'); assert.equal(row.usd, null); assert.equal(row.priceMissing, false); assert.equal(usdText(row.usd), '—');
   const grouped = groupAssets(snap.rows);
   assert.deepEqual(grouped.slice(-2).map(g => g.symbol), ['CPUNK', 'IXIOS']);
   const ixios = grouped.find(g => g.symbol === 'IXIOS');
-  assert.equal(ixios.balance, null); assert.equal(ixios.usd, null); assert.equal(usdText(ixios.usd), '—');
+  assert.equal(ixios.balance, '7.25'); assert.equal(ixios.usd, null); assert.equal(usdText(ixios.usd), '—');
   assert.deepEqual(groupAssets(snap.rows, 'ixios').map(g => g.symbol), ['IXIOS']);
+  // An IXIOS read failure (for example a wrong-network RPC) does not block
+  // completeness of the priced portfolio, and does not become a zero balance.
+  balances['ixios:IXIOS'] = { state: 'error' };
+  snap = portfolioSnapshot(balances, parsePrices({ coins: coins() }, now), now, withBoth);
+  row = snap.rows.find(r => r.key === 'ixios:IXIOS');
+  assert.equal(snap.complete, true); assert.equal(row.state, 'error'); assert.equal(row.balance, null); assert.equal(row.usd, null);
 });
 test('price requests contain only pinned asset identifiers and honor cancellation', async () => {
   let called=false;

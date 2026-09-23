@@ -1,10 +1,10 @@
 import { portfolioRead, cellframeRead } from './portfolio-routes.js';
 import { pastePhrase } from './browser-phrase.js';
-// Ixios as a receive-only, not-active wallet network, both sides of
-// VITE_ENABLE_IXIOS. Public test phrase only; every external request is
-// intercepted. Unlike the other browser scripts this one builds its own two
-// bundles (flag on, flag off) into temporary directories and previews each with
-// --outDir, so dist/ is left untouched.
+// Ixios as a receive-only wallet network handled exactly like Cellframe, both
+// sides of VITE_ENABLE_IXIOS. Public test phrase only; every external request is
+// intercepted (the Ixios RPC included: mocked below). Unlike the other browser
+// scripts this one builds its own two bundles (flag on, flag off) into temporary
+// directories and previews each with --outDir, so dist/ is left untouched.
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -17,10 +17,19 @@ const app = fileURLToPath(new URL('..', import.meta.url));
 const vite = join(app, 'node_modules/vite/bin/vite.js');
 const { Phrase: phrase, Checksummed: expected } = JSON.parse(readFileSync(new URL('./fixtures/ixios-checksum.json', import.meta.url))).vectors[0];
 assert.equal(phrase, Array(23).fill('abandon').concat('art').join(' '));
-// Spec 2026-09-23-wallet-0.1.16-ixios-spec.md, Paket R2 item 3, verbatim.
-const IXIOS_NOTE = 'Do not send IXIOS to this address yet. The Ixios network has not switched on quantum-safe addresses; funds sent here before it does may be lost. Sending and receiving will be enabled in a later release.';
+// Web wallet 0.1.18, Package R3 item 3, verbatim (the Cellframe-style note).
+const IXIOS_NOTE = 'Sending IXIOS is not available in this release. The Ixios network does not accept this address type yet.';
+const IXIOS_RPC = 'https://ixios-rpc.innova.limited';
+// Ixios mainnet genesis block hash (ixiosSpark params/config.go:27) and, for
+// the wrong-network case, Ethereum mainnet's: both chains report chain id 1.
+const IXIOS_GENESIS = '0xa19acef59b3b84f192a69407981c50695fd105988d9311dd2e1c60332b629f2f';
+const ETHEREUM_GENESIS = '0xd4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3';
+// Mocked IXIOS holding: 1234.567 IXIOS (18 decimals).
+const IXIOS_BALANCE = '0x' + (1234567n * 10n ** 15n).toString(16);
 const dirs = [], servers = [];
-let browser;
+let browser, ixiosGenesis = IXIOS_GENESIS;
+// Every JSON-RPC call answered by the Ixios mock, in arrival order.
+const ixiosCalls = [];
 
 function build(enabled) {
   const outDir = mkdtempSync(join(tmpdir(), `nodus-wallet-ixios-${enabled ? 'on' : 'off'}-`)); dirs.push(outDir);
@@ -50,8 +59,22 @@ async function serve(outDir, port) {
   return url;
 }
 // Any request whose host names Ixios (the public RPC ixios-rpc.innova.limited,
-// or any other Ixios endpoint): the network is not active, so none may be made.
+// or any other Ixios endpoint). Flag on: only the mocked RPC; flag off: none.
 const ixiosHost = requestUrl => /ixios|innova\.limited/i.test(new URL(requestUrl).hostname);
+// The Ixios RPC mock: genesis block 0 (network identity) and eth_getBalance.
+async function ixiosRead(route) {
+  const req = route.request();
+  if (new URL(req.url()).origin !== new URL(IXIOS_RPC).origin) return false;
+  assert.equal(req.method(), 'POST');
+  const call = req.postDataJSON();
+  ixiosCalls.push({ method: call.method, params: call.params });
+  let result;
+  if (call.method === 'eth_getBlockByNumber') result = { number: '0x0', hash: ixiosGenesis };
+  else if (call.method === 'eth_getBalance') result = IXIOS_BALANCE;
+  else { await route.fulfill({ json: { jsonrpc: '2.0', id: call.id, error: { code: -32601, message: 'Fixture: method not mocked' } } }); return true; }
+  await route.fulfill({ json: { jsonrpc: '2.0', id: call.id, result } });
+  return true;
+}
 async function openWallet(url) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 960 } }); page.setDefaultTimeout(20000);
   const unexpected = [], errors = [], wasm = [], ixiosRequests = [];
@@ -59,6 +82,7 @@ async function openWallet(url) {
   page.on('request', req => { if (ixiosHost(req.url())) ixiosRequests.push(req.url()); });
   await page.route('**/*', async route => {
     const req = route.request();
+    if (await ixiosRead(route)) return;
     if (await cellframeRead(route)) return;
     if (await portfolioRead(route)) return;
     if (!req.url().startsWith(url + '/') || req.method() !== 'GET' || req.postData()) {
@@ -78,6 +102,11 @@ async function openWallet(url) {
 }
 async function portfolioDone(page) {
   await page.waitForFunction(() => !document.querySelector('#portfolio-refresh').disabled && document.querySelector('#portfolio-updated').textContent.startsWith('Last refresh:'));
+}
+// The Ixios address (and so its balance read) arrives after the automatic
+// refresh has settled, as Cellframe's does; wait for its row to leave "Reading…".
+async function ixiosSettled(page) {
+  await page.waitForFunction(() => { const strong = document.querySelector('.asset-group[data-symbol="IXIOS"] .holding-value strong'); return strong && strong.textContent !== 'Reading…'; });
 }
 
 try {
@@ -99,29 +128,39 @@ try {
   // Network selector: Ixios after the sendable chains and Cellframe.
   assert.deepEqual(await page.locator('#chain option').evaluateAll(options => options.map(o => o.value)), ['ethereum', 'bsc', 'solana', 'tron', 'cellframe', 'ixios']);
   assert.equal(await page.locator('#chain option[value="ixios"]').textContent(), 'Ixios');
-  assert.match(await page.locator('#portfolio-scope').innerText(), /Ixios/);
-  assert.match(await page.locator('#portfolio-scope').innerText(), /not active yet/);
-  // Portfolio: filter, health badge, and an IXIOS row that is never read.
+  // Scope text: IXIOS mentioned exactly as CPUNK is (balance shown, not in the total).
+  assert.equal(await page.locator('#portfolio-scope').innerText(), 'Supported assets on Ethereum, BNB Smart Chain, Solana, TRON, Cellframe and Ixios. NODUS, CPUNK and IXIOS balances are shown, but only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total.');
+  // Portfolio: filter, health badge, and an IXIOS row read like the CPUNK row.
   assert.equal(await page.locator('.network-filter[data-chain="ixios"]').innerText(), 'Ixios');
   const badge = page.locator('#portfolio-networks .network-health', { hasText: 'Ixios' });
-  assert.equal(await badge.innerText(), 'Ixios · Not active yet');
   assert.ok((await badge.locator('img.coin-icon').getAttribute('src')).endsWith('/assets/coins/ixios.png'));
-  await portfolioDone(page);
+  await portfolioDone(page); await ixiosSettled(page);
+  assert.equal(await badge.innerText(), 'Ixios · Balances read');
+  // Network identity (genesis block 0) is checked before the balance is read,
+  // and the balance is read for the derived, checksummed address.
+  assert.deepEqual(ixiosCalls, [
+    { method: 'eth_getBlockByNumber', params: ['0x0', false] },
+    { method: 'eth_getBalance', params: [expected, 'latest'] },
+  ]);
   const row = page.locator('.asset-group[data-symbol="IXIOS"]');
   assert.equal(await row.count(), 1);
   assert.ok((await row.locator('summary img.coin-icon').getAttribute('src')).endsWith('/assets/coins/ixios.png'));
   assert.equal(await row.locator('.asset-name small').innerText(), 'IXIOS · Ixios');
   assert.equal(await page.locator('.asset-group[data-symbol="ETH"] .asset-name small').innerText(), 'Ethereum · Ethereum', 'shared subtitle format unchanged for other coins');
-  assert.equal(await row.locator('.asset-value strong').innerText(), '—');
-  assert.equal(await row.locator('.asset-value small').innerText(), 'Not active yet');
+  // Shown like the CPUNK row: the balance, and no USD value.
+  const cpunk = page.locator('.asset-group[data-symbol="CPUNK"]');
+  assert.equal(await row.locator('.asset-value strong').innerText(), '1234.567');
+  assert.equal(await row.locator('.asset-value small').innerText(), '—');
+  assert.equal(await row.locator('.asset-value small').innerText(), await cpunk.locator('.asset-value small').innerText());
   await row.locator('summary').click();
-  assert.equal(await row.locator('.holding-value strong').innerText(), '—');
-  assert.equal(await row.locator('.holding-value small').innerText(), 'Not active yet');
+  assert.equal(await row.locator('.holding-value strong').innerText(), '1234.567 IXIOS');
+  assert.equal(await row.locator('.holding-value small').innerText(), '—');
   assert.deepEqual(await row.locator('.holding-actions button').allTextContents(), ['Receive']);
-  assert.doesNotMatch(await page.locator('#balances').innerText(), /\d\s*IXIOS/, 'never a numeric IXIOS balance');
-  // The USD total is the priced four networks only (price fixture $2, zero holdings).
+  // Outside the USD total: the priced four networks only (price fixture $2,
+  // zero holdings), although IXIOS holds a non-zero balance.
   assert.equal(await page.locator('#portfolio-total').innerText(), '$0.00');
   assert.match(await page.locator('#portfolio-status').innerText(), /All supported asset balances/);
+  assert.doesNotMatch(await page.locator('body').innerText(), /not active/i);
   await page.locator('.network-filter[data-chain="ixios"]').click();
   assert.deepEqual(await page.locator('.asset-group').evaluateAll(groups => groups.map(g => g.dataset.symbol)), ['IXIOS']);
   await page.locator('.network-filter[data-chain="all"]').click();
@@ -150,9 +189,24 @@ try {
   await page.selectOption('#chain', 'ixios');
   assert.equal(await page.locator('#receive-address').innerText(), expected);
   assert.equal(await page.locator('#send-disabled-note').innerText(), IXIOS_NOTE);
-  // Another full refresh still reads nothing from Ixios.
+  // Wrong network (an RPC whose genesis is Ethereum's, same chain id 1): the
+  // balance is never read and the row shows the error state every network shows
+  // for a failed read — no amount, no zero.
+  ixiosCalls.length = 0; ixiosGenesis = ETHEREUM_GENESIS;
   await page.locator('#portfolio-refresh').click(); await portfolioDone(page);
-  assert.equal(await row.locator('.asset-value small').innerText(), 'Not active yet');
+  assert.deepEqual(ixiosCalls, [{ method: 'eth_getBlockByNumber', params: ['0x0', false] }], 'no eth_getBalance after a wrong genesis');
+  assert.equal(await row.locator('.holding-value strong').innerText(), 'Balance unavailable');
+  assert.equal(await row.locator('.asset-value strong').innerText(), '—');
+  assert.equal(await badge.innerText(), 'Ixios · Incomplete');
+  assert.doesNotMatch(await page.locator('#balances').innerText(), /\d\s*IXIOS/, 'no IXIOS amount from a wrong network');
+  assert.equal(await page.locator('#portfolio-total').innerText(), '$0.00');
+  // The right network again: the balance comes back.
+  ixiosCalls.length = 0; ixiosGenesis = IXIOS_GENESIS;
+  await page.locator('#portfolio-refresh').click(); await portfolioDone(page);
+  assert.deepEqual(ixiosCalls.map(call => call.method), ['eth_getBlockByNumber', 'eth_getBalance']);
+  assert.equal(await row.locator('.holding-value strong').innerText(), '1234.567 IXIOS');
+  assert.equal(await badge.innerText(), 'Ixios · Balances read');
+  assert.doesNotMatch(await page.locator('body').innerText(), /not active/i);
   // The Cellframe derivation also fetches legacy-dilithium-*.wasm on open; what matters
   // here is that the keygen module was loaded and the signing module never was.
   assert.ok(on.wasm.some(path => /\/assets\/mldsa87-[^/?]+\.wasm$/.test(path)), 'Nodus keygen request (no query)');
@@ -163,7 +217,9 @@ try {
   assert.equal(await page.locator('#ixios-address-status').textContent(), '');
   assert.equal(await page.locator('#balances').textContent(), '');
   assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
-  assert.deepEqual(on.ixiosRequests, [], 'no request to any Ixios host');
+  // Every Ixios-host request went to the configured public RPC (and was mocked).
+  assert.ok(on.ixiosRequests.length > 0);
+  assert.ok(on.ixiosRequests.every(requestUrl => new URL(requestUrl).origin === new URL(IXIOS_RPC).origin), on.ixiosRequests.join());
   assert.deepEqual(on.unexpected, []); assert.deepEqual(on.errors, []);
 
   const off = await openWallet(await serve(disabledDir, 4194));
@@ -182,7 +238,7 @@ try {
   assert.equal(await off.page.evaluate(() => localStorage.length + sessionStorage.length), 0);
   assert.deepEqual(off.ixiosRequests, []);
   assert.deepEqual(off.unexpected, []); assert.deepEqual(off.errors, []);
-  console.log('Ixios browser checks passed: flag-on build lists Ixios in the network selector, portfolio filters, badges and assets (IXIOS row: Receive only, "Not active yet", never a balance, outside the USD total); selecting it shows the checksummed receive address, hides the send fields and shows the Ixios note while Cellframe keeps its own; no request to any Ixios host; lock clears it; loads only the keygen module (?ixios). Flag-off build shows no Ixios anywhere and ships no Ixios JavaScript; neither build ships mldsa87-sign.wasm or Ixios markup; no unmocked external requests or storage.');
+  console.log('Ixios browser checks passed: flag-on build lists Ixios in the network selector, portfolio filters, badges and assets (IXIOS row: Receive only, balance read like CPUNK after a genesis-block identity check, outside the USD total; a wrong genesis gives the shared "Balance unavailable" state with no balance read); selecting it shows the checksummed receive address, hides the send fields and shows the Ixios note while Cellframe keeps its own; Ixios requests go only to the configured RPC; lock clears it; loads only the keygen module (?ixios). Flag-off build shows no Ixios anywhere and ships no Ixios JavaScript; neither build ships mldsa87-sign.wasm or Ixios markup; no unmocked external requests or storage.');
 } finally {
   await browser?.close();
   for (const server of servers) server.kill();

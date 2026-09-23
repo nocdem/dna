@@ -7,7 +7,24 @@ import { chromium } from 'playwright';
 import { ASSETS, PRICE_URL } from '../src/portfolio.js';
 import { priceFixture, portfolioRead, cellframeRead } from './portfolio-routes.js';
 import { pastePhrase } from './browser-phrase.js';
-const url = process.env.WALLET_URL || 'http://127.0.0.1:4192';
+import { IXIOS_NETWORK } from '../src/ixios/network.js';
+// A VITE_ENABLE_IXIOS=true dist also reads the IXIOS balance (like CPUNK); its
+// own behaviour is covered by test/browser-ixios.js. Ixios mainnet genesis
+// (ixiosSpark params/config.go:27); 1 IXIOS held.
+const IXIOS_GENESIS = '0xa19acef59b3b84f192a69407981c50695fd105988d9311dd2e1c60332b629f2f';
+async function ixiosRead(route) {
+  const req = route.request();
+  if (new URL(req.url()).origin !== new URL(IXIOS_NETWORK.endpoint).origin) return false;
+  assert.equal(req.method(), 'POST');
+  const call = req.postDataJSON();
+  let result;
+  if (call.method === 'eth_getBlockByNumber') { assert.deepEqual(call.params, ['0x0', false]); result = { number: '0x0', hash: IXIOS_GENESIS }; }
+  else if (call.method === 'eth_getBalance') { assert.match(call.params[0], /^0x[0-9a-fA-F]{96}$/); assert.equal(call.params[1], 'latest'); result = '0x' + (10n ** 18n).toString(16); }
+  else return false;
+  await route.fulfill({ json: { jsonrpc: '2.0', id: call.id, result } });
+  return true;
+}
+const url =process.env.WALLET_URL || 'http://127.0.0.1:4192';
 const server = process.env.WALLET_URL ? null : spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'preview', '--host', '127.0.0.1', '--port', '4192', '--strictPort'], { stdio: 'pipe' });
 const phrase = Array(23).fill('abandon').concat('art').join(' ');
 const holdings = Object.fromEntries(ASSETS.map(a => [a.key, String(10n ** BigInt(a.decimals))]));
@@ -35,6 +52,7 @@ try {
     }
     if (await cellframeRead(route, { balance: '10', fail: cellframeFail })) { reads.add(new URL(req.url()).origin); return; }
     if (await portfolioRead(route, { holdings, failures, wrongNetwork })) { reads.add(new URL(req.url()).origin); return; }
+    if (await ixiosRead(route)) { reads.add(new URL(req.url()).origin); return; }
     unexpected.push({ url: req.url(), method: req.method() }); return route.abort();
   });
   await page.goto(url);
@@ -49,9 +67,13 @@ try {
   // the other four networks' automatic refresh has already settled; wait for
   // its row to leave the "Reading…" placeholder before asserting on it.
   async function cpunkSettled() { await page.waitForFunction(() => { const strong = document.querySelector('.asset-group[data-symbol="CPUNK"] .holding-value strong'); return strong && strong.textContent !== 'Reading…'; }); }
+  // Same for the IXIOS row, when the dist was built with VITE_ENABLE_IXIOS=true.
+  async function ixiosSettled() { await page.waitForFunction(() => { const strong = document.querySelector('.asset-group[data-symbol="IXIOS"] .holding-value strong'); return strong && strong.textContent !== 'Reading…'; }); }
   const cpunk = page.locator('.asset-group[data-symbol="CPUNK"]');
   await restore(); await done(); await cpunkSettled();
-  assert.equal(reads.size, 5); assert.equal(await page.locator('#portfolio-total').innerText(), '$28.00');
+  const ixiosShown = await page.locator('#chain option[value="ixios"]').count() === 1;
+  if (ixiosShown) await ixiosSettled();
+  assert.equal(reads.size, ixiosShown ? 6 : 5); assert.equal(await page.locator('#portfolio-total').innerText(), '$28.00');
   assert.match(await page.locator('#portfolio-status').innerText(), /All supported asset balances/);
   // Coin icons: CPUNK's own file in the asset summary, the Cellframe network's
   // own logo (not the CPUNK asset icon) on its network badge, ETH unaffected,
@@ -73,14 +95,21 @@ try {
   assert.deepEqual(await cpunk.locator('.holding-actions button').allTextContents(), ['Receive']);
   await cpunk.locator('summary').click();
   const usdt = page.locator('.asset-group[data-symbol="USDT"]');
-  // A VITE_ENABLE_IXIOS=true dist adds one never-read IXIOS group (last); its
-  // own behaviour is covered by test/browser-ixios.js. The default build has none.
-  const ixiosShown = await page.locator('#chain option[value="ixios"]').count() === 1;
+  // A VITE_ENABLE_IXIOS=true dist adds one IXIOS group (last), shown like CPUNK:
+  // a read balance, no USD value. The default build has none.
   assert.equal(await page.locator('.asset-group').count(), ixiosShown ? 10 : 9);
   if (ixiosShown) {
+    const ixios = page.locator('.asset-group[data-symbol="IXIOS"]');
     assert.equal(await page.locator('.asset-group').last().getAttribute('data-symbol'), 'IXIOS');
-    assert.equal(await page.locator('.asset-group[data-symbol="IXIOS"] .asset-value small').innerText(), 'Not active yet');
+    assert.equal(await ixios.locator('.asset-value strong').innerText(), '1.0');
+    assert.equal(await ixios.locator('.asset-value small').innerText(), '—');
+    await ixios.locator('summary').click();
+    assert.equal(await ixios.locator('.holding-value strong').innerText(), '1.0 IXIOS');
+    assert.equal(await ixios.locator('.holding-value small').innerText(), '—');
+    assert.deepEqual(await ixios.locator('.holding-actions button').allTextContents(), ['Receive']);
+    await ixios.locator('summary').click();
   }
+  assert.doesNotMatch(await page.locator('#portfolio-networks').innerText(), /Not active yet/);
   assert.equal(await usdt.locator('.asset-value strong').innerText(), '4.0');
   await usdt.locator('summary').click(); assert.equal(await usdt.locator('.chain-holding').count(), 4);
   assert.equal(await usdt.locator('.holding-value strong').allTextContents().then(a => a.every(v => v === '1.0 USDT')), true);

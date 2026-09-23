@@ -531,3 +531,22 @@ where the other coins are). With `VITE_ENABLE_IXIOS=true` (the published build):
   (Cellframe, then Ixios) instead of the single `cellframe` option.
 - `npm run test:ixios` checks the placement, the zero Ixios requests, the lock
   behaviour and the flag-off build (no Ixios option, row, badge, markup or JS).
+
+## Ixios handled exactly like Cellframe (0.1.18)
+
+Operator, 2026-09-23: no special treatment for Ixios. The 0.1.17 `notActive`
+behaviour is removed:
+
+- The IXIOS balance is read like CPUNK's, from the selected Ixios RPC
+  (`src/ixios/balance.js`): network identity first — block 0 hash must equal
+  Ixios mainnet genesis `0xa19acef5…2f2f` (ixiosSpark `params/config.go:27`;
+  never `eth_chainId`, which is 1 on both Ixios and Ethereum) — then
+  `eth_getBalance`. A wrong network or a failed read shows the shared
+  "Balance unavailable" state. IXIOS stays unpriced and outside the USD total.
+- The send note matches Cellframe's style: "Sending IXIOS is not available in
+  this release. The Ixios network does not accept this address type yet."
+- Note: on 2026-09-23 the Ixios mainnet (validators on ixiosSpark 1.0.3, RPC
+  1.0.5) has no Q-address support, so the balance shown is 0.
+- Tests mock the Ixios RPC (`test/portfolio-routes.js` `ixiosRead`,
+  `test/ixios-balance.test.js`); `browser-nodus.js` now routes Ixios reads to
+  that mock instead of counting them as unexpected requests.

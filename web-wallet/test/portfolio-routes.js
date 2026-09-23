@@ -2,6 +2,8 @@
 import assert from 'node:assert/strict';
 import { ASSETS, PRICE_URL } from '../src/portfolio.js';
 import { CHAINS, CELLFRAME } from '../src/config.js';
+import { IXIOS_NETWORK } from '../src/ixios/network.js';
+import { IXIOS_GENESIS_HASH } from '../src/ixios/balance.js';
 export function priceFixture(price = 2, timestamp = Math.floor(Date.now() / 1000)) {
   return { coins: Object.fromEntries(ASSETS.map(a => [a.priceId, { symbol: a.symbol, decimals: a.decimals, price, timestamp, confidence: .99 }])) };
 }
@@ -21,6 +23,21 @@ export async function cellframeRead(route, { balance = '10', fail = false } = {}
   assert.match(body.arguments.addr, /^[1-9A-HJ-NP-Za-km-z]{100,110}$/);
   if (fail) { await route.abort(); return true; }
   await route.fulfill({ json: { result: [[{ addr: body.arguments.addr, balance }]] } });
+  return true;
+}
+// Ixios (flag-on builds only): network identity by genesis block 0, then
+// eth_getBalance for a 48-byte Q-address. Shape-checked like cellframeRead;
+// `balance` is raw units (18 decimals).
+export async function ixiosRead(route, { balance = 10n ** 18n } = {}) {
+  const req = route.request();
+  if (new URL(req.url()).origin !== new URL(IXIOS_NETWORK.endpoint).origin) return false;
+  assert.equal(req.method(), 'POST');
+  const call = req.postDataJSON();
+  let result;
+  if (call.method === 'eth_getBlockByNumber') { assert.deepEqual(call.params, ['0x0', false]); result = { number: '0x0', hash: IXIOS_GENESIS_HASH }; }
+  else if (call.method === 'eth_getBalance') { assert.match(call.params[0], /^0x[0-9a-fA-F]{96}$/); assert.equal(call.params[1], 'latest'); result = '0x' + balance.toString(16); }
+  else assert.fail(`unexpected Ixios RPC method ${call.method}`);
+  await route.fulfill({ json: { jsonrpc: '2.0', id: call.id, result } });
   return true;
 }
 export async function portfolioRead(route, { ethereum = true, holdings = {}, failures = [], wrongNetwork } = {}) {

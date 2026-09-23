@@ -1,4 +1,4 @@
-import { portfolioRead, cellframeRead } from './portfolio-routes.js';
+import { portfolioRead, cellframeRead, ixiosRead } from './portfolio-routes.js';
 import { pastePhrase, readPhrase } from './browser-phrase.js';
 // Production assets, public test phrases, and no external network requests.
 import assert from 'node:assert/strict';
@@ -64,6 +64,8 @@ try {
     // fulfilling it, so a malformed or secret-carrying request here fails this
     // test rather than being silently accepted.
     if (await cellframeRead(route)) { cellframeRequests.push(req.url()); return; }
+    // Flag-on builds also read the Ixios balance (shape-checked mock, never forwarded).
+    if (await ixiosRead(route)) return;
     if (await portfolioRead(route)) return;
     if (!req.url().startsWith(url + '/') || req.method() !== 'GET' || req.postData()) {
       unexpected.push({ url: req.url(), method: req.method() }); return route.abort();

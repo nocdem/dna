@@ -25,20 +25,17 @@ function networkIcon(c) { return c.icon ? iconImg(c.icon) : icon(c.symbol); }
 
 // This controller receives only public addresses, never a wallet or signing key.
 // `extraNetworks` is an ordered list of `{ network: { name, symbol, receiveOnly,
-// notActive?, ... }, asset }` entries (Cellframe/CPUNK_ASSET, and Ixios when its
+// ... }, asset }` entries (Cellframe/CPUNK_ASSET, and Ixios/IXIOS_ASSET when its
 // build flag is on): unpriced, receive-only networks merged after the permanent
-// CHAINS/ASSETS registry. Their addresses are derived later than the others
-// (asynchronous local derivation, not part of deriveWallet()), so their balance
-// reads are not started at open() alongside the rest; a read starts once
-// setAddress() reports the derived address, or the row is marked errored if
-// derivation fails. A `notActive` network's balance is never read at all — no
-// request, no stored balance state — and its rows and badge say "Not active yet".
+// CHAINS/ASSETS registry, all handled the same way. Their addresses are derived
+// later than the others (asynchronous local derivation, not part of
+// deriveWallet()), so their balance reads are not started at open() alongside
+// the rest; a read starts once setAddress() reports the derived address, or the
+// row is marked errored if derivation fails.
 export function createPortfolio({ readBalances, selectAsset, extraNetworks = [] }) {
   const networks = { ...CHAINS, ...Object.fromEntries(extraNetworks.map(({ network, asset }) => [asset.chain, network])) };
   const assets = [...ASSETS, ...extraNetworks.map(({ asset }) => asset)];
   const chains = Object.keys(networks);
-  const inactive = chain => !!networks[chain].notActive;
-  const NOT_ACTIVE = 'Not active yet';
   let addresses, endpoints, balances = {}, quotes = {}, filter = 'all', hidden = false, session = 0, timer, priceJob;
   const jobs = new Map();
   const text = value => hidden ? '••••' : value;
@@ -56,7 +53,7 @@ export function createPortfolio({ readBalances, selectAsset, extraNetworks = [] 
     $('portfolio-hide').setAttribute('aria-pressed', String(hidden));
     $('portfolio-networks').replaceChildren(...Object.entries(networks).map(([chain, c]) => {
       const rows = snap.rows.filter(r => r.chain === chain), ready = rows.every(r => r.balance !== null);
-      const status = inactive(chain) ? NOT_ACTIVE : rows.some(r => r.state === 'loading') ? 'Reading' : ready ? 'Balances read' : rows.every(r => r.state === 'idle') ? 'Not read' : 'Incomplete';
+      const status = rows.some(r => r.state === 'loading') ? 'Reading' : ready ? 'Balances read' : rows.every(r => r.state === 'idle') ? 'Not read' : 'Incomplete';
       const badge = el('span', 'network-health'); badge.append(networkIcon(c), el('span', '', `${c.name} · ${status}`)); return badge;
     }));
     for (const button of $('portfolio-filters').querySelectorAll('button')) button.setAttribute('aria-pressed', String(button.dataset.chain === filter));
@@ -66,21 +63,18 @@ export function createPortfolio({ readBalances, selectAsset, extraNetworks = [] 
     $('balances').replaceChildren(...groupAssets(snap.rows, filter).map(group => {
       const detail = el('details', 'asset-group'); detail.dataset.symbol = group.symbol; detail.open = opened.has(group.symbol);
       const summary = el('summary', 'asset-summary'), name = el('span', 'asset-name');
-      const home = networks[group.rows[0].chain], groupInactive = group.rows.every(row => inactive(row.chain));
+      const home = networks[group.rows[0].chain];
       name.append(el('strong', '', group.symbol), el('small', '', `${names[group.symbol] ?? group.symbol} · ${group.rows.length === 1 ? home.name : `${group.rows.length} networks`}`));
       const value = el('span', 'asset-value');
       value.append(el('strong', '', text(group.balance === null ? '—' : `${group.balance}${group.partialBalance ? ' known' : ''}`)),
-        el('small', '', text(groupInactive ? NOT_ACTIVE : `${usdText(group.usd, group.positive)}${group.partialValue && group.usd !== null ? ' known' : ''}`)));
+        el('small', '', text(`${usdText(group.usd, group.positive)}${group.partialValue && group.usd !== null ? ' known' : ''}`)));
       summary.append(icon(group.symbol, home), name, value, el('span', 'asset-chevron', '⌄')); detail.append(summary);
       for (const row of group.rows) {
         const entry = el('div', 'chain-holding'), identity = el('span', 'holding-network');
         identity.append(networkIcon(networks[row.chain]), el('span', '', networks[row.chain].name));
         const value = el('span', 'holding-value');
         const state = row.state === 'loading' ? 'Reading…' : row.state === 'stale' ? 'Balance out of date' : row.state === 'idle' ? 'Not read' : 'Balance unavailable';
-        // A not-active network never has a balance: show no amount rather than
-        // a state that suggests a read could produce one (or a false zero).
-        if (inactive(row.chain)) value.append(el('strong', '', text('—')), el('small', '', text(NOT_ACTIVE)));
-        else value.append(el('strong', '', text(row.balance === null ? state : `${row.balance} ${row.symbol}`)),
+        value.append(el('strong', '', text(row.balance === null ? state : `${row.balance} ${row.symbol}`)),
           el('small', '', text(row.priceMissing ? 'Price unavailable' : usdText(row.usd, row.positive))));
         const actions = el('span', 'holding-actions');
         for (const action of networks[row.chain].receiveOnly ? ['Receive'] : ['Send', 'Receive']) {
@@ -101,9 +95,7 @@ export function createPortfolio({ readBalances, selectAsset, extraNetworks = [] 
     }
   }
   async function readChainBalances(chain, current) {
-    // Never read a not-active network: no request, and no balance state stored.
-    if (inactive(chain)) return;
-    // No address yet (Cellframe derivation still pending): stay "Reading…"
+    // No address yet (Cellframe/Ixios derivation still pending): stay "Reading…"
     // rather than issuing a request or reporting a false error.
     if (!addresses[chain]) { for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'loading' }; render(); return; }
     const controller = new AbortController(); jobs.set(chain, controller);
@@ -120,7 +112,7 @@ export function createPortfolio({ readBalances, selectAsset, extraNetworks = [] 
     if (!addresses || jobs.size || priceJob) return;
     const current = session;
     quotes = {};
-    for (const asset of assets) if (!inactive(asset.chain)) balances[asset.key] = { state: 'loading' };
+    for (const asset of assets) balances[asset.key] = { state: 'loading' };
     const controller = new AbortController(); priceJob = controller;
     $('portfolio-updated').textContent = 'Reading balances and market prices…'; render();
     const priceRead = readPrices({ signal: controller.signal }).then(value => { if (session === current) quotes = value; }).catch(() => {});
@@ -151,11 +143,10 @@ export function createPortfolio({ readBalances, selectAsset, extraNetworks = [] 
   // address), once local derivation settles. A session guard is unnecessary here
   // beyond the `addresses` check: open()/clear() always run before a stale
   // wallet's caller could reach this, and readChainBalances re-checks `session`
-  // itself. A not-active network only records the address: it is never read.
+  // itself.
   function setAddress(chain, address) {
     if (!addresses) return;
     addresses[chain] = address;
-    if (inactive(chain)) return;
     if (!address) { for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'error' }; render(); return; }
     void readChainBalances(chain, session);
   }
