@@ -538,10 +538,14 @@ Operator, 2026-09-23: no special treatment for Ixios. The 0.1.17 `notActive`
 behaviour is removed:
 
 - The IXIOS balance is read like CPUNK's, from the selected Ixios RPC
-  (`src/ixios/balance.js`): network identity first — block 0 hash must equal
-  Ixios mainnet genesis `0xa19acef5…2f2f` (ixiosSpark `params/config.go:27`;
-  never `eth_chainId`, which is 1 on both Ixios and Ethereum) — then
-  `eth_getBalance`. A wrong network or a failed read shows the shared
+  (`src/ixios/balance.js`): network identity first — block 1's `parentHash`
+  must equal Ixios mainnet genesis `0xa19acef5…2f2f` (ixiosSpark
+  `params/config.go:27`; never `eth_chainId`, which is 1 on both Ixios and
+  Ethereum) — then `eth_getBalance`. **0.1.19 fix:** 0.1.18 read block 0, whose
+  ~215 KB `extraData` string exceeds the transport's 65 536-character cap, so
+  every live read failed ("Balance unavailable"); block 1 is ~1.6 KB. Verified
+  2026-09-23 against the live Ixios RPC (balance read) and an Ethereum RPC
+  (rejected as the wrong network). A wrong network or a failed read shows the shared
   "Balance unavailable" state. IXIOS stays unpriced and outside the USD total.
 - The send note matches Cellframe's style: "Sending IXIOS is not available in
   this release. The Ixios network does not accept this address type yet."

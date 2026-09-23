@@ -18,7 +18,7 @@ async function ixiosRead(route) {
   assert.equal(req.method(), 'POST');
   const call = req.postDataJSON();
   let result;
-  if (call.method === 'eth_getBlockByNumber') { assert.deepEqual(call.params, ['0x0', false]); result = { number: '0x0', hash: IXIOS_GENESIS }; }
+  if (call.method === 'eth_getBlockByNumber') { assert.deepEqual(call.params, ['0x1', false]); result = { number: '0x1', parentHash: IXIOS_GENESIS }; }
   else if (call.method === 'eth_getBalance') { assert.match(call.params[0], /^0x[0-9a-fA-F]{96}$/); assert.equal(call.params[1], 'latest'); result = '0x' + (10n ** 18n).toString(16); }
   else return false;
   await route.fulfill({ json: { jsonrpc: '2.0', id: call.id, result } });

@@ -34,7 +34,7 @@ export async function ixiosRead(route, { balance = 10n ** 18n } = {}) {
   assert.equal(req.method(), 'POST');
   const call = req.postDataJSON();
   let result;
-  if (call.method === 'eth_getBlockByNumber') { assert.deepEqual(call.params, ['0x0', false]); result = { number: '0x0', hash: IXIOS_GENESIS_HASH }; }
+  if (call.method === 'eth_getBlockByNumber') { assert.deepEqual(call.params, ['0x1', false]); result = { number: '0x1', parentHash: IXIOS_GENESIS_HASH }; }
   else if (call.method === 'eth_getBalance') { assert.match(call.params[0], /^0x[0-9a-fA-F]{96}$/); assert.equal(call.params[1], 'latest'); result = '0x' + balance.toString(16); }
   else assert.fail(`unexpected Ixios RPC method ${call.method}`);
   await route.fulfill({ json: { jsonrpc: '2.0', id: call.id, result } });

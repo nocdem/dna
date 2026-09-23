@@ -69,7 +69,7 @@ async function ixiosRead(route) {
   const call = req.postDataJSON();
   ixiosCalls.push({ method: call.method, params: call.params });
   let result;
-  if (call.method === 'eth_getBlockByNumber') result = { number: '0x0', hash: ixiosGenesis };
+  if (call.method === 'eth_getBlockByNumber') result = { number: '0x1', parentHash: ixiosGenesis };
   else if (call.method === 'eth_getBalance') result = IXIOS_BALANCE;
   else { await route.fulfill({ json: { jsonrpc: '2.0', id: call.id, error: { code: -32601, message: 'Fixture: method not mocked' } } }); return true; }
   await route.fulfill({ json: { jsonrpc: '2.0', id: call.id, result } });
@@ -136,10 +136,10 @@ try {
   assert.ok((await badge.locator('img.coin-icon').getAttribute('src')).endsWith('/assets/coins/ixios.png'));
   await portfolioDone(page); await ixiosSettled(page);
   assert.equal(await badge.innerText(), 'Ixios · Balances read');
-  // Network identity (genesis block 0) is checked before the balance is read,
-  // and the balance is read for the derived, checksummed address.
+  // Network identity (block 1's parentHash = genesis hash) is checked before the
+  // balance is read, and the balance is read for the derived, checksummed address.
   assert.deepEqual(ixiosCalls, [
-    { method: 'eth_getBlockByNumber', params: ['0x0', false] },
+    { method: 'eth_getBlockByNumber', params: ['0x1', false] },
     { method: 'eth_getBalance', params: [expected, 'latest'] },
   ]);
   const row = page.locator('.asset-group[data-symbol="IXIOS"]');
@@ -194,7 +194,7 @@ try {
   // for a failed read — no amount, no zero.
   ixiosCalls.length = 0; ixiosGenesis = ETHEREUM_GENESIS;
   await page.locator('#portfolio-refresh').click(); await portfolioDone(page);
-  assert.deepEqual(ixiosCalls, [{ method: 'eth_getBlockByNumber', params: ['0x0', false] }], 'no eth_getBalance after a wrong genesis');
+  assert.deepEqual(ixiosCalls, [{ method: 'eth_getBlockByNumber', params: ['0x1', false] }], 'no eth_getBalance after a wrong genesis');
   assert.equal(await row.locator('.holding-value strong').innerText(), 'Balance unavailable');
   assert.equal(await row.locator('.asset-value strong').innerText(), '—');
   assert.equal(await badge.innerText(), 'Ixios · Incomplete');
