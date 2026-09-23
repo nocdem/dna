@@ -3363,6 +3363,175 @@ static int t_claim_items(void)
     return 0;
 }
 
+/* TV3-P0 item 2 regression — ported from the ORCHESTRATOR's impact-review
+ * scratch scenario (scratchpad/claimfault/scratch_case.inc, 2026-09-22/23).
+ * Denies the ONE sqlite write `nodus_witness_v2_claim_spend_insert` makes
+ * (the shape of a local SQLITE_IOERR/FULL) — a NODE-LOCAL fault inside one
+ * claim item on the cometbft lane. */
+static int authz_deny_v2_claims_spent_insert(void *ud, int action,
+                                             const char *a1, const char *a2,
+                                             const char *a3, const char *a4)
+{
+    (void)ud; (void)a2; (void)a3; (void)a4;
+    if (action == SQLITE_INSERT && a1 && strcmp(a1, "v2_claims_spent") == 0) {
+        return SQLITE_DENY;
+    }
+    return SQLITE_OK;
+}
+
+/**
+ * A NODE-LOCAL STORAGE FAULT INSIDE ONE CLAIM ITEM IS A BLOCK FAULT, NOT
+ * AN ITEM CODE.
+ *
+ * Before TV3-P0, `nodus_witness_v2_claim_spend_insert`'s INSERT failing
+ * for a NODE-LOCAL reason was indistinguishable from a deterministic
+ * claim refusal: the helper returned a bare -1 for both,
+ * `claim_execute_one` propagated -1, and the cometbft-lane claim loop
+ * folded ANY nonzero into item code CLAIM (8) with a savepoint rollback
+ * — the block still COMMITTED, with a LastResultsHash that depended on
+ * a fault only THIS node hit (a node-local condition becoming consensus
+ * data). The helper now returns -2 for exactly this class, the loop
+ * takes `goto fail_fault` instead of the item-refusal path, and
+ * `nodus_cmt_app_finalize_block`'s existing `rc != 0 -> CMT_FAULT`
+ * mapping (nodus_witness_cmt_app.c:1341-1369, read-only for this
+ * package) turns it into CMT_FAULT — this node stops rather than
+ * voting on state a peer without the fault would not share.
+ *
+ * The genesis carries exactly one allocation, bound to `g_ks[0]`'s
+ * public key (cfg_make_v3_real) — the same single-leaf claim shape
+ * `t_claim_items` builds; the config derivation is deterministic, so two
+ * independent `gfx_open` fixtures agree on the same chain and the same
+ * claim bytes apply cleanly to both.
+ */
+static int t_claim_local_fault_is_block_fault(void)
+{
+    gfx_t          gm, gc;
+    exec_t         xm, xc;
+    dna_claim_t   *claim;
+    uint8_t        mh[64], leaf_hash[64];
+    uint8_t        cbytes[DNA_CLAIM_MAX_WIRE];
+    size_t         clen = 0;
+    cmt_block_id_t bid_m, bid_c;
+    int            rc;
+
+    CHECK(gfx_open(&gm, "claimfaultm") == 0, "faulted fixture");
+    CHECK(gfx_open(&gc, "claimfaultc") == 0, "clean fixture");
+    CHECK(memcmp(gm.chain32, gc.chain32, 32) == 0,
+          "the config derivation is deterministic — same chain both sides");
+    CHECK(exec_init(&xm, &gm) == 0, "faulted blockexec");
+    CHECK(exec_init(&xc, &gc) == 0, "clean blockexec");
+
+    claim = calloc(1, sizeof(*claim));    /* ~5 KB: never on the stack */
+    CHECK(claim, "alloc");
+    {
+        dna_gman_t      m;
+        dna_dist_leaf_t leaf;
+
+        CHECK(nodus_witness_v2_manifest_load(gm.w, 0, &m) == 0,
+              "the genesis manifest is committed at seq 0");
+        CHECK(dna_gman_hash(&m, mh) == 0, "its hash");
+        CHECK(m.dist_present == 1, "it carries a distribution section");
+
+        memset(&leaf, 0, sizeof(leaf));
+        leaf.leaf_version  = DNA_DIST_VERSION;
+        leaf.source_id_len = (uint16_t)NODUS_V2_GEN_SRCID_LEN;
+        memcpy(leaf.source_id, gm.box.allocs[0].source_id,
+               NODUS_V2_GEN_SRCID_LEN);
+        leaf.source_amount = gm.box.allocs[0].amount;
+        memcpy(leaf.dest_binding, gm.box.allocs[0].dest_binding, 64);
+        CHECK(dna_dist_leaf_hash(&leaf, leaf_hash) == 0, "leaf hash");
+
+        claim->claim_version = DNA_CLAIM_VERSION;
+        memcpy(claim->chain_id, gm.chain32, DNA_CHAIN_ID_LEN);
+        memcpy(claim->manifest_hash, mh, 64);
+        claim->leaf_index    = 0;
+        claim->source_id_len = leaf.source_id_len;
+        memcpy(claim->source_id, leaf.source_id, leaf.source_id_len);
+        claim->source_amount = leaf.source_amount;
+        memcpy(claim->dest_binding, leaf.dest_binding, 64);
+        claim->n_siblings = 0;             /* a one-leaf tree */
+        claim->auth_mode  = DNA_CLAIMAUTH_DNA_NATIVE;
+        memcpy(claim->pubkey, g_ks[0].pk, QGP_DSA87_PUBLICKEYBYTES);
+    }
+    {
+        uint8_t pre[DNA_CLAIM_PREIMAGE_MAX];
+        size_t  pre_len = 0, siglen = 0;
+
+        CHECK(dna_claim_preimage(claim, pre, &pre_len) == 0, "preimage");
+        CHECK(qgp_dsa87_sign(claim->signature, &siglen, pre, pre_len,
+                             g_ks[0].sk) == 0 &&
+              siglen == DNA_CLAIM_SIG_LEN, "the claimant signs it");
+    }
+    CHECK(dna_claim_encode(claim, cbytes, sizeof(cbytes), &clen) == 0,
+          "the claim encodes");
+
+    /* ── the FAULTED node: this transaction's v2_claims_spent INSERT is
+     * denied by the authorizer — the shape of a local SQLITE_IOERR/FULL
+     * at prepare time. ─────────────────────────────────────────────── */
+    xm.txs[0].data = cbytes; xm.txs[0].len = clen;
+    CHECK(exec_make_block(&xm, 1, 1) == 0, "faulted node: block 1 = [claim]");
+    CHECK(exec_block_id(&xm, xm.blk, &bid_m) == 0 &&
+          block_id_is_complete(&bid_m), "a COMPLETE BlockID");
+
+    CHECK(sqlite3_set_authorizer(gm.w->db,
+                                 authz_deny_v2_claims_spent_insert,
+                                 NULL) == SQLITE_OK, "authorizer installed");
+    rc = nodus_cmt_host_apply_verified_block(xm.be, &bid_m, xm.blk, xm.state);
+    sqlite3_set_authorizer(gm.w->db, NULL, NULL);
+    CHECK(rc == CMT_FAULT,
+          "a node-local spent-claim-insert fault stops the node "
+          "(CMT_FAULT), never a CMT_OK block with item code CLAIM");
+    CHECK(q1(gm.w->db, "SELECT COUNT(*) FROM v2_blocks") == 0,
+          "the whole transaction rolled back — nothing committed at "
+          "height 1 on the faulted node");
+    CHECK(q1(gm.w->db, "SELECT COUNT(*) FROM v2_claims_spent") == 0,
+          "no spent row either");
+    /* THE POST-CONDITION THAT ACTUALLY OBSERVES THE ROLLBACK (ORCHESTRATOR
+     * delta, verifier N9): the v2_blocks row is written AFTER the claim
+     * loop and the denied INSERT is the spent row itself, so neither of
+     * the two checks above observes any undo at all. What does:
+     * `nodus_rt_core_claim_apply` inserts the claim's OUTPUT into utxo_set
+     * BEFORE `_claim_spend_insert` runs (nodus_witness_v2_claims.c,
+     * EXECUTE stage a precedes stage b), so that row genuinely existed
+     * mid-transaction and its absence here is the undo made visible. A
+     * version-3 genesis holds no spendable UTXO
+     * (nodus_witness_v2_gen.c post-condition), so the expected count is
+     * exactly 0.
+     *
+     * HONEST LABEL (second verifier, D5): this does NOT tell the host's
+     * whole-transaction ROLLBACK apart from the item-savepoint unwind the
+     * fault exit also performs — ROLLBACK TO SAVEPOINT would remove the
+     * same row — so it proves "the output is undone on a FAULT", not
+     * which of the two mechanisms undid it. The savepoint unwind at the
+     * fault exits is a convention alignment with the envelope lane, not
+     * an observable here. */
+    CHECK(q1(gm.w->db, "SELECT COUNT(*) FROM utxo_set") == 0,
+          "the claim OUTPUT written before the denied insert is undone "
+          "on the faulted node");
+
+    /* ── the CLEAN twin applies the SAME bytes with code 0 ──────────── */
+    xc.txs[0].data = cbytes; xc.txs[0].len = clen;
+    CHECK(exec_make_block(&xc, 1, 1) == 0, "clean node: block 1 = [claim]");
+    CHECK(exec_block_id(&xc, xc.blk, &bid_c) == 0 &&
+          block_id_is_complete(&bid_c), "a COMPLETE BlockID");
+    CHECK(memcmp(bid_c.hash, bid_m.hash, CMT_TMHASH_SIZE) == 0,
+          "block 1 is the SAME block on both nodes");
+    CHECK(nodus_cmt_host_apply_verified_block(xc.be, &bid_c, xc.blk, xc.state)
+              == CMT_OK, "the clean twin applies block 1");
+    CHECK(xc.ledger->fb_pb[0].det.code == (uint32_t)NODUS_V2_TX_OK,
+          "the clean twin's claim applied with code 0");
+    CHECK(q1(gc.w->db, "SELECT COUNT(*) FROM v2_claims_spent") == 1,
+          "the clean twin's spent row exists");
+    CHECK(q1(gc.w->db, "SELECT COUNT(*) FROM utxo_set") == 1,
+          "and its claim OUTPUT exists — the control for the faulted "
+          "node's zero above");
+
+    free(claim);
+    exec_free(&xc); gfx_close(&gc);
+    exec_free(&xm); gfx_close(&gm);
+    return 0;
+}
+
 /**
  * A PER-ITEM REFUSAL THAT CARRIES WORK AWAY.
  *
@@ -3602,6 +3771,7 @@ int main(void)
         { "finalize_block_empty",       t_finalize_block_empty },
         { "commit",                     t_commit },
         { "claim_items",                t_claim_items },
+        { "claim_local_fault_is_block_fault", t_claim_local_fault_is_block_fault },
         { "check_tx",                   t_check_tx },
         { "chain_id_row_branch",        t_chain_id_row_branch_unchanged },
         { "prepare_proposal",           t_prepare_proposal },

@@ -327,12 +327,31 @@ static int produce_batch_check_impl(
                 goto done;
             }
             nodus_v2_claim_admit_t adm;
-            int ok = (dna_claim_decode(items[oi].tx_data,
-                                       items[oi].tx_len, c) == 0) &&
-                     (nodus_witness_v2_claim_admit(w, c, candidate,
-                                                   &adm) == 0);
+            int drc = dna_claim_decode(items[oi].tx_data, items[oi].tx_len,
+                                       c);
+            /* TV3-P0 item 2 — claim_admit now answers 0 / -1 VERDICT / -2
+             * FAULT; only call it once decode succeeded, so a decode
+             * failure (a VERDICT about this entry's own bytes) is never
+             * mistaken for the admission helper's answer. */
+            int arc = (drc == 0)
+                          ? nodus_witness_v2_claim_admit(w, c, candidate,
+                                                         &adm)
+                          : -1;
             free(c);
-            if (!ok) {
+            if (drc == 0 && arc == -2) {
+                /* NODE-LOCAL: "cannot decide", mirroring the envelope
+                 * subset's own NODUS_V2_BATCH_FAIL_FAULT handling just
+                 * above — never ENTRY_INVALID, which would accuse a
+                 * producer of proposing something this node alone could
+                 * not evaluate. */
+                if (result_out)
+                    result_out->kind = NODUS_V2_BATCH_FAIL_FAULT;
+                QGP_LOG_ERROR(LOG_TAG, "batch pre-check FAULTED on claim "
+                              "entry %d (admission) — no verdict", oi);
+                rc_out = -2;
+                goto done;
+            }
+            if (drc != 0 || arc != 0) {
                 if (fail_index_out) *fail_index_out = oi;
                 if (result_out)
                     result_out->kind = NODUS_V2_BATCH_FAIL_ENTRY_INVALID;

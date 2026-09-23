@@ -1481,6 +1481,154 @@ static int test_dist_lifecycle(void) {
     return 0;
 }
 
+/* ── 5b: FAULT vs VERDICT classification (TV3-P0 item 2) ─────────────
+ *
+ * The four claim-pipeline helpers (nodus_witness_v2_claim_admit,
+ * _claim_output_create, _claim_spend_insert, _claim_state_update) used to
+ * conflate a node-local storage fault with a deterministic claim
+ * rejection under one bare -1. They now return a genuine tri-state
+ * (0 admitted/applied, -1 VERDICT, -2 FAULT):
+ *   - a claim naming a manifest this chain never committed is STILL
+ *     exactly -1 — every honest node reading the same committed state
+ *     reaches the same answer;
+ *   - a LOCAL sqlite denial on the read/write each helper owns is now
+ *     -2 — this node alone cannot answer, and must not vote a value
+ *     another node without the fault would disagree with.
+ * `expect_reject` (used by the surrounding adversarial matrix) already
+ * accepts either code as "a fail-closed no-op"; this test pins the EXACT
+ * code each branch takes, which `expect_reject` deliberately does not. */
+
+/* Denies ONE (action, table) pair — parameterized so one callback covers
+ * every helper's own read or write without touching any OTHER
+ * statement in the same claim's pipeline (a coarser denial would fault
+ * an earlier stage than the one under test). */
+typedef struct { int action; const char *table; } authz_deny_spec_t;
+
+static int authz_deny_cb(void *ud, int action, const char *a1,
+                         const char *a2, const char *a3, const char *a4) {
+    const authz_deny_spec_t *spec = (const authz_deny_spec_t *)ud;
+    (void)a2; (void)a3; (void)a4;
+    if (spec && action == spec->action && a1 &&
+        strcmp(a1, spec->table) == 0) {
+        return SQLITE_DENY;
+    }
+    return SQLITE_OK;
+}
+
+static int apply_with_denial(nodus_witness_t *w, nodus_v2_block_t *b,
+                             int action, const char *table) {
+    authz_deny_spec_t spec = { action, table };
+    int rc;
+
+    if (sqlite3_set_authorizer(w->db, authz_deny_cb, &spec) != SQLITE_OK)
+        return -100;   /* setup failure, not a code under test */
+    rc = nodus_witness_v2_apply_block(w, b);
+    sqlite3_set_authorizer(w->db, NULL, NULL);
+    return rc;
+}
+
+static int test_claim_fault_classification(void) {
+    fixture_t fx;
+    uint8_t chain[32], gid[64], mh[64];
+    nodus_v2_block_t b;
+    dna_claim_t c0;
+    uint8_t d0[64], d1[64];
+    int rc;
+
+    CHECK(fx_open(&fx) == 0, "fixture");
+    /* wide window [0,100]: every attempt below applies at height 1, no
+     * "early"/"late" interference with the branch under test */
+    CHECK(dist_genesis(&fx, 32, 0, 100, "faultcheck", chain, gid, mh) == 0,
+          "dist genesis");
+    CHECK(make_claim(&c0, 0, chain, mh) == 0, "claim0");
+    OK();
+
+    /* ── VERDICT (-1): a claim naming a manifest this chain never
+     * committed — claim_admit/claim_prescan_one step 3, mrc > 0
+     * (nodus_witness_v2_manifest_load_by_hash answers "absent", not a
+     * fault). EXACT rc pinned, not just "a reject". */
+    {
+        dna_claim_t bad;
+        uint8_t pre[DNA_CLAIM_PREIMAGE_MAX];
+        size_t pre_len = 0, siglen = 0;
+
+        memcpy(&bad, &c0, sizeof(bad));
+        bad.manifest_hash[0] ^= 0xFF;
+        CHECK(dna_claim_preimage(&bad, pre, &pre_len) == 0, "preimage");
+        CHECK(qgp_dsa87_sign(bad.signature, &siglen, pre, pre_len,
+                             g_sk[0]) == 0, "resign after tamper");
+        mk_claim_block(&b, 1, gid, &bad, 1);
+        CHECK(db_state_digest(fx.w, d0) == 0, "digest before");
+        rc = nodus_witness_v2_apply_block(fx.w, &b);
+        CHECK(rc == -1, "unknown manifest is a VERDICT, exactly -1");
+        CHECK(db_state_digest(fx.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
+              "no-op");
+        OK();
+    }
+
+    /* ── FAULT (-2), one branch per helper ──────────────────────────── */
+
+    /* claim_prescan_one / claim_admit step 3: v2_manifests SELECT
+     * denied — "manifest read fault", the dispatch's own NODE-LOCAL
+     * class. */
+    mk_claim_block(&b, 1, gid, &c0, 1);
+    CHECK(db_state_digest(fx.w, d0) == 0, "digest before");
+    rc = apply_with_denial(fx.w, &b, SQLITE_READ, "v2_manifests");
+    CHECK(rc == -2, "a manifest read fault is -2, not -1");
+    CHECK(db_state_digest(fx.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
+          "no-op");
+    OK();
+
+    /* claim_admit step 9: v2_claims_spent SELECT denied
+     * (nodus_witness_v2_claim_nullifier_spent's own prepare fault). */
+    mk_claim_block(&b, 1, gid, &c0, 1);
+    CHECK(db_state_digest(fx.w, d0) == 0, "digest before");
+    rc = apply_with_denial(fx.w, &b, SQLITE_READ, "v2_claims_spent");
+    CHECK(rc == -2, "a spent-set read fault is -2, not -1");
+    CHECK(db_state_digest(fx.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
+          "no-op");
+    OK();
+
+    /* nodus_witness_v2_claim_output_create -> nodus_rt_core_claim_apply:
+     * utxo_set INSERT denied. */
+    mk_claim_block(&b, 1, gid, &c0, 1);
+    CHECK(db_state_digest(fx.w, d0) == 0, "digest before");
+    rc = apply_with_denial(fx.w, &b, SQLITE_INSERT, "utxo_set");
+    CHECK(rc == -2, "the output-create write fault is -2, not -1");
+    CHECK(db_state_digest(fx.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
+          "no-op");
+    OK();
+
+    /* nodus_witness_v2_claim_spend_insert: v2_claims_spent INSERT
+     * denied. */
+    mk_claim_block(&b, 1, gid, &c0, 1);
+    CHECK(db_state_digest(fx.w, d0) == 0, "digest before");
+    rc = apply_with_denial(fx.w, &b, SQLITE_INSERT, "v2_claims_spent");
+    CHECK(rc == -2, "the spend-insert write fault is -2, not -1");
+    CHECK(db_state_digest(fx.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
+          "no-op");
+    OK();
+
+    /* nodus_witness_v2_claim_state_update: v2_dist_state UPDATE
+     * denied (its own re-SELECT stays open — a different action code). */
+    mk_claim_block(&b, 1, gid, &c0, 1);
+    CHECK(db_state_digest(fx.w, d0) == 0, "digest before");
+    rc = apply_with_denial(fx.w, &b, SQLITE_UPDATE, "v2_dist_state");
+    CHECK(rc == -2, "the state-update write fault is -2, not -1");
+    CHECK(db_state_digest(fx.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
+          "no-op");
+    OK();
+
+    /* control: with nothing denied, the SAME claim still applies */
+    mk_claim_block(&b, 1, gid, &c0, 1);
+    CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+          "clean control still applies");
+    OK();
+
+    fx_close(&fx);
+    return 0;
+}
+
 /* ── 6: insertion-order independence (twin fixtures) ────────────────── */
 
 static int test_order_independence(void) {
@@ -2428,6 +2576,7 @@ int main(void) {
     if (test_migration()) return 1;
     if (test_absent_fixture()) return 1;
     if (test_dist_lifecycle()) return 1;
+    if (test_claim_fault_classification()) return 1;
     if (test_order_independence()) return 1;
     if (test_never_mint()) return 1;
     if (test_genesis_rejects()) return 1;

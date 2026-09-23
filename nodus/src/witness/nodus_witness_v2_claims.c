@@ -538,26 +538,38 @@ int nodus_witness_v2_claim_admit(nodus_witness_t *w,
                                  const dna_claim_t *c,
                                  uint64_t global_height,
                                  nodus_v2_claim_admit_t *out) {
-    if (!w || !w->db || !c || !out) return -1;
+    /* Cannot even attempt a determination: -2, never -1 (a caller-
+     * contract violation is not a fact about the claim). */
+    if (!w || !w->db || !c || !out) return -2;
     memset(out, 0, sizeof(*out));
 
-    /* 1. structural validation */
+    /* 1. structural validation — pure function of the claim's own
+     * bytes; every honest node reaches the SAME answer. VERDICT. */
     if (dna_claim_validate(c) != 0) return -1;
 
-    /* 2. chain binding */
+    /* 2. chain binding: reading THIS node's own chain id is a local DB
+     * read (NODE-LOCAL, "chain id unreadable"); once known, comparing it
+     * to the claim's is a deterministic VERDICT. */
     uint8_t chain_id[DNA_CHAIN_ID_LEN];
-    if (nodus_witness_v2_chain_id(w, chain_id) != 0) return -1;
+    if (nodus_witness_v2_chain_id(w, chain_id) != 0) return -2;
     if (memcmp(chain_id, c->chain_id, DNA_CHAIN_ID_LEN) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "claim chain_id mismatch — cross-chain "
                       "replay rejected");
         return -1;
     }
 
-    /* 3. committed manifest BY HASH (the committed identity) */
+    /* 3. committed manifest BY HASH (the committed identity).
+     * nodus_witness_v2_manifest_load_by_hash's OWN contract already
+     * splits this: 0 found, 1 absent (deterministic — the claim names a
+     * manifest this chain never committed, every honest node agrees),
+     * -1 fault (a local prepare/step error, or a stored row that no
+     * longer re-hashes to its own claimed identity — local corruption,
+     * never a network-wide fact). */
     dna_gman_t m;
     int mrc = nodus_witness_v2_manifest_load_by_hash(w, c->manifest_hash,
                                                      &m);
-    if (mrc != 0) return -1;            /* absent AND fault both reject  */
+    if (mrc < 0) return -2;             /* NODE-LOCAL: read/corruption   */
+    if (mrc > 0) return -1;             /* VERDICT: not committed here   */
     if (m.dist_present != 1) return -1; /* no distribution to claim from */
     if (c->auth_mode != m.auth_mode) return -1;
 
@@ -577,7 +589,10 @@ int nodus_witness_v2_claim_admit(nodus_witness_t *w,
     leaf.source_amount = c->source_amount;
     memcpy(leaf.dest_binding, c->dest_binding, 64);
     uint8_t leaf_hash[64];
-    if (dna_dist_leaf_hash(&leaf, leaf_hash) != 0) return -1;
+    /* SHA3 backend: a total function of already-validated bytes — a
+     * nonzero return here is an environment/allocation fault, never a
+     * data-dependent answer. NODE-LOCAL. */
+    if (dna_dist_leaf_hash(&leaf, leaf_hash) != 0) return -2;
     if (dna_dist_proof_verify(m.snapshot_root, leaf_hash, c->leaf_index,
                               m.leaf_count, c->siblings,
                               c->n_siblings) != 0) {
@@ -596,8 +611,10 @@ int nodus_witness_v2_claim_admit(nodus_witness_t *w,
      *    already rejected by validate + the manifest match above) */
     {
         uint8_t pk_hash[64];
+        /* SHA3 backend — NODE-LOCAL, same reasoning as the leaf hash
+         * above. */
         if (qgp_sha3_512(c->pubkey, DNA_CLAIM_PUBKEY_LEN, pk_hash) != 0)
-            return -1;
+            return -2;
         if (memcmp(pk_hash, c->dest_binding, 64) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "claim key does not bind to the "
                           "leaf destination — substitution rejected");
@@ -605,7 +622,12 @@ int nodus_witness_v2_claim_admit(nodus_witness_t *w,
         }
         uint8_t pre[DNA_CLAIM_PREIMAGE_MAX];
         size_t pre_len = 0;
-        if (dna_claim_preimage(c, pre, &pre_len) != 0) return -1;
+        /* dna_claim_preimage fails only on NULL arguments or on a claim
+         * dna_claim_validate refuses (shared/dnac/manifest_wire.c) — and
+         * step 1 already passed validate on this very claim. Reaching
+         * this branch is a broken invariant, never a fact about the
+         * claim: -2 under the header contract (TV3-P0, verifier N6). */
+        if (dna_claim_preimage(c, pre, &pre_len) != 0) return -2;
         if (qgp_dsa87_verify(c->signature, DNA_CLAIM_SIG_LEN,
                              pre, pre_len, c->pubkey) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "claim signature invalid");
@@ -615,47 +637,72 @@ int nodus_witness_v2_claim_admit(nodus_witness_t *w,
 
     /* 8. TARGET runtime: registered, ACTIVE, locally compiled, claim
      *    hooks present, committed asset accepted. The generic engine
-     *    NEVER picks a domain — the committed manifest names it. */
+     *    NEVER picks a domain — the committed manifest names it.
+     *    nodus_witness_v2_runtime_for conflates THREE things under one
+     *    -1 — an unknown/inactive registry entry (deterministic registry
+     *    state) OR a local registry read fault OR this build's compiled
+     *    runtime table lacking the exact tuple (deterministic ACROSS a
+     *    consistent fleet, but indistinguishable here from the read
+     *    fault it shares a return code with). Per the DB-failure-is-
+     *    never-a-value rule, a conflated code that MAY be a local fault
+     *    is never asserted as a VERDICT: NODE-LOCAL, -2. */
     const nodus_domain_runtime_t *rt = NULL;
     if (nodus_witness_v2_runtime_for(w, m.target_domain_id, 1, &rt) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "claim target domain %u has no resolvable "
-                      "ACTIVE runtime — rejected", m.target_domain_id);
-        return -1;
+                      "ACTIVE runtime (runtime table resolution fault, "
+                      "possibly conflated with a local read — honest "
+                      "label) — refusing to vote", m.target_domain_id);
+        return -2;
     }
-    if (!rt->asset_check || !rt->claim_apply) return -1;
+    /* Both of the following are properties of THIS BUILD's compiled
+     * runtime table for a target that manifest_commit already verified
+     * to be hook-backed and asset-accepting at commit time — the same
+     * class as the resolution miss above, so the same code: NODE-LOCAL
+     * / broken invariant, -2, never a claim verdict (TV3-P0, verifier
+     * N6; header contract in nodus_witness_v2_claims.h). */
+    if (!rt->asset_check || !rt->claim_apply) return -2;
     if (rt->asset_check(rt, m.target_asset_ref, m.target_asset_len) != 0)
-        return -1;
+        return -2;
 
-    /* 9. nullifier from the COMMITTED context — already spent rejects */
+    /* 9. nullifier from the COMMITTED context — already spent rejects.
+     * Derivation is a SHA3 backend call: NODE-LOCAL on failure. */
     uint8_t nul[64];
     if (dna_claim_nullifier(c->chain_id, c->manifest_hash,
                             m.target_domain_id, m.target_asset_ref,
                             m.target_asset_len, leaf_hash, nul) != 0)
-        return -1;
-    /* O15K V-3 — the lookup moved into the shared tri-state helper above
-     * so this caller and the reaper cannot drift. THIS caller maps the
-     * FAULT to SPENT: the question here is "may I ADMIT this?", and a
-     * node that cannot read the spent set must never admit what may be a
-     * double-spend. The reaper maps the same -1 the OTHER way — see the
-     * table on the helper. The verdict for every input is unchanged: a
-     * prepare failure, a row, and a mid-step fault all rejected before
-     * this refactor too. */
-    if (nodus_witness_v2_claim_nullifier_spent(w, nul) != 0)
-        return -1;              /* 1 = already claimed, -1 = fail closed  */
+        return -2;
+    /* O15K V-3's tri-state (1 spent / 0 not spent / -1 FAULT) is now
+     * mapped to the finer tri-state THIS function returns: spent is a
+     * VERDICT every honest node with the same committed set reaches
+     * (-1); a read fault is NODE-LOCAL (-2) — TV3-P0 item 2 replaces the
+     * old "FAULT maps to SPENT" collapse the comment used to describe,
+     * which hid a local read fault inside an ordinary claim refusal. */
+    {
+        int nsp = nodus_witness_v2_claim_nullifier_spent(w, nul);
+        if (nsp < 0) return -2;   /* NODE-LOCAL: spent-set read fault    */
+        if (nsp > 0) return -1;   /* VERDICT: already claimed            */
+    }
 
-    /* 10. the distribution must cover it — a claim can never mint */
+    /* 10. the distribution must cover it — a claim can never mint.
+     * The row's ABSENCE here is itself an invariant break (step 3 above
+     * already required `m.dist_present == 1`, and manifest_commit seeds
+     * this table whenever that holds), so — like a genuine sqlite
+     * prepare/step fault or a negative stored value — it is NODE-LOCAL,
+     * never a verdict about this claim. Only the remaining-cover
+     * COMPARISON itself, once the row is known good, is the
+     * deterministic VERDICT. */
     {
         sqlite3_stmt *st = NULL;
         if (sqlite3_prepare_v2(w->db,
                 "SELECT remaining FROM v2_dist_state "
                 "WHERE manifest_hash = ?1", -1, &st, NULL) != SQLITE_OK)
-            return -1;
+            return -2;
         sqlite3_bind_blob(st, 1, c->manifest_hash, 64, SQLITE_TRANSIENT);
         int rc = sqlite3_step(st);
         sqlite3_int64 rem = (rc == SQLITE_ROW)
                                 ? sqlite3_column_int64(st, 0) : -1;
         sqlite3_finalize(st);
-        if (rc != SQLITE_ROW || rem < 0) return -1;
+        if (rc != SQLITE_ROW || rem < 0) return -2;
         if ((uint64_t)rem < converted) {
             QGP_LOG_ERROR(LOG_TAG, "claim exceeds remaining distribution "
                           "value — rejected (never mints)");
@@ -678,9 +725,13 @@ int nodus_witness_v2_claim_output_create(nodus_witness_t *w,
                                          const nodus_v2_claim_admit_t *a,
                                          uint64_t global_height,
                                          uint8_t out_output_id[64]) {
+    /* EXECUTE stage: ADMIT already settled the verdict for this claim,
+     * so every failure here — a broken precondition ADMIT was supposed
+     * to guarantee, or the runtime hook's own storage/backend fault — is
+     * NODE-LOCAL. -2, never -1 (header contract, TV3-P0 item 2). */
     if (!w || !w->db || !c || !a || !a->rt || !a->rt->claim_apply ||
         !out_output_id || a->converted == 0)
-        return -1;
+        return -2;
     nodus_rt_claim_t rc_ctx;
     memset(&rc_ctx, 0, sizeof(rc_ctx));
     rc_ctx.nullifier = a->nullifier;
@@ -689,7 +740,8 @@ int nodus_witness_v2_claim_output_create(nodus_witness_t *w,
     rc_ctx.asset_ref = a->target_asset_ref;
     rc_ctx.asset_ref_len = a->target_asset_len;
     rc_ctx.global_height = global_height;
-    return a->rt->claim_apply(a->rt, w, &rc_ctx, out_output_id);
+    return a->rt->claim_apply(a->rt, w, &rc_ctx, out_output_id) == 0
+               ? 0 : -2;
 }
 
 int nodus_witness_v2_claim_spend_insert(nodus_witness_t *w,
@@ -697,8 +749,9 @@ int nodus_witness_v2_claim_spend_insert(nodus_witness_t *w,
                                         const nodus_v2_claim_admit_t *a,
                                         const uint8_t output_id[64],
                                         uint64_t global_height) {
+    /* EXECUTE stage — see the header contract: -2, never -1. */
     if (!w || !w->db || !c || !a || !output_id || a->converted == 0)
-        return -1;
+        return -2;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(w->db,
             "INSERT INTO v2_claims_spent (nullifier, manifest_hash, "
@@ -706,7 +759,7 @@ int nodus_witness_v2_claim_spend_insert(nodus_witness_t *w,
             "claimed_height, output_id) "
             "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)", -1, &st, NULL)
         != SQLITE_OK)
-        return -1;
+        return -2;
     sqlite3_bind_blob(st, 1, a->nullifier, 64, SQLITE_TRANSIENT);
     sqlite3_bind_blob(st, 2, a->manifest_hash, 64, SQLITE_TRANSIENT);
     sqlite3_bind_int64(st, 3, (sqlite3_int64)a->target_domain_id);
@@ -718,37 +771,46 @@ int nodus_witness_v2_claim_spend_insert(nodus_witness_t *w,
     sqlite3_bind_blob(st, 8, output_id, 64, SQLITE_TRANSIENT);
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);
-    return rc == SQLITE_DONE ? 0 : -1;  /* dup nullifier = PK constraint */
+    /* A PK collision here means the in-block duplicate-nullifier check
+     * upstream was bypassed — a broken invariant, not a fact about this
+     * claim (the comment used to read "dup nullifier = PK constraint"
+     * as if that were an ordinary rejection path). */
+    return rc == SQLITE_DONE ? 0 : -2;
 }
 
 int nodus_witness_v2_claim_state_update(nodus_witness_t *w,
                                         const uint8_t manifest_hash[64],
                                         uint64_t converted) {
-    if (!w || !w->db || !manifest_hash || converted == 0) return -1;
+    /* EXECUTE stage — see the header contract: -2, never -1. */
+    if (!w || !w->db || !manifest_hash || converted == 0) return -2;
 
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(w->db,
             "SELECT remaining FROM v2_dist_state WHERE manifest_hash = ?1",
             -1, &st, NULL) != SQLITE_OK)
-        return -1;
+        return -2;
     sqlite3_bind_blob(st, 1, manifest_hash, 64, SQLITE_TRANSIENT);
     int rc = sqlite3_step(st);
     sqlite3_int64 rem = (rc == SQLITE_ROW) ? sqlite3_column_int64(st, 0)
                                            : -1;
     sqlite3_finalize(st);
-    if (rc != SQLITE_ROW || rem < 0) return -1;
-    if ((uint64_t)rem < converted) return -1;   /* checked underflow     */
+    if (rc != SQLITE_ROW || rem < 0) return -2;
+    /* ADMIT's own step 10 already verified `rem >= converted` moments
+     * earlier in this SAME sequential apply (no other claim's write can
+     * have run in between) — reaching underflow here is a broken
+     * invariant, not a new fact. */
+    if ((uint64_t)rem < converted) return -2;
 
     if (sqlite3_prepare_v2(w->db,
             "UPDATE v2_dist_state SET remaining = ?1 "
             "WHERE manifest_hash = ?2", -1, &st, NULL) != SQLITE_OK)
-        return -1;
+        return -2;
     sqlite3_bind_int64(st, 1, (sqlite3_int64)((uint64_t)rem - converted));
     sqlite3_bind_blob(st, 2, manifest_hash, 64, SQLITE_TRANSIENT);
     rc = sqlite3_step(st);
     int changed = sqlite3_changes(w->db);
     sqlite3_finalize(st);
-    return (rc == SQLITE_DONE && changed == 1) ? 0 : -1;
+    return (rc == SQLITE_DONE && changed == 1) ? 0 : -2;
 }
 
 /* ═════════════════════════════════════════════════════════════════════

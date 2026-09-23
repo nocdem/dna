@@ -170,33 +170,74 @@ typedef struct {
 
 /**
  * ADMIT one claim (read-only; pipeline steps 1-10 above).
+ *
+ * ⚠ TRI-STATE, TV3-P0 item 2 — a bare -1 is FORBIDDEN here. Before this
+ * package every failure branch (chain id unreadable, a manifest/spent-set
+ * read that could not even be prepared, this build's compiled runtime
+ * table lacking the target tuple, a broken admit-stage invariant — ALL
+ * node-local — mixed with a genuinely deterministic verdict about the
+ * claim's own bytes under one -1) collapsed into a single code; the
+ * cometbft-lane claim loop then folded that -1 into an ordinary item
+ * refusal (code CLAIM, savepoint rollback, block still commits), so a
+ * fault only THIS node hit became consensus data (`nodus/CLAUDE.md`,
+ * "A DB failure is never a value"). The three classes now are:
+ *   0  admissible, *out filled;
+ *  -1  VERDICT — every honest node reading the SAME committed state
+ *      reaches the SAME answer (malformed shape, chain mismatch, no
+ *      committed manifest, dist section absent/auth_mode mismatch,
+ *      height window, leaf index/Merkle proof, destination binding,
+ *      signature, already spent, insufficient remaining cover);
+ *  -2  FAULT — this node could not even evaluate the claim (chain id /
+ *      manifest / spent-set / remaining-cover read faulted, this
+ *      build's compiled runtime table has no resolvable ACTIVE tuple
+ *      for the manifest's target, a SHA3 backend call failed, or a
+ *      broken invariant) — the caller must NOT vote on this claim,
+ *      never convert it into a rejection.
  * @param global_height the height the claim would commit at.
- * @return 0 admissible with *out filled / -1 (fail-closed).
+ * @return 0 admissible with *out filled / -1 VERDICT / -2 FAULT.
  */
 int nodus_witness_v2_claim_admit(nodus_witness_t *w,
                                  const dna_claim_t *c,
                                  uint64_t global_height,
                                  nodus_v2_claim_admit_t *out);
 
-/** EXECUTE stage a: route the admitted claim through the resolved
- *  TARGET runtime's claim_apply hook — the runtime creates its
- *  domain-local output and returns its output identity. INSIDE the
- *  caller's txn. */
+/**
+ * EXECUTE stage a: route the admitted claim through the resolved TARGET
+ * runtime's claim_apply hook — the runtime creates its domain-local
+ * output and returns its output identity. INSIDE the caller's txn.
+ *
+ * By EXECUTE time the verdict is already settled (ADMIT ran first, in
+ * the SAME sequential processing of this claim) — every failure here is
+ * therefore a NODE-LOCAL FAULT (storage/backend fault, or a broken
+ * invariant such as a pre-condition ADMIT already guaranteed): -2, never
+ * -1. @return 0 / -2.
+ */
 int nodus_witness_v2_claim_output_create(nodus_witness_t *w,
                                          const dna_claim_t *c,
                                          const nodus_v2_claim_admit_t *a,
                                          uint64_t global_height,
                                          uint8_t out_output_id[64]);
 
-/** EXECUTE stage b: spent-claim insert keyed by committed identity. */
+/**
+ * EXECUTE stage b: spent-claim insert keyed by committed identity.
+ * Same EXECUTE-stage discipline as stage a: any failure is a NODE-LOCAL
+ * FAULT, never a verdict (a PK collision here would mean the in-block
+ * duplicate-nullifier check upstream was bypassed — an invariant break,
+ * not a fact about THIS claim). @return 0 / -2.
+ */
 int nodus_witness_v2_claim_spend_insert(nodus_witness_t *w,
                                         const dna_claim_t *c,
                                         const nodus_v2_claim_admit_t *a,
                                         const uint8_t output_id[64],
                                         uint64_t global_height);
 
-/** EXECUTE stage c: checked v2_dist_state.remaining decrement (keyed by
- *  manifest_hash). */
+/**
+ * EXECUTE stage c: checked v2_dist_state.remaining decrement (keyed by
+ * manifest_hash). Same EXECUTE-stage discipline: any failure — including
+ * a re-read that finds `remaining < converted`, which ADMIT's own step
+ * 10 already verified moments earlier on the same sequential apply — is
+ * a NODE-LOCAL FAULT (broken invariant), never a verdict. @return 0 / -2.
+ */
 int nodus_witness_v2_claim_state_update(nodus_witness_t *w,
                                         const uint8_t manifest_hash[64],
                                         uint64_t converted);

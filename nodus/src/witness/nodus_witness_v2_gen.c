@@ -1668,7 +1668,12 @@ int nodus_witness_v2_gen_derive(const char *data_path,
          * to serialize one. */
         QGP_LOG_INFO(LOG_TAG, "%s",
                      "closed lane (D-17 rev 10 (9)): version-2 chain, no "
-                     "genesis bundle is persisted — deleted next wave");
+                     "genesis bundle is persisted — this lane is still in "
+                     "the tree with no production caller (grep: only test "
+                     "files and this offline one-shot call "
+                     "nodus_witness_v2_gen_derive), and its deletion is "
+                     "package P4, not the next wave (tokenomics v3 "
+                     "design, 2026-09-23)");
 
         /* ── 8. Land the real name in the REAL data_path — rename only
          * after a COMPLETE derivation (same filesystem, atomic). ───── */
@@ -3268,23 +3273,18 @@ int nodus_witness_v2_gen_derive_v3(const char *data_path,
          * reads the committed manifest and the six base tables — never
          * the height-0 block row — so it is carried unchanged here.
          *
-         * ⚠ THE CONSUMER SIDE IS NOT YET SAFE FOR A VERSION-3 CHAIN, and
-         * naming it here is the point — it is an OBLIGATION of C1c/W3,
-         * not a hole this package may close.
-         *   nodus_witness_v2_bundle_apply (nodus_witness_v2_bundle.c:415)
-         *   calls nodus_witness_v2_genesis_ex at :482. A joiner handed
-         *   THIS bundle would therefore run the VERSION-2 genesis and
-         *   write a height-0 v2_blocks row — the very row D-19 rev 6
-         *   withdrew — producing a chain whose ledger state matches but
-         *   whose shape and identity do not. Nothing reaches that path in
-         *   W2 (no v3 chain serves a bundle yet), and
-         *   nodus_witness_v2_bundle.c is outside this package's whitelist,
-         *   so it is recorded rather than edited.
-         *   W3/C1c must route the Comet lane's bundle apply through
-         *   nodus_witness_v2_genesis_cmt and carry the genesis DOCUMENT
-         *   in the bundle — the joiner's out-of-band input is the chain
-         *   id and the document is what it checks against (D-24 rev 3),
-         *   and the bundle wire format changes with the document version.
+         * Since R3 W3, `nodus_witness_v2_bundle_apply`
+         * (nodus_witness_v2_bundle.c:647) runs `nodus_witness_v2_
+         * genesis_cmt` on a version-3 chain — never the version-2
+         * `nodus_witness_v2_genesis_ex` path this comment used to warn
+         * about — and requires BOTH the stored document's `chain_id` to
+         * equal the joiner's pin AND its `app_hash` to equal the root
+         * that call just computed from the replanted tables
+         * (nodus_witness_v2_bundle.c:665-667): a bundle whose tables
+         * were tampered but whose document still hashes to the pin is
+         * refused there, not silently adopted. The obligation this
+         * comment used to name (C1c/W3 routing the Comet lane's bundle
+         * apply through the version-3 genesis) is CLOSED.
          */
         if (nodus_witness_v2_bundle_persist(w2) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "%s",

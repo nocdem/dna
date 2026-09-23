@@ -3867,6 +3867,11 @@ typedef struct {
     /* response storage */
     cmt_pb_stored_exec_tx_result_t *tx_results;
     cmt_pb_bytes_t                 *pp_txs;
+    /* TV3-P0 item 1 regression — per-tx FORCED result code, indexed the
+     * same as `tx_results`; calloc'd to 0 in tapp_new(), so every
+     * EXISTING case that never sets an entry keeps its "all codes 0"
+     * behavior unchanged. */
+    uint32_t                       *forced_code;
     /* abcimocks.Application answers (the tests that use one) */
     bool                     mock_prepare;         /* answer with mock_txs */
     const cmt_pb_bytes_t    *mock_txs;
@@ -3915,7 +3920,8 @@ static int tapp_finalize_block(void *ctx, const nodus_abci_request_finalize_bloc
     memset(resp, 0, sizeof *resp);
     for (i = 0; i < req->txs_len; i++) {                                  /* :241-246 */
         memset(&app->tx_results[i], 0, sizeof(app->tx_results[i]));
-        app->tx_results[i].det.code = 0;                                  /* CodeTypeOK */
+        /* TV3-P0 item 1 — CodeTypeOK unless the case forced a code. */
+        app->tx_results[i].det.code = app->forced_code[i];
     }
     resp->tx_results = app->tx_results;
     resp->tx_results_cap = TAPP_MAX_TXS;
@@ -4050,8 +4056,10 @@ static tapp_t *tapp_new(void)
     app->tx_results = (cmt_pb_stored_exec_tx_result_t *)
         calloc(TAPP_MAX_TXS, sizeof(cmt_pb_stored_exec_tx_result_t));
     app->pp_txs = (cmt_pb_bytes_t *)calloc(TAPP_MAX_TXS, sizeof(cmt_pb_bytes_t));
-    if (!app->tx_results || !app->pp_txs) {
-        free(app->tx_results); free(app->pp_txs); free(app);
+    app->forced_code = (uint32_t *)calloc(TAPP_MAX_TXS, sizeof(uint32_t));
+    if (!app->tx_results || !app->pp_txs || !app->forced_code) {
+        free(app->tx_results); free(app->pp_txs); free(app->forced_code);
+        free(app);
         return NULL;
     }
     return app;
@@ -4062,6 +4070,7 @@ static void tapp_free(tapp_t *app)
     if (app) {
         free(app->tx_results);
         free(app->pp_txs);
+        free(app->forced_code);
         free(app);
     }
 }
@@ -4388,6 +4397,120 @@ static int t_exec_apply_block(void)
               got.tx_results_len == 10, "last response at height 1");
         free(arena.buf);
     }
+    free(b); free(empty);
+    exec_free(&x);
+    env_free(&e);
+    return 0;
+}
+
+/* TV3-P0 item 1 — LastResultsHash was computed over an ALIASED array:
+ * the host bound `results.results` to the very `det_results` array it
+ * read FROM, and `cmt_new_results` -> `cmt_deterministic_exec_tx_result`
+ * (results.go:47-54, cmt_results.c) calls `cmt_pb_exec_tx_result_init(out)`
+ * — a zeroing init — BEFORE reading `response->code`/`gas_wanted`/
+ * `gas_used`. When `out` and `response` were the SAME pointer, that init
+ * zeroed the source out from under itself, so LastResultsHash
+ * (state/execution.go:658 `TxResultsHash(abciResponse.TxResults)`,
+ * state/store.go:411-413; types/results.go NewResults + Hash) was the
+ * hash of an ALL-ZERO-CODE list on EVERY
+ * block — a block whose items carried a real refusal code (8, …) hashed
+ * identically to an all-code-0 block of the same length.
+ *
+ * Regression: (a) a ten-tx block with one item coded 8 produces a
+ * LastResultsHash that EQUALS the hash computed independently by calling
+ * `cmt_new_results` + `cmt_abci_results_hash` on a FRESH, unaliased copy
+ * of the same det results (proves the host now hashes the REAL values);
+ * (b) that same hash is DIFFERENT from the hash of an all-code-0 block of
+ * the same length (proves the code actually reaches the hash at all).
+ *
+ * RED NOT RUN BY THIS AGENT — a BUILDER may compile but is forbidden
+ * from running any binary it built (`AGENT CLASSES & SUBAGENT BYPASS`),
+ * so this case was never executed here, fixed or unfixed. The ORCHESTRATOR
+ * runs it both ways: reverting `nodus_witness_cmt_host.c`'s fix (aliasing
+ * `results.results` back to `det_results` in `nodus_cmt_update_state`)
+ * traces to assertion (a) failing — `cmt_deterministic_exec_tx_result`'s
+ * `cmt_pb_exec_tx_result_init(out)` zeroes `det_results[i]` before its own
+ * "copy" reads it back, so the host's hash would equal the INDEPENDENT
+ * all-zero-code hash rather than the mixed-code one computed on a SEPARATE
+ * array — and assertion (b) failing for the same reason (mixed and
+ * all-zero would hash identically). That trace is reasoning from reading
+ * the code, not an observed run. */
+static int t_exec_last_results_hash_not_aliased(void)
+{
+    t_env_t        e;
+    t_exec_t       x;
+    cmt_block_t   *b;
+    cmt_commit_t  *empty;
+    cmt_block_id_t bid;
+    uint8_t hash_mixed[CMT_TMHASH_SIZE];
+    uint8_t hash_allzero[CMT_TMHASH_SIZE];
+    uint8_t hash_independent[CMT_TMHASH_SIZE];
+
+    /* ── block 1: mixed codes {0,...,0,8} over env_make_block's ten txs */
+    CHECK(env_make_state(&e, 1, 1) == 0, "state");
+    CHECK(exec_init(&x, &e) == 0, "executor");
+    b = (cmt_block_t *)calloc(1, sizeof(*b));
+    empty = (cmt_commit_t *)calloc(1, sizeof(*empty));
+    CHECK(b && empty, "alloc");
+    x.app->forced_code[1] = 8;      /* one of the ten txs refuses      */
+    CHECK(env_make_block(&e, e.state, 1, empty, b) == 0, "make block");
+    CHECK(block_id_of(&e, b, &bid) == 0, "block id");
+    CHECK(nodus_cmt_blockexec_apply_block(x.be, &bid, b, e.state) == CMT_OK,
+          "apply mixed-code block");
+    memcpy(hash_mixed, e.state->last_results_hash, CMT_TMHASH_SIZE);
+
+    /* independent recomputation over a FRESH, unaliased copy of the same
+     * ten det results this apply actually produced — `tapp_t` retains
+     * them past the call (its own header comment: "the app owns what it
+     * returns until the next call of the same method"). */
+    {
+        cmt_pb_exec_tx_result_t src[10];
+        cmt_pb_exec_tx_result_t out[10];
+        cmt_abci_results_t      results;
+        uint8_t                 scratch[4096];
+        cmt_merkle_item_t       items[10];
+        size_t i;
+
+        memset(src, 0, sizeof src);
+        memset(out, 0, sizeof out);
+        for (i = 0; i < 10; i++) {
+            src[i].code       = x.app->tx_results[i].det.code;
+            src[i].gas_wanted = x.app->tx_results[i].det.gas_wanted;
+            src[i].gas_used   = x.app->tx_results[i].det.gas_used;
+        }
+        memset(&results, 0, sizeof results);
+        results.results     = out;          /* SEPARATE from `src`      */
+        results.results_cap = 10;
+        CHECK(cmt_new_results(src, 10, &results) == CMT_OK,
+              "cmt_new_results over a SEPARATE array");
+        CHECK(cmt_abci_results_hash(&results, scratch, sizeof scratch,
+                                    items, 10, hash_independent) == CMT_OK,
+              "cmt_abci_results_hash");
+    }
+    CHECK(memcmp(hash_mixed, hash_independent, CMT_TMHASH_SIZE) == 0,
+          "the host's LastResultsHash equals the independently "
+          "recomputed hash over the SAME (unaliased) results");
+
+    free(b); free(empty);
+    exec_free(&x);
+    env_free(&e);
+
+    /* ── block 2: same shape, all codes 0 — must hash DIFFERENTLY ───── */
+    CHECK(env_make_state(&e, 1, 1) == 0, "state 2");
+    CHECK(exec_init(&x, &e) == 0, "executor 2");
+    b = (cmt_block_t *)calloc(1, sizeof(*b));
+    empty = (cmt_commit_t *)calloc(1, sizeof(*empty));
+    CHECK(b && empty, "alloc 2");
+    CHECK(env_make_block(&e, e.state, 1, empty, b) == 0, "make block 2");
+    CHECK(block_id_of(&e, b, &bid) == 0, "block id 2");
+    CHECK(nodus_cmt_blockexec_apply_block(x.be, &bid, b, e.state) == CMT_OK,
+          "apply all-zero-code block");
+    memcpy(hash_allzero, e.state->last_results_hash, CMT_TMHASH_SIZE);
+    CHECK(memcmp(hash_mixed, hash_allzero, CMT_TMHASH_SIZE) != 0,
+          "a block with a real nonzero code hashes DIFFERENTLY from an "
+          "all-zero-code block of the same length (the aliasing bug made "
+          "these byte-identical)");
+
     free(b); free(empty);
     exec_free(&x);
     env_free(&e);
@@ -5276,6 +5399,7 @@ int main(void)
         { "exec_validate_validator_updates",       t_exec_validate_validator_updates },
         { "exec_update_validators",                t_exec_update_validators },
         { "exec_apply_block",                      t_exec_apply_block },
+        { "exec_last_results_hash_not_aliased",    t_exec_last_results_hash_not_aliased },
         { "exec_finalize_block_decided_last_commit", t_exec_finalize_block_decided_last_commit },
         { "exec_finalize_block_validators",        t_exec_finalize_block_validators },
         { "exec_process_proposal",                 t_exec_process_proposal },

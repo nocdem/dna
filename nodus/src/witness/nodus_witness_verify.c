@@ -58,6 +58,8 @@
 #include <stdlib.h>
 
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+#include "crypto/utils/qgp_log.h"           /* TV3-P0 item 2: QGP_LOG_ERROR on a
+                                              * claim-admission node fault      */
 
 #define LOG_TAG "WITNESS-VERIFY"
 
@@ -588,9 +590,34 @@ static int verify_v2_successor_claim(nodus_witness_t *w,
             break;
         }
         uint64_t candidate = claim_tip + 1;
-        if (nodus_witness_v2_claim_admit(w, c, candidate, &adm) != 0) {
-            snprintf(reject_reason, reason_size, "claim admission rejected");
-            break;
+        /* TV3-P0 item 2 — claim_admit now answers 0 / -1 VERDICT / -2
+         * FAULT (nodus_witness_v2_claims.h). This admission lane's own
+         * established convention (every branch above: allocation
+         * failure, the chain-height read fault) is a SINGLE reject
+         * return here — admission decisions are mempool-local, never
+         * consensus data, so a -2 refusing the transaction is harmless
+         * even if another node's mempool disagrees. The addition is
+         * ERROR-level logging on -2 alone, so a node whose own storage
+         * is failing is loud about it instead of looking like it is
+         * just refusing invalid claims. */
+        {
+            int arc = nodus_witness_v2_claim_admit(w, c, candidate, &adm);
+            if (arc == -2) {
+                QGP_LOG_ERROR(LOG_TAG, "%s", "claim admission faulted on "
+                              "this node (chain id / manifest / spent-set "
+                              "/ remaining-cover read, runtime resolution, "
+                              "or a SHA3 backend call) — refusing at "
+                              "admission, never consensus data");
+                snprintf(reject_reason, reason_size,
+                         "claim admission faulted on this node (local "
+                         "storage)");
+                break;
+            }
+            if (arc != 0) {
+                snprintf(reject_reason, reason_size,
+                         "claim admission rejected");
+                break;
+            }
         }
         /* R3 W4 — the pending-mempool dedup that used to run here in
          * ADMISSION mode (a local intake gate over w->mempool, now

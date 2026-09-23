@@ -1263,6 +1263,7 @@ int nodus_cmt_update_state(nodus_cmt_blockexec_t *ctx, const cmt_state_t *state,
      * CMT_FAULT (node-local, umbrella panic rule). */
     {
         cmt_pb_exec_tx_result_t *det_results = NULL;
+        cmt_pb_exec_tx_result_t *out_results = NULL;
         cmt_merkle_item_t       *items       = NULL;
         uint8_t                 *leaf_scratch = NULL;
         size_t                   leaf_scratch_cap;
@@ -1276,6 +1277,30 @@ int nodus_cmt_update_state(nodus_cmt_blockexec_t *ctx, const cmt_state_t *state,
         if (resp->tx_results_len > 0) {
             det_results = (cmt_pb_exec_tx_result_t *)
                 calloc(resp->tx_results_len, sizeof(*det_results));
+            /* ORCHESTRATOR TV3-P0 item 1 — `out_results` MUST be a
+             * SEPARATE allocation from `det_results`, never the same
+             * array bound through `results.results` (the aliasing this
+             * fixes). `cmt_new_results` (results.go:13-19,
+             * cmt_results.c:29-49) writes `out->results[i]` through
+             * `cmt_deterministic_exec_tx_result`, whose FIRST statement
+             * is `cmt_pb_exec_tx_result_init(out)` — a zeroing init —
+             * BEFORE it reads `response->code`/`data`/`gas_wanted`/
+             * `gas_used`. When `out` and `response` were the SAME
+             * pointer (`results.results == det_results`, `i` equal on
+             * both sides), that init zeroed the source struct out from
+             * under itself: every field the function then "copied" read
+             * back as 0. The state's LastResultsHash
+             * (state/execution.go:658 `LastResultsHash:
+             * TxResultsHash(abciResponse.TxResults)`, state/store.go
+             * :411-413 `TxResultsHash` = types/results.go NewResults +
+             * Hash) was therefore the hash
+             * of an ALL-ZERO-CODE result list on EVERY block, regardless
+             * of what the ledger actually returned — a block whose items
+             * carried a real nonzero code (8, …) committed the SAME
+             * LastResultsHash as an all-code-0 block of the same
+             * length. */
+            out_results = (cmt_pb_exec_tx_result_t *)
+                calloc(resp->tx_results_len, sizeof(*out_results));
             items = (cmt_merkle_item_t *)
                 calloc(resp->tx_results_len, sizeof(*items));
         }
@@ -1288,8 +1313,10 @@ int nodus_cmt_update_state(nodus_cmt_blockexec_t *ctx, const cmt_state_t *state,
                            resp->tx_results_len * 32u + 64u;
         leaf_scratch = (uint8_t *)malloc(leaf_scratch_cap);
         if (!leaf_scratch ||
-            (resp->tx_results_len > 0 && (!det_results || !items))) {
+            (resp->tx_results_len > 0 &&
+             (!det_results || !out_results || !items))) {
             free(det_results);
+            free(out_results);
             free(items);
             free(leaf_scratch);
             return CMT_FAULT;
@@ -1297,7 +1324,7 @@ int nodus_cmt_update_state(nodus_cmt_blockexec_t *ctx, const cmt_state_t *state,
         for (i = 0; i < resp->tx_results_len; i++) {
             det_results[i] = resp->tx_results[i].det;
         }
-        results.results     = det_results;
+        results.results     = out_results;
         results.results_cap = resp->tx_results_len;
         hash_rc = nodus_cmt_ss_tx_results_hash(det_results,
                                                resp->tx_results_len,
@@ -1306,6 +1333,7 @@ int nodus_cmt_update_state(nodus_cmt_blockexec_t *ctx, const cmt_state_t *state,
                                                resp->tx_results_len,
                                                ns->last_results_hash);
         free(det_results);
+        free(out_results);
         free(items);
         free(leaf_scratch);
         if (hash_rc != CMT_OK) {

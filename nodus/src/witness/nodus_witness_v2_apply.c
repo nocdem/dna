@@ -1908,14 +1908,16 @@ done:
  * manifest hash, target domain, target asset and leaf) — so moving WHEN
  * it runs cannot change WHAT it answers.
  *
- * ⚠ The conflation the engine's header already records is preserved, not
- * introduced: `nodus_witness_v2_manifest_load_by_hash` answers -1 for
- * both "not committed" and a local read fault, so a refusal here is
- * classed by the CALLER exactly as it was before.
+ * ⚠ TRI-STATE, TV3-P0 item 2 — the conflation the engine's header used to
+ * record is CLOSED here: `nodus_witness_v2_manifest_load_by_hash`'s own
+ * contract already splits "not committed" (1, deterministic) from "local
+ * read/corruption fault" (-1, node-local), and this function now maps
+ * those two into ITS OWN -1 VERDICT / -2 FAULT rather than folding both
+ * into one code the way its caller used to.
  *
  * @param out_target receives the manifest's target domain id.
- * @return 0 with `out_nul` and `out_target` filled; -1 refused, with the
- *         reason written into (reason, reason_size).
+ * @return 0 with `out_nul` and `out_target` filled; -1 VERDICT / -2 FAULT,
+ *         with the reason written into (reason, reason_size).
  */
 static int claim_prescan_one(nodus_witness_t *w, const dna_claim_t *c,
                              size_t idx, uint8_t out_nul[64],
@@ -1925,18 +1927,28 @@ static int claim_prescan_one(nodus_witness_t *w, const dna_claim_t *c,
     dna_gman_t      m;
     dna_dist_leaf_t leaf;
     uint8_t         leaf_hash[64];
+    int             mrc;
 
     if (dna_claim_validate(c) != 0) {
         V2AP_ENV_VERDICT("claim %llu failed dna_claim_validate "
                          "(malformed shape)", (unsigned long long)idx);
         return -1;
     }
-    if (nodus_witness_v2_manifest_load_by_hash(w, c->manifest_hash, &m) != 0) {
+    mrc = nodus_witness_v2_manifest_load_by_hash(w, c->manifest_hash, &m);
+    if (mrc < 0) {
+        char h[17];
+
+        V2AP_ENV_FAULT("claim %llu: manifest %s lookup faulted on this "
+                       "node (read/corruption)",
+                       (unsigned long long)idx,
+                       v2ap_hex8(c->manifest_hash, h));
+        return -2;
+    }
+    if (mrc > 0) {
         char h[17];
 
         V2AP_ENV_VERDICT("claim %llu names manifest %s, which is not "
-                         "committed here (helper conflates a read fault - "
-                         "honest label in the header)",
+                         "committed here",
                          (unsigned long long)idx,
                          v2ap_hex8(c->manifest_hash, h));
         return -1;
@@ -1954,18 +1966,17 @@ static int claim_prescan_one(nodus_witness_t *w, const dna_claim_t *c,
     leaf.source_amount = c->source_amount;
     memcpy(leaf.dest_binding, c->dest_binding, 64);
     if (dna_dist_leaf_hash(&leaf, leaf_hash) != 0) {
-        V2AP_ENV_VERDICT("claim %llu: distribution leaf hash could not be "
-                         "derived from its source/dest binding",
-                         (unsigned long long)idx);
-        return -1;
+        V2AP_ENV_FAULT("claim %llu: distribution leaf hash backend failed",
+                       (unsigned long long)idx);
+        return -2;
     }
     if (dna_claim_nullifier(c->chain_id, c->manifest_hash,
                             m.target_domain_id, m.target_asset_ref,
                             m.target_asset_len, leaf_hash, out_nul) != 0) {
-        V2AP_ENV_VERDICT("claim %llu: nullifier could not be derived for "
-                         "target domain %u", (unsigned long long)idx,
-                         (unsigned)m.target_domain_id);
-        return -1;
+        V2AP_ENV_FAULT("claim %llu: nullifier hash backend failed for "
+                       "target domain %u", (unsigned long long)idx,
+                       (unsigned)m.target_domain_id);
+        return -2;
     }
     *out_target = m.target_domain_id;
     return 0;
@@ -1981,7 +1992,20 @@ static int claim_prescan_one(nodus_witness_t *w, const dna_claim_t *c,
  * transaction, the cometbft lane runs it for ONE claim inside that
  * claim's SAVEPOINT. The fault points fire exactly where they did.
  *
- * @return 0; -1 refused, reason written into (reason, reason_size).
+ * ⚠ TRI-STATE, TV3-P0 item 2. `nodus_witness_v2_claim_admit` now answers
+ * 0 / -1 VERDICT / -2 FAULT (header contract); this function propagates
+ * that split. The three EXECUTE-stage helpers below it (output_create /
+ * spend_insert / state_update) return 0 / -2 ONLY by their OWN header
+ * contract — by EXECUTE time the verdict is already settled, so nothing
+ * they can fail on is a new judgement about this claim.
+ *
+ * The three `blk->fail_at == V2AP_FAIL_AFTER_CLAIM_*` blocks are TEST
+ * HARNESS fault-injection points, not real check failures, and are left
+ * returning -1 unchanged so the existing F16/F17/F18 fault-point tests
+ * keep pinning exactly the code path they always have.
+ *
+ * @return 0; -1 VERDICT / -2 FAULT, reason written into (reason,
+ *         reason_size).
  */
 static int claim_execute_one(nodus_witness_t *w, const nodus_v2_block_t *blk,
                              size_t idx, const uint8_t expect_nul[64],
@@ -1990,11 +2014,19 @@ static int claim_execute_one(nodus_witness_t *w, const nodus_v2_block_t *blk,
     const dna_claim_t      *c = &blk->claims[idx];
     nodus_v2_claim_admit_t  adm;
     uint8_t                 output_id[64];
+    int                     arc;
 
-    if (nodus_witness_v2_claim_admit(w, c, blk->global_height, &adm) != 0) {
-        V2AP_ENV_VERDICT("phase 6b: claim %llu refused at admission "
-                         "(helper conflates a read fault - honest label in "
-                         "the header)", (unsigned long long)idx);
+    arc = nodus_witness_v2_claim_admit(w, c, blk->global_height, &adm);
+    if (arc == -2) {
+        V2AP_ENV_FAULT("phase 6b: claim %llu admission faulted on this "
+                       "node (chain id / manifest / spent-set / remaining-"
+                       "cover read, runtime resolution, or a SHA3 backend "
+                       "call)", (unsigned long long)idx);
+        return -2;
+    }
+    if (arc != 0) {
+        V2AP_ENV_VERDICT("phase 6b: claim %llu refused at admission",
+                         (unsigned long long)idx);
         return -1;
     }
     if (memcmp(adm.nullifier, expect_nul, 64) != 0) {
@@ -2009,10 +2041,10 @@ static int claim_execute_one(nodus_witness_t *w, const nodus_v2_block_t *blk,
     }
     if (nodus_witness_v2_claim_output_create(w, c, &adm, blk->global_height,
                                              output_id) != 0) {
-        V2AP_ENV_VERDICT("phase 6b: claim %llu target-runtime output "
-                         "creation failed (helper conflates a read fault)",
-                         (unsigned long long)idx);
-        return -1;
+        V2AP_ENV_FAULT("phase 6b: claim %llu target-runtime output "
+                       "creation faulted on this node",
+                       (unsigned long long)idx);
+        return -2;
     }
     if (blk->fail_at == V2AP_FAIL_AFTER_CLAIM_OUTPUT &&
         blk->fail_claim_index == (uint32_t)idx) {
@@ -2023,10 +2055,9 @@ static int claim_execute_one(nodus_witness_t *w, const nodus_v2_block_t *blk,
     }
     if (nodus_witness_v2_claim_spend_insert(w, c, &adm, output_id,
                                             blk->global_height) != 0) {
-        V2AP_ENV_VERDICT("phase 6b: claim %llu spent-claim insert failed "
-                         "(helper conflates a read fault)",
-                         (unsigned long long)idx);
-        return -1;
+        V2AP_ENV_FAULT("phase 6b: claim %llu spent-claim insert faulted "
+                       "on this node", (unsigned long long)idx);
+        return -2;
     }
     if (blk->fail_at == V2AP_FAIL_AFTER_CLAIM_SPEND &&
         blk->fail_claim_index == (uint32_t)idx) {
@@ -2037,10 +2068,9 @@ static int claim_execute_one(nodus_witness_t *w, const nodus_v2_block_t *blk,
     }
     if (nodus_witness_v2_claim_state_update(w, adm.manifest_hash,
                                             adm.converted) != 0) {
-        V2AP_ENV_VERDICT("phase 6b: claim %llu distribution-state decrement "
-                         "failed (helper conflates a read fault)",
-                         (unsigned long long)idx);
-        return -1;
+        V2AP_ENV_FAULT("phase 6b: claim %llu distribution-state decrement "
+                       "faulted on this node", (unsigned long long)idx);
+        return -2;
     }
     if (blk->fail_at == V2AP_FAIL_AFTER_CLAIM_STATE &&
         blk->fail_claim_index == (uint32_t)idx) {
@@ -3121,8 +3151,10 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
     }
 
     /* ── S6 claims: bounds + in-block duplicate nullifiers + touched
-     * TARGET domains (pre-txn, read-only) — unchanged from S6; its
-     * helpers keep the conflated -1 (header HONEST LABEL). ──────────── */
+     * TARGET domains (pre-txn, read-only). TV3-P0: the claim helpers no
+     * longer conflate — they answer 0 / -1 VERDICT / -2 FAULT
+     * (nodus_witness_v2_claims.h), and a -2 here leaves through
+     * fail_fault_pre. ────────────────────────────────────────────────── */
     if (blk->n_claims > 0) {
         if (!blk->claims || blk->n_claims > NODUS_V2_APPLY_MAX_CLAIMS) {
             V2AP_VERDICT("block declares %llu claims with %s array (engine "
@@ -3147,10 +3179,15 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
         }
         for (size_t i = 0; i < blk->n_claims; i++) {
             uint32_t target = 0;
+            int      prc;
 
-            if (claim_prescan_one(w, &blk->claims[i], i, claim_nuls[i],
-                                  &target, blk->out_reason,
-                                  sizeof blk->out_reason) != 0) {
+            prc = claim_prescan_one(w, &blk->claims[i], i, claim_nuls[i],
+                                    &target, blk->out_reason,
+                                    sizeof blk->out_reason);
+            if (prc == -2) {
+                goto fail_fault_pre;    /* the helper owns the reason    */
+            }
+            if (prc != 0) {
                 RET_VERDICT;         /* the helper owns the reason       */
             }
             for (size_t j = 0; j < i; j++)
@@ -3164,14 +3201,27 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
                     RET_VERDICT;
                 }
             dom_ctx_t *d = dom_for(doms, n_dom, target);
-            if (!d || d->status != DNA_DOMST_ACTIVE || !d->rt) {
+            if (!d || d->status != DNA_DOMST_ACTIVE) {
                 V2AP_VERDICT("claim %llu targets domain %u, which is %s",
                              (unsigned long long)i, (unsigned)target,
                              !d ? "not registered"
-                                : (!d->rt ? "registered with no "
-                                            "resolvable runtime"
-                                          : "registered but not ACTIVE"));
+                                : "registered but not ACTIVE");
                 RET_VERDICT;
+            }
+            if (!d->rt) {
+                /* TV3-P0 (ORCHESTRATOR delta, verifier N7): an ACTIVE
+                 * domain whose runtime THIS node cannot resolve is a
+                 * NODE-LOCAL condition (registry read fault or a compiled
+                 * table lacking the tuple — doms_load discards
+                 * runtime_for's return at :390), never a verdict about
+                 * the claim. Unreachable in practice: doms_load's
+                 * strict_active pass (:399-405) already refused this
+                 * working set at phase 0a as a FAULT; kept fail-closed
+                 * in the same class so the two sites cannot disagree. */
+                V2AP_FAULT("claim %llu targets ACTIVE domain %u whose "
+                           "runtime this node cannot resolve",
+                           (unsigned long long)i, (unsigned)target);
+                goto fail_fault_pre;
             }
             d->touched = 1;
         }
@@ -3725,11 +3775,28 @@ cmt_item_failed:
                            "node", (unsigned long long)i);
                 goto fail_fault;
             }
-            if (claim_prescan_one(w, &blk->claims[i], i, claim_nuls[i],
-                                  &target, blk->out_reason,
-                                  sizeof blk->out_reason) != 0) {
-                code = NODUS_V2_TX_ERR_CLAIM;
-                goto cmt_claim_failed;
+            {
+                int prc = claim_prescan_one(w, &blk->claims[i], i,
+                                            claim_nuls[i], &target,
+                                            blk->out_reason,
+                                            sizeof blk->out_reason);
+                if (prc == -2) {
+                    /* NODE-LOCAL: block FAULT, no item code. The host
+                     * owns the whole-transaction ROLLBACK
+                     * (nodus_witness_cmt_host.c apply_verified_block:
+                     * BEGIN IMMEDIATE before finalize, plain ROLLBACK at
+                     * its fail label), which subsumes this savepoint —
+                     * it is still unwound here so the claim lane and
+                     * the envelope lane (every in-savepoint
+                     * `goto fail_fault` above) exit the same way. */
+                    (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                    (void)cmt_savepoint_release(w, sp);
+                    goto fail_fault;
+                }
+                if (prc != 0) {
+                    code = NODUS_V2_TX_ERR_CLAIM;
+                    goto cmt_claim_failed;
+                }
             }
             for (j = 0; j < i; j++) {
                 if (blk->cmt.results[blk->n_envs + j].code ==
@@ -3740,15 +3807,40 @@ cmt_item_failed:
                 }
             }
             d = dom_for(doms, n_dom, target);
-            if (!d || d->status != DNA_DOMST_ACTIVE || !d->rt) {
-                code = NODUS_V2_TX_ERR_CLAIM;
+            if (!d || d->status != DNA_DOMST_ACTIVE) {
+                code = NODUS_V2_TX_ERR_CLAIM;   /* deterministic: registry */
                 goto cmt_claim_failed;
             }
-            if (claim_execute_one(w, blk, i, claim_nuls[i],
-                                  blk->out_reason,
-                                  sizeof blk->out_reason) != 0) {
-                code = NODUS_V2_TX_ERR_CLAIM;
-                goto cmt_claim_failed;
+            if (!d->rt) {
+                /* TV3-P0 (ORCHESTRATOR delta, verifier N7): the
+                 * runtime-resolution miss is NODE-LOCAL (see the legacy
+                 * prescan's twin comment) and must not become item code
+                 * CLAIM — that would write a build-local condition into
+                 * LastResultsHash, the class this package closes.
+                 * Unreachable in practice (phase 0a's doms_load already
+                 * FAULTed), kept fail-closed in the same class. */
+                V2AP_FAULT("cometbft claim %llu targets ACTIVE domain %u "
+                           "whose runtime this node cannot resolve",
+                           (unsigned long long)i, (unsigned)target);
+                (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                (void)cmt_savepoint_release(w, sp);
+                goto fail_fault;
+            }
+            {
+                int erc = claim_execute_one(w, blk, i, claim_nuls[i],
+                                            blk->out_reason,
+                                            sizeof blk->out_reason);
+                if (erc == -2) {
+                    /* NODE-LOCAL, see above — unwound like the envelope
+                     * lane, then the host's ROLLBACK. */
+                    (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                    (void)cmt_savepoint_release(w, sp);
+                    goto fail_fault;
+                }
+                if (erc != 0) {
+                    code = NODUS_V2_TX_ERR_CLAIM;
+                    goto cmt_claim_failed;
+                }
             }
             /* APPLIED: only now is the target domain touched, so a
              * refused claim moves no domain root. */
@@ -3861,8 +3953,12 @@ cmt_claim_failed:
      * with the cometbft lane, which runs it per claim inside that
      * claim's own SAVEPOINT. */
     for (size_t i = 0; i < blk->n_claims; i++) {
-        if (claim_execute_one(w, blk, i, claim_nuls[i], blk->out_reason,
-                              sizeof blk->out_reason) != 0) {
+        int erc = claim_execute_one(w, blk, i, claim_nuls[i],
+                                    blk->out_reason, sizeof blk->out_reason);
+        if (erc == -2) {
+            goto fail_fault;         /* the helper owns the reason      */
+        }
+        if (erc != 0) {
             goto fail;               /* the helper owns the reason      */
         }
     }
