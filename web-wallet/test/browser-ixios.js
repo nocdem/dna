@@ -56,7 +56,7 @@ async function openWallet(url) {
     if (!req.url().startsWith(url + '/') || req.method() !== 'GET' || req.postData()) {
       unexpected.push({ url: req.url(), method: req.method() }); return route.abort();
     }
-    if (new URL(req.url()).pathname.endsWith('.wasm')) wasm.push(new URL(req.url()).pathname);
+    if (new URL(req.url()).pathname.endsWith('.wasm')) wasm.push(new URL(req.url()).pathname + new URL(req.url()).search);
     return route.continue();
   });
   await page.goto(url);
@@ -85,7 +85,8 @@ try {
   assert.equal(await panel.isVisible(), true);
   await on.page.waitForFunction(address => document.querySelector('#ixios-address').textContent === address, expected);
   assert.match(await panel.innerText(), /Your Ixios address/);
-  assert.match(await panel.locator('.pill').innerText(), /Ixios · receive only/);
+  assert.match(await panel.locator('.pill').innerText(), /Ixios · not active yet/);
+  assert.match(await panel.innerText(), /Do not send IXIOS to this address yet/);
   assert.doesNotMatch(await panel.innerText(), /testnet|mainnet/i);
   assert.equal(await on.page.locator('#copy-ixios-address').isDisabled(), false);
   assert.match(await on.page.locator('#ixios-status').innerText(), /Derived locally/);
@@ -99,7 +100,8 @@ try {
   assert.doesNotMatch(await on.page.locator('#portfolio-networks').innerText(), /ixios/i);
   // The Cellframe derivation also fetches legacy-dilithium-*.wasm on open; what matters
   // here is that the keygen module was loaded and the signing module never was.
-  assert.ok(on.wasm.some(path => /\/assets\/mldsa87-[^/]+\.wasm$/.test(path)));
+  assert.ok(on.wasm.some(path => /\/assets\/mldsa87-[^/?]+\.wasm$/.test(path)), 'Nodus keygen request (no query)');
+  assert.ok(on.wasm.some(path => /\/assets\/mldsa87-[^/?]+\.wasm\?ixios$/.test(path)), 'Ixios keygen request is tagged ?ixios');
   assert.ok(on.wasm.every(path => !/mldsa87-sign/.test(path)));
   await on.page.locator('#lock').click();
   assert.equal(await on.page.locator('#ixios-address').innerText(), '');
@@ -112,6 +114,7 @@ try {
   assert.equal(await off.page.locator('#ixios-address-panel').isVisible(), false);
   assert.equal(await off.page.locator('#ixios-address').textContent(), '');
   assert.ok(off.wasm.every(path => !/mldsa87-sign/.test(path)));
+  assert.ok(off.wasm.every(path => !/\?ixios$/.test(path)), 'flag-off build makes no Ixios keygen request');
   assert.equal(await off.page.evaluate(() => localStorage.length + sessionStorage.length), 0);
   assert.deepEqual(off.unexpected, []); assert.deepEqual(off.errors, []);
   console.log('Ixios browser checks passed: flag-on build shows the checksummed receive-only address for the public fixture phrase, copies it, keeps it out of networks/portfolio/send, clears it on lock and loads only the keygen module; flag-off build hides the panel and ships no Ixios JavaScript; neither build ships mldsa87-sign.wasm; no unmocked external requests or storage.');

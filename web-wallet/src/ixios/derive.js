@@ -41,7 +41,12 @@ export async function deriveIxiosAddress(phrase, { wasmBytes, signal } = {}) {
   let binary = wasmBytes;
   if (!binary) {
     const timeout = AbortSignal.timeout(15000);
-    const response = await fetch(new URL('../nodus/mldsa87.wasm', import.meta.url), { credentials: 'omit', redirect: 'error', signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
+    // Same file as the Nodus derivation; the "ixios" query only makes this
+    // request distinguishable from it (static servers ignore the query), so a
+    // test holding the Nodus request does not depend on which fetch runs first.
+    const moduleUrl = new URL('../nodus/mldsa87.wasm', import.meta.url);
+    moduleUrl.search = 'ixios';
+    const response = await fetch(moduleUrl, { credentials: 'omit', redirect: 'error', signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
     if (!response.ok) throw new Error('Ixios address module could not load. Reload to retry.');
     binary = await response.arrayBuffer();
   }

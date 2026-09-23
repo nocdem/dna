@@ -468,18 +468,20 @@ Spec `docs/plans/2026-09-23-wallet-0.1.16-ixios-spec.md`; decisions
   a custom one: an RPC can still misreport balances and nonces.
   `npm run verify:networks` probes every listed URL from Chromium; the 2026-09-23
   run returned READ_OK for all 15.
-- **Ixios receive-only address, build flag `VITE_ENABLE_IXIOS=true` (default
-  off; the production build leaves it off).** When enabled, a panel shows the
+- **Ixios address, build flag `VITE_ENABLE_IXIOS=true` (default off in the
+  source; the published 0.1.16 build turns it on — operator decision
+  2026-09-23: show it, remove later if needed).** When enabled, a panel shows the
   wallet's Ixios Q-address: seed `SHAKE256(BIP39 master seed ‖ "ixios-mldsa87-v1", 32)`,
   key generation through the existing keygen-only `src/nodus/mldsa87.wasm`,
   address `SHA3-512(pk)[16..63]` shown with Ixios' Keccak-512 mixed-case
   checksum. It is a separate key from the Nodus identity. Ixios is not in the
-  network selector, portfolio or send form. **Why it is off:** on 2026-09-23 the
+  network selector, portfolio or send form. **Not usable yet:** on 2026-09-23 the
   Ixios mainnet validators ran ixiosSpark 1.0.3 and the public RPC 1.0.5; those
   versions use 32-byte addresses and have no ML-DSA support (Q-addresses arrive
   with v1.1.0, which the network had not adopted). A Q-address cannot receive
-  on that network, so it is not shown to users. A disabled build contains no
-  Ixios JavaScript (the panel's hidden markup and CSS remain).
+  on that network, so the panel is labelled "not active yet" and tells users
+  not to send IXIOS to it. A disabled build contains no Ixios JavaScript (the
+  panel's hidden markup and CSS remain).
 - **ML-DSA-87 signing module (in the tree, not in any build).**
   `src/pq/mldsa87-sign.wasm` (`crypto/mldsa87-sign-wasm.c`,
   `scripts/build-mldsa87-sign-wasm.sh`, Emscripten 4.0.16, zero imports): one
