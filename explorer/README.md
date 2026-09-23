@@ -3,7 +3,9 @@
 Read-only block/transaction indexer + JSON API for `scan.cpunk.io`. Polls the
 Nodus witness cluster over the client SDK, mirrors committed chain content
 into a local sqlite index, and serves it over a small HTTP JSON API. The
-static frontend lives in `cpunk/scan.cpunk.io/` (separate deploy path).
+static frontend for `scan.cpunk.io` is no longer in this repository (the
+CPUNK sites moved out on 2026-09-23); the Nodus Scan frontend
+(`scan.nodusnetwork.io`) lives in `website/scan/` (see `website/deploy/README.md`).
 
 Design doc: `docs/plans/2026-07-21-dnac-explorer-design.md` (local-only, not
 committed — see `feedback_plans_dir_local_only`). Determinism/threat-model
@@ -139,10 +141,10 @@ reopen), and `500` on an internal query failure.
    see format above, real IPs from internal ops reference), and install
    `deploy/dna-explorerd.service` to `/etc/systemd/system/`, then
    `systemctl daemon-reload && systemctl enable --now dna-explorerd`.
-2. **Frontend (static site):** `scp` each changed file under
-   `cpunk/scan.cpunk.io/` to `/var/www/scan.cpunk.io/` on the web server —
-   **scp only, never rsync** (`feedback_no_rsync`). Files: `index.html`,
-   `block.html`, `tx.html`, `address.html`, `app.js`, `style.css`, favicons.
+2. **Frontend (static site):** the Nodus Scan frontend is `website/scan/`,
+   published to `scan.nodusnetwork.io` per `website/deploy/README.md` —
+   **scp only, never rsync** (`feedback_no_rsync`). The legacy
+   `scan.cpunk.io` frontend is no longer in this repository.
 3. **nginx:** install `deploy/scan.cpunk.io.nginx.conf` to
    `/etc/nginx/sites-available/`, symlink into `sites-enabled/`,
    `nginx -t && systemctl reload nginx`.

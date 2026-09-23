@@ -62,6 +62,9 @@ docs/CPUNK_ROADMAP.md
 # Confidential documents
 docs/CPUNK_COUNCIL_DECISIONS.md
 docs/REPO_SECURITY_ASSESSMENT.md
+# Nodus website internal notes (removed tokenomics history, local plan references)
+website/CONTENT_SOURCES.md
+website/REVIEW.md
 
 # Claude Code instructions (contain infra details, IPs, deploy commands)
 CLAUDE.md
