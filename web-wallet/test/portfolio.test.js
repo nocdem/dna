@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ASSETS, CPUNK_ASSET, PRICE_URL, BALANCE_MAX_AGE, PRICE_MAX_AGE, balanceUnits, chainBalances, parsePrices, readPrices, portfolioSnapshot, groupAssets, usdText } from '../src/portfolio.js';
+import { IXIOS_NETWORK, IXIOS_ASSET } from '../src/ixios/network.js';
 const now = 1789918200000;
 const coins = () => Object.fromEntries(ASSETS.map(a => [a.priceId, { price: 2, symbol: a.symbol, decimals: a.decimals, timestamp: now / 1000, confidence: .99 }]));
 const ready = () => Object.fromEntries(ASSETS.map(a => [a.key, { state: 'ready', units: 0n, observedAt: now }]));
@@ -76,6 +77,28 @@ test('CPUNK is an unpriced, opt-in row: no priceId, no PRICE_URL entry, never co
   // Grouping sorts CPUNK after the other configured symbols.
   const grouped = groupAssets(snap.rows);
   assert.equal(grouped.at(-1).symbol, 'CPUNK'); assert.equal(grouped.find(g => g.symbol === 'CPUNK').usd, null);
+});
+test('IXIOS is an unpriced, never-read row: no priceId, no PRICE_URL entry, an unread row never becomes a zero, sorts last', () => {
+  assert.equal(IXIOS_ASSET.priceId, undefined);
+  assert.equal(IXIOS_ASSET.chain, 'ixios'); assert.equal(IXIOS_ASSET.key, 'ixios:IXIOS'); assert.equal(IXIOS_ASSET.decimals, 18);
+  assert.equal(IXIOS_NETWORK.symbol, IXIOS_ASSET.symbol); assert.equal(IXIOS_NETWORK.icon, 'ixios.png');
+  assert.equal(IXIOS_NETWORK.receiveOnly, true); assert.equal(IXIOS_NETWORK.notActive, true);
+  assert.equal(IXIOS_NETWORK.rpcOptions[0].url, IXIOS_NETWORK.endpoint); assert.deepEqual(IXIOS_NETWORK.tokens, []);
+  assert.match(IXIOS_NETWORK.sendNote, /^Do not send IXIOS to this address yet\./);
+  assert.ok(!/ixios/i.test(PRICE_URL));
+  // The portfolio view never stores a balance for a not-active network, so its
+  // row stays idle: no balance, no USD value, and the priced portfolio is still complete.
+  const withBoth = [...ASSETS, CPUNK_ASSET, IXIOS_ASSET];
+  const balances = { ...ready(), 'cellframe:CPUNK': { state: 'ready', units: 0n, observedAt: now } };
+  const snap = portfolioSnapshot(balances, parsePrices({ coins: coins() }, now), now, withBoth);
+  assert.equal(snap.complete, true); assert.equal(snap.total, 0n); assert.equal(snap.state, 'complete');
+  const row = snap.rows.find(r => r.key === 'ixios:IXIOS');
+  assert.equal(row.state, 'idle'); assert.equal(row.balance, null); assert.equal(row.usd, null); assert.equal(row.positive, false);
+  const grouped = groupAssets(snap.rows);
+  assert.deepEqual(grouped.slice(-2).map(g => g.symbol), ['CPUNK', 'IXIOS']);
+  const ixios = grouped.find(g => g.symbol === 'IXIOS');
+  assert.equal(ixios.balance, null); assert.equal(ixios.usd, null); assert.equal(usdText(ixios.usd), '—');
+  assert.deepEqual(groupAssets(snap.rows, 'ixios').map(g => g.symbol), ['IXIOS']);
 });
 test('price requests contain only pinned asset identifiers and honor cancellation', async () => {
   let called=false;

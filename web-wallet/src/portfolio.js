@@ -99,8 +99,11 @@ export function groupAssets(rows, filter = 'all') {
       partialBalance: known.length !== entries.length, partialValue: valued.length !== entries.length,
       usd: priced ? (valued.length === entries.length || usd > 0n ? usd : null) : null, positive: valued.some(row => row.positive) };
   }).sort((a, b) => {
+    // A symbol missing from this list (an optional network's asset, added by
+    // portfolio-view.js) sorts after every listed one instead of first (-1).
     const order = ['USDT', 'USDC', 'ETH', 'BNB', 'SOL', 'TRX', 'DAI', 'USDD', 'CPUNK'];
-    return order.indexOf(a.symbol) - order.indexOf(b.symbol);
+    const rank = symbol => { const index = order.indexOf(symbol); return index < 0 ? order.length : index; };
+    return rank(a.symbol) - rank(b.symbol);
   });
 }
 export function usdText(units, positive = false) {

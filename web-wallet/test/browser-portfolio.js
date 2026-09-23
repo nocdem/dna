@@ -73,7 +73,14 @@ try {
   assert.deepEqual(await cpunk.locator('.holding-actions button').allTextContents(), ['Receive']);
   await cpunk.locator('summary').click();
   const usdt = page.locator('.asset-group[data-symbol="USDT"]');
-  assert.equal(await page.locator('.asset-group').count(), 9);
+  // A VITE_ENABLE_IXIOS=true dist adds one never-read IXIOS group (last); its
+  // own behaviour is covered by test/browser-ixios.js. The default build has none.
+  const ixiosShown = await page.locator('#chain option[value="ixios"]').count() === 1;
+  assert.equal(await page.locator('.asset-group').count(), ixiosShown ? 10 : 9);
+  if (ixiosShown) {
+    assert.equal(await page.locator('.asset-group').last().getAttribute('data-symbol'), 'IXIOS');
+    assert.equal(await page.locator('.asset-group[data-symbol="IXIOS"] .asset-value small').innerText(), 'Not active yet');
+  }
   assert.equal(await usdt.locator('.asset-value strong').innerText(), '4.0');
   await usdt.locator('summary').click(); assert.equal(await usdt.locator('.chain-holding').count(), 4);
   assert.equal(await usdt.locator('.holding-value strong').allTextContents().then(a => a.every(v => v === '1.0 USDT')), true);

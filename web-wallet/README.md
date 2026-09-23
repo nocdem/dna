@@ -470,7 +470,8 @@ Spec `docs/plans/2026-09-23-wallet-0.1.16-ixios-spec.md`; decisions
   run returned READ_OK for all 15.
 - **Ixios address, build flag `VITE_ENABLE_IXIOS=true` (default off in the
   source; the published 0.1.16 build turns it on — operator decision
-  2026-09-23: show it, remove later if needed).** When enabled, a panel shows the
+  2026-09-23: show it, remove later if needed; the panel was replaced in 0.1.17,
+  see below).** When enabled, a panel shows the
   wallet's Ixios Q-address: seed `SHAKE256(BIP39 master seed ‖ "ixios-mldsa87-v1", 32)`,
   key generation through the existing keygen-only `src/nodus/mldsa87.wasm`,
   address `SHA3-512(pk)[16..63]` shown with Ixios' Keccak-512 mixed-case
@@ -509,3 +510,24 @@ Spec `docs/plans/2026-09-23-wallet-0.1.16-ixios-spec.md`; decisions
   pq-crystals code agree, not that the code is correct — the circl comparison
   is the independent check, and it is run by hand, not in CI. No Ixios
   transaction has been sent on any network.
+
+## Ixios listed like the other coins (0.1.17)
+
+The 0.1.16 top-of-page Ixios panel is gone (operator, 2026-09-23: Ixios belongs
+where the other coins are). With `VITE_ENABLE_IXIOS=true` (the published build):
+
+- Ixios is a receive-only network in the same places as Cellframe/CPUNK: the
+  network selector, the portfolio filters and health badges, and the asset list
+  (an IXIOS row with its own icon `public/assets/coins/ixios.png`, the Ixios
+  mark, and only a Receive action). Selecting it shows the checksummed Q-address
+  in the receive panel, hides the send fields and shows an Ixios-specific note:
+  "Do not send IXIOS to this address yet…". Cellframe keeps its own note.
+- The network is marked `notActive`: its balance is **never read** (no request
+  to any Ixios host), because the public RPC (v1.0.5) answers 0 for any 48-byte
+  address. The row and badge say "Not active yet" and the amount is "—", never
+  a false zero. IXIOS is unpriced and outside the USD total.
+- The definition lives in `src/ixios/network.js`, pulled in only by the flag-on
+  build; `createPortfolio` takes an ordered `extraNetworks` list
+  (Cellframe, then Ixios) instead of the single `cellframe` option.
+- `npm run test:ixios` checks the placement, the zero Ixios requests, the lock
+  behaviour and the flag-off build (no Ixios option, row, badge, markup or JS).

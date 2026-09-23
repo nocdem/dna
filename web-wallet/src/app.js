@@ -4,6 +4,9 @@ import { serializeActivity, parseActivity, activityKeyFor } from './activity-sto
 import { recordActivity, watchActivity, terminal } from './activity.js';
 import { CHAINS, CELLFRAME } from './config.js';
 import { CPUNK_ASSET } from './portfolio.js';
+// Pure data, referenced only inside `if (import.meta.env.VITE_ENABLE_IXIOS === 'true')`
+// blocks below, so a disabled build tree-shakes the whole module away.
+import { IXIOS_NETWORK, IXIOS_ASSET } from './ixios/network.js';
 import { deriveWallet, disposeWallet, newPhrase, normalizePhrase } from './keys.js';
 import { adapters, prepareTransfer } from './wallet.js';
 import { endpointUrl } from './core.js';
@@ -20,8 +23,13 @@ const CPUNK_ENABLED = import.meta.env.VITE_ENABLE_CPUNK !== 'false';
 let wallet, pending, generatedPhrase, phraseStep, revision = 0, busy = false, lockTimer, idleDeadline = 0, confirmEnableTimer;
 const DEFAULT_PHRASE_ENTRY_HELP = '24 words, in order. Paste your full phrase into any box to fill all 24. Start typing for local word suggestions; choose with the arrow keys and Enter, or tap a word.';
 let cellframeDerivation, cellframeReader, nodusDerivation;
-// Set only inside the VITE_ENABLE_IXIOS block below; no-ops in a disabled build.
+// Set only inside the VITE_ENABLE_IXIOS derivation block below; no-ops in a disabled build.
 let doShowIxiosAddress, stopIxiosAddress = () => {};
+// Receive-panel derivation status line per receive-only network, shown only
+// while that network is selected. The Ixios entry is added by its flag block.
+const addressStatus = { cellframe: $('cellframe-address-status') };
+// index.html's #send-disabled-note text is Cellframe's; a network may carry its own `sendNote`.
+const DEFAULT_SEND_DISABLED_NOTE = $('send-disabled-note').textContent;
 let activitySession = null, activityBlocked = false, historyWrites = Promise.resolve(), vaultOperation = 0;
 const history = []; let stopTracking = () => {};
 function withActivityLock(write) {
@@ -75,7 +83,18 @@ function renderActivity(save = true) {
 }
 function trackActivity() { stopTracking(); renderActivity(); if (wallet) stopTracking = watchActivity(visibleActivity, renderActivity); }
 const endpoints = Object.fromEntries(Object.entries(CHAINS).map(([key, chain]) => [key, chain.endpoint]));
-if (CPUNK_ENABLED) endpoints.cellframe = CELLFRAME.endpoint;
+// Receive-only networks outside CHAINS, in display order (network selector,
+// portfolio filters, badges and asset rows). Neither can be sent to: src/wallet.js
+// has no adapter for them.
+const extraNetworks = [];
+if (CPUNK_ENABLED) { endpoints.cellframe = CELLFRAME.endpoint; extraNetworks.push({ network: CELLFRAME, asset: CPUNK_ASSET }); }
+// Ixios: receive-only and not active — its balance is never read, so its
+// endpoint serves only the network-settings UI (see src/ixios/network.js).
+if (import.meta.env.VITE_ENABLE_IXIOS === 'true') {
+  endpoints[IXIOS_ASSET.chain] = IXIOS_NETWORK.endpoint; extraNetworks.push({ network: IXIOS_NETWORK, asset: IXIOS_ASSET });
+}
+const receiveOnlyNetworks = Object.fromEntries(extraNetworks.map(({ network, asset }) => [asset.chain, network]));
+function networkFor(chain) { return CHAINS[chain] || receiveOnlyNetworks[chain]; }
 const portfolio = createPortfolio({
   // cellframeReader is set by showCellframeAddress() before it ever reports an
   // address to the portfolio, so it is always ready by the time this branch runs.
@@ -87,16 +106,22 @@ const portfolio = createPortfolio({
     $('chain').value = chain; selectChain(); $('asset').value = symbol;
     $(action === 'send' ? 'quick-send' : 'quick-receive').click();
   },
-  cellframe: CPUNK_ENABLED ? { network: CELLFRAME, asset: CPUNK_ASSET } : undefined
+  extraNetworks
 });
 const message = text => { $('wallet-status').textContent = text; };
 for (const [key, chain] of Object.entries(CHAINS)) $('chain').add(new Option(chain.name, key));
+for (const { network, asset } of extraNetworks) $('chain').add(new Option(network.name, asset.chain));
 if (CPUNK_ENABLED) {
-  $('chain').add(new Option(CELLFRAME.name, 'cellframe'));
   // The default HTML text (kept for a disabled build, where it stays true
   // unedited) says CPUNK is "not included"; with the module enabled its
   // balance IS shown here, just never priced into the total.
   $('portfolio-scope').textContent = 'Supported assets on Ethereum, BNB Smart Chain, Solana, TRON and Cellframe. NODUS and CPUNK balances are shown, but only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total.';
+}
+if (import.meta.env.VITE_ENABLE_IXIOS === 'true') {
+  const ixiosScope = 'IXIOS is listed without a balance or price because the Ixios network is not active yet; it does not count toward the estimated total.';
+  $('portfolio-scope').textContent = CPUNK_ENABLED
+    ? `Supported assets on Ethereum, BNB Smart Chain, Solana, TRON, Cellframe and Ixios. NODUS and CPUNK balances are shown, but only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total. ${ixiosScope}`
+    : `Supported assets on Ethereum, BNB Smart Chain, Solana, TRON and Ixios. NODUS and CPUNK are not included. ${ixiosScope}`;
 }
 function expireIdle() {
   if (idleDeadline && Date.now() >= idleDeadline) { lock(); return true; }
@@ -237,57 +262,55 @@ $('copy-nodus-address').onclick = async () => {
   try { await navigator.clipboard.writeText(source.nodusAddress); if (source === wallet && !source.locked) $('nodus-status').textContent = 'Nodus address copied.'; }
   catch { if (source === wallet && !source.locked) $('nodus-status').textContent = 'Copy unavailable. Select and copy the address above.'; }
 };
-// Ixios receive-only address (default OFF). Same pattern as showNodusAddress():
-// AbortController, current() guard, aborted and cleared on lock, late results
-// dropped; the address is stored on the wallet object only once current() passes.
+// Ixios receive-only address (default OFF), shown in the receive panel when
+// Ixios is the selected network, like Cellframe's. Same pattern as
+// showNodusAddress() and doShowCellframeAddress(): AbortController, current()
+// guard, aborted and cleared on lock, late results dropped; the address is
+// stored on the wallet (source.addresses.ixios) and reported to the portfolio
+// only once current() passes. The portfolio never reads its balance (notActive).
 // Everything Ixios-specific — both dynamic imports (derive.js fetches
-// nodus/mldsa87.wasm through `new URL(..., import.meta.url)`), the DOM ids, the
-// UI text and the wallet property — stays inside this literal top-level `if`,
-// for the reason given above the VITE_ENABLE_CPUNK block: only then does a
-// disabled build carry no Ixios code or text in its JavaScript. lock() and the
-// open paths reach it only through stopIxiosAddress / doShowIxiosAddress.
-// Ixios is deliberately NOT part of the network selector, portfolio or send form.
+// nodus/mldsa87.wasm through `new URL(..., import.meta.url)`), the status
+// element and the UI text — stays inside this literal top-level `if`, for the
+// reason given above the VITE_ENABLE_CPUNK block: only then does a disabled
+// build carry no Ixios code or text in its JavaScript. lock() and the open
+// paths reach it only through stopIxiosAddress / doShowIxiosAddress.
 if (import.meta.env.VITE_ENABLE_IXIOS === 'true') {
   let ixiosDerivation;
+  const chain = IXIOS_ASSET.chain;
   const unavailable = 'Ixios address unavailable. Lock and reopen your wallet to retry.';
-  $('ixios-address-panel').hidden = false;
-  stopIxiosAddress = () => {
-    ixiosDerivation?.abort(); ixiosDerivation = undefined;
-    $('ixios-address').textContent = ''; $('ixios-status').textContent = ''; $('copy-ixios-address').disabled = true;
-  };
-  $('copy-ixios-address').onclick = async () => {
-    const source = wallet;
-    if (!source || source.locked || !source.ixiosAddress) return;
-    try { await navigator.clipboard.writeText(source.ixiosAddress); if (source === wallet && !source.locked) $('ixios-status').textContent = 'Ixios address copied.'; }
-    catch { if (source === wallet && !source.locked) $('ixios-status').textContent = 'Copy unavailable. Select and copy the address above.'; }
-  };
+  // Created here rather than in index.html so a disabled build has no Ixios markup.
+  const status = document.createElement('p');
+  status.id = 'ixios-address-status'; status.className = 'hint'; status.hidden = true;
+  status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
+  $('cellframe-address-status').after(status); addressStatus[chain] = status;
+  stopIxiosAddress = () => { ixiosDerivation?.abort(); ixiosDerivation = undefined; status.textContent = ''; };
   Promise.all([import('./ixios/derive.js'), import('./ixios/address.js')]).then(([{ deriveIxiosAddress }, { ixiosChecksumAddress }]) => {
     doShowIxiosAddress = async () => {
       ixiosDerivation?.abort();
       const operation = new AbortController(), source = wallet;
       ixiosDerivation = operation;
-      $('ixios-address').textContent = ''; $('copy-ixios-address').disabled = true;
-      $('ixios-status').textContent = 'Calculating your Ixios address locally…';
+      status.textContent = 'Calculating your Ixios address locally…';
       const current = () => ixiosDerivation === operation && source === wallet && !source.locked && !operation.signal.aborted;
       try {
         const bytes = await deriveIxiosAddress(source.recoveryPhrase, { signal: operation.signal });
         if (!current()) return;
         const address = ixiosChecksumAddress(bytes);
-        source.ixiosAddress = address;
-        $('ixios-address').textContent = address; $('copy-ixios-address').disabled = false;
-        $('ixios-status').textContent = 'Derived locally from this wallet’s recovery phrase.';
+        source.addresses[chain] = address;
+        if ($('chain').value === chain) $('receive-address').textContent = address;
+        status.textContent = 'Derived locally from this wallet’s recovery phrase.';
+        portfolio.setAddress(chain, address);
       } catch {
-        if (current()) $('ixios-status').textContent = unavailable;
+        if (current()) { status.textContent = unavailable; portfolio.setAddress(chain, undefined); }
       }
     };
     // The modules can resolve after a wallet is already open; start derivation
     // for whichever wallet is current, as a direct showIxiosAddress() would.
     if (wallet && !wallet.locked) void doShowIxiosAddress();
-  }).catch(() => { if (wallet && !wallet.locked) $('ixios-status').textContent = unavailable; });
+  }).catch(() => { if (wallet && !wallet.locked) status.textContent = unavailable; });
 }
 function showIxiosAddress() { void doShowIxiosAddress?.(); }
 function selectChain() {
-  revision++; closeReview(); const chain = $('chain').value; const c = CHAINS[chain] || CELLFRAME;
+  revision++; closeReview(); const chain = $('chain').value; const c = networkFor(chain);
   for (const label of document.querySelectorAll('.selected-network-name')) label.textContent = c.name;
   const address = wallet.addresses[chain];
   $('receive-address').textContent = address || ''; populateRpcChoice(chain, c);
@@ -299,7 +322,8 @@ function selectChain() {
   trackActivity();
   $('recipient').value = ''; $('amount').value = '';
   $('send-fields').hidden = !!c.receiveOnly; $('send-disabled-note').hidden = !c.receiveOnly;
-  $('cellframe-address-status').hidden = chain !== 'cellframe';
+  $('send-disabled-note').textContent = c.sendNote || DEFAULT_SEND_DISABLED_NOTE;
+  for (const [key, node] of Object.entries(addressStatus)) node.hidden = chain !== key;
 }
 $('chain').onchange = selectChain;
 $('quick-send').onclick = () => {
@@ -340,7 +364,7 @@ function populateRpcChoice(chain, c) {
   }
 }
 $('rpc-choice').onchange = () => {
-  const chain = $('chain').value, c = CHAINS[chain] || CELLFRAME, value = $('rpc-choice').value;
+  const chain = $('chain').value, c = networkFor(chain), value = $('rpc-choice').value;
   if (value === CUSTOM_RPC) { setRpcCustomVisible(true); $('rpc-endpoint').value = ''; $('rpc-endpoint').focus(); setRpcNote(undefined); return; }
   const option = c.rpcOptions[Number(value)];
   setRpcCustomVisible(false); $('rpc-endpoint').value = option.url; setRpcNote(option.note);
@@ -349,10 +373,12 @@ $('save-rpc').onclick = () => { try { const chain = $('chain').value, endpoint =
 $('send-form').onsubmit = async event => {
   event.preventDefault(); if (busy) return;
   // Belt-and-suspenders: the send fields are hidden/disabled for a receive-only
-  // network already, and prepareTransfer() has no 'cellframe' adapter to route
-  // to either (src/wallet.js is unchanged), so this can only be reached by a
-  // script bypassing the UI, not a real user.
-  if ($('chain').value === 'cellframe') { message('Sending CPUNK is not available in this release. You can receive to the address above.'); return; }
+  // network already, and prepareTransfer() has no adapter for a receive-only
+  // network to route to either (src/wallet.js is unchanged), so this can only be
+  // reached by a script bypassing the UI, not a real user. The message is the
+  // network's own note (Cellframe: index.html's default text).
+  const selected = networkFor($('chain').value);
+  if (selected?.receiveOnly) { message(selected.sendNote || DEFAULT_SEND_DISABLED_NOTE); return; }
   if ($('chain').value === 'ethereum' || $('chain').value === 'bsc') {
     const address = wallet.addresses[$('chain').value];
     const blocking = history.find(row => row.chain === $('chain').value && row.address === address && !terminal(row.status));

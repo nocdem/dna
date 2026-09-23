@@ -238,12 +238,6 @@ body:has(#wallet-open:not([hidden])) .wallet-card { background: #171c13; }
 .nodus-address-panel .address-row { background: #11150f80; border: 1px solid #d5f9981f; }
 .nodus-address-panel code { font-size: 13px; line-height: 1.8; letter-spacing: .025em; }
 .nodus-address-panel .hint { margin-bottom: 8px; }
-/* Ixios receive-only address: reuses the Nodus panel styles, set apart from the overview grid. */
-.ixios-address-panel { margin: 22px 0 0; background: #1c2418; }
-.ixios-address-panel .section-head { gap: 12px; }
-.ixios-address-panel .section-head h3 { font-size: 19px; letter-spacing: -.035em; margin: 0; }
-.ixios-address-panel .pill { margin: 0; }
-.ixios-address-panel code { overflow-wrap: anywhere; }
 .native-availability { font-size: 11px; line-height: 1.6; margin: 0; }
 .transfer-actions { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin: 28px 0 20px; }
 .transfer-actions .eyebrow { margin-bottom: 6px; }
