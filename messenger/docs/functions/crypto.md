@@ -141,7 +141,8 @@ re-hosted on the new ML-KEM K-PKE primitives (§6). Removal: Faz 3
 | `bool seed_storage_exists(const char *identity_dir)` | Check if encrypted seed file exists |
 | `int seed_storage_delete(const char *identity_dir)` | Delete encrypted seed file |
 | `int mnemonic_storage_save(...)` | Save mnemonic encrypted with Kyber1024 round-3 KEM (legacy, `mnemonic.enc`) |
-| `int mnemonic_storage_load(...)` | Load mnemonic decrypted with Kyber1024 round-3 KEM (legacy) |
+| `int mnemonic_storage_load(...)` | Load mnemonic decrypted with Kyber1024 round-3 KEM (legacy). **0.11.22:** a file starting with the `KEY_ENC_MAGIC` ("DNAK") password header is refused with an explicit "password-wrapped, needs repair" error instead of a misleading decrypt failure |
+| `int mnemonic_storage_repair_password_wrap(const char *identity_dir, const char *password)` | **NEW (0.11.22).** Unwraps a `mnemonic.enc` that a pre-0.11.22 password change wrapped in the KEY_ENC header (`key_change_password` → `key_save_encrypted`) and rewrites the raw KEM blob atomically (temp + fsync + rename, owner-only). Returns 1 repaired, 0 nothing to do (absent/raw), -1 error (no/wrong password, malformed — file untouched). Called at identity load right after the password is verified, and by `dna_engine_change_password_sync` with the old password |
 | `bool mnemonic_storage_exists(const char *identity_dir)` | **CHANGED (KEM Faz 1):** true if EITHER `mnemonic.enc` (legacy) OR `mnemonic.v2.enc` (ML-KEM) exists |
 | `int mnemonic_storage_save_v2(const char *mnemonic, const uint8_t mlkem_pubkey[1568], const char *identity_dir)` | **NEW (KEM Faz 1).** Save mnemonic encrypted with ML-KEM-1024 (`mnemonic.v2.enc`); same tag-less blob layout as `mnemonic_storage_save` (ct‖nonce‖tag‖enc) |
 | `int mnemonic_storage_load_v2(char *mnemonic_out, size_t mnemonic_size, const uint8_t mlkem_privkey[3168], const char *identity_dir)` | **NEW (KEM Faz 1).** Load mnemonic decrypted with ML-KEM-1024 |

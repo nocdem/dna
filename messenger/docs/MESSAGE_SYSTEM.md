@@ -1211,7 +1211,9 @@ CREATE TABLE IF NOT EXISTS group_messages (
 │   └── identity.dsa      # Dilithium5 private key (4896 bytes)
 │   └── identity.kem      # Kyber1024 round-3 private key (3168 bytes, legacy — always present, always readable)
 │   └── identity.mlkem    # ML-KEM-1024 (FIPS 203) private key (3168 bytes, KEM Faz 1 — absent until migrated)
-├── mnemonic.enc          # Recovery phrase, encrypted with identity.kem (legacy)
+├── mnemonic.enc          # Recovery phrase, encrypted with identity.kem (legacy). RAW KEM blob, never password-wrapped:
+│                         #   a password change does not touch it (0.11.22); a file wrapped by an older password
+│                         #   change is repaired at the next password-protected load (mnemonic_storage_repair_password_wrap)
 ├── mnemonic.v2.enc       # Recovery phrase, encrypted with identity.mlkem (KEM Faz 1, present once migrated)
 ├── db/
 │   ├── messages.db       # SQLCipher - Direct messages only (v0.4.63+, encrypted v0.9.161+)

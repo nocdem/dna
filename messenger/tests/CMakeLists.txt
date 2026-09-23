@@ -116,6 +116,7 @@ message(STATUS "  - test_kyber1024       : Kyber1024 round-3 (LEGACY) KAT")
 message(STATUS "  - test_mlkem1024       : ML-KEM-1024 (FIPS 203) known-answer tests")
 message(STATUS "  - test_bip39_bip32     : BIP39/BIP32 mnemonic and HD key derivation")
 message(STATUS "  - test_mlkem_rollout   : KEM Faz 1 (M1) dual-key ML-KEM-1024 rollout")
+message(STATUS "  - test_mnemonic_password_repair : mnemonic.enc password-wrap repair")
 message(STATUS "  - test_db_encryption   : Database encryption (SQLCipher)")
 message(STATUS "")
 
@@ -477,6 +478,16 @@ add_executable(test_mlkem_rollout
 target_include_directories(test_mlkem_rollout PRIVATE ${DNA_ROOT}/src/api/engine)
 target_link_libraries(test_mlkem_rollout ${TEST_LIBS})
 add_test(NAME test_mlkem_rollout COMMAND test_mlkem_rollout)
+
+# =============================================================================
+# Test: mnemonic.enc password-wrap repair (pre-0.11.22 password-change defect)
+# =============================================================================
+# Reproduces the wrap with key_change_password, asserts mnemonic_storage_load
+# fails on it, and that mnemonic_storage_repair_password_wrap restores the raw
+# blob byte-for-byte. Default build only; /tmp/test_mnemonic_pw_repair_<pid>.
+add_executable(test_mnemonic_password_repair test_mnemonic_password_repair.c)
+target_link_libraries(test_mnemonic_password_repair ${TEST_LIBS})
+add_test(NAME test_mnemonic_password_repair COMMAND test_mnemonic_password_repair)
 
 # =============================================================================
 # CTest integration

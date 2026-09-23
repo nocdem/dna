@@ -347,6 +347,17 @@ int dna_load_identity_internal(dna_engine_t *engine, const char *fingerprint,
             /* Store password for session (needed for sensitive operations) */
             engine->session_password = strdup(password);
             QGP_LOG_INFO(LOG_TAG, "Loaded password-protected identity");
+
+            /* One-time repair of a mnemonic.enc wrapped by a pre-0.11.22
+             * password change (see dna_engine_change_password_sync). Runs
+             * here — right after the password is verified and BEFORE the KEM
+             * Faz 1 migration below reads mnemonic.enc — so a wrapped file
+             * never costs the identity its recovery phrase or its ML-KEM key.
+             * 0 = nothing to do; a failure is logged and the load continues
+             * (the rest of the identity is intact). */
+            if (mnemonic_storage_repair_password_wrap(engine->data_dir, password) < 0) {
+                QGP_LOG_WARN(LOG_TAG, "mnemonic.enc is password-wrapped and could not be repaired");
+            }
         } else {
             QGP_LOG_INFO(LOG_TAG, "Loaded unprotected identity");
         }
@@ -2131,32 +2142,20 @@ int dna_engine_change_password_sync(
         qgp_key_free(mlkem_tmp);
     }
 
-    /* Change password on mnemonic file if it exists.
-     * mnemonic.enc is NOT in DNAK format and NOT TEE-wrapped — leave using
-     * key_change_password (legacy path handles mnemonic blob as-is). */
-    if (qgp_platform_file_exists(mnemonic_path)) {
-        if (key_change_password(mnemonic_path, old_password, new_password) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Failed to change password on mnemonic file");
-            /* Try to rollback DSA, KEM and ML-KEM keys via TEE-aware path */
-            qgp_key_t *dsa_rollback = NULL;
-            if (qgp_key_load_encrypted(dsa_path, new_password, &dsa_rollback) == 0) {
-                qgp_key_save_encrypted(dsa_rollback, dsa_path, old_password);
-                qgp_key_free(dsa_rollback);
-            }
-            qgp_key_t *kem_rollback = NULL;
-            if (qgp_key_load_encrypted(kem_path, new_password, &kem_rollback) == 0) {
-                qgp_key_save_encrypted(kem_rollback, kem_path, old_password);
-                qgp_key_free(kem_rollback);
-            }
-            if (qgp_platform_file_exists(mlkem_path)) {
-                qgp_key_t *mlkem_rollback = NULL;
-                if (qgp_key_load_encrypted(mlkem_path, new_password, &mlkem_rollback) == 0) {
-                    qgp_key_save_encrypted(mlkem_rollback, mlkem_path, old_password);
-                    qgp_key_free(mlkem_rollback);
-                }
-            }
-            return DNA_ERROR_CRYPTO;
-        }
+    /* mnemonic.enc is NOT password-protected and must NOT be touched here:
+     * it is the raw KEM blob ct||nonce||tag||enc (seed_storage.c), protected
+     * by the KEM private key, which the steps above just re-keyed. Before
+     * 0.11.22 this function handed it to key_change_password(), whose
+     * key_save_encrypted() re-saved it WRAPPED in the KEY_ENC ("DNAK")
+     * header — after which mnemonic_storage_load() (which reads the file raw)
+     * could never read it again: the recovery phrase was lost to the app and
+     * the KEM Faz 1 migration skipped the identity. If an earlier password
+     * change already wrapped it, the wrap was made with old_password (each
+     * change re-wrapped with the password it set), so unwrap it now while we
+     * hold that password. Non-fatal: the keys are already re-keyed. */
+    if (qgp_platform_file_exists(mnemonic_path) &&
+        mnemonic_storage_repair_password_wrap(engine->data_dir, old_password) < 0) {
+        QGP_LOG_WARN(LOG_TAG, "mnemonic.enc is password-wrapped and could not be repaired with the old password");
     }
 
     /* Update session password and encryption state */

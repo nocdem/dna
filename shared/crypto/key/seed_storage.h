@@ -169,6 +169,25 @@ int mnemonic_storage_load(
 );
 
 /**
+ * Repair a mnemonic.enc that a pre-0.11.22 password change wrapped in the
+ * KEY_ENC ("DNAK") password header.
+ *
+ * mnemonic.enc is protected by the KEM key (ct||nonce||tag||enc) and must be
+ * stored raw; dna_engine_change_password_sync used to hand it to
+ * key_change_password(), which re-saved it wrapped, after which every reader
+ * (mnemonic_storage_load) failed. This function unwraps it with the given
+ * password (the one the wrap was made with = the identity's current
+ * password) and rewrites the raw blob atomically (temp + fsync + rename,
+ * owner-only permissions). Idempotent.
+ *
+ * @param identity_dir  Directory path (e.g., ~/.dna/)
+ * @param password      The identity's current password (session password)
+ * @return 1 repaired, 0 nothing to do (absent or already raw), -1 error
+ *         (no password, wrong password, malformed content — file untouched)
+ */
+int mnemonic_storage_repair_password_wrap(const char *identity_dir, const char *password);
+
+/**
  * Check if encrypted mnemonic file exists (EITHER format, KEM Faz 1 R4)
  *
  * Returns true if the legacy round-3 mnemonic.enc OR the ML-KEM

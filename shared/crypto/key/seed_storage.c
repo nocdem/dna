@@ -12,6 +12,7 @@
 #include "crypto/enc/qgp_kyber.h"
 #include "crypto/enc/qgp_mlkem.h"
 #include "crypto/enc/qgp_aes.h"
+#include "crypto/key/key_encryption.h"   /* KEY_ENC_MAGIC, key_load_encrypted — password-wrap repair */
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/utils/qgp_log.h"
 
@@ -519,6 +520,20 @@ int mnemonic_storage_load(
         goto cleanup;
     }
 
+    /* A mnemonic.enc written by a pre-0.11.22 password change is wrapped in
+     * the KEY_ENC ("DNAK") password header (dna_engine_change_password_sync
+     * handed it to key_change_password, which re-saves through
+     * key_save_encrypted). Its bytes are NOT ct||nonce||tag||enc, so
+     * decapsulating them only yields a misleading "decrypt failed". Say what
+     * it is; the caller that holds the session password repairs it with
+     * mnemonic_storage_repair_password_wrap(). */
+    if (memcmp(file_buffer, KEY_ENC_MAGIC, KEY_ENC_MAGIC_SIZE) == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "mnemonic.enc is password-wrapped (legacy password-change "
+                      "defect) - needs mnemonic_storage_repair_password_wrap() with the "
+                      "session password before it can be read");
+        goto cleanup;
+    }
+
     fclose(fp);
     fp = NULL;
 
@@ -576,6 +591,144 @@ cleanup:
         fclose(fp);
     }
 
+    return result;
+}
+
+int mnemonic_storage_repair_password_wrap(const char *identity_dir, const char *password) {
+    if (!identity_dir) {
+        return -1;
+    }
+
+    char mnemonic_path[512];
+    if (build_mnemonic_path(identity_dir, mnemonic_path, sizeof(mnemonic_path)) != 0) {
+        return -1;
+    }
+
+    /* Nothing to do unless the file exists AND starts with the KEY_ENC magic. */
+    uint8_t magic[KEY_ENC_MAGIC_SIZE];
+    FILE *fp = fopen(mnemonic_path, "rb");
+    if (!fp) {
+        return 0;
+    }
+    size_t got = fread(magic, 1, sizeof(magic), fp);
+    long file_size = -1;
+    if (fseek(fp, 0, SEEK_END) == 0) {
+        file_size = ftell(fp);
+    }
+    fclose(fp);
+    if (got != sizeof(magic) || memcmp(magic, KEY_ENC_MAGIC, KEY_ENC_MAGIC_SIZE) != 0) {
+        return 0;
+    }
+
+    /* The only legitimate wrapped form is KEY_ENC header + the raw blob.
+     * Anything else is refused BEFORE decryption: key_load_encrypted()
+     * decrypts into the caller's buffer without bounding the output by its
+     * size (key_encryption.c key_decrypt — pre-existing, see messenger/
+     * BUGS.md), so an oversized "DNAK" file must never reach it. The buffer
+     * below is sized from the file itself as a second guard. */
+    if (file_size != (long)(KEY_ENC_HEADER_SIZE + MNEMONIC_STORAGE_TOTAL_SIZE)) {
+        QGP_LOG_ERROR(LOG_TAG, "mnemonic.enc repair: wrapped file has size %ld, expected %d - refusing",
+                      file_size, (int)(KEY_ENC_HEADER_SIZE + MNEMONIC_STORAGE_TOTAL_SIZE));
+        return -1;
+    }
+
+    if (!password || password[0] == '\0') {
+        QGP_LOG_ERROR(LOG_TAG, "mnemonic.enc is password-wrapped but no password is available to repair it");
+        return -1;
+    }
+
+    /* The wrap is exactly what key_change_password() produced:
+     * key_save_encrypted(raw mnemonic blob, password). Unwrap with the SAME
+     * primitive and require the result to be a well-formed blob. */
+    int result = -1;
+    const size_t raw_cap = (size_t)file_size;   /* >= any ciphertext the file can hold */
+    uint8_t *raw = malloc(raw_cap);
+    size_t raw_len = 0;
+    FILE *out = NULL;
+    char tmp_path[600];
+#ifdef _WIN32
+    char bak_path[600];
+    bak_path[0] = '\0';
+#endif
+    int n;
+    tmp_path[0] = '\0';
+    if (!raw) {
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed");
+        return -1;
+    }
+    if (key_load_encrypted(mnemonic_path, password, raw, raw_cap, &raw_len) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "mnemonic.enc repair: could not unwrap with the session password");
+        goto cleanup;
+    }
+    if (raw_len != MNEMONIC_STORAGE_TOTAL_SIZE) {
+        QGP_LOG_ERROR(LOG_TAG, "mnemonic.enc repair: unwrapped %zu bytes, expected %d - leaving file untouched",
+                      raw_len, (int)MNEMONIC_STORAGE_TOTAL_SIZE);
+        goto cleanup;
+    }
+
+    /* Write the raw blob back atomically: temp file, flush, sync, rename. */
+    n = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", mnemonic_path);
+    if (n < 0 || (size_t)n >= sizeof(tmp_path)) {
+        goto cleanup;
+    }
+    out = fopen(tmp_path, "wb");
+    if (!out) {
+        QGP_LOG_ERROR(LOG_TAG, "mnemonic.enc repair: cannot create %s (%s)", tmp_path, strerror(errno));
+        goto cleanup;
+    }
+    set_file_permissions(tmp_path);
+    if (fwrite(raw, 1, raw_len, out) != raw_len || fflush(out) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "mnemonic.enc repair: write failed");
+        goto cleanup;
+    }
+#ifndef _WIN32
+    if (fsync(fileno(out)) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "mnemonic.enc repair: fsync failed (%s)", strerror(errno));
+        goto cleanup;
+    }
+#endif
+    fclose(out);
+    out = NULL;
+#ifdef _WIN32
+    /* rename() does not replace an existing file on Windows: move the wrapped
+     * original aside first, and put it back if the final rename fails, so a
+     * failure never leaves the identity without its mnemonic file. */
+    n = snprintf(bak_path, sizeof(bak_path), "%s.wrapped.bak", mnemonic_path);
+    if (n < 0 || (size_t)n >= sizeof(bak_path)) {
+        remove(tmp_path);
+        goto cleanup;
+    }
+    remove(bak_path);
+    if (rename(mnemonic_path, bak_path) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "mnemonic.enc repair: cannot move original aside (%s)", strerror(errno));
+        remove(tmp_path);
+        goto cleanup;
+    }
+    if (rename(tmp_path, mnemonic_path) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "mnemonic.enc repair: rename failed (%s) - original restored", strerror(errno));
+        rename(bak_path, mnemonic_path);
+        remove(tmp_path);
+        goto cleanup;
+    }
+    remove(bak_path);
+#else
+    if (rename(tmp_path, mnemonic_path) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "mnemonic.enc repair: rename failed (%s)", strerror(errno));
+        remove(tmp_path);
+        goto cleanup;
+    }
+#endif
+    set_file_permissions(mnemonic_path);
+    QGP_LOG_WARN(LOG_TAG, "mnemonic.enc was password-wrapped by an old password change - repaired (raw KEM blob restored)");
+    result = 1;
+
+cleanup:
+    if (out) {
+        fclose(out);
+        remove(tmp_path);
+    }
+    qgp_secure_memzero(raw, raw_cap);
+    free(raw);
     return result;
 }
 
