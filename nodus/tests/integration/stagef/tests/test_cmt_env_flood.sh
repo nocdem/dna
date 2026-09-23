@@ -1,83 +1,250 @@
 #!/usr/bin/env bash
 # ════════════════════════════════════════════════════════════════════
 # test_cmt_env_flood.sh — a block beyond 10 envelopes, 7/7 agreement
-# (R3 W4-C delta 2)
+# (R3 W4-C delta 2; made runnable by CLI-SPEND)
 # ════════════════════════════════════════════════════════════════════
 #
-# WHAT IT PROVES (INTENDED — NOT YET RUNNABLE; see "WHY IT SKIPS")
+# WHAT IT PROVES
 #   That a single block can carry MORE than the retired chain-config
 #   envelope cap (10) of ENVELOPE-classified items (not claims — those
 #   are test_cmt_claim_flood.sh's subject), that every one of them
 #   applies, and that all 7 nodes agree — the operator's decision
 #   (atlas-dec-5b7568512b95e6d2e671c4eaad2c1879 rev 1) names this
 #   scenario explicitly as part of what delta 2 delivers, alongside a
-#   measurement of wall-clock cost per envelope.
+#   measurement of wall-clock cost per envelope. The property that would
+#   be false if it failed: *a proposer handed a burst of admissible
+#   SPEND envelopes packs more than 10 of them into one block, and every
+#   node applies that block identically.*
 #
-# WHY IT SKIPS — A CLI CAPABILITY GAP, GROUNDED BY GREP, NOT ASSUMED
-#   The PUMP identity's 40 UTXOs (created by test_cmt_claim_flood.sh's
-#   claims, if that scenario ran first) can only be SPENT by submitting
-#   an ENVELOPE with a CORE leg that consumes them — the shape the
-#   dispatch calls "one dnac_spend each". `nodus-cli` (the only client
-#   this harness drives, `STAGEF_NODUSCLI_BIN`) has NO such command:
-#     - `grep -n '"spend"\|"transfer"' nodus/tools/nodus-cli.c` — EMPTY.
-#     - The DNAC-lane top-level commands it dispatches are exactly
-#       `chain-config`, `stake`, `v2-envelope` (whose only implemented
-#       non-stake subcommand is `chain-config` — cmd_v2_envelope,
-#       nodus-cli.c:1551, refuses any `sub` other than "chain-config"),
-#       and `v2-claim`. None of these is a generic CORE-domain value
-#       transfer.
-#     - `v2-envelope stake` builds a two-leg SYSTEM+CORE STAKE envelope,
-#       but it is a ONE-TIME bond per identity (self-stake), not a
-#       repeatable spend, and it requires a NON-VALIDATOR identity —
-#       shaping 40 repeated submissions from ONE identity through it
-#       would not be 40 spends, it would be one stake attempt followed
-#       by 39 refusals from an already-staked identity, proving nothing
-#       about envelope-count capacity.
-#     - `v2-envelope chain-config` is a governance proposal (committee
-#       vote, grace period, one parameter change at a time) — not a
-#       value transfer, and not repeatable 40 times in one block either.
-#   This is a TOOLING gap, not a nullifier/intent RULE the way the
-#   dispatch's own escape hatch anticipated ("if a single identity
-#   cannot spend 40 UTXOs in one block for a reason you read, say which
-#   rule") — the reason here is that no CLI path reaches the operation
-#   at all, for ANY identity. Adding one is a `nodus-cli.c` CHANGE
-#   outside this delta's whitelist (which grants ONLY "the name table +
-#   usage lines" in that file) and is not a harness-script decision to
-#   make unilaterally.
+#   The envelopes are real CORE SPENDs (runtime_op 1), built by
+#   `nodus-cli v2-envelope spend --count K` — K independent self-sends
+#   from the PUMP identity, each funded by its OWN coin (disjoint input
+#   sets planned from one coin listing), all submitted on ONE client
+#   session so they reach the mempool faster than the chain commits.
+#   Every envelope is followed to its LEDGER EFFECT: the UTXO row it
+#   creates carries the envelope's intent_id as its tx_hash
+#   (nodus_witness_rt_native.c rtn_utxo_create_eff), so "applied, and in
+#   which block" is read from `utxo_set`, never from the CLI's answer
+#   (CheckTx admission) and never from `v2_blocks.tx_count` alone.
 #
-# WHAT IT REQUIRES (once the CLI gap above is closed)
-#   Compile flags: none beyond a default build.
-#   Environment: a cluster from stagef_up_v2.sh; PUMP UTXOs to spend
-#   (test_cmt_claim_flood.sh run first in the sweep).
+# WHAT IT REQUIRES
+#   Compile flags: none beyond a default build (nodus-server AND
+#   nodus-cli from the same tree — the CLI takes the CORE ruleset from its
+#   own compiled table, and a CLI built for another ruleset is refused at
+#   CheckTx).
+#   Environment: a cluster from stagef_up_v2.sh (Comet lane; otherwise
+#   rc 99). The PUMP identity must hold at least 11 SPENDABLE native coins
+#   on node 1 — i.e. test_cmt_claim_flood.sh has run first and claimed
+#   the batch (genesis_protocol_v2.sh's order guarantees it). This
+#   scenario NEVER claims the batch itself: a later claim_flood run in
+#   --scenarios mode would then find nothing to claim and fail. With
+#   fewer than 11 coins it SKIPS (rc 99). STAGEF_ENV_FLOOD_MAX (default
+#   40, at most 100 — the CLI's listing cap) bounds K.
 #
 # WHAT IT LEAVES BEHIND
-#   Nothing — this run is a SKIP (exit 99), it submits nothing.
+#   The PUMP identity's K largest coins are each replaced by ONE new coin
+#   (a self-send of coin − fee; with the default equal-sized batch there
+#   is no change output), so its coin count is unchanged and each of
+#   those coins is STAGEF_PUMP_FEE_RAW smaller. The chain is at least one
+#   block further on. Nothing is killed or restarted.
 #
 # HOW IT CAN LIE
-#   - **A SKIP is not a pass.** This scenario existing on disk, green in
-#     a sweep, proves NOTHING about envelope-count capacity beyond 10 —
-#     that coverage has not happened. Do not fold this exit into a green
-#     count.
-#   - **rc=99 here means a missing CLIENT CAPABILITY, not a missing
-#     CLUSTER.** Every other `exit 99` in this suite means "not a Comet
-#     cluster" or "no short-epoch binary"; this one fires on an
-#     otherwise perfectly healthy Comet cluster. Read this script's own
-#     stderr line, not just the exit code, before assuming which.
+#   - **A SKIP is not a pass.** rc 99 here means the cluster was not
+#     Comet, or the PUMP identity held fewer than 11 spendable coins (claim
+#     flood did not run first) — coverage that did not happen.
+#   - **The batch lands in one block only if the CLI submits faster than
+#     the chain commits — a MEASURED fact, not this scenario's premise.**
+#     The CLI's wall-clock for the whole batch is printed; if it ever
+#     approaches a block interval, the envelopes spread across blocks and
+#     the `> 10 in one block` assertion fails for a CLIENT-pace reason,
+#     not an engine one (test_cmt_claim_flood.sh's header documents the
+#     same trap for claims). Read the printed duration before blaming the
+#     engine.
+#   - **The per-block envelope count is set by UNITS, not by a count.**
+#     PrepareProposal's capacity seam reserves EVERY envelope's whole
+#     res_max_total_units against ONE 1 000 000-unit block budget at once,
+#     without finalizing in between (nodus_witness_cmt_app.c
+#     app_seam_check → nodus_witness_v2_produce.c:269 →
+#     nodus_witness_v2_env.c:382; NODUS_V2_GLOBAL_UNIT_BUDGET,
+#     nodus_witness_v2_apply.h:290) and trims the rest to a later block,
+#     so the ceiling each envelope declares IS the per-block limit. The
+#     CLI right-sizes it (nodus-cli.c t6_spend_ceiling: the metering
+#     module's own static_units + one w_read per mediated read). ARITHMETIC,
+#     NOT MEASURED: a 1-in/1-out spend is w_base 1 + w_op 1 + call 298 +
+#     auth 7 220 + res_max_effects 40 + res_max_effect_bytes 16 384 + 2
+#     reads = 23 946 units (all weights 1, nodus_witness_runtime.c
+#     sys_policy_build :120-140), so at most 41 fit one block — K ≤ 40 by
+#     default for that reason. A round 200 000 ceiling would have capped
+#     every block at 5 and made this scenario structurally unpassable.
+#   - **Measurements are HARNESS-OBSERVED.** Per-height timestamps are
+#     polls at ~1 s granularity (the claim-flood method), not header
+#     times; nothing is asserted about them.
+#   - **The inclusion wait is an INLINE copy of stagef_cmt_wait_row's
+#     rules** (stall = 3 idle intervals with no new height → rc 1;
+#     budget = 20 heights past the submission tip → rc 2), polled every
+#     second so the timestamps mean something. If the helper's rules
+#     change, this loop must change with it.
+#   - **Neither wait outcome is distinguished from a genuine silent
+#     drop** — rc 1 and rc 2 are distinguished from EACH OTHER only (the
+#     same residual every Comet-lane scenario discloses).
+#   - **NEVER parse `committed:` on this lane.** The CLI's `accepted:`
+#     line is mempool CheckTx admission, not inclusion.
 #
 # ════════════════════════════════════════════════════════════════════
 set -euo pipefail
 . "$(dirname "$0")/../stagef_env.sh"
 
+REF=1
+CONF="$BASE_DIR/v2_genesis.conf"
+PUMP="$BASE_DIR/v2pump/identity"
 CLI="${STAGEF_NODUSCLI_BIN:-$STAGEF_REPO_ROOT/nodus/build/nodus-cli}"
+FLOOD_MIN=11                                    # "beyond 10"
+FLOOD_MAX="${STAGEF_ENV_FLOOD_MAX:-40}"
+[ "$FLOOD_MAX" -le 100 ] || FLOOD_MAX=100       # the CLI's --count cap
 
-echo "[SKIP] test_cmt_env_flood.sh: nodus-cli has no generic CORE-domain" >&2
-echo "       spend/transfer envelope command — grep -n '\"spend\"' " >&2
-echo "       nodus/tools/nodus-cli.c is empty, and v2-envelope's only" >&2
-echo "       implemented non-stake subcommand is chain-config" >&2
-echo "       (cmd_v2_envelope, nodus-cli.c:1551). This is a CLI TOOLING" >&2
-echo "       gap outside this package's whitelist (nodus-cli.c is only" >&2
-echo "       approved for its name-table + usage-line edits), not a" >&2
-echo "       consensus/nullifier rule. Reported to the ORCHESTRATOR;" >&2
-echo "       this scenario needs a v2-envelope spend/transfer builder" >&2
-echo "       before it can run for real." >&2
-exit 99
+die() { echo "[FAIL] $*" >&2; exit 1; }
+
+ref_db=$(stagef_node_chain_db "$REF")
+[ -n "$ref_db" ] && [ -s "$ref_db" ] || die "no chain DB for node$REF"
+has_v2=$(sqlite3 "$ref_db" \
+    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='v2_blocks';" 2>/dev/null || echo 0)
+if [ "${has_v2:-0}" = "0" ] || [ ! -f "$CONF" ] || [ ! -s "$PUMP/nodus.pk" ]; then
+    echo "[SKIP] not a Comet cluster with a pump identity — use stagef_up_v2.sh"
+    exit 99
+fi
+[ -x "$CLI" ] || die "no nodus-cli at $CLI"
+
+# ── the PUMP identity's spendable native coins, largest first ────────
+pump_fp=$(cat "$PUMP/nodus.fp")
+coins=$(sqlite3 "$ref_db" \
+    "SELECT amount FROM utxo_set
+      WHERE owner = '$pump_fp' AND token_id = zeroblob(64)
+        AND unlock_block <= (SELECT COALESCE(MAX(global_height),0) FROM v2_blocks)
+      ORDER BY amount DESC LIMIT $FLOOD_MAX;" 2>/dev/null || true)
+n_coins=$(printf '%s\n' "$coins" | grep -c '^[0-9][0-9]*$' || true)
+if [ "${n_coins:-0}" -lt "$FLOOD_MIN" ]; then
+    echo "[SKIP] the PUMP identity holds $n_coins spendable coin(s) on node$REF;"
+    echo "       this scenario needs >= $FLOOD_MIN, created by test_cmt_claim_flood.sh"
+    echo "       (run it first — this scenario never claims the batch itself)"
+    exit 99
+fi
+K="$n_coins"
+# Every envelope must be covered by ONE coin: the smallest of the K
+# largest coins pays amount + fee exactly, the larger ones leave change.
+kth=$(printf '%s\n' "$coins" | sed -n "${K}p")
+amount=$(( kth - STAGEF_PUMP_FEE_RAW ))
+[ "$amount" -ge 1 ] || die "the ${K}th-largest pump coin ($kth) cannot pay the fee $STAGEF_PUMP_FEE_RAW"
+stagef_sentinel SETUP_OK   # W4-H: the runner turns PASS-without-ASSERT_RUN into FAIL
+echo "[ok] PUMP identity: $K spendable coin(s) (>= $FLOOD_MIN); each spend sends $amount raw to itself, fee $STAGEF_PUMP_FEE_RAW"
+
+stagef_cmt_diff_at_floor "pre-cmt-env-flood" || exit 2
+
+before_tip=$(stagef_cmt_tip "$ref_db")
+
+# ── ONE CLI call, ONE session, K independent envelopes ──────────────
+log="$BASE_DIR/cmtenvflood.log"
+port=$(stagef_tcp_port "$REF")
+submit_start=$(date +%s)
+if ! "$CLI" -s 127.0.0.1 -p "$port" v2-envelope spend --keys "$PUMP" \
+       --to "$pump_fp" --amount "$amount" --fee "$STAGEF_PUMP_FEE_RAW" \
+       --count "$K" --submit "127.0.0.1:$port" > "$log" 2>&1; then
+    cat "$log" >&2
+    die "the envelope batch submission failed (CheckTx refusal or the client) — see above"
+fi
+submit_end=$(date +%s)
+submit_secs=$(( submit_end - submit_start ))
+intents=$(awk -F= '/^  intent_id=/{print $2}' "$log")
+n_intents=$(printf '%s\n' "$intents" | grep -c '^[0-9a-f]\{128\}$' || true)
+n_accepted=$(grep -c '^accepted: mempool CheckTx approved' "$log" || true)
+[ "$n_intents" = "$K" ] && [ "$n_accepted" = "$K" ] || {
+    cat "$log" >&2
+    die "expected $K intent ids and $K CheckTx approvals, got $n_intents / $n_accepted"
+}
+stagef_sentinel TARGET_REACHED
+echo "[ok] $K SPEND envelopes APPROVED by CheckTx on one session"
+echo "[info] v2-envelope spend wall-clock duration: ${submit_secs}s for $K envelopes, one session"
+
+in_list=$(printf "'%s'," $intents)
+in_list="${in_list%,}"
+
+# ── every envelope applies (its created row exists), within 20 heights
+# INLINE wait (see "HOW IT CAN LIE"): stagef_cmt_wait_row's rules, 1 s poll.
+stall_polls=$(( 3 * (STAGEF_CMT_EMPTY_INTERVAL_MS / 1000) ))
+max_heights=20
+wait_rc=0
+last_h="$before_tip"
+since=0
+prev_h="$before_tip"
+prev_ts=$(date +%s)
+echo "[info] harness-observed height timestamps (poll granularity ~1s, NOT header time):"
+while :; do
+    n_applied=$(sqlite3 "$ref_db" \
+        "SELECT COUNT(DISTINCT tx_hash) FROM utxo_set WHERE lower(hex(tx_hash)) IN ($in_list);" \
+        2>/dev/null || echo 0)
+    case "$n_applied" in ''|*[!0-9]*) n_applied=0 ;; esac
+    h=$(stagef_cmt_tip "$ref_db")
+    [ -n "$h" ] || h="$last_h"
+    if [ "$h" -gt "$last_h" ]; then
+        now_ts=$(date +%s)
+        echo "         height $h observed_at $now_ts gap_since_prev=$(( now_ts - prev_ts ))s (from height $prev_h)"
+        prev_h="$h"; prev_ts="$now_ts"; last_h="$h"; since=0
+    else
+        since=$(( since + 1 ))
+    fi
+    if [ "$n_applied" -ge "$K" ]; then wait_rc=0; break; fi
+    if [ "$since" -ge "$stall_polls" ]; then wait_rc=1; break; fi
+    if [ $(( h - before_tip )) -gt "$max_heights" ]; then wait_rc=2; break; fi
+    sleep 1
+done
+if [ "$n_applied" -lt "$K" ]; then
+    if [ "$wait_rc" = 1 ]; then
+        die "only $n_applied of $K envelopes applied and the chain STALLED at $h"
+    else
+        die "only $n_applied of $K envelopes were included within $max_heights heights of submission (tip $before_tip -> $h) — at least one was dropped or refused in-block (e.g. CAPACITY), not delayed"
+    fi
+fi
+echo "[ok] all $K envelopes applied within $max_heights heights (tip $before_tip -> $h)"
+
+# ── the assertion the scenario exists for: ONE block carried > 10 ────
+carrying=$(sqlite3 "$ref_db" \
+    "SELECT block_height, COUNT(DISTINCT tx_hash) FROM utxo_set
+      WHERE lower(hex(tx_hash)) IN ($in_list)
+      GROUP BY block_height ORDER BY block_height;")
+max_in_one=0
+max_h=0
+# Printed bare as `height:count` so genesis_protocol_v2.sh's green-run
+# echo filter keeps them; each block's v2_blocks.tx_count (applied
+# envelopes) follows on its own [info] line — shown, not asserted.
+echo "[info] carrying blocks (height:envelopes_in_that_block):"
+tx_counts=""
+while IFS='|' read -r bh c; do
+    [ -n "$bh" ] || continue
+    tc=$(sqlite3 "$ref_db" "SELECT tx_count FROM v2_blocks WHERE global_height = $bh;" 2>/dev/null || echo '?')
+    echo "         $bh:$c"
+    tx_counts="$tx_counts $bh=${tc:-?}"
+    if [ "$c" -gt "$max_in_one" ]; then max_in_one="$c"; fi
+    if [ "$bh" -gt "$max_h" ]; then max_h="$bh"; fi
+done <<< "$carrying"
+echo "[info] v2_blocks.tx_count at those heights:$tx_counts"
+if [ "$submit_secs" -gt 0 ]; then
+    echo "[info] client-side cost: $K envelopes in ${submit_secs}s (build + sign + CheckTx round trip each)"
+fi
+
+# Every node must reach the last carrying height before the comparison.
+for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
+    stagef_cmt_wait_height "$(stagef_node_chain_db "$n")" "$max_h" 3 >/dev/null \
+        || die "node$n never reached height $max_h (mesh replication stalled)"
+done
+
+stagef_sentinel ASSERT_RUN   # the terminal assertion is next
+[ "$max_in_one" -gt 10 ] || die \
+    "no single block carried more than 10 envelopes (max was $max_in_one) — either the CLI's ${submit_secs}s submission spread the batch over several rounds (see HOW IT CAN LIE) or the envelope capacity regressed"
+echo "[ok] one block carried $max_in_one envelopes — beyond the retired cap of 10"
+stagef_cmt_diff_at_floor "post-cmt-env-flood" || exit 2
+
+stagef_sentinel PASS
+echo ""
+echo "[PASS] $K CORE SPEND envelopes from one identity, submitted on one session,"
+echo "       all applied within $max_heights heights (tip $before_tip -> $h); one block"
+echo "       carried $max_in_one — beyond the retired 10-envelope cap; all"
+echo "       $STAGEF_COMMITTEE_SIZE nodes agree."

@@ -34,6 +34,19 @@
 #   reachability test is no longer a leaf count.
 #   A cluster from stagef_up_v2.sh. Pump leaves help but are no longer
 #   required to reach the boundary at all (see below).
+#   Optional: a built `nodus-cli` (STAGEF_NODUSCLI_BIN) and
+#   STAGEF_PUMP_FUNDER_NODE / STAGEF_PUMP_SUBMIT_NODE (stagef_env.sh,
+#   defaults 3 / 1) for the CLI-SPEND pump below; without them the wait
+#   is idle production exactly as before.
+#
+# CLI-SPEND — THE WAIT IS NOW DRIVEN BY SPEND TRANSACTIONS WHEN POSSIBLE
+#   The wait for the boundary goes through stagef_cmt_advance_to: when
+#   stagef_cmt_pump_ready succeeds (node 3's genesis leaf, claimed by the
+#   first pump step), the remaining blocks are driven by self-send
+#   `v2-envelope spend` transactions, one at a time, each confirmed by
+#   its own created utxo_set row before the next; otherwise it is the
+#   idle wait described below. The SKIP budget uses the matching
+#   per-block pace. The opportunistic PUMP-batch claim is unchanged.
 #
 # R3 W3 (C2d) — WHERE THE BLOCKS COME FROM CHANGED COMPLETELY
 #   The pre-Comet measurement this scenario was built on — "40 leaves ->
@@ -88,6 +101,11 @@
 #   BOTH test_cmt_mempool_flood.sh (which deliberately does not touch the
 #   pump batch) AND test_cmt_claim_flood.sh (which deliberately drains
 #   all of it) for exactly the reasons above.
+#   When pumped: node 3's genesis leaf CLAIMED by the first pump step
+#   (unless an earlier scenario's pump already did) and one
+#   STAGEF_PUMP_FEE_RAW fee per pump step gone from node 3's single coin.
+#   A SKIP leaves nothing of the pump behind: stagef_cmt_pump_ready,
+#   which decides the pace before the budget, submits nothing.
 #
 # HOW IT CAN LIE
 #   - **Advancing is not crossing.** A height delta proves the chain
@@ -105,12 +123,17 @@
 #   - **NEVER parse `committed:` on this lane.** The pump submission's
 #     own exit code is CheckTx admission, not inclusion; the boundary
 #     crossing is read from the chain, not the CLI's stdout.
-#   - **This is now one of the SLOWEST scenarios in the sweep.** At
-#     E=15 the pump batch can shorten the wait, but the worst case (an
-#     empty or already-spent pump batch) is bounded purely by
-#     CreateEmptyBlocksInterval — up to `need * 60s` wall-clock. Budget
-#     minutes, not seconds, for this scenario even at the short-epoch
-#     harness convention.
+#   - **Idle, this is one of the SLOWEST scenarios in the sweep.** At
+#     E=15 the pump batch can shorten the wait, but without the CLI-SPEND
+#     pump the worst case (an empty or already-spent pump batch) is
+#     bounded purely by CreateEmptyBlocksInterval — up to `need * 60s`
+#     wall-clock. Pumped, it is `need` confirmed spends. The
+#     `[ok] block driving:` line says which one this run was.
+#   - **Pumped, the crossed epoch carries SPEND transactions.** The
+#     snapshot being frozen is the property; a pumped green does not
+#     prove an idle-only crossing and vice versa. A pump fault (rc 3) or
+#     a dropped spend (rc 2) FAILS the run; it is never silently retried
+#     or downgraded to idle.
 #   - **rc=99 means the boundary was out of the harness's wall-clock
 #     patience**, i.e. the coverage did not happen. Never a pass.
 #
@@ -149,19 +172,30 @@ stagef_sentinel SETUP_OK   # W4-H: the runner turns PASS-without-ASSERT_RUN into
 # harness's patience for that worst case is bounded, exactly the way
 # the old check was bounded by leaves on hand: same two conventional
 # values (15 -> proceeds, 720 -> skips), honest reasoning underneath.
+#
+# CLI-SPEND: the per-block pace is the pump's (STAGEF_CMT_PUMP_BLOCK_S)
+# when stagef_cmt_pump_ready succeeds, the idle interval otherwise —
+# decided FIRST, because the budget depends on it.
+pace="idle"
+per_block_s=$(( STAGEF_CMT_EMPTY_INTERVAL_MS / 1000 ))
+if stagef_cmt_pump_ready "$ref_db"; then
+    pace="pumped"
+    per_block_s="$STAGEF_CMT_PUMP_BLOCK_S"
+fi
+echo "[ok] block driving: $pace (${per_block_s}s per block for the budget below)"
 STAGEF_EPOCH_BOUNDARY_BUDGET_S="${STAGEF_EPOCH_BOUNDARY_BUDGET_S:-1800}"
 head0=$(tip)
 next_boundary=$(( (head0 / E_LEN + 1) * E_LEN ))
 need=$(( next_boundary - head0 ))
-worst_case_s=$(( need * (STAGEF_CMT_EMPTY_INTERVAL_MS / 1000) ))
+worst_case_s=$(( need * per_block_s ))
 if [ "$worst_case_s" -gt "$STAGEF_EPOCH_BOUNDARY_BUDGET_S" ]; then
     echo "[SKIP] the next boundary is $need blocks away (epoch length $E_LEN);"
-    echo "       the worst-case idle-only wait is ${worst_case_s}s, over this"
-    echo "       harness's ${STAGEF_EPOCH_BOUNDARY_BUDGET_S}s patience budget —"
+    echo "       the worst-case $pace wait is ${worst_case_s}s (${per_block_s}s/block),"
+    echo "       over this harness's ${STAGEF_EPOCH_BOUNDARY_BUDGET_S}s patience budget —"
     echo "       needs a SHORT-EPOCH build: -DDNAC_EPOCH_LENGTH=15 + STAGEF_EPOCH_LENGTH=15"
     exit 99
 fi
-echo "[ok] epoch length $E_LEN, head $head0, next boundary at $next_boundary ($need blocks, worst case ${worst_case_s}s)"
+echo "[ok] epoch length $E_LEN, head $head0, next boundary at $next_boundary ($need blocks, worst case ${worst_case_s}s, $pace)"
 
 before_set=$(snapshots "$REF")
 echo "[ok] snapshots before: $before_set"
@@ -188,8 +222,18 @@ echo "[ok] pump batch submission attempted (best-effort; see $log)"
 # single interval. The wall-clock feasibility question was already
 # answered above; this bound is for detecting a genuine halt quickly,
 # not for capping how long a HEALTHY wait may legitimately take.
-head1=$(stagef_cmt_wait_height "$ref_db" "$next_boundary" 4) \
-    || die "height stalled at $head1 for 4 consecutive intervals, short of the boundary at $next_boundary"
+#
+# CLI-SPEND: when pumped, stagef_cmt_advance_to drives the rest of the
+# way with one confirmed self-send SPEND at a time (stagef_env.sh
+# stagef_cmt_pump_to); its rc 2 (a spend dropped) and rc 3 (pump fault)
+# fail here as distinctly as a stall does.
+head1=$(stagef_cmt_advance_to "$ref_db" "$next_boundary" 4) && arc=0 || arc=$?
+case "$arc" in
+  0) ;;
+  2) die "a pump spend was approved but not included within 20 heights (tip $head1) — dropped, not delayed" ;;
+  3) die "the pump faulted at tip $head1 (see its stderr above) — short of the boundary at $next_boundary" ;;
+  *) die "height stalled at $head1 for 4 consecutive intervals ($pace), short of the boundary at $next_boundary" ;;
+esac
 echo "[ok] the chain CROSSED the boundary: $head0 -> $head1 (boundary $next_boundary)"
 
 # ── A snapshot for a NEW epoch must have appeared ────────────────────

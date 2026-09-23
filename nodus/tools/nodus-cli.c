@@ -968,6 +968,30 @@ static void cc_appr_envelope_free(cc_appr_envelope_t *b) {
     free(b->env_bytes);
 }
 
+/* One domain's ruleset identity (ruleset_version + ruleset_hash), read
+ * from the LOCAL BINARY's compiled production table
+ * (nodus_witness_runtime.c table_get, exported as
+ * nodus_runtime_builtin_table) — the source every NETWORKED envelope
+ * builder uses, because a remote client has no chain database to read
+ * the domain registry from. A version-3 chain's registry is seeded from
+ * this same compiled table at genesis (nodus_witness_domreg.c:319-380,
+ * manifest_from_runtime copies ruleset_version/ruleset_hash at
+ * :305-306), and CheckTx builds its contextual ruleset table from that
+ * registry (nodus_witness_v2_apply.c block_ctx_from_doms), so the two
+ * agree on every chain this binary can execute. A binary built for a
+ * different ruleset fails closed at the node's preflight
+ * (DNA_ENV_PF_ERR_CTX_VERSION / a call_commit mismatch) rather than
+ * being silently accepted. Shared by `chain-config propose` (SYSTEM) and
+ * `v2-envelope spend` (CORE). @return the runtime, or NULL. */
+static const nodus_domain_runtime_t *cli_builtin_runtime(uint32_t domain_id) {
+    size_t n_rt = 0;
+    const nodus_domain_runtime_t *rtbl = nodus_runtime_builtin_table(&n_rt);
+    if (!rtbl) return NULL;
+    for (size_t i = 0; i < n_rt; i++)
+        if (rtbl[i].domain_id == domain_id) return &rtbl[i];
+    return NULL;
+}
+
 /* ── Stage E.3 — chain-config propose ───────────────────────────── */
 
 static int cc_param_name_to_id(const char *name, uint8_t *out_id) {
@@ -1273,13 +1297,9 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
      * (nodus_witness_domreg.c:324 resolves through it), so the two agree
      * on every chain SYSTEM is even resolvable on. A mismatched binary
      * version fails closed at preflight (ERR_CTX_VERSION) rather than
-     * building a wrongly-keyed envelope. */
-    size_t n_rt = 0;
-    const nodus_domain_runtime_t *rtbl = nodus_runtime_builtin_table(&n_rt);
-    const nodus_domain_runtime_t *sys_rt = NULL;
-    for (size_t i = 0; i < n_rt; i++) {
-        if (rtbl[i].domain_id == DNA_DOMAIN_SYSTEM) { sys_rt = &rtbl[i]; break; }
-    }
+     * building a wrongly-keyed envelope. The lookup itself is the shared
+     * cli_builtin_runtime (also used by `v2-envelope spend`). */
+    const nodus_domain_runtime_t *sys_rt = cli_builtin_runtime(DNA_DOMAIN_SYSTEM);
     if (!sys_rt) {
         fprintf(stderr, "SYSTEM runtime not found in the compiled "
                         "production table\n");
@@ -2651,6 +2671,94 @@ done:
 #define T6_SPEND_MAX_IN   15u
 #define T6_SPEND_OUT_LEN  232u
 
+/* Write ONE transfer-section output record (T6_SPEND_OUT_LEN = 232 bytes):
+ *   [0..127]   owner fingerprint, 128 lowercase-hex chars (NOT raw — the
+ *              chain checks rtn_hex_lower_ok, nodus_witness_rt_native.c:
+ *              1121)
+ *   [128..135] amount u64 BE (>= 1, rt_native.c:1122)
+ *   [136..199] token id, 64 bytes (NULL = all-zero = native)
+ *   [200..231] seed, 32 bytes — output id = SHA3-512(owner_hex ‖ seed)
+ *              (rtn_out_ids, rt_native.c:1427-1431)
+ * Shared by `v2-envelope stake` (the SYSFUND change output) and
+ * `v2-envelope spend`. */
+static void t6_xfer_out_put(uint8_t *rec, const char *owner_hex128,
+                            uint64_t amount, const uint8_t *token64,
+                            const uint8_t seed32[32]) {
+    memcpy(rec, owner_hex128, 128);
+    for (int i = 0; i < 8; i++)
+        rec[128 + i] = (uint8_t)(amount >> (56 - 8 * i));
+    if (token64) memcpy(rec + 136, token64, 64);
+    else         memset(rec + 136, 0, 64);
+    memcpy(rec + 200, seed32, 32);
+}
+
+/* The two-pass build for an envelope EVERY leg of which is authorised by
+ * the SAME single kind-1 signer (auth_data = count u8 = 1 ‖ pubkey ‖ sig
+ * over that leg's ENGINE-derived auth_digest): encode with each leg's
+ * auth blob zero-filled at its FINAL length (auth_len is committed, so
+ * the digest cannot depend on the signature bytes), preflight at the
+ * candidate height tip+1 to derive every auth_digest, sign, re-encode
+ * (same lengths ⇒ same digests) and re-preflight as a self-check.
+ *
+ * `auths[L]` is leg L's caller-owned auth buffer — the SAME pointer the
+ * caller set as legs[L].auth_data — of exactly
+ * 1 + NODUS_RT_AUTH_SIGNER_LEN bytes. On success *env_out is a heap
+ * buffer (caller frees) of *env_len_out bytes and `pf` holds the pass-2
+ * commitments (wire_id, intent_id, ...). Shared by `v2-envelope stake`
+ * (two legs) and `v2-envelope spend` (one leg). @return 0 / -1. */
+static int t6_env_sign_one_key(const dna_env_in_t *env_in,
+                               uint8_t *const *auths,
+                               const dna_env_leg_ctx_t *lctx,
+                               const uint8_t chain32[DNA_CHAIN_ID_LEN],
+                               uint64_t tip, const nodus_identity_t *key,
+                               uint8_t **env_out, size_t *env_len_out,
+                               dna_env_preflight_t *pf) {
+    *env_out = NULL;
+    *env_len_out = 0;
+    size_t env_len = 0;
+    if (dna_env_encoded_size(env_in->legs, env_in->leg_count, &env_len) != 0)
+        return -1;
+    uint8_t *env_bytes = malloc(env_len);
+    if (!env_bytes) return -1;
+
+    size_t used = 0;
+    if (dna_env_encode(env_in, env_bytes, env_len, &used) != 0 ||
+        used != env_len) goto fail;
+    if (dna_env_preflight(env_bytes, env_len, chain32, tip + 1, lctx,
+                          env_in->leg_count, pf) != DNA_ENV_PF_OK) {
+        fprintf(stderr, "pass-1 preflight failed\n");
+        goto fail;
+    }
+
+    for (uint16_t L = 0; L < env_in->leg_count; L++) {
+        uint8_t *ab = auths[L];
+        ab[0] = 1;
+        memcpy(ab + 1, key->pk.bytes, DNAC_PUBKEY_SIZE);
+        size_t sl = 0;
+        if (qgp_dsa87_sign(ab + 1 + DNAC_PUBKEY_SIZE, &sl, pf->auth_digest[L],
+                           64, key->sk.bytes) != 0 ||
+            sl != DNAC_SIGNATURE_SIZE) {
+            fprintf(stderr, "leg %d signature failed\n", (int)L);
+            goto fail;
+        }
+    }
+
+    if (dna_env_encode(env_in, env_bytes, env_len, &used) != 0 ||
+        used != env_len) goto fail;
+    if (dna_env_preflight(env_bytes, env_len, chain32, tip + 1, lctx,
+                          env_in->leg_count, pf) != DNA_ENV_PF_OK) {
+        fprintf(stderr, "pass-2 preflight (self-check) failed\n");
+        goto fail;
+    }
+    *env_out = env_bytes;
+    *env_len_out = env_len;
+    return 0;
+
+fail:
+    free(env_bytes);
+    return -1;
+}
+
 static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
                         int argc, char **argv, int cmd_start) {
     const char *db_path = NULL, *keys_csv = NULL, *dest_fp_hex = NULL;
@@ -2821,11 +2929,8 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
         uint8_t seed_full[64];
         if (qgp_sha3_512((const uint8_t *)nulls, (size_t)n_in * 64,
                          seed_full) != 0) goto done;
-        memcpy(fcall + off, staker_fp, 128);                 /* owner fp   */
-        for (int i = 0; i < 8; i++)
-            fcall[off + 128 + i] = (uint8_t)(change >> (56 - 8 * i));
-        memset(fcall + off + 136, 0, 64);                    /* native tok */
-        memcpy(fcall + off + 200, seed_full, 32);            /* seed       */
+        t6_xfer_out_put(fcall + off, staker_fp, change, NULL /* native */,
+                        seed_full);
         off += T6_SPEND_OUT_LEN;
     }
     uint32_t fcall_len = (uint32_t)off;
@@ -2871,11 +2976,6 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     env_in.leg_count           = 2;
     env_in.legs                = legs;
 
-    size_t env_len = 0;
-    if (dna_env_encoded_size(legs, 2, &env_len) != 0) goto done;
-    env_bytes = malloc(env_len);
-    if (!env_bytes) goto done;
-
     dna_env_leg_ctx_t lctx[2];
     memset(lctx, 0, sizeof(lctx));
     lctx[0].domain_id       = DNA_DOMAIN_SYSTEM;
@@ -2885,38 +2985,15 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     lctx[1].ruleset_version = core_man.ruleset_version;
     memcpy(lctx[1].ruleset_hash, core_man.ruleset_hash, 64);
 
-    size_t used = 0;
-    if (dna_env_encode(&env_in, env_bytes, env_len, &used) != 0 ||
-        used != env_len) goto done;
-    if (dna_env_preflight(env_bytes, env_len, chain32, tip + 1, lctx, 2, pf)
-        != DNA_ENV_PF_OK) {
-        fprintf(stderr, "pass-1 preflight failed\n");
-        goto done;
-    }
-
     /* Sign each leg's auth_digest with the staker sk (kind-1: count=1 ‖
      * pubkey ‖ sig). One key covers BOTH legs: it is the STAKE identity
-     * AND the owner of the funding inputs. */
-    for (int L = 0; L < 2; L++) {
-        uint8_t *ab = (L == 0) ? auth0 : auth1;
-        ab[0] = 1;
-        memcpy(ab + 1, keys[0].pk.bytes, DNAC_PUBKEY_SIZE);
-        size_t sl = 0;
-        if (qgp_dsa87_sign(ab + 1 + DNAC_PUBKEY_SIZE, &sl, pf->auth_digest[L],
-                           64, keys[0].sk.bytes) != 0 ||
-            sl != 4627) {
-            fprintf(stderr, "leg %d signature failed\n", L);
-            goto done;
-        }
-    }
-
-    if (dna_env_encode(&env_in, env_bytes, env_len, &used) != 0 ||
-        used != env_len) goto done;
-    if (dna_env_preflight(env_bytes, env_len, chain32, tip + 1, lctx, 2, pf)
-        != DNA_ENV_PF_OK) {
-        fprintf(stderr, "pass-2 preflight (self-check) failed\n");
+     * AND the owner of the funding inputs. The two-pass build itself is
+     * the shared t6_env_sign_one_key (also `v2-envelope spend`). */
+    uint8_t *auths[2] = { auth0, auth1 };
+    size_t env_len = 0;
+    if (t6_env_sign_one_key(&env_in, auths, lctx, chain32, tip, &keys[0],
+                            &env_bytes, &env_len, pf) != 0)
         goto done;
-    }
 
     if (dry_run) {
         printf("v2-envelope stake: %zu bytes, inputs=%d sum_in=%llu "
@@ -2960,6 +3037,565 @@ done:
     }
     return rc;
 }
+
+/* ── `v2-envelope spend` — the CORE SPEND builder (nodus/BUGS.md, top
+ *    entry: "TESTNET BLOCKER: no client can build a coin TRANSFER") ────
+ *
+ * Builds a single-leg DNA_CORE envelope, runtime_op 1
+ * (DNA_CORERULE_SPEND), auth_kind 1 (the sender's ML-DSA-87 signature
+ * over the leg auth digest), fee in the envelope. The chain side is the
+ * SPECIFICATION (nodus_witness_rt_native.c): call v1 = in_count u8
+ * (1..15) ‖ nullifiers strictly ascending ‖ out_count u8 (1..16) ‖
+ * out_count × 232-byte records (rtn_xfer_section_parse :1098-1125,
+ * rtn_spend_parse :1129-1138); exec (rtn_xfer_exec :1589-1702) requires
+ * every input present and UNLOCKED (unlock_block < H, :1617), owned by a
+ * verified signer (:1619-1623), per-token exact conservation with the
+ * native token paying the fee (:1646-1656), the fee at or above BOTH
+ * DNAC_MIN_FEE_RAW and NODUS_W_BASE_TX_FEE (:1642), and unique output
+ * ids SHA3-512(owner_hex ‖ seed) (:1424-1446).
+ *
+ * EVERYTHING COMES FROM THE NETWORK, so a remote client can spend: the
+ * whole flow runs on ONE session authenticated AS THE SENDER (dnac_utxo
+ * answers only for the session's own fingerprint —
+ * nodus_witness_handlers.c handle_dnac_utxo, "owner must match
+ * authenticated session fingerprint"):
+ *   - chain id: dnac_supply's chain_id32 (w->v2_chain32, the SAME value
+ *     CheckTx's nodus_witness_v2_chain_id resolves on a version-3 chain);
+ *   - CORE ruleset: the compiled table (cli_builtin_runtime — the
+ *     `chain-config propose` precedent);
+ *   - the sender's coins: dnac_utxo (nullifier, amount, token, "ub" =
+ *     unlock_block) plus its block_height = the committed tip
+ *     (nodus_witness_block_height reads v2_blocks on a version-3 chain).
+ *
+ * SELECTION is deterministic over what the RPC returned: coins with
+ * unlock_block > tip are skipped (the chain rejects unlock >= H and
+ * H >= tip + 1), then largest amount first, ties by nullifier ascending;
+ * the chosen nullifiers are re-sorted ascending for the wire. A native
+ * spend draws amount + fee from native coins; a --token spend draws the
+ * amount from that token's coins and the fee from native coins. Change
+ * goes back to the sender, one output per token that has any. Output
+ * seeds are 32 fresh random bytes each (nodus_random) — client-side
+ * only: consensus never derives a seed, it only hashes the one it is
+ * given, and a duplicate output id is a deterministic reject
+ * (rt_native.c:1443-1445), not a split.
+ *
+ * --count N plans N INDEPENDENT spends with DISJOINT input sets from ONE
+ * coin listing and submits them on the same session — the only way one
+ * identity can have more than one spend in flight at once, because the
+ * RPC lists COMMITTED coins only and a second query before the first
+ * spend commits would select the same coin again. Every envelope is
+ * planned before anything is submitted, so a shortfall refuses the whole
+ * batch without sending any of it.
+ *
+ * Fee: default max(DNAC_MIN_FEE_RAW, NODUS_W_BASE_TX_FEE) — the stake
+ * builder's rule. Per the operator's tokenomics decision
+ * (docs/plans/decisions/2026-09-22-nodus-tokenomics-v3-operator.md §1,
+ * §2 F3) fees belong to the reward pool; the chain still BURNS them
+ * today (rt_native.c:1682-1688). This client only pays the fee; where it
+ * goes is the chain's rule, not this builder's.
+ *
+ * Resource fields: res_max_effects 40 / res_max_effect_bytes 16384 — the
+ * per-leg ceilings test_v2_native.c's spend_env (:982-993) proves at the
+ * 15-input maximum. res_max_total_units is RIGHT-SIZED per envelope
+ * (t6_spend_ceiling), NOT a round number: PrepareProposal's capacity
+ * seam reserves EVERY envelope's full ceiling against ONE 1 000 000-unit
+ * block budget at once, without finalizing in between
+ * (nodus_witness_cmt_app.c app_seam_check → nodus_witness_v2_produce.c
+ * :269 → nodus_witness_v2_env.c :382 "Step 5 — sequential reservation";
+ * NODUS_V2_GLOBAL_UNIT_BUDGET, nodus_witness_v2_apply.h:290), so the
+ * ceiling IS the per-block envelope count: a round 200 000 (the test
+ * precedent) would admit five spends per block, 400 000 (the stake
+ * builder) two.
+ */
+#define T6_SPEND_MAX_OUTS  3u   /* recipient + token change + native change */
+
+typedef struct {
+    uint8_t  nul[64];
+    uint64_t amount;
+    uint8_t  kind;      /* 0 native · 1 the requested token · 2 any other */
+    uint8_t  used;
+} t6_coin_t;
+
+typedef struct {
+    int      idx[T6_SPEND_MAX_IN];   /* into the sorted coin array        */
+    int      n_in;
+    uint64_t native_in, token_in;
+    uint64_t native_change, token_change;
+} t6_spend_plan_t;
+
+/* Largest amount first; equal amounts by nullifier ascending — a TOTAL
+ * order (nullifiers are distinct rows), so the selection is a pure
+ * function of the listing whatever order the server returned it in. */
+static int t6_coin_cmp(const void *a, const void *b) {
+    const t6_coin_t *x = (const t6_coin_t *)a;
+    const t6_coin_t *y = (const t6_coin_t *)b;
+    if (x->amount != y->amount) return x->amount > y->amount ? -1 : 1;
+    return memcmp(x->nul, y->nul, 64);
+}
+
+static int t6_nul_cmp(const void *a, const void *b) {
+    return memcmp(a, b, 64);
+}
+
+/* Append unused coins of `kind`, largest first, to plan->idx until their
+ * sum reaches `need`. @return 0 covered · -1 not enough coins of this
+ * kind · -2 would need more than T6_SPEND_MAX_IN inputs in total · -3
+ * the input sum overflows u64 (the chain's checked add rejects that,
+ * rt_native.c:1378-1395). */
+static int t6_spend_pick(const t6_coin_t *coins, int n_coins, uint8_t kind,
+                         uint64_t need, t6_spend_plan_t *plan,
+                         uint64_t *sum_out) {
+    uint64_t sum = 0;
+    for (int i = 0; i < n_coins && sum < need; i++) {
+        if (coins[i].used || coins[i].kind != kind) continue;
+        if (plan->n_in >= (int)T6_SPEND_MAX_IN) return -2;
+        if (sum > UINT64_MAX - coins[i].amount) return -3;
+        plan->idx[plan->n_in++] = i;
+        sum += coins[i].amount;
+    }
+    *sum_out = sum;
+    return sum >= need ? 0 : -1;
+}
+
+/* The smallest res_max_total_units the chain will accept for THIS
+ * envelope AND never exhaust while executing it:
+ *   ceiling = static_units(envelope) + n_reads × w_read
+ * static_units is computed by the metering module itself
+ * (dna_meter_plan_build, shared/dnac/res_meter.c — w_base + Σ w_op +
+ * w_callbyte·call_len + w_authbyte·auth_len + w_effect·res_max_effects +
+ * w_effectbyte·res_max_effect_bytes) under the BLOCK policy, which is the
+ * SYSTEM runtime's compiled meter_policy (nodus_witness_v2_apply.c:589
+ * `ctx->policy = sys->rt->meter_policy`), so no weight is restated here.
+ * Execution charges the fixed part (≤ static), the actual effect count
+ * and bytes (≤ the declared per-leg ceilings — res_meter.h "Declared
+ * per-leg ceilings gate it"), and ONE w_read per mediated read
+ * (nodus_witness_v2_apply.c:1377, charged against the SAME global
+ * ceiling — res_meter.c meter_charge "consumed never crosses the
+ * reserved ceiling"); a SPEND makes in_count + 1 reads
+ * (nodus_witness_rt_native.c:1322). The read term is added explicitly
+ * rather than trusting the effect-byte slack to absorb it.
+ * env_in->res_max_total_units is overwritten (provisionally, then by the
+ * caller with the result). @return 0 / -1. */
+static int t6_spend_ceiling(dna_env_in_t *env_in,
+                            const dna_meter_policy_t *pol, uint32_t n_reads,
+                            uint64_t *ceiling_out) {
+    size_t len = 0, used = 0;
+    if (!pol || dna_env_encoded_size(env_in->legs, env_in->leg_count,
+                                     &len) != 0)
+        return -1;
+    uint8_t *buf = malloc(len);
+    dna_meter_plan_t *plan = calloc(1, sizeof(*plan));
+    dna_env_view_t *view = calloc(1, sizeof(*view));
+    int rc = -1;
+    /* provisional: plan_build only checks static_total <= this value */
+    env_in->res_max_total_units = UINT64_MAX;
+    if (buf && plan && view &&
+        dna_env_encode(env_in, buf, len, &used) == 0 && used == len &&
+        dna_env_decode(buf, len, view) == 0 &&
+        dna_meter_plan_build(pol, view, plan) == DNA_METER_OK &&
+        (plan->w_read == 0 || n_reads <= UINT64_MAX / plan->w_read) &&
+        plan->static_total <= UINT64_MAX - (uint64_t)n_reads * plan->w_read) {
+        *ceiling_out = plan->static_total + (uint64_t)n_reads * plan->w_read;
+        rc = 0;
+    }
+    free(view);
+    free(plan);
+    free(buf);
+    return rc;
+}
+
+static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
+                        int argc, char **argv, int cmd_start) {
+    const char *keys_csv = NULL, *to_hex = NULL, *token_hex = NULL;
+    const char *submit = NULL;
+    uint64_t amount = 0, fee = 0;
+    long count = 1;
+    int dry_run = 0, have_amount = 0, have_fee = 0, bad_arg = 0;
+
+    for (int i = cmd_start + 2; i < argc; i++) {   /* skip the "spend" word */
+        const char *a = argv[i];
+        if      (!strcmp(a, "--keys")   && i + 1 < argc) keys_csv  = argv[++i];
+        else if (!strcmp(a, "--to")     && i + 1 < argc) to_hex    = argv[++i];
+        else if (!strcmp(a, "--token")  && i + 1 < argc) token_hex = argv[++i];
+        else if (!strcmp(a, "--submit") && i + 1 < argc) submit    = argv[++i];
+        else if (!strcmp(a, "--amount") && i + 1 < argc) {
+            amount = strtoull(argv[++i], NULL, 10); have_amount = 1;
+        } else if (!strcmp(a, "--fee") && i + 1 < argc) {
+            fee = strtoull(argv[++i], NULL, 10); have_fee = 1;
+        } else if (!strcmp(a, "--count") && i + 1 < argc) {
+            count = strtol(argv[++i], NULL, 10);
+        } else if (!strcmp(a, "--dry-run")) {
+            dry_run = 1;
+        } else { bad_arg = 1; break; }
+    }
+    if (bad_arg || !keys_csv || !to_hex || !have_amount) {
+        fprintf(stderr,
+            "Usage: v2-envelope spend --keys <keydir> --to <fp128hex> "
+            "--amount <raw>\n"
+            "       [--fee <raw>] [--token <hex128>] [--count <N>] "
+            "[--submit ip:port] [--dry-run]\n"
+            "  The whole flow (chain id, coin listing, submission) runs on "
+            "ONE session\n"
+            "  to --submit, or to the outer -s server when --submit is "
+            "absent.\n"
+            "  --dry-run still needs that node (it lists the coins); it "
+            "builds and\n"
+            "  self-checks every envelope and submits none.\n");
+        return 1;
+    }
+
+    /* ── argument verdicts: refuse what the chain would refuse ────────── */
+    uint8_t to_raw[64];
+    if (qgp_fp_hex_to_raw(to_hex, to_raw) != 0) {
+        fprintf(stderr, "--to must be exactly 128 lowercase hex chars (a "
+                "fingerprint; the output owner field is checked by "
+                "rtn_hex_lower_ok)\n");
+        return 1;
+    }
+    if (amount == 0) {
+        fprintf(stderr, "--amount must be >= 1 (a zero-value output is a "
+                "deterministic reject on the chain)\n");
+        return 1;
+    }
+    const uint64_t fee_floor = DNAC_MIN_FEE_RAW > NODUS_W_BASE_TX_FEE
+                             ? DNAC_MIN_FEE_RAW : NODUS_W_BASE_TX_FEE;
+    if (!have_fee) fee = fee_floor;
+    if (fee < DNAC_MIN_FEE_RAW || fee < NODUS_W_BASE_TX_FEE) {
+        fprintf(stderr, "--fee %llu is below the chain's floor %llu "
+                "(DNAC_MIN_FEE_RAW %llu, NODUS_W_BASE_TX_FEE %llu)\n",
+                (unsigned long long)fee, (unsigned long long)fee_floor,
+                (unsigned long long)DNAC_MIN_FEE_RAW,
+                (unsigned long long)NODUS_W_BASE_TX_FEE);
+        return 1;
+    }
+    /* A batch needs one listed coin per envelope at least, and the
+     * listing is capped at NODUS_DNAC_MAX_UTXO_RESULTS rows. */
+    if (count < 1 || count > (long)NODUS_DNAC_MAX_UTXO_RESULTS) {
+        fprintf(stderr, "--count must be 1..%d\n",
+                (int)NODUS_DNAC_MAX_UTXO_RESULTS);
+        return 1;
+    }
+    static const uint8_t native_tok[64] = {0};
+    uint8_t token[64];
+    memset(token, 0, sizeof(token));
+    if (token_hex && qgp_fp_hex_to_raw(token_hex, token) != 0) {
+        /* same 64-byte lowercase-hex shape as a fingerprint */
+        fprintf(stderr, "--token must be exactly 128 lowercase hex chars "
+                "(a 64-byte token id)\n");
+        return 1;
+    }
+    const int is_native = memcmp(token, native_tok, 64) == 0;
+    uint64_t native_need = fee;
+    if (is_native) {
+        if (amount > UINT64_MAX - fee) {
+            fprintf(stderr, "amount + fee overflows u64\n");
+            return 1;
+        }
+        native_need = amount + fee;
+    }
+
+    int rc = 1;
+    nodus_identity_t *keys = NULL;
+    t6_coin_t *coins = NULL;
+    t6_spend_plan_t *plans = NULL;
+    dna_env_preflight_t *pf = NULL;
+    uint8_t *call = NULL, *auth = NULL, *env_bytes = NULL;
+    nodus_dnac_utxo_result_t utxos;
+    memset(&utxos, 0, sizeof(utxos));
+    int utxos_valid = 0, connected = 0;
+    nodus_client_t client;
+    memset(&client, 0, sizeof(client));
+
+    keys = calloc(4, sizeof(*keys));
+    if (!keys) return 1;
+    if (act_load_keys(keys_csv, keys, 4) != 1) {
+        fprintf(stderr, "v2-envelope spend needs exactly one --keys identity\n");
+        goto done;
+    }
+
+    /* Sender fingerprint (128 lowercase hex): the utxo_set owner form,
+     * the dnac_utxo query key and every change output's owner. */
+    uint8_t sender_raw[64];
+    char sender_fp[QGP_FP_HEX_BUFFER];
+    if (qgp_sha3_512(keys[0].pk.bytes, DNAC_PUBKEY_SIZE, sender_raw) != 0)
+        goto done;
+    qgp_fp_raw_to_hex(sender_raw, sender_fp);
+    char to_fp[QGP_FP_HEX_BUFFER];
+    qgp_fp_raw_to_hex(to_raw, to_fp);          /* canonical lowercase copy */
+
+    const nodus_domain_runtime_t *core_rt = cli_builtin_runtime(DNA_DOMAIN_CORE);
+    const nodus_domain_runtime_t *sys_rt  = cli_builtin_runtime(DNA_DOMAIN_SYSTEM);
+    if (!core_rt || !sys_rt || !sys_rt->meter_policy) {
+        fprintf(stderr, "CORE runtime / SYSTEM block metering policy not "
+                "found in the compiled production table\n");
+        goto done;
+    }
+
+    /* ── ONE session, authenticated as the sender ──────────────────── */
+    char sip[64];
+    uint16_t sport = 0;
+    if (t6_resolve_target(submit, server_ip, server_port, sip, &sport) != 0) {
+        fprintf(stderr, "invalid --submit target (and no -s server)\n");
+        goto done;
+    }
+    nodus_client_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "%s", sip);
+    cfg.servers[0].port = sport;
+    cfg.server_count    = 1;
+    cfg.auto_reconnect  = false;
+    if (nodus_client_init(&client, &cfg, &keys[0]) != 0) {
+        fprintf(stderr, "client_init failed\n");
+        goto done;
+    }
+    connected = 1;                          /* init succeeded: close owed */
+    if (nodus_client_connect(&client) != 0) {
+        fprintf(stderr, "client connect failed (%s:%u)\n", sip, sport);
+        goto done;
+    }
+
+    uint8_t chain32[DNA_CHAIN_ID_LEN];
+    bool has_chain32 = false;
+    if (nodus_client_dnac_chain_id32(&client, &has_chain32, chain32) != 0 ||
+        !has_chain32) {
+        fprintf(stderr, "this node is not on a version-3 chain (no "
+                "chain_id32 in its dnac_supply reply) — v2-envelope spend "
+                "needs a version-3 chain\n");
+        goto done;
+    }
+
+    int urc = nodus_client_dnac_utxo(&client, sender_fp,
+                                     NODUS_DNAC_MAX_UTXO_RESULTS, &utxos);
+    if (urc != 0) {
+        fprintf(stderr, "dnac_utxo query failed (rc=%d)\n", urc);
+        goto done;
+    }
+    utxos_valid = 1;
+    const uint64_t tip = utxos.block_height;
+    if (tip == 0)
+        /* The server fills block_height from its FAIL-OPEN accessor
+         * (nodus_witness_db.c nodus_witness_block_height: 0 on a read
+         * fault). Harmless to the build — every coin with a lock is then
+         * skipped — but it must not read as "the chain is at genesis". */
+        fprintf(stderr, "warning: the node reported tip 0 (a version-3 "
+                "chain past its first block never does; its height read "
+                "may have faulted) — locked coins are skipped\n");
+    if (utxos.count >= (int)NODUS_DNAC_MAX_UTXO_RESULTS)
+        fprintf(stderr, "warning: the coin listing is capped at %d rows and "
+                "came back full — the server applies no ordering before its "
+                "cap, so coins beyond it are invisible to this selection\n",
+                (int)NODUS_DNAC_MAX_UTXO_RESULTS);
+
+    /* ── the spendable coin set, in the deterministic selection order ── */
+    coins = calloc((size_t)(utxos.count > 0 ? utxos.count : 1),
+                   sizeof(*coins));
+    if (!coins) goto done;
+    int n_coins = 0, n_locked = 0;
+    for (int i = 0; i < utxos.count; i++) {
+        const nodus_dnac_utxo_entry_t *e = &utxos.entries[i];
+        if (e->amount == 0) continue;         /* never selectable value   */
+        if (e->unlock_block > tip) { n_locked++; continue; }
+        t6_coin_t *c = &coins[n_coins++];
+        memcpy(c->nul, e->nullifier, 64);
+        c->amount = e->amount;
+        if (memcmp(e->token_id, native_tok, 64) == 0) c->kind = 0;
+        else if (!is_native && memcmp(e->token_id, token, 64) == 0) c->kind = 1;
+        else c->kind = 2;
+        c->used = 0;
+    }
+    qsort(coins, (size_t)n_coins, sizeof(*coins), t6_coin_cmp);
+
+    /* ── plan EVERY envelope before submitting ANY ───────────────────── */
+    plans = calloc((size_t)count, sizeof(*plans));
+    if (!plans) goto done;
+    for (long k = 0; k < count; k++) {
+        t6_spend_plan_t *p = &plans[k];
+        int prc = 0;
+        if (!is_native) {
+            prc = t6_spend_pick(coins, n_coins, 1, amount, p, &p->token_in);
+            if (prc == 0) p->token_change = p->token_in - amount;
+        }
+        if (prc == 0) {
+            prc = t6_spend_pick(coins, n_coins, 0, native_need, p,
+                                &p->native_in);
+            if (prc == 0) p->native_change = p->native_in - native_need;
+        }
+        if (prc != 0) {
+            if (prc == -2)
+                fprintf(stderr, "spend %ld/%ld needs more than %u inputs "
+                        "(the chain's RTN_SPEND_MAX_IN) — consolidate "
+                        "coins first or send less\n", k + 1, count,
+                        (unsigned)T6_SPEND_MAX_IN);
+            else if (prc == -3)
+                fprintf(stderr, "spend %ld/%ld: the selected input sum "
+                        "overflows u64\n", k + 1, count);
+            else
+                fprintf(stderr, "insufficient funds for spend %ld/%ld: need "
+                        "amount %llu raw (%s) + fee %llu raw (native); %d "
+                        "spendable coin(s) listed, %d locked (unlock_block "
+                        "> tip %llu) — nothing was submitted\n",
+                        k + 1, count, (unsigned long long)amount,
+                        is_native ? "native" : "--token",
+                        (unsigned long long)fee, n_coins, n_locked,
+                        (unsigned long long)tip);
+            goto done;
+        }
+        for (int j = 0; j < p->n_in; j++) coins[p->idx[j]].used = 1;
+    }
+
+    /* ── build, self-check and (unless --dry-run) submit each ────────── */
+    const uint32_t alen = 1u + NODUS_RT_AUTH_SIGNER_LEN;   /* kind-1, 1 sig */
+    call = malloc(2 + (size_t)T6_SPEND_MAX_IN * 64 +
+                  (size_t)T6_SPEND_MAX_OUTS * T6_SPEND_OUT_LEN);
+    auth = calloc(1, alen);
+    pf   = calloc(1, sizeof(*pf));
+    if (!call || !auth || !pf) goto done;
+
+    dna_env_leg_ctx_t lctx;
+    memset(&lctx, 0, sizeof(lctx));
+    lctx.domain_id       = DNA_DOMAIN_CORE;
+    lctx.ruleset_version = core_rt->ruleset_version;
+    memcpy(lctx.ruleset_hash, core_rt->ruleset_hash, 64);
+
+    for (long k = 0; k < count; k++) {
+        const t6_spend_plan_t *p = &plans[k];
+
+        /* inputs: strictly ascending nullifiers on the wire (:1115-1118) */
+        uint8_t nulls[T6_SPEND_MAX_IN][64];
+        for (int j = 0; j < p->n_in; j++)
+            memcpy(nulls[j], coins[p->idx[j]].nul, 64);
+        qsort(nulls, (size_t)p->n_in, 64, t6_nul_cmp);
+
+        size_t off = 0;
+        call[off++] = (uint8_t)p->n_in;
+        for (int j = 0; j < p->n_in; j++) { memcpy(call + off, nulls[j], 64); off += 64; }
+
+        /* outputs: recipient first, then the change the plan leaves */
+        const char *o_owner[T6_SPEND_MAX_OUTS];
+        uint64_t     o_amt[T6_SPEND_MAX_OUTS];
+        const uint8_t *o_tok[T6_SPEND_MAX_OUTS];
+        int n_out = 0;
+        o_owner[n_out] = to_fp; o_amt[n_out] = amount;
+        o_tok[n_out] = is_native ? NULL : token; n_out++;
+        if (!is_native && p->token_change > 0) {
+            o_owner[n_out] = sender_fp; o_amt[n_out] = p->token_change;
+            o_tok[n_out] = token; n_out++;
+        }
+        if (p->native_change > 0) {
+            o_owner[n_out] = sender_fp; o_amt[n_out] = p->native_change;
+            o_tok[n_out] = NULL; n_out++;
+        }
+        call[off++] = (uint8_t)n_out;
+        uint8_t out_id[T6_SPEND_MAX_OUTS][64];
+        for (int o = 0; o < n_out; o++) {
+            uint8_t seed[32];
+            if (nodus_random(seed, sizeof(seed)) != 0) {
+                fprintf(stderr, "random seed generation failed\n");
+                goto done;
+            }
+            t6_xfer_out_put(call + off, o_owner[o], o_amt[o], o_tok[o], seed);
+            /* the output id the chain will derive (rtn_out_ids :1427-1431)
+             * — printed so a caller can find the created row */
+            uint8_t pre[160];
+            memcpy(pre, call + off, 128);
+            memcpy(pre + 128, seed, 32);
+            if (qgp_sha3_512(pre, sizeof(pre), out_id[o]) != 0) goto done;
+            off += T6_SPEND_OUT_LEN;
+        }
+        const uint32_t call_len = (uint32_t)off;
+
+        dna_env_leg_in_t leg;
+        memset(&leg, 0, sizeof(leg));
+        leg.hdr.domain_id            = DNA_DOMAIN_CORE;
+        leg.hdr.runtime_op           = DNA_CORERULE_SPEND;
+        leg.hdr.ruleset_version      = core_rt->ruleset_version;
+        leg.hdr.access_mode          = DNA_ENV_ACCESS_INVOKE;
+        leg.hdr.auth_kind            = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
+        leg.hdr.call_len             = call_len;
+        leg.hdr.auth_len             = alen;
+        leg.hdr.res_max_effects      = 40;
+        leg.hdr.res_max_effect_bytes = 16384;
+        leg.call_data = call;
+        memset(auth, 0, alen);               /* pass 1 needs a zero blob */
+        leg.auth_data = auth;
+
+        dna_env_in_t env_in;
+        memset(&env_in, 0, sizeof(env_in));
+        env_in.expiry_height       = 0;      /* none — race-proof        */
+        env_in.fee_amount          = fee;
+        env_in.leg_count           = 1;
+        env_in.legs                = &leg;
+
+        uint64_t units = 0;                  /* reads: in_count + 1      */
+        if (t6_spend_ceiling(&env_in, sys_rt->meter_policy,
+                             (uint32_t)p->n_in + 1u, &units) != 0) {
+            fprintf(stderr, "could not size res_max_total_units (the "
+                    "metering plan refused the envelope)\n");
+            goto done;
+        }
+        env_in.res_max_total_units = units;
+
+        uint8_t *auths[1] = { auth };
+        size_t env_len = 0;
+        free(env_bytes);
+        env_bytes = NULL;
+        if (t6_env_sign_one_key(&env_in, auths, &lctx, chain32, tip,
+                                &keys[0], &env_bytes, &env_len, pf) != 0)
+            goto done;
+
+        printf("v2-envelope spend %ld/%ld: %zu bytes, inputs=%d "
+               "native_in=%llu token_in=%llu amount=%llu fee=%llu "
+               "native_change=%llu token_change=%llu units=%llu tip=%llu\n",
+               k + 1, count, env_len, p->n_in,
+               (unsigned long long)p->native_in,
+               (unsigned long long)p->token_in,
+               (unsigned long long)amount, (unsigned long long)fee,
+               (unsigned long long)p->native_change,
+               (unsigned long long)p->token_change,
+               (unsigned long long)units, (unsigned long long)tip);
+        printf("  wire_id=");
+        for (int b = 0; b < 64; b++) printf("%02x", pf->wire_id[b]);
+        printf("\n  intent_id=");
+        for (int b = 0; b < 64; b++) printf("%02x", pf->intent_id[b]);
+        printf("\n");
+        for (int o = 0; o < n_out; o++) {
+            printf("  out[%d] id=", o);
+            for (int b = 0; b < 64; b++) printf("%02x", out_id[o][b]);
+            printf(" owner=%.16s... amount=%llu\n", o_owner[o],
+                   (unsigned long long)o_amt[o]);
+        }
+        fflush(stdout);
+
+        if (dry_run) {
+            printf("  PREFLIGHT SELF-CHECK: OK (1 leg CORE SPEND) — not "
+                   "submitted (--dry-run)\n");
+            continue;
+        }
+        if (t6_submit_on(&client, &keys[0], pf->wire_id, env_bytes,
+                         (uint32_t)env_len) != 0) {
+            fprintf(stderr, "spend %ld/%ld was not accepted; %ld earlier "
+                    "spend(s) of this batch were\n", k + 1, count, k);
+            goto done;
+        }
+        fflush(stdout);
+    }
+    rc = 0;
+
+done:
+    free(env_bytes);
+    free(call);
+    free(auth);
+    free(pf);
+    free(plans);
+    free(coins);
+    if (utxos_valid) nodus_client_free_utxo_result(&utxos);
+    if (connected) nodus_client_close(&client);
+    if (keys) {
+        for (int i = 0; i < 4; i++) nodus_identity_clear(&keys[i]);
+        free(keys);
+    }
+    return rc;
+}
 #endif /* NODUS_CLI_HAS_DNAC */
 
 /* ── Usage ───────────────────────────────────────────────────────── */
@@ -2990,6 +3626,9 @@ static void usage(const char *prog) {
     fprintf(stderr, "  v2-envelope stake --db <s.db> --keys <dir> --bond <raw>\n");
     fprintf(stderr, "           --commission <bps> --dest-fp <hex128>\n");
     fprintf(stderr, "           (--dry-run | --submit ip:port)   O11 two-leg STAKE\n");
+    fprintf(stderr, "  v2-envelope spend --keys <dir> --to <fp128hex> --amount <raw>\n");
+    fprintf(stderr, "           [--fee <raw>] [--token <hex128>] [--count <N>]\n");
+    fprintf(stderr, "           [--submit ip:port] [--dry-run]   CORE SPEND (coin transfer)\n");
 #endif
 }
 
@@ -3108,11 +3747,14 @@ int main(int argc, char **argv) {
     }
 
     /* O15D — v2-envelope: successor-chain envelope builder/submitter.
-     * O15F T6 adds the `stake` subcommand (O11 two-leg STAKE). */
+     * O15F T6 adds the `stake` subcommand (O11 two-leg STAKE); CLI-SPEND
+     * adds `spend` (single-leg CORE SPEND, networked). */
     if (strcmp(command, "v2-envelope") == 0) {
         int rc;
         if (optind + 1 < argc && strcmp(argv[optind + 1], "stake") == 0)
             rc = cmd_v2_stake(server_ip, server_port, argc, argv, optind);
+        else if (optind + 1 < argc && strcmp(argv[optind + 1], "spend") == 0)
+            rc = cmd_v2_spend(server_ip, server_port, argc, argv, optind);
         else
             rc = cmd_v2_envelope(server_ip, server_port, argc, argv, optind);
         nodus_identity_clear(&identity);

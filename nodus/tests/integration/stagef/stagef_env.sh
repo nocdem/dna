@@ -424,7 +424,8 @@ stagef_dna_as() {
 # leaves) instead, exactly as the existing V2 scenarios already do.
 #
 # ⚠ THIS FILE IS SOURCED BY EVERY SURVIVING SCENARIO.
-# Nothing below runs at source time except the two constant assignments.
+# Nothing below runs at source time except constant assignments (the two
+# Comet timing constants just below and CLI-SPEND's pump constants).
 # ──────────────────────────────────────────────────────────────────────
 
 # The two Comet timing constants this build overrides away from the
@@ -597,6 +598,250 @@ stagef_cmt_wait_row() {
         if [ "$(( h - start_h ))" -gt "$max_heights" ]; then printf '%s\n' "$h"; return 2; fi
         sleep "$poll_s"
     done
+}
+
+# ──────────────────────────────────────────────────────────────────────
+# CLI-SPEND — TRANSACTION-DRIVEN HEIGHT (the "pump")
+#
+# WHY. After tokenomics-v3 P1 an idle chain commits one block per
+# create_empty_blocks_interval (60 s, above), so a scenario that must
+# cross several epoch boundaries waited on idle production alone — the
+# nodus/BUGS.md top entry records the cost (test_cmt_rule_n_retire.sh
+# ≈ 40-45 min of a ≈ 64 min short-epoch sweep). `nodus-cli v2-envelope
+# spend` now exists, so a scenario can drive height with REAL CORE SPEND
+# transactions instead.
+#
+# THE FUNDER. Node STAGEF_PUMP_FUNDER_NODE's own genesis leaf (default
+# node 3). stagef_up_v2.sh gives every node one leaf (100M DNAC) and no
+# scenario in genesis_protocol_v2.sh's list claims node 1's or node 3's
+# (grep of every `v2-claim` call: test_v2_claim.sh = node 2,
+# test_cmt_mempool_flood.sh = nodes 4-7, test_v2_stake.sh = v2user,
+# test_cmt_claim_flood.sh / test_v2_epoch_boundary.sh = the PUMP batch,
+# test_cmt_empty_blocks.sh = v2probe). The PUMP identity's batch is
+# deliberately NOT the funder: test_cmt_claim_flood.sh must be the one to
+# claim it, in one call, or its assertion breaks.
+#
+# THE SPEND. Each step sends the funder's LARGEST spendable native coin
+# back to itself minus the fee: exactly one input, exactly one output, no
+# change, no dust. The funder's coin count therefore never grows, which
+# matters because dnac_utxo lists at most 100 coins with no ORDER BY
+# before its LIMIT (nodus_witness_db.c nodus_witness_utxo_by_owner) — a
+# pump that minted a dust output per step would, after ~100 steps, hide
+# its own change coin from the CLI's selection.
+#
+# ONE SPEND IN FLIGHT, EACH CONFIRMED BY ITS LEDGER EFFECT. The next spend
+# is built only after the previous one's created UTXO row (utxo_set
+# tx_hash = the envelope's intent_id, nodus_witness_rt_native.c
+# rtn_utxo_create_eff :1463) is visible on the reference node, via
+# stagef_cmt_wait_row. Chosen over "one spend per observed height"
+# because (a) dnac_utxo lists COMMITTED coins only, so a second spend
+# built before the first commits would select the same coin and be a
+# double spend; (b) every step is proven applied, not merely admitted —
+# a CheckTx-approved spend that never lands is reported (rc 2), never
+# papered over by the next one.
+#
+# PROGRESS-BOUNDED, NEVER A BIGGER TIMEOUT. Every wait inside is
+# stagef_cmt_wait_row's own two bounds (STALL_INTERVALS × 60 s with the
+# tip not moving → rc 1; the awaited row absent 20 heights past its
+# submission → rc 2). There is no wall-clock cap on the whole call.
+# ──────────────────────────────────────────────────────────────────────
+
+# The funder / submission nodes, and the fee each pump step pays: the
+# CLI's own default, max(DNAC_MIN_FEE_RAW, NODUS_W_BASE_TX_FEE) — both
+# 1 000 000 raw (dnac/include/dnac/dnac.h:143,
+# nodus/include/nodus/nodus_types.h:266) — passed explicitly so the
+# helper's "amount = coin − fee" arithmetic and the CLI can never disagree.
+STAGEF_PUMP_FUNDER_NODE="${STAGEF_PUMP_FUNDER_NODE:-3}"
+STAGEF_PUMP_SUBMIT_NODE="${STAGEF_PUMP_SUBMIT_NODE:-1}"
+STAGEF_PUMP_FEE_RAW=1000000
+# PUMPED PACE, for a scenario's SKIP feasibility budget only (never a
+# wait bound). JUDGMENT, NOT MEASURED on this build: one pump step costs
+# at most one block interval to inclusion — measured ≈ 6 s per proof
+# block at timeout_commit 5 s before P1 (the DELTA 1 note above; 4 s
+# now) — plus stagef_cmt_wait_row's 5 s poll plus one CLI session
+# (≈ 1 s per Kyber1024 handshake + T2 auth, test_cmt_claim_flood.sh's
+# measured per-leaf reconnect pace). ≈ 12 s, rounded up to 15. At the
+# harness conventions it changes no verdict: E=15 proceeds, E=720 still
+# skips.
+STAGEF_CMT_PUMP_BLOCK_S=15
+export STAGEF_PUMP_FUNDER_NODE STAGEF_PUMP_SUBMIT_NODE STAGEF_PUMP_FEE_RAW \
+       STAGEF_CMT_PUMP_BLOCK_S
+
+stagef_pump_keys() { echo "$(stagef_node_dir "$STAGEF_PUMP_FUNDER_NODE")/identity"; }
+
+# stagef_pump_largest DB — the funder's largest SPENDABLE native coin on
+# DB (unlock_block <= DB's tip, the stake builder's and the CLI's own
+# lock predicate), 0 when it holds none or the read fails.
+stagef_pump_largest() {
+    local db="$1" fp amt
+    fp=$(cat "$(stagef_pump_keys)/nodus.fp" 2>/dev/null || true)
+    [ "${#fp}" = 128 ] || { echo 0; return 0; }
+    amt=$(sqlite3 "$db" \
+        "SELECT COALESCE(MAX(amount),0) FROM utxo_set
+          WHERE owner = '$fp' AND token_id = zeroblob(64)
+            AND unlock_block <= (SELECT COALESCE(MAX(global_height),0) FROM v2_blocks);" \
+        2>/dev/null || echo 0)
+    case "$amt" in ''|*[!0-9]*) amt=0 ;; esac
+    echo "$amt"
+}
+
+# stagef_cmt_pump_ready DB
+#
+# A PURE FEASIBILITY CHECK — submits nothing, changes no chain state, so
+# a scenario that decides its pace with it and then SKIPs leaves nothing
+# behind. Records the answer in STAGEF_PUMP_READY (1 / 0) for
+# stagef_cmt_advance_to. CALL IT DIRECTLY, never inside $(...): the
+# variable must land in the calling shell.
+#   rc 0 / READY=1 — nodus-cli, the genesis config and the funder
+#                    identity exist, AND the funder either already holds
+#                    a spendable native coin above the fee on DB, or the
+#                    config binds a genesis leaf to it (claimed by
+#                    stagef_cmt_pump_to's first step, not here);
+#   rc 1 / READY=0 — otherwise (reason on stderr).
+# It cannot see whether that leaf was already claimed AND spent down by
+# someone else — nothing in the sweep does that; if it ever happens the
+# first pump step's claim is refused and the pump FAULTS (rc 3) loudly.
+stagef_cmt_pump_ready() {
+    local db="$1" keys conf fp
+    STAGEF_PUMP_READY=0
+    keys=$(stagef_pump_keys)
+    conf="$BASE_DIR/v2_genesis.conf"
+    if [ ! -x "$STAGEF_NODUSCLI_BIN" ] || [ ! -f "$conf" ] || \
+       [ ! -s "$keys/nodus.pk" ] || [ ! -s "$keys/nodus.fp" ]; then
+        echo "[pump] unavailable: needs $STAGEF_NODUSCLI_BIN, $conf and $keys" >&2
+        return 1
+    fi
+    fp=$(cat "$keys/nodus.fp")
+    if [ "$(stagef_pump_largest "$db")" -le "$STAGEF_PUMP_FEE_RAW" ] && \
+       ! grep -q "^dest_binding = ${fp}\$" "$conf"; then
+        echo "[pump] unavailable: node$STAGEF_PUMP_FUNDER_NODE holds no coin above the fee and $conf binds no leaf to it" >&2
+        return 1
+    fi
+    STAGEF_PUMP_READY=1
+    return 0
+}
+
+# stagef_pump_claim DB — claim the funder's genesis leaf (`v2-claim`,
+# submitted to the submit node) and wait for the claimed coin as a
+# LEDGER EFFECT: an unlocked native coin above the fee owned by the
+# funder (the 100M DNAC leaf itself, not any small coin an epoch
+# settlement payout may already have given it). Prints the tip; rc 0 /
+# 1 stall / 2 not included within 20 heights / 3 the claim was refused.
+stagef_pump_claim() {
+    local db="$1" keys conf fp port log h wrc
+    keys=$(stagef_pump_keys)
+    conf="$BASE_DIR/v2_genesis.conf"
+    fp=$(cat "$keys/nodus.fp")
+    port=$(stagef_tcp_port "$STAGEF_PUMP_SUBMIT_NODE")
+    log="$BASE_DIR/pump_claim_node${STAGEF_PUMP_FUNDER_NODE}.log"
+    if ! "$STAGEF_NODUSCLI_BIN" -s 127.0.0.1 -p "$port" v2-claim \
+           --config "$conf" --db "$db" --keys "$keys" \
+           --submit "127.0.0.1:$port" > "$log" 2>&1; then
+        echo "[pump] node$STAGEF_PUMP_FUNDER_NODE's genesis-leaf claim was refused:" >&2
+        cat "$log" >&2
+        stagef_cmt_tip "$db"
+        return 3
+    fi
+    h=$(stagef_cmt_wait_row "$db" \
+        "SELECT COUNT(*) FROM utxo_set WHERE owner = '$fp'
+           AND token_id = zeroblob(64) AND amount > $STAGEF_PUMP_FEE_RAW;") \
+        && wrc=0 || wrc=$?
+    if [ "$wrc" != 0 ]; then
+        echo "[pump] node$STAGEF_PUMP_FUNDER_NODE's claimed coin never appeared (wait rc=$wrc, tip $h)" >&2
+    else
+        echo "[pump] node$STAGEF_PUMP_FUNDER_NODE's genesis leaf claimed (tip $h)" >&2
+    fi
+    printf '%s\n' "$h"
+    return "$wrc"
+}
+
+# stagef_cmt_pump_to DB TARGET [STALL_INTERVALS]
+#
+# Drive DB's Comet tip to TARGET with pump spends (see the section note).
+# Requires a successful stagef_cmt_pump_ready. Prints the final tip read.
+#   rc 0  reached TARGET
+#   rc 1  STALL — a spend's inclusion wait saw the tip stop advancing
+#   rc 2  DROPPED — a CheckTx-approved spend was not included within 20
+#         heights while the chain kept advancing
+#   rc 3  PUMP FAULT — the funder's leaf claim was refused, no spendable
+#         funder coin above the fee even after claiming, the CLI
+#         refused/failed, or its output carried no intent_id (the CLI's
+#         own output is echoed to stderr)
+# FIRST STEP, when the funder holds no coin above the fee: claim its
+# genesis leaf (stagef_pump_claim) — ONCE per call; a second shortfall
+# is a fault, not another claim.
+# A fault is RETURNED, never retried: the caller decides; nothing here
+# falls back to idle production silently.
+stagef_cmt_pump_to() {
+    local db="$1" target="$2" stall="${3:-3}"
+    local keys fp port h amt out intent wrc steps=0 claimed=0
+    keys=$(stagef_pump_keys)
+    fp=$(cat "$keys/nodus.fp" 2>/dev/null || true)
+    port=$(stagef_tcp_port "$STAGEF_PUMP_SUBMIT_NODE")
+    while :; do
+        h=$(stagef_cmt_tip "$db")
+        [ -n "$h" ] || h=-1
+        if [ "$h" -ge "$target" ]; then
+            echo "[pump] tip $h >= $target after $steps spend(s)" >&2
+            printf '%s\n' "$h"
+            return 0
+        fi
+        amt=$(stagef_pump_largest "$db")
+        if [ "$amt" -le "$STAGEF_PUMP_FEE_RAW" ]; then
+            if [ "$claimed" = 1 ]; then
+                echo "[pump] node$STAGEF_PUMP_FUNDER_NODE holds no spendable native coin above the fee even after claiming its leaf" >&2
+                printf '%s\n' "$h"
+                return 3
+            fi
+            claimed=1
+            h=$(stagef_pump_claim "$db") && wrc=0 || wrc=$?
+            if [ "$wrc" != 0 ]; then
+                printf '%s\n' "$h"
+                return "$wrc"
+            fi
+            continue                # the claim itself may have reached TARGET
+        fi
+        if ! out=$("$STAGEF_NODUSCLI_BIN" -s 127.0.0.1 -p "$port" \
+                   v2-envelope spend --keys "$keys" --to "$fp" \
+                   --amount "$(( amt - STAGEF_PUMP_FEE_RAW ))" \
+                   --fee "$STAGEF_PUMP_FEE_RAW" \
+                   --submit "127.0.0.1:$port" 2>&1); then
+            echo "[pump] v2-envelope spend failed at tip $h:" >&2
+            printf '%s\n' "$out" >&2
+            printf '%s\n' "$h"
+            return 3
+        fi
+        intent=$(printf '%s\n' "$out" | awk -F= '/^  intent_id=/{print $2; exit}')
+        if [ "${#intent}" != 128 ]; then
+            echo "[pump] the spend's output carried no intent_id:" >&2
+            printf '%s\n' "$out" >&2
+            printf '%s\n' "$h"
+            return 3
+        fi
+        h=$(stagef_cmt_wait_row "$db" \
+            "SELECT COUNT(*) FROM utxo_set WHERE lower(hex(tx_hash)) = '$intent';" \
+            "$stall") && wrc=0 || wrc=$?
+        if [ "$wrc" != 0 ]; then
+            echo "[pump] spend ${intent:0:16}... not applied (wait rc=$wrc, tip $h)" >&2
+            printf '%s\n' "$h"
+            return "$wrc"
+        fi
+        steps=$(( steps + 1 ))
+    done
+}
+
+# stagef_cmt_advance_to DB TARGET [STALL_INTERVALS]
+#
+# The one call a scenario uses for a multi-block wait: stagef_cmt_pump_to
+# when STAGEF_PUMP_READY=1, stagef_cmt_wait_height (idle production)
+# otherwise. Same stdout (the final tip) and rc 0 = reached; any other rc
+# is the underlying helper's own (pump: 1/2/3, idle: 1).
+stagef_cmt_advance_to() {
+    if [ "${STAGEF_PUMP_READY:-0}" = 1 ]; then
+        stagef_cmt_pump_to "$@"
+    else
+        stagef_cmt_wait_height "$@"
+    fi
 }
 
 # stagef_voter_id PUBKEY_FILE

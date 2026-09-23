@@ -62,12 +62,29 @@
 #   Environment: `STAGEF_EPOCH_LENGTH=<E>` exported to the SAME E before
 #   bring-up, from stagef_up_v2.sh. This scenario needs to observe
 #   THREE consecutive epoch boundaries plus a short settle window; at
-#   the shipped epoch length (720) that is many hours of idle-only wall
-#   time and this script SKIPS (rc 99) rather than wait for it — see the
-#   wall-clock budget below, computed the same way
+#   the shipped epoch length (720) that is hours of wall time even
+#   pumped, and this script SKIPS (rc 99) rather than wait for it — see
+#   the wall-clock budget below, computed the same way
 #   `test_v2_epoch_boundary.sh` computes its own (a blocks-away figure
-#   times the interval, never a bare timeout raised until green).
+#   times the per-block pace, never a bare timeout raised until green).
+#   Optional: STAGEF_PUMP_FUNDER_NODE / STAGEF_PUMP_SUBMIT_NODE
+#   (stagef_env.sh, defaults 3 / 1) and a built `nodus-cli`
+#   (STAGEF_NODUSCLI_BIN) for the pump below; without them it runs on
+#   idle production exactly as before.
 #   ⚠ A cluster from **stagef_up_v2.sh**. On a legacy cluster it exits 99.
+#
+# CLI-SPEND — BLOCKS ARE DRIVEN BY SPEND TRANSACTIONS WHEN POSSIBLE
+#   Every multi-block wait below (alignment, settle, the three
+#   boundaries, the final settle) goes through stagef_cmt_advance_to: when
+#   stagef_cmt_pump_ready succeeds (node 3's genesis leaf, claimed by the
+#   first pump step, then one self-send `v2-envelope spend` at a time, each
+#   confirmed by its created utxo_set row before the next), the chain
+#   is driven by real CORE SPEND transactions instead of the 60 s idle
+#   interval; otherwise the waits are the idle ones they always were. The
+#   SKIP budget uses the matching per-block pace (STAGEF_CMT_PUMP_BLOCK_S
+#   when pumped). Only the victim's catch-up waits after the resume stay
+#   idle — they wait for REPLICATION, not production. None of the
+#   assertions changed.
 #
 # ROUND 5 RE-CHECK (R5-8, tokenomics-v3 P1): re-verified against R5-1
 # (duty-set evaluation), R5-2 (the floor) and R5-3 (graduation deferral)
@@ -99,6 +116,12 @@
 #   this one that assumes 7 ACTIVE validators will not find them. The
 #   runner places it immediately before `test_cmt_arena_runway.sh`
 #   (which only reads receive-arena latches) and after everything else.
+#   When pumped: node 3's genesis leaf CLAIMED by the first pump step (if
+#   no earlier scenario's pump already claimed it) and every pump step's
+#   fee (STAGEF_PUMP_FEE_RAW) gone from node 3's coin; node 3's coin
+#   count stays one (self-sends, no change output). A SKIP leaves nothing
+#   of the pump behind: stagef_cmt_pump_ready, which decides the pace
+#   before the budget, submits nothing.
 #
 # HOW IT CAN LIE
 #   - Idle production (CreateEmptyBlocks) means "height advanced" alone
@@ -129,6 +152,17 @@
 #   - A green here is at E=15, not 720: it proves the retire → §A →
 #     graduation ordering and 7/7 agreement, nothing about how long a
 #     real epoch takes to reach it.
+#   - PUMPED, the watched epochs carry SPEND transactions; idle, they are
+#     empty blocks. Rule N reads signatures, not block content, so both
+#     exercise the same rule — but a green pumped run does not prove the
+#     idle shape and vice versa; the `[ok] block driving:` line says which
+#     one this run was. A pump fault (rc 3: CLI refusal, no funds) or a
+#     dropped spend (rc 2) FAILS the wait it happened in; it is never
+#     silently retried or downgraded to idle mid-run.
+#   - (FIXED at the P1 landing) the stop-SETTLE block used to REUSE the
+#     name `settle_to`, overwriting the final "e3 + 7" target so the final
+#     settle returned at once. It now uses its own `stop_settle_to`; the
+#     first short-epoch sweep run 2 at 0.19.67 still ran the old shape.
 #
 # ════════════════════════════════════════════════════════════════════
 set -euo pipefail
@@ -155,10 +189,24 @@ fi
 E_LEN="${STAGEF_EPOCH_LENGTH:-720}"
 tip() { stagef_cmt_tip "$ref_db"; }
 
+# ── CLI-SPEND: drive height with pump SPENDS when the pump is usable
+# (stagef_env.sh stagef_cmt_pump_ready — a pure check; node 3's genesis
+# leaf is claimed by the first pump step, not here), idle production
+# otherwise. Decided BEFORE the budget below, because the budget's
+# per-block pace depends on it. ───────────────────────────────────────
+pace="idle"
+per_block_s=$(( STAGEF_CMT_EMPTY_INTERVAL_MS / 1000 ))
+if stagef_cmt_pump_ready "$ref_db"; then
+    pace="pumped"
+    per_block_s="$STAGEF_CMT_PUMP_BLOCK_S"
+fi
+echo "[ok] block driving: $pace (${per_block_s}s per block for the budget below)"
+
 # ── Wall-clock budget for THREE boundaries + settle, computed from the
 # CURRENT tip, exactly the reasoning test_v2_epoch_boundary.sh's own
-# header states: worst case is purely idle production, one
-# CreateEmptyBlocksInterval per block, no leaf count involved. ────────
+# header states: blocks needed x the per-block pace — the idle
+# CreateEmptyBlocksInterval, or STAGEF_CMT_PUMP_BLOCK_S when pumped — no
+# leaf count involved. ────────────────────────────────────────────────
 STAGEF_RULE_N_RETIRE_BUDGET_S="${STAGEF_RULE_N_RETIRE_BUDGET_S:-5400}"
 head0=$(tip)
 epoch_start0=$(( (head0 / E_LEN) * E_LEN ))
@@ -168,17 +216,17 @@ e2=$(( e1 + E_LEN ))
 e3=$(( e2 + E_LEN ))
 settle_to=$(( e3 + 7 ))
 need=$(( settle_to - head0 ))
-worst_case_s=$(( need * (STAGEF_CMT_EMPTY_INTERVAL_MS / 1000) ))
+worst_case_s=$(( need * per_block_s ))
 if [ "$worst_case_s" -gt "$STAGEF_RULE_N_RETIRE_BUDGET_S" ]; then
     echo "[SKIP] epoch length $E_LEN needs $need blocks to observe three"
     echo "       boundaries plus settle from height $head0; worst-case"
-    echo "       idle-only wait is ${worst_case_s}s, over this harness's"
-    echo "       ${STAGEF_RULE_N_RETIRE_BUDGET_S}s patience budget —"
+    echo "       $pace wait is ${worst_case_s}s (${per_block_s}s/block), over"
+    echo "       this harness's ${STAGEF_RULE_N_RETIRE_BUDGET_S}s patience budget —"
     echo "       needs a SHORT-EPOCH build: -DDNAC_EPOCH_LENGTH=15 +"
     echo "       STAGEF_EPOCH_LENGTH=15"
     exit 99
 fi
-echo "[ok] epoch length $E_LEN, head $head0, boundaries at $align_to/$e1/$e2/$e3, settle to $settle_to (worst case ${worst_case_s}s)"
+echo "[ok] epoch length $E_LEN, head $head0, boundaries at $align_to/$e1/$e2/$e3, settle to $settle_to (worst case ${worst_case_s}s, $pace)"
 stagef_sentinel SETUP_OK   # W4-H: the runner turns PASS-without-ASSERT_RUN into FAIL
 
 stagef_cmt_diff_at_floor "pre-cmt-rule-n-retire" || exit 2
@@ -189,8 +237,8 @@ voter_id=$(stagef_voter_id "$(stagef_node_dir "$VICTIM")/identity/nodus.pk")
 # ── ALIGNMENT: wait for a fresh epoch start with node 7 still HEALTHY,
 # so both watched epochs are unambiguously 0 % attended by design. ────
 if [ "$align_to" -gt "$head0" ]; then
-    aligned=$(stagef_cmt_wait_height "$ref_db" "$align_to" 3) \
-        || die "tip did not reach the alignment boundary $align_to (stuck at $aligned)"
+    aligned=$(stagef_cmt_advance_to "$ref_db" "$align_to" 3) \
+        || die "tip did not reach the alignment boundary $align_to ($pace; stuck at $aligned)"
 fi
 # Self-correcting re-derivation (HOW IT CAN LIE): read the height
 # ACTUALLY reached, not assumed, before deriving the two-epoch window.
@@ -216,12 +264,9 @@ echo "[ok] node$VICTIM (pid $VPID) STOPPED (voter_id ${voter_id:0:16}...) at hei
 # late credit gives node 7 ONE signed block inside the first watched epoch
 # (≈ 1/15 at E=15) — still far below the 50 % bar, so the miss at e1 is
 # unaffected, but "0 % attended" is 0-1 blocks, not exactly 0.
-# Its own name: `settle_to` is the FINAL "e3 + 7" target set above and
-# reused at the end — overwriting it (as the first cut of this block did)
-# made the final settle return at once.
 stop_settle_to=$(( aligned_h + 3 ))
-settled_h=$(stagef_cmt_wait_height "$ref_db" "$stop_settle_to" 12) \
-    || die "tip did not reach the settle height $stop_settle_to with node$VICTIM stopped (stuck at $settled_h)"
+settled_h=$(stagef_cmt_advance_to "$ref_db" "$stop_settle_to" 12) \
+    || die "tip did not reach the settle height $stop_settle_to with node$VICTIM stopped ($pace; stuck at $settled_h)"
 last_signed_frozen=$(sqlite3 "$ref_db" \
     "SELECT COALESCE(last_signed_height,-1) FROM v2_attendance WHERE lower(hex(voter_id))='$voter_id';" \
     2>/dev/null || echo -1)
@@ -234,8 +279,8 @@ v7pk_hex=$(xxd -p -c 999999 "$(stagef_node_dir "$VICTIM")/identity/nodus.pk" 2>/
 [ -n "$v7pk_hex" ] || die "could not read node$VICTIM's pubkey file"
 
 # ── First epoch, fully missed, but below AUTO_RETIRE_EPOCHS ─────────
-h1=$(stagef_cmt_wait_height "$ref_db" "$e1" 12) \
-    || die "tip did not reach the first boundary $e1 with node$VICTIM stopped (stuck at $h1)"
+h1=$(stagef_cmt_advance_to "$ref_db" "$e1" 12) \
+    || die "tip did not reach the first boundary $e1 with node$VICTIM stopped ($pace; stuck at $h1)"
 row1=$(sqlite3 "$ref_db" \
     "SELECT status||'|'||consecutive_missed_epochs FROM validators WHERE lower(hex(pubkey))='$v7pk_hex';")
 [ -n "$row1" ] || die "no validators row for node$VICTIM's pubkey"
@@ -245,8 +290,8 @@ st1="${row1%%|*}"; miss1="${row1##*|}"
 echo "[ok] boundary $e1 (height $h1): node$VICTIM ACTIVE, consecutive_missed_epochs=1 (one miss, not yet AUTO_RETIRE)"
 
 # ── Second epoch, fully missed: AUTO_RETIRE fires ────────────────────
-h2=$(stagef_cmt_wait_height "$ref_db" "$e2" 12) \
-    || die "tip did not reach the second boundary $e2 with node$VICTIM stopped (stuck at $h2)"
+h2=$(stagef_cmt_advance_to "$ref_db" "$e2" 12) \
+    || die "tip did not reach the second boundary $e2 with node$VICTIM stopped ($pace; stuck at $h2)"
 row2=$(sqlite3 "$ref_db" \
     "SELECT status||'|'||consecutive_missed_epochs FROM validators WHERE lower(hex(pubkey))='$v7pk_hex';")
 st2="${row2%%|*}"; miss2="${row2##*|}"
@@ -256,8 +301,8 @@ echo "[ok] boundary $e2 (height $h2): node$VICTIM AUTO_RETIRED (status=3), conse
 
 # ── Third epoch: cometbft's OWN validator set catches up (§A, one
 # epoch behind the DB flip — see this script's own header). ─────────
-h3=$(stagef_cmt_wait_height "$ref_db" "$e3" 12) \
-    || die "tip did not reach the third boundary $e3 with node$VICTIM stopped (stuck at $h3)"
+h3=$(stagef_cmt_advance_to "$ref_db" "$e3" 12) \
+    || die "tip did not reach the third boundary $e3 with node$VICTIM stopped ($pace; stuck at $h3)"
 log="$(stagef_node_dir "$REF")/nodus.log"
 [ -f "$log" ] || die "no nodus.log for node$REF"
 if ! grep -q "boundary height $e3 .*n_removed=1" "$log"; then
@@ -280,8 +325,8 @@ echo "[ok] node$VICTIM signed nothing across the whole window; $others other val
 
 # ── Settle: 7 further heights with node 7 absent from every commit,
 # then resume and re-converge. ───────────────────────────────────────
-settled=$(stagef_cmt_wait_height "$ref_db" "$settle_to" 6) \
-    || die "tip did not reach the settle height $settle_to (stuck at $settled)"
+settled=$(stagef_cmt_advance_to "$ref_db" "$settle_to" 6) \
+    || die "tip did not reach the settle height $settle_to ($pace; stuck at $settled)"
 echo "[ok] tip advanced to $settled with node$VICTIM still stopped (needed >= $settle_to)"
 
 kill -CONT "$VPID"

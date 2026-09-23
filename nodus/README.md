@@ -113,6 +113,21 @@ Produces:
 - `nodus-circ` — circuit relay test tool
 - `test_*` — Unit test binaries
 
+### `nodus-cli` chain commands (version-3 chain)
+
+`nodus-cli -h` prints the full list (DHT verbs included). The envelope and
+claim builders — every one answers with the mempool **CheckTx** verdict
+(`accepted: mempool CheckTx approved ...`), never a commit; inclusion is
+read from the chain:
+
+| Command | What it builds |
+|---|---|
+| `v2-claim --config <conf> --db <db> --keys <dir> (--dry-run \| --submit ip:port)` | GENESIS_CLAIM of every genesis leaf bound to the key, one session |
+| `v2-envelope stake --db <db> --keys <dir> --bond <raw> --commission <bps> --dest-fp <hex128> (--dry-run \| --submit ip:port)` | two-leg SYSTEM STAKE + CORE SYSFUND |
+| `v2-envelope spend --keys <dir> --to <fp128hex> --amount <raw> [--fee <raw>] [--token <hex128>] [--count <N>] [--submit ip:port] [--dry-run]` | single-leg CORE SPEND — a coin transfer. Networked end to end on ONE session authenticated as the sender: chain id from `dnac_supply`, the sender's coins from `dnac_utxo` (unlocked only, largest first, ties by nullifier), CORE ruleset from the binary's compiled table. Fee defaults to the chain floor (1 000 000 raw) and is refused below it; change returns to the sender; `--count N` submits N independent spends with disjoint inputs. `res_max_total_units` is right-sized per envelope (the block reserves every envelope's full ceiling at once, so the ceiling sets how many fit one block — ≈ 41 one-input spends). Prints `intent_id=` per envelope — the `tx_hash` of the UTXOs it creates. Refuses insufficient funds, more than 15 inputs, amount 0, a fee below the floor. `--dry-run` still needs the node (it lists the coins) and submits nothing. |
+| `v2-envelope chain-config --db <db> --keys <dirs>` | offline-signed SYSTEM CHAIN_CONFIG (rehearsal driver) |
+| `chain-config propose --param <NAME> --value <N> --effective <H>` | networked SYSTEM CHAIN_CONFIG with committee approvals collected over the wire |
+
 ## Run Tests
 
 ```bash
