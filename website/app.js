@@ -354,7 +354,7 @@ const turkish = {
   "footer.terms": "Hizmet Şartları",
   "footer.privacy": "Gizlilik",
   "team.label": "EKİP",
-  "team.title": "Nodus’u geliştiren insanlar",
+  "team.title": "Nodus’un arkasındakiler",
   "team.founderRole": "Kurucu ve Baş Mimar, Nodus Foundation",
   "team.cfoRole": "CFO, Nodus Foundation",
   "legal.label": "HUKUKİ",
