@@ -33,7 +33,9 @@
  *
  * ── THE CHAIN OVERRIDES TWO OF THESE AT R3 ─────────────────────────────
  * `create_empty_blocks_interval` becomes 60 000 ms and `timeout_commit`
- * 5 000 ms, both compile-time NODE settings per D-4 rev 3
+ * 4 000 ms (5 000 ms until tokenomics-v3 P1: operator decision S-7,
+ * docs/plans/decisions/2026-09-22-nodus-tokenomics-v3-operator.md §1),
+ * both compile-time NODE settings per D-4 rev 3
  * (atlas-dec-d5ddcba654eb48d861c03a0ecd170718, APPROVED 2026-09-11; the
  * CHAIN_CONFIG block-interval parameter has NO effect on this lane; a
  * 60 s idle interval when there is no demand). That wiring is R3's; the

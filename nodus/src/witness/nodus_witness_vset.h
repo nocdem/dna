@@ -139,7 +139,9 @@ int nodus_witness_vset_root(nodus_witness_t *w,
  * epoch_start, and active_count = the committee size actually returned.
  *
  * A chain with no eligible validators has NO snapshot: count == 0 returns
- * -1 rather than an empty set.
+ * -1 rather than an empty set. (The selection itself is a static core
+ * shared with nodus_witness_vset_preview_next below, which reports that
+ * same empty case as a verdict, rc 1, instead.)
  *
  * @param max_active   target set size, must be in [1, DNA_MAX_ACTIVE_VALIDATORS].
  * @param snapshot_out [out] optional; heap snapshot (dna_vset_free).
@@ -159,7 +161,11 @@ int nodus_witness_vset_build_for_epoch(nodus_witness_t *w,
 /* ════════════════════════════════════════════════════════════════════
  * S3 epoch lifecycle — ACTIVE. Called from finalize_block.
  *
- * These three are the only functions in this file that consensus runs.
+ * These three are the only functions in this file through which
+ * consensus WRITES state. Consensus also calls one READ-ONLY function
+ * declared among them, nodus_witness_vset_preview_next (Rule N's weight
+ * floor — v2ep_rule_n, nodus_witness_v2_epoch.c), which runs BEFORE
+ * commit_next in the same boundary (Rule N is step 3, commit_next step 5).
  * All of them execute INSIDE the caller's block DB transaction, in
  * finalize_block's deterministic order, so BFT-original commit, genesis
  * commit and sync replay all reach them identically (every path funnels
@@ -219,6 +225,39 @@ int nodus_witness_vset_apply_boundary_flips(nodus_witness_t *w,
  */
 int nodus_witness_vset_commit_next(nodus_witness_t *w,
                                    uint64_t boundary_height);
+
+/**
+ * Build — WITHOUT encoding, hashing or storing — the snapshot that
+ * nodus_witness_vset_commit_next(w, boundary_height) would build for the
+ * epoch starting at boundary_height + DNAC_EPOCH_LENGTH if it ran over
+ * the SAME committed state.
+ *
+ * tokenomics-v3 P1 round 6 (decision file §3 2026-09-23, "Rule N TABANI
+ * WEIGHT ÜZERİNDEN"): Rule N's floor judges the voting power of the NEXT
+ * epoch's seatable members, i.e. of this very snapshot. Same key
+ * (boundary_height + DNAC_EPOCH_LENGTH), same target lookup
+ * (vset_target_for_epoch, keyed on that height) and the same static
+ * selection core that nodus_witness_vset_build_for_epoch wraps — so there
+ * is exactly one piece of selection logic, not a copy.
+ *
+ * Pure read: runs inside the caller's transaction, writes nothing.
+ *
+ * Unlike nodus_witness_vset_build_for_epoch (and therefore commit_next
+ * and commit_genesis, which keep "empty = fault"), this function tells a
+ * VERDICT from a FAULT:
+ *
+ * @param snapshot_out [out] heap snapshot on rc 0 (dna_vset_free);
+ *        untouched otherwise.
+ * @return 0 built;
+ *         1 the committee is EMPTY (no bonded, tenured validator would
+ *           be seated) — a well-formed answer, not an error;
+ *        -1 fault (bad args, height overflow, TARGET_ACTIVE_COUNT
+ *           unreadable, committee compute failed, allocation, witness_id
+ *           derivation). A DB failure is never a value.
+ */
+int nodus_witness_vset_preview_next(nodus_witness_t *w,
+                                    uint64_t boundary_height,
+                                    dna_vset_snapshot_t **snapshot_out);
 
 /**
  * Seed the genesis snapshots.

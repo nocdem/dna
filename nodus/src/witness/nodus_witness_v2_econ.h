@@ -51,12 +51,16 @@
  *    V1 — a REAL committed-state difference between the lanes.
  *    V1's two whole-pool exits (no usable snapshot; committee_count 0)
  *    `return 0` BEFORE its counter reset, so on those two paths V1 does
- *    NOT clear signed_blocks_this_epoch and the counts carry into the
- *    next epoch. On this lane the reset belongs to Rule N step (d)
- *    (O15C) and runs unconditionally after settlement returns.
- *    `signed_blocks_this_epoch` IS a validator merkle-leaf field
- *    (nodus_witness_merkle.c), so the two lanes commit different state
- *    on those paths.
+ *    NOT clear its per-epoch signed-block counter and the counts carry
+ *    into the next epoch. On this lane the reset runs unconditionally
+ *    after settlement returns, as its own boundary step (tokenomics-v3
+ *    P1: `v2_attendance.signed_count` reset, immediately after the
+ *    attendance digest write and after Rule N — nodus_witness_v2_epoch.c
+ *    `nodus_witness_v2_epoch_boundary_apply`). Post-P1 the counter is
+ *    OUT-OF-ROOT (`v2_attendance`, never a validator merkle-leaf field),
+ *    so this divergence no longer commits different STATE ROOT bytes
+ *    between the lanes — only different table contents, which matters
+ *    only to the liveness bar this same function reads.
  *    NOT a fork risk — the lanes never run on one chain — and arguably
  *    the better behaviour, since V1's carry-over inflates the next
  *    epoch's attendance and hides downtime. But it is a divergence from

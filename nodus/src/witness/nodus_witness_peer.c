@@ -717,11 +717,24 @@ int nodus_witness_peer_handle_ident(nodus_witness_t *w,
      *
      * Pre-genesis (committee empty) is handled liberally — the check
      * is a no-op until the chain has any validators. Otherwise,
-     * reject ident from any pubkey not in the current committee. */
+     * reject ident from any pubkey not in the current committee.
+     *
+     * tokenomics-v3 P1 round 5 (O6 red-team L1-2): cometbft's own
+     * two-height lag means a validator set change the LEDGER already
+     * applied is not yet the set cometbft is voting with — it still
+     * validates heights H and H+1 with the PREVIOUS set. A member that
+     * is still an honest voter under that previous set could be refused
+     * here purely because this gate only ever asked the FORWARD
+     * committee, and once refused it cannot redial to keep signing.
+     * Accept the ident if the pubkey is a member of EITHER the committee
+     * for `peer_tip + 1` (forward — unchanged) OR the committee for
+     * `peer_tip - 1` (the set cometbft can still be using, guarded
+     * against underflow at low heights). This gate has NO counterpart in
+     * the cometbft reference — p2p there does not filter peers by
+     * validator set at all — so it remains registered attack surface,
+     * not a ported behaviour, whichever committee(s) it consults. */
     {
         /* S3: heap — a DNAC_MAX_ACTIVE_VALIDATORS committee is ~334 KB. */
-        nodus_committee_member_t *committee = NULL;
-        int cm_count = 0;
         bool reject = false;
         /* O15O Faz 1 — a faulted height read takes the SAME path this
          * gate already takes for a committee-lookup failure and for
@@ -740,28 +753,58 @@ int nodus_witness_peer_handle_ident(nodus_witness_t *w,
                     "%s: w_ident — chain-height read faulted; treating the "
                     "admission gate as pre-genesis (accept) rather than "
                     "resolving the committee at height 1\n", LOG_TAG);
-        } else if (nodus_committee_get_for_block_alloc(w,
-                                                  peer_tip + 1,
-                                                  &committee,
-                                                  &cm_count) == 0 &&
-            cm_count > 0) {
+        } else {
             bool in_committee = false;
-            for (int i = 0; i < cm_count; i++) {
-                if (memcmp(committee[i].pubkey, ident->pubkey,
-                            DNAC_PUBKEY_SIZE) == 0) {
-                    in_committee = true;
-                    break;
+            bool fwd_resolved = false;
+
+            nodus_committee_member_t *fwd = NULL;
+            int fwd_count = 0;
+            if (nodus_committee_get_for_block_alloc(w, peer_tip + 1, &fwd,
+                                                    &fwd_count) == 0 &&
+                fwd_count > 0) {
+                fwd_resolved = true;
+                for (int i = 0; i < fwd_count; i++) {
+                    if (memcmp(fwd[i].pubkey, ident->pubkey,
+                              DNAC_PUBKEY_SIZE) == 0) {
+                        in_committee = true;
+                        break;
+                    }
                 }
             }
-            reject = !in_committee;
+            free(fwd);
+
+            /* The lagging committee can only WIDEN admission — it is
+             * consulted only when the forward committee resolved and
+             * refused. A forward lookup that failed or came back empty
+             * keeps its pre-round-5 meaning (accept), whatever the lag
+             * lookup would say (O6 verifier, round 5). */
+            if (fwd_resolved && !in_committee && peer_tip >= 1) {
+                nodus_committee_member_t *lag = NULL;
+                int lag_count = 0;
+                if (nodus_committee_get_for_block_alloc(w, peer_tip - 1,
+                                                        &lag,
+                                                        &lag_count) == 0 &&
+                    lag_count > 0) {
+                    for (int i = 0; i < lag_count; i++) {
+                        if (memcmp(lag[i].pubkey, ident->pubkey,
+                                  DNAC_PUBKEY_SIZE) == 0) {
+                            in_committee = true;
+                            break;
+                        }
+                    }
+                }
+                free(lag);
+            }
+
+            /* Forward committee failed or empty: pre-genesis / bootstrap
+             * / lookup fault — accept liberally, exactly as before. */
+            reject = fwd_resolved && !in_committee;
         }
-        /* cm_count == 0: pre-genesis / bootstrap — accept liberally so
-         * committee can be established. */
-        free(committee);
         if (reject) {
             fprintf(stderr,
                     "%s: w_ident rejected — peer pubkey not in "
-                    "current committee (transport admission gate)\n",
+                    "the forward or the lagging committee (transport "
+                    "admission gate)\n",
                     LOG_TAG);
             return -1;
         }

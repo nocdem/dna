@@ -24,10 +24,13 @@
  *   §5  OFFLINE SHARE — in a NON-carve-out epoch a member that did not
  *       clear the liveness bar is paid NOTHING and its whole slot is
  *       BURNED (burn leg 2 of 3), while a member that did clear it is
- *       paid in full. Attendance is accumulated through the REAL O15C
- *       writer by proposing real blocks — nothing is hand-written. This
- *       is also what pins the settlement-before-Rule-N ordering: Rule N
- *       resets the very counter the liveness gate reads.
+ *       paid in full. Attendance is accumulated through the REAL
+ *       attendance writer (tokenomics-v3 P1:
+ *       nodus_witness_v2_attendance_credit, driven here by injecting a
+ *       one-vote decided_last_commit per attending block) — nothing is
+ *       hand-written into `v2_attendance`. This is also what pins the
+ *       settlement-before-reset ordering: the boundary's attendance-reset
+ *       step zeroes the very counter the liveness gate reads.
  *   §6  SUPPLY EQUATION — recomputed term by term from the tables (not
  *       merely by asking the gate) at every stage of every cycle above.
  *   §7  DETERMINISM TWIN — two independent fixtures seeded in OPPOSITE
@@ -63,6 +66,7 @@
 #include "nodus/nodus_chain_config.h"
 #include "nodus/nodus_types.h"
 #include "dnac/dnac.h"
+#include "dnac/cmt_pb.h"        /* CMT_PB_BLOCK_ID_FLAG_COMMIT (Q1)      */
 #include "dnac/ledger_ids.h"
 #include "dnac/validator.h"
 #include "crypto/hash/qgp_sha3.h"
@@ -376,8 +380,21 @@ static void fx_close(fixture_t *fx) {
 }
 
 /* Apply one zero-envelope block at the next height, optionally crediting
- * a REAL proposer. `proposer_key` < 0 means an all-zero proposer_id — the
- * O15C writer's documented no-op (nodus_witness_v2_epoch.c:444-449). */
+ * a REAL attendance vote. `attendee_key` < 0 means no vote at all — the
+ * writer's documented empty case (nodus_witness_v2_attendance_credit,
+ * n_votes == 0, nodus_witness_v2_epoch.c).
+ *
+ * tokenomics-v3 P1 (D-2, Q1): the O15C proposer-credit mechanism this
+ * fixture originally drove (`b.proposer_id`) is RETIRED — "Teklifçi
+ * kimliği katılım sayımına GİRMEZ" (decision §1). `proposer_key` still
+ * sets the header's `proposer_id` field below (harmless, no longer read
+ * by attendance), but the REAL credit now comes from a one-vote
+ * `decided_last_commit`, injected directly into `b.cmt.votes_address` /
+ * `.votes_block_id_flag` — the same fields `nodus_cmt_app_finalize_block`
+ * populates from a real ABCI request. This engine-level fixture builds
+ * `nodus_v2_block_t` directly (no ABCI request exists here), so it sets
+ * them the same way the app does. `CMT_PB_BLOCK_ID_FLAG_COMMIT` credits
+ * height h-1 — the commit the block at height h carries. */
 static int fx_block_by(fixture_t *fx, int proposer_key, int *rc_out) {
     uint64_t h = fx->height + 1;
     if (h % E == 0 && seed_legacy_block(fx, h - 1) != 0) return -1;
@@ -387,11 +404,21 @@ static int fx_block_by(fixture_t *fx, int proposer_key, int *rc_out) {
     b.epoch  = nodus_v2_epoch_for_height(h);
     b.envs   = NULL;
     b.n_envs = 0;
+    uint8_t vote_addr[32];
+    int32_t vote_flag = CMT_PB_BLOCK_ID_FLAG_COMMIT;
     if (proposer_key >= 0) {
         uint8_t digest[64];
         if (qgp_sha3_512(g_pk[proposer_key], DNAC_PUBKEY_SIZE, digest) != 0)
             return -1;
         memcpy(b.proposer_id, digest, 32);
+        memcpy(vote_addr, digest, 32);
+        /* h == 1 (the initial height) has no previous commit to report —
+         * the same execution.go precondition the writer itself enforces. */
+        if (h > 1) {
+            b.cmt.votes_address = (const uint8_t (*)[32])&vote_addr;
+            b.cmt.votes_block_id_flag = &vote_flag;
+            b.cmt.votes_len = 1;
+        }
     }
     int rc = nodus_witness_v2_apply_block(fx->w, &b);
     if (rc_out) *rc_out = rc;
@@ -402,9 +429,10 @@ static int fx_block_by(fixture_t *fx, int proposer_key, int *rc_out) {
     return rc == 0 ? 0 : -1;
 }
 
-/* Drive to `target`; every block in [attend_from, attend_to] is PROPOSED
- * by `proposer_key`, so the real O15C attendance writer accumulates its
- * counter from a committed header field. */
+/* Drive to `target`; every block in [attend_from, attend_to] carries a
+ * decided_last_commit vote FOR `proposer_key`, so the real attendance
+ * writer accumulates its counter from a real signature, not an identity
+ * this fixture asserts by fiat. */
 static int fx_drive(fixture_t *fx, uint64_t target, int proposer_key,
                     uint64_t attend_from, uint64_t attend_to) {
     while (fx->height < target) {
@@ -418,6 +446,91 @@ static int fx_drive(fixture_t *fx, uint64_t target, int proposer_key,
 
 static int fx_drive_to(fixture_t *fx, uint64_t target) {
     return fx_drive(fx, target, -1, 0, 0);
+}
+
+/* round 5 (R5-4): the settlement bar's genesis carve-out (`settling_
+ * epoch_start == 0 -> present = 1` unconditionally) is REMOVED — epoch 0
+ * now goes through the shared predicate like every other epoch. Every
+ * settlement case below that used to reach ordinary payouts at epoch 0
+ * via `fx_drive_to` (crediting NOBODY) now needs REAL attendance to be
+ * paid — `fx_active_voters`/`fx_block_full`/`fx_drive_full_to` credit
+ * EVERY currently status=ACTIVE validator's decided_last_commit COMMIT
+ * vote on every block, mirroring `test_v2_epoch.c`'s own `fx_active_
+ * voters`/`fx_block` pattern one on one, so those cases' SUBJECT (payout
+ * splitting, burn-dust math) is unaffected by the carve-out's removal —
+ * everyone genuinely attends, so everyone is genuinely paid. */
+static int fx_active_voters(fixture_t *fx, uint8_t addrs[N_KEYS][32],
+                            size_t *n_out) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(fx->w->db,
+            "SELECT pubkey FROM validators WHERE status = ?1", -1, &st,
+            NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int(st, 1, (int)DNAC_VALIDATOR_ACTIVE);
+    size_t n = 0;
+    int rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        if (n >= N_KEYS) { sqlite3_finalize(st); return -1; }
+        const void *pk = sqlite3_column_blob(st, 0);
+        int pklen = sqlite3_column_bytes(st, 0);
+        uint8_t digest[64];
+        if (pklen != (int)DNAC_PUBKEY_SIZE || !pk ||
+            qgp_sha3_512((const uint8_t *)pk, DNAC_PUBKEY_SIZE, digest)
+                != 0) {
+            sqlite3_finalize(st);
+            return -1;
+        }
+        memcpy(addrs[n], digest, 32);
+        n++;
+    }
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) return -1;
+    *n_out = n;
+    return 0;
+}
+
+static int fx_block_full(fixture_t *fx, int *rc_out) {
+    uint64_t h = fx->height + 1;
+    if (h % E == 0 && seed_legacy_block(fx, h - 1) != 0) return -1;
+    nodus_v2_block_t b;
+    memset(&b, 0, sizeof(b));
+    b.global_height = h;
+    b.epoch  = nodus_v2_epoch_for_height(h);
+    b.envs   = NULL;
+    b.n_envs = 0;
+    uint8_t addrs[N_KEYS][32];
+    int32_t flags[N_KEYS];
+    if (h > 1) {
+        size_t n = 0;
+        if (fx_active_voters(fx, addrs, &n) != 0) return -1;
+        if (n > 0) {
+            for (size_t i = 0; i < n; i++)
+                flags[i] = CMT_PB_BLOCK_ID_FLAG_COMMIT;
+            b.cmt.votes_address = (const uint8_t (*)[32])addrs;
+            b.cmt.votes_block_id_flag = flags;
+            b.cmt.votes_len = n;
+        }
+    }
+    int rc = nodus_witness_v2_apply_block(fx->w, &b);
+    if (rc_out) *rc_out = rc;
+    if (rc == 0) fx->height = h;
+    if (rc != 0)
+        fprintf(stderr, "block %llu rejected (rc=%d): %s\n",
+                (unsigned long long)h, rc, b.out_reason);
+    return rc == 0 ? 0 : -1;
+}
+
+static int fx_drive_full_to(fixture_t *fx, uint64_t target) {
+    while (fx->height < target) {
+        int rc = 0;
+        if (fx_block_full(fx, &rc) != 0) {
+            fprintf(stderr, "fx_drive_full_to: block at height %llu "
+                    "failed (rc=%d)\n",
+                    (unsigned long long)(fx->height + 1), rc);
+            return -1;
+        }
+    }
+    return 0;
 }
 
 /* ── readers ─────────────────────────────────────────────────────────── */
@@ -487,10 +600,14 @@ static int fp_of(int key, char out[129]) {
     return 0;
 }
 
+/* tokenomics-v3 P1 (§C): the counter moved out-of-root into
+ * `v2_attendance`, keyed by voter_id (not the validators row). Absence
+ * (arc == 1) is honest zero, not a fault. */
 static uint64_t signed_count(fixture_t *fx, int key) {
-    dnac_validator_record_t v;
-    if (nodus_validator_get(fx->w, g_pk[key], &v) != 0) return UINT64_MAX;
-    return v.signed_blocks_this_epoch;
+    uint64_t n = 0;
+    int arc = nodus_witness_v2_attendance_get(fx->w, g_pk[key], &n, NULL);
+    if (arc == -2) return UINT64_MAX;
+    return arc == 1 ? 0 : n;
 }
 
 /* Total emission accruing into the epoch that starts at `epoch_start`,
@@ -815,7 +932,11 @@ static int t_fault_settlement(void) {
         fixture_t fx;
         CHECK(fx_stage1(&fx, tag, SPEC3, 3, NULL, 0) == 0, "stage1");
         CHECK(fx_stage2(&fx) == 0, "stage2");
-        CHECK(fx_drive_to(&fx, E - 1) == 0, "drive to E-1");
+        /* round 5 (R5-4): the clean retry below must actually pay
+         * someone for its own assertion to discriminate anything — drive
+         * real attendance for everyone rather than relying on the
+         * removed genesis carve-out. */
+        CHECK(fx_drive_full_to(&fx, E - 1) == 0, "drive to E-1");
 
         const uint64_t pool = pool_expected(0);
         CHECK(q1f(fx.w, "SELECT epoch_pool_accum FROM epoch_state "
@@ -866,7 +987,11 @@ static int t_settlement_flat(void) {
     CHECK(fx_stage1(&fx, "flat", SPEC3, 3, NULL, 0) == 0, "stage1");
     CHECK(fx_stage2(&fx) == 0, "stage2");
 
-    CHECK(fx_drive_to(&fx, E - 1) == 0, "drive to E-1");
+    /* round 5 (R5-4): the genesis carve-out is gone — this case's
+     * SUBJECT is payout-splitting math, not attendance, so every
+     * validator attends every block (`fx_drive_full_to`) rather than
+     * relying on the removed free pass. */
+    CHECK(fx_drive_full_to(&fx, E - 1) == 0, "drive to E-1");
     const uint64_t pool = pool_expected(0);
     CHECK(q1f(fx.w, "SELECT epoch_pool_accum FROM epoch_state "
                     "WHERE epoch_start_height = %llu", 0) == pool,
@@ -882,7 +1007,7 @@ static int t_settlement_flat(void) {
     CHECK(supply_balances(&pre), "the equation holds before settlement");
     OK();
 
-    CHECK(fx_drive_to(&fx, E) == 0, "drive the boundary");
+    CHECK(fx_drive_full_to(&fx, E) == 0, "drive the boundary");
 
     const uint64_t per_slot   = pool / 3;
     const uint64_t outer_dust = pool - per_slot * 3;
@@ -1017,7 +1142,9 @@ static int t_settlement_delegated(void) {
     fixture_t fx;
     CHECK(fx_stage1(&fx, "deleg", SPECD, 3, DELS, 3) == 0, "stage1");
     CHECK(fx_stage2(&fx) == 0, "stage2");
-    CHECK(fx_drive_to(&fx, E) == 0, "drive the boundary");
+    /* round 5 (R5-4): SUBJECT is the delegation-split formula, not
+     * attendance — everyone attends every block. */
+    CHECK(fx_drive_full_to(&fx, E) == 0, "drive the boundary");
 
     const uint64_t pool     = pool_expected(0);
     const uint64_t per_slot = pool / 3;
@@ -1156,46 +1283,90 @@ static int t_settlement_offline(void) {
     CHECK(fx_stage1(&fx, "offline", SPEC3, 3, NULL, 0) == 0, "stage1");
     CHECK(fx_stage2(&fx) == 0, "stage2");
 
-    /* Epoch 0 settles under the genesis carve-out — drive past it and
-     * record where the burn counter stood, so the epoch-1 delta is
-     * isolated from it. */
-    CHECK(fx_drive_to(&fx, E) == 0, "drive to the first boundary");
+    /* round 5 (R5-4): the genesis carve-out is GONE — epoch 0 now needs
+     * REAL attendance too, or this file's own new
+     * `t_settlement_epoch0_zero_attendance_not_paid` case is the honest
+     * proof of what a zero-attendance epoch 0 actually does (burn
+     * everything, not just the dust). This case's SUBJECT is epoch 1's
+     * offline detection, so epoch 0 is driven with everyone genuinely
+     * attending — drive past it and record where the burn counter stood,
+     * so the epoch-1 delta is isolated from it. */
+    CHECK(fx_drive_full_to(&fx, E) == 0, "drive to the first boundary");
     const uint64_t burned_after_epoch0 =
         q1(fx.w, "SELECT total_burned FROM supply_tracking");
     CHECK(burned_after_epoch0 == pool_expected(0) - (pool_expected(0) / 3) * 3,
-          "epoch 0 burned only its outer dust — the carve-out paid "
-          "everyone despite a zero attendance counter");
+          "epoch 0 burned only its outer dust — everyone genuinely "
+          "attended, so nobody's slot was burned as offline");
     OK();
 
-    /* Epoch 1 (heights E .. 2E-1). Validator 0 proposes exactly enough
-     * blocks to reach the liveness bar; 1 and 2 propose none. The counter
-     * is written ONLY by the real O15C writer from the committed header
-     * proposer — nothing here touches `validators` directly, so this
-     * test cannot pass by seeding an outcome the engine would not
-     * produce.
+    /* Epoch 1 (heights E .. 2E-1). Validator 0 casts exactly enough
+     * decided_last_commit COMMIT votes to reach the liveness bar; 1 and 2
+     * cast none. The counter is written ONLY by the real attendance
+     * writer (nodus_witness_v2_attendance_credit) into `v2_attendance` —
+     * nothing here touches that table directly, so this test cannot pass
+     * by seeding an outcome the engine would not produce.
      *
-     * Bar (bft.c:3239-3245), rearranged exactly as the source does:
-     *   signed * committee_count * 10000 >= EPOCH_LENGTH * BPS. */
+     * round 3 (R3-1, tokenomics-v3 P1): the settlement bar now calls the
+     * SAME shared predicate Rule N does
+     * (`nodus_witness_v2_attendance_meets_bar`) — no more
+     * `× committee_count` factor, so `required` is the EXACT SAME
+     * formula `test_v2_epoch.c`'s own `test_rule_n_liveness` uses:
+     * signed_count * 10000 >= EPOCH_LENGTH * BPS. The shared predicate
+     * ALSO requires P2 (recency, last 120 blocks) — which the old
+     * committee_count-scaled formula never checked here — so validator
+     * 0's attending window is placed at the very END of the epoch
+     * (the last `required` blocks, [2E-required+1, 2E]) rather than
+     * right after E+1: last_signed_height then lands on 2E-1, trivially
+     * inside the window at the boundary that settles it. */
     const uint64_t required =
-        (E * (uint64_t)DNAC_LIVENESS_THRESHOLD_BPS + (3ULL * 10000ULL) - 1)
-        / (3ULL * 10000ULL);
+        (E * (uint64_t)DNAC_LIVENESS_THRESHOLD_BPS + 10000ULL - 1) /
+        10000ULL;
     CHECK(required > 0 && required < E - 1,
           "FIXTURE GUARD: the bar must be reachable inside one epoch");
-    CHECK(required * 3ULL * 10000ULL >=
-          E * (uint64_t)DNAC_LIVENESS_THRESHOLD_BPS,
+    CHECK(required * 10000ULL >= E * (uint64_t)DNAC_LIVENESS_THRESHOLD_BPS,
           "FIXTURE GUARD: `required` really does clear the bar");
     OK();
 
-    CHECK(fx_drive(&fx, E + required, 0, E + 1, E + required) == 0,
-          "propose the attending blocks");
-    CHECK(signed_count(&fx, 0) == required,
-          "the REAL attendance writer accumulated the counter");
-    OK();
+    CHECK(fx_drive(&fx, 2 * E - 1, 0, 2 * E - required + 1, 2 * E) == 0,
+          "propose the attending blocks in the LAST `required` blocks "
+          "of the epoch (P2 recency), up to the block before the "
+          "boundary");
+    /* R4-1 (round 4 brief, tokenomics-v3 P1): the boundary block (height
+     * 2E) is BOTH the window's last attending block (attend_to == 2E,
+     * unchanged below) AND the block whose OWN processing resets
+     * `v2_attendance.signed_count` to 0 (step 6 of
+     * nodus_witness_v2_epoch_boundary_apply, nodus_witness_v2_epoch.c) —
+     * its credit (phase 6d-bis, nodus_witness_v2_apply.c:4111-4132) and
+     * that reset both happen inside the SAME call to
+     * nodus_witness_v2_apply_block, so no read from outside that call
+     * can ever observe the counter AT `required`: the highest value
+     * observable before the boundary block applies is `required - 1`
+     * (the window's [2E-required+1, 2E-1] portion, already committed).
+     * The settlement assertions below (validator 0 alone paid its full
+     * slot) are what prove the engine itself saw the FULL `required`
+     * count — they run inside the boundary transaction, before the
+     * reset. */
+    CHECK(signed_count(&fx, 0) == required - 1,
+          "the REAL attendance writer accumulated required-1 of the "
+          "window's credits before the boundary block supplies the "
+          "last one");
     CHECK(signed_count(&fx, 1) == 0 && signed_count(&fx, 2) == 0,
-          "and credited nobody else");
+          "and credited nobody else — both fail P1 AND P2 at 5000 bps, "
+          "exactly as they did at 8000: they signed NOTHING (checked "
+          "before the boundary reset, so this actually discriminates)");
     OK();
 
-    CHECK(fx_drive_to(&fx, 2 * E) == 0, "drive the second boundary");
+    {
+        /* the boundary block itself: reuses fx_block_by, the SAME
+         * per-block driver fx_drive calls internally for every height —
+         * not a parallel pipeline. attend_to == 2E (unchanged) means
+         * this height still carries validator 0's vote. */
+        int rc = 0;
+        CHECK(fx_block_by(&fx, 0, &rc) == 0 && rc == 0,
+              "the boundary block, still carrying validator 0's vote");
+    }
+    CHECK(fx.height == 2 * E, "drove exactly to the boundary");
+    OK();
 
     const uint64_t pool     = pool_expected(E);
     const uint64_t per_slot = pool / 3;
@@ -1217,11 +1388,12 @@ static int t_settlement_offline(void) {
             /* KILLED BY: inverting the liveness comparison, which would
              * pay the two absentees and starve the attendee.
              *
-             * ALSO KILLED BY: moving settlement AFTER Rule N. Rule N's
-             * step (d) zeroes signed_blocks_this_epoch, so the gate
-             * would read 0 for EVERY member, `found` would be 0, and
-             * this assertion fails. That is the ordering proof — there
-             * is no other test in the tree that would notice. */
+             * ALSO KILLED BY: moving settlement AFTER the attendance
+             * reset. The boundary's attendance-reset step zeroes
+             * `v2_attendance.signed_count`, so the gate would read 0 for
+             * EVERY member, `found` would be 0, and this assertion
+             * fails. That is the ordering proof — there is no other test
+             * in the tree that would notice. */
             CHECK(memcmp(r.owner, fp0, 128) == 0,
                   "only the validator that attended is paid");
             CHECK(r.amount == per_slot, "and it is paid its full slot");
@@ -1267,6 +1439,68 @@ static int t_settlement_offline(void) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
+ * round 5 (R5-4, O6 verifier V-2): the genesis carve-out is REMOVED.
+ * A genesis validator with ZERO real attendance in epoch 0 is NOT paid
+ * at boundary E — RED before round 5 (the removed carve-out paid it
+ * unconditionally).
+ * ════════════════════════════════════════════════════════════════════ */
+
+static int t_settlement_epoch0_zero_attendance_not_paid(void) {
+    fixture_t fx;
+    CHECK(fx_stage1(&fx, "epoch0zero", SPEC3, 3, NULL, 0) == 0, "stage1");
+    CHECK(fx_stage2(&fx) == 0, "stage2");
+
+    /* `fx_drive_to` (proposer_key = -1 throughout) credits NOBODY — a
+     * genuinely idle, zero-attendance epoch 0. */
+    CHECK(fx_drive_to(&fx, E) == 0, "drive to the first boundary, "
+                                    "crediting nobody");
+    CHECK(fx.height == E, "drove exactly to the boundary");
+
+    for (int k = 0; k < 3; k++)
+        CHECK(signed_count(&fx, SPEC3[k].key) == 0,
+              "FIXTURE GUARD: every genesis validator really has "
+              "zero signed_count going into settlement");
+
+    const uint64_t pool = pool_expected(0);
+    CHECK(pool > 0, "FIXTURE GUARD: a real pool accrued to settle");
+
+    /* R5-4: the shared predicate now decides epoch 0 exactly like every
+     * other epoch — signed_count == 0 fails P1 unconditionally, so every
+     * seat is "failing" and every seat's slot is burned, none paid. */
+    for (int k = 0; k < 3; k++) {
+        utxo_row_t r;
+        CHECK(payout_get(&fx, 0, NODUS_V2_SETTLE_KIND_VALIDATOR,
+                         NODUS_V2_SETTLE_OUT_IDX_BASE + (uint32_t)k,
+                         &r) == 0, "read payout slot");
+        CHECK(!r.found,
+              "R5-4: a zero-attendance genesis validator is NOT paid at "
+              "epoch 0's settlement — RED before round 5 (the removed "
+              "carve-out paid every seat here unconditionally)");
+    }
+    OK();
+
+    /* the WHOLE pool is burned — not merely the outer (indivisible)
+     * dust, since every one of the three per-slot shares is ALSO
+     * burned via the same "failing member" path
+     * `t_settlement_offline` already exercises for a MIXED epoch. */
+    CHECK(q1(fx.w, "SELECT total_burned FROM supply_tracking") == pool,
+          "the whole pool burns when nobody attended — three burned "
+          "slots plus the outer dust, none paid");
+    OK();
+
+    supply_terms_t t;
+    CHECK(supply_terms(fx.w, &t) == 0, "terms");
+    CHECK(supply_balances(&t), "the supply equation still holds when "
+                               "the WHOLE epoch is burned");
+    OK();
+    CHECK(nodus_witness_v2_supply_check(fx.w) == 0, "gate GREEN");
+    OK();
+
+    fx_close(&fx);
+    return 0;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
  * §7 DETERMINISM TWIN
  * ════════════════════════════════════════════════════════════════════ */
 
@@ -1283,9 +1517,13 @@ static int t_determinism_twin(void) {
     CHECK(fx_stage1(&b, "twin_b", SPEC3_REV, 3, NULL, 0) == 0, "b stage1");
     CHECK(fx_stage2(&b) == 0, "b stage2");
 
-    /* A full emission + settlement cycle on both. */
-    CHECK(fx_drive_to(&a, E) == 0, "a drive");
-    CHECK(fx_drive_to(&b, E) == 0, "b drive");
+    /* A full emission + settlement cycle on both. round 5 (R5-4): the
+     * genesis carve-out is gone, so real attendance is needed for the
+     * "three settlement payouts" this case asserts below — both twins
+     * drive identically (every ACTIVE validator attends every block),
+     * so the determinism property under test is unaffected. */
+    CHECK(fx_drive_full_to(&a, E) == 0, "a drive");
+    CHECK(fx_drive_full_to(&b, E) == 0, "b drive");
 
     uint8_t sys_a[64], core_a[64], sys_b[64], core_b[64];
     CHECK(nodus_witness_system_root_v2(a.w, sys_a) == 0, "a sys");
@@ -1333,6 +1571,8 @@ int main(void) {
           t_settlement_delegated },
         { "settlement: offline share burn + ordering",
           t_settlement_offline },
+        { "R5-4: a zero-attendance genesis validator is not paid at "
+          "epoch 0", t_settlement_epoch0_zero_attendance_not_paid },
         { "determinism twin", t_determinism_twin },
         /* review R2-F5 — the three fault points shipped undriven */
         { "F52: the per-block mint rolls back whole", t_fault_emission },

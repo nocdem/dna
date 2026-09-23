@@ -72,7 +72,6 @@ static void make_validator(dnac_validator_record_t *v,
     memset(v->unstake_destination_pubkey, 0x77, DNAC_PUBKEY_SIZE);
     v->last_validator_update_block = 0;
     v->consecutive_missed_epochs   = 0;
-    v->last_signed_block           = 0;
 }
 
 static void rmrf(const char *path) {

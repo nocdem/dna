@@ -879,18 +879,20 @@ static int test_defect_L2F1(void) {
         CHECK(nodus_witness_v2_supply_check(w) == 0,
               "SCOPE: v2_blocks present but empty still returns 0");
 
-        /* R3-W4-S: climb the SAME handle straight to S14 (the Comet
-         * stores). No genesis document is ever stored here — only the
-         * migration ran, never nodus_witness_v2_gen_derive_v3 — so this
-         * is the version-3-schema analogue of the S12 case just above:
-         * a fresh S14 catalogue with no stored genesisDoc row must stay
-         * honest pre-genesis, not be mistaken for a committed genesis
-         * merely because the Comet stores now exist. */
-        CHECK(nodus_witness_db_migrate_v2s14(w) == 0, "migrate to S14");
+        /* R3-W4-S: climb the SAME handle straight to S15 (tokenomics-v3
+         * P1 moved the live rung from S14 — the Comet stores AND the
+         * out-of-root attendance tables). No genesis document is ever
+         * stored here — only the migration ran, never
+         * nodus_witness_v2_gen_derive_v3 — so this is the
+         * version-3-schema analogue of the S12 case just above: a fresh
+         * S15 catalogue with no stored genesisDoc row must stay honest
+         * pre-genesis, not be mistaken for a committed genesis merely
+         * because the Comet stores now exist. */
+        CHECK(nodus_witness_db_migrate_v2s15(w) == 0, "migrate to S15");
         CHECK(q1(w->db, "SELECT COUNT(*) FROM v2_blocks") == 0,
               "still no block committed");
         CHECK(nodus_witness_v2_supply_check(w) == 0,
-              "SCOPE: S14 tables (cmt_state included) present, no stored "
+              "SCOPE: S15 tables (cmt_state included) present, no stored "
               "genesisDoc, no supply row: still honest pre-genesis");
         close_chain(w);
         rmrf(dir);
@@ -2169,8 +2171,9 @@ static int test_v3_derive(void) {
 
     CHECK(memcmp(id16, chain32, 16) == 0,
           "the file name is the first 16 bytes of the chain id");
-    CHECK(q1(db, "PRAGMA user_version") == (int64_t)NODUS_V2_SCHEMA_VERSION_S14,
-          "the chain is at schema S14 — the Comet stores exist");
+    CHECK(q1(db, "PRAGMA user_version") == (int64_t)NODUS_V2_SCHEMA_VERSION_S15,
+          "the chain is at schema S15 — the Comet stores and the "
+          "out-of-root attendance tables exist (tokenomics-v3 P1)");
     CHECK(q1(db, "SELECT COUNT(*) FROM v2_blocks") == 0,
           "there is NO genesis block row — of any height (D-19 rev 6)");
     /* ⚠ THE KEY COLUMN IS A BLOB (schema S14: `key BLOB PRIMARY KEY`)

@@ -1,6 +1,9 @@
 # Mempool & Block Time — the cometbft lane
 
-**Rewritten:** 2026-09-17 (R3 wave W4, v0.19.62) | **Applies to:** every chain this build can open (a version-3 / cometbft chain — the post-open gate refuses everything else, `nodus_witness.c` `witness_post_open_gate`)
+**Rewritten:** 2026-09-17 (R3 wave W4, v0.19.62); **Block time / idle
+pace and TxsAvailable sections updated:** 2026-09-23 (tokenomics-v3 P1 —
+D-4 relocated attendance out of every root, D-5 wired the real
+`TxsAvailable` callback) | **Applies to:** every chain this build can open (a version-3 / cometbft chain — the post-open gate refuses everything else, `nodus_witness.c` `witness_post_open_gate`)
 
 > **History.** Until R3 wave W4 this document described the LEGACY lane's
 > mempool: a fee-sorted in-memory pool (`nodus_witness_mempool.c`), a 5 s
@@ -109,28 +112,64 @@ time with `env_batch_max`/`env_cap`/`claim_cap`/`mixed_item_cap`).
 ## Block time
 
 Cadence is two NODE settings, not chain rules (D-4 rev 3;
-`nodus_witness_cmt_node.c:1717-1718`):
+`nodus_witness_cmt_node.c:1760-1761`):
 
 | Setting | Value |
 |---|---|
-| `TimeoutCommit` | 5 000 ms |
+| `TimeoutCommit` | 4 000 ms (tokenomics-v3 P1 round 5, operator decision S-7: 5 000 -> 4 000, decision file §1 line 57's 2026-09-23 note) |
 | `CreateEmptyBlocks` | true |
 | `CreateEmptyBlocksInterval` | 60 000 ms |
 
-**Measured pace: one block per ≈ 6 s, always, idle or not.** The interval
-never applies on this ledger because every block is a *proof block*:
-Rule N attendance writes the proposer's `last_signed_block` into the
-validators leaf on every block, so the global root changes at every
-height and cometbft's `needProofBlock` (`shared/dnac/cmt_cs.c:1825`,
-`:1939`, state.go:1106-1129) is true at every height. Consequences,
-recorded for the operator (not defects of the port):
+**tokenomics-v3 P1 (D-4) — the idle pace is now the CONFIGURED 60 s, not
+a faster "proof block" pace.** Before this package, EVERY block was a
+*proof block*: Rule N attendance wrote the committed header proposer's
+credit into `validators.last_signed_block`, a validator merkle-leaf
+field, so `system_state_root` — and therefore the global root —
+changed at every height, and cometbft's `needProofBlock`
+(`shared/dnac/cmt_cs.c:1825`, `:1939`, state.go:1106-1129) was TRUE at
+every height regardless of whether the block carried a transaction.
+Measured then: one block per ≈ 6 s, always, idle or not.
 
-- an idle chain grows by ≈ 14 000 blocks a day (an epoch of 720 blocks ≈
-  72 minutes);
-- the 60 s interval is an upper bound the harness's stall detectors use,
-  not the observed pace (`stagef_env.sh` `stagef_cmt_wait_height`);
-- a round with demand takes the same ≈ 5-6 s — a transaction's latency is
-  "wait for a proposer whose pool holds it", one to a few blocks.
+tokenomics-v3 P1 relocated attendance out of every root (D-2, D-4):
+`nodus_witness_v2_attendance_credit` (`nodus_witness_v2_epoch.c`) credits
+every `CMT_PB_BLOCK_ID_FLAG_COMMIT` vote of `decided_last_commit` into
+`v2_attendance` — a table that is not a leg of `system_state_root` and is
+never read by any root computation. Its contents enter the root only
+once per epoch, through the `attendance_root` leg (a digest of the whole
+table, `shared/dnac/ledger_roots_v2.c`), committed at the epoch boundary.
+Consequences:
+
+- an EMPTY block moves NOTHING in `system_state_root`, so
+  `needProofBlock` is FALSE on an idle chain and the 60 s
+  `CreateEmptyBlocksInterval` is once again the OBSERVED pace, not merely
+  an upper bound — measured directly by
+  `nodus/tests/integration/stagef/tests/test_cmt_empty_blocks.sh` (>= 2
+  consecutive idle gaps >= 45 s, ~1 s polling granularity);
+- an idle chain now grows by ≈ 1 440 blocks a day (one per minute), not
+  ≈ 14 000 — an epoch of 720 blocks is idle-paced at ≈ 12 hours, though
+  in practice a validator set almost always has SOME traffic;
+- a round WITH demand still takes ≈ 4-5 s (`TimeoutCommit`, 4 000 ms as
+  of round 5) — a transaction's latency is "wait for a proposer whose
+  pool holds it", one to a few blocks — and D-5 (below) means demand
+  itself no longer waits for the next idle-interval tick to be noticed.
+
+**tokenomics-v3 P1 (D-5) — the mempool's `TxsAvailable` signal is wired
+to a real callback.** `cmt_mem_enable_txs_available` (`shared/dnac/
+cmt_mem.h`) used to be bound with a NULL consumer
+(`nodus_witness_cmt_node.c:1982` — "a channel nobody reads; the flag
+still flips"). It now binds `node_txs_available_cb`
+(`nodus_witness_cmt_node.c`), which calls
+`cmt_cs_notify_txs_available(cs)` (`shared/dnac/cmt_cs.c:895-899`, sets
+one bool, no re-entry into the mempool) the first time a transaction is
+admitted at a given height — the reference's own mechanism
+(`clist_mempool.go:510-521` → `state.go:1033`) for making a round that is
+WAITING FOR TRANSACTIONS (`WaitForTxs()` — true here, since
+`CreateEmptyBlocks` alone would otherwise still make the round wait out
+the full interval before proposing) start proposing at once instead of
+sitting out the remaining `CreateEmptyBlocksInterval`. No consensus value
+moves; only WHEN a round starts. Measured by the same harness scenario
+above, Part 2: a claim submitted to an idle chain reaches inclusion in
+well under 30 s, not the ≈ 60 s a NULL callback would have produced.
 
 ## What a client sees
 

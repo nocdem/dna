@@ -37,11 +37,13 @@
  *     transient I/O error.
  *
  *  3. THE PER-EPOCH COUNTER RESET IS NOT REPEATED. V1's settlement
- *     resets `signed_blocks_this_epoch` at its tail (bft.c:3350-3360).
- *     On the V2 lane the O15C Rule N transplant already performs exactly
- *     that UPDATE (nodus_witness_v2_epoch.c:611-622) one step later in
- *     the same transaction, which is precisely why settlement must run
- *     BEFORE Rule N — see the ordering note at the call site. Doing it
+ *     resets its per-epoch attendance counter at its tail
+ *     (bft.c:3350-3360). On the V2 lane the boundary's own attendance-
+ *     reset step already performs exactly that UPDATE
+ *     (tokenomics-v3 P1: `v2_attendance.signed_count = 0`,
+ *     nodus_witness_v2_epoch.c) one step later in the same transaction,
+ *     which is precisely why settlement must run BEFORE it — see the
+ *     ordering note at the call site. Doing it
  *     twice would be a no-op that only widens the write set.
  *
  *  4. RETURN CONVENTION. V1's helper returns -1; the V2 boundary's
@@ -55,6 +57,9 @@
                                               * add_burned                */
 #include "witness/nodus_witness_emission.h"  /* nodus_emission_per_block  */
 #include "witness/nodus_witness_epoch.h"     /* epoch_state CRUD + D.1     */
+#include "witness/nodus_witness_v2_epoch.h"  /* nodus_witness_v2_attendance_
+                                              * meets_bar (tokenomics-v3
+                                              * P1, §C — round 3)         */
 #include "witness/nodus_witness_runtime.h"   /* the CORE record builder   */
 #include "witness/nodus_witness_v2_adapter.h"/* effects_apply             */
 #include "witness/nodus_witness_v2_claims.h" /* v2_runtime_for            */
@@ -724,7 +729,7 @@ int nodus_witness_v2_settlement_apply(nodus_witness_t *w,
          * epoch (design §3.6), so it is deliberately unread — same as
          * bft.c:3186-3187. */
 
-        /* ── ATTENDANCE (bft.c:3189-3247) ────────────────────────────
+        /* ── ATTENDANCE (bft.c:3189-3247, tokenomics-v3 P1 round 3) ───
          * THE WATERMARK QUESTION, ANSWERED. The design document's §5.4
          * obligation 3 says V1 reads `validator.last_signed_block`. That
          * repeats V1's own STALE contract comment (bft.c:2955-2963); the
@@ -735,26 +740,52 @@ int nodus_witness_v2_settlement_apply(nodus_witness_t *w,
          * per epoch. The specification of this port is the shipped
          * implementation, so the count-based gate is what is ported.
          *
-         * The V2 lane HAS this counter: nodus_witness_v2_record_attendance
-         * increments it for the committed header proposer inside the same
-         * block transaction (nodus_witness_v2_epoch.c:485-491). It is the
-         * O15C transplant, and it writes the SAME column V1's
-         * record_attendance writes.
+         * Round 3 (operator 2026-09-23): this bar is no longer its OWN
+         * formula. It calls `nodus_witness_v2_attendance_meets_bar` — the
+         * SAME shared predicate Rule N calls (nodus_witness_v2_epoch.c)
+         * — so a validator's payout and its ACTIVE-set membership are
+         * decided by the identical P1 (bar) && P2 (recency) test at the
+         * identical rate (decision §1 line 79's parenthetical "tek kural,
+         * iki tüketici"; §3's last entry, "settlement barının kendi
+         * formülü yerine Rule N'in yüklemini çağırması"). Before round 3
+         * this bar carried its OWN `signed * committee_count * 10000 >=
+         * EPOCH_LENGTH * BPS` formula, with `committee_count` — the size
+         * THIS epoch actually had, decoded from the committed snapshot —
+         * as a normalising factor left over from the retired PROPOSER-
+         * credit era (a proposer could only ever propose about
+         * E / committee_count blocks). Once attendance switched to
+         * signature counting that factor was never removed, so this
+         * bar's EFFECTIVE rate was ~11% while Rule N's was 80% — two
+         * different answers to one question. The shared predicate has no
+         * `× committee_count` term and needs none: `nodus_witness_v2_
+         * attendance_meets_bar` takes the BOUNDARY HEIGHT, not the
+         * settling epoch's start, because its P2 window is anchored to
+         * "now" (the boundary), not to the epoch that just ended;
+         * settlement always drains the epoch immediately BEFORE the
+         * boundary it runs at, so `settling_epoch_start +
+         * DNAC_EPOCH_LENGTH` names the SAME height Rule N's own `h`
+         * parameter already is.
          *
-         * The denominator is `committee_count` — the size THIS epoch
-         * actually had, decoded from the committed snapshot being
-         * iterated, not a current-set substitution (bft.c:3211-3224).
-         * Rearranged to a pure multiplication so no truncation enters:
-         *   signed * committee_count * 10000 >= EPOCH_LENGTH * BPS.
-         *
-         * GENESIS CARVE-OUT (bft.c:3230-3236): at the first settlement
-         * every genesis-seeded validator has a zero counter but genuinely
-         * participated. Burning the whole first pool for that would be
-         * wrong, so epoch 0 treats every member as present. */
+         * GENESIS CARVE-OUT — REMOVED (tokenomics-v3 P1 round 5, decision
+         * file §3 2026-09-23 "tek kural, iki tüketici"; O6 verifier V-2).
+         * V1's bft.c:3230-3236 exception was written for the retired
+         * PROPOSER-credit counter, which was genuinely zero at genesis
+         * for every honest validator regardless of real participation.
+         * That reason does not survive the switch to signature-based
+         * attendance: the writer credits from block 2
+         * (`nodus_witness_v2_attendance_credit`, a block at height H
+         * carries the commit FOR H-1), so epoch 0 has E-1 creditable
+         * commits — >= DNAC_LIVENESS_THRESHOLD_BPS for any E >= 4. Keeping
+         * the carve-out paid a genesis validator with ZERO real
+         * attendance while Rule N (which never carved out epoch 0)
+         * judged the SAME validator absent — two different answers to
+         * one question, exactly what "tek kural, iki tüketici" forbids.
+         * Epoch 0 now goes through the shared predicate like every other
+         * epoch. */
         int present = 0;
-        if (settling_epoch_start == 0) {
-            present = 1;
-        } else {
+        {
+            const uint64_t boundary_height =
+                settling_epoch_start + (uint64_t)DNAC_EPOCH_LENGTH;
             dnac_validator_record_t cur;
             int vrc = nodus_validator_get(w, vpk, &cur);
             if (vrc < 0) {
@@ -775,12 +806,25 @@ int nodus_witness_v2_settlement_apply(nodus_witness_t *w,
                  * band on every block, and a settlement is only ever
                  * reached by a node that has been minting. A build that
                  * disagreed halted long before it could compute a
-                 * liveness bar from the wrong denominator. */
-                uint64_t lhs = cur.signed_blocks_this_epoch *
-                               (uint64_t)committee_count * 10000ULL;
-                uint64_t rhs = (uint64_t)DNAC_EPOCH_LENGTH *
-                               (uint64_t)DNAC_LIVENESS_THRESHOLD_BPS;
-                if (lhs >= rhs) present = 1;
+                 * liveness bar from the wrong denominator.
+                 *
+                 * tokenomics-v3 P1 (§C, round 3): the shared predicate
+                 * reads `v2_attendance` itself — `cur` above is read
+                 * ONLY to learn whether the member's validators row
+                 * still exists (vrc), unchanged. */
+                int meets = 0;
+                int mrc = nodus_witness_v2_attendance_meets_bar(
+                    w, vpk, boundary_height, &meets);
+                if (mrc != 0) {
+                    QGP_LOG_ERROR(LOG_TAG,
+                        "settlement of epoch %llu: committee member %u's "
+                        "attendance is unreadable — refusing rather than "
+                        "burning his share",
+                        (unsigned long long)settling_epoch_start,
+                        (unsigned)vi);
+                    goto done;
+                }
+                if (meets) present = 1;
             }
             /* vrc == 1: the row is gone (graduated out of existence).
              * Not present — exactly V1's outcome for that case. */

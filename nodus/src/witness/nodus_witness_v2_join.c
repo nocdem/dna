@@ -149,17 +149,19 @@ static int join_adopt(nodus_witness_t *w) {
          * the guard is now uniform across the builder and the joiner. */
         w2->v2_successor = 1;
         /* R3 W3 (D-24 rev 4 (2)): the joiner re-derives its OWN chain and
-         * MUST land at the same schema the chain builder produces — S14,
-         * where the Comet stores live (nodus_witness_v2_gen_derive_v3).
-         * O15F Task 4's original reason (v2_claim_counts, the S12-era
-         * count-row-driven serving seam) still holds AS A LOWER BOUND:
-         * S14 is a structural superset of S12 (the migration ladder
-         * cascades through it), so nothing that reason needed is lost.
-         * `nodus_witness_v2_bundle_apply`'s own version-3 branch also
-         * migrates to S14 before storing the document, so this call is
-         * not load-bearing for that path — but the chain_config table it
-         * plants IS needed before that branch runs, so it stays here. */
-        if (nodus_witness_db_migrate_v2s14(w2) != 0) break;
+         * MUST land at the same schema the chain builder produces — S15
+         * (tokenomics-v3 P1 moved the live rung from S14), where the
+         * Comet stores AND the out-of-root attendance tables live
+         * (nodus_witness_v2_gen_derive_v3). O15F Task 4's original reason
+         * (v2_claim_counts, the S12-era count-row-driven serving seam)
+         * still holds AS A LOWER BOUND: S15 is a structural superset of
+         * S12 (the migration ladder cascades through it), so nothing
+         * that reason needed is lost. `nodus_witness_v2_bundle_apply`'s
+         * own version-3 branch also migrates to S15 before storing the
+         * document, so this call is not load-bearing for that path — but
+         * the chain_config table it plants IS needed before that branch
+         * runs, so it stays here. */
+        if (nodus_witness_db_migrate_v2s15(w2) != 0) break;
         if (nodus_chain_config_db_migrate(w2) != 0) break;
 
         if (nodus_witness_v2_bundle_apply(w2, bytes, len,

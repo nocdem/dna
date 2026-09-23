@@ -885,7 +885,14 @@ static void be64_into(uint64_t v, uint8_t out[8]) {
     for (int i = 7; i >= 0; i--) { out[i] = (uint8_t)(v & 0xff); v >>= 8; }
 }
 
-/* Validator leaf value hash:
+/* Validator leaf value hash — v2 of this preimage (tokenomics-v3 P1,
+ * Q2 "clean path"): the two per-block attendance counters
+ * (`last_signed_block`, `signed_blocks_this_epoch`) are DROPPED from the
+ * leaf. Attendance now lives out-of-root in `v2_attendance`
+ * (nodus_witness_v2_epoch.c) and enters `system_state_root` only through
+ * the epoch-boundary digest leg (`nodus_witness_attendance_root`,
+ * shared/dnac/ledger_roots_v2.c). The 0x02 tag byte is UNCHANGED — this
+ * is a shorter preimage under the same tree tag, not a new tag.
  *   SHA3-512( 0x02                      // tag
  *          || pubkey[2592]
  *          || self_stake[8 BE]
@@ -900,9 +907,7 @@ static void be64_into(uint64_t v, uint8_t out[8]) {
  *          || unstake_destination_fp[128 ASCII]
  *          || unstake_destination_pubkey[2592]
  *          || last_validator_update_block[8 BE]
- *          || consecutive_missed_epochs[8 BE]
- *          || last_signed_block[8 BE]
- *          || signed_blocks_this_epoch[8 BE] )
+ *          || consecutive_missed_epochs[8 BE] )
  * Canonical: ORDER BY pubkey ASC. */
 static int load_validator_leaves(nodus_witness_t *w,
                                   uint8_t **leaves_out,
@@ -917,8 +922,7 @@ static int load_validator_leaves(nodus_witness_t *w,
         "       pending_effective_block, status, active_since_block,"
         "       unstake_commit_block, unstake_destination_fp,"
         "       unstake_destination_pubkey, last_validator_update_block,"
-        "       consecutive_missed_epochs, last_signed_block,"
-        "       signed_blocks_this_epoch "
+        "       consecutive_missed_epochs "
         "FROM validators ORDER BY pubkey ASC", -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "%s: validator scan prepare failed: %s\n",
@@ -1067,10 +1071,6 @@ static int load_validator_leaves(nodus_witness_t *w,
         be64_into((uint64_t)sqlite3_column_int64(stmt, 12), be);
         EVP_DigestUpdate(md, be, 8);
         be64_into((uint64_t)sqlite3_column_int64(stmt, 13), be);
-        EVP_DigestUpdate(md, be, 8);
-        be64_into((uint64_t)sqlite3_column_int64(stmt, 14), be);
-        EVP_DigestUpdate(md, be, 8);
-        be64_into((uint64_t)sqlite3_column_int64(stmt, 15), be);
         EVP_DigestUpdate(md, be, 8);
 
         if (sha3_512_final(md, buf + n * 64) != 0) {

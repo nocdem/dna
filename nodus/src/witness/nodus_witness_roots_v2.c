@@ -250,6 +250,100 @@ int nodus_witness_supply_root_v2(nodus_witness_t *w, uint8_t out[64]) {
                               sup.total_burned, out);
 }
 
+/* ── attendance_root (tokenomics-v3 P1, D-4 / S-2) ─────────────────────
+ * Follows the epoch leg's pattern exactly (nodus_witness_epoch_root_v2
+ * above): "no such table" via sqlite_master probe = the honest EMPTY
+ * state (pre-P1 database, or a chain that has not reached its first
+ * boundary yet), a probe FAULT is never reported as empty, and a
+ * malformed row FAILS the whole computation — never substituted.
+ * Round 2 (R2-1): both attendance tables now also live in the BASE
+ * schema, so on every database THIS build creates the prepare above
+ * simply succeeds — this probe stays because it is still the honest
+ * answer for a database an OLDER build (pre-R2-1, or pre-S15) created
+ * and has not yet migrated forward. */
+
+int nodus_witness_attendance_root(nodus_witness_t *w, uint8_t out[64]) {
+    if (!w || !w->db || !out) return -1;
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(w->db,
+        "SELECT epoch_start, digest FROM v2_attendance_epoch "
+        "ORDER BY epoch_start ASC", -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        sqlite3_stmt *chk = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='v2_attendance_epoch'", -1, &chk, NULL)
+            != SQLITE_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "attendance table probe failed: %s",
+                          sqlite3_errmsg(w->db));
+            return -1;                       /* probe fault != empty */
+        }
+        int step = sqlite3_step(chk);
+        sqlite3_finalize(chk);
+        if (step == SQLITE_DONE)             /* table genuinely absent */
+            return dna_v2_empty_root(DNA_V2_EMPTY_ATTENDANCE, out);
+        if (step != SQLITE_ROW) {
+            QGP_LOG_ERROR(LOG_TAG,
+                          "attendance table probe step failed (rc=%d)",
+                          step);
+            return -1;                       /* probe fault != empty */
+        }
+        QGP_LOG_ERROR(LOG_TAG, "attendance scan prepare failed: %s",
+                      sqlite3_errmsg(w->db));
+        return -1;
+    }
+
+    size_t cap = 4, n = 0;
+    uint64_t *starts = malloc(cap * sizeof(uint64_t));
+    uint8_t (*digests)[64] = malloc(cap * sizeof(*digests));
+    if (!starts || !digests) {
+        free(starts); free(digests); sqlite3_finalize(stmt);
+        return -1;
+    }
+    int fail = 0;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        if (n >= cap) {
+            size_t nc = cap * 2;
+            uint64_t *ns = realloc(starts, nc * sizeof(uint64_t));
+            uint8_t (*nd)[64] = realloc(digests, nc * sizeof(*nd));
+            if (!ns || !nd) {
+                free(ns ? ns : starts);
+                free(nd ? nd : digests);
+                sqlite3_finalize(stmt);
+                return -1;
+            }
+            starts = ns; digests = nd; cap = nc;
+        }
+        const void *dg = sqlite3_column_blob(stmt, 1);
+        int dg_len     = sqlite3_column_bytes(stmt, 1);
+        if (!dg || dg_len != 64) {
+            /* Always written full-length (nodus_witness_v2_epoch.c) — a
+             * NULL or short blob is corruption. FAIL, never substitute. */
+            QGP_LOG_ERROR(LOG_TAG, "attendance row %zu digest malformed "
+                          "— failing root", n);
+            fail = 1;
+            break;
+        }
+        starts[n] = (uint64_t)sqlite3_column_int64(stmt, 0);
+        memcpy(digests[n], dg, 64);
+        n++;
+    }
+    if (!fail && rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "attendance scan aborted mid-stream "
+                      "(rc=%d) — failing root", rc);
+        fail = 1;
+    }
+    sqlite3_finalize(stmt);
+
+    int ret = -1;
+    if (!fail)
+        ret = dna_v2_attendance_root(starts, digests, n, out);
+    free(starts);
+    free(digests);
+    return ret;
+}
+
 /* ── Composition ────────────────────────────────────────────────────── */
 
 int nodus_witness_system_payload_root_v2(nodus_witness_t *w,
@@ -276,6 +370,7 @@ int nodus_witness_system_root_v2(nodus_witness_t *w, uint8_t out[64]) {
     if (!w || !out) return -1;
     uint8_t validator_root[64], delegation_root[64], epoch_v2[64];
     uint8_t chain_config_root[64], vset[64], domreg[64], manifest[64];
+    uint8_t attendance[64];
     if (nodus_witness_merkle_compute_validator_root(w, validator_root) != 0)
         return -1;
     if (nodus_witness_merkle_compute_delegation_root(w, delegation_root) != 0)
@@ -304,12 +399,23 @@ int nodus_witness_system_root_v2(nodus_witness_t *w, uint8_t out[64]) {
      * pre-manifest chain. */
     if (nodus_witness_manifest_root_v2(w, manifest) != 0)
         return -1;
+    /* tokenomics-v3 P1 (D-4, S-2): the 8th leg. An empty
+     * `v2_attendance_epoch` (every pre-P1 chain, and every P1 chain
+     * before its first epoch boundary) returns the SAME tagged empty
+     * root DNA_V2_EMPTY_ATTENDANCE regardless — but the COMPOSITION tag
+     * still changed ("DNA.SYS.v1" -> "DNA.SYS.v2"), so this root is NOT
+     * byte-unchanged for a pre-P1 chain the way the vset/domreg/manifest
+     * legs were for THEIR predecessors: every state_root changes at this
+     * package (devnet wipe + stop-all, decision file §2 "F1-F4, F8, F9,
+     * F12 ve F13-b" class). */
+    if (nodus_witness_attendance_root(w, attendance) != 0)
+        return -1;
     /* GENERICITY CORRECTION (locked): the native supply_root is NOT a
      * SYSTEM leg — issuance belongs to the DNA_CORE runtime and is
      * committed by ITS state root below. */
     return dna_v2_system_root(validator_root, delegation_root, epoch_v2,
                               chain_config_root, vset, domreg, manifest,
-                              out);
+                              attendance, out);
 }
 
 int nodus_witness_core_root_v2(nodus_witness_t *w, uint8_t out[64]) {

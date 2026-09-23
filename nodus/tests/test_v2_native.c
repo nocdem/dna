@@ -103,6 +103,8 @@
 #include "dnac/env_wire.h"
 #include "dnac/env_preflight.h"
 #include "dnac/effect_wire.h"
+#include "dnac/cmt_pb.h"        /* CMT_PB_BLOCK_ID_FLAG_COMMIT (round 2,
+                                 * R2-2 attendance feeding)              */
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/sign/qgp_dilithium.h"
 
@@ -4918,8 +4920,7 @@ static int val_row_matches(nodus_witness_t *w, const uint8_t pkh[64],
             "pending_effective_block, status, active_since_block, "
             "unstake_commit_block, unstake_destination_fp, "
             "unstake_destination_pubkey, last_validator_update_block, "
-            "consecutive_missed_epochs, last_signed_block, "
-            "signed_blocks_this_epoch FROM validators "
+            "consecutive_missed_epochs FROM validators "
             "WHERE pubkey_hash = ?1", -1, &st, NULL) != SQLITE_OK)
         return -1;
     sqlite3_bind_blob(st, 1, pkh, 64, SQLITE_TRANSIENT);
@@ -4947,9 +4948,7 @@ static int val_row_matches(nodus_witness_t *w, const uint8_t pkh[64],
               memcmp(dpk, dest_pk_key >= 0 ? g_pk[dest_pk_key] : zero,
                      2592) == 0 &&
               sqlite3_column_int64(st, 12) == 0 &&
-              sqlite3_column_int64(st, 13) == 0 &&
-              sqlite3_column_int64(st, 14) == 0 &&
-              sqlite3_column_int64(st, 15) == 0) ? 0 : -1;
+              sqlite3_column_int64(st, 13) == 0) ? 0 : -1;
     }
     sqlite3_finalize(st);
     return ok;
@@ -5582,7 +5581,7 @@ static int test_o11_hook_pins(void) {
         nodus_rt_read_res_t r2[NODUS_RT_MAX_READS];
         memcpy(r2, reads, sizeof(r2));
         r2[0].present = 1;
-        r2[0].value_len = 5397;
+        r2[0].value_len = 5381;   /* tokenomics-v3 P1: VAL record 5397 -> 5381 */
         CHECK(nodus_rt_system_exec(sys, &v, 0, &ctx, r2, nr, res,
                                    sizeof(res), &rl) == -1,
               "P1 present validator row must reject at the hook"); OK();
@@ -5695,8 +5694,9 @@ static int test_o11_hook_pins(void) {
         memcpy(rq.key, pkh0, 64);
         CHECK(nodus_witness_v2_read_one(fx.w, sys, &rq, &rr)
                   == NODUS_ADAPTER_OK && rr.present == 1 &&
-              rr.value_len == 5397,
-              "P8 an honest validator row reads as the 5397-byte record");
+              rr.value_len == 5381,
+              "P8 an honest validator row reads as the 5381-byte record "
+              "(tokenomics-v3 P1: 5397 -> 5381, re-derived)");
         OK();
         CHECK(run_sql(fx.w->db,
               "UPDATE validators SET self_stake = -1 WHERE "
@@ -5746,7 +5746,8 @@ static int test_o11_hook_pins(void) {
 /* Record offsets, RESTATED here rather than imported: the production
  * macros live in nodus_witness_rt_native.c and are not exported, and an
  * independent restatement is what catches a silent layout move. */
-#define TVAL_REC_LEN     5397u
+#define TVAL_REC_LEN     5381u   /* tokenomics-v3 P1: 5397 -> 5381, the two
+                                  * trailing attendance fields removed    */
 #define TVAL_SELF_OFF    2592u
 #define TVAL_TOT_OFF     2600u
 #define TVAL_EXT_OFF     2608u
@@ -8127,6 +8128,21 @@ static int test_o11_global(void) {
         const int delegators[3] = { 9, 10, 11 };
         CHECK(fx_genesis(&fx, "epochb") == 0, "genesis");
         CHECK(val_key(0, vk0) == 0, "key");
+        /* round 2 (R2-2): this drive crosses ONE epoch boundary (LEN) —
+         * below DNAC_AUTO_RETIRE_EPOCHS (2 consecutive misses), so a
+         * zero-attendance drive could not have AUTO_RETIRED anyone here.
+         * Fed anyway (every ACTIVE committee member — `fx_genesis`'s own
+         * 7-member seed — gets a COMMIT vote per block below), matching
+         * this file's own §16 boundary discipline and keeping Rule N a
+         * documented no-op rather than merely a harmless one. */
+        uint8_t   att_addrs[7][32];
+        int32_t   att_flags[7];
+        for (int ai = 0; ai < 7; ai++) {
+            uint8_t digest[64];
+            CHECK(qgp_sha3_512(g_pk[ai], 2592, digest) == 0, "voter digest");
+            memcpy(att_addrs[ai], digest, 32);
+            att_flags[ai] = CMT_PB_BLOCK_ID_FLAG_COMMIT;
+        }
         /* NOTE (ORCHESTRATOR integration): funding is seeded AFTER the
          * empty drive, not here. seed_funding writes utxo_set OUT OF
          * BAND (no block), so the CORE head root and the recomputed
@@ -8149,6 +8165,9 @@ static int test_o11_global(void) {
         OK();
         for (uint64_t h = 2; h < (uint64_t)DNAC_EPOCH_LENGTH - 1; h++) {
             mk_block_h(&b, h, NULL, 0);
+            b.cmt.votes_address       = (const uint8_t (*)[32])att_addrs;
+            b.cmt.votes_block_id_flag = att_flags;
+            b.cmt.votes_len           = 7;
             if (nodus_witness_v2_apply_block(fx.w, &b) != 0) {
                 fprintf(stderr, "empty drive failed at height %llu\n",
                         (unsigned long long)h);
@@ -8198,6 +8217,9 @@ static int test_o11_global(void) {
                                 sd, 1, sd, 1, NULL) == 0, "build");
             nodus_v2_envelope_t ve = { e.bytes, e.len };
             mk_block_h(&b, h, &ve, 1);
+            b.cmt.votes_address       = (const uint8_t (*)[32])att_addrs;
+            b.cmt.votes_block_id_flag = att_flags;
+            b.cmt.votes_len           = 7;
             CHECK(b.epoch == h / (uint64_t)DNAC_EPOCH_LENGTH,
                   "the block's epoch is the derived value");
             CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
@@ -8307,8 +8329,9 @@ static int set_commission(fixture_t *fx, const uint8_t pkh[64],
 /* Every column of a validator record EXCEPT the four this op may write.
  * A transition that quietly moves a fifth column fails here — this is
  * the "NOTHING ELSE MOVES" assertion, done positively (compare the whole
- * 5397-byte record) rather than by listing what to check. @return 0 =
- * every untouched column is byte-identical. */
+ * 5381-byte record, tokenomics-v3 P1: 5397 -> 5381) rather than by
+ * listing what to check. @return 0 = every untouched column is
+ * byte-identical. */
 static int vupd_only_commission_moved(const uint8_t *before,
                                       const uint8_t *after) {
     uint8_t a[TVAL_REC_LEN], b[TVAL_REC_LEN];

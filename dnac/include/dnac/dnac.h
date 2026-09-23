@@ -200,12 +200,59 @@ extern "C" {
  * already wide enough. */
 #define DNAC_MAX_ACTIVE_VALIDATORS   128
 
-/** Liveness threshold: fraction of epoch blocks a committee member must sign
- *  (in basis points — 8000 = 80%) to earn rewards that epoch (Rule N) */
-#define DNAC_LIVENESS_THRESHOLD_BPS  8000
+/** Liveness threshold: fraction of epoch blocks a committee member must
+ *  SIGN — never propose — to stay ACTIVE and to earn rewards that epoch.
+ *  In basis points; 5000 = 50%.
+ *
+ *  tokenomics-v3 P1 round 3 (operator 2026-09-23, decision file §3 last
+ *  entry): 8000 -> 5000, and this ONE constant is now read by BOTH
+ *  consumers through ONE predicate
+ *  (`nodus_witness_v2_attendance_meets_bar`, nodus_witness_v2_epoch.{c,h}):
+ *  Rule N's AUTO_RETIRE test (`v2ep_rule_n`) and the settlement reward
+ *  bar (`nodus_witness_v2_econ.c`) — "tek kural, iki tüketici" (decision
+ *  §1 line 79's parenthetical). Previously the reward bar carried an
+ *  extra `× committee_count` factor left over from the retired
+ *  PROPOSER-credit era, which made its EFFECTIVE bar ~11% while Rule N's
+ *  was 80% — two different answers to one question; the shared predicate
+ *  ends that divergence.
+ *
+ *  The value sits BELOW cometbft's structural attendance FLOOR on
+ *  purpose (round 5 correction, decision file §3 2026-09-23 "ORCHESTRATOR
+ *  DÜZELTMESİ" — the earlier text here had the direction backwards). A
+ *  block commits on MORE than two-thirds of the committee's signatures,
+ *  so average attendance across a healthy, block-producing epoch is AT
+ *  LEAST ~67% (~73% in small sets) — a FLOOR, not a ceiling; the true
+ *  ceiling is 100%. The number that matters for this constant is the
+ *  WORST case: every block commits with exactly a quorum and the excluded
+ *  members rotate, so every member sits near q/n ≈ 70%. 8000 (80%) is
+ *  ABOVE that worst case, so a jittery-but-honest cluster could put its
+ *  ENTIRE active set below the bar in the same epoch — two such epochs
+ *  empty the validator list, and an empty list can build no next
+ *  snapshot, produce no block and admit no governance transaction to fix
+ *  it: an irreversible halt. Measured, not hypothetical: `test_v2_econ.c`
+ *  `t_settlement_offline` (a 3-validator fixture, no crash, no missed
+ *  block) produced "Rule N: auto-retired 3 validator(s)" then "epoch
+ *  2160: committee is empty (count=0)" then a -2 FAULT at the next
+ *  boundary, at the OLD 8000 value. 5000 sits below that ~70% worst case
+ *  at every committee size, so the bar ALONE cannot fail the whole set —
+ *  but the bar and the 120-block recency condition
+ *  (DNAC_SETTLEMENT_ATTENDANCE_WINDOW_BLOCKS) can fail DIFFERENT members
+ *  in the same boundary (measured: 5 of 7 in one worked example), which
+ *  is why Rule N carries a floor — the operator's initial "no floor
+ *  needed" call was reversed once that arithmetic was shown. Round 6
+ *  (decision file §3 2026-09-23 "Rule N TABANI WEIGHT ÜZERİNDEN") made
+ *  that floor a VOTING-POWER rule with no constant of its own: a
+ *  boundary retires nobody unless the NEXT epoch's seatable set still
+ *  commits with its largest member gone, (P - max) > P * 2 / 3 — see
+ *  `v2ep_rule_n` and the "ROUND 6: THE WEIGHT FLOOR" contract in
+ *  nodus_witness_v2_epoch.{c,h}. */
+#define DNAC_LIVENESS_THRESHOLD_BPS  5000
 
-/** Number of consecutive missed epochs before AUTO_RETIRED status (Rule N) */
-#define DNAC_AUTO_RETIRE_EPOCHS      3
+/** Number of consecutive missed epochs before AUTO_RETIRED status (Rule N).
+ *  tokenomics-v3 §1 "iki ardışık epoch katılım koşullarını sağlayamayan
+ *  validator çıkarılacak" (decisions/2026-09-22-nodus-tokenomics-v3-
+ *  operator.md) — 3 -> 2 (P1). */
+#define DNAC_AUTO_RETIRE_EPOCHS      2
 
 /** VALIDATOR_UPDATE freshness window: TX rejected if signed_at_block is older than this */
 #define DNAC_SIGN_FRESHNESS_WINDOW   32   /* blocks (~160s at 5s blocks) */
@@ -215,7 +262,16 @@ extern "C" {
  *  runs, or its slot's pool is burned as offline. Decoupled from
  *  EPOCH_LENGTH to avoid the "1 sig in 1 hour" loophole that would
  *  otherwise trivialize the offline penalty. 120 blocks = 10 min of
- *  recent liveness required. */
+ *  recent liveness required.
+ *  tokenomics-v3 P1: read by the shared participation predicate
+ *  (`nodus_witness_v2_attendance_meets_bar`, nodus_witness_v2_epoch.c) as
+ *  the P2 term `last_signed_height >= (H > W ? H - W : 0)` against
+ *  `v2_attendance` — ONE reader, called by BOTH Rule N (`v2ep_rule_n`)
+ *  and the settlement liveness bar (`nodus_witness_v2_econ.c`). Before
+ *  round 3 nothing in this tree read this constant at all: the
+ *  settlement bar had its own `× committee_count` formula and Rule N had
+ *  no recency term — the "already read it" claim once written here was
+ *  false at base (round 5 correction). */
 #define DNAC_SETTLEMENT_ATTENDANCE_WINDOW_BLOCKS  120
 
 /** chain_config_tx grace — ergonomic params.

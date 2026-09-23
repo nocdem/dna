@@ -151,6 +151,8 @@
 #include "witness/nodus_witness_v2_gen.h"
 #include "witness/nodus_witness_v2_produce.h"
 #include "witness/nodus_witness_committee.h"
+#include "witness/nodus_witness_domreg.h"         /* round 2: build_cc_env */
+#include "witness/nodus_witness_runtime.h"        /* round 2: build_cc_env */
 #include "witness/nodus_witness_emission.h"      /* DNAC_DECIMAL_UNIT   */
 #include "witness/nodus_witness_cmt_app.h"
 #include "witness/nodus_witness_cmt_host.h"
@@ -164,6 +166,10 @@
 #include "dnac/cmt_merkle.h"
 #include "dnac/cmt_part_set.h"
 #include "dnac/cmt_state.h"
+#include "dnac/cmt_mem.h"           /* round 2: cmt_mem_check_tx driving */
+#include "dnac/ledger_ids.h"        /* round 2: dna_bft_quorum           */
+#include "dnac/env_wire.h"          /* round 2: build_cc_env             */
+#include "dnac/env_preflight.h"     /* round 2: build_cc_env             */
 #include "dnac/cmt_tmhash.h"
 
 #define CHECK(cond, msg) do {                                              \
@@ -474,6 +480,200 @@ static void opts_default(gfx_t *g, nodus_cmt_node_opts_t *o)
     o->limits.max_txs      = TEST_NODE_MAX_TXS;
     o->limits.tx_arena_cap = 2u * 1024u * 1024u;
     o->limits.max_evidence = 4;
+}
+
+/* ══ a REAL chain_config envelope — test_cmt_app.c:874-1036's shape
+ * ═══════════════════════════════════════════════════════════════════
+ * round 2 (test_cmt_node.c drive): "retyped here" over this file's own
+ * `gfx_t`/`g_ks`, the SAME convention `cfg_make_v3_real` above already
+ * follows for this file (its own comment cites test_cmt_app.c:242-309).
+ * Needed ONLY to drive a transaction CheckTx genuinely ACCEPTS —
+ * `mem_res_cb_first_time`'s `notifyTxsAvailable` (clist_mempool.go:453)
+ * fires only on `res->code == CMT_MEM_CODE_TYPE_OK`, so the txsAvailable
+ * drive below cannot use a stub. */
+
+#define CC_CALL_LEN 41u
+#define CC_UNITS    200000u
+
+typedef struct {
+    uint8_t *bytes;
+    size_t   len;
+    uint8_t  wire_id[64];
+    uint8_t  intent_id[64];
+} test_env_t;
+
+static int build_cc_env(nodus_witness_t *w, const uint8_t chain32[32],
+                        uint64_t nonce, test_env_t *out)
+{
+    dna_domain_manifest_t     sys_man;
+    nodus_committee_member_t *cm = NULL;
+    dna_env_preflight_t      *pf = NULL;
+    uint8_t                  *fps = NULL, *auth = NULL, *env_bytes = NULL;
+    uint8_t                  *call = NULL;
+    uint64_t                  tip = 0;
+    int                       cmn = 0, rc = -1, bad = 0;
+
+    memset(out, 0, sizeof(*out));
+    if (nodus_witness_domreg_get(w, DNA_DOMAIN_SYSTEM, NULL, &sys_man,
+                                 NULL) != 0) {
+        return -1;
+    }
+    /* A version-3 chain has no block rows at all, so the tip read
+     * answers 0 and the candidate height is 1 — which is the first
+     * Comet block's height. */
+    if (nodus_witness_v2_tip_height(w, &tip) != 0) {
+        return -1;
+    }
+    if (nodus_committee_get_for_block_alloc(w, tip, &cm, &cmn) != 0 ||
+        cmn < 1) {
+        return -1;
+    }
+    fps  = malloc((size_t)cmn * 64);
+    pf   = calloc(1, sizeof(*pf));
+    call = calloc(1, CC_CALL_LEN);
+    do {
+        uint8_t  set_hash[64];
+        uint64_t appr_epoch, nv = 7, eff, vb, sa = 1;
+        uint32_t quorum, emitted = 0;
+        size_t   auth_len, env_len = 0, used = 0, sl = 0;
+        dna_env_leg_in_t  leg;
+        dna_env_in_t      env_in;
+        dna_env_leg_ctx_t lctx;
+        uint8_t          *p;
+        int i, s;
+
+        if (!fps || !pf || !call) {
+            break;
+        }
+        for (i = 0; i < cmn; i++) {
+            if (qgp_sha3_512(cm[i].pubkey, DNAC_PUBKEY_SIZE,
+                             fps + (size_t)i * 64) != 0) {
+                bad = 1;
+                break;
+            }
+        }
+        if (bad ||
+            nodus_rt_committee_set_hash((const uint8_t (*)[64])fps,
+                                        (uint32_t)cmn, set_hash) != 0) {
+            break;
+        }
+        appr_epoch = nodus_v2_epoch_for_height(tip);
+        quorum     = dna_bft_quorum((uint32_t)cmn);
+        eff = tip + 100000;
+        vb  = eff + 100000;
+        call[0] = 4;                        /* DNAC_CFG_TARGET_ACTIVE_COUNT */
+        for (i = 0; i < 8; i++) call[1 + i]  = (uint8_t)(nv    >> (56 - 8 * i));
+        for (i = 0; i < 8; i++) call[9 + i]  = (uint8_t)(eff   >> (56 - 8 * i));
+        for (i = 0; i < 8; i++) call[17 + i] = (uint8_t)(nonce >> (56 - 8 * i));
+        for (i = 0; i < 8; i++) call[25 + i] = (uint8_t)(sa    >> (56 - 8 * i));
+        for (i = 0; i < 8; i++) call[33 + i] = (uint8_t)(vb    >> (56 - 8 * i));
+
+        auth_len = 1 + NODUS_RT_AUTH_SIGNER_LEN + 2 +
+                   (size_t)quorum * NODUS_RT_AUTH_APPROVAL_LEN;
+        auth = calloc(1, auth_len);
+        if (!auth) {
+            break;
+        }
+        memset(&leg, 0, sizeof(leg));
+        leg.hdr.domain_id            = DNA_DOMAIN_SYSTEM;
+        leg.hdr.runtime_op           = DNA_SYSRULE_CHAIN_CONFIG;
+        leg.hdr.ruleset_version      = sys_man.ruleset_version;
+        leg.hdr.access_mode          = DNA_ENV_ACCESS_INVOKE;
+        leg.hdr.auth_kind            = NODUS_RT_AUTHKIND_DSA87_CC_V1;
+        leg.hdr.call_len             = CC_CALL_LEN;
+        leg.hdr.auth_len             = (uint32_t)auth_len;
+        leg.hdr.res_max_effects      = 4;
+        leg.hdr.res_max_effect_bytes = 4096;
+        leg.call_data                = call;
+        leg.auth_data                = auth;
+
+        memset(&env_in, 0, sizeof(env_in));
+        env_in.expiry_height       = 0;
+        env_in.fee_amount          = 0;   /* a CHAIN_CONFIG leg requires 0 */
+        env_in.res_max_total_units = CC_UNITS;
+        env_in.leg_count           = 1;
+        env_in.legs                = &leg;
+
+        if (dna_env_encoded_size(&leg, 1, &env_len) != 0) {
+            break;
+        }
+        env_bytes = malloc(env_len);
+        if (!env_bytes) {
+            break;
+        }
+        lctx.domain_id       = DNA_DOMAIN_SYSTEM;
+        lctx.ruleset_version = sys_man.ruleset_version;
+        memcpy(lctx.ruleset_hash, sys_man.ruleset_hash, 64);
+
+        if (dna_env_encode(&env_in, env_bytes, env_len, &used) != 0 ||
+            used != env_len ||
+            dna_env_preflight(env_bytes, env_len, chain32, tip + 1, &lctx,
+                              1, pf) != DNA_ENV_PF_OK) {
+            break;
+        }
+        p = auth;
+        p[0] = 1;
+        memcpy(p + 1, g_ks[0].pk, DNAC_PUBKEY_SIZE);
+        if (qgp_dsa87_sign(p + 1 + DNAC_PUBKEY_SIZE, &sl, pf->auth_digest[0],
+                           64, g_ks[0].sk) != 0) {
+            break;
+        }
+        p += 1 + NODUS_RT_AUTH_SIGNER_LEN;
+        p[0] = (uint8_t)(quorum >> 8);
+        p[1] = (uint8_t)quorum;
+        p += 2;
+        for (s = 0; s < cmn && emitted < quorum; s++) {
+            int     ki = -1;
+            uint8_t adg[64];
+            int     k;
+
+            for (k = 0; k < N_KEYS; k++) {
+                if (memcmp(cm[s].pubkey, g_ks[k].pk, DNAC_PUBKEY_SIZE) == 0) {
+                    ki = k;
+                    break;
+                }
+            }
+            if (ki < 0 ||
+                nodus_rt_cc_approval_digest(pf->auth_digest[0], set_hash,
+                                            appr_epoch, (uint16_t)s,
+                                            adg) != 0) {
+                bad = 1;
+                break;
+            }
+            p[0] = (uint8_t)((uint16_t)s >> 8);
+            p[1] = (uint8_t)s;
+            sl = 0;
+            if (qgp_dsa87_sign(p + 2, &sl, adg, 64, g_ks[ki].sk) != 0) {
+                bad = 1;
+                break;
+            }
+            p += NODUS_RT_AUTH_APPROVAL_LEN;
+            emitted++;
+        }
+        if (bad || emitted != quorum) {
+            break;
+        }
+        if (dna_env_encode(&env_in, env_bytes, env_len, &used) != 0 ||
+            used != env_len ||
+            dna_env_preflight(env_bytes, env_len, chain32, tip + 1, &lctx,
+                              1, pf) != DNA_ENV_PF_OK) {
+            break;
+        }
+        out->bytes = env_bytes;
+        out->len   = env_len;
+        memcpy(out->wire_id, pf->wire_id, 64);
+        memcpy(out->intent_id, pf->intent_id, 64);
+        env_bytes = NULL;
+        rc = 0;
+    } while (0);
+
+    free(env_bytes);
+    free(call);
+    free(auth);
+    free(pf);
+    free(fps);
+    free(cm);
+    return rc;
 }
 
 /* ══ cmt_state row helpers ═══════════════════════════════════════════ */
@@ -1811,6 +2011,23 @@ static int t_start_and_release(void)
           "a fresh chain directory has NO last-sign state file");
 
     CHECK(nodus_cmt_node_init(n, g.w, &o) == CMT_OK, "the node builds");
+    /* tokenomics-v3 P1 (D-5) — the REGISTRATION half of the TxsAvailable
+     * wiring, observable without driving a CheckTx: before this package
+     * `cmt_mem_enable_txs_available` was called with a NULL callback and
+     * a NULL ctx (nodus_witness_cmt_node.c, "a channel nobody reads; the
+     * flag still flips") — both fields stayed NULL after init. This
+     * fixture's own settings make `cmt_config_wait_for_txs` true
+     * (CreateEmptyBlocksInterval > 0), so the registration call always
+     * runs. Pins ONLY that a real callback and the node itself as its
+     * ctx got bound; it does NOT prove the callback FIRES on the first
+     * accepted tx (that needs a CheckTx drive this fixture does not do —
+     * reported as a gap, not invented here). RED before D-5:
+     * `n->mem->txs_available_fn == NULL`. */
+    CHECK(n->mem != NULL, "mempool exists");
+    CHECK(n->mem->txs_available_fn != NULL,
+          "D-5: TxsAvailable is bound to a REAL callback, not NULL");
+    CHECK(n->mem->txs_available_ctx == (void *)n,
+          "D-5: the callback's ctx is the node itself");
     /* PACKAGE C2e, register R3-A-5: node_slots_alloc's part-set payload
      * store, one per block slot, sized parts_cap[k] *
      * CMT_BLOCK_PART_SIZE_BYTES — the same arithmetic node_slots_alloc's
@@ -1930,6 +2147,113 @@ static int t_start_and_release(void)
      * the release — a restart must find it. */
     CHECK(access(g.pvpath, F_OK) == 0,
           "the last-sign-state file is on disk after release");
+    gfx_close(&g);
+    return 0;
+}
+
+/**
+ * tokenomics-v3 P1 (D-5), round 2 — the DRIVE half of the TxsAvailable
+ * wiring `t_start_and_release` above only REGISTERS. A transaction
+ * CheckTx genuinely ACCEPTS fires the callback and sets
+ * `n->cs->txs_available`; a SECOND accepted transaction at the SAME
+ * height does NOT fire it again (`notified_txs_available`'s own latch,
+ * clist_mempool.go:510-521 / cmt_mem.c:1223-1229); the mempool's own
+ * `Update` (the per-height reset, clist_mempool.go:592-593 /
+ * cmt_mem.c:1706) clears that latch, so the NEXT accepted transaction at
+ * the next height fires it once more — "once per height".
+ *
+ * `cmt_mem_check_tx` is driven DIRECTLY on `n->mem`, not through a
+ * FinalizeBlock request — CheckTx and FinalizeBlock are different ABCI
+ * connections (AppConnMempool vs AppConnConsensus,
+ * nodus_witness_cmt_app.h's own file header) and this property belongs
+ * to the mempool connection alone.
+ */
+static int t_txs_available_fires(void)
+{
+    gfx_t                       g;
+    nodus_cmt_node_opts_t       o;
+    nodus_cmt_node_t           *n;
+    test_env_t                  env1, env2, env3;
+    cmt_mem_tx_info_t           info;
+    cmt_mem_response_check_tx_t res;
+    cmt_mem_error_t             err;
+
+    CHECK(gfx_open(&g, "txsavail") == 0, "version-3 fixture");
+    n = (nodus_cmt_node_t *)calloc(1, sizeof(*n));
+    CHECK(n != NULL, "alloc");
+    opts_default(&g, &o);
+    CHECK(nodus_cmt_node_init(n, g.w, &o) == CMT_OK, "the node builds");
+    CHECK(n->cs != NULL, "consensus state exists after init");
+    CHECK(!n->cs->txs_available,
+          "FIXTURE GUARD: not set before any transaction");
+
+    memset(&info, 0, sizeof(info));
+
+    /* ── first accepted transaction: FIRES it ──────────────────────── */
+    CHECK(build_cc_env(g.w, g.chain32, 0x9001, &env1) == 0, "envelope 1");
+    memset(&res, 0, sizeof(res));
+    memset(&err, 0, sizeof(err));
+    CHECK(cmt_mem_check_tx(n->mem, env1.bytes, env1.len, &info, &res, &err)
+              == CMT_OK, "checked");
+    CHECK(res.code == CMT_MEM_CODE_TYPE_OK, "a valid envelope is admitted");
+    CHECK(n->cs->txs_available,
+          "D-5: the FIRST accepted transaction fires the callback and "
+          "sets cs->txs_available");
+
+    /* the flag is CONSUMED by the real consensus event loop
+     * (`cmt_cs_handle_txs_available`'s own reset, cmt_cs.c:1616) — this
+     * test clears it by hand to observe what happens NEXT, the same
+     * substitution that handler performs. */
+    n->cs->txs_available = false;
+
+    /* ── a SECOND accepted transaction at the SAME height: does NOT fire
+     * it again. */
+    CHECK(build_cc_env(g.w, g.chain32, 0x9002, &env2) == 0, "envelope 2");
+    memset(&res, 0, sizeof(res));
+    memset(&err, 0, sizeof(err));
+    CHECK(cmt_mem_check_tx(n->mem, env2.bytes, env2.len, &info, &res, &err)
+              == CMT_OK, "checked");
+    CHECK(res.code == CMT_MEM_CODE_TYPE_OK, "also admitted");
+    CHECK(!n->cs->txs_available,
+          "D-5: a SECOND accepted transaction at the same height does "
+          "NOT fire the callback again — notified_txs_available already "
+          "latched");
+
+    /* ── Update commits BOTH pending transactions, emptying the pool, so
+     * its own tail re-notify ("notify when transactions remain",
+     * clist_mempool.go:634-636) does NOT fire — isolating what this
+     * case is actually about: a NEW transaction at the NEXT height gets
+     * a FRESH chance to fire, because Update cleared the latch, not
+     * because the pool happened to be non-empty. */
+    {
+        cmt_pb_bytes_t          committed[2];
+        cmt_pb_exec_tx_result_t results[2];
+
+        committed[0].data = env1.bytes; committed[0].len = env1.len;
+        committed[1].data = env2.bytes; committed[1].len = env2.len;
+        memset(results, 0, sizeof(results));
+        CHECK(cmt_mem_update(n->mem, 1, committed, 2, results, 2,
+                             NULL, NULL) == CMT_OK, "Update commits both");
+    }
+    CHECK(!n->cs->txs_available,
+          "FIXTURE GUARD: Update left the flag clear — the pool is now "
+          "empty, so its own tail re-notify did not fire either");
+
+    CHECK(build_cc_env(g.w, g.chain32, 0x9003, &env3) == 0, "envelope 3");
+    memset(&res, 0, sizeof(res));
+    memset(&err, 0, sizeof(err));
+    CHECK(cmt_mem_check_tx(n->mem, env3.bytes, env3.len, &info, &res, &err)
+              == CMT_OK, "checked");
+    CHECK(res.code == CMT_MEM_CODE_TYPE_OK, "admitted at the new height");
+    CHECK(n->cs->txs_available,
+          "D-5: after Update resets the latch, the NEXT accepted "
+          "transaction fires the callback again — once per height");
+
+    free(env1.bytes);
+    free(env2.bytes);
+    free(env3.bytes);
+    nodus_cmt_node_release(n);
+    free(n);
     gfx_close(&g);
     return 0;
 }
@@ -2134,6 +2458,7 @@ int main(void)
         { "edge_state_ahead",         t_edge_state_ahead_of_store},
         { "genesis_doc_loader",       t_genesis_doc_loader       },
         { "start_and_release",        t_start_and_release        },
+        { "txs_available_fires",      t_txs_available_fires      },
         { "privval_load_or_gen",      t_privval_load_or_gen      },
         { "init_invariants",          t_init_invariants          },
         { "mock_app_rows",            t_mock_app_rows            },

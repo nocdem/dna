@@ -37,37 +37,87 @@
  *      global_height % DNAC_EPOCH_LENGTH == 0. Exact mirror of
  *      nodus_witness_bft.c:2358. Height only: no clock, no timestamp.
  *   1. PENDING COMMISSION ACTIVATION — bft.c:2379-2402 verbatim shape.
- *   2. RETIRING → UNSTAKED GRADUATION — candidates selected
- *      ORDER BY pubkey ASC (bft.c:2416-2422; the order is load-bearing
- *      and is a stable total key on every node), bounded by
- *      DNAC_MAX_VALIDATORS. Per graduate, in the legacy order
- *      (bft.c:2465-2560): release UTXO → validators row → active_count.
+ *   2. GRADUATION — tokenomics-v3 P1 (D-11): candidates are every row
+ *      whose status is RETIRING **or AUTO_RETIRED** (widened from
+ *      RETIRING-only; an AUTO_RETIRED member's bond is RETURNED, never
+ *      cut — decision §3, 2026-09-23), selected ORDER BY pubkey ASC
+ *      (bft.c:2416-2422; the order is load-bearing and is a stable total
+ *      key on every node), bounded by DNAC_MAX_VALIDATORS.
+ *
+ *      ROUND 5 DEFERRAL (decision file §3 2026-09-23, "ayrılan
+ *      validatorun MEZUNİYETİ … ertelenir"; O6 red-team L1-1): a
+ *      candidate graduates at boundary H ONLY IF its pubkey is NOT an
+ *      entry of `nodus_witness_v2_epoch_authority_for_epoch(w, H)` — the
+ *      snapshot TAKING EFFECT at H. If it is still an entry (a member
+ *      that unstaked during the just-ended epoch, whose exit snapshot(H)
+ *      predates), it is left UNTOUCHED for a LATER boundary; no counter,
+ *      no status change, no fault. Before this round graduation ran with
+ *      no height condition at all: a member frozen into snapshot(H) at
+ *      H-E (before it ever unstaked) is still an entry cometbft votes
+ *      with until H+2, so releasing its bond and dropping its row at H
+ *      let it (and its operator) walk away while still owed a vote —
+ *      measured trigger: >=1/3 of a 7-member set leaving in the same
+ *      epoch and shutting their nodes down at graduation halts the chain
+ *      with no boundary able to recover, because the boundary that would
+ *      exclude them (H+E) never arrives without their vote. Absent/
+ *      unreadable snapshot(H) -> -2 (a boundary has no verdict class),
+ *      same fail-closed rule R5-1 gives Rule N. Practical consequence: an
+ *      exiting validator remains seated — and must keep signing — for
+ *      ONE FULL EXTRA EPOCH past its own UNSTAKE; its unlock height
+ *      starts counting from the boundary at which it actually graduates,
+ *      not the one at which UNSTAKE was requested.
+ *
+ *      Per graduate, in the legacy order (bft.c:2465-2560): release UTXO
+ *      → validators row → active_count — EXCEPT active_count is
+ *      decremented only for a graduate whose status WAS RETIRING; Rule N
+ *      already decremented it for AUTO_RETIRED at the boundary that
+ *      retired it, and decrementing twice would poison
+ *      `nodus_validator_active_count` for every later reader.
  *   2b. EPOCH SETTLEMENT (O15J Faz 2) — nodus_witness_v2_settlement_apply
  *      drains the ENDED epoch's pool into CORE payout UTXOs and burn.
- *      Contract and every V1 anchor: nodus_witness_v2_econ.h.
- *   3. RULE N (liveness / AUTO_RETIRED) — MIGRATED by O15C; see the
- *      labelled section below.
+ *      Contract and every V1 anchor: nodus_witness_v2_econ.h. Its
+ *      liveness bar now reads `v2_attendance.signed_count`
+ *      (`nodus_witness_v2_attendance_get`), not a validators-table
+ *      column (tokenomics-v3 P1, §C).
+ *   3. RULE N (liveness / AUTO_RETIRED) — REWRITTEN by tokenomics-v3 P1
+ *      (D-3); see the labelled section below.
+ *   3b. ATTENDANCE DIGEST (S-2) — `v2ep_attendance_digest`: hashes every
+ *      `v2_attendance` row of the epoch that just ended (voter_id ASC)
+ *      into ONE digest, written to `v2_attendance_epoch`. This is the
+ *      ONLY point at which the out-of-root attendance table's contents
+ *      enter `system_state_root` (the `attendance_root` leg,
+ *      shared/dnac/ledger_roots_v2.c) — a divergence between two nodes'
+ *      `v2_attendance` rows is invisible until this digest, and certain
+ *      here.
+ *   3c. ATTENDANCE RESET — `UPDATE v2_attendance SET signed_count = 0`
+ *      (keeping `last_signed_height`, the P2 watermark Rule N's NEXT
+ *      boundary needs). MUST run AFTER 3b: resetting before hashing would
+ *      digest all zeros and hide every divergence the leg exists to
+ *      catch.
  *   4. BOUNDARY FLIPS — nodus_witness_vset_apply_boundary_flips(w, H).
  *   5. NEXT SNAPSHOT — nodus_witness_vset_commit_next(w, H).
  *
  * ── WHY SETTLEMENT SITS AT 2b AND NOT AFTER RULE N ──────────────────
  * V1 runs its settlement AFTER the whole boundary transition
- * (bft.c:3737, transitions at :3594) and resets the per-epoch
- * signed-block counters at settlement's own tail (bft.c:3350-3360).
- * The V2 lane cannot copy that position: when O15C transplanted Rule N
- * it also brought the counter reset along (nodus_witness_v2_epoch.c
- * :611-622, step d), because at the time nothing else on this lane would
- * have performed it. Settlement's attendance gate READS that very
- * counter, so running it after Rule N would read all zeros and burn
- * every honest validator's share, every epoch, on every node.
+ * (bft.c:3737, transitions at :3594) and resets its per-epoch
+ * attendance counter at settlement's own tail (bft.c:3350-3360).
+ * tokenomics-v3 P1 keeps settlement at 2b for the SAME reason O15C
+ * placed it there, restated against the NEW source: settlement's
+ * liveness bar reads `v2_attendance.signed_count` for the epoch that
+ * just ended (via `nodus_witness_v2_attendance_get`), and step 3c resets
+ * that very column for every row. Running settlement after 3c would read
+ * all zeros and burn every honest validator's share, every epoch, on
+ * every node.
  *
- * Placing it at 2b restores V1's INPUTS exactly: the counters settlement
- * reads are the ones the epoch actually accumulated, and Rule N's reset
- * still lands one step later inside the same transaction. Nothing else
- * is order-sensitive across the two — Rule N reads `last_signed_block`
- * and `consecutive_missed_epochs`, neither of which settlement writes,
- * and settlement reads a committed snapshot blob plus that counter,
- * neither of which Rule N's other statements touch.
+ * Placing it at 2b restores V1's INPUTS exactly: the counts settlement
+ * reads are the ones the epoch actually accumulated, and the reset still
+ * lands two steps later (3c), after Rule N (3) and the digest (3b) have
+ * both consumed the pre-reset counts, inside the same transaction.
+ * Nothing else is order-sensitive across the three — Rule N and the
+ * digest both READ `v2_attendance` and `consecutive_missed_epochs`;
+ * neither writes what the other reads; settlement reads a committed
+ * snapshot blob plus the counter, neither of which Rule N's or the
+ * digest's statements touch.
  *
  * ── THE OTHER HALF OF THE ARGUMENT (review R1-C7) ───────────────────
  * The paragraph above justifies settlement ↔ Rule N. It does NOT cover
@@ -96,13 +146,124 @@
  * the epoch-key split is the easy half and it is not the one carrying
  * the weight.
  *
- * ── RULE N: MIGRATED (O15C) ─────────────────────────────────────────
+ * ── RULE N: REWRITTEN (tokenomics-v3 P1, D-3) ───────────────────────
  * The legacy boundary's third transition (liveness-based AUTO_RETIRED,
- * bft.c:2559-2660) reads the per-validator attendance watermark
- * `last_signed_block`. O12 deferred it because the V2 lane had no writer
- * for that watermark; O15C supplied one
- * (nodus_witness_v2_record_attendance, below), so the rule now runs here
- * with the legacy semantics, resolved through the committed snapshot.
+ * bft.c:2559-2660) reads a per-validator attendance watermark. O12
+ * deferred it because the V2 lane had no writer; O15C supplied one keyed
+ * on the committed header PROPOSER. Operator O4 (2026-09-23) replaced
+ * that source: participation is now REAL signature attendance, counted
+ * ONLY from cometbft's `decided_last_commit`
+ * (`nodus_witness_v2_attendance_credit`, below) — the proposer identity
+ * never enters the count. No base-leader blame (the legacy/O15C rule
+ * blamed only the epoch's one designated "base leader" slot; that
+ * concept is gone). Two independent predicates, BOTH required (decision
+ * §1 "birlikte aranacak"), evaluated by ONE exported function,
+ * `nodus_witness_v2_attendance_meets_bar` (below — tokenomics-v3 P1
+ * round 3, operator 2026-09-23):
+ *   P1 (50% bar)   signed_count * 10000 >= DNAC_EPOCH_LENGTH *
+ *                  DNAC_LIVENESS_THRESHOLD_BPS  (8000 -> 5000, round 3 —
+ *                  deliberately below cometbft's structural ~67-73%
+ *                  attendance FLOOR — round 5 correction, see the
+ *                  constant's own comment in dnac.h for the direction
+ *                  fix and why 80% was unsafe)
+ *   P2 (recency)   last_signed_height > 0 &&
+ *                  last_signed_height >= (H > W ? H - W : 0),
+ *                  W = DNAC_SETTLEMENT_ATTENDANCE_WINDOW_BLOCKS
+ * `miss = !(P1 && P2)`.
+ *
+ * ── ROUND 5: WHO HAS A DUTY (O6 verifier V-1, red-team L3-1/L3-2) ────
+ * `miss` is only CHARGED to a member with a DUTY this boundary: an entry
+ * of the COMMITTED snapshot that governed the epoch just ending,
+ * `nodus_witness_v2_epoch_authority_for_epoch(w, H-E)` (the set flipped
+ * ACTIVE at boundary H-E, the one cometbft has used since H-E+2), AND
+ * currently `status = ACTIVE`. RETIRING rows are never scanned (an
+ * exiting member cannot be auto-retired a second time). Every OTHER
+ * bonded row (ACTIVE without a duty this boundary — a mid-epoch STAKE
+ * seated after snapshot(H-E) was frozen — or ELIGIBLE) has its counter
+ * RESET to 0 instead: an epoch without a duty breaks the chain of
+ * consecutive misses. Before this round every ACTIVE row was evaluated
+ * regardless of duty, which (a) charged a brand-new staker a miss it
+ * had no way to avoid, and (b) let a counter earned in one duty epoch
+ * survive into a later, unrelated one, turning two NON-consecutive
+ * misses into a retirement — both measured (verifier V-1). Absent/
+ * unreadable duty snapshot -> -2 (a boundary has no verdict class).
+ *
+ * ── ROUND 6: THE WEIGHT FLOOR (decision file §3 2026-09-23 "Rule N
+ * TABANI WEIGHT ÜZERİNDEN", replacing round 5's count floor "Rule N
+ * TABANI = 4", now marked invalid) ─────────────────────────────────
+ * Why a floor exists at all (unchanged): the round-3 "no floor" call
+ * rested on an argument the ORCHESTRATOR had written backwards (average
+ * attendance is AT LEAST ~67 %, a floor, not a ceiling — corrected in the
+ * decision file §3, 2026-09-23) and on a "3 of 7" bound that ignored the
+ * recency window; red-team L3-2 showed the bar and the 120-block window
+ * can fail DIFFERENT members at the same boundary (5 of a 7-member
+ * committee in one worked example, every block still committing), and
+ * departing members still vote one more epoch while Rule N evaluates only
+ * seated ones — so retiring everyone past the threshold can leave a next
+ * set that cannot survive losing one member, or no set at all.
+ *
+ * What it measures (round 6): with every row that reached
+ * DNAC_AUTO_RETIRE_EPOCHS provisionally AUTO_RETIRED inside a SAVEPOINT,
+ * Rule N builds — without storing — the snapshot this same boundary's
+ * `nodus_witness_vset_commit_next` will store for H+E
+ * (`nodus_witness_vset_preview_next`, nodus_witness_vset.h). Power per
+ * entry = `total_stake / DNAC_DECIMAL_UNIT` (the unit the §A
+ * ValidatorUpdate diff reports, nodus_witness_cmt_app.c:1569); P = the
+ * checked sum, max = the largest entry. The retirement stands iff
+ * P > 0 AND (P − max) > P * 2 / 3 — cometbft's own integer commit form
+ * (shared/dnac/cmt_validation.c:298): the next set must still commit
+ * with its single largest member gone. An EMPTY next set (preview rc 1)
+ * is never allowed. Otherwise the boundary ROLLS BACK TO the savepoint
+ * and retires NOBODY: counters keep their incremented values (the
+ * members go at the first boundary where the survivors can carry them),
+ * active_count does not move, one QGP_LOG_WARN names the boundary, the
+ * would-be count, P and max. A preview FAULT (rc -1) fails the boundary
+ * (-2), never a verdict. All-or-nothing — never a partial or ranked
+ * retirement — the same precedent as `nodus_witness_domreg_exclusions_at`
+ * (nodus_witness_domreg.h:239-246).
+ *
+ * Why weight, not count (the count floor's defects, O6 verifier + the
+ * operator): it counted bonded rows the tenure gate will not seat next
+ * epoch (`nodus_validator_top_n`, nodus_witness_validator.c:311 — 7
+ * members + 1 fresh staker, 4 retired: count 4, next set 3 seats), and a
+ * 4-member set where one member holds 40 % stalls on that member alone.
+ * The weight inequality forces max < P/3, so it implies at least four
+ * seatable members — the old count bound follows from it.
+ *
+ * What it does NOT do (open operator questions, decision file §3): it
+ * does not cap how MANY may be retired at one boundary in a large set
+ * (100 equal members, 96 retired → 4 equal left → allowed); and if one
+ * member already holds at least a third of the next set's power it
+ * allows no retirement at all (stake concentration, tied to the open
+ * pre-testnet power-cap decision).
+ *
+ * Why the preview IS the stored snapshot: between Rule N and
+ * commit_next the boundary runs only the attendance digest, the
+ * attendance reset and the flips; none of them writes an input of
+ * `nodus_committee_compute_for_epoch(H+E)` (the per-input argument, with
+ * file:line, is the comment above the floor in v2ep_rule_n,
+ * nodus_witness_v2_epoch.c). Re-check it if that ordering ever moves.
+ *
+ * ── THE SAME PREDICATE BINDS THE REWARD BAR (round 3) ────────────────
+ * `nodus_witness_v2_attendance_meets_bar` is not Rule N's alone: the
+ * settlement liveness bar (`nodus_witness_v2_econ.c`) calls the SAME
+ * function, so a validator's ACTIVE-set membership and its epoch payout
+ * are decided by the identical P1 && P2 test at the identical rate. This
+ * is not a design choice this package invented — it is decision §1
+ * line 79's own parenthetical, "Aynı oran ödül hak edişi için de
+ * geçerli: tek kural, iki tüketici" ("the same rate applies to reward
+ * eligibility too: one rule, two consumers"), and §3's last entry states
+ * the mechanism explicitly: "ödül ve çıkarılma TEK kurala bağlanır" /
+ * "settlement barının kendi formülü yerine Rule N'in yüklemini
+ * çağırması" (the settlement bar calls Rule N's PREDICATE, not a
+ * formula of its own). Before round 3 the settlement bar had its own
+ * `signed_count * committee_count * 10000 >= E * BPS` formula — the
+ * `× committee_count` factor was a leftover normalisation from the
+ * retired PROPOSER-credit era (a proposer could only ever propose about
+ * E / committee_count blocks) that, once attendance switched to
+ * signature counting, made the reward bar's EFFECTIVE rate ~11% while
+ * Rule N's was 80%: two different answers to one question. Round 3
+ * deletes that factor along with the divergence.
  *
  * ── ACTIVATION OBLIGATION 1: legacy-malformed validator rows ────────
  * `validators` is SHARED with the live legacy lane. A row whose
@@ -259,8 +420,15 @@ typedef enum {
      * append-only and the engine maps them BY NAME. */
     NODUS_V2_EPST_SETTLE_EMITTED  = 9,  /* every payout UTXO written,
                                          * nothing burned or retired yet */
-    NODUS_V2_EPST_SETTLE_APPLIED  = 10  /* burn recorded + epoch row
+    NODUS_V2_EPST_SETTLE_APPLIED  = 10, /* burn recorded + epoch row
                                          * retired                       */
+    /* tokenomics-v3 P1 (D-4, S-2) — APPENDED for the same reason. Both
+     * stages run BETWEEN Rule N and the boundary flips in execution
+     * order: 11 fires with the digest row written to
+     * `v2_attendance_epoch` and nothing reset; 12 after
+     * `v2_attendance.signed_count` has been reset for every row. */
+    NODUS_V2_EPST_ATTENDANCE_DIGEST = 11, /* digest row written          */
+    NODUS_V2_EPST_ATTENDANCE_RESET  = 12  /* signed_count reset          */
     /* Values ascend in FIRING order. They are module-internal: the
      * engine maps them onto its own frozen F39-F45 ids BY NAME
      * (nodus_witness_v2_apply.c epoch_stage_fault), so nothing outside
@@ -339,24 +507,123 @@ int nodus_witness_v2_epoch_boundary_apply(nodus_witness_t *w,
                                           nodus_v2_epoch_result_t *out);
 
 /**
- * O15C — the V2 attendance writer (the Rule N source the O15A preflight
- * issue 12 stood for). Credits ONLY the block's committed header
- * proposer (`proposer_id` = SHA3-512(pubkey)[0..31]) on ACTIVE/RETIRING
- * rows, monotonic on last_signed_block. MUST be called inside the apply
- * engine's single block transaction BEFORE any root computation, and
- * NOWHERE else — in particular never from a sync/replay side path (the
- * O15B.1 post-root-mutation invariant).
+ * tokenomics-v3 P1 (D-2, D-4, Q1) — the V2 attendance writer. REPLACES
+ * the O15C proposer-credit writer (`nodus_witness_v2_record_attendance`,
+ * DELETED with this change — its "credit whoever proposed" source is not
+ * the decision this package binds: D-2 is explicit that "Teklifçi
+ * kimliği katılım sayımına GİRMEZ", a proposer identity never enters the
+ * count).
  *
- * @param credited_out optional: 1 when a row was actually updated (the
- *        caller declares SYSTEM touched exactly then). All-zero or
- *        unknown proposer, height 0 and the monotonic skip are all
- *        clean no-ops (0 with *credited_out = 0).
- * @return 0; -2 node-local fault (DB/hash — do not vote).
+ * Credits every vote in `addresses`/`block_id_flags` (parallel arrays,
+ * `n_votes` entries — copied verbatim by the app from cometbft's
+ * `decided_last_commit`, nodus_witness_v2_apply.h
+ * `nodus_v2_block_cmt_t.votes_address` / `.votes_block_id_flag`) whose
+ * flag is EXACTLY `CMT_PB_BLOCK_ID_FLAG_COMMIT` (shared/dnac/cmt_pb.h;
+ * Q1, 2026-09-23 O4: NIL and ABSENT do not count). Upserts, in the
+ * out-of-root `v2_attendance` table (S15), `signed_count += 1` and
+ * `last_signed_height = global_height - 1` — a block at height H carries
+ * the commit FOR height H-1 (state/execution.go BuildLastCommitInfo). No
+ * status filter, no join against `validators`: an address this chain
+ * never seated is stored anyway (cheap, out of every root, and never
+ * read back except by address). `n_votes == 0` (the initial height,
+ * execution.go:451-455) writes nothing.
+ *
+ * MUST be called inside the apply engine's single block transaction
+ * BEFORE any root computation, and NOWHERE else — in particular never
+ * from a sync/replay side path (the O15B.1 post-root-mutation
+ * invariant). Unlike the writer it replaces, this phase declares NO
+ * domain touched: `v2_attendance` is not a leg of any root, so a credit
+ * here moves no state_root byte until the epoch boundary's digest leg
+ * (`nodus_witness_v2_epoch_boundary_apply` step 5, S-2) commits its
+ * SUMMARY of the ended epoch.
+ *
+ * @return 0 (including n_votes == 0); -2 node-local fault (DB/hash — a
+ *         validator's signature is consensus data, never a verdict; see
+ *         nodus/CLAUDE.md "A DB failure is never a value").
  */
-int nodus_witness_v2_record_attendance(nodus_witness_t *w,
+int nodus_witness_v2_attendance_credit(nodus_witness_t *w,
                                        uint64_t global_height,
-                                       const uint8_t proposer_id[32],
-                                       int *credited_out);
+                                       const uint8_t (*addresses)[32],
+                                       const int32_t *block_id_flags,
+                                       size_t n_votes);
+
+/**
+ * tokenomics-v3 P1 — read one validator's out-of-root attendance row by
+ * PUBKEY. Derives the lookup key with `nodus_chain_config_derive_witness_id`
+ * (nodus/nodus_chain_config.h) — the SAME nodus-side function
+ * `nodus_witness_vset.c:365` already uses to populate a snapshot entry's
+ * `voter_id`, byte-identical to `cmt_address_hash` (shared/dnac/
+ * cmt_tmhash.h) and to the cometbft address this table is keyed on: ONE
+ * derivation, reused, never re-implemented.
+ *
+ * Used directly by `nodus_witness_v2_attendance_meets_bar` (below), the
+ * ONE predicate both Rule N and the settlement liveness bar now call —
+ * this function itself is no longer read by either caller directly
+ * (round 3, tokenomics-v3 P1).
+ *
+ * @param signed_count_out      optional.
+ * @param last_signed_height_out optional.
+ * @return 0 found (out params written); 1 absent — HONEST ZERO, not a
+ *         fault (an epoch with no writer yet, or a validator that never
+ *         signed; out params are NOT written on 1, callers must treat
+ *         absence as signed_count 0 / last_signed_height 0 themselves);
+ *        -2 node-local fault (bad argument, hash failure, DB error).
+ */
+int nodus_witness_v2_attendance_get(nodus_witness_t *w,
+                                    const uint8_t pubkey[DNAC_PUBKEY_SIZE],
+                                    uint64_t *signed_count_out,
+                                    uint64_t *last_signed_height_out);
+
+/**
+ * tokenomics-v3 P1 round 3 (operator 2026-09-23) — THE shared
+ * participation predicate. ONE function, TWO callers: Rule N's
+ * AUTO_RETIRE test (`v2ep_rule_n`, this file) and the settlement reward
+ * bar (`nodus_witness_v2_settlement_apply`, `nodus_witness_v2_econ.c`).
+ * Evaluates BOTH P1 and P2 for every caller — the decision text binds
+ * them together as ONE participation criterion, not two independently
+ * selectable halves: decision §1 line 79's parenthetical ("Aynı oran
+ * ödül hak edişi için de geçerli: tek kural, iki tüketici" — the same
+ * rate applies to reward eligibility too, one rule, two consumers) and
+ * §3's last entry ("settlement barının kendi formülü yerine Rule N'in
+ * yüklemini çağırması" — the settlement bar calls Rule N's PREDICATE,
+ * not a formula of its own). Neither caller may opt out of P2: the
+ * decision's own participation sentence ("Epoch boyunca en az %50
+ * katılım VE son 120 blokta en az bir imza şartları BİRLİKTE aranacak")
+ * governs participation as such, with no separate clause for rewards.
+ *
+ *   P1 (bar)      signed_count * 10000 >= DNAC_EPOCH_LENGTH *
+ *                 DNAC_LIVENESS_THRESHOLD_BPS
+ *   P2 (recency)  last_signed_height > 0 &&
+ *                 last_signed_height >= (boundary_height > W ?
+ *                                        boundary_height - W : 0),
+ *                 W = DNAC_SETTLEMENT_ATTENDANCE_WINDOW_BLOCKS
+ *
+ * `boundary_height` is the epoch-boundary height H the caller is
+ * evaluating AT (Rule N: the boundary it is currently running at, H
+ * itself — the epoch that just accumulated attendance is (H-E, H]. The
+ * settlement bar: `settling_epoch_start + DNAC_EPOCH_LENGTH`, since
+ * settlement always drains the epoch immediately BEFORE the boundary it
+ * runs at — the two derivations name the same H).
+ *
+ * Reads via `nodus_witness_v2_attendance_get`; an ABSENT row (arc == 1)
+ * is the honest zero (never signed) that P1/P2 both fail on, not a
+ * caller-visible distinction. The GENESIS CARVE-OUT (settlement's epoch
+ * 0: every genesis-seeded validator is treated as present) is NOT part
+ * of this predicate — it is a precondition the settlement caller applies
+ * BEFORE calling, exactly as it did before round 3; this function has no
+ * epoch-0 special case of its own.
+ *
+ * @param out  1 == both predicates pass (present); 0 == miss. Written
+ *             only on a 0 return.
+ * @return 0 (`*out` written); -2 node-local fault (bad argument or
+ *         `nodus_witness_v2_attendance_get`'s own -2 — a validator's
+ *         signature history is consensus data, never a verdict).
+ */
+int nodus_witness_v2_attendance_meets_bar(nodus_witness_t *w,
+                                          const uint8_t
+                                              pubkey[DNAC_PUBKEY_SIZE],
+                                          uint64_t boundary_height,
+                                          int *out);
 
 /**
  * The canonical graduation identity, exposed so a test (or a future

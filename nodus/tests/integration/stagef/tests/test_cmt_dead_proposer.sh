@@ -74,12 +74,25 @@
 #     production alone even if something were subtly wrong about how a
 #     dead validator's turn is actually handled. The load-bearing
 #     assertion is therefore NOT the height delta by itself: it is that
-#     the VICTIM'S OWN `validators.last_signed_block` did NOT move while
-#     stopped (it did not propose anything — a fact this harness reads
-#     directly, not inferred from silence) AND that OTHER validators'
-#     `last_signed_block` DID move past the point of the stop (someone
-#     else kept proposing). Both together are what "rotated past it and
-#     kept going" means; either alone is weaker.
+#     the VICTIM'S OWN attendance row did NOT move while stopped (it
+#     could not SIGN anything, being frozen — a fact this harness reads
+#     directly from `v2_attendance`, not inferred from silence) AND that
+#     OTHER validators' attendance DID move past the point of the stop
+#     (a quorum kept signing without it). Both together are what "rotated
+#     past it and kept going" means; either alone is weaker.
+#   - **tokenomics-v3 P1 (D-2, D-4) changed WHAT is read, not WHAT is
+#     proved.** Before this package attendance credited the committed
+#     header PROPOSER into `validators.last_signed_block` (a merkle-leaf
+#     field); this package relocated it out-of-root into `v2_attendance`,
+#     credited on every COMMIT-flagged vote of `decided_last_commit` —
+#     i.e. on every validator that SIGNED, not on whoever proposed. A
+#     SIGSTOPped process can do neither (it cannot propose AND it cannot
+#     sign a precommit), so the property this scenario pins — "the
+#     stopped validator's attendance is frozen; everyone else's is not"
+#     — still holds under the new source, and is if anything a MORE
+#     direct reading of "did this validator do anything while stopped":
+#     signing is the mechanism cometbft itself requires for liveness,
+#     where proposing was only this chain's OWN credit rule.
 #   - **DELTA 1 (verifier UNCOVERED FINDING 6, fixed).** The baseline
 #     reads (`last_signed_before`, `tip_before`) are taken AFTER
 #     `kill -STOP` lands, never before — reading them first left a
@@ -90,6 +103,12 @@
 #     window to 6 of the 7-cycle, missing the victim's turn with
 #     probability 1/7 and passing without the timeout ever firing (false
 #     GREEN).
+#   - **The one-block credit lag (tokenomics-v3 P1 landing, measured).**
+#     Block H credits the precommits FOR H-1, so a precommit the victim
+#     sent just before the stop lands in the row one block AFTER the stop.
+#     The frozen baseline is therefore read 3 heights past the stop (see
+#     the SETTLE block), never immediately after it; the first production
+#     sweep at 0.19.67 failed on exactly that race (10 -> 11).
 #   - **No log line proves a round advanced past 0.** Read for this
 #     package: `cmt_cs.c` carries ZERO `QGP_LOG_INFO` calls —
 #     `cmt_cs_enter_new_round` (:1772) and every neighbouring transition
@@ -147,18 +166,48 @@ stagef_cmt_diff_at_floor "pre-cmt-dead-proposer" || exit 2
 # observed window to 6 of the 7-cycle, which misses the victim's turn
 # with probability 1/7 and passes without the round timeout ever firing.
 # The signal is delivered FIRST, synchronously, before either DB read.
-pk=$(xxd -p -c 99999 "$(stagef_node_dir "$VICTIM")/identity/nodus.pk")
+voter_id=$(stagef_voter_id "$(stagef_node_dir "$VICTIM")/identity/nodus.pk")
+[ "${#voter_id}" = 64 ] || die "could not derive node$VICTIM's voter_id"
 VPID=$(pgrep -f "node$VICTIM/data" | head -1 || true)
 [ -n "$VPID" ] || die "node$VICTIM is not running"
 kill -STOP "$VPID"
-echo "[ok] node$VICTIM (pid $VPID) STOPPED"
+echo "[ok] node$VICTIM (pid $VPID) STOPPED (voter_id ${voter_id:0:16}...)"
 
 last_signed_before=$(sqlite3 "$ref_db" \
-    "SELECT COALESCE(last_signed_block,-1) FROM validators WHERE lower(hex(pubkey))='$pk';" \
+    "SELECT COALESCE(last_signed_height,-1) FROM v2_attendance WHERE lower(hex(voter_id))='$voter_id';" \
     2>/dev/null || echo -1)
-[ "${last_signed_before:-ERR}" != "ERR" ] || die "could not read node$VICTIM's validators row"
+[ "${last_signed_before:-ERR}" != "ERR" ] || die "could not read node$VICTIM's v2_attendance row"
 tip_before=$(stagef_cmt_tip "$ref_db")
-echo "[ok] baseline (read AFTER the stop): node$VICTIM last_signed_block=$last_signed_before tip=$tip_before"
+echo "[ok] baseline (read AFTER the stop): node$VICTIM last_signed_height=$last_signed_before tip=$tip_before"
+
+# ── SETTLE before freezing the baseline (tokenomics-v3 P1 landing,
+# MEASURED at production constants 2026-09-23: /tmp/stagef-20260923T162434Z).
+# Attendance is credited from `decided_last_commit`: block H carries the
+# precommits FOR H-1 (nodus_witness_v2_attendance_credit writes
+# last_signed_height = H-1). A precommit the victim SENT BEFORE the stop
+# is therefore credited one block LATER — after the stop — by whichever
+# proposer assembles that LastCommit. Measured: stop at tip 11, baseline
+# 10, then 11 appeared with node2 frozen; node2's own WAL holds its signed
+# messages and EndHeight for height 11, written before the stop. Reading
+# the baseline immediately after the stop made the verdict depend on
+# whether that in-flight precommit had been folded in yet — a timing race,
+# forbidden by the NO FLAKY rule. The baseline is now read once the tip is
+# 3 heights past the stop. Arithmetic: a validator precommits at most the
+# height after the one it last committed, so if the victim had committed
+# L blocks more than node1's tip_before when it stopped, its last
+# precommit is for tip_before+L+1, credited by block tip_before+L+2.
+# Settling at +3 covers L <= 1. L is NOT bounded by anything this script
+# can read — it is an assumption (node1 lagging the victim by two whole
+# committed blocks at the instant of the stop). If it is ever violated the
+# failure is a visible RED below ("MOVED ... after the settle point"),
+# never a false GREEN. From the settle point on the row must not move.
+settle_to=$(( tip_before + 3 ))
+settled_tip=$(stagef_cmt_wait_height "$ref_db" "$settle_to" 12) \
+    || die "tip did not reach $settle_to with node$VICTIM stopped (stuck at $settled_tip) — the fleet may have stalled rather than rotated"
+last_signed_settled=$(sqlite3 "$ref_db" \
+    "SELECT COALESCE(last_signed_height,-1) FROM v2_attendance WHERE lower(hex(voter_id))='$voter_id';" \
+    2>/dev/null || echo -1)
+echo "[ok] settled baseline at tip $settled_tip: node$VICTIM last_signed_height=$last_signed_settled (was $last_signed_before right after the stop — the difference, if any, is precommits sent BEFORE the stop and credited one block later)"
 
 # ── The pigeonhole window: >= 7 heights, bounded by progress ────────
 target=$(( tip_before + STAGEF_COMMITTEE_SIZE ))
@@ -169,20 +218,20 @@ after=$(stagef_cmt_wait_height "$ref_db" "$target" 12) \
     || die "tip did not reach $target with node$VICTIM stopped (stuck at $after) — the fleet may have stalled rather than rotated"
 echo "[ok] tip advanced to $after with node$VICTIM stopped (needed >= $target)"
 
-# ── The victim proposed NOTHING while stopped ───────────────────────
+# ── The victim SIGNED NOTHING while stopped ─────────────────────────
 last_signed_during=$(sqlite3 "$ref_db" \
-    "SELECT COALESCE(last_signed_block,-1) FROM validators WHERE lower(hex(pubkey))='$pk';" \
+    "SELECT COALESCE(last_signed_height,-1) FROM v2_attendance WHERE lower(hex(voter_id))='$voter_id';" \
     2>/dev/null || echo -1)
-[ "$last_signed_during" = "$last_signed_before" ] || die \
-  "node$VICTIM's last_signed_block MOVED while it was STOPPED ($last_signed_before -> $last_signed_during) — it should not have been able to propose at all"
-echo "[ok] node$VICTIM proposed nothing while stopped (last_signed_block unchanged at $last_signed_before)"
+[ "$last_signed_during" = "$last_signed_settled" ] || die \
+  "node$VICTIM's v2_attendance last_signed_height MOVED while it was STOPPED, after the settle point ($last_signed_settled -> $last_signed_during) — a SIGSTOPped process should not have been able to sign a precommit at all"
+echo "[ok] node$VICTIM signed nothing while stopped (last_signed_height frozen at $last_signed_settled from tip $settled_tip to $after)"
 
-# ── SOMEONE ELSE kept proposing ──────────────────────────────────────
+# ── SOMEONE ELSE kept signing ────────────────────────────────────────
 others=$(sqlite3 "$ref_db" \
-    "SELECT COUNT(*) FROM validators WHERE lower(hex(pubkey)) <> '$pk' AND last_signed_block > $tip_before;")
+    "SELECT COUNT(*) FROM v2_attendance WHERE lower(hex(voter_id)) <> '$voter_id' AND last_signed_height > $tip_before;")
 [ "${others:-0}" -ge 1 ] || die \
-  "no OTHER validator's last_signed_block moved past $tip_before — the chain advanced by height but nobody's attendance row shows it"
-echo "[ok] $others other validator(s) proposed at least one block in the window"
+  "no OTHER validator's v2_attendance last_signed_height moved past $tip_before — the chain advanced by height but nobody's attendance row shows it"
+echo "[ok] $others other validator(s) signed at least one COMMIT-flagged vote in the window"
 
 # ── Resume, and it must catch up ────────────────────────────────────
 kill -CONT "$VPID"
@@ -204,6 +253,6 @@ stagef_cmt_diff_at_floor "post-cmt-dead-proposer" || exit 2
 
 stagef_sentinel PASS
 echo ""
-echo "[PASS] node$VICTIM was stopped for >= $STAGEF_COMMITTEE_SIZE heights, proposed"
+echo "[PASS] node$VICTIM was stopped for >= $STAGEF_COMMITTEE_SIZE heights, signed"
 echo "       nothing in that window while other validators kept committing,"
 echo "       and re-converged to the SAME chain after resuming. Tip $tip_before -> $vt."

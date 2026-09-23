@@ -19,7 +19,10 @@
 /* All tags are EXACTLY 16 bytes, zero-padded ASCII. */
 #define TAG_LEN 16
 
-static const uint8_t TAG_SYS[TAG_LEN]     = "DNA.SYS.v1\0\0\0\0\0";
+/* tokenomics-v3 P1 (D-4, S-2): "DNA.SYS.v1" -> "DNA.SYS.v2" — the 8th
+ * leg (attendance_root) changes the composition, so the tag changes
+ * with it (a changed preimage is never hashed under the OLD tag). */
+static const uint8_t TAG_SYS[TAG_LEN]     = "DNA.SYS.v2\0\0\0\0\0";
 static const uint8_t TAG_CORE[TAG_LEN]    = "DNA.CORE.v1\0\0\0\0";
 static const uint8_t TAG_GLOBAL[TAG_LEN]  = "DNA.GLOBAL.v1\0\0";
 static const uint8_t TAG_SUPPLY[TAG_LEN]  = "DNA.SUPPLY.v1\0\0";
@@ -31,6 +34,12 @@ static const uint8_t TAG_DOMHEAD[TAG_LEN] = "DNA.DOMHEAD.v1\0";
 static const uint8_t TAG_DOMNODE[TAG_LEN] = "DNA.DOMNODE.v1\0";
 static const uint8_t TAG_VSLEAF[TAG_LEN]  = "DNA.VSLEAF.v1\0\0";
 static const uint8_t TAG_VSNODE[TAG_LEN]  = "DNA.VSNODE.v1\0\0";
+/* tokenomics-v3 P1 (D-4, S-2) — collision-scanned against every DNA.*
+ * tag in the tree before adoption (see the ledger_roots_v2.h "TAG TABLE"
+ * comment and the P1 executor report's grep). */
+static const uint8_t TAG_ATTEP[TAG_LEN]   = "DNA.ATTEP.v1\0\0\0";
+static const uint8_t TAG_ATLEAF[TAG_LEN]  = "DNA.ATLEAF.v1\0\0";
+static const uint8_t TAG_ATNODE[TAG_LEN]  = "DNA.ATNODE.v1\0\0";
 
 static const uint8_t TAG_EMPTY[DNA_V2_EMPTY__COUNT][TAG_LEN] = {
     "DNA.E.VSET.v1\0\0",   /* DNA_V2_EMPTY_VSET     */
@@ -41,6 +50,7 @@ static const uint8_t TAG_EMPTY[DNA_V2_EMPTY__COUNT][TAG_LEN] = {
     "DNA.E.NAMES.v1\0",    /* DNA_V2_EMPTY_NAMES    */
     "DNA.E.TOKENS.v1",     /* DNA_V2_EMPTY_TOKENS   */
     "DNA.E.EPOCH.v2\0",    /* DNA_V2_EMPTY_EPOCH_V2 */
+    "DNA.E.ATTND.v1\0",    /* DNA_V2_EMPTY_ATTENDANCE (P1) */
 };
 
 static void put_be32(uint32_t v, uint8_t out[4]) {
@@ -225,6 +235,69 @@ int dna_v2_vset_root(const uint64_t *epochs,
     return rc;
 }
 
+/* ── attendance_root (tokenomics-v3 P1, D-4 / S-2) ────────────────────
+ * Contract, both layers: ledger_roots_v2.h. */
+
+int dna_v2_attendance_digest(uint64_t epoch_start,
+                             const dna_v2_attendance_row_t *rows, size_t n,
+                             uint8_t out[DNA_V2_ROOT_LEN]) {
+    if (!out || (n > 0 && !rows)) return -1;
+    if (n > UINT32_MAX) return -1;
+    for (size_t i = 1; i < n; i++)
+        if (memcmp(rows[i - 1].voter_id, rows[i].voter_id, 32) >= 0)
+            return -1;                    /* strictly ascending, no dups */
+
+    size_t pre_len = (size_t)TAG_LEN + 8 + 4 + n * 48;
+    uint8_t *pre = malloc(pre_len);
+    if (!pre) return -1;
+    size_t off = 0;
+    memcpy(pre + off, TAG_ATTEP, TAG_LEN); off += TAG_LEN;
+    put_be64(epoch_start, pre + off);      off += 8;
+    put_be32((uint32_t)n, pre + off);      off += 4;
+    for (size_t i = 0; i < n; i++) {
+        memcpy(pre + off, rows[i].voter_id, 32);        off += 32;
+        put_be64(rows[i].signed_count, pre + off);      off += 8;
+        put_be64(rows[i].last_signed_height, pre + off); off += 8;
+    }
+    int rc = qgp_sha3_512(pre, pre_len, out) == 0 ? 0 : -1;
+    free(pre);
+    return rc;
+}
+
+int dna_v2_attendance_leaf_hash(uint64_t epoch_start,
+                                const uint8_t digest[DNA_V2_ROOT_LEN],
+                                uint8_t out[DNA_V2_ROOT_LEN]) {
+    if (!digest || !out) return -1;
+    uint8_t pre[TAG_LEN + 8 + DNA_V2_ROOT_LEN];
+    memcpy(pre, TAG_ATLEAF, TAG_LEN);
+    put_be64(epoch_start, pre + TAG_LEN);
+    memcpy(pre + TAG_LEN + 8, digest, DNA_V2_ROOT_LEN);
+    return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;
+}
+
+int dna_v2_attendance_root(const uint64_t *epoch_starts,
+                           const uint8_t (*digests)[DNA_V2_ROOT_LEN],
+                           size_t n, uint8_t out[DNA_V2_ROOT_LEN]) {
+    if (!out || (n > 0 && (!epoch_starts || !digests))) return -1;
+    if (n == 0)
+        return dna_v2_empty_root(DNA_V2_EMPTY_ATTENDANCE, out);
+    for (size_t i = 1; i < n; i++)
+        if (epoch_starts[i - 1] >= epoch_starts[i]) return -1;
+
+    uint8_t (*level)[DNA_V2_ROOT_LEN] = malloc(n * sizeof(*level));
+    if (!level) return -1;
+    for (size_t i = 0; i < n; i++) {
+        if (dna_v2_attendance_leaf_hash(epoch_starts[i], digests[i],
+                                        level[i]) != 0) {
+            free(level);
+            return -1;
+        }
+    }
+    int rc = tagged_merkle(TAG_ATNODE, level, n, out);
+    free(level);
+    return rc;
+}
+
 /* ── DomainHead + domains_root ──────────────────────────────────────── */
 
 int dna_v2_domain_head_encode(const dna_v2_domain_head_t *head,
@@ -280,19 +353,20 @@ int dna_v2_system_root(const uint8_t validator_root[64],
                        const uint8_t validator_set_root[64],
                        const uint8_t domain_registry_root[64],
                        const uint8_t manifest_root[64],
+                       const uint8_t attendance_root[64],
                        uint8_t out[DNA_V2_ROOT_LEN]) {
     if (!validator_root || !delegation_root || !epoch_state_root_v2 ||
         !chain_config_root || !validator_set_root || !domain_registry_root ||
-        !manifest_root || !out)
+        !manifest_root || !attendance_root || !out)
         return -1;
-    uint8_t pre[TAG_LEN + 7 * DNA_V2_ROOT_LEN];
+    uint8_t pre[TAG_LEN + 8 * DNA_V2_ROOT_LEN];
     memcpy(pre, TAG_SYS, TAG_LEN);
-    const uint8_t *parts[7] = {
+    const uint8_t *parts[8] = {
         validator_root, delegation_root, epoch_state_root_v2,
         chain_config_root, validator_set_root, domain_registry_root,
-        manifest_root
+        manifest_root, attendance_root
     };
-    for (int i = 0; i < 7; i++)
+    for (int i = 0; i < 8; i++)
         memcpy(pre + TAG_LEN + (size_t)i * DNA_V2_ROOT_LEN, parts[i],
                DNA_V2_ROOT_LEN);
     return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;

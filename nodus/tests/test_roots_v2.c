@@ -66,6 +66,7 @@ static const char *EMPTY_KAT[DNA_V2_EMPTY__COUNT] = {
     /* NAMES  */ "ef12a4d9657dc6711688a664ea0ac0a9295f8bdc595599121a7b60c7dae9467ec3e80e861e55a3cb99c76dfbf14c596e91fa0fa1b7a67317cbc155ce120db412",
     /* TOKENS */ "4098bc465307c3a6340c1374d020957372b82d4b670f5e2049b6a3fa13f9ade608eadcc34afe643079b6e4fcd890bab80f1b4582023e80c719bcffcf0ce093f3",
     /* EPOCH2 */ "e49a53f12820a8589744a67123cfcb9b7e75d8be9197c168b4caee2ed2804cb9a1aee49c9127cc8697fb93982e2d6c1e4ee720f8a75c31a9efc166744159d126",
+    /* ATTND  */ "c917bcb22a2eef99ded15a92b70117d32a92996276f395ca3acbc8abfa17bcd66cda39856cc038582cc32f67e49ece48055434718ff5f4a94e95d1f6f60c0001",
 };
 static const char *KAT_SUPPLY       = "ef949407440c0a7adab9f6b0a0999e06074e57a4b2b04f7b1532cf2effb597f2e656e3f396f663a1b3d5237d6709165393ec076ddc5f47f35abe0de3b26e91b7";
 static const char *KAT_TOKEN_LEAF_A = "29c4c9998ab9a29fe1a90bbcb021d743287ef733c03d896b67131d07cee9f9ef54347e2d2d64430814f900e804e298d86c085c051c8159d9e8fe471c5e720d47";
@@ -75,16 +76,40 @@ static const char *KAT_EPOCH_ROOT   = "1837965787d805678abfe86ea24e898546a3e7d17
 static const char *KAT_DOMHEAD_SYS  = "e675d070c918dedf23fa5d1ebf8d2381345705b316ffb1340e85738b50b6e01d7753a3e0ef456f3ff588fddcd4bba1c35a1edf7274ee46c48d2bd988b645b0b5";
 static const char *KAT_DOMAINS_2    = "bba32c948f2851a85dae113c7b27258d27f4a292ee423faca3a072f5e31634bcd80bb608386d0b664c934db4997539b0c02599c8ee1a5430dea4e5d68430838a";
 static const char *KAT_DOMAINS_3    = "823492dabf1bddd0b76b907d31233e4affeaf5b4f85caaccf55488eb5f6af5ad04d3c7993d38472887915535ec6a6cd608d8688ac8c7d6daa40efd0105c97d4e";
-/* GENERICITY CORRECTION re-pin (supply ownership): system_state_root is
- * now SEVEN legs (the native supply leg moved OUT — issuance is the
- * DNA_CORE runtime's asset commitment) and core_state_root is SIX legs
- * (supply appended last). Both literals re-derived with the SAME
- * independent python3 sha3_512 oracle as the S2 originals; the oracle
- * reproduces the retired 8-leg/5-leg values byte-exactly
- * (673b7a1e… / b35098ed…), proving derivation continuity. */
-static const char *KAT_SYSTEM       = "5de7c65076b43e882f7cf814971dce313ce35d39573c5bf73f78b420c5611986f5c9bcfe01b0841af5c9ef6ae469ea00b96067c3ddbf888b5d947e40572d6e57";
+/* GENERICITY CORRECTION re-pin (supply ownership): core_state_root is SIX
+ * legs (supply appended last, issuance is the DNA_CORE runtime's asset
+ * commitment). Re-derived with the SAME independent python3 sha3_512
+ * oracle as the S2 originals; the oracle reproduces the retired
+ * 8-leg/5-leg values byte-exactly (673b7a1e… / b35098ed…), proving
+ * derivation continuity.
+ *
+ * tokenomics-v3 P1 (D-4, S-2) re-pin: system_state_root gained an 8th leg
+ * (attendance_root) and moved from SEVEN legs / tag "DNA.SYS.v1" to EIGHT
+ * legs / tag "DNA.SYS.v2" — see KAT_SYSTEM_8LEG below and
+ * shared/dnac/tests/ledger_roots_v2_attendance_oracle.py, which
+ * self-checks against the retired 7-leg value before deriving the new
+ * one. */
+/* RETIRED, tokenomics-v3 P1 (D-4, S-2): the 7-leg "DNA.SYS.v1" composition
+ * is superseded by the 8-leg "DNA.SYS.v2" below (KAT_SYSTEM_8LEG) — a
+ * changed composition is a new tag, never the same tag over different
+ * bytes, so this value is never re-derived, only removed. Kept here as a
+ * one-line historical note, not as a live vector:
+ *   5de7c65076b43e882f7cf814971dce313ce35d39573c5bf73f78b420c5611986f5c9bcfe01b0841af5c9ef6ae469ea00b96067c3ddbf888b5d947e40572d6e57 */
+static const char *KAT_SYSTEM_8LEG  = "ec9fc33017c755d6555a867c02b618b39fec4bea9e9740733561446e064e9b9e578691a670352277e14f021751da58e97b03fda0651ab7510500c3649ba22122";
 static const char *KAT_CORE         = "ccaae1c6ced38cfd93a99f9a15f26c490c15fd343d18f9232116bab6d7ba1f7fc918b7a324b071cda8b6a556dbb89226da6082f9efc55aa2667659c2f4f8db3e";
 static const char *KAT_GLOBAL       = "0c0d2fce1984bf15c2e5841eeef72a067aefe4cdf8790a713332f09326393f79185dc7277f3d403a6f9d47fbfc68b049ddb117a654f2da59e0e4218e45f7e681";
+/* ── tokenomics-v3 P1 (D-4, S-2) — attendance leg, SELF-CONSISTENT with
+ * shared/dnac/tests/ledger_roots_v2_attendance_oracle.py (same author,
+ * same day; see that script's PROVENANCE section — not an external
+ * audit). epoch_start=720, two rows (voter_id ASC: fill(0x01,32) then
+ * fill(0x02,32)), signed_count/last_signed_height (100,5000) /
+ * (200,6000). */
+static const char *KAT_ATT_DIGEST_2ROW =
+    "44d1f8e3115517ab9022060668e00c197e1256350a2ac3f65c2b0e2f4d41a7e7c1dc5ca281331bf7dedb7733eaa005080cbb727bc2ce4c7e8a3b6575cf6b9dee";
+static const char *KAT_ATT_LEAF =
+    "e6d3230258462204cf4a68c4e97f586435d4190bb058d5f3de4a5e963a33df26e9171ba93e81bcce660acb4549c0f2786e873a1ab8c751bc31d66c98d51013fa";
+static const char *KAT_ATT_ROOT_2ENTRY =
+    "800f63b49e5a71474b665bfe750a9d68e51b4f39bef796f6438e8e0d14c19b45f947637027af27b5572c0a7313d898d1b7f0ec586edf8e0f2e9ebbd4f79f1576";
 
 /* ── Fixture token leaves (must mirror the oracle) ──────────────────── */
 static void make_tokens(dna_v2_token_leaf_t t[3],
@@ -242,20 +267,85 @@ static int test_shared_layer(void) {
         CHECK(dna_v2_domains_root(d, 0, h) != 0, "empty domains ok'd"); OK();
     }
 
-    /* Composition KATs + full subroot mutation sweep. SYSTEM = 7 legs
-     * (validator/delegation/epoch/chain_config/vset/domreg/manifest);
-     * CORE = 6 legs (utxo/token/pools/claims/names/SUPPLY — native
-     * issuance is CORE's own asset commitment). */
+    /* ── tokenomics-v3 P1 (D-4, S-2): the attendance leg ─────────────
+     * digest -> leaf -> root, self-consistent with
+     * shared/dnac/tests/ledger_roots_v2_attendance_oracle.py. */
     {
-        uint8_t legs[7][64];
-        for (int i = 0; i < 7; i++) fill(legs[i], 64, (uint8_t)(0x90 + i));
+        uint8_t voter0[32], voter1[32];
+        fill(voter0, 32, 0x01);
+        fill(voter1, 32, 0x02);
+        dna_v2_attendance_row_t rows[2] = {
+            { .signed_count = 100, .last_signed_height = 5000 },
+            { .signed_count = 200, .last_signed_height = 6000 },
+        };
+        memcpy(rows[0].voter_id, voter0, 32);
+        memcpy(rows[1].voter_id, voter1, 32);
+        CHECK(dna_v2_attendance_digest(720, rows, 2, h) == 0, "att digest");
+        CHECK(hex_eq(h, KAT_ATT_DIGEST_2ROW, "att digest"),
+              "att digest KAT"); OK();
+        /* strictly ascending voter_id enforced: swap the rows, expect -1 */
+        dna_v2_attendance_row_t rows_bad[2] = { rows[1], rows[0] };
+        CHECK(dna_v2_attendance_digest(720, rows_bad, 2, h2) != 0,
+              "non-ascending voter_id accepted"); OK();
+        dna_v2_attendance_row_t dup[2] = { rows[0], rows[0] };
+        CHECK(dna_v2_attendance_digest(720, dup, 2, h2) != 0,
+              "duplicate voter_id accepted"); OK();
+        /* n == 0 hashes over zero rows, no special case (unlike the
+         * MERKLE ROOT's n==0, which is the tagged empty root instead). */
+        CHECK(dna_v2_attendance_digest(720, NULL, 0, h2) == 0 &&
+              memcmp(h, h2, 64) != 0, "n==0 digest collides with n==2"); OK();
+
+        uint8_t digest2row[64];
+        memcpy(digest2row, h, 64);
+        CHECK(dna_v2_attendance_leaf_hash(720, digest2row, h) == 0,
+              "att leaf");
+        CHECK(hex_eq(h, KAT_ATT_LEAF, "att leaf"), "att leaf KAT"); OK();
+
+        /* root: n==0 -> tagged empty; n==1 -> the leaf itself; n==2 -> a
+         * real inner node. */
+        CHECK(dna_v2_attendance_root(NULL, NULL, 0, h2) == 0 &&
+              hex_eq(h2, EMPTY_KAT[DNA_V2_EMPTY_ATTENDANCE], "att root n0"),
+              "att root n==0 KAT"); OK();
+        {
+            uint64_t es1[1] = { 720 };
+            uint8_t  dg1[1][64];
+            memcpy(dg1[0], digest2row, 64);
+            CHECK(dna_v2_attendance_root(es1, dg1, 1, h2) == 0 &&
+                  memcmp(h2, h, 64) == 0,
+                  "att root n==1 must equal the single leaf"); OK();
+        }
+        {
+            uint64_t es2[2] = { 720, 1440 };
+            uint8_t  dg2[2][64];
+            memcpy(dg2[0], digest2row, 64);
+            fill(dg2[1], 64, 0x60);
+            CHECK(dna_v2_attendance_root(es2, dg2, 2, h2) == 0, "att root2");
+            CHECK(hex_eq(h2, KAT_ATT_ROOT_2ENTRY, "att root2"),
+                  "att root n==2 KAT"); OK();
+            uint64_t dup_es[2] = { 720, 720 };
+            CHECK(dna_v2_attendance_root(dup_es, dg2, 2, h2) != 0,
+                  "duplicate epoch_start accepted"); OK();
+            uint64_t desc_es[2] = { 1440, 720 };
+            CHECK(dna_v2_attendance_root(desc_es, dg2, 2, h2) != 0,
+                  "descending epoch_start accepted"); OK();
+        }
+    }
+
+    /* Composition KATs + full subroot mutation sweep. SYSTEM = 8 legs
+     * (validator/delegation/epoch/chain_config/vset/domreg/manifest/
+     * attendance — tokenomics-v3 P1, D-4); CORE = 6 legs
+     * (utxo/token/pools/claims/names/SUPPLY — native issuance is CORE's
+     * own asset commitment). */
+    {
+        uint8_t legs[8][64];
+        for (int i = 0; i < 8; i++) fill(legs[i], 64, (uint8_t)(0x90 + i));
         CHECK(dna_v2_system_root(legs[0], legs[1], legs[2], legs[3], legs[4],
-                                 legs[5], legs[6], h) == 0, "sys");
-        CHECK(hex_eq(h, KAT_SYSTEM, "system"), "system KAT"); OK();
-        for (int i = 0; i < 7; i++) {
+                                 legs[5], legs[6], legs[7], h) == 0, "sys");
+        CHECK(hex_eq(h, KAT_SYSTEM_8LEG, "system"), "system KAT"); OK();
+        for (int i = 0; i < 8; i++) {
             legs[i][0] ^= 1;
             CHECK(dna_v2_system_root(legs[0], legs[1], legs[2], legs[3],
-                                     legs[4], legs[5], legs[6],
+                                     legs[4], legs[5], legs[6], legs[7],
                                      h2) == 0 && memcmp(h, h2, 64) != 0,
                   "system leg not bound"); OK();
             legs[i][0] ^= 1;
@@ -328,9 +418,12 @@ static const char *SCHEMA_SQL =
     "  unstake_destination_fp BLOB,"
     "  unstake_destination_pubkey BLOB,"
     "  last_validator_update_block INTEGER NOT NULL DEFAULT 0,"
-    "  consecutive_missed_epochs INTEGER NOT NULL DEFAULT 0,"
-    "  last_signed_block INTEGER NOT NULL DEFAULT 0,"
-    "  signed_blocks_this_epoch INTEGER NOT NULL DEFAULT 0);"
+    "  consecutive_missed_epochs INTEGER NOT NULL DEFAULT 0);"
+    /* tokenomics-v3 P1 (Q2): last_signed_block / signed_blocks_this_epoch
+     * REMOVED — this table is never populated in this file (validator_root
+     * is always computed over it EMPTY; see the S3 comment below), so the
+     * column list only needs to match the production shape for honesty,
+     * never for a live INSERT. */
     "CREATE TABLE IF NOT EXISTS delegations ("
     "  delegator_pubkey BLOB NOT NULL, validator_pubkey BLOB NOT NULL,"
     "  amount INTEGER NOT NULL, delegated_at_block INTEGER NOT NULL,"

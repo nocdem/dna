@@ -558,10 +558,14 @@ typedef struct {
 /**
  * `NewNodeWithContext` (node/node.go:285-422) over the ledger `w`.
  *
- * `w` must be an OPEN Ledger V2 successor chain at schema S14 whose
- * `cmt_state` carries the version-3 genesis document (or whose document
- * arrives through `opts->genesis_doc_bytes`). `w->db` is BORROWED and
- * must outlive the node.
+ * `w` must be an OPEN Ledger V2 successor chain at schema S15 (the live
+ * rung as of tokenomics-v3 P1; S15 drops the two retired attendance
+ * columns from `validators` and adds the two attendance tables — the
+ * cometbft tables this function opens
+ * have carried unchanged since S14) whose `cmt_state` carries the
+ * version-3 genesis document (or whose document arrives through
+ * `opts->genesis_doc_bytes`). `w->db` is BORROWED and must outlive the
+ * node.
  *
  * DEFAULTS when `opts->limits` is zeroed: `max_txs` = the SAME
  * byte-bound derivation the application uses for its own `env_bound`

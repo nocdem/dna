@@ -237,8 +237,7 @@ static int poison_validators(fx_t *fx, const uint8_t *poison_pk) {
         "  pending_commission_bps, pending_effective_block, status,"
         "  active_since_block, unstake_commit_block,"
         "  unstake_destination_fp, unstake_destination_pubkey,"
-        "  last_validator_update_block, consecutive_missed_epochs,"
-        "  last_signed_block, signed_blocks_this_epoch"
+        "  last_validator_update_block, consecutive_missed_epochs"
         " FROM validators_raw;");
 }
 

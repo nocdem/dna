@@ -246,7 +246,10 @@ typedef struct {
  * `NewBlockStore(db)` (store.go:67-76: `LoadBlockStoreState`, :692-715,
  * with its `Height > 0 && Base == 0 → Base = 1` compatibility rule
  * :711-713) and `NewStore(db, options)` (state/store.go:112-114) on the
- * same borrowed connection. Tables must exist (schema S14).
+ * same borrowed connection. Tables must exist (schema S14; a chain
+ * opened by this build is at S15, the live rung as of tokenomics-v3 P1
+ * round 5 — S15 does not touch these tables, only `validators` and the
+ * new attendance tables).
  * @return CMT_OK, CMT_FAULT.
  */
 int nodus_cmt_store_init(nodus_cmt_store_t *s, sqlite3 *db,

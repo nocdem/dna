@@ -152,16 +152,19 @@ typedef enum {
      * RETIRED VALUE — kept for id stability, NEVER RAISED since O15C.
      *
      * O15A raised this UNCONDITIONALLY because Ledger V2 had no producer
-     * for `last_signed_block`: enforcing Rule N without its writer would
-     * freeze the watermark and walk the validator set down, and inventing
-     * an attendance oracle is forbidden. O15C supplied the real source:
-     * the V2 apply engine credits the committed header proposer inside
-     * the block transaction, before root computation
-     * (nodus_witness_v2_record_attendance), and the V2 epoch boundary
-     * runs the transplanted leader-blame settlement
-     * (nodus_witness_v2_epoch.c). With the writer in this build, the
-     * obligation the unconditional raise stood for is DISCHARGED — the
-     * check is deleted, the id is not reused.
+     * for a per-validator attendance watermark: enforcing Rule N without
+     * its writer would freeze the watermark and walk the validator set
+     * down, and inventing an attendance oracle is forbidden. O15C
+     * supplied a first source (the committed header proposer);
+     * tokenomics-v3 P1 (operator O4, 2026-09-23) replaced it with REAL
+     * signature attendance — the V2 apply engine credits every
+     * COMMIT-flagged vote of cometbft's `decided_last_commit` inside the
+     * block transaction, before root computation
+     * (`nodus_witness_v2_attendance_credit`), and the V2 epoch boundary
+     * evaluates every ACTIVE row against the two-predicate liveness bar
+     * (nodus_witness_v2_epoch.c `v2ep_rule_n`). With the writer in this
+     * build, the obligation the unconditional raise stood for is
+     * DISCHARGED — the check is deleted, the id is not reused.
      */
     NODUS_V2_PF_RULE_N_ATTENDANCE_SOURCE_ABSENT = 12,
     /** V2 external ingress is reachable — activation must not proceed. */
@@ -203,10 +206,12 @@ typedef enum {
      * committed root, recomputed from the committed DomainHeads exactly
      * as `nodus_witness_v2_genesis_cmt` composed them, since there is no
      * block row to read it back from yet. From the FIRST committed block
-     * on, the current root is no longer the genesis one (this ledger's
-     * global root changes at every block — Rule N attendance), so the
-     * comparison target becomes block 1's header `AppHash`, read from
-     * the Comet blockstore: cometbft @709fd12b `state/state.go`
+     * on, the current root is no longer the genesis one (at the time this
+     * was measured, this ledger's global root changed at every block via
+     * Rule N attendance; tokenomics-v3 P1 relocated attendance out of
+     * every root, but any block carrying a transaction still moves it),
+     * so the comparison target becomes block 1's header `AppHash`, read
+     * from the Comet blockstore: cometbft @709fd12b `state/state.go`
      * `MakeGenesisState` sets it from the genesis document and
      * `state/validation.go` `validateBlock` requires every block's
      * `AppHash` to equal the running `state.AppHash`, so block 1's header

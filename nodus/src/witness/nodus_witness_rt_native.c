@@ -2607,16 +2607,19 @@ const nodus_domain_adapter_t NODUS_RT_CORE_ADAPTER = {
  *   [2773..5364]  unstake_destination_pubkey   DNAC_PUBKEY_SIZE
  *   [5365..5372]  last_validator_update_block  u64 BE
  *   [5373..5380]  consecutive_missed_epochs    u64 BE
- *   [5381..5388]  last_signed_block            u64 BE
- *   [5389..5396]  signed_blocks_this_epoch     u64 BE
  *
- * ⚠ SPEC NOTE: the O11 design doc §4.4 states this total as 5417. The
- * field list it enumerates (identical to the one above, and to the
- * merkle leaf) sums to 5397 — 2×2592 + 128 + 10×u64 + 2×u16 + 1×u8.
- * There is no sixteen-column layout that reaches 5417 and no consumer of
- * the stated total, so the LAYOUT is authoritative and the record is
- * 5397 bytes; padding twenty meaningless bytes to match the prose would
- * put un-derived bytes inside a hashed value. */
+ * tokenomics-v3 P1 (Q2, clean path): the two trailing per-block
+ * attendance counters that used to occupy [5381..5396]
+ * (`last_signed_block`, `signed_blocks_this_epoch`) are REMOVED — the
+ * canonical record is now 5381 bytes, not 5397. Attendance lives
+ * out-of-root in `v2_attendance` (nodus_witness_v2_epoch.c) and never
+ * enters this typed effect value.
+ *
+ * ⚠ SPEC NOTE (historical): the O11 design doc §4.4 stated the pre-P1
+ * total as 5417, when the shipped layout summed to 5397 — 2×2592 + 128 +
+ * 10×u64 + 2×u16 + 1×u8. The LAYOUT was always authoritative; this note
+ * is kept so a reader hunting for "5417" or "5397" in old text finds the
+ * explanation instead of a silent renumbering. */
 #define RTN_VAL_PK_OFF        0u
 #define RTN_VAL_SELF_OFF      ((uint32_t)DNAC_PUBKEY_SIZE)
 #define RTN_VAL_TOTDEL_OFF    (RTN_VAL_SELF_OFF + 8u)
@@ -2632,10 +2635,8 @@ const nodus_domain_adapter_t NODUS_RT_CORE_ADAPTER = {
 #define RTN_VAL_DPK_OFF       (RTN_VAL_DFP_OFF + RTN_VAL_DFP_LEN)
 #define RTN_VAL_LASTUPD_OFF   (RTN_VAL_DPK_OFF + (uint32_t)DNAC_PUBKEY_SIZE)
 #define RTN_VAL_MISSED_OFF    (RTN_VAL_LASTUPD_OFF + 8u)
-#define RTN_VAL_LSIGNED_OFF   (RTN_VAL_MISSED_OFF + 8u)
-#define RTN_VAL_SIGNEP_OFF    (RTN_VAL_LSIGNED_OFF + 8u)
-#define RTN_VAL_REC_LEN       (RTN_VAL_SIGNEP_OFF + 8u)
-_Static_assert(RTN_VAL_REC_LEN == 5397u,
+#define RTN_VAL_REC_LEN       (RTN_VAL_MISSED_OFF + 8u)
+_Static_assert(RTN_VAL_REC_LEN == 5381u,
                "validator record layout drifted — re-derive from the "
                "merkle leaf column list");
 _Static_assert(RTN_VAL_REC_LEN <= (uint32_t)DNA_EFFECT_MAX_VALUE_LEN,
@@ -3944,10 +3945,8 @@ static int rtn_sys_val_row(sqlite3_stmt *st, uint8_t rec[RTN_VAL_REC_LEN]) {
     sqlite3_int64 ucom = sqlite3_column_int64(st, 9);
     sqlite3_int64 lupd = sqlite3_column_int64(st, 12);
     sqlite3_int64 miss = sqlite3_column_int64(st, 13);
-    sqlite3_int64 lsig = sqlite3_column_int64(st, 14);
-    sqlite3_int64 sepo = sqlite3_column_int64(st, 15);
     if (self < 0 || totd < 0 || extd < 0 || peff < 0 || sinc < 0 ||
-        ucom < 0 || lupd < 0 || miss < 0 || lsig < 0 || sepo < 0)
+        ucom < 0 || lupd < 0 || miss < 0)
         return -1;
     if (comm < 0 || comm > UINT16_MAX || pcom < 0 || pcom > UINT16_MAX)
         return -1;
@@ -3969,8 +3968,6 @@ static int rtn_sys_val_row(sqlite3_stmt *st, uint8_t rec[RTN_VAL_REC_LEN]) {
     memcpy(rec + RTN_VAL_DPK_OFF, dpk, DNAC_PUBKEY_SIZE);
     rtn_put64(rec + RTN_VAL_LASTUPD_OFF, (uint64_t)lupd);
     rtn_put64(rec + RTN_VAL_MISSED_OFF, (uint64_t)miss);
-    rtn_put64(rec + RTN_VAL_LSIGNED_OFF, (uint64_t)lsig);
-    rtn_put64(rec + RTN_VAL_SIGNEP_OFF, (uint64_t)sepo);
     return 0;
 }
 
@@ -3986,8 +3983,7 @@ static int rtn_sys_val_fetch(nodus_witness_t *w, const uint8_t *key,
             "pending_effective_block, status, active_since_block, "
             "unstake_commit_block, unstake_destination_fp, "
             "unstake_destination_pubkey, last_validator_update_block, "
-            "consecutive_missed_epochs, last_signed_block, "
-            "signed_blocks_this_epoch FROM validators "
+            "consecutive_missed_epochs FROM validators "
             "WHERE pubkey_hash = ?1", -1, &st, NULL) != SQLITE_OK)
         return -1;
     sqlite3_bind_blob(st, 1, key, RTN_VAL_KEY_LEN, SQLITE_TRANSIENT);
@@ -4096,8 +4092,7 @@ static int rtn_val_rec_ok(const uint8_t *v, const uint8_t *key) {
     static const uint32_t u64_offs[] = {
         RTN_VAL_SELF_OFF, RTN_VAL_TOTDEL_OFF, RTN_VAL_EXTDEL_OFF,
         RTN_VAL_PEFF_OFF, RTN_VAL_SINCE_OFF, RTN_VAL_UCOMMIT_OFF,
-        RTN_VAL_LASTUPD_OFF, RTN_VAL_MISSED_OFF, RTN_VAL_LSIGNED_OFF,
-        RTN_VAL_SIGNEP_OFF
+        RTN_VAL_LASTUPD_OFF, RTN_VAL_MISSED_OFF
     };
     uint8_t want[64];
     if (rtn_tag_key(NODUS_TREE_TAG_VALIDATOR, v + RTN_VAL_PK_OFF,
@@ -4303,7 +4298,7 @@ static nodus_adapter_status_t rtn_sys_read(
     return NODUS_ADAPTER_ERR_STORAGE_FAULT;
 }
 
-/* Bind the fifteen mutable validator columns of an INSERT/UPDATE
+/* Bind the thirteen mutable validator columns of an INSERT/UPDATE
  * statement starting at parameter `start`, in the order
  * nodus_witness_validator.c bind_validator_mutable_fields uses (the
  * schema's column order) — the record's own field order is the MERKLE
@@ -4341,10 +4336,6 @@ static void rtn_sys_val_bind(sqlite3_stmt *st, int start,
         (sqlite3_int64)rtn_get64(v + RTN_VAL_LASTUPD_OFF));
     sqlite3_bind_int64(st, start + 12,
         (sqlite3_int64)rtn_get64(v + RTN_VAL_MISSED_OFF));
-    sqlite3_bind_int64(st, start + 13,
-        (sqlite3_int64)rtn_get64(v + RTN_VAL_LSIGNED_OFF));
-    sqlite3_bind_int64(st, start + 14,
-        (sqlite3_int64)rtn_get64(v + RTN_VAL_SIGNEP_OFF));
 }
 
 static nodus_adapter_status_t rtn_sys_mutate(
@@ -4390,10 +4381,9 @@ static nodus_adapter_status_t rtn_sys_mutate(
                 "pending_effective_block, status, active_since_block, "
                 "unstake_commit_block, unstake_destination_fp, "
                 "unstake_destination_pubkey, "
-                "last_validator_update_block, consecutive_missed_epochs, "
-                "last_signed_block, signed_blocks_this_epoch) "
+                "last_validator_update_block, consecutive_missed_epochs) "
                 "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, "
-                "?12, ?13, ?14, ?15, ?16, ?17)",
+                "?12, ?13, ?14, ?15)",
                 -1, &st, NULL) != SQLITE_OK)
             return NODUS_ADAPTER_ERR_STORAGE_FAULT;
         sqlite3_bind_blob(st, 1, key, RTN_VAL_KEY_LEN, SQLITE_TRANSIENT);
@@ -4415,12 +4405,11 @@ static nodus_adapter_status_t rtn_sys_mutate(
                 "unstake_destination_fp = ?10, "
                 "unstake_destination_pubkey = ?11, "
                 "last_validator_update_block = ?12, "
-                "consecutive_missed_epochs = ?13, last_signed_block = ?14, "
-                "signed_blocks_this_epoch = ?15 WHERE pubkey_hash = ?16",
+                "consecutive_missed_epochs = ?13 WHERE pubkey_hash = ?14",
                 -1, &st, NULL) != SQLITE_OK)
             return NODUS_ADAPTER_ERR_STORAGE_FAULT;
         rtn_sys_val_bind(st, 1, value);
-        sqlite3_bind_blob(st, 16, key, RTN_VAL_KEY_LEN, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(st, 14, key, RTN_VAL_KEY_LEN, SQLITE_TRANSIENT);
     } else if (op->op_id == RTN_SYS_OP_DELEG &&
                kind == DNA_EFFECT_CREATE) {
         if (key_len != RTN_DEL_KEY_LEN || value_len != RTN_DEL_REC_LEN ||

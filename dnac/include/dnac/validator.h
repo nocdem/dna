@@ -144,20 +144,17 @@ typedef struct {
     /** Last block where a VALIDATOR_UPDATE from this validator was accepted (Rule K cooldown). */
     uint64_t last_validator_update_block;
 
-    /** Consecutive epochs where liveness threshold was missed (Rule N). */
+    /** Consecutive epochs where liveness threshold was missed (Rule N).
+     *
+     * tokenomics-v3 P1: the two per-block attendance counters
+     * (`last_signed_block`, `signed_blocks_this_epoch`) are REMOVED from
+     * this record — attendance now lives out-of-root in `v2_attendance`
+     * (voter_id = SHA3-512(pubkey)[0..31], keyed by the cometbft address;
+     * see `nodus_witness_v2_epoch.c`). Rule N (`v2ep_rule_n`) reads that
+     * table at the epoch boundary and writes ONLY its RESULT here: this
+     * field, incremented on a miss and reset to 0 on a pass, evaluated
+     * for every ACTIVE row (no base-leader blame, no tenure gate). */
     uint64_t consecutive_missed_epochs;
-
-    /** Block height of the most recent block this validator signed. */
-    uint64_t last_signed_block;
-
-    /** Blocks this validator has been credited as proposer within the
-     *  current epoch (incremented on every committed block whose
-     *  proposer_id matches this validator). Reset to 0 at epoch-boundary
-     *  settlement. Gates reward eligibility via
-     *  `signed_blocks_this_epoch * 10000 >=
-     *   (EPOCH_LENGTH / COMMITTEE_SIZE) * LIVENESS_THRESHOLD_BPS`
-     *  (Rule N, post-EPOCH_LENGTH=720 attendance redesign). */
-    uint64_t signed_blocks_this_epoch;
 } dnac_validator_record_t;
 
 /* ============================================================================

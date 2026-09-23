@@ -109,6 +109,26 @@ static int utxo_has_domain_col(nodus_witness_t *w) {
     return found;
 }
 
+/* 1 = `table` has a column named `col`, 0 = not, -1 = fault. Generic
+ * single-column presence check — S15's DROP COLUMN gate needs "does this
+ * one column exist", not the exact-shape match `table_cols_exact` makes. */
+static int col_present(nodus_witness_t *w, const char *table,
+                       const char *col) {
+    char sql[128];
+    snprintf(sql, sizeof(sql), "PRAGMA table_info(\"%s\")", table);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db, sql, -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    int found = 0, rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const unsigned char *name = sqlite3_column_text(st, 1);
+        if (name && strcmp((const char *)name, col) == 0) found = 1;
+    }
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) return -1;
+    return found;
+}
+
 /* 1 = table exists, 0 = not, -1 = fault. */
 static int table_exists(nodus_witness_t *w, const char *name) {
     sqlite3_stmt *st = NULL;
@@ -1588,4 +1608,134 @@ int nodus_witness_db_migrate_v2s14_ex(nodus_witness_t *w,
 
 int nodus_witness_db_migrate_v2s14(nodus_witness_t *w) {
     return nodus_witness_db_migrate_v2s14_ex(w, V2S14MIG_FAIL_NONE);
+}
+
+/* ── S15 migration: tokenomics-v3 P1 (Q2, "clean path") ────────────────
+ * Contract: nodus_witness_v2_schema.h. */
+
+int nodus_witness_db_migrate_v2s15_ex(nodus_witness_t *w,
+                                      nodus_v2s15_mig_fail_t fail_at) {
+    if (!w || !w->db) return -1;
+
+    uint32_t ver = 0;
+    if (nodus_witness_db_schema_version(w, &ver) != 0) return -1;
+    if (ver == NODUS_V2_SCHEMA_VERSION_S15) return 0;    /* idempotent    */
+    if (ver != NODUS_V2_SCHEMA_VERSION_S14) {
+        if (nodus_witness_db_migrate_v2s14(w) != 0) return -1;
+        ver = NODUS_V2_SCHEMA_VERSION_S14;
+    }
+
+    if (exec_sql(w, "BEGIN IMMEDIATE") != 0) return -1;
+
+    int ok = 0;
+    int already = 0;
+    do {
+        if (fail_at == V2S15MIG_FAIL_AFTER_BEGIN) break;
+
+        /* O15B discipline: the pre-BEGIN read decided nothing. */
+        int rv = mig_revalidate_version(w, NODUS_V2_SCHEMA_VERSION_S14,
+                                        NODUS_V2_SCHEMA_VERSION_S15, "S15");
+        if (rv < 0) break;
+        if (rv == 0) { already = 1; break; }
+        if (fail_at == V2S15MIG_FAIL_AFTER_REVALIDATE) break;
+
+        /* 1. The two out-of-root attendance tables. Neither is a leg of
+         * any root by itself (ledger_roots_v2.h "attendance_root").
+         * Round 2 (R2-1): both tables now ALSO live in the base schema
+         * (WITNESS_DB_SCHEMA, nodus_witness.c) because they are
+         * lane-independent bookkeeping, same as validators/epoch_state/
+         * validator_stats — a fixture that migrates straight to an
+         * earlier rung (e.g. S9) still needs them to exist. This
+         * CREATE TABLE IF NOT EXISTS is now a no-op on any chain DB
+         * this build created; it stays REQUIRED for a database an
+         * OLDER build already created and is now migrating forward —
+         * that database has neither table until this rung runs. The
+         * shape verification below is unconditional either way. This
+         * step's remaining REAL work is step 2: dropping the two
+         * retired validators columns. */
+        if (exec_sql(w,
+                "CREATE TABLE IF NOT EXISTS v2_attendance ("
+                "  voter_id BLOB PRIMARY KEY,"
+                "  signed_count INTEGER NOT NULL,"
+                "  last_signed_height INTEGER NOT NULL"
+                ")") != 0)
+            break;
+        if (exec_sql(w,
+                "CREATE TABLE IF NOT EXISTS v2_attendance_epoch ("
+                "  epoch_start INTEGER PRIMARY KEY,"
+                "  digest BLOB NOT NULL"
+                ")") != 0)
+            break;
+
+        /* 2. Drop the two retired per-block counters, WHEN PRESENT — a
+         * database that reached S14 without ever having them (a future
+         * from-scratch fixture) is not asked to drop what it lacks.
+         * SQLite >= 3.35 (DROP COLUMN) is already required by S14; no
+         * new library check here. */
+        {
+            int lsig = col_present(w, "validators", "last_signed_block");
+            int sepo = col_present(w, "validators",
+                                   "signed_blocks_this_epoch");
+            if (lsig < 0 || sepo < 0) break;
+            if (lsig == 1 &&
+                exec_sql(w, "ALTER TABLE validators "
+                            "DROP COLUMN last_signed_block") != 0)
+                break;
+            if (sepo == 1 &&
+                exec_sql(w, "ALTER TABLE validators "
+                            "DROP COLUMN signed_blocks_this_epoch") != 0)
+                break;
+        }
+        if (fail_at == V2S15MIG_FAIL_AFTER_TABLES) break;
+
+        /* Verify: the two new tables exist with their exact shape, and
+         * the two retired columns are gone from validators. */
+        static const char *const att_cols[] =
+            { "voter_id", "signed_count", "last_signed_height" };
+        static const char *const attep_cols[] =
+            { "epoch_start", "digest" };
+        if (table_cols_exact(w, "v2_attendance", att_cols,
+                sizeof(att_cols) / sizeof(att_cols[0])) != 1 ||
+            table_cols_exact(w, "v2_attendance_epoch", attep_cols,
+                sizeof(attep_cols) / sizeof(attep_cols[0])) != 1) {
+            QGP_LOG_ERROR(LOG_TAG, "%s",
+                          "S15 attendance table shape drift — refusing");
+            break;
+        }
+        {
+            int lsig2 = col_present(w, "validators", "last_signed_block");
+            int sepo2 = col_present(w, "validators",
+                                    "signed_blocks_this_epoch");
+            if (lsig2 != 0 || sepo2 != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "%s",
+                              "S15 validators column drop verification "
+                              "failed — refusing");
+                break;
+            }
+        }
+        if (fail_at == V2S15MIG_FAIL_AFTER_VERIFY) break;
+
+        if (exec_sql(w, "PRAGMA user_version = 15") != 0) break;
+        if (fail_at == V2S15MIG_FAIL_BEFORE_COMMIT) break;
+
+        ok = 1;
+    } while (0);
+
+    if (already) {
+        (void)exec_sql(w, "ROLLBACK");
+        return 0;
+    }
+    if (!ok) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    if (exec_sql(w, "COMMIT") != 0) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    return 0;
+}
+
+int nodus_witness_db_migrate_v2s15(nodus_witness_t *w) {
+    return nodus_witness_db_migrate_v2s15_ex(w, V2S15MIG_FAIL_NONE);
 }

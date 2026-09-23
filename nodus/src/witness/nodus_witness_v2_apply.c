@@ -1109,6 +1109,10 @@ static int epoch_stage_fault(void *ud, nodus_v2_epoch_stage_t s,
             return blk->fail_at == V2AP_FAIL_AFTER_SETTLE_EMITTED;
         case NODUS_V2_EPST_SETTLE_APPLIED:
             return blk->fail_at == V2AP_FAIL_AFTER_SETTLE_APPLIED;
+        case NODUS_V2_EPST_ATTENDANCE_DIGEST:
+            return blk->fail_at == V2AP_FAIL_AFTER_ATTENDANCE_DIGEST;
+        case NODUS_V2_EPST_ATTENDANCE_RESET:
+            return blk->fail_at == V2AP_FAIL_AFTER_ATTENDANCE_RESET;
         default:
             return 1;                    /* unknown stage: fail closed   */
     }
@@ -2242,17 +2246,18 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
     uint32_t ver = 0;
     if (blk->cmt.on) {
         /* ── THE COMETBFT LANE'S OWN PRECONDITIONS (D-23 rev 5) ───────
-         * S14 ONLY: this lane writes a `v2_blocks` row without `header`,
-         * `qc` or `commit_cert`, and at S12 `header` is NOT NULL, so the
-         * insert could not even be expressed. Nothing about the block is
-         * judged by either refusal — both are this node's shape. */
+         * S15 ONLY (tokenomics-v3 P1 moved the live rung from S14): this
+         * lane writes a `v2_blocks` row without `header`, `qc` or
+         * `commit_cert`, and at S12 `header` is NOT NULL, so the insert
+         * could not even be expressed. Nothing about the block is judged
+         * by either refusal — both are this node's shape. */
         if (nodus_witness_db_schema_version(w, &ver) != 0 ||
-            ver != NODUS_V2_SCHEMA_VERSION_S14) {
+            ver != NODUS_V2_SCHEMA_VERSION_S15) {
             V2AP_FAULT("cometbft lane: this node's schema version is %u, "
                        "not %u - the Comet block row cannot be written "
                        "here; nothing about the block was judged",
                        (unsigned)ver,
-                       (unsigned)NODUS_V2_SCHEMA_VERSION_S14);
+                       (unsigned)NODUS_V2_SCHEMA_VERSION_S15);
             return -2;
         }
         /* The HOST owns the transaction (D-23 rev 5 (5)): this entry
@@ -4103,34 +4108,27 @@ cmt_items_done:
         n_dom = n_post;
     }
 
-    /* 6d-bis. O15C ATTENDANCE — the Rule N source. Credits the committed
-     * header proposer INSIDE this one transaction, before the boundary
-     * below and before every root phase (the O15B.1 ordering invariant).
-     * Deterministic: a pure function of committed rows + the
-     * BlockID-bound proposer_id, so live application and replay through
-     * this same engine write identical bytes. SYSTEM is declared touched
-     * exactly when a credit landed (the attendance columns are validator
-     * merkle-leaf fields feeding system_state_root). */
-    {
-        int credited = 0;
-        if (nodus_witness_v2_record_attendance(w, blk->global_height,
-                                               blk->proposer_id,
-                                               &credited) != 0) {
-            V2AP_FAULT("phase 6d: O15C attendance credit for the header "
-                       "proposer at height %llu failed on this node",
-                       (unsigned long long)blk->global_height);
-            goto fail_fault;
-        }
-        if (credited) {
-            dom_ctx_t *dsys_att = dom_for(doms, n_dom, DNA_DOMAIN_SYSTEM);
-            if (!dsys_att) {
-                V2AP_FAULT("phase 6d: attendance credited but SYSTEM "
-                           "domain %u is absent from the working set",
-                           (unsigned)DNA_DOMAIN_SYSTEM);
-                goto fail_fault;
-            }
-            dsys_att->touched = 1;
-        }
+    /* 6d-bis. tokenomics-v3 P1 (D-2, D-4, Q1) ATTENDANCE — the Rule N
+     * source. Credits every COMMIT-flagged vote of cometbft's
+     * `decided_last_commit` (`blk->cmt.votes_address` /
+     * `.votes_block_id_flag`, copied verbatim by the app,
+     * nodus_witness_v2_apply.h) INSIDE this one transaction, before the
+     * boundary below and before every root phase (the O15B.1 ordering
+     * invariant). Deterministic: a pure function of the request's own
+     * bytes, so live application and replay through this same engine
+     * write identical rows. Declares NO domain touched: `v2_attendance`
+     * is OUT OF EVERY ROOT (D-4) — a credit here moves no state_root
+     * byte until the epoch boundary's digest leg commits its SUMMARY of
+     * the ended epoch (attendance_root, shared/dnac/ledger_roots_v2.c).
+     * `votes_len == 0` (the legacy lane, or the initial height) is the
+     * legal empty case: the writer no-ops. */
+    if (nodus_witness_v2_attendance_credit(w, blk->global_height,
+                                           blk->cmt.votes_address,
+                                           blk->cmt.votes_block_id_flag,
+                                           blk->cmt.votes_len) != 0) {
+        V2AP_FAULT("phase 6d: attendance credit at height %llu failed on "
+                   "this node", (unsigned long long)blk->global_height);
+        goto fail_fault;
     }
 
     /* 6e. O12 S2 EPOCH BOUNDARY — engine-MANDATORY, not caller-declared.
@@ -5448,7 +5446,11 @@ int nodus_witness_v2_genesis_cmt(nodus_witness_t *w,
      * to the document that names it. */
     if (!manifest_bytes || manifest_len == 0) return -1;
 
-    /* SCHEMA GATE: S12 OR S14 IN W2 — S14 ALONE FROM W3.
+    /* SCHEMA GATE (HISTORY): S12 OR S14 IN W2 — S14 ALONE FROM W3.
+     * CURRENT (tokenomics-v3 P1 round 5): S15 alone — see the gate's
+     * own check below and the paragraph's last sentence; everything
+     * above this point in the comment is the W2/W3 history that led
+     * here, not today's requirement.
      *
      * The destination is S14 and only S14: that is where the Comet
      * stores live (D-17 rev 6). S12 was accepted for ONE release window
@@ -5469,11 +5471,13 @@ int nodus_witness_v2_genesis_cmt(nodus_witness_t *w,
      * the ledger genesis runs (D-18 rev 5 (1)'s S12-then-climb order is
      * withdrawn), so this function is never reached at S12 on the live
      * path any more. The version-2 entry's own gate at :620-623 (S9-S12)
-     * is untouched — it belongs to the closed old lane. */
+     * is untouched — it belongs to the closed old lane.
+     * tokenomics-v3 P1 moves this gate's accepted value S14 -> S15 (the
+     * derivation now migrates to S15 before this point). */
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0 ||
-        ver != NODUS_V2_SCHEMA_VERSION_S14) {
-        QGP_LOG_ERROR(LOG_TAG, "cometbft genesis needs schema S14, the "
+        ver != NODUS_V2_SCHEMA_VERSION_S15) {
+        QGP_LOG_ERROR(LOG_TAG, "cometbft genesis needs schema S15, the "
                       "database is at %u — refusing", (unsigned)ver);
         return -1;
     }

@@ -47,6 +47,13 @@ int nodus_witness_epoch_root_v2(nodus_witness_t *w, uint8_t out[64]);
  *  row = honest pre-genesis zeros; DB error = fail). */
 int nodus_witness_supply_root_v2(nodus_witness_t *w, uint8_t out[64]);
 
+/** attendance_root (tokenomics-v3 P1, D-4 / S-2) over `v2_attendance_epoch`
+ *  rows, epoch_start ASC. Follows the epoch leg's fail-closed pattern: a
+ *  missing table is the honest empty state (a pre-P1 database, or before
+ *  the chain's first epoch boundary), a probe fault is never reported as
+ *  empty, and a malformed row fails the whole computation. */
+int nodus_witness_attendance_root(nodus_witness_t *w, uint8_t out[64]);
+
 /** system_state_root per the V2 composition. The validator-set leg is now
  *  REAL (S3): nodus_witness_vset_root over the validator_set_snapshots
  *  table. That table is empty until a later wave wires the genesis /

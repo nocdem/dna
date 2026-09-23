@@ -1,14 +1,22 @@
 /**
  * Nodus — cometbft @709fd12b port, FLEET-TM-R3 wave W1, package R3-B:
- * the HOST behind cmt_cs_host_t — the stores over SQLite (schema S14),
- * the WAL storage, the file privval, the stored-value codecs and the
- * BlockExecutor — driven the way the reference's own tests drive them.
+ * the HOST behind cmt_cs_host_t — the stores over SQLite (schema S14,
+ * superseded as the live rung by S15 — tokenomics-v3 P1 round 5, see the
+ * S15 matrix below), the WAL storage, the file privval, the stored-value
+ * codecs and the BlockExecutor — driven the way the reference's own
+ * tests drive them.
  *
  * ── WHAT IT PROVES ──────────────────────────────────────────────────────
  *  · Schema S14 climbs from 0 and from 13, is idempotent, survives a
- *    reopen, rolls back BYTE-IDENTICALLY at every fail stage, refuses an
- *    unknown version 15, and drops exactly `header`, `qc`, `commit_cert`
- *    from v2_blocks (PRAGMA table_info) while `tm_wal`/`tm_state` are gone.
+ *    reopen, rolls back BYTE-IDENTICALLY at every fail stage, and drops
+ *    exactly `header`, `qc`, `commit_cert` from v2_blocks (PRAGMA
+ *    table_info) while `tm_wal`/`tm_state` are gone. S14 is no longer the
+ *    live rung (S15 is, since tokenomics-v3 P1 round 5 — see the S15
+ *    matrix below); this suite's S14 cases still prove the S14 step of
+ *    the climb honestly, they just no longer describe the database a
+ *    live chain settles at. The unknown-version refusal this section
+ *    used to describe as S14's is exercised, at the CURRENT ceiling, by
+ *    the S15 matrix's own case (`t_s15_unknown_16_fails_closed`).
  *  · cmt_pb_store encodes the stored values to the bytes the generated
  *    gogoproto encoders produce (golden vectors from cmt_pb_oracle.py,
  *    literal below 41 bytes, SHA3-512 above), and decodes them back.
@@ -61,8 +69,10 @@
  *  is `mkdtemp("test_cmt_host.XXXXXX")` in the cwd) and SQLite ≥ 3.35.0
  *  (DROP COLUMN — the S14 rung refuses an older linked library before
  *  writing, `NODUS_V2_S14_SQLITE_MIN_VERSION`, and every fixture here
- *  climbs to S14, so an older library fails every case at "fixture";
- *  the tree links 3.40.1 and the guard itself is not exercised).
+ *  climbs at least to S14 — the S15 fixtures (tokenomics-v3 P1 round 5)
+ *  climb through it to S15 — so an older library fails every case at
+ *  "fixture"; the tree links 3.40.1 and the guard itself is not
+ *  exercised).
  *
  * ── WHAT IT LEAVES BEHIND ───────────────────────────────────────────────
  *  Nothing on success: every `test_cmt_host.XXXXXX` directory is removed
@@ -501,13 +511,14 @@ static void dbfx_close(dbfx_t *fx)
     rmrf(fx->dir);
 }
 
-/* Open + climb to S14: what every store test starts from. */
-static int dbfx_open_s14(dbfx_t *fx)
+/* Open + climb to S15 (tokenomics-v3 P1 moved the live rung from S14):
+ * what every store test starts from. */
+static int dbfx_open_s15(dbfx_t *fx)
 {
     if (dbfx_open(fx) != 0) {
         return -1;
     }
-    if (nodus_witness_db_migrate_v2s14(fx->w) != 0) {
+    if (nodus_witness_db_migrate_v2s15(fx->w) != 0) {
         dbfx_close(fx);
         return -1;
     }
@@ -845,7 +856,7 @@ static int env_make_state(t_env_t *e, size_t nvals, int height)
     int    h;
 
     memset(e, 0, sizeof(*e));
-    if (dbfx_open_s14(&e->fx) != 0) {
+    if (dbfx_open_s15(&e->fx) != 0) {
         return -1;
     }
     e->store = (nodus_cmt_store_t *)calloc(1, sizeof(*e->store));
@@ -1310,6 +1321,217 @@ static int t_s14_unknown_15_fails_closed(void)
     CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 15,
           "version 15 mutated");
     CHECK(has_table(fx.w->db, "cmt_wal") == 0, "version 15 got a table");
+    dbfx_close(&fx);
+    return 0;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * S15 — the migration matrix (tokenomics-v3 P1, Q2 "clean path"),
+ * BESIDE the S14 matrix above — S14's own tests are untouched, S14's
+ * function still exists and its behaviour has not changed.
+ * ══════════════════════════════════════════════════════════════════════ */
+
+static const char S15_VALIDATORS_COLS[] =
+    "pubkey_hash,pubkey,self_stake,total_delegated,external_delegated,"
+    "commission_bps,pending_commission_bps,pending_effective_block,"
+    "status,active_since_block,unstake_commit_block,"
+    "unstake_destination_fp,unstake_destination_pubkey,"
+    "last_validator_update_block,consecutive_missed_epochs";
+
+static int t_s15_fresh_climb(void)
+{
+    dbfx_t   fx;
+    uint32_t ver = 0;
+    char     cols[512];
+
+    CHECK(dbfx_open(&fx) == 0, "fixture");
+    /* 0 -> 15 in one call: the S9...S14 chain, then the rung. */
+    CHECK(nodus_witness_db_migrate_v2s15(fx.w) == 0, "0->15");
+    CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 15,
+          "version != 15");
+    CHECK(has_table(fx.w->db, "v2_attendance") == 1 &&
+          has_table(fx.w->db, "v2_attendance_epoch") == 1,
+          "S15 attendance tables missing");
+    CHECK(table_cols(fx.w->db, "v2_attendance", cols, sizeof(cols)) == 0 &&
+          strcmp(cols, "voter_id,signed_count,last_signed_height") == 0,
+          "v2_attendance column list");
+    CHECK(table_cols(fx.w->db, "v2_attendance_epoch", cols,
+                     sizeof(cols)) == 0 &&
+          strcmp(cols, "epoch_start,digest") == 0,
+          "v2_attendance_epoch column list");
+    /* the two retired columns are gone from validators */
+    CHECK(has_col(fx.w->db, "validators", "last_signed_block") == 0 &&
+          has_col(fx.w->db, "validators",
+                 "signed_blocks_this_epoch") == 0,
+          "a retired validators column survived");
+    CHECK(table_cols(fx.w->db, "validators", cols, sizeof(cols)) == 0 &&
+          strcmp(cols, S15_VALIDATORS_COLS) == 0,
+          "validators column list");
+    /* the earlier schemas remain (S14's own tables, still present) */
+    CHECK(has_table(fx.w->db, "cmt_blockstore") == 1 &&
+          has_table(fx.w->db, "cmt_wal") == 1, "S15 dropped an S14 table");
+    /* idempotent */
+    CHECK(nodus_witness_db_migrate_v2s15(fx.w) == 0, "re-run 15");
+    CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 15,
+          "re-run moved version");
+    CHECK(dbfx_reopen_raw(&fx) == 0, "raw reopen");
+    CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 15,
+          "raw restart lost 15");
+    CHECK(has_table(fx.w->db, "v2_attendance") == 1,
+          "raw restart lost v2_attendance");
+    dbfx_close(&fx);
+    return 0;
+}
+
+/* A database created by a binary OLDER than this change still carries
+ * the two retired columns (nodus_witness.c's base DDL created them
+ * unconditionally before tokenomics-v3 P1); simulated here with a manual
+ * ALTER TABLE ADD COLUMN, since `dbfx_open` now runs the CURRENT
+ * `nodus_witness_create_chain_db`, which no longer creates them. S15
+ * must DROP them regardless. */
+static int t_s15_from_14_with_columns_present(void)
+{
+    dbfx_t   fx;
+    uint32_t ver = 0;
+
+    CHECK(dbfx_open(&fx) == 0, "fixture");
+    CHECK(nodus_witness_db_migrate_v2s14(fx.w) == 0, "0->14");
+    CHECK(has_col(fx.w->db, "validators", "last_signed_block") == 0 &&
+          has_col(fx.w->db, "validators",
+                 "signed_blocks_this_epoch") == 0,
+          "a freshly created database should NOT carry the retired "
+          "columns (nodus_witness.c's base DDL, tokenomics-v3 P1)");
+    CHECK(run_sql(fx.w->db,
+              "ALTER TABLE validators ADD COLUMN last_signed_block "
+              "INTEGER NOT NULL DEFAULT 0") == 0,
+          "simulate a pre-P1 database: add last_signed_block back");
+    CHECK(run_sql(fx.w->db,
+              "ALTER TABLE validators ADD COLUMN "
+              "signed_blocks_this_epoch INTEGER NOT NULL DEFAULT 0") == 0,
+          "simulate a pre-P1 database: add signed_blocks_this_epoch back");
+    CHECK(has_col(fx.w->db, "validators", "last_signed_block") == 1 &&
+          has_col(fx.w->db, "validators",
+                 "signed_blocks_this_epoch") == 1,
+          "the simulated pre-P1 shape did not take");
+    CHECK(nodus_witness_db_migrate_v2s15(fx.w) == 0, "14->15");
+    CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 15, "15");
+    CHECK(has_col(fx.w->db, "validators", "last_signed_block") == 0 &&
+          has_col(fx.w->db, "validators",
+                 "signed_blocks_this_epoch") == 0,
+          "S15 did not drop the retired columns");
+    dbfx_close(&fx);
+    return 0;
+}
+
+/* A database that reached S14 the CURRENT ordinary way (tokenomics-v3
+ * P1's base DDL never creates the two retired columns) never has them —
+ * `col_present` must skip the DROP cleanly, not fault. */
+static int t_s15_without_columns_present(void)
+{
+    dbfx_t   fx;
+    uint32_t ver = 0;
+
+    CHECK(dbfx_open(&fx) == 0, "fixture");
+    CHECK(nodus_witness_db_migrate_v2s14(fx.w) == 0, "0->14");
+    CHECK(has_col(fx.w->db, "validators", "last_signed_block") == 0 &&
+          has_col(fx.w->db, "validators",
+                 "signed_blocks_this_epoch") == 0,
+          "a freshly created database never carried the retired columns");
+    CHECK(nodus_witness_db_migrate_v2s15(fx.w) == 0,
+          "14->15 with columns already absent");
+    CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 15, "15");
+    CHECK(has_table(fx.w->db, "v2_attendance") == 1,
+          "S15 tables still created when the columns were already gone");
+    dbfx_close(&fx);
+    return 0;
+}
+
+static int t_s15_unknown_16_fails_closed(void)
+{
+    dbfx_t   fx;
+    uint32_t ver = 0;
+
+    CHECK(dbfx_open(&fx) == 0, "fixture");
+    /* round 3 (R3-2, MEASURED): round 2's R2-1 moved v2_attendance /
+     * v2_attendance_epoch into the BASE schema (nodus_witness.c), so
+     * `dbfx_open`'s `nodus_witness_create_chain_db` above already
+     * created them — "version 16 got a table" is no longer a
+     * distinguishing assertion (every database has them, refused
+     * migration or not). Simulate a pre-P1 database (the SAME pattern
+     * `t_s15_from_14_with_columns_present` uses) so a refusal has
+     * something concrete to prove it left untouched: what S15 still
+     * OWNS at an unknown version is the two DROP COLUMN steps and the
+     * version bump — prove neither ran. */
+    CHECK(run_sql(fx.w->db,
+              "ALTER TABLE validators ADD COLUMN last_signed_block "
+              "INTEGER NOT NULL DEFAULT 0") == 0, "simulate pre-P1 shape");
+    CHECK(run_sql(fx.w->db,
+              "ALTER TABLE validators ADD COLUMN "
+              "signed_blocks_this_epoch INTEGER NOT NULL DEFAULT 0") == 0,
+          "simulate pre-P1 shape");
+    CHECK(run_sql(fx.w->db, "PRAGMA user_version = 16") == 0, "set 16");
+    CHECK(nodus_witness_db_migrate_v2s15(fx.w) == -1, "version 16 migrated");
+    CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 16,
+          "version 16 mutated");
+    CHECK(has_col(fx.w->db, "validators", "last_signed_block") == 1 &&
+          has_col(fx.w->db, "validators",
+                 "signed_blocks_this_epoch") == 1,
+          "a refused migration dropped a column");
+    dbfx_close(&fx);
+    return 0;
+}
+
+static int t_s15_fail_stages_roll_back(void)
+{
+    dbfx_t   fx;
+    uint32_t ver = 0;
+    uint8_t  d14[64], dnow[64];
+    int      stage;
+
+    CHECK(dbfx_open(&fx) == 0, "fixture");
+    CHECK(nodus_witness_db_migrate_v2s14(fx.w) == 0, "0->14");
+    CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 14,
+          "base 14");
+    /* Simulate a pre-P1 database (see t_s15_from_14_with_columns_present)
+     * so the DROP COLUMN steps below actually have something to roll
+     * back — on a purely fresh database the columns never exist and the
+     * rollback of a DROP that never ran would be a trivial, uninformative
+     * pass. */
+    CHECK(run_sql(fx.w->db,
+              "ALTER TABLE validators ADD COLUMN last_signed_block "
+              "INTEGER NOT NULL DEFAULT 0") == 0, "simulate pre-P1 shape");
+    CHECK(run_sql(fx.w->db,
+              "ALTER TABLE validators ADD COLUMN "
+              "signed_blocks_this_epoch INTEGER NOT NULL DEFAULT 0") == 0,
+          "simulate pre-P1 shape");
+    CHECK(db_digest(fx.w->db, d14) == 0, "digest 14");
+    /* every fail stage rolls back to a byte-identical version-14 DB —
+     * the two DROP COLUMNs included */
+    for (stage = V2S15MIG_FAIL_AFTER_BEGIN;
+         stage <= V2S15MIG_FAIL_BEFORE_COMMIT; stage++) {
+        CHECK(nodus_witness_db_migrate_v2s15_ex(
+                  fx.w, (nodus_v2s15_mig_fail_t)stage) == -1,
+              "staged failure did not fail");
+        CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 14,
+              "failed stage moved the version");
+        /* round 3 (R3-2, MEASURED): round 2's R2-1 moved v2_attendance /
+         * v2_attendance_epoch into the BASE schema, so `dbfx_open` above
+         * already created them BEFORE this fixture ever called
+         * migrate_v2s14 or migrate_v2s15 — "a failed stage left an
+         * attendance table" is no longer a distinguishing assertion
+         * (every open has them, failed stage or not). What S15 still
+         * OWNS here is the two DROP COLUMN steps and the version bump,
+         * both checked below and by the whole-DB digest compare at the
+         * loop's tail. */
+        CHECK(has_col(fx.w->db, "validators", "last_signed_block") == 1 &&
+              has_col(fx.w->db, "validators",
+                     "signed_blocks_this_epoch") == 1,
+              "failed stage dropped a column");
+        CHECK(db_digest(fx.w->db, dnow) == 0, "post-stage digest");
+        CHECK(memcmp(d14, dnow, 64) == 0, "failed stage mutated the DB");
+    }
+    CHECK(nodus_witness_db_migrate_v2s15(fx.w) == 0, "14->15");
+    CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 15, "15");
     dbfx_close(&fx);
     return 0;
 }
@@ -2182,7 +2404,7 @@ static int t_wal_write_classes_and_visibility(void)
     int n = -1, sn = -1;
     int64_t dl = 0;
 
-    CHECK(dbfx_open_s14(&fx) == 0, "fixture");
+    CHECK(dbfx_open_s15(&fx) == 0, "fixture");
     w = (nodus_cmt_wal_t *)calloc(1, sizeof(*w));
     m = (cmt_wal_message_t *)calloc(1, sizeof(*m));
     CHECK(w && m, "alloc");
@@ -2301,7 +2523,7 @@ static int t_wal_start_and_search(void)
     bool found = false, eof = false;
     int n = -1;
 
-    CHECK(dbfx_open_s14(&fx) == 0, "fixture");
+    CHECK(dbfx_open_s15(&fx) == 0, "fixture");
     w = (nodus_cmt_wal_t *)calloc(1, sizeof(*w));
     m = (cmt_wal_message_t *)calloc(1, sizeof(*m));
     tw = (cmt_timed_wal_message_t *)calloc(1, sizeof(*tw));
@@ -2394,7 +2616,7 @@ static int t_wal_corruption_faults(void)
     cmt_timed_wal_message_t *tw;
     bool eof = false, found = false;
 
-    CHECK(dbfx_open_s14(&fx) == 0, "fixture");
+    CHECK(dbfx_open_s15(&fx) == 0, "fixture");
     w = (nodus_cmt_wal_t *)calloc(1, sizeof(*w));
     m = (cmt_wal_message_t *)calloc(1, sizeof(*m));
     tw = (cmt_timed_wal_message_t *)calloc(1, sizeof(*tw));
@@ -2744,7 +2966,7 @@ static int t_store_load_block_store_state(void)
         { 100, 1000, 100, 1000 }, { 0, 0, 0, 0 }, { 0, 1000, 1, 1000 } };
     int i;
 
-    CHECK(dbfx_open_s14(&fx) == 0, "fixture");
+    CHECK(dbfx_open_s15(&fx) == 0, "fixture");
     s = (nodus_cmt_store_t *)calloc(1, sizeof(*s));
     CHECK(s && nodus_cmt_store_init(s, fx.w->db, false) == CMT_OK, "store");
     for (i = 0; i < 3; i++) {
@@ -2770,7 +2992,7 @@ static int t_store_new_block_store(void)
     dbfx_t fx;
     nodus_cmt_store_t *s;
 
-    CHECK(dbfx_open_s14(&fx) == 0, "fixture");
+    CHECK(dbfx_open_s15(&fx) == 0, "fixture");
     s = (nodus_cmt_store_t *)calloc(1, sizeof(*s));
     CHECK(s != NULL, "alloc");
     CHECK(run_sql(fx.w->db,
@@ -3275,7 +3497,7 @@ static int t_store_load_block_meta(void)
     size_t n = 0, n2 = 0;
     bool found = true;
 
-    CHECK(dbfx_open_s14(&fx) == 0, "fixture");
+    CHECK(dbfx_open_s15(&fx) == 0, "fixture");
     s = (nodus_cmt_store_t *)calloc(1, sizeof(*s));
     meta = (nodus_cmt_block_meta_t *)calloc(1, sizeof(*meta));
     got = (nodus_cmt_block_meta_t *)calloc(1, sizeof(*got));
@@ -3439,7 +3661,7 @@ static int t_ss_load_validators(void)
     uint8_t *buf;
     size_t n = 0;
 
-    CHECK(dbfx_open_s14(&fx) == 0, "fixture");
+    CHECK(dbfx_open_s15(&fx) == 0, "fixture");
     s = (nodus_cmt_store_t *)calloc(1, sizeof(*s));
     vstor = (cmt_validator_t *)calloc(CMT_VALSET_MAX, sizeof(*vstor));
     vstor2 = (cmt_validator_t *)calloc(CMT_VALSET_MAX, sizeof(*vstor2));
@@ -3527,7 +3749,7 @@ static int t_ss_prune_states(void)
         int rc;
 
         fprintf(stderr, "  PruneStates: %s\n", tcs[t].name);
-        CHECK(dbfx_open_s14(&fx) == 0, "fixture");
+        CHECK(dbfx_open_s15(&fx) == 0, "fixture");
         s = (nodus_cmt_store_t *)calloc(1, sizeof(*s));
         vstor = (cmt_validator_t *)calloc(CMT_VALSET_MAX, sizeof(*vstor));
         vstor2 = (cmt_validator_t *)calloc(CMT_VALSET_MAX, sizeof(*vstor2));
@@ -3660,7 +3882,7 @@ static int t_ss_last_finalize_block_responses(void)
     cmt_pb_rfb_storage_t rst;
     cmt_pb_arena_t arena;
 
-    CHECK(dbfx_open_s14(&fx) == 0, "fixture");
+    CHECK(dbfx_open_s15(&fx) == 0, "fixture");
     s = (nodus_cmt_store_t *)calloc(1, sizeof(*s));
     r1 = (cmt_pb_response_finalize_block_t *)calloc(1, sizeof(*r1));
     got = (cmt_pb_response_finalize_block_t *)calloc(1, sizeof(*got));
@@ -3748,7 +3970,7 @@ static int t_ss_int_conversion(void)
     n = nodus_cmt_int64_to_bytes(INT64_MIN, b);
     CHECK(n == 10 && nodus_cmt_int64_from_bytes(b, n) == INT64_MIN, "min");
     CHECK(nodus_cmt_int64_from_bytes(b, 0) == 0, "empty → 0");
-    CHECK(dbfx_open_s14(&fx) == 0, "fixture");
+    CHECK(dbfx_open_s15(&fx) == 0, "fixture");
     s = (nodus_cmt_store_t *)calloc(1, sizeof(*s));
     CHECK(s && nodus_cmt_store_init(s, fx.w->db, false) == CMT_OK, "store");
     /* ORCHESTRATOR delta 1, item 8 / E (R3-C1c-2, CLOSED) — the tri-state
@@ -3813,7 +4035,7 @@ static int t_ss_load_from_db_or_genesis(void)
         cmt_genesis_doc_t doc;
         cmt_genesis_validator_t gv[2];
 
-        CHECK(dbfx_open_s14(&fx) == 0, "fixture");
+        CHECK(dbfx_open_s15(&fx) == 0, "fixture");
         s = (nodus_cmt_store_t *)calloc(1, sizeof(*s));
         CHECK(s && nodus_cmt_store_init(s, fx.w->db, false) == CMT_OK, "store");
         memset(&doc, 0, sizeof doc);
@@ -5366,6 +5588,11 @@ int main(void)
         { "s14_half_present_catalogue_refused",    t_s14_half_present_catalogue_refused },
         { "s14_from_13_with_fail_stages",          t_s14_from_13_with_fail_stages },
         { "s14_unknown_15_fails_closed",           t_s14_unknown_15_fails_closed },
+        { "s15_fresh_climb",                       t_s15_fresh_climb },
+        { "s15_from_14_with_columns_present",      t_s15_from_14_with_columns_present },
+        { "s15_without_columns_present",           t_s15_without_columns_present },
+        { "s15_unknown_16_fails_closed",           t_s15_unknown_16_fails_closed },
+        { "s15_fail_stages_roll_back",             t_s15_fail_stages_roll_back },
         { "codec_small_vectors",                   t_codec_small_vectors },
         { "codec_finalize_block_response",         t_codec_finalize_block_response },
         { "codec_block_meta_and_state",            t_codec_block_meta_and_state },

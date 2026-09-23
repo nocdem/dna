@@ -211,9 +211,7 @@ static const char *VALIDATOR_COLUMNS =
     "  unstake_destination_fp TEXT,"
     "  unstake_destination_pubkey BLOB,"
     "  last_validator_update_block INTEGER NOT NULL,"
-    "  consecutive_missed_epochs INTEGER NOT NULL,"
-    "  last_signed_block INTEGER NOT NULL,"
-    "  signed_blocks_this_epoch INTEGER NOT NULL";
+    "  consecutive_missed_epochs INTEGER NOT NULL";
 
 /* Insert 4 validator rows into `table`. Row `fault_row` (1-based,
  * 0 = none) gets the malformed value named by `fault_kind`. `bad_row`
@@ -246,9 +244,8 @@ static int validator_rows(nodus_witness_t *w, const char *table,
             " pending_effective_block, status, active_since_block,"
             " unstake_commit_block, unstake_destination_fp,"
             " unstake_destination_pubkey, last_validator_update_block,"
-            " consecutive_missed_epochs, last_signed_block,"
-            " signed_blocks_this_epoch%s) VALUES (?, 10, 0, 0, 100, 0, 0, 1,"
-            " 1, 0, ?, ?, 0, 0, 0, 0%s)",
+            " consecutive_missed_epochs%s) VALUES (?, 10, 0, 0, 100, 0, 0, 1,"
+            " 1, 0, ?, ?, 0, 0%s)",
             table, has_bad ? ", bad" : "", has_bad ? ", ?" : "");
 
         sqlite3_stmt *stmt = NULL;
@@ -295,8 +292,7 @@ static int validator_view_fixture(nodus_witness_t *w, int bad_row) {
         "  pending_commission_bps, pending_effective_block, status,"
         "  active_since_block, unstake_commit_block, unstake_destination_fp,"
         "  unstake_destination_pubkey, last_validator_update_block,"
-        "  consecutive_missed_epochs, last_signed_block,"
-        "  signed_blocks_this_epoch FROM validators_raw;") != 0) return -1;
+        "  consecutive_missed_epochs FROM validators_raw;") != 0) return -1;
 
     return validator_rows(w, "validators_raw", 1, bad_row, VF_NONE, 0);
 }

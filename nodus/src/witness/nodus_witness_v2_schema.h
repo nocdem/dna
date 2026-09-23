@@ -634,6 +634,55 @@ int nodus_witness_db_migrate_v2s14(nodus_witness_t *w);
 int nodus_witness_db_migrate_v2s14_ex(nodus_witness_t *w,
                                       nodus_v2s14_mig_fail_t fail_at);
 
+/* ── S15 migration: tokenomics-v3 P1 (Q2, "clean path") ───────────────
+ *
+ * Two independent shape changes, one rung:
+ *
+ *   1. `v2_attendance(voter_id BLOB PRIMARY KEY, signed_count INTEGER
+ *      NOT NULL, last_signed_height INTEGER NOT NULL)` and
+ *      `v2_attendance_epoch(epoch_start INTEGER PRIMARY KEY, digest BLOB
+ *      NOT NULL)` are CREATED. `voter_id` is 32 bytes = SHA3-512(pubkey)
+ *      [0..31] = the cometbft address (vset_wire.h:121). Neither table
+ *      is a leg of any root by itself — `v2_attendance_epoch` enters
+ *      `system_state_root` only through the `attendance_root` leg
+ *      (shared/dnac/ledger_roots_v2.c), computed from its COMMITTED
+ *      rows, never from `v2_attendance` directly.
+ *   2. `validators.last_signed_block` and
+ *      `validators.signed_blocks_this_epoch` are DROPPED, when present
+ *      (`PRAGMA table_info` checked first — a database that somehow
+ *      reached S14 without ever having those columns, e.g. a future
+ *      from-scratch fixture, is not asked to drop what it does not
+ *      have). SQLite ≥ 3.35 is ALREADY required by S14
+ *      (`NODUS_V2_S14_SQLITE_MIN_VERSION`) for its own three DROP
+ *      COLUMNs, so this rung adds no new library requirement.
+ *
+ * Together: every S15 database ends at ONE validators shape (13 mutable
+ * columns, `nodus_witness_validator.c`), whether it was created fresh at
+ * S15 or migrated up from a chain born before this change.
+ */
+#define NODUS_V2_SCHEMA_VERSION_S15  15u
+
+typedef enum {
+    V2S15MIG_FAIL_NONE = 0,
+    V2S15MIG_FAIL_AFTER_BEGIN,      /* after BEGIN, before any DDL        */
+    V2S15MIG_FAIL_AFTER_REVALIDATE, /* in-txn version re-read passed      */
+    V2S15MIG_FAIL_AFTER_TABLES,     /* attendance tables created, columns
+                                     * dropped                            */
+    V2S15MIG_FAIL_AFTER_VERIFY,     /* schema-shape verification passed   */
+    V2S15MIG_FAIL_BEFORE_COMMIT     /* user_version written, pre-COMMIT   */
+} nodus_v2s15_mig_fail_t;
+
+/** Atomic S15 migration. Versions below 14 run the S9…S14 chain first,
+ *  then 14 → 15 atomically with the in-transaction revalidation.
+ *  @return 0 migrated or already at 15 (idempotent); -1 failure (full
+ *  rollback of the running stage) — including an UNKNOWN user_version
+ *  (16+): fail closed. */
+int nodus_witness_db_migrate_v2s15(nodus_witness_t *w);
+
+/** Test variant: deterministic abort inside the 14 → 15 transaction. */
+int nodus_witness_db_migrate_v2s15_ex(nodus_witness_t *w,
+                                      nodus_v2s15_mig_fail_t fail_at);
+
 #ifdef __cplusplus
 }
 #endif

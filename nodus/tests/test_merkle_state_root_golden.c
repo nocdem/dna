@@ -105,16 +105,38 @@ static int failed = 0;
  *
  * ⚠ If this ever fails, do NOT regenerate it to make the build green. A moved
  * root means the state_root FORMAT changed, and that turns a rolling deploy
- * into a stop-all + archive + chain-wipe decision. */
+ * into a stop-all + archive + chain-wipe decision.
+ *
+ * ── RE-PINNED BY tokenomics-v3 P1 (2026-09-23, ORCHESTRATOR) ────────
+ * The previous value (bd5ae52f…3a324c0f, generated at 2bb59883) went RED
+ * exactly as predicted: P1 removed the validator leaf's two trailing
+ * fields (`last_signed_block`, `signed_blocks_this_epoch` —
+ * nodus_witness_merkle.c load_validator_leaves). That move is DELIBERATE
+ * and APPROVED: the operator's decision (docs/plans/decisions/
+ * 2026-09-22-nodus-tokenomics-v3-operator.md §2 "Değişenin bedeli")
+ * requires a devnet wipe + stop-all for this package, so there is no
+ * chain on which the old and new roots must agree.
+ *
+ * HONEST LABEL — read this before trusting the value below. Unlike the
+ * old pin, these bytes were produced by `--print-root` on the P1 code
+ * ITSELF (worktree fleet/tv3-p1, the build this commit ships). By this
+ * file's own rule above, a value produced by the code it polices pins
+ * nothing about THAT code's correctness, and that is true here: this pin
+ * proves nothing about whether P1's composition is right. What it DOES
+ * do is freeze P1's format from this commit onward, so that any LATER
+ * change that moves the root without an approved wipe goes RED here —
+ * the job this file has always had. There was no pre-P1 build that
+ * could have produced a P1-format root, so an old-side generation is not
+ * available for a deliberate format change. */
 static const uint8_t GOLDEN_STATE_ROOT[64] = {
-    0xbd, 0x5a, 0xe5, 0x2f, 0xc7, 0x80, 0xb5, 0x57,
-    0x5a, 0xe5, 0x66, 0x27, 0xe3, 0xbe, 0xed, 0x9f,
-    0x04, 0x08, 0xed, 0x58, 0x93, 0xd5, 0x32, 0xfb,
-    0x1d, 0xe3, 0xde, 0x0a, 0x20, 0xb4, 0xfd, 0x12,
-    0x5e, 0x8d, 0x79, 0xa9, 0x37, 0xdb, 0x4c, 0xfb,
-    0xee, 0x18, 0x6b, 0x14, 0x08, 0x42, 0x64, 0x1b,
-    0x9c, 0x17, 0x5f, 0x22, 0x13, 0x8f, 0xe7, 0x39,
-    0xd8, 0xa7, 0x8f, 0x41, 0x3a, 0x32, 0x4c, 0x0f,
+    0xe0, 0xc4, 0x92, 0x61, 0xc8, 0x2f, 0xd8, 0xa3,
+    0xba, 0xa2, 0x0c, 0xb1, 0x91, 0x62, 0xc8, 0xff,
+    0x35, 0x29, 0x6c, 0x04, 0xe3, 0x6b, 0x99, 0xe0,
+    0xf0, 0x1f, 0x34, 0xd6, 0x7e, 0xff, 0x4e, 0x15,
+    0x49, 0x3b, 0xdc, 0xad, 0x5e, 0x27, 0x20, 0xa0,
+    0x57, 0x25, 0x78, 0x4b, 0x20, 0xa1, 0xd3, 0x2b,
+    0x70, 0x53, 0xe4, 0x7c, 0xe9, 0xb9, 0x2f, 0x1f,
+    0xf5, 0x70, 0xb1, 0xbe, 0x7f, 0x1c, 0x2e, 0xde,
 };
 
 static int golden_is_unfilled(void) {
@@ -189,9 +211,7 @@ static int create_schema(nodus_witness_t *w) {
         "  unstake_destination_fp TEXT NOT NULL,"
         "  unstake_destination_pubkey BLOB NOT NULL,"
         "  last_validator_update_block INTEGER NOT NULL DEFAULT 0,"
-        "  consecutive_missed_epochs INTEGER NOT NULL DEFAULT 0,"
-        "  last_signed_block INTEGER NOT NULL DEFAULT 0,"
-        "  signed_blocks_this_epoch INTEGER NOT NULL DEFAULT 0"
+        "  consecutive_missed_epochs INTEGER NOT NULL DEFAULT 0"
         ");"
         "CREATE TABLE delegations ("
         "  delegator_hash BLOB,"
@@ -290,9 +310,8 @@ static int insert_validators(nodus_witness_t *w) {
             " pending_commission_bps, pending_effective_block, status,"
             " active_since_block, unstake_commit_block,"
             " unstake_destination_fp, unstake_destination_pubkey,"
-            " last_validator_update_block, consecutive_missed_epochs,"
-            " last_signed_block, signed_blocks_this_epoch)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " last_validator_update_block, consecutive_missed_epochs)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             -1, &stmt, NULL) != SQLITE_OK) return -1;
 
         sqlite3_bind_blob (stmt,  1, pubkey_hash, 64, SQLITE_STATIC);
@@ -310,8 +329,6 @@ static int insert_validators(nodus_witness_t *w) {
         sqlite3_bind_blob (stmt, 13, upk, DNAC_PUBKEY_SIZE, SQLITE_STATIC);
         sqlite3_bind_int64(stmt, 14, (sqlite3_int64)(20 + i));
         sqlite3_bind_int64(stmt, 15, (sqlite3_int64)i);
-        sqlite3_bind_int64(stmt, 16, (sqlite3_int64)(900 + i));
-        sqlite3_bind_int64(stmt, 17, (sqlite3_int64)(30 + i));
 
         int rc = sqlite3_step(stmt);
         sqlite3_finalize(stmt);

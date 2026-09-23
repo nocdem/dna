@@ -160,6 +160,15 @@ SCENARIOS_ONLY=0
 #     remains of the PUMP batch (ordinarily nothing, since the scenario
 #     above already spent it) to help reach the boundary; SKIPS (99) at
 #     the shipped epoch length.
+#   test_cmt_rule_n_retire.sh (round 2, tokenomics-v3 P1 §A/D-3/D-11) —
+#     SKIPS (99) at the shipped epoch length (needs THREE boundaries'
+#     worth of idle-only wall time, its own header explains why three,
+#     not two). Placed AFTER every leaf-spending and epoch-boundary
+#     scenario and BEFORE arena_runway: it PERMANENTLY AUTO_RETIREs node
+#     7 (its own "WHAT IT LEAVES BEHIND" — not reversible within this
+#     bring-up), so nothing after it may assume 7 ACTIVE validators.
+#     arena_runway only READS accumulated counters, unaffected by which
+#     validators are still ACTIVE.
 #   test_cmt_arena_runway.sh   LAST, unconditionally: it reads the
 #     receive-arena usage every OTHER node has accumulated across the
 #     whole sweep and asserts no latch fired ACROSS ALL OF IT.
@@ -176,6 +185,7 @@ test_cmt_mempool_flood.sh
 test_cmt_claim_flood.sh
 test_cmt_env_flood.sh
 test_v2_epoch_boundary.sh
+test_cmt_rule_n_retire.sh
 test_cmt_arena_runway.sh
 "
 

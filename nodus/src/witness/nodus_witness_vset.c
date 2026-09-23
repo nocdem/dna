@@ -315,16 +315,27 @@ int nodus_witness_vset_root(nodus_witness_t *w,
 
 /* ── Builder ────────────────────────────────────────────────────────── */
 
-int nodus_witness_vset_build_for_epoch(nodus_witness_t *w,
-                                       uint64_t epoch_start,
-                                       int max_active,
-                                       dna_vset_snapshot_t **snapshot_out,
-                                       uint8_t **blob_out,
-                                       size_t *blob_len_out,
-                                       uint8_t hash_out64[DNA_VSET_HASH_LEN]) {
-    if (!w || !w->db) return -1;
+/* The ONE selection core behind both public builders —
+ * nodus_witness_vset_build_for_epoch (every stored snapshot: genesis and
+ * commit_next) and nodus_witness_vset_preview_next (tokenomics-v3 P1
+ * round 6, Rule N's weight floor). Kept as one function so the snapshot
+ * Rule N judges and the snapshot commit_next stores can never be built by
+ * two different pieces of selection logic.
+ *
+ * Unlike the public build_for_epoch, this core tells the two "no
+ * snapshot" outcomes apart (FAULT vs VERDICT — a DB failure is never a
+ * value):
+ *   0  built, *snap_out owns a heap snapshot (dna_vset_free);
+ *   1  the committee is EMPTY — a well-formed answer from committed
+ *      state (no bonded, tenured validator), *snap_out untouched;
+ *  -1  fault (bad args, allocation, the committee compute failed, a
+ *      count above max_active, a witness_id derivation failure),
+ *      *snap_out untouched. */
+static int vset_build_snapshot(nodus_witness_t *w, uint64_t epoch_start,
+                               int max_active,
+                               dna_vset_snapshot_t **snap_out) {
+    if (!w || !w->db || !snap_out) return -1;
     if (max_active < 1 || max_active > DNA_MAX_ACTIVE_VALIDATORS) return -1;
-    if (blob_out && !blob_len_out) return -1;
 
     /* 128 members are ~335 KB — heap, never the stack. */
     nodus_committee_member_t *members =
@@ -341,14 +352,18 @@ int nodus_witness_vset_build_for_epoch(nodus_witness_t *w,
         free(members);
         return -1;
     }
-    if (count <= 0 || count > max_active) {
-        /* A chain with no eligible validators has NO snapshot. An empty
-         * set would encode as active_count 0, which the codec rejects —
-         * and would silently claim "nobody may vote at this epoch". */
-        QGP_LOG_ERROR(LOG_TAG, "epoch %llu: committee is empty (count=%d) — "
-                      "no snapshot", (unsigned long long)epoch_start, count);
+    if (count < 0 || count > max_active) {
+        /* compute_for_epoch caps its output at max_entries; anything
+         * outside [0, max_active] is corruption, not an empty set. */
+        QGP_LOG_ERROR(LOG_TAG, "epoch %llu: committee count %d outside "
+                      "[0, %d]", (unsigned long long)epoch_start, count,
+                      max_active);
         free(members);
         return -1;
+    }
+    if (count == 0) {
+        free(members);
+        return 1;
     }
 
     dna_vset_snapshot_t *snap = dna_vset_alloc((uint16_t)count);
@@ -377,6 +392,36 @@ int nodus_witness_vset_build_for_epoch(nodus_witness_t *w,
         e->commission_bps = members[i].commission_bps;
     }
     free(members);
+
+    *snap_out = snap;
+    return 0;
+}
+
+int nodus_witness_vset_build_for_epoch(nodus_witness_t *w,
+                                       uint64_t epoch_start,
+                                       int max_active,
+                                       dna_vset_snapshot_t **snapshot_out,
+                                       uint8_t **blob_out,
+                                       size_t *blob_len_out,
+                                       uint8_t hash_out64[DNA_VSET_HASH_LEN]) {
+    if (!w || !w->db) return -1;
+    if (max_active < 1 || max_active > DNA_MAX_ACTIVE_VALIDATORS) return -1;
+    if (blob_out && !blob_len_out) return -1;
+
+    dna_vset_snapshot_t *snap = NULL;
+    int brc = vset_build_snapshot(w, epoch_start, max_active, &snap);
+    if (brc == 1) {
+        /* A chain with no eligible validators has NO snapshot. An empty
+         * set would encode as active_count 0, which the codec rejects —
+         * and would silently claim "nobody may vote at this epoch". On
+         * THIS public path an empty committee stays a failure (every
+         * stored snapshot needs at least one member); only
+         * nodus_witness_vset_preview_next reports it as a verdict. */
+        QGP_LOG_ERROR(LOG_TAG, "epoch %llu: committee is empty (count=0) — "
+                      "no snapshot", (unsigned long long)epoch_start);
+        return -1;
+    }
+    if (brc != 0 || !snap) return -1;
 
     /* Encode once; every output is derived from the SAME bytes so the
      * caller can never hold a hash that disagrees with its blob. */
@@ -657,6 +702,29 @@ int nodus_witness_vset_commit_next(nodus_witness_t *w,
      * node reads the same target. */
     uint64_t next_start = boundary_height + (uint64_t)DNAC_EPOCH_LENGTH;
     return vset_build_and_store(w, next_start, boundary_height);
+}
+
+/* ── Next-epoch preview (tokenomics-v3 P1 round 6) ──────────────────── */
+
+int nodus_witness_vset_preview_next(nodus_witness_t *w,
+                                    uint64_t boundary_height,
+                                    dna_vset_snapshot_t **snapshot_out) {
+    if (!w || !w->db || !snapshot_out) return -1;
+    if (boundary_height > UINT64_MAX - (uint64_t)DNAC_EPOCH_LENGTH) {
+        QGP_LOG_ERROR(LOG_TAG, "preview: boundary %llu + epoch length "
+                      "overflows", (unsigned long long)boundary_height);
+        return -1;
+    }
+
+    /* EXACTLY commit_next's key, target lookup and builder core:
+     * next_start as above, vset_target_for_epoch(next_start) as
+     * vset_build_and_store does, and the same vset_build_snapshot that
+     * nodus_witness_vset_build_for_epoch wraps. Nothing is encoded,
+     * hashed or stored. */
+    uint64_t next_start = boundary_height + (uint64_t)DNAC_EPOCH_LENGTH;
+    int target = 0;
+    if (vset_target_for_epoch(w, next_start, &target) != 0) return -1;
+    return vset_build_snapshot(w, next_start, target, snapshot_out);
 }
 
 /* ── Genesis seeding ────────────────────────────────────────────────── */

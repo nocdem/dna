@@ -48,7 +48,7 @@
 #   $BASE_DIR/v2_genesis_pin so a scenario can READ the fleet's identity
 #   rather than form a second opinion by re-deriving it.
 #
-#   THREE IDENTITIES BESIDE THE SEVEN NODES, each with its own genesis
+#   FOUR IDENTITIES BESIDE THE SEVEN NODES, each with its own genesis
 #   leaves, because on a V2 chain who can be funded is decided BEFORE the
 #   chain exists:
 #     - every node          one leaf   (so claiming scenarios never
@@ -60,6 +60,13 @@
 #                                       per transaction and a scenario
 #                                       that needs to reach a height has
 #                                       no other way to get there
+#     - $BASE_DIR/v2probe   one small leaf — tokenomics-v3 P1:
+#                                       test_cmt_empty_blocks.sh's OWN
+#                                       claim, kept separate from the pump
+#                                       leaves so its submission-to-
+#                                       inclusion latency measurement
+#                                       never changes what any pump-leaf-
+#                                       counting scenario sees
 #
 # HOW IT CAN LIE
 #   - **Seven identical chain ids from seven identical configs is not a
@@ -178,6 +185,33 @@ kill "$pg" 2>/dev/null || true; wait "$pg" 2>/dev/null || true
 [ -s "$PUMP_DIR/identity/nodus.pk" ] || { echo "[FAIL] pump identity" >&2; exit 4; }
 echo "[ok] pump identity generated ($PUMP_DIR/identity)"
 
+# A THIRD non-validator identity, tokenomics-v3 P1: `test_cmt_empty_blocks.sh`
+# needs to submit exactly ONE claim, from an identity NO OTHER scenario ever
+# touches, to measure how fast a real transaction reaches inclusion on an
+# otherwise-idle chain (D-5's txsAvailable wiring). Reusing a pump leaf
+# would work for that ONE measurement but would silently subtract a leaf
+# every other pump-leaf-counting scenario (test_cmt_claim_flood.sh,
+# test_v2_epoch_boundary.sh, test_v2_grow_7_20.sh — grep confirms all three
+# read the pump identity/leaf count) assumes is untouched — exactly the
+# cross-scenario coupling the pump/user split above already exists to
+# avoid. Kept separate for the same reason.
+PROBE_DIR="$BASE_DIR/v2probe"
+mkdir -p "$PROBE_DIR/identity" "$PROBE_DIR/data"
+"$STAGEF_NODUS_BIN" -b 127.0.0.1 \
+    -u "$(stagef_udp_port $(( C + 3 )))" -t "$(stagef_tcp_port $(( C + 3 )))" \
+    -p "$(stagef_peer_port $(( C + 3 )))" -C "$(stagef_chan_port $(( C + 3 )))" \
+    -W "$(stagef_witness_port $(( C + 3 )))" \
+    -i "$PROBE_DIR/identity" -d "$PROBE_DIR/data" \
+    > "$PROBE_DIR/identity_gen.log" 2>&1 &
+prg=$!
+for _ in $(seq 1 40); do
+    [ -s "$PROBE_DIR/identity/nodus.pk" ] && [ -s "$PROBE_DIR/identity/nodus.fp" ] && break
+    sleep 0.25
+done
+kill "$prg" 2>/dev/null || true; wait "$prg" 2>/dev/null || true
+[ -s "$PROBE_DIR/identity/nodus.pk" ] || { echo "[FAIL] probe identity" >&2; exit 4; }
+echo "[ok] probe identity generated ($PROBE_DIR/identity)"
+
 # ── 1c. CANDIDATE identities, for the growth scenario ───────────────
 # Off by default. STAGEF_V2_CANDIDATES=<N> generates N more identities,
 # each with a genesis leaf big enough to SELF-BOND, so a scenario can
@@ -202,9 +236,10 @@ if [ "$CANDIDATES" -gt 0 ]; then
     for i in $(seq 1 "$CANDIDATES"); do
         cd_dir="$BASE_DIR/cand$i"
         mkdir -p "$cd_dir/identity" "$cd_dir/data"
-        # Port block past the pump identity's, so an identity-generation
-        # spawn can never collide with a live node.
-        pn=$(( C + 2 + i ))
+        # Port block past the pump AND probe identities' (tokenomics-v3
+        # P1 added the probe identity at C+3), so an identity-generation
+        # spawn can never collide with a live node or either of them.
+        pn=$(( C + 3 + i ))
         "$STAGEF_NODUS_BIN" -b 127.0.0.1 \
             -u "$(stagef_udp_port "$pn")" -t "$(stagef_tcp_port "$pn")" \
             -p "$(stagef_peer_port "$pn")" -C "$(stagef_chan_port "$pn")" \
@@ -299,12 +334,16 @@ ALLOC=10000000000000000              # 100M DNAC per leaf, a round number
 # spare; at the shipped 720 nothing can cross a boundary here anyway.
 PUMP_LEAVES="${STAGEF_V2_PUMP_LEAVES:-40}"
 PUMP_ALLOC=1000000000                # 10 DNAC each, deliberately tiny
+# tokenomics-v3 P1: the probe identity's ONE leaf — small, like a pump
+# leaf (it exists to be claimed once, not to fund anything), but its own
+# allocation so no pump-leaf-counting scenario sees its count change.
+PROBE_ALLOC=1000000000               # 10 DNAC, deliberately tiny
 # A candidate must be able to SELF-BOND, so its leaf carries the exact
 # bond plus a margin for fees. Anything less and the stake is refused for
 # a reason that has nothing to do with what a growth scenario tests.
 CAND_ALLOC=$(( SELF_STAKE + 100000000000 ))
 TOTAL=$(( SELF_STAKE * C + ALLOC * (C + 1) + PUMP_ALLOC * PUMP_LEAVES \
-          + CAND_ALLOC * CANDIDATES ))
+          + PROBE_ALLOC + CAND_ALLOC * CANDIDATES ))
 
 CONF="$BASE_DIR/v2_genesis.conf"
 {
@@ -400,8 +439,19 @@ CONF="$BASE_DIR/v2_genesis.conf"
         echo "dest_binding = $(cat "$PUMP_DIR/identity/nodus.fp")"
         echo "amount       = $PUMP_ALLOC"
     done
+
+    # ── PROBE LEAF (tokenomics-v3 P1) ───────────────────────────────
+    # Exactly ONE leaf, in its own source_id band (3000) so it can never
+    # collide with the node/user (1..C+1), pump (1001..) or candidate
+    # (2001..) bands. test_cmt_empty_blocks.sh claims it to measure
+    # submission-to-inclusion latency on an otherwise idle chain.
+    echo ""
+    echo "[allocation]"
+    printf 'source_id    = %0128d\n' 3000
+    echo "dest_binding = $(cat "$PROBE_DIR/identity/nodus.fp")"
+    echo "amount       = $PROBE_ALLOC"
 } > "$CONF"
-echo "[ok] v2_genesis.conf built ($C validators, $(( C + 1 + PUMP_LEAVES + CANDIDATES )) allocations incl. $PUMP_LEAVES pump + $CANDIDATES candidate leaves, $(stat -c%s "$CONF") bytes)"
+echo "[ok] v2_genesis.conf built ($C validators, $(( C + 1 + PUMP_LEAVES + 1 + CANDIDATES )) allocations incl. $PUMP_LEAVES pump + 1 probe + $CANDIDATES candidate leaves, $(stat -c%s "$CONF") bytes)"
 
 # ── 3. derive on every node, INDEPENDENTLY ──────────────────────────
 CHAIN_ID=""; GENESIS_PIN=""

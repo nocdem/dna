@@ -159,8 +159,12 @@ int main(void) {
     CHECK_EQ(sqlite_master_count(w.db, "table", "rewards"), 0);
     CHECK_EQ(sqlite_master_count(w.db, "table", "validator_stats"), 1);
 
-    /* Column counts match v0.17 schema (validators gained signed_blocks_this_epoch). */
-    CHECK_EQ(table_column_count(w.db, "validators"), 17);
+    /* Column count matches the current schema: tokenomics-v3 P1 (Q2,
+     * clean path) removed `last_signed_block` and
+     * `signed_blocks_this_epoch` from the base DDL — 17 -> 15. Attendance
+     * lives out-of-root in `v2_attendance` (S15 migration only; a fresh
+     * chain DB via this call stays at version 0). */
+    CHECK_EQ(table_column_count(w.db, "validators"), 15);
     CHECK_EQ(table_column_count(w.db, "delegations"), 6);
     CHECK_EQ(table_column_count(w.db, "validator_stats"), 2);
 

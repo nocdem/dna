@@ -33,7 +33,7 @@ static void compute_pubkey_hash(const uint8_t *pubkey, uint8_t out[64]) {
                           DNAC_PUBKEY_SIZE, out);
 }
 
-/* Bind the 16 columns of the INSERT/UPDATE statement starting at
+/* Bind the 13 columns of the INSERT/UPDATE statement starting at
  * parameter index `start` in order:
  *   1  self_stake
  *   2  total_delegated
@@ -48,7 +48,10 @@ static void compute_pubkey_hash(const uint8_t *pubkey, uint8_t out[64]) {
  *   11 unstake_destination_pubkey (BLOB, DNAC_PUBKEY_SIZE)
  *   12 last_validator_update_block
  *   13 consecutive_missed_epochs
- *   14 last_signed_block
+ *
+ * tokenomics-v3 P1 (Q2, clean path): `last_signed_block` and
+ * `signed_blocks_this_epoch` DROPPED — attendance lives out-of-root in
+ * `v2_attendance` (nodus_witness_v2_epoch.c), never in this row.
  */
 static void bind_validator_mutable_fields(sqlite3_stmt *stmt, int start,
                                           const dnac_validator_record_t *v) {
@@ -71,8 +74,6 @@ static void bind_validator_mutable_fields(sqlite3_stmt *stmt, int start,
                        (int64_t)v->last_validator_update_block);
     sqlite3_bind_int64(stmt, start + 12,
                        (int64_t)v->consecutive_missed_epochs);
-    sqlite3_bind_int64(stmt, start + 13, (int64_t)v->last_signed_block);
-    sqlite3_bind_int64(stmt, start + 14, (int64_t)v->signed_blocks_this_epoch);
 }
 
 /* Populate a dnac_validator_record_t from a SELECT row. Column layout
@@ -91,7 +92,6 @@ static void bind_validator_mutable_fields(sqlite3_stmt *stmt, int start,
  *   11 unstake_destination_pubkey (BLOB, DNAC_PUBKEY_SIZE)
  *   12 last_validator_update_block
  *   13 consecutive_missed_epochs
- *   14 last_signed_block
  *
  * Returns 0 on success, -1 on unexpected blob size.
  */
@@ -139,10 +139,6 @@ static int row_to_record(sqlite3_stmt *stmt, dnac_validator_record_t *out) {
         (uint64_t)sqlite3_column_int64(stmt, 12);
     out->consecutive_missed_epochs =
         (uint64_t)sqlite3_column_int64(stmt, 13);
-    out->last_signed_block =
-        (uint64_t)sqlite3_column_int64(stmt, 14);
-    out->signed_blocks_this_epoch =
-        (uint64_t)sqlite3_column_int64(stmt, 15);
 
     return 0;
 }
@@ -164,9 +160,8 @@ int nodus_validator_insert(nodus_witness_t *w,
         "  commission_bps, pending_commission_bps, pending_effective_block,"
         "  status, active_since_block, unstake_commit_block,"
         "  unstake_destination_fp, unstake_destination_pubkey,"
-        "  last_validator_update_block, consecutive_missed_epochs,"
-        "  last_signed_block, signed_blocks_this_epoch"
-        ") VALUES (?, ?,  ?, ?, ?,  ?, ?, ?,  ?, ?, ?,  ?, ?,  ?, ?, ?, ?)",
+        "  last_validator_update_block, consecutive_missed_epochs"
+        ") VALUES (?, ?,  ?, ?, ?,  ?, ?, ?,  ?, ?, ?,  ?, ?,  ?, ?)",
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "%s: insert prepare failed: %s\n",
@@ -209,8 +204,7 @@ int nodus_validator_get(nodus_witness_t *w,
         "       pending_effective_block, status, active_since_block,"
         "       unstake_commit_block, unstake_destination_fp,"
         "       unstake_destination_pubkey, last_validator_update_block,"
-        "       consecutive_missed_epochs, last_signed_block,"
-        "       signed_blocks_this_epoch "
+        "       consecutive_missed_epochs "
         "FROM validators WHERE pubkey_hash = ?",
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
@@ -256,8 +250,7 @@ int nodus_validator_update(nodus_witness_t *w,
         "  pending_effective_block = ?, status = ?,"
         "  active_since_block = ?, unstake_commit_block = ?,"
         "  unstake_destination_fp = ?, unstake_destination_pubkey = ?,"
-        "  last_validator_update_block = ?, consecutive_missed_epochs = ?,"
-        "  last_signed_block = ?, signed_blocks_this_epoch = ? "
+        "  last_validator_update_block = ?, consecutive_missed_epochs = ? "
         "WHERE pubkey_hash = ?",
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
@@ -267,7 +260,7 @@ int nodus_validator_update(nodus_witness_t *w,
     }
 
     bind_validator_mutable_fields(stmt, /*start=*/1, v);
-    sqlite3_bind_blob(stmt, 16, pubkey_hash, 64, SQLITE_STATIC);
+    sqlite3_bind_blob(stmt, 14, pubkey_hash, 64, SQLITE_STATIC);
 
     rc = sqlite3_step(stmt);
     int changes = sqlite3_changes(w->db);
@@ -299,8 +292,7 @@ int nodus_validator_top_n(nodus_witness_t *w,
         "       pending_effective_block, status, active_since_block,"
         "       unstake_commit_block, unstake_destination_fp,"
         "       unstake_destination_pubkey, last_validator_update_block,"
-        "       consecutive_missed_epochs, last_signed_block,"
-        "       signed_blocks_this_epoch "
+        "       consecutive_missed_epochs "
         "FROM validators "
         /* S3: the candidate set is every BONDED validator. ACTIVE and
          * ELIGIBLE are both bonded — ELIGIBLE simply means "not in the
@@ -398,8 +390,7 @@ int nodus_validator_list_paged(nodus_witness_t *w,
           "       pending_effective_block, status, active_since_block,"
           "       unstake_commit_block, unstake_destination_fp,"
           "       unstake_destination_pubkey, last_validator_update_block,"
-          "       consecutive_missed_epochs, last_signed_block,"
-          "       signed_blocks_this_epoch "
+          "       consecutive_missed_epochs "
           "FROM validators "
           "ORDER BY (self_stake + external_delegated) DESC, pubkey ASC "
           "LIMIT ? OFFSET ?"
@@ -408,8 +399,7 @@ int nodus_validator_list_paged(nodus_witness_t *w,
           "       pending_effective_block, status, active_since_block,"
           "       unstake_commit_block, unstake_destination_fp,"
           "       unstake_destination_pubkey, last_validator_update_block,"
-          "       consecutive_missed_epochs, last_signed_block,"
-          "       signed_blocks_this_epoch "
+          "       consecutive_missed_epochs "
           "FROM validators WHERE status = ? "
           "ORDER BY (self_stake + external_delegated) DESC, pubkey ASC "
           "LIMIT ? OFFSET ?";

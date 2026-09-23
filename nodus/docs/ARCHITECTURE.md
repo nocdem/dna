@@ -1777,7 +1777,7 @@ the legacy lane and every ZK path are byte-untouched. Three packages landed toge
 | `shared/dnac/cmt_ps.{h,c}` | `consensus/reactor.go:1017-1482`, `consensus/types/peer_round_state.go` | PeerState and PeerRoundState: what THIS node believes a peer has — its height/round/step, its proposal and part-set header, its vote bit arrays and catch-up commit round — and the `Apply*` methods that update that picture from the peer's own announcements |
 | `shared/dnac/cmt_conr.{h,c}` | `consensus/reactor.go` (57 PORT rows), `consensus/msgs.go:232-234` | the reactor: the four channel descriptors, `Receive` with the nine `ValidateBasic` gates (the gate R2 deliberately left out), the three broadcasts, and the three per-peer gossip routines — data, votes, VoteSetMaj23 — as TICK PASSES instead of goroutines |
 | `nodus/src/witness/nodus_witness_cmt_host.{h,c}` | `state/execution.go`, `state/validation.go` | the BlockExecutor behind `cmt_cs_host_t`: CreateProposalBlock / ProcessProposal / ValidateBlock / ApplyVerifiedBlock / ExtendVote / VerifyVoteExtension / Commit / updateState, plus the application, mempool and evidence-pool interface tables the reference keeps |
-| `nodus/src/witness/nodus_witness_cmt_store.{h,c}` | `store/store.go`, `state/store.go` | the two Comet stores over SQLite with the reference's OWN keys (`H:`/`P:`/`C:`/`SC:`/`EC:`/`BH:`/`blockStore`, `stateKey`/`validatorsKey:`/`consensusParamsKey:`/`abciResponsesKey:`/…) and proto values — schema S14 |
+| `nodus/src/witness/nodus_witness_cmt_store.{h,c}` | `store/store.go`, `state/store.go` | the two Comet stores over SQLite with the reference's OWN keys (`H:`/`P:`/`C:`/`SC:`/`EC:`/`BH:`/`blockStore`, `stateKey`/`validatorsKey:`/`consensusParamsKey:`/`abciResponsesKey:`/…) and proto values — schema S14 (S14's own tables; a chain opened by this build is at S15, the live rung since tokenomics-v3 P1 round 5, which does not touch these tables) |
 | `nodus/src/witness/nodus_witness_cmt_wal.{h,c}` | `consensus/wal.go` (write, search, decode) | the consensus WAL split by CALL CLASS across two connections (D-13, D-15 rev 5): `Write` is one autocommit row on the MAIN connection (`synchronous=NORMAL`, no fsync — the reference's buffered write), `WriteSync` one autocommit row on a SECOND connection at `synchronous=FULL` (the commit IS the fsync), `FlushAndSync` a one-row barrier on that same FULL connection, and the 2 s flush ticker a deadline the host's tick honours. No transaction is ever held, so the two connections never contend |
 | `nodus/src/witness/nodus_witness_cmt_privval.{h,c}` | `privval/file.go:135-147`, `libs/tempfile`, `libs/json` | the last-sign-state file: the reference's JSON document written atomically (temp file, `O_SYNC`, rename) PLUS an fsync of the directory |
 | `shared/dnac/cmt_pb_store.{h,c}` | `store/types.proto`, `state/types.proto`, `types/types.proto`, `params.proto`, `abci/types.proto` | the STORED values as proto3 under K-1: BlockMeta, BlockStoreState, State, ValidatorsInfo, ConsensusParamsInfo, ABCIResponsesInfo, ConsensusParams and the ResponseFinalizeBlock family — plus the block decoder the store needs to read a block back |
@@ -1800,8 +1800,9 @@ reference's own `eventBus != nil` guard.
 
 Tests: `test_cmt_conr` (the ten ValidateBasic tables, the two Receive-before-InitPeer cases,
 and multi-node scenarios over an in-memory switch where every byte crosses through the REAL
-reactor), `test_cmt_host` (48 cases: schema S14, the ported store / state-store / execution /
-validation tests, the WAL write classes against a real SQLite file, the last-sign-state JSON),
+reactor), `test_cmt_host` (48 cases: schema S14 — no longer the live rung, S15 is (tokenomics-v3
+P1 round 5) — the ported store / state-store / execution / validation tests, the WAL write
+classes against a real SQLite file, the last-sign-state JSON),
 `test_cmt_mem` / `test_cmt_memr` / `test_cmt_clist`. Running them found four defects — all in
 the tests, none in the port: a prune fixture whose genesis time was AFTER the state's last
 block time (so the evidence retain height came out 1 instead of 1100), an expectation that a
@@ -1892,7 +1893,7 @@ W3 makes the port the running consensus. Three packages landed after P0 and C2b 
 
 **Tests:** `test_cmt_live` (NEW, 5 cases over a real version-3 chain through the REAL `nodus_witness_init` → `nodus_witness_tick` → `nodus_witness_dispatch_t3`: the genesis-time wait and the peer-admission gate; verb 35 at protocol version 7 accepted through the real dispatcher and refused at 6 and 8 with distinct heights; CheckTx admitting a real signed claim and refusing the same claim under another key; a restart reopening the same role; the mesh dialing a roster witness on a version-3 chain), `test_cmt_app` 21 cases (+ the empty block, the byte-bound seam with a policy-verified ceiling, the count guards at `env_bound + 1`), `test_cmt_host` 50 (+ the half-present S14 catalogue refusal; + `store_get_then_full_write_then_main_write`, below), `test_cmt_node` 14 (+ nilWAL before start), `test_witness_protocol_version_gate` §1-§4 now prove the closed lane stays closed at every version, `test_v2_preflight` (the five document cases with a whole-DB digest; + the two height-aware cases of the second harness run, below), `test_v2_bundle` (v3 round trip with the document, wrong pin / tampered table / foreign bundle / old magic refused), `test_v2_pools` `t_s14_flip` (the silent skip proven RED), `test_tier3` verb 24/25 (32-byte `p`, 31/33 refused, chunk ceiling), `test_v2_gate_pure` / `test_v2_gen` / `test_v2_gen_config` converted to version-3 fixtures where they touch the flip.
 
-**Found by RUNNING the Genesis Protocol harness at production constants (2026-09-17), fixed in-wave — every node stopped after height 1.** Seven nodes, the mesh up in seconds, height 1 committed on all seven; then on every node every Write-class consensus-WAL row on the MAIN connection failed `database is locked` (≈ 50 lines), then the store's own `BEGIN IMMEDIATE` failed the same way, `failed to save block at height 2`, `CMT_FAULT in cmt_cs_step — consensus participation stops`. Root cause (register R3-W3-C2a-17; reproduced with an independent two-connection experiment against the linked SQLite 3.40.1): `nodus_cmt_store_get` left its SELECT statement STEPPED — the row pointer "valid until the next call" meant the statement stayed un-reset that long — which pins an open read transaction (a WAL snapshot) on the main connection; the moment the consensus WAL's separate `synchronous=FULL` connection commits anything (an own-vote `WriteSync`, `EndHeight`, the flush barrier) that snapshot is stale, and SQLite's `SQLITE_BUSY_SNAPSHOT` rule — a read transaction can never be promoted to a write once another connection has written since the snapshot was taken, and the busy handler is not invoked for it — fails every later write on that connection until the statement is reset. Height 1 survived because the first live store READ is the reactor's catch-up gossip for a peer one height behind (LoadBlockMeta / LoadBlockPart / LoadBlockCommit), which only exists after the first commit. The reference's store is goleveldb and has no such reader/writer interaction, so this is host hardening, not a port change: `get` now copies the row into a store-owned per-table buffer and resets the statement before returning; the observable contract ("valid until the next `get` on the same table") is unchanged. `test_cmt_host` gained `store_get_then_full_write_then_main_write`, proven RED on the old store with the harness's own log line and GREEN after; the W1 test `wal_main_connection_interaction` never caught it because its control was an explicit transaction, not a materialised read. Re-run by hand on the fixed binary: seven nodes at one block per ≈ 6 s with zero error lines, byte-identical at every floor, and the restart scenario (`kill -9` + respawn of one node at height 29: ABCI replay `app 29, store 29, state 29`, rejoined, fleet at 34 thirty seconds later) green. Two consequences the run made visible, both recorded, neither a defect of the port: the global root changes on EVERY block (Rule N attendance writes the proposer's `last_signed_block` into the validators leaf), so cometbft's `needProofBlock` is true at every height and empty blocks arrive at the `timeout_commit` pace (≈ 5-6 s), never waiting the 60 s `create_empty_blocks_interval` — an idle chain grows by ≈ 14 000 blocks a day; and the harness's scenarios compared "at the floor" before any block existed (the Comet lane has no height-0 row), which is why the first sweep reported seven failures in seven seconds — package C2d's bring-up now has to prove the chain PRODUCES before a scenario may compare.
+**Found by RUNNING the Genesis Protocol harness at production constants (2026-09-17), fixed in-wave — every node stopped after height 1.** Seven nodes, the mesh up in seconds, height 1 committed on all seven; then on every node every Write-class consensus-WAL row on the MAIN connection failed `database is locked` (≈ 50 lines), then the store's own `BEGIN IMMEDIATE` failed the same way, `failed to save block at height 2`, `CMT_FAULT in cmt_cs_step — consensus participation stops`. Root cause (register R3-W3-C2a-17; reproduced with an independent two-connection experiment against the linked SQLite 3.40.1): `nodus_cmt_store_get` left its SELECT statement STEPPED — the row pointer "valid until the next call" meant the statement stayed un-reset that long — which pins an open read transaction (a WAL snapshot) on the main connection; the moment the consensus WAL's separate `synchronous=FULL` connection commits anything (an own-vote `WriteSync`, `EndHeight`, the flush barrier) that snapshot is stale, and SQLite's `SQLITE_BUSY_SNAPSHOT` rule — a read transaction can never be promoted to a write once another connection has written since the snapshot was taken, and the busy handler is not invoked for it — fails every later write on that connection until the statement is reset. Height 1 survived because the first live store READ is the reactor's catch-up gossip for a peer one height behind (LoadBlockMeta / LoadBlockPart / LoadBlockCommit), which only exists after the first commit. The reference's store is goleveldb and has no such reader/writer interaction, so this is host hardening, not a port change: `get` now copies the row into a store-owned per-table buffer and resets the statement before returning; the observable contract ("valid until the next `get` on the same table") is unchanged. `test_cmt_host` gained `store_get_then_full_write_then_main_write`, proven RED on the old store with the harness's own log line and GREEN after; the W1 test `wal_main_connection_interaction` never caught it because its control was an explicit transaction, not a materialised read. Re-run by hand on the fixed binary: seven nodes at one block per ≈ 6 s with zero error lines, byte-identical at every floor, and the restart scenario (`kill -9` + respawn of one node at height 29: ABCI replay `app 29, store 29, state 29`, rejoined, fleet at 34 thirty seconds later) green. Two consequences the run made visible, both recorded at the time, neither a defect of the port: **(historical — see tokenomics-v3 P1 below, which changed this)** the global root changed on EVERY block (Rule N attendance wrote the proposer's per-block credit — at the time, a validators-leaf field — on every committed block), so cometbft's `needProofBlock` was true at every height and empty blocks arrived at the `timeout_commit` pace (≈ 5-6 s), never waiting the 60 s `create_empty_blocks_interval` — an idle chain grew by ≈ 14 000 blocks a day; tokenomics-v3 P1 (D-4) relocated that credit out of every root, so this specific consequence no longer holds on this build (see the "package P1" section and `MEMPOOL_BLOCK_TIME.md`). The OTHER consequence still stands: the harness's scenarios compared "at the floor" before any block existed (the Comet lane has no height-0 row), which is why the first sweep reported seven failures in seven seconds — package C2d's bring-up now has to prove the chain PRODUCES before a scenario may compare.
 
 **Two more, from the SECOND sweep (same day), both fixed in-wave.** (1) A wiped node restarted with only its genesis pin was never served the genesis bundle: `nodus_witness_v2_preflight`'s check 5 compared the stored document's `app_hash` with the CURRENT committed global root, which on this ledger changes at every block (Rule N attendance), so from height 1 on every healthy node reported `GENESIS_APP_HASH_MISMATCH`, the gate answered NOT_READY, and `nodus_witness_v2_sync_handle_gbundle_q` — which asks `nodus_witness_v2_activation_permitted` on every request — refused silently (27 `V2 ingress is ARMED while the activation gate is not OPEN` lines fleet-wide, one per request). Check 5 is now height-aware: with no committed block it compares as before; from the first block on it compares against BLOCK 1's header `AppHash` from the Comet blockstore, which is the genesis app hash by the reference's own rule (`state/state.go` `MakeGenesisState` sets `state.AppHash` from the document, `state/validation.go` `validateBlock` requires every block's `AppHash` to equal it). `test_v2_preflight` gained a fixture that commits one real empty block through the apply lane AND the blockstore and asserts READY (RED on the old check, exactly at issue 17) and that a block 1 carrying a wrong app hash still raises 17 (register R3-W3-C2c-14). Recorded, not changed: the reference has no run-time "may activation proceed?" question — a version-3 node's role is decided once by the post-open gate — yet `v2sync_ready` re-runs the whole preflight on every bundle request and sync tick. (2) The mempool never gossiped a client-submitted transaction: a claim submitted to node 1 was included only when node 1 itself proposed again, 6-7 heights later, and no other node ever received it. A debugger on the live node showed every peer slot's mempool id as 0 (`SENDER-CHECK slot=N peer_id=0 is_sender=1`): `net_scan_peers` called `cmt_conr_init_peer` + `cmt_conr_add_peer` for the consensus reactor but only `cmt_memr_add_peer` for the mempool reactor — never `cmt_memr_init_peer`, the port of `InitPeer` → `ids.ReserveForPeer` that the reference switch runs for EVERY reactor before any `AddPeer` (`p2p/switch.go:829-831`, `:858-860`; `mempool/ids.go` starts `nextID` at 1 so that 0 stays the RPC/unknown sender). With every peer at id 0 and the client lane stamping its transaction "from 0", `isSender` was true for every peer and nothing was ever sent. One call added in the reference's order; `test_cmt_net` gained a case that asserts reserved, distinct ids, one send per up slot for a sender-0 transaction, and receive-side stamping with the receiver's own id (RED on the old glue at "peer id not reserved (0)"; register R3-W3-C2b-15). The W1/C2b tests had never asked whether a locally admitted transaction LEAVES the node.
 
@@ -1981,6 +1982,239 @@ One Sonnet writer (one round) + one Opus verifier (11 CONFIRMED / 4 REFUTED / 1 
 - **Honest labels.** The host test's independent recomputation uses the same `cmt_new_results`/`cmt_abci_results_hash` the host uses — it pins the aliasing, not the hash construction (the mixed-vs-all-zero assertion is the discriminating one). `nodus_witness_v2_runtime_for` still conflates unknown/inactive registry state with a read fault; mapping it to FAULT is correct today only because no live operation changes a domain's status after genesis (grep: no production caller of `nodus_witness_domreg_op_*`) — the domain-lifecycle season must split it. The "D-23 rev 5 (5)" ledger-bracket citation that older code carries is not resolvable in the exported decision records; the new comment cites the code site instead.
 - **Gates (worktree `fleet/tv3-p0` @ `c86cad72`):** build 0 warnings; `ctest` 189/189; ASan+UBSan (`-fno-sanitize-recover=all`, `detect_leaks=1`) clean on `test_cmt_host` (51/51), `test_cmt_app` (24/24, 482 checks), `test_v2_claims` (106), `test_v2_apply` (123). Genesis Protocol sweep: at landing, on the wiped chain.
 
+### Tokenomics-v3 binding season — package P1: real signature attendance, Rule N rewritten, attendance leg out-of-root, txsAvailable wired (2026-09-23)
+
+One Sonnet writer (worktree `fleet/tv3-p1`). Design:
+`docs/plans/2026-09-23-tokenomics-v3-consensus-binding-design.md` §4 row
+P1 (local); decision `docs/plans/decisions/2026-09-22-nodus-tokenomics-v3-operator.md`
+§1 ("gerçek imza katılımı", "iki ardışık epoch"), §3 (2026-09-23:
+AUTO_RETIRED's bond is RETURNED; S-1/S-2 mechanism). Operator O4
+(2026-09-23): Q1 — only `BlockIDFlagCommit` counts as a signature (NIL
+and ABSENT do not); Q2 — the CLEAN path: the two per-block counters
+(`last_signed_block`, `signed_blocks_this_epoch`) LEAVE the validators
+table, the validator merkle leaf and the canonical VAL record;
+attendance lives in `v2_attendance` (out of every root) and its
+per-epoch digest enters `system_state_root` through a NEW leg.
+
+- **D-2/Q1 — the attendance writer moved from "who proposed" to "who
+  signed".** `nodus_witness_v2_attendance_credit`
+  (`nodus_witness_v2_epoch.c`) REPLACES the O15C proposer-credit writer
+  (deleted). It is called from the apply engine's phase 6d-bis
+  (`nodus_witness_v2_apply.c`) with two parallel arrays,
+  `nodus_v2_block_cmt_t.votes_address` / `.votes_block_id_flag`
+  (`nodus_witness_v2_apply.h`), copied VERBATIM by
+  `nodus_cmt_app_finalize_block` (`nodus_witness_cmt_app.c`) from
+  cometbft's `decided_last_commit` — a per-request LOCAL array, freed
+  before the function returns (unlike `ctx->fb_pb`, nothing here needs to
+  survive past this call). Only `CMT_PB_BLOCK_ID_FLAG_COMMIT` credits;
+  NIL and ABSENT do not (Q1). A block at height H carries the commit FOR
+  H-1, so a credit sets `last_signed_height = H - 1`.
+- **D-4/S-2 — `v2_attendance` is OUT OF EVERY ROOT.** New S15 table
+  `v2_attendance(voter_id BLOB PK, signed_count INTEGER,
+  last_signed_height INTEGER)`, `voter_id` = SHA3-512(pubkey)[0..31] =
+  the cometbft address (`vset_wire.h:121`). Phase 6d-bis declares NO
+  domain touched. At the epoch boundary, step 3b hashes EVERY row
+  (voter_id ASC, no status join) into ONE digest
+  (`dna_v2_attendance_digest`, tag `"DNA.ATTEP.v1"`,
+  `shared/dnac/ledger_roots_v2.c`), inserted into
+  `v2_attendance_epoch(epoch_start PK, digest)`; step 3c then resets
+  `signed_count` to 0 (keeping `last_signed_height`). This digest table
+  is the ONLY thing that ever enters a root: `attendance_root`
+  (`nodus_witness_attendance_root`, `nodus_witness_roots_v2.c`) is a
+  Merkle tree over `v2_attendance_epoch` rows (leaf tag
+  `"DNA.ATLEAF.v1"`, inner `"DNA.ATNODE.v1"`, empty
+  `"DNA.E.ATTND.v1"`) and is the 8th leg of `system_state_root`, whose
+  composition tag changed `"DNA.SYS.v1"` → `"DNA.SYS.v2"` (a changed
+  preimage is never hashed under the old tag). Consequence: an EMPTY
+  block moves NOTHING in `system_state_root` any more — see the
+  Consensus flow pace note below and `MEMPOOL_BLOCK_TIME.md`.
+- **D-3 — Rule N rewritten, no base-leader blame, no tenure gate, duty-set
+  evaluation, a reinstated floor (round 5), measured in voting power
+  (round 6).** `v2ep_rule_n`
+  (`nodus_witness_v2_epoch.c`) evaluates a bonded row (ACTIVE or
+  ELIGIBLE) against ONE shared predicate, `nodus_witness_v2_attendance_
+  meets_bar` (round 3, operator 2026-09-23) — P1 (bar)
+  `signed_count * 10000 >= DNAC_EPOCH_LENGTH * DNAC_LIVENESS_THRESHOLD_BPS`
+  AND P2 (recency)
+  `last_signed_height >= H - DNAC_SETTLEMENT_ATTENDANCE_WINDOW_BLOCKS`
+  (120 blocks, `dnac.h:275`) — ONLY if the row is `status = ACTIVE` AND
+  an entry of the committed snapshot that governed the epoch just
+  ending, `nodus_witness_v2_epoch_authority_for_epoch(w, H-E)` (round 5,
+  decision file §3 2026-09-23; O6 verifier V-1). Every bonded row NOT
+  evaluated this boundary — ACTIVE without a duty (a mid-epoch STAKE) or
+  ELIGIBLE — has its counter RESET to 0: an epoch without a duty breaks
+  the chain of consecutive misses. RETIRING rows are never scanned.
+  `DNAC_LIVENESS_THRESHOLD_BPS` moved 8000 → 5000 (80% → 50%) the SAME
+  day (round 3), on a premise that was itself corrected round 5: a
+  cometbft block commits on MORE than two-thirds of the committee's
+  signatures, so average attendance across a healthy epoch is AT LEAST
+  ~67-73% — a FLOOR, not a ceiling (the earlier text here had the
+  direction backwards; see `dnac.h`'s `DNAC_LIVENESS_THRESHOLD_BPS`
+  comment for the correction). The number that actually bounds the
+  constant is the WORST case — every block committing on exactly a
+  quorum, excluded members rotating — where every member sits near
+  q/n ≈ 70%; 80% sat ABOVE that worst case, so a merely-jittery healthy
+  cluster could push its whole active set below the bar in one epoch,
+  and two such epochs empty the validator list irreversibly (measured:
+  `test_v2_econ.c` `t_settlement_offline` hit exactly this at 8000 —
+  "Rule N: auto-retired 3 validator(s)" then "committee is empty
+  (count=0)"). 50% sits below that worst case at every committee size,
+  so the bar ALONE cannot fail the whole set — but the bar and the
+  120-block recency window can fail DIFFERENT members in the same
+  boundary (round-5 red-team L3-2: 5 of 7 in one worked example), which
+  is why a floor was reinstated. **Round 6 (decision file §3 2026-09-23,
+  "Rule N TABANI WEIGHT ÜZERİNDEN", replacing round 5's count floor
+  `DNAC_RULE_N_MIN_BONDED` = 4, now deleted) measures it in VOTING
+  POWER of the next epoch's SEATABLE set:** inside a SAVEPOINT
+  (`v2ep_rn_savepoint`, name `v2ep_rule_n_retire`), every ACTIVE row
+  past `DNAC_AUTO_RETIRE_EPOCHS` is provisionally AUTO_RETIRED, then
+  `nodus_witness_vset_preview_next(w, H, …)` (`nodus_witness_vset.c`)
+  builds — without storing — the snapshot this same boundary's
+  `commit_next` will store for H+E (same key, same
+  `vset_target_for_epoch`, one shared static core `vset_build_snapshot`
+  with `nodus_witness_vset_build_for_epoch`); it returns 0 built / 1
+  EMPTY (a verdict) / -1 fault. Power per entry =
+  `total_stake / DNAC_DECIMAL_UNIT` (the §A unit,
+  `nodus_witness_cmt_app.c:1569`), P = checked sum, max = largest; the
+  retirement stands iff `P > 0 && (P − max) > P * 2 / 3` — cometbft's
+  integer commit form (`shared/dnac/cmt_validation.c:298`): the next set
+  must still commit with its largest member gone. Refused (or EMPTY) →
+  ROLLBACK TO + RELEASE: NOBODY is retired that boundary (counters keep
+  their incremented values, active_count unchanged, one WARN naming the
+  boundary, the would-be count, P and max; same all-or-nothing precedent
+  as `nodus_witness_domreg_exclusions_at`). Allowed → RELEASE, then the
+  unchanged active_count CAS. A preview fault fails the boundary (-2),
+  never a verdict. Why weight: the count floor counted bonded rows the
+  tenure gate will not seat (`nodus_witness_validator.c:311`; O6
+  verifier: 7 members + 1 fresh staker, 4 retired → count 4, next set 3
+  seats), and a 4-member set where one member holds 40% stalls on that
+  member alone. The inequality forces max < P/3, so it implies ≥ 4
+  seatable members. The preview IS the stored snapshot because the
+  steps between Rule N and `commit_next` (attendance digest, attendance
+  reset, flips) write none of `nodus_committee_compute_for_epoch`'s
+  inputs — per-input argument in the comment above the floor in
+  `v2ep_rule_n`. `test_v2_epoch.c` §12g checks stored hash == preview
+  hash over the SAME post-boundary state — it proves the builder is
+  shared, not the per-input argument; a step later inserted between
+  Rule N and `commit_next` must re-walk that list. **Open with the operator, not this rule's job:** no cap
+  on how MANY one boundary may retire in a large set (100 equal → 96
+  retired → 4 equal left → allowed); and if one member already holds
+  ≥ 1/3 of the next set's power, no retirement is ever allowed (stake
+  concentration, the pre-testnet power-cap decision).
+  `consecutive_missed_epochs` is SET (not conditionally incremented via
+  two separate UPDATEs) to `miss ? +1 : 0` for evaluated rows, `0` for
+  every other bonded row. Two consecutive misses
+  (`DNAC_AUTO_RETIRE_EPOCHS`, 3 → 2, `dnac.h:255`), weight floor
+  permitting → AUTO_RETIRED, `active_count -= retire_count`.
+- **D-11 — AUTO_RETIRED graduates the SAME way RETIRING does, deferred
+  until it actually leaves the effective set (round 5).**
+  `v2ep_graduate`'s candidate query is `status IN (RETIRING,
+  AUTO_RETIRED)` — an AUTO_RETIRED member's bond is RETURNED via the
+  same release-UTXO path, never cut (decision §3). Round 5 (decision
+  file §3 2026-09-23, "ayrılan validatorun MEZUNİYETİ … ertelenir"; O6
+  red-team L1-1) added a height condition: a candidate graduates at
+  boundary H only if its pubkey is NOT an entry of the snapshot TAKING
+  EFFECT at H (`nodus_witness_v2_epoch_authority_for_epoch(w, H)`);
+  otherwise it is left untouched for a later boundary. Before round 5 a
+  member frozen into that snapshot at H-E (seated before it ever
+  unstaked) still graduated at the very next boundary even though
+  cometbft keeps voting with it until H+2 — a coordinated exit of >=1/3
+  of the committee in one epoch could halt the chain with no boundary
+  able to recover, because the boundary that would exclude them never
+  arrives without their vote. Practical consequence: an exiting
+  validator remains seated, and must keep signing, for one full extra
+  epoch past its own UNSTAKE; its unlock height starts counting from the
+  boundary it actually graduates at. Since Rule N already decremented
+  `active_count` when it flipped a row to AUTO_RETIRED, the graduation
+  step decrements it ONLY for a RETIRING-origin candidate, never a
+  second time for an AUTO_RETIRED one.
+- **Settlement's genesis carve-out REMOVED (round 5, O6 verifier V-2).**
+  `nodus_witness_v2_settlement_apply` (`nodus_witness_v2_econ.c`) no
+  longer treats `settling_epoch_start == 0` as automatically "present":
+  that exception was written for the retired PROPOSER-credit counter,
+  genuinely zero at genesis for every honest validator; it does not
+  survive signature-based attendance, which credits from block 2 and so
+  has E-1 creditable commits in epoch 0 — a genesis validator with ZERO
+  real attendance was being paid while Rule N judged the same validator
+  absent, violating "tek kural, iki tüketici". Epoch 0 now goes through
+  the shared predicate like every other epoch.
+- **§C — the two counters left the ledger (Q2, clean path).**
+  `last_signed_block` / `signed_blocks_this_epoch` are REMOVED from
+  `dnac_validator_record_t` (`dnac/include/dnac/validator.h`), the base
+  `validators` DDL (`nodus_witness.c`), every SQL site in
+  `nodus_witness_validator.c`, the canonical VAL record (`5397` → `5381`
+  bytes, `nodus_witness_rt_native.c`), and the validator merkle leaf
+  (`nodus_witness_merkle.c`, same `0x02` tag, shorter preimage — "v2 of
+  the leaf", not a new tag). The settlement liveness bar
+  (`nodus_witness_v2_econ.c`) reads `v2_attendance` through the same
+  SHARED PREDICATE Rule N calls (round 3:
+  `nodus_witness_v2_attendance_meets_bar`, replacing its own
+  `× committee_count` formula — see D-3 above). Schema S15
+  (`nodus_witness_v2_schema.c`) creates the two attendance tables and
+  DROPs the two retired columns from `validators` WHEN PRESENT — a
+  database created by THIS build's DDL never has them; one created by an
+  older binary still does, until this rung runs.
+- **D-5 — `TxsAvailable` wired to a real callback.**
+  `cmt_mem_enable_txs_available` (`nodus_witness_cmt_node.c`) now binds
+  `node_txs_available_cb`, which calls `cmt_cs_notify_txs_available`
+  (`shared/dnac/cmt_cs.c:895-899` — sets one bool, no re-entry). No
+  consensus value moves; only WHEN a round starts proposing instead of
+  waiting out the rest of the idle interval.
+- **§A — D-1/G1, validator set updates to cometbft (round 2).** Before
+  this package `FinalizeBlock`'s `resp->validator_updates` was always
+  NULL/0, so a Comet chain's validator set NEVER moved. Now, at a
+  boundary height H (`H > 0`, `H % DNAC_EPOCH_LENGTH == 0`),
+  `nodus_cmt_app_finalize_block` (`nodus_witness_cmt_app.c`, "§A" block
+  after `app_hash`) diffs `authority_for_epoch(H)` (the snapshot taking
+  effect at H, frozen at H-E) against `authority_for_epoch(H-E)` (what
+  cometbft holds now, by induction from InitChain's snapshot(0)):
+  additions and power changes in snapshot-H order, then removals with
+  power 0; power = `total_stake / DNAC_DECIMAL_UNIT`. Either snapshot
+  absent or unreadable is `CMT_FAULT`, never an empty list. The array is
+  owned by the app context (`ctx->val_updates` / `val_updates_cap`,
+  `nodus_witness_cmt_app.h`) — it must outlive the call (the ABCI
+  ownership rule `ctx->fb_pb` follows) and is freed at the top of the
+  next call and at release. One INFO line per boundary:
+  `validator_updates n_added=… n_power_changed=… n_removed=…`. cometbft
+  applies the list with its own two-height lag (effective from H+2),
+  which is why the TCP 4004 admission gate also accepts the
+  `peer_tip - 1` committee (round 5, `nodus_witness_peer.c`). Timing
+  chain for a retirement: Rule N flips a member AUTO_RETIRED at boundary
+  H; it is still in snapshot(H) (frozen at H-E), so §A removes it at
+  H+E and graduation (D-11 above) releases its bond at the same H+E.
+  Live proof: Genesis Protocol scenario `test_cmt_rule_n_retire.sh`
+  (short-epoch build; see the stagef README). The set-GROW scenario
+  from the design doc §3 test plan is not written.
+- **Tests:** `test_v2_epoch.c` `test_rule_n_liveness` (P1 exact
+  threshold pass/miss, a pass resets to 0, two consecutive misses
+  AUTO_RETIREs with `active_count` dropping exactly once); `test_v2_epoch.c`
+  `test_boundary_chain` extended for D-11 (an AUTO_RETIRED snapshot
+  member graduates at the SAME boundary as a RETIRING one, TWO
+  graduation UTXOs, `active_count` unaffected by the AUTO_RETIRED one);
+  `test_cmt_app.c` `t_d4_empty_blocks_root_stable` (two empty blocks,
+  the second carrying a full-committee COMMIT vote, commit the SAME
+  `global_root`) and `t_attendance_mixed_flags` (COMMIT credits, NIL and
+  ABSENT do not, from one decided_last_commit mixing all three flags on
+  REAL signed votes); `test_roots_v2.c` (attendance digest/leaf/root
+  KATs + the 8-leg `system_root` vector, self-consistent oracle
+  `shared/dnac/tests/ledger_roots_v2_attendance_oracle.py`); the S15
+  migration matrix (`test_cmt_host.c`, beside the S14 one);
+  `test_cmt_node.c` `t_txs_available_fires` (the D-5 callback);
+  `test_cmt_app.c` `t_val_updates_*` (§A diff at a boundary, NULL off a
+  boundary, fault on an absent snapshot); round 5's `test_v2_epoch.c`
+  §12a-§12d (no miss without a duty, a no-duty epoch resets the counter,
+  the floor and its control, graduation deferral), `test_v2_econ.c`
+  `t_settlement_epoch0_zero_attendance_not_paid`, and
+  `test_witness_peer_dedup.c` `test_ident_committee_gate`.
+- **Gates (worktree `fleet/tv3-p1`):** build 0 warnings across every
+  touched `nodus`/`nodus-server`/`nodus-cli` target and every listed
+  `test_*` target — compiled, never run (BUILDER discipline); `ctest`
+  and the Genesis Protocol harness are the ORCHESTRATOR's, not run here.
+  **Consensus-value change: the validator merkle leaf, the canonical VAL
+  record length, and `system_state_root`'s composition (7 legs/`v1` tag
+  → 8 legs/`v2` tag) all change → devnet wipe + stop-all at landing (no
+  live chain today), same class as P0.**
+
 ### Consensus flow (cometbft @709fd12b, the only lane)
 
 ```
@@ -1988,7 +2222,9 @@ Client → any witness → CheckTx (mempool admission) → answered AT ONCE
                               │
                               └─ mempool reactor floods the tx to every peer (verb 39)
 
-every ≈ 6 s, the round's PROPOSER (weighted round-robin over the frozen epoch validator set):
+every ≈ 4-5 s with demand, or ≈ 60 s idle (tokenomics-v3 P1, D-4 — attendance
+is out-of-root, so an empty block no longer forces the ≈ 6 s "proof block"
+pace; see MEMPOOL_BLOCK_TIME.md), the round's PROPOSER (weighted round-robin over the frozen epoch validator set):
   PrepareProposal (fee-descending, chain_config alone, byte budget,
                    per-class caps: envelopes <= 3 209 (memory ceiling),
                    claims <= 14 162 (cometbft byte ceiling), mixed <= 17 371)

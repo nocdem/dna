@@ -253,6 +253,136 @@ per-validator readiness signals make the legacy chain terminal at the
 activation height, and legacy balances move to the successor chain via
 deterministic claims.
 
+### Validator liveness (Rule N) — tokenomics-v3 P1
+
+Real signature attendance, not proposer credit: every validator's
+attendance is counted from cometbft's own `decided_last_commit` — only a
+`BlockIDFlagCommit` vote counts (NIL and ABSENT do not). At every epoch
+boundary, a bonded validator is checked against two conditions, BOTH
+required, through ONE shared predicate
+(`nodus_witness_v2_attendance_meets_bar`):
+
+- **50% bar** — signed at least 50% of the epoch's blocks
+  (`DNAC_LIVENESS_THRESHOLD_BPS`, 5000 bps; lowered from 80%/8000 on
+  2026-09-23 — see below);
+- **recency** — signed at least one block within the last 120 blocks
+  (`DNAC_SETTLEMENT_ATTENDANCE_WINDOW_BLOCKS`).
+
+**Only if it had a DUTY.** A validator is checked ONLY if it is
+`ACTIVE` AND an entry of the committee snapshot that governed the epoch
+just ending (the set flipped ACTIVE two epochs before this boundary,
+which cometbft has used since one epoch before it) — round 5 (2026-09-23
+decision record, verifier finding V-1). Every other bonded validator
+(RETIRING is never scanned; ACTIVE without a duty — e.g. staked
+mid-epoch — or ELIGIBLE) has its miss counter RESET to 0 instead: an
+epoch without a duty breaks the chain of consecutive misses, so a
+brand-new validator is never charged a miss it had no way to avoid, and
+a stale counter from an unrelated earlier epoch can never combine with a
+later, unrelated miss to trigger a retirement.
+
+A validator that fails either condition in **two consecutive DUTY
+epochs** (`DNAC_AUTO_RETIRE_EPOCHS = 2`) is AUTO_RETIRED — removed from
+the active set at the epoch after next, its bond RETURNED in full (no
+cut to principal — only slashing, a separate mechanism not yet
+implemented, would ever cut a bond) — **unless the validators that
+would be seated in the NEXT epoch could no longer commit a block
+without their single largest member**, in which case the boundary
+retires NOBODY that round: counters keep their incremented values so the
+retirement fires at the first boundary where the survivors can carry it,
+and the active set does not shrink. The check runs on voting power, the
+same unit cometbft is told (`total_stake / 10^8` per validator): take
+the set the boundary is about to freeze for the next epoch with the
+retirements applied — only validators that set can actually seat, so a
+fresh staker still inside its two-epoch tenure does not count — add up
+its power `P`, find its largest member `max`, and allow the retirement
+only if `(P − max) > P × 2 / 3` (cometbft's own integer commit
+threshold). An empty next set is never allowed. Equal stakes need at
+least 4 survivors (3 of 4 clears two-thirds, 2 of 3 does not); a 4-member
+set where one member holds 40% fails. A floor was reinstated 2026-09-23
+(reversing an earlier "no floor needed" call) once red-team review
+showed the bar and the 120-block window can fail DIFFERENT validators in
+the same boundary — a majority of a small committee can miss one or the
+other even though the average attendance argument alone (below) says the
+bar can't fail everyone by itself — and it was moved from a head count
+("at least 4 bonded") to this voting-power rule the same day, because
+the head count also counted stakers that could not yet be seated and
+ignored how stake is spread. Two questions stay open with the operator:
+the rule does not cap how MANY validators one boundary may retire in a
+large set (100 equal validators, 96 retired, 4 equal left — allowed),
+and if a single validator already holds a third or more of the next
+set's power it allows no retirement at all.
+Delegators' principal is never touched by Rule N regardless of their
+validator's outcome.
+
+**A retiring validator stays seated for one extra epoch.** RETIRING and
+AUTO_RETIRED validators graduate (bond release, row → UNSTAKED) only
+once their pubkey is no longer an entry of the committee snapshot taking
+effect at the graduating boundary — round 5, 2026-09-23. Before this, a
+validator that unstakes was still counted by cometbft as a voter for one
+more epoch than the ledger tracked, and graduating it immediately let it
+(and its operator) drop off the network while still owed a vote by
+cometbft — a coordinated exit of a third or more of the committee in one
+epoch could halt block production with no later boundary able to fix it.
+An exiting validator must therefore keep its node running and signing
+for one full extra epoch past requesting UNSTAKE; its bond's unlock
+height (and cooldown) starts counting from the epoch it actually
+graduates at, not the one in which UNSTAKE was sent.
+
+**The SAME predicate, at the SAME rate, decides epoch rewards — including
+epoch 0.** The settlement liveness bar (`nodus_witness_v2_econ.c`) calls
+`nodus_witness_v2_attendance_meets_bar` too, instead of a formula of its
+own — a validator's payout eligibility and its ACTIVE-set membership are
+now one question, not two (operator decision, 2026-09-22 record §1 line
+79's parenthetical "tek kural, iki tüketici" — one rule, two consumers).
+Before this, the settlement bar carried an extra `× committee_count`
+factor left over from the retired PROPOSER-credit era, which made its
+EFFECTIVE rate ~11% while Rule N's was 80%. A genesis-epoch carve-out
+that paid every epoch-0 validator regardless of real attendance was
+removed the same round (2026-09-23): it was written for the old
+proposer-credit counter, which really was zero at genesis for every
+honest validator, but signature-based attendance credits from block 2
+onward, so epoch 0 has real, checkable attendance like any other epoch.
+
+**Why 50%, not 80%, and why a floor rule after all.** A cometbft block
+commits on MORE than two-thirds of the committee's signatures, so
+average attendance across a healthy, block-producing epoch is AT LEAST
+roughly 67% (about 73% in small committees) — a FLOOR, not a ceiling; the
+true ceiling is 100%. What bounds `DNAC_LIVENESS_THRESHOLD_BPS` is the
+WORST case: every block committing on exactly a quorum with the excluded
+signers rotating, which puts every validator near ~70% by the end of the
+epoch. At 80% (ABOVE that worst case) a merely-jittery, otherwise-healthy
+cluster could put its ENTIRE active set below the bar in the same epoch;
+two such epochs AUTO_RETIRE every validator, leaving no set to build the
+next snapshot from, no block producible, and no governance transaction
+able to repair it — an irreversible halt. This was measured, not
+hypothesized: `test_v2_econ.c`'s `t_settlement_offline` (3 validators, no
+crash, no missed block) produced "Rule N: auto-retired 3 validator(s)"
+then "epoch 2160: committee is empty (count=0)" then a block FAULT, at
+the old 8000 bps value. At 50%, the bar sits below that ~70% worst case
+at every committee size, so the bar ALONE can no longer push the whole
+set below it in one epoch — a real outage still triggers AUTO_RETIRE.
+But the bar and the 120-block recency window are two DIFFERENT
+conditions and can fail two DIFFERENT sets of validators in the same
+boundary: a worked 7-validator example (two conditions, no crash, no
+missed block) fails 5 of 7 at once. That is why Rule N carries the
+voting-power floor described above — an initial "no floor needed" call,
+based on the 50%-alone argument only, was reversed once this was shown.
+
+Per-block attendance counts (`v2_attendance`, keyed by the validator's
+32-byte cometbft address) live OUT OF the ledger's canonical validator
+record — they are a bookkeeping table, not part of consensus state,
+except through a once-per-epoch digest that does enter the state root.
+The validator record itself (`dnac_validator_record_t`,
+`dnac/include/dnac/validator.h`) carries: `pubkey`, `self_stake`,
+`total_delegated`, `external_delegated`, `commission_bps`,
+`pending_commission_bps`, `pending_effective_block`, `status`,
+`active_since_block`, `unstake_commit_block`,
+`unstake_destination_fp`/`_pubkey`, `last_validator_update_block`, and
+`consecutive_missed_epochs` (the ONLY Rule N state this record still
+carries — incremented on a missed epoch, reset to 0 on a clean one). The
+two older per-block counters this record used to carry
+(`last_signed_block`, `signed_blocks_this_epoch`) are RETIRED.
+
 ## Security
 
 - **Dilithium5 everywhere** — TX signers, witness attestations, BFT votes

@@ -1604,6 +1604,31 @@ static int node_slots_alloc(nodus_cmt_node_t *n)
     return CMT_OK;
 }
 
+/* tokenomics-v3 P1 (D-5) — the real `TxsAvailable` consumer. Fires from
+ * inside the mempool's CheckTx path (cmt_mem.h "the channel's reader");
+ * `cmt_cs_notify_txs_available` (shared/dnac/cmt_cs.c:895-899) only sets
+ * `cs->txs_available = true` — no re-entry into the mempool, no lock, no
+ * further call. `ctx` is the node itself: `n->cs` is bound at step 9
+ * below (cmt_cs_init), AFTER this callback is merely REGISTERED here at
+ * step 7a — it does not need to be bound yet, only by the time a
+ * transaction can actually reach CheckTx, which is after
+ * nodus_cmt_node_init has returned. A NULL `n->cs` at fire time is
+ * therefore unreachable in production; logged, not dereferenced, if it
+ * ever is. No consensus value moves (clist_mempool.go:510-521 ->
+ * state.go:1033). */
+static void node_txs_available_cb(void *ctx)
+{
+    nodus_cmt_node_t *n = (nodus_cmt_node_t *)ctx;
+
+    if (!n || !n->cs) {
+        QGP_LOG_ERROR(LOG_TAG, "%s",
+                      "TxsAvailable fired with no bound consensus state "
+                      "— dropping the signal");
+        return;
+    }
+    cmt_cs_notify_txs_available(n->cs);
+}
+
 int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
                         const nodus_cmt_node_opts_t *opts)
 {
@@ -1729,7 +1754,10 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
     if (cmt_config_default(&n->config) != CMT_OK) {
         goto fail;
     }
-    n->config.timeout_commit               = 5000 * CMT_MILLISECOND;
+    /* tokenomics-v3 P1 round 5 (operator decision S-7, decision file §1
+     * line 57's 2026-09-23 note: "Commit beklemesi 5 saniye. (2026-09-23:
+     * hedef epoch ~ 60 dk -> düğüm ayarı 4 saniye; operatör)"): 5000 -> 4000. */
+    n->config.timeout_commit               = 4000 * CMT_MILLISECOND;
     n->config.create_empty_blocks_interval = 60000 * CMT_MILLISECOND;
 
     /* node.go:305's second product — `stateStore.LoadFromDBOrGenesisDoc`
@@ -1975,11 +2003,13 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
      * mp.EnableTxsAvailable() }`. Under this chain's settings
      * (CreateEmptyBlocks true, CreateEmptyBlocksInterval 60 000 ms) the
      * predicate is TRUE (config.go:1054-1057), so the signal is enabled.
-     * The CONSUMER is NULL: the reference's channel is read by the
-     * consensus state's event loop, which is W3's — "a channel nobody
-     * reads; the flag still flips" (cmt_mem.h). */
+     * tokenomics-v3 P1 (D-5): the CONSUMER is now real —
+     * `node_txs_available_cb` above calls `cmt_cs_notify_txs_available`,
+     * matching the reference's channel read by the consensus state's
+     * event loop (W3). */
     if (cmt_config_wait_for_txs(&n->config)) {
-        if (cmt_mem_enable_txs_available(n->mem, NULL, NULL) != CMT_OK) {
+        if (cmt_mem_enable_txs_available(n->mem, node_txs_available_cb, n)
+            != CMT_OK) {
             goto fail;
         }
     }

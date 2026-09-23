@@ -665,7 +665,19 @@ typedef enum {
      * all, which is the conservation equation's own precondition. */
     V2AP_FAIL_AFTER_SETTLE_EMITTED     = 50, /* payout UTXOs written     */
     V2AP_FAIL_AFTER_SETTLE_APPLIED     = 51, /* burn + epoch row retired */
-    V2AP_FAIL_AFTER_EMISSION           = 52  /* per-block mint accrued   */
+    V2AP_FAIL_AFTER_EMISSION           = 52, /* per-block mint accrued   */
+
+    /* tokenomics-v3 P1 (D-4, S-2) — the attendance digest leg. APPENDED;
+     * 39-52 are pinned by shipped tests and are never renumbered. 53
+     * fires with the per-epoch digest row written to
+     * `v2_attendance_epoch` and NOTHING reset yet: the proof obligation
+     * is that an interrupt there leaves no digest row. 54 fires after
+     * `v2_attendance.signed_count` has been reset for every row — the
+     * second rollback window. Both sit BETWEEN Rule N (F39's sibling,
+     * NODUS_V2_EPST_RULE_N) and the boundary flips (F43) in execution
+     * order, exactly as F50/F51 sit between graduation and Rule N. */
+    V2AP_FAIL_AFTER_ATTENDANCE_DIGEST = 53, /* digest row written        */
+    V2AP_FAIL_AFTER_ATTENDANCE_RESET  = 54  /* signed_count reset        */
 } nodus_v2_apply_fail_t;
 
 /*
@@ -853,6 +865,31 @@ typedef struct {
     nodus_v2_tx_result_t *results;
     size_t                results_cap;
     size_t                results_len;   /* OUT */
+
+    /**
+     * tokenomics-v3 P1 (D-2) — `decided_last_commit`, copied VERBATIM by
+     * the app from `req->decided_last_commit.votes[i].validator.address`
+     * / `.block_id_flag` (nodus_witness_cmt_host.h:167-193
+     * nodus_abci_vote_info_t; the request itself:
+     * nodus_witness_cmt_host.h:336-351
+     * nodus_abci_request_finalize_block_t.decided_last_commit). Two
+     * parallel arrays, both sized `votes_len`: `votes_address[i]` is
+     * validator i's cometbft address (32 B, = SHA3-512(pubkey)[0..31],
+     * vset_wire.h:121); `votes_block_id_flag[i]` is that validator's raw
+     * `cmt_pb_block_id_flag_t` for the commit THIS block carries — the
+     * commit FOR global_height-1 (state/execution.go's BuildLastCommitInfo
+     * contract; the host builds it BEFORE calling FinalizeBlock, so a
+     * COMMIT-flagged vote here means "signed global_height-1", never
+     * "signed this block"). The engine credits ONLY
+     * CMT_PB_BLOCK_ID_FLAG_COMMIT votes (D-2, Q1: NIL/ABSENT do not
+     * count) into the out-of-root `v2_attendance` table
+     * (nodus_witness_v2_epoch.c). The legacy lane and the initial height
+     * (no previous commit to report, execution.go:451-455) leave both
+     * arrays NULL and `votes_len` 0 — that is the legal empty case, never
+     * a fault. */
+    const uint8_t (*votes_address)[32];
+    const int32_t  *votes_block_id_flag;
+    size_t          votes_len;
 } nodus_v2_block_cmt_t;
 
 /* ── WHAT THE BLOCK ROW COUNTS IN THIS LANE (register row R3-C1a-7) ──
@@ -1056,7 +1093,8 @@ int nodus_witness_v2_supply_check(nodus_witness_t *w);
  * activation block: height 0, root = the runtime's state root — whose
  * activation payload form must equal the registry-committed
  * genesis_state_root — last_updated 0, status ACTIVE, height-0 history
- * row; SYSTEM's head root is the FULL 7-leg system root computed AFTER
+ * row; SYSTEM's head root is the FULL 8-leg system root ("DNA.SYS.v2",
+ * tokenomics-v3 P1 — ledger_roots_v2.h) computed AFTER
  * the registry rows exist). A registered-but-not-ACTIVE domain exists
  * only in the registry: no head, absent from domains_root. Then the
  * height-0 v2_blocks row (empty tx/update roots) and the supply gate.
@@ -1115,8 +1153,11 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
  * Everything above describes the LEGACY lane and is unchanged. With
  * `cmt.on` the same entry behaves as cometbft's `FinalizeBlock`:
  *
- *   · SCHEMA. S14 only. At any other version the entry returns -2 — the
- *     Comet row shape needs the three columns S14 drops to be gone.
+ *   · SCHEMA. S15 only (tokenomics-v3 P1 round 5 moved this gate's
+ *     accepted value from the earlier S14). At any other version the
+ *     entry returns -2 — the Comet row shape needs the three columns
+ *     S14 dropped to be gone, AND S15's own two `validators` columns
+ *     (`last_signed_block`, `signed_blocks_this_epoch`) to be gone.
  *   · TRANSACTION. The entry opens NOTHING and closes NOTHING. It
  *     REQUIRES the caller's transaction to be open already
  *     (`sqlite3_get_autocommit(w->db) == 0`) and returns -2 otherwise;
@@ -1255,16 +1296,23 @@ int nodus_witness_v2_local_index_find(const uint8_t ids[][64], uint32_t n,
  *            (1): AppHash carries the ledger's root), and the caller
  *            cannot read it back from a block row that no longer exists.
  *
- * SCHEMA: S12 OR S14 in W2; S14 alone from W3. The destination is S14 —
- * that is where the Comet stores live — but the ledger genesis below
- * runs the CORE runtime's `state_init`, whose own gate stops at S12
+ * SCHEMA (HISTORY): S12 OR S14 in W2; S14 alone from W3. The destination
+ * WAS S14 — that is where the Comet stores live — but the ledger genesis
+ * below runs the CORE runtime's `state_init`, whose own gate stops at S12
  * (nodus_witness_v2_pools.c:1174-1182), and that gate is one of the five
  * D-17 rev 7 (7) assigns to W3 together with the live S14 flip. So the
  * derivation builds the ledger at S12 and climbs to S14 afterwards
- * (nodus_witness_v2_gen_derive_v3, step 9), and this entry admits both
- * versions for that one window. W3 narrows it back to S14 in the same
+ * (nodus_witness_v2_gen_derive_v3, step 9), and this entry admitted both
+ * versions for that one window. W3 narrowed it back to S14 in the same
  * commit that widens the pool gate. The version-2 entry's gate (S9-S12)
  * is untouched and stays the live path's.
+ *
+ * CURRENT (tokenomics-v3 P1 round 5): the destination is S15, not S14 —
+ * the derivation now climbs S12 -> S15 (`nodus_witness_db_migrate_v2s15`
+ * cascades through S14 and S13, `nodus_witness_v2_gen.c:2951-2954`), and
+ * this entry's own gate accepts S15 only. Everything in the paragraph
+ * above this one is the W2/W3 history that shaped the climb, not today's
+ * target version.
  *
  * NOT IDEMPOTENT, and it cannot be: the version-2 entry decides "already
  * done" from the height-0 row this one does not write. A database that
@@ -1273,7 +1321,7 @@ int nodus_witness_v2_local_index_find(const uint8_t ids[][64], uint32_t n,
  * VERIFIES its committed genesis through InitChain, it never re-applies
  * it.
  *
- * @param w                the open chain (S14), outside a transaction.
+ * @param w                the open chain (S15), outside a transaction.
  * @param vset_hash        the 64-byte genesis authority hash. An
  *                         ASSERTION: when a genesis snapshot is already
  *                         committed it MUST equal it.

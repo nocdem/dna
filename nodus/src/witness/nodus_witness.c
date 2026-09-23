@@ -213,9 +213,13 @@ static const char *WITNESS_DB_SCHEMA =
     "  unstake_destination_fp TEXT NOT NULL,"
     "  unstake_destination_pubkey BLOB NOT NULL,"
     "  last_validator_update_block INTEGER NOT NULL DEFAULT 0,"
-    "  consecutive_missed_epochs INTEGER NOT NULL DEFAULT 0,"
-    "  last_signed_block INTEGER NOT NULL DEFAULT 0,"
-    "  signed_blocks_this_epoch INTEGER NOT NULL DEFAULT 0"
+    "  consecutive_missed_epochs INTEGER NOT NULL DEFAULT 0"
+    /* tokenomics-v3 P1 (Q2, clean path): `last_signed_block` and
+     * `signed_blocks_this_epoch` are DROPPED here for every NEW database;
+     * an existing database created before this change still carries them
+     * until the S15 migration (nodus_witness_v2_schema.c) issues its own
+     * `ALTER TABLE validators DROP COLUMN` — see that rung for why this
+     * base DDL cannot simply omit them for everyone at once. */
     ");"
     "CREATE INDEX IF NOT EXISTS idx_validator_rank "
     "ON validators ((self_stake + external_delegated) DESC);"
@@ -263,6 +267,35 @@ static const char *WITNESS_DB_SCHEMA =
     "CREATE TABLE IF NOT EXISTS validator_stats ("
     "  key TEXT PRIMARY KEY,"
     "  value INTEGER NOT NULL"
+    ");"
+    /* tokenomics-v3 P1 (round 2, R2-1): the two attendance tables are
+     * LANE-INDEPENDENT bookkeeping — nothing about them depends on which
+     * schema rung (S9, S14, S15, ...) a given chain DB has migrated to,
+     * exactly like validators/epoch_state/validator_stats above. They
+     * belong in the base schema so every chain DB has them from its
+     * FIRST open, at any rung, not only once S15 runs. The S15 migration
+     * (nodus_witness_v2_schema.c) keeps its own `CREATE TABLE IF NOT
+     * EXISTS` for both — idempotent here, and still the ONLY path that
+     * back-fills them into a database an OLDER build already created —
+     * and keeps verifying their shape; S15's real remaining work is the
+     * `ALTER TABLE validators DROP COLUMN` pair (Q2, clean path).
+     * Column definitions here are byte-identical to the S15 rung's.
+     *   v2_attendance        voter_id = SHA3-512(pubkey)[0..31] (the
+     *                        cometbft address, vset_wire.h). NOT a leg
+     *                        of any root (ledger_roots_v2.h
+     *                        "attendance_root" — only the per-epoch
+     *                        digest below enters a root).
+     *   v2_attendance_epoch  one row per epoch boundary; digest is the
+     *                        SHA3-512 fold of v2_attendance at that
+     *                        boundary (nodus_witness_v2_epoch.c). */
+    "CREATE TABLE IF NOT EXISTS v2_attendance ("
+    "  voter_id BLOB PRIMARY KEY,"
+    "  signed_count INTEGER NOT NULL,"
+    "  last_signed_height INTEGER NOT NULL"
+    ");"
+    "CREATE TABLE IF NOT EXISTS v2_attendance_epoch ("
+    "  epoch_start INTEGER PRIMARY KEY,"
+    "  digest BLOB NOT NULL"
     ");"
     /* ── Ledger V2 S3 — per-epoch validator-set snapshots (INACTIVE).
      * Rows are written by nodus_witness_vset_insert and read back by

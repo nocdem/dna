@@ -24,7 +24,11 @@
  *     no partial or fallback root is ever produced.
  *
  * ── TAG TABLE (each exactly 16 bytes, zero-padded) ────────────────────
- *   composition   "DNA.SYS.v1"      system_state_root
+ *   composition   "DNA.SYS.v2"      system_state_root (P1 added the
+ *                                   attendance_root leg — a changed
+ *                                   preimage is never hashed under the
+ *                                   old tag; "DNA.SYS.v1" is HISTORY,
+ *                                   the 7-leg composition before P1)
  *                 "DNA.CORE.v1"     core_state_root
  *                 "DNA.GLOBAL.v1"   global_state_root
  *   supply        "DNA.SUPPLY.v1"   supply_root (leafless single hash)
@@ -36,6 +40,9 @@
  *                 "DNA.DOMNODE.v1"  domains Merkle inner node
  *   vset (S3)     "DNA.VSLEAF.v1"   validator-set snapshot leaf
  *                 "DNA.VSNODE.v1"   validator-set Merkle inner node
+ *   attendance    "DNA.ATTEP.v1"    per-epoch attendance digest (P1, S-2)
+ *   (P1, S-2)     "DNA.ATLEAF.v1"   attendance leg leaf
+ *                 "DNA.ATNODE.v1"   attendance leg Merkle inner node
  *   empty roots   "DNA.E.VSET.v1"   validator_set_root   (EMPTY vset table)
  *                 "DNA.E.DOMREG.v1" domain_registry_root (until S4)
  *                 "DNA.E.MANIF.v1"  manifest_root        (until S6)
@@ -44,14 +51,23 @@
  *                 "DNA.E.NAMES.v1"  name_root            (timing open, O-7)
  *                 "DNA.E.TOKENS.v1" token_root of an EMPTY registry
  *                 "DNA.E.EPOCH.v2"  epoch_root_v2 of an EMPTY epoch table
+ *                 "DNA.E.ATTND.v1"  attendance_root of an EMPTY
+ *                                   v2_attendance_epoch table (P1)
  *   (domains_root has NO empty tag: SYSTEM must always be present — an
  *    empty domain list is a hard error, not an empty tree.)
  *
  * ── Composition preimages (exact) ─────────────────────────────────────
- *   system_state_root = SHA3-512("DNA.SYS.v1"  ‖ validator_root[64]
+ *   system_state_root = SHA3-512("DNA.SYS.v2"  ‖ validator_root[64]
  *       ‖ delegation_root[64] ‖ epoch_state_root_v2[64]
  *       ‖ chain_config_root[64] ‖ validator_set_root[64]
- *       ‖ domain_registry_root[64] ‖ manifest_root[64])
+ *       ‖ domain_registry_root[64] ‖ manifest_root[64]
+ *       ‖ attendance_root[64])
+ *     tokenomics-v3 P1 (D-4, S-2): the 8th leg and a NEW composition tag
+ *     ("DNA.SYS.v1" -> "DNA.SYS.v2" — a changed composition is a new
+ *     tag, never the same tag over different bytes). `system_payload_root`
+ *     below is UNCHANGED (5 legs, its own tag) — attendance is a
+ *     container-lifetime leg like domreg/manifest, empty at genesis, so
+ *     the genesis payload derivation does not change shape.
  *   core_state_root   = SHA3-512("DNA.CORE.v1" ‖ utxo_root[64]
  *       ‖ token_root[64] ‖ pools_root[64] ‖ claims_root[64]
  *       ‖ name_root[64] ‖ supply_root[64])
@@ -85,6 +101,20 @@
  *       `snapshot_hash` is dna_vset_hash of the canonical snapshot bytes
  *       (shared/dnac/vset_wire.h). The snapshot BODY is never re-hashed
  *       here: the leaf binds the already-tagged snapshot commitment.
+ *   attendance digest (P1, S-2) = SHA3-512("DNA.ATTEP.v1" ‖
+ *       epoch_start(8 BE) ‖ n(4 BE) ‖
+ *       Σ_{rows ASC by voter_id} (voter_id[32] ‖ signed_count(8 BE) ‖
+ *                                 last_signed_height(8 BE)))
+ *     `epoch_start` is the epoch that JUST ENDED at the boundary writing
+ *     this digest (H - E); the sum ranges over EVERY row of the
+ *     out-of-root `v2_attendance` table (no status join — any divergence
+ *     anywhere in that table is caught, not just among seated
+ *     validators). Rows MUST be strictly ascending by voter_id
+ *     (duplicates reject). This is a PLAIN hash, not a Merkle tree — one
+ *     digest per epoch, stored in `v2_attendance_epoch.digest`.
+ *   attendance leaf (P1, S-2)   = SHA3-512("DNA.ATLEAF.v1" ‖
+ *       epoch_start(8 BE) ‖ digest[64])   — the leaf of `attendance_root`
+ *     below, one per row of `v2_attendance_epoch`.
  *
  * ── Merkle construction (RFC6962-style, per tree) ─────────────────────
  *   leaves  = the already-tagged 64-byte hashes (DomainHead / token leaf /
@@ -124,6 +154,8 @@ typedef enum {
     DNA_V2_EMPTY_NAMES,        /* name_root            (O-7) */
     DNA_V2_EMPTY_TOKENS,       /* empty token registry       */
     DNA_V2_EMPTY_EPOCH_V2,     /* empty epoch table          */
+    /* tokenomics-v3 P1 (D-4, S-2) — APPENDED. */
+    DNA_V2_EMPTY_ATTENDANCE,   /* empty v2_attendance_epoch  */
     DNA_V2_EMPTY__COUNT
 } dna_v2_empty_kind_t;
 
@@ -203,6 +235,55 @@ int dna_v2_vset_root(const uint64_t *epochs,
                      const uint8_t (*snapshot_hashes)[DNA_V2_ROOT_LEN],
                      size_t n, uint8_t out[DNA_V2_ROOT_LEN]);
 
+/* ── attendance_root (tokenomics-v3 P1, D-4 / S-2) ─────────────────────
+ *
+ * Two layers, matching the vset leg's shape exactly:
+ *   1. `dna_v2_attendance_digest` — ONE plain hash per epoch over every
+ *      `v2_attendance` row (voter_id ASC), computed by the witness at
+ *      the epoch boundary and stored in `v2_attendance_epoch.digest`.
+ *   2. `dna_v2_attendance_root` — a Merkle root over EVERY committed
+ *      `v2_attendance_epoch` row (epoch_start ASC), the leg this file
+ *      composes into `system_state_root`.
+ * Same Merkle rules as every other tree here: strictly ascending
+ * epoch_start (duplicates reject); an unpaired odd node PROMOTED, never
+ * duplicated; n == 1 yields the single leaf; n == 0 yields the tagged
+ * empty root DNA_V2_EMPTY_ATTENDANCE.
+ */
+
+/** One `v2_attendance` row, canonical order = voter_id ASC. */
+typedef struct {
+    uint8_t  voter_id[32];
+    uint64_t signed_count;
+    uint64_t last_signed_height;
+} dna_v2_attendance_row_t;
+
+/**
+ * The per-epoch digest: SHA3-512("DNA.ATTEP.v1" ‖ epoch_start(8 BE) ‖
+ * n(4 BE) ‖ Σ_{rows ASC} (voter_id[32] ‖ signed_count(8 BE) ‖
+ * last_signed_height(8 BE))). `rows` MUST be strictly ascending by
+ * voter_id (duplicates reject) — n == 0 is legal (an epoch with no
+ * attendance row yet) and hashes over zero rows, no special case.
+ * @return 0 / -1 (NULL out, bad order, digest failure).
+ */
+int dna_v2_attendance_digest(uint64_t epoch_start,
+                             const dna_v2_attendance_row_t *rows, size_t n,
+                             uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** leaf = SHA3-512("DNA.ATLEAF.v1" ‖ epoch_start(8 BE) ‖ digest[64]). */
+int dna_v2_attendance_leaf_hash(uint64_t epoch_start,
+                                const uint8_t digest[DNA_V2_ROOT_LEN],
+                                uint8_t out[DNA_V2_ROOT_LEN]);
+
+/**
+ * attendance_root over `v2_attendance_epoch` rows, STRICTLY ASCENDING
+ * epoch_start (duplicates reject); inner = SHA3-512("DNA.ATNODE.v1" ‖
+ * left ‖ right); n == 0 -> DNA_V2_EMPTY_ATTENDANCE.
+ * @return 0 / -1.
+ */
+int dna_v2_attendance_root(const uint64_t *epoch_starts,
+                           const uint8_t (*digests)[DNA_V2_ROOT_LEN],
+                           size_t n, uint8_t out[DNA_V2_ROOT_LEN]);
+
 /* ── DomainHead + domains_root ──────────────────────────────────────── */
 typedef struct {
     uint32_t domain_id;
@@ -234,6 +315,8 @@ int dna_v2_domains_root(const dna_v2_domain_head_t *heads, size_t n,
                         uint8_t out[DNA_V2_ROOT_LEN]);
 
 /* ── Composition ────────────────────────────────────────────────────── */
+/** tokenomics-v3 P1 (D-4, S-2): gained the 8th leg `attendance_root` and
+ *  a new composition tag "DNA.SYS.v2" (was "DNA.SYS.v1"). */
 int dna_v2_system_root(const uint8_t validator_root[64],
                        const uint8_t delegation_root[64],
                        const uint8_t epoch_state_root_v2[64],
@@ -241,6 +324,7 @@ int dna_v2_system_root(const uint8_t validator_root[64],
                        const uint8_t validator_set_root[64],
                        const uint8_t domain_registry_root[64],
                        const uint8_t manifest_root[64],
+                       const uint8_t attendance_root[64],
                        uint8_t out[DNA_V2_ROOT_LEN]);
 
 int dna_v2_core_root(const uint8_t utxo_root[64],
@@ -262,17 +346,21 @@ int dna_v2_global_root(const uint8_t domains_root[64],
  *       ‖ delegation_root ‖ epoch_state_root_v2 ‖ chain_config_root
  *       ‖ validator_set_root)
  *
- * This is dna_v2_system_root MINUS the two container legs
- * (domain_registry_root, manifest_root) under a DISTINCT tag. It exists
- * to break the genesis cycle: a DomainManifest's `genesis_state_root` is
- * defined as the domain's RUNTIME-OWNED genesis payload root — it never
- * covers a structure that commits that domain's own manifest, so
+ * This is dna_v2_system_root MINUS the THREE container-lifetime legs
+ * (domain_registry_root, manifest_root, and — since tokenomics-v3 P1's
+ * "DNA.SYS.v2" — attendance_root) under a DISTINCT tag. attendance_root
+ * joined this exclusion list unchanged in kind: it is empty at genesis
+ * exactly like domreg/manifest, so this function's own 5-leg shape and
+ * its genesis-cycle argument below do not change. It exists to break the
+ * genesis cycle: a DomainManifest's `genesis_state_root` is defined as
+ * the domain's RUNTIME-OWNED genesis payload root — it never covers a
+ * structure that commits that domain's own manifest, so
  *   payload → manifest hash → registry root → FINAL system root
  * is a DAG, not a cycle. (The native supply_root is NOT a leg here:
  * issuance belongs to DNA_CORE, whose payload root IS its full
  * core_state_root — no self-reference exists for CORE, so the generic
  * rule holds trivially.) The FINAL SYSTEM DomainHead.state_root remains
- * the full 7-leg dna_v2_system_root. At domain ACTIVATION the payload
+ * the full 8-leg dna_v2_system_root. At domain ACTIVATION the payload
  * root is the value compared against the registry-committed
  * genesis_state_root (the runtime's optional payload_root hook —
  * nodus_witness_runtime.h; a runtime without the hook compares its

@@ -898,15 +898,14 @@ int nodus_witness_v2_pools_startup_check(nodus_witness_t *w) {
 
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0) return -1;
-    /* R3 W3 (D-17 rev 10 (8)) — THE LIVE S14 FLIP: S14 is ADDED to the
-     * accepted set so this check actually RUNS on a version-3 chain. Before
-     * this wave S14 fell through to the `return 0` below and the S7 pool
-     * replay was silently skipped and reported green — the exact fail-open
-     * this function exists to prevent. S7-S12 are UNTOUCHED: they are the
-     * old lane's resting states, closed in W3 (no live caller reaches them
-     * — D-17 rev 10 (9)) and deleted only in the next wave. S13 is not
-     * added: it is a transitional rung inside one migration call
-     * (nodus_witness_db_migrate_v2s14), never a database's persisted open
+    /* R3 W3 (D-17 rev 10 (8)) — THE LIVE S14 FLIP: S14 was ADDED to the
+     * accepted set so this check actually RUNS on a version-3 chain.
+     * tokenomics-v3 P1 moves the live rung to S15 (schema.h) — S14 is
+     * dropped from this list and S15 takes its place; S7-S12 are
+     * UNTOUCHED: they are the old lane's resting states, closed in W3
+     * (no live caller reaches them — D-17 rev 10 (9)) and deleted only
+     * in a later wave. S13 is not added: it is a transitional rung
+     * inside one migration call, never a database's persisted open
      * schema on any path this tree produces. */
     if (ver != NODUS_V2_SCHEMA_VERSION_S7 &&
         ver != NODUS_V2_SCHEMA_VERSION_S8 &&
@@ -914,7 +913,7 @@ int nodus_witness_v2_pools_startup_check(nodus_witness_t *w) {
         ver != NODUS_V2_SCHEMA_VERSION_S10 &&
         ver != NODUS_V2_SCHEMA_VERSION_S11 &&
         ver != NODUS_V2_SCHEMA_VERSION_S12 &&
-        ver != NODUS_V2_SCHEMA_VERSION_S14)
+        ver != NODUS_V2_SCHEMA_VERSION_S15)
         return 0;                        /* pre-v7: no pool state (the
                                           * S8 intent schema CONTAINS the
                                           * S7 pool tables — the check
@@ -1190,7 +1189,9 @@ int nodus_rt_core_state_init(const nodus_domain_runtime_t *rt,
      * here is the other half of that fix: the derivation now migrates to
      * S14 BEFORE the ledger genesis runs (D-17 rev 10 (8) withdraws the
      * S12-then-climb order). S7-S12 are UNTOUCHED — the old lane's
-     * resting states, closed but not deleted (D-17 rev 10 (9)). */
+     * resting states, closed but not deleted (D-17 rev 10 (9)).
+     * tokenomics-v3 P1: the live rung is now S15; S14 dropped from this
+     * list, S15 takes its place. */
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0 ||
         (ver != NODUS_V2_SCHEMA_VERSION_S7 &&
@@ -1199,7 +1200,7 @@ int nodus_rt_core_state_init(const nodus_domain_runtime_t *rt,
          ver != NODUS_V2_SCHEMA_VERSION_S10 &&
          ver != NODUS_V2_SCHEMA_VERSION_S11 &&
          ver != NODUS_V2_SCHEMA_VERSION_S12 &&
-         ver != NODUS_V2_SCHEMA_VERSION_S14))
+         ver != NODUS_V2_SCHEMA_VERSION_S15))
         return -1;
 
     for (size_t i = 0;

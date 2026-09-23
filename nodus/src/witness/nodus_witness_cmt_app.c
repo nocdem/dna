@@ -40,6 +40,9 @@
                                               * (nodus_witness_v2_gen.h:786) */
 #include "witness/nodus_witness_emission.h"  /* DNAC_DECIMAL_UNIT
                                               * (nodus_witness_emission.h:42) */
+#include "witness/nodus_witness_v2_epoch.h"  /* round 2 §A:
+                                              * nodus_witness_v2_epoch_
+                                              * authority_for_epoch */
 
 #define LOG_TAG "CMT-APP"
 
@@ -68,10 +71,11 @@
  * DNAC_MAX_ACTIVE_VALIDATORS, dnac.h:201). */
 #define CMT_APP_MIN_VALS_FOR_BOUND ((int64_t)1)
 
-/* ORCHESTRATOR delta 2, item A — only TWO arrays remain context-owned
+/* ORCHESTRATOR delta 2, item A — only THREE arrays remain context-owned
  * across calls (the ABCI response-ownership rule; see the header's
- * struct comment); every other scratch array delta 1 kept here is now
- * local to the row that uses it. NULL-safe throughout. */
+ * struct comment) since round 2 added `val_updates` (§A); every other
+ * scratch array delta 1 kept here is now local to the row that uses it.
+ * NULL-safe throughout. */
 void nodus_cmt_app_ledger_release(nodus_cmt_app_ledger_t *ctx)
 {
     if (!ctx) {
@@ -79,11 +83,14 @@ void nodus_cmt_app_ledger_release(nodus_cmt_app_ledger_t *ctx)
     }
     free(ctx->prep_txs);
     free(ctx->fb_pb);
-    ctx->prep_txs     = NULL;
-    ctx->prep_txs_len = 0;
-    ctx->prep_txs_cap = 0;
-    ctx->fb_pb        = NULL;
-    ctx->fb_pb_cap    = 0;
+    free(ctx->val_updates);
+    ctx->prep_txs      = NULL;
+    ctx->prep_txs_len  = 0;
+    ctx->prep_txs_cap  = 0;
+    ctx->fb_pb         = NULL;
+    ctx->fb_pb_cap     = 0;
+    ctx->val_updates     = NULL;
+    ctx->val_updates_cap = 0;
 }
 
 int nodus_cmt_app_ledger_init(nodus_cmt_app_ledger_t *ctx, nodus_witness_t *w,
@@ -1164,6 +1171,26 @@ int nodus_cmt_app_finalize_block(void *vctx,
     dna_claim_t                    *claim_arr = NULL;
     nodus_v2_tx_result_t           *results_arr = NULL;
     cmt_pb_stored_exec_tx_result_t *new_fb_pb   = NULL;
+    /* tokenomics-v3 P1 (D-2) — the decided_last_commit copy, LOCAL to
+     * this call: `blk` (and therefore these arrays) is consumed
+     * synchronously inside nodus_witness_v2_apply_block below, never
+     * retained past this function's return — unlike fb_pb/prep_txs,
+     * these need no ctx-owned lifetime. */
+    uint8_t                       (*votes_addr_arr)[32] = NULL;
+    int32_t                        *votes_flag_arr      = NULL;
+    /* round 2 §A (D-1, G1) — the epoch-boundary ValidatorUpdates diff.
+     * `vu_snap_new`/`vu_snap_old` are the two committed snapshots being
+     * compared; `vu_scratch` is LOCAL per-request scratch (freed at
+     * `done:` like class_arr/of_arr/etc above), sized to the tight
+     * worst-case bound for THIS boundary (snap_new's count + snap_old's
+     * count — never the compile-time CMT_VALSET_MAX_CHANGES), filled
+     * in place and then handed straight to `ctx->val_updates` on
+     * success — the same "no separate scratch+final copy" shape
+     * `new_fb_pb`/`ctx->fb_pb` already use above, because here too the
+     * final size is known before the array is filled. */
+    dna_vset_snapshot_t             *vu_snap_new = NULL;
+    dna_vset_snapshot_t             *vu_snap_old = NULL;
+    cmt_pb_validator_update_t       *vu_scratch   = NULL;
 
     if (resp) {
         memset(resp, 0, sizeof(*resp));
@@ -1179,6 +1206,11 @@ int nodus_cmt_app_finalize_block(void *vctx,
     free(ctx->fb_pb);
     ctx->fb_pb     = NULL;
     ctx->fb_pb_cap = 0;
+    /* round 2 §A — `val_updates` follows the identical rule: THIS call
+     * is "the next call" for FinalizeBlock's SECOND response buffer too. */
+    free(ctx->val_updates);
+    ctx->val_updates     = NULL;
+    ctx->val_updates_cap = 0;
 
     /* env_bound, not the retired NODUS_CMT_APP_MAX_TXS — the byte-derived
      * count no honestly-decided block (Block.MaxBytes, D-4 rev 3) can
@@ -1334,6 +1366,47 @@ int nodus_cmt_app_finalize_block(void *vctx,
      * request's own true worst case for n_env + n_claim), not to
      * env_bound — the per-request array already IS the tight bound. */
     blk->cmt.results_cap = req->txs_len;
+
+    /* tokenomics-v3 P1 (D-2) — decided_last_commit, copied VERBATIM into
+     * two per-request LOCAL arrays (freed at `done:` below, never
+     * ctx-owned: nodus_witness_v2_apply_block consumes them
+     * synchronously, before this function returns). `votes_len == 0`
+     * (the initial height, execution.go:451-455) leaves both NULL/0 —
+     * the legal empty case nodus_witness_v2_attendance_credit already
+     * documents. */
+    if (req->decided_last_commit.votes_len > 0) {
+        size_t nv = req->decided_last_commit.votes_len;
+        votes_addr_arr = (uint8_t (*)[32])calloc(nv, sizeof(*votes_addr_arr));
+        votes_flag_arr = (int32_t *)calloc(nv, sizeof(*votes_flag_arr));
+        if (!votes_addr_arr || !votes_flag_arr) {
+            rc_out = CMT_FAULT;
+            goto done;
+        }
+        for (size_t vi = 0; vi < nv; vi++) {
+            const nodus_abci_vote_info_t *v =
+                &req->decided_last_commit.votes[vi];
+            /* address_len is a REQUEST field, not a compile-time
+             * guarantee — tm2pb_validator always writes exactly 32
+             * (nodus_witness_cmt_host.c:173), but this function must not
+             * trust a comment about a caller it does not control. Any
+             * other length is a node-local contract break: CMT_FAULT,
+             * never a skip (the same class as the n_votes>0/height==0
+             * guard in the attendance writer). */
+            if (v->validator.address_len != 32) {
+                QGP_LOG_ERROR(LOG_TAG, "FinalizeBlock: decided_last_commit "
+                              "vote %zu carries address_len %zu, not 32",
+                              vi, v->validator.address_len);
+                rc_out = CMT_FAULT;
+                goto done;
+            }
+            memcpy(votes_addr_arr[vi], v->validator.address, 32);
+            votes_flag_arr[vi] = v->block_id_flag;
+        }
+    }
+    blk->cmt.votes_address        = votes_addr_arr;
+    blk->cmt.votes_block_id_flag  = votes_flag_arr;
+    blk->cmt.votes_len            = req->decided_last_commit.votes_len;
+
     blk->fail_at = ctx->test_fail_at;    /* TEST-ONLY; 0 = no injection */
     blk->fail_env_index    = ctx->test_fail_env_index;
     blk->fail_effect_index = ctx->test_fail_effect_index;
@@ -1428,14 +1501,177 @@ int nodus_cmt_app_finalize_block(void *vctx,
     memcpy(resp->app_hash, blk->out_global_root, 64);
     resp->app_hash_len = 64;
 
-    /* validator_updates EMPTY in W2 — a NAMED GAP, not a statement that
-     * the set never changes. The epoch boundary that graduates and
-     * retires validators runs inside the apply (D-23 rev 4 (3): "validator
-     * updates at the epoch boundary, power = stake"), and turning its
-     * result into ABCI ValidatorUpdates is R3-T's. Until it is wired, a
-     * Comet chain's validator set never moves. */
+    /* ── tokenomics-v3 P1 §A (D-1, G1), round 2 — the epoch-boundary
+     * ValidatorUpdates diff, now UNBLOCKED (ctx->val_updates,
+     * nodus_witness_cmt_app.h). Non-boundary height: NULL/0, the legal
+     * "leave the set" response (replay.go:346-360). At a boundary height
+     * H (H % DNAC_EPOCH_LENGTH == 0, H > 0), diff the committed authority
+     * for epoch H (the set that TAKES EFFECT at H, frozen at H-E by
+     * nodus_witness_vset_commit_next) against the committed authority
+     * for epoch H-E (what cometbft holds NOW, by induction — InitChain
+     * above checked snapshot(0); every earlier boundary announced its
+     * own snap_new, which became the next boundary's snap_old). Either
+     * snapshot ABSENT (resolver rc 1) or UNREADABLE (rc -1) is
+     * CMT_FAULT, never an empty list — an empty list here would tell
+     * cometbft "nothing changed" when the true answer is "unknown". */
     resp->validator_updates = NULL;
     resp->validator_updates_len = 0;
+    {
+        uint64_t H = blk->global_height;
+
+        if (H > 0 && (H % (uint64_t)DNAC_EPOCH_LENGTH) == 0) {
+            int    arc_new, arc_old;
+            size_t vu_bound = 0, n_updates = 0;
+            size_t n_added = 0, n_power_changed = 0, n_removed = 0;
+            size_t jn, jo;
+            int    fault = 0;
+
+            arc_new = nodus_witness_v2_epoch_authority_for_epoch(
+                ctx->w, H, &vu_snap_new, NULL, NULL);
+            arc_old = nodus_witness_v2_epoch_authority_for_epoch(
+                ctx->w, H - (uint64_t)DNAC_EPOCH_LENGTH, &vu_snap_old,
+                NULL, NULL);
+            if (arc_new != 0 || arc_old != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "FinalizeBlock: epoch boundary "
+                              "height %" PRIu64 " — validator-set "
+                              "snapshot absent or unreadable (new rc=%d, "
+                              "old rc=%d)", H, arc_new, arc_old);
+                dna_vset_free(&vu_snap_new);
+                dna_vset_free(&vu_snap_old);
+                rc_out = CMT_FAULT;
+                goto done;
+            }
+
+            /* Tight worst-case bound for THIS boundary: every new-side
+             * entry could be an addition/power-change, every old-side
+             * entry could be a removal. Both counts are individually
+             * bounded by DNA_MAX_ACTIVE_VALIDATORS == CMT_VALSET_MAX
+             * (vset_wire.h / cmt_validator_set.h), so the sum can never
+             * itself exceed CMT_VALSET_MAX_CHANGES — sized to THIS
+             * boundary, never to the compile-time ceiling. */
+            vu_bound = (size_t)vu_snap_new->active_count +
+                       (size_t)vu_snap_old->active_count;
+            if (vu_bound > 0) {
+                vu_scratch = (cmt_pb_validator_update_t *)
+                    calloc(vu_bound, sizeof(*vu_scratch));
+                if (!vu_scratch) {
+                    dna_vset_free(&vu_snap_new);
+                    dna_vset_free(&vu_snap_old);
+                    rc_out = CMT_FAULT;
+                    goto done;
+                }
+            }
+
+            /* additions / power changes, in snap_new's OWN order */
+            for (jn = 0; jn < (size_t)vu_snap_new->active_count && !fault;
+                 jn++) {
+                const dna_vset_entry_t *en = &vu_snap_new->entries[jn];
+                uint64_t power = en->total_stake / DNAC_DECIMAL_UNIT;
+                uint64_t old_power = 0;
+                int      found = 0;
+
+                for (jo = 0; jo < (size_t)vu_snap_old->active_count;
+                     jo++) {
+                    if (memcmp(en->pubkey, vu_snap_old->entries[jo].pubkey,
+                               DNA_VSET_PUBKEY_LEN) == 0) {
+                        found = 1;
+                        old_power = vu_snap_old->entries[jo].total_stake /
+                                    DNAC_DECIMAL_UNIT;
+                        break;
+                    }
+                }
+                if (power == 0) {
+                    /* Invariant, unreachable at self-stake >= 10M — a
+                     * genesis/join gate already refuses this. Checked
+                     * here anyway because this row must never emit a
+                     * ValidatorUpdate the reference itself would refuse
+                     * (crypto/encoding/codec.go: power <= 0 is invalid). */
+                    QGP_LOG_ERROR(LOG_TAG, "FinalizeBlock: boundary %"
+                                  PRIu64 " — new-snapshot entry %zu "
+                                  "computes power 0", H, jn);
+                    fault = 1;
+                    break;
+                }
+                if (!found || old_power != power) {
+                    if (n_updates >= vu_bound) { fault = 1; break; }
+                    vu_scratch[n_updates].pub_key.present = true;
+                    memcpy(vu_scratch[n_updates].pub_key.key, en->pubkey,
+                           DNA_VSET_PUBKEY_LEN);
+                    vu_scratch[n_updates].power = (int64_t)power;
+                    n_updates++;
+                    if (found) n_power_changed++; else n_added++;
+                }
+            }
+            /* removals, in snap_old's OWN order */
+            for (jo = 0; jo < (size_t)vu_snap_old->active_count && !fault;
+                 jo++) {
+                const dna_vset_entry_t *eo = &vu_snap_old->entries[jo];
+                int found = 0;
+
+                for (jn = 0; jn < (size_t)vu_snap_new->active_count;
+                     jn++) {
+                    if (memcmp(eo->pubkey, vu_snap_new->entries[jn].pubkey,
+                               DNA_VSET_PUBKEY_LEN) == 0) {
+                        found = 1;
+                        break;
+                    }
+                }
+                if (!found) {
+                    if (n_updates >= vu_bound) { fault = 1; break; }
+                    vu_scratch[n_updates].pub_key.present = true;
+                    memcpy(vu_scratch[n_updates].pub_key.key, eo->pubkey,
+                           DNA_VSET_PUBKEY_LEN);
+                    vu_scratch[n_updates].power = 0;
+                    n_updates++;
+                    n_removed++;
+                }
+            }
+            /* Defense-in-depth: n_updates cannot exceed
+             * CMT_VALSET_MAX_CHANGES given the per-snapshot bound above,
+             * but this row refuses rather than emit an over-sized
+             * ValidatorUpdates list if that invariant is ever broken
+             * elsewhere. */
+            if (!fault && n_updates > (size_t)CMT_VALSET_MAX_CHANGES) {
+                fault = 1;
+            }
+
+            if (fault) {
+                QGP_LOG_ERROR(LOG_TAG, "FinalizeBlock: boundary %"
+                              PRIu64 " — validator update computation "
+                              "refused (bound %zu, CMT_VALSET_MAX_CHANGES "
+                              "%d)", H, vu_bound, CMT_VALSET_MAX_CHANGES);
+                free(vu_scratch);
+                vu_scratch = NULL;
+                dna_vset_free(&vu_snap_new);
+                dna_vset_free(&vu_snap_old);
+                rc_out = CMT_FAULT;
+                goto done;
+            }
+
+            /* ONE INFO line per boundary, also when all three are 0 —
+             * a quiet boundary is still a boundary the operator should
+             * be able to see happened. */
+            QGP_LOG_INFO(LOG_TAG, "FinalizeBlock: epoch boundary height "
+                         "%" PRIu64 " — validator_updates n_added=%zu "
+                         "n_power_changed=%zu n_removed=%zu", H, n_added,
+                         n_power_changed, n_removed);
+
+            if (n_updates > 0) {
+                ctx->val_updates     = vu_scratch;
+                ctx->val_updates_cap = vu_bound;
+                vu_scratch = NULL;    /* ownership transferred to ctx */
+                resp->validator_updates = ctx->val_updates;
+                resp->validator_updates_len = n_updates;
+            } else {
+                /* quiet boundary: unchanged members are not re-announced
+                 * (`resp->validator_updates` stays NULL/0, set above). */
+                free(vu_scratch);
+                vu_scratch = NULL;
+            }
+            dna_vset_free(&vu_snap_new);
+            dna_vset_free(&vu_snap_old);
+        }
+    }
     resp->has_consensus_param_updates = false;   /* none, D-23 rev 4 (3) */
     resp->events_len = 0;                        /* no events (YOK)      */
 
@@ -1448,6 +1684,16 @@ done:
     free(env_arr);
     free(claim_arr);
     free(results_arr);
+    free(votes_addr_arr);
+    free(votes_flag_arr);
+    /* round 2 §A — every path above that reaches `done:` has already
+     * either freed these explicitly or (on success) NULLed `vu_scratch`
+     * after transferring it to `ctx->val_updates`; unconditionally safe
+     * here too (dna_vset_free/free are both NULL-safe), matching this
+     * function's existing exhaustive style. */
+    free(vu_scratch);
+    dna_vset_free(&vu_snap_new);
+    dna_vset_free(&vu_snap_old);
     return rc_out;
 }
 

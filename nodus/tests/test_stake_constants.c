@@ -49,8 +49,30 @@ int main(void) {
     CHECK_EQ(DNAC_VALIDATOR_UNSTAKED,     2);
     CHECK_EQ(DNAC_VALIDATOR_AUTO_RETIRED, 3);
     CHECK_EQ(DNAC_VALIDATOR_ELIGIBLE,     4);
-    CHECK_EQ(DNAC_LIVENESS_THRESHOLD_BPS, 8000);
-    CHECK_EQ(DNAC_AUTO_RETIRE_EPOCHS, 3);
+    /* tokenomics-v3 P1 (operator decision 2026-09-23, decision file §1
+     * line 79 + §3's last entries): the liveness bar is 5000 bps, not
+     * the retired 8000, and the auto-retire threshold is 2 consecutive
+     * DUTY epochs, not 3. Both values are re-pinned here deliberately —
+     * this file exists so a silent drift in either is caught, and the
+     * 8000 value in particular must never come back: the value that
+     * bounds this bar is the WORST-case attendance every member sees
+     * when every block commits on exactly a quorum with the excluded
+     * signers rotating (~67-73 %, since a block commits on MORE than
+     * two-thirds of the members' signatures — a FLOOR on the healthy
+     * average, not a ceiling; round 5 correction). A bar ABOVE that
+     * worst case lets a jittery-but-healthy cluster put its ENTIRE
+     * active set below the bar, and two such epochs empty the validator
+     * list with no way to repair it. A bar below it cannot fail the
+     * whole set alone, which is why Rule N still carries a SEPARATE
+     * floor: the bar and the 120-block recency window can fail
+     * DIFFERENT members in the same boundary. That floor has no
+     * constant to pin since round 6 (decision file §3 2026-09-23, "Rule
+     * N TABANI WEIGHT ÜZERİNDEN", replacing the count floor "Rule N
+     * TABANI = 4" and its DNAC_RULE_N_MIN_BONDED): it is the voting-power
+     * inequality (P - max) > P * 2 / 3 over the next epoch's seatable
+     * set, pinned behaviourally in test_v2_epoch.c §12c/§12e-§12i. */
+    CHECK_EQ(DNAC_LIVENESS_THRESHOLD_BPS, 5000);
+    CHECK_EQ(DNAC_AUTO_RETIRE_EPOCHS, 2);
     CHECK_EQ(DNAC_SIGN_FRESHNESS_WINDOW, 32);
     CHECK_EQ(DNAC_COMMISSION_BPS_MAX, 10000);
     CHECK_EQ(DNAC_SETTLEMENT_ATTENDANCE_WINDOW_BLOCKS, 120);

@@ -46,9 +46,17 @@
  *     does not cover the other claim refusal classes, and its "refused"
  *     claim fails at the MANIFEST lookup — the earliest of the six
  *     stages `claim_prescan_one`/`claim_execute_one` run.
- *  2. VALIDATOR UPDATES are not covered: `finalize_block` returns none
- *     by construction (R3-T), so `t_finalize_block` asserting an empty
- *     update list proves the GAP, not a capability.
+ *  2. VALIDATOR UPDATES ARE COVERED (round 2, §A; round 4, R4-2):
+ *     `t_val_updates_non_boundary` / `_missing_snapshot` still drive the
+ *     REAL `nodus_cmt_app_finalize_block` directly (the
+ *     `t_finalize_block_bound` pattern, no host, no signing).
+ *     `_quiet_boundary` / `_boundary_diff` drive the REAL HOST pipeline
+ *     instead (`vu_host_drive_to`, the `t_d4_empty_blocks_root_stable`
+ *     pattern) — round 3 measured that the finalize-block-only pipeline
+ *     never writes a Comet BlockMeta, so the committee's tiebreak seed
+ *     cannot resolve above height 1 and a boundary above 1 FAULTs there.
+ *     `t_finalize_block` itself still asserts nothing about validator
+ *     updates — that assertion moved to the four cases above.
  *  3. `t_prepare_fee_order` compares the returned DESCRIPTORS by
  *     pointer, which is exactly what the row promises (it borrows the
  *     request's byte views). If the row ever copied the bytes instead,
@@ -409,8 +417,17 @@ static int cfg_make_v3_real(cfgbox_t *b)
  * `cfg_make_v3_real` itself is left completely UNCHANGED: `t_claim_items`
  * depends on its one-leaf, no-siblings shape (`good->n_siblings = 0`)
  * and must stay on it, not on this.
+ *
+ * round 2 (R2-3) — `inflation_start` is a NEW parameter, not a NEW
+ * function: this path had exactly one caller (`gfx_open_n`, itself
+ * called only by `t_prepare_proposal_item_cap`), so widening its
+ * signature is the "reuse the existing code path" choice over a
+ * duplicated ~45-line fixture-open function. `gfx_open_n`'s own single
+ * call site is updated to pass `1ULL` — today's hardcoded value,
+ * byte-for-byte unchanged behaviour for that case.
  */
-static int cfg_make_v3_real_n(cfgbox_t *b, uint32_t n)
+static int cfg_make_v3_real_n(cfgbox_t *b, uint32_t n,
+                              uint64_t inflation_start)
 {
     nodus_v2_gen_config_t *c;
     uint16_t k;
@@ -433,7 +450,7 @@ static int cfg_make_v3_real_n(cfgbox_t *b, uint32_t n)
     c->epoch_length          = (uint64_t)DNAC_EPOCH_LENGTH;
     c->blocks_per_year       = (uint64_t)DNAC_BLOCKS_PER_YEAR;
     c->decimal_unit          = (uint64_t)DNAC_DECIMAL_UNIT;
-    c->inflation_start_block = 1ULL;
+    c->inflation_start_block = inflation_start;
     c->claim_start_height    = 0;
     c->claim_end_height      = UINT64_MAX;
     c->n_validators          = (uint16_t)N_KEYS;
@@ -556,18 +573,32 @@ static int gfx_open(gfx_t *g, const char *tag)
 
 /**
  * ORCHESTRATOR delta 11 (R3-W3-C2a-19) — `gfx_open`'s own body, with ONE
- * substitution: `cfg_make_v3_real_n(&g->box, n_allocs)` in place of
- * `cfg_make_v3_real(&g->box)`, so the derived chain's genesis commits an
- * `n_allocs`-leaf distribution tree instead of one. `gfx_open` itself is
- * untouched.
+ * substitution: `cfg_make_v3_real_n(&g->box, n_allocs, inflation_start)`
+ * in place of `cfg_make_v3_real(&g->box)`, so the derived chain's genesis
+ * commits an `n_allocs`-leaf distribution tree instead of one. `gfx_open`
+ * itself is untouched.
+ *
+ * round 2 (R2-3) — `inflation_start` is a NEW parameter forwarded
+ * straight to `cfg_make_v3_real_n`; this function has exactly ONE
+ * caller (`t_prepare_proposal_item_cap`), updated to pass `1ULL` —
+ * today's hardcoded value, so that case's behaviour is byte-for-byte
+ * unchanged. `t_d4_empty_blocks_root_stable` (D-4) is the reason the
+ * parameter exists: it needs `inflation_start_block = 0`, matching the
+ * live harness genesis (`stagef_up_v2.sh`), because Phase 6f's mint path
+ * (`inflation_start_block = 1`, this file's OTHER fixtures) moves
+ * `epoch_state.epoch_pool_accum` — a leg of `system_state_root` — on
+ * EVERY block, which makes the D-4 "two empty blocks, same global_root"
+ * property unsatisfiable for a reason that has nothing to do with
+ * attendance.
  */
-static int gfx_open_n(gfx_t *g, const char *tag, uint32_t n_allocs)
+static int gfx_open_n(gfx_t *g, const char *tag, uint32_t n_allocs,
+                      uint64_t inflation_start)
 {
     char path[600];
     int  i;
 
     memset(g, 0, sizeof(*g));
-    if (cfg_make_v3_real_n(&g->box, n_allocs) != 0) {
+    if (cfg_make_v3_real_n(&g->box, n_allocs, inflation_start) != 0) {
         return -1;
     }
     if (nodus_witness_v2_gen_v3_validate(g->box.cfg) != 0) {
@@ -824,7 +855,7 @@ static int fx_open(fixture_t *fx, const char *tag)
     fx->w->v2_successor = true;
     memcpy(fx->w->v2_chain32, fx->chain_id, 32);
     fx->w->v2_ingress_armed = true;
-    if (nodus_witness_db_migrate_v2s14(fx->w) != 0) {
+    if (nodus_witness_db_migrate_v2s15(fx->w) != 0) {
         return -1;
     }
     return 0;
@@ -1462,6 +1493,20 @@ static int gfx_doc(gfx_t *g, cmt_genesis_doc_t *doc,
         != 0) {
         return -1;
     }
+    /* ORCHESTRATOR (P1 round 5, MEASURED with gdb on a -g build): the
+     * `chain_id` is the derivation's OTHER output (nodus_witness_v2_gen.h
+     * :575-588, :648) and was never written back into `box.cfg` either,
+     * so every document this helper projected — and therefore every
+     * block header `cmt_state_make_block` built from it — carried an
+     * ALL-ZERO chain id, while the node's own identity
+     * (`w->v2_chain32`, set from the same `g->chain32` in gfx_open_n)
+     * is the real one. Nothing noticed until a case crossed an epoch
+     * boundary: the version-3 committee tiebreak seed
+     * (`v2_seed_block_id`, nodus_witness_committee.c:218-220) compares
+     * the stored BlockMeta's header chain id against `w->v2_chain32` and
+     * correctly refused it as WRONG CHAIN at height 719. Filled here from
+     * the derivation's own output, exactly like `app_hash` above. */
+    memcpy(g->box.cfg->chain_id, g->chain32, NODUS_V2_GEN_CHAIN_ID_LEN);
     return nodus_witness_v2_gen_to_cmt_doc(g->box.cfg, doc, gvals,
                                            DNAC_COMMITTEE_SIZE);
 }
@@ -2073,6 +2118,610 @@ static int t_finalize_block_bound(void)
     return 0;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════
+ * round 2, §A UNBLOCKED — tokenomics-v3 P1 (D-1, G1): the epoch-boundary
+ * ValidatorUpdates diff (nodus_cmt_app_finalize_block's own comment;
+ * ctx->val_updates, nodus_witness_cmt_app.h).
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+#define VU_EPOCH ((uint64_t)DNAC_EPOCH_LENGTH)
+
+/* Deterministic, per-height, DISTINCT block hash — the SAME byte-pattern
+ * shape test_v2_epoch.c's own `mk_block_id` uses (not shared across test
+ * binaries), needed only so no two heights this file drives through the
+ * DIRECT `nodus_cmt_app_finalize_block` path below ever collide with the
+ * engine's own already-committed-elsewhere refusal (`t_finalize_block`'s
+ * duplicate-BlockID probe, above, proves that refusal is real). */
+static void vu_block_hash(uint8_t out[64], uint64_t h)
+{
+    int i;
+
+    for (i = 0; i < 8; i++) {
+        out[i] = (uint8_t)(h >> (56 - 8 * i));
+    }
+    for (i = 8; i < 64; i++) {
+        out[i] = (uint8_t)((h * 7u + (uint64_t)i * 3u + 1u) & 0xFF);
+    }
+}
+
+/**
+ * Drive height `h` through the REAL `nodus_cmt_app_finalize_block`,
+ * bypassing the exec_t/cmt_state/blockexec pipeline entirely — the SAME
+ * minimal pattern `t_finalize_block_bound` above already establishes (a
+ * hand-built request straight into the application, no host, no
+ * signing: the apply path "reads only the SIZE and each slot's
+ * block_id_flag — it does not verify these signatures", D-2's own
+ * comment on `exec_make_last_commit`), extended with a FULL-COMMITTEE
+ * COMMIT vote for every height above the initial one (R2-2's own
+ * discipline: Rule N must stay a no-op while these cases drive across an
+ * epoch boundary, or the whole genesis committee AUTO_RETIREs before any
+ * of this file's controlled mutations produce a diff to observe).
+ * `finalize_block` itself opens no transaction
+ * (nodus_witness_cmt_app.h: "the application never issues BEGIN") — this
+ * helper opens and closes the ONE transaction the HOST normally brackets
+ * it in, exactly as `t_finalize_block`'s duplicate-BlockID probe does
+ * for a direct engine call.
+ *
+ * @return CMT_OK or CMT_FAULT (the application's own verdict); `resp` is
+ *         always fully populated by `nodus_cmt_app_finalize_block` itself
+ *         (memset first).
+ */
+static int vu_drive(nodus_witness_t *w, nodus_cmt_app_ledger_t *app,
+                    uint64_t h, nodus_abci_response_finalize_block_t *resp)
+{
+    nodus_abci_request_finalize_block_t req;
+    nodus_abci_vote_info_t votes[N_KEYS];
+    int i, rc;
+
+    memset(&req, 0, sizeof(req));
+    memset(votes, 0, sizeof(votes));
+    for (i = 0; i < N_KEYS; i++) {
+        memcpy(votes[i].validator.address, g_ks[i].voter, 32);
+        votes[i].validator.address_len = 32;
+        votes[i].block_id_flag = (int32_t)CMT_PB_BLOCK_ID_FLAG_COMMIT;
+    }
+    if (h > 1) {
+        /* h == 1 is the initial height (execution.go:451-455) — the
+         * legal empty case (D-2's own comment); every height above it
+         * carries a real commit for h-1. */
+        req.decided_last_commit.votes     = votes;
+        req.decided_last_commit.votes_len = (size_t)N_KEYS;
+    }
+    req.height = (int64_t)h;
+    vu_block_hash(req.hash, h);
+    req.hash_len = 64;
+
+    memset(resp, 0, sizeof(*resp));
+    if (run_sql(w->db, "BEGIN IMMEDIATE") != 0) {
+        return CMT_FAULT;
+    }
+    rc = nodus_cmt_app_finalize_block(app, &req, resp);
+    if (rc != CMT_OK) {
+        (void)run_sql(w->db, "ROLLBACK");
+        return rc;
+    }
+    if (run_sql(w->db, "COMMIT") != 0) {
+        return CMT_FAULT;
+    }
+    return CMT_OK;
+}
+
+/* Drive every height in (from, to] with `vu_drive`, discarding each
+ * response — the run-up blocks exist only to reach a target height with
+ * full attendance behind them. */
+static int vu_drive_to(nodus_witness_t *w, nodus_cmt_app_ledger_t *app,
+                       uint64_t from, uint64_t to)
+{
+    uint64_t h;
+
+    for (h = from + 1; h <= to; h++) {
+        nodus_abci_response_finalize_block_t resp;
+
+        if (vu_drive(w, app, h, &resp) != CMT_OK) {
+            fprintf(stderr, "vu_drive_to: height %" PRIu64 " FAULTed\n", h);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* §A round 4 (R4-2): drive heights (from, to] through the REAL host
+ * pipeline `t_d4_empty_blocks_root_stable` already establishes —
+ * `exec_make_block` / `exec_make_last_commit` / `exec_block_id` /
+ * `nodus_cmt_host_apply_verified_block` — every block carrying ZERO
+ * transactions (these §A cases are about the validator-updates response,
+ * not envelopes). MEASURED (round 3): the OLDER `vu_drive`/`vu_drive_to`
+ * pipeline calls `nodus_cmt_app_finalize_block` directly and never writes
+ * a Comet BlockMeta, so the committee's tiebreak seed
+ * (`v2_seed_block_id`, nodus_witness_committee.c:178-227) cannot resolve
+ * above height 1 and any boundary above 1 FAULTs.
+ *
+ * ⚠ ORCHESTRATOR correction (round 4, MEASURED): applying a block does
+ * NOT save it. An earlier version of this comment claimed this pipeline
+ * "writes the BlockMeta itself, through `nodus_cmt_bs_save_block`
+ * (nodus_witness_cmt_host.c)" — it does not, and the boundary still
+ * FAULTed with `V2 seed row at 719 missing or unusable` after the move.
+ * `nodus_cmt_bs_save_block`'s only production call site is the HOST
+ * TABLE row `nodus_witness_cmt_host.c:1965` serves, which the CONSENSUS
+ * layer (`cmt_cs`'s finalizeCommit) calls — never the block executor.
+ * So this helper stands in for that layer too: after each apply it saves
+ * the block with its part set and a seen commit, exactly the recipe the
+ * two other fixtures that need a real BlockMeta already use
+ * (`test_v2_preflight.c:732`, `test_v2_committee_seed.c:532`, both of
+ * whose comments name themselves "the only caller"). The part set is
+ * built here rather than through `exec_block_id`, which discards its own.
+ *
+ * `*bid` is the caller's scratch BlockID: zeroed by the caller before the
+ * first call, and left holding `to`'s BlockID on return.
+ */
+static int vu_host_drive_to(exec_t *x, cmt_block_id_t *bid, int64_t from,
+                            int64_t to)
+{
+    /* The block store marshals the block, its parts, the meta and the
+     * commits into this scratch; it must NOT be `x->part_scratch`, which
+     * the part set below still points into. Every block here carries zero
+     * transactions, so 1 MiB is far more than `cmt_block_size`'s need. */
+    const size_t save_cap = 1u << 20;
+    uint8_t     *save_scratch = (uint8_t *)malloc(save_cap);
+    int64_t      h;
+    int          rc = -1;
+
+    if (!save_scratch) {
+        return -1;
+    }
+    for (h = from + 1; h <= to; h++) {
+        cmt_part_set_t ps;
+        cmt_commit_t   seen_commit;
+
+        if (h > 1) {
+            if (exec_make_last_commit(x, h - 1, bid) != 0) {
+                fprintf(stderr, "vu_host_drive_to: last_commit for %"
+                        PRId64 " failed\n", h - 1);
+                goto done;
+            }
+        }
+        if (exec_make_block(x, h, 0) != 0) {
+            fprintf(stderr, "vu_host_drive_to: make_block %" PRId64
+                    " failed\n", h);
+            goto done;
+        }
+        /* `exec_block_id`'s body, with the part set KEPT — the block
+         * store needs it and that helper throws its own away. */
+        memset(bid, 0, sizeof(*bid));
+        if (cmt_block_hash(x->blk, bid->hash) != CMT_OK) {
+            fprintf(stderr, "vu_host_drive_to: block_hash %" PRId64
+                    " failed\n", h);
+            goto done;
+        }
+        bid->hash_len = CMT_TMHASH_SIZE;
+        if (cmt_block_make_part_set(x->blk, CMT_BLOCK_PART_SIZE_BYTES,
+                                    x->part_scratch, x->part_scratch_cap,
+                                    x->parts, x->parts_cap, &ps) != CMT_OK ||
+            cmt_part_set_header(&ps, &bid->part_set_header) != CMT_OK ||
+            !block_id_is_complete(bid)) {
+            fprintf(stderr, "vu_host_drive_to: block_id %" PRId64
+                    " incomplete\n", h);
+            goto done;
+        }
+        if (nodus_cmt_host_apply_verified_block(x->be, bid, x->blk, x->state)
+                != CMT_OK) {
+            fprintf(stderr, "vu_host_drive_to: apply %" PRId64
+                    " FAULTed\n", h);
+            goto done;
+        }
+        /* The half the executor does NOT do (see this function's own
+         * comment): without it there is no BlockMeta and the committee
+         * tiebreak seed cannot resolve at the boundary's lookback. */
+        memset(&seen_commit, 0, sizeof(seen_commit));
+        seen_commit.height   = h;
+        seen_commit.round    = 0;
+        seen_commit.block_id = *bid;
+        if (nodus_cmt_bs_save_block(x->store, x->blk, &ps, &seen_commit,
+                                    save_scratch, save_cap) != CMT_OK) {
+            fprintf(stderr, "vu_host_drive_to: save_block %" PRId64
+                    " failed\n", h);
+            goto done;
+        }
+    }
+    rc = 0;
+done:
+    free(save_scratch);
+    return rc;
+}
+
+/* Load the FinalizeBlock response the boundary block itself stored
+ * (`nodus_cmt_ss_save_finalize_block_response`, nodus_witness_cmt_host.c
+ * apply_block :259) — the ONLY way to read `resp->validator_updates` back
+ * out of the REAL host pipeline, which frees its own `resp` internally
+ * (nodus_witness_cmt_host.c apply_block :1646). `vu_pool`/`vu_cap` size
+ * the validator_updates pool; a validator update's pubkey is a FIXED
+ * 2592-byte array on the struct itself (cmt_pb.h's cmt_pb_public_key_t),
+ * so `arena` only needs to be non-NULL — these §A cases never encode a
+ * tx_result or an event (every driven block carries zero transactions).
+ */
+static int vu_host_load_updates(exec_t *x, int64_t height,
+                                cmt_pb_response_finalize_block_t *out,
+                                cmt_pb_validator_update_t *vu_pool,
+                                size_t vu_cap, cmt_pb_arena_t *arena)
+{
+    cmt_pb_rfb_storage_t rst;
+
+    memset(&rst, 0, sizeof(rst));
+    rst.validator_updates     = vu_pool;
+    rst.validator_updates_cap = vu_cap;
+    rst.arena                 = arena;
+    memset(out, 0, sizeof(*out));
+    return nodus_cmt_ss_load_finalize_block_response(x->store, height, &rst,
+                                                      out);
+}
+
+/**
+ * §A — a non-boundary height returns NULL/0: the legal "leave the set"
+ * response (replay.go:346-360). Cheapest possible drive: height 1 alone.
+ */
+static int t_val_updates_non_boundary(void)
+{
+    gfx_t                                 g;
+    cmt_genesis_doc_t                     doc;
+    cmt_genesis_validator_t               gvals[DNAC_COMMITTEE_SIZE];
+    nodus_cmt_app_ledger_t                *app;
+    nodus_abci_response_finalize_block_t   resp;
+
+    /* inflation OFF (round 2 hardening): this case is about the
+     * validator-updates response alone, not economics; `gfx_open`'s
+     * default `inflation_start_block = 1` would mint on every driven
+     * block, an unrelated interaction this case does not need. */
+    CHECK(gfx_open_n(&g, "vu_nonb", 1, 0ULL) == 0, "version-3 fixture");
+    app = calloc(1, sizeof(*app));
+    CHECK(app != NULL, "alloc");
+    CHECK(gfx_doc(&g, &doc, gvals) == 0, "the completed genesis document");
+    CHECK(nodus_cmt_app_ledger_init(app, g.w, &doc) == CMT_OK, "bind");
+
+    CHECK(vu_drive(g.w, app, 1, &resp) == CMT_OK, "height 1 applies");
+    CHECK(resp.validator_updates == NULL && resp.validator_updates_len == 0,
+          "§A: a non-boundary height returns NULL/0");
+
+    nodus_cmt_app_ledger_release(app);
+    free(app);
+    gfx_close(&g);
+    return 0;
+}
+
+/**
+ * §A — the FIRST boundary (height E) is unavoidably QUIET: both
+ * snapshot(0) and snapshot(E) are written by
+ * `nodus_witness_vset_commit_genesis` in the SAME transaction, from the
+ * SAME unmutated `validators` table (nodus_witness_vset.c) — so a
+ * freshly-derived chain's first boundary always compares a set against
+ * itself. Proves the quiet case without needing any mutation: unchanged
+ * members are not re-announced.
+ *
+ * round 4 (R4-2, MEASURED): this case used to drive `vu_drive`/
+ * `vu_drive_to` (a direct call into `nodus_cmt_app_finalize_block`).
+ * Round 3 measured that pipeline never writes a Comet BlockMeta, so the
+ * committee's tiebreak seed (`v2_seed_block_id`,
+ * nodus_witness_committee.c:178-227 — needs BOTH the `v2_blocks` row AND
+ * a BlockMeta at the lookback height) cannot resolve above height 1 and
+ * this case FAULTed at the boundary. It now drives `vu_host_drive_to`
+ * (the REAL host pipeline `t_d4_empty_blocks_root_stable` establishes —
+ * see that helper's own comment), which writes the BlockMeta itself.
+ */
+static int t_val_updates_quiet_boundary(void)
+{
+    gfx_t                             g;
+    exec_t                            x;
+    cmt_block_id_t                    bid;
+    cmt_pb_response_finalize_block_t  got;
+    cmt_pb_validator_update_t         vu_pool[8];
+    cmt_pb_arena_t                    arena;
+    uint8_t                           arena_buf[1024];
+
+    /* inflation OFF — same reason as t_val_updates_non_boundary above. */
+    CHECK(gfx_open_n(&g, "vu_quiet", 1, 0ULL) == 0, "version-3 fixture");
+    CHECK(exec_init(&x, &g) == 0, "blockexec + real application");
+
+    memset(&bid, 0, sizeof(bid));
+    CHECK(vu_host_drive_to(&x, &bid, 0, (int64_t)VU_EPOCH) == 0,
+          "drive height 1..E through the REAL host pipeline; the first "
+          "boundary applies");
+
+    arena.buf = arena_buf;
+    arena.cap = sizeof(arena_buf);
+    arena.used = 0;
+    CHECK(vu_host_load_updates(&x, (int64_t)VU_EPOCH, &got, vu_pool, 8,
+                               &arena) == CMT_OK,
+          "load the boundary's stored FinalizeBlock response");
+    CHECK(got.validator_updates_len == 0,
+          "§A: a quiet boundary returns validator_updates_len 0");
+
+    exec_free(&x);
+    gfx_close(&g);
+    return 0;
+}
+
+/**
+ * §A — either snapshot ABSENT or UNREADABLE is CMT_FAULT, never an
+ * empty list. Deletes the OLD snapshot (epoch_start 0) after driving to
+ * E-1. MEASURED, not assumed: `nodus_witness_vset_apply_boundary_flips`
+ * (the engine's OWN boundary step that also touches snapshots) reads
+ * snapshot(boundary_height) = snapshot(E), NOT snapshot(0)
+ * (nodus_witness_vset.c) — and treats an ABSENT one as a graceful
+ * pre-S3 skip, not a fault — so deleting snapshot(0) does not disturb
+ * the engine's own internal boundary processing at all; the ONLY reader
+ * of snapshot(0) at this boundary is this package's OWN §A diff
+ * (`nodus_witness_v2_epoch_authority_for_epoch(w, H-E, ...)`), which is
+ * exactly the path this case isolates.
+ */
+static int t_val_updates_missing_snapshot(void)
+{
+    gfx_t                                 g;
+    cmt_genesis_doc_t                     doc;
+    cmt_genesis_validator_t               gvals[DNAC_COMMITTEE_SIZE];
+    nodus_cmt_app_ledger_t                *app;
+    nodus_abci_response_finalize_block_t   resp;
+
+    /* inflation OFF — same reason as t_val_updates_non_boundary above. */
+    CHECK(gfx_open_n(&g, "vu_missing", 1, 0ULL) == 0, "version-3 fixture");
+    app = calloc(1, sizeof(*app));
+    CHECK(app != NULL, "alloc");
+    CHECK(gfx_doc(&g, &doc, gvals) == 0, "the completed genesis document");
+    CHECK(nodus_cmt_app_ledger_init(app, g.w, &doc) == CMT_OK, "bind");
+
+    CHECK(vu_drive_to(g.w, app, 0, VU_EPOCH - 1) == 0, "drive to E-1");
+    CHECK(run_sql(g.w->db,
+              "DELETE FROM validator_set_snapshots WHERE epoch_start = 0")
+              == 0, "remove the OLD snapshot the boundary's diff needs");
+
+    CHECK(vu_drive(g.w, app, VU_EPOCH, &resp) == CMT_FAULT,
+          "§A: a missing snapshot is CMT_FAULT, never an empty list");
+
+    nodus_cmt_app_ledger_release(app);
+    free(app);
+    gfx_close(&g);
+    return 0;
+}
+
+/**
+ * §A — twin-condition boundary diff: the mutated snapshot(E), diffed at
+ * the FIRST boundary (E) against the unmutated, genesis-seeded
+ * snapshot(0), with all THREE update kinds produced in a single pass: an
+ * added member, a power change on an existing member, and a removed
+ * member.
+ *
+ * round 4 (R4-2, MEASURED, replaces rounds 2/3's approach): this case
+ * used to drive to the SECOND boundary (2E), mutating the `validators`
+ * table between E-1 and E so the ENGINE's own
+ * `nodus_witness_vset_commit_next(E)` would build a different snapshot(2E)
+ * live. Two problems, both measured: (a) `vu_drive`'s finalize-block-only
+ * pipeline cannot resolve the committee's tiebreak seed above height 1
+ * (no BlockMeta — see `t_val_updates_quiet_boundary`'s own comment), and
+ * (b) funding the added/doubled self_stake out of the genesis treasury
+ * leaf so the supply invariant would still balance.
+ *
+ * §A's OWN diff (nodus_witness_cmt_app.c ~1504-1674) reads ONLY the two
+ * COMMITTED SNAPSHOTS — `nodus_witness_v2_epoch_authority_for_epoch(w, H)`
+ * and `(w, H-E)` — and never reads the `validators` table at all (that
+ * resolver's own header, nodus_witness_v2_epoch.h:601-609: "nothing here
+ * reads the `validators` table, at any height, ever"). So the same three
+ * update kinds are produced with only ONE boundary (E, not 2E) by
+ * mutating the COMMITTED snapshot(E) row directly — no `validators` row,
+ * no funding, and `vu_host_drive_to` resolves the committee tiebreak seed
+ * the same way `t_val_updates_quiet_boundary` now does.
+ *
+ * The mutated snapshot is built by loading the GENUINE, genesis-seeded
+ * snapshot(E) — identical to snapshot(0), the quiet case's own proof —
+ * copying every entry EXCEPT g_ks[2] (the removal), doubling g_ks[1]'s
+ * `total_stake` (the power change — still a whole multiple of
+ * DNAC_DECIMAL_UNIT, DNAC_SELF_STAKE_AMOUNT already is one), and
+ * appending an 8th, freshly-generated ML-DSA-87 entry (the addition) —
+ * then re-encoding and overwriting the `validator_set_snapshots` row for
+ * epoch_start E directly (test-only — `nodus_witness_vset_insert` would
+ * CONFLICT, -2, on a differing hash for an existing row, by design: that
+ * is the cross-node identity check this fixture deliberately bypasses,
+ * the same class of direct-row mutation `test_v2_epoch.c`'s own
+ * `seed_validator` uses on `validators`).
+ *
+ * The boundary's OTHER consumers of this same snapshot do not fault:
+ * `nodus_witness_vset_apply_boundary_flips(E)` (nodus_witness_vset.c)
+ * runs as part of this SAME block's own processing and DOES consume the
+ * mutated snapshot(E) — its pass 2 (`UPDATE validators SET status=ACTIVE
+ * WHERE pubkey=? AND status=ELIGIBLE`) simply updates ZERO rows for the
+ * added member's pubkey (no `validators` row exists to match, never a
+ * fault); g_ks[2] (dropped from the mutated snapshot) is left ELIGIBLE
+ * rather than re-flipped to ACTIVE — a real but harmless side effect,
+ * since this case never drives past E or asserts anything about the
+ * `validators` table. `nodus_witness_vset_commit_next(E)` then builds
+ * snapshot(2E) from the POST-flip `validators` table, which our
+ * snapshot(E) mutation never touched, and succeeds normally.
+ *
+ * §A's OWN algorithm guarantees every addition/power-change entry
+ * PRECEDES every removal in the response (snap_new order, then snap_old
+ * order) — this case asserts that ordering invariant directly (no
+ * addition/change ever seen after the first removal) rather than
+ * replicating `nodus_validator_top_n`'s own `ORDER BY`, which would make
+ * the test as complex as the code it is checking.
+ *
+ * HOW THIS CAN LIE: combining the three into one mutated snapshot (rather
+ * than three separate single-mutation drives) is a deliberate cost trade
+ * — it does not prove the three kinds are independent of each other, only
+ * that they compose correctly when they occur together in the same
+ * boundary.
+ */
+static int t_val_updates_boundary_diff(void)
+{
+    gfx_t                              g;
+    exec_t                             x;
+    cmt_block_id_t                     bid;
+    cmt_pb_response_finalize_block_t   got;
+    cmt_pb_validator_update_t          vu_pool[16];
+    cmt_pb_arena_t                     arena;
+    uint8_t                            arena_buf[8192];
+    dna_vset_snapshot_t                *old_snap = NULL;
+    dna_vset_snapshot_t                *mutated = NULL;
+    uint8_t                             extra_pk[QGP_DSA87_PUBLICKEYBYTES];
+    uint8_t                             extra_sk[QGP_DSA87_SECRETKEYBYTES];
+    uint8_t                             extra_seed[32];
+    uint8_t                             extra_digest[64];
+    uint8_t                            *blob = NULL;
+    size_t                              enc_len = 0, written = 0, mi = 0, oi;
+    sqlite3_stmt                       *st = NULL;
+    size_t                              i;
+    int                                 found_added = 0, found_changed = 0,
+                                         found_removed = 0;
+    int                                 saw_g1 = 0, saw_g2 = 0;
+    uint64_t expect_changed_power =
+        2ULL * DNAC_SELF_STAKE_AMOUNT / DNAC_DECIMAL_UNIT;
+    uint64_t expect_added_power = DNAC_SELF_STAKE_AMOUNT / DNAC_DECIMAL_UNIT;
+
+    /* inflation OFF — same reason as t_val_updates_non_boundary above. */
+    CHECK(gfx_open_n(&g, "vu_diff", 1, 0ULL) == 0, "version-3 fixture");
+    CHECK(exec_init(&x, &g) == 0, "blockexec + real application");
+
+    CHECK(nodus_witness_vset_get(g.w, VU_EPOCH, &old_snap, NULL) == 0,
+          "load the genesis-seeded snapshot(E)");
+    CHECK(old_snap->active_count == (uint16_t)N_KEYS,
+          "FIXTURE GUARD: genesis seeded snapshot(E) with all N_KEYS "
+          "members");
+
+    mutated = dna_vset_alloc((uint16_t)N_KEYS);
+    CHECK(mutated != NULL, "alloc the mutated snapshot");
+    mutated->epoch = VU_EPOCH;
+    /* selection_ruleset + the all-zero sortition_seed dna_vset_alloc sets
+     * are exactly what TOPN_V1 requires (vset_wire.h). */
+
+    for (oi = 0; oi < old_snap->active_count; oi++) {
+        const dna_vset_entry_t *oe = &old_snap->entries[oi];
+
+        if (memcmp(oe->pubkey, g_ks[2].pk, DNAC_PUBKEY_SIZE) == 0) {
+            saw_g2 = 1;
+            continue;                          /* removal */
+        }
+        CHECK(mi < mutated->active_count, "room for the kept entry");
+        mutated->entries[mi] = *oe;
+        if (memcmp(oe->pubkey, g_ks[1].pk, DNAC_PUBKEY_SIZE) == 0) {
+            mutated->entries[mi].total_stake *= 2;    /* power change */
+            saw_g1 = 1;
+        }
+        mi++;
+    }
+    CHECK(saw_g1 && saw_g2,
+          "FIXTURE GUARD: g_ks[1] and g_ks[2] were both present in the "
+          "genesis-seeded snapshot(E) before this case mutated it");
+    CHECK(mi == (size_t)mutated->active_count - 1,
+          "N_KEYS - 1 members copied verbatim (or doubled)");
+
+    /* addition: a freshly-generated 8th key, appended last */
+    memset(extra_seed, 0x50, sizeof(extra_seed));
+    CHECK(qgp_dsa87_keypair_derand(extra_pk, extra_sk, extra_seed) == 0,
+          "the 8th keypair");
+    CHECK(qgp_sha3_512(extra_pk, DNAC_PUBKEY_SIZE, extra_digest) == 0,
+          "the 8th voter_id");
+    memcpy(mutated->entries[mi].voter_id, extra_digest, 32);
+    memcpy(mutated->entries[mi].pubkey, extra_pk, DNAC_PUBKEY_SIZE);
+    mutated->entries[mi].total_stake = DNAC_SELF_STAKE_AMOUNT;
+    mutated->entries[mi].self_bond   = DNAC_SELF_STAKE_AMOUNT;
+    mutated->entries[mi].commission_bps = 100;
+    mi++;
+    CHECK(mi == (size_t)mutated->active_count, "N_KEYS entries total");
+
+    /* ORCHESTRATOR (round 5, MEASURED): the overwrite below must happen
+     * AFTER heights 1..E-1 are committed, not before height 1.
+     * `validator_set_snapshots` is a leg of `system_state_root`, and the
+     * SYSTEM domain head committed at genesis still carries the ORIGINAL
+     * snapshot's root. Overwritten before height 1, the first block —
+     * which does not touch SYSTEM — trips the engine's untouched-domain
+     * guard ("domain 0 was not declared touched yet its root moved",
+     * `nodus_witness_v2_apply.c` phase 8) and the case never reaches its
+     * boundary. The boundary block at E DOES declare SYSTEM touched, so
+     * a mutation landed just before it is recorded as that block's new
+     * SYSTEM root instead of being refused. */
+    memset(&bid, 0, sizeof(bid));
+    CHECK(vu_host_drive_to(&x, &bid, 0, (int64_t)VU_EPOCH - 1) == 0,
+          "drive height 1..E-1 through the REAL host pipeline, before "
+          "the snapshot(E) overwrite");
+
+    enc_len = dna_vset_encoded_len(mutated);
+    CHECK(enc_len > 0, "the mutated snapshot encodes");
+    blob = (uint8_t *)malloc(enc_len);
+    CHECK(blob != NULL, "alloc");
+    CHECK(dna_vset_encode(mutated, blob, enc_len, &written) == 0 &&
+          written == enc_len, "encode the mutated snapshot");
+    {
+        uint8_t hash[DNA_VSET_HASH_LEN];
+
+        CHECK(dna_vset_hash(mutated, hash) == 0,
+              "hash the mutated snapshot");
+        /* test-only direct overwrite: nodus_witness_vset_insert CONFLICTs
+         * (-2) on a differing hash for an existing row, by design (the
+         * cross-node identity check this fixture deliberately bypasses —
+         * see this case's own doc comment). */
+        CHECK(sqlite3_prepare_v2(g.w->db,
+                "UPDATE validator_set_snapshots SET active_count = ?1, "
+                "snapshot_hash = ?2, snapshot_blob = ?3 "
+                "WHERE epoch_start = ?4", -1, &st, NULL) == SQLITE_OK,
+              "prep");
+        sqlite3_bind_int(st, 1, (int)mutated->active_count);
+        sqlite3_bind_blob(st, 2, hash, DNA_VSET_HASH_LEN, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(st, 3, blob, (int)enc_len, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 4, (sqlite3_int64)VU_EPOCH);
+        CHECK(sqlite3_step(st) == SQLITE_DONE, "overwrite snapshot(E)");
+        CHECK(sqlite3_changes(g.w->db) == 1, "exactly one row updated");
+        sqlite3_finalize(st);
+        st = NULL;
+    }
+    free(blob);
+    blob = NULL;
+    dna_vset_free(&mutated);
+    dna_vset_free(&old_snap);
+
+    CHECK(vu_host_drive_to(&x, &bid, (int64_t)VU_EPOCH - 1,
+                           (int64_t)VU_EPOCH) == 0,
+          "apply the boundary block E; it diffs snapshot(E) [mutated] "
+          "against snapshot(0) [genesis]");
+
+    arena.buf = arena_buf;
+    arena.cap = sizeof(arena_buf);
+    arena.used = 0;
+    CHECK(vu_host_load_updates(&x, (int64_t)VU_EPOCH, &got, vu_pool, 16,
+                               &arena) == CMT_OK,
+          "load the boundary's stored FinalizeBlock response");
+    CHECK(got.validator_updates_len == 3,
+          "§A: exactly one added + one power-changed + one removed");
+
+    for (i = 0; i < got.validator_updates_len; i++) {
+        const cmt_pb_validator_update_t *u = &got.validator_updates[i];
+
+        CHECK(u->pub_key.present, "every update carries a key");
+        if (u->power == 0) {
+            CHECK(memcmp(u->pub_key.key, g_ks[2].pk, DNAC_PUBKEY_SIZE) == 0,
+                  "§A: the ONLY power-0 entry is the removed member");
+            found_removed = 1;
+        } else if (memcmp(u->pub_key.key, g_ks[1].pk,
+                          DNAC_PUBKEY_SIZE) == 0) {
+            CHECK(!found_removed,
+                  "§A: additions/power-changes precede removals");
+            CHECK((uint64_t)u->power == expect_changed_power,
+                  "§A: the power-changed entry carries the NEW power");
+            found_changed = 1;
+        } else if (memcmp(u->pub_key.key, extra_pk,
+                          DNAC_PUBKEY_SIZE) == 0) {
+            CHECK(!found_removed,
+                  "§A: additions/power-changes precede removals");
+            CHECK((uint64_t)u->power == expect_added_power,
+                  "§A: the added entry carries its own power");
+            found_added = 1;
+        } else {
+            CHECK(0, "§A: an update for a pubkey this case did not touch");
+        }
+    }
+    CHECK(found_added && found_changed && found_removed,
+          "§A: all three expected updates were present");
+
+    exec_free(&x);
+    gfx_close(&g);
+    return 0;
+}
+
 /**
  * ORCHESTRATOR delta 4, item A (D-4 rev 3's `create_empty_blocks_interval`,
  * 60 s) — AN EMPTY DECIDED BLOCK.
@@ -2154,6 +2803,201 @@ static int t_finalize_block_empty(void)
           "two block rows committed");
     CHECK(has_state_key(g.w->db, "abciResponsesKey:2") == 1,
           "the second empty block's response is stored too");
+
+    exec_free(&x);
+    gfx_close(&g);
+    return 0;
+}
+
+/**
+ * tokenomics-v3 P1 (D-4) — THE PROPERTY test_pf_ready_after_first_block
+ * (test_v2_preflight.c) can no longer discriminate on its own: TWO
+ * structurally-identical EMPTY, non-boundary blocks commit the SAME
+ * global_root, even when the second block's decided_last_commit carries
+ * a FULL-COMMITTEE COMMIT vote for the first.
+ *
+ * RED on the code this package replaces: the O15C proposer-credit writer
+ * ran on EVERY block (crediting the committed header proposer into the
+ * validator merkle leaf), so `system_state_root` — and therefore
+ * `global_root`/`app_hash` — moved at every height regardless of whether
+ * the block carried any transaction. This exact equality would have
+ * FAILED against that code: root1 (no attendance writer has run yet)
+ * would differ from root2 (one proposer credit landed in the validator
+ * leaf).
+ *
+ * GREEN on this package: `v2_attendance` is out-of-root (D-4) — a credit
+ * lands in that table (proven below, so the equality is not vacuously
+ * true because "nothing happened") but does not touch any leg of
+ * `system_state_root` until the epoch boundary's digest leg commits a
+ * SUMMARY of the whole ended epoch.
+ */
+static int t_d4_empty_blocks_root_stable(void)
+{
+    gfx_t          g;
+    exec_t         x;
+    cmt_block_id_t bid1, bid2;
+    uint8_t        root1[64], root2[64];
+
+    /* round 2 (R2-3, MEASURED): `gfx_open`'s genesis carries
+     * `inflation_start_block = 1` (`cfg_make_v3_real`), so Phase 6f runs
+     * `nodus_witness_v2_emission_apply` on EVERY block
+     * (nodus_witness_v2_apply.c), which accrues into
+     * `epoch_state.epoch_pool_accum` — a leg of `system_state_root`
+     * (`nodus_witness_epoch_root_v2`) — moving the root at every height
+     * for a reason that has nothing to do with attendance, making this
+     * case's own D-4 equality unsatisfiable. `gfx_open_n(..., 1, 0ULL)`
+     * is `gfx_open`'s same one-leaf genesis (n_allocs=1, the shape this
+     * case never touches — it drives no claims) with
+     * `inflation_start_block = 0`, matching the live harness genesis
+     * (`stagef_up_v2.sh`) — the mint path never runs, so the equality
+     * this case asserts measures attendance alone. This case becomes
+     * unconditional (no fixture variant needed at all) once P2 deletes
+     * the mint path entirely — NOT this package's job. */
+    CHECK(gfx_open_n(&g, "d4stable", 1, 0ULL) == 0,
+          "version-3 fixture, inflation OFF");
+    CHECK(exec_init(&x, &g) == 0, "blockexec + real application");
+
+    CHECK(exec_make_block(&x, 1, 0) == 0, "block 1 with ZERO transactions");
+    CHECK(exec_block_id(&x, x.blk, &bid1) == 0 &&
+          block_id_is_complete(&bid1), "block 1's COMPLETE BlockID");
+    CHECK(nodus_cmt_host_apply_verified_block(x.be, &bid1, x.blk, x.state)
+              == CMT_OK, "block 1 applies");
+    CHECK(nodus_witness_v2_committed_global_root(g.w, root1) == 0,
+          "root after block 1");
+
+    /* block 2's decided_last_commit: EVERY validator voted COMMIT for
+     * block 1 — the busiest honest case this lane can carry, chosen
+     * deliberately over the quietest (an all-ABSENT commit would prove
+     * nothing about whether a REAL credit fails to move the root). */
+    CHECK(exec_make_last_commit(&x, 1, &bid1) == 0,
+          "a precommit from every validator for block 1");
+    CHECK(exec_make_block(&x, 2, 0) == 0, "block 2 with ZERO transactions");
+    CHECK(exec_block_id(&x, x.blk, &bid2) == 0 &&
+          block_id_is_complete(&bid2), "block 2's COMPLETE BlockID");
+    CHECK(nodus_cmt_host_apply_verified_block(x.be, &bid2, x.blk, x.state)
+              == CMT_OK, "block 2 applies");
+    CHECK(nodus_witness_v2_committed_global_root(g.w, root2) == 0,
+          "root after block 2");
+
+    CHECK(memcmp(root1, root2, 64) == 0,
+          "D-4: two structurally-identical empty blocks commit the SAME "
+          "global_root, even though block 2's decided_last_commit "
+          "carries a full-committee COMMIT vote crediting block 1");
+
+    /* the credit DID land — proves the equality above is "out of root",
+     * never "the writer did not run" (a vacuous pass). */
+    CHECK(q1(g.w->db, "SELECT COUNT(*) FROM v2_attendance WHERE "
+                      "signed_count > 0") > 0,
+          "v2_attendance recorded the credit even though the root did "
+          "not move");
+
+    exec_free(&x);
+    gfx_close(&g);
+    return 0;
+}
+
+/**
+ * tokenomics-v3 P1 (D-2, Q1) — attendance rows from a decided_last_commit
+ * MIXING all three block_id_flag values: only COMMIT credits
+ * `v2_attendance`; NIL and ABSENT do not, even though every slot here
+ * carries a REAL, validly-signed vote (the apply path does not verify
+ * signatures — `ApplyVerifiedBlock` is by definition past verification —
+ * so this proves the FLAG is what gates the credit, not the presence or
+ * validity of a signature).
+ *
+ * `exec_make_last_commit` signs every slot as a COMMIT (a complete
+ * BlockID yields a COMMIT entry — vote.go:101-123, the doc comment on
+ * that helper). This case then OVERWRITES two slots' `block_id_flag` to
+ * NIL and ABSENT post-hoc: the apply path "reads only the SIZE and each
+ * slot's block_id_flag — it does not verify these signatures" (the same
+ * helper's own doc comment), so tampering the flag after a real signature
+ * was produced is exactly the shape the reference itself would apply
+ * (a NIL or ABSENT `CommitSig` never carries a meaningful signature to
+ * begin with — vote.go's own construction).
+ */
+static int t_attendance_mixed_flags(void)
+{
+    gfx_t          g;
+    exec_t         x;
+    cmt_block_id_t bid1, bid2;
+
+    CHECK(gfx_open(&g, "mixedflags") == 0, "version-3 fixture");
+    CHECK(exec_init(&x, &g) == 0, "blockexec + real application");
+
+    CHECK(exec_make_block(&x, 1, 0) == 0, "block 1 with ZERO transactions");
+    CHECK(exec_block_id(&x, x.blk, &bid1) == 0 &&
+          block_id_is_complete(&bid1), "block 1's COMPLETE BlockID");
+    CHECK(nodus_cmt_host_apply_verified_block(x.be, &bid1, x.blk, x.state)
+              == CMT_OK, "block 1 applies");
+
+    CHECK(exec_make_last_commit(&x, 1, &bid1) == 0,
+          "a real precommit from every validator for block 1");
+    CHECK(x.last_commit.signatures_len >= 3,
+          "FIXTURE GUARD: at least three validators to mix flags over");
+    /* slot 0 stays COMMIT; slot 1 -> NIL; slot 2 -> ABSENT. */
+    x.last_sigs[1].block_id_flag = (int32_t)CMT_PB_BLOCK_ID_FLAG_NIL;
+    x.last_sigs[2].block_id_flag = (int32_t)CMT_PB_BLOCK_ID_FLAG_ABSENT;
+    uint8_t commit_addr[32], nil_addr[32], absent_addr[32];
+    memcpy(commit_addr, x.last_sigs[0].validator_address, 32);
+    memcpy(nil_addr,    x.last_sigs[1].validator_address, 32);
+    memcpy(absent_addr, x.last_sigs[2].validator_address, 32);
+
+    CHECK(exec_make_block(&x, 2, 0) == 0, "block 2 with ZERO transactions");
+    CHECK(exec_block_id(&x, x.blk, &bid2) == 0 &&
+          block_id_is_complete(&bid2), "block 2's COMPLETE BlockID");
+    CHECK(nodus_cmt_host_apply_verified_block(x.be, &bid2, x.blk, x.state)
+              == CMT_OK, "block 2 applies with the mixed-flag commit");
+
+    {
+        sqlite3_stmt *st = NULL;
+        CHECK(sqlite3_prepare_v2(g.w->db,
+                "SELECT signed_count, last_signed_height FROM v2_attendance "
+                "WHERE voter_id = ?1", -1, &st, NULL) == SQLITE_OK, "prep");
+        sqlite3_bind_blob(st, 1, commit_addr, 32, SQLITE_TRANSIENT);
+        CHECK(sqlite3_step(st) == SQLITE_ROW, "COMMIT slot has a row");
+        CHECK(sqlite3_column_int64(st, 0) == 1 &&
+              sqlite3_column_int64(st, 1) == 1,
+              "COMMIT credits signed_count=1, last_signed_height=1 "
+              "(block 2 carries the commit FOR height 1)");
+        sqlite3_finalize(st);
+    }
+    {
+        sqlite3_stmt *st = NULL;
+        CHECK(sqlite3_prepare_v2(g.w->db,
+                "SELECT 1 FROM v2_attendance WHERE voter_id = ?1", -1,
+                &st, NULL) == SQLITE_OK, "prep");
+        sqlite3_bind_blob(st, 1, nil_addr, 32, SQLITE_TRANSIENT);
+        CHECK(sqlite3_step(st) == SQLITE_DONE,
+              "Q1: NIL does not credit — no row at all");
+        sqlite3_finalize(st);
+    }
+    {
+        sqlite3_stmt *st = NULL;
+        CHECK(sqlite3_prepare_v2(g.w->db,
+                "SELECT 1 FROM v2_attendance WHERE voter_id = ?1", -1,
+                &st, NULL) == SQLITE_OK, "prep");
+        sqlite3_bind_blob(st, 1, absent_addr, 32, SQLITE_TRANSIENT);
+        CHECK(sqlite3_step(st) == SQLITE_DONE,
+              "Q1: ABSENT does not credit — no row at all");
+        sqlite3_finalize(st);
+    }
+    /* round 2 (R2-4): the LITERAL 1 this assertion used to compare
+     * against was wrong — the fixture seats DNAC_COMMITTEE_SIZE
+     * validators (exec_make_last_commit builds one COMMIT vote per
+     * member of the height-1 validator set) and this case only
+     * overwrites TWO of them (slot 1 -> NIL, slot 2 -> ABSENT), so
+     * every OTHER slot (0 and 3..6) is still COMMIT and credits its own
+     * row. The three assertions immediately above already PROVE the Q1
+     * property (COMMIT credits; NIL has no row; ABSENT has no row) —
+     * this final count is a sanity check on the WHOLE table, derived
+     * from the real signature list rather than a hardcoded literal, so
+     * it stays correct at any committee size. The discriminating part
+     * of this case is the two ABSENT rows (no row for nil_addr,
+     * absent_addr), not this count. */
+    CHECK(q1(g.w->db, "SELECT COUNT(*) FROM v2_attendance") ==
+          (int64_t)(x.last_commit.signatures_len - 2),
+          "every slot except the two flipped to NIL/ABSENT credited "
+          "exactly one row");
 
     exec_free(&x);
     gfx_close(&g);
@@ -3009,7 +3853,8 @@ static int t_prepare_proposal_item_cap(void)
     const uint32_t                            N = 40;
     uint32_t                                  i;
 
-    CHECK(gfx_open_n(&g, "prep_cap", N) == 0, "40-leaf version-3 fixture");
+    CHECK(gfx_open_n(&g, "prep_cap", N, 1ULL) == 0,
+          "40-leaf version-3 fixture");
     CHECK(exec_init(&x, &g) == 0, "app+host+state fixture (builds and "
           "binds the completed genesis document internally)");
     /* Heap: 40 x DNA_CLAIM_MAX_WIRE (each claim carries up to
@@ -3768,7 +4613,13 @@ int main(void)
         { "crash_window_before_commit", t_crash_window_before_commit },
         { "crash_window_after_commit",  t_crash_window_after_commit },
         { "finalize_block_bound",       t_finalize_block_bound },
+        { "val_updates_non_boundary",   t_val_updates_non_boundary },
+        { "val_updates_quiet_boundary", t_val_updates_quiet_boundary },
+        { "val_updates_missing_snapshot", t_val_updates_missing_snapshot },
+        { "val_updates_boundary_diff",  t_val_updates_boundary_diff },
         { "finalize_block_empty",       t_finalize_block_empty },
+        { "d4_empty_blocks_root_stable", t_d4_empty_blocks_root_stable },
+        { "attendance_mixed_flags",     t_attendance_mixed_flags },
         { "commit",                     t_commit },
         { "claim_items",                t_claim_items },
         { "claim_local_fault_is_block_fault", t_claim_local_fault_is_block_fault },

@@ -117,15 +117,16 @@ int nodus_witness_v2_preflight(nodus_witness_t *w,
         out->ready = 0;
         return 0;
     }
-    /* R3 W3 (D-17 rev 10 (8)) — THE LIVE S14 FLIP: S14 is now the ONLY
+    /* R3 W3 (D-17 rev 10 (8)) — THE LIVE S14 FLIP: S14 was the ONLY
      * accepted schema. Before this wave S10/S11/S12 were accepted because
      * the legacy consensus lane read them directly; that lane is CLOSED in
      * W3 (D-17 rev 10 (9)) and this build derives version-3 chains only,
-     * which climb straight through S13 to S14 (nodus_witness_v2_gen_derive_v3).
+     * which climb straight through S13 to S15 (nodus_witness_v2_gen_derive_v3).
      * A database at any earlier rung is not a chain this preflight can
      * ever call ready, so narrowing the accepted set to one value is not a
-     * loss of coverage — it is the coverage this build actually has. */
-    if (ver != NODUS_V2_SCHEMA_VERSION_S14)
+     * loss of coverage — it is the coverage this build actually has.
+     * tokenomics-v3 P1: the ONE accepted value moves S14 -> S15. */
+    if (ver != NODUS_V2_SCHEMA_VERSION_S15)
         pf_add(out, NODUS_V2_PF_SCHEMA_UNSUPPORTED);
 
     /* ── 2. REQUIRED TABLES ───────────────────────────────────────── */
@@ -263,10 +264,15 @@ int nodus_witness_v2_preflight(nodus_witness_t *w,
      * app hash the chain actually STARTED FROM. Before this delta that
      * comparison target was `nodus_witness_v2_committed_global_root(w)` —
      * the CURRENT committed global root — unconditionally. That is wrong
-     * past height 0: this ledger's global root changes at EVERY block
-     * (Rule N attendance writes the proposer's `last_signed_block` into
-     * the validators leaf, nodus_witness_v2_record_attendance, called
-     * from nodus_witness_v2_apply_block), so from height 1 on the CURRENT
+     * past height 0: at the time this was measured, this ledger's global
+     * root changed at EVERY block (Rule N attendance wrote the proposer's
+     * `last_signed_block` into the validators leaf,
+     * nodus_witness_v2_record_attendance, called from
+     * nodus_witness_v2_apply_block — BOTH retired by tokenomics-v3 P1,
+     * which relocated attendance out-of-root into `v2_attendance` and
+     * moves the root only at the epoch boundary's digest leg; ANY
+     * transaction in a block still moves it, which is why this height-
+     * aware fix remains needed), so from height 1 on the CURRENT
      * root is no longer the GENESIS one and the comparison raised issue
      * 17 on every healthy node past its first block — measured on the
      * Genesis Protocol harness at production constants (evidence kept at
@@ -378,18 +384,20 @@ int nodus_witness_v2_preflight(nodus_witness_t *w,
     if (have_v2_blocks && nodus_witness_v2_supply_check(w) != 0)
         pf_add(out, NODUS_V2_PF_SUPPLY_INCONSISTENT);
 
-    /* ── 9. RULE N — obligation DISCHARGED (O15C) ─────────────────────
+    /* ── 9. RULE N — obligation DISCHARGED (O15C, rewritten P1) ───────
      * O15A raised issue 12 UNCONDITIONALLY because this build had no V2
-     * attendance source. O15C supplied it: the apply engine credits the
-     * committed header proposer inside the one block transaction, before
-     * any root computation (nodus_witness_v2_record_attendance, called
-     * from nodus_witness_v2_apply.c), and the V2 epoch boundary runs the
-     * transplanted leader-blame settlement (nodus_witness_v2_epoch.c —
-     * the legacy bft.c:2587-2723 semantics against the committed
-     * snapshot authority). With the writer present in this build, the
-     * standing issue's own removal condition ("removed when the
-     * live-integration season supplies the writer") is met: the check is
-     * DELETED, the id is retired, never reused.
+     * attendance source. O15C supplied one (proposer-credit); operator O4
+     * (2026-09-23, tokenomics-v3 P1) replaced it with REAL signature
+     * attendance: the apply engine credits every COMMIT-flagged vote of
+     * cometbft's `decided_last_commit` inside the one block transaction,
+     * before any root computation (`nodus_witness_v2_attendance_credit`,
+     * called from nodus_witness_v2_apply.c), and the V2 epoch boundary
+     * evaluates every ACTIVE row against the two-predicate liveness bar
+     * (nodus_witness_v2_epoch.c `v2ep_rule_n` — no base-leader blame).
+     * With the writer present in this build, the standing issue's own
+     * removal condition ("removed when the live-integration season
+     * supplies the writer") is met: the check is DELETED, the id is
+     * retired, never reused.
      *
      * ── 9b. O15C — committed activation authority sanity ─────────────
      * DELETED by O15J Faz 3, with the ceremony it guarded. It raised

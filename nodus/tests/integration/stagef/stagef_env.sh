@@ -431,28 +431,39 @@ stagef_dna_as() {
 # library defaults, read directly from the node's own construction so a
 # scenario's wait budget is derived from the SAME numbers the node runs
 # on, never a second, hand-copied guess:
-#   create_empty_blocks_interval — nodus_witness_cmt_node.c:1700
+#   create_empty_blocks_interval — nodus_witness_cmt_node.c:1761
 #     (`n->config.create_empty_blocks_interval = 60000 * CMT_MILLISECOND`)
-#   timeout_commit                — nodus_witness_cmt_node.c:1699
-#     (`n->config.timeout_commit = 5000 * CMT_MILLISECOND`)
+#   timeout_commit                — nodus_witness_cmt_node.c:1760
+#     (`n->config.timeout_commit = 4000 * CMT_MILLISECOND` — tokenomics-v3
+#     P1 round 5, operator decision S-7: 5000 -> 4000, decision file §1
+#     line 57's 2026-09-23 note)
 # `create_empty_blocks` itself stays the library default `true`
 # (shared/dnac/cmt_config.h:121) — this build does not turn it off.
 #
-# DELTA 1 — MEASURED FACT: STAGEF_CMT_EMPTY_INTERVAL_MS IS NOT THE
-# OBSERVED PACE, IT IS AN UPPER BOUND. Rule N attendance writes the
-# proposer's `last_signed_block` on every single block
-# (nodus_witness_v2_apply.c:3801), so the global root changes at every
-# height and cometbft's `needProofBlock` (state.go:1106-1129, ported at
-# cmt_cs.c:1872) is TRUE at every height in this build — every block is
-# a proof block. A proof block is produced at the `timeout_commit` pace
-# (5 000 ms), not the `create_empty_blocks_interval` pace: measured live,
-# seven nodes committed at roughly one block per 6 s, not one per 60 s.
-# `STAGEF_CMT_EMPTY_INTERVAL_MS` is used below ONLY as the stall
-# detector's budget — a conservative upper bound that stays correct even
-# if this build's `needProofBlock` behaviour ever changed — never as a
-# prediction of how fast blocks will actually arrive.
+# DELTA 1 (HISTORICAL — SUPERSEDED BY tokenomics-v3 P1, see below).
+# Before P1: MEASURED FACT — STAGEF_CMT_EMPTY_INTERVAL_MS was NOT the
+# observed pace, only an upper bound. Rule N attendance wrote the
+# proposer's `last_signed_block` on every single block, so the global
+# root changed at every height and cometbft's `needProofBlock`
+# (state.go:1106-1129, ported at cmt_cs.c:1872) was TRUE at every height
+# in that build — every block was a proof block, produced at the
+# `timeout_commit` pace (5 000 ms at the time this was measured, now
+# 4 000 ms — round 5, S-7), not the `create_empty_blocks_interval` pace:
+# measured live, seven nodes committed at roughly one block per 6 s, not
+# one per 60 s.
+#
+# tokenomics-v3 P1 (D-4): attendance is now out-of-root — a
+# decided_last_commit vote credits `v2_attendance`, which is not a leg of
+# any root, so an EMPTY block no longer moves `system_state_root` and
+# `needProofBlock` is FALSE on an idle chain. STAGEF_CMT_EMPTY_INTERVAL_MS
+# is therefore now the OBSERVED pace again, as D-4 rev 3 always specified
+# — this is exactly the property `test_cmt_empty_blocks.sh` measures
+# directly (>= 45 s between consecutive idle commits) rather than assumes
+# from this comment. Still used below as the stall detector's budget; on
+# THIS build that budget and the expected pace are the same number, which
+# they were not before P1.
 STAGEF_CMT_EMPTY_INTERVAL_MS=60000
-STAGEF_CMT_TIMEOUT_COMMIT_MS=5000
+STAGEF_CMT_TIMEOUT_COMMIT_MS=4000
 export STAGEF_CMT_EMPTY_INTERVAL_MS STAGEF_CMT_TIMEOUT_COMMIT_MS
 
 # stagef_cmt_tip DB — the Comet lane's tip, read from v2_blocks (the
@@ -586,6 +597,23 @@ stagef_cmt_wait_row() {
         if [ "$(( h - start_h ))" -gt "$max_heights" ]; then printf '%s\n' "$h"; return 2; fi
         sleep "$poll_s"
     done
+}
+
+# stagef_voter_id PUBKEY_FILE
+#
+# tokenomics-v3 P1 (D-2, §C) — `v2_attendance.voter_id` is
+# SHA3-512(pubkey)[0..31] (vset_wire.h:121, `nodus_chain_config_derive_
+# witness_id`, nodus_witness_chain_config.c:637-652), the SAME 32-byte
+# value cometbft's own address is. Hashes the RAW pubkey file bytes
+# directly (never the hex text of it) with the openssl CLI, matching the
+# C's one EVP SHA3-512 call over the 2592-byte key, and prints the first
+# 64 hex characters (32 bytes) lowercase. No caller of this function may
+# read `validators.last_signed_block` / `signed_blocks_this_epoch` —
+# those columns are RETIRED (tokenomics-v3 P1, Q2 clean path); attendance
+# is read from `v2_attendance` keyed by this value.
+stagef_voter_id() {
+    local pkfile="$1"
+    openssl dgst -sha3-512 "$pkfile" 2>/dev/null | awk '{print substr($NF,1,64)}'
 }
 
 # stagef_cmt_diff_at_floor [LABEL]

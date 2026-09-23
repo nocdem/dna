@@ -1731,8 +1731,9 @@ static int t_corr_startup(void) {
  * v2_pool_nullifiers, v2_pool_roots) are untouched by the real S12->S14
  * migration — only v2_blocks columns and the new Comet stores change —
  * so the bare PRAGMA is a faithful probe of the gate alone. */
-static int t_s14_flip(void) {
-    printf("11c: R3 W3 — the check RUNS at S14 (D-17 rev 10 (8))\n");
+static int t_s15_flip(void) {
+    printf("11c: the check RUNS at the LIVE rung, now S15 "
+           "(R3 W3 D-17 rev 10 (8), moved S14 -> S15 by tokenomics-v3 P1)\n");
     fixture_t fx;
     CHECK(fx_open(&fx) == 0 && genesis(&fx) == 0, "fixture");
 
@@ -1749,10 +1750,17 @@ static int t_s14_flip(void) {
     CHECK(nodus_witness_v2_pools_startup_check(fx.w) == 0,
           "valid S12 state green before the flip"); OK();
 
-    CHECK(run_sql(fx.w->db, "PRAGMA user_version = 14") == 0,
-          "force user_version=14"); OK();
+    /* tokenomics-v3 P1 (round 2, R2-1) moved the LIVE schema rung S14 ->
+     * S15 (the two out-of-root attendance tables plus the validators
+     * column drop), and `nodus_witness_v2_pools_startup_check`'s accepted
+     * set moved with it. S14 is no longer a rung any chain rests at, so
+     * probing it here would assert the SILENT SKIP this case exists to
+     * forbid — the pin follows the live rung, it does not follow the
+     * number 14. */
+    CHECK(run_sql(fx.w->db, "PRAGMA user_version = 15") == 0,
+          "force user_version=15"); OK();
     CHECK(nodus_witness_v2_pools_startup_check(fx.w) == 0,
-          "valid state at S14 is STILL green (the flip does not make a "
+          "valid state at S15 is STILL green (the flip does not make a "
           "clean chain fail)"); OK();
 
     /* THE KILL. */
@@ -1763,13 +1771,13 @@ static int t_s14_flip(void) {
         "WHERE domain_id=1 AND pool_id=1 AND position=0") == 0, "corrupt");
     CHECK(db_state_digest(fx.w, d1) == 0, "digest");
     CHECK(nodus_witness_v2_pools_startup_check(fx.w) == -1,
-          "corruption at S14 tolerated — the old silent-skip is back");
+          "corruption at S15 tolerated — the old silent-skip is back");
     OK();
     CHECK(db_state_digest(fx.w, d2) == 0 && memcmp(d1, d2, 64) == 0,
-          "startup check mutated/repaired state at S14"); OK();
+          "startup check mutated/repaired state at S15"); OK();
     CHECK(run_sql(fx.w->db, "ROLLBACK") == 0, "rollback");
     CHECK(nodus_witness_v2_pools_startup_check(fx.w) == 0,
-          "state not restored at S14"); OK();
+          "state not restored at S15"); OK();
 
     fx_close(&fx);
     return 0;
@@ -1794,7 +1802,7 @@ int main(void) {
     if (t_inactivity()) return 1;
     if (t_corr_preimage()) return 1;
     if (t_corr_startup()) return 1;
-    if (t_s14_flip()) return 1;
+    if (t_s15_flip()) return 1;
     printf("test_v2_pools: ALL OK (%d checks)\n", g_checks);
     return 0;
 }

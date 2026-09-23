@@ -85,7 +85,6 @@ static void make_validator(dnac_validator_record_t *v,
     memset(v->unstake_destination_pubkey, dest_fill, DNAC_PUBKEY_SIZE);
     v->last_validator_update_block = 0;
     v->consecutive_missed_epochs   = 0;
-    v->last_signed_block           = 0;
 }
 
 /* Assert two validator records are byte-equal (all fields). */
@@ -107,7 +106,6 @@ static void check_record_eq(const dnac_validator_record_t *a,
                  b->unstake_destination_pubkey, DNAC_PUBKEY_SIZE);
     CHECK_EQ(a->last_validator_update_block, b->last_validator_update_block);
     CHECK_EQ(a->consecutive_missed_epochs, b->consecutive_missed_epochs);
-    CHECK_EQ(a->last_signed_block, b->last_signed_block);
 }
 
 int main(void) {
@@ -151,7 +149,7 @@ int main(void) {
     /* ── Scenario 3: Update existing ───────────────────────────────── */
     v.commission_bps = 1000;           /* 10% */
     v.total_delegated = 999999;
-    v.last_signed_block = 42;
+    v.consecutive_missed_epochs = 3;
     rc = nodus_validator_update(&w, &v);
     CHECK_EQ(rc, 0);
 

@@ -657,10 +657,12 @@ static int pf8_open(pf8_fx_t *x, const char *tag, uint8_t salt) {
  * halves are needed. */
 static int pf8_commit_block1(pf8_fx_t *x) {
     /* validator[0]'s identity, reproduced exactly as v3pf_cfg_make built
-     * it for index 0 under this SAME salt, so Rule N attendance
-     * (nodus_witness_v2_record_attendance) finds a real match and
-     * credits it — the mechanism check 5's comment names as what changes
-     * the global root from height 1 on. */
+     * it for index 0 under this SAME salt. Historically (O15C) Rule N
+     * attendance credited this proposer identity and moved the global
+     * root from height 1 on; tokenomics-v3 P1 relocated attendance
+     * out-of-root (D-4), so this identity is now cosmetic — it still
+     * becomes the block's `proposer_address` header field, but no
+     * longer moves anything a preflight check compares against. */
     uint8_t proposer[32];
     {
         uint8_t digest[64];
@@ -735,10 +737,26 @@ static int pf8_commit_block1(pf8_fx_t *x) {
 }
 
 /* ── (a) READY after the first block: the property the harness broke.
- * RED TODAY, exactly at issue 17 — before the fix in this delta, section
- * 5 unconditionally compares the document's app_hash against the
- * CURRENT committed global root, which a Rule N attendance credit at
- * height 1 has already moved past the genesis value. */
+ * At the time this delta landed, RED TODAY meant exactly issue 17 —
+ * before the fix, section 5 unconditionally compared the document's
+ * app_hash against the CURRENT committed global root, which the O15C
+ * proposer-credit Rule N writer had already moved past the genesis
+ * value by height 1.
+ *
+ * tokenomics-v3 P1 NOTE: that specific discriminator is GONE — attendance
+ * is out-of-root now (D-4), so an EMPTY block (this fixture's own
+ * `pf8_commit_block1`, no envelopes, no claims) no longer moves the root
+ * at all, and this case can no longer tell the fixed comparison from the
+ * old buggy one by root movement alone. It still proves a real,
+ * independent property: a healthy chain one block past genesis reports
+ * READY with zero issues and the preflight itself writes nothing. The
+ * "reads block 1's header, not the current root" property that issue 17
+ * actually turns on is proved by `test_pf_app_hash_mismatch_after_first_
+ * block` below via direct corruption, independent of whether the root
+ * naturally moved — that sibling case is the one still pinned to the
+ * mechanism. Making THIS case move the root again would need a real
+ * transaction in the fixture's block; not done here (P1 whitelist did
+ * not include rebuilding this fixture's envelope path). */
 static int test_pf_ready_after_first_block(void) {
     printf("=== R3 W3 delta 8 — READY after the first committed block "
            "===\n");
@@ -770,12 +788,12 @@ static int test_pf_ready_after_first_block(void) {
           "the preflight wrote nothing — committing the block was the "
           "only write, and it happened BEFORE this digest pair");
     CHECK(!has_issue(&r, NODUS_V2_PF_GENESIS_APP_HASH_MISMATCH),
-          "no app_hash mismatch reported one block past genesis — before "
-          "this delta's fix this assertion FAILS (issue 17 fires): check "
-          "5 used to compare against the CURRENT committed root "
-          "unconditionally, and Rule N attendance at height 1 has "
-          "already moved it past the genesis value, exactly the "
-          "harness's measured failure");
+          "no app_hash mismatch reported one block past genesis — "
+          "post-tokenomics-v3-P1 this empty block does not move the "
+          "root at all (attendance is out-of-root, D-4), so this "
+          "assertion no longer discriminates the historical bug by "
+          "itself; test_pf_app_hash_mismatch_after_first_block below "
+          "does, via direct corruption of block 1's header app_hash");
     CHECK(r.n_issues == 0, "a healthy chain one block past genesis is "
           "READY with zero issues");
     CHECK(r.ready == 1, "ready");
@@ -902,11 +920,13 @@ int main(void) {
 
     /* ── 5. O15C — issue 12 is RETIRED, and stays retired.
      * O15A raised RULE_N_ATTENDANCE_SOURCE_ABSENT unconditionally
-     * because the build had no V2 attendance writer; O15C shipped the
-     * writer (nodus_witness_v2_record_attendance inside the apply
-     * engine + the transplanted boundary settlement), which is the
-     * issue's own documented removal condition. It must never be raised
-     * again — a resurrected raise would mean the writer was lost. */
+     * because the build had no V2 attendance writer; O15C shipped a
+     * first writer, and tokenomics-v3 P1 replaced it with
+     * `nodus_witness_v2_attendance_credit` (real signature attendance
+     * from cometbft's decided_last_commit) + the rewritten Rule N
+     * (`v2ep_rule_n`) — the issue's own documented removal condition is
+     * still met. It must never be raised again — a resurrected raise
+     * would mean the writer was lost. */
     {
         nodus_v2_preflight_report_t r;
         CHECK(nodus_witness_v2_preflight(f.w, &r) == 0, "run");
@@ -917,16 +937,17 @@ int main(void) {
               "a fresh database is still not ready (schema/genesis)");
     }
 
-    /* ── 6. SCHEMA: R3 W3 (D-17 rev 10 (8)) — THE LIVE S14 FLIP. Before
-     * this wave S10 (O15C's activation version) cleared this issue; the
-     * flip narrows the accepted set to S14 ALONE, because the old lane's
+    /* ── 6. SCHEMA: R3 W3 (D-17 rev 10 (8)) — THE LIVE SCHEMA FLIP,
+     * tokenomics-v3 P1 moved the accepted value S14 -> S15. Before R3 W3
+     * S10 (O15C's activation version) cleared this issue; the flip
+     * narrows the accepted set to ONE value, because the old lane's
      * consensus schemas (S10-S12) are closed (D-17 rev 10 (9)) and this
      * build derives version-3 chains only. v9 and v12 — a version this
      * function used to ACCEPT — must now BOTH be reported UNSUPPORTED;
-     * only landing at S14 clears it. This is the mirror pin: the
-     * narrowing is real in both directions, not just "S14 was added". */
+     * only landing at S15 clears it. This is the mirror pin: the
+     * narrowing is real in both directions, not just "S15 was added". */
     {
-        nodus_v2_preflight_report_t before_mig, at_v9, at_v12, at_s14;
+        nodus_v2_preflight_report_t before_mig, at_v9, at_v12, at_s15;
         CHECK(nodus_witness_v2_preflight(f.w, &before_mig) == 0, "run");
         CHECK(has_issue(&before_mig, NODUS_V2_PF_SCHEMA_UNSUPPORTED),
               "pre-migration schema must be reported unsupported");
@@ -944,12 +965,12 @@ int main(void) {
               "before the flip and is not any more (D-17 rev 10 (9): "
               "the old lane's schemas are closed)");
 
-        CHECK(nodus_witness_db_migrate_v2s14(f.w) == 0, "migrate to S14");
-        CHECK(nodus_witness_v2_preflight(f.w, &at_s14) == 0, "run");
-        CHECK(!has_issue(&at_s14, NODUS_V2_PF_SCHEMA_UNSUPPORTED),
-              "S14 must clear the schema issue — it is the only accepted "
+        CHECK(nodus_witness_db_migrate_v2s15(f.w) == 0, "migrate to S15");
+        CHECK(nodus_witness_v2_preflight(f.w, &at_s15) == 0, "run");
+        CHECK(!has_issue(&at_s15, NODUS_V2_PF_SCHEMA_UNSUPPORTED),
+              "S15 must clear the schema issue — it is the only accepted "
               "version now");
-        CHECK(at_s14.ready == 0, "still not ready (no genesis document yet)");
+        CHECK(at_s15.ready == 0, "still not ready (no genesis document yet)");
     }
 
     /* ── 7. GENESIS ABSENT is detected on a migrated-but-empty chain. */

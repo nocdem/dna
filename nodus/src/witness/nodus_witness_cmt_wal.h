@@ -249,7 +249,10 @@ typedef struct {
  * `cmt_wal_sync` barrier row and restores `next_seq`. `main_db` is
  * BORROWED and must outlive this handle; the caller keeps it at
  * `synchronous=NORMAL`.
- * The `cmt_wal` and `cmt_wal_sync` tables must already exist (schema S14).
+ * The `cmt_wal` and `cmt_wal_sync` tables must already exist (schema S14;
+ * a chain opened by this build is at S15, the live rung as of
+ * tokenomics-v3 P1 round 5 — S15 does not touch these tables, only
+ * `validators` and the new attendance tables).
  * @return CMT_OK, CMT_FAULT.
  */
 int nodus_cmt_wal_open(nodus_cmt_wal_t *w, sqlite3 *main_db,

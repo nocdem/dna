@@ -23,10 +23,12 @@
  * ledger's global root after the block.
  *
  * ── WHAT THIS LANE DOES NOT DO YET (named, not hidden) ─────────────────
- *   · VALIDATOR UPDATES. `finalize_block` returns none, so a Comet
- *     chain's validator set never moves (R3-T).
  *   · `ExecTxResult.data` is EMPTY — the engine retains no per-item
  *     effect bytes.
+ * VALIDATOR UPDATES ARE WIRED (round 2, §A, tokenomics-v3 P1 D-1/G1):
+ * `finalize_block` returns a diff of the committed authority for the
+ * epoch boundary height against the previous boundary's authority — see
+ * `nodus_cmt_app_finalize_block`'s own comment and `ctx->val_updates`.
  * CLAIMS ARE APPLIED: a claim-classified item is decoded here and
  * applied by the engine inside its own SAVEPOINT, exactly as an
  * envelope is. Only bytes that do not DECODE are coded at this
@@ -222,10 +224,11 @@ extern "C" {
 
 /**
  * The application's context: the ledger handle, the genesis document,
- * the three derived bounds, and the TWO response buffers the ABCI
- * ownership rule requires to persist past the call that fills them. One
- * instance per node; the rows are single-threaded (the consensus event
- * loop calls them in line).
+ * the three derived bounds, and the THREE response buffers the ABCI
+ * ownership rule requires to persist past the call that fills them
+ * (round 2, R2-unblocked §A adds `val_updates` alongside `prep_txs` /
+ * `fb_pb`). One instance per node; the rows are single-threaded (the
+ * consensus event loop calls them in line).
  *
  * `w` and `gendoc` are BORROWED and must outlive the context.
  *
@@ -235,16 +238,16 @@ extern "C" {
  * inside the row that needs it, calloc'd at the top of the call sized to
  * that request, freed via goto-cleanup before every return — see
  * `nodus_cmt_app_prepare_proposal` / `_process_proposal` /
- * `_finalize_block` in the .c file. Only `prep_txs` and `fb_pb` remain
- * context fields, because the RESPONSE each row returns points into
- * them and proxy/app_conn.go's ownership rule keeps that pointer valid
- * until the NEXT call to the SAME method — each row frees its own
- * previous buffer at the TOP of its next call (not at the bottom of the
- * call that filled it) and reallocates sized to what THIS call
- * produces. `nodus_cmt_app_ledger_init` no longer allocates anything;
- * it only computes the three bounds. `nodus_cmt_app_ledger_release`
- * frees whichever of `prep_txs` / `fb_pb` happen to be non-NULL at
- * teardown.
+ * `_finalize_block` in the .c file. Only `prep_txs`, `fb_pb` and (round 2)
+ * `val_updates` remain context fields, because the RESPONSE each row
+ * returns points into them and proxy/app_conn.go's ownership rule keeps
+ * that pointer valid until the NEXT call to the SAME method — each row
+ * frees its own previous buffer at the TOP of its next call (not at the
+ * bottom of the call that filled it) and reallocates sized to what THIS
+ * call produces. `nodus_cmt_app_ledger_init` no longer allocates
+ * anything; it only computes the three bounds. `nodus_cmt_app_ledger_
+ * release` frees whichever of `prep_txs` / `fb_pb` / `val_updates`
+ * happen to be non-NULL at teardown.
  */
 typedef struct {
     nodus_witness_t         *w;       /* the ledger                       */
@@ -299,15 +302,32 @@ typedef struct {
      * never to env_bound. */
     cmt_pb_stored_exec_tx_result_t *fb_pb;
     size_t                          fb_pb_cap;
+
+    /* ── finalize_block's SECOND response buffer, tokenomics-v3 P1 §A
+     * (round 2, previously BLOCKED — this field is what unblocked it):
+     * the ABCI ValidatorUpdates list at an epoch boundary. Same ownership
+     * rule and same lifecycle as `fb_pb` immediately above — REALLOCATED
+     * per boundary call, freed at the TOP of the NEXT FinalizeBlock (not
+     * at the bottom of the call that filled it), sized to that
+     * boundary's own update count (never to CMT_VALSET_MAX_CHANGES; that
+     * constant is only the REFUSAL ceiling — nodus_witness_cmt_app.c's
+     * `nodus_cmt_app_finalize_block`). NULL/0 on every non-boundary
+     * height and on a quiet boundary (no member added, changed or
+     * removed) — the caller need not distinguish the two: both are the
+     * legal "no update" response replay.go:346-360 already treats as
+     * "leave the current set". */
+    cmt_pb_validator_update_t      *val_updates;
+    size_t                          val_updates_cap;
 } nodus_cmt_app_ledger_t;
 
 /**
- * Frees `prep_txs` and `fb_pb` if either is non-NULL — the only two
- * arrays this context still owns across calls (delta 2). Does NOT free
- * `ctx` itself (production callers heap-allocate the context and free
- * it themselves — nodus_witness_cmt_node.c's `nodus_cmt_node_release`).
- * NULL-safe throughout; a partially-built or freshly-bound context (no
- * row has run yet) is safe to release.
+ * Frees `prep_txs`, `fb_pb` and `val_updates` if any is non-NULL — the
+ * only three arrays this context still owns across calls (delta 2; §A
+ * round 2 adds the third). Does NOT free `ctx` itself (production
+ * callers heap-allocate the context and free it themselves —
+ * nodus_witness_cmt_node.c's `nodus_cmt_node_release`). NULL-safe
+ * throughout; a partially-built or freshly-bound context (no row has
+ * run yet) is safe to release.
  */
 void nodus_cmt_app_ledger_release(nodus_cmt_app_ledger_t *ctx);
 

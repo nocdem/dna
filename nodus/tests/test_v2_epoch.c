@@ -61,9 +61,11 @@
 #include "witness/nodus_witness_vset.h"
 #include "witness/nodus_witness_roots_v2.h"
 #include "witness/nodus_witness_db.h"
+#include "witness/nodus_witness_emission.h"  /* DNAC_DECIMAL_UNIT (§12e-i) */
 #include "nodus/nodus_chain_config.h"
 #include "nodus/nodus_types.h"
 #include "dnac/dnac.h"
+#include "dnac/cmt_pb.h"        /* CMT_PB_BLOCK_ID_FLAG_COMMIT (Q1)      */
 #include "dnac/validator.h"
 #include "dnac/ledger_ids.h"
 #include "dnac/vset_wire.h"
@@ -526,13 +528,88 @@ static int fx_reopen(fixture_t *fx) {
     return 0;
 }
 
+/* round 2 (R2-2) — every CURRENTLY ACTIVE validator's voter_id (SHA3-512
+ * of its pubkey, truncated to 32 bytes — vset_wire.h's own key, the
+ * SAME derivation `rn_block` below already uses), queried LIVE from the
+ * `validators` table rather than any fixture-side key list: different
+ * cases in this file seed different subsets of `g_pk[]` via `vspec_t`,
+ * so a hardcoded index list would silently stop matching whichever case
+ * changed its own seeding. `addrs` is capped at N_KEYS (10) — this
+ * file's whole validator pool — so the query itself refuses to overrun
+ * it rather than truncate silently. */
+static int fx_active_voters(fixture_t *fx, uint8_t addrs[N_KEYS][32],
+                            size_t *n_out) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(fx->w->db,
+            "SELECT pubkey FROM validators WHERE status = ?1", -1, &st,
+            NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int(st, 1, (int)DNAC_VALIDATOR_ACTIVE);
+    size_t n = 0;
+    int rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        if (n >= N_KEYS) { sqlite3_finalize(st); return -1; }
+        const void *pk = sqlite3_column_blob(st, 0);
+        int pklen = sqlite3_column_bytes(st, 0);
+        uint8_t digest[64];
+        if (pklen != (int)DNAC_PUBKEY_SIZE || !pk ||
+            qgp_sha3_512((const uint8_t *)pk, DNAC_PUBKEY_SIZE, digest)
+                != 0) {
+            sqlite3_finalize(st);
+            return -1;
+        }
+        memcpy(addrs[n], digest, 32);
+        n++;
+    }
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) return -1;
+    *n_out = n;
+    return 0;
+}
+
 /* Apply one zero-envelope block at the next height. Plants the legacy
- * lookback row a boundary needs BEFORE applying. */
+ * lookback row a boundary needs BEFORE applying.
+ *
+ * round 2 (R2-2, MEASURED): once R2-1 lands the attendance tables in the
+ * base schema, Rule N evaluates every ACTIVE row against REAL
+ * attendance — a fixture driving blocks WITHOUT `blk->cmt.votes_*`
+ * credits nobody, so every ACTIVE validator misses every boundary and
+ * two consecutive misses AUTO_RETIRE the whole set (Rule N working
+ * correctly, not a defect) — but a case whose SUBJECT is something else
+ * entirely (graduation, restart, a staking envelope, determinism) must
+ * not have its validator set dissolve underneath it. `fx_block` now
+ * feeds a FULL-COMMITTEE COMMIT vote on every block above the initial
+ * height, keeping Rule N a no-op for every case that drives through it.
+ * `test_rule_n_liveness`'s own `rn_block`/`rn_drive` (below) are
+ * UNTOUCHED — that case deliberately drives PARTIAL attendance and must
+ * keep doing so; it does not call this function.
+ *
+ * LIFETIME NOTE: `addrs`/`flags` are this function's own stack arrays;
+ * `*out_blk = b` copies the `nodus_v2_block_t` (including the pointers
+ * into them) but NOT their storage. Safe only because
+ * `nodus_witness_v2_apply_block` runs (and this function returns) before
+ * any caller could dereference `out_blk->cmt.votes_address` — the one
+ * caller that reads `out_blk` at all (test_v2_epoch.c's own §2 boundary
+ * case) reads only `.n_envs`. A future caller must not read
+ * `out_blk->cmt.*` after this function returns. */
 static int fx_block(fixture_t *fx, nodus_v2_block_t *out_blk, int *rc_out) {
     uint64_t h = fx->height + 1;
     if (h % E == 0 && seed_legacy_block(fx, h - 1) != 0) return -1;
     nodus_v2_block_t b;
     mk_block(&b, h);
+    uint8_t addrs[N_KEYS][32];
+    int32_t flags[N_KEYS];
+    if (h > 1) {
+        size_t n = 0;
+        if (fx_active_voters(fx, addrs, &n) != 0) return -1;
+        if (n > 0) {
+            for (size_t i = 0; i < n; i++)
+                flags[i] = CMT_PB_BLOCK_ID_FLAG_COMMIT;
+            b.cmt.votes_address = (const uint8_t (*)[32])addrs;
+            b.cmt.votes_block_id_flag = flags;
+            b.cmt.votes_len = n;
+        }
+    }
     int rc = nodus_witness_v2_apply_block(fx->w, &b);
     if (rc_out) *rc_out = rc;
     if (rc == 0 || rc == 1 || rc == 2) fx->height = h;
@@ -732,6 +809,43 @@ static int test_derivation(void) {
         CHECK(hbig + CD > (uint64_t)INT64_MAX,
               "the fixture height must actually overflow the bound");
 
+        /* round 5 (R5-3): `v2ep_graduate` now resolves the EFFECTIVE
+         * snapshot at `hbig` first and defers any candidate still an
+         * entry of it — with NO snapshot committed for `hbig` at all,
+         * that resolution would itself fail (-2, "unreadable"), which is
+         * ALSO an honest fail-closed answer but not the SPECIFIC guard
+         * (the unlock-height overflow check, deeper in the candidate
+         * loop) this case is named for and exists to reach. Seed a
+         * minimal synthetic one-member snapshot at `hbig` whose member
+         * is NOT g_pk[6] (a synthetic pubkey), so the resolver succeeds,
+         * key 6 is correctly found absent from it (never deferred), and
+         * the candidate loop actually reaches the overflow guard. */
+        {
+            dna_vset_snapshot_t *hs = dna_vset_alloc(1);
+            CHECK(hs != NULL, "alloc synthetic snapshot");
+            hs->epoch = hbig;
+            memset(hs->entries[0].pubkey, 0xAB, DNA_VSET_PUBKEY_LEN);
+            uint8_t full[64];
+            CHECK(qgp_sha3_512(hs->entries[0].pubkey, DNA_VSET_PUBKEY_LEN,
+                               full) == 0, "hash synthetic pubkey");
+            memcpy(hs->entries[0].voter_id, full, DNA_VSET_VOTER_ID_LEN);
+            hs->entries[0].total_stake    = 1000;
+            hs->entries[0].self_bond      = 1000;
+            hs->entries[0].commission_bps = 100;
+            uint8_t *hbuf = malloc(DNA_VSET_MAX_ENC_LEN);
+            CHECK(hbuf != NULL, "alloc encode buffer");
+            size_t hlen = 0;
+            uint8_t hhash[64];
+            CHECK(dna_vset_encode(hs, hbuf, DNA_VSET_MAX_ENC_LEN, &hlen)
+                      == 0 && dna_vset_hash(hs, hhash) == 0,
+                  "encode+hash synthetic snapshot");
+            dna_vset_free(&hs);
+            CHECK(nodus_witness_vset_insert(fx.w, hbig, hbuf, hlen, hhash,
+                                            0) == 0,
+                  "seed synthetic snapshot at hbig");
+            free(hbuf);
+        }
+
         /* EXEMPT from the two-stage rule (fx_genesis note): this whole
          * probe lives inside a transaction the test itself rolls back,
          * and NO block is ever driven on this fixture afterwards — so
@@ -868,16 +982,44 @@ static int test_derivation(void) {
 static int test_boundary_chain(void) {
     printf("\n§2-§5 graduation / replay / commission / flips\n");
     fixture_t fx;
+    /* round 5 (R5-3) note: keys 3 and 6 are seeded RETIRING/AUTO_RETIRED
+     * directly IN THE SPECS, before `fx_genesis`'s own
+     * `nodus_witness_vset_commit_genesis` call runs — exactly the
+     * `test_rule_n_retiring_excluded` pattern, and for the SAME reason:
+     * `nodus_validator_top_n` (status IN (ACTIVE, ELIGIBLE) only) never
+     * selects a RETIRING/AUTO_RETIRED row, so both are ALREADY absent
+     * from snapshot(0) and snapshot(E) the moment they are built. Before
+     * round 5 both were seeded ACTIVE and flipped by direct SQL AFTER
+     * the freeze (modeling "already RETIRING/AUTO_RETIRED before this
+     * boundary" the same way `test_rule_n_retiring_excluded` always
+     * has) — that ordering put both keys INSIDE the frozen snapshot(E),
+     * which R5-3 now DEFERS graduation for (a candidate still an entry
+     * of the snapshot taking effect this boundary is left untouched).
+     * Seeding pre-freeze instead keeps this test's actual SUBJECT
+     * (graduation payout, flips, replay, next-boundary non-regraduation)
+     * unaffected: everything below this point still graduates exactly
+     * at boundary E, because neither key was ever a snapshot member. */
     static const vspec_t specs[7] = {
-        { 0, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0,    0 },
-        { 1, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0,    0 },
-        { 2, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0,    0 },
-        { 3, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0,    0 },
-        { 4, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 777,  E },
-        { 5, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 888,  2 * E },
-        { 6, BOND_BIG,  DNAC_VALIDATOR_ACTIVE, 250, 0,    0 },
+        { 0, BOND_BASE, DNAC_VALIDATOR_ACTIVE,       100, 0,    0 },
+        { 1, BOND_BASE, DNAC_VALIDATOR_ACTIVE,       100, 0,    0 },
+        { 2, BOND_BASE, DNAC_VALIDATOR_ACTIVE,       100, 0,    0 },
+        { 3, BOND_BASE, DNAC_VALIDATOR_AUTO_RETIRED, 100, 0,    0 },
+        { 4, BOND_BASE, DNAC_VALIDATOR_ACTIVE,       100, 777,  E },
+        { 5, BOND_BASE, DNAC_VALIDATOR_ACTIVE,       100, 888,  2 * E },
+        { 6, BOND_BIG,  DNAC_VALIDATOR_RETIRING,     250, 0,    0 },
     };
-    CHECK(fx_genesis(&fx, "chain", specs, 7, 7) == 0, "genesis");
+    /* n_active_count = 6, not 7: the D-11 active_count invariant counts
+     * every row NOT YET GRADUATED (ACTIVE stays counted; RETIRING stays
+     * counted until it actually graduates — rt_native.c:3381,
+     * "self_stake stays untouched and active_count is NOT [decremented]"
+     * at UNSTAKE-request time) MINUS AUTO_RETIRED (decremented the SAME
+     * step Rule N sets it — v2ep_rule_n). So the honest baseline here is
+     * 5 ACTIVE (0,1,2,4,5) + 1 RETIRING-but-not-yet-graduated (6) = 6;
+     * key 3 (AUTO_RETIRED) is NOT counted, modeling that Rule N already
+     * decremented it in a prior, unmodeled cycle — the SAME fact the
+     * pre-round-5 fixture modeled explicitly with a later SQL UPDATE
+     * (removed below, now baked into this baseline instead). */
+    CHECK(fx_genesis(&fx, "chain", specs, 7, 6) == 0, "genesis");
 
     /* key 7 joins AFTER the genesis snapshots were frozen but BEFORE the
      * V2 genesis, so it is bonded, absent from snapshot(E) — the flip
@@ -903,27 +1045,32 @@ static int test_boundary_chain(void) {
         CHECK(run_sql(fx.w->db, sql) == 0, "supply top-up");
     }
     CHECK(run_sql(fx.w->db,
-                  "UPDATE validator_stats SET value = 8 "
-                  "WHERE key = 'active_count'") == 0, "count 8");
+                  "UPDATE validator_stats SET value = 7 "
+                  "WHERE key = 'active_count'") == 0, "count 7 (6 + key 7)");
 
     /* UNSTAKE-shaped pre-state: key 6 RETIRING with its bond intact —
      * exactly what the O11 UNSTAKE apply leaves behind (the principal
-     * release is DEFERRED to this boundary). */
+     * release is DEFERRED to this boundary). `unstake_commit_block`
+     * cannot be set through `vspec_t`/`seed_validator`, so it is still
+     * set here by direct mutation — AFTER the freeze, which is fine:
+     * it does not change key 6's STATUS (already RETIRING since specs),
+     * so it cannot change snapshot(E)'s membership either. */
     {
         dnac_validator_record_t v;
         CHECK(val_get(&fx, 6, &v) == 0, "get 6");
-        v.status = (uint8_t)DNAC_VALIDATOR_RETIRING;
         v.unstake_commit_block = 3;
-        CHECK(nodus_validator_update(fx.w, &v) == 0, "RETIRING");
+        CHECK(nodus_validator_update(fx.w, &v) == 0, "unstake_commit_block");
     }
-    /* A snapshot member that has LEFT the bonded states: pass 2's
-     * `AND status = ELIGIBLE` predicate must refuse to resurrect it. */
-    {
-        dnac_validator_record_t v;
-        CHECK(val_get(&fx, 3, &v) == 0, "get 3");
-        v.status = (uint8_t)DNAC_VALIDATOR_AUTO_RETIRED;
-        CHECK(nodus_validator_update(fx.w, &v) == 0, "AUTO_RETIRED");
-    }
+    /* Neither key 6 (RETIRING) nor key 3 (AUTO_RETIRED) is a member of
+     * ANY committed snapshot (both were non-ACTIVE/non-ELIGIBLE before
+     * `fx_genesis`'s own commit ran) — the pre-round-5 comment here
+     * explaining a SEPARATE active_count correction for key 3 is GONE
+     * because that correction is now baked into the genesis baseline
+     * (n_active_count = 6, above). What remains true and IS still
+     * discriminating below: only key 6's RETIRING-origin graduation may
+     * move active_count at the boundary (7 -> 6) — key 3's AUTO_RETIRED-
+     * origin graduation must NOT move it a second time (D-11); a build
+     * that (wrongly) decremented for both would land on 5, not 6. */
 
     /* Stage 2 — the pre-chain state is now FINAL, so the genesis
      * DomainHead roots commit exactly what the first driven block will
@@ -946,7 +1093,7 @@ static int test_boundary_chain(void) {
         CHECK(v.commission_bps == 100 && v.pending_commission_bps == 777,
               "the pending commission has NOT activated mid-epoch");
         CHECK(q1(fx.w, "SELECT value FROM validator_stats WHERE "
-                       "key='active_count'") == 8,
+                       "key='active_count'") == 7,
               "active_count untouched mid-epoch");
         CHECK(q1(fx.w, "SELECT COUNT(*) FROM validator_set_snapshots") == 2,
               "only the two genesis-seeded snapshots exist");
@@ -1020,10 +1167,30 @@ static int test_boundary_chain(void) {
         OK();
     }
 
-    /* the counter, and the invariant the whole transition exists to keep */
+    /* the counter, and the invariant the whole transition exists to keep.
+     * tokenomics-v3 P1 (D-11): TWO graduates fire at this boundary now
+     * (key 6 RETIRING, key 3 AUTO_RETIRED), but only ONE of them may
+     * decrement active_count here — the RETIRING-origin one (key 6). A
+     * real Rule N AUTO_RETIRE flip decrements active_count in the SAME
+     * step it sets the status, so by the time key 3 reaches this
+     * boundary as AUTO_RETIRED, the count must already reflect that
+     * decrement. The fixture flips key 3 via raw SQL (no Rule N pass
+     * runs in this test), so it models that prior decrement explicitly:
+     * count is set to 8 at line ~906 (7 genesis + late-joiner key 7),
+     * then dropped to 7 right after key 3 is flipped to AUTO_RETIRED,
+     * with a comment there explaining why. Starting from that honest
+     * baseline of 7, THIS boundary's graduation sweep must decrement
+     * exactly once more — for key 6 only, per D-11 — landing on 6. A
+     * regression that double-decrements for the AUTO_RETIRED-origin
+     * graduate too would land on 5, not 6; this assertion is what
+     * catches that. */
     CHECK(q1(fx.w, "SELECT value FROM validator_stats WHERE "
-                   "key='active_count'") == 7,
-          "active_count decremented by exactly one");
+                   "key='active_count'") == 6,
+          "active_count decremented by exactly one at this boundary "
+          "(D-11: only for the RETIRING-origin graduate, key 6 — key 3's "
+          "AUTO_RETIRED-origin graduation does not decrement again, "
+          "since Rule N already did when it set that status — see the "
+          "comment above)");
     CHECK(nodus_witness_v2_supply_check(fx.w) == 0,
           "the supply gate is GREEN after the bond moved into a UTXO");
     OK();
@@ -1068,14 +1235,58 @@ static int test_boundary_chain(void) {
         CHECK(v.status == (uint8_t)DNAC_VALIDATOR_ACTIVE,
               "a snapshot member is (re)seated ACTIVE");
         CHECK(val_get(&fx, 3, &v) == 0, "get 3");
-        CHECK(v.status == (uint8_t)DNAC_VALIDATOR_AUTO_RETIRED,
-              "pass 2's ELIGIBLE predicate refuses to resurrect a "
-              "snapshot member that left the bonded states");
+        /* tokenomics-v3 P1 (D-11, round 5 note): AUTO_RETIRED graduates
+         * the SAME boundary it is found at (v2ep_graduate runs at step 2,
+         * BEFORE the flips at step 4), so by the time the flips run
+         * validator 3 is already UNSTAKED, not AUTO_RETIRED. Since round
+         * 5 (R5-3), validator 3 was ALSO never a member of snapshot(E) in
+         * the first place (seeded AUTO_RETIRED before the genesis freeze,
+         * above) — pass 2 walks ONLY the snapshot's own entries, so it
+         * never visits validator 3's row at all; there is nothing here
+         * for "AND status = ELIGIBLE" to refuse. The PROPERTY this case
+         * pins ("a graduated row is never resurrected by the flips") is
+         * unchanged; the MECHANISM is "pass 2 never reaches it" rather
+         * than "pass 2 reaches it and declines" (that second mechanism —
+         * a candidate still IN the effective snapshot, deferred, RETIRING
+         * at flip time — is pinned separately, see the graduation
+         * deferral test). */
+        CHECK(v.status == (uint8_t)DNAC_VALIDATOR_UNSTAKED,
+              "validator 3 graduated to UNSTAKED at this boundary and "
+              "the flips do not touch it (never a snapshot member)");
+        CHECK(v.self_stake == 0,
+              "D-11: the AUTO_RETIRED graduate's bond moved into its "
+              "release UTXO too");
         CHECK(val_get(&fx, 6, &v) == 0, "get 6");
         CHECK(v.status == (uint8_t)DNAC_VALIDATOR_UNSTAKED,
-              "the freshly graduated row is not resurrected either");
+              "validator 6 graduated the same way, same reason — not a "
+              "snapshot member, so the flips do not touch it either");
         OK();
         printf("  ok: flips demote/seat/never resurrect\n");
+    }
+
+    /* D-11: validator 3's release UTXO exists too — the SAME boundary
+     * graduated TWO candidates (RETIRING key 6 AND AUTO_RETIRED key 3),
+     * ORDER BY pubkey ASC over their union. */
+    {
+        uint8_t gid3[64], nul3[64];
+        CHECK(nodus_witness_v2_epoch_grad_id(fx.chain_id, E, g_pk[3], gid3)
+              == 0, "grad_id 3");
+        CHECK(nodus_witness_v2_epoch_grad_nullifier(gid3, nul3) == 0,
+              "nul 3");
+        utxo_row_t r3;
+        CHECK(utxo_get(fx.w, nul3, &r3) == 0, "utxo probe 3");
+        CHECK(r3.found, "D-11: the AUTO_RETIRED graduate released a UTXO "
+                        "too, no cut to principal");
+        CHECK(r3.amount == BOND_BASE,
+              "the release pays validator 3's ACTUAL bond");
+        CHECK(memcmp(r3.owner, g_fp[3], 128) == 0,
+              "owner is validator 3's unstake_destination_fp");
+        CHECK(r3.unlock_block == E + CD,
+              "unlock = H + DNAC_UNSTAKE_COOLDOWN_BLOCKS, same as any "
+              "other graduate");
+        OK();
+        printf("  ok: D-11 AUTO_RETIRED graduates alongside RETIRING, "
+               "same boundary, bond returned\n");
     }
 
     /* the next snapshot exists and the boundary's roots/metadata landed */
@@ -1111,9 +1322,13 @@ static int test_boundary_chain(void) {
                        "path");
         CHECK(db_state_digest(fx.w, d1) == 0, "digest");
         CHECK(memcmp(d0, d1, 64) == 0, "replay wrote nothing");
+        /* tokenomics-v3 P1 (D-11): TWO graduates at this boundary now
+         * (RETIRING key 6 AND AUTO_RETIRED key 3), so TWO graduation
+         * UTXOs — the replay must not create a THIRD. */
         CHECK(q1(fx.w, "SELECT COUNT(*) FROM utxo_set WHERE "
-                       "output_index = 200") == 1,
-              "exactly ONE graduation UTXO exists after the replay");
+                       "output_index = 200") == 2,
+              "exactly TWO graduation UTXOs exist after the replay "
+              "(D-11: key 6 RETIRING + key 3 AUTO_RETIRED)");
         OK();
         printf("  ok: replay is a no-op, no second release\n");
     }
@@ -1140,8 +1355,8 @@ static int test_boundary_chain(void) {
         CHECK(fx_drive_to(&fx, 2 * E) == 0, "drive to 2E");
         CHECK(q1(fx.w, "SELECT COUNT(*) FROM utxo_set "
                        "WHERE output_index = 200") == grads_before,
-              "an UNSTAKED row is not selected by the RETIRING scan — "
-              "no second release");
+              "an UNSTAKED row is not selected by the RETIRING/"
+              "AUTO_RETIRED scan (D-11) — no second release");
         uint8_t gid2[64], nul2[64];
         CHECK(nodus_witness_v2_epoch_grad_id(fx.chain_id, 2 * E, g_pk[6],
                                              gid2) == 0, "grad_id 2E");
@@ -1151,7 +1366,7 @@ static int test_boundary_chain(void) {
         CHECK(utxo_get(fx.w, nul2, &r) == 0, "probe");
         CHECK(!r.found, "no 2E-height release for the same validator");
         CHECK(q1(fx.w, "SELECT value FROM validator_stats WHERE "
-                       "key='active_count'") == 7,
+                       "key='active_count'") == 6,
               "active_count did not drop a second time");
         /* and the 2E pending commission DID activate now */
         dnac_validator_record_t v5;
@@ -1220,19 +1435,34 @@ static int test_boundary_chain(void) {
  * ════════════════════════════════════════════════════════════════════ */
 
 /* Build a chain with TWO RETIRING rows, seeding the validators in the
- * caller's order, and drive it exactly to the first boundary. */
+ * caller's order, and drive it exactly to the first boundary.
+ *
+ * round 5 (R5-3) note: keys 5 and 6 are now RETIRING in a LOCAL, mutable
+ * copy of the caller's spec array BEFORE `fx_genesis`'s own
+ * `nodus_witness_vset_commit_genesis` call — the SAME
+ * `test_rule_n_retiring_excluded` / `test_boundary_chain` pattern, for
+ * the SAME reason: `nodus_validator_top_n` never selects a RETIRING row,
+ * so both are absent from snapshot(0)/snapshot(E) the moment they are
+ * built, and R5-3's deferral (which only holds back a candidate still an
+ * entry of the snapshot taking effect this boundary) does not apply —
+ * both still graduate exactly at E, which is this test's actual subject.
+ * Before round 5 both were seeded ACTIVE and flipped by direct SQL
+ * AFTER the freeze, which put both INSIDE the frozen snapshot(E) and is
+ * now deferred by R5-3. active_count's baseline is UNCHANGED by this
+ * reordering (still `(int)n`): RETIRING does not decrement active_count
+ * at UNSTAKE-request time regardless of when the status was set
+ * (rt_native.c:3381) — only AUTO_RETIRED does, and neither row is ever
+ * AUTO_RETIRED here. */
 static int multi_build(fixture_t *fx, const char *tag,
                        const vspec_t *specs, size_t n) {
-    if (fx_genesis(fx, tag, specs, n, (int)n) != 0) return -1;
-    /* Between the stages: the snapshots are frozen with both rows still
-     * ACTIVE (so the boundary must refuse to resurrect them once they
-     * graduate), and the genesis root commits them as RETIRING. */
-    for (int k = 5; k <= 6; k++) {
-        dnac_validator_record_t v;
-        if (nodus_validator_get(fx->w, g_pk[k], &v) != 0) return -1;
-        v.status = (uint8_t)DNAC_VALIDATOR_RETIRING;
-        if (nodus_validator_update(fx->w, &v) != 0) return -1;
+    if (n > 7) return -1;
+    vspec_t local[7];
+    memcpy(local, specs, n * sizeof(vspec_t));
+    for (size_t i = 0; i < n; i++) {
+        if (local[i].key == 5 || local[i].key == 6)
+            local[i].status = (uint8_t)DNAC_VALIDATOR_RETIRING;
     }
+    if (fx_genesis(fx, tag, local, n, (int)n) != 0) return -1;
     if (fx_v2_genesis(fx) != 0) return -1;
     return fx_drive_to(fx, E);
 }
@@ -1499,18 +1729,27 @@ static int test_faults(void) {
         "F45 snapshot persist"
     };
 
+    /* round 5 (R5-3) note: keys 5 and 6 must be RETIRING BEFORE
+     * `fx_genesis`'s own snapshot freeze — the `multi_build` /
+     * `test_boundary_chain` pattern, same reason: a candidate still an
+     * entry of the snapshot taking effect this boundary is now DEFERRED
+     * (not evaluated at all — the per-candidate loop `continue`s before
+     * ever reaching `v2ep_release_utxo` or a fault point), which would
+     * leave F40-F42 with no candidate to inject against. A local mutable
+     * copy of `specs` carries the pre-freeze status; `nodus_validator_
+     * top_n` then never selects either row into snapshot(0)/snapshot(E). */
+    vspec_t local_specs[7];
+    memcpy(local_specs, specs, sizeof(specs));
+    for (size_t i = 0; i < 7; i++) {
+        if (local_specs[i].key == 5 || local_specs[i].key == 6)
+            local_specs[i].status = (uint8_t)DNAC_VALIDATOR_RETIRING;
+    }
+
     fixture_t f, t;
-    CHECK(fx_genesis(&f, "fault", specs, 7, 7) == 0, "genesis F");
-    CHECK(fx_genesis(&t, "twin", specs, 7, 7) == 0, "genesis T");
+    CHECK(fx_genesis(&f, "fault", local_specs, 7, 7) == 0, "genesis F");
+    CHECK(fx_genesis(&t, "twin", local_specs, 7, 7) == 0, "genesis T");
     for (int pass = 0; pass < 2; pass++) {
         fixture_t *x = pass ? &t : &f;
-        /* between the stages — see the two-stage note on fx_genesis */
-        for (int k = 5; k <= 6; k++) {
-            dnac_validator_record_t v;
-            CHECK(nodus_validator_get(x->w, g_pk[k], &v) == 0, "get");
-            v.status = (uint8_t)DNAC_VALIDATOR_RETIRING;
-            CHECK(nodus_validator_update(x->w, &v) == 0, "RETIRING");
-        }
         CHECK(fx_v2_genesis(x) == 0, "v2 genesis");
         CHECK(fx_drive_to(x, E - 1) == 0, "drive to E-1");
     }
@@ -1631,22 +1870,30 @@ static int test_faults(void) {
 static int test_malformed_row(void) {
     printf("\n§10 legacy-malformed RETIRING row\n");
     fixture_t fx;
-    CHECK(fx_genesis(&fx, "malf", g_plain7, 7, 7) == 0, "genesis");
-
-    /* BOTH mutations sit between the fixture stages. The malformed
-     * fingerprint is NOT planted mid-chain: `validators` feeds the
-     * SYSTEM root, so a post-genesis write would be caught by the
-     * untouched-domain guard on the very next block and this test would
-     * pass for the WRONG reason — a generic out-of-band-write reject
-     * instead of the graduation's writable-shape refusal. Seeding it
-     * pre-genesis is also the honest model of the case: a legacy chain
-     * carrying a malformed row from before the V2 lane existed. */
-    {
-        dnac_validator_record_t v;
-        CHECK(val_get(&fx, 6, &v) == 0, "get 6");
-        v.status = (uint8_t)DNAC_VALIDATOR_RETIRING;
-        CHECK(nodus_validator_update(fx.w, &v) == 0, "RETIRING");
+    /* round 5 (R5-3) note: key 6 is RETIRING in a LOCAL copy of
+     * `g_plain7` (the shared array itself is `const` and used by other
+     * tests) BEFORE `fx_genesis`'s own snapshot freeze — the
+     * `multi_build` / `test_boundary_chain` pattern, same reason: a
+     * candidate still an entry of the effective snapshot is now DEFERRED
+     * before `v2ep_graduate` ever calls `nodus_validator_get` /
+     * `nodus_witness_v2_epoch_val_rec_ok` on it, which would make this
+     * case's actual subject — activation obligation 1, the
+     * legacy-malformed-row refusal — unreachable. */
+    vspec_t local7[7];
+    memcpy(local7, g_plain7, sizeof(g_plain7));
+    for (size_t i = 0; i < 7; i++) {
+        if (local7[i].key == 6)
+            local7[i].status = (uint8_t)DNAC_VALIDATOR_RETIRING;
     }
+    CHECK(fx_genesis(&fx, "malf", local7, 7, 7) == 0, "genesis");
+
+    /* the malformed fingerprint is NOT planted mid-chain: `validators`
+     * feeds the SYSTEM root, so a post-genesis write would be caught by
+     * the untouched-domain guard on the very next block and this test
+     * would pass for the WRONG reason — a generic out-of-band-write
+     * reject instead of the graduation's writable-shape refusal. Seeding
+     * it pre-genesis is also the honest model of the case: a legacy
+     * chain carrying a malformed row from before the V2 lane existed. */
     /* Break the destination fingerprint DIRECTLY in the row — the shape
      * a legacy lane could have written and the V2 lane must refuse to
      * pay out to. Uppercase hex is the narrowest possible break: the
@@ -2326,6 +2573,1549 @@ static int test_authority_large_height(void) {
 
 /* ════════════════════════════════════════════════════════════════════ */
 
+/* ════════════════════════════════════════════════════════════════════
+ * §10  RULE N — tokenomics-v3 P1 (D-3): the liveness/AUTO_RETIRE matrix
+ *
+ * Real signature attendance ONLY — no field is hand-written into
+ * `v2_attendance` or `validators.consecutive_missed_epochs`; every
+ * credit comes from a real decided_last_commit vote (`rn_block` below,
+ * mirroring test_v2_econ.c's fx_block_by/fx_drive), exactly as
+ * nodus_cmt_app_finalize_block populates blk->cmt from a real ABCI
+ * request.
+ * ════════════════════════════════════════════════════════════════════ */
+
+/* Apply the next block, crediting a COMMIT vote for every key in
+ * `attend[]` (n_attend entries, 0 legal). `h == 1` never carries votes
+ * (execution.go's own precondition: no previous commit to report). */
+static int rn_block(fixture_t *fx, const int *attend, size_t n_attend,
+                    int *rc_out) {
+    uint64_t h = fx->height + 1;
+    if (h % E == 0 && seed_legacy_block(fx, h - 1) != 0) return -1;
+    if (n_attend > 8) return -1;
+    nodus_v2_block_t b;
+    mk_block(&b, h);
+    uint8_t addrs[8][32];
+    int32_t flags[8];
+    if (h > 1 && n_attend > 0) {
+        for (size_t i = 0; i < n_attend; i++) {
+            uint8_t digest[64];
+            if (qgp_sha3_512(g_pk[attend[i]], DNAC_PUBKEY_SIZE, digest) != 0)
+                return -1;
+            memcpy(addrs[i], digest, 32);
+            flags[i] = CMT_PB_BLOCK_ID_FLAG_COMMIT;
+        }
+        b.cmt.votes_address = (const uint8_t (*)[32])addrs;
+        b.cmt.votes_block_id_flag = flags;
+        b.cmt.votes_len = n_attend;
+    }
+    int rc = nodus_witness_v2_apply_block(fx->w, &b);
+    if (rc_out) *rc_out = rc;
+    if (rc == 0) fx->height = h;
+    if (rc != 0)
+        fprintf(stderr, "rn_block: height %llu failed (rc=%d): %s\n",
+                (unsigned long long)h, rc, b.out_reason);
+    return rc == 0 ? 0 : -1;
+}
+
+/* Drive to `target`; every block in [from, to] credits `attend[]`. */
+static int rn_drive(fixture_t *fx, uint64_t target, const int *attend,
+                    size_t n_attend, uint64_t from, uint64_t to) {
+    while (fx->height < target) {
+        uint64_t h = fx->height + 1;
+        int rc = 0;
+        int in_range = (h >= from && h <= to);
+        if (rn_block(fx, in_range ? attend : NULL, in_range ? n_attend : 0,
+                    &rc) != 0)
+            return -1;
+    }
+    return 0;
+}
+
+static int test_rule_n_liveness(void) {
+    printf("\n\xc2\xa7" "10 Rule N liveness matrix (tokenomics-v3 P1, D-3)\n");
+
+    /* round 5 (R5-2) note, re-derived for round 6's WEIGHT floor: TWO
+     * extra always-passing members (3, 4) were added — with only 3
+     * members, retiring validator 1 would leave 2 equal seatable members
+     * for the next epoch, and the floor refuses that: power P = 2p,
+     * max = p, (P - max) = p is NOT > P*2/3 = floor(4p/3), so this
+     * case's whole epoch-2 section would assert something false. With 5
+     * equal members (all genesis-seeded, active_since_block 1, so all
+     * tenured), retiring the ONE (validator 1) leaves 4 equal seatable
+     * members: P = 4p, (P - max) = 3p > floor(8p/3) — allowed, the
+     * smallest equal set the weight floor lets through, so the ordinary
+     * AUTO_RETIRE path this case actually tests still runs
+     * (p = BOND_BASE / DNAC_DECIMAL_UNIT = 10^7). Keys 3 and 4 attend the IDENTICAL
+     * blocks validator 0 already does in both epochs (added to the
+     * `only0`/`both`/`who0`/`both02` attend arrays below), so they never
+     * miss and never affect the counts this case asserts. */
+    static const vspec_t specs[5] = {
+        { 0, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+        { 1, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+        { 2, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+        { 3, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+        { 4, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+    };
+    fixture_t fx;
+    CHECK(fx_genesis(&fx, "rulen", specs, 5, 5) == 0, "genesis");
+    CHECK(fx_v2_genesis(&fx) == 0, "v2 genesis");
+
+    /* `required` is the EXACT P1 threshold: the smallest signed_count for
+     * which signed_count*10000 >= E*DNAC_LIVENESS_THRESHOLD_BPS holds
+     * (round 3: 5000, not the retired 8000). `required` itself must
+     * PASS and `required - 1` must FAIL — both proven as a fixture guard
+     * before anything is asserted about the engine. */
+    const uint64_t required =
+        (E * (uint64_t)DNAC_LIVENESS_THRESHOLD_BPS + 10000ULL - 1) /
+        10000ULL;
+    CHECK(required > 1 && required < E,
+          "FIXTURE GUARD: required must be reachable inside one epoch");
+    CHECK(required * 10000ULL >= E * (uint64_t)DNAC_LIVENESS_THRESHOLD_BPS,
+          "FIXTURE GUARD: required clears the bar");
+    CHECK((required - 1) * 10000ULL <
+          E * (uint64_t)DNAC_LIVENESS_THRESHOLD_BPS,
+          "FIXTURE GUARD: required-1 does NOT clear the bar — the exact "
+          "boundary");
+
+    /* Epoch 1 (heights 1..E): validator 0 attends the last `required`
+     * blocks (P1 exact pass, P2 trivially satisfied — its last vote is
+     * in the LAST block of the epoch); validator 1 attends the last
+     * `required-1` blocks (P1 exact MISS, one short); validator 2 never
+     * attends (misses both predicates). Both 0 and 1 share their last
+     * `required-1` blocks so P2 cannot be what distinguishes them — ONLY
+     * P1 differs. */
+    {
+        int both[4]  = { 0, 1, 3, 4 };
+        int only0[3] = { 0, 3, 4 };
+        CHECK(rn_drive(&fx, E - required, NULL, 0, 0, 0) == 0,
+              "quiet run-up to E-required");
+        CHECK(rn_drive(&fx, E - required + 1, only0, 3,
+                       E - required + 1, E - required + 1) == 0,
+              "validators 0, 3, 4's extra block");
+        CHECK(rn_drive(&fx, E, both, 4, E - required + 2, E) == 0,
+              "validators 0, 1, 3, 4 share the remaining required-1 "
+              "blocks");
+        CHECK(fx.height == E, "drove exactly to the first boundary");
+    }
+
+    {
+        dnac_validator_record_t v0, v1, v2;
+        CHECK(val_get(&fx, 0, &v0) == 0 && val_get(&fx, 1, &v1) == 0 &&
+              val_get(&fx, 2, &v2) == 0, "get all three at E");
+        CHECK(v0.consecutive_missed_epochs == 0,
+              "P1 exact pass (required) + P2 pass -> no miss");
+        CHECK(v1.consecutive_missed_epochs == 1,
+              "P1 exact miss (required-1) -> miss, despite P2 passing");
+        CHECK(v2.consecutive_missed_epochs == 1,
+              "never attended -> miss (both predicates fail)");
+        CHECK(v0.status == (uint8_t)DNAC_VALIDATOR_ACTIVE &&
+              v1.status == (uint8_t)DNAC_VALIDATOR_ACTIVE &&
+              v2.status == (uint8_t)DNAC_VALIDATOR_ACTIVE,
+              "one miss is not enough to AUTO_RETIRE");
+        CHECK(q1(fx.w, "SELECT value FROM validator_stats WHERE "
+                       "key='active_count'") == 5,
+              "active_count untouched by a single miss");
+    }
+    OK();
+    printf("  ok: epoch 1 — P1 exact boundary, miss vs pass\n");
+
+    /* Epoch 2 (heights E+1..2E): validator 0 (+3, +4) attend fully again
+     * (stay at 0 misses); validator 1 attends NOTHING this time (second
+     * consecutive miss -> AUTO_RETIRED, active_count -1, exactly once);
+     * validator 2 attends FULLY this time (a pass resets its counter to
+     * 0, proving the reset is not itself a decrement toward AUTO_RETIRE). */
+    {
+        int who0[3] = { 0, 3, 4 };
+        int both02[4] = { 0, 2, 3, 4 };
+        CHECK(rn_drive(&fx, 2 * E - required, who0, 3, E + 1,
+                       2 * E - required) == 0,
+              "validators 0, 3, 4's run-up in epoch 2");
+        CHECK(rn_drive(&fx, 2 * E, both02, 4, 2 * E - required + 1, 2 * E)
+                  == 0,
+              "validators 0, 2, 3, 4 share the last `required` blocks");
+        CHECK(fx.height == 2 * E, "drove exactly to the second boundary");
+    }
+
+    {
+        dnac_validator_record_t v0, v1, v2, v3, v4;
+        CHECK(val_get(&fx, 0, &v0) == 0 && val_get(&fx, 1, &v1) == 0 &&
+              val_get(&fx, 2, &v2) == 0 && val_get(&fx, 3, &v3) == 0 &&
+              val_get(&fx, 4, &v4) == 0, "get all five at 2E");
+        CHECK(v0.consecutive_missed_epochs == 0,
+              "validator 0: second consecutive pass, still 0");
+        CHECK(v1.status == (uint8_t)DNAC_VALIDATOR_AUTO_RETIRED,
+              "validator 1: TWO consecutive misses -> AUTO_RETIRED "
+              "(DNAC_AUTO_RETIRE_EPOCHS == 2); the next set is 4 equal "
+              "members, (P - max) = 3p > P*2/3, so the round-6 weight "
+              "floor does not block this retirement");
+        CHECK(v2.consecutive_missed_epochs == 0 &&
+              v2.status == (uint8_t)DNAC_VALIDATOR_ACTIVE,
+              "validator 2: a PASS resets the counter to 0, not merely "
+              "decrements it");
+        CHECK(v3.consecutive_missed_epochs == 0 &&
+              v3.status == (uint8_t)DNAC_VALIDATOR_ACTIVE &&
+              v4.consecutive_missed_epochs == 0 &&
+              v4.status == (uint8_t)DNAC_VALIDATOR_ACTIVE,
+              "FIXTURE GUARD: validators 3 and 4 never missed either "
+              "epoch");
+        CHECK(q1(fx.w, "SELECT value FROM validator_stats WHERE "
+                       "key='active_count'") == 4,
+              "active_count dropped by EXACTLY one for the ONE "
+              "AUTO_RETIRE, not per-miss and not twice");
+    }
+    OK();
+    printf("  ok: epoch 2 — two consecutive misses AUTO_RETIREs, a pass "
+           "resets to 0, active_count drops exactly once, the weight "
+           "floor does not block a retirement that leaves 4 equal "
+           "members\n");
+
+    fx_close(&fx);
+    return 0;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ * round 2 — Rule N edge cases owed from round 1's own "NOT DONE" list:
+ * the P2 window's exact edges, RETIRING exclusion, twin determinism
+ * across a real attendance-bearing boundary, and fault injection at the
+ * two NEW attendance stages.
+ * ════════════════════════════════════════════════════════════════════ */
+
+static int test_rule_n_p2_window(void) {
+    printf("\n\xc2\xa7" "11a Rule N P2 window — exact edges (H-W passes, "
+           "H-W-1 fails, 0 fails)\n");
+
+    static const vspec_t specs[3] = {
+        { 0, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+        { 1, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+        { 2, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+    };
+    fixture_t fx;
+    CHECK(fx_genesis(&fx, "p2win", specs, 3, 3) == 0, "genesis");
+    CHECK(fx_v2_genesis(&fx) == 0, "v2 genesis");
+
+    const uint64_t W = (uint64_t)DNAC_SETTLEMENT_ATTENDANCE_WINDOW_BLOCKS;
+    const uint64_t required =
+        (E * (uint64_t)DNAC_LIVENESS_THRESHOLD_BPS + 10000ULL - 1) /
+        10000ULL;
+    CHECK(required > 0 && required <= E - W,
+          "FIXTURE GUARD: `required` consecutive-enough blocks fit "
+          "before the window edge, with room for a quiet run-up");
+
+    /* A vote FED at block h credits `last_signed_height = h-1` (D-2: the
+     * commit a block carries is FOR the previous height — `rn_block`'s
+     * own comment above states the same rule). So to make a validator's
+     * STORED last_signed_height land exactly on H-W, its LAST FED block
+     * must be H-W+1, not H-W (test_rule_n_liveness escapes this because
+     * ITS last vote is fed at block E, storing E-1 >= H-W trivially).
+     *
+     * validator 0 (key 0): LAST FED block H-W+1 -> stored last_signed_
+     * height == H-W — P1 passes at the exact bar (the same `required`
+     * test_rule_n_liveness already proves is exact); P2 passes at the
+     * exact window edge (>=). validator 1 (key 1): the SAME `required`
+     * count, but its LAST FED block is H-W -> stored last_signed_height
+     * == H-W-1, one short of the window — P1 still passes (same count),
+     * P2 fails (< H-W). validator 2 (key 2): never attends at all —
+     * last_signed_height stays 0, the OTHER named P2 failure ("0
+     * fails"). The two windows OVERLAP everywhere except each one's own
+     * unique edge block, so both are driven in THREE stages: validator
+     * 1's unique first block, the shared overlap, then validator 0's
+     * unique last block. */
+    int v0[1] = { 0 };
+    int v1[1] = { 1 };
+    int both01[2] = { 0, 1 };
+
+    CHECK(rn_drive(&fx, E - W - required, NULL, 0, 0, 0) == 0,
+          "quiet run-up");
+    CHECK(rn_drive(&fx, E - W - required + 1, v1, 1,
+                   E - W - required + 1, E - W - required + 1) == 0,
+          "validator 1's unique (first) attended block");
+    CHECK(rn_drive(&fx, E - W, both01, 2,
+                   E - W - required + 2, E - W) == 0,
+          "validators 0 and 1 share the overlap");
+    CHECK(rn_drive(&fx, E - W + 1, v0, 1, E - W + 1, E - W + 1) == 0,
+          "validator 0's unique (last) attended block");
+    CHECK(rn_drive(&fx, E, NULL, 0, 0, 0) == 0, "quiet run to the boundary");
+    CHECK(fx.height == E, "drove exactly to the boundary");
+
+    {
+        dnac_validator_record_t r0, r1, r2;
+        CHECK(val_get(&fx, 0, &r0) == 0 && val_get(&fx, 1, &r1) == 0 &&
+              val_get(&fx, 2, &r2) == 0, "get all three");
+        CHECK(r0.consecutive_missed_epochs == 0,
+              "P2 EXACT PASS: last_signed_height == H-W");
+        CHECK(r1.consecutive_missed_epochs == 1,
+              "P2 EXACT FAIL: last_signed_height == H-W-1, one short");
+        CHECK(r2.consecutive_missed_epochs == 1,
+              "P2 FAIL: never signed, last_signed_height == 0");
+    }
+    OK();
+    printf("  ok: P2 window — H-W passes, H-W-1 fails, 0 fails\n");
+    fx_close(&fx);
+    return 0;
+}
+
+static int test_rule_n_retiring_excluded(void) {
+    printf("\n\xc2\xa7" "11b Rule N — RETIRING rows are not evaluated\n");
+
+    static const vspec_t specs[2] = {
+        { 0, BOND_BASE, DNAC_VALIDATOR_ACTIVE,   100, 0, 0 },
+        { 1, BOND_BIG,  DNAC_VALIDATOR_RETIRING, 100, 0, 0 },
+    };
+    fixture_t fx;
+    CHECK(fx_genesis(&fx, "retexcl", specs, 2, 2) == 0, "genesis");
+
+    /* round 5 (R5-3) note: validator 1 is seeded RETIRING BEFORE
+     * `fx_genesis`'s own `nodus_witness_vset_commit_genesis` call runs,
+     * so `nodus_validator_top_n` (status IN (ACTIVE, ELIGIBLE) only)
+     * never selects it into snapshot(0) or snapshot(E) — it graduates
+     * normally at E, R5-3's deferral (which only holds back a candidate
+     * still an entry of the EFFECTIVE snapshot) does not apply. This
+     * test's outcome is therefore unchanged by round 5.
+     *
+     * validator 1 already carries ONE Rule N miss from a PRIOR epoch —
+     * seeded directly, BETWEEN the two genesis stages, the SAME
+     * placement test_faults() uses for its own hand-set RETIRING rows
+     * (its own comment: mutating validators state AFTER fx_v2_genesis
+     * would drift against what that stage already committed). If Rule N
+     * evaluated this RETIRING row, a second miss here would push it to
+     * 2 (AUTO_RETIRE); proving it stays at 1 is proof Rule N's own
+     * UPDATE never touched this row — only graduation's did. */
+    {
+        dnac_validator_record_t v;
+        CHECK(nodus_validator_get(fx.w, g_pk[1], &v) == 0, "get key 1");
+        v.consecutive_missed_epochs = 1;
+        CHECK(nodus_validator_update(fx.w, &v) == 0,
+              "seed one prior miss");
+    }
+    CHECK(fx_v2_genesis(&fx) == 0, "v2 genesis");
+
+    int v0[1] = { 0 };
+    CHECK(rn_drive(&fx, E, v0, 1, 2, E) == 0,
+          "validator 0 fully attended; validator 1 (RETIRING) gets none");
+    CHECK(fx.height == E, "drove exactly to the boundary");
+
+    {
+        dnac_validator_record_t r0, r1;
+        CHECK(val_get(&fx, 0, &r0) == 0 && val_get(&fx, 1, &r1) == 0,
+              "get both");
+        CHECK(r0.consecutive_missed_epochs == 0,
+              "validator 0: fully attended, no miss");
+        CHECK(r1.status == (uint8_t)DNAC_VALIDATOR_UNSTAKED,
+              "validator 1: graduated normally (the RETIRING path, not "
+              "AUTO_RETIRE)");
+        CHECK(r1.consecutive_missed_epochs == 1,
+              "Rule N: RETIRING rows are not evaluated — the counter "
+              "this validator carried BEFORE the boundary is UNCHANGED, "
+              "even though it received ZERO attendance and graduated in "
+              "the SAME block");
+    }
+    OK();
+    printf("  ok: a RETIRING row's Rule N counter survives its own "
+           "graduation untouched\n");
+    fx_close(&fx);
+    return 0;
+}
+
+static int test_rule_n_twin_determinism(void) {
+    printf("\n\xc2\xa7" "11c Rule N — twin determinism across a real "
+           "attendance-driven boundary\n");
+
+    static const vspec_t specs[3] = {
+        { 0, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+        { 1, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+        { 2, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+    };
+    fixture_t a, b;
+    CHECK(fx_genesis(&a, "twindet_a", specs, 3, 3) == 0, "genesis a");
+    CHECK(fx_genesis(&b, "twindet_b", specs, 3, 3) == 0, "genesis b");
+    CHECK(fx_v2_genesis(&a) == 0, "v2 genesis a");
+    CHECK(fx_v2_genesis(&b) == 0, "v2 genesis b");
+
+    /* IDENTICAL attendance history on both: validators 0 and 2 attend
+     * fully, validator 1 never does — a genuine miss-bearing boundary
+     * (not a quiet one), so the digest comparison actually exercises the
+     * attendance digest/reset legs, not just an empty pass-through. */
+    int who02[2] = { 0, 2 };
+    CHECK(rn_drive(&a, E, who02, 2, 2, E) == 0, "drive a");
+    CHECK(rn_drive(&b, E, who02, 2, 2, E) == 0, "drive b");
+    CHECK(a.height == E && b.height == E, "both at the boundary");
+
+    uint8_t da[64], db[64];
+    CHECK(db_state_digest(a.w, da) == 0, "digest a");
+    CHECK(db_state_digest(b.w, db) == 0, "digest b");
+    CHECK(memcmp(da, db, 64) == 0,
+          "two independently-driven fixtures, IDENTICAL attendance "
+          "history, produce a byte-identical whole-DB digest");
+
+    {
+        dnac_validator_record_t v1a, v1b;
+        CHECK(val_get(&a, 1, &v1a) == 0 && val_get(&b, 1, &v1b) == 0,
+              "get validator 1 on both");
+        CHECK(v1a.consecutive_missed_epochs == 1 &&
+              v1b.consecutive_missed_epochs == 1,
+              "FIXTURE GUARD: the miss actually happened on both");
+    }
+    OK();
+    printf("  ok: twin fixtures agree byte-for-byte through a real "
+           "attendance-bearing boundary\n");
+    fx_close(&a);
+    fx_close(&b);
+    return 0;
+}
+
+static int test_rule_n_attendance_fault_stages(void) {
+    printf("\n\xc2\xa7" "11d Rule N fault points at the two NEW attendance "
+           "stages\n");
+
+    static const vspec_t specs[3] = {
+        { 0, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+        { 1, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+        { 2, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+    };
+    static const nodus_v2_apply_fail_t pts[2] = {
+        V2AP_FAIL_AFTER_ATTENDANCE_DIGEST,
+        V2AP_FAIL_AFTER_ATTENDANCE_RESET
+    };
+    static const char *names[2] = {
+        "attendance digest written", "signed_count reset"
+    };
+
+    for (size_t i = 0; i < 2; i++) {
+        fixture_t fx;
+        char tag[32];
+
+        snprintf(tag, sizeof(tag), "attfault%zu", i);
+        CHECK(fx_genesis(&fx, tag, specs, 3, 3) == 0, "genesis");
+        CHECK(fx_v2_genesis(&fx) == 0, "v2 genesis");
+        /* `fx_drive_to`/`fx_block` (round 2, R2-2) feed a FULL-COMMITTEE
+         * COMMIT vote per block, so by E-1 there is REAL, non-trivial
+         * attendance behind the digest/reset stages this case injects
+         * at. */
+        CHECK(fx_drive_to(&fx, E - 1) == 0,
+              "drive to E-1 with real attendance behind it");
+        CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_attendance WHERE "
+                       "signed_count > 0") == 3,
+              "FIXTURE GUARD: real attendance accumulated for all three");
+
+        /* the SAME reason test_faults() plants this before taking the
+         * entry digest: fx_block_inject seeds it lazily, and that INSERT
+         * autocommits OUTSIDE the block transaction, so digesting first
+         * would compare a pre-row snapshot against a post-row one. */
+        CHECK(seed_legacy_block(&fx, E - 1) == 0, "legacy lookback");
+
+        uint8_t entry[64];
+        CHECK(db_state_digest(fx.w, entry) == 0, "entry digest");
+
+        int rc = 0;
+        CHECK(fx_block_inject(&fx, pts[i], &rc) == 0,
+              "an injected fault AT this stage rolls back with a "
+              "byte-identical whole-DB digest");
+        CHECK(rc == -2, "boundary failure is a NODE FAULT, never a verdict");
+
+        uint8_t now[64];
+        CHECK(db_state_digest(fx.w, now) == 0, "digest");
+        CHECK(memcmp(entry, now, 64) == 0,
+              "the fixture is still at its pre-block state");
+        CHECK(q1f(fx.w, "SELECT COUNT(*) FROM v2_attendance_epoch WHERE "
+                        "epoch_start = %llu", 0ULL) == 0,
+              "no attendance digest row survived the rollback");
+        CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_attendance WHERE "
+                       "signed_count = 0") == 0,
+              "signed_count was NOT reset — the reset step never "
+              "committed");
+
+        /* clean retry: the SAME boundary, uninjected, lands both stages */
+        CHECK(fx_block(&fx, NULL, &rc) == 0 && rc == 0,
+              "the clean retry commits");
+        CHECK(q1f(fx.w, "SELECT COUNT(*) FROM v2_attendance_epoch WHERE "
+                        "epoch_start = %llu", 0ULL) == 1,
+              "the clean retry wrote exactly one digest row for epoch 0");
+        CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_attendance WHERE "
+                       "signed_count > 0") == 0,
+              "the clean retry reset every signed_count to 0");
+
+        printf("  ok: %s fault point rolls back cleanly; the clean "
+               "retry lands both stages\n", names[i]);
+        fx_close(&fx);
+    }
+    OK();
+    return 0;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * round 3 (R3-1, operator 2026-09-23): the property the 50% bar BUYS —
+ * a jittery-but-healthy cluster clears it where the retired 80% bar
+ * could not have. All three members are genesis-seeded and therefore
+ * entries of snapshot(0) — the round-5 (R5-1) duty check
+ * (`nodus_witness_v2_epoch_authority_for_epoch(w, H-E)`) resolves to
+ * that snapshot at this fixture's boundary (H=E, H-E=0,
+ * `nodus_witness_vset_commit_genesis` seeds it — fx_genesis, above), and
+ * all three are entries of it, so all three still have a duty here; this
+ * test's outcome is unchanged by round 5.
+ * ════════════════════════════════════════════════════════════════════ */
+
+/* A block commits on MORE than two-thirds of the committee's signatures
+ * (decision file §3's round-5 correction entry): with THREE members that
+ * is exactly TWO per block, and this case rotates WHICH one is left out
+ * round-robin (height h excludes member h % 3) — network jitter, not a
+ * chronically slow node, since no member is EVER excluded twice in a
+ * row. Every member therefore signs exactly 2 of every 3 blocks: ~66.7%
+ * average attendance, comfortably ABOVE the 50% bar (5000 bps) and BELOW
+ * the RETIRED 80% bar (8000 bps) — the exact arithmetic the operator's
+ * decision cites, corrected round 5: this is the WORST-case floor a
+ * healthy cluster sits at (q/n for n=3, q=2), not a ceiling nothing can
+ * cross — a healthier cluster (no rotation, every member almost always
+ * present) would clear well above two-thirds. Height 1 never carries a
+ * vote regardless of which set is passed (rn_block's own h>1 gate), so
+ * it does not disturb the rotation's shape. */
+static int test_rule_n_jittery_cluster(void) {
+    printf("\n\xc2\xa7" "11e Rule N — jittery-but-healthy cluster: "
+           "quorum-only rotating attendance clears the 50%% bar for "
+           "EVERY member (would have failed every member at the "
+           "retired 80%% bar)\n");
+
+    static const vspec_t specs[3] = {
+        { 0, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+        { 1, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+        { 2, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+    };
+    fixture_t fx;
+    CHECK(fx_genesis(&fx, "jitter", specs, 3, 3) == 0, "genesis");
+    CHECK(fx_v2_genesis(&fx) == 0, "v2 genesis");
+
+    /* R4-1: the boundary block (step 6 of nodus_witness_v2_epoch_boundary_
+     * apply, round 2's S-2 ordering) resets EVERY row's signed_count to 0
+     * AFTER settlement (step 3) and Rule N (step 4) have already read it —
+     * the engine is correct to do this (round 4 brief). Drive only to
+     * E − 1 here, so the raw counters are still live, and read the
+     * FIXTURE GUARDs at that height; the boundary block (E) is driven
+     * separately below, and only the OUTCOME (consecutive_missed_epochs,
+     * status) is asserted after it. */
+    for (uint64_t h = fx.height + 1; h <= E - 1; h++) {
+        int excluded = (int)(h % 3);
+        int attend[2];
+        size_t k = 0;
+        for (int m = 0; m < 3; m++) {
+            if (m != excluded) attend[k++] = m;
+        }
+        int rc = 0;
+        CHECK(rn_block(&fx, attend, k, &rc) == 0 && rc == 0,
+              "quorum-only rotating block");
+    }
+    CHECK(fx.height == E - 1, "drove to the block before the boundary");
+
+    {
+        /* FIXTURE GUARD: the rotation really did produce ~2/3 attendance
+         * for everyone, not some other shape — 2/3 clears 5000 bps
+         * (required today, E * 5000 / 10000) but would NOT have cleared
+         * 8000 bps (E * 8000 / 10000) at the SAME count. This is the
+         * exact arithmetic named in the constant's own comment
+         * (dnac.h, DNAC_LIVENESS_THRESHOLD_BPS) and in the decision
+         * file's §3 last entry — proven here, not merely asserted. Read
+         * BEFORE the boundary block: the boundary's step 6 zeroes
+         * signed_count for every row, so a read after it would see 0. */
+        uint64_t sc0 = 0, sc1 = 0, sc2 = 0;
+        CHECK(nodus_witness_v2_attendance_get(fx.w, g_pk[0], &sc0, NULL)
+                  == 0, "sc0");
+        CHECK(nodus_witness_v2_attendance_get(fx.w, g_pk[1], &sc1, NULL)
+                  == 0, "sc1");
+        CHECK(nodus_witness_v2_attendance_get(fx.w, g_pk[2], &sc2, NULL)
+                  == 0, "sc2");
+        CHECK(sc0 * 10000ULL >= E * (uint64_t)DNAC_LIVENESS_THRESHOLD_BPS &&
+              sc1 * 10000ULL >= E * (uint64_t)DNAC_LIVENESS_THRESHOLD_BPS &&
+              sc2 * 10000ULL >= E * (uint64_t)DNAC_LIVENESS_THRESHOLD_BPS,
+              "FIXTURE GUARD: every member's real count clears 5000 bps");
+        CHECK(sc0 * 10000ULL < E * 8000ULL &&
+              sc1 * 10000ULL < E * 8000ULL &&
+              sc2 * 10000ULL < E * 8000ULL,
+              "FIXTURE GUARD: the SAME count would have missed the "
+              "RETIRED 8000 bps bar for every member — this is what "
+              "changed, not the rotation");
+    }
+
+    {
+        /* the boundary block itself (h == E); same round-robin exclusion
+         * as the loop above. */
+        int excluded = (int)(E % 3);
+        int attend[2];
+        size_t k = 0;
+        for (int m = 0; m < 3; m++) {
+            if (m != excluded) attend[k++] = m;
+        }
+        int rc = 0;
+        CHECK(rn_block(&fx, attend, k, &rc) == 0 && rc == 0,
+              "quorum-only rotating boundary block");
+    }
+    CHECK(fx.height == E, "drove exactly to the boundary");
+
+    {
+        dnac_validator_record_t v0, v1, v2;
+        CHECK(val_get(&fx, 0, &v0) == 0 && val_get(&fx, 1, &v1) == 0 &&
+              val_get(&fx, 2, &v2) == 0, "get all three at E");
+        CHECK(v0.consecutive_missed_epochs == 0 &&
+              v1.consecutive_missed_epochs == 0 &&
+              v2.consecutive_missed_epochs == 0,
+              "jittery-but-healthy rotation: NO member falls below the "
+              "50% bar");
+        CHECK(v0.status == (uint8_t)DNAC_VALIDATOR_ACTIVE &&
+              v1.status == (uint8_t)DNAC_VALIDATOR_ACTIVE &&
+              v2.status == (uint8_t)DNAC_VALIDATOR_ACTIVE,
+              "the whole set stays ACTIVE — no collapse");
+    }
+    OK();
+    printf("  ok: jittery cluster — quorum-only rotating attendance "
+           "clears the 50%% bar for every member\n");
+    fx_close(&fx);
+    return 0;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * round 5 — R5-1 duty-set evaluation, R5-2 the floor (a head count in
+ * round 5, voting power since round 6 — §12c re-derived, §12e-§12i
+ * added below), R5-3 graduation deferral. Every round-5 case below is
+ * RED on round <= 4's code and the reason is stated inline.
+ * ════════════════════════════════════════════════════════════════════ */
+
+/* R5-8(a) — verifier V-1: a validator STAKEd MID-EPOCH is not charged a
+ * miss at the next boundary; its counter is 0. */
+static int test_rule_n_midepoch_stake_no_miss(void) {
+    printf("\n\xc2\xa7" "12a Rule N — a mid-epoch STAKE gets no miss "
+           "(R5-1, verifier V-1)\n");
+
+    static const vspec_t specs[3] = {
+        { 0, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+        { 1, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+        { 2, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+    };
+    fixture_t fx;
+    CHECK(fx_genesis(&fx, "midstake", specs, 3, 3) == 0, "genesis");
+
+    /* R5-1: STAKE writes a NEW row with status = ACTIVE
+     * (nodus_witness_rt_native.c:3108) while the duty snapshot is already
+     * frozen. Modeled with the late-joiner pattern above (key 7): seeded
+     * AFTER fx_genesis froze snapshot(0) and snapshot(E), BEFORE the V2
+     * genesis. It cannot be seeded between blocks after the V2 genesis —
+     * a direct SQL write there moves a committed root outside any block
+     * and the block's untouched-domain guard (phase 8) rightly refuses it;
+     * real STAKEs arrive inside a block, which these fixtures do not
+     * drive. The property under test is unchanged: key 3 is ACTIVE and
+     * is NOT an entry of snapshot(0), the duty snapshot for boundary E,
+     * so it can never be a cometbft voter for epoch 1 and never attends.
+     * Before round 5, `v2ep_rule_n` evaluated every ACTIVE row regardless
+     * of duty and charged it a miss it had no chance to avoid — the exact
+     * bug verifier V-1 found. */
+    CHECK(seed_validator(&fx, 3, BOND_BASE, DNAC_VALIDATOR_ACTIVE,
+                         100, 0, 0) == 0, "STAKE after snapshot freeze (key 3)");
+    /* A real STAKE funds the bond from its sibling SYSFUND leg and
+     * bumps active_count by one (nodus_witness_rt_native.c:3083-3131);
+     * this fixture has no UTXO large enough to debit, so the bond enters
+     * the supply equation the way the late-joiner fixture does it
+     * ("supply top-up") — otherwise the PRE-APPLY supply gate
+     * (nodus_witness_v2_claims.c:1114-1160) correctly refuses a bond
+     * that came from nowhere. */
+    {
+        char sql[192];
+        snprintf(sql, sizeof(sql),
+                 "UPDATE supply_tracking SET genesis_supply = "
+                 "genesis_supply + %llu, current_supply = current_supply "
+                 "+ %llu WHERE id = 1",
+                 (unsigned long long)BOND_BASE,
+                 (unsigned long long)BOND_BASE);
+        CHECK(run_sql(fx.w->db, sql) == 0, "supply top-up (key 3 bond)");
+    }
+    CHECK(run_sql(fx.w->db,
+                  "UPDATE validator_stats SET value = 4 "
+                  "WHERE key = 'active_count'") == 0,
+          "active_count 4 (3 + key 3)");
+    CHECK(fx_v2_genesis(&fx) == 0, "v2 genesis");
+
+    /* validators 0, 1, 2 (the ONLY entries of snapshot(0)) attend fully
+     * for the whole epoch; key 3 never attends. */
+    int all012[3] = { 0, 1, 2 };
+    CHECK(rn_drive(&fx, E, all012, 3, 2, E) == 0,
+          "epoch 1, validator 3 never attends");
+    CHECK(fx.height == E, "drove exactly to the boundary");
+
+    {
+        dnac_validator_record_t v3;
+        CHECK(val_get(&fx, 3, &v3) == 0, "get 3");
+        CHECK(v3.consecutive_missed_epochs == 0,
+              "R5-1: no duty this boundary (absent from snapshot(0)) -> "
+              "reset to 0, never charged a miss — RED before round 5");
+        /* Not ACTIVE after boundary E: the flips run after Rule N and
+         * seat ONLY entries of snapshot(E) (nodus_witness_vset.c:562-625,
+         * pass 1 every bonded row -> ELIGIBLE, pass 2 snapshot members
+         * -> ACTIVE); snapshot(E) was frozen at genesis without key 3. */
+        CHECK(v3.status == (uint8_t)DNAC_VALIDATOR_ELIGIBLE,
+              "ELIGIBLE (not in snapshot(E)), never AUTO_RETIRED");
+        dnac_validator_record_t v0;
+        CHECK(val_get(&fx, 0, &v0) == 0, "get 0");
+        CHECK(v0.consecutive_missed_epochs == 0,
+              "FIXTURE GUARD: the genesis members, who DID have a real "
+              "duty and met it, are unaffected");
+    }
+    OK();
+    printf("  ok: a mid-epoch STAKE gets no miss at the next boundary\n");
+    fx_close(&fx);
+    return 0;
+}
+
+/* Replace the stored snapshot(epoch_start) with the SAME snapshot minus
+ * the entry for `pk` — entry order, stakes, ruleset and seed untouched,
+ * so the result is what the source builder would have frozen had `pk`
+ * not been selected. PRE-V2-GENESIS ONLY: the snapshot table feeds the
+ * vset leg of system_state_root (fx_genesis' own note above), so a
+ * rewrite after the V2 genesis would trip the untouched-domain guard.
+ * vset_insert CONFLICTs on an existing row by design, hence the DELETE
+ * first — test-only, the same move test_cmt_app.c's boundary-diff
+ * fixture makes. */
+static int snap_drop_member(fixture_t *fx, uint64_t epoch_start,
+                            const uint8_t pk[DNAC_PUBKEY_SIZE]) {
+    dna_vset_snapshot_t *cur = NULL;
+    if (nodus_witness_vset_get(fx->w, epoch_start, &cur, NULL) != 0 || !cur)
+        return -1;
+    int ret = -1;
+    dna_vset_snapshot_t *next = NULL;
+    uint8_t *buf = NULL;
+    uint16_t keep = 0;
+    for (uint16_t i = 0; i < cur->active_count; i++)
+        if (memcmp(cur->entries[i].pubkey, pk, DNAC_PUBKEY_SIZE) != 0) keep++;
+    if (keep == cur->active_count || keep == 0) goto out;   /* absent/only */
+    next = dna_vset_alloc(keep);
+    if (!next) goto out;
+    next->epoch = cur->epoch;
+    next->selection_ruleset = cur->selection_ruleset;
+    memcpy(next->sortition_seed, cur->sortition_seed,
+           sizeof(next->sortition_seed));
+    for (uint16_t i = 0, j = 0; i < cur->active_count; i++)
+        if (memcmp(cur->entries[i].pubkey, pk, DNAC_PUBKEY_SIZE) != 0)
+            next->entries[j++] = cur->entries[i];
+    buf = malloc(DNA_VSET_MAX_ENC_LEN);
+    if (!buf) goto out;
+    size_t len = 0;
+    uint8_t hash[64];
+    if (dna_vset_encode(next, buf, DNA_VSET_MAX_ENC_LEN, &len) != 0 ||
+        dna_vset_hash(next, hash) != 0)
+        goto out;
+    char sql[128];
+    snprintf(sql, sizeof(sql),
+             "DELETE FROM validator_set_snapshots WHERE epoch_start = %llu",
+             (unsigned long long)epoch_start);
+    if (run_sql(fx->w->db, sql) != 0) goto out;
+    if (nodus_witness_vset_insert(fx->w, epoch_start, buf, len, hash, 0) != 0)
+        goto out;
+    ret = 0;
+out:
+    free(buf);
+    dna_vset_free(&next);
+    dna_vset_free(&cur);
+    return ret;
+}
+
+/* R5-8(b) — verifier V-1's other half: a member that misses once, then
+ * has no duty for a whole epoch, has its counter reset to 0 rather than
+ * carrying the stale miss into a LATER, unrelated duty epoch. */
+static int test_rule_n_no_duty_resets_counter(void) {
+    printf("\n\xc2\xa7" "12b Rule N — a no-duty epoch resets the counter "
+           "(R5-1, verifier V-1)\n");
+
+    static const vspec_t specs[3] = {
+        { 0, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+        { 1, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+        { 2, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+    };
+    fixture_t fx;
+    CHECK(fx_genesis(&fx, "noduty", specs, 3, 3) == 0, "genesis");
+    /* Validator 1 loses its seat at boundary E (an ordinary rotation):
+     * snapshot(E) is frozen WITHOUT it while snapshot(0) keeps it. Done
+     * before the V2 genesis — see snap_drop_member. Boundary E's own
+     * flips then demote it to ELIGIBLE (nodus_witness_vset.c:562-625),
+     * and commit_next(E) re-selects it for snapshot(2E) (top_n reads
+     * ACTIVE + ELIGIBLE, nodus_witness_validator.c:303). */
+    CHECK(snap_drop_member(&fx, E, g_pk[1]) == 0,
+          "snapshot(E) frozen without validator 1");
+    CHECK(fx_v2_genesis(&fx) == 0, "v2 genesis");
+
+    /* Epoch 1 (1..E): validators 0 and 2 attend fully; validator 1 never
+     * attends — a GENUINE miss against a REAL duty (it is an entry of
+     * snapshot(0)). */
+    int both02[2] = { 0, 2 };
+    CHECK(rn_drive(&fx, E, both02, 2, 2, E) == 0, "epoch 1 drive");
+    CHECK(fx.height == E, "drove to E");
+
+    {
+        dnac_validator_record_t v1;
+        CHECK(val_get(&fx, 1, &v1) == 0, "get 1 at E");
+        CHECK(v1.consecutive_missed_epochs == 1,
+              "FIXTURE GUARD: validator 1 genuinely missed epoch 1 (it "
+              "had a real duty)");
+        CHECK(v1.status == (uint8_t)DNAC_VALIDATOR_ELIGIBLE,
+              "FIXTURE GUARD: one miss does not retire it; boundary E's "
+              "flips left it ELIGIBLE (not a snapshot(E) member) — it "
+              "carries its ONE miss into a no-duty epoch");
+    }
+
+    /* Epoch 2 (E+1..2E): validators 0 and 2 attend fully; validator 1 is
+     * ELIGIBLE throughout and absent from the duty snapshot(E) — it has
+     * NO duty at boundary 2E. */
+    CHECK(rn_drive(&fx, 2 * E, both02, 2, E + 1, 2 * E) == 0,
+          "epoch 2 drive, validator 1 stays ELIGIBLE throughout");
+    CHECK(fx.height == 2 * E, "drove to 2E");
+
+    {
+        dnac_validator_record_t v1;
+        CHECK(val_get(&fx, 1, &v1) == 0, "get 1 at 2E");
+        CHECK(v1.consecutive_missed_epochs == 0,
+              "R5-1: an epoch without a duty (ELIGIBLE throughout, never "
+              "evaluated) RESETS the counter to 0 — RED before round 5 "
+              "(the old ACTIVE-only scan never touched an ELIGIBLE row "
+              "at all, so the stale miss from epoch 1 would have "
+              "survived unreset)");
+        /* boundary 2E's OWN flip step re-seats validator 1 to ACTIVE
+         * (commit_next(E) put it back into snapshot(2E)) AFTER
+         * Rule N already reset its counter — the same "rejoin" moment
+         * verifier V-1 described: a member that lost its seat, sat out a
+         * whole duty epoch, then regains its seat, must start its next
+         * miss count from a clean 0, not from a carried-over 1. */
+        CHECK(v1.status == (uint8_t)DNAC_VALIDATOR_ACTIVE,
+              "validator 1 rejoins ACTIVE at this same boundary (a "
+              "snapshot(2E) member) — Rule N's reset already committed "
+              "before this flip runs");
+    }
+    OK();
+    printf("  ok: a no-duty epoch resets the counter, breaking the "
+           "non-consecutive-miss chain\n");
+    fx_close(&fx);
+    return 0;
+}
+
+/* R5-8(c) — THE FLOOR, re-derived in round 6 for the WEIGHT rule
+ * (decision file §3 2026-09-23 "Rule N TABANI WEIGHT ÜZERİNDEN", which
+ * replaced "Rule N TABANI = 4"; red-team L3-2's worked example,
+ * orchestration.md FLEET TV3-P1 O6 red-team L3): a 7-member committee
+ * where the liveness bar and the 120-block recency window fail
+ * DIFFERENT members in the SAME boundary, so 5 of 7 reach
+ * AUTO_RETIRE_EPOCHS at the SAME boundary. Retiring all 5 would seat 2
+ * equal members next epoch: power P = 2p, max = p (p = BOND_BASE /
+ * DNAC_DECIMAL_UNIT = 10^7), and (P - max) = p is NOT > P*2/3 =
+ * floor(4p/3) — so the floor must retire NOBODY, keep every incremented
+ * counter, and log a WARN. The control epoch then retires 2 of 7,
+ * leaving 5 equal: (P - max) = 4p > floor(10p/3) — allowed.
+ *
+ * HONEST LABEL: every member here is genesis-seeded and equal-staked, so
+ * this case gives the SAME outcome under the retired count floor
+ * (bonded_after 2 < 4 refused; 5 >= 4 allowed) — it pins that the weight
+ * rule still covers red-team L3-2, it does NOT discriminate weight from
+ * count. §12e (stake concentration) and §12h (untenured staker) do.
+ *
+ * Numbers re-derived for THIS fixture's compiled constants — E = 720
+ * (DNAC_EPOCH_LENGTH), W = 120 (DNAC_SETTLEMENT_ATTENDANCE_WINDOW_
+ * BLOCKS), required = ceil(E * 5000 / 10000) = 360, quorum(7) =
+ * floor(2*7/3) + 1 = 5 (dna_bft_quorum, ledger_ids.h:140-142):
+ *   F, G (keys 5, 6):    sign EVERY block (720) -> P1 pass, P2 pass.
+ *   D, E' (keys 3, 4):   sign ONLY the first E-W = 600 blocks -> P1
+ *                        pass (600 >= 360) but last_signed_height caps
+ *                        at 599 < E-W = 600 -> P2 FAIL.
+ *   A, B, C (keys 0-2):  sign the LAST W = 120 blocks (clears P2) PLUS
+ *                        200 EARLY blocks each (a fixed literal, NOT
+ *                        derived from `required` — the red-team's own
+ *                        number), rotating one at a time across the
+ *                        first E-W = 600 blocks (3 * 200 = 600, exact
+ *                        tiling, one signer per early block) -> total
+ *                        120 + 200 = 320 < 360 -> P1 FAIL. (Epoch 1
+ *                        only: block 1 carries no commit, so A gets
+ *                        199 early credits there, 319 total — same
+ *                        outcome.)
+ * Every block from h=2 on carries exactly quorum(7) = 5 signers: [1, E-W] = F,G (2
+ * fixed) + D,E' (2 fixed) + ONE of {A,B,C} (rotating) = 5; [E-W+1, E] =
+ * F,G (2) + A,B,C (3) = 5. Miss set this epoch: {D, E', A, B, C} = 5 of
+ * 7; F, G pass. */
+static int test_rule_n_floor(void) {
+    printf("\n\xc2\xa7" "12c Rule N — THE FLOOR: nobody is retired when "
+           "the next set (2 equal members) could not commit without its "
+           "largest member (round 6 weight rule, red-team L3-2)\n");
+
+    static const vspec_t specs[7] = {
+        { 0, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },  /* A */
+        { 1, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },  /* B */
+        { 2, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },  /* C */
+        { 3, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },  /* D */
+        { 4, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },  /* E' */
+        { 5, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },  /* F */
+        { 6, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },  /* G */
+    };
+    fixture_t fx;
+    CHECK(fx_genesis(&fx, "floor", specs, 7, 7) == 0, "genesis");
+    CHECK(fx_v2_genesis(&fx) == 0, "v2 genesis");
+
+    const uint64_t W = (uint64_t)DNAC_SETTLEMENT_ATTENDANCE_WINDOW_BLOCKS;
+    const uint64_t required =
+        (E * (uint64_t)DNAC_LIVENESS_THRESHOLD_BPS + 10000ULL - 1) /
+        10000ULL;
+    CHECK(W == 120, "FIXTURE GUARD: this fixture's numbers assume "
+                    "W = 120 exactly");
+    CHECK(required == 360, "FIXTURE GUARD: this fixture's numbers "
+                           "assume required = 360 exactly (E = 720)");
+    const uint64_t early_each = 200;                    /* literal, L3-2 */
+    CHECK(early_each * 3 == E - W,
+          "FIXTURE GUARD: three members' early rotation exactly tiles "
+          "the first E-W blocks, one signer per block, zero overlap");
+    CHECK(W + early_each < required,
+          "FIXTURE GUARD: A/B/C's total (window + early) misses the "
+          "bar");
+
+    /* Epochs 1 and 2 (heights 1..2E): the SAME miss pattern both times,
+     * so D, E', A, B, C each accumulate TWO consecutive misses. */
+    for (int epoch = 0; epoch < 2; epoch++) {
+        const uint64_t base = (uint64_t)epoch * E;
+        for (uint64_t h = fx.height + 1; h <= base + E; h++) {
+            uint64_t rel = h - base;                    /* 1..E in-epoch */
+            int attend[5];
+            size_t k = 0;
+            attend[k++] = 5;                             /* F: always    */
+            attend[k++] = 6;                             /* G: always    */
+            if (rel <= E - W) {
+                attend[k++] = 3;                          /* D: first 600 */
+                attend[k++] = 4;                          /* E': first600 */
+                attend[k++] = (int)((rel - 1) % 3);       /* rotate A/B/C */
+            } else {
+                attend[k++] = 0;                          /* A: last W    */
+                attend[k++] = 1;                          /* B: last W    */
+                attend[k++] = 2;                          /* C: last W    */
+            }
+            CHECK(k == 5, "exactly quorum(7) = 5 signers this block");
+            int rc = 0;
+            CHECK(rn_block(&fx, attend, k, &rc) == 0 && rc == 0,
+                  "the L3-2 pattern's block");
+        }
+    }
+    CHECK(fx.height == 2 * E, "drove exactly to the second boundary");
+
+    {
+        dnac_validator_record_t v;
+        CHECK(val_get(&fx, 5, &v) == 0 && v.consecutive_missed_epochs == 0
+                  && v.status == (uint8_t)DNAC_VALIDATOR_ACTIVE, "F: 0");
+        CHECK(val_get(&fx, 6, &v) == 0 && v.consecutive_missed_epochs == 0
+                  && v.status == (uint8_t)DNAC_VALIDATOR_ACTIVE, "G: 0");
+        CHECK(val_get(&fx, 3, &v) == 0 && v.consecutive_missed_epochs == 2
+                  && v.status == (uint8_t)DNAC_VALIDATOR_ACTIVE,
+              "D: TWO consecutive misses reached the threshold, but the "
+              "floor left it ACTIVE — counters are 2, not AUTO_RETIRED");
+        CHECK(val_get(&fx, 4, &v) == 0 && v.consecutive_missed_epochs == 2
+                  && v.status == (uint8_t)DNAC_VALIDATOR_ACTIVE, "E': 2");
+        CHECK(val_get(&fx, 0, &v) == 0 && v.consecutive_missed_epochs == 2
+                  && v.status == (uint8_t)DNAC_VALIDATOR_ACTIVE, "A: 2");
+        CHECK(val_get(&fx, 1, &v) == 0 && v.consecutive_missed_epochs == 2
+                  && v.status == (uint8_t)DNAC_VALIDATOR_ACTIVE, "B: 2");
+        CHECK(val_get(&fx, 2, &v) == 0 && v.consecutive_missed_epochs == 2
+                  && v.status == (uint8_t)DNAC_VALIDATOR_ACTIVE, "C: 2");
+        CHECK(q1(fx.w, "SELECT value FROM validator_stats WHERE "
+                       "key='active_count'") == 7,
+              "the weight floor fired — retiring all 5 would seat 2 "
+              "equal members, (P - max) = p is not > P*2/3, so NOBODY "
+              "was retired and active_count did not move — RED before "
+              "round 5 (no floor: all five AUTO_RETIRED, active_count "
+              "7 -> 2); same outcome under round 5's count floor");
+    }
+    OK();
+    printf("  ok: the floor blocks a 5-of-7 simultaneous retirement, "
+           "counters stay at 2\n");
+
+    /* ── CONTROL: a SMALLER retirement (5 equal members left) still fires
+     * normally. Epoch 3: D, E', C fully recover (counters reset 2 -> 0);
+     * A, B repeat the SAME failing pattern (counter 2 -> 3, still over
+     * threshold); F, G continue perfect. Only A and B reach the
+     * threshold this boundary. */
+    {
+        for (uint64_t h = fx.height + 1; h <= 3 * E; h++) {
+            uint64_t rel = h - 2 * E;                   /* 1..E in-epoch */
+            int attend[7];
+            size_t k = 0;
+            attend[k++] = 2;                             /* C: always    */
+            attend[k++] = 3;                              /* D: always   */
+            attend[k++] = 4;                              /* E': always  */
+            attend[k++] = 5;                              /* F: always   */
+            attend[k++] = 6;                              /* G: always   */
+            /* A signs blocks [1,200] and the last W; B signs [201,400]
+             * and the last W — 200 + 120 = 320 each, the SAME failing
+             * total as before. Overlap with the 5 always-signers is
+             * fine: this control does not need an exact quorum count,
+             * only real progress and the SAME miss shape for A, B. */
+            if (rel <= 200) attend[k++] = 0;
+            if (rel > 200 && rel <= 400) attend[k++] = 1;
+            if (rel > E - W) { attend[k++] = 0; attend[k++] = 1; }
+            int rc = 0;
+            CHECK(rn_block(&fx, attend, k, &rc) == 0 && rc == 0,
+                  "the control epoch's block");
+        }
+    }
+    CHECK(fx.height == 3 * E, "drove exactly to the third boundary");
+
+    {
+        dnac_validator_record_t v;
+        CHECK(val_get(&fx, 2, &v) == 0 && v.consecutive_missed_epochs == 0,
+              "C recovered: full attendance resets its counter to 0");
+        CHECK(val_get(&fx, 3, &v) == 0 && v.consecutive_missed_epochs == 0,
+              "D recovered");
+        CHECK(val_get(&fx, 4, &v) == 0 && v.consecutive_missed_epochs == 0,
+              "E' recovered");
+        CHECK(val_get(&fx, 0, &v) == 0 &&
+              v.status == (uint8_t)DNAC_VALIDATOR_AUTO_RETIRED,
+              "A: THREE consecutive misses now (2 kept by the floor + "
+              "this one) — the next set is 5 equal members, (P - max) "
+              "= 4p > P*2/3, so the retirement proceeds normally this "
+              "time");
+        CHECK(val_get(&fx, 1, &v) == 0 &&
+              v.status == (uint8_t)DNAC_VALIDATOR_AUTO_RETIRED, "B: same");
+        CHECK(q1(fx.w, "SELECT value FROM validator_stats WHERE "
+                       "key='active_count'") == 5,
+              "active_count dropped by exactly two — the control "
+              "retirement was NOT blocked");
+    }
+    OK();
+    printf("  ok: control — a 2-of-7 retirement (5 equal members left, "
+           "4p > 10p/3) proceeds normally\n");
+
+    fx_close(&fx);
+    return 0;
+}
+
+/* R5-8(d) — graduation deferral (decision file §3 2026-09-23, "ayrılan
+ * validatorun MEZUNİYETİ … ertelenir"; O6 red-team L1-1): a validator
+ * that UNSTAKEs while it is still a member of the snapshot TAKING EFFECT
+ * at the next boundary is NOT graduated there — it stays RETIRING, its
+ * bond stays locked, and it graduates only at the FOLLOWING boundary,
+ * once it is genuinely absent from the effective snapshot. */
+static int test_rule_n_graduation_deferral(void) {
+    printf("\n\xc2\xa7" "12d Rule N — graduation deferral: a mid-epoch "
+           "UNSTAKE stays seated one extra epoch (R5-3, red-team "
+           "L1-1)\n");
+
+    static const vspec_t specs[4] = {
+        { 0, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+        { 1, BOND_BIG,  DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+        { 2, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+        { 3, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+    };
+    fixture_t fx;
+    CHECK(fx_genesis(&fx, "graddefer", specs, 4, 4) == 0, "genesis");
+
+    /* UNSTAKE inside the epoch that just started (H-E, H) with H = E:
+     * validator 1 is already ACTIVE in the genesis-frozen snapshot(0)
+     * AND snapshot(E) (both built while it was still ACTIVE, above) —
+     * modeled directly, as O11's UNSTAKE apply leaves it: RETIRING, bond
+     * intact. Timed BETWEEN the fixture stages, same discipline as
+     * `test_boundary_chain`'s key 6 / `test_rule_n_retiring_excluded`'s
+     * key 1 — the ONE difference here is deliberate: this candidate MUST
+     * still be a snapshot(E) member, so it is flipped AFTER the freeze,
+     * not before. */
+    {
+        dnac_validator_record_t v;
+        CHECK(nodus_validator_get(fx.w, g_pk[1], &v) == 0, "get 1");
+        v.status = (uint8_t)DNAC_VALIDATOR_RETIRING;
+        v.unstake_commit_block = 3;
+        CHECK(nodus_validator_update(fx.w, &v) == 0, "RETIRING mid-epoch");
+    }
+    CHECK(fx_v2_genesis(&fx) == 0, "v2 genesis");
+
+    uint8_t gid[64], nul[64];
+    CHECK(nodus_witness_v2_epoch_grad_id(fx.chain_id, E, g_pk[1], gid)
+          == 0, "grad_id at E");
+    CHECK(nodus_witness_v2_epoch_grad_nullifier(gid, nul) == 0, "nul at E");
+
+    CHECK(fx_drive_to(&fx, E) == 0, "drive to the first boundary");
+    CHECK(fx.height == E, "at E");
+
+    {
+        dnac_validator_record_t v;
+        CHECK(val_get(&fx, 1, &v) == 0, "get 1 at E");
+        CHECK(v.status == (uint8_t)DNAC_VALIDATOR_RETIRING,
+              "R5-3: still RETIRING at E — still a member of the "
+              "snapshot taking effect at E, so graduation is DEFERRED — "
+              "RED before round 5 (the old code graduated it here "
+              "unconditionally)");
+        CHECK(v.self_stake == BOND_BIG,
+              "the bond is still locked, not released");
+        utxo_row_t r;
+        CHECK(utxo_get(fx.w, nul, &r) == 0, "utxo probe at E");
+        CHECK(!r.found, "no release UTXO at E");
+        CHECK(q1(fx.w, "SELECT value FROM validator_stats WHERE "
+                       "key='active_count'") == 4,
+              "active_count untouched at E — no graduation happened");
+    }
+    OK();
+    printf("  ok: still RETIRING at E, not released, still in "
+           "snapshot(E)\n");
+
+    /* commit_next(E) (run inside the E boundary above) builds snapshot
+     * for epoch_start = 2E from the POST-flip, POST-graduation state —
+     * validator 1 is RETIRING, `nodus_validator_top_n` never selects a
+     * RETIRING row, so it is genuinely absent from snapshot(2E). At the
+     * NEXT boundary (2E), graduation is no longer deferred. */
+    uint8_t gid2[64], nul2[64];
+    CHECK(nodus_witness_v2_epoch_grad_id(fx.chain_id, 2 * E, g_pk[1], gid2)
+          == 0, "grad_id at 2E");
+    CHECK(nodus_witness_v2_epoch_grad_nullifier(gid2, nul2) == 0,
+          "nul at 2E");
+
+    CHECK(fx_drive_to(&fx, 2 * E) == 0, "drive to the second boundary");
+    CHECK(fx.height == 2 * E, "at 2E");
+
+    {
+        dnac_validator_record_t v;
+        CHECK(val_get(&fx, 1, &v) == 0, "get 1 at 2E");
+        CHECK(v.status == (uint8_t)DNAC_VALIDATOR_UNSTAKED,
+              "graduated at 2E — genuinely absent from the effective "
+              "snapshot now");
+        CHECK(v.self_stake == 0, "the bond moved into the release UTXO");
+        utxo_row_t r;
+        CHECK(utxo_get(fx.w, nul2, &r) == 0, "utxo probe at 2E");
+        CHECK(r.found, "released at H+E, not at H");
+        CHECK(r.amount == BOND_BIG, "pays the record's actual bond");
+        CHECK(r.unlock_block == 2 * E + CD,
+              "unlock = (H+E) + DNAC_UNSTAKE_COOLDOWN_BLOCKS — H+E is "
+              "the height it ACTUALLY graduates at, not the height "
+              "UNSTAKE was requested");
+        CHECK(q1(fx.w, "SELECT value FROM validator_stats WHERE "
+                       "key='active_count'") == 3,
+              "active_count dropped by EXACTLY one, and only NOW — one "
+              "single move across the whole two-boundary sequence");
+        utxo_row_t r_early;
+        CHECK(utxo_get(fx.w, nul, &r_early) == 0, "re-probe the E-keyed "
+                                                   "grad_id");
+        CHECK(!r_early.found,
+              "the E-keyed grad_id (deferred, never used) still has no "
+              "row — the deferred candidate did not silently graduate "
+              "under the WRONG height either");
+    }
+    OK();
+    printf("  ok: graduated at 2E, unlock = 2E + cooldown, active_count "
+           "moved exactly once\n");
+
+    fx_close(&fx);
+    return 0;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * round 6 — THE WEIGHT FLOOR (decision file §3 2026-09-23, "Rule N
+ * TABANI WEIGHT ÜZERİNDEN"). A boundary's retirement stands iff the
+ * snapshot commit_next will store for H+E still commits with its single
+ * largest member gone: power per entry = total_stake / DNAC_DECIMAL_UNIT
+ * (the §A unit, nodus_witness_cmt_app.c:1569), P = sum, max = largest,
+ * allowed iff P > 0 AND (P - max) > P * 2 / 3 (cometbft's integer form,
+ * shared/dnac/cmt_validation.c:298). Empty next set -> never allowed.
+ *
+ * Every drive below is "survivors attend every block from height 2,
+ * victims never attend": each victim has a real duty in snapshot(0) and
+ * snapshot(E) (both frozen at genesis with every seeded member), misses
+ * twice, and reaches DNAC_AUTO_RETIRE_EPOCHS at boundary 2E — the one
+ * boundary every case below judges. Every validator is genesis-seeded
+ * (active_since_block 1, always tenured) unless a case says otherwise.
+ * ════════════════════════════════════════════════════════════════════ */
+
+/* The rule, re-derived here INDEPENDENTLY of the engine's static
+ * v2ep_rn_weight_verdict, so a fixture guard can state what the engine
+ * must decide before the engine is asked. */
+static int rn_weight_allows(const uint64_t *power, size_t n) {
+    uint64_t P = 0, m = 0;
+    for (size_t i = 0; i < n; i++) {
+        P += power[i];
+        if (power[i] > m) m = power[i];
+    }
+    return P > 0 && (P - m) > P * 2 / 3;
+}
+
+static int snap_has(const dna_vset_snapshot_t *s,
+                    const uint8_t pk[DNAC_PUBKEY_SIZE]) {
+    for (uint16_t i = 0; i < s->active_count; i++)
+        if (memcmp(s->entries[i].pubkey, pk, DNAC_PUBKEY_SIZE) == 0)
+            return 1;
+    return 0;
+}
+
+/* Drive heights 1..2E with `surv` attending every block from 2 on. */
+static int rn_two_epochs(fixture_t *fx, const int *surv, size_t n_surv) {
+    if (rn_drive(fx, 2 * E, surv, n_surv, 2, 2 * E) != 0) return -1;
+    return fx->height == 2 * E ? 0 : -1;
+}
+
+/* §12e — STAKE CONCENTRATION: 4 survivors, but one of them holds 40 % of
+ * their power, so the next set cannot commit without it — nobody is
+ * retired. RED on round 5's count floor: bonded_after = 7 - 3 = 4 was
+ * NOT below 4, so the count floor retired all three. */
+static int test_rule_n_weight_concentration(void) {
+    printf("\n\xc2\xa7" "12e Rule N weight floor — 4 survivors, one holds "
+           "40%% of their power: nobody retired (round 6)\n");
+
+    static const vspec_t specs[7] = {
+        { 0, 2 * BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },  /* 40 */
+        { 1, BOND_BASE,     DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },  /* 20 */
+        { 2, BOND_BASE,     DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },  /* 20 */
+        { 3, BOND_BASE,     DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },  /* 20 */
+        { 4, BOND_BASE,     DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },  /* victim */
+        { 5, BOND_BASE,     DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },  /* victim */
+        { 6, BOND_BASE,     DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },  /* victim */
+    };
+    {
+        /* FIXTURE GUARD: powers are exact integers and the arithmetic is
+         * what the case name claims, BEFORE the engine is consulted. */
+        CHECK(BOND_BASE % DNAC_DECIMAL_UNIT == 0,
+              "FIXTURE GUARD: BOND_BASE is a whole number of power units");
+        const uint64_t p = BOND_BASE / DNAC_DECIMAL_UNIT;
+        const uint64_t surv[4] = { 2 * p, p, p, p };
+        CHECK(!rn_weight_allows(surv, 4),
+              "FIXTURE GUARD: 40/20/20/20 -> (P - max) = 3p is NOT > "
+              "floor(10p/3)");
+        CHECK(2 * p * 3 >= 5 * p,
+              "FIXTURE GUARD: the largest survivor holds >= 1/3 of the "
+              "survivors' power");
+        CHECK(7 - 3 >= 4,
+              "FIXTURE GUARD: round 5's count floor (bonded_after >= 4) "
+              "WOULD have allowed this retirement — the case is RED there");
+    }
+    fixture_t fx;
+    CHECK(fx_genesis_full(&fx, "wconc", specs, 7, 7) == 0, "genesis");
+
+    int surv[4] = { 0, 1, 2, 3 };
+    CHECK(rn_two_epochs(&fx, surv, 4) == 0, "two epochs, 4-6 never sign");
+
+    {
+        dnac_validator_record_t v;
+        for (int k = 4; k <= 6; k++) {
+            CHECK(val_get(&fx, k, &v) == 0, "get victim");
+            CHECK(v.consecutive_missed_epochs == 2,
+                  "victim reached the threshold (counter kept at 2)");
+            CHECK(v.status == (uint8_t)DNAC_VALIDATOR_ACTIVE,
+                  "victim NOT retired — the survivors' largest member "
+                  "holds 40% of their power — RED on round 5's count "
+                  "floor, which retired it");
+        }
+        for (int k = 0; k <= 3; k++) {
+            CHECK(val_get(&fx, k, &v) == 0 &&
+                  v.consecutive_missed_epochs == 0 &&
+                  v.status == (uint8_t)DNAC_VALIDATOR_ACTIVE,
+                  "FIXTURE GUARD: survivors never missed");
+        }
+        CHECK(q1(fx.w, "SELECT value FROM validator_stats WHERE "
+                       "key='active_count'") == 7,
+              "active_count did not move");
+    }
+    {
+        /* The ROLLBACK TO undid the provisional retirement BEFORE
+         * commit_next ran: the stored next set still seats the victims. */
+        dna_vset_snapshot_t *st = NULL;
+        CHECK(nodus_witness_vset_get(fx.w, 3 * E, &st, NULL) == 0 && st,
+              "snapshot(3E) stored");
+        int ok = st->active_count == 7 && snap_has(st, g_pk[4]) &&
+                 snap_has(st, g_pk[5]) && snap_has(st, g_pk[6]);
+        dna_vset_free(&st);
+        CHECK(ok, "snapshot(3E) still seats all 7 — the refused "
+                  "retirement left no trace in the next set");
+    }
+    OK();
+    printf("  ok: 40/20/20/20 survivors — nobody retired, counters kept, "
+           "next set unchanged\n");
+    fx_close(&fx);
+    return 0;
+}
+
+/* §12f — EQUAL SURVIVORS: 4 equal -> retired; 3 equal -> nobody retired.
+ * §12g — in the allowed case, the snapshot commit_next STORED for H+E is
+ * byte-for-byte what preview_next builds: same members, same order, same
+ * hash. HONEST SCOPE (round-6 O6 verifier): the preview here runs AFTER
+ * block 2E committed, i.e. over the same post-flip state commit_next
+ * saw, so this proves "same builder, same state -> same snapshot". It
+ * CANNOT catch a future step inserted between Rule N and commit_next
+ * that writes a committee input; that half rests on the input-by-input
+ * argument in the comment above v2ep_rule_n's floor block.
+ * §12f is GREEN on round 5 too (6-2 = 4 >= 4 allowed; 5-2 = 3 < 4
+ * refused) — it pins the weight rule's small-set edge, not the change.
+ * §12g is RED on round 5 by construction: nodus_witness_vset_preview_next
+ * does not exist there. */
+static int test_rule_n_weight_equal_survivors(void) {
+    printf("\n\xc2\xa7" "12f Rule N weight floor — 4 equal survivors "
+           "retire, 3 equal survivors do not (round 6)\n");
+
+    const uint64_t p = BOND_BASE / DNAC_DECIMAL_UNIT;
+    {
+        const uint64_t four[4] = { p, p, p, p };
+        const uint64_t three[3] = { p, p, p };
+        CHECK(rn_weight_allows(four, 4),
+              "FIXTURE GUARD: 4 equal -> 3p > floor(8p/3)");
+        CHECK(!rn_weight_allows(three, 3),
+              "FIXTURE GUARD: 3 equal -> 2p is NOT > 2p");
+    }
+
+    /* (a) 6 equal, keys 4 and 5 fail -> 4 equal survivors -> retired. */
+    {
+        static const vspec_t specs[6] = {
+            { 0, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+            { 1, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+            { 2, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+            { 3, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+            { 4, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+            { 5, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+        };
+        fixture_t fx;
+        CHECK(fx_genesis_full(&fx, "weq4", specs, 6, 6) == 0, "genesis");
+        int surv[4] = { 0, 1, 2, 3 };
+        CHECK(rn_two_epochs(&fx, surv, 4) == 0, "two epochs, 4-5 silent");
+
+        dnac_validator_record_t v;
+        CHECK(val_get(&fx, 4, &v) == 0 &&
+              v.status == (uint8_t)DNAC_VALIDATOR_AUTO_RETIRED,
+              "key 4 AUTO_RETIRED — 4 equal survivors carry it");
+        CHECK(val_get(&fx, 5, &v) == 0 &&
+              v.status == (uint8_t)DNAC_VALIDATOR_AUTO_RETIRED,
+              "key 5 AUTO_RETIRED");
+        CHECK(q1(fx.w, "SELECT value FROM validator_stats WHERE "
+                       "key='active_count'") == 4,
+              "active_count 6 -> 4, exactly once per retirement");
+        OK();
+        printf("  ok: 4 equal survivors — both victims retired\n");
+
+        /* §12g — after block 2E committed, the only writes since Rule N
+         * ran are the digest (v2_attendance_epoch), the reset
+         * (v2_attendance.signed_count) and the flips (validators.status
+         * among bonded rows) plus the block's own bookkeeping at height
+         * 2E; none is an input of the preview (the argument above the
+         * floor in v2ep_rule_n). So the preview taken NOW must equal the
+         * one Rule N judged, and must equal what commit_next(2E) stored. */
+        printf("\n\xc2\xa7" "12g the stored snapshot(H+E) IS the preview "
+               "Rule N judged\n");
+        dna_vset_snapshot_t *pv = NULL, *st = NULL;
+        uint8_t st_hash[64], pv_hash[64];
+        CHECK(nodus_witness_vset_preview_next(fx.w, 2 * E, &pv) == 0 && pv,
+              "preview_next(2E) builds");
+        CHECK(nodus_witness_vset_get(fx.w, 3 * E, &st, st_hash) == 0 && st,
+              "snapshot(3E) stored by commit_next(2E)");
+        int same = pv->active_count == 4 &&
+                   pv->active_count == st->active_count &&
+                   pv->epoch == st->epoch && pv->epoch == 3 * E;
+        for (uint16_t i = 0; same && i < pv->active_count; i++) {
+            const dna_vset_entry_t *a = &pv->entries[i];
+            const dna_vset_entry_t *b = &st->entries[i];
+            same = memcmp(a->pubkey, b->pubkey, DNA_VSET_PUBKEY_LEN) == 0 &&
+                   memcmp(a->voter_id, b->voter_id,
+                          sizeof(a->voter_id)) == 0 &&
+                   a->total_stake == b->total_stake &&
+                   a->self_bond == b->self_bond &&
+                   a->commission_bps == b->commission_bps;
+        }
+        int hashed = dna_vset_hash(pv, pv_hash) == 0 &&
+                     memcmp(pv_hash, st_hash, 64) == 0;
+        int victims_out = !snap_has(pv, g_pk[4]) && !snap_has(pv, g_pk[5]);
+        dna_vset_free(&pv);
+        dna_vset_free(&st);
+        CHECK(same, "preview and stored snapshot: same members, same "
+                    "order, same stakes");
+        CHECK(hashed, "preview hash == stored snapshot_hash");
+        CHECK(victims_out, "neither retired member is in the next set");
+        OK();
+        printf("  ok: stored snapshot(3E) is the preview, member for "
+               "member and byte for byte\n");
+        fx_close(&fx);
+    }
+
+    /* (b) 5 equal, keys 3 and 4 fail -> 3 equal survivors -> nobody. */
+    {
+        static const vspec_t specs[5] = {
+            { 0, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+            { 1, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+            { 2, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+            { 3, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+            { 4, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+        };
+        fixture_t fx;
+        CHECK(fx_genesis_full(&fx, "weq3", specs, 5, 5) == 0, "genesis");
+        int surv[3] = { 0, 1, 2 };
+        CHECK(rn_two_epochs(&fx, surv, 3) == 0, "two epochs, 3-4 silent");
+
+        dnac_validator_record_t v;
+        CHECK(val_get(&fx, 3, &v) == 0 &&
+              v.status == (uint8_t)DNAC_VALIDATOR_ACTIVE &&
+              v.consecutive_missed_epochs == 2,
+              "key 3 NOT retired, counter kept at 2 — 3 equal survivors "
+              "cannot commit without their largest member");
+        CHECK(val_get(&fx, 4, &v) == 0 &&
+              v.status == (uint8_t)DNAC_VALIDATOR_ACTIVE &&
+              v.consecutive_missed_epochs == 2, "key 4 same");
+        CHECK(q1(fx.w, "SELECT value FROM validator_stats WHERE "
+                       "key='active_count'") == 5,
+              "active_count did not move");
+        OK();
+        printf("  ok: 3 equal survivors — nobody retired\n");
+        fx_close(&fx);
+    }
+    return 0;
+}
+
+/* §12h — the O6 verifier's scenario: an UNTENURED staker is not counted.
+ * 6 genesis members + 1 staker whose bond is younger than
+ * DNAC_MIN_TENURE_BLOCKS at the next epoch's start, so
+ * nodus_validator_top_n (nodus_witness_validator.c:311) will not seat it
+ * at 3E. Keys 3, 4, 5 fail twice. Survivors that can be SEATED: 0, 1, 2
+ * (3 equal) -> refused. Had the staker been counted they would be 4
+ * equal -> allowed. RED on round 5: its count floor saw bonded = 7
+ * (6 ACTIVE + the ELIGIBLE staker), 7 - 3 = 4, and retired all three,
+ * leaving a 3-seat next set. */
+static int test_rule_n_weight_untenured_not_counted(void) {
+    printf("\n\xc2\xa7" "12h Rule N weight floor — an untenured staker "
+           "is not counted (O6 verifier, round 6)\n");
+
+    static const vspec_t specs[6] = {
+        { 0, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+        { 1, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+        { 2, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+        { 3, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+        { 4, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+        { 5, BOND_BASE, DNAC_VALIDATOR_ACTIVE, 100, 0, 0 },
+    };
+    /* The staker's bond is dated E + 1 — a STAKE landing in epoch 2.
+     * Tenure (Rule R) needs active_since + DNAC_MIN_TENURE_BLOCKS <=
+     * e_start: E+1 + 2E > 3E, so it is NOT seatable at 3E (nor at 2E). */
+    const uint64_t staker_since = E + 1;
+    {
+        const uint64_t p = BOND_BASE / DNAC_DECIMAL_UNIT;
+        const uint64_t three[3] = { p, p, p };
+        const uint64_t four[4] = { p, p, p, p };
+        CHECK(staker_since + (uint64_t)DNAC_MIN_TENURE_BLOCKS > 3 * E,
+              "FIXTURE GUARD: the staker is untenured at e_start = 3E");
+        CHECK(!rn_weight_allows(three, 3),
+              "FIXTURE GUARD: the 3 seatable survivors fail the rule");
+        CHECK(rn_weight_allows(four, 4),
+              "FIXTURE GUARD: counting the staker would PASS — the case "
+              "discriminates exactly the defect");
+        CHECK(7 - 3 >= 4,
+              "FIXTURE GUARD: round 5's count floor (bonded_after >= 4) "
+              "would have allowed this retirement — RED there");
+    }
+
+    fixture_t fx;
+    CHECK(fx_genesis(&fx, "wtenure", specs, 6, 6) == 0, "genesis");
+    /* Shaped BETWEEN the fixture stages (fixture rule: no consensus-table
+     * SQL after the V2 genesis) — the §12a pattern: a STAKE creates an
+     * ACTIVE row (nodus_witness_rt_native.c:3108) with active_since = its
+     * executing height; the row exists from genesis here only because the
+     * fixture cannot write between blocks. It is absent from snapshot(0)
+     * and snapshot(E) (both frozen above), so it never has a duty; the
+     * boundary-E flips leave it ELIGIBLE and it stays bonded. */
+    CHECK(seed_validator(&fx, 6, BOND_BASE, DNAC_VALIDATOR_ACTIVE,
+                         100, 0, 0) == 0, "staker row (key 6)");
+    {
+        dnac_validator_record_t v;
+        CHECK(val_get(&fx, 6, &v) == 0, "get staker");
+        v.active_since_block = staker_since;
+        CHECK(nodus_validator_update(fx.w, &v) == 0, "date the bond E+1");
+        char sql[192];
+        snprintf(sql, sizeof(sql),
+                 "UPDATE supply_tracking SET genesis_supply = "
+                 "genesis_supply + %llu, current_supply = current_supply "
+                 "+ %llu WHERE id = 1",
+                 (unsigned long long)BOND_BASE,
+                 (unsigned long long)BOND_BASE);
+        CHECK(run_sql(fx.w->db, sql) == 0, "supply top-up (staker bond)");
+    }
+    CHECK(run_sql(fx.w->db,
+                  "UPDATE validator_stats SET value = 7 "
+                  "WHERE key = 'active_count'") == 0,
+          "active_count 7 (6 + the staker)");
+    CHECK(fx_v2_genesis(&fx) == 0, "v2 genesis");
+
+    int surv[3] = { 0, 1, 2 };
+    CHECK(rn_two_epochs(&fx, surv, 3) == 0, "two epochs, 3-5 silent");
+
+    {
+        dnac_validator_record_t v;
+        CHECK(val_get(&fx, 6, &v) == 0 &&
+              v.status == (uint8_t)DNAC_VALIDATOR_ELIGIBLE &&
+              v.consecutive_missed_epochs == 0,
+              "FIXTURE GUARD: the staker is bonded (ELIGIBLE), never "
+              "charged — it IS in round 5's bonded count");
+        for (int k = 3; k <= 5; k++) {
+            CHECK(val_get(&fx, k, &v) == 0 &&
+                  v.status == (uint8_t)DNAC_VALIDATOR_ACTIVE &&
+                  v.consecutive_missed_epochs == 2,
+                  "victim NOT retired — only 3 equal members could be "
+                  "seated at 3E — RED on round 5's count floor");
+        }
+        CHECK(q1(fx.w, "SELECT value FROM validator_stats WHERE "
+                       "key='active_count'") == 7,
+              "active_count did not move");
+    }
+    {
+        dna_vset_snapshot_t *st = NULL;
+        CHECK(nodus_witness_vset_get(fx.w, 3 * E, &st, NULL) == 0 && st,
+              "snapshot(3E) stored");
+        int ok = !snap_has(st, g_pk[6]) && st->active_count == 6;
+        dna_vset_free(&st);
+        CHECK(ok, "the tenure gate kept the staker out of snapshot(3E) — "
+                  "the set the floor judged never contained it");
+    }
+    OK();
+    printf("  ok: an untenured staker does not prop up a retirement\n");
+    fx_close(&fx);
+    return 0;
+}
+
+/* §12i — nodus_witness_vset_preview_next tells a VERDICT from a FAULT
+ * (brief step 2), and the public build_for_epoch keeps "empty = fault".
+ * Bare fixture (no V2 genesis, no DomainHead to guard), legacy seed path
+ * (w->v2_successor = 0): the lookback seed for e_start = 3E is the
+ * legacy `blocks` row at 2E - 1 (nodus_witness_committee.c:258, :279).
+ * RED on round 5: the function does not exist there. The in-boundary
+ * fault path (Rule N returning -1 because the preview faulted) is NOT
+ * isolated here: with the hooks this file has, a missing seed row also
+ * fails commit_next later in the same boundary, so a failed block cannot
+ * say which of the two failed. */
+static int test_vset_preview_verdicts(void) {
+    printf("\n\xc2\xa7" "12i preview_next — 0 built / 1 empty (verdict) "
+           "/ -1 fault\n");
+    fixture_t fx;
+    CHECK(fx_bare(&fx, "preview") == 0, "bare fixture");
+
+    dna_vset_snapshot_t *s = NULL;
+    CHECK(nodus_witness_vset_preview_next(fx.w, 2 * E, &s) == -1 && !s,
+          "no seed row at 2E-1: FAULT (-1), never an empty verdict");
+    CHECK(nodus_witness_vset_preview_next(fx.w, UINT64_MAX - 1, &s) == -1
+              && !s, "H + E overflow: FAULT");
+    CHECK(nodus_witness_vset_preview_next(fx.w, 2 * E, NULL) == -1,
+          "NULL out: FAULT");
+
+    CHECK(seed_legacy_block(&fx, 2 * E - 1) == 0, "seed row at 2E-1");
+    CHECK(nodus_witness_vset_preview_next(fx.w, 2 * E, &s) == 1 && !s,
+          "seed present, no validator: EMPTY verdict (1), out untouched");
+    CHECK(nodus_witness_vset_build_for_epoch(fx.w, 3 * E,
+                                             DNAC_COMMITTEE_SIZE, NULL,
+                                             NULL, NULL, NULL) == -1,
+          "the public build_for_epoch still treats EMPTY as a failure "
+          "(commit_next / commit_genesis semantics unchanged)");
+
+    CHECK(seed_validator(&fx, 0, BOND_BASE, DNAC_VALIDATOR_ACTIVE,
+                         100, 0, 0) == 0, "one tenured validator");
+    CHECK(seed_validator(&fx, 1, BOND_BASE, DNAC_VALIDATOR_ACTIVE,
+                         100, 0, 0) == 0, "one more, re-dated below");
+    {
+        dnac_validator_record_t v;
+        CHECK(val_get(&fx, 1, &v) == 0, "get 1");
+        v.active_since_block = 2 * E;      /* 2E + 2E > 3E: untenured */
+        CHECK(nodus_validator_update(fx.w, &v) == 0, "untenured bond");
+    }
+    CHECK(nodus_witness_vset_preview_next(fx.w, 2 * E, &s) == 0 && s,
+          "one tenured validator: built (0)");
+    int ok = s->active_count == 1 && s->epoch == 3 * E &&
+             memcmp(s->entries[0].pubkey, g_pk[0], DNAC_PUBKEY_SIZE) == 0 &&
+             s->entries[0].total_stake == BOND_BASE;
+    dna_vset_free(&s);
+    CHECK(ok, "the preview is keyed on H+E and passes through the same "
+              "tenure gate as commit_next — key 1 is not seated");
+    OK();
+    printf("  ok: preview_next separates FAULT from EMPTY; build_for_epoch "
+           "unchanged\n");
+    fx_close(&fx);
+    return 0;
+}
+
 int main(void) {
     printf("=== Ledger V2 O12 S2/S3 — epoch boundary + snapshot "
            "authority ===\n");
@@ -2345,6 +4135,20 @@ int main(void) {
     if (test_commit_next() != 0) return 1;
     if (test_faults() != 0) return 1;
     if (test_malformed_row() != 0) return 1;
+    if (test_rule_n_liveness() != 0) return 1;
+    if (test_rule_n_p2_window() != 0) return 1;
+    if (test_rule_n_retiring_excluded() != 0) return 1;
+    if (test_rule_n_twin_determinism() != 0) return 1;
+    if (test_rule_n_attendance_fault_stages() != 0) return 1;
+    if (test_rule_n_jittery_cluster() != 0) return 1;
+    if (test_rule_n_midepoch_stake_no_miss() != 0) return 1;
+    if (test_rule_n_no_duty_resets_counter() != 0) return 1;
+    if (test_rule_n_floor() != 0) return 1;
+    if (test_rule_n_graduation_deferral() != 0) return 1;
+    if (test_rule_n_weight_concentration() != 0) return 1;
+    if (test_rule_n_weight_equal_survivors() != 0) return 1;
+    if (test_rule_n_weight_untenured_not_counted() != 0) return 1;
+    if (test_vset_preview_verdicts() != 0) return 1;
 
     /* S3 — the snapshot authority resolver + dynamic quorum */
     if (test_authority_quorum() != 0) return 1;

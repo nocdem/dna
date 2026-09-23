@@ -14,14 +14,20 @@
 #include "witness/nodus_witness_v2_econ.h"   /* O15J Faz 2 — settlement */
 #include "witness/nodus_witness_validator.h"
 #include "witness/nodus_witness_vset.h"
+#include "witness/nodus_witness_emission.h"  /* DNAC_DECIMAL_UNIT (Rule N
+                                                weight floor, round 6)   */
 
 #include "dnac/dnac.h"                 /* DNAC_EPOCH_LENGTH, cooldown    */
 #include "dnac/validator.h"            /* dnac_validator_record_t        */
+#include "dnac/cmt_pb.h"               /* CMT_PB_BLOCK_ID_FLAG_COMMIT (Q1) */
+#include "dnac/ledger_roots_v2.h"      /* dna_v2_attendance_digest (S-2) */
 #include "nodus/nodus_types.h"         /* NODUS_TREE_TAG_VALIDATOR       */
+#include "nodus/nodus_chain_config.h"  /* nodus_chain_config_derive_witness_id */
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_log.h"
 
 #include <sqlite3.h>
+#include <stdio.h>                     /* snprintf (Rule N savepoint)    */
 #include <stdlib.h>
 #include <string.h>
 
@@ -290,12 +296,43 @@ static int v2ep_active_count_dec(nodus_witness_t *w) {
     return 0;
 }
 
+/* ── shared: is `pubkey` an entry of `snap`? ───────────────────────────
+ * Linear scan — snap->active_count is bounded by DNA_MAX_ACTIVE_
+ * VALIDATORS (128), a fixed, tiny cost. Used by v2ep_graduate (R5-3, the
+ * snapshot TAKING EFFECT this boundary) and v2ep_rule_n below (R5-1, the
+ * snapshot that GOVERNED the ending epoch) — one comparison, two
+ * different snapshots. */
+static int v2ep_pubkey_in_snapshot(const dna_vset_snapshot_t *snap,
+                                   const uint8_t pubkey[DNAC_PUBKEY_SIZE]) {
+    for (size_t j = 0; j < (size_t)snap->active_count; j++) {
+        if (memcmp(pubkey, snap->entries[j].pubkey, DNAC_PUBKEY_SIZE) == 0)
+            return 1;
+    }
+    return 0;
+}
+
 /* ── stage 2: RETIRING → UNSTAKED graduation ───────────────────────── */
 
 static int v2ep_graduate(nodus_witness_t *w, uint64_t h,
                          const uint8_t chain_id[DNA_CHAIN_ID_LEN],
                          nodus_v2_epoch_fault_fn fault, void *ud,
                          uint32_t *n_out) {
+    /* tokenomics-v3 P1 round 5 (decision file §3 2026-09-23, "ayrılan
+     * validatorun MEZUNİYETİ … ertelenir"; O6 red-team L1-1): a
+     * RETIRING/AUTO_RETIRED candidate graduates at H only if it is NOT
+     * an entry of the snapshot TAKING EFFECT at H — full contract in the
+     * header's GRADUATION section. Absent/unreadable snapshot(H) -> -2,
+     * a boundary has no verdict class. */
+    dna_vset_snapshot_t *effective = NULL;
+    int erc = nodus_witness_v2_epoch_authority_for_epoch(w, h, &effective,
+                                                          NULL, NULL);
+    if (erc != 0 || !effective) {
+        QGP_LOG_ERROR(LOG_TAG,
+                      "graduate: effective snapshot for epoch %llu "
+                      "unreadable (rc=%d)", (unsigned long long)h, erc);
+        return -2;
+    }
+
     /* Candidates collected FIRST — a SELECT statement cannot stay open
      * across the UPDATEs that follow on the same table (bft.c:2406-2407).
      * ORDER BY pubkey ASC is the stable total key on every node
@@ -304,35 +341,41 @@ static int v2ep_graduate(nodus_witness_t *w, uint64_t h,
      * therefore the stage-fault indices. */
     uint8_t (*cand)[DNAC_PUBKEY_SIZE] =
         calloc(DNAC_MAX_VALIDATORS, DNAC_PUBKEY_SIZE);
-    if (!cand) return -2;
+    if (!cand) { dna_vset_free(&effective); return -2; }
     size_t n = 0;
+    size_t n_graduated = 0;
     int ret = -2;
     int rc = SQLITE_OK;
 
     sqlite3_stmt *sel = NULL;
     if (sqlite3_prepare_v2(w->db,
-            "SELECT pubkey FROM validators WHERE status = ?1 "
+            /* tokenomics-v3 P1 (D-11): AUTO_RETIRED graduates the same
+             * way RETIRING does — its bond is RETURNED, never cut
+             * (decision §3, 2026-09-23). */
+            "SELECT pubkey FROM validators WHERE status IN (?1, ?2) "
             "ORDER BY pubkey ASC", -1, &sel, NULL) != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "RETIRING prepare failed: %s",
+        QGP_LOG_ERROR(LOG_TAG, "RETIRING/AUTO_RETIRED prepare failed: %s",
                       sqlite3_errmsg(w->db));
         goto done;
     }
     sqlite3_bind_int(sel, 1, (int)DNAC_VALIDATOR_RETIRING);
+    sqlite3_bind_int(sel, 2, (int)DNAC_VALIDATOR_AUTO_RETIRED);
     while ((rc = sqlite3_step(sel)) == SQLITE_ROW) {
         const void *pk = sqlite3_column_blob(sel, 0);
         int pk_len = sqlite3_column_bytes(sel, 0);
         if (!pk || pk_len != DNAC_PUBKEY_SIZE) {
-            QGP_LOG_ERROR(LOG_TAG, "RETIRING pubkey wrong size (%d)",
-                          pk_len);
+            QGP_LOG_ERROR(LOG_TAG, "RETIRING/AUTO_RETIRED pubkey wrong "
+                          "size (%d)", pk_len);
             sqlite3_finalize(sel);
             goto done;
         }
         if (n >= (size_t)DNAC_MAX_VALIDATORS) {
             /* The table itself is capped at DNAC_MAX_VALIDATORS; more
-             * RETIRING rows than that means the cap was already broken
+             * candidate rows than that means the cap was already broken
              * (bft.c:2497-2500 relies on the same bound). */
             QGP_LOG_ERROR(LOG_TAG, "%s",
-                          "more RETIRING rows than DNAC_MAX_VALIDATORS");
+                          "more graduation candidates than "
+                          "DNAC_MAX_VALIDATORS");
             sqlite3_finalize(sel);
             goto done;
         }
@@ -340,12 +383,24 @@ static int v2ep_graduate(nodus_witness_t *w, uint64_t h,
     }
     sqlite3_finalize(sel);
     if (rc != SQLITE_DONE) {
-        QGP_LOG_ERROR(LOG_TAG, "RETIRING scan failed (rc=%d): %s", rc,
-                      sqlite3_errmsg(w->db));
+        QGP_LOG_ERROR(LOG_TAG, "RETIRING/AUTO_RETIRED scan failed "
+                      "(rc=%d): %s", rc, sqlite3_errmsg(w->db));
         goto done;
     }
 
     for (size_t i = 0; i < n; i++) {
+        /* R5-3: still an entry of the snapshot taking effect this
+         * boundary -> leave it UNTOUCHED for a later boundary. No row
+         * read, no counter, no status change, no fault() call — nothing
+         * about this candidate is decided yet. */
+        if (v2ep_pubkey_in_snapshot(effective, cand[i])) {
+            QGP_LOG_INFO(LOG_TAG,
+                "graduation of a RETIRING/AUTO_RETIRED validator "
+                "deferred at boundary %llu — still an entry of the "
+                "effective snapshot", (unsigned long long)h);
+            continue;
+        }
+
         dnac_validator_record_t v;
         if (nodus_validator_get(w, cand[i], &v) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "%s", "graduate row unreadable");
@@ -359,6 +414,10 @@ static int v2ep_graduate(nodus_witness_t *w, uint64_t h,
                           "the boundary (activation obligation 1)");
             goto done;
         }
+        /* tokenomics-v3 P1 (D-11): captured BEFORE the row is overwritten
+         * below — decides whether active_count is decremented for THIS
+         * graduate. */
+        const uint8_t orig_status = v.status;
 
         uint8_t grad_id[64], nul[64];
         if (nodus_witness_v2_epoch_grad_id(chain_id, h, v.pubkey,
@@ -400,227 +459,752 @@ static int v2ep_graduate(nodus_witness_t *w, uint64_t h,
         if (fault && fault(ud, NODUS_V2_EPST_GRAD_RELEASE, (uint32_t)i))
             goto done;
 
-        /* RETIRING → UNSTAKED and ZERO the bond: its value just moved
-         * into the release UTXO, and leaving it on the record too would
-         * double-count it in the supply invariant's Σ self_stake term
-         * (bft.c:2516-2536). Nothing else on the row moves. */
+        /* RETIRING/AUTO_RETIRED → UNSTAKED and ZERO the bond: its value
+         * just moved into the release UTXO, and leaving it on the record
+         * too would double-count it in the supply invariant's Σ
+         * self_stake term (bft.c:2516-2536). Nothing else on the row
+         * moves. */
         v.status = (uint8_t)DNAC_VALIDATOR_UNSTAKED;
         v.self_stake = 0;
         if (nodus_validator_update(w, &v) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "%s", "graduate row update failed");
             goto done;
         }
-        if (v2ep_active_count_dec(w) != 0) goto done;
+        /* tokenomics-v3 P1 (D-11): active_count is decremented ONLY for
+         * a graduate that WAS RETIRING. Rule N already decremented it
+         * for AUTO_RETIRED at the boundary that retired it
+         * (v2ep_rule_n); decrementing again here would poison
+         * nodus_validator_active_count for every later reader. */
+        if (orig_status == (uint8_t)DNAC_VALIDATOR_RETIRING) {
+            if (v2ep_active_count_dec(w) != 0) goto done;
+        }
         if (fault && fault(ud, NODUS_V2_EPST_GRAD_APPLIED, (uint32_t)i))
             goto done;
+        n_graduated++;
     }
 
-    *n_out = (uint32_t)n;
+    *n_out = (uint32_t)n_graduated;
     ret = 0;
 done:
     free(cand);
+    dna_vset_free(&effective);
     return ret;
 }
 
-/* ── O15C: the V2 attendance writer ─────────────────────────────────
- *
- * The V2 lane's attendance writer (its legacy twin,
- * nodus_witness_record_attendance in nodus_witness_bft.c, was deleted
- * with the closed lane in R3 W4): credits ONLY the committed header
- * proposer (proposer_id = SHA3-512(pubkey)[0..31], a BlockID-bound
- * field), ACTIVE/RETIRING rows only, monotonic. Runs inside the apply
- * engine's single block transaction BEFORE any root computation — the
- * O15B.1 invariant ("a field committed by a block's state_root is never
- * mutated after that root has been calculated") holds by construction,
- * and there is deliberately NO sync/replay-side compensating writer:
- * replay reaches this exact code through the one engine. */
-int nodus_witness_v2_record_attendance(nodus_witness_t *w,
+/* ── tokenomics-v3 P1: the V2 attendance writer (D-2, D-4, Q1) ────────
+ * Contract: nodus_witness_v2_epoch.h. REPLACES the O15C proposer-credit
+ * writer (deleted with this change). */
+int nodus_witness_v2_attendance_credit(nodus_witness_t *w,
                                        uint64_t global_height,
-                                       const uint8_t proposer_id[32],
-                                       int *credited_out) {
-    if (credited_out) *credited_out = 0;
+                                       const uint8_t (*addresses)[32],
+                                       const int32_t *block_id_flags,
+                                       size_t n_votes) {
     if (!w || !w->db) return -2;
-    if (!proposer_id || global_height == 0) return 0;
+    if (n_votes == 0) return 0;
+    if (!addresses || !block_id_flags) return -2;
+    /* A block at height H carries the commit FOR H-1 (BuildLastCommitInfo);
+     * a non-empty vote list at the initial height would mean the host
+     * handed us decided_last_commit when execution.go's own precondition
+     * says it must not exist — a node-local contract violation, not a
+     * value this function can honestly report as "nothing to credit". */
+    if (global_height == 0) return -2;
+    const uint64_t signed_height = global_height - 1;
 
-    /* All-zero proposer = no proposer identity committed (fixtures,
-     * genesis) — nothing to credit, deterministically, everywhere. */
-    {
-        int nz = 0;
-        for (int i = 0; i < 32; i++) if (proposer_id[i]) { nz = 1; break; }
-        if (!nz) return 0;
-    }
+    for (size_t i = 0; i < n_votes; i++) {
+        if (block_id_flags[i] != (int32_t)CMT_PB_BLOCK_ID_FLAG_COMMIT)
+            continue;                     /* Q1: NIL/ABSENT do not count */
 
-    sqlite3_stmt *sel = NULL;
-    if (sqlite3_prepare_v2(w->db,
-            "SELECT pubkey, last_signed_block FROM validators "
-            "WHERE status IN (?, ?)", -1, &sel, NULL) != SQLITE_OK)
-        return -2;
-    sqlite3_bind_int(sel, 1, (int)DNAC_VALIDATOR_ACTIVE);
-    sqlite3_bind_int(sel, 2, (int)DNAC_VALIDATOR_RETIRING);
-
-    uint8_t match_pk[2592];
-    uint64_t match_last = 0;
-    int matched = 0;
-    int rc;
-    while ((rc = sqlite3_step(sel)) == SQLITE_ROW) {
-        const void *pk = sqlite3_column_blob(sel, 0);
-        if (!pk || sqlite3_column_bytes(sel, 0) != (int)sizeof(match_pk))
-            continue;
-        uint8_t digest[64];
-        if (qgp_sha3_512(pk, sizeof(match_pk), digest) != 0) {
+        /* R5-7: every sqlite3_bind_* return checked. A failed bind here
+         * is a node-local fault, never an insert of a NULL/zeroed key or
+         * an "absent" read — either would silently misattribute or lose
+         * a vote's attendance credit. */
+        sqlite3_stmt *sel = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "SELECT signed_count FROM v2_attendance "
+                "WHERE voter_id = ?1", -1, &sel, NULL) != SQLITE_OK)
+            return -2;
+        if (sqlite3_bind_blob(sel, 1, addresses[i], 32, SQLITE_TRANSIENT)
+            != SQLITE_OK) {
             sqlite3_finalize(sel);
             return -2;
         }
-        if (memcmp(digest, proposer_id, 32) != 0) continue;
-        memcpy(match_pk, pk, sizeof(match_pk));
-        match_last = (uint64_t)sqlite3_column_int64(sel, 1);
-        matched = 1;
-        break;
-    }
-    sqlite3_finalize(sel);
-    if (!matched && rc != SQLITE_ROW && rc != SQLITE_DONE) return -2;
-    if (!matched) return 0;                     /* unknown proposer: skip */
-    if (global_height <= match_last) return 0;  /* monotonic             */
+        int rc = sqlite3_step(sel);
+        int has_row = (rc == SQLITE_ROW);
+        uint64_t cur = has_row ? (uint64_t)sqlite3_column_int64(sel, 0) : 0;
+        sqlite3_finalize(sel);
+        if (!has_row && rc != SQLITE_DONE) return -2;
 
-    sqlite3_stmt *upd = NULL;
-    if (sqlite3_prepare_v2(w->db,
-            "UPDATE validators SET "
-            "  last_signed_block = ?,"
-            "  signed_blocks_this_epoch = signed_blocks_this_epoch + 1 "
-            "WHERE pubkey = ?", -1, &upd, NULL) != SQLITE_OK)
+        if (has_row) {
+            sqlite3_stmt *upd = NULL;
+            if (sqlite3_prepare_v2(w->db,
+                    "UPDATE v2_attendance SET signed_count = ?1, "
+                    "last_signed_height = ?2 WHERE voter_id = ?3",
+                    -1, &upd, NULL) != SQLITE_OK)
+                return -2;
+            if (sqlite3_bind_int64(upd, 1, (sqlite3_int64)(cur + 1))
+                    != SQLITE_OK ||
+                sqlite3_bind_int64(upd, 2, (sqlite3_int64)signed_height)
+                    != SQLITE_OK ||
+                sqlite3_bind_blob(upd, 3, addresses[i], 32,
+                                  SQLITE_TRANSIENT) != SQLITE_OK) {
+                sqlite3_finalize(upd);
+                return -2;
+            }
+            int urc = sqlite3_step(upd);
+            sqlite3_finalize(upd);
+            if (urc != SQLITE_DONE) return -2;
+        } else {
+            sqlite3_stmt *ins = NULL;
+            if (sqlite3_prepare_v2(w->db,
+                    "INSERT INTO v2_attendance (voter_id, signed_count, "
+                    "last_signed_height) VALUES (?1, 1, ?2)",
+                    -1, &ins, NULL) != SQLITE_OK)
+                return -2;
+            if (sqlite3_bind_blob(ins, 1, addresses[i], 32,
+                                  SQLITE_TRANSIENT) != SQLITE_OK ||
+                sqlite3_bind_int64(ins, 2, (sqlite3_int64)signed_height)
+                    != SQLITE_OK) {
+                sqlite3_finalize(ins);
+                return -2;
+            }
+            int irc = sqlite3_step(ins);
+            sqlite3_finalize(ins);
+            if (irc != SQLITE_DONE) return -2;
+        }
+    }
+    return 0;
+}
+
+/* ── tokenomics-v3 P1: the attendance reader ──────────────────────────
+ * Contract: nodus_witness_v2_epoch.h. */
+int nodus_witness_v2_attendance_get(nodus_witness_t *w,
+                                    const uint8_t pubkey[DNAC_PUBKEY_SIZE],
+                                    uint64_t *signed_count_out,
+                                    uint64_t *last_signed_height_out) {
+    if (!w || !w->db || !pubkey) return -2;
+
+    uint8_t voter_id[32];
+    if (nodus_chain_config_derive_witness_id(pubkey, voter_id) != 0)
         return -2;
-    sqlite3_bind_int64(upd, 1, (int64_t)global_height);
-    sqlite3_bind_blob(upd, 2, match_pk, sizeof(match_pk), SQLITE_STATIC);
-    int urc = sqlite3_step(upd);
-    sqlite3_finalize(upd);
-    if (urc != SQLITE_DONE) return -2;
-    if (credited_out) *credited_out = 1;
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT signed_count, last_signed_height FROM v2_attendance "
+            "WHERE voter_id = ?1", -1, &st, NULL) != SQLITE_OK)
+        return -2;
+    /* R5-7: bind checked — a failed bind must not be read as "absent". */
+    if (sqlite3_bind_blob(st, 1, voter_id, 32, SQLITE_TRANSIENT) !=
+        SQLITE_OK) {
+        sqlite3_finalize(st);
+        return -2;
+    }
+    int rc = sqlite3_step(st);
+    if (rc == SQLITE_ROW) {
+        if (signed_count_out)
+            *signed_count_out = (uint64_t)sqlite3_column_int64(st, 0);
+        if (last_signed_height_out)
+            *last_signed_height_out = (uint64_t)sqlite3_column_int64(st, 1);
+        sqlite3_finalize(st);
+        return 0;
+    }
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE ? 1 : -2;
+}
+
+/* ── tokenomics-v3 P1 round 3 (operator 2026-09-23): the SHARED
+ * participation predicate ────────────────────────────────────────────
+ * Contract: nodus_witness_v2_epoch.h. ONE function, TWO callers
+ * (`v2ep_rule_n` below and `nodus_witness_v2_settlement_apply`,
+ * nodus_witness_v2_econ.c) — both predicates, always together, per the
+ * decision text's own binding (header comment, "THE SAME PREDICATE
+ * BINDS THE REWARD BAR"). */
+int nodus_witness_v2_attendance_meets_bar(nodus_witness_t *w,
+                                          const uint8_t
+                                              pubkey[DNAC_PUBKEY_SIZE],
+                                          uint64_t boundary_height,
+                                          int *out) {
+    if (!w || !w->db || !pubkey || !out) return -2;
+
+    uint64_t signed_count = 0, last_signed_height = 0;
+    int arc = nodus_witness_v2_attendance_get(w, pubkey, &signed_count,
+                                              &last_signed_height);
+    if (arc == -2) return -2;
+    /* arc == 1 (absent): honest zero — never signed, never credited. */
+    if (arc == 1) { signed_count = 0; last_signed_height = 0; }
+
+    const int p1 = (signed_count * 10000ULL) >=
+                   ((uint64_t)DNAC_EPOCH_LENGTH *
+                    (uint64_t)DNAC_LIVENESS_THRESHOLD_BPS);
+
+    const uint64_t window = (uint64_t)DNAC_SETTLEMENT_ATTENDANCE_WINDOW_BLOCKS;
+    const uint64_t window_floor =
+        (boundary_height > window) ? boundary_height - window : 0;
+    const int p2 = last_signed_height > 0 &&
+                   last_signed_height >= window_floor;
+
+    *out = (p1 && p2) ? 1 : 0;
     return 0;
 }
 
 /* ── O15C: Rule N settlement (legacy bft.c:2587-2723 transplant) ───── */
 
+/* tokenomics-v3 P1 round 6 — the savepoint Rule N's weight floor opens
+ * around its AUTO_RETIRED UPDATE (v2ep_rule_n). A fixed literal: it is
+ * inlined into SQL (SAVEPOINT takes no bound parameter), and no other
+ * savepoint in nodus/src uses this name, so nesting inside the block's
+ * own transaction / the cometbft lane's per-item savepoints
+ * (nodus_witness_v2_apply.c, `cmt_item_<n>`) can never alias it. */
+#define V2EP_RULE_N_SAVEPOINT "v2ep_rule_n_retire"
+
+/* Run one savepoint statement ("SAVEPOINT", "RELEASE SAVEPOINT" or
+ * "ROLLBACK TO SAVEPOINT") on V2EP_RULE_N_SAVEPOINT. Same raw-exec shape
+ * as nodus_witness_v2_pools.c's s7_startup savepoint. @return 0 / -1. */
+static int v2ep_rn_savepoint(nodus_witness_t *w, const char *verb) {
+    char sql[64];
+    snprintf(sql, sizeof(sql), "%s " V2EP_RULE_N_SAVEPOINT, verb);
+    char *err = NULL;
+    if (sqlite3_exec(w->db, sql, NULL, NULL, &err) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Rule N: %s failed: %s", sql,
+                      err ? err : sqlite3_errmsg(w->db));
+        if (err) sqlite3_free(err);
+        return -1;
+    }
+    return 0;
+}
+
+/* tokenomics-v3 P1 round 6 — Rule N's weight floor verdict over the NEXT
+ * epoch's snapshot (decision file §3 2026-09-23 "Rule N TABANI WEIGHT
+ * ÜZERİNDEN"). Power per entry is `total_stake / DNAC_DECIMAL_UNIT` —
+ * the exact unit the §A ValidatorUpdate diff reports to cometbft
+ * (nodus_witness_cmt_app.c:1569). P = checked sum, m = max. Allowed iff
+ * P > 0 AND (P - m) > P * 2 / 3 — cometbft's own integer form
+ * (shared/dnac/cmt_validation.c:298 `needed = total * 2 / 3`, a commit
+ * needs tallied > needed): the set must still commit with its single
+ * largest member gone.
+ *
+ * @param allowed_out [out] 1 allowed / 0 not allowed.
+ * @return 0 computed, -1 fault (sum or doubling overflows uint64 —
+ *         unreachable at real supply, refused visibly rather than
+ *         wrapped). */
+static int v2ep_rn_weight_verdict(const dna_vset_snapshot_t *s,
+                                  uint64_t *p_out, uint64_t *m_out,
+                                  int *allowed_out) {
+    uint64_t P = 0, m = 0;
+    for (uint16_t i = 0; i < s->active_count; i++) {
+        uint64_t p = s->entries[i].total_stake / DNAC_DECIMAL_UNIT;
+        if (P > UINT64_MAX - p) return -1;
+        P += p;
+        if (p > m) m = p;
+    }
+    if (P > UINT64_MAX / 2) return -1;
+    *p_out = P;
+    *m_out = m;
+    *allowed_out = (P > 0 && (P - m) > P * 2 / 3) ? 1 : 0;
+    return 0;
+}
+
+/* tokenomics-v3 P1 round 5 (O6 verifier V-1 / red-team L3-1, L3-2; decision
+ * file §3 2026-09-23 — the floor was the "Rule N TABANI = 4" entry, now
+ * INVALID and replaced in round 6 by the "Rule N TABANI WEIGHT
+ * ÜZERİNDEN" entry, whose contract sits above the floor block below;
+ * the graduation-deferral entry between them is R5-3): a member has a
+ * DUTY at boundary H iff it is an entry of the
+ * COMMITTED snapshot that governed the epoch just ending,
+ * snapshot(H-E) — the set flipped ACTIVE at boundary H-E and the one
+ * cometbft has used since H-E+2 (its own two-height lag) — AND its row's
+ * status is ACTIVE right now. Evaluating every ACTIVE row regardless of
+ * duty (the round-3/4 shape) charged a miss to a validator STAKEd mid-epoch
+ * (seated ACTIVE, never in the duty snapshot — V-1) and let a counter
+ * survive an epoch the member had no duty in (a validator that fell out of
+ * ACTIVE and later came back, or was simply never evaluated because the
+ * committee shrank around it), turning two NON-consecutive misses into a
+ * retirement. Every bonded row (ACTIVE or ELIGIBLE) that is NOT evaluated
+ * this boundary has its counter reset to 0: an epoch without a duty breaks
+ * the chain of consecutive misses. RETIRING rows are excluded from the scan
+ * entirely (an exiting member cannot be auto-retired a second time).
+ * Candidates collected FIRST — a SELECT statement cannot stay open across
+ * the UPDATEs that follow, same discipline as v2ep_graduate above. Scan
+ * order is `validators` `pubkey ASC` (NOT the duty snapshot's own order,
+ * which is stake DESC with a hash tiebreak inside equal-stake groups,
+ * nodus_witness_committee.c:344-359 — coupling Rule N's evaluated order to
+ * a value read elsewhere, current stake, would coincidentally sort the
+ * update writes and their fault-stage indices by wealth, which is neither
+ * needed nor exercised by any existing fault-injection test); pubkey ASC
+ * is the total, stable key every other pass in this file already commits
+ * to. */
 static int v2ep_rule_n(nodus_witness_t *w, uint64_t h) {
-    uint64_t epoch_start =
-        (h > (uint64_t)DNAC_EPOCH_LENGTH) ? h - (uint64_t)DNAC_EPOCH_LENGTH
-                                          : 0;
-
-    /* a. Blame the past epoch's BASE LEADER only, from the COMMITTED
-     * snapshot authority (the O12 resolver). Absence = nobody had a
-     * slot = nobody blamed (the legacy past_n == 0 tolerance for
-     * bootstrap/fixture epochs); a FAULT stays a fault. */
-    const uint8_t *leader_pk = NULL;
-    dna_vset_snapshot_t *past = NULL;
-    {
-        uint32_t n = 0, q = 0;
-        int arc = nodus_witness_v2_epoch_authority_for_epoch(w, epoch_start,
-                                                             &past, &n, &q);
-        if (arc < 0) { dna_vset_free(&past); return -1; }
-        if (arc == 0 && past && n > 0) {
-            uint64_t epoch_num = epoch_start / (uint64_t)DNAC_EPOCH_LENGTH;
-            leader_pk = past->entries[(size_t)(epoch_num % n)].pubkey;
-        }
+    /* R5-1: absent/unreadable duty snapshot -> the boundary has no
+     * verdict class (fault, not an empty-set assumption). epoch_start
+     * cannot underflow: the caller's gate already proved h is a positive
+     * multiple of DNAC_EPOCH_LENGTH, so h >= E. */
+    const uint64_t duty_epoch_start = h - (uint64_t)DNAC_EPOCH_LENGTH;
+    dna_vset_snapshot_t *duty = NULL;
+    int drc = nodus_witness_v2_epoch_authority_for_epoch(
+        w, duty_epoch_start, &duty, NULL, NULL);
+    if (drc != 0 || !duty) {
+        QGP_LOG_ERROR(LOG_TAG,
+                      "Rule N: duty snapshot for epoch %llu unreadable "
+                      "(rc=%d) at boundary %llu",
+                      (unsigned long long)duty_epoch_start, drc,
+                      (unsigned long long)h);
+        return -1;
     }
+    /* Round 6: the weight floor's preview of snapshot(H+E); freed at
+     * `done` on every path. */
+    dna_vset_snapshot_t *next = NULL;
 
+    uint8_t (*cand)[DNAC_PUBKEY_SIZE] =
+        calloc(DNAC_MAX_VALIDATORS, DNAC_PUBKEY_SIZE);
+    uint8_t *cand_status = calloc(DNAC_MAX_VALIDATORS, sizeof(uint8_t));
+    uint64_t *cand_missed = calloc(DNAC_MAX_VALIDATORS, sizeof(uint64_t));
+    if (!cand || !cand_status || !cand_missed) {
+        free(cand); free(cand_status); free(cand_missed);
+        dna_vset_free(&duty);
+        return -1;
+    }
+    size_t n = 0;
     int rc;
-    if (leader_pk) {
-        sqlite3_stmt *inc = NULL;
-        if (sqlite3_prepare_v2(w->db,
-                "UPDATE validators "
-                "SET consecutive_missed_epochs = "
-                "    consecutive_missed_epochs + 1 "
-                "WHERE status = ? AND last_signed_block < ? "
-                "  AND active_since_block + ? <= ? "
-                "  AND pubkey = ?", -1, &inc, NULL) != SQLITE_OK) {
-            dna_vset_free(&past);
-            return -1;
+    int ret = -1;
+
+    sqlite3_stmt *sel = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT pubkey, status, consecutive_missed_epochs FROM "
+            "validators WHERE status IN (?1, ?2) ORDER BY pubkey ASC",
+            -1, &sel, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Rule N: bonded prepare failed: %s",
+                      sqlite3_errmsg(w->db));
+        goto done;
+    }
+    sqlite3_bind_int(sel, 1, (int)DNAC_VALIDATOR_ACTIVE);
+    sqlite3_bind_int(sel, 2, (int)DNAC_VALIDATOR_ELIGIBLE);
+    while ((rc = sqlite3_step(sel)) == SQLITE_ROW) {
+        const void *pk = sqlite3_column_blob(sel, 0);
+        int pk_len = sqlite3_column_bytes(sel, 0);
+        if (!pk || pk_len != DNAC_PUBKEY_SIZE) {
+            QGP_LOG_ERROR(LOG_TAG, "Rule N: bonded pubkey wrong size (%d)",
+                          pk_len);
+            sqlite3_finalize(sel);
+            goto done;
         }
-        sqlite3_bind_int(inc, 1, (int)DNAC_VALIDATOR_ACTIVE);
-        sqlite3_bind_int64(inc, 2, (int64_t)epoch_start);
-        sqlite3_bind_int64(inc, 3, (int64_t)DNAC_MIN_TENURE_BLOCKS);
-        sqlite3_bind_int64(inc, 4, (int64_t)h);
-        sqlite3_bind_blob(inc, 5, leader_pk, 2592, SQLITE_STATIC);
-        rc = sqlite3_step(inc);
-        sqlite3_finalize(inc);
-    } else {
-        rc = SQLITE_DONE;
+        if (n >= (size_t)DNAC_MAX_VALIDATORS) {
+            QGP_LOG_ERROR(LOG_TAG, "%s",
+                          "more bonded rows than DNAC_MAX_VALIDATORS");
+            sqlite3_finalize(sel);
+            goto done;
+        }
+        memcpy(cand[n], pk, DNAC_PUBKEY_SIZE);
+        cand_status[n] = (uint8_t)sqlite3_column_int(sel, 1);
+        cand_missed[n] = (uint64_t)sqlite3_column_int64(sel, 2);
+        n++;
     }
-    dna_vset_free(&past);
-    if (rc != SQLITE_DONE) return -1;
+    sqlite3_finalize(sel);
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "Rule N: bonded scan failed (rc=%d): %s",
+                      rc, sqlite3_errmsg(w->db));
+        goto done;
+    }
 
-    /* b. Reset for attendees. */
+    /* tokenomics-v3 P1 round 3: both predicates (bar + recency window)
+     * now come from ONE shared function, `nodus_witness_v2_attendance_
+     * meets_bar` — the SAME one the settlement reward bar calls
+     * (nodus_witness_v2_econ.c). `h` IS the boundary height the shared
+     * function's `boundary_height` parameter wants: the epoch that just
+     * accumulated attendance is (h - E, h], and h never underflows the
+     * window arithmetic (the gate above proved h is a positive multiple
+     * of DNAC_EPOCH_LENGTH, so h >= 1). */
     {
-        sqlite3_stmt *rst = NULL;
-        if (sqlite3_prepare_v2(w->db,
-                "UPDATE validators SET consecutive_missed_epochs = 0 "
-                "WHERE status = ? AND last_signed_block >= ?",
-                -1, &rst, NULL) != SQLITE_OK)
-            return -1;
-        sqlite3_bind_int(rst, 1, (int)DNAC_VALIDATOR_ACTIVE);
-        sqlite3_bind_int64(rst, 2, (int64_t)epoch_start);
-        rc = sqlite3_step(rst);
-        sqlite3_finalize(rst);
-        if (rc != SQLITE_DONE) return -1;
+        for (size_t i = 0; i < n; i++) {
+            /* R5-1: duty membership — is cand[i] an entry of duty
+             * (snapshot(H-E))? Shared helper (v2ep_pubkey_in_snapshot,
+             * above v2ep_graduate) — same comparison R5-3 uses against a
+             * different snapshot. */
+            int in_duty = v2ep_pubkey_in_snapshot(duty, cand[i]);
+
+            int64_t new_missed;
+            if (cand_status[i] == (uint8_t)DNAC_VALIDATOR_ACTIVE &&
+                in_duty) {
+                int present = 0;
+                int mrc = nodus_witness_v2_attendance_meets_bar(
+                    w, cand[i], h, &present);
+                if (mrc != 0) {
+                    QGP_LOG_ERROR(LOG_TAG, "%s",
+                                  "Rule N: attendance lookup faulted");
+                    goto done;
+                }
+                int miss = !present;
+                new_missed = miss ? (int64_t)(cand_missed[i] + 1) : 0;
+            } else {
+                /* No duty this boundary — ELIGIBLE (never evaluated), or
+                 * ACTIVE but absent from the duty snapshot (a mid-epoch
+                 * STAKE, or a member the committee shrank around). Reset,
+                 * never increment: an epoch without a duty breaks the
+                 * chain of consecutive misses (R5-1). */
+                new_missed = 0;
+            }
+
+            sqlite3_stmt *upd = NULL;
+            if (sqlite3_prepare_v2(w->db,
+                    "UPDATE validators SET consecutive_missed_epochs = ?1 "
+                    "WHERE status = ?2 AND pubkey = ?3", -1, &upd, NULL)
+                != SQLITE_OK) {
+                QGP_LOG_ERROR(LOG_TAG, "Rule N: update prepare failed: %s",
+                              sqlite3_errmsg(w->db));
+                goto done;
+            }
+            sqlite3_bind_int64(upd, 1, (sqlite3_int64)new_missed);
+            sqlite3_bind_int(upd, 2, (int)cand_status[i]);
+            sqlite3_bind_blob(upd, 3, cand[i], DNAC_PUBKEY_SIZE,
+                              SQLITE_STATIC);
+            int urc = sqlite3_step(upd);
+            sqlite3_finalize(upd);
+            if (urc != SQLITE_DONE) {
+                QGP_LOG_ERROR(LOG_TAG, "Rule N: update failed (rc=%d): %s",
+                              urc, sqlite3_errmsg(w->db));
+                goto done;
+            }
+        }
     }
 
-    /* c. AUTO_RETIRE past the threshold, active_count kept coherent. */
+    /* AUTO_RETIRE past the threshold, behind THE WEIGHT FLOOR —
+     * tokenomics-v3 P1 round 6 (decision file §3 2026-09-23, "Rule N
+     * TABANI WEIGHT ÜZERİNDEN", which replaced the round-5 count floor
+     * "Rule N TABANI = 4", now marked invalid there).
+     *
+     * WHY A FLOOR AT ALL (unchanged from round 5): the 50% bar and the
+     * 120-block recency window are two DIFFERENT conditions and can fail
+     * DIFFERENT members at the same boundary (red-team L3-2: 5 of a 7-
+     * member committee in one worked example, every block still
+     * committing), and members leaving the set still vote one more epoch
+     * while Rule N only evaluates seated ones. Retiring everyone who
+     * crossed the threshold can therefore leave a next set that cannot
+     * survive losing a single member — or no set at all.
+     *
+     * WHAT IT MEASURES (round 6): VOTING POWER of the members that will
+     * actually be SEATED next epoch, not a head count of bonded rows. The
+     * count floor counted ELIGIBLE rows the tenure gate will not seat
+     * (nodus_witness_validator.c:311 — O6 verifier: 7 members + 1 fresh
+     * staker, 4 retired, count 4, next set 3 seats), and liveness is a
+     * question of power: a commit needs MORE than two-thirds of it
+     * (shared/dnac/cmt_validation.c:298). The rule: with every row past
+     * DNAC_AUTO_RETIRE_EPOCHS provisionally retired, build the snapshot
+     * this boundary's commit_next will store for H+E
+     * (nodus_witness_vset_preview_next) and require that it still commits
+     * with its single LARGEST member gone — see v2ep_rn_weight_verdict.
+     * An EMPTY next set is never allowed. Only ACTIVE rows can reach the
+     * threshold (ELIGIBLE rows were reset above, never incremented), so
+     * `retire_count` is exactly the set about to lose its seat.
+     * All-or-nothing, never a partial or ranked retirement: refused ->
+     * ROLLBACK TO the savepoint, NOBODY is retired, the counters keep the
+     * values written above (the members go at the first boundary where
+     * the survivors can carry them), active_count does not move, one WARN.
+     * Same precedent as `nodus_witness_domreg_exclusions_at`
+     * (nodus_witness_domreg.h:239-246, "NO exclusion happens").
+     *
+     * WHAT IT DOES NOT DO (open operator questions, decision file §3, not
+     * this rule's job): it does not cap HOW MANY may be retired at once
+     * in a large set (100 equal members, 96 retired -> 4 equal left,
+     * (4-1) > 4*2/3 -> allowed); and if ONE member already holds at least
+     * a third of the next set's power, it allows no retirement at all
+     * (stake concentration — the pre-testnet "power cap" decision). The
+     * inequality forces max < P/3, so it implies at least 4 seatable
+     * members: the old count bound is a consequence, not a second rule.
+     *
+     * WHY THE PREVIEW IS THE SNAPSHOT commit_next STORES (brief step 3,
+     * every input of nodus_committee_compute_for_epoch(w, H+E) checked
+     * against what runs between this point and commit_next — the
+     * attendance digest, the attendance reset and the boundary flips,
+     * nodus_witness_v2_epoch_boundary_apply below):
+     *   - builder: the preview and commit_next share ONE static core,
+     *     vset_build_snapshot (nodus_witness_vset.c:334), keyed on the
+     *     same H+E and sized by the same vset_target_for_epoch
+     *     (nodus_witness_vset.c:484; commit_next reaches it through
+     *     vset_build_and_store :524/:530, the preview at :709).
+     *   - path: H is a positive multiple of E, so H+E >= 2E > E+1 and the
+     *     bootstrap branch (nodus_witness_committee.c:247) is unreachable
+     *     for both.
+     *   - target: committee_target_for_epoch (nodus_witness_committee.c
+     *     :98, :255) reads chain_config_history only (cache hit == miss by
+     *     contract, nodus_witness_chain_config.c:316-333); none of the
+     *     three steps writes it.
+     *   - seed: the lookback row at H+E-E-1 = H-1 (:258) — v2_blocks +
+     *     the Comet BlockMeta (:271), or the legacy `blocks` row (:279);
+     *     committed by an EARLIER block, written by none of the three.
+     *   - candidates: nodus_validator_top_n (:320 ->
+     *     nodus_witness_validator.c:303-313) — rows with status IN
+     *     (ACTIVE, ELIGIBLE), filtered on active_since_block, ordered on
+     *     self_stake + external_delegated then pubkey. The digest writes
+     *     v2_attendance_epoch and the reset writes v2_attendance
+     *     (v2ep_attendance_digest / v2ep_attendance_reset below); the
+     *     flips write ONLY validators.status, and only ACTIVE/ELIGIBLE ->
+     *     ELIGIBLE then ELIGIBLE -> ACTIVE (nodus_witness_vset.c:632,
+     *     :657), so the candidate SET, its stakes, tenure and order are
+     *     unchanged; the tiebreak (:340) hashes pubkey with the seed; the
+     *     emitted fields (emit_member :230 — pubkey, total_stake,
+     *     self_stake, commission_bps) are not written by any of them.
+     * test_v2_epoch.c §12g checks the stored snapshot(H+E) hash equals
+     * a preview built over the SAME post-boundary state — it proves the
+     * builder is shared, NOT this input-by-input argument: a step later
+     * inserted here that writes a committee input would stay green
+     * there. Anyone adding a step between Rule N and commit_next must
+     * re-walk the list above. */
     {
         sqlite3_stmt *cnt = NULL;
         if (sqlite3_prepare_v2(w->db,
                 "SELECT COUNT(*) FROM validators "
                 "WHERE status = ? AND consecutive_missed_epochs >= ?",
                 -1, &cnt, NULL) != SQLITE_OK)
-            return -1;
+            goto done;
         sqlite3_bind_int(cnt, 1, (int)DNAC_VALIDATOR_ACTIVE);
         sqlite3_bind_int64(cnt, 2, (int64_t)DNAC_AUTO_RETIRE_EPOCHS);
         int retire_count = -1;
         if (sqlite3_step(cnt) == SQLITE_ROW)
             retire_count = sqlite3_column_int(cnt, 0);
         sqlite3_finalize(cnt);
-        if (retire_count < 0) return -1;
+        if (retire_count < 0) goto done;
 
         if (retire_count > 0) {
-            sqlite3_stmt *ar = NULL;
-            if (sqlite3_prepare_v2(w->db,
-                    "UPDATE validators SET status = ? "
-                    "WHERE status = ? AND consecutive_missed_epochs >= ?",
-                    -1, &ar, NULL) != SQLITE_OK)
-                return -1;
-            sqlite3_bind_int(ar, 1, (int)DNAC_VALIDATOR_AUTO_RETIRED);
-            sqlite3_bind_int(ar, 2, (int)DNAC_VALIDATOR_ACTIVE);
-            sqlite3_bind_int64(ar, 3, (int64_t)DNAC_AUTO_RETIRE_EPOCHS);
-            rc = sqlite3_step(ar);
-            sqlite3_finalize(ar);
-            if (rc != SQLITE_DONE) return -1;
+            /* 1. Open the savepoint. Every statement above is finalized,
+             *    so none is open across it. */
+            if (v2ep_rn_savepoint(w, "SAVEPOINT") != 0) goto done;
 
-            sqlite3_stmt *dec = NULL;
-            if (sqlite3_prepare_v2(w->db,
-                    "UPDATE validator_stats SET value = value - ? "
-                    "WHERE key = 'active_count'", -1, &dec, NULL)
-                != SQLITE_OK)
-                return -1;
-            sqlite3_bind_int(dec, 1, retire_count);
-            rc = sqlite3_step(dec);
-            sqlite3_finalize(dec);
-            if (rc != SQLITE_DONE) return -1;
+            /* 2. Retire provisionally (the same UPDATE as before round 6)
+             * 3. and preview the snapshot commit_next(h) will store for
+             *    h+E over exactly that state. `step_ok` stays 0 on any
+             *    fault; the verdict itself is `allowed`. */
+            int step_ok = 0, allowed = 0, prc = -1;
+            uint64_t pw_total = 0, pw_max = 0;
+            do {
+                sqlite3_stmt *ar = NULL;
+                if (sqlite3_prepare_v2(w->db,
+                        "UPDATE validators SET status = ? "
+                        "WHERE status = ? AND consecutive_missed_epochs >= ?",
+                        -1, &ar, NULL) != SQLITE_OK) {
+                    QGP_LOG_ERROR(LOG_TAG, "Rule N: retire prepare "
+                                  "failed: %s", sqlite3_errmsg(w->db));
+                    break;
+                }
+                sqlite3_bind_int(ar, 1, (int)DNAC_VALIDATOR_AUTO_RETIRED);
+                sqlite3_bind_int(ar, 2, (int)DNAC_VALIDATOR_ACTIVE);
+                sqlite3_bind_int64(ar, 3, (int64_t)DNAC_AUTO_RETIRE_EPOCHS);
+                rc = sqlite3_step(ar);
+                sqlite3_finalize(ar);
+                if (rc != SQLITE_DONE) {
+                    QGP_LOG_ERROR(LOG_TAG, "Rule N: retire failed "
+                                  "(rc=%d): %s", rc, sqlite3_errmsg(w->db));
+                    break;
+                }
 
-            QGP_LOG_INFO(LOG_TAG, "Rule N: auto-retired %d validator(s) "
-                         "at boundary %llu", retire_count,
-                         (unsigned long long)h);
+                prc = nodus_witness_vset_preview_next(w, h, &next);
+                if (prc < 0) {
+                    /* FAULT, never a verdict: a node that cannot build
+                     * the next set cannot judge it (and commit_next would
+                     * fail on the same inputs). */
+                    QGP_LOG_ERROR(LOG_TAG, "Rule N: next-set preview "
+                                  "faulted at boundary %llu",
+                                  (unsigned long long)h);
+                    break;
+                }
+                if (prc == 0 &&
+                    v2ep_rn_weight_verdict(next, &pw_total, &pw_max,
+                                           &allowed) != 0) {
+                    QGP_LOG_ERROR(LOG_TAG, "Rule N: next-set power "
+                                  "overflows at boundary %llu",
+                                  (unsigned long long)h);
+                    break;
+                }
+                /* prc == 1: the next set would be EMPTY — a verdict,
+                 * never allowed (allowed stays 0). */
+                dna_vset_free(&next);
+                step_ok = 1;
+            } while (0);
+
+            if (!step_ok) {
+                /* Unwind our own savepoint so the savepoint stack the
+                 * caller sees is balanced, then fail the boundary; the
+                 * block's own rollback discards everything regardless
+                 * (return values of the unwind are logged inside and
+                 * cannot change the outcome, which is already a fault). */
+                (void)v2ep_rn_savepoint(w, "ROLLBACK TO SAVEPOINT");
+                (void)v2ep_rn_savepoint(w, "RELEASE SAVEPOINT");
+                goto done;
+            }
+
+            if (!allowed) {
+                /* 5b. Refused: undo the provisional retirement (counter
+                 *     writes above predate the savepoint and stay), then
+                 *     drop the savepoint. active_count untouched. */
+                if (v2ep_rn_savepoint(w, "ROLLBACK TO SAVEPOINT") != 0)
+                    goto done;
+                if (v2ep_rn_savepoint(w, "RELEASE SAVEPOINT") != 0)
+                    goto done;
+                QGP_LOG_WARN(LOG_TAG,
+                    "Rule N: weight floor at boundary %llu — %d would "
+                    "retire, next set %s P=%llu max=%llu, needs "
+                    "(P-max) > P*2/3; retiring NOBODY this boundary, "
+                    "counters kept",
+                    (unsigned long long)h, retire_count,
+                    prc == 1 ? "EMPTY" : "power",
+                    (unsigned long long)pw_total,
+                    (unsigned long long)pw_max);
+            } else {
+                /* 5a. Allowed: keep the retirement. */
+                if (v2ep_rn_savepoint(w, "RELEASE SAVEPOINT") != 0)
+                    goto done;
+
+                /* active_count decrement — READ FIRST and bound to the
+                 * observed value (the same CAS discipline as
+                 * v2ep_active_count_dec above; the legacy blind
+                 * `value = value - ?` could store a negative counter and
+                 * poison nodus_validator_active_count for every later
+                 * reader). active_count counts BONDED rows plus RETIRING
+                 * rows not yet graduated (STAKE increments it, UNSTAKE
+                 * does not decrement it — nodus_witness_rt_native.c
+                 * :3380-3381 — graduation of a RETIRING row does,
+                 * v2ep_graduate); retire_count is a subset of the ACTIVE
+                 * rows, so cur < retire_count is unreachable — a genuine
+                 * corruption, not a value. */
+                int cur = 0;
+                if (nodus_validator_active_count(w, &cur) != 0) {
+                    QGP_LOG_ERROR(LOG_TAG, "%s",
+                                  "Rule N: active_count read failed");
+                    goto done;
+                }
+                if (cur < retire_count) {
+                    QGP_LOG_ERROR(LOG_TAG,
+                        "Rule N: active_count %d cannot absorb %d "
+                        "retirement(s)", cur, retire_count);
+                    goto done;
+                }
+
+                sqlite3_stmt *dec = NULL;
+                if (sqlite3_prepare_v2(w->db,
+                        "UPDATE validator_stats SET value = ?1 "
+                        "WHERE key = 'active_count' AND value = ?2",
+                        -1, &dec, NULL) != SQLITE_OK)
+                    goto done;
+                sqlite3_bind_int64(dec, 1,
+                    (sqlite3_int64)(cur - retire_count));
+                sqlite3_bind_int64(dec, 2, (sqlite3_int64)cur);
+                rc = sqlite3_step(dec);
+                int dec_changed = (int)sqlite3_changes(w->db);
+                sqlite3_finalize(dec);
+                if (rc != SQLITE_DONE || dec_changed != 1) goto done;
+
+                QGP_LOG_INFO(LOG_TAG, "Rule N: auto-retired %d validator(s) "
+                             "at boundary %llu", retire_count,
+                             (unsigned long long)h);
+            }
         }
     }
 
-    /* d. Per-epoch counter reset — every node enters the next epoch with
-     * identical counters (the legacy settlement reset). */
-    {
-        char *err = NULL;
-        if (sqlite3_exec(w->db,
-                "UPDATE validators SET signed_blocks_this_epoch = 0 "
-                "WHERE signed_blocks_this_epoch > 0",
-                NULL, NULL, &err) != SQLITE_OK) {
-            if (err) sqlite3_free(err);
+    ret = 0;
+done:
+    free(cand);
+    free(cand_status);
+    free(cand_missed);
+    dna_vset_free(&duty);
+    dna_vset_free(&next);
+    return ret;
+}
+
+/* ── tokenomics-v3 P1 (S-2): the attendance digest ────────────────────
+ * Hashes every `v2_attendance` row (voter_id ASC — no status join: any
+ * divergence anywhere in the table is caught, not just among seated
+ * validators) into ONE digest for the epoch that JUST ENDED
+ * (`epoch_start = H - E`) and inserts it into `v2_attendance_epoch`.
+ * This is the ONLY point at which the out-of-root attendance table's
+ * contents enter `system_state_root` (the `attendance_root` leg). */
+static int v2ep_attendance_digest(nodus_witness_t *w, uint64_t epoch_start) {
+    sqlite3_stmt *sel = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT voter_id, signed_count, last_signed_height "
+            "FROM v2_attendance ORDER BY voter_id ASC", -1, &sel, NULL)
+        != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "attendance digest scan prepare failed: %s",
+                      sqlite3_errmsg(w->db));
+        return -1;
+    }
+
+    size_t cap = 16, n = 0;
+    dna_v2_attendance_row_t *rows = calloc(cap, sizeof(*rows));
+    if (!rows) { sqlite3_finalize(sel); return -1; }
+
+    int rc;
+    while ((rc = sqlite3_step(sel)) == SQLITE_ROW) {
+        if (n >= cap) {
+            size_t nc = cap * 2;
+            dna_v2_attendance_row_t *nr = realloc(rows, nc * sizeof(*nr));
+            if (!nr) { free(rows); sqlite3_finalize(sel); return -1; }
+            rows = nr; cap = nc;
+        }
+        const void *vid = sqlite3_column_blob(sel, 0);
+        int vid_len = sqlite3_column_bytes(sel, 0);
+        if (!vid || vid_len != 32) {
+            QGP_LOG_ERROR(LOG_TAG, "%s",
+                          "attendance row voter_id wrong size — failing "
+                          "the digest");
+            free(rows);
+            sqlite3_finalize(sel);
             return -1;
         }
+        memcpy(rows[n].voter_id, vid, 32);
+        rows[n].signed_count = (uint64_t)sqlite3_column_int64(sel, 1);
+        rows[n].last_signed_height =
+            (uint64_t)sqlite3_column_int64(sel, 2);
+        n++;
+    }
+    sqlite3_finalize(sel);
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "attendance digest scan failed (rc=%d): %s",
+                      rc, sqlite3_errmsg(w->db));
+        free(rows);
+        return -1;
+    }
+
+    uint8_t digest[64];
+    int drc = dna_v2_attendance_digest(epoch_start, rows, n, digest);
+    free(rows);
+    if (drc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "attendance digest computation failed for "
+                      "epoch %llu", (unsigned long long)epoch_start);
+        return -1;
+    }
+
+    sqlite3_stmt *ins = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "INSERT INTO v2_attendance_epoch (epoch_start, digest) "
+            "VALUES (?1, ?2)", -1, &ins, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int64(ins, 1, (sqlite3_int64)epoch_start);
+    sqlite3_bind_blob(ins, 2, digest, 64, SQLITE_TRANSIENT);
+    int irc = sqlite3_step(ins);
+    sqlite3_finalize(ins);
+    if (irc != SQLITE_DONE) {
+        /* A duplicate key (SQLITE_CONSTRAINT) means this epoch's digest
+         * was already written — a FAULT, never a value: two different
+         * digests for one epoch_start would be a leg-level divergence. */
+        QGP_LOG_ERROR(LOG_TAG, "attendance digest insert failed for "
+                      "epoch %llu (rc=%d): %s",
+                      (unsigned long long)epoch_start, irc,
+                      sqlite3_errmsg(w->db));
+        return -1;
+    }
+    return 0;
+}
+
+/* ── tokenomics-v3 P1: the attendance reset ───────────────────────────
+ * `signed_count` only — `last_signed_height` is the P2 watermark Rule N
+ * needs at the NEXT boundary and is never reset. MUST run AFTER the
+ * digest (v2ep_attendance_digest): resetting first would digest all
+ * zeros and hide every divergence the leg exists to catch. */
+static int v2ep_attendance_reset(nodus_witness_t *w) {
+    char *err = NULL;
+    if (sqlite3_exec(w->db,
+            "UPDATE v2_attendance SET signed_count = 0 "
+            "WHERE signed_count > 0",
+            NULL, NULL, &err) != SQLITE_OK) {
+        if (err) sqlite3_free(err);
+        return -1;
     }
     return 0;
 }
@@ -661,13 +1245,15 @@ int nodus_witness_v2_epoch_boundary_apply(
      *
      * ORDER IS LOAD-BEARING, and the reason is written out in the
      * header ("WHY SETTLEMENT SITS AT 2b"): the attendance gate reads
-     * `signed_blocks_this_epoch`, and Rule N's step (d) below RESETS
-     * that column. Settling after Rule N would see zeros and burn every
-     * share on every node — deterministically wrong rather than flaky,
-     * which is worse, not better. Settlement therefore runs BEFORE it,
-     * and deliberately does NOT repeat the reset V1 performs at its own
-     * tail (bft.c:3350-3360): Rule N is about to issue exactly that
-     * UPDATE, inside this same transaction. */
+     * `v2_attendance.signed_count` (tokenomics-v3 P1), and the attendance
+     * RESET step below zeroes that column. Settling after the reset
+     * would read all zeros and burn every share on every node —
+     * deterministically wrong rather than flaky, which is worse, not
+     * better. Settlement therefore runs BEFORE it, and deliberately does
+     * NOT repeat the reset V1 performs at its own tail
+     * (bft.c:3350-3360): the boundary's own attendance-reset step is
+     * about to issue exactly that UPDATE, inside this same
+     * transaction. */
     if (nodus_witness_v2_settlement_apply(
             w, global_height - (uint64_t)DNAC_EPOCH_LENGTH,
             fault, fault_ud,
@@ -677,31 +1263,58 @@ int nodus_witness_v2_epoch_boundary_apply(
         return -2;
     }
 
-    /* ── RULE N (O15C — the transplanted legacy settlement) ──────────
-     * O12 deliberately skipped Rule N because the V2 lane had no
-     * attendance writer. O15C supplied it
-     * (nodus_witness_v2_record_attendance, called by the apply engine
-     * inside the block transaction, before roots), so the settlement now
-     * runs here with the EXACT legacy semantics
-     * (nodus_witness_bft.c:2587-2723), authority-resolved through the
-     * committed snapshot:
-     *   a. blame ONLY the past epoch's BASE LEADER (snapshot entry
-     *      epoch_num % n) if it never signed in that epoch, tenure-gated;
-     *   b. reset consecutive_missed_epochs for attendees;
-     *   c. AUTO_RETIRE at DNAC_AUTO_RETIRE_EPOCHS, decrementing
-     *      active_count once per flip;
-     *   d. reset every per-epoch signed-block counter for the next epoch.
-     * Ordered BEFORE the flips, mirroring the legacy boundary sequence
-     * (1 commissions → 2 graduation → 2b settlement → 3 Rule N →
-     *  5a flips → 5b freeze).
-     *
-     * O15J Faz 2: step (d) is now the ONLY writer of that reset on this
-     * lane, and the settlement immediately above depends on running
-     * before it. Moving Rule N earlier, or moving the reset into
-     * settlement, breaks one of the two — do neither without reading the
-     * header's "WHY SETTLEMENT SITS AT 2b". */
+    /* ── RULE N (tokenomics-v3 P1, D-3 — REWRITTEN) ───────────────────
+     * Every ACTIVE row with a duty evaluated against the committed
+     * `v2_attendance` table; no base-leader blame, no tenure gate on the
+     * evaluation; AUTO_RETIRE at DNAC_AUTO_RETIRE_EPOCHS behind the
+     * round-6 WEIGHT floor, decrementing active_count once per flip.
+     * RETIRING rows are not evaluated. The weight floor previews the
+     * snapshot commit_next (below) stores for H+E; the three steps
+     * between here and commit_next (digest, reset, flips) change none of
+     * that snapshot's inputs — the argument is written above the floor in
+     * v2ep_rule_n; moving any step that writes `validators` stakes,
+     * tenure or bonded membership, `chain_config_history`, or the H-1
+     * seed row in between would break it. Full contract: v2ep_rule_n
+     * above and the header's "RULE N: REWRITTEN" section. Ordered BEFORE the
+     * attendance digest/reset and the boundary flips, mirroring the
+     * legacy boundary sequence (1 commissions → 2 graduation →
+     * 2b settlement → 3 Rule N → 3b digest → 3c reset → 4 flips →
+     * 5 snapshot). */
     if (v2ep_rule_n(w, global_height) != 0) return -2;
     if (fault && fault(fault_ud, NODUS_V2_EPST_RULE_N, UINT32_MAX))
+        return -2;
+
+    /* ── ATTENDANCE DIGEST (tokenomics-v3 P1, S-2) ────────────────────
+     * MUST run BEFORE the reset immediately below: the digest is a
+     * function of the epoch's ACCUMULATED counts, and resetting first
+     * would digest all zeros and hide every divergence this leg exists
+     * to catch. Keyed on the SAME epoch_start settlement drained above —
+     * the gate already proved the subtraction cannot underflow. */
+    if (v2ep_attendance_digest(
+            w, global_height - (uint64_t)DNAC_EPOCH_LENGTH) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "attendance digest failed at boundary %llu",
+                      (unsigned long long)global_height);
+        return -2;
+    }
+    if (fault && fault(fault_ud, NODUS_V2_EPST_ATTENDANCE_DIGEST,
+                       UINT32_MAX))
+        return -2;
+
+    /* ── ATTENDANCE RESET (tokenomics-v3 P1) ──────────────────────────
+     * The ONLY writer of this reset on this lane — every node enters the
+     * next epoch with `v2_attendance.signed_count` at 0, per-address,
+     * `last_signed_height` untouched (Rule N's own P2 watermark). Both
+     * settlement above and Rule N above depend on running BEFORE this
+     * step; moving it earlier, or folding it into either of them, breaks
+     * one of the two — do neither without reading the header's "WHY
+     * SETTLEMENT SITS AT 2b". */
+    if (v2ep_attendance_reset(w) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "attendance reset failed at boundary %llu",
+                      (unsigned long long)global_height);
+        return -2;
+    }
+    if (fault && fault(fault_ud, NODUS_V2_EPST_ATTENDANCE_RESET,
+                       UINT32_MAX))
         return -2;
 
     /* Boundary flips consume the snapshot frozen one epoch earlier; an

@@ -1038,8 +1038,9 @@ static int gen_seed_state(nodus_witness_t *w2,
         rec.unstake_commit_block        = 0;
         rec.last_validator_update_block = 0;
         rec.consecutive_missed_epochs   = 0;
-        rec.last_signed_block           = 0;
-        rec.signed_blocks_this_epoch    = 0;
+        /* tokenomics-v3 P1: last_signed_block / signed_blocks_this_epoch
+         * are REMOVED from this record — attendance lives out-of-root in
+         * v2_attendance (already zeroed by the memset above). */
         if (nodus_validator_insert(w2, &rec) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "validator insert [%u] failed",
                           (unsigned)i);
@@ -2941,15 +2942,16 @@ int nodus_witness_v2_gen_derive_v3(const char *data_path,
          * `nodus_witness_v2_pools_startup_check`) and narrows
          * `nodus_witness_v2_genesis_cmt`'s own gate back to S14 alone
          * (nodus_witness_v2_apply.c) — the three edits are one change.
-         * With the pool gate now accepting S14, there is no longer a
-         * reason to defer the climb: the database migrates to S14 HERE,
-         * before `nodus_chain_config_db_migrate`, the seeder or any
-         * genesis step runs, exactly the order every other schema rung
-         * in this derivation uses (migrate first, then act on it).
-         * `nodus_witness_db_migrate_v2s14` cascades through S13 and S12
-         * on its own (nodus_witness_v2_schema.c:1436-1441, :1301-1304),
-         * so a freshly created database reaches S14 in this one call. */
-        if (nodus_witness_db_migrate_v2s14(w2) != 0) break;
+         * With the pool gate now accepting S15 (tokenomics-v3 P1 moved
+         * it from S14), there is no longer a reason to defer the climb:
+         * the database migrates to S15 HERE, before
+         * `nodus_chain_config_db_migrate`, the seeder or any genesis
+         * step runs, exactly the order every other schema rung in this
+         * derivation uses (migrate first, then act on it).
+         * `nodus_witness_db_migrate_v2s15` cascades through S14, S13 and
+         * S12 on its own (nodus_witness_v2_schema.c), so a freshly
+         * created database reaches S15 in this one call. */
+        if (nodus_witness_db_migrate_v2s15(w2) != 0) break;
         if (nodus_chain_config_db_migrate(w2) != 0) break;
 
         /* ── 5. SYSTEM state, from the config — the SAME seeder. ────── */

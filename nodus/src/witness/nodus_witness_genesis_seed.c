@@ -118,7 +118,8 @@ int nodus_witness_genesis_seed_validators(nodus_witness_t *w,
         memcpy(v.unstake_destination_fp, iv_fp, DNAC_FINGERPRINT_SIZE);
         v.last_validator_update_block = 0;
         v.consecutive_missed_epochs   = 0;
-        v.last_signed_block           = 0;
+        /* tokenomics-v3 P1: last_signed_block is REMOVED from this
+         * record — attendance lives out-of-root in v2_attendance. */
 
         int rc = nodus_validator_insert(w, &v);
         if (rc != 0) {
