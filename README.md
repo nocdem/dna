@@ -22,7 +22,8 @@ DNA is a suite of decentralized applications built on **NIST-approved post-quant
 | [**DNA Connect**](messenger/) | End-to-end encrypted communication with multi-chain crypto wallet | RC |
 | [**Nodus**](nodus/) | Post-quantum Kademlia DHT server with embedded BFT witness | RC |
 | [**DNAC**](dnac/) | DNA Chain — post-quantum UTXO blockchain with BFT witness consensus | Testnet |
-| [**CPUNK Platform**](cpunk/) | Quantum-safe community platform | Live |
+| [**Nodus Web Wallet**](web-wallet/) | Accountless browser multichain wallet and temporary CPUNK balance reader | Development preview |
+| [**Nodus Website**](website/) | nodusnetwork.io with its Wiki and Scan subdomains | Live |
 
 ---
 
@@ -170,7 +171,8 @@ dna/
 │   ├── include/               #   Public headers
 │   └── tests/                 #   Unit tests
 ├── explorer/                  # DNA Chain block explorer daemon (scan.cpunk.io) — read-only indexer + JSON API
-├── cpunk/                     # cpunk.io web platform
+├── website/                   # nodusnetwork.io, wiki.nodusnetwork.io, scan.nodusnetwork.io (static)
+├── web-wallet/                # Nodus Web Wallet (wallet.nodusnetwork.io, separate origin)
 ├── scripts/                   # Operational scripts (determinism checks, reporting)
 └── docs/                      # Top-level project documentation
 ```
@@ -223,7 +225,7 @@ DNA uses the Nodus DHT network. Anyone can run a Nodus node — the network is o
 
 ## Links
 
-- **Website:** https://cpunk.io
+- **Website:** https://nodusnetwork.io
 - **GitLab (Primary):** https://gitlab.cpunk.io/cpunk/dna
 - **GitHub (Mirror):** https://github.com/nocdem/dna
 - **Telegram:** [@chippunk_official](https://t.me/chippunk_official)

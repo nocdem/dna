@@ -1,0 +1,104 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { checkActivity, watchActivity, terminal } from '../src/activity.js';
+import { endpointUrl } from '../src/core.js';
+const hash = '0x' + 'a'.repeat(64), blockHash = '0x' + 'b'.repeat(64);
+const row = { chain: 'ethereum', hash, endpoint: 'https://rpc.example', status: 'pending' };
+test('EVM waits for canonical finality, distinguishes execution failure and reorg', async () => {
+  let receipt = null, final = '0x9', canonical = blockHash;
+  const call = async (_, method, params) => ({ eth_chainId: '0x1', eth_getTransactionReceipt: receipt, eth_getBlockByNumber: params[0] === 'finalized' ? { number: final } : { hash: canonical } })[method];
+  assert.equal((await checkActivity(row, { call })).status, 'pending');
+  receipt = { transactionHash: hash, blockHash, blockNumber: '0xa', status: '0x1' };
+  assert.equal((await checkActivity(row, { call })).status, 'included');
+  canonical = '0x' + 'c'.repeat(64); assert.equal((await checkActivity(row, { call })).status, 'pending');
+  canonical = blockHash; final = '0xb'; assert.equal((await checkActivity(row, { call })).status, 'confirmed');
+  receipt.status = '0x0'; assert.equal((await checkActivity(row, { call })).status, 'failed');
+  receipt = null; assert.equal((await checkActivity(row, { call })).status, 'pending');
+  await assert.rejects(checkActivity(row, { call: async () => '0x38' }), /Wrong network/);
+});
+test('EVM detects a replaced transaction only when the record carries a saved nonce', async () => {
+  let counted = 0, receiptCalls = 0;
+  const withCount = count => async (_, method) => {
+    if (method === 'eth_getTransactionCount') counted++;
+    if (method === 'eth_getTransactionReceipt') receiptCalls++;
+    return { eth_chainId: '0x1', eth_getTransactionReceipt: null, eth_getTransactionCount: count }[method];
+  };
+  assert.equal((await checkActivity({ ...row, nonce: 5 }, { call: withCount('0x6') })).status, 'replaced');
+  assert.equal(counted, 1); assert.equal(receiptCalls, 2);
+  counted = 0; receiptCalls = 0;
+  assert.equal((await checkActivity({ ...row, nonce: 5 }, { call: withCount('0x5') })).status, 'pending');
+  assert.equal(counted, 1); assert.equal(receiptCalls, 1);
+  // A transaction mined between the first receipt read and the count read must
+  // not be misreported as terminal 'replaced': the re-check receipt read finds
+  // it and the record stays pending for the next tick to confirm normally.
+  let recheckCalls = 0;
+  const raceCall = async (_, method) => {
+    if (method === 'eth_getTransactionCount') return '0x6';
+    if (method === 'eth_getTransactionReceipt') { recheckCalls++; return recheckCalls === 1 ? null : {}; }
+    return { eth_chainId: '0x1' }[method];
+  };
+  assert.equal((await checkActivity({ ...row, nonce: 5 }, { call: raceCall })).status, 'pending');
+  assert.equal(recheckCalls, 2);
+  // A record saved before the nonce field existed (0.1.14 and earlier) must not
+  // trigger the extra read at all, and must keep today's plain pending behavior.
+  const legacyCall = async (_, method) => { if (method === 'eth_getTransactionCount') throw new Error('must not be called without a saved nonce'); return { eth_chainId: '0x1', eth_getTransactionReceipt: null }[method]; };
+  assert.equal((await checkActivity(row, { call: legacyCall })).status, 'pending');
+  assert.equal(terminal('replaced'), true); assert.equal(terminal('abandoned'), true);
+});
+test('Solana requires finalized status and never treats an absent expired signature as terminal', async () => {
+  const sol = { ...row, chain: 'solana', hash: '1'.repeat(88), lastValidBlockHeight: 100 };
+  let status = null, height = 99;
+  const call = async (_, method) => ({ getGenesisHash: '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d', getSignatureStatuses: { value: [status] }, getBlockHeight: height })[method];
+  assert.equal((await checkActivity(sol, { call })).status, 'pending');
+  height = 101; const absent = await checkActivity(sol, { call }); assert.equal(absent.status, 'unknown'); assert.equal(terminal(absent.status), false);
+  status = { err: null, confirmationStatus: 'confirmed' }; assert.equal((await checkActivity(sol, { call })).status, 'included');
+  status.confirmationStatus = 'finalized'; assert.equal((await checkActivity(sol, { call })).status, 'confirmed');
+  status.err = { InstructionError: [0, 'failed'] }; assert.equal((await checkActivity(sol, { call })).status, 'failed');
+});
+test('TRON uses solidified transaction execution result, never infers failure from absence', async () => {
+  const tron = { ...row, chain: 'tron', hash: 'a'.repeat(64), endpoint: endpointUrl('https://api.trongrid.io') }; let tx = {};
+  const post = async path => { assert.ok(path.startsWith('https://api.trongrid.io/wallet')); return path.endsWith('getblockbynum') ? { blockID: '00000000000000001ebf88508a03865c71d452e25f4d51194196a1d22b6653dc' } : tx; };
+  assert.equal((await checkActivity(tron, { post })).status, 'pending');
+  tx = { txID: tron.hash, ret: [{ contractRet: 'SUCCESS' }] }; assert.equal((await checkActivity(tron, { post })).status, 'confirmed');
+  tx.ret[0].contractRet = 'REVERT'; assert.equal((await checkActivity(tron, { post })).status, 'failed');
+});
+test('EVM rechecks canonical inclusion after observing finality', async () => {
+  let canonical = blockHash;
+  const call = async (_, method, params) => {
+    if (method === 'eth_chainId') return '0x1';
+    if (method === 'eth_getTransactionReceipt') return { transactionHash: hash, blockHash, blockNumber: '0xa', status: '0x1' };
+    if (params[0] === 'finalized') { canonical = '0x' + 'c'.repeat(64); return { number: '0xb', hash: '0x' + 'd'.repeat(64) }; }
+    return { hash: canonical };
+  };
+  assert.equal((await checkActivity(row, { call })).status, 'pending');
+});
+test('EVM same-height finalized hash must agree with the receipt', async () => {
+  const call = async (_, method, params) => ({ eth_chainId: '0x1', eth_getTransactionReceipt: { transactionHash: hash, blockHash, blockNumber: '0xa', status: '0x1' }, eth_getBlockByNumber: params[0] === 'finalized' ? { number: '0xa', hash: '0x' + 'c'.repeat(64) } : { hash: blockHash } })[method];
+  assert.equal((await checkActivity(row, { call })).status, 'pending');
+});
+test('Solana continues tracking after an absent lookup beyond the validity window', async () => {
+  const sol = { ...row, chain: 'solana', hash: '1'.repeat(88), lastValidBlockHeight: 100 };
+  let lookups = 0, stop;
+  const call = async (_, method) => {
+    if (method === 'getGenesisHash') return '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';
+    if (method === 'getBlockHeight') return 101;
+    return { value: [++lookups === 1 ? null : { err: null, confirmationStatus: 'finalized' }] };
+  };
+  await new Promise((resolve, reject) => {
+    const deadline = setTimeout(() => { stop(); reject(new Error('Tracking stopped before later inclusion')); }, 1000);
+    stop = watchActivity(() => [sol], () => {
+      if (sol.status === 'confirmed') { stop(); clearTimeout(deadline); resolve(); }
+    }, { interval: 1, check: record => checkActivity(record, { call }) });
+  });
+  assert.equal(lookups, 2); assert.equal(sol.status, 'confirmed');
+});
+test('tracking preserves state on transient failure and ignores results after cancellation', async () => {
+  let updates = 0, finish;
+  const item = { ...row, status: 'included' };
+  const stop = watchActivity(() => [item], () => updates++, { interval: 999999, check: () => new Promise(resolve => { finish = resolve; }) });
+  stop(); finish({ status: 'confirmed' }); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(updates, 0); assert.equal(item.status, 'included');
+  const stop2 = watchActivity(() => [item], () => updates++, { interval: 999999, check: async () => { throw Error('offline'); } });
+  await new Promise(resolve => setImmediate(resolve)); stop2();
+  assert.equal(item.status, 'included'); assert.match(item.readError, /offline/);
+});

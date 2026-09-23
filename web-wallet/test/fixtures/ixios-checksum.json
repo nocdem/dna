@@ -1,0 +1,25 @@
+{
+  "source": "ixiosSpark 874f6d6ce18a48c019307d796e2a63eff3bd3180 common.Address.Hex() (common/types.go checksumHex)",
+  "vectors": [
+    {
+      "Phrase": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art",
+      "Address": "e827f656fdbf57b6444b3d81efd5be779278a7c92f6d68a9c67486580ff36c7bf313b9a9dca80edec25559630e337bc6",
+      "Checksummed": "0xE827f656FdbF57B6444b3D81EfD5bE779278A7c92f6d68A9c67486580Ff36C7bf313B9a9dCa80eDec25559630E337Bc6"
+    },
+    {
+      "Phrase": "absurd amount doctor acoustic avoid letter advice cage absurd amount doctor acoustic avoid letter advice cage absurd amount doctor acoustic avoid letter advice comic",
+      "Address": "bdacc18a8a7b819870edd8499b156e957a2901c962f4ed5b67efad0b54dfeb5cbf94131d582f335b814bfb64abca9277",
+      "Checksummed": "0xbdacC18a8a7B819870eDD8499B156E957A2901c962F4Ed5b67eFAd0B54Dfeb5CBF94131d582F335B814Bfb64aBca9277"
+    },
+    {
+      "Phrase": "advice cage absurd amount doctor acoustic avoid letter advice cage absurd amount doctor acoustic avoid letter advice cage absurd amount doctor acoustic avoid negative",
+      "Address": "2ab830387d5aabc69f0c1d1ab0fef4ea09bb9780342c8a3d29d1369950e337264ebc3ab00c746887341f5b258221d87a",
+      "Checksummed": "0x2ab830387D5aaBc69F0c1d1ab0fEF4EA09bB9780342c8A3d29D1369950e337264eBC3AB00c746887341f5B258221d87a"
+    },
+    {
+      "Phrase": "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo vote",
+      "Address": "9363c0390f8c9807165fbffec61e44ba09116dce6277511aabe5964460b2ec4ecb68844a2521557c2460fb5b76439d84",
+      "Checksummed": "0x9363c0390F8c9807165FbFFec61e44BA09116DcE6277511AABE5964460b2ec4ECB68844A2521557c2460FB5B76439d84"
+    }
+  ]
+}

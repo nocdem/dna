@@ -1,0 +1,22 @@
+{
+  "sourceCommit": "b9a1a813a46223cf5ff0226d461721f35bbfae17",
+  "provenance": "Public 24-word test phrases only; native C BIP39/SHAKE256/ML-DSA-87/OpenSSL SHA3-512 output matched against browser WASM.",
+  "vectors": [
+    {
+      "phrase": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art",
+      "address": "72b656d2739df07416b5d98943deb9debedaf2d9efd18153173e381b85d269e040ad4387b7e45ef776c3032c1fcb1d4a22c56f6eb1fd0572b66e646583742fd9"
+    },
+    {
+      "phrase": "absurd amount doctor acoustic avoid letter advice cage absurd amount doctor acoustic avoid letter advice cage absurd amount doctor acoustic avoid letter advice comic",
+      "address": "0c3fd9efb7bfbe9ff7f16c326eed91ca70315750efa10c0a0dcd388aa4efd398f258d6c6f31d641dd6db9f0e5fc12e91651e07dde717f44b5c0e37de7f637685"
+    },
+    {
+      "phrase": "advice cage absurd amount doctor acoustic avoid letter advice cage absurd amount doctor acoustic avoid letter advice cage absurd amount doctor acoustic avoid negative",
+      "address": "283c890fe00d7df042788bbcdc439dc812a7343112e3747a368c2150fe9203eb076f2ae553438ec65da1290787bb05a323664c94877560c0abafd701cc612086"
+    },
+    {
+      "phrase": "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo vote",
+      "address": "13eaee1b98e13a4a7b83ff6c41d1bf37837de0b5b3c44b6a46b6e2bd3bb6a8163b9791934e12e27e658a329c531d2c49e06ee1978396178deca178488c31069c"
+    }
+  ]
+}
