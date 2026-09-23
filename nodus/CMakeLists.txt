@@ -89,7 +89,8 @@ if(NODUS_STANDALONE)
         ${SHARED_DIR}/crypto/hash/hkdf_sha3.c
         ${SHARED_DIR}/crypto/enc/qgp_aes.c
         ${SHARED_DIR}/crypto/enc/qgp_kyber.c
-        ${SHARED_DIR}/crypto/enc/kyber_deterministic.c
+        ${SHARED_DIR}/crypto/enc/kyber_r3_legacy.c
+        ${SHARED_DIR}/crypto/enc/qgp_mlkem.c
         ${SHARED_DIR}/crypto/sign/qgp_dilithium.c
         ${SHARED_DIR}/crypto/utils/qgp_random.c
         ${SHARED_DIR}/crypto/utils/qgp_u128.c

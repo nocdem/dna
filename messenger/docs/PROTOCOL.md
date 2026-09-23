@@ -44,7 +44,8 @@ All protocols use NIST Category 5 post-quantum cryptography.
 
 | Algorithm | Standard | Purpose | Sizes |
 |-----------|----------|---------|-------|
-| **Kyber1024** | Kyber **round-3** — *not* ML-KEM-1024, *not* FIPS 203 ⚠ | Key Encapsulation | Pub: 1568, Priv: 3168, CT: 1568, SS: 32 |
+| **Kyber1024 round-3** | pre-FIPS-203 — LEGACY (read always; send during Faz 1-2) ⚠ | Key Encapsulation | Pub: 1568, Priv: 3168, CT: 1568, SS: 32 |
+| **ML-KEM-1024** | FIPS 203 input-output conformant (pq-crystals `standard`@d5b791c, NIST ACVP-Server @975de31 + CCTV KAT) — *not* FIPS 140-3 validated | Key Encapsulation | Pub: 1568, Priv: 3168, CT: 1568, SS: 32 |
 | **ML-DSA-87** | FIPS 204 (Dilithium5) | Digital Signatures | Pub: 2592, Priv: 4896, Sig: ~4627 |
 | **AES-256-GCM** | FIPS 197 + SP 800-38D | Symmetric Encryption | Key: 32, Nonce: 12, Tag: 16 |
 | **SHA3-512** | FIPS 202 | Fingerprints/Hashing | Output: 64 bytes |
@@ -52,20 +53,21 @@ All protocols use NIST Category 5 post-quantum cryptography.
 
 **Source:** `crypto/utils/qgp_types.h`
 
-> ⚠ **Naming note (corrected 2026-07-28).** This document, and several others, used
-> **ML-KEM-1024** as a synonym for the KEM in use. It is not one: the shipped code is
-> **Kyber round-3**, ML-KEM's direct predecessor, and the two are not interoperable.
-> Round-3 retains a final shared-secret hash `ss = SHAKE256(K' ‖ H(c))`
-> (`shared/crypto/enc/kem/kem.c:73-75`) that FIPS 203 removed, and its keygen feeds G
-> 32 bytes rather than `G(d ‖ k)` (`kem/indcpa.c:231-232`). Wherever the text below
-> says "ML-KEM-1024", read **Kyber1024 (round-3)** — the wire sizes are identical
-> (1568/3168/1568/32), so the format descriptions remain accurate; only the standard
-> name was wrong. Authoritative statement: `shared/crypto/enc/qgp_kyber.h`.
->
-> This is a documentation correction, **not** a request to change the algorithm.
-> Kyber1024 round-3 is not broken. Switching to ML-KEM would change every derived
-> shared secret and break every stored ciphertext and every deployed peer — a separate,
-> breaking decision.
+> ⚠ **Migration status (Faz 0 port, 2026-09-23).** `shared/crypto/enc/kem/` is now
+> the pq-crystals/kyber `standard`@d5b791c reference (ML-KEM-1024, FIPS 203
+> input-output conformant) — replacing the round-3 snapshot this note used to
+> describe. Every EXISTING caller still uses the round-3 wire format and behaviour
+> unchanged (`shared/crypto/enc/qgp_kyber.h` -> `kyber_r3_legacy.h`, a verbatim
+> transplant of the old direct implementation). The new FIPS-203-conformant API
+> (`shared/crypto/enc/qgp_mlkem.h`) has NO caller yet — nothing in this document's
+> wire formats uses `enc_key_type=3` yet. Wire sizes are identical between the two
+> (1568/3168/1568/32) — algorithms cannot be told apart by size, only by the
+> explicit tag each format carries. See
+> `docs/plans/decisions/2026-09-23-kem-mlkem-migration.md` (K1-K6) and
+> `docs/plans/2026-09-23-mlkem-fips203-migration-design.md` for the phased rollout
+> that will, in later phases, change the wire formats below. Until Faz 1 lands,
+> every "ML-KEM-1024" label in the wire sections below denotes the LEGACY round-3
+> KEM (`enc_key_type = 2`); `enc_key_type = 3` is not yet defined.
 
 ---
 

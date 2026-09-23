@@ -25,7 +25,7 @@
 #include "crypto/hash/qgp_sha3.h"
 #include "../qgp.h"
 #include "crypto/key/bip39/bip39.h"
-#include "crypto/enc/kyber_deterministic.h"
+#include "crypto/enc/kyber_r3_legacy.h"
 #include "../dht/core/dht_keyserver.h"
 #include "crypto/nodus_identity.h"
 #include "../database/keyserver_cache.h"
@@ -209,7 +209,7 @@ int messenger_generate_keys_from_seeds(
         goto cleanup;
     }
 
-    if (crypto_kem_keypair_derand(kyber_pk, kyber_sk, encryption_seed) != 0) {
+    if (kyber_r3_keypair_derand(kyber_pk, kyber_sk, encryption_seed) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "KEM-1024 key generation from seed failed");
         goto cleanup;
     }
@@ -913,7 +913,7 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
         goto cleanup;
     }
 
-    if (crypto_kem_keypair_derand(kyber_pk, kyber_sk, encryption_seed) != 0) {
+    if (kyber_r3_keypair_derand(kyber_pk, kyber_sk, encryption_seed) != 0) {
         fprintf(stderr, "Error: KEM-1024 key regeneration failed\n");
         free(kyber_pk);
         free(kyber_sk);

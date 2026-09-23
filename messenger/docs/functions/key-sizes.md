@@ -10,10 +10,15 @@ Quick reference for cryptographic algorithm key and component sizes.
 
 | Algorithm | Component | Size (bytes) | Notes |
 |-----------|-----------|--------------|-------|
-| **Kyber1024** | Public Key | 1568 | ML-KEM-1024 |
-| **Kyber1024** | Private Key | 3168 | ML-KEM-1024 |
-| **Kyber1024** | Ciphertext | 1568 | KEM encapsulation |
-| **Kyber1024** | Shared Secret | 32 | 256-bit symmetric key |
+| **Kyber1024 (round-3, legacy)** | Public Key | 1568 | `qgp_kyber.h` — same bytes as ML-KEM-1024; the two are NOT interoperable |
+| **Kyber1024 (round-3, legacy)** | Private Key | 3168 | `qgp_kyber.h` |
+| **Kyber1024 (round-3, legacy)** | Ciphertext | 1568 | KEM encapsulation |
+| **Kyber1024 (round-3, legacy)** | Shared Secret | 32 | 256-bit symmetric key |
+| **ML-KEM-1024 (FIPS 203)** | Encapsulation Key (ek) | 1568 | `qgp_mlkem.h` — Faz 0 (2026-09-23): no caller yet |
+| **ML-KEM-1024 (FIPS 203)** | Decapsulation Key (dk) | 3168 | `qgp_mlkem.h` |
+| **ML-KEM-1024 (FIPS 203)** | Ciphertext | 1568 | |
+| **ML-KEM-1024 (FIPS 203)** | Shared Secret | 32 | |
+| **ML-KEM-1024 (FIPS 203)** | KeyGen coins (d ‖ z) | 64 | `QGP_MLKEM1024_COINS_BYTES` |
 | **Dilithium5** | Public Key | 2592 | ML-DSA-87 |
 | **Dilithium5** | Private Key | 4896 | ML-DSA-87 |
 | **Dilithium5** | Signature | 4627 | Variable (max 4627) |

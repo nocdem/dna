@@ -10,7 +10,7 @@
 #include "crypto/nodus_sign.h"
 #include "crypto/sign/qgp_dilithium.h"
 #include "crypto/enc/qgp_kyber.h"
-#include "crypto/enc/kyber_deterministic.h"
+#include "crypto/enc/kyber_r3_legacy.h"
 #include "crypto/hash/hkdf_sha3.h"
 #include "crypto/utils/qgp_platform.h"
 #include <string.h>
@@ -60,7 +60,7 @@ int nodus_identity_from_seed(const uint8_t *seed, nodus_identity_t *id_out) {
     if (rc != 0)
         return -1;
 
-    rc = crypto_kem_keypair_derand(id_out->kyber_pk, id_out->kyber_sk, kyber_seed);
+    rc = kyber_r3_keypair_derand(id_out->kyber_pk, id_out->kyber_sk, kyber_seed);
     qgp_secure_memzero(kyber_seed, sizeof(kyber_seed));
     if (rc != 0)
         return -1;

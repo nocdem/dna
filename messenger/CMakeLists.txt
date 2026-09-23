@@ -138,12 +138,13 @@ set(COMMON_SOURCES
     ${SHARED_DIR}/crypto/key/bip39/bip39.c
     ${SHARED_DIR}/crypto/key/bip39/bip39_pbkdf2.c
     ${SHARED_DIR}/crypto/key/bip39/seed_derivation.c
-    ${SHARED_DIR}/crypto/enc/kyber_deterministic.c
+    ${SHARED_DIR}/crypto/enc/kyber_r3_legacy.c
     dna_config.c
     # SDK Independence: New crypto modules
     ${SHARED_DIR}/crypto/utils/qgp_random.c
     ${SHARED_DIR}/crypto/enc/qgp_aes.c
     ${SHARED_DIR}/crypto/enc/qgp_kyber.c
+    ${SHARED_DIR}/crypto/enc/qgp_mlkem.c
     ${SHARED_DIR}/crypto/sign/qgp_dilithium.c
     ${SHARED_DIR}/crypto/key/seed_storage.c
     ${SHARED_DIR}/crypto/hash/qgp_sha3.c         # SHA3-512 for Category 5 security

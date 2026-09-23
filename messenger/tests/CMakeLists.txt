@@ -112,7 +112,8 @@ message(STATUS "")
 message(STATUS "Test executables:")
 message(STATUS "  - test_aes256_gcm      : AES-256-GCM encryption/decryption")
 message(STATUS "  - test_key_encryption  : Key encryption (PBKDF2 + AES-256-GCM)")
-message(STATUS "  - test_kyber1024       : Kyber1024 (ML-KEM-1024) post-quantum KEM")
+message(STATUS "  - test_kyber1024       : Kyber1024 round-3 (LEGACY) KAT")
+message(STATUS "  - test_mlkem1024       : ML-KEM-1024 (FIPS 203) known-answer tests")
 message(STATUS "  - test_bip39_bip32     : BIP39/BIP32 mnemonic and HD key derivation")
 message(STATUS "  - test_db_encryption   : Database encryption (SQLCipher)")
 message(STATUS "")
@@ -156,11 +157,48 @@ target_link_libraries(test_key_encryption ${TEST_LIBS})
 add_test(NAME test_key_encryption COMMAND test_key_encryption)
 
 # =============================================================================
-# Test: Kyber1024 (ML-KEM-1024) Post-Quantum KEM
+# Test: Kyber1024 round-3 (LEGACY) KAT — kyber_r3_legacy_kat.h fixture
 # =============================================================================
 add_executable(test_kyber1024 test_kyber1024.c)
 target_link_libraries(test_kyber1024 ${TEST_LIBS})
 add_test(NAME test_kyber1024 COMMAND test_kyber1024)
+
+# =============================================================================
+# Test: ML-KEM-1024 (FIPS 203) known-answer tests
+# =============================================================================
+# fixtures/mlkem/modulus-ML-KEM-1024.txt.gz and acvp-ML-KEM-1024.txt.gz are
+# kept gzipped in the repo (fixtures/mlkem/PIN.md) and decompressed once,
+# here, at configure time.
+set(MLKEM_MODULUS_GZ "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/mlkem/modulus-ML-KEM-1024.txt.gz")
+set(MLKEM_MODULUS_TXT "${CMAKE_BINARY_DIR}/fixtures/modulus-ML-KEM-1024.txt")
+set(MLKEM_ACVP_GZ "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/mlkem/acvp-ML-KEM-1024.txt.gz")
+set(MLKEM_ACVP_TXT "${CMAKE_BINARY_DIR}/fixtures/acvp-ML-KEM-1024.txt")
+file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/fixtures")
+execute_process(
+    COMMAND gzip -dc "${MLKEM_MODULUS_GZ}"
+    OUTPUT_FILE "${MLKEM_MODULUS_TXT}"
+    RESULT_VARIABLE MLKEM_GUNZIP_RESULT
+)
+if(NOT MLKEM_GUNZIP_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to gunzip ${MLKEM_MODULUS_GZ} (exit ${MLKEM_GUNZIP_RESULT})")
+endif()
+execute_process(
+    COMMAND gzip -dc "${MLKEM_ACVP_GZ}"
+    OUTPUT_FILE "${MLKEM_ACVP_TXT}"
+    RESULT_VARIABLE MLKEM_ACVP_GUNZIP_RESULT
+)
+if(NOT MLKEM_ACVP_GUNZIP_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to gunzip ${MLKEM_ACVP_GZ} (exit ${MLKEM_ACVP_GUNZIP_RESULT})")
+endif()
+
+add_executable(test_mlkem1024 test_mlkem1024.c)
+target_link_libraries(test_mlkem1024 ${TEST_LIBS})
+target_compile_definitions(test_mlkem1024 PRIVATE
+    "MLKEM_FIXTURES_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/mlkem\""
+    "MLKEM_MODULUS_VECTORS=\"${MLKEM_MODULUS_TXT}\""
+    "MLKEM_ACVP_VECTORS=\"${MLKEM_ACVP_TXT}\""
+)
+add_test(NAME test_mlkem1024 COMMAND test_mlkem1024)
 
 # =============================================================================
 # Test: SEC-02 — qgp_key file size validation (exact-bounds rejection)

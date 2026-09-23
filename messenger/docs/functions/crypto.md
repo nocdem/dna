@@ -24,13 +24,34 @@ Low-level cryptographic primitives, platform abstraction, and key derivation.
 | `int qgp_sha3_512_hex(...)` | Compute SHA3-512 and return as hex string |
 | `int qgp_sha3_512_fingerprint(...)` | Compute SHA3-512 fingerprint of public key |
 
-### 5.3 Kyber1024 KEM (`crypto/enc/qgp_kyber.h`)
+### 5.3 Kyber1024 round-3 KEM — LEGACY (`crypto/enc/qgp_kyber.h`)
+
+Round-3 (pre-FIPS-203); kept for backward compatibility only. Routes to
+`crypto/enc/kyber_r3_legacy.h` (§5.7). New code uses §5.3b (ML-KEM-1024).
 
 | Function | Description |
 |----------|-------------|
-| `int qgp_kem1024_keypair(uint8_t *pk, uint8_t *sk)` | Generate KEM-1024 keypair |
-| `int qgp_kem1024_encapsulate(uint8_t *ct, uint8_t *ss, const uint8_t *pk)` | Generate shared secret and ciphertext |
-| `int qgp_kem1024_decapsulate(uint8_t *ss, const uint8_t *ct, const uint8_t *sk)` | Recover shared secret from ciphertext |
+| `int qgp_kem1024_keypair(uint8_t *pk, uint8_t *sk)` | Generate KEM-1024 (round-3) keypair |
+| `int qgp_kem1024_encapsulate(uint8_t *ct, uint8_t *ss, const uint8_t *pk)` | Generate shared secret and ciphertext (round-3) |
+| `int qgp_kem1024_decapsulate(uint8_t *ss, const uint8_t *ct, const uint8_t *sk)` | Recover shared secret from ciphertext (round-3) |
+
+### 5.3b ML-KEM-1024 KEM — FIPS 203 (`crypto/enc/qgp_mlkem.h`)
+
+Wraps the pq-crystals/kyber `standard` @ d5b791c reference
+(`crypto/enc/kem/`, §6). FIPS 203 input-output conformant (Appendix C);
+NOT a FIPS 140-3 validated module. See
+`docs/plans/2026-09-23-mlkem-fips203-migration-design.md` and
+`docs/plans/decisions/2026-09-23-kem-mlkem-migration.md` for the migration
+this is Faz 0 of (port only — no caller uses this API yet).
+
+| Function | Description |
+|----------|-------------|
+| `int qgp_mlkem1024_keypair(uint8_t *ek, uint8_t *dk)` | Generate ML-KEM-1024 keypair from fresh randomness |
+| `int qgp_mlkem1024_keypair_derand(uint8_t *ek, uint8_t *dk, const uint8_t *coins)` | Deterministic keypair from 64-byte coins = d(32)\|\|z(32) (FIPS 203 Alg 16) |
+| `int qgp_mlkem1024_ek_check(const uint8_t *ek)` | FIPS 203 §7.2 encapsulation key check (per-coefficient `< q`); 0 = valid |
+| `int qgp_mlkem1024_encapsulate(uint8_t *ct, uint8_t *ss, const uint8_t *ek)` | ek_check, then encapsulate with fresh randomness |
+| `int qgp_mlkem1024_encapsulate_derand(uint8_t *ct, uint8_t *ss, const uint8_t *ek, const uint8_t *m)` | ek_check, then deterministic encapsulate from 32-byte message m (KAT entry point) |
+| `int qgp_mlkem1024_decapsulate(uint8_t *ss, const uint8_t *ct, const uint8_t *dk)` | FIPS 203 §7.3 dk hash check (every call), then decapsulate |
 
 ### 5.4 Dilithium5 DSA (`crypto/sign/qgp_dilithium.h`)
 
@@ -73,11 +94,19 @@ Low-level cryptographic primitives, platform abstraction, and key derivation.
 | `int aes256_wrap_key(...)` | AES-256 key wrap (RFC 3394) |
 | `int aes256_unwrap_key(...)` | AES-256 key unwrap (RFC 3394) |
 
-### 5.7 Deterministic Kyber (`crypto/enc/kyber_deterministic.h`)
+### 5.7 Kyber round-3 legacy wrapper (`crypto/enc/kyber_r3_legacy.h`)
+
+Verbatim transplant of the pre-2026-09-23-port round-3 direct
+implementation (commit c86cad72 `kem/kem.c` + `kyber_deterministic.c`),
+re-hosted on the new ML-KEM K-PKE primitives (§6). Removal: Faz 3
+(`docs/plans/decisions/2026-09-23-kem-mlkem-migration.md`, K5).
 
 | Function | Description |
 |----------|-------------|
-| `int crypto_kem_keypair_derand(unsigned char *pk, unsigned char *sk, const uint8_t *seed)` | Deterministic keypair from seed |
+| `int kyber_r3_keypair(uint8_t pk[1568], uint8_t sk[3168])` | Generate round-3 keypair from fresh randomness |
+| `int kyber_r3_keypair_derand(uint8_t pk[1568], uint8_t sk[3168], const uint8_t seed[32])` | Deterministic round-3 keypair from a 32-byte seed (z = SHA3-256(seed)) |
+| `int kyber_r3_encapsulate(uint8_t ct[1568], uint8_t ss[32], const uint8_t pk[1568])` | Round-3 encapsulate |
+| `int kyber_r3_decapsulate(uint8_t ss[32], const uint8_t ct[1568], const uint8_t sk[3168])` | Round-3 decapsulate (implicit rejection: SHAKE256(z\|\|H(ct))) |
 
 ### 5.8 Random Number Generation (`crypto/utils/qgp_random.h`)
 
@@ -215,39 +244,57 @@ Abstract API for hardware-backed key wrapping. Android uses TEE via Android Keys
 
 ---
 
-## 6. Cryptography KEM (Kyber Internals)
+## 6. Cryptography KEM (ML-KEM-1024 Internals)
 
 **Directory:** `crypto/enc/kem/`
 
-Internal Kyber1024 (ML-KEM-1024) implementation from pq-crystals reference.
+pq-crystals/kyber `standard` branch @ `d5b791c0c601b543233daccbae2845c6197a9e77`
+(`KYBER_K=4` = ML-KEM-1024), ported 2026-09-23
+(`docs/plans/decisions/2026-09-23-kem-mlkem-migration.md`) replacing the
+round-3 vendored snapshot that lived here before. File names below are
+upstream's own (`poly.h`, `ntt.h`, `reduce.h` — NOT the old `poly_kyber.h` /
+`ntt_kyber.h` / `reduce_kyber.h`; `sha2.h` is gone, it was never used by
+this KEM). All symbols are namespaced `pqcrystals_kyber1024_ref_*` /
+`pqcrystals_kyber_fips202_ref_*` (via the `KYBER_NAMESPACE`/
+`FIPS202_NAMESPACE` macros in `params.h`/`fips202.h`) — the table below
+gives the pre-macro-expansion names used in the headers, which is what the
+call sites (`qgp_mlkem.c`, `kyber_r3_legacy.c`) use directly. These
+functions serve BOTH the ML-KEM API (`qgp_mlkem.h`) and the legacy round-3
+wrapper (`kyber_r3_legacy.h`, §5.7): `gen_matrix`, `poly_getnoise_eta1`,
+`polyvec_ntt`, `polyvec_basemul_acc_montgomery`, `poly_tomont`,
+`polyvec_add`, `polyvec_reduce`, `polyvec_tobytes`, `indcpa_enc`,
+`indcpa_dec`, `verify`, `cmov` — the two APIs differ only in the FO wrapper
+(§5.3/§5.3b), not in this K-PKE layer.
 
 ### 6.1 KEM API (`kem.h`)
 
 | Function | Description |
 |----------|-------------|
-| `int crypto_kem_keypair(unsigned char *pk, unsigned char *sk)` | Generate KEM keypair |
-| `int crypto_kem_enc(unsigned char *ct, unsigned char *ss, const unsigned char *pk)` | Encapsulate shared secret |
-| `int crypto_kem_dec(unsigned char *ss, const unsigned char *ct, const unsigned char *sk)` | Decapsulate shared secret |
+| `int crypto_kem_keypair(uint8_t *pk, uint8_t *sk)` | Generate ML-KEM keypair from fresh randomness |
+| `int crypto_kem_keypair_derand(uint8_t *pk, uint8_t *sk, const uint8_t *coins)` | Deterministic keypair, coins = d(32)\|\|z(32) — FIPS 203 Alg 16 |
+| `int crypto_kem_enc(uint8_t *ct, uint8_t *ss, const uint8_t *pk)` | Encapsulate with fresh randomness |
+| `int crypto_kem_enc_derand(uint8_t *ct, uint8_t *ss, const uint8_t *pk, const uint8_t *coins)` | Deterministic encapsulate, coins = m(32) |
+| `int crypto_kem_dec(uint8_t *ss, const uint8_t *ct, const uint8_t *sk)` | Decapsulate shared secret |
 
 ### 6.2 IND-CPA (`indcpa.h`)
 
 | Function | Description |
 |----------|-------------|
 | `void gen_matrix(polyvec*, const uint8_t seed[32], int)` | Generate matrix from seed |
-| `void indcpa_keypair(uint8_t *pk, uint8_t *sk)` | IND-CPA keypair generation |
+| `void indcpa_keypair_derand(uint8_t *pk, uint8_t *sk, const uint8_t coins[32])` | IND-CPA deterministic keypair generation |
 | `void indcpa_enc(uint8_t *c, const uint8_t *m, const uint8_t *pk, const uint8_t *coins)` | IND-CPA encryption |
 | `void indcpa_dec(uint8_t *m, const uint8_t *c, const uint8_t *sk)` | IND-CPA decryption |
 
-### 6.3 Polynomial Operations (`poly_kyber.h`)
+### 6.3 Polynomial Operations (`poly.h`)
 
 | Function | Description |
 |----------|-------------|
-| `void poly_compress(uint8_t*, poly*)` | Compress polynomial |
+| `void poly_compress(uint8_t*, const poly*)` | Compress polynomial |
 | `void poly_decompress(poly*, const uint8_t*)` | Decompress polynomial |
-| `void poly_tobytes(uint8_t*, poly*)` | Serialize polynomial to bytes |
+| `void poly_tobytes(uint8_t*, const poly*)` | Serialize polynomial to bytes |
 | `void poly_frombytes(poly*, const uint8_t*)` | Deserialize polynomial from bytes |
 | `void poly_frommsg(poly*, const uint8_t*)` | Convert message to polynomial |
-| `void poly_tomsg(uint8_t*, poly*)` | Convert polynomial to message |
+| `void poly_tomsg(uint8_t*, const poly*)` | Convert polynomial to message |
 | `void poly_getnoise_eta1(poly*, const uint8_t*, uint8_t)` | Sample noise polynomial (eta1) |
 | `void poly_getnoise_eta2(poly*, const uint8_t*, uint8_t)` | Sample noise polynomial (eta2) |
 | `void poly_ntt(poly*)` | Forward NTT transform |
@@ -255,26 +302,30 @@ Internal Kyber1024 (ML-KEM-1024) implementation from pq-crystals reference.
 | `void poly_basemul_montgomery(poly*, const poly*, const poly*)` | Pointwise multiplication |
 | `void poly_tomont(poly*)` | Convert to Montgomery representation |
 | `void poly_reduce(poly*)` | Apply Barrett reduction |
-| `void poly_csubq(poly*)` | Conditional subtraction of q |
 | `void poly_add(poly*, const poly*, const poly*)` | Add polynomials |
 | `void poly_sub(poly*, const poly*, const poly*)` | Subtract polynomials |
+
+Note: `poly_csubq` is gone — upstream `standard` folded the conditional
+subtraction into the reduction/compress code; nothing in this tree calls
+it any more. (`libdna.so` still exports an unrelated `csubq` from
+`shared/crypto/sign/cellframe_dilithium/`; that is a different subsystem,
+untouched by this port — this note is about the ML-KEM path only.)
 
 ### 6.4 Polynomial Vector (`polyvec.h`)
 
 | Function | Description |
 |----------|-------------|
-| `void polyvec_compress(uint8_t*, polyvec*)` | Compress polynomial vector |
+| `void polyvec_compress(uint8_t*, const polyvec*)` | Compress polynomial vector |
 | `void polyvec_decompress(polyvec*, const uint8_t*)` | Decompress polynomial vector |
-| `void polyvec_tobytes(uint8_t*, polyvec*)` | Serialize polynomial vector |
+| `void polyvec_tobytes(uint8_t*, const polyvec*)` | Serialize polynomial vector |
 | `void polyvec_frombytes(polyvec*, const uint8_t*)` | Deserialize polynomial vector |
 | `void polyvec_ntt(polyvec*)` | Forward NTT on vector |
 | `void polyvec_invntt_tomont(polyvec*)` | Inverse NTT on vector |
-| `void polyvec_pointwise_acc_montgomery(poly*, const polyvec*, const polyvec*)` | Inner product |
+| `void polyvec_basemul_acc_montgomery(poly*, const polyvec*, const polyvec*)` | Inner product (renamed from round-3's `polyvec_pointwise_acc_montgomery`) |
 | `void polyvec_reduce(polyvec*)` | Reduce coefficients |
-| `void polyvec_csubq(polyvec*)` | Conditional subtraction |
 | `void polyvec_add(polyvec*, const polyvec*, const polyvec*)` | Add vectors |
 
-### 6.5 NTT (`ntt_kyber.h`)
+### 6.5 NTT (`ntt.h`)
 
 | Function | Description |
 |----------|-------------|
@@ -289,42 +340,39 @@ Internal Kyber1024 (ML-KEM-1024) implementation from pq-crystals reference.
 | `void cbd_eta1(poly*, const uint8_t*)` | Centered binomial distribution (eta1) |
 | `void cbd_eta2(poly*, const uint8_t*)` | Centered binomial distribution (eta2) |
 
-### 6.7 Reduction (`reduce_kyber.h`)
+### 6.7 Reduction (`reduce.h`)
 
 | Function | Description |
 |----------|-------------|
 | `int16_t montgomery_reduce(int32_t a)` | Montgomery reduction |
 | `int16_t barrett_reduce(int16_t a)` | Barrett reduction |
-| `int16_t csubq(int16_t x)` | Conditional subtraction of q |
+
+Note: `csubq` (conditional subtraction of q) is GONE, same reason as §6.3.
 
 ### 6.8 Verification (`verify.h`)
 
 | Function | Description |
 |----------|-------------|
-| `int verify(const uint8_t *a, const uint8_t *b, size_t len)` | Constant-time comparison |
+| `int verify(const uint8_t *a, const uint8_t *b, size_t len)` | Constant-time comparison (0 = equal) |
 | `void cmov(uint8_t *r, const uint8_t *x, size_t len, uint8_t b)` | Constant-time conditional move |
+| `void cmov_int16(int16_t *r, int16_t v, uint16_t b)` | Constant-time conditional move (int16) |
 
-### 6.9 Symmetric Primitives (`symmetric.h`, `fips202_kyber.h`)
+### 6.9 Symmetric Primitives (`symmetric.h`, `fips202.h`)
+
+`fips202_kyber.h` is now a one-line shim (`#include "fips202.h"`), kept
+only because `crypto/key/bip39/seed_derivation.c` includes it by that name.
 
 | Function | Description |
 |----------|-------------|
 | `void kyber_shake128_absorb(keccak_state*, const uint8_t*, uint8_t, uint8_t)` | SHAKE128 absorb for Kyber |
 | `void kyber_shake256_prf(uint8_t*, size_t, const uint8_t*, uint8_t)` | SHAKE256 PRF for Kyber |
-| `void shake128_absorb(keccak_state*, const uint8_t*, size_t)` | SHAKE128 absorb |
-| `void shake128_squeezeblocks(uint8_t*, size_t, keccak_state*)` | SHAKE128 squeeze blocks |
-| `void shake256_absorb(keccak_state*, const uint8_t*, size_t)` | SHAKE256 absorb |
-| `void shake256_squeezeblocks(uint8_t*, size_t, keccak_state*)` | SHAKE256 squeeze blocks |
-| `void shake128(uint8_t*, size_t, const uint8_t*, size_t)` | SHAKE128 hash |
-| `void shake256(uint8_t*, size_t, const uint8_t*, size_t)` | SHAKE256 hash |
+| `void kyber_shake256_rkprf(uint8_t out[32], const uint8_t key[32], const uint8_t input[1568])` | FIPS 203 J(z\|\|c) rejection PRF (Decaps implicit-rejection value) |
+| `void shake128_init(keccak_state*)` / `shake128_absorb(...)` / `shake128_finalize(...)` / `shake128_squeeze(...)` / `shake128_absorb_once(...)` / `shake128_squeezeblocks(...)` | Incremental SHAKE128 API |
+| `void shake256_init(keccak_state*)` / `shake256_absorb(...)` / `shake256_finalize(...)` / `shake256_squeeze(...)` / `shake256_absorb_once(...)` / `shake256_squeezeblocks(...)` | Incremental SHAKE256 API |
+| `void shake128(uint8_t*, size_t, const uint8_t*, size_t)` | SHAKE128 one-shot |
+| `void shake256(uint8_t*, size_t, const uint8_t*, size_t)` | SHAKE256 one-shot |
 | `void sha3_256(uint8_t h[32], const uint8_t*, size_t)` | SHA3-256 hash |
 | `void sha3_512(uint8_t h[64], const uint8_t*, size_t)` | SHA3-512 hash |
-
-### 6.10 SHA2 (`sha2.h`)
-
-| Function | Description |
-|----------|-------------|
-| `void sha256(uint8_t out[32], const uint8_t*, size_t)` | SHA-256 hash |
-| `void sha512(uint8_t out[64], const uint8_t*, size_t)` | SHA-512 hash |
 
 ---
 
