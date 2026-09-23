@@ -5,16 +5,19 @@
 # ════════════════════════════════════════════════════════════════════
 #
 # WHAT IT PROVES
-#   That a single block can carry MORE than the retired chain-config
-#   envelope cap (10) of ENVELOPE-classified items (not claims — those
-#   are test_cmt_claim_flood.sh's subject), that every one of them
-#   applies, and that all 7 nodes agree — the operator's decision
+#   That a burst of K (default 40) real SPEND envelopes from one identity
+#   is ALL applied and that all 7 nodes agree — the operator's decision
 #   (atlas-dec-5b7568512b95e6d2e671c4eaad2c1879 rev 1) names this
-#   scenario explicitly as part of what delta 2 delivers, alongside a
-#   measurement of wall-clock cost per envelope. The property that would
-#   be false if it failed: *a proposer handed a burst of admissible
-#   SPEND envelopes packs more than 10 of them into one block, and every
-#   node applies that block identically.*
+#   scenario as part of what delta 2 delivers, alongside a measurement of
+#   wall-clock cost per envelope. The property that would be false if it
+#   failed: *K admissible SPEND envelopes, gossiped from one node, are
+#   every one applied, and every node applies the carrying blocks
+#   identically.* How they were split across blocks is PRINTED (height:
+#   count), NOT asserted (operator 2026-09-23): the split is a wall-clock
+#   race between the client and a proposer woken by txsAvailable. That a
+#   block may carry more than the retired cap of 10 is proven
+#   deterministically by test_v2_apply.c §6 (11 envelopes, one block).
+#   First pumped sweep at 0.19.68: 40 in 3 s -> 32 + 8.
 #
 #   The envelopes are real CORE SPENDs (runtime_op 1), built by
 #   `nodus-cli v2-envelope spend --count K` — K independent self-sends
@@ -52,14 +55,11 @@
 #   - **A SKIP is not a pass.** rc 99 here means the cluster was not
 #     Comet, or the PUMP identity held fewer than 11 spendable coins (claim
 #     flood did not run first) — coverage that did not happen.
-#   - **The batch lands in one block only if the CLI submits faster than
-#     the chain commits — a MEASURED fact, not this scenario's premise.**
-#     The CLI's wall-clock for the whole batch is printed; if it ever
-#     approaches a block interval, the envelopes spread across blocks and
-#     the `> 10 in one block` assertion fails for a CLIENT-pace reason,
-#     not an engine one (test_cmt_claim_flood.sh's header documents the
-#     same trap for claims). Read the printed duration before blaming the
-#     engine.
+#   - **It does NOT prove a live proposer packs > 10 into one block.**
+#     The per-block split depends on the CLI's pace against a proposer
+#     woken by the first admitted envelope (txsAvailable); it is printed
+#     and read by a human, never asserted. The engine-side property (a
+#     block with > 10 envelopes applies) is test_v2_apply.c §6's.
 #   - **The per-block envelope count is set by UNITS, not by a count.**
 #     PrepareProposal's capacity seam reserves EVERY envelope's whole
 #     res_max_total_units against ONE 1 000 000-unit block budget at once,
@@ -236,15 +236,25 @@ for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
         || die "node$n never reached height $max_h (mesh replication stalled)"
 done
 
+# The largest per-block count is REPORTED, never asserted (operator
+# 2026-09-23): with txsAvailable the proposer may start a block before the
+# client has finished the batch, so the split is a wall-clock race between
+# the CLI and the proposer — an assertion on it would pass or fail with
+# the machine's speed, not the code (NO FLAKY). "A block may carry more
+# than 10 envelopes" is proven deterministically by the engine unit test
+# test_v2_apply.c §6 (11 envelopes applied in one block, every run).
+if [ "$max_in_one" -gt 10 ]; then
+    echo "[info] largest block carried $max_in_one envelopes (> the retired cap of 10)"
+else
+    echo "[info] largest block carried $max_in_one envelopes — NOT above 10 on this run; the batch spread over several rounds (client pace ${submit_secs}s vs the proposer; see HOW IT CAN LIE) — informational, not a failure"
+fi
+
 stagef_sentinel ASSERT_RUN   # the terminal assertion is next
-[ "$max_in_one" -gt 10 ] || die \
-    "no single block carried more than 10 envelopes (max was $max_in_one) — either the CLI's ${submit_secs}s submission spread the batch over several rounds (see HOW IT CAN LIE) or the envelope capacity regressed"
-echo "[ok] one block carried $max_in_one envelopes — beyond the retired cap of 10"
 stagef_cmt_diff_at_floor "post-cmt-env-flood" || exit 2
 
 stagef_sentinel PASS
 echo ""
 echo "[PASS] $K CORE SPEND envelopes from one identity, submitted on one session,"
-echo "       all applied within $max_heights heights (tip $before_tip -> $h); one block"
-echo "       carried $max_in_one — beyond the retired 10-envelope cap; all"
+echo "       all applied within $max_heights heights (tip $before_tip -> $h); largest"
+echo "       block carried $max_in_one (reported, not asserted); all"
 echo "       $STAGEF_COMMITTEE_SIZE nodes agree."
