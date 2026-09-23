@@ -6,8 +6,9 @@ import { validateNodusPhrase } from '../recovery.js';
 // messenger one derived by src/nodus/derive.js (same 'qgp-signing-v1' pattern,
 // different label). See docs/plans/decisions/2026-09-23-ixios-separate-mldsa-key.md:
 // same phrase, label-only domain separation, so a messenger identity cannot be
-// linked to an Ixios balance. No WASM here — key generation itself happens in
-// src/pq/sign.js via mldsa87Sign(); this only derives the 32-byte seed it needs.
+// linked to an Ixios balance. Signing (src/pq/sign.js mldsa87Sign) and address
+// display (deriveIxiosAddress below) both start from this 32-byte seed.
+// The caller owns the returned seed and must wipe it.
 export function ixiosSigningSeed(phrase) {
   const normalized = validateNodusPhrase(phrase);
   let master, input, seed;
@@ -28,4 +29,38 @@ export function ixiosSigningSeed(phrase) {
 // (hash[len(hash)-common.AddressLength:], common/types.go:38 AddressLength = 48).
 export function ixiosAddressBytes(publicKey) {
   return sha3_512(publicKey).slice(16);
+}
+
+// Receive-only address display. Key generation uses the audited keygen-only
+// module src/nodus/mldsa87.wasm (no signing export), NOT src/pq/mldsa87-sign.wasm;
+// only the seed label differs from deriveNodusAddress(). Returns the 48 address bytes.
+export async function deriveIxiosAddress(phrase, { wasmBytes, signal } = {}) {
+  signal?.throwIfAborted();
+  const normalized = validateNodusPhrase(phrase);
+  // Fetch the public module before deriving any mutable secret buffers.
+  let binary = wasmBytes;
+  if (!binary) {
+    const timeout = AbortSignal.timeout(15000);
+    const response = await fetch(new URL('../nodus/mldsa87.wasm', import.meta.url), { credentials: 'omit', redirect: 'error', signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
+    if (!response.ok) throw new Error('Ixios address module could not load. Reload to retry.');
+    binary = await response.arrayBuffer();
+  }
+  let instance, signingSeed;
+  try {
+    signal?.throwIfAborted();
+    ({ instance } = await WebAssembly.instantiate(binary, {}));
+    signal?.throwIfAborted();
+    instance.exports._initialize?.();
+    // ixiosSigningSeed() wipes its own master seed and SHAKE input.
+    signingSeed = ixiosSigningSeed(normalized);
+    const memory = new Uint8Array(instance.exports.memory.buffer);
+    memory.set(signingSeed, instance.exports.nodus_input());
+    if (instance.exports.nodus_derive() !== 0) throw new Error('Ixios address derivation failed.');
+    const offset = instance.exports.nodus_output();
+    return ixiosAddressBytes(memory.subarray(offset, offset + 2592));
+  } finally {
+    signingSeed?.fill(0);
+    // Includes key-generation stack temporaries; every call owns a fresh instance.
+    if (instance) new Uint8Array(instance.exports.memory.buffer).fill(0);
+  }
 }

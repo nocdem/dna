@@ -74,6 +74,11 @@ try {
   }
   // Paket C: RPC provider select — populated per network, TRON has no custom
   // option, and picking "Custom HTTPS endpoint..." reveals the free-text box.
+  // Open the settings disclosure first, as a user must: inside a closed
+  // <details> Chromium reports option innerText as '' and every control as
+  // not visible, so the visibility checks below would pass vacuously.
+  await page.locator('.rpc-settings summary').click();
+  assert.equal(await page.locator('#rpc-choice').isVisible(), true);
   await page.selectOption('#chain', 'tron');
   assert.deepEqual(await page.locator('#rpc-choice option').allTextContents(), ['TronGrid']);
   assert.equal(await page.locator('#rpc-endpoint').isVisible(), false);
@@ -83,7 +88,7 @@ try {
   await page.selectOption('#chain', 'solana');
   assert.equal(await page.locator('#rpc-choice option').count(), 2);
   await page.selectOption('#chain', 'ethereum');
-  assert.equal(await page.locator('#rpc-choice option').count(), 6);
+  assert.equal(await page.locator('#rpc-choice option').count(), 5);
   assert.equal(await page.locator('#rpc-endpoint').isVisible(), false);
   await page.selectOption('#rpc-choice', 'custom');
   assert.equal(await page.locator('#rpc-endpoint').isVisible(), true);

@@ -30,6 +30,8 @@ test('Ixios signatures match native C for public test phrases, fixed rnd, withou
   const originalFetch = globalThis.fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
   globalThis.fetch = () => { throw new Error('Unexpected network request'); };
+  // An empty fixture would make the loop below pass without checking anything.
+  assert.ok(vectors.length > 0);
   for (const { phrase, publicKey, address, signature } of vectors) {
     const seed = ixiosSigningSeed(phrase);
     const { publicKey: pk, signature: sig } = await mldsa87Sign({ seed, hash: fixedHash, rnd: fixedRnd, wasmBytes });

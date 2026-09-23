@@ -248,7 +248,7 @@ The default is `https://rpc.cellframe.net/connect`. On 2026-09-19 a read-only PO
 
 The native query contract is `messenger/blockchain/cellframe/cellframe_rpc.c`: `wallet`, `info`, `{net:'Backbone', addr, token:'CPUNK'}`. The live response uses `result[0][0].tokens[]`, `token.ticker`, `coins` and `datoshi`. The parser selects exactly one CPUNK entry, checks Backbone and matching returned address, and verifies coins against integer datoshi with 18 decimal places. The older native `result[0][0].balance` format is also supported. Missing tokens, malformed data, mismatched amounts and connectivity failures are errors, never inferred zero balances. The address is always the one derived locally from the open wallet's phrase (0.1.13: there is no manual address-entry field); derivation itself verifies the Backbone network, signature type and SHA3 checksum before the address is ever queried. Neither establishes ownership to a server. The Cellframe row shows the last read outcome for its balance and updates automatically on refresh, like every other network.
 
-A custom trusted HTTPS endpoint for Cellframe may be entered through the same per-network **HTTPS RPC endpoint** field used for the other chains (select Cellframe, then expand Device & settings), not a dedicated CPUNK field. The default and custom endpoints are contacted directly by the browser and must allow browser access (CORS). Read-only command-line verification uses the public address from `cellframe_rpc.h`:
+A custom trusted HTTPS endpoint for Cellframe may be chosen through the same per-network provider select used for the other chains (select Cellframe, expand Device & settings, pick "Custom HTTPS endpoint…"; 0.1.16), not a dedicated CPUNK field. The default and custom endpoints are contacted directly by the browser and must allow browser access (CORS). Read-only command-line verification uses the public address from `cellframe_rpc.h`:
 
 ```sh
 npm run cpunk:verify
@@ -316,7 +316,7 @@ Rebuild with Zig 0.13.0: `ZIG_BIN=/path/to/zig bash scripts/build-cpunk-wasm.sh`
 
 ## Live read verification
 
-Run `CHROMIUM_PATH=/path/to/chromium npm run verify:networks` to open a minimal localhost page and execute standard public network-identity/native-balance reads against all five public providers. The script does not create keys, sign or broadcast; all addresses are public repository test vectors. It exits unsuccessfully when any connection is blocked. `python3 scripts/verify-rpc-transport.py` separately probes permanent-chain identity and public native balances using curl; it is not a browser CORS test.
+Run `CHROMIUM_PATH=/path/to/chromium npm run verify:networks` to open a minimal localhost page and execute standard public network-identity/native-balance reads against every provider in each network's `rpcOptions` list (0.1.16; EVM entries also read the `finalized` block and gas price). The script does not create keys, sign or broadcast; all addresses are public repository test vectors. It exits unsuccessfully when any connection is blocked. `python3 scripts/verify-rpc-transport.py` separately probes permanent-chain identity and public native balances using curl; it is not a browser CORS test.
 
 The final recorded 2026-09-19 browser results are in `test/fixtures/network-verification.json`: with the configured environment proxy, all five providers were blocked by Chromium’s `net::ERR_CERT_AUTHORITY_INVALID` before CORS could be established. The local probe page loaded successfully. TLS validation was kept enabled; no certificate checks were bypassed. This is an environment observation, not evidence that the providers are offline. `test/fixtures/rpc-transport-verification.json` records independent curl results. CPUNK HTTPS curl previously returned a valid live balance as detailed above. Ethereum/BSC adapters compare chain IDs and Solana compares its mainnet genesis; TRON uses the pinned mainnet provider, and the verification report records an observed genesis when available without claiming an independent genesis match. Final deployment-origin CORS and actual funded mainnet transfers remain unverified. Offline signing/serialization and intercepted browser sends do not substitute for real-transfer validation.
 
@@ -443,3 +443,67 @@ resolved per the writer spec `docs/plans/2026-09-23-wallet-0.1.15-spec.md`):
   in the page can register a replacement implementation. The saved-wallet KDF
   uses WebCrypto directly (`src/vault.js`) and does not depend on ethers'
   `pbkdf2`, so this changes no existing behavior.
+
+## RPC provider list, Ixios address and ML-DSA-87 signing module (0.1.16)
+
+Spec `docs/plans/2026-09-23-wallet-0.1.16-ixios-spec.md`; decisions
+`docs/plans/decisions/2026-09-23-ixios-separate-mldsa-key.md`,
+`2026-09-23-web-wallet-mldsa-hedged-signing.md`, `2026-09-23-ixios-send-mainnet-first.md`.
+
+- **RPC provider list.** Every network in `src/config.js` carries
+  `rpcOptions: [{ url, label, note? }]`; `rpcOptions[0]` is the unchanged default
+  `endpoint`. **Device & settings → Network connection settings** is now a
+  provider select plus a "Custom HTTPS endpoint…" choice (not offered for TRON,
+  which keeps its single pinned provider; Apply still re-checks it). Listed on
+  2026-09-23 after identity, CORS, balance, `finalized` block and gas-price reads:
+  Ethereum — PublicNode, dRPC, Blast API, MEV Blocker (shown with a
+  private-submission note); BSC — Binance dataseed and dataseed1–4, Defibit,
+  Ninicoin, PublicNode; Solana, TRON, Cellframe — the existing single provider.
+  Not listed, with the observed reason: cloudflare-eth (`finalized` and
+  `eth_gasPrice` rejected, activity tracking would break), 1rpc.io (finalized
+  block behind), Ankr (API key), LlamaRPC (525), BlockPI (521), BSC dRPC (rate
+  limit), Solana mainnet-beta (403), Solana PublicNode (token reads need a key),
+  Solana dRPC (paid), Flashbots Protect (`eth_getBalance` HTTP 504 after 10.5 s,
+  3/3; browser "Failed to fetch"). A listed provider is not more trustworthy than
+  a custom one: an RPC can still misreport balances and nonces.
+  `npm run verify:networks` probes every listed URL from Chromium; the 2026-09-23
+  run returned READ_OK for all 15.
+- **Ixios receive-only address, build flag `VITE_ENABLE_IXIOS=true` (default
+  off; the production build leaves it off).** When enabled, a panel shows the
+  wallet's Ixios Q-address: seed `SHAKE256(BIP39 master seed ‖ "ixios-mldsa87-v1", 32)`,
+  key generation through the existing keygen-only `src/nodus/mldsa87.wasm`,
+  address `SHA3-512(pk)[16..63]` shown with Ixios' Keccak-512 mixed-case
+  checksum. It is a separate key from the Nodus identity. Ixios is not in the
+  network selector, portfolio or send form. **Why it is off:** on 2026-09-23 the
+  Ixios mainnet validators ran ixiosSpark 1.0.3 and the public RPC 1.0.5; those
+  versions use 32-byte addresses and have no ML-DSA support (Q-addresses arrive
+  with v1.1.0, which the network had not adopted). A Q-address cannot receive
+  on that network, so it is not shown to users. A disabled build contains no
+  Ixios JavaScript (the panel's hidden markup and CSS remain).
+- **ML-DSA-87 signing module (in the tree, not in any build).**
+  `src/pq/mldsa87-sign.wasm` (`crypto/mldsa87-sign-wasm.c`,
+  `scripts/build-mldsa87-sign-wasm.sh`, Emscripten 4.0.16, zero imports): one
+  call takes seed, 32-byte hash and 32-byte `rnd`, runs pq-crystals
+  `qgp_dsa87_keypair_derand` + `crypto_sign_signature_internal` with the
+  empty-context prefix, and returns only the public key and signature; the
+  secret key never leaves WASM and `src/pq/sign.js` zeroes the whole instance
+  after every call. Production signing is hedged (`rnd` from
+  `crypto.getRandomValues`). Nothing imports it yet; it is for Ixios (and later
+  Nodus) sending.
+- **Cross-implementation evidence.** `bash scripts/build-ixios-native-vector.sh`
+  builds a native generator; its output for the public phrases is committed as
+  `test/fixtures/ixios-vectors.json` and must reproduce byte for byte. The same
+  keys, signatures and addresses were checked against Cloudflare circl v1.6.3
+  (independent ML-DSA-87: identical public keys from the same seed, signatures
+  verify, tampered ones fail) and ixiosSpark v1.1.0 (`874f6d6c`) address and
+  checksum code; `test/fixtures/ixios-checksum.json` is ixiosSpark
+  `common.Address.Hex()` output. The Go oracles live outside this tree
+  (`~/releases/nodus-web-wallet/ixios-interop/`) because ixiosSpark is LGPL;
+  no Ixios code is copied here.
+- **Tests.** `test/mldsa87-sign.test.js` and `test/ixios-address.test.js` run in
+  `npm test`; `npm run test:ixios` builds flag-on and flag-off bundles and checks
+  the panel, the lock behaviour and that no build ships the signing module.
+  **How these can lie:** C ↔ WASM equality proves the two builds of the same
+  pq-crystals code agree, not that the code is correct — the circl comparison
+  is the independent check, and it is run by hand, not in CI. No Ixios
+  transaction has been sent on any network.

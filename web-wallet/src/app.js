@@ -20,6 +20,8 @@ const CPUNK_ENABLED = import.meta.env.VITE_ENABLE_CPUNK !== 'false';
 let wallet, pending, generatedPhrase, phraseStep, revision = 0, busy = false, lockTimer, idleDeadline = 0, confirmEnableTimer;
 const DEFAULT_PHRASE_ENTRY_HELP = '24 words, in order. Paste your full phrase into any box to fill all 24. Start typing for local word suggestions; choose with the arrow keys and Enter, or tap a word.';
 let cellframeDerivation, cellframeReader, nodusDerivation;
+// Set only inside the VITE_ENABLE_IXIOS block below; no-ops in a disabled build.
+let doShowIxiosAddress, stopIxiosAddress = () => {};
 let activitySession = null, activityBlocked = false, historyWrites = Promise.resolve(), vaultOperation = 0;
 const history = []; let stopTracking = () => {};
 function withActivityLock(write) {
@@ -117,6 +119,7 @@ function lock() {
   nodusDerivation?.abort(); nodusDerivation = undefined;
   cellframeDerivation?.abort(); cellframeDerivation = undefined;
   $('cellframe-address-status').textContent = '';
+  stopIxiosAddress();
   $('nodus-address').textContent = ''; $('nodus-status').textContent = ''; $('copy-nodus-address').disabled = true;
   revision++; vaultOperation++; activitySession = null; activityBlocked = false; idleDeadline = 0; stopTracking(); closeReview(); disposeWallet(wallet); wallet = undefined; generatedPhrase = undefined;
   $('discard-activity').hidden = true;
@@ -159,7 +162,7 @@ $('phrase-form').onsubmit = event => {
     const phrase = phraseFields.read();
     if (phraseStep === 'verify' && normalizePhrase(phrase) !== generatedPhrase) throw new Error('The phrase does not match. Re-enter your saved backup.');
     wallet = deriveWallet(phrase); generatedPhrase = undefined; phraseFields.clear();
-    $('phrase-form').hidden = true; $('wallet-open').hidden = false; message('Wallet open. Portfolio balances load automatically.'); selectChain(); activity(); void showNodusAddress(); void showCellframeAddress(); focusOpenWallet();
+    $('phrase-form').hidden = true; $('wallet-open').hidden = false; message('Wallet open. Portfolio balances load automatically.'); selectChain(); activity(); void showNodusAddress(); void showCellframeAddress(); showIxiosAddress(); focusOpenWallet();
   } catch (error) { message(error.message); }
 };
 async function showNodusAddress() {
@@ -234,6 +237,55 @@ $('copy-nodus-address').onclick = async () => {
   try { await navigator.clipboard.writeText(source.nodusAddress); if (source === wallet && !source.locked) $('nodus-status').textContent = 'Nodus address copied.'; }
   catch { if (source === wallet && !source.locked) $('nodus-status').textContent = 'Copy unavailable. Select and copy the address above.'; }
 };
+// Ixios receive-only address (default OFF). Same pattern as showNodusAddress():
+// AbortController, current() guard, aborted and cleared on lock, late results
+// dropped; the address is stored on the wallet object only once current() passes.
+// Everything Ixios-specific — both dynamic imports (derive.js fetches
+// nodus/mldsa87.wasm through `new URL(..., import.meta.url)`), the DOM ids, the
+// UI text and the wallet property — stays inside this literal top-level `if`,
+// for the reason given above the VITE_ENABLE_CPUNK block: only then does a
+// disabled build carry no Ixios code or text in its JavaScript. lock() and the
+// open paths reach it only through stopIxiosAddress / doShowIxiosAddress.
+// Ixios is deliberately NOT part of the network selector, portfolio or send form.
+if (import.meta.env.VITE_ENABLE_IXIOS === 'true') {
+  let ixiosDerivation;
+  const unavailable = 'Ixios address unavailable. Lock and reopen your wallet to retry.';
+  $('ixios-address-panel').hidden = false;
+  stopIxiosAddress = () => {
+    ixiosDerivation?.abort(); ixiosDerivation = undefined;
+    $('ixios-address').textContent = ''; $('ixios-status').textContent = ''; $('copy-ixios-address').disabled = true;
+  };
+  $('copy-ixios-address').onclick = async () => {
+    const source = wallet;
+    if (!source || source.locked || !source.ixiosAddress) return;
+    try { await navigator.clipboard.writeText(source.ixiosAddress); if (source === wallet && !source.locked) $('ixios-status').textContent = 'Ixios address copied.'; }
+    catch { if (source === wallet && !source.locked) $('ixios-status').textContent = 'Copy unavailable. Select and copy the address above.'; }
+  };
+  Promise.all([import('./ixios/derive.js'), import('./ixios/address.js')]).then(([{ deriveIxiosAddress }, { ixiosChecksumAddress }]) => {
+    doShowIxiosAddress = async () => {
+      ixiosDerivation?.abort();
+      const operation = new AbortController(), source = wallet;
+      ixiosDerivation = operation;
+      $('ixios-address').textContent = ''; $('copy-ixios-address').disabled = true;
+      $('ixios-status').textContent = 'Calculating your Ixios address locally…';
+      const current = () => ixiosDerivation === operation && source === wallet && !source.locked && !operation.signal.aborted;
+      try {
+        const bytes = await deriveIxiosAddress(source.recoveryPhrase, { signal: operation.signal });
+        if (!current()) return;
+        const address = ixiosChecksumAddress(bytes);
+        source.ixiosAddress = address;
+        $('ixios-address').textContent = address; $('copy-ixios-address').disabled = false;
+        $('ixios-status').textContent = 'Derived locally from this wallet’s recovery phrase.';
+      } catch {
+        if (current()) $('ixios-status').textContent = unavailable;
+      }
+    };
+    // The modules can resolve after a wallet is already open; start derivation
+    // for whichever wallet is current, as a direct showIxiosAddress() would.
+    if (wallet && !wallet.locked) void doShowIxiosAddress();
+  }).catch(() => { if (wallet && !wallet.locked) $('ixios-status').textContent = unavailable; });
+}
+function showIxiosAddress() { void doShowIxiosAddress?.(); }
 function selectChain() {
   revision++; closeReview(); const chain = $('chain').value; const c = CHAINS[chain] || CELLFRAME;
   for (const label of document.querySelectorAll('.selected-network-name')) label.textContent = c.name;
@@ -390,7 +442,7 @@ $('unlock-form').onsubmit = async event => {
     disposeWallet(wallet); wallet = restored; activitySession = { id: saved.id, key, vault: text }; activityBlocked = !!problem;
     history.length = 0; history.push(...rows);
     $('discard-activity').hidden = !problem; $('vault-status').textContent = problem || 'Saved activity authenticated.';
-    $('welcome').hidden = true; $('phrase-form').hidden = true; $('wallet-open').hidden = false; updateVaultUI(); selectChain(); activity(); void showNodusAddress(); void showCellframeAddress(); message('Saved wallet unlocked locally.'); focusOpenWallet();
+    $('welcome').hidden = true; $('phrase-form').hidden = true; $('wallet-open').hidden = false; updateVaultUI(); selectChain(); activity(); void showNodusAddress(); void showCellframeAddress(); showIxiosAddress(); message('Saved wallet unlocked locally.'); focusOpenWallet();
   } catch (error) { if (operation === vaultOperation) $('vault-status').textContent = error.message; }
   finally { $('unlock-wallet').disabled = false; }
 };
