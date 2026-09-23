@@ -195,3 +195,86 @@ and disabling the send form for a receive-only network. `VITE_ENABLE_CPUNK=false
 continues to exclude the adapter, the derivation module and its WASM from the
 bundle; the Cellframe network option, its automatic derivation call and its
 CPUNK asset row are gated by the same flag, checked once at bundle build time.
+
+## Red-team fixes (0.1.15)
+
+Findings from the 2026-09-22 red-team review (`docs/plans/2026-09-22-web-wallet-redteam.md`),
+resolved per the writer spec `docs/plans/2026-09-23-wallet-0.1.15-spec.md` and,
+where an operator decision was needed, `docs/plans/decisions/2026-09-23-web-wallet-double-send-and-password.md`.
+All eight are **fixed in 0.1.15**:
+
+- **E-2 (review dialog focus/timing)** — fixed. `index.html`'s `#review-dialog`
+  `.actions` now lists `#cancel-send` before `#confirm-send`, so `showModal()`'s
+  default-focus algorithm lands on Cancel. `src/app.js`'s send-review handler
+  disables Confirm immediately before `showModal()` and re-enables it after
+  600 ms (timer cleared in `closeReview()`); a `keydown` listener on the dialog
+  suppresses Enter while Confirm is disabled. A successful broadcast clears the
+  recipient and amount fields.
+- **B-1 (EVM double-send, uncertain outcome)** — fixed via operator decision 1a
+  (automatic resolution, not button-only). `src/adapters/evm.js`'s `prepare()`
+  now returns the signed `nonce` and passes it to `onBroadcast`; `src/wallet.js`
+  and `src/activity.js`'s `recordActivity` carry it into the saved record.
+  `src/app.js`'s send-form handler blocks opening a new review for the same
+  EVM chain/address while a non-terminal record exists, and offers a two-click
+  "Mark as abandoned" / "Confirm abandon" control per Activity row. Resolution
+  is automatic: `src/activity.js`'s `checkActivity`, when a receipt is absent
+  and the record carries a saved nonce, reads `eth_getTransactionCount` and
+  marks the record `replaced` (terminal) once the account's count has passed
+  that nonce; a record without a `nonce` (saved by 0.1.14 or earlier) makes no
+  extra read and keeps today's behavior. `replaced` and `abandoned` were added
+  to `terminal()` and to `src/activity-storage.js`'s validated status set;
+  `abandoned` survives a reload, every other status still resets to `pending`.
+- **B-2 (TRON expiration unbounded)** — fixed. `src/adapters/tron.js`'s
+  `validateTransaction` rejects a transaction whose `raw_data.expiration` is
+  not a safe integer or is more than 10 minutes in the future, before the
+  encoding-consistency check.
+- **A-1 (password shape filter bypass)** — fixed via operator decision 2b (no
+  added dependency). `src/vault.js`'s `validateNewPassword` replaced the
+  anchored `^(word)[0-9]*$` regex — defeated by a single trailing non-digit
+  character — with: removal of every occurrence of an expanded common-word list
+  from the folded password wherever it appears (rejecting if fewer than 8
+  characters remain); a repeated-pattern/sequential-run scan over every 8+
+  character window of the folded password, not only the password as a whole;
+  and, for passwords under 24 characters, a requirement of at least two
+  character classes (letter/digit/other). Existing 12-character v1 vaults
+  still unlock unchanged.
+- **E-3 (lower-case address, no checksum feedback)** — fixed. `src/app.js`'s
+  review-details now show `getAddress(to)` (checksummed) on the `To` line for
+  Ethereum/BSC, and add a highlighted "Address check" line when the typed
+  recipient was all-lower-case hex. Sending is not blocked.
+- **E-4 (paste during backup verification)** — fixed. `src/phrase-fields.js`'s
+  `createPhraseFields(...).set()` takes an `{ allowPaste }` option; `src/app.js`
+  disables it only for the "re-enter your saved phrase" verification step,
+  with a visible note. Restore and normal entry are unaffected.
+- **E-1 (uncertain-outcome wording without a signed transaction)** — fixed.
+  `src/app.js`'s send-failure handler now shows only `error.message` when no
+  transaction was ever signed and recorded; the "broadcast failure can have an
+  uncertain outcome" sentence is shown only when a record exists.
+- **D-2 (no explicit RNG/KDF backend lock)** — fixed. `src/main.js` imports
+  `randomBytes`/`pbkdf2` from `ethers` and calls `.lock()` on both before the
+  wallet module loads, so no later code can register a replacement
+  implementation. The saved-wallet KDF uses WebCrypto directly (`src/vault.js`)
+  and does not depend on ethers' `pbkdf2`; this changes no existing behavior.
+
+## Known issue — cross-tab record loss (found 2026-09-23, pre-existing, NOT fixed in 0.1.15)
+
+Two tabs of the same saved wallet sending within milliseconds of each other can
+lose one tab's activity record even though its broadcast still goes out. The
+Web Lock that serializes `nodus.activity.v1` writes only serializes execution:
+the main tab holds the lock, reads and merges the saved history, writes its own
+row and releases; if the peer tab acquires the lock a couple of milliseconds
+later, its `localStorage.getItem` read inside the lock does not yet see the
+main tab's write (Chromium's per-renderer `localStorage` caching is not
+immediately consistent across tabs, an observed, not source-read, behavior),
+so it merges only its own row and overwrites the key. The consequence is that
+the first tab's send is missing from saved history after a reload, and since
+0.1.15's same-network double-send lock (B-1) reads that same saved history, a
+reloaded wallet has no record of the lost send and will not block a second one
+on that network. This predates 0.1.15: the same race reproduces on the 0.1.14
+tree, so it is not a regression introduced by the fixes above. A fix is planned
+separately — a cross-tab-consistent activity store (for example IndexedDB
+transactions) or a single-tab-at-a-time rule — and is an open operator
+decision, not part of this release. `test/browser-security.js`'s "Concurrent
+signed records serialized across tabs" scenario can fail intermittently for
+this exact reason; that failure must be root-caused again if seen, never
+silenced by loosening its assertion.

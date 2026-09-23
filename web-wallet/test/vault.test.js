@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { encryptVault, decryptVault, parseVault } from '../src/vault.js';
+import { encryptVault, decryptVault, parseVault, validateNewPassword } from '../src/vault.js';
 import { serializeActivity, parseActivity, activityKeyFor } from '../src/activity-storage.js';
 const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art';
 const password = 'public-test-password-123';
@@ -30,4 +30,28 @@ test('encrypted history is bounded, scoped, rechecked after reload and excludes 
   assert.equal(parsed[0].endpoint, 'https://ethereum-rpc.publicnode.com');
   await assert.rejects(parseActivity(text, 'wrong', addresses, key));
   await assert.rejects(parseActivity(text, id, { ethereum: 'other' }, key));
+});
+test('saved activity keeps an abandoned mark permanent, resets other statuses to pending on reload, and validates a saved nonce', async () => {
+  const addresses = { ethereum: '0xabc' };
+  const id = btoa('fedcba9876543210'), key = await activityKeyFor(phrase, id);
+  const base = { chain: 'ethereum', address: '0xabc', to: '0xdef', symbol: 'ETH', amount: '1', createdAt: new Date().toISOString() };
+  const rows = [
+    { ...base, hash: '0x' + 'a'.repeat(64), status: 'abandoned', nonce: 3 },
+    { ...base, hash: '0x' + 'b'.repeat(64), status: 'replaced', nonce: 4 },
+    { ...base, hash: '0x' + 'c'.repeat(64), status: 'confirmed' },
+  ];
+  const text = await serializeActivity(id, rows, key);
+  const parsed = await parseActivity(text, id, addresses, key);
+  assert.deepEqual(parsed.map(row => row.status), ['abandoned', 'pending', 'pending']);
+  assert.equal(parsed[0].note, 'Marked abandoned by you; the network may still include it. Check the explorer.');
+  assert.equal(parsed[0].nonce, 3); assert.equal(parsed[1].nonce, 4); assert.equal(parsed[2].nonce, undefined);
+  const badNonce = await serializeActivity(id, [{ ...base, hash: '0x' + 'd'.repeat(64), status: 'pending', nonce: 1.5 }], key);
+  await assert.rejects(parseActivity(badNonce, id, addresses, key), /Invalid saved activity/);
+  const stringNonce = await serializeActivity(id, [{ ...base, hash: '0x' + 'e'.repeat(64), status: 'pending', nonce: '3' }], key);
+  await assert.rejects(parseActivity(stringNonce, id, addresses, key), /Invalid saved activity/);
+});
+test('new local password rules close the anchored-regex bypass and reject common, patterned or low-diversity passwords', () => {
+  // Passwords under 16 characters are rejected by the length rule first and are therefore not part of this vector set.
+  for (const password of ['passwordwallet1!', 'Password12345678', 'qwertyuiop123456', 'nodus-wallet-2026', 'aaaaaaaaaaaaaaaa', 'abcdefghijklmnop1', 'administrator123']) assert.throws(() => validateNewPassword(password), /too easy to guess/, password);
+  for (const password of ['correct horse battery staple', 'T7#kq9!zLm2@wpXe', 'blue-otter-piano-cloud-42']) assert.doesNotThrow(() => validateNewPassword(password), password);
 });

@@ -5,6 +5,7 @@ import { attachPhraseSuggestions } from './phrase-suggestions.js';
 // No hidden aggregate input, storage, background clipboard access or network requests.
 export function createPhraseFields(grid, error) {
   const inputs = [], clearSuggestions = [];
+  let pasteAllowed = true;
   const focus = index => inputs[Math.min(index, NODUS_WORD_COUNT - 1)].focus();
   function distribute(text, index) {
     const words = normalizePhrase(text).split(' ');
@@ -36,6 +37,7 @@ export function createPhraseFields(grid, error) {
     cell.append(label, input, panel); grid.append(cell); inputs.push(input);
     input.addEventListener('paste', event => {
       event.preventDefault();
+      if (!pasteAllowed) { error.textContent = 'Type each word from your written backup; pasting is disabled here.'; return; }
       if (!input.readOnly) {
         if (distribute(event.clipboardData.getData('text/plain'), index)) {
           // A paste is activity even when input defaults have been prevented.
@@ -65,7 +67,8 @@ export function createPhraseFields(grid, error) {
   }
   return {
     clear,
-    set(phrase = '', readOnly = false) {
+    set(phrase = '', readOnly = false, { allowPaste = true } = {}) {
+      pasteAllowed = allowPaste;
       clear();
       const words = phrase ? phrase.split(' ') : [];
       inputs.forEach((input, index) => { input.readOnly = readOnly; input.value = words[index] || ''; });

@@ -1,6 +1,7 @@
+import { getAddress } from 'ethers';
 import { VAULT_KEY, ACTIVITY_KEY, parseVault, encryptVault, decryptVault, validateNewPassword } from './vault.js';
 import { serializeActivity, parseActivity, activityKeyFor } from './activity-storage.js';
-import { recordActivity, watchActivity } from './activity.js';
+import { recordActivity, watchActivity, terminal } from './activity.js';
 import { CHAINS, CELLFRAME } from './config.js';
 import { CPUNK_ASSET } from './portfolio.js';
 import { deriveWallet, disposeWallet, newPhrase, normalizePhrase } from './keys.js';
@@ -16,7 +17,8 @@ const phraseFields = createPhraseFields($('phrase-grid'), $('phrase-error'));
 // gates a dynamic import directly — see the top-level `if (import.meta.env...)`
 // block further down for why that distinction matters for bundle size.
 const CPUNK_ENABLED = import.meta.env.VITE_ENABLE_CPUNK !== 'false';
-let wallet, pending, generatedPhrase, phraseStep, revision = 0, busy = false, lockTimer, idleDeadline = 0;
+let wallet, pending, generatedPhrase, phraseStep, revision = 0, busy = false, lockTimer, idleDeadline = 0, confirmEnableTimer;
+const DEFAULT_PHRASE_ENTRY_HELP = '24 words, in order. Paste your full phrase into any box to fill all 24. Start typing for local word suggestions; choose with the arrow keys and Enter, or tap a word.';
 let cellframeDerivation, cellframeReader, nodusDerivation;
 let activitySession = null, activityBlocked = false, historyWrites = Promise.resolve(), vaultOperation = 0;
 const history = []; let stopTracking = () => {};
@@ -54,7 +56,19 @@ function renderActivity(save = true) {
   $('activity').replaceChildren(...visibleActivity().map(row => {
     const div = document.createElement('div'), link = document.createElement('a');
     div.textContent = `${row.amount} ${row.symbol} → ${row.to} · ${row.status} · ${row.readError || row.note} `;
-    link.href = CHAINS[row.chain].explorer + encodeURIComponent(row.hash); link.textContent = 'View transaction'; link.target = '_blank'; link.rel = 'noopener noreferrer'; div.append(link); return div;
+    link.href = CHAINS[row.chain].explorer + encodeURIComponent(row.hash); link.textContent = 'View transaction'; link.target = '_blank'; link.rel = 'noopener noreferrer'; div.append(link);
+    if (!terminal(row.status)) {
+      const abandon = document.createElement('button'); abandon.type = 'button'; abandon.className = 'secondary small';
+      abandon.textContent = row._abandonArmed ? 'Confirm abandon' : 'Mark as abandoned';
+      abandon.onclick = () => {
+        if (row._abandonArmed) {
+          row.status = 'abandoned'; row.note = 'Marked abandoned by you; the network may still include it. Check the explorer.'; delete row._abandonArmed;
+          renderActivity();
+        } else { row._abandonArmed = true; renderActivity(false); }
+      };
+      div.append(' ', abandon);
+    }
+    return div;
   }));
 }
 function trackActivity() { stopTracking(); renderActivity(); if (wallet) stopTracking = watchActivity(visibleActivity, renderActivity); }
@@ -95,7 +109,8 @@ function activity() {
 for (const event of ['pointerdown', 'keydown', 'input']) document.addEventListener(event, activity);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) expireIdle(); });
 window.addEventListener('focus', expireIdle);
-function closeReview() { pending?.cancel(); pending = undefined; $('review-dialog').close(); $('review-details').replaceChildren(); $('review-error').textContent = ''; }
+function closeReview() { clearTimeout(confirmEnableTimer); pending?.cancel(); pending = undefined; $('review-dialog').close(); $('review-details').replaceChildren(); $('review-error').textContent = ''; }
+$('review-dialog').addEventListener('keydown', event => { if (event.key === 'Enter' && $('confirm-send').disabled) event.preventDefault(); });
 function lock() {
   portfolio.clear();
   phraseFields.clear();
@@ -121,6 +136,7 @@ function phraseForm(create) {
   $('welcome').hidden = true; $('phrase-form').hidden = false; $('backup-confirm').checked = false;
   phraseFields.set(generatedPhrase || '', create);
   $('phrase-label').textContent = create ? 'Write down your 24-word recovery phrase privately' : 'Enter your 24-word Nodus recovery phrase';
+  $('phrase-entry-help').textContent = DEFAULT_PHRASE_ENTRY_HELP;
   $('phrase-help').textContent = 'This phrase controls your funds. It stays local; an encrypted copy is stored only if you choose to save it. Keep an offline backup. This screen clears after 10 minutes of inactivity.';
   $('phrase-submit').textContent = create ? 'I saved it — verify backup' : 'Open wallet'; message('');
   // Show the recovery warning before focusing a word field, including on narrow screens.
@@ -134,8 +150,10 @@ $('phrase-cancel').onclick = lock;
 $('phrase-form').onsubmit = event => {
   event.preventDefault();
   if (phraseStep === 'backup') {
-    phraseStep = 'verify'; phraseFields.set();
-    $('phrase-label').textContent = 'Re-enter your saved recovery phrase'; $('phrase-submit').textContent = 'Open wallet'; phraseFields.focus(); return;
+    phraseStep = 'verify'; phraseFields.set(undefined, false, { allowPaste: false });
+    $('phrase-label').textContent = 'Re-enter your saved recovery phrase'; $('phrase-submit').textContent = 'Open wallet';
+    $('phrase-entry-help').textContent = 'Type each word from your written backup; pasting is disabled here.';
+    phraseFields.focus(); return;
   }
   try {
     const phrase = phraseFields.read();
@@ -255,16 +273,30 @@ $('send-form').onsubmit = async event => {
   // to either (src/wallet.js is unchanged), so this can only be reached by a
   // script bypassing the UI, not a real user.
   if ($('chain').value === 'cellframe') { message('Sending CPUNK is not available in this release. You can receive to the address above.'); return; }
+  if ($('chain').value === 'ethereum' || $('chain').value === 'bsc') {
+    const address = wallet.addresses[$('chain').value];
+    const blocking = history.find(row => row.chain === $('chain').value && row.address === address && !terminal(row.status));
+    if (blocking) { message(`A previous send on this network has no final result yet (tx ${blocking.hash}). Wait for it to resolve, or mark it as abandoned in Activity.`); return; }
+  }
   busy = true; $('review-button').disabled = true; const current = revision;
   message('Preparing transfer and network fee…');
   try {
     const transfer = await prepareTransfer({ wallet, chain: $('chain').value, symbol: $('asset').value, to: $('recipient').value, amount: $('amount').value, endpoint: endpoints[$('chain').value] });
     if (current !== revision || !wallet) { transfer.cancel(); return; }
     pending = transfer; $('review-details').replaceChildren();
-    for (const [key, value] of Object.entries({ Network: `${CHAINS[transfer.chain].name} mainnet`, From: transfer.from, To: transfer.to, Asset: transfer.symbol, Amount: transfer.amount, 'Network fee': transfer.fee, 'Review expires': new Date(transfer.expiresAt).toLocaleTimeString() })) {
-      const dt = document.createElement('dt'), dd = document.createElement('dd'); dt.textContent = key; dd.textContent = value; $('review-details').append(dt, dd);
+    const isEvm = transfer.chain === 'ethereum' || transfer.chain === 'bsc';
+    const details = { Network: `${CHAINS[transfer.chain].name} mainnet`, From: transfer.from, To: isEvm ? getAddress(transfer.to) : transfer.to };
+    if (isEvm && /^0x[0-9a-f]{40}$/.test(transfer.to)) details['Address check'] = 'No checksum in what you typed — compare the form above with your source character by character.';
+    Object.assign(details, { Asset: transfer.symbol, Amount: transfer.amount, 'Network fee': transfer.fee });
+    if (isEvm) details['Transaction number (nonce)'] = transfer.nonce;
+    details['Review expires'] = new Date(transfer.expiresAt).toLocaleTimeString();
+    for (const [key, value] of Object.entries(details)) {
+      const dt = document.createElement('dt'), dd = document.createElement('dd'); dt.textContent = key; dd.textContent = value;
+      if (key === 'Address check') dd.className = 'notice';
+      $('review-details').append(dt, dd);
     }
-    $('confirm-send').disabled = false; $('review-error').textContent = ''; $('review-dialog').showModal(); message('Review every transfer detail before confirming.');
+    $('confirm-send').disabled = true; $('review-error').textContent = ''; $('review-dialog').showModal(); message('Review every transfer detail before confirming.');
+    clearTimeout(confirmEnableTimer); confirmEnableTimer = setTimeout(() => { $('confirm-send').disabled = false; }, 600);
   } catch (error) { if (current === revision) message(error.message); }
   finally { busy = false; $('review-button').disabled = false; }
 };
@@ -284,11 +316,12 @@ $('confirm-send').onclick = async () => {
     closeReview();
     if (current !== revision) return;
     message('Broadcast submitted; confirmation is pending. ');
+    $('recipient').value = ''; $('amount').value = '';
     const link = document.createElement('a'); link.href = CHAINS[transfer.chain].explorer + encodeURIComponent(hash); link.textContent = `View transaction ${hash}`; link.target = '_blank'; link.rel = 'noopener noreferrer'; $('wallet-status').append(link);
   } catch (error) {
     if (record) { record.status = 'unknown'; record.note = 'Broadcast outcome uncertain. Tracking the signed transaction; do not resend automatically.'; if (current === revision) trackActivity(); }
     closeReview();
-    if (current === revision) message(`${error.message} A broadcast failure can have an uncertain outcome. Check your address on the chain explorer before creating another transfer.`);
+    if (current === revision) message(record ? `${error.message} A broadcast failure can have an uncertain outcome. Check your address on the chain explorer before creating another transfer.` : error.message);
   } finally { busy = false; $('cancel-send').disabled = false; }
 };
 function updateVaultUI() {

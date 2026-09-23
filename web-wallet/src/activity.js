@@ -1,12 +1,12 @@
 import { CHAINS } from './config.js';
 import { rpc, request, endpointUrl } from './core.js';
-export const terminal = status => ['confirmed', 'failed', 'expired'].includes(status);
+export const terminal = status => ['confirmed', 'failed', 'expired', 'replaced', 'abandoned'].includes(status);
 export function validHash(chain, hash) {
   return typeof hash === 'string' && (chain === 'solana' ? /^[1-9A-HJ-NP-Za-km-z]{80,90}$/.test(hash) : chain === 'tron' ? /^[0-9a-f]{64}$/i.test(hash) : /^0x[0-9a-f]{64}$/i.test(hash));
 }
 export function recordActivity(transfer, details) {
   if (!validHash(transfer.chain, details.hash)) throw new Error('Invalid transaction identifier.');
-  return { chain: transfer.chain, address: transfer.from, to: transfer.to, symbol: transfer.symbol, amount: transfer.amount, endpoint: transfer.endpoint, hash: details.hash, lastValidBlockHeight: details.lastValidBlockHeight, expiration: details.expiration, createdAt: new Date().toISOString(), status: 'pending', note: 'Broadcast outcome pending.' };
+  return { chain: transfer.chain, address: transfer.from, to: transfer.to, symbol: transfer.symbol, amount: transfer.amount, endpoint: transfer.endpoint, hash: details.hash, lastValidBlockHeight: details.lastValidBlockHeight, expiration: details.expiration, nonce: details.nonce, createdAt: new Date().toISOString(), status: 'pending', note: 'Broadcast outcome pending.' };
 }
 export async function checkActivity(row, { signal, call = rpc, post = request } = {}) {
   const c = CHAINS[row.chain], endpoint = row.endpoint;
@@ -16,7 +16,23 @@ export async function checkActivity(row, { signal, call = rpc, post = request } 
   if (row.chain === 'ethereum' || row.chain === 'bsc') {
     if (BigInt(await rpcCall('eth_chainId', [])) !== BigInt(c.chainId)) throw new Error('Wrong network.');
     const receipt = await rpcCall('eth_getTransactionReceipt', [row.hash]);
-    if (receipt === null) return { status: 'pending', note: 'Not included, or previous inclusion was reorganized. Check explorer before resending.' };
+    if (receipt === null) {
+      // A record saved before the nonce field existed (0.1.14 and earlier) has
+      // no basis for this check and keeps today's behavior unchanged.
+      if (Number.isSafeInteger(row.nonce)) {
+        const count = await rpcCall('eth_getTransactionCount', [row.address, 'latest']);
+        if (!/^0x[0-9a-f]+$/i.test(count)) throw new Error('Invalid transaction count.');
+        if (BigInt(count) > BigInt(row.nonce)) {
+          // A transaction that got mined between the two reads above must not be
+          // misreported as terminal 'replaced': re-check its own receipt once
+          // more before concluding another transaction consumed this nonce.
+          const recheck = await rpcCall('eth_getTransactionReceipt', [row.hash]);
+          if (recheck === null) return { status: 'replaced', note: 'This transaction number was used by another transaction; this one can no longer be included.' };
+          return { status: 'pending', note: 'Inclusion observed; confirming on the next check.' };
+        }
+      }
+      return { status: 'pending', note: 'Not included, or previous inclusion was reorganized. Check explorer before resending.' };
+    }
     if (receipt.transactionHash?.toLowerCase() !== row.hash.toLowerCase() || !/^0x[0-9a-f]+$/i.test(receipt.blockNumber) || !/^0x[0-9a-f]{64}$/i.test(receipt.blockHash) || !['0x0', '0x1'].includes(receipt.status)) throw new Error('Invalid transaction receipt.');
     // Observe finality before the last canonical lookup: a reorg between these
     // reads must not turn a stale receipt into a terminal success.

@@ -40,9 +40,10 @@ test('CPUNK uses public-address query only and distinguishes errors from exact z
 test('review only sends on confirmation, once, and rejects expired/cancelled/ambiguous retries', async () => {
   let sends = 0;
   const args = { wallet: deriveWallet(phrase), chain: 'ethereum', symbol: 'ETH', to: '0x0000000000000000000000000000000000000001', amount: '1' };
-  const mock = expiresAt => ({ ethereum: { prepare: async () => ({ expiresAt, fee: '0.001 ETH', send: async () => { sends++; return 'hash'; } }) } });
-  const review = await prepareTransfer(args, mock(Date.now() + 10000)); assert.equal(sends, 0);
-  assert.equal(await review.confirm(), 'hash'); assert.equal(sends, 1); await assert.rejects(review.confirm(), /closed/);
+  const mock = (expiresAt, nonce = 7) => ({ ethereum: { prepare: async () => ({ expiresAt, fee: '0.001 ETH', nonce, send: async onBroadcast => { sends++; await onBroadcast?.({ hash: 'hash', nonce }); return 'hash'; } }) } });
+  const review = await prepareTransfer(args, mock(Date.now() + 10000)); assert.equal(sends, 0); assert.equal(review.nonce, 7);
+  let broadcastDetails;
+  assert.equal(await review.confirm(details => { broadcastDetails = details; }), 'hash'); assert.equal(sends, 1); assert.equal(broadcastDetails.nonce, 7); await assert.rejects(review.confirm(), /closed/);
   const cancelled = await prepareTransfer(args, mock(Date.now() + 10000)); cancelled.cancel(); await assert.rejects(cancelled.confirm(), /closed/);
   const expired = await prepareTransfer(args, mock(Date.now() - 1)); await assert.rejects(expired.confirm(), /expired/);
   const failure = await prepareTransfer(args, { ethereum: { prepare: async () => ({ expiresAt: Date.now() + 10000, send: async () => { throw new Error('ambiguous'); } }) } });
@@ -75,4 +76,18 @@ test('TRON rejects altered recipients, amounts, permissions and unexpected calls
   for (const mutate of [x => x.raw_data.contract[0].parameter.value.amount++, x => x.raw_data.contract[0].parameter.value.to_address = TronWeb.address.toHex(wallet.addresses.tron), x => x.raw_data.contract.push(x.raw_data.contract[0]), x => x.raw_data.contract[0].Permission_id = 2]) {
     const changed = structuredClone(tx); mutate(changed); assert.throws(() => validateTransaction(changed, intent));
   }
+});
+test('TRON rejects an expiration outside the accepted broadcast window', async () => {
+  const wallet = deriveWallet(phrase);
+  const tron = new TronWeb({ fullHost: 'https://api.trongrid.io' });
+  const to = TronWeb.address.fromPrivateKey(HDNodeWallet.fromPhrase(phrase, undefined, "m/44'/195'/0'/0/1").privateKey.slice(2));
+  const tx = await tron.transactionBuilder.sendTrx(to, 1000000, wallet.addresses.tron, { blockHeader: { ref_block_bytes: 'abcd', ref_block_hash: '0123456789abcdef', expiration: Date.now() + 60000, timestamp: Date.now() } });
+  const intent = { from: wallet.addresses.tron, to, asset: { symbol: 'TRX' }, units: 1000000n };
+  validateTransaction(tx, intent);
+  // The expiration check runs before txCheck's encoding-consistency check, so
+  // mutating only the expiration proves this specific check fires, not txCheck.
+  const tooFar = structuredClone(tx); tooFar.raw_data.expiration = Date.now() + 11 * 60 * 1000;
+  assert.throws(() => validateTransaction(tooFar, intent), /expiration is out of range/);
+  const notNumber = structuredClone(tx); notNumber.raw_data.expiration = String(tx.raw_data.expiration);
+  assert.throws(() => validateTransaction(notNumber, intent), /expiration is out of range/);
 });

@@ -348,7 +348,7 @@ Solana uses an application-owned mutable `Signer.secretKey` buffer, which is ove
 
 Permanent-chain transport limits are 256 KiB per response by default, 2 MiB for EVM block reads and 4 MiB for Solana token-account lists, with 4,096 entries per object/array, 65,536 characters per string and depth/node limits. Numeric balances are bounded before BigInt conversion. Streams are counted independently of Content-Length, redirects are refused and the 15-second timeout covers body reads. Very large legitimate account lists can therefore produce an explicit error instead of a partial balance.
 
-The five findings from the 2026-09-19 local review are covered by these regressions; this is not an independent security certification. See [security follow-up](SECURITY-FOLLOWUP.md) for scope and remaining deployment checks.
+The five findings from the 2026-09-19 local review are covered by these regressions. Of the eight 2026-09-22 red-team findings fixed in 0.1.15, six are covered by these regressions: review-dialog focus/timing (E-2), the same-network EVM double-send lock and its abandon escape hatch (B-1), the TRON expiration bound (B-2), the local password rules (A-1), the lower-case-address review warning (E-3) and paste-disabled backup verification (E-4). The remaining two, the broadcast-uncertain message wording (E-1) and the ethers RNG/KDF lock (D-2), are verified by code review only, not by an automated test. This is not an independent security certification. See [security follow-up](SECURITY-FOLLOWUP.md) for scope and remaining deployment checks.
 
 ## Deployment corrections (0.1.1, 2026-09-20)
 
@@ -390,3 +390,56 @@ not a separate collapsed panel. Lock aborts its pending address derivation and
 balance read and clears its displayed address. No CELL balance or transfer
 support is claimed. The CF-20 code remains isolated and removable with the
 existing flag.
+
+## Red-team fixes (0.1.15)
+
+Eight findings from the 2026-09-22 red-team review (`docs/plans/2026-09-22-web-wallet-redteam.md`,
+resolved per the writer spec `docs/plans/2026-09-23-wallet-0.1.15-spec.md`):
+
+- **Review dialog focus and timing (E-2).** The transfer review dialog now places
+  Cancel first in the DOM so `showModal()` focuses it by default, and Confirm
+  starts disabled for 600 ms after the dialog opens. A keydown handler on the
+  dialog suppresses Enter while Confirm is disabled, so a key held down while
+  filling the send form cannot reach a signing action before the reviewer has
+  had a moment to read the details. The recipient and amount fields clear after
+  a successful broadcast.
+- **Same-network EVM double-send lock (B-1, operator decision
+  `docs/plans/decisions/2026-09-23-web-wallet-double-send-and-password.md`,
+  option 1a).** Ethereum/BSC transfers now carry their signed nonce into the
+  review and into the saved activity record. While a previous send on the same
+  network has no final result yet, opening a new review is blocked with a
+  plain-language message naming the pending transaction. Resolution is
+  automatic: the existing 12-second activity tracker also reads the account's
+  current transaction count when a receipt is absent, and marks the record
+  `replaced` (terminal) once that count has passed the saved nonce. A record can
+  also be marked `abandoned` (permanent, requires two clicks) from the Activity
+  panel; records saved before this release (no `nonce` field) keep today's
+  behavior unchanged, with no extra network read.
+- **TRON expiration bound (B-2).** `validateTransaction` now rejects a TRON
+  transaction whose `raw_data.expiration` is not a safe integer or is more than
+  10 minutes in the future, before it reaches the encoding-consistency check.
+- **Local password rules (A-1, operator decision option 2b, no added
+  dependency).** `validateNewPassword` closes the previous anchored-regex bypass
+  (a single trailing non-digit character defeated `^(word)[0-9]*$`) by removing
+  every occurrence of an expanded common-word list from the folded password
+  wherever it appears; what remains must still carry at least 8 characters.
+  Repeated-pattern and sequential-run checks now scan every 8+ character window
+  of the folded password, not only the password as a whole. A password under 24
+  characters must also mix at least two character classes (letter/digit/other).
+  Existing 12-character v1 vaults still unlock unchanged.
+- **Lower-case EVM address warning (E-3).** The review's `To` line always shows
+  the checksummed address; if the recipient was typed as an all-lower-case hex
+  address, an additional highlighted "Address check" line asks the sender to
+  compare it character by character. Sending is not blocked.
+- **Backup verification blocks paste (E-4).** During the "re-enter your saved
+  phrase" verification step only, pasting into a recovery word box is rejected
+  with a visible note; restoring an existing wallet is unaffected.
+- **Broadcast-uncertain wording (E-1).** When a send fails before a signed
+  transaction exists, the status message is just the error; the "broadcast
+  failure can have an uncertain outcome" sentence now only appears when a
+  transaction was actually signed and recorded.
+- **RNG/KDF hardening (D-2).** `main.js` locks ethers' `randomBytes` and
+  `pbkdf2` backends (`.lock()`) before the wallet module loads, so nothing later
+  in the page can register a replacement implementation. The saved-wallet KDF
+  uses WebCrypto directly (`src/vault.js`) and does not depend on ethers'
+  `pbkdf2`, so this changes no existing behavior.

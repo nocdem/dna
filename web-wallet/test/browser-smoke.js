@@ -81,6 +81,11 @@ try {
   await page.locator('#review-button').click(); await page.locator('#review-dialog').waitFor({ state: 'visible' }); await page.locator('#confirm-send').click();
   await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('Broadcast submitted'));
   assert.equal(broadcasts.length, 1); assert.equal(broadcasts[0].from, '0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb'); assert.equal(broadcasts[0].value, 10000000000000000n); assert.equal(broadcasts[0].chainId, 1n);
+  // B-1: the first send has no final result yet, so it must be marked abandoned
+  // before a second same-network review can open; E-2 also clears the recipient
+  // after a successful broadcast, so it is re-filled here too.
+  await page.locator('#activity').getByRole('button', { name: 'Mark as abandoned' }).click(); await page.locator('#activity').getByRole('button', { name: 'Confirm abandon' }).click(); await page.waitForFunction(() => document.querySelector('#activity').textContent.includes('abandoned'));
+  await page.locator('#recipient').fill('0x0000000000000000000000000000000000000001');
   await page.selectOption('#asset','USDC'); await page.locator('#amount').fill('1.000001'); await page.locator('#review-button').click(); await page.locator('#review-dialog').waitFor({ state: 'visible' }); await page.locator('#confirm-send').click();
   await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('Broadcast submitted'));
   assert.equal(broadcasts.length, 2); assert.equal(broadcasts[1].to, '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'); assert.equal(broadcasts[1].value, 0n);
@@ -127,8 +132,13 @@ try {
   await page.locator('#welcome').waitFor({ state: 'visible' }); assert.equal(await page.locator('#receive-address').innerText(), '');
   assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
   await page.locator('#create').click(); const created = await readPhrase(page); assert.equal(created.split(' ').length, 24); await page.locator('#backup-confirm').check(); await page.locator('#phrase-submit').click();
-  await pastePhrase(page, phrase); await page.locator('#phrase-submit').click(); await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('does not match'));
-  await pastePhrase(page, created); await page.locator('#phrase-submit').click(); await page.locator('#wallet-open').waitFor({ state: 'visible' });
+  // E-4 blocks paste on this verify step by design, so the backup check below
+  // types each word into its own box instead of pasting the full phrase.
+  const boxes = page.locator('#phrase-grid input');
+  for (const [i, word] of phrase.split(' ').entries()) await boxes.nth(i).fill(word);
+  await page.locator('#phrase-submit').click(); await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('does not match'));
+  for (const [i, word] of created.split(' ').entries()) await boxes.nth(i).fill(word);
+  await page.locator('#phrase-submit').click(); await page.locator('#wallet-open').waitFor({ state: 'visible' });
   await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#nodus-address').textContent));
   await page.locator('#lock').click(); assert.equal(await page.locator('#nodus-address').innerText(), '');
   await page.setViewportSize({ width: 390, height: 844 }); assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);

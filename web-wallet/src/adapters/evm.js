@@ -30,14 +30,14 @@ export async function prepare({ chain, wallet, to, asset, units, endpoint }) {
     if (!gasPrice || balance < gasLimit * gasPrice + tx.value) throw new Error('Insufficient native balance for amount and network fee.');
     const unsigned = { ...tx, chainId: CHAINS[chain].chainId, nonce, gasLimit, gasPrice, type: 0 };
     delete unsigned.from;
-    return { fee: `Up to ${formatUnits(gasLimit * gasPrice, 18)} ${CHAINS[chain].symbol}`, expiresAt: Date.now() + 60000,
+    return { fee: `Up to ${formatUnits(gasLimit * gasPrice, 18)} ${CHAINS[chain].symbol}`, expiresAt: Date.now() + 60000, nonce,
       async send(onBroadcast) {
         assertWalletActive(wallet);
         await checkNetwork(chain, endpoint);
         assertWalletActive(wallet);
         const signed = await wallet.evm.signTransaction(unsigned);
         assertWalletActive(wallet);
-        const hash = keccak256(signed); await onBroadcast?.({ hash });
+        const hash = keccak256(signed); await onBroadcast?.({ hash, nonce });
         assertWalletActive(wallet);
         const returned = await rpc(endpoint, 'eth_sendRawTransaction', [signed]);
         if (returned?.toLowerCase() !== hash.toLowerCase()) throw new Error('RPC returned a different transaction identifier.');

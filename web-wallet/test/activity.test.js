@@ -16,6 +16,35 @@ test('EVM waits for canonical finality, distinguishes execution failure and reor
   receipt = null; assert.equal((await checkActivity(row, { call })).status, 'pending');
   await assert.rejects(checkActivity(row, { call: async () => '0x38' }), /Wrong network/);
 });
+test('EVM detects a replaced transaction only when the record carries a saved nonce', async () => {
+  let counted = 0, receiptCalls = 0;
+  const withCount = count => async (_, method) => {
+    if (method === 'eth_getTransactionCount') counted++;
+    if (method === 'eth_getTransactionReceipt') receiptCalls++;
+    return { eth_chainId: '0x1', eth_getTransactionReceipt: null, eth_getTransactionCount: count }[method];
+  };
+  assert.equal((await checkActivity({ ...row, nonce: 5 }, { call: withCount('0x6') })).status, 'replaced');
+  assert.equal(counted, 1); assert.equal(receiptCalls, 2);
+  counted = 0; receiptCalls = 0;
+  assert.equal((await checkActivity({ ...row, nonce: 5 }, { call: withCount('0x5') })).status, 'pending');
+  assert.equal(counted, 1); assert.equal(receiptCalls, 1);
+  // A transaction mined between the first receipt read and the count read must
+  // not be misreported as terminal 'replaced': the re-check receipt read finds
+  // it and the record stays pending for the next tick to confirm normally.
+  let recheckCalls = 0;
+  const raceCall = async (_, method) => {
+    if (method === 'eth_getTransactionCount') return '0x6';
+    if (method === 'eth_getTransactionReceipt') { recheckCalls++; return recheckCalls === 1 ? null : {}; }
+    return { eth_chainId: '0x1' }[method];
+  };
+  assert.equal((await checkActivity({ ...row, nonce: 5 }, { call: raceCall })).status, 'pending');
+  assert.equal(recheckCalls, 2);
+  // A record saved before the nonce field existed (0.1.14 and earlier) must not
+  // trigger the extra read at all, and must keep today's plain pending behavior.
+  const legacyCall = async (_, method) => { if (method === 'eth_getTransactionCount') throw new Error('must not be called without a saved nonce'); return { eth_chainId: '0x1', eth_getTransactionReceipt: null }[method]; };
+  assert.equal((await checkActivity(row, { call: legacyCall })).status, 'pending');
+  assert.equal(terminal('replaced'), true); assert.equal(terminal('abandoned'), true);
+});
 test('Solana requires finalized status and never treats an absent expired signature as terminal', async () => {
   const sol = { ...row, chain: 'solana', hash: '1'.repeat(88), lastValidBlockHeight: 100 };
   let status = null, height = 99;

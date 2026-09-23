@@ -37,6 +37,7 @@ export function validateTransaction(tx, { from, to, asset, units }) {
   const hex = a => TronWeb.address.toHex(a).toLowerCase();
   const contracts = tx?.raw_data?.contract;
   if (!Array.isArray(contracts) || contracts.length !== 1 || tx.signature || tx.raw_data.data) throw new Error('Unexpected TRON transaction.');
+  if (!Number.isSafeInteger(tx.raw_data.expiration) || tx.raw_data.expiration > Date.now() + 10 * 60 * 1000) throw new Error('TRON transaction expiration is out of range.');
   const contract = contracts[0], value = contract.parameter?.value;
   if (!value || hex(value.owner_address) !== hex(from) || contract.Permission_id) throw new Error('Unexpected TRON sender or permission.');
   if (!asset.address) {

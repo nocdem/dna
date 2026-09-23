@@ -155,6 +155,12 @@ try {
   await page.locator('#backup-confirm').check(); await page.locator('#phrase-submit').click();
   assert.equal(await readPhrase(page), '');
   assert.equal(await page.locator('#phrase-grid input').evaluateAll(inputs => inputs.every(input => !input.readOnly)), true);
+  // E-4: verify step blocks paste so a saved clipboard copy cannot substitute for
+  // actually typing the backup from memory.
+  assert.match(await page.locator('#phrase-entry-help').innerText(), /pasting is disabled/);
+  await pastePhrase(page, generated);
+  assert.equal(await readPhrase(page), '');
+  assert.match(await page.locator('#phrase-error').innerText(), /pasting is disabled/);
   await page.locator('#phrase-cancel').click();
   await page.setViewportSize({ width: 1280, height: 960 });
   async function restore(phrase) {

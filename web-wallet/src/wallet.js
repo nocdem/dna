@@ -10,7 +10,7 @@ export async function prepareTransfer({ wallet, chain, symbol, to, amount, endpo
   endpoint = endpointUrl(endpoint || CHAINS[chain].endpoint);
   const prepared = await implementations[chain].prepare({ wallet, chain, to: to.trim(), asset, units, endpoint });
   let used = false;
-  return { endpoint, chain, symbol, to: to.trim(), amount, from: wallet.addresses[chain], fee: prepared.fee, expiresAt: prepared.expiresAt,
+  return { endpoint, chain, symbol, to: to.trim(), amount, from: wallet.addresses[chain], fee: prepared.fee, expiresAt: prepared.expiresAt, nonce: prepared.nonce,
     cancel() { used = true; },
     async confirm(onBroadcast) {
       if (used) throw new Error('This review is already closed.');

@@ -22,7 +22,7 @@ export async function activityKeyFor(phrase, id) {
 const header = data => ({ version: data.version, id: data.id, cipher: data.cipher, iv: data.iv });
 export async function serializeActivity(id, rows, key) {
   const data = { version: 2, id, cipher: 'AES-256-GCM', iv: encode(crypto.getRandomValues(new Uint8Array(12))) };
-  const selected = rows.slice(-100).map(({ chain, address, to, symbol, amount, hash, lastValidBlockHeight, expiration, createdAt, status }) => ({ chain, address, to, symbol, amount, hash, lastValidBlockHeight, expiration, createdAt, status }));
+  const selected = rows.slice(-100).map(({ chain, address, to, symbol, amount, hash, lastValidBlockHeight, expiration, nonce, createdAt, status }) => ({ chain, address, to, symbol, amount, hash, lastValidBlockHeight, expiration, nonce, createdAt, status }));
   const bytes = encoder.encode(JSON.stringify(selected));
   try {
     if (bytes.length > MAX_PLAIN) throw new Error('Saved activity is too large.');
@@ -44,9 +44,9 @@ export async function parseActivity(text, id, addresses, key) {
   finally { bytes?.fill(0); }
   if (!Array.isArray(rows) || rows.length > 100) throw new Error('Invalid saved activity.');
   return rows.map(row => {
-    if (!row || !Object.hasOwn(CHAINS, row.chain) || row.address !== addresses[row.chain] || !validHash(row.chain, row.hash) || typeof row.to !== 'string' || row.to.length > 128 || typeof row.symbol !== 'string' || row.symbol.length > 12 || typeof row.amount !== 'string' || !/^\d{1,78}(\.\d{1,18})?$/.test(row.amount) || typeof row.createdAt !== 'string' || !Number.isFinite(Date.parse(row.createdAt)) || !['pending','included','unknown','confirmed','failed','expired'].includes(row.status)) throw new Error('Invalid saved activity.');
+    if (!row || !Object.hasOwn(CHAINS, row.chain) || row.address !== addresses[row.chain] || !validHash(row.chain, row.hash) || typeof row.to !== 'string' || row.to.length > 128 || typeof row.symbol !== 'string' || row.symbol.length > 12 || typeof row.amount !== 'string' || !/^\d{1,78}(\.\d{1,18})?$/.test(row.amount) || typeof row.createdAt !== 'string' || !Number.isFinite(Date.parse(row.createdAt)) || !(row.nonce === undefined || Number.isSafeInteger(row.nonce)) || !['pending','included','unknown','confirmed','failed','expired','replaced','abandoned'].includes(row.status)) throw new Error('Invalid saved activity.');
     if (row.lastValidBlockHeight !== undefined && (!Number.isSafeInteger(row.lastValidBlockHeight) || row.lastValidBlockHeight < 0)) throw new Error('Invalid saved expiry.');
     if (row.expiration !== undefined && (!Number.isSafeInteger(row.expiration) || row.expiration < 0)) throw new Error('Invalid saved expiry.');
-    return { chain: row.chain, address: row.address, to: row.to, symbol: row.symbol, amount: row.amount, endpoint: CHAINS[row.chain].endpoint, hash: row.hash, createdAt: row.createdAt, lastValidBlockHeight: row.lastValidBlockHeight, expiration: row.expiration, status: 'pending', note: 'Authenticated local record; verifying network status.' };
+    return { chain: row.chain, address: row.address, to: row.to, symbol: row.symbol, amount: row.amount, endpoint: CHAINS[row.chain].endpoint, hash: row.hash, createdAt: row.createdAt, lastValidBlockHeight: row.lastValidBlockHeight, expiration: row.expiration, nonce: row.nonce, ...(row.status === 'abandoned' ? { status: 'abandoned', note: 'Marked abandoned by you; the network may still include it. Check the explorer.' } : { status: 'pending', note: 'Authenticated local record; verifying network status.' }) };
   });
 }

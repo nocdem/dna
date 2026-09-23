@@ -124,11 +124,15 @@ try {
   assert.equal(await page.locator('#account-explorer').getAttribute('href'), null);
   await peer.selectOption('#chain', 'bsc');
   await peer.waitForFunction(previous => localStorage.getItem('nodus.activity.v1') !== previous, original);
+  // Close the peer before capturing: it keeps writing (each tracker change
+  // re-persists with a fresh IV) after the waitFunction above resolves on the
+  // first change, so reading localStorage while it is still open is a race.
+  // With the peer closed, the only remaining tab (page, locked) cannot write.
+  await peer.close();
   const preserved = await page.evaluate(() => ({ vault: localStorage.getItem('nodus.wallet.v1'), activity: localStorage.getItem('nodus.activity.v1') }));
   const vaultId = JSON.parse(preserved.vault).id, activityKey = await activityKeyFor(phrase, vaultId);
   const combinedRows = await parseActivity(preserved.activity, vaultId, addresses, activityKey);
   assert.equal(combinedRows.length, 2); assert.deepEqual(combinedRows.map(row => row.amount).sort(), ['0.01', '0.02']);
-  await peer.close();
   await restore(page);
   await page.locator('#vault-password').fill('different-public-test-password'); await page.locator('#vault-old-password').fill(password); await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-change').click();
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('unlock the saved wallet'));
@@ -188,6 +192,47 @@ try {
   await page.locator('#welcome').waitFor({ state: 'visible' });
   assert.equal(await page.evaluate(() => globalThis.cpunkFetchSignal.aborted), true);
   console.log('Lock aborts an in-flight Cellframe address fetch.');
+
+  // E-2/B-1/E-3: a fresh saved wallet exercises the review dialog's focus/timing
+  // guard, the same-network double-send lock and its abandon escape hatch, and
+  // the lower-case-address review warning, in one continuous session.
+  page = await fresh(); await restore(page); await page.getByText('Save wallet on this device (optional)', { exact: true }).click();
+  await page.locator('#vault-password').fill(password); await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click();
+  await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('Encrypted wallet saved'));
+
+  let sent = broadcasts;
+  await review(page);
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'cancel-send');
+  assert.equal(await page.locator('#confirm-send').isDisabled(), true);
+  await page.keyboard.down('Enter');
+  await delay(700);
+  assert.equal(broadcasts, sent); assert.equal(await page.locator('#review-dialog').isVisible(), true);
+  await page.keyboard.up('Enter');
+  assert.equal(await page.locator('#confirm-send').isDisabled(), false);
+  await page.locator('#confirm-send').click();
+  await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('Broadcast submitted'));
+  assert.equal(broadcasts, sent + 1);
+  assert.equal(await page.locator('#recipient').inputValue(), ''); assert.equal(await page.locator('#amount').inputValue(), '');
+  console.log('E-2: review opens with Cancel focused and Confirm disabled for 600ms, a held Enter reaches no signing action, and the form clears after broadcast.');
+
+  await page.locator('#recipient').fill('0x0000000000000000000000000000000000000001'); await page.locator('#amount').fill('0.01'); await page.locator('#review-button').click();
+  await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('no final result yet'));
+  assert.equal(await page.locator('#review-dialog').isVisible(), false);
+  await page.locator('#activity').getByRole('button', { name: 'Mark as abandoned' }).click();
+  await page.locator('#activity').getByRole('button', { name: 'Confirm abandon' }).click();
+  await page.waitForFunction(() => document.querySelector('#activity').textContent.includes('abandoned'));
+  console.log('B-1: a second review on the same network is blocked while the first send has no final result.');
+
+  await page.locator('#recipient').fill(addresses.ethereum.toLowerCase()); await page.locator('#amount').fill('0.01'); await page.locator('#review-button').click();
+  await page.locator('#review-dialog').waitFor({ state: 'visible' });
+  assert.match(await page.locator('#review-details').innerText(), /Address check/);
+  await page.locator('#cancel-send').click();
+  await page.locator('#recipient').fill(addresses.ethereum); await page.locator('#amount').fill('0.01'); await page.locator('#review-button').click();
+  await page.locator('#review-dialog').waitFor({ state: 'visible' });
+  assert.doesNotMatch(await page.locator('#review-details').innerText(), /Address check/);
+  await page.locator('#cancel-send').click();
+  console.log('E-3: a lower-case EVM recipient triggers a review warning and a checksummed one does not; both prove a review can open again once the earlier send is marked abandoned.');
+
   assert.deepEqual(errors, []); assert.ok(staleWriteCompleted);
   console.log('Browser security regressions passed. All blockchain traffic was intercepted.');
 } finally { await browser.close(); server.kill(); }

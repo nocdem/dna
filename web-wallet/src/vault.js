@@ -17,10 +17,36 @@ export function validateNewPassword(password) {
   // New saves/changes only: existing v1 wallets must remain unlockable.
   if (typeof password !== 'string' || password.length < 16 || password.length > 1024) throw new Error('Use a unique local password of 16–1024 characters. A password manager can generate one.');
   const folded = password.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
-  const common = /^(password|passphrase|qwerty|letmein|welcome|admin|administrator|iloveyou|changeme|nodus|wallet|1234567890)[0-9]*$/;
-  const repeated = /^(.{1,8})\1+$/u.test(password.toLowerCase());
-  const sequence = ['0123456789', '1234567890', 'abcdefghijklmnopqrstuvwxyz', 'qwertyuiopasdfghjklzxcvbnm'].some(value => value.repeat(4).includes(folded) || value.split('').reverse().join('').repeat(4).includes(folded));
-  if (folded.length < 8 || common.test(folded) || repeated || sequence) throw new Error('This password is too easy to guess. Use a unique generated password or several unrelated words.');
+  // Closes the previous anchored-regex bypass (`^(word)[0-9]*$` was defeated by a
+  // single trailing character that was not a digit). Every occurrence of a common
+  // word is removed from the folded password wherever it appears, not just as a
+  // whole-string prefix; what remains must still carry at least 8 characters.
+  const common = ['password', 'passphrase', 'qwerty', 'letmein', 'welcome', 'admin', 'administrator', 'iloveyou', 'changeme', 'nodus', 'wallet', 'secret', 'monkey', 'dragon', 'master', 'login', 'abc123', '123456', '1234567890', 'football', 'baseball', 'sunshine', 'princess', 'trustno1'];
+  // Removal order matters for a compound word that contains a shorter one
+  // (e.g. "administrator" contains "admin"): sort longest-first, stably, so the
+  // compound word is stripped before a shorter word inside it can fragment it
+  // into a longer-looking remainder.
+  const residual = [...common].sort((a, b) => b.length - a.length).reduce((text, word) => text.split(word).join(''), folded);
+  // The spec's own per-word rule, independent of removal order: a single common
+  // word close to the whole password (fewer than 8 characters left over) rejects
+  // on its own, even for a word the cumulative removal above did not reach first.
+  const tooClose = common.some(word => folded.includes(word) && folded.length - word.length < 8);
+  const sequences = ['0123456789', '1234567890', 'abcdefghijklmnopqrstuvwxyz', 'qwertyuiopasdfghjklzxcvbnm'];
+  const runs = sequences.flatMap(value => [value.repeat(4), value.split('').reverse().join('').repeat(4)]);
+  // Repeated-pattern and sequential-run checks scan every 8+ character window of
+  // the folded password, not only the password taken as a whole, so a pattern
+  // padded with unrelated characters on either side is still caught.
+  let patterned = false;
+  for (let start = 0; start < folded.length && !patterned; start++) {
+    const eight = folded.slice(start, start + 8);
+    if (eight.length === 8 && runs.some(run => run.includes(eight))) { patterned = true; break; }
+    for (let end = start + 8; end <= Math.min(start + 16, folded.length) && !patterned; end++) {
+      if (/^(.{1,8})\1+$/u.test(folded.slice(start, end))) patterned = true;
+    }
+  }
+  const classes = new Set();
+  for (const char of password) classes.add(/\p{L}/u.test(char) ? 'letter' : /\p{N}/u.test(char) ? 'digit' : 'other');
+  if (residual.length < 8 || tooClose || patterned || (password.length < 24 && classes.size < 2)) throw new Error('This password is too easy to guess. Use a unique generated password or several unrelated words.');
 }
 function header(vault) { return { version: vault.version, id: vault.id, kdf: vault.kdf, iterations: vault.iterations, salt: vault.salt, cipher: vault.cipher, iv: vault.iv }; }
 export function parseVault(text) {
