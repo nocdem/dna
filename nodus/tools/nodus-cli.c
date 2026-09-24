@@ -3085,6 +3085,30 @@ done:
  * planned before anything is submitted, so a shortfall refuses the whole
  * batch without sending any of it.
  *
+ * --shard I/M lets M SEPARATE sessions of the same identity keep spends
+ * in flight at once without ever selecting the same coin. The shard is a
+ * property of the COIN, not of its position in a listing: a coin belongs
+ * to shard (first 8 nullifier bytes as a big-endian u64) mod M. A rank
+ * in the selection order would NOT do — the listing is capped at 100 rows
+ * with no ORDER BY (nodus_witness_db.c nodus_witness_utxo_by_owner), each
+ * session lists at a different moment and from a different node, and
+ * every committed spend replaces a coin with a smaller one under a fresh
+ * nullifier, so the same rank names different coins in two listings. A
+ * nullifier is SHA3-512(owner_hex ‖ seed) (rtn_out_ids,
+ * nodus_witness_rt_native.c:1463-1475), so with --shard every output
+ * this envelope creates has its seed re-drawn until its id lands in the
+ * SAME shard (expected M draws; the seed is client-chosen and consensus
+ * only hashes it) — each shard's coin set is then closed: a session
+ * never sees, and can never select, a coin another shard's session
+ * created or is spending.
+ *
+ * --amount all sends each selected coin's WHOLE value minus the fee:
+ * exactly one native input and one output per spend, no change and no
+ * dust, however unevenly the coins have shrunk. --count all (only with
+ * --amount all) plans one such spend per eligible coin (native, unlocked,
+ * in the shard, amount > fee); zero eligible coins prints a line saying
+ * so and submits nothing (exit 0).
+ *
  * Fee: default max(DNAC_MIN_FEE_RAW, NODUS_W_BASE_TX_FEE) — the stake
  * builder's rule. Per the operator's tokenomics decision
  * (docs/plans/decisions/2026-09-22-nodus-tokenomics-v3-operator.md §1,
@@ -3208,7 +3232,9 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
     const char *submit = NULL;
     uint64_t amount = 0, fee = 0;
     long count = 1;
+    unsigned long shard_i = 0, shard_m = 1;          /* 1 = no sharding    */
     int dry_run = 0, have_amount = 0, have_fee = 0, bad_arg = 0;
+    int amount_all = 0, count_all = 0;
 
     for (int i = cmd_start + 2; i < argc; i++) {   /* skip the "spend" word */
         const char *a = argv[i];
@@ -3217,11 +3243,27 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
         else if (!strcmp(a, "--token")  && i + 1 < argc) token_hex = argv[++i];
         else if (!strcmp(a, "--submit") && i + 1 < argc) submit    = argv[++i];
         else if (!strcmp(a, "--amount") && i + 1 < argc) {
-            amount = strtoull(argv[++i], NULL, 10); have_amount = 1;
+            const char *v = argv[++i];
+            if (!strcmp(v, "all")) amount_all = 1;
+            else amount = strtoull(v, NULL, 10);
+            have_amount = 1;
         } else if (!strcmp(a, "--fee") && i + 1 < argc) {
             fee = strtoull(argv[++i], NULL, 10); have_fee = 1;
         } else if (!strcmp(a, "--count") && i + 1 < argc) {
-            count = strtol(argv[++i], NULL, 10);
+            const char *v = argv[++i];
+            if (!strcmp(v, "all")) count_all = 1;
+            else count = strtol(v, NULL, 10);
+        } else if (!strcmp(a, "--shard") && i + 1 < argc) {
+            /* strict "I/M": digits, one '/', digits, nothing else */
+            const char *v = argv[++i];
+            char *e1 = NULL, *e2 = NULL;
+            if (v[0] < '0' || v[0] > '9') { bad_arg = 1; break; }
+            shard_i = strtoul(v, &e1, 10);
+            if (!e1 || *e1 != '/' || e1[1] < '0' || e1[1] > '9') {
+                bad_arg = 1; break;
+            }
+            shard_m = strtoul(e1 + 1, &e2, 10);
+            if (!e2 || *e2 != '\0') { bad_arg = 1; break; }
         } else if (!strcmp(a, "--dry-run")) {
             dry_run = 1;
         } else { bad_arg = 1; break; }
@@ -3229,16 +3271,49 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
     if (bad_arg || !keys_csv || !to_hex || !have_amount) {
         fprintf(stderr,
             "Usage: v2-envelope spend --keys <keydir> --to <fp128hex> "
-            "--amount <raw>\n"
-            "       [--fee <raw>] [--token <hex128>] [--count <N>] "
-            "[--submit ip:port] [--dry-run]\n"
+            "--amount <raw|all>\n"
+            "       [--fee <raw>] [--token <hex128>] [--count <N|all>] "
+            "[--shard <I>/<M>]\n"
+            "       [--submit ip:port] [--dry-run]\n"
             "  The whole flow (chain id, coin listing, submission) runs on "
             "ONE session\n"
             "  to --submit, or to the outer -s server when --submit is "
             "absent.\n"
             "  --dry-run still needs that node (it lists the coins); it "
             "builds and\n"
-            "  self-checks every envelope and submits none.\n");
+            "  self-checks every envelope and submits none.\n"
+            "  --amount all   each spend sends ONE native coin's whole "
+            "value minus the\n"
+            "                 fee (1 input, 1 output, no change); not with "
+            "--token.\n"
+            "  --count all    one spend per eligible coin (needs --amount "
+            "all); none\n"
+            "                 eligible = nothing submitted, exit 0.\n"
+            "  --shard I/M    select only coins whose nullifier's first 8 "
+            "bytes (BE u64)\n"
+            "                 mod M == I, and re-draw every output seed "
+            "until the new\n"
+            "                 coin's id lands in the same shard — M "
+            "sessions of one\n"
+            "                 identity with distinct I never share a coin "
+            "(0 <= I < M <= %d).\n",
+            (int)NODUS_DNAC_MAX_UTXO_RESULTS);
+        return 1;
+    }
+    if (shard_m < 1 || shard_m > (unsigned long)NODUS_DNAC_MAX_UTXO_RESULTS ||
+        shard_i >= shard_m) {
+        fprintf(stderr, "--shard I/M needs 1 <= M <= %d and 0 <= I < M\n",
+                (int)NODUS_DNAC_MAX_UTXO_RESULTS);
+        return 1;
+    }
+    if (amount_all && token_hex) {
+        fprintf(stderr, "--amount all spends whole NATIVE coins; it cannot "
+                "be combined with --token\n");
+        return 1;
+    }
+    if (count_all && !amount_all) {
+        fprintf(stderr, "--count all needs --amount all (a fixed amount has "
+                "no per-coin count)\n");
         return 1;
     }
 
@@ -3250,7 +3325,7 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
                 "rtn_hex_lower_ok)\n");
         return 1;
     }
-    if (amount == 0) {
+    if (!amount_all && amount == 0) {
         fprintf(stderr, "--amount must be >= 1 (a zero-value output is a "
                 "deterministic reject on the chain)\n");
         return 1;
@@ -3267,8 +3342,9 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
         return 1;
     }
     /* A batch needs one listed coin per envelope at least, and the
-     * listing is capped at NODUS_DNAC_MAX_UTXO_RESULTS rows. */
-    if (count < 1 || count > (long)NODUS_DNAC_MAX_UTXO_RESULTS) {
+     * listing is capped at NODUS_DNAC_MAX_UTXO_RESULTS rows. --count all
+     * is resolved after the listing (below). */
+    if (!count_all && (count < 1 || count > (long)NODUS_DNAC_MAX_UTXO_RESULTS)) {
         fprintf(stderr, "--count must be 1..%d\n",
                 (int)NODUS_DNAC_MAX_UTXO_RESULTS);
         return 1;
@@ -3388,10 +3464,15 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
     coins = calloc((size_t)(utxos.count > 0 ? utxos.count : 1),
                    sizeof(*coins));
     if (!coins) goto done;
-    int n_coins = 0, n_locked = 0;
+    int n_coins = 0, n_locked = 0, n_other_shard = 0;
     for (int i = 0; i < utxos.count; i++) {
         const nodus_dnac_utxo_entry_t *e = &utxos.entries[i];
         if (e->amount == 0) continue;         /* never selectable value   */
+        if (shard_m > 1) {                    /* the coin's OWN shard     */
+            uint64_t key = 0;
+            for (int b = 0; b < 8; b++) key = (key << 8) | e->nullifier[b];
+            if (key % shard_m != shard_i) { n_other_shard++; continue; }
+        }
         if (e->unlock_block > tip) { n_locked++; continue; }
         t6_coin_t *c = &coins[n_coins++];
         memcpy(c->nul, e->nullifier, 64);
@@ -3403,12 +3484,53 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
     }
     qsort(coins, (size_t)n_coins, sizeof(*coins), t6_coin_cmp);
 
+    /* --amount all: an eligible coin is native and can pay the fee with
+     * at least 1 raw left for the output (a zero-value output is a
+     * deterministic reject). --count all = every eligible coin. */
+    if (count_all) {
+        long n_elig = 0;
+        for (int i = 0; i < n_coins; i++)
+            if (coins[i].kind == 0 && coins[i].amount > fee) n_elig++;
+        if (n_elig == 0) {
+            printf("v2-envelope spend: 0 eligible coin(s) (shard %lu/%lu: "
+                   "%d listed in shard, %d locked, %d in other shards; "
+                   "listing %d row(s), tip %llu) — nothing to submit\n",
+                   shard_i, shard_m, n_coins, n_locked, n_other_shard,
+                   utxos.count, (unsigned long long)tip);
+            rc = 0;
+            goto done;
+        }
+        count = n_elig;
+    }
+
     /* ── plan EVERY envelope before submitting ANY ───────────────────── */
     plans = calloc((size_t)count, sizeof(*plans));
     if (!plans) goto done;
     for (long k = 0; k < count; k++) {
         t6_spend_plan_t *p = &plans[k];
         int prc = 0;
+        if (amount_all) {
+            /* largest unused eligible coin first (t6_coin_cmp order) */
+            int pick = -1;
+            for (int i = 0; i < n_coins; i++)
+                if (!coins[i].used && coins[i].kind == 0 &&
+                    coins[i].amount > fee) { pick = i; break; }
+            if (pick < 0) {
+                fprintf(stderr, "insufficient coins for spend %ld/%ld "
+                        "(--amount all): each spend needs its own native "
+                        "coin above the fee %llu raw; %d spendable coin(s) "
+                        "listed in shard %lu/%lu, %d locked, %d in other "
+                        "shards — nothing was submitted\n", k + 1, count,
+                        (unsigned long long)fee, n_coins, shard_i, shard_m,
+                        n_locked, n_other_shard);
+                goto done;
+            }
+            p->idx[p->n_in++] = pick;
+            p->native_in      = coins[pick].amount;
+            p->native_change  = 0;
+            coins[pick].used  = 1;
+            continue;
+        }
         if (!is_native) {
             prc = t6_spend_pick(coins, n_coins, 1, amount, p, &p->token_in);
             if (prc == 0) p->token_change = p->token_in - amount;
@@ -3431,11 +3553,13 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
                 fprintf(stderr, "insufficient funds for spend %ld/%ld: need "
                         "amount %llu raw (%s) + fee %llu raw (native); %d "
                         "spendable coin(s) listed, %d locked (unlock_block "
-                        "> tip %llu) — nothing was submitted\n",
+                        "> tip %llu), %d outside shard %lu/%lu — nothing "
+                        "was submitted\n",
                         k + 1, count, (unsigned long long)amount,
                         is_native ? "native" : "--token",
                         (unsigned long long)fee, n_coins, n_locked,
-                        (unsigned long long)tip);
+                        (unsigned long long)tip, n_other_shard,
+                        shard_i, shard_m);
             goto done;
         }
         for (int j = 0; j < p->n_in; j++) coins[p->idx[j]].used = 1;
@@ -3473,7 +3597,10 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
         uint64_t     o_amt[T6_SPEND_MAX_OUTS];
         const uint8_t *o_tok[T6_SPEND_MAX_OUTS];
         int n_out = 0;
-        o_owner[n_out] = to_fp; o_amt[n_out] = amount;
+        /* --amount all: this plan's ONE coin minus the fee (> 0 — the
+         * planner only picks coins above the fee) */
+        const uint64_t send_amt = amount_all ? p->native_in - fee : amount;
+        o_owner[n_out] = to_fp; o_amt[n_out] = send_amt;
         o_tok[n_out] = is_native ? NULL : token; n_out++;
         if (!is_native && p->token_change > 0) {
             o_owner[n_out] = sender_fp; o_amt[n_out] = p->token_change;
@@ -3486,18 +3613,36 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
         call[off++] = (uint8_t)n_out;
         uint8_t out_id[T6_SPEND_MAX_OUTS][64];
         for (int o = 0; o < n_out; o++) {
-            uint8_t seed[32];
-            if (nodus_random(seed, sizeof(seed)) != 0) {
-                fprintf(stderr, "random seed generation failed\n");
-                goto done;
+            /* --shard: re-draw the seed until the output id (= the new
+             * coin's nullifier) lands in THIS shard — expected shard_m
+             * draws; the bound only turns a broken RNG into an error. */
+            const unsigned long max_draws = 64ul * shard_m + 64ul;
+            unsigned long draws = 0;
+            for (;;) {
+                uint8_t seed[32];
+                if (nodus_random(seed, sizeof(seed)) != 0) {
+                    fprintf(stderr, "random seed generation failed\n");
+                    goto done;
+                }
+                t6_xfer_out_put(call + off, o_owner[o], o_amt[o], o_tok[o],
+                                seed);
+                /* the output id the chain will derive (rtn_out_ids
+                 * :1427-1431) — printed so a caller can find the row */
+                uint8_t pre[160];
+                memcpy(pre, call + off, 128);
+                memcpy(pre + 128, seed, 32);
+                if (qgp_sha3_512(pre, sizeof(pre), out_id[o]) != 0) goto done;
+                if (shard_m <= 1) break;
+                uint64_t key = 0;
+                for (int b = 0; b < 8; b++) key = (key << 8) | out_id[o][b];
+                if (key % shard_m == shard_i) break;
+                if (++draws >= max_draws) {
+                    fprintf(stderr, "no output seed landed in shard %lu/%lu "
+                            "after %lu draws — the random source is "
+                            "broken\n", shard_i, shard_m, draws);
+                    goto done;
+                }
             }
-            t6_xfer_out_put(call + off, o_owner[o], o_amt[o], o_tok[o], seed);
-            /* the output id the chain will derive (rtn_out_ids :1427-1431)
-             * — printed so a caller can find the created row */
-            uint8_t pre[160];
-            memcpy(pre, call + off, 128);
-            memcpy(pre + 128, seed, 32);
-            if (qgp_sha3_512(pre, sizeof(pre), out_id[o]) != 0) goto done;
             off += T6_SPEND_OUT_LEN;
         }
         const uint32_t call_len = (uint32_t)off;
@@ -3547,7 +3692,7 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
                k + 1, count, env_len, p->n_in,
                (unsigned long long)p->native_in,
                (unsigned long long)p->token_in,
-               (unsigned long long)amount, (unsigned long long)fee,
+               (unsigned long long)send_amt, (unsigned long long)fee,
                (unsigned long long)p->native_change,
                (unsigned long long)p->token_change,
                (unsigned long long)units, (unsigned long long)tip);
@@ -3623,8 +3768,9 @@ static void usage(const char *prog) {
     fprintf(stderr, "  v2-envelope stake --db <s.db> --keys <dir> --bond <raw>\n");
     fprintf(stderr, "           --commission <bps> --dest-fp <hex128>\n");
     fprintf(stderr, "           (--dry-run | --submit ip:port)   O11 two-leg STAKE\n");
-    fprintf(stderr, "  v2-envelope spend --keys <dir> --to <fp128hex> --amount <raw>\n");
-    fprintf(stderr, "           [--fee <raw>] [--token <hex128>] [--count <N>]\n");
+    fprintf(stderr, "  v2-envelope spend --keys <dir> --to <fp128hex> --amount <raw|all>\n");
+    fprintf(stderr, "           [--fee <raw>] [--token <hex128>] [--count <N|all>]\n");
+    fprintf(stderr, "           [--shard <I>/<M>]\n");
     fprintf(stderr, "           [--submit ip:port] [--dry-run]   CORE SPEND (coin transfer)\n");
 #endif
 }

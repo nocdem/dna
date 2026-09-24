@@ -153,13 +153,15 @@ SCENARIOS_ONLY=0
 #     proving a single block can carry more claims than the retired
 #     16-item cap. MUST run before test_v2_epoch_boundary.sh, whose own
 #     header describes what it finds left (ordinarily nothing).
-#   test_cmt_env_flood.sh (R3 W4-C delta 2) — INTENDED to prove a block
-#     beyond 10 ENVELOPES (not claims) applies with 7/7 agreement;
-#     currently a SKIP (99) — nodus-cli has no generic CORE spend/
-#     transfer envelope command to drive it (see the script's own
-#     header). Placed here, after claim_flood and before epoch_boundary,
-#     because it does not touch the pump batch at all while skipping
-#     (nothing to leave behind either way).
+#   test_cmt_env_flood.sh (R3 W4-C delta 2, runnable since CLI-SPEND,
+#     10d61f65) — a burst of K real CORE SPEND envelopes (`nodus-cli
+#     v2-envelope spend --count K`, self-sends by the PUMP identity) all
+#     apply with 7/7 agreement; the per-block split is printed, not
+#     asserted. MUST run AFTER claim_flood: it spends the PUMP identity's
+#     CLAIMED coins and never claims the batch itself (fewer than 11
+#     spendable coins = SKIP 99). Placed before epoch_boundary; it leaves
+#     the coin count unchanged (each spent coin replaced by one coin one
+#     fee smaller).
 #   test_v2_epoch_boundary.sh — opportunistically submits whatever
 #     remains of the PUMP batch (ordinarily nothing, since the scenario
 #     above already spent it) to help reach the boundary; SKIPS (99) at
