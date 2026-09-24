@@ -1,0 +1,436 @@
+{
+  "observedAt": "2026-09-19T12:36:56.750013+00:00",
+  "mode": "Public curl reads; browser CORS not established",
+  "results": [
+    {
+      "chain": "ethereum",
+      "url": "https://eth.llamarpc.com",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "eth_chainId",
+        "params": []
+      },
+      "exitCode": 28,
+      "response": "",
+      "error": "curl: (28) Operation timed out after 25002 milliseconds with 0 bytes received\n"
+    },
+    {
+      "chain": "ethereum",
+      "url": "https://eth.llamarpc.com",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "eth_getBalance",
+        "params": [
+          "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+          "latest"
+        ]
+      },
+      "exitCode": 28,
+      "response": "",
+      "error": "curl: (28) Operation timed out after 25002 milliseconds with 0 bytes received\n"
+    },
+    {
+      "chain": "bsc",
+      "url": "https://bsc-dataseed.binance.org",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "eth_chainId",
+        "params": []
+      },
+      "exitCode": 0,
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": "0x38"
+      },
+      "error": ""
+    },
+    {
+      "chain": "bsc",
+      "url": "https://bsc-dataseed.binance.org",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "eth_getBalance",
+        "params": [
+          "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+          "latest"
+        ]
+      },
+      "exitCode": 0,
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": "0x0"
+      },
+      "error": ""
+    },
+    {
+      "chain": "solana",
+      "url": "https://api.mainnet-beta.solana.com",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getGenesisHash",
+        "params": []
+      },
+      "exitCode": 22,
+      "response": {
+        "jsonrpc": "2.0",
+        "error": {
+          "code": 403,
+          "message": "Access forbidden"
+        },
+        "id": 1
+      },
+      "error": "curl: (22) The requested URL returned error: 403\n"
+    },
+    {
+      "chain": "solana",
+      "url": "https://api.mainnet-beta.solana.com",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getBalance",
+        "params": [
+          "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk",
+          {
+            "commitment": "confirmed"
+          }
+        ]
+      },
+      "exitCode": 22,
+      "response": {
+        "jsonrpc": "2.0",
+        "error": {
+          "code": 403,
+          "message": "Access forbidden"
+        },
+        "id": 1
+      },
+      "error": "curl: (22) The requested URL returned error: 403\n"
+    },
+    {
+      "chain": "tron",
+      "url": "https://api.trongrid.io/wallet/getblockbynum",
+      "request": {
+        "num": 0
+      },
+      "exitCode": 0,
+      "response": {
+        "blockID": "00000000000000001ebf88508a03865c71d452e25f4d51194196a1d22b6653dc",
+        "block_header": {
+          "raw_data": {
+            "txTrieRoot": "8ef446bf3f395af929c218014f6101ec86576c5f61b2ae3236bf3a2ab5e2fecd",
+            "parentHash": "e58f33f9baf9305dc6f82b9f1934ea8f0ade2defb951258d50167028c780351f",
+            "witness_address": "41206e65772073797374656d206d75737420616c6c6f77206578697374696e672073797374656d7320746f206265206c696e6b656420746f67657468657220776974686f757420726571756972696e6720616e792063656e7472616c20636f6e74726f6c206f7220636f6f7264696e6174696f6e"
+          }
+        },
+        "transactions": [
+          {
+            "raw_data": {
+              "contract": [
+                {
+                  "parameter": {
+                    "value": {
+                      "owner_address": "3078303030303030303030303030303030303030303030",
+                      "to_address": "4171b0af54e0a1182a5e0947d6a64f3b22740ef318",
+                      "amount": 99000000000000000
+                    },
+                    "type_url": "type.googleapis.com/protocol.TransferContract"
+                  },
+                  "type": "TransferContract"
+                }
+              ]
+            },
+            "raw_data_hex": "5a6f0801126b0a2d747970652e676f6f676c65617069732e636f6d2f70726f746f636f6c2e5472616e73666572436f6e7472616374123a0a17307830303030303030303030303030303030303030303012154171b0af54e0a1182a5e0947d6a64f3b22740ef3181880808ec69bffedaf01",
+            "txID": "788b4d0ca432b3d07f895dffe80429bf58398d0e86222460b07f9db38e238803"
+          },
+          {
+            "raw_data": {
+              "contract": [
+                {
+                  "parameter": {
+                    "value": {
+                      "owner_address": "3078303030303030303030303030303030303030303030",
+                      "to_address": "41ef1bd15b5b657f69611b053a6f4fcd7268a50858"
+                    },
+                    "type_url": "type.googleapis.com/protocol.TransferContract"
+                  },
+                  "type": "TransferContract"
+                }
+              ]
+            },
+            "raw_data_hex": "5a65080112610a2d747970652e676f6f676c65617069732e636f6d2f70726f746f636f6c2e5472616e73666572436f6e747261637412300a173078303030303030303030303030303030303030303030121541ef1bd15b5b657f69611b053a6f4fcd7268a50858",
+            "txID": "dfb4a633165cb85963ec1edfb4c9283644a3e136b77c063f4ba2e39307863a75"
+          },
+          {
+            "raw_data": {
+              "contract": [
+                {
+                  "parameter": {
+                    "value": {
+                      "owner_address": "3078303030303030303030303030303030303030303030",
+                      "to_address": "4177944d19c052b73ee2286823aa83f8138cb7032f",
+                      "amount": -9223372036854775808
+                    },
+                    "type_url": "type.googleapis.com/protocol.TransferContract"
+                  },
+                  "type": "TransferContract"
+                }
+              ]
+            },
+            "raw_data_hex": "5a700801126c0a2d747970652e676f6f676c65617069732e636f6d2f70726f746f636f6c2e5472616e73666572436f6e7472616374123b0a17307830303030303030303030303030303030303030303012154177944d19c052b73ee2286823aa83f8138cb7032f1880808080808080808001",
+            "txID": "25b18a55f86afb10e7aca38d0073d04c80397c6636069193953fdefaea0b8369"
+          }
+        ]
+      },
+      "error": ""
+    },
+    {
+      "chain": "tron",
+      "url": "https://api.trongrid.io/wallet/getaccount",
+      "request": {
+        "address": "TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH",
+        "visible": true
+      },
+      "exitCode": 0,
+      "response": {
+        "account_name": "CryptoChain_TESTS",
+        "address": "TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH",
+        "create_time": 1531409601000,
+        "latest_opration_time": 1789802394000,
+        "latest_withdraw_time": 1658324214000,
+        "free_net_usage": 302,
+        "latest_consume_time": 1789806003000,
+        "latest_consume_free_time": 1789780314000,
+        "net_window_size": 28800000,
+        "net_window_optimized": true,
+        "account_resource": {
+          "latest_consume_time_for_energy": 1789817178000,
+          "energy_window_size": 28800000,
+          "energy_window_optimized": true
+        },
+        "owner_permission": {
+          "permission_name": "lol",
+          "threshold": 1,
+          "keys": [
+            {
+              "address": "TUmdykWXNWHbRk3V4wFGKGHKMdh6jHzijm",
+              "weight": 1
+            }
+          ]
+        },
+        "active_permission": [
+          {
+            "type": "Active",
+            "id": 2,
+            "permission_name": "kek",
+            "threshold": 1,
+            "operations": "7fff1fc0033ec30f000000000000000000000000000000000000000000000000",
+            "keys": [
+              {
+                "address": "TUmdykWXNWHbRk3V4wFGKGHKMdh6jHzijm",
+                "weight": 1
+              }
+            ]
+          }
+        ],
+        "frozenV2": [
+          {},
+          {
+            "type": "ENERGY"
+          },
+          {
+            "type": "TRON_POWER"
+          }
+        ],
+        "assetV2": [
+          {
+            "key": "1004977",
+            "value": 8888880000
+          },
+          {
+            "key": "1004989",
+            "value": 1111111
+          },
+          {
+            "key": "1005119",
+            "value": 8888
+          },
+          {
+            "key": "1005107",
+            "value": 20536500
+          },
+          {
+            "key": "1004952",
+            "value": 72300
+          },
+          {
+            "key": "1005127",
+            "value": 88888888
+          },
+          {
+            "key": "1005026",
+            "value": 8888880000
+          },
+          {
+            "key": "1004950",
+            "value": 9980
+          },
+          {
+            "key": "1005193",
+            "value": 8888888888
+          },
+          {
+            "key": "1005190",
+            "value": 780100000
+          },
+          {
+            "key": "1005157",
+            "value": 17777776
+          },
+          {
+            "key": "1005168",
+            "value": 8888888888
+          },
+          {
+            "key": "1005002",
+            "value": 40000000
+          },
+          {
+            "key": "1005145",
+            "value": 1250000
+          },
+          {
+            "key": "1005156",
+            "value": 7777777
+          },
+          {
+            "key": "1005178",
+            "value": 10
+          },
+          {
+            "key": "1005177",
+            "value": 1422000000
+          },
+          {
+            "key": "1005065",
+            "value": 8888880000
+          },
+          {
+            "key": "1005141",
+            "value": 970000
+          },
+          {
+            "key": "1005185",
+            "value": 4444444444
+          },
+          {
+            "key": "1005074",
+            "value": 33555555
+          },
+          {
+            "key": "1005162",
+            "value": 2135133000
+          }
+        ],
+        "free_asset_net_usageV2": [
+          {
+            "key": "1004977",
+            "value": 0
+          },
+          {
+            "key": "1004989",
+            "value": 0
+          },
+          {
+            "key": "1005119",
+            "value": 0
+          },
+          {
+            "key": "1005107",
+            "value": 0
+          },
+          {
+            "key": "1004952",
+            "value": 0
+          },
+          {
+            "key": "1005127",
+            "value": 0
+          },
+          {
+            "key": "1005026",
+            "value": 0
+          },
+          {
+            "key": "1004950",
+            "value": 0
+          },
+          {
+            "key": "1005193",
+            "value": 0
+          },
+          {
+            "key": "1005190",
+            "value": 0
+          },
+          {
+            "key": "1005157",
+            "value": 0
+          },
+          {
+            "key": "1005168",
+            "value": 0
+          },
+          {
+            "key": "1005002",
+            "value": 0
+          },
+          {
+            "key": "1005145",
+            "value": 0
+          },
+          {
+            "key": "1005156",
+            "value": 0
+          },
+          {
+            "key": "1005178",
+            "value": 0
+          },
+          {
+            "key": "1005177",
+            "value": 0
+          },
+          {
+            "key": "1005065",
+            "value": 0
+          },
+          {
+            "key": "1005141",
+            "value": 0
+          },
+          {
+            "key": "1005185",
+            "value": 0
+          },
+          {
+            "key": "1005074",
+            "value": 0
+          },
+          {
+            "key": "1005162",
+            "value": 0
+          }
+        ],
+        "asset_optimized": true
+      },
+      "error": ""
+    }
+  ]
+}

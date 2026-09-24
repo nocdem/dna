@@ -1,0 +1,134 @@
+# Nodus Web Wallet — first-stage browser implementation
+
+A standalone, accountless browser client alongside the existing DNA applications. No Connect installation, extension, identity registration, email, phone, or account backend is required. This is a development preview, not a deployed or audited custody product.
+
+## Run
+
+Requires Node.js 22.12+ and a modern browser with Web Crypto and BigInt.
+
+```sh
+cd web-wallet
+npm ci
+npm run dev
+```
+
+Open the localhost URL printed by Vite. For a production bundle, run `npm run build`; `npm run preview` serves `dist` locally. Production hosting must use HTTPS and a restrictive `frame-ancestors 'none'` response header (it cannot be enforced by a CSP meta tag). Dependencies are bundled locally; no third-party script CDN is used.
+
+## Publish
+
+Run `npm ci`, `npm test` and `npm run build`, then serve only `web-wallet/dist` from `https://wallet.nodusnetwork.io` using the existing HTTPS web server. Node.js is needed for building and local verification, not as a production application service. All blockchain requests go directly from the browser to their HTTPS RPC endpoints.
+
+For Caddy, `deploy/Caddyfile` serves the static files and supplies the response headers: set `WALLET_HOST` to your domain and `WALLET_DIST` to the absolute `dist` directory. Use equivalent settings with an existing web server. Do not serve production through Vite preview. After publication, verify HTTPS, response headers and direct RPC access in a browser on the actual wallet domain. No service is deployed by these files.
+
+## Implemented
+
+- Create a 24-word BIP39 recovery phrase, verify the entire backup, or restore a valid English BIP39 phrase. Recovery phrases and keys stay local and are never sent to RPCs. Optional device persistence stores only an authenticated encrypted phrase; temporary wallets do not persist secrets. Lock, page exit and ten minutes of inactivity discard the wallet; the same timeout clears phrase creation, backup verification, restore and password entry screens. Focus/visibility checks also enforce the deadline after tab suspension. There is no account service or automatic recovery; an optional local password unlocks the encrypted device copy. JavaScript cannot guarantee erasure of immutable strings or garbage-collected copies.
+- First-account addresses and local signing matching Connect: ETH/BSC `m/44'/60'/0'/0/0`, Solana SLIP-10 `m/44'/501'/0'/0'`, TRON `m/44'/195'/0'/0/0`. Empty BIP39 passphrase matches Connect. Other account indices, hardware wallets and BIP39 passphrases are not included.
+- Receive/copy address, explicit balance refresh, native and preset token transfers on Ethereum, BSC, Solana and TRON mainnets. Preset token contracts/decimals are copied from the C headers: ETH USDT/USDC/DAI; BSC USDT/USDC; SOL USDT/USDC; TRON USDT/USDC/USDD. Token listing is not an endorsement or statement of current issuer support.
+- Exact integer amount handling, address validation by chain libraries, EVM chain-ID and Solana genesis checks, explicit review of network/sender/recipient/asset/amount/fee before local signing and broadcast, expiring single-use reviews, and transaction explorer links. Broadcast submission is shown as pending, never as confirmed. Ambiguous failures are not automatically retried.
+- EVM gas estimation with a 20% gas-limit margin and legacy gas-price transactions; Solana fee/rent estimation and idempotent recipient token account creation, including spending across multiple source token accounts; TRON native/TRC-20 transaction intent and protobuf consistency validation. TRON token energy has a 100 TRX limit; bandwidth/activation charges are network dependent and not falsely presented as an exact fee estimate. TRON sending uses only the configured default mainnet provider; there is no testnet fallback.
+- Temporary **CPUNK-only, read-only** Cellframe/Backbone query using a public address. Local address derivation from the open wallet’s phrase is available; Cellframe signing, sending, trading and claiming are unavailable. Its balance is not proof of ownership, a snapshot, or airdrop eligibility.
+
+## CPUNK connection
+
+The default is `https://rpc.cellframe.net/connect`. On 2026-09-19 a read-only POST using the repository's public DNA registration address returned HTTP 200, `Access-Control-Allow-Origin: *`, POST/OPTIONS allowed, and the full CellframeNode 5.7-44 JSON response. CPUNK was `0.00000000000000001` coins / `10` datoshi; the response also contained CELL. This is an observation, not a current balance guarantee. An earlier 12-second HTTPS probe received headers but timed out before the body; HTTP also timed out. These observations do not establish a network outage. Browser preflight and live access from the final deployment origin still require verification.
+
+The native query contract is `messenger/blockchain/cellframe/cellframe_rpc.c`: `wallet`, `info`, `{net:'Backbone', addr, token:'CPUNK'}`. The live response uses `result[0][0].tokens[]`, `token.ticker`, `coins` and `datoshi`. The parser selects exactly one CPUNK entry, checks Backbone and matching returned address, and verifies coins against integer datoshi with 18 decimal places. The older native `result[0][0].balance` format is also supported. Missing tokens, malformed data, mismatched amounts and connectivity failures are errors, never inferred zero balances. Manually entered addresses receive structural Base58/length checking; locally derived addresses additionally verify the Backbone network, signature type and SHA3 checksum. Neither establishes ownership to a server. UI status reports the last read outcome and resets when input changes.
+
+A custom trusted HTTPS endpoint may be entered for this tab. The default and custom endpoints are contacted directly by the browser and must allow browser access (CORS). Read-only command-line verification uses the public address from `cellframe_rpc.h`:
+
+```sh
+npm run cpunk:verify
+# Optional direct HTTPS RPC endpoint
+npm run cpunk:verify -- https://rpc.cellframe.net/connect
+```
+
+The command fails on connection errors or malformed responses; it does not test browser CORS. After deployment, use the page's public-address read to verify access from the actual wallet origin. Only the public address and fixed CPUNK query fields are sent to the RPC. Responses are capped at 64 KiB and browser operations at 15 seconds; redirects are refused and balances are not cached. No claim system, snapshot rule or ownership proof is implemented.
+
+## Permanent chain RPC limitations
+
+RPC defaults are taken from the repository's providers. Actual production availability, quotas and CORS access must be verified from the deployment origin. Ethereum/BSC and Solana endpoints may be changed for this tab; network identities are checked before reads and sends. A user-selected RPC sees public addresses and signed transactions. No seed or private key is transmitted. There is no backend relay or API-key service, and no silent endpoint fallback.
+
+Chain SDKs, not the existing native C binaries, implement browser signing; existing Connect/Nodus code is unchanged. Real mainnet transfers have not been executed during development. This slice does not include global transaction history indexing, custom-token discovery, Nodus Network integration, ZK, claims, DEX/swap or tokenomics changes.
+
+## Remove temporary Cellframe support
+
+```sh
+VITE_ENABLE_CPUNK=false npm run build
+```
+
+The CPUNK panel is removed and the lazy-loaded adapter is excluded from the bundle. The reusable `src/wallet.js`, permanent adapters and key derivation do not import CPUNK. For final source removal, delete `src/adapters/cpunk.js`, `src/cpunk-protocol.js`, `scripts/verify-cpunk.js`, `src/cpunk/` (including WASM), `crypto/`, `scripts/build-cpunk-wasm.sh`, `scripts/build-native-vector.sh`, its isolated UI block/form and corresponding tests. No permanent-chain changes are needed.
+
+## Verification
+
+```sh
+npm test
+npm run build
+npx playwright install chromium
+npm run test:browser
+npm run test:security
+```
+
+The browser test starts its own preview server and intercepts **all external HTTPS requests**, so it never broadcasts to a real chain. Set `CHROMIUM_PATH` to use an existing Chromium binary or `WALLET_URL` to test an already running preview. Offline tests cover deterministic recovery addresses, exact amounts, malformed responses, CPUNK public-only requests, review lifecycle, ETH/SOL signatures and TRON transaction tampering. Browser smoke covers create/backup/restore, chain selection, mocked ETH/ERC-20 send review/finality/scoped activity, network mismatch, local CPUNK derivation and balance errors/success, lock, temporary no-storage mode, encrypted save/unlock/password change/delete, reload/history recovery, KDF-lock cancellation and mobile overflow.
+
+`npm audit --json` on 2026-09-19 reports **0 vulnerabilities** across all severities; the recorded result is `test/fixtures/dependency-audit.json`. `@solana/web3.js` is pinned to 1.99.0. Legacy `@solana/spl-token` and its vulnerable `bigint-buffer` tree were removed in favor of the maintained generated `@solana-program/token` 0.16.1 instruction client. A small adapter converts standard instruction account roles to the existing web3.js signer; golden prior-SPL instruction bytes/account roles, ATA derivation, split-account transfers and signed native/SPL RPC flows are regression-tested.
+
+A scoped `@solana/web3.js` dependency override uses Jayson 5.0.0, removing vulnerable `stream-json` and old `uuid` dependencies. Its browser request/callback API was inspected and exercised through the SDK’s real RPC transport in deterministic tests. This is a deliberate tested major dependency override; reassess it on future SDK upgrades. No advisory is suppressed and `npm audit fix --force` was not used. A zero-advisory result is not a security audit or assurance against unknown vulnerabilities. The existing large chain-library bundle warning remains (~1.37 MB before gzip).
+
+## Source layout
+
+- `src/config.js`: permanent mainnet/token registry sourced from C headers.
+- `src/keys.js`: local recovery/generation and compatible derivation.
+- `src/core.js`, `src/rpc-transport.js`: exact units, bounded JSON/stream parsing and shared timeout-limited transport for direct RPC plus Ethers, Solana and TRON SDK calls.
+- `src/wallet.js`: common adapter routing and single-use transfer review.
+- `src/adapters/{evm,solana,tron}.js`: permanent balance and send adapters.
+- `src/adapters/cpunk.js`, `src/cpunk-protocol.js`: isolated temporary public balance adapter and bounded protocol parser.
+- `src/cpunk/`, `crypto/`, `scripts/build-*-vector.sh`, `scripts/build-cpunk-wasm.sh`: temporary legacy Cellframe address derivation, native reference bridge and reproducible build.
+- `src/activity.js`, `src/activity-storage.js`: public confirmation tracking and bounded, authenticated encrypted activity storage.
+- `src/vault.js`: optional authenticated local encryption.
+- `src/app.js`, `index.html`, `src/style.css`: accountless responsive UI.
+- `test/`: offline and fully intercepted browser verification.
+
+## Connect-compatible Cellframe address derivation
+
+Open a BIP39 wallet, then select **Use my open wallet’s address**. Derivation stays in the browser; reading the derived public balance is a separate action. This mode accepts the same normalized, checksum-valid English BIP39 phrase as the multichain wallet. Arbitrary non-BIP39 Cellframe strings are not supported. No recovery phrase is sent to the RPC.
+
+The temporary `src/cpunk/` module compiles the repository's unchanged legacy Cellframe Dilithium MODE_1 C, not modern ML-DSA. It matches native `EVP_sha3_256(mnemonic)` (not Keccak), the key generator’s subsequent SHA3, 1196-byte serialized public key and 77-byte Backbone address/checksum. A fresh WASM instance is used per derivation and its memory is overwritten afterward; JavaScript string erasure cannot be guaranteed. The open wallet retains its phrase in RAM until lock to support derivation.
+
+Rebuild with Zig 0.13.0: `ZIG_BIN=/path/to/zig bash scripts/build-cpunk-wasm.sh`. Native reference verification (GCC/OpenSSL development headers): `bash scripts/build-native-vector.sh`, then `CPUNK_NATIVE_CHECK=/tmp/nodus-cpunk-native-vector npm test`. Three public BIP39 vectors crosscheck the actual native wallet/address functions against the browser module. The committed WASM allows normal builds without installing a compiler. `VITE_ENABLE_CPUNK=false` excludes this module and WASM from the production bundle.
+
+## Live read verification
+
+Run `CHROMIUM_PATH=/path/to/chromium npm run verify:networks` to open a minimal localhost page and execute standard public network-identity/native-balance reads against all five public providers. The script does not create keys, sign or broadcast; all addresses are public repository test vectors. It exits unsuccessfully when any connection is blocked. `python3 scripts/verify-rpc-transport.py` separately probes permanent-chain identity and public native balances using curl; it is not a browser CORS test.
+
+The final recorded 2026-09-19 browser results are in `test/fixtures/network-verification.json`: with the configured environment proxy, all five providers were blocked by Chromium’s `net::ERR_CERT_AUTHORITY_INVALID` before CORS could be established. The local probe page loaded successfully. TLS validation was kept enabled; no certificate checks were bypassed. This is an environment observation, not evidence that the providers are offline. `test/fixtures/rpc-transport-verification.json` records independent curl results. CPUNK HTTPS curl previously returned a valid live balance as detailed above. Ethereum/BSC adapters compare chain IDs and Solana compares its mainnet genesis; TRON uses the pinned mainnet provider, and the verification report records an observed genesis when available without claiming an independent genesis match. Final deployment-origin CORS and actual funded mainnet transfers remain unverified. Offline signing/serialization and intercepted browser sends do not substitute for real-transfer validation.
+
+Curl results in that run: BSC returned chain ID `0x38` and native balance `0x0`; TRON returned genesis `00000000000000001ebf88508a03865c71d452e25f4d51194196a1d22b6653dc` and an account response without a native balance field. Ethereum requests timed out at 25 seconds; Solana returned HTTP/RPC 403 `Access forbidden`. No automatic provider substitution was made.
+
+## Confirmation and activity
+
+Sends initiated here appear under **Activity recorded in this tab**, scoped to the current chain and sender. This is not a full incoming/outgoing account history. Use the account explorer for global history. By default records stay in tab memory and survive locking in that tab. Opting into a saved wallet also saves up to 100 activity records encrypted for reload recovery; keys are not kept by history.
+
+The app computes the transaction ID locally before broadcast and records it even if the response is ambiguous. It never retries a broadcast automatically. Polling checks only public status and stops on lock or chain changes. Ethereum/BSC require a canonical receipt and the provider’s finalized block before reporting confirmed/failed. Solana requires finalized signature status; missing history after the finalized validity window is labeled expired, with an explorer verification reminder. TRON uses the solidified transaction execution result and checks the observed mainnet genesis; absence is pending, not an invented failure. Providers lacking finality/status APIs may leave activity unresolved with a read error. Transient read failures do not overwrite prior status. Pending and included are never labeled confirmed. Tracking starts with the endpoint that prepared the send. Changing RPC settings cancels current reads and updates visible records to the selected provider; reloaded records use chain defaults until changed.
+
+## Optional encrypted device wallet
+
+**Save wallet on this device** encrypts the open wallet’s full recovery phrase using browser Web Crypto: AES-256-GCM, a new random 128-bit salt and 96-bit IV, and PBKDF2-HMAC-SHA256 with 600,000 iterations. New passwords must be 16–1024 characters; obvious repetitions, sequences and common-password patterns are rejected locally. These checks do not guarantee entropy: use a unique password generated by a password manager. Existing version-1 vaults using the previous 12-character minimum still unlock so they can be migrated without losing access. The strict versioned format authenticates its header (including KDF parameters and wallet ID) and rejects malformed/oversized records. Passwords are never persisted or transmitted. Wrong passwords and altered ciphertext fail authentication. This is not a security audit or protection against malicious scripts/extensions executing in an unlocked browser.
+
+Lock/reload requires either the saved local password or the recovery phrase. The recovery phrase remains the backup if storage is cleared or the password is forgotten. Save/unlock/password-change operations are invalidated by lock or wallet replacement; changes in another tab lock this tab. Change password requires the current password and matching open saved wallet. Explicitly deleting the device copy also deletes its saved activity, without moving funds. Temporary wallets remain available. JavaScript strings and garbage-collected copies cannot be reliably erased.
+
+Saving also stores **authenticated encrypted activity** (chain, sender/recipient, amount, symbol, transaction ID and timestamps), capped at 100 rows. The version-2 activity envelope uses AES-256-GCM with fresh 96-bit IVs; a non-extractable key is derived from the high-entropy recovery phrase using HKDF-SHA256, the vault ID as salt and the separate `nodus.wallet.activity.v2` context. The envelope header is authenticated as AAD. It contains no recovery phrase, private key, password or custom provider URL/API credentials. Password changes preserve the vault ID and activity access. Activity is bound to the wallet but is not a proof that an RPC provider is honest.
+
+Writes are serialized and scoped to the active wallet/vault. A saved wallet's signed transaction ID is encrypted and stored before the first broadcast; storage failure or a lock/vault change during this operation stops submission. The adapters recheck the lock after this asynchronous step. Old unauthenticated version-1 history and damaged activity are not imported or automatically overwritten: the wallet can still unlock, but sending remains blocked until the user checks the explorer and explicitly discards the unreadable local history. This does not delete the saved wallet or move funds. Previously completed statuses are rechecked after unlock; custom RPC settings remain in memory and restored activity uses chain defaults.
+
+Solana uses an application-owned mutable `Signer.secretKey` buffer, which is overwritten on lock. The SDK `Keypair.secretKey` getter returns copies and is not used for long-lived secret storage. JavaScript, cryptographic-library temporaries and immutable strings still cannot provide guaranteed physical-memory erasure.
+
+## Security regression checks
+
+`npm test` includes the original vectors and protocol checks plus red-team regressions for real Solana buffer erasure, weak-password rejection with legacy unlock, activity tampering/cross-wallet replay/forged plaintext history, stream/JSON/numeric bounds, stalled-body cancellation and the real SDK transport paths. It exercises mocked TRX and TRC-20 signatures and verifies that Solana/TRON do not broadcast if locked while awaiting activity persistence.
+
+`npm run test:security` exercises the production bundle in Chromium with all external requests intercepted: timeouts during create/verify/restore, suspended-tab expiry, weak password feedback, encrypted history, hash persistence before broadcast, tampered/legacy history handling, and lock/delete during pending encryption. Use `CHROMIUM_PATH` as with the browser smoke test. No real blockchain transaction is submitted.
+
+Permanent-chain transport limits are 256 KiB per response by default, 2 MiB for EVM block reads and 4 MiB for Solana token-account lists, with 4,096 entries per object/array, 65,536 characters per string and depth/node limits. Numeric balances are bounded before BigInt conversion. Streams are counted independently of Content-Length, redirects are refused and the 15-second timeout covers body reads. Very large legitimate account lists can therefore produce an explicit error instead of a partial balance.
+
+The five findings from the 2026-09-19 local review are covered by these regressions; this is not an independent security certification. See [security follow-up](SECURITY-FOLLOWUP.md) for scope and remaining deployment checks.
