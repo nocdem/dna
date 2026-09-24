@@ -75,14 +75,12 @@ enum {
                              NV2GC_K_INFL_START,
 
     /* ── the version-3 top-level keys (D-18 rev 4) ─────────────────────
-     * `config_version` decides which document the file expresses. It is
-     * OPTIONAL and absent means 2, which is what every file written
-     * before this change means — those files parse to exactly the struct
-     * they parsed to before, and NONE of the keys below may appear in
-     * one (naming a version-3 key in a version-2 file is a REFUSAL, not
-     * a field the builder would ignore).
+     * `config_version` names the document the file expresses. Since
+     * tokenomics-v3 P4 it is REQUIRED and its only legal value is 3
+     * (version 2 is deleted, OBLIGATION atlas-dec-71525f3b); before P4 it
+     * was optional and absent meant 2.
      *
-     * Of the version-3 keys only two are REQUIRED, and for the same
+     * Of the other version-3 keys only two are REQUIRED, and for the same
      * reason the five above are: no defensible default exists.
      *   genesis_time_ms  the producer's choice of when the chain starts;
      *   initial_height   0 and 1 both produce a document whose height is
@@ -110,13 +108,6 @@ enum {
     NV2GC_K_REWARD_DIV     = 1u << 17,
     NV2GC_K_PAYOUT_EPOCHS  = 1u << 18,
     NV2GC_V3_REQUIRED      = NV2GC_K_GENESIS_TIME | NV2GC_K_INITIAL_HEIGHT,
-    /* every key that only a version-3 document has */
-    NV2GC_V3_ANY           = NV2GC_K_CONSENSUS_PROTO | NV2GC_V3_REQUIRED |
-                             NV2GC_K_BLK_MAX_BYTES | NV2GC_K_BLK_MAX_GAS |
-                             NV2GC_K_EV_MAX_AGE_NB | NV2GC_K_EV_MAX_AGE_NS |
-                             NV2GC_K_EV_MAX_BYTES  | NV2GC_K_VERSION_APP |
-                             NV2GC_K_ABCI_VE_HEIGHT | NV2GC_K_REWARD_POOL |
-                             NV2GC_K_REWARD_DIV | NV2GC_K_PAYOUT_EPOCHS,
 
     /* NV2GC_SCOPE_VALIDATOR */
     NV2GC_K_PUBKEY         = 1u << 0,
@@ -395,10 +386,6 @@ typedef struct {
      * the builder's default, and a field that was named must not be
      * overwritten by it. */
     unsigned               top_seen;
-    /* Was a version-3 key seen inside a BLOCK? Same question as
-     * `top_seen` asks for the top-level section, and it needs its own
-     * flag for the same reason: `seen` is cleared at every header. */
-    int                    saw_v3_block_key;
     size_t                 scope_line; /* where the open scope started  */
 } nv2gc_state_t;
 
@@ -552,9 +539,9 @@ static int nv2gc_assign_top(nv2gc_state_t *st, const char *key,
 
     /* ── the version-3 top-level keys ─────────────────────────────────
      * Same three-part shape as the table above: mark (which refuses a
-     * duplicate), parse strictly, record. They are accepted in ANY file;
-     * a version-2 file that names one is refused at EOF, where the
-     * version is finally known, with a message that says which key. */
+     * duplicate), parse strictly, record. (Before tokenomics-v3 P4 a
+     * version-2 file that named one was refused at EOF; there is no
+     * version-2 file any more.) */
     {
         struct { const char *name; unsigned bit; uint64_t *dst; } u3[] = {
             { "genesis_time_ms",     NV2GC_K_GENESIS_TIME,
@@ -615,13 +602,15 @@ static int nv2gc_assign_top(nv2gc_state_t *st, const char *key,
         if (nv2gc_mark(st, NV2GC_K_CONFIG_VERSION, key, lineno) != 0)
             return -1;
         uint64_t v = 0;
+        /* tokenomics-v3 P4 (OBLIGATION atlas-dec-71525f3b): version 2 —
+         * the pure-V2 chain with a height-0 genesis block — is DELETED
+         * with its derivation. 3 is the only schema this build derives. */
         if (nv2gc_u64(val, &v) != 0 ||
-            (v != (uint64_t)NODUS_V2_GEN_CONFIG_VERSION &&
-             v != (uint64_t)NODUS_V2_GEN_CONFIG_VERSION_V3)) {
+            v != (uint64_t)NODUS_V2_GEN_CONFIG_VERSION_V3) {
             nv2gc_bad_value(lineno, key,
-                "expected 2 (the pure-V2 chain this build has always "
-                "derived) or 3 (the cometbft genesis document). No other "
-                "value is a schema this build understands.");
+                "expected 3 (the cometbft genesis document). Version 2 "
+                "(the pure-V2 chain) is deleted from this build; no other "
+                "value is a schema it understands.");
             return -1;
         }
         st->cfg->config_version = (uint32_t)v;
@@ -717,7 +706,7 @@ static int nv2gc_assign_validator(nv2gc_state_t *st, const char *key,
         v->commission_bps = (uint16_t)tmp;
         return 0;
     }
-    /* VERSION 3 ONLY — the Comet row's display name. It is stored at the
+    /* The Comet row's display name (a version-3 field). It is stored at the
      * validator's FILE position; nodus_witness_v2_gen_v3_fill_comet_rows
      * re-keys it by public key when it puts the rows into the canonical
      * order, so the name follows its validator rather than its line. */
@@ -734,7 +723,6 @@ static int nv2gc_assign_validator(nv2gc_state_t *st, const char *key,
                 "omit the key entirely for an empty name.");
             return -1;
         }
-        st->saw_v3_block_key = 1;
         return 0;
     }
     return 1;                                     /* not a validator key */
@@ -817,8 +805,8 @@ int nodus_v2_gen_config_parse_file(const char *path,
      * nodus_witness_v2_gen.h and a stack copy overflows the default
      * thread stack the same way nodus_witness_t does. calloc also means
      * every byte this parser does not write is zero, which matters both
-     * for the pad the config encoder walks and for the version-3 fields
-     * a version-2 file never names. */
+     * for the pad the config encoder walks and for the OUTPUT fields
+     * (app_hash, chain_id) no file may name. */
     st.cfg = calloc(1, sizeof(*st.cfg));
     char *line = malloc(NV2GC_MAX_LINE);
     if (!st.cfg || !line) {
@@ -989,14 +977,22 @@ int nodus_v2_gen_config_parse_file(const char *path,
      * Naming either of them in the file is an unknown key, which is how
      * the operator learns they are not knobs.
      *
-     * `config_version` LEFT THIS LIST when the version-3 document
-     * arrived: it now has two legal values, so a forced one would be a
-     * decision this parser has no business making. Absent still means 2
-     * — every file written before this change parses to exactly the
-     * struct it parsed to then.
+     * `config_version` is NOT one of them: it is REQUIRED in the file.
+     * It left this list when the version-3 document arrived, and "absent
+     * means 2" stood until tokenomics-v3 P4 deleted version 2
+     * (OBLIGATION atlas-dec-71525f3b). An absent version is now REFUSED
+     * rather than defaulted to 3: a file written for the deleted schema
+     * must not be read as the new one because it said nothing — the
+     * format's own rule is that absent is never a value.
      */
-    if (!(st.top_seen & NV2GC_K_CONFIG_VERSION))
-        st.cfg->config_version = NODUS_V2_GEN_CONFIG_VERSION;
+    if (!(st.top_seen & NV2GC_K_CONFIG_VERSION)) {
+        fprintf(stderr,
+                "genesis config: no 'config_version' key. It is required "
+                "and must be 3 (the cometbft genesis document) — version 2 "
+                "is deleted from this build, and an absent version is "
+                "refused rather than guessed.\n");
+        goto out;
+    }
     st.cfg->claim_start_height = 0;
     st.cfg->claim_end_height   = UINT64_MAX;
 
@@ -1027,23 +1023,12 @@ int nodus_v2_gen_config_parse_file(const char *path,
     st.cfg->n_allocs = st.n_allocs;
     st.cfg->allocs   = st.allocs;
 
-    /* ── a version-2 file may not carry a version-3 key ───────────────
-     * Silently ignoring one would be the worst available outcome: the
-     * operator writes genesis_time_ms, the builder never reads it, and a
-     * version-2 chain is derived from a file its author believed said
-     * something else. */
-    if (st.cfg->config_version == NODUS_V2_GEN_CONFIG_VERSION &&
-        ((st.top_seen & NV2GC_V3_ANY) != 0 || st.saw_v3_block_key)) {
-        fprintf(stderr,
-                "genesis config: this file carries a version-3 key but its "
-                "config_version is 2 (absent means 2). Either add "
-                "'config_version = 3' or remove the version-3 keys — a key "
-                "that the chosen document has no field for is REFUSED, "
-                "never ignored.\n");
-        goto out;
-    }
-
-    /* ── version 3: the required keys, the defaults, the Comet rows ─── */
+    /* ── version 3: the required keys, the defaults, the Comet rows ───
+     * The condition always holds here — the key is required above and
+     * nv2gc_assign_top refuses any value but 3 — and is kept as the
+     * explicit statement of which document this block completes. (The
+     * "version-2 file carrying a version-3 key" refusal that stood before
+     * this block is gone with version 2, tokenomics-v3 P4.) */
     if (st.cfg->config_version == NODUS_V2_GEN_CONFIG_VERSION_V3) {
         if ((st.top_seen & NV2GC_V3_REQUIRED) != NV2GC_V3_REQUIRED) {
             fprintf(stderr,

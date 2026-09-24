@@ -344,15 +344,12 @@ DU="${STAGEF_DECIMAL_UNIT:-100000000}"
 echo "[ok] econ parameters: epoch_length=$EL blocks_per_year=$BY decimal_unit=$DU"
 
 # ── R3 W3 (C2d) — THE VERSION-3 KEYS ────────────────────────────────
-# config_version = 3 is what routes the ceremony into the cometbft
-# derivation at all: nodus_witness_v2_gen_v3_validate REFUSES any other
-# value (nodus_witness_v2_gen.c:2416-2422), and run_derive_v2_genesis
-# (nodus-server.c) always calls the version-3 derivation now — an
-# omitted config_version defaults to 2 (nodus_v2_gen_config.c's own
-# parser comment) and is refused at the very first validation step, not
-# a value this build treats as "the version-2 chain we've always
-# derived". Without this key stagef_up_v2.sh cannot derive at all
-# against this worktree.
+# config_version = 3 is REQUIRED: since tokenomics-v3 P4 the config
+# parser refuses a file without it and accepts no other value
+# (nodus_v2_gen_config.c), gen_plan_build refuses anything but 3
+# (nodus_witness_v2_gen.c), and run_derive_v2_genesis (nodus-server.c)
+# calls only the version-3 derivation — the version-2 derivation is
+# deleted. Without this key stagef_up_v2.sh cannot derive at all.
 #
 # genesis_time_ms is MANDATORY for a version-3 document
 # (nodus_v2_gen_config.c ~:1030-1045: "a version-3 document must name

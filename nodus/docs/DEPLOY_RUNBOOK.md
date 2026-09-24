@@ -115,8 +115,9 @@ Everything below assumes §1's `DATA_DIR` check has already been done.
 nodus-server --derive-v2-genesis <config-file> -d "$DATA_DIR"
 ```
 
-It parses the config, derives the chain, prints the chain id and the genesis
-BlockID, and **exits**. It never opens a socket and never starts a server. That
+It parses the config, derives the chain, prints the chain id (`chain-id` and
+`v2-genesis-pin` — the same 32 bytes; a version-3 chain has no genesis
+block, the document is its genesis), and **exits**. It never opens a socket and never starts a server. That
 is deliberate: the genesis validator set comes only from the config file, and
 there is no running process for anything on the network to reach.
 
@@ -174,12 +175,22 @@ lowercase hex. Deliberately not JSON: the server's JSON support is an optional
 build dependency, and a ceremony performed once must not depend on which
 libraries a host happened to have.
 
+A complete, commented template with the decision's numbers (1B supply, 200M
+reward reserve, 7 × 10M bonds, the ten pool allocations) and a checker live in
+`nodus/tools/genesis/` (`testnet_v3.conf.template`, `check_genesis_conf.sh`,
+`README.md`) — start from there. The shape:
+
 ```
-total_supply_raw      = 100000000000000000
-epoch_length          = 720
-blocks_per_year       = 6307200
-decimal_unit          = 100000000
-inflation_start_block = 0          # 0 = emission never runs
+config_version         = 3          # REQUIRED; only 3 is accepted (P4)
+genesis_time_ms        = <UTC ms, written ONCE, the same in every copy>
+initial_height         = 1
+total_supply_raw       = 100000000000000000
+epoch_length           = 720
+blocks_per_year        = 6307200
+decimal_unit           = 100000000
+inflation_start_block  = 0          # MUST be 0: the mint is deleted (P2)
+reward_pool_initial    = 20000000000000000
+payout_interval_epochs = 24
 
 [validator]                         # exactly 7 of these
 pubkey                     = <5184 hex chars>
@@ -207,10 +218,9 @@ otherwise produce a node that mints on a schedule its peers do not share.
 
 - **`epoch_length`, `blocks_per_year`, `decimal_unit`** — governance cannot
   reach these. Changing them later means a new chain.
-- **`inflation_start_block` is a ONE-WAY GATE.** Write `0` and emission never
-  runs, and a later governance vote can still turn it on. Write anything else
-  and **no vote can ever turn it off again, or move the start later**. If you
-  are unsure, `0` is the reversible answer.
+- **`inflation_start_block` must be `0`.** Tokenomics-v3 P2 deleted the
+  per-block mint and retired its governance parameter (id 3); the builder
+  refuses any other value. Rewards come only from `reward_pool_initial`.
 - **The validator payout fingerprints.** The builder now verifies that each one
   derives from the payout key beside it, so a copy-paste error is refused rather
   than stranding that validator's 10,000,000 DNAC self-bond at an address no key

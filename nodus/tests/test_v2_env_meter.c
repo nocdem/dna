@@ -113,10 +113,6 @@ static void fx_close(fixture_t *fx) {
     rmrf(fx->dir);
 }
 
-static void mk_gen_id(uint8_t out[64], uint8_t base) {
-    for (int i = 0; i < 64; i++) out[i] = (uint8_t)(base + i);
-}
-
 /** A 1-leg envelope on domain 1: runtime_op 1, call_len 8, auth_len 0,
  *  res_max_effects 2, res_max_effect_bytes 64, chosen ceiling.
  *  With the fixture policy below its static price is
@@ -186,15 +182,16 @@ static int all_zero(const uint8_t *b, size_t n) {
 }
 
 int main(void) {
-    fixture_t fx;
-    CHECK(fx_open(&fx) == 0, "fixture"); OK();
-    CHECK(nodus_witness_db_migrate_v2s9(fx.w) == 0, "migrate"); OK();
-
-    uint8_t gen_id[64], vset[64];
-    (void)mk_gen_id;
-    memset(vset, 0x77, sizeof(vset));
-    /* O14: the genesis BlockID is DERIVED by the engine. */
-    CHECK(v2x_genesis_min(fx.w, vset, gen_id, NULL) == 0, "genesis");
+    /* tokenomics-v3 P4: the chain under test is a REAL version-3 chain —
+     * derived by the ceremony's derivation and reopened through the
+     * production open path (v2_genesis_fixture.h, v2x_chain_open). The
+     * metered seam reads only the chain id from it
+     * (nodus_witness_v2_chain_id → the stored genesis document), so every
+     * pinned number below is unchanged. The fixture_t / fx_open pair
+     * stays for §8's deliberately genesis-less database. */
+    v2x_chain_t ch;
+    CHECK(v2x_chain_open(&ch, "env_meter", 0x00) == 0,
+          "version-3 chain (derive + production open)");
     OK();
 
     dna_env_leg_ctx_t tab;
@@ -247,7 +244,7 @@ int main(void) {
 
     /* ── 1+2. HAPPY METERED BATCH: pinned sequential debits ─────────── */
     CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-              fx.w, 1, &tab, 1, pol, &bud, envs, 3, out, meters,
+              ch.w, 1, &tab, 1, pol, &bud, envs, 3, out, meters,
               &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_OK,
           "happy metered batch"); OK();
     CHECK(fail_idx == 0 && pf_st == DNA_ENV_PF_OK && ms == DNA_METER_OK,
@@ -271,7 +268,7 @@ int main(void) {
      * under the DERIVED chain id (and the batch produced 3 distinct). */
     {
         uint8_t derived[DNA_CHAIN_ID_LEN];
-        CHECK(nodus_witness_v2_chain_id(fx.w, derived) == 0, "chain id");
+        CHECK(nodus_witness_v2_chain_id(ch.w, derived) == 0, "chain id");
         OK();
         dna_env_preflight_t *ref = calloc(1, sizeof(*ref));
         CHECK(ref != NULL, "ref alloc");
@@ -298,7 +295,7 @@ int main(void) {
     memset(meters, 0xAA, NODUS_V2_ENV_BATCH_MAX * sizeof(*meters));
     fail_idx = 999; ms = DNA_METER_OK;
     CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-              fx.w, 1, &tab, 1, pol, &bud, envs, 3, out, meters,
+              ch.w, 1, &tab, 1, pol, &bud, envs, 3, out, meters,
               &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_METER,
           "domain-budget failure"); OK();
     CHECK(fail_idx == 2, "failing envelope index"); OK();
@@ -319,7 +316,7 @@ int main(void) {
     entry_bud = bud;
     fail_idx = 999; ms = DNA_METER_OK;
     CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-              fx.w, 1, &tab, 1, pol, &bud, envs, 3, out, meters,
+              ch.w, 1, &tab, 1, pol, &bud, envs, 3, out, meters,
               &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_METER,
           "global-budget failure"); OK();
     CHECK(fail_idx == 0 && ms == DNA_METER_ERR_GLOBAL_BUDGET,
@@ -335,7 +332,7 @@ int main(void) {
     entry_bud = bud;
     ms = DNA_METER_OK;
     CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-              fx.w, 1, &tab, 1, pol, &bud, envs, 3, out, meters,
+              ch.w, 1, &tab, 1, pol, &bud, envs, 3, out, meters,
               &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_METER,
           "missing domain entry"); OK();
     CHECK(ms == DNA_METER_ERR_DOMAIN, "missing-domain status"); OK();
@@ -353,7 +350,7 @@ int main(void) {
     memset(meters, 0xAA, NODUS_V2_ENV_BATCH_MAX * sizeof(*meters));
     ms = DNA_METER_OK;
     CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-              fx.w, 1, &tab, 1, pol, &bud, envs, 3, out, meters,
+              ch.w, 1, &tab, 1, pol, &bud, envs, 3, out, meters,
               &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_METER,
           "mutated policy accepted"); OK();
     CHECK(ms == DNA_METER_ERR_POLICY, "policy status"); OK();
@@ -375,7 +372,7 @@ int main(void) {
         memset(meters, 0xAA, sizeof(*meters));
         ms = DNA_METER_ERR_FAULT;
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-                  fx.w, 2, &tab, 1, pol, &bud, &one, 1, out, meters,
+                  ch.w, 2, &tab, 1, pol, &bud, &one, 1, out, meters,
                   &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_PREFLIGHT,
               "expired envelope status"); OK();
         CHECK(pf_st == DNA_ENV_PF_ERR_EXPIRED, "pf status"); OK();
@@ -390,7 +387,7 @@ int main(void) {
         two[0].env_bytes = e0; two[0].env_len = l0;
         two[1].env_bytes = e0; two[1].env_len = l0;
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-                  fx.w, 1, &tab, 1, pol, &bud, two, 2, out, meters,
+                  ch.w, 1, &tab, 1, pol, &bud, two, 2, out, meters,
                   &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_DUP,
               "duplicate status"); OK();
         CHECK(fail_idx == 1, "dup second member"); OK();
@@ -401,20 +398,20 @@ int main(void) {
         memset(out, 0xAA, sizeof(*out));
         memset(meters, 0xAA, sizeof(*meters));
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-                  fx.w, 1, &tab, 1, pol, &bud, envs, 3, NULL, meters,
+                  ch.w, 1, &tab, 1, pol, &bud, envs, 3, NULL, meters,
                   &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_ARG,
               "NULL out"); OK();
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-                  fx.w, 1, &tab, 1, pol, &bud, envs, 3, out, NULL,
+                  ch.w, 1, &tab, 1, pol, &bud, envs, 3, out, NULL,
                   &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_ARG,
               "NULL meters"); OK();
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-                  fx.w, 1, &tab, 1, pol, &bud, envs,
+                  ch.w, 1, &tab, 1, pol, &bud, envs,
                   NODUS_V2_ENV_BATCH_MAX + 1, out, meters,
                   &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_ARG,
               "oversize batch"); OK();
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-                  fx.w, 1, &tab, 1, pol, &bud, envs, 0, out, meters,
+                  ch.w, 1, &tab, 1, pol, &bud, envs, 0, out, meters,
                   &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_ARG,
               "zero batch"); OK();
         /* the 0xAA sentinel survived the gate rejects */
@@ -423,14 +420,14 @@ int main(void) {
               "gate reject wrote a caller buffer"); OK();
         /* NULL policy / budget: after the gates, arrays ARE zeroed */
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-                  fx.w, 1, &tab, 1, NULL, &bud, envs, 3, out, meters,
+                  ch.w, 1, &tab, 1, NULL, &bud, envs, 3, out, meters,
                   &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_ARG,
               "NULL policy"); OK();
         CHECK(all_zero((const uint8_t *)out, 3 * sizeof(*out)) &&
               all_zero((const uint8_t *)meters, 3 * sizeof(*meters)),
               "arrays not zeroed on NULL policy"); OK();
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-                  fx.w, 1, &tab, 1, pol, NULL, envs, 3, out, meters,
+                  ch.w, 1, &tab, 1, pol, NULL, envs, 3, out, meters,
                   &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_ARG,
               "NULL budget"); OK();
     }
@@ -443,7 +440,7 @@ int main(void) {
         bud.dom[0].domain_id = 1;
         bud.dom[0].remaining_units = 300;
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-                  fx.w, 1, &tab, 1, pol, &bud, envs, 1, out, meters,
+                  ch.w, 1, &tab, 1, pol, &bud, envs, 1, out, meters,
                   &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_OK,
               "single batch"); OK();
         CHECK(dna_meter_activate(&meters[0]) == DNA_METER_OK, "activate");
@@ -475,7 +472,7 @@ int main(void) {
         memset(meters, 0xAA, sizeof(*meters));
         ms = DNA_METER_ERR_FAULT;
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-                  fx.w, 1, two, 2, pol, &bud, envs, 1, out, meters,
+                  ch.w, 1, two, 2, pol, &bud, envs, 1, out, meters,
                   &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_RULESETS,
               "unsorted rulesets status"); OK();
         CHECK(ms == DNA_METER_OK, "meter status on RULESETS fail"); OK();
@@ -487,7 +484,7 @@ int main(void) {
         mk_rulesets(&other, 0xB7);
         other.domain_id = 2;                      /* envelope is domain 1 */
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-                  fx.w, 1, &other, 1, pol, &bud, envs, 1, out, meters,
+                  ch.w, 1, &other, 1, pol, &bud, envs, 1, out, meters,
                   &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_CTX_MISSING,
               "missing ctx status"); OK();
         CHECK(pf_st == DNA_ENV_PF_OK && ms == DNA_METER_OK,
@@ -545,7 +542,7 @@ int main(void) {
         CHECK(dna_meter_policy_seal(pol) == 0, "reseal"); OK();
         memcpy(&entry_bud, &bud, sizeof(bud));
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-                  fx.w, 1, &tab, 1, pol, &bud, envs, 2, out, meters,
+                  ch.w, 1, &tab, 1, pol, &bud, envs, 2, out, meters,
                   &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_OK,
               "batch exactly at the byte bound reserves"); OK();
         for (size_t i = 0; i < 2; i++)
@@ -554,7 +551,7 @@ int main(void) {
               "abort restored the budget byte-identically"); OK();
         memcpy(&entry_bud, &bud, sizeof(bud));
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-                  fx.w, 1, &tab, 1, pol, &bud, envs, 3, out, meters,
+                  ch.w, 1, &tab, 1, pol, &bud, envs, 3, out, meters,
                   &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_BLOCK_BYTES,
               "sum above the bound returns the DISTINCT byte status");
         OK();
@@ -576,7 +573,7 @@ int main(void) {
     free(meters);
     free(pol);
     free(e0); free(e1); free(e2);
-    fx_close(&fx);
+    v2x_chain_close(&ch);
     printf("test_v2_env_meter: %d checks OK\n", g_checks);
     return 0;
 }

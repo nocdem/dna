@@ -484,23 +484,28 @@ static int gen_leaf_qcmp(const void *a, const void *b) {
 }
 
 /* tokenomics-v3 P2 (P2-1): the genesis reward reserve a config commits.
- * `reward_pool_initial` is a VERSION-3 field — the version-2 encoder
- * stops before it (gen_encode_planned), so a version-2 config reserves
- * nothing, whatever the (ignored) field holds. */
+ * Every config gen_plan_build admits is a version-3 config (below), so
+ * this is the field as written; it stays a function so the three sites
+ * that read the reserve name it the same way. */
 static uint64_t gen_reward_pool(const nodus_v2_gen_config_t *cfg) {
-    return cfg->config_version == NODUS_V2_GEN_CONFIG_VERSION_V3
-               ? cfg->reward_pool_initial : 0;
+    return cfg->reward_pool_initial;
 }
 
 static int gen_plan_build(const nodus_v2_gen_config_t *cfg, gen_plan_t *p) {
     if (!cfg || !p) return -1;
     memset(p, 0, sizeof(*p));
 
-    if (cfg->config_version != NODUS_V2_GEN_CONFIG_VERSION &&
-        cfg->config_version != NODUS_V2_GEN_CONFIG_VERSION_V3) {
-        QGP_LOG_ERROR(LOG_TAG, "config_version %u is neither 2 nor 3 — "
-                      "refusing", (unsigned)cfg->config_version);
-        return -1;                     /* W2: the rules below are SHARED */
+    /* tokenomics-v3 P4 (OBLIGATION atlas-dec-71525f3b, "the version-2
+     * genesis path" is DELETED): the version-3 document is the only
+     * config this build derives. A version-2 config used to be accepted
+     * here and derived by nodus_witness_v2_gen_derive, which no longer
+     * exists. */
+    if (cfg->config_version != NODUS_V2_GEN_CONFIG_VERSION_V3) {
+        QGP_LOG_ERROR(LOG_TAG, "config_version %u is not 3 — the version-3 "
+                      "(cometbft) genesis document is the only config this "
+                      "build derives; refusing",
+                      (unsigned)cfg->config_version);
+        return -1;
     }
 
     /* ── build identity: ALL THREE SCHEDULE CONSTANTS ─────────────────
@@ -589,8 +594,8 @@ static int gen_plan_build(const nodus_v2_gen_config_t *cfg, gen_plan_t *p) {
 
     /* ── L2-F6 Rule P.1 — EXACT initial validator count ───────────────
      * dnac/src/transaction/genesis.c:112-118 owns this on the legacy
-     * path, which a pure-V2 chain never executes;
-     * nodus_witness_v2_genesis_ex has no equivalent. */
+     * path, which a version-3 chain never executes; the engine genesis
+     * (nodus_witness_v2_genesis_cmt) has no equivalent. */
     if (cfg->n_validators != (uint16_t)DNAC_COMMITTEE_SIZE) {
         QGP_LOG_ERROR(LOG_TAG, "n_validators=%u != %u (Rule P.1)",
                       (unsigned)cfg->n_validators,
@@ -771,7 +776,7 @@ static int gen_plan_build(const nodus_v2_gen_config_t *cfg, gen_plan_t *p) {
          * nothing) and passes the duplicate check (dna_dist_leaf_cmp
          * compares source_id ONLY, shared/dnac/manifest_wire.c:331-339),
          * so nodus_witness_v2_gen_config_validate answered YES for a
-         * config nodus_witness_v2_gen_derive then refused downstream in
+         * config the derivation then refused downstream in
          * dna_dist_leaf_hash. An oracle that disagrees with the thing it
          * is an oracle for is worse than no oracle. */
         if (cfg->allocs[i].amount < 1) {
@@ -811,10 +816,7 @@ static int gen_plan_build(const nodus_v2_gen_config_t *cfg, gen_plan_t *p) {
      * total supply (decision §1: 200M of the 1B "Konsensüs / validator
      * ödülleri", no minting), so the rule becomes
      *   Σ allocations + Σ self-stake + reward_pool_initial
-     *     == total_supply_raw.
-     * reward_pool_initial is a VERSION-3 field (the version-2 encoder
-     * stops before it, nodus_witness_v2_gen.h) — a version-2 config
-     * reserves nothing (gen_reward_pool). */
+     *     == total_supply_raw. */
     const uint64_t pool_init = gen_reward_pool(cfg);
     if (cfg->total_supply_raw < 1) {
         QGP_LOG_ERROR(LOG_TAG, "%s", "total_supply_raw must be >= 1");
@@ -903,9 +905,11 @@ int nodus_witness_v2_gen_config_validate(const nodus_v2_gen_config_t *cfg) {
     return rc;
 }
 
-/* ── the canonical config encoding ───────────────────────────────────── */
+/* ── the canonical config body ───────────────────────────────────────── */
 
-/* Layout: the header's table, verbatim. */
+/* Layout: the header's table, verbatim. This is the BODY of the version-3
+ * genesis document; gen_v3_encode_planned appends the version-3 tail to
+ * exactly these bytes. */
 #define GEN_VAL_ENC_LEN  (DNAC_PUBKEY_SIZE + DNAC_PUBKEY_SIZE + \
                           DNAC_FINGERPRINT_SIZE + 8 + 2)
 /* tag + config_version(4) + total_supply_raw(8) + epoch_length(8) +
@@ -982,56 +986,12 @@ static int gen_encode_planned(const nodus_v2_gen_config_t *cfg,
     return 0;
 }
 
-int nodus_witness_v2_gen_config_encode(const nodus_v2_gen_config_t *cfg,
-                                       uint8_t **out, size_t *out_len) {
-    if (!out || !out_len) return -1;
-    *out = NULL;
-    *out_len = 0;
-    if (!cfg || cfg->config_version != NODUS_V2_GEN_CONFIG_VERSION) return -1;
-    gen_plan_t plan;
-    if (gen_plan_build(cfg, &plan) != 0) return -1;
-    int rc = gen_encode_planned(cfg, &plan, out, out_len);
-    gen_plan_free(&plan);
-    return rc;
-}
-
-static int gen_source_commit_planned(const nodus_v2_gen_config_t *cfg,
-                                     const gen_plan_t *plan,
-                                     uint8_t out[NODUS_V2_GEN_SRCCOMMIT_LEN]) {
-    /* VERSION 2 ONLY. This is the choke point for BOTH the public
-     * version-2 source_commit and nodus_witness_v2_gen_derive, so it is
-     * the one place a version-3 config meets the version-2 lane — and
-     * the operator CAN reach it: the config tool now parses a
-     * `config_version = 3` file and nodus-server's ceremony
-     * (nodus-server.c:314-345) still calls the version-2 derivation. It
-     * therefore says why, like every other refusal in this module. */
-    if (!cfg || cfg->config_version != NODUS_V2_GEN_CONFIG_VERSION) {
-        QGP_LOG_ERROR(LOG_TAG, "this is a version-%u config and the "
-                      "version-2 source binding is not defined for it — "
-                      "a version-3 chain is derived by "
-                      "nodus_witness_v2_gen_derive_v3 (W3 flips the "
-                      "ceremony onto it)",
-                      cfg ? (unsigned)cfg->config_version : 0u);
-        return -1;
-    }
-    uint8_t *buf = NULL;
-    size_t len = 0;
-    if (gen_encode_planned(cfg, plan, &buf, &len) != 0) return -1;
-    int rc = qgp_sha3_512(buf, len, out);
-    free(buf);
-    return rc == 0 ? 0 : -1;
-}
-
-int nodus_witness_v2_gen_source_commit(
-        const nodus_v2_gen_config_t *cfg,
-        uint8_t out[NODUS_V2_GEN_SRCCOMMIT_LEN]) {
-    if (!out) return -1;
-    gen_plan_t plan;
-    if (gen_plan_build(cfg, &plan) != 0) return -1;
-    int rc = gen_source_commit_planned(cfg, &plan, out);
-    gen_plan_free(&plan);
-    return rc;
-}
+/* tokenomics-v3 P4 (OBLIGATION atlas-dec-71525f3b): the version-2 public
+ * entries that stood here — nodus_witness_v2_gen_config_encode,
+ * nodus_witness_v2_gen_source_commit and their shared static
+ * gen_source_commit_planned — are DELETED with the version-2 derivation
+ * they served. gen_encode_planned above is NOT theirs alone: it writes
+ * the body of the version-3 document (gen_v3_encode_planned). */
 
 /* ── step 5: seed the SYSTEM state from the config ───────────────────── */
 
@@ -1112,9 +1072,9 @@ static int gen_seed_state(nodus_witness_t *w2,
      * than an invented constant.
      *
      * tokenomics-v3 P2 (P2-1): the row is seeded with the reward reserve
-     * (supply_tracking.reward_pool = reward_pool_initial, 0 for a
-     * version-2 config) — carved OUT of total_supply_raw, which stays the
-     * genesis supply; Rule P.2 above proved the pool fits. */
+     * (supply_tracking.reward_pool = reward_pool_initial) — carved OUT of
+     * total_supply_raw, which stays the genesis supply; Rule P.2 above
+     * proved the pool fits. */
     {
         int rc = nodus_witness_supply_init(w2, cfg->total_supply_raw,
                                            gen_reward_pool(cfg),
@@ -1301,484 +1261,6 @@ static int gen_seed_state(nodus_witness_t *w2,
     return 0;
 }
 
-/* ── the derivation ──────────────────────────────────────────────────── */
-
-int nodus_witness_v2_gen_derive(const char *data_path,
-                                const nodus_v2_gen_config_t *cfg,
-                                uint8_t out_chain32[32]) {
-    if (!data_path || !data_path[0] || !cfg) return -1;
-
-    /* ── 1. Validate the config COMPLETELY, before any filesystem or
-     * database work. A plan exists only for a derivable config. ────── */
-    gen_plan_t plan;
-    if (gen_plan_build(cfg, &plan) != 0) return -1;
-
-    uint8_t present_commit[NODUS_V2_GEN_SRCCOMMIT_LEN];
-    memset(present_commit, 0, sizeof(present_commit));
-    int pe = gen_chain_db_scan(data_path, present_commit);
-    if (pe < 0) {
-        QGP_LOG_ERROR(LOG_TAG, "%s",
-            "could not classify the chain databases already in the data "
-            "path — refusing to derive (fail closed)");
-        gen_plan_free(&plan);
-        return -1;
-    }
-    if (pe == 2) {
-        /* R2-F1. The V1 chain must be DELETED before the V2 chain is
-         * created; two chain databases in one data path make startup
-         * selection a filename coin-flip (nodus_witness.c:597-600). */
-        QGP_LOG_ERROR(LOG_TAG, "%s",
-            "a FOREIGN chain database is already present in the data path "
-            "— refusing to derive. Moving to Ledger V2 deletes the "
-            "previous chain; remove it first. Deriving beside it would "
-            "leave two chains and let each node boot a different one.");
-        gen_plan_free(&plan);
-        return -1;
-    }
-
-    /* ── 2. The source binding. No terminal block, no legacy chain: the
-     * config IS the source, and source_commit is its digest.
-     *
-     * Computed BEFORE the idempotency branch, because D4 needs it there:
-     * "a chain already exists" is only a success if it is THIS config's
-     * chain. */
-    uint8_t source_commit[NODUS_V2_GEN_SRCCOMMIT_LEN];
-    if (gen_source_commit_planned(cfg, &plan, source_commit) != 0) {
-        gen_plan_free(&plan);
-        return -1;
-    }
-
-    if (pe == 1) {
-        /* ── O16A / D4, security goal G4 — IDEMPOTENCY COMPARES THE
-         * CHAIN, NOT JUST ITS TAG ─────────────────────────────────────
-         * This branch used to return 0 on the strength of the source
-         * TAG alone, which every chain this builder produces carries.
-         * So an operator who edited the config and re-ran the tool was
-         * told "a pure-V2 chain already exists — nothing to derive",
-         * given a zero exit code, and left with the chain built from the
-         * OLD config sitting in the data directory. On one node that is
-         * never noticed; on a fleet it surfaces much later as a
-         * join-time identity mismatch, by which point six other nodes
-         * have been configured against the wrong id.
-         *
-         * source_commit is what distinguishes them: it is the digest of
-         * the canonical config encoding, it is carried in the committed
-         * manifest, and the chain id is a function of it
-         * (nodus_witness_v2_gen.h:66-70). Equal → the idempotent success
-         * this branch always claimed to be. Different → REFUSE, printing
-         * both digests, because the operator has to be able to tell
-         * which of the two configs the directory holds.
-         *
-         * The undecidable case never reaches here: gen_chain_db_scan
-         * returns -1 rather than 1 when it cannot read an identity, and
-         * that was handled above. Fail closed on all three legs. */
-        if (memcmp(present_commit, source_commit,
-                   NODUS_V2_GEN_SRCCOMMIT_LEN) == 0) {
-            QGP_LOG_INFO(LOG_TAG, "%s",
-                         "a pure-V2 chain derived from THIS config already "
-                         "exists — nothing to derive");
-            gen_plan_free(&plan);
-            return 0;
-        }
-        {
-            char have[QGP_FP_HEX_BUFFER], want[QGP_FP_HEX_BUFFER];
-            qgp_fp_raw_to_hex(present_commit, have);
-            qgp_fp_raw_to_hex(source_commit, want);
-            QGP_LOG_ERROR(LOG_TAG,
-                "the data path already holds a pure-V2 chain built from a "
-                "DIFFERENT config — refusing to report success. "
-                "present source_commit=%s config source_commit=%s. Either "
-                "this is the wrong config file, or the previous chain must "
-                "be removed before a new one can be derived; deriving is "
-                "never a way to replace a chain in place.", have, want);
-        }
-        gen_plan_free(&plan);
-        return -1;
-    }
-
-    /* ── 3. The distribution snapshot root over the canonical leaves.
-     * dna_dist_snapshot_root accepts ONLY strictly ascending source_id
-     * order, so it re-proves the plan's ordering as a side effect. ── */
-    uint8_t snap_root[64];
-    if (dna_dist_snapshot_root(plan.leaves, plan.n_leaves,
-                               snap_root) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "%s", "distribution snapshot root failed");
-        gen_plan_free(&plan);
-        return -1;
-    }
-
-    QGP_LOG_INFO(LOG_TAG, "deriving a pure Ledger V2 chain: %u validators, "
-                 "%zu allocations, %llu raw claimable of %llu total",
-                 (unsigned)cfg->n_validators, plan.n_leaves,
-                 (unsigned long long)plan.total_claimable,
-                 (unsigned long long)cfg->total_supply_raw);
-
-    /* ── 4. Provisional database, deterministic name ─────────────────
-     * Derived in a SCRATCH SUBDIRECTORY: nodus_witness_create_chain_db
-     * archives every OTHER witness_*.db in its data_path (the stale-
-     * chain discipline), which must not touch anything already in the
-     * real data_path. Only a COMPLETE chain is renamed up. */
-    uint8_t prov_full[64], prov16[16];
-    if (qgp_sha3_512(source_commit, sizeof(source_commit), prov_full) != 0) {
-        gen_plan_free(&plan);
-        return -1;
-    }
-    memcpy(prov16, prov_full, 16);
-
-    nodus_witness_t *w2 = calloc(1, sizeof(*w2));
-    if (!w2) { gen_plan_free(&plan); return -1; }
-    /* A calloc'd handle has cached_committee_epoch_start == 0, which the
-     * committee cache reads as a VALID entry for epoch 0 holding zero
-     * members (nodus_witness_committee.c:474-492). The vset builder used
-     * on this path calls nodus_committee_compute_for_epoch directly and
-     * bypasses the cache (nodus_witness_vset.c:341), so this is hygiene
-     * rather than a load-bearing fix — but the invalid marker is
-     * UINT64_MAX (nodus_witness.h:743) and every other constructor sets
-     * it (nodus_witness.c:915, nodus_witness_v2_join.c:108). */
-    w2->cached_committee_epoch_start = UINT64_MAX;
-    /* O15J review R2-F3 — CHECK THE TRUNCATION. `data_path` is
-     * char[256] (nodus_witness.h). This snprintf used to be unchecked,
-     * so a long data path silently produced a PREFIX of itself: at
-     * exactly 255 characters the "scratch" path IS the operator's real
-     * witness directory, and gen_scratch_clear below unlinks every file
-     * in whatever directory it is handed. A successful derivation would
-     * then delete its own output and everything beside it, and still
-     * return 0. Refuse instead — a path we cannot express is not a path
-     * we may clear. */
-    int pn = snprintf(w2->data_path, sizeof(w2->data_path), "%s/v2gen.tmp",
-                      data_path);
-    if (pn < 0 || (size_t)pn >= sizeof(w2->data_path)) {
-        QGP_LOG_ERROR(LOG_TAG,
-            "data path too long (%zu bytes) to form a scratch directory "
-            "within %zu — refusing to derive rather than clearing a "
-            "truncated path", strlen(data_path), sizeof(w2->data_path));
-        free(w2);
-        gen_plan_free(&plan);
-        return -1;
-    }
-    gen_scratch_clear(w2->data_path);           /* crashed prior attempt */
-    if (mkdir(w2->data_path, 0700) != 0 && errno != EEXIST) {
-        free(w2);
-        gen_plan_free(&plan);
-        return -1;
-    }
-
-    char prov_path[600];
-    {
-        char hex[33];
-        for (int i = 0; i < 16; i++)
-            snprintf(hex + i * 2, 3, "%02x", prov16[i]);
-        snprintf(prov_path, sizeof(prov_path), "%s/witness_%s.db",
-                 w2->data_path, hex);
-    }
-
-    int ok = -1;
-    do {
-        if (nodus_witness_create_chain_db(w2, prov16) != 0) break;
-        /* Mark the handle a Ledger V2 chain BEFORE any validator-set
-         * seeding. THE ORDER IS THE POINT: the writer guard that clamps
-         * an active set to NODUS_V2_ACTIVE_SET_MAX is gated on
-         * v2_successor (nodus_witness_vset.c:130 and :459), and
-         * nodus_witness_vset_commit_genesis seeds the epoch-0/E snapshots
-         * through that guard. Set the flag after seeding and the genesis
-         * snapshots seed UNCAPPED — committed, and wrong. (This is the
-         * rule the removed activation seam established in O15F Task 1;
-         * the ordering requirement outlived the seam.) A deterministic
-         * local act every node performs identically. */
-        w2->v2_successor = 1;
-        /* S12: every block a pure-V2 chain commits carries its canonical
-         * envelope bytes and its per-block claim bytes + count. */
-        if (nodus_witness_db_migrate_v2s12(w2) != 0) break;
-        if (nodus_chain_config_db_migrate(w2) != 0) break;
-
-        /* ── 5. SYSTEM state, from the config ───────────────────────── */
-        if (gen_seed_state(w2, cfg, &plan, source_commit) != 0) break;
-
-        /* ── 6. Authority + registry + manifest + genesis ─────────────
-         * ORDER IS LOAD-BEARING (the seam's step 6): the validator
-         * snapshots feed the SYSTEM payload root, and
-         * domreg_init_genesis commits that root — genesis_ex re-runs it
-         * and byte-compares, so the snapshots must exist FIRST. The
-         * argument to commit_genesis is the legacy BLOCK HEIGHT sentinel
-         * (VSET_GENESIS_BLOCK_HEIGHT), not a count. */
-        {
-            sqlite3_int64 n_snap = -1;
-            if (gen_count(w2->db,
-                    "SELECT COUNT(*) FROM validator_set_snapshots",
-                    &n_snap) != 0) break;
-            if (n_snap != 0) {
-                QGP_LOG_ERROR(LOG_TAG, "%s", "a fresh database already "
-                              "holds validator snapshots — refusing");
-                break;
-            }
-            if (nodus_witness_vset_commit_genesis(w2, 1) != 0) break;
-        }
-        if (nodus_witness_domreg_init_genesis(w2) != 0) break;
-
-        dna_domain_manifest_t dm;
-        uint8_t sys_h[64], core_h[64];
-        if (nodus_witness_domreg_get(w2, DNA_DOMAIN_SYSTEM, NULL, &dm,
-                                     NULL) != 0) break;
-        if (dna_domman_hash(&dm, sys_h) != 0) break;
-        if (nodus_witness_domreg_get(w2, DNA_DOMAIN_CORE, NULL, &dm,
-                                     NULL) != 0) break;
-        if (dna_domman_hash(&dm, core_h) != 0) break;
-
-        /* The committed supply is read BACK from the row this
-         * derivation wrote — three-valued, so a DB fault can never
-         * become the value 0 in a hash preimage (the seam's L1-F7). */
-        uint64_t gsupply = 0;
-        {
-            nodus_witness_supply_t sup;
-            memset(&sup, 0, sizeof(sup));
-            int src = nodus_witness_supply_get(w2, &sup);
-            if (src != 0) {
-                QGP_LOG_ERROR(LOG_TAG, "supply row unreadable after seeding "
-                              "(rc=%d) — ABORT", src);
-                break;
-            }
-            gsupply = sup.genesis_supply;
-            if (gsupply != cfg->total_supply_raw) break;
-            /* tokenomics-v3 P2 (P2-1): and the reserve reads back as the
-             * config's — the committed pool is the one the distribution
-             * will pay from. */
-            if (sup.reward_pool != gen_reward_pool(cfg)) {
-                QGP_LOG_ERROR(LOG_TAG, "%s", "the committed reward pool does "
-                              "not read back as the config — ABORT");
-                break;
-            }
-        }
-
-        dna_gman_t m;
-        memset(&m, 0, sizeof(m));
-        m.manifest_version = DNA_GMAN_VERSION;
-        m.genesis_supply_raw = gsupply;
-        m.domain_count = 2;
-        m.domains[0].domain_id = DNA_DOMAIN_SYSTEM;
-        memcpy(m.domains[0].manifest_hash, sys_h, 64);
-        m.domains[1].domain_id = DNA_DOMAIN_CORE;
-        memcpy(m.domains[1].manifest_hash, core_h, 64);
-        m.dist_present = 1;
-        m.dist_version = DNA_DIST_VERSION;
-        m.target_domain_id = DNA_DOMAIN_CORE;
-        m.target_asset_len = 64;               /* native token id: zeros */
-        m.source_tag_len = (uint16_t)NODUS_V2_GEN_SOURCE_TAG_LEN;
-        memcpy(m.source_tag, NODUS_V2_GEN_SOURCE_TAG,
-               NODUS_V2_GEN_SOURCE_TAG_LEN);
-        m.source_commit_len = (uint16_t)NODUS_V2_GEN_SRCCOMMIT_LEN;
-        memcpy(m.source_commit, source_commit, NODUS_V2_GEN_SRCCOMMIT_LEN);
-        memcpy(m.snapshot_root, snap_root, 64);
-        m.leaf_count = (uint64_t)plan.n_leaves;
-        m.conv_numerator = 1;
-        m.conv_denominator = 1;
-        m.rounding_mode = DNA_DISTROUND_FLOOR;
-        m.excluded_amount = 0;
-        m.total_claimable = plan.total_claimable;
-        m.claim_start_height = 0;
-        m.claim_end_height = UINT64_MAX;
-        m.auth_mode = DNA_CLAIMAUTH_DNA_NATIVE;
-        m.fee_mode = DNA_CLAIMFEE_NONE;
-        m.post_deadline_mode = DNA_POSTDL_RETAIN;
-
-        uint8_t mbytes[8192];
-        size_t mlen = 0;
-        if (dna_gman_encode(&m, mbytes, sizeof(mbytes), &mlen) != 0) break;
-
-        uint8_t vsh[DNA_VSET_HASH_LEN];
-        {
-            dna_vset_snapshot_t *s0 = NULL;
-            uint32_t sn = 0, sq = 0;
-            if (nodus_witness_v2_epoch_authority_for_height(w2, 0, &s0,
-                                                            &sn, &sq) != 0 ||
-                !s0) {
-                dna_vset_free(&s0);
-                break;
-            }
-            int hrc = dna_vset_hash(s0, vsh);
-            dna_vset_free(&s0);
-            if (hrc != 0) break;
-        }
-
-        if (nodus_witness_v2_genesis_ex(w2, NULL, vsh, 0,
-                                        mbytes, mlen) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "%s", "pure-V2 genesis FAILED");
-            break;
-        }
-
-        /* ── 7. Post-conditions ─────────────────────────────────────── */
-
-        /* No spendable value exists at genesis: the whole non-bonded
-         * supply sits in the claim reserve. */
-        sqlite3_int64 n_utxo = -1;
-        if (gen_count(w2->db, "SELECT COUNT(*) FROM utxo_set",
-                      &n_utxo) != 0 || n_utxo != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "%s",
-                          "a pure-V2 genesis holds spendable UTXOs — ABORT");
-            break;
-        }
-        {
-            sqlite3_stmt *st = NULL;
-            sqlite3_int64 remaining = -1;
-            if (sqlite3_prepare_v2(w2->db,
-                    "SELECT COALESCE(SUM(remaining), -1) FROM v2_dist_state",
-                    -1, &st, NULL) != SQLITE_OK)
-                break;
-            int rc = sqlite3_step(st);
-            if (rc == SQLITE_ROW) remaining = sqlite3_column_int64(st, 0);
-            sqlite3_finalize(st);
-            if (rc != SQLITE_ROW || remaining < 0 ||
-                (uint64_t)remaining != plan.total_claimable) {
-                QGP_LOG_ERROR(LOG_TAG, "claim reserve %lld != claimable "
-                              "%llu — ABORT", (long long)remaining,
-                              (unsigned long long)plan.total_claimable);
-                break;
-            }
-        }
-
-        /* Σ self_stake must be exactly what the config bonded. */
-        {
-            sqlite3_int64 bonded = -1;
-            if (gen_count(w2->db,
-                    "SELECT COALESCE(SUM(self_stake),0) FROM validators",
-                    &bonded) != 0) break;
-            if ((uint64_t)bonded != plan.stake_total) {
-                QGP_LOG_ERROR(LOG_TAG, "committed self-stake %lld != %llu "
-                              "— ABORT", (long long)bonded,
-                              (unsigned long long)plan.stake_total);
-                break;
-            }
-        }
-
-        /* ── L2-F4, at the COMMITTED-ROW level ───────────────────────
-         * The config was checked; this checks what actually LANDED. A
-         * storage layer that truncated a fingerprint on the way in would
-         * otherwise ship a chain that halts at its first graduation. */
-        {
-            int bad = 0;
-            for (uint16_t i = 0; i < cfg->n_validators && !bad; i++) {
-                dnac_validator_record_t got;
-                if (nodus_validator_get(w2, cfg->validators[i].pubkey,
-                                        &got) != 0 ||
-                    !nodus_witness_v2_epoch_val_rec_ok(&got))
-                    bad = 1;
-            }
-            if (bad) {
-                QGP_LOG_ERROR(LOG_TAG, "%s", "a COMMITTED validator row is "
-                              "not writable-shaped — ABORT (L2-F4)");
-                break;
-            }
-        }
-
-        /* ── L2-F1, the producer half ────────────────────────────────
-         * The seam never asserted this. The conservation invariant must
-         * BALANCE on the derived chain before it is allowed to exist:
-         *   genesis + 0 − 0 == 0 utxo + Σ self_stake + 0 delegated
-         *                      + 0 pool + unclaimed + 0 shielded
-         * A config whose numbers do not balance dies here even if every
-         * rule above somehow admitted it. */
-        if (nodus_witness_v2_supply_check(w2) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "%s", "the supply equation does not "
-                          "balance on the derived chain — ABORT");
-            break;
-        }
-
-        uint8_t chain32[32];
-        if (nodus_witness_v2_chain_id(w2, chain32) != 0) break;
-
-        /* ── 7b. R3 W3 (D-17 rev 10 (9)): NO BUNDLE IS PERSISTED HERE
-         * ANY MORE. This step used to call nodus_witness_v2_bundle_persist
-         * while the base tables still held their exact genesis-time
-         * bytes, aborting the whole derivation if it failed. It cannot
-         * any more: bundle_persist itself now REFUSES a chain with no
-         * stored genesis DOCUMENT (nodus_witness_v2_bundle.c), and a
-         * version-2 chain never has one (D-19 rev 6 is v3-only) — so
-         * calling it here would abort EVERY version-2 derivation
-         * unconditionally, which is not this closure's intent: the old
-         * lane stays byte-unchanged and unreachable from the running
-         * node, but its OWN unit tests (test_v2_gen.c,
-         * test_v2_gen_config.c, test_v2_gate_pure.c,
-         * test_v2_econ_params.c) keep passing until the deletion wave
-         * removes the lane and its tests together. A version-2 chain
-         * therefore derives with NO genesis bundle — it was never a
-         * valid bootstrap source under D-17 rev 10 (9) regardless, so
-         * nothing that mattered to a live joiner is lost by not trying
-         * to serialize one. */
-        QGP_LOG_INFO(LOG_TAG, "%s",
-                     "closed lane (D-17 rev 10 (9)): version-2 chain, no "
-                     "genesis bundle is persisted — this lane is still in "
-                     "the tree with no production caller (grep: only test "
-                     "files and this offline one-shot call "
-                     "nodus_witness_v2_gen_derive), and its deletion is "
-                     "package P4, not the next wave (tokenomics v3 "
-                     "design, 2026-09-23)");
-
-        /* ── 8. Land the real name in the REAL data_path — rename only
-         * after a COMPLETE derivation (same filesystem, atomic). ───── */
-        sqlite3_close(w2->db);
-        w2->db = NULL;
-        char real_path[600];
-        {
-            char hex[33];
-            for (int i = 0; i < 16; i++)
-                snprintf(hex + i * 2, 3, "%02x", chain32[i]);
-            snprintf(real_path, sizeof(real_path), "%s/witness_%s.db",
-                     data_path, hex);
-        }
-        if (rename(prov_path, real_path) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "rename to %s failed: %s", real_path,
-                          strerror(errno));
-            break;
-        }
-
-        /* ── O16A — THE PARTIAL-WIPE MARKER IS NOT WRITTEN HERE, AND
-         * THAT IS THE CORRECTION ──────────────────────────────────────
-         * An earlier cut of this work dropped the marker into
-         * `data_path` at exactly this point. It was wrong, and the
-         * reason is worth keeping so nobody re-adds it.
-         *
-         * The marker does not mean "a chain exists". It means "this node
-         * has completed a normal boot with a chain", because that is the
-         * only state in which the invariant it arms is true: the gate
-         * (nodus_server_check_partial_wipe) demands that nodus.db,
-         * channels.db and witness_*.db be all-present or all-absent.
-         *
-         * This builder creates exactly ONE of those three. The other two
-         * are created by nodus_server_init, and the gate runs BEFORE
-         * them. So a marker written here makes the very next start fail
-         * the gate on a data directory that has no nodus.db or
-         * channels.db yet — a freshly provisioned host, or one whose
-         * directory was emptied rather than having only witness_* removed
-         * — and the refusal's printed remedy is to delete all three,
-         * i.e. the chain this ceremony just produced.
-         *
-         * Two further holes the placement could not close: a crash
-         * between the rename and the write, and the idempotent re-run
-         * above, which returns before ever reaching this point — so the
-         * natural operator repair ("run it again") did not repair it.
-         *
-         * The write now lives in nodus_server_init, on the success path
-         * after all three databases are open. That placement is true when
-         * it is made, self-heals a crashed or failed ceremony on the next
-         * boot, and covers a node that JOINED rather than derived — which
-         * this path never could. */
-
-        if (out_chain32) memcpy(out_chain32, chain32, 32);
-        QGP_LOG_INFO(LOG_TAG, "pure Ledger V2 chain derived: %s "
-                     "(reserve=%llu raw across %zu claim leaves, "
-                     "bonded=%llu)", real_path,
-                     (unsigned long long)plan.total_claimable,
-                     plan.n_leaves,
-                     (unsigned long long)plan.stake_total);
-        ok = 0;
-    } while (0);
-
-    if (w2->db) { sqlite3_close(w2->db); w2->db = NULL; }
-    gen_scratch_clear(w2->data_path);           /* nothing partial */
-    free(w2);
-    gen_plan_free(&plan);
-    return ok;
-}
-
 /* ══════════════════════════════════════════════════════════════════════
  * VERSION 3 — THE COMETBFT GENESIS DOCUMENT (D-18 rev 4, W2 / R3-C1b)
  *
@@ -1786,40 +1268,22 @@ int nodus_witness_v2_gen_derive(const char *data_path,
  * different fields: the header. What is worth stating HERE is the one
  * structural property a reviewer should not have to take on trust:
  *
- *   THE VERSION-2 BODY IS PRODUCED BY THE VERSION-2 ENCODER. This layer
- *   calls `gen_encode_planned` — the same function, over the same plan —
- *   and APPENDS to what it returns. "The body is byte-identical except
- *   config_version = 3" is therefore true by construction, not by
- *   inspection, and it stays true if the body ever changes.
+ *   THE BODY IS PRODUCED BY THE ONE BODY ENCODER. This layer calls
+ *   `gen_encode_planned` — over the same plan the rules were checked
+ *   against — and APPENDS the version-3 tail to what it returns, so the
+ *   body cannot drift from the fields gen_plan_build validated.
  *
- * ── WHAT A PRODUCTION BINARY CAN AND CANNOT REACH IN W2 ───────────────
- * Stated precisely, because "nothing below is reachable from the live
- * path" — which an earlier draft of this comment said — is FALSE:
- *
- *   REACHABLE. The genesis config tool is production code on the
- *   ceremony path (nodus-server.c:321 and nodus-cli.c:2018 both call
- *   nodus_v2_gen_config_parse_file), and on a file that says
- *   `config_version = 3` the parser calls
- *   `nodus_witness_v2_gen_v3_defaults` (nodus_v2_gen_config.c:1065) and
- *   `nodus_witness_v2_gen_v3_fill_comet_rows` (:1118). An operator who
- *   writes such a file therefore executes those two functions today.
- *
- *   REACHABLE ON ONE BRANCH ONLY. `nodus_witness_v2_chain_id`
- *   (nodus_witness_v2_claims.c) is live code and, since W2 / R3-C1a,
- *   falls back to `_stored_chain_id` (and so to `_stored_doc`, `_v3_decode`,
- *   `_v3_validate`, `_v3_encode` and `_chain_id`) when the chain has NO
- *   height-0 block row. Every chain derived by the version-2 path has
- *   that row, so on every chain that exists today the fallback is never
- *   taken and the answer is byte-for-byte the old one.
- *
- *   NOT REACHABLE. No production caller reaches
- *   nodus_witness_v2_gen_derive_v3, nodus_witness_v2_genesis_cmt,
- *   _v3_source_commit or _to_cmt_doc: the ceremony calls the VERSION-2
- *   derivation, which refuses a version-3 config at
- *   `gen_source_commit_planned` with a logged reason; the startup table
- *   (nodus_witness_cmt_node.c) that reads the document has no production
- *   caller yet. W3 flips the ceremony onto the version-3 derivation
- *   (D-17 rev 7).
+ * ── WHAT A PRODUCTION BINARY REACHES ──────────────────────────────────
+ * The ceremony (nodus-server.c run_derive_v2_genesis) parses the config
+ * file (nodus_v2_gen_config.c, which calls `_v3_defaults` and
+ * `_v3_fill_comet_rows`) and derives with
+ * `nodus_witness_v2_gen_derive_v3`; a running node reads its identity
+ * through `nodus_witness_v2_gen_stored_chain_id` (the post-open gate,
+ * nodus_witness.c) and its document through `_stored_doc`
+ * (nodus_witness_cmt_node.c). The version-2 derivation that used to sit
+ * above this banner — nodus_witness_v2_gen_derive, closed by R3 W3
+ * (D-17 rev 10 (9)) — is DELETED by tokenomics-v3 P4 (OBLIGATION
+ * atlas-dec-71525f3b); its steps live on in `_derive_v3` below.
  * ════════════════════════════════════════════════════════════════════ */
 
 /* Compile-time agreement with the port's own types. Deliberately at the
@@ -1996,9 +1460,10 @@ static int gen_v3_encode_planned(const nodus_v2_gen_config_t *cfg,
     if (!cfg || !plan || !out || !out_len) return -1;
     if (gen_v3_shape_ok(cfg) != 0) return -1;
 
-    /* THE BODY IS THE VERSION-2 ENCODER'S OUTPUT, verbatim. It writes
-     * cfg->config_version, which reads 3 here — that single field is the
-     * whole difference D-18 rev 4 states between the two bodies. */
+    /* THE BODY is gen_encode_planned's output. It writes
+     * cfg->config_version, which reads 3 here — D-18 rev 4's version-2
+     * body differed only in that field (the version-2 encoder itself is
+     * deleted, P4). */
     uint8_t *body = NULL;
     size_t   body_len = 0;
     if (gen_encode_planned(cfg, plan, &body, &body_len) != 0) return -1;
@@ -3023,8 +2488,15 @@ int nodus_witness_v2_gen_derive_v3(const char *data_path,
     int ok = -1;
     do {
         if (nodus_witness_create_chain_db(w2, prov16) != 0) break;
-        /* The flag before any validator-set seeding — the ordering rule
-         * the version-2 path states at its step 4. */
+        /* Mark the handle a Ledger V2 chain BEFORE any validator-set
+         * seeding. THE ORDER IS THE POINT: the writer guard that clamps
+         * an active set to NODUS_V2_ACTIVE_SET_MAX is gated on
+         * v2_successor (nodus_witness_vset.c), and
+         * nodus_witness_vset_commit_genesis seeds the epoch-0/E snapshots
+         * through that guard. Set the flag after seeding and the genesis
+         * snapshots seed UNCAPPED — committed, and wrong. (This rule was
+         * stated at step 4 of the deleted version-2 derivation; it is
+         * this function's own now.) */
         w2->v2_successor = 1;
         /* R3 W3 (D-17 rev 10 (8)) — S14 FIRST, THEN THE LEDGER GENESIS.
          *
@@ -3207,45 +2679,28 @@ int nodus_witness_v2_gen_derive_v3(const char *data_path,
 
         /* ── 10. Post-conditions ─────────────────────────────────────
          *
-         * ALL OF THEM RUN AT S14, and that is checked, not assumed.
-         * `grep -n nodus_witness_db_schema_version` finds the reader
-         * referenced in SEVEN non-test files (nodus_witness_v2_apply.c,
-         * nodus_witness_v2_gen.c, nodus_witness_v2_pools.c,
-         * nodus_witness_v2_preflight.c, nodus_witness_v2_schema.c/.h,
-         * nodus_witness_v2_sync2.c — twelve counting tests), and that
-         * grep finds every schema-version GATE in the tree (this comment
-         * re-derives the count R3 W3 changed, rather than repeating
-         * W2's, since the flip touches three of them). The migration
+         * ALL OF THEM RUN AT THE LIVE RUNG (S16 since tokenomics-v3 P2),
+         * and that is checked, not assumed. A grep for
+         * `nodus_witness_db_schema_version(` over nodus/src/witness finds
+         * every schema-version GATE in the tree (re-derived for
+         * tokenomics-v3 P4; the W3 list that stood here named the
+         * old-lane sync2 block server, deleted by R3 W4). The migration
          * ladder inside nodus_witness_v2_schema.c reads its own starting
          * version at every rung and gates nothing else; excluding it,
-         * the gates are exactly eight:
-         *   nodus_witness_v2_apply.c:619   (the version-2 genesis, S9-S12
-         *                                   — the closed old lane)
-         *   nodus_witness_v2_apply.c:2168  (Comet-lane block apply, S14
-         *                                   only — unchanged by this wave)
-         *   nodus_witness_v2_apply.c:2204  (legacy-lane block apply,
-         *                                   S9-S12 — the closed old lane)
-         *   nodus_witness_v2_apply.c:5134  (this lane's genesis, NARROWED
-         *                                   to S14 alone this wave)
-         *   nodus_witness_v2_pools.c:900   (pool startup check, WIDENED
-         *                                   to admit S14 this wave)
-         *   nodus_witness_v2_pools.c:1195  (CORE state_init, WIDENED to
-         *                                   admit S14 this wave — the one
-         *                                   that forced the old order)
-         *   nodus_witness_v2_preflight.c:114,129 (reader call at :114,
-         *                                   the equality gate at :129 —
-         *                                   NARROWED to S14 alone)
-         *   nodus_witness_v2_sync2.c:386   (nodus_witness_v2_sync_serve_block,
-         *                                   the OLD-LANE verb 20-23 block
-         *                                   server, `< S12` — UNCHANGED:
-         *                                   14 already is not < 12, and the
-         *                                   function SELECTs the `header`/
-         *                                   `qc` columns S14 dropped
-         *                                   earlier still, so this gate was
-         *                                   never the live defect for S14
-         *                                   and widening it would not fix
-         *                                   one — left for the deletion
-         *                                   wave, not this one)
+         * the gates are, by function:
+         *   nodus_witness_v2_genesis_ex         (the version-2 engine
+         *                                        genesis, S9-S12 — the
+         *                                        closed old lane)
+         *   v2_apply_block_body, cmt.on branch  (Comet-lane block apply,
+         *                                        S16 only)
+         *   v2_apply_block_body, else branch    (legacy-lane block apply,
+         *                                        S9-S12 — the closed old
+         *                                        lane)
+         *   nodus_witness_v2_genesis_cmt        (this lane's genesis, S16
+         *                                        only)
+         *   nodus_witness_v2_pools_startup_check
+         *   nodus_rt_core_state_init            (nodus_witness_v2_pools.c)
+         *   nodus_witness_v2_preflight          (the equality gate)
          * None of them is on the path of anything below:
          * nodus_witness_v2_supply_check dispatches nodus_rt_core_invariant
          * (nodus_witness_v2_claims.c:868), nodus_validator_get
@@ -3319,10 +2774,12 @@ int nodus_witness_v2_gen_derive_v3(const char *data_path,
             break;
         }
 
-        /* (d) The version-2 derivation's own post-conditions, unchanged:
-         * no spendable value, the whole reserve claimable, exactly the
-         * configured bond, every committed validator row writable-shaped,
-         * and the conservation equation balancing. */
+        /* (d) The ledger post-conditions (carried over unchanged from
+         * the deleted version-2 derivation): no spendable value, the
+         * whole reserve claimable, exactly the configured bond, every
+         * committed validator row writable-shaped (L2-F4 at the
+         * committed-row level), and the conservation equation balancing
+         * (L2-F1, the producer half). */
         sqlite3_int64 n_utxo = -1;
         if (gen_count(w2->db, "SELECT COUNT(*) FROM utxo_set",
                       &n_utxo) != 0 || n_utxo != 0) {
@@ -3387,13 +2844,13 @@ int nodus_witness_v2_gen_derive_v3(const char *data_path,
          * the height-0 block row — so it is carried unchanged here.
          *
          * Since R3 W3, `nodus_witness_v2_bundle_apply`
-         * (nodus_witness_v2_bundle.c:647) runs `nodus_witness_v2_
+         * (nodus_witness_v2_bundle.c) runs `nodus_witness_v2_
          * genesis_cmt` on a version-3 chain — never the version-2
-         * `nodus_witness_v2_genesis_ex` path this comment used to warn
-         * about — and requires BOTH the stored document's `chain_id` to
+         * engine genesis this comment used to warn about — and requires
+         * BOTH the stored document's `chain_id` to
          * equal the joiner's pin AND its `app_hash` to equal the root
          * that call just computed from the replanted tables
-         * (nodus_witness_v2_bundle.c:665-667): a bundle whose tables
+         * (nodus_witness_v2_bundle_apply): a bundle whose tables
          * were tampered but whose document still hashes to the pin is
          * refused there, not silently adopted. The obligation this
          * comment used to name (C1c/W3 routing the Comet lane's bundle
@@ -3423,6 +2880,17 @@ int nodus_witness_v2_gen_derive_v3(const char *data_path,
                           strerror(errno));
             break;
         }
+
+        /* ── O16A — THE PARTIAL-WIPE MARKER IS NOT WRITTEN HERE. It means
+         * "this node completed a normal boot with a chain", and this
+         * builder creates only ONE of the three databases the gate
+         * (nodus_server_check_partial_wipe) requires all-present; a
+         * marker written here fails the next start of a freshly
+         * provisioned host, whose printed remedy deletes the chain just
+         * derived. The write lives in nodus_server_init
+         * (nodus/docs/BOOTSTRAP.md, "Who writes .witness_db_seen"). This
+         * note moved here from the deleted version-2 derivation, where
+         * the original defect was found. */
 
         if (out_chain32)
             memcpy(out_chain32, chain32, NODUS_V2_GEN_CHAIN_ID_LEN);

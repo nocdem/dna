@@ -155,7 +155,7 @@ static void cfg_free(cfgbox_t *b) {
  * from, so this file pins the GATE's reading of a chain the builder's own
  * test already proves is complete.
  *
- * The config is ~160 KB — heap-allocated, never on the stack
+ * The config is ~255 KB — heap-allocated, never on the stack
  * (nodus_witness_v2_gen.h).
  */
 static int cfg_make(cfgbox_t *b) {
@@ -166,7 +166,7 @@ static int cfg_make(cfgbox_t *b) {
     if (!b->cfg || !b->allocs) { cfg_free(b); return -1; }
 
     nodus_v2_gen_config_t *c = b->cfg;
-    c->config_version        = NODUS_V2_GEN_CONFIG_VERSION;
+    c->config_version        = NODUS_V2_GEN_CONFIG_VERSION_V3;
     c->total_supply_raw      = DNAC_DEFAULT_TOTAL_SUPPLY;
     c->epoch_length          = (uint64_t)DNAC_EPOCH_LENGTH;
     c->blocks_per_year       = (uint64_t)DNAC_BLOCKS_PER_YEAR;
@@ -205,16 +205,14 @@ static int cfg_make(cfgbox_t *b) {
     return 0;
 }
 
-/* R3 W3 (D-17 rev 10 (8)/(9)) — the SAME §0 composition, completed to a
+/* R3 W3 (D-17 rev 10 (8)/(9)) — the §0 composition, completed to a
  * version-3 document via the two builder calls the ceremony tool uses.
- * The base fields (validators, allocation, economic parameters) are
- * IDENTICAL to cfg_make's — only config_version and the v3-only fields
- * differ — so §1's "a real chain opens the gate and arms" property is
- * proven on the SAME composition this file has always used, just
- * completed to the schema this build now accepts. */
+ * tokenomics-v3 P4: this is now the ONLY composition in the file — the
+ * version-2 derivation every section below used to share with §1's
+ * version-3 one is deleted (OBLIGATION atlas-dec-71525f3b), and the
+ * config is built as version 3 from its first field. */
 static int cfg_make_v3(cfgbox_t *b) {
     if (cfg_make(b) != 0) return -1;
-    b->cfg->config_version = NODUS_V2_GEN_CONFIG_VERSION_V3;
     if (nodus_witness_v2_gen_v3_defaults(b->cfg) != 0) {
         cfg_free(b);
         return -1;
@@ -264,29 +262,9 @@ static int find_chain(const char *dir, char out_path[600], uint8_t out16[16]) {
 }
 
 /**
- * Derive a fresh pure-V2 chain into a fresh temp dir.
- *
- * @param dir      [out] the temp directory (caller rmrf's it).
- * @param db_path  [out] the derived chain database path.
- * @return 0 on success.
- */
-static int derive_chain(const char *tag, char dir[128], char db_path[600]) {
-    cfgbox_t box;
-    if (cfg_make(&box) != 0) return -1;
-
-    snprintf(dir, 128, "/tmp/test_v2_gate_pure_%s_XXXXXX", tag);
-    if (!mkdtemp(dir)) { cfg_free(&box); return -1; }
-
-    int rc = nodus_witness_v2_gen_derive(dir, box.cfg, NULL);
-    cfg_free(&box);
-    if (rc != 0) return -1;
-
-    uint8_t id16[16];
-    return find_chain(dir, db_path, id16) == 0 ? 0 : -1;
-}
-
-/**
  * Derive a fresh VERSION-3 chain into a fresh temp dir (D-17 rev 10 (8)).
+ * Every section uses it (tokenomics-v3 P4 deleted the version-2
+ * `derive_chain` §2b and §3 used to call).
  *
  * @param dir      [out] the temp directory (caller rmrf's it).
  * @param db_path  [out] the derived chain database path.
@@ -565,20 +543,20 @@ static int test_pure_chain_opens(void) {
  * NO_AUTHORITY no longer means "this binary has no ceremony compiled in".
  * It means "this database is not a chain this gate may open".
  *
- * R3 W3 NOTE ON SHAPE: neither (a) nor (b) below is a version-3 chain,
- * and neither needs to become one. (a) is a BARE `create_chain_db`
- * database with no genesis at all — no manifest, no schema past the
- * baseline — which is not "a populated database" in the sense the
- * merged tree's new chain-role gate cares about, so it is unaffected by
- * that gate either way. (b) IS a real derived chain, but it reaches the
- * gate through `open_db_raw` (a bare `sqlite3_open`, deliberately
- * bypassing `nodus_witness_create_chain_db`'s production role
- * derivation — see that helper's own doc comment), because §2b's whole
- * point is a chain the production open path would legitimately REFUSE
- * for an unrelated reason (a foreign source_tag); it stays on the
- * version-2 derivation this file has always used for that shape, since
- * the property under test (a foreign tag is a clean NO_AUTHORITY) does
- * not depend on which lane produced the chain.
+ * NOTE ON SHAPE: (a) is a BARE `create_chain_db` database with no
+ * genesis at all — no manifest, no schema past the baseline — which is
+ * not "a populated database" in the sense the chain-role gate cares
+ * about, so it is unaffected by that gate either way. (b) IS a real
+ * derived chain, but it reaches the gate through `open_db_raw` (a bare
+ * `sqlite3_open`, deliberately bypassing `nodus_witness_create_chain_db`'s
+ * production role derivation — see that helper's own doc comment),
+ * because §2b's whole point is a chain the production open path would
+ * legitimately REFUSE for an unrelated reason (a foreign source_tag).
+ * tokenomics-v3 P4: (b) is derived by the VERSION-3 builder (the
+ * version-2 derivation it used before is deleted); the property under
+ * test (a foreign tag is a clean NO_AUTHORITY) reads only the height-0
+ * `v2_manifests` row (nodus_witness_v2_gate.c v2_authority_present),
+ * which the version-3 derivation writes in the same shape.
  * ══════════════════════════════════════════════════════════════════ */
 
 /* (a) A fresh chain database: no v2_manifests genesis row at all — NOT a
@@ -626,7 +604,8 @@ static int test_foreign_tag_no_authority(void) {
     printf("§2b a real chain with a FOREIGN source_tag: NO_AUTHORITY\n");
 
     char dir[128], db_path[600];
-    CHECK(derive_chain("tag", dir, db_path) == 0, "derive");
+    uint8_t chain32[32];
+    CHECK(derive_chain_v3("tag", dir, db_path, chain32) == 0, "derive");
     OK();
 
     uint8_t *blob = NULL;
@@ -696,19 +675,20 @@ static int test_foreign_tag_no_authority(void) {
  * (O15J review R2-F4), where it silently produced a second chain beside a
  * damaged first one.
  *
- * R3 W3 NOTE ON SHAPE: like §2b, this derives a version-2 chain
- * (`derive_chain`) and reaches it through `open_db_raw`, never through
- * `nodus_witness_create_chain_db` — the property (an unreadable manifest
- * is a FAULT, never a clean NO_AUTHORITY) is about the GATE's own
- * reading of a damaged manifest, not about which lane produced the
- * chain, and going through the raw path is what lets this section reach
- * a database the production open path would refuse anyway.
+ * NOTE ON SHAPE: like §2b, this derives a chain (with the version-3
+ * builder since tokenomics-v3 P4 deleted the version-2 one) and reaches
+ * it through `open_db_raw`, never through `nodus_witness_create_chain_db`
+ * — the property (an unreadable manifest is a FAULT, never a clean
+ * NO_AUTHORITY) is about the GATE's own reading of a damaged manifest,
+ * and going through the raw path is what lets this section reach a
+ * database the production open path would refuse anyway.
  * ══════════════════════════════════════════════════════════════════ */
 
 static int fault_case(const char *tag, const uint8_t *blob, size_t len,
                       const char *what) {
     char dir[128], db_path[600];
-    CHECK(derive_chain(tag, dir, db_path) == 0, "derive");
+    uint8_t chain32[32];
+    CHECK(derive_chain_v3(tag, dir, db_path, chain32) == 0, "derive");
     OK();
 
     CHECK(manifest_overwrite(db_path, blob, len) == 0, "manifest replaced");

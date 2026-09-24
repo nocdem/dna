@@ -1106,8 +1106,9 @@ int nodus_witness_db_migrate_v2s10_ex(nodus_witness_t *w,
          *
          * The RUNG ITSELF STAYS, and deliberately: the ladder is a chain
          * of exact predecessors (S11 refuses anything but a version-10
-         * database, and nodus_witness_v2_gen_derive climbs to S12 through
-         * it), and version 10 databases exist. Collapsing 9→11 would
+         * database, and every fresh database — the genesis derivation's
+         * nodus_witness_db_migrate_v2s16 cascade included — climbs
+         * through it), and version 10 databases exist. Collapsing 9→11 would
          * renumber every rung above it and strand them. The two fail
          * injection points below are kept at their numbers for the same
          * reason — removing them would renumber

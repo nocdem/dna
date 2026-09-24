@@ -55,6 +55,7 @@
 #include "witness/nodus_witness_v2_bundle.h"
 #include "witness/nodus_witness_v2_claims.h"
 #include "witness/nodus_witness_v2_gen.h"       /* R3 W3 — the v3 fixture */
+#include "witness/nodus_witness_cmt_store.h"    /* P4: remove genesisDoc */
 #include "witness/nodus_witness_emission.h"     /* DNAC_BLOCKS_PER_YEAR :34,
                                                   * DNAC_DECIMAL_UNIT :42 */
 #include "nodus/nodus_chain_config.h"
@@ -76,13 +77,13 @@
 static int g_checks = 0;
 #define OK() do { g_checks++; } while (0)
 
-#define N_VAL 3
-
+/* The JOINER-side fixture: an empty chain database with no genesis. (The
+ * version-2 SOURCE half — seed_validators + v2x_genesis_min, N_VAL 3 — is
+ * deleted by tokenomics-v3 P4; the source is a real version-3 chain,
+ * v2x_chain_open.) */
 typedef struct {
     nodus_witness_t *w;
     char             dir[128];
-    uint8_t          chain_id[32];
-    uint8_t          genesis_id[64];
 } fixture_t;
 
 static void rmrf(const char *path) {
@@ -112,33 +113,8 @@ static int run_sql(sqlite3 *db, const char *sql) {
     return rc == SQLITE_OK ? 0 : -1;
 }
 
-static int seed_validators(nodus_witness_t *w) {
-    static const char hexd[] = "0123456789abcdef";
-    for (int i = 0; i < N_VAL; i++) {
-        dnac_validator_record_t v;
-        memset(&v, 0, sizeof(v));
-        for (size_t b = 0; b < DNAC_PUBKEY_SIZE; b++)
-            v.pubkey[b] = (uint8_t)(0x22 * (i + 1) + (b & 0x3F));
-        v.self_stake         = 0;
-        v.status             = DNAC_VALIDATOR_ACTIVE;
-        v.active_since_block = 1;
-        uint8_t fpr[64];
-        if (qgp_sha3_512(v.pubkey, DNAC_PUBKEY_SIZE, fpr) != 0) return -1;
-        for (int b = 0; b < 64; b++) {
-            v.unstake_destination_fp[2 * b]     = hexd[fpr[b] >> 4];
-            v.unstake_destination_fp[2 * b + 1] = hexd[fpr[b] & 0xF];
-        }
-        v.unstake_destination_fp[128] = '\0';
-        if (nodus_validator_insert(w, &v) != 0) return -1;
-    }
-    return 0;
-}
-
-/* Open a chain DB at S11 with the base tables seeded, but NOT yet a
- * genesis — the SOURCE fixture then commits genesis (which persists the
- * bundle via the seam step; here we call bundle_persist directly since
- * the seam is activation-gated). The JOINER fixture opens empty. */
-static int fx_open(fixture_t *fx, const char *tag, int with_genesis) {
+/* Open an EMPTY chain DB at S11 — the joiner the old-magic case feeds. */
+static int fx_open(fixture_t *fx, const char *tag) {
     memset(fx, 0, sizeof(*fx));
     fx->w = calloc(1, sizeof(*fx->w));
     if (!fx->w) return -1;
@@ -152,30 +128,6 @@ static int fx_open(fixture_t *fx, const char *tag, int with_genesis) {
     if (nodus_witness_create_chain_db(fx->w, cid16) != 0) return -1;
     if (nodus_witness_db_migrate_v2s11(fx->w) != 0) return -1;
     if (nodus_chain_config_db_migrate(fx->w) != 0) return -1;
-
-    if (!with_genesis) return 0;
-
-    if (run_sql(fx->w->db,
-            "INSERT OR REPLACE INTO supply_tracking (id, genesis_supply, "
-            "total_burned, total_minted, current_supply, last_tx_hash, "
-            "last_sequence) VALUES (1, 0, 0, 0, 0, zeroblob(64), 0)") != 0)
-        return -1;
-    if (seed_validators(fx->w) != 0) return -1;
-    /* a chain_config_history row so that table is NON-EMPTY in the
-     * bundle (a realistic successor carries CC rows from the terminal
-     * carry) — real columns: new_value/commit_block/tx_hash. */
-    if (run_sql(fx->w->db,
-            "INSERT INTO chain_config_history (param_id, new_value, "
-            "effective_block, commit_block, tx_hash, proposal_nonce, "
-            "created_at_unix) "
-            "VALUES (4, 3, 100, 99, zeroblob(64), 7, 0)") != 0)
-        return -1;
-    if (nodus_witness_vset_commit_genesis(fx->w, 1) != 0) return -1;
-
-    uint8_t vset[64];
-    memset(vset, 0x77, sizeof(vset));
-    if (v2x_genesis_min(fx->w, vset, fx->genesis_id, NULL) != 0) return -1;
-    if (nodus_witness_v2_chain_id(fx->w, fx->chain_id) != 0) return -1;
     return 0;
 }
 
@@ -304,11 +256,9 @@ static int has_v2_block0(nodus_witness_t *w) {
  * ══════════════════════════════════════════════════════════════════ */
 
 /* A version-3 config's n_validators MUST equal DNAC_COMMITTEE_SIZE (7)
- * — gen_plan_build's shared rule, checked whether the caller wanted a
- * small committee or not (nodus_witness_v2_gen.c:582). The file's own
- * N_VAL (3) is the LOW-LEVEL v2x_genesis_min fixture's count, which
- * bypasses the config builder and this rule entirely — the two are not
- * interchangeable, and reusing N_VAL here would refuse at v3_validate. */
+ * — gen_plan_build's shared rule (Rule P.1, nodus_witness_v2_gen.c).
+ * (The 3-validator count this file's deleted version-2 source fixture
+ * used bypassed that rule; tokenomics-v3 P4 removed it.) */
 #define V3_N_VAL 7
 #define V3_TREASURY_RAW 93000000000000000ULL  /* V3_N_VAL self-bonds + this
                                                 * == DNAC_DEFAULT_TOTAL_SUPPLY,
@@ -720,18 +670,46 @@ static int test_v3_bundle(void) {
 }
 
 int main(void) {
-    /* ── R3 W3 (D-17 rev 10 (9) / D-24 rev 4 (2)): THE VERSION-2 LANE
-     * CANNOT BE BUNDLED AT ALL any more — a chain with no stored genesis
-     * DOCUMENT cannot serve a correct bundle, so `bundle_persist` now
-     * refuses instead of producing a document-less one. Everything this
-     * file used to prove about the ADOPT/wrong-pin/malformed/foreign-
-     * bundle properties now lives on the version-3 path
-     * (test_v3_bundle, below) — this section proves only the CLOSURE
-     * itself: persist refuses, no bundle row exists, and an old-binary
-     * (`DNA.GBUNDLE.v1`) bundle is refused by its magic with the
-     * joiner's whole database left byte-identical. */
-    fixture_t src;
-    CHECK(fx_open(&src, "src", 1) == 0, "source fixture (genesis)"); OK();
+    /* ── R3 W3 (D-17 rev 10 (9) / D-24 rev 4 (2)): A CHAIN WITH NO
+     * STORED GENESIS DOCUMENT CANNOT BE BUNDLED — `bundle_persist`
+     * refuses instead of producing a document-less bundle. Everything
+     * this file proves about the ADOPT/wrong-pin/malformed/foreign-bundle
+     * properties lives on the version-3 path (test_v3_bundle, below);
+     * this section proves the refusal: persist refuses, no bundle row
+     * exists, and an old-binary (`DNA.GBUNDLE.v1`) bundle is refused by
+     * its magic with the joiner's whole database left byte-identical.
+     *
+     * tokenomics-v3 P4: the document-less chain used to be a VERSION-2
+     * chain (v2x_genesis_min, which never stores a document). That lane's
+     * derivation is deleted, so the same state is now reached from a real
+     * version-3 chain (v2_genesis_fixture.h, v2x_chain_open) whose
+     * "genesisDoc" row is then removed through the production store API:
+     * a chain holding a genesis manifest and every base table, minus the
+     * document — exactly the input the refusal exists for. */
+    v2x_chain_t src;
+    CHECK(v2x_chain_open(&src, "bundle_src", 0x00) == 0,
+          "source fixture (version-3 genesis)"); OK();
+    {
+        nodus_cmt_store_t s;
+        CHECK(nodus_cmt_store_init(&s, src.w->db, false) == CMT_OK,
+              "store init"); OK();
+        int drc = nodus_cmt_store_delete(&s, /*state_table=*/true,
+                                         NODUS_V2_GEN_GENESIS_DOC_KEY);
+        nodus_cmt_store_release(&s);
+        CHECK(drc == CMT_OK, "the stored genesis document is removed"); OK();
+        /* The derivation persisted a bundle while the document was
+         * still there (nodus_witness_v2_gen_derive_v3 step 12); remove
+         * it too, so "no bundle row" below is about THIS persist call. */
+        CHECK(run_sql(src.w->db, "DELETE FROM v2_genesis_bundle") == 0,
+              "the derivation's bundle is removed"); OK();
+        {
+            uint8_t *bundle = NULL;
+            size_t blen = 0;
+            CHECK(nodus_witness_v2_bundle_get(src.w, &bundle, &blen) == 1,
+                  "precondition: no bundle row before the persist below");
+            OK();
+        }
+    }
 
     CHECK(nodus_witness_v2_bundle_persist(src.w) != 0,
           "persist REFUSES a chain with no genesis document"); OK();
@@ -750,7 +728,7 @@ int main(void) {
      * comparison, so anything after it is never read. */
     {
         fixture_t j;
-        CHECK(fx_open(&j, "oldmagic", 0) == 0, "joiner fixture"); OK();
+        CHECK(fx_open(&j, "oldmagic") == 0, "joiner fixture"); OK();
 
         uint8_t old_bundle[64];
         memcpy(old_bundle, NODUS_V2_GBUNDLE_MAGIC_V1_RETIRED,
@@ -775,7 +753,7 @@ int main(void) {
         fx_close(&j);
     }
 
-    fx_close(&src);
+    v2x_chain_close(&src);
 
     /* R3 W3 (D-24 rev 4) — the version-3 lane: the only one that can
      * actually produce and adopt a bundle now (see the closure section

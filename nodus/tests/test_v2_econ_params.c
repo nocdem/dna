@@ -22,12 +22,17 @@
  *
  * ── THE TWO BINDINGS, AND WHY BOTH ARE TESTED SEPARATELY ────────────
  * The parameters travel two INDEPENDENT paths to the chain id:
- *   A. into `source_commit` (canonical config encoding → manifest →
- *      dna_bh2_genesis_block_id, nodus_witness_v2_apply.c:865);
+ *   A. into the genesis DOCUMENT's body (nodus_witness_v2_gen_v3_encode
+ *      → the chain id is the hash of the completed document, and
+ *      `source_commit` is the hash of it with chain_id and app_hash
+ *      zeroed). tokenomics-v3 P4: before the version-2 derivation was
+ *      deleted this path ran through the version-2 encoding into
+ *      dna_bh2_genesis_block_id; the body bytes are the same;
  *   B. into committed chain_config_history ROWS (→ chain_config_root →
- *      SYSTEM root, nodus_witness_roots_v2.c:266, :285 → the same
- *      genesis BlockID), which is also the ONLY path a JOINER sees — a
- *      joiner never runs the builder, so path A cannot protect it.
+ *      SYSTEM root, nodus_witness_roots_v2.c → the global root that
+ *      becomes the document's app_hash), which is also the ONLY path a
+ *      JOINER sees — a joiner never runs the builder, so path A cannot
+ *      protect it.
  *
  * ⚠ ANTI-VACUITY / COMPOUND MUTANT. Because two independent paths defend
  * "a changed parameter is a changed chain", a SINGLE mutant of either one
@@ -268,7 +273,9 @@ static int cfg_make(cfgbox_t *b, uint8_t salt, uint64_t inflation_start) {
     if (!b->cfg || !b->allocs) { cfg_free(b); return -1; }
 
     nodus_v2_gen_config_t *c = b->cfg;
-    c->config_version        = NODUS_V2_GEN_CONFIG_VERSION;
+    /* tokenomics-v3 P4: 3 is the only config version gen_plan_build
+     * accepts; the version-3 TAIL is completed by cfg_make_v3. */
+    c->config_version        = NODUS_V2_GEN_CONFIG_VERSION_V3;
     c->total_supply_raw      = DNAC_DEFAULT_TOTAL_SUPPLY;
     c->epoch_length          = (uint64_t)DNAC_EPOCH_LENGTH;
     c->blocks_per_year       = (uint64_t)DNAC_BLOCKS_PER_YEAR;
@@ -307,21 +314,16 @@ static int cfg_make(cfgbox_t *b, uint8_t salt, uint64_t inflation_start) {
     return 0;
 }
 
-/* R3 W4-D — the SAME §0 composition, completed to a version-3 document,
- * for t_path_b_committed_root: the post-open gate every ordinary
- * restart runs (O15A obligation 6, closed-consensus-lane deletion)
- * refuses a version-2 chain on reopen, so that case's open_chain call
- * needs a version-3 chain instead. Shape copied from test_v2_gen.c's
- * cfg_make_v3_ex (not included — this file builds its own). Verified by
- * reading, not assumed: gen_seed_state (nodus_witness_v2_gen.c), the
- * function that writes the chain_config_history rows param_id 200/201/
- * 202 assert on, is called identically from both nodus_witness_v2_gen_
- * derive (line 1466) and nodus_witness_v2_gen_derive_v3 (line 2951) —
- * the same shared helper, so those three rows do not depend on which
- * derive path built the chain. */
+/* The SAME §0 composition, completed to a DERIVABLE version-3 document
+ * (the tail: consensus parameters, genesis time, initial height, the
+ * reward reserve, the Comet rows). Shape copied from test_v2_gen.c's
+ * cfg_make_v3_ex (not included — this file builds its own). The
+ * committed chain_config_history rows param_id 200/201/202 are written
+ * by gen_seed_state (nodus_witness_v2_gen.c), which
+ * nodus_witness_v2_gen_derive_v3 calls — since tokenomics-v3 P4 the only
+ * derivation there is. */
 static int cfg_make_v3(cfgbox_t *b, uint8_t salt, uint64_t inflation_start) {
     if (cfg_make(b, salt, inflation_start) != 0) return -1;
-    b->cfg->config_version = NODUS_V2_GEN_CONFIG_VERSION_V3;
     if (nodus_witness_v2_gen_v3_defaults(b->cfg) != 0) {
         cfg_free(b);
         return -1;
@@ -457,12 +459,23 @@ static int t_path_a_chain_id(void) {
     CHECK(nodus_witness_v2_gen_config_validate(c1.cfg) != 0 &&
           nodus_witness_v2_gen_config_validate(c5.cfg) != 0,
           "any nonzero (retired) inflation start is REFUSED");
+
+    /* tokenomics-v3 P4: the encoding and derivation refusals are asserted
+     * on a COMPLETE version-3 document (the version-2 source_commit and
+     * derivation they used to run against are deleted). The document is
+     * completed at 0 — completing it runs the shared rules and would
+     * refuse a nonzero start on its own — and the start is set to 1
+     * afterwards, so the retired field is the ONLY defect it carries. */
+    cfgbox_t cv;
+    CHECK(cfg_make_v3(&cv, 0x00, 0ULL) == 0, "cfg (version 3, start=0)");
+    OK();
+    cv.cfg->inflation_start_block = 1ULL;
     {
         uint8_t sc[NODUS_V2_GEN_SRCCOMMIT_LEN];
-        CHECK(nodus_witness_v2_gen_source_commit(c1.cfg, sc) != 0,
+        CHECK(nodus_witness_v2_gen_v3_source_commit(cv.cfg, sc) != 0,
               "and has no source_commit — nothing about it is encoded");
     }
-    CHECK(nodus_witness_v2_gen_derive(d1, c1.cfg, NULL) != 0,
+    CHECK(nodus_witness_v2_gen_derive_v3(d1, cv.cfg, NULL) != 0,
           "and derive refuses it");
     {
         char p[600];
@@ -471,7 +484,7 @@ static int t_path_a_chain_id(void) {
               "leaving nothing in the data path");
     }
 
-    cfg_free(&c0); cfg_free(&c1); cfg_free(&c5);
+    cfg_free(&c0); cfg_free(&c1); cfg_free(&c5); cfg_free(&cv);
     rmrf(d1);
     return g_fail;
 }
@@ -493,22 +506,40 @@ static int t_path_a_chain_id(void) {
 static int t_path_a_encoding(void) {
     cfgbox_t c;
     /* tokenomics-v3 P2: 0, the retired field's only legal value (a
-     * nonzero one is refused before a byte is produced, §1.1). */
-    CHECK(cfg_make(&c, 0x00, 0ULL) == 0, "cfg");
+     * nonzero one is refused before a byte is produced, §1.1).
+     * tokenomics-v3 P4: the encoding under test is the version-3
+     * DOCUMENT (nodus_witness_v2_gen_v3_encode) — the version-2 encoder
+     * that produced the body alone is deleted. The body is the SAME
+     * table, so every offset below is unchanged; the document continues
+     * with the version-3 tail. */
+    CHECK(cfg_make_v3(&c, 0x00, 0ULL) == 0, "cfg (version 3)");
     OK();
 
     uint8_t *enc = NULL;
     size_t   len = 0;
-    CHECK(nodus_witness_v2_gen_config_encode(c.cfg, &enc, &len) == 0 && enc,
+    CHECK(nodus_witness_v2_gen_v3_encode(c.cfg, &enc, &len) == 0 && enc,
           "the config encodes");
     OK();
 
-    const size_t want_len = (size_t)ENC_HEAD_LEN +
+    /* The BODY length: where the version-3 tail must begin. A dropped
+     * economic field moves the tail 8 bytes earlier, so the tail's first
+     * two fields (consensus_protocol u32, genesis_time u64 — the table in
+     * nodus_witness_v2_gen.h) are read back AT this offset: the pair can
+     * only match if the body has exactly the documented length. */
+    const size_t body_len = (size_t)ENC_HEAD_LEN +
                             (size_t)N_VAL * ENC_VAL_LEN + 4 +
                             (size_t)1 * ENC_ALLOC_LEN;
-    CHECK(len == want_len,
-          "the encoding is exactly the documented length — a dropped "
-          "economic field shortens it by 8");
+    CHECK(len > body_len + 12, "the document extends past its body");
+    OK();
+    {
+        const uint8_t *t = enc + body_len;
+        uint32_t proto = ((uint32_t)t[0] << 24) | ((uint32_t)t[1] << 16) |
+                         ((uint32_t)t[2] << 8)  |  (uint32_t)t[3];
+        CHECK(proto == NODUS_V2_GEN_CONSENSUS_COMETBFT &&
+                  be64_at(t + 4) == c.cfg->genesis_time_ms,
+              "the body is exactly the documented length — a dropped "
+              "economic field shortens it by 8 and moves the tail");
+    }
 
     CHECK(be64_at(enc + ENC_OFF_EPOCH_LENGTH) == (uint64_t)DNAC_EPOCH_LENGTH,
           "epoch_length sits at its documented offset");
@@ -528,10 +559,20 @@ static int t_path_a_encoding(void) {
           be64_at(enc + ENC_OFF_CLAIM_END) == UINT64_MAX,
           "the surrounding fields kept their offsets");
 
-    /* THE BINDING STEP: these bytes ARE the source_commit preimage. */
+    /* THE BINDING STEP: these bytes ARE the source_commit preimage. The
+     * version-3 source_commit hashes the document with chain_id AND
+     * app_hash zeroed; both are derivation OUTPUTS and are zero in an
+     * operator's config (asserted, not assumed), so for this config the
+     * preimage is exactly `enc`. */
+    {
+        static const uint8_t zero[NODUS_V2_GEN_APP_HASH_LEN] = { 0 };
+        CHECK(memcmp(c.cfg->app_hash, zero, NODUS_V2_GEN_APP_HASH_LEN) == 0 &&
+              memcmp(c.cfg->chain_id, zero, NODUS_V2_GEN_CHAIN_ID_LEN) == 0,
+              "the config carries no app_hash and no chain_id (outputs)");
+    }
     uint8_t direct[64], reported[NODUS_V2_GEN_SRCCOMMIT_LEN];
     CHECK(qgp_sha3_512(enc, len, direct) == 0, "digest the encoding");
-    CHECK(nodus_witness_v2_gen_source_commit(c.cfg, reported) == 0,
+    CHECK(nodus_witness_v2_gen_v3_source_commit(c.cfg, reported) == 0,
           "source_commit");
     CHECK(memcmp(direct, reported, 64) == 0,
           "source_commit IS SHA3-512 of exactly those bytes — the offsets "
@@ -551,12 +592,10 @@ static int t_path_a_encoding(void) {
  * This is the SECOND half of the compound mutant. §1.1 and §1.2 both
  * survive deleting the seeded rows; this one does not.
  *
- * R3 W4-D — this case now derives and opens a VERSION-3 chain, not
- * version-2: open_chain reopens through nodus_witness_create_chain_db,
- * whose post-open gate (O15A obligation 6) now refuses a version-2
- * chain the same way every ordinary restart does. The three committed-
- * row assertions below are unchanged from the version-2 form — see
- * cfg_make_v3's own comment for why that is grounded, not assumed. */
+ * R3 W4-D — this case derives and opens a VERSION-3 chain: open_chain
+ * reopens through nodus_witness_create_chain_db, whose post-open gate
+ * refuses anything else the same way every ordinary restart does (and
+ * since tokenomics-v3 P4 no other derivation exists). */
 static int t_path_b_committed_root(void) {
     char dir[128];
     CHECK(mkdir_tmp(dir, "b") == 0, "tmpdir");
@@ -623,23 +662,28 @@ static int t_derive_refuses_mismatch(void) {
     /* blocks_per_year */
     /* tokenomics-v3 P2: every fixture here carries inflation start 0 —
      * a nonzero one would be refused on its own and make each mismatch
-     * refusal below vacuous. */
-    CHECK(cfg_make(&c, 0x00, 0ULL) == 0, "cfg");
-    CHECK(nodus_witness_v2_gen_config_validate(c.cfg) == 0,
+     * refusal below vacuous.
+     * tokenomics-v3 P4: the derive refusals run against a COMPLETE
+     * version-3 document (cfg_make_v3), mutated AFTER completion so the
+     * mismatch is its only defect — the version-2 derivation these used
+     * to call is deleted. */
+    CHECK(cfg_make_v3(&c, 0x00, 0ULL) == 0, "cfg");
+    CHECK(nodus_witness_v2_gen_config_validate(c.cfg) == 0 &&
+          nodus_witness_v2_gen_v3_validate(c.cfg) == 0,
           "the unmodified composition is ACCEPTED (non-vacuity control)");
     c.cfg->blocks_per_year = (uint64_t)DNAC_BLOCKS_PER_YEAR + 1;
     CHECK(nodus_witness_v2_gen_config_validate(c.cfg) != 0,
           "a blocks_per_year this build cannot honour is REFUSED");
-    CHECK(nodus_witness_v2_gen_derive(dir, c.cfg, NULL) != 0,
+    CHECK(nodus_witness_v2_gen_derive_v3(dir, c.cfg, NULL) != 0,
           "and derive refuses it too");
     cfg_free(&c);
 
     /* decimal_unit */
-    CHECK(cfg_make(&c, 0x00, 0ULL) == 0, "cfg");
+    CHECK(cfg_make_v3(&c, 0x00, 0ULL) == 0, "cfg");
     c.cfg->decimal_unit = (uint64_t)DNAC_DECIMAL_UNIT * 10;
     CHECK(nodus_witness_v2_gen_config_validate(c.cfg) != 0,
           "a decimal_unit this build cannot honour is REFUSED");
-    CHECK(nodus_witness_v2_gen_derive(dir, c.cfg, NULL) != 0,
+    CHECK(nodus_witness_v2_gen_derive_v3(dir, c.cfg, NULL) != 0,
           "and derive refuses it too");
     cfg_free(&c);
 
@@ -654,10 +698,11 @@ static int t_derive_refuses_mismatch(void) {
      * retired — any nonzero value is refused (it replaces the old
      * governance-ceiling case: there is no ceiling to test when 1 is
      * already illegal). */
-    CHECK(cfg_make(&c, 0x00, 1ULL) == 0, "cfg");
+    CHECK(cfg_make_v3(&c, 0x00, 0ULL) == 0, "cfg");
+    c.cfg->inflation_start_block = 1ULL;
     CHECK(nodus_witness_v2_gen_config_validate(c.cfg) != 0,
           "a nonzero (retired) inflation start is REFUSED");
-    CHECK(nodus_witness_v2_gen_derive(dir, c.cfg, NULL) != 0,
+    CHECK(nodus_witness_v2_gen_derive_v3(dir, c.cfg, NULL) != 0,
           "and derive refuses it too");
     cfg_free(&c);
 
@@ -667,6 +712,17 @@ static int t_derive_refuses_mismatch(void) {
     c.cfg->config_version = 1u;
     CHECK(nodus_witness_v2_gen_config_validate(c.cfg) != 0,
           "the pre-2C config schema is REFUSED, not defaulted");
+    cfg_free(&c);
+
+    /* tokenomics-v3 P4 (OBLIGATION atlas-dec-71525f3b): version 2 — the
+     * pure-V2 chain — is DELETED, and gen_plan_build no longer accepts
+     * it. RED ON THE PRE-P4 TREE: this config passed the shared rules.
+     * MUTANT KILLED: restoring `config_version == 2` acceptance in
+     * gen_plan_build. */
+    CHECK(cfg_make(&c, 0x00, 0ULL) == 0, "cfg");
+    c.cfg->config_version = 2u;
+    CHECK(nodus_witness_v2_gen_config_validate(c.cfg) != 0,
+          "the deleted version-2 config schema is REFUSED");
     cfg_free(&c);
 
     /* FAIL-CLOSED: not one of those refusals left a chain behind. */

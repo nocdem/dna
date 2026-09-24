@@ -11,7 +11,9 @@ implementation under test is not grounding, it is an echo.
 
 Same two-stage shape as shared/dnac/tests/block_v3_oracle.py:
 
-  stage 1 CONTROL — re-derive the SHIPPED version-2 canonical encoding of
+  stage 1 CONTROL — re-derive the version-2 canonical encoding (its C
+                    encoder was deleted in P4; the body it modelled is the
+                    version-3 body with config_version = 2) of
                     the fixture test_v2_gen.c builds (cfg_make(salt=0,
                     n_alloc=1, reverse=0)) and compare it against the
                     constant pinned below.  Nothing is emitted unless it
@@ -25,11 +27,13 @@ Same two-stage shape as shared/dnac/tests/block_v3_oracle.py:
     `grep -n '"[0-9a-f]\{32,\}"' nodus/tests/test_v2_gen.c
     nodus/tests/test_v2_econ_params.c`, which matches nothing — so the
     constant below was derived by THIS FILE from the layout.  It becomes
-    a genuine cross-implementation control the moment test_v2_gen.c is
-    run: §5 there asserts the SAME constant against the shipped C encoder
-    (nodus_witness_v2_gen_config_encode).  Until that run, the honest
-    statement is "the Python model of the version-2 layout is
-    self-consistent", never "it matches the C".
+    a cross-implementation control through test_v2_gen.c §5.  Since P4
+    (2026-09-24) the C version-2 encoder is DELETED; §5 re-checks the
+    constant over the version-3 document's first 37 481 bytes with byte
+    19 (config_version) patched to 2 — valid because the v2 body is
+    byte-identical to the v3 body except that field (D-18 rev 4).  That
+    is a self-consistency check of the shared body layout, not an
+    independent run of a v2 encoder.
 
 Run:  python3 shared/dnac/tests/genesis_v3_oracle.py
 
@@ -287,9 +291,9 @@ def make_v3(names=None, params=None, **over) -> dict:
 # ── stage 1: CONTROL ──────────────────────────────────────────────────
 #
 # The canonical version-2 encoding of cfg_make(0, 1, 0), as this file
-# models it.  test_v2_gen.c §5 asserts the same constant against the
-# SHIPPED C encoder — that assertion is what turns this leg into a
-# cross-implementation control rather than a self-comparison.
+# models it.  test_v2_gen.c §5 asserts the same constant against the C
+# version-3 encoder's first 37 481 bytes with byte 19 (config_version)
+# patched to 2 — the version-2 C encoder itself was deleted in P4.
 
 # Re-pinned 2026-09-24 (tokenomics-v3 P2: inflation_start_block 1 → 0)
 # AFTER test_v2_gen.c §5 was run against the C encoder with this value
@@ -314,7 +318,6 @@ def control_leg() -> bool:
     print("── stage 1: CONTROL (the version-2 body of cfg_make(0,1,0)) ───")
     print("  encoding length      = %d bytes" % len(enc))
     print("  SHA3-512(encoding)   = %s" % got)
-    print("  source_commit        = %s" % got)
     ok = (got == CONTROL_V2_ENC_SHA and len(enc) == CONTROL_V2_ENC_LEN)
     print("  [%s] matches CONTROL_V2_ENC_SHA / _LEN"
           % ("OK " if ok else "FAIL"))
@@ -322,9 +325,9 @@ def control_leg() -> bool:
         print()
         print("  The pinned constant in this file does not match what this")
         print("  file computes.  Update CONTROL_V2_ENC_SHA to the value")
-        print("  above ONLY after test_v2_gen.c's §5 assertion has been run")
-        print("  against the C encoder and agrees — otherwise the constant")
-        print("  is an unverified number and the control proves nothing.")
+        print("  above ONLY after test_v2_gen.c's §5 assertion (the C v3")
+        print("  body with config_version patched to 2) has been run and")
+        print("  agrees — otherwise the constant proves nothing.")
     return ok
 
 

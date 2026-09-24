@@ -28,7 +28,9 @@
  *
  *     O15J Faz 3 removed the activation ceremony. There is no longer a
  *     V1→V2 transition to authorize: a Ledger V2 chain is BORN V2, built
- *     from an operator config by `nodus_witness_v2_gen_derive` with no
+ *     from an operator config by the genesis derivation (since
+ *     tokenomics-v3 P4 only `nodus_witness_v2_gen_derive_v3`; the
+ *     version-2 `nodus_witness_v2_gen_derive` is deleted) with no
  *     legacy ancestor. So the authority this gate reads is not a rule
  *     naming a future height — it is the committed fact that THIS
  *     DATABASE IS A PURE-V2 CHAIN.
@@ -36,9 +38,11 @@
  *     Concretely: a height-0 row in `v2_manifests` whose decoded genesis
  *     manifest has `dist_present == 1` and `source_tag ==
  *     NODUS_V2_GEN_SOURCE_TAG` ("DNA.GENESIS.v1",
- *     nodus_witness_v2_gen.h:184-185). That manifest's hash IS the chain
- *     id, so the predicate rests on the most committed bytes the database
- *     holds — not on a flag, a build option or an operator decision.
+ *     nodus_witness_v2_gen.h). That manifest is committed at genesis; its
+ *     source_commit is a hash of the genesis document (chain_id and
+ *     app_hash zeroed) and the chain id is a hash of the same document
+ *     (chain_id zeroed), so the predicate rests on committed bytes — not
+ *     on a flag, a build option or an operator decision.
  *
  *     `NODUS_V2_GATE_NO_AUTHORITY` therefore now means "THIS IS NOT A
  *     PURE-V2 CHAIN", not "this software cannot activate V2". The

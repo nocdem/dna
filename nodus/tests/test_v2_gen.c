@@ -2,9 +2,12 @@
  * @file nodus/tests/test_v2_gen.c
  * @brief Ledger V2 O15J Faz 1 — the PURE-V2 genesis builder.
  *
- * Drives the REAL production functions (nodus_witness_v2_gen_derive,
- * _config_validate, _source_commit, _is_pure) over real chain databases.
- * No parallel builder, no re-implemented codec.
+ * Drives the REAL production functions (nodus_witness_v2_gen_derive_v3,
+ * _config_validate, _v3_source_commit, _is_pure) over real chain
+ * databases. No parallel builder, no re-implemented codec.
+ * (tokenomics-v3 P4 deleted the version-2 derivation and its two public
+ * encoders, OBLIGATION atlas-dec-71525f3b; the sections whose SUBJECT was
+ * that lane are deleted with it and named at their old place.)
  *
  * Sections:
  *   §1  the §0 composition derives a COMPLETE genesis
@@ -209,7 +212,10 @@ static int cfg_make(cfgbox_t *b, uint8_t salt, uint32_t n_alloc,
     if (!b->cfg || !b->allocs) { cfg_free(b); return -1; }
 
     nodus_v2_gen_config_t *c = b->cfg;
-    c->config_version     = NODUS_V2_GEN_CONFIG_VERSION;
+    /* tokenomics-v3 P4: 3 is the only version gen_plan_build accepts;
+     * this is the document BODY only — the tail is cfg_make_v3_ex's /
+     * cfg_make_v3's. */
+    c->config_version     = NODUS_V2_GEN_CONFIG_VERSION_V3;
     c->total_supply_raw   = DNAC_DEFAULT_TOTAL_SUPPLY;
     c->epoch_length       = (uint64_t)DNAC_EPOCH_LENGTH;
     /* Block 2C — the economic parameters. The three schedule constants
@@ -273,7 +279,6 @@ static int cfg_make(cfgbox_t *b, uint8_t salt, uint32_t n_alloc,
 static int cfg_make_v3_ex(cfgbox_t *b, uint8_t salt, uint32_t n_alloc,
                           int reverse) {
     if (cfg_make(b, salt, n_alloc, reverse) != 0) return -1;
-    b->cfg->config_version = NODUS_V2_GEN_CONFIG_VERSION_V3;
     if (nodus_witness_v2_gen_v3_defaults(b->cfg) != 0) {
         cfg_free(b);
         return -1;
@@ -1068,54 +1073,13 @@ static int test_defect_L2F1(void) {
     return 0;
 }
 
-/* R3 W3 (D-17 rev 10 (8)/(9)): this section is SPECIFICALLY about the
- * closed version-2 lane (its bundle join), not a lane-independent
- * property, so it keeps deriving version 2 — but the merged tree's
- * post-open chain-role gate now refuses to REOPEN a version-2 chain at
- * all ("chain role: PRE-COMET LEDGER V2 (schema below S14) … the old
- * consensus lane is CLOSED in W3 (D-17 rev 10); refusing the
- * database"), so the assertion this section makes changes from "the
- * chain opens" to "the chain derives, but the production path refuses
- * to reopen it, and refuses closed for the reason this closure names".
- * The property this test ORIGINALLY proved — validator_stats and
- * chain_config_history travel to a JOINER through the genesis bundle —
- * cannot be exercised on this lane any more regardless (Delta 3 of this
- * package already established that no version-2 chain gets a bundle at
- * all any more); its coverage moved to test_v2_bundle.c's
- * test_v3_bundle, which digests validator_stats (among V3_TBL) between
- * a version-3 source and its joiner on every run. */
-static int test_defect_L1F1(void) {
-    printf("§3.6 L1-F1 — the closed version-2 lane derives, but the "
-           "production path refuses to reopen it\n");
-
-    cfgbox_t c;
-    CHECK(cfg_make(&c, 0, 1, 0) == 0, "cfg");
-    char sdir[128], jdir[128];
-    CHECK(mkdir_tmp(sdir, "l1f1_src") == 0, "src dir");
-    CHECK(mkdir_tmp(jdir, "l1f1_join") == 0, "joiner dir");
-    OK();
-    CHECK(nodus_witness_v2_gen_derive(sdir, c.cfg, NULL) == 0,
-          "the closed lane still DERIVES — D-17 rev 10 (9) closes it, "
-          "the deletion wave removes it");
-    OK();
-
-    nodus_witness_t *src = open_chain(sdir, NULL);
-    CHECK(src == NULL,
-          "the production open path REFUSES to reopen a version-2 chain "
-          "— the merged tree's post-open chain-role gate (D-17 rev 10 "
-          "(9)): a populated database below S14 is the closed old "
-          "consensus lane");
-    OK();
-
-    rmrf(sdir);
-    rmrf(jdir);
-    cfg_free(&c);
-    OK();
-    printf("  ok: the closed lane derives but cannot be reopened "
-           "(coverage for the bundle property moved to "
-           "test_v2_bundle.c's test_v3_bundle)\n");
-    return 0;
-}
+/* §3.6 L1-F1 — DELETED by tokenomics-v3 P4 (OBLIGATION
+ * atlas-dec-71525f3b). Its SUBJECT was the version-2 lane: it derived a
+ * version-2 chain and asserted that the production open path refused to
+ * reopen it. The derivation it called is deleted. The property L1-F1
+ * originally proved — validator_stats and chain_config_history travel to
+ * a JOINER through the genesis bundle — is covered by test_v2_bundle.c's
+ * test_v3_bundle (validator_stats is among its V3_TBL digests). */
 
 /* ════════════════════════════════════════════════════════════════════
  * §3.7 — review R1-F4: a zero-amount allocation leaf
@@ -1201,16 +1165,19 @@ static int dir_is_clean(const char *dir) {
 static int test_fail_closed(void) {
     printf("§4 a refused derivation leaves NOTHING behind\n");
 
-    /* a config that fails the exact-count rule */
+    /* a config that fails the exact-count rule.
+     * tokenomics-v3 P4: derived through the version-3 entry (the
+     * version-2 one is deleted), over a COMPLETE document mutated after
+     * completion, so the count is its only defect. */
     {
         cfgbox_t c;
-        CHECK(cfg_make(&c, 0, 1, 0) == 0, "cfg");
+        CHECK(cfg_make_v3_ex(&c, 0, 1, 0) == 0, "cfg");
         char dir[128];
         CHECK(mkdir_tmp(dir, "fc_p1") == 0, "tmpdir");
         OK();
         c.cfg->n_validators = (uint16_t)(N_VAL - 1);
         c.allocs[0].amount = TREASURY_RAW + DNAC_SELF_STAKE_AMOUNT;
-        CHECK(nodus_witness_v2_gen_derive(dir, c.cfg, NULL) != 0,
+        CHECK(nodus_witness_v2_gen_derive_v3(dir, c.cfg, NULL) != 0,
               "the derivation is REFUSED");
         CHECK(dir_is_clean(dir) == 1,
               "and the data path is untouched — no chain db, no scratch");
@@ -1220,89 +1187,76 @@ static int test_fail_closed(void) {
 
     /* a build whose epoch length disagrees with the config.
      * The config commits DNAC_EPOCH_LENGTH because that value reaches
-     * the genesis BlockID through the epoch-keyed vset snapshots; a
-     * build that disagrees must refuse LOUDLY instead of deriving a
-     * silently different chain id from the same config bytes. */
+     * the chain id through the epoch-keyed vset snapshots; a build that
+     * disagrees must refuse LOUDLY instead of deriving a silently
+     * different chain id from the same config bytes. */
     {
         cfgbox_t c;
-        CHECK(cfg_make(&c, 0, 1, 0) == 0, "cfg");
+        CHECK(cfg_make_v3_ex(&c, 0, 1, 0) == 0, "cfg");
         char dir[128];
         CHECK(mkdir_tmp(dir, "fc_epoch") == 0, "tmpdir");
         OK();
         c.cfg->epoch_length = (uint64_t)DNAC_EPOCH_LENGTH + 1;
-        CHECK(nodus_witness_v2_gen_derive(dir, c.cfg, NULL) != 0,
+        CHECK(nodus_witness_v2_gen_derive_v3(dir, c.cfg, NULL) != 0,
               "an epoch_length this build cannot honour is REFUSED");
         CHECK(dir_is_clean(dir) == 1, "nothing left behind");
         rmrf(dir);
         cfg_free(&c);
     }
 
-    /* an unknown config version.
-     *
-     * ⚠ THE PREMISE OF THIS CASE MOVED IN W2 (R3-C1b) AND THE VALUE HAD
-     * TO CHANGE WITH IT. It used to say NODUS_V2_GEN_CONFIG_VERSION + 1,
-     * i.e. 3 — and 3 is now the cometbft genesis document's version, a
-     * schema this build DOES understand (nodus_witness_v2_gen.c:490-495
-     * accepts 2 or 3, because every rule gen_plan_build states is shared
-     * by both documents). The assertion still passed nothing: it read
-     * "an unknown version rejects" while feeding a known one. + 2 is a
-     * genuinely unknown schema and keeps the case meaning what its name
-     * says. The version-3 half is pinned directly below rather than
-     * left to this case. */
+    /* an unknown config version — and, since tokenomics-v3 P4, the
+     * DELETED one. 4 is a schema that never existed; 2 is the pure-V2
+     * schema whose derivation is gone (OBLIGATION atlas-dec-71525f3b).
+     * RED ON THE PRE-P4 TREE for the version-2 leg: gen_plan_build
+     * accepted 2 as a shared-rules body.
+     * MUTANT KILLED: restoring `config_version == 2` in gen_plan_build. */
     {
         cfgbox_t c;
         CHECK(cfg_make(&c, 0, 1, 0) == 0, "cfg");
         OK();
-        c.cfg->config_version = NODUS_V2_GEN_CONFIG_VERSION + 2;
+        c.cfg->config_version = NODUS_V2_GEN_CONFIG_VERSION_V3 + 1;
         CHECK(nodus_witness_v2_gen_config_validate(c.cfg) != 0,
               "an unknown config_version REJECTS");
+        c.cfg->config_version = 2u;
+        CHECK(nodus_witness_v2_gen_config_validate(c.cfg) != 0,
+              "the deleted version-2 schema REJECTS");
         cfg_free(&c);
     }
 
-    /* ── THE POSITIVE COUNTERPART: a version-2 BODY claiming version 3.
+    /* ── A VERSION-3 BODY WITH NO VERSION-3 TAIL.
      *
-     * This is the config the case above used to build by accident, so it
-     * gets asserted deliberately: every version-3 field is zero (the
-     * struct is calloc'd and cfg_make never touches them), which is a
-     * document with no consensus protocol and no genesis time.
+     * Every tail field is zero (the struct is calloc'd and cfg_make never
+     * touches them), which is a document with no consensus protocol and
+     * no genesis time.
      *
      * WHERE EACH REFUSAL COMES FROM, named so a future reader does not
      * have to guess which function owns the rule:
      *
      *   nodus_witness_v2_gen_config_validate   ACCEPTS it — and that is
-     *       DELIBERATE, not a hole. Since W2 it answers one question:
-     *       "do the rules the two documents SHARE hold?"
-     *       (nodus_witness_v2_gen.c:490-495 and the @return note in
-     *       nodus_witness_v2_gen.h). For this config they do: the
-     *       validators, the allocations, the schedule constants and the
-     *       claim window are a perfectly good version-2 body. A 0 here
+     *       DELIBERATE, not a hole. It answers one question: "do the
+     *       SHARED rules (gen_plan_build) hold?" (the @return note in
+     *       nodus_witness_v2_gen.h). For this config they do. A 0 here
      *       means "the shared rules pass", never "derivable". Asserting
      *       the 0 pins that scope: if someone later makes this function
-     *       version-aware, this line fails and points them here.
+     *       tail-aware, this line fails and points them here.
      *   nodus_witness_v2_gen_v3_validate       REFUSES, and for the
-     *       RIGHT reason — consensus_protocol is 0, not cometbft
-     *       (nodus_witness_v2_gen.c:2386-2392). It is the version-3
-     *       verdict, and nodus_witness_v2_gen_derive_v3 runs it first.
-     *   nodus_witness_v2_gen_config_encode     REFUSES (gen.c:957): the
-     *       version-2 layout writer must never produce bytes for a
-     *       version-3 config.
-     *   nodus_witness_v2_gen_source_commit     REFUSES (gen.c:970-979),
-     *       which is the choke point nodus_witness_v2_gen_derive passes
-     *       through — so the version-2 derivation refuses it too, with a
-     *       logged reason an operator can act on.
+     *       RIGHT reason — consensus_protocol is 0, not cometbft. It is
+     *       the version-3 verdict, and nodus_witness_v2_gen_derive_v3
+     *       runs it first.
      *
-     * Together those four are the whole lane split, asserted on ONE
-     * config. */
+     * (Before tokenomics-v3 P4 this case also asserted that the version-2
+     * encoder, source binding and derivation refused this config; all
+     * three are deleted.) */
     {
         cfgbox_t c;
         CHECK(cfg_make(&c, 0, 1, 0) == 0, "cfg");
         OK();
-        c.cfg->config_version = NODUS_V2_GEN_CONFIG_VERSION_V3;
 
-        CHECK(c.cfg->consensus_protocol == 0 &&
+        CHECK(c.cfg->config_version == NODUS_V2_GEN_CONFIG_VERSION_V3 &&
+              c.cfg->consensus_protocol == 0 &&
               c.cfg->genesis_time_ms == 0 &&
               c.cfg->n_comet_validators == 0,
-              "the version-3 fields of a version-2 config are all zero");
+              "the tail fields of a body-only config are all zero");
         CHECK(nodus_witness_v2_gen_config_validate(c.cfg) == 0,
               "config_validate answers the SHARED rules only, and they "
               "hold — it is not the version-3 verdict");
@@ -1311,24 +1265,12 @@ static int test_fail_closed(void) {
               "and a genesis that does not name its consensus has no "
               "validity rules");
 
-        uint8_t *enc = NULL;
-        size_t   enc_len = 0;
-        CHECK(nodus_witness_v2_gen_config_encode(c.cfg, &enc, &enc_len) != 0 &&
-              enc == NULL,
-              "the version-2 encoder REFUSES to write it");
-        uint8_t sc[NODUS_V2_GEN_SRCCOMMIT_LEN];
-        CHECK(nodus_witness_v2_gen_source_commit(c.cfg, sc) != 0,
-              "and so does the version-2 source binding — which is what "
-              "makes nodus_witness_v2_gen_derive refuse it");
-
         char dir[128];
         CHECK(mkdir_tmp(dir, "v2body_v3ver") == 0, "tmpdir");
         OK();
-        CHECK(nodus_witness_v2_gen_derive(dir, c.cfg, NULL) != 0,
-              "the version-2 derivation is REFUSED");
         CHECK(nodus_witness_v2_gen_derive_v3(dir, c.cfg, NULL) != 0,
-              "and so is the version-3 derivation");
-        CHECK(dir_is_clean(dir) == 1, "neither left anything behind");
+              "the derivation is REFUSED");
+        CHECK(dir_is_clean(dir) == 1, "and left nothing behind");
         rmrf(dir);
         cfg_free(&c);
     }
@@ -1344,16 +1286,20 @@ static int test_fail_closed(void) {
         cfg_free(&c);
     }
 
-    /* the canonical encoding is stable and order-independent */
+    /* the canonical encoding is stable and order-independent.
+     * tokenomics-v3 P4: asserted on the version-3 DOCUMENT (the
+     * version-2 encoder of the body alone is deleted); the Comet rows are
+     * filled in canonical order by _v3_fill_comet_rows, so the whole
+     * document — body and tail — must be byte-identical. */
     {
         cfgbox_t f, r;
-        CHECK(cfg_make(&f, 0, 3, 0) == 0, "cfg forward");
-        CHECK(cfg_make(&r, 0, 3, 1) == 0, "cfg reversed");
+        CHECK(cfg_make_v3_ex(&f, 0, 3, 0) == 0, "cfg forward");
+        CHECK(cfg_make_v3_ex(&r, 0, 3, 1) == 0, "cfg reversed");
         OK();
         uint8_t *bf = NULL, *br = NULL;
         size_t lf = 0, lr = 0;
-        CHECK(nodus_witness_v2_gen_config_encode(f.cfg, &bf, &lf) == 0 &&
-              nodus_witness_v2_gen_config_encode(r.cfg, &br, &lr) == 0,
+        CHECK(nodus_witness_v2_gen_v3_encode(f.cfg, &bf, &lf) == 0 &&
+              nodus_witness_v2_gen_v3_encode(r.cfg, &br, &lr) == 0,
               "both configs encode");
         CHECK(lf == lr && bf && br && memcmp(bf, br, lf) == 0,
               "the canonical encoding is byte-identical regardless of the "
@@ -1377,7 +1323,8 @@ static int test_fail_closed(void) {
  * Every vector below comes from shared/dnac/tests/genesis_v3_oracle.py,
  * which re-derives the layout in Python from the byte table in
  * nodus_witness_v2_gen.h and NEVER calls this C.  Its stage-1 control leg
- * is §5 here: the same constant, over the shipped version-2 encoder.  If
+ * is §5 here: the same constant, over the body the version-3 document
+ * carries (the version-2 encoder that wrote it alone is deleted).  If
  * §5 fails, the oracle's model of the container is wrong and no §6 vector
  * means anything — which is exactly why §5 runs first and says so.
  *
@@ -1441,6 +1388,11 @@ static int hex_eq(const uint8_t *b, size_t n, const char *hex) {
  * for the fixture composition. */
 
 #define KAT_GENESIS_TIME_MS  1767225600000ULL   /* 2026-01-01T00:00:00Z */
+/* The BODY length for the §0 composition (7 validators, 1 allocation) —
+ * a pure function of the field widths, so it holds at any economic
+ * constants. It was the whole length of the version-2 encoding, which is
+ * where the constant's name comes from; since tokenomics-v3 P4 deleted
+ * that encoder it is used as "where the version-3 tail begins". */
 #define KAT_V2_ENC_LEN       37481u
 #define KAT_A_ENC_LEN        56121u
 #define KAT_B_ENC_LEN        56130u
@@ -1571,47 +1523,71 @@ static int cfg_make_v3_d(cfgbox_t *b) {
 }
 
 /* ════════════════════════════════════════════════════════════════════
- * §5 — THE CONTROL LEG: the oracle reproduces the SHIPPED version-2
- *      encoder byte for byte.
+ * §5 — THE CONTROL LEG: the oracle's model of the BODY equals the C
+ *      body encoder byte for byte.
  *
  * PROVES  the Python model of the canonical container equals the C that
  *         has been deriving chains since O15J. Without it, every §6
  *         vector is an echo of an unverified model.
- * SOURCE  genesis_v3_oracle.py stage 1 (CONTROL_V2_ENC_SHA / _LEN).
+ * SOURCE  genesis_v3_oracle.py stage 1 (CONTROL_V2_ENC_SHA / _LEN) —
+ *         SHA3-512 of the body with config_version = 2, the version-2
+ *         encoding the oracle was validated against.
+ * HOW, SINCE tokenomics-v3 P4. The version-2 encoder this leg used to
+ *         call (nodus_witness_v2_gen_config_encode) is DELETED. The body
+ *         it wrote is still produced — by the SAME gen_encode_planned —
+ *         as the first KAT_V2_ENC_LEN bytes of the version-3 document
+ *         (D-18 rev 4: "the version-2 body is byte-identical ... with
+ *         config_version reading 3"; nodus_witness_v2_gen.c
+ *         gen_v3_encode_planned). So the control constant is re-checked
+ *         over that prefix with its 4-byte config_version field (offset
+ *         16, after the 16-byte tag) written back to 2. The tail must
+ *         begin exactly at KAT_V2_ENC_LEN (consensus_protocol == 1), or
+ *         the prefix is not the body.
  * LIES?   only if this build's economic constants differ — in which case
  *         it DOES NOT RUN and says so.
  * AT BASE red: the fixture is unchanged but this assertion is new.
  * ══════════════════════════════════════════════════════════════════ */
 
 static int test_v3_control(void) {
-    printf("§5 the oracle reproduces the shipped version-2 encoding\n");
+    printf("§5 the oracle reproduces the body encoding\n");
     if (!kat_constants_match()) {
         kat_announce_skip("§5 (and with it every §6 vector)");
         return 0;
     }
+    /* the oracle's control composition: TREASURY_RAW in one allocation,
+     * no reward reserve — cfg_make_v3_ex's composition exactly */
     cfgbox_t box;
-    CHECK(cfg_make(&box, 0x00, 1, 0) == 0, "config");
+    CHECK(cfg_make_v3_ex(&box, 0x00, 1, 0) == 0, "config");
     OK();
     uint8_t *enc = NULL;
     size_t   len = 0;
-    CHECK(nodus_witness_v2_gen_config_encode(box.cfg, &enc, &len) == 0,
-          "the version-2 config encodes");
+    CHECK(nodus_witness_v2_gen_v3_encode(box.cfg, &enc, &len) == 0,
+          "the version-3 document encodes");
     OK();
-    CHECK(len == KAT_V2_ENC_LEN, "the encoding is 37481 bytes");
+    CHECK(len > KAT_V2_ENC_LEN + 4, "the document extends past its body");
+    OK();
+    CHECK(enc[KAT_V2_ENC_LEN]     == 0 && enc[KAT_V2_ENC_LEN + 1] == 0 &&
+          enc[KAT_V2_ENC_LEN + 2] == 0 &&
+          enc[KAT_V2_ENC_LEN + 3] == NODUS_V2_GEN_CONSENSUS_COMETBFT,
+          "the tail begins exactly at the 37481-byte body boundary");
+    CHECK(enc[16] == 0 && enc[17] == 0 && enc[18] == 0 &&
+          enc[19] == NODUS_V2_GEN_CONFIG_VERSION_V3,
+          "the body's config_version field reads 3");
+    uint8_t *body = malloc(KAT_V2_ENC_LEN);
+    CHECK(body != NULL, "alloc");
+    OK();
+    memcpy(body, enc, KAT_V2_ENC_LEN);
+    body[19] = 2u;     /* the oracle's stage-1 container is version 2 */
     uint8_t d[64];
-    CHECK(qgp_sha3_512(enc, len, d) == 0, "digest");
+    CHECK(qgp_sha3_512(body, KAT_V2_ENC_LEN, d) == 0, "digest");
     CHECK(hex_eq(d, 64, KAT_V2_ENC_SHA),
-          "SHA3-512(version-2 encoding) == the oracle's control constant");
-    /* source_commit IS that digest — stated by the header, asserted here
-     * so the two can never drift into two definitions. */
-    uint8_t sc[NODUS_V2_GEN_SRCCOMMIT_LEN];
-    CHECK(nodus_witness_v2_gen_source_commit(box.cfg, sc) == 0, "commit");
-    CHECK(memcmp(sc, d, 64) == 0,
-          "source_commit is SHA3-512 of exactly those bytes");
+          "SHA3-512(the body, version field 2) == the oracle's control "
+          "constant");
+    free(body);
     free(enc);
     cfg_free(&box);
     OK();
-    printf("  ok: the oracle and the shipped encoder agree\n");
+    printf("  ok: the oracle and the body encoder agree\n");
     return 0;
 }
 
@@ -1708,17 +1684,8 @@ static int test_v3_vectors(void) {
               "app_hash IS inside the chain-id preimage");
     }
 
-    /* the version-2 encoder must refuse a version-3 config outright */
-    {
-        uint8_t *x = NULL;
-        size_t   xl = 0;
-        CHECK(nodus_witness_v2_gen_config_encode(a.cfg, &x, &xl) != 0 &&
-              x == NULL,
-              "the version-2 encoder REFUSES a version-3 config");
-        uint8_t sc[64];
-        CHECK(nodus_witness_v2_gen_source_commit(a.cfg, sc) != 0,
-              "and so does the version-2 source_commit");
-    }
+    /* (The "version-2 encoder refuses a version-3 config" leg that stood
+     * here is deleted with the version-2 encoder, tokenomics-v3 P4.) */
 
     cfg_free(&a); cfg_free(&b); cfg_free(&c); cfg_free(&d);
     OK();
@@ -1938,19 +1905,21 @@ static int test_v3_decode(void) {
         free(longer);
     }
 
-    /* ── a version-2 encoding fed to the version-3 decoder ──────────── */
+    /* ── a version-2 encoding fed to the version-3 decoder ──────────── *
+     * tokenomics-v3 P4: the version-2 encoder is deleted, so the
+     * version-2 encoding is built from what it was — the body alone,
+     * config_version 2 — out of this very document's first
+     * KAT_V2_ENC_LEN bytes (see §5 for why that prefix IS the body). */
     {
-        cfgbox_t v2;
-        CHECK(cfg_make(&v2, 0x00, 1, 0) == 0, "v2 config");
+        CHECK(len > KAT_V2_ENC_LEN, "the document is longer than its body");
         OK();
-        uint8_t *v2enc = NULL;
-        size_t   v2len = 0;
-        CHECK(nodus_witness_v2_gen_config_encode(v2.cfg, &v2enc, &v2len) == 0,
-              "v2 encodes");
+        uint8_t *v2enc = malloc(KAT_V2_ENC_LEN);
+        CHECK(v2enc != NULL, "alloc");
         OK();
-        v3_reject("a version-2 encoding", v2enc, v2len);
+        memcpy(v2enc, enc, KAT_V2_ENC_LEN);
+        v2enc[16] = 0; v2enc[17] = 0; v2enc[18] = 0; v2enc[19] = 2u;
+        v3_reject("a version-2 encoding", v2enc, KAT_V2_ENC_LEN);
         free(v2enc);
-        cfg_free(&v2);
     }
 
     /* ── values the encoder can write and a DOCUMENT may not carry ─── */
@@ -2644,23 +2613,21 @@ static int test_v3_row_equality(void) {
         cfg_free(&m);
     }
 
-    /* a version-2 config must NOT derive through the version-3 entry,
-     * and a version-3 config must not derive through the version-2 one */
+    /* a version-2 config must NOT derive through the version-3 entry.
+     * (The reverse leg — a version-3 config through the version-2 entry
+     * — is deleted with that entry, tokenomics-v3 P4.) */
     {
-        cfgbox_t v2, v3;
+        cfgbox_t v2;
         char dir[128];
-        CHECK(cfg_make(&v2, 0x00, 1, 0) == 0 && cfg_make_v3(&v3) == 0,
-              "fixtures");
+        CHECK(cfg_make(&v2, 0x00, 1, 0) == 0, "fixture");
+        v2.cfg->config_version = 2u;
         CHECK(mkdir_tmp(dir, "v3cross") == 0, "tmpdir");
         OK();
         CHECK(nodus_witness_v2_gen_derive_v3(dir, v2.cfg, NULL) != 0,
               "the version-3 derivation refuses a version-2 config");
-        CHECK(nodus_witness_v2_gen_derive(dir, v3.cfg, NULL) != 0,
-              "the version-2 derivation refuses a version-3 config");
-        CHECK(dir_is_clean(dir) == 1, "neither left anything behind");
+        CHECK(dir_is_clean(dir) == 1, "and left nothing behind");
         rmrf(dir);
         cfg_free(&v2);
-        cfg_free(&v3);
     }
 
     OK();
@@ -2680,7 +2647,6 @@ int main(void) {
     if (test_defect_L2F3())   return 1;
     if (test_defect_L2F2())   return 1;
     if (test_defect_L2F1())   return 1;
-    if (test_defect_L1F1())   return 1;
     if (test_zero_amount_leaf()) return 1;   /* O15J review R1-F4 */
     if (test_fail_closed())   return 1;
     printf("\n=== W2 / R3-C1b — the version-3 genesis document ===\n\n");

@@ -6,13 +6,14 @@
  * The properties pinned here, in increasing order of importance:
  *
  *   1. SEAM CHAIN-ID AUTHORITY — the seam binds to the DERIVED chain id
- *      (committed genesis block_id, full 32 bytes), never to the LEGACY
- *      witness->chain_id whose bytes 16..31 are always zero
- *      (nodus_witness.c:265-280). The fixture's genesis id is non-zero in
- *      every one of those bytes, so a regression that reached for the
- *      legacy value would produce a DIFFERENT tx_id — and this suite
- *      computes that different value and asserts the seam does not match
- *      it.
+ *      (the full 32-byte hash of the chain's stored genesis document
+ *      since tokenomics-v3 P4 moved this file onto a real version-3
+ *      chain; the committed genesis block_id before), never to the
+ *      LEGACY witness->chain_id whose bytes 16..31 are always zero
+ *      (nodus_witness.c). The suite ASSERTS the derived id's bytes 16..31
+ *      are not all zero, so a regression that reached for the legacy
+ *      value would produce a DIFFERENT tx_id — and this suite computes
+ *      that different value and asserts the seam does not match it.
  *   2. FORGED-DUPLICATE IMPOSSIBILITY — the API has no transaction-id
  *      input at all (pinned by a _Static_assert on the envelope struct's
  *      size), so two envelopes whose first 64 wire bytes are byte-
@@ -129,16 +130,6 @@ static void fx_close(fixture_t *fx) {
     rmrf(fx->dir);
 }
 
-/**
- * Genesis block id, NON-ZERO THROUGHOUT: bytes 0x40..0x7F. The derived
- * chain id is its first 32 bytes (0x40..0x5F), so bytes 16..31 of the
- * chain id are 0x50..0x5F — every one non-zero, and distinct from bytes
- * 0..15. That is what makes the legacy-value regression observable.
- */
-static void mk_gen_id(uint8_t out[64], uint8_t base) {
-    for (int i = 0; i < 64; i++) out[i] = (uint8_t)(base + i);
-}
-
 /* ── envelope construction ──────────────────────────────────────────── */
 
 /** A 1-leg envelope. Caller owns the returned buffer. */
@@ -230,15 +221,15 @@ static int batch_zeroed(const dna_env_preflight_t *out, size_t n) {
 }
 
 int main(void) {
-    fixture_t fx;
-    CHECK(fx_open(&fx) == 0, "fixture"); OK();
-    CHECK(nodus_witness_db_migrate_v2s9(fx.w) == 0, "migrate"); OK();
-
-    uint8_t gen_id[64], vset[64];
-    (void)mk_gen_id;
-    memset(vset, 0x77, sizeof(vset));
-    /* O14: the genesis BlockID is DERIVED by the engine. */
-    CHECK(v2x_genesis_min(fx.w, vset, gen_id, NULL) == 0, "genesis");
+    /* tokenomics-v3 P4: a REAL version-3 chain (v2_genesis_fixture.h,
+     * v2x_chain_open — the ceremony's derivation + the production open
+     * path). Its chain id is the hash of its stored genesis document; the
+     * version-2 fixture this replaced took it from a height-0 block row.
+     * fixture_t / fx_open stay for §8's deliberately genesis-less
+     * database. */
+    v2x_chain_t ch;
+    CHECK(v2x_chain_open(&ch, "env_pf", 0x00) == 0,
+          "version-3 chain (derive + production open)");
     OK();
 
     dna_env_leg_ctx_t tab;
@@ -246,11 +237,16 @@ int main(void) {
 
     /* ── 2. SEAM CHAIN-ID AUTHORITY ─────────────────────────────────── */
     uint8_t derived[DNA_CHAIN_ID_LEN];
-    CHECK(nodus_witness_v2_chain_id(fx.w, derived) == 0, "derive chain id");
+    CHECK(nodus_witness_v2_chain_id(ch.w, derived) == 0, "derive chain id");
     OK();
-    /* full 32-byte prefix of the genesis block id */
-    CHECK(memcmp(derived, gen_id, DNA_CHAIN_ID_LEN) == 0,
-          "derived chain id != genesis block_id[0..31]"); OK();
+    /* the full 32-byte chain id the DERIVATION produced (the document's
+     * own). tokenomics-v3 P4 ASSERTION CHANGE: this compared against the
+     * version-2 genesis block_id[0..31], an artefact of the deleted
+     * version-2 genesis; the property — the seam's id is the chain's full
+     * derived id, not a local stand-in — is the same. */
+    CHECK(DNA_CHAIN_ID_LEN == NODUS_V2_GEN_CHAIN_ID_LEN &&
+          memcmp(derived, ch.chain32, DNA_CHAIN_ID_LEN) == 0,
+          "derived chain id != the derivation's chain id"); OK();
     /* bytes 16..31 are NON-zero — the legacy value's are always zero */
     CHECK(!all_zero(derived + 16, 16),
           "fixture cannot detect a legacy-chain-id regression"); OK();
@@ -295,7 +291,7 @@ int main(void) {
 
     size_t fail_idx = 999;
     dna_env_preflight_status_t pf_st = DNA_ENV_PF_ERR_HASH;
-    CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 1, &tab, 1, envs, 3,
+    CHECK(nodus_witness_v2_env_preflight_batch(ch.w, 1, &tab, 1, envs, 3,
                                                out, &fail_idx, &pf_st)
           == NODUS_V2_ENV_OK, "happy batch"); OK();
     CHECK(fail_idx == 0 && pf_st == DNA_ENV_PF_OK,
@@ -334,29 +330,26 @@ int main(void) {
 
     /* ── 3. CROSS-CHAIN: a different genesis, same bytes, same table ── */
     {
-        fixture_t fb;
-        CHECK(fx_open(&fb) == 0, "fixture b");
-        CHECK(nodus_witness_db_migrate_v2s9(fb.w) == 0, "migrate b");
-        uint8_t gen_b[64], vset_b[64];
-        /* O14: a different chain comes from a different committed
-         * VALIDATOR SET — genesis binds the committed authority, so a
-         * different set yields a different vset hash, genesis BlockID
-         * and chain id. Seed it before genesis. */
-        memset(vset_b, 0x80, sizeof(vset_b));
-        CHECK(v2x_seed_authority_fill(fb.w, 0x80) == 0, "seed set b");
-        CHECK(v2x_genesis_min(fb.w, vset_b, gen_b, NULL) == 0,
-              "genesis b");
+        /* A different chain comes from a different genesis: salt 0x80
+         * gives every validator a different key, hence a different
+         * genesis document and a different chain id. */
+        v2x_chain_t cb;
+        CHECK(v2x_chain_open(&cb, "env_pf_b", 0x80) == 0,
+              "a second version-3 chain");
+        OK();
+        CHECK(memcmp(cb.chain32, ch.chain32, sizeof(cb.chain32)) != 0,
+              "the two chains really are different chains"); OK();
 
         dna_env_preflight_t *ob = calloc(1, sizeof(*ob));
         CHECK(ob != NULL, "ob alloc");
         nodus_v2_envelope_t one = { e0, l0 };
-        CHECK(nodus_witness_v2_env_preflight_batch(fb.w, 1, &tab, 1, &one, 1,
+        CHECK(nodus_witness_v2_env_preflight_batch(cb.w, 1, &tab, 1, &one, 1,
                                                    ob, NULL, NULL)
               == NODUS_V2_ENV_OK, "batch b"); OK();
         CHECK(memcmp(ob->wire_id, out[0].wire_id, 64) != 0,
               "same identity on two different chains"); OK();
         free(ob);
-        fx_close(&fb);
+        v2x_chain_close(&cb);
     }
 
     /* ── 4. CROSS-RULESET: same chain, a different contextual hash ──── */
@@ -369,7 +362,7 @@ int main(void) {
         dna_env_preflight_t *o2 = calloc(1, sizeof(*o2));
         CHECK(o2 != NULL, "o2 alloc");
         nodus_v2_envelope_t one = { e0, l0 };
-        CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 1, &other, 1, &one,
+        CHECK(nodus_witness_v2_env_preflight_batch(ch.w, 1, &other, 1, &one,
                                                    1, o2, NULL, NULL)
               == NODUS_V2_ENV_OK, "cross-ruleset batch"); OK();
         CHECK(memcmp(o2->wire_id, out[0].wire_id, 64) != 0,
@@ -391,7 +384,7 @@ int main(void) {
         dna_env_preflight_t *o2 = calloc(2, sizeof(*o2));
         CHECK(o2 != NULL, "o2 alloc");
         nodus_v2_envelope_t two[2] = { { e0, l0 }, { e1, l1 } };
-        CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 1, &tab, 1, two, 2,
+        CHECK(nodus_witness_v2_env_preflight_batch(ch.w, 1, &tab, 1, two, 2,
                                                    o2, NULL, NULL)
               == NODUS_V2_ENV_OK, "prefix-identical pair rejected"); OK();
         CHECK(memcmp(o2[0].wire_id, o2[1].wire_id, 64) != 0,
@@ -431,7 +424,7 @@ int main(void) {
         memset(o2, 0xAA, 2 * sizeof(*o2));   /* DIRTY: zeroing is proven */
         nodus_v2_envelope_t two[2] = { { ea, la }, { eb, lb } };
         size_t fidx = 99;
-        CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 1, &tab, 1, two, 2,
+        CHECK(nodus_witness_v2_env_preflight_batch(ch.w, 1, &tab, 1, two, 2,
                                                    o2, &fidx, NULL)
               == NODUS_V2_ENV_ERR_DUP_INTENT,
               "auth-differing same-intent pair accepted"); OK();
@@ -449,10 +442,10 @@ int main(void) {
         CHECK(oa && ob, "single alloc");
         nodus_v2_envelope_t onea[1] = { { ea, la } };
         nodus_v2_envelope_t oneb[1] = { { eb, lb } };
-        CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 1, &tab, 1, onea,
+        CHECK(nodus_witness_v2_env_preflight_batch(ch.w, 1, &tab, 1, onea,
                                                    1, oa, NULL, NULL)
               == NODUS_V2_ENV_OK, "realization A rejected"); OK();
-        CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 1, &tab, 1, oneb,
+        CHECK(nodus_witness_v2_env_preflight_batch(ch.w, 1, &tab, 1, oneb,
                                                    1, ob, NULL, NULL)
               == NODUS_V2_ENV_OK, "realization B rejected"); OK();
         CHECK(memcmp(oa->wire_id, ob->wire_id, 64) != 0,
@@ -504,14 +497,14 @@ int main(void) {
 
         size_t fi = 999;
         memset(om, 0xAA, sizeof(*om));
-        CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 1, tab2, 1, &one_ml,
+        CHECK(nodus_witness_v2_env_preflight_batch(ch.w, 1, tab2, 1, &one_ml,
                                                    1, om, &fi, NULL)
               == NODUS_V2_ENV_ERR_CTX_MISSING,
               "second leg's missing entry accepted"); OK();
         CHECK(fi == 0 && batch_zeroed(om, 1), "ml missing not fail-closed");
         OK();
 
-        CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 1, tab2, 2, &one_ml,
+        CHECK(nodus_witness_v2_env_preflight_batch(ch.w, 1, tab2, 2, &one_ml,
                                                    1, om, NULL, NULL)
               == NODUS_V2_ENV_OK, "2-leg envelope rejected"); OK();
         CHECK(om->view.leg_count == 2, "2-leg view wrong"); OK();
@@ -590,7 +583,7 @@ int main(void) {
 
             size_t fi = 999;
             dna_env_preflight_status_t ps = DNA_ENV_PF_OK;
-            CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 1, &tab, 1, ev,
+            CHECK(nodus_witness_v2_env_preflight_batch(ch.w, 1, &tab, 1, ev,
                                                        n, ob, &fi, &ps)
                   == NODUS_V2_ENV_ERR_DUP, "duplicate not rejected"); OK();
             /* the SECOND member of the pair */
@@ -618,18 +611,18 @@ int main(void) {
 
         /* candidate height 1: no-expiry accepts, expiry 1 accepts */
         nodus_v2_envelope_t one = { exp0, le };
-        CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 1, &tab, 1, &one, 1,
+        CHECK(nodus_witness_v2_env_preflight_batch(ch.w, 1, &tab, 1, &one, 1,
                                                    ob, NULL, NULL)
               == NODUS_V2_ENV_OK, "expiry 0 at H=1"); OK();
         one.env_bytes = exp1; one.env_len = le1;
-        CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 1, &tab, 1, &one, 1,
+        CHECK(nodus_witness_v2_env_preflight_batch(ch.w, 1, &tab, 1, &one, 1,
                                                    ob, NULL, NULL)
               == NODUS_V2_ENV_OK, "expiry 1 at H=1"); OK();
 
         /* candidate height 2: expiry 1 is now in the past */
         size_t fi = 999;
         dna_env_preflight_status_t ps = DNA_ENV_PF_OK;
-        CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 2, &tab, 1, &one, 1,
+        CHECK(nodus_witness_v2_env_preflight_batch(ch.w, 2, &tab, 1, &one, 1,
                                                    ob, &fi, &ps)
               == NODUS_V2_ENV_ERR_PREFLIGHT, "expiry 1 at H=2"); OK();
         CHECK(ps == DNA_ENV_PF_ERR_EXPIRED, "wrong pf status"); OK();
@@ -644,7 +637,7 @@ int main(void) {
          * so the claim is grounded in this fixture, not assumed. */
         {
             sqlite3_stmt *st = NULL;
-            CHECK(sqlite3_prepare_v2(fx.w->db,
+            CHECK(sqlite3_prepare_v2(ch.w->db,
                   "SELECT MAX(domain_height) FROM v2_domain_heads", -1,
                   &st, NULL) == SQLITE_OK, "prep heads");
             CHECK(sqlite3_step(st) == SQLITE_ROW, "heads row");
@@ -675,7 +668,7 @@ int main(void) {
 
         size_t fi = 999;
         dna_env_preflight_status_t ps = DNA_ENV_PF_OK;
-        CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 5, &tab, 1, ev, 3,
+        CHECK(nodus_witness_v2_env_preflight_batch(ch.w, 5, &tab, 1, ev, 3,
                                                    ob, &fi, &ps)
               == NODUS_V2_ENV_ERR_PREFLIGHT, "mid-batch expiry"); OK();
         CHECK(fi == 1, "wrong fail index"); OK();
@@ -698,7 +691,7 @@ int main(void) {
         memset(ob, 0xAA, sizeof(*ob));
 
         size_t fi = 999;
-        CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 1, &tab, 1, &one, 1,
+        CHECK(nodus_witness_v2_env_preflight_batch(ch.w, 1, &tab, 1, &one, 1,
                                                    ob, &fi, NULL)
               == NODUS_V2_ENV_ERR_CTX_MISSING, "unknown domain accepted");
         OK();
@@ -719,7 +712,7 @@ int main(void) {
         mk_rulesets(&desc[0], 0x11); desc[0].domain_id = 7;
         mk_rulesets(&desc[1], 0x22); desc[1].domain_id = 1;   /* descending */
         memset(ob, 0xAA, sizeof(*ob));    /* DIRTY: zeroing must be proven */
-        CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 1, desc, 2, &one, 1,
+        CHECK(nodus_witness_v2_env_preflight_batch(ch.w, 1, desc, 2, &one, 1,
                                                    ob, NULL, NULL)
               == NODUS_V2_ENV_ERR_RULESETS, "descending table accepted");
         OK();
@@ -729,7 +722,7 @@ int main(void) {
         mk_rulesets(&dup[0], 0x11); dup[0].domain_id = 1;
         mk_rulesets(&dup[1], 0x22); dup[1].domain_id = 1;     /* duplicate  */
         memset(ob, 0xAA, sizeof(*ob));
-        CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 1, dup, 2, &one, 1,
+        CHECK(nodus_witness_v2_env_preflight_batch(ch.w, 1, dup, 2, &one, 1,
                                                    ob, NULL, NULL)
               == NODUS_V2_ENV_ERR_RULESETS, "duplicate table accepted");
         OK();
@@ -755,23 +748,23 @@ int main(void) {
             calloc(NODUS_V2_ENV_BATCH_MAX + 1, sizeof(*big));
         CHECK(big != NULL, "big alloc");
 
-        CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 1, &tab, 1, &one, 0,
+        CHECK(nodus_witness_v2_env_preflight_batch(ch.w, 1, &tab, 1, &one, 0,
                                                    big, NULL, NULL)
               == NODUS_V2_ENV_ERR_ARG, "n_envs 0 accepted"); OK();
         CHECK(nodus_witness_v2_env_preflight_batch(
-                  fx.w, 1, &tab, 1, &one, NODUS_V2_ENV_BATCH_MAX + 1, big,
+                  ch.w, 1, &tab, 1, &one, NODUS_V2_ENV_BATCH_MAX + 1, big,
                   NULL, NULL) == NODUS_V2_ENV_ERR_ARG,
               "n_envs NODUS_V2_ENV_BATCH_MAX+1 accepted"); OK();
-        CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 1, &tab, 1, &one, 1,
+        CHECK(nodus_witness_v2_env_preflight_batch(ch.w, 1, &tab, 1, &one, 1,
                                                    NULL, NULL, NULL)
               == NODUS_V2_ENV_ERR_ARG, "NULL out accepted"); OK();
-        CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 1, &tab, 1, NULL, 1,
+        CHECK(nodus_witness_v2_env_preflight_batch(ch.w, 1, &tab, 1, NULL, 1,
                                                    big, NULL, NULL)
               == NODUS_V2_ENV_ERR_ARG, "NULL envs accepted"); OK();
-        CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 1, NULL, 1, &one, 1,
+        CHECK(nodus_witness_v2_env_preflight_batch(ch.w, 1, NULL, 1, &one, 1,
                                                    big, NULL, NULL)
               == NODUS_V2_ENV_ERR_ARG, "NULL rulesets accepted"); OK();
-        CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 1, &tab, 0, &one, 1,
+        CHECK(nodus_witness_v2_env_preflight_batch(ch.w, 1, &tab, 0, &one, 1,
                                                    big, NULL, NULL)
               == NODUS_V2_ENV_ERR_ARG, "n_rulesets 0 accepted"); OK();
         CHECK(nodus_witness_v2_env_preflight_batch(NULL, 1, &tab, 1, &one, 1,
@@ -784,7 +777,7 @@ int main(void) {
             nodus_v2_envelope_t nullbytes[2] = { { e0, l0 }, { NULL, 0 } };
             size_t fi = 999;
             memset(big, 0xAA, 2 * sizeof(*big));   /* DIRTY */
-            CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 1, &tab, 1,
+            CHECK(nodus_witness_v2_env_preflight_batch(ch.w, 1, &tab, 1,
                                                        nullbytes, 2, big,
                                                        &fi, NULL)
                   == NODUS_V2_ENV_ERR_ARG, "NULL env_bytes accepted"); OK();
@@ -802,7 +795,7 @@ int main(void) {
             size_t fi = 999;
             dna_env_preflight_status_t ps = DNA_ENV_PF_OK;
             memset(big, 0xAA, sizeof(*big));       /* DIRTY */
-            CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 1, &tab, 1,
+            CHECK(nodus_witness_v2_env_preflight_batch(ch.w, 1, &tab, 1,
                                                        &bad, 1, big, &fi,
                                                        &ps)
                   == NODUS_V2_ENV_ERR_PREFLIGHT, "truncated accepted"); OK();
@@ -839,7 +832,7 @@ int main(void) {
     free(out);
     free(e2); free(e1); free(e0);
 #undef ENV_HAPPY_CAP
-    fx_close(&fx);
+    v2x_chain_close(&ch);
 
     printf("test_v2_env_preflight: all %d checks passed\n", g_checks);
     return 0;

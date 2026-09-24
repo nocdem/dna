@@ -339,7 +339,7 @@ static int cfg_make_v3_real(cfgbox_t *b)
         return -1;
     }
     c = b->cfg;
-    c->config_version        = NODUS_V2_GEN_CONFIG_VERSION;
+    c->config_version        = NODUS_V2_GEN_CONFIG_VERSION_V3;
     c->total_supply_raw      = DNAC_DEFAULT_TOTAL_SUPPLY;
     c->epoch_length          = (uint64_t)DNAC_EPOCH_LENGTH;
     c->blocks_per_year       = (uint64_t)DNAC_BLOCKS_PER_YEAR;
@@ -445,7 +445,7 @@ static int cfg_make_v3_real_n(cfgbox_t *b, uint32_t n)
         return -1;
     }
     c = b->cfg;
-    c->config_version        = NODUS_V2_GEN_CONFIG_VERSION;
+    c->config_version        = NODUS_V2_GEN_CONFIG_VERSION_V3;
     c->total_supply_raw      = DNAC_DEFAULT_TOTAL_SUPPLY;
     c->epoch_length          = (uint64_t)DNAC_EPOCH_LENGTH;
     c->blocks_per_year       = (uint64_t)DNAC_BLOCKS_PER_YEAR;
@@ -509,12 +509,13 @@ typedef struct {
 /**
  * Derive a version-3 chain and OPEN IT BY HAND.
  *
- * `nodus_witness_create_chain_db` cannot be used: it derives the chain's
- * role, finds the pure-V2 manifest tag and then calls the height-0
- * chain_id, which a version-3 chain cannot answer — the refusal
- * nodus_witness_v2_gen.h records as a W3 item. So the handle is built
- * field by field, and EVERY field set here is one the app/apply path
- * reads:
+ * The handle is built field by field rather than through
+ * `nodus_witness_create_chain_db`. (The reason first recorded here — that
+ * the production open could not recognise a version-3 chain — stopped
+ * being true in R3 W3: the post-open gate now reads the stored document,
+ * and v2_genesis_fixture.h's v2x_chain_open reopens through it.) This
+ * fixture keeps its by-hand open; EVERY field set here is one the
+ * app/apply path reads:
  *   db                            every statement
  *   data_path                     nothing in this path, set for parity
  *   v2_successor                  the app's bind gate and the verify divert
@@ -756,7 +757,12 @@ static void gfx_close(gfx_t *g)
 }
 
 /* ══ FIXTURE B — a version-2 successor chain at S14 ══════════════════
- * The seam-backed rows need the height-0 block row (see the header). */
+ * tokenomics-v3 P4: used by ONE case only, t_chain_id_row_branch_
+ * unchanged, whose subject is the height-0-row branch of
+ * nodus_witness_v2_chain_id (nodus_witness_v2_claims.c) — a branch of the
+ * deleted version-2 genesis that stays in the tree until claims.c is in
+ * a package's whitelist (OBLIGATION atlas-dec-71525f3b names it). Every
+ * other case that borrowed this fixture now runs on gfx_open. */
 
 typedef struct {
     nodus_witness_t *w;
@@ -1958,7 +1964,6 @@ static int t_per_item_failure(void)
 static int t_apply_entry_preconditions(void)
 {
     gfx_t             g;
-    fixture_t         fx;
     nodus_v2_block_t *blk;
     nodus_v2_tx_result_t results[4];
 
@@ -1977,25 +1982,26 @@ static int t_apply_entry_preconditions(void)
           "and says so");
     gfx_close(&g);
 
-    /* the same entry at S12 — the version-2 fixture BEFORE its S14 rung
-     * would be ideal, but fx_open climbs it; a chain at S12 is built by
-     * asking the schema module directly. */
-    CHECK(fx_open(&fx, "pre_s12") == 0, "version-2 fixture at S14");
-    CHECK(run_sql(fx.w->db, "PRAGMA user_version = 12") == 0,
+    /* the same entry at S12. tokenomics-v3 P4: the chain is a real
+     * version-3 chain (gfx_open) whose schema version is then rewritten
+     * to 12, so the version is the only thing wrong with it — the
+     * version-2 fixture this used to borrow is not needed for that. */
+    CHECK(gfx_open(&g, "pre_s12") == 0, "version-3 fixture");
+    CHECK(run_sql(g.w->db, "PRAGMA user_version = 12") == 0,
           "pretend this node is still at S12");
-    CHECK(run_sql(fx.w->db, "BEGIN IMMEDIATE") == 0, "a host transaction");
+    CHECK(run_sql(g.w->db, "BEGIN IMMEDIATE") == 0, "a host transaction");
     memset(blk, 0, sizeof(*blk));
     blk->global_height = 1;
     blk->epoch = nodus_v2_epoch_for_height(1);
     blk->cmt.on = true;
     blk->cmt.results = results;
     blk->cmt.results_cap = 4;
-    CHECK(nodus_witness_v2_apply_block(fx.w, blk) == NODUS_V2_INTERNAL_FAULT,
+    CHECK(nodus_witness_v2_apply_block(g.w, blk) == NODUS_V2_INTERNAL_FAULT,
           "the Comet entry refuses at S12");
     CHECK(strstr(blk->out_reason, "schema version") != NULL, "and says so");
-    CHECK(run_sql(fx.w->db, "ROLLBACK") == 0, "clean up");
+    CHECK(run_sql(g.w->db, "ROLLBACK") == 0, "clean up");
     free(blk);
-    fx_close(&fx);
+    gfx_close(&g);
     return 0;
 }
 
@@ -4058,7 +4064,7 @@ static int t_process_proposal_item_cap(void)
 /** The vote-extension pair is the reference's BaseApplication default. */
 static int t_vote_extensions(void)
 {
-    fixture_t                                   fx;
+    gfx_t                                       fx;
     cmt_genesis_doc_t                           doc;
     nodus_cmt_app_ledger_t                     *app;
     nodus_abci_request_extend_vote_t            evreq;
@@ -4066,7 +4072,9 @@ static int t_vote_extensions(void)
     nodus_abci_request_verify_vote_extension_t  vreq;
     nodus_abci_response_verify_vote_extension_t vresp;
 
-    CHECK(fx_open(&fx, "voteext") == 0, "version-2 fixture");
+    /* tokenomics-v3 P4: a real version-3 chain (the version-2 fixture
+     * this case borrowed carried nothing it reads). */
+    CHECK(gfx_open(&fx, "voteext") == 0, "version-3 fixture");
     app = calloc(1, sizeof(*app));
     CHECK(app != NULL, "alloc");
     memset(&doc, 0, sizeof(doc));
@@ -4091,7 +4099,7 @@ static int t_vote_extensions(void)
     CHECK(vresp.status == NODUS_ABCI_VERIFY_STATUS_ACCEPT, "ACCEPT");
     nodus_cmt_app_ledger_release(app);
     free(app);
-    fx_close(&fx);
+    gfx_close(&fx);
     return 0;
 }
 
@@ -4567,11 +4575,13 @@ static int t_prepare_fee_order(void)
 /** Binding a LEGACY chain is refused. */
 static int t_bind_refuses_legacy(void)
 {
-    fixture_t               fx;
+    gfx_t                   fx;
     cmt_genesis_doc_t       doc;
     nodus_cmt_app_ledger_t *app;
 
-    CHECK(fx_open(&fx, "bind") == 0, "version-2 fixture");
+    /* tokenomics-v3 P4: a real version-3 chain; the case flips
+     * v2_successor itself, which is its subject. */
+    CHECK(gfx_open(&fx, "bind") == 0, "version-3 fixture");
     app = calloc(1, sizeof(*app));
     CHECK(app != NULL, "alloc");
     memset(&doc, 0, sizeof(doc));
@@ -4592,7 +4602,7 @@ static int t_bind_refuses_legacy(void)
     CHECK(nodus_cmt_app_ledger_init(app, fx.w, NULL) == CMT_FAULT,
           "the genesis document is mandatory");
     free(app);
-    fx_close(&fx);
+    gfx_close(&fx);
     return 0;
 }
 

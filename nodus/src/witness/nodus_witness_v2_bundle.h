@@ -54,27 +54,13 @@
  * refused", before reading anything past it — an old-binary bundle is
  * refused BY ITS MAGIC, never by a short read further in. There is no
  * version-2 code path left in this file; `nodus_witness_v2_genesis_ex`
- * is not called here (the deletion wave removes the function itself).
- * CONSEQUENCE, stated plainly: `nodus_witness_v2_gen_derive` (the
- * version-2 lane, nodus_witness_v2_gen.c step 7b) no longer calls
- * `nodus_witness_v2_bundle_persist` at all — since that call would now
- * unconditionally refuse (no document to carry) and there is no reason
- * to make a document-less chain's derivation fail over a bundle it was
- * never going to be able to serve, the step was replaced with a single
- * INFO log line and the derivation continues. So a version-2 chain
- * derives exactly as before EXCEPT that it now has NO persisted bundle
- * row (`nodus_witness_v2_bundle_get` reports it absent) — every existing
- * caller of `nodus_witness_v2_gen_derive` (including unit tests outside
- * this package's whitelist, e.g. test_v2_econ_params.c) still derives
- * successfully; the one whitelisted assertion that specifically checked
- * a version-2 chain's bundle presence (test_v2_gen.c) was updated to
- * expect absence, and that bundle-carriage property now has its own
- * coverage under test_v2_bundle.c's version-3 tests instead. This is
- * DEVNET: a wipe + stop-all deploy accompanies this wave regardless
- * (`BREAKING-CHANGE POLICY`), and the version-2 lane is titled for
- * deletion (an APPROVED OBLIGATION already assigns
- * `nodus_witness_v2_gen_derive` to it) — that obligation is unaffected
- * by this file and stays exactly as recorded.
+ * is not called here.
+ * The version-2 DERIVATION (`nodus_witness_v2_gen_derive`), which after
+ * R3 W3 derived with no persisted bundle, is DELETED by tokenomics-v3 P4
+ * (OBLIGATION atlas-dec-71525f3b). The only derivation left,
+ * `nodus_witness_v2_gen_derive_v3`, stores the document first and then
+ * persists the bundle (its step 12). test_v2_bundle.c proves the refusal
+ * above on a version-3 chain whose document was removed.
  *
  * ═══ THE VERSION-3 PIN, AND WHAT IT BINDS ═══════════════════════════════
  * `pin` is 32 bytes — the chain id (D-24 rev 4 (1); a version-3 chain has

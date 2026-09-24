@@ -40,15 +40,21 @@
  *     fill.
  *   - A missing key refuses. Absent is never zero.
  *
- * ── THE THREE FIELDS THE FILE MAY NOT NAME ──────────────────────────
- * `config_version`, `claim_start_height` and `claim_end_height` are set
- * by this parser and are NOT settable from the file; naming any of them
- * is an unknown key. This is NOT a hidden default. Each has exactly one
- * legal value and `gen_plan_build` refuses every other one — the
- * version at nodus_witness_v2_gen.c:467-472 and the claim window at
- * :544-553 — so there is no alternative value a silent default could be
- * masking. A settable field with a one-element domain would only give
- * the operator a way to fail later, in the builder, instead of never.
+ * ── THE TWO FIELDS THE FILE MAY NOT NAME ────────────────────────────
+ * `claim_start_height` and `claim_end_height` are set by this parser and
+ * are NOT settable from the file; naming either is an unknown key. This
+ * is NOT a hidden default. Each has exactly one legal value and
+ * `gen_plan_build` refuses every other one (the claim window rule in
+ * nodus_witness_v2_gen.c), so there is no alternative value a silent
+ * default could be masking. A settable field with a one-element domain
+ * would only give the operator a way to fail later, in the builder,
+ * instead of never.
+ *
+ * `config_version` is the opposite case: REQUIRED in the file, and 3 is
+ * its only legal value (tokenomics-v3 P4 deleted version 2, OBLIGATION
+ * atlas-dec-71525f3b). It is required rather than forced so that a file
+ * written for the deleted schema is refused instead of being silently
+ * read as the new one.
  *
  * ── THE FORMAT ──────────────────────────────────────────────────────
  * Line-oriented ASCII. `#` begins a comment that runs to end of line.
@@ -64,7 +70,11 @@
  * config needs exactly DNAC_COMMITTEE_SIZE of them (Rule P.1,
  * nodus_witness_v2_gen.c:559-564), and at least one allocation:
  *
- *     # DNA Chain — Ledger V2 genesis config
+ *     # DNA Chain — version-3 (cometbft) genesis config
+ *     config_version        = 3          # REQUIRED; 3 is the only value
+ *     genesis_time_ms       = <UTC ms>   # REQUIRED
+ *     initial_height        = 1          # REQUIRED (0 and 1 differ in
+ *                                        # chain id)
  *     total_supply_raw      = 100000000000000000
  *     epoch_length          = 720
  *     blocks_per_year       = 6307200
@@ -75,7 +85,6 @@
  *                                        # gen_plan_build. The key stays
  *                                        # required: it is a field of the
  *                                        # canonical genesis encoding.
- *     # the next two are version-3 keys (config_version = 3 only):
  *     reward_pool_initial    = 20000000000000000  # optional, default
  *                                        # 200M × 10^8 (v2_gen.c
  *                                        # GEN_V3_REWARD_POOL_INITIAL);
@@ -130,13 +139,10 @@ extern "C" {
  * under ceremony conditions: a refusal that does not name the line is a
  * refusal that costs an hour.
  *
- * For a VERSION-2 file this function performs NO genesis validation: a
- * successfully parsed config is a WELL-FORMED one, not a derivable one;
- * the genesis rules belong to nodus_witness_v2_gen_config_validate and
- * to nodus_witness_v2_gen_derive, which are the single authority on them.
- *
- * For a VERSION-3 file (`config_version = 3`, W2 / R3-C1b) the contract
- * is WIDER, and deliberately (register row R3-C1b-3): deriving the Comet
+ * The file must say `config_version = 3` (the only schema since
+ * tokenomics-v3 P4; a version-2 file, and a file with no version, is
+ * refused). The contract is WIDER than well-formedness, and
+ * deliberately (register row R3-C1b-3): deriving the Comet
  * validator rows (`nodus_witness_v2_gen_v3_fill_comet_rows`) runs the
  * builder's SHARED genesis rules through `gen_plan_build`, so a
  * well-formed version-3 file whose configuration is not derivable is

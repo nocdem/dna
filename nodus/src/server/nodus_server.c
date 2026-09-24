@@ -6331,7 +6331,9 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
      * accident"). Arming it is only honest once all three are real.
      *
      * WHY NOT IN THE V2 GENESIS BUILDER. That was the first cut and it
-     * was wrong: nodus_witness_v2_gen_derive runs as an offline one-shot
+     * was wrong: the genesis derivation (nodus_witness_v2_gen_derive_v3
+     * today; the version-2 nodus_witness_v2_gen_derive where the defect
+     * was found is deleted, tokenomics-v3 P4) runs as an offline one-shot
      * that creates exactly ONE of the three, and this gate runs BEFORE
      * nodus_storage_open and nodus_channel_store_open create the other
      * two. A marker written there fails the gate on the very next start

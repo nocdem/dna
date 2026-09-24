@@ -63,7 +63,9 @@ arm the gate — arming it would turn its legitimate two-of-three state into a
 refusal.
 
 **The Ledger V2 genesis builder deliberately does NOT write it.**
-`nodus_witness_v2_gen_derive` runs as an offline one-shot (`nodus-server
+`nodus_witness_v2_gen_derive_v3` (the only derivation since tokenomics-v3 P4
+deleted the version-2 `nodus_witness_v2_gen_derive`, where this was first
+found) runs as an offline one-shot (`nodus-server
 --derive-v2-genesis`) that creates exactly ONE of the three databases, and the
 H-10 gate runs BEFORE `nodus_storage_open` and `nodus_channel_store_open` create
 the other two. A marker written there fails the gate on the very next start of a

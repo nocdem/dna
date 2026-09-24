@@ -105,10 +105,10 @@ static int parse_v2_pin(const char *hex, uint8_t out[32]) {
  * out of it rather than out of a check:
  *
  *  - The node is not on the network while the chain is being derived.
- *    nodus_witness_v2_gen_derive already takes no witness and no server
- *    handle (nodus_witness_v2_gen.h:362-364), so nothing arriving from a
- *    peer can reach a derived byte; with an offline tool there is
- *    additionally no process a peer could talk to.
+ *    nodus_witness_v2_gen_derive_v3 takes no witness and no server
+ *    handle (nodus_witness_v2_gen.h), so nothing arriving from a peer can
+ *    reach a derived byte; with an offline tool there is additionally no
+ *    process a peer could talk to.
  *  - The two abort()ing migrations inside nodus_witness_create_chain_db
  *    (nodus_witness_db.c, migrate_v12's ALTER and DROP INDEX paths)
  *    cannot kill a live node. On a one-shot tool an abort is a failed
@@ -331,8 +331,10 @@ static int run_derive_v2_genesis(const char *cfg_path, const char *data_path) {
             cfg_path, data_path);
 
     /* R3 W3 (D-17 rev 10 (9)): the ceremony derives version 3 only. The
-     * version-2 entry (nodus_witness_v2_gen_derive) is CLOSED — no code
-     * path in this tool reaches it any more. out_chain32 is still passed
+     * version-2 entry (nodus_witness_v2_gen_derive), closed by W3, is
+     * DELETED from the tree by tokenomics-v3 P4 (OBLIGATION
+     * atlas-dec-71525f3b), and the config parser refuses a version-2 or
+     * version-less file before this point. out_chain32 is still passed
      * as NULL on purpose, and the printed value comes from the committed
      * database instead: nodus_witness_v2_gen_derive_v3 is idempotent and
      * returns 0 WITHOUT writing out_chain32 when a chain built from this

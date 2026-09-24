@@ -1519,14 +1519,14 @@ register_witness_test(test_v2_committee_seed)
 # vs source, wrong-pin/malformed rejection with zero trace.
 register_witness_test(test_v2_bundle)
 
-# Ledger V2 O15J Faz 1 — the PURE-V2 genesis builder: the §0 composition
-# (1 treasury + 7 × 10M self-stake == 10^17) derived from a config with no
-# legacy ancestor, determinism twins (byte-identical chain id / genesis
-# BlockID / whole-database digest from independent derivations), config
-# sensitivity, and one explicit REJECT per red-team defect (L2-F1 absent
-# supply row, L2-F2 total_claimable vs leaves, L2-F3 claim window,
-# L2-F4 graduation-malformed validator, L2-F6 rules P.1/P.2/P.3,
-# L1-F1 validator_stats carried in the genesis bundle).
+# The version-3 genesis builder (the version-2 derivation was deleted in
+# tokenomics-v3 P4): the composition (allocations + 7 × 10M self-stake +
+# the reward reserve == total supply, Rule P.2) derived from a config,
+# determinism twins (byte-identical chain id / whole-database digest from
+# independent derivations), config sensitivity, the version-3-only gate,
+# and one explicit REJECT per red-team defect (L2-F1 absent supply row,
+# L2-F2 total_claimable vs leaves, L2-F3 claim window, L2-F4
+# graduation-malformed validator, L2-F6 rules P.1/P.2/P.3).
 register_witness_test(test_v2_gen)
 
 # O16A — the genesis config TEXT form and the three wiring corrections
@@ -1597,9 +1597,19 @@ register_witness_test(test_v2_active_max)
 # the old lane is linked into the production server. The version-3
 # acceptance path is cometbft's own (nodus_witness_cmt_app.c FinalizeBlock),
 # whose presence test_cmt_live drives end to end.
+# tokenomics-v3 P4 (OBLIGATION atlas-dec-71525f3b): the version-2 genesis
+# DERIVATION is deleted too — nodus_witness_v2_gen_derive and its two public
+# encoders, nodus_witness_v2_gen_config_encode and
+# nodus_witness_v2_gen_source_commit. The first and last are anchored with
+# `$` because live symbols share their prefix
+# (nodus_witness_v2_gen_derive_v3; nodus_witness_v2_gen_v3_source_commit
+# differs earlier but is anchored alike for symmetry). The version-2 ENGINE
+# genesis (nodus_witness_v2_genesis_ex) is NOT on this list: it is still in
+# the tree (see the P4 report — its removal needs the ledger-engine test
+# fixture conversion).
 add_test(NAME test_v2_seam_linked
          COMMAND sh -c
-         "! nm '$<TARGET_FILE:nodus-server>' | grep -qE ' T (nodus_witness_bft_|nodus_witness_sync_|nodus_witness_bootstrap_|nodus_witness_mempool_|nodus_witness_cert_store|nodus_witness_v2_finalize_|nodus_witness_v2_qc_|nodus_witness_v2_produce_commit|nodus_witness_v2_sync_tick|nodus_witness_v2_ingress_block)'")
+         "! nm '$<TARGET_FILE:nodus-server>' | grep -qE ' T (nodus_witness_bft_|nodus_witness_sync_|nodus_witness_bootstrap_|nodus_witness_mempool_|nodus_witness_cert_store|nodus_witness_v2_finalize_|nodus_witness_v2_qc_|nodus_witness_v2_produce_commit|nodus_witness_v2_sync_tick|nodus_witness_v2_ingress_block|nodus_witness_v2_gen_derive$|nodus_witness_v2_gen_config_encode$|nodus_witness_v2_gen_source_commit$)'")
 
 # Ledger V2 — generic typed-effect + compiled storage-adapter boundary
 # (INACTIVE): adapter registration through the five-axis runtime lookup,

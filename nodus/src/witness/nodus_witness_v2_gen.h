@@ -12,11 +12,14 @@
  * That seam derived a successor from a TERMINAL LEGACY DATABASE. This
  * module kept its proven steps 4 and 6-8 verbatim — provisional-DB
  * creation, vset_commit_genesis + domreg_init_genesis + dna_gman_encode
- * + nodus_witness_v2_genesis_ex, the supply post-conditions, the genesis
- * bundle persist, and the rename-only-on-COMPLETE discipline — and
- * replaced exactly the steps that were legacy-shaped. The step numbers
- * below are the seam's, kept because they are how this module's own
- * structure is still organised; the file they refer to no longer exists.
+ * + the engine genesis, the supply post-conditions, the genesis bundle
+ * persist, and the rename-only-on-COMPLETE discipline — and replaced
+ * exactly the steps that were legacy-shaped. The step numbers below are
+ * the seam's, kept because they are how this module's own structure is
+ * still organised; the file they refer to no longer exists. (The engine
+ * genesis is nodus_witness_v2_genesis_cmt since W2; the version-2
+ * derivation that called nodus_witness_v2_genesis_ex is deleted by
+ * tokenomics-v3 P4.)
  *
  *   seam step 1  terminal binding       → REPLACED: source_tag is
  *                                         "DNA.GENESIS.v1" and
@@ -33,10 +36,13 @@
  *                                         seeded from the config.
  *
  * ════════════════════════════════════════════════════════════════════
- * NO LIVE CONSUMER YET. Nothing calls nodus_witness_v2_gen_derive on a
- * running node: startup wiring (choosing this path over the legacy
- * bootstrap, and the G5 refusal of a legacy-derived database) is NOT
- * part of Faz 1. This module is complete and tested, but inert.
+ * LIVE CONSUMERS (tokenomics-v3 P4, re-derived by grep): the genesis
+ * ceremony `nodus-server --derive-v2-genesis` calls
+ * nodus_witness_v2_gen_derive_v3 (nodus-server.c run_derive_v2_genesis);
+ * a running node reads its identity and document through
+ * nodus_witness_v2_gen_stored_chain_id / _stored_doc (the post-open gate
+ * in nodus_witness.c, the startup table in nodus_witness_cmt_node.c).
+ * The "NO LIVE CONSUMER YET" banner that stood here described Faz 1.
  * ════════════════════════════════════════════════════════════════════
  *
  * ── DETERMINISM ─────────────────────────────────────────────────────
@@ -66,20 +72,21 @@
  * All four economic parameters now travel two INDEPENDENT paths, and the
  * two are not the same property:
  *
- *   A. INTO source_commit. They are fields of the canonical config
- *      encoding, so source_commit changes with them; the manifest carries
- *      source_commit into dna_bh2_genesis_block_id as an explicit input
- *      (nodus_witness_v2_apply.c:865), and chain id = f(genesis BlockID).
+ *   A. INTO THE CHAIN ID. They are fields of the genesis document's body,
+ *      so both the manifest's source_commit and the chain id (the hash
+ *      of the completed document, `nodus_witness_v2_gen_chain_id`)
+ *      change with them. (Under the deleted version-2 derivation the
+ *      route was source_commit → dna_bh2_genesis_block_id → chain id;
+ *      the property is the same.)
  *      A mismatched build therefore derives a DIFFERENT CHAIN and cannot
  *      join. An invisible split becomes a loud refusal — that is the
  *      point, and the accepted consequence is that a harness built with
  *      a short tokenomic year derives a different chain than production.
  *      It always WAS a different chain; only the identity was hiding it.
  *      OPERATIONAL NOTE: such a harness must ALSO put its own <BY> in the
- *      genesis config, or this builder refuses to derive at all. No
- *      harness does that today — nothing calls
- *      nodus_witness_v2_gen_derive on a running node yet (see the NO LIVE
- *      CONSUMER banner above) — but whoever wires it must.
+ *      genesis config, or this builder refuses to derive at all — the
+ *      Genesis Protocol harness does (stagef_up_v2.sh writes
+ *      blocks_per_year from STAGEF_BLOCKS_PER_YEAR).
  *
  *   B. INTO COMMITTED, READABLE STATE. gen_seed_state writes them as
  *      chain_config_history rows at effective_block 0 — the inflation
@@ -111,8 +118,8 @@
  * `total_supply_raw` (decision file §1: no minting; 200M of 1B is the
  * validator reward reserve): Rule P.2 is
  *   Σ allocations + Σ self_stake + reward_pool_initial == total_supply_raw
- * and supply_tracking.reward_pool is seeded with it. A version-2 config
- * reserves nothing. `reward_divisor_log2` has ONE legal value
+ * and supply_tracking.reward_pool is seeded with it. `reward_divisor_log2`
+ * has ONE legal value
  * (NODUS_V2_GEN_REWARD_DIVISOR_LOG2) and `payout_interval_epochs` must be
  * >= 1 (nodus_witness_v2_gen_v3_validate).
  *
@@ -184,28 +191,21 @@
 extern "C" {
 #endif
 
-/** The config schema this build understands. Any other value rejects.
+/** The ONLY config schema this build understands (D-18 rev 4). Any
+ *  other value is refused by gen_plan_build.
  *
- *  2 — O15J Faz 2 Block 2C added the economic parameters
- *  (blocks_per_year, decimal_unit, inflation_start_block) to the config
- *  and to the canonical encoding. A version-1 config is REFUSED rather
- *  than defaulted: the whole point of this change is that an economic
- *  parameter is never supplied by a structural default. */
-#define NODUS_V2_GEN_CONFIG_VERSION   2u
-
-/** The config schema the COMETBFT lane understands (D-18 rev 4).
- *
- *  3 — FLEET-TM-R3 W2 (R3-C1, package C1b). The version-2 body above is
- *  carried BYTE-IDENTICALLY, with `config_version` reading 3, and the
+ *  3 — FLEET-TM-R3 W2 (R3-C1, package C1b). The config BODY (the table
+ *  below; version 2 was that body alone, with the Block 2C economic
+ *  parameters) is carried with `config_version` reading 3, and the
  *  cometbft `GenesisDoc` fields (types/genesis.go:38-46), the consensus
  *  parameters (proto/tendermint/types/params.proto), the committee's
- *  Comet validator rows, `app_hash`, `chain_id` and the tokenomics-v2
- *  pool fields are APPENDED after it.
+ *  Comet validator rows, `app_hash`, `chain_id` and the tokenomics pool
+ *  fields are APPENDED after it.
  *
- *  A version-2 config still derives a version-2 chain exactly as it does
- *  today; version 3 is a SEPARATE path beside it (the `_v3_` functions
- *  below). W3 refuses version 2 and flips the live gates (D-17 rev 7) —
- *  nothing on the live path changes in W2. */
+ *  Version 2 — the pure-V2 chain with a height-0 genesis block — was
+ *  closed by R3 W3 (D-17 rev 10 (9)) and its derivation, its constant
+ *  (NODUS_V2_GEN_CONFIG_VERSION = 2) and its two public encoders are
+ *  DELETED by tokenomics-v3 P4 (OBLIGATION atlas-dec-71525f3b). */
 #define NODUS_V2_GEN_CONFIG_VERSION_V3   3u
 
 /** `consensus_protocol` — the one accepted value: cometbft @709fd12b.
@@ -357,10 +357,10 @@ typedef struct {
  * nodus_witness_t does, and it does so sooner than before.
  */
 typedef struct {
-    uint32_t config_version;     /* NODUS_V2_GEN_CONFIG_VERSION         */
+    uint32_t config_version;     /* NODUS_V2_GEN_CONFIG_VERSION_V3      */
     uint64_t total_supply_raw;   /* == Σ allocations + Σ self_stake
-                                  * + reward_pool_initial (version 3;
-                                  * tokenomics-v3 P2 Rule P.2)          */
+                                  * + reward_pool_initial
+                                  * (tokenomics-v3 P2 Rule P.2)         */
 
     /* ── THE ECONOMIC PARAMETERS (Block 2C) ───────────────────────────
      * All four are hashed into source_commit; the first three are
@@ -390,13 +390,12 @@ typedef struct {
     uint32_t n_allocs;           /* 1 .. NODUS_V2_GEN_MAX_ALLOCS        */
     const nodus_v2_gen_alloc_t *allocs;  /* caller-owned, n_allocs long */
 
-    /* ══ VERSION 3 ONLY (D-18 rev 4) ══════════════════════════════════
-     * Every field below is written by the version-3 encoder and IGNORED
-     * by the version-2 one — `gen_encode_planned` stops at `allocs`, so
-     * a version-2 config encodes to exactly the bytes it always did even
-     * if a caller left rubbish here. They are all ZERO in a calloc'd
-     * config, and zero is a REFUSAL for the ones that have no legal zero
-     * (consensus_protocol, genesis_time_ms), never a default. */
+    /* ══ THE VERSION-3 TAIL (D-18 rev 4) ══════════════════════════════
+     * Every field below is written by the version-3 encoder AFTER the
+     * body (`gen_encode_planned` stops at `allocs`). They are all ZERO in
+     * a calloc'd config, and zero is a REFUSAL for the ones that have no
+     * legal zero (consensus_protocol, genesis_time_ms), never a
+     * default. */
 
     uint32_t consensus_protocol; /* NODUS_V2_GEN_CONSENSUS_COMETBFT     */
     uint64_t genesis_time_ms;    /* UTC milliseconds, producer-written.
@@ -449,11 +448,12 @@ typedef struct {
     uint64_t payout_interval_epochs;
 } nodus_v2_gen_config_t;
 
-/**
- * The canonical config encoding — the ONE byte sequence a config hashes
- * to. Fixed-width or explicitly length-prefixed throughout; every
- * integer big-endian; no floats; no optional fields, therefore no
- * presence bytes and no defaults.
+/*
+ * The canonical config BODY — the first part of the version-3 document
+ * (the tail is appended after it, see the VERSION 3 banner below).
+ * Fixed-width or explicitly length-prefixed throughout; every integer
+ * big-endian; no floats; no optional fields, therefore no presence bytes
+ * and no defaults.
  *
  *   tag                          16   NODUS_V2_GEN_CFG_TAG, zero-padded
  *   config_version              u32be
@@ -483,73 +483,30 @@ typedef struct {
  * The config is FULLY VALIDATED before a byte is produced, so an encoded
  * config is by construction a derivable one.
  *
- * VERSION 2 ONLY. A version-3 config is REFUSED here — its bytes are
- * nodus_witness_v2_gen_v3_encode's, and producing the version-2 prefix
- * of a version-3 config would be a second, wrong identity for it.
- *
- * @param out      receives a malloc'd buffer the caller must free().
- * @param out_len  receives its length.
- * @return 0 / -1 (invalid config, wrong version, overflow, or allocation
- *         failure).
+ * tokenomics-v3 P4 (OBLIGATION atlas-dec-71525f3b): the body is no longer
+ * a public product of its own. The version-2 entries that exposed it —
+ * nodus_witness_v2_gen_config_encode (these bytes alone) and
+ * nodus_witness_v2_gen_source_commit (their SHA3-512) — are DELETED with
+ * the version-2 derivation nodus_witness_v2_gen_derive. The version-3
+ * document, its chain id and its source_commit are the `_v3_` functions
+ * below.
  */
-int nodus_witness_v2_gen_config_encode(const nodus_v2_gen_config_t *cfg,
-                                       uint8_t **out, size_t *out_len);
 
 /**
- * source_commit = SHA3-512(canonical config bytes).
+ * Validate a config against the SHARED genesis rules (gen_plan_build),
+ * touching no filesystem and no database: the schedule constants, the
+ * claim window, Rule P.1/P.2/P.3, the validator shape and
+ * payout-fingerprint derivation, the allocation set — and, since
+ * tokenomics-v3 P4, config_version == 3.
  *
- * The value operators compare across nodes BEFORE starting, and the
- * value that binds the config into the chain identity transitively
- * (manifest → genesis BlockID → chain id).
- *
- * VERSION 2 ONLY — a version-3 config is REFUSED; its manifest binding
- * is nodus_witness_v2_gen_v3_source_commit, which zeroes `app_hash`
- * (an OUTPUT of the apply the manifest is committed before).
- *
- * @return 0 / -1.
- */
-int nodus_witness_v2_gen_source_commit(const nodus_v2_gen_config_t *cfg,
-                                       uint8_t out[NODUS_V2_GEN_SRCCOMMIT_LEN]);
-
-/**
- * Validate a config against every genesis rule the TWO VERSIONS SHARE,
- * touching no filesystem and no database. Exactly the checks
- * nodus_witness_v2_gen_derive runs first, exposed so an operator tool
- * (and a test) can get the verdict without deriving.
- *
- * ⚠ SCOPE, since version 3 exists: this accepts a config whose
- * `config_version` is 2 OR 3 and checks the rules that apply to both —
- * the schedule constants, the claim window, Rule P.1/P.2/P.3, the
- * validator shape and payout-fingerprint derivation, the allocation set.
- * It does NOT check the version-3 fields; a 0 here for a version-3
- * config means "the shared rules pass", not "derivable". The version-3
- * verdict is nodus_witness_v2_gen_v3_validate, and
- * nodus_witness_v2_gen_derive_v3 runs it.
+ * It does NOT check the version-3 tail (consensus protocol, genesis
+ * time, parameters, Comet rows); a 0 here means "the shared rules pass",
+ * not "derivable". The full verdict is nodus_witness_v2_gen_v3_validate,
+ * and nodus_witness_v2_gen_derive_v3 runs it.
  *
  * @return 0 the shared rules pass; -1 they do not (the reason is logged).
  */
 int nodus_witness_v2_gen_config_validate(const nodus_v2_gen_config_t *cfg);
-
-/**
- * Derive a complete Ledger V2 chain from `cfg` into `data_path`.
- *
- * Fail-closed and all-or-nothing: the whole derivation happens inside a
- * scratch subdirectory and only a COMPLETE chain is renamed up into
- * `data_path` (a same-filesystem rename, therefore atomic). On ANY
- * failure the scratch directory is cleared and `data_path` is untouched.
- *
- * IDEMPOTENT: if `data_path` already holds a pure-V2 chain database this
- * returns 0 without deriving anything and without writing `out_chain32`.
- *
- * @param data_path   the witness data directory.
- * @param cfg         the operator config (heap-allocated; see the type).
- * @param out_chain32 optional; on a fresh derivation receives the
- *                    32-byte derived chain id.
- * @return 0 derived (or already present); -1 refused / failed.
- */
-int nodus_witness_v2_gen_derive(const char *data_path,
-                                const nodus_v2_gen_config_t *cfg,
-                                uint8_t out_chain32[32]);
 
 /**
  * Is `db_path` a PURE-V2 chain database — i.e. does it carry a committed
@@ -571,10 +528,9 @@ int nodus_witness_v2_gen_is_pure(const char *db_path);
  *
  * ── THE CANONICAL ENCODING ────────────────────────────────────────────
  * Every integer BIG-ENDIAN; a signed value is 8-byte two's complement.
- * The version-2 body is byte-identical to the table above, with
- * `config_version` reading 3 — it is produced by the SAME function
- * (`gen_encode_planned`), never by a second copy of the layout.
- * APPENDED after it, in this order:
+ * The body is the table above, with `config_version` reading 3 — it is
+ * produced by ONE function (`gen_encode_planned`), never by a second
+ * copy of the layout. APPENDED after it, in this order:
  *
  *   consensus_protocol              u32be   1 = cometbft @709fd12b
  *   genesis_time                    u64be   UTC milliseconds
@@ -772,21 +728,21 @@ int nodus_witness_v2_gen_to_cmt_doc(const nodus_v2_gen_config_t *cfg,
                                     size_t cap);
 
 /**
- * Derive a complete VERSION-3 chain from `cfg` into `data_path`.
+ * Derive a complete VERSION-3 chain from `cfg` into `data_path` — the
+ * ONLY chain derivation this build has (the ceremony:
+ * `nodus-server --derive-v2-genesis`).
  *
- * The version-2 derivation's steps, with exactly four differences:
- *   · the ledger is BUILT at schema S12, exactly as the version-2 path
- *     builds it, and the database climbs to S14 — where the Comet
- *     stores live — only AFTER the genesis has been applied and the
- *     document completed. The order is forced, not stylistic: the
- *     genesis runs the CORE runtime's `state_init`, which refuses any
- *     schema past S12 (nodus_witness_v2_pools.c:1174-1182), and that
- *     gate is W3's to widen (D-17 rev 7 (7)), not W2's;
+ * The steps, in order (D-18 rev 5 (1) as amended by R3 W3):
+ *   · the database is created and migrated to the live schema rung
+ *     (S16 since tokenomics-v3 P2) BEFORE the ledger genesis runs;
+ *   · the SYSTEM state is seeded from the config (validators,
+ *     validator_stats.active_count, supply_tracking with the reward
+ *     reserve, the committed econ band), then the genesis validator-set
+ *     snapshots (epoch 0 and E) and the domain registry;
  *   · the genesis apply is the Comet entry
  *     (nodus_witness_v2_genesis_cmt) — NO height-0 `v2_blocks` row is
- *     written at all (D-19 rev 6 withdrew the genesis block), which is
- *     also what makes the three columns the S14 rung drops carry no
- *     committed value;
+ *     written at all (D-19 rev 6 withdrew the genesis block) — which
+ *     also writes the epoch-0 balance copy;
  *   · `app_hash` is the global root that apply returns, `chain_id` is
  *     the hash of the completed document, and the COMPLETED DOCUMENT
  *     BYTES are stored in `cmt_state` under "genesisDoc" (the
@@ -795,19 +751,15 @@ int nodus_witness_v2_gen_to_cmt_doc(const nodus_v2_gen_config_t *cfg,
  *     SELECTION convention, never the identity.
  *
  * `stateKey` is NOT written here: in the reference the State is made on
- * the node's FIRST START (node/setup.go:581 LoadFromDBOrGenesisDoc), and
- * that startup table is package C1c's.
+ * the node's FIRST START (node/setup.go:581 LoadFromDBOrGenesisDoc).
  *
- * Fail-closed and all-or-nothing exactly as the version-2 path: a
- * scratch subdirectory, a rename only on COMPLETE, and the scratch
- * cleared on every exit.
+ * Fail-closed and all-or-nothing: a scratch subdirectory, a rename only
+ * on COMPLETE, and the scratch cleared on every exit.
  *
- * ⚠ IDEMPOTENCY IS NARROWER THAN THE VERSION-2 PATH'S, and deliberately:
- * a chain built from THIS config (same source_commit) is a success and
- * derives nothing; a chain built from a different one refuses. Both
- * verdicts come from the committed manifest, which is where they came
- * from before — but the genesis APPLY below has no idempotent branch at
- * all, because the row it used to decide on no longer exists.
+ * IDEMPOTENCY: a chain built from THIS config (same source_commit) is a
+ * success and derives nothing; a chain built from a different one
+ * refuses. Both verdicts come from the committed manifest; the genesis
+ * APPLY itself has no idempotent branch at all.
  *
  * @param out_chain32 optional; on a fresh derivation receives the
  *                    32-byte derived chain id.

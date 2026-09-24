@@ -192,7 +192,7 @@ static int cfg_make_v3_real(cfgbox_t *b) {
     b->allocs = calloc(1, sizeof(*b->allocs));
     if (!b->cfg || !b->allocs) { cfg_free(b); return -1; }
     c = b->cfg;
-    c->config_version        = NODUS_V2_GEN_CONFIG_VERSION;
+    c->config_version        = NODUS_V2_GEN_CONFIG_VERSION_V3;
     c->total_supply_raw      = DNAC_DEFAULT_TOTAL_SUPPLY;
     c->epoch_length          = (uint64_t)DNAC_EPOCH_LENGTH;
     c->blocks_per_year       = (uint64_t)DNAC_BLOCKS_PER_YEAR;

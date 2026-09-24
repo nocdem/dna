@@ -5,12 +5,17 @@
  *        fingerprint derivation.
  *
  * Drives the REAL functions: nodus_v2_gen_config_parse_file,
- * nodus_witness_v2_gen_config_validate, _source_commit and _derive.
- * No parallel parser, no re-implemented encoder.
+ * nodus_witness_v2_gen_config_validate, _v3_source_commit and
+ * _derive_v3. No parallel parser, no re-implemented encoder.
+ * (tokenomics-v3 P4 deleted the version-2 derivation, its source_commit
+ * and the parser's "absent config_version means 2" rule; the golden file
+ * is a version-3 document and every derivation goes through
+ * nodus_witness_v2_gen_derive_v3 — the entry the ceremony uses.)
  *
  * Sections:
  *   §1  a golden config file parses to the expected struct, field for
- *       field — including the three constants the file may NOT name
+ *       field — including the two constants the file may NOT name and
+ *       the required config_version
  *   §2  D-I5: the same file parsed twice yields an identical
  *       source_commit, and it equals the in-memory reference's
  *   §3  every refusal, one case each, each naming what it kills
@@ -191,7 +196,8 @@ static int cfg_make(cfgbox_t *b, uint16_t c0_extra) {
     if (!b->cfg || !b->allocs) { cfg_free(b); return -1; }
 
     nodus_v2_gen_config_t *c = b->cfg;
-    c->config_version        = NODUS_V2_GEN_CONFIG_VERSION;
+    /* tokenomics-v3 P4: 3 is the only version; the tail is cfg_make_v3's */
+    c->config_version        = NODUS_V2_GEN_CONFIG_VERSION_V3;
     c->total_supply_raw      = DNAC_DEFAULT_TOTAL_SUPPLY;
     c->epoch_length          = (uint64_t)DNAC_EPOCH_LENGTH;
     c->blocks_per_year       = (uint64_t)DNAC_BLOCKS_PER_YEAR;
@@ -232,15 +238,12 @@ static int cfg_make(cfgbox_t *b, uint16_t c0_extra) {
     return 0;
 }
 
-/* R3 W3 (D-17 rev 10 (8)) — the SAME reference composition, completed to
- * a version-3 document. §7 D8 needs this: the merged tree's post-open
- * chain-role gate now refuses a version-2 chain on RESTART (the closed
- * lane, D-17 rev 10 (9)), and the property that section proves — a node
- * holding a real chain must not be told it has none — is
- * lane-independent. */
-static int cfg_make_v3(cfgbox_t *b) {
-    if (cfg_make(b, 0) != 0) return -1;
-    b->cfg->config_version = NODUS_V2_GEN_CONFIG_VERSION_V3;
+/* The SAME reference composition, completed to a version-3 document —
+ * the shape the golden file expresses and every derivation here uses
+ * (tokenomics-v3 P4: the version-2 form is deleted). `c0_extra` is
+ * cfg_make's. */
+static int cfg_make_v3_ex(cfgbox_t *b, uint16_t c0_extra) {
+    if (cfg_make(b, c0_extra) != 0) return -1;
     if (nodus_witness_v2_gen_v3_defaults(b->cfg) != 0) {
         cfg_free(b);
         return -1;
@@ -256,6 +259,10 @@ static int cfg_make_v3(cfgbox_t *b) {
         return -1;
     }
     return 0;
+}
+
+static int cfg_make_v3(cfgbox_t *b) {
+    return cfg_make_v3_ex(b, 0);
 }
 
 /* ── the reference config, as text ───────────────────────────────────── */
@@ -278,7 +285,21 @@ static char *golden_text(const nodus_v2_gen_config_t *c) {
         n += (size_t)_w;                                                 \
     } while (0)
 
-    EMIT("# DNA Chain — Ledger V2 genesis config (test fixture)\n");
+    EMIT("# DNA Chain — version-3 genesis config (test fixture)\n");
+    /* tokenomics-v3 P4: the version-3 keys the file must (config_version,
+     * genesis_time_ms, initial_height) or here does (reward_pool_initial,
+     * payout_interval_epochs — written explicitly so the parsed config
+     * equals the in-memory reference instead of the builder's defaults)
+     * name. */
+    EMIT("config_version = %u\n", (unsigned)c->config_version);
+    EMIT("genesis_time_ms = %llu\n",
+         (unsigned long long)c->genesis_time_ms);
+    EMIT("initial_height = %llu\n",
+         (unsigned long long)c->initial_height);
+    EMIT("reward_pool_initial = %llu\n",
+         (unsigned long long)c->reward_pool_initial);
+    EMIT("payout_interval_epochs = %llu\n",
+         (unsigned long long)c->payout_interval_epochs);
     EMIT("total_supply_raw = %llu\n",
          (unsigned long long)c->total_supply_raw);
     EMIT("epoch_length = %llu\n", (unsigned long long)c->epoch_length);
@@ -404,7 +425,7 @@ static int test_golden_roundtrip(void) {
     printf("§1 a golden config file parses to the expected struct\n");
 
     cfgbox_t ref;
-    CHECK(cfg_make(&ref, 0) == 0, "reference config");
+    CHECK(cfg_make_v3(&ref) == 0, "reference config (version 3)");
     OK();
 
     char dir[128];
@@ -425,14 +446,22 @@ static int test_golden_roundtrip(void) {
           "the golden config parses");
     OK();
 
-    /* The three the file may NOT name — set by the parser, and each has
+    /* The two the file may NOT name — set by the parser, and each has
      * exactly one legal value the builder enforces. */
-    CHECK(got->config_version == NODUS_V2_GEN_CONFIG_VERSION,
-          "config_version is forced to the schema version");
     CHECK(got->claim_start_height == 0,
           "claim_start_height is forced to 0");
     CHECK(got->claim_end_height == UINT64_MAX,
           "claim_end_height is forced to UINT64_MAX");
+    /* tokenomics-v3 P4: config_version is REQUIRED in the file and 3 is
+     * its only value (it was forced to 2 when absent before P4). */
+    CHECK(got->config_version == NODUS_V2_GEN_CONFIG_VERSION_V3,
+          "config_version is the file's 3");
+    CHECK(got->genesis_time_ms == ref.cfg->genesis_time_ms &&
+          got->initial_height  == ref.cfg->initial_height,
+          "the two required version-3 keys round-trip");
+    CHECK(got->reward_pool_initial    == ref.cfg->reward_pool_initial &&
+          got->payout_interval_epochs == ref.cfg->payout_interval_epochs,
+          "the reward reserve and the payday period round-trip");
 
     /* The five the file MUST name. */
     CHECK(got->total_supply_raw      == ref.cfg->total_supply_raw,
@@ -479,7 +508,8 @@ static int test_golden_roundtrip(void) {
 
     /* A well-formed file is not automatically a derivable one, but this
      * one is — which is what makes §5's derivations possible. */
-    CHECK(nodus_witness_v2_gen_config_validate(got) == 0,
+    CHECK(nodus_witness_v2_gen_config_validate(got) == 0 &&
+          nodus_witness_v2_gen_v3_validate(got) == 0,
           "the golden config is derivable");
 
     nodus_v2_gen_config_free(got);
@@ -487,7 +517,7 @@ static int test_golden_roundtrip(void) {
     cfg_free(&ref);
     rmrf(dir);
     OK();
-    printf("  ok: every field round-trips and the three forced constants "
+    printf("  ok: every field round-trips and the two forced constants "
            "are set\n");
     return 0;
 }
@@ -500,7 +530,7 @@ static int test_determinism_twin(void) {
     printf("§2 D-I5 — the same file twice yields the same source_commit\n");
 
     cfgbox_t ref;
-    CHECK(cfg_make(&ref, 0) == 0, "reference config");
+    CHECK(cfg_make_v3(&ref) == 0, "reference config (version 3)");
     OK();
 
     char dir[128];
@@ -523,9 +553,12 @@ static int test_determinism_twin(void) {
     uint8_t ca[NODUS_V2_GEN_SRCCOMMIT_LEN];
     uint8_t cb[NODUS_V2_GEN_SRCCOMMIT_LEN];
     uint8_t cr[NODUS_V2_GEN_SRCCOMMIT_LEN];
-    CHECK(nodus_witness_v2_gen_source_commit(a, ca) == 0, "commit 1");
-    CHECK(nodus_witness_v2_gen_source_commit(b, cb) == 0, "commit 2");
-    CHECK(nodus_witness_v2_gen_source_commit(ref.cfg, cr) == 0,
+    /* tokenomics-v3 P4: the version-3 source_commit — the whole document
+     * with chain_id and app_hash zeroed, so it covers the tail the file
+     * now carries too (the version-2 one is deleted). */
+    CHECK(nodus_witness_v2_gen_v3_source_commit(a, ca) == 0, "commit 1");
+    CHECK(nodus_witness_v2_gen_v3_source_commit(b, cb) == 0, "commit 2");
+    CHECK(nodus_witness_v2_gen_v3_source_commit(ref.cfg, cr) == 0,
           "commit of the in-memory reference");
     OK();
 
@@ -559,7 +592,7 @@ static int test_refusals(void) {
     printf("§3 every malformed config is REFUSED, never repaired\n");
 
     cfgbox_t ref;
-    CHECK(cfg_make(&ref, 0) == 0, "reference config");
+    CHECK(cfg_make_v3(&ref) == 0, "reference config (version 3)");
     OK();
     char dir[128];
     CHECK(mkdir_tmp(dir, "refuse") == 0, "tmpdir");
@@ -764,6 +797,20 @@ static int test_refusals(void) {
     expect_refusal(dir, g, "[allocation]\n", "[allocations]\n",
                    "an unknown block header REFUSES");
 
+    /* ── tokenomics-v3 P4 (OBLIGATION atlas-dec-71525f3b): VERSION 2 IS
+     * DELETED. A file that names 2 is refused at the line, and a file
+     * that names NO version is refused rather than read as 2 (the pre-P4
+     * rule) or guessed as 3. Everything else in these mutants is the
+     * golden, derivable document, so the version is the only defect.
+     * RED ON THE PRE-P4 TREE: both parsed (absent meant 2, and 2 was a
+     * legal value).
+     * MUTANT KILLED: re-admitting 2 in nv2gc_assign_top, or restoring the
+     * "absent means 2" default at EOF. */
+    expect_refusal(dir, g, "config_version = 3\n", "config_version = 2\n",
+                   "config_version 2 (the deleted schema) REFUSES");
+    expect_refusal(dir, g, "config_version = 3\n", "",
+                   "a file with NO config_version REFUSES");
+
     /* ── THE BRANCHES THE FIRST CUT LEFT UNCOVERED ───────────────────
      * Found by a read-only review of this file, not by a failure. Each
      * one is a distinct refusal branch in the parser that no case above
@@ -835,7 +882,12 @@ static int test_refusals(void) {
         const char *ab = strstr(g, "[allocation]");
         CHECK(vb != NULL && ab != NULL && ab > vb, "blocks present");
         if (vb && ab && ab > vb) {
-            size_t blk = (size_t)(ab - vb);          /* one block + tail */
+            /* [vb, ab) is ALL seven [validator] blocks, so every copy
+             * adds seven: 7 + 24 × 7 = 175 blocks, far past the bound
+             * (NODUS_V2_GEN_MAX_VALIDATORS, 32 since tokenomics-v3 P3-7).
+             * The earlier "one block" / "31 validators" notes here were
+             * wrong about the span; the refusal was never in doubt. */
+            size_t blk = (size_t)(ab - vb);          /* the 7 blocks     */
             size_t need = strlen(g) + blk * 24 + 1;
             char *big = calloc(1, need);
             CHECK(big != NULL, "alloc oversize config");
@@ -843,7 +895,7 @@ static int test_refusals(void) {
                 size_t head = (size_t)(ab - g);
                 memcpy(big, g, head);                /* 7 validators     */
                 size_t n = head;
-                for (int i = 0; i < 24; i++) {       /* -> 31 validators */
+                for (int i = 0; i < 24; i++) {       /* -> 175 blocks    */
                     memcpy(big + n, vb, blk);
                     n += blk;
                 }
@@ -949,20 +1001,28 @@ static int test_payout_fp_derivation(void) {
 static int test_derive_idempotency_and_marker(void) {
     printf("§5/§6 D4 idempotency compares the chain; D3 lands the marker\n");
 
+    /* tokenomics-v3 P4: both configs are complete version-3 documents and
+     * every derivation below is nodus_witness_v2_gen_derive_v3 — the
+     * ceremony's entry; the version-2 derivation these properties were
+     * first proven on is deleted. D4's comparison is the same one there
+     * (gen_chain_db_scan's source_commit against the config's). */
     cfgbox_t A, B;
-    CHECK(cfg_make(&A, 0)  == 0, "config A");
-    CHECK(cfg_make(&B, 50) == 0, "config B (validator[0] commission +50)");
+    CHECK(cfg_make_v3_ex(&A, 0)  == 0, "config A");
+    CHECK(cfg_make_v3_ex(&B, 50) == 0,
+          "config B (validator[0] commission +50)");
     OK();
 
     /* B must be a DIFFERENT but equally derivable config, or §5 would be
      * measuring an ordinary validation failure. */
-    CHECK(nodus_witness_v2_gen_config_validate(A.cfg) == 0, "A derivable");
-    CHECK(nodus_witness_v2_gen_config_validate(B.cfg) == 0, "B derivable");
+    CHECK(nodus_witness_v2_gen_v3_validate(A.cfg) == 0, "A derivable");
+    CHECK(nodus_witness_v2_gen_v3_validate(B.cfg) == 0, "B derivable");
     {
         uint8_t ca[NODUS_V2_GEN_SRCCOMMIT_LEN];
         uint8_t cb[NODUS_V2_GEN_SRCCOMMIT_LEN];
-        CHECK(nodus_witness_v2_gen_source_commit(A.cfg, ca) == 0, "commit A");
-        CHECK(nodus_witness_v2_gen_source_commit(B.cfg, cb) == 0, "commit B");
+        CHECK(nodus_witness_v2_gen_v3_source_commit(A.cfg, ca) == 0,
+              "commit A");
+        CHECK(nodus_witness_v2_gen_v3_source_commit(B.cfg, cb) == 0,
+              "commit B");
         CHECK(memcmp(ca, cb, sizeof(ca)) != 0,
               "A and B commit to DIFFERENT digests");
     }
@@ -974,7 +1034,7 @@ static int test_derive_idempotency_and_marker(void) {
 
     uint8_t chain_a[32];
     memset(chain_a, 0, sizeof(chain_a));
-    CHECK(nodus_witness_v2_gen_derive(dir, A.cfg, chain_a) == 0,
+    CHECK(nodus_witness_v2_gen_derive_v3(dir, A.cfg, chain_a) == 0,
           "config A derives a chain");
     OK();
 
@@ -1023,12 +1083,12 @@ static int test_derive_idempotency_and_marker(void) {
      * which is the whole defect: the operator edits the config, re-runs,
      * is told "nothing to derive", and ships a fleet configured against
      * a chain id that no longer matches anything. */
-    CHECK(nodus_witness_v2_gen_derive(dir, B.cfg, NULL) != 0,
+    CHECK(nodus_witness_v2_gen_derive_v3(dir, B.cfg, NULL) != 0,
           "re-deriving with a DIFFERENT config REFUSES");
 
     /* And the refusal changed nothing: A's chain is still the one here,
      * so the fail-closed promise holds at the directory level too. */
-    CHECK(nodus_witness_v2_gen_derive(dir, A.cfg, NULL) == 0,
+    CHECK(nodus_witness_v2_gen_derive_v3(dir, A.cfg, NULL) == 0,
           "re-deriving with the SAME config is the idempotent success it "
           "claims to be");
 

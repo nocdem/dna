@@ -13,6 +13,25 @@
  * scripted execution runtimes, and pulling the whole exec fixture into
  * them would collide with their own local helpers.
  *
+ * ⚠ TWO FIXTURES LIVE HERE (tokenomics-v3 P4).
+ *   v2x_genesis_min & co. (below) — the VERSION-2 engine genesis
+ *     (nodus_witness_v2_genesis_ex) over hand-seeded state, driven through
+ *     the legacy (non-cmt) block lane. It is NOT the chain a node runs:
+ *     no stored genesis document, a height-0 v2_blocks row,
+ *     validator_stats.active_count left at 0. It stays because the
+ *     ledger-engine tests that still use it (test_v2_apply, _claims,
+ *     _econ, _epoch, _exec, _native, _pools, _schema,
+ *     _deleg_cap_bench, _committee_seed §7, and test_cmt_app's
+ *     chain_id row-branch case) drive the legacy block lane and/or seed
+ *     genesis states a version-3 config cannot express (sub-10M or zero
+ *     stakes, other than 7 validators, genesis UTXOs / delegations, zero
+ *     supply). Some of them could move to the fixture below; P4 did not
+ *     reach them. Its removal is the open half of OBLIGATION
+ *     atlas-dec-71525f3b (see the P4 report).
+ *   v2x_chain_open & co. (at the end) — a REAL version-3 chain: the
+ *     ceremony's derivation + the production open path. New tests use
+ *     this one.
+ *
  * Copyright (c) 2026 nocdem — SPDX-License-Identifier: MIT
  */
 
@@ -431,6 +450,209 @@ done:
     sqlite3_finalize(ts);
     free(buf);
     return ret;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * THE VERSION-3 FIXTURE (tokenomics-v3 P4)
+ *
+ * A chain built the way a real one is: a version-3 config →
+ * nodus_witness_v2_gen_derive_v3 (the derivation `nodus-server
+ * --derive-v2-genesis` runs, which seeds the validators, the
+ * validator_stats.active_count row, supply_tracking, the econ band, the
+ * epoch-0/E validator-set snapshots, runs the engine genesis
+ * nodus_witness_v2_genesis_cmt — manifest, domain heads, the epoch-0
+ * balance copy — and stores the genesis document) → reopened through the
+ * PRODUCTION open path (nodus_witness_create_chain_db, whose post-open
+ * gate recognises a version-3 chain from its stored document and sets
+ * v2_successor / v2_chain32 itself — ASSERTED here, never assigned).
+ *
+ * WHY IT EXISTS. v2x_genesis_min above builds a chain the real genesis
+ * never builds (no stored document, a height-0 v2_blocks row,
+ * active_count left at 0, a zero-supply manifest with no distribution).
+ * Files converted to this fixture test the chain shape that runs.
+ *
+ * THE COMPOSITION, and why it is the only one: gen_plan_build admits
+ * exactly DNAC_COMMITTEE_SIZE validators, each bonding exactly
+ * DNAC_SELF_STAKE_AMOUNT with a payout fingerprint that derives from its
+ * payout key, and Rule P.2 (Σ allocations + Σ self_stake +
+ * reward_pool_initial == total_supply_raw). The validators are
+ * deterministic SYNTHETIC byte patterns (no signature is ever verified
+ * against them here), varied by `salt` so two chains can differ; the one
+ * allocation (source_id 0x30…, the remainder of the supply) is bound to
+ * SHA3-512 of a synthetic owner key; no reward reserve. The same shape
+ * test_v2_gen.c / test_v2_committee_seed.c derive from.
+ *
+ * Everything is v2x_-prefixed so no includer's own helpers collide.
+ * ══════════════════════════════════════════════════════════════════════ */
+
+#include "witness/nodus_witness_v2_gen.h"
+#include "witness/nodus_witness_emission.h"   /* DNAC_BLOCKS_PER_YEAR,
+                                               * DNAC_DECIMAL_UNIT       */
+#include "dnac/dnac.h"
+
+#define V2X_GENESIS_TIME_MS  1700000000000ULL
+
+typedef struct {
+    nodus_v2_gen_config_t *cfg;       /* ~255 KB — heap, never stack    */
+    nodus_v2_gen_alloc_t  *allocs;
+} v2x_cfgbox_t;
+
+static void v2x_cfg_free(v2x_cfgbox_t *b) {
+    if (!b) return;
+    free(b->cfg);
+    free(b->allocs);
+    b->cfg = NULL;
+    b->allocs = NULL;
+}
+
+/** A complete, derivable version-3 config (see the banner). 0 / -1. */
+static int v2x_cfg_make(v2x_cfgbox_t *b, uint8_t salt) {
+    static const char hexd[] = "0123456789abcdef";
+    if (!b) return -1;
+    memset(b, 0, sizeof(*b));
+    b->cfg    = (nodus_v2_gen_config_t *)calloc(1, sizeof(*b->cfg));
+    b->allocs = (nodus_v2_gen_alloc_t *)calloc(1, sizeof(*b->allocs));
+    if (!b->cfg || !b->allocs) { v2x_cfg_free(b); return -1; }
+
+    nodus_v2_gen_config_t *c = b->cfg;
+    c->config_version        = NODUS_V2_GEN_CONFIG_VERSION_V3;
+    c->total_supply_raw      = DNAC_DEFAULT_TOTAL_SUPPLY;
+    c->epoch_length          = (uint64_t)DNAC_EPOCH_LENGTH;
+    c->blocks_per_year       = (uint64_t)DNAC_BLOCKS_PER_YEAR;
+    c->decimal_unit          = (uint64_t)DNAC_DECIMAL_UNIT;
+    c->inflation_start_block = 0ULL;          /* retired: only 0 is legal */
+    c->claim_start_height    = 0;
+    c->claim_end_height      = UINT64_MAX;
+    c->n_validators          = (uint16_t)DNAC_COMMITTEE_SIZE;
+    for (uint16_t i = 0; i < c->n_validators; i++) {
+        nodus_v2_gen_validator_t *v = &c->validators[i];
+        uint8_t d[64];
+        for (size_t k = 0; k < DNAC_PUBKEY_SIZE; k++) {
+            v->pubkey[k] = (uint8_t)(0x11 * (i + 1) + (k & 0x3F) + salt);
+            v->unstake_destination_pubkey[k] = (uint8_t)(v->pubkey[k] ^ 0x5A);
+        }
+        if (qgp_sha3_512(v->unstake_destination_pubkey, DNAC_PUBKEY_SIZE,
+                         d) != 0) {
+            v2x_cfg_free(b);
+            return -1;
+        }
+        for (int k = 0; k < 64; k++) {
+            v->unstake_destination_fp[2 * k]     = (uint8_t)hexd[d[k] >> 4];
+            v->unstake_destination_fp[2 * k + 1] = (uint8_t)hexd[d[k] & 0xF];
+        }
+        v->unstake_destination_fp[128] = 0;
+        v->self_stake     = DNAC_SELF_STAKE_AMOUNT;
+        v->commission_bps = (uint16_t)(100 * (i + 1));
+    }
+    {
+        nodus_v2_gen_alloc_t *a = &b->allocs[0];
+        uint8_t owner[DNAC_PUBKEY_SIZE];
+        memset(a->source_id, 0, sizeof(a->source_id));
+        a->source_id[0] = 0x30;
+        for (size_t k = 0; k < sizeof(owner); k++)
+            owner[k] = (uint8_t)(0xA0 + (k & 0x1F) + salt);
+        if (qgp_sha3_512(owner, sizeof(owner), a->dest_binding) != 0) {
+            v2x_cfg_free(b);
+            return -1;
+        }
+        a->amount = DNAC_DEFAULT_TOTAL_SUPPLY -
+                    (uint64_t)DNAC_COMMITTEE_SIZE * DNAC_SELF_STAKE_AMOUNT;
+    }
+    c->n_allocs = 1;
+    c->allocs   = b->allocs;
+
+    if (nodus_witness_v2_gen_v3_defaults(c) != 0) {
+        v2x_cfg_free(b);
+        return -1;
+    }
+    c->reward_pool_initial = 0;     /* the allocation carries the supply */
+    c->genesis_time_ms     = V2X_GENESIS_TIME_MS;
+    c->initial_height      = 1;
+    if (nodus_witness_v2_gen_v3_fill_comet_rows(c) != 0) {
+        v2x_cfg_free(b);
+        return -1;
+    }
+    return 0;
+}
+
+typedef struct {
+    nodus_witness_t *w;               /* multi-MB — heap, never stack   */
+    v2x_cfgbox_t     box;             /* the config the chain came from */
+    char             dir[128];
+    uint8_t          chain32[NODUS_V2_GEN_CHAIN_ID_LEN];
+} v2x_chain_t;
+
+static void v2x_chain_close(v2x_chain_t *c) {
+    if (!c) return;
+    if (c->w) {
+        if (c->w->db) sqlite3_close(c->w->db);
+        free(c->w);
+        c->w = NULL;
+    }
+    v2x_cfg_free(&c->box);
+    if (c->dir[0]) {
+        char cmd[200];
+        snprintf(cmd, sizeof(cmd), "rm -rf '%s'", c->dir);
+        if (system(cmd) != 0) { /* best effort */ }
+        c->dir[0] = 0;
+    }
+}
+
+/**
+ * Derive a version-3 chain from `box` (taken over: closed with the
+ * chain) into a fresh mkdtemp directory tagged `tag`, and reopen it
+ * through the production open path. On any failure everything built so
+ * far is released and -1 is returned.
+ */
+static int v2x_chain_open_cfg(v2x_chain_t *c, const char *tag,
+                              v2x_cfgbox_t *box) {
+    if (!c || !tag || !box || !box->cfg) return -1;
+    memset(c, 0, sizeof(*c));
+    c->box = *box;
+    memset(box, 0, sizeof(*box));
+    snprintf(c->dir, sizeof(c->dir), "/tmp/v2x_%s_XXXXXX", tag);
+    if (!mkdtemp(c->dir)) {
+        c->dir[0] = 0;
+        v2x_chain_close(c);
+        return -1;
+    }
+    if (nodus_witness_v2_gen_derive_v3(c->dir, c->box.cfg, c->chain32) != 0) {
+        v2x_chain_close(c);
+        return -1;
+    }
+    c->w = (nodus_witness_t *)calloc(1, sizeof(*c->w));
+    if (!c->w) { v2x_chain_close(c); return -1; }
+    /* the live constructor's cache sentinel (nodus_witness.h) */
+    c->w->cached_committee_epoch_start = UINT64_MAX;
+    snprintf(c->w->data_path, sizeof(c->w->data_path), "%s", c->dir);
+    /* The file is named witness_<chain_id[0..15] hex>.db, so reopening by
+     * the first 16 bytes of the derived id opens exactly that file. */
+    if (nodus_witness_create_chain_db(c->w, c->chain32) != 0) {
+        v2x_chain_close(c);
+        return -1;
+    }
+    /* ASSERTED, never assigned: the post-open gate sets both from the
+     * stored document. A gate that stopped recognising the chain must
+     * fail the fixture, not route the test through another lane. */
+    if (!c->w->v2_successor ||
+        memcmp(c->w->v2_chain32, c->chain32, sizeof(c->chain32)) != 0) {
+        fprintf(stderr, "v2x_chain_open: the production open path did not "
+                        "recognise the derived version-3 chain\n");
+        v2x_chain_close(c);
+        return -1;
+    }
+    return 0;
+}
+
+/** v2x_cfg_make(salt) + v2x_chain_open_cfg. 0 / -1. */
+static int v2x_chain_open(v2x_chain_t *c, const char *tag, uint8_t salt) {
+    v2x_cfgbox_t box;
+    if (v2x_cfg_make(&box, salt) != 0) return -1;
+    if (v2x_chain_open_cfg(c, tag, &box) != 0) {
+        v2x_cfg_free(&box);            /* no-op if it was taken over     */
+        return -1;
+    }
+    return 0;
 }
 
 #endif /* NODUS_TESTS_V2_GENESIS_FIXTURE_H */
