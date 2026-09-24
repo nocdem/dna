@@ -62,20 +62,27 @@
 #     block with > 10 envelopes applies) is test_v2_apply.c §6's.
 #   - **The per-block envelope count is set by UNITS, not by a count.**
 #     PrepareProposal's capacity seam reserves EVERY envelope's whole
-#     res_max_total_units against ONE 1 000 000-unit block budget at once,
-#     without finalizing in between (nodus_witness_cmt_app.c
-#     app_seam_check → nodus_witness_v2_produce.c:269 →
-#     nodus_witness_v2_env.c:382; NODUS_V2_GLOBAL_UNIT_BUDGET,
-#     nodus_witness_v2_apply.h:290) and trims the rest to a later block,
-#     so the ceiling each envelope declares IS the per-block limit. The
-#     CLI right-sizes it (nodus-cli.c t6_spend_ceiling: the metering
-#     module's own static_units + one w_read per mediated read). ARITHMETIC,
-#     NOT MEASURED: a 1-in/1-out spend is w_base 1 + w_op 1 + call 298 +
-#     auth 7 220 + res_max_effects 40 + res_max_effect_bytes 16 384 + 2
-#     reads = 23 946 units (all weights 1, nodus_witness_runtime.c
-#     sys_policy_build :120-140), so at most 41 fit one block — K ≤ 40 by
-#     default for that reason. A round 200 000 ceiling would have capped
-#     every block at 5 and made this scenario structurally unpassable.
+#     res_max_total_units against ONE block budget at once, without
+#     finalizing in between (nodus_witness_cmt_app.c app_seam_check →
+#     nodus_witness_v2_produce.c:269 → nodus_witness_v2_env.c:382;
+#     NODUS_V2_GLOBAL_UNIT_BUDGET = 2 097 152 since block capacity trial
+#     B, operator 2026-09-24, nodus_witness_v2_apply.h:298) and trims the
+#     rest to a later block, so the ceiling each envelope declares IS the
+#     per-block limit. The CLI right-sizes it (nodus-cli.c
+#     t6_spend_ceiling: the metering module's own static_units + one
+#     w_read per mediated read) over an EXACT effect declaration
+#     (t6_spend_effect_decl: inputs + outputs + 1 effects, 116 + 148·in +
+#     432·out result bytes). ARITHMETIC, NOT MEASURED at this budget: a
+#     1-in/1-out spend is w_base 1 + w_op 1 + call 298 + auth 7 220 +
+#     res_max_effects 3 + res_max_effect_bytes 696 + 2 reads = 8 221
+#     units (all weights 1, nodus_witness_runtime.c sys_policy_build
+#     :117-142), so at most floor(2 097 152 / 8 221) = 255 fit one block
+#     — far above K ≤ 40 (and the CLI's 100-coin listing cap), so the
+#     unit budget no longer shapes this scenario's split at all.
+#     (MEASURED at the old values — budget 1 000 000, 40 / 16 384
+#     declared, 23 946 units — by bench_tps_v2.sh at 0.19.69: 110 of 110
+#     loaded blocks carried exactly 41.) A round 200 000 ceiling would
+#     cap every block at 10.
 #   - **Measurements are HARNESS-OBSERVED.** Per-height timestamps are
 #     polls at ~1 s granularity (the claim-flood method), not header
 #     times; nothing is asserted about them.

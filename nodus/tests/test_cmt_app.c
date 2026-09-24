@@ -3001,8 +3001,11 @@ static int t_attendance_mixed_flags(void)
  * `DNA_METER_ERR_OP_WEIGHT` (status 3) at `dna_meter_plan_build`. Worse,
  * every envelope's declared reservation CEILING (200 000,
  * `res_max_total_units`) is reserved WHOLE from the GLOBAL unit budget
- * (`NODUS_V2_GLOBAL_UNIT_BUDGET`, 1 000 000) at RESERVE time — five such
- * envelopes exhaust it EXACTLY (5 x 200 000 = 1 000 000), so the SIXTH
+ * (`NODUS_V2_GLOBAL_UNIT_BUDGET`, 1 000 000 at the time; 2 097 152 since
+ * block capacity trial B, operator 2026-09-24, where the same shape
+ * would exhaust it at the ELEVENTH — floor(2 097 152 / 200 000) = 10) at
+ * RESERVE time — five such envelopes exhausted it EXACTLY (5 x 200 000
+ * = 1 000 000), so the SIXTH
  * (batch index 5) failed `DNA_METER_ERR_GLOBAL_BUDGET` (status 7) before
  * ever reaching PrepareProposal's own byte-budget logic; the retry loop
  * dropped it and re-hit GLOBAL_BUDGET once more at the new index 5 (2x

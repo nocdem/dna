@@ -254,12 +254,14 @@ static int env_core_utxo_create(v2x_env_t *e, uint8_t keylast,
 
 /* R3 W4-C delta 3: same leg shape as env_core_utxo_create, but with a
  * caller-chosen res_max_total_units instead of v2x_env_build's default
- * 200000. Needed because NODUS_V2_GLOBAL_UNIT_BUDGET
- * (nodus_witness_v2_apply.h) is 1000000 and the reservation formula
- * (res_meter.h:84-87) takes the FULL declared ceiling from the global
- * budget at reserve — 200000 x 5 envelopes already exhausts it, so a
- * block of 11 such envelopes needs a smaller per-envelope ceiling to fit
- * at all. The floor this ceiling must clear is static_units(envelope):
+ * 200000. Needed because the reservation formula (res_meter.h:84-87)
+ * takes the FULL declared ceiling from NODUS_V2_GLOBAL_UNIT_BUDGET
+ * (nodus_witness_v2_apply.h) at reserve — at the trial-B value 2097152
+ * (operator 2026-09-24; 1000000 before, when 5 already exhausted it)
+ * 200000 x 11 = 2200000 still exceeds it, so a block of 11 such
+ * envelopes needs a smaller per-envelope ceiling to fit at all (§6
+ * derives it from the macro: `ceil11`). The floor this ceiling must
+ * clear is static_units(envelope):
  * sys_policy_build's seven weights are all 1
  * (nodus_witness_runtime.c:120-121), and this leg's cost is w_base(1) +
  * w_op(1) + w_callbyte*call_len + w_authbyte*auth_len(1) +
@@ -1062,22 +1064,32 @@ int main(void) {
          * test below moves to height 7 to make room).
          *
          * R3 W4-C delta 3 fix: the default ceiling (200000,
-         * v2x_env_build) is what actually binds 11 envelopes now — NOT
-         * a count. dna_meter_reserve takes the FULL declared
-         * res_max_total_units from NODUS_V2_GLOBAL_UNIT_BUDGET (1000000)
-         * at reserve time, so 5 x 200000 already exhausts it and the
-         * 6th reservation faults with DNA_METER_ERR_GLOBAL_BUDGET — this
-         * is the UNIT BUDGET binding, not the retired count cap, and it
-         * is the wrong thing for this case to prove. Each envelope here
-         * uses env_core_utxo_create_ceiling with 80000 instead: 11 x
-         * 80000 = 880000 < 1000000, comfortably under the global unit
-         * budget, and 80000 is comfortably above the ~2236-unit floor
-         * this leg's own static_units cost (see the helper's comment). */
+         * v2x_env_build) is what actually binds 11 envelopes — NOT a
+         * count. dna_meter_reserve takes the FULL declared
+         * res_max_total_units from NODUS_V2_GLOBAL_UNIT_BUDGET at
+         * reserve time: at 1000000 the 6th reservation faulted with
+         * DNA_METER_ERR_GLOBAL_BUDGET; at the trial-B 2097152 (operator
+         * 2026-09-24) the 11th still does (11 x 200000 = 2200000) — the
+         * UNIT BUDGET binding, not the retired count cap, and the wrong
+         * thing for this case to prove. Each envelope here uses
+         * env_core_utxo_create_ceiling with a ceiling DERIVED from the
+         * macro instead: budget / 12, so 11 of them take 11/12 of the
+         * budget (comfortably under it, whatever its value) while the
+         * ceiling stays far above the ~2236-unit floor this leg's own
+         * static_units cost (see the helper's comment) — both checked
+         * below, so a future budget small enough to break either fails
+         * HERE, named, not as an unexplained apply refusal. */
+        const uint64_t ceil11 = (uint64_t)NODUS_V2_GLOBAL_UNIT_BUDGET / 12u;
+        CHECK(ceil11 >= 2236u * 4u &&
+              11u * ceil11 < (uint64_t)NODUS_V2_GLOBAL_UNIT_BUDGET,
+              "the derived per-envelope ceiling must clear the leg's "
+              "static floor and fit 11 times under the global budget");
+        OK();
         static v2x_env_t many[11];
         nodus_v2_envelope_t vm[11];
         for (int i = 0; i < 11; i++) {
             CHECK(env_core_utxo_create_ceiling(&many[i],
-                      (uint8_t)(0x70 + i), 1, 80000)
+                      (uint8_t)(0x70 + i), 1, ceil11)
                       == 0, "env many");
             vm[i].env_bytes = many[i].bytes;
             vm[i].env_len = many[i].len;

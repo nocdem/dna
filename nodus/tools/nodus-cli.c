@@ -3111,23 +3111,30 @@ done:
  *
  * Fee: default max(DNAC_MIN_FEE_RAW, NODUS_W_BASE_TX_FEE) — the stake
  * builder's rule. Per the operator's tokenomics decision
- * (docs/plans/decisions/2026-09-22-nodus-tokenomics-v3-operator.md §1,
- * §2 F3) fees belong to the reward pool; the chain still BURNS them
- * today (rt_native.c:1682-1688). This client only pays the fee; where it
- * goes is the chain's rule, not this builder's.
+ * (docs/plans/decisions/2026-09-22-nodus-tokenomics-v3-operator.md §1)
+ * fees belong to the reward pool, and since tokenomics-v3 P2 the chain
+ * credits them there (rtn_xfer_exec's pool SET, nodus_witness_rt_native.c
+ * rtn_supply_add_eff with RTN_SUPPLY_SEL_POOL). This client only pays
+ * the fee; where it goes is the chain's rule, not this builder's.
  *
- * Resource fields: res_max_effects 40 / res_max_effect_bytes 16384 — the
- * per-leg ceilings test_v2_native.c's spend_env (:982-993) proves at the
- * 15-input maximum. res_max_total_units is RIGHT-SIZED per envelope
+ * Resource fields: res_max_effects / res_max_effect_bytes are the EXACT
+ * effect count and canonical result length THIS envelope's SPEND leg
+ * emits (t6_spend_effect_decl — derived from rtn_xfer_exec and the
+ * effect_wire.h layout, pinned by test_v2_native.c
+ * test_spend_effect_decl), not the old flat 40 / 16 384 sized for the
+ * 15-input maximum (16 384 of a 1-in/1-out spend's 23 946 units).
+ * res_max_total_units is RIGHT-SIZED per envelope from that declaration
  * (t6_spend_ceiling), NOT a round number: PrepareProposal's capacity
- * seam reserves EVERY envelope's full ceiling against ONE 1 000 000-unit
- * block budget at once, without finalizing in between
- * (nodus_witness_cmt_app.c app_seam_check → nodus_witness_v2_produce.c
- * :269 → nodus_witness_v2_env.c :382 "Step 5 — sequential reservation";
- * NODUS_V2_GLOBAL_UNIT_BUDGET, nodus_witness_v2_apply.h:290), so the
- * ceiling IS the per-block envelope count: a round 200 000 (the test
- * precedent) would admit five spends per block, 400 000 (the stake
- * builder) two.
+ * seam reserves EVERY envelope's full ceiling against ONE block budget
+ * at once, without finalizing in between (nodus_witness_cmt_app.c
+ * app_seam_check → nodus_witness_v2_produce.c :269 →
+ * nodus_witness_v2_env.c :382 "Step 5 — sequential reservation";
+ * NODUS_V2_GLOBAL_UNIT_BUDGET = 2 097 152 — trial B, operator
+ * 2026-09-24 — nodus_witness_v2_apply.h:298), so the ceiling IS the
+ * per-block envelope count: 8 221 units for a 1-in/1-out spend
+ * (ARITHMETIC, all weights 1) → at most 255 per block; a round 200 000
+ * (the test precedent) would admit ten spends per block, 400 000 (the
+ * stake builder) five.
  */
 #define T6_SPEND_MAX_OUTS  3u   /* recipient + token change + native change */
 
@@ -3178,6 +3185,69 @@ static int t6_spend_pick(const t6_coin_t *coins, int n_coins, uint8_t kind,
     *sum_out = sum;
     return sum >= need ? 0 : -1;
 }
+
+/* The EXACT per-leg effect declaration (res_max_effects,
+ * res_max_effect_bytes) of ONE CORE SPEND leg with n_in inputs and
+ * n_out outputs — what the chain's SPEND executor emits and what the
+ * meter charges, not a ceiling guess:
+ *
+ * EFFECTS (rtn_xfer_exec, nodus_witness_rt_native.c:1639-1771; the
+ * result is built at :1727-1767; SPEND = burn_amount 0, is_burn false):
+ *   - n_out CREATEs, one per output (:1734-1741): key 64 (the output
+ *     nullifier), value RTN_UTXO_REC_LEN = 284 (:1010; set by
+ *     rtn_utxo_create_eff :1563-1564; exported as
+ *     NODUS_RT_CORE_UTXO_REC_LEN, nodus_witness_runtime.h:661);
+ *   - exactly ONE reward-pool SET (:1752-1757, rtn_supply_add_eff
+ *     :1598-1599): key 1 (the selector), value 8 (the counter). It is
+ *     emitted UNCONDITIONALLY for a SPEND — there is no fee == 0 branch,
+ *     and a fee below DNAC_MIN_FEE_RAW / NODUS_W_BASE_TX_FEE is refused
+ *     before it (:1698-1700), so fee > 0 is not a term here;
+ *   - n_in DELETEs, one per input (:1758-1764, rtn_utxo_delete_eff
+ *     :1617-1618): key 64 (the input nullifier), value 0.
+ *   The burned-counter SET (:1746-1751) is BURN-only.
+ *
+ * BYTES = the canonical encoded result length — res_meter.h "effect
+ * bytes" (:114-119) is the full effect_wire encoding, and
+ * dna_meter_charge_effects recomputes it as head + count × record +
+ * Σ key_len + Σ value_len (res_meter.c:459-467). effect_wire.h layout:
+ * DNA_EFFECT_FIXED_HEAD 23, DNA_EFFECT_RECORD_LEN 84 per effect, then
+ * every key and value blob with no padding. So:
+ *   effects = n_in + n_out + 1
+ *   bytes   = 23 + 84·effects + n_out·(64 + 284) + (1 + 8) + n_in·64
+ *           = 116 + 148·n_in + 432·n_out
+ * e.g. 1-in/1-out: 3 effects, 696 bytes. Every term is a fixed-size
+ * field, so the bound is EXACT, never short. The charge gate rejects
+ * only actual > declared (res_meter.c:473-476): exact equality passes,
+ * an under-declaration fails the transaction at charge time (after
+ * CheckTx admitted it). test_v2_native.c
+ * test_spend_effect_decl restates this formula independently and pins
+ * it against the real runtime (hook-level equality, block-level: the
+ * exact declaration commits, one effect or one byte short rejects). */
+static void t6_spend_effect_decl(uint32_t n_in, uint32_t n_out,
+                                 uint32_t *effects_out,
+                                 uint32_t *bytes_out) {
+    const uint32_t effects = n_in + n_out + 1u;
+    *effects_out = effects;
+    *bytes_out = (uint32_t)DNA_EFFECT_FIXED_HEAD +
+                 (uint32_t)DNA_EFFECT_RECORD_LEN * effects +
+                 n_out * (64u + NODUS_RT_CORE_UTXO_REC_LEN) +
+                 (1u + 8u) +
+                 n_in * 64u;
+}
+/* The largest shape this builder can emit (15 inputs, 3 outputs) stays
+ * inside the metering plan's declaration caps (res_meter.h :78-80:
+ * res_max_effects <= DNA_EFFECT_MAX_COUNT, res_max_effect_bytes <=
+ * DNA_EFFECT_MAX_TOTAL_LEN). */
+_Static_assert(T6_SPEND_MAX_IN + T6_SPEND_MAX_OUTS + 1u <=
+                   (unsigned)DNA_EFFECT_MAX_COUNT,
+               "SPEND effect count exceeds the effect codec cap");
+_Static_assert((unsigned)DNA_EFFECT_FIXED_HEAD +
+                   (unsigned)DNA_EFFECT_RECORD_LEN *
+                       (T6_SPEND_MAX_IN + T6_SPEND_MAX_OUTS + 1u) +
+                   T6_SPEND_MAX_OUTS * (64u + NODUS_RT_CORE_UTXO_REC_LEN) +
+                   (1u + 8u) + T6_SPEND_MAX_IN * 64u <=
+                   DNA_EFFECT_MAX_TOTAL_LEN,
+               "SPEND result length exceeds the effect codec cap");
 
 /* The smallest res_max_total_units the chain will accept for THIS
  * envelope AND never exhaust while executing it:
@@ -3296,7 +3366,14 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
             "                 coin's id lands in the same shard — M "
             "sessions of one\n"
             "                 identity with distinct I never share a coin "
-            "(0 <= I < M <= %d).\n",
+            "(0 <= I < M <= %d).\n"
+            "  Every envelope declares the EXACT effects its SPEND leg "
+            "emits: res_max_effects\n"
+            "  = inputs + outputs + 1 (the reward-pool fee SET), "
+            "res_max_effect_bytes =\n"
+            "  116 + 148*inputs + 432*outputs; res_max_total_units is "
+            "sized from that\n"
+            "  (printed as effects= / effect_bytes= / units=).\n",
             (int)NODUS_DNAC_MAX_UTXO_RESULTS);
         return 1;
     }
@@ -3656,8 +3733,11 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
         leg.hdr.auth_kind            = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
         leg.hdr.call_len             = call_len;
         leg.hdr.auth_len             = alen;
-        leg.hdr.res_max_effects      = 40;
-        leg.hdr.res_max_effect_bytes = 16384;
+        /* the EXACT effects this leg emits (t6_spend_effect_decl) — the
+         * units right-sized below price exactly this declaration */
+        t6_spend_effect_decl((uint32_t)p->n_in, (uint32_t)n_out,
+                             &leg.hdr.res_max_effects,
+                             &leg.hdr.res_max_effect_bytes);
         leg.call_data = call;
         memset(auth, 0, alen);               /* pass 1 needs a zero blob */
         leg.auth_data = auth;
@@ -3688,13 +3768,16 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
 
         printf("v2-envelope spend %ld/%ld: %zu bytes, inputs=%d "
                "native_in=%llu token_in=%llu amount=%llu fee=%llu "
-               "native_change=%llu token_change=%llu units=%llu tip=%llu\n",
+               "native_change=%llu token_change=%llu effects=%u "
+               "effect_bytes=%u units=%llu tip=%llu\n",
                k + 1, count, env_len, p->n_in,
                (unsigned long long)p->native_in,
                (unsigned long long)p->token_in,
                (unsigned long long)send_amt, (unsigned long long)fee,
                (unsigned long long)p->native_change,
                (unsigned long long)p->token_change,
+               (unsigned)leg.hdr.res_max_effects,
+               (unsigned)leg.hdr.res_max_effect_bytes,
                (unsigned long long)units, (unsigned long long)tip);
         printf("  wire_id=");
         for (int b = 0; b < 64; b++) printf("%02x", pf->wire_id[b]);

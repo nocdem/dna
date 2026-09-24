@@ -43,6 +43,17 @@
 #   different value is a different chain id. The genesis config also
 #   reserves reward_pool_initial = 200M x 10^8 (P2-1), added to
 #   total_supply_raw.
+#   STAGEF_V2_PUMP_IDENTITIES=K (default 1; block capacity trial B,
+#   operator 2026-09-24) generates K-1 EXTRA pump identities under
+#   $BASE_DIR/v2pump2 .. v2pumpK, each owning its OWN STAGEF_V2_PUMP_LEAVES
+#   leaves of the same PUMP_ALLOC, in its own source_id band
+#   j x 10^9 + 1 .. j x 10^9 + PUMP_LEAVES (j = 2..K), added to
+#   total_supply_raw (Rule P.2). Only bench_tps_v2.sh uses them (one
+#   coin listing is capped at 100 rows PER IDENTITY). **K = 1 emits no
+#   extra line and adds 0 to the total: the config is byte-for-byte what
+#   this script wrote before the knob existed** (same inputs, same
+#   timestamps), so every sweep scenario's chain is unchanged. K > 1 is
+#   a DIFFERENT chain id (more leaves in the hashed document).
 #
 # WHAT IT LEAVES BEHIND
 #   A full 7-node cluster running under $BASE_DIR, its path in
@@ -264,6 +275,47 @@ if [ "$CANDIDATES" -gt 0 ]; then
     echo "[ok] $CANDIDATES candidate identities generated (\$BASE_DIR/cand1..$CANDIDATES)"
 fi
 
+# ── 1d. EXTRA PUMP identities, for the TPS bench (trial B) ──────────
+# Off by default (K = 1: nothing below runs and nothing is written into
+# the genesis config). STAGEF_V2_PUMP_IDENTITIES=K generates K-1 more
+# pump identities, $BASE_DIR/v2pump2 .. v2pumpK, generated EXACTLY like
+# $BASE_DIR/v2pump above (a short-lived nodus-server spawn that writes
+# identity/nodus.pk + nodus.fp). Why several: the dnac_utxo listing
+# returns at most NODUS_DNAC_MAX_UTXO_RESULTS = 100 coins per identity,
+# so one pump identity can never keep more than ~100 spends in flight —
+# below trial B's 255-per-block unit cap. K identities lift that bound to
+# ~100 x K. Port blocks: past the probe (C+3) AND every candidate
+# (C+3+1 .. C+3+CANDIDATES), so no spawn collides with a node, the pump,
+# the probe or a candidate.
+PUMP_IDS="${STAGEF_V2_PUMP_IDENTITIES:-1}"
+case "$PUMP_IDS" in
+    ''|*[!0-9]*) echo "[FAIL] STAGEF_V2_PUMP_IDENTITIES='$PUMP_IDS' — must be an integer 1..100" >&2; exit 2 ;;
+esac
+if [ "$PUMP_IDS" -lt 1 ] || [ "$PUMP_IDS" -gt 100 ]; then
+    echo "[FAIL] STAGEF_V2_PUMP_IDENTITIES=$PUMP_IDS — must be 1..100" >&2; exit 2
+fi
+if [ "$PUMP_IDS" -gt 1 ]; then
+    for j in $(seq 2 "$PUMP_IDS"); do
+        xp_dir="$BASE_DIR/v2pump$j"
+        mkdir -p "$xp_dir/identity" "$xp_dir/data"
+        pn=$(( C + 3 + CANDIDATES + j - 1 ))
+        "$STAGEF_NODUS_BIN" -b 127.0.0.1 \
+            -u "$(stagef_udp_port "$pn")" -t "$(stagef_tcp_port "$pn")" \
+            -p "$(stagef_peer_port "$pn")" -C "$(stagef_chan_port "$pn")" \
+            -W "$(stagef_witness_port "$pn")" \
+            -i "$xp_dir/identity" -d "$xp_dir/data" \
+            > "$xp_dir/identity_gen.log" 2>&1 &
+        xg=$!
+        for _ in $(seq 1 40); do
+            [ -s "$xp_dir/identity/nodus.pk" ] && [ -s "$xp_dir/identity/nodus.fp" ] && break
+            sleep 0.25
+        done
+        kill "$xg" 2>/dev/null || true; wait "$xg" 2>/dev/null || true
+        [ -s "$xp_dir/identity/nodus.pk" ] || { echo "[FAIL] pump identity $j" >&2; exit 4; }
+    done
+    echo "[ok] $(( PUMP_IDS - 1 )) extra pump identities generated (\$BASE_DIR/v2pump2..v2pump$PUMP_IDS)"
+fi
+
 # The identity-generation spawn opened a data directory, so each node
 # now holds nodus.db / channels.db. The derivation refuses to run
 # beside a FOREIGN chain database but does not care about these, and
@@ -380,6 +432,9 @@ case "$PAYOUT_INTERVAL" in
 esac
 TOTAL=$(( SELF_STAKE * C + ALLOC * (C + 1) + PUMP_ALLOC * PUMP_LEAVES \
           + PROBE_ALLOC + CAND_ALLOC * CANDIDATES + REWARD_POOL ))
+# Trial B: the extra pump identities' leaves (section 1d). K = 1 adds
+# exactly 0, so the total — and the line that writes it — is unchanged.
+TOTAL=$(( TOTAL + PUMP_ALLOC * PUMP_LEAVES * (PUMP_IDS - 1) ))
 echo "[ok] reward reserve: reward_pool_initial=$REWARD_POOL payout_interval_epochs=$PAYOUT_INTERVAL"
 
 CONF="$BASE_DIR/v2_genesis.conf"
@@ -489,8 +544,33 @@ CONF="$BASE_DIR/v2_genesis.conf"
     printf 'source_id    = %0128d\n' 3000
     echo "dest_binding = $(cat "$PROBE_DIR/identity/nodus.fp")"
     echo "amount       = $PROBE_ALLOC"
+
+    # ── EXTRA PUMP LEAVES (trial B, section 1d) ─────────────────────
+    # Written ONLY when K > 1 — with the default K = 1 this block emits
+    # nothing, so the file above is byte-for-byte the pre-knob config.
+    # Identity j (2..K) owns PUMP_LEAVES leaves of PUMP_ALLOC (the same
+    # leaf size as v2pump) in its own band j x 10^9 + i. No band can
+    # collide: node/user 1..C+1, pump 1001..1000+PUMP_LEAVES, candidates
+    # 2001.., probe 3000 all sit below 2 x 10^9 for any derivable config
+    # (the builder takes at most NODUS_V2_GEN_MAX_ALLOCS = 65 536 leaves,
+    # nodus_witness_v2_gen.h:284, so PUMP_LEAVES < 10^9), and band j ends
+    # at j x 10^9 + PUMP_LEAVES < (j + 1) x 10^9. The builder sorts the
+    # leaves by source_id itself (nodus_witness_v2_gen.c:793-796, qsort,
+    # duplicates rejected), so appending here is order-safe.
+    if [ "$PUMP_IDS" -gt 1 ]; then
+        for j in $(seq 2 "$PUMP_IDS"); do
+            xp_fp=$(cat "$BASE_DIR/v2pump$j/identity/nodus.fp")
+            for i in $(seq 1 "$PUMP_LEAVES"); do
+                echo ""
+                echo "[allocation]"
+                printf 'source_id    = %0128d\n' "$(( j * 1000000000 + i ))"
+                echo "dest_binding = $xp_fp"
+                echo "amount       = $PUMP_ALLOC"
+            done
+        done
+    fi
 } > "$CONF"
-echo "[ok] v2_genesis.conf built ($C validators, $(( C + 1 + PUMP_LEAVES + 1 + CANDIDATES )) allocations incl. $PUMP_LEAVES pump + 1 probe + $CANDIDATES candidate leaves, $(stat -c%s "$CONF") bytes)"
+echo "[ok] v2_genesis.conf built ($C validators, $(( C + 1 + PUMP_LEAVES * PUMP_IDS + 1 + CANDIDATES )) allocations incl. $PUMP_LEAVES pump x $PUMP_IDS identit(y/ies) + 1 probe + $CANDIDATES candidate leaves, $(stat -c%s "$CONF") bytes)"
 
 # ── 3. derive on every node, INDEPENDENTLY ──────────────────────────
 CHAIN_ID=""; GENESIS_PIN=""

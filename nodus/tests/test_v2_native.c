@@ -84,6 +84,13 @@
  *      and accepted at unlock + 1 (hook
  *      level — the block layer only accepts the next height, see the
  *      section header).
+ *  11. (§19, block capacity trial B) THE CLI's SPEND EFFECT
+ *      DECLARATION: nodus-cli's exact res_max_effects /
+ *      res_max_effect_bytes formula, restated independently, equals the
+ *      real runtime's emitted count and canonical result length at
+ *      1/1, 1/2, 2/1, 15/1 and 15/3; one effect or one byte short
+ *      rejects the block; the exact declaration commits with zero unit
+ *      slack.
  *
  * @file test_v2_native.c
  */
@@ -9696,6 +9703,211 @@ static int test_vupd_hook_pins(void) {
     return 0;
 }
 
+/* ══ 19. THE CLI's SPEND EFFECT DECLARATION (block capacity trial B) ══
+ *
+ * docs/plans/decisions/2026-09-24-block-capacity-trial-b.md item 1:
+ * `nodus-cli v2-envelope spend` declares res_max_effects /
+ * res_max_effect_bytes as the EXACT effects its CORE SPEND leg emits
+ * (nodus-cli.c t6_spend_effect_decl), because PrepareProposal reserves
+ * every envelope's whole ceiling — a padded declaration is lost block
+ * capacity, a SHORT one fails the transaction at the effect charge
+ * (res_meter.c dna_meter_charge_effects: actual > declared rejects).
+ *
+ * The formula is RESTATED here independently (tsp_effect_decl — the
+ * CLI is a tool, not a library this binary links; literals on purpose,
+ * so a changed codec constant or a changed executor turns this RED
+ * instead of moving both sides together):
+ *   effects = n_in + n_out + 1        (CREATE per output, ONE reward-
+ *                                      pool SET, DELETE per input —
+ *                                      rtn_xfer_exec, SPEND arm)
+ *   bytes   = 23 + 84·effects + n_out·(64 + 284) + (1 + 8) + n_in·64
+ * KEEP IN STEP WITH nodus-cli.c t6_spend_effect_decl.
+ *
+ * Per shape — 1-in/1-out, 1-in/2-out, 2-in/1-out, the 15-input maximum
+ * (RTN_SPEND_MAX_IN) with 1 output, and 15-in/3-out (the largest the
+ * CLI builds: T6_SPEND_MAX_OUTS) — through the REAL builtin runtime:
+ *   (a) one effect short, then one byte short: the block REJECTS (-1,
+ *       digest-proven no-op) — the bound is tight in both fields;
+ *   (b) the exact declaration: the hook-level exec's decoded result
+ *       has effect_count and canonical length EQUAL to the formula
+ *       (so also <=); the block COMMITS at that height;
+ *   (c) zero slack: the ceiling the CLI declares (t6_spend_ceiling:
+ *       static_total + (n_in + 1)·w_read) equals what the chain
+ *       consumed — w_base (global) + the CORE DomainUpdate's
+ *       res_verify_cost.
+ * KILLED BY: dropping the pool SET from the count, counting it only
+ * when fee > 0, sizing CREATE values other than 284, a BURN-shaped
+ * second SET, any off-by-one in either field. */
+#define TSP_AMT 3000000ULL
+
+static void tsp_effect_decl(uint32_t n_in, uint32_t n_out,
+                            uint32_t *effects, uint32_t *bytes) {
+    *effects = n_in + n_out + 1u;
+    *bytes = 23u + 84u * *effects + n_out * (64u + TUTXO_REC_LEN) +
+             (1u + 8u) + n_in * 64u;
+}
+
+static int test_spend_effect_decl(void) {
+    static const struct { int n_in, n_out; } shp[5] = {
+        { 1, 1 }, { 1, 2 }, { 2, 1 }, { 15, 1 }, { 15, 3 }
+    };
+    static uint8_t res[DNA_EFFECT_MAX_TOTAL_LEN];
+    static uint8_t call[8192];
+    fixture_t fx;
+    size_t nbt = 0;
+    const nodus_domain_runtime_t *bt = nodus_runtime_builtin_table(&nbt);
+    int s7[1] = { 7 };
+    uint8_t iid[64];
+    nodus_rt_auth_verdict_t av;
+
+    CHECK(bt && nbt == 2 && bt[0].meter_policy, "table");
+    CHECK(fx_genesis(&fx, "effdecl") == 0, "genesis");
+    env_t *e = malloc(sizeof(*e));
+    CHECK(e != NULL, "alloc");
+    memset(&av, 0, sizeof(av));
+    av.n_signers = 1;
+    CHECK(qgp_sha3_512(g_pk[7], 2592, av.signer_fp[0]) == 0, "fp");
+    memset(iid, 0x5E, sizeof(iid));
+
+    /* the formula's own worked value (nodus-cli.c's comment) */
+    {
+        uint32_t fe = 0, fb = 0;
+        tsp_effect_decl(1, 1, &fe, &fb);
+        CHECK(fe == 3 && fb == 696, "1-in/1-out = 3 effects, 696 bytes");
+        OK();
+    }
+
+    for (int s = 0; s < 5; s++) {
+        const uint64_t h = (uint64_t)s + 1;
+        const int ni = shp[s].n_in, no = shp[s].n_out;
+        uint8_t ins[15][64];
+        for (int j = 0; j < ni; j++)
+            CHECK(seed_utxo(&fx, 7, TSP_AMT, (uint8_t)(0x20 + 16 * s + j),
+                            0, ins[j]) == 0, "seed");
+        {
+            char sql[192];
+            snprintf(sql, sizeof(sql),
+                     "UPDATE supply_tracking SET genesis_supply = "
+                     "genesis_supply + %llu, current_supply = "
+                     "current_supply + %llu WHERE id = 1",
+                     (unsigned long long)(ni * TSP_AMT),
+                     (unsigned long long)(ni * TSP_AMT));
+            CHECK(run_sql(fx.w->db, sql) == 0, "supply seed");
+        }
+        /* balanced: Σin = Σout + fee; outputs alternate owner 8 / 7 */
+        out_spec_t outs[3];
+        uint64_t left = (uint64_t)ni * TSP_AMT - FEE_MIN;
+        for (int o = 0; o < no; o++) {
+            outs[o].owner = (o % 2 == 0) ? 8 : 7;
+            outs[o].amount = (o + 1 < no) ? 500000ULL : left;
+            left -= outs[o].amount;
+            outs[o].seed_byte = (uint8_t)(0xE0 + 4 * s + o);
+            outs[o].token = NULL;
+        }
+        uint32_t cl = spend_call_build(call, sizeof(call), ins, ni, outs,
+                                       no);
+        CHECK(cl > 0, "call");
+        uint32_t d_eff = 0, d_bytes = 0;
+        tsp_effect_decl((uint32_t)ni, (uint32_t)no, &d_eff, &d_bytes);
+
+        /* (a) one effect short, one byte short: rejected, no state */
+        for (int k = 0; k < 2; k++) {
+            int rc = 0;
+            nodus_v2_block_t b;
+            CHECK(env_build_signed(&fx, e, DNA_DOMAIN_CORE,
+                                   DNA_CORERULE_SPEND, call, cl, FEE_MIN,
+                                   0, d_eff - (k == 0 ? 1u : 0u),
+                                   d_bytes - (k == 1 ? 1u : 0u), s7, 1,
+                                   NULL) == 0, "build short");
+            nodus_v2_envelope_t ve = { e->bytes, e->len };
+            mk_block(&b, h, &ve, 1);
+            CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+                  k == 0 ? "a declaration ONE EFFECT short must reject"
+                         : "a declaration ONE BYTE short must reject");
+            OK();
+        }
+
+        /* (b) the exact declaration */
+        CHECK(env_build_signed(&fx, e, DNA_DOMAIN_CORE, DNA_CORERULE_SPEND,
+                               call, cl, FEE_MIN, 0, d_eff, d_bytes, s7, 1,
+                               NULL) == 0, "build exact");
+        dna_env_view_t v;
+        CHECK(dna_env_decode(e->bytes, e->len, &v) == 0, "decode");
+        {
+            nodus_rt_exec_ctx_t ctx;
+            memset(&ctx, 0, sizeof(ctx));
+            ctx.chain_id = fx.chain_id;
+            ctx.intent_id = iid;
+            ctx.wire_id = iid;
+            ctx.auth = &av;
+            size_t rl = 0;
+            CHECK(core_exec_at(&fx, &v, 0, &ctx, h, res, sizeof(res), &rl)
+                      == 0, "hook-level SPEND exec");
+            dna_effect_view_t ev;
+            CHECK(dna_effect_result_decode(res, rl, &ev) == 0,
+                  "the runtime's result decodes");
+            CHECK(ev.effect_count <= d_eff && rl <= d_bytes,
+                  "the emitted effects exceed the declaration");
+            OK();
+            CHECK(ev.effect_count == d_eff && rl == d_bytes,
+                  "the declaration is not EXACT for this shape");
+            OK();
+        }
+        uint64_t ceiling = 0, base = 0;
+        {
+            dna_meter_plan_t *plan = calloc(1, sizeof(*plan));
+            CHECK(plan != NULL, "alloc plan");
+            int prc = dna_meter_plan_build(bt[0].meter_policy, &v, plan);
+            if (prc == DNA_METER_OK) {
+                ceiling = plan->static_total +
+                          (uint64_t)(ni + 1) * plan->w_read;
+                base = plan->base_units;
+            }
+            free(plan);
+            CHECK(prc == DNA_METER_OK, "the block policy plans the leg");
+        }
+        {
+            nodus_v2_envelope_t ve = { e->bytes, e->len };
+            nodus_v2_block_t b;
+            mk_block(&b, h, &ve, 1);
+            CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+                  "the exact declaration must commit");
+            OK();
+        }
+
+        /* (c) zero slack: declared ceiling == consumed units */
+        {
+            sqlite3_stmt *st = NULL;
+            char sql[128];
+            snprintf(sql, sizeof(sql),
+                     "SELECT COUNT(*) FROM v2_domain_updates WHERE "
+                     "global_height=%llu", (unsigned long long)h);
+            CHECK(q1(fx.w, sql) == 1, "exactly one (CORE) update");
+            snprintf(sql, sizeof(sql),
+                     "SELECT upd FROM v2_domain_updates WHERE "
+                     "global_height=%llu", (unsigned long long)h);
+            CHECK(sqlite3_prepare_v2(fx.w->db, sql, -1, &st, NULL)
+                      == SQLITE_OK && sqlite3_step(st) == SQLITE_ROW,
+                  "upd row");
+            dna_domain_update_t u;
+            int drc = dna_dupd_decode(sqlite3_column_blob(st, 0),
+                                      (size_t)sqlite3_column_bytes(st, 0),
+                                      &u);
+            sqlite3_finalize(st);
+            CHECK(drc == 0, "decode upd");
+            CHECK(base + u.res_verify_cost == ceiling,
+                  "the CLI-style ceiling is not exactly the consumed "
+                  "units (w_base + the CORE update's res_verify_cost)");
+            OK();
+        }
+    }
+    CHECK(supply_identity_holds(fx.w), "identity");
+    OK();
+    free(e);
+    fx_close(&fx);
+    return 0;
+}
+
 int main(void) {
     /* This file pins which domain roots a given runtime op moves: "op X
      * moves SYSTEM", "op X must NOT move CORE". The O15J per-block mint
@@ -9729,6 +9941,7 @@ int main(void) {
     if (test_o11_global() != 0) return 1;
     if (test_system_validator_update() != 0) return 1;
     if (test_vupd_hook_pins() != 0) return 1;
+    if (test_spend_effect_decl() != 0) return 1;
     printf("test_v2_native: ALL OK (%d checks)\n", g_checks);
     return 0;
 }

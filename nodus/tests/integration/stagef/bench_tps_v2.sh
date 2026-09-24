@@ -13,16 +13,25 @@
 #   How many real CORE SPEND envelopes per second the 7-node localhost
 #   cluster commits while M parallel client sessions keep its mempool fed
 #   for D seconds. The load is `nodus-cli v2-envelope spend --amount all
-#   --count all --shard I/M`: worker I (0 <= I < M) owns the PUMP
-#   identity's coins whose nullifier falls in shard I, self-sends every
-#   one it can see (each coin's whole value minus the fee — 1 input, 1
-#   output, no change), waits until every accepted spend's created
+#   --count all --shard R/W`. PUMP IDENTITIES (trial B): the bring-up may
+#   have made K pump identities (STAGEF_V2_PUMP_IDENTITIES; identity 1 =
+#   $BASE_DIR/v2pump, j = $BASE_DIR/v2pump<j>, counted on disk); worker I
+#   (0 <= I < M) spends identity (I mod K) + 1. The W workers sharing an
+#   identity (I, I+K, I+2K, ...) shard ITS coins among themselves, worker
+#   I taking shard R = I div K of W; workers on different identities need
+#   no sharding (different owners — they can never list the same coin).
+#   With K = M every worker owns one identity and runs --shard 0/1 (no
+#   sharding); with K = 1 this is exactly the old --shard I/M. Each worker
+#   self-sends every coin of its shard it can see (each coin's whole value
+#   minus the fee — 1 input, 1 output, no change), waits until every
+#   accepted spend's created
 #   `utxo_set` row (tx_hash = the envelope's intent_id,
 #   nodus_witness_rt_native.c rtn_utxo_create_eff :1505) exists on the
 #   node it submits to, then repeats. The shard is a property of the COIN
-#   (first 8 nullifier bytes mod M) and the CLI re-draws every output
-#   seed until the new coin lands in the same shard, so the M sessions
-#   can never select the same coin (nodus-cli.c cmd_v2_spend's header).
+#   (first 8 nullifier bytes mod W) and the CLI re-draws every output
+#   seed until the new coin lands in the same shard, so the sessions of
+#   one identity can never select the same coin (nodus-cli.c
+#   cmd_v2_spend's header).
 #   Worker I submits to, lists on and confirms on node (I mod 7) + 1 —
 #   ONE replica per worker, so its next listing always reflects the spends
 #   it just confirmed (the STAGEF_PUMP_SUBMIT_NODE README row: a lagging
@@ -39,6 +48,24 @@
 #   / accepted / refused / dropped / applied / idle rounds, and the
 #   theoretical per-block cap floor(NODUS_V2_GLOBAL_UNIT_BUDGET / the
 #   res_max_total_units the CLI declared) next to the measured max.
+#   BANDWIDTH (operator requirement, trial B 2026-09-24): during the load
+#   window the parent also samples, about once a second, every
+#   nodus-server pid's TCP sockets with `ss -tinpH` (bytes_sent — or
+#   bytes_acked where bytes_sent is absent — and bytes_received per
+#   socket, keyed by pid + local port + peer port), keeps the LAST (=
+#   MAX, the counters only grow) value seen per socket so a socket that
+#   closes mid-run still counts what it carried until its last sample,
+#   and subtracts a baseline taken at window start for sockets that
+#   already existed. Per node it reports bytes sent / received in the
+#   window and bytes/s, split by the node's own listening-port class for
+#   INCOMING connections (in_client 14xx1, in_internode 14xx2,
+#   in_channel 14xx3, in_witness 14xx4 — README "Port map",
+#   stagef_env.sh stagef_*_port) and by the PEER's port class for its
+#   OUTGOING ones (out_client / out_internode / out_channel / out_witness,
+#   out_other for anything outside the cluster's range), plus bytes per
+#   committed envelope per node and for the cluster; one CSV per node,
+#   $BASE_DIR/bench/bandwidth_node<N>.csv, and the raw samples in
+#   $BASE_DIR/bench/bw_samples.raw.
 #   Ends with stagef_cmt_diff_at_floor "post-bench-tps".
 #
 # WHAT IT REQUIRES
@@ -49,9 +76,17 @@
 #   another tree makes the printed cap wrong).
 #   Environment:
 #     STAGEF_V2_PUMP_LEAVES=<N>  exported BEFORE stagef_up_v2.sh (it is
-#                                part of the genesis document). Suggested
-#                                400; the script default is 40. See "HOW
-#                                IT CAN LIE" on the 100-row listing cap.
+#                                part of the genesis document), PER pump
+#                                identity. The script default is 40.
+#     STAGEF_V2_PUMP_IDENTITIES=<K>  exported BEFORE stagef_up_v2.sh
+#                                (default 1). The bench counts the
+#                                identities on disk; if this variable is
+#                                also exported at bench time it must
+#                                match, or the bench refuses.
+#                                SUGGESTED for the trial-B cap of 255:
+#                                K = 7, N = 150 (in-flight bound
+#                                7 x min(100, 150) = 700; see "HOW IT CAN
+#                                LIE" on the 100-row listing cap).
 #     STAGEF_BENCH_WORKERS       M, default 7 = one per node, max 7: a
 #                                node evicts an older session of the
 #                                same identity (SESSION_EVICT), so two
@@ -61,16 +96,24 @@
 #                                correctness bound: every wait inside is
 #                                progress-bounded (below).
 #   A fresh cluster from stagef_up_v2.sh (not a Comet cluster, or no pump
-#   identity → rc 99). The PUMP batch is claimed here in ONE v2-claim call
-#   if it is not claimed yet (v2-claim rc 2 "all already claimed" is
-#   accepted, e.g. after test_cmt_claim_flood.sh).
+#   identity → rc 99). Every pump identity's batch is claimed here, ONE
+#   v2-claim call per identity, if it is not claimed yet (v2-claim rc 2
+#   "all already claimed" is accepted, e.g. after
+#   test_cmt_claim_flood.sh), and the load starts only once EVERY
+#   identity's coins are all spendable on node 1 and every node has
+#   reached that height.
+#   Optional: `ss` (iproute2) with TCP byte counters (`-i` printing
+#   bytes_received / bytes_acked) for the bandwidth section. Without it
+#   that section is SKIPPED with a message; the bench itself still runs
+#   and still exits 0 on a clean load.
 #
 # WHAT IT LEAVES BEHIND
-#   The PUMP identity's whole batch claimed; every coin it spent replaced
+#   Every pump identity's whole batch claimed; every coin spent replaced
 #   by one coin STAGEF_PUMP_FEE_RAW smaller (coin count unchanged, fees
 #   in the reward pool). The chain many blocks further on. Nothing is
-#   killed or restarted. $BASE_DIR/bench/ holds blocks.csv, summary.txt
-#   and one worker_<I>.log / worker_<I>.stats per worker. A worker still
+#   killed or restarted. $BASE_DIR/bench/ holds blocks.csv, summary.txt,
+#   one worker_<I>.log / worker_<I>.stats per worker and — when ss
+#   qualified — bw_samples.raw and bandwidth_node<N>.csv. A worker still
 #   running when the bench aborts is killed; a nodus-cli it had started
 #   finishes on its own.
 #
@@ -97,22 +140,72 @@
 #   - **The 100-row listing cap bounds what is in flight.** dnac_utxo
 #     returns at most NODUS_DNAC_MAX_UTXO_RESULTS = 100 rows with no
 #     ORDER BY before its LIMIT (nodus_witness_db.c
-#     nodus_witness_utxo_by_owner). Every worker lists the SAME identity,
-#     so ALL workers together see at most 100 coins per listing, and a
+#     nodus_witness_utxo_by_owner) — PER IDENTITY. The workers of one
+#     identity together see at most 100 of its coins per listing, and a
 #     worker sees only the part of those 100 that falls in its shard.
-#     Leaves beyond 100 are a reserve that rotates into view as spent
-#     coins are replaced; they do not raise the in-flight bound.
+#     Leaves beyond 100 per identity are a reserve that rotates into view
+#     as spent coins are replaced; they do not raise the bound. The
+#     in-flight bound is therefore ≈ Σ over the identities that have a
+#     worker of min(100, leaves) — 100 × K with ≥ 100 leaves each (K = 7:
+#     700 ≥ 255) — and the summary prints K and this bound; when the
+#     bound is below the cap it says the block CANNOT fill.
 #     (Which 100 rows come back is SQLite's plan choice, not a documented
 #     order — JUDGMENT, not verified with EXPLAIN on a live DB.) A worker
 #     whose shard has nothing visible does an IDLE round — it waits for
 #     one new height and lists again; idle rounds are counted per worker.
 #   - **Today's unit budget only.** The per-block cap is
-#     NODUS_V2_GLOBAL_UNIT_BUDGET (1 000 000, nodus_witness_v2_apply.h:292)
-#     / the CLI's right-sized ceiling (t6_spend_ceiling). A different
-#     budget, metering weight, auth size or ceiling rule is a different
-#     cap and a different result. Other block bounds (Block.MaxBytes,
-#     NODUS_V2_ENV_BATCH_MAX) are far above this load and are not
-#     reported; if one ever bound first, the "cap" line would be wrong.
+#     NODUS_V2_GLOBAL_UNIT_BUDGET (read from nodus_witness_v2_apply.h:298
+#     at run time — 2 097 152 since block capacity trial B, operator
+#     2026-09-24; it was 1 000 000) / the CLI's right-sized ceiling
+#     (t6_spend_ceiling over the EXACT effect declaration,
+#     t6_spend_effect_decl). ARITHMETIC, NOT MEASURED: a 1-in/1-out spend
+#     declares 8 221 units (all weights 1: base 1 + op 1 + call 298 +
+#     auth 7 220 + 3 effects + 696 effect bytes + 2 reads), so the cap is
+#     floor(2 097 152 / 8 221) = 255. A different budget, metering
+#     weight, auth size or ceiling rule is a different cap and a
+#     different result. The policy's envelope BYTE bound
+#     (max_block_env_bytes 2 MiB) is now close: a 1-in/1-out envelope is
+#     43 + 30 + 298 + 7 220 = 7 591 bytes (env_wire.h fixed head + leg
+#     header + call + auth), floor(2 097 152 / 7 591) = 276 per block,
+#     so the UNIT cap still binds first by that arithmetic; the bench
+#     prints only the unit cap. Block.MaxBytes and NODUS_V2_ENV_BATCH_MAX
+#     are far above this load and are not reported; if one ever bound
+#     first, the "cap" line would be wrong.
+#   - **With ONE pump identity the CLIENTS cannot fill a 255 block.** The
+#     100-row listing cap (above) then bounds all workers together to
+#     ~100 coins in flight, below the trial-B cap of 255 — the summary
+#     prints "STRUCTURAL" under the verdict. Bring the cluster up with
+#     STAGEF_V2_PUMP_IDENTITIES=7 (bound 700). A bound above the cap is
+#     NECESSARY, not sufficient: each worker also pays a session setup and
+#     a ~1 s confirmation poll per round, so a block may still fall short
+#     of the cap — the verdict line then still says CLIENTS, honestly.
+#   - **Bandwidth is localhost TCP payload, and sampled.** The counters
+#     are the kernel's per-socket TCP payload bytes (bytes_sent /
+#     bytes_acked, bytes_received): they INCLUDE everything nodus writes
+#     to the socket — its wire framing, CBOR, and whatever session
+#     encryption / authentication overhead that link carries — and
+#     EXCLUDE IP/TCP headers; on loopback there is no
+#     real network, no loss and no bandwidth limit, so the numbers say
+#     how much a node SENDS, not how fast a real link could carry it.
+#     A socket opened AND closed between two ~1 s samples is missed
+#     entirely; a socket's bytes after its last sample are missed;
+#     `ss -p` attributes a socket to a pid only for the caller's own
+#     processes (or as root), so nodes run by another user are invisible
+#     and the section reports "no nodus-server TCP socket was seen"; a
+#     (pid, local port, peer port) tuple re-used by a new socket is
+#     detected only when a counter goes DOWN (counted as a re-use and
+#     summed as two sockets). The report prints how many sockets were
+#     seen, how many were open at start, opened during and gone before
+#     the end. Node-to-node bytes appear twice across the cluster (sent
+#     by one node, received by the other); client (nodus-cli) sessions
+#     are measured on the server side only (their pids are not
+#     sampled). Bytes per envelope divide the window's bytes by the
+#     committed envelopes in the window blocks — the byte window
+#     (wall-clock load start → load end) and the block window (blocks
+#     first seen inside it) are not the same interval at their edges.
+#     Consensus traffic flows with or without envelopes (idle blocks,
+#     votes), so bytes per envelope is an upper bound on what an
+#     envelope costs, not its marginal cost.
 #   - **The fencepost.** TPS = envelopes in window blocks 2..n / (first-
 #     seen(n) − first-seen(1)): block 1's envelopes accumulated BEFORE the
 #     window opened, so they are excluded from the rate (printed in the
@@ -192,40 +285,82 @@ mkdir -p "$BENCH_DIR"
 rm -f "$BENCH_DIR"/worker_*.log "$BENCH_DIR"/worker_*.stats \
       "$BENCH_DIR"/blocks.csv "$BENCH_DIR"/summary.txt
 
-pump_fp=$(cat "$PUMP/nodus.fp")
-n_leaves=$(grep -c "^dest_binding = ${pump_fp}\$" "$CONF" || true)
-[ "${n_leaves:-0}" -gt 0 ] || die "no pump leaves for $pump_fp in $CONF"
-echo "[ok] pump identity: $n_leaves genesis leaves (STAGEF_V2_PUMP_LEAVES at bring-up)"
-[ "$n_leaves" -ge "$M" ] || echo "[warn] fewer pump leaves ($n_leaves) than workers ($M) — some shards start empty"
-[ "$n_leaves" -le 100 ] || echo "[info] $n_leaves leaves > the 100-row listing cap: at most 100 coins are visible to all workers together at a time (see HOW IT CAN LIE)"
+# ── the pump identities (trial B: STAGEF_V2_PUMP_IDENTITIES at bring-up)
+# Identity 1 is $BASE_DIR/v2pump; identities 2..K are v2pump2..v2pumpK,
+# counted ON DISK (consecutive, each with a nodus.pk) because the bench
+# runs against a cluster that already exists. If STAGEF_V2_PUMP_IDENTITIES
+# is exported it must agree with what the bring-up actually made.
+K=1
+while [ -s "$BASE_DIR/v2pump$(( K + 1 ))/identity/nodus.pk" ]; do K=$(( K + 1 )); done
+if [ -n "${STAGEF_V2_PUMP_IDENTITIES:-}" ] && [ "$STAGEF_V2_PUMP_IDENTITIES" != "$K" ]; then
+    die "STAGEF_V2_PUMP_IDENTITIES=$STAGEF_V2_PUMP_IDENTITIES but this bring-up has $K pump identit(y/ies) under $BASE_DIR — export the value used at bring-up, or unset it"
+fi
+declare -a PK_DIR PK_FP PK_LEAVES PK_WORKERS
+n_leaves=0
+for j in $(seq 1 "$K"); do
+    if [ "$j" = 1 ]; then PK_DIR[$j]="$PUMP"; else PK_DIR[$j]="$BASE_DIR/v2pump$j/identity"; fi
+    PK_FP[$j]=$(cat "${PK_DIR[$j]}/nodus.fp")
+    PK_LEAVES[$j]=$(grep -c "^dest_binding = ${PK_FP[$j]}\$" "$CONF" || true)
+    [ "${PK_LEAVES[$j]:-0}" -gt 0 ] || die "no pump leaves for identity $j (${PK_FP[$j]}) in $CONF"
+    # workers I with I mod K == j-1 use identity j
+    if [ "$(( j - 1 ))" -lt "$M" ]; then
+        PK_WORKERS[$j]=$(( (M - 1 - (j - 1)) / K + 1 ))
+    else
+        PK_WORKERS[$j]=0
+    fi
+    n_leaves=$(( n_leaves + PK_LEAVES[j] ))
+done
+# In-flight bound: one dnac_utxo listing returns at most
+# NODUS_DNAC_MAX_UTXO_RESULTS = 100 coins of ONE identity, and every
+# worker of an identity lists that same identity — so the coins the
+# workers can see at once are Σ over USED identities of min(100, leaves).
+INFLIGHT_BOUND=0
+for j in $(seq 1 "$K"); do
+    [ "${PK_WORKERS[$j]}" -gt 0 ] || continue
+    l="${PK_LEAVES[$j]}"; [ "$l" -le 100 ] || l=100
+    INFLIGHT_BOUND=$(( INFLIGHT_BOUND + l ))
+done
+echo "[ok] pump identities K=$K, $n_leaves genesis leaves in total (STAGEF_V2_PUMP_LEAVES per identity at bring-up); in-flight bound ≈ $INFLIGHT_BOUND coins (100-row listing cap per identity)"
+for j in $(seq 1 "$K"); do
+    if [ "${PK_WORKERS[$j]}" = 0 ]; then
+        echo "[warn] pump identity $j has no worker (K=$K > M=$M) — its batch is claimed but never spent"
+    elif [ "${PK_LEAVES[$j]}" -lt "${PK_WORKERS[$j]}" ]; then
+        echo "[warn] pump identity $j: fewer leaves (${PK_LEAVES[$j]}) than its workers (${PK_WORKERS[$j]}) — some shards start empty"
+    fi
+done
 
 stagef_cmt_diff_at_floor "pre-bench-tps" || exit 2
 
-# ── (i) claim the whole batch in ONE call, wait for every coin ───────
-claim_log="$BENCH_DIR/claim.log"
+# ── (i) claim every identity's batch (ONE v2-claim call per identity),
+#        then wait until EVERY identity's coins are all spendable ──────
 port=$(stagef_tcp_port "$REF")
-crc=0
-"$CLI" -s 127.0.0.1 -p "$port" v2-claim --config "$CONF" --db "$ref_db" \
-    --keys "$PUMP" --submit "127.0.0.1:$port" > "$claim_log" 2>&1 || crc=$?
-if [ "$crc" = 2 ]; then
-    echo "[ok] the pump batch was already claimed (v2-claim rc 2) — using it as it stands"
-elif [ "$crc" != 0 ]; then
-    cat "$claim_log" >&2
-    die "the pump batch claim failed (v2-claim rc $crc)"
-else
-    echo "[ok] pump batch submitted in one v2-claim call"
-fi
-h=$(stagef_cmt_wait_row "$ref_db" \
-    "SELECT (SELECT COUNT(*) FROM utxo_set WHERE owner = '$pump_fp'
-               AND token_id = zeroblob(64) AND amount > $FEE
-               AND unlock_block <= (SELECT COALESCE(MAX(global_height),0) FROM v2_blocks))
-            >= $n_leaves;") && wrc=0 || wrc=$?
-case "$wrc" in
-    0) ;;
-    1) die "the claimed pump coins never all appeared and the chain STALLED (tip $h)" ;;
-    *) die "fewer than $n_leaves spendable pump coins above the fee on node$REF within $MAX_HEIGHTS heights (tip $h) — a claim was refused or dropped, or earlier use left coins at or below the fee" ;;
-esac
-echo "[ok] $n_leaves spendable pump coins on node$REF (tip $h)"
+for j in $(seq 1 "$K"); do
+    claim_log="$BENCH_DIR/claim_$j.log"
+    crc=0
+    "$CLI" -s 127.0.0.1 -p "$port" v2-claim --config "$CONF" --db "$ref_db" \
+        --keys "${PK_DIR[$j]}" --submit "127.0.0.1:$port" > "$claim_log" 2>&1 || crc=$?
+    if [ "$crc" = 2 ]; then
+        echo "[ok] pump identity $j: batch already claimed (v2-claim rc 2) — using it as it stands"
+    elif [ "$crc" != 0 ]; then
+        cat "$claim_log" >&2
+        die "pump identity $j: batch claim failed (v2-claim rc $crc)"
+    else
+        echo "[ok] pump identity $j: ${PK_LEAVES[$j]} leaves submitted in one v2-claim call"
+    fi
+done
+for j in $(seq 1 "$K"); do
+    h=$(stagef_cmt_wait_row "$ref_db" \
+        "SELECT (SELECT COUNT(*) FROM utxo_set WHERE owner = '${PK_FP[$j]}'
+                   AND token_id = zeroblob(64) AND amount > $FEE
+                   AND unlock_block <= (SELECT COALESCE(MAX(global_height),0) FROM v2_blocks))
+                >= ${PK_LEAVES[$j]};") && wrc=0 || wrc=$?
+    case "$wrc" in
+        0) ;;
+        1) die "pump identity $j: the claimed coins never all appeared and the chain STALLED (tip $h)" ;;
+        *) die "pump identity $j: fewer than ${PK_LEAVES[$j]} spendable coins above the fee on node$REF within $MAX_HEIGHTS heights (tip $h) — a claim was refused or dropped, or earlier use left coins at or below the fee" ;;
+    esac
+    echo "[ok] pump identity $j: ${PK_LEAVES[$j]} spendable coins on node$REF (tip $h)"
+done
 # every node a worker will list on must hold the same coins first
 for n in $(seq 1 "$C"); do
     stagef_cmt_wait_height "$(stagef_node_chain_db "$n")" "$h" 3 >/dev/null \
@@ -250,8 +385,18 @@ wait_new_height() {
 
 # worker I: loop until LOAD_END; every round = one CLI session.
 worker() {
-    local I="$1" node port db log stats
+    local I="$1" node port db log stats pj keys fp shard
     node=$(( I % C + 1 ))
+    # pump identity (I mod K) + 1; among the workers sharing it (I, I+K,
+    # I+2K, ...) this one is rank I div K of PK_WORKERS[pj], and shards
+    # that identity's coins by rank — workers on DIFFERENT identities can
+    # never select the same coin (different owners), so sharding is only
+    # needed within an identity. K = M gives every worker its own identity
+    # and --shard 0/1 (= no sharding, the CLI's shard_m 1).
+    pj=$(( I % K + 1 ))
+    keys="${PK_DIR[$pj]}"
+    fp="${PK_FP[$pj]}"
+    shard="$(( I / K ))/${PK_WORKERS[$pj]}"
     port=$(stagef_tcp_port "$node")
     db=$(stagef_node_chain_db "$node")
     log="$BENCH_DIR/worker_$I.log"
@@ -264,8 +409,8 @@ worker() {
         start_h=$(stagef_cmt_tip "$db")
         rc=0
         out=$("$CLI" -s 127.0.0.1 -p "$port" v2-envelope spend \
-                --keys "$PUMP" --to "$pump_fp" --amount all --count all \
-                --shard "$I/$M" --fee "$FEE" \
+                --keys "$keys" --to "$fp" --amount all --count all \
+                --shard "$shard" --fee "$FEE" \
                 --submit "127.0.0.1:$port" 2>&1) || rc=$?
         printf '── round %d (tip %s, rc %d)\n%s\n' "$rounds" "$start_h" "$rc" "$out" >> "$log"
         planned=$(printf '%s\n' "$out" | grep -c '^v2-envelope spend [0-9]*/[0-9]*:' || true)
@@ -348,7 +493,8 @@ worker() {
         applied=$(( applied + n_app ))
     done
     {
-        echo "worker=$I"; echo "node=$node"; echo "rounds=$rounds"
+        echo "worker=$I"; echo "node=$node"; echo "pump_identity=$pj"
+        echo "shard=$shard"; echo "rounds=$rounds"
         echo "idle_rounds=$idle"; echo "submitted=$submitted"
         echo "accepted=$accepted"; echo "refused=$refused"
         echo "unsent=$unsent"; echo "dropped=$dropped"; echo "applied=$applied"
@@ -371,6 +517,157 @@ cpu_ticks() {
 }
 CLK_TCK=$(getconf CLK_TCK)
 
+# BANDWIDTH: per-socket TCP byte counters of every nodus-server pid,
+# via `ss -tinpH` (iproute2). Each sample appends one line per nodus
+# socket to $BW_RAW:  phase,time,pid,node,local_port,peer_port,sent,recv
+# (phase 0 = the baseline at load start, 1 = inside the window). `ss`
+# prints each socket on a line starting at column 0 and its `-i`
+# counters on the NEXT, indented line; sent = bytes_sent (bytes_acked
+# when bytes_sent is absent), recv = bytes_received, 0 when not printed.
+# Missing `ss` or missing byte counters SKIP this section only.
+BW_OK=0
+BW_WHY=""
+BW_RAW="$BENCH_DIR/bw_samples.raw"
+BW_SAMPLES=0
+BW_TEND=0
+rm -f "$BW_RAW" "$BENCH_DIR"/bandwidth_node*.csv
+if ! command -v ss >/dev/null 2>&1; then
+    BW_WHY="ss (iproute2) is not installed"
+else
+    bw_probe=$(ss -tinpH 2>/dev/null || true)
+    case "$bw_probe" in
+        *bytes_received:*|*bytes_acked:*) BW_OK=1 ;;
+        *) BW_WHY="ss -tinpH printed no bytes_received / bytes_acked counters (ss or kernel too old for -i byte counters)" ;;
+    esac
+    unset bw_probe
+fi
+BW_PIDMAP=""
+for n in $(seq 1 "$C"); do BW_PIDMAP="$BW_PIDMAP $(node_pid "$n"):$n"; done
+if [ "$BW_OK" = 1 ]; then
+    echo "[ok] bandwidth: sampling nodus-server TCP sockets with ss -tinpH (~1 s)"
+else
+    echo "[info] bandwidth section SKIPPED: $BW_WHY"
+fi
+
+# bw_sample PHASE TIME — one ss snapshot of the nodus sockets. Never
+# fails the bench: an ss error just loses that sample.
+bw_sample() {
+    [ "$BW_OK" = 1 ] || return 0
+    BW_SAMPLES=$(( BW_SAMPLES + 1 ))
+    { ss -tinpH 2>/dev/null || true; } | awk -v ph="$1" -v t="$2" -v map="$BW_PIDMAP" '
+        BEGIN {
+            n = split(map, a, " ")
+            for (i = 1; i <= n; i++) { split(a[i], kv, ":"); node[kv[1]] = kv[2] }
+            key = ""
+        }
+        /^[^ \t]/ {
+            key = ""
+            if (match($0, /pid=[0-9]+/)) {
+                pid = substr($0, RSTART + 4, RLENGTH - 4)
+                if (pid in node) {
+                    lp = $4; sub(/.*:/, "", lp)
+                    pp = $5; sub(/.*:/, "", pp)
+                    key = pid "," node[pid] "," lp "," pp
+                }
+            }
+            next
+        }
+        key != "" {
+            s = 0; r = 0
+            if (match($0, /bytes_sent:[0-9]+/))
+                s = substr($0, RSTART + 11, RLENGTH - 11)
+            else if (match($0, /bytes_acked:[0-9]+/))
+                s = substr($0, RSTART + 12, RLENGTH - 12)
+            if (match($0, /bytes_received:[0-9]+/))
+                r = substr($0, RSTART + 15, RLENGTH - 15)
+            print ph "," t "," key "," s "," r
+            key = ""
+        }' >> "$BW_RAW" || true
+}
+
+# bw_report — the window's bytes per node and port class (stdout) and
+# one CSV per node. Reads $BW_RAW in append (= time) order: per socket
+# key the LAST value is its MAX (the kernel counters only grow); a
+# counter going DOWN means a new socket re-used the key — the old one's
+# last value is banked and counting restarts. Window bytes = banked +
+# last − baseline (baseline = the phase-0 value, 0 for a socket first
+# seen inside the window). Output order is fixed (nodes 1..C, a fixed
+# class list), never awk's hash order.
+bw_report() {
+    if [ "$BW_OK" != 1 ]; then
+        echo "bandwidth: SKIPPED — $BW_WHY (nothing else in this bench depends on it)"
+        return 0
+    fi
+    if [ ! -s "$BW_RAW" ]; then
+        echo "bandwidth: SKIPPED — no nodus-server TCP socket was seen in any of $BW_SAMPLES ss sample(s) (ss -p names a socket's pid only for the caller's own processes unless run as root — are the nodes another user's?)"
+        return 0
+    fi
+    awk -F, -v C="$C" -v dir="$BENCH_DIR" -v wall="$BW_WALL" -v env="$w_env" \
+        -v tend="$BW_TEND" -v nsamp="$BW_SAMPLES" '
+    function cls(nd, l, p,    d) {
+        d = l - (14000 + (nd - 1) * 10)
+        if (d >= 1 && d <= 4) return "in_" nm[d]
+        if (p >= 14000 && p < 14000 + 10 * C) {
+            d = (p - 14000) % 10
+            if (d >= 1 && d <= 4) return "out_" nm[d]
+        }
+        return "out_other"
+    }
+    function B(x) { return sprintf("%.0f", x) }
+    function R(x) { return sprintf("%.1f", x / wall) }
+    function E(x) { return env > 0 ? sprintf("%.0f", x / env) : "n/a" }
+    BEGIN {
+        nm[1] = "client"; nm[2] = "internode"; nm[3] = "channel"; nm[4] = "witness"
+        ncl = split("in_client in_internode in_channel in_witness out_client out_internode out_channel out_witness out_other", cl, " ")
+    }
+    {
+        k = $3 "," $5 "," $6
+        s = $7 + 0; r = $8 + 0
+        if (!(k in kn)) {
+            kn[k] = $4; kl[k] = $5 + 0; kp[k] = $6 + 0
+            if ($1 == 0) { bs[k] = s; br[k] = r; n_start++ }
+            else         { bs[k] = 0; br[k] = 0; n_new++ }
+            ls[k] = s; lr[k] = r; as[k] = 0; ar[k] = 0
+        } else if (s < ls[k] || r < lr[k]) {
+            as[k] += ls[k]; ar[k] += lr[k]; n_reuse++
+            ls[k] = s; lr[k] = r
+        } else {
+            ls[k] = s; lr[k] = r
+        }
+        lt[k] = $2 + 0
+    }
+    END {
+        for (k in kn) {
+            nd = kn[k]; c = cls(nd, kl[k], kp[k])
+            ws = as[k] + ls[k] - bs[k]; wr = ar[k] + lr[k] - br[k]
+            if (ws < 0) ws = 0
+            if (wr < 0) wr = 0
+            S[nd, c] += ws; RV[nd, c] += wr; K[nd, c]++
+            TS[nd] += ws; TR[nd] += wr; TK[nd]++
+            if (lt[k] < tend) n_gone++
+            nk++
+        }
+        printf "bandwidth over %d s of load (ss -tinpH, %d sample(s) ~1 s apart; %d socket(s) seen: %d open at start, %d opened during the window, %d gone before the end, %d key re-use(s)):\n", wall, nsamp, nk, n_start + 0, n_new + 0, n_gone + 0, n_reuse + 0
+        printf "  bytes per envelope = window bytes / %s committed envelopes (window blocks)\n", env
+        for (nd = 1; nd <= C; nd++) {
+            f = dir "/bandwidth_node" nd ".csv"
+            print "class,sockets,bytes_sent,bytes_received,sent_Bps,recv_Bps,sent_per_env,recv_per_env" > f
+            printf "  node%d  sent %s B (%s B/s)  recv %s B (%s B/s)  per envelope: sent %s B, recv %s B  [%d socket(s)]\n", nd, B(TS[nd]), R(TS[nd]), B(TR[nd]), R(TR[nd]), E(TS[nd]), E(TR[nd]), TK[nd]
+            for (i = 1; i <= ncl; i++) {
+                c = cl[i]
+                if (!((nd, c) in K)) continue
+                printf "         %-14s sent %s B (%s B/s)  recv %s B (%s B/s)  [%d]\n", c, B(S[nd, c]), R(S[nd, c]), B(RV[nd, c]), R(RV[nd, c]), K[nd, c]
+                print c "," K[nd, c] "," B(S[nd, c]) "," B(RV[nd, c]) "," R(S[nd, c]) "," R(RV[nd, c]) "," E(S[nd, c]) "," E(RV[nd, c]) > f
+            }
+            print "total," (TK[nd] + 0) "," B(TS[nd]) "," B(TR[nd]) "," R(TS[nd]) "," R(TR[nd]) "," E(TS[nd]) "," E(TR[nd]) > f
+            close(f)
+            CS += TS[nd]; CR += TR[nd]
+        }
+        printf "  cluster sent %s B (%s B/s)  recv %s B (%s B/s)  per envelope: sent %s B, recv %s B\n", B(CS), R(CS), B(CR), R(CR), E(CS), E(CR)
+        printf "  (node-to-node bytes count once as sent and once as received; client sessions only on the server side)\n"
+    }' "$BW_RAW" || echo "bandwidth: report FAILED to aggregate $BW_RAW (awk error) — raw samples kept"
+}
+
 # ── (iii) start the load, sample while it runs ───────────────────────
 csv="$BENCH_DIR/blocks.csv"
 echo "height,first_seen_s,tx_count,in_window" > "$csv"
@@ -381,6 +678,7 @@ for n in $(seq 1 "$C"); do cpu0[$n]=$(cpu_ticks "$(node_pid "$n")"); done
 LOAD_START=$(date +%s)
 LOAD_END=$(( LOAD_START + D ))
 export LOAD_END
+bw_sample 0 "$LOAD_START"                        # the bandwidth baseline
 for I in $(seq 0 $(( M - 1 ))); do
     worker "$I" &
     wpids[$I]=$!
@@ -390,7 +688,7 @@ kill_workers() {
     for p in "${wpids[@]}"; do kill "$p" 2>/dev/null || true; done
 }
 trap kill_workers EXIT
-echo "[ok] $M workers started at $LOAD_START for ${D}s (nodes: worker I -> node I mod $C + 1); base tip $base_h"
+echo "[ok] $M workers started at $LOAD_START for ${D}s (nodes: worker I -> node I mod $C + 1; pump identity I mod $K + 1); base tip $base_h"
 
 sample() {
     local now rows row bh tc inwin
@@ -412,9 +710,14 @@ declare -a cpu1
 running="$M"
 while [ "$running" -gt 0 ]; do
     sample
-    if [ "$cpu1_taken" = 0 ] && [ "$(date +%s)" -ge "$LOAD_END" ]; then
+    now_s=$(date +%s)
+    if [ "$cpu1_taken" = 0 ] && [ "$now_s" -ge "$LOAD_END" ]; then
         for n in $(seq 1 "$C"); do cpu1[$n]=$(cpu_ticks "$(node_pid "$n")"); done
+        BW_TEND="$now_s"
+        bw_sample 1 "$BW_TEND"                   # the window's last sample
         cpu1_taken=1
+    elif [ "$cpu1_taken" = 0 ]; then
+        bw_sample 1 "$now_s"
     fi
     running=0
     for I in $(seq 0 $(( M - 1 ))); do
@@ -433,11 +736,15 @@ done
 sample
 if [ "$cpu1_taken" = 0 ]; then
     for n in $(seq 1 "$C"); do cpu1[$n]=$(cpu_ticks "$(node_pid "$n")"); done
+    BW_TEND=$(date +%s)
+    bw_sample 1 "$BW_TEND"
 fi
 trap - EXIT
 LOAD_DONE=$(date +%s)
 CPU_WALL=$(( (cpu1_taken == 1 ? LOAD_END : LOAD_DONE) - LOAD_START ))
 [ "$CPU_WALL" -ge 1 ] || CPU_WALL=1
+BW_WALL=$(( BW_TEND - LOAD_START ))
+[ "$BW_WALL" -ge 1 ] || BW_WALL=1
 
 # ── (iv) report ──────────────────────────────────────────────────────
 sum_w() { awk -F= -v k="$1" '$1 == k { s += $2 } END { print s + 0 }' "$BENCH_DIR"/worker_*.stats; }
@@ -481,7 +788,10 @@ summary="$BENCH_DIR/summary.txt"
 {
     echo "bench_tps_v2 — $(date -u +%Y-%m-%dT%H:%M:%SZ), BASE_DIR $BASE_DIR"
     echo "parameters: workers M=$M, load D=${D}s, --count all, --amount all, fee $FEE raw,"
-    echo "            pump leaves $n_leaves, nodes $C on one machine ($(nproc) CPUs), reference node$REF"
+    echo "            pump leaves $n_leaves over K=$K pump identit(y/ies) (worker I -> identity I mod K + 1),"
+    echo "            nodes $C on one machine ($(nproc) CPUs), reference node$REF"
+    echo "in-flight bound: ≈ $INFLIGHT_BOUND coins = Σ over the identities with a worker of min(100, leaves)"
+    echo "            (the dnac_utxo listing returns at most 100 coins per identity)"
     echo "load: started $LOAD_START, stopped starting rounds at $LOAD_END, last worker done $LOAD_DONE"
     echo ""
     echo "window (blocks first seen on node$REF between load start and load end):"
@@ -504,6 +814,10 @@ summary="$BENCH_DIR/summary.txt"
     elif [ "$w_max" -lt "$cap" ]; then
         echo "  VERDICT: NO block reached the unit cap — the CLIENTS were the bottleneck,"
         echo "           this TPS is a FLOOR on the chain's capacity, not its ceiling."
+        if [ "$INFLIGHT_BOUND" -lt "$cap" ]; then
+            echo "           STRUCTURAL: the in-flight bound ($INFLIGHT_BOUND) is below the cap ($cap) —"
+            echo "           no block CAN fill; raise STAGEF_V2_PUMP_IDENTITIES / STAGEF_V2_PUMP_LEAVES at bring-up."
+        fi
     else
         n_full=$(awk -F, -v cap="$cap" 'NR > 1 && $4 == 1 && $3 >= cap { n++ } END { print n + 0 }' "$csv")
         echo "  VERDICT: $n_full window block(s) reached the unit cap — the chain's unit budget bound at least those blocks."
@@ -527,9 +841,12 @@ summary="$BENCH_DIR/summary.txt"
             echo "  node$n  $(awk -v d="$(( b - a ))" -v hz="$CLK_TCK" -v w="$CPU_WALL" 'BEGIN { printf "%.1f%%", 100 * d / hz / w }')"
         fi
     done
+    echo ""
+    bw_report
 } > "$summary"
 cat "$summary"
 echo "[ok] per-block rows: $csv; summary: $summary"
+[ "$BW_OK" != 1 ] || echo "[ok] bandwidth: per-node CSVs $BENCH_DIR/bandwidth_node<N>.csv; raw samples $BW_RAW"
 
 stagef_cmt_diff_at_floor "post-bench-tps" || { echo "[FAIL] 7/7 disagreement after the bench" | tee -a "$summary" >&2; exit 2; }
 echo "7/7 agreement at the floor after the bench: OK" >> "$summary"

@@ -229,9 +229,11 @@
  * per-result charges → finalize (unused units released) — abort on any
  * rejection restores everything. No caller, envelope, runtime or legacy
  * tx_cost hook can feed or override a price; no domain borrows from
- * another. Checked u64 arithmetic throughout. Global caps: chain-config
- * MAX_TXS_PER_BLOCK and NODUS_V2_GLOBAL_UNIT_BUDGET (JUDGMENT constant;
- * the consensus value is OPEN until the devnet reset pins economics);
+ * another. Checked u64 arithmetic throughout. Global cap:
+ * NODUS_V2_GLOBAL_UNIT_BUDGET (a CONSENSUS value, 2 097 152 since the
+ * operator's 2026-09-24 decision — docs/plans/decisions/
+ * 2026-09-24-block-capacity-trial-b.md; the chain-config
+ * MAX_TXS_PER_BLOCK count cap was RETIRED 2026-09-18, W4-C delta 2);
  * per-domain budgets from the committed manifest quota (honest label
  * above).
  *
@@ -284,12 +286,19 @@
 extern "C" {
 #endif
 
-/** Global per-block unit budget for the envelope lane — JUDGMENT
- *  constant sized so placeholder-weight envelopes (Dilithium5-scale
- *  auth blobs at w_authbyte 1) fit comfortably; the consensus value is
- *  OPEN until the devnet reset pins real economics. Never a price: it
+/** Global per-block unit budget for the envelope lane. OPERATOR
+ *  DECISION 2026-09-24 (block capacity trial B, measured 15.91 TPS vs
+ *  7.55 at 1 000 000 on the same machine, then made permanent —
+ *  docs/plans/decisions/2026-09-24-block-capacity-trial-b.md; was
+ *  1 000 000, a JUDGMENT constant): 2 097 152 = the policy's per-block
+ *  envelope BYTE bound, max_block_env_bytes = 2 x DNA_ENV_MAX_TOTAL_LEN
+ *  = 2 MiB (nodus_witness_runtime.c sys_policy_build). Every metering
+ *  weight is 1 (same function), so one unit is roughly one envelope
+ *  byte and the two per-block bounds sit at the same place. Consensus
+ *  value: changing it is a devnet wipe + stop-all deploy. Kept a plain
+ *  literal (bench_tps_v2.sh reads it from this line). Never a price: it
  *  bounds what a block may reserve, the policy alone prices. */
-#define NODUS_V2_GLOBAL_UNIT_BUDGET  1000000u
+#define NODUS_V2_GLOBAL_UNIT_BUDGET  2097152u
 
 /**
  * R3 W4-C delta 2 (operator "kaldır" 2026-09-18;
@@ -304,10 +313,12 @@ extern "C" {
  * still needs SOME ceiling on how many envelopes' worth of per-block
  * scratch it will allocate in one call (`pf`/`meters`/`env_phase`/
  * `auths`/`auth_off`, all sized by `blk->n_envs` since R3 W4-C delta 1)
- * — a RELEASE RESOURCE CHOICE, exactly the same kind of number as
- * `NODUS_V2_GLOBAL_UNIT_BUDGET` above and the W3 receive arena's 64 MiB
- * (nodus_witness_cmt_net.h) — not a consensus parameter, never governed,
- * never voted. 64 MiB. */
+ * — a RELEASE RESOURCE CHOICE, the same kind of number as the W3
+ * receive arena's 64 MiB (nodus_witness_cmt_net.h) — not a consensus
+ * parameter, never governed, never voted. 64 MiB. (Unlike
+ * `NODUS_V2_GLOBAL_UNIT_BUDGET` above, which decides which blocks are
+ * valid and IS a consensus value — an earlier version of this comment
+ * put the two in one class.) */
 #define NODUS_V2_APPLY_SCRATCH_BUDGET_BYTES \
     ((size_t)64u * 1024u * 1024u)
 
