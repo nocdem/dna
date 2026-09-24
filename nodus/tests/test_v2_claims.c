@@ -2,9 +2,22 @@
  * Nodus — Ledger V2 S6: witness manifest/claims integration + the
  * GENERICITY suite (INACTIVE).
  *
- * Rollback claims are NEVER made from return codes alone: db_state_digest
+ * Rollback claims are NEVER made from return codes alone: v2x_db_digest
  * serializes EVERY table into one SHA3-512 and the tests byte-compare it
- * around every reject/fault (the test_v2_apply discipline).
+ * around every fault; an ITEM refusal is proven with v2x_ledger_digest
+ * (every table but the per-block bookkeeping) — the test_v2_apply
+ * discipline.
+ *
+ * THE LANE (tokenomics-v3 P4). Every chain is a seeded version-3
+ * genesis (v2_genesis_fixture.h — the test's own manifests, windows and
+ * synthetic domains committed by the real engine genesis, plus the
+ * genesis committee every version-3 chain has, whose bonds join the
+ * genesis supply) and every block goes through the cometbft lane: a
+ * refused claim or envelope is the ITEM's code (CLAIM / CONTEXT) in a
+ * block that commits and consumes its height; a block-level check or a
+ * node-local fault is a node FAULT the host rolls back. There is no
+ * genesis block (the identity is the stored document's hash), no
+ * idempotent replay and no block-level verdict.
  *
  * Sections:
  *   1. Schema v6 migration matrix: 0→6, 5→6, idempotent 6, unknown 7
@@ -19,25 +32,27 @@
  *      keys): manifest/dist-state seeding (explicit target domain +
  *      asset), supply gate with the unclaimed-distribution owner,
  *      snapshot + manifest root reconstruction byte-identity, chain_id
- *      derived through the REAL genesis BlockID.
+ *      derived from the REAL stored genesis document.
  *   4. Claim lifecycle (CORE target): multi-claim block; deterministic
  *      output created BY THE CORE RUNTIME HOOK (amount, owner, EXPLICIT
  *      domain ownership, created_at = 0); remaining decrement;
  *      claims_root reconstruction; supply holds; supply_tracking
  *      UNTOUCHED (a claim never mints); SYSTEM head does not advance.
- *   5. Adversarial matrix (every reject digest-proven no-op):
- *      early / late (post-deadline RETAIN) / duplicate-in-block /
+ *   5. Adversarial matrix (every refusal a ledger-digest-proven no-op,
+ *      code CLAIM): early / late (post-deadline RETAIN) /
  *      already-spent / destination substitution (leaf tamper AND wrong
  *      key) / bad signature / wrong amount / corrupt proof / wrong
  *      index / out-of-range index / unknown manifest hash / cross-chain
- *      replay.
+ *      replay; duplicate-in-block on a twin (the first copy applies,
+ *      the second is refused).
  *   6. Insertion-order independence: same claims, reversed order in the
  *      same block on an identical twin fixture → byte-identical
  *      claims_root / core / global roots.
- *   7. Fault injection F16/F17/F18 (the S6 claim stages) + F13 with a
- *      claim aboard: rc −1 and the FULL DB digest is byte-identical.
- *   8. Restart persistence + idempotent replay; spent-claim survives
- *      reopen and re-claims reject.
+ *   7. Fault injection F16/F17/F18 (the S6 claim stages — the claim
+ *      ITEM is refused, ledger byte-identical) + F13 with a claim
+ *      aboard (a node FAULT, the FULL DB digest byte-identical).
+ *   8. Restart persistence; the committed height cannot be applied
+ *      twice; spent-claim survives reopen and re-claims reject.
  *   9. Never-mint: a manifest committing LESS than the snapshot sum —
  *      the remaining-value gate rejects the overdraw and rolls back.
  *  10. Genesis manifest rejects: wrong domain hash / wrong domain count
@@ -134,7 +149,9 @@ typedef struct {
     uint8_t          chain_id16[16];
 } fixture_t;
 
-static int fx_open(fixture_t *fx) {
+/* A bare pre-genesis database — the schema-ladder test (section 1)
+ * drives the migrations itself from an empty file. */
+static int fx_open_raw(fixture_t *fx) {
     fx->w = calloc(1, sizeof(*fx->w));
     if (!fx->w) return -1;
     snprintf(fx->dir, sizeof(fx->dir), "/tmp/test_v2_claims_XXXXXX");
@@ -146,6 +163,28 @@ static int fx_open(fixture_t *fx) {
         return -1;
     }
     nodus_chain_config_db_migrate(fx->w);
+    return 0;
+}
+
+/* tokenomics-v3 P4: every chain here is a SEEDED VERSION-3 GENESIS
+ * (v2_genesis_fixture.h v2x_seed_prepare / v2x_seed_genesis — the
+ * derivation's own steps with the test's genesis rows seeded before the
+ * engine genesis), because these tests commit genesis manifests a
+ * version-3 config cannot express (their own distributions, windows and
+ * synthetic domains). Salt 0 for every fixture: twin fixtures seeded
+ * alike are the same chain. */
+static int fx_open(fixture_t *fx) {
+    fx->w = calloc(1, sizeof(*fx->w));
+    if (!fx->w) return -1;
+    snprintf(fx->dir, sizeof(fx->dir), "/tmp/test_v2_claims_XXXXXX");
+    if (!mkdtemp(fx->dir)) { free(fx->w); fx->w = NULL; return -1; }
+    snprintf(fx->w->data_path, sizeof(fx->w->data_path), "%s", fx->dir);
+    memset(fx->chain_id16, 0x36, sizeof(fx->chain_id16));
+    if (v2x_seed_prepare(fx->w, fx->chain_id16, 0) != 0) {
+        if (fx->w->db) sqlite3_close(fx->w->db);
+        rmrf(fx->dir); free(fx->w); fx->w = NULL;
+        return -1;
+    }
     return 0;
 }
 
@@ -190,7 +229,7 @@ static uint64_t q1(nodus_witness_t *w, const char *sql) {
     return v;
 }
 
-/* ── full-DB digest (the rollback oracle) ───────────────────────────── */
+/* ── growable byte buffer (the synthetic runtimes' state roots) ─────── */
 typedef struct { uint8_t *buf; size_t len, cap; } dyn_t;
 
 static int dyn_put(dyn_t *d, const void *p, size_t n) {
@@ -206,52 +245,6 @@ static int dyn_put(dyn_t *d, const void *p, size_t n) {
     return 0;
 }
 
-static int db_state_digest(nodus_witness_t *w, uint8_t out[64]) {
-    sqlite3_stmt *ts = NULL;
-    if (sqlite3_prepare_v2(w->db,
-            "SELECT name FROM sqlite_master WHERE type='table' AND "
-            "name NOT LIKE 'sqlite_%' ORDER BY name", -1, &ts, NULL)
-        != SQLITE_OK)
-        return -1;
-    dyn_t d = { 0 };
-    int rc, out_rc = -1;
-    while ((rc = sqlite3_step(ts)) == SQLITE_ROW) {
-        const char *name = (const char *)sqlite3_column_text(ts, 0);
-        if (dyn_put(&d, name, strlen(name) + 1) != 0) goto done;
-        char sql[256];
-        snprintf(sql, sizeof(sql), "SELECT * FROM \"%s\" ORDER BY rowid",
-                 name);
-        sqlite3_stmt *rs = NULL;
-        if (sqlite3_prepare_v2(w->db, sql, -1, &rs, NULL) != SQLITE_OK)
-            goto done;
-        int rrc;
-        while ((rrc = sqlite3_step(rs)) == SQLITE_ROW) {
-            int nc = sqlite3_column_count(rs);
-            for (int c = 0; c < nc; c++) {
-                uint8_t t = (uint8_t)sqlite3_column_type(rs, c);
-                if (dyn_put(&d, &t, 1) != 0) { sqlite3_finalize(rs); goto done; }
-                if (t == SQLITE_NULL) continue;
-                const void *b = sqlite3_column_blob(rs, c);
-                int bl = sqlite3_column_bytes(rs, c);
-                uint32_t bl32 = (uint32_t)bl;
-                if (dyn_put(&d, &bl32, 4) != 0 ||
-                    (bl > 0 && dyn_put(&d, b, (size_t)bl) != 0)) {
-                    sqlite3_finalize(rs);
-                    goto done;
-                }
-            }
-        }
-        sqlite3_finalize(rs);
-        if (rrc != SQLITE_DONE) goto done;
-    }
-    if (rc != SQLITE_DONE) goto done;
-    out_rc = qgp_sha3_512(d.buf ? d.buf : (const uint8_t *)"", d.len, out)
-                 == 0 ? 0 : -1;
-done:
-    sqlite3_finalize(ts);
-    free(d.buf);
-    return out_rc;
-}
 
 /* ── deterministic keys + synthetic generic snapshot ────────────────── */
 
@@ -650,8 +643,9 @@ static int register_synthetic(nodus_witness_t *w,
 /* ── manifest + genesis builders ────────────────────────────────────── */
 
 /* The REAL DomainManifest hashes: pre-run the (idempotent) registry
- * genesis, then hash the stored manifests — genesis_ex re-runs it and
- * byte-compares, so state must not move in between (it doesn't). */
+ * genesis, then hash the stored manifests — the engine genesis re-runs
+ * it and byte-compares, so state must not move in between (it
+ * doesn't). */
 static int domman_hash_of(nodus_witness_t *w, uint32_t dom,
                           uint8_t out[64]) {
     dna_domain_manifest_t m;
@@ -659,15 +653,27 @@ static int domman_hash_of(nodus_witness_t *w, uint32_t dom,
     return dna_domman_hash(&m, out);
 }
 
+/* `out_supply` receives the committed genesis supply the manifest must
+ * name (the engine genesis cross-checks it against supply_tracking):
+ * the test's own seeded supply PLUS the bonds of the genesis committee
+ * v2x_seed_rows adds — a version-3 genesis always has its committee,
+ * and these tests seed none of their own. */
 static int domman_hashes(nodus_witness_t *w, uint8_t sys_h[64],
-                         uint8_t core_h[64]) {
+                         uint8_t core_h[64], uint64_t *out_supply) {
     /* O14: seed the committed validator authority BEFORE the registry
      * commits genesis_state_root — the vset leg feeds the SYSTEM payload
-     * root, and genesis_ex re-derives it and byte-compares. Every V2
-     * block also needs a resolvable snapshot to be applied at all. */
-    if (v2x_seed_authority(w) != 0) return -1;
+     * root, and the engine genesis re-derives it and byte-compares.
+     * Every V2 block also needs a resolvable snapshot to be applied at
+     * all. */
+    if (v2x_seed_rows(w, 0) != 0) return -1;
     if (nodus_witness_domreg_init_genesis(w) != 0) return -1;
     if (domman_hash_of(w, DNA_DOMAIN_SYSTEM, sys_h) != 0) return -1;
+    if (out_supply) {
+        nodus_witness_supply_t sup;
+        memset(&sup, 0, sizeof(sup));
+        if (nodus_witness_supply_get(w, &sup) != 0) return -1;
+        *out_supply = sup.genesis_supply;
+    }
     return domman_hash_of(w, DNA_DOMAIN_CORE, core_h);
 }
 
@@ -711,48 +717,23 @@ static void gman_dist(dna_gman_t *m, uint64_t total,
     m->post_deadline_mode = DNA_POSTDL_RETAIN;
 }
 
-/* Genesis BlockID through the REAL derivation: BlockHeader V2 with the
- * all-zero chain_id ‖ the canonical manifest bytes (block_v2.h). */
-/* ── O14: the genesis identity is DERIVED, not predicted ─────────────
- * The retired `genesis_id_of` used to compute the genesis BlockID from a
- * header with ZEROED roots and hand it to genesis_ex as the id to store.
- * The engine now builds the genesis header from its OWN derived global
- * root and binds that into the preimage, so a zero-root prediction can
- * never match. Commit with the assertion omitted and read the committed
- * identity back — chain_id is the id's first 32 bytes (block_v2.h).
- *
- * Also seeds the committed validator authority every V2 block needs
- * (v2x_seed_authority) BEFORE genesis, since the vset leg feeds the
- * SYSTEM payload root that genesis re-derives and byte-compares. */
+/* ── the genesis identity ─────────────────────────────────────────────
+ * tokenomics-v3 P4: a version-3 chain has NO genesis block (D-19 rev 6)
+ * — its identity is the hash of its stored genesis DOCUMENT, and
+ * nodus_witness_v2_chain_id reads exactly that. The seeded genesis
+ * (v2x_seed_genesis) commits the manifest through the engine genesis,
+ * stores the completed document and reopens the database through the
+ * production open path; the chain id comes back from the post-open
+ * gate. (The genesis BlockID this helper used to read from the height-0
+ * v2_blocks row no longer exists.) */
 static int commit_genesis_read(fixture_t *fx, const uint8_t *mbytes,
-                               size_t mlen, uint8_t out_gid[64],
-                               uint8_t out_chain[32]) {
-    uint8_t vset[64], gid[64];
-    memset(vset, 0x77, 64);
-    /* O14 review R1-F2: genesis binds validator_set_hash into the chain
-     * identity and the engine requires it to EQUAL the committed epoch-0
-     * authority, so hand over the COMMITTED hash rather than a chosen
-     * one. (v2x_seed_authority already ran in domman_hashes.) */
-    {
-        dna_vset_snapshot_t *s0 = NULL;
-        uint32_t sn = 0, sq = 0;
-        if (nodus_witness_v2_epoch_authority_for_height(fx->w, 0, &s0,
-                                                        &sn, &sq) == 0 &&
-            s0) {
-            int hrc = dna_vset_hash(s0, vset);
-            dna_vset_free(&s0);
-            if (hrc != 0) return -1;
-        } else {
-            dna_vset_free(&s0);
-        }
-    }
-    if (nodus_witness_v2_genesis_ex(fx->w, NULL, vset, 0, mbytes, mlen)
-        != 0)
-        return -1;
-    if (v2x_block_id_at(fx->w, 0, gid) != 0) return -1;
-    if (out_gid)   memcpy(out_gid, gid, 64);
-    if (out_chain) memcpy(out_chain, gid, 32);
-    return 0;
+                               size_t mlen, uint8_t out_chain[32]) {
+    /* not a real genesis: the supply fixtures (seed_supply) carry the
+     * non-claimable remainder as ONE spendable genesis UTXO, where the
+     * derivation's allocations hold no UTXO at all */
+    v2x_seed_not_real(V2X_SEED_NOT_REAL_UTXOS);
+    return v2x_seed_genesis(fx->w, fx->chain_id16, 0, mbytes, mlen,
+                            out_chain);
 }
 
 /* Seed supply so that genesis + minted − burned == utxo + unclaimed
@@ -782,26 +763,31 @@ static int seed_supply(nodus_witness_t *w, uint64_t genesis_supply,
     return run_sql(w->db, sql);
 }
 
+/* The genesis committee's bonds (v2x_seed_rows seeds the document's
+ * seven validators on every chain in this file) — part of every genesis
+ * supply here, never a UTXO. */
+#define COMMITTEE_BONDS \
+    ((uint64_t)DNAC_COMMITTEE_SIZE * (uint64_t)DNAC_SELF_STAKE_AMOUNT)
+
 /* Full present-distribution genesis on a fresh fixture (CORE-native
- * target). Outputs the derived chain id + genesis block id + the
- * committed manifest hash. */
+ * target). Outputs the derived chain id + the committed manifest
+ * hash. */
 static int dist_genesis(fixture_t *fx, uint64_t total, uint64_t start_h,
                         uint64_t end_h, const char *tag,
-                        uint8_t out_chain[32], uint8_t out_gid[64],
-                        uint8_t out_mh[64]) {
-    if (nodus_witness_db_migrate_v2s9(fx->w) != 0) return -1;
+                        uint8_t out_chain[32], uint8_t out_mh[64]) {
     if (seed_supply(fx->w, 1000, 1000 - total) != 0) return -1;
     uint8_t sys_h[64], core_h[64];
-    if (domman_hashes(fx->w, sys_h, core_h) != 0) return -1;
+    uint64_t supply = 0;
+    if (domman_hashes(fx->w, sys_h, core_h, &supply) != 0) return -1;
     dna_gman_t m;
-    gman_base(&m, 1000, sys_h, core_h);
+    gman_base(&m, supply, sys_h, core_h);
     gman_dist(&m, total, start_h, end_h, tag, DNA_DOMAIN_CORE,
               g_native_asset, 64);
     uint8_t mbytes[8192];
     size_t mlen = 0;
     if (dna_gman_encode(&m, mbytes, sizeof(mbytes), &mlen) != 0) return -1;
     if (out_mh && dna_gman_hash(&m, out_mh) != 0) return -1;
-    return commit_genesis_read(fx, mbytes, mlen, out_gid, out_chain);
+    return commit_genesis_read(fx, mbytes, mlen, out_chain);
 }
 
 /* ── claim + block builders ─────────────────────────────────────────── */
@@ -834,16 +820,13 @@ static int make_claim(dna_claim_t *c, int leaf, const uint8_t chain[32],
     return 0;
 }
 
-static void mk_id(uint8_t out[64], uint8_t fill) { memset(out, fill, 64); }
-
+/* A block as nodus_cmt_app_finalize_block hands it to the engine; the
+ * cometbft-lane identity is filled by v2x_cmt_apply. */
 static void mk_claim_block(nodus_v2_block_t *b, uint64_t h,
-                           const uint8_t gen_id[64],
                            const dna_claim_t *claims, size_t n_claims) {
     memset(b, 0, sizeof(*b));
     b->global_height = h;
-    b->epoch = 0;
-    /* O14 leader mode: identity is DERIVED, never carried. */
-    (void)gen_id;
+    b->epoch = nodus_v2_epoch_for_height(h);
     b->claims = claims;
     b->n_claims = n_claims;
 }
@@ -854,8 +837,8 @@ static void mk_claim_block(nodus_v2_block_t *b, uint64_t h,
 static nodus_v2_envelope_t g_env_ref;
 
 static void mk_env_block(nodus_v2_block_t *b, uint64_t h,
-                         const uint8_t gid[64], const v2x_env_t *e) {
-    mk_claim_block(b, h, gid, NULL, 0);
+                         const v2x_env_t *e) {
+    mk_claim_block(b, h, NULL, 0);
     if (e) {
         g_env_ref.env_bytes = e->bytes;
         g_env_ref.env_len = e->len;
@@ -960,23 +943,42 @@ static int claim_ids(const dna_claim_t *c, uint32_t target_domain,
     return dna_claim_utxo_id(nul, oid);
 }
 
-/* apply a block that must REJECT, digest-proven no-op */
-static int expect_reject(nodus_witness_t *w, nodus_v2_block_t *b,
-                         const char *msg) {
-    /* Both rejection classes count here — a consensus VERDICT (-1) and
-     * a node-local FAULT (-2, e.g. this build cannot resolve an ACTIVE
-     * domain's runtime) — because what THESE tests pin is the fail-
-     * closed no-op: nothing persisted either way (digest-proven). */
-    uint8_t d0[64], d1[64];
-    if (db_state_digest(w, d0) != 0) return 1;
-    int rc = nodus_witness_v2_apply_block(w, b);
-    if (rc != -1 && rc != -2) {
-        fprintf(stderr, "expected reject: %s (rc %d)\n", msg, rc);
+/* THE COMETBFT LANE'S TWO FAIL-CLOSED SHAPES (tokenomics-v3 P4), which
+ * replace the legacy lane's "the whole block rejects" helper:
+ *
+ *   expect_refused — every item of the block is REFUSED with code `want`
+ *     while the block itself COMMITS (a decided block is never refused):
+ *     the ledger — every table but the block's own bookkeeping — is
+ *     byte-identical (v2x_cmt_refused). Consumes the height.
+ *   expect_fault   — the block is a node FAULT the host rolls back: the
+ *     WHOLE database is byte-identical (v2x_cmt_fault). Consumes no
+ *     height.
+ *
+ * A claim refusal is always code CLAIM; an envelope on a domain that is
+ * not ACTIVE at block entry is refused as CONTEXT (the block-start
+ * ruleset table carries ACTIVE domains only). */
+static int expect_refused(nodus_witness_t *w, nodus_v2_block_t *b,
+                          uint32_t want, const char *msg) {
+    uint32_t code = 0;
+    if (v2x_cmt_refused(w, b, 0, &code) != 0) {
+        fprintf(stderr, "expected a refused item: %s\n", msg);
         return 1;
     }
-    if (db_state_digest(w, d1) != 0) return 1;
-    if (memcmp(d0, d1, 64) != 0) {
-        fprintf(stderr, "reject was not a no-op: %s\n", msg);
+    for (size_t i = 0; i < b->n_envs + b->n_claims; i++) {
+        if (b->cmt.results[i].code != want) {
+            fprintf(stderr, "%s: item %zu code %u, expected %u\n", msg, i,
+                    (unsigned)b->cmt.results[i].code, (unsigned)want);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int expect_fault(nodus_witness_t *w, nodus_v2_block_t *b,
+                        const char *msg) {
+    if (v2x_cmt_fault(w, b) != 0) {
+        fprintf(stderr, "expected a node FAULT with nothing written: %s\n",
+                msg);
         return 1;
     }
     return 0;
@@ -986,7 +988,7 @@ static int expect_reject(nodus_witness_t *w, nodus_v2_block_t *b,
 
 static int test_migration(void) {
     fixture_t fx;
-    CHECK(fx_open(&fx) == 0, "fixture"); OK();
+    CHECK(fx_open_raw(&fx) == 0, "fixture"); OK();
 
     uint32_t ver = 0;
     /* fresh 0 → 6 (runs the S5 stage internally) */
@@ -1005,7 +1007,7 @@ static int test_migration(void) {
 
     /* 5 → 6 with per-stage fault rollback: digest identical, version 5 */
     fixture_t f5;
-    CHECK(fx_open(&f5) == 0, "fixture 5");
+    CHECK(fx_open_raw(&f5) == 0, "fixture 5");
     CHECK(nodus_witness_db_migrate_v2s5(f5.w) == 0, "0->5");
     CHECK(nodus_witness_db_schema_version(f5.w, &ver) == 0 && ver == 5,
           "at 5");
@@ -1015,10 +1017,10 @@ static int test_migration(void) {
     };
     for (size_t i = 0; i < sizeof(stages) / sizeof(stages[0]); i++) {
         uint8_t d0[64], d1[64];
-        CHECK(db_state_digest(f5.w, d0) == 0, "digest");
+        CHECK(v2x_db_digest(f5.w, d0) == 0, "digest");
         CHECK(nodus_witness_db_migrate_v2s6_ex(f5.w, stages[i]) == -1,
               "stage fails");
-        CHECK(db_state_digest(f5.w, d1) == 0 &&
+        CHECK(v2x_db_digest(f5.w, d1) == 0 &&
               memcmp(d0, d1, 64) == 0, "stage rollback digest");
         CHECK(nodus_witness_db_schema_version(f5.w, &ver) == 0 &&
               ver == 5, "still 5");
@@ -1059,28 +1061,22 @@ static int absent_genesis(fixture_t *fx, uint8_t out_sys[64],
                           uint8_t out_core[64], uint8_t out_glob[64],
                           uint8_t out_manroot[64]) {
     if (fx_open(fx) != 0) return -1;
-    if (nodus_witness_db_migrate_v2s9(fx->w) != 0) return -1;
+    /* O15J L2-F1 — the supply row must EXIST before a V2 genesis is
+     * committed; its absence used to SKIP the conservation equation for
+     * the life of the chain and now fails closed. tokenomics-v3 P4: the
+     * seeded genesis creates it from the seeded rows — here only the
+     * genesis committee's bonds, so no value outside the bonds exists —
+     * and the manifest names that supply (domman_hashes). */
     uint8_t sys_h[64], core_h[64];
-    if (domman_hashes(fx->w, sys_h, core_h) != 0) return -1;
+    uint64_t supply = 0;
+    if (domman_hashes(fx->w, sys_h, core_h, &supply) != 0) return -1;
     dna_gman_t m;
-    gman_base(&m, 0, sys_h, core_h);        /* pre-genesis supply = 0 */
+    gman_base(&m, supply, sys_h, core_h);   /* the committee's bonds only */
     uint8_t mbytes[8192];
     size_t mlen = 0;
     if (dna_gman_encode(&m, mbytes, sizeof(mbytes), &mlen) != 0) return -1;
-    uint8_t gid[64], chain[32];
-    /* O15J L2-F1 — the supply row must EXIST before a V2 genesis is
-     * committed; its absence used to SKIP the conservation equation for
-     * the life of the chain and now fails closed. This fixture's intent
-     * is a ZERO-supply chain, so a row holding 0 expresses exactly what
-     * it always meant and the equation genuinely evaluates 0 == 0.
-     * -2 == already initialized (nodus_witness_db.c:952). */
-    {
-        uint8_t zh[64];
-        memset(zh, 0, sizeof(zh));
-        int sv = nodus_witness_supply_init(fx->w, 0, 0, zh);
-        if (sv != 0 && sv != -2) return -1;
-    }
-    if (commit_genesis_read(fx, mbytes, mlen, gid, chain) != 0) return -1;
+    uint8_t chain[32];
+    if (commit_genesis_read(fx, mbytes, mlen, chain) != 0) return -1;
     if (nodus_witness_system_root_v2(fx->w, out_sys) != 0) return -1;
     if (nodus_witness_core_root_v2(fx->w, out_core) != 0) return -1;
     if (nodus_witness_global_root_v2(fx->w, out_glob, NULL, NULL, NULL)
@@ -1160,11 +1156,16 @@ static int test_absent_fixture(void) {
 
 static int test_dist_lifecycle(void) {
     fixture_t fx;
-    uint8_t chain[32], gid[64], mh[64];
+    uint8_t chain[32], mh[64];
     CHECK(fx_open(&fx) == 0, "fixture");
-    /* window [2, 6] */
-    CHECK(dist_genesis(&fx, 32, 2, 6, "testnet-generic", chain, gid, mh)
-              == 0,
+    /* window [2, 8] — was [2, 6]: in the cometbft lane a block whose
+     * items are all refused still COMMITS (and consumes its height), so
+     * the rejection matrix below walks heights the legacy lane re-used.
+     * The window is widened by exactly what that walk needs, so every
+     * refusal inside it is refused for ITS OWN reason, never for being
+     * late. Height plan: 1 early | 2 claims | 3 matrix | 4-6 claim fault
+     * points | 7 re-claim after restart | 8 spacer | 9 late. */
+    CHECK(dist_genesis(&fx, 32, 2, 8, "testnet-generic", chain, mh) == 0,
           "dist genesis");
     OK();
 
@@ -1197,24 +1198,24 @@ static int test_dist_lifecycle(void) {
     CHECK(make_claim(&c2, 2, chain, mh) == 0, "claim2");
     OK();
 
-    /* 5a. EARLY: h=1 < start=2 rejects, digest-proven */
+    /* 5a. EARLY: h=1 < start=2 — the claim is refused (CLAIM) and the
+     * ledger does not move; its block commits height 1, which is the
+     * metadata-only linkage block the legacy lane needed a separate
+     * spacer for. */
     nodus_v2_block_t b;
-    mk_claim_block(&b, 1, gid, &c0, 1);
-    CHECK(expect_reject(fx.w, &b, "early claim") == 0, "early"); OK();
-
-    /* h=1 spacer commits (no ops, no claims) — wait: a block with no
-     * ops and no claims touches nothing and produces no update, which
-     * the engine treats as valid metadata-only linkage */
-    mk_claim_block(&b, 1, gid, NULL, 0);
-    CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0, "spacer h1"); OK();
+    mk_claim_block(&b, 1, &c0, 1);
+    CHECK(expect_refused(fx.w, &b, NODUS_V2_TX_ERR_CLAIM, "early claim")
+              == 0, "early"); OK();
+    CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_blocks WHERE global_height=1")
+              == 1, "spacer h1"); OK();
 
     /* 4. h=2: MULTI-claim block [c0, c1] commits */
     uint64_t sys_h_before = q1(fx.w,
         "SELECT domain_height FROM v2_domain_heads WHERE domain_id=0");
     dna_claim_t two[2];
     two[0] = c0; two[1] = c1;
-    mk_claim_block(&b, 2, gid, two, 2);
-    CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0, "claims h2"); OK();
+    mk_claim_block(&b, 2, two, 2);
+    CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0, "claims h2"); OK();
 
     /* outputs: deterministic id, amount, owner, EXPLICIT domain,
      * created_at — created by the CORE runtime hook */
@@ -1243,7 +1244,8 @@ static int test_dist_lifecycle(void) {
     /* accounting: moved, not minted */
     CHECK(q1(fx.w, "SELECT remaining FROM v2_dist_state") == 32 - 22,
           "remaining 10");
-    CHECK(q1(fx.w, "SELECT genesis_supply FROM supply_tracking") == 1000 &&
+    CHECK(q1(fx.w, "SELECT genesis_supply FROM supply_tracking")
+              == 1000 + COMMITTEE_BONDS &&
           q1(fx.w, "SELECT total_minted FROM supply_tracking") == 0 &&
           q1(fx.w, "SELECT total_burned FROM supply_tracking") == 0,
           "supply_tracking untouched — claim never mints");
@@ -1287,21 +1289,27 @@ static int test_dist_lifecycle(void) {
         OK();
     }
 
-    /* 5b. adversarial matrix at h=3 (every one digest-proven no-op) */
+    /* 5b. adversarial matrix at h=3. The cometbft lane judges each claim
+     * as its own ITEM against the committed state (and the claims this
+     * block already APPLIED — none here), so the whole matrix rides ONE
+     * block: every item must be refused with code CLAIM and the ledger
+     * must be byte-identical (expect_refused / v2x_cmt_refused), each
+     * item's own code pinned below under its old message. Built into
+     * `mx[]` in this order:
+     *   0 already committed   1 destination substitution   2 foreign key
+     *   3 bad signature       4 wrong amount               5 bad path
+     *   6 wrong index         7 index out of range         8 unknown
+     *   manifest              9 wrong chain id
+     * The in-block DUPLICATE case needs a claim that APPLIES (the lane
+     * refuses only the SECOND copy), so it runs on its own twin fixture
+     * after this one — c2 must stay unclaimed here for sections 7/5c. */
     {
         nodus_v2_block_t bb;
         dna_claim_t x;
-
-        /* duplicate claim within one block */
-        dna_claim_t dup[2];
-        dup[0] = c2; dup[1] = c2;
-        mk_claim_block(&bb, 3, gid, dup, 2);
-        CHECK(expect_reject(fx.w, &bb, "dup in block") == 0, "dup"); OK();
+        static dna_claim_t mx[10];
 
         /* already committed claim */
-        mk_claim_block(&bb, 3, gid, &c0, 1);
-        CHECK(expect_reject(fx.w, &bb, "already claimed") == 0, "spent");
-        OK();
+        mx[0] = c0;
 
         /* destination substitution: leaf data with a FOREIGN dest —
          * Merkle proof cannot validate */
@@ -1315,10 +1323,7 @@ static int test_dist_lifecycle(void) {
             CHECK(qgp_dsa87_sign(x.signature, &sl, pre, pl, g_sk[0]) == 0,
                   "sign");
         }
-        mk_claim_block(&bb, 3, gid, &x, 1);
-        CHECK(expect_reject(fx.w, &bb, "dest substitution") == 0,
-              "substitution");
-        OK();
+        mx[1] = x;
 
         /* right leaf, WRONG key (key does not hash to dest_binding) */
         x = c2;
@@ -1330,75 +1335,130 @@ static int test_dist_lifecycle(void) {
             CHECK(qgp_dsa87_sign(x.signature, &sl, pre, pl, g_sk[0]) == 0,
                   "sign");
         }
-        mk_claim_block(&bb, 3, gid, &x, 1);
-        CHECK(expect_reject(fx.w, &bb, "foreign key") == 0, "wrong key");
-        OK();
+        mx[2] = x;
 
         /* tampered signature */
         x = c2;
         x.signature[100] ^= 1;
-        mk_claim_block(&bb, 3, gid, &x, 1);
-        CHECK(expect_reject(fx.w, &bb, "bad sig") == 0, "bad sig"); OK();
+        mx[3] = x;
 
         /* wrong amount (conversion/leaf mismatch) */
         x = c2;
         x.source_amount += 1;
-        mk_claim_block(&bb, 3, gid, &x, 1);
-        CHECK(expect_reject(fx.w, &bb, "wrong amount") == 0, "amount");
-        OK();
+        mx[4] = x;
 
         /* corrupted Merkle path */
         x = c2;
         x.siblings[0][0] ^= 1;
-        mk_claim_block(&bb, 3, gid, &x, 1);
-        CHECK(expect_reject(fx.w, &bb, "bad path") == 0, "path"); OK();
+        mx[5] = x;
 
         /* wrong index */
         x = c2;
         x.leaf_index = 0;
-        mk_claim_block(&bb, 3, gid, &x, 1);
-        CHECK(expect_reject(fx.w, &bb, "wrong index") == 0, "index"); OK();
+        mx[6] = x;
 
         /* out-of-range index */
         x = c2;
         x.leaf_index = N_LEAVES;
-        mk_claim_block(&bb, 3, gid, &x, 1);
-        CHECK(expect_reject(fx.w, &bb, "index range") == 0, "range"); OK();
+        mx[7] = x;
 
         /* unknown manifest hash (the committed identity) */
         x = c2;
         x.manifest_hash[0] ^= 1;
-        mk_claim_block(&bb, 3, gid, &x, 1);
-        CHECK(expect_reject(fx.w, &bb, "unknown manifest") == 0,
-              "manifest");
-        OK();
+        mx[8] = x;
 
         /* wrong chain id (cross-chain replay, synthetic) */
         x = c2;
         memset(x.chain_id, 0xFF, 32);
-        mk_claim_block(&bb, 3, gid, &x, 1);
-        CHECK(expect_reject(fx.w, &bb, "wrong chain") == 0, "chain"); OK();
+        mx[9] = x;
+
+        mk_claim_block(&bb, 3, mx, 10);
+        CHECK(expect_refused(fx.w, &bb, NODUS_V2_TX_ERR_CLAIM,
+                             "adversarial matrix") == 0,
+              "a matrix claim was applied or the ledger moved"); OK();
+        CHECK(bb.cmt.results[0].code == NODUS_V2_TX_ERR_CLAIM, "spent");
+        OK();
+        CHECK(bb.cmt.results[1].code == NODUS_V2_TX_ERR_CLAIM,
+              "substitution");
+        OK();
+        CHECK(bb.cmt.results[2].code == NODUS_V2_TX_ERR_CLAIM, "wrong key");
+        OK();
+        CHECK(bb.cmt.results[3].code == NODUS_V2_TX_ERR_CLAIM, "bad sig");
+        OK();
+        CHECK(bb.cmt.results[4].code == NODUS_V2_TX_ERR_CLAIM, "amount");
+        OK();
+        CHECK(bb.cmt.results[5].code == NODUS_V2_TX_ERR_CLAIM, "path");
+        OK();
+        CHECK(bb.cmt.results[6].code == NODUS_V2_TX_ERR_CLAIM, "index");
+        OK();
+        CHECK(bb.cmt.results[7].code == NODUS_V2_TX_ERR_CLAIM, "range");
+        OK();
+        CHECK(bb.cmt.results[8].code == NODUS_V2_TX_ERR_CLAIM, "manifest");
+        OK();
+        CHECK(bb.cmt.results[9].code == NODUS_V2_TX_ERR_CLAIM, "chain");
+        OK();
     }
 
-    /* 7. fault injection at the three S6 stages + F13 with a claim */
+    /* duplicate claim within one block — on a TWIN of this chain (same
+     * seeded genesis), where the cometbft lane's truth is visible: the
+     * first copy APPLIES, the second is refused (CLAIM) against the
+     * claim this block just applied, and the value moves exactly once. */
+    {
+        fixture_t fd;
+        uint8_t chd[32], mhd[64];
+        nodus_v2_block_t bb;
+        dna_claim_t cd, dup[2];
+        CHECK(fx_open(&fd) == 0, "dup fixture");
+        CHECK(dist_genesis(&fd, 32, 2, 8, "testnet-generic", chd, mhd) == 0,
+              "dup genesis");
+        CHECK(make_claim(&cd, 2, chd, mhd) == 0, "dup claim");
+        mk_claim_block(&bb, 1, NULL, 0);
+        CHECK(v2x_cmt_apply_ok(fd.w, &bb) == 0, "dup spacer");
+        dup[0] = cd; dup[1] = cd;
+        mk_claim_block(&bb, 2, dup, 2);
+        CHECK(v2x_cmt_apply(fd.w, &bb) == 0 &&
+              bb.cmt.results[0].code == NODUS_V2_TX_OK &&
+              bb.cmt.results[1].code == NODUS_V2_TX_ERR_CLAIM, "dup");
+        CHECK(q1(fd.w, "SELECT COUNT(*) FROM v2_claims_spent") == 1 &&
+              q1(fd.w, "SELECT remaining FROM v2_dist_state")
+                  == 32 - g_conv_amount[2] &&
+              nodus_witness_v2_supply_check(fd.w) == 0,
+              "the duplicate moved value twice");
+        OK();
+        fx_close(&fd);
+    }
+
+    /* 7. fault injection at the three S6 stages + F13 with a claim.
+     * The S6 stages sit INSIDE the claim's own item execution
+     * (claim_execute_one), so in the cometbft lane each refuses the ITEM
+     * (CLAIM) — its SAVEPOINT carries the output, the spent row and the
+     * decrement away — in a block that commits (heights 4-6). F13
+     * (before the host's commit) is block-level: a node FAULT, nothing
+     * written, no height consumed. */
     {
         nodus_v2_block_t bb;
         static const nodus_v2_apply_fail_t pts[] = {
             V2AP_FAIL_AFTER_CLAIM_OUTPUT, V2AP_FAIL_AFTER_CLAIM_SPEND,
-            V2AP_FAIL_AFTER_CLAIM_STATE, V2AP_FAIL_BEFORE_COMMIT
+            V2AP_FAIL_AFTER_CLAIM_STATE
         };
         for (size_t i = 0; i < sizeof(pts) / sizeof(pts[0]); i++) {
-            mk_claim_block(&bb, 3, gid, &c2, 1);
+            mk_claim_block(&bb, 4 + i, &c2, 1);
             bb.fail_at = pts[i];
             bb.fail_claim_index = 0;
-            CHECK(expect_reject(fx.w, &bb, "fault point") == 0,
+            CHECK(expect_refused(fx.w, &bb, NODUS_V2_TX_ERR_CLAIM,
+                                 "fault point") == 0,
                   "fault rollback");
             OK();
         }
+        mk_claim_block(&bb, 7, &c2, 1);
+        bb.fail_at = V2AP_FAIL_BEFORE_COMMIT;
+        CHECK(expect_fault(fx.w, &bb, "fault point") == 0,
+              "fault rollback");
+        OK();
     }
 
-    /* 8. restart: state persists; already-spent still rejects;
-     * committed block replay is idempotent */
+    /* 8. restart: state persists; already-spent still rejects; the
+     * committed height cannot be applied twice */
     {
         uint8_t cr_before[64], cr_after[64];
         CHECK(nodus_witness_claims_root_v2(fx.w, DNA_DOMAIN_CORE,
@@ -1415,21 +1475,22 @@ static int test_dist_lifecycle(void) {
         CHECK(nodus_witness_v2_supply_check(fx.w) == 0,
               "supply after restart");
         OK();
-        /* re-claim after restart rejects */
+        /* re-claim after restart rejects (height 7, inside the window) */
         nodus_v2_block_t bb;
-        mk_claim_block(&bb, 3, gid, &c0, 1);
-        CHECK(expect_reject(fx.w, &bb, "spent after restart") == 0,
+        mk_claim_block(&bb, 7, &c0, 1);
+        CHECK(expect_refused(fx.w, &bb, NODUS_V2_TX_ERR_CLAIM,
+                             "spent after restart") == 0,
               "spent restart");
         OK();
-        /* idempotent replay of the committed h=2 block — O14 D6: the
-         * no-write path is follower mode, so assert the derived id. */
+        /* the committed h=2 block again. The legacy lane's idempotent
+         * rc 1 (an asserted expect_block_id) has NO cometbft-lane
+         * counterpart — the lane refuses identity assertions and
+         * consensus never re-delivers a finalized height; the committed
+         * height again is a node FAULT that writes nothing. */
         dna_claim_t two2[2];
         two2[0] = c0; two2[1] = c1;
-        uint8_t id2[64];
-        CHECK(v2x_block_id_at(fx.w, 2, id2) == 0, "read committed id2");
-        mk_claim_block(&bb, 2, gid, two2, 2);
-        bb.expect_block_id = id2;
-        CHECK(nodus_witness_v2_apply_block(fx.w, &bb) == 1,
+        mk_claim_block(&bb, 2, two2, 2);
+        CHECK(expect_fault(fx.w, &bb, "the committed height again") == 0,
               "identical replay rc 1");
         OK();
     }
@@ -1439,12 +1500,11 @@ static int test_dist_lifecycle(void) {
      * disposition is an OPEN future versioned mode) */
     {
         nodus_v2_block_t bb;
-        for (uint64_t h = 3; h <= 6; h++) {
-            mk_claim_block(&bb, h, gid, NULL, 0);
-            CHECK(nodus_witness_v2_apply_block(fx.w, &bb) == 0, "spacer");
-        }
-        mk_claim_block(&bb, 7, gid, &c2, 1);
-        CHECK(expect_reject(fx.w, &bb, "late claim") == 0, "late");
+        mk_claim_block(&bb, 8, NULL, 0);
+        CHECK(v2x_cmt_apply_ok(fx.w, &bb) == 0, "spacer");
+        mk_claim_block(&bb, 9, &c2, 1);          /* 9 > end 8          */
+        CHECK(expect_refused(fx.w, &bb, NODUS_V2_TX_ERR_CLAIM,
+                             "late claim") == 0, "late");
         CHECK(q1(fx.w, "SELECT remaining FROM v2_dist_state") == 10,
               "RETAIN keeps remaining");
         CHECK(nodus_witness_v2_supply_check(fx.w) == 0, "supply late");
@@ -1467,9 +1527,11 @@ static int test_dist_lifecycle(void) {
  *   - a LOCAL sqlite denial on the read/write each helper owns is now
  *     -2 — this node alone cannot answer, and must not vote a value
  *     another node without the fault would disagree with.
- * `expect_reject` (used by the surrounding adversarial matrix) already
- * accepts either code as "a fail-closed no-op"; this test pins the EXACT
- * code each branch takes, which `expect_reject` deliberately does not. */
+ * In the cometbft lane (tokenomics-v3 P4) the -1 surfaces as the claim
+ * ITEM's code CLAIM in a block that commits, and the -2 as the block's
+ * node FAULT (NODUS_V2_INTERNAL_FAULT) — never as an item code, which
+ * would write a node-local condition into LastResultsHash. This test
+ * pins which of the two each branch takes. */
 
 /* Denies ONE (action, table) pair — parameterized so one callback covers
  * every helper's own read or write without touching any OTHER
@@ -1495,31 +1557,36 @@ static int apply_with_denial(nodus_witness_t *w, nodus_v2_block_t *b,
 
     if (sqlite3_set_authorizer(w->db, authz_deny_cb, &spec) != SQLITE_OK)
         return -100;   /* setup failure, not a code under test */
-    rc = nodus_witness_v2_apply_block(w, b);
+    /* the host's BEGIN / COMMIT / ROLLBACK name no table, so the
+     * (action, table) denial reaches only the engine's own statements */
+    rc = v2x_cmt_apply(w, b);
     sqlite3_set_authorizer(w->db, NULL, NULL);
     return rc;
 }
 
 static int test_claim_fault_classification(void) {
     fixture_t fx;
-    uint8_t chain[32], gid[64], mh[64];
+    uint8_t chain[32], mh[64];
     nodus_v2_block_t b;
     dna_claim_t c0;
     uint8_t d0[64], d1[64];
+    uint32_t code = 0;
     int rc;
 
     CHECK(fx_open(&fx) == 0, "fixture");
-    /* wide window [0,100]: every attempt below applies at height 1, no
+    /* wide window [0,100]: every attempt below applies inside it, no
      * "early"/"late" interference with the branch under test */
-    CHECK(dist_genesis(&fx, 32, 0, 100, "faultcheck", chain, gid, mh) == 0,
+    CHECK(dist_genesis(&fx, 32, 0, 100, "faultcheck", chain, mh) == 0,
           "dist genesis");
     CHECK(make_claim(&c0, 0, chain, mh) == 0, "claim0");
     OK();
 
-    /* ── VERDICT (-1): a claim naming a manifest this chain never
-     * committed — claim_admit/claim_prescan_one step 3, mrc > 0
+    /* ── the deterministic REFUSAL: a claim naming a manifest this chain
+     * never committed — claim_admit/claim_prescan_one step 3, mrc > 0
      * (nodus_witness_v2_manifest_load_by_hash answers "absent", not a
-     * fault). EXACT rc pinned, not just "a reject". */
+     * fault). The legacy lane's VERDICT (-1) is, in the cometbft lane,
+     * the ITEM's code CLAIM in a block that commits (height 1) with the
+     * ledger byte-identical. EXACT class pinned, not just "a reject". */
     {
         dna_claim_t bad;
         uint8_t pre[DNA_CLAIM_PREIMAGE_MAX];
@@ -1530,71 +1597,78 @@ static int test_claim_fault_classification(void) {
         CHECK(dna_claim_preimage(&bad, pre, &pre_len) == 0, "preimage");
         CHECK(qgp_dsa87_sign(bad.signature, &siglen, pre, pre_len,
                              g_sk[0]) == 0, "resign after tamper");
-        mk_claim_block(&b, 1, gid, &bad, 1);
-        CHECK(db_state_digest(fx.w, d0) == 0, "digest before");
-        rc = nodus_witness_v2_apply_block(fx.w, &b);
-        CHECK(rc == -1, "unknown manifest is a VERDICT, exactly -1");
-        CHECK(db_state_digest(fx.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
-              "no-op");
+        mk_claim_block(&b, 1, &bad, 1);
+        CHECK(v2x_cmt_refused(fx.w, &b, 0, &code) == 0 &&
+              code == NODUS_V2_TX_ERR_CLAIM,
+              "unknown manifest is a VERDICT, exactly -1");
         OK();
     }
 
-    /* ── FAULT (-2), one branch per helper ──────────────────────────── */
+    /* ── FAULT, one branch per helper ─────────────────────────────────
+     * A node-local fault never becomes an item code: the block is a
+     * node FAULT (NODUS_V2_INTERNAL_FAULT) and the host rolls the whole
+     * block back (whole-database digest). Every attempt is at height 2,
+     * which a FAULT does not consume. */
 
     /* claim_prescan_one / claim_admit step 3: v2_manifests SELECT
      * denied — "manifest read fault", the dispatch's own NODE-LOCAL
      * class. */
-    mk_claim_block(&b, 1, gid, &c0, 1);
-    CHECK(db_state_digest(fx.w, d0) == 0, "digest before");
+    mk_claim_block(&b, 2, &c0, 1);
+    CHECK(v2x_db_digest(fx.w, d0) == 0, "digest before");
     rc = apply_with_denial(fx.w, &b, SQLITE_READ, "v2_manifests");
-    CHECK(rc == -2, "a manifest read fault is -2, not -1");
-    CHECK(db_state_digest(fx.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
+    CHECK(rc == NODUS_V2_INTERNAL_FAULT,
+          "a manifest read fault is -2, not -1");
+    CHECK(v2x_db_digest(fx.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
           "no-op");
     OK();
 
     /* claim_admit step 9: v2_claims_spent SELECT denied
      * (nodus_witness_v2_claim_nullifier_spent's own prepare fault). */
-    mk_claim_block(&b, 1, gid, &c0, 1);
-    CHECK(db_state_digest(fx.w, d0) == 0, "digest before");
+    mk_claim_block(&b, 2, &c0, 1);
+    CHECK(v2x_db_digest(fx.w, d0) == 0, "digest before");
     rc = apply_with_denial(fx.w, &b, SQLITE_READ, "v2_claims_spent");
-    CHECK(rc == -2, "a spent-set read fault is -2, not -1");
-    CHECK(db_state_digest(fx.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
+    CHECK(rc == NODUS_V2_INTERNAL_FAULT,
+          "a spent-set read fault is -2, not -1");
+    CHECK(v2x_db_digest(fx.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
           "no-op");
     OK();
 
     /* nodus_witness_v2_claim_output_create -> nodus_rt_core_claim_apply:
      * utxo_set INSERT denied. */
-    mk_claim_block(&b, 1, gid, &c0, 1);
-    CHECK(db_state_digest(fx.w, d0) == 0, "digest before");
+    mk_claim_block(&b, 2, &c0, 1);
+    CHECK(v2x_db_digest(fx.w, d0) == 0, "digest before");
     rc = apply_with_denial(fx.w, &b, SQLITE_INSERT, "utxo_set");
-    CHECK(rc == -2, "the output-create write fault is -2, not -1");
-    CHECK(db_state_digest(fx.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
+    CHECK(rc == NODUS_V2_INTERNAL_FAULT,
+          "the output-create write fault is -2, not -1");
+    CHECK(v2x_db_digest(fx.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
           "no-op");
     OK();
 
     /* nodus_witness_v2_claim_spend_insert: v2_claims_spent INSERT
      * denied. */
-    mk_claim_block(&b, 1, gid, &c0, 1);
-    CHECK(db_state_digest(fx.w, d0) == 0, "digest before");
+    mk_claim_block(&b, 2, &c0, 1);
+    CHECK(v2x_db_digest(fx.w, d0) == 0, "digest before");
     rc = apply_with_denial(fx.w, &b, SQLITE_INSERT, "v2_claims_spent");
-    CHECK(rc == -2, "the spend-insert write fault is -2, not -1");
-    CHECK(db_state_digest(fx.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
+    CHECK(rc == NODUS_V2_INTERNAL_FAULT,
+          "the spend-insert write fault is -2, not -1");
+    CHECK(v2x_db_digest(fx.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
           "no-op");
     OK();
 
     /* nodus_witness_v2_claim_state_update: v2_dist_state UPDATE
      * denied (its own re-SELECT stays open — a different action code). */
-    mk_claim_block(&b, 1, gid, &c0, 1);
-    CHECK(db_state_digest(fx.w, d0) == 0, "digest before");
+    mk_claim_block(&b, 2, &c0, 1);
+    CHECK(v2x_db_digest(fx.w, d0) == 0, "digest before");
     rc = apply_with_denial(fx.w, &b, SQLITE_UPDATE, "v2_dist_state");
-    CHECK(rc == -2, "the state-update write fault is -2, not -1");
-    CHECK(db_state_digest(fx.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
+    CHECK(rc == NODUS_V2_INTERNAL_FAULT,
+          "the state-update write fault is -2, not -1");
+    CHECK(v2x_db_digest(fx.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
           "no-op");
     OK();
 
     /* control: with nothing denied, the SAME claim still applies */
-    mk_claim_block(&b, 1, gid, &c0, 1);
-    CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+    mk_claim_block(&b, 2, &c0, 1);
+    CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
           "clean control still applies");
     OK();
 
@@ -1606,14 +1680,15 @@ static int test_claim_fault_classification(void) {
 
 static int test_order_independence(void) {
     fixture_t fa, fb;
-    uint8_t chA[32], gidA[64], mhA[64], chB[32], gidB[64], mhB[64];
+    uint8_t chA[32], mhA[64], chB[32], mhB[64];
     CHECK(fx_open(&fa) == 0 && fx_open(&fb) == 0, "fixtures");
-    CHECK(dist_genesis(&fa, 32, 1, 9, "testnet-generic", chA, gidA, mhA)
+    CHECK(dist_genesis(&fa, 32, 1, 9, "testnet-generic", chA, mhA)
               == 0, "genesis A");
-    CHECK(dist_genesis(&fb, 32, 1, 9, "testnet-generic", chB, gidB, mhB)
+    CHECK(dist_genesis(&fb, 32, 1, 9, "testnet-generic", chB, mhB)
               == 0, "genesis B");
-    /* twins: identical manifests ⇒ identical genesis id + chain id */
-    CHECK(memcmp(chA, chB, 32) == 0 && memcmp(gidA, gidB, 64) == 0 &&
+    /* twins: identical manifests ⇒ identical chain id (the genesis
+     * document's hash, whose app_hash is the genesis root) */
+    CHECK(memcmp(chA, chB, 32) == 0 &&
           memcmp(mhA, mhB, 64) == 0, "twin chains identical");
     OK();
 
@@ -1625,10 +1700,10 @@ static int test_order_independence(void) {
     dna_claim_t fwd[2], rev[2];
     fwd[0] = c0; fwd[1] = c1;
     rev[0] = c1; rev[1] = c0;
-    mk_claim_block(&b, 1, gidA, fwd, 2);
-    CHECK(nodus_witness_v2_apply_block(fa.w, &b) == 0, "A applies fwd");
-    mk_claim_block(&b, 1, gidB, rev, 2);
-    CHECK(nodus_witness_v2_apply_block(fb.w, &b) == 0, "B applies rev");
+    mk_claim_block(&b, 1, fwd, 2);
+    CHECK(v2x_cmt_apply_ok(fa.w, &b) == 0, "A applies fwd");
+    mk_claim_block(&b, 1, rev, 2);
+    CHECK(v2x_cmt_apply_ok(fb.w, &b) == 0, "B applies rev");
     OK();
 
     uint8_t ra[64], rb[64], ca[64], cb[64], ga[64], gb[64];
@@ -1659,14 +1734,14 @@ static int test_order_independence(void) {
      * Compared against a third fixture that applied NO claims. */
     {
         fixture_t fc;
-        uint8_t chC[32], gidC[64], mhC[64];
+        uint8_t chC[32], mhC[64];
         CHECK(fx_open(&fc) == 0, "fixture C");
-        CHECK(dist_genesis(&fc, 32, 1, 9, "testnet-generic", chC, gidC,
+        CHECK(dist_genesis(&fc, 32, 1, 9, "testnet-generic", chC,
                            mhC) == 0, "genesis C");
         /* C is the SAME twin chain — identical genesis, identical
          * manifest — so any root difference below can ONLY come from the
          * claims A applied and C did not. */
-        CHECK(memcmp(chA, chC, 32) == 0 && memcmp(gidA, gidC, 64) == 0,
+        CHECK(memcmp(chA, chC, 32) == 0 && memcmp(mhA, mhC, 64) == 0,
               "C is a twin of A");
 
         uint8_t rc_[64], cc_[64], gc[64];
@@ -1694,25 +1769,26 @@ static int test_order_independence(void) {
 
 static int test_never_mint(void) {
     fixture_t fx;
-    uint8_t chain[32], gid[64], mh[64];
+    uint8_t chain[32], mh[64];
     CHECK(fx_open(&fx) == 0, "fixture");
     /* total_claimable 20 < Σ converted 32: the distribution is the ONLY
      * source; once drained, further structurally-valid claims REJECT */
-    CHECK(dist_genesis(&fx, 20, 1, 9, "testnet-generic", chain, gid, mh)
+    CHECK(dist_genesis(&fx, 20, 1, 9, "testnet-generic", chain, mh)
               == 0, "genesis 20");
     OK();
     dna_claim_t c0, c1;
     CHECK(make_claim(&c0, 0, chain, mh) == 0, "c0");
     CHECK(make_claim(&c1, 1, chain, mh) == 0, "c1");
     nodus_v2_block_t b;
-    mk_claim_block(&b, 1, gid, &c0, 1);
-    CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0, "claim 15 of 20");
+    mk_claim_block(&b, 1, &c0, 1);
+    CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0, "claim 15 of 20");
     CHECK(q1(fx.w, "SELECT remaining FROM v2_dist_state") == 5,
           "remaining 5");
     OK();
-    /* c1 needs 7 > 5 — MUST reject (a claim can never mint) */
-    mk_claim_block(&b, 2, gid, &c1, 1);
-    CHECK(expect_reject(fx.w, &b, "overdraw") == 0, "never mints");
+    /* c1 needs 7 > 5 — MUST be refused (a claim can never mint) */
+    mk_claim_block(&b, 2, &c1, 1);
+    CHECK(expect_refused(fx.w, &b, NODUS_V2_TX_ERR_CLAIM, "overdraw") == 0,
+          "never mints");
     CHECK(nodus_witness_v2_supply_check(fx.w) == 0, "supply intact");
     OK();
     fx_close(&fx);
@@ -1721,13 +1797,22 @@ static int test_never_mint(void) {
 
 /* ── 10: genesis manifest rejects (whole genesis rolled back) ───────── */
 
-static int genesis_expect_fail(dna_gman_t *m, int seed, const char *msg) {
+/* The caller's manifest names `supply_delta` relative to the committed
+ * genesis supply (0 = the true value, -1 = one unit short): the
+ * committed supply includes the genesis committee's bonds, which the
+ * caller cannot know before the rows are seeded. */
+static int genesis_expect_fail(dna_gman_t *m, int seed, int64_t supply_delta,
+                               const char *msg) {
     fixture_t fx;
     if (fx_open(&fx) != 0) return 1;
-    if (nodus_witness_db_migrate_v2s9(fx.w) != 0) { fx_close(&fx); return 1; }
     if (seed && seed_supply(fx.w, 1000, 968) != 0) { fx_close(&fx); return 1; }
     uint8_t sys_h[64], core_h[64];
-    if (domman_hashes(fx.w, sys_h, core_h) != 0) { fx_close(&fx); return 1; }
+    uint64_t supply = 0;
+    if (domman_hashes(fx.w, sys_h, core_h, &supply) != 0) {
+        fx_close(&fx);
+        return 1;
+    }
+    m->genesis_supply_raw = supply + (uint64_t)supply_delta;
     /* the caller pre-filled everything EXCEPT the real hashes; slot
      * them in unless the test wants them wrong (all-0xEE marker) */
     if (m->domains[0].manifest_hash[0] != 0xEE)
@@ -1741,19 +1826,19 @@ static int genesis_expect_fail(dna_gman_t *m, int seed, const char *msg) {
         fx_close(&fx);
         return 1;
     }
-    uint8_t vset[64];
-    memset(vset, 0x77, 64);
-    /* O14: assertion omitted — this genesis must be rejected on its own
-     * (lying) manifest, not because an id failed to match. */
+    /* the COMMITTED epoch-0 set: this genesis must be rejected on its own
+     * (lying) manifest, not because the validator-set assertion failed. */
+    uint8_t vset[DNA_VSET_HASH_LEN], groot[64];
+    if (v2x_seed_vset_hash(fx.w, vset) != 0) { fx_close(&fx); return 1; }
     uint8_t d0[64], d1[64];
-    if (db_state_digest(fx.w, d0) != 0) { fx_close(&fx); return 1; }
-    if (nodus_witness_v2_genesis_ex(fx.w, NULL, vset, 0, mbytes, mlen)
+    if (v2x_db_digest(fx.w, d0) != 0) { fx_close(&fx); return 1; }
+    if (nodus_witness_v2_genesis_cmt(fx.w, vset, mbytes, mlen, groot)
         != -1) {
         fprintf(stderr, "genesis should fail: %s\n", msg);
         fx_close(&fx);
         return 1;
     }
-    if (db_state_digest(fx.w, d1) != 0 || memcmp(d0, d1, 64) != 0) {
+    if (v2x_db_digest(fx.w, d1) != 0 || memcmp(d0, d1, 64) != 0) {
         fprintf(stderr, "genesis reject not rolled back: %s\n", msg);
         fx_close(&fx);
         return 1;
@@ -1767,59 +1852,63 @@ static int test_genesis_rejects(void) {
     uint8_t zero[64];
     memset(zero, 0, sizeof(zero));
 
+    /* (the genesis supply every manifest below names is slotted in by
+     * genesis_expect_fail from the committed row: the test's 1000 plus
+     * the genesis committee's bonds, then the given delta) */
+
     /* wrong DomainManifest hash (registry cross-check) */
-    gman_base(&m, 1000, zero, zero);
+    gman_base(&m, 0, zero, zero);
     gman_dist(&m, 32, 1, 9, "testnet-generic", DNA_DOMAIN_CORE,
               g_native_asset, 64);
     memset(m.domains[1].manifest_hash, 0xEE, 64);   /* wrong-marker */
-    CHECK(genesis_expect_fail(&m, 1, "wrong domman hash") == 0,
+    CHECK(genesis_expect_fail(&m, 1, 0, "wrong domman hash") == 0,
           "hash mismatch rejects");
     OK();
 
     /* wrong domain count (SYSTEM only, registry has 2) */
-    gman_base(&m, 1000, zero, zero);
+    gman_base(&m, 0, zero, zero);
     m.domain_count = 1;
     gman_dist(&m, 32, 1, 9, "testnet-generic", DNA_DOMAIN_SYSTEM,
               g_native_asset, 64);
-    CHECK(genesis_expect_fail(&m, 1, "wrong count") == 0,
+    CHECK(genesis_expect_fail(&m, 1, 0, "wrong count") == 0,
           "count mismatch rejects");
     OK();
 
-    /* genesis-supply mismatch against supply_tracking */
-    gman_base(&m, 999, zero, zero);
+    /* genesis-supply mismatch against supply_tracking (one unit short) */
+    gman_base(&m, 0, zero, zero);
     gman_dist(&m, 32, 1, 9, "testnet-generic", DNA_DOMAIN_CORE,
               g_native_asset, 64);
-    CHECK(genesis_expect_fail(&m, 1, "supply mismatch") == 0,
+    CHECK(genesis_expect_fail(&m, 1, -1, "supply mismatch") == 0,
           "supply mismatch rejects");
     OK();
 
     /* UNREGISTERED target domain: fails closed — the engine never
      * "defaults" an unknown target anywhere */
-    gman_base(&m, 1000, zero, zero);
+    gman_base(&m, 0, zero, zero);
     gman_dist(&m, 32, 1, 9, "testnet-generic", 42, g_native_asset, 64);
-    CHECK(genesis_expect_fail(&m, 1, "unknown target domain") == 0,
+    CHECK(genesis_expect_fail(&m, 1, 0, "unknown target domain") == 0,
           "unregistered target rejects");
     OK();
 
     /* target SYSTEM: registered and ACTIVE, but its runtime carries NO
      * claim hooks — a runtime that cannot apply claims cannot be a
      * distribution target */
-    gman_base(&m, 1000, zero, zero);
+    gman_base(&m, 0, zero, zero);
     gman_dist(&m, 32, 1, 9, "testnet-generic", DNA_DOMAIN_SYSTEM,
               g_native_asset, 64);
-    CHECK(genesis_expect_fail(&m, 1, "target without claim hooks") == 0,
+    CHECK(genesis_expect_fail(&m, 1, 0, "target without claim hooks") == 0,
           "hookless target rejects");
     OK();
 
     /* asset the CORE runtime refuses (non-native token id) */
-    gman_base(&m, 1000, zero, zero);
+    gman_base(&m, 0, zero, zero);
     {
         uint8_t alien[64];
         memset(alien, 0x5A, 64);
         gman_dist(&m, 32, 1, 9, "testnet-generic", DNA_DOMAIN_CORE,
                   alien, 64);
     }
-    CHECK(genesis_expect_fail(&m, 1, "asset refused by runtime") == 0,
+    CHECK(genesis_expect_fail(&m, 1, 0, "asset refused by runtime") == 0,
           "incompatible asset rejects");
     OK();
     return 0;
@@ -1829,9 +1918,9 @@ static int test_genesis_rejects(void) {
 
 static int test_inactive_boundary(void) {
     fixture_t fx;
-    uint8_t chain[32], gid[64], mh[64];
+    uint8_t chain[32], mh[64];
     CHECK(fx_open(&fx) == 0, "fixture");
-    CHECK(dist_genesis(&fx, 32, 1, 9, "testnet-generic", chain, gid, mh)
+    CHECK(dist_genesis(&fx, 32, 1, 9, "testnet-generic", chain, mh)
               == 0, "genesis");
     for (uint8_t ty = 12; ty <= 14; ty++) {
         for (uint32_t dom = 0; dom <= 1; dom++) {
@@ -1857,24 +1946,24 @@ static int test_inactive_boundary(void) {
  * UTXOs — the T3-asset claimable 32 is NOT DNAC and MUST NOT enter the
  * DNAC equation. */
 static int t3_genesis(fixture_t *fx, uint8_t out_chain[32],
-                      uint8_t out_gid[64], uint8_t out_mh[64],
+                      uint8_t out_mh[64],
                       uint64_t start_h, uint64_t end_h) {
     if (fx_open(fx) != 0) return -1;
     fx->w->v2_runtime_table = g_ext_table;
     fx->w->v2_runtime_table_n = g_ext_n;
-    if (nodus_witness_db_migrate_v2s9(fx->w) != 0) return -1;
     if (run_sql(fx->w->db,
             "CREATE TABLE t3_state (id BLOB PRIMARY KEY, "
             "amount INTEGER NOT NULL, asset BLOB NOT NULL)") != 0)
         return -1;
     if (seed_supply(fx->w, 1000, 1000) != 0) return -1;
     uint8_t sys_h[64], core_h[64], t3_h[64];
-    if (domman_hashes(fx->w, sys_h, core_h) != 0) return -1;
+    uint64_t supply = 0;
+    if (domman_hashes(fx->w, sys_h, core_h, &supply) != 0) return -1;
     if (register_synthetic(fx->w, &g_ext_table[2]) != 0) return -1;
     if (domman_hash_of(fx->w, T3_DOMAIN, t3_h) != 0) return -1;
 
     dna_gman_t m;
-    gman_base(&m, 1000, sys_h, core_h);
+    gman_base(&m, supply, sys_h, core_h);
     m.domain_count = 3;
     m.domains[2].domain_id = T3_DOMAIN;
     memcpy(m.domains[2].manifest_hash, t3_h, 64);
@@ -1884,15 +1973,15 @@ static int t3_genesis(fixture_t *fx, uint8_t out_chain[32],
     size_t mlen = 0;
     if (dna_gman_encode(&m, mbytes, sizeof(mbytes), &mlen) != 0) return -1;
     if (dna_gman_hash(&m, out_mh) != 0) return -1;
-    return commit_genesis_read(fx, mbytes, mlen, out_gid, out_chain);
+    return commit_genesis_read(fx, mbytes, mlen, out_chain);
 }
 
 static int test_generic_t3(void) {
     fixture_t fx;
-    uint8_t chain[32], gid[64], mh[64];
+    uint8_t chain[32], mh[64];
     g_t3_claim_hook_calls = 0;
     g_t3_invariant_calls = 0;
-    CHECK(t3_genesis(&fx, chain, gid, mh, 1, 9) == 0, "t3 genesis"); OK();
+    CHECK(t3_genesis(&fx, chain, mh, 1, 9) == 0, "t3 genesis"); OK();
 
     /* three registered domains → three genesis heads; the schema, the
      * header codec and the block table needed NOTHING new */
@@ -1945,8 +2034,8 @@ static int test_generic_t3(void) {
     CHECK(nodus_witness_core_root_v2(fx.w, core_root_before) == 0,
           "core root");
     nodus_v2_block_t b;
-    mk_claim_block(&b, 1, gid, &c0, 1);
-    CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0, "t3 claim block");
+    mk_claim_block(&b, 1, &c0, 1);
+    CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0, "t3 claim block");
     OK();
     CHECK(g_t3_claim_hook_calls == 1,
           "claim application reached the T3 runtime hook");
@@ -1993,15 +2082,19 @@ static int test_generic_t3(void) {
         dna_claim_t x = c0;
         x.manifest_hash[5] ^= 1;
         nodus_v2_block_t bb;
-        mk_claim_block(&bb, 2, gid, &x, 1);
-        CHECK(expect_reject(fx.w, &bb, "cross-manifest replay") == 0,
+        mk_claim_block(&bb, 2, &x, 1);          /* commits height 2   */
+        CHECK(expect_refused(fx.w, &bb, NODUS_V2_TX_ERR_CLAIM,
+                             "cross-manifest replay") == 0,
               "cross-manifest replay rejects");
         OK();
     }
 
     /* SIDECAR: a block carrying a claim CANNOT slip past a follower's
      * root expectation — the claim's state effect lands in the
-     * committed global root or the block rejects atomically */
+     * committed global root or the block does not commit at all. The
+     * expected-root compare is block-level (phase 13): in the cometbft
+     * lane a mismatch is a node FAULT the host rolls back, the claim
+     * with it. */
     {
         dna_claim_t c1;
         CHECK(make_claim(&c1, 1, chain, mh) == 0, "claim1");
@@ -2015,10 +2108,10 @@ static int test_generic_t3(void) {
         memcpy(stale_root, sqlite3_column_blob(st, 0), 64);
         sqlite3_finalize(st);
         nodus_v2_block_t bb;
-        mk_claim_block(&bb, 2, gid, &c1, 1);
+        mk_claim_block(&bb, 3, &c1, 1);
         bb.expect_global_root = stale_root;   /* claim-less expectation */
-        CHECK(expect_reject(fx.w, &bb,
-                            "sidecar claim vs root expectation") == 0,
+        CHECK(expect_fault(fx.w, &bb,
+                           "sidecar claim vs root expectation") == 0,
               "uncommitted sidecar claim cannot affect state");
         OK();
     }
@@ -2048,11 +2141,11 @@ static int test_generic_t3(void) {
             { e3s.bytes, e3s.len }, { e3c.bytes, e3c.len }
         };
         nodus_v2_block_t bb;
-        mk_claim_block(&bb, 2, gid, &c1, 1);
+        mk_claim_block(&bb, 3, &c1, 1);
         bb.envs = v3d;
         bb.n_envs = 2;
         bb.fail_at = V2AP_FAIL_BEFORE_COMMIT;
-        CHECK(expect_reject(fx.w, &bb, "3-domain fault") == 0,
+        CHECK(expect_fault(fx.w, &bb, "3-domain fault") == 0,
               "SYSTEM+CORE+T3 fault rolls the whole block back");
         OK();
     }
@@ -2063,8 +2156,9 @@ static int test_generic_t3(void) {
         CHECK(q1(fx.w, "SELECT COUNT(*) FROM t3_state") == 1,
               "T3 state persists");
         nodus_v2_block_t bb;
-        mk_claim_block(&bb, 2, gid, &c0, 1);
-        CHECK(expect_reject(fx.w, &bb, "spent after restart") == 0,
+        mk_claim_block(&bb, 3, &c0, 1);
+        CHECK(expect_refused(fx.w, &bb, NODUS_V2_TX_ERR_CLAIM,
+                             "spent after restart") == 0,
               "T3 spent persists");
         OK();
     }
@@ -2077,8 +2171,8 @@ static int test_generic_t3(void) {
  * carries the T3 runtime — the claim must fail closed. */
 static int test_generic_unresolvable_target(void) {
     fixture_t fx;
-    uint8_t chain[32], gid[64], mh[64];
-    CHECK(t3_genesis(&fx, chain, gid, mh, 1, 9) == 0, "t3 genesis"); OK();
+    uint8_t chain[32], mh[64];
+    CHECK(t3_genesis(&fx, chain, mh, 1, 9) == 0, "t3 genesis"); OK();
 
     dna_claim_t c0;
     CHECK(make_claim(&c0, 0, chain, mh) == 0, "claim0");
@@ -2087,36 +2181,35 @@ static int test_generic_unresolvable_target(void) {
     fx.w->v2_runtime_table = g_ext_table;
     fx.w->v2_runtime_table_n = 2;
     nodus_v2_block_t b;
-    mk_claim_block(&b, 1, gid, &c0, 1);
-    /* NOTE: the supply gate ALSO fails closed here (ACTIVE registered
-     * domain without a runtime = unknown state), so the reject fires
-     * before any state moves — digest-proven. */
-    CHECK(expect_reject(fx.w, &b, "unresolvable target runtime") == 0,
+    mk_claim_block(&b, 1, &c0, 1);
+    /* An ACTIVE registered domain whose runtime this node cannot
+     * resolve fails the block-start snapshot (phase 0a's strict
+     * doms_load) — this node's shape, never a statement about the claim:
+     * a node FAULT, nothing written. */
+    CHECK(expect_fault(fx.w, &b, "unresolvable target runtime") == 0,
           "unknown target runtime rejects");
     OK();
 
-    /* restore, then mark T3 PAUSED in the registry: an INACTIVE target
-     * fails closed too */
+    /* restore, then PAUSE T3 — in-band, through the SYSTEM registry
+     * transition a block carries (the legacy version rewrote the
+     * registry out of band, which the cometbft lane's untouched-domain
+     * guard would turn into a FAULT that masks the claim's own
+     * refusal). An INACTIVE target fails closed too: the claim is
+     * refused (CLAIM) and T3's state does not move. */
     fx.w->v2_runtime_table_n = g_ext_n;
     {
-        dna_domreg_record_t rec;
-        CHECK(nodus_witness_domreg_get(fx.w, T3_DOMAIN, &rec, NULL, NULL)
-                  == 0, "rec");
-        rec.status = DNA_DOMST_PAUSED;
-        uint8_t recb[DNA_DOMREG_REC_ENC_LEN];
-        CHECK(dna_domreg_record_encode(&rec, recb) == 0, "enc");
-        sqlite3_stmt *st = NULL;
-        CHECK(sqlite3_prepare_v2(fx.w->db,
-              "UPDATE domain_registry SET record=?1 WHERE domain_id=?2",
-              -1, &st, NULL) == SQLITE_OK, "prep");
-        sqlite3_bind_blob(st, 1, recb, sizeof(recb), SQLITE_TRANSIENT);
-        sqlite3_bind_int64(st, 2, (sqlite3_int64)T3_DOMAIN);
-        CHECK(sqlite3_step(st) == SQLITE_DONE, "update");
-        sqlite3_finalize(st);
+        static v2x_env_t epause;
+        CHECK(env_status(&epause, fx.w, T3_DOMAIN, DNA_DOMST_PAUSED, 0)
+                  == 0, "epause");
+        mk_env_block(&b, 1, &epause);
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0, "pause T3");
     }
-    mk_claim_block(&b, 1, gid, &c0, 1);
-    CHECK(expect_reject(fx.w, &b, "inactive target") == 0,
+    mk_claim_block(&b, 2, &c0, 1);
+    CHECK(expect_refused(fx.w, &b, NODUS_V2_TX_ERR_CLAIM,
+                         "inactive target") == 0,
           "inactive target rejects");
+    CHECK(q1(fx.w, "SELECT COUNT(*) FROM t3_state") == 0,
+          "the inactive target's state moved");
     OK();
     fx_close(&fx);
     return 0;
@@ -2129,7 +2222,6 @@ static int test_generic_coexistence(void) {
     CHECK(fx_open(&fx) == 0, "fixture");
     fx.w->v2_runtime_table = g_ext_table;
     fx.w->v2_runtime_table_n = g_ext_n;
-    CHECK(nodus_witness_db_migrate_v2s9(fx.w) == 0, "migrate");
     CHECK(run_sql(fx.w->db,
         "CREATE TABLE t3_state (id BLOB PRIMARY KEY, "
         "amount INTEGER NOT NULL, asset BLOB NOT NULL);"
@@ -2137,14 +2229,15 @@ static int test_generic_coexistence(void) {
         "amount INTEGER NOT NULL, asset BLOB NOT NULL)") == 0, "tables");
     CHECK(seed_supply(fx.w, 1000, 1000) == 0, "supply");
     uint8_t sys_h[64], core_h[64], t3_h[64], t4_h[64];
-    CHECK(domman_hashes(fx.w, sys_h, core_h) == 0, "natives");
+    uint64_t supply = 0;
+    CHECK(domman_hashes(fx.w, sys_h, core_h, &supply) == 0, "natives");
     CHECK(register_synthetic(fx.w, &g_ext_table[2]) == 0, "reg T3");
     CHECK(register_synthetic(fx.w, &g_ext_table[3]) == 0, "reg T4");
     CHECK(domman_hash_of(fx.w, T3_DOMAIN, t3_h) == 0, "t3 hash");
     CHECK(domman_hash_of(fx.w, T4_DOMAIN, t4_h) == 0, "t4 hash");
 
     dna_gman_t m;
-    gman_base(&m, 1000, sys_h, core_h);
+    gman_base(&m, supply, sys_h, core_h);
     m.domain_count = 4;
     m.domains[2].domain_id = T3_DOMAIN;
     memcpy(m.domains[2].manifest_hash, t3_h, 64);
@@ -2156,8 +2249,8 @@ static int test_generic_coexistence(void) {
     CHECK(dna_gman_encode(&m, mbytes, sizeof(mbytes), &mlen) == 0, "enc");
     uint8_t mh[64];
     CHECK(dna_gman_hash(&m, mh) == 0, "mh");
-    uint8_t gid[64], chain[32];
-    CHECK(commit_genesis_read(&fx, mbytes, mlen, gid, chain) == 0,
+    uint8_t chain[32];
+    CHECK(commit_genesis_read(&fx, mbytes, mlen, chain) == 0,
           "4-domain genesis");
     CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_domain_heads") == 4,
           "four heads, zero header/schema changes");
@@ -2170,11 +2263,11 @@ static int test_generic_coexistence(void) {
     static v2x_env_t et4;
     CHECK(env_tn_put(&et4, T4_DOMAIN, 0x01, 5, T4_ASSET) == 0, "et4");
     nodus_v2_block_t b;
-    mk_claim_block(&b, 1, gid, &c0, 1);
+    mk_claim_block(&b, 1, &c0, 1);
     nodus_v2_envelope_t vt4 = { et4.bytes, et4.len };
     b.envs = &vt4;
     b.n_envs = 1;
-    CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0, "mixed block");
+    CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0, "mixed block");
     CHECK(q1(fx.w, "SELECT COUNT(*) FROM t3_state") == 1 &&
           q1(fx.w, "SELECT COUNT(*) FROM t4_state") == 1,
           "both synthetic runtimes drove their own state");
@@ -2222,37 +2315,42 @@ static uint64_t be64_at(const uint8_t *p) {
 
 /* Lifecycle genesis: SYSTEM + CORE ACTIVE, T3 REGISTERED-only (present
  * in the registry, ABSENT from committed domain state). */
-static int lifecycle_genesis(fixture_t *fx, uint8_t out_gid[64]) {
+static int lifecycle_genesis(fixture_t *fx, uint8_t out_chain[32]) {
     if (fx_open(fx) != 0) return -1;
     fx->w->v2_runtime_table = g_ext_table;
     fx->w->v2_runtime_table_n = g_ext_n;
-    if (nodus_witness_db_migrate_v2s9(fx->w) != 0) return -1;
     if (run_sql(fx->w->db,
             "CREATE TABLE t3_state (id BLOB PRIMARY KEY, "
             "amount INTEGER NOT NULL, asset BLOB NOT NULL)") != 0)
         return -1;
     if (seed_supply(fx->w, 1000, 1000) != 0) return -1;
     uint8_t sys_h[64], core_h[64], t3_h[64];
-    if (domman_hashes(fx->w, sys_h, core_h) != 0) return -1;
+    uint64_t supply = 0;
+    if (domman_hashes(fx->w, sys_h, core_h, &supply) != 0) return -1;
     if (register_synthetic_only(fx->w, &g_ext_table[2]) != 0) return -1;
     if (domman_hash_of(fx->w, T3_DOMAIN, t3_h) != 0) return -1;
 
     dna_gman_t m;
-    gman_base(&m, 1000, sys_h, core_h);
+    gman_base(&m, supply, sys_h, core_h);
     m.domain_count = 3;
     m.domains[2].domain_id = T3_DOMAIN;
     memcpy(m.domains[2].manifest_hash, t3_h, 64);
     uint8_t mbytes[8192];
     size_t mlen = 0;
     if (dna_gman_encode(&m, mbytes, sizeof(mbytes), &mlen) != 0) return -1;
-    uint8_t chain[32];
-    return commit_genesis_read(fx, mbytes, mlen, out_gid, chain);
+    return commit_genesis_read(fx, mbytes, mlen, out_chain);
 }
 
 
+/* Height plan (cometbft lane: a block whose only item is refused still
+ * commits and consumes its height; a FAULT does not):
+ *   1 pre-activation execution (refused) | 2 activation | 3 first
+ *   execution | 4 spacer | 5 pause | 6 paused execution (refused) |
+ *   7 empty, runtime withdrawn | 8 resume | 9 execution | 10 retire |
+ *   11 retired execution (refused) | 12 the fail-closed FAULT probes. */
 static int test_lifecycle(void) {
     fixture_t fx;
-    uint8_t gid[64];
+    uint8_t gid[32];                     /* the chain id */
     CHECK(lifecycle_genesis(&fx, gid) == 0, "lifecycle genesis"); OK();
 
     /* BEFORE ACTIVATION: registry-only — no head, absent from
@@ -2264,8 +2362,11 @@ static int test_lifecycle(void) {
     static v2x_env_t et3;
     nodus_v2_block_t b;
     CHECK(env_tn_put(&et3, T3_DOMAIN, 0x01, 5, T3_ASSET) == 0, "et3");
-    mk_env_block(&b, 1, gid, &et3);
-    CHECK(expect_reject(fx.w, &b, "pre-activation execution") == 0,
+    /* a leg on a domain that is not ACTIVE at block entry is outside
+     * the block-start ruleset table: the item's CONTEXT code */
+    mk_env_block(&b, 1, &et3);
+    CHECK(expect_refused(fx.w, &b, NODUS_V2_TX_ERR_CONTEXT,
+                         "pre-activation execution") == 0,
           "pre-activation execution rejects"); OK();
 
     /* restart BEFORE activation reproduces identical roots */
@@ -2282,12 +2383,12 @@ static int test_lifecycle(void) {
     static v2x_env_t eact;
     CHECK(env_status(&eact, fx.w, T3_DOMAIN, DNA_DOMST_ACTIVE, 0) == 0,
           "eact");
-    mk_env_block(&b, 1, gid, &eact);
+    mk_env_block(&b, 2, &eact);
     b.fail_at = V2AP_FAIL_BEFORE_COMMIT;
-    CHECK(expect_reject(fx.w, &b, "activation fault") == 0,
+    CHECK(expect_fault(fx.w, &b, "activation fault") == 0,
           "activation fault rolls back registry+head+roots+meta"); OK();
-    mk_env_block(&b, 1, gid, &eact);
-    CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0, "activation block");
+    mk_env_block(&b, 2, &eact);
+    CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0, "activation block");
     OK();
 
     /* the canonical activation head: EVERY field one exact value */
@@ -2299,7 +2400,7 @@ static int test_lifecycle(void) {
               "registry transitioned");
         CHECK(head_blob(fx.w, T3_DOMAIN, blob) == 0, "head created");
         CHECK(be64_at(blob + 68) == 0, "domain_height = 0");
-        CHECK(be64_at(blob + 76) == 1, "last_updated = activation block");
+        CHECK(be64_at(blob + 76) == 2, "last_updated = activation block");
         CHECK(blob[88] == DNA_DOMST_ACTIVE, "status = ACTIVE");
         /* initial root = the registry-committed genesis_state_root =
          * the runtime's live root (independent recomputation) */
@@ -2312,19 +2413,21 @@ static int test_lifecycle(void) {
               "activation root == live runtime recomputation");
         CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_root_history WHERE "
                        "domain_id=7 AND domain_height=0 AND "
-                       "global_height=1") == 1, "height-0 history row");
+                       "global_height=2") == 1, "height-0 history row");
         CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_domain_heads") == 3,
               "head entered domains_root set");
         OK();
     }
 
     /* TWIN NODE: an independent fixture running the same sequence
-     * derives a byte-identical activation head and global root. */
+     * (the refused pre-activation block at height 1, then the
+     * activation at height 2) derives a byte-identical activation head
+     * and global root. */
     {
         fixture_t ft;
-        uint8_t gid2[64];
+        uint8_t gid2[32];
         CHECK(lifecycle_genesis(&ft, gid2) == 0, "twin genesis");
-        CHECK(memcmp(gid, gid2, 64) == 0, "twin chains identical");
+        CHECK(memcmp(gid, gid2, 32) == 0, "twin chains identical");
         static v2x_env_t eact2;
         static nodus_v2_envelope_t eref2;
         CHECK(env_status(&eact2, ft.w, T3_DOMAIN, DNA_DOMST_ACTIVE, 0)
@@ -2335,12 +2438,16 @@ static int test_lifecycle(void) {
               memcmp(eact2.bytes, eact.bytes, eact.len) == 0,
               "twin activation envelopes diverged");
         nodus_v2_block_t b2;
-        mk_claim_block(&b2, 1, gid2, NULL, 0);
+        mk_env_block(&b2, 1, &et3);
+        CHECK(expect_refused(ft.w, &b2, NODUS_V2_TX_ERR_CONTEXT,
+                             "twin pre-activation execution") == 0,
+              "twin pre-activation execution rejects");
+        mk_claim_block(&b2, 2, NULL, 0);
         eref2.env_bytes = eact2.bytes;
         eref2.env_len = eact2.len;
         b2.envs = &eref2;
         b2.n_envs = 1;
-        CHECK(nodus_witness_v2_apply_block(ft.w, &b2) == 0, "twin apply");
+        CHECK(v2x_cmt_apply_ok(ft.w, &b2) == 0, "twin apply");
         uint8_t tb[DNA_V2_DOMHEAD_ENC_LEN];
         CHECK(head_blob(ft.w, T3_DOMAIN, tb) == 0 &&
               memcmp(tb, blob, DNA_V2_DOMHEAD_ENC_LEN) == 0,
@@ -2370,18 +2477,20 @@ static int test_lifecycle(void) {
 
     /* FIRST EXECUTION does not synthesize or replace the head — it
      * advances it through the pinned DomainUpdate rules (0 → 1). */
-    mk_env_block(&b, 2, gid, &et3);      /* the pre-activation envelope */
-    CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0, "first execution");
+    mk_env_block(&b, 3, &et3);      /* the pre-activation envelope — it
+                                     * was refused at height 1, so its
+                                     * identity was never committed   */
+    CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0, "first execution");
     CHECK(head_blob(fx.w, T3_DOMAIN, blob) == 0 &&
-          be64_at(blob + 68) == 1 && be64_at(blob + 76) == 2,
+          be64_at(blob + 68) == 1 && be64_at(blob + 76) == 3,
           "head advanced 0 -> 1 (no replacement)");
     CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_root_history WHERE "
                    "domain_id=7") == 2, "history 0 and 1"); OK();
 
     /* UNTOUCHED ACTIVE: exact head + height retained byte-identically
      * (an empty block touches nothing — still a legal block). */
-    mk_env_block(&b, 3, gid, NULL);
-    CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0, "spacer");
+    mk_env_block(&b, 4, NULL);
+    CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0, "spacer");
     CHECK(head_blob(fx.w, T3_DOMAIN, blob2) == 0 &&
           memcmp(blob, blob2, DNA_V2_DOMHEAD_ENC_LEN) == 0,
           "untouched ACTIVE head byte-identical"); OK();
@@ -2391,41 +2500,45 @@ static int test_lifecycle(void) {
     static v2x_env_t epause;
     CHECK(env_status(&epause, fx.w, T3_DOMAIN, DNA_DOMST_PAUSED, 0) == 0,
           "epause");
-    mk_env_block(&b, 4, gid, &epause);
-    CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0, "pause block");
+    mk_env_block(&b, 5, &epause);
+    CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0, "pause block");
     CHECK(head_blob(fx.w, T3_DOMAIN, blob2) == 0 &&
           memcmp(blob, blob2, DNA_V2_DOMHEAD_ENC_LEN) == 0,
           "PAUSED head remains committed unchanged"); OK();
     static v2x_env_t et3b;
     CHECK(env_tn_put(&et3b, T3_DOMAIN, 0x02, 5, T3_ASSET) == 0, "et3b");
-    mk_env_block(&b, 5, gid, &et3b);
-    CHECK(expect_reject(fx.w, &b, "paused execution") == 0,
+    mk_env_block(&b, 6, &et3b);
+    CHECK(expect_refused(fx.w, &b, NODUS_V2_TX_ERR_CONTEXT,
+                         "paused execution") == 0,
           "PAUSED admits no execution"); OK();
     /* runtime withdrawn while paused: blocks still apply (the opaque
      * head is carried without executing or recomputing the runtime) */
     fx.w->v2_runtime_table_n = 2;
-    mk_env_block(&b, 5, gid, NULL);
-    CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+    mk_env_block(&b, 7, NULL);
+    CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
           "paused head carried without its runtime"); OK();
 
     /* RESUME fails closed without the exact runtime; succeeds with it —
-     * and the head is CARRIED, never rebuilt. */
+     * and the head is CARRIED, never rebuilt. Without the runtime the
+     * SYSTEM transition applies inside the block and the lifecycle
+     * re-scan (phase 6c) finds an ACTIVE domain it cannot resolve: a
+     * node FAULT the host rolls back, nothing written. */
     static v2x_env_t eresume;
     CHECK(env_status(&eresume, fx.w, T3_DOMAIN, DNA_DOMST_ACTIVE, 1000)
               == 0, "eresume");     /* distinct bytes ⇒ distinct tx_id */
-    mk_env_block(&b, 6, gid, &eresume);
-    CHECK(expect_reject(fx.w, &b, "resume without runtime") == 0,
+    mk_env_block(&b, 8, &eresume);
+    CHECK(expect_fault(fx.w, &b, "resume without runtime") == 0,
           "resume fails closed without the runtime"); OK();
     fx.w->v2_runtime_table_n = g_ext_n;
-    mk_env_block(&b, 6, gid, &eresume);
-    CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0, "resume block");
+    mk_env_block(&b, 8, &eresume);
+    CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0, "resume block");
     CHECK(head_blob(fx.w, T3_DOMAIN, blob2) == 0 &&
           memcmp(blob, blob2, DNA_V2_DOMHEAD_ENC_LEN) == 0,
           "resume carries the head unchanged"); OK();
     static v2x_env_t et3c;
     CHECK(env_tn_put(&et3c, T3_DOMAIN, 0x03, 5, T3_ASSET) == 0, "et3c");
-    mk_env_block(&b, 7, gid, &et3c);
-    CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+    mk_env_block(&b, 9, &et3c);
+    CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
           "executable after resume");
     CHECK(head_blob(fx.w, T3_DOMAIN, blob) == 0 && be64_at(blob + 68) == 2,
           "height 2 after resume execution"); OK();
@@ -2435,22 +2548,26 @@ static int test_lifecycle(void) {
     static v2x_env_t eretire;
     CHECK(env_status(&eretire, fx.w, T3_DOMAIN, DNA_DOMST_RETIRED, 0)
               == 0, "eretire");
-    mk_env_block(&b, 8, gid, &eretire);
-    CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0, "retire block");
+    mk_env_block(&b, 10, &eretire);
+    CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0, "retire block");
     CHECK(head_blob(fx.w, T3_DOMAIN, blob2) == 0 &&
           memcmp(blob, blob2, DNA_V2_DOMHEAD_ENC_LEN) == 0,
           "RETIRED head remains committed unchanged"); OK();
     static v2x_env_t et3d;
     CHECK(env_tn_put(&et3d, T3_DOMAIN, 0x04, 5, T3_ASSET) == 0, "et3d");
-    mk_env_block(&b, 9, gid, &et3d);
-    CHECK(expect_reject(fx.w, &b, "retired execution") == 0,
+    mk_env_block(&b, 11, &et3d);
+    CHECK(expect_refused(fx.w, &b, NODUS_V2_TX_ERR_CONTEXT,
+                         "retired execution") == 0,
           "RETIRED admits no execution"); OK();
     {
+        /* the SYSTEM transition applies inside the block; phase 6c's
+         * terminal-state rule (a domain may never leave RETIRED) is a
+         * block-level check — a node FAULT, nothing written */
         static v2x_env_t ereact;
         CHECK(env_status(&ereact, fx.w, T3_DOMAIN, DNA_DOMST_ACTIVE,
                          2000) == 0, "ereact");
-        mk_env_block(&b, 9, gid, &ereact);
-        CHECK(expect_reject(fx.w, &b, "retired reactivation") == 0,
+        mk_env_block(&b, 12, &ereact);
+        CHECK(expect_fault(fx.w, &b, "retired reactivation") == 0,
               "RETIRED is terminal — reactivation rejects"); OK();
     }
     {
@@ -2485,8 +2602,8 @@ static int test_lifecycle(void) {
         sqlite3_bind_blob(st, 1, bad, sizeof(bad), SQLITE_TRANSIENT);
         CHECK(sqlite3_step(st) == SQLITE_DONE, "patch");
         sqlite3_finalize(st);
-        mk_env_block(&b, 9, gid, NULL);
-        CHECK(expect_reject(fx.w, &b, "unknown lifecycle") == 0,
+        mk_env_block(&b, 12, NULL);
+        CHECK(expect_fault(fx.w, &b, "unknown lifecycle") == 0,
               "unknown lifecycle value fails closed"); OK();
         CHECK(sqlite3_prepare_v2(fx.w->db,
               "UPDATE domain_registry SET record=?1 WHERE domain_id=7",
@@ -2514,8 +2631,8 @@ static int test_lifecycle(void) {
         CHECK(run_sql(fx.w->db,
               "DELETE FROM v2_domain_heads WHERE domain_id=1") == 0,
               "delete");
-        mk_env_block(&b, 9, gid, NULL);
-        CHECK(expect_reject(fx.w, &b, "ACTIVE missing head") == 0,
+        mk_env_block(&b, 12, NULL);
+        CHECK(expect_fault(fx.w, &b, "ACTIVE missing head") == 0,
               "ACTIVE domain with missing head rejects"); OK();
         CHECK(sqlite3_prepare_v2(fx.w->db,
               "INSERT INTO v2_domain_heads (domain_id, head, "
@@ -2533,8 +2650,8 @@ static int test_lifecycle(void) {
      * table — SYSTEM alone remains). */
     {
         fx.w->v2_runtime_table_n = 1;   /* SYSTEM only */
-        mk_env_block(&b, 9, gid, NULL);
-        CHECK(expect_reject(fx.w, &b, "ACTIVE unresolved runtime") == 0,
+        mk_env_block(&b, 12, NULL);
+        CHECK(expect_fault(fx.w, &b, "ACTIVE unresolved runtime") == 0,
               "ACTIVE domain with unresolved runtime rejects"); OK();
         fx.w->v2_runtime_table_n = g_ext_n;
     }

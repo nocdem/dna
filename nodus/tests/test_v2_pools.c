@@ -27,10 +27,10 @@
  *      fails closed.
  *   7. Balance — checked add/sub, overflow/underflow, root ownership
  *      (CORE + global move, SYSTEM does not).
- *   8. Engine — supply-preserving transparent↔pool fixtures, follower
- *      order-divergence reject, twin-DB byte identity, duplicate-batch
- *      reject, S7 fault points F19-F25 with full-DB digest rollback
- *      proof, SYSTEM-only quiet block leaves the pool untouched.
+ *   8. Engine (cometbft lane, tokenomics-v3 P4) — a block carrying an
+ *      S7 pool batch is a node FAULT that writes nothing (the batch was
+ *      a legacy-lane-only engine input, deleted with that lane); a
+ *      SYSTEM-only quiet block leaves the pool untouched.
  *   9. Migration — 0→7 / 5→7 / 6→7, idempotency, version 8+ reject,
  *      per-stage fault rollback (digest-proven), column-drift reject.
  *  10. Inactivity — type 11 admission still rejects, types 12-14
@@ -162,7 +162,9 @@ typedef struct {
     uint8_t          chain_id16[16];
 } fixture_t;
 
-static int fx_open(fixture_t *fx) {
+/* A bare pre-genesis database — the migration matrix (group 9) drives
+ * the schema ladder itself from an empty file. */
+static int fx_open_raw(fixture_t *fx) {
     fx->w = calloc(1, sizeof(*fx->w));
     if (!fx->w) return -1;
     snprintf(fx->dir, sizeof(fx->dir), "/tmp/test_v2_pools_XXXXXX");
@@ -170,6 +172,27 @@ static int fx_open(fixture_t *fx) {
     snprintf(fx->w->data_path, sizeof(fx->w->data_path), "%s", fx->dir);
     memset(fx->chain_id16, 0x55, sizeof(fx->chain_id16));
     if (nodus_witness_create_chain_db(fx->w, fx->chain_id16) != 0) {
+        rmrf(fx->dir); free(fx->w); fx->w = NULL;
+        return -1;
+    }
+    return 0;
+}
+
+/* tokenomics-v3 P4: a chain is a SEEDED VERSION-3 GENESIS
+ * (v2_genesis_fixture.h): v2x_seed_prepare here, the test's own genesis
+ * rows (if any), then genesis() below — the derivation's steps with the
+ * engine genesis over those rows, the stored document, and the reopen
+ * through the production open path. The file keeps the 0x55 id, which
+ * the startup-corruption case opens raw by name. */
+static int fx_open(fixture_t *fx) {
+    fx->w = calloc(1, sizeof(*fx->w));
+    if (!fx->w) return -1;
+    snprintf(fx->dir, sizeof(fx->dir), "/tmp/test_v2_pools_XXXXXX");
+    if (!mkdtemp(fx->dir)) { free(fx->w); fx->w = NULL; return -1; }
+    snprintf(fx->w->data_path, sizeof(fx->w->data_path), "%s", fx->dir);
+    memset(fx->chain_id16, 0x55, sizeof(fx->chain_id16));
+    if (v2x_seed_prepare(fx->w, fx->chain_id16, 0) != 0) {
+        if (fx->w->db) sqlite3_close(fx->w->db);
         rmrf(fx->dir); free(fx->w); fx->w = NULL;
         return -1;
     }
@@ -271,7 +294,6 @@ done:
 }
 
 /* ── helpers ────────────────────────────────────────────────────────── */
-static void mk_id(uint8_t out[64], uint8_t fill) { memset(out, fill, 64); }
 
 /* canonical 32-byte value from a small seed (lanes < 2^40 < p) */
 static void mk_c(uint64_t seed, uint8_t out[32]) {
@@ -296,11 +318,7 @@ static void lanes_be(const uint64_t lanes[4], uint8_t out[32]) {
 }
 
 static int genesis(fixture_t *fx) {
-    if (nodus_witness_db_migrate_v2s9(fx->w) != 0) return -1;
-    uint8_t vset[64];
-    mk_id(vset, 0x77);
-    /* O14: the genesis BlockID is DERIVED by the engine, not chosen. */
-    return v2x_genesis_min(fx->w, vset, NULL, NULL);
+    return v2x_seed_genesis(fx->w, fx->chain_id16, 0, NULL, 0, NULL);
 }
 
 /* one pool batch inside an explicit transaction (module-level tests) */
@@ -1061,7 +1079,7 @@ static int t_balance(void) {
     return 0;
 }
 
-/* ── 8. engine — supply moves, follower reject, faults ──────────────── */
+/* ── 8. engine — the cometbft lane (see t_engine's header) ──────────── */
 static int seed_small_supply(fixture_t *fx) {
     /* genesis_supply 1000, all of it one CORE utxo → invariant holds */
     if (run_sql(fx->w->db,
@@ -1080,176 +1098,64 @@ static void mk_block(nodus_v2_block_t *b, uint64_t h,
                      const nodus_v2_envelope_t *envs, size_t n) {
     memset(b, 0, sizeof(*b));
     b->global_height = h;
-    b->epoch = 0;
-    /* O14 leader mode: identity is DERIVED, never carried. */
+    b->epoch = nodus_v2_epoch_for_height(h);
     b->envs = envs;
     b->n_envs = n;
 }
 
-/* CORE envelope: SET the fixture UTXO (key 63×00 + 0x01) to an ABSOLUTE
- * amount through the typed adapter — the old raw-SQL "UPDATE utxo_set
- * SET amount = N" op, typed. */
-static int env_utxo_abs(v2x_env_t *e, uint64_t amount) {
-    uint8_t key[64] = { 0 };
-    key[63] = 0x01;
-    uint8_t val[8];
-    for (int i = 0; i < 8; i++)
-        val[i] = (uint8_t)(amount >> (56 - 8 * i));
-    return v2x_env1(e, 1, 1, V2X_OP_UTXO, DNA_EFFECT_SET,
-                    DNA_EFFECT_PRE_EXISTS, key, 64, val, 8);
-}
-
+/* THE COMETBFT LANE AND POOL BATCHES (tokenomics-v3 P4). The S7
+ * pool-state batch was an INACTIVE engine input that only the legacy
+ * block lane accepted (its phase 6p, deleted with that lane): a block
+ * message cannot express one (shared/dnac/blockmsg_v2.h, pool_batch_count
+ * must be zero), so the cometbft lane refuses a block that carries one as
+ * a node-local shape — a FAULT that writes nothing. Every assertion this
+ * group used to make about pool batches applied INSIDE a block (supply
+ * moves through a block, the twin-DB root identity of such a block, the
+ * conservation/duplicate/unregistered-domain rejects, the follower
+ * order-divergence reject, and the S7 fault points F19-F25 the engine
+ * mapped onto the pool module's stages) had no path into a cometbft
+ * block and is gone with that lane. The pool module's own semantics stay
+ * pinned directly (groups 2-7: append order, capacity, nullifiers,
+ * history, balance). What remains here is what the lane itself does. */
 static int t_engine(void) {
-    printf("8: engine — supply moves, follower reject, fault points\n");
-    fixture_t fe, fe2;
+    printf("8: engine — a pool batch in a block is a FAULT; quiet blocks "
+           "leave pools untouched\n");
+    fixture_t fe;
     CHECK(fx_open(&fe) == 0, "fx e");
-    CHECK(nodus_witness_db_migrate_v2s9(fe.w) == 0, "migrate");
     CHECK(seed_small_supply(&fe) == 0, "seed");
-    uint8_t gid[64], vset[64];
-    mk_id(gid, 0xEE);
-    mk_id(vset, 0x77);
-    CHECK(v2x_genesis_min(fe.w, vset, gid, NULL) == 0, "genesis");
+    /* not a real genesis: the whole supply is ONE spendable CORE UTXO
+     * (seed_small_supply), the funding the engine case spends */
+    v2x_seed_not_real(V2X_SEED_NOT_REAL_UTXOS);
+    CHECK(genesis(&fe) == 0, "genesis");
     OK();
-    CHECK(fx_open(&fe2) == 0, "fx e2");
-    CHECK(nodus_witness_db_migrate_v2s9(fe2.w) == 0, "migrate2");
-    CHECK(seed_small_supply(&fe2) == 0, "seed2");
-    CHECK(v2x_genesis_min(fe2.w, vset, NULL, NULL) == 0, "genesis2");
-
-    uint8_t sys_pre[64];
-    CHECK(nodus_witness_system_root_v2(fe.w, sys_pre) == 0, "sys pre");
-
     CHECK(v2x_table_init(fe.w) == 0, "scripted table fe");
-    CHECK(v2x_table_init(fe2.w) == 0, "scripted table fe2");
 
-    /* block 1: transparent → pool (5 units), one commitment + one
-     * nullifier ride along */
-    static v2x_env_t eop1;
-    CHECK(env_utxo_abs(&eop1, 995) == 0, "eop1");
-    nodus_v2_envelope_t vop1 = { eop1.bytes, eop1.len };
-    nodus_v2_pool_out_t o1;
-    nodus_v2_pool_in_t in1;
-    mk_out(&o1, 0x800, 0, 0);
-    mk_in(&in1, 0x801, 0, 0);
-    nodus_v2_pool_mut_t pm1;
-    mut_init(&pm1, 1, 1);
-    pm1.outs = &o1; pm1.n_outs = 1;
-    pm1.ins = &in1; pm1.n_ins = 1;
-    pm1.balance_add = 5;
-
-    nodus_v2_block_t b1;
-    mk_block(&b1, 1, &vop1, 1);
-    b1.pool_muts = &pm1;
-    b1.n_pool_muts = 1;
-    CHECK(nodus_witness_v2_apply_block(fe.w, &b1) == 0,
-          "transparent→pool block rejected"); OK();
-    nodus_v2_pool_state_t ps;
-    CHECK(nodus_witness_v2_pool_load(fe.w, 1, 1, &ps) == 0 &&
-          ps.balance == 5 && ps.note_count == 1 && ps.nul_count == 1,
-          "pool state after block"); OK();
-    uint8_t sys_post[64];
-    CHECK(nodus_witness_system_root_v2(fe.w, sys_post) == 0, "sys post");
-    CHECK(memcmp(sys_pre, sys_post, 64) == 0,
-          "pool block moved the SYSTEM root"); OK();
-
-    /* identical canonical mutations on an independent DB → identical
-     * committed roots (byte-for-byte) */
-    nodus_v2_block_t b1b;
-    memcpy(&b1b, &b1, sizeof(b1));
-    CHECK(nodus_witness_v2_apply_block(fe2.w, &b1b) == 0, "twin block");
-    CHECK(memcmp(b1.out_global_root, b1b.out_global_root, 64) == 0 &&
-          memcmp(b1.out_domains_root, b1b.out_domains_root, 64) == 0,
-          "independent DBs diverged"); OK();
-
-    /* block 2: pool → transparent (exact reverse) */
-    static v2x_env_t eop2;
-    CHECK(env_utxo_abs(&eop2, 1000) == 0, "eop2");
-    nodus_v2_envelope_t vop2 = { eop2.bytes, eop2.len };
-    nodus_v2_pool_mut_t pm2;
-    mut_init(&pm2, 1, 1);
-    pm2.balance_sub = 5;
-    nodus_v2_block_t b2;
-    mk_block(&b2, 2, &vop2, 1);
-    b2.pool_muts = &pm2;
-    b2.n_pool_muts = 1;
-    CHECK(nodus_witness_v2_apply_block(fe.w, &b2) == 0,
-          "pool→transparent block rejected"); OK();
-    CHECK(nodus_witness_v2_pool_load(fe.w, 1, 1, &ps) == 0 &&
-          ps.balance == 0, "drained"); OK();
-
-    /* a pool credit WITHOUT the matching transparent debit violates
-     * conservation → whole block rolls back (digest-proven) */
-    uint8_t dg[64], dg2[64];
-    CHECK(db_state_digest(fe.w, dg) == 0, "digest");
-    nodus_v2_pool_mut_t pm3;
-    mut_init(&pm3, 1, 1);
-    pm3.balance_add = 5;
-    nodus_v2_block_t b3;
-    mk_block(&b3, 3, NULL, 0);
-    b3.pool_muts = &pm3;
-    b3.n_pool_muts = 1;
-    CHECK(nodus_witness_v2_apply_block(fe.w, &b3) == -1,
-          "unbacked pool credit committed"); OK();
-    CHECK(db_state_digest(fe.w, dg2) == 0 && memcmp(dg, dg2, 64) == 0,
-          "supply reject leaked state"); OK();
-
-    /* duplicate (domain, pool) batches in ONE block reject */
-    nodus_v2_pool_mut_t twins[2];
-    mut_init(&twins[0], 1, 1);
-    twins[0].balance_add = 1;
-    mut_init(&twins[1], 1, 1);
-    twins[1].balance_sub = 1;
-    nodus_v2_block_t b4;
-    mk_block(&b4, 3, NULL, 0);
-    b4.pool_muts = twins;
-    b4.n_pool_muts = 2;
-    CHECK(nodus_witness_v2_apply_block(fe.w, &b4) == -1,
-          "duplicate pool batches accepted"); OK();
-    /* unregistered owning domain rejects */
-    nodus_v2_pool_mut_t pm9;
-    mut_init(&pm9, 9, 1);
-    pm9.balance_add = 1;
-    nodus_v2_block_t b5;
-    mk_block(&b5, 3, NULL, 0);
-    b5.pool_muts = &pm9;
-    b5.n_pool_muts = 1;
-    CHECK(nodus_witness_v2_apply_block(fe.w, &b5) == -1,
-          "unregistered pool domain accepted"); OK();
-
-    /* follower order-divergence reject: same mutations, different
-     * canonical assignment, expected root from the OTHER node */
+    /* a block carrying an S7 pool batch: a node FAULT, the whole
+     * database byte-identical. P4 fix round: the block carries NO
+     * envelope (the old transparent→pool shape also carried a
+     * supply-breaking UTXO SET, which could have faulted the block on
+     * its own), and the reason is pinned to the pool-batch refusal — so
+     * the pool batch is the ONLY thing that can have refused it. */
     {
-        static v2x_env_t eop3;
-        CHECK(env_utxo_abs(&eop3, 990) == 0, "eop3");
-        nodus_v2_envelope_t vop3 = { eop3.bytes, eop3.len };
-        nodus_v2_pool_out_t two_a[2], two_b[2];
-        mk_out(&two_a[0], 0x810, 0, 0);
-        mk_out(&two_a[1], 0x811, 0, 1);
-        memcpy(two_b[0].commitment, two_a[1].commitment, 32);
-        two_b[0].tx_index = 0; two_b[0].output_slot = 0;
-        memcpy(two_b[1].commitment, two_a[0].commitment, 32);
-        two_b[1].tx_index = 0; two_b[1].output_slot = 1;
-        nodus_v2_pool_mut_t pma, pmb;
-        mut_init(&pma, 1, 1);
-        pma.outs = two_a; pma.n_outs = 2;
-        pma.balance_add = 10;
-        mut_init(&pmb, 1, 1);
-        pmb.outs = two_b; pmb.n_outs = 2;
-        pmb.balance_add = 10;
-
-        nodus_v2_block_t ba;
-        mk_block(&ba, 3, &vop3, 1);
-        ba.pool_muts = &pma;
-        ba.n_pool_muts = 1;
-        CHECK(nodus_witness_v2_apply_block(fe.w, &ba) == 0, "leader");
-        OK();
-        nodus_v2_block_t bb;
-        mk_block(&bb, 2, &vop3, 1);     /* fe2 is at height 1            */
-        /* O14: prev and id are both derived from committed state. */
-        bb.pool_muts = &pmb;
-        bb.n_pool_muts = 1;
-        bb.expect_global_root = ba.out_global_root;
-        CHECK(nodus_witness_v2_apply_block(fe2.w, &bb) == -1,
-              "order divergence not caught by root expectation"); OK();
+        nodus_v2_pool_out_t o1;
+        nodus_v2_pool_in_t in1;
+        mk_out(&o1, 0x800, 0, 0);
+        mk_in(&in1, 0x801, 0, 0);
+        nodus_v2_pool_mut_t pm1;
+        mut_init(&pm1, 1, 1);
+        pm1.outs = &o1; pm1.n_outs = 1;
+        pm1.ins = &in1; pm1.n_ins = 1;
+        pm1.balance_add = 5;
+        nodus_v2_block_t b1;
+        mk_block(&b1, 1, NULL, 0);
+        b1.pool_muts = &pm1;
+        b1.n_pool_muts = 1;
+        CHECK(v2x_cmt_fault_why(fe.w, &b1, V2X_FAULT, "pool batches") == 0,
+              "a pool batch in a block must be refused"); OK();
+        nodus_v2_pool_state_t ps;
+        CHECK(nodus_witness_v2_pool_load(fe.w, 1, 1, &ps) == 0 &&
+              ps.balance == 0 && ps.note_count == 0 && ps.nul_count == 0,
+              "pool state after block"); OK();
     }
 
     /* SYSTEM-only quiet block: pool row, history and CORE head height
@@ -1279,9 +1185,8 @@ static int t_engine(void) {
         }
         nodus_v2_envelope_t vsop = { esop.bytes, esop.len };
         nodus_v2_block_t bs;
-        mk_block(&bs, 4, &vsop, 1);
-        /* O14: prev derived from the committed parent. */
-        CHECK(nodus_witness_v2_apply_block(fe.w, &bs) == 0, "sys block");
+        mk_block(&bs, 1, &vsop, 1);
+        CHECK(v2x_cmt_apply_ok(fe.w, &bs) == 0, "sys block");
         OK();
         CHECK(sqlite3_prepare_v2(fe.w->db,
               "SELECT domain_height FROM v2_domain_heads WHERE "
@@ -1298,100 +1203,7 @@ static int t_engine(void) {
               "quiet block touched the pool"); OK();
     }
 
-    /* S7 fault points F19-F25: full-DB digest restored on every one.
-     * The batch exercises every stage: commits + frontier + nulls +
-     * nul root + balance + history + eviction (drive the CORE pool's
-     * history? limit is 720 — use the foreign-asset limit-3 pool
-     * created pre-genesis in module tests? Here: create a limit-3
-     * pool INSIDE committed state first (its own block is not needed
-     * — direct create + the pool joins CORE's pools_root; the next
-     * block's untouched-domain guard would flag CORE... so commit the
-     * creation THROUGH a block-visible path: create pre-genesis is
-     * impossible now — instead run THREE root-changing blocks on the
-     * CORE pool after temporarily shrinking its history_limit is a
-     * config mutation — NOT allowed. Simplest sound route: a fresh
-     * fixture whose genesis pool table gains a limit-3 foreign-asset
-     * pool BEFORE genesis, exactly like the module tests). */
-    fixture_t ff;
-    CHECK(fx_open(&ff) == 0, "fx f");
-    CHECK(nodus_witness_db_migrate_v2s9(ff.w) == 0, "migrate f");
-    CHECK(seed_small_supply(&ff) == 0, "seed f");
-    {
-        /* pre-genesis: create the limit-3 pool so the genesis CORE
-         * payload commits it (generic: any runtime could have done
-         * this in its own state_init) */
-        dna_pool_config_t p7 = {
-            .domain_id = 1, .pool_id = 7, .config_version = 1,
-            .tree_depth = 24, .history_limit = 3,
-            .asset_ref_len = 64, .asset_ref = { 0xAB },
-        };
-        CHECK(run_sql(ff.w->db, "BEGIN IMMEDIATE") == 0, "begin");
-        CHECK(nodus_witness_v2_pool_create(ff.w, &p7, 0) == 0, "p7");
-        CHECK(run_sql(ff.w->db, "COMMIT") == 0, "commit");
-    }
-    CHECK(v2x_genesis_min(ff.w, vset, gid, NULL) == 0,
-          "genesis f");
-    /* drive the pool to its history limit with three blocks */
-    for (uint64_t k = 1; k <= 3; k++) {
-        nodus_v2_pool_out_t o;
-        mk_out(&o, 0x900 + k, 0, 0);
-        nodus_v2_pool_mut_t pm;
-        mut_init(&pm, 1, 7);
-        pm.outs = &o; pm.n_outs = 1;
-        nodus_v2_block_t bk;
-        mk_block(&bk, k, NULL, 0);
-        bk.pool_muts = &pm;
-        bk.n_pool_muts = 1;
-        CHECK(nodus_witness_v2_apply_block(ff.w, &bk) == 0, "warm");
-    }
-    CHECK(nodus_witness_v2_pool_load(ff.w, 1, 7, &ps) == 0 &&
-          ps.hist_count == 3, "warmed to limit"); OK();
-
-    nodus_v2_pool_out_t fo[2];
-    nodus_v2_pool_in_t fi;
-    mk_out(&fo[0], 0x910, 0, 0);
-    mk_out(&fo[1], 0x911, 0, 1);
-    mk_in(&fi, 0x912, 0, 0);
-    nodus_v2_pool_mut_t fpm;
-    mut_init(&fpm, 1, 7);
-    fpm.outs = fo; fpm.n_outs = 2;
-    fpm.ins = &fi; fpm.n_ins = 1;
-    /* balance stays 0-sum against supply: foreign asset — free */
-    fpm.balance_add = 1;
-
-    static const nodus_v2_apply_fail_t points[] = {
-        V2AP_FAIL_AFTER_POOL_COMMITS, V2AP_FAIL_AFTER_POOL_FRONTIER,
-        V2AP_FAIL_AFTER_POOL_NULLS, V2AP_FAIL_AFTER_POOL_NULROOT,
-        V2AP_FAIL_AFTER_POOL_BALANCE, V2AP_FAIL_AFTER_POOL_HISTORY,
-        V2AP_FAIL_AFTER_POOL_EVICT,
-    };
-    CHECK(db_state_digest(ff.w, dg) == 0, "digest f");
-    for (size_t i = 0; i < sizeof(points) / sizeof(points[0]); i++) {
-        nodus_v2_block_t bf;
-        mk_block(&bf, 4, NULL, 0);
-        /* O14: prev derived from the committed parent. */
-        bf.pool_muts = &fpm;
-        bf.n_pool_muts = 1;
-        bf.fail_at = points[i];
-        bf.fail_pool_index = 0;
-        CHECK(nodus_witness_v2_apply_block(ff.w, &bf) == -1,
-              "fault point did not abort"); OK();
-        CHECK(db_state_digest(ff.w, dg2) == 0 &&
-              memcmp(dg, dg2, 64) == 0,
-              "fault point leaked state (digest)"); OK();
-    }
-    /* the clean run commits — the eviction really happened */
-    nodus_v2_block_t bf;
-    mk_block(&bf, 4, NULL, 0);
-    /* O14: prev derived from the committed parent. */
-    bf.pool_muts = &fpm;
-    bf.n_pool_muts = 1;
-    CHECK(nodus_witness_v2_apply_block(ff.w, &bf) == 0, "clean"); OK();
-    CHECK(nodus_witness_v2_pool_load(ff.w, 1, 7, &ps) == 0 &&
-          ps.hist_count == 3 && ps.hist_next_seq == 5 &&
-          ps.balance == 1, "post-fault state"); OK();
-
-    fx_close(&fe); fx_close(&fe2); fx_close(&ff);
+    fx_close(&fe);
     return 0;
 }
 
@@ -1402,7 +1214,7 @@ static int t_migration(void) {
 
     /* fresh 0 → 7, idempotent, 8+ rejects */
     fixture_t fx;
-    CHECK(fx_open(&fx) == 0, "fx");
+    CHECK(fx_open_raw(&fx) == 0, "fx");
     CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 0,
           "fresh version"); OK();
     CHECK(nodus_witness_db_migrate_v2s7(fx.w) == 0, "0→7"); OK();
@@ -1424,14 +1236,14 @@ static int t_migration(void) {
 
     /* 5 → 7 and 6 → 7 */
     fixture_t f5;
-    CHECK(fx_open(&f5) == 0, "f5");
+    CHECK(fx_open_raw(&f5) == 0, "f5");
     CHECK(nodus_witness_db_migrate_v2s5(f5.w) == 0, "0→5");
     CHECK(nodus_witness_db_migrate_v2s7(f5.w) == 0, "5→7"); OK();
     CHECK(nodus_witness_db_schema_version(f5.w, &ver) == 0 && ver == 7,
           "5→7 version"); OK();
     fx_close(&f5);
     fixture_t f6;
-    CHECK(fx_open(&f6) == 0, "f6");
+    CHECK(fx_open_raw(&f6) == 0, "f6");
     CHECK(nodus_witness_db_migrate_v2s6(f6.w) == 0, "0→6");
 
     /* per-stage fault rollback at v6 (digest-proven) */
@@ -1454,7 +1266,7 @@ static int t_migration(void) {
     /* column drift: a wrong-shape v2_pools at v6 rejects the migration
      * and the database stays a valid v6 */
     fixture_t fd;
-    CHECK(fx_open(&fd) == 0, "fd");
+    CHECK(fx_open_raw(&fd) == 0, "fd");
     CHECK(nodus_witness_db_migrate_v2s6(fd.w) == 0, "0→6 d");
     CHECK(run_sql(fd.w->db,
         "CREATE TABLE v2_pools (wrong INTEGER)") == 0, "drift");
@@ -1748,8 +1560,12 @@ static int t_s15_flip(void) {
     m.ins = ii; m.n_ins = 1;
     CHECK(apply_txn(&fx, &m, 1) == 0, "seed one nullifier"); OK();
 
+    /* tokenomics-v3 P4: the fixture is a version-3 chain, already at
+     * the live rung S16 (it used to be an S12 version-2 genesis), so the
+     * PRAGMA below re-asserts the rung rather than flipping to it; the
+     * kill further down is what pins the gate. */
     CHECK(nodus_witness_v2_pools_startup_check(fx.w) == 0,
-          "valid S12 state green before the flip"); OK();
+          "valid state green before the flip"); OK();
 
     /* tokenomics-v3 P1 (round 2, R2-1) moved the LIVE schema rung S14 ->
      * S15 (the two out-of-root attendance tables plus the validators

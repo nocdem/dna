@@ -1189,8 +1189,11 @@ static int t_s14_fresh_climb(void)
           strcmp(cols, "key,value") == 0, "cmt_blockstore shape");
     /* the earlier schemas remain */
     CHECK(has_table(fx.w->db, "v2_claim_bytes") == 1 &&
-          has_table(fx.w->db, "v2_tx_bytes") == 1 &&
           has_table(fx.w->db, "v2_blocks") == 1, "S14 dropped an earlier table");
+    /* tokenomics-v3 P4 fix round: the S11 rung is empty — no rung
+     * creates v2_tx_bytes any more */
+    CHECK(has_table(fx.w->db, "v2_tx_bytes") == 0,
+          "a fresh database must not get v2_tx_bytes");
     /* idempotent */
     CHECK(nodus_witness_db_migrate_v2s14(fx.w) == 0, "re-run 14");
     CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 14,

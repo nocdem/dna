@@ -18,24 +18,36 @@
  *   charged) → native compiled runtime execution (nodus_rt_exec_fn) →
  *   canonical "DNA.EFFRES.v1" typed result → strict decode + adapter
  *   validation → deterministic charging → storage-adapter application →
- *   domain/global roots → persistence → ONE outer COMMIT.
+ *   domain/global roots → persistence, inside the HOST's transaction.
  *
  * There is NO second execution path and NO raw-SQL fallback inside this
  * engine boundary: no V2 request, runtime result or effect can carry
  * SQL text, a table name, a schema string, an SQLite handle or a
  * callback address — the envelope and effect codecs cannot represent
  * them. The only SQL in this file is the ENGINE'S OWN persistence
- * (heads/updates/history/indices/metadata and BEGIN/COMMIT/ROLLBACK),
+ * (heads/updates/history/indices/metadata and the per-item SAVEPOINTs),
  * compiled into the engine, never accepted from a caller or a runtime.
  * ════════════════════════════════════════════════════════════════════════
  *
- * ── One atomic SQLite transaction per global block ────────────────────
- * nodus_witness_v2_apply_block OWNS the single BEGIN IMMEDIATE. Every
- * helper below it runs inside that transaction and never commits on its
- * own. Phase order:
+ * ── ONE LANE: THE COMETBFT LANE (tokenomics-v3 P4) ────────────────────
+ * The engine applies DECIDED cometbft blocks only (`blk->cmt.on`); the
+ * legacy block lane — the engine owning its own BEGIN IMMEDIATE / COMMIT
+ * / ROLLBACK, a whole-batch all-or-nothing verdict, the rc 1 idempotent
+ * replay, the rc 2 post-commit window, a derived dna_bh2 identity and
+ * schema S9-S12 — is DELETED (OBLIGATION atlas-dec-71525f3b). The HOST
+ * owns the one transaction (D-23 rev 5 (5)): it opens it before
+ * FinalizeBlock and closes it at Commit; the engine joins it, never
+ * commits or rolls back, and returns with it OPEN. Each item runs in its
+ * own SAVEPOINT inside it. The full lane contract is at
+ * nodus_v2_block_cmt_t and nodus_witness_v2_apply_block below. Phase
+ * order (the fault points in brackets):
  *
- *   0.  replay/linkage checks against v2_blocks (read-only, pre-BEGIN)
- *   0a. FROZEN BLOCK-START EXECUTION SNAPSHOT (read-only, pre-BEGIN):
+ *   entry: schema S16, a host transaction open, the result array sized,
+ *       no identity assertion (expect_*), blk->epoch == the derivation
+ *   0.  linkage against v2_blocks (read-only): height 0 refused, a gap
+ *       ahead deferred (-3), a height at or below the head refused, the
+ *       parent row read (64 zero bytes for the chain's first block)
+ *   0a. FROZEN BLOCK-START EXECUTION SNAPSHOT (read-only):
  *       registered-domain working set (strict ACTIVE preconditions),
  *       per-domain contextual ruleset table, derived chain id, epoch
  *       DERIVED FROM GLOBAL BLOCK COUNT (blk->epoch must equal
@@ -46,57 +58,31 @@
  *       resolves against this one snapshot: no mid-block mutation can
  *       change a later transaction's ruleset, price or authority, and
  *       the caller can neither supply nor override any of it.
- *   0b. envelope preflight + RESERVATION of the whole canonical batch
- *       (nodus_witness_v2_env_preflight_reserve_batch — BOTH derived
- *       identities per envelope, batch dedup at wire AND intent level,
- *       deterministic sequential reservation)                   [F26]
- *       + COMMITTED-IDENTITY REPLAY GUARD (intent season): each
- *       envelope's intent_id then wire_id checked read-only against
- *       v2_intent_index / v2_tx_index — a hit is a deterministic
- *       VERDICT (a committed intent may commit ONCE per chain, under
- *       exactly one wire realization; matching intent is never
- *       evidence of authorization). Budget restored byte-identically
- *       on rejection.                                           [F35]
- *       + per-leg execution admission: block-entry ACTIVE domain,
- *       resolvable runtime WITH an exec hook, INVOKE access (READ legs
- *       are rejected this season — an admission rule for a later
- *       season, honest label below), runtime_op OWNED by the domain's
- *       committed ruleset (descriptor rule_ids), per-domain tx quota.
- *   1.  BEGIN IMMEDIATE                                   [F1]
+ *   0b. the item working set (heap)                       [F1 after it]
  *   2.  supply gate (pre-apply)
- *   4.  SYSTEM-phase envelopes (single leg, SYSTEM)       [F2]
- *   5.  cross-domain envelopes (leg_count > 1)            [F3]
- *   6.  domain-local envelopes, EVERY registered domain, domain_id ASC
- *                                                         [F4 per batch]
- *       Each envelope executes as: meter activate → per leg (ascending
- *       domain_id by envelope construction): mediated read plan +
- *       engine-charged reads → native exec → strict result decode →
- *       adapter validation → effect charge → adapter application
- *       [F37 mid-effect-list, F38 BETWEEN legs of the same envelope] →
- *       meter finalize                          [F27 after the envelope
- *       at fail_env_index]                                [F5 "UTXO"]
- *   6b. S6 generic claims: admit (committed manifest names the TARGET
- *       domain + asset; the registered target runtime is resolved
- *       through the generic registry path) → target-runtime output
- *       [F16] → spent-claim insert [F17] → distribution-state
- *       decrement [F18]; fault points fire after the named stage of
- *       claim `fail_claim_index`. The engine never creates an output
- *       or picks a domain itself.
- *   6p. S7 pool-state batches (INACTIVE test/fixture surface — future
- *       S9 transaction semantics will construct these): each batch is
- *       one pool's canonical mutations for this block, processed in
- *       strictly ascending (domain_id, pool_id) order through
- *       nodus_witness_v2_pool_apply — commitment inserts [F19] →
- *       frontier/root/count update [F20] → nullifier inserts [F21] →
- *       nullifier-root update [F22] → balance update [F23] → history
- *       append [F24] → history eviction [F25]; fault points fire
- *       after the named stage of batch `fail_pool_index`. Carrying a
- *       batch declares its (already ACTIVE, runtime-backed) owning
- *       domain touched. The engine knows no pool internals — ordering,
- *       capacity, canonicity, duplicate and collision rules live in
- *       the pool module. pools_root recomputation rides the existing
- *       domain-root phase [F7]; DomainHead/history/global metadata
- *       persistence ride [F9]/[F10]/[F12].
+ *   4-6b. THE ITEMS, in the block's order — envelopes, then claims —
+ *       each in its own SAVEPOINT; an item-attributable refusal rolls
+ *       its savepoint back and records a nonzero nodus_v2_tx_code_t, the
+ *       block continues. Per envelope: the contextual ruleset table
+ *       (CONTEXT) → dna_env_preflight (DECODE / CONTEXT) → the
+ *       COMMITTED-IDENTITY REPLAY GUARD, intent_id then wire_id against
+ *       v2_intent_index / v2_tx_index, which also see this block's
+ *       earlier items (REPLAY) → per-leg admission: block-entry ACTIVE
+ *       domain with exec + auth hooks, INVOKE access (READ legs refused
+ *       this season), runtime_op OWNED by the committed ruleset, the
+ *       runtime's auth-kind allowlist (ADMISSION), the manifest's
+ *       per-domain tx quota (CAPACITY) → meter reserve (CAPACITY) →
+ *       verified authorization (AUTH) → exec: meter activate → per leg
+ *       mediated read plan [F29] + engine-charged reads [F30] → native
+ *       exec [F31] → strict result decode [F32] → effect charge [F33] →
+ *       adapter application [F37 mid-effect-list, F38 BETWEEN legs] →
+ *       meter finalize (EXEC) → the item's identity index rows. A block
+ *       carrying pool batches is a node FAULT (a block message cannot
+ *       express one). Per claim: derivation, in-block duplicate,
+ *       target-domain check, then admit (committed manifest names the
+ *       TARGET domain + asset) → target-runtime output [F16] →
+ *       spent-claim insert [F17] → distribution-state decrement [F18],
+ *       on claim `fail_claim_index` (CLAIM).
  *   6c. LIFECYCLE re-scan (canonical DomainHead lifecycle): re-read the
  *       registry; a domain whose status became ACTIVE with no committed
  *       head gets its ONE deterministic activation head HERE (height 0,
@@ -109,57 +95,49 @@
  *       synthesized anywhere else. Execution authority remains the
  *       BLOCK-ENTRY status: nothing executes in its own activation
  *       block.
+ *   6d. attendance credit (decided_last_commit, out of every root)
+ *   6e. the epoch boundary (a no-op off a boundary height)
+ *                                     [F39-F45, F53-F60, boundary only]
+ *   6f. the econ band's build-identity check
  *   7.  supply gate (post-stage)                          [F6 "supply"]
  *   8.  domain state roots — dispatched through each REGISTERED
  *       runtime's state_root hook — + the UNTOUCHED-DOMAIN GUARD:
  *       an untouched domain's recomputed root MUST equal its persisted
  *       head root — an op that mutated a domain it did not declare
- *       (cross-domain substitution) rejects the whole block  [F7]
+ *       (cross-domain substitution) refuses the whole block  [F7]
  *   9.  DomainUpdate build + verify + persist (touched only)  [F8]
  *   10. DomainHead write                                   [F9]
  *   11. root history append                                [F10]
- *   12. transaction indices: SEMANTIC first (v2_intent_index —
- *       intent_id PK + its ONE accepted wire realization)  [F36]
- *       then WIRE (v2_tx_index + v2_tx_local_index)        [F11]
- *   13. domain_updates_root + domains_root + global root; compare every
- *       caller-expected root; v2_blocks metadata insert    [F12]
+ *   12. the APPLIED items' v2_tx_local_index rows (their identity rows
+ *       were written inside each item's savepoint)         [F11]
+ *   12c. the claim count + canonical claim bytes           [F49]
+ *   13. tx_root (APPLIED items) + domain_updates_root + domains_root +
+ *       global root; compare every caller-expected root; the v2_blocks
+ *       row: consensus's block hash + Comet ValidatorsHash verbatim  [F12]
  *   14. supply gate (pre-commit)                           [F13]
- *   15. COMMIT                                             [F14 simulated
- *       commit failure → ROLLBACK]                         [F15 = crash
- *       window AFTER commit, BEFORE cache publication → rc 2; restart
- *       reconstructs from the tables]
+ *   15. return 0 with the host's transaction OPEN.
  *
- * Any failure before COMMIT rolls back EVERYTHING (UTXOs, supply
- * counters, registry, updates, heads, history, indices, metadata) — the
- * tests prove it by byte-comparing table dumps and roots, not by return
- * codes. There are no authoritative V2 in-memory caches to un-publish;
- * the reconstruct-on-restart path is the table state itself. The
- * IN-MEMORY meter/budget state rolls back too: on every rejection the
- * engine aborts every non-terminal meter, which restores the engine-
- * owned budget byte-identically — no reservation is ever stranded and
- * no meter is left RESERVED or ACTIVE.
+ * Any BLOCK-level failure is returned to the host, which rolls back
+ * EVERYTHING (UTXOs, supply counters, registry, updates, heads, history,
+ * indices, metadata) — the tests prove it by byte-comparing table dumps
+ * and roots, not by return codes. There are no authoritative V2
+ * in-memory caches to un-publish; the reconstruct-on-restart path is the
+ * table state itself. The IN-MEMORY meter/budget state rolls back too:
+ * an item refusal aborts that item's meter, which restores the block
+ * budget byte-identically, and a block failure aborts every non-terminal
+ * meter — no reservation is ever stranded.
  *
- * ── FAULT vs VERDICT vs DEFERRAL (the return-code contract) ───────────
+ * ── FAULT vs VERDICT vs DEFERRAL ──────────────────────────────────────
  * The named values are nodus_v2_result_t (nodus_witness_v2_result.h).
- *
- * -1 CONSENSUS_INVALID is a VERDICT: a deterministic function of
- * (committed state, block bytes) — every honest node computes the same
- * rejection.
- * -2 INTERNAL_FAULT is a NODE-LOCAL FAULT: this node could not compute
- * (storage fault, hash-backend failure, allocation failure, broken
- * compiled table, meter accounting FAULT).
- * -3 NOT_YET_LINKABLE is a DEFERRAL, added by O15A: the block's height is
- * beyond the next expected one, or no genesis is committed here, so the
- * required predecessor state is absent and NOTHING was judged. It is not
- * a rejection and must never be reported as one — a node that is merely
- * behind produces it for bytes that synced peers accept. Note the
- * boundary: a block AT or BELOW the head is evaluable now and gets a
- * verdict; only a block ahead of the chain is deferred.
- *
- * All three roll back completely. A consensus caller MUST fail its own
- * operation on -2 and -3 (do not vote), and never convert either into a
- * transaction/block rejection — the env_preflight.h ERR_HASH rule,
- * engine-wide.
+ * Inside the body a refusal site is still labelled by its class —
+ * VERDICT (-1, a deterministic function of committed state and block
+ * bytes), FAULT (-2, this node could not compute) or DEFERRAL (-3, a
+ * height AHEAD of this node's head: the predecessor state is absent and
+ * nothing was judged) — and the reason text names it. But a DECIDED
+ * block is never refused: nodus_witness_v2_apply_block folds every
+ * negative return into -2 INTERNAL_FAULT (see its contract), and the
+ * host rolls the block back and stops. Item-level verdicts never travel
+ * as a return code; they live in `blk->cmt.results[i].code`.
  *
  * CONSERVATIVE CLASSIFICATION SEAM: nodus_witness_v2_runtime_for
  * conflates "tuple not carried by this build" with a node-local domreg
@@ -168,13 +146,13 @@
  * NULL result is therefore classified -2 — the SAFE direction: the
  * deterministic unsupported-tuple case also reads as "do not vote"
  * rather than risking one starved witness voting reject. The
- * deterministic VERDICTS about resolvability live in the pre-BEGIN
- * admission scan (strict doms_load + per-leg checks).
+ * deterministic answers about resolvability live in the strict block-
+ * start doms_load and the per-item admission checks.
  *
  * ── HONEST LABELS (what this engine still does NOT do) ────────────────
  *   (DRIFT REPAIR, intent season: the former "authorization stays with a
  *   later season" label was stale — the native-auth season shipped the
- *   verified boundary. Authorization is now verified pre-BEGIN into the
+ *   verified boundary. Authorization is verified per item into the
  *   engine-owned verdict array; the exec context hands runtimes BOTH
  *   derived identities — wire_id, intent_id — plus the commitments and
  *   the verified verdict, and consensus-state provenance binds
@@ -190,23 +168,18 @@
  *     units, which the envelope lane never consults) is the documented
  *     interim rule until the devnet reset pins real economics.
  *
- * ── Replay / idempotency (checked BEFORE the transaction) ─────────────
- *   same height, byte-identical BlockID already committed → rc 1, NO
- *     writes of any kind;
- *   same height, different BlockID → reject;
- *   same BlockID at another height → reject;
- *   height gap (height != max_committed + 1) → reject;
- *   wrong prev_block_id (must equal the previous row's block_id) → reject.
- *   TRANSACTION-LEVEL (intent season, after the whole-block matrix —
- *   exact committed-block replay therefore stays idempotent, rc 1):
- *   an envelope whose intent_id is already committed → reject (semantic
- *     replay — including under a DIFFERENT valid authorization witness,
- *     and in ANY later block);
- *   an envelope whose wire_id is already committed → reject (the intent
+ * ── Replay ────────────────────────────────────────────────────────────
+ *   BLOCK-LEVEL: a height at or below the committed head, or a block
+ *     hash already committed at another height → refused (a node FAULT
+ *     after the fold: the host never hands a decided height twice). The
+ *     legacy lane's rc-1 idempotent replay is deleted (tokenomics-v3 P4).
+ *   ITEM-LEVEL (intent season): an envelope whose intent_id is already
+ *     committed — or applied earlier in this block — is refused REPLAY
+ *     (semantic replay, including under a DIFFERENT valid authorization
+ *     witness, in ANY later block); likewise its wire_id (the intent
  *     guard subsumes this for byte-identical envelopes; the wire check
- *     is the independent second leg);
- *   both backstopped by the v2_intent_index / v2_tx_index UNIQUE
- *     constraints inside the block transaction.
+ *     is the independent second leg); both backstopped by the
+ *     v2_intent_index / v2_tx_index UNIQUE constraints.
  *
  * ── Touched-domain definition ─────────────────────────────────────────
  * touched(block) = the UNION of the LEG DOMAINS of the block's included
@@ -311,8 +284,9 @@ extern "C" {
  * the pinned reference (cometbft @709fd12b bounds blocks by
  * `Block.MaxBytes` alone, no transaction-count parameter). This engine
  * still needs SOME ceiling on how many envelopes' worth of per-block
- * scratch it will allocate in one call (`pf`/`meters`/`env_phase`/
- * `auths`/`auth_off`, all sized by `blk->n_envs` since R3 W4-C delta 1)
+ * scratch it will allocate in one call (`pf`/`meters`, sized by
+ * `blk->n_envs` since R3 W4-C delta 1; the legacy lane's `env_phase` /
+ * `auth_off` went with it, tokenomics-v3 P4)
  * — a RELEASE RESOURCE CHOICE, the same kind of number as the W3
  * receive arena's 64 MiB (nodus_witness_cmt_net.h) — not a consensus
  * parameter, never governed, never voted. 64 MiB. (Unlike
@@ -462,7 +436,7 @@ _Static_assert(NODUS_V2_APPLY_MAX_CLAIMS == 14162,
  * governance hard cap of 10, retired in delta 2) plus the most claims one
  * cometbft block can carry (`NODUS_V2_APPLY_MAX_CLAIMS`, 14 162) =
  * 17 371. The per-block scratch this bounded
- * (`wire_ids`/`claim_nuls`/`env_phase`/`all_ids`/`auths`) is no longer
+ * (`wire_ids`/`claim_nuls`/`all_ids`/`auths`) is no longer
  * fixed-size at this number — it is heap-allocated and sized by the
  * BLOCK's own `n_envs`/`n_claims`/leg counts (see the per-field comments
  * in nodus_witness_v2_apply.c). What THIS bound still does: it is the
@@ -526,14 +500,23 @@ static inline uint64_t nodus_v2_epoch_for_height(uint64_t global_height) {
     return global_height / (uint64_t)DNAC_EPOCH_LENGTH;
 }
 
-/** Deterministic fault-injection points (prompt §11, 15 points). */
+/** Deterministic fault-injection points (prompt §11, 15 points).
+ *
+ * tokenomics-v3 P4: the points only the deleted legacy block lane could
+ * fire are RETIRED with it — 2-5 (its phase order: SYSTEM, cross-domain,
+ * per-domain batch on `fail_domain_batch`, UTXO), 14/15 (its own COMMIT
+ * and the post-commit rc-2 window), 19-25 (the in-block S7 pool batches
+ * on `fail_pool_index`), 26-28 (its whole-batch reserve, per-envelope
+ * phase exec and batch authorization), 34-36 (its committee-snapshot
+ * stage, pre-BEGIN replay guard and batch intent-index insert) and 46/47
+ * (its dna_bh2 header build and derived BlockID); 48 (phase 12b, the
+ * `v2_tx_bytes` persist) is retired by the P4 fix round. The numbers stay
+ * RESERVED — never fired, never reused — and the surviving ids keep
+ * their values. */
 typedef enum {
     V2AP_FAIL_NONE = 0,
     V2AP_FAIL_AFTER_BEGIN = 1,
-    V2AP_FAIL_AFTER_SYSTEM = 2,
-    V2AP_FAIL_AFTER_CROSS = 3,
-    V2AP_FAIL_AFTER_DOMAIN_BATCH = 4,   /* + blk->fail_domain_batch      */
-    V2AP_FAIL_AFTER_UTXO = 5,
+    /* 2-5 RETIRED (tokenomics-v3 P4) */
     V2AP_FAIL_AFTER_SUPPLY_MUT = 6,
     V2AP_FAIL_AFTER_DOMAIN_ROOTS = 7,
     V2AP_FAIL_AFTER_UPDATES = 8,
@@ -542,55 +525,21 @@ typedef enum {
     V2AP_FAIL_AFTER_TX_INDEX = 11,
     V2AP_FAIL_AFTER_BLOCK_META = 12,
     V2AP_FAIL_BEFORE_COMMIT = 13,
-    V2AP_FAIL_COMMIT = 14,              /* simulated COMMIT failure      */
-    V2AP_FAIL_AFTER_COMMIT = 15,        /* pre-cache crash window → rc 2 */
+    /* 14-15 RETIRED (tokenomics-v3 P4) */
     /* S6 claim stages (fire after the named stage of the claim at
      * index blk->fail_claim_index) */
     V2AP_FAIL_AFTER_CLAIM_OUTPUT = 16,  /* target-runtime output created */
     V2AP_FAIL_AFTER_CLAIM_SPEND = 17,   /* spent-claim insert done       */
     V2AP_FAIL_AFTER_CLAIM_STATE = 18,   /* remaining decremented         */
-    /* S7 pool stages (fire after the named stage of the pool batch at
-     * index blk->fail_pool_index; S1-S6 ids above are FROZEN) */
-    V2AP_FAIL_AFTER_POOL_COMMITS = 19,  /* v2_pool_notes rows inserted   */
-    V2AP_FAIL_AFTER_POOL_FRONTIER = 20, /* frontier/root/count updated   */
-    V2AP_FAIL_AFTER_POOL_NULLS = 21,    /* nullifier rows inserted       */
-    V2AP_FAIL_AFTER_POOL_NULROOT = 22,  /* nullifier root/count updated  */
-    V2AP_FAIL_AFTER_POOL_BALANCE = 23,  /* pool balance updated          */
-    V2AP_FAIL_AFTER_POOL_HISTORY = 24,  /* history entry appended        */
-    V2AP_FAIL_AFTER_POOL_EVICT = 25,    /* oldest history entry evicted  */
-    /* Execution-season stages (S1-S7 ids above are FROZEN) */
-    V2AP_FAIL_AFTER_ENV_RESERVE = 26,   /* whole batch preflighted +
-                                         * reserved (pre-BEGIN; proves
-                                         * meter abort + budget restore) */
-    V2AP_FAIL_AFTER_ENV_EXEC = 27,      /* the envelope at
-                                         * blk->fail_env_index fully
-                                         * executed + finalized          */
-    /* Native-auth-season stages (26/27 above are FROZEN). 28 fires
-     * pre-BEGIN after the WHOLE batch's authorization verdicts were
-     * verified; 29-33 fire INSIDE the transaction after the named
-     * per-leg stage of the envelope at blk->fail_env_index. */
-    V2AP_FAIL_AFTER_AUTH = 28,          /* all auth verdicts verified    */
+    /* 19-28 RETIRED (tokenomics-v3 P4). 29-33 fire INSIDE the item's
+     * SAVEPOINT after the named per-leg stage of the envelope at
+     * blk->fail_env_index. */
     V2AP_FAIL_AFTER_READ_PLAN = 29,     /* read plan emitted + validated */
     V2AP_FAIL_AFTER_READS = 30,         /* mediated reads done + charged */
     V2AP_FAIL_AFTER_EXEC_HOOK = 31,     /* native exec returned          */
     V2AP_FAIL_AFTER_EFFECT_DECODE = 32, /* strict result decode done     */
     V2AP_FAIL_AFTER_EFFECT_CHARGE = 33, /* effect charge done            */
-    /* Capacity-season stage (28-33 above are FROZEN). Fires pre-BEGIN
-     * after the governing committee snapshot was resolved, hashed and
-     * fixed into the engine-owned view — proves that a block failing
-     * right after snapshot resolution leaves the database digest, the
-     * unit budget and every index byte-identical. */
-    V2AP_FAIL_AFTER_CC_SNAPSHOT = 34,
-    /* Intent-season stages (34 above is FROZEN). 35 fires pre-BEGIN
-     * after the committed-identity replay guard passed (both identities
-     * of every envelope checked against v2_intent_index / v2_tx_index)
-     * — proves the guard's rejection path releases the batch
-     * reservation and restores the budget byte-identically. 36 fires
-     * INSIDE the transaction after the v2_intent_index rows were
-     * inserted and BEFORE the wire indices — proves an interrupted
-     * block commits NEITHER identity index. */
-    V2AP_FAIL_AFTER_INTENT_GUARD = 35,
-    V2AP_FAIL_AFTER_INTENT_INDEX = 36,
+    /* 34-36 RETIRED (tokenomics-v3 P4) */
     /* Burn-season stage (35/36 above are FROZEN). Fires INSIDE the
      * transaction after the adapter APPLIED the effect at index
      * blk->fail_effect_index of a leg of the envelope at
@@ -616,8 +565,8 @@ typedef enum {
     /* O12 S2 epoch-boundary stages (38 above is FROZEN). All seven fire
      * INSIDE the transaction, from the boundary module's stage callback
      * (nodus_witness_v2_epoch.h nodus_v2_epoch_stage_t) — the module owns
-     * the stages, this enum owns the numbering, exactly as F19-F25 map
-     * the S7 pool stages. They only ever fire on a block whose height IS
+     * the stages, this enum owns the numbering (as F19-F25 once mapped
+     * the S7 pool stages). They only ever fire on a block whose height IS
      * an epoch boundary; on any other height the boundary is a no-op and
      * none of them is reachable.
      *
@@ -640,22 +589,10 @@ typedef enum {
     V2AP_FAIL_AFTER_SNAPSHOT_BUILD     = 44, /* build inputs final       */
     V2AP_FAIL_AFTER_SNAPSHOT_PERSIST   = 45, /* snapshot row written     */
 
-    /* O14 — the identity seam inside phase 13. F46 fires with the
-     * canonical header v3 fully reconstructed from locally derived
-     * results and NOTHING hashed or written; F47 after the final
-     * BlockID has been recomputed and checked against the caller's
-     * assertion, still before the v2_blocks row exists. Together they
-     * bracket the exact window in which an interrupt could otherwise
-     * leave a persisted id that no execution result produced. */
-    V2AP_FAIL_AFTER_HEADER_BUILD       = 46, /* header bytes final       */
-    V2AP_FAIL_AFTER_BLOCK_ID           = 47, /* BlockID recomputed       */
+    /* 46-47 RETIRED (tokenomics-v3 P4) */
 
-    /* O15E Faz B — fires with every canonical envelope byte record of
-     * the block written (phase 12b, S11 schema) and nothing of phase 13
-     * (roots/header/identity/metadata) started. Brackets the envelope
-     * persist so an interrupt can never leave byte rows for a block
-     * that was not committed, or a committed block missing its bytes. */
-    V2AP_FAIL_AFTER_ENV_BYTES          = 48, /* envelope bytes persisted */
+    /* 48 RETIRED (tokenomics-v3 P4 fix round): it bracketed phase 12b,
+     * the `v2_tx_bytes` persist, deleted with that table. */
 
     /* O15F Task 4 — fires with every canonical claim byte record of the
      * block written (phase 12c, S12 schema) and nothing of phase 13
@@ -825,8 +762,8 @@ typedef enum {
  * `nodus_witness_v2_manifest_load_by_hash` and the three claim write
  * stages — answer -1 for BOTH "deterministically refused" and "this
  * node could not read", a conflation this engine's header has always
- * recorded. In the legacy lane that conflation costs a wrongly rejected
- * block. HERE IT COSTS MORE: code 8 is hashed into the block's results
+ * recorded. In the deleted legacy lane that conflation cost a wrongly
+ * rejected block. HERE IT COSTS MORE: code 8 is hashed into the block's results
  * hash, so a node-local read fault becomes CONSENSUS-VISIBLE DATA
  * instead of stopping the node, and a node with a failing disk could
  * commit a results hash its healthy peers do not compute. The named fix
@@ -932,8 +869,8 @@ typedef struct {
      * "signed this block"). The engine credits ONLY
      * CMT_PB_BLOCK_ID_FLAG_COMMIT votes (D-2, Q1: NIL/ABSENT do not
      * count) into the out-of-root `v2_attendance` table
-     * (nodus_witness_v2_epoch.c). The legacy lane and the initial height
-     * (no previous commit to report, execution.go:451-455) leave both
+     * (nodus_witness_v2_epoch.c). The initial height
+     * (no previous commit to report, execution.go:451-455) leaves both
      * arrays NULL and `votes_len` 0 — that is the legal empty case, never
      * a fault. */
     const uint8_t (*votes_address)[32];
@@ -961,34 +898,17 @@ typedef struct {
  */
 
 /**
- * One V2 global block for the engine.
+ * One V2 global block for the engine — a DECIDED cometbft block
+ * (`cmt.on` MUST be set; tokenomics-v3 P4 deleted the legacy lane, and
+ * the engine refuses a block without it as a node FAULT).
  *
- * ── O14: THE ENGINE OWNS THE BLOCK IDENTITY ───────────────────────────
- * There is NO caller-supplied `block_id`, `prev_block_id` or `vset_hash`
- * input any more. The engine DERIVES every canonical header-v3 field and
- * computes the BlockID it persists; a caller may only ASSERT what it
- * expects, through the `expect_*` pointers, and a mismatch rejects the
- * block BEFORE commit. No field has two authoritative producers.
- *
- * Field authority classification (prompt §9):
- *   header_version      fixed protocol value  (DNA_BH2_VERSION)
- *   chain_id            committed pre-state   (nodus_witness_v2_chain_id)
- *   block_height        block input           (global_height)
- *   epoch               committed pre-state   (nodus_v2_epoch_for_height,
- *                                              VERIFIED against `epoch`)
- *   prev_block_id       committed pre-state   (the previous v2_blocks row)
- *   global_state_root   execution             (out_global_root)
- *   tx_root             execution             (out_tx_root)
- *   domain_updates_root execution             (out_dupd_root)
- *   validator_set_hash  committed pre-state   (the block-start authority
- *                                              snapshot, re-hashed here)
- *   tx_count            execution             (the derived batch size)
- *   proposer_id         block input           (below)
- *   timestamp           block input           (below; EXCLUDED from the
- *                                              BlockID — PR2 discipline)
- *
- * The only two header fields a caller still supplies are the two the
- * engine cannot possibly derive: `proposer_id` and `timestamp`.
+ * ── THE IDENTITY IS CONSENSUS'S (D-17 rev 7 (6)) ──────────────────────
+ * The v2_blocks row stores `cmt.block_hash` (cometbft's header hash) as
+ * `block_id` and `cmt.validators_hash` as `vset_hash`, verbatim; the
+ * ledger derives no identity of its own. `prev_block_id` is the previous
+ * v2_blocks row's id (64 zero bytes for the chain's first block); the
+ * roots and `tx_count` (the APPLIED items) are execution's. The legacy
+ * lane's dna_bh2 header build and derived BlockID (O14) are deleted.
  */
 typedef struct {
     uint64_t global_height;
@@ -996,14 +916,15 @@ typedef struct {
                                          * nodus_v2_epoch_for_height(
                                          *   global_height) — verified,
                                          * never trusted               */
-    /* ── Header material the engine CANNOT derive ─────────────────── */
+    /* ── Block material from the decided header (informational) ───── */
     uint8_t  proposer_id[32];
-    uint64_t timestamp;                 /* informational; NOT in BlockID */
+    uint64_t timestamp;
 
-    /* ── Equality ASSERTIONS — never authority. NULL = derive only.
-     * A non-NULL pointer that disagrees with the locally derived result
-     * REJECTS the block before any commit (the follower/verification
-     * mode; NULL throughout is leader/derivation mode). */
+    /* ── The legacy lane's identity ASSERTIONS. MUST be NULL: the
+     * identity is consensus's input here, not a derivation to assert,
+     * and the engine refuses a block carrying any of them as a node
+     * FAULT (the entry gate). Kept as fields so that refusal stays
+     * expressible — and tested. */
     const uint8_t *expect_prev_block_id;
     const uint8_t *expect_vset_hash;
     const uint8_t *expect_block_id;
@@ -1033,64 +954,51 @@ typedef struct {
      * Reconstructing the claim/pool INPUT bytes from committed state is a
      * sync concern and is deliberately out of scope here.
      *
-     * Included envelopes, in canonical batch order (the order IS the
-     * intra-phase execution and index order). NULL/0 = none. */
+     * Included envelopes, in the block's order (the order IS the item
+     * execution order). NULL/0 = none. */
     const nodus_v2_envelope_t *envs;
     size_t   n_envs;
     /* S6 generic claims (routed to each claim's COMMITTED target
-     * runtime; processed INSIDE the one block transaction, phase 6b).
+     * runtime; each processed as an item inside its own SAVEPOINT).
      * NULL/0 = none. */
     const dna_claim_t *claims;
     size_t   n_claims;
-    /* S7 pool-state batches (INACTIVE test/fixture surface; processed
-     * INSIDE the one block transaction, phase 6p; strictly ascending
-     * (domain_id, pool_id) — duplicates reject). NULL/0 = none. */
+    /* S7 pool-state batches. A decided block cannot carry one (the block
+     * message's pool_batch_count must be zero, shared/dnac/blockmsg_v2.h);
+     * a non-zero count is refused as a node FAULT. The in-block pool
+     * phase (6p) is deleted with the legacy lane (tokenomics-v3 P4).
+     * NULL/0 = none. */
     const nodus_v2_pool_mut_t *pool_muts;
     size_t   n_pool_muts;
-    /* Follower-mode expected roots — any NULL = leader mode (fill). A
-     * non-NULL expectation that mismatches the recomputation rejects the
-     * whole block. */
+    /* Follower-mode expected roots — any NULL = fill only. A non-NULL
+     * expectation that mismatches the recomputation refuses the block
+     * (a node FAULT: the block is decided). */
     const uint8_t *expect_tx_root;
     const uint8_t *expect_dupd_root;
     const uint8_t *expect_domains_root;
     const uint8_t *expect_global_root;
-    /* OPTIONAL opaque finalization certificate (the encoded QC V2), bound
-     * into the SAME v2_blocks INSERT as the block it certifies. The
-     * engine does not parse or verify it — verification is the caller's
-     * (nodus_witness_v2_finalize.c), which runs it BEFORE any durable
-     * mutation. Carrying it here rather than writing it afterwards is
-     * what keeps "commit once" true: there is no window in which a
-     * committed block lacks its certificate. NULL/0 = store SQL NULL. */
-    const uint8_t *qc_bytes;
-    size_t   qc_len;
-    /* Fault injection */
+    /* Fault injection (tokenomics-v3 P4: the legacy lane's
+     * `fail_domain_batch` (point 4) and `fail_pool_index` (points 19-25)
+     * are deleted with those points, as are the `qc_bytes`/`qc_len`
+     * certificate the legacy v2_blocks row stored). */
     nodus_v2_apply_fail_t fail_at;
-    uint32_t fail_domain_batch;         /* domain_id for point 4         */
     uint32_t fail_claim_index;          /* claim index for points 16-18  */
-    uint32_t fail_pool_index;           /* batch index for points 19-25  */
-    uint32_t fail_env_index;            /* envelope index for point 27   */
+    uint32_t fail_env_index;            /* envelope index, points 29-38  */
     uint32_t fail_effect_index;         /* effect index for point 37     */
     uint32_t fail_leg_index;            /* leg index for point 38        */
-    /* ── Outputs ───────────────────────────────────────────────────────
-     * Roots/header/identity are valid on rc 0/2 (committed). On rc 1
-     * (idempotent replay) `out_block_id`, `out_prev_block_id` and
-     * `out_header` are served from the ALREADY-COMMITTED row, so a
-     * caller can still compare the certified id against the stored one
-     * without the engine re-executing anything. */
+    /* ── Outputs — valid on rc 0 (applied). ─────────────────────────── */
     uint8_t  out_tx_root[64];
     uint8_t  out_dupd_root[64];
     uint8_t  out_domains_root[64];
     uint8_t  out_global_root[64];
     uint8_t  out_prev_block_id[64];
     uint8_t  out_vset_hash[64];
-    /* The canonical 413-byte header v3 the engine built from LOCALLY
-     * DERIVED results, and the BlockID over its 405 bound bytes. This
-     * id — never an input byte — is what `v2_blocks.block_id` stores. */
-    uint8_t  out_header[DNA_BH2_ENC_SIZE];
+    /* The id `v2_blocks.block_id` stores: `cmt.block_hash`, verbatim.
+     * (The legacy lane's `out_header` — its dna_bh2 header bytes — is
+     * deleted with that lane.) */
     uint8_t  out_block_id[DNA_BH2_ID_LEN];
-    /* ── THE COMETBFT LANE (D-23 rev 4/5) ─────────────────────────────
-     * `cmt.on` false — the whole struct zeroed — is the legacy lane,
-     * unchanged in every observable way. See nodus_v2_block_cmt_t. */
+    /* ── THE COMETBFT LANE (D-23 rev 4/5) — `cmt.on` MUST be set. See
+     * nodus_v2_block_cmt_t. */
     nodus_v2_block_cmt_t cmt;
     /* ── WHY the engine refused (DIAGNOSTIC ONLY) ──────────────────────
      * NUL-terminated ASCII, written by the exact site that refused, so
@@ -1134,49 +1042,13 @@ typedef struct {
 /** V2 supply-conservation gate (header equation). @return 0 / -1. */
 int nodus_witness_v2_supply_check(nodus_witness_t *w);
 
-/**
- * V2 genesis: requires schema version 8; one atomic transaction seeding
- * the domain registry (REAL payload-root manifests — the S5 cycle
- * break), then ONE canonical ACTIVATION DomainHead per registered
- * domain whose status is ACTIVE (the genesis block IS those domains'
- * activation block: height 0, root = the runtime's state root — whose
- * activation payload form must equal the registry-committed
- * genesis_state_root — last_updated 0, status ACTIVE, height-0 history
- * row; SYSTEM's head root is the FULL 8-leg system root ("DNA.SYS.v2",
- * tokenomics-v3 P1 — ledger_roots_v2.h) computed AFTER
- * the registry rows exist). A registered-but-not-ACTIVE domain exists
- * only in the registry: no head, absent from domains_root. Then the
- * height-0 v2_blocks row (empty tx/update roots) and the supply gate.
- * The domain count is whatever the registry holds — never a fixed two.
- * Idempotent-or-conflict (byte-identical re-run 0 / diverging -2 / -1).
- */
-int nodus_witness_v2_genesis(nodus_witness_t *w,
-                             const uint8_t genesis_block_id[64],
-                             const uint8_t vset_hash[64],
-                             uint64_t epoch);   /* MUST be 0: genesis is
-                                                 * height 0 and the epoch
-                                                 * is DERIVED (0/LEN == 0)
-                                                 * — any other value is
-                                                 * rejected              */
-
-/**
- * S6 variant: additionally commits ONE canonical GenesisManifest v1
- * (manifest_seq 0, height 0) inside the same genesis transaction,
- * BEFORE the root computation — so the genesis SYSTEM head root
- * commits the REAL manifest_root. `manifest_bytes` NULL/0 keeps the
- * legacy no-manifest genesis (manifest_root stays the tagged-empty
- * leg). The manifest's domain set is cross-checked against the domain
- * registry and its genesis supply against supply_tracking; a present
- * distribution section seeds the unclaimed-distribution state
- * (v2_dist_state) that the supply gate then owns. Same return contract
- * as nodus_witness_v2_genesis.
- */
-int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
-                                const uint8_t genesis_block_id[64],
-                                const uint8_t vset_hash[64],
-                                uint64_t epoch,
-                                const uint8_t *manifest_bytes,
-                                size_t manifest_len);
+/* tokenomics-v3 P4 (OBLIGATION atlas-dec-71525f3b): the version-2 engine
+ * genesis entries nodus_witness_v2_genesis / nodus_witness_v2_genesis_ex
+ * (schema S9-S12, a height-0 v2_blocks row carrying a derived dna_bh2
+ * genesis BlockID) are DELETED with the legacy block lane. The one
+ * genesis is nodus_witness_v2_genesis_cmt, below. The build's `nm` gate
+ * (CMakeLists.txt test_v2_seam_linked) fails if either symbol is linked
+ * again. */
 
 /**
  * Apply one V2 global block (header contract).
@@ -1185,22 +1057,18 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
  * class-tagged text of the site that refused — see the field's contract
  * in nodus_v2_block_t. It is DIAGNOSTIC ONLY and changes no verdict: the
  * return codes below are exactly what they were before the reason
- * existed. The signature is deliberately unchanged so that every
- * existing caller (nodus_witness_v2_finalize.c:171 and the V2 test
- * suites) keeps compiling and gets the reason for free in the block it
- * already owns.
+ * existed.
  *
- * @return 0 committed; 1 idempotent replay (no writes); 2 committed but
- *         the post-commit/pre-cache crash window fired (state IS
- *         committed; restart reconstructs it); -1 CONSENSUS-VERDICT
- *         rejection, rolled back; -2 NODE-LOCAL FAULT, rolled back —
- *         this node could not compute; a consensus caller fails its own
- *         operation (does not vote) and never converts -2 into a
- *         rejection (FAULT vs VERDICT block above).
+ * @return 0 applied — the host's transaction still OPEN, per-item codes
+ *         in `blk->cmt.results`; NODUS_V2_INTERNAL_FAULT (-2) — the
+ *         host rolls the block back and the node stops. No other value
+ *         is returned (see REFUSAL below). tokenomics-v3 P4 deleted the
+ *         legacy lane with its rc 1 idempotent replay, its rc 2
+ *         post-commit window and its -1 verdicts; a block without
+ *         `cmt.on` is refused (-2) without being judged.
  *
  * ── THE COMETBFT LANE (`blk->cmt.on`, D-23 rev 4/5) ───────────────────
- * Everything above describes the LEGACY lane and is unchanged. With
- * `cmt.on` the same entry behaves as cometbft's `FinalizeBlock`:
+ * The entry behaves as cometbft's `FinalizeBlock`:
  *
  *   · SCHEMA. S16 only (tokenomics-v3 P1 round 5 moved this gate's
  *     accepted value from the earlier S14 to S15; P2 moves it to S16).
@@ -1225,13 +1093,12 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
  *     nested in the caller's transaction. An item-attributable refusal
  *     rolls that SAVEPOINT back, pays no fee, writes no index row, and
  *     records a nonzero `nodus_v2_tx_code_t` in `cmt.results[i]`; the
- *     block CONTINUES. This replaces the legacy lane's phase order
- *     (SYSTEM → cross-domain → domain-local) — a block with mixed phases
- *     therefore produces DIFFERENT roots in the two lanes, which is
- *     correct: the two lanes are two consensus protocols.
+ *     block CONTINUES. (The deleted legacy lane's phase order — SYSTEM →
+ *     cross-domain → domain-local — was a different consensus protocol's
+ *     rule.)
  *   · REFUSAL. A decided block is never refused. EVERY negative the
- *     engine would return in the legacy lane other than -2 becomes -2 in
- *     this one — both -1 CONSENSUS_INVALID and -3 NOT_YET_LINKABLE —
+ *     body produces other than -2 becomes -2 —
+ *     both -1 CONSENSUS_INVALID and -3 NOT_YET_LINKABLE —
  *     including the refusals that are not attributable to one item
  *     (SYSTEM not ACTIVE, an unreadable block context, an unreadable
  *     authority snapshot). A node that cannot apply a decided block
@@ -1330,7 +1197,9 @@ int nodus_witness_v2_local_index_find(const uint8_t ids[][64], uint32_t n,
 /**
  * THE COMETBFT-LANE GENESIS (FLEET-TM-R3 W2, package R3-C1b).
  *
- * Everything nodus_witness_v2_genesis_ex does to the LEDGER's state —
+ * THE genesis (the version-2 entry nodus_witness_v2_genesis_ex, which it
+ * was written beside, is deleted since tokenomics-v3 P4). Everything
+ * that entry did to the LEDGER's state —
  * the registry's genesis initialisation, the committed genesis manifest,
  * one canonical activation DomainHead per ACTIVE domain with its
  * height-0 root-history row, the domains/global roots, the committed-
@@ -1355,8 +1224,8 @@ int nodus_witness_v2_local_index_find(const uint8_t ids[][64], uint32_t n,
  * derivation builds the ledger at S12 and climbs to S14 afterwards
  * (nodus_witness_v2_gen_derive_v3, step 9), and this entry admitted both
  * versions for that one window. W3 narrowed it back to S14 in the same
- * commit that widens the pool gate. The version-2 entry's gate (S9-S12)
- * is untouched and stays the live path's.
+ * commit that widens the pool gate. (The version-2 entry's own S9-S12
+ * gate is deleted with it, tokenomics-v3 P4.)
  *
  * CURRENT (tokenomics-v3 P2): the destination is S16 (P1 round 5 had
  * S15) — the derivation climbs S12 -> S16 (`nodus_witness_db_migrate_
@@ -1366,8 +1235,9 @@ int nodus_witness_v2_local_index_find(const uint8_t ids[][64], uint32_t n,
  * climb, not today's target version. The entry also writes the epoch-0
  * frozen balance copy (nodus_witness_v2_balance_copy_write, P2-5).
  *
- * NOT IDEMPOTENT, and it cannot be: the version-2 entry decides "already
- * done" from the height-0 row this one does not write. A database that
+ * NOT IDEMPOTENT, and it cannot be: the deleted version-2 entry decided
+ * "already done" from the height-0 row this one does not write. A
+ * database that
  * already carries a committed genesis manifest is REFUSED here. Under
  * D-23 rev 5 (7) that is the right shape anyway — a restarting node
  * VERIFIES its committed genesis through InitChain, it never re-applies

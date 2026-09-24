@@ -113,7 +113,9 @@ static int run_sql(sqlite3 *db, const char *sql) {
     return rc == SQLITE_OK ? 0 : -1;
 }
 
-/* Open an EMPTY chain DB at S11 — the joiner the old-magic case feeds. */
+/* Open an EMPTY chain DB at S11 — the joiner the old-magic case feeds.
+ * (S11 creates no table since the P4 fix round deleted `v2_tx_bytes`;
+ * the rung still moves the version.) */
 static int fx_open(fixture_t *fx, const char *tag) {
     memset(fx, 0, sizeof(*fx));
     fx->w = calloc(1, sizeof(*fx->w));

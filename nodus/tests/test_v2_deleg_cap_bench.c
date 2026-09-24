@@ -58,7 +58,11 @@
  *     per-block root recomputation a real boundary block also pays (the
  *     SYSTEM root over every delegation leaf, the CORE root over every
  *     UTXO and accrual row). That cost exists on every block of a chain
- *     this full, boundary or not, and is NOT measured here.
+ *     this full, boundary or not, and is NOT measured here. Because no
+ *     block is driven, the successor committee seed's inputs at E − 1
+ *     (the Comet block-store records 1 … E − 1 and one v2_blocks row)
+ *     are PLANTED — identity rows only, out of every root; the chain is
+ *     a seeded version-3 genesis (tokenomics-v3 P4).
  *  2. Attendance is written straight into v2_attendance (every member
  *     signed every block of the epoch), so the distribution pays every
  *     member — the worst (most work) case, not a typical one.
@@ -217,9 +221,9 @@ int main(void) {
     snprintf(w->data_path, sizeof(w->data_path), "%s", dir);
     uint8_t cid16[16];
     memset(cid16, 0x4E, sizeof(cid16));
-    CHECK(nodus_witness_create_chain_db(w, cid16) == 0, "chain db");
-    CHECK(nodus_chain_config_db_migrate(w) == 0, "cc migrate");
-    CHECK(nodus_witness_db_migrate_v2s9(w) == 0, "v2 migrate");
+    /* tokenomics-v3 P4: a SEEDED VERSION-3 GENESIS (v2_genesis_fixture.h)
+     * — v2x_seed_prepare here, the test's rows, v2x_seed_genesis below */
+    CHECK(v2x_seed_prepare(w, cid16, 0) == 0, "pre-genesis chain db");
 
     /* ── stage 1: 32 ACTIVE + 1 RETIRING validators, 33 × 2048
      *    delegations, the supply row with the reward reserve ─────────── */
@@ -294,34 +298,53 @@ int main(void) {
     CHECK(nodus_witness_vset_commit_genesis(w, 1) == 0, "genesis snapshots");
     const double t_seed1 = now_ms();
 
-    /* ── stage 2: the engine genesis (writes copy(0)) ─────────────────── */
-    uint8_t vset[64], chain_id[DNA_CHAIN_ID_LEN];
-    memset(vset, 0x77, sizeof(vset));
+    /* ── stage 2: the engine genesis (writes copy(0)) — the seeded
+     *    version-3 genesis: registry, nodus_witness_v2_genesis_cmt, the
+     *    stored document, the reopen through the production open path ─ */
+    uint8_t chain_id[DNA_CHAIN_ID_LEN];
     const double t_gen0 = now_ms();
-    CHECK(v2x_genesis_min(w, vset, NULL, NULL) == 0, "v2 genesis");
+    /* not a real genesis: a spendable UTXO_A row (fee funding) and a
+     * RETIRING graduate — the boundary under measurement — which a
+     * version-3 genesis (every row ACTIVE, no UTXOs) cannot write */
+    v2x_seed_not_real(V2X_SEED_NOT_REAL_UTXOS | V2X_SEED_NOT_REAL_STATUSES);
+    CHECK(v2x_seed_genesis(w, cid16, 0, NULL, 0, NULL) == 0, "v3 genesis");
     const double t_gen1 = now_ms();
     CHECK(nodus_witness_v2_chain_id(w, chain_id) == 0, "chain id");
     CHECK(q1(w, "SELECT COUNT(*) FROM v2_balance_copy WHERE epoch_start = 0")
               == (int64_t)(N_VAL + 1) * (1 + N_DEL),
           "copy(0): 33 bonds + 33 × 2048 delegations");
 
-    /* ── the boundary's inputs the fixture lane must plant: the legacy
-     *    lookback row commit_next(E) seeds its tiebreak from (non-
-     *    successor lane, the test_v2_epoch.c shape), and a full-epoch
-     *    attendance row per seated member ─────────────────────────────── */
+    /* ── the boundary's inputs the bench must plant, because it applies
+     *    the boundary directly instead of driving E − 1 blocks:
+     *    (a) the successor committee seed commit_next(E) reads at the
+     *        lookback height E − 1 (committee.c v2_seed_block_id): the
+     *        Comet block-store record there — the store keeps heights
+     *        contiguous, so records 1 … E − 1 are written, exactly the
+     *        ones the fixture host (v2x_cmt_apply) writes per block —
+     *        and the v2_blocks row at E − 1 whose block_id is that
+     *        record's hash (v2_blocks is out of every root);
+     *    (b) a full-epoch attendance row per seated member (also out of
+     *        every root). ─────────────────────────────────────────────── */
     {
         sqlite3_stmt *st = NULL;
-        uint8_t sr[64];
-        memset(sr, 0x5A, sizeof(sr));
+        uint8_t hash[64], nvh[64], prop[32];
+        uint64_t secs = 0;
+        CHECK(run_sql(w->db, "BEGIN IMMEDIATE") == 0, "begin lookback");
+        for (uint64_t h = 1; h <= E - 1; h++)
+            CHECK(v2x_cmt_store_block(w, h, hash, nvh, prop, &secs) == 0,
+                  "block-store record");
         CHECK(sqlite3_prepare_v2(w->db,
-                  "INSERT OR IGNORE INTO blocks (height, tx_root, tx_count, "
-                  "timestamp, proposer_id, prev_hash, state_root, created_at) "
-                  "VALUES (?1, zeroblob(64), 0, 0, zeroblob(32), zeroblob(64), "
-                  "?2, 0)", -1, &st, NULL) == SQLITE_OK, "prep block");
+                  "INSERT INTO v2_blocks (global_height, block_id, "
+                  "prev_block_id, epoch, tx_root, domain_updates_root, "
+                  "domains_root, global_root, vset_hash, tx_count) VALUES "
+                  "(?1, ?2, zeroblob(64), 0, zeroblob(64), zeroblob(64), "
+                  "zeroblob(64), zeroblob(64), zeroblob(64), 0)",
+                  -1, &st, NULL) == SQLITE_OK, "prep v2_blocks");
         sqlite3_bind_int64(st, 1, (sqlite3_int64)(E - 1));
-        sqlite3_bind_blob(st, 2, sr, 64, SQLITE_TRANSIENT);
-        CHECK(sqlite3_step(st) == SQLITE_DONE, "lookback row");
+        sqlite3_bind_blob(st, 2, hash, 64, SQLITE_TRANSIENT);
+        CHECK(sqlite3_step(st) == SQLITE_DONE, "lookback v2_blocks row");
         sqlite3_finalize(st);
+        CHECK(run_sql(w->db, "COMMIT") == 0, "commit lookback");
         for (int v = 0; v < N_VAL; v++) {
             uint8_t full[64];
             val_pk(v, pk);

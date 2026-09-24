@@ -2687,15 +2687,11 @@ int nodus_witness_v2_gen_derive_v3(const char *data_path,
          * old-lane sync2 block server, deleted by R3 W4). The migration
          * ladder inside nodus_witness_v2_schema.c reads its own starting
          * version at every rung and gates nothing else; excluding it,
-         * the gates are, by function:
-         *   nodus_witness_v2_genesis_ex         (the version-2 engine
-         *                                        genesis, S9-S12 — the
-         *                                        closed old lane)
-         *   v2_apply_block_body, cmt.on branch  (Comet-lane block apply,
+         * the gates are, by function (tokenomics-v3 P4 deleted the
+         * version-2 engine genesis and the legacy-lane block apply, the
+         * two S9-S12 gates this list used to carry):
+         *   v2_apply_block_body                 (Comet-lane block apply,
          *                                        S16 only)
-         *   v2_apply_block_body, else branch    (legacy-lane block apply,
-         *                                        S9-S12 — the closed old
-         *                                        lane)
          *   nodus_witness_v2_genesis_cmt        (this lane's genesis, S16
          *                                        only)
          *   nodus_witness_v2_pools_startup_check

@@ -48,7 +48,8 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include "v2_genesis_fixture.h"   /* v2x_seed_authority / v2x_block_id_at /
+#include "v2_genesis_fixture.h"   /* the seeded version-3 genesis, the
+                                   * cometbft-lane host (v2x_cmt_apply) and
                                    * v2x_db_digest — the whole-DB oracle */
 
 #define CHECK(cond, msg) do { \
@@ -201,11 +202,17 @@ static int schema_present(sqlite3 *db) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
- * S12 apply-side fixture: a present-distribution successor genesis at S12,
- * then a claim block through the REAL apply engine — proving phase 12c
+ * S12 apply-side fixture: a present-distribution seeded version-3 genesis
+ * (the live rung S16 carries the S12 claim tables), then a claim block
+ * through the REAL apply engine's cometbft lane — proving phase 12c
  * persists v2_claim_counts (every block) + v2_claim_bytes (byte-equal to
- * the submitted canonical claim), and that F49 rolls both back with the
- * whole-DB digest unchanged. Distribution/claim shape mirrors
+ * the submitted canonical claim), and that F49 (a block-stage point, a
+ * node FAULT) rolls both back with the whole-DB digest unchanged.
+ * tokenomics-v3 P4: this used to build an S12 LEGACY genesis
+ * (nodus_witness_v2_genesis_ex, deleted); the subject — phase-12c
+ * persistence — is the cometbft lane's too, so it is kept on the live
+ * genesis rather than deleted with the old one. Distribution/claim shape
+ * mirrors
  * test_v2_claims.c (the T4 dispatch's "reuse the claim fixtures").
  * ════════════════════════════════════════════════════════════════════ */
 
@@ -288,10 +295,16 @@ static int s12_build_dist_manifest(nodus_witness_t *w, uint8_t *out,
         return -1;
     if (dna_domman_hash(&dm, core_h) != 0) return -1;
 
+    /* the COMMITTED genesis supply: the seeded genesis adds the
+     * document committee's bonds to the 1000 the test declares
+     * (v2x_seed_rows), and the manifest must name what is committed */
+    uint64_t gs = s12_q1(w, "SELECT genesis_supply FROM supply_tracking");
+    if (gs == UINT64_MAX) return -1;
+
     dna_gman_t m;
     memset(&m, 0, sizeof(m));
     m.manifest_version   = DNA_GMAN_VERSION;
-    m.genesis_supply_raw = 1000;
+    m.genesis_supply_raw = gs;
     m.domain_count       = 2;
     m.domains[0].domain_id = DNA_DOMAIN_SYSTEM;
     memcpy(m.domains[0].manifest_hash, sys_h, 64);
@@ -323,18 +336,26 @@ static int s12_build_dist_manifest(nodus_witness_t *w, uint8_t *out,
     return dna_gman_encode(&m, out, cap, out_len);
 }
 
-/* fresh fixture → S12 → present-distribution genesis. Reports the derived
- * chain id + genesis BlockID + the committed manifest hash. */
+/* fresh fixture → a present-distribution SEEDED VERSION-3 genesis
+ * (tokenomics-v3 P4; v2_genesis_fixture.h): v2x_seed_prepare (the live
+ * rung S16, which carries the S12 claim tables), the test's supply +
+ * CORE utxo, the document committee's rows (v2x_seed_rows), the
+ * registry, then v2x_seed_genesis over the distribution manifest.
+ * Reports the derived chain id + the committed manifest hash. */
 static int s12_open_dist(fixture_t *fx, uint8_t out_chain[32],
-                         uint8_t out_gid[64], uint8_t out_mh[64]) {
-    if (fx_open(fx) != 0) return -1;
-    if (nodus_chain_config_db_migrate(fx->w) != 0) return -1;
-    if (nodus_witness_db_migrate_v2s12(fx->w) != 0) return -1;
+                         uint8_t out_mh[64]) {
+    fx->w = calloc(1, sizeof(*fx->w));   /* multi-MB — ALWAYS heap */
+    if (!fx->w) return -1;
+    snprintf(fx->dir, sizeof(fx->dir), "/tmp/test_v2_schema_XXXXXX");
+    if (!mkdtemp(fx->dir)) { free(fx->w); fx->w = NULL; return -1; }
+    snprintf(fx->w->data_path, sizeof(fx->w->data_path), "%s", fx->dir);
+    memset(fx->chain_id16, 0x22, sizeof(fx->chain_id16));
+    if (v2x_seed_prepare(fx->w, fx->chain_id16, 0) != 0) return -1;
     /* supply + CORE utxo BEFORE the registry commits genesis roots */
     if (s12_seed_supply(fx->w, 1000 - 32) != 0) return -1;
-    /* committed validator authority BEFORE domreg genesis (the vset leg
-     * feeds the SYSTEM payload root genesis re-derives). */
-    if (v2x_seed_authority(fx->w) != 0) return -1;
+    /* committee + committed validator authority BEFORE domreg genesis
+     * (the validator and vset legs feed the SYSTEM payload root) */
+    if (v2x_seed_rows(fx->w, 0) != 0) return -1;
     if (nodus_witness_domreg_init_genesis(fx->w) != 0) return -1;
 
     uint8_t mbytes[8192];
@@ -342,29 +363,11 @@ static int s12_open_dist(fixture_t *fx, uint8_t out_chain[32],
     if (s12_build_dist_manifest(fx->w, mbytes, sizeof(mbytes), &mlen,
                                 out_mh) != 0)
         return -1;
-
-    uint8_t vsh[DNA_VSET_HASH_LEN];
-    memset(vsh, 0x77, sizeof(vsh));
-    {
-        dna_vset_snapshot_t *s0 = NULL;
-        uint32_t sn = 0, sq = 0;
-        if (nodus_witness_v2_epoch_authority_for_height(fx->w, 0, &s0, &sn,
-                                                        &sq) != 0 || !s0) {
-            dna_vset_free(&s0);
-            return -1;
-        }
-        int hrc = dna_vset_hash(s0, vsh);
-        dna_vset_free(&s0);
-        if (hrc != 0) return -1;
-    }
-    if (nodus_witness_v2_genesis_ex(fx->w, NULL, vsh, 0, mbytes, mlen) != 0)
-        return -1;
-
-    uint8_t gid[64];
-    if (v2x_block_id_at(fx->w, 0, gid) != 0) return -1;
-    if (out_gid)   memcpy(out_gid, gid, 64);
-    if (out_chain) memcpy(out_chain, gid, 32);
-    return 0;
+    /* not a real genesis: the non-claimable remainder is ONE spendable
+     * genesis UTXO (s12_seed_supply) */
+    v2x_seed_not_real(V2X_SEED_NOT_REAL_UTXOS);
+    return v2x_seed_genesis(fx->w, fx->chain_id16, 0, mbytes, mlen,
+                            out_chain);
 }
 
 static int s12_make_claim(dna_claim_t *c, int leaf, const uint8_t chain[32],
@@ -453,20 +456,20 @@ static int run_s12_apply_matrix(void) {
     /* ── A. claim-bearing block: counts[h]==n, bytes byte-equal ──────── */
     {
         fixture_t fx;
-        uint8_t chain[32], gid[64], mh[64];
-        CHECK(s12_open_dist(&fx, chain, gid, mh) == 0,
-              "S12 present-distribution genesis"); OK();
+        uint8_t chain[32], mh[64];
+        CHECK(s12_open_dist(&fx, chain, mh) == 0,
+              "present-distribution genesis"); OK();
         uint32_t sv = 0;
-        CHECK(nodus_witness_db_schema_version(fx.w, &sv) == 0 && sv == 12,
-              "fixture DB at S12"); OK();
+        CHECK(nodus_witness_db_schema_version(fx.w, &sv) == 0 && sv == 16,
+              "fixture DB at the live rung S16"); OK();
         CHECK(has_table(fx.w->db, "v2_claim_bytes") == 1 &&
               has_table(fx.w->db, "v2_claim_counts") == 1,
               "S12 claim tables present"); OK();
 
-        /* genesis (h=0) is committed by nodus_witness_v2_genesis_ex, NOT
-         * the apply-block phase-12c path — so it carries NO count row,
-         * exactly as it carries no v2_tx_bytes rows. Genesis is served to
-         * a joiner via the Faz D bundle, never the claim-count seam. */
+        /* genesis is committed by nodus_witness_v2_genesis_cmt, NOT the
+         * apply-block phase-12c path — so it carries NO count row.
+         * Genesis is served to
+         * a joiner as the stored document, never the claim-count seam. */
         CHECK(s12_q1(fx.w, "SELECT COUNT(*) FROM v2_claim_counts "
                            "WHERE global_height=0") == 0,
               "genesis carries no count row (bundle-served)"); OK();
@@ -482,7 +485,7 @@ static int run_s12_apply_matrix(void) {
         dna_claim_t claims[2] = { c0, c1 };
         nodus_v2_block_t b;
         s12_mk_block(&b, 1, claims, 2);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "claim block h=1 commits"); OK();
 
         CHECK(s12_q1(fx.w, "SELECT n_claims FROM v2_claim_counts "
@@ -503,7 +506,7 @@ static int run_s12_apply_matrix(void) {
         /* ── B. claim-free block: count row 0, no bytes rows ─────────── */
         nodus_v2_block_t b2;
         s12_mk_block(&b2, 2, NULL, 0);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b2) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b2) == 0,
               "claim-free block h=2 commits"); OK();
         CHECK(s12_q1(fx.w, "SELECT n_claims FROM v2_claim_counts "
                            "WHERE global_height=2") == 0,
@@ -519,9 +522,9 @@ static int run_s12_apply_matrix(void) {
     /* ── C. F49 fault → whole-DB digest-identical rollback + clean retry ─ */
     {
         fixture_t fx;
-        uint8_t chain[32], gid[64], mh[64];
-        CHECK(s12_open_dist(&fx, chain, gid, mh) == 0,
-              "S12 fixture for F49"); OK();
+        uint8_t chain[32], mh[64];
+        CHECK(s12_open_dist(&fx, chain, mh) == 0,
+              "fixture for F49"); OK();
 
         dna_claim_t c0, c1;
         CHECK(s12_make_claim(&c0, 0, chain, mh) == 0, "F49 claim0");
@@ -534,8 +537,12 @@ static int run_s12_apply_matrix(void) {
         nodus_v2_block_t bf;
         s12_mk_block(&bf, 1, claims, 2);
         bf.fail_at = V2AP_FAIL_AFTER_CLAIM_BYTES;
-        CHECK(nodus_witness_v2_apply_block(fx.w, &bf) == -1,
-              "F49 rejects (verdict)"); OK();
+        /* a BLOCK-stage point: a node FAULT in the cometbft lane (the
+         * legacy lane reported it as a verdict, -1) */
+        CHECK(v2x_cmt_apply(fx.w, &bf) == NODUS_V2_INTERNAL_FAULT &&
+              v2x_reason_is(&bf, V2X_VERDICT, "V2AP_FAIL_AFTER_CLAIM_BYTES")
+                  == 0,
+              "F49 faults the block"); OK();
 
         uint8_t d_after[64];
         CHECK(v2x_db_digest(fx.w, d_after) == 0, "digest after F49"); OK();
@@ -553,7 +560,7 @@ static int run_s12_apply_matrix(void) {
         dna_claim_t claims2[2] = { c0, c1 };
         nodus_v2_block_t bok;
         s12_mk_block(&bok, 1, claims2, 2);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &bok) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &bok) == 0,
               "clean retry commits"); OK();
         CHECK(s12_q1(fx.w, "SELECT n_claims FROM v2_claim_counts "
                            "WHERE global_height=1") == 2,
@@ -864,10 +871,14 @@ int main(void) {
         CHECK(has_table(f12.w->db, "v2_claim_bytes") == 1 &&
               has_table(f12.w->db, "v2_claim_counts") == 1,
               "S12 tables missing"); OK();
-        /* the earlier schemas remain present (additive superset) */
-        CHECK(has_table(f12.w->db, "v2_tx_bytes") == 1 &&
-              has_table(f12.w->db, "v2_blocks") == 1,
+        /* the earlier schemas remain present (additive superset) — and
+         * the S11 rung is EMPTY since the tokenomics-v3 P4 fix round:
+         * `v2_tx_bytes` (no reader, and its UNIQUE tx_id halted the
+         * chain on a replayed envelope) is created by no rung */
+        CHECK(has_table(f12.w->db, "v2_blocks") == 1,
               "S12 dropped an earlier table"); OK();
+        CHECK(has_table(f12.w->db, "v2_tx_bytes") == 0,
+              "a fresh database must not get v2_tx_bytes"); OK();
         /* idempotent re-run */
         CHECK(nodus_witness_db_migrate_v2s12(f12.w) == 0, "re-run 12"); OK();
         CHECK(nodus_witness_db_schema_version(f12.w, &ver) == 0 && ver == 12,
@@ -972,9 +983,10 @@ int main(void) {
         /* the earlier schemas remain present (additive superset) */
         CHECK(has_table(s13f.w->db, "v2_claim_bytes") == 1 &&
               has_table(s13f.w->db, "v2_claim_counts") == 1 &&
-              has_table(s13f.w->db, "v2_tx_bytes") == 1 &&
               has_table(s13f.w->db, "v2_blocks") == 1,
               "S13 dropped an earlier table"); OK();
+        CHECK(has_table(s13f.w->db, "v2_tx_bytes") == 0,
+              "no rung creates v2_tx_bytes (P4 fix round)"); OK();
         /* idempotent re-run */
         CHECK(nodus_witness_db_migrate_v2s13(s13f.w) == 0, "re-run 13"); OK();
         CHECK(nodus_witness_db_schema_version(s13f.w, &ver) == 0 && ver == 13,

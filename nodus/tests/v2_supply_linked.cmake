@@ -17,9 +17,11 @@
 # replacement CANNOT EXIST IN PRODUCTION where the original could.
 #
 # (Review R2-F5 corrected the count: test_v2_claims was given the macro
-# too, but it never calls v2x_genesis_min and so never arms the bypass —
-# all nine of its supply assertions run live. It was dropped back to a
-# plain register_witness_test.)
+# too, but it never armed the bypass — all nine of its supply assertions
+# run live. It was dropped back to a plain register_witness_test.
+# tokenomics-v3 P4: the fixture helpers that arm it for the two bypass
+# targets are now v2x_chain_open / v2x_seed_genesis in
+# v2_genesis_fixture.h; the deleted v2x_genesis_min used to.)
 #
 # WHY A LINK GATE AND NOT A C TEST
 # A C test proves things about the binary it is compiled into, and those

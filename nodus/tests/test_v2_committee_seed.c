@@ -117,8 +117,7 @@
 #include "dnac/cmt_pb_store.h"                 /* cmt_pb_store_block_meta_* */
 
 #include "../tests/v2_genesis_fixture.h"        /* v2x_db_digest (schema-
-                                                  * independent) + the
-                                                  * §7 legacy sub-fixture */
+                                                  * independent) */
 
 #define CHECK(cond, msg) do { \
     if (!(cond)) { \
@@ -682,11 +681,11 @@ static int committee_matches(const fixture_t *fx,
  * this delta does not touch at all. This sub-fixture is therefore kept
  * in its PRE-delta-10 shape: the old S9-era construction, not the v3
  * derivation above — proving the legacy path still behaves exactly as
- * before is a claim about code this delta never changed. */
+ * before is a claim about code this delta never changed. Since
+ * tokenomics-v3 P4 it commits NO V2 genesis (see legacy_fx_open). */
 typedef struct {
     nodus_witness_t *w;
     char             dir[128];
-    uint8_t          chain_id[32];
 } legacy_fixture_t;
 
 static int legacy_seed_validators(legacy_fixture_t *fx, uint8_t pks[N_VAL][DNAC_PUBKEY_SIZE]) {
@@ -768,18 +767,15 @@ static int legacy_fx_open(legacy_fixture_t *fx) {
         return -1;
     }
 
-    uint8_t vset[64], gid[64];
-    memset(vset, 0x77, sizeof(vset));
-    if (v2x_genesis_min(fx->w, vset, gid, NULL) != 0) {
-        legacy_fx_close(fx);
-        return -1;
-    }
-    if (nodus_witness_v2_chain_id(fx->w, fx->chain_id) != 0) {
-        legacy_fx_close(fx);
-        return -1;
-    }
-
-    fx->w->v2_successor = false;   /* a LEGACY chain */
+    /* tokenomics-v3 P4: NO V2 genesis. This sub-fixture used to commit
+     * a legacy-lane genesis (v2x_genesis_min → nodus_witness_v2_genesis_ex,
+     * both deleted with the lane). The branch under test never read
+     * anything that genesis wrote — it reads the validators, the
+     * committee target, the frozen copy and the terminal `blocks` row —
+     * and a database that is NOT a version-3 successor is, since the
+     * deletion, exactly a database with no committed V2 genesis: the
+     * only state in which this branch is reached at all. */
+    fx->w->v2_successor = false;   /* not a version-3 successor */
     return 0;
 }
 

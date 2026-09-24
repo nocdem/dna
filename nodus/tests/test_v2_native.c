@@ -26,16 +26,20 @@
  *      wrong set hash, kind-1-no-approvals, allowlist), snapshot
  *      ROTATION, validity-window shape, FRESHNESS, grace, duplicate
  *      (param, effective), retired param 3 (INFLATION_START), nonzero
- *      fee_amount — rejects digest-proven; CC fault matrix F26/F28/
- *      F34/F13/F14.
+ *      fee_amount — each refused as an item, the ledger byte-identical;
+ *      CC fault matrix F13/F31/F37 (the cometbft lane's points).
  *   4. CORE slice — SPEND: valid transfer + change; multi-input/multi-
  *      owner; exact-value; fee pooled exactly once (P2-3); per-token
  *      conservation; duplicate/missing/spent inputs; wrong owner;
  *      locked input; value mismatch; overflow; duplicate output id;
  *      cross-domain UTXO substitution; supply invariant equality.
- *   5. ENGINE — new fault points 28-33 (digest rollback), exact meter
- *      accounting of the consumed units, restart/replay idempotency,
+ *   5. ENGINE — the item fault points 29-33/37/38 (ledger rollback),
+ *      exact meter accounting of the consumed units, re-applying a
+ *      committed height writes nothing (before and after a restart),
  *      twin-fixture root determinism.
+ *   Every block goes through the cometbft lane with the test as host
+ *   (tokenomics-v3 P4, v2_genesis_fixture.h v2x_cmt_apply) over a seeded
+ *   version-3 genesis (fx_genesis_n / fx_pre + fx_seal).
  *   6. (§11, O11) SYSTEM slice — STAKE + the CORE funding leg: the
  *      first CROSS-DOMAIN operation. Two positives (destination
  *      fingerprint derived from the staker's own key and not), a
@@ -225,6 +229,24 @@ static uint64_t q1(nodus_witness_t *w, const char *sql) {
     return v;
 }
 
+/* P4 fix round — the per-item "left no identity" check (the twin of
+ * test_v2_apply.c's): only an APPLIED item is indexed (cmt_item_index,
+ * nodus_witness_v2_apply.c) and its global_index counts APPLIED items
+ * only, so a block whose refused items left nothing behind has EXACTLY
+ * `applied` rows at its height in the wire index AND the intent index.
+ * 0 / -1. */
+static int idx_rows_are(nodus_witness_t *w, uint64_t h, uint64_t applied) {
+    char sql[160];
+    snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM v2_tx_index WHERE "
+             "global_height = %llu", (unsigned long long)h);
+    if (q1(w, sql) != applied) return -1;
+    snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM v2_intent_index "
+             "WHERE global_height = %llu", (unsigned long long)h);
+    return q1(w, sql) == applied ? 0 : -1;
+}
+
+static uint64_t utxo_rows(nodus_witness_t *w, const uint8_t nul[64]);
+
 typedef struct { uint8_t *buf; size_t len, cap; } dyn_t;
 static int dyn_put(dyn_t *d, const void *p, size_t n) {
     if (d->len + n > d->cap) {
@@ -294,21 +316,29 @@ static void mk_block(nodus_v2_block_t *b, uint64_t h,
     memset(b, 0, sizeof(*b));
     b->global_height = h;
     b->epoch = nodus_v2_epoch_for_height(h);
-    /* O14 leader mode: identity is DERIVED, never carried. */
     b->envs = envs;
     b->n_envs = n;
 }
 
-/* reject with digest-identical rollback proof; reports the rc class */
-static int apply_reject(nodus_witness_t *w, nodus_v2_block_t *b,
-                        int *rc_out) {
-    uint8_t d0[64], d1[64];
-    if (db_state_digest(w, d0) != 0) return 1;
-    int rc = nodus_witness_v2_apply_block(w, b);
-    if (rc_out) *rc_out = rc;
-    if (rc != -1 && rc != -2) return 1;
-    if (db_state_digest(w, d1) != 0) return 1;
-    return memcmp(d0, d1, 64) != 0;
+/* THE COMETBFT LANE (tokenomics-v3 P4). Every block goes through
+ * nodus_witness_v2_apply_block's one production lane with the test as
+ * the host (v2_genesis_fixture.h v2x_cmt_apply). The legacy lane's
+ * "the whole block rejects, digest byte-identical" becomes:
+ *
+ *   item_refused — the block APPLIES (engine rc 0) and every item it
+ *     carries is refused with a nonzero code, the ledger byte-identical
+ *     inside the host's transaction; the host then rolls the probe back
+ *     so the next attempt can take the same height, exactly the
+ *     reject-then-retry sequences below (v2x_cmt_refused_probe). Every
+ *     refusal in this file comes from an envelope's own admission,
+ *     authorization or execution — ITEM-level in this lane; a refusal
+ *     that turned out to be block-level would fail here loudly, with
+ *     the engine's reason printed.
+ *   v2x_cmt_fault — a node FAULT, the whole database byte-identical.
+ *   v2x_cmt_injected — a fault point, by its lane class
+ *     (v2x_cmt_fail_class). */
+static int item_refused(nodus_witness_t *w, nodus_v2_block_t *b) {
+    return v2x_cmt_refused_probe(w, b, 0, NULL);
 }
 
 /* seed one CORE utxo owned by key k; nullifier = SHA3(fp128 ‖ seed32)
@@ -362,8 +392,33 @@ static uint8_t g_nul_a[64], g_nul_b[64], g_nul_c[64], g_nul_lock[64];
  * cross-chain intent, now earned rather than asserted. */
 static uint8_t g_gid_fill = 0xEE;
 
+/* tokenomics-v3 P4: a test that needs extra CORE/SYSTEM rows (a locked
+ * UTXO, a token row, ...) seeds them HERE, before the genesis state is
+ * committed. A post-genesis SQL write into a root leg moves a domain
+ * root no block item touched, and the next block — even one whose
+ * every item is refused — is a node FAULT at the untouched-domain guard
+ * (phase 8). One-shot: fx_genesis_n clears it after use. */
+static int (*g_fx_pre_genesis)(fixture_t *fx) = NULL;
+static int g_fx_no_seal = 0;          /* fx_pre: stop before the seal     */
+
+/* commit the version-3 genesis over the fixture's rows (v2x_seed_genesis:
+ * committee authority, domain registry, manifest, genesis roots, the
+ * stored document, reopen through the production open path) and read
+ * the derived chain id */
+static int fx_seal(fixture_t *fx) {
+    /* not a real genesis: every fixture here seeds spendable genesis
+     * UTXOs (A, B, C and the tests' own funding rows) */
+    v2x_seed_not_real(V2X_SEED_NOT_REAL_UTXOS);
+    if (v2x_seed_genesis(fx->w, fx->chain_id16, 0, NULL, 0, NULL) != 0)
+        return -1;
+    return nodus_witness_v2_chain_id(fx->w, fx->chain_id) == 0 ? 0 : -1;
+}
+
 static int fx_genesis_n(fixture_t *fx, const char *tag,
                         const uint8_t (*vkeys)[2592], int nval) {
+    /* one-shot: consumed before anything can fail */
+    int (*pre)(fixture_t *) = g_fx_pre_genesis;
+    g_fx_pre_genesis = NULL;
     fx->w = calloc(1, sizeof(*fx->w));
     if (!fx->w) return -1;
     /* the live constructor's cache sentinel (nodus_witness.c:649) — a
@@ -375,10 +430,12 @@ static int fx_genesis_n(fixture_t *fx, const char *tag,
     if (!mkdtemp(fx->dir)) { free(fx->w); fx->w = NULL; return -1; }
     snprintf(fx->w->data_path, sizeof(fx->w->data_path), "%s", fx->dir);
     memset(fx->chain_id16, 0x4E, sizeof(fx->chain_id16));
-    if (nodus_witness_create_chain_db(fx->w, fx->chain_id16) != 0)
-        return -1;
-    if (nodus_chain_config_db_migrate(fx->w) != 0) return -1;
-    if (nodus_witness_db_migrate_v2s9(fx->w) != 0) return -1;
+    /* tokenomics-v3 P4: the SEEDED VERSION-3 GENESIS
+     * (v2_genesis_fixture.h): the derivation's step 4 here, this
+     * fixture's own rows below (real-key validators bonding VAL_BOND,
+     * funded UTXOs, a target seat count other than 7 — none of which a
+     * version-3 config can express), then v2x_seed_genesis. */
+    if (v2x_seed_prepare(fx->w, fx->chain_id16, 0) != 0) return -1;
 
     if (nval != 7) {
         char sql[256];
@@ -392,8 +449,9 @@ static int fx_genesis_n(fixture_t *fx, const char *tag,
 
     /* nval ACTIVE validators = the bootstrap committee.
      * O11: each row carries a REAL 128-hex unstake_destination_fp (its
-     * own key's fingerprint) — that is what the legacy lane writes on
-     * every STAKE (bft.c:1591, qgp_fp_raw_to_hex) and what live genesis
+     * own key's fingerprint) — that is what every STAKE writes (the
+     * STAKE rule in nodus_witness_rt_native.c, carried over from the
+     * deleted legacy lane's bft.c:1591, qgp_fp_raw_to_hex) and what live genesis
      * chain_defs carry. The earlier memset-empty fp was an unrealistic
      * fixture shape: the V2 writable-shape verdict rightly WRITE-FREEZES
      * such rows (legacy-malformed), which would make every delegation
@@ -444,20 +502,32 @@ static int fx_genesis_n(fixture_t *fx, const char *tag,
     if (seed_utxo(fx, 7, UTXO_B, 0xA2, 0, g_nul_b) != 0) return -1;
     if (seed_utxo(fx, 8, UTXO_C, 0xC1, 0, g_nul_c) != 0) return -1;
 
-    /* O14: the chain is differentiated by the committed VALIDATOR SET,
-     * since genesis must bind the committed authority. This fixture
-     * seeds its own real-key validators above, so vary the set by also
-     * seeding a filler keyed on g_gid_fill BEFORE genesis. */
-    uint8_t vset[64];
-    mk_id(vset, g_gid_fill);
-    if (v2x_seed_authority_fill(fx->w, g_gid_fill) != 0) return -1;
-    if (v2x_genesis_min(fx->w, vset, NULL, NULL) != 0) return -1;
-    if (nodus_witness_v2_chain_id(fx->w, fx->chain_id) != 0) return -1;
-    return 0;
+    /* The chain is differentiated by its committed genesis STATE: a
+     * non-default g_gid_fill moves every validator's commission_bps
+     * (above), which moves the SYSTEM root, the genesis global root the
+     * document commits as app_hash, and therefore the chain id. The
+     * committed authority (snapshots 0/E) is built from these rows by
+     * v2x_seed_genesis itself. */
+    if (pre && pre(fx) != 0) return -1;
+    if (g_fx_no_seal) return 0;
+    return fx_seal(fx);
 }
 
 static int fx_genesis(fixture_t *fx, const char *tag) {
     return fx_genesis_n(fx, tag, (const uint8_t (*)[2592])g_pk, 7);
+}
+
+/* fx_genesis WITHOUT the seal: the fixture's genesis rows are written,
+ * the genesis is NOT committed yet. The test seeds its own extra rows
+ * (funding utxos, …) into this pre-genesis database, then calls
+ * fx_seal — so they are part of the committed genesis state, exactly as
+ * g_fx_pre_genesis rows are (see there for why a post-genesis seed
+ * cannot be used ahead of a refusal-only block). */
+static int fx_pre(fixture_t *fx, const char *tag) {
+    g_fx_no_seal = 1;
+    int rc = fx_genesis(fx, tag);
+    g_fx_no_seal = 0;
+    return rc;
 }
 
 static void fx_close(fixture_t *fx) {
@@ -1143,8 +1213,7 @@ static int test_auth(void) {
         ve.env_bytes = e.bytes;
         ve.env_len = e.len;
         mk_block(&b, 1, &ve, 1);
-        int rc = 0;
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1, neg[i].name);
+        CHECK(item_refused(fx.w, &b) == 0, neg[i].name);
         OK();
     }
 
@@ -1164,8 +1233,7 @@ static int test_auth(void) {
         ve.env_bytes = e.bytes;
         ve.env_len = e.len;
         mk_block(&b, 1, &ve, 1);
-        int rc = 0;
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "disordered signers must reject");
         OK();
     }
@@ -1176,7 +1244,7 @@ static int test_auth(void) {
     ve.env_bytes = e.bytes;
     ve.env_len = e.len;
     mk_block(&b, 1, &ve, 1);
-    CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+    CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
           "valid authorization must commit");
     OK();
 
@@ -1184,9 +1252,10 @@ static int test_auth(void) {
      * Dilithium signing is randomized, so re-signing the SAME intent
      * yields a second envelope with a DIFFERENT wire_id. It must not
      * double-spend — and BOTH guards would now kill it: the committed-
-     * intent replay guard (fires first, pre-BEGIN) and the spent-input
-     * guard (the first commit consumed the inputs). This is the season's
-     * "SPEND replay where both guards would reject" case. */
+     * intent replay guard (fires first — the per-item replay guard, so
+     * the item's code is REPLAY) and the spent-input guard (the first
+     * commit consumed the inputs). This is the season's "SPEND replay
+     * where both guards would reject" case. */
     {
         env_t twin;
         CHECK(spend_env(&fx, &twin, ins, 1, outs, 2, FEE_MIN, s7, 1,
@@ -1196,9 +1265,10 @@ static int test_auth(void) {
               "randomized signing must produce a distinct envelope");
         nodus_v2_envelope_t vt = { twin.bytes, twin.len };
         nodus_v2_block_t b2;
-        mk_block(&b2, 2, &vt, 1);       /* prev links to block 1        */
-        int rc = 0;
-        CHECK(apply_reject(fx.w, &b2, &rc) == 0 && rc == -1,
+        mk_block(&b2, 2, &vt, 1);       /* the height after block 1     */
+        uint32_t code = 0;
+        CHECK(v2x_cmt_refused_probe(fx.w, &b2, 0, &code) == 0 &&
+              code == NODUS_V2_TX_ERR_REPLAY,
               "malleability twin must not double-spend");
         OK();
     }
@@ -1260,13 +1330,12 @@ static int test_authority(void) {
     fx.w->v2_runtime_table = noexec;
     fx.w->v2_runtime_table_n = 2;
     mk_block(&b, 1, &ve, 1);
-    int rc = 0;
-    CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+    CHECK(item_refused(fx.w, &b) == 0,
           "missing exec hook fails closed");
     OK();
     fx.w->v2_runtime_table = noauth;
     mk_block(&b, 1, &ve, 1);
-    CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+    CHECK(item_refused(fx.w, &b) == 0,
           "missing auth hook fails closed");
     OK();
     fx.w->v2_runtime_table = NULL;      /* back to the builtin table    */
@@ -1289,7 +1358,7 @@ static int test_authority(void) {
                                1024, s7, 1, NULL) == 0, "build");
         nodus_v2_envelope_t vo = { e.bytes, e.len };
         mk_block(&b, 1, &vo, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "un-migrated CORE op must reject");
     }
     OK();
@@ -1299,7 +1368,7 @@ static int test_authority(void) {
                                1024, s7, 1, NULL) == 0, "build");
         nodus_v2_envelope_t vo = { e.bytes, e.len };
         mk_block(&b, 1, &vo, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "un-migrated SYSTEM op must reject");
     }
     OK();
@@ -1317,7 +1386,6 @@ static int test_system_cc(void) {
     int voters7[7] = { 0, 1, 2, 3, 4, 5, 6 };
     env_t e;
     nodus_v2_block_t b;
-    int rc = 0;
 
     uint8_t sys_r0[64], core_r0[64];
     CHECK(head_root(fx.w, 0, sys_r0) == 0 &&
@@ -1351,7 +1419,7 @@ static int test_system_cc(void) {
                          NULL) == 0, "build");
             nodus_v2_envelope_t ve = { e.bytes, e.len };
             mk_block(&b, 1, &ve, 1);
-            CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+            CHECK(item_refused(fx.w, &b) == 0,
                   sneg[i].name);
             OK();
         }
@@ -1426,7 +1494,7 @@ static int test_system_cc(void) {
                          &cneg[i].so) == 0, "build");
             nodus_v2_envelope_t ve = { e.bytes, e.len };
             mk_block(&b, 1, &ve, 1);
-            CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+            CHECK(item_refused(fx.w, &b) == 0,
                   cneg[i].name);
             OK();
         }
@@ -1445,7 +1513,7 @@ static int test_system_cc(void) {
                          5, 0, NULL, &so) == 0, "build");
             nodus_v2_envelope_t ve = { e.bytes, e.len };
             mk_block(&b, 1, &ve, 1);
-            CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+            CHECK(item_refused(fx.w, &b) == 0,
                   "proposal substitution invalidates the approvals");
             OK();
         }
@@ -1467,7 +1535,7 @@ static int test_system_cc(void) {
                   "build");
             nodus_v2_envelope_t ve = { e.bytes, e.len };
             mk_block(&b, 1, &ve, 1);
-            CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+            CHECK(item_refused(fx.w, &b) == 0,
                   "kind-1 CC leg (no approvals) fails the quorum gate");
             OK();
         }
@@ -1484,7 +1552,7 @@ static int test_system_cc(void) {
                          5, 0, NULL, &so) == 0, "build");
             nodus_v2_envelope_t ve = { e.bytes, e.len };
             mk_block(&b, 1, &ve, 1);
-            CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+            CHECK(item_refused(fx.w, &b) == 0,
                   "auth kind outside the allowlist must reject");
             OK();
         }
@@ -1501,21 +1569,22 @@ static int test_system_cc(void) {
     {
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "retired param 3 (value 0) must reject");
         OK();
         CHECK(cc_env(&fx, &e, 1, 3, 999, 20000, 0x44, 1, 30000, voters5,
                      5, 0, NULL, NULL) == 0, "build");
         nodus_v2_envelope_t v2e = { e.bytes, e.len };
         mk_block(&b, 1, &v2e, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "retired param 3 (value 999) must reject");
         OK();
     }
 
     /* R3 W4-C delta 3, RED-first retired-id case: an OTHERWISE-valid
      * quorum (5 of 7) proposal for the RETIRED id (1, MAX_TXS_PER_BLOCK)
-     * must still refuse as a deterministic VERDICT (-1), never commit.
+     * must still be refused as an item (a deterministic item code, the
+     * block applying around it), never commit.
      * Same shape (quorum, scalar window, value 5) the surviving positive
      * case below uses — the ONLY thing that differs is the param id.
      * RED on delta 1: at that point scalar_rules still admitted id 1
@@ -1529,7 +1598,7 @@ static int test_system_cc(void) {
     {
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "retired param id 1 must refuse even an otherwise-valid "
               "quorum proposal");
         OK();
@@ -1554,9 +1623,8 @@ static int test_system_cc(void) {
     {
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        int prc = nodus_witness_v2_apply_block(fx.w, &b);
-        if (prc != 0) fprintf(stderr, "cc positive rc=%d\n", prc);
-        CHECK(prc == 0, "quorum proposal must commit");
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
+              "quorum proposal must commit");
         OK();
     }
     CHECK(q1(fx.w, "SELECT new_value FROM chain_config_history WHERE "
@@ -1614,7 +1682,7 @@ static int test_system_cc(void) {
     {
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 2, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "second scheduled transition must commit");
         OK();
     }
@@ -1634,7 +1702,7 @@ static int test_system_cc(void) {
     {
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 3, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "stale proposal (freshness) must reject");
         OK();
     }
@@ -1649,7 +1717,7 @@ static int test_system_cc(void) {
     {
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 3, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "duplicate (param, effective) must reject");
         OK();
     }
@@ -1697,37 +1765,63 @@ static int test_system_cc(void) {
         CHECK(nodus_witness_vset_commit_genesis(fx.w, 1) == 0,
               "re-freeze rotated set");
         fx.w->cached_committee_epoch_start = UINT64_MAX;   /* cold cache */
-        nodus_v2_envelope_t ve = { stale->bytes, stale->len };
-        mk_block(&b, 3, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
-              "stale-snapshot approvals must reject after rotation");
-        OK();
+        /* cometbft lane: the rotation above is an out-of-band SYSTEM
+         * write, and a block that refuses its only item would leave
+         * SYSTEM untouched with a moved root — phase 8's untouched-domain
+         * guard, a block-level node FAULT that would mask the stale
+         * approvals' own refusal. So the stale envelope and the FRESH
+         * re-signed one ride ONE block, stale first: the stale item is
+         * refused, the fresh one (same param/effective key) applies and
+         * touches SYSTEM, which the committed root then legitimately
+         * includes. */
+        env_t *fresh = malloc(sizeof(*fresh));
+        CHECK(fresh != NULL, "alloc");
         /* the ROTATED-IN validator signs under the NEW snapshot: fresh
          * approvals with key 15 in the set commit */
         int votersr[5] = { 0, 1, 2, 3, 15 };
-        CHECK(cc_env(&fx, stale, 3, DNAC_CFG_BLOCK_INTERVAL_SEC, 7, 20002,
+        CHECK(cc_env(&fx, fresh, 3, DNAC_CFG_BLOCK_INTERVAL_SEC, 7, 20002,
                      0xAB, 3, 30000, votersr,
                      5, 0, NULL, NULL) == 0, "build fresh");
-        nodus_v2_envelope_t vf = { stale->bytes, stale->len };
-        mk_block(&b, 3, &vf, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        nodus_v2_envelope_t vsf[2] = {
+            { stale->bytes, stale->len }, { fresh->bytes, fresh->len }
+        };
+        mk_block(&b, 3, vsf, 2);
+        CHECK(v2x_cmt_apply(fx.w, &b) == 0 &&
+              b.cmt.results[0].code != NODUS_V2_TX_OK,
+              "stale-snapshot approvals must reject after rotation");
+        OK();
+        CHECK(b.cmt.results[1].code == NODUS_V2_TX_OK &&
+              q1(fx.w, "SELECT new_value FROM chain_config_history WHERE "
+                       "param_id=2 AND effective_block=20002") == 7,
               "rotated-in committee signs under the new snapshot");
         OK();
+        free(fresh);
         free(stale);
     }
 
-    /* ── CC fault-injection matrix (capacity-season stages) ──────────── */
+    /* ── CC fault-injection matrix (capacity-season stages) ────────────
+     * tokenomics-v3 P4: the legacy lane's CC points — F26 after the
+     * whole-batch reserve, F28 after the pre-BEGIN authorization pass,
+     * F34 after its committee-snapshot resolution, F14 its own COMMIT —
+     * belong to stages the cometbft lane does not have (it reserves,
+     * authorizes and resolves the committee per item / per block with no
+     * injection point there, and the host owns the commit); they have NO
+     * counterpart and are gone. What the lane does have for a valid CC
+     * envelope is F13 before the host's commit — a node FAULT, the whole
+     * database byte-identical — plus the item-stage points inside the
+     * SYSTEM leg's execution (F31 after the native exec hook, F37 after
+     * its first applied effect), which refuse the item and leave the
+     * ledger byte-identical. */
     {
-        static const nodus_v2_apply_fail_t cpts[5] = {
-            V2AP_FAIL_AFTER_ENV_RESERVE, V2AP_FAIL_AFTER_AUTH,
-            V2AP_FAIL_AFTER_CC_SNAPSHOT, V2AP_FAIL_BEFORE_COMMIT,
-            V2AP_FAIL_COMMIT
+        static const nodus_v2_apply_fail_t cpts[3] = {
+            V2AP_FAIL_BEFORE_COMMIT, V2AP_FAIL_AFTER_EXEC_HOOK,
+            V2AP_FAIL_AFTER_EFFECT_APPLY
         };
         int votersr[5] = { 0, 1, 2, 3, 15 };
-        for (int p = 0; p < 5; p++) {
+        for (int p = 0; p < 3; p++) {
             /* param 1 -> 2; effective 20003 clears the H=4 SAFETY-grace
              * floor (4 + 17280) and is a distinct PK from every earlier
-             * commit — each of these five must be otherwise FULLY VALID
+             * commit — each of these must be otherwise FULLY VALID
              * (quorum, scalar window, freshness, grace all pass) so the
              * INJECTED fault (b.fail_at below) is the only thing that
              * interrupts the commit; valid_before 30000 clears the
@@ -1739,20 +1833,21 @@ static int test_system_cc(void) {
             mk_block(&b, 4, &ve, 1);
             b.fail_at = cpts[p];
             b.fail_env_index = 0;
-            CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+            b.fail_effect_index = 0;
+            CHECK(v2x_cmt_injected(fx.w, &b) == 0,
                   "CC fault point must roll back byte-identically");
             OK();
         }
         /* clean re-apply commits (budgets and snapshot state intact).
-         * Same (param=2, effective=20003) PK as the five faulted
-         * attempts above — each of those rolled back byte-identically,
-         * so the PK is still free for this one to actually commit. */
+         * Same (param=2, effective=20003) PK as the faulted attempts
+         * above — each of those left the database byte-identical, so the
+         * PK is still free for this one to actually commit. */
         CHECK(cc_env(&fx, &e, 4, DNAC_CFG_BLOCK_INTERVAL_SEC, 8, 20003,
                      0xC9, 4, 30000, votersr, 5,
                      0, NULL, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 4, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "clean re-apply after CC faults must commit");
         OK();
     }
@@ -1780,7 +1875,6 @@ static int test_system_cc_target_active_max(void) {
     int voters5[5] = { 0, 1, 2, 3, 4 };
     env_t e;
     nodus_v2_block_t b;
-    int rc = 0;
 
     /* TARGET_ACTIVE_COUNT carries the SAFETY grace class, so `effective`
      * must clear H + DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS (17280 in the
@@ -1793,13 +1887,13 @@ static int test_system_cc_target_active_max(void) {
 
     /* 33 > 32: rejects as a deterministic verdict, DB byte-identical.
      * The scalar rule [7..128] ACCEPTS 33, so without the D2 narrowing
-     * this envelope COMMITS and apply_reject FAILS here. */
+     * this envelope COMMITS and item_refused FAILS here. */
     CHECK(cc_env(&fx, &e, 1, DNAC_CFG_TARGET_ACTIVE_COUNT, 33, EFF0, 0x33,
                  1, VB, voters5, 5, 0, NULL, NULL) == 0, "build 33");
     {
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "TARGET_ACTIVE_COUNT=33 must reject (V2-lane max 32)");
         OK();
     }
@@ -1811,7 +1905,7 @@ static int test_system_cc_target_active_max(void) {
     {
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "TARGET_ACTIVE_COUNT=32 must commit");
         OK();
     }
@@ -1826,7 +1920,7 @@ static int test_system_cc_target_active_max(void) {
     {
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 2, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "TARGET_ACTIVE_COUNT=31 must commit");
         OK();
     }
@@ -1840,7 +1934,7 @@ static int test_system_cc_target_active_max(void) {
     {
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 3, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "TARGET_ACTIVE_COUNT=6 must reject (floor 7)");
         OK();
     }
@@ -1856,11 +1950,21 @@ static int test_system_cc_target_active_max(void) {
  *   - the FIRST committee whose quorum exceeds the RETIRED cap (8):
  *     smallest N with dna_bft_quorum(N) > 8  →  N = 12 (quorum 9)
  *   - the release technical ceiling: DNA_MAX_ACTIVE_VALIDATORS = 128,
- *     quorum dna_bft_quorum(128) = 86
- * The 128-seat leg runs REAL ML-DSA-87 end-to-end (128 keypairs, 128
- * approval signatures verified through the whole engine path). */
-static uint8_t g_bpk[DNA_MAX_ACTIVE_VALIDATORS][2592];
-static uint8_t g_bsk[DNA_MAX_ACTIVE_VALIDATORS][4896];
+ *     quorum dna_bft_quorum(128) = 86 (the formula is still re-verified
+ *     below)
+ *   - the VERSION-3 lane's own ceiling: NODUS_V2_ACTIVE_SET_MAX = 32,
+ *     quorum dna_bft_quorum(32) = 22
+ * tokenomics-v3 P4: the widest leg used to seat 128 validators. A
+ * version-3 chain cannot hold that committee — its validator-set writer
+ * clamps every snapshot to NODUS_V2_ACTIVE_SET_MAX (32, P3-7) from
+ * genesis onward (nodus_witness_vset.c / nodus_witness_committee.c, the
+ * v2_successor cap), so a 128-member committee is not a shape any chain
+ * this engine applies blocks for can have, and neither is the
+ * ceiling-class 128-approval envelope. The leg now runs at the lane's
+ * own ceiling: REAL ML-DSA-87 end-to-end, 32 keypairs, 32 approval
+ * signatures verified through the whole engine path. */
+static uint8_t g_bpk[NODUS_V2_ACTIVE_SET_MAX][2592];
+static uint8_t g_bsk[NODUS_V2_ACTIVE_SET_MAX][4896];
 
 static int test_committee_capacity(void) {
     /* derive the boundary sizes from source and re-verify the formula
@@ -1889,7 +1993,6 @@ static int test_committee_capacity(void) {
                            12) == 0, "genesis 12");
         env_t e;
         nodus_v2_block_t b;
-        int rc = 0;
         /* quorum(12) = 9 > the retired cap 8: NINE approvals commit.
          * param 1 -> 2 (retired id); effective 20000 clears the H=1
          * SAFETY-grace floor (17281); valid_before 30000 clears the
@@ -1899,7 +2002,7 @@ static int test_committee_capacity(void) {
                      NULL, NULL) == 0, "build 9");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "quorum 9 of 12 commits — the old 8-vote cap is gone");
         OK();
         /* quorum-1 = 8 (the exact retired cap) fails — the quorum gate
@@ -1910,40 +2013,43 @@ static int test_committee_capacity(void) {
                      NULL, NULL) == 0, "build 8");
         nodus_v2_envelope_t v8 = { e.bytes, e.len };
         mk_block(&b, 2, &v8, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "8 of 12 (quorum-1) must reject");
         OK();
         fx_close(&fx);
     }
 
-    /* ── N = 128 (the release ceiling), REAL ML-DSA-87 end-to-end ───── */
+    /* ── N = NODUS_V2_ACTIVE_SET_MAX (32, the version-3 lane's ceiling),
+     *    REAL ML-DSA-87 end-to-end (see the header for why not 128) ──── */
     {
-        for (int i = 0; i < DNA_MAX_ACTIVE_VALIDATORS; i++)
+        const int NMAX = (int)NODUS_V2_ACTIVE_SET_MAX;
+        CHECK(NMAX == 32 && dna_bft_quorum((uint32_t)NMAX) == 22,
+              "FIXTURE GUARD: the version-3 ceiling is 32, quorum 22");
+        for (int i = 0; i < NMAX; i++)
             if (qgp_dsa87_keypair(g_bpk[i], g_bsk[i]) != 0) {
                 fprintf(stderr, "big keygen failed\n");
                 return 1;
             }
         fixture_t fx;
-        CHECK(fx_genesis_n(&fx, "cap128", (const uint8_t (*)[2592])g_bpk,
-                           DNA_MAX_ACTIVE_VALIDATORS) == 0,
-              "genesis 128");
-        /* the ceiling-shape envelopes exceed the standard buffer — heap
-         * (never the stack; capacity-season discipline) */
+        CHECK(fx_genesis_n(&fx, "cap32", (const uint8_t (*)[2592])g_bpk,
+                           NMAX) == 0,
+              "genesis 32");
+        /* heap envelope buffer (never the stack; capacity-season
+         * discipline) */
         size_t cap = DNA_ENV_MAX_TOTAL_LEN;
         uint8_t *buf = malloc(cap);
         CHECK(buf != NULL, "alloc");
         size_t elen = 0;
-        int voters[DNA_MAX_ACTIVE_VALIDATORS];
+        int voters[NODUS_V2_ACTIVE_SET_MAX];
         nodus_v2_block_t b;
-        int rc = 0;
-        const uint32_t Q = dna_bft_quorum(DNA_MAX_ACTIVE_VALIDATORS);
+        const uint32_t Q = dna_bft_quorum((uint32_t)NMAX);
 
-        /* ALL 128 distinct approvals — the worst-case legal envelope
-         * shape of the DNA_ENV_MAX_TOTAL_LEN derivation — commits */
-        for (int i = 0; i < 128; i++) voters[i] = i;
+        /* ALL 32 distinct approvals — the widest committee a version-3
+         * chain can seat — commit */
+        for (int i = 0; i < NMAX; i++) voters[i] = i;
         CHECK(cc_build(&fx, buf, cap, &elen, 1,
                        (const uint8_t (*)[2592])g_bpk,
-                       (const uint8_t (*)[4896])g_bsk, 128, 0,
+                       (const uint8_t (*)[4896])g_bsk, NMAX, 0,
                        /* ORCHESTRATOR (W4-C ORC-4): param 1 is RETIRED
                         * (delta 2) and every survivor is SAFETY-grace
                         * (17 280), so BLOCK_INTERVAL_SEC (2) with
@@ -1951,42 +2057,54 @@ static int test_committee_capacity(void) {
                         * sweep missed this helper's three call sites. */
                        DNAC_CFG_BLOCK_INTERVAL_SEC, 5, 20000, 0x42, 1,
                        30000, 0, 750000,
-                       voters, 128, NULL, NULL) == 0, "build 128");
-        CHECK(elen > 590000 && elen <= DNA_ENV_MAX_TOTAL_LEN,
-              "all-N envelope is a ceiling-class shape");
+                       voters, NMAX, NULL, NULL) == 0, "build 32");
+        /* P4 FIX ROUND: the pre-P4 leg asserted elen > 590 000 — the
+         * ceiling-class shape of 128 approvals. Under the 32-seat
+         * version-3 committee that shape is NOT constructible: the
+         * approvals a CHAIN_CONFIG can carry are bounded by the committee
+         * (a non-member or duplicate approval is refused), and the
+         * DNA_ENV_MAX_TOTAL_LEN derivation (shared/dnac/env_wire.h) puts
+         * 128 approvals at 700 914 bytes, so 32 are roughly a quarter of
+         * that. What IS pinned: the envelope really carries all 32
+         * signatures (a lower bound no shorter shape meets) and fits the
+         * ceiling. */
+        CHECK(elen > (size_t)NMAX * DNAC_SIGNATURE_SIZE &&
+              elen <= DNA_ENV_MAX_TOTAL_LEN,
+              "all-N envelope carries every approval signature and fits "
+              "the envelope ceiling");
         {
             nodus_v2_envelope_t ve = { buf, elen };
             mk_block(&b, 1, &ve, 1);
-            CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
-                  "ALL 128 release-ceiling approvals commit");
+            CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
+                  "ALL 32 lane-ceiling approvals commit");
             OK();
         }
-        /* EXACT quorum (86) commits */
+        /* EXACT quorum (22) commits */
         CHECK(cc_build(&fx, buf, cap, &elen, 2,
                        (const uint8_t (*)[2592])g_bpk,
-                       (const uint8_t (*)[4896])g_bsk, 128, 0,
+                       (const uint8_t (*)[4896])g_bsk, NMAX, 0,
                        DNAC_CFG_BLOCK_INTERVAL_SEC, 6, 20001, 0x43, 2,
                        30000, 0, 750000,
-                       voters, (int)Q, NULL, NULL) == 0, "build 86");
+                       voters, (int)Q, NULL, NULL) == 0, "build 22");
         {
             nodus_v2_envelope_t ve = { buf, elen };
             mk_block(&b, 2, &ve, 1);
-            CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
-                  "exact release-ceiling quorum (86 of 128) commits");
+            CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
+                  "exact lane-ceiling quorum (22 of 32) commits");
             OK();
         }
-        /* quorum-1 (85) rejects */
+        /* quorum-1 (21) rejects */
         CHECK(cc_build(&fx, buf, cap, &elen, 3,
                        (const uint8_t (*)[2592])g_bpk,
-                       (const uint8_t (*)[4896])g_bsk, 128, 0,
+                       (const uint8_t (*)[4896])g_bsk, NMAX, 0,
                        DNAC_CFG_BLOCK_INTERVAL_SEC, 7, 20002, 0x44, 3,
                        30000, 0, 750000,
-                       voters, (int)Q - 1, NULL, NULL) == 0, "build 85");
+                       voters, (int)Q - 1, NULL, NULL) == 0, "build 21");
         {
             nodus_v2_envelope_t ve = { buf, elen };
             mk_block(&b, 3, &ve, 1);
-            CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
-                  "quorum-1 (85 of 128) must reject");
+            CHECK(item_refused(fx.w, &b) == 0,
+                  "quorum-1 (21 of 32) must reject");
             OK();
         }
         free(buf);
@@ -1997,31 +2115,33 @@ static int test_committee_capacity(void) {
 
 /* ══ 4. CORE slice — SPEND ═════════════════════════════════════════ */
 
+/* one LOCKED utxo (unlock far in the future) for the lock gate, seeded
+ * into the genesis state (g_fx_pre_genesis) with its value added to the
+ * supply so the CORE invariant the genesis commits still closes */
+static int seed_locked_pre_genesis(fixture_t *fx) {
+    if (seed_utxo(fx, 7, 1500000 + FEE_MIN, 0xE1, 100000,
+                  g_nul_lock) != 0)
+        return -1;
+    char sql[160];
+    snprintf(sql, sizeof(sql),
+             "UPDATE supply_tracking SET genesis_supply = "
+             "genesis_supply + %llu, current_supply = "
+             "current_supply + %llu WHERE id = 1",
+             (unsigned long long)(1500000 + FEE_MIN),
+             (unsigned long long)(1500000 + FEE_MIN));
+    return run_sql(fx->w->db, sql);
+}
+
 static int test_core_spend(void) {
     fixture_t fx;
-    CHECK(fx_genesis(&fx, "spend") == 0, "genesis");
+    g_fx_pre_genesis = seed_locked_pre_genesis;
+    CHECK(fx_genesis(&fx, "spend") == 0, "genesis (with a locked utxo)");
     int s7[1] = { 7 };
     int s78[2] = { 7, 8 };
     env_t e;
     nodus_v2_block_t b;
-    int rc = 0;
     uint8_t ins1[1][64];
     memcpy(ins1[0], g_nul_a, 64);
-
-    /* seed one LOCKED utxo (unlock far in the future) for the lock gate */
-    CHECK(seed_utxo(&fx, 7, 1500000 + FEE_MIN, 0xE1, 100000,
-                    g_nul_lock) == 0, "seed locked");
-    /* the invariant seed must still hold: add the locked value */
-    {
-        char sql[160];
-        snprintf(sql, sizeof(sql),
-                 "UPDATE supply_tracking SET genesis_supply = "
-                 "genesis_supply + %llu, current_supply = "
-                 "current_supply + %llu WHERE id = 1",
-                 (unsigned long long)(1500000 + FEE_MIN),
-                 (unsigned long long)(1500000 + FEE_MIN));
-        CHECK(run_sql(fx.w->db, sql) == 0, "supply seed");
-    }
 
     /* ── negatives (each digest-proven no-op) ───────────────────────── */
     out_spec_t o_ok[2] = { { 8, 2000000, 0x01, NULL },
@@ -2081,7 +2201,7 @@ static int test_core_spend(void) {
                         neg[i].n_signers, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1, neg[i].name);
+        CHECK(item_refused(fx.w, &b) == 0, neg[i].name);
         OK();
     }
 
@@ -2095,7 +2215,7 @@ static int test_core_spend(void) {
                   == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "zero-amount output must reject");
         OK();
     }
@@ -2107,7 +2227,7 @@ static int test_core_spend(void) {
                         NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "sub-floor fee must reject");
         OK();
     }
@@ -2124,7 +2244,7 @@ static int test_core_spend(void) {
                                40, 16384, s7, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "non-hex owner fingerprint must reject");
         OK();
     }
@@ -2160,7 +2280,7 @@ static int test_core_spend(void) {
               "encode");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "auth layout mismatch must reject");
         OK();
     }
@@ -2183,7 +2303,7 @@ static int test_core_spend(void) {
               "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "duplicate input in one transaction must reject");
         OK();
     }
@@ -2197,14 +2317,17 @@ static int test_core_spend(void) {
                   == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "locked input must reject");
         OK();
     }
 
     /* cross-domain UTXO substitution: a row owned by another domain is
      * invisible to the CORE adapter (missing input) AND poisons the
-     * supply gate — the block cannot commit either way */
+     * supply gate — the block cannot commit either way. In the cmt lane
+     * the foreign row already fails the CORE invariant's ownership guard
+     * at the PRE-APPLY supply gate (phase 2), before any item runs, so
+     * the block is a node FAULT (nothing written), never a commit. */
     {
         fixture_t fx2;
         CHECK(fx_genesis(&fx2, "xdom") == 0, "genesis");
@@ -2219,7 +2342,8 @@ static int test_core_spend(void) {
         nodus_v2_envelope_t ve = { e2.bytes, e2.len };
         nodus_v2_block_t b2;
         mk_block(&b2, 1, &ve, 1);
-        CHECK(apply_reject(fx2.w, &b2, &rc) == 0 && rc == -1,
+        CHECK(v2x_cmt_fault_why(fx2.w, &b2, V2X_VERDICT,
+                                "PRE-APPLY supply gate") == 0,
               "cross-domain substitution cannot commit");
         OK();
         fx_close(&fx2);
@@ -2236,7 +2360,7 @@ static int test_core_spend(void) {
     {
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "valid transfer must commit");
         OK();
     }
@@ -2378,7 +2502,7 @@ static int test_core_spend(void) {
                   == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 2, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "multi-input exact-value transfer must commit");
         CHECK(supply_identity_holds(fx.w), "identity");
         OK();
@@ -2390,7 +2514,7 @@ static int test_core_spend(void) {
                   == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 3, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "already-spent input must reject");
         OK();
     }
@@ -2399,7 +2523,12 @@ static int test_core_spend(void) {
     {
         /* 15 inputs, EVERY input owned by a DISTINCT signer — the
          * structural maximum the NODUS_RT_AUTH_MAX_SIGNERS derivation
-         * names. 15 keys, 15 real signatures, engine-verified. */
+         * names. 15 keys, 15 real signatures, engine-verified.
+         * The UTXO seeds below are written out of band AFTER genesis;
+         * each is followed by a block whose item TOUCHES CORE, so the
+         * CORE root is recomputed over them and the untouched-domain
+         * guard (phase 8) never sees a moved root. The refusal probes
+         * at height 4 run only after that. */
         fixture_t fs;
         CHECK(fx_genesis(&fs, "sig15") == 0, "genesis");
         uint8_t nul15[15][64];
@@ -2430,7 +2559,7 @@ static int test_core_spend(void) {
             nodus_v2_envelope_t ve = { e15->bytes, e15->len };
             nodus_v2_block_t bs;
             mk_block(&bs, 1, &ve, 1);
-            CHECK(nodus_witness_v2_apply_block(fs.w, &bs) == 0,
+            CHECK(v2x_cmt_apply_ok(fs.w, &bs) == 0,
                   "15 inputs / 15 distinct owners must commit");
             CHECK(supply_identity_holds(fs.w), "identity");
             OK();
@@ -2462,7 +2591,7 @@ static int test_core_spend(void) {
             nodus_v2_envelope_t ve = { e15->bytes, e15->len };
             nodus_v2_block_t bs;
             mk_block(&bs, 2, &ve, 1);
-            CHECK(nodus_witness_v2_apply_block(fs.w, &bs) == 0,
+            CHECK(v2x_cmt_apply_ok(fs.w, &bs) == 0,
                   "one signer authorizing 15 owned inputs must commit");
             OK();
         }
@@ -2489,7 +2618,7 @@ static int test_core_spend(void) {
             nodus_v2_envelope_t ve = { e15->bytes, e15->len };
             nodus_v2_block_t bs;
             mk_block(&bs, 3, &ve, 1);
-            CHECK(nodus_witness_v2_apply_block(fs.w, &bs) == 0,
+            CHECK(v2x_cmt_apply_ok(fs.w, &bs) == 0,
                   "extra unrelated signer is pinned ACCEPT");
             OK();
         }
@@ -2532,7 +2661,7 @@ static int test_core_spend(void) {
             nodus_v2_envelope_t ve = { e15->bytes, e15->len };
             nodus_v2_block_t bs;
             mk_block(&bs, 4, &ve, 1);
-            CHECK(apply_reject(fs.w, &bs, &rc) == 0 && rc == -1,
+            CHECK(item_refused(fs.w, &bs) == 0,
                   "16 signers (one above the derived bound) must reject");
             OK();
         }
@@ -2579,7 +2708,7 @@ static int test_core_spend(void) {
             nodus_v2_envelope_t ve = { e15->bytes, e15->len };
             nodus_v2_block_t bs;
             mk_block(&bs, 4, &ve, 1);
-            CHECK(apply_reject(fs.w, &bs, &rc) == 0 && rc == -1,
+            CHECK(item_refused(fs.w, &bs) == 0,
                   "zero-prefix pubkey must reject at the parse level");
             OK();
         }
@@ -2590,15 +2719,24 @@ static int test_core_spend(void) {
     /* checked-add overflow across inputs: THREE INT64_MAX utxos (each
      * individually representable and non-negative, so the malformed-row
      * guard passes) whose sum crosses UINT64_MAX at the third input —
-     * the dna_ck_add_u64 path in exec is what fires. The supply row
-     * cannot represent the total, so the invariant is made vacuous
-     * (honest pre-genesis shape) and only the overflow verdict is
-     * asserted. */
+     * the checked add in rtn_tok_add (nodus_witness_rt_native.c) is what
+     * must fire.
+     * P4 FIX ROUND — tested at the HOOK (plan, mediated reads, exec),
+     * the supply-bypass target. Through a block this check is
+     * unreachable on a conserving chain: three INT64_MAX rows need a
+     * genesis supply above INT64_MAX, which the supply row cannot hold,
+     * so any block over them stops at the PRE-APPLY supply gate before
+     * the item runs (the old assertion passed on that gate). The rows
+     * are written into the fixture's database only so the mediated
+     * reads see them; no block is applied over them.
+     * The output is chosen so the WRAPPED input sum (3·INT64_MAX mod
+     * 2^64 = INT64_MAX − 2) balances output + fee exactly: without the
+     * checked add the item would ACCEPT, so the -1 here can only come
+     * from the overflow check, not from the conservation equation.
+     * KILLED BY: an unchecked `in_sum += amount`. */
     {
         fixture_t fo;
         CHECK(fx_genesis(&fo, "ovf") == 0, "genesis");
-        CHECK(run_sql(fo.w->db, "DELETE FROM supply_tracking") == 0,
-              "vacuous supply");
         uint8_t na[64], nb[64], nc[64];
         CHECK(seed_utxo(&fo, 7, (uint64_t)INT64_MAX, 0xF1, 0, na) == 0 &&
               seed_utxo(&fo, 7, (uint64_t)INT64_MAX, 0xF2, 0, nb) == 0 &&
@@ -2608,16 +2746,54 @@ static int test_core_spend(void) {
         memcpy(insb[0], na, 64);
         memcpy(insb[1], nb, 64);
         memcpy(insb[2], nc, 64);
-        out_spec_t oo[1] = { { 8, 5, 0x0B, NULL } };
-        env_t eo;
-        CHECK(spend_env(&fo, &eo, insb, 3, oo, 1, FEE_MIN, s7, 1, NULL)
+        const uint64_t wrapped = (uint64_t)INT64_MAX * 3u;  /* mod 2^64 */
+        const uint64_t oamt = wrapped - FEE_MIN;
+        CHECK(wrapped == (uint64_t)INT64_MAX - 2u && oamt + FEE_MIN == wrapped,
+              "FIXTURE GUARD: the wrapped sum balances output + fee");
+        out_spec_t oo[1] = { { 8, oamt, 0x0B, NULL } };
+        env_t *eo = calloc(1, sizeof(*eo));
+        CHECK(eo != NULL, "alloc");
+        CHECK(spend_env(&fo, eo, insb, 3, oo, 1, FEE_MIN, s7, 1, NULL)
                   == 0, "build");
-        nodus_v2_envelope_t ve = { eo.bytes, eo.len };
-        nodus_v2_block_t bo;
-        mk_block(&bo, 1, &ve, 1);
-        CHECK(apply_reject(fo.w, &bo, &rc) == 0 && rc == -1,
-              "checked-add overflow must reject");
+        dna_env_view_t v;
+        CHECK(dna_env_decode(eo->bytes, eo->len, &v) == 0, "decode");
+        size_t nbt = 0;
+        const nodus_domain_runtime_t *bt = nodus_runtime_builtin_table(&nbt);
+        CHECK(bt && nbt == 2, "runtime table");
+        nodus_rt_auth_verdict_t av;
+        memset(&av, 0, sizeof(av));
+        av.n_signers = 1;
+        CHECK(qgp_sha3_512(g_pk[7], 2592, av.signer_fp[0]) == 0, "fp");
+        static uint8_t iid[64];
+        memset(iid, 0x3C, 64);
+        nodus_rt_exec_ctx_t ctx;
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.chain_id = fo.chain_id;
+        ctx.global_height = 1;
+        ctx.intent_id = iid;
+        ctx.wire_id = iid;
+        ctx.auth = &av;
+        nodus_rt_read_req_t reqs[NODUS_RT_MAX_READS];
+        static nodus_rt_read_res_t reads[NODUS_RT_MAX_READS];
+        uint16_t nr = 0;
+        CHECK(nodus_rt_core_read_plan(&bt[1], &v, 0, &ctx, reqs,
+                                      NODUS_RT_MAX_READS, &nr) == 0,
+              "read plan");
+        memset(reads, 0, sizeof(reads));
+        for (uint16_t r = 0; r < nr; r++)
+            CHECK(nodus_witness_v2_read_one(fo.w, &bt[1], &reqs[r],
+                                            &reads[r]) == NODUS_ADAPTER_OK,
+                  "mediated read");
+        CHECK(reads[0].present && reads[1].present && reads[2].present,
+              "FIXTURE GUARD: all three INT64_MAX inputs are read");
+        static uint8_t res[DNA_EFFECT_MAX_TOTAL_LEN];
+        size_t rl = 0;
+        CHECK(nodus_rt_core_exec(&bt[1], &v, 0, &ctx, reads, nr, res,
+                                 sizeof(res), &rl) == -1,
+              "an input sum past UINT64_MAX must reject at the checked "
+              "add");
         OK();
+        free(eo);
         fx_close(&fo);
     }
     fx_close(&fx);
@@ -2627,14 +2803,19 @@ static int test_core_spend(void) {
 /* ══ 5. ENGINE — faults, restart, determinism ══════════════════════ */
 
 static int test_engine(void) {
-    /* fault injection at the new stages: digest-identical rollback */
+    /* fault injection at the item stages: in the cometbft lane each is
+     * an ITEM refusal whose savepoint rollback leaves the ledger
+     * byte-identical (v2x_cmt_injected). The legacy lane's F28
+     * (AFTER_AUTH, batch auth stage) and F27 (AFTER_ENV_EXEC) never fire
+     * here; the post-mutation obligation F27 carried is F37/F38 — the
+     * leg's adapter writes already landed and the rollback must erase
+     * them. */
     static const nodus_v2_apply_fail_t pts[7] = {
-        V2AP_FAIL_AFTER_AUTH, V2AP_FAIL_AFTER_READ_PLAN,
+        V2AP_FAIL_AFTER_READ_PLAN,
         V2AP_FAIL_AFTER_READS, V2AP_FAIL_AFTER_EXEC_HOOK,
         V2AP_FAIL_AFTER_EFFECT_DECODE, V2AP_FAIL_AFTER_EFFECT_CHARGE,
-        V2AP_FAIL_AFTER_ENV_EXEC   /* POST-mutation: the envelope's
-                                    * adapter writes already landed —
-                                    * the rollback must erase them      */
+        V2AP_FAIL_AFTER_EFFECT_APPLY,   /* after the leg's first effect  */
+        V2AP_FAIL_AFTER_LEG_APPLY       /* POST-mutation: the whole leg  */
     };
     int s7[1] = { 7 };
     out_spec_t outs[2] = { { 8, 2000000, 0x01, NULL },
@@ -2652,13 +2833,14 @@ static int test_engine(void) {
         mk_block(&b, 1, &ve, 1);
         b.fail_at = pts[p];
         b.fail_env_index = 0;
-        int rc = 0;
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        b.fail_effect_index = 0;
+        b.fail_leg_index = 0;
+        CHECK(v2x_cmt_injected(fx.w, &b) == 0,
               "fault point must roll back byte-identically");
         OK();
         /* and the SAME block, un-faulted, commits (budgets restored) */
         b.fail_at = V2AP_FAIL_NONE;
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "clean re-apply after the fault must commit");
         OK();
         fx_close(&fx);
@@ -2680,41 +2862,39 @@ static int test_engine(void) {
         nodus_v2_block_t ba, bb;
         mk_block(&ba, 1, &ve, 1);
         mk_block(&bb, 1, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(a.w, &ba) == 0, "A commits");
+        CHECK(v2x_cmt_apply_ok(a.w, &ba) == 0, "A commits");
         /* B applies in FOLLOWER mode: A's roots are the expectation, so
-         * a divergent recomputation would reject (the mismatch legs of
+         * a divergent recomputation would fault (the mismatch legs of
          * the expectation matrix live in test_v2_apply) */
         bb.expect_tx_root = ba.out_tx_root;
         bb.expect_dupd_root = ba.out_dupd_root;
         bb.expect_domains_root = ba.out_domains_root;
         bb.expect_global_root = ba.out_global_root;
-        CHECK(nodus_witness_v2_apply_block(c.w, &bb) == 0, "B commits");
+        CHECK(v2x_cmt_apply_ok(c.w, &bb) == 0, "B commits");
         CHECK(memcmp(ba.out_global_root, bb.out_global_root, 64) == 0 &&
               memcmp(ba.out_tx_root, bb.out_tx_root, 64) == 0 &&
               memcmp(ba.out_domains_root, bb.out_domains_root, 64) == 0,
               "twin fixtures must land on byte-identical roots");
         OK();
-        /* identical replay short-circuits BEFORE any expectation is
-         * consulted (same height + asserted committed id ⇒ rc 1, no
-         * writes). O14 D6: the id is ENGINE-derived, so the replay
-         * asserts the one the engine actually committed. */
-        uint8_t idc[64];
-        CHECK(v2x_block_id_at(c.w, 1, idc) == 0, "read committed id (c)");
+        /* re-delivering the committed height writes nothing. The legacy
+         * lane's rc-1 idempotent fast path (an asserted committed
+         * BlockID) does not exist in the cometbft lane — the host never
+         * hands a decided height to the engine twice, and if it did the
+         * engine refuses the height ("VERDICT: … at or below this node's
+         * head") with the whole database byte-identical. */
         nodus_v2_block_t bf;
         mk_block(&bf, 1, &ve, 1);
-        bf.expect_block_id = idc;
-        CHECK(nodus_witness_v2_apply_block(c.w, &bf) == 1,
-              "identical replay is idempotent (rc 1)");
+        CHECK(v2x_cmt_fault_why(c.w, &bf, V2X_VERDICT, "at or below") == 0,
+              "re-applying a committed height writes nothing");
         OK();
-        /* restart: reopen the DB and replay the committed block */
+        /* restart: reopen the DB through the production open path; the
+         * committed height stays refused, the chain continues above it */
         CHECK(fx_reopen(&a) == 0, "reopen");
-        uint8_t ida[64];
-        CHECK(v2x_block_id_at(a.w, 1, ida) == 0, "read committed id (a)");
         nodus_v2_block_t br;
         mk_block(&br, 1, &ve, 1);
-        br.expect_block_id = ida;
-        CHECK(nodus_witness_v2_apply_block(a.w, &br) == 1,
-              "post-restart replay is idempotent (rc 1)");
+        CHECK(v2x_cmt_fault_why(a.w, &br, V2X_VERDICT, "at or below") == 0,
+              "post-restart re-apply of a committed height writes "
+              "nothing");
         OK();
         fx_close(&a);
         fx_close(&c);
@@ -2809,7 +2989,6 @@ static int test_intent_engine(void) {
         { 7, 2000000, 0x02, NULL }
     };
     uint8_t ins[1][64];
-    int rc = 0;
 
     /* ── SPEND TWIN EXECUTION across independent identical fixtures:
      * realization A on fixture A, a DIFFERENT valid signature
@@ -2846,8 +3025,8 @@ static int test_intent_engine(void) {
          * the engine DERIVES different BlockIDs. What the test used to
          * assert by construction is now a property of the engine, and
          * the digest comparison below is what proves it. */
-        CHECK(nodus_witness_v2_apply_block(a.w, &ba) == 0, "A commits");
-        CHECK(nodus_witness_v2_apply_block(b2.w, &bb) == 0, "B commits");
+        CHECK(v2x_cmt_apply_ok(a.w, &ba) == 0, "A commits");
+        CHECK(v2x_cmt_apply_ok(b2.w, &bb) == 0, "B commits");
         OK();
 
         /* consensus partition: state + state-bearing roots IDENTICAL */
@@ -2904,9 +3083,10 @@ static int test_intent_engine(void) {
         }
 
         /* ── COMMITTED-INTENT REPLAY, later block, THIRD realization —
-         * rejected by the intent guard with digest-identical rollback
-         * (both the intent guard and the spent-input guard would kill
-         * it; the intent guard fires first, pre-BEGIN). ────────────── */
+         * refused by the intent guard (item code REPLAY) with the ledger
+         * byte-identical (both the intent guard and the spent-input
+         * guard would kill it; the replay guard runs first in the
+         * item). ───────────────────────────────────────────────────── */
         {
             env_t ec;
             CHECK(spend_env(&a, &ec, ins, 1, outs, 2, FEE_MIN, s7, 1,
@@ -2914,8 +3094,10 @@ static int test_intent_engine(void) {
             CHECK(memcmp(ec.bytes, ea.bytes, ea.len) != 0, "distinct");
             nodus_v2_envelope_t vc = { ec.bytes, ec.len };
             nodus_v2_block_t bc;
+            uint32_t code = 0;
             mk_block(&bc, 2, &vc, 1);
-            CHECK(apply_reject(a.w, &bc, &rc) == 0 && rc == -1,
+            CHECK(v2x_cmt_refused_probe(a.w, &bc, 0, &code) == 0 &&
+                  code == NODUS_V2_TX_ERR_REPLAY,
                   "committed intent under a new witness must reject");
             OK();
 
@@ -2924,30 +3106,34 @@ static int test_intent_engine(void) {
             CHECK(fx_reopen(&a) == 0, "reopen");
             nodus_v2_block_t bd;
             mk_block(&bd, 2, &vc, 1);
-            CHECK(apply_reject(a.w, &bd, &rc) == 0 && rc == -1,
+            code = 0;
+            CHECK(v2x_cmt_refused_probe(a.w, &bd, 0, &code) == 0 &&
+                  code == NODUS_V2_TX_ERR_REPLAY,
                   "intent replay protection must survive reopen");
             OK();
 
-            /* byte-identical committed-block replay is STILL idempotent
-             * (whole-block matrix runs before the intent guard) */
-            uint8_t id1[64];
-            CHECK(v2x_block_id_at(a.w, 1, id1) == 0, "read committed id1");
+            /* re-delivering the committed height 1 writes nothing (the
+             * legacy rc-1 idempotent fast path has no cometbft
+             * equivalent: the engine refuses the height as a VERDICT,
+             * "at or below this node's head") */
             nodus_v2_block_t be;
             mk_block(&be, 1, &va, 1);
-            be.expect_block_id = id1;
-            CHECK(nodus_witness_v2_apply_block(a.w, &be) == 1,
-                  "committed-block replay stays idempotent");
+            CHECK(v2x_cmt_fault_why(a.w, &be, V2X_VERDICT, "at or below") == 0,
+                  "committed-block replay writes nothing");
             OK();
 
             /* RESURRECTED-INPUT REPLAY — the case where the intent guard
              * is the ONLY thing standing: fixture surgery re-creates the
              * spent input (and keeps the supply identity consistent), so
              * a same-intent/different-witness realization would EXECUTE
-             * CLEANLY if the guard keyed on the wrong identity. It must
-             * still reject as a VERDICT (-1) with a digest-identical
-             * rollback — a guard that missed would instead die on the
-             * v2_intent_index UNIQUE backstop as a node fault (-2), or
-             * worse, double-apply. */
+             * CLEANLY if the guard keyed on the wrong identity. The
+             * surgery is an out-of-band CORE write, so the block — whose
+             * one item is refused and so touches nothing — is a node
+             * FAULT at the untouched-domain guard (nothing written). The
+             * item's own verdict is recorded before that gate: it must
+             * be REPLAY — a guard that missed would let the item execute
+             * (code OK, or the v2_intent_index UNIQUE backstop as a node
+             * fault inside the item), never REPLAY. */
             {
                 CHECK(seed_utxo(&a, 7, UTXO_A, 0xA1, 0, ins[0]) == 0,
                       "resurrect spent input");
@@ -2975,7 +3161,9 @@ static int test_intent_engine(void) {
                 nodus_v2_envelope_t vf = { ef.bytes, ef.len };
                 nodus_v2_block_t bf2;
                 mk_block(&bf2, 2, &vf, 1);
-                CHECK(apply_reject(a.w, &bf2, &rc) == 0 && rc == -1,
+                CHECK(v2x_cmt_fault(a.w, &bf2) == 0 &&
+                      bf2.cmt.results_len >= 1 &&
+                      bf2.cmt.results[0].code == NODUS_V2_TX_ERR_REPLAY,
                       "resurrected-input intent replay must reject as a "
                       "verdict — the intent guard, not the backstop");
                 OK();
@@ -3036,9 +3224,9 @@ static int test_intent_engine(void) {
         mk_block(&bb, 1, &vb, 1);
         mk_block(&bc, 1, &vc, 1);
         /* O14: ids are engine-derived — see the twin note above. */
-        CHECK(nodus_witness_v2_apply_block(a.w, &ba) == 0, "ccA commits");
-        CHECK(nodus_witness_v2_apply_block(b2.w, &bb) == 0, "ccB commits");
-        CHECK(nodus_witness_v2_apply_block(c.w, &bc) == 0, "ccC commits");
+        CHECK(v2x_cmt_apply_ok(a.w, &ba) == 0, "ccA commits");
+        CHECK(v2x_cmt_apply_ok(b2.w, &bb) == 0, "ccB commits");
+        CHECK(v2x_cmt_apply_ok(c.w, &bc) == 0, "ccC commits");
         OK();
 
         uint8_t da[64], db[64], dc[64];
@@ -3085,16 +3273,18 @@ static int test_intent_engine(void) {
                          0, NULL, NULL) == 0, "build replay");
             nodus_v2_envelope_t vr = { er.bytes, er.len };
             nodus_v2_block_t br;
+            uint32_t code = 0;
             mk_block(&br, 2, &vr, 1);
-            CHECK(apply_reject(a.w, &br, &rc) == 0 && rc == -1,
+            CHECK(v2x_cmt_refused_probe(a.w, &br, 0, &code) == 0 &&
+                  code == NODUS_V2_TX_ERR_REPLAY,
                   "no-input SYSTEM intent replay must reject");
             OK();
         }
 
         /* MATCHING INTENT IS NEVER EVIDENCE OF AUTHORIZATION: a
          * realization of the already-committed intent carrying an
-         * INVALID signature must reject as a VERDICT (-1) — never
-         * commit, never soften to a fault. */
+         * INVALID signature must be REFUSED as an item — never commit,
+         * never soften to a fault. */
         {
             env_t ebad;
             int q4v[5] = { 0, 1, 2, 3, 4 };
@@ -3107,7 +3297,7 @@ static int test_intent_engine(void) {
             nodus_v2_envelope_t vb2 = { ebad.bytes, ebad.len };
             nodus_v2_block_t bb2;
             mk_block(&bb2, 2, &vb2, 1);
-            CHECK(apply_reject(a.w, &bb2, &rc) == 0 && rc == -1,
+            CHECK(item_refused(a.w, &bb2) == 0,
                   "matching intent is never evidence of authorization");
             OK();
         }
@@ -3150,16 +3340,20 @@ static int test_intent_engine(void) {
         mk_block(&bo, 1, &va, 1);
         /* O14: prev is DERIVED from chain O's own committed genesis, so
          * the block reaches the auth stage without being told to. */
-        CHECK(apply_reject(o.w, &bo, &rc) == 0 && rc == -1,
+        CHECK(item_refused(o.w, &bo) == 0,
               "cross-chain replay must fail the chain binding");
         OK();
         fx_close(&a);
         fx_close(&o);
     }
 
-    /* ── FAULT POINTS F35 (post-guard, pre-BEGIN) and F36 (after the
-     * intent-index insert, inside the transaction): full digest
-     * rollback, no identity index rows, clean retry commits. ───────── */
+    /* ── IDENTITY INDEX ATOMICITY: an item interrupted after its leg
+     * applied (F38) commits NEITHER identity index; a clean retry
+     * commits BOTH. The legacy lane's F35 (post-guard, pre-BEGIN) and
+     * F36 (after its batch intent-index insert) bracketed stages that
+     * do not exist in the cometbft lane, where the item's index rows
+     * are written inside its own savepoint after execution
+     * (cmt_item_index) and go with it on any refusal. ──────────────── */
     {
         fixture_t fx;
         CHECK(fx_genesis(&fx, "f3536") == 0, "genesis f");
@@ -3171,23 +3365,20 @@ static int test_intent_engine(void) {
         nodus_v2_block_t b;
 
         mk_block(&b, 1, &ve, 1);
-        b.fail_at = V2AP_FAIL_AFTER_INTENT_GUARD;
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
-              "F35 must reject with digest-identical rollback");
-        OK();
-        mk_block(&b, 1, &ve, 1);
-        b.fail_at = V2AP_FAIL_AFTER_INTENT_INDEX;
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
-              "F36 must reject with digest-identical rollback");
-        /* the interrupted block committed NEITHER identity index */
+        b.fail_at = V2AP_FAIL_AFTER_LEG_APPLY;
+        b.fail_env_index = 0;
+        b.fail_leg_index = 0;
+        CHECK(v2x_cmt_injected(fx.w, &b) == 0,
+              "F38 must refuse the item with the ledger byte-identical");
+        /* the interrupted item committed NEITHER identity index */
         CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_intent_index") == 0,
-              "F36 left an intent row");
+              "F38 left an intent row");
         CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_tx_index") == 0,
-              "F36 left a wire row");
+              "F38 left a wire row");
         OK();
         /* clean retry commits, and BOTH indices land atomically */
         mk_block(&b, 1, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "clean retry after faults must commit");
         CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_intent_index") == 1 &&
               q1(fx.w, "SELECT COUNT(*) FROM v2_tx_index") == 1,
@@ -3277,35 +3468,42 @@ static int head_blob(nodus_witness_t *w, uint32_t dom, uint8_t out[89]) {
     return ok;
 }
 
+/* burn fixture's extra genesis rows (g_fx_pre_genesis): one LOCKED
+ * native utxo (its value added to the supply) and one CUSTOM-token
+ * utxo (outside the native identity) */
+static uint8_t g_burn_tok[64];
+static uint8_t g_burn_nul_tok[64];
+
+static int seed_burn_pre_genesis(fixture_t *fx) {
+    if (seed_utxo(fx, 7, 1500000 + FEE_MIN, 0xE2, 100000,
+                  g_nul_lock) != 0)
+        return -1;
+    char sql[192];
+    snprintf(sql, sizeof(sql),
+             "UPDATE supply_tracking SET genesis_supply = "
+             "genesis_supply + %llu, current_supply = "
+             "current_supply + %llu WHERE id = 1",
+             (unsigned long long)(1500000 + FEE_MIN),
+             (unsigned long long)(1500000 + FEE_MIN));
+    if (run_sql(fx->w->db, sql) != 0) return -1;
+    memset(g_burn_tok, 0x71, sizeof(g_burn_tok));
+    return seed_token_utxo(fx, 7, 500, 0xD1, g_burn_tok, g_burn_nul_tok);
+}
+
 static int test_core_burn(void) {
     fixture_t fx;
-    CHECK(fx_genesis(&fx, "burn") == 0, "genesis");
+    /* extra genesis rows: one LOCKED native utxo, one CUSTOM-token utxo */
+    g_fx_pre_genesis = seed_burn_pre_genesis;
+    CHECK(fx_genesis(&fx, "burn") == 0,
+          "genesis (with a locked and a token utxo)");
     int s7[1] = { 7 };
     int s8[1] = { 8 };
     env_t e;
     nodus_v2_block_t b;
-    int rc = 0;
     uint8_t ins1[1][64];
     memcpy(ins1[0], g_nul_a, 64);
-
-    /* extra fixture rows: one LOCKED native utxo, one CUSTOM-token utxo */
-    CHECK(seed_utxo(&fx, 7, 1500000 + FEE_MIN, 0xE2, 100000,
-                    g_nul_lock) == 0, "seed locked");
-    {
-        char sql[192];
-        snprintf(sql, sizeof(sql),
-                 "UPDATE supply_tracking SET genesis_supply = "
-                 "genesis_supply + %llu, current_supply = "
-                 "current_supply + %llu WHERE id = 1",
-                 (unsigned long long)(1500000 + FEE_MIN),
-                 (unsigned long long)(1500000 + FEE_MIN));
-        CHECK(run_sql(fx.w->db, sql) == 0, "supply seed");
-    }
-    static uint8_t tokT[64];
-    memset(tokT, 0x71, sizeof(tokT));
-    uint8_t nul_tok[64];
-    CHECK(seed_token_utxo(&fx, 7, 500, 0xD1, tokT, nul_tok) == 0,
-          "seed token utxo");
+    const uint8_t *tokT = g_burn_tok;
+    const uint8_t *nul_tok = g_burn_nul_tok;
 
     /* ── negatives (each a digest-proven no-op) ─────────────────────── */
     /* zero burn amount — a zero burn IS a SPEND (canonical form) */
@@ -3315,7 +3513,7 @@ static int test_core_burn(void) {
                   == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "zero burn amount must reject");
         OK();
     }
@@ -3327,7 +3525,7 @@ static int test_core_burn(void) {
                        NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "unfunded burn must reject");
         OK();
     }
@@ -3342,7 +3540,7 @@ static int test_core_burn(void) {
                        s7, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "fee+burn overflow must reject");
         OK();
     }
@@ -3369,7 +3567,7 @@ static int test_core_burn(void) {
               "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "duplicate burn input must reject");
         OK();
     }
@@ -3382,7 +3580,7 @@ static int test_core_burn(void) {
                   == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "unowned burn input must reject");
         OK();
     }
@@ -3397,7 +3595,7 @@ static int test_core_burn(void) {
               "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "invalid burn signature must reject");
         OK();
     }
@@ -3415,7 +3613,7 @@ static int test_core_burn(void) {
                   == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "token burn (deficit) must reject");
         OK();
         /* partial token deficit rejects too */
@@ -3425,7 +3623,7 @@ static int test_core_burn(void) {
                   == 0, "build");
         nodus_v2_envelope_t ve2 = { e.bytes, e.len };
         mk_block(&b, 1, &ve2, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "partial token burn must reject");
         OK();
     }
@@ -3437,7 +3635,7 @@ static int test_core_burn(void) {
                        NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "burn fee mismatch must reject");
         OK();
     }
@@ -3448,7 +3646,7 @@ static int test_core_burn(void) {
                        NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "sub-floor burn fee must reject");
         OK();
     }
@@ -3461,7 +3659,7 @@ static int test_core_burn(void) {
                        NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "locked burn input must reject");
         OK();
     }
@@ -3479,7 +3677,7 @@ static int test_core_burn(void) {
                                40, 16384, s7, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "BURN call bytes under runtime_op SPEND must reject");
         OK();
         uint32_t cl2 = spend_call_build(call, sizeof(call), ins1, 1, o,
@@ -3490,7 +3688,7 @@ static int test_core_burn(void) {
                                40, 16384, s7, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve2 = { e.bytes, e.len };
         mk_block(&b, 1, &ve2, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "SPEND call bytes under runtime_op BURN must reject");
         OK();
     }
@@ -3514,7 +3712,7 @@ static int test_core_burn(void) {
                          p1_intent) == 0, "ids");
         nodus_v2_envelope_t ve = { e_p1.bytes, e_p1.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "burn with change must commit");
         OK();
         /* the exact before/after invariant, named buckets (the season's
@@ -3578,7 +3776,7 @@ static int test_core_burn(void) {
                        NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 2, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "already-spent burn input must reject");
         OK();
     }
@@ -3596,7 +3794,7 @@ static int test_core_burn(void) {
               "twin: same intent, different wire");
         nodus_v2_envelope_t ve = { e2.bytes, e2.len };
         mk_block(&b, 2, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "burn replay under a new witness must reject");
         OK();
     }
@@ -3611,7 +3809,7 @@ static int test_core_burn(void) {
                        UTXO_B - FEE_MIN, s7, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 2, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "full-value burn must commit");
         CHECK(q1(fx.w, "SELECT total_burned FROM supply_tracking")
                   == burned_pre + UTXO_B - FEE_MIN,
@@ -3632,7 +3830,7 @@ static int test_core_burn(void) {
                   == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 3, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "smallest burn must commit");
         CHECK(q1(fx.w, "SELECT total_burned FROM supply_tracking")
                   == burned_pre + 1,
@@ -3659,7 +3857,7 @@ static int test_core_burn(void) {
               "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 4, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "token pass-through burn must commit");
         CHECK(q1(fx.w, "SELECT total_burned FROM supply_tracking")
                   == burned_pre + 2000000 - 500000 - FEE_MIN,
@@ -3705,8 +3903,8 @@ static int test_core_burn(void) {
         mk_block(&ba, 1, &va, 1);
         mk_block(&bb, 1, &vb, 1);
         /* O14: ids are engine-derived — see the twin note above. */
-        CHECK(nodus_witness_v2_apply_block(a.w, &ba) == 0, "A commits");
-        CHECK(nodus_witness_v2_apply_block(b2.w, &bb) == 0, "B commits");
+        CHECK(v2x_cmt_apply_ok(a.w, &ba) == 0, "A commits");
+        CHECK(v2x_cmt_apply_ok(b2.w, &bb) == 0, "B commits");
         uint8_t da[64], db[64];
         CHECK(consensus_state_digest(a.w, da) == 0 &&
               consensus_state_digest(b2.w, db) == 0, "digest");
@@ -3739,13 +3937,13 @@ static int test_core_burn(void) {
         nodus_v2_block_t bo;
         mk_block(&bo, 1, &va, 1);
         /* O14: prev is DERIVED from chain O2's own committed genesis. */
-        CHECK(apply_reject(o2.w, &bo, &rc) == 0 && rc == -1,
+        CHECK(item_refused(o2.w, &bo) == 0,
               "cross-chain burn replay must fail the chain binding");
         OK();
         /* cross-domain: the same call bytes as a SYSTEM leg — SYSTEM
          * owns no runtime_op 2 semantics for them (admission owns the
          * rule ids; op 2 IS a SYSTEM rule id (DELEGATE), so this dies
-         * on the auth binding/exec rules — either way a VERDICT) */
+         * on the auth binding/exec rules — either way an ITEM refusal) */
         {
             static uint8_t call[8192];
             uint32_t cl = burn_call_build(call, sizeof(call), insa, 1,
@@ -3758,7 +3956,7 @@ static int test_core_burn(void) {
             nodus_v2_envelope_t vs = { e.bytes, e.len };
             nodus_v2_block_t bs;
             mk_block(&bs, 1, &vs, 1);
-            CHECK(apply_reject(a.w, &bs, &rc) == 0 && rc == -1,
+            CHECK(item_refused(a.w, &bs) == 0,
                   "burn call routed to SYSTEM must reject");
             OK();
         }
@@ -3785,22 +3983,25 @@ static int test_core_burn(void) {
             bf.fail_at = V2AP_FAIL_AFTER_EFFECT_APPLY;
             bf.fail_env_index = 0;
             bf.fail_effect_index = idx;
-            CHECK(apply_reject(fxf.w, &bf, &rc) == 0 && rc == -1,
+            CHECK(v2x_cmt_injected(fxf.w, &bf) == 0,
                   "F37 mid-effect fault must roll back byte-identically");
             /* clean retry commits deterministically */
             bf.fail_at = V2AP_FAIL_NONE;
-            CHECK(nodus_witness_v2_apply_block(fxf.w, &bf) == 0,
+            CHECK(v2x_cmt_apply_ok(fxf.w, &bf) == 0,
                   "clean retry after F37 must commit");
             CHECK(supply_identity_holds(fxf.w), "identity after retry");
             OK();
             fx_close(&fxf);
         }
-        /* the reads/decode/commit-failure points with a BURN envelope */
-        static const nodus_v2_apply_fail_t pts[4] = {
+        /* the reads/decode points (ITEM refusals) and the pre-commit
+         * point (a node FAULT) with a BURN envelope. The legacy lane's
+         * F14 (its own COMMIT failing) has no cometbft equivalent: the
+         * host owns the COMMIT. */
+        static const nodus_v2_apply_fail_t pts[3] = {
             V2AP_FAIL_AFTER_READS, V2AP_FAIL_AFTER_EFFECT_DECODE,
-            V2AP_FAIL_BEFORE_COMMIT, V2AP_FAIL_COMMIT
+            V2AP_FAIL_BEFORE_COMMIT
         };
-        for (int p = 0; p < 4; p++) {
+        for (int p = 0; p < 3; p++) {
             fixture_t fxf;
             CHECK(fx_genesis(&fxf, "bflt") == 0, "genesis");
             uint8_t insa[1][64];
@@ -3814,10 +4015,10 @@ static int test_core_burn(void) {
             mk_block(&bf, 1, &ve, 1);
             bf.fail_at = pts[p];
             bf.fail_env_index = 0;
-            CHECK(apply_reject(fxf.w, &bf, &rc) == 0 && rc == -1,
+            CHECK(v2x_cmt_injected(fxf.w, &bf) == 0,
                   "burn fault point must roll back byte-identically");
             bf.fail_at = V2AP_FAIL_NONE;
-            CHECK(nodus_witness_v2_apply_block(fxf.w, &bf) == 0,
+            CHECK(v2x_cmt_apply_ok(fxf.w, &bf) == 0,
                   "clean retry after the burn fault must commit");
             OK();
             fx_close(&fxf);
@@ -3887,9 +4088,11 @@ static uint64_t tok_rows(nodus_witness_t *w, const uint8_t token_id[64]) {
 
 /* seed one big native funding utxo (>= the creation fee) + rebalance
  * the fixture's conservation identity */
-static int seed_funding(fixture_t *fx, int k, uint64_t amount,
-                        uint8_t seed_byte, uint8_t nul_out[64]) {
-    if (seed_utxo(fx, k, amount, seed_byte, 0, nul_out) != 0) return -1;
+static int seed_funding_locked(fixture_t *fx, int k, uint64_t amount,
+                               uint8_t seed_byte, uint64_t unlock,
+                               uint8_t nul_out[64]) {
+    if (seed_utxo(fx, k, amount, seed_byte, unlock, nul_out) != 0)
+        return -1;
     char sql[224];
     snprintf(sql, sizeof(sql),
              "UPDATE supply_tracking SET genesis_supply = "
@@ -3899,25 +4102,98 @@ static int seed_funding(fixture_t *fx, int k, uint64_t amount,
     return run_sql(fx->w->db, sql);
 }
 
+static int seed_funding(fixture_t *fx, int k, uint64_t amount,
+                        uint8_t seed_byte, uint8_t nul_out[64]) {
+    return seed_funding_locked(fx, k, amount, seed_byte, 0, nul_out);
+}
+
+/* ONE native funding utxo written into the genesis state
+ * (g_fx_pre_genesis) — for fixtures whose first block after the seed
+ * may be refusal-only. Set g_pre_fund_* and arm the hook; the derived
+ * nullifier lands in g_pre_fund_nul. */
+static int      g_pre_fund_k;
+static uint64_t g_pre_fund_amt;
+static uint8_t  g_pre_fund_seed;
+static uint8_t  g_pre_fund_nul[64];
+
+static int seed_one_funding_pre_genesis(fixture_t *fx) {
+    return seed_funding(fx, g_pre_fund_k, g_pre_fund_amt, g_pre_fund_seed,
+                        g_pre_fund_nul);
+}
+
+static int fx_genesis_funded(fixture_t *fx, const char *tag, int k,
+                             uint64_t amount, uint8_t seed_byte,
+                             uint8_t nul_out[64]) {
+    g_pre_fund_k = k;
+    g_pre_fund_amt = amount;
+    g_pre_fund_seed = seed_byte;
+    g_fx_pre_genesis = seed_one_funding_pre_genesis;
+    if (fx_genesis(fx, tag) != 0) return -1;
+    memcpy(nul_out, g_pre_fund_nul, 64);
+    return 0;
+}
+
+/* TOKEN_CREATE fixture's extra genesis rows (g_fx_pre_genesis): three
+ * native funding utxos, a squatter registry row under tokC (the
+ * collision case), a custom-token funding utxo and a LOCKED native
+ * funding utxo (the funding-input matrix). Written before genesis so
+ * the committed CORE root covers them — see g_fx_pre_genesis. */
+static uint8_t g_tc_nul_f[3][64], g_tc_ntok[64], g_tc_nlock[64];
+static uint8_t g_tc_tokC[64], g_tc_tokFund[64];
+
+static int seed_tc_pre_genesis(fixture_t *fx) {
+    if (seed_funding(fx, 7, TC_FEE + 3000000, 0x31, g_tc_nul_f[0]) != 0 ||
+        seed_funding(fx, 7, TC_FEE, 0x32, g_tc_nul_f[1]) != 0 ||
+        seed_funding(fx, 7, TC_FEE + FEE_MIN, 0x33, g_tc_nul_f[2]) != 0)
+        return -1;
+    /* deliberate collision fixture: a registry row under the target id
+     * (INSERTED DIRECTLY — the legacy INSERT OR IGNORE would have
+     * silently dropped the new registration; V2 rejects) */
+    memset(g_tc_tokC, 0xC9, 64);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(fx->w->db,
+            "INSERT INTO tokens (token_id, name, symbol, decimals, "
+            "supply, creator_fp, flags, block_height, timestamp) "
+            "VALUES (?1, 'Squat', 'SQ', 8, 1, ?2, 0, 0, 0)",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, g_tc_tokC, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 2, g_fp[8], 128, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) return -1;
+    /* NON-NATIVE funding: a custom-token utxo for key 7 */
+    memset(g_tc_tokFund, 0x77, 64);
+    if (seed_token_utxo(fx, 7, 5, 0x63, g_tc_tokFund, g_tc_ntok) != 0)
+        return -1;
+    /* LOCKED funding: TC_FEE native, unlock far in the future */
+    if (seed_utxo(fx, 7, TC_FEE, 0x66, 100000, g_tc_nlock) != 0)
+        return -1;
+    char sql[224];
+    snprintf(sql, sizeof(sql),
+             "UPDATE supply_tracking SET genesis_supply = "
+             "genesis_supply + %llu, current_supply = "
+             "current_supply + %llu WHERE id = 1",
+             (unsigned long long)TC_FEE, (unsigned long long)TC_FEE);
+    return run_sql(fx->w->db, sql);
+}
+
 static int test_core_token_create(void) {
     fixture_t fx;
-    CHECK(fx_genesis(&fx, "tc") == 0, "genesis");
+    g_fx_pre_genesis = seed_tc_pre_genesis;
+    CHECK(fx_genesis(&fx, "tc") == 0,
+          "genesis (with the creation fixture rows)");
     int s7[1] = { 7 };
     env_t e;
     nodus_v2_block_t b;
-    int rc = 0;
 
-    static uint8_t tokA[64], tokB[64], tokC[64];
+    static uint8_t tokA[64], tokB[64];
     memset(tokA, 0xA7, 64);
     memset(tokB, 0xB8, 64);
-    memset(tokC, 0xC9, 64);
+    const uint8_t *tokC = g_tc_tokC;
 
-    uint8_t nul_f1[64], nul_f2[64], nul_f3[64];
-    CHECK(seed_funding(&fx, 7, TC_FEE + 3000000, 0x31, nul_f1) == 0,
-          "funding 1");
-    CHECK(seed_funding(&fx, 7, TC_FEE, 0x32, nul_f2) == 0, "funding 2");
-    CHECK(seed_funding(&fx, 7, TC_FEE + FEE_MIN, 0x33, nul_f3) == 0,
-          "funding 3");
+    const uint8_t *nul_f1 = g_tc_nul_f[0], *nul_f2 = g_tc_nul_f[1],
+                  *nul_f3 = g_tc_nul_f[2];
     uint8_t insf1[1][64], insf2[1][64], insf3[1][64];
     memcpy(insf1[0], nul_f1, 64);
     memcpy(insf2[0], nul_f2, 64);
@@ -3934,7 +4210,7 @@ static int test_core_token_create(void) {
                      TC_FEE, s7, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "underfunded token creation must reject");
         OK();
     }
@@ -3947,7 +4223,7 @@ static int test_core_token_create(void) {
                      TC_FEE - 1, s7, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "creation fee below the shipped floor must reject");
         OK();
     }
@@ -3962,7 +4238,7 @@ static int test_core_token_create(void) {
                      TC_FEE, s7, 1, &so) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "invalid creation signature must reject");
         OK();
     }
@@ -4009,7 +4285,7 @@ static int test_core_token_create(void) {
                          NULL) == 0, "build");
             nodus_v2_envelope_t ve = { e.bytes, e.len };
             mk_block(&b, 1, &ve, 1);
-            CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1, m[i].what);
+            CHECK(item_refused(fx.w, &b) == 0, m[i].what);
             OK();
         }
         /* non-printable byte in the name (0x1f) — hand-patched call */
@@ -4028,7 +4304,7 @@ static int test_core_token_create(void) {
                       == 0, "build");
             nodus_v2_envelope_t ve = { e.bytes, e.len };
             mk_block(&b, 1, &ve, 1);
-            CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+            CHECK(item_refused(fx.w, &b) == 0,
                   "non-printable name byte must reject");
             OK();
         }
@@ -4047,7 +4323,7 @@ static int test_core_token_create(void) {
                                    NULL) == 0, "build");
             nodus_v2_envelope_t ve = { e.bytes, e.len };
             mk_block(&b, 1, &ve, 1);
-            CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+            CHECK(item_refused(fx.w, &b) == 0,
                   "truncated creation call must reject");
             OK();
         }
@@ -4059,7 +4335,7 @@ static int test_core_token_create(void) {
                          o, 2, TC_FEE, s7, 1, NULL) == 0, "build");
             nodus_v2_envelope_t ve = { e.bytes, e.len };
             mk_block(&b, 1, &ve, 1);
-            CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+            CHECK(item_refused(fx.w, &b) == 0,
                   "genesis-output token substitution must reject");
             OK();
         }
@@ -4071,7 +4347,7 @@ static int test_core_token_create(void) {
                          o, 2, TC_FEE, s7, 1, NULL) == 0, "build");
             nodus_v2_envelope_t ve = { e.bytes, e.len };
             mk_block(&b, 1, &ve, 1);
-            CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+            CHECK(item_refused(fx.w, &b) == 0,
                   "second output of the new token must reject");
             OK();
         }
@@ -4083,32 +4359,21 @@ static int test_core_token_create(void) {
                          o, 2, TC_FEE, s7, 1, NULL) == 0, "build");
             nodus_v2_envelope_t ve = { e.bytes, e.len };
             mk_block(&b, 1, &ve, 1);
-            CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+            CHECK(item_refused(fx.w, &b) == 0,
                   "zero initial supply must reject");
             OK();
         }
     }
-    /* deliberate collision fixture: a pre-existing registry row under
-     * the target id (INSERTED DIRECTLY — the legacy INSERT OR IGNORE
-     * would have silently dropped the new registration; V2 rejects) */
+    /* deliberate collision fixture: the pre-existing registry row under
+     * the target id (seed_tc_pre_genesis) */
     {
-        sqlite3_stmt *st = NULL;
-        CHECK(sqlite3_prepare_v2(fx.w->db,
-              "INSERT INTO tokens (token_id, name, symbol, decimals, "
-              "supply, creator_fp, flags, block_height, timestamp) "
-              "VALUES (?1, 'Squat', 'SQ', 8, 1, ?2, 0, 0, 0)",
-              -1, &st, NULL) == SQLITE_OK, "prep");
-        sqlite3_bind_blob(st, 1, tokC, 64, SQLITE_TRANSIENT);
-        sqlite3_bind_text(st, 2, g_fp[8], 128, SQLITE_TRANSIENT);
-        CHECK(sqlite3_step(st) == SQLITE_DONE, "squat row");
-        sqlite3_finalize(st);
         out_spec_t o[2] = { { 7, 777, 0x52, tokC },
                             { 7, 3000000, 0x53, NULL } };
         CHECK(tc_env(&fx, &e, tokC, "TestToken", "TT", 8, insf1, 1, o, 2,
                      TC_FEE, s7, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "colliding token id must reject");
         OK();
     }
@@ -4118,46 +4383,29 @@ static int test_core_token_create(void) {
          * to fund the creation fee with it (native leg balanced so the
          * native-only rule is the one violated: token in TC_FEE covers
          * nothing, native in == 0 != out+fee) — actually the non-native
-         * check fires FIRST, before any sum */
-        static uint8_t tokFund[64];
-        memset(tokFund, 0x77, 64);
-        uint8_t ntok[64];
-        CHECK(seed_token_utxo(&fx, 7, 5, 0x63, tokFund, ntok) == 0,
-              "seed token fund");
+         * check fires FIRST, before any sum. The token utxo is
+         * seed_tc_pre_genesis's. */
         uint8_t insn[2][64];
         memcpy(insn[0], nul_f1, 64);
-        memcpy(insn[1], ntok, 64);
+        memcpy(insn[1], g_tc_ntok, 64);
         out_spec_t o[2] = { { 7, 777, 0x64, tokA },
                             { 7, 3000000, 0x65, NULL } };
         CHECK(tc_env(&fx, &e, tokA, "TestToken", "TT", 8, insn, 2, o, 2,
                      TC_FEE, s7, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "non-native creation funding must reject");
         OK();
-        /* LOCKED funding input */
-        uint8_t nlock[64];
-        CHECK(seed_utxo(&fx, 7, TC_FEE, 0x66, 100000, nlock) == 0,
-              "seed locked fund");
-        {
-            char sql[224];
-            snprintf(sql, sizeof(sql),
-                     "UPDATE supply_tracking SET genesis_supply = "
-                     "genesis_supply + %llu, current_supply = "
-                     "current_supply + %llu WHERE id = 1",
-                     (unsigned long long)TC_FEE,
-                     (unsigned long long)TC_FEE);
-            CHECK(run_sql(fx.w->db, sql) == 0, "supply seed");
-        }
+        /* LOCKED funding input (seed_tc_pre_genesis) */
         uint8_t insl[1][64];
-        memcpy(insl[0], nlock, 64);
+        memcpy(insl[0], g_tc_nlock, 64);
         out_spec_t ol[1] = { { 7, 777, 0x67, tokA } };
         CHECK(tc_env(&fx, &e, tokA, "TestToken", "TT", 8, insl, 1, ol, 1,
                      TC_FEE, s7, 1, NULL) == 0, "build");
         nodus_v2_envelope_t vl = { e.bytes, e.len };
         mk_block(&b, 1, &vl, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "locked creation funding must reject");
         OK();
         /* WRONG-OWNER funding (key 8 signs over key 7's utxo) */
@@ -4169,7 +4417,7 @@ static int test_core_token_create(void) {
                      TC_FEE, s8w, 1, NULL) == 0, "build");
         nodus_v2_envelope_t vw = { e.bytes, e.len };
         mk_block(&b, 1, &vw, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "unowned creation funding must reject");
         OK();
         /* MISSING funding input */
@@ -4180,7 +4428,7 @@ static int test_core_token_create(void) {
                      TC_FEE, s7, 1, NULL) == 0, "build");
         nodus_v2_envelope_t vm = { e.bytes, e.len };
         mk_block(&b, 1, &vm, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "missing creation funding must reject");
         OK();
     }
@@ -4195,7 +4443,7 @@ static int test_core_token_create(void) {
                      TC_FEE, s7, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "change-sum overflow must reject");
         OK();
     }
@@ -4210,7 +4458,7 @@ static int test_core_token_create(void) {
                      1, TC_FEE, s7, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "15-input creation must reject (read budget)");
         OK();
         /* out_count 0 (a creation must create its genesis output) */
@@ -4218,7 +4466,7 @@ static int test_core_token_create(void) {
                      TC_FEE, s7, 1, NULL) == 0, "build");
         nodus_v2_envelope_t v0 = { e.bytes, e.len };
         mk_block(&b, 1, &v0, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "zero-output creation must reject");
         OK();
         /* ':' in the SYMBOL (the name variant lives in the matrix) */
@@ -4226,7 +4474,7 @@ static int test_core_token_create(void) {
                      TC_FEE, s7, 1, NULL) == 0, "build");
         nodus_v2_envelope_t vs = { e.bytes, e.len };
         mk_block(&b, 1, &vs, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "colon in symbol must reject");
         OK();
         /* CROSS-OP: TOKEN_CREATE bytes under runtime_op BURN and under
@@ -4243,7 +4491,7 @@ static int test_core_token_create(void) {
                                40, 16384, s7, 1, NULL) == 0, "build");
         nodus_v2_envelope_t vb2 = { e.bytes, e.len };
         mk_block(&b, 1, &vb2, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "TOKEN_CREATE bytes under runtime_op BURN must reject");
         OK();
         CHECK(env_build_signed(&fx, &e, DNA_DOMAIN_CORE,
@@ -4251,7 +4499,7 @@ static int test_core_token_create(void) {
                                40, 16384, s7, 1, NULL) == 0, "build");
         nodus_v2_envelope_t vsp = { e.bytes, e.len };
         mk_block(&b, 1, &vsp, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "TOKEN_CREATE bytes under runtime_op SPEND must reject");
         OK();
     }
@@ -4273,7 +4521,7 @@ static int test_core_token_create(void) {
                          p1_intent) == 0, "ids");
         nodus_v2_envelope_t ve = { e_p1.bytes, e_p1.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "valid token creation must commit");
         OK();
         /* the registry row: every committed column, wall clock EXCLUDED */
@@ -4353,7 +4601,7 @@ static int test_core_token_create(void) {
                      TC_FEE, s7, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 2, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "duplicate token id must reject");
         CHECK(tok_rows(fx.w, tokA) == 1, "exactly one registry row");
         OK();
@@ -4372,7 +4620,7 @@ static int test_core_token_create(void) {
               "replay twin: same intent, new wire");
         nodus_v2_envelope_t ve = { e2.bytes, e2.len };
         mk_block(&b, 2, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "creation replay under a new witness must reject");
         OK();
     }
@@ -4390,7 +4638,7 @@ static int test_core_token_create(void) {
                      TC_FEE, s7, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 2, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "boundary creation must commit");
         CHECK(q1(fx.w, "SELECT total_burned FROM supply_tracking")
                   == burned_pre &&
@@ -4419,8 +4667,12 @@ static int test_core_token_create(void) {
     fx_close(&fx);
 
     /* ── SAME-BLOCK duplicate: two creations of ONE id in one block —
-     * the second leg's registry read runs INSIDE the transaction and
-     * sees the first row: the whole block rejects, nothing survives ── */
+     * the second item's registry read runs INSIDE the transaction and
+     * sees the first item's row. The cometbft lane judges ITEMS: the
+     * first creation applies, the second is refused, and exactly ONE
+     * registry row exists — the FIRST one's (the funding seeds are
+     * out-of-band CORE writes absorbed by the first item, which touches
+     * CORE). ────────────────────────────────────────────────────────── */
     {
         fixture_t fx2;
         CHECK(fx_genesis(&fx2, "tcdup") == 0, "genesis");
@@ -4442,9 +4694,28 @@ static int test_core_token_create(void) {
                                       { eb.bytes, eb.len } };
         nodus_v2_block_t bd;
         mk_block(&bd, 1, vs, 2);
-        CHECK(apply_reject(fx2.w, &bd, &rc) == 0 && rc == -1,
-              "same-block duplicate token id must reject the block");
-        CHECK(tok_rows(fx2.w, tokA) == 0, "no registry row survived");
+        const uint64_t pool_b = q1(fx2.w,
+                                   "SELECT reward_pool FROM supply_tracking");
+        CHECK(v2x_cmt_apply(fx2.w, &bd) == 0 &&
+              bd.cmt.results_len == 2 &&
+              bd.cmt.results[0].code == NODUS_V2_TX_OK &&
+              bd.cmt.results[1].code != NODUS_V2_TX_OK,
+              "same-block duplicate token id: the second is refused");
+        CHECK(tok_rows(fx2.w, tokA) == 1, "exactly one registry row");
+        CHECK(q1(fx2.w, "SELECT COUNT(*) FROM tokens WHERE "
+                        "name = 'First'") == 1,
+              "the surviving row is the FIRST creation's");
+        OK();
+        /* per-item effects of the refusal (P4 fix round): no fee debit
+         * (the pool grew by the FIRST item's fee only), its funding input
+         * f2 is still unspent, and it left no identity row */
+        CHECK(q1(fx2.w, "SELECT reward_pool FROM supply_tracking") ==
+                  pool_b + TC_FEE,
+              "the refused duplicate paid no fee");
+        CHECK(utxo_rows(fx2.w, f2) == 1 && utxo_rows(fx2.w, f1) == 0,
+              "the refused duplicate's funding input is unspent");
+        CHECK(idx_rows_are(fx2.w, bd.global_height, 1) == 0,
+              "the refused duplicate left no identity row");
         OK();
         fx_close(&fx2);
     }
@@ -4475,7 +4746,7 @@ static int test_core_token_create(void) {
                                       { eb.bytes, eb.len } };
         nodus_v2_block_t b1;
         mk_block(&b1, 1, va, 2);
-        CHECK(nodus_witness_v2_apply_block(xa.w, &b1) == 0, "A commits");
+        CHECK(v2x_cmt_apply_ok(xa.w, &b1) == 0, "A commits");
         /* fixture B — the SAME two creations, opposite order */
         env_t ea2, eb2;
         CHECK(seed_funding(&xb, 7, TC_FEE, 0x36, fa) == 0, "fund");
@@ -4489,7 +4760,7 @@ static int test_core_token_create(void) {
         nodus_v2_block_t b2;
         mk_block(&b2, 1, vb, 2);
         /* O14: id derived by the engine. */
-        CHECK(nodus_witness_v2_apply_block(xb.w, &b2) == 0, "B commits");
+        CHECK(v2x_cmt_apply_ok(xb.w, &b2) == 0, "B commits");
         CHECK(memcmp(b1.out_domains_root, b2.out_domains_root, 64) == 0 &&
               memcmp(b1.out_global_root, b2.out_global_root, 64) == 0,
               "creation order must not move the state roots");
@@ -4503,17 +4774,19 @@ static int test_core_token_create(void) {
     /* ── CROSS-CHAIN replay negative ────────────────────────────────── */
     {
         fixture_t a, o2;
-        CHECK(fx_genesis(&a, "tcxcA") == 0, "genesis A");
-        g_gid_fill = 0xF1;
-        int orc = fx_genesis(&o2, "tcxcO");
-        g_gid_fill = 0xEE;
-        CHECK(orc == 0, "genesis O");
-        uint8_t f1[64];
-        CHECK(seed_funding(&a, 7, TC_FEE, 0x38, f1) == 0, "fund");
+        uint8_t f1[64], fo1[64];
+        CHECK(fx_genesis_funded(&a, "tcxcA", 7, TC_FEE, 0x38, f1) == 0,
+              "genesis A (funded)");
         /* fund the OTHER chain identically (same seed ⇒ same nullifier)
          * so the chain binding is the ONLY rejecting rule — review
-         * round: without this, a missing-input reject stood behind it */
-        CHECK(seed_funding(&o2, 7, TC_FEE, 0x38, f1) == 0, "fund O");
+         * round: without this, a missing-input reject stood behind it.
+         * Both fundings are genesis rows (the refusal-only block on O
+         * must not meet a moved CORE root). */
+        g_gid_fill = 0xF1;
+        int orc = fx_genesis_funded(&o2, "tcxcO", 7, TC_FEE, 0x38, fo1);
+        g_gid_fill = 0xEE;
+        CHECK(orc == 0, "genesis O (funded)");
+        CHECK(memcmp(f1, fo1, 64) == 0, "same funding nullifier on O");
         uint8_t i1[1][64];
         memcpy(i1[0], f1, 64);
         out_spec_t o[1] = { { 7, 333, 0x5D, tokC } };
@@ -4524,7 +4797,7 @@ static int test_core_token_create(void) {
         nodus_v2_block_t bo;
         mk_block(&bo, 1, &va, 1);
         /* O14: prev derived from this chain's own committed genesis. */
-        CHECK(apply_reject(o2.w, &bo, &rc) == 0 && rc == -1,
+        CHECK(item_refused(o2.w, &bo) == 0,
               "cross-chain creation replay must fail the chain binding");
         OK();
         fx_close(&a);
@@ -4559,8 +4832,8 @@ static int test_core_token_create(void) {
         mk_block(&ba, 1, &va, 1);
         mk_block(&bb, 1, &vb, 1);
         /* O14: id derived by the engine. */
-        CHECK(nodus_witness_v2_apply_block(a.w, &ba) == 0, "A commits");
-        CHECK(nodus_witness_v2_apply_block(b2.w, &bb) == 0, "B commits");
+        CHECK(v2x_cmt_apply_ok(a.w, &ba) == 0, "A commits");
+        CHECK(v2x_cmt_apply_ok(b2.w, &bb) == 0, "B commits");
         uint8_t da[64], db[64];
         CHECK(consensus_state_digest(a.w, da) == 0 &&
               consensus_state_digest(b2.w, db) == 0, "digest");
@@ -4586,10 +4859,12 @@ static int test_core_token_create(void) {
     {
         for (uint32_t idx = 2; idx <= 4; idx++) {
             fixture_t fxf;
-            CHECK(fx_genesis(&fxf, "tcf37") == 0, "genesis");
             uint8_t f1[64];
-            CHECK(seed_funding(&fxf, 7, TC_FEE + 1000000, 0x3A, f1) == 0,
-                  "fund");
+            /* the funding is a genesis row: the injected block refuses
+             * its only item, so an out-of-band CORE seed would fault it
+             * at the untouched-domain guard */
+            CHECK(fx_genesis_funded(&fxf, "tcf37", 7, TC_FEE + 1000000,
+                                    0x3A, f1) == 0, "genesis (funded)");
             uint8_t i1[1][64];
             memcpy(i1[0], f1, 64);
             out_spec_t o[2] = { { 7, 555, 0x5F, tokC },
@@ -4603,12 +4878,12 @@ static int test_core_token_create(void) {
             bf.fail_at = V2AP_FAIL_AFTER_EFFECT_APPLY;
             bf.fail_env_index = 0;
             bf.fail_effect_index = idx;
-            CHECK(apply_reject(fxf.w, &bf, &rc) == 0 && rc == -1,
+            CHECK(v2x_cmt_injected(fxf.w, &bf) == 0,
                   "creation F37 fault must roll back byte-identically");
             CHECK(tok_rows(fxf.w, tokC) == 0,
                   "no registry row survives a fault");
             bf.fail_at = V2AP_FAIL_NONE;
-            CHECK(nodus_witness_v2_apply_block(fxf.w, &bf) == 0,
+            CHECK(v2x_cmt_apply_ok(fxf.w, &bf) == 0,
                   "clean retry after the creation fault must commit");
             CHECK(tok_rows(fxf.w, tokC) == 1 &&
                   supply_identity_holds(fxf.w),
@@ -5034,10 +5309,9 @@ static uint64_t dom_height(nodus_witness_t *w, uint32_t dom) {
 
 static int test_system_stake(void) {
     fixture_t fx;
-    CHECK(fx_genesis(&fx, "stake") == 0, "genesis");
+    CHECK(fx_pre(&fx, "stake") == 0, "pre-genesis");
     env_t e;
     nodus_v2_block_t b;
-    int rc = 0;
     int s9[1]  = { 9 };
     int s10[1] = { 10 };
     int s11[1] = { 11 };
@@ -5047,8 +5321,9 @@ static int test_system_stake(void) {
     CHECK(key_fp_raw(9, fp9) == 0 && key_fp_raw(K_STRAY, fp_other) == 0,
           "fps");
 
-    /* funding: one UTXO per staker + one owned by an unrelated key */
-    uint8_t f9[64], f10[64], f11[64], ftok[64];
+    /* funding: one UTXO per staker + one owned by an unrelated key —
+     * genesis rows (fx_pre … fx_seal), including C18's second funding */
+    uint8_t f9[64], f10[64], f11[64], ftok[64], f9b[64];
     CHECK(seed_funding(&fx, 9, STAKE_FUND, 0xF1, f9) == 0, "fund 9");
     CHECK(seed_funding(&fx, 10, STAKE_FUND, 0xF2, f10) == 0, "fund 10");
     CHECK(seed_funding(&fx, 11, STAKE_FUND, 0xF3, f11) == 0, "fund 11");
@@ -5058,6 +5333,8 @@ static int test_system_stake(void) {
         CHECK(seed_token_utxo(&fx, 9, 900, 0xF4, tokS, ftok) == 0,
               "fund token");
     }
+    CHECK(seed_funding(&fx, 9, STAKE_FUND, 0xF5, f9b) == 0, "fund 9b");
+    CHECK(fx_seal(&fx) == 0, "genesis");
     uint8_t in9[1][64], in11[1][64], in2[2][64];
     memcpy(in9[0], f9, 64);
     memcpy(in11[0], f11, 64);
@@ -5078,7 +5355,7 @@ static int test_system_stake(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "C1 underfunded stake must reject");
         OK();
     }
@@ -5094,7 +5371,7 @@ static int test_system_stake(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "C2 unowned funding input must reject");
         OK();
     }
@@ -5112,7 +5389,7 @@ static int test_system_stake(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "C3 non-native funding input must reject");
         OK();
     }
@@ -5133,7 +5410,7 @@ static int test_system_stake(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "C4 non-native change output must reject");
         OK();
     }
@@ -5150,7 +5427,7 @@ static int test_system_stake(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "C5 zero-amount change output must reject");
         OK();
     }
@@ -5167,7 +5444,7 @@ static int test_system_stake(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "C6 bond below DNAC_SELF_STAKE_AMOUNT must reject");
         OK();
     }
@@ -5189,7 +5466,7 @@ static int test_system_stake(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "C7 commission_bps 5001 (> the P3-8 cap 5000) must reject");
         OK();
     }
@@ -5211,7 +5488,7 @@ static int test_system_stake(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "C8 duplicate funding input must reject");
         OK();
     }
@@ -5227,7 +5504,7 @@ static int test_system_stake(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "C9 sub-floor fee must reject");
         OK();
     }
@@ -5244,7 +5521,7 @@ static int test_system_stake(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "C10 declared fee != what the inputs release must reject");
         OK();
     }
@@ -5258,7 +5535,7 @@ static int test_system_stake(void) {
                                16384, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "C11 single-leg STAKE (no funding) must reject");
         OK();
     }
@@ -5272,7 +5549,7 @@ static int test_system_stake(void) {
                                0, 40, 16384, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "C12 single-leg SYSFUND (no record) must reject");
         OK();
     }
@@ -5302,7 +5579,7 @@ static int test_system_stake(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "C13 SYSFUND with a non-staking sibling must reject");
         OK();
     }
@@ -5321,7 +5598,7 @@ static int test_system_stake(void) {
                             s9x, 2, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "C14 extra SYSTEM signer must reject (n_signers != 1)");
         OK();
     }
@@ -5339,7 +5616,7 @@ static int test_system_stake(void) {
                             s11, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "C15 signer fp != SHA3(call.staker_pubkey) must reject");
         OK();
     }
@@ -5358,7 +5635,7 @@ static int test_system_stake(void) {
                             s9, 1, s9, 1, &to) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "C16 invalid record-leg signature must reject");
         OK();
     }
@@ -5377,7 +5654,7 @@ static int test_system_stake(void) {
                             s9, 1, s9, 1, &to) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "C17 invalid funding-leg signature must reject");
         OK();
     }
@@ -5388,7 +5665,13 @@ static int test_system_stake(void) {
     uint8_t sys_head0[89], core_head0[89];
     CHECK(head_blob(fx.w, DNA_DOMAIN_SYSTEM, sys_head0) == 0, "sys head");
     CHECK(head_blob(fx.w, DNA_DOMAIN_CORE, core_head0) == 0, "core head");
-    CHECK(active_count(fx.w) == 0, "fixture starts with active_count 0");
+    /* tokenomics-v3 P4: the genesis derivation writes active_count as
+     * the bonded row count (D-11: ACTIVE ∪ ELIGIBLE ∪ RETIRING) — the
+     * fixture's 7 ACTIVE validators. Every step below is relative to
+     * it; the legacy lane's genesis left the counter at 0. */
+    const uint64_t ac0 = active_count(fx.w);
+    CHECK(ac0 == 7, "fixture starts with active_count 7 (the bonded "
+                    "genesis committee)");
     OK();
     uint8_t pkh9[64], pkh10[64];
     CHECK(val_key(9, pkh9) == 0 && val_key(10, pkh10) == 0, "keys");
@@ -5407,7 +5690,7 @@ static int test_system_stake(void) {
         CHECK(out_nul(9, 0x71, chg9) == 0, "change id");
         nodus_v2_envelope_t ve = { e_a.bytes, e_a.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "A: the canonical STAKE must commit");
         OK();
     }
@@ -5417,7 +5700,7 @@ static int test_system_stake(void) {
     CHECK(val_row_matches(fx.w, pkh9, 9, STAKE_BOND, STAKE_BPS, 1,
                           g_fp[9], /*dest_pk=*/9) == 0,
           "A: validator row columns"); OK();
-    CHECK(active_count(fx.w) == 1, "A: active_count == 1"); OK();
+    CHECK(active_count(fx.w) == ac0 + 1, "A: active_count + 1"); OK();
     /* the funding leg's own effects */
     CHECK(utxo_rows(fx.w, f9) == 0, "A: funding input deleted"); OK();
     CHECK(utxo_rows(fx.w, chg9) == 1, "A: change UTXO created"); OK();
@@ -5481,12 +5764,12 @@ static int test_system_stake(void) {
         CHECK(out_nul(10, 0x72, chg10) == 0, "change id");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 2, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "B: foreign-destination STAKE must commit"); OK();
         CHECK(val_row_matches(fx.w, pkh10, 10, STAKE_BOND, STAKE_BPS, 2,
                               g_fp[K_STRAY], /*dest_pk=*/-1) == 0,
               "B: destination pubkey stays all-zero"); OK();
-        CHECK(active_count(fx.w) == 2, "B: active_count == 2"); OK();
+        CHECK(active_count(fx.w) == ac0 + 2, "B: active_count + 2"); OK();
         CHECK(utxo_rows(fx.w, chg10) == 1, "B: change UTXO"); OK();
         CHECK(supply_identity_holds(fx.w), "B: supply identity"); OK();
     }
@@ -5496,9 +5779,8 @@ static int test_system_stake(void) {
      * DIFFER (another commission), so the intent guard cannot be what
      * rejects it — the ABSENT validator read is. */
     {
-        uint8_t f9b[64], in9b[1][64];
-        CHECK(seed_funding(&fx, 9, STAKE_FUND, 0xF5, f9b) == 0, "fund");
-        memcpy(in9b[0], f9b, 64);
+        uint8_t in9b[1][64];
+        memcpy(in9b[0], f9b, 64);           /* seeded pre-genesis above */
         out_spec_t o[1] = { { 9, STAKE_CHANGE, 0x73, NULL } };
         uint32_t sl = stake_call_build(scall, sizeof(scall), 9,
                                        STAKE_BPS + 1, STAKE_BOND, fp9);
@@ -5509,10 +5791,10 @@ static int test_system_stake(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 3, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "C18 Rule I: a second stake for one pubkey must reject");
         OK();
-        CHECK(active_count(fx.w) == 2 &&
+        CHECK(active_count(fx.w) == ac0 + 2 &&
               val_col(fx.w, pkh9, "commission_bps") == STAKE_BPS,
               "C18 the existing row is untouched"); OK();
     }
@@ -5528,7 +5810,7 @@ static int test_system_stake(void) {
     {
         nodus_v2_envelope_t ve = { e_a.bytes, e_a.len };
         mk_block(&b, 3, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "C19 byte-identical replay must reject"); OK();
     }
     /* C20 AUTH TWIN: the same intent authorized by a DIFFERENT valid
@@ -5556,7 +5838,7 @@ static int test_system_stake(void) {
               "C20 it MUST move the wire id"); OK();
         nodus_v2_envelope_t ve = { e_t.bytes, e_t.len };
         mk_block(&b, 3, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "C20 the auth twin must reject on the committed intent");
         OK();
     }
@@ -6122,16 +6404,23 @@ static uint32_t fund_call(uint8_t *dst, size_t cap, const uint8_t in[64],
 
 static int test_system_delegate(void) {
     fixture_t fx;
-    CHECK(fx_genesis(&fx, "dlg") == 0, "genesis");
+    CHECK(fx_pre(&fx, "dlg") == 0, "pre-genesis");
     env_t e;
     nodus_v2_block_t b;
-    int rc = 0;
     int s9[1] = { 9 }, s10[1] = { 10 }, s11[1] = { 11 };
     static uint8_t scall[8192], fcall[8192];
-    uint8_t f9[64], f10[64], f11[64];
+    /* every funding row this test spends ahead of a refusal-only block
+     * is a GENESIS row (fx_pre … fx_seal): D1's key-0 funding, D10b's
+     * LOCKED funding (unlock 1000, never reached), N4b's and D9's */
+    uint8_t f9[64], f10[64], f11[64], f0[64], flk[64], f9x[64], f9c[64];
     CHECK(seed_funding(&fx, 9, DLG_FUND, 0xD1, f9) == 0, "fund 9");
     CHECK(seed_funding(&fx, 10, DLG_FUND, 0xD2, f10) == 0, "fund 10");
     CHECK(seed_funding(&fx, 11, DLG_FUND, 0xD3, f11) == 0, "fund 11");
+    CHECK(seed_funding(&fx, 0, DLG_FUND, 0xD4, f0) == 0, "fund 0");
+    CHECK(seed_funding_locked(&fx, 9, DLG_FUND, 0x27, 1000, flk) == 0,
+          "locked fund");
+    CHECK(seed_funding(&fx, 9, NOLOCK_FUND, 0xD7, f9x) == 0, "fund 9x");
+    CHECK(seed_funding(&fx, 9, DLG_FUND, 0xD6, f9c) == 0, "fund 9c");
 
     uint8_t vk0[64], vk2[64], vk3[64], vk4[64];
     CHECK(val_key(0, vk0) == 0 && val_key(2, vk2) == 0 &&
@@ -6139,6 +6428,13 @@ static int test_system_delegate(void) {
     uint8_t dk90[128], dk10_0[128];
     CHECK(deleg_key_of(9, 0, dk90) == 0 &&
           deleg_key_of(10, 0, dk10_0) == 0, "deleg keys");
+
+    /* the genesis SET is frozen over the seven ACTIVE rows BEFORE the
+     * status flips below — the committee the legacy fixture froze (it
+     * flipped after its genesis); the seal's v2x_seed_rows sees the two
+     * snapshots and does not rebuild them */
+    CHECK(nodus_witness_vset_commit_genesis(fx.w, 1) == 0,
+          "freeze the genesis set");
 
     /* validator 2 becomes ELIGIBLE, validator 3 RETIRING — the two
      * status classes the BONDED gate must separate (bft.c:1429-1434) */
@@ -6158,13 +6454,17 @@ static int test_system_delegate(void) {
         CHECK(sqlite3_step(st) == SQLITE_DONE, "retiring");
         sqlite3_finalize(st);
     }
+    /* the statuses above are genesis state too.
+     * not a real genesis: an ELIGIBLE and a RETIRING row are this
+     * section's subject (the BONDED gate), and a version-3 genesis
+     * writes only ACTIVE rows */
+    v2x_seed_not_real(V2X_SEED_NOT_REAL_STATUSES);
+    CHECK(fx_seal(&fx) == 0, "genesis");
 
     /* ── negatives (digest-proven no-ops at height 1) ───────────────── */
     /* D1 self-delegation (Rule S) — key 0 delegating to itself. It is
-     * also funded, so only Rule S rejects. */
+     * also funded (f0, a genesis row), so only Rule S rejects. */
     {
-        uint8_t f0[64];
-        CHECK(seed_funding(&fx, 0, DLG_FUND, 0xD4, f0) == 0, "fund 0");
         int s0[1] = { 0 };
         uint32_t sl = deleg_call_build(scall, sizeof(scall), 0, 0,
                                        DLG_AMOUNT);
@@ -6176,7 +6476,7 @@ static int test_system_delegate(void) {
                             s0, 1, s0, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "D1 self-delegation must reject (Rule S)"); OK();
     }
     /* D2 unknown validator (the stray key has no row) */
@@ -6191,7 +6491,7 @@ static int test_system_delegate(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "D2 unknown validator must reject"); OK();
     }
     /* D3 RETIRING target: an exit state is not a delegation target */
@@ -6206,7 +6506,7 @@ static int test_system_delegate(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "D3 RETIRING target must reject"); OK();
     }
     /* D4 amount 0 and D5 amount > total supply */
@@ -6220,7 +6520,7 @@ static int test_system_delegate(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "D4 zero delegation amount must reject"); OK();
     }
     {
@@ -6240,7 +6540,7 @@ static int test_system_delegate(void) {
          * bound is nevertheless the rejecting site: leg0 executes to
          * completion before leg1 is touched, and the bound fires inside
          * leg0's exec, so the funding leg is never consulted. */
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "D5 amount above total supply must reject"); OK();
     }
     /* D6 CONSERVATION: the funding leg does not lock the call's amount.
@@ -6258,7 +6558,7 @@ static int test_system_delegate(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "D6 funding that does not lock the declared amount must "
               "reject"); OK();
     }
@@ -6274,7 +6574,7 @@ static int test_system_delegate(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "D7 unowned funding input must reject"); OK();
     }
     /* D8 identity mismatch: the call names delegator 9, key 11 signs */
@@ -6289,7 +6589,7 @@ static int test_system_delegate(void) {
                             s11, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "D8 signer fp != SHA3(call.delegator) must reject"); OK();
     }
 
@@ -6312,7 +6612,7 @@ static int test_system_delegate(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "D13 a NEW delegation below DNAC_MIN_DELEGATION must reject");
         OK();
     }
@@ -6341,7 +6641,7 @@ static int test_system_delegate(void) {
         CHECK(out_nul(9, 0x21, chg9) == 0, "change id");
         nodus_v2_envelope_t ve = { e_p1.bytes, e_p1.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "P1 a new delegation must commit"); OK();
     }
     /* the validator record: EXACTLY the two totals moved */
@@ -6416,7 +6716,7 @@ static int test_system_delegate(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 2, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "P2 top-up must commit"); OK();
         uint8_t d[TDEL_REC_LEN];
         CHECK(sysrow_read(fx.w, 5, dk90, 128, d, TDEL_REC_LEN) == 1,
@@ -6449,7 +6749,7 @@ static int test_system_delegate(void) {
                             s10, 1, s10, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 3, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "P3 a second delegator must commit"); OK();
         CHECK(q1(fx.w, "SELECT COUNT(*) FROM delegations") == 2,
               "P3 two distinct delegation rows"); OK();
@@ -6477,7 +6777,7 @@ static int test_system_delegate(void) {
                             s11, 1, s11, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 4, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "P4 an ELIGIBLE validator must accept delegation"); OK();
         uint8_t v[TVAL_REC_LEN];
         CHECK(sysrow_read(fx.w, 4, vk2, 64, v, TVAL_REC_LEN) == 1, "row");
@@ -6496,22 +6796,11 @@ static int test_system_delegate(void) {
      *    envelope is otherwise perfectly balanced — the lock gate is
      *    the only violated rule. ─────────────────────────────────────── */
     {
-        uint8_t flk[64];
-        /* seed_funding keeps the supply identity (row + counters), THEN
-         * the row is locked in place — so the ONLY violated rule is the
-         * lock gate, never the pre-apply supply gate */
-        CHECK(seed_funding(&fx, 9, DLG_FUND, 0x27, flk) == 0,
-              "locked fund");
-        {
-            sqlite3_stmt *st = NULL;
-            CHECK(sqlite3_prepare_v2(fx.w->db,
-                  "UPDATE utxo_set SET unlock_block = 1000 "
-                  "WHERE nullifier = ?1", -1, &st, NULL) == SQLITE_OK,
-                  "prep");
-            sqlite3_bind_blob(st, 1, flk, 64, SQLITE_TRANSIENT);
-            CHECK(sqlite3_step(st) == SQLITE_DONE, "lock");
-            sqlite3_finalize(st);
-        }
+        /* flk is a GENESIS row locked until 1000 with its value in the
+         * supply (seed_funding_locked, above) — so the ONLY violated
+         * rule is the lock gate, never the pre-apply supply gate. It
+         * stays in the fixture: no later check sums key 9's rows, and
+         * no height here reaches its unlock. */
         uint32_t sl = deleg_call_build(scall, sizeof(scall), 9, 0,
                                        DLG_AMOUNT);
         uint32_t fl = fund_call(fcall, sizeof(fcall), flk, 9, DLG_CHANGE,
@@ -6522,31 +6811,10 @@ static int test_system_delegate(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 5, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "D10b a LOCKED funding input must reject at the SYSFUND "
               "lock gate"); OK();
-        /* restore the fixture exactly: remove the locked row AND its
-         * seed_funding supply bump (seed-and-restore discipline) */
-        {
-            sqlite3_stmt *st = NULL;
-            CHECK(sqlite3_prepare_v2(fx.w->db,
-                  "DELETE FROM utxo_set WHERE nullifier = ?1",
-                  -1, &st, NULL) == SQLITE_OK, "prep");
-            sqlite3_bind_blob(st, 1, flk, 64, SQLITE_TRANSIENT);
-            CHECK(sqlite3_step(st) == SQLITE_DONE, "cleanup row");
-            sqlite3_finalize(st);
-        }
-        {
-            char sql[224];
-            snprintf(sql, sizeof(sql),
-                     "UPDATE supply_tracking SET genesis_supply = "
-                     "genesis_supply - %llu, current_supply = "
-                     "current_supply - %llu WHERE id = 1",
-                     (unsigned long long)DLG_FUND,
-                     (unsigned long long)DLG_FUND);
-            CHECK(run_sql(fx.w->db, sql) == 0, "cleanup supply");
-        }
-        CHECK(supply_identity_holds(fx.w), "D10b restore identity"); OK();
+        CHECK(supply_identity_holds(fx.w), "D10b identity"); OK();
     }
 
     /* ── N4b OVER-WITHDRAWAL UNDER AGGREGATION (O11 mutation-campaign
@@ -6558,11 +6826,10 @@ static int test_system_delegate(void) {
      *    single-delegator N4 exactly because the totals check masked it
      *    there, and under M5 this shape degrades to a mutate-side node
      *    fault (the wrapped row amount trips the INT64 storage bound as
-     *    -2). rc == -1 is therefore the load-bearing half of this
-     *    assertion, not a formality. ─────────────────────────────────── */
+     *    -2). An ITEM refusal (not a node FAULT) is therefore the
+     *    load-bearing half of this assertion, not a formality. f9x is a
+     *    genesis row. ───────────────────────────────────────────────── */
     {
-        uint8_t f9x[64];
-        CHECK(seed_funding(&fx, 9, NOLOCK_FUND, 0xD7, f9x) == 0, "fund");
         uint32_t sl = deleg_call_build(scall, sizeof(scall), 9, 0,
                                        2 * DLG_AMOUNT + 1);
         uint32_t fl = fund_call(fcall, sizeof(fcall), f9x, 9, DLG_CHANGE,
@@ -6573,48 +6840,18 @@ static int test_system_delegate(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 5, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "N4b over-withdrawal must be a VERDICT even when the "
               "validator totals cover it"); OK();
     }
 
-    /* ── D9 TOP-UP OVERFLOW: a validator whose totals already sit at
-     *    the storage bound cannot absorb more. Seeded and RESTORED
-     *    around the check so the fixture's supply identity survives. ── */
-    {
-        uint8_t f9c[64];
-        CHECK(seed_funding(&fx, 9, DLG_FUND, 0xD6, f9c) == 0, "fund");
-        sqlite3_stmt *st = NULL;
-        CHECK(sqlite3_prepare_v2(fx.w->db,
-              "UPDATE validators SET total_delegated = ?2, "
-              "external_delegated = ?2 WHERE pubkey_hash = ?1",
-              -1, &st, NULL) == SQLITE_OK, "prep");
-        sqlite3_bind_blob(st, 1, vk4, 64, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(st, 2, INT64_MAX);
-        CHECK(sqlite3_step(st) == SQLITE_DONE, "seed");
-        sqlite3_finalize(st);
-        uint32_t sl = deleg_call_build(scall, sizeof(scall), 9, 4,
-                                       DLG_AMOUNT);
-        uint32_t fl = fund_call(fcall, sizeof(fcall), f9c, 9, DLG_CHANGE,
-                                0x25);
-        CHECK(sl && fl, "call");
-        CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_DELEGATE, scall, sl,
-                            DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
-                            s9, 1, s9, 1, NULL) == 0, "build");
-        nodus_v2_envelope_t ve = { e.bytes, e.len };
-        mk_block(&b, 5, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
-              "D9 totals at the storage bound must reject the top-up");
-        OK();
-        st = NULL;
-        CHECK(sqlite3_prepare_v2(fx.w->db,
-              "UPDATE validators SET total_delegated = 0, "
-              "external_delegated = 0 WHERE pubkey_hash = ?1",
-              -1, &st, NULL) == SQLITE_OK, "prep");
-        sqlite3_bind_blob(st, 1, vk4, 64, SQLITE_TRANSIENT);
-        CHECK(sqlite3_step(st) == SQLITE_DONE, "restore");
-        sqlite3_finalize(st);
-    }
+    /* D9 TOP-UP OVERFLOW moved to the hook level, inside D12 below (P4
+     * fix round). Through a block it could not be reached: totals at
+     * the storage bound need Σ total_delegated ≈ INT64_MAX, the genesis
+     * supply would have to cover that PLUS every utxo and bond, and a
+     * supply column above INT64_MAX is not representable — so any block
+     * over such a row stops at the PRE-APPLY supply gate before the
+     * item runs. */
 
     /* ── D10 AUTH TWIN + D11 semantic replay ────────────────────────── */
     {
@@ -6637,12 +6874,12 @@ static int test_system_delegate(void) {
               "D10 it MUST move wire_id"); OK();
         nodus_v2_envelope_t ve = { e_t.bytes, e_t.len };
         mk_block(&b, 5, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "D10 the auth twin of a committed intent must reject");
         OK();
         nodus_v2_envelope_t vr2 = { e_p1.bytes, e_p1.len };
         mk_block(&b, 5, &vr2, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "D11 byte-identical replay must reject"); OK();
     }
 
@@ -6712,6 +6949,44 @@ static int test_system_delegate(void) {
         CHECK(nodus_rt_system_exec(&bt[0], &v, 0, &ctx, reads, nr, res,
                                    sizeof(res), &rl) == 0,
               "D12 honest hook-level DELEGATE accepts"); OK();
+        /* ── D9 TOP-UP OVERFLOW, at the hook (supply-bypass target: the
+         *    exec hook sees the observed record, not the supply row).
+         *    The observed validator record is re-written with both totals
+         *    at a chosen value; the record stays writable-shaped
+         *    (rtn_val_rec_ok: every u64 <= INT64_MAX), so the ONLY check
+         *    that can refuse is rtn_add_bounded on the totals
+         *    (nodus_witness_rt_native.c, rtn_delegate_exec).
+         *    EDGE       totals = INT64_MAX − DLG_AMOUNT: the sum is exactly
+         *               INT64_MAX — accepted.
+         *    D9         totals = INT64_MAX − DLG_AMOUNT + 1: one raw over
+         *               the storage bound — refused (-1, a verdict).
+         *    KILLED BY: a bound of UINT64_MAX instead of INT64_MAX (D9
+         *    accepted); `>=` against the bound (EDGE refused); no bound
+         *    check at all. */
+        {
+            static nodus_rt_read_res_t r2[NODUS_RT_MAX_READS];
+            const uint64_t totv[2] = {
+                (uint64_t)INT64_MAX - DLG_AMOUNT,
+                (uint64_t)INT64_MAX - DLG_AMOUNT + 1 };
+            const int want[2] = { 0, -1 };
+            CHECK(reads[0].present && reads[0].value_len == TVAL_REC_LEN,
+                  "FIXTURE GUARD: read 0 is the validator record");
+            for (int k = 0; k < 2; k++) {
+                memcpy(r2, reads, sizeof(r2));
+                for (int i = 0; i < 8; i++) {
+                    uint8_t by = (uint8_t)(totv[k] >> (56 - 8 * i));
+                    r2[0].value[TVAL_TOT_OFF + i] = by;
+                    r2[0].value[TVAL_EXT_OFF + i] = by;
+                }
+                CHECK(nodus_rt_system_exec(&bt[0], &v, 0, &ctx, r2, nr, res,
+                                           sizeof(res), &rl) == want[k],
+                      k == 0 ? "D9 EDGE totals landing exactly on INT64_MAX "
+                               "accept"
+                             : "D9 totals one raw past INT64_MAX must reject "
+                               "the delegation");
+                OK();
+            }
+        }
         dna_env_view_t v2 = v;
         v2.leg[0].auth_kind = NODUS_RT_AUTHKIND_DSA87_CC_V1;
         CHECK(nodus_rt_system_exec(&bt[0], &v2, 0, &ctx, reads, nr, res,
@@ -6745,7 +7020,7 @@ static int test_system_delegate(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 5, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "P5 a 1-raw TOP-UP of an existing row commits"); OK();
         uint8_t d[TDEL_REC_LEN];
         CHECK(sysrow_read(fx.w, 5, dk90, 128, d, TDEL_REC_LEN) == 1 &&
@@ -6765,7 +7040,7 @@ static int test_system_delegate(void) {
                             s12, 1, s12, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve2 = { e.bytes, e.len };
         mk_block(&b, 6, &ve2, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "P6 a NEW row of exactly DNAC_MIN_DELEGATION commits"); OK();
         CHECK(sysrow_read(fx.w, 5, dk12_1, 128, d, TDEL_REC_LEN) == 1 &&
               tbe64(d + TDEL_AMT_OFF) == (uint64_t)DNAC_MIN_DELEGATION,
@@ -6858,24 +7133,35 @@ static int test_delegator_cap_v2(void) {
     fixture_t fx;
     env_t e;
     nodus_v2_block_t b;
-    int rc = 0;
     int s9[1] = { 9 }, s10[1] = { 10 }, s11[1] = { 11 };
     int s12[1] = { 12 };
     static uint8_t scall[8192], fcall[8192];
     const int CAP = NODUS_MAX_DELEGATORS_PER_VALIDATOR;
 
-    CHECK(fx_genesis(&fx, "dlgcap") == 0, "genesis");
+    /* every seed is a GENESIS row (fx_pre … fx_seal): the synthetic
+     * delegator sets on validators 0 (C1) and 1 (C6), and all the
+     * funding rows — several blocks below refuse their only item, and
+     * a post-genesis seed would fault them at the untouched-domain
+     * guard */
+    uint8_t f9[64], f10[64], f9b[64], f11c5[64], f11[64], f12[64];
+    CHECK(fx_pre(&fx, "dlgcap") == 0, "pre-genesis");
+    CHECK(seed_synth_dels(fx.w, 0, CAP - 1, 0xA0) == 0, "seed CAP-1 (0)");
+    CHECK(seed_synth_dels(fx.w, 1, CAP - 1, 0xB0) == 0, "seed CAP-1 (1)");
+    CHECK(seed_funding(&fx, 9, DLG_FUND, 0xF1, f9) == 0, "fund 9");
+    CHECK(seed_funding(&fx, 10, DLG_FUND, 0xF2, f10) == 0, "fund 10");
+    CHECK(seed_funding(&fx, 9, DLG_FUND, 0xF3, f9b) == 0, "fund 9b");
+    CHECK(seed_funding(&fx, 11, DLG_FUND, 0xF4, f11c5) == 0, "fund 11 C5");
+    CHECK(seed_funding(&fx, 11, DLG_FUND, 0xF5, f11) == 0, "fund 11");
+    CHECK(seed_funding(&fx, 12, DLG_FUND, 0xF6, f12) == 0, "fund 12");
+    CHECK(fx_seal(&fx) == 0, "genesis");
 
     /* ── C1: AT THE CAP ADMITS ───────────────────────────────────────
      * validator 0 carries CAP-1 delegators; delegator 9 is the one that
      * takes it to exactly CAP. If the gate were written `>= CAP - 1`
      * (or the count were read one row early) this commit would fail. */
     {
-        uint8_t f9[64];
-        CHECK(seed_synth_dels(fx.w, 0, CAP - 1, 0xA0) == 0, "seed 63");
         CHECK(synth_del_count(fx.w, 0) == CAP - 1,
               "C1 fixture starts one BELOW the cap"); OK();
-        CHECK(seed_funding(&fx, 9, DLG_FUND, 0xF1, f9) == 0, "fund 9");
         uint32_t sl = deleg_call_build(scall, sizeof(scall), 9, 0,
                                        DLG_AMOUNT);
         uint32_t fl = fund_call(fcall, sizeof(fcall), f9, 9, DLG_CHANGE,
@@ -6886,21 +7172,20 @@ static int test_delegator_cap_v2(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "C1 the delegation that lands EXACTLY ON the cap commits");
         OK();
         CHECK(synth_del_count(fx.w, 0) == CAP,
               "C1 validator 0 now holds exactly CAP delegators"); OK();
     }
 
-    /* ── C2: ONE OVER REJECTS, and it is a VERDICT ───────────────────
-     * rc == -1 is the whole point: -2 would mean "node fault, do not
-     * vote", which would let anyone stall a witness by delegating to a
-     * full validator. The digest-identical rollback inside apply_reject
-     * proves the refused block left nothing behind. */
+    /* ── C2: ONE OVER REJECTS, and it is an ITEM refusal ─────────────
+     * An item code (the block applies around it) is the whole point: a
+     * node FAULT would mean "this node cannot apply the block", which
+     * would let anyone stall a witness by delegating to a full
+     * validator. The ledger-identical check inside item_refused proves
+     * the refused item left nothing behind. */
     {
-        uint8_t f10[64];
-        CHECK(seed_funding(&fx, 10, DLG_FUND, 0xF2, f10) == 0, "fund 10");
         uint32_t sl = deleg_call_build(scall, sizeof(scall), 10, 0,
                                        DLG_AMOUNT);
         uint32_t fl = fund_call(fcall, sizeof(fcall), f10, 10, DLG_CHANGE,
@@ -6911,7 +7196,7 @@ static int test_delegator_cap_v2(void) {
                             s10, 1, s10, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 2, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "C2 a NEW delegator past the cap must reject as a VERDICT");
         OK();
         CHECK(synth_del_count(fx.w, 0) == CAP,
@@ -6928,7 +7213,7 @@ static int test_delegator_cap_v2(void) {
                             s10, 1, s10, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve2 = { e.bytes, e.len };
         mk_block(&b, 2, &ve2, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "C2 CONTROL the same delegator commits on a NON-full "
               "validator"); OK();
     }
@@ -6940,8 +7225,6 @@ static int test_delegator_cap_v2(void) {
      * and would permanently freeze every existing delegator's position
      * the moment a validator filled up. */
     {
-        uint8_t f9b[64];
-        CHECK(seed_funding(&fx, 9, DLG_FUND, 0xF3, f9b) == 0, "fund 9b");
         uint32_t sl = deleg_call_build(scall, sizeof(scall), 9, 0,
                                        DLG_AMOUNT);
         uint32_t fl = fund_call(fcall, sizeof(fcall), f9b, 9, DLG_CHANGE,
@@ -6952,7 +7235,7 @@ static int test_delegator_cap_v2(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 3, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "C3 an EXISTING delegator may top up at the cap"); OK();
         CHECK(synth_del_count(fx.w, 0) == CAP,
               "C3 a top-up moves no row count"); OK();
@@ -6999,13 +7282,11 @@ static int test_delegator_cap_v2(void) {
     {
         size_t n = 0;
         const nodus_domain_runtime_t *bt = nodus_runtime_builtin_table(&n);
-        uint8_t f11[64];
         CHECK(bt && n == 2, "builtin table");
-        CHECK(seed_funding(&fx, 11, DLG_FUND, 0xF4, f11) == 0, "fund 11");
         uint32_t sl = deleg_call_build(scall, sizeof(scall), 11, 0,
                                        DLG_AMOUNT);
-        uint32_t fl = fund_call(fcall, sizeof(fcall), f11, 11, DLG_CHANGE,
-                                0x74);
+        uint32_t fl = fund_call(fcall, sizeof(fcall), f11c5, 11,
+                                DLG_CHANGE, 0x74);
         CHECK(sl && fl, "call");
         CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_DELEGATE, scall, sl,
                             DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
@@ -7090,19 +7371,16 @@ static int test_delegator_cap_v2(void) {
 
     /* ── C6: INTRA-BLOCK — two NEW delegators in ONE block cannot both
      *    slip past a validator sitting at CAP-1 ────────────────────────
-     * The engine applies each leg's effects before the next envelope's
-     * mediated reads run (nodus_witness_v2_apply.c), so envelope 2 must
-     * observe envelope 1's row. If effects were instead batched to block
-     * end, BOTH envelopes would read CAP-1, both would commit, and the
-     * validator would end at CAP+1 with the snapshot silently truncating
-     * — exactly the bug. This is the test that would catch that. */
+     * The engine applies each item's effects before the next item's
+     * mediated reads run (nodus_witness_v2_apply.c, one savepoint per
+     * item), so envelope 2 must observe envelope 1's row. If effects
+     * were instead batched to block end, BOTH envelopes would read
+     * CAP-1, both would commit, and the validator would end at CAP+1 —
+     * exactly the bug. In the cometbft lane the block applies: item 1
+     * commits (taking the validator to CAP), item 2 is refused. */
     {
-        uint8_t f11[64], f12[64];
-        CHECK(seed_synth_dels(fx.w, 1, CAP - 1, 0xB0) == 0, "seed 63");
         CHECK(synth_del_count(fx.w, 1) == CAP - 1,
               "C6 validator 1 starts one below the cap"); OK();
-        CHECK(seed_funding(&fx, 11, DLG_FUND, 0xF5, f11) == 0, "fund 11");
-        CHECK(seed_funding(&fx, 12, DLG_FUND, 0xF6, f12) == 0, "fund 12");
         /* static: env_t is a 128 KB inline buffer and this block needs
          * TWO live at once alongside the function's own `e` */
         static env_t e1, e2;
@@ -7125,19 +7403,27 @@ static int test_delegator_cap_v2(void) {
         nodus_v2_envelope_t two[2] = { { e1.bytes, e1.len },
                                        { e2.bytes, e2.len } };
         mk_block(&b, 4, two, 2);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
-              "C6 two NEW delegators in one block must reject the block");
+        const uint64_t pool_b = q1(fx.w,
+                                   "SELECT reward_pool FROM supply_tracking");
+        CHECK(v2x_cmt_apply(fx.w, &b) == 0 && b.cmt.results_len == 2 &&
+              b.cmt.results[0].code == NODUS_V2_TX_OK &&
+              b.cmt.results[1].code != NODUS_V2_TX_OK,
+              "C6 two NEW delegators in one block: the first commits, "
+              "the second (crossing the cap) is refused");
         OK();
-        CHECK(synth_del_count(fx.w, 1) == CAP - 1,
-              "C6 the refused block added NO rows"); OK();
-        /* and envelope 1 ALONE commits — the rejection above was the
-         * second delegator crossing the cap, not a broken pair */
-        nodus_v2_envelope_t one = { e1.bytes, e1.len };
-        mk_block(&b, 4, &one, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
-              "C6 envelope 1 alone commits"); OK();
         CHECK(synth_del_count(fx.w, 1) == CAP,
               "C6 validator 1 stops exactly at the cap"); OK();
+        /* per-item effects of the refusal (P4 fix round): the pool grew
+         * by the FIRST item's fee only, the refused item's funding input
+         * f12 is still unspent (f11 was consumed), and only the applied
+         * item is indexed */
+        CHECK(q1(fx.w, "SELECT reward_pool FROM supply_tracking") ==
+                  pool_b + FEE_MIN,
+              "C6 the refused delegation paid no fee"); OK();
+        CHECK(utxo_rows(fx.w, f12) == 1 && utxo_rows(fx.w, f11) == 0,
+              "C6 the refused delegation's funding input is unspent"); OK();
+        CHECK(idx_rows_are(fx.w, b.global_height, 1) == 0,
+              "C6 the refused delegation left no identity row"); OK();
     }
 
     fx_close(&fx);
@@ -7146,18 +7432,19 @@ static int test_delegator_cap_v2(void) {
 
 static int test_system_unstake(void) {
     fixture_t fx;
-    CHECK(fx_genesis(&fx, "unstk") == 0, "genesis");
+    CHECK(fx_pre(&fx, "unstk") == 0, "pre-genesis");
     env_t e;
     nodus_v2_block_t b;
-    int rc = 0;
     int s1[1] = { 1 }, s5[1] = { 5 }, s6[1] = { 6 };
     int s9[1] = { 9 }, s11[1] = { 11 };
     static uint8_t scall[8192], fcall[8192];
+    /* genesis rows: the height-1 negatives below refuse their only item */
     uint8_t f9[64], f9b[64], f9d[64], f10[64];
     CHECK(seed_funding(&fx, 9, NOLOCK_FUND, 0xC1, f9) == 0, "fund");
     CHECK(seed_funding(&fx, 9, NOLOCK_FUND, 0xC2, f9b) == 0, "fund");
     CHECK(seed_funding(&fx, 9, FEE_MIN, 0xC4, f9d) == 0, "fund exact");
     CHECK(seed_funding(&fx, 10, DLG_FUND, 0xC5, f10) == 0, "fund 10");
+    CHECK(fx_seal(&fx) == 0, "genesis");
 
     uint8_t vk1[64], vk6[64];
     CHECK(val_key(1, vk1) == 0 && val_key(6, vk6) == 0, "keys");
@@ -7174,7 +7461,7 @@ static int test_system_unstake(void) {
                             sk, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "U1 unknown validator must reject"); OK();
     }
     /* ── U2 wrong signer: the call names validator 1, key 11 signs ──── */
@@ -7188,7 +7475,7 @@ static int test_system_unstake(void) {
                             s11, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "U2 a non-owner cannot retire a validator"); OK();
     }
     /* ── U3 sub-floor fee (balanced for that fee) ───────────────────── */
@@ -7202,7 +7489,7 @@ static int test_system_unstake(void) {
                             s1, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "U3 sub-floor fee must reject"); OK();
     }
     /* ── U4 RULE A IS GONE (tokenomics-v3 P3-4; decision file §3
@@ -7229,7 +7516,7 @@ static int test_system_unstake(void) {
                             s10, 1, s10, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "U4 setup delegation commits"); OK();
 
         uint32_t sl2 = unstake_call_build(scall, sizeof(scall), 5);
@@ -7264,7 +7551,7 @@ static int test_system_unstake(void) {
         }
         nodus_v2_envelope_t ve2 = { e.bytes, e.len };
         mk_block(&b, 2, &ve2, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "U4 a delegated validator CAN unstake (Rule A removed)"); OK();
         uint8_t vk5[64], v[TVAL_REC_LEN];
         CHECK(val_key(5, vk5) == 0 &&
@@ -7297,7 +7584,7 @@ static int test_system_unstake(void) {
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         /* height 3: U4's UNSTAKE now COMMITS at height 2 (P3-4) */
         mk_block(&b, 3, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "UP1 UNSTAKE must commit"); OK();
     }
     CHECK(sysrow_read(fx.w, 4, vk1, 64, v1_after, TVAL_REC_LEN) == 1,
@@ -7336,7 +7623,7 @@ static int test_system_unstake(void) {
                             s1, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 4, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "U5 a RETIRING validator cannot unstake again"); OK();
     }
     /* ── POSITIVE 2: a ZERO-CHANGE funding leg (out_count 0, the input
@@ -7356,7 +7643,7 @@ static int test_system_unstake(void) {
                             s6, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 4, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "UP2 a zero-change fee-only funding leg must commit"); OK();
         uint8_t v[TVAL_REC_LEN];
         CHECK(sysrow_read(fx.w, 4, vk6, 64, v, TVAL_REC_LEN) == 1, "row");
@@ -7396,7 +7683,6 @@ static int test_system_undelegate(void) {
     CHECK(fx_genesis(&fx, "undlg") == 0, "genesis");
     env_t e;
     nodus_v2_block_t b;
-    int rc = 0;
     int s9[1] = { 9 }, s11[1] = { 11 };
     static uint8_t scall[8192], fcall[8192];
     uint8_t f9[64], f9b[64], f9c[64], f9d[64], f9e[64], f9f[64];
@@ -7423,7 +7709,7 @@ static int test_system_undelegate(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0, "setup"); OK();
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0, "setup"); OK();
     }
 
     /* ── negatives at height 2 ──────────────────────────────────────── */
@@ -7439,7 +7725,7 @@ static int test_system_undelegate(void) {
                             s11, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 2, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "N1 unknown delegation must reject"); OK();
     }
     /* N2 wrong owner: the call names delegator 9, key 11 signs */
@@ -7454,7 +7740,7 @@ static int test_system_undelegate(void) {
                             s11, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 2, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "N2 only the delegator may withdraw"); OK();
     }
     /* N3 amount 0 and N4 amount above the position */
@@ -7468,7 +7754,7 @@ static int test_system_undelegate(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 2, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "N3 zero withdrawal must reject"); OK();
     }
     {
@@ -7482,44 +7768,15 @@ static int test_system_undelegate(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 2, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "N4 withdrawing more than the position must reject"); OK();
     }
-    /* N5 TOTALS UNDERFLOW: validator totals below the delegation row —
-     * malformed legacy state fails CLOSED, it is never repaired.
-     * Seeded and restored around the check. */
-    {
-        sqlite3_stmt *st = NULL;
-        CHECK(sqlite3_prepare_v2(fx.w->db,
-              "UPDATE validators SET total_delegated = ?2, "
-              "external_delegated = ?2 WHERE pubkey_hash = ?1",
-              -1, &st, NULL) == SQLITE_OK, "prep");
-        sqlite3_bind_blob(st, 1, vk0, 64, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(st, 2, (sqlite3_int64)(DLG_AMOUNT - 1));
-        CHECK(sqlite3_step(st) == SQLITE_DONE, "seed");
-        sqlite3_finalize(st);
-        uint32_t sl = deleg_call_build(scall, sizeof(scall), 9, 0,
-                                       DLG_AMOUNT);
-        uint32_t fl = fund_call(fcall, sizeof(fcall), f9b, 9, DLG_CHANGE,
-                                0x46);
-        CHECK(sl && fl, "call");
-        CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_UNDELEGATE, scall, sl,
-                            DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
-                            s9, 1, s9, 1, NULL) == 0, "build");
-        nodus_v2_envelope_t ve = { e.bytes, e.len };
-        mk_block(&b, 2, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
-              "N5 totals below the position must fail closed"); OK();
-        st = NULL;
-        CHECK(sqlite3_prepare_v2(fx.w->db,
-              "UPDATE validators SET total_delegated = ?2, "
-              "external_delegated = ?2 WHERE pubkey_hash = ?1",
-              -1, &st, NULL) == SQLITE_OK, "prep");
-        sqlite3_bind_blob(st, 1, vk0, 64, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(st, 2, (sqlite3_int64)DLG_AMOUNT);
-        CHECK(sqlite3_step(st) == SQLITE_DONE, "restore");
-        sqlite3_finalize(st);
-    }
+    /* N5 TOTALS UNDERFLOW moved to test_undelegate_totals_underflow()
+     * (P4 fix round): the old in-place seed lowered total_delegated on a
+     * COMMITTED chain, which broke the CORE conservation equation, so
+     * the PRE-APPLY supply gate stopped the block before the UNDELEGATE
+     * item ran and the underflow check was never reached. The new test
+     * writes the inconsistent totals into a CONSERVING genesis. */
 
     /* ── N8/N9 tokenomics-v3 P3-5: a PARTIAL withdrawal must leave 0 or
      *    >= DNAC_MIN_DELEGATION (decision file §3 2026-09-24 "P3 soruları"
@@ -7547,7 +7804,7 @@ static int test_system_undelegate(void) {
                                 s9, 1, s9, 1, NULL) == 0, "build");
             nodus_v2_envelope_t ve = { e.bytes, e.len };
             mk_block(&b, 2, &ve, 1);
-            CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+            CHECK(item_refused(fx.w, &b) == 0,
                   "N8/N9 a partial withdrawal leaving a dust remainder "
                   "(0 < rest < DNAC_MIN_DELEGATION) must reject");
         }
@@ -7584,7 +7841,7 @@ static int test_system_undelegate(void) {
         }
         nodus_v2_envelope_t ve = { ep.bytes, ep.len };
         mk_block(&b, 2, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "R1 a partial withdrawal must commit"); OK();
     }
     {
@@ -7666,7 +7923,7 @@ static int test_system_undelegate(void) {
               "different release identity"); OK();
         nodus_v2_envelope_t ve = { ep.bytes, ep.len };
         mk_block(&b, 3, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "R2 the full drain must commit"); OK();
     }
     CHECK(sysrow_read(fx.w, 5, dk90, 128, NULL, TDEL_REC_LEN) == 0,
@@ -7727,7 +7984,7 @@ static int test_system_undelegate(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 4, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "N6 withdrawing from a drained position must reject"); OK();
     }
 
@@ -7749,7 +8006,7 @@ static int test_system_undelegate(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 4, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0, "setup"); OK();
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0, "setup"); OK();
         /* The validator is retired out from under the delegator.
          * HONEST LABEL: this row is SYNTHETIC pre-graduation state — an
          * UNSTAKED status with a non-zero self_stake is what a chain
@@ -7778,7 +8035,7 @@ static int test_system_undelegate(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve2 = { e.bytes, e.len };
         mk_block(&b, 5, &ve2, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "R3 an UNSTAKED validator's delegator can still exit"); OK();
         CHECK(sysrow_read(fx.w, 5, dk96, 128, NULL, TDEL_REC_LEN) == 0,
               "R3 the position is gone"); OK();
@@ -7805,7 +8062,7 @@ static int test_system_undelegate(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 6, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "N7 the same call bytes under another op must reject");
         OK();
     }
@@ -8055,7 +8312,6 @@ static int test_undelegate_release_lock(void) {
      *    unlocks nothing ─────────────────────────────────────────────── */
     nodus_v2_block_t b;
     env_t e;
-    int rc = 0;
     uint8_t relA[64];
     {
         uint8_t fbig[64];
@@ -8070,7 +8326,7 @@ static int test_undelegate_release_lock(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "L4 the position (h=1)"); OK();
     }
     {
@@ -8088,7 +8344,7 @@ static int test_undelegate_release_lock(void) {
         CHECK(release_nul(iid, relA) == 0, "release id");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 2, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "L4 the partial withdrawal (h=2)"); OK();
         CHECK(utxo_rows(fx.w, relA) == 1 &&
               row_unlock(fx.w, relA) == exp_release_unlock(2),
@@ -8107,7 +8363,7 @@ static int test_undelegate_release_lock(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 3, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "L4 a top-up FUNDED BY the locked release must reject "
               "(the SYSFUND input gate)"); OK();
     }
@@ -8125,7 +8381,7 @@ static int test_undelegate_release_lock(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 3, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "L4 a top-up with unlocked coin commits (h=3)"); OK();
         uint8_t d[TDEL_REC_LEN];
         CHECK(sysrow_read(fx.w, 5, dk90, 128, d, TDEL_REC_LEN) == 1 &&
@@ -8223,7 +8479,7 @@ static int test_undelegate_release_lock(void) {
                                 s9, 1, s9, 1, NULL) == 0, "build");
             nodus_v2_envelope_t ve = { e.bytes, e.len };
             mk_block(&b, 4, &ve, 1);
-            CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+            CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
                   "L6 a TC_FEE-sized position to validator 1 (h=4)"); OK();
         }
         {
@@ -8241,7 +8497,7 @@ static int test_undelegate_release_lock(void) {
             CHECK(release_nul(iid, relT) == 0, "release id");
             nodus_v2_envelope_t ve = { e.bytes, e.len };
             mk_block(&b, 5, &ve, 1);
-            CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+            CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
                   "L6 the full drain (h=5)"); OK();
             CHECK(utxo_rows(fx.w, relT) == 1 &&
                   row_unlock(fx.w, relT) == exp_release_unlock(5) &&
@@ -8348,9 +8604,13 @@ typedef struct {
     const char           *name;
 } fpt_t;
 
+/* tokenomics-v3 P4: the cometbft lane's points only (v2x_cmt_fail_class).
+ * The legacy lane's F26 (post-reserve batch stage), F28 (post-auth batch
+ * stage), F35/F36 (its pre-BEGIN replay guard and batch intent-index
+ * insert) and F14 (its own COMMIT) bracket stages that no longer exist.
+ * Every item point below refuses the item with the ledger byte-identical;
+ * F13 is a block point — a node FAULT with the whole database identical. */
 static const fpt_t O11_FAULTS[] = {
-    { V2AP_FAIL_AFTER_ENV_RESERVE,   0, 0, "F26 post-reserve" },
-    { V2AP_FAIL_AFTER_AUTH,          0, 0, "F28 post-auth" },
     { V2AP_FAIL_AFTER_READS,         0, 0, "F30 post-reads" },
     { V2AP_FAIL_AFTER_EXEC_HOOK,     0, 0, "F31 post-exec-hook" },
     /* F37 fires on the FIRST leg whose effect_count exceeds the index.
@@ -8372,10 +8632,7 @@ static const fpt_t O11_FAULTS[] = {
     { V2AP_FAIL_AFTER_EFFECT_APPLY,  0, 0, "F37 inside leg 0" },
     { V2AP_FAIL_AFTER_EFFECT_APPLY,  2, 0, "F37 in leg 1" },
     { V2AP_FAIL_AFTER_LEG_APPLY,     0, 0, "F38 BETWEEN legs" },
-    { V2AP_FAIL_AFTER_INTENT_GUARD,  0, 0, "F35 post-replay-guard" },
-    { V2AP_FAIL_AFTER_INTENT_INDEX,  0, 0, "F36 post-intent-index" },
-    { V2AP_FAIL_BEFORE_COMMIT,       0, 0, "F13 pre-commit" },
-    { V2AP_FAIL_COMMIT,              0, 0, "F14 commit failure" }
+    { V2AP_FAIL_BEFORE_COMMIT,       0, 0, "F13 pre-commit" }
 };
 #define O11_FAULT_N (sizeof(O11_FAULTS) / sizeof(O11_FAULTS[0]))
 
@@ -8388,10 +8645,11 @@ static int test_o11_fault_matrix(void) {
         fixture_t fx;
         env_t e;
         nodus_v2_block_t b;
-        int rc = 0;
         uint8_t f9[64], vk0[64], dk90[128], chg[64];
-        CHECK(fx_genesis(&fx, "f38d") == 0, "genesis");
-        CHECK(seed_funding(&fx, 9, DLG_FUND, 0xA1, f9) == 0, "fund");
+        /* the funding is a genesis row: an item point refuses the block's
+         * only item, so a post-genesis seed would fault it at phase 8 */
+        CHECK(fx_genesis_funded(&fx, "f38d", 9, DLG_FUND, 0xA1, f9) == 0,
+              "genesis (funded)");
         CHECK(val_key(0, vk0) == 0 && deleg_key_of(9, 0, dk90) == 0,
               "keys");
         uint32_t sl = deleg_call_build(scall, sizeof(scall), 9, 0,
@@ -8409,8 +8667,9 @@ static int test_o11_fault_matrix(void) {
         b.fail_env_index = 0;
         b.fail_effect_index = O11_FAULTS[p].effect_index;
         b.fail_leg_index = O11_FAULTS[p].leg_index;
-        /* the whole-DB digest is byte-identical across the injection */
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        /* the ledger (item point) / the whole DB (block point) is
+         * byte-identical across the injection */
+        CHECK(v2x_cmt_injected(fx.w, &b) == 0,
               O11_FAULTS[p].name);
         /* and the named half-envelope residues, individually: no
          * delegation row, no totals movement, the funding input still
@@ -8434,7 +8693,7 @@ static int test_o11_fault_matrix(void) {
         /* CLEAN RETRY: the same block, un-faulted, commits to the exact
          * expected end state */
         b.fail_at = V2AP_FAIL_NONE;
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "clean retry after the fault must commit"); OK();
         CHECK(q1(fx.w, "SELECT COUNT(*) FROM delegations") == 1 &&
               utxo_rows(fx.w, f9) == 0 && utxo_rows(fx.w, chg) == 1,
@@ -8458,7 +8717,6 @@ static int test_o11_fault_matrix(void) {
         fixture_t fx;
         env_t e, ed;
         nodus_v2_block_t b;
-        int rc = 0;
         uint8_t f9[64], f9b[64], vk0[64], dk90[128], relid[64];
         uint8_t wid[64], iid[64];
         CHECK(fx_genesis(&fx, "f38u") == 0, "genesis");
@@ -8478,7 +8736,7 @@ static int test_o11_fault_matrix(void) {
                                 s9, 1, s9, 1, NULL) == 0, "build");
             nodus_v2_envelope_t vd = { ed.bytes, ed.len };
             mk_block(&b, 1, &vd, 1);
-            CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0, "setup");
+            CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0, "setup");
         }
         /* the partial withdrawal under injection */
         uint64_t half = DLG_AMOUNT / 2;
@@ -8497,7 +8755,7 @@ static int test_o11_fault_matrix(void) {
         b.fail_env_index = 0;
         b.fail_effect_index = O11_FAULTS[p].effect_index;
         b.fail_leg_index = O11_FAULTS[p].leg_index;
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(v2x_cmt_injected(fx.w, &b) == 0,
               O11_FAULTS[p].name);
         /* the release UTXO is the value this fault could have minted */
         CHECK(utxo_rows(fx.w, relid) == 0,
@@ -8516,7 +8774,7 @@ static int test_o11_fault_matrix(void) {
         }
         OK();
         b.fail_at = V2AP_FAIL_NONE;
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "clean retry after the fault must commit"); OK();
         CHECK(utxo_rows(fx.w, relid) == 1,
               "retry creates EXACTLY the release UTXO");
@@ -8556,9 +8814,11 @@ static int test_o11_fault_matrix(void) {
  * be proving the wrong thing. */
 static int test_o11_vset_firewall(void) {
     fixture_t fx;
+    /* tokenomics-v3 P4: the seeded version-3 genesis (v2x_seed_genesis)
+     * already committed both snapshots through this same source path —
+     * a second call here would be an out-of-band write to a SYSTEM root
+     * leg after genesis */
     CHECK(fx_genesis(&fx, "vsfw") == 0, "genesis");
-    CHECK(nodus_witness_vset_commit_genesis(fx.w, 1) == 0,
-          "seed the genesis validator-set snapshots"); OK();
     CHECK(q1(fx.w, "SELECT COUNT(*) FROM validator_set_snapshots") == 2,
           "epochs 0 and DNAC_EPOCH_LENGTH are frozen"); OK();
 
@@ -8566,7 +8826,6 @@ static int test_o11_vset_firewall(void) {
     int s9[1] = { 9 }, s10[1] = { 10 }, s1[1] = { 1 };
     env_t e;
     nodus_v2_block_t b;
-    int rc = 0;
     uint8_t f9[64], f10[64], f10b[64], f9b[64], f9c[64];
     CHECK(seed_funding(&fx, 9, STAKE_FUND, 0x51, f9) == 0, "fund");
     CHECK(seed_funding(&fx, 10, DLG_FUND, 0x52, f10) == 0, "fund");
@@ -8656,7 +8915,7 @@ static int test_o11_vset_firewall(void) {
                             s9, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "STAKE commits"); OK();
         CHECK(q1(fx.w, "SELECT COUNT(*) FROM validators") == 8,
               "the validators TABLE grew"); OK();
@@ -8677,7 +8936,7 @@ static int test_o11_vset_firewall(void) {
                             s10, 1, s10, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 2, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "DELEGATE commits"); OK();
     }
     FIREWALL_HOLDS("after DELEGATE");
@@ -8694,7 +8953,7 @@ static int test_o11_vset_firewall(void) {
                             s10, 1, s10, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 3, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "UNDELEGATE commits"); OK();
     }
     FIREWALL_HOLDS("after UNDELEGATE");
@@ -8710,7 +8969,7 @@ static int test_o11_vset_firewall(void) {
                             s1, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 4, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "UNSTAKE commits"); OK();
         uint8_t vk1[64], v[TVAL_REC_LEN];
         CHECK(val_key(1, vk1) == 0 &&
@@ -8744,7 +9003,7 @@ static int test_o11_vset_firewall(void) {
                             s1, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 5, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "a 2592-byte call in the op-5 slot must reject");
         OK();
         /* and single-leg */
@@ -8754,7 +9013,7 @@ static int test_o11_vset_firewall(void) {
               "build");
         nodus_v2_envelope_t v2 = { e.bytes, e.len };
         mk_block(&b, 5, &v2, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "single-leg VALIDATOR_UPDATE must reject"); OK();
         /* the LIVE update */
         uint32_t vl = vupd_call_build(scall, sizeof(scall), 1, 750);
@@ -8765,7 +9024,7 @@ static int test_o11_vset_firewall(void) {
                             s1, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t vv = { e.bytes, e.len };
         mk_block(&b, 5, &vv, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "a RETIRING validator's commission update commits"); OK();
         uint8_t vk1[64], v[TVAL_REC_LEN];
         CHECK(val_key(1, vk1) == 0 &&
@@ -8800,10 +9059,13 @@ static int test_o11_vset_firewall(void) {
 static int test_o11_global(void) {
     static uint8_t scall[8192], fcall[8192];
     int s9[1] = { 9 };
-    int rc = 0;
 
-    /* ── 1. SAME-BLOCK duplicate intent: the batch dedup, not the
-     *    committed guard (nothing is committed yet) ─────────────────── */
+    /* ── 1. SAME-BLOCK duplicate intent: nothing is committed before
+     *    the block, so what stops the second copy is the replay guard
+     *    reading THIS block's first item (the cometbft lane's per-item
+     *    guard reads the live index, which holds the rows an earlier
+     *    item of the same block wrote). The first copy applies, the
+     *    second is refused REPLAY; exactly one position exists. ──────── */
     {
         fixture_t fx;
         env_t e;
@@ -8822,18 +9084,16 @@ static int test_o11_global(void) {
         nodus_v2_envelope_t two[2] = { { e.bytes, e.len },
                                        { e.bytes, e.len } };
         mk_block(&b, 1, two, 2);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
-              "the same staking intent twice in ONE block must reject");
+        CHECK(v2x_cmt_apply(fx.w, &b) == 0 && b.cmt.results_len == 2 &&
+              b.cmt.results[0].code == NODUS_V2_TX_OK &&
+              b.cmt.results[1].code == NODUS_V2_TX_ERR_REPLAY,
+              "the same staking intent twice in ONE block: the second "
+              "copy must reject");
         OK();
-        CHECK(q1(fx.w, "SELECT COUNT(*) FROM delegations") == 0 &&
-              utxo_rows(fx.w, f9) == 1,
-              "the rejected batch left nothing"); OK();
-        /* ONE copy commits — the rejection was the duplicate, not the
-         * envelope */
-        nodus_v2_envelope_t one = { e.bytes, e.len };
-        mk_block(&b, 1, &one, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
-              "a single copy of the same envelope commits"); OK();
+        CHECK(q1(fx.w, "SELECT COUNT(*) FROM delegations") == 1 &&
+              utxo_rows(fx.w, f9) == 0,
+              "exactly ONE copy applied — the refusal was the duplicate, "
+              "not the envelope"); OK();
         fx_close(&fx);
     }
 
@@ -8881,24 +9141,23 @@ static int test_o11_global(void) {
         nodus_v2_envelope_t va = { ea.bytes, ea.len };
         nodus_v2_envelope_t vo = { eo.bytes, eo.len };
         mk_block(&b, 1, &va, 1);
-        CHECK(nodus_witness_v2_apply_block(a.w, &b) == 0, "A commits");
+        CHECK(v2x_cmt_apply_ok(a.w, &b) == 0, "A commits");
         mk_block(&b, 1, &vo, 1);
-        /* O14: prev derived from this chain's own committed genesis. */
-        CHECK(nodus_witness_v2_apply_block(o.w, &b) == 0, "O commits");
+        CHECK(v2x_cmt_apply_ok(o.w, &b) == 0, "O commits");
         OK();
         /* chain A's exact bytes on chain O: every signature was made
-         * over A's chain-bound digest */
+         * over A's chain-bound digest. O2's funding is a genesis row —
+         * the block below refuses its only item. */
         {
             fixture_t o2;
-            g_gid_fill = 0xF3;
-            int o2rc = fx_genesis(&o2, "xcdO2");
-            g_gid_fill = 0xEE;
-            CHECK(o2rc == 0, "genesis O2");
             uint8_t f2[64];
-            CHECK(seed_funding(&o2, 9, DLG_FUND, 0x63, f2) == 0, "fund");
+            g_gid_fill = 0xF3;
+            int o2rc = fx_genesis_funded(&o2, "xcdO2", 9, DLG_FUND, 0x63,
+                                         f2);
+            g_gid_fill = 0xEE;
+            CHECK(o2rc == 0, "genesis O2 (funded)");
             mk_block(&b, 1, &va, 1);
-            /* O14: prev derived from the committed parent. */
-            CHECK(apply_reject(o2.w, &b, &rc) == 0 && rc == -1,
+            CHECK(item_refused(o2.w, &b) == 0,
                   "chain A's bytes must fail chain O2's binding"); OK();
             fx_close(&o2);
         }
@@ -8920,8 +9179,9 @@ static int test_o11_global(void) {
         env_t e;
         nodus_v2_block_t b;
         uint8_t f9[64];
-        CHECK(fx_genesis(&fx, "legord") == 0, "genesis");
-        CHECK(seed_funding(&fx, 9, DLG_FUND, 0x65, f9) == 0, "fund");
+        /* genesis row: the reversed-leg block refuses its only item */
+        CHECK(fx_genesis_funded(&fx, "legord", 9, DLG_FUND, 0x65, f9) == 0,
+              "genesis (funded)");
         uint32_t sl = deleg_call_build(scall, sizeof(scall), 9, 0,
                                        DLG_AMOUNT);
         uint32_t fl = fund_call(fcall, sizeof(fcall), f9, 9, DLG_CHANGE,
@@ -8985,7 +9245,7 @@ static int test_o11_global(void) {
                   "the DECODER must refuse descending leg order"); OK();
             nodus_v2_envelope_t ve = { bad, e.len };
             mk_block(&b, 1, &ve, 1);
-            CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+            CHECK(item_refused(fx.w, &b) == 0,
                   "a reversed-leg envelope must never reach execution");
             OK();
         }
@@ -9033,7 +9293,10 @@ static int test_o11_global(void) {
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
         b.epoch = 7;                     /* a lie about its own epoch    */
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        /* a BLOCK-level lie: the cometbft lane refuses it before any
+         * item runs, as a node FAULT with the whole database identical */
+        CHECK(v2x_cmt_fault_why(fx.w, &b, V2X_VERDICT, "declares epoch")
+                  == 0,
               "a block that lies about its epoch must reject"); OK();
         fx_close(&fx);
     }
@@ -9042,11 +9305,11 @@ static int test_o11_global(void) {
      * O12 S2 gave the V2 engine an epoch-boundary phase of its own
      * (nodus_witness_v2_epoch.c: commissions → graduation → flips →
      * commit_next), so the boundary block at LEN now ALSO freezes the
-     * snapshot for epoch 2·LEN — which needs the legacy `blocks` row at
-     * the lookback height LEN−1 (committee.c:116-125; the V2-native
-     * seed source is an ACTIVATION-SEASON obligation, see the module
-     * header). The fixture plants that row below, exactly as
-     * test_v2_epoch does. The property under test is unchanged: a
+     * snapshot for epoch 2·LEN — whose committee seed reads the Comet
+     * block-store record at the lookback height LEN−1 (committee.c
+     * v2_seed_block_id). The fixture host (v2x_cmt_apply) writes that
+     * record for every block it applies, exactly as test_v2_epoch
+     * relies on. The property under test is unchanged: a
      * staking envelope behaves IDENTICALLY across the boundary and
      * blk->epoch is the derived value at each height. Driving there
      * needs DNAC_EPOCH_LENGTH-2 empty blocks; that empty blocks commit
@@ -9093,7 +9356,7 @@ static int test_o11_global(void) {
          * refuses one, THIS assertion names the reason the boundary
          * drive stopped rather than the drive silently not happening. */
         mk_block_h(&b, 1, NULL, 0);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "an EMPTY V2 block must commit (epoch-boundary drive)");
         OK();
         for (uint64_t h = 2; h < (uint64_t)DNAC_EPOCH_LENGTH - 1; h++) {
@@ -9101,7 +9364,7 @@ static int test_o11_global(void) {
             b.cmt.votes_address       = (const uint8_t (*)[32])att_addrs;
             b.cmt.votes_block_id_flag = att_flags;
             b.cmt.votes_len           = 7;
-            if (nodus_witness_v2_apply_block(fx.w, &b) != 0) {
+            if (v2x_cmt_apply_ok(fx.w, &b) != 0) {
                 fprintf(stderr, "empty drive failed at height %llu\n",
                         (unsigned long long)h);
                 return 1;
@@ -9114,27 +9377,6 @@ static int test_o11_global(void) {
         for (int i = 0; i < 3; i++)
             CHECK(seed_funding(&fx, delegators[i], DLG_FUND,
                                (uint8_t)(0x70 + i), f[i]) == 0, "fund");
-        /* O12 S2: the boundary block at LEN freezes snapshot(2·LEN),
-         * whose committee compute reads the LEGACY blocks row at the
-         * lookback height (state_seed tiebreak, committee.c:116-125).
-         * Plant it — `blocks` is legacy block storage, not a V2 root
-         * leg, so the out-of-band insert cannot trip the guard. */
-        {
-            sqlite3_stmt *st = NULL;
-            CHECK(sqlite3_prepare_v2(fx.w->db,
-                "INSERT OR IGNORE INTO blocks (height, tx_root, "
-                "tx_count, timestamp, proposer_id, prev_hash, "
-                "state_root, created_at) VALUES (?1, zeroblob(64), 0, "
-                "0, zeroblob(32), zeroblob(64), ?2, 0)",
-                -1, &st, NULL) == SQLITE_OK, "lookback prep");
-            uint8_t sr[64];
-            memset(sr, 0x5A, sizeof(sr));
-            sqlite3_bind_int64(st, 1,
-                (sqlite3_int64)((uint64_t)DNAC_EPOCH_LENGTH - 1));
-            sqlite3_bind_blob(st, 2, sr, 64, SQLITE_TRANSIENT);
-            CHECK(sqlite3_step(st) == SQLITE_DONE, "lookback row");
-            sqlite3_finalize(st);
-        }
         /* three identical-shaped delegations at LEN-1, LEN, LEN+1 */
         for (int i = 0; i < 3; i++) {
             uint64_t h = (uint64_t)DNAC_EPOCH_LENGTH - 1 + (uint64_t)i;
@@ -9155,7 +9397,7 @@ static int test_o11_global(void) {
             b.cmt.votes_len           = 7;
             CHECK(b.epoch == h / (uint64_t)DNAC_EPOCH_LENGTH,
                   "the block's epoch is the derived value");
-            CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+            CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
                   "a staking envelope commits identically across the "
                   "epoch boundary");
             uint8_t d[TDEL_REC_LEN], dk[128];
@@ -9333,12 +9575,21 @@ static uint64_t utxo_amount_of(nodus_witness_t *w, const uint8_t nul[64]) {
 #define VU_UNSTAKED  14
 #define VU_AUTORET   15
 
-static int vupd_fixture(fixture_t *fx, const char *tag) {
+/* tokenomics-v3 P4: every row below is GENESIS state — written into the
+ * pre-genesis database (fx_pre) and committed by the seal, so no block
+ * meets an out-of-band root move. vupd_fixture_pre stops before the
+ * seal for a caller that seeds its own funding rows too; vupd_fixture
+ * seals. The SET is frozen FIRST, over the seven genesis validators
+ * alone — exactly the committee the legacy fixture froze before adding
+ * the four extra-status rows. */
+static int vupd_fixture_pre(fixture_t *fx, const char *tag) {
     uint8_t pkh[7][64];
-    if (fx_genesis(fx, tag) != 0) return -1;
-    /* freeze the SET through the SOURCE genesis hook FIRST, so committee
-     * resolution serves the frozen row and the extra rows below cannot
-     * be mistaken for a set change (the §15 seeding note) */
+    if (fx_pre(fx, tag) != 0) return -1;
+    /* freeze the SET through the SOURCE genesis hook FIRST — over the
+     * seven bonded ACTIVE rows only — so committee resolution serves the
+     * frozen row and the extra rows below cannot be mistaken for a set
+     * change (the §15 seeding note). Still pre-genesis: the seal's
+     * v2x_seed_rows sees the two snapshots and does not rebuild them. */
     if (nodus_witness_vset_commit_genesis(fx->w, 1) != 0) return -1;
     for (int k = 0; k < 7; k++)
         if (val_key(k, pkh[k]) != 0) return -1;
@@ -9360,7 +9611,26 @@ static int vupd_fixture(fixture_t *fx, const char *tag) {
     if (seed_validator(fx, VU_AUTORET, DNAC_VALIDATOR_AUTO_RETIRED, 500)
         != 0)
         return -1;
+    /* not a real genesis: the ELIGIBLE / RETIRING / UNSTAKED /
+     * AUTO_RETIRED rows are the status matrix under test, and a
+     * version-3 genesis writes only ACTIVE rows (consumed by the seal
+     * both callers run next) */
+    v2x_seed_not_real(V2X_SEED_NOT_REAL_STATUSES);
     return 0;
+}
+
+static int vupd_fixture(fixture_t *fx, const char *tag) {
+    if (vupd_fixture_pre(fx, tag) != 0) return -1;
+    return fx_seal(fx);
+}
+
+/* vupd_fixture with ONE native funding row for key 9 in the genesis */
+static int vupd_fixture_funded(fixture_t *fx, const char *tag,
+                               uint8_t seed_byte, uint8_t nul_out[64]) {
+    if (vupd_fixture_pre(fx, tag) != 0) return -1;
+    if (seed_funding(fx, 9, NOLOCK_FUND, seed_byte, nul_out) != 0)
+        return -1;
+    return fx_seal(fx);
 }
 
 /* ══ 17b. RE-STAKE AFTER GRADUATION, block level (tokenomics-v3 P3-9;
@@ -9401,20 +9671,11 @@ static int test_restake_after_graduation(void) {
     uint8_t f9[64], f10[64], f5[64], fp5[64], vk5[64];
     CHECK(fx_genesis(&fx, "restk") == 0, "genesis");
     CHECK(key_fp_raw(5, fp5) == 0 && val_key(5, vk5) == 0, "keys");
-    /* This fixture starts with active_count 0 (pinned at the §17 header,
-     * "fixture starts with active_count 0") although it seeds bonded
-     * validators; a real version-3 genesis sets it to n_validators
-     * (nodus_witness_v2_gen.c UPDATE validator_stats ... active_count).
-     * A graduation decrements the counter and REFUSES to go below 0
-     * ("active_count 0 cannot absorb a graduation" — a FAULT, correctly),
-     * so this drive first makes the counter what genesis would: the
-     * bonded rows (ACTIVE / ELIGIBLE / RETIRING). Out of band, BEFORE h1,
-     * whose DELEGATE leg declares SYSTEM touched and absorbs the drift. */
-    CHECK(sqlite3_exec(fx.w->db,
-          "UPDATE validator_stats SET value = (SELECT COUNT(*) FROM "
-          "validators WHERE status IN (0, 1, 4)) WHERE key = 'active_count'",
-          NULL, NULL, NULL) == SQLITE_OK &&
-          sqlite3_changes(fx.w->db) == 1, "counter as genesis sets it");
+    /* tokenomics-v3 P4: the seeded version-3 genesis writes active_count
+     * as the bonded row count (ACTIVE / ELIGIBLE / RETIRING), exactly as
+     * nodus_witness_v2_gen.c does — the out-of-band counter repair this
+     * drive needed under the legacy fixture (whose genesis left it 0,
+     * and a graduation REFUSES to take it below 0) is gone with it. */
     CHECK(active_count(fx.w) > 0, "fixture guard: bonded validators seeded");
     /* every out-of-band seed lands BEFORE h1, whose SYSFUND leg declares
      * CORE touched and absorbs the drift (the §5 drive's note) */
@@ -9434,7 +9695,7 @@ static int test_restake_after_graduation(void) {
                             s10, 1, s10, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block_h(&b, 1, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "h1 the delegation commits"); OK();
     }
     /* h2: validator 5 UNSTAKEs (funded by key 9's leg) */
@@ -9448,7 +9709,7 @@ static int test_restake_after_graduation(void) {
                             s5, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block_h(&b, 2, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "h2 the UNSTAKE commits"); OK();
         uint8_t v[TVAL_REC_LEN];
         CHECK(sysrow_read(fx.w, 4, vk5, 64, v, TVAL_REC_LEN) == 1 &&
@@ -9458,8 +9719,9 @@ static int test_restake_after_graduation(void) {
     }
 
     /* the attended empty drive across E and 2E (the §5 drive's shape:
-     * every genesis member's COMMIT vote per block, the legacy lookback
-     * rows planted before each boundary) */
+     * every genesis member's COMMIT vote per block; the boundary
+     * committee seed reads the block-store record the fixture host
+     * writes for every block) */
     {
         uint8_t att_addrs[7][32];
         int32_t att_flags[7];
@@ -9469,27 +9731,12 @@ static int test_restake_after_graduation(void) {
             memcpy(att_addrs[ai], digest, 32);
             att_flags[ai] = CMT_PB_BLOCK_ID_FLAG_COMMIT;
         }
-        for (int k = 1; k <= 2; k++) {
-            sqlite3_stmt *st = NULL;
-            CHECK(sqlite3_prepare_v2(fx.w->db,
-                "INSERT OR IGNORE INTO blocks (height, tx_root, "
-                "tx_count, timestamp, proposer_id, prev_hash, "
-                "state_root, created_at) VALUES (?1, zeroblob(64), 0, "
-                "0, zeroblob(32), zeroblob(64), ?2, 0)",
-                -1, &st, NULL) == SQLITE_OK, "lookback prep");
-            uint8_t sr[64];
-            memset(sr, 0x5A, sizeof(sr));
-            sqlite3_bind_int64(st, 1, (sqlite3_int64)((uint64_t)k * E - 1));
-            sqlite3_bind_blob(st, 2, sr, 64, SQLITE_TRANSIENT);
-            CHECK(sqlite3_step(st) == SQLITE_DONE, "lookback row");
-            sqlite3_finalize(st);
-        }
         for (uint64_t h = 3; h <= 2 * E; h++) {
             mk_block_h(&b, h, NULL, 0);
             b.cmt.votes_address       = (const uint8_t (*)[32])att_addrs;
             b.cmt.votes_block_id_flag = att_flags;
             b.cmt.votes_len           = 7;
-            if (nodus_witness_v2_apply_block(fx.w, &b) != 0) {
+            if (v2x_cmt_apply_ok(fx.w, &b) != 0) {
                 fprintf(stderr, "re-stake drive failed at height %llu: %s\n",
                         (unsigned long long)h, b.out_reason);
                 return 1;
@@ -9544,7 +9791,7 @@ static int test_restake_after_graduation(void) {
                             s5, 1, s5, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block_h(&b, 2 * E + 1, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "2E+1 a STAKE revives the UNSTAKED row"); OK();
     }
     {
@@ -9588,7 +9835,6 @@ static int test_system_validator_update(void) {
     static env_t e_p6;                /* P6's exact bytes, for the
                                        * byte-identical replay leg      */
     nodus_v2_block_t b;
-    int rc = 0;
     static uint8_t vcall[4096], fcall[8192];
     uint8_t fneg[64], fpos[8][64];
     uint8_t pkh0[64], pkh1[64], pkh6[64], pkhE[64], pkhR[64], pkhU[64],
@@ -9596,7 +9842,9 @@ static int test_system_validator_update(void) {
     uint8_t before[TVAL_REC_LEN], after[TVAL_REC_LEN];
     vwin_t w;
 
-    CHECK(vupd_fixture(&fx, "vupd") == 0, "genesis");
+    /* the funding rows are genesis rows: the height-1 negatives refuse
+     * their only item */
+    CHECK(vupd_fixture_pre(&fx, "vupd") == 0, "pre-genesis");
     CHECK(val_key(0, pkh0) == 0 && val_key(1, pkh1) == 0 &&
           val_key(6, pkh6) == 0 && val_key(VU_ELIGIBLE, pkhE) == 0 &&
           val_key(VU_RETIRING, pkhR) == 0 &&
@@ -9606,6 +9854,8 @@ static int test_system_validator_update(void) {
     for (int i = 0; i < 8; i++)
         CHECK(seed_funding(&fx, 9, NOLOCK_FUND, (uint8_t)(0x91 + i),
                            fpos[i]) == 0, "fund pos");
+    CHECK(fx_seal(&fx) == 0, "genesis");
+    const uint64_t ac0 = active_count(fx.w);
 
     /* the frozen SET surfaces, captured before anything executes */
     uint8_t vset0[64], epoch0[64];
@@ -9624,7 +9874,7 @@ static int test_system_validator_update(void) {
                        NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "N1 unknown validator must reject"); OK();
     }
     /* N2 UNSTAKED and N3 AUTO_RETIRED: frozen stake, frozen commission
@@ -9635,7 +9885,7 @@ static int test_system_validator_update(void) {
                        NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "N2 an UNSTAKED validator must not update"); OK();
     }
     {
@@ -9643,7 +9893,7 @@ static int test_system_validator_update(void) {
                        NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "N3 an AUTO_RETIRED validator must not update"); OK();
     }
     /* N4 bps above the bound (bft.c:1953-1957; tokenomics-v3 P3-8: the
@@ -9654,7 +9904,7 @@ static int test_system_validator_update(void) {
                        0xA3, FEE_MIN, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "N4 commission_bps 5001 (> the P3-8 cap) must reject"); OK();
     }
     /* N5/N6 call length ±1: EXACT 2594, never a prefix and never a
@@ -9677,7 +9927,7 @@ static int test_system_validator_update(void) {
                                 NULL) == 0, "build");
             nodus_v2_envelope_t ve = { e.bytes, e.len };
             mk_block(&b, 1, &ve, 1);
-            CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+            CHECK(item_refused(fx.w, &b) == 0,
                   "N5/N6 a call length other than 2594 must reject");
         }
         OK();
@@ -9697,7 +9947,7 @@ static int test_system_validator_update(void) {
                             FEE_MIN, sv, 1, sf, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "N7 an all-zero identity pubkey must reject"); OK();
     }
     /* N8 WRONG SIGNER: the call names validator 0, the record leg is
@@ -9716,7 +9966,7 @@ static int test_system_validator_update(void) {
                             sv, 1, sf, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "N8 a valid signature by the wrong identity must reject");
         OK();
     }
@@ -9731,7 +9981,7 @@ static int test_system_validator_update(void) {
               "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "N9 kind-2 carriage on an op-5 leg must reject"); OK();
     }
     /* N10 SINGLE-LEG SYSTEM: a record with no funding partner */
@@ -9744,7 +9994,7 @@ static int test_system_validator_update(void) {
                                0, 0, 8, 16384, sv, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "N10 single-leg VALIDATOR_UPDATE must reject"); OK();
     }
     /* N11 SINGLE-LEG SYSFUND: funding with no record partner */
@@ -9758,7 +10008,7 @@ static int test_system_validator_update(void) {
                                0, 40, 16384, sf, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "N11 single-leg SYSFUND must reject"); OK();
     }
     /* N12 SIBLING MISMATCH: a well-formed op-5 record leg paired with a
@@ -9776,7 +10026,7 @@ static int test_system_validator_update(void) {
                             sv, 1, sf, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "N12 a non-SYSFUND sibling must reject"); OK();
     }
     /* the whole negative matrix left the chain untouched */
@@ -9796,7 +10046,7 @@ static int test_system_validator_update(void) {
                        NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "P1 a decrease commits"); OK();
         CHECK(sysrow_read(fx.w, 4, pkh0, 64, after, TVAL_REC_LEN) == 1,
               "after");
@@ -9833,7 +10083,7 @@ static int test_system_validator_update(void) {
                        NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 2, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "P2 an equal update commits"); OK();
         CHECK(sysrow_read(fx.w, 4, pkh1, 64, after, TVAL_REC_LEN) == 1,
               "after");
@@ -9856,7 +10106,7 @@ static int test_system_validator_update(void) {
                        NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 3, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "P3 an increase commits"); OK();
         CHECK(sysrow_read(fx.w, 4, pkh6, 64, after, TVAL_REC_LEN) == 1,
               "after");
@@ -9877,7 +10127,7 @@ static int test_system_validator_update(void) {
                        FEE_MIN, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 4, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "P4 an ELIGIBLE validator's update commits"); OK();
         CHECK(sysrow_read(fx.w, 4, pkhE, 64, after, TVAL_REC_LEN) == 1,
               "after");
@@ -9898,7 +10148,7 @@ static int test_system_validator_update(void) {
                        FEE_MIN, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 5, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "P5 a RETIRING validator's update commits"); OK();
         CHECK(sysrow_read(fx.w, 4, pkhR, 64, after, TVAL_REC_LEN) == 1,
               "after");
@@ -9925,7 +10175,7 @@ static int test_system_validator_update(void) {
                        NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e_p6.bytes, e_p6.len };
         mk_block(&b, 6, &ve, 1);
-        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
               "P6 a second update commits"); OK();
         CHECK(sysrow_read(fx.w, 4, pkh0, 64, after, TVAL_REC_LEN) == 1,
               "after");
@@ -9961,7 +10211,7 @@ static int test_system_validator_update(void) {
               val_col(fx.w, pkh0, "total_delegated") == 0 &&
               val_col(fx.w, pkh0, "external_delegated") == 0,
               "stake and status did not move"); OK();
-        CHECK(active_count(fx.w) == 0,
+        CHECK(active_count(fx.w) == ac0,
               "validator_stats.active_count did not move"); OK();
     }
 
@@ -9987,7 +10237,7 @@ static int test_system_validator_update(void) {
          * that committed at height 6 */
         nodus_v2_envelope_t ve = { e_p6.bytes, e_p6.len };
         mk_block(&b, 7, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "a committed update intent must not replay"); OK();
         CHECK(derive_ids2(&fx, &e_p6, w0, i0) == 0, "ids");
         /* the AUTH TWIN: one more valid funding signer, same intent */
@@ -10000,7 +10250,7 @@ static int test_system_validator_update(void) {
         CHECK(memcmp(wt, w0, 64) != 0, "it MUST move the wire id"); OK();
         nodus_v2_envelope_t vt = { twin.bytes, twin.len };
         mk_block(&b, 7, &vt, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        CHECK(item_refused(fx.w, &b) == 0,
               "the auth twin must reject on the committed intent"); OK();
     }
     fx_close(&fx);
@@ -10035,22 +10285,21 @@ static int test_system_validator_update(void) {
         nodus_v2_envelope_t va = { ea.bytes, ea.len };
         nodus_v2_envelope_t vo = { eo.bytes, eo.len };
         mk_block(&b, 1, &va, 1);
-        CHECK(nodus_witness_v2_apply_block(a.w, &b) == 0, "A commits");
+        CHECK(v2x_cmt_apply_ok(a.w, &b) == 0, "A commits");
         mk_block(&b, 1, &vo, 1);
-        /* O14: prev derived from this chain's own committed genesis. */
-        CHECK(nodus_witness_v2_apply_block(o.w, &b) == 0, "O commits");
+        CHECK(v2x_cmt_apply_ok(o.w, &b) == 0, "O commits");
         OK();
         {
+            /* O2's funding is a genesis row: the block below refuses its
+             * only item */
             fixture_t o2;
-            g_gid_fill = 0xF7;
-            int o2rc = vupd_fixture(&o2, "vuxcO2");
-            g_gid_fill = 0xEE;
-            CHECK(o2rc == 0, "genesis O2");
             uint8_t f2[64];
-            CHECK(seed_funding(&o2, 9, NOLOCK_FUND, 0xC0, f2) == 0, "fund");
+            g_gid_fill = 0xF7;
+            int o2rc = vupd_fixture_funded(&o2, "vuxcO2", 0xC0, f2);
+            g_gid_fill = 0xEE;
+            CHECK(o2rc == 0, "genesis O2 (funded)");
             mk_block(&b, 1, &va, 1);
-            /* O14: prev derived from the committed parent. */
-            CHECK(apply_reject(o2.w, &b, &rc) == 0 && rc == -1,
+            CHECK(item_refused(o2.w, &b) == 0,
                   "chain A's bytes must fail chain O2's binding"); OK();
             fx_close(&o2);
         }
@@ -10085,9 +10334,8 @@ static int test_system_validator_update(void) {
         nodus_v2_envelope_t vb = { eb.bytes, eb.len };
         mk_block(&ba, 1, &va, 1);
         mk_block(&bb, 1, &vb, 1);
-        /* O14: id derived by the engine. */
-        CHECK(nodus_witness_v2_apply_block(a.w, &ba) == 0, "A commits");
-        CHECK(nodus_witness_v2_apply_block(b2.w, &bb) == 0, "B commits");
+        CHECK(v2x_cmt_apply_ok(a.w, &ba) == 0, "A commits");
+        CHECK(v2x_cmt_apply_ok(b2.w, &bb) == 0, "B commits");
         OK();
         uint8_t da[64], db[64];
         CHECK(consensus_state_digest(a.w, da) == 0 &&
@@ -10403,7 +10651,26 @@ static int test_spend_effect_decl(void) {
     nodus_rt_auth_verdict_t av;
 
     CHECK(bt && nbt == 2 && bt[0].meter_policy, "table");
-    CHECK(fx_genesis(&fx, "effdecl") == 0, "genesis");
+    /* every shape's inputs are GENESIS rows (fx_pre … fx_seal): each
+     * shape runs refusal-only blocks before its exact declaration
+     * commits, and a post-genesis seed would fault them at phase 8 */
+    static uint8_t ins_all[5][15][64];
+    CHECK(fx_pre(&fx, "effdecl") == 0, "pre-genesis");
+    for (int s = 0; s < 5; s++) {
+        const int ni = shp[s].n_in;
+        for (int j = 0; j < ni; j++)
+            CHECK(seed_utxo(&fx, 7, TSP_AMT, (uint8_t)(0x20 + 16 * s + j),
+                            0, ins_all[s][j]) == 0, "seed");
+        char sql[192];
+        snprintf(sql, sizeof(sql),
+                 "UPDATE supply_tracking SET genesis_supply = "
+                 "genesis_supply + %llu, current_supply = "
+                 "current_supply + %llu WHERE id = 1",
+                 (unsigned long long)(ni * TSP_AMT),
+                 (unsigned long long)(ni * TSP_AMT));
+        CHECK(run_sql(fx.w->db, sql) == 0, "supply seed");
+    }
+    CHECK(fx_seal(&fx) == 0, "genesis");
     env_t *e = malloc(sizeof(*e));
     CHECK(e != NULL, "alloc");
     memset(&av, 0, sizeof(av));
@@ -10422,20 +10689,7 @@ static int test_spend_effect_decl(void) {
     for (int s = 0; s < 5; s++) {
         const uint64_t h = (uint64_t)s + 1;
         const int ni = shp[s].n_in, no = shp[s].n_out;
-        uint8_t ins[15][64];
-        for (int j = 0; j < ni; j++)
-            CHECK(seed_utxo(&fx, 7, TSP_AMT, (uint8_t)(0x20 + 16 * s + j),
-                            0, ins[j]) == 0, "seed");
-        {
-            char sql[192];
-            snprintf(sql, sizeof(sql),
-                     "UPDATE supply_tracking SET genesis_supply = "
-                     "genesis_supply + %llu, current_supply = "
-                     "current_supply + %llu WHERE id = 1",
-                     (unsigned long long)(ni * TSP_AMT),
-                     (unsigned long long)(ni * TSP_AMT));
-            CHECK(run_sql(fx.w->db, sql) == 0, "supply seed");
-        }
+        uint8_t (*ins)[64] = ins_all[s];
         /* balanced: Σin = Σout + fee; outputs alternate owner 8 / 7 */
         out_spec_t outs[3];
         uint64_t left = (uint64_t)ni * TSP_AMT - FEE_MIN;
@@ -10454,7 +10708,6 @@ static int test_spend_effect_decl(void) {
 
         /* (a) one effect short, one byte short: rejected, no state */
         for (int k = 0; k < 2; k++) {
-            int rc = 0;
             nodus_v2_block_t b;
             CHECK(env_build_signed(&fx, e, DNA_DOMAIN_CORE,
                                    DNA_CORERULE_SPEND, call, cl, FEE_MIN,
@@ -10463,7 +10716,7 @@ static int test_spend_effect_decl(void) {
                                    NULL) == 0, "build short");
             nodus_v2_envelope_t ve = { e->bytes, e->len };
             mk_block(&b, h, &ve, 1);
-            CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+            CHECK(item_refused(fx.w, &b) == 0,
                   k == 0 ? "a declaration ONE EFFECT short must reject"
                          : "a declaration ONE BYTE short must reject");
             OK();
@@ -10512,7 +10765,7 @@ static int test_spend_effect_decl(void) {
             nodus_v2_envelope_t ve = { e->bytes, e->len };
             nodus_v2_block_t b;
             mk_block(&b, h, &ve, 1);
-            CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+            CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
                   "the exact declaration must commit");
             OK();
         }
@@ -10545,6 +10798,215 @@ static int test_spend_effect_decl(void) {
     }
     CHECK(supply_identity_holds(fx.w), "identity");
     OK();
+    free(e);
+    fx_close(&fx);
+    return 0;
+}
+
+/* ══ 20. BYTE-IDENTICAL RESUBMISSION NEVER HALTS THE CHAIN (tokenomics-v3
+ *     P4 fix round) ═══════════════════════════════════════════════════
+ *
+ * The defect this pins: phase 12b wrote EVERY carried envelope — refused
+ * ones included — into `v2_tx_bytes`, whose `tx_id` (the wire_id) was
+ * UNIQUE. A later block carrying a byte-identical copy of an envelope
+ * any earlier block had carried therefore failed that insert (sqlite rc
+ * 19): a node FAULT on every node — a chain halt one proposer could
+ * trigger, since ProcessProposal checks no committed identity. Phase 12b
+ * and the table are deleted; what remains is the per-item replay guard
+ * (the intent index, then the wire index — written ONLY for APPLIED
+ * items).
+ *   (i)  a byte-identical copy of an APPLIED envelope in a later block:
+ *        the item is refused REPLAY, the block COMMITS (no fault), and the
+ *        ledger is byte-identical for it;
+ *   (ii) an envelope REFUSED at apply (its input did not exist yet — the
+ *        block's later item creates it), resubmitted byte-identical in a
+ *        later block where it is now valid: it APPLIES.
+ * RED ON THE PRE-FIX TREE: both second blocks faulted in phase 12b. */
+static int test_resubmission_no_halt(void) {
+    int s7[1] = { 7 };
+    static env_t ea, eb;                /* 128 KiB each — off the stack   */
+    fixture_t fx;
+    CHECK(fx_genesis(&fx, "resub") == 0, "genesis");
+
+    /* E_a spends A (5M, key 7) → 2M to key 8 (seed 0x01) + 2M change to
+     * key 7 (seed 0x02) + fee. E_b spends E_a's change (2M, key 7) → 1M
+     * to key 8 (seed 0x03) + fee. */
+    uint8_t ins_a[1][64], ins_b[1][64];
+    memcpy(ins_a[0], g_nul_a, 64);
+    CHECK(out_nul(7, 0x02, ins_b[0]) == 0, "E_a's change id");
+    out_spec_t outs_a[2] = { { 8, 2000000, 0x01, NULL },
+                             { 7, 2000000, 0x02, NULL } };
+    out_spec_t outs_b[1] = { { 8, 1000000, 0x03, NULL } };
+    CHECK(spend_env(&fx, &ea, ins_a, 1, outs_a, 2, FEE_MIN, s7, 1, NULL)
+              == 0, "build E_a");
+    CHECK(spend_env(&fx, &eb, ins_b, 1, outs_b, 1, FEE_MIN, s7, 1, NULL)
+              == 0, "build E_b");
+    nodus_v2_envelope_t va = { ea.bytes, ea.len };
+    nodus_v2_envelope_t vb = { eb.bytes, eb.len };
+
+    /* h1 = [E_b, E_a]: E_b is judged first, while its input does not
+     * exist yet — refused; E_a then applies and creates that input. */
+    {
+        nodus_v2_envelope_t both[2] = { vb, va };
+        nodus_v2_block_t b;
+        mk_block(&b, 1, both, 2);
+        CHECK(v2x_cmt_apply(fx.w, &b) == 0 && b.cmt.results_len == 2 &&
+              b.cmt.results[0].code != NODUS_V2_TX_OK &&
+              b.cmt.results[1].code == NODUS_V2_TX_OK,
+              "h1: E_b refused (input absent), E_a applied");
+        CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_tx_index") == 1,
+              "h1: only the APPLIED item is indexed");
+        OK();
+    }
+    /* (i) h2 = [E_a again, byte-identical]: REPLAY, the block commits */
+    {
+        nodus_v2_block_t b;
+        uint32_t code = 0;
+        mk_block(&b, 2, &va, 1);
+        CHECK(v2x_cmt_refused(fx.w, &b, 0, &code) == 0 &&
+              code == NODUS_V2_TX_ERR_REPLAY,
+              "(i) a byte-identical copy of an APPLIED envelope is refused "
+              "REPLAY, the block commits, the ledger is unchanged");
+        CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_blocks WHERE "
+                       "global_height = 2") == 1,
+              "(i) height 2 committed — no halt");
+        OK();
+    }
+    /* (ii) h3 = [E_b again, byte-identical]: now valid — it applies */
+    {
+        nodus_v2_block_t b;
+        uint8_t paid[64];
+        mk_block(&b, 3, &vb, 1);
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
+              "(ii) a byte-identical copy of a REFUSED envelope, now "
+              "valid, applies");
+        CHECK(out_nul(8, 0x03, paid) == 0, "E_b's output id");
+        sqlite3_stmt *st = NULL;
+        CHECK(sqlite3_prepare_v2(fx.w->db,
+              "SELECT COUNT(*) FROM utxo_set WHERE nullifier = ?1", -1,
+              &st, NULL) == SQLITE_OK, "prep");
+        sqlite3_bind_blob(st, 1, paid, 64, SQLITE_TRANSIENT);
+        CHECK(sqlite3_step(st) == SQLITE_ROW &&
+              sqlite3_column_int64(st, 0) == 1, "(ii) E_b's output exists");
+        sqlite3_finalize(st);
+        CHECK(supply_identity_holds(fx.w), "(ii) supply identity");
+        OK();
+    }
+    fx_close(&fx);
+    return 0;
+}
+
+/* ══ N5 UNDELEGATE TOTALS UNDERFLOW, on a CONSERVING chain (P4 fix round)
+ *
+ * rtn_undelegate_exec (nodus_witness_rt_native.c:3823) refuses when the
+ * validator's total_delegated / external_delegated are BELOW the amount
+ * being withdrawn — totals and delegation row disagree, and malformed
+ * state fails closed instead of being repaired. The old N5 lowered the
+ * totals on an already-committed chain; that broke the CORE equation
+ * (Σ validators.total_delegated is one of its terms) and the PRE-APPLY
+ * supply gate stopped the block before this check ever ran.
+ *
+ * Here the disagreement is part of a genesis that CONSERVES: delegation
+ * row amounts are NOT a supply term, validators.total_delegated is. So
+ * a row of DLG_AMOUNT under totals of DLG_AMOUNT − 1, with DLG_AMOUNT − 1
+ * added to the genesis supply, passes the supply gates and the item
+ * reaches the underflow check.
+ *   N5       UNDELEGATE DLG_AMOUNT  (> totals, <= row): ITEM refusal, code
+ *            EXEC, ledger unchanged — never a node fault.
+ *   CONTROL  UNDELEGATE DNAC_MIN_DELEGATION (<= totals, remainder exactly
+ *            MIN) with the same key, row and funding: COMMITS. Without it
+ *            N5 would also pass on a broken signature, row or funding.
+ * RED ON THE PRE-FIX TREE: N5 asserted a node FAULT at the PRE-APPLY gate
+ * (the check it names was unreachable). KILLED BY: dropping the `tot <
+ * c.amount || ext < c.amount` guard — the u64 totals then wrap above
+ * INT64_MAX, the validator adapter's record check (rtn_val_rec_ok)
+ * refuses the write as a STORAGE_FAULT instead of the item being
+ * refused with code EXEC, and N5's assertion fails. */
+static int test_undelegate_totals_underflow(void) {
+    fixture_t fx;
+    env_t *e = calloc(1, sizeof(*e));
+    nodus_v2_block_t b;
+    int s9[1] = { 9 };
+    static uint8_t scall[8192], fcall[8192];
+    uint8_t f9[64], f9b[64], vk0[64];
+    CHECK(e != NULL, "alloc");
+    CHECK(val_key(0, vk0) == 0, "key");
+
+    CHECK(fx_pre(&fx, "undlg_uf") == 0, "pre-genesis");
+    {
+        dnac_delegation_record_t d;
+        memset(&d, 0, sizeof(d));
+        memcpy(d.delegator_pubkey, g_pk[9], DNAC_PUBKEY_SIZE);
+        memcpy(d.validator_pubkey, g_pk[0], DNAC_PUBKEY_SIZE);
+        d.amount = DLG_AMOUNT;
+        CHECK(nodus_delegation_insert(fx.w, &d) == 0, "seed delegation");
+        char sql[320];
+        sqlite3_stmt *st = NULL;
+        CHECK(sqlite3_prepare_v2(fx.w->db,
+              "UPDATE validators SET total_delegated = ?2, "
+              "external_delegated = ?2 WHERE pubkey_hash = ?1",
+              -1, &st, NULL) == SQLITE_OK, "prep");
+        sqlite3_bind_blob(st, 1, vk0, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 2, (sqlite3_int64)(DLG_AMOUNT - 1));
+        CHECK(sqlite3_step(st) == SQLITE_DONE &&
+              sqlite3_changes(fx.w->db) == 1, "seed totals");
+        sqlite3_finalize(st);
+        /* the totals are a CORE term: the genesis supply carries them */
+        snprintf(sql, sizeof(sql),
+                 "UPDATE supply_tracking SET genesis_supply = "
+                 "genesis_supply + %llu, current_supply = "
+                 "current_supply + %llu WHERE id = 1",
+                 (unsigned long long)(DLG_AMOUNT - 1),
+                 (unsigned long long)(DLG_AMOUNT - 1));
+        CHECK(run_sql(fx.w->db, sql) == 0, "seed supply");
+    }
+    CHECK(seed_funding(&fx, 9, NOLOCK_FUND, 0xD1, f9) == 0, "fund");
+    CHECK(seed_funding(&fx, 9, NOLOCK_FUND, 0xD2, f9b) == 0, "fund");
+    CHECK(fx_seal(&fx) == 0, "genesis");
+    CHECK(supply_identity_holds(fx.w),
+          "FIXTURE GUARD: the seeded genesis conserves"); OK();
+
+    /* N5: DLG_AMOUNT > totals (DLG_AMOUNT − 1), <= the row */
+    {
+        uint32_t code = 0;
+        uint32_t sl = deleg_call_build(scall, sizeof(scall), 9, 0,
+                                       DLG_AMOUNT);
+        uint32_t fl = fund_call(fcall, sizeof(fcall), f9, 9, DLG_CHANGE,
+                                0x46);
+        CHECK(sl && fl, "call");
+        CHECK(two_leg_build(&fx, e, DNA_SYSRULE_UNDELEGATE, scall, sl,
+                            DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                            s9, 1, s9, 1, NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e->bytes, e->len };
+        mk_block(&b, 1, &ve, 1);
+        /* the probe rolls the refused block back: the control below
+         * takes the same height */
+        CHECK(v2x_cmt_refused_probe(fx.w, &b, 0, &code) == 0 &&
+              code == NODUS_V2_TX_ERR_EXEC,
+              "N5 totals below the withdrawal must refuse the ITEM (EXEC), "
+              "never fault the node"); OK();
+    }
+    /* CONTROL: DNAC_MIN_DELEGATION fits under the totals and leaves
+     * exactly MIN on the row — the same key, row and funding commit.
+     * The chain keeps the malformed shape ON PURPOSE: totals go
+     * 2·MIN − 1 → MIN − 1 while the row goes 2·MIN → MIN, still one raw
+     * below it (conservation holds: Σ total_delegated fell by exactly
+     * the MIN the locked release utxo now carries). */
+    {
+        uint32_t sl = deleg_call_build(scall, sizeof(scall), 9, 0,
+                                       (uint64_t)DNAC_MIN_DELEGATION);
+        uint32_t fl = fund_call(fcall, sizeof(fcall), f9b, 9, DLG_CHANGE,
+                                0x47);
+        CHECK(sl && fl, "call");
+        CHECK(two_leg_build(&fx, e, DNA_SYSRULE_UNDELEGATE, scall, sl,
+                            DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                            s9, 1, s9, 1, NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e->bytes, e->len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
+              "N5 CONTROL a withdrawal within the totals commits"); OK();
+        CHECK(supply_identity_holds(fx.w), "N5 CONTROL identity"); OK();
+    }
     free(e);
     fx_close(&fx);
     return 0;
@@ -10585,6 +11047,8 @@ int main(void) {
     if (test_system_validator_update() != 0) return 1;
     if (test_vupd_hook_pins() != 0) return 1;
     if (test_spend_effect_decl() != 0) return 1;
+    if (test_resubmission_no_halt() != 0) return 1;
+    if (test_undelegate_totals_underflow() != 0) return 1;
     printf("test_v2_native: ALL OK (%d checks)\n", g_checks);
     return 0;
 }

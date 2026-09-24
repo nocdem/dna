@@ -243,11 +243,12 @@ int nodus_witness_v2_balance_copy_frozen(nodus_witness_t *w,
  *     not read back, or carries 0, is a FAULT;
  *   - a version-3 successor chain (w->v2_successor) WITHOUT its document:
  *     FAULT — every such chain stores its document at derivation;
- *   - any other chain (no document: the pre-document fixture lane that
- *     builds its genesis through nodus_witness_v2_genesis_ex): the
+ *   - any other database (not a version-3 successor, no document): the
  *     version-3 default NODUS_V2_GEN_PAYOUT_INTERVAL_EPOCHS_DEFAULT (24),
  *     the same "nothing committed -> compiled constant" rule
  *     nodus_witness_v2_econ_params_load applies to a chain with no band.
+ *     (tokenomics-v3 P4 deleted nodus_witness_v2_genesis_ex, the
+ *     version-2 genesis that used to build such chains.)
  *
  * @param out  required; written only on 0.
  * @return 0 / -2.

@@ -1,7 +1,9 @@
 /**
  * Nodus — Ledger V2 O12 S2: the ENGINE-MANDATORY epoch-boundary
- * transition (nodus_witness_v2_epoch.{h,c}) driven through the real
- * (INACTIVE) V2 apply engine.
+ * transition (nodus_witness_v2_epoch.{h,c}) driven through the real V2
+ * apply engine in its cometbft lane (tokenomics-v3 P4: every genesis
+ * here is a seeded version-3 genesis and every block goes through
+ * v2x_cmt_apply, the test acting as the host — v2_genesis_fixture.h).
  *
  * Sections:
  *   §1  DERIVATION MATRIX — the boundary fires exactly at H % E == 0 for
@@ -19,9 +21,10 @@
  *       domain CORE, created_at 0; the bond zeroes, the status becomes
  *       UNSTAKED, everything else on the row is byte-unchanged,
  *       active_count drops by exactly one, and the supply gate is GREEN.
- *   §3  NO DOUBLE GRADUATION — byte-identical replay of the boundary
- *       block is rc 1 with a byte-identical digest, and the NEXT
- *       boundary does not re-graduate an UNSTAKED row.
+ *   §3  NO DOUBLE GRADUATION — the boundary height applied again is a
+ *       node FAULT with a byte-identical digest (the cometbft lane has
+ *       no idempotent replay), and the NEXT boundary does not re-graduate
+ *       an UNSTAKED row.
  *   §4  PENDING COMMISSION — activates at ITS OWN pending_effective_block
  *       boundary, never one epoch early.
  *   §5  FLIPS — a bonded validator absent from the frozen snapshot is
@@ -269,28 +272,16 @@ done:
     return out_rc;
 }
 
-static void mk_id(uint8_t out[64], uint8_t fill) { memset(out, fill, 64); }
-
-/* Deterministic per-height block ids: a boundary block driven twice in
- * two fixtures must carry the SAME id, or the twin comparison would be
- * comparing different blocks. */
-/* Synthetic block id for height h. The FULL height is embedded in the
- * first 8 bytes (BE): the original byte pattern `(h*7 + 3i + 1) & 0xFF`
- * alone repeats with period 256, so block_id(257) == block_id(1) and the
- * engine's replay/linkage guard correctly rejected the drive at height
- * 257 (found live by the E-1 drive). */
-static void mk_block_id(uint8_t out[64], uint64_t h) {
-    for (int i = 0; i < 8; i++)
-        out[i] = (uint8_t)(h >> (56 - 8 * i));
-    for (int i = 8; i < 64; i++)
-        out[i] = (uint8_t)((h * 7u + (uint64_t)i * 3u + 1u) & 0xFF);
-}
-
+/* A zero-envelope block as nodus_cmt_app_finalize_block hands it to the
+ * engine. Its identity (the Comet block hash) comes from the host's
+ * block-store record v2x_cmt_apply writes (v2_genesis_fixture.h) — the
+ * same record the boundary's committee seed later reads back at the
+ * lookback height — so a boundary block driven twice in two twin
+ * fixtures carries the SAME id. */
 static void mk_block(nodus_v2_block_t *b, uint64_t h) {
     memset(b, 0, sizeof(*b));
     b->global_height = h;
     b->epoch = nodus_v2_epoch_for_height(h);
-    /* O14 leader mode: identity is DERIVED, never carried. */
     b->envs = NULL;
     b->n_envs = 0;                       /* ZERO-ENVELOPE by design      */
 }
@@ -340,17 +331,20 @@ static int seed_utxo(fixture_t *fx, int k, uint64_t amount,
 }
 
 /*
- * ACTIVATION OBLIGATION 2 (nodus_witness_v2_epoch.h), handled HONESTLY
- * in the fixture rather than by inventing engine behaviour:
- * nodus_witness_vset_commit_next(H) builds the snapshot for
- * e_start = H + E, and nodus_committee_compute_for_epoch reads the
- * LEGACY `blocks` row at e_start − E − 1 == H − 1 for its state_seed
- * tiebreak (nodus_witness_committee.c:116-125). A pure-V2 chain produces
- * no legacy block rows, so the test plants the one row the source path
- * needs, with a FIXED deterministic state_root so two twin fixtures see
- * an identical seed. `blocks.height` is an explicit column
- * (nodus_witness.c:80-90), so the row is planted at the exact height —
- * nodus_witness_block_add only ever APPENDS.
+ * The LEGACY seed row — used ONLY by the §14 preview case, which runs on
+ * a bare, NON-successor database (fx_bare: no genesis, v2_successor
+ * false). There nodus_committee_compute_for_epoch reads the legacy
+ * `blocks` row at e_start − E − 1 for its state_seed tiebreak (the
+ * `v2_successor == false` branch of nodus_witness_committee.c), so the
+ * test plants that one row with a FIXED deterministic state_root.
+ * `blocks.height` is an explicit column, so the row is planted at the
+ * exact height — nodus_witness_block_add only ever APPENDS.
+ *
+ * tokenomics-v3 P4: every GENESIS-based case in this file is a
+ * version-3 chain (v2_successor true), whose seed source is the host's
+ * block-store record at that height (nodus_witness_committee.c
+ * v2_seed_block_id); v2x_cmt_apply writes that record for every block
+ * it applies, so those cases plant nothing.
  */
 static int seed_legacy_block(fixture_t *fx, uint64_t height) {
     sqlite3_stmt *st = NULL;
@@ -404,12 +398,23 @@ typedef struct {
  *
  *   fx_genesis     — stage 1: DB + schema + validator/supply/UTXO seed +
  *                    the SOURCE genesis vset snapshots. Stops BEFORE the
- *                    V2 genesis so a test can still shape its pre-chain
- *                    state (a late joiner, a status flip, a malformed
- *                    legacy row) with the snapshots ALREADY FROZEN.
- *   fx_v2_genesis  — stage 2: the V2 genesis itself. After this call the
- *                    fixture is a live chain and NOTHING may write a
+ *                    engine genesis so a test can still shape its
+ *                    pre-chain state (a late joiner, a status flip, a
+ *                    malformed legacy row) with the snapshots ALREADY
+ *                    FROZEN.
+ *   fx_v2_genesis  — stage 2: the engine genesis itself. After this call
+ *                    the fixture is a live chain and NOTHING may write a
  *                    consensus table except through a block.
+ *
+ * tokenomics-v3 P4: the two stages ARE the seeded version-3 genesis
+ * (v2_genesis_fixture.h): stage 1 opens with v2x_seed_prepare (the
+ * derivation's step 4: live rung S16, v2_successor before any validator
+ * row, the economic band), stage 2 is v2x_seed_genesis (the committed
+ * authority, the registry, the engine genesis
+ * nodus_witness_v2_genesis_cmt, the stored document, the reopen through
+ * the production open path). These chains carry validator sets, bonds
+ * and genesis UTXOs a version-3 config cannot express, which is why they
+ * are seeded rather than derived.
  *
  * The one deliberate exception is a test that plants CORRUPTION to prove
  * a fail-closed path (the conflicting snapshot in §7, which must be
@@ -421,16 +426,11 @@ static int fx_genesis(fixture_t *fx, const char *tag,
     memset(fx, 0, sizeof(*fx));
     fx->w = calloc(1, sizeof(*fx->w));
     if (!fx->w) return -1;
-    /* the live constructor's cache sentinel (nodus_witness.c:649) — a
-     * zeroed struct reads as a CACHED EMPTY committee for epoch 0 */
-    fx->w->cached_committee_epoch_start = UINT64_MAX;
     snprintf(fx->dir, sizeof(fx->dir), "/tmp/test_v2_epoch_%s_XXXXXX", tag);
     if (!mkdtemp(fx->dir)) { free(fx->w); fx->w = NULL; return -1; }
     snprintf(fx->w->data_path, sizeof(fx->w->data_path), "%s", fx->dir);
     memset(fx->chain_id16, 0x4E, sizeof(fx->chain_id16));
-    if (nodus_witness_create_chain_db(fx->w, fx->chain_id16) != 0) return -1;
-    if (nodus_chain_config_db_migrate(fx->w) != 0) return -1;
-    if (nodus_witness_db_migrate_v2s9(fx->w) != 0) return -1;
+    if (v2x_seed_prepare(fx->w, fx->chain_id16, 0) != 0) return -1;
 
     uint64_t bonds = 0;
     for (size_t i = 0; i < n_spec; i++) {
@@ -478,10 +478,23 @@ static int fx_genesis(fixture_t *fx, const char *tag,
 /* Stage 2 — see the two-stage note above. Every direct write to a
  * consensus table must ALREADY have happened when this returns. */
 static int fx_v2_genesis(fixture_t *fx) {
-    uint8_t vset[64];
-    mk_id(vset, 0x77);
-    /* O14: the genesis BlockID is DERIVED by the engine, not chosen. */
-    if (v2x_genesis_min(fx->w, vset, NULL, NULL) != 0) return -1;
+    /* not a real genesis: stage 1 always seeds a spendable UTXO_A row
+     * (the fee funding every driven block spends). */
+    v2x_seed_not_real(V2X_SEED_NOT_REAL_UTXOS);
+    {
+        /* not a real genesis: these chains model PRE-CHAIN lifecycle
+         * states — RETIRING graduates, AUTO_RETIRED and ELIGIBLE rows —
+         * that a version-3 genesis (every row ACTIVE) cannot write; the
+         * subjects of §2-§10 are exactly those rows. Only named when
+         * such a row is present, so an all-ACTIVE chain keeps the real
+         * genesis's active_count (every row). */
+        uint64_t nonact = q1(fx->w, "SELECT COUNT(*) FROM validators "
+                                    "WHERE status != 0");
+        if (nonact == UINT64_MAX) return -1;
+        if (nonact != 0) v2x_seed_not_real(V2X_SEED_NOT_REAL_STATUSES);
+    }
+    if (v2x_seed_genesis(fx->w, fx->chain_id16, 0, NULL, 0, NULL) != 0)
+        return -1;
     if (nodus_witness_v2_chain_id(fx->w, fx->chain_id) != 0) return -1;
     fx->height = 0;
     return 0;
@@ -504,24 +517,30 @@ static void fx_close(fixture_t *fx) {
     rmrf(fx->dir);
 }
 
-/* R3 W4-D — this used to reopen through nodus_witness_create_chain_db,
- * which now runs the SAME post-open integrity gate every ordinary
- * restart runs (O15A obligation 6): a fixture seeded via seed_legacy_
- * block plants rows in the legacy `blocks` table, and the gate refuses
- * to treat that as a version-3 chain — outcome (c), "non-empty legacy
- * blocks table" — exactly as test_v2_restart_gate.c's own cases pin.
- * That refusal is correct production behaviour, but it is not this
- * file's subject: these fixtures test ENGINE PERSISTENCE across a
- * restart (does previously-written v2_blocks / validator / snapshot
- * data survive a close and reopen), not the chain-role gate. The
- * fixture itself is the version-2 engine's (package W4-G converts it to
- * version-3); until then, reopen the SAME file directly — the same
- * PRAGMAs witness_db_open_attempt (nodus_witness.c) sets that the
- * engine depends on, and nothing else: no schema exec, no migration, no
- * gate. Read directly: journal_mode=WAL, synchronous=NORMAL and a busy
- * timeout are the only settings that function applies; there is no
- * foreign_keys pragma anywhere in the witness sources to replicate. */
+/* A restart.
+ *
+ * A VERSION-3 chain (every genesis-based case — tokenomics-v3 P4)
+ * reopens through the PRODUCTION open path,
+ * nodus_witness_create_chain_db, whose post-open gate recognises it from
+ * its stored document and sets v2_successor / v2_chain32 again.
+ *
+ * The BARE, non-successor fixture (fx_bare, §11-§14) is no chain at all
+ * — it has no stored document, and the §14 case plants a legacy
+ * `blocks` row — so the gate would refuse it (outcome (c), exactly as
+ * test_v2_restart_gate.c pins); its subject is persistence of the
+ * snapshot rows, not the chain-role gate. It reopens the SAME file
+ * directly with the PRAGMAs witness_db_open_attempt (nodus_witness.c)
+ * sets and nothing else: journal_mode=WAL, synchronous=NORMAL and a busy
+ * timeout; there is no foreign_keys pragma in the witness sources to
+ * replicate. */
 static int fx_reopen(fixture_t *fx) {
+    if (fx->w->v2_successor) {
+        sqlite3_close(fx->w->db);
+        fx->w->db = NULL;
+        fx->w->cached_committee_epoch_start = UINT64_MAX;
+        fx->w->chain_config_cache_warm = false;
+        return nodus_witness_create_chain_db(fx->w, fx->chain_id16);
+    }
     sqlite3_close(fx->w->db);
     fx->w->db = NULL;
 
@@ -608,7 +627,6 @@ static int fx_active_voters(fixture_t *fx, uint8_t addrs[N_KEYS][32],
  * `out_blk->cmt.*` after this function returns. */
 static int fx_block(fixture_t *fx, nodus_v2_block_t *out_blk, int *rc_out) {
     uint64_t h = fx->height + 1;
-    if (h % E == 0 && seed_legacy_block(fx, h - 1) != 0) return -1;
     nodus_v2_block_t b;
     mk_block(&b, h);
     uint8_t addrs[N_KEYS][32];
@@ -624,9 +642,11 @@ static int fx_block(fixture_t *fx, nodus_v2_block_t *out_blk, int *rc_out) {
             b.cmt.votes_len = n;
         }
     }
-    int rc = nodus_witness_v2_apply_block(fx->w, &b);
+    /* the cometbft lane, the test as the host (v2x_cmt_apply): 0
+     * committed, NODUS_V2_INTERNAL_FAULT rolled back */
+    int rc = v2x_cmt_apply(fx->w, &b);
     if (rc_out) *rc_out = rc;
-    if (rc == 0 || rc == 1 || rc == 2) fx->height = h;
+    if (rc == 0) fx->height = h;
     if (out_blk) *out_blk = b;
     return rc == 0 ? 0 : -1;
 }
@@ -646,20 +666,26 @@ static int fx_drive_to(fixture_t *fx, uint64_t target) {
 }
 
 /* Apply the next block with an injected fault; PROVE the whole-DB digest
- * is byte-identical afterwards. @return 0 iff rc was a rollback class
- * AND the digest did not move. */
+ * is byte-identical afterwards. In the cometbft lane every boundary
+ * stage fault is a node FAULT (a boundary has no verdict class, and a
+ * decided block is never refused), which the host rolls back.
+ * @return 0 iff rc was NODUS_V2_INTERNAL_FAULT AND the digest did not
+ * move. */
 static int fx_block_inject(fixture_t *fx, nodus_v2_apply_fail_t pt,
                            int *rc_out) {
     uint64_t h = fx->height + 1;
-    if (h % E == 0 && seed_legacy_block(fx, h - 1) != 0) return -1;
     uint8_t d0[64], d1[64];
     if (db_state_digest(fx->w, d0) != 0) return -1;
     nodus_v2_block_t b;
     mk_block(&b, h);
     b.fail_at = pt;
-    int rc = nodus_witness_v2_apply_block(fx->w, &b);
+    int rc = v2x_cmt_apply(fx->w, &b);
     if (rc_out) *rc_out = rc;
-    if (rc != -1 && rc != -2) return -1;
+    if (rc != NODUS_V2_INTERNAL_FAULT) return -1;
+    /* A boundary failure is a NODE FAULT, never a verdict — and the body
+     * says so itself (phase 6e's V2AP_FAULT), before the wrapper's fold
+     * could have made anything look like one. */
+    if (v2x_reason_is(&b, V2X_FAULT, "phase 6e") != 0) return -1;
     if (db_state_digest(fx->w, d1) != 0) return -1;
     return memcmp(d0, d1, 64) == 0 ? 0 : -1;
 }
@@ -1323,20 +1349,19 @@ static int test_boundary_chain(void) {
     {
         uint8_t d0[64], d1[64];
         CHECK(db_state_digest(fx.w, d0) == 0, "digest");
-        /* O14 D6: the rc-1 idempotent path is FOLLOWER-mode only — it
-         * needs an asserted id to probe with. Read the committed id of
-         * the boundary block and assert it. (The leader-mode arm, which
-         * has no id and therefore dies on height continuity, is covered
-         * separately in test_v2_apply.) */
-        uint8_t committed_id[64];
-        CHECK(v2x_block_id_at(fx.w, E, committed_id) == 0,
-              "read committed boundary id");
+        /* tokenomics-v3 P4: the legacy lane's rc-1 idempotent replay (an
+         * asserted expect_block_id) has NO cometbft-lane counterpart —
+         * the lane refuses identity assertions and consensus never
+         * re-delivers a finalized height. The boundary height again is a
+         * node FAULT the host rolls back; what this section pins — the
+         * replay writes nothing and releases no second bond — is
+         * asserted on that. */
         nodus_v2_block_t rb;
         mk_block(&rb, E);
-        rb.expect_block_id = committed_id;
-        int rc = nodus_witness_v2_apply_block(fx.w, &rb);
-        CHECK(rc == 1, "byte-identical replay is the no-write idempotent "
-                       "path");
+        int rc = v2x_cmt_apply(fx.w, &rb);
+        CHECK(rc == NODUS_V2_INTERNAL_FAULT &&
+              v2x_reason_is(&rb, V2X_VERDICT, "at or below") == 0,
+              "byte-identical replay is the no-write idempotent path");
         CHECK(db_state_digest(fx.w, d1) == 0, "digest");
         CHECK(memcmp(d0, d1, 64) == 0, "replay wrote nothing");
         /* tokenomics-v3 P1 (D-11): TWO graduates at this boundary now
@@ -1358,8 +1383,9 @@ static int test_boundary_chain(void) {
          * comment used to say the narrowing was needed because "the
          * boundary now also SETTLES ... into payout UTXOs, so a
          * whole-table count would grow". Since tokenomics-v3 P2 no
-         * boundary writes a payout UTXO except a PAYDAY (every 24th
-         * epoch on these document-less fixtures, P2-7), which this
+         * boundary writes a payout UTXO except a PAYDAY (every
+         * payout_interval_epochs-th epoch — the stored document's
+         * default here, P2-7), which this
          * section never reaches, and every fixture here seeds an empty
          * reward pool. The narrowing is still right — it says what the
          * assertion always meant — but it is a PRECISION fix, not a
@@ -1950,13 +1976,13 @@ static int test_commit_next(void) {
             sqlite3_finalize(st);
             CHECK(rc == SQLITE_DONE, "decoy planted");
         }
-        CHECK(seed_legacy_block(&c, E - 1) == 0, "legacy lookback");
         uint8_t d0[64], d1[64];
         CHECK(db_state_digest(c.w, d0) == 0, "digest");
         nodus_v2_block_t b;
         mk_block(&b, E);
-        int rc = nodus_witness_v2_apply_block(c.w, &b);
-        CHECK(rc == -2,
+        int rc = v2x_cmt_apply(c.w, &b);
+        CHECK(rc == NODUS_V2_INTERNAL_FAULT &&
+              v2x_reason_is(&b, V2X_FAULT, "phase 6e") == 0,
               "a diverging snapshot for the same epoch is a NODE FAULT — "
               "two validator sets claiming one epoch");
         CHECK(db_state_digest(c.w, d1) == 0, "digest");
@@ -2049,15 +2075,10 @@ static int test_faults(void) {
               nodus_witness_v2_epoch_grad_nullifier(g6, n6) == 0, "nuls");
     }
 
-    /* Plant the legacy lookback row BEFORE the entry digest is taken.
-     * fx_block_inject seeds it lazily, and that INSERT autocommits
-     * OUTSIDE the block transaction (it is fixture setup, not engine
-     * work), so digesting first would compare a pre-row snapshot against
-     * a post-row one and report a rollback failure that never happened.
-     * Every later call hits the OR IGNORE no-op path. */
-    CHECK(seed_legacy_block(&f, E - 1) == 0, "legacy lookback for F");
-    CHECK(seed_legacy_block(&t, E - 1) == 0, "legacy lookback for T");
-
+    /* (The committee seed's lookback record at E-1 is the host's
+     * block-store row v2x_cmt_apply wrote when block E-1 committed —
+     * already in both fixtures; the injected block's own record is
+     * written inside the host transaction and rolled back with it.) */
     uint8_t entry[64];
     CHECK(db_state_digest(f.w, entry) == 0, "entry digest");
 
@@ -2197,20 +2218,23 @@ static int test_malformed_row(void) {
         CHECK(rc == SQLITE_DONE && sqlite3_changes(fx.w->db) == 1,
               "malformed fp planted");
     }
+    /* not a real genesis: a legacy-malformed row IS this case's subject,
+     * and derive_v3 refuses to commit one (L2-F4) */
+    v2x_seed_not_real(V2X_SEED_NOT_REAL_MALFORMED);
     CHECK(fx_v2_genesis(&fx) == 0, "v2 genesis");
 
     /* The malformed row is committed state and every ordinary block
      * rides straight past it — only the GRADUATION reads that column. */
     CHECK(fx_drive_to(&fx, E - 1) == 0,
           "a malformed row does not disturb ordinary blocks");
-    CHECK(seed_legacy_block(&fx, E - 1) == 0, "legacy lookback");
 
     uint8_t d0[64], d1[64];
     CHECK(db_state_digest(fx.w, d0) == 0, "digest");
     nodus_v2_block_t b;
     mk_block(&b, E);
-    int rc = nodus_witness_v2_apply_block(fx.w, &b);
-    CHECK(rc == -2,
+    int rc = v2x_cmt_apply(fx.w, &b);
+    CHECK(rc == NODUS_V2_INTERNAL_FAULT &&
+          v2x_reason_is(&b, V2X_FAULT, "phase 6e") == 0,
           "a legacy-malformed graduate refuses the boundary as a NODE "
           "FAULT (activation obligation 1)");
     CHECK(db_state_digest(fx.w, d1) == 0, "digest");
@@ -2872,7 +2896,6 @@ static int test_authority_large_height(void) {
 static int rn_block(fixture_t *fx, const int *attend, size_t n_attend,
                     int *rc_out) {
     uint64_t h = fx->height + 1;
-    if (h % E == 0 && seed_legacy_block(fx, h - 1) != 0) return -1;
     if (n_attend > 8) return -1;
     nodus_v2_block_t b;
     mk_block(&b, h);
@@ -2890,7 +2913,7 @@ static int rn_block(fixture_t *fx, const int *attend, size_t n_attend,
         b.cmt.votes_block_id_flag = flags;
         b.cmt.votes_len = n_attend;
     }
-    int rc = nodus_witness_v2_apply_block(fx->w, &b);
+    int rc = v2x_cmt_apply(fx->w, &b);
     if (rc_out) *rc_out = rc;
     if (rc == 0) fx->height = h;
     if (rc != 0)
@@ -3278,12 +3301,6 @@ static int test_rule_n_attendance_fault_stages(void) {
         CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_attendance WHERE "
                        "signed_count > 0") == 3,
               "FIXTURE GUARD: real attendance accumulated for all three");
-
-        /* the SAME reason test_faults() plants this before taking the
-         * entry digest: fx_block_inject seeds it lazily, and that INSERT
-         * autocommits OUTSIDE the block transaction, so digesting first
-         * would compare a pre-row snapshot against a post-row one. */
-        CHECK(seed_legacy_block(&fx, E - 1) == 0, "legacy lookback");
 
         uint8_t entry[64];
         CHECK(db_state_digest(fx.w, entry) == 0, "entry digest");
@@ -4416,7 +4433,8 @@ int main(void) {
      * counts across boundaries. tokenomics-v3 P2 deleted the per-block
      * mint, so every chain is quiet (the O15J `v2x_inflation_off` switch
      * is gone); the reward distribution pays nothing here because these
-     * fixtures reserve no reward pool (v2x_genesis_min seeds pool 0).
+     * fixtures reserve no reward pool (their seeded supply rows carry
+     * reward_pool 0).
      * The distribution and the payday are covered by test_v2_econ. */
     keys_init();
 

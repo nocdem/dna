@@ -11,25 +11,20 @@
  * REAL temporary SQLite database with REAL ML-DSA-87 keys; there is no
  * stand-in for anything this file is about.
  *
- * ── TWO FIXTURES, AND WHY ──────────────────────────────────────────────
+ * ── ONE FIXTURE ────────────────────────────────────────────────────────
  * `gfx_*` is a REAL VERSION-3 chain, derived by
  * `nodus_witness_v2_gen_derive_v3` exactly as test_v2_gen.c §10 derives
  * one and opened by hand (the production open path refuses a version-3
  * chain until W3 — nodus_witness_v2_gen.h's note on
- * `..._stored_chain_id`). The apply-lane, InitChain, Commit and bracket
- * cases run there.
- *
- * `fx_*` is a version-2 SUCCESSOR chain climbed to S14. It survives for
- * exactly TWO things the version-3 chain cannot prove, each named at its
- * case: `t_chain_id_row_branch_unchanged` (a chain that HAS a height-0
- * block row still derives its identity from that row — the branch of
- * `nodus_witness_v2_chain_id` the version-3 fallback must not disturb)
- * and the S12 half of `t_apply_entry_preconditions` (a chain below S14).
- * Every other case, the seam-backed rows included, now runs on the
- * version-3 chain: `nodus_witness_v2_chain_id` answers from the stored
- * genesis document when there is no block row
- * (nodus_witness_v2_claims.c:186-224), so the batch preflight, claim
+ * `..._stored_chain_id`). Every case runs there, the seam-backed rows
+ * included: `nodus_witness_v2_chain_id` answers from the stored genesis
+ * document (nodus_witness_v2_claims.c), so the batch preflight, claim
  * admission and the capacity seam all work there.
+ * tokenomics-v3 P4 deleted the second fixture (`fx_*`, a version-2
+ * successor built through the deleted legacy genesis) together with its
+ * last case, `t_chain_id_row_branch_unchanged`: that case pinned the
+ * height-0-block-row branch of `nodus_witness_v2_chain_id`, and that
+ * branch is deleted — nothing writes a height-0 v2_blocks row any more.
  *
  * ── WHAT IT REQUIRES ───────────────────────────────────────────────────
  * Compile flags: none beyond a default build (no QGP_FAULT_INJECT — the
@@ -180,7 +175,6 @@
 #include "dnac/cmt_pb_store.h"
 
 #include "dnac/manifest_wire.h"          /* dna_claim_t, the dist helpers */
-#include "dnac/block_v2.h"               /* dna_bh2_derive_chain_id       */
 
 #include "../tests/v2_genesis_fixture.h"
 #include "../tests/v2_exec_fixture.h"    /* the SCRIPTED runtime table:
@@ -754,127 +748,6 @@ static void gfx_close(gfx_t *g)
     g->srv = NULL;
     cfg_free(&g->box);
     rmrf(g->dir);
-}
-
-/* ══ FIXTURE B — a version-2 successor chain at S14 ══════════════════
- * tokenomics-v3 P4: used by ONE case only, t_chain_id_row_branch_
- * unchanged, whose subject is the height-0-row branch of
- * nodus_witness_v2_chain_id (nodus_witness_v2_claims.c) — a branch of the
- * deleted version-2 genesis that stays in the tree until claims.c is in
- * a package's whitelist (OBLIGATION atlas-dec-71525f3b names it). Every
- * other case that borrowed this fixture now runs on gfx_open. */
-
-typedef struct {
-    nodus_witness_t *w;
-    nodus_server_t  *srv;
-    char             dir[128];
-    uint8_t          chain_id[DNA_CHAIN_ID_LEN];
-    uint8_t          genesis_id[64];
-} fixture_t;
-
-static int seed_validators(fixture_t *fx)
-{
-    int i, b;
-
-    for (i = 0; i < N_KEYS; i++) {
-        dnac_validator_record_t v;
-        uint8_t fpr[64];
-
-        memset(&v, 0, sizeof(v));
-        memcpy(v.pubkey, g_ks[i].pk, DNAC_PUBKEY_SIZE);
-        v.self_stake         = 0;
-        v.status             = DNAC_VALIDATOR_ACTIVE;
-        v.active_since_block = 1;
-        if (qgp_sha3_512(g_ks[i].pk, DNAC_PUBKEY_SIZE, fpr) != 0) {
-            return -1;
-        }
-        {
-            static const char hexd[] = "0123456789abcdef";
-
-            for (b = 0; b < 64; b++) {
-                v.unstake_destination_fp[2 * b]     = hexd[fpr[b] >> 4];
-                v.unstake_destination_fp[2 * b + 1] = hexd[fpr[b] & 0xF];
-            }
-        }
-        v.unstake_destination_fp[128] = '\0';
-        if (nodus_validator_insert(fx->w, &v) != 0) {
-            return -1;
-        }
-    }
-    return 0;
-}
-
-/* test_v2_produce.c:149-192's shape (that file is deleted with the
- * closed consensus lane, R3 W4), then the S14 rung. ORDER IS
- * LOAD-BEARING: the V2 genesis runs at S9 (the engine's genesis gate
- * accepts S9-S12) and the S9 rung REFUSES a populated v2_blocks, so the
- * climb to S14 comes after. */
-static int fx_open(fixture_t *fx, const char *tag)
-{
-    uint8_t cid16[16];
-    uint8_t vset[64];
-
-    memset(fx, 0, sizeof(*fx));
-    fx->w   = calloc(1, sizeof(*fx->w));
-    fx->srv = calloc(1, sizeof(*fx->srv));
-    if (!fx->w || !fx->srv) {
-        return -1;
-    }
-    fx->w->cached_committee_epoch_start = UINT64_MAX;
-    snprintf(fx->dir, sizeof(fx->dir), "/tmp/test_cmt_app_%s_XXXXXX", tag);
-    if (!mkdtemp(fx->dir)) {
-        return -1;
-    }
-    snprintf(fx->w->data_path, sizeof(fx->w->data_path), "%s", fx->dir);
-    memset(cid16, 0x5D, sizeof(cid16));
-    if (nodus_witness_create_chain_db(fx->w, cid16) != 0 ||
-        nodus_chain_config_db_migrate(fx->w) != 0 ||
-        nodus_witness_db_migrate_v2s9(fx->w) != 0) {
-        return -1;
-    }
-    if (run_sql(fx->w->db,
-            "INSERT INTO supply_tracking (id, genesis_supply, total_burned,"
-            " total_minted, current_supply, last_tx_hash, last_sequence) "
-            "VALUES (1, 0, 0, 0, 0, zeroblob(64), 0)") != 0) {
-        return -1;
-    }
-    if (seed_validators(fx) != 0 ||
-        nodus_witness_vset_commit_genesis(fx->w, 1) != 0) {
-        return -1;
-    }
-    memset(vset, 0x77, sizeof(vset));
-    if (v2x_genesis_min(fx->w, vset, fx->genesis_id, NULL) != 0 ||
-        nodus_witness_v2_chain_id(fx->w, fx->chain_id) != 0) {
-        return -1;
-    }
-    memcpy(fx->srv->identity.pk.bytes, g_ks[0].pk, NODUS_PK_BYTES);
-    memcpy(fx->srv->identity.sk.bytes, g_ks[0].sk, QGP_DSA87_SECRETKEYBYTES);
-    memcpy(fx->srv->identity.node_id.bytes, g_ks[0].voter, 32);
-    fx->w->server = fx->srv;
-    memcpy(fx->w->my_id, g_ks[0].voter, 32);
-    fx->w->v2_successor = true;
-    memcpy(fx->w->v2_chain32, fx->chain_id, 32);
-    fx->w->v2_ingress_armed = true;
-    /* tokenomics-v3 P2: the cometbft lane's schema gate moved S15 -> S16
-     * (nodus_witness_v2_apply.c); the fixture climbs to the live rung. */
-    if (nodus_witness_db_migrate_v2s16(fx->w) != 0) {
-        return -1;
-    }
-    return 0;
-}
-
-static void fx_close(fixture_t *fx)
-{
-    if (fx->w) {
-        if (fx->w->db) {
-            sqlite3_close(fx->w->db);
-        }
-        free(fx->w);
-        fx->w = NULL;
-    }
-    free(fx->srv);
-    fx->srv = NULL;
-    rmrf(fx->dir);
 }
 
 /* ══ a REAL chain_config envelope — test_v2_produce.c:256-410's shape
@@ -1960,7 +1833,8 @@ static int t_per_item_failure(void)
     return 0;
 }
 
-/** The Comet apply entry refuses outside a transaction, and at S12. */
+/** The Comet apply entry refuses outside a transaction, at S12, and a
+ *  block that does not set `cmt.on` (the deleted legacy lane). */
 static int t_apply_entry_preconditions(void)
 {
     gfx_t             g;
@@ -2000,8 +1874,41 @@ static int t_apply_entry_preconditions(void)
           "the Comet entry refuses at S12");
     CHECK(strstr(blk->out_reason, "schema version") != NULL, "and says so");
     CHECK(run_sql(g.w->db, "ROLLBACK") == 0, "clean up");
-    free(blk);
     gfx_close(&g);
+
+    /* tokenomics-v3 P4: a block WITHOUT `cmt.on` asks for the deleted
+     * legacy lane. The entry refuses it as a node FAULT, judges nothing
+     * and writes nothing — on an otherwise perfectly applicable block
+     * (a real version-3 chain at S16, inside a host transaction, the
+     * result array sized), so the missing flag is the ONLY thing wrong.
+     * RED ON THE PRE-P4 TREE (the reason assertion): the legacy lane's
+     * own S9-S12 schema gate refused this S16 chain first, with a
+     * schema reason — a refusal incidental to the missing flag, which
+     * nothing named. */
+    {
+        uint8_t d0[64], d1[64];
+
+        CHECK(gfx_open(&g, "pre_nocmt") == 0, "version-3 fixture");
+        CHECK(v2x_db_digest(g.w, d0) == 0, "digest before");
+        CHECK(run_sql(g.w->db, "BEGIN IMMEDIATE") == 0,
+              "a host transaction");
+        memset(blk, 0, sizeof(*blk));
+        blk->global_height = 1;
+        blk->epoch = nodus_v2_epoch_for_height(1);
+        blk->cmt.results = results;
+        blk->cmt.results_cap = 4;        /* everything but `cmt.on`      */
+        CHECK(nodus_witness_v2_apply_block(g.w, blk) ==
+                  NODUS_V2_INTERNAL_FAULT,
+              "a block without cmt.on is refused as a node FAULT");
+        CHECK(strstr(blk->out_reason, "legacy (non-cometbft) block lane "
+                                      "is deleted") != NULL,
+              "and says why");
+        CHECK(run_sql(g.w->db, "ROLLBACK") == 0, "clean up");
+        CHECK(v2x_db_digest(g.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
+              "nothing was written");
+        gfx_close(&g);
+    }
+    free(blk);
     return 0;
 }
 
@@ -3572,8 +3479,9 @@ static int t_check_tx(void)
     cmt_genesis_validator_t     gvals[DNAC_COMMITTEE_SIZE];
 
     /* On the VERSION-3 chain: the seam reaches
-     * `nodus_witness_v2_chain_id`, which now answers from the stored
-     * genesis document when there is no height-0 block row. */
+     * `nodus_witness_v2_chain_id`, which answers from the stored
+     * genesis document (the chain's only identity since tokenomics-v3
+     * P4 deleted the height-0 block-row branch). */
     CHECK(gfx_open(&g, "checktx") == 0, "version-3 fixture");
     app = calloc(1, sizeof(*app));
     CHECK(app != NULL, "alloc");
@@ -3623,33 +3531,6 @@ static int t_check_tx(void)
     free(env.bytes);
     free(app);
     gfx_close(&g);
-    return 0;
-}
-
-/**
- * The OTHER branch of the same function: a chain that HAS a height-0
- * block row still derives its identity from that row, byte-for-byte as
- * before the version-3 fallback was added
- * (nodus_witness_v2_claims.c:186-224). This is the one case that must
- * run on the version-2 fixture — the version-3 chain has no such row,
- * so it cannot exercise this path at all.
- */
-static int t_chain_id_row_branch_unchanged(void)
-{
-    fixture_t fx;
-    uint8_t   from_row[DNA_CHAIN_ID_LEN];
-    uint8_t   derived[DNA_CHAIN_ID_LEN];
-
-    CHECK(fx_open(&fx, "chainid") == 0, "version-2 fixture");
-    CHECK(q1(fx.w->db, "SELECT COUNT(*) FROM v2_blocks "
-                       "WHERE global_height = 0") == 1,
-          "this chain HAS a height-0 block row");
-    CHECK(nodus_witness_v2_chain_id(fx.w, from_row) == 0, "it answers");
-    CHECK(dna_bh2_derive_chain_id(fx.genesis_id, derived) == 0, "derive");
-    CHECK(memcmp(from_row, derived, DNA_CHAIN_ID_LEN) == 0,
-          "and the answer is still the genesis block id's derivation, "
-          "not the stored document's");
-    fx_close(&fx);
     return 0;
 }
 
@@ -4635,7 +4516,6 @@ int main(void)
         { "claim_items",                t_claim_items },
         { "claim_local_fault_is_block_fault", t_claim_local_fault_is_block_fault },
         { "check_tx",                   t_check_tx },
-        { "chain_id_row_branch",        t_chain_id_row_branch_unchanged },
         { "prepare_proposal",           t_prepare_proposal },
         { "prepare_fee_order",          t_prepare_fee_order },
         { "process_proposal",           t_process_proposal },

@@ -69,8 +69,9 @@
  * close; a case that aborts through CHECK leaves its directory behind.
  * ── HOW IT CAN LIE ─────────────────────────────────────────────────────
  *  1. §5 calls the payday DIRECTLY, not through a block: the fixture
- *     lane's payout interval (24 epochs, no genesis document) is out of
- *     reach; the harness scenario test_v2_rewards.sh covers the payday
+ *     chain's payout interval (24 epochs, its seeded genesis document's
+ *     default) is out of reach; the harness scenario
+ *     test_v2_rewards.sh covers the payday
  *     end to end (interval 2). §3b's mid-epoch withdrawal and §3's
  *     source-copy swap are written BY HAND between blocks (the fixture
  *     lane cannot sign an UNDELEGATE envelope): the withdrawal moves the
@@ -258,8 +259,6 @@ static uint64_t copy_of(nodus_witness_t *w, uint64_t epoch, int vkey,
     return v;
 }
 
-static void mk_id(uint8_t out[64], uint8_t fill) { memset(out, fill, 64); }
-
 /* floor(a × b / d) with a 128-bit intermediate — the in-test re-derivation
  * of the formula (qgp_u128 is the shared arithmetic library, not the code
  * under test). */
@@ -330,32 +329,22 @@ static int seed_utxo(fixture_t *fx, int k, uint64_t amount,
     return rc == SQLITE_DONE ? 0 : -1;
 }
 
-/* nodus_committee_compute_for_epoch reads the LEGACY `blocks` row at
- * e_start - E - 1 for its state_seed tiebreak; a pure-V2 chain writes no
- * such rows, so the fixture plants the one the source path needs with a
- * FIXED state_root, identical in every fixture so twins agree (the
- * test_v2_epoch.c shape). */
-static int seed_legacy_block(fixture_t *fx, uint64_t height) {
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(fx->w->db,
-            "INSERT OR IGNORE INTO blocks (height, tx_root, tx_count, "
-            "timestamp, proposer_id, prev_hash, state_root, created_at) "
-            "VALUES (?1, zeroblob(64), 0, 0, zeroblob(32), zeroblob(64), "
-            "?2, 0)", -1, &st, NULL) != SQLITE_OK)
-        return -1;
-    uint8_t sr[64];
-    memset(sr, 0x5A, sizeof(sr));
-    sqlite3_bind_int64(st, 1, (sqlite3_int64)height);
-    sqlite3_bind_blob(st, 2, sr, 64, SQLITE_TRANSIENT);
-    int rc = sqlite3_step(st);
-    sqlite3_finalize(st);
-    return rc == SQLITE_DONE ? 0 : -1;
-}
-
 /* Stage 1: DB + schema + consensus-table seed (validators, delegations,
  * the supply row WITH the reward reserve, one UTXO) + the genesis vset
  * snapshots. Stops BEFORE the V2 genesis so the engine genesis writes
- * copy(0) over exactly these rows. */
+ * copy(0) over exactly these rows.
+ *
+ * tokenomics-v3 P4: the two stages ARE the seeded version-3 genesis
+ * (v2_genesis_fixture.h): stage 1 opens with v2x_seed_prepare (live
+ * rung S16, v2_successor, the econ band committed at effective 0 with
+ * this build's values), stage 2 is v2x_seed_genesis (registry, the
+ * engine genesis nodus_witness_v2_genesis_cmt, the stored document, the
+ * reopen through the production open path). Every block then goes
+ * through the cometbft lane with the test as the host (v2x_cmt_apply),
+ * whose Comet block-store record per block is what the boundary's
+ * committee seed reads at the lookback height (committee.c
+ * v2_seed_block_id) — the legacy `blocks` row this fixture used to
+ * plant is gone with the lane that read it. */
 static int fx_stage1(fixture_t *fx, const char *tag,
                      const vspec_t *specs, size_t n_spec,
                      const dspec_t *dels, size_t n_del) {
@@ -369,9 +358,7 @@ static int fx_stage1(fixture_t *fx, const char *tag,
     if (!mkdtemp(fx->dir)) { free(fx->w); fx->w = NULL; return -1; }
     snprintf(fx->w->data_path, sizeof(fx->w->data_path), "%s", fx->dir);
     memset(fx->chain_id16, 0x4E, sizeof(fx->chain_id16));
-    if (nodus_witness_create_chain_db(fx->w, fx->chain_id16) != 0) return -1;
-    if (nodus_chain_config_db_migrate(fx->w) != 0) return -1;
-    if (nodus_witness_db_migrate_v2s9(fx->w) != 0) return -1;
+    if (v2x_seed_prepare(fx->w, fx->chain_id16, 0) != 0) return -1;
 
     uint64_t bonds = 0, delegated_total = 0;
     for (size_t i = 0; i < n_spec; i++) {
@@ -429,9 +416,12 @@ static int fx_stage1(fixture_t *fx, const char *tag,
 }
 
 static int fx_stage2(fixture_t *fx) {
-    uint8_t vset[64];
-    mk_id(vset, 0x77);
-    if (v2x_genesis_min(fx->w, vset, NULL, NULL) != 0) return -1;
+    /* not a real genesis: stage 1 seeds a spendable UTXO_A row (and
+     * genesis delegations and a reward pool, which the derivation's
+     * post-conditions do not name) */
+    v2x_seed_not_real(V2X_SEED_NOT_REAL_UTXOS);
+    if (v2x_seed_genesis(fx->w, fx->chain_id16, 0, NULL, 0, NULL) != 0)
+        return -1;
     if (nodus_witness_v2_chain_id(fx->w, fx->chain_id) != 0) return -1;
     fx->height = 0;
     return 0;
@@ -451,10 +441,13 @@ static void fx_close(fixture_t *fx) {
  * key i) — the real attendance writer's input, exactly as the app copies
  * it from an ABCI request (nodus_witness_v2_attendance_credit). Height 1
  * carries no previous commit (execution.go's precondition). */
+/* the last block fx_block_mask handed the engine — read back only for
+ * its out_reason (the refusal class the body labelled it with) */
+static nodus_v2_block_t g_last_block;
+
 static int fx_block_mask(fixture_t *fx, unsigned voter_mask,
                          nodus_v2_apply_fail_t fail_at, int *rc_out) {
     uint64_t h = fx->height + 1;
-    if (h % E == 0 && seed_legacy_block(fx, h - 1) != 0) return -1;
     nodus_v2_block_t b;
     memset(&b, 0, sizeof(b));
     b.global_height = h;
@@ -478,8 +471,11 @@ static int fx_block_mask(fixture_t *fx, unsigned voter_mask,
             b.cmt.votes_len = n;
         }
     }
-    int rc = nodus_witness_v2_apply_block(fx->w, &b);
+    /* the cometbft lane, the test as the host: 0 committed,
+     * NODUS_V2_INTERNAL_FAULT rolled back */
+    int rc = v2x_cmt_apply(fx->w, &b);
     if (rc_out) *rc_out = rc;
+    g_last_block = b;                  /* the refusal class + reason     */
     if (rc == 0) fx->height = h;
     if (rc != 0 && fail_at == V2AP_FAIL_NONE)
         fprintf(stderr, "block %llu rejected (rc=%d): %s\n",
@@ -501,14 +497,17 @@ static int fx_block_inject(fixture_t *fx, unsigned voter_mask,
                            nodus_v2_apply_fail_t pt, int *rc_out) {
     uint8_t d0[64], d1[64];
     if (fx->height + 1 == 0) return -1;
-    if ((fx->height + 1) % E == 0 &&
-        seed_legacy_block(fx, fx->height) != 0)
-        return -1;
     if (v2x_db_digest(fx->w, d0) != 0) return -1;
     int rc = 0;
     (void)fx_block_mask(fx, voter_mask, pt, &rc);
     if (rc_out) *rc_out = rc;
-    if (rc != -1 && rc != -2) return -1;     /* the point did not fire */
+    /* every boundary-stage failure is a node FAULT in the cometbft lane
+     * (the wrapper folds every body return into it) */
+    if (rc != NODUS_V2_INTERNAL_FAULT) return -1;   /* did not fire */
+    /* and the body labelled it a boundary NODE FAULT (phase 6e), never
+     * a verdict — the class the fold would otherwise hide */
+    if (v2x_reason_is(&g_last_block, V2X_FAULT, "phase 6e") != 0)
+        return -1;
     if (v2x_db_digest(fx->w, d1) != 0) return -1;
     return memcmp(d0, d1, 64) == 0 ? 0 : -1;
 }
@@ -1460,38 +1459,23 @@ static int t_partial_withdraw_topup(void) {
  * §3e the econ band's decimal_unit refusal
  * ════════════════════════════════════════════════════════════════════ */
 
-/* The fixture lane commits no econ band (present == 0), so the three
- * band rows are written here, with THIS build's values, exactly as the
- * version-3 genesis commits them (param 200/201/202, effective_block 0 —
- * nodus_chain_config.h NODUS_CC_ECON_*). Then decimal_unit alone is
- * changed to a value this build did not compile.
+/* Stage 1 commits the three band rows with THIS build's values, exactly
+ * as the version-3 genesis commits them (param 200/201/202,
+ * effective_block 0 — nodus_chain_config.h NODUS_CC_ECON_*; the fixture's
+ * v2x_seed_prepare). Then decimal_unit alone is changed to a value this
+ * build did not compile.
  * RED ON THE PRE-FIX TREE: the loader refused only epoch_length and
  * returned 0 with present == 1 and decimal_unit == 10 × the compiled one.
  * KILLED BY: deleting the decimal_unit refusal; returning -1 without
  * zeroing the struct. */
 static int t_econ_params_decimal_unit(void) {
     fixture_t fx;
+    /* tokenomics-v3 P4: the band is committed by stage 1 itself
+     * (v2x_seed_prepare writes the three rows at
+     * NODUS_CC_ECON_EFFECTIVE_BLOCK with this build's values, as the
+     * genesis derivation does) — the explicit INSERT this case used to
+     * make would now collide with it */
     CHECK(fx_stage1(&fx, "dunit", SPECD, 3, DELS, 2) == 0, "stage1");
-    {
-        char sql[512];
-        snprintf(sql, sizeof(sql),
-                 "INSERT INTO chain_config_history (param_id, new_value, "
-                 "effective_block, commit_block, tx_hash, proposal_nonce, "
-                 "created_at_unix) VALUES "
-                 "(%u, %llu, %llu, 0, zeroblob(64), 0, 0), "
-                 "(%u, %llu, %llu, 0, zeroblob(64), 0, 0), "
-                 "(%u, %llu, %llu, 0, zeroblob(64), 0, 0)",
-                 (unsigned)NODUS_CC_ECON_BLOCKS_PER_YEAR,
-                 (unsigned long long)DNAC_BLOCKS_PER_YEAR,
-                 (unsigned long long)NODUS_CC_ECON_EFFECTIVE_BLOCK,
-                 (unsigned)NODUS_CC_ECON_DECIMAL_UNIT,
-                 (unsigned long long)DNAC_DECIMAL_UNIT,
-                 (unsigned long long)NODUS_CC_ECON_EFFECTIVE_BLOCK,
-                 (unsigned)NODUS_CC_ECON_EPOCH_LENGTH,
-                 (unsigned long long)DNAC_EPOCH_LENGTH,
-                 (unsigned long long)NODUS_CC_ECON_EFFECTIVE_BLOCK);
-        CHECK(run_sql(fx.w->db, sql) == 0, "commit the band");
-    }
     nodus_v2_econ_params_t p;
     CHECK(nodus_witness_v2_econ_params_load(fx.w, &p) == 0 &&
           p.present == 1 &&
@@ -1887,16 +1871,23 @@ static int t_payday(void) {
 }
 
 /* The interval reader's three answers (nodus_witness_v2_payout_
- * interval): a pre-document fixture chain → the default; the same chain
- * flagged as a version-3 successor → FAULT (a version-3 chain always
- * stores its document). The document path itself is the harness's
- * (test_v2_rewards.sh, STAGEF_PAYOUT_INTERVAL_EPOCHS=2) and
- * test_v2_gen's stored-document cases. */
+ * interval): a database with no document, not flagged a successor → the
+ * default; the same database flagged as a version-3 successor → FAULT (a
+ * version-3 chain always stores its document); the sealed chain → its
+ * stored document's interval. A non-default interval through a block is
+ * the harness's (test_v2_rewards.sh, STAGEF_PAYOUT_INTERVAL_EPOCHS=2)
+ * and test_v2_gen's stored-document cases. */
 static int t_payout_interval(void) {
     fixture_t fx;
+    /* tokenomics-v3 P4: the "no document" answers are read on the
+     * stage-1 database — BEFORE the seal stores the document — with the
+     * successor flag set each way; the third answer is the stored
+     * document's own interval after the seal. */
     CHECK(fx_stage1(&fx, "interval", SPECD, 3, DELS, 2) == 0, "stage1");
-    CHECK(fx_stage2(&fx) == 0, "stage2");
+    CHECK(nodus_witness_v2_gen_stored_doc_present(fx.w) == 0,
+          "FIXTURE GUARD: no document before the seal");
     uint64_t iv = 0;
+    fx.w->v2_successor = 0;
     CHECK(nodus_witness_v2_payout_interval(fx.w, &iv) == 0 &&
           iv == (uint64_t)NODUS_V2_GEN_PAYOUT_INTERVAL_EPOCHS_DEFAULT &&
           iv == 24,
@@ -1905,7 +1896,14 @@ static int t_payout_interval(void) {
     iv = 777;
     CHECK(nodus_witness_v2_payout_interval(fx.w, &iv) == -2 && iv == 777,
           "a version-3 successor with no document is a FAULT, not 24");
-    fx.w->v2_successor = 0;
+    OK();
+    CHECK(fx_stage2(&fx) == 0, "stage2");
+    CHECK(nodus_witness_v2_gen_stored_doc_present(fx.w) == 1,
+          "the seal stored the document");
+    iv = 0;
+    CHECK(nodus_witness_v2_payout_interval(fx.w, &iv) == 0 && iv == 24,
+          "a version-3 chain reads its document's interval (the "
+          "fixture document carries the default, 24)");
     OK();
     fx_close(&fx);
     return 0;

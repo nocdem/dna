@@ -23,12 +23,19 @@
  *      over-plan, and a later envelope OBSERVING an earlier envelope's
  *      canonical mutation inside the same block transaction.
  *   6. hostile runtime results: garbage bytes, unknown effect op,
- *      precondition failure, actual-over-declared effects, duplicate
- *      derived tx ids — all VERDICTS (-1); rogue adapter statuses and
- *      storage faults — NODE FAULTS (-2). Both leave the database
- *      byte-identical (digest-proven).
+ *      precondition failure, actual-over-declared effects — each an
+ *      ITEM refusal (code EXEC) in a block that still commits, the
+ *      ledger byte-identical (digest-proven); a duplicate derived tx id
+ *      in one block — the second copy refused as a REPLAY; rogue
+ *      adapter statuses and storage faults — NODE FAULTS
+ *      (NODUS_V2_INTERNAL_FAULT), the whole database byte-identical.
  *   7. determinism: twin fixtures running the same sequence land on
  *      byte-identical roots; a restart reproduces them.
+ *
+ * Every chain is a real version-3 chain and every block goes through
+ * the cometbft lane (tokenomics-v3 P4 — v2_genesis_fixture.h's
+ * v2x_chain_open / v2x_cmt_apply): the lane's truth table is "the block
+ * commits, each item carries its own code" or "node FAULT".
  *
  * @file test_v2_exec.c
  */
@@ -49,7 +56,6 @@
 #include "v2_exec_fixture.h"
 #include "v2_genesis_fixture.h"
 
-#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -68,67 +74,35 @@
 static int g_checks = 0;
 #define OK() do { g_checks++; } while (0)
 
-/* ── fixture (the test_v2_apply shape) ─────────────────────────────── */
-static void rmrf(const char *path) {
-    DIR *d = opendir(path);
-    if (d) {
-        struct dirent *ent;
-        while ((ent = readdir(d)) != NULL) {
-            if (strcmp(ent->d_name, ".") == 0 ||
-                strcmp(ent->d_name, "..") == 0) continue;
-            char child[1024];
-            snprintf(child, sizeof(child), "%s/%s", path, ent->d_name);
-            struct stat st;
-            if (lstat(child, &st) == 0) {
-                if (S_ISDIR(st.st_mode)) rmrf(child);
-                else (void)unlink(child);
-            }
-        }
-        closedir(d);
-        (void)rmdir(path);
-    } else {
-        (void)unlink(path);
-    }
-}
-
+/* ── fixture ───────────────────────────────────────────────────────────
+ * tokenomics-v3 P4: a REAL version-3 chain (v2x_chain_open — the
+ * ceremony's derivation + the production open path), with the scripted
+ * test runtimes installed after the open. The scripted entries are
+ * builtin copies (same five-axis tuple, same state_init / state_root /
+ * invariant hooks — v2_exec_fixture.h), so the genesis the ceremony
+ * committed with the builtin table is the genesis they resolve. Blocks
+ * are applied through the cometbft lane (v2x_cmt_apply — the one lane
+ * nodus_witness_v2_apply_block has a production caller for). */
 typedef struct {
     nodus_witness_t *w;
-    char             dir[256];
-    uint8_t          chain_id16[16];
+    v2x_chain_t      c;                 /* owns w, the directory, the id */
 } fixture_t;
-
-static int fx_open(fixture_t *fx) {
-    fx->w = calloc(1, sizeof(*fx->w));
-    if (!fx->w) return -1;
-    snprintf(fx->dir, sizeof(fx->dir), "/tmp/test_v2_exec_XXXXXX");
-    if (!mkdtemp(fx->dir)) { free(fx->w); fx->w = NULL; return -1; }
-    snprintf(fx->w->data_path, sizeof(fx->w->data_path), "%s", fx->dir);
-    memset(fx->chain_id16, 0x44, sizeof(fx->chain_id16));
-    if (nodus_witness_create_chain_db(fx->w, fx->chain_id16) != 0) {
-        rmrf(fx->dir); free(fx->w); fx->w = NULL;
-        return -1;
-    }
-    nodus_chain_config_db_migrate(fx->w);
-    return 0;
-}
 
 static int fx_reopen(fixture_t *fx) {
     const nodus_domain_runtime_t *tbl = fx->w->v2_runtime_table;
     size_t tbl_n = fx->w->v2_runtime_table_n;
     sqlite3_close(fx->w->db);
     fx->w->db = NULL;
-    int rc = nodus_witness_create_chain_db(fx->w, fx->chain_id16);
+    /* the derived chain's file is named from chain_id[0..15] */
+    int rc = nodus_witness_create_chain_db(fx->w, fx->c.chain32);
     fx->w->v2_runtime_table = tbl;
     fx->w->v2_runtime_table_n = tbl_n;
     return rc;
 }
 
 static void fx_close(fixture_t *fx) {
-    if (!fx->w) return;
-    if (fx->w->db) { sqlite3_close(fx->w->db); fx->w->db = NULL; }
-    free(fx->w);
+    v2x_chain_close(&fx->c);
     fx->w = NULL;
-    rmrf(fx->dir);
 }
 
 static int run_sql(sqlite3 *db, const char *sql) {
@@ -141,77 +115,11 @@ static int run_sql(sqlite3 *db, const char *sql) {
     return 0;
 }
 
-/* full-DB digest (the rollback oracle — test_v2_apply's shape) */
-typedef struct { uint8_t *buf; size_t len, cap; } dyn_t;
-
-static int dyn_put(dyn_t *d, const void *p, size_t n) {
-    if (d->len + n > d->cap) {
-        size_t nc = d->cap ? d->cap * 2 : 65536;
-        while (nc < d->len + n) nc *= 2;
-        uint8_t *nb = realloc(d->buf, nc);
-        if (!nb) return -1;
-        d->buf = nb; d->cap = nc;
-    }
-    memcpy(d->buf + d->len, p, n);
-    d->len += n;
-    return 0;
-}
-
-static int db_state_digest(nodus_witness_t *w, uint8_t out[64]) {
-    sqlite3_stmt *ts = NULL;
-    if (sqlite3_prepare_v2(w->db,
-            "SELECT name FROM sqlite_master WHERE type='table' AND "
-            "name NOT LIKE 'sqlite_%' ORDER BY name", -1, &ts, NULL)
-        != SQLITE_OK)
-        return -1;
-    dyn_t d = { 0 };
-    int rc, out_rc = -1;
-    while ((rc = sqlite3_step(ts)) == SQLITE_ROW) {
-        const char *name = (const char *)sqlite3_column_text(ts, 0);
-        if (dyn_put(&d, name, strlen(name) + 1) != 0) goto done;
-        char sql[256];
-        snprintf(sql, sizeof(sql), "SELECT * FROM \"%s\" ORDER BY rowid",
-                 name);
-        sqlite3_stmt *rs = NULL;
-        if (sqlite3_prepare_v2(w->db, sql, -1, &rs, NULL) != SQLITE_OK)
-            goto done;
-        int rrc;
-        while ((rrc = sqlite3_step(rs)) == SQLITE_ROW) {
-            int nc = sqlite3_column_count(rs);
-            for (int c = 0; c < nc; c++) {
-                uint8_t t = (uint8_t)sqlite3_column_type(rs, c);
-                if (dyn_put(&d, &t, 1) != 0) { sqlite3_finalize(rs); goto done; }
-                if (t == SQLITE_NULL) continue;
-                const void *b = sqlite3_column_blob(rs, c);
-                int bl = sqlite3_column_bytes(rs, c);
-                uint32_t bl32 = (uint32_t)bl;
-                if (dyn_put(&d, &bl32, 4) != 0 ||
-                    (bl > 0 && dyn_put(&d, b, (size_t)bl) != 0)) {
-                    sqlite3_finalize(rs);
-                    goto done;
-                }
-            }
-        }
-        sqlite3_finalize(rs);
-        if (rrc != SQLITE_DONE) goto done;
-    }
-    if (rc != SQLITE_DONE) goto done;
-    out_rc = qgp_sha3_512(d.buf ? d.buf : (const uint8_t *)"", d.len, out)
-                 == 0 ? 0 : -1;
-done:
-    sqlite3_finalize(ts);
-    free(d.buf);
-    return out_rc;
-}
-
-static void mk_id(uint8_t out[64], uint8_t fill) { memset(out, fill, 64); }
-
 static void mk_block(nodus_v2_block_t *b, uint64_t h,
                      const nodus_v2_envelope_t *envs, size_t n) {
     memset(b, 0, sizeof(*b));
     b->global_height = h;
     b->epoch = nodus_v2_epoch_for_height(h);
-    /* O14 leader mode: identity is DERIVED, never carried. */
     b->envs = envs;
     b->n_envs = n;
 }
@@ -227,27 +135,14 @@ static uint64_t q1(nodus_witness_t *w, const char *sql) {
     return v;
 }
 
-/* reject with digest proof; accepts BOTH classes but returns which */
-static int apply_reject(nodus_witness_t *w, nodus_v2_block_t *b,
-                        int *rc_out) {
-    uint8_t d0[64], d1[64];
-    if (db_state_digest(w, d0) != 0) return 1;
-    int rc = nodus_witness_v2_apply_block(w, b);
-    if (rc_out) *rc_out = rc;
-    if (rc != -1 && rc != -2) return 1;
-    if (db_state_digest(w, d1) != 0) return 1;
-    return memcmp(d0, d1, 64) != 0;
-}
-
-/* shared genesis: migrate + scripted table + v2 genesis */
+/* shared genesis: the ceremony's version-3 chain + the scripted table.
+ * Every fixture opens the SAME config (salt 0), so twin fixtures are the
+ * same chain byte for byte. */
 static int fx_genesis(fixture_t *fx) {
-    if (fx_open(fx) != 0) return -1;
-    if (nodus_witness_db_migrate_v2s9(fx->w) != 0) return -1;
-    if (v2x_table_init(fx->w) != 0) return -1;
-    uint8_t vset[64];
-    mk_id(vset, 0x77);
-    /* O14: the genesis BlockID is DERIVED by the engine, not chosen. */
-    return v2x_genesis_min(fx->w, vset, NULL, NULL);
+    memset(fx, 0, sizeof(*fx));
+    if (v2x_chain_open(&fx->c, "exec", 0) != 0) return -1;
+    fx->w = fx->c.w;
+    return v2x_table_init(fx->w);
 }
 
 /* one CORE UTXO CREATE envelope with an arbitrary key byte + amount */
@@ -286,11 +181,13 @@ static int test_epoch(void) {
     nodus_v2_block_t b;
     mk_block(&b, 1, &v1, 1);
     b.epoch = 7;                        /* height 1 is epoch 0           */
-    int rc = 0;
-    CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+    /* cometbft lane: a block that lies about its own epoch is refused
+     * as a whole — a decided block is never refused, so the class is a
+     * node FAULT and the host rolls everything back (digest-proven). */
+    CHECK(v2x_cmt_fault_why(fx.w, &b, V2X_VERDICT, "declares epoch") == 0,
           "lying epoch accepted"); OK();
     mk_block(&b, 1, &v1, 1);            /* derived epoch: applies        */
-    CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+    CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
           "derived epoch rejected"); OK();
     fx_close(&fx);
     return 0;
@@ -346,7 +243,11 @@ static int test_resolution(void) {
     CHECK(env_utxo(&e1, 0x01, 5) == 0, "env");
     nodus_v2_envelope_t v1 = { e1.bytes, e1.len };
     nodus_v2_block_t b;
-    int rc;
+    uint32_t code;
+    /* cometbft lane: a block whose only item is refused still COMMITS
+     * (the item gets its code, the ledger does not move), so each
+     * refusal below consumes a height; a FAULT does not. */
+    uint64_t h = 1;
 
     /* unregistered domain: a leg addressing domain 99 has no ruleset
      * entry in the snapshot — the caller cannot widen the table */
@@ -359,8 +260,9 @@ static int test_resolution(void) {
                        DNA_EFFECT_PRE_ABSENT, key, 64, val, 8) == 0,
               "e99");
         nodus_v2_envelope_t v99 = { e99.bytes, e99.len };
-        mk_block(&b, 1, &v99, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        mk_block(&b, h++, &v99, 1);
+        CHECK(v2x_cmt_refused(fx.w, &b, 0, &code) == 0 &&
+              code == NODUS_V2_TX_ERR_CONTEXT,
               "unregistered domain executed"); OK();
     }
 
@@ -405,8 +307,9 @@ static int test_resolution(void) {
         CHECK(dna_env_encode(&in, es.bytes, sizeof(es.bytes), &es.len)
                   == 0, "encode");
         nodus_v2_envelope_t vs = { es.bytes, es.len };
-        mk_block(&b, 1, &vs, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        mk_block(&b, h++, &vs, 1);
+        CHECK(v2x_cmt_refused(fx.w, &b, 0, &code) == 0 &&
+              code == NODUS_V2_TX_ERR_CONTEXT,
               "stale ruleset executed"); OK();
     }
 
@@ -437,8 +340,8 @@ static int test_resolution(void) {
         CHECK(sqlite3_step(st) == SQLITE_DONE, "update");
         sqlite3_finalize(st);
 
-        mk_block(&b, 1, &v1, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -2,
+        mk_block(&b, h, &v1, 1);        /* a FAULT consumes no height */
+        CHECK(v2x_cmt_fault_why(fx.w, &b, V2X_FAULT, "phase 0a") == 0,
               "hash-mismatched runtime resolved (must be a node FAULT)");
         OK();
 
@@ -458,16 +361,23 @@ static int test_resolution(void) {
         sqlite3_finalize(st);
     }
 
-    /* missing exec hook: the PRODUCTION builtin table has no execution
-     * surface — the same block fails closed as a VERDICT (the domain
-     * resolves, it just cannot execute envelope legs) */
+    /* the PRODUCTION builtin table under the scripted fixture's
+     * envelope: the domain resolves, but the builtin runtime's hooks are
+     * not the scripted ones (the builtin auth hook is
+     * nodus_rt_auth_dsa87_v1, nodus_witness_runtime.c:305/:353, and the
+     * fixture's legs carry a 1-byte stub authorization), so the item
+     * fails closed. The message and the old comment named an "exec-less"
+     * builtin table; the builtin table has carried exec hooks since the
+     * native-auth season (nodus_witness_runtime.c:312/:361), so what
+     * this pins is "the scripted envelope does not execute under the
+     * production runtime" — the refusal itself, not which stage. */
     {
         const nodus_domain_runtime_t *tbl = fx.w->v2_runtime_table;
         size_t n = fx.w->v2_runtime_table_n;
         fx.w->v2_runtime_table = NULL;   /* builtin table               */
         fx.w->v2_runtime_table_n = 0;
-        mk_block(&b, 1, &v1, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        mk_block(&b, h++, &v1, 1);
+        CHECK(v2x_cmt_refused(fx.w, &b, 0, NULL) == 0,
               "exec-less runtime executed"); OK();
         fx.w->v2_runtime_table = tbl;
         fx.w->v2_runtime_table_n = n;
@@ -488,7 +398,10 @@ static int test_resolution(void) {
         memset(&leg, 0, sizeof(leg));
         leg.hdr.domain_id = 1;
         leg.hdr.runtime_op = 1;
-        leg.hdr.ruleset_version = 1;
+        /* P4 fix round: the COMMITTED ruleset version (it named the
+         * retired version 1, so the item died at CONTEXT in preflight and
+         * the READ check below was never reached) */
+        leg.hdr.ruleset_version = v2x_ruleset_version_for(1);
         leg.hdr.access_mode = DNA_ENV_ACCESS_READ;
         leg.hdr.auth_kind = 1;
         leg.hdr.call_len = cl;
@@ -506,8 +419,12 @@ static int test_resolution(void) {
         CHECK(dna_env_encode(&in, er.bytes, sizeof(er.bytes), &er.len)
                   == 0, "encode");
         nodus_v2_envelope_t vr = { er.bytes, er.len };
-        mk_block(&b, 1, &vr, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        mk_block(&b, h++, &vr, 1);
+        uint32_t rcode = 0;
+        /* the access-mode rule is an ADMISSION refusal — pinned, so the
+         * item cannot pass by dying at any earlier stage */
+        CHECK(v2x_cmt_refused(fx.w, &b, 0, &rcode) == 0 &&
+              rcode == NODUS_V2_TX_ERR_ADMISSION,
               "READ leg executed"); OK();
     }
 
@@ -543,15 +460,19 @@ static int test_resolution(void) {
                        DNA_EFFECT_PRE_ABSENT, key, 64, val, 8) == 0,
               "eo");
         nodus_v2_envelope_t vo = { eo.bytes, eo.len };
-        mk_block(&b, 1, &vo, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        mk_block(&b, h++, &vo, 1);
+        /* the cometbft lane's per-leg admission names the class: the
+         * ownership gate is an ADMISSION refusal
+         * (nodus_witness_v2_apply.c, the Comet item loop) */
+        CHECK(v2x_cmt_refused(fx.w, &b, 0, &code) == 0 &&
+              code == NODUS_V2_TX_ERR_ADMISSION,
               "unowned-but-priced runtime_op executed"); OK();
         fx.w->v2_runtime_table = g_v2x_table;  /* restore shared fx    */
         fx.w->v2_runtime_table_n = 2;
-        /* POSITIVE CONTROL on a FRESH fixture (keeps the shared fx
-         * uncommitted): the SAME op 2 on the UNSHRUNK CORE (op 2 IS
-         * owned) APPLIES — proving the reject above was the ownership
-         * gate, not some incidental earlier rejection. */
+        /* POSITIVE CONTROL on a FRESH fixture: the SAME op 2 on the
+         * UNSHRUNK CORE (op 2 IS owned) APPLIES — proving the reject
+         * above was the ownership gate, not some incidental earlier
+         * rejection. */
         fixture_t fp;
         CHECK(fx_genesis(&fp) == 0, "genesis P");
         static v2x_env_t eok;
@@ -561,7 +482,7 @@ static int test_resolution(void) {
         nodus_v2_envelope_t vok = { eok.bytes, eok.len };
         nodus_v2_block_t bp;
         mk_block(&bp, 1, &vok, 1);
-        CHECK(nodus_witness_v2_apply_block(fp.w, &bp) == 0,
+        CHECK(v2x_cmt_apply_ok(fp.w, &bp) == 0,
               "owned op rejected — the gate is over-broad"); OK();
         fx_close(&fp);
     }
@@ -569,8 +490,8 @@ static int test_resolution(void) {
     /* OVER-PLAN: a read_plan that emits MORE than NODUS_RT_MAX_READS
      * requests is rejected by the engine's post-plan count guard
      * (unreachable through the scripted fixture, which caps at build
-     * time — so this uses a dedicated hook). Reject on the shared fx,
-     * height 1, nothing committed. */
+     * time — so this uses a dedicated hook). Refused as an item on the
+     * shared fx; the ledger does not move. */
     {
         static nodus_domain_runtime_t op_tbl[2];
         memcpy(op_tbl, g_v2x_table, sizeof(op_tbl));
@@ -580,21 +501,35 @@ static int test_resolution(void) {
         static v2x_env_t eop;
         CHECK(env_utxo(&eop, 0x40, 1) == 0, "eop");
         nodus_v2_envelope_t vop = { eop.bytes, eop.len };
-        mk_block(&b, 1, &vop, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        mk_block(&b, h++, &vop, 1);
+        CHECK(v2x_cmt_refused(fx.w, &b, 0, &code) == 0 &&
+              code == NODUS_V2_TX_ERR_EXEC,
               "over-plan read list executed"); OK();
         fx.w->v2_runtime_table = g_v2x_table;
         fx.w->v2_runtime_table_n = 2;
     }
 
-    /* duplicate DERIVED identity: the same bytes twice in one block */
+    /* duplicate DERIVED identity: the same bytes twice in one block.
+     * cometbft lane: the block is decided, so it is not refused — the
+     * FIRST copy applies and the SECOND is refused as a REPLAY of the
+     * identity the first just wrote (the per-item replay guard reads
+     * the live index inside the block's transaction); the row the
+     * envelope creates exists exactly once. */
     {
         nodus_v2_envelope_t two[2] = {
             { e1.bytes, e1.len }, { e1.bytes, e1.len }
         };
-        mk_block(&b, 1, two, 2);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        mk_block(&b, h++, two, 2);
+        CHECK(v2x_cmt_apply(fx.w, &b) == 0 &&
+              b.cmt.results[0].code == NODUS_V2_TX_OK &&
+              b.cmt.results[1].code == NODUS_V2_TX_ERR_REPLAY,
               "duplicate derived tx_id accepted"); OK();
+        CHECK(q1(fx.w, "SELECT COUNT(*) FROM utxo_set WHERE "
+                       "nullifier=CAST(zeroblob(63)||x'01' AS BLOB)") == 1
+              && q1(fx.w, "SELECT COUNT(*) FROM v2_tx_index WHERE "
+                          "global_height = (SELECT MAX(global_height) "
+                          "FROM v2_blocks)") == 1,
+              "the duplicate's effects or index rows survived"); OK();
     }
     fx_close(&fx);
     return 0;
@@ -640,7 +575,7 @@ static int test_meter_authority(void) {
     nodus_v2_envelope_t v1 = { e1.bytes, e1.len };
     nodus_v2_block_t b;
     mk_block(&b, 1, &v1, 1);
-    CHECK(nodus_witness_v2_apply_block(fa.w, &b) == 0, "baseline");
+    CHECK(v2x_cmt_apply_ok(fa.w, &b) == 0, "baseline");
     uint8_t base_root[64];
     memcpy(base_root, b.out_global_root, 64);
     /* the committed consumed units: every weight is 1 and there are no
@@ -707,7 +642,7 @@ static int test_meter_authority(void) {
         fb.w->v2_runtime_table_n = 2;
         nodus_v2_block_t b2;
         mk_block(&b2, 1, &v1, 1);
-        CHECK(nodus_witness_v2_apply_block(fb.w, &b2) == 0, "decoy block");
+        CHECK(v2x_cmt_apply_ok(fb.w, &b2) == 0, "decoy block");
         CHECK(memcmp(b2.out_global_root, base_root, 64) == 0,
               "a leg-domain policy changed the committed root"); OK();
         sqlite3_stmt *st = NULL;
@@ -745,7 +680,7 @@ static int test_meter_authority(void) {
         fc.w->v2_runtime_table_n = 2;
         nodus_v2_block_t b3;
         mk_block(&b3, 1, &v1, 1);
-        CHECK(nodus_witness_v2_apply_block(fc.w, &b3) == 0,
+        CHECK(v2x_cmt_apply_ok(fc.w, &b3) == 0,
               "tx_cost hook leaked into the envelope lane");
         CHECK(memcmp(b3.out_global_root, base_root, 64) == 0,
               "tx_cost changed committed state"); OK();
@@ -766,9 +701,9 @@ static int test_meter_authority(void) {
         fd.w->v2_runtime_table = bad_tbl;
         fd.w->v2_runtime_table_n = 2;
         nodus_v2_block_t b4;
-        int rc;
         mk_block(&b4, 1, &v1, 1);
-        CHECK(apply_reject(fd.w, &b4, &rc) == 0 && rc == -2,
+        CHECK(v2x_cmt_fault_why(fd.w, &b4, V2X_FAULT, "block context")
+                  == 0,
               "same-identity different-weights was not a node fault");
         OK();
         /* corrupted seal (mutation after the snapshot was compiled) */
@@ -777,7 +712,8 @@ static int test_meter_authority(void) {
         mutated.w_read = 77;             /* weights moved, seal stale    */
         bad_tbl[0].meter_policy = &mutated;
         mk_block(&b4, 1, &v1, 1);
-        CHECK(apply_reject(fd.w, &b4, &rc) == 0 && rc == -2,
+        CHECK(v2x_cmt_fault_why(fd.w, &b4, V2X_FAULT, "block context")
+                  == 0,
               "mutated policy was not a node fault"); OK();
         fx_close(&fd);
     }
@@ -877,7 +813,7 @@ static int test_meter_authority(void) {
         nodus_v2_envelope_t vx = { ex.bytes, ex.len };
         nodus_v2_block_t bf;
         mk_block(&bf, 1, &vx, 1);
-        CHECK(nodus_witness_v2_apply_block(ff.w, &bf) == 0,
+        CHECK(v2x_cmt_apply_ok(ff.w, &bf) == 0,
               "global exact fit rejected"); OK();
         fx_close(&ff);
     }
@@ -1000,7 +936,12 @@ static int test_reads_and_hostile(void) {
     };
     nodus_v2_block_t b;
     mk_block(&b, 1, vab, 2);
-    CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0, "read chain");
+    CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0, "read chain");
+    /* cometbft lane: each refused block below still commits (the item
+     * gets its code, the ledger does not move) and consumes a height;
+     * the closing FAULT does not. */
+    uint64_t h = 2;
+    uint32_t code;
     CHECK(q1(fx.w, "SELECT amount FROM utxo_set WHERE "
                    "nullifier=CAST(zeroblob(63)||x'02' AS BLOB)") == 41 &&
           q1(fx.w, "SELECT amount FROM utxo_set WHERE "
@@ -1035,9 +976,10 @@ static int test_reads_and_hostile(void) {
     }
 
     /* duplicate reads reject; descending reads reject; over-plan
-     * rejects — all deterministic VERDICTS */
+     * rejects — all deterministic refusals, which the cometbft lane
+     * records as the item's EXEC code (exec_one_env's read-plan checks)
+     * while the block commits without it */
     {
-        int rc;
         nodus_rt_read_req_t rr[2];
         memset(rr, 0, sizeof(rr));
         rr[0].op_id = V2X_OP_UTXO;
@@ -1052,8 +994,9 @@ static int test_reads_and_hostile(void) {
         static v2x_env_t ed;
         CHECK(v2x_env_build(&ed, &leg, 1) == 0, "ed");
         nodus_v2_envelope_t vd = { ed.bytes, ed.len };
-        mk_block(&b, 2, &vd, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        mk_block(&b, h++, &vd, 1);
+        CHECK(v2x_cmt_refused(fx.w, &b, 0, &code) == 0 &&
+              code == NODUS_V2_TX_ERR_EXEC,
               "duplicate reads accepted"); OK();
         /* descending */
         rr[0].key[63] = 0x02;
@@ -1064,15 +1007,18 @@ static int test_reads_and_hostile(void) {
         static v2x_env_t ee;
         CHECK(v2x_env_build(&ee, &leg2, 1) == 0, "ee");
         nodus_v2_envelope_t ve = { ee.bytes, ee.len };
-        mk_block(&b, 2, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        mk_block(&b, h++, &ve, 1);
+        CHECK(v2x_cmt_refused(fx.w, &b, 0, &code) == 0 &&
+              code == NODUS_V2_TX_ERR_EXEC,
               "descending reads accepted"); OK();
     }
 
-    /* hostile results (scripted table again) */
+    /* hostile results (scripted table again). Refusals inside
+     * exec_one_env are the item's EXEC code; a rogue adapter STATUS is
+     * a node FAULT (-2 from exec_one_env), which the lane never turns
+     * into an item code. */
     fx.w->v2_runtime_table = g_v2x_table;
     fx.w->v2_runtime_table_n = 2;
-    int rc;
     {   /* garbage result bytes */
         static nodus_domain_runtime_t g_tbl[2];
         memcpy(g_tbl, g_v2x_table, sizeof(g_tbl));
@@ -1081,16 +1027,17 @@ static int test_reads_and_hostile(void) {
         static v2x_env_t eg;
         CHECK(env_utxo(&eg, 0x20, 1) == 0, "eg");
         nodus_v2_envelope_t vg = { eg.bytes, eg.len };
-        mk_block(&b, 2, &vg, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        mk_block(&b, h++, &vg, 1);
+        CHECK(v2x_cmt_refused(fx.w, &b, 0, &code) == 0 &&
+              code == NODUS_V2_TX_ERR_EXEC,
               "garbage result applied"); OK();
         fx.w->v2_runtime_table = g_v2x_table;
     }
     {   /* SQL SMUGGLED AS A RESULT: a runtime result that is literal
-         * SQL text is just malformed bytes — the engine must REJECT it
-         * as a verdict and MUST NOT execute it (there is no raw-SQL
-         * fallback of any kind; a mutant that "helpfully" executes the
-         * bytes would commit the insert and flip this block to rc 0). */
+         * SQL text is just malformed bytes — the engine must REFUSE the
+         * item and MUST NOT execute it (there is no raw-SQL fallback of
+         * any kind; a mutant that "helpfully" executes the bytes would
+         * commit the insert and flip this item's code to 0). */
         static const char smuggled[] =
             "INSERT INTO utxo_set (nullifier, owner, amount, token_id, "
             "tx_hash, output_index, block_height, created_at, "
@@ -1106,8 +1053,9 @@ static int test_reads_and_hostile(void) {
         static v2x_env_t esql;
         CHECK(v2x_env_build(&esql, &leg, 1) == 0, "esql");
         nodus_v2_envelope_t vsql = { esql.bytes, esql.len };
-        mk_block(&b, 2, &vsql, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        mk_block(&b, h++, &vsql, 1);
+        CHECK(v2x_cmt_refused(fx.w, &b, 0, &code) == 0 &&
+              code == NODUS_V2_TX_ERR_EXEC,
               "smuggled SQL executed"); OK();
         CHECK(q1(fx.w, "SELECT COUNT(*) FROM utxo_set WHERE "
                        "owner='smuggled'") == 0,
@@ -1122,16 +1070,18 @@ static int test_reads_and_hostile(void) {
                        DNA_EFFECT_CREATE, DNA_EFFECT_PRE_ABSENT, key, 64,
                        val, 8) == 0, "eu");
         nodus_v2_envelope_t vu = { eu.bytes, eu.len };
-        mk_block(&b, 2, &vu, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        mk_block(&b, h++, &vu, 1);
+        CHECK(v2x_cmt_refused(fx.w, &b, 0, &code) == 0 &&
+              code == NODUS_V2_TX_ERR_EXEC,
               "unknown effect op applied"); OK();
     }
     {   /* precondition failure: CREATE over the existing key 0x01 */
         static v2x_env_t ep;
         CHECK(env_utxo(&ep, 0x01, 9) == 0, "ep");
         nodus_v2_envelope_t vp = { ep.bytes, ep.len };
-        mk_block(&b, 2, &vp, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        mk_block(&b, h++, &vp, 1);
+        CHECK(v2x_cmt_refused(fx.w, &b, 0, &code) == 0 &&
+              code == NODUS_V2_TX_ERR_EXEC,
               "failed precondition applied"); OK();
     }
     {   /* actual effects above the DECLARED per-leg ceiling */
@@ -1152,8 +1102,9 @@ static int test_reads_and_hostile(void) {
         static v2x_env_t el;
         CHECK(v2x_env_build(&el, &leg, 1) == 0, "el");
         nodus_v2_envelope_t vl = { el.bytes, el.len };
-        mk_block(&b, 2, &vl, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+        mk_block(&b, h++, &vl, 1);
+        CHECK(v2x_cmt_refused(fx.w, &b, 0, &code) == 0 &&
+              code == NODUS_V2_TX_ERR_EXEC,
               "over-declaration applied"); OK();
     }
     {   /* rogue adapter status: NODE FAULT, digest-proven no-op */
@@ -1167,8 +1118,9 @@ static int test_reads_and_hostile(void) {
         static v2x_env_t er;
         CHECK(env_utxo(&er, 0x23, 1) == 0, "er");
         nodus_v2_envelope_t vr = { er.bytes, er.len };
-        mk_block(&b, 2, &vr, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -2,
+        mk_block(&b, h, &vr, 1);
+        CHECK(v2x_cmt_fault_why(fx.w, &b, V2X_FAULT, "storage/arg fault")
+                  == 0,
               "rogue adapter status was not a node fault"); OK();
         fx.w->v2_runtime_table = g_v2x_table;
     }
@@ -1190,8 +1142,8 @@ static int test_determinism(void) {
     nodus_v2_block_t ba, bb;
     mk_block(&ba, 1, v12, 2);
     mk_block(&bb, 1, v12, 2);
-    CHECK(nodus_witness_v2_apply_block(fa.w, &ba) == 0, "A");
-    CHECK(nodus_witness_v2_apply_block(fb.w, &bb) == 0, "B");
+    CHECK(v2x_cmt_apply_ok(fa.w, &ba) == 0, "A");
+    CHECK(v2x_cmt_apply_ok(fb.w, &bb) == 0, "B");
     CHECK(memcmp(ba.out_global_root, bb.out_global_root, 64) == 0 &&
           memcmp(ba.out_tx_root, bb.out_tx_root, 64) == 0 &&
           memcmp(ba.out_dupd_root, bb.out_dupd_root, 64) == 0,
@@ -1202,11 +1154,11 @@ static int test_determinism(void) {
     nodus_v2_envelope_t v3 = { e3.bytes, e3.len };
     nodus_v2_block_t b2a, b2b;
     mk_block(&b2a, 2, &v3, 1);
-    CHECK(nodus_witness_v2_apply_block(fa.w, &b2a) == 0, "A2");
+    CHECK(v2x_cmt_apply_ok(fa.w, &b2a) == 0, "A2");
     mk_block(&b2b, 2, &v3, 1);
     b2b.expect_global_root = b2a.out_global_root;
     b2b.expect_tx_root = b2a.out_tx_root;
-    CHECK(nodus_witness_v2_apply_block(fb.w, &b2b) == 0,
+    CHECK(v2x_cmt_apply_ok(fb.w, &b2b) == 0,
           "follower expectations rejected an identical block"); OK();
     /* restart reproduces committed roots byte-identically */
     uint8_t g0[64], g1[64];
@@ -1215,14 +1167,25 @@ static int test_determinism(void) {
     CHECK(fx_reopen(&fa) == 0, "reopen");
     CHECK(nodus_witness_global_root_v2(fa.w, g1, NULL, NULL, NULL) == 0 &&
           memcmp(g0, g1, 64) == 0, "restart roots diverged"); OK();
-    /* replay after restart is idempotent — O14 D6: the no-write path is
-     * follower mode, so assert the id the engine derived pre-restart. */
-    uint8_t id2[64];
-    CHECK(v2x_block_id_at(fa.w, 2, id2) == 0, "read committed id2");
+    /* replay after restart. The legacy lane's idempotent rc 1 (an
+     * asserted expect_block_id matching the committed row) has NO
+     * cometbft-lane equivalent: the lane refuses identity assertions,
+     * and consensus never hands a node a height it already finalized.
+     * What replay means here, both halves pinned:
+     *   - the SAME height again is refused ("VERDICT: … at or below
+     *     this node's head") and moves nothing (whole-database digest
+     *     identical);
+     *   - the SAME envelope at the next height is refused as a REPLAY of
+     *     its committed identity and moves no ledger state. */
     nodus_v2_block_t br;
     mk_block(&br, 2, &v3, 1);
-    br.expect_block_id = id2;
-    CHECK(nodus_witness_v2_apply_block(fa.w, &br) == 1, "replay"); OK();
+    CHECK(v2x_cmt_fault_why(fa.w, &br, V2X_VERDICT, "at or below") == 0,
+          "replay"); OK();
+    uint32_t rcode = 0;
+    mk_block(&br, 3, &v3, 1);
+    CHECK(v2x_cmt_refused(fa.w, &br, 0, &rcode) == 0 &&
+          rcode == NODUS_V2_TX_ERR_REPLAY,
+          "a committed envelope re-applied after restart"); OK();
     fx_close(&fa);
     fx_close(&fb);
     return 0;

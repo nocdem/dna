@@ -1142,7 +1142,8 @@ int nodus_witness_db_migrate_v2s10(nodus_witness_t *w) {
     return nodus_witness_db_migrate_v2s10_ex(w, V2S10MIG_FAIL_NONE);
 }
 
-/* ── S11 (O15E Faz B): canonical envelope byte availability ─────────── */
+/* ── S11 (O15E Faz B): canonical envelope byte availability — an EMPTY
+ * rung since the tokenomics-v3 P4 fix round (see inside) ────────────── */
 
 int nodus_witness_db_migrate_v2s11_ex(nodus_witness_t *w,
                                       nodus_v2s11_mig_fail_t fail_at) {
@@ -1170,28 +1171,28 @@ int nodus_witness_db_migrate_v2s11_ex(nodus_witness_t *w,
         if (rv == 0) { already = 1; break; }
         if (fail_at == V2S11MIG_FAIL_AFTER_REVALIDATE) break;
 
-        /* tx_id UNIQUE mirrors v2_tx_index (one committed wire tx, one
-         * byte record); the PK is the canonical batch order the block
-         * message re-assembles in. NO default on any column. */
-        if (exec_sql(w,
-                "CREATE TABLE IF NOT EXISTS v2_tx_bytes ("
-                "  global_height INTEGER NOT NULL,"
-                "  global_index INTEGER NOT NULL,"
-                "  tx_id BLOB NOT NULL UNIQUE,"
-                "  env BLOB NOT NULL,"
-                "  PRIMARY KEY (global_height, global_index)"
-                ")") != 0)
-            break;
+        /* tokenomics-v3 P4 fix round — S11 IS NOW AN EMPTY RUNG (the
+         * O15J Faz 3 S10 precedent above).
+         *
+         * It created `v2_tx_bytes` (the canonical envelope bytes of every
+         * committed transaction, for the retired BlockMessage v1 assembly)
+         * and verified its exact column shape. The table had NO reader
+         * left — its BlockMessage consumer was deleted with the closed
+         * consensus lane (R3 W4) — and its `tx_id UNIQUE` column turned a
+         * byte-identical envelope in a later block into a failed insert,
+         * a node FAULT on every node: a chain halt one proposer could
+         * trigger. It was OUT of every state root (roots_v2 / merkle code
+         * never read it), so deleting it moves no root byte. The chain is
+         * devnet and wipes, so there is no drop rung: a fresh database
+         * simply never gets the table.
+         *
+         * The RUNG ITSELF STAYS (the ladder is a chain of exact
+         * predecessors — S12 refuses anything but a version-11 database —
+         * and every fresh database climbs through it), and the fail
+         * injection points keep their numbers; they now abort a stage
+         * that creates nothing, still proving the version write rolls
+         * back. */
         if (fail_at == V2S11MIG_FAIL_AFTER_TABLES) break;
-
-        static const char *const txb_cols[] = {
-            "global_height", "global_index", "tx_id", "env"
-        };
-        if (table_cols_exact(w, "v2_tx_bytes", txb_cols,
-                sizeof(txb_cols) / sizeof(txb_cols[0])) != 1) {
-            QGP_LOG_ERROR(LOG_TAG, "%s", "S11 schema shape drift — refusing");
-            break;
-        }
         if (fail_at == V2S11MIG_FAIL_AFTER_VERIFY) break;
 
         if (exec_sql(w, "PRAGMA user_version = 11") != 0) break;

@@ -27,7 +27,6 @@
 #include "witness/nodus_witness_cmt_store.h" /* W4-S: the genesisDoc row,
                                               * probed by the supply gate */
 
-#include "dnac/block_v2.h"
 #include "dnac/domain_wire.h"
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/sign/qgp_dilithium.h"
@@ -192,46 +191,26 @@ int nodus_witness_claims_root_v2(nodus_witness_t *w, uint32_t domain_id,
 int nodus_witness_v2_chain_id(nodus_witness_t *w,
                               uint8_t out[DNA_CHAIN_ID_LEN]) {
     if (!w || !w->db || !out) return -1;
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(w->db,
-            "SELECT block_id FROM v2_blocks WHERE global_height = 0",
-            -1, &st, NULL) != SQLITE_OK)
-        return -1;
-    int rc = sqlite3_step(st);
-    int ret = -1;
-    if (rc == SQLITE_ROW && sqlite3_column_bytes(st, 0) == 64) {
-        ret = dna_bh2_derive_chain_id(sqlite3_column_blob(st, 0), out);
-    }
-    sqlite3_finalize(st);
-    if (ret == 0 || rc != SQLITE_DONE) {
-        /* A row was there and answered, or the read itself faulted. Both
-         * are EXACTLY what this function did before the fallback below
-         * existed: every chain that has a height-0 block row — which is
-         * every chain derived by the version-2 path, i.e. every chain
-         * that exists today — takes this return and nothing about it
-         * changes. */
-        return ret;
-    }
-    /* ── NO HEIGHT-0 ROW: a VERSION-3 CHAIN (FLEET-TM-R3 W2, R3-C1a) ──
+    /* ── THE CHAIN'S IDENTITY IS ITS STORED GENESIS DOCUMENT ──────────
      *
      * D-19 rev 6 withdrew the genesis block, so the cometbft genesis
      * writes no `v2_blocks` row of any height
      * (nodus_witness_v2_genesis_cmt, nodus_witness_v2_apply.h) and the
      * chain's identity is the hash of its stored genesis DOCUMENT
      * (D-18 rev 4). `nodus_witness_v2_gen_stored_chain_id` reads exactly
-     * that, from `cmt_state`'s "genesisDoc" row.
+     * that, from `cmt_state`'s "genesisDoc" row. Every consumer of this
+     * function — the batch preflight (nodus_witness_v2_env.c), claim
+     * admission (below), the apply engine's block-start snapshot — reads
+     * the one identity.
      *
-     * This is D-17 rev 7's W3 rewire BROUGHT FORWARD, deliberately and
-     * with the operator's grant: without it the Comet lane cannot run at
-     * all on the only chain shape it has. Every consumer of this
-     * function — the batch preflight (nodus_witness_v2_env.c:89), claim
-     * admission (:516 below), the apply engine's block-start snapshot —
-     * becomes correct on a version-3 chain by this one change, and no
-     * consumer sees a different answer on any chain that has the row.
+     * tokenomics-v3 P4 (OBLIGATION atlas-dec-71525f3b): the branch that
+     * answered from a committed HEIGHT-0 v2_blocks row
+     * (dna_bh2_derive_chain_id over the version-2 genesis BlockID) is
+     * deleted with the version-2 genesis that wrote that row
+     * (nodus_witness_v2_genesis_ex) — nothing writes one any more.
      *
-     * An absent document is still a failure: a chain with neither a
-     * genesis block row nor a stored genesis document has no identity to
-     * bind anything to, which is what this function has always said. */
+     * An absent document is a failure: a chain with no stored genesis
+     * document has no identity to bind anything to. */
     return nodus_witness_v2_gen_stored_chain_id(w, out);
 }
 
@@ -1044,41 +1023,29 @@ int nodus_rt_core_invariant(const nodus_domain_runtime_t *rt,
          * R3-W4-S (D-17 rev 11 (11)): a version-3 (cometbft) chain NEVER
          * writes a height-0 v2_blocks row — its genesis is a STORED
          * DOCUMENT in cmt_state under NODUS_V2_GEN_GENESIS_DOC_KEY
-         * ("genesisDoc", D-18). The height-0 probe alone therefore
-         * cannot tell a version-3 genesis from genuine pre-genesis; it
-         * is amended by a second probe.
+         * ("genesisDoc", D-18), and that document is the probe.
+         * tokenomics-v3 P4: the height-0-row probe that decided for the
+         * version-2 genesis (nodus_witness_v2_genesis_ex) is deleted with
+         * it — nothing writes that row any more.
          *
-         * Deliberately SCOPED so the legitimate legacy/pre-genesis
-         * `return 0` is not weakened:
-         *   - no v2_blocks table at all  → legacy DB, never had a V2
-         *     genesis            → 0 (unchanged behaviour)
-         *   - table present, no height-0 row, no cmt_state table (below
-         *     S14) → genuinely pre-genesis → 0 (unchanged behaviour)
-         *   - table present, no height-0 row, cmt_state present but no
-         *     stored genesisDoc → the ceremony's own scratch database
-         *     before the document is written → 0 (still honest
-         *     pre-genesis)
-         *   - height-0 row present OR a stored genesisDoc present → a
-         *     genesis EXISTS → -1
+         * Deliberately SCOPED so the legitimate pre-genesis `return 0` is
+         * not weakened:
+         *   - no v2_blocks table at all  → never had a V2 genesis → 0
+         *   - no cmt_state table (below S14) → genuinely pre-genesis → 0
+         *   - cmt_state present but no stored genesisDoc → the
+         *     ceremony's own scratch database before the document is
+         *     written → 0 (still honest pre-genesis)
+         *   - a stored genesisDoc present → a genesis EXISTS → -1
          *   - any probe fault      → -1, never a value (the probe-fault
          *     discipline this file's header states). */
         int has_v2 = table_exists(w, "v2_blocks");
         if (has_v2 < 0) return -1;
-        if (has_v2 == 0) return 0;       /* legacy DB: honest pre-genesis */
+        if (has_v2 == 0) return 0;       /* honest pre-genesis            */
 
-        sqlite3_stmt *gst = NULL;
-        if (sqlite3_prepare_v2(w->db,
-                "SELECT 1 FROM v2_blocks WHERE global_height = 0",
-                -1, &gst, NULL) != SQLITE_OK)
-            return -1;
-        int grc = sqlite3_step(gst);
-        sqlite3_finalize(gst);
-        if (grc != SQLITE_DONE && grc != SQLITE_ROW) return -1; /* fault */
-
-        int genesis_exists = (grc == SQLITE_ROW);
-        if (!genesis_exists) {
-            /* No height-0 row. Probe the Comet stores (D-19 rev 6) for a
-             * stored genesis document before declaring pre-genesis. */
+        int genesis_exists = 0;
+        {
+            /* Probe the Comet stores (D-19 rev 6) for a stored genesis
+             * document before declaring pre-genesis. */
             int has_cmt = table_exists(w, "cmt_state");
             if (has_cmt < 0) return -1;
             if (has_cmt == 1) {

@@ -232,12 +232,13 @@ set(NODUS_SOURCES
     # lane, and the consensus reactor and the tick are W3's.
     src/witness/nodus_witness_cmt_node.c
 
-    # Ledger V2 O12 S2 — INACTIVE engine-mandatory epoch-boundary
-    # transition (pending-commission activation, RETIRING -> UNSTAKED
-    # graduation with its canonical per-record release identity, then
-    # the S3 boundary flips + next-epoch snapshot). Mirrors the legacy
-    # apply_epoch_boundary_transitions; the legacy lane is untouched and
-    # remains the only boundary a running chain executes.
+    # Ledger V2 O12 S2 — the engine-mandatory epoch-boundary transition
+    # (pending-commission activation, RETIRING -> UNSTAKED graduation
+    # with its canonical per-record release identity, then the S3
+    # boundary flips + next-epoch snapshot). Mirrored the legacy
+    # apply_epoch_boundary_transitions (lane deleted in R3 W4-D); the
+    # apply engine calls it at every boundary block
+    # (nodus_witness_v2_apply.c, nodus_witness_v2_epoch_boundary_apply).
     src/witness/nodus_witness_v2_epoch.c
 
     # Ledger V2 O15J Faz 2 — V1's economics on the V2 lane: the per-block
@@ -1452,9 +1453,11 @@ add_test(NAME test_manifest_wire COMMAND test_manifest_wire)
 # spent-after-restart), fault-injection digest rollback, one-owner
 # supply conservation, insertion-order-independent claims_root.
 # O15J review R2-F5 (secondary): test_v2_claims does NOT need the bypass.
-# It never calls v2x_genesis_min, so it never arms it, and all nine of its
-# supply_check assertions run against the LIVE invariant over genuinely
-# seeded rows. What it actually needed was the supply_init seeding at
+# It is compiled without NODUS_V2_TEST_SUPPLY, so no fixture can arm it
+# (tokenomics-v3 P4: the fixture that armed it for the bypass targets is
+# now v2x_chain_open / v2x_seed_genesis, v2_genesis_fixture.h), and all
+# nine of its supply_check assertions run against the LIVE invariant over
+# genuinely seeded rows. What it actually needed was the supply_init seeding at
 # test_v2_claims.c:1066+. Enabling a compile-time conservation off-switch
 # on a target that does not use it only widens the surface the link gate
 # has to defend.
@@ -1603,13 +1606,15 @@ register_witness_test(test_v2_active_max)
 # nodus_witness_v2_gen_source_commit. The first and last are anchored with
 # `$` because live symbols share their prefix
 # (nodus_witness_v2_gen_derive_v3; nodus_witness_v2_gen_v3_source_commit
-# differs earlier but is anchored alike for symmetry). The version-2 ENGINE
-# genesis (nodus_witness_v2_genesis_ex) is NOT on this list: it is still in
-# the tree (see the P4 report — its removal needs the ledger-engine test
-# fixture conversion).
+# differs earlier but is anchored alike for symmetry).
+# tokenomics-v3 P4, second half: the version-2 ENGINE genesis is deleted
+# as well — nodus_witness_v2_genesis_ex and its wrapper
+# nodus_witness_v2_genesis — together with the legacy block lane of
+# nodus_witness_v2_apply_block. Both are anchored with `$`: the live
+# cometbft genesis nodus_witness_v2_genesis_cmt shares their prefix.
 add_test(NAME test_v2_seam_linked
          COMMAND sh -c
-         "! nm '$<TARGET_FILE:nodus-server>' | grep -qE ' T (nodus_witness_bft_|nodus_witness_sync_|nodus_witness_bootstrap_|nodus_witness_mempool_|nodus_witness_cert_store|nodus_witness_v2_finalize_|nodus_witness_v2_qc_|nodus_witness_v2_produce_commit|nodus_witness_v2_sync_tick|nodus_witness_v2_ingress_block|nodus_witness_v2_gen_derive$|nodus_witness_v2_gen_config_encode$|nodus_witness_v2_gen_source_commit$)'")
+         "! nm '$<TARGET_FILE:nodus-server>' | grep -qE ' T (nodus_witness_bft_|nodus_witness_sync_|nodus_witness_bootstrap_|nodus_witness_mempool_|nodus_witness_cert_store|nodus_witness_v2_finalize_|nodus_witness_v2_qc_|nodus_witness_v2_produce_commit|nodus_witness_v2_sync_tick|nodus_witness_v2_ingress_block|nodus_witness_v2_gen_derive$|nodus_witness_v2_gen_config_encode$|nodus_witness_v2_gen_source_commit$|nodus_witness_v2_genesis_ex$|nodus_witness_v2_genesis$)'")
 
 # Ledger V2 — generic typed-effect + compiled storage-adapter boundary
 # (INACTIVE): adapter registration through the five-axis runtime lookup,

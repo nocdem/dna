@@ -437,10 +437,10 @@ int nodus_cmt_app_init_chain(void *vctx,
 
     /* ── (1) the committed chain id == the request's ───────────────────
      * ONE derivation, the ledger's own: `nodus_witness_v2_chain_id`
-     * answers from the height-0 block row where there is one and from
-     * the stored genesis document where there is not
-     * (nodus_witness_v2_claims.c:186-224), so a version-3 chain and an
-     * older one are served by the same call. */
+     * answers from the stored genesis document
+     * (nodus_witness_v2_claims.c, nodus_witness_v2_chain_id). The
+     * height-0 block-row branch it used to have is deleted with the
+     * version-2 genesis that wrote that row (tokenomics-v3 P4). */
     if (nodus_witness_v2_chain_id(ctx->w, chain_id) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "%s",
                       "InitChain: the committed chain id is underivable");
@@ -605,9 +605,9 @@ done:
 
 /** Is this envelope a chain_config transaction?
  *
- * The legacy lane keys the rule on the entry class
- * `NODUS_W_TX_CHAIN_CONFIG` (nodus_witness_bft.c:5434-5465 leader side,
- * :6264-6280 follower side). The V2 lane has no such class — every entry
+ * The legacy lane (deleted in R3 W4-D with nodus_witness_bft.c) keyed
+ * the rule on the entry class `NODUS_W_TX_CHAIN_CONFIG` (bft.c:5434-5465
+ * leader side, :6264-6280 follower side, in the tree before W4-D). The V2 lane has no such class — every entry
  * is an ENVELOPE or a CLAIM — so the same transaction is identified by
  * what it DOES: a leg on the SYSTEM domain (DNA_DOMAIN_SYSTEM,
  * shared/dnac/ledger_ids.h:52) whose `runtime_op` is

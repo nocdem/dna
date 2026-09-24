@@ -53,8 +53,9 @@
  * `DNA.GBUNDLE.v1\0\0` magic outright, logging "version-1 bundle format,
  * refused", before reading anything past it — an old-binary bundle is
  * refused BY ITS MAGIC, never by a short read further in. There is no
- * version-2 code path left in this file; `nodus_witness_v2_genesis_ex`
- * is not called here.
+ * version-2 code path left in this file, and the version-2 engine
+ * genesis it used to call (`nodus_witness_v2_genesis_ex`) no longer
+ * exists — tokenomics-v3 P4 deleted it.
  * The version-2 DERIVATION (`nodus_witness_v2_gen_derive`), which after
  * R3 W3 derived with no persisted bundle, is DELETED by tokenomics-v3 P4
  * (OBLIGATION atlas-dec-71525f3b). The only derivation left,
@@ -149,8 +150,8 @@ int nodus_witness_v2_bundle_get(nodus_witness_t *w,
  *
  * A bundle carrying the RETIRED version-2 magic is refused immediately,
  * logged "version-1 bundle format, refused" — there is no version-2
- * code path in this function; `nodus_witness_v2_genesis_ex` is never
- * called here.
+ * code path in this function (the version-2 engine genesis,
+ * `nodus_witness_v2_genesis_ex`, was deleted by tokenomics-v3 P4).
  *
  * ORDER: plant base rows → migrate the scratch database to S14
  * (cascades up from wherever it already is,

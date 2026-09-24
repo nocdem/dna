@@ -516,11 +516,13 @@ int nodus_witness_v2_payout_interval(nodus_witness_t *w, uint64_t *out) {
                           "chain has no stored genesis document — refusing");
             return -2;
         }
-        /* The pre-document fixture lane (a genesis built through
-         * nodus_witness_v2_genesis_ex, no version-3 document): nothing
-         * committed the interval, so the version-3 default stands — the
-         * econ band's "present == 0 → compiled constants" rule
-         * (nodus_witness_v2_econ_params_load above). */
+        /* A database that is not a version-3 successor and has no
+         * document: nothing committed the interval, so the version-3
+         * default stands — the econ band's "present == 0 → compiled
+         * constants" rule (nodus_witness_v2_econ_params_load above).
+         * tokenomics-v3 P4 deleted the version-2 engine genesis
+         * (nodus_witness_v2_genesis_ex) that used to build such chains;
+         * no genesis left in the tree does. */
         *out = (uint64_t)NODUS_V2_GEN_PAYOUT_INTERVAL_EPOCHS_DEFAULT;
         return 0;
     }
