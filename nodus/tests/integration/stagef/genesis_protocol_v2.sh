@@ -51,8 +51,12 @@
 #   run AFTER that spend (whatever it opportunistically finds left,
 #   ordinarily nothing — see its own header). Anything that needs a
 #   transaction after either would find none. test_v2_epoch_boundary.sh
-#   is also the only scenario that needs a short-epoch binary, and it
-#   SKIPS (99) rather than pretending on a default build.
+#   needs a short-epoch binary, and it SKIPS (99) rather than pretending
+#   on a default build — so do test_cmt_rule_n_retire.sh and
+#   test_v2_rewards.sh (the latter ALSO needs STAGEF_PAYOUT_INTERVAL_
+#   EPOCHS=2 exported before bring-up); this sentence read "the only
+#   scenario" until tokenomics-v3 P2 corrected it. (The CLI-SPEND pump
+#   those three use claims node 3's own leaf, never the PUMP batch.)
 #   test_cmt_arena_runway.sh runs absolute LAST because its subject is
 #   the CUMULATIVE receive-arena usage every other node in this sweep
 #   has already produced — reading it any earlier would read a partial
@@ -160,6 +164,13 @@ SCENARIOS_ONLY=0
 #     remains of the PUMP batch (ordinarily nothing, since the scenario
 #     above already spent it) to help reach the boundary; SKIPS (99) at
 #     the shipped epoch length.
+#   test_v2_rewards.sh (tokenomics-v3 P2) — drives the chain through
+#     paying boundaries up to a payday with the CLI-SPEND pump; SKIPS
+#     (99) unless the bring-up ran with a short epoch AND
+#     STAGEF_PAYOUT_INTERVAL_EPOCHS=2 exported (the interval is part of
+#     the genesis document). MUST run BEFORE test_cmt_rule_n_retire.sh:
+#     it asserts all SEVEN committee validators are paid, and that
+#     scenario permanently retires node 7.
 #   test_cmt_rule_n_retire.sh (round 2, tokenomics-v3 P1 §A/D-3/D-11) —
 #     SKIPS (99) at the shipped epoch length (needs THREE boundaries'
 #     worth of idle-only wall time, its own header explains why three,
@@ -185,6 +196,7 @@ test_cmt_mempool_flood.sh
 test_cmt_claim_flood.sh
 test_cmt_env_flood.sh
 test_v2_epoch_boundary.sh
+test_v2_rewards.sh
 test_cmt_rule_n_retire.sh
 test_cmt_arena_runway.sh
 "

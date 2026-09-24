@@ -344,7 +344,7 @@ static int cfg_make_v3_real(cfgbox_t *b)
     c->epoch_length          = (uint64_t)DNAC_EPOCH_LENGTH;
     c->blocks_per_year       = (uint64_t)DNAC_BLOCKS_PER_YEAR;
     c->decimal_unit          = (uint64_t)DNAC_DECIMAL_UNIT;
-    c->inflation_start_block = 1ULL;
+    c->inflation_start_block = 0ULL;   /* tokenomics-v3 P2: RETIRED */
     c->claim_start_height    = 0;
     c->claim_end_height      = UINT64_MAX;
     c->n_validators          = (uint16_t)N_KEYS;
@@ -377,6 +377,10 @@ static int cfg_make_v3_real(cfgbox_t *b)
         cfg_free(b);
         return -1;
     }
+    /* tokenomics-v3 P2 (P2-1): Rule P.2 now counts the reward reserve;
+     * this fixture's allocations spend the whole supply and it is not a
+     * reward test — no pool reserved. */
+    c->reward_pool_initial = 0;
     c->genesis_time_ms = GEN_TIME_MS;
     c->initial_height  = 1;
     if (nodus_witness_v2_gen_v3_fill_comet_rows(c) != 0) {
@@ -418,16 +422,12 @@ static int cfg_make_v3_real(cfgbox_t *b)
  * depends on its one-leaf, no-siblings shape (`good->n_siblings = 0`)
  * and must stay on it, not on this.
  *
- * round 2 (R2-3) — `inflation_start` is a NEW parameter, not a NEW
- * function: this path had exactly one caller (`gfx_open_n`, itself
- * called only by `t_prepare_proposal_item_cap`), so widening its
- * signature is the "reuse the existing code path" choice over a
- * duplicated ~45-line fixture-open function. `gfx_open_n`'s own single
- * call site is updated to pass `1ULL` — today's hardcoded value,
- * byte-for-byte unchanged behaviour for that case.
+ * tokenomics-v3 P2 (P2-4): the round-2 (R2-3) `inflation_start`
+ * parameter is REMOVED — the genesis inflation start is retired and its
+ * only legal value is 0, so there is nothing left to vary (the per-block
+ * mint it switched off is deleted).
  */
-static int cfg_make_v3_real_n(cfgbox_t *b, uint32_t n,
-                              uint64_t inflation_start)
+static int cfg_make_v3_real_n(cfgbox_t *b, uint32_t n)
 {
     nodus_v2_gen_config_t *c;
     uint16_t k;
@@ -450,7 +450,7 @@ static int cfg_make_v3_real_n(cfgbox_t *b, uint32_t n,
     c->epoch_length          = (uint64_t)DNAC_EPOCH_LENGTH;
     c->blocks_per_year       = (uint64_t)DNAC_BLOCKS_PER_YEAR;
     c->decimal_unit          = (uint64_t)DNAC_DECIMAL_UNIT;
-    c->inflation_start_block = inflation_start;
+    c->inflation_start_block = 0ULL;   /* tokenomics-v3 P2: RETIRED */
     c->claim_start_height    = 0;
     c->claim_end_height      = UINT64_MAX;
     c->n_validators          = (uint16_t)N_KEYS;
@@ -485,6 +485,10 @@ static int cfg_make_v3_real_n(cfgbox_t *b, uint32_t n,
         cfg_free(b);
         return -1;
     }
+    /* tokenomics-v3 P2 (P2-1): Rule P.2 now counts the reward reserve;
+     * this fixture's allocations spend the whole supply and it is not a
+     * reward test — no pool reserved. */
+    c->reward_pool_initial = 0;
     c->genesis_time_ms = GEN_TIME_MS;
     c->initial_height  = 1;
     if (nodus_witness_v2_gen_v3_fill_comet_rows(c) != 0) {
@@ -573,32 +577,22 @@ static int gfx_open(gfx_t *g, const char *tag)
 
 /**
  * ORCHESTRATOR delta 11 (R3-W3-C2a-19) — `gfx_open`'s own body, with ONE
- * substitution: `cfg_make_v3_real_n(&g->box, n_allocs, inflation_start)`
+ * substitution: `cfg_make_v3_real_n(&g->box, n_allocs)`
  * in place of `cfg_make_v3_real(&g->box)`, so the derived chain's genesis
  * commits an `n_allocs`-leaf distribution tree instead of one. `gfx_open`
  * itself is untouched.
  *
- * round 2 (R2-3) — `inflation_start` is a NEW parameter forwarded
- * straight to `cfg_make_v3_real_n`; this function has exactly ONE
- * caller (`t_prepare_proposal_item_cap`), updated to pass `1ULL` —
- * today's hardcoded value, so that case's behaviour is byte-for-byte
- * unchanged. `t_d4_empty_blocks_root_stable` (D-4) is the reason the
- * parameter exists: it needs `inflation_start_block = 0`, matching the
- * live harness genesis (`stagef_up_v2.sh`), because Phase 6f's mint path
- * (`inflation_start_block = 1`, this file's OTHER fixtures) moves
- * `epoch_state.epoch_pool_accum` — a leg of `system_state_root` — on
- * EVERY block, which makes the D-4 "two empty blocks, same global_root"
- * property unsatisfiable for a reason that has nothing to do with
- * attendance.
+ * tokenomics-v3 P2 (P2-4): the round-2 (R2-3) `inflation_start`
+ * parameter is REMOVED with the per-block mint it existed to switch off
+ * (its only legal value is 0 now); every fixture chain is quiet.
  */
-static int gfx_open_n(gfx_t *g, const char *tag, uint32_t n_allocs,
-                      uint64_t inflation_start)
+static int gfx_open_n(gfx_t *g, const char *tag, uint32_t n_allocs)
 {
     char path[600];
     int  i;
 
     memset(g, 0, sizeof(*g));
-    if (cfg_make_v3_real_n(&g->box, n_allocs, inflation_start) != 0) {
+    if (cfg_make_v3_real_n(&g->box, n_allocs) != 0) {
         return -1;
     }
     if (nodus_witness_v2_gen_v3_validate(g->box.cfg) != 0) {
@@ -855,7 +849,9 @@ static int fx_open(fixture_t *fx, const char *tag)
     fx->w->v2_successor = true;
     memcpy(fx->w->v2_chain32, fx->chain_id, 32);
     fx->w->v2_ingress_armed = true;
-    if (nodus_witness_db_migrate_v2s15(fx->w) != 0) {
+    /* tokenomics-v3 P2: the cometbft lane's schema gate moved S15 -> S16
+     * (nodus_witness_v2_apply.c); the fixture climbs to the live rung. */
+    if (nodus_witness_db_migrate_v2s16(fx->w) != 0) {
         return -1;
     }
     return 0;
@@ -2367,11 +2363,9 @@ static int t_val_updates_non_boundary(void)
     nodus_cmt_app_ledger_t                *app;
     nodus_abci_response_finalize_block_t   resp;
 
-    /* inflation OFF (round 2 hardening): this case is about the
-     * validator-updates response alone, not economics; `gfx_open`'s
-     * default `inflation_start_block = 1` would mint on every driven
-     * block, an unrelated interaction this case does not need. */
-    CHECK(gfx_open_n(&g, "vu_nonb", 1, 0ULL) == 0, "version-3 fixture");
+    /* (round 2 hardening used an inflation-OFF genesis here;
+     * tokenomics-v3 P2 deleted the mint, so every fixture is quiet.) */
+    CHECK(gfx_open_n(&g, "vu_nonb", 1) == 0, "version-3 fixture");
     app = calloc(1, sizeof(*app));
     CHECK(app != NULL, "alloc");
     CHECK(gfx_doc(&g, &doc, gvals) == 0, "the completed genesis document");
@@ -2416,8 +2410,7 @@ static int t_val_updates_quiet_boundary(void)
     cmt_pb_arena_t                    arena;
     uint8_t                           arena_buf[1024];
 
-    /* inflation OFF — same reason as t_val_updates_non_boundary above. */
-    CHECK(gfx_open_n(&g, "vu_quiet", 1, 0ULL) == 0, "version-3 fixture");
+    CHECK(gfx_open_n(&g, "vu_quiet", 1) == 0, "version-3 fixture");
     CHECK(exec_init(&x, &g) == 0, "blockexec + real application");
 
     memset(&bid, 0, sizeof(bid));
@@ -2460,8 +2453,7 @@ static int t_val_updates_missing_snapshot(void)
     nodus_cmt_app_ledger_t                *app;
     nodus_abci_response_finalize_block_t   resp;
 
-    /* inflation OFF — same reason as t_val_updates_non_boundary above. */
-    CHECK(gfx_open_n(&g, "vu_missing", 1, 0ULL) == 0, "version-3 fixture");
+    CHECK(gfx_open_n(&g, "vu_missing", 1) == 0, "version-3 fixture");
     app = calloc(1, sizeof(*app));
     CHECK(app != NULL, "alloc");
     CHECK(gfx_doc(&g, &doc, gvals) == 0, "the completed genesis document");
@@ -2573,8 +2565,7 @@ static int t_val_updates_boundary_diff(void)
         2ULL * DNAC_SELF_STAKE_AMOUNT / DNAC_DECIMAL_UNIT;
     uint64_t expect_added_power = DNAC_SELF_STAKE_AMOUNT / DNAC_DECIMAL_UNIT;
 
-    /* inflation OFF — same reason as t_val_updates_non_boundary above. */
-    CHECK(gfx_open_n(&g, "vu_diff", 1, 0ULL) == 0, "version-3 fixture");
+    CHECK(gfx_open_n(&g, "vu_diff", 1) == 0, "version-3 fixture");
     CHECK(exec_init(&x, &g) == 0, "blockexec + real application");
 
     CHECK(nodus_witness_vset_get(g.w, VU_EPOCH, &old_snap, NULL) == 0,
@@ -2838,23 +2829,12 @@ static int t_d4_empty_blocks_root_stable(void)
     cmt_block_id_t bid1, bid2;
     uint8_t        root1[64], root2[64];
 
-    /* round 2 (R2-3, MEASURED): `gfx_open`'s genesis carries
-     * `inflation_start_block = 1` (`cfg_make_v3_real`), so Phase 6f runs
-     * `nodus_witness_v2_emission_apply` on EVERY block
-     * (nodus_witness_v2_apply.c), which accrues into
-     * `epoch_state.epoch_pool_accum` — a leg of `system_state_root`
-     * (`nodus_witness_epoch_root_v2`) — moving the root at every height
-     * for a reason that has nothing to do with attendance, making this
-     * case's own D-4 equality unsatisfiable. `gfx_open_n(..., 1, 0ULL)`
-     * is `gfx_open`'s same one-leaf genesis (n_allocs=1, the shape this
-     * case never touches — it drives no claims) with
-     * `inflation_start_block = 0`, matching the live harness genesis
-     * (`stagef_up_v2.sh`) — the mint path never runs, so the equality
-     * this case asserts measures attendance alone. This case becomes
-     * unconditional (no fixture variant needed at all) once P2 deletes
-     * the mint path entirely — NOT this package's job. */
-    CHECK(gfx_open_n(&g, "d4stable", 1, 0ULL) == 0,
-          "version-3 fixture, inflation OFF");
+    /* round 2 (R2-3, MEASURED) needed an inflation-OFF genesis here: the
+     * O15J per-block mint moved `epoch_state.epoch_pool_accum` (a SYSTEM
+     * leg) on every block, making this case's D-4 equality unsatisfiable
+     * for a reason unrelated to attendance. tokenomics-v3 P2 deleted the
+     * mint, so the case is unconditional now — any fixture is quiet. */
+    CHECK(gfx_open_n(&g, "d4stable", 1) == 0, "version-3 fixture");
     CHECK(exec_init(&x, &g) == 0, "blockexec + real application");
 
     CHECK(exec_make_block(&x, 1, 0) == 0, "block 1 with ZERO transactions");
@@ -3120,7 +3100,7 @@ static int t_byte_bound_prepare_and_process(void)
     v2x_env_t                             *envs[TEST_APP_SMALL_N + 1];
     uint8_t                                effres[DNA_EFFECT_FIXED_HEAD];
     size_t                                 effres_len = 0;
-    uint8_t                                script[64];
+    uint8_t                                script[512];  /* one CREATE */
     uint32_t                               slen;
     v2x_leg_t                              leg;
     int64_t                                budget_for_eleven;
@@ -3149,24 +3129,42 @@ static int t_byte_bound_prepare_and_process(void)
      * one that decodes to nothing at execution, would be refused
      * before the byte-budget logic (or the apply step) is ever
      * meaningfully exercised. */
+    /* tokenomics-v3 P2 (ORCHESTRATOR, 2026-09-24): every envelope now
+     * CREATEs ONE zero-amount utxo_set row (fixture op V2X_OP_UTXO, a
+     * distinct key per envelope). Before P2 these envelopes executed to
+     * ZERO effects and the block still applied only because the per-block
+     * MINT moved the CORE root every height; with the mint deleted, a
+     * CORE-declared block whose CORE root does not move is correctly a
+     * "declared no-op" (the engine's phase-9 rule). A zero amount keeps
+     * the supply equation untouched while the new row moves the root —
+     * which is what every real CORE op does. `effres` (the old zero-effect
+     * result) is kept only for the header-size sanity check below. */
     CHECK(v2x_effres(effres, sizeof(effres), NULL, 0, &effres_len) == 0 &&
           effres_len == DNA_EFFECT_FIXED_HEAD,
           "a real, valid, header-only ZERO-effect result encodes — "
           "\"n == 0 with a NULL array is ACCEPTED\" (effect_wire.c)");
-    slen = v2x_script_build(script, sizeof(script), NULL, 0,
-                            effres, effres_len);
-    CHECK(slen > 0, "the script (byte-identical for every envelope)");
     memset(&leg, 0, sizeof(leg));
     leg.domain_id   = DNA_DOMAIN_CORE;
     leg.runtime_op  = 1;                   /* owned + priced, weight 1  */
-    leg.call        = script;
-    leg.call_len    = slen;
-    leg.max_effects = 1;                   /* ceiling; actual count 0   */
+    leg.max_effects = 4;                   /* ceiling; actual count 1   */
     for (i = 0; i < TEST_APP_SMALL_N + 1; i++) {
+        uint8_t ukey[64] = { 0 };
+        uint8_t uval[8]  = { 0 };          /* amount 0: supply unchanged */
+        uint8_t ures[512];
+        size_t  ulen = 0;
+        ukey[0]  = 0xB7;
+        ukey[63] = (uint8_t)(0x40 + i);    /* distinct row per envelope  */
         envs[i] = calloc(1, sizeof(*envs[i]));
         if (!envs[i]) { ok = 0; break; }
-        leg.max_effect_bytes = (uint32_t)(64 + i);  /* the ONLY thing
-                                                      * that varies      */
+        if (v2x_eff1(ures, sizeof(ures), V2X_OP_UTXO, DNA_EFFECT_CREATE,
+                     DNA_EFFECT_PRE_ABSENT, ukey, 64, uval, 8,
+                     &ulen) != 0) { ok = 0; break; }
+        slen = v2x_script_build(script, sizeof(script), NULL, 0, ures,
+                                ulen);
+        if (slen == 0) { ok = 0; break; }
+        leg.call        = script;
+        leg.call_len    = slen;
+        leg.max_effect_bytes = (uint32_t)(2048 + i);  /* varies too     */
         if (v2x_env_build_ex(envs[i], TEST_APP_ENV_CEILING, 0, 1, &leg, 1)
                 != 0) {
             ok = 0;
@@ -3853,7 +3851,7 @@ static int t_prepare_proposal_item_cap(void)
     const uint32_t                            N = 40;
     uint32_t                                  i;
 
-    CHECK(gfx_open_n(&g, "prep_cap", N, 1ULL) == 0,
+    CHECK(gfx_open_n(&g, "prep_cap", N) == 0,
           "40-leaf version-3 fixture");
     CHECK(exec_init(&x, &g) == 0, "app+host+state fixture (builds and "
           "binds the completed genesis document internally)");

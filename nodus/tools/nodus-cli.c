@@ -999,12 +999,12 @@ static int cc_param_name_to_id(const char *name, uint8_t *out_id) {
      * (param id 1) is RETIRED from governance — removed from this name
      * table, so this CLI can no longer even NAME the proposal; the
      * witness-side scalar_rules refuses id 1 unconditionally as
-     * defense in depth regardless. */
+     * defense in depth regardless. tokenomics-v3 P2 (P2-4): the same
+     * for INFLATION_START_BLOCK (param id 3) — RETIRED with the
+     * per-block mint, removed from this table, refused witness-side. */
     static const struct { const char *n; uint8_t id; } map[] = {
         { "BLOCK_INTERVAL_SEC",   DNAC_CFG_BLOCK_INTERVAL_SEC },
         { "block_interval_sec",   DNAC_CFG_BLOCK_INTERVAL_SEC },
-        { "INFLATION_START_BLOCK", DNAC_CFG_INFLATION_START_BLOCK },
-        { "inflation_start_block", DNAC_CFG_INFLATION_START_BLOCK },
         { "TARGET_ACTIVE_COUNT",  DNAC_CFG_TARGET_ACTIVE_COUNT },
         { "target_active_count",  DNAC_CFG_TARGET_ACTIVE_COUNT },
     };
@@ -1168,12 +1168,10 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
             "--effective <BLOCK> [--nonce <N>] [--chain-id <64-hex>]\n"
             "Params (--value range):\n"
             "  BLOCK_INTERVAL_SEC     [%llu, %llu]\n"
-            "  INFLATION_START_BLOCK  [0, %llu]\n"
             "  TARGET_ACTIVE_COUNT    [%llu, %llu]   "
             "(active validator set; epoch-boundary effective)\n",
             (unsigned long long)DNAC_CFG_MIN_BLOCK_INTERVAL_SEC,
             (unsigned long long)DNAC_CFG_MAX_BLOCK_INTERVAL_SEC,
-            (unsigned long long)DNAC_CFG_MAX_INFLATION_START_BLOCK,
             (unsigned long long)DNAC_CFG_MIN_TARGET_ACTIVE,
             (unsigned long long)DNAC_CFG_MAX_TARGET_ACTIVE);
         return 1;
@@ -3618,8 +3616,7 @@ static void usage(const char *prog) {
     fprintf(stderr, "  chain-config propose --param <NAME> --value <N> --effective <BLOCK>\n");
     fprintf(stderr, "  stake [--commission BPS] [--bond RAW]   Bond this node identity as validator (S3)\n");
     fprintf(stderr, "                              [--nonce <N>]  (committee operator only)\n");
-    fprintf(stderr, "                  NAME: BLOCK_INTERVAL_SEC |\n");
-    fprintf(stderr, "                        INFLATION_START_BLOCK | TARGET_ACTIVE_COUNT\n");
+    fprintf(stderr, "                  NAME: BLOCK_INTERVAL_SEC | TARGET_ACTIVE_COUNT\n");
     fprintf(stderr, "                  run without --value for per-param ranges\n");
     fprintf(stderr, "  v2-claim --legacy-db <t.db> --db <s.db> --keys <dir>\n");
     fprintf(stderr, "           (--dry-run | --submit ip:port)   Successor GENESIS_CLAIM\n");

@@ -1,78 +1,70 @@
 /**
  * @file nodus_witness_v2_econ.h
- * @brief O15J Faz 2 — V1's economics, ported verbatim onto the Ledger V2
- *        lane: per-block inflation emission and epoch settlement.
+ * @brief The version-3 chain's economics: the committed economic
+ *        parameters, the epoch reward distribution, the payday and the
+ *        frozen balance copy (tokenomics-v3 P2).
  *
- * ── WHY THIS FILE EXISTS ────────────────────────────────────────────
- * A pure-V2 chain (one born without a legacy ancestor) never executes
- * `finalize_block`, and `finalize_block` is where V1 keeps its entire
- * issuance and reward machinery: the emission block
- * (nodus_witness_bft.c:3640-3700) and the settlement trigger
- * (nodus_witness_bft.c:3730-3743 calling apply_epoch_settlement at
- * :3085). With neither running, a V2 chain mints nothing and — because
- * both lanes already burn every transaction fee — pays validators
- * exactly zero. That is the O15J red-team's L2-F5, recorded in
- * docs/plans/2026-08-26-pure-v2-genesis-design.md §3.4.
+ * ── WHAT THIS FILE WAS, AND WHAT IT IS NOW ─────────────────────────
+ * O15J Faz 2 ported V1's economics onto this lane verbatim: a PER-BLOCK
+ * MINT on the 32 → 1 halving curve (nodus_witness_v2_emission_apply,
+ * apply phase 6f), accumulated per epoch in `epoch_state`, and an EQUAL
+ * per-seat settlement at every boundary that BURNED every remainder and
+ * every missed share, while every transaction fee was burned too.
  *
- * The user's decision (2026-08-26, §5 of that document) is "V1'in
- * aynısı": the specification of this port is the SHIPPED V1
- * implementation, not a new design. Every rule below is cited to the
- * bft.c line that defines it, and where this port cannot be literal the
- * divergence is named at the point where it happens — never smoothed
- * over.
+ * tokenomics-v3 P2 replaces all of it. The governing record is
+ * docs/plans/decisions/2026-09-22-nodus-tokenomics-v3-operator.md (§1
+ * "Ödüller ve ücretler", "Katılım ve cezalar"; §3 "P2 tasarım
+ * soruları") and the contract is design
+ * docs/plans/2026-09-23-tokenomics-v3-consensus-binding-design.md §7
+ * (P2-1 … P2-9):
  *
- * ── THE THREE PARTS, AND WHERE EACH ONE LIVES ───────────────────────
- *   Fee     — already identical on both lanes: the CORE runtime's SPEND
- *             and BURN legs add every destroyed value to
- *             supply_tracking.total_burned regardless of leg kind
- *             (nodus_witness_rt_native.c rtn_supply_burn_eff), which is
- *             V1's route_tx_fee rule (bft.c:731-733). NOTHING HERE.
- *   Emission— nodus_witness_v2_emission_apply, below. A PER-BLOCK hook.
- *   Settle  — nodus_witness_v2_settlement_apply, below. A phase of
- *             nodus_witness_v2_epoch_boundary_apply.
+ *   NO MINT. The total supply is fixed at genesis ("Yeni token
+ *   basılmayacak"). The per-block mint, its halving curve and apply phase
+ *   6f are DELETED; chain-config parameter id 3 (INFLATION_START_BLOCK)
+ *   is RETIRED exactly as id 1 was.
  *
- * ── TWO MORE DIVERGENCES, FOUND BY REVIEW R1 AND NAMED HERE ─────────
- * The four divergences documented at their own sites are not the whole
- * list. Review R1 found two more; both are recorded rather than
- * silently carried.
+ *   A REWARD POOL. `supply_tracking.reward_pool` is seeded at genesis
+ *   with the version-3 document's `reward_pool_initial` (carved OUT of
+ *   the fixed total supply — genesis Rule P.2), grows by EVERY
+ *   transaction fee (nodus_witness_rt_native.c, P2-3) and shrinks ONLY
+ *   by the distribution below.
  *
- * 5. AN ACTIVE CORE RUNTIME IS A PRECONDITION FOR PAYING OUT.
- *    nodus_witness_v2_settlement_apply resolves the CORE runtime with
- *    require_active = 1 and FAULTS if it does not resolve. V1 has no
- *    such precondition — it writes the payout row with raw SQL and does
- *    not care whether a runtime exists. So on a chain whose CORE is
- *    registered but not ACTIVE, V1 pays and this lane halts the block.
- *    Deliberate: paying out through a runtime that is not active would
- *    mean writing domain state with no owner, which is exactly what the
- *    typed effect boundary exists to prevent. Named because "four
- *    divergences" was an undercount, not because the choice is doubted.
+ *   DISTRIBUTION at every boundary H over the epoch (H−E, H]
+ *   (nodus_witness_v2_settlement_apply; design §7.1 "P2-6 rev 2",
+ *   decision file §3 2026-09-24 "DELEGATOR = VALIDATOR GİBİ"): payout =
+ *   reward_pool >> 16, split among the members of the snapshot that
+ *   GOVERNED the epoch by that snapshot's own voting power; a member
+ *   that failed the shared participation predicate forfeits its WHOLE
+ *   share, delegators included; inside a member the split is by the
+ *   frozen balance copy that snapshot was built from (src(H) = H−2E, 0
+ *   for the genesis-governed epochs), checked against the snapshot entry
+ *   first; every share is ACCRUED per recipient in `v2_reward_accrual`;
+ *   every rounding remainder and every forfeited share stays in the
+ *   pool. Nothing is burned. A stake withdrawn during the epoch is still
+ *   in the governing snapshot and in the source copy, so it is paid for
+ *   the epoch — and its release UTXO stays LOCKED until 12 epochs after
+ *   it leaves the voting power (P2-10, nodus_witness_rt_native.c), which
+ *   is what makes paying the governing set safe (no coin earns while it
+ *   is spendable).
  *
- * 6. THE PER-EPOCH COUNTER RESET IS UNCONDITIONAL HERE, CONDITIONAL IN
- *    V1 — a REAL committed-state difference between the lanes.
- *    V1's two whole-pool exits (no usable snapshot; committee_count 0)
- *    `return 0` BEFORE its counter reset, so on those two paths V1 does
- *    NOT clear its per-epoch signed-block counter and the counts carry
- *    into the next epoch. On this lane the reset runs unconditionally
- *    after settlement returns, as its own boundary step (tokenomics-v3
- *    P1: `v2_attendance.signed_count` reset, immediately after the
- *    attendance digest write and after Rule N — nodus_witness_v2_epoch.c
- *    `nodus_witness_v2_epoch_boundary_apply`). Post-P1 the counter is
- *    OUT-OF-ROOT (`v2_attendance`, never a validator merkle-leaf field),
- *    so this divergence no longer commits different STATE ROOT bytes
- *    between the lanes — only different table contents, which matters
- *    only to the liveness bar this same function reads.
- *    NOT a fork risk — the lanes never run on one chain — and arguably
- *    the better behaviour, since V1's carry-over inflates the next
- *    epoch's attendance and hides downtime. But it is a divergence from
- *    "V1'in aynısı" and it was nowhere in writing until now.
+ *   PAYDAY every `payout_interval_epochs` boundaries
+ *   (nodus_witness_v2_payday_apply): every accrual row becomes one CORE
+ *   UTXO and is deleted. An owner that left (UNDELEGATE deletes the
+ *   delegation row; a validator graduates) is still paid — the accrual is
+ *   keyed by the RECIPIENT, never by a stake row.
+ *
+ *   THE FROZEN BALANCE COPY (nodus_witness_v2_balance_copy_write): at
+ *   every boundary (and at genesis) the bonded balances are copied into
+ *   `v2_balance_copy`, out of every root; the H−E and H copies are kept,
+ *   and the distribution at H + E reads the H−E one.
  *
  * ── FAULT/VERDICT CLASSIFICATION ────────────────────────────────────
- * Both entry points take committed state and a height as their ONLY
- * inputs. Neither can be wrong about a block the way a signature check
- * can: there is no verdict class here. Every failure is therefore -2, a
- * NODE-LOCAL FAULT — the caller rolls the block back and does not vote.
- * This is the same convention nodus_witness_v2_epoch.h states for the
- * boundary, and the reason neither function returns -1.
+ * Every entry point takes committed state and a height as its ONLY
+ * inputs. None of them can be wrong about a block the way a signature
+ * check can: there is no verdict class here. Every failure is therefore
+ * -2, a NODE-LOCAL FAULT — the caller rolls the block back and does not
+ * vote (nodus/CLAUDE.md "A DB failure is never a value"; approved record
+ * atlas-dec-fb1307d36a5af51accfc9950174986bc).
  *
  * Copyright (c) 2026 nocdem — SPDX-License-Identifier: MIT
  */
@@ -95,30 +87,31 @@ extern "C" {
  * ── THE DEFECT THIS CLOSES (O15J Faz 2 Block 2C) ────────────────────
  * DNAC_BLOCKS_PER_YEAR, DNAC_DECIMAL_UNIT (nodus_witness_emission.h) and
  * DNAC_EPOCH_LENGTH (dnac.h) are all `#ifndef`-guarded, so `-D` at
- * compile time changes how much a node mints and where its epoch
- * boundaries fall. Before this change none of them appeared in any
- * committed field: a differently-built node derived the SAME chain id,
- * joined cleanly, and then credited a different amount at some later
- * height — a CORE root divergence with nothing visible on the wire.
+ * compile time changes a node's build identity. Before Block 2C none of
+ * them appeared in any committed field: a differently-built node derived
+ * the SAME chain id, joined cleanly, and then diverged at some later
+ * height.
  *
- * The pure-V2 builder now commits all three, at genesis, into the
- * reserved chain_config_history econ band (nodus_chain_config.h). Two
- * independent bindings result, and they are NOT the same property:
- *   1. the values are hashed into `source_commit`, which the manifest
- *      carries into dna_bh2_genesis_block_id (nodus_witness_v2_apply.c
- *      :865) — so a config change is a DIFFERENT CHAIN ID;
- *   2. the values are committed ROWS, so they reach chain_config_root →
- *      SYSTEM root (nodus_witness_roots_v2.c:266, :285), they travel to
- *      joiners in the genesis bundle (nodus_witness_v2_bundle.c:47), and
- *      — the point — the runtime can READ THEM BACK. Binding alone would
- *      be decorative: a joiner never runs the builder, so only a readable
- *      committed value can catch a mismatched build that arrived by
- *      syncing rather than by deriving.
+ * The pure-V2 builder commits all three, at genesis, into the reserved
+ * chain_config_history econ band (nodus_chain_config.h). Two independent
+ * bindings result: the values are hashed into `source_commit` (so a
+ * config change is a DIFFERENT CHAIN ID), and they are committed ROWS
+ * the runtime can READ BACK — which is what catches a mismatched build
+ * that arrived by syncing rather than by deriving.
  *
- * `present == 0` is the honest answer for every chain built before this
- * change (and for every seam successor, which has no operator config to
- * express these values): the compiled constants stand, and behaviour is
- * byte-identical to what it was. A READ FAULT is never `present == 0`.
+ * tokenomics-v3 P2: blocks_per_year has NO consumer any more (its one
+ * consumer was the deleted per-block mint); the band stays committed
+ * build identity. decimal_unit is still the voting-power unit (power =
+ * total_stake / DNAC_DECIMAL_UNIT — the cometbft ValidatorUpdate, Rule
+ * N's weight floor). The refusals of epoch_length AND decimal_unit
+ * (below) are enforced on EVERY block — the apply engine calls this
+ * loader once per block (nodus_witness_v2_apply.c phase 6f, "per-block
+ * build-identity check"), relocated from the deleted mint so the check
+ * did not vanish with it.
+ *
+ * `present == 0` is the honest answer for every chain built before
+ * Block 2C: the compiled constants stand. A READ FAULT is never
+ * `present == 0`.
  */
 typedef struct {
     int      present;          /* 1 the chain committed a band; 0 it did
@@ -131,27 +124,30 @@ typedef struct {
 /**
  * Load the committed econ band, and VALIDATE it against this build.
  *
- * Three-valued by construction — the shape nodus/CLAUDE.md demands of a
- * read whose answer reaches consensus:
+ * Three-valued by construction:
  *   0  either all three rows are present and usable (`out->present == 1`)
  *      or NONE of them is (`out->present == 0`, compiled constants apply)
  *  -1  a fault: the table is unreadable, the band is PARTIAL (some rows
  *      present, some absent — a chain in that state has no defined
- *      economics), a committed value is 0 or stored negative, or the
+ *      economics), a committed value is 0 or stored negative, the
  *      committed epoch_length disagrees with the compiled
- *      DNAC_EPOCH_LENGTH.
+ *      DNAC_EPOCH_LENGTH, or the committed decimal_unit disagrees with
+ *      the compiled DNAC_DECIMAL_UNIT.
  *
- * WHY epoch_length IS CHECKED RATHER THAN USED. blocks_per_year and
- * decimal_unit have exactly one production consumer on this lane
- * (nodus_witness_v2_emission_apply), so the committed value can simply be
- * USED. DNAC_EPOCH_LENGTH cannot: it is read as a macro by the vset
- * snapshot builder (nodus_witness_vset.c:721-722), the committee
- * selector, the graduation boundary and this module's own settlement
- * arithmetic. Rewiring every one of those is a different change. Until
- * then the only honest guarantee is REFUSAL — a build whose epoch length
- * disagrees with the chain's committed one stops, rather than quietly
- * keying its epochs differently from its peers. That is DETECTION, and it
- * is labelled as such rather than sold as parameterisation.
+ * WHY decimal_unit IS CHECKED TOO. DNAC_DECIMAL_UNIT is read as a macro
+ * wherever voting power is derived (the cometbft ValidatorUpdate, Rule
+ * N's weight floor). The genesis builder refuses a config that disagrees
+ * with it, but a node that SYNCED never ran the builder; this refusal is
+ * what stops it from reporting every power scaled differently from its
+ * peers. Same detection-not-parameterisation stance as epoch_length.
+ *
+ * WHY epoch_length IS CHECKED RATHER THAN USED. DNAC_EPOCH_LENGTH is read
+ * as a macro by the vset snapshot builder, the committee selector, the
+ * boundary gate, the reward distribution and the payday rule. Rewiring
+ * every one of those is a different change. The honest guarantee is
+ * REFUSAL — a build whose epoch length disagrees with the chain's
+ * committed one stops, rather than quietly keying its epochs differently
+ * from its peers. That is DETECTION, and it is labelled as such.
  *
  * Pure read; opens no transaction and writes nothing.
  *
@@ -163,158 +159,193 @@ int nodus_witness_v2_econ_params_load(nodus_witness_t *w,
                                       nodus_v2_econ_params_t *out);
 
 /**
- * PER-BLOCK INFLATION EMISSION — the port of nodus_witness_bft.c
- * :3640-3700.
+ * THE FROZEN BALANCE COPY (tokenomics-v3 P2, design §7 P2-5).
  *
- * Rule, as IMPLEMENTED (the V1 rule with Block 2C's committed inputs —
- * the two differ only in where the parameters come from, never in the
- * arithmetic):
- *   econ            = econ_params_load()        ← Block 2C, and a FAULT
- *                                                 here fails the block
- *   BY, DU          = econ.present ? the chain's COMMITTED values
- *                                  : DNAC_BLOCKS_PER_YEAR /
- *                                    DNAC_DECIMAL_UNIT
- *   inflation_start = chain_config(DNAC_CFG_INFLATION_START_BLOCK,
- *                                  at height, DEFAULT 1)
- *   emission = (inflation_start != 0 && height >= inflation_start)
- *              ? nodus_emission_per_block_ex(height, BY, DU) : 0
- *   if emission > 0:
- *       supply_tracking.total_minted += emission        (bft.c:3666)
- *       epoch_state[floor(h/E)*E].epoch_pool_accum += emission
- *                                                       (bft.c:3679)
- *       and, when that row did not exist, seed it and capture the
- *       epoch-start committee+delegation snapshot
- *       (nodus_witness_epoch_snapshot_apply, bft.c:3709)
+ * Writes `v2_balance_copy` rows for `epoch_start`:
+ *   - one row per `validators` row with self_stake != 0:
+ *       (epoch_start, fp(pubkey), fp(pubkey), self_stake)
+ *   - one row per `delegations` row:
+ *       (epoch_start, fp(validator_pubkey), fp(delegator_pubkey), amount)
+ * where fp = the raw 64-byte SHA3-512(pubkey) (the recipient identity the
+ * accrual and the payday UTXO owner use). Then DELETES every row whose
+ * epoch_start is below `epoch_start − DNAC_EPOCH_LENGTH` — the H−E and H
+ * copies are kept, nothing older.
  *
- * THE 1ULL DEFAULT APPLIES ONLY WHEN THERE IS GENUINELY NO ROW.
+ * The distribution at boundary H reads copy(H−2E) — the copy written at
+ * the SAME boundary as the snapshot that governs (H−E, H], right after
+ * commit_next (design §7.1 "P2-6 rev 2"; src(H) = 0 while H < 2E, the
+ * genesis snapshots and copy(0) coming from the same genesis rows). So
+ * the copy kept at boundary H as "H−E" is read by the distribution at
+ * H + E, which runs before that boundary's own prune. P3 will read the
+ * same copy for validator selection.
  *
- * ⚠ CORRECTED, O15J Block 2 (A2). This paragraph used to read: "THE 1ULL
- * DEFAULT IS LOAD-BEARING, not a convenience: an override that cannot be
- * fetched must not silently disable emission on one node and leave it on
- * for another." That justification did not hold. Substituting 1ULL only
- * covers the direction where the real override would DELAY emission; when
- * the peers' override starts emission LATER than 1, or is an explicit 0,
- * the node that could not read it mints blocks its peers do not — the
- * same state_root split, in the other direction. A default cannot close a
- * hole whose nature is not knowing which side of it you are on.
+ * OUT OF EVERY ROOT, deliberately: every row is a pure function of
+ * `validators` and `delegations`, which ARE rooted, taken at a
+ * boundary. The distribution CHECKS each governing member's copy rows
+ * against its snapshot entry (self row == self_bond, Σ delegator rows ==
+ * total_stake − self_bond) and FAULTS on a mismatch, so a node whose
+ * copy diverged stops at the boundary that reads it instead of paying a
+ * different accrual; a divergence the check cannot see (a delegator row
+ * moved between two delegators of one member, sums intact) pays a
+ * different accrual, and accrual_root (core_state_root) catches it at
+ * that boundary.
  *
- * The lookup is three-valued now: rc 1 (no governance row — every chain
- * today) still yields 1ULL and the historical behaviour byte-for-byte;
- * rc -1 is a NODE-LOCAL FAULT and this function returns -2 rather than
- * minting on a schedule it cannot read. The V1 lane's gate
- * (nodus_witness_bft.c, finalize_block) carries the identical rule.
+ * A stored-negative stake or amount, a malformed pubkey, a row that
+ * already exists for (epoch_start, validator, owner) — every one is a
+ * FAULT, never skipped.
  *
- * Block 2C narrowed WHEN that default is reached without changing it: a
- * chain this builder derives commits its own inflation start at genesis,
- * so the lookup returns a committed row and the 1ULL is reached only by a
- * chain that committed nothing — which is every chain built before 2C,
- * and is exactly the behaviour those chains already had.
+ * MUST run inside the caller's transaction; opens/commits nothing.
+ * Called by the engine genesis (epoch 0) and at the END of every epoch
+ * boundary (nodus_witness_v2_epoch_boundary_apply, after the graduation
+ * so the copy reflects the bonded state the next epoch starts from).
  *
- * TOUCHED-DOMAIN OBLIGATION OF THE CALLER. A non-zero mint moves
- * supply_tracking — a leg of the CORE state root
- * (nodus_witness_roots_v2.c:342-345) — and epoch_state — a leg of the
- * SYSTEM state root (:283-284). The caller MUST declare BOTH domains
- * touched when *minted_out > 0, and NEITHER when it is 0: the apply
- * engine rejects an undeclared mutation (nodus_witness_v2_apply.c
- * :2888-2901) AND a declared no-op (:2912-2919). That is why this
- * function reports what it minted.
- *
- * MUST run inside the caller's transaction and BEFORE any root
- * computation. Opens, commits and rolls back nothing.
- *
- * @param w             witness handle (open DB).
- * @param global_height the block's GLOBAL height.
- * @param minted_out    required; receives the raw amount minted (0 when
- *                      emission is off, or before the start block).
- * @return 0 applied (including a legitimate zero-mint height);
- *         -2 NODE-LOCAL FAULT.
+ * @return 0 / -2.
  */
-int nodus_witness_v2_emission_apply(nodus_witness_t *w,
-                                    uint64_t global_height,
-                                    uint64_t *minted_out);
+int nodus_witness_v2_balance_copy_write(nodus_witness_t *w,
+                                        uint64_t epoch_start);
 
 /**
- * EPOCH SETTLEMENT — the port of apply_epoch_settlement
- * (nodus_witness_bft.c:3085-3378; contract comment at :2917-2957).
+ * The chain's payout interval, in epochs (tokenomics-v3 P2, P2-7):
+ *   - a chain with a stored version-3 genesis document: the document's
+ *     `payout_interval_epochs`, read through the canonical-strict
+ *     accessor (nodus_witness_v2_gen_stored_doc) — a document that does
+ *     not read back, or carries 0, is a FAULT;
+ *   - a version-3 successor chain (w->v2_successor) WITHOUT its document:
+ *     FAULT — every such chain stores its document at derivation;
+ *   - any other chain (no document: the pre-document fixture lane that
+ *     builds its genesis through nodus_witness_v2_genesis_ex): the
+ *     version-3 default NODUS_V2_GEN_PAYOUT_INTERVAL_EPOCHS_DEFAULT (24),
+ *     the same "nothing committed -> compiled constant" rule
+ *     nodus_witness_v2_econ_params_load applies to a chain with no band.
  *
- * Drains epoch_state[settling_epoch_start].epoch_pool_accum into CORE
- * UTXOs and burn, per the V1 rule:
+ * @param out  required; written only on 0.
+ * @return 0 / -2.
+ */
+int nodus_witness_v2_payout_interval(nodus_witness_t *w, uint64_t *out);
+
+/**
+ * THE EPOCH REWARD DISTRIBUTION (tokenomics-v3 P2, design §7 P2-6 as
+ * REVISED by §7.1 "P2-6 rev 2"; decision file §3 2026-09-24 "DELEGATOR =
+ * VALIDATOR GİBİ") — replaces the O15J equal-per-seat, burning
+ * settlement. Runs at boundary H for the epoch (H−E, H] that just ended:
  *
- *   per_slot   = pool / committee_count
- *   outer_dust = pool - per_slot * committee_count          -> BURN
- *   for each committee validator V (snapshot order):
- *       if V missed the liveness bar this epoch: per_slot    -> BURN
- *       else if V has no delegations:  emit_utxo(V, per_slot)
- *       else:
- *           validator_base  = per_slot * self_stake / total_stake
- *           delegator_gross = per_slot - validator_base
- *           commission      = delegator_gross * commission_bps / 10000
- *           validator_total = validator_base + commission
- *           delegator_net   = delegator_gross - commission
- *           emit_utxo(each D, delegator_net * D.amount / total_delegated)
- *           inner_dust      = delegator_net - SUM(shares)    -> BURN
- *           emit_utxo(V, validator_total)
- *   delete epoch_state[settling_epoch_start]
+ *   payout   = reward_pool >> NODUS_V2_GEN_REWARD_DIVISOR_LOG2 (16)
+ *   members  = snapshot(H−E) (nodus_witness_v2_epoch_authority_for_epoch;
+ *              the set that GOVERNED the epoch, in its committed order)
+ *   src      = H−2E when H >= 2E, else 0 — the frozen balance copy that
+ *              snapshot was built from (the same boundary, right after
+ *              commit_next; the genesis snapshots 0 and E and copy(0)
+ *              all come from the genesis rows)
+ *   PASS 1, for EVERY member v (snapshot order):
+ *     CONSISTENCY GATE: copy(src)'s self row of v (absent = 0) must equal
+ *                 the entry's self_bond, and Σ copy(src) delegator rows
+ *                 of v must equal total_stake − self_bond; otherwise
+ *                 FAULT -2 before anything is paid (the two structures
+ *                 were built from one state — a mismatch is local
+ *                 corruption or a broken external_delegated writer)
+ *     power_v   = entry.total_stake / DNAC_DECIMAL_UNIT
+ *   Σpower over ALL members — including a member with no row and one
+ *   that misses the bar below, so a forfeited share is never
+ *   redistributed to the members that attended (§3 "P2 tasarım
+ *   soruları" (2)). Σpower == 0 -> nothing is paid, the pool stays.
+ *   PASS 2, for each member v (snapshot order):
+ *     share_v   = floor(payout × power_v / Σpower)       (128-bit)
+ *     share_v == 0, no validators row, or the shared participation
+ *     predicate (nodus_witness_v2_attendance_meets_bar at H) fails
+ *                -> share_v STAYS IN THE POOL, delegators included
+ *     base      = floor(share × self_bond / total_stake)  (the entry's)
+ *     gross     = share − base
+ *     commission= floor(gross × commission_bps / 10000), commission_bps
+ *                 from the snapshot(H−E) ENTRY (frozen with the set)
+ *     net       = gross − commission
+ *     x_d       = floor(net × a_d / Σa_d), a_d = the delegator's
+ *                 copy(src) amount, delegators in owner_fp ASC order
+ *                 (Σa_d == 0 with net > 0: net stays in the pool)
+ *     accrue    base + commission to fp(v), x_d to each delegator's fp
+ *   reward_pool −= Σ accrued (checked; bound to the observed value)
  *
- * THE THREE BURN LEGS ARE ONE COUNTER. outer_dust (bft.c:3147), the
- * absent validator's per_slot (:3250) and inner_dust (:3326) accumulate
- * into one total and reach supply_tracking through ONE call (:3369).
- * Two whole-pool burn branches exist beside them: no usable snapshot
- * (:3103) and an empty committee (:3134). A port that drops any leg does
- * not balance at the first boundary, because dust is MINTED value that
- * could not be distributed — see the design document §5.3.
+ * There is no "left mid-epoch" stake any more: a delegator that
+ * withdraws during (H−E, H] is still in snapshot(H−E) and in copy(src),
+ * so it is paid for the epoch it was counted in — and its release UTXO
+ * is locked until L(h) + 12 epochs (P2-10, nodus_witness_rt_native.c;
+ * nodus_v2_power_exit_boundary), so no counted coin is spendable while
+ * it earns. A flash delegation into the governing set is locked the
+ * same way, so it is no lever.
  *
- * TOUCHED-DOMAIN OBLIGATION OF THE CALLER. Emitted UTXOs and the burn
- * both move the CORE state root; the epoch_state deletion moves the
- * SYSTEM root (which a fired boundary already declares). The caller MUST
- * declare CORE touched exactly when (*n_utxos_out > 0 || *burned_out >
- * 0). Both outputs exist for that decision.
+ * Every rounding remainder stays in the pool (share − base − commission
+ * − Σx_d, and payout − Σshare). `has_row` (a validators row exists) is
+ * read at H BEFORE this boundary's own transitions: the distribution
+ * runs ahead of the graduation (boundary order, header of
+ * nodus_witness_v2_epoch.h), so a leaving validator that kept signing
+ * through its last seated epoch is paid for it — the decision file §3
+ * (graduation deferral) states it must keep signing that epoch and
+ * loses the epoch's share only if it stops (the bar). It also runs
+ * ahead of step 6's prune, which deletes copy(src).
  *
- * MUST run inside the caller's transaction, and BEFORE the per-epoch
- * signed-block counters are reset — see the ordering note in
- * nodus_witness_v2_epoch.c, and the report of this port.
+ * TOUCHED-DOMAIN OBLIGATION OF THE CALLER. A nonzero *accrued_out moved
+ * `v2_reward_accrual` and `supply_tracking.reward_pool` — both CORE
+ * state-root legs — so CORE is declared touched exactly when it is > 0.
  *
- * @param w                    witness handle (open DB).
- * @param settling_epoch_start canonical epoch key of the epoch that just
- *                             ENDED (block_height - DNAC_EPOCH_LENGTH).
- * @param fault                optional stage-fault callback (NULL = none).
- * @param fault_ud             opaque cookie for `fault`.
- * @param n_utxos_out          required; settlement UTXOs emitted.
- * @param burned_out           required; the ONE accumulated burn.
- * @return 0 applied (including "no row for that epoch — nothing to
- *         settle", which is the honest state of a chain whose first
- *         epoch predates emission);
- *         -2 NODE-LOCAL FAULT.
+ * MUST run inside the caller's transaction, BEFORE the attendance reset
+ * (it reads the ended epoch's attendance through the shared predicate)
+ * and BEFORE the boundary's balance-copy write (whose prune deletes
+ * copy(src)). Fault stages NODUS_V2_EPST_DIST_ACCRUED /
+ * NODUS_V2_EPST_DIST_APPLIED.
+ *
+ * @param boundary_height  H — a positive multiple of DNAC_EPOCH_LENGTH.
+ * @param accrued_out      required; Σ credited this boundary.
+ * @return 0 (including "nothing to pay": an empty pool, a zero payout,
+ *         a zero total power); -2 NODE-LOCAL FAULT (a DB or allocation
+ *         failure, or the consistency gate refusing a member).
  */
 int nodus_witness_v2_settlement_apply(nodus_witness_t *w,
-                                      uint64_t settling_epoch_start,
+                                      uint64_t boundary_height,
                                       nodus_v2_epoch_fault_fn fault,
                                       void *fault_ud,
-                                      uint32_t *n_utxos_out,
-                                      uint64_t *burned_out);
+                                      uint64_t *accrued_out);
 
 /**
- * The settlement UTXO batch's canonical tx_hash — SHA3-512("settlement"
- * ‖ u64be(settling_epoch_start)), the V1 derivation at
- * nodus_witness_bft.c:2977-2986 with a BYTE-IDENTICAL preimage (the
- * 10-byte ASCII tag carries no NUL).
+ * PAYDAY (tokenomics-v3 P2, design §7 P2-7). At boundary H with
+ * (H / DNAC_EPOCH_LENGTH) % payout_interval_epochs == 0, every
+ * `v2_reward_accrual` row (owner_fp ASC) becomes ONE CORE UTXO — owner =
+ * lowercase-hex(owner_fp), amount = the accrual, native token, unlock 0,
+ * block_height = H, tx_hash = nodus_witness_v2_settlement_tx_hash(H),
+ * nullifier = nodus_witness_v2_settlement_nullifier(tx_hash,
+ * NODUS_V2_SETTLE_KIND_ACCRUAL, NODUS_V2_SETTLE_OUT_IDX_BASE + i) with i
+ * the row's rank — written through the typed CORE effect path — and
+ * then every accrual row is deleted. Any other height is a no-op.
  *
- * EXPORTED so a test can recompute the identity of a settlement row
- * independently instead of reading it back out of the row it is meant to
- * be checking.
+ * TOUCHED-DOMAIN OBLIGATION: CORE, exactly when *n_utxos_out > 0.
+ * Fault stages NODUS_V2_EPST_PAYDAY_EMITTED / NODUS_V2_EPST_PAYDAY_APPLIED.
+ *
+ * @param interval  payout_interval_epochs (nodus_witness_v2_payout_
+ *                  interval); 0 is a FAULT.
+ * @return 0 / -2.
+ */
+int nodus_witness_v2_payday_apply(nodus_witness_t *w,
+                                  uint64_t boundary_height,
+                                  uint64_t interval,
+                                  nodus_v2_epoch_fault_fn fault,
+                                  void *fault_ud,
+                                  uint32_t *n_utxos_out);
+
+/**
+ * The payday UTXO batch's canonical tx_hash — SHA3-512("settlement" ‖
+ * u64be(key)), the V1 derivation at nodus_witness_bft.c:2977-2986 with a
+ * BYTE-IDENTICAL preimage (the 10-byte ASCII tag carries no NUL). Since
+ * tokenomics-v3 P2 the key is the PAYDAY BOUNDARY HEIGHT H.
+ *
+ * EXPORTED so a test can recompute the identity of a payday row
+ * independently instead of reading it back out of the row it checks.
  *
  * @return 0 / -2 on a NULL argument or a hash-backend fault.
  */
-int nodus_witness_v2_settlement_tx_hash(uint64_t settling_epoch_start,
-                                        uint8_t out[64]);
+int nodus_witness_v2_settlement_tx_hash(uint64_t key, uint8_t out[64]);
 
 /**
- * The settlement UTXO's nullifier — SHA3-512(tx_hash ‖ kind ‖
+ * The payday UTXO's nullifier — SHA3-512(tx_hash ‖ kind ‖
  * u32be(output_index)), the V1 synthetic derivation at
- * nodus_witness_bft.c:3041-3052. `kind` is 0x20 for a validator payout
- * and 0x21 for a delegator payout (bft.c:3261 and :3333 / bft.c:3314).
- *
- * EXPORTED for the same reason as the tx_hash above.
+ * nodus_witness_bft.c:3041-3052.
  *
  * @return 0 / -2 on a NULL argument or a hash-backend fault.
  */
@@ -323,9 +354,11 @@ int nodus_witness_v2_settlement_nullifier(const uint8_t tx_hash[64],
                                           uint32_t output_index,
                                           uint8_t out[64]);
 
-/** V1's settlement payout kind bytes (bft.c:3261 / :3314). */
-#define NODUS_V2_SETTLE_KIND_VALIDATOR ((uint8_t)0x20)
-#define NODUS_V2_SETTLE_KIND_DELEGATOR ((uint8_t)0x21)
+/* The payout kind bytes. 0x20 (validator) and 0x21 (delegator) were the
+ * O15J per-boundary settlement's (bft.c:3261 / :3314); that settlement
+ * is gone and the two values are RETIRED — never reused. The P2 payday
+ * pays ONE kind, the accrual, APPENDED. */
+#define NODUS_V2_SETTLE_KIND_ACCRUAL   ((uint8_t)0x22)
 
 /** V1's settlement output-index base (bft.c NODUS_EPOCH_SETTLE_
  *  OUTPUT_INDEX_BASE, :3025): clear of the UNDELEGATE range (100-101)

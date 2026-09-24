@@ -900,8 +900,9 @@ int nodus_witness_v2_pools_startup_check(nodus_witness_t *w) {
     if (nodus_witness_db_schema_version(w, &ver) != 0) return -1;
     /* R3 W3 (D-17 rev 10 (8)) — THE LIVE S14 FLIP: S14 was ADDED to the
      * accepted set so this check actually RUNS on a version-3 chain.
-     * tokenomics-v3 P1 moves the live rung to S15 (schema.h) — S14 is
-     * dropped from this list and S15 takes its place; S7-S12 are
+     * tokenomics-v3 P1 moved the live rung to S15 (schema.h) — S14 was
+     * dropped from this list and S15 took its place; tokenomics-v3 P2
+     * moves it to S16 the same way (S15 dropped, S16 in). S7-S12 are
      * UNTOUCHED: they are the old lane's resting states, closed in W3
      * (no live caller reaches them — D-17 rev 10 (9)) and deleted only
      * in a later wave. S13 is not added: it is a transitional rung
@@ -913,7 +914,7 @@ int nodus_witness_v2_pools_startup_check(nodus_witness_t *w) {
         ver != NODUS_V2_SCHEMA_VERSION_S10 &&
         ver != NODUS_V2_SCHEMA_VERSION_S11 &&
         ver != NODUS_V2_SCHEMA_VERSION_S12 &&
-        ver != NODUS_V2_SCHEMA_VERSION_S15)
+        ver != NODUS_V2_SCHEMA_VERSION_S16)
         return 0;                        /* pre-v7: no pool state (the
                                           * S8 intent schema CONTAINS the
                                           * S7 pool tables — the check
@@ -1190,8 +1191,9 @@ int nodus_rt_core_state_init(const nodus_domain_runtime_t *rt,
      * S14 BEFORE the ledger genesis runs (D-17 rev 10 (8) withdraws the
      * S12-then-climb order). S7-S12 are UNTOUCHED — the old lane's
      * resting states, closed but not deleted (D-17 rev 10 (9)).
-     * tokenomics-v3 P1: the live rung is now S15; S14 dropped from this
-     * list, S15 takes its place. */
+     * tokenomics-v3 P1: the live rung became S15 (S14 dropped from this
+     * list); tokenomics-v3 P2: the live rung is now S16, S15 dropped,
+     * S16 takes its place. */
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0 ||
         (ver != NODUS_V2_SCHEMA_VERSION_S7 &&
@@ -1200,7 +1202,7 @@ int nodus_rt_core_state_init(const nodus_domain_runtime_t *rt,
          ver != NODUS_V2_SCHEMA_VERSION_S10 &&
          ver != NODUS_V2_SCHEMA_VERSION_S11 &&
          ver != NODUS_V2_SCHEMA_VERSION_S12 &&
-         ver != NODUS_V2_SCHEMA_VERSION_S15))
+         ver != NODUS_V2_SCHEMA_VERSION_S16))
         return -1;
 
     for (size_t i = 0;

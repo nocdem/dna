@@ -250,9 +250,10 @@ typedef struct {
  * BORROWED and must outlive this handle; the caller keeps it at
  * `synchronous=NORMAL`.
  * The `cmt_wal` and `cmt_wal_sync` tables must already exist (schema S14;
- * a chain opened by this build is at S15, the live rung as of
- * tokenomics-v3 P1 round 5 — S15 does not touch these tables, only
- * `validators` and the new attendance tables).
+ * a chain opened by this build is at S16, the live rung as of
+ * tokenomics-v3 P2 — neither S15 nor S16 touches these tables: S15
+ * changed `validators` and added the attendance tables, S16 added the
+ * reward pool column and the reward tables).
  * @return CMT_OK, CMT_FAULT.
  */
 int nodus_cmt_wal_open(nodus_cmt_wal_t *w, sqlite3 *main_db,

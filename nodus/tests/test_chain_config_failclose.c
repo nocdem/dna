@@ -24,8 +24,9 @@
  *   2. FAULT is -1 and leaves the caller's value UNTOUCHED.
  *   3. A fault is scoped to the param that faulted — an over-broad
  *      fail-close would take a whole cluster down on one bad row.
- *   4. The consumers fail closed rather than selecting a committee,
- *      sizing a snapshot or minting on a guessed parameter.
+ *   4. The consumers fail closed rather than selecting a committee or
+ *      sizing a snapshot on a guessed parameter. (tokenomics-v3 P2: the
+ *      third consumer, the per-block mint, is deleted with its case.)
  *
  * ── FAULT INJECTION IS STRUCTURAL, NOT TIMED ──────────────────────────
  * chain_config_history is replaced by a VIEW whose flagged row projects
@@ -53,7 +54,6 @@
 #include "witness/nodus_witness_committee.h"
 #include "witness/nodus_witness_validator.h"
 #include "witness/nodus_witness_vset.h"
-#include "witness/nodus_witness_v2_econ.h"
 
 #include "dnac/dnac.h"
 #include "dnac/validator.h"
@@ -75,7 +75,6 @@ static int failed = 0;
 #define OVERFLOW_EXPR "abs(-9223372036854775808)"
 
 #define P_TXS   ((uint8_t)DNAC_CFG_MAX_TXS_PER_BLOCK)      /* 1 */
-#define P_INFL  ((uint8_t)DNAC_CFG_INFLATION_START_BLOCK)  /* 3 */
 #define P_TAC   ((uint8_t)DNAC_CFG_TARGET_ACTIVE_COUNT)    /* 4 */
 
 /* A sentinel the callee must never write over on a fault. */
@@ -553,55 +552,13 @@ done:
     fx_free(&fx);
 }
 
-/* CONSUMER: the V2 emission gate. This is the exact parameter
- * nodus_witness_chain_config.c named in its KNOWN REMAINING HOLE note —
- * inflation-start — and the exact place the tree's comments claimed a
- * 1ULL default made a fetch failure safe.
- *
- * The twin is the same row with the poison off, carrying the explicit 0
- * that disables emission: the healthy read returns rc 0 with value 0, so
- * emission_apply returns 0 having minted nothing. That proves the read
- * path works AND that "explicit 0 disables emission" still holds — the
- * behaviour the substituted default could never honour on a fault.
- *
- * KILLED BY: reverting to the unchecked read. inflation_start then takes
- * the 1ULL default, emission becomes non-zero, and the function walks on
- * into the supply path instead of returning -2 — a node minting on a
- * schedule its peers do not share. */
-static void t_emission_fails_closed(void) {
-    TEST("consumer: V2 emission halts on an unreadable inflation-start");
-    fx_t fx;
-
-    /* Twin: healthy explicit 0 => emission off, rc 0, nothing minted. */
-    if (fx_up(&fx, "em_ok", 1) != 0) { FAIL("fixture"); fx_free(&fx); return; }
-    if (cc_view(&fx, P_INFL, 0ULL, 0ULL, 0) != 0) { FAIL("view"); goto done; }
-    {
-        uint64_t minted = UNTOUCHED;
-        if (nodus_witness_v2_emission_apply(fx.w, 5, &minted) != 0) {
-            FAIL("healthy emission gate did not succeed — twin is vacuous");
-            goto done;
-        }
-        if (minted != 0) {
-            FAIL("an explicit inflation-start of 0 still minted");
-            goto done;
-        }
-    }
-    fx_free(&fx);
-
-    /* Same row, poisoned. */
-    if (fx_up(&fx, "em_bad", 1) != 0) { FAIL("fixture"); fx_free(&fx); return; }
-    if (cc_view(&fx, P_INFL, 0ULL, 0ULL, 1) != 0) { FAIL("view"); goto done; }
-    {
-        uint64_t minted = UNTOUCHED;
-        if (nodus_witness_v2_emission_apply(fx.w, 5, &minted) != -2) {
-            FAIL("emission proceeded on a guessed inflation schedule");
-            goto done;
-        }
-    }
-    PASS();
-done:
-    fx_free(&fx);
-}
+/* tokenomics-v3 P2 — the "V2 emission gate" consumer case that stood
+ * here (t_emission_fails_closed: nodus_witness_v2_emission_apply halting
+ * on an unreadable INFLATION_START_BLOCK row) is DELETED with its
+ * subject: the per-block mint is gone and parameter id 3 is retired, so
+ * there is no emission consumer of chain_config left to fail closed. The
+ * two surviving consumer cases above (committee, vset) keep the
+ * "consumers fail closed" pin. */
 
 int main(void) {
     printf("\nO15J A2 — chain_config: ABSENT is not a FAULT, and a FAULT "
@@ -617,7 +574,6 @@ int main(void) {
     t_out_of_range_param_is_a_fault();
     t_committee_fails_closed();
     t_vset_fails_closed();
-    t_emission_fails_closed();
 
     printf("\n======================================================="
            "=======================\n");

@@ -32,12 +32,32 @@ The chain is implemented in three layers of the monorepo:
   bytes and units only now (cometbft's own `Block.MaxBytes`, the meter
   policy's per-block byte/unit budgets, and the engine's own derived
   memory ceiling on envelope-scratch allocation — never a governed
-  count). Ids 2-4 (BLOCK_INTERVAL_SEC, INFLATION_START_BLOCK,
-  TARGET_ACTIVE_COUNT) are unaffected and keep their numbers — id 1 is
-  never reused), GENESIS
-- **Explicit committed fee** on the wire (v2 header) with a min-fee gate
-  and a fee-burn model (fees are removed from circulation, not paid to
-  witnesses)
+  count). **tokenomics-v3 P2 (2026-09-24):** parameter id 3
+  (`INFLATION_START_BLOCK`) is RETIRED the same way — the per-block mint
+  it scheduled is deleted, and both the witness's vote rules and this
+  library's mirror (`dnac/src/transaction/verify.c`) refuse it. Ids 2
+  and 4 (BLOCK_INTERVAL_SEC, TARGET_ACTIVE_COUNT) are unaffected; ids
+  never renumber and a retired id is never reused), GENESIS
+- **Explicit committed fee** on the wire (v2 header) with a min-fee
+  gate. **Since tokenomics-v3 P2 every fee goes to the chain's REWARD
+  POOL** (`supply_tracking.reward_pool`) — it is neither burned nor paid
+  to the block's proposer; the pool pays the stakers (below). Only an
+  explicit BURN's `burn_amount` leaves circulation.
+- **Rewards (tokenomics-v3 P2).** No coin is ever minted: genesis reserves
+  a fixed pool (`reward_pool_initial`, 200M NODUS by default — Rule P.2:
+  allocations + self-stake + pool = total supply) and every fee refills
+  it. At each epoch boundary `pool >> 16` is shared among the validators
+  of the ended epoch in proportion to their voting power; a validator that
+  missed the participation bar forfeits its whole share, delegators
+  included. Inside a share the validator keeps the part earned by its own
+  bond plus its commission; delegators share the rest by their stake —
+  counted at the SMALLER of what they had when the epoch started and what
+  they have at its end (joining or leaving mid-epoch earns nothing for
+  that epoch; a top-up counts from the next one). Rewards accrue on the
+  chain and are paid as ordinary spendable coins every
+  `payout_interval_epochs` boundaries (24 by default — a payday), including
+  to a delegator that has since left. Every rounding remainder stays in
+  the pool.
 - **Lock-aware coin selection** — the wallet skips UTXOs still inside
   their post-UNSTAKE cooldown (`unlock_block`), so it never builds a
   transaction consensus is guaranteed to reject
@@ -130,7 +150,9 @@ dna-connect-cli dna token-info <id|symbol>
 dna-connect-cli dna stake ...               # Become a validator (self-bond)
 dna-connect-cli dna unstake ...
 dna-connect-cli dna delegate ...
-dna-connect-cli dna undelegate ...
+dna-connect-cli dna undelegate ...         # version-3 chain: the released coin is LOCKED
+                                            # until L(h) + 12 epochs (L = the boundary where the
+                                            # stake leaves voting power; tokenomics-v3 P2-10)
 dna-connect-cli dna validator-update ...    # Commission change
 dna-connect-cli dna validator-list
 dna-connect-cli dna delegations
@@ -329,7 +351,8 @@ height (and cooldown) starts counting from the epoch it actually
 graduates at, not the one in which UNSTAKE was sent.
 
 **The SAME predicate, at the SAME rate, decides epoch rewards — including
-epoch 0.** The settlement liveness bar (`nodus_witness_v2_econ.c`) calls
+epoch 0.** The reward distribution's participation bar
+(`nodus_witness_v2_econ.c`, tokenomics-v3 P2) calls
 `nodus_witness_v2_attendance_meets_bar` too, instead of a formula of its
 own — a validator's payout eligibility and its ACTIVE-set membership are
 now one question, not two (operator decision, 2026-09-22 record §1 line
@@ -393,7 +416,10 @@ two older per-block counters this record used to carry
 - **Chain-ID binding** — all BFT messages are validated against the
   chain ID to prevent cross-chain replay
 - **Supply invariant** — native supply is hard-conserved by the witness
-  supply gate; fee burns are tracked in committed supply state
+  supply gate: genesis − burned == coins + bonds + delegations + reward
+  pool + unpaid rewards + unclaimed genesis allocations + shielded pool
+  balances (tokenomics-v3 P2; nothing is minted); explicit burns and the pool
+  are tracked in committed supply state
 
 ## Status
 

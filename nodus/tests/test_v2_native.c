@@ -25,11 +25,11 @@
  *      count/framing/truncation/trailing, wrong member, wrong epoch,
  *      wrong set hash, kind-1-no-approvals, allowlist), snapshot
  *      ROTATION, validity-window shape, FRESHNESS, grace, duplicate
- *      (param, effective), INFLATION_START monotonicity, nonzero
+ *      (param, effective), retired param 3 (INFLATION_START), nonzero
  *      fee_amount — rejects digest-proven; CC fault matrix F26/F28/
  *      F34/F13/F14.
  *   4. CORE slice — SPEND: valid transfer + change; multi-input/multi-
- *      owner; exact-value; fee burned exactly once; per-token
+ *      owner; exact-value; fee pooled exactly once (P2-3); per-token
  *      conservation; duplicate/missing/spent inputs; wrong owner;
  *      locked input; value mismatch; overflow; duplicate output id;
  *      cross-domain UTXO substitution; supply invariant equality.
@@ -73,6 +73,17 @@
  *      the block layer cannot separate — above all the one-epoch
  *      deferral arithmetic at epoch LEN-1 / LEN / LEN+1, where the next
  *      boundary and H + epoch coincide.
+ *  10. (§13b, tokenomics-v3 P2-10) THE UNDELEGATE RELEASE LOCK: L(h)
+ *      pure (hand table + overflow refusals); the release CREATE's
+ *      unlock = L(h) + 12E at h inside an epoch, at a boundary and at
+ *      boundary + 1 (hook level), the change output unlocked; through
+ *      real blocks the committed release row's lock, a top-up FUNDED by
+ *      the locked release refused and a top-up with other coin leaving
+ *      it locked; and a SPEND, a DELEGATE and a TOKEN_CREATE funded by a
+ *      release — all three input gates — refused AT the unlock height
+ *      and accepted at unlock + 1 (hook
+ *      level — the block layer only accepts the next height, see the
+ *      section header).
  *
  * @file test_v2_native.c
  */
@@ -97,6 +108,8 @@
 #include "witness/nodus_witness_vset.h"        /* O11 S5: seed the frozen
                                         * validator-set snapshots through
                                         * the SOURCE genesis hook       */
+#include "witness/nodus_witness_v2_epoch.h"    /* tokenomics-v3 P2-10:
+                                        * nodus_v2_power_exit_boundary */
 #include "nodus/nodus_chain_config.h"
 
 #include "dnac/dnac.h"
@@ -1033,27 +1046,15 @@ static int head_root(nodus_witness_t *w, uint32_t dom, uint8_t out[64]) {
  * helper would have reported a false violation (the engine's own gate
  * always counted it).
  *
- * O15J Faz 2: `epoch_pool` was added here because the V2 lane grew a
- * per-block mint that credits total_minted AND epoch_state.epoch_pool_accum
- * together (nodus_witness_v2_econ.c, engine phase 6f), so a helper that
- * counts `m` but not the pool reports a false violation on any minting
- * chain — the engine's own gate always counted it
- * (nodus_witness_v2_claims.c).
- *
- * ⚠ HONEST LABEL, added by review R2-F7: in THIS file the term is
- * currently DEAD. main sets v2x_inflation_off = 1 and every fixture
- * reaches genesis through v2x_genesis_min, so no epoch_state row is ever
- * created: `ep` is 0 at all 20+ call sites and the identity is
- * byte-equivalent to its pre-Faz-2 form. A mutant deleting `+ ep` below
- * survives every assertion in this file.
- *
- * It is kept, not reverted, for two reasons: the helper is correct for
- * the general case and would silently start lying if this file ever
- * un-quiets, and deleting it would leave the next author to rediscover
- * the same thing. But it must not be COUNTED as coverage — emission's
- * effect on the supply identity is proven in test_v2_econ, where the
- * chain actually mints. Unclaimed distribution and shielded remain zero
- * in this file. */
+ * tokenomics-v3 P2 (design §7 P2-2): the O15J `epoch_pool` term is GONE
+ * with the mint and epoch_state; the reserve now sits in two places the
+ * engine's own gate counts (nodus_witness_v2_claims.c): the
+ * supply_tracking.reward_pool column — which EVERY fee leg in this file
+ * now credits (P2-3) — and the unpaid v2_reward_accrual rows. The pool
+ * term is LIVE here (each fee-paying case moves it); the accrual term is
+ * 0 in this file (no fixture crosses a paying boundary — that is
+ * test_v2_econ's subject). Unclaimed distribution and shielded remain
+ * zero in this file. */
 static int supply_identity_holds(nodus_witness_t *w) {
     uint64_t g = q1(w, "SELECT genesis_supply FROM supply_tracking");
     uint64_t m = q1(w, "SELECT total_minted FROM supply_tracking");
@@ -1063,13 +1064,14 @@ static int supply_identity_holds(nodus_witness_t *w) {
     uint64_t bo = q1(w, "SELECT COALESCE(SUM(self_stake),0) FROM validators");
     uint64_t dl = q1(w, "SELECT COALESCE(SUM(total_delegated),0) "
                         "FROM validators");
-    uint64_t ep = q1(w, "SELECT COALESCE(SUM(epoch_pool_accum),0) "
-                        "FROM epoch_state");
+    uint64_t rp = q1(w, "SELECT reward_pool FROM supply_tracking");
+    uint64_t ac = q1(w, "SELECT COALESCE(SUM(amount),0) "
+                        "FROM v2_reward_accrual");
     if (g == UINT64_MAX || m == UINT64_MAX || bu == UINT64_MAX ||
         ux == UINT64_MAX || bo == UINT64_MAX || dl == UINT64_MAX ||
-        ep == UINT64_MAX)
+        rp == UINT64_MAX || ac == UINT64_MAX)
         return 0;
-    return g + m - bu == ux + bo + dl + ep;
+    return g + m - bu == ux + bo + dl + rp + ac;
 }
 
 /* ══ 1. AUTH — the verified boundary ═══════════════════════════════ */
@@ -1480,27 +1482,26 @@ static int test_system_cc(void) {
         }
     }
 
-    /* INFLATION_START monotonicity: a prior nonzero row is seeded, so
-     * a proposal disabling it (0) or moving it past now must reject */
-    CHECK(run_sql(fx.w->db,
-        "INSERT INTO chain_config_history (param_id, new_value, "
-        "effective_block, commit_block, tx_hash, proposal_nonce, "
-        "created_at_unix) VALUES (3, 900000, 500000, 0, zeroblob(64), "
-        "7, 0)") == 0, "seed inflation row");
+    /* tokenomics-v3 P2-4: param 3 (INFLATION_START_BLOCK) is RETIRED with
+     * the mint it scheduled — the pre-P2 monotonicity cases here are
+     * gone with it. A quorum proposal for id 3 refuses as a
+     * deterministic VERDICT at every value: 0 (the pre-P2 "disable"),
+     * and 999 (a pre-P2 "enable"). KILLED BY: dropping the RETIRED
+     * return in cc_scalar_rules (nodus_witness_chain_config.c). */
     CHECK(cc_env(&fx, &e, 1, 3, 0, 20000, 0x43, 1, 30000, voters5, 5, 0,
                  NULL, NULL) == 0, "build");
     {
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
         CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
-              "monotonicity: cannot disable once enabled");
+              "retired param 3 (value 0) must reject");
         OK();
         CHECK(cc_env(&fx, &e, 1, 3, 999, 20000, 0x44, 1, 30000, voters5,
                      5, 0, NULL, NULL) == 0, "build");
         nodus_v2_envelope_t v2e = { e.bytes, e.len };
         mk_block(&b, 1, &v2e, 1);
         CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
-              "monotonicity: cannot move start past current block");
+              "retired param 3 (value 999) must reject");
         OK();
     }
 
@@ -2199,6 +2200,7 @@ static int test_core_spend(void) {
 
     /* ── POSITIVE: transfer with change ─────────────────────────────── */
     uint64_t burned0 = q1(fx.w, "SELECT total_burned FROM supply_tracking");
+    uint64_t pool0 = q1(fx.w, "SELECT reward_pool FROM supply_tracking");
     uint8_t core_r0[64], sys_r0[64];
     CHECK(head_root(fx.w, 1, core_r0) == 0 &&
           head_root(fx.w, 0, sys_r0) == 0, "roots");
@@ -2283,9 +2285,13 @@ static int test_core_spend(void) {
             OK();
         }
     }
-    /* fee burned exactly once; conservation identity holds */
+    /* tokenomics-v3 P2-3: the fee reaches the REWARD POOL exactly once
+     * and burns nothing; conservation identity holds. KILLED BY: a SPEND
+     * that still SETs total_burned, or credits the pool twice. */
     CHECK(q1(fx.w, "SELECT total_burned FROM supply_tracking")
-              == burned0 + FEE_MIN, "fee burned exactly once");
+              == burned0, "a SPEND fee burns nothing");
+    CHECK(q1(fx.w, "SELECT reward_pool FROM supply_tracking")
+              == pool0 + FEE_MIN, "fee credited to the pool exactly once");
     CHECK(supply_identity_holds(fx.w), "pre/post total DNAC identity");
     OK();
     /* CORE root moved + height advanced; SYSTEM untouched */
@@ -3468,6 +3474,7 @@ static int test_core_burn(void) {
     uint8_t core_root0[64];
     CHECK(head_root(fx.w, DNA_DOMAIN_CORE, core_root0) == 0, "core root");
     uint64_t burned0 = q1(fx.w, "SELECT total_burned FROM supply_tracking");
+    uint64_t pool0 = q1(fx.w, "SELECT reward_pool FROM supply_tracking");
     uint64_t supply0 = q1(fx.w,
                           "SELECT current_supply FROM supply_tracking");
     env_t e_p1;
@@ -3484,14 +3491,21 @@ static int test_core_burn(void) {
               "burn with change must commit");
         OK();
         /* the exact before/after invariant, named buckets (the season's
-         * §6 proof): total_burned += fee + burn, current_supply -= the
-         * same, input row GONE, exactly one change row created */
+         * §6 proof, re-split by tokenomics-v3 P2-3): total_burned +=
+         * burn_amount ONLY (an explicit burn still burns), the fee goes
+         * to the reward pool, current_supply -= burn_amount ONLY (a pool
+         * credit destroys nothing), input row GONE, exactly one change
+         * row created. KILLED BY: a BURN that still burns its fee, or
+         * one that pools its burn_amount. */
         CHECK(q1(fx.w, "SELECT total_burned FROM supply_tracking")
-                  == burned0 + FEE_MIN + 2000000,
-              "total_burned == before + fee + burn_amount");
+                  == burned0 + 2000000,
+              "total_burned == before + burn_amount");
+        CHECK(q1(fx.w, "SELECT reward_pool FROM supply_tracking")
+                  == pool0 + FEE_MIN,
+              "reward_pool == before + fee");
         CHECK(q1(fx.w, "SELECT current_supply FROM supply_tracking")
-                  == supply0 - (FEE_MIN + 2000000),
-              "current_supply fell by exactly fee + burn_amount");
+                  == supply0 - 2000000,
+              "current_supply fell by exactly burn_amount");
         {
             sqlite3_stmt *st = NULL;
             CHECK(sqlite3_prepare_v2(fx.w->db,
@@ -3573,8 +3587,9 @@ static int test_core_burn(void) {
         CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
               "full-value burn must commit");
         CHECK(q1(fx.w, "SELECT total_burned FROM supply_tracking")
-                  == burned_pre + UTXO_B,
-              "full value entered total_burned");
+                  == burned_pre + UTXO_B - FEE_MIN,
+              "the full value less the fee entered total_burned (the "
+              "fee went to the reward pool, P2-3)");
         CHECK(supply_identity_holds(fx.w), "conservation identity");
         OK();
     }
@@ -3593,7 +3608,8 @@ static int test_core_burn(void) {
         CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
               "smallest burn must commit");
         CHECK(q1(fx.w, "SELECT total_burned FROM supply_tracking")
-                  == burned_pre + FEE_MIN + 1, "burn of exactly 1 unit");
+                  == burned_pre + 1,
+              "burn of exactly 1 unit (the fee is pooled, not burned)");
         CHECK(supply_identity_holds(fx.w), "conservation identity");
         OK();
     }
@@ -3619,8 +3635,8 @@ static int test_core_burn(void) {
         CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
               "token pass-through burn must commit");
         CHECK(q1(fx.w, "SELECT total_burned FROM supply_tracking")
-                  == burned_pre + 2000000 - 500000,
-              "only native value burned");
+                  == burned_pre + 2000000 - 500000 - FEE_MIN,
+              "only the native burn_amount burned (fee pooled)");
         /* the token moved intact */
         {
             sqlite3_stmt *st = NULL;
@@ -4215,6 +4231,7 @@ static int test_core_token_create(void) {
 
     /* ── POSITIVE 1: valid creation with change ─────────────────────── */
     uint64_t burned0 = q1(fx.w, "SELECT total_burned FROM supply_tracking");
+    uint64_t pool0 = q1(fx.w, "SELECT reward_pool FROM supply_tracking");
     uint8_t core_root0[64], sys_head0[89];
     CHECK(head_root(fx.w, DNA_DOMAIN_CORE, core_root0) == 0, "core root");
     CHECK(head_blob(fx.w, DNA_DOMAIN_SYSTEM, sys_head0) == 0, "sys head");
@@ -4277,12 +4294,15 @@ static int test_core_token_create(void) {
             sqlite3_finalize(st);
             OK();
         }
-        /* fee burned exactly once; native conservation holds; the
+        /* tokenomics-v3 P2-3: the creation fee reaches the reward pool
+         * exactly once and burns nothing; native conservation holds; the
          * current_supply COLUMN itself stays coherent (review round:
          * pin the derivation, not just the recomputed identity) */
         CHECK(q1(fx.w, "SELECT total_burned FROM supply_tracking")
-                  == burned0 + TC_FEE + 1000000,
-              "creation fee burned exactly once");
+                  == burned0, "a creation fee burns nothing");
+        CHECK(q1(fx.w, "SELECT reward_pool FROM supply_tracking")
+                  == pool0 + TC_FEE + 1000000,
+              "creation fee credited to the pool exactly once");
         CHECK(q1(fx.w, "SELECT current_supply FROM supply_tracking")
                   == q1(fx.w, "SELECT genesis_supply + total_minted - "
                               "total_burned FROM supply_tracking"),
@@ -4335,6 +4355,8 @@ static int test_core_token_create(void) {
     {
         uint64_t burned_pre = q1(fx.w,
                                  "SELECT total_burned FROM supply_tracking");
+        uint64_t pool_pre = q1(fx.w,
+                               "SELECT reward_pool FROM supply_tracking");
         static const char n32[] = "NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN";
         out_spec_t o[1] = { { 7, 9223372036854775807ULL, 0x58, tokB } };
         CHECK(tc_env(&fx, &e, tokB, n32, "SSSSSSSS", 18, insf2, 1, o, 1,
@@ -4344,7 +4366,9 @@ static int test_core_token_create(void) {
         CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
               "boundary creation must commit");
         CHECK(q1(fx.w, "SELECT total_burned FROM supply_tracking")
-                  == burned_pre + TC_FEE, "exact-fee boundary burned");
+                  == burned_pre &&
+              q1(fx.w, "SELECT reward_pool FROM supply_tracking")
+                  == pool_pre + TC_FEE, "exact-fee boundary pooled");
         {
             sqlite3_stmt *st = NULL;
             CHECK(sqlite3_prepare_v2(fx.w->db,
@@ -5328,6 +5352,7 @@ static int test_system_stake(void) {
 
     /* ── §A the canonical positive (destination fp = the staker's own) ─ */
     uint64_t burned0 = q1(fx.w, "SELECT total_burned FROM supply_tracking");
+    uint64_t pool0 = q1(fx.w, "SELECT reward_pool FROM supply_tracking");
     uint8_t sys_head0[89], core_head0[89];
     CHECK(head_blob(fx.w, DNA_DOMAIN_SYSTEM, sys_head0) == 0, "sys head");
     CHECK(head_blob(fx.w, DNA_DOMAIN_CORE, core_head0) == 0, "core head");
@@ -5387,8 +5412,11 @@ static int test_system_stake(void) {
         OK();
     }
     CHECK(q1(fx.w, "SELECT total_burned FROM supply_tracking")
-              == burned0 + FEE_MIN,
-          "A: burned += the fee and ONLY the fee"); OK();
+              == burned0 &&
+          q1(fx.w, "SELECT reward_pool FROM supply_tracking")
+              == pool0 + FEE_MIN,
+          "A: the pool += the fee and ONLY the fee; nothing burned "
+          "(tokenomics-v3 P2-3)"); OK();
     CHECK(supply_identity_holds(fx.w),
           "A: the CORE conservation identity still holds"); OK();
     /* both domains moved, each exactly once */
@@ -6042,6 +6070,7 @@ static int test_system_delegate(void) {
     CHECK(sysrow_read(fx.w, 4, vk0, 64, v0_before, TVAL_REC_LEN) == 1,
           "validator 0 row"); OK();
     uint64_t burned0 = q1(fx.w, "SELECT total_burned FROM supply_tracking");
+    uint64_t pool0 = q1(fx.w, "SELECT reward_pool FROM supply_tracking");
     uint8_t sys_h0[89], core_h0[89];
     CHECK(head_blob(fx.w, DNA_DOMAIN_SYSTEM, sys_h0) == 0 &&
           head_blob(fx.w, DNA_DOMAIN_CORE, core_h0) == 0, "heads");
@@ -6093,7 +6122,10 @@ static int test_system_delegate(void) {
               "P1 delegation row columns"); OK();
     }
     CHECK(q1(fx.w, "SELECT total_burned FROM supply_tracking")
-              == burned0 + FEE_MIN, "P1 burned += fee only"); OK();
+              == burned0 &&
+          q1(fx.w, "SELECT reward_pool FROM supply_tracking")
+              == pool0 + FEE_MIN,
+          "P1 pool += fee only, nothing burned (P2-3)"); OK();
     CHECK(utxo_rows(fx.w, f9) == 0 && utxo_rows(fx.w, chg9) == 1,
           "P1 input spent, change created"); OK();
     CHECK(supply_identity_holds(fx.w),
@@ -6110,7 +6142,15 @@ static int test_system_delegate(void) {
     }
 
     /* ── POSITIVE 2: TOP-UP at a later height — amount SUMS and
-     *    delegated_at_block is REFRESHED (bft.c:1468) ───────────────── */
+     *    delegated_at_block is REFRESHED to the top-up's height ────────
+     * The legacy refresh (bft.c:1468), restored by tokenomics-v3 P2
+     * revision 2 (design §7.1 "Silinenler"): the rev-1 rule that read
+     * this column as "the row was (re)opened here" is deleted from the
+     * reward distribution, so nothing on the witness reads it and the
+     * rev-1 "keep it on a top-up" divergence has no reason to exist.
+     * RED ON THE PRE-REV2 TREE: the row read 1 (kept at the creating
+     * height by the rev-1 divergence).
+     * KILLED BY: writing ctx->global_height on the CREATE path only. */
     {
         uint8_t f9b[64];
         CHECK(seed_funding(&fx, 9, DLG_FUND, 0xD5, f9b) == 0, "fund");
@@ -6132,7 +6172,8 @@ static int test_system_delegate(void) {
         CHECK(tbe64(d + TDEL_AMT_OFF) == 2 * DLG_AMOUNT,
               "P2 the top-up SUMS into the existing position"); OK();
         CHECK(tbe64(d + TDEL_AT_OFF) == 2,
-              "P2 delegated_at_block is REFRESHED to the new height");
+              "P2 delegated_at_block is REFRESHED to the top-up's height "
+              "(2), the legacy behaviour");
         OK();
         CHECK(q1(fx.w, "SELECT COUNT(*) FROM delegations") == 1,
               "P2 a top-up creates NO second row"); OK();
@@ -6624,18 +6665,18 @@ static int test_delegator_cap_v2(void) {
         }
     }
 
-    /* ── C4: SNAPSHOT PROPERTY — the truncating query can no longer be
-     *    ASKED to truncate ──────────────────────────────────────────
-     * This is the property the whole cap exists for. The epoch snapshot
-     * feeds nodus_delegation_list_by_validator a bound of
-     * NODUS_EPOCH_MAX_DELEGS_PER_VAL, which is an ALIAS of the cap; the
-     * assertion is that a validator driven as hard as the chain allows
-     * still fits inside that bound, so the LIMIT never discards a row
-     * and the missing ORDER BY has no set to choose from. */
+    /* ── C4: the ROW BOUND holds table-wide ───────────────────────────
+     * The cap was introduced for the O15J epoch snapshot, which read a
+     * validator's delegators through nodus_delegation_list_by_validator
+     * at a bound aliasing the cap. tokenomics-v3 P2 deleted that snapshot
+     * and that function (the P2 distribution reads every delegation
+     * through v2_balance_copy, untruncated); the cap stays an admission
+     * bound, and the assertion is that a validator driven as hard as the
+     * chain allows still has at most CAP delegator rows. */
     {
         char sql[256];
         CHECK(synth_del_count(fx.w, 0) <= (int64_t)CAP,
-              "C4 no validator can exceed the snapshot's capacity"); OK();
+              "C4 no validator can exceed the delegator cap"); OK();
         /* the bound is interpolated from CAP, never a literal 64 — a
          * hard-coded copy here would keep passing after the production
          * constant moved, which is the drift this season exists to end */
@@ -6899,6 +6940,7 @@ static int test_system_unstake(void) {
     CHECK(sysrow_read(fx.w, 4, vk1, 64, v1_before, TVAL_REC_LEN) == 1,
           "row"); OK();
     uint64_t burned1 = q1(fx.w, "SELECT total_burned FROM supply_tracking");
+    uint64_t pool1 = q1(fx.w, "SELECT reward_pool FROM supply_tracking");
     uint64_t ac_before = active_count(fx.w);
     {
         uint32_t sl = unstake_call_build(scall, sizeof(scall), 1);
@@ -6933,7 +6975,9 @@ static int test_system_unstake(void) {
     CHECK(active_count(fx.w) == ac_before,
           "UP1 active_count does NOT drop at the request"); OK();
     CHECK(q1(fx.w, "SELECT total_burned FROM supply_tracking")
-              == burned1 + FEE_MIN, "UP1 burned += fee"); OK();
+              == burned1 &&
+          q1(fx.w, "SELECT reward_pool FROM supply_tracking")
+              == pool1 + FEE_MIN, "UP1 pool += fee, nothing burned"); OK();
     CHECK(supply_identity_holds(fx.w), "UP1 supply identity"); OK();
 
     /* ── U5 REPEATED unstake: the row is RETIRING, no longer BONDED ── */
@@ -6979,6 +7023,25 @@ static int test_system_unstake(void) {
     }
     fx_close(&fx);
     return 0;
+}
+
+/* The UNDELEGATE release UTXO's unlock height for a withdrawal executed
+ * in block h (tokenomics-v3 P2-10, design §7.1), re-derived HERE from
+ * the design's words and NOT through nodus_v2_power_exit_boundary, the
+ * function under test:
+ *   nb(h) = ceil(h / E) · E     — written as (h + E − 1) / E · E, a
+ *                                  different spelling from the
+ *                                  production h % E branch
+ *   L(h)  = nb(h) + E
+ *   unlock = L(h) + DNAC_UNDELEGATE_LOCK_EPOCHS · E
+ * Hand values with the decision's 12 epochs (checked by name in
+ * test_undelegate_release_lock): h strictly inside epoch 0 → 14E;
+ * h = E → 14E (block E's transactions run before boundary E, whose
+ * commit_next already excludes them); h = E + 1 → 15E. */
+static uint64_t exp_release_unlock(uint64_t h) {
+    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    const uint64_t nb = ((h + E - 1) / E) * E;
+    return nb + E + (uint64_t)DNAC_UNDELEGATE_LOCK_EPOCHS * E;
 }
 
 static int test_system_undelegate(void) {
@@ -7180,9 +7243,11 @@ static int test_system_undelegate(void) {
               memcmp(sqlite3_column_blob(st, 2), intent1, 64) == 0 &&
               sqlite3_column_int64(st, 3) == 100 &&
               sqlite3_column_int64(st, 4) == 2 &&
-              sqlite3_column_int64(st, 5) == 0 &&
+              (uint64_t)sqlite3_column_int64(st, 5) ==
+                  exp_release_unlock(2) &&
               memcmp(sqlite3_column_blob(st, 6), zt, 64) == 0,
-              "R1 the release UTXO's every column");
+              "R1 the release UTXO's every column — born LOCKED to "
+              "L(2) + 12E = 14E (P2-10; was unlock 0 before revision 2)");
         sqlite3_finalize(st);
         OK();
     }
@@ -7237,6 +7302,32 @@ static int test_system_undelegate(void) {
     }
     CHECK(utxo_rows(fx.w, rel2) == 1 && utxo_rows(fx.w, rel1) == 1,
           "R2 both release UTXOs coexist"); OK();
+    /* The FULL drain's release is locked exactly like the partial one's
+     * (tokenomics-v3 P2-10): h = 3 is inside epoch 0, so by hand
+     * nb(3) = E, L(3) = 2E, unlock = 2E + 12E = 14E (exp_release_unlock
+     * re-derives it independently of the function under test).
+     * RED ON THE PRE-REV2 TREE: the row read 0.
+     * KILLED BY: computing the lock only on the partial path (the drain
+     * path DELETEs the delegation row — rtn_undelegate_exec — and the
+     * release must be locked all the same). */
+    {
+        sqlite3_stmt *st = NULL;
+        CHECK(sqlite3_prepare_v2(fx.w->db,
+              "SELECT unlock_block, amount FROM utxo_set "
+              "WHERE nullifier = ?1", -1, &st, NULL) == SQLITE_OK, "prep");
+        sqlite3_bind_blob(st, 1, rel2, 64, SQLITE_TRANSIENT);
+        CHECK(sqlite3_step(st) == SQLITE_ROW, "row");
+        const uint64_t u2 = (uint64_t)sqlite3_column_int64(st, 0);
+        const uint64_t a2 = (uint64_t)sqlite3_column_int64(st, 1);
+        sqlite3_finalize(st);
+        CHECK(a2 == DLG_AMOUNT - half &&
+              u2 == exp_release_unlock(3) &&
+              u2 == (2 + (uint64_t)DNAC_UNDELEGATE_LOCK_EPOCHS) *
+                        (uint64_t)DNAC_EPOCH_LENGTH,
+              "R2 the full drain's release is born LOCKED to L(3) + 12E "
+              "= 14E");
+        OK();
+    }
     CHECK(supply_identity_holds(fx.w), "R2 supply identity"); OK();
 
     /* ── N6 repeated FULL drain: the row is gone ────────────────────── */
@@ -7354,6 +7445,440 @@ static int release_nul(const uint8_t intent[64], uint8_t out[64]) {
     pre[64] = 0x01;
     pre[65] = 0; pre[66] = 0; pre[67] = 0; pre[68] = 100;
     return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;
+}
+
+/* ══ 13b. THE UNDELEGATE RELEASE LOCK (tokenomics-v3 P2-10) ══════════
+ *
+ * Design docs/plans/2026-09-23-tokenomics-v3-consensus-binding-design.md
+ * §7.1; decision file §1 "Stake çözme" (12 epochs, from where the stake
+ * leaves the voting power) and §3 2026-09-24 "DELEGATOR = VALIDATOR
+ * GİBİ". The release UTXO an UNDELEGATE creates is born locked to
+ * L(h) + 12E; the spend gates (`unlock >= H` is locked) make it
+ * spendable from L(h) + 12E + 1.
+ *
+ * HEIGHT CONTROL, HONESTLY LABELLED: the block layer only accepts the
+ * next height (nodus_witness_v2_apply.c, `global_height != maxh + 1`),
+ * and the unlock sits 14 epochs out (10 080 blocks at the default E), so
+ * the boundary heights and the unlock height are reached at the HOOK
+ * level — the CORE runtime's own exec with ctx.global_height set, the
+ * test_vupd_hook_pins H4 pattern. The release row itself and the
+ * locked-funding refusal are ALSO pinned through real blocks at heights
+ * 2 and 3. */
+
+/* the UTXO record's unlock field, RESTATED (the production offset
+ * RTN_UTXO_UNLOCK_OFF is not exported — the same independent-restatement
+ * rule as TVAL_* / TDEL_*) */
+#define TUTXO_REC_LEN     284u
+#define TUTXO_UNLOCK_OFF  276u
+
+/* The unlock of the CREATE whose key is `key` in an encoded effect
+ * result. @return 0 found (value in *unlock) / -1 absent or malformed. */
+static int res_create_unlock(const uint8_t *res, size_t rl,
+                             const uint8_t key[64], uint64_t *unlock) {
+    dna_effect_view_t ev;
+    if (dna_effect_result_decode(res, rl, &ev) != 0) return -1;
+    for (uint16_t i = 0; i < ev.effect_count; i++) {
+        if (ev.eff[i].op_id != 1 ||             /* RTN_CORE_OP_UTXO */
+            ev.eff[i].effect_kind != DNA_EFFECT_CREATE ||
+            ev.eff[i].key_len != 64 ||
+            ev.eff[i].value_len != TUTXO_REC_LEN)
+            continue;
+        if (memcmp(ev.buf + ev.key_off[i], key, 64) != 0) continue;
+        *unlock = tbe64(ev.buf + ev.val_off[i] + TUTXO_UNLOCK_OFF);
+        return 0;
+    }
+    return -1;
+}
+
+/* the committed unlock_block of one utxo_set row; UINT64_MAX absent */
+static uint64_t row_unlock(nodus_witness_t *w, const uint8_t nul[64]) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT unlock_block FROM utxo_set WHERE nullifier = ?1",
+            -1, &st, NULL) != SQLITE_OK)
+        return UINT64_MAX;
+    sqlite3_bind_blob(st, 1, nul, 64, SQLITE_TRANSIENT);
+    uint64_t v = UINT64_MAX;
+    if (sqlite3_step(st) == SQLITE_ROW)
+        v = (uint64_t)sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    return v;
+}
+
+/* Hook-level CORE exec of leg `leg` at height `h`: plan, mediated reads,
+ * exec. @return the exec rc (0 / -1 / -2), or -9 on a harness failure. */
+static int core_exec_at(fixture_t *fx, const dna_env_view_t *v,
+                        uint16_t leg, nodus_rt_exec_ctx_t *ctx,
+                        uint64_t h, uint8_t *res, size_t cap,
+                        size_t *rl) {
+    size_t n = 0;
+    const nodus_domain_runtime_t *bt = nodus_runtime_builtin_table(&n);
+    if (!bt || n != 2) return -9;
+    const nodus_domain_runtime_t *core = &bt[1];
+    nodus_rt_read_req_t reqs[NODUS_RT_MAX_READS];
+    nodus_rt_read_res_t reads[NODUS_RT_MAX_READS];
+    uint16_t nr = 0;
+    ctx->global_height = h;
+    if (nodus_rt_core_read_plan(core, v, leg, ctx, reqs, NODUS_RT_MAX_READS,
+                                &nr) != 0)
+        return -9;
+    memset(reads, 0, sizeof(reads));
+    for (uint16_t r = 0; r < nr; r++)
+        if (nodus_witness_v2_read_one(fx->w, core, &reqs[r], &reads[r])
+            != NODUS_ADAPTER_OK)
+            return -9;
+    return nodus_rt_core_exec(core, v, leg, ctx, reads, nr, res, cap, rl);
+}
+
+#define RLK_BIG     4000000ULL   /* the delegated position              */
+#define RLK_HALF    (RLK_BIG / 2) /* the partial withdrawal              */
+#define RLK_LOCK2   500000ULL    /* a re-delegation the release funds   */
+/* RLK_HALF == FEE_MIN + RLK_LOCK2 + RLK_CHG2 (the SYSFUND equation) and
+ * RLK_HALF == FEE_MIN + RLK_SPEND_OUT (the SPEND equation) */
+#define RLK_CHG2    (RLK_HALF - FEE_MIN - RLK_LOCK2)
+#define RLK_SPEND_OUT (RLK_HALF - FEE_MIN)
+
+/* RED ON THE PRE-REV2 TREE: every release UTXO was born unlock 0
+ * (rtn_sysfund_exec's memset rel_rec + the shared builder's literal 0),
+ * so the unlock checks read 0 and the locked-funding refusals committed
+ * — the "withdraw, use, re-delegate within the epoch" path of the
+ * decision file's 2026-09-24 entry.
+ * KILLED BY: dropping the lock; a floor-based nb (h inside epoch 0 →
+ * 13E, E+1 → 14E); treating a boundary h as "the next boundary is
+ * h + E" (h = E → 15E); L = nb(h) or nb(h) + 2E; counting the lock in
+ * blocks instead of epochs; locking the CHANGE output too; checking
+ * `unlock > H` instead of `unlock >= H` in ANY of the three input gates
+ * (SPEND/BURN rtn_xfer_exec — L5; SYSFUND rtn_sysfund_exec — L5;
+ * TOKEN_CREATE rtn_tc_exec — L6). */
+static int test_undelegate_release_lock(void) {
+    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    static uint8_t scall[8192], fcall[8192];
+    static uint8_t res[DNA_EFFECT_MAX_TOTAL_LEN];
+    size_t rl = 0;
+    int s9[1] = { 9 };
+
+    /* ── L1 the decision's constant, and the hand-derived table ──────── */
+    CHECK(DNAC_UNDELEGATE_LOCK_EPOCHS == 12,
+          "L1 the delegator lock is the decision's 12 epochs (§1 "
+          "\"Delegator bekleme süresi 12 epoch\")"); OK();
+    CHECK(E > 2, "FIXTURE GUARD: an epoch long enough to have an inside");
+    CHECK(exp_release_unlock(E / 2) == 14 * E &&
+          exp_release_unlock(E) == 14 * E &&
+          exp_release_unlock(E + 1) == 15 * E &&
+          exp_release_unlock(2 * E) == 15 * E,
+          "FIXTURE GUARD: the independent re-derivation matches the hand "
+          "table (inside → 14E, boundary E → 14E, E+1 → 15E, 2E → 15E)");
+    OK();
+
+    /* ── L2 L(h) itself, pure ─────────────────────────────────────────
+     * Hand: L(0) = 0 + E (0 is a boundary), L(1) = E + E, L(E−1) = 2E,
+     * L(E) = 2E, L(E+1) = 3E, L(2E) = 3E. */
+    {
+        const uint64_t hs[6]   = { 0, 1, E - 1, E, E + 1, 2 * E };
+        const uint64_t want[6] = { E, 2 * E, 2 * E, 2 * E, 3 * E, 3 * E };
+        for (int i = 0; i < 6; i++) {
+            uint64_t got = 0;
+            CHECK(nodus_v2_power_exit_boundary(hs[i], &got) == 0 &&
+                  got == want[i], "L2 L(h) = ceil(h/E)·E + E");
+        }
+        OK();
+        uint64_t got = 7;
+        CHECK(nodus_v2_power_exit_boundary(UINT64_MAX, &got) == -1 &&
+              got == 7,
+              "L2 an h whose ceil leaves 64 bits is refused, out untouched");
+        CHECK(nodus_v2_power_exit_boundary((UINT64_MAX / E) * E, &got)
+                  == -1 && got == 7,
+              "L2 a boundary h whose + E leaves 64 bits is refused");
+        CHECK(nodus_v2_power_exit_boundary(1, NULL) == -1,
+              "L2 NULL out is refused");
+        OK();
+    }
+
+    fixture_t fx;
+    CHECK(fx_genesis(&fx, "rellk") == 0, "genesis");
+    uint8_t vk0[64], dk90[128];
+    CHECK(val_key(0, vk0) == 0 && deleg_key_of(9, 0, dk90) == 0, "keys");
+
+    /* ── L3 hook level: the release CREATE's unlock at h inside an epoch,
+     *    h exactly at a boundary, h = boundary + 1 (and E−1, 2E), and the
+     *    CHANGE output stays unlocked ─────────────────────────────────── */
+    {
+        uint8_t f9[64], iid[64], relid[64], chg[64];
+        env_t e;
+        dna_env_view_t v;
+        CHECK(seed_funding(&fx, 9, NOLOCK_FUND, 0xC1, f9) == 0, "fund");
+        uint32_t sl = deleg_call_build(scall, sizeof(scall), 9, 0,
+                                       DLG_AMOUNT);
+        uint32_t fl = fund_call(fcall, sizeof(fcall), f9, 9, DLG_CHANGE,
+                                0xC2);
+        CHECK(sl && fl, "call");
+        CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_UNDELEGATE, scall, sl,
+                            DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                            s9, 1, s9, 1, NULL) == 0, "build");
+        CHECK(dna_env_decode(e.bytes, e.len, &v) == 0, "decode");
+        CHECK(out_nul(9, 0xC2, chg) == 0, "change id");
+        nodus_rt_auth_verdict_t av;
+        memset(&av, 0, sizeof(av));
+        av.n_signers = 1;
+        CHECK(qgp_sha3_512(g_pk[9], 2592, av.signer_fp[0]) == 0, "fp");
+        memset(iid, 0x5C, sizeof(iid));
+        CHECK(release_nul(iid, relid) == 0, "release id");
+        nodus_rt_exec_ctx_t ctx;
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.chain_id = fx.chain_id;
+        ctx.intent_id = iid;
+        ctx.wire_id = iid;
+        ctx.auth = &av;
+
+        const uint64_t hs[5] = { E / 2, E - 1, E, E + 1, 2 * E };
+        for (int i = 0; i < 5; i++) {
+            uint64_t u = 0, uc = 1;
+            CHECK(core_exec_at(&fx, &v, 1, &ctx, hs[i], res, sizeof(res),
+                               &rl) == 0, "L3 the funding leg executes");
+            CHECK(res_create_unlock(res, rl, relid, &u) == 0 &&
+                  u == exp_release_unlock(hs[i]),
+                  "L3 the release is born locked to L(h) + 12E");
+            CHECK(res_create_unlock(res, rl, chg, &uc) == 0 && uc == 0,
+                  "L3 the CHANGE output is NOT locked");
+        }
+        OK();
+    }
+
+    /* ── L4 block level: position → partial withdrawal (h=2) → the
+     *    release row carries the lock; the withdrawn coin cannot fund a
+     *    top-up (h=3, refused); a top-up with other coin still works and
+     *    unlocks nothing ─────────────────────────────────────────────── */
+    nodus_v2_block_t b;
+    env_t e;
+    int rc = 0;
+    uint8_t relA[64];
+    {
+        uint8_t fbig[64];
+        CHECK(seed_funding(&fx, 9, RLK_BIG + FEE_MIN + DLG_CHANGE, 0xC3,
+                           fbig) == 0, "fund");
+        uint32_t sl = deleg_call_build(scall, sizeof(scall), 9, 0, RLK_BIG);
+        uint32_t fl = fund_call(fcall, sizeof(fcall), fbig, 9, DLG_CHANGE,
+                                0xC4);
+        CHECK(sl && fl, "call");
+        CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_DELEGATE, scall, sl,
+                            DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                            s9, 1, s9, 1, NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+              "L4 the position (h=1)"); OK();
+    }
+    {
+        uint8_t f9[64], wid[64], iid[64];
+        CHECK(seed_funding(&fx, 9, NOLOCK_FUND, 0xC5, f9) == 0, "fund");
+        uint32_t sl = deleg_call_build(scall, sizeof(scall), 9, 0,
+                                       RLK_HALF);
+        uint32_t fl = fund_call(fcall, sizeof(fcall), f9, 9, DLG_CHANGE,
+                                0xC6);
+        CHECK(sl && fl, "call");
+        CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_UNDELEGATE, scall, sl,
+                            DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                            s9, 1, s9, 1, NULL) == 0, "build");
+        CHECK(derive_ids2(&fx, &e, wid, iid) == 0, "ids");
+        CHECK(release_nul(iid, relA) == 0, "release id");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 2, &ve, 1);
+        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+              "L4 the partial withdrawal (h=2)"); OK();
+        CHECK(utxo_rows(fx.w, relA) == 1 &&
+              row_unlock(fx.w, relA) == exp_release_unlock(2),
+              "L4 the committed release row is locked to L(2) + 12E");
+        CHECK(supply_identity_holds(fx.w), "L4 supply identity"); OK();
+    }
+    /* the withdrawn coin tries to come straight back as a top-up */
+    {
+        uint32_t sl = deleg_call_build(scall, sizeof(scall), 9, 0,
+                                       RLK_LOCK2);
+        uint32_t fl = fund_call(fcall, sizeof(fcall), relA, 9, RLK_CHG2,
+                                0xC7);
+        CHECK(sl && fl, "call");
+        CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_DELEGATE, scall, sl,
+                            DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                            s9, 1, s9, 1, NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 3, &ve, 1);
+        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+              "L4 a top-up FUNDED BY the locked release must reject "
+              "(the SYSFUND input gate)"); OK();
+    }
+    /* a top-up with other coin commits, and unlocks nothing */
+    {
+        uint8_t f9[64];
+        CHECK(seed_funding(&fx, 9, DLG_FUND, 0xC8, f9) == 0, "fund");
+        uint32_t sl = deleg_call_build(scall, sizeof(scall), 9, 0,
+                                       DLG_AMOUNT);
+        uint32_t fl = fund_call(fcall, sizeof(fcall), f9, 9, DLG_CHANGE,
+                                0xC9);
+        CHECK(sl && fl, "call");
+        CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_DELEGATE, scall, sl,
+                            DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                            s9, 1, s9, 1, NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 3, &ve, 1);
+        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+              "L4 a top-up with unlocked coin commits (h=3)"); OK();
+        uint8_t d[TDEL_REC_LEN];
+        CHECK(sysrow_read(fx.w, 5, dk90, 128, d, TDEL_REC_LEN) == 1 &&
+              tbe64(d + TDEL_AMT_OFF) == RLK_BIG - RLK_HALF + DLG_AMOUNT,
+              "L4 the position is the remainder plus the top-up"); OK();
+        CHECK(row_unlock(fx.w, relA) == exp_release_unlock(2),
+              "L4 the withdrawn part STAYS locked after the top-up"); OK();
+        CHECK(supply_identity_holds(fx.w), "L4 supply identity"); OK();
+    }
+
+    /* ── L5 hook level at the unlock height U and U + 1: a SPEND and a
+     *    DELEGATE funded by the committed release ───────────────────── */
+    {
+        const uint64_t U = exp_release_unlock(2);
+        nodus_rt_auth_verdict_t av;
+        memset(&av, 0, sizeof(av));
+        av.n_signers = 1;
+        CHECK(qgp_sha3_512(g_pk[9], 2592, av.signer_fp[0]) == 0, "fp");
+        uint8_t iid[64];
+        memset(iid, 0x5D, sizeof(iid));
+        nodus_rt_exec_ctx_t ctx;
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.chain_id = fx.chain_id;
+        ctx.intent_id = iid;
+        ctx.wire_id = iid;
+        ctx.auth = &av;
+
+        /* SPEND (leg 0, rtn_xfer_exec's input gate) */
+        {
+            uint8_t in1[1][64];
+            memcpy(in1[0], relA, 64);
+            out_spec_t o[1] = { { 9, RLK_SPEND_OUT, 0xCA, NULL } };
+            dna_env_view_t v;
+            CHECK(spend_env(&fx, &e, in1, 1, o, 1, FEE_MIN, s9, 1, NULL)
+                      == 0, "build");
+            CHECK(dna_env_decode(e.bytes, e.len, &v) == 0, "decode");
+            CHECK(core_exec_at(&fx, &v, 0, &ctx, U, res, sizeof(res), &rl)
+                      == -1,
+                  "L5 a SPEND of the release AT its unlock height rejects");
+            CHECK(core_exec_at(&fx, &v, 0, &ctx, U + 1, res, sizeof(res),
+                               &rl) == 0,
+                  "L5 the same SPEND at unlock + 1 is accepted");
+            OK();
+        }
+        /* DELEGATE funded by the release (leg 1, rtn_sysfund_exec's
+         * input gate) */
+        {
+            dna_env_view_t v;
+            uint32_t sl = deleg_call_build(scall, sizeof(scall), 9, 0,
+                                           RLK_LOCK2);
+            uint32_t fl = fund_call(fcall, sizeof(fcall), relA, 9, RLK_CHG2,
+                                    0xCB);
+            CHECK(sl && fl, "call");
+            CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_DELEGATE, scall, sl,
+                                DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                                s9, 1, s9, 1, NULL) == 0, "build");
+            CHECK(dna_env_decode(e.bytes, e.len, &v) == 0, "decode");
+            CHECK(core_exec_at(&fx, &v, 1, &ctx, U, res, sizeof(res), &rl)
+                      == -1,
+                  "L5 a DELEGATE funded by the release AT its unlock "
+                  "height rejects");
+            CHECK(core_exec_at(&fx, &v, 1, &ctx, U + 1, res, sizeof(res),
+                               &rl) == 0,
+                  "L5 the same DELEGATE funding at unlock + 1 is accepted");
+            OK();
+        }
+    }
+
+    /* ── L6 the THIRD input gate: TOKEN_CREATE (rtn_tc_exec's input loop,
+     *    `unlock >= ctx->global_height` → -1). The creation fee is
+     *    TC_FEE = NODUS_W_TOKEN_CREATE_FEE (1e15 raw), paid in native
+     *    coin only, so the release must be at least that large: a FULL
+     *    drain of a TC_FEE-sized position to validator 1, through real
+     *    blocks at h = 4 (DELEGATE) and h = 5 (UNDELEGATE). By hand:
+     *    h = 5 is inside epoch 0 → nb = E, L = 2E, unlock U5 = 14E.
+     *    The TOKEN_CREATE spends exactly that release (Σnative_in = fee,
+     *    one 777-unit output of the new token) and is executed at the
+     *    hook with ctx.global_height = U5 (refused) and U5 + 1 (accepted)
+     *    — the same height control as L5.
+     *    KILLED BY: `unlock > H` instead of `unlock >= H` at the
+     *    TOKEN_CREATE gate (U5 would be accepted); dropping that gate. */
+    {
+        uint8_t fT[64], relT[64];
+        {
+            CHECK(seed_funding(&fx, 9, TC_FEE + FEE_MIN + DLG_CHANGE, 0xCC,
+                               fT) == 0, "fund");
+            uint32_t sl = deleg_call_build(scall, sizeof(scall), 9, 1,
+                                           TC_FEE);
+            uint32_t fl = fund_call(fcall, sizeof(fcall), fT, 9, DLG_CHANGE,
+                                    0xCD);
+            CHECK(sl && fl, "call");
+            CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_DELEGATE, scall, sl,
+                                DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                                s9, 1, s9, 1, NULL) == 0, "build");
+            nodus_v2_envelope_t ve = { e.bytes, e.len };
+            mk_block(&b, 4, &ve, 1);
+            CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+                  "L6 a TC_FEE-sized position to validator 1 (h=4)"); OK();
+        }
+        {
+            uint8_t f9[64], wid[64], iid[64];
+            CHECK(seed_funding(&fx, 9, NOLOCK_FUND, 0xCE, f9) == 0, "fund");
+            uint32_t sl = deleg_call_build(scall, sizeof(scall), 9, 1,
+                                           TC_FEE);
+            uint32_t fl = fund_call(fcall, sizeof(fcall), f9, 9, DLG_CHANGE,
+                                    0xCF);
+            CHECK(sl && fl, "call");
+            CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_UNDELEGATE, scall, sl,
+                                DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                                s9, 1, s9, 1, NULL) == 0, "build");
+            CHECK(derive_ids2(&fx, &e, wid, iid) == 0, "ids");
+            CHECK(release_nul(iid, relT) == 0, "release id");
+            nodus_v2_envelope_t ve = { e.bytes, e.len };
+            mk_block(&b, 5, &ve, 1);
+            CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+                  "L6 the full drain (h=5)"); OK();
+            CHECK(utxo_rows(fx.w, relT) == 1 &&
+                  row_unlock(fx.w, relT) == exp_release_unlock(5) &&
+                  exp_release_unlock(5) ==
+                      (2 + (uint64_t)DNAC_UNDELEGATE_LOCK_EPOCHS) * E,
+                  "L6 the TC_FEE release is locked to L(5) + 12E = 14E");
+            OK();
+        }
+        {
+            const uint64_t U5 = exp_release_unlock(5);
+            static uint8_t tokL[64];
+            memset(tokL, 0x9A, sizeof(tokL));
+            uint8_t inT[1][64];
+            memcpy(inT[0], relT, 64);
+            out_spec_t o[1] = { { 9, 777, 0xD0, tokL } };
+            dna_env_view_t v;
+            CHECK(tc_env(&fx, &e, tokL, "Lockd", "LK", 8, inT, 1, o, 1,
+                         TC_FEE, s9, 1, NULL) == 0, "build");
+            CHECK(dna_env_decode(e.bytes, e.len, &v) == 0, "decode");
+            nodus_rt_auth_verdict_t av;
+            memset(&av, 0, sizeof(av));
+            av.n_signers = 1;
+            CHECK(qgp_sha3_512(g_pk[9], 2592, av.signer_fp[0]) == 0, "fp");
+            uint8_t iid[64];
+            memset(iid, 0x5E, sizeof(iid));
+            nodus_rt_exec_ctx_t ctx;
+            memset(&ctx, 0, sizeof(ctx));
+            ctx.chain_id = fx.chain_id;
+            ctx.intent_id = iid;
+            ctx.wire_id = iid;
+            ctx.auth = &av;
+            CHECK(core_exec_at(&fx, &v, 0, &ctx, U5, res, sizeof(res), &rl)
+                      == -1,
+                  "L6 a TOKEN_CREATE paid by the release AT its unlock "
+                  "height rejects");
+            CHECK(core_exec_at(&fx, &v, 0, &ctx, U5 + 1, res, sizeof(res),
+                               &rl) == 0,
+                  "L6 the same TOKEN_CREATE at unlock + 1 is accepted");
+            OK();
+        }
+    }
+    fx_close(&fx);
+    return 0;
 }
 
 /* digest of ONE table (rowid order) — the firewall/atomicity proof unit
@@ -8624,8 +9149,10 @@ static int test_system_validator_update(void) {
     }
     /* the whole negative matrix left the chain untouched */
     CHECK(q1(fx.w, "SELECT total_burned FROM supply_tracking") == 0 &&
+          q1(fx.w, "SELECT reward_pool FROM supply_tracking") == 0 &&
           utxo_rows(fx.w, fneg) == 1,
-          "the negative matrix burned nothing and spent nothing"); OK();
+          "the negative matrix burned nothing, pooled nothing and spent "
+          "nothing"); OK();
 
     /* ══ POSITIVES ═══════════════════════════════════════════════════ */
 
@@ -8648,15 +9175,17 @@ static int test_system_validator_update(void) {
         CHECK(vupd_only_commission_moved(before, after) == 0,
               "P1 no other column moved"); OK();
         /* fee-only conservation: the change output exists, the input is
-         * gone, and EXACTLY the fee was burned */
+         * gone, and EXACTLY the fee reached the reward pool (P2-3 —
+         * nothing is burned) */
         uint8_t chg[64];
         CHECK(out_nul(9, 0xB0, chg) == 0, "change id");
         CHECK(utxo_rows(fx.w, chg) == 1 && utxo_rows(fx.w, fpos[0]) == 0,
               "P1 change created, funding input consumed"); OK();
-        CHECK(q1(fx.w, "SELECT total_burned FROM supply_tracking") ==
+        CHECK(q1(fx.w, "SELECT total_burned FROM supply_tracking") == 0 &&
+              q1(fx.w, "SELECT reward_pool FROM supply_tracking") ==
                   FEE_MIN &&
               utxo_amount_of(fx.w, chg) == DLG_CHANGE,
-              "P1 exactly the fee burned, exactly the change created");
+              "P1 exactly the fee pooled, exactly the change created");
         OK();
         CHECK(supply_identity_holds(fx.w), "P1 supply identity"); OK();
     }
@@ -8771,10 +9300,11 @@ static int test_system_validator_update(void) {
         CHECK(vupd_only_commission_moved(before, after) == 0,
               "P6 no other column moved"); OK();
     }
-    /* six committed envelopes, six fees, nothing else destroyed */
-    CHECK(q1(fx.w, "SELECT total_burned FROM supply_tracking") ==
+    /* six committed envelopes, six fees pooled, nothing destroyed */
+    CHECK(q1(fx.w, "SELECT total_burned FROM supply_tracking") == 0 &&
+          q1(fx.w, "SELECT reward_pool FROM supply_tracking") ==
               6 * FEE_MIN,
-          "fee-only: exactly one fee burned per committed update"); OK();
+          "fee-only: exactly one fee pooled per committed update"); OK();
     CHECK(supply_identity_holds(fx.w), "supply identity"); OK();
 
     /* ══ ACTIVE-SET IMMUTABILITY ══════════════════════════════════════
@@ -9167,21 +9697,11 @@ static int test_vupd_hook_pins(void) {
 }
 
 int main(void) {
-    /* O15J Faz 2 — this file pins which domain roots a given runtime op
-     * moves: "op X moves SYSTEM", "op X must NOT move CORE".
-     *
-     * A mint moves BOTH roots on every block, so with inflation on the
-     * "must move" half becomes VACUOUS (true for a reason unrelated to
-     * the op) and the "must not move" half FAILS OUTRIGHT. An earlier
-     * version of this comment said both became "vacuously true" — review
-     * R2-F12 corrected that; only one half is vacuity, the other is a
-     * hard failure.
-     *
-     * Either way the properties are inexpressible on a minting chain, so
-     * this file runs quiet. Emission and settlement have their own
-     * coverage in test_v2_econ. */
-    v2x_inflation_off = 1;
-
+    /* This file pins which domain roots a given runtime op moves: "op X
+     * moves SYSTEM", "op X must NOT move CORE". The O15J per-block mint
+     * made that inexpressible and this file set `v2x_inflation_off`;
+     * tokenomics-v3 P2 deleted the mint, so every chain is quiet and the
+     * switch is gone. */
     if (keys_init() != 0) {
         fprintf(stderr, "keygen failed\n");
         return 1;
@@ -9203,6 +9723,7 @@ int main(void) {
     if (test_delegator_cap_v2() != 0) return 1;
     if (test_system_unstake() != 0) return 1;
     if (test_system_undelegate() != 0) return 1;
+    if (test_undelegate_release_lock() != 0) return 1;
     if (test_o11_fault_matrix() != 0) return 1;
     if (test_o11_vset_firewall() != 0) return 1;
     if (test_o11_global() != 0) return 1;

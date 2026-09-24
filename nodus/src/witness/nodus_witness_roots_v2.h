@@ -44,8 +44,17 @@ int nodus_witness_token_root_v2(nodus_witness_t *w, uint8_t out[64]);
 int nodus_witness_epoch_root_v2(nodus_witness_t *w, uint8_t out[64]);
 
 /** supply_root from supply_tracking (three-valued read honored: absent
- *  row = honest pre-genesis zeros; DB error = fail). */
+ *  row = honest pre-genesis zeros; DB error = fail). tokenomics-v3 P2:
+ *  the leaf commits genesis/minted/burned AND reward_pool
+ *  ("DNA.SUPPLY.v2"). */
 int nodus_witness_supply_root_v2(nodus_witness_t *w, uint8_t out[64]);
+
+/** accrual_root (tokenomics-v3 P2, P2-8) over `v2_reward_accrual`
+ *  (owner_fp ASC) — the 7th leg of core_state_root. A malformed row
+ *  (owner_fp not 64 bytes, amount <= 0) or a scan fault fails the whole
+ *  computation; the table is in the base schema, so an absent table is
+ *  a fault, never the empty state. @return 0 / -1. */
+int nodus_witness_accrual_root_v2(nodus_witness_t *w, uint8_t out[64]);
 
 /** attendance_root (tokenomics-v3 P1, D-4 / S-2) over `v2_attendance_epoch`
  *  rows, epoch_start ASC. Follows the epoch leg's fail-closed pattern: a
@@ -66,7 +75,8 @@ int nodus_witness_attendance_root(nodus_witness_t *w, uint8_t out[64]);
  *  still a tagged-empty placeholder. */
 int nodus_witness_system_root_v2(nodus_witness_t *w, uint8_t out[64]);
 
-/** core_state_root per the V2 composition (S6/S7/O-7 legs tagged-empty). */
+/** core_state_root per the V2 composition (S6/S7/O-7 legs tagged-empty;
+ *  tokenomics-v3 P2: 7 legs incl. accrual_root, tag "DNA.CORE.v2"). */
 int nodus_witness_core_root_v2(nodus_witness_t *w, uint8_t out[64]);
 
 /** S5 — SYSTEM runtime-owned genesis PAYLOAD root ("DNA.SYSPAYL.v1"):

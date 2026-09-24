@@ -98,16 +98,15 @@ int main(void) {
     tx.signer_count = 2;
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
 
-    /* 5. param_id bounds — 0 and >MAX_ID rejected; id 1 (MAX_TXS_PER_BLOCK)
-     * is IN [1, MAX_ID] but RETIRED (see case 6 below, not here); the two
-     * OTHER defined IDs this file checks accept valid values. */
+    /* 5. param_id bounds — 0 and >MAX_ID rejected; ids 1
+     * (MAX_TXS_PER_BLOCK) and 3 (INFLATION_START_BLOCK) are IN
+     * [1, MAX_ID] but RETIRED (cases 6 and 8 below, not here); the
+     * governable id this case checks accepts a valid value. */
     build_valid_chain_config(&tx, 0, 5);
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
     build_valid_chain_config(&tx, DNAC_CFG_PARAM_MAX_ID + 1, 0);
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
     build_valid_chain_config(&tx, DNAC_CFG_BLOCK_INTERVAL_SEC, 5);
-    CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
-    build_valid_chain_config(&tx, DNAC_CFG_INFLATION_START_BLOCK, 12345);
     CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
 
     /* 6. MAX_TXS_PER_BLOCK (id 1) is RETIRED: every value refuses, even
@@ -135,14 +134,21 @@ int main(void) {
     build_valid_chain_config(&tx, DNAC_CFG_BLOCK_INTERVAL_SEC, 60);
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
 
-    /* 8. INFLATION_START_BLOCK upper bound 2^48. */
+    /* 8. INFLATION_START_BLOCK (id 3) is RETIRED (tokenomics-v3 P2, P2-4;
+     * decision file 2026-09-22-nodus-tokenomics-v3-operator.md §3 S-4):
+     * dnac_tx_verify_chain_config_rules refuses it for EVERY value
+     * (verify.c, the id-3 case), mirroring the witness-side
+     * nodus_chain_config_scalar_rules. The values below are the shapes
+     * the retired [0, 2^48] range used to ACCEPT — 0, an ordinary
+     * height, and the former upper bound itself — so a restored range
+     * check fails here. The bound macro (DNAC_CFG_MAX_INFLATION_START_
+     * BLOCK) is deleted, hence the literal 2^48. */
     build_valid_chain_config(&tx, DNAC_CFG_INFLATION_START_BLOCK, 0);
-    CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));  /* 0 allowed at client layer */
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, DNAC_CFG_INFLATION_START_BLOCK, 12345);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
     build_valid_chain_config(&tx, DNAC_CFG_INFLATION_START_BLOCK,
-                             DNAC_CFG_MAX_INFLATION_START_BLOCK);
-    CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
-    build_valid_chain_config(&tx, DNAC_CFG_INFLATION_START_BLOCK,
-                             DNAC_CFG_MAX_INFLATION_START_BLOCK + 1);
+                             281474976710656ULL);           /* 2^48 */
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
 
     /* 9. signed_at_block == 0 rejected (CC-AUDIT-008). */

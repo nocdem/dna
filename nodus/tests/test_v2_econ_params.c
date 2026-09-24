@@ -4,7 +4,7 @@
  *        COMMITTED GENESIS STATE.
  *
  * THE DEFECT UNDER TEST. DNAC_BLOCKS_PER_YEAR, DNAC_DECIMAL_UNIT
- * (nodus_witness_emission.h:33, :41) and DNAC_EPOCH_LENGTH (dnac.h:171)
+ * (nodus_witness_emission.h:48, :53 today) and DNAC_EPOCH_LENGTH (dnac.h:171)
  * are `#ifndef`-guarded, so `-D` at compile time changes how much a node
  * mints and where its epoch boundaries fall — and the Stage F halving
  * test requires exactly such a build, SKIPping when one is not declared
@@ -13,10 +13,12 @@
  * derived the SAME chain id, joined cleanly, and then credited a
  * different amount at some later height. Nothing on the wire showed it.
  *
- * Mirror-image half: the builder ASSERTED chain_config_history empty, so
- * the emission gate's nodus_chain_config_get_u64(..., 1ULL) fell to its
- * default forever and every derived chain minted from height 1 with no
- * way to configure that at genesis.
+ * tokenomics-v3 P2 (P2-4): the per-block mint is DELETED and the genesis
+ * inflation start (chain-config param 3) is RETIRED — the builder no
+ * longer commits a param-3 row and refuses any nonzero value. The band's
+ * three rows stay committed build identity, and the epoch_length refusal
+ * still runs on EVERY block (relocated from the deleted mint to apply
+ * phase 6f — the check this file's §2.2 exercises through the loader).
  *
  * ── THE TWO BINDINGS, AND WHY BOTH ARE TESTED SEPARATELY ────────────
  * The parameters travel two INDEPENDENT paths to the chain id:
@@ -39,8 +41,9 @@
  *
  * Sections:
  *   §1  the parameters reach the chain id — BOTH paths, independently
+ *       (§1.1 is now the RETIRED inflation start's refusal, P2-4)
  *   §2  a mismatched build is REFUSED, not silently admitted
- *   §3  the inflation start is honoured FROM GENESIS
+ *   §3  the retired inflation start is NOT committed (P2-4)
  *   §4  the Faz 1 determinism twin still holds
  *
  * Copyright (c) 2026 nocdem
@@ -58,7 +61,8 @@
 
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_db.h"
-#include "witness/nodus_witness_emission.h"
+#include "witness/nodus_witness_emission.h"   /* DNAC_BLOCKS_PER_YEAR,
+                                               * DNAC_DECIMAL_UNIT      */
 #include "witness/nodus_witness_v2_econ.h"
 #include "witness/nodus_witness_v2_gen.h"
 #include "nodus/nodus_chain_config.h"
@@ -252,10 +256,10 @@ static void cfg_free(cfgbox_t *b) {
  * bonding DNAC_SELF_STAKE_AMOUNT plus TREASURY_RAW claimable — 10^17 raw
  * in total, exactly DNAC_DEFAULT_TOTAL_SUPPLY.
  *
- * @param inflation_start the ONLY economic parameter a config may vary
- *                        and still derive: the three schedule constants
- *                        are pinned to this build (that IS the fail-closed
- *                        rule §2 exercises).
+ * @param inflation_start written verbatim into the config. tokenomics-v3
+ *                        P2 RETIRED the field: 0 is its only legal value,
+ *                        and §1.1 / §2.1 pass a nonzero one precisely to
+ *                        prove it is refused.
  */
 static int cfg_make(cfgbox_t *b, uint8_t salt, uint64_t inflation_start) {
     memset(b, 0, sizeof(*b));
@@ -322,6 +326,10 @@ static int cfg_make_v3(cfgbox_t *b, uint8_t salt, uint64_t inflation_start) {
         cfg_free(b);
         return -1;
     }
+    /* tokenomics-v3 P2 (P2-1): the default reward reserve is carved out
+     * of the fixed supply, so the treasury allocation carries the rest
+     * (Rule P.2: Σ allocations + Σ self_stake + reserve == total). */
+    b->allocs[0].amount = TREASURY_RAW - b->cfg->reward_pool_initial;
     b->cfg->genesis_time_ms = 1700000000000ULL;
     b->cfg->initial_height  = 1;
     if (nodus_witness_v2_gen_v3_fill_comet_rows(b->cfg) != 0) {
@@ -417,54 +425,54 @@ static int poke_band(nodus_witness_t *w, unsigned param, uint64_t value) {
  * §1 — THE PARAMETERS REACH THE CHAIN ID, BY BOTH PATHS
  * ══════════════════════════════════════════════════════════════════ */
 
-/* §1.1 PATH A, END TO END. Two configs identical in every byte except
- * `inflation_start_block` derive DIFFERENT chain ids.
+/* §1.1 THE RETIRED INFLATION START (tokenomics-v3 P2, P2-4).
  *
- * inflation_start_block is the only economic parameter a config may vary
- * and still derive — the other three are pinned to the build — so it is
- * the only one for which a full derive-and-compare is expressible. It is
- * a genuine end-to-end proof of path A: config → canonical encoding →
- * source_commit → manifest → dna_bh2_genesis_block_id → chain id.
+ * Before P2 this section proved path A end to end by deriving two
+ * configs that differed ONLY in `inflation_start_block` — the one
+ * economic parameter a config could vary and still derive. P2 deletes the
+ * per-block mint that field gated and retires chain-config param 3, so
+ * the field has ONE legal value, 0: a nonzero value describes a mint the
+ * chain cannot perform and is REFUSED before a byte is encoded (a
+ * document must not lie). The three band parameters are still proven on
+ * path A byte-for-byte (§1.2) and on path B on their own (§1.3).
  *
- * MUTANT KILLED: delete `put_be64(p, cfg->inflation_start_block)` from
- * gen_encode_planned and the two configs hash identically, so the two
- * chain ids collide and this fails. Also killed: writing a constant
- * instead of the field. NOT killed by this assertion alone: dropping the
- * SEEDED ROW (path B) — §1.3 covers that, deliberately separately. */
+ * RED ON THE PRE-P2 TREE: both nonzero configs below were accepted (the
+ * old rule only bounded the value by 2^48) and derived chains.
+ *
+ * MUTANT KILLED: dropping the `inflation_start_block != 0` refusal in
+ * gen_plan_build. */
 static int t_path_a_chain_id(void) {
-    char d1[128], d2[128];
-    CHECK(mkdir_tmp(d1, "a1") == 0 && mkdir_tmp(d2, "a2") == 0, "tmpdirs");
+    char d1[128];
+    CHECK(mkdir_tmp(d1, "a1") == 0, "tmpdir");
     OK();
 
-    cfgbox_t c1, c2;
-    CHECK(cfg_make(&c1, 0x00, 1ULL) == 0, "cfg 1");
-    CHECK(cfg_make(&c2, 0x00, 5ULL) == 0, "cfg 2");
+    cfgbox_t c0, c1, c5;
+    CHECK(cfg_make(&c0, 0x00, 0ULL) == 0, "cfg start=0");
+    CHECK(cfg_make(&c1, 0x00, 1ULL) == 0, "cfg start=1");
+    CHECK(cfg_make(&c5, 0x00, 5ULL) == 0, "cfg start=5");
     OK();
 
-    /* Both configs are derivable — the difference is a legal one, not a
-     * rejection. If this fails the test below proves nothing. */
-    CHECK(nodus_witness_v2_gen_config_validate(c1.cfg) == 0 &&
-          nodus_witness_v2_gen_config_validate(c2.cfg) == 0,
-          "both inflation starts are legal configs");
-    OK();
+    CHECK(nodus_witness_v2_gen_config_validate(c0.cfg) == 0,
+          "0 — the only legal inflation start — is ACCEPTED (control)");
+    CHECK(nodus_witness_v2_gen_config_validate(c1.cfg) != 0 &&
+          nodus_witness_v2_gen_config_validate(c5.cfg) != 0,
+          "any nonzero (retired) inflation start is REFUSED");
+    {
+        uint8_t sc[NODUS_V2_GEN_SRCCOMMIT_LEN];
+        CHECK(nodus_witness_v2_gen_source_commit(c1.cfg, sc) != 0,
+              "and has no source_commit — nothing about it is encoded");
+    }
+    CHECK(nodus_witness_v2_gen_derive(d1, c1.cfg, NULL) != 0,
+          "and derive refuses it");
+    {
+        char p[600];
+        uint8_t id16[16];
+        CHECK(find_chain(d1, p, id16) == 1,
+              "leaving nothing in the data path");
+    }
 
-    uint8_t sc1[NODUS_V2_GEN_SRCCOMMIT_LEN], sc2[NODUS_V2_GEN_SRCCOMMIT_LEN];
-    CHECK(nodus_witness_v2_gen_source_commit(c1.cfg, sc1) == 0 &&
-          nodus_witness_v2_gen_source_commit(c2.cfg, sc2) == 0,
-          "source_commit computed for both");
-    CHECK(memcmp(sc1, sc2, sizeof(sc1)) != 0,
-          "a different inflation start is a DIFFERENT source_commit");
-
-    uint8_t id1[32], id2[32];
-    CHECK(nodus_witness_v2_gen_derive(d1, c1.cfg, id1) == 0, "derive 1");
-    CHECK(nodus_witness_v2_gen_derive(d2, c2.cfg, id2) == 0, "derive 2");
-    OK();
-    CHECK(memcmp(id1, id2, 32) != 0,
-          "and therefore a DIFFERENT CHAIN ID — a mismatched economic "
-          "config cannot join, it derives its own chain");
-
-    cfg_free(&c1); cfg_free(&c2);
-    rmrf(d1); rmrf(d2);
+    cfg_free(&c0); cfg_free(&c1); cfg_free(&c5);
+    rmrf(d1);
     return g_fail;
 }
 
@@ -484,7 +492,9 @@ static int t_path_a_chain_id(void) {
  * place of the config field (the offset check reads the value back). */
 static int t_path_a_encoding(void) {
     cfgbox_t c;
-    CHECK(cfg_make(&c, 0x00, 7ULL) == 0, "cfg");
+    /* tokenomics-v3 P2: 0, the retired field's only legal value (a
+     * nonzero one is refused before a byte is produced, §1.1). */
+    CHECK(cfg_make(&c, 0x00, 0ULL) == 0, "cfg");
     OK();
 
     uint8_t *enc = NULL;
@@ -507,9 +517,10 @@ static int t_path_a_encoding(void) {
           "blocks_per_year sits at its documented offset");
     CHECK(be64_at(enc + ENC_OFF_DECIMAL_UNIT) == (uint64_t)DNAC_DECIMAL_UNIT,
           "decimal_unit sits at its documented offset");
-    CHECK(be64_at(enc + ENC_OFF_INFLATION_START) == 7ULL,
-          "inflation_start_block sits at its documented offset and carries "
-          "the CONFIG's value, not a constant");
+    CHECK(be64_at(enc + ENC_OFF_INFLATION_START) == 0ULL,
+          "inflation_start_block keeps its documented offset (the layout "
+          "is unchanged by P2) and carries the retired field's only "
+          "value, 0");
     /* The fields around them must not have moved either. */
     CHECK(be64_at(enc + ENC_OFF_TOTAL_SUPPLY) ==
               (uint64_t)DNAC_DEFAULT_TOTAL_SUPPLY &&
@@ -551,7 +562,7 @@ static int t_path_b_committed_root(void) {
     CHECK(mkdir_tmp(dir, "b") == 0, "tmpdir");
     OK();
     cfgbox_t c;
-    CHECK(cfg_make_v3(&c, 0x00, 1ULL) == 0, "cfg (version 3)");
+    CHECK(cfg_make_v3(&c, 0x00, 0ULL) == 0, "cfg (version 3)");
     CHECK(nodus_witness_v2_gen_derive_v3(dir, c.cfg, NULL) == 0, "derive v3");
     OK();
 
@@ -610,7 +621,12 @@ static int t_derive_refuses_mismatch(void) {
     cfgbox_t c;
 
     /* blocks_per_year */
-    CHECK(cfg_make(&c, 0x00, 1ULL) == 0, "cfg");
+    /* tokenomics-v3 P2: every fixture here carries inflation start 0 —
+     * a nonzero one would be refused on its own and make each mismatch
+     * refusal below vacuous. */
+    CHECK(cfg_make(&c, 0x00, 0ULL) == 0, "cfg");
+    CHECK(nodus_witness_v2_gen_config_validate(c.cfg) == 0,
+          "the unmodified composition is ACCEPTED (non-vacuity control)");
     c.cfg->blocks_per_year = (uint64_t)DNAC_BLOCKS_PER_YEAR + 1;
     CHECK(nodus_witness_v2_gen_config_validate(c.cfg) != 0,
           "a blocks_per_year this build cannot honour is REFUSED");
@@ -619,7 +635,7 @@ static int t_derive_refuses_mismatch(void) {
     cfg_free(&c);
 
     /* decimal_unit */
-    CHECK(cfg_make(&c, 0x00, 1ULL) == 0, "cfg");
+    CHECK(cfg_make(&c, 0x00, 0ULL) == 0, "cfg");
     c.cfg->decimal_unit = (uint64_t)DNAC_DECIMAL_UNIT * 10;
     CHECK(nodus_witness_v2_gen_config_validate(c.cfg) != 0,
           "a decimal_unit this build cannot honour is REFUSED");
@@ -628,23 +644,26 @@ static int t_derive_refuses_mismatch(void) {
     cfg_free(&c);
 
     /* epoch_length — the Faz 1 check, still in force */
-    CHECK(cfg_make(&c, 0x00, 1ULL) == 0, "cfg");
+    CHECK(cfg_make(&c, 0x00, 0ULL) == 0, "cfg");
     c.cfg->epoch_length = (uint64_t)DNAC_EPOCH_LENGTH + 1;
     CHECK(nodus_witness_v2_gen_config_validate(c.cfg) != 0,
           "an epoch_length this build cannot honour is still REFUSED");
     cfg_free(&c);
 
-    /* the governance ceiling on the one FREE parameter */
+    /* tokenomics-v3 P2 (P2-4): the formerly FREE inflation start is
+     * retired — any nonzero value is refused (it replaces the old
+     * governance-ceiling case: there is no ceiling to test when 1 is
+     * already illegal). */
     CHECK(cfg_make(&c, 0x00, 1ULL) == 0, "cfg");
-    c.cfg->inflation_start_block = DNAC_CFG_MAX_INFLATION_START_BLOCK + 1;
     CHECK(nodus_witness_v2_gen_config_validate(c.cfg) != 0,
-          "an inflation start above the governance ceiling is REFUSED — "
-          "genesis must not commit a value no vote could produce");
+          "a nonzero (retired) inflation start is REFUSED");
+    CHECK(nodus_witness_v2_gen_derive(dir, c.cfg, NULL) != 0,
+          "and derive refuses it too");
     cfg_free(&c);
 
     /* a version-1 config is refused rather than defaulted: an economic
      * parameter must never arrive from a structural default */
-    CHECK(cfg_make(&c, 0x00, 1ULL) == 0, "cfg");
+    CHECK(cfg_make(&c, 0x00, 0ULL) == 0, "cfg");
     c.cfg->config_version = 1u;
     CHECK(nodus_witness_v2_gen_config_validate(c.cfg) != 0,
           "the pre-2C config schema is REFUSED, not defaulted");
@@ -675,9 +694,9 @@ static int t_derive_refuses_mismatch(void) {
  * chain's committed economics say one thing, this build says another.
  *
  * MUTANT KILLED: delete the epoch_length refusal in
- * nodus_witness_v2_econ_params_load, or the -2 conversion at the top of
- * nodus_witness_v2_emission_apply — the poked chain then mints happily on
- * the wrong parameters, which is the original defect. */
+ * nodus_witness_v2_econ_params_load. (tokenomics-v3 P2: the loader's
+ * per-block CALLER moved from the deleted mint to apply phase 6f; the
+ * loader itself is the unit under test here, exactly as before.) */
 static int t_join_refuses_mismatch(void) {
     char dir[128];
     CHECK(mkdir_tmp(dir, "j") == 0, "tmpdir");
@@ -688,7 +707,7 @@ static int t_join_refuses_mismatch(void) {
      * pre-Comet chain, and this case is about what the RUNTIME reads on a
      * chain it has OPENED. The committed band rows are written by the
      * same gen_seed_state either way (nodus_witness_v2_gen.c). */
-    CHECK(cfg_make_v3(&c, 0x00, 1ULL) == 0, "cfg (version 3)");
+    CHECK(cfg_make_v3(&c, 0x00, 0ULL) == 0, "cfg (version 3)");
     CHECK(nodus_witness_v2_gen_derive_v3(dir, c.cfg, NULL) == 0, "derive v3");
     OK();
 
@@ -696,7 +715,8 @@ static int t_join_refuses_mismatch(void) {
     CHECK(w != NULL, "open");
     OK();
 
-    /* Baseline: an untouched chain loads cleanly and MINTS. */
+    /* Baseline: an untouched chain's band loads cleanly (tokenomics-v3
+     * P2: there is no mint to exercise any more). */
     {
         nodus_v2_econ_params_t p;
         CHECK(nodus_witness_v2_econ_params_load(w, &p) == 0 && p.present,
@@ -705,10 +725,6 @@ static int t_join_refuses_mismatch(void) {
               p.decimal_unit    == (uint64_t)DNAC_DECIMAL_UNIT &&
               p.epoch_length    == (uint64_t)DNAC_EPOCH_LENGTH,
               "with this build's values");
-        uint64_t minted = 0;
-        CHECK(nodus_witness_v2_emission_apply(w, 1, &minted) == 0 &&
-              minted == nodus_emission_per_block(1),
-              "and a block on it mints the scheduled amount");
     }
     OK();
 
@@ -722,27 +738,21 @@ static int t_join_refuses_mismatch(void) {
         nodus_v2_econ_params_t p;
         CHECK(nodus_witness_v2_econ_params_load(w, &p) != 0,
               "a committed epoch_length this build cannot honour is a "
-              "FAULT, not a value");
-        uint64_t minted = 123;
-        CHECK(nodus_witness_v2_emission_apply(w, 2, &minted) == -2 &&
-              minted == 0,
-              "and the block FAILS rather than minting on parameters this "
-              "build disagrees with");
+              "FAULT, not a value (apply phase 6f fails the block on it)");
+        CHECK(p.present == 0 && p.epoch_length == 0,
+              "and the struct holds nothing usable on the fault");
     }
     CHECK(poke_band(w, NODUS_CC_ECON_EPOCH_LENGTH,
                     (uint64_t)DNAC_EPOCH_LENGTH) == 0, "restore E");
     OK();
 
     /* A CORRUPT value is a fault too — 0 blocks_per_year is not a
-     * schedule, and _ex would have to divide by it. */
+     * committed schedule value, it is a corrupt row. */
     CHECK(poke_band(w, NODUS_CC_ECON_BLOCKS_PER_YEAR, 0ULL) == 0, "poke 0");
     {
         nodus_v2_econ_params_t p;
         CHECK(nodus_witness_v2_econ_params_load(w, &p) != 0,
               "a zero-valued committed economic parameter is REFUSED");
-        uint64_t minted = 123;
-        CHECK(nodus_witness_v2_emission_apply(w, 2, &minted) == -2 &&
-              minted == 0, "and no block mints on it");
     }
     CHECK(poke_band(w, NODUS_CC_ECON_BLOCKS_PER_YEAR,
                     (uint64_t)DNAC_BLOCKS_PER_YEAR) == 0, "restore BY");
@@ -763,8 +773,7 @@ static int t_join_refuses_mismatch(void) {
     OK();
 
     /* GOVERNANCE CAN NEVER PRODUCE A BAND ROW. The band is committed
-     * once, at genesis, and no committee vote may move it — the property
-     * nodus_witness_emission.h states about the emission schedule.
+     * once, at genesis, and no committee vote may move it.
      * MUTANT KILLED: widening the allowlist to admit these ids. */
     CHECK(nodus_chain_config_scalar_rules(
               (uint8_t)NODUS_CC_ECON_BLOCKS_PER_YEAR, 100, 1, 100, 50) != 0 &&
@@ -773,12 +782,25 @@ static int t_join_refuses_mismatch(void) {
           nodus_chain_config_scalar_rules(
               (uint8_t)NODUS_CC_ECON_EPOCH_LENGTH, 100, 1, 100, 50) != 0,
           "no CHAIN_CONFIG tx can ever write the reserved econ band");
-    /* ...while the governable inflation start still passes its own rules,
-     * so the assertion above is about the BAND and not about the checker
-     * rejecting everything it is handed. */
+    /* ...while a governable parameter (TARGET_ACTIVE_COUNT, id 4) still
+     * passes its own rules, so the assertion above is about the BAND and
+     * not about the checker rejecting everything it is handed. */
     CHECK(nodus_chain_config_scalar_rules(
-              (uint8_t)DNAC_CFG_INFLATION_START_BLOCK, 100, 1, 200, 50) == 0,
-          "and the governable inflation start is still votable");
+              (uint8_t)DNAC_CFG_TARGET_ACTIVE_COUNT, 9, 1, 200, 50) == 0,
+          "and a governable parameter is still votable");
+    /* tokenomics-v3 P2 (P2-4): the INFLATION START (id 3) is RETIRED —
+     * refused for every value, exactly as id 1 is, and its grace is the
+     * unsatisfiable UINT64_MAX. RED ON THE PRE-P2 TREE: id 3 with value
+     * 100 passed these very rules.
+     * MUTANT KILLED: restoring a range check for id 3 in scalar_rules. */
+    CHECK(nodus_chain_config_scalar_rules(
+              (uint8_t)DNAC_CFG_INFLATION_START_BLOCK, 100, 1, 200, 50) != 0 &&
+          nodus_chain_config_scalar_rules(
+              (uint8_t)DNAC_CFG_INFLATION_START_BLOCK, 0, 1, 200, 50) != 0,
+          "the retired inflation start is refused at any value");
+    CHECK(nodus_chain_config_grace_for_param(
+              (uint8_t)DNAC_CFG_INFLATION_START_BLOCK) == UINT64_MAX,
+          "and its grace is unsatisfiable by construction");
 
     close_chain(w);
     cfg_free(&c);
@@ -801,7 +823,7 @@ static int t_preexisting_chain_unchanged(void) {
     cfgbox_t c;
     /* R3 W4 — version-3 chain (see t_join_refuses_mismatch); the band is
      * stripped by hand below, which is the shape under test. */
-    CHECK(cfg_make_v3(&c, 0x00, 1ULL) == 0, "cfg (version 3)");
+    CHECK(cfg_make_v3(&c, 0x00, 0ULL) == 0, "cfg (version 3)");
     CHECK(nodus_witness_v2_gen_derive_v3(dir, c.cfg, NULL) == 0, "derive v3");
     OK();
     nodus_witness_t *w = open_chain(dir);
@@ -815,13 +837,9 @@ static int t_preexisting_chain_unchanged(void) {
 
     nodus_v2_econ_params_t p;
     CHECK(nodus_witness_v2_econ_params_load(w, &p) == 0 && p.present == 0,
-          "no band is ABSENT, not a fault");
-
-    uint64_t minted = 0;
-    CHECK(nodus_witness_v2_emission_apply(w, 1, &minted) == 0 &&
-          minted == nodus_emission_per_block(1),
-          "and such a chain mints exactly what the COMPILED constants say "
-          "— byte-identical to its pre-2C behaviour");
+          "no band is ABSENT, not a fault — the compiled constants stand "
+          "(tokenomics-v3 P2: nothing mints, so there is no mint to "
+          "compare; the per-block check simply passes)");
 
     close_chain(w);
     cfg_free(&c);
@@ -830,98 +848,55 @@ static int t_preexisting_chain_unchanged(void) {
 }
 
 /* ════════════════════════════════════════════════════════════════════
- * §3 — THE INFLATION START IS HONOURED FROM GENESIS
+ * §3 — THE RETIRED INFLATION START IS NOT COMMITTED (tokenomics-v3 P2)
  * ══════════════════════════════════════════════════════════════════ */
 
-/* Before Block 2C this was INEXPRESSIBLE: the builder asserted
- * chain_config_history empty, so the gate's 1ULL default stood and every
- * derived chain minted from height 1. The only way to change it was a
- * governance vote AFTER the chain was already minting.
+/* Block 2C made the inflation start expressible AT GENESIS and committed
+ * it as a param-3 chain_config_history row, which the per-block mint read
+ * on every block. tokenomics-v3 P2 deletes the mint and retires param 3
+ * (decision file §3 S-4), so a derived chain carries NO param-3 row, the
+ * committed band is the three build-identity rows only, and
+ * total_minted stays 0 — the reward reserve (supply_tracking.reward_pool)
+ * is where validator rewards come from now.
  *
- * MUTANT KILLED: remove the DNAC_CFG_INFLATION_START_BLOCK row from
- * gen_seed_state — the gate falls back to 1ULL, the start=0 chain starts
- * minting and the start=4 chain mints at height 1. Both halves fail. */
+ * RED ON THE PRE-P2 TREE: the row was seeded (4 rows), and the reserve
+ * column did not exist.
+ * MUTANT KILLED: re-seeding the param-3 row in gen_seed_state. */
 static int t_inflation_start_from_genesis(void) {
-    /* ── off for the life of the chain ─────────────────────────────── */
-    {
-        char dir[128];
-        CHECK(mkdir_tmp(dir, "i0") == 0, "tmpdir");
-        OK();
-        cfgbox_t c;
-        /* R3 W4 — version-3 chain (see t_join_refuses_mismatch). */
-        CHECK(cfg_make_v3(&c, 0x00, 0ULL) == 0, "cfg start=0 (version 3)");
-        CHECK(nodus_witness_v2_gen_derive_v3(dir, c.cfg, NULL) == 0,
-              "derive v3");
-        OK();
-        nodus_witness_t *w = open_chain(dir);
-        CHECK(w != NULL, "open");
-        OK();
-
-        /* Block 2A made this read three-valued. rc MUST be 0 (found):
-         * an absent row would mean the builder never committed the
-         * value, which is precisely what this assertion denies. */
-        uint64_t got_zero = UINT64_MAX;
-        CHECK(nodus_chain_config_get_u64(
-                  w, (uint8_t)DNAC_CFG_INFLATION_START_BLOCK, 0,
-                  UINT64_MAX, &got_zero) == 0 && got_zero == 0ULL,
-              "the gate reads a COMMITTED 0, not its 1ULL default");
-
-        for (uint64_t h = 1; h <= 3; h++) {
-            uint64_t minted = 123;
-            CHECK(nodus_witness_v2_emission_apply(w, h, &minted) == 0 &&
-                  minted == 0,
-                  "emission is OFF from genesis — no height mints");
-        }
-        CHECK(q1(w->db, "SELECT total_minted FROM supply_tracking "
-                        "WHERE id = 1") == 0,
-              "and supply_tracking never moved");
-        close_chain(w);
-        cfg_free(&c);
-        rmrf(dir);
-    }
+    char dir[128];
+    CHECK(mkdir_tmp(dir, "i0") == 0, "tmpdir");
+    OK();
+    cfgbox_t c;
+    CHECK(cfg_make_v3(&c, 0x00, 0ULL) == 0, "cfg start=0 (version 3)");
+    CHECK(nodus_witness_v2_gen_derive_v3(dir, c.cfg, NULL) == 0,
+          "derive v3");
+    OK();
+    nodus_witness_t *w = open_chain(dir);
+    CHECK(w != NULL, "open");
     OK();
 
-    /* ── deferred start ────────────────────────────────────────────── */
+    CHECK(q1(w->db, "SELECT COUNT(*) FROM chain_config_history "
+                    "WHERE param_id = 3") == 0,
+          "NO param-3 (INFLATION_START_BLOCK) row is committed");
     {
-        const uint64_t START = 4ULL;
-        char dir[128];
-        CHECK(mkdir_tmp(dir, "i4") == 0, "tmpdir");
-        OK();
-        cfgbox_t c;
-        /* R3 W4 — version-3 chain (see t_join_refuses_mismatch). */
-        CHECK(cfg_make_v3(&c, 0x00, START) == 0, "cfg start=4 (version 3)");
-        CHECK(nodus_witness_v2_gen_derive_v3(dir, c.cfg, NULL) == 0,
-              "derive v3");
-        OK();
-        nodus_witness_t *w = open_chain(dir);
-        CHECK(w != NULL, "open");
-        OK();
-
-        uint64_t got_start = 0;
+        uint64_t got = 0xABCDULL;
         CHECK(nodus_chain_config_get_u64(
                   w, (uint8_t)DNAC_CFG_INFLATION_START_BLOCK, 0,
-                  UINT64_MAX, &got_start) == 0 && got_start == START,
-              "the committed start is what the gate reads");
-
-        for (uint64_t h = 1; h < START; h++) {
-            uint64_t minted = 123;
-            CHECK(nodus_witness_v2_emission_apply(w, h, &minted) == 0 &&
-                  minted == 0, "nothing mints BELOW the committed start");
-        }
-        {
-            uint64_t minted = 0;
-            CHECK(nodus_witness_v2_emission_apply(w, START, &minted) == 0 &&
-                  minted == nodus_emission_per_block(START),
-                  "and the committed start height mints the scheduled "
-                  "amount — the value is honoured, not merely stored");
-            CHECK(q1(w->db, "SELECT total_minted FROM supply_tracking "
-                            "WHERE id = 1") == (int64_t)minted,
-                  "and supply_tracking recorded exactly that");
-        }
-        close_chain(w);
-        cfg_free(&c);
-        rmrf(dir);
+                  0xABCDULL, &got) == 1 && got == 0xABCDULL,
+              "the reader reports it ABSENT (rc 1), not a value");
     }
+    CHECK(q1(w->db, "SELECT COUNT(*) FROM chain_config_history") == 3,
+          "the committed band is exactly the three build-identity rows");
+    CHECK(q1(w->db, "SELECT total_minted FROM supply_tracking "
+                    "WHERE id = 1") == 0,
+          "total_minted is 0 and nothing will ever write it");
+    CHECK(q1(w->db, "SELECT reward_pool FROM supply_tracking WHERE id = 1")
+              == (int64_t)c.cfg->reward_pool_initial,
+          "the reward reserve is committed as the pool instead");
+
+    close_chain(w);
+    cfg_free(&c);
+    rmrf(dir);
     return g_fail;
 }
 
@@ -950,8 +925,8 @@ static int t_determinism_twin(void) {
      * stamps the SAME genesis_time_ms / initial_height into both, so the
      * identity claim below still compares two independently-built,
      * byte-identical documents. */
-    CHECK(cfg_make_v3(&c1, 0x00, 4ULL) == 0, "cfg 1 (version 3)");
-    CHECK(cfg_make_v3(&c2, 0x00, 4ULL) == 0,
+    CHECK(cfg_make_v3(&c1, 0x00, 0ULL) == 0, "cfg 1 (version 3)");
+    CHECK(cfg_make_v3(&c2, 0x00, 0ULL) == 0,
           "cfg 2 (independent, identical, version 3)");
     OK();
 
@@ -972,14 +947,21 @@ static int t_determinism_twin(void) {
           "digest both");
     CHECK(memcmp(h1, h2, 64) == 0,
           "and byte-identical whole-database logical state — including "
-          "the four committed economic rows");
+          "the three committed economic rows and the epoch-0 balance copy");
 
     /* The economic rows are IN that digest, so the assertion above is
      * really about them too — prove they are present rather than assuming
-     * the digest covered them. */
-    CHECK(q1(w1->db, "SELECT COUNT(*) FROM chain_config_history") == 4 &&
-          q1(w2->db, "SELECT COUNT(*) FROM chain_config_history") == 4,
-          "both twins carry exactly the four economic rows");
+     * the digest covered them. tokenomics-v3 P2: three rows (param 3 is
+     * retired), and the out-of-root copy(0) the engine genesis writes is
+     * in the digest as well. */
+    CHECK(q1(w1->db, "SELECT COUNT(*) FROM chain_config_history") == 3 &&
+          q1(w2->db, "SELECT COUNT(*) FROM chain_config_history") == 3,
+          "both twins carry exactly the three economic rows");
+    CHECK(q1(w1->db, "SELECT COUNT(*) FROM v2_balance_copy") ==
+              (int64_t)N_VAL &&
+          q1(w2->db, "SELECT COUNT(*) FROM v2_balance_copy") ==
+              (int64_t)N_VAL,
+          "both twins carry the same epoch-0 balance copy");
     CHECK(q1(w1->db, "SELECT COUNT(*) FROM chain_config_history "
                      "WHERE created_at_unix != 0") == 0,
           "created_at_unix is pinned to 0 — no wall clock in a committed "
@@ -998,7 +980,7 @@ int main(void) {
     printf("=== O15J Faz 2 Block 2C — committed economic parameters ===\n");
 
     struct { const char *name; int (*fn)(void); } tests[] = {
-        { "§1.1 path A: a changed parameter is a changed chain id",
+        { "§1.1 the retired inflation start is refused (P2-4)",
           t_path_a_chain_id },
         { "§1.2 path A: the encoding carries every parameter",
           t_path_a_encoding },
@@ -1010,7 +992,7 @@ int main(void) {
           t_join_refuses_mismatch },
         { "§2.3 a pre-2C chain is unchanged",
           t_preexisting_chain_unchanged },
-        { "§3   the inflation start is honoured from genesis",
+        { "§3   the retired inflation start is not committed (P2-4)",
           t_inflation_start_from_genesis },
         { "§4   the determinism twin still holds",
           t_determinism_twin },

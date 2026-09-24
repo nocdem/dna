@@ -1739,3 +1739,107 @@ int nodus_witness_db_migrate_v2s15_ex(nodus_witness_t *w,
 int nodus_witness_db_migrate_v2s15(nodus_witness_t *w) {
     return nodus_witness_db_migrate_v2s15_ex(w, V2S15MIG_FAIL_NONE);
 }
+
+/* ── S16 migration: tokenomics-v3 P2 (rewards, fees, the reward pool) ─
+ * Contract: nodus_witness_v2_schema.h. */
+
+int nodus_witness_db_migrate_v2s16_ex(nodus_witness_t *w,
+                                      nodus_v2s16_mig_fail_t fail_at) {
+    if (!w || !w->db) return -1;
+
+    uint32_t ver = 0;
+    if (nodus_witness_db_schema_version(w, &ver) != 0) return -1;
+    if (ver == NODUS_V2_SCHEMA_VERSION_S16) return 0;    /* idempotent    */
+    if (ver != NODUS_V2_SCHEMA_VERSION_S15) {
+        if (nodus_witness_db_migrate_v2s15(w) != 0) return -1;
+        ver = NODUS_V2_SCHEMA_VERSION_S15;
+    }
+
+    if (exec_sql(w, "BEGIN IMMEDIATE") != 0) return -1;
+
+    int ok = 0;
+    int already = 0;
+    do {
+        if (fail_at == V2S16MIG_FAIL_AFTER_BEGIN) break;
+
+        /* O15B discipline: the pre-BEGIN read decided nothing. */
+        int rv = mig_revalidate_version(w, NODUS_V2_SCHEMA_VERSION_S15,
+                                        NODUS_V2_SCHEMA_VERSION_S16, "S16");
+        if (rv < 0) break;
+        if (rv == 0) { already = 1; break; }
+        if (fail_at == V2S16MIG_FAIL_AFTER_REVALIDATE) break;
+
+        /* 1. supply_tracking.reward_pool, WHEN ABSENT. Every DB this
+         * build created carries it from WITNESS_DB_SCHEMA and the
+         * every-open v18 leg; only a DB an older build created and that
+         * has not been opened by this one since reaches the ALTER. A
+         * probe FAULT (-1) is never "absent". */
+        {
+            int rp = col_present(w, "supply_tracking", "reward_pool");
+            if (rp < 0) break;
+            if (rp == 0 &&
+                exec_sql(w, "ALTER TABLE supply_tracking ADD COLUMN "
+                            "reward_pool INTEGER NOT NULL DEFAULT 0") != 0)
+                break;
+        }
+
+        /* 2 + 3. The two reward tables — byte-identical to the base
+         * schema's (nodus_witness.c), a no-op on any DB this build
+         * created. */
+        if (exec_sql(w,
+                "CREATE TABLE IF NOT EXISTS v2_reward_accrual ("
+                "  owner_fp BLOB PRIMARY KEY,"
+                "  amount INTEGER NOT NULL"
+                ")") != 0)
+            break;
+        if (exec_sql(w,
+                "CREATE TABLE IF NOT EXISTS v2_balance_copy ("
+                "  epoch_start INTEGER NOT NULL,"
+                "  validator_fp BLOB NOT NULL,"
+                "  owner_fp BLOB NOT NULL,"
+                "  amount INTEGER NOT NULL,"
+                "  PRIMARY KEY (epoch_start, validator_fp, owner_fp)"
+                ")") != 0)
+            break;
+        if (fail_at == V2S16MIG_FAIL_AFTER_TABLES) break;
+
+        /* Verify: both tables exist with their exact shape, and the
+         * column is present. */
+        static const char *const acc_cols[] = { "owner_fp", "amount" };
+        static const char *const copy_cols[] =
+            { "epoch_start", "validator_fp", "owner_fp", "amount" };
+        if (table_cols_exact(w, "v2_reward_accrual", acc_cols,
+                sizeof(acc_cols) / sizeof(acc_cols[0])) != 1 ||
+            table_cols_exact(w, "v2_balance_copy", copy_cols,
+                sizeof(copy_cols) / sizeof(copy_cols[0])) != 1 ||
+            col_present(w, "supply_tracking", "reward_pool") != 1) {
+            QGP_LOG_ERROR(LOG_TAG, "%s",
+                          "S16 reward schema shape drift — refusing");
+            break;
+        }
+        if (fail_at == V2S16MIG_FAIL_AFTER_VERIFY) break;
+
+        if (exec_sql(w, "PRAGMA user_version = 16") != 0) break;
+        if (fail_at == V2S16MIG_FAIL_BEFORE_COMMIT) break;
+
+        ok = 1;
+    } while (0);
+
+    if (already) {
+        (void)exec_sql(w, "ROLLBACK");
+        return 0;
+    }
+    if (!ok) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    if (exec_sql(w, "COMMIT") != 0) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    return 0;
+}
+
+int nodus_witness_db_migrate_v2s16(nodus_witness_t *w) {
+    return nodus_witness_db_migrate_v2s16_ex(w, V2S16MIG_FAIL_NONE);
+}

@@ -1732,8 +1732,9 @@ static int t_corr_startup(void) {
  * migration — only v2_blocks columns and the new Comet stores change —
  * so the bare PRAGMA is a faithful probe of the gate alone. */
 static int t_s15_flip(void) {
-    printf("11c: the check RUNS at the LIVE rung, now S15 "
-           "(R3 W3 D-17 rev 10 (8), moved S14 -> S15 by tokenomics-v3 P1)\n");
+    printf("11c: the check RUNS at the LIVE rung, now S16 "
+           "(R3 W3 D-17 rev 10 (8), moved S14 -> S15 by tokenomics-v3 P1, "
+           "S15 -> S16 by P2)\n");
     fixture_t fx;
     CHECK(fx_open(&fx) == 0 && genesis(&fx) == 0, "fixture");
 
@@ -1756,11 +1757,13 @@ static int t_s15_flip(void) {
      * set moved with it. S14 is no longer a rung any chain rests at, so
      * probing it here would assert the SILENT SKIP this case exists to
      * forbid — the pin follows the live rung, it does not follow the
-     * number 14. */
-    CHECK(run_sql(fx.w->db, "PRAGMA user_version = 15") == 0,
-          "force user_version=15"); OK();
+     * number 14. tokenomics-v3 P2 moved it again, S15 -> S16 (the reward
+     * pool column and the two reward tables) — same rule, the pin
+     * follows the live rung. */
+    CHECK(run_sql(fx.w->db, "PRAGMA user_version = 16") == 0,
+          "force user_version=16"); OK();
     CHECK(nodus_witness_v2_pools_startup_check(fx.w) == 0,
-          "valid state at S15 is STILL green (the flip does not make a "
+          "valid state at S16 is STILL green (the flip does not make a "
           "clean chain fail)"); OK();
 
     /* THE KILL. */
@@ -1771,25 +1774,23 @@ static int t_s15_flip(void) {
         "WHERE domain_id=1 AND pool_id=1 AND position=0") == 0, "corrupt");
     CHECK(db_state_digest(fx.w, d1) == 0, "digest");
     CHECK(nodus_witness_v2_pools_startup_check(fx.w) == -1,
-          "corruption at S15 tolerated — the old silent-skip is back");
+          "corruption at S16 tolerated — the old silent-skip is back");
     OK();
     CHECK(db_state_digest(fx.w, d2) == 0 && memcmp(d1, d2, 64) == 0,
-          "startup check mutated/repaired state at S15"); OK();
+          "startup check mutated/repaired state at S16"); OK();
     CHECK(run_sql(fx.w->db, "ROLLBACK") == 0, "rollback");
     CHECK(nodus_witness_v2_pools_startup_check(fx.w) == 0,
-          "state not restored at S15"); OK();
+          "state not restored at S16"); OK();
 
     fx_close(&fx);
     return 0;
 }
 
 int main(void) {
-    /* O15J Faz 2 — this file pins POOL-ROOT ISOLATION ("a pool block must
-     * not move the SYSTEM root"). A mint moves epoch_state, a SYSTEM leg,
-     * on every block, so that property is inexpressible with inflation on.
-     * Quiet chain; emission is covered by test_v2_econ. */
-    v2x_inflation_off = 1;
-
+    /* This file pins POOL-ROOT ISOLATION ("a pool block must not move
+     * the SYSTEM root"). The O15J per-block mint moved epoch_state every
+     * block and this file set `v2x_inflation_off`; tokenomics-v3 P2
+     * deleted the mint, so every chain is quiet and the switch is gone. */
     if (t_kats()) return 1;
     if (t_core_pool()) return 1;
     if (t_append()) return 1;

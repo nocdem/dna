@@ -15,8 +15,15 @@
  *    matrix below); this suite's S14 cases still prove the S14 step of
  *    the climb honestly, they just no longer describe the database a
  *    live chain settles at. The unknown-version refusal this section
- *    used to describe as S14's is exercised, at the CURRENT ceiling, by
- *    the S15 matrix's own case (`t_s15_unknown_16_fails_closed`).
+ *    used to describe as S14's is exercised by the S15 matrix's own case
+ *    (`t_s15_unknown_16_fails_closed` — 16 was unknown to S15 then and
+ *    S15 still refuses it: a rung never "migrates" a newer database) and,
+ *    at the CURRENT ceiling, by `t_s16_unknown_17_fails_closed`.
+ *  · Schema S16 (tokenomics-v3 P2 — the live rung now; every store
+ *    fixture climbs to it through `dbfx_open_live`) adds
+ *    supply_tracking.reward_pool, v2_reward_accrual and v2_balance_copy
+ *    to a database an older build created, is idempotent, refuses 17,
+ *    and rolls back byte-identically at every fail stage.
  *  · cmt_pb_store encodes the stored values to the bytes the generated
  *    gogoproto encoders produce (golden vectors from cmt_pb_oracle.py,
  *    literal below 41 bytes, SHA3-512 above), and decodes them back.
@@ -511,14 +518,16 @@ static void dbfx_close(dbfx_t *fx)
     rmrf(fx->dir);
 }
 
-/* Open + climb to S15 (tokenomics-v3 P1 moved the live rung from S14):
- * what every store test starts from. */
-static int dbfx_open_s15(dbfx_t *fx)
+/* Open + climb to the LIVE rung — S16 since tokenomics-v3 P2 (P1 had
+ * moved it from S14 to S15): what every store test starts from. Renamed
+ * from dbfx_open_s15 with the move, so the name states the property
+ * (the live rung) rather than a number that goes stale. */
+static int dbfx_open_live(dbfx_t *fx)
 {
     if (dbfx_open(fx) != 0) {
         return -1;
     }
-    if (nodus_witness_db_migrate_v2s15(fx->w) != 0) {
+    if (nodus_witness_db_migrate_v2s16(fx->w) != 0) {
         dbfx_close(fx);
         return -1;
     }
@@ -856,7 +865,7 @@ static int env_make_state(t_env_t *e, size_t nvals, int height)
     int    h;
 
     memset(e, 0, sizeof(*e));
-    if (dbfx_open_s15(&e->fx) != 0) {
+    if (dbfx_open_live(&e->fx) != 0) {
         return -1;
     }
     e->store = (nodus_cmt_store_t *)calloc(1, sizeof(*e->store));
@@ -1452,6 +1461,12 @@ static int t_s15_unknown_16_fails_closed(void)
     uint32_t ver = 0;
 
     CHECK(dbfx_open(&fx) == 0, "fixture");
+    /* tokenomics-v3 P2: version 16 is no longer UNKNOWN — it is the S16
+     * rung. The property this case pins still holds and is still worth
+     * pinning: the S15 rung never touches a database ABOVE its own
+     * version (no downgrade, no re-run of its DROP COLUMN steps). The
+     * genuinely-unknown case moved up a rung:
+     * t_s16_unknown_17_fails_closed. */
     /* round 3 (R3-2, MEASURED): round 2's R2-1 moved v2_attendance /
      * v2_attendance_epoch into the BASE schema (nodus_witness.c), so
      * `dbfx_open`'s `nodus_witness_create_chain_db` above already
@@ -1532,6 +1547,144 @@ static int t_s15_fail_stages_roll_back(void)
     }
     CHECK(nodus_witness_db_migrate_v2s15(fx.w) == 0, "14->15");
     CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 15, "15");
+    dbfx_close(&fx);
+    return 0;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * S16 — the migration matrix (tokenomics-v3 P2: supply_tracking.
+ * reward_pool, v2_reward_accrual, v2_balance_copy), BESIDE the S15
+ * matrix above — S15's own tests are untouched.
+ *
+ * All three S16 shapes ALSO live in the base schema (nodus_witness.c),
+ * so a fresh `dbfx_open` already has them; the cases that must prove the
+ * rung DOES something simulate a pre-P2 database by dropping them first
+ * (SQLite >= 3.35 DROP COLUMN, already required by S14).
+ *
+ * RED ON THE PRE-P2 TREE: the function and the version do not exist.
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/* Make `fx` look like a database an OLDER build created: no reward_pool
+ * column, no reward tables. */
+static int s16_simulate_pre_p2(dbfx_t *fx)
+{
+    if (run_sql(fx->w->db, "DROP TABLE IF EXISTS v2_reward_accrual") != 0 ||
+        run_sql(fx->w->db, "DROP TABLE IF EXISTS v2_balance_copy") != 0 ||
+        run_sql(fx->w->db, "ALTER TABLE supply_tracking "
+                           "DROP COLUMN reward_pool") != 0)
+        return -1;
+    return 0;
+}
+
+static int t_s16_fresh_climb(void)
+{
+    dbfx_t   fx;
+    uint32_t ver = 0;
+    char     cols[512];
+
+    CHECK(dbfx_open(&fx) == 0, "fixture");
+    /* 0 -> 16 in one call: the S9...S15 chain, then the rung. */
+    CHECK(nodus_witness_db_migrate_v2s16(fx.w) == 0, "0->16");
+    CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 16,
+          "version != 16");
+    CHECK(table_cols(fx.w->db, "v2_reward_accrual", cols,
+                     sizeof(cols)) == 0 &&
+          strcmp(cols, "owner_fp,amount") == 0,
+          "v2_reward_accrual column list");
+    CHECK(table_cols(fx.w->db, "v2_balance_copy", cols, sizeof(cols)) == 0 &&
+          strcmp(cols, "epoch_start,validator_fp,owner_fp,amount") == 0,
+          "v2_balance_copy column list");
+    CHECK(has_col(fx.w->db, "supply_tracking", "reward_pool") == 1,
+          "supply_tracking.reward_pool missing");
+    /* S15's own work is still in place */
+    CHECK(has_table(fx.w->db, "v2_attendance") == 1 &&
+          has_table(fx.w->db, "cmt_blockstore") == 1,
+          "S16 lost an earlier rung's table");
+    /* idempotent, and a raw restart keeps it */
+    CHECK(nodus_witness_db_migrate_v2s16(fx.w) == 0, "re-run 16");
+    CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 16,
+          "re-run moved version");
+    CHECK(dbfx_reopen_raw(&fx) == 0, "raw reopen");
+    CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 16,
+          "raw restart lost 16");
+    dbfx_close(&fx);
+    return 0;
+}
+
+/* A database an OLDER build created (no reward_pool, no reward tables),
+ * climbed to 15 by that build: S16 must ADD all three. */
+static int t_s16_from_15_pre_p2_shape(void)
+{
+    dbfx_t   fx;
+    uint32_t ver = 0;
+
+    CHECK(dbfx_open(&fx) == 0, "fixture");
+    CHECK(nodus_witness_db_migrate_v2s15(fx.w) == 0, "0->15");
+    CHECK(s16_simulate_pre_p2(&fx) == 0, "simulate a pre-P2 database");
+    CHECK(has_col(fx.w->db, "supply_tracking", "reward_pool") == 0 &&
+          has_table(fx.w->db, "v2_reward_accrual") == 0 &&
+          has_table(fx.w->db, "v2_balance_copy") == 0,
+          "the simulated pre-P2 shape did not take");
+    CHECK(nodus_witness_db_migrate_v2s16(fx.w) == 0, "15->16");
+    CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 16,
+          "16");
+    CHECK(has_col(fx.w->db, "supply_tracking", "reward_pool") == 1 &&
+          has_table(fx.w->db, "v2_reward_accrual") == 1 &&
+          has_table(fx.w->db, "v2_balance_copy") == 1,
+          "S16 did not add the column and the two tables");
+    dbfx_close(&fx);
+    return 0;
+}
+
+/* A version NEWER than this build understands is refused, untouched. */
+static int t_s16_unknown_17_fails_closed(void)
+{
+    dbfx_t   fx;
+    uint32_t ver = 0;
+
+    CHECK(dbfx_open(&fx) == 0, "fixture");
+    CHECK(s16_simulate_pre_p2(&fx) == 0, "simulate a pre-P2 database");
+    CHECK(run_sql(fx.w->db, "PRAGMA user_version = 17") == 0, "set 17");
+    CHECK(nodus_witness_db_migrate_v2s16(fx.w) == -1, "version 17 migrated");
+    CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 17,
+          "version 17 mutated");
+    CHECK(has_col(fx.w->db, "supply_tracking", "reward_pool") == 0 &&
+          has_table(fx.w->db, "v2_reward_accrual") == 0,
+          "a refused migration still added the reward shapes");
+    dbfx_close(&fx);
+    return 0;
+}
+
+static int t_s16_fail_stages_roll_back(void)
+{
+    dbfx_t   fx;
+    uint32_t ver = 0;
+    uint8_t  d15[64], dnow[64];
+    int      stage;
+
+    CHECK(dbfx_open(&fx) == 0, "fixture");
+    CHECK(nodus_witness_db_migrate_v2s15(fx.w) == 0, "0->15");
+    /* pre-P2 shape, so the ALTER and the CREATEs have something to roll
+     * back (on a fresh database every shape already exists) */
+    CHECK(s16_simulate_pre_p2(&fx) == 0, "simulate a pre-P2 database");
+    CHECK(db_digest(fx.w->db, d15) == 0, "digest 15");
+    for (stage = V2S16MIG_FAIL_AFTER_BEGIN;
+         stage <= V2S16MIG_FAIL_BEFORE_COMMIT; stage++) {
+        CHECK(nodus_witness_db_migrate_v2s16_ex(
+                  fx.w, (nodus_v2s16_mig_fail_t)stage) == -1,
+              "staged failure did not fail");
+        CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 15,
+              "failed stage moved the version");
+        CHECK(has_col(fx.w->db, "supply_tracking", "reward_pool") == 0 &&
+              has_table(fx.w->db, "v2_reward_accrual") == 0 &&
+              has_table(fx.w->db, "v2_balance_copy") == 0,
+              "failed stage left a reward shape behind");
+        CHECK(db_digest(fx.w->db, dnow) == 0, "post-stage digest");
+        CHECK(memcmp(d15, dnow, 64) == 0, "failed stage mutated the DB");
+    }
+    CHECK(nodus_witness_db_migrate_v2s16(fx.w) == 0, "15->16");
+    CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 16,
+          "16");
     dbfx_close(&fx);
     return 0;
 }
@@ -2404,7 +2557,7 @@ static int t_wal_write_classes_and_visibility(void)
     int n = -1, sn = -1;
     int64_t dl = 0;
 
-    CHECK(dbfx_open_s15(&fx) == 0, "fixture");
+    CHECK(dbfx_open_live(&fx) == 0, "fixture");
     w = (nodus_cmt_wal_t *)calloc(1, sizeof(*w));
     m = (cmt_wal_message_t *)calloc(1, sizeof(*m));
     CHECK(w && m, "alloc");
@@ -2523,7 +2676,7 @@ static int t_wal_start_and_search(void)
     bool found = false, eof = false;
     int n = -1;
 
-    CHECK(dbfx_open_s15(&fx) == 0, "fixture");
+    CHECK(dbfx_open_live(&fx) == 0, "fixture");
     w = (nodus_cmt_wal_t *)calloc(1, sizeof(*w));
     m = (cmt_wal_message_t *)calloc(1, sizeof(*m));
     tw = (cmt_timed_wal_message_t *)calloc(1, sizeof(*tw));
@@ -2616,7 +2769,7 @@ static int t_wal_corruption_faults(void)
     cmt_timed_wal_message_t *tw;
     bool eof = false, found = false;
 
-    CHECK(dbfx_open_s15(&fx) == 0, "fixture");
+    CHECK(dbfx_open_live(&fx) == 0, "fixture");
     w = (nodus_cmt_wal_t *)calloc(1, sizeof(*w));
     m = (cmt_wal_message_t *)calloc(1, sizeof(*m));
     tw = (cmt_timed_wal_message_t *)calloc(1, sizeof(*tw));
@@ -2966,7 +3119,7 @@ static int t_store_load_block_store_state(void)
         { 100, 1000, 100, 1000 }, { 0, 0, 0, 0 }, { 0, 1000, 1, 1000 } };
     int i;
 
-    CHECK(dbfx_open_s15(&fx) == 0, "fixture");
+    CHECK(dbfx_open_live(&fx) == 0, "fixture");
     s = (nodus_cmt_store_t *)calloc(1, sizeof(*s));
     CHECK(s && nodus_cmt_store_init(s, fx.w->db, false) == CMT_OK, "store");
     for (i = 0; i < 3; i++) {
@@ -2992,7 +3145,7 @@ static int t_store_new_block_store(void)
     dbfx_t fx;
     nodus_cmt_store_t *s;
 
-    CHECK(dbfx_open_s15(&fx) == 0, "fixture");
+    CHECK(dbfx_open_live(&fx) == 0, "fixture");
     s = (nodus_cmt_store_t *)calloc(1, sizeof(*s));
     CHECK(s != NULL, "alloc");
     CHECK(run_sql(fx.w->db,
@@ -3497,7 +3650,7 @@ static int t_store_load_block_meta(void)
     size_t n = 0, n2 = 0;
     bool found = true;
 
-    CHECK(dbfx_open_s15(&fx) == 0, "fixture");
+    CHECK(dbfx_open_live(&fx) == 0, "fixture");
     s = (nodus_cmt_store_t *)calloc(1, sizeof(*s));
     meta = (nodus_cmt_block_meta_t *)calloc(1, sizeof(*meta));
     got = (nodus_cmt_block_meta_t *)calloc(1, sizeof(*got));
@@ -3661,7 +3814,7 @@ static int t_ss_load_validators(void)
     uint8_t *buf;
     size_t n = 0;
 
-    CHECK(dbfx_open_s15(&fx) == 0, "fixture");
+    CHECK(dbfx_open_live(&fx) == 0, "fixture");
     s = (nodus_cmt_store_t *)calloc(1, sizeof(*s));
     vstor = (cmt_validator_t *)calloc(CMT_VALSET_MAX, sizeof(*vstor));
     vstor2 = (cmt_validator_t *)calloc(CMT_VALSET_MAX, sizeof(*vstor2));
@@ -3749,7 +3902,7 @@ static int t_ss_prune_states(void)
         int rc;
 
         fprintf(stderr, "  PruneStates: %s\n", tcs[t].name);
-        CHECK(dbfx_open_s15(&fx) == 0, "fixture");
+        CHECK(dbfx_open_live(&fx) == 0, "fixture");
         s = (nodus_cmt_store_t *)calloc(1, sizeof(*s));
         vstor = (cmt_validator_t *)calloc(CMT_VALSET_MAX, sizeof(*vstor));
         vstor2 = (cmt_validator_t *)calloc(CMT_VALSET_MAX, sizeof(*vstor2));
@@ -3882,7 +4035,7 @@ static int t_ss_last_finalize_block_responses(void)
     cmt_pb_rfb_storage_t rst;
     cmt_pb_arena_t arena;
 
-    CHECK(dbfx_open_s15(&fx) == 0, "fixture");
+    CHECK(dbfx_open_live(&fx) == 0, "fixture");
     s = (nodus_cmt_store_t *)calloc(1, sizeof(*s));
     r1 = (cmt_pb_response_finalize_block_t *)calloc(1, sizeof(*r1));
     got = (cmt_pb_response_finalize_block_t *)calloc(1, sizeof(*got));
@@ -3970,7 +4123,7 @@ static int t_ss_int_conversion(void)
     n = nodus_cmt_int64_to_bytes(INT64_MIN, b);
     CHECK(n == 10 && nodus_cmt_int64_from_bytes(b, n) == INT64_MIN, "min");
     CHECK(nodus_cmt_int64_from_bytes(b, 0) == 0, "empty → 0");
-    CHECK(dbfx_open_s15(&fx) == 0, "fixture");
+    CHECK(dbfx_open_live(&fx) == 0, "fixture");
     s = (nodus_cmt_store_t *)calloc(1, sizeof(*s));
     CHECK(s && nodus_cmt_store_init(s, fx.w->db, false) == CMT_OK, "store");
     /* ORCHESTRATOR delta 1, item 8 / E (R3-C1c-2, CLOSED) — the tri-state
@@ -4035,7 +4188,7 @@ static int t_ss_load_from_db_or_genesis(void)
         cmt_genesis_doc_t doc;
         cmt_genesis_validator_t gv[2];
 
-        CHECK(dbfx_open_s15(&fx) == 0, "fixture");
+        CHECK(dbfx_open_live(&fx) == 0, "fixture");
         s = (nodus_cmt_store_t *)calloc(1, sizeof(*s));
         CHECK(s && nodus_cmt_store_init(s, fx.w->db, false) == CMT_OK, "store");
         memset(&doc, 0, sizeof doc);
@@ -5593,6 +5746,10 @@ int main(void)
         { "s15_without_columns_present",           t_s15_without_columns_present },
         { "s15_unknown_16_fails_closed",           t_s15_unknown_16_fails_closed },
         { "s15_fail_stages_roll_back",             t_s15_fail_stages_roll_back },
+        { "s16_fresh_climb",                       t_s16_fresh_climb },
+        { "s16_from_15_pre_p2_shape",              t_s16_from_15_pre_p2_shape },
+        { "s16_unknown_17_fails_closed",           t_s16_unknown_17_fails_closed },
+        { "s16_fail_stages_roll_back",             t_s16_fail_stages_roll_back },
         { "codec_small_vectors",                   t_codec_small_vectors },
         { "codec_finalize_block_response",         t_codec_finalize_block_response },
         { "codec_block_meta_and_state",            t_codec_block_meta_and_state },

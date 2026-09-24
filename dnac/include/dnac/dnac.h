@@ -154,6 +154,23 @@ extern "C" {
 /** UNSTAKE locked-UTXO cooldown (24h at 5s block interval) */
 #define DNAC_UNSTAKE_COOLDOWN_BLOCKS  17280
 
+/** UNDELEGATE lock, in EPOCHS (tokenomics-v3 P2-10).
+ *
+ *  docs/plans/decisions/2026-09-22-nodus-tokenomics-v3-operator.md §1
+ *  "Stake çözme": "Delegator bekleme süresi 12 epoch" (2026-09-23, halved
+ *  from 24), and the wait starts when the stake leaves ACTIVE voting
+ *  power (§3 S-3; §3 2026-09-24 "DELEGATOR = VALIDATOR GİBİ" (d)).
+ *
+ *  The version-3 witness creates an UNDELEGATE's release UTXO LOCKED to
+ *  unlock_block = L(h) + DNAC_UNDELEGATE_LOCK_EPOCHS × DNAC_EPOCH_LENGTH,
+ *  where L(h) is the boundary at which the withdrawn stake leaves the
+ *  voting power (nodus_v2_power_exit_boundary, nodus/src/witness/
+ *  nodus_witness_v2_epoch.h). Counted in epochs, never in blocks, so the
+ *  lock scales with the epoch length a build compiled. A compile-time
+ *  constant for the whole devnet (decision §3, 2026-09-23 "DEVNET
+ *  BOYUNCA SABİT"). */
+#define DNAC_UNDELEGATE_LOCK_EPOCHS   12
+
 /** Epoch length in blocks (~1 hour at 5s).
  *
  * Drives: committee rotation cadence, epoch_state snapshot cadence,
@@ -294,7 +311,8 @@ extern "C" {
 #endif
 
 /** chain_config_tx grace — safety-critical params (BLOCK_INTERVAL,
- *  INFLATION_START, TARGET_ACTIVE_COUNT). Decoupled from EPOCH_LENGTH so it
+ *  TARGET_ACTIVE_COUNT; INFLATION_START until tokenomics-v3 P2 retired
+ *  id 3). Decoupled from EPOCH_LENGTH so it
  *  can be tuned independently; 24 hours gives operators + auditors time to
  *  react.
  *
@@ -306,18 +324,23 @@ extern "C" {
 #endif
 
 /* ============================================================================
- * Block-Reward Inflation — RETIRED here; see nodus_witness_emission.{h,c}
+ * Block-Reward Inflation — RETIRED, and there is NO MINT ANY MORE.
  *
  * The v1 inline curve that lived here (16-DNAC base, 4 halvings,
  * dnac_block_reward / dnac_total_minted_at / DNAC_INFLATION_*_REWARD /
  * DNAC_HALVING_INTERVAL_BLOCKS) was superseded by the v0.16 per-block
- * emission redesign and is deleted. The LIVE, deployed schedule is the
- * 32-DNAC / 5-halving curve in nodus/src/witness/nodus_witness_emission.h
- * (DNAC_BLOCKS_PER_YEAR 6,307,200, base 32, floor 1) driven by
- * nodus_emission_per_block / nodus_emission_total_minted. Halving is
- * pinned to BLOCK COUNT, not wall time, so retuning the block interval
- * compresses/expands the halving cadence in real time without moving the
- * per-block reward curve. See project memory: DNAC inflation DEPLOYED.
+ * emission redesign, and that redesign (the 32-DNAC / 5-halving curve,
+ * nodus_emission_per_block / nodus_emission_total_minted) is itself
+ * DELETED by tokenomics-v3 P2 (decision file
+ * docs/plans/decisions/2026-09-22-nodus-tokenomics-v3-operator.md §1:
+ * "Toplam arz 1.000.000.000 NODUS, sabit. Yeni token basılmayacak").
+ * Validator rewards are paid from a fixed reward reserve carved out of
+ * the genesis supply (the version-3 genesis document's
+ * reward_pool_initial, committed as supply_tracking.reward_pool): each
+ * epoch boundary pays out reward_pool >> 16, pro rata to voting power,
+ * accrued per recipient and paid every payout_interval_epochs; every
+ * transaction fee is credited back to the pool. Implementation:
+ * nodus/src/witness/nodus_witness_v2_econ.c.
  * ========================================================================== */
 
 /** Maximum commission in basis points (100% = 10000) */
@@ -400,7 +423,19 @@ typedef enum {
                                           *   activates again and is never
                                           *   reassigned. */
     DNAC_CFG_BLOCK_INTERVAL_SEC    = 2,  /**< overrides chain_def.block_interval_sec */
-    DNAC_CFG_INFLATION_START_BLOCK = 3,  /**< overrides default 1 (0 = inflation off) */
+    DNAC_CFG_INFLATION_START_BLOCK = 3,  /**< RETIRED (tokenomics-v3 P2,
+                                          *   P2-4; decision file
+                                          *   2026-09-22-nodus-tokenomics-
+                                          *   v3-operator.md §3 S-4: the
+                                          *   per-block mint is DELETED,
+                                          *   "INFLATION_START parametresi
+                                          *   (id 3) emekli") — refused
+                                          *   unconditionally by the
+                                          *   witness-side scalar rules
+                                          *   and this client-side mirror
+                                          *   (verify.c); the id NEVER
+                                          *   activates again and is never
+                                          *   reassigned. */
     DNAC_CFG_TARGET_ACTIVE_COUNT   = 4,  /**< S3: target size of the active validator set */
     DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_TARGET_ACTIVE_COUNT
 } dnac_chain_config_param_id_t;
@@ -426,7 +461,13 @@ typedef enum {
  * (`nodus_witness_merkle.c`), not the version-3 path. */
 #define DNAC_CFG_MIN_BLOCK_INTERVAL_SEC     1ULL
 #define DNAC_CFG_MAX_BLOCK_INTERVAL_SEC     15ULL   /* Q6 default — tightened from 60 */
-#define DNAC_CFG_MAX_INFLATION_START_BLOCK  281474976710656ULL  /* 2^48 */
+/* tokenomics-v3 P2: DNAC_CFG_MAX_INFLATION_START_BLOCK (the 2^48 bound of
+ * RETIRED param id 3) is DELETED, exactly as delta 3 deleted
+ * DNAC_CFG_MAX_TXS_HARD_CAP for id 1: verify.c refuses id 3
+ * unconditionally, the genesis builder refuses any nonzero
+ * inflation_start_block, and its last reference
+ * (dnac/tests/test_chain_config_verify.c) now asserts the refusal
+ * instead of probing the bound. */
 
 /** TARGET_ACTIVE_COUNT range (S3, param_id 4): [7, 128].
  *
@@ -440,8 +481,9 @@ typedef enum {
  *  committee-selection path (wired in a later S3 wave), so it is
  *  epoch-boundary-effective by construction — a mid-epoch effective_block
  *  cannot resize a live committee.
- *  GRACE CLASS: SAFETY-CRITICAL (same tier as BLOCK_INTERVAL_SEC and
- *  INFLATION_START_BLOCK — DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS). */
+ *  GRACE CLASS: SAFETY-CRITICAL (same tier as BLOCK_INTERVAL_SEC —
+ *  DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS; INFLATION_START_BLOCK was in it
+ *  until tokenomics-v3 P2 retired id 3). */
 #define DNAC_CFG_MIN_TARGET_ACTIVE          ((uint64_t)DNAC_COMMITTEE_SIZE)
 #define DNAC_CFG_MAX_TARGET_ACTIVE          ((uint64_t)DNAC_MAX_ACTIVE_VALIDATORS)
 

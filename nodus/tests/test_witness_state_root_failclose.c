@@ -102,7 +102,8 @@ static nodus_witness_t *fixture_new(const char *label, uint64_t genesis_supply) 
 
     uint8_t genesis_tx_hash[NODUS_T3_TX_HASH_LEN];
     memset(genesis_tx_hash, 0x77, sizeof(genesis_tx_hash));
-    if (nodus_witness_supply_init(w, genesis_supply, genesis_tx_hash) != 0) {
+    if (nodus_witness_supply_init(w, genesis_supply, 0,
+                                  genesis_tx_hash) != 0) {
         sqlite3_close(w->db);
         free(w);
         return NULL;

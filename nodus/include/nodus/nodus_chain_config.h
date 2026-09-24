@@ -65,9 +65,11 @@ typedef struct nodus_witness nodus_witness_t;
  * WHY GOVERNANCE CANNOT REACH IT. nodus_chain_config_scalar_rules rejects
  * every id outside 1..CC_PARAM_MAX_ID and its switch has no case for these
  * (nodus_witness_chain_config.c:497, :515-516), so no CHAIN_CONFIG tx can
- * insert or replace a band row on either lane. That preserves the property
- * nodus_witness_emission.h states: a committee vote cannot alter the
- * emission schedule.
+ * insert or replace a band row on either lane. (tokenomics-v3 P2: the
+ * emission schedule this used to protect is gone — nothing mints; the
+ * band stays because blocks_per_year / decimal_unit / epoch_length are
+ * still committed build identity, and epoch_length's refusal is still
+ * checked on every block, nodus_witness_v2_econ_params_load.)
  *
  * WHY 200+. The band must never collide with a future
  * DNAC_CFG_* allocation, which grows upward from 1 (currently 4). Starting
@@ -82,7 +84,8 @@ typedef struct nodus_witness nodus_witness_t;
  * their own loader, nodus_witness_v2_econ_params_load.
  * ========================================================================== */
 
-/** Halving period in blocks — the committed DNAC_BLOCKS_PER_YEAR. */
+/** Blocks per tokenomic year — the committed DNAC_BLOCKS_PER_YEAR (the
+ *  halving period of the retired mint; still committed build identity). */
 #define NODUS_CC_ECON_BLOCKS_PER_YEAR   200u
 /** Raw base units per 1 DNAC — the committed DNAC_DECIMAL_UNIT. */
 #define NODUS_CC_ECON_DECIMAL_UNIT      201u
@@ -141,8 +144,6 @@ int nodus_chain_config_db_migrate(nodus_witness_t *w);
  *      it must not vote, propose, seal or commit on a guess.
  *
  * Production consumer sites, all fail-closed on -1:
- *   - inflation gate, V1 lane:  nodus_witness_bft.c
- *   - inflation gate, V2 lane:  nodus_witness_v2_econ.c
  *   - epoch seat count:         nodus_witness_committee.c (committee),
  *                               nodus_witness_vset.c (snapshot builder)
  *   - proposer batch cap:       nodus_witness_bft.c (abstain from the
@@ -159,6 +160,12 @@ int nodus_chain_config_db_migrate(nodus_witness_t *w);
  * this function — the "proposer timer" consumer this docblock used to
  * list does not exist in the tree (grep, O15J Block 2 A2). Only
  * nodus-cli names the param, as a proposal argument.
+ * tokenomics-v3 P2 (P2-4): the two "inflation gate" consumers this list
+ * used to name are GONE — the V1 lane's with nodus_witness_bft.c (R3
+ * W4), the V2 lane's with the per-block mint
+ * (nodus_witness_v2_emission_apply, deleted) — and
+ * DNAC_CFG_INFLATION_START_BLOCK (param id 3) is retired from governance
+ * exactly as id 1 was (scalar_rules and grace_for_param refuse it).
  *
  * @param w              Witness context (w->db must be open).
  * @param param_id       dnac_chain_config_param_id_t value
@@ -212,9 +219,11 @@ int nodus_chain_config_compute_root(nodus_witness_t *w, uint8_t out_root[64]);
  *   2. Re-verify local rules via dnac_tx_verify_chain_config_rules.
  *   3. Freshness: commit_block <= valid_before_block (Rule CC-G).
  *   4. Grace: effective_block >= commit_block + grace_period_for_param
- *      (Rule CC-C). Safety-critical params (BLOCK_INTERVAL_SEC,
- *      INFLATION_START_BLOCK, and — since Ledger V2 S3 —
- *      TARGET_ACTIVE_COUNT) use DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS
+ *      (Rule CC-C). Safety-critical params (BLOCK_INTERVAL_SEC and —
+ *      since Ledger V2 S3 — TARGET_ACTIVE_COUNT; INFLATION_START_BLOCK
+ *      was one until tokenomics-v3 P2 retired it, and
+ *      `nodus_chain_config_grace_for_param` now refuses id 3 as it does
+ *      id 1) use DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS
  *      (24 hours); every other (unassigned) id falls back to
  *      DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS (1 hour), an ergonomic
  *      class with NO current member — R3 W4-C delta 2 retired MAX_TXS,
@@ -231,8 +240,9 @@ int nodus_chain_config_compute_root(nodus_witness_t *w, uint8_t out_root[64]);
  *      exactly the historical 5-of-7 rule.
  *   6. Signature verify: each committee_votes[i].signature valid against
  *      that witness's Dilithium5 pubkey over the proposal preimage.
- *   7. Monotonicity (Q5 mitigation): once INFLATION_START_BLOCK has been
- *      set non-zero, reject new_value == 0 or new_value > current_block.
+ *   7. (RETIRED, tokenomics-v3 P2 — the INFLATION_START_BLOCK
+ *      monotonicity rule left with parameter id 3, which step 2's
+ *      scalar rules now refuse.)
  *   8. INSERT row into chain_config_history (PK conflict = replay reject).
  *
  * R3 W4 deleted apply_tx_to_state and nodus_witness_bft.c, the caller

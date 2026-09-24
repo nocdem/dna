@@ -21,9 +21,10 @@
  *      shipped proposal digest (nodus_chain_config_compute_digest),
  *      scalar rules / grace tiers come from the SAME exported helpers
  *      the legacy apply consumes (nodus_chain_config_scalar_rules /
- *      nodus_chain_config_grace_for_param), freshness and the
- *      INFLATION_START monotonicity rule are mirrored 1:1 from
- *      nodus_chain_config_apply (nodus_witness_chain_config.c:903).
+ *      nodus_chain_config_grace_for_param), freshness is mirrored 1:1
+ *      from nodus_chain_config_apply (nodus_witness_chain_config.c).
+ *      The INFLATION_START monotonicity rule left with parameter id 3
+ *      (tokenomics-v3 P2, P2-4 — RETIRED, refused by the scalar rules).
  *
  *   2. DNA_CORE / DNA_CORERULE_SPEND (runtime_op 1, legacy tx 1): the
  *      canonical transparent DNAC UTXO transfer. Source semantics
@@ -37,8 +38,11 @@
  *      fee_amount and satisfy BOTH shipped floors (DNAC_MIN_FEE_RAW,
  *      verify.c:540; NODUS_W_BASE_TX_FEE, verify.c:833 — equal today,
  *      enforced as a conjunction so neither can silently drift), and the
- *      fee is BURNED exactly once into supply_tracking.total_burned
- *      (route_tx_fee → nodus_witness_supply_add_burned semantics).
+ *      fee is credited exactly once to supply_tracking.reward_pool
+ *      (tokenomics-v3 P2, P2-3 — decision §1: every transaction fee,
+ *      TOKEN_CREATE included, goes to the reward pool and is never
+ *      burned; before P2 it was burned into total_burned, the legacy
+ *      route_tx_fee rule).
  *
  *   3. DNA_CORE / DNA_CORERULE_BURN (runtime_op 2, legacy tx 2): the
  *      explicit native destruction. The legacy lane has NO type-2
@@ -48,9 +52,10 @@
  *      so a legacy "burn" IS a fee-shaped destruction into the ONE
  *      committed counter supply_tracking.total_burned. The V2 call
  *      splits the DECLARATION (explicit burn_amount, >= 1) from the
- *      fee while preserving the exact accounting bucket:
- *      Σnative_in == Σnative_out + fee + burn_amount, and
- *      total_burned += fee + burn_amount (one SET). Non-native tokens
+ *      fee: Σnative_in == Σnative_out + fee + burn_amount, and —
+ *      tokenomics-v3 P2 (P2-3) — total_burned += burn_amount and
+ *      reward_pool += fee (two SETs, each bound to its observed
+ *      counter; before P2 both went to total_burned). Non-native tokens
  *      must balance exactly — an explicit TOKEN burn is inexpressible
  *      in the legacy lane (nothing ever decrements tokens.supply) and
  *      is fail-closed here, never invented.
@@ -98,13 +103,16 @@
  *      and neither leg can be replayed against a different partner. It
  *      enforces the legacy consistency equation with the state amount
  *      named on the side it belongs to —
- *      Σnative_in == Σchange + fee + lock — and burns the fee and ONLY
- *      the fee (a lock MOVES value into a supply bucket the conservation
+ *      Σnative_in == Σchange + fee + lock — and credits the fee and ONLY
+ *      the fee to the reward pool (tokenomics-v3 P2; burned before P2)
+ *      (a lock MOVES value into a supply bucket the conservation
  *      equation already counts; a RELEASE is not netted against the
  *      funding inputs at all — see rtn_sysfund_exec). The release UTXO
  *      reproduces the shipped synthetic-UTXO derivation
  *      (emit_synthetic_utxo, bft.c:1720-1729): kind 0x01, output_index
- *      100, unlock 0, owner = the delegator's fingerprint. LABELED
+ *      100, owner = the delegator's fingerprint — but it is born LOCKED
+ *      to L(h) + DNAC_UNDELEGATE_LOCK_EPOCHS · E (tokenomics-v3 P2-10,
+ *      DIVERGENCE from the legacy unlock 0; rtn_sysfund_exec). LABELED
  *      NARROWING: native-token-only on both sides (the legacy staking
  *      applies summed only native DNAC and silently ignored any other
  *      token riding along).
@@ -303,6 +311,10 @@
                              * honest coupling; a second literal 64 here
                              * is exactly the drift that produced the bug
                              * this cap fixes (O15J Block 2). */
+#include "witness/nodus_witness_v2_epoch.h"
+                            /* nodus_v2_power_exit_boundary — L(h), the
+                             * ONE authority for where the UNDELEGATE
+                             * release lock starts (tokenomics-v3 P2-10) */
 #include "nodus/nodus_chain_config.h"
 
 #include "dnac/dnac.h"                 /* DNAC_MIN_FEE_RAW, DNAC_CFG_*   */
@@ -849,8 +861,10 @@ static int rtn_sys_call_identity(uint32_t op, const uint8_t *p,
  *               principal is released at epoch-boundary graduation,
  *               bft.c:2404-2560 — a DEFERRED season, not silently
  *               reproduced here)
- *   UNDELEGATE  lock = 0         release = amount (immediate principal
- *               return, bft.c:1873-1877 — Rule O is client-lane only)
+ *   UNDELEGATE  lock = 0         release = amount (the principal UTXO is
+ *               created in the same block, bft.c:1873-1877, but LOCKED
+ *               to L(h) + 12 epochs — tokenomics-v3 P2-10,
+ *               rtn_sysfund_exec)
  *   VALIDATOR_UPDATE
  *               lock = 0         release = 0  (O12 S1: a commission
  *               change moves NO value at all — the funding leg exists
@@ -1010,9 +1024,14 @@ _Static_assert(NODUS_RT_CORE_UTXO_REC_LEN == RTN_UTXO_REC_LEN,
 #define RTN_UTXO_BH_OFF       268u
 #define RTN_UTXO_UNLOCK_OFF   276u
 
-/* The supply selector key: byte 2 = total_burned (the ONE counter this
- * slice consumes; selector 1 = total_minted is reserved, unimplemented). */
+/* The supply selector keys: byte 2 = total_burned, byte 3 = reward_pool
+ * (tokenomics-v3 P2, P2-3: every fee is credited to the reward pool,
+ * only an explicit BURN's burn_amount still reaches total_burned).
+ * Selector 1 = total_minted is reserved, unimplemented — nothing mints
+ * (decision §1 "Yeni token basılmayacak"). Ascending selector order is
+ * the effect codec's canonical key order for two SETs on op 3. */
 #define RTN_SUPPLY_SEL_BURNED 2u
+#define RTN_SUPPLY_SEL_POOL   3u
 
 /* The canonical token-registry record value (exact 188 bytes — burn
  * season). Exactly the `tokens` columns the token merkle leaf consumes
@@ -1291,20 +1310,37 @@ static int rtn_sysfund_shape(const dna_env_view_t *env, uint16_t leg_index) {
 }
 
 /* Emit the shared transfer-read prefix: one UTXO read per input (keys
- * already strictly ascending by the parse) then the ONE burned-counter
- * read — ascending (op_id, key), the engine's canonical order. */
-static void rtn_xfer_reads(const rtn_spend_call_t *c,
-                           nodus_rt_read_req_t *reqs_out) {
+ * already strictly ascending by the parse) then the supply counter
+ * reads — ascending (op_id, key), the engine's canonical order.
+ *
+ * tokenomics-v3 P2 (P2-3): every leg reads the REWARD POOL (selector 3),
+ * because every fee is credited to it; only an explicit BURN
+ * (`with_burned`) also reads the burned counter (selector 2), because
+ * only its burn_amount is destroyed. Selector 2 sorts before selector 3,
+ * so the burned read (when present) is at [in_count] and the pool read
+ * at the LAST supply slot. @return the number of supply reads emitted
+ * (1 or 2). */
+static uint16_t rtn_xfer_reads(const rtn_spend_call_t *c, int with_burned,
+                               nodus_rt_read_req_t *reqs_out) {
     for (uint8_t i = 0; i < c->in_count; i++) {
         memset(&reqs_out[i], 0, sizeof(reqs_out[i]));
         reqs_out[i].op_id = RTN_CORE_OP_UTXO;
         reqs_out[i].key_len = 64;
         memcpy(reqs_out[i].key, c->ins + (size_t)i * 64, 64);
     }
-    memset(&reqs_out[c->in_count], 0, sizeof(reqs_out[0]));
-    reqs_out[c->in_count].op_id = RTN_CORE_OP_SUPPLY;
-    reqs_out[c->in_count].key_len = 1;
-    reqs_out[c->in_count].key[0] = RTN_SUPPLY_SEL_BURNED;
+    uint16_t k = c->in_count;
+    if (with_burned) {
+        memset(&reqs_out[k], 0, sizeof(reqs_out[0]));
+        reqs_out[k].op_id = RTN_CORE_OP_SUPPLY;
+        reqs_out[k].key_len = 1;
+        reqs_out[k].key[0] = RTN_SUPPLY_SEL_BURNED;
+        k++;
+    }
+    memset(&reqs_out[k], 0, sizeof(reqs_out[0]));
+    reqs_out[k].op_id = RTN_CORE_OP_SUPPLY;
+    reqs_out[k].key_len = 1;
+    reqs_out[k].key[0] = RTN_SUPPLY_SEL_POOL;
+    return with_burned ? 2u : 1u;
 }
 
 int nodus_rt_core_read_plan(const nodus_domain_runtime_t *rt,
@@ -1319,9 +1355,9 @@ int nodus_rt_core_read_plan(const nodus_domain_runtime_t *rt,
     case DNA_CORERULE_SPEND: {
         rtn_spend_call_t c;
         if (rtn_spend_parse(env, leg_index, &c) != 0) return -1;
-        uint16_t need = (uint16_t)(c.in_count + 1);
+        uint16_t need = (uint16_t)(c.in_count + 1);   /* + the pool */
         if (need > max_reqs) return -1;
-        rtn_xfer_reads(&c, reqs_out);
+        (void)rtn_xfer_reads(&c, 0, reqs_out);
         *n_out = need;
         return 0;
     }
@@ -1330,20 +1366,22 @@ int nodus_rt_core_read_plan(const nodus_domain_runtime_t *rt,
         uint64_t burn = 0;
         if (rtn_burn_parse(env, leg_index, &c, &burn) != 0) return -1;
         (void)burn;                      /* validated; consumed at exec  */
-        uint16_t need = (uint16_t)(c.in_count + 1);
+        /* tokenomics-v3 P2: + the burned counter AND the pool — the fee
+         * goes to the pool, the burn_amount to total_burned. */
+        uint16_t need = (uint16_t)(c.in_count + 2);
         if (need > max_reqs) return -1;
-        rtn_xfer_reads(&c, reqs_out);
+        (void)rtn_xfer_reads(&c, 1, reqs_out);
         *n_out = need;
         return 0;
     }
     case DNA_CORERULE_TOKEN_CREATE: {
         rtn_tc_call_t t;
         if (rtn_tc_parse(env, leg_index, &t) != 0) return -1;
-        /* inputs + supply + the registry-uniqueness read (op 4 last —
+        /* inputs + the pool + the registry-uniqueness read (op 4 last —
          * ascending op_id keeps the canonical request order) */
         uint16_t need = (uint16_t)(t.xfer.in_count + 2);
         if (need > max_reqs) return -1;
-        rtn_xfer_reads(&t.xfer, reqs_out);
+        (void)rtn_xfer_reads(&t.xfer, 0, reqs_out);
         memset(&reqs_out[t.xfer.in_count + 1], 0, sizeof(reqs_out[0]));
         reqs_out[t.xfer.in_count + 1].op_id = RTN_CORE_OP_TOKEN;
         reqs_out[t.xfer.in_count + 1].key_len = 64;
@@ -1356,11 +1394,11 @@ int nodus_rt_core_read_plan(const nodus_domain_runtime_t *rt,
         if (rtn_sysfund_shape(env, leg_index) != 0) return -1;
         if (rtn_sysfund_parse(env, leg_index, &c) != 0) return -1;
         /* the SPEND read shape exactly: one UTXO read per input plus the
-         * ONE burned-counter read (the release UTXO is CREATED, never
-         * read) */
+         * ONE reward-pool read (tokenomics-v3 P2 — the fee's
+         * destination; the release UTXO is CREATED, never read) */
         uint16_t need = (uint16_t)(c.in_count + 1);
         if (need > max_reqs) return -1;
-        rtn_xfer_reads(&c, reqs_out);
+        (void)rtn_xfer_reads(&c, 0, reqs_out);
         *n_out = need;
         return 0;
     }
@@ -1446,11 +1484,15 @@ static int rtn_out_ids(const rtn_spend_call_t *c,
     return 0;
 }
 
-/* Append one canonical UTXO CREATE record/effect (shared builder). */
+/* Append one canonical UTXO CREATE record/effect (shared builder).
+ * `unlock_block` is the caller's: 0 for every wire output (SPEND, BURN,
+ * TOKEN_CREATE and the SYSFUND change), and the P2-10 lock height for
+ * the UNDELEGATE release UTXO (rtn_sysfund_exec). */
 static void rtn_utxo_create_eff(dna_effect_in_t *eff, uint8_t *v,
                                 const uint8_t *rec, uint8_t o,
                                 const uint8_t *out_id,
-                                const nodus_rt_exec_ctx_t *ctx) {
+                                const nodus_rt_exec_ctx_t *ctx,
+                                uint64_t unlock_block) {
     memcpy(v + RTN_UTXO_OWNER_OFF, rec, 128);
     memcpy(v + RTN_UTXO_AMOUNT_OFF, rec + 128, 8);   /* already BE   */
     memcpy(v + RTN_UTXO_TOKEN_OFF, rec + 136, 64);
@@ -1463,8 +1505,7 @@ static void rtn_utxo_create_eff(dna_effect_in_t *eff, uint8_t *v,
     memcpy(v + RTN_UTXO_TXH_OFF, ctx->intent_id, 64);
     rtn_put32(v + RTN_UTXO_OIDX_OFF, (uint32_t)o);
     rtn_put64(v + RTN_UTXO_BH_OFF, ctx->global_height);
-    rtn_put64(v + RTN_UTXO_UNLOCK_OFF, 0);           /* legacy: all
-                                      * non-UNSTAKE outputs unlocked */
+    rtn_put64(v + RTN_UTXO_UNLOCK_OFF, unlock_block);
     eff->hdr.op_id = RTN_CORE_OP_UTXO;
     eff->hdr.effect_kind = DNA_EFFECT_CREATE;
     eff->hdr.precond_tag = DNA_EFFECT_PRE_ABSENT;
@@ -1526,31 +1567,37 @@ int nodus_rt_core_utxo_create_eff(dna_effect_in_t *eff, uint8_t *value,
     return 0;
 }
 
-/* Append the ONE burned-counter SET, bound to the observed pre-state
- * counter (EXISTS_VERSION). `burn_total` = everything this leg destroys
- * (SPEND: the fee; BURN: fee + explicit burn_amount — ONE counter, the
- * legacy accounting: route_tx_fee adds every destroyed value to
- * supply_tracking.total_burned regardless of tx_type,
- * nodus_witness_bft.c:731-733; no separate explicit-burn bucket exists
- * in committed state and inventing one would be a schema/protocol
- * change). @return 0 / -1 verdict / -2 fault. */
-static int rtn_supply_burn_eff(dna_effect_in_t *eff, uint8_t supv[8],
-                               const nodus_rt_read_res_t *r,
-                               uint64_t burn_total) {
+/* Append ONE supply-counter SET — `sel` names the counter
+ * (RTN_SUPPLY_SEL_BURNED / RTN_SUPPLY_SEL_POOL) — bound to the observed
+ * pre-state counter (EXISTS_VERSION): an absolute write of old + delta,
+ * never a blind relative UPDATE.
+ *
+ * tokenomics-v3 P2 (P2-3, decision §1 "TOKEN_CREATE dahil işlem
+ * ücretlerinin tamamı ödül havuzuna aktarılacak; yakılmayacak"): EVERY
+ * fee — SPEND, BURN, TOKEN_CREATE, SYSFUND — is now credited to the
+ * reward pool (sel 3), and ONLY an explicit BURN's burn_amount is still
+ * destroyed into total_burned (sel 2). Before P2 both went to the ONE
+ * burned counter (the legacy route_tx_fee accounting,
+ * nodus_witness_bft.c:731-733). @return 0 / -1 verdict / -2 fault. */
+static int rtn_supply_add_eff(dna_effect_in_t *eff, uint8_t supv[8],
+                              const nodus_rt_read_res_t *r,
+                              uint64_t delta, uint8_t sel) {
+    static const uint8_t sel_burned[1] = { RTN_SUPPLY_SEL_BURNED };
+    static const uint8_t sel_pool[1]   = { RTN_SUPPLY_SEL_POOL };
     if (!r->present) return -1;          /* no supply row: unfunded chain*/
     if (r->value_len != 8) return -2;
-    uint64_t burned_old = rtn_get64(r->value);
-    uint64_t burned_new;
-    if (dna_ck_add_u64(burned_old, burn_total, &burned_new) != 0)
+    uint64_t old_v = rtn_get64(r->value);
+    uint64_t new_v;
+    if (dna_ck_add_u64(old_v, delta, &new_v) != 0)
         return -1;
-    rtn_put64(supv, burned_new);
+    rtn_put64(supv, new_v);
     eff->hdr.op_id = RTN_CORE_OP_SUPPLY;
     eff->hdr.effect_kind = DNA_EFFECT_SET;
     eff->hdr.precond_tag = DNA_EFFECT_PRE_EXISTS_VERSION;
-    eff->hdr.expected_version = burned_old;
+    eff->hdr.expected_version = old_v;
     eff->hdr.key_len = 1;
     eff->hdr.value_len = 8;
-    eff->key = (const uint8_t *)"\x02";
+    eff->key = (sel == RTN_SUPPLY_SEL_BURNED) ? sel_burned : sel_pool;
     eff->value = supv;
     return 0;
 }
@@ -1575,10 +1622,13 @@ static int rtn_utxo_delete_eff(dna_effect_in_t *eff, uint8_t dvh[64],
 }
 
 /* The shared transparent-transfer executor — SPEND (burn_amount == 0)
- * and BURN (burn_amount >= 1, parsed from the call) differ ONLY in the
- * native conservation equation and the burned-counter delta:
- *   SPEND:  Σnative_in == Σnative_out + fee            ; burned += fee
- *   BURN:   Σnative_in == Σnative_out + fee + burn     ; burned += fee+burn
+ * and BURN (burn_amount >= 1, parsed from the call — rtn_burn_parse
+ * refuses 0, so burn_amount > 0 IS the BURN leg) differ ONLY in the
+ * native conservation equation and the supply deltas (tokenomics-v3 P2,
+ * P2-3 — the fee is credited to the reward pool, never burned):
+ *   SPEND:  Σnative_in == Σnative_out + fee         ; pool += fee
+ *   BURN:   Σnative_in == Σnative_out + fee + burn  ; pool += fee,
+ *                                                     burned += burn
  * Every non-native token balances EXACTLY in both — an explicit token
  * burn is NOT expressible: the legacy lane cannot represent one either
  * (its verify sums tokens blindly, verify.c:753-758, and nothing ever
@@ -1592,7 +1642,14 @@ static int rtn_xfer_exec(const rtn_spend_call_t *c, uint64_t burn_amount,
                          const nodus_rt_read_res_t *reads, uint16_t n_reads,
                          uint8_t *res_out, size_t res_cap,
                          size_t *res_len_out) {
-    if (!reads || n_reads != (uint16_t)(c->in_count + 1)) return -2;
+    /* the read plan's shape (rtn_xfer_reads): inputs, then the burned
+     * counter for BURN only, then the pool */
+    const int is_burn = (burn_amount > 0);
+    const uint16_t n_sup = is_burn ? 2u : 1u;
+    if (!reads || n_reads != (uint16_t)(c->in_count + n_sup)) return -2;
+    const nodus_rt_read_res_t *r_burned = is_burn ? &reads[c->in_count]
+                                                  : NULL;
+    const nodus_rt_read_res_t *r_pool = &reads[c->in_count + n_sup - 1];
 
     uint8_t sfp[NODUS_RT_AUTH_MAX_SIGNERS][128];
     rtn_signer_fps(ctx, sfp);
@@ -1641,7 +1698,10 @@ static int rtn_xfer_exec(const rtn_spend_call_t *c, uint64_t burn_amount,
     uint64_t fee = env->fee_amount;
     if (fee < DNAC_MIN_FEE_RAW || fee < NODUS_W_BASE_TX_FEE)
         return -1;                       /* BOTH shipped floors          */
-    uint64_t destroyed;                  /* fee + explicit burn          */
+    uint64_t destroyed;                  /* fee + explicit burn: what
+                                          * leaves the native UTXOs (the
+                                          * fee to the pool, the burn
+                                          * destroyed — P2-3)            */
     if (dna_ck_add_u64(fee, burn_amount, &destroyed) != 0) return -1;
     for (size_t t = 0; t < n_toks; t++) {
         if (memcmp(toks[t].token, native_token, 64) == 0) {
@@ -1664,10 +1724,10 @@ static int rtn_xfer_exec(const rtn_spend_call_t *c, uint64_t burn_amount,
     }
 
     /* ── canonical typed-effect result ──────────────────────────────── */
-    dna_effect_in_t effs[RTN_SPEND_MAX_OUT + 1 + RTN_SPEND_MAX_IN];
+    dna_effect_in_t effs[RTN_SPEND_MAX_OUT + 2 + RTN_SPEND_MAX_IN];
     uint8_t crv[RTN_SPEND_MAX_OUT][RTN_UTXO_REC_LEN];
     uint8_t dvh[RTN_SPEND_MAX_IN][64];
-    uint8_t supv[8];
+    uint8_t supv_burned[8], supv_pool[8];
     uint16_t ne = 0;
     memset(effs, 0, sizeof(effs));
 
@@ -1676,13 +1736,22 @@ static int rtn_xfer_exec(const rtn_spend_call_t *c, uint64_t burn_amount,
         uint8_t o = sorted[a];
         rtn_utxo_create_eff(&effs[ne], crv[a],
                             c->outs + (size_t)o * RTN_SPEND_OUT_LEN, o,
-                            nul[o], ctx);
+                            nul[o], ctx, 0);
         ne++;
     }
-    /* the ONE burn (kind 2), bound to the observed pre-state counter */
+    /* the supply SETs (kind 2), each bound to its observed pre-state
+     * counter, in ascending selector order (2 burned, then 3 pool — the
+     * codec's canonical key order): the explicit burn_amount is
+     * destroyed, the fee is credited to the reward pool. */
+    if (is_burn) {
+        int rc = rtn_supply_add_eff(&effs[ne], supv_burned, r_burned,
+                                    burn_amount, RTN_SUPPLY_SEL_BURNED);
+        if (rc != 0) return rc;
+        ne++;
+    }
     {
-        int rc = rtn_supply_burn_eff(&effs[ne], supv, &reads[c->in_count],
-                                     destroyed);
+        int rc = rtn_supply_add_eff(&effs[ne], supv_pool, r_pool, fee,
+                                    RTN_SUPPLY_SEL_POOL);
         if (rc != 0) return rc;
         ne++;
     }
@@ -1818,7 +1887,7 @@ static int rtn_tc_exec(const rtn_tc_call_t *t,
         uint8_t o = sorted[a];
         rtn_utxo_create_eff(&effs[ne], crv[a],
                             c->outs + (size_t)o * RTN_SPEND_OUT_LEN, o,
-                            nul[o], ctx);
+                            nul[o], ctx, 0);
         ne++;
     }
     {
@@ -1842,10 +1911,12 @@ static int rtn_tc_exec(const rtn_tc_call_t *t,
         effs[ne].value = tokv;
         ne++;
     }
-    /* the ONE fee burn (kind 2) */
+    /* the ONE fee credit (kind 2) — tokenomics-v3 P2 (P2-3): the
+     * creation fee goes to the reward pool, never burned (decision §1
+     * names TOKEN_CREATE explicitly). */
     {
-        int rc = rtn_supply_burn_eff(&effs[ne], supv, &reads[c->in_count],
-                                     fee);
+        int rc = rtn_supply_add_eff(&effs[ne], supv, &reads[c->in_count],
+                                    fee, RTN_SUPPLY_SEL_POOL);
         if (rc != 0) return rc;
         ne++;
     }
@@ -1975,10 +2046,12 @@ static int rtn_sysfund_exec(const rtn_spend_call_t *c,
          * the CORE supply identity (v2_claims.c:787).
          *
          * Derivation, per op (matches the season design's supply map):
-         *   STAKE/DELEGATE  Σutxo −(lock+fee), bucket +lock, burned +fee
-         *   UNSTAKE         Σutxo −fee,                      burned +fee
+         *   STAKE/DELEGATE  Σutxo −(lock+fee), bucket +lock, pool +fee
+         *   UNSTAKE         Σutxo −fee,                      pool +fee
          *   UNDELEGATE      Σutxo +(release−fee), delegated −release,
-         *                                                    burned +fee
+         *                                                    pool +fee
+         * (tokenomics-v3 P2, P2-3: "pool" is supply_tracking.reward_pool;
+         * before P2 every fee went to total_burned instead),
          * each of which is exactly this equation plus the SYSTEM leg's
          * bucket move. The legacy lane enforced the same thing implicitly:
          * apply_undelegate performs NO balance check of its own, the
@@ -1995,9 +2068,48 @@ static int rtn_sysfund_exec(const rtn_spend_call_t *c,
     /* ── the release UTXO (UNDELEGATE only) ─────────────────────────── */
     uint8_t rel_id[64];
     uint8_t rel_rec[RTN_SPEND_OUT_LEN];
+    uint64_t rel_unlock = 0;
     memset(rel_id, 0, sizeof(rel_id));
     memset(rel_rec, 0, sizeof(rel_rec));
     if (release > 0) {
+        /* THE RELEASE IS BORN LOCKED (tokenomics-v3 P2-10; design §7.1;
+         * decision file §1 "Stake çözme" — "Delegator bekleme süresi 12
+         * epoch", the wait starting where the stake leaves the voting
+         * power — and §3 2026-09-24 "DELEGATOR = VALIDATOR GİBİ"):
+         *
+         *   unlock = L(h) + DNAC_UNDELEGATE_LOCK_EPOCHS · E
+         *
+         * with h = the executing height and L(h) the boundary at which a
+         * set that no longer counts this stake takes effect
+         * (nodus_v2_power_exit_boundary — the derivation lives there,
+         * and only there). The withdrawn amount keeps earning until L(h)
+         * (it stays in the governing snapshot and in the source copy the
+         * distribution reads), so it must not be spendable before it has
+         * stopped earning; with the lock it cannot be spent, re-delegated
+         * or moved to another validator (the SYSFUND input gate below
+         * refuses a locked funding coin) before L(h) + 12E + 1 — the
+         * spend gates refuse while unlock >= height (rtn_xfer_exec,
+         * rtn_tc_exec and the input loop above). Same shape as the
+         * validator graduation's locked release (nodus_witness_v2_epoch.c
+         * v2ep_graduate, unlock = H + DNAC_UNSTAKE_COOLDOWN_BLOCKS).
+         *
+         * Every step is checked, and the result is bounded by the SQLite
+         * INTEGER maximum: an unlock that round-trips NEGATIVE would be
+         * refused by the row reader (rtn_core_row_record) as a malformed
+         * row forever. An overflow here is a VERDICT, like every checked
+         * add in this function: it is a deterministic function of the
+         * block height, identical on every node. */
+        uint64_t exit_b = 0, lock_len = 0;
+        if (nodus_v2_power_exit_boundary(ctx->global_height, &exit_b) != 0)
+            return -1;
+        if ((uint64_t)DNAC_UNDELEGATE_LOCK_EPOCHS >
+            UINT64_MAX / (uint64_t)DNAC_EPOCH_LENGTH)
+            return -1;
+        lock_len = (uint64_t)DNAC_UNDELEGATE_LOCK_EPOCHS *
+                   (uint64_t)DNAC_EPOCH_LENGTH;
+        if (dna_ck_add_u64(exit_b, lock_len, &rel_unlock) != 0 ||
+            rel_unlock > (uint64_t)INT64_MAX)
+            return -1;
         /* identity = SHA3-512(tx_hash ‖ kind ‖ u32be(index)) with
          * tx_hash = the canonical INTENT identity: this row is consensus
          * state (the UTXO merkle leaf commits tx_hash), so two valid
@@ -2077,16 +2189,21 @@ static int rtn_sysfund_exec(const rtn_spend_call_t *c,
 
     for (uint8_t a = 0; a < nc; a++) {               /* CREATEs (kind 1) */
         uint8_t s = order[a];
+        /* the change outputs are unlocked; the release (crec == rel_rec,
+         * set before the key sort, so the identity survives it) carries
+         * the P2-10 lock computed above */
         rtn_utxo_create_eff(&effs[ne], crv[a], crec[s], cidx[s],
-                            nul[s], ctx);
+                            nul[s], ctx,
+                            crec[s] == rel_rec ? rel_unlock : 0);
         ne++;
     }
-    /* the ONE burn (kind 2): the FEE ONLY. A locked bond is not
-     * destroyed — it moves into a validator/delegation bucket the supply
-     * equation already counts. */
+    /* the ONE fee credit (kind 2): the FEE ONLY, to the reward pool
+     * (tokenomics-v3 P2, P2-3). A locked bond is not moved here — it
+     * moves into a validator/delegation bucket the supply equation
+     * already counts. */
     {
-        int rc = rtn_supply_burn_eff(&effs[ne], supv, &reads[c->in_count],
-                                     fee);
+        int rc = rtn_supply_add_eff(&effs[ne], supv, &reads[c->in_count],
+                                    fee, RTN_SUPPLY_SEL_POOL);
         if (rc != 0) return rc;
         ne++;
     }
@@ -2305,12 +2422,22 @@ static int rtn_token_rec_ok(const uint8_t *v) {
     return 1;
 }
 
-/* 0 = value fetched, 1 = absent, -1 = fault. */
-static int rtn_core_burned_fetch(nodus_witness_t *w, uint64_t *out) {
+/* One supply counter by selector (RTN_SUPPLY_SEL_BURNED ->
+ * total_burned, RTN_SUPPLY_SEL_POOL -> reward_pool — tokenomics-v3 P2).
+ * Any other selector is a fault: the op table admits exactly 1-byte
+ * keys, and only these two name a counter this adapter owns.
+ * 0 = value fetched, 1 = absent, -1 = fault. */
+static int rtn_core_supply_fetch(nodus_witness_t *w, uint8_t sel,
+                                 uint64_t *out) {
+    const char *sql;
+    if (sel == RTN_SUPPLY_SEL_BURNED)
+        sql = "SELECT total_burned FROM supply_tracking WHERE id = 1";
+    else if (sel == RTN_SUPPLY_SEL_POOL)
+        sql = "SELECT reward_pool FROM supply_tracking WHERE id = 1";
+    else
+        return -1;
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(w->db,
-            "SELECT total_burned FROM supply_tracking WHERE id = 1",
-            -1, &st, NULL) != SQLITE_OK)
+    if (sqlite3_prepare_v2(w->db, sql, -1, &st, NULL) != SQLITE_OK)
         return -1;
     int rc = sqlite3_step(st);
     if (rc == SQLITE_ROW) {
@@ -2345,10 +2472,9 @@ static nodus_adapter_status_t rtn_core_probe(
         return NODUS_ADAPTER_OK;
     }
     if (op->op_id == RTN_CORE_OP_SUPPLY) {
-        if (key_len != 1 || key[0] != RTN_SUPPLY_SEL_BURNED)
-            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        if (key_len != 1) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
         uint64_t v = 0;
-        int rc = rtn_core_burned_fetch(w, &v);
+        int rc = rtn_core_supply_fetch(w, key[0], &v);
         if (rc < 0) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
         f->exists = (rc == 0);
         if (f->exists) {
@@ -2398,10 +2524,9 @@ static nodus_adapter_status_t rtn_core_read(
         return NODUS_ADAPTER_OK;
     }
     if (op->op_id == RTN_CORE_OP_SUPPLY) {
-        if (key_len != 1 || key[0] != RTN_SUPPLY_SEL_BURNED)
-            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        if (key_len != 1) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
         uint64_t v = 0;
-        int rc = rtn_core_burned_fetch(w, &v);
+        int rc = rtn_core_supply_fetch(w, key[0], &v);
         if (rc < 0) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
         if (rc == 1) return NODUS_ADAPTER_OK;
         if (cap < 8) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
@@ -2473,17 +2598,34 @@ static nodus_adapter_status_t rtn_core_mutate(
         sqlite3_bind_int64(st, 2, (sqlite3_int64)dom);
     } else if (op->op_id == RTN_CORE_OP_SUPPLY &&
                kind == DNA_EFFECT_SET) {
-        if (key_len != 1 || key[0] != RTN_SUPPLY_SEL_BURNED ||
-            value_len != 8 || !value)
+        if (key_len != 1 || value_len != 8 || !value)
             return NODUS_ADAPTER_ERR_STORAGE_FAULT;
-        /* absolute new counter; current_supply kept coherent by the
-         * same derivation the legacy burn maintains (genesis + minted
-         * − burned); last_tx_hash is audit-only and stays unchanged */
-        if (sqlite3_prepare_v2(w->db,
-                "UPDATE supply_tracking SET total_burned = ?1, "
-                "current_supply = genesis_supply + total_minted - ?1, "
-                "last_sequence = last_sequence + 1 WHERE id = 1",
-                -1, &st, NULL) != SQLITE_OK)
+        /* A value above INT64_MAX would round-trip NEGATIVE through the
+         * INTEGER column and poison every later fetch — the token
+         * record's storage-bound rule (rtn_token_rec_ok). Every counter
+         * is bounded by the chain's total supply, so this is
+         * unreachable by an honest chain: a fault, never a verdict. */
+        if (rtn_get64(value) > (uint64_t)INT64_MAX)
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        const char *sql;
+        if (key[0] == RTN_SUPPLY_SEL_BURNED) {
+            /* absolute new counter; current_supply kept coherent by the
+             * same derivation the legacy burn maintains (genesis +
+             * minted − burned); last_tx_hash is audit-only and stays
+             * unchanged */
+            sql = "UPDATE supply_tracking SET total_burned = ?1, "
+                  "current_supply = genesis_supply + total_minted - ?1, "
+                  "last_sequence = last_sequence + 1 WHERE id = 1";
+        } else if (key[0] == RTN_SUPPLY_SEL_POOL) {
+            /* tokenomics-v3 P2 (P2-3): the reward pool, absolute. A fee
+             * credited to the pool is NOT destroyed, so current_supply
+             * (genesis + minted − burned) does not move. */
+            sql = "UPDATE supply_tracking SET reward_pool = ?1, "
+                  "last_sequence = last_sequence + 1 WHERE id = 1";
+        } else {
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        }
+        if (sqlite3_prepare_v2(w->db, sql, -1, &st, NULL) != SQLITE_OK)
             return NODUS_ADAPTER_ERR_STORAGE_FAULT;
         sqlite3_bind_int64(st, 1, (sqlite3_int64)rtn_get64(value));
     } else if (op->op_id == RTN_CORE_OP_TOKEN &&
@@ -2576,7 +2718,10 @@ const nodus_domain_adapter_t NODUS_RT_CORE_ADAPTER = {
  * AUTHORIZATION boundary against the engine-resolved snapshot
  * (auth_kind 2), so the exec phase no longer reads the committee at
  * all. The id is not reused. */
-#define RTN_SYS_OP_CCLATEST  3u  /* READ-ONLY: latest nonzero value      */
+/* op id 3 (READ-ONLY: the latest nonzero chain-config value, the
+ * INFLATION_START monotonicity input) is RETIRED by tokenomics-v3 P2
+ * (P2-4) together with parameter id 3 — its only read plan was that
+ * rule. The id is not reused. */
 /* O11 — the stake-lifecycle rows. Ids are APPENDED strictly ascending;
  * 1 and 3 are frozen (an op id is part of every committed effect). */
 #define RTN_SYS_OP_VAL       4u  /* CREATE|SET + read: validators row    */
@@ -2984,18 +3129,13 @@ int nodus_rt_system_read_plan(const nodus_domain_runtime_t *rt,
                                           * below genesis                */
     /* capacity season: the committee is no longer a mediated read —
      * membership and approvals verified at the AUTH boundary against
-     * the engine-resolved snapshot. The one remaining read is the
-     * INFLATION_START monotonicity input. */
-    uint16_t need = (uint16_t)(c.param_id == DNAC_CFG_INFLATION_START_BLOCK
-                                   ? 1 : 0);
-    if (need > max_reqs) return -1;
-    if (need == 1) {
-        memset(&reqs_out[0], 0, sizeof(reqs_out[0]));
-        reqs_out[0].op_id = RTN_SYS_OP_CCLATEST;
-        reqs_out[0].key_len = 1;
-        reqs_out[0].key[0] = c.param_id;
-    }
-    *n_out = need;
+     * the engine-resolved snapshot. tokenomics-v3 P2 (P2-4): the one
+     * read that remained — the INFLATION_START monotonicity input (the
+     * retired op 3, RTN_SYS_OP_CCLATEST) — is gone with the parameter
+     * (id 3 is RETIRED; nodus_chain_config_scalar_rules refuses it), so
+     * a chain-config leg reads nothing. */
+    (void)max_reqs;
+    *n_out = 0;
     return 0;
 }
 
@@ -3135,7 +3275,7 @@ static int rtn_stake_exec(const dna_env_view_t *env, uint16_t leg_index,
     effs[1].hdr.precond_tag = DNA_EFFECT_PRE_EXISTS_VERSION;
     effs[1].hdr.expected_version = count_old;   /* bound to the OBSERVED
                                           * counter — the supply-counter
-                                          * pattern (rtn_supply_burn_eff)*/
+                                          * pattern (rtn_supply_add_eff) */
     effs[1].hdr.key_len = 1;
     effs[1].hdr.value_len = 8;
     effs[1].key = statk;
@@ -3172,10 +3312,20 @@ static int rtn_del_rec_ok(const uint8_t *v, const uint8_t *key);
  * exist and be BONDED — ACTIVE or ELIGIBLE, so a validator that merely
  * lost its seat stays delegatable while RETIRING / UNSTAKED /
  * AUTO_RETIRED do not (:1424-1434); an existing delegation is TOPPED UP
- * rather than replaced, with delegated_at_block REFRESHED to the
- * executing height (:1448-1470); and both validator totals rise by the
- * amount, external_delegated included, because Rule S makes every
+ * rather than replaced (:1448-1470); and both validator totals rise by
+ * the amount, external_delegated included, because Rule S makes every
  * delegation external (:1476-1486).
+ *
+ * delegated_at_block is written with the executing height on BOTH paths
+ * — a top-up REFRESHES it, exactly as the legacy source did (:1468).
+ * Nothing on the witness reads it: the version-3 reward distribution
+ * weighs the governing snapshot and the source balance copy
+ * (nodus_witness_v2_econ.c; tokenomics-v3 P2 revision 2, design §7.1
+ * "Silinenler" — the rev-1 rule that read it, and the rev-1 "keep it on
+ * a top-up" divergence, are both gone), and UNDELEGATE has no hold check
+ * because the delegator's hold is the release UTXO's lock (P2-10,
+ * rtn_sysfund_exec). The client's Rule O TODO (dnac/src/transaction/
+ * verify.c) is superseded by that lock.
  *
  * HONEST LABEL (not a narrowing — a deliberate NON-adoption): the
  * client lane's 100-DNAC MIN_DELEGATION (dnac/src/transaction/verify.c)
@@ -3259,13 +3409,14 @@ static int rtn_delegate_exec(const dna_env_view_t *env, uint16_t leg_index,
 
     /* ── the per-validator delegator cap (O15J Block 2) ──────────────
      *
-     * The epoch snapshot carries at most
+     * Introduced when the O15J epoch snapshot blob (nodus_witness_epoch.c,
+     * DELETED by tokenomics-v3 P2) carried at most
      * NODUS_MAX_DELEGATORS_PER_VALIDATOR delegators per committee member
-     * while writing the validator's FULL total_delegated
-     * (nodus_witness_epoch.c). A validator holding more delegators than
-     * the blob can carry would have every delegator past the cap unpaid
-     * forever, its share burned. Capping the ROW COUNT at admission is
-     * what makes the snapshot's truncation unreachable.
+     * while writing the validator's FULL total_delegated, so a validator
+     * with more delegators had every delegator past the cap unpaid
+     * forever. That blob is gone — the P2 distribution reads every
+     * delegation through v2_balance_copy with no truncation — and the cap
+     * stays as the per-validator row bound it is.
      *
      * FAIL-CLOSED, and a FAULT rather than a verdict: the count always
      * ANSWERS — 0 delegations is a VALUE, not an absent row
@@ -3278,8 +3429,7 @@ static int rtn_delegate_exec(const dna_env_view_t *env, uint16_t leg_index,
      * Rule A read.
      *
      * A TOP-UP is exempt: dr->present means this delegator ALREADY has a
-     * row, so the count does not move and the snapshot still holds
-     * everyone. Only a CREATE — a delegator with no row yet — can push
+     * row, so the count does not move. Only a CREATE — a delegator with no row yet — can push
      * the count past the cap, and only that path is gated. This is the
      * VERDICT class: the count is a deterministic function of committed
      * state, so every honest node reaches the same answer. */
@@ -3329,8 +3479,12 @@ static int rtn_delegate_exec(const dna_env_view_t *env, uint16_t leg_index,
         rtn_put64(dnew + RTN_DEL_AMT_OFF, c.amount);
     }
     /* delegated_at_block := the executing height on BOTH paths — the
-     * top-up REFRESHES it (:1468), which is the legacy behavior and
-     * imposes a fresh hold period on the whole position */
+     * top-up REFRESHES it (:1468), which is the legacy behavior. Nothing
+     * in the version-3 reward path reads this column any more
+     * (tokenomics-v3 P2 revision 2, design §7.1 "Silinenler": the
+     * distribution weighs the governing snapshot and the source balance
+     * copy, and the delegator's hold is the UNDELEGATE release lock,
+     * P2-10), so the rev-1 "keep it on a top-up" divergence is gone. */
     rtn_put64(dnew + RTN_DEL_AT_OFF, ctx->global_height);
 
     /* ── effects (the codec's kind-major canonical order) ───────────── */
@@ -3464,7 +3618,14 @@ static int rtn_unstake_exec(const dna_env_view_t *env, uint16_t leg_index,
  * creates the principal UTXO from the SAME call bytes
  * (rtn_sys_call_flow), and the value it creates is exactly the amount
  * this leg removes from the delegated bucket — which is why the funding
- * equation does not net a release against its inputs.
+ * equation does not net a release against its inputs. That UTXO is born
+ * LOCKED to L(h) + DNAC_UNDELEGATE_LOCK_EPOCHS · E (tokenomics-v3
+ * P2-10, design §7.1; decision file §1 "Stake çözme" and §3 2026-09-24
+ * "DELEGATOR = VALIDATOR GİBİ"): the amount leaves the live tables HERE,
+ * immediately, but it stays in the governing snapshot and the source
+ * copy and keeps earning until L(h), and it cannot be spent — nor fund a
+ * new DELEGATE — until 12 epochs after that. There is no hold check on
+ * THIS leg: the lock is the hold.
  *
  * STALE-COMMENT NOTE: apply_undelegate's own doc comment describes a
  * reward accumulator and TWO synthetic UTXOs. The CODE emits only the
@@ -3804,20 +3965,12 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
         if (c.effective < floor_h) return -1;
     }
 
-    uint16_t expect_reads =
-        (uint16_t)(c.param_id == DNAC_CFG_INFLATION_START_BLOCK ? 1 : 0);
-    if (n_reads != expect_reads) return -2;
-    if (expect_reads > 0 && !reads) return -2;
-
-    /* ── INFLATION_START monotonicity (Q5 / CC-GOV-001, 1:1) ────────── */
-    if (c.param_id == DNAC_CFG_INFLATION_START_BLOCK) {
-        const nodus_rt_read_res_t *mono = &reads[0];
-        if (mono->present) {
-            if (mono->value_len != 8) return -2;
-            if (c.new_value == 0) return -1;   /* cannot disable         */
-            if (c.new_value > H) return -1;    /* cannot move past now   */
-        }
-    }
+    /* tokenomics-v3 P2 (P2-4): the read plan emits nothing for a
+     * chain-config leg since the INFLATION_START monotonicity rule left
+     * with parameter id 3 (RETIRED — refused by the scalar rules above,
+     * so no id-3 leg ever reaches this line). */
+    (void)reads;
+    if (n_reads != 0) return -2;
 
     /* ── the ONE effect: CREATE the committed history row ───────────── */
     uint8_t key[RTN_CC_KEY_LEN], val[RTN_CC_VAL_LEN];
@@ -4222,32 +4375,6 @@ static nodus_adapter_status_t rtn_sys_read(
         *vlen = RTN_CC_VAL_LEN;
         return NODUS_ADAPTER_OK;
     }
-    if (op->op_id == RTN_SYS_OP_CCLATEST) {
-        if (key_len != 1) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
-        sqlite3_stmt *st = NULL;
-        if (sqlite3_prepare_v2(w->db,
-                "SELECT new_value FROM chain_config_history "
-                "WHERE param_id = ?1 AND new_value > 0 "
-                "ORDER BY commit_block DESC LIMIT 1", -1, &st, NULL)
-            != SQLITE_OK)
-            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
-        sqlite3_bind_int64(st, 1, (sqlite3_int64)key[0]);
-        int rc = sqlite3_step(st);
-        if (rc == SQLITE_ROW) {
-            if (cap < 8) {
-                sqlite3_finalize(st);
-                return NODUS_ADAPTER_ERR_STORAGE_FAULT;
-            }
-            rtn_put64(value, (uint64_t)sqlite3_column_int64(st, 0));
-            sqlite3_finalize(st);
-            *present = 1;
-            *vlen = 8;
-            return NODUS_ADAPTER_OK;
-        }
-        sqlite3_finalize(st);
-        return rc == SQLITE_DONE ? NODUS_ADAPTER_OK
-                                 : NODUS_ADAPTER_ERR_STORAGE_FAULT;
-    }
     if (op->op_id == RTN_SYS_OP_VAL) {
         uint8_t rec[RTN_VAL_REC_LEN];
         int rc = rtn_sys_val_fetch(w, key, key_len, rec);
@@ -4492,13 +4619,15 @@ static nodus_adapter_status_t rtn_sys_mutate(
     return NODUS_ADAPTER_OK;
 }
 
-static const nodus_adapter_op_t RTN_SYS_OPS[6] = {
+static const nodus_adapter_op_t RTN_SYS_OPS[5] = {
     { RTN_SYS_OP_CC,
       NODUS_ADAPTER_KIND_BIT(DNA_EFFECT_CREATE),
       NODUS_ADAPTER_PRECOND_BIT(DNA_EFFECT_PRE_ABSENT),
       RTN_CC_KEY_LEN, RTN_CC_KEY_LEN, RTN_CC_VAL_LEN, RTN_CC_VAL_LEN },
     /* op 2 (committee read) RETIRED — capacity season; id not reused */
-    { RTN_SYS_OP_CCLATEST,  0, 0, 1, 1, 0, 8 },
+    /* op 3 (latest nonzero chain-config value — the INFLATION_START
+     * monotonicity input) RETIRED — tokenomics-v3 P2 (P2-4), with
+     * parameter id 3 itself; id not reused */
     /* O11 — the stake-lifecycle rows */
     { RTN_SYS_OP_VAL,
       (uint8_t)(NODUS_ADAPTER_KIND_BIT(DNA_EFFECT_CREATE) |
@@ -4528,7 +4657,7 @@ static const nodus_adapter_op_t RTN_SYS_OPS[6] = {
 const nodus_domain_adapter_t NODUS_RT_SYSTEM_ADAPTER = {
     .adapter_version = NODUS_DOMAIN_ADAPTER_V1,
     .ops = RTN_SYS_OPS,
-    .n_ops = 6,
+    .n_ops = 5,
     .probe = rtn_sys_probe,
     .mutate = rtn_sys_mutate,
     .read = rtn_sys_read

@@ -724,8 +724,11 @@ stagef_cmt_pump_ready() {
 # stagef_pump_claim DB — claim the funder's genesis leaf (`v2-claim`,
 # submitted to the submit node) and wait for the claimed coin as a
 # LEDGER EFFECT: an unlocked native coin above the fee owned by the
-# funder (the 100M DNAC leaf itself, not any small coin an epoch
-# settlement payout may already have given it). Prints the tip; rc 0 /
+# funder — ordinarily the 100M DNAC leaf itself. The predicate is only
+# "above the fee": a tokenomics-v3 P2 PAYDAY coin (a validator's payout,
+# output_index >= 400) landing in the same wait would satisfy it too;
+# harmless for the pump, which spends whichever coin is largest
+# (stagef_pump_largest). Prints the tip; rc 0 /
 # 1 stall / 2 not included within 20 heights / 3 the claim was refused.
 stagef_pump_claim() {
     local db="$1" keys conf fp port log h wrc

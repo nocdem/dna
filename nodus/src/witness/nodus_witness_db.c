@@ -926,8 +926,14 @@ int nodus_witness_genesis_get(nodus_witness_t *w,
 /* ── Supply tracking ─────────────────────────────────────────────── */
 
 int nodus_witness_supply_init(nodus_witness_t *w, uint64_t total_supply,
+                                 uint64_t reward_pool,
                                  const uint8_t *genesis_tx_hash) {
     if (!w || !w->db || !genesis_tx_hash) return -1;
+    /* tokenomics-v3 P2 (P2-1): the reserve is carved OUT of the fixed
+     * total supply, never added to it — a pool above the total is a
+     * config the genesis Rule P.2 already refused, so reaching here with
+     * one is a caller bug, never a value to store. */
+    if (reward_pool > total_supply) return -1;
 
     /* Schema first, "already initialized" probe SECOND (2026-07-31).
      *
@@ -952,13 +958,22 @@ int nodus_witness_supply_init(nodus_witness_t *w, uint64_t total_supply,
         "  total_minted INTEGER NOT NULL DEFAULT 0,"
         "  current_supply INTEGER NOT NULL,"
         "  last_tx_hash BLOB NOT NULL,"
-        "  last_sequence INTEGER NOT NULL"
+        "  last_sequence INTEGER NOT NULL,"
+        /* tokenomics-v3 P2 — byte-identical to WITNESS_DB_SCHEMA
+         * (nodus_witness.c) and to the S16 rung's ALTER. */
+        "  reward_pool INTEGER NOT NULL DEFAULT 0"
         ");", NULL, NULL, NULL);
 
     /* Migration: add total_minted to pre-v0.16 DBs. The ALTER silently
      * fails when the column already exists (ignored via NULL errmsg). */
     sqlite3_exec(w->db,
         "ALTER TABLE supply_tracking ADD COLUMN total_minted "
+        "INTEGER NOT NULL DEFAULT 0", NULL, NULL, NULL);
+    /* tokenomics-v3 P2 — the same idempotent back-fill for reward_pool
+     * (the every-open v18 leg's twin), so a legacy row this call refuses
+     * to re-initialise is still readable by supply_get afterwards. */
+    sqlite3_exec(w->db,
+        "ALTER TABLE supply_tracking ADD COLUMN reward_pool "
         "INTEGER NOT NULL DEFAULT 0", NULL, NULL, NULL);
 
     /* Check if already initialized */
@@ -974,14 +989,15 @@ int nodus_witness_supply_init(nodus_witness_t *w, uint64_t total_supply,
     rc = sqlite3_prepare_v2(w->db,
         "INSERT INTO supply_tracking "
         "(id, genesis_supply, total_burned, total_minted, "
-        " current_supply, last_tx_hash, last_sequence) "
-        "VALUES (1, ?, 0, 0, ?, ?, 1)",
+        " current_supply, last_tx_hash, last_sequence, reward_pool) "
+        "VALUES (1, ?, 0, 0, ?, ?, 1, ?)",
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) return -1;
 
     sqlite3_bind_int64(stmt, 1, (int64_t)total_supply);
     sqlite3_bind_int64(stmt, 2, (int64_t)total_supply);
     sqlite3_bind_blob(stmt, 3, genesis_tx_hash, NODUS_T3_TX_HASH_LEN, SQLITE_STATIC);
+    sqlite3_bind_int64(stmt, 4, (int64_t)reward_pool);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -999,7 +1015,7 @@ int nodus_witness_supply_get(nodus_witness_t *w,
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
         "SELECT genesis_supply, total_burned, total_minted, current_supply, "
-        "       last_sequence "
+        "       last_sequence, reward_pool "
         "FROM supply_tracking WHERE id = 1", -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         /* Includes "no such table: supply_tracking" and "no such column:
@@ -1027,68 +1043,30 @@ int nodus_witness_supply_get(nodus_witness_t *w,
         return -1;
     }
 
+    /* tokenomics-v3 P2: a stored-NEGATIVE reward_pool is a corrupt row
+     * (the value is a u64 bound to INT64_MAX by every writer), never a
+     * huge pool — the rtn_core_burned_fetch rule. */
+    if (sqlite3_column_int64(stmt, 5) < 0) {
+        sqlite3_finalize(stmt);
+        QGP_LOG_ERROR(LOG_TAG, "%s", "supply_get: reward_pool is stored "
+                      "negative — corrupt row");
+        return -1;
+    }
     memset(out, 0, sizeof(*out));
     out->genesis_supply = (uint64_t)sqlite3_column_int64(stmt, 0);
     out->total_burned   = (uint64_t)sqlite3_column_int64(stmt, 1);
     out->total_minted   = (uint64_t)sqlite3_column_int64(stmt, 2);
     out->current_supply = (uint64_t)sqlite3_column_int64(stmt, 3);
     out->last_sequence  = (uint64_t)sqlite3_column_int64(stmt, 4);
+    out->reward_pool    = (uint64_t)sqlite3_column_int64(stmt, 5);
 
     sqlite3_finalize(stmt);
     return 0;
 }
 
-int nodus_witness_supply_add_minted(nodus_witness_t *w, uint64_t mint) {
-    if (!w || !w->db) return -1;
-    if (mint == 0) return 0;
-
-    sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(w->db,
-        "UPDATE supply_tracking SET total_minted = total_minted + ?, "
-        "current_supply = current_supply + ? WHERE id = 1",
-        -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        /* Table might not exist yet on pre-genesis witness DBs (unit
-         * test fixtures). Treat as advisory no-op. */
-        return 0;
-    }
-
-    sqlite3_bind_int64(stmt, 1, (int64_t)mint);
-    sqlite3_bind_int64(stmt, 2, (int64_t)mint);
-
-    rc = sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
-    if (rc != SQLITE_DONE) return -1;
-    /* sqlite3_changes == 0 means no supply_tracking row yet (pre-genesis
-     * fixture). Production path always initializes it in commit_genesis
-     * before the first finalize_block call; we tolerate the gap here
-     * so unit tests that bypass genesis still exercise the mint path. */
-    return 0;
-}
-
-int nodus_witness_supply_add_burned(nodus_witness_t *w, uint64_t fee,
-                                       const uint8_t *tx_hash) {
-    if (!w || !w->db || fee == 0) return 0;
-    if (!tx_hash) return -1;
-
-    sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(w->db,
-        "UPDATE supply_tracking SET total_burned = total_burned + ?, "
-        "current_supply = current_supply - ?, last_tx_hash = ?, "
-        "last_sequence = last_sequence + 1 WHERE id = 1",
-        -1, &stmt, NULL);
-    if (rc != SQLITE_OK) return -1;
-
-    sqlite3_bind_int64(stmt, 1, (int64_t)fee);
-    sqlite3_bind_int64(stmt, 2, (int64_t)fee);
-    sqlite3_bind_blob(stmt, 3, tx_hash, NODUS_T3_TX_HASH_LEN, SQLITE_STATIC);
-
-    rc = sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
-    if (rc != SQLITE_DONE) return -1;
-    if (sqlite3_changes(w->db) != 1) return -1;  /* supply_tracking row missing */
-    return 0;
-}
+/* tokenomics-v3 P2 — nodus_witness_supply_add_minted and
+ * nodus_witness_supply_add_burned are DELETED (declaration comment in
+ * nodus_witness_db.h): no production caller survived P2-4 / P2-6. */
 
 /* ── Transaction history by owner ────────────────────────────────── */
 
@@ -1790,6 +1768,7 @@ static void nodus_witness_db_migrate_v15_stake_delegation(nodus_witness_t *w);
  * nodus_witness_db_save_pbft_state / _load_pbft_state, its only writer
  * and reader, are both deleted below and the table is never read again. */
 static void nodus_witness_db_migrate_v17_supply_total_minted(nodus_witness_t *w);
+static void nodus_witness_db_migrate_v18_supply_reward_pool(nodus_witness_t *w);
 
 /* Does `table` already have a column called `column`? 1 / 0 / -1 fault.
  *
@@ -1918,6 +1897,14 @@ int nodus_witness_db_migrate_v12(nodus_witness_t *w) {
     /* 2026-07-31 — supply_tracking.total_minted back-fill, made reachable
      * on every open (it was unreachable inside supply_init). */
     nodus_witness_db_migrate_v17_supply_total_minted(w);
+
+    /* tokenomics-v3 P2 — supply_tracking.reward_pool back-fill, on every
+     * open, for the same reason as the v17 leg above: supply_get now
+     * reads the column, so a DB that predates it would otherwise refuse
+     * every supply read. The version-3 lane's own S16 rung
+     * (nodus_witness_v2_schema.c) adds and VERIFIES the same column; this
+     * leg is what keeps every other lane's supply read working. */
+    nodus_witness_db_migrate_v18_supply_reward_pool(w);
 
     return 0;
 }
@@ -2051,6 +2038,34 @@ static void nodus_witness_db_migrate_v17_supply_total_minted(nodus_witness_t *w)
             fprintf(stderr,
                     "MIGRATION FAILURE: ALTER ADD supply_tracking.total_minted "
                     "sqlite error %d: %s\n", rc, msg);
+            if (err) sqlite3_free(err);
+            abort();
+        }
+        if (err) sqlite3_free(err);
+    }
+}
+
+/* tokenomics-v3 P2 — supply_tracking.reward_pool (P2-1). The v17 leg
+ * above, verbatim in shape and in its two tolerated errors, for the
+ * column P2 adds: "duplicate column name" is the normal case on every
+ * DB this build created (WITNESS_DB_SCHEMA carries the column), "no such
+ * table" a hand-built fixture that has no supply_tracking at all. The
+ * DEFAULT 0 is the honest back-fill: a chain that predates the reward
+ * pool never had one. */
+static void nodus_witness_db_migrate_v18_supply_reward_pool(nodus_witness_t *w) {
+    if (!w || !w->db) return;
+    char *err = NULL;
+    int rc = sqlite3_exec(w->db,
+        "ALTER TABLE supply_tracking "
+        "ADD COLUMN reward_pool INTEGER NOT NULL DEFAULT 0",
+        NULL, NULL, &err);
+    if (rc != SQLITE_OK) {
+        const char *msg = err ? err : "(null)";
+        if (!strstr(msg, "duplicate column name") &&
+            !strstr(msg, "no such table")) {
+            QGP_LOG_ERROR(LOG_TAG, "MIGRATION FAILURE: ALTER ADD "
+                          "supply_tracking.reward_pool sqlite error %d: %s",
+                          rc, msg);
             if (err) sqlite3_free(err);
             abort();
         }

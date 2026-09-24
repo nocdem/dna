@@ -933,7 +933,10 @@ static int sum_q(nodus_witness_t *w, const char *sql, uint64_t *out) {
  *
  *   genesis + minted − burned ==
  *       Σ utxo (native, CORE-owned) + Σ self_stake + Σ delegated
- *     + Σ epoch_pool + unclaimed CORE-native distribution
+ *     + reward_pool + Σ accrued (tokenomics-v3 P2 — the reserve plus
+ *       every fee, and the per-recipient accrual; the O15J Σ epoch_pool
+ *       term is gone with the per-block mint)
+ *     + unclaimed CORE-native distribution
  *     + Σ balance of THIS domain's pools configured for the native
  *       asset (S7 — real committed pool balances; the previous
  *       "shielded ≡ 0, no pool table may exist" placeholder is
@@ -1117,7 +1120,21 @@ int nodus_rt_core_invariant(const nodus_domain_runtime_t *rt,
     if (sup.total_burned > expected) return -1;   /* underflow            */
     expected -= sup.total_burned;
 
-    uint64_t utxo = 0, bonds = 0, delegated = 0, pool = 0, unclaimed = 0;
+    /* tokenomics-v3 P2 (design §7 P2-2): the equation is
+     *   genesis + minted − burned
+     *     == utxo + bonds + delegated + reward_pool + accrued
+     *        + unclaimed + shielded
+     * The O15J `epoch_state.epoch_pool_accum` term is GONE with the
+     * per-block mint that filled it (nothing writes epoch_state any
+     * more), and total_minted is never written (decision §1 "Yeni token
+     * basılmayacak") — it stays in the LHS as a term that is always 0.
+     * The reward pool (supply_tracking.reward_pool, read with the row
+     * above) holds the undistributed reserve plus every fee; `accrued`
+     * (Σ v2_reward_accrual.amount) holds what the distribution credited
+     * and the payday has not yet paid. The two move value between each
+     * other and utxo_set only, so the equation closes at every step. */
+    uint64_t utxo = 0, bonds = 0, delegated = 0, accrued = 0, unclaimed = 0;
+    const uint64_t pool = sup.reward_pool;
     /* the production helper OWNS the native-token representation rule —
      * one authority, never a parallel SQL mirror */
     if (nodus_witness_utxo_sum_by_token(w, NULL, &utxo) != 0) return -1;
@@ -1125,8 +1142,8 @@ int nodus_rt_core_invariant(const nodus_domain_runtime_t *rt,
               &bonds) != 0) return -1;
     if (sum_q(w, "SELECT COALESCE(SUM(total_delegated),0) FROM validators",
               &delegated) != 0) return -1;
-    if (sum_q(w, "SELECT COALESCE(SUM(epoch_pool_accum),0) FROM epoch_state",
-              &pool) != 0) return -1;
+    if (sum_q(w, "SELECT COALESCE(SUM(amount),0) FROM v2_reward_accrual",
+              &accrued) != 0) return -1;
     /* Unclaimed distribution value TARGETING THIS RUNTIME'S NATIVE
      * ASSET only — a distribution targeting another domain/asset is
      * that runtime's invariant, never summed here. */
@@ -1152,6 +1169,8 @@ int nodus_rt_core_invariant(const nodus_domain_runtime_t *rt,
     observed += delegated;
     if (pool > UINT64_MAX - observed) return -1;
     observed += pool;
+    if (accrued > UINT64_MAX - observed) return -1;
+    observed += accrued;
     if (unclaimed > UINT64_MAX - observed) return -1;
     observed += unclaimed;
     if (shielded > UINT64_MAX - observed) return -1;
@@ -1160,12 +1179,13 @@ int nodus_rt_core_invariant(const nodus_domain_runtime_t *rt,
     if (expected != observed) {
         QGP_LOG_ERROR(LOG_TAG,
             "CORE INVARIANT VIOLATION: expected=%llu observed=%llu "
-            "(utxo=%llu bonds=%llu delegated=%llu pool=%llu "
-            "unclaimed=%llu shielded=0)",
+            "(utxo=%llu bonds=%llu delegated=%llu reward_pool=%llu "
+            "accrued=%llu unclaimed=%llu shielded=%llu)",
             (unsigned long long)expected, (unsigned long long)observed,
             (unsigned long long)utxo, (unsigned long long)bonds,
             (unsigned long long)delegated, (unsigned long long)pool,
-            (unsigned long long)unclaimed);
+            (unsigned long long)accrued, (unsigned long long)unclaimed,
+            (unsigned long long)shielded);
         return -1;
     }
     return 0;

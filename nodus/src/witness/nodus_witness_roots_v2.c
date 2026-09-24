@@ -201,8 +201,12 @@ int nodus_witness_epoch_root_v2(nodus_witness_t *w, uint8_t out[64]) {
         const void *snap = sqlite3_column_blob(stmt, 2);
         int snap_len     = sqlite3_column_bytes(stmt, 2);
         if (!snap || snap_len != 64) {
-            /* Always written full-length (nodus_witness_epoch.c) — a NULL
-             * or short blob is corruption. FAIL, never substitute. */
+            /* The writer (nodus_witness_epoch.c) always wrote it
+             * full-length; that file is DELETED by tokenomics-v3 P2 and
+             * no writer of `epoch_state` remains, so on a version-3
+             * chain the table is empty and this leg is the constant
+             * empty root (n == 0 below). A NULL or short blob is
+             * corruption. FAIL, never substitute. */
             QGP_LOG_ERROR(LOG_TAG, "epoch row %zu snapshot malformed — "
                           "failing root", n);
             fail = 1;
@@ -245,9 +249,82 @@ int nodus_witness_supply_root_v2(nodus_witness_t *w, uint8_t out[64]) {
         return -1;
     }
     /* rc == 1: row genuinely absent (pre-genesis) — zeros are the honest
-     * values; `sup` is already zeroed. */
+     * values; `sup` is already zeroed. tokenomics-v3 P2 (P2-8): the leaf
+     * commits the reward pool too ("DNA.SUPPLY.v2"). */
     return dna_v2_supply_root(sup.genesis_supply, sup.total_minted,
-                              sup.total_burned, out);
+                              sup.total_burned, sup.reward_pool, out);
+}
+
+/* ── accrual_root (tokenomics-v3 P2, P2-8) ─────────────────────────────
+ * The attendance/epoch legs' fail-closed shape: a malformed row FAILS
+ * the computation, a scan fault is never a shorter table. No
+ * sqlite_master probe: `v2_reward_accrual` is in WITNESS_DB_SCHEMA
+ * (nodus_witness.c) and the S16 rung, so a missing table on a DB this
+ * build opened is a fault, not an empty state. */
+int nodus_witness_accrual_root_v2(nodus_witness_t *w, uint8_t out[64]) {
+    if (!w || !w->db || !out) return -1;
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(w->db,
+        "SELECT owner_fp, amount FROM v2_reward_accrual "
+        "ORDER BY owner_fp ASC", -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "accrual scan prepare failed: %s",
+                      sqlite3_errmsg(w->db));
+        return -1;
+    }
+
+    size_t cap = 16, n = 0;
+    uint8_t (*fps)[64] = malloc(cap * sizeof(*fps));
+    uint64_t *amts = malloc(cap * sizeof(uint64_t));
+    if (!fps || !amts) {
+        free(fps); free(amts); sqlite3_finalize(stmt);
+        return -1;
+    }
+    int fail = 0;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        if (n >= cap) {
+            size_t nc = cap * 2;
+            uint8_t (*nf)[64] = realloc(fps, nc * sizeof(*nf));
+            if (nf) fps = nf;
+            uint64_t *na = nf ? realloc(amts, nc * sizeof(uint64_t)) : NULL;
+            if (na) amts = na;
+            if (!nf || !na) {
+                free(fps); free(amts); sqlite3_finalize(stmt);
+                return -1;
+            }
+            cap = nc;
+        }
+        const void *fp = sqlite3_column_blob(stmt, 0);
+        int fp_len     = sqlite3_column_bytes(stmt, 0);
+        sqlite3_int64 a = sqlite3_column_int64(stmt, 1);
+        /* The distribution writes 64-byte owner_fps and strictly positive
+         * amounts only (a zero accrual is never written, a paid row is
+         * DELETED) — anything else is corruption. FAIL, never skip. */
+        if (!fp || fp_len != 64 || a <= 0) {
+            QGP_LOG_ERROR(LOG_TAG, "accrual row %zu malformed "
+                          "(owner_fp %d bytes, amount %lld) — failing root",
+                          n, fp_len, (long long)a);
+            fail = 1;
+            break;
+        }
+        memcpy(fps[n], fp, 64);
+        amts[n] = (uint64_t)a;
+        n++;
+    }
+    if (!fail && rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "accrual scan aborted mid-stream (rc=%d) — "
+                      "failing root", rc);
+        fail = 1;
+    }
+    sqlite3_finalize(stmt);
+
+    int ret = -1;
+    if (!fail)
+        ret = dna_v2_accrual_root((const uint8_t (*)[64])fps, amts, n, out);
+    free(fps);
+    free(amts);
+    return ret;
 }
 
 /* ── attendance_root (tokenomics-v3 P1, D-4 / S-2) ─────────────────────
@@ -421,7 +498,7 @@ int nodus_witness_system_root_v2(nodus_witness_t *w, uint8_t out[64]) {
 int nodus_witness_core_root_v2(nodus_witness_t *w, uint8_t out[64]) {
     if (!w || !out) return -1;
     uint8_t utxo_root[64], token_root[64], pools[64], claims[64], names[64];
-    uint8_t supply[64];
+    uint8_t supply[64], accrual[64];
     if (nodus_witness_merkle_compute_utxo_root(w, utxo_root) != 0)
         return -1;
     if (nodus_witness_token_root_v2(w, token_root) != 0)
@@ -447,8 +524,14 @@ int nodus_witness_core_root_v2(nodus_witness_t *w, uint8_t out[64]) {
      * asset commitment — the supply leg lives HERE (locked ownership). */
     if (nodus_witness_supply_root_v2(w, supply) != 0)
         return -1;
+    /* tokenomics-v3 P2 (P2-8): the 7th leg — the per-recipient reward
+     * accrual, under the new composition tag "DNA.CORE.v2". An empty
+     * table (every chain before its first paying boundary, and right
+     * after every payday) is the tagged empty root. */
+    if (nodus_witness_accrual_root_v2(w, accrual) != 0)
+        return -1;
     return dna_v2_core_root(utxo_root, token_root, pools, claims, names,
-                            supply, out);
+                            supply, accrual, out);
 }
 
 /* Decode the 89-byte canonical head blob (layout: ledger_roots_v2.h). */

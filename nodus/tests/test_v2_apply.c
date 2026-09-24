@@ -441,15 +441,63 @@ static void rogue_table_disarm(nodus_witness_t *w) {
     w->v2_runtime_table_n = 2;
 }
 
-int main(void) {
-    /* O15J Faz 2 — this file pins TOUCH ISOLATION ("SYSTEM advanced while
-     * untouched", untouched-domain guards, per-block head heights). The
-     * economics port makes every block mint, and a mint legitimately
-     * moves both CORE (supply_tracking) and SYSTEM (epoch_state), so a
-     * chain with inflation on can no longer express those properties.
-     * Quiet chain here; emission is covered by test_v2_econ. */
-    v2x_inflation_off = 1;
+/* tokenomics-v3 P2 — one CROSS-DOMAIN envelope carrying a conserving
+ * native move: a SYSTEM leg that SETs the (non-supply) epoch_state
+ * bookkeeping row to `accum_new`, and a CORE leg with TWO effects, the
+ * transparent row 0x..01 SET to `utxo_new` and supply selector 3
+ * (reward_pool) SET to `pool_new` — the fee → pool hop (P2-3) as a
+ * scripted pair. Two DomainUpdates; the value moves inside CORE. */
+static int env_cross_fee_to_pool(v2x_env_t *env, uint64_t accum_new,
+                                 uint64_t utxo_new, uint64_t pool_new) {
+    uint8_t skey[8], sval[8];
+    v2x_put64(skey, 0);
+    v2x_put64(sval, accum_new);
+    uint8_t sres[256];
+    size_t srl = 0;
+    if (v2x_eff1(sres, sizeof(sres), V2X_OP_EPOCH, DNA_EFFECT_SET,
+                 DNA_EFFECT_PRE_EXISTS, skey, 8, sval, 8, &srl) != 0)
+        return -1;
+    uint8_t ukey[64] = { 0 }, uval[8], pkey[1] = { 3 }, pval[8];
+    ukey[63] = 0x01;
+    v2x_put64(uval, utxo_new);
+    v2x_put64(pval, pool_new);
+    dna_effect_in_t effs[2];
+    memset(effs, 0, sizeof(effs));
+    effs[0].hdr.op_id = V2X_OP_UTXO;
+    effs[0].hdr.effect_kind = DNA_EFFECT_SET;
+    effs[0].hdr.precond_tag = DNA_EFFECT_PRE_EXISTS;
+    effs[0].hdr.key_len = 64;
+    effs[0].hdr.value_len = 8;
+    effs[0].key = ukey;
+    effs[0].value = uval;
+    effs[1].hdr.op_id = V2X_OP_SUPPLY;
+    effs[1].hdr.effect_kind = DNA_EFFECT_SET;
+    effs[1].hdr.precond_tag = DNA_EFFECT_PRE_EXISTS;
+    effs[1].hdr.key_len = 1;
+    effs[1].hdr.value_len = 8;
+    effs[1].key = pkey;
+    effs[1].value = pval;
+    uint8_t cres[512];
+    size_t crl = 0;
+    if (v2x_effres(cres, sizeof(cres), effs, 2, &crl) != 0) return -1;
+    uint8_t scall[400], ccall[700];
+    uint32_t scl = v2x_script_build(scall, sizeof(scall), NULL, 0,
+                                    sres, srl);
+    uint32_t ccl = v2x_script_build(ccall, sizeof(ccall), NULL, 0,
+                                    cres, crl);
+    if (!scl || !ccl) return -1;
+    v2x_leg_t legs[2] = {
+        { 0, 1, scall, scl, 4, 2048 },
+        { 1, 1, ccall, ccl, 4, 2048 }
+    };
+    return v2x_env_build(env, legs, 2);
+}
 
+int main(void) {
+    /* This file pins TOUCH ISOLATION ("SYSTEM advanced while untouched",
+     * untouched-domain guards, per-block head heights). tokenomics-v3 P2
+     * deleted the per-block mint, so every chain is quiet — the O15J
+     * `v2x_inflation_off` switch this file used to set is gone. */
     fixture_t fx;
     CHECK(fx_open(&fx) == 0, "fixture"); OK();
     CHECK(nodus_witness_db_migrate_v2s9(fx.w) == 0, "migrate"); OK();
@@ -461,11 +509,6 @@ int main(void) {
      * payload root, so seeding after the capture would move the root out
      * from under the cycle proof below. */
     CHECK(v2x_seed_authority(fx.w) == 0, "seed authority"); OK();
-    /* O15J Faz 2 — same rule, same reason: chain_config_history is also a
-     * SYSTEM payload-root leg, so the inflation-OFF row must be in place
-     * BEFORE the capture below or the cycle proof compares a root taken
-     * without it against a manifest committed with it. */
-    CHECK(v2x_seed_inflation_off(fx.w) == 0, "seed inflation off"); OK();
     uint8_t sys_payload_pre[64], core_pre[64];
     CHECK(nodus_witness_system_payload_root_v2(fx.w, sys_payload_pre) == 0,
           "payload pre"); OK();
@@ -1314,18 +1357,44 @@ int main(void) {
     CHECK(run_sql(fs.w->db,
         "UPDATE supply_tracking SET total_burned = total_burned - 1000000")
         == 0, "undo double");
-    /* reward: mint into the epoch pool, then settle pool → utxo */
+    /* tokenomics-v3 P2-2: the reward reserve's three hops are MOVES —
+     * fee utxo → reward_pool (P2-3), pool → v2_reward_accrual (the
+     * boundary distribution, P2-6), accrual → utxo (payday, P2-7) —
+     * and the equation must hold after each. KILLED BY: a supply gate
+     * that omits the pool term or the accrual term. */
+    CHECK(run_sql(fs.w->db,
+        "UPDATE utxo_set SET amount = amount - 3200 "
+        "WHERE nullifier=CAST(zeroblob(63)||x'01' AS BLOB);"
+        "UPDATE supply_tracking SET reward_pool = reward_pool + 3200")
+        == 0, "fee to pool");
+    CHECK(nodus_witness_v2_supply_check(fs.w) == 0, "fee→pool broke"); OK();
+    CHECK(run_sql(fs.w->db,
+        "UPDATE supply_tracking SET reward_pool = reward_pool - 3200;"
+        "INSERT INTO v2_reward_accrual (owner_fp, amount) "
+        "VALUES (zeroblob(64), 3200)") == 0, "distribute");
+    CHECK(nodus_witness_v2_supply_check(fs.w) == 0, "pool→accrual broke");
+    OK();
+    CHECK(run_sql(fs.w->db,
+        "DELETE FROM v2_reward_accrual;"
+        "UPDATE utxo_set SET amount = amount + 3200 "
+        "WHERE nullifier=CAST(zeroblob(63)||x'01' AS BLOB)") == 0, "payday");
+    CHECK(nodus_witness_v2_supply_check(fs.w) == 0, "accrual→utxo broke");
+    OK();
+    /* the RETIRED O15J term: a mint parked in epoch_state is no longer
+     * backed by anything the gate counts (P2-4 deleted the mint and the
+     * term with it) — it must violate. KILLED BY: a gate that still sums
+     * epoch_state.epoch_pool_accum. */
     CHECK(run_sql(fs.w->db,
         "UPDATE supply_tracking SET total_minted = total_minted + 3200;"
         "INSERT INTO epoch_state (epoch_start_height, epoch_pool_accum, "
-        "snapshot_hash) VALUES (0, 3200, zeroblob(64))") == 0, "mint");
-    CHECK(nodus_witness_v2_supply_check(fs.w) == 0, "mint broke"); OK();
+        "snapshot_hash) VALUES (0, 3200, zeroblob(64))") == 0, "old mint");
+    CHECK(nodus_witness_v2_supply_check(fs.w) != 0,
+          "an epoch_state-parked mint still conserved"); OK();
     CHECK(run_sql(fs.w->db,
-        "UPDATE epoch_state SET epoch_pool_accum = 0 "
-        "WHERE epoch_start_height = 0;"
-        "UPDATE utxo_set SET amount = amount + 3200 "
-        "WHERE nullifier=CAST(zeroblob(63)||x'01' AS BLOB)") == 0, "settle");
-    CHECK(nodus_witness_v2_supply_check(fs.w) == 0, "settle broke"); OK();
+        "UPDATE supply_tracking SET total_minted = total_minted - 3200")
+        == 0, "undo old mint");
+    CHECK(nodus_witness_v2_supply_check(fs.w) == 0,
+          "epoch_state is no supply term"); OK();
     /* duplicate ownership: value in a UTXO AND a bond simultaneously */
     CHECK(run_sql(fs.w->db,
         "UPDATE validators SET self_stake = self_stake + 5 "
@@ -1356,7 +1425,7 @@ int main(void) {
     CHECK(nodus_witness_v2_supply_check(fs.w) != 0, "overflow passed");
     OK();
     CHECK(run_sql(fs.w->db,
-        "UPDATE supply_tracking SET total_minted = 3200") == 0, "restore");
+        "UPDATE supply_tracking SET total_minted = 0") == 0, "restore");
     CHECK(nodus_witness_v2_supply_check(fs.w) == 0, "restore broke"); OK();
     /* unbacked native pool balance must fail the equation */
     CHECK(run_sql(fs.w->db,
@@ -1406,9 +1475,12 @@ int main(void) {
 
     /* ── 8. SUPPLY OWNERSHIP through TYPED cross-domain envelopes ───── */
     {
-        /* (a) MINT: total_minted (CORE, SUPPLY_SET absolute) + epoch
-         * pool (SYSTEM, EPOCH_SET absolute) — one cross-domain
-         * envelope, two DomainUpdates, conserved. */
+        /* (a) THE RETIRED MINT: total_minted (CORE, SUPPLY_SET absolute)
+         * + epoch pool (SYSTEM, EPOCH_SET absolute) — the O15J shape,
+         * which conserved while epoch_state was a supply term. Since
+         * tokenomics-v3 P2-2/P2-4 nothing backs it: the supply gate
+         * rejects the block and nothing leaks. KILLED BY: a gate that
+         * still counts epoch_state.epoch_pool_accum. */
         uint64_t minted = q1(fs.w, "SELECT total_minted FROM "
                                    "supply_tracking");
         uint64_t accum = q1(fs.w, "SELECT epoch_pool_accum FROM "
@@ -1439,49 +1511,34 @@ int main(void) {
         CHECK(v2x_env_build(&emint, mlegs, 2) == 0, "emint");
         nodus_v2_envelope_t vmint = { emint.bytes, emint.len };
         nodus_v2_block_t mb;
+        uint8_t md0[64], md1[64];
+        CHECK(db_state_digest(fs.w, md0) == 0, "digest");
         mk_block(&mb, 1, &vmint, 1);
-        CHECK(nodus_witness_v2_apply_block(fs.w, &mb) == 0, "mint block");
-        CHECK(q1(fs.w, "SELECT COUNT(*) FROM v2_domain_updates "
-                       "WHERE global_height=1") == 2,
-              "mint must update BOTH domains atomically"); OK();
+        CHECK(nodus_witness_v2_apply_block(fs.w, &mb) == -1,
+              "an unbacked mint (the retired epoch-pool shape) accepted");
+        CHECK(db_state_digest(fs.w, md1) == 0 && memcmp(md0, md1, 64) == 0,
+              "the rejected mint leaked state");
         CHECK(q1(fs.w, "SELECT total_minted FROM supply_tracking")
-                  == minted + 500, "minted exactly once");
-        CHECK(nodus_witness_v2_supply_check(fs.w) == 0, "mint conserves");
+                  == minted, "nothing minted");
         OK();
 
-        /* (b) SETTLE: pool (SYSTEM) → transparent UTXO (CORE). */
+        /* (b) FEE → POOL across a cross-domain envelope: SYSTEM leg (the
+         * non-supply epoch_state row) + CORE leg (transparent row −500,
+         * reward_pool +500) — two DomainUpdates, conserved. */
         uint64_t amt = q1(fs.w, "SELECT amount FROM utxo_set WHERE "
                                 "nullifier=CAST(zeroblob(63)||x'01' AS BLOB)");
-        uint8_t s2val[8], c2key[64] = { 0 }, c2val[8];
-        c2key[63] = 0x01;
-        v2x_put64(s2val, accum + 500 - 500);   /* back to entry accum */
-        v2x_put64(c2val, amt + 500);
-        uint8_t s2res[256], c2res[256];
-        size_t s2rl = 0, c2rl = 0;
-        CHECK(v2x_eff1(s2res, sizeof(s2res), V2X_OP_EPOCH,
-                       DNA_EFFECT_SET, DNA_EFFECT_PRE_EXISTS, skey, 8,
-                       s2val, 8, &s2rl) == 0, "s2res");
-        CHECK(v2x_eff1(c2res, sizeof(c2res), V2X_OP_UTXO, DNA_EFFECT_SET,
-                       DNA_EFFECT_PRE_EXISTS, c2key, 64, c2val, 8,
-                       &c2rl) == 0, "c2res");
-        uint8_t s2call[400], c2call[400];
-        uint32_t s2cl = v2x_script_build(s2call, sizeof(s2call), NULL, 0,
-                                         s2res, s2rl);
-        uint32_t c2cl = v2x_script_build(c2call, sizeof(c2call), NULL, 0,
-                                         c2res, c2rl);
-        CHECK(s2cl && c2cl, "calls2");
-        v2x_leg_t slegs[2] = {
-            { 0, 1, s2call, s2cl, 4, 2048 },
-            { 1, 1, c2call, c2cl, 4, 2048 }
-        };
-        static v2x_env_t esettle;
-        CHECK(v2x_env_build(&esettle, slegs, 2) == 0, "esettle");
-        nodus_v2_envelope_t vsettle = { esettle.bytes, esettle.len };
-        mk_block(&mb, 2, &vsettle, 1);
-        CHECK(nodus_witness_v2_apply_block(fs.w, &mb) == 0, "settle block");
+        uint64_t pool = q1(fs.w, "SELECT reward_pool FROM supply_tracking");
+        static v2x_env_t efee;
+        CHECK(env_cross_fee_to_pool(&efee, accum + 500, amt - 500,
+                                    pool + 500) == 0, "efee");
+        nodus_v2_envelope_t vfee = { efee.bytes, efee.len };
+        mk_block(&mb, 1, &vfee, 1);
+        CHECK(nodus_witness_v2_apply_block(fs.w, &mb) == 0, "fee block");
         CHECK(q1(fs.w, "SELECT COUNT(*) FROM v2_domain_updates "
-                       "WHERE global_height=2") == 2,
-              "settle must update BOTH domains"); OK();
+                       "WHERE global_height=1") == 2,
+              "the move must update BOTH domains atomically"); OK();
+        CHECK(q1(fs.w, "SELECT reward_pool FROM supply_tracking")
+                  == pool + 500, "pooled exactly once");
         CHECK(nodus_witness_v2_supply_check(fs.w) == 0,
               "cross-domain move conserves total supply"); OK();
 
@@ -1525,10 +1582,10 @@ int main(void) {
         static v2x_env_t eburn;
         CHECK(v2x_env_build(&eburn, &bleg, 1) == 0, "eburn");
         nodus_v2_envelope_t vburn = { eburn.bytes, eburn.len };
-        mk_block(&mb, 3, &vburn, 1);
+        mk_block(&mb, 2, &vburn, 1);
         CHECK(nodus_witness_v2_apply_block(fs.w, &mb) == 0, "burn block");
         CHECK(q1(fs.w, "SELECT COUNT(*) FROM v2_domain_updates "
-                       "WHERE global_height=3") == 1,
+                       "WHERE global_height=2") == 1,
               "burn is CORE-local: exactly one update"); OK();
         CHECK(q1(fs.w, "SELECT domain_height FROM v2_domain_heads "
                        "WHERE domain_id=0") == sys_h_burn,
@@ -1546,7 +1603,7 @@ int main(void) {
         static v2x_env_t esneak;
         CHECK(env_sys_cc(&esneak, 999997, 5) == 0, "esneak");
         nodus_v2_envelope_t vsneak = { esneak.bytes, esneak.len };
-        mk_block(&mb, 4, &vsneak, 1);
+        mk_block(&mb, 3, &vsneak, 1);
         CHECK(nodus_witness_v2_apply_block(fs.w, &mb) == -1,
               "undeclared issuance mutation accepted"); OK();
         rogue_table_disarm(fs.w);
@@ -1555,34 +1612,16 @@ int main(void) {
 
         /* (e) fault during a cross-domain native move rolls BOTH
          * domains, heads, roots, accounting and metadata back. */
-        uint64_t minted2 = q1(fs.w, "SELECT total_minted FROM "
-                                    "supply_tracking");
         uint64_t accum2 = q1(fs.w, "SELECT epoch_pool_accum FROM "
                                    "epoch_state WHERE "
                                    "epoch_start_height=0");
-        uint8_t m2sval[8], m2cval[8];
-        v2x_put64(m2sval, accum2 + 9);
-        v2x_put64(m2cval, minted2 + 9);
-        uint8_t m2sres[256], m2cres[256];
-        size_t m2srl = 0, m2crl = 0;
-        CHECK(v2x_eff1(m2sres, sizeof(m2sres), V2X_OP_EPOCH,
-                       DNA_EFFECT_SET, DNA_EFFECT_PRE_EXISTS, skey, 8,
-                       m2sval, 8, &m2srl) == 0, "m2sres");
-        CHECK(v2x_eff1(m2cres, sizeof(m2cres), V2X_OP_SUPPLY,
-                       DNA_EFFECT_SET, DNA_EFFECT_PRE_EXISTS, ckey, 1,
-                       m2cval, 8, &m2crl) == 0, "m2cres");
-        uint8_t m2scall[400], m2ccall[400];
-        uint32_t m2scl = v2x_script_build(m2scall, sizeof(m2scall), NULL,
-                                          0, m2sres, m2srl);
-        uint32_t m2ccl = v2x_script_build(m2ccall, sizeof(m2ccall), NULL,
-                                          0, m2cres, m2crl);
-        CHECK(m2scl && m2ccl, "m2 calls");
-        v2x_leg_t m2legs[2] = {
-            { 0, 1, m2scall, m2scl, 4, 2048 },
-            { 1, 1, m2ccall, m2ccl, 4, 2048 }
-        };
+        uint64_t amt3 = q1(fs.w, "SELECT amount FROM utxo_set WHERE "
+                                 "nullifier=CAST(zeroblob(63)||x'01' AS "
+                                 "BLOB)");
+        uint64_t pool2 = q1(fs.w, "SELECT reward_pool FROM supply_tracking");
         static v2x_env_t emint2;
-        CHECK(v2x_env_build(&emint2, m2legs, 2) == 0, "emint2");
+        CHECK(env_cross_fee_to_pool(&emint2, accum2 + 9, amt3 - 9,
+                                    pool2 + 9) == 0, "emint2");
         nodus_v2_envelope_t vmint2 = { emint2.bytes, emint2.len };
         static const nodus_v2_apply_fail_t xpts[] = {
             V2AP_FAIL_AFTER_CROSS, V2AP_FAIL_AFTER_SUPPLY_MUT,
@@ -1591,7 +1630,7 @@ int main(void) {
             V2AP_FAIL_AFTER_ENV_RESERVE, V2AP_FAIL_AFTER_ENV_EXEC
         };
         for (size_t i = 0; i < sizeof(xpts) / sizeof(xpts[0]); i++) {
-            mk_block(&mb, 4, &vmint2, 1);
+            mk_block(&mb, 3, &vmint2, 1);
             mb.fail_at = xpts[i];
             mb.fail_env_index = 0;
             CHECK(nodus_witness_v2_apply_block(fs.w, &mb) == -1,
@@ -1604,7 +1643,7 @@ int main(void) {
         /* determinism after failed attempts: the same block with no
          * fault commits, proving no meter/budget residue from the
          * rejected attempts survived */
-        mk_block(&mb, 4, &vmint2, 1);
+        mk_block(&mb, 3, &vmint2, 1);
         CHECK(nodus_witness_v2_apply_block(fs.w, &mb) == 0,
               "post-fault clean apply"); OK();
         CHECK(nodus_witness_v2_supply_check(fs.w) == 0, "conserved");

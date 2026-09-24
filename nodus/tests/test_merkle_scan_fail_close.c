@@ -406,7 +406,10 @@ static int create_empty_supply_tracking(nodus_witness_t *w) {
         "  total_minted INTEGER NOT NULL DEFAULT 0,"
         "  current_supply INTEGER NOT NULL,"
         "  last_tx_hash BLOB NOT NULL,"
-        "  last_sequence INTEGER NOT NULL"
+        "  last_sequence INTEGER NOT NULL,"
+        /* tokenomics-v3 P2: read by nodus_witness_supply_get (the
+         * production DDL, nodus_witness.c) */
+        "  reward_pool INTEGER NOT NULL DEFAULT 0"
         ");");
 }
 

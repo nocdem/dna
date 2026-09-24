@@ -1,65 +1,63 @@
 /**
- * Nodus — O15J Faz 2: V1's economics on the Ledger V2 lane.
+ * Nodus — the version-3 chain's economics (tokenomics-v3 P2).
  *
- * Contract, provenance, the user decision this implements and the
- * touched-domain obligations are in nodus_witness_v2_econ.h. Every V1
- * anchor cited here is a file:line in THIS tree, read rather than
- * recalled.
+ * Contract, the governing records and the touched-domain obligations are
+ * in nodus_witness_v2_econ.h. Every anchor cited here is a file:line in
+ * THIS tree, read rather than recalled.
  *
- * ── WHAT COULD NOT BE LITERAL, AND WHY ──────────────────────────────
- * Four deliberate divergences from the V1 source, each named again at
- * the line where it happens:
+ * ── WHAT P2 DELETED FROM THIS FILE, AND WHY ─────────────────────────
+ * O15J Faz 2 ported V1's economics verbatim: a per-block mint
+ * (nodus_witness_v2_emission_apply, the 32 → 1 halving curve), an
+ * `epoch_state` pool it accrued into, the epoch-start snapshot blob
+ * (nodus_witness_epoch_snapshot_apply) it read delegator amounts from,
+ * and an equal-per-seat settlement that BURNED its remainders and every
+ * missed share. Decision §1 ("Yeni token basılmayacak"; "Hak kazanılmayan
+ * ödül payları ve yuvarlama artıkları havuzda kalacak"; "Ödeme her 24
+ * epoch'ta yapılacak") and design §7 P2-4/P2-6 replace every one of those
+ * rules, so all of them are GONE — not disabled — per No Dead Code.
  *
- *  1. UTXO WRITES GO THROUGH THE TYPED EFFECT PATH. V1 emits settlement
- *     rows with a hand-rolled `INSERT OR IGNORE INTO utxo_set`
- *     (bft.c:3166-3178) that does not bind `domain_id` at all. On the V2
- *     schema that column has NO default (nodus_witness_v2_schema.c:211
- *     and the note at nodus_witness_v2_epoch.c:214-217), so the V1
- *     statement would not even be well-formed here. Settlement therefore
- *     builds canonical CORE effects and applies them through
- *     nodus_witness_v2_effects_apply — the same probe → precond → mutate
- *     path every CORE spend output takes. Consequences, all improvements
- *     but all divergences: a duplicate row is now FAIL-CLOSED (the
- *     PRE_ABSENT precondition) where V1 silently ignored it, and
- *     `created_at` is pinned to 0 where V1 wrote `time(NULL)` — a WALL
- *     CLOCK value in a consensus write path (bft.c:3062). The column is
- *     excluded from the UTXO merkle leaf, so V1 never forked on it, but
- *     it is not a value this lane will reproduce.
+ * ── P2 REVISION 2: "DELEGATOR = VALIDATOR GİBİ" (2026-09-24) ───────
+ * Design docs/plans/2026-09-23-tokenomics-v3-consensus-binding-design.md
+ * §7.1, decision file §3 2026-09-24 "DELEGATOR = VALIDATOR GİBİ". The
+ * rev-1 patches — min(copy(H−E), live at H) per stake and a zero for a
+ * delegation whose delegated_at_block was after H−E — sampled only two
+ * instants and could not see a PARTIAL withdrawal taken out, used and
+ * topped back up inside one epoch. The root was that an UNDELEGATE's
+ * release UTXO was spendable in the next block. Revision 2 removes that
+ * root instead: the release is born LOCKED until 12 epochs after the
+ * stake leaves the voting power (P2-10, nodus_witness_rt_native.c
+ * rtn_sysfund_exec, nodus_v2_power_exit_boundary). With every counted
+ * coin locked through the epoch it earns, the distribution can simply
+ * pay the set that GOVERNED the epoch, by that set's own power, and
+ * split each member's share by the frozen copy that set was built from.
+ * The rev-1 weigher, its live-delegation read and the delegated_at_block
+ * zeroing are DELETED (design §7.1 "Silinenler"; the decision file marks
+ * the 2026-09-24 entries (1)'s min() and (2) as superseded by this).
  *
- *  2. A DATABASE FAULT IS NEVER A VALUE. V1 turns several read failures
- *     into economic outcomes: a failed epoch_state fetch means "nothing
- *     to settle" (bft.c:3089-3090), an unreadable validator row means
- *     "absent, burn his share" (bft.c:3238-3247), and three
- *     supply/delete return codes are discarded outright (bft.c:3103,
- *     :3134, :3369). Each of those is a fault here. The reason is the
- *     nodus rule this tree states everywhere else — two nodes must not
- *     be able to pay different validators because one of them had a
- *     transient I/O error.
- *
- *  3. THE PER-EPOCH COUNTER RESET IS NOT REPEATED. V1's settlement
- *     resets its per-epoch attendance counter at its tail
- *     (bft.c:3350-3360). On the V2 lane the boundary's own attendance-
- *     reset step already performs exactly that UPDATE
- *     (tokenomics-v3 P1: `v2_attendance.signed_count = 0`,
- *     nodus_witness_v2_epoch.c) one step later in the same transaction,
- *     which is precisely why settlement must run BEFORE it — see the
- *     ordering note at the call site. Doing it
- *     twice would be a no-op that only widens the write set.
- *
- *  4. RETURN CONVENTION. V1's helper returns -1; the V2 boundary's
- *     contract is 0/-2 with no verdict class. Every V1 -1 becomes -2.
+ * ── DIVERGENCES FROM V1 KEPT FROM O15J (still true here) ────────────
+ *  1. UTXO WRITES GO THROUGH THE TYPED EFFECT PATH (the payday), never a
+ *     hand-rolled INSERT: the CORE adapter's probe → precond → mutate
+ *     path, so a colliding payout identity FAILS CLOSED (PRE_ABSENT) and
+ *     `created_at` is pinned to 0 (V1 wrote a wall-clock time).
+ *  2. A DATABASE FAULT IS NEVER A VALUE. Every read that decides a share
+ *     is three-valued, and an unreadable member / attendance / copy /
+ *     supply row is -2, never "absent, keep his share".
+ *  3. RETURN CONVENTION. The boundary's contract is 0/-2 with no verdict
+ *     class.
  *
  * Copyright (c) 2026 nocdem — SPDX-License-Identifier: MIT
  */
 
 #include "witness/nodus_witness_v2_econ.h"
-#include "witness/nodus_witness_db.h"        /* supply_get / add_minted /
-                                              * add_burned                */
-#include "witness/nodus_witness_emission.h"  /* nodus_emission_per_block  */
-#include "witness/nodus_witness_epoch.h"     /* epoch_state CRUD + D.1     */
-#include "witness/nodus_witness_v2_epoch.h"  /* nodus_witness_v2_attendance_
-                                              * meets_bar (tokenomics-v3
-                                              * P1, §C — round 3)         */
+#include "witness/nodus_witness_db.h"        /* supply_get               */
+#include "witness/nodus_witness_emission.h"  /* DNAC_DECIMAL_UNIT (the §A
+                                              * power unit — the econ
+                                              * band's build-identity
+                                              * refusal)                 */
+#include "witness/nodus_witness_v2_epoch.h"  /* attendance_meets_bar,
+                                              * authority_for_epoch      */
+#include "witness/nodus_witness_v2_gen.h"    /* stored document, reward
+                                              * divisor, payout default */
 #include "witness/nodus_witness_runtime.h"   /* the CORE record builder   */
 #include "witness/nodus_witness_v2_adapter.h"/* effects_apply             */
 #include "witness/nodus_witness_v2_claims.h" /* v2_runtime_for            */
@@ -71,7 +69,9 @@
 #include "dnac/dnac.h"
 #include "dnac/effect_wire.h"
 #include "dnac/ledger_ids.h"
+#include "dnac/res_meter.h"      /* dna_ck_add_u64                      */
 #include "dnac/validator.h"
+#include "dnac/vset_wire.h"
 
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_fingerprint.h"
@@ -84,39 +84,28 @@
 
 #define LOG_TAG "W_V2ECON"
 
+/* The stored SQLite INTEGER bound. Anything above it round-trips
+ * NEGATIVE and would poison every later read — the V2EP_STORE_MAX rule
+ * (nodus_witness_v2_epoch.c). */
+#define V2EC_STORE_MAX  ((uint64_t)INT64_MAX)
+
 /* ── little BE helpers ─────────────────────────────────────────────── */
 
 static void v2ec_put64(uint8_t *p, uint64_t v) {
     for (int i = 0; i < 8; i++) p[i] = (uint8_t)(v >> (56 - 8 * i));
 }
 
-static uint16_t v2ec_be16(const uint8_t *p) {
-    return (uint16_t)(((uint16_t)p[0] << 8) | (uint16_t)p[1]);
-}
+/* ── the two canonical payday identities (pure, no DB) ──────────────── */
 
-static uint32_t v2ec_be32(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
-           ((uint32_t)p[2] <<  8) |  (uint32_t)p[3];
-}
-
-static uint64_t v2ec_be64(const uint8_t *p) {
-    uint64_t v = 0;
-    for (int i = 0; i < 8; i++) v = (v << 8) | (uint64_t)p[i];
-    return v;
-}
-
-/* ── the two canonical settlement identities (pure, no DB) ──────────── */
-
-int nodus_witness_v2_settlement_tx_hash(uint64_t settling_epoch_start,
-                                        uint8_t out[64]) {
+int nodus_witness_v2_settlement_tx_hash(uint64_t key, uint8_t out[64]) {
     if (!out) return -2;
     /* BYTE-IDENTICAL to bft.c:2977-2986: the 10 ASCII bytes of
-     * "settlement" with NO terminator, then the epoch key big-endian.
+     * "settlement" with NO terminator, then the key big-endian.
      * sizeof("settlement") would be 11 and would silently change the
      * preimage — hence the explicit 10. */
     uint8_t pre[10 + 8];
     memcpy(pre, "settlement", 10);
-    v2ec_put64(pre + 10, settling_epoch_start);
+    v2ec_put64(pre + 10, key);
     return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -2;
 }
 
@@ -150,14 +139,13 @@ int nodus_witness_v2_econ_params_load(nodus_witness_t *w,
 
     /* ONE statement over the reserved band. The ORDER BY is explicit and
      * over a unique key (the band ids are distinct and effective_block is
-     * pinned), so the walk below is identical on every node — the
-     * unordered-iteration rule applies to a read that decides a mint.
+     * pinned), so the walk below is identical on every node.
      *
      * NOT nodus_chain_config_get_u64: that function bounds param_id at
      * CC_PARAM_SLOTS and answers `default_value` for every band id
-     * (nodus_witness_chain_config.c:245), which would report a committed
-     * row as absent. The warm cache skips the band for the same reason
-     * (:195), so there is nothing to invalidate here either. */
+     * (nodus_witness_chain_config.c), which would report a committed
+     * row as absent. The warm cache skips the band for the same reason,
+     * so there is nothing to invalidate here either. */
     static const char *const sql =
         "SELECT param_id, new_value FROM chain_config_history "
         "WHERE param_id >= ?1 AND param_id <= ?2 AND effective_block = ?3 "
@@ -188,9 +176,9 @@ int nodus_witness_v2_econ_params_load(nodus_witness_t *w,
         if (pid < (int)NODUS_CC_ECON_PARAM_MIN ||
             pid > (int)NODUS_CC_ECON_PARAM_MAX) { bad = 1; break; }
         /* A stored-negative or zero economic parameter is a corrupt row,
-         * never a value: 0 blocks_per_year is not a schedule and 0
-         * decimal_unit mints nothing forever. The same rule the CORE row
-         * reader applies (nodus_witness_rt_native.c:3757-3760). */
+         * never a value: 0 blocks_per_year is not a schedule and a 0
+         * epoch_length keys no epoch. The same rule the CORE row reader
+         * applies (nodus_witness_rt_native.c). */
         if (nv <= 0) { bad = 1; break; }
         int idx = pid - (int)NODUS_CC_ECON_PARAM_MIN;
         if (seen[idx]) { bad = 1; break; }     /* PK makes this impossible */
@@ -235,11 +223,19 @@ int nodus_witness_v2_econ_params_load(nodus_witness_t *w,
 
     /* THE BUILD-IDENTITY REFUSAL. Detection, not parameterisation — see
      * the header for why epoch_length cannot simply be used. Everything
-     * downstream of this point that keys on DNAC_EPOCH_LENGTH (this
-     * module's epoch key at the mint, and its liveness bar at settlement)
-     * is covered by this one check: emission runs on EVERY block, so a
-     * node whose epoch length disagrees with the chain's cannot reach a
-     * settlement at all. */
+     * that keys on DNAC_EPOCH_LENGTH (the boundary gate, this module's
+     * distribution and payday, the snapshot builder, the UNDELEGATE
+     * release lock) is covered by this one check because the apply
+     * engine runs it on EVERY block (nodus_witness_v2_apply.c phase 6f —
+     * relocated there by tokenomics-v3 P2 from the deleted per-block
+     * mint, which used to be its per-block caller). It does NOT stop a
+     * mismatched build before its first boundary work: phase 6f runs
+     * AFTER phase 6e (the epoch boundary) inside the same block, so a
+     * boundary block does execute its boundary on such a node — and then
+     * this refusal FAULTS the block, which rolls back whole, boundary
+     * included. Nothing a mismatched build computed is ever committed;
+     * what the check buys is a fault on the first block, not a boundary
+     * that never runs. */
     if (out->epoch_length != (uint64_t)DNAC_EPOCH_LENGTH) {
         QGP_LOG_ERROR(LOG_TAG,
             "econ params: this chain committed epoch_length %llu at "
@@ -254,215 +250,292 @@ int nodus_witness_v2_econ_params_load(nodus_witness_t *w,
         return -1;
     }
 
+    /* THE SAME REFUSAL FOR THE POWER UNIT. DNAC_DECIMAL_UNIT is read as a
+     * macro wherever voting power is derived (power = total_stake /
+     * DNAC_DECIMAL_UNIT: the ValidatorUpdate cometbft is told, Rule N's
+     * weight floor), and the genesis builder refuses a config that
+     * disagrees with it (nodus_witness_v2_gen.c gen_plan_build) — but a
+     * node that arrived by SYNCING never ran the builder. A build whose
+     * unit disagrees with the chain's committed one would report every
+     * validator's power scaled differently from its peers; it stops here
+     * instead, on the same per-block caller as epoch_length. */
+    if (out->decimal_unit != (uint64_t)DNAC_DECIMAL_UNIT) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "econ params: this chain committed decimal_unit %llu at "
+            "genesis, this build compiled %llu — refusing to run rather "
+            "than deriving voting power differently from every peer",
+            (unsigned long long)out->decimal_unit,
+            (unsigned long long)DNAC_DECIMAL_UNIT);
+        memset(out, 0, sizeof(*out));
+        return -1;
+    }
+
     out->present = 1;
     return 0;
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * PART 1 — per-block emission (bft.c:3638-3720)
+ * PART 1 — the frozen balance copy (design §7 P2-5)
  * ════════════════════════════════════════════════════════════════════ */
 
-int nodus_witness_v2_emission_apply(nodus_witness_t *w,
-                                    uint64_t global_height,
-                                    uint64_t *minted_out) {
-    if (!w || !w->db || !minted_out) return -2;
-    *minted_out = 0;
+typedef struct {
+    uint8_t  vfp[64];
+    uint8_t  ofp[64];
+    uint64_t amount;
+} v2ec_copy_row_t;
 
-    /* ── THE COMMITTED ECONOMICS, LOADED FIRST (Block 2C) ─────────────
-     * DELIBERATELY ABOVE THE ZERO-MINT EARLY RETURN. Placed below it, the
-     * epoch_length build-identity refusal would never run on a chain with
-     * inflation switched off — the enforcement point would silently
-     * vanish for exactly one class of chain, which is the shape of defect
-     * this task exists to close. Emission is the per-BLOCK hook, so
-     * loading here means every block on a pure-V2 chain validates the
-     * build against the chain's own genesis.
-     *
-     * A FAULT IS NEVER A FALLBACK: -1 becomes -2 and the block fails. An
-     * ABSENT band (present == 0) is a different, legitimate answer — every
-     * chain built before this change, and every seam successor, has no
-     * band and keeps the compiled constants, byte-identically. */
-    nodus_v2_econ_params_t econ;
-    if (nodus_witness_v2_econ_params_load(w, &econ) != 0) {
-        QGP_LOG_ERROR(LOG_TAG,
-            "emission at %llu: the committed economic parameters could not "
-            "be established — refusing to mint",
-            (unsigned long long)global_height);
+typedef struct {
+    v2ec_copy_row_t *rows;
+    size_t           n, cap;
+} v2ec_copy_set_t;
+
+static int v2ec_copy_push(v2ec_copy_set_t *s, const uint8_t vpk[],
+                          const uint8_t opk[], uint64_t amount) {
+    if (s->n == s->cap) {
+        size_t nc = s->cap ? s->cap * 2 : 64;
+        v2ec_copy_row_t *nr = realloc(s->rows, nc * sizeof(*nr));
+        if (!nr) return -2;
+        s->rows = nr;
+        s->cap = nc;
+    }
+    v2ec_copy_row_t *r = &s->rows[s->n];
+    if (qgp_sha3_512(vpk, DNAC_PUBKEY_SIZE, r->vfp) != 0) return -2;
+    if (opk == vpk) {
+        memcpy(r->ofp, r->vfp, 64);
+    } else if (qgp_sha3_512(opk, DNAC_PUBKEY_SIZE, r->ofp) != 0) {
         return -2;
     }
-    const uint64_t by = econ.present ? econ.blocks_per_year
-                                     : (uint64_t)DNAC_BLOCKS_PER_YEAR;
-    const uint64_t du = econ.present ? econ.decimal_unit
-                                     : (uint64_t)DNAC_DECIMAL_UNIT;
+    r->amount = amount;
+    s->n++;
+    return 0;
+}
 
-    /* THE GATE, mirroring the V1 lane — MERGED FROM BLOCKS 2A AND 2C,
-     * which reached this same line from opposite directions.
-     *
-     * 2C: the default is now the FALLBACK, not the rule. A pure-V2 chain
-     * commits its inflation start AT GENESIS (the builder seeds
-     * DNAC_CFG_INFLATION_START_BLOCK at effective_block 0), so this read
-     * returns the chain's OWN committed value. Before that, the row was
-     * unreachable at genesis and EVERY derived chain minted from height 1
-     * with no way to configure it. The 1ULL below is now reached only by
-     * a chain that committed nothing — which is every chain built before
-     * this change, and is exactly the behaviour those chains had.
-     *
-     * 2A: an EARLIER wording called that 1ULL default "load-bearing"
-     * against a node that cannot fetch the override. That was wrong, and
-     * the correction is kept rather than dropped in the merge: the
-     * default only defends the direction where the override would DELAY
-     * emission. When the override starts emission EARLIER than 1 the
-     * default cannot help, and either way an unreadable row means this
-     * node mints on a schedule it cannot prove its peers share. So the
-     * read is three-valued: rc == 1 (genuinely no row) keeps the
-     * historical default, rc < 0 is a NODE FAULT and the block does not
-     * commit. */
-    uint64_t inflation_start = 0;
-    int crc = nodus_chain_config_get_u64(w, DNAC_CFG_INFLATION_START_BLOCK,
-                                         global_height, 1ULL,
-                                         &inflation_start);
-    if (crc < 0) {
-        QGP_LOG_ERROR(LOG_TAG,
-            "emission at %llu: INFLATION_START_BLOCK is unreadable — a "
-            "chain cannot mint on an emission schedule it cannot read",
-            (unsigned long long)global_height);
+int nodus_witness_v2_balance_copy_write(nodus_witness_t *w,
+                                        uint64_t epoch_start) {
+    if (!w || !w->db) return -2;
+    if (epoch_start > V2EC_STORE_MAX) return -2;
+
+    v2ec_copy_set_t set;
+    memset(&set, 0, sizeof(set));
+    int ret = -2;
+    int rc;
+    sqlite3_stmt *st = NULL;
+
+    /* ── 1. validators: every row with a bond, owner = the validator ───
+     * `self_stake != 0` (not `> 0`) so a stored-NEGATIVE bond is read and
+     * refused below rather than silently filtered out. ORDER BY pubkey:
+     * the collect order is fixed on every node (the PK decides the
+     * committed set anyway — the order only fixes the INSERT sequence). */
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT pubkey, self_stake FROM validators "
+            "WHERE self_stake != 0 ORDER BY pubkey ASC",
+            -1, &st, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "balance copy %llu: validators prepare "
+                      "failed: %s", (unsigned long long)epoch_start,
+                      sqlite3_errmsg(w->db));
+        goto done;
+    }
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const void *pk = sqlite3_column_blob(st, 0);
+        int pk_len = sqlite3_column_bytes(st, 0);
+        sqlite3_int64 s = sqlite3_column_int64(st, 1);
+        if (!pk || pk_len != DNAC_PUBKEY_SIZE || s < 0) {
+            QGP_LOG_ERROR(LOG_TAG, "balance copy %llu: malformed validators "
+                          "row (pubkey %d bytes, self_stake %lld)",
+                          (unsigned long long)epoch_start, pk_len,
+                          (long long)s);
+            sqlite3_finalize(st);
+            goto done;
+        }
+        if (v2ec_copy_push(&set, pk, pk, (uint64_t)s) != 0) {
+            sqlite3_finalize(st);
+            goto done;
+        }
+    }
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "balance copy %llu: validators scan failed "
+                      "(rc=%d) — a scan fault is never a shorter set",
+                      (unsigned long long)epoch_start, rc);
+        goto done;
+    }
+
+    /* ── 2. delegations: every row ──────────────────────────────────── */
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT validator_pubkey, delegator_pubkey, amount "
+            "FROM delegations "
+            "ORDER BY validator_hash ASC, delegator_hash ASC",
+            -1, &st, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "balance copy %llu: delegations prepare "
+                      "failed: %s", (unsigned long long)epoch_start,
+                      sqlite3_errmsg(w->db));
+        goto done;
+    }
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const void *vpk = sqlite3_column_blob(st, 0);
+        int vpk_len = sqlite3_column_bytes(st, 0);
+        const void *dpk = sqlite3_column_blob(st, 1);
+        int dpk_len = sqlite3_column_bytes(st, 1);
+        sqlite3_int64 a = sqlite3_column_int64(st, 2);
+        if (!vpk || vpk_len != DNAC_PUBKEY_SIZE ||
+            !dpk || dpk_len != DNAC_PUBKEY_SIZE || a < 0) {
+            QGP_LOG_ERROR(LOG_TAG, "balance copy %llu: malformed "
+                          "delegations row", (unsigned long long)epoch_start);
+            sqlite3_finalize(st);
+            goto done;
+        }
+        if (v2ec_copy_push(&set, vpk, dpk, (uint64_t)a) != 0) {
+            sqlite3_finalize(st);
+            goto done;
+        }
+    }
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "balance copy %llu: delegations scan failed "
+                      "(rc=%d)", (unsigned long long)epoch_start, rc);
+        goto done;
+    }
+
+    /* ── 3. write — STRICT INSERT: an existing (epoch, validator, owner)
+     * row is a FAULT, never silently kept or replaced. Two ways it could
+     * arise, both local defects: a boundary writing the same epoch twice,
+     * or a self-delegation (delegator == validator) colliding with the
+     * validator's own row — Rule S refuses that at admission
+     * (nodus_witness_rt_native.c, rtn_delegate_exec). */
+    if (sqlite3_prepare_v2(w->db,
+            "INSERT INTO v2_balance_copy (epoch_start, validator_fp, "
+            "owner_fp, amount) VALUES (?1, ?2, ?3, ?4)",
+            -1, &st, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "balance copy %llu: insert prepare failed: "
+                      "%s", (unsigned long long)epoch_start,
+                      sqlite3_errmsg(w->db));
+        goto done;
+    }
+    for (size_t i = 0; i < set.n; i++) {
+        sqlite3_reset(st);
+        sqlite3_clear_bindings(st);
+        if (sqlite3_bind_int64(st, 1, (sqlite3_int64)epoch_start)
+                != SQLITE_OK ||
+            sqlite3_bind_blob(st, 2, set.rows[i].vfp, 64, SQLITE_TRANSIENT)
+                != SQLITE_OK ||
+            sqlite3_bind_blob(st, 3, set.rows[i].ofp, 64, SQLITE_TRANSIENT)
+                != SQLITE_OK ||
+            sqlite3_bind_int64(st, 4, (sqlite3_int64)set.rows[i].amount)
+                != SQLITE_OK) {
+            sqlite3_finalize(st);
+            goto done;
+        }
+        if (sqlite3_step(st) != SQLITE_DONE) {
+            QGP_LOG_ERROR(LOG_TAG, "balance copy %llu: row %zu insert "
+                          "failed: %s", (unsigned long long)epoch_start, i,
+                          sqlite3_errmsg(w->db));
+            sqlite3_finalize(st);
+            goto done;
+        }
+    }
+    sqlite3_finalize(st);
+
+    /* ── 4. prune: keep epoch_start − E and epoch_start, nothing older.
+     * At genesis (epoch_start < E) there is nothing older to prune.
+     * The kept epoch_start − E copy is the SOURCE copy the NEXT
+     * boundary's distribution reads (src(H + E) = H − E, v2ec_source_copy
+     * below); that distribution runs before the next boundary's own
+     * prune. */
+    if (epoch_start >= (uint64_t)DNAC_EPOCH_LENGTH) {
+        if (sqlite3_prepare_v2(w->db,
+                "DELETE FROM v2_balance_copy WHERE epoch_start < ?1",
+                -1, &st, NULL) != SQLITE_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "balance copy %llu: prune prepare "
+                          "failed: %s", (unsigned long long)epoch_start,
+                          sqlite3_errmsg(w->db));
+            goto done;
+        }
+        if (sqlite3_bind_int64(st, 1, (sqlite3_int64)
+                               (epoch_start - (uint64_t)DNAC_EPOCH_LENGTH))
+            != SQLITE_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "balance copy %llu: prune bind failed",
+                          (unsigned long long)epoch_start);
+            sqlite3_finalize(st);
+            goto done;
+        }
+        rc = sqlite3_step(st);
+        sqlite3_finalize(st);
+        if (rc != SQLITE_DONE) {
+            QGP_LOG_ERROR(LOG_TAG, "balance copy %llu: prune failed "
+                          "(rc=%d)", (unsigned long long)epoch_start, rc);
+            goto done;
+        }
+    }
+    ret = 0;
+
+done:
+    free(set.rows);
+    return ret;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * PART 2 — the payout interval (design §7 P2-7)
+ * ════════════════════════════════════════════════════════════════════ */
+
+int nodus_witness_v2_payout_interval(nodus_witness_t *w, uint64_t *out) {
+    if (!w || !w->db || !out) return -2;
+
+    int present = nodus_witness_v2_gen_stored_doc_present(w);
+    if (present < 0) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "payout interval: the genesis document "
+                      "probe faulted — a probe fault is never 'no "
+                      "document'");
         return -2;
     }
-    uint64_t emission = 0;
-    if (inflation_start != 0 && global_height >= inflation_start)
-        emission = nodus_emission_per_block_ex(global_height, by, du);
-    if (emission == 0) return 0;
-
-    /* ── FAIL-CLOSED PRE-CHECK (divergence 2, and it has teeth) ───────
-     * nodus_witness_supply_add_minted is ADVISORY: it returns 0 both
-     * when the UPDATE landed and when there was no supply_tracking row
-     * to update (nodus_witness_db.c:1035-1049). On the legacy lane that
-     * tolerance only ever covered pre-genesis unit fixtures. Here it
-     * would be a hole in the conservation equation itself: the pool
-     * would grow by `emission` while total_minted did not, and the very
-     * next supply gate would fail the block for a reason no message
-     * names. Proving the row EXISTS first converts the advisory success
-     * into a real one, because the UPDATE is keyed on that same id=1
-     * row. */
-    {
-        nodus_witness_supply_t sup;
-        memset(&sup, 0, sizeof(sup));
-        int src = nodus_witness_supply_get(w, &sup);
-        if (src != 0) {
-            QGP_LOG_ERROR(LOG_TAG,
-                "emission at %llu: supply_tracking is unreadable or absent "
-                "(rc=%d) — a chain cannot mint into a row it does not have",
-                (unsigned long long)global_height, src);
+    if (present == 0) {
+        if (w->v2_successor) {
+            /* A version-3 chain stores its document at derivation
+             * (nodus_witness_v2_gen_derive_v3) and a joiner stores it at
+             * adopt (nodus_witness_v2_bundle.c) — its absence here is a
+             * broken database, never a chain with no interval. */
+            QGP_LOG_ERROR(LOG_TAG, "%s", "payout interval: this version-3 "
+                          "chain has no stored genesis document — refusing");
             return -2;
         }
+        /* The pre-document fixture lane (a genesis built through
+         * nodus_witness_v2_genesis_ex, no version-3 document): nothing
+         * committed the interval, so the version-3 default stands — the
+         * econ band's "present == 0 → compiled constants" rule
+         * (nodus_witness_v2_econ_params_load above). */
+        *out = (uint64_t)NODUS_V2_GEN_PAYOUT_INTERVAL_EPOCHS_DEFAULT;
+        return 0;
     }
 
-    if (nodus_witness_supply_add_minted(w, emission) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "emission at %llu: supply_add_minted failed",
-                      (unsigned long long)global_height);
+    nodus_v2_gen_config_t *cfg = calloc(1, sizeof(*cfg));   /* ~240 KB */
+    nodus_v2_gen_alloc_t  *allocs = NULL;
+    if (!cfg) return -2;
+    int rc = nodus_witness_v2_gen_stored_doc(w, cfg, &allocs);
+    uint64_t v = cfg->payout_interval_epochs;
+    free(allocs);
+    free(cfg);
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "payout interval: the stored genesis "
+                      "document does not read back — refusing");
         return -2;
     }
-
-    /* The canonical epoch key: floor(h / E) * E (bft.c:3675-3678).
-     *
-     * Block 2C — the macro is SAFE HERE because the load above already
-     * refused if the chain committed a different epoch_length. That check
-     * is the reason this line may keep reading DNAC_EPOCH_LENGTH: it is
-     * proven equal to the committed value, not merely assumed to be. */
-    uint64_t epoch_start = (global_height / (uint64_t)DNAC_EPOCH_LENGTH) *
-                           (uint64_t)DNAC_EPOCH_LENGTH;
-
-    int add_rc = nodus_witness_epoch_add_pool(w, epoch_start, emission);
-    if (add_rc == 1) {
-        /* Row missing — seed it with this mint as the starting pool, then
-         * capture the epoch-start snapshot. bft.c:3680-3715, including
-         * the -2 (someone else inserted it) retry. */
-        nodus_epoch_state_t seed;
-        memset(&seed, 0, sizeof(seed));
-        seed.epoch_start_height = epoch_start;
-        seed.epoch_pool_accum   = emission;
-        int ins_rc = nodus_witness_epoch_insert(w, &seed);
-        if (ins_rc != 0 && ins_rc != -2) {
-            QGP_LOG_ERROR(LOG_TAG,
-                "emission at %llu: epoch_insert seed failed rc=%d",
-                (unsigned long long)global_height, ins_rc);
-            return -2;
-        }
-        if (ins_rc == -2 &&
-            nodus_witness_epoch_add_pool(w, epoch_start, emission) != 0) {
-            QGP_LOG_ERROR(LOG_TAG,
-                "emission at %llu: epoch_add_pool retry failed",
-                (unsigned long long)global_height);
-            return -2;
-        }
-
-        /* HOOK 2 — THE EPOCH-START SNAPSHOT, and it is REQUIRED.
-         * Settlement splits a delegator's reward by that delegator's own
-         * amount, and `validator_set_snapshots` carries no per-delegation
-         * figures at all — only the committee. This blob is the ONLY
-         * committed source of them. The SAME writer V1 calls
-         * (bft.c:3709) is called here rather than a second snapshot
-         * format, because two encoders of one snapshot is two answers to
-         * one question. Idempotent by its own contract
-         * (nodus_witness_epoch.h:96-97). */
-        if (nodus_witness_epoch_snapshot_apply(w, epoch_start) != 0) {
-            QGP_LOG_ERROR(LOG_TAG,
-                "emission at %llu: epoch_snapshot_apply(%llu) failed",
-                (unsigned long long)global_height,
-                (unsigned long long)epoch_start);
-            return -2;
-        }
-    } else if (add_rc != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "emission at %llu: epoch_add_pool rc=%d",
-                      (unsigned long long)global_height, add_rc);
+    if (v == 0) {
+        /* nodus_witness_v2_gen_v3_validate refuses a 0 interval, so a
+         * document that read back cannot carry one; checked anyway
+         * because the payday rule divides by it. */
+        QGP_LOG_ERROR(LOG_TAG, "%s", "payout interval: the document says 0 "
+                      "— refusing");
         return -2;
     }
-
-    /* ── FAIL-CLOSED POST-CHECK (divergence 2, the pool half) ─────────
-     * nodus_witness_epoch_add_pool is advisory in the SAME shape: a
-     * failed prepare — the epoch_state table missing — returns 0, not an
-     * error (nodus_witness_epoch.c:196-203). Minting into a pool that
-     * does not exist breaks the equation exactly as the supply half
-     * would. One SELECT proves the row is there; a chain that cannot
-     * prove it does not mint.
-     *
-     * WHY THE ROW BEING PRESENT IS ENOUGH, stated because it is the
-     * load-bearing step: the only way add_pool can silently answer 0
-     * without having updated anything is a FAILED PREPARE, and its
-     * statement and this one address the SAME table. So a successful
-     * SELECT here proves the table existed, which proves that prepare
-     * succeeded, which means add_pool's answer came from
-     * sqlite3_changes() and was therefore handled above. */
-    {
-        nodus_epoch_state_t chk;
-        memset(&chk, 0, sizeof(chk));
-        int grc = nodus_witness_epoch_get(w, epoch_start, &chk);
-        nodus_witness_epoch_free(&chk);
-        if (grc != 0) {
-            QGP_LOG_ERROR(LOG_TAG,
-                "emission at %llu: epoch_state row %llu absent or "
-                "unreadable after accrual (rc=%d) — the mint has nowhere "
-                "to live", (unsigned long long)global_height,
-                (unsigned long long)epoch_start, grc);
-            return -2;
-        }
-    }
-
-    *minted_out = emission;
+    *out = v;
     return 0;
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * PART 2 — epoch settlement (bft.c:3085-3378)
+ * PART 3 — the typed-effect UTXO batch (the payday's writer)
  * ════════════════════════════════════════════════════════════════════ */
 
-/* The snapshot_blob row widths, from the ONE writer that produces them
- * (nodus_witness_epoch.h:99-107, nodus_witness_epoch.c:301-343). */
-#define V2EC_VAL_ROW (DNAC_PUBKEY_SIZE + 8 + 8 + 2 + 1)   /* 2611 */
-#define V2EC_DEL_ROW (DNAC_PUBKEY_SIZE + DNAC_PUBKEY_SIZE + 8) /* 5192 */
-
 /* One typed-effect batch. DNA_EFFECT_MAX_COUNT (64) is the codec's hard
- * ceiling on a single result, and a 7-seat epoch can emit up to
- * 7 x (1 + 64) = 455 payout rows, so settlement necessarily applies
+ * ceiling on a single result, so a payday with more accrual rows applies
  * SEVERAL results. Batching changes only the INSERT order, never the row
  * set: every root loader in this tree scans with an explicit total-order
  * ORDER BY on a unique key, so the committed roots are batch-boundary
@@ -487,13 +560,12 @@ static int v2ec_flush(v2ec_batch_t *b) {
     if (b->n == 0) return 0;
 
     /* CANONICAL ORDER is a codec REQUIREMENT, not a preference: encode
-     * rejects a non-ascending result outright (effect_wire.c:313). The
-     * total order is (effect_kind, op_id, key bytes)
-     * (effect_wire.c:186-192); every effect staged here is a CREATE on
-     * RTN_CORE_OP_UTXO, so the 64-byte key alone decides. Sorting a
-     * PERMUTATION keeps each dna_effect_in_t pointing at its own key and
-     * value buffers. Insertion sort: n <= 64, and it is deterministic on
-     * every node for the same input. */
+     * rejects a non-ascending result outright (effect_wire.c). The
+     * total order is (effect_kind, op_id, key bytes); every effect staged
+     * here is a CREATE on the CORE UTXO op, so the 64-byte key alone
+     * decides. Sorting a PERMUTATION keeps each dna_effect_in_t pointing
+     * at its own key and value buffers. Insertion sort: n <= 64, and it
+     * is deterministic on every node for the same input. */
     for (uint16_t i = 0; i < b->n; i++) b->ord[i] = i;
     for (uint16_t a = 1; a < b->n; a++) {
         uint16_t k = b->ord[a];
@@ -512,16 +584,16 @@ static int v2ec_flush(v2ec_batch_t *b) {
         /* The only inputs are this module's own effects, so a reject
          * means a duplicate payout identity or a shape this build got
          * wrong — never peer data. Fail closed either way. */
-        QGP_LOG_ERROR(LOG_TAG, "settlement: encoding %u payout effects "
-                      "was refused by the codec", (unsigned)b->n);
+        QGP_LOG_ERROR(LOG_TAG, "payday: encoding %u payout effects was "
+                      "refused by the codec", (unsigned)b->n);
         return -2;
     }
 
     dna_effect_view_t view;
     if (dna_effect_result_decode(b->enc, wlen, &view) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "%s",
-                      "settlement: this node could not decode its own "
-                      "encoded effect result");
+                      "payday: this node could not decode its own encoded "
+                      "effect result");
         return -2;
     }
 
@@ -531,9 +603,9 @@ static int v2ec_flush(v2ec_batch_t *b) {
     if (st != NODUS_ADAPTER_OK) {
         /* PRE_ABSENT is what makes a colliding payout identity fail here
          * instead of vanishing the way V1's INSERT OR IGNORE did
-         * (bft.c:3166). Divergence 1, deliberately fail-closed. */
+         * (bft.c:3166). Deliberately fail-closed. */
         QGP_LOG_ERROR(LOG_TAG,
-                      "settlement: effect %u of %u was refused by the CORE "
+                      "payday: effect %u of %u was refused by the CORE "
                       "adapter (status %d)", (unsigned)fail_index,
                       (unsigned)b->n, (int)st);
         return -2;
@@ -542,8 +614,9 @@ static int v2ec_flush(v2ec_batch_t *b) {
     return 0;
 }
 
-/* Stage one payout row. @return 0 / -2. */
-static int v2ec_emit(v2ec_batch_t *b, const uint8_t *owner_pubkey,
+/* Stage one payout row to the RAW 64-byte owner fingerprint. @return 0 /
+ * -2. */
+static int v2ec_emit(v2ec_batch_t *b, const uint8_t owner_fp[64],
                      uint64_t amount, const uint8_t tx_hash[64],
                      uint8_t kind, uint32_t output_index,
                      uint64_t block_height) {
@@ -555,20 +628,17 @@ static int v2ec_emit(v2ec_batch_t *b, const uint8_t *owner_pubkey,
                                               b->key[s]) != 0)
         return -2;
 
-    /* Owner fingerprint = hex(SHA3-512(pubkey)), the V1 encoding at
+    /* Owner = lowercase hex of the raw fingerprint, the V1 encoding at
      * bft.c:3054-3057. `qgp_fp_raw_to_hex` NUL-terminates at 128, and
      * the record builder copies exactly 128. */
-    uint8_t fp_raw[QGP_FP_RAW_BYTES];
-    if (qgp_sha3_512(owner_pubkey, DNAC_PUBKEY_SIZE, fp_raw) != 0)
-        return -2;
     char fp_hex[QGP_FP_HEX_BUFFER];
-    qgp_fp_raw_to_hex(fp_raw, fp_hex);
+    qgp_fp_raw_to_hex(owner_fp, fp_hex);
 
     /* Native DNAC token id = 64 zeros (bft.c:3058-3059). */
     static const uint8_t native_token[64] = {0};
 
-    /* unlock_block 0: settlement rewards are spendable immediately —
-     * V1 passes 0 at bft.c:3264, :3316 and :3336. */
+    /* unlock_block 0: payday rewards are spendable immediately — V1
+     * passes 0 at bft.c:3264, :3316 and :3336. */
     if (nodus_rt_core_utxo_create_eff(&b->in[s], b->val[s], b->key[s],
                                       fp_hex, amount, native_token,
                                       tx_hash, output_index, block_height,
@@ -580,128 +650,549 @@ static int v2ec_emit(v2ec_batch_t *b, const uint8_t *owner_pubkey,
     return 0;
 }
 
-/* The whole-pool burn shared by V1's two "nothing to distribute" exits
- * (bft.c:3102-3107 and :3132-3138). Both burn against the SNAPSHOT hash,
- * not the settlement tx_hash — kept verbatim, because that value is what
- * the audit column already records for those two cases. @return 0 / -2. */
-static int v2ec_burn_whole_pool(nodus_witness_t *w, uint64_t pool,
-                                const uint8_t snapshot_hash[64],
-                                uint64_t settling_epoch_start,
-                                uint64_t *burned_out) {
-    if (pool > 0) {
-        if (nodus_witness_supply_add_burned(w, pool, snapshot_hash) != 0) {
-            QGP_LOG_ERROR(LOG_TAG,
-                "settlement of epoch %llu: burning the undistributable "
-                "pool of %llu failed",
-                (unsigned long long)settling_epoch_start,
-                (unsigned long long)pool);
-            return -2;
-        }
-        *burned_out = pool;
-    }
-    /* Retire the row. V1 discards this return (bft.c:3106, :3137); a row
-     * that vanished between the SELECT and the DELETE inside ONE
-     * transaction is not an outcome this lane accepts. */
-    int drc = nodus_witness_epoch_delete(w, settling_epoch_start);
-    if (drc != 0) {
-        QGP_LOG_ERROR(LOG_TAG,
-            "settlement of epoch %llu: retiring the epoch row failed "
-            "(rc=%d)", (unsigned long long)settling_epoch_start, drc);
+/* ══════════════════════════════════════════════════════════════════════
+ * PART 4 — the epoch reward distribution (design §7 P2-6 as REVISED by
+ * §7.1 "P2-6 rev 2": the governing snapshot's own power between
+ * members, the source copy src(H) inside a member, a consistency gate
+ * between the two). Contract: the header.
+ * ════════════════════════════════════════════════════════════════════ */
+
+/* v2_reward_accrual[owner_fp] += x, READ FIRST and bound to the observed
+ * value (the O11 STATS EXISTS_VERSION discipline: an absolute write bound
+ * to what this transaction observed, never a blind relative UPDATE).
+ * x == 0 writes nothing — a zero accrual row is never created (the
+ * accrual_root loader refuses one). @return 0 / -2. */
+static int v2ec_accrue(nodus_witness_t *w, const uint8_t owner_fp[64],
+                       uint64_t x) {
+    if (x == 0) return 0;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT amount FROM v2_reward_accrual WHERE owner_fp = ?1",
+            -1, &st, NULL) != SQLITE_OK)
+        return -2;
+    if (sqlite3_bind_blob(st, 1, owner_fp, 64, SQLITE_TRANSIENT)
+        != SQLITE_OK) {
+        sqlite3_finalize(st);
         return -2;
     }
+    int rc = sqlite3_step(st);
+    int has = (rc == SQLITE_ROW);
+    sqlite3_int64 cur = has ? sqlite3_column_int64(st, 0) : 0;
+    sqlite3_finalize(st);
+    if (!has && rc != SQLITE_DONE) return -2;
+    if (has && cur <= 0) {
+        QGP_LOG_ERROR(LOG_TAG, "accrual row holds %lld — corrupt",
+                      (long long)cur);
+        return -2;
+    }
+
+    uint64_t nv = 0;
+    if (dna_ck_add_u64((uint64_t)cur, x, &nv) != 0 || nv > V2EC_STORE_MAX)
+        return -2;
+
+    if (has) {
+        if (sqlite3_prepare_v2(w->db,
+                "UPDATE v2_reward_accrual SET amount = ?1 "
+                "WHERE owner_fp = ?2 AND amount = ?3", -1, &st, NULL)
+            != SQLITE_OK)
+            return -2;
+        if (sqlite3_bind_int64(st, 1, (sqlite3_int64)nv) != SQLITE_OK ||
+            sqlite3_bind_blob(st, 2, owner_fp, 64, SQLITE_TRANSIENT)
+                != SQLITE_OK ||
+            sqlite3_bind_int64(st, 3, cur) != SQLITE_OK) {
+            sqlite3_finalize(st);
+            return -2;
+        }
+    } else {
+        if (sqlite3_prepare_v2(w->db,
+                "INSERT INTO v2_reward_accrual (owner_fp, amount) "
+                "VALUES (?1, ?2)", -1, &st, NULL) != SQLITE_OK)
+            return -2;
+        if (sqlite3_bind_blob(st, 1, owner_fp, 64, SQLITE_TRANSIENT)
+                != SQLITE_OK ||
+            sqlite3_bind_int64(st, 2, (sqlite3_int64)nv) != SQLITE_OK) {
+            sqlite3_finalize(st);
+            return -2;
+        }
+    }
+    rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE || sqlite3_changes(w->db) != 1) return -2;
+    return 0;
+}
+
+/* One (owner, amount) row this module reads: a copy(src) row of a
+ * member, or an accrual row. */
+typedef struct {
+    uint8_t  fp[64];
+    uint64_t amount;
+} v2ec_row_t;
+
+/* The copy(`epoch_start`) rows of ONE member, owner_fp ASC (the owner_fp
+ * order the delegators are paid in). @return 0 / -2. */
+static int v2ec_member_copy(nodus_witness_t *w, uint64_t epoch_start,
+                            const uint8_t vfp[64], v2ec_row_t **out,
+                            size_t *n_out) {
+    *out = NULL;
+    *n_out = 0;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT owner_fp, amount FROM v2_balance_copy "
+            "WHERE epoch_start = ?1 AND validator_fp = ?2 "
+            "ORDER BY owner_fp ASC", -1, &st, NULL) != SQLITE_OK)
+        return -2;
+    if (sqlite3_bind_int64(st, 1, (sqlite3_int64)epoch_start) != SQLITE_OK ||
+        sqlite3_bind_blob(st, 2, vfp, 64, SQLITE_TRANSIENT) != SQLITE_OK) {
+        sqlite3_finalize(st);
+        return -2;
+    }
+    size_t cap = 0, n = 0;
+    v2ec_row_t *arr = NULL;
+    int rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const void *fp = sqlite3_column_blob(st, 0);
+        int fp_len = sqlite3_column_bytes(st, 0);
+        sqlite3_int64 a = sqlite3_column_int64(st, 1);
+        if (!fp || fp_len != 64 || a < 0) {
+            sqlite3_finalize(st);
+            free(arr);
+            return -2;
+        }
+        if (n == cap) {
+            size_t nc = cap ? cap * 2 : 16;
+            v2ec_row_t *na = realloc(arr, nc * sizeof(*na));
+            if (!na) { sqlite3_finalize(st); free(arr); return -2; }
+            arr = na;
+            cap = nc;
+        }
+        memcpy(arr[n].fp, fp, 64);
+        arr[n].amount = (uint64_t)a;
+        n++;
+    }
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) { free(arr); return -2; }
+    *out = arr;
+    *n_out = n;
+    return 0;
+}
+
+/* floor(a × b / d), 128-bit intermediate. The callers guarantee d != 0
+ * and a result <= a (b <= d), so the quotient always fits 64 bits. */
+static uint64_t v2ec_muldiv(uint64_t a, uint64_t b, uint64_t d) {
+    uint64_t rem = 0;
+    qgp_u128_t num = qgp_u128_mul_u64(qgp_u128_from_u64(a), b);
+    return qgp_u128_div_u64(num, d, &rem).lo;
+}
+
+/* One member of the governing snapshot, loaded and checked (pass 1 of
+ * the distribution). The copy array is owned here and freed by
+ * v2ec_member_release on every path. */
+typedef struct {
+    int         has_row;   /* 1 a `validators` row exists at H          */
+    uint8_t     vfp[64];   /* raw SHA3-512(pubkey) — the accrual key     */
+    v2ec_row_t *copy;      /* its copy(src) rows, owner_fp ASC           */
+    size_t      n_copy;
+    uint64_t    sum_d;     /* Σ a_d: every copy(src) row but the self row */
+    uint64_t    power;     /* the entry's total_stake / DNAC_DECIMAL_UNIT */
+} v2ec_member_t;
+
+static void v2ec_member_release(v2ec_member_t *m) {
+    free(m->copy);
+    m->copy = NULL;
+}
+
+/* The copy a governing snapshot was built FROM, for the distribution at
+ * boundary H (design §7.1 "P2-6 rev 2"):
+ *
+ *   src(H) = H − 2E  when H >= 2E, else 0
+ *
+ * The distribution at H pays the epoch (H−E, H], governed by
+ * snapshot(H−E). That snapshot was built at boundary H−2E by commit_next
+ * (nodus_witness_vset.c:703 keys it boundary + E), and copy(H−2E) was
+ * written at the SAME boundary right after it
+ * (nodus_witness_v2_epoch.c:1348 commit_next, :1359 the copy), with no
+ * stake movement in between. For H = E and H = 2E the governing
+ * snapshots are the genesis ones (0 and E), both built from the genesis
+ * rows by nodus_witness_vset_commit_genesis (nodus_witness_vset.c:
+ * 766-768), and copy(0) is written by the engine genesis from the same
+ * rows (nodus_witness_v2_apply.c:960, :5657) — so src is 0 for both.
+ *
+ * RETENTION. Boundary H−E's copy write prunes everything below H−2E
+ * (nodus_witness_v2_balance_copy_write step 4), so copy(H−2E) exists
+ * when boundary H begins; this distribution runs at step 1b
+ * (nodus_witness_v2_epoch.c:1242), BEFORE boundary H's own copy write
+ * (step 6, :1359) prunes it. At E: copy(0) (nothing pruned yet). At 2E:
+ * copy(0) — boundary E pruned below 0, i.e. nothing. At 3E: copy(E) —
+ * boundary 2E pruned only copy(0). Moving the distribution after step 6
+ * would read a deleted copy. */
+static uint64_t v2ec_source_copy(uint64_t boundary_height) {
+    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    return boundary_height >= 2 * E ? boundary_height - 2 * E : 0;
+}
+
+/* PASS 1 — load ONE member of the governing snapshot and CHECK it
+ * against the copy it was built from (design §7.1 "Tutarlılık kapısı"):
+ *
+ *   copy(src) self row amount       == entry.self_bond
+ *                                      (an ABSENT self row counts 0)
+ *   Σ copy(src) delegator rows      == entry.total_stake − entry.self_bond
+ *
+ * Both structures are derived from the SAME committed state at the SAME
+ * boundary (v2ec_source_copy above): the entry's total_stake is
+ * self_stake + external_delegated (nodus_witness_committee.c:338-339),
+ * the copy writes self_stake as the self row when it is nonzero and
+ * every `delegations` row (nodus_witness_v2_balance_copy_write), and
+ * every writer keeps external_delegated == Σ delegations of that
+ * validator (rtn_delegate_exec / rtn_undelegate_exec move both by the
+ * same amount; every genesis writes 0 and no delegation). A mismatch is
+ * therefore either local corruption of one node's copy or a broken
+ * external_delegated writer — both halt rather than pay silently wrong
+ * (design §7.1; threat G6: the chain stops at that boundary). FAULT -2.
+ *
+ * `power` is the entry's own voting power, total_stake / DNAC_DECIMAL_UNIT
+ * — the unit the ValidatorUpdate cometbft is told uses. `has_row` is
+ * whether a `validators` row exists at H (a member without one is NOT
+ * paid in pass 2, its share stays in the pool). Every read is
+ * three-valued: a fault is -2, never a value. @return 0 / -2. */
+static int v2ec_member_load(nodus_witness_t *w, uint64_t src,
+                            uint64_t boundary_height,
+                            const dna_vset_entry_t *e, v2ec_member_t *m) {
+    dnac_validator_record_t cur;
+    memset(&cur, 0, sizeof(cur));
+    int vrc = nodus_validator_get(w, e->pubkey, &cur);
+    if (vrc < 0 || vrc > 1) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "distribution: a member's validators "
+                      "row is unreadable — refusing rather than guessing "
+                      "whether it exists");
+        return -2;
+    }
+    m->has_row = (vrc == 0);
+    if (qgp_sha3_512(e->pubkey, DNAC_PUBKEY_SIZE, m->vfp) != 0) return -2;
+
+    if (e->self_bond > e->total_stake) {
+        QGP_LOG_ERROR(LOG_TAG, "distribution at %llu: snapshot entry "
+                      "carries self_bond %llu above total_stake %llu — "
+                      "corrupt", (unsigned long long)boundary_height,
+                      (unsigned long long)e->self_bond,
+                      (unsigned long long)e->total_stake);
+        return -2;
+    }
+    if (v2ec_member_copy(w, src, m->vfp, &m->copy, &m->n_copy) != 0)
+        return -2;
+
+    uint64_t self = 0, sum_d = 0;
+    for (size_t i = 0; i < m->n_copy; i++) {
+        if (memcmp(m->copy[i].fp, m->vfp, 64) == 0) {
+            self = m->copy[i].amount;        /* PK: at most one self row */
+            continue;
+        }
+        if (dna_ck_add_u64(sum_d, m->copy[i].amount, &sum_d) != 0)
+            return -2;
+    }
+    if (self != e->self_bond || sum_d != e->total_stake - e->self_bond) {
+        QGP_LOG_ERROR(LOG_TAG, "distribution at %llu: copy(%llu) disagrees "
+                      "with the governing snapshot for a member (self %llu "
+                      "vs self_bond %llu, delegated %llu vs %llu) — the two "
+                      "were built from one state; refusing to pay",
+                      (unsigned long long)boundary_height,
+                      (unsigned long long)src, (unsigned long long)self,
+                      (unsigned long long)e->self_bond,
+                      (unsigned long long)sum_d,
+                      (unsigned long long)(e->total_stake - e->self_bond));
+        return -2;
+    }
+    m->sum_d = sum_d;
+    m->power = e->total_stake / (uint64_t)DNAC_DECIMAL_UNIT;
+    return 0;
+}
+
+/* PASS 2 — pay ONE loaded member its `share` into the accrual table
+ * (the inner split, design §7.1 "P2-6 rev 2"):
+ *
+ *   base       = floor(share × self_bond / total_stake)   (the entry's
+ *                own fields — pass 1 proved they match copy(src))
+ *   gross      = share − base
+ *   commission = floor(gross × commission_bps / 10000)    (the entry's,
+ *                frozen with the set)
+ *   net        = gross − commission
+ *   x_d        = floor(net × a_d / Σa_d), a_d the delegator's copy(src)
+ *                amount, delegators in owner_fp ASC order
+ *
+ * base + commission accrue to the validator's fp, each x_d to its
+ * delegator's fp. Σa_d == 0 with net > 0 leaves net in the pool (pass 1
+ * makes Σa_d == total_stake − self_bond, so net is 0 then anyway).
+ * `*accrued_out` receives what was credited. Returns -2 on a fault; a
+ * member that is not paid (no row, bar missed, zero share) returns 0
+ * with *accrued_out == 0 — its whole share, delegators included, stays
+ * in the pool (decision §3 "P2 tasarım soruları" (2)). */
+static int v2ec_pay_member(nodus_witness_t *w, uint64_t boundary_height,
+                           const dna_vset_entry_t *e,
+                           const v2ec_member_t *m, uint64_t share,
+                           uint64_t *accrued_out) {
+    *accrued_out = 0;
+    if (share == 0) return 0;
+    if (!m->has_row) return 0;            /* no row: share stays in pool */
+
+    /* ── the shared participation predicate (P1, "tek kural, iki
+     * tüketici"): a miss forfeits the WHOLE share, delegators included
+     * (decision §3 "P2 tasarım soruları" (2)). ─────────────────────── */
+    int meets = 0;
+    if (nodus_witness_v2_attendance_meets_bar(w, e->pubkey, boundary_height,
+                                              &meets) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "distribution: a member's attendance "
+                      "is unreadable — refusing");
+        return -2;
+    }
+    if (!meets) return 0;
+
+    if (e->commission_bps > (uint16_t)DNAC_COMMISSION_BPS_MAX) {
+        QGP_LOG_ERROR(LOG_TAG, "distribution: snapshot entry carries "
+                      "commission %u bps — corrupt",
+                      (unsigned)e->commission_bps);
+        return -2;
+    }
+
+    /* share > 0 implies power > 0 (share = floor(payout × power /
+     * Σpower)), hence total_stake > 0; checked anyway because it is the
+     * divisor below. self_bond <= total_stake was proven in pass 1, so
+     * base <= share. */
+    if (e->total_stake == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "distribution: a member with a "
+                      "nonzero share carries total_stake 0 — refusing");
+        return -2;
+    }
+
+    const uint64_t base  = v2ec_muldiv(share, e->self_bond, e->total_stake);
+    const uint64_t gross = share - base;
+    const uint64_t commission =
+        v2ec_muldiv(gross, (uint64_t)e->commission_bps, 10000ULL);
+    const uint64_t net = gross - commission;
+
+    uint64_t credited = 0;
+    /* the validator: its own-bond base + the commission */
+    {
+        uint64_t vx = 0;
+        if (dna_ck_add_u64(base, commission, &vx) != 0) return -2;
+        if (v2ec_accrue(w, m->vfp, vx) != 0) return -2;
+        credited = vx;
+    }
+    /* every delegator of copy(src), owner_fp ASC (the copy reader's own
+     * ORDER BY) — its share of `net` by its frozen amount a_d */
+    if (net > 0 && m->sum_d > 0) {
+        for (size_t i = 0; i < m->n_copy; i++) {
+            if (memcmp(m->copy[i].fp, m->vfp, 64) == 0) continue;
+            uint64_t x = v2ec_muldiv(net, m->copy[i].amount, m->sum_d);
+            if (v2ec_accrue(w, m->copy[i].fp, x) != 0) return -2;
+            if (dna_ck_add_u64(credited, x, &credited) != 0) return -2;
+        }
+    }
+    /* Σ credited <= share by construction (every factor above is <= its
+     * divisor); a violation would mean this function mis-counted, so it
+     * is a fault, never a pay-out beyond the share. */
+    if (credited > share) return -2;
+    *accrued_out = credited;
     return 0;
 }
 
 int nodus_witness_v2_settlement_apply(nodus_witness_t *w,
-                                      uint64_t settling_epoch_start,
+                                      uint64_t boundary_height,
                                       nodus_v2_epoch_fault_fn fault,
                                       void *fault_ud,
-                                      uint32_t *n_utxos_out,
-                                      uint64_t *burned_out) {
-    if (!w || !w->db || !n_utxos_out || !burned_out) return -2;
-    *n_utxos_out = 0;
-    *burned_out  = 0;
+                                      uint64_t *accrued_out) {
+    if (!w || !w->db || !accrued_out) return -2;
+    *accrued_out = 0;
+    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    if (boundary_height < E || (boundary_height % E) != 0) return -2;
+    const uint64_t epoch_start = boundary_height - E;
 
-    /* ── the epoch row ───────────────────────────────────────────────
-     * V1 treats ANY non-zero return as "nothing to settle"
-     * (bft.c:3089-3090). Divergence 2: a MISS (rc 1) is a legitimate
-     * nothing — a chain whose first epoch predates emission has no row —
-     * but a read FAULT is not, and must never become one silently. */
-    nodus_epoch_state_t es;
-    memset(&es, 0, sizeof(es));
-    int grc = nodus_witness_epoch_get(w, settling_epoch_start, &es);
-    if (grc == 1) return 0;
-    if (grc != 0) {
-        QGP_LOG_ERROR(LOG_TAG,
-            "settlement of epoch %llu: epoch_state unreadable (rc=%d) — "
-            "a read fault is never 'nothing to settle'",
-            (unsigned long long)settling_epoch_start, grc);
+    /* ── the pool ─────────────────────────────────────────────────────
+     * An ABSENT supply row at a boundary is a broken chain (genesis
+     * writes it, nodus_witness_v2_gen.c), never "nothing to pay". */
+    nodus_witness_supply_t sup;
+    memset(&sup, 0, sizeof(sup));
+    int src = nodus_witness_supply_get(w, &sup);
+    if (src != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "distribution at %llu: supply_tracking is "
+                      "unreadable or absent (rc=%d) — refusing",
+                      (unsigned long long)boundary_height, src);
+        return -2;
+    }
+    const uint64_t payout = sup.reward_pool >>
+                            NODUS_V2_GEN_REWARD_DIVISOR_LOG2;
+    if (payout == 0) return 0;            /* an (almost) empty pool      */
+
+    /* ── the members: the set that GOVERNED the ended epoch ─────────── */
+    dna_vset_snapshot_t *snap = NULL;
+    int arc = nodus_witness_v2_epoch_authority_for_epoch(w, epoch_start,
+                                                         &snap, NULL, NULL);
+    if (arc != 0 || !snap) {
+        QGP_LOG_ERROR(LOG_TAG, "distribution at %llu: snapshot(%llu) "
+                      "unreadable or absent (rc=%d) — a boundary has no "
+                      "verdict class", (unsigned long long)boundary_height,
+                      (unsigned long long)epoch_start, arc);
         return -2;
     }
 
-    /* Everything the `goto done` paths below could skip is declared and
-     * initialised HERE, before the first jump: no branch to the single
-     * exit may cross an initialiser. */
-    const uint64_t pool     = es.epoch_pool_accum;
-    const uint8_t *blob     = es.snapshot_blob;
-    const size_t   blob_len = es.snapshot_blob_len;
-
-    int             ret = -2;
-    v2ec_batch_t   *b   = NULL;
-    size_t          off = 0;
-    uint16_t        committee_count = 0;
-    uint32_t        deleg_count     = 0;
-    const uint8_t  *val_base        = NULL;
-    const uint8_t  *deleg_base      = NULL;
-    uint64_t        per_slot        = 0;
-    uint64_t        total_burned_here = 0;
-    uint32_t        out_idx         = NODUS_V2_SETTLE_OUT_IDX_BASE;
-    uint8_t         tx_hash[64];
-    memset(tx_hash, 0, sizeof(tx_hash));
-
-    /* CANONICAL EMPTY SNAPSHOT is 6 bytes (u16 zero committee ‖ u32 zero
-     * delegations). Anything shorter is not a snapshot at all — V1 burns
-     * the pool and retires the row (bft.c:3102-3107). */
-    if (!blob || blob_len < 6) {
-        ret = v2ec_burn_whole_pool(w, pool, es.snapshot_hash,
-                                   settling_epoch_start, burned_out);
-        goto done;
+    int ret = -2;
+    const uint16_t n_mem = snap->active_count;
+    const uint64_t src_epoch = v2ec_source_copy(boundary_height);
+    v2ec_member_t *mem = NULL;
+    uint64_t sum_power = 0, total = 0;
+    if (n_mem > 0) {
+        mem = calloc(n_mem, sizeof(*mem));
+        if (!mem) goto done;
     }
 
-    committee_count = v2ec_be16(blob + off); off += 2;
-    if (off + (size_t)committee_count * V2EC_VAL_ROW + 4 > blob_len) {
-        QGP_LOG_ERROR(LOG_TAG,
-            "settlement of epoch %llu: truncated snapshot_blob",
-            (unsigned long long)settling_epoch_start);
-        goto done;
+    /* ── PASS 1: load every member, CHECK it against copy(src) (the
+     * consistency gate, v2ec_member_load — a mismatch is -2), and sum
+     * the governing set's power. EVERY member is counted in Σpower,
+     * including one with no validators row and one that will miss the
+     * attendance bar in pass 2: a forfeited share must stay in the pool,
+     * never be redistributed to the members that attended (decision §3
+     * "P2 tasarım soruları" (2)). The gate runs for every member BEFORE
+     * anything is paid, so a divergent copy halts the boundary with the
+     * pool and the accrual table untouched. ─────────────────────────── */
+    for (uint16_t i = 0; i < n_mem; i++) {
+        if (v2ec_member_load(w, src_epoch, boundary_height,
+                             &snap->entries[i], &mem[i]) != 0)
+            goto done;
+        if (dna_ck_add_u64(sum_power, mem[i].power, &sum_power) != 0)
+            goto done;
     }
-    val_base = blob + off;
-    off += (size_t)committee_count * V2EC_VAL_ROW;
+    if (sum_power == 0) { ret = 0; goto done; }   /* no power: the payout
+                                                   * stays in the pool  */
 
-    deleg_count = v2ec_be32(blob + off); off += 4;
-    if (off + (size_t)deleg_count * V2EC_DEL_ROW > blob_len) {
-        QGP_LOG_ERROR(LOG_TAG,
-            "settlement of epoch %llu: truncated snapshot delegations",
-            (unsigned long long)settling_epoch_start);
-        goto done;
+    /* ── PASS 2: share_i = floor(payout × power_i / Σpower), paid by the
+     * inner split. The snapshot's committed order (hash-committed, the
+     * same order cometbft is told); the per-member arithmetic is
+     * independent of it — only the INSERT sequence of the accrual rows
+     * follows it, and the accrual_root sorts by owner_fp. ──────────── */
+    for (uint16_t i = 0; i < n_mem; i++) {
+        const uint64_t share = v2ec_muldiv(payout, mem[i].power,
+                                           sum_power);
+        uint64_t got = 0;
+        if (v2ec_pay_member(w, boundary_height, &snap->entries[i], &mem[i],
+                            share, &got) != 0)
+            goto done;
+        if (dna_ck_add_u64(total, got, &total) != 0) goto done;
     }
-    deleg_base = blob + off;
-
-    if (committee_count == 0) {
-        ret = v2ec_burn_whole_pool(w, pool, es.snapshot_hash,
-                                   settling_epoch_start, burned_out);
+    if (total > payout) goto done;        /* Σ floor(shares) <= payout   */
+    if (fault && fault(fault_ud, NODUS_V2_EPST_DIST_ACCRUED, UINT32_MAX))
         goto done;
+
+    /* ── reward_pool −= Σ credited, bound to the value this transaction
+     * observed (an absolute write, never a blind relative UPDATE) ───── */
+    if (total > 0) {
+        if (total > sup.reward_pool) goto done;
+        const uint64_t new_pool = sup.reward_pool - total;
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "UPDATE supply_tracking SET reward_pool = ?1 "
+                "WHERE id = 1 AND reward_pool = ?2", -1, &st, NULL)
+            != SQLITE_OK)
+            goto done;
+        if (sqlite3_bind_int64(st, 1, (sqlite3_int64)new_pool)
+                != SQLITE_OK ||
+            sqlite3_bind_int64(st, 2, (sqlite3_int64)sup.reward_pool)
+                != SQLITE_OK) {
+            sqlite3_finalize(st);
+            goto done;
+        }
+        int rc = sqlite3_step(st);
+        sqlite3_finalize(st);
+        if (rc != SQLITE_DONE || sqlite3_changes(w->db) != 1) {
+            QGP_LOG_ERROR(LOG_TAG, "distribution at %llu: the pool debit "
+                          "did not land — refusing",
+                          (unsigned long long)boundary_height);
+            goto done;
+        }
+    }
+    if (fault && fault(fault_ud, NODUS_V2_EPST_DIST_APPLIED, UINT32_MAX))
+        goto done;
+
+    QGP_LOG_DEBUG(LOG_TAG,
+        "epoch %llu distributed at %llu: pool=%llu payout=%llu "
+        "members=%u power=%llu source copy=%llu accrued=%llu",
+        (unsigned long long)epoch_start,
+        (unsigned long long)boundary_height,
+        (unsigned long long)sup.reward_pool, (unsigned long long)payout,
+        (unsigned)n_mem, (unsigned long long)sum_power,
+        (unsigned long long)src_epoch, (unsigned long long)total);
+    *accrued_out = total;
+    ret = 0;
+
+done:
+    if (mem) {
+        for (uint16_t i = 0; i < n_mem; i++) v2ec_member_release(&mem[i]);
+        free(mem);
+    }
+    dna_vset_free(&snap);
+    if (ret != 0) *accrued_out = 0;
+    return ret;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * PART 5 — payday (design §7 P2-7)
+ * ════════════════════════════════════════════════════════════════════ */
+
+int nodus_witness_v2_payday_apply(nodus_witness_t *w,
+                                  uint64_t boundary_height,
+                                  uint64_t interval,
+                                  nodus_v2_epoch_fault_fn fault,
+                                  void *fault_ud,
+                                  uint32_t *n_utxos_out) {
+    if (!w || !w->db || !n_utxos_out) return -2;
+    *n_utxos_out = 0;
+    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    if (interval == 0) return -2;
+    if (boundary_height < E || (boundary_height % E) != 0) return -2;
+    if (((boundary_height / E) % interval) != 0) return 0;   /* not a
+                                                           * payday      */
+    if (boundary_height > V2EC_STORE_MAX) return -2;
+
+    /* ── every accrual row, owner_fp ASC (the payout index order) ───── */
+    v2ec_row_t *rows = NULL;
+    size_t n = 0, cap = 0;
+    int rc;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT owner_fp, amount FROM v2_reward_accrual "
+            "ORDER BY owner_fp ASC", -1, &st, NULL) != SQLITE_OK)
+        return -2;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const void *fp = sqlite3_column_blob(st, 0);
+        int fp_len = sqlite3_column_bytes(st, 0);
+        sqlite3_int64 a = sqlite3_column_int64(st, 1);
+        if (!fp || fp_len != 64 || a <= 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "payday: malformed accrual row — "
+                          "refusing");
+            sqlite3_finalize(st);
+            free(rows);
+            return -2;
+        }
+        if (n == cap) {
+            size_t nc = cap ? cap * 2 : 64;
+            v2ec_row_t *nr = realloc(rows, nc * sizeof(*nr));
+            if (!nr) { sqlite3_finalize(st); free(rows); return -2; }
+            rows = nr;
+            cap = nc;
+        }
+        memcpy(rows[n].fp, fp, 64);
+        rows[n].amount = (uint64_t)a;
+        n++;
+    }
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) { free(rows); return -2; }
+    if (n == 0) { free(rows); return 0; }   /* nothing accrued yet     */
+    if (n > (size_t)(UINT32_MAX - NODUS_V2_SETTLE_OUT_IDX_BASE)) {
+        free(rows);
+        return -2;                          /* the index would wrap    */
     }
 
-    /* ── the split (bft.c:3140-3147) ─────────────────────────────────── */
-    per_slot = pool / (uint64_t)committee_count;
-    /* BURN LEG 1 of 3 — the remainder the committee split could not
-     * divide (bft.c:3147). All three accumulate HERE and reach
-     * supply_tracking through the ONE call at the end. */
-    total_burned_here = pool - per_slot * (uint64_t)committee_count;
-
-    if (nodus_witness_v2_settlement_tx_hash(settling_epoch_start,
-                                            tx_hash) != 0)
+    int ret = -2;
+    uint8_t tx_hash[64];
+    v2ec_batch_t *b = NULL;
+    if (nodus_witness_v2_settlement_tx_hash(boundary_height, tx_hash) != 0)
         goto done;
 
     /* ~90 KB with the 64-KB encode scratch — heap, never the stack. */
@@ -714,251 +1205,45 @@ int nodus_witness_v2_settlement_apply(nodus_witness_t *w,
          * a CORE UTXO at all. Refusing is the only answer that does not
          * invent one. */
         QGP_LOG_ERROR(LOG_TAG, "%s",
-            "settlement: the CORE runtime does not resolve as ACTIVE on "
-            "this node — refusing to pay out");
+            "payday: the CORE runtime does not resolve as ACTIVE on this "
+            "node — refusing to pay out");
         goto done;
     }
 
-    for (uint16_t vi = 0; vi < committee_count; vi++) {
-        const uint8_t *vrow = val_base + (size_t)vi * V2EC_VAL_ROW;
-        const uint8_t *vpk  = vrow;
-        uint64_t self_stake      = v2ec_be64(vrow + DNAC_PUBKEY_SIZE);
-        uint64_t total_delegated = v2ec_be64(vrow + DNAC_PUBKEY_SIZE + 8);
-        uint16_t commission_bps  = v2ec_be16(vrow + DNAC_PUBKEY_SIZE + 16);
-        /* status byte at +2610: RETIRING members keep their seat for the
-         * epoch (design §3.6), so it is deliberately unread — same as
-         * bft.c:3186-3187. */
-
-        /* ── ATTENDANCE (bft.c:3189-3247, tokenomics-v3 P1 round 3) ───
-         * THE WATERMARK QUESTION, ANSWERED. The design document's §5.4
-         * obligation 3 says V1 reads `validator.last_signed_block`. That
-         * repeats V1's own STALE contract comment (bft.c:2955-2963); the
-         * shipped code reads `signed_blocks_this_epoch` against an
-         * 80%-of-expected-slots bar (bft.c:3239-3245), and the comment
-         * at bft.c:3190-3210 records that the binary last-signed check
-         * was REPLACED precisely because it allowed 83% planned downtime
-         * per epoch. The specification of this port is the shipped
-         * implementation, so the count-based gate is what is ported.
-         *
-         * Round 3 (operator 2026-09-23): this bar is no longer its OWN
-         * formula. It calls `nodus_witness_v2_attendance_meets_bar` — the
-         * SAME shared predicate Rule N calls (nodus_witness_v2_epoch.c)
-         * — so a validator's payout and its ACTIVE-set membership are
-         * decided by the identical P1 (bar) && P2 (recency) test at the
-         * identical rate (decision §1 line 79's parenthetical "tek kural,
-         * iki tüketici"; §3's last entry, "settlement barının kendi
-         * formülü yerine Rule N'in yüklemini çağırması"). Before round 3
-         * this bar carried its OWN `signed * committee_count * 10000 >=
-         * EPOCH_LENGTH * BPS` formula, with `committee_count` — the size
-         * THIS epoch actually had, decoded from the committed snapshot —
-         * as a normalising factor left over from the retired PROPOSER-
-         * credit era (a proposer could only ever propose about
-         * E / committee_count blocks). Once attendance switched to
-         * signature counting that factor was never removed, so this
-         * bar's EFFECTIVE rate was ~11% while Rule N's was 80% — two
-         * different answers to one question. The shared predicate has no
-         * `× committee_count` term and needs none: `nodus_witness_v2_
-         * attendance_meets_bar` takes the BOUNDARY HEIGHT, not the
-         * settling epoch's start, because its P2 window is anchored to
-         * "now" (the boundary), not to the epoch that just ended;
-         * settlement always drains the epoch immediately BEFORE the
-         * boundary it runs at, so `settling_epoch_start +
-         * DNAC_EPOCH_LENGTH` names the SAME height Rule N's own `h`
-         * parameter already is.
-         *
-         * GENESIS CARVE-OUT — REMOVED (tokenomics-v3 P1 round 5, decision
-         * file §3 2026-09-23 "tek kural, iki tüketici"; O6 verifier V-2).
-         * V1's bft.c:3230-3236 exception was written for the retired
-         * PROPOSER-credit counter, which was genuinely zero at genesis
-         * for every honest validator regardless of real participation.
-         * That reason does not survive the switch to signature-based
-         * attendance: the writer credits from block 2
-         * (`nodus_witness_v2_attendance_credit`, a block at height H
-         * carries the commit FOR H-1), so epoch 0 has E-1 creditable
-         * commits — >= DNAC_LIVENESS_THRESHOLD_BPS for any E >= 4. Keeping
-         * the carve-out paid a genesis validator with ZERO real
-         * attendance while Rule N (which never carved out epoch 0)
-         * judged the SAME validator absent — two different answers to
-         * one question, exactly what "tek kural, iki tüketici" forbids.
-         * Epoch 0 now goes through the shared predicate like every other
-         * epoch. */
-        int present = 0;
-        {
-            const uint64_t boundary_height =
-                settling_epoch_start + (uint64_t)DNAC_EPOCH_LENGTH;
-            dnac_validator_record_t cur;
-            int vrc = nodus_validator_get(w, vpk, &cur);
-            if (vrc < 0) {
-                /* Divergence 2: V1's `== 0` else-absent (bft.c:3240)
-                 * turns an I/O error into a burn. Two nodes must not
-                 * disagree about a payout because one had a bad read. */
-                QGP_LOG_ERROR(LOG_TAG,
-                    "settlement of epoch %llu: committee member %u is "
-                    "unreadable — refusing rather than burning his share",
-                    (unsigned long long)settling_epoch_start,
-                    (unsigned)vi);
-                goto done;
-            }
-            if (vrc == 0) {
-                /* Block 2C — DNAC_EPOCH_LENGTH is proven equal to the
-                 * chain's COMMITTED epoch_length before this point:
-                 * nodus_witness_v2_emission_apply loads and checks the
-                 * band on every block, and a settlement is only ever
-                 * reached by a node that has been minting. A build that
-                 * disagreed halted long before it could compute a
-                 * liveness bar from the wrong denominator.
-                 *
-                 * tokenomics-v3 P1 (§C, round 3): the shared predicate
-                 * reads `v2_attendance` itself — `cur` above is read
-                 * ONLY to learn whether the member's validators row
-                 * still exists (vrc), unchanged. */
-                int meets = 0;
-                int mrc = nodus_witness_v2_attendance_meets_bar(
-                    w, vpk, boundary_height, &meets);
-                if (mrc != 0) {
-                    QGP_LOG_ERROR(LOG_TAG,
-                        "settlement of epoch %llu: committee member %u's "
-                        "attendance is unreadable — refusing rather than "
-                        "burning his share",
-                        (unsigned long long)settling_epoch_start,
-                        (unsigned)vi);
-                    goto done;
-                }
-                if (meets) present = 1;
-            }
-            /* vrc == 1: the row is gone (graduated out of existence).
-             * Not present — exactly V1's outcome for that case. */
-        }
-
-        if (!present) {
-            /* BURN LEG 2 of 3 — the offline member's whole slot
-             * (bft.c:3250). This is MINTED value that found no owner,
-             * which is why it must be burned and not merely skipped. */
-            total_burned_here += per_slot;
-            continue;
-        }
-
-        if (per_slot == 0) continue;      /* pool too small (bft.c:3254) */
-
-        if (total_delegated == 0 || deleg_count == 0) {
-            if (v2ec_emit(b, vpk, per_slot, tx_hash,
-                          NODUS_V2_SETTLE_KIND_VALIDATOR, out_idx++,
-                          settling_epoch_start) != 0)
-                goto done;
-            continue;
-        }
-
-        uint64_t total_stake = self_stake + total_delegated;
-        if (total_stake == 0) total_stake = 1;   /* defensive, bft.c:3277 */
-
-        /* u128 for the products: per_slot * self_stake can exceed 64 bits
-         * long before either factor does (bft.c:3280-3287). */
-        uint64_t rem = 0;
-        qgp_u128_t num = qgp_u128_mul_u64(qgp_u128_from_u64(per_slot),
-                                          self_stake);
-        uint64_t validator_base = qgp_u128_div_u64(num, total_stake,
-                                                   &rem).lo;
-        uint64_t delegator_gross = (per_slot > validator_base)
-                                   ? (per_slot - validator_base) : 0;
-
-        uint64_t commission = 0;
-        if (commission_bps > 0 && delegator_gross > 0) {
-            qgp_u128_t cn = qgp_u128_mul_u64(
-                qgp_u128_from_u64(delegator_gross),
-                (uint64_t)commission_bps);
-            commission = qgp_u128_div_u64(cn, 10000ULL, &rem).lo;
-            if (commission > delegator_gross) commission = delegator_gross;
-        }
-        uint64_t validator_total = validator_base + commission;
-        uint64_t delegator_net   = delegator_gross - commission;
-
-        /* Delegator shares, in the snapshot's own row order — which the
-         * ONE snapshot writer fixed at validator-then-delegator pubkey
-         * ASC (nodus_witness_epoch.c:327-344), so every node walks them
-         * identically. V1 first copies the matching rows into a scratch
-         * array (bft.c:2992-3013); scanning in place is the same walk in
-         * the same order without the copy. */
-        uint64_t distributed = 0;
-        for (uint32_t di = 0; di < deleg_count; di++) {
-            const uint8_t *drow = deleg_base + (size_t)di * V2EC_DEL_ROW;
-            if (memcmp(drow + DNAC_PUBKEY_SIZE, vpk, DNAC_PUBKEY_SIZE) != 0)
-                continue;
-            uint64_t d_amount = v2ec_be64(drow + 2 * DNAC_PUBKEY_SIZE);
-
-            qgp_u128_t sn = qgp_u128_mul_u64(
-                qgp_u128_from_u64(delegator_net), d_amount);
-            uint64_t share = qgp_u128_div_u64(sn, total_delegated, &rem).lo;
-            if (share == 0) continue;     /* bft.c:3308 */
-
-            if (v2ec_emit(b, drow, share, tx_hash,
-                          NODUS_V2_SETTLE_KIND_DELEGATOR, out_idx++,
-                          settling_epoch_start) != 0)
-                goto done;
-            distributed += share;
-        }
-        if (distributed > delegator_net) distributed = delegator_net;
-        /* BURN LEG 3 of 3 — what integer division left behind after the
-         * delegator shares (bft.c:3324-3326). */
-        total_burned_here += delegator_net - distributed;
-
-        if (validator_total > 0 &&
-            v2ec_emit(b, vpk, validator_total, tx_hash,
-                      NODUS_V2_SETTLE_KIND_VALIDATOR, out_idx++,
-                      settling_epoch_start) != 0)
+    for (size_t i = 0; i < n; i++) {
+        if (v2ec_emit(b, rows[i].fp, rows[i].amount, tx_hash,
+                      NODUS_V2_SETTLE_KIND_ACCRUAL,
+                      NODUS_V2_SETTLE_OUT_IDX_BASE + (uint32_t)i,
+                      boundary_height) != 0)
             goto done;
     }
-
     if (v2ec_flush(b) != 0) goto done;
+    if (fault && fault(fault_ud, NODUS_V2_EPST_PAYDAY_EMITTED, UINT32_MAX))
+        goto done;
+
+    /* Every paid row leaves the table; exactly the rows just read. */
+    if (sqlite3_prepare_v2(w->db, "DELETE FROM v2_reward_accrual",
+                           -1, &st, NULL) != SQLITE_OK)
+        goto done;
+    rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE || (size_t)sqlite3_changes(w->db) != n) {
+        QGP_LOG_ERROR(LOG_TAG, "payday at %llu: the accrual table did not "
+                      "empty as read (%zu rows) — refusing",
+                      (unsigned long long)boundary_height, n);
+        goto done;
+    }
+    if (fault && fault(fault_ud, NODUS_V2_EPST_PAYDAY_APPLIED, UINT32_MAX))
+        goto done;
+
+    QGP_LOG_DEBUG(LOG_TAG, "payday at %llu: %zu accrual rows paid",
+                  (unsigned long long)boundary_height, n);
     *n_utxos_out = b->emitted;
-    if (fault && fault(fault_ud, NODUS_V2_EPST_SETTLE_EMITTED, UINT32_MAX))
-        goto done;
-
-    /* THE ONE BURN CALL for all three legs (bft.c:3368-3370). V1 casts
-     * the return to void; divergence 2 checks it — an unrecorded burn is
-     * a supply equation that no longer closes. */
-    if (total_burned_here > 0) {
-        if (nodus_witness_supply_add_burned(w, total_burned_here,
-                                            tx_hash) != 0) {
-            QGP_LOG_ERROR(LOG_TAG,
-                "settlement of epoch %llu: recording the %llu burned "
-                "(dust + offline shares) failed",
-                (unsigned long long)settling_epoch_start,
-                (unsigned long long)total_burned_here);
-            goto done;
-        }
-        *burned_out = total_burned_here;
-    }
-
-    /* Retire the settled row (bft.c:3376). NOTE: the per-epoch
-     * signed-block counter reset that V1 performs just above that line
-     * (bft.c:3350-3360) is NOT repeated — divergence 3; the O15C Rule N
-     * transplant issues that exact UPDATE immediately after this
-     * function returns. */
-    {
-        int drc = nodus_witness_epoch_delete(w, settling_epoch_start);
-        if (drc != 0) {
-            QGP_LOG_ERROR(LOG_TAG,
-                "settlement of epoch %llu: retiring the epoch row failed "
-                "(rc=%d)", (unsigned long long)settling_epoch_start, drc);
-            goto done;
-        }
-    }
-
-    if (fault && fault(fault_ud, NODUS_V2_EPST_SETTLE_APPLIED, UINT32_MAX))
-        goto done;
-
-    QGP_LOG_DEBUG(LOG_TAG,
-        "epoch %llu settled: pool=%llu committee=%u per_slot=%llu "
-        "utxos=%u burned=%llu",
-        (unsigned long long)settling_epoch_start,
-        (unsigned long long)pool, (unsigned)committee_count,
-        (unsigned long long)per_slot, (unsigned)*n_utxos_out,
-        (unsigned long long)*burned_out);
     ret = 0;
 
 done:
     free(b);
-    nodus_witness_epoch_free(&es);
-    if (ret != 0) { *n_utxos_out = 0; *burned_out = 0; }
+    free(rows);
+    if (ret != 0) *n_utxos_out = 0;
     return ret;
 }

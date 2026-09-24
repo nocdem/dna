@@ -446,7 +446,8 @@ static int cfg_make_v3_real(cfgbox_t *b, uint64_t genesis_time_ms)
     c->epoch_length          = (uint64_t)DNAC_EPOCH_LENGTH;
     c->blocks_per_year       = (uint64_t)DNAC_BLOCKS_PER_YEAR;
     c->decimal_unit          = (uint64_t)DNAC_DECIMAL_UNIT;
-    c->inflation_start_block = 1ULL;
+    c->inflation_start_block = 0ULL;   /* tokenomics-v3 P2: RETIRED,
+                                        * the only legal value is 0 */
     c->claim_start_height    = 0;
     c->claim_end_height      = UINT64_MAX;
     c->n_validators          = (uint16_t)N_KEYS;
@@ -474,6 +475,12 @@ static int cfg_make_v3_real(cfgbox_t *b, uint64_t genesis_time_ms)
         cfg_free(b);
         return -1;
     }
+    /* tokenomics-v3 P2 (P2-1): Rule P.2 now counts the reward reserve
+     * (Σ allocs + Σ self_stake + reward_pool_initial == total). This
+     * fixture's allocation already spends the whole supply, and it is not
+     * a reward test — it reserves no pool (the reward path is
+     * test_v2_econ's and the harness's). */
+    c->reward_pool_initial = 0;
     c->genesis_time_ms = genesis_time_ms;
     c->initial_height  = 1;
     if (nodus_witness_v2_gen_v3_fill_comet_rows(c) != 0) {

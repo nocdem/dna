@@ -67,8 +67,27 @@ static const char *EMPTY_KAT[DNA_V2_EMPTY__COUNT] = {
     /* TOKENS */ "4098bc465307c3a6340c1374d020957372b82d4b670f5e2049b6a3fa13f9ade608eadcc34afe643079b6e4fcd890bab80f1b4582023e80c719bcffcf0ce093f3",
     /* EPOCH2 */ "e49a53f12820a8589744a67123cfcb9b7e75d8be9197c168b4caee2ed2804cb9a1aee49c9127cc8697fb93982e2d6c1e4ee720f8a75c31a9efc166744159d126",
     /* ATTND  */ "c917bcb22a2eef99ded15a92b70117d32a92996276f395ca3acbc8abfa17bcd66cda39856cc038582cc32f67e49ece48055434718ff5f4a94e95d1f6f60c0001",
+    /* ACCRU  */ "225010d99df0cb442e76fc02469f95922ecf182b07678887e00924bdf4ee3f99bb010b0c983b5e66b92b44e39c9fb74cdbe3b3d20578cfc0d94cc6fd9e6c4ea8",
 };
-static const char *KAT_SUPPLY       = "ef949407440c0a7adab9f6b0a0999e06074e57a4b2b04f7b1532cf2effb597f2e656e3f396f663a1b3d5237d6709165393ec076ddc5f47f35abe0de3b26e91b7";
+/* tokenomics-v3 P2 (P2-8) re-pin: the supply leaf gained reward_pool and
+ * the tag "DNA.SUPPLY.v2"; the CORE composition gained a 7th leg
+ * (accrual_root) and the tag "DNA.CORE.v2". SELF-CONSISTENT with
+ * shared/dnac/tests/ledger_roots_v2_accrual_oracle.py (same author, same
+ * day — see its PROVENANCE; not an external audit), which self-checks
+ * against the retired KAT_SUPPLY / 6-leg KAT_CORE values below before
+ * deriving the new ones. The values were computed by the executor with an
+ * independent inline python3 hashlib calculator, NOT by running that
+ * script; the ORCHESTRATOR runs the script to confirm.
+ * RETIRED (historical notes, not live vectors — a changed preimage is a
+ * new tag, never the same tag over different bytes):
+ *   KAT_SUPPLY "DNA.SUPPLY.v1" (1e17, 500, 300):
+ *     ef949407440c0a7adab9f6b0a0999e06074e57a4b2b04f7b1532cf2effb597f2e656e3f396f663a1b3d5237d6709165393ec076ddc5f47f35abe0de3b26e91b7
+ *   KAT_CORE 6-leg "DNA.CORE.v1" (fill 0xB0..0xB5):
+ *     ccaae1c6ced38cfd93a99f9a15f26c490c15fd343d18f9232116bab6d7ba1f7fc918b7a324b071cda8b6a556dbb89226da6082f9efc55aa2667659c2f4f8db3e */
+static const char *KAT_SUPPLY_V2    = "0054849ba0b8141bbfd6d42088bb93ec10fdae6024d113f2ca12ee600a08101a418555e0ddeb731abbdbbe42a94e67f522722bdc578a013ad3a3c7f0d89a11bb";
+static const char *KAT_ACC_LEAF     = "ce416c2f0fb6ae548afca3e2b8639d218d58535bfb6cbb8fe3f17e371fc83488a37a3ad7007c37426a40605cdbdd5abf36e7fa4c97332fa8d0777cb68b290fa2";
+static const char *KAT_ACC_ROOT_2   = "3f29e12e3f3d682b270f5ae70e79b47da0a6b282eae3bfe099715a1df7bc8a68eeb5ce99ddbd2817acb7e87a2213b01d5d58ccb0cc21d06a69db4e1460e3c715";
+static const char *KAT_ACC_ROOT_3   = "7cba36466f3e76be1ae037ec90b67067e6c8f397ce1b418a5dcce77cce022fd6ed999c664699d1eff13f12f7b6897fc2c2b0a417f287cda4c574ccdf3b292b51";
 static const char *KAT_TOKEN_LEAF_A = "29c4c9998ab9a29fe1a90bbcb021d743287ef733c03d896b67131d07cee9f9ef54347e2d2d64430814f900e804e298d86c085c051c8159d9e8fe471c5e720d47";
 static const char *KAT_TOKEN_ROOT   = "0b039f37cdf12fb0c30580bdd338246c393d9d434d686e9f21627152bf545efc8c88e4ddcaef74d0ebef915cbed1d293c45559ae84325e56cdd7d0f2e7bbb9d7";
 static const char *KAT_EPOCH_LEAF1  = "d8015bdc11119bed60d273b1c4089018513a29997765eac3d905b866264b237b20225f69f17060ab342eb557ca4bf1a79c1be7d5ab59dc42b99a92e45a31c468";
@@ -96,7 +115,7 @@ static const char *KAT_DOMAINS_3    = "823492dabf1bddd0b76b907d31233e4affeaf5b4f
  * one-line historical note, not as a live vector:
  *   5de7c65076b43e882f7cf814971dce313ce35d39573c5bf73f78b420c5611986f5c9bcfe01b0841af5c9ef6ae469ea00b96067c3ddbf888b5d947e40572d6e57 */
 static const char *KAT_SYSTEM_8LEG  = "ec9fc33017c755d6555a867c02b618b39fec4bea9e9740733561446e064e9b9e578691a670352277e14f021751da58e97b03fda0651ab7510500c3649ba22122";
-static const char *KAT_CORE         = "ccaae1c6ced38cfd93a99f9a15f26c490c15fd343d18f9232116bab6d7ba1f7fc918b7a324b071cda8b6a556dbb89226da6082f9efc55aa2667659c2f4f8db3e";
+static const char *KAT_CORE_7LEG    = "6316f2646cbe34ef0fc5c5d0487d62a9f72b4e58ccdbf40b5b7c3217210aeecd96d1fff0a313ed25434f0ca0990aa98791e4787ff4546a4d57d948b8f326c765";
 static const char *KAT_GLOBAL       = "0c0d2fce1984bf15c2e5841eeef72a067aefe4cdf8790a713332f09326393f79185dc7277f3d403a6f9d47fbfc68b049ddb117a654f2da59e0e4218e45f7e681";
 /* ── tokenomics-v3 P1 (D-4, S-2) — attendance leg, SELF-CONSISTENT with
  * shared/dnac/tests/ledger_roots_v2_attendance_oracle.py (same author,
@@ -161,10 +180,52 @@ static int test_shared_layer(void) {
 
     /* supply_root KAT + single-commitment-point proof: the v2 epoch leaf
      * takes NO supply inputs, so different counters change ONLY supply_root. */
-    CHECK(dna_v2_supply_root(100000000000000000ULL, 500, 300, h) == 0, "supply");
-    CHECK(hex_eq(h, KAT_SUPPLY, "supply"), "supply KAT"); OK();
-    CHECK(dna_v2_supply_root(100000000000000000ULL, 501, 300, h2) == 0 &&
+    CHECK(dna_v2_supply_root(100000000000000000ULL, 500, 300, 400, h) == 0,
+          "supply");
+    CHECK(hex_eq(h, KAT_SUPPLY_V2, "supply"), "supply KAT"); OK();
+    CHECK(dna_v2_supply_root(100000000000000000ULL, 501, 300, 400, h2) == 0 &&
           memcmp(h, h2, 64) != 0, "minted not bound in supply_root"); OK();
+    /* tokenomics-v3 P2 (P2-8): the reward pool is bound too. */
+    CHECK(dna_v2_supply_root(100000000000000000ULL, 500, 300, 401, h2) == 0 &&
+          memcmp(h, h2, 64) != 0, "reward_pool not bound in supply_root");
+    OK();
+    /* tokenomics-v3 P2 (P2-8): the accrual leg — leaf KAT, n==1 == leaf,
+     * two- and three-row roots (the odd third node PROMOTED), order and
+     * duplicate rejection, n==0 == tagged empty. */
+    {
+        uint8_t fps[3][64], acc_root[64], leaf[64];
+        uint64_t amts[3] = { 12345, 67890, 1 };
+        fill(fps[0], 64, 0x11);
+        fill(fps[1], 64, 0x22);
+        fill(fps[2], 64, 0x33);
+        CHECK(dna_v2_accrual_leaf_hash(fps[0], amts[0], leaf) == 0 &&
+              hex_eq(leaf, KAT_ACC_LEAF, "acc leaf"), "acc leaf KAT"); OK();
+        CHECK(dna_v2_accrual_root((const uint8_t (*)[64])fps, amts, 1,
+                                  acc_root) == 0 &&
+              memcmp(acc_root, leaf, 64) == 0, "acc root n==1 != leaf"); OK();
+        CHECK(dna_v2_accrual_root((const uint8_t (*)[64])fps, amts, 2,
+                                  acc_root) == 0 &&
+              hex_eq(acc_root, KAT_ACC_ROOT_2, "acc root 2"),
+              "acc root n==2 KAT"); OK();
+        CHECK(dna_v2_accrual_root((const uint8_t (*)[64])fps, amts, 3,
+                                  acc_root) == 0 &&
+              hex_eq(acc_root, KAT_ACC_ROOT_3, "acc root 3"),
+              "acc root n==3 KAT"); OK();
+        CHECK(dna_v2_accrual_root(NULL, NULL, 0, acc_root) == 0 &&
+              hex_eq(acc_root, EMPTY_KAT[DNA_V2_EMPTY_ACCRUAL],
+                     "acc root n0"), "acc root n==0 KAT"); OK();
+        uint8_t swapped[2][64];
+        uint64_t samts[2] = { amts[1], amts[0] };
+        memcpy(swapped[0], fps[1], 64);
+        memcpy(swapped[1], fps[0], 64);
+        CHECK(dna_v2_accrual_root((const uint8_t (*)[64])swapped, samts, 2,
+                                  acc_root) != 0,
+              "descending owner_fp accepted"); OK();
+        memcpy(swapped[1], fps[1], 64);
+        CHECK(dna_v2_accrual_root((const uint8_t (*)[64])swapped, samts, 2,
+                                  acc_root) != 0,
+              "duplicate owner_fp accepted"); OK();
+    }
     {
         uint8_t snap[64], e1[64], e1b[64];
         fill(snap, 64, 0x40);
@@ -333,9 +394,10 @@ static int test_shared_layer(void) {
 
     /* Composition KATs + full subroot mutation sweep. SYSTEM = 8 legs
      * (validator/delegation/epoch/chain_config/vset/domreg/manifest/
-     * attendance — tokenomics-v3 P1, D-4); CORE = 6 legs
-     * (utxo/token/pools/claims/names/SUPPLY — native issuance is CORE's
-     * own asset commitment). */
+     * attendance — tokenomics-v3 P1, D-4); CORE = 7 legs
+     * (utxo/token/pools/claims/names/SUPPLY/ACCRUAL — native issuance is
+     * CORE's own asset commitment; the accrual leg and "DNA.CORE.v2" are
+     * tokenomics-v3 P2, P2-8). */
     {
         uint8_t legs[8][64];
         for (int i = 0; i < 8; i++) fill(legs[i], 64, (uint8_t)(0x90 + i));
@@ -350,15 +412,15 @@ static int test_shared_layer(void) {
                   "system leg not bound"); OK();
             legs[i][0] ^= 1;
         }
-        uint8_t cl[6][64];
-        for (int i = 0; i < 6; i++) fill(cl[i], 64, (uint8_t)(0xB0 + i));
+        uint8_t cl[7][64];
+        for (int i = 0; i < 7; i++) fill(cl[i], 64, (uint8_t)(0xB0 + i));
         CHECK(dna_v2_core_root(cl[0], cl[1], cl[2], cl[3], cl[4], cl[5],
-                               h) == 0, "core");
-        CHECK(hex_eq(h, KAT_CORE, "core"), "core KAT"); OK();
-        for (int i = 0; i < 6; i++) {
+                               cl[6], h) == 0, "core");
+        CHECK(hex_eq(h, KAT_CORE_7LEG, "core"), "core KAT"); OK();
+        for (int i = 0; i < 7; i++) {
             cl[i][0] ^= 1;
             CHECK(dna_v2_core_root(cl[0], cl[1], cl[2], cl[3], cl[4],
-                                   cl[5], h2) == 0
+                                   cl[5], cl[6], h2) == 0
                   && memcmp(h, h2, 64) != 0, "core leg not bound"); OK();
             cl[i][0] ^= 1;
         }
@@ -446,7 +508,15 @@ static const char *SCHEMA_SQL =
      * Registry-bearing coverage lives in test_domreg.c. */
     "CREATE TABLE IF NOT EXISTS domain_registry ("
     "  domain_id INTEGER PRIMARY KEY, record BLOB NOT NULL,"
-    "  current_manifest BLOB NOT NULL, pending_manifest BLOB);";
+    "  current_manifest BLOB NOT NULL, pending_manifest BLOB);"
+    /* tokenomics-v3 P2 (P2-8): the accrual leg is FAIL-CLOSED on an
+     * absent table (nodus_witness_roots_v2.c nodus_witness_accrual_root_v2
+     * — the table is in WITNESS_DB_SCHEMA and the S16 rung, so absence is
+     * a fault there). This hand-written schema must therefore carry it,
+     * as production's does; left EMPTY here, it yields the tagged
+     * DNA_V2_EMPTY_ACCRUAL root. */
+    "CREATE TABLE IF NOT EXISTS v2_reward_accrual ("
+    "  owner_fp BLOB PRIMARY KEY, amount INTEGER NOT NULL);";
 
 static int setup_w(nodus_witness_t **w_out) {
     nodus_witness_t *w = calloc(1, sizeof(*w));   /* multi-MB: heap-alloc */
@@ -537,7 +607,9 @@ static int populate_fixture(nodus_witness_t *w, int reversed,
     /* Supply row via the production initializer (creates supply_tracking). */
     uint8_t gh[64];
     fill(gh, 64, 0x77);
-    if (nodus_witness_supply_init(w, 100000000000000000ULL, gh) != 0)
+    /* tokenomics-v3 P2: reward pool 0 — the fixture's supply leaf then
+     * hashes (1e17, 0, 0, 0). */
+    if (nodus_witness_supply_init(w, 100000000000000000ULL, 0, gh) != 0)
         return -1;
     return 0;
 }
@@ -564,12 +636,61 @@ static int test_loaders(void) {
     CHECK(hex_eq(h, KAT_EPOCH_LEAF1, "db epoch root (1 leaf)"),
           "db epoch KAT"); OK();
 
-    /* Supply root from DB (init writes genesis=1e17, minted=0, burned=0). */
+    /* Supply root from DB (init writes genesis=1e17, minted=0, burned=0,
+     * reward_pool=0). */
     {
         uint8_t expect[64];
         CHECK(nodus_witness_supply_root_v2(wa, h) == 0, "supply root");
-        CHECK(dna_v2_supply_root(100000000000000000ULL, 0, 0, expect) == 0 &&
+        CHECK(dna_v2_supply_root(100000000000000000ULL, 0, 0, 0,
+                                 expect) == 0 &&
               memcmp(h, expect, 64) == 0, "db supply root mismatch"); OK();
+    }
+    /* tokenomics-v3 P2 (P2-8): the reward pool is IN the supply leaf —
+     * moving it moves the CORE root and NOT the SYSTEM root. KILLED BY:
+     * dropping reward_pool from dna_v2_supply_root's preimage or from
+     * nodus_witness_supply_root_v2's call. */
+    {
+        uint8_t sys0[64], core0[64], sys1[64], core1[64];
+        CHECK(nodus_witness_system_root_v2(wa, sys0) == 0 &&
+              nodus_witness_core_root_v2(wa, core0) == 0, "roots pre-pool");
+        CHECK(run_sql(wa->db,
+              "UPDATE supply_tracking SET reward_pool = reward_pool + 11")
+                  == 0, "pool mutation");
+        CHECK(nodus_witness_system_root_v2(wa, sys1) == 0 &&
+              nodus_witness_core_root_v2(wa, core1) == 0, "roots post-pool");
+        CHECK(memcmp(core0, core1, 64) != 0,
+              "a reward-pool move must change the CORE root"); OK();
+        CHECK(memcmp(sys0, sys1, 64) == 0,
+              "a reward-pool move must NOT change the SYSTEM root"); OK();
+        CHECK(run_sql(wa->db,
+              "UPDATE supply_tracking SET reward_pool = reward_pool - 11")
+                  == 0, "pool restore");
+    }
+    /* tokenomics-v3 P2 (P2-8): the accrual leg — an empty table is the
+     * tagged empty root, a row moves the CORE root, a malformed row
+     * (amount 0) FAILS it. KILLED BY: dropping accrual_root from the
+     * CORE composition; skipping instead of failing on a bad row. */
+    {
+        uint8_t acc[64], empty[64], core0[64], core1[64];
+        CHECK(nodus_witness_accrual_root_v2(wa, acc) == 0 &&
+              dna_v2_empty_root(DNA_V2_EMPTY_ACCRUAL, empty) == 0 &&
+              memcmp(acc, empty, 64) == 0,
+              "empty accrual table must be the tagged empty root"); OK();
+        CHECK(nodus_witness_core_root_v2(wa, core0) == 0, "core pre-acc");
+        char sql[256];
+        snprintf(sql, sizeof(sql),
+                 "INSERT INTO v2_reward_accrual (owner_fp, amount) "
+                 "VALUES (zeroblob(64), 5)");
+        CHECK(run_sql(wa->db, sql) == 0, "accrual insert");
+        CHECK(nodus_witness_core_root_v2(wa, core1) == 0 &&
+              memcmp(core0, core1, 64) != 0,
+              "an accrual row must change the CORE root"); OK();
+        CHECK(run_sql(wa->db, "UPDATE v2_reward_accrual SET amount = 0")
+                  == 0, "zero the accrual");
+        CHECK(nodus_witness_accrual_root_v2(wa, acc) != 0,
+              "a zero-amount accrual row must FAIL the root"); OK();
+        CHECK(run_sql(wa->db, "DELETE FROM v2_reward_accrual") == 0,
+              "accrual cleanup");
     }
 
     /* SUPPLY OWNERSHIP (locked correction): mutating native issuance

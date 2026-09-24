@@ -29,9 +29,18 @@
  *                                   preimage is never hashed under the
  *                                   old tag; "DNA.SYS.v1" is HISTORY,
  *                                   the 7-leg composition before P1)
- *                 "DNA.CORE.v1"     core_state_root
+ *                 "DNA.CORE.v2"     core_state_root (tokenomics-v3 P2
+ *                                   added the accrual_root leg — a
+ *                                   changed preimage is never hashed
+ *                                   under the old tag; "DNA.CORE.v1" is
+ *                                   HISTORY, the 6-leg composition
+ *                                   before P2)
  *                 "DNA.GLOBAL.v1"   global_state_root
- *   supply        "DNA.SUPPLY.v1"   supply_root (leafless single hash)
+ *   supply        "DNA.SUPPLY.v2"   supply_root (leafless single hash;
+ *                                   P2 added reward_pool — "DNA.SUPPLY.v1"
+ *                                   is HISTORY, the 3-counter preimage)
+ *   accrual (P2)  "DNA.ACLEAF.v1"   reward-accrual leaf
+ *                 "DNA.ACNODE.v1"   reward-accrual Merkle inner node
  *   tokens        "DNA.TOKLEAF.v1"  token leaf
  *                 "DNA.TOKNODE.v1"  token Merkle inner node
  *   epoch (v2)    "DNA.EPOCH.v2"    epoch leaf (NO supply counters)
@@ -53,6 +62,8 @@
  *                 "DNA.E.EPOCH.v2"  epoch_root_v2 of an EMPTY epoch table
  *                 "DNA.E.ATTND.v1"  attendance_root of an EMPTY
  *                                   v2_attendance_epoch table (P1)
+ *                 "DNA.E.ACCRU.v1"  accrual_root of an EMPTY
+ *                                   v2_reward_accrual table (P2)
  *   (domains_root has NO empty tag: SYSTEM must always be present — an
  *    empty domain list is a hard error, not an empty tree.)
  *
@@ -68,12 +79,27 @@
  *     below is UNCHANGED (5 legs, its own tag) — attendance is a
  *     container-lifetime leg like domreg/manifest, empty at genesis, so
  *     the genesis payload derivation does not change shape.
- *   core_state_root   = SHA3-512("DNA.CORE.v1" ‖ utxo_root[64]
+ *   core_state_root   = SHA3-512("DNA.CORE.v2" ‖ utxo_root[64]
  *       ‖ token_root[64] ‖ pools_root[64] ‖ claims_root[64]
- *       ‖ name_root[64] ‖ supply_root[64])
+ *       ‖ name_root[64] ‖ supply_root[64] ‖ accrual_root[64])
+ *     tokenomics-v3 P2 (design §7 P2-8): the 7th leg `accrual_root`
+ *     (the per-recipient reward accrual, v2_reward_accrual) and a NEW
+ *     composition tag ("DNA.CORE.v1" -> "DNA.CORE.v2").
  *   global_state_root = SHA3-512("DNA.GLOBAL.v1" ‖ domains_root[64])
- *   supply_root       = SHA3-512("DNA.SUPPLY.v1" ‖ genesis_supply_raw(8 BE)
- *       ‖ total_minted_raw(8 BE) ‖ total_burned_raw(8 BE))
+ *   supply_root       = SHA3-512("DNA.SUPPLY.v2" ‖ genesis_supply_raw(8 BE)
+ *       ‖ total_minted_raw(8 BE) ‖ total_burned_raw(8 BE)
+ *       ‖ reward_pool_raw(8 BE))
+ *     tokenomics-v3 P2 (design §7 P2-8, "supply yaprağı reward_pool
+ *     alanını içerir"): the reward pool is a committed counter of the
+ *     native asset exactly like the three before it, so it joins THIS
+ *     leaf rather than a leg of its own; the tag moves to "v2" because
+ *     the preimage changed.
+ *   accrual leaf (P2) = SHA3-512("DNA.ACLEAF.v1" ‖ owner_fp[64]
+ *       ‖ amount(8 BE))   — one per `v2_reward_accrual` row, owner_fp
+ *       = the recipient's raw 64-byte SHA3-512(pubkey).
+ *   accrual_root (P2) = tagged Merkle over the accrual leaves, STRICTLY
+ *       ascending owner_fp (duplicates reject), inner "DNA.ACNODE.v1",
+ *       n == 0 -> DNA_V2_EMPTY_ACCRUAL.
  *
  *   SUPPLY OWNERSHIP (genericity correction, locked): the native DNAC
  *   issuance counters (genesis/minted/burned) are the NATIVE ASSET's
@@ -156,6 +182,8 @@ typedef enum {
     DNA_V2_EMPTY_EPOCH_V2,     /* empty epoch table          */
     /* tokenomics-v3 P1 (D-4, S-2) — APPENDED. */
     DNA_V2_EMPTY_ATTENDANCE,   /* empty v2_attendance_epoch  */
+    /* tokenomics-v3 P2 (P2-8) — APPENDED. */
+    DNA_V2_EMPTY_ACCRUAL,      /* empty v2_reward_accrual    */
     DNA_V2_EMPTY__COUNT
 } dna_v2_empty_kind_t;
 
@@ -163,10 +191,36 @@ typedef enum {
 int dna_v2_empty_root(dna_v2_empty_kind_t kind, uint8_t out[DNA_V2_ROOT_LEN]);
 
 /* ── supply_root ────────────────────────────────────────────────────── */
+/** tokenomics-v3 P2: gained `reward_pool_raw` and the tag "DNA.SUPPLY.v2"
+ *  (was "DNA.SUPPLY.v1" over the three counters). */
 int dna_v2_supply_root(uint64_t genesis_supply_raw,
                        uint64_t total_minted_raw,
                        uint64_t total_burned_raw,
+                       uint64_t reward_pool_raw,
                        uint8_t out[DNA_V2_ROOT_LEN]);
+
+/* ── accrual_root (tokenomics-v3 P2, P2-8) ─────────────────────────────
+ * The per-recipient reward accrual (`v2_reward_accrual`): what each
+ * owner has earned at past epoch boundaries and not yet been paid. A leg
+ * of core_state_root. */
+
+/** leaf = SHA3-512("DNA.ACLEAF.v1" ‖ owner_fp[64] ‖ amount(8 BE)).
+ *  @return 0 / -1. */
+int dna_v2_accrual_leaf_hash(const uint8_t owner_fp[DNA_V2_ROOT_LEN],
+                             uint64_t amount,
+                             uint8_t out[DNA_V2_ROOT_LEN]);
+
+/**
+ * accrual_root over `v2_reward_accrual` rows, STRICTLY ASCENDING owner_fp
+ * (byte-lexicographic; equal or descending neighbours reject — insertion
+ * order can never reach the root); inner = SHA3-512("DNA.ACNODE.v1" ‖
+ * left ‖ right); odd node promoted; n == 1 the single leaf; n == 0 ->
+ * DNA_V2_EMPTY_ACCRUAL.
+ * @return 0 / -1 (NULL, bad order, allocation or digest failure).
+ */
+int dna_v2_accrual_root(const uint8_t (*owner_fps)[DNA_V2_ROOT_LEN],
+                        const uint64_t *amounts, size_t n,
+                        uint8_t out[DNA_V2_ROOT_LEN]);
 
 /* ── token_root ─────────────────────────────────────────────────────── */
 #define DNA_V2_TOKEN_ID_LEN   64
@@ -327,12 +381,15 @@ int dna_v2_system_root(const uint8_t validator_root[64],
                        const uint8_t attendance_root[64],
                        uint8_t out[DNA_V2_ROOT_LEN]);
 
+/** tokenomics-v3 P2 (P2-8): gained the 7th leg `accrual_root` and a new
+ *  composition tag "DNA.CORE.v2" (was "DNA.CORE.v1"). */
 int dna_v2_core_root(const uint8_t utxo_root[64],
                      const uint8_t token_root[64],
                      const uint8_t pools_root[64],
                      const uint8_t claims_root[64],
                      const uint8_t name_root[64],
                      const uint8_t supply_root[64],
+                     const uint8_t accrual_root[64],
                      uint8_t out[DNA_V2_ROOT_LEN]);
 
 int dna_v2_global_root(const uint8_t domains_root[64],

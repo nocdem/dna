@@ -1340,11 +1340,13 @@ static int test_boundary_chain(void) {
          * ⚠ The stated cause was CORRECTED by review R2-F10. This
          * comment used to say the narrowing was needed because "the
          * boundary now also SETTLES ... into payout UTXOs, so a
-         * whole-table count would grow". That CANNOT HAPPEN IN THIS
-         * FILE: main sets v2x_inflation_off = 1, so no pool ever
-         * accrues and settlement is a permanent no-op here. The
-         * narrowing is still right — it says what the assertion always
-         * meant — but it is a PRECISION fix, not a repair of a break.
+         * whole-table count would grow". Since tokenomics-v3 P2 no
+         * boundary writes a payout UTXO except a PAYDAY (every 24th
+         * epoch on these document-less fixtures, P2-7), which this
+         * section never reaches, and every fixture here seeds an empty
+         * reward pool. The narrowing is still right — it says what the
+         * assertion always meant — but it is a PRECISION fix, not a
+         * repair of a break.
          *
          * The claim being made here is about the RETIRING scan, and
          * index 200 is exactly the graduation's own slot
@@ -4120,12 +4122,12 @@ int main(void) {
     printf("=== Ledger V2 O12 S2/S3 — epoch boundary + snapshot "
            "authority ===\n");
     printf("(INACTIVE: no live consensus path calls this module)\n");
-    /* O15J Faz 2 — this file pins per-block DomainUpdate counts and
-     * whole-table row counts across boundaries. Emission makes every
-     * block produce a SYSTEM and a CORE update, so those counts change
-     * for a reason unrelated to what the file tests. Quiet chain;
-     * emission and settlement are covered by test_v2_econ. */
-    v2x_inflation_off = 1;
+    /* This file pins per-block DomainUpdate counts and whole-table row
+     * counts across boundaries. tokenomics-v3 P2 deleted the per-block
+     * mint, so every chain is quiet (the O15J `v2x_inflation_off` switch
+     * is gone); the reward distribution pays nothing here because these
+     * fixtures reserve no reward pool (v2x_genesis_min seeds pool 0).
+     * The distribution and the payday are covered by test_v2_econ. */
     keys_init();
 
     /* S2 — the engine-mandatory boundary transition */

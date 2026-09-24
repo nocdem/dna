@@ -24,13 +24,12 @@
  * The refusal matrix below (foreign chain id in the T3 HEADER — the
  * envelope wire carries no chain id, see nodus_chain_config.h's handler
  * note; non-member, wrong auth_kind, nonzero fee, TARGET_ACTIVE_COUNT
- * above the V2 ceiling, effective below the grace floor, INFLATION_START
- * moved past the candidate height while a start is set, the
- * per-proposer rate limit) each drives ONE call and checks `ok == false`
- * plus a specific `reason` substring — never a signature. "valid_before
- * already past" is NOT in the matrix (HOW IT CAN LIE 1b). The INFLATION
- * pair (ORC-6) also has a POSITIVE case: a chain born with inflation OFF
- * signs a proposal to start it at a future height.
+ * above the V2 ceiling, effective below the grace floor, the RETIRED
+ * INFLATION_START parameter (tokenomics-v3 P2 — it replaces the ORC-6
+ * monotonicity pair), the per-proposer rate limit) each drives ONE call
+ * and checks `ok == false` plus a specific `reason` substring — never a
+ * signature. "valid_before already past" is NOT in the matrix (HOW IT
+ * CAN LIE 1b).
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: none beyond a default build. Environment: none. SQLite
@@ -182,14 +181,10 @@ static void cfg_free(cfgbox_t *b) {
     if (b) { free(b->cfg); free(b->allocs); memset(b, 0, sizeof(*b)); }
 }
 
-/* The genesis INFLATION_START_BLOCK the fixture seeds (param 3 at
- * effective 0, nodus_witness_v2_gen.c's econ rows). 1 = inflation from
- * the first block, the file's default; 0 = inflation OFF — the value the
- * Genesis Protocol harness seeds (stagef_up_v2.sh "inflation_start_block
- * = 0"), which is what the two t_inflation_start_* cases need
- * (ORCHESTRATOR correction W4-CC ORC-6). */
-static uint64_t g_cfg_inflation_start = 1ULL;
-
+/* tokenomics-v3 P2 (P2-4): the genesis INFLATION_START_BLOCK is RETIRED
+ * — its only legal value is 0 and it is no longer committed as a param-3
+ * row — so the `g_cfg_inflation_start` switch the two ORC-6 cases used
+ * to flip is gone with them (see t_inflation_start_retired_refused). */
 static int cfg_make_v3_real(cfgbox_t *b) {
     nodus_v2_gen_config_t *c;
     memset(b, 0, sizeof(*b));
@@ -202,7 +197,7 @@ static int cfg_make_v3_real(cfgbox_t *b) {
     c->epoch_length          = (uint64_t)DNAC_EPOCH_LENGTH;
     c->blocks_per_year       = (uint64_t)DNAC_BLOCKS_PER_YEAR;
     c->decimal_unit          = (uint64_t)DNAC_DECIMAL_UNIT;
-    c->inflation_start_block = g_cfg_inflation_start;
+    c->inflation_start_block = 0ULL;   /* tokenomics-v3 P2: RETIRED */
     c->claim_start_height    = 0;
     c->claim_end_height      = UINT64_MAX;
     c->n_validators          = (uint16_t)N_KEYS;
@@ -232,6 +227,10 @@ static int cfg_make_v3_real(cfgbox_t *b) {
     c->allocs   = b->allocs;
 
     if (nodus_witness_v2_gen_v3_defaults(c) != 0) { cfg_free(b); return -1; }
+    /* tokenomics-v3 P2 (P2-1): Rule P.2 now counts the reward reserve;
+     * this fixture's allocation spends the whole supply and it is not a
+     * reward test — no pool reserved. */
+    c->reward_pool_initial = 0;
     c->genesis_time_ms = GEN_TIME_MS;
     c->initial_height  = 1;
     if (nodus_witness_v2_gen_v3_fill_comet_rows(c) != 0) { cfg_free(b); return -1; }
@@ -819,82 +818,23 @@ static int t_effective_below_floor(void) {
  * fixture without first advancing the chain past height 1, which this
  * file's fixture does not do. A real gap, not a substitute. */
 
-/* ORCHESTRATOR correction (W4-CC ORC-6) — INFLATION_START_BLOCK
- * monotonicity must be judged the way the EXEC HOOK judges it: "a start
- * is already set" = the latest NONZERO history row by commit_block
- * (SYSTEM adapter op 3, nodus_witness_rt_native.c RTN_SYS_OP_CCLATEST),
- * not "the row active at h". On a chain born with inflation OFF (the
- * harness's genesis seeds param 3 = 0 at effective 0) the two differ:
- * the exec hook sees NO start and applies a proposal to begin inflation
- * at a future height; the first responder draft read the zero row as an
- * active override and refused "cannot move ... past the candidate
- * height" — a governance action the chain accepts, blocked at
- * collection. RED on the writer's read (this case failed with exactly
- * that reason), GREEN after the responder issues the adapter's SELECT. */
-static int t_inflation_start_from_off_signs(void) {
-    gfx_t  g;
-    loop_t lp;
-    dna_env_preflight_t pf1;
-    pre_env_t env;
-    uint64_t tip = 0;
-
-    g_cfg_inflation_start = 0ULL;              /* inflation OFF at genesis */
-    int orc = gfx_open(&g, "inflfromoff");
-    g_cfg_inflation_start = 1ULL;              /* restore for later cases  */
-    CHECK(orc == 0, "version-3 fixture with inflation off");
-    CHECK(loop_open(&lp) == 0, "loopback conn");
-    CHECK(nodus_witness_v2_tip_height(g.w, &tip) == 0, "tip height");
-    /* the seeded row IS there and IS zero — the premise of the case */
-    {
-        sqlite3_stmt *st = NULL;
-        int64_t seeded = -1;
-        CHECK(sqlite3_prepare_v2(g.w->db,
-                "SELECT new_value FROM chain_config_history "
-                "WHERE param_id = 3 AND effective_block = 0",
-                -1, &st, NULL) == SQLITE_OK, "prepare");
-        if (sqlite3_step(st) == SQLITE_ROW) seeded = sqlite3_column_int64(st, 0);
-        sqlite3_finalize(st);
-        CHECK(seeded == 0, "genesis seeded INFLATION_START_BLOCK = 0 (off)");
-    }
-    /* start inflation at a FUTURE height: new_value = h + 5000 > h. The
-     * exec hook accepts this (no nonzero start exists yet). */
-    CHECK(pre_env_build(g.w, tip, 5, DNAC_CFG_INFLATION_START_BLOCK,
-                        tip + 1 + 5000, tip + 1 + 200000, tip + 1 + 300000, 0,
-                        NODUS_RT_AUTHKIND_DSA87_CC_V1, &env, &pf1) == 0,
-          "pass-1 build");
-    {
-        uint8_t *p = env.auth;
-        p[0] = 1;
-        memcpy(p + 1, g_ks[0].pk, DNAC_PUBKEY_SIZE);
-        size_t sl = 0;
-        CHECK(qgp_dsa87_sign(p + 1 + DNAC_PUBKEY_SIZE, &sl, pf1.auth_digest[0],
-                             64, g_ks[0].sk) == 0, "submitter sign");
-        p += 1 + NODUS_RT_AUTH_SIGNER_LEN;
-        p[0] = 0; p[1] = 5;
-    }
-    bind_identity(&g, 0);
-    nodus_t3_cc_appr_rsp_t rsp;
-    memset(&rsp, 0, sizeof(rsp));
-    CHECK(ask(&g, &lp, g.chain32, g_ks[0].voter, env.bytes, env.len,
-             &rsp) == 0, "ask");
-    CHECK(rsp.ok, rsp.ok ? "signed" : rsp.reason);
-
-    pre_env_free(&env);
-    loop_close(&lp);
-    gfx_close(&g);
-    return 0;
-}
-
-/* The control for the case above: with a NONZERO start already set (the
- * file's default fixture seeds 1) the monotonic rule DOES bite — a
- * proposal to move the start past the candidate height is refused with
- * the exec hook's own reason. Pins that the adapter-shaped SELECT still
- * finds a set start. */
-static int t_inflation_start_past_candidate_refused(void) {
-    return refusal_case("inflpast", 0, NULL, 5, DNAC_CFG_INFLATION_START_BLOCK,
-                        1 + 5000 /* > h == 1 */, 1 + 200000, 1 + 300000, 0,
+/* tokenomics-v3 P2 (P2-4) — INFLATION_START_BLOCK (param id 3) is
+ * RETIRED, exactly as MAX_TXS_PER_BLOCK (id 1) was: the responder's
+ * scalar-rules gate refuses ANY param-3 proposal, whatever its value —
+ * here the very "start inflation at a future height" proposal the ORC-6
+ * pair used to accept on a chain born with inflation off. The two ORC-6
+ * cases (t_inflation_start_from_off_signs, a POSITIVE case, and its
+ * monotonicity control t_inflation_start_past_candidate_refused) are
+ * DELETED with the rule they pinned: the monotonicity check and the
+ * SYSTEM adapter's op 3 it read are gone, and a genesis no longer seeds a
+ * param-3 row. RED on the pre-P2 tree: the responder signed this
+ * proposal (the exact ORC-6 positive case). */
+static int t_inflation_start_retired_refused(void) {
+    return refusal_case("inflretired", 0, NULL, 5,
+                        DNAC_CFG_INFLATION_START_BLOCK,
+                        1 + 5000, 1 + 200000, 1 + 300000, 0,
                         NODUS_RT_AUTHKIND_DSA87_CC_V1,
-                        "past the candidate height") == 0 ? 0 : 1;
+                        "scalar rules rejected") == 0 ? 0 : 1;
 }
 
 /* The per-proposer rate limit (unchanged, nodus_cc_rate_limit_check):
@@ -955,9 +895,8 @@ int main(void) {
         { "nonzero_fee",                t_nonzero_fee },
         { "target_above_ceiling",       t_target_above_ceiling },
         { "effective_below_floor",      t_effective_below_floor },
-        { "inflation_start_from_off_signs", t_inflation_start_from_off_signs },
-        { "inflation_start_past_candidate_refused",
-                                        t_inflation_start_past_candidate_refused },
+        { "inflation_start_retired_refused",
+                                        t_inflation_start_retired_refused },
         { "rate_limited_second_request", t_rate_limited_second_request },
     };
     size_t failed = 0, ncases = sizeof(cases) / sizeof(cases[0]);

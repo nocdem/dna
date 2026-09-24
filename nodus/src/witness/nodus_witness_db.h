@@ -297,12 +297,38 @@ int  nodus_witness_genesis_get(nodus_witness_t *w,
 typedef struct {
     uint64_t    genesis_supply;
     uint64_t    total_burned;
-    uint64_t    total_minted;    /* v0.16 stage B.2 — cumulative inflation mint */
+    uint64_t    total_minted;    /* v0.16 stage B.2 — cumulative inflation
+                                  * mint. tokenomics-v3 P2: NOTHING writes
+                                  * it any more (decision §1 "Yeni token
+                                  * basılmayacak"); it reads 0 on every
+                                  * chain this build derives and stays in
+                                  * the supply leaf and the equation as a
+                                  * term that is always 0. */
     uint64_t    current_supply;
     uint64_t    last_sequence;
+    uint64_t    reward_pool;     /* tokenomics-v3 P2 (P2-1): the reward
+                                  * reserve. Seeded at genesis with the
+                                  * document's reward_pool_initial, grows
+                                  * by every transaction fee, shrinks only
+                                  * by the epoch distribution. */
 } nodus_witness_supply_t;
 
+/**
+ * Create the singleton supply_tracking row (id = 1).
+ *
+ * tokenomics-v3 P2 (P2-1): `reward_pool` is the genesis reward reserve
+ * (the version-3 document's `reward_pool_initial`; 0 for every chain that
+ * has none). It is part of `genesis_supply` — total_supply is FIXED and
+ * the reserve is carved out of it, never added to it — so the row starts
+ * with genesis_supply = current_supply = total_supply and reward_pool =
+ * `reward_pool`, and the caller guarantees reward_pool <= total_supply
+ * (the genesis Rule P.2, nodus_witness_v2_gen.c).
+ *
+ * @return 0 created; -2 a row already exists (untouched); -1 fault or
+ *         reward_pool > total_supply.
+ */
 int  nodus_witness_supply_init(nodus_witness_t *w, uint64_t total_supply,
+                                 uint64_t reward_pool,
                                  const uint8_t *genesis_tx_hash);
 
 /**
@@ -326,16 +352,13 @@ int  nodus_witness_supply_init(nodus_witness_t *w, uint64_t total_supply,
  */
 int  nodus_witness_supply_get(nodus_witness_t *w,
                                 nodus_witness_supply_t *out);
-int  nodus_witness_supply_add_burned(nodus_witness_t *w, uint64_t fee,
-                                       const uint8_t *tx_hash);
-
-/**
- * v0.16 stage B.2 — accumulate minted DNAC (per-block inflation) into
- * supply_tracking.total_minted and bump current_supply by the same
- * amount. Stage C.2's finalize_block calls this once per block.
- * @return 0 on success, -1 on DB error, 0 as a no-op when mint == 0.
- */
-int  nodus_witness_supply_add_minted(nodus_witness_t *w, uint64_t mint);
+/* tokenomics-v3 P2 — nodus_witness_supply_add_burned and
+ * nodus_witness_supply_add_minted are DELETED: their only production
+ * callers were the per-block mint and the burning epoch settlement
+ * (nodus_witness_v2_econ.c), both removed by P2-4/P2-6. Every surviving
+ * writer of supply_tracking is the CORE adapter's EXISTS_VERSION-bound
+ * absolute SET (nodus_witness_rt_native.c) and the distribution's own
+ * bound pool update (nodus_witness_v2_econ.c). */
 
 /* ── Transaction history by owner ────────────────────────────────── */
 

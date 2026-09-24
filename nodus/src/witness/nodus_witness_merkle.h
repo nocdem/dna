@@ -333,6 +333,10 @@ int nodus_witness_merkle_compute_delegation_root(nodus_witness_t *w,
  * `epoch_state` table. Leaves embed the global total_minted/total_burned
  * counters from supply_tracking so supply-invariant coverage is included
  * in the top-level state_root.
+ *
+ * tokenomics-v3 P2: the table's writer (nodus_witness_epoch.c) is
+ * DELETED and nothing writes `epoch_state` any more; the table stays in
+ * the schema, so this legacy root reads an empty table.
  */
 int nodus_witness_merkle_compute_epoch_state_root(nodus_witness_t *w,
                                                    uint8_t *root_out);

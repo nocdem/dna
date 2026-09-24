@@ -1308,10 +1308,11 @@ static int load_epoch_state_leaves(nodus_witness_t *w,
         be64_into((uint64_t)sqlite3_column_int64(stmt, 1), be);
         EVP_DigestUpdate(md, be, 8);
 
-        /* snapshot_hash is always written full-length —
-         * nodus_witness_epoch.c:58-59 binds NODUS_EPOCH_SNAPSHOT_HASH_LEN
-         * (64, nodus_witness_epoch.h:30) — so a NULL or short blob is
-         * corruption, not a legitimate empty state. Substituting 64 zeros
+        /* snapshot_hash was always written full-length — the writer,
+         * nodus_witness_epoch.c, bound NODUS_EPOCH_SNAPSHOT_HASH_LEN
+         * (64); both it and nodus_witness_epoch.h are DELETED by
+         * tokenomics-v3 P2 and no writer of `epoch_state` remains — so a
+         * NULL or short blob is corruption, not a legitimate empty state. Substituting 64 zeros
          * for it put a value in the leaf that no peer could reproduce.
          * Note sqlite3_column_blob() returns NULL for a zero-length blob,
          * so `!snap` and "empty" are the same signal here; both are

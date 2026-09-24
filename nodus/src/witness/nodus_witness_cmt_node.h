@@ -558,9 +558,10 @@ typedef struct {
 /**
  * `NewNodeWithContext` (node/node.go:285-422) over the ledger `w`.
  *
- * `w` must be an OPEN Ledger V2 successor chain at schema S15 (the live
- * rung as of tokenomics-v3 P1; S15 drops the two retired attendance
- * columns from `validators` and adds the two attendance tables — the
+ * `w` must be an OPEN Ledger V2 successor chain at schema S16 (the live
+ * rung as of tokenomics-v3 P2; S15 dropped the two retired attendance
+ * columns from `validators` and added the two attendance tables, S16
+ * adds `supply_tracking.reward_pool` and the two reward tables — the
  * cometbft tables this function opens
  * have carried unchanged since S14) whose `cmt_state` carries the
  * version-3 genesis document (or whose document arrives through

@@ -213,13 +213,12 @@ static int cfg_make(cfgbox_t *b, uint8_t salt, uint32_t n_alloc,
     c->total_supply_raw   = DNAC_DEFAULT_TOTAL_SUPPLY;
     c->epoch_length       = (uint64_t)DNAC_EPOCH_LENGTH;
     /* Block 2C — the economic parameters. The three schedule constants
-     * MUST equal the compiled ones or the builder refuses; the inflation
-     * start is free, and 1 reproduces the pre-2C behaviour exactly (the
-     * old builder could not express it, so every chain it derived took
-     * the emission gate's 1ULL default). */
+     * MUST equal the compiled ones or the builder refuses. The inflation
+     * start was free until tokenomics-v3 P2 retired it: its only legal
+     * value is 0 now (gen_plan_build refuses any other). */
     c->blocks_per_year       = (uint64_t)DNAC_BLOCKS_PER_YEAR;
     c->decimal_unit          = (uint64_t)DNAC_DECIMAL_UNIT;
-    c->inflation_start_block = 1ULL;
+    c->inflation_start_block = 0ULL;
     c->claim_start_height = 0;
     c->claim_end_height   = UINT64_MAX;
     c->n_validators       = N_VAL;
@@ -279,6 +278,12 @@ static int cfg_make_v3_ex(cfgbox_t *b, uint8_t salt, uint32_t n_alloc,
         cfg_free(b);
         return -1;
     }
+    /* tokenomics-v3 P2 (P2-1): Rule P.2 counts the reward reserve. The §0
+     * composition spends the whole supply on allocations + bonds, and the
+     * sections built on this helper are not about the reserve — they
+     * reserve none. The reserve's own rule is test_defect_P2_reward_pool
+     * (§3.1b). */
+    b->cfg->reward_pool_initial = 0;
     b->cfg->genesis_time_ms = 1700000000000ULL;
     b->cfg->initial_height  = 1;
     if (nodus_witness_v2_gen_v3_fill_comet_rows(b->cfg) != 0) {
@@ -433,11 +438,25 @@ static int test_happy_path(void) {
           q1(w->db, "SELECT COUNT(*) FROM epoch_state") == 0,
           "delegations / epoch_state are EMPTY");
     /* Block 2C — chain_config_history is NO LONGER empty: it carries the
-     * four committed economic parameters and NOTHING else. The exact
-     * count is the assertion, so a fifth row (a future create_chain_db
-     * seeding something of its own) fails here. */
-    CHECK(q1(w->db, "SELECT COUNT(*) FROM chain_config_history") == 4,
-          "chain_config_history holds exactly the 4 economic parameters");
+     * committed economic parameters and NOTHING else. tokenomics-v3 P2:
+     * THREE rows now (blocks_per_year, decimal_unit, epoch_length) — the
+     * retired INFLATION_START_BLOCK (param 3) is no longer seeded. The
+     * exact count is the assertion, so an extra row fails here. */
+    CHECK(q1(w->db, "SELECT COUNT(*) FROM chain_config_history") == 3,
+          "chain_config_history holds exactly the 3 economic parameters");
+    CHECK(q1(w->db, "SELECT COUNT(*) FROM chain_config_history "
+                    "WHERE param_id = 3") == 0,
+          "no retired INFLATION_START_BLOCK row is committed");
+    /* tokenomics-v3 P2 (P2-5): the engine genesis wrote the epoch-0
+     * frozen balance copy — one row per bonded validator, no delegations
+     * exist at genesis. */
+    CHECK(q1(w->db, "SELECT COUNT(*) FROM v2_balance_copy "
+                    "WHERE epoch_start = 0") == (int64_t)N_VAL &&
+          q1(w->db, "SELECT COUNT(*) FROM v2_balance_copy "
+                    "WHERE validator_fp != owner_fp") == 0,
+          "copy(0) holds the seven bonds and nothing else");
+    CHECK(q1(w->db, "SELECT COUNT(*) FROM v2_reward_accrual") == 0,
+          "nothing is accrued at genesis");
     CHECK(q1(w->db, "SELECT COUNT(*) FROM validator_set_snapshots") == 2,
           "epoch 0 and epoch E snapshots are committed");
 
@@ -669,6 +688,103 @@ static int test_defect_L2F6(void) {
     return 0;
 }
 
+/* §3.1b tokenomics-v3 P2 (P2-1) — Rule P.2 COUNTS THE REWARD RESERVE,
+ * and the reserve reaches the ledger.
+ *
+ * The decision fixes the total supply and carves the 200M validator
+ * reserve OUT of it (decision file §1: "Toplam arz ... sabit. Yeni token
+ * basılmayacak"; "Ödüller sabit arz içindeki 200M NODUS rezervinden
+ * karşılanacak"), so
+ *   Σ allocations + Σ self_stake + reward_pool_initial == total_supply_raw.
+ *
+ * RED ON THE PRE-P2 TREE, both halves: the old rule ignored the reserve,
+ * so (a) a v3 config whose allocations spend the whole supply AND carry a
+ * nonzero reserve was ACCEPTED (over-committing the supply by the
+ * reserve), and (b) the accounted composition (allocation shrunk by the
+ * reserve) was REFUSED as under-allocation; and the old builder never
+ * wrote supply_tracking.reward_pool (the column did not exist).
+ *
+ * KILLED BY: dropping `pool_init` from either sum in gen_plan_build;
+ * seeding supply_init with 0 instead of gen_reward_pool(cfg); dropping
+ * the reserve from total_claimable. */
+static int test_defect_P2_reward_pool(void) {
+    printf("§3.1b P2-1 — Rule P.2 counts the reward reserve\n");
+    cfgbox_t c;
+    const uint64_t POOL = 200000000ULL * 100000000ULL;   /* the default */
+
+    CHECK(cfg_make_v3_ex(&c, 0, 1, 0) == 0, "cfg");
+    OK();
+    c.cfg->reward_pool_initial = POOL;
+    /* (a) the reserve NOT accounted for — the allocation still spends
+     * the whole supply */
+    c.allocs[0].amount = TREASURY_RAW;
+    CHECK(nodus_witness_v2_gen_v3_validate(c.cfg) != 0,
+          "P.2: a reserve on top of a fully-spent supply REJECTS");
+    /* (b) accounted by 1 raw too little / too much */
+    c.allocs[0].amount = TREASURY_RAW - POOL + 1;
+    CHECK(nodus_witness_v2_gen_v3_validate(c.cfg) != 0,
+          "P.2: over-allocation by 1 next to the reserve REJECTS");
+    c.allocs[0].amount = TREASURY_RAW - POOL - 1;
+    CHECK(nodus_witness_v2_gen_v3_validate(c.cfg) != 0,
+          "P.2: under-allocation by 1 next to the reserve REJECTS");
+    /* (c) the exact composition */
+    c.allocs[0].amount = TREASURY_RAW - POOL;
+    CHECK(nodus_witness_v2_gen_v3_validate(c.cfg) == 0,
+          "P.2: allocations + bonds + reserve == total is ACCEPTED");
+    OK();
+
+    /* and it DERIVES: the reserve is the committed pool, it is not
+     * claimable, and the conservation invariant closes over it */
+    char dir[128];
+    CHECK(mkdir_tmp(dir, "p2pool") == 0, "tmpdir");
+    OK();
+    CHECK(nodus_witness_v2_gen_derive_v3(dir, c.cfg, NULL) == 0,
+          "the accounted composition derives");
+    OK();
+    char path[600];
+    nodus_witness_t *w = open_chain(dir, path);
+    CHECK(w != NULL, "open");
+    OK();
+    CHECK(q1(w->db, "SELECT reward_pool FROM supply_tracking WHERE id=1")
+              == (int64_t)POOL,
+          "supply_tracking.reward_pool is seeded with reward_pool_initial");
+    CHECK(q1(w->db, "SELECT genesis_supply FROM supply_tracking WHERE id=1")
+              == (int64_t)DNAC_DEFAULT_TOTAL_SUPPLY,
+          "the genesis supply is still the FIXED total (the reserve is "
+          "carved out of it, never added)");
+    CHECK(q1(w->db, "SELECT COALESCE(SUM(remaining),-1) FROM v2_dist_state")
+              == (int64_t)(TREASURY_RAW - POOL),
+          "the claim reserve is the allocations only — the pool is not "
+          "claimable");
+    CHECK(nodus_witness_v2_supply_check(w) == 0,
+          "genesis == bonds + unclaimed + reward_pool: the invariant "
+          "closes at genesis");
+    close_chain(w);
+    rmrf(dir);
+
+    /* reward_divisor_log2 has ONE legal value (decision: pool / 65 536);
+     * payout_interval_epochs must be >= 1 (the payday divides by it). */
+    c.cfg->reward_divisor_log2 = 15;
+    CHECK(nodus_witness_v2_gen_v3_validate(c.cfg) != 0,
+          "a divisor other than 2^16 REJECTS");
+    c.cfg->reward_divisor_log2 = NODUS_V2_GEN_REWARD_DIVISOR_LOG2;
+    c.cfg->payout_interval_epochs = 0;
+    CHECK(nodus_witness_v2_gen_v3_validate(c.cfg) != 0,
+          "a zero payout interval REJECTS");
+    c.cfg->payout_interval_epochs = 2;
+    CHECK(nodus_witness_v2_gen_v3_validate(c.cfg) == 0,
+          "any positive payout interval is a legal choice");
+    /* the retired inflation start: only 0 */
+    c.cfg->inflation_start_block = 1;
+    CHECK(nodus_witness_v2_gen_v3_validate(c.cfg) != 0,
+          "P2-4: a nonzero (retired) inflation_start_block REJECTS");
+    cfg_free(&c);
+
+    OK();
+    printf("  ok: the reserve is counted, committed and closed over\n");
+    return 0;
+}
+
 static int test_defect_L2F4(void) {
     printf("§3.2 L2-F4 — a graduation-malformed validator row\n");
     cfgbox_t c;
@@ -879,20 +995,20 @@ static int test_defect_L2F1(void) {
         CHECK(nodus_witness_v2_supply_check(w) == 0,
               "SCOPE: v2_blocks present but empty still returns 0");
 
-        /* R3-W4-S: climb the SAME handle straight to S15 (tokenomics-v3
-         * P1 moved the live rung from S14 — the Comet stores AND the
-         * out-of-root attendance tables). No genesis document is ever
-         * stored here — only the migration ran, never
-         * nodus_witness_v2_gen_derive_v3 — so this is the
-         * version-3-schema analogue of the S12 case just above: a fresh
-         * S15 catalogue with no stored genesisDoc row must stay honest
-         * pre-genesis, not be mistaken for a committed genesis merely
-         * because the Comet stores now exist. */
-        CHECK(nodus_witness_db_migrate_v2s15(w) == 0, "migrate to S15");
+        /* R3-W4-S: climb the SAME handle straight to the live rung —
+         * S16 since tokenomics-v3 P2 (P1 had moved it from S14 to S15:
+         * the Comet stores, the out-of-root attendance tables, and now
+         * the reward tables). No genesis document is ever stored here —
+         * only the migration ran, never nodus_witness_v2_gen_derive_v3 —
+         * so this is the version-3-schema analogue of the S12 case just
+         * above: a fresh S16 catalogue with no stored genesisDoc row must
+         * stay honest pre-genesis, not be mistaken for a committed
+         * genesis merely because the Comet stores now exist. */
+        CHECK(nodus_witness_db_migrate_v2s16(w) == 0, "migrate to S16");
         CHECK(q1(w->db, "SELECT COUNT(*) FROM v2_blocks") == 0,
               "still no block committed");
         CHECK(nodus_witness_v2_supply_check(w) == 0,
-              "SCOPE: S15 tables (cmt_state included) present, no stored "
+              "SCOPE: S16 tables (cmt_state included) present, no stored "
               "genesisDoc, no supply row: still honest pre-genesis");
         close_chain(w);
         rmrf(dir);
@@ -1278,7 +1394,8 @@ static int test_fail_closed(void) {
 static int g_kat_skipped = 0;
 
 /* The constants the vectors were generated at (the shipped defaults:
- * dnac.h:72, :137, :172, :187 and nodus_witness_emission.h:34, :42). */
+ * dnac.h:72, :137, :172, :187 and nodus_witness_emission.h:48, :53 —
+ * the header's lines since tokenomics-v3 P2 cut it down). */
 static int kat_constants_match(void) {
     return (uint64_t)DNAC_EPOCH_LENGTH        == 720ULL &&
            (uint64_t)DNAC_BLOCKS_PER_YEAR     == 6307200ULL &&
@@ -1310,7 +1427,18 @@ static int hex_eq(const uint8_t *b, size_t n, const char *hex) {
 }
 
 /* ── the oracle's vectors ────────────────────────────────────────────
- * genesis_v3_oracle.py, stage 1 and stage 2 output, 2026-09-16. */
+ * genesis_v3_oracle.py, stage 1 and stage 2 output — RE-PINNED
+ * 2026-09-24 (tokenomics-v3 P2) by the ORCHESTRATOR: the oracle's
+ * fixtures were moved to the SAME legal composition as the C fixtures
+ * below (inflation_start_block 0; the single treasury allocation reduced
+ * by exactly reward_pool_initial — Rule P.2 counts the reserve); the
+ * control constant was first checked against the C encoder (§5 passed
+ * with it) and only then written into the oracle, which then emitted
+ * A-D. The lengths did not change (no field added or removed). Honest
+ * label: the oracle is an independent transcription of the layout, but
+ * the P2 fixture change was made in both by the same session — the
+ * vectors are cross-implementation for the ENCODING, self-consistent
+ * for the fixture composition. */
 
 #define KAT_GENESIS_TIME_MS  1767225600000ULL   /* 2026-01-01T00:00:00Z */
 #define KAT_V2_ENC_LEN       37481u
@@ -1320,38 +1448,38 @@ static int hex_eq(const uint8_t *b, size_t n, const char *hex) {
 #define KAT_D_ENC_LEN        56121u
 
 static const char *KAT_V2_ENC_SHA =
-    "92bd62f51df63ebf30a68c4fde32c7965d72ebd1ca4c3d20649998abe5be69af"
-    "856534cccca070f4fc039ca523d31e53d877ca5d5ac18c9a3d04759fcd3ffca0";
+    "523e2c971f1c44f06ad63cf8d0b4b4eb56ae7b98b58f8dc7afa09b97b523893a"
+    "5c408314a06f32e378b4f4f24764bb2763fe6fcdae8a1ccd63e279b09f4103bf";
 
 static const char *KAT_A_ENC_SHA =
-    "47d6c83089dd3f5616a782227872cea62171be6d8fb7dd30f056edbeee5dba08"
-    "057ac178ef1eefbab3b35178f1aa1607854744f809baf360e514d8c3af50768f";
+    "e63e9ff5c6f9d2f13ef3276b8f678221d478211607dcbd66545c9d27f2b93fd6"
+    "244a44c16ec82c9785701bcb392949e4882ea4510fa3560a17b9973e32c8be64";
 static const char *KAT_A_CHAIN_ID =
-    "47d6c83089dd3f5616a782227872cea62171be6d8fb7dd30f056edbeee5dba08";
+    "e63e9ff5c6f9d2f13ef3276b8f678221d478211607dcbd66545c9d27f2b93fd6";
 static const char *KAT_A_SRC_COMMIT =
-    "47d6c83089dd3f5616a782227872cea62171be6d8fb7dd30f056edbeee5dba08"
-    "057ac178ef1eefbab3b35178f1aa1607854744f809baf360e514d8c3af50768f";
+    "e63e9ff5c6f9d2f13ef3276b8f678221d478211607dcbd66545c9d27f2b93fd6"
+    "244a44c16ec82c9785701bcb392949e4882ea4510fa3560a17b9973e32c8be64";
 
 static const char *KAT_B_ENC_SHA =
-    "8d5b54e7123685eb3cde15e5ed193f53f1ec1e800b14772a65c295dfcbdaba32"
-    "9171a07ec6ae643f42336cc7152273c623fd30cdd63174efc99b72159f1a7b04";
+    "c9ab02d3d443846aa435d27bb207d4f0c342f6f322833eb57a9455b7d4fa1cab"
+    "95de99861f3d709f097f9a353f8455c37f18a48e36490b412e08614ecfe32b4b";
 static const char *KAT_B_CHAIN_ID =
-    "96c5a7ceeb43249096a6e29ad423094c50139f30561eebcc52e5c26b90debc5d";
+    "f2e3e45cc11822a931cc0bcd4e42a25ea92108f5021e47be70263bf6d03a8940";
 static const char *KAT_B_SRC_COMMIT =
-    "999717b830021ec9cba8e79d0376cc454d38b01a7b25d033dfe592b63c76f3fc"
-    "7b74307ba178c9ffbfc50f648dd31fefd1d0ac5956a53fd44cc4c840d1d937bc";
+    "efa32045899a99de4a846653811ae8316d4ea1e32e95f15059c53bf66853a70f"
+    "bc4d1d68e4d1aad86880dcbc58615b3b5d2a7ec173f8a3c09c047d61d0e0ba8e";
 
 static const char *KAT_C_ENC_SHA =
-    "bb6ae4559057a42d8cc54bef6c5fbc00f8770fdf5bc6da106e6873709b09f5f9"
-    "761dc7487e7059dfe1075f5b0c6db22a6e04771a5ebad9eee0aa4b30679206e8";
+    "aacf24c34b20d9fb8bb02209075f6c13e64902d2fdbddebb9b742d7b741bacae"
+    "2be6ab9caa58b40ff1fda9fbf5d81293479ae70361d3ee11dfafd565644d57eb";
 static const char *KAT_C_CHAIN_ID =
-    "bb6ae4559057a42d8cc54bef6c5fbc00f8770fdf5bc6da106e6873709b09f5f9";
+    "aacf24c34b20d9fb8bb02209075f6c13e64902d2fdbddebb9b742d7b741bacae";
 
 static const char *KAT_D_ENC_SHA =
-    "579d4820bd3193bd49ddc154236d89701775c9206894d5d69eb7a6f912916eef"
-    "590b7c8af21fc92fe051fee7c956558b4ece86cbb3d93b7b7f9fec17f8ecae51";
+    "7925db184e5883ed3b9563ca85d0b518b6ed6e2de00ccaea61def42a2dc5dc43"
+    "8d9eb9675696a6b4ddfe173a0e435937baf228d02a273522a492e06f0d1ef2b2";
 static const char *KAT_D_CHAIN_ID =
-    "a1c16107b6744e705396d1c2c2156616c16c478f4b6691b233fe64be9772af96";
+    "8f633f2022d6ae833817b604737a09cb881b3a130dd3cddd7540e723088b6040";
 
 /* ── the version-3 fixtures (the oracle's make_v3, transcribed) ─────── */
 
@@ -1361,6 +1489,13 @@ static const char *KAT_D_CHAIN_ID =
 static int cfg_make_v3(cfgbox_t *b) {
     if (cfg_make(b, 0x00, 1, 0) != 0) return -1;
     if (nodus_witness_v2_gen_v3_defaults(b->cfg) != 0) { cfg_free(b); return -1; }
+    /* tokenomics-v3 P2 (P2-1): the default 200M reserve is carved out of
+     * the fixed supply, so the treasury allocation shrinks by it (Rule
+     * P.2). ⚠ This changes the vector bytes: every KAT_* below MUST be
+     * re-derived from genesis_v3_oracle.py with the SAME composition
+     * change (inflation_start_block 0, allocation TREASURY − pool) —
+     * see the RE-PIN note above the constants. */
+    b->allocs[0].amount = TREASURY_RAW - b->cfg->reward_pool_initial;
     b->cfg->genesis_time_ms = KAT_GENESIS_TIME_MS;
     b->cfg->initial_height  = 1;
     if (nodus_witness_v2_gen_v3_fill_comet_rows(b->cfg) != 0) {
@@ -1394,6 +1529,12 @@ static int cfg_make_v3_b(cfgbox_t *b) {
     for (int i = 0; i < 64; i++) c->app_hash[i] = (uint8_t)(0x77 + i * 7);
     for (int i = 0; i < 32; i++) c->chain_id[i] = (uint8_t)(0x99 + i * 5);
     c->reward_pool_initial    = 123456789ULL;
+    /* tokenomics-v3 P2 (P2-1): Rule P.2 — the allocation carries what the
+     * reserve does not. (reward_divisor_log2 = 15 is fine for ENCODING,
+     * which checks shape and the shared rules only; the version-3
+     * content rule that pins it to 16 is nodus_witness_v2_gen_v3_validate,
+     * which this vector never calls.) */
+    b->allocs[0].amount       = TREASURY_RAW - 123456789ULL;
     c->reward_divisor_log2    = 15ULL;
     c->payout_interval_epochs = 7ULL;
     return 0;
@@ -1625,9 +1766,13 @@ static int test_v3_sensitivity(void) {
     CHECK(nodus_witness_v2_gen_chain_id(a.cfg, base) == 0, "base id");
     OK();
 
-    /* one version-2 field: inflation_start_block is the free one, so a
-     * flip stays inside the shared rules and isolates the encoding. */
-    V3_SENS("inflation_start_block", c->inflation_start_block = 2);
+    /* one version-2 field. inflation_start_block USED to be the free one
+     * flipped here; tokenomics-v3 P2 retired it (only 0 is legal, so a
+     * flip is refused before any byte is encoded). A validator's
+     * commission stays inside the shared rules and isolates the encoding
+     * the same way. */
+    V3_SENS("validators[0].commission_bps",
+            c->validators[0].commission_bps = 777);
 
     V3_SENS("consensus_protocol", c->consensus_protocol = 2);
     V3_SENS("genesis_time_ms",    c->genesis_time_ms = KAT_GENESIS_TIME_MS + 1);
@@ -1651,7 +1796,12 @@ static int test_v3_sensitivity(void) {
               c->comet_validators[0].name[1] = '\0';
               c->comet_validators[0].name_len = 1; });
     V3_SENS("app_hash",          c->app_hash[0] ^= 0xFF);
-    V3_SENS("reward_pool_initial",    c->reward_pool_initial = 1);
+    /* tokenomics-v3 P2 (P2-1): Rule P.2 binds the reserve to the
+     * allocations, so a reserve flip alone is REFUSED before encoding —
+     * the allocation moves by the same amount the other way, keeping the
+     * sum, and the reserve's own bytes are what must reach the id. */
+    V3_SENS("reward_pool_initial",
+            (c->reward_pool_initial -= 1, m.allocs[0].amount += 1));
     V3_SENS("reward_divisor_log2",    c->reward_divisor_log2 = 17);
     V3_SENS("payout_interval_epochs", c->payout_interval_epochs = 25);
 
@@ -2171,9 +2321,10 @@ static int test_v3_derive(void) {
 
     CHECK(memcmp(id16, chain32, 16) == 0,
           "the file name is the first 16 bytes of the chain id");
-    CHECK(q1(db, "PRAGMA user_version") == (int64_t)NODUS_V2_SCHEMA_VERSION_S15,
-          "the chain is at schema S15 — the Comet stores and the "
-          "out-of-root attendance tables exist (tokenomics-v3 P1)");
+    CHECK(q1(db, "PRAGMA user_version") == (int64_t)NODUS_V2_SCHEMA_VERSION_S16,
+          "the chain is at schema S16 — the Comet stores, the "
+          "out-of-root attendance tables (tokenomics-v3 P1) and the "
+          "reward tables (P2) exist");
     CHECK(q1(db, "SELECT COUNT(*) FROM v2_blocks") == 0,
           "there is NO genesis block row — of any height (D-19 rev 6)");
     /* ⚠ THE KEY COLUMN IS A BLOB (schema S14: `key BLOB PRIMARY KEY`)
@@ -2190,11 +2341,16 @@ static int test_v3_derive(void) {
           "start makes the State (node/setup.go:581)");
     CHECK(q1(db, "SELECT COUNT(*) FROM validators") == (int64_t)N_VAL,
           "seven validator rows");
-    CHECK(q1(db, "SELECT COUNT(*) FROM chain_config_history") == 4,
-          "the four committed economic parameters");
+    CHECK(q1(db, "SELECT COUNT(*) FROM chain_config_history") == 3,
+          "the three committed economic parameters (tokenomics-v3 P2 "
+          "retired the fourth, INFLATION_START_BLOCK)");
     CHECK(q1(db, "SELECT COALESCE(SUM(remaining),-1) FROM v2_dist_state")
-              == (int64_t)TREASURY_RAW,
-          "the claim reserve holds the whole treasury");
+              == (int64_t)(TREASURY_RAW - 200000000ULL * 100000000ULL),
+          "the claim reserve holds the treasury less the reward reserve "
+          "(fixture A carves the default 200M out, Rule P.2)");
+    CHECK(q1(db, "SELECT reward_pool FROM supply_tracking WHERE id = 1")
+              == (int64_t)(200000000ULL * 100000000ULL),
+          "and the reward reserve is the committed pool");
 
     /* the stored document IS the derived chain's identity.
      *
@@ -2519,6 +2675,7 @@ int main(void) {
     if (test_happy_path())    return 1;
     if (test_determinism())   return 1;
     if (test_defect_L2F6())   return 1;
+    if (test_defect_P2_reward_pool()) return 1;
     if (test_defect_L2F4())   return 1;
     if (test_defect_L2F3())   return 1;
     if (test_defect_L2F2())   return 1;

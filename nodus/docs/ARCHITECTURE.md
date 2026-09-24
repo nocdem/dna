@@ -1571,7 +1571,9 @@ i.e. on this chain. The one chain-id REFUSAL is the T3 header frame gate (`chain
 w->v2_chain32` before anything else runs, the discipline verbs 35-39 use); a foreign chain is
 defended by digest BINDING, not by an envelope check (D-16 rev 7 (4)'s literal "envelope
 chain_id == w->v2_chain32" cannot be implemented as written — register R3-W4-CC-ORC-1).
-ORCHESTRATOR corrections after running the package: the INFLATION_START monotonicity read is
+ORCHESTRATOR corrections after running the package (**historical — tokenomics-v3 P2 retired
+parameter 3 and deleted the monotonicity rule and its op-3 read; see the "package P2" section**):
+the INFLATION_START monotonicity read is
 the SYSTEM adapter's op-3 SELECT verbatim (latest NONZERO row by `commit_block`, any
 effective) — the first draft asked `nodus_chain_config_get_u64` ("the row active at h"), which
 on every version-3 chain (genesis seeds param 3 with the config's `inflation_start_block`, 0 =
@@ -2215,6 +2217,171 @@ per-epoch digest enters `system_state_root` through a NEW leg.
   → 8 legs/`v2` tag) all change → devnet wipe + stop-all at landing (no
   live chain today), same class as P0.**
 
+### Tokenomics-v3 binding season — package P2: rewards, fees and the reward pool (2026-09-24)
+
+One writer (worktree `tv3-p2`). Design:
+`docs/plans/2026-09-23-tokenomics-v3-consensus-binding-design.md` §7
+"P2 ayrıntılı tasarım" P2-1 … P2-9 (local — the contract); decision
+`docs/plans/decisions/2026-09-22-nodus-tokenomics-v3-operator.md` §1
+("Ödüller ve ücretler": no new coin is ever minted; a fixed reserve pays
+the stakers; every fee refills it), §3 "P2 tasarım soruları" (operator,
+2026-09-23: a delegator is paid on the amount frozen at the epoch's
+START; a validator that misses the participation bar forfeits its WHOLE
+slot, delegators included; the accrual lives in its own table keyed by
+recipient).
+
+- **P2-1 — the reserve is born at genesis.** Rule P.2 is now
+  `Σ allocations + Σ self_stake + reward_pool_initial == total_supply_raw`
+  (`gen_plan_build`, `nodus_witness_v2_gen.c`; re-checked at both genesis
+  read-backs). `supply_tracking` gains `reward_pool` (base DDL
+  `nodus_witness.c`; idempotent back-fill
+  `nodus_witness_db_migrate_v18_supply_reward_pool`,
+  `nodus_witness_db.c:2055`) and `nodus_witness_supply_init` seeds it
+  (`nodus_witness_db.c:929`, refusing a pool above the total). The
+  document's `reward_divisor_log2` must be 16 and `payout_interval_epochs`
+  >= 1 (`nodus_witness_v2_gen_v3_validate`); `inflation_start_block`
+  stays in the canonical encoding but must be 0.
+- **P2-2 — the supply equation.** The engine's CORE invariant
+  (`nodus_witness_v2_claims.c:1125`) is now
+  `genesis + minted − burned == utxo + bonds + delegated + reward_pool +
+  Σ v2_reward_accrual + unclaimed + shielded`. The O15J
+  `epoch_state.epoch_pool_accum` term is GONE; `total_minted` stays 0 on
+  every chain because nothing mints.
+- **P2-3 — every fee goes to the pool.** The native runtime's fee leg
+  (`nodus_witness_rt_native.c`: SPEND, BURN, TOKEN_CREATE and every
+  SYSFUND funding leg) credits `reward_pool` through supply selector 3
+  (`RTN_SUPPLY_SEL_POOL`, `:1026`) as an EXISTS_VERSION-bound absolute
+  SET (`rtn_supply_add_eff`, `:1571`); `total_burned` moves ONLY for an
+  explicit BURN's `burn_amount`. `current_supply` falls only by what is
+  really destroyed.
+- **P2-4 — the mint and parameter 3 are gone.** `nodus_witness_epoch.{c,h}`
+  and `nodus_witness_emission.c` are DELETED (the per-block mint, the
+  O15J epoch pool, the equal-per-seat burning settlement);
+  `nodus_witness_emission.h` keeps only `DNAC_BLOCKS_PER_YEAR` /
+  `DNAC_DECIMAL_UNIT`. Chain-config parameter id 3
+  (`INFLATION_START_BLOCK`) is RETIRED: `nodus_chain_config_scalar_rules`
+  refuses it, its grace is `UINT64_MAX`, the SYSTEM runtime's CCLATEST
+  read op 3 is removed, genesis no longer seeds its row, the dnac mirror
+  (`dnac/src/transaction/verify.c`) refuses it, and `nodus-cli` no
+  longer names it. The ORC-6 monotonicity rule described in the W4-CC
+  section above no longer exists.
+- **P2-5 — the frozen balance copy.** `v2_balance_copy(epoch_start,
+  validator_fp, owner_fp, amount)` — one row per bond (owner = the
+  validator) and per delegation, raw SHA3-512(pubkey) keys — is written
+  at genesis (copy(0)) and at every boundary H (copy(H)) — written LAST,
+  right after `commit_next` builds snapshot(H+E) from the same state,
+  with no stake movement in between — and every copy older than H−E is
+  pruned (`nodus_witness_v2_balance_copy_write`,
+  `nodus_witness_v2_econ.c:313`). It is OUT of every root (a pure
+  function of committed state at H). It exists because a snapshot entry
+  carries only `total_stake` and `self_bond` per validator
+  (`shared/dnac/vset_wire.h:119-126`), never the delegators behind them.
+- **P2-6 (rev 2, 2026-09-24) — the distribution, every boundary.**
+  payout = `reward_pool >> 16`; the members and their weights are the
+  GOVERNING snapshot(H−E): each gets `floor(payout × power / Σpower)`
+  (128-bit intermediates, power = `total_stake / DNAC_DECIMAL_UNIT`); a
+  member that fails the shared participation predicate
+  (`nodus_witness_v2_attendance_meets_bar`) or has no validators row
+  forfeits the whole share to the pool (its power stays in Σpower). Inside
+  a share: `base = floor(share × self_bond / total_stake)` (the entry's
+  own fields), the entry's `commission_bps` on the rest, and the
+  delegators split the net by their amounts in the SOURCE COPY — the copy
+  the governing snapshot was built from, `src(H) = H ≥ 2E ? H−2E : 0`
+  (`v2ec_source_copy`, `:828`), owner_fp ASC (`v2ec_pay_member`, `:928`).
+  **Consistency gate** (`v2ec_member_load`, `:857`): for every member the
+  source copy's self row must equal `self_bond` and its delegator rows
+  must sum to `total_stake − self_bond`, else FAULT (-2) — the two
+  structures are built at the same boundary from the same state, and
+  `external_delegated == Σ delegations` holds for every writer (DELEGATE,
+  UNDELEGATE, genesis 0), so the gate fires only on a node-local
+  corruption or a broken writer, never on an ordinary transaction. It
+  runs only when payout > 0. Credits are read-first bound upserts into
+  `v2_reward_accrual(owner_fp, amount)`; the pool is debited by EXACTLY
+  Σ credited — every rounding remainder stays in it
+  (`nodus_witness_v2_settlement_apply`, `:997`). Rev 1's
+  `min(copy(H−E), live at H)` rule and its `delegated_at_block` guard are
+  GONE: they sampled two moments and a partial withdraw → reuse →
+  top-up still earned the whole epoch (P2 O6, verifier + red-team).
+- **P2-10 (2026-09-24) — the delegator is locked like a validator.**
+  An UNDELEGATE (partial or full) still removes the amount from the live
+  tables at once, but its release UTXO is born with
+  `unlock_block = L(h) + DNAC_UNDELEGATE_LOCK_EPOCHS × E`
+  (`nodus_witness_rt_native.c` `rtn_sysfund_exec`, `:2066-2111`;
+  `DNAC_UNDELEGATE_LOCK_EPOCHS` = 12, `dnac/include/dnac/dnac.h:172`,
+  decision §1 "Delegator bekleme süresi 12 epoch"). `L(h)` — the power
+  exit boundary — is pinned in ONE function,
+  `nodus_v2_power_exit_boundary` (`nodus_witness_v2_epoch.c:1473`):
+  `nb(h) = ⌈h/E⌉·E` (h itself at a boundary, because a block's
+  transactions run before its boundary), `L(h) = nb(h) + E` (the first
+  set that no longer counts the stake takes effect there). The withdrawn
+  amount therefore keeps earning until `L(h)` and cannot be spent,
+  re-delegated or moved to another validator before `L(h) + 12E + 1`: the
+  three input gates (SPEND/BURN, TOKEN_CREATE, SYSFUND) refuse while
+  `unlock >= height`. Every UNDELEGATE takes the same lock, including
+  stake that never reached a snapshot (operator, "herkese aynı kilit").
+  There is no redelegation op. The DELEGATE top-up refreshes
+  `delegated_at_block` again (legacy); nothing in the reward path reads
+  it. **`unlock_block` is not in the state root** (the UTXO leaf reads
+  `nullifier, owner, amount, token_id, tx_hash, output_index`,
+  `nodus_witness_merkle.c:187-188`) — same as the validator graduation
+  lock; the operator decided it will be rooted in a separate root-layout
+  round. **P3:** when selection moves to the previous boundary's copy
+  ("okuma B"), `L(h)`, `src(H)` and the copy retention move TOGETHER
+  (`nodus_witness_v2_epoch.h`, P3 NOTE).
+- **P2-7 — payday.** When `(H / E) % payout_interval_epochs == 0`
+  (the committed genesis document's value; 24 on a chain with no stored
+  document, a FAULT on a version-3 successor without one —
+  `nodus_witness_v2_payout_interval`, `:420`) every accrual row, owner_fp
+  ASC, becomes one CORE UTXO through the typed effect path (owner = fp
+  hex, unlock 0, tx_hash = `settlement_tx_hash(H)`, nullifier kind 0x22
+  `NODUS_V2_SETTLE_KIND_ACCRUAL`, index 400 + rank) and the table is
+  emptied (`nodus_witness_v2_payday_apply`, `:1030`). A delegator that
+  has left is still paid what it accrued. Kinds 0x20/0x21 are retired,
+  never reused.
+- **Boundary order** (`nodus_witness_v2_epoch.c:1289`): 1 commissions →
+  **1b distribution** → **1c payday** → 2 graduation → 3 Rule N →
+  3b attendance digest → 3c attendance reset → 4 flips → 5 next snapshot
+  → **6 balance copy**. The distribution must read attendance BEFORE the
+  reset; it reads the governing snapshot and the source copy, both
+  frozen earlier, so graduation later in the same boundary cannot change
+  what it pays (the decision's graduation deferral keeps a leaving
+  validator signing — and paid — for its extra epoch); the copy is written
+  last, right after `commit_next`, so it is the exact state the next
+  snapshot was built from. New append-only stage and
+  fault ids: `NODUS_V2_EPST_DIST_ACCRUED`..`_BALANCE_COPY` (13-17),
+  `V2AP_FAIL_AFTER_DIST_ACCRUED`..`_BALANCE_COPY` (55-59); the retired
+  settle stages (9/10, F50-52) are never reused.
+- **P2-8 — roots and schema S16.** The supply leaf commits the pool
+  (`dna_v2_supply_root`, tag `DNA.SUPPLY.v2`); `core_state_root` gains a
+  7th leg, `accrual_root` (`dna_v2_accrual_root`: leaves
+  `DNA.ACLEAF.v1 ‖ owner_fp ‖ be64(amount)`, strictly ascending, inner
+  `DNA.ACNODE.v1`, empty `DNA.E.ACCRU.v1`), composed under `DNA.CORE.v2`
+  (`shared/dnac/ledger_roots_v2.c`; DB side
+  `nodus_witness_accrual_root_v2`, `nodus_witness_roots_v2.c:260`).
+  Schema rung S16 (`nodus_witness_db_migrate_v2s16`,
+  `nodus_witness_v2_schema.c:1746`) adds the column when absent, creates
+  both tables and verifies their exact shape; every S15 gate
+  (cometbft lane, genesis, preflight, pools, join, bundle) now requires
+  S16.
+- **Tests (compiled, not run by the writer):** `test_v2_econ.c`
+  rewritten (copy, distribution math through the engine, the source copy
+  at E/2E/3E, the consistency gate, a mid-epoch withdrawal paid through
+  L(h), partial withdraw + top-up timing and earned ≤ locked, the
+  decimal_unit refusal, bar miss, payday, the interval reader,
+  F55/F56/F59 + payday stage rollbacks, determinism twin); fee-to-pool
+  pins and the UNDELEGATE release lock (L(h), partial and full drain, the
+  SPEND / SYSFUND / TOKEN_CREATE gates at U and U+1) in
+  `test_v2_native.c`, fee-to-pool in `test_v2_apply.c`; supply/accrual/core KATs in `test_roots_v2.c`
+  (self-consistency oracle `shared/dnac/tests/ledger_roots_v2_accrual_oracle.py`);
+  the S16 matrix in `test_cmt_host.c`; Rule P.2 and the reserve in
+  `test_v2_gen.c`; param-3 retirement in `test_v2_econ_params.c`,
+  `test_cc_appr.c`, `test_v2_native.c`. Harness: `test_v2_rewards.sh`
+  (short-epoch build + `STAGEF_PAYOUT_INTERVAL_EPOCHS=2`).
+- **Consensus-value change: the supply leaf, `core_state_root`'s
+  composition (6 legs → 7, `DNA.CORE.v1` → `v2`), every fee's
+  destination and the genesis document's Rule P.2 all change → devnet
+  wipe + stop-all at landing, same class as P0/P1.**
+
 ### Consensus flow (cometbft @709fd12b, the only lane)
 
 ```
@@ -2262,7 +2429,9 @@ SQLite tables managed by the witness module (`nodus_witness_db.c`):
 | `utxo_set` | Shared UTXO set for balance validation |
 | `blocks` | Block chain (height → tx_hash mapping) |
 | `epochs` | BFT-signed epoch roots |
-| `supply_state` | Genesis supply, burned fees, current supply |
+| `supply_tracking` | Genesis supply, `total_burned` (explicit burns only since tokenomics-v3 P2), `total_minted` (always 0), current supply, and `reward_pool` — the reserve every fee refills (P2). This row read `supply_state` / "burned fees" before P2; the table's name was always `supply_tracking` (`nodus_witness.c` base DDL). |
+| `v2_reward_accrual` | tokenomics-v3 P2: rewards credited at each boundary, one row per recipient fp, paid out and emptied at each payday; a leg of `core_state_root` |
+| `v2_balance_copy` | tokenomics-v3 P2: the stake frozen at each epoch's start (copy(H−E) and copy(H) kept); out of every root |
 | `committed_transactions` | Full serialized TX data (hub/spoke queries) |
 
 ### Witness startup and chain-database faults

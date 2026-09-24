@@ -179,7 +179,8 @@ static int v3pf_cfg_make(v3pf_cfgbox_t *b, uint8_t salt) {
     c->epoch_length          = (uint64_t)DNAC_EPOCH_LENGTH;
     c->blocks_per_year       = (uint64_t)DNAC_BLOCKS_PER_YEAR;
     c->decimal_unit          = (uint64_t)DNAC_DECIMAL_UNIT;
-    c->inflation_start_block = 1ULL;
+    c->inflation_start_block = 0ULL;   /* tokenomics-v3 P2: RETIRED,
+                                        * the only legal value is 0 */
     c->claim_start_height    = 0;
     c->claim_end_height      = UINT64_MAX;
     c->n_validators          = V3PF_N_VAL;
@@ -213,6 +214,10 @@ static int v3pf_cfg_make(v3pf_cfgbox_t *b, uint8_t salt) {
         v3pf_cfg_free(b);
         return -1;
     }
+    /* tokenomics-v3 P2 (P2-1): Rule P.2 now counts the reward reserve;
+     * this fixture's allocation spends the whole supply and it is not a
+     * reward test — no pool reserved. */
+    c->reward_pool_initial = 0;
     c->genesis_time_ms = 1700000000000ULL;
     c->initial_height  = 1;
     if (nodus_witness_v2_gen_v3_fill_comet_rows(c) != 0) {
@@ -938,16 +943,19 @@ int main(void) {
     }
 
     /* ── 6. SCHEMA: R3 W3 (D-17 rev 10 (8)) — THE LIVE SCHEMA FLIP,
-     * tokenomics-v3 P1 moved the accepted value S14 -> S15. Before R3 W3
+     * tokenomics-v3 P1 moved the accepted value S14 -> S15, tokenomics-v3
+     * P2 moved it S15 -> S16. Before R3 W3
      * S10 (O15C's activation version) cleared this issue; the flip
      * narrows the accepted set to ONE value, because the old lane's
      * consensus schemas (S10-S12) are closed (D-17 rev 10 (9)) and this
      * build derives version-3 chains only. v9 and v12 — a version this
      * function used to ACCEPT — must now BOTH be reported UNSUPPORTED;
-     * only landing at S15 clears it. This is the mirror pin: the
-     * narrowing is real in both directions, not just "S15 was added". */
+     * only landing at S16 clears it — and S15, the previous live rung,
+     * no longer does. This is the mirror pin: the narrowing is real in
+     * both directions, not just "S16 was added". */
     {
-        nodus_v2_preflight_report_t before_mig, at_v9, at_v12, at_s15;
+        nodus_v2_preflight_report_t before_mig, at_v9, at_v12, at_s15,
+                                    at_s16;
         CHECK(nodus_witness_v2_preflight(f.w, &before_mig) == 0, "run");
         CHECK(has_issue(&before_mig, NODUS_V2_PF_SCHEMA_UNSUPPORTED),
               "pre-migration schema must be reported unsupported");
@@ -967,10 +975,16 @@ int main(void) {
 
         CHECK(nodus_witness_db_migrate_v2s15(f.w) == 0, "migrate to S15");
         CHECK(nodus_witness_v2_preflight(f.w, &at_s15) == 0, "run");
-        CHECK(!has_issue(&at_s15, NODUS_V2_PF_SCHEMA_UNSUPPORTED),
-              "S15 must clear the schema issue — it is the only accepted "
+        CHECK(has_issue(&at_s15, NODUS_V2_PF_SCHEMA_UNSUPPORTED),
+              "S15 must be UNSUPPORTED since tokenomics-v3 P2 — the "
+              "reward tables are guaranteed only at S16");
+
+        CHECK(nodus_witness_db_migrate_v2s16(f.w) == 0, "migrate to S16");
+        CHECK(nodus_witness_v2_preflight(f.w, &at_s16) == 0, "run");
+        CHECK(!has_issue(&at_s16, NODUS_V2_PF_SCHEMA_UNSUPPORTED),
+              "S16 must clear the schema issue — it is the only accepted "
               "version now");
-        CHECK(at_s15.ready == 0, "still not ready (no genesis document yet)");
+        CHECK(at_s16.ready == 0, "still not ready (no genesis document yet)");
     }
 
     /* ── 7. GENESIS ABSENT is detected on a migrated-but-empty chain. */

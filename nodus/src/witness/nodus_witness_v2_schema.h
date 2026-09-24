@@ -683,6 +683,53 @@ int nodus_witness_db_migrate_v2s15(nodus_witness_t *w);
 int nodus_witness_db_migrate_v2s15_ex(nodus_witness_t *w,
                                       nodus_v2s15_mig_fail_t fail_at);
 
+/* ── S16 migration: tokenomics-v3 P2 (rewards, fees, the reward pool) ──
+ *
+ * Three shape changes, one rung (design §7 P2-8):
+ *
+ *   1. `supply_tracking.reward_pool INTEGER NOT NULL DEFAULT 0` is ADDED
+ *      when absent (`PRAGMA table_info` checked first — every DB this
+ *      build created already has it from WITNESS_DB_SCHEMA and the
+ *      every-open v18 leg, nodus_witness_db.c; the rung is not asked to
+ *      add what is there). The supply leaf of core_state_root commits it
+ *      ("DNA.SUPPLY.v2", shared/dnac/ledger_roots_v2.h).
+ *   2. `v2_reward_accrual(owner_fp BLOB PRIMARY KEY, amount INTEGER NOT
+ *      NULL)` is CREATED — the per-recipient accrual, a leg of
+ *      core_state_root (accrual_root).
+ *   3. `v2_balance_copy(epoch_start INTEGER NOT NULL, validator_fp BLOB
+ *      NOT NULL, owner_fp BLOB NOT NULL, amount INTEGER NOT NULL,
+ *      PRIMARY KEY (epoch_start, validator_fp, owner_fp))` is CREATED —
+ *      the frozen per-boundary balance copy, OUT of every root.
+ *
+ * All three also live in the base schema (nodus_witness.c) so every
+ * chain DB has them from its first open at any rung; this rung's
+ * CREATE TABLE IF NOT EXISTS / conditional ALTER is the path for a DB an
+ * OLDER build created, and its shape verification is unconditional.
+ * S16 is the ONE rung the cometbft lane accepts from this change on
+ * (every S15 gate moved to S16).
+ */
+#define NODUS_V2_SCHEMA_VERSION_S16  16u
+
+typedef enum {
+    V2S16MIG_FAIL_NONE = 0,
+    V2S16MIG_FAIL_AFTER_BEGIN,      /* after BEGIN, before any DDL        */
+    V2S16MIG_FAIL_AFTER_REVALIDATE, /* in-txn version re-read passed      */
+    V2S16MIG_FAIL_AFTER_TABLES,     /* column added, two tables created   */
+    V2S16MIG_FAIL_AFTER_VERIFY,     /* schema-shape verification passed   */
+    V2S16MIG_FAIL_BEFORE_COMMIT     /* user_version written, pre-COMMIT   */
+} nodus_v2s16_mig_fail_t;
+
+/** Atomic S16 migration. Versions below 15 run the S9…S15 chain first,
+ *  then 15 → 16 atomically with the in-transaction revalidation.
+ *  @return 0 migrated or already at 16 (idempotent); -1 failure (full
+ *  rollback of the running stage) — including an UNKNOWN user_version
+ *  (17+): fail closed. */
+int nodus_witness_db_migrate_v2s16(nodus_witness_t *w);
+
+/** Test variant: deterministic abort inside the 15 → 16 transaction. */
+int nodus_witness_db_migrate_v2s16_ex(nodus_witness_t *w,
+                                      nodus_v2s16_mig_fail_t fail_at);
+
 #ifdef __cplusplus
 }
 #endif

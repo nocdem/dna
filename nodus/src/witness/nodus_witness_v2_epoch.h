@@ -37,6 +37,17 @@
  *      global_height % DNAC_EPOCH_LENGTH == 0. Exact mirror of
  *      nodus_witness_bft.c:2358. Height only: no clock, no timestamp.
  *   1. PENDING COMMISSION ACTIVATION — bft.c:2379-2402 verbatim shape.
+ *   1b. REWARD DISTRIBUTION (tokenomics-v3 P2, P2-6) —
+ *      nodus_witness_v2_settlement_apply(w, H): payout = reward_pool >>
+ *      16 over snapshot(H−E) pro rata to its power, inner split on the
+ *      source copy src(H) = H−2E (0 below 2E) after a consistency gate
+ *      against the snapshot entry (P2 revision 2, design §7.1),
+ *      credited to `v2_reward_accrual`, reward_pool debited by exactly
+ *      what was credited. Contract: nodus_witness_v2_econ.h.
+ *   1c. PAYDAY (P2-7) — nodus_witness_v2_payday_apply(w, H, interval):
+ *      at (H / E) % payout_interval_epochs == 0 every accrual row
+ *      becomes one CORE UTXO and is deleted; a no-op otherwise. Runs
+ *      AFTER 1b so the epoch that just ended is included in the pay.
  *   2. GRADUATION — tokenomics-v3 P1 (D-11): candidates are every row
  *      whose status is RETIRING **or AUTO_RETIRED** (widened from
  *      RETIRING-only; an AUTO_RETIRED member's bond is RETURNED, never
@@ -73,12 +84,8 @@
  *      already decremented it for AUTO_RETIRED at the boundary that
  *      retired it, and decrementing twice would poison
  *      `nodus_validator_active_count` for every later reader.
- *   2b. EPOCH SETTLEMENT (O15J Faz 2) — nodus_witness_v2_settlement_apply
- *      drains the ENDED epoch's pool into CORE payout UTXOs and burn.
- *      Contract and every V1 anchor: nodus_witness_v2_econ.h. Its
- *      liveness bar now reads `v2_attendance.signed_count`
- *      (`nodus_witness_v2_attendance_get`), not a validators-table
- *      column (tokenomics-v3 P1, §C).
+ *   (2b — the O15J EPOCH SETTLEMENT — is GONE from this position:
+ *      tokenomics-v3 P2 replaced it with the distribution at 1b.)
  *   3. RULE N (liveness / AUTO_RETIRED) — REWRITTEN by tokenomics-v3 P1
  *      (D-3); see the labelled section below.
  *   3b. ATTENDANCE DIGEST (S-2) — `v2ep_attendance_digest`: hashes every
@@ -96,55 +103,48 @@
  *      catch.
  *   4. BOUNDARY FLIPS — nodus_witness_vset_apply_boundary_flips(w, H).
  *   5. NEXT SNAPSHOT — nodus_witness_vset_commit_next(w, H).
+ *   6. BALANCE COPY (tokenomics-v3 P2, P2-5) —
+ *      nodus_witness_v2_balance_copy_write(w, H): the bonded balances as
+ *      they stand AFTER every one of this boundary's transitions, pruned
+ *      to the H−E and H copies. Out of every root.
  *
- * ── WHY SETTLEMENT SITS AT 2b AND NOT AFTER RULE N ──────────────────
- * V1 runs its settlement AFTER the whole boundary transition
- * (bft.c:3737, transitions at :3594) and resets its per-epoch
- * attendance counter at settlement's own tail (bft.c:3350-3360).
- * tokenomics-v3 P1 keeps settlement at 2b for the SAME reason O15C
- * placed it there, restated against the NEW source: settlement's
- * liveness bar reads `v2_attendance.signed_count` for the epoch that
- * just ended (via `nodus_witness_v2_attendance_get`), and step 3c resets
- * that very column for every row. Running settlement after 3c would read
- * all zeros and burn every honest validator's share, every epoch, on
- * every node.
+ * ── WHY THE DISTRIBUTION SITS AT 1b (tokenomics-v3 P2) ──────────────
+ * Three inputs decide it, and each fixes a bound on its position:
+ *   - ATTENDANCE: the shared participation predicate reads
+ *     `v2_attendance.signed_count` for the epoch that just ended, and
+ *     step 3c zeroes that column — the distribution must run BEFORE 3c
+ *     (the O15J settlement's own reason for sitting at 2b; running after
+ *     3c would forfeit every honest share, every epoch, on every node).
+ *   - NO LIVE STAKE (P2 revision 2, design §7.1): the amounts come from
+ *     the governing snapshot(H−E) and the source copy, never from the
+ *     live `validators` / `delegations` stakes; the only live read is
+ *     whether a member's `validators` row exists, and no boundary step
+ *     deletes one (step 2 zeroes a graduate's self_stake and sets
+ *     UNSTAKED). Running before step 2 is kept, and is no longer what
+ *     pays a leaving validator for its last seated epoch — its snapshot
+ *     entry does (the decision file §3 graduation deferral: it keeps
+ *     signing that epoch and loses the share only by missing the bar).
+ *   - THE FROZEN SIDE: the source copy src(H) = copy(H−2E) was written
+ *     at the END of boundary H−2E (step 6), right after the commit_next
+ *     that built snapshot(H−E); boundary H−E's prune kept it, and THIS
+ *     boundary's step 6 prune deletes it. So the distribution MUST run
+ *     before step 6. copy(H) is written last and is not read here.
+ * Rule N (3), the digest (3b) and the flips (4) write only statuses,
+ * counters, `v2_attendance_epoch` and snapshots; none is read by 1b or
+ * 1c, and neither 1b nor 1c writes anything they read (1b writes
+ * `v2_reward_accrual` and `supply_tracking.reward_pool`, 1c `utxo_set`
+ * and `v2_reward_accrual`). The payday (1c) sits right after 1b so the
+ * epoch just credited is included in a paying boundary.
  *
- * Placing it at 2b restores V1's INPUTS exactly: the counts settlement
- * reads are the ones the epoch actually accumulated, and the reset still
- * lands two steps later (3c), after Rule N (3) and the digest (3b) have
- * both consumed the pre-reset counts, inside the same transaction.
- * Nothing else is order-sensitive across the three — Rule N and the
- * digest both READ `v2_attendance` and `consecutive_missed_epochs`;
- * neither writes what the other reads; settlement reads a committed
- * snapshot blob plus the counter, neither of which Rule N's or the
- * digest's statements touch.
- *
- * ── THE OTHER HALF OF THE ARGUMENT (review R1-C7) ───────────────────
- * The paragraph above justifies settlement ↔ Rule N. It does NOT cover
- * settlement ↔ EMISSION, which the port also inverts: V1 mints before
- * it settles (bft.c emission block, then :3737); here settlement runs
- * at boundary step 2b and emission at apply phase 6f, after it.
- *
- * That inversion is safe, but NOT for the reason one would reach for
- * first. `epoch_state` is genuinely key-disjoint — settlement drains and
- * deletes key H−E while emission accrues into key H, and E > 0. But
- * `supply_tracking` is NOT: both write the SAME id = 1 row
- * (nodus_witness_db.c, the add_minted and add_burned UPDATEs). The
- * inversion survives there on COMMUTATIVITY, not disjointness:
- *
- *   - the two UPDATEs touch DISJOINT COLUMNS (total_minted vs
- *     total_burned) plus a commutative ±current_supply;
- *   - both are unguarded additive updates — no clamp, no underflow
- *     branch, so neither has an order-sensitive path;
- *   - add_minted never touches last_tx_hash / last_sequence;
- *   - and NOTHING between them reads current_supply: Rule N, the
- *     boundary flips and vset_commit_next touch only validators,
- *     validator_stats and validator_set_snapshots. The supply gate is
- *     phase 7, after both.
- *
- * If this ordering is ever revisited, THAT is the argument to re-check —
- * the epoch-key split is the easy half and it is not the one carrying
- * the weight.
+ * ── WHY THE BALANCE COPY SITS LAST (step 6) ─────────────────────────
+ * The copy freezes the balances the NEXT epoch starts from. Of this
+ * boundary's steps only the graduation (2) moves a stake (it zeroes a
+ * graduate's self_stake, which drops it from the copy); Rule N and the
+ * flips move statuses only, and the copy carries no status. Writing it
+ * after step 5 therefore captures the post-boundary state, and it adds
+ * nothing between Rule N and commit_next — the window Rule N's weight
+ * floor argument (v2ep_rule_n) requires to stay free of writes to
+ * committee inputs.
  *
  * ── RULE N: REWRITTEN (tokenomics-v3 P1, D-3) ───────────────────────
  * The legacy boundary's third transition (liveness-based AUTO_RETIRED,
@@ -345,9 +345,12 @@
  * engine's untouched-domain guard (nodus_witness_v2_apply.c:1583-1589)
  * therefore REQUIRES the caller to declare SYSTEM touched whenever the
  * boundary fired, and CORE touched when (and only when) at least one
- * graduate released — declaring CORE on a graduate-free boundary would
- * trip the "declared but changed nothing" reject at :1600-1601. That is
- * why this function reports `fired` and `n_graduates`.
+ * graduate released, the distribution credited something or the payday
+ * paid something (tokenomics-v3 P2 — `v2_reward_accrual`,
+ * `supply_tracking` and `utxo_set` are all CORE legs) — declaring CORE
+ * on a boundary that moved none of them would trip the "declared but
+ * changed nothing" reject. That is why this function reports `fired`,
+ * `n_graduates`, `dist_accrued` and `n_payday_utxos`.
  *
  * Copyright (c) 2026 nocdem — SPDX-License-Identifier: MIT
  */
@@ -418,19 +421,33 @@ typedef enum {
     /* O15J Faz 2 — APPENDED for the same reason. Both stages run
      * BETWEEN graduation and Rule N in execution order; the numbers are
      * append-only and the engine maps them BY NAME. */
-    NODUS_V2_EPST_SETTLE_EMITTED  = 9,  /* every payout UTXO written,
-                                         * nothing burned or retired yet */
-    NODUS_V2_EPST_SETTLE_APPLIED  = 10, /* burn recorded + epoch row
-                                         * retired                       */
+    /* 9 and 10 are RETIRED by tokenomics-v3 P2 with the burning O15J
+     * settlement they bracketed (payout UTXOs written / burn recorded +
+     * epoch row retired); never fired, never reused. */
+    NODUS_V2_EPST_SETTLE_EMITTED  = 9,  /* RETIRED (P2)                  */
+    NODUS_V2_EPST_SETTLE_APPLIED  = 10, /* RETIRED (P2)                  */
     /* tokenomics-v3 P1 (D-4, S-2) — APPENDED for the same reason. Both
      * stages run BETWEEN Rule N and the boundary flips in execution
      * order: 11 fires with the digest row written to
      * `v2_attendance_epoch` and nothing reset; 12 after
      * `v2_attendance.signed_count` has been reset for every row. */
     NODUS_V2_EPST_ATTENDANCE_DIGEST = 11, /* digest row written          */
-    NODUS_V2_EPST_ATTENDANCE_RESET  = 12  /* signed_count reset          */
-    /* Values ascend in FIRING order. They are module-internal: the
-     * engine maps them onto its own frozen F39-F45 ids BY NAME
+    NODUS_V2_EPST_ATTENDANCE_RESET  = 12, /* signed_count reset          */
+    /* tokenomics-v3 P2 — APPENDED (values above are pinned by shipped
+     * tests). In EXECUTION order the distribution and the payday run
+     * FIRST, right after the commission activation and BEFORE the
+     * graduation, and the balance copy runs LAST, after the next
+     * snapshot — see the transition order in the file header. */
+    NODUS_V2_EPST_DIST_ACCRUED    = 13, /* every accrual row credited,
+                                         * reward_pool not yet debited   */
+    NODUS_V2_EPST_DIST_APPLIED    = 14, /* reward_pool debited           */
+    NODUS_V2_EPST_PAYDAY_EMITTED  = 15, /* every payday UTXO written,
+                                         * accrual rows not yet deleted  */
+    NODUS_V2_EPST_PAYDAY_APPLIED  = 16, /* accrual rows deleted          */
+    NODUS_V2_EPST_BALANCE_COPY    = 17  /* copy(H) written, older pruned */
+    /* The numbers are append-only and NOT in firing order any more
+     * (13-16 fire before 2); they are module-internal: the engine maps
+     * them onto its own frozen fault ids BY NAME
      * (nodus_witness_v2_apply.c epoch_stage_fault), so nothing outside
      * this header depends on the numbers. */
 } nodus_v2_epoch_stage_t;
@@ -466,16 +483,19 @@ typedef int (*nodus_v2_epoch_fault_fn)(void *ud,
 typedef struct {
     int      fired;         /* 1 = this height IS an epoch boundary     */
     uint32_t n_graduates;   /* RETIRING rows graduated (0 on a no-op)   */
-    /* O15J Faz 2 — the settlement's contribution to the SAME decision.
-     * Settlement writes utxo_set and supply_tracking, both legs of the
-     * CORE state root, so CORE must be declared touched exactly when it
-     * moved either of them: (n_graduates > 0 || n_settle_utxos > 0 ||
-     * settle_burned > 0). A boundary that settles an EMPTY pool moves
-     * neither and must NOT declare CORE — the engine rejects a declared
-     * no-op just as hard as an undeclared mutation
-     * (nodus_witness_v2_apply.c:2888-2919). */
-    uint32_t n_settle_utxos;/* payout UTXOs emitted at this boundary    */
-    uint64_t settle_burned; /* dust + offline shares burned (one total) */
+    /* tokenomics-v3 P2 — the distribution's and the payday's
+     * contributions to the SAME decision. The distribution writes
+     * `v2_reward_accrual` and `supply_tracking.reward_pool`, the payday
+     * writes `utxo_set` and deletes accrual rows — all CORE state-root
+     * legs — so CORE must be declared touched exactly when
+     * (n_graduates > 0 || dist_accrued > 0 || n_payday_utxos > 0). A
+     * boundary that credits nothing and pays nothing moves none of them
+     * and must NOT declare CORE — the engine rejects a declared no-op
+     * just as hard as an undeclared mutation (nodus_witness_v2_apply.c
+     * phases 8-9). The balance copy is OUT of every root and never
+     * decides a declaration. */
+    uint64_t dist_accrued;  /* Σ credited to v2_reward_accrual          */
+    uint32_t n_payday_utxos;/* payday UTXOs emitted at this boundary    */
 } nodus_v2_epoch_result_t;
 
 /**
@@ -601,17 +621,13 @@ int nodus_witness_v2_attendance_get(nodus_witness_t *w,
  * `boundary_height` is the epoch-boundary height H the caller is
  * evaluating AT (Rule N: the boundary it is currently running at, H
  * itself — the epoch that just accumulated attendance is (H-E, H]. The
- * settlement bar: `settling_epoch_start + DNAC_EPOCH_LENGTH`, since
- * settlement always drains the epoch immediately BEFORE the boundary it
- * runs at — the two derivations name the same H).
+ * reward distribution: the SAME H, which it is called with since
+ * tokenomics-v3 P2).
  *
  * Reads via `nodus_witness_v2_attendance_get`; an ABSENT row (arc == 1)
  * is the honest zero (never signed) that P1/P2 both fail on, not a
- * caller-visible distinction. The GENESIS CARVE-OUT (settlement's epoch
- * 0: every genesis-seeded validator is treated as present) is NOT part
- * of this predicate — it is a precondition the settlement caller applies
- * BEFORE calling, exactly as it did before round 3; this function has no
- * epoch-0 special case of its own.
+ * caller-visible distinction. There is NO genesis carve-out anywhere
+ * (removed in P1 round 5); this function has no epoch-0 special case.
  *
  * @param out  1 == both predicates pass (present); 0 == miss. Written
  *             only on a 0 return.
@@ -760,6 +776,62 @@ int nodus_witness_v2_epoch_authority_for_height(nodus_witness_t *w,
 static inline uint64_t nodus_v2_epoch_start_for_height(uint64_t h) {
     return (h / (uint64_t)DNAC_EPOCH_LENGTH) * (uint64_t)DNAC_EPOCH_LENGTH;
 }
+
+/**
+ * L(h) — THE POWER EXIT BOUNDARY of a stake change executed in block h
+ * (tokenomics-v3 P2-10; design docs/plans/2026-09-23-tokenomics-v3-
+ * consensus-binding-design.md §7.1; decision docs/plans/decisions/
+ * 2026-09-22-nodus-tokenomics-v3-operator.md §1 "Stake çözme" and §3
+ * 2026-09-24 "DELEGATOR = VALIDATOR GİBİ"): the first boundary at which
+ * a validator set that NO LONGER counts the changed stake takes effect.
+ * With E = DNAC_EPOCH_LENGTH:
+ *
+ *   nb(h) = ceil(h / E) · E        (h itself when h is a boundary)
+ *   L(h)  = nb(h) + E
+ *
+ * DERIVATION, from the code in this tree:
+ *   1. A block's transactions run BEFORE its own boundary: the envelopes
+ *      execute with ctx.global_height = blk->global_height
+ *      (nodus_witness_v2_apply.c:1307, called at :3640) and the boundary
+ *      is phase 6e, later in the same block (:4163). So the FIRST
+ *      boundary whose commit_next sees a change made in block h is nb(h)
+ *      — h itself when h is a boundary, because block h's transactions
+ *      are already applied when block h's boundary runs.
+ *   2. commit_next reads the LIVE stake, self_stake + external_delegated
+ *      (nodus_witness_committee.c:338-339, the bootstrap twin :481-482).
+ *   3. The set commit_next builds at boundary B is keyed B + E
+ *      (nodus_witness_vset.c:703) — it governs (B+E, B+2E], not
+ *      (B, B+E]. The boundary builds it at nodus_witness_v2_epoch.c:1348
+ *      and writes the frozen balance copy right after (:1359), with no
+ *      stake movement in between.
+ *   So the set built at nb(h) is the first that excludes the change, and
+ *   it takes effect at nb(h) + E = L(h). cometbft's own two-height
+ *   ValidatorUpdate delay is NOT included (decision §3 S-1).
+ *
+ * The UNDELEGATE release UTXO is born locked to L(h) +
+ * DNAC_UNDELEGATE_LOCK_EPOCHS · E (nodus_witness_rt_native.c
+ * rtn_sysfund_exec); the spend gates refuse it while unlock >= height.
+ *
+ * P3 NOTE: when P3's "okuma B" (the selection reads the frozen copy of
+ * the PREVIOUS boundary) lands, a stake change is first seen by the set
+ * built one boundary later, and L(h) becomes nb(h) + 2E. THREE things
+ * move together, never this function alone (P2 rev 2 red-team,
+ * 2026-09-24): (1) this function; (2) the distribution's source copy,
+ * nodus_witness_v2_econ.c v2ec_source_copy — it must name the copy the
+ * governing snapshot was BUILT from (H−3E instead of H−2E), or the
+ * consistency gate faults on every honest node at the first boundary
+ * after any delegation; (3) the copy retention in
+ * nodus_witness_v2_balance_copy_write — it prunes below epoch_start − E
+ * today, so copy(H−3E) would already be gone. D-9 also wants a status
+ * column the copy does not carry.
+ *
+ * Pure height arithmetic: no clock, no database, identical on every
+ * node for the same h.
+ *
+ * @param out  required; written only on 0.
+ * @return 0; -1 when L(h) does not fit in 64 bits (or out is NULL).
+ */
+int nodus_v2_power_exit_boundary(uint64_t h, uint64_t *out);
 
 #ifdef __cplusplus
 }

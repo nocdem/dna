@@ -1231,37 +1231,46 @@ int nodus_witness_v2_epoch_boundary_apply(
     if (fault && fault(fault_ud, NODUS_V2_EPST_COMMISSIONS, UINT32_MAX))
         return -2;
 
+    /* ── 1b. THE REWARD DISTRIBUTION (tokenomics-v3 P2, P2-6) ─────────
+     * Pays the epoch (H−E, H] that JUST ENDED into the per-recipient
+     * accrual. ORDER IS LOAD-BEARING — the header's "WHY THE
+     * DISTRIBUTION SITS AT 1b": it reads the ended epoch's attendance
+     * (zeroed by the reset at 3c) and the source balance copy
+     * copy(H−2E), which this boundary's step 6 prunes. It deliberately
+     * does NOT reset attendance itself: step 3c does, inside this same
+     * transaction. */
+    if (nodus_witness_v2_settlement_apply(w, global_height, fault, fault_ud,
+                                          &out->dist_accrued) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "reward distribution failed at boundary "
+                      "%llu", (unsigned long long)global_height);
+        return -2;
+    }
+
+    /* ── 1c. PAYDAY (tokenomics-v3 P2, P2-7) ──────────────────────────
+     * AFTER 1b, so a paying boundary pays the epoch it just credited
+     * too. The interval is the chain's own (its stored genesis
+     * document); a read fault is a fault, never "not a payday". */
+    {
+        uint64_t interval = 0;
+        if (nodus_witness_v2_payout_interval(w, &interval) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "payout interval unreadable at "
+                          "boundary %llu", (unsigned long long)global_height);
+            return -2;
+        }
+        if (nodus_witness_v2_payday_apply(w, global_height, interval,
+                                          fault, fault_ud,
+                                          &out->n_payday_utxos) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "payday failed at boundary %llu",
+                          (unsigned long long)global_height);
+            return -2;
+        }
+    }
+
     if (v2ep_graduate(w, global_height, chain_id, fault, fault_ud,
                       &out->n_graduates) != 0)
         return -2;
     if (fault && fault(fault_ud, NODUS_V2_EPST_GRAD_BATCH, UINT32_MAX))
         return -2;
-
-    /* ── EPOCH SETTLEMENT (O15J Faz 2 — V1's economics, ported) ──────
-     * Drains the epoch that JUST ENDED. The key is the canonical
-     * epoch_start of the previous epoch: at H = k*E that is H - E, and
-     * the gate above already proved H is a positive multiple of E, so
-     * the subtraction cannot underflow.
-     *
-     * ORDER IS LOAD-BEARING, and the reason is written out in the
-     * header ("WHY SETTLEMENT SITS AT 2b"): the attendance gate reads
-     * `v2_attendance.signed_count` (tokenomics-v3 P1), and the attendance
-     * RESET step below zeroes that column. Settling after the reset
-     * would read all zeros and burn every share on every node —
-     * deterministically wrong rather than flaky, which is worse, not
-     * better. Settlement therefore runs BEFORE it, and deliberately does
-     * NOT repeat the reset V1 performs at its own tail
-     * (bft.c:3350-3360): the boundary's own attendance-reset step is
-     * about to issue exactly that UPDATE, inside this same
-     * transaction. */
-    if (nodus_witness_v2_settlement_apply(
-            w, global_height - (uint64_t)DNAC_EPOCH_LENGTH,
-            fault, fault_ud,
-            &out->n_settle_utxos, &out->settle_burned) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "settlement failed at boundary %llu",
-                      (unsigned long long)global_height);
-        return -2;
-    }
 
     /* ── RULE N (tokenomics-v3 P1, D-3 — REWRITTEN) ───────────────────
      * Every ACTIVE row with a duty evaluated against the committed
@@ -1276,10 +1285,9 @@ int nodus_witness_v2_epoch_boundary_apply(
      * tenure or bonded membership, `chain_config_history`, or the H-1
      * seed row in between would break it. Full contract: v2ep_rule_n
      * above and the header's "RULE N: REWRITTEN" section. Ordered BEFORE the
-     * attendance digest/reset and the boundary flips, mirroring the
-     * legacy boundary sequence (1 commissions → 2 graduation →
-     * 2b settlement → 3 Rule N → 3b digest → 3c reset → 4 flips →
-     * 5 snapshot). */
+     * attendance digest/reset and the boundary flips (1 commissions →
+     * 1b distribution → 1c payday → 2 graduation → 3 Rule N → 3b digest
+     * → 3c reset → 4 flips → 5 snapshot → 6 balance copy). */
     if (v2ep_rule_n(w, global_height) != 0) return -2;
     if (fault && fault(fault_ud, NODUS_V2_EPST_RULE_N, UINT32_MAX))
         return -2;
@@ -1304,10 +1312,10 @@ int nodus_witness_v2_epoch_boundary_apply(
      * The ONLY writer of this reset on this lane — every node enters the
      * next epoch with `v2_attendance.signed_count` at 0, per-address,
      * `last_signed_height` untouched (Rule N's own P2 watermark). Both
-     * settlement above and Rule N above depend on running BEFORE this
-     * step; moving it earlier, or folding it into either of them, breaks
-     * one of the two — do neither without reading the header's "WHY
-     * SETTLEMENT SITS AT 2b". */
+     * the distribution (1b) and Rule N above depend on running BEFORE
+     * this step; moving it earlier, or folding it into either of them,
+     * breaks one of the two — do neither without reading the header's
+     * "WHY THE DISTRIBUTION SITS AT 1b". */
     if (v2ep_attendance_reset(w) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "attendance reset failed at boundary %llu",
                       (unsigned long long)global_height);
@@ -1344,12 +1352,24 @@ int nodus_witness_v2_epoch_boundary_apply(
     if (fault && fault(fault_ud, NODUS_V2_EPST_SNAPSHOT_PERSIST, UINT32_MAX))
         return -2;
 
+    /* ── 6. THE FROZEN BALANCE COPY (tokenomics-v3 P2, P2-5) ──────────
+     * LAST: the bonded balances the NEXT epoch starts from, after every
+     * transition above (the graduation is the only one that moves a
+     * stake). The distribution at H+E reads it. Out of every root. */
+    if (nodus_witness_v2_balance_copy_write(w, global_height) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "balance copy failed at boundary %llu",
+                      (unsigned long long)global_height);
+        return -2;
+    }
+    if (fault && fault(fault_ud, NODUS_V2_EPST_BALANCE_COPY, UINT32_MAX))
+        return -2;
+
     QGP_LOG_DEBUG(LOG_TAG, "boundary at %llu applied (%u graduates, "
-                  "%u settlement utxos, %llu burned)",
+                  "%llu accrued, %u payday utxos)",
                   (unsigned long long)global_height,
                   (unsigned)out->n_graduates,
-                  (unsigned)out->n_settle_utxos,
-                  (unsigned long long)out->settle_burned);
+                  (unsigned long long)out->dist_accrued,
+                  (unsigned)out->n_payday_utxos);
     return 0;
 }
 
@@ -1443,4 +1463,26 @@ int nodus_witness_v2_epoch_authority_for_height(
     return nodus_witness_v2_epoch_authority_for_epoch(
         w, nodus_v2_epoch_start_for_height(global_height),
         snap_out, n_out, quorum_out);
+}
+
+/* ── tokenomics-v3 P2-10: the power exit boundary L(h) ────────────────
+ * Contract and the derivation (why nb(h) + E) are in the header. Every
+ * step is checked: ceil(h/E)·E and the + E can both leave 64 bits for a
+ * height near UINT64_MAX, and a wrapped boundary would be a lock that
+ * opens in the past. */
+int nodus_v2_power_exit_boundary(uint64_t h, uint64_t *out) {
+    if (!out) return -1;
+    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+
+    /* nb(h) = ceil(h / E) · E — h itself when h is a boundary. */
+    uint64_t nb = h;
+    if ((h % E) != 0) {
+        const uint64_t q = h / E + 1;        /* h / E < UINT64_MAX: E > 1
+                                              * or h % E would be 0     */
+        if (q > UINT64_MAX / E) return -1;
+        nb = q * E;
+    }
+    if (nb > UINT64_MAX - E) return -1;
+    *out = nb + E;
+    return 0;
 }

@@ -588,8 +588,9 @@ int nodus_witness_v2_bundle_apply(nodus_witness_t *w2,
      * only CORE has one (nodus_witness_runtime.c:367,
      * nodus_rt_core_state_init). That hook's own gate
      * (nodus_witness_v2_pools.c:1194-1203) requires the schema to
-     * ALREADY be S7, S8, S9, S10, S11, S12 or S15 (tokenomics-v3 P1
-     * moved the accepted value from S14) — and fails CLOSED
+     * ALREADY be S7, S8, S9, S10, S11, S12 or S16 (tokenomics-v3 P1
+     * moved the accepted value from S14 to S15, P2 from S15 to S16) —
+     * and fails CLOSED
      * with a bare `return -1`, no log line. In the order this function
      * used before this fix, domreg_init_genesis ran BEFORE
      * nodus_witness_db_migrate_v2s14, so on a freshly
@@ -606,17 +607,18 @@ int nodus_witness_v2_bundle_apply(nodus_witness_t *w2,
      * that misattribution here so the next reader does not go looking
      * for a document read that direction does not take.)
      *
-     * Fix: migrate to S15 (tokenomics-v3 P1 moved the live rung from
-     * S14; cascades from wherever the scratch DB already is —
-     * nodus_witness_v2_schema.c's ladder) and store the document FIRST,
-     * so the CORE gate already sees S15 by the time domreg_init_genesis
+     * Fix: migrate to S16 (tokenomics-v3 P1 moved the live rung from
+     * S14 to S15, P2 from S15 to S16; cascades from wherever the scratch
+     * DB already is — nodus_witness_v2_schema.c's ladder) and store the
+     * document FIRST, so the CORE gate already sees S16 by the time
+     * domreg_init_genesis
      * dispatches to it — THEN snapshots, THEN domreg, THEN the
      * Comet-lane genesis, matching the order nodus_witness_v2_gen.c's
      * derive_v3 path already uses for the exact same reason
      * (:2924-2947, D-17 rev 10 (8)). Each step manages its own
      * transaction; a failure leaves the scratch DB for the caller to
      * discard. */
-    if (nodus_witness_db_migrate_v2s15(w2) != 0) { free(doc); return -1; }
+    if (nodus_witness_db_migrate_v2s16(w2) != 0) { free(doc); return -1; }
     {
         nodus_cmt_store_t s;
         if (nodus_cmt_store_init(&s, w2->db, false) != CMT_OK) {

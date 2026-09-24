@@ -20,7 +20,8 @@
 #include "witness/nodus_witness_v2_claims.h"
 #include "witness/nodus_witness_v2_adapter.h"
 #include "witness/nodus_witness_v2_epoch.h"    /* O12 S2: the boundary  */
-#include "witness/nodus_witness_v2_econ.h"     /* O15J Faz 2: emission  */
+#include "witness/nodus_witness_v2_econ.h"     /* econ params (6f),
+                                                * balance copy (genesis) */
 #include "witness/nodus_witness_runtime.h"
 #include "witness/nodus_witness_domreg.h"
 #include "witness/nodus_witness_roots_v2.h"
@@ -947,6 +948,20 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
          * the ONE canonical activation path.) */
 
         if (nodus_witness_v2_supply_check(w) != 0) break;
+
+        /* tokenomics-v3 P2 (P2-5): the epoch-0 frozen balance copy —
+         * the balances the first epoch starts from, read by the first
+         * boundary's reward distribution (nodus_witness_v2_econ.c). Out
+         * of every root, so written after every root above; written by
+         * THE ENGINE rather than by a builder, so every path that commits
+         * a genesis (the builder, a fixture, a joiner) produces the same
+         * rows from the same committed validators/delegations. A write
+         * failure is a NODE-LOCAL FAULT, never a verdict. */
+        if (nodus_witness_v2_balance_copy_write(w, 0) != 0) {
+            free(heads);
+            (void)exec_sql(w, "ROLLBACK");
+            return NODUS_V2_INTERNAL_FAULT;
+        }
         ok = 1;
     } while (0);
     free(heads);
@@ -1105,14 +1120,26 @@ static int epoch_stage_fault(void *ud, nodus_v2_epoch_stage_t s,
              * (SETTLE_APPLIED before, BOUNDARY_FLIPS after) already
              * prove the rollback bracket for this region. */
             return 0;
-        case NODUS_V2_EPST_SETTLE_EMITTED:
-            return blk->fail_at == V2AP_FAIL_AFTER_SETTLE_EMITTED;
-        case NODUS_V2_EPST_SETTLE_APPLIED:
-            return blk->fail_at == V2AP_FAIL_AFTER_SETTLE_APPLIED;
+        /* NODUS_V2_EPST_SETTLE_EMITTED / _APPLIED (9, 10) are RETIRED by
+         * tokenomics-v3 P2 with the burning settlement; the module never
+         * fires them, and an unexpected one lands in `default` (fail
+         * closed). Their engine ids F50/F51 are retired with them. */
         case NODUS_V2_EPST_ATTENDANCE_DIGEST:
             return blk->fail_at == V2AP_FAIL_AFTER_ATTENDANCE_DIGEST;
         case NODUS_V2_EPST_ATTENDANCE_RESET:
             return blk->fail_at == V2AP_FAIL_AFTER_ATTENDANCE_RESET;
+        /* tokenomics-v3 P2 — the reward stages, mapped BY NAME onto the
+         * appended engine ids F55-F59. */
+        case NODUS_V2_EPST_DIST_ACCRUED:
+            return blk->fail_at == V2AP_FAIL_AFTER_DIST_ACCRUED;
+        case NODUS_V2_EPST_DIST_APPLIED:
+            return blk->fail_at == V2AP_FAIL_AFTER_DIST_APPLIED;
+        case NODUS_V2_EPST_PAYDAY_EMITTED:
+            return blk->fail_at == V2AP_FAIL_AFTER_PAYDAY_EMITTED;
+        case NODUS_V2_EPST_PAYDAY_APPLIED:
+            return blk->fail_at == V2AP_FAIL_AFTER_PAYDAY_APPLIED;
+        case NODUS_V2_EPST_BALANCE_COPY:
+            return blk->fail_at == V2AP_FAIL_AFTER_BALANCE_COPY;
         default:
             return 1;                    /* unknown stage: fail closed   */
     }
@@ -2246,18 +2273,20 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
     uint32_t ver = 0;
     if (blk->cmt.on) {
         /* ── THE COMETBFT LANE'S OWN PRECONDITIONS (D-23 rev 5) ───────
-         * S15 ONLY (tokenomics-v3 P1 moved the live rung from S14): this
-         * lane writes a `v2_blocks` row without `header`, `qc` or
-         * `commit_cert`, and at S12 `header` is NOT NULL, so the insert
-         * could not even be expressed. Nothing about the block is judged
-         * by either refusal — both are this node's shape. */
+         * S16 ONLY (tokenomics-v3 P1 moved the live rung from S14 to
+         * S15, P2 from S15 to S16): this lane writes a `v2_blocks` row
+         * without `header`, `qc` or `commit_cert`, and at S12 `header`
+         * is NOT NULL, so the insert could not even be expressed; below
+         * S16 the reward tables the boundary writes are not guaranteed.
+         * Nothing about the block is judged by either refusal — both are
+         * this node's shape. */
         if (nodus_witness_db_schema_version(w, &ver) != 0 ||
-            ver != NODUS_V2_SCHEMA_VERSION_S15) {
+            ver != NODUS_V2_SCHEMA_VERSION_S16) {
             V2AP_FAULT("cometbft lane: this node's schema version is %u, "
                        "not %u - the Comet block row cannot be written "
                        "here; nothing about the block was judged",
                        (unsigned)ver,
-                       (unsigned)NODUS_V2_SCHEMA_VERSION_S15);
+                       (unsigned)NODUS_V2_SCHEMA_VERSION_S16);
             return -2;
         }
         /* The HOST owns the transaction (D-23 rev 5 (5)): this entry
@@ -4178,24 +4207,26 @@ cmt_items_done:
                 goto fail_fault;
             }
             dsys->touched = 1;
-            /* O15J Faz 2 — CORE is touched by a graduation release AND
-             * by the settlement, which writes utxo_set and moves
-             * supply_tracking (both CORE state-root legs,
-             * nodus_witness_roots_v2.c:317-345). A boundary that settles
-             * an EMPTY pool moves neither and must NOT declare CORE:
-             * phase 9 rejects a declared no-op as hard as phase 8
-             * rejects an undeclared mutation. */
-            if (ep.n_graduates > 0 || ep.n_settle_utxos > 0 ||
-                ep.settle_burned > 0) {
+            /* tokenomics-v3 P2 — CORE is touched by a graduation release
+             * (utxo_set), by the reward distribution (v2_reward_accrual
+             * and supply_tracking.reward_pool) and by the payday
+             * (utxo_set and v2_reward_accrual) — all CORE state-root legs
+             * (nodus_witness_roots_v2.c nodus_witness_core_root_v2). A
+             * boundary that credits nothing and pays nothing moves none
+             * of them and must NOT declare CORE: phase 9 rejects a
+             * declared no-op as hard as phase 8 rejects an undeclared
+             * mutation. The balance copy is out of every root. */
+            if (ep.n_graduates > 0 || ep.dist_accrued > 0 ||
+                ep.n_payday_utxos > 0) {
                 dom_ctx_t *dcore = dom_for(doms, n_dom, DNA_DOMAIN_CORE);
                 if (!dcore) {
                     V2AP_FAULT("phase 6e: the boundary moved CORE state "
-                               "(%u graduates, %u settlement utxos, %llu "
-                               "burned) but CORE domain %u is absent from "
+                               "(%u graduates, %llu accrued, %u payday "
+                               "utxos) but CORE domain %u is absent from "
                                "the working set",
                                (unsigned)ep.n_graduates,
-                               (unsigned)ep.n_settle_utxos,
-                               (unsigned long long)ep.settle_burned,
+                               (unsigned long long)ep.dist_accrued,
+                               (unsigned)ep.n_payday_utxos,
                                (unsigned)DNA_DOMAIN_CORE);
                     goto fail_fault;
                 }
@@ -4204,57 +4235,38 @@ cmt_items_done:
         }
     }
 
-    /* 6f. O15J Faz 2 — PER-BLOCK INFLATION EMISSION.
+    /* 6f. PER-BLOCK BUILD-IDENTITY CHECK (tokenomics-v3 P2, P2-4).
      *
-     * The V1 order is transitions → emission → settlement
-     * (nodus_witness_bft.c:3594, :3638, :3737). This lane keeps the
-     * transitions-then-emission half literally; the settlement half moved
-     * INSIDE the boundary above, one step before Rule N, because Rule N's
-     * transplanted counter reset would otherwise destroy settlement's
-     * attendance input (nodus_witness_v2_epoch.h, "WHY SETTLEMENT SITS
-     * AT 2b"). The two are key-disjoint — at a boundary H the settlement
-     * drains epoch H-E while the mint accrues into epoch H, and E > 0 —
-     * so their relative order changes no committed byte.
-     *
-     * Engine-MANDATORY like the boundary: emission is a function of the
-     * height and committed chain_config alone, never caller-declared, so
-     * it runs unconditionally (a zero-envelope block still mints). It is
-     * a no-op before DNAC_CFG_INFLATION_START_BLOCK.
-     *
-     * Placed AFTER the boundary and BEFORE the supply gate so that the
-     * gate at phase 7 covers the mint this block performed — the same
-     * reason the boundary sits where it does. */
+     * This phase used to be the O15J per-block INFLATION EMISSION
+     * (nodus_witness_v2_emission_apply). P2 deletes the mint (decision
+     * file §1: "Yeni token basılmayacak"; §3 S-4), but the mint was also
+     * the per-block caller of nodus_witness_v2_econ_params_load, whose
+     * build-identity refusals must STILL run on every block: a node whose
+     * compiled DNAC_EPOCH_LENGTH disagrees with the chain's committed one
+     * would key its boundaries differently from its peers, and one whose
+     * compiled DNAC_DECIMAL_UNIT disagrees would derive every voting power
+     * (and the reward split's power) differently. This phase runs AFTER
+     * 6e, so on a boundary block a mismatched node has already executed
+     * its boundary in this transaction — the fault below rolls the whole
+     * block back, boundary included, so nothing it computed commits.
+     * That call is what remains here, with the same behaviour
+     * the mint gave it: a fault is a node fault, never a fallback; an
+     * absent band (present == 0, a chain built before Block 2C) keeps the
+     * compiled constants. It moves no state and declares nothing. The
+     * old F52 injection point (V2AP_FAIL_AFTER_EMISSION) is RETIRED with
+     * the mint it bracketed. */
     {
-        uint64_t minted = 0;
-        if (nodus_witness_v2_emission_apply(w, blk->global_height,
-                                            &minted) != 0) {
-            V2AP_FAULT("phase 6f: per-block emission at height %llu "
-                       "failed - like a boundary it has no verdict class, "
-                       "its input is committed state and the height alone",
+        nodus_v2_econ_params_t econ;
+        if (nodus_witness_v2_econ_params_load(w, &econ) != 0) {
+            V2AP_FAULT("phase 6f: the committed economic parameters at "
+                       "height %llu could not be established on this "
+                       "node (unreadable band, partial band, or an "
+                       "epoch_length or decimal_unit this build did not "
+                       "compile)",
                        (unsigned long long)blk->global_height);
             goto fail_fault;
         }
-        if (minted > 0) {
-            /* A mint moves supply_tracking (a CORE state-root leg,
-             * nodus_witness_roots_v2.c:342-345) AND epoch_state (a SYSTEM
-             * leg, :283-284). Both must be declared, and only when the
-             * mint was non-zero. */
-            dom_ctx_t *dcore_em = dom_for(doms, n_dom, DNA_DOMAIN_CORE);
-            dom_ctx_t *dsys_em  = dom_for(doms, n_dom, DNA_DOMAIN_SYSTEM);
-            if (!dcore_em || !dsys_em) {
-                V2AP_FAULT("phase 6f: %llu minted at height %llu but "
-                           "domain %u is absent from the working set",
-                           (unsigned long long)minted,
-                           (unsigned long long)blk->global_height,
-                           (unsigned)(!dcore_em ? DNA_DOMAIN_CORE
-                                                : DNA_DOMAIN_SYSTEM));
-                goto fail_fault;
-            }
-            dcore_em->touched = 1;
-            dsys_em->touched  = 1;
-        }
     }
-    FAIL_POINT(V2AP_FAIL_AFTER_EMISSION);
 
     /* 7. supply gate (post-stage) */
     if (nodus_witness_v2_supply_check(w) != 0) {
@@ -5447,7 +5459,7 @@ int nodus_witness_v2_genesis_cmt(nodus_witness_t *w,
     if (!manifest_bytes || manifest_len == 0) return -1;
 
     /* SCHEMA GATE (HISTORY): S12 OR S14 IN W2 — S14 ALONE FROM W3.
-     * CURRENT (tokenomics-v3 P1 round 5): S15 alone — see the gate's
+     * CURRENT (tokenomics-v3 P2): S16 alone (P1 round 5 had S15) — see the gate's
      * own check below and the paragraph's last sentence; everything
      * above this point in the comment is the W2/W3 history that led
      * here, not today's requirement.
@@ -5473,11 +5485,13 @@ int nodus_witness_v2_genesis_cmt(nodus_witness_t *w,
      * path any more. The version-2 entry's own gate at :620-623 (S9-S12)
      * is untouched — it belongs to the closed old lane.
      * tokenomics-v3 P1 moves this gate's accepted value S14 -> S15 (the
-     * derivation now migrates to S15 before this point). */
+     * derivation now migrates to S15 before this point); tokenomics-v3
+     * P2 moves it S15 -> S16 (the reward pool column and the two reward
+     * tables; the derivation migrates to S16 first). */
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0 ||
-        ver != NODUS_V2_SCHEMA_VERSION_S15) {
-        QGP_LOG_ERROR(LOG_TAG, "cometbft genesis needs schema S15, the "
+        ver != NODUS_V2_SCHEMA_VERSION_S16) {
+        QGP_LOG_ERROR(LOG_TAG, "cometbft genesis needs schema S16, the "
                       "database is at %u — refusing", (unsigned)ver);
         return -1;
     }
@@ -5634,6 +5648,17 @@ int nodus_witness_v2_genesis_cmt(nodus_witness_t *w,
         /* :906 — the conservation invariant must balance before this
          * genesis is allowed to exist. */
         if (nodus_witness_v2_supply_check(w) != 0) break;
+
+        /* tokenomics-v3 P2 (P2-5) — the epoch-0 frozen balance copy, the
+         * version-2 entry's step verbatim in intent (see there). A
+         * joiner reaches this same function (nodus_witness_v2_bundle.c)
+         * over the bundle's validators/delegations, so it writes the
+         * byte-identical rows the builder wrote. */
+        if (nodus_witness_v2_balance_copy_write(w, 0) != 0) {
+            (void)exec_sql(w, "ROLLBACK");
+            free(heads);
+            return NODUS_V2_INTERNAL_FAULT;
+        }
         ok = 1;
     } while (0);
     free(heads);

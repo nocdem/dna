@@ -85,7 +85,10 @@ static int v2x_q1(struct nodus_witness *wns, const char *sql,
  *                    canonical 8-byte value.
  * op 2 V2X_OP_UTXDEL DELETE: key = nullifier, value empty.
  * op 3 V2X_OP_SUPPLY SET over the supply_tracking counters: key = 1
- *                    byte selector (1 = total_minted, 2 = total_burned),
+ *                    byte selector (1 = total_minted, 2 = total_burned,
+ *                    3 = reward_pool — the tokenomics-v3 P2 reserve, the
+ *                    same numbering the native runtime uses,
+ *                    nodus_witness_rt_native.c RTN_SUPPLY_SEL_POOL),
  *                    value = 8-byte BE ABSOLUTE counter value.
  */
 #define V2X_OP_UTXO   1u
@@ -119,7 +122,9 @@ static int v2x_supply_get(struct nodus_witness *wns, uint8_t sel,
                           int *exists, uint64_t *val) {
     const char *sql = sel == 1
         ? "SELECT total_minted FROM supply_tracking WHERE id=1"
-        : "SELECT total_burned FROM supply_tracking WHERE id=1";
+        : sel == 2
+        ? "SELECT total_burned FROM supply_tracking WHERE id=1"
+        : "SELECT reward_pool FROM supply_tracking WHERE id=1";
     uint64_t v = 0;
     int rc = v2x_q1(wns, sql, &v);
     if (rc < 0) return -1;
@@ -140,7 +145,7 @@ static nodus_adapter_status_t v2x_core_probe(
         if (v2x_utxo_row(w, dom, key, key_len, &ex, &val) != 0)
             return NODUS_ADAPTER_ERR_STORAGE_FAULT;
     } else if (op->op_id == V2X_OP_SUPPLY) {
-        if (key_len != 1 || (key[0] != 1 && key[0] != 2))
+        if (key_len != 1 || key[0] < 1 || key[0] > 3)
             return NODUS_ADAPTER_ERR_STORAGE_FAULT;
         if (v2x_supply_get(w, key[0], &ex, &val) != 0)
             return NODUS_ADAPTER_ERR_STORAGE_FAULT;
@@ -216,11 +221,13 @@ static nodus_adapter_status_t v2x_core_mutate(
         sqlite3_bind_blob(st, 1, key, key_len, SQLITE_TRANSIENT);
         sqlite3_bind_int64(st, 2, (sqlite3_int64)dom);
     } else if (op->op_id == V2X_OP_SUPPLY && kind == DNA_EFFECT_SET) {
-        if (key_len != 1 || value_len != 8)
+        if (key_len != 1 || value_len != 8 || key[0] < 1 || key[0] > 3)
             return NODUS_ADAPTER_ERR_STORAGE_FAULT;
         const char *sql = key[0] == 1
             ? "UPDATE supply_tracking SET total_minted=?1 WHERE id=1"
-            : "UPDATE supply_tracking SET total_burned=?1 WHERE id=1";
+            : key[0] == 2
+            ? "UPDATE supply_tracking SET total_burned=?1 WHERE id=1"
+            : "UPDATE supply_tracking SET reward_pool=?1 WHERE id=1";
         if (sqlite3_prepare_v2(w->db, sql, -1, &st, NULL) != SQLITE_OK)
             return NODUS_ADAPTER_ERR_STORAGE_FAULT;
         sqlite3_bind_int64(st, 1, (sqlite3_int64)v2x_get64(value));

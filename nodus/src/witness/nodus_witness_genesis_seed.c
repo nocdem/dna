@@ -129,8 +129,15 @@ int nodus_witness_genesis_seed_validators(nodus_witness_t *w,
         }
 
         /* v0.16: reward row seeding removed — the push-settlement model
-         * has no per-validator reward state. epoch_state[0] is seeded by
-         * genesis instead (Stage B.1). */
+         * has no per-validator reward state. The "epoch_state[0] is
+         * seeded by genesis" note that stood here is stale: tokenomics-v3
+         * P2 replaced the epoch_state reward pool with
+         * supply_tracking.reward_pool (P2-4; nodus_witness_v2_econ.c file
+         * header, "WHAT P2 DELETED"), and the reward state a version-3
+         * chain starts from is that pool plus the epoch-0 balance copy,
+         * which the ENGINE genesis writes from these rows
+         * (nodus_witness_v2_apply.c, the two
+         * nodus_witness_v2_balance_copy_write(w, 0) calls). */
     }
 
     if (!w->db) {

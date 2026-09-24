@@ -289,7 +289,8 @@ int dnac_tx_verify_unstake_rules_internal(const dnac_transaction_t *tx) {
  * Rules requiring witness-side DB access are deferred to state-apply:
  *   - delegation(signer[0], validator_pubkey) exists
  *   - amount <= delegation.amount
- *   - Rule O: current_block − delegation.delegated_at_block >= EPOCH_LENGTH
+ * The old "Rule O" hold on delegated_at_block is superseded by the
+ * release UTXO's lock (tokenomics-v3 P2-10) — see the note in the body.
  */
 static int verify_undelegate_rules(const dnac_transaction_t *tx) {
     /* signer_count == 1 */
@@ -305,13 +306,19 @@ static int verify_undelegate_rules(const dnac_transaction_t *tx) {
         return DNAC_ERROR_INVALID_PARAM;
     }
 
-    /* TODO(Phase 8 Task 43 / witness-side):
+    /* Witness-side, at state-apply (the client has no witness DB):
      *   - delegation(signer[0].pubkey, validator_pubkey) exists
      *   - amount <= delegation.amount
-     *   - Rule O (hold duration): current_block − delegation.delegated_at_block
-     *     >= DNAC_EPOCH_LENGTH
-     * Requires nodus_delegation_lookup; the client has no witness DB so
-     * these run server-side at state-apply. */
+     * (nodus/src/witness/nodus_witness_rt_native.c rtn_undelegate_exec).
+     *
+     * Rule O — a hold measured as current_block −
+     * delegation.delegated_at_block — is NOT implemented anywhere and is
+     * SUPERSEDED: delegated_at_block is not a hold clock. The delegator's
+     * hold is the UNDELEGATE release UTXO's lock (tokenomics-v3 P2-10,
+     * design docs/plans/2026-09-23-tokenomics-v3-consensus-binding-
+     * design.md §7.1): the witness creates it locked to L(h) +
+     * DNAC_UNDELEGATE_LOCK_EPOCHS × DNAC_EPOCH_LENGTH (rtn_sysfund_exec),
+     * and every spend gate refuses it until then. */
 
     return DNAC_SUCCESS;
 }
@@ -411,10 +418,10 @@ int dnac_tx_verify_validator_update_rules_internal(const dnac_transaction_t *tx)
  *                                (nodus_witness_v2_apply.h's derived
  *                                envelope ceiling)
  *       BLOCK_INTERVAL_SEC     : [1, 15]
- *       INFLATION_START_BLOCK  : [0, 2^48]  (0 allowed at design-time —
- *                                 witness-side monotonicity rule Q5 kicks
- *                                 the "can't set to 0 once enabled" check
- *                                 on top of this)
+ *       INFLATION_START_BLOCK  : RETIRED (tokenomics-v3 P2, P2-4) — id 3
+ *                                is refused unconditionally, mirroring
+ *                                the witness-side scalar_rules; there is
+ *                                no per-block mint left to start
  *       TARGET_ACTIVE_COUNT    : [DNAC_CFG_MIN_TARGET_ACTIVE=7,
  *                                 DNAC_CFG_MAX_TARGET_ACTIVE=128]  (S3)
  *   - signed_at_block > 0                (CC-AUDIT-008)
@@ -469,13 +476,17 @@ static int verify_chain_config_rules(const dnac_transaction_t *tx) {
             }
             break;
         case DNAC_CFG_INFLATION_START_BLOCK:
-            if (cc->new_value > DNAC_CFG_MAX_INFLATION_START_BLOCK) {
-                QGP_LOG_ERROR(LOG_TAG,
-                              "CHAIN_CONFIG: INFLATION_START_BLOCK=%llu > 2^48",
-                              (unsigned long long)cc->new_value);
-                return DNAC_ERROR_INVALID_PARAM;
-            }
-            break;
+            /* RETIRED (tokenomics-v3 P2, P2-4; decision file §3 S-4):
+             * the per-block mint this parameter gated is deleted, so the
+             * id left governance exactly as id 1 did above — refused
+             * unconditionally here, mirroring
+             * nodus_witness_chain_config.c's scalar_rules witness-side.
+             * This id is NEVER accepted again; ids 2 and 4 keep their
+             * numbers. */
+            QGP_LOG_ERROR(LOG_TAG,
+                          "CHAIN_CONFIG: param_id=3 (INFLATION_START_BLOCK) "
+                          "is retired");
+            return DNAC_ERROR_INVALID_PARAM;
         case DNAC_CFG_TARGET_ACTIVE_COUNT:
             if (cc->new_value < DNAC_CFG_MIN_TARGET_ACTIVE ||
                 cc->new_value > DNAC_CFG_MAX_TARGET_ACTIVE) {
@@ -552,10 +563,8 @@ static int verify_chain_config_rules(const dnac_transaction_t *tx) {
      *     effective_block_height (for ergonomic params: MAX_TXS).
      *   - commit_block + DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS <=
      *     effective_block_height (for safety-critical params:
-     *     BLOCK_INTERVAL, INFLATION_START).
+     *     BLOCK_INTERVAL, TARGET_ACTIVE_COUNT).
      *   - commit_block <= valid_before_block (freshness).
-     *   - INFLATION_START_BLOCK monotonicity (Q5): once non-zero committed,
-     *     reject new_value == 0 and reject new_value > current_block.
      *   - Exclusive-block rule (Q7): block containing chain_config_tx has
      *     tx_count == 1. */
 

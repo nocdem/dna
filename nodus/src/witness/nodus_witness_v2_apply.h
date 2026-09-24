@@ -244,8 +244,10 @@
  *   - SYSTEM declares no asset state (NULL hook);
  *   - the native CORE runtime enforces the DNAC conservation equation
  *     (genesis + minted − burned == Σ CORE utxo + Σ self_stake +
- *     Σ delegated + Σ epoch_pool + unclaimed CORE-NATIVE distribution +
- *     shielded ≡ 0), including a fail-closed guard that no foreign
+ *     Σ delegated + reward_pool + Σ accrued + unclaimed CORE-NATIVE
+ *     distribution + shielded — tokenomics-v3 P2 replaced the
+ *     epoch_pool term with the reward pool and the per-recipient
+ *     accrual), including a fail-closed guard that no foreign
  *     domain owns a utxo_set row and no shielded/pool table exists —
  *     see nodus_rt_core_invariant (nodus_witness_v2_claims.c);
  *   - a registered ACTIVE domain whose runtime this build cannot
@@ -663,9 +665,12 @@ typedef enum {
      * Rule N — the second rollback window. 52 brackets the per-block
      * mint: total_minted and epoch_pool_accum move together or not at
      * all, which is the conservation equation's own precondition. */
-    V2AP_FAIL_AFTER_SETTLE_EMITTED     = 50, /* payout UTXOs written     */
-    V2AP_FAIL_AFTER_SETTLE_APPLIED     = 51, /* burn + epoch row retired */
-    V2AP_FAIL_AFTER_EMISSION           = 52, /* per-block mint accrued   */
+    /* 50-52 RETIRED by tokenomics-v3 P2 (P2-4 / P2-6): the burning
+     * settlement and the per-block mint they bracketed are deleted. The
+     * ids stay reserved — never fired, never reused. */
+    V2AP_FAIL_AFTER_SETTLE_EMITTED     = 50, /* RETIRED (P2)             */
+    V2AP_FAIL_AFTER_SETTLE_APPLIED     = 51, /* RETIRED (P2)             */
+    V2AP_FAIL_AFTER_EMISSION           = 52, /* RETIRED (P2)             */
 
     /* tokenomics-v3 P1 (D-4, S-2) — the attendance digest leg. APPENDED;
      * 39-52 are pinned by shipped tests and are never renumbered. 53
@@ -677,7 +682,28 @@ typedef enum {
      * NODUS_V2_EPST_RULE_N) and the boundary flips (F43) in execution
      * order, exactly as F50/F51 sit between graduation and Rule N. */
     V2AP_FAIL_AFTER_ATTENDANCE_DIGEST = 53, /* digest row written        */
-    V2AP_FAIL_AFTER_ATTENDANCE_RESET  = 54  /* signed_count reset        */
+    V2AP_FAIL_AFTER_ATTENDANCE_RESET  = 54, /* signed_count reset        */
+
+    /* tokenomics-v3 P2 — the reward stages. APPENDED; 39-54 are pinned
+     * by shipped tests and are never renumbered. All five fire INSIDE
+     * the transaction on a boundary height only, from the boundary
+     * module's stage callback (NODUS_V2_EPST_DIST_* / _PAYDAY_* /
+     * _BALANCE_COPY, mapped BY NAME in epoch_stage_fault).
+     *   55 every accrual row of the distribution credited, the reward
+     *      pool NOT yet debited — an interrupt must leave no accrual row
+     *      and no pool movement;
+     *   56 the pool debited — the second window of the distribution;
+     *   57 every payday UTXO written, the accrual rows NOT yet deleted —
+     *      an interrupt must leave neither a paid UTXO nor a missing
+     *      accrual;
+     *   58 the accrual rows deleted;
+     *   59 copy(H) written and the older copy pruned (out of every root:
+     *      the proof obligation is the whole-DB digest, not a root). */
+    V2AP_FAIL_AFTER_DIST_ACCRUED      = 55, /* accrual rows credited     */
+    V2AP_FAIL_AFTER_DIST_APPLIED      = 56, /* reward pool debited       */
+    V2AP_FAIL_AFTER_PAYDAY_EMITTED    = 57, /* payday UTXOs written      */
+    V2AP_FAIL_AFTER_PAYDAY_APPLIED    = 58, /* accrual rows deleted      */
+    V2AP_FAIL_AFTER_BALANCE_COPY      = 59  /* copy(H) written, pruned   */
 } nodus_v2_apply_fail_t;
 
 /*
@@ -1153,11 +1179,13 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
  * Everything above describes the LEGACY lane and is unchanged. With
  * `cmt.on` the same entry behaves as cometbft's `FinalizeBlock`:
  *
- *   · SCHEMA. S15 only (tokenomics-v3 P1 round 5 moved this gate's
- *     accepted value from the earlier S14). At any other version the
- *     entry returns -2 — the Comet row shape needs the three columns
- *     S14 dropped to be gone, AND S15's own two `validators` columns
- *     (`last_signed_block`, `signed_blocks_this_epoch`) to be gone.
+ *   · SCHEMA. S16 only (tokenomics-v3 P1 round 5 moved this gate's
+ *     accepted value from the earlier S14 to S15; P2 moves it to S16).
+ *     At any other version the entry returns -2 — the Comet row shape
+ *     needs the three columns S14 dropped to be gone, S15's own two
+ *     `validators` columns (`last_signed_block`,
+ *     `signed_blocks_this_epoch`) to be gone, and S16's reward pool
+ *     column and two reward tables to exist.
  *   · TRANSACTION. The entry opens NOTHING and closes NOTHING. It
  *     REQUIRES the caller's transaction to be open already
  *     (`sqlite3_get_autocommit(w->db) == 0`) and returns -2 otherwise;
@@ -1307,12 +1335,13 @@ int nodus_witness_v2_local_index_find(const uint8_t ids[][64], uint32_t n,
  * commit that widens the pool gate. The version-2 entry's gate (S9-S12)
  * is untouched and stays the live path's.
  *
- * CURRENT (tokenomics-v3 P1 round 5): the destination is S15, not S14 —
- * the derivation now climbs S12 -> S15 (`nodus_witness_db_migrate_v2s15`
- * cascades through S14 and S13, `nodus_witness_v2_gen.c:2951-2954`), and
- * this entry's own gate accepts S15 only. Everything in the paragraph
- * above this one is the W2/W3 history that shaped the climb, not today's
- * target version.
+ * CURRENT (tokenomics-v3 P2): the destination is S16 (P1 round 5 had
+ * S15) — the derivation climbs S12 -> S16 (`nodus_witness_db_migrate_
+ * v2s16` cascades through S15, S14 and S13, nodus_witness_v2_gen.c
+ * derive_v3), and this entry's own gate accepts S16 only. Everything in
+ * the paragraph above this one is the W2/W3 history that shaped the
+ * climb, not today's target version. The entry also writes the epoch-0
+ * frozen balance copy (nodus_witness_v2_balance_copy_write, P2-5).
  *
  * NOT IDEMPOTENT, and it cannot be: the version-2 entry decides "already
  * done" from the height-0 row this one does not write. A database that
@@ -1321,7 +1350,7 @@ int nodus_witness_v2_local_index_find(const uint8_t ids[][64], uint32_t n,
  * VERIFIES its committed genesis through InitChain, it never re-applies
  * it.
  *
- * @param w                the open chain (S15), outside a transaction.
+ * @param w                the open chain (S16), outside a transaction.
  * @param vset_hash        the 64-byte genesis authority hash. An
  *                         ASSERTION: when a genesis snapshot is already
  *                         committed it MUST equal it.

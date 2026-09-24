@@ -483,6 +483,15 @@ static int gen_leaf_qcmp(const void *a, const void *b) {
                              (const dna_dist_leaf_t *)b);
 }
 
+/* tokenomics-v3 P2 (P2-1): the genesis reward reserve a config commits.
+ * `reward_pool_initial` is a VERSION-3 field — the version-2 encoder
+ * stops before it (gen_encode_planned), so a version-2 config reserves
+ * nothing, whatever the (ignored) field holds. */
+static uint64_t gen_reward_pool(const nodus_v2_gen_config_t *cfg) {
+    return cfg->config_version == NODUS_V2_GEN_CONFIG_VERSION_V3
+               ? cfg->reward_pool_initial : 0;
+}
+
 static int gen_plan_build(const nodus_v2_gen_config_t *cfg, gen_plan_t *p) {
     if (!cfg || !p) return -1;
     memset(p, 0, sizeof(*p));
@@ -535,19 +544,22 @@ static int gen_plan_build(const nodus_v2_gen_config_t *cfg, gen_plan_t *p) {
         return -1;
     }
 
-    /* ── the inflation start is FREE, but bounded ─────────────────────
-     * Unlike the three above it is a genuine operator choice: 0 means
-     * emission never runs, any other value is the first minted height.
-     * The bound mirrors the governance rule
-     * (nodus_chain_config_scalar_rules CC_PARAM_INFLATION_START,
-     * nodus_witness_chain_config.c:508-510) — genesis must not commit a
-     * value that no later vote could legally produce, or the chain starts
-     * outside its own parameter space. */
-    if (cfg->inflation_start_block > DNAC_CFG_MAX_INFLATION_START_BLOCK) {
-        QGP_LOG_ERROR(LOG_TAG, "config inflation_start_block %llu exceeds "
-                      "the governance ceiling %llu",
-                      (unsigned long long)cfg->inflation_start_block,
-                      (unsigned long long)DNAC_CFG_MAX_INFLATION_START_BLOCK);
+    /* ── the inflation start is RETIRED: it MUST be 0 ─────────────────
+     * tokenomics-v3 P2 (P2-4; decision file §1 "Yeni token
+     * basılmayacak", §3 S-4 "blok başı basım kodu SİLİNİR,
+     * INFLATION_START parametresi (id 3) emekli"). There is no per-block
+     * mint left for a start height to switch on, so the field has ONE
+     * legal value — the claim window's rule below. It stays in the
+     * config and in the version-3 document's encoding (the document
+     * layout is unchanged by P2) but is no longer committed as a
+     * chain_config_history row, and a nonzero value is REFUSED: a
+     * document that says "emission starts at block K" on a chain that
+     * cannot mint would be a document that lies. */
+    if (cfg->inflation_start_block != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "config inflation_start_block %llu — the "
+                      "per-block mint is retired (tokenomics-v3 P2), the "
+                      "only legal value is 0",
+                      (unsigned long long)cfg->inflation_start_block);
         return -1;
     }
 
@@ -792,7 +804,17 @@ static int gen_plan_build(const nodus_v2_gen_config_t *cfg, gen_plan_t *p) {
 
     /* ── L2-F6 Rule P.2 — the supply sum ──────────────────────────────
      * genesis.c:120-152: Σ outputs + Σ self-bond == the chain's
-     * committed initial supply. Under- AND over-allocation both reject. */
+     * committed initial supply. Under- AND over-allocation both reject.
+     *
+     * tokenomics-v3 P2 (P2-1): the reward reserve is part of the fixed
+     * total supply (decision §1: 200M of the 1B "Konsensüs / validator
+     * ödülleri", no minting), so the rule becomes
+     *   Σ allocations + Σ self-stake + reward_pool_initial
+     *     == total_supply_raw.
+     * reward_pool_initial is a VERSION-3 field (the version-2 encoder
+     * stops before it, nodus_witness_v2_gen.h) — a version-2 config
+     * reserves nothing (gen_reward_pool). */
+    const uint64_t pool_init = gen_reward_pool(cfg);
     if (cfg->total_supply_raw < 1) {
         QGP_LOG_ERROR(LOG_TAG, "%s", "total_supply_raw must be >= 1");
         gen_plan_free(p);
@@ -814,27 +836,37 @@ static int gen_plan_build(const nodus_v2_gen_config_t *cfg, gen_plan_t *p) {
         gen_plan_free(p);
         return -1;
     }
-    if (p->stake_total > cfg->total_supply_raw) {
-        QGP_LOG_ERROR(LOG_TAG, "stake-lock %llu exceeds total_supply_raw "
-                      "%llu (Rule P.2)",
-                      (unsigned long long)p->stake_total,
-                      (unsigned long long)cfg->total_supply_raw);
-        gen_plan_free(p);
-        return -1;
+    {
+        uint64_t locked = 0;
+        if (add_u64(p->stake_total, pool_init, &locked) != 0 ||
+            locked > cfg->total_supply_raw) {
+            QGP_LOG_ERROR(LOG_TAG, "stake-lock %llu + reward pool %llu "
+                          "exceeds total_supply_raw %llu (Rule P.2)",
+                          (unsigned long long)p->stake_total,
+                          (unsigned long long)pool_init,
+                          (unsigned long long)cfg->total_supply_raw);
+            gen_plan_free(p);
+            return -1;
+        }
+        /* total_claimable is derived from the SUPPLY side, never from
+         * the leaf sum — that is what makes the check_totals call below
+         * a real cross-check rather than a restatement of its own input.
+         * The reserve is not claimable: it is the pool the distribution
+         * pays from (supply_tracking.reward_pool). */
+        p->total_claimable = cfg->total_supply_raw - locked;
     }
-    /* total_claimable is derived from the SUPPLY side, never from the
-     * leaf sum — that is what makes the check_totals call below a real
-     * cross-check rather than a restatement of its own input. */
-    p->total_claimable = cfg->total_supply_raw - p->stake_total;
 
     {
         uint64_t sum = 0;
         if (add_u64(p->alloc_total, p->stake_total, &sum) != 0 ||
+            add_u64(sum, pool_init, &sum) != 0 ||
             sum != cfg->total_supply_raw) {
             QGP_LOG_ERROR(LOG_TAG, "Σ allocations %llu + Σ self-stake %llu "
-                          "!= total_supply_raw %llu (Rule P.2)",
+                          "+ reward_pool_initial %llu != total_supply_raw "
+                          "%llu (Rule P.2)",
                           (unsigned long long)p->alloc_total,
                           (unsigned long long)p->stake_total,
+                          (unsigned long long)pool_init,
                           (unsigned long long)cfg->total_supply_raw);
             gen_plan_free(p);
             return -1;
@@ -1076,9 +1108,15 @@ static int gen_seed_state(nodus_witness_t *w2,
      * last_tx_hash is provenance-only (it reaches no consensus value)
      * but it must still be DETERMINISTIC: source_commit is the one
      * 64-byte value that identifies this genesis, so it is used rather
-     * than an invented constant. */
+     * than an invented constant.
+     *
+     * tokenomics-v3 P2 (P2-1): the row is seeded with the reward reserve
+     * (supply_tracking.reward_pool = reward_pool_initial, 0 for a
+     * version-2 config) — carved OUT of total_supply_raw, which stays the
+     * genesis supply; Rule P.2 above proved the pool fits. */
     {
         int rc = nodus_witness_supply_init(w2, cfg->total_supply_raw,
+                                           gen_reward_pool(cfg),
                                            source_commit);
         if (rc != 0) {
             QGP_LOG_ERROR(LOG_TAG, "supply_init failed (rc=%d)", rc);
@@ -1104,12 +1142,14 @@ static int gen_seed_state(nodus_witness_t *w2,
      *
      * GOVERNANCE STILL CANNOT REACH THE BAND. Ids 200-202 are outside
      * 1..CC_PARAM_MAX_ID and have no case in the allowlist switch
-     * (nodus_witness_chain_config.c:497, :515-516), so no CHAIN_CONFIG tx
-     * can ever insert or replace one. That preserves the property
-     * nodus_witness_emission.h states — a committee vote cannot alter the
-     * emission schedule. Id 3 (the inflation start) IS governable, and
-     * always was; genesis now sets its opening value instead of leaving
-     * it to a hardcoded default.
+     * (nodus_witness_chain_config.c), so no CHAIN_CONFIG tx can ever
+     * insert or replace one.
+     *
+     * tokenomics-v3 P2 (P2-4): the inflation start (id 3) is NO LONGER
+     * seeded. It was the fourth row here while a per-block mint existed;
+     * the mint is deleted and id 3 is RETIRED (the scalar rules refuse
+     * it), so a genesis row for it would be a committed value nothing
+     * reads. gen_plan_build refuses a nonzero config value.
      *
      * EVERY COLUMN IS EXPLICIT AND DETERMINISTIC. `tx_hash` is NOT NULL
      * and carries source_commit — the one 64-byte value that identifies
@@ -1122,13 +1162,11 @@ static int gen_seed_state(nodus_witness_t *w2,
      * block committed these and no proposal produced them. */
     {
         static const struct { unsigned param; const char *name; } econ[] = {
-            { DNAC_CFG_INFLATION_START_BLOCK, "inflation_start_block" },
             { NODUS_CC_ECON_BLOCKS_PER_YEAR,  "blocks_per_year"       },
             { NODUS_CC_ECON_DECIMAL_UNIT,     "decimal_unit"          },
             { NODUS_CC_ECON_EPOCH_LENGTH,     "epoch_length"          },
         };
         const uint64_t val[] = {
-            cfg->inflation_start_block,
             cfg->blocks_per_year,
             cfg->decimal_unit,
             cfg->epoch_length,
@@ -1170,9 +1208,8 @@ static int gen_seed_state(nodus_witness_t *w2,
 
         /* The warm chain-config cache is invalidated explicitly: this
          * INSERT bypasses the mutate path that would do it
-         * (nodus_witness_rt_native.c:4386), and without this the very
-         * next nodus_chain_config_get_u64 would keep serving the 1ULL
-         * inflation default and the seeded row would do nothing. */
+         * (nodus_witness_rt_native.c), and a cache warmed before the
+         * INSERT must not outlive it. */
         w2->chain_config_cache_warm = false;
 
         /* POST-CONDITION: exactly these rows, and NOTHING else. An
@@ -1205,24 +1242,6 @@ static int gen_seed_state(nodus_witness_t *w2,
                               "does not read back as the config — ABORT");
                 return -1;
             }
-            /* Block 2A made this read three-valued: rc 0 found, 1 genuinely
-             * absent, -1 fault. Here ALL THREE non-matching outcomes abort,
-             * and deliberately so — this is the derivation's own read-back
-             * post-condition. A row we just wrote must be readable and must
-             * equal what we wrote; "absent" and "unreadable" are both proof
-             * that the commit did not land as intended. The UINT64_MAX
-             * default is now unreachable rather than load-bearing, since
-             * rc != 0 is rejected before the value is compared. */
-            uint64_t seen_start = 0;
-            int start_rc = nodus_chain_config_get_u64(w2,
-                    (uint8_t)DNAC_CFG_INFLATION_START_BLOCK, 0,
-                    UINT64_MAX, &seen_start);
-            if (start_rc != 0 || seen_start != cfg->inflation_start_block) {
-                QGP_LOG_ERROR(LOG_TAG, "the committed inflation start does "
-                              "not read back as the config (rc=%d) — ABORT",
-                              start_rc);
-                return -1;
-            }
         }
     }
 
@@ -1250,10 +1269,18 @@ static int gen_seed_state(nodus_witness_t *w2,
      *
      * chain_config_history is NO LONGER on this list — Block 2C commits
      * the economic parameters into it above, with its own exact-row
-     * post-condition. */
+     * post-condition.
+     *
+     * tokenomics-v3 P2: `epoch_state` stays EMPTY for the life of the
+     * chain now — the per-block mint that created its rows is deleted —
+     * and two tables join the list: `v2_reward_accrual` (nothing has
+     * been earned before the first boundary) and `v2_balance_copy` (the
+     * engine genesis writes copy(0) itself, nodus_witness_v2_apply.c,
+     * AFTER this seeder — a row here would collide with it). */
     {
         static const char *const must_be_empty[] = {
-            "delegations", "epoch_state"
+            "delegations", "epoch_state", "v2_reward_accrual",
+            "v2_balance_copy"
         };
         for (size_t i = 0; i < sizeof(must_be_empty) /
                                sizeof(must_be_empty[0]); i++) {
@@ -1511,6 +1538,14 @@ int nodus_witness_v2_gen_derive(const char *data_path,
             }
             gsupply = sup.genesis_supply;
             if (gsupply != cfg->total_supply_raw) break;
+            /* tokenomics-v3 P2 (P2-1): and the reserve reads back as the
+             * config's — the committed pool is the one the distribution
+             * will pay from. */
+            if (sup.reward_pool != gen_reward_pool(cfg)) {
+                QGP_LOG_ERROR(LOG_TAG, "%s", "the committed reward pool does "
+                              "not read back as the config — ABORT");
+                break;
+            }
         }
 
         dna_gman_t m;
@@ -1810,10 +1845,17 @@ _Static_assert(NODUS_V2_GEN_SRCCOMMIT_LEN == 64,
  * a 200 000 000 NODUS reserve of the fixed 1 000 000 000 supply, paying
  * pool >> 16 at every epoch boundary, settled every 24 epochs. These are
  * the values `_v3_defaults` writes; they are COMMITTED GENESIS DATA, not
- * compiled policy — the chain obeys the number in its own document. */
+ * compiled policy — the chain obeys the number in its own document.
+ * tokenomics-v3 P2: the divisor has ONE legal value
+ * (NODUS_V2_GEN_REWARD_DIVISOR_LOG2, nodus_witness_v2_gen.h — refused
+ * otherwise by nodus_witness_v2_gen_v3_validate); the interval default
+ * is the header's, so the reader of a document-less chain
+ * (nodus_witness_v2_payout_interval) and this default cannot drift. */
 #define GEN_V3_REWARD_POOL_INITIAL     (200000000ULL * 100000000ULL)
-#define GEN_V3_REWARD_DIVISOR_LOG2     16ULL
-#define GEN_V3_PAYOUT_INTERVAL_EPOCHS  24ULL
+#define GEN_V3_REWARD_DIVISOR_LOG2     \
+        ((uint64_t)NODUS_V2_GEN_REWARD_DIVISOR_LOG2)
+#define GEN_V3_PAYOUT_INTERVAL_EPOCHS  \
+        ((uint64_t)NODUS_V2_GEN_PAYOUT_INTERVAL_EPOCHS_DEFAULT)
 
 /* ── big-endian readers (the decoder's half of put_be*) ──────────────── */
 
@@ -2451,6 +2493,32 @@ int nodus_witness_v2_gen_v3_validate(const nodus_v2_gen_config_t *cfg) {
                           "document's int64 field");
             break;
         }
+        /* tokenomics-v3 P2 — the two reward parameters the chain now
+         * OBEYS (nodus_witness_v2_econ.c). Before P2 nothing read them
+         * and nothing bounded them.
+         *   reward_divisor_log2: the decision fixes the per-epoch payout
+         *     at floor(pool / 65 536) (decision file §1 "Her epoch ödülü:
+         *     floor(mevcut ödül havuzu / 65.536)"), so the field has ONE
+         *     legal value — the claim window's rule. A document naming
+         *     another divisor would describe a payout the chain does not
+         *     make.
+         *   payout_interval_epochs: the payday rule divides by it
+         *     ((H / E) % interval); 0 has no meaning. Any positive value
+         *     is a genuine config choice (the decision's 24 is the
+         *     default; the harness uses a small one to reach a payday). */
+        if (cfg->reward_divisor_log2 !=
+            (uint64_t)NODUS_V2_GEN_REWARD_DIVISOR_LOG2) {
+            QGP_LOG_ERROR(LOG_TAG, "reward_divisor_log2 %llu — the only "
+                          "legal value is %u (payout = pool / 65 536)",
+                          (unsigned long long)cfg->reward_divisor_log2,
+                          (unsigned)NODUS_V2_GEN_REWARD_DIVISOR_LOG2);
+            break;
+        }
+        if (cfg->payout_interval_epochs == 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "payout_interval_epochs is 0 — "
+                          "the payday needs at least one epoch");
+            break;
+        }
         /* The reference's own parameter rules (types/params.go:145-206),
          * through the port, so there is one implementation of them. */
         if (cmt_consensus_params_validate_basic(&cfg->consensus_params)
@@ -2639,6 +2707,36 @@ static int gen_v3_load_doc(nodus_witness_t *w, uint8_t **out, size_t *out_len) {
     }
     nodus_cmt_store_release(&s);
     return rc;
+}
+
+/* tokenomics-v3 P2 — the three-valued presence probe (contract:
+ * nodus_witness_v2_gen.h). The claims invariant's own genesis probe
+ * (nodus_witness_v2_claims.c, nodus_rt_core_invariant) is the shape:
+ * table first, then the store; a probe fault is never "absent". */
+int nodus_witness_v2_gen_stored_doc_present(nodus_witness_t *w) {
+    if (!w || !w->db) return -1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='cmt_state'", -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    if (rc == SQLITE_DONE) return 0;          /* below S14: no store     */
+    if (rc != SQLITE_ROW) return -1;
+
+    nodus_cmt_store_t s;
+    if (nodus_cmt_store_init(&s, w->db, false) != CMT_OK) return -1;
+    const uint8_t *val = NULL;
+    size_t vlen = 0;
+    int grc = nodus_cmt_store_get(&s, /*state_table=*/true,
+                                  NODUS_V2_GEN_GENESIS_DOC_KEY, &val, &vlen);
+    /* Evaluated BEFORE the release: `val` points into the store's own
+     * copy buffer (nodus_witness_cmt_store.h). */
+    int present = (grc == CMT_OK && val != NULL && vlen > 0);
+    nodus_cmt_store_release(&s);
+    if (grc != CMT_OK) return -1;
+    return present ? 1 : 0;
 }
 
 int nodus_witness_v2_gen_stored_doc(nodus_witness_t *w,
@@ -2950,8 +3048,12 @@ int nodus_witness_v2_gen_derive_v3(const char *data_path,
          * derivation uses (migrate first, then act on it).
          * `nodus_witness_db_migrate_v2s15` cascades through S14, S13 and
          * S12 on its own (nodus_witness_v2_schema.c), so a freshly
-         * created database reaches S15 in this one call. */
-        if (nodus_witness_db_migrate_v2s15(w2) != 0) break;
+         * created database reaches S15 in this one call.
+         * tokenomics-v3 P2 moves the live rung S15 -> S16 (the reward
+         * pool column and the two reward tables);
+         * `nodus_witness_db_migrate_v2s16` cascades through S15 the same
+         * way. */
+        if (nodus_witness_db_migrate_v2s16(w2) != 0) break;
         if (nodus_chain_config_db_migrate(w2) != 0) break;
 
         /* ── 5. SYSTEM state, from the config — the SAME seeder. ────── */
@@ -2993,6 +3095,14 @@ int nodus_witness_v2_gen_derive_v3(const char *data_path,
             }
             gsupply = sup.genesis_supply;
             if (gsupply != cfg->total_supply_raw) break;
+            /* tokenomics-v3 P2 (P2-1): and the reserve reads back as the
+             * config's — the committed pool is the one the distribution
+             * will pay from. */
+            if (sup.reward_pool != gen_reward_pool(cfg)) {
+                QGP_LOG_ERROR(LOG_TAG, "%s", "the committed reward pool does "
+                              "not read back as the config — ABORT");
+                break;
+            }
         }
 
         dna_gman_t m;

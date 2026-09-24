@@ -23,9 +23,13 @@
  * leg (attendance_root) changes the composition, so the tag changes
  * with it (a changed preimage is never hashed under the OLD tag). */
 static const uint8_t TAG_SYS[TAG_LEN]     = "DNA.SYS.v2\0\0\0\0\0";
-static const uint8_t TAG_CORE[TAG_LEN]    = "DNA.CORE.v1\0\0\0\0";
+/* tokenomics-v3 P2 (P2-8): "DNA.CORE.v1" -> "DNA.CORE.v2" — the 7th leg
+ * (accrual_root) changes the composition; "DNA.SUPPLY.v1" ->
+ * "DNA.SUPPLY.v2" — the leaf gained reward_pool. A changed preimage is
+ * never hashed under the OLD tag. */
+static const uint8_t TAG_CORE[TAG_LEN]    = "DNA.CORE.v2\0\0\0\0";
 static const uint8_t TAG_GLOBAL[TAG_LEN]  = "DNA.GLOBAL.v1\0\0";
-static const uint8_t TAG_SUPPLY[TAG_LEN]  = "DNA.SUPPLY.v1\0\0";
+static const uint8_t TAG_SUPPLY[TAG_LEN]  = "DNA.SUPPLY.v2\0\0";
 static const uint8_t TAG_TOKLEAF[TAG_LEN] = "DNA.TOKLEAF.v1\0";
 static const uint8_t TAG_TOKNODE[TAG_LEN] = "DNA.TOKNODE.v1\0";
 static const uint8_t TAG_EPOCH[TAG_LEN]   = "DNA.EPOCH.v2\0\0\0";
@@ -40,6 +44,12 @@ static const uint8_t TAG_VSNODE[TAG_LEN]  = "DNA.VSNODE.v1\0\0";
 static const uint8_t TAG_ATTEP[TAG_LEN]   = "DNA.ATTEP.v1\0\0\0";
 static const uint8_t TAG_ATLEAF[TAG_LEN]  = "DNA.ATLEAF.v1\0\0";
 static const uint8_t TAG_ATNODE[TAG_LEN]  = "DNA.ATNODE.v1\0\0";
+/* tokenomics-v3 P2 (P2-8) — collision-scanned against every DNA.* tag in
+ * the tree before adoption (grep "DNA\.AC", "DNA\.E\.ACC": no other
+ * consumer). SELF-CONSISTENT, not externally referenced — the P1 ATTEP
+ * precedent (ledger_roots_v2_attendance_oracle.py PROVENANCE). */
+static const uint8_t TAG_ACLEAF[TAG_LEN]  = "DNA.ACLEAF.v1\0\0";
+static const uint8_t TAG_ACNODE[TAG_LEN]  = "DNA.ACNODE.v1\0\0";
 
 static const uint8_t TAG_EMPTY[DNA_V2_EMPTY__COUNT][TAG_LEN] = {
     "DNA.E.VSET.v1\0\0",   /* DNA_V2_EMPTY_VSET     */
@@ -51,6 +61,7 @@ static const uint8_t TAG_EMPTY[DNA_V2_EMPTY__COUNT][TAG_LEN] = {
     "DNA.E.TOKENS.v1",     /* DNA_V2_EMPTY_TOKENS   */
     "DNA.E.EPOCH.v2\0",    /* DNA_V2_EMPTY_EPOCH_V2 */
     "DNA.E.ATTND.v1\0",    /* DNA_V2_EMPTY_ATTENDANCE (P1) */
+    "DNA.E.ACCRU.v1\0",    /* DNA_V2_EMPTY_ACCRUAL (P2)    */
 };
 
 static void put_be32(uint32_t v, uint8_t out[4]) {
@@ -69,13 +80,15 @@ int dna_v2_empty_root(dna_v2_empty_kind_t kind, uint8_t out[DNA_V2_ROOT_LEN]) {
 int dna_v2_supply_root(uint64_t genesis_supply_raw,
                        uint64_t total_minted_raw,
                        uint64_t total_burned_raw,
+                       uint64_t reward_pool_raw,
                        uint8_t out[DNA_V2_ROOT_LEN]) {
     if (!out) return -1;
-    uint8_t pre[TAG_LEN + 24];
+    uint8_t pre[TAG_LEN + 32];
     memcpy(pre, TAG_SUPPLY, TAG_LEN);
     put_be64(genesis_supply_raw, pre + TAG_LEN);
     put_be64(total_minted_raw,   pre + TAG_LEN + 8);
     put_be64(total_burned_raw,   pre + TAG_LEN + 16);
+    put_be64(reward_pool_raw,    pre + TAG_LEN + 24);
     return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;
 }
 
@@ -298,6 +311,46 @@ int dna_v2_attendance_root(const uint64_t *epoch_starts,
     return rc;
 }
 
+/* ── accrual_root (tokenomics-v3 P2, P2-8) ────────────────────────────
+ * Contract: ledger_roots_v2.h. */
+
+int dna_v2_accrual_leaf_hash(const uint8_t owner_fp[DNA_V2_ROOT_LEN],
+                             uint64_t amount,
+                             uint8_t out[DNA_V2_ROOT_LEN]) {
+    if (!owner_fp || !out) return -1;
+    uint8_t pre[TAG_LEN + DNA_V2_ROOT_LEN + 8];
+    memcpy(pre, TAG_ACLEAF, TAG_LEN);
+    memcpy(pre + TAG_LEN, owner_fp, DNA_V2_ROOT_LEN);
+    put_be64(amount, pre + TAG_LEN + DNA_V2_ROOT_LEN);
+    return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;
+}
+
+int dna_v2_accrual_root(const uint8_t (*owner_fps)[DNA_V2_ROOT_LEN],
+                        const uint64_t *amounts, size_t n,
+                        uint8_t out[DNA_V2_ROOT_LEN]) {
+    if (!out || (n > 0 && (!owner_fps || !amounts))) return -1;
+    if (n == 0)
+        return dna_v2_empty_root(DNA_V2_EMPTY_ACCRUAL, out);
+    /* Strictly ascending owner_fp: rejects duplicates AND any
+     * non-canonical order, so no input ordering can influence the root. */
+    for (size_t i = 1; i < n; i++)
+        if (memcmp(owner_fps[i - 1], owner_fps[i], DNA_V2_ROOT_LEN) >= 0)
+            return -1;
+
+    uint8_t (*level)[DNA_V2_ROOT_LEN] = malloc(n * sizeof(*level));
+    if (!level) return -1;
+    for (size_t i = 0; i < n; i++) {
+        if (dna_v2_accrual_leaf_hash(owner_fps[i], amounts[i],
+                                     level[i]) != 0) {
+            free(level);
+            return -1;
+        }
+    }
+    int rc = tagged_merkle(TAG_ACNODE, level, n, out);
+    free(level);
+    return rc;
+}
+
 /* ── DomainHead + domains_root ──────────────────────────────────────── */
 
 int dna_v2_domain_head_encode(const dna_v2_domain_head_t *head,
@@ -378,17 +431,18 @@ int dna_v2_core_root(const uint8_t utxo_root[64],
                      const uint8_t claims_root[64],
                      const uint8_t name_root[64],
                      const uint8_t supply_root[64],
+                     const uint8_t accrual_root[64],
                      uint8_t out[DNA_V2_ROOT_LEN]) {
     if (!utxo_root || !token_root || !pools_root || !claims_root ||
-        !name_root || !supply_root || !out)
+        !name_root || !supply_root || !accrual_root || !out)
         return -1;
-    uint8_t pre[TAG_LEN + 6 * DNA_V2_ROOT_LEN];
+    uint8_t pre[TAG_LEN + 7 * DNA_V2_ROOT_LEN];
     memcpy(pre, TAG_CORE, TAG_LEN);
-    const uint8_t *parts[6] = {
+    const uint8_t *parts[7] = {
         utxo_root, token_root, pools_root, claims_root, name_root,
-        supply_root
+        supply_root, accrual_root
     };
-    for (int i = 0; i < 6; i++)
+    for (int i = 0; i < 7; i++)
         memcpy(pre + TAG_LEN + (size_t)i * DNA_V2_ROOT_LEN, parts[i],
                DNA_V2_ROOT_LEN);
     return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;

@@ -235,7 +235,11 @@ static int create_schema(nodus_witness_t *w) {
         "  total_minted INTEGER NOT NULL DEFAULT 0,"
         "  current_supply INTEGER NOT NULL,"
         "  last_tx_hash BLOB NOT NULL,"
-        "  last_sequence INTEGER NOT NULL"
+        "  last_sequence INTEGER NOT NULL,"
+        /* tokenomics-v3 P2: nodus_witness_supply_get reads it (the
+         * production DDL, nodus_witness.c); the legacy leaves below do
+         * not hash it, so the golden value is unaffected. */
+        "  reward_pool INTEGER NOT NULL DEFAULT 0"
         ");"
         "CREATE TABLE chain_config_history ("
         "  param_id          INTEGER NOT NULL,"

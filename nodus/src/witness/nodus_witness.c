@@ -262,7 +262,13 @@ static const char *WITNESS_DB_SCHEMA =
     "  total_minted INTEGER NOT NULL DEFAULT 0,"
     "  current_supply INTEGER NOT NULL,"
     "  last_tx_hash BLOB NOT NULL,"
-    "  last_sequence INTEGER NOT NULL"
+    "  last_sequence INTEGER NOT NULL,"
+    /* tokenomics-v3 P2 (P2-1): the reward reserve — seeded at genesis
+     * with the document's reward_pool_initial, + every fee, − every
+     * epoch distribution. A DB an older build created gains it through
+     * nodus_witness_db_migrate_v18_supply_reward_pool (every open) and
+     * the S16 rung (nodus_witness_v2_schema.c). */
+    "  reward_pool INTEGER NOT NULL DEFAULT 0"
     ");"
     "CREATE TABLE IF NOT EXISTS validator_stats ("
     "  key TEXT PRIMARY KEY,"
@@ -296,6 +302,42 @@ static const char *WITNESS_DB_SCHEMA =
     "CREATE TABLE IF NOT EXISTS v2_attendance_epoch ("
     "  epoch_start INTEGER PRIMARY KEY,"
     "  digest BLOB NOT NULL"
+    ");"
+    /* tokenomics-v3 P2 (P2-5, P2-8): the two reward tables, in the base
+     * schema for the reason the attendance tables above are — they are
+     * lane-independent bookkeeping every chain DB needs from its FIRST
+     * open, at any rung. The S16 rung (nodus_witness_v2_schema.c) keeps
+     * its own CREATE TABLE IF NOT EXISTS (the only path that back-fills
+     * them into a DB an OLDER build created) and verifies both shapes.
+     * Column definitions here are byte-identical to the S16 rung's.
+     *   v2_reward_accrual  owner_fp = the recipient's raw 64-byte
+     *                      SHA3-512(pubkey). What each owner earned at
+     *                      past epoch boundaries and has not yet been
+     *                      paid; a leg of core_state_root (accrual_root,
+     *                      shared/dnac/ledger_roots_v2.h). A row is keyed
+     *                      by the RECIPIENT, never by a delegation or
+     *                      validator row, so an exit (UNDELEGATE deletes
+     *                      the delegation row) never erases an accrual
+     *                      (decision §3 "P2 tasarım soruları").
+     *   v2_balance_copy    the frozen bonded balances at each epoch
+     *                      boundary: one row per validator with
+     *                      self_stake > 0 (owner = the validator) and one
+     *                      per delegation. OUT of every root — derived
+     *                      at the boundary from committed (rooted)
+     *                      tables; a node whose copy diverged pays a
+     *                      different accrual at the next boundary and is
+     *                      caught there by accrual_root. Only the H-E and
+     *                      H copies are kept. */
+    "CREATE TABLE IF NOT EXISTS v2_reward_accrual ("
+    "  owner_fp BLOB PRIMARY KEY,"
+    "  amount INTEGER NOT NULL"
+    ");"
+    "CREATE TABLE IF NOT EXISTS v2_balance_copy ("
+    "  epoch_start INTEGER NOT NULL,"
+    "  validator_fp BLOB NOT NULL,"
+    "  owner_fp BLOB NOT NULL,"
+    "  amount INTEGER NOT NULL,"
+    "  PRIMARY KEY (epoch_start, validator_fp, owner_fp)"
     ");"
     /* ── Ledger V2 S3 — per-epoch validator-set snapshots (INACTIVE).
      * Rows are written by nodus_witness_vset_insert and read back by

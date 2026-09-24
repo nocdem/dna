@@ -168,49 +168,6 @@ int nodus_delegation_get(nodus_witness_t *w,
     return ret;
 }
 
-/* ── Update (amount, delegated_at_block) ────────────────────────── */
-
-int nodus_delegation_update(nodus_witness_t *w,
-                             const dnac_delegation_record_t *d) {
-    if (!w || !w->db || !d) return -1;
-
-    uint8_t delegator_hash[NODUS_DELEGATION_HASH_LEN];
-    uint8_t validator_hash[NODUS_DELEGATION_HASH_LEN];
-    delegation_row_hash(d->delegator_pubkey, delegator_hash);
-    delegation_row_hash(d->validator_pubkey, validator_hash);
-
-    sqlite3_stmt *stmt = NULL;
-    const char *sql =
-        "UPDATE delegations "
-        "SET amount = ?, delegated_at_block = ? "
-        "WHERE delegator_hash = ? AND validator_hash = ?";
-
-    int rc = sqlite3_prepare_v2(w->db, sql, -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr, "%s: update prepare failed: %s\n",
-                LOG_TAG, sqlite3_errmsg(w->db));
-        return -1;
-    }
-
-    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)d->amount);
-    sqlite3_bind_int64(stmt, 2, (sqlite3_int64)d->delegated_at_block);
-    sqlite3_bind_blob(stmt, 3, delegator_hash, NODUS_DELEGATION_HASH_LEN,
-                      SQLITE_STATIC);
-    sqlite3_bind_blob(stmt, 4, validator_hash, NODUS_DELEGATION_HASH_LEN,
-                      SQLITE_STATIC);
-
-    rc = sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
-
-    if (rc != SQLITE_DONE) {
-        fprintf(stderr, "%s: update step failed rc=%d: %s\n",
-                LOG_TAG, rc, sqlite3_errmsg(w->db));
-        return -1;
-    }
-
-    return (sqlite3_changes(w->db) == 0) ? 1 : 0;
-}
-
 /* ── Delete ──────────────────────────────────────────────────────── */
 
 int nodus_delegation_delete(nodus_witness_t *w,
@@ -342,20 +299,20 @@ int nodus_delegation_count_by_validator(nodus_witness_t *w,
  * reached first — index-scan order, i.e. physical row layout. Two
  * witnesses holding the SAME logical rows written in a different order
  * (a resync, a replay, a VACUUM, a table rebuild) keep DIFFERENT
- * subsets. The live consumer is the epoch snapshot
- * (nodus_witness_epoch.c:418), and a differing delegator set there is a
- * differing snapshot_hash, hence a differing state_root — a chain
- * split, not a cosmetic difference. The per-node symptom is quieter and
- * just as bad: the excluded delegators are never paid and their share
- * falls into the inner-dust burn.
+ * subsets. The consumer that made this a chain split was the O15J epoch
+ * snapshot's by-validator read (nodus_witness_epoch.c, DELETED by
+ * tokenomics-v3 P2 together with nodus_delegation_list_by_validator,
+ * its only caller): a differing delegator set there was a differing
+ * snapshot_hash, hence a differing state_root.
  *
- * WHY `order_col` IS A PARAMETER. This is one implementation serving
- * two queries, and the order key must be the pubkey column that is NOT
- * the filtered one — filtered on validator_hash ⇒ order by
- * delegator_pubkey, and the transpose for the other caller. Both
- * strings come from the two callers below and from nowhere else (the
- * function is file-static), so the set of values that can reach this
- * snprintf is closed and consists of caller-supplied constants only.
+ * WHY `order_col` IS A PARAMETER. The order key must be the pubkey
+ * column that is NOT the filtered one — filtered on delegator_hash ⇒
+ * order by validator_pubkey. One caller remains
+ * (nodus_delegation_list_by_delegator below, whose live consumer is the
+ * witness delegations query in nodus_witness_handlers.c — no consensus
+ * path); both strings come from it and from nowhere else (the function
+ * is file-static), so the set of values that can reach this snprintf is
+ * closed and consists of caller-supplied constants only.
  *
  * WHY THAT IS A TOTAL ORDER. `delegations` is keyed
  * PRIMARY KEY (delegator_hash, validator_hash) (nodus_witness.c:196),
@@ -377,19 +334,10 @@ int nodus_delegation_count_by_validator(nodus_witness_t *w,
  * to change, so ordering by it would re-state the bug rather than fix
  * it.
  *
- * The by-validator order is the SAME order deleg_cmp imposes
- * downstream (nodus_witness_epoch.c:298-302, memcmp over
- * delegator_pubkey), so the snapshot's qsort now re-sorts an
- * already-sorted array instead of ordering an arbitrarily chosen
- * subset.
- *
- * REACHABILITY, honestly: unreachable today. The per-validator
- * delegator cap (NODUS_MAX_DELEGATORS_PER_VALIDATOR, enforced at
- * admission in both lanes) holds the filtered set at or below the bound
- * the snapshot passes, so there is no over-cap set left to choose from.
- * Lift or raise that cap — or inherit a chain that already carried an
- * over-cap validator — and the truncation is live again, which is why
- * the order is fixed here rather than argued away.
+ * REACHABILITY, honestly: the remaining caller passes the query's own
+ * `max_results`, so a caller asking for fewer rows than a delegator
+ * holds DOES truncate — and gets the same, byte-ordered prefix from
+ * every witness it asks.
  */
 static int delegation_list_by_hash(nodus_witness_t *w,
                                    const char *hash_col,
@@ -462,21 +410,5 @@ int nodus_delegation_list_by_delegator(nodus_witness_t *w,
     /* Filtered on the DELEGATOR, so validator_pubkey is the column that
      * varies across the result set and is therefore the total order. */
     return delegation_list_by_hash(w, "delegator_hash", "validator_pubkey",
-                                   h, out, max_entries, count_out);
-}
-
-int nodus_delegation_list_by_validator(nodus_witness_t *w,
-                                        const uint8_t *validator_pubkey,
-                                        dnac_delegation_record_t *out,
-                                        int max_entries,
-                                        int *count_out) {
-    if (!validator_pubkey) return -1;
-    uint8_t h[NODUS_DELEGATION_HASH_LEN];
-    delegation_row_hash(validator_pubkey, h);
-    /* Filtered on the VALIDATOR, so delegator_pubkey is the column that
-     * varies — and it is the key deleg_cmp already sorts the epoch
-     * snapshot's survivors by (nodus_witness_epoch.c:298-302), so the
-     * selection and the downstream sort now agree. */
-    return delegation_list_by_hash(w, "validator_hash", "delegator_pubkey",
                                    h, out, max_entries, count_out);
 }

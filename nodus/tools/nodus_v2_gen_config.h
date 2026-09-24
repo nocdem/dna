@@ -69,7 +69,20 @@
  *     epoch_length          = 720
  *     blocks_per_year       = 6307200
  *     decimal_unit          = 100000000
- *     inflation_start_block = 0          # 0 = emission never runs
+ *     inflation_start_block = 0          # MUST be 0: the mint is gone
+ *                                        # (tokenomics-v3 P2-4); any
+ *                                        # other value is refused by
+ *                                        # gen_plan_build. The key stays
+ *                                        # required: it is a field of the
+ *                                        # canonical genesis encoding.
+ *     # the next two are version-3 keys (config_version = 3 only):
+ *     reward_pool_initial    = 20000000000000000  # optional, default
+ *                                        # 200M × 10^8 (v2_gen.c
+ *                                        # GEN_V3_REWARD_POOL_INITIAL);
+ *                                        # Rule P.2: Σ allocations +
+ *                                        # Σ self_stake + this ==
+ *                                        # total_supply_raw
+ *     payout_interval_epochs = 24        # optional, default 24; >= 1
  *
  *     [validator]
  *     pubkey                     = <5184 lowercase hex chars>

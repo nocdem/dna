@@ -121,12 +121,13 @@ int nodus_witness_v2_preflight(nodus_witness_t *w,
      * accepted schema. Before this wave S10/S11/S12 were accepted because
      * the legacy consensus lane read them directly; that lane is CLOSED in
      * W3 (D-17 rev 10 (9)) and this build derives version-3 chains only,
-     * which climb straight through S13 to S15 (nodus_witness_v2_gen_derive_v3).
+     * which climb straight through S13 to S16 (nodus_witness_v2_gen_derive_v3).
      * A database at any earlier rung is not a chain this preflight can
      * ever call ready, so narrowing the accepted set to one value is not a
      * loss of coverage — it is the coverage this build actually has.
-     * tokenomics-v3 P1: the ONE accepted value moves S14 -> S15. */
-    if (ver != NODUS_V2_SCHEMA_VERSION_S15)
+     * tokenomics-v3 P1: the ONE accepted value moved S14 -> S15;
+     * tokenomics-v3 P2 moves it S15 -> S16. */
+    if (ver != NODUS_V2_SCHEMA_VERSION_S16)
         pf_add(out, NODUS_V2_PF_SCHEMA_UNSUPPORTED);
 
     /* ── 2. REQUIRED TABLES ───────────────────────────────────────── */

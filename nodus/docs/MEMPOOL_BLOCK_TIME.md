@@ -3,7 +3,8 @@
 **Rewritten:** 2026-09-17 (R3 wave W4, v0.19.62); **Block time / idle
 pace and TxsAvailable sections updated:** 2026-09-23 (tokenomics-v3 P1 —
 D-4 relocated attendance out of every root, D-5 wired the real
-`TxsAvailable` callback) | **Applies to:** every chain this build can open (a version-3 / cometbft chain — the post-open gate refuses everything else, `nodus_witness.c` `witness_post_open_gate`)
+`TxsAvailable` callback); 2026-09-24 (tokenomics-v3 P2 — fees go to
+the reward pool; no pace change, see the P2 note under the idle pace) | **Applies to:** every chain this build can open (a version-3 / cometbft chain — the post-open gate refuses everything else, `nodus_witness.c` `witness_post_open_gate`)
 
 > **History.** Until R3 wave W4 this document described the LEGACY lane's
 > mempool: a fee-sorted in-memory pool (`nodus_witness_mempool.c`), a 5 s
@@ -152,6 +153,18 @@ Consequences:
   of round 5) — a transaction's latency is "wait for a proposer whose
   pool holds it", one to a few blocks — and D-5 (below) means demand
   itself no longer waits for the next idle-interval tick to be noticed.
+
+**tokenomics-v3 P2 (2026-09-24) does not change this pace.** P2 moves
+two more things into `core_state_root` — the reward pool (in the supply
+leaf) and the `v2_reward_accrual` table (a new `accrual_root` leg) — but
+neither moves on an idle non-boundary block: the pool moves only when a
+fee is paid (a block WITH demand, already a root-moving block) or at an
+epoch boundary (the distribution, and every `payout_interval_epochs`-th
+boundary the payday), and the accrual table moves only at a boundary.
+A boundary block already moved the root before P2 (attendance digest,
+next snapshot), so the block after it was already a proof block. A claim
+still carries no fee, so a claims-only block moves the pool not at all.
+See `nodus/docs/ARCHITECTURE.md` "package P2".
 
 **tokenomics-v3 P1 (D-5) — the mempool's `TxsAvailable` signal is wired
 to a real callback.** `cmt_mem_enable_txs_available` (`shared/dnac/

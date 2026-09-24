@@ -133,7 +133,10 @@ def make_cfg(salt: int = 0, n_alloc: int = 1) -> dict:
         "epoch_length": EPOCH_LENGTH,
         "blocks_per_year": BLOCKS_PER_YEAR,
         "decimal_unit": DECIMAL_UNIT,
-        "inflation_start_block": 1,
+        # tokenomics-v3 P2 (P2-4): the mint is deleted and a nonzero
+        # inflation_start_block is REFUSED (nodus_witness_v2_gen.c); the
+        # C fixture (test_v2_gen.c cfg_make) moved to 0 in the same package.
+        "inflation_start_block": 0,
         "claim_start_height": 0,
         "claim_end_height": UINT64_MAX,
         "validators": vals,
@@ -271,6 +274,12 @@ def make_v3(names=None, params=None, **over) -> dict:
     c["reward_divisor_log2"] = 16
     c["payout_interval_epochs"] = 24
     c.update(over)
+    # tokenomics-v3 P2 (P2-1): Rule P.2 now counts the reward reserve —
+    # Σ allocations + Σ self-stake + reward_pool_initial == total supply —
+    # so the single treasury allocation shrinks by exactly the reserve,
+    # as the C fixtures do (test_v2_gen.c cfg_make_v3 / cfg_make_v3_b).
+    if len(c["allocs"]) == 1:
+        c["allocs"][0]["amount"] = TREASURY_RAW - c["reward_pool_initial"]
     c["comet"] = derive_rows(c, names)
     return c
 
@@ -282,9 +291,12 @@ def make_v3(names=None, params=None, **over) -> dict:
 # SHIPPED C encoder — that assertion is what turns this leg into a
 # cross-implementation control rather than a self-comparison.
 
+# Re-pinned 2026-09-24 (tokenomics-v3 P2: inflation_start_block 1 → 0)
+# AFTER test_v2_gen.c §5 was run against the C encoder with this value
+# and agreed — the rule stated in control_leg() below.
 CONTROL_V2_ENC_SHA = (
-    "92bd62f51df63ebf30a68c4fde32c7965d72ebd1ca4c3d20649998abe5be69af"
-    "856534cccca070f4fc039ca523d31e53d877ca5d5ac18c9a3d04759fcd3ffca0"
+    "523e2c971f1c44f06ad63cf8d0b4b4eb56ae7b98b58f8dc7afa09b97b523893a"
+    "5c408314a06f32e378b4f4f24764bb2763fe6fcdae8a1ccd63e279b09f4103bf"
 )
 # The encoding is 37481 bytes: 78 head (16 tag + 4 version + 7 × 8 + 2
 # count) + 7 × 5323 validator + 4 + 1 × 138 allocation.  The C computes

@@ -36,6 +36,13 @@
 #   epoch length its own binary disagrees with is a chain the fleet
 #   cannot run.
 #   STAGEF_NODUS_BIN / STAGEF_NODUSCLI_BIN honoured as usual.
+#   STAGEF_PAYOUT_INTERVAL_EPOCHS (default 24, the production value;
+#   tokenomics-v3 P2-7) is written into the genesis config as
+#   payout_interval_epochs — the payday cadence. It is part of the
+#   hashed genesis document, so it must be exported BEFORE bring-up; a
+#   different value is a different chain id. The genesis config also
+#   reserves reward_pool_initial = 200M x 10^8 (P2-1), added to
+#   total_supply_raw.
 #
 # WHAT IT LEAVES BEHIND
 #   A full 7-node cluster running under $BASE_DIR, its path in
@@ -342,8 +349,38 @@ PROBE_ALLOC=1000000000               # 10 DNAC, deliberately tiny
 # bond plus a margin for fees. Anything less and the stake is refused for
 # a reason that has nothing to do with what a growth scenario tests.
 CAND_ALLOC=$(( SELF_STAKE + 100000000000 ))
+# tokenomics-v3 P2-1 — THE REWARD RESERVE. Rule P.2 is now
+#   Σ allocations + Σ self_stake + reward_pool_initial == total_supply_raw
+# (nodus_witness_v2_gen.c gen_plan_build), and supply_tracking.reward_pool
+# is seeded with it at genesis. Written EXPLICITLY at the decision's own
+# number (200M NODUS; decision 2026-09-22 §1 "Ödüller ve ücretler",
+# v2_gen.c GEN_V3_REWARD_POOL_INITIAL) rather than left to the builder's
+# default, so the config file says what the chain holds. The leaves above
+# keep their sizes: the reserve is ADDED to the total, so no scenario that
+# counts a leaf's value sees it change.
+#
+# DELIBERATE DIFFERENCE FROM PRODUCTION (operator, 2026-09-24): on the
+# production chain the total supply is FIXED and the reserve is carved
+# out of the treasury allocation (genesis_v3_oracle.py; the builder
+# checks only the equation above). This harness has no treasury leaf —
+# its largest leaf is 100M, smaller than the 200M reserve — and its
+# total is not a production number, so the reserve is added on top
+# instead of shrinking a leaf a scenario relies on. Rule P.2 holds
+# either way; nothing here tests the production total.
+REWARD_POOL=20000000000000000        # 200M x 10^8
+# The payday cadence (design §7 P2-7): every payout_interval_epochs-th
+# boundary turns the accrual table into UTXOs. The production value is
+# 24; a scenario that must SEE a payday in a short-epoch run exports a
+# smaller one BEFORE bring-up (test_v2_rewards.sh documents its own).
+# The value is part of the hashed genesis document — every node reads
+# the same config file, so all seven agree by construction.
+PAYOUT_INTERVAL="${STAGEF_PAYOUT_INTERVAL_EPOCHS:-24}"
+case "$PAYOUT_INTERVAL" in
+    ''|*[!0-9]*|0) echo "[FAIL] STAGEF_PAYOUT_INTERVAL_EPOCHS='$PAYOUT_INTERVAL' — must be a positive integer" >&2; exit 2 ;;
+esac
 TOTAL=$(( SELF_STAKE * C + ALLOC * (C + 1) + PUMP_ALLOC * PUMP_LEAVES \
-          + PROBE_ALLOC + CAND_ALLOC * CANDIDATES ))
+          + PROBE_ALLOC + CAND_ALLOC * CANDIDATES + REWARD_POOL ))
+echo "[ok] reward reserve: reward_pool_initial=$REWARD_POOL payout_interval_epochs=$PAYOUT_INTERVAL"
 
 CONF="$BASE_DIR/v2_genesis.conf"
 {
@@ -364,11 +401,13 @@ CONF="$BASE_DIR/v2_genesis.conf"
     echo "epoch_length          = $EL"
     echo "blocks_per_year       = $BY"
     echo "decimal_unit          = $DU"
-    # 0 = emission never runs. The reversible choice: a later governance
-    # vote can still turn it on, while any non-zero value can never be
-    # turned off again (nodus_witness_rt_native.c). A harness chain has
-    # no reason to mint.
+    # MUST be 0: tokenomics-v3 P2-4 deleted the per-block mint and
+    # retired its governance parameter (id 3); the builder refuses any
+    # other value. The key stays because it is a field of the canonical
+    # genesis encoding.
     echo "inflation_start_block = 0"
+    echo "reward_pool_initial   = $REWARD_POOL"
+    echo "payout_interval_epochs = $PAYOUT_INTERVAL"
     for n in $(seq 1 "$C"); do
         nd=$(stagef_node_dir "$n")
         pk=$(xxd -p -c 99999 "$nd/identity/nodus.pk")

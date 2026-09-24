@@ -2,15 +2,19 @@
  * Nodus — O15O Faz 7 — the delegation LIMIT truncates against a TOTAL ORDER
  *
  * WHAT THIS PROVES.
- *   delegation_list_by_hash (nodus_witness_delegation.c) is the ONLY way
- *   the epoch snapshot reads a validator's delegators
- *   (nodus_witness_epoch.c:418), and it caps the result with a LIMIT.
- *   Before this phase the query carried NO `ORDER BY`, so when the
- *   filtered set was larger than the bound, the rows that SURVIVED were
- *   whichever ones SQLite's scan reached first — index-scan order, which
- *   is to say the order the rows happened to be WRITTEN. Two witnesses
- *   holding the same logical rows in a different physical order keep
- *   different subsets.
+ *   delegation_list_by_hash (nodus_witness_delegation.c) caps its result
+ *   with a LIMIT. Before O15O Faz 7 the query carried NO `ORDER BY`, so
+ *   when the filtered set was larger than the bound, the rows that
+ *   SURVIVED were whichever ones SQLite's scan reached first — index-scan
+ *   order, which is to say the order the rows happened to be WRITTEN. Two
+ *   witnesses holding the same logical rows in a different physical order
+ *   kept different subsets.
+ *
+ *   Its remaining caller is nodus_delegation_list_by_delegator, whose
+ *   live consumer is the witness delegations query
+ *   (nodus_witness_handlers.c) — it passes the request's own
+ *   `max_results`, so a query asking for fewer rows than a delegator
+ *   holds DOES truncate, and must get the same prefix from every witness.
  *
  *   The property that would be false if any assertion here failed: the
  *   set of rows that survives the truncation is a function of the ROWS
@@ -19,40 +23,26 @@
  *
  *     - DETERMINISM. The same rows inserted in two DIFFERENT orders, read
  *       at the same bound, yield the IDENTICAL surviving set — position
- *       for position, not merely as a set. This is the chain-split half:
- *       a differing delegator list is a differing snapshot blob, hence a
- *       differing snapshot_hash, hence a differing state_root.
+ *       for position, not merely as a set.
  *     - CORRECTNESS. That set is the one the total order names — the
  *       memcmp-smallest `max_entries` pubkeys — computed HERE by sorting
  *       the fixture's own keys, independently of anything the database
  *       says. "Both runs agreed" is not enough on its own: two runs of a
  *       broken query can agree by luck of layout.
  *
- *   The order key is the pubkey column the WHERE clause does NOT pin, so
- *   the shared implementation is parameterised on it exactly as it is on
- *   the filter column. Both directions are covered: §1 filters on the
- *   validator and orders by delegator_pubkey (the LIVE consumer's call),
- *   §2 filters on the delegator and orders by validator_pubkey (the
- *   transpose, which pins that the parameterisation is real and not a
- *   constant wearing a parameter's clothes).
+ *   The order key is the pubkey column the WHERE clause does NOT pin: the
+ *   caller filters on the delegator, so the order is validator_pubkey.
  *
- *   ⚠ WHY A TEST FOR AN UNREACHABLE PATH. In production the per-validator
- *   delegator cap (NODUS_MAX_DELEGATORS_PER_VALIDATOR, enforced at
- *   admission in both lanes) keeps the filtered set at or below the bound
- *   the snapshot passes, so the LIMIT never truncates and the ORDER BY
- *   changes no output. This file therefore inserts rows DIRECTLY through
- *   the CRUD writer, bypassing admission, because its subject is exactly
- *   the world where that cap is lifted, raised, or already violated by an
- *   inherited chain — see the RESIDUAL paragraph in nodus_witness_epoch.c.
- *   Reaching the LIMIT is the whole point, and a run that did not reach
- *   it would prove nothing at all (see HOW IT CAN LIE).
+ *   tokenomics-v3 P2: this file used to cover a second direction — the
+ *   by-validator read (nodus_delegation_list_by_validator) the O15J epoch
+ *   snapshot made (nodus_witness_epoch.c). Both the snapshot and that
+ *   function are DELETED (no caller survived), so that section is gone
+ *   with them; the section below is the former §2, unchanged.
  *
  * WHAT IT REQUIRES.
  *   Compile flags: NONE beyond a default nodus build. Registered through
  *   register_witness_test, which supplies NODUS_WITNESS_INTERNAL_API (the
- *   file defines it too, matching test_v2_native.c, whose
- *   test_delegator_cap_v2 is test_delegator_cap.c's version-3
- *   successor — that file is deleted with the closed consensus lane).
+ *   file defines it too, matching test_v2_native.c).
  *   No QGP_FAULT_INJECT, no O15H_DIAG, no NODUS_V2_* gate macro. Nothing
  *   here reads DNAC_EPOCH_LENGTH or any other tunable constant, so the
  *   assertions hold identically at production and harness parameters.
@@ -97,13 +87,9 @@
  *     time to prove nothing extra. It does mean this file would not
  *     notice an ordering rule that became key-semantic rather than
  *     byte-wise.
- *   - IT PINS THE QUERY, NOT THE SETTLEMENT. Nothing here runs
- *     nodus_witness_epoch_snapshot_apply or pays anyone. That the
- *     snapshot consumes this order correctly is argued in that file's
- *     docblock and covered by test_delegator_cap_v2 in test_v2_native.c
- *     (test_delegator_cap.c's version-3 successor — that file is
- *     deleted with the closed consensus lane); this file proves only
- *     that the order exists and is total.
+ *   - IT PINS THE QUERY, NOT THE HANDLER. Nothing here decodes a request
+ *     or clamps `max_results`; this file proves only that the order
+ *     exists and is total.
  *   - THE SCHEMA IS A COPY. The DDL below is copied from the production
  *     WITNESS_DB_SCHEMA (nodus_witness.c:189-199), INCLUDING BOTH
  *     INDEXES, because the unfixed scan order is index-scan order and a
@@ -145,16 +131,9 @@ static int failed = 0;
 #define N_ROWS  8
 #define LIMIT   3
 
-/* Index 0 is the PIVOT — the validator in §1, the delegator in §2 — so it
- * can never collide with one of the eight counterparties. */
+/* Index 0 is the PIVOT — the delegator — so it can never collide with one
+ * of the eight validators it delegates to. */
 #define PIVOT_IDX 0
-
-/* Which side of the pair the WHERE clause pins, and therefore which side
- * must carry the total order. */
-typedef enum {
-    BY_VALIDATOR,   /* pin validator_hash → order by delegator_pubkey */
-    BY_DELEGATOR    /* pin delegator_hash → order by validator_pubkey */
-} lens_t;
 
 /* ── fixture ────────────────────────────────────────────────────────── */
 
@@ -225,15 +204,6 @@ static void synth_pubkey(uint8_t out[DNAC_PUBKEY_SIZE], uint32_t idx) {
     out[4] = (uint8_t)idx;
 }
 
-/* The half of the pair that VARIES across a result set: the one the
- * WHERE clause did not pin, and therefore the one that carries the
- * order. */
-static const uint8_t *varying(const dnac_delegation_record_t *r,
-                              lens_t lens) {
-    return (lens == BY_VALIDATOR) ? r->delegator_pubkey
-                                  : r->validator_pubkey;
-}
-
 static int pubkey_cmp(const void *a, const void *b) {
     return memcmp(a, b, DNAC_PUBKEY_SIZE);
 }
@@ -244,17 +214,15 @@ static int pubkey_cmp(const void *a, const void *b) {
  * through the PRODUCTION accessor, on a database of this leg's own.
  *
  * `order` is the INSERTION order, and it is the only thing that differs
- * between the two legs of a section — same rows, same amounts, same
- * pivot. A fresh `:memory:` database per leg is what makes the physical
- * layout genuinely follow it: rowids start from 1 again, so leg B's
- * rowid order really is leg B's insertion order and not a continuation
- * of leg A's.
+ * between the two legs — same rows, same amounts, same pivot. A fresh
+ * `:memory:` database per leg is what makes the physical layout genuinely
+ * follow it: rowids start from 1 again, so leg B's rowid order really is
+ * leg B's insertion order and not a continuation of leg A's.
  *
  * @return 0 on success, -1 on any fixture or accessor failure.
  */
-static int run_leg(lens_t lens, const uint32_t *order,
-                   dnac_delegation_record_t *got, int *got_n,
-                   int *total_rows) {
+static int run_leg(const uint32_t *order, dnac_delegation_record_t *got,
+                   int *got_n, int *total_rows) {
     nodus_witness_t *w = fixture();
     if (!w) return -1;
 
@@ -266,13 +234,8 @@ static int run_leg(lens_t lens, const uint32_t *order,
     for (int i = 0; i < N_ROWS; i++) {
         dnac_delegation_record_t d;
         memset(&d, 0, sizeof(d));
-        if (lens == BY_VALIDATOR) {
-            synth_pubkey(d.delegator_pubkey, order[i]);
-            memcpy(d.validator_pubkey, pivot, DNAC_PUBKEY_SIZE);
-        } else {
-            memcpy(d.delegator_pubkey, pivot, DNAC_PUBKEY_SIZE);
-            synth_pubkey(d.validator_pubkey, order[i]);
-        }
+        memcpy(d.delegator_pubkey, pivot, DNAC_PUBKEY_SIZE);
+        synth_pubkey(d.validator_pubkey, order[i]);
         /* The amount is a function of the ROW, never of its insertion
          * position, so the two legs seed byte-identical row sets. */
         d.amount             = 1000ULL + (uint64_t)order[i];
@@ -284,24 +247,13 @@ static int run_leg(lens_t lens, const uint32_t *order,
      * from the loop above: the anti-vacuity control must measure what the
      * database actually holds. */
     *total_rows = -1;
-    if (lens == BY_VALIDATOR) {
-        if (nodus_delegation_count_by_validator(w, pivot, total_rows) != 0)
-            goto out;
-    } else {
-        if (nodus_delegation_count_by_delegator(w, pivot, total_rows) != 0)
-            goto out;
-    }
+    if (nodus_delegation_count_by_delegator(w, pivot, total_rows) != 0)
+        goto out;
 
     *got_n = -1;
-    if (lens == BY_VALIDATOR) {
-        if (nodus_delegation_list_by_validator(w, pivot, got, LIMIT,
-                                               got_n) != 0)
-            goto out;
-    } else {
-        if (nodus_delegation_list_by_delegator(w, pivot, got, LIMIT,
-                                               got_n) != 0)
-            goto out;
-    }
+    if (nodus_delegation_list_by_delegator(w, pivot, got, LIMIT, got_n)
+        != 0)
+        goto out;
 
     rc = 0;
 out:
@@ -322,8 +274,6 @@ static void expected_prefix(uint8_t out[LIMIT][DNAC_PUBKEY_SIZE]) {
         memcpy(out[i], all[i], DNAC_PUBKEY_SIZE);
 }
 
-/* ── the section body, shared by both lenses ────────────────────────── */
-
 /* Two insertion orders. NEITHER begins with the sorted prefix {1,2,3} —
  * A starts {3,1,4}, B starts {8,5,2} — so on a build without the ORDER BY
  * each leg returns its OWN first three and the two disagree. That is the
@@ -334,8 +284,7 @@ static const uint32_t ORDER_B[N_ROWS] = { 8, 5, 2, 7, 1, 4, 3, 6 };
 
 /* Assert everything one leg can be asked on its own. Returns 0 if the leg
  * holds, -1 with a FAIL already reported otherwise. */
-static int check_leg(lens_t lens, const char *leg_name,
-                     const uint32_t *order,
+static int check_leg(const char *leg_name, const uint32_t *order,
                      const dnac_delegation_record_t *got, int got_n,
                      int total_rows,
                      uint8_t expect[LIMIT][DNAC_PUBKEY_SIZE]) {
@@ -369,13 +318,13 @@ static int check_leg(lens_t lens, const char *leg_name,
      * also pins the direction, since a DESC would be equally
      * deterministic and equally wrong. */
     for (int i = 0; i < LIMIT; i++) {
-        if (memcmp(varying(&got[i], lens), expect[i],
+        if (memcmp(got[i].validator_pubkey, expect[i],
                    DNAC_PUBKEY_SIZE) != 0) {
             snprintf(msg, sizeof(msg),
                      "%s: row %d is not the one the total order names "
                      "(marker 0x%02X%02X, expected 0x%02X%02X)",
                      leg_name, i,
-                     varying(&got[i], lens)[3], varying(&got[i], lens)[4],
+                     got[i].validator_pubkey[3], got[i].validator_pubkey[4],
                      expect[i][3], expect[i][4]);
             FAIL(msg);
             return -1;
@@ -386,7 +335,7 @@ static int check_leg(lens_t lens, const char *leg_name,
      * expectation above: it is the one property a reader can check by eye
      * against the query text. */
     for (int i = 1; i < LIMIT; i++) {
-        if (memcmp(varying(&got[i - 1], lens), varying(&got[i], lens),
+        if (memcmp(got[i - 1].validator_pubkey, got[i].validator_pubkey,
                    DNAC_PUBKEY_SIZE) >= 0) {
             snprintf(msg, sizeof(msg),
                      "%s: rows %d and %d are not in ascending byte order",
@@ -413,7 +362,7 @@ static int check_leg(lens_t lens, const char *leg_name,
         for (int i = 0; i < LIMIT && same_as_inserted; i++) {
             uint8_t ins[DNAC_PUBKEY_SIZE];
             synth_pubkey(ins, order[i]);
-            if (memcmp(varying(&got[i], lens), ins, DNAC_PUBKEY_SIZE) != 0)
+            if (memcmp(got[i].validator_pubkey, ins, DNAC_PUBKEY_SIZE) != 0)
                 same_as_inserted = 0;
         }
         if (same_as_inserted) {
@@ -430,8 +379,8 @@ static int check_leg(lens_t lens, const char *leg_name,
     return 0;
 }
 
-/* One lens, both insertion orders, every assertion. */
-static void section(lens_t lens, const char *title) {
+/* Both insertion orders, every assertion. */
+static void section(const char *title) {
     dnac_delegation_record_t *a = NULL, *b = NULL;
     int a_n = 0, b_n = 0, a_total = 0, b_total = 0;
     uint8_t expect[LIMIT][DNAC_PUBKEY_SIZE];
@@ -444,32 +393,32 @@ static void section(lens_t lens, const char *title) {
 
     expected_prefix(expect);
 
-    if (run_leg(lens, ORDER_A, a, &a_n, &a_total) != 0) {
+    if (run_leg(ORDER_A, a, &a_n, &a_total) != 0) {
         FAIL("leg A: fixture or accessor failed");
         goto out;
     }
-    if (run_leg(lens, ORDER_B, b, &b_n, &b_total) != 0) {
+    if (run_leg(ORDER_B, b, &b_n, &b_total) != 0) {
         FAIL("leg B: fixture or accessor failed");
         goto out;
     }
 
-    if (check_leg(lens, "leg A", ORDER_A, a, a_n, a_total, expect) != 0)
+    if (check_leg("leg A", ORDER_A, a, a_n, a_total, expect) != 0)
         goto out;
-    if (check_leg(lens, "leg B", ORDER_B, b, b_n, b_total, expect) != 0)
+    if (check_leg("leg B", ORDER_B, b, b_n, b_total, expect) != 0)
         goto out;
 
     /* ── DETERMINISM: the two legs agree position for position. Each leg
      * has already been proven individually correct, so this is strictly
      * redundant — and it is kept anyway, because it is the property the
-     * chain depends on stated in its own terms, and it is what would
-     * still fail if BOTH expectations above were ever weakened together.
-     * The whole record is compared, not just the ordering key: the amount
-     * is a function of the row, so a leg that returned the right keys
-     * carrying another row's payload is caught here. */
+     * query's callers depend on stated in its own terms, and it is what
+     * would still fail if BOTH expectations above were ever weakened
+     * together. The whole record is compared, not just the ordering key:
+     * the amount is a function of the row, so a leg that returned the
+     * right keys carrying another row's payload is caught here. */
     for (int i = 0; i < LIMIT; i++) {
-        if (memcmp(varying(&a[i], lens), varying(&b[i], lens),
+        if (memcmp(a[i].validator_pubkey, b[i].validator_pubkey,
                    DNAC_PUBKEY_SIZE) != 0) {
-            FAIL("the two insertion orders kept DIFFERENT delegators — "
+            FAIL("the two insertion orders kept DIFFERENT validators — "
                  "the truncation set follows physical layout");
             goto out;
         }
@@ -499,19 +448,9 @@ int main(void) {
     printf("  %d rows per pivot, read at a bound of %d — the LIMIT is "
            "reached in every leg\n", N_ROWS, LIMIT);
 
-    /* §1 — the LIVE consumer's direction: the epoch snapshot calls
-     * nodus_delegation_list_by_validator (nodus_witness_epoch.c:418), so
-     * this is the path whose truncation set decides who gets paid and
-     * what snapshot_hash every node computes. */
-    section(BY_VALIDATOR,
-            "S1 by validator: order is delegator_pubkey, both legs agree");
-
-    /* §2 — the transpose. It has no consensus consumer today, and it is
-     * here because the implementation is SHARED and parameterised: if the
-     * order column were hard-coded rather than passed alongside the
-     * filter column, this section is what fails. */
-    section(BY_DELEGATOR,
-            "S2 by delegator: order is validator_pubkey, both legs agree");
+    /* The one remaining direction: nodus_delegation_list_by_delegator,
+     * whose live consumer is the witness delegations query. */
+    section("by delegator: order is validator_pubkey, both legs agree");
 
     printf("------------------------------------------------------"
            "------------\n");

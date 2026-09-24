@@ -51,9 +51,11 @@
  * SQLite rowid order that a whole-database digest sees.
  *
  * ── THE ECONOMIC PARAMETERS ARE COMMITTED GENESIS STATE (Block 2C) ──
- * DNAC_BLOCKS_PER_YEAR, DNAC_DECIMAL_UNIT (nodus_witness_emission.h:33,
- * :41) and DNAC_EPOCH_LENGTH (dnac.h:171) are all `#ifndef`-guarded, so
- * `-D` changes how much a node mints and where its epoch boundaries fall,
+ * DNAC_BLOCKS_PER_YEAR, DNAC_DECIMAL_UNIT (nodus_witness_emission.h:48,
+ * :53 since tokenomics-v3 P2 cut that header down to them) and
+ * DNAC_EPOCH_LENGTH (dnac.h:171) are all `#ifndef`-guarded, so
+ * `-D` changes (before P2 deleted the mint: how much a node minted, and
+ * still today) where its epoch boundaries fall and the voting-power unit,
  * and the Stage F halving test expects exactly such a build: it requires
  * a binary carrying -DDNAC_BLOCKS_PER_YEAR=<BY> and SKIPs when the value
  * is not declared (test_halving_boundaries.sh:37, :57-65). They
@@ -96,11 +98,23 @@
  * the committed rows stop a bad JOIN at the first block. Neither covers
  * the other's case.
  *
- * `inflation_start_block` is the mirror-image fix. This builder used to
- * ASSERT chain_config_history was empty, so the emission gate's
- * nodus_chain_config_get_u64(..., 1ULL) fell to its default forever and
- * every derived chain minted from height 1, configurable only by a later
- * governance vote. It is now expressible AT GENESIS.
+ * `inflation_start_block` — RETIRED by tokenomics-v3 P2 (P2-4). Block 2C
+ * made it expressible at genesis and committed it as a
+ * chain_config_history row (param id 3); P2 deletes the per-block mint it
+ * gated and retires param id 3, so the field stays in the config and in
+ * the encoding (the document layout is unchanged) but its ONLY legal
+ * value is 0 (gen_plan_build refuses any other) and it is no longer
+ * committed as a row.
+ *
+ * ── THE REWARD RESERVE (tokenomics-v3 P2, P2-1) ─────────────────────
+ * A version-3 config's `reward_pool_initial` is carved OUT of the fixed
+ * `total_supply_raw` (decision file §1: no minting; 200M of 1B is the
+ * validator reward reserve): Rule P.2 is
+ *   Σ allocations + Σ self_stake + reward_pool_initial == total_supply_raw
+ * and supply_tracking.reward_pool is seeded with it. A version-2 config
+ * reserves nothing. `reward_divisor_log2` has ONE legal value
+ * (NODUS_V2_GEN_REWARD_DIVISOR_LOG2) and `payout_interval_epochs` must be
+ * >= 1 (nodus_witness_v2_gen_v3_validate).
  *
  * ⚠ ONE INPUT THE CONFIG STILL DOES NOT FIX (stated, not hidden):
  *   The compiled SYSTEM/CORE ruleset_version / ruleset_hash pins reach
@@ -136,7 +150,8 @@
  *          failure — is in nodus_witness_v2_claims.c.
  *   L2-F2  dna_dist_check_totals is called against the manifest's
  *          total_claimable, which is derived independently as
- *          total_supply_raw − Σ self_stake.
+ *          total_supply_raw − Σ self_stake − reward_pool_initial
+ *          (tokenomics-v3 P2: the reserve is not claimable).
  *   L2-F3  the claim window is pinned to [0, UINT64_MAX]; any other
  *          window is refused.
  *   L2-F4  every seeded validator row is validated against
@@ -219,6 +234,21 @@ extern "C" {
  *  read by loadGenesisDoc :589-604). NOT `stateKey`: that one holds the
  *  State (D-18 rev 4 corrects D-24 rev 3's wording). */
 #define NODUS_V2_GEN_GENESIS_DOC_KEY     "genesisDoc"
+
+/** tokenomics-v3 P2 — the per-epoch payout divisor, log2: payout =
+ *  reward_pool >> 16 = floor(pool / 65 536) (decision file
+ *  2026-09-22-nodus-tokenomics-v3-operator.md §1 "Her epoch ödülü:
+ *  floor(mevcut ödül havuzu / 65.536)"). The document's
+ *  `reward_divisor_log2` has THIS one legal value
+ *  (nodus_witness_v2_gen_v3_validate); the distribution shifts by it
+ *  (nodus_witness_v2_econ.c). */
+#define NODUS_V2_GEN_REWARD_DIVISOR_LOG2             16u
+
+/** tokenomics-v3 P2 — the payout interval default, in epochs (decision
+ *  §1 "Ödeme her 24 epoch'ta yapılacak"). `_v3_defaults` writes it; a
+ *  chain with no stored document (the pre-document fixture lane) uses it
+ *  (nodus_witness_v2_payout_interval). */
+#define NODUS_V2_GEN_PAYOUT_INTERVAL_EPOCHS_DEFAULT  24u
 
 /**
  * The manifest `source_tag` a pure-V2 genesis carries. Distinct from the
@@ -327,12 +357,16 @@ typedef struct {
  */
 typedef struct {
     uint32_t config_version;     /* NODUS_V2_GEN_CONFIG_VERSION         */
-    uint64_t total_supply_raw;   /* == Σ allocations + Σ self_stake     */
+    uint64_t total_supply_raw;   /* == Σ allocations + Σ self_stake
+                                  * + reward_pool_initial (version 3;
+                                  * tokenomics-v3 P2 Rule P.2)          */
 
     /* ── THE ECONOMIC PARAMETERS (Block 2C) ───────────────────────────
-     * All four are hashed into source_commit AND committed as
-     * chain_config_history rows — see the ECONOMIC PARAMETERS block in
-     * the file header for which binding each one buys. */
+     * All four are hashed into source_commit; the first three are
+     * committed as chain_config_history rows — see the ECONOMIC
+     * PARAMETERS block in the file header for which binding each one
+     * buys. tokenomics-v3 P2: inflation_start_block is RETIRED (MUST be
+     * 0, no longer committed as a row). */
     uint64_t epoch_length;       /* MUST equal the compiled
                                   * DNAC_EPOCH_LENGTH — see the
                                   * DETERMINISM note in this header     */
@@ -341,10 +375,10 @@ typedef struct {
     uint64_t decimal_unit;       /* MUST equal the compiled
                                   * DNAC_DECIMAL_UNIT                   */
     uint64_t inflation_start_block;
-                                 /* FREE: 0 = emission off for the life
-                                  * of the chain; otherwise the first
-                                  * minted height. Bounded by
-                                  * DNAC_CFG_MAX_INFLATION_START_BLOCK  */
+                                 /* RETIRED (tokenomics-v3 P2): MUST be
+                                  * 0 — there is no per-block mint to
+                                  * start. Kept in the encoding so the
+                                  * document layout does not change.    */
 
     uint64_t claim_start_height; /* MUST be 0                           */
     uint64_t claim_end_height;   /* MUST be UINT64_MAX                  */
@@ -402,7 +436,13 @@ typedef struct {
     /* Tokenomics v2 (atlas-dec-93ff0761d40f5bc16fbae607ab54f458):
      * 200 000 000 NODUS reserve, payout = pool >> 16 per epoch,
      * settlement every 24 epochs. Carried at genesis so the reserve is a
-     * committed fact rather than a compiled constant. */
+     * committed fact rather than a compiled constant.
+     * tokenomics-v3 P2 BINDS all three: reward_pool_initial seeds
+     * supply_tracking.reward_pool (Rule P.2 carves it out of
+     * total_supply_raw); reward_divisor_log2 MUST equal
+     * NODUS_V2_GEN_REWARD_DIVISOR_LOG2; payout_interval_epochs >= 1 is
+     * the payday period the chain reads back from its stored document
+     * (nodus_witness_v2_payout_interval). */
     uint64_t reward_pool_initial;
     uint64_t reward_divisor_log2;
     uint64_t payout_interval_epochs;
@@ -807,6 +847,20 @@ int nodus_witness_v2_gen_derive_v3(const char *data_path,
 int nodus_witness_v2_gen_stored_doc(nodus_witness_t *w,
                                     nodus_v2_gen_config_t *cfg_out,
                                     nodus_v2_gen_alloc_t **allocs_out);
+
+/**
+ * tokenomics-v3 P2 — IS a genesis document stored? Three-valued, because
+ * `nodus_witness_v2_gen_stored_doc` answers -1 both for "no row" and for
+ * a fault and a caller that must choose between "this chain has no
+ * document" and "this node cannot read its document" needs the two
+ * apart. Checks only PRESENCE (a non-empty "genesisDoc" row in
+ * `cmt_state`); reading the document is still `..._stored_doc`'s job,
+ * with all four of its checks.
+ *
+ * @return 1 present; 0 absent (no `cmt_state` table — below S14 — or no
+ *         row); -1 a probe fault (never "absent").
+ */
+int nodus_witness_v2_gen_stored_doc_present(nodus_witness_t *w);
 
 /**
  * The stored chain id of an OPEN version-3 chain — CANONICAL-STRICT.

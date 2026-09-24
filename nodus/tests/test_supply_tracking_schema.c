@@ -208,7 +208,7 @@ static void test_supply_init_migrates_legacy_db(void) {
     memset(genesis_tx_hash, 0x22, sizeof(genesis_tx_hash));
 
     /* Still -2 — the row exists, so re-initialising is still refused… */
-    CHECK_EQ(nodus_witness_supply_init(w, 9999, genesis_tx_hash), -2);
+    CHECK_EQ(nodus_witness_supply_init(w, 9999, 0, genesis_tx_hash), -2);
     /* …but the column got added on the way there, and the existing row
      * is untouched (genesis_supply is still the legacy 5000, not 9999). */
     CHECK_TRUE(table_has_column(w->db, "supply_tracking", "total_minted"));
@@ -280,16 +280,19 @@ int main(void) {
     /* ── supply_init still works on top of the open-time table ──── */
     uint8_t genesis_tx_hash[NODUS_T3_TX_HASH_LEN];
     memset(genesis_tx_hash, 0x11, sizeof(genesis_tx_hash));
-    CHECK_EQ(nodus_witness_supply_init(w, 1000, genesis_tx_hash), 0);
+    /* tokenomics-v3 P2 (P2-1): the reward pool is seeded with the row —
+     * carved out of the genesis supply, never added to it. */
+    CHECK_EQ(nodus_witness_supply_init(w, 1000, 200, genesis_tx_hash), 0);
     CHECK_EQ(table_row_count(w->db, "supply_tracking"), 1);
     CHECK_EQ(nodus_witness_supply_get(w, &supply), 0);
     CHECK_EQ(supply.genesis_supply, 1000);
     CHECK_EQ(supply.current_supply, 1000);
     CHECK_EQ(supply.total_minted, 0);
     CHECK_EQ(supply.total_burned, 0);
+    CHECK_EQ(supply.reward_pool, 200);
 
     /* Second call sees the row and refuses to re-initialise. */
-    CHECK_EQ(nodus_witness_supply_init(w, 2000, genesis_tx_hash), -2);
+    CHECK_EQ(nodus_witness_supply_init(w, 2000, 0, genesis_tx_hash), -2);
 
     /* ── Idempotence: reopen re-runs the schema, row survives ───── */
     sqlite3_close(w->db);

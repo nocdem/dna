@@ -471,8 +471,17 @@ if(NOT WIN32)
         src/witness/nodus_witness_spend_preimage.c
         src/witness/nodus_witness_validator.c
         src/witness/nodus_witness_delegation.c
-        src/witness/nodus_witness_epoch.c
-        src/witness/nodus_witness_emission.c
+        # tokenomics-v3 P2 — nodus_witness_epoch.c (the epoch_state CRUD
+        # and the epoch-start snapshot blob) and nodus_witness_emission.c
+        # (the per-block halving curve) are DELETED with the per-block
+        # mint they served; no production caller survived (decision file
+        # 2026-09-22-nodus-tokenomics-v3-operator.md §3 S-4). The
+        # epoch_state TABLE itself stays (nodus_witness.c schema) with no
+        # writer left, so its SYSTEM-root leg is the constant empty root
+        # (nodus_witness_roots_v2.c nodus_witness_epoch_root_v2); dropping
+        # the table/leg changes the root preimage and is a separate round.
+        # The emission HEADER (nodus_witness_emission.h) stays: it carries
+        # the two committed unit constants, nothing that mints.
         src/witness/nodus_witness_committee.c
         # Ledger V2 S3 — validator-set snapshot persistence + builder
         # (INACTIVE). Placed here, not in the common list, because it
@@ -2004,34 +2013,13 @@ register_witness_test(test_stake_constants)
 # Task 12 — validator tree DB CRUD (witness stake v1 / Phase 4)
 register_witness_test(test_validator_db)
 
-# v0.16 Stage B.1 — epoch_state table CRUD smoke test
-register_witness_test(test_epoch_state)
-
-# v0.16 Stage C.1 — emission_per_block halving-boundary KAT (RT-C2)
-register_witness_test(test_emission_boundaries)
-
-# v0.16 Stage D.2 — epoch snapshot empty-chain hash + idempotence smoke
-register_witness_test(test_epoch_snapshot)
-
-# O15J Block 2 / A1 — nodus_witness_epoch_snapshot_apply must HALT on a DB
-# fault instead of hashing a fabricated input into snapshot_hash, which is
-# a state_root leg. Each of the three legs (committee lookup, per-member
-# validators row, per-member delegation scan) gets a FAULT case and an
-# ABSENT case, and each poison is scoped so exactly ONE leg can observe it
-# — otherwise a mutant reverting a single leg would survive behind
-# another leg's guard. Faults are injected structurally, by replacing the
-# table under test with a VIEW whose flagged row raises "integer overflow"
-# at step time; the code under test is unmodified production code.
-# Links `crypto` on top of register_witness_test's set for the same reason
-# test_vset_boundary does: it drives the committee accessor, which reaches
-# the shared validator-set snapshot codec.
-add_executable(test_epoch_snapshot_failclose
-    tests/test_epoch_snapshot_failclose.c)
-target_link_libraries(test_epoch_snapshot_failclose nodus dsa nodus crypto)
-target_compile_definitions(test_epoch_snapshot_failclose PRIVATE
-                           NODUS_WITNESS_INTERNAL_API)
-add_test(NAME test_epoch_snapshot_failclose
-         COMMAND test_epoch_snapshot_failclose)
+# tokenomics-v3 P2 — test_epoch_state (the epoch_state CRUD),
+# test_emission_boundaries (the halving curve KAT), test_epoch_snapshot and
+# test_epoch_snapshot_failclose (the epoch-start snapshot blob) are DELETED
+# with the source files they tested (nodus_witness_epoch.c,
+# nodus_witness_emission.c — both deleted; no production caller survived
+# the mint's removal). The reward distribution that replaced them is
+# covered by test_v2_econ.
 
 # Task 62 — dnac_committee_query RPC shape (Phase 14)
 register_witness_test(test_committee_query_rpc)
@@ -2089,30 +2077,28 @@ register_witness_test(test_witness_protocol_version_gate)
 register_witness_test(test_witness_block_height_checked)
 
 # ── O15O Faz 7 — the delegation LIMIT truncates against a TOTAL ORDER ─
-# delegation_list_by_hash (nodus_witness_delegation.c) is the only way
-# the epoch snapshot reads a validator's delegators
-# (nodus_witness_epoch.c:418) and it caps the result with a LIMIT. The
-# query carried NO `ORDER BY`, so when the filtered set exceeded the
-# bound the rows that SURVIVED were whichever ones SQLite's scan reached
-# first — index-scan order, i.e. the order the rows were WRITTEN. Two
-# witnesses holding the same rows in a different physical layout keep
-# different subsets: different snapshot blob, different snapshot_hash,
-# different state_root. The fix orders by the pubkey column the WHERE
-# clause does NOT pin, which is a stable TOTAL order because
+# delegation_list_by_hash (nodus_witness_delegation.c) caps its result
+# with a LIMIT. The query carried NO `ORDER BY`, so when the filtered set
+# exceeded the bound the rows that SURVIVED were whichever ones SQLite's
+# scan reached first — index-scan order, i.e. the order the rows were
+# WRITTEN; two witnesses holding the same rows in a different physical
+# layout kept different subsets. The fix orders by the pubkey column the
+# WHERE clause does NOT pin, which is a stable TOTAL order because
 # (delegator_pubkey, validator_pubkey) is unique.
-# ⚠ THE PATH IS UNREACHABLE IN PRODUCTION TODAY and the test is
-# deliberately built for the world where it is not: the per-validator
-# delegator cap holds the set at or below the snapshot's bound, so this
-# file inserts rows DIRECTLY through the CRUD writer, bypassing
-# admission, to actually reach the LIMIT. A leg that did not reach it
-# would pass with or without the fix, so every leg asserts BOTH that
-# more rows exist than the bound and that the read came back AT it.
-# Two sections (filter on validator / on delegator, the shared
-# implementation's two parameterisations), each run twice with the SAME
-# rows in DIFFERENT insertion orders; each leg is checked against an
-# independently sorted expectation, and each asserts its result is NOT
-# the first rows it inserted — that last one is what proves the ORDER BY
-# changed the answer.
+# tokenomics-v3 P2: the by-validator read the O15J epoch snapshot made
+# (nodus_delegation_list_by_validator, nodus_witness_epoch.c) is DELETED
+# with the snapshot, and its section with it. The remaining caller is
+# nodus_delegation_list_by_delegator, whose live consumer is the witness
+# delegations query (nodus_witness_handlers.c) — it passes the request's
+# own max_results, so the truncation is reachable there. This file
+# inserts rows DIRECTLY through the CRUD writer to reach the LIMIT; a leg
+# that did not reach it would pass with or without the fix, so every leg
+# asserts BOTH that more rows exist than the bound and that the read
+# came back AT it. One section (filter on the delegator), run twice with
+# the SAME rows in DIFFERENT insertion orders; each leg is checked
+# against an independently sorted expectation, and each asserts its
+# result is NOT the first rows it inserted — that last one is what
+# proves the ORDER BY changed the answer.
 # Needs no compile flag and no environment; nothing here reads
 # DNAC_EPOCH_LENGTH, so it holds at production and harness parameters
 # alike. Leaves nothing behind — every fixture is an `:memory:` database.

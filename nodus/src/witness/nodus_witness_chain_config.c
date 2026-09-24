@@ -88,7 +88,8 @@
  * no live consumer; the id space stays 1..CC_PARAM_MAX_ID unchanged. */
 #define CC_MIN_BLOCK_INTERVAL_SEC   1ULL
 #define CC_MAX_BLOCK_INTERVAL_SEC   15ULL
-#define CC_MAX_INFLATION_START      281474976710656ULL  /* 2^48 */
+/* CC_MAX_INFLATION_START RETIRED (tokenomics-v3 P2, P2-4) with
+ * CC_PARAM_INFLATION_START — no live consumer. */
 #define CC_MIN_TARGET_ACTIVE        ((uint64_t)CC_COMMITTEE_SIZE)
 #define CC_MAX_TARGET_ACTIVE        ((uint64_t)CC_MAX_ACTIVE)
 
@@ -589,8 +590,14 @@ int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
                 new_value > CC_MAX_BLOCK_INTERVAL_SEC) return -1;
             break;
         case CC_PARAM_INFLATION_START:
-            if (new_value > CC_MAX_INFLATION_START) return -1;
-            break;
+            /* RETIRED (tokenomics-v3 P2, P2-4 — decision file §3
+             * 2026-09-23 S-4: "blok başı basım kodu SİLİNİR,
+             * INFLATION_START parametresi (id 3) emekli"). There is no
+             * per-block mint left for a start height to gate (decision
+             * §1: "Yeni token basılmayacak"), so the parameter left
+             * governance exactly as id 1 did. This id is NEVER accepted
+             * again; ids 2 and 4 keep their numbers. */
+            return -1;
         case CC_PARAM_TARGET_ACTIVE:
             if (new_value < CC_MIN_TARGET_ACTIVE ||
                 new_value > CC_MAX_TARGET_ACTIVE) return -1;
@@ -611,9 +618,15 @@ int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
 uint64_t nodus_chain_config_grace_for_param(uint8_t param_id) {
     switch (param_id) {
         case CC_PARAM_BLOCK_INTERVAL:
-        case CC_PARAM_INFLATION_START:
         case CC_PARAM_TARGET_ACTIVE:
             return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS;
+        case CC_PARAM_INFLATION_START:
+            /* RETIRED (tokenomics-v3 P2, P2-4) — the id-1 treatment
+             * below, verbatim in intent: `scalar_rules` refuses id 3
+             * before any caller reaches a grace check; UINT64_MAX makes
+             * the gap test unsatisfiable by construction for a caller
+             * that reaches this function directly. */
+            return (uint64_t)-1;
         case CC_PARAM_MAX_TXS:
             /* RETIRED (R3 W4-C delta 2) — `scalar_rules` above already
              * refuses id 1 with -1 before any caller reaches a grace
@@ -874,8 +887,9 @@ static int cc_appr_rules_chain_config(nodus_witness_t *w,
     cc_appr_parse_cc_call(call, &c);
 
     /* the SAME scalar authority the legacy apply and the V2 exec hook
-     * both consume — id 1 (MAX_TXS_PER_BLOCK) is refused here exactly
-     * as it is everywhere else once W4-C retires it. */
+     * both consume — id 1 (MAX_TXS_PER_BLOCK) and, since tokenomics-v3
+     * P2, id 3 (INFLATION_START_BLOCK) are refused here exactly as they
+     * are everywhere else. */
     if (nodus_chain_config_scalar_rules(c.param_id, c.new_value,
                                         c.signed_at, c.valid_before,
                                         c.effective) != 0) {
@@ -909,56 +923,11 @@ static int cc_appr_rules_chain_config(nodus_witness_t *w,
             return -1;
         }
     }
-    /* INFLATION_START_BLOCK monotonicity (Q5 / CC-GOV-001). ORCHESTRATOR
-     * correction (W4-CC ORC-6): the exec hook decides "is a start already
-     * set?" through the SYSTEM adapter's op 3 read — the LATEST NONZERO
-     * row by commit_block, ANY effective height
-     * (nodus_witness_rt_native.c RTN_SYS_OP_CCLATEST, the SELECT below is
-     * that statement verbatim). The first draft asked
-     * nodus_chain_config_get_u64 instead, which answers a different
-     * question — "the row ACTIVE at h" — and the two disagree on every
-     * version-3 chain: genesis seeds param 3 with the config's
-     * inflation_start_block (0 = off) at effective 0, so get_u64 found a
-     * zero row, called it an active override, and refused any proposal
-     * to START inflation at a future height (new_value > h) that the
-     * exec hook would have applied. This handler runs outside any block
-     * apply transaction (no mediated read to ride), so the adapter's SQL
-     * is issued directly. A read fault is a NODE fault: never sign on a
-     * guess. */
-    if (c.param_id == DNAC_CFG_INFLATION_START_BLOCK) {
-        int present = 0;
-        sqlite3_stmt *st = NULL;
-        if (!w->db ||
-            sqlite3_prepare_v2(w->db,
-                "SELECT new_value FROM chain_config_history "
-                "WHERE param_id = ?1 AND new_value > 0 "
-                "ORDER BY commit_block DESC LIMIT 1", -1, &st, NULL)
-                != SQLITE_OK) {
-            snprintf(reason, reason_size, "fault");
-            return -2;
-        }
-        sqlite3_bind_int64(st, 1, (sqlite3_int64)DNAC_CFG_INFLATION_START_BLOCK);
-        int src = sqlite3_step(st);
-        sqlite3_finalize(st);
-        if (src == SQLITE_ROW) {
-            present = 1;
-        } else if (src != SQLITE_DONE) {
-            snprintf(reason, reason_size, "fault");
-            return -2;
-        }
-        if (present) {    /* a start is already set: monotonic-only */
-            if (c.new_value == 0) {
-                snprintf(reason, reason_size,
-                         "cannot disable INFLATION_START_BLOCK once set");
-                return -1;
-            }
-            if (c.new_value > h) {
-                snprintf(reason, reason_size,
-                         "cannot move INFLATION_START_BLOCK past the candidate height");
-                return -1;
-            }
-        }
-    }
+    /* tokenomics-v3 P2 (P2-4): the INFLATION_START_BLOCK monotonicity
+     * check that stood here left with parameter id 3 — the scalar rules
+     * above refuse id 3, so no id-3 proposal reaches this line, and the
+     * exec hook it mirrored (the SYSTEM adapter's retired op 3) is gone
+     * with it. */
     return 0;
 }
 
@@ -1471,34 +1440,9 @@ int nodus_chain_config_apply(nodus_witness_t *w,
         }
     }
 
-    /* Monotonicity for INFLATION_START_BLOCK (Q5 / CC-GOV-001). */
-    if (cc->param_id == CC_PARAM_INFLATION_START) {
-        const char *exists_sql =
-            "SELECT new_value FROM chain_config_history "
-            "WHERE param_id = ? AND new_value > 0 "
-            "ORDER BY commit_block DESC LIMIT 1";
-        sqlite3_stmt *st = NULL;
-        if (sqlite3_prepare_v2(w->db, exists_sql, -1, &st, NULL) == SQLITE_OK) {
-            sqlite3_bind_int(st, 1, CC_PARAM_INFLATION_START);
-            if (sqlite3_step(st) == SQLITE_ROW) {
-                if (cc->new_value == 0) {
-                    QGP_LOG_ERROR(LOG_TAG,
-                                  "apply: INFLATION_START_BLOCK monotonicity -- "
-                                  "cannot disable once enabled");
-                    sqlite3_finalize(st);
-                    goto out;
-                }
-                if (cc->new_value > block_height) {
-                    QGP_LOG_ERROR(LOG_TAG,
-                                  "apply: INFLATION_START_BLOCK monotonicity -- "
-                                  "cannot move start_block forward past current_block");
-                    sqlite3_finalize(st);
-                    goto out;
-                }
-            }
-            sqlite3_finalize(st);
-        }
-    }
+    /* tokenomics-v3 P2 (P2-4): the INFLATION_START_BLOCK monotonicity
+     * block that stood here left with parameter id 3 — the scalar rules
+     * refuse id 3 before this point, so it was unreachable. */
 
     /* INSERT row; PK conflict = replay reject. */
     const char *ins_sql =

@@ -18,9 +18,15 @@
  * idx_validator can provide O(log N) prefix scans.)
  *
  * Scope (Task 13):
- *   - insert / get / update / delete by (delegator, validator) pair
+ *   - insert / get / delete by (delegator, validator) pair. update was
+ *     removed by tokenomics-v3 P2 revision 2: it had no production
+ *     caller (the version-3 runtime rewrites a delegation row through
+ *     its typed effect, nodus_witness_rt_native.c rtn_sys_mutate), only
+ *     the rev-1 reward tests used it.
  *   - count-by-delegator (feeds STAKE verify rule G: max 64/delegator)
- *   - list-by-delegator / list-by-validator (O(K) bounded scan)
+ *   - list-by-delegator (O(K) bounded scan). list-by-validator was
+ *     removed by tokenomics-v3 P2 with its only caller, the O15J epoch
+ *     snapshot (nodus_witness_epoch.c, deleted).
  *
  * @file nodus_witness_delegation.h
  */
@@ -40,7 +46,15 @@ extern "C" {
  * The ONE authority for how many DISTINCT delegators may reference a
  * single validator (O15J Block 2 — the OPEN HIGH in nodus/BUGS.md).
  *
- * WHY THIS EXISTS. nodus_witness_epoch.c serializes at most
+ * ⚠ HISTORY — the snapshot blob below is GONE. tokenomics-v3 P2 deleted
+ * nodus_witness_epoch.c (the blob, NODUS_EPOCH_MAX_DELEGS_PER_VAL and
+ * nodus_delegation_list_by_validator with it); the P2 reward
+ * distribution reads every delegation through v2_balance_copy with no
+ * truncation (nodus_witness_v2_econ.c). The cap below stays a
+ * per-validator row bound enforced at admission; the paragraphs that
+ * follow record why it was introduced.
+ *
+ * WHY THIS EXISTS. nodus_witness_epoch.c serialized at most
  * NODUS_EPOCH_MAX_DELEGS_PER_VAL delegators per committee member into
  * the epoch snapshot blob, but nothing ever bounded the underlying row
  * count. A validator with more delegators than the snapshot can hold
@@ -106,16 +120,6 @@ int nodus_delegation_get(nodus_witness_t *w,
                           dnac_delegation_record_t *out);
 
 /**
- * Update a delegation row (amount, delegated_at_block).
- * Delegator and validator keys are immutable — identified by the
- * composite PK derived from the record's pubkey fields.
- *
- * @return 0 on success, 1 if not found, -1 on error.
- */
-int nodus_delegation_update(nodus_witness_t *w,
-                             const dnac_delegation_record_t *d);
-
-/**
  * Delete a delegation row.
  *
  * @return 0 on success, 1 if not found, -1 on error.
@@ -159,17 +163,6 @@ int nodus_delegation_count_by_validator(nodus_witness_t *w,
  */
 int nodus_delegation_list_by_delegator(nodus_witness_t *w,
                                         const uint8_t *delegator_pubkey,
-                                        dnac_delegation_record_t *out,
-                                        int max_entries,
-                                        int *count_out);
-
-/**
- * List all delegations targeting the given validator (up to max_entries).
- *
- * @return 0 on success, -1 on error. *count_out is set on success.
- */
-int nodus_delegation_list_by_validator(nodus_witness_t *w,
-                                        const uint8_t *validator_pubkey,
                                         dnac_delegation_record_t *out,
                                         int max_entries,
                                         int *count_out);
