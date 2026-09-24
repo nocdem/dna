@@ -478,29 +478,24 @@ static void handle_dnac_utxo(nodus_witness_t *w,
     fprintf(stderr, "WITNESS_UTXO: owner=%.16s... db=%p rc=%d count=%d\n",
             owner, (void*)w->db, utxo_rc, count);
 
-    /* Phase 2 / Task 38: each UTXO ships with an anchored Merkle inclusion
-     * proof against the current state_root. The top-level response also
-     * carries the latest committed block_height so the client can fetch the
-     * matching block anchor via dnac_block.
-     *
-     * Proof wire format per UTXO (short CBOR keys to match existing
-     * conventions "n", "tid", "bh"):
+    /* Phase 2 / Task 38 defined a per-UTXO proof block. Its wire keys
+     * STAY (short CBOR keys to match existing conventions "n", "tid",
+     * "bh"):
      *   pr_s : bstr — flat sibling buffer (depth * 64 bytes)
      *   pr_p : uint — position bitfield
      *   pr_d : uint — proof depth
-     *   sr   : bstr — 64-byte state_root (matches block.state_root)
-     *
-     * build_proof is O(N_utxos) per call; for N results in one response
-     * this is O(N^2). Acceptable for the current 100-UTXO cap — revisit
-     * in Phase 11+ if it becomes hot. */
-    #define DNAC_UTXO_PROOF_MAX_DEPTH 32
+     *   sr   : bstr — 64-byte root
+     * but since the root-layout round (K3) they always carry depth 0, an
+     * empty pr_s and an all-zero sr — see the loop below. The top-level
+     * response still carries the latest committed block_height. */
     uint64_t latest_height = nodus_witness_block_height(w);
 
     /* Per UTXO we encode at worst:
      *   8 base fields  ≈ 256 B (O15B §7 added "ub", a u64 ⇒ ≤ 12 B more;
      *                   the 256 B line item already had ample slack and the
      *                   2560 B per-entry round-up is unchanged)
-     *   pr_s siblings  ≤ 32 * 64  = 2048 B
+     *   pr_s siblings  ≤ 32 * 64  = 2048 B (always 0 B since the
+     *                   root-layout round; the budget is left as it was)
      *   pr_p / pr_d    ≈ 16 B
      *   sr             ≈ 70 B
      *   CBOR overhead  ≈ 64 B
@@ -528,44 +523,19 @@ static void handle_dnac_utxo(nodus_witness_t *w,
     cbor_encode_array(&enc, (size_t)count);
 
     for (int i = 0; i < count; i++) {
-        /* Build the anchored state_root proof for this UTXO. On failure
-         * (e.g. empty tree, leaf not yet committed) emit depth=0 empty
-         * proof and a zeroed state_root so the client sees a degraded —
-         * but still structurally valid — entry rather than losing the
-         * UTXO entirely. Client verifies proof before trusting anchor. */
-        uint8_t leaf[NODUS_MERKLE_HASH_LEN];
-        uint8_t siblings[DNAC_UTXO_PROOF_MAX_DEPTH * NODUS_MERKLE_HASH_LEN];
+        /* Root-layout round (K3, 2026-09-25): the proof fields STAY on the
+         * wire but always carry the degraded entry this handler already
+         * emitted when no proof could be built — depth 0, no siblings,
+         * zero positions, all-zero root. The proof it used to build
+         * (nodus_witness_merkle_build_proof) anchored to the legacy
+         * five-input state_root, which no block header carries, and the
+         * client verifies only when depth > 0 AND a verified anchor is
+         * installed (dnac/src/nodus/tcp_client.c) — no code installs
+         * one. A client therefore stores the coin unverified, exactly as
+         * before. A real UTXO proof needs a new design bound to the V2
+         * global root (design doc, Threat Model "out of scope"). */
         uint8_t state_root[NODUS_MERKLE_HASH_LEN];
-        uint32_t positions = 0;
-        int depth = 0;
-        bool have_proof = false;
-
-        memset(siblings, 0, sizeof(siblings));
         memset(state_root, 0, sizeof(state_root));
-
-        if (nodus_witness_merkle_leaf_hash(utxos[i].nullifier,
-                                             utxos[i].owner,
-                                             utxos[i].amount,
-                                             utxos[i].token_id,
-                                             utxos[i].tx_hash,
-                                             utxos[i].output_index,
-                                             leaf) == 0) {
-            if (nodus_witness_merkle_build_proof(w, leaf, siblings, &positions,
-                                                   DNAC_UTXO_PROOF_MAX_DEPTH,
-                                                   &depth, state_root) == 0) {
-                have_proof = true;
-            }
-        }
-        if (!have_proof) {
-            /* Degraded: zeroed proof + root. Client-side verify will
-             * reject — caller must retry once the witness is caught up. */
-            positions = 0;
-            depth = 0;
-            memset(siblings, 0, sizeof(siblings));
-            memset(state_root, 0, sizeof(state_root));
-        }
-
-        size_t sibs_len = (size_t)depth * NODUS_MERKLE_HASH_LEN;
 
         /* O15B §7 — 12 entries: the 11 shipped fields plus "ub".
          *
@@ -595,12 +565,14 @@ static void handle_dnac_utxo(nodus_witness_t *w,
         cbor_encode_uint(&enc, utxos[i].block_height);
         cbor_encode_cstr(&enc, "ub");
         cbor_encode_uint(&enc, utxos[i].unlock_block);
+        /* pr_s: a zero-length bstr (depth 0 ⇒ no siblings). A non-NULL
+         * pointer is passed so the zero-byte copy never sees NULL. */
         cbor_encode_cstr(&enc, "pr_s");
-        cbor_encode_bstr(&enc, siblings, sibs_len);
+        cbor_encode_bstr(&enc, state_root, 0);
         cbor_encode_cstr(&enc, "pr_p");
-        cbor_encode_uint(&enc, (uint64_t)positions);
+        cbor_encode_uint(&enc, 0);
         cbor_encode_cstr(&enc, "pr_d");
-        cbor_encode_uint(&enc, (uint64_t)depth);
+        cbor_encode_uint(&enc, 0);
         cbor_encode_cstr(&enc, "sr");
         cbor_encode_bstr(&enc, state_root, NODUS_MERKLE_HASH_LEN);
     }

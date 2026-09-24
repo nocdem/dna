@@ -15,11 +15,12 @@
  * fixtures — no parallel serializer.
  *
  * HOW IT CAN LIE (R3 W3 delta 7): `nodus_witness_v2_bundle_apply`
- * DELETEs, re-INSERTs and COMMITs the six base tables (its own BEGIN
+ * DELETEs, re-INSERTs and COMMITs the five base tables (six before the
+ * root-layout round dropped epoch_state; its own BEGIN
  * IMMEDIATE / COMMIT) BEFORE the pin precheck ever runs, because the
  * document sits at the tail of the wire frame and must be fully parsed
  * first — a rejected pin therefore still leaves the sender's rows
- * planted in all six base tables on the scratch handle. The v3
+ * planted in all five base tables on the scratch handle. The v3
  * wrong-pin case (test_v3_bundle, "adopt with the WRONG pin") and the
  * foreign-bundle case ("foreign bundle") each assert only
  * `v3_has_doc(jw) == 0` afterwards — that proves NO GENESIS DOCUMENT
@@ -30,9 +31,10 @@
  * `join_scratch_clear`) property, not this function's, and this test
  * never exercises that discard path (each joiner directory here is
  * `rmrf`'d by the TEST itself, not by the production joiner). The
- * old-magic case, by contrast, IS refused before its own BEGIN
- * (bundle.c's magic check runs before any SQL), so it legitimately
- * asserts a whole-DB digest is unchanged.
+ * old-magic cases (v1, and since the root-layout round the six-table
+ * v3), by contrast, ARE refused before their own BEGIN
+ * (bundle.c's magic check runs before any SQL), so they legitimately
+ * assert a whole-DB digest is unchanged.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -250,7 +252,8 @@ static int has_v2_block0(nodus_witness_t *w) {
 /* ════════════════════════════════════════════════════════════════════
  * R3 W3 (D-24 rev 4 (2), D-17 rev 10 (9)) — THE VERSION-3 bundle: the
  * genesis DOCUMENT travels after the base tables under the `DNA.
- * GBUNDLE.v3` magic (nodus_witness_v2_bundle.h's layout comment); the
+ * GBUNDLE.v4` magic since the root-layout round (`v3` before it —
+ * nodus_witness_v2_bundle.h's layout comment); the
  * version-2 lane cannot be bundled at all any more (bundle_persist
  * refuses with no stored document). The joiner binds BOTH the document
  * (chain_id) and the ledger it actually replanted (app_hash == the
@@ -419,10 +422,11 @@ static int v3_has_doc(nodus_witness_t *w) {
     return nodus_witness_v2_gen_stored_chain_id(w, id) == 0 ? 1 : 0;
 }
 
+/* The FIVE base tables the v4 bundle carries (root-layout round K2 —
+ * `epoch_state` is gone; nodus_witness_v2_bundle.c BUNDLE_TABLES). */
 static const struct { const char *name; const char *order; } V3_TBL[] = {
     { "validators",           "pubkey_hash ASC" },
     { "delegations",          "delegator_hash ASC, validator_hash ASC" },
-    { "epoch_state",          "epoch_start_height ASC" },
     { "chain_config_history", "param_id ASC, effective_block ASC" },
     { "supply_tracking",      "id ASC" },
     { "validator_stats",      "key ASC" },
@@ -751,6 +755,54 @@ int main(void) {
               "the refused apply left the joiner's whole database "
               "byte-identical"); OK();
         CHECK(has_v2_block0(j.w) == 0, "no trace"); OK();
+
+        fx_close(&j);
+    }
+
+    /* Root-layout round (K2, 2026-09-25): the SIX-table
+     * `DNA.GBUNDLE.v3\0\0` format (it carried `epoch_state`) is RETIRED
+     * the same way — refused BY ITS MAGIC, before anything past it is
+     * read, the joiner's database byte-identical. The body after the
+     * magic is a plausible v3 prefix (a manifest length and a table
+     * count of SIX) so a regression that dropped the magic check and
+     * fell through to the table loop would be reading a real-looking
+     * frame, not garbage. KILLED BY: accepting NODUS_V2_GBUNDLE_MAGIC_V3_
+     * RETIRED, or leaving NODUS_V2_GBUNDLE_MAGIC at "DNA.GBUNDLE.v3". */
+    {
+        CHECK(memcmp(NODUS_V2_GBUNDLE_MAGIC, "DNA.GBUNDLE.v4\0\0",
+                     NODUS_V2_GBUNDLE_MAGIC_LEN) == 0,
+              "the current magic is DNA.GBUNDLE.v4"); OK();
+        CHECK(memcmp(NODUS_V2_GBUNDLE_MAGIC_V3_RETIRED, "DNA.GBUNDLE.v3\0\0",
+                     NODUS_V2_GBUNDLE_MAGIC_LEN) == 0,
+              "the retired magic is DNA.GBUNDLE.v3"); OK();
+
+        fixture_t j;
+        CHECK(fx_open(&j, "v3magic") == 0, "joiner fixture"); OK();
+
+        uint8_t v3_bundle[64];
+        memset(v3_bundle, 0, sizeof(v3_bundle));
+        memcpy(v3_bundle, NODUS_V2_GBUNDLE_MAGIC_V3_RETIRED,
+               NODUS_V2_GBUNDLE_MAGIC_LEN);
+        size_t off = NODUS_V2_GBUNDLE_MAGIC_LEN;
+        v3_bundle[off + 3] = 8;                   /* manifest_len u32 BE = 8 */
+        off += 4;
+        memset(v3_bundle + off, 0x42, 8);         /* 8 manifest bytes        */
+        off += 8;
+        v3_bundle[off + 3] = 6;                   /* table_count u32 BE = 6  */
+        uint8_t any_pin[32];
+        memset(any_pin, 0x99, sizeof(any_pin));
+
+        uint8_t before[64], after[64];
+        CHECK(db_digest_all(j.w, before) == 0, "digest before"); OK();
+        CHECK(nodus_witness_v2_bundle_apply(j.w, v3_bundle,
+                                            sizeof(v3_bundle),
+                                            any_pin) != 0,
+              "version-3 (six-table) magic REFUSED"); OK();
+        CHECK(db_digest_all(j.w, after) == 0, "digest after"); OK();
+        CHECK(memcmp(before, after, 64) == 0,
+              "the refused v3 apply left the joiner's whole database "
+              "byte-identical"); OK();
+        CHECK(v3_has_doc(j.w) == 0, "no genesis document adopted"); OK();
 
         fx_close(&j);
     }

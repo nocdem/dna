@@ -56,8 +56,9 @@
  *      cross-domain shape (the F26/F28/F30/F31/F37/F38/F35/F36/F13/F14
  *      matrix over a DELEGATE and an UNDELEGATE envelope, F38 being the
  *      half-envelope point that fires BETWEEN the two legs), the
- *      VALIDATOR-SET FIREWALL (snapshots / epoch_state /
+ *      VALIDATOR-SET FIREWALL (snapshots /
  *      chain_config_history / resolved committee / resolved-set hash
+ *      — epoch_state left the list with the table, root-layout round K2
  *      byte-identical across all four ops; op 5 and types 11/12/13 still
  *      dead), and the global leftovers (same-block duplicate intent,
  *      cross-chain independence + binding, reversed leg order at BOTH
@@ -8838,10 +8839,10 @@ static int test_o11_vset_firewall(void) {
     uint8_t fp9[64];
     CHECK(key_fp_raw(9, fp9) == 0, "fp");
 
-    /* the four frozen surfaces, captured ONCE */
-    uint8_t vset0[64], epoch0[64], cc0[64], sethash0[64];
+    /* the frozen surfaces, captured ONCE (root-layout round K2:
+     * `epoch_state` is no longer one — the schema does not create it) */
+    uint8_t vset0[64], cc0[64], sethash0[64];
     CHECK(table_digest(fx.w, "validator_set_snapshots", vset0) == 0 &&
-          table_digest(fx.w, "epoch_state", epoch0) == 0 &&
           table_digest(fx.w, "chain_config_history", cc0) == 0,
           "capture"); OK();
     /* the RESOLVED committee at a fixed governing height (epoch 0, so
@@ -8876,8 +8877,6 @@ static int test_o11_vset_firewall(void) {
         CHECK(table_digest(fx.w, "validator_set_snapshots", d1) == 0 &&  \
               memcmp(d1, vset0, 64) == 0,                                \
               label ": validator_set_snapshots moved");                  \
-        CHECK(table_digest(fx.w, "epoch_state", d1) == 0 &&              \
-              memcmp(d1, epoch0, 64) == 0, label ": epoch_state moved"); \
         CHECK(table_digest(fx.w, "chain_config_history", d1) == 0 &&     \
               memcmp(d1, cc0, 64) == 0,                                  \
               label ": chain_config_history moved");                     \
@@ -9442,7 +9441,8 @@ static int test_o11_global(void) {
  *     last_validator_update_block and NOTHING else — asserted by a
  *     FULL-RECORD byte comparison against the record the mediated read
  *     observed, with only the named columns patched;
- *   - that the ACTIVE SET is untouched (snapshots + epoch_state).
+ *   - that the ACTIVE SET is untouched (snapshots; epoch_state was the
+ *     second surface until the root-layout round dropped the table).
  *
  * ⚠ ARITHMETIC LABEL, stated once here and once at rtn_vupd_exec: the
  * deferral is max(next_epoch_boundary, H + 2E) since the P3 fix round
@@ -9858,9 +9858,9 @@ static int test_system_validator_update(void) {
     const uint64_t ac0 = active_count(fx.w);
 
     /* the frozen SET surfaces, captured before anything executes */
-    uint8_t vset0[64], epoch0[64];
-    CHECK(table_digest(fx.w, "validator_set_snapshots", vset0) == 0 &&
-          table_digest(fx.w, "epoch_state", epoch0) == 0, "capture");
+    uint8_t vset0[64];
+    CHECK(table_digest(fx.w, "validator_set_snapshots", vset0) == 0,
+          "capture");
     CHECK(q1(fx.w, "SELECT COUNT(*) FROM validator_set_snapshots") == 2,
           "the set really is frozen (2 seeded epochs)"); OK();
 
@@ -10202,9 +10202,6 @@ static int test_system_validator_update(void) {
         CHECK(table_digest(fx.w, "validator_set_snapshots", d1) == 0 &&
               memcmp(d1, vset0, 64) == 0,
               "validator_set_snapshots must be byte-identical"); OK();
-        CHECK(table_digest(fx.w, "epoch_state", d1) == 0 &&
-              memcmp(d1, epoch0, 64) == 0,
-              "epoch_state must be byte-identical"); OK();
         CHECK(val_col(fx.w, pkh0, "self_stake") == VAL_BOND &&
               val_col(fx.w, pkh0, "status") ==
                   (uint64_t)DNAC_VALIDATOR_ACTIVE &&

@@ -488,7 +488,7 @@ typedef struct nodus_domain_runtime {
      * DomainHead is created at ACTIVATION. NULL = the state root itself
      * (the generic case — a runtime whose state root contains no
      * self-referencing container legs). SYSTEM sets it to the
-     * "DNA.SYSPAYL.v1" payload root (the S5 genesis cycle break) — the
+     * "DNA.SYSPAYL.v2" payload root (the S5 genesis cycle break) — the
      * ONE protocol-special composition, kept inside SYSTEM's runtime
      * entry so the generic engine never branches on a domain id. */
     nodus_rt_root_fn      payload_root;

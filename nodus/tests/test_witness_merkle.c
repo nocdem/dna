@@ -8,8 +8,14 @@
  *   - Three-leaf root duplicates odd sibling at level 0
  *   - Determinism: different insert order -> same root
  *   - Stress: 1000 leaves compute without panic
- *   - Proof round-trip: build_proof -> verify_proof (all leaves)
- *   - Proof tamper: corrupt leaf/sibling/root -> verify fails
+ *
+ * Root-layout round K3 (2026-09-25): the two UTXO proof cases
+ * (build_proof -> verify_proof round-trip, tamper) are DELETED with
+ * nodus_witness_merkle_build_proof. verify_proof itself stays and keeps
+ * its coverage through the tx_root proofs (test_merkle_tx_proof.c). K1:
+ * the utxo_set fixture carries unlock_block (every row here keeps the
+ * default 0) and the seeded leaf helper hashes it; the 340-byte KAT is
+ * in test_merkle_utxo_root.c.
  *
  * Uses in-memory SQLite with the real utxo_set schema.
  */
@@ -59,7 +65,8 @@ static int setup_witness(nodus_witness_t *w) {
         "  tx_hash BLOB NOT NULL,"
         "  output_index INTEGER NOT NULL,"
         "  block_height INTEGER NOT NULL DEFAULT 0,"
-        "  created_at INTEGER NOT NULL DEFAULT 0"
+        "  created_at INTEGER NOT NULL DEFAULT 0,"
+        "  unlock_block INTEGER NOT NULL DEFAULT 0"
         ")") != 0) {
         return -1;
     }
@@ -131,8 +138,10 @@ static int seeded_leaf_hash(uint8_t seed, uint64_t amount, uint8_t out[64]) {
     uint64_t amt;
     build_seeded_utxo(seed, amount, nullifier, tx_hash, token_id, owner,
                       &oi, &amt);
+    /* unlock_block 0 — insert_utxo_full leaves the column at its
+     * DEFAULT 0 (root-layout round K1). */
     return nodus_witness_merkle_leaf_hash(nullifier, owner, amt, token_id,
-                                            tx_hash, oi, out);
+                                            tx_hash, oi, out, 0);
 }
 
 /* RFC 6962 domain-tagged primitives. The production Merkle in
@@ -362,108 +371,6 @@ static void test_stress_1000(void) {
     cleanup_witness(&w);
 }
 
-static void test_proof_roundtrip(void) {
-    T_START("proof round-trip: build + verify every leaf");
-    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
-    if (setup_witness(&w) != 0) { T_FAIL("setup"); return; }
-
-    const int N = 7; /* odd count exercises odd-dup path */
-    uint8_t seeds[7];
-    for (int i = 0; i < N; i++) {
-        seeds[i] = (uint8_t)(0x10 + i);
-        insert_seeded(&w, seeds[i], (uint64_t)(i * 100));
-    }
-
-    uint8_t root[64];
-    nodus_witness_merkle_compute_utxo_root(&w, root);
-
-    int ok = 1;
-    for (int i = 0; i < N; i++) {
-        uint8_t leaf[64];
-        seeded_leaf_hash(seeds[i], (uint64_t)(i * 100), leaf);
-
-        uint8_t siblings[32 * 64];
-        uint32_t positions = 0;
-        int depth = 0;
-        uint8_t proof_root[64];
-
-        if (nodus_witness_merkle_build_proof(&w, leaf, siblings, &positions,
-                                                32, &depth, proof_root) != 0) {
-            T_FAIL("build_proof"); ok = 0; break;
-        }
-
-        if (memcmp(proof_root, root, 64) != 0) {
-            T_FAIL("proof_root != root"); ok = 0; break;
-        }
-
-        if (nodus_witness_merkle_verify_proof(leaf, siblings, positions,
-                                                 depth, root) != 0) {
-            T_FAIL("verify_proof"); ok = 0; break;
-        }
-    }
-    if (ok) T_PASS();
-    cleanup_witness(&w);
-}
-
-static void test_proof_tamper(void) {
-    T_START("tampered proof -> verify fails");
-    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
-    if (setup_witness(&w) != 0) { T_FAIL("setup"); return; }
-
-    for (int i = 0; i < 5; i++)
-        insert_seeded(&w, (uint8_t)(0x20 + i), 1000);
-
-    uint8_t root[64];
-    nodus_witness_merkle_compute_utxo_root(&w, root);
-
-    uint8_t leaf[64];
-    seeded_leaf_hash(0x22, 1000, leaf);
-
-    uint8_t siblings[32 * 64];
-    uint32_t positions = 0;
-    int depth = 0;
-    if (nodus_witness_merkle_build_proof(&w, leaf, siblings, &positions, 32,
-                                            &depth, NULL) != 0) {
-        T_FAIL("build"); cleanup_witness(&w); return;
-    }
-
-    /* Sanity: untampered verifies */
-    if (nodus_witness_merkle_verify_proof(leaf, siblings, positions, depth,
-                                             root) != 0) {
-        T_FAIL("baseline verify"); cleanup_witness(&w); return;
-    }
-
-    /* Tamper the leaf */
-    uint8_t bad_leaf[64];
-    memcpy(bad_leaf, leaf, 64);
-    bad_leaf[0] ^= 0xff;
-    if (nodus_witness_merkle_verify_proof(bad_leaf, siblings, positions,
-                                             depth, root) == 0) {
-        T_FAIL("tampered leaf accepted"); cleanup_witness(&w); return;
-    }
-
-    /* Tamper a sibling */
-    uint8_t bad_siblings[32 * 64];
-    memcpy(bad_siblings, siblings, (size_t)depth * 64);
-    bad_siblings[0] ^= 0xff;
-    if (nodus_witness_merkle_verify_proof(leaf, bad_siblings, positions,
-                                             depth, root) == 0) {
-        T_FAIL("tampered sibling accepted"); cleanup_witness(&w); return;
-    }
-
-    /* Tamper the root */
-    uint8_t bad_root[64];
-    memcpy(bad_root, root, 64);
-    bad_root[63] ^= 0xff;
-    if (nodus_witness_merkle_verify_proof(leaf, siblings, positions, depth,
-                                             bad_root) == 0) {
-        T_FAIL("tampered root accepted"); cleanup_witness(&w); return;
-    }
-
-    T_PASS();
-    cleanup_witness(&w);
-}
-
 /* ── Runner ───────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -476,8 +383,6 @@ int main(void) {
     test_three_leaves_rfc6962_split();
     test_determinism();
     test_stress_1000();
-    test_proof_roundtrip();
-    test_proof_tamper();
 
     printf("\n");
     printf("Passed: %d\n", passed);

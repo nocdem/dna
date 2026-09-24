@@ -1,18 +1,32 @@
 /*
- * Nodus — witness fail-close: state_root subtree faults + supply-gate
- * ambiguity (D1-D3, 2026-07-31).
+ * Nodus — witness fail-close: state-root leg faults + supply-gate
+ * ambiguity (D1-D3, 2026-07-31; retargeted by the root-layout round,
+ * 2026-09-25).
  *
  * The defect class this pins: a transient DB failure used to be converted
- * into a legitimate "empty" or "zero" value and then fed into state_root.
+ * into a legitimate "empty" or "zero" value and then fed into a state
+ * root.
  *
  *   D1  nodus_witness_supply_get is three-valued — 0 present / 1 absent /
  *       -1 real error. Before, a prepare failure and a missing row both
  *       returned -1, so no caller could tell "pre-genesis" from "broken".
- *   D2  nodus_witness_merkle_compute_state_root fails CLOSED on every
- *       subtree, not just utxo. The four nodus_merkle_empty_root(...)
- *       sentinel fallbacks are gone.
- *   D3  load_epoch_state_leaves zeroes the supply counters only when D1
- *       reports 1 (genuinely absent); a -1 propagates out.
+ *   D2  every leg of the chain's state root fails CLOSED — a missing
+ *       backing table never becomes a tagged-empty sentinel.
+ *
+ * ROOT-LAYOUT ROUND (K2/K3, docs/plans/decisions/
+ * 2026-09-25-root-layout-round.md): the subject of D2 used to be the
+ * legacy five-input nodus_witness_merkle_compute_state_root (utxo ‖
+ * validator ‖ delegation ‖ epoch_state ‖ chain_config via combine_v3),
+ * and D3 was its epoch_state leaf loader. All three are DELETED — no
+ * block header carried that root. D2 is re-pinned here on the roots the
+ * chain DOES commit: nodus_witness_system_root_v2 ("DNA.SYS.v3" —
+ * validator, delegation, chain_config legs among others) and
+ * nodus_witness_core_root_v2 ("DNA.CORE.v2" — the utxo and supply legs
+ * among others). D3 has no successor subject: the supply counters now
+ * reach the root only through supply_root, whose fail-closed read is
+ * the "supply" case below. The healthy-composition pin that stood here
+ * (state_root == combine_v3 of five subtrees) is replaced by the
+ * composition checks in test_roots_v2.c.
  *
  *   R3 W4-D (Delta B): D4 — the v0.16 hard supply gate,
  *   check_supply_invariant_v016, rejecting on a DB error rather than
@@ -34,8 +48,7 @@
 
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_db.h"
-#include "witness/nodus_witness_merkle.h"
-#include "nodus/nodus_chain_config.h"
+#include "witness/nodus_witness_roots_v2.h"
 #include "nodus/nodus_types.h"
 
 #include <sqlite3.h>
@@ -68,20 +81,15 @@ static int g_checks = 0;
 /* ── Fixture ────────────────────────────────────────────────────────── */
 
 /* A witness on a freshly created chain DB. create_chain_db runs the full
- * WITNESS_DB_SCHEMA (validators / delegations / epoch_state / utxo_set —
- * and, since the K4 change merged alongside this one, supply_tracking as
- * an empty table) plus migrate_v12 (chain_config_history, and the v17
- * supply_tracking.total_minted back-fill).
+ * WITNESS_DB_SCHEMA (validators / delegations / utxo_set / supply_tracking
+ * as an empty table / the attendance, accrual, vset and domain-registry
+ * tables — no epoch_state since the root-layout round) plus migrate_v12
+ * (chain_config_history, and the v17 supply_tracking.total_minted
+ * back-fill) and the utxo_set.unlock_block migration the K1 leaf reads.
  *
- * MERGE NOTE (2026-07-31): this comment used to say supply_tracking "is
- * created lazily by supply_init". That is no longer true — the table is
- * in the open-time schema. supply_init is still called explicitly below,
- * because the table being present says nothing about the id = 1 ROW: the
- * schema deliberately seeds no row, and it is that row these tests need.
- * That is exactly what the genesis commit path did before reaching
- * finalize_block — the legacy commit path this comment cited
- * (nodus_witness_bft.c) is deleted with the closed consensus lane
- * (R3 W4); nodus_witness_supply_init's own contract is unchanged. */
+ * supply_init is still called explicitly below, because the table being
+ * present says nothing about the id = 1 ROW: the schema deliberately
+ * seeds no row, and it is that row these tests need. */
 static nodus_witness_t *fixture_new(const char *label, uint64_t genesis_supply) {
     nodus_witness_t *w = calloc(1, sizeof(*w));   /* multi-MB — never on the stack */
     if (!w) return NULL;
@@ -126,109 +134,57 @@ static int drop_table(nodus_witness_t *w, const char *table) {
     return sqlite3_exec(w->db, sql, NULL, NULL, NULL) == SQLITE_OK ? 0 : -1;
 }
 
-/* ── (d) Regression pin: the healthy path is unchanged ──────────────── */
+typedef int (*root_fn_t)(nodus_witness_t *w, uint8_t out[64]);
 
-/* The evidence that D2 did not change the accept set. compute_state_root
- * on a healthy DB must still be exactly the v3 combination of the five
- * per-subtree functions — the same composition it produced before the
- * sentinel fallbacks were deleted, because on a healthy DB no fallback
- * ever fired. Derived in-test rather than hard-coded so the pin cannot
- * silently rot against a leaf-layout change it is not meant to guard. */
-static void test_healthy_root_unchanged(void) {
-    printf("  (d) healthy DB: state_root == combine_v3(five real subtrees)\n");
+/* ── (d) the healthy path computes, stably ──────────────────────────── */
+
+static void test_healthy_roots(void) {
+    printf("  (d) healthy DB: SYSTEM and CORE roots compute, stably\n");
     nodus_witness_t *w = fixture_new("healthy", 0);
     CHECK(w != NULL);
     if (!w) return;
 
-    uint8_t utxo[64], validator[64], delegation[64], epoch[64], cc[64];
-    CHECK_EQ(nodus_witness_merkle_compute_utxo_root(w, utxo), 0);
-    CHECK_EQ(nodus_witness_merkle_compute_validator_root(w, validator), 0);
-    CHECK_EQ(nodus_witness_merkle_compute_delegation_root(w, delegation), 0);
-    CHECK_EQ(nodus_witness_merkle_compute_epoch_state_root(w, epoch), 0);
-    CHECK_EQ(nodus_chain_config_compute_root(w, cc), 0);
-
-    uint8_t expected[64];
-    /* O15J Faz 3 — the v4 (6-leg) composition went with the activation
-     * ceremony. state_root is v3 over the five real subtrees, in every
-     * build; there is no longer a second composition to branch on. */
-    nodus_merkle_combine_state_root_v3(utxo, validator, delegation,
-                                        epoch, cc, expected);
-
-    uint8_t got[64];
-    CHECK_EQ(nodus_witness_merkle_compute_state_root(w, got), 0);
-    CHECK(memcmp(got, expected, 64) == 0);
-
-    /* Non-zero + stable across recomputation (an all-zero root would be
-     * tautologically matchable by any peer mid-wipe). */
-    uint8_t zero[64];
+    uint8_t sys[64], core[64], again[64], zero[64];
     memset(zero, 0, sizeof(zero));
-    CHECK(memcmp(got, zero, 64) != 0);
-
-    uint8_t again[64];
-    CHECK_EQ(nodus_witness_merkle_compute_state_root(w, again), 0);
-    CHECK(memcmp(got, again, 64) == 0);
+    CHECK_EQ(nodus_witness_system_root_v2(w, sys), 0);
+    CHECK_EQ(nodus_witness_core_root_v2(w, core), 0);
+    /* An all-zero root would be tautologically matchable by any peer. */
+    CHECK(memcmp(sys, zero, 64) != 0);
+    CHECK(memcmp(core, zero, 64) != 0);
+    CHECK_EQ(nodus_witness_system_root_v2(w, again), 0);
+    CHECK(memcmp(sys, again, 64) == 0);
+    CHECK_EQ(nodus_witness_core_root_v2(w, again), 0);
+    CHECK(memcmp(core, again, 64) == 0);
 
     fixture_free(w);
 }
 
-/* ── (a) Each subtree fault fails closed, with no substituted root ──── */
+/* ── (a) Each leg fault fails closed, with no substituted root ──────── */
 
-/* Drops `table`, then asserts compute_state_root (1) returns non-zero and
- * (2) leaves root_out byte-for-byte untouched. The untouched-buffer check
- * is the "did NOT emit a substituted root" evidence: pre-fix, four of
- * these five faults returned 0 with a tagged-empty sentinel written into
- * the corresponding slot. */
-static void assert_subtree_fails_closed(const char *label, const char *table) {
-    printf("  (a) DROP %s -> compute_state_root fails closed\n", table);
+/* Drops `table`, then asserts `fn` (1) returns non-zero and (2) leaves
+ * its output byte-for-byte untouched. The untouched-buffer check is the
+ * "did NOT emit a substituted root" evidence. */
+static void assert_leg_fails_closed(const char *label, const char *table,
+                                    root_fn_t fn, const char *root_name) {
+    printf("  (a) DROP %s -> %s fails closed\n", table, root_name);
     nodus_witness_t *w = fixture_new(label, 0);
     CHECK(w != NULL);
     if (!w) return;
 
     /* Healthy first, so the fault is the only difference. */
     uint8_t healthy[64];
-    CHECK_EQ(nodus_witness_merkle_compute_state_root(w, healthy), 0);
+    CHECK_EQ(fn(w, healthy), 0);
 
     CHECK_EQ(drop_table(w, table), 0);
 
     uint8_t root[64];
     memset(root, 0x5A, sizeof(root));          /* sentinel canary */
-    CHECK(nodus_witness_merkle_compute_state_root(w, root) != 0);
+    CHECK(fn(w, root) != 0);
 
     uint8_t canary[64];
     memset(canary, 0x5A, sizeof(canary));
     CHECK(memcmp(root, canary, 64) == 0);      /* nothing was written */
     CHECK(memcmp(root, healthy, 64) != 0);     /* and it is not the real root */
-
-    fixture_free(w);
-}
-
-/* The strongest form of the (a) claim, for the one fault where the other
- * four subtrees still compute: dropping `validators` must NOT yield the
- * root the deleted fallback would have produced. */
-static void test_no_sentinel_substitution(void) {
-    printf("  (a+) DROP validators -> not the old tagged-empty sentinel root\n");
-    nodus_witness_t *w = fixture_new("sentinel", 0);
-    CHECK(w != NULL);
-    if (!w) return;
-
-    uint8_t utxo[64], delegation[64], epoch[64], cc[64];
-    CHECK_EQ(nodus_witness_merkle_compute_utxo_root(w, utxo), 0);
-    CHECK_EQ(nodus_witness_merkle_compute_delegation_root(w, delegation), 0);
-    CHECK_EQ(nodus_witness_merkle_compute_epoch_state_root(w, epoch), 0);
-    CHECK_EQ(nodus_chain_config_compute_root(w, cc), 0);
-
-    /* Exactly what the pre-D2 code emitted on this fault. */
-    uint8_t sentinel_validator[64], old_behaviour[64];
-    nodus_merkle_empty_root(NODUS_TREE_TAG_VALIDATOR, sentinel_validator);
-    nodus_merkle_combine_state_root_v3(utxo, sentinel_validator, delegation,
-                                        epoch, cc, old_behaviour);
-
-    CHECK_EQ(drop_table(w, "validators"), 0);
-
-    uint8_t root[64];
-    memset(root, 0x5A, sizeof(root));
-    CHECK(nodus_witness_merkle_compute_state_root(w, root) != 0);
-    CHECK(memcmp(root, old_behaviour, 64) != 0);
 
     fixture_free(w);
 }
@@ -276,63 +232,29 @@ static void test_supply_get_three_valued(void) {
     fixture_free(w);
 }
 
-/* R3 W4-D (Delta B) — test_supply_gate_rejects_db_error, the "(c)" case
- * pinning check_supply_invariant_v016 (the v0.16 hard supply gate), is
- * DELETED: the gate's only production definition was nodus_witness_bft.c,
- * deleted whole with the closed consensus lane. Per the orchestrator's
- * answer to this file's Q1 finding: the gate has NO version-2 successor;
- * its version-3 counterpart is nodus_witness_v2_supply_check (apply.c) ->
- * nodus_rt_core_invariant (claims.c), already pinned fail-closed by
- * test_v2_gen.c §3.5 (L2-F1) and by test_v2_pools. The two remaining
- * "(c)"-family cases below do not call the deleted gate — they call the
- * surviving nodus_witness_merkle_compute_epoch_state_root and
- * nodus_witness_supply_get directly — and stay. */
-
-/* D3 in isolation: the counters that go into every epoch_state leaf must
- * not be silently zeroed on a DB error. With supply_tracking dropped, the
- * epoch_state subtree itself must fail rather than hash zeros. */
-static void test_epoch_state_root_fails_on_supply_error(void) {
-    printf("  (c+) epoch_state_root refuses zeroed supply counters\n");
-    nodus_witness_t *w = fixture_new("epochsupply", 4200);
-    CHECK(w != NULL);
-    if (!w) return;
-
-    uint8_t healthy[64];
-    CHECK_EQ(nodus_witness_merkle_compute_epoch_state_root(w, healthy), 0);
-
-    CHECK_EQ(drop_table(w, "supply_tracking"), 0);
-
-    uint8_t root[64];
-    memset(root, 0x5A, sizeof(root));
-    CHECK(nodus_witness_merkle_compute_epoch_state_root(w, root) != 0);
-
-    uint8_t canary[64];
-    memset(canary, 0x5A, sizeof(canary));
-    CHECK(memcmp(root, canary, 64) == 0);
-
-    fixture_free(w);
-}
-
 /* ── main ───────────────────────────────────────────────────────────── */
 
 int main(void) {
-    printf("\nWitness fail-close: state_root subtrees + supply gate (D1-D3)\n");
+    printf("\nWitness fail-close: state-root legs + supply gate (D1-D2)\n");
 
-    test_healthy_root_unchanged();
+    test_healthy_roots();
 
-    /* One per subtree that compute_state_root depends on. epoch_state is
-     * covered twice: via its own table and via supply_tracking, which
-     * feeds its leaves (D3). */
-    assert_subtree_fails_closed("utxo",       "utxo_set");
-    assert_subtree_fails_closed("validator",  "validators");
-    assert_subtree_fails_closed("delegation", "delegations");
-    assert_subtree_fails_closed("epoch",      "epoch_state");
-    assert_subtree_fails_closed("chaincfg",   "chain_config_history");
-    assert_subtree_fails_closed("supply",     "supply_tracking");
-    test_no_sentinel_substitution();
+    /* One per backing table of a committed leg. SYSTEM: validator,
+     * delegation, chain_config legs. CORE: utxo and supply legs (a DB
+     * error in supply_get is -1, never pre-genesis zeros — D1 feeding
+     * D2). */
+    assert_leg_fails_closed("validator",  "validators",
+                            nodus_witness_system_root_v2, "SYSTEM root");
+    assert_leg_fails_closed("delegation", "delegations",
+                            nodus_witness_system_root_v2, "SYSTEM root");
+    assert_leg_fails_closed("chaincfg",   "chain_config_history",
+                            nodus_witness_system_root_v2, "SYSTEM root");
+    assert_leg_fails_closed("utxo",       "utxo_set",
+                            nodus_witness_core_root_v2, "CORE root");
+    assert_leg_fails_closed("supply",     "supply_tracking",
+                            nodus_witness_core_root_v2, "CORE root");
 
     test_supply_get_three_valued();
-    test_epoch_state_root_fails_on_supply_error();
 
     if (g_fail == 0) {
         printf("test_witness_state_root_failclose: ALL %d CHECKS PASSED\n",

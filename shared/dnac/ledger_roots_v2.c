@@ -2,8 +2,9 @@
  * @file shared/dnac/ledger_roots_v2.c
  * @brief Ledger V2 Season 2 — tagged state-root hierarchy implementation.
  *
- * INACTIVE: no live consensus path calls anything here (S2 charter). See
- * ledger_roots_v2.h for the exact tag table, preimages, and Merkle rules.
+ * The version-3 chain's state root (its global_state_root is the block
+ * app_hash — ledger_roots_v2.h ACTIVATION). See ledger_roots_v2.h for the
+ * exact tag table, preimages, and Merkle rules.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -20,9 +21,10 @@
 #define TAG_LEN 16
 
 /* tokenomics-v3 P1 (D-4, S-2): "DNA.SYS.v1" -> "DNA.SYS.v2" — the 8th
- * leg (attendance_root) changes the composition, so the tag changes
- * with it (a changed preimage is never hashed under the OLD tag). */
-static const uint8_t TAG_SYS[TAG_LEN]     = "DNA.SYS.v2\0\0\0\0\0";
+ * leg (attendance_root). Root-layout round (K2, 2026-09-25):
+ * "DNA.SYS.v2" -> "DNA.SYS.v3" — the epoch_state leg is removed (7
+ * legs). A changed preimage is never hashed under the OLD tag. */
+static const uint8_t TAG_SYS[TAG_LEN]     = "DNA.SYS.v3\0\0\0\0\0";
 /* tokenomics-v3 P2 (P2-8): "DNA.CORE.v1" -> "DNA.CORE.v2" — the 7th leg
  * (accrual_root) changes the composition; "DNA.SUPPLY.v1" ->
  * "DNA.SUPPLY.v2" — the leaf gained reward_pool. A changed preimage is
@@ -32,8 +34,9 @@ static const uint8_t TAG_GLOBAL[TAG_LEN]  = "DNA.GLOBAL.v1\0\0";
 static const uint8_t TAG_SUPPLY[TAG_LEN]  = "DNA.SUPPLY.v2\0\0";
 static const uint8_t TAG_TOKLEAF[TAG_LEN] = "DNA.TOKLEAF.v1\0";
 static const uint8_t TAG_TOKNODE[TAG_LEN] = "DNA.TOKNODE.v1\0";
-static const uint8_t TAG_EPOCH[TAG_LEN]   = "DNA.EPOCH.v2\0\0\0";
-static const uint8_t TAG_EPNODE[TAG_LEN]  = "DNA.EPNODE.v2\0\0";
+/* Root-layout round (K2): TAG_EPOCH "DNA.EPOCH.v2" and TAG_EPNODE
+ * "DNA.EPNODE.v2" DELETED with the epoch_state leg — retired, never
+ * reused (ledger_roots_v2.h TAG TABLE). */
 static const uint8_t TAG_DOMHEAD[TAG_LEN] = "DNA.DOMHEAD.v1\0";
 static const uint8_t TAG_DOMNODE[TAG_LEN] = "DNA.DOMNODE.v1\0";
 static const uint8_t TAG_VSLEAF[TAG_LEN]  = "DNA.VSLEAF.v1\0\0";
@@ -59,8 +62,8 @@ static const uint8_t TAG_EMPTY[DNA_V2_EMPTY__COUNT][TAG_LEN] = {
     "DNA.E.CLAIMS.v1",     /* DNA_V2_EMPTY_CLAIMS   */
     "DNA.E.NAMES.v1\0",    /* DNA_V2_EMPTY_NAMES    */
     "DNA.E.TOKENS.v1",     /* DNA_V2_EMPTY_TOKENS   */
-    "DNA.E.EPOCH.v2\0",    /* DNA_V2_EMPTY_EPOCH_V2 */
-    "DNA.E.ATTND.v1\0",    /* DNA_V2_EMPTY_ATTENDANCE (P1) */
+    /* "DNA.E.EPOCH.v2" — DELETED, root-layout round K2 */
+    "DNA.E.ATTND.v1\0",   /* DNA_V2_EMPTY_ATTENDANCE (P1) */
     "DNA.E.ACCRU.v1\0",    /* DNA_V2_EMPTY_ACCRUAL (P2)    */
 };
 
@@ -183,37 +186,6 @@ int dna_v2_token_root(const dna_v2_token_leaf_t *leaves, size_t n,
     }
     int rc = tagged_merkle(TAG_TOKNODE, hashes, n, out);
     free(hashes);
-    return rc;
-}
-
-/* ── epoch_state_root_v2 ────────────────────────────────────────────── */
-
-int dna_v2_epoch_leaf_hash(uint64_t epoch_start_height,
-                           uint64_t epoch_pool_accum,
-                           const uint8_t snapshot_hash[64],
-                           uint8_t out[DNA_V2_ROOT_LEN]) {
-    if (!snapshot_hash || !out) return -1;
-    uint8_t pre[TAG_LEN + 8 + 8 + 64];
-    memcpy(pre, TAG_EPOCH, TAG_LEN);
-    put_be64(epoch_start_height, pre + TAG_LEN);
-    put_be64(epoch_pool_accum,   pre + TAG_LEN + 8);
-    memcpy(pre + TAG_LEN + 16, snapshot_hash, 64);
-    return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;
-}
-
-int dna_v2_epoch_root(const uint64_t *epoch_starts,
-                      const uint8_t (*leaf_hashes)[DNA_V2_ROOT_LEN],
-                      size_t n, uint8_t out[DNA_V2_ROOT_LEN]) {
-    if (!out || (n > 0 && (!epoch_starts || !leaf_hashes))) return -1;
-    if (n == 0)
-        return dna_v2_empty_root(DNA_V2_EMPTY_EPOCH_V2, out);
-    for (size_t i = 1; i < n; i++)
-        if (epoch_starts[i - 1] >= epoch_starts[i]) return -1;
-    uint8_t (*level)[DNA_V2_ROOT_LEN] = malloc(n * sizeof(*level));
-    if (!level) return -1;
-    memcpy(level, leaf_hashes, n * sizeof(*level));
-    int rc = tagged_merkle(TAG_EPNODE, level, n, out);
-    free(level);
     return rc;
 }
 
@@ -401,25 +373,24 @@ int dna_v2_domains_root(const dna_v2_domain_head_t *heads, size_t n,
  * DNA_CORE runtime's asset commitment (header ownership note). */
 int dna_v2_system_root(const uint8_t validator_root[64],
                        const uint8_t delegation_root[64],
-                       const uint8_t epoch_state_root_v2[64],
                        const uint8_t chain_config_root[64],
                        const uint8_t validator_set_root[64],
                        const uint8_t domain_registry_root[64],
                        const uint8_t manifest_root[64],
                        const uint8_t attendance_root[64],
                        uint8_t out[DNA_V2_ROOT_LEN]) {
-    if (!validator_root || !delegation_root || !epoch_state_root_v2 ||
+    if (!validator_root || !delegation_root ||
         !chain_config_root || !validator_set_root || !domain_registry_root ||
         !manifest_root || !attendance_root || !out)
         return -1;
-    uint8_t pre[TAG_LEN + 8 * DNA_V2_ROOT_LEN];
+    uint8_t pre[TAG_LEN + 7 * DNA_V2_ROOT_LEN];
     memcpy(pre, TAG_SYS, TAG_LEN);
-    const uint8_t *parts[8] = {
-        validator_root, delegation_root, epoch_state_root_v2,
-        chain_config_root, validator_set_root, domain_registry_root,
-        manifest_root, attendance_root
+    const uint8_t *parts[7] = {
+        validator_root, delegation_root, chain_config_root,
+        validator_set_root, domain_registry_root, manifest_root,
+        attendance_root
     };
-    for (int i = 0; i < 8; i++)
+    for (int i = 0; i < 7; i++)
         memcpy(pre + TAG_LEN + (size_t)i * DNA_V2_ROOT_LEN, parts[i],
                DNA_V2_ROOT_LEN);
     return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;
@@ -459,24 +430,25 @@ int dna_v2_global_root(const uint8_t domains_root[64],
 
 /* ── SYSTEM payload root (S5 genesis cycle break) ───────────────────── */
 
-static const uint8_t TAG_SYSPAYL[TAG_LEN] = "DNA.SYSPAYL.v1\0";
+/* Root-layout round (K2): "DNA.SYSPAYL.v1" (5 legs) -> "DNA.SYSPAYL.v2"
+ * (4 legs, the epoch_state leg removed). */
+static const uint8_t TAG_SYSPAYL[TAG_LEN] = "DNA.SYSPAYL.v2\0";
 
 int dna_v2_system_payload_root(const uint8_t validator_root[64],
                                const uint8_t delegation_root[64],
-                               const uint8_t epoch_state_root_v2[64],
                                const uint8_t chain_config_root[64],
                                const uint8_t validator_set_root[64],
                                uint8_t out[DNA_V2_ROOT_LEN]) {
-    if (!validator_root || !delegation_root || !epoch_state_root_v2 ||
+    if (!validator_root || !delegation_root ||
         !chain_config_root || !validator_set_root || !out)
         return -1;
-    uint8_t pre[TAG_LEN + 5 * DNA_V2_ROOT_LEN];
+    uint8_t pre[TAG_LEN + 4 * DNA_V2_ROOT_LEN];
     memcpy(pre, TAG_SYSPAYL, TAG_LEN);
-    const uint8_t *parts[5] = {
-        validator_root, delegation_root, epoch_state_root_v2,
-        chain_config_root, validator_set_root
+    const uint8_t *parts[4] = {
+        validator_root, delegation_root, chain_config_root,
+        validator_set_root
     };
-    for (int i = 0; i < 5; i++)
+    for (int i = 0; i < 4; i++)
         memcpy(pre + TAG_LEN + (size_t)i * DNA_V2_ROOT_LEN, parts[i],
                DNA_V2_ROOT_LEN);
     return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;

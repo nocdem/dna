@@ -9,7 +9,8 @@
  * nodus_chain_config_compute_root: the step loop's final rc is checked
  * against SQLITE_DONE, a malformed row fails the computation, and no leg
  * is ever replaced by a sentinel. An absent S6 table is distinguished
- * from a fault via sqlite_master (the epoch_state probe pattern) — a
+ * from a fault via sqlite_master (the attendance-leg probe pattern,
+ * nodus_witness_roots_v2.c) — a
  * probe fault is never reported as "empty".
  *
  * @file nodus_witness_v2_claims.c
@@ -1092,8 +1093,8 @@ int nodus_rt_core_invariant(const nodus_domain_runtime_t *rt,
      *     == utxo + bonds + delegated + reward_pool + accrued
      *        + unclaimed + shielded
      * The O15J `epoch_state.epoch_pool_accum` term is GONE with the
-     * per-block mint that filled it (nothing writes epoch_state any
-     * more), and total_minted is never written (decision §1 "Yeni token
+     * per-block mint that filled it (the table itself is dropped by
+     * the root-layout round, K2), and total_minted is never written (decision §1 "Yeni token
      * basılmayacak") — it stays in the LHS as a term that is always 0.
      * The reward pool (supply_tracking.reward_pool, read with the row
      * above) holds the undistributed reserve plus every fee; `accrued`

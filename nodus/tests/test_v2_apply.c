@@ -416,21 +416,34 @@ static void rogue_table_disarm(nodus_witness_t *w) {
     w->v2_runtime_table_n = 2;
 }
 
+/* The SYSTEM bookkeeping row the cross-domain cases touch: the supply
+ * fixture's validator zeroblob(63)||0xa6 (no other case in this file
+ * edits it), field last_validator_update_block (V2X_OP_VBOOK,
+ * v2_exec_fixture.h). Root-layout round K2: these cases used the
+ * epoch_state row at epoch_start_height 0, a table the schema no longer
+ * has. */
+static void vbook_key(uint8_t key[64]) {
+    memset(key, 0, 64);
+    key[63] = 0xa6;
+}
+#define VBOOK_SQL_READ "SELECT last_validator_update_block FROM validators " \
+                       "WHERE pubkey_hash=CAST(zeroblob(63)||x'a6' AS BLOB)"
+
 /* tokenomics-v3 P2 — one CROSS-DOMAIN envelope carrying a conserving
- * native move: a SYSTEM leg that SETs the (non-supply) epoch_state
- * bookkeeping row to `accum_new`, and a CORE leg with TWO effects, the
+ * native move: a SYSTEM leg that SETs a (non-supply) SYSTEM bookkeeping
+ * field to `book_new` (see vbook_key), and a CORE leg with TWO effects, the
  * transparent row 0x..01 SET to `utxo_new` and supply selector 3
  * (reward_pool) SET to `pool_new` — the fee → pool hop (P2-3) as a
  * scripted pair. Two DomainUpdates; the value moves inside CORE. */
-static int env_cross_fee_to_pool(v2x_env_t *env, uint64_t accum_new,
+static int env_cross_fee_to_pool(v2x_env_t *env, uint64_t book_new,
                                  uint64_t utxo_new, uint64_t pool_new) {
-    uint8_t skey[8], sval[8];
-    v2x_put64(skey, 0);
-    v2x_put64(sval, accum_new);
+    uint8_t skey[64], sval[8];
+    vbook_key(skey);
+    v2x_put64(sval, book_new);
     uint8_t sres[256];
     size_t srl = 0;
-    if (v2x_eff1(sres, sizeof(sres), V2X_OP_EPOCH, DNA_EFFECT_SET,
-                 DNA_EFFECT_PRE_EXISTS, skey, 8, sval, 8, &srl) != 0)
+    if (v2x_eff1(sres, sizeof(sres), V2X_OP_VBOOK, DNA_EFFECT_SET,
+                 DNA_EFFECT_PRE_EXISTS, skey, 64, sval, 8, &srl) != 0)
         return -1;
     uint8_t ukey[64] = { 0 }, uval[8], pkey[1] = { 3 }, pval[8];
     ukey[63] = 0x01;
@@ -1391,7 +1404,8 @@ int main(void) {
             "INSERT INTO validators (pubkey_hash, pubkey, self_stake, "
             "total_delegated, commission_bps, status, active_since_block, "
             "unstake_destination_fp, unstake_destination_pubkey) "
-            "VALUES (zeroblob(63)||x'%02x', zeroblob(2591)||x'%02x', "
+            "VALUES (CAST(zeroblob(63)||x'%02x' AS BLOB), "
+            "zeroblob(2591)||x'%02x', "
             "1000000000000000, 0, 100, 0, 0, '%s', zeroblob(2592))",
             0xA0 + i, 0xB0 + i, fpx);
         CHECK(run_sql(fs.w->db, sql) == 0, "validator");
@@ -1425,11 +1439,11 @@ int main(void) {
         "UPDATE utxo_set SET amount = amount - 1000000000000000 "
         "WHERE nullifier=CAST(zeroblob(63)||x'01' AS BLOB);"
         "UPDATE validators SET self_stake = self_stake + 1000000000000000 "
-        "WHERE pubkey_hash=zeroblob(63)||x'a0'") == 0, "lock");
+        "WHERE pubkey_hash=CAST(zeroblob(63)||x'a0' AS BLOB)") == 0, "lock");
     CHECK(nodus_witness_v2_supply_check(fs.w) == 0, "bond lock broke"); OK();
     CHECK(run_sql(fs.w->db,
         "UPDATE validators SET self_stake = self_stake - 1000000000000000 "
-        "WHERE pubkey_hash=zeroblob(63)||x'a0';"
+        "WHERE pubkey_hash=CAST(zeroblob(63)||x'a0' AS BLOB);"
         "UPDATE utxo_set SET amount = amount + 1000000000000000 "
         "WHERE nullifier=CAST(zeroblob(63)||x'01' AS BLOB)") == 0, "unlock");
     CHECK(nodus_witness_v2_supply_check(fs.w) == 0, "unlock broke"); OK();
@@ -1438,7 +1452,7 @@ int main(void) {
         "UPDATE utxo_set SET amount = amount - 10000000000 "
         "WHERE nullifier=CAST(zeroblob(63)||x'01' AS BLOB);"
         "UPDATE validators SET total_delegated = total_delegated + "
-        "10000000000 WHERE pubkey_hash=zeroblob(63)||x'a1'") == 0, "delegate");
+        "10000000000 WHERE pubkey_hash=CAST(zeroblob(63)||x'a1' AS BLOB)") == 0, "delegate");
     CHECK(nodus_witness_v2_supply_check(fs.w) == 0, "delegation broke");
     OK();
     /* fee burn EXACTLY once */
@@ -1480,30 +1494,31 @@ int main(void) {
         "WHERE nullifier=CAST(zeroblob(63)||x'01' AS BLOB)") == 0, "payday");
     CHECK(nodus_witness_v2_supply_check(fs.w) == 0, "accrual→utxo broke");
     OK();
-    /* the RETIRED O15J term: a mint parked in epoch_state is no longer
-     * backed by anything the gate counts (P2-4 deleted the mint and the
-     * term with it) — it must violate. KILLED BY: a gate that still sums
-     * epoch_state.epoch_pool_accum. */
+    /* the RETIRED O15J term: a mint is no longer backed by anything the
+     * gate counts (P2-4 deleted the mint and its epoch_state pool term;
+     * the root-layout round K2 dropped the epoch_state table itself, so
+     * the old "parked in epoch_state" half of this case has nothing left
+     * to park in) — an unbacked total_minted must violate. KILLED BY: a
+     * gate that treats total_minted as backed. */
     CHECK(run_sql(fs.w->db,
-        "UPDATE supply_tracking SET total_minted = total_minted + 3200;"
-        "INSERT INTO epoch_state (epoch_start_height, epoch_pool_accum, "
-        "snapshot_hash) VALUES (0, 3200, zeroblob(64))") == 0, "old mint");
+        "UPDATE supply_tracking SET total_minted = total_minted + 3200")
+        == 0, "old mint");
     CHECK(nodus_witness_v2_supply_check(fs.w) != 0,
-          "an epoch_state-parked mint still conserved"); OK();
+          "an unbacked mint still conserved"); OK();
     CHECK(run_sql(fs.w->db,
         "UPDATE supply_tracking SET total_minted = total_minted - 3200")
         == 0, "undo old mint");
     CHECK(nodus_witness_v2_supply_check(fs.w) == 0,
-          "epoch_state is no supply term"); OK();
+          "undoing the mint restores conservation"); OK();
     /* duplicate ownership: value in a UTXO AND a bond simultaneously */
     CHECK(run_sql(fs.w->db,
         "UPDATE validators SET self_stake = self_stake + 5 "
-        "WHERE pubkey_hash=zeroblob(63)||x'a2'") == 0, "dup owner");
+        "WHERE pubkey_hash=CAST(zeroblob(63)||x'a2' AS BLOB)") == 0, "dup owner");
     CHECK(nodus_witness_v2_supply_check(fs.w) != 0,
           "double-counted value conserved"); OK();
     CHECK(run_sql(fs.w->db,
         "UPDATE validators SET self_stake = self_stake - 5 "
-        "WHERE pubkey_hash=zeroblob(63)||x'a2'") == 0, "undo");
+        "WHERE pubkey_hash=CAST(zeroblob(63)||x'a2' AS BLOB)") == 0, "undo");
     /* missing ownership */
     CHECK(run_sql(fs.w->db,
         "UPDATE utxo_set SET amount = amount - 5 WHERE nullifier=CAST(zeroblob(63)||x'01' AS BLOB)")
@@ -1584,23 +1599,22 @@ int main(void) {
     /* ── 8. SUPPLY OWNERSHIP through TYPED cross-domain envelopes ───── */
     {
         /* (a) THE RETIRED MINT: total_minted (CORE, SUPPLY_SET absolute)
-         * + epoch pool (SYSTEM, EPOCH_SET absolute) — the O15J shape,
-         * which conserved while epoch_state was a supply term. Since
-         * tokenomics-v3 P2-2/P2-4 nothing backs it: the supply gate
+         * + a SYSTEM leg (VBOOK_SET absolute — it stood for the O15J
+         * epoch pool, whose table the root-layout round dropped). Since
+         * tokenomics-v3 P2-2/P2-4 nothing backs the mint: the supply gate
          * rejects the block and nothing leaks. KILLED BY: a gate that
-         * still counts epoch_state.epoch_pool_accum. */
+         * treats total_minted as backed. */
         uint64_t minted = q1(fs.w, "SELECT total_minted FROM "
                                    "supply_tracking");
-        uint64_t accum = q1(fs.w, "SELECT epoch_pool_accum FROM "
-                                  "epoch_state WHERE epoch_start_height=0");
-        uint8_t skey[8], sval[8], ckey[1] = { 1 }, cval[8];
-        v2x_put64(skey, 0);
+        uint64_t accum = q1(fs.w, VBOOK_SQL_READ);
+        uint8_t skey[64], sval[8], ckey[1] = { 1 }, cval[8];
+        vbook_key(skey);
         v2x_put64(sval, accum + 500);
         v2x_put64(cval, minted + 500);
         uint8_t sres[256], cres[256];
         size_t srl = 0, crl = 0;
-        CHECK(v2x_eff1(sres, sizeof(sres), V2X_OP_EPOCH, DNA_EFFECT_SET,
-                       DNA_EFFECT_PRE_EXISTS, skey, 8, sval, 8, &srl)
+        CHECK(v2x_eff1(sres, sizeof(sres), V2X_OP_VBOOK, DNA_EFFECT_SET,
+                       DNA_EFFECT_PRE_EXISTS, skey, 64, sval, 8, &srl)
                   == 0, "sres");
         CHECK(v2x_eff1(cres, sizeof(cres), V2X_OP_SUPPLY, DNA_EFFECT_SET,
                        DNA_EFFECT_PRE_EXISTS, ckey, 1, cval, 8, &crl)
@@ -1630,7 +1644,7 @@ int main(void) {
         OK();
 
         /* (b) FEE → POOL across a cross-domain envelope: SYSTEM leg (the
-         * non-supply epoch_state row) + CORE leg (transparent row −500,
+         * non-supply bookkeeping field, vbook_key) + CORE leg (transparent row −500,
          * reward_pool +500) — two DomainUpdates, conserved. */
         uint64_t amt = q1(fs.w, "SELECT amount FROM utxo_set WHERE "
                                 "nullifier=CAST(zeroblob(63)||x'01' AS BLOB)");
@@ -1732,9 +1746,7 @@ int main(void) {
          * leg's first effect), each refusing the ITEM (EXEC) with the ledger
          * byte-identical, in a block that commits and so consumes a
          * height. */
-        uint64_t accum2 = q1(fs.w, "SELECT epoch_pool_accum FROM "
-                                   "epoch_state WHERE "
-                                   "epoch_start_height=0");
+        uint64_t accum2 = q1(fs.w, VBOOK_SQL_READ);
         uint64_t amt3 = q1(fs.w, "SELECT amount FROM utxo_set WHERE "
                                  "nullifier=CAST(zeroblob(63)||x'01' AS "
                                  "BLOB)");

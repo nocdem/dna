@@ -477,10 +477,9 @@ if(NOT WIN32)
         # (the per-block halving curve) are DELETED with the per-block
         # mint they served; no production caller survived (decision file
         # 2026-09-22-nodus-tokenomics-v3-operator.md §3 S-4). The
-        # epoch_state TABLE itself stays (nodus_witness.c schema) with no
-        # writer left, so its SYSTEM-root leg is the constant empty root
-        # (nodus_witness_roots_v2.c nodus_witness_epoch_root_v2); dropping
-        # the table/leg changes the root preimage and is a separate round.
+        # epoch_state TABLE and its SYSTEM-root leg went in the separate
+        # root-layout round (decisions/2026-09-25-root-layout-round.md K2:
+        # "DNA.SYS.v3", "DNA.SYSPAYL.v2", "DNA.GBUNDLE.v4").
         # The emission HEADER (nodus_witness_emission.h) stays: it carries
         # the two committed unit constants, nothing that mints.
         src/witness/nodus_witness_committee.c
@@ -1794,19 +1793,16 @@ target_link_libraries(test_chain_config_rate_limit nodus dsa nodus)
 add_test(NAME test_chain_config_rate_limit
          COMMAND test_chain_config_rate_limit)
 
-# UTXO state_root determinism tests (Phase 2 / Task 2.5)
+# UTXO state_root determinism tests (Phase 2 / Task 2.5) + the root-layout
+# round's 340-byte leaf KAT, unlock_block-moves-the-root and the
+# negative-unlock_block fail-close (K1)
 add_executable(test_merkle_utxo_root tests/test_merkle_utxo_root.c)
 target_link_libraries(test_merkle_utxo_root nodus dsa nodus)
 add_test(NAME test_merkle_utxo_root COMMAND test_merkle_utxo_root)
 
-# state_root GOLDEN VECTOR — pins the five-subtree composition to a fixed
-# 64-byte value so a format change cannot pass a relational test. Also
-# usable as a generator: ./test_merkle_state_root_golden --print-root
-add_executable(test_merkle_state_root_golden
-    tests/test_merkle_state_root_golden.c)
-target_link_libraries(test_merkle_state_root_golden nodus dsa nodus)
-add_test(NAME test_merkle_state_root_golden
-         COMMAND test_merkle_state_root_golden)
+# Root-layout round (K3, 2026-09-25): test_merkle_state_root_golden (the
+# five-subtree legacy state_root golden vector) is DELETED with
+# nodus_witness_merkle_compute_state_root, its only subject.
 
 # state_root leaf-scan fail-close tests (K3 / K3b — mid-scan step error
 # and malformed row must fail the load, never truncate the leaf set)
@@ -1814,10 +1810,9 @@ add_executable(test_merkle_scan_fail_close tests/test_merkle_scan_fail_close.c)
 target_link_libraries(test_merkle_scan_fail_close nodus dsa nodus)
 add_test(NAME test_merkle_scan_fail_close COMMAND test_merkle_scan_fail_close)
 
-# RFC 6962 Merkle proof round-trip tests (Phase 2 / Task 2.6)
-add_executable(test_merkle_proof tests/test_merkle_proof.c)
-target_link_libraries(test_merkle_proof nodus dsa nodus)
-add_test(NAME test_merkle_proof COMMAND test_merkle_proof)
+# Root-layout round (K3): test_merkle_proof (the UTXO-set build_proof
+# round-trip) is DELETED with nodus_witness_merkle_build_proof, its only
+# subject; verify_proof keeps coverage through test_merkle_tx_proof.
 
 # RFC 6962 tx_root inclusion proof tests (anchored-merkle-proofs / Tasks 32-35)
 add_executable(test_merkle_tx_proof tests/test_merkle_tx_proof.c)
@@ -2070,6 +2065,8 @@ register_witness_test(test_min_tenure_boundary)
 # supply_get's three-valued contract keeps a DB error from masquerading as
 # pre-genesis. Deterministic fault injection (DROP TABLE on a temp DB).
 # See nodus/docs/plans/2026-07-31-witness-failclose-state-root-design.md
+# Root-layout round (K3): retargeted from the deleted legacy
+# compute_state_root to the SYSTEM / CORE roots the chain commits.
 register_witness_test(test_witness_state_root_failclose)
 
 # Task 51 — committee election (post-commit lookback + state_seed tiebreak)

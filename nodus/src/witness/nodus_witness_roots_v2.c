@@ -1,5 +1,6 @@
 /**
- * Nodus — Ledger V2 Season 2: witness-side V2 root loaders (INACTIVE).
+ * Nodus — Ledger V2: witness-side V2 root loaders (the version-3 chain's
+ * state root — see nodus_witness_roots_v2.h ACTIVATION).
  *
  * See nodus_witness_roots_v2.h. Every reader follows the fail-closed
  * shape of nodus_chain_config_compute_root: the step loop's final rc is
@@ -137,104 +138,10 @@ int nodus_witness_token_root_v2(nodus_witness_t *w, uint8_t out[64]) {
     return ret;
 }
 
-/* ── epoch_state_root_v2 (supply counters relocated out) ────────────── */
-
-int nodus_witness_epoch_root_v2(nodus_witness_t *w, uint8_t out[64]) {
-    if (!w || !w->db || !out) return -1;
-
-    sqlite3_stmt *stmt = NULL;
-    int rc = sqlite3_prepare_v2(w->db,
-        "SELECT epoch_start_height, epoch_pool_accum, snapshot_hash "
-        "FROM epoch_state ORDER BY epoch_start_height ASC",
-        -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        /* The epoch_state table is created lazily; on a fresh DB the
-         * prepare fails with "no such table" — that is the honest EMPTY
-         * state (pre-genesis), not a fault. Distinguish it via
-         * sqlite_master — and FAIL CLOSED if the probe itself errors
-         * (S2 verifier finding: a probe fault must never be reported as
-         * pre-genesis; "a DB failure is never a value"). */
-        sqlite3_stmt *chk = NULL;
-        if (sqlite3_prepare_v2(w->db,
-                "SELECT 1 FROM sqlite_master WHERE type='table' "
-                "AND name='epoch_state'", -1, &chk, NULL) != SQLITE_OK) {
-            QGP_LOG_ERROR(LOG_TAG, "epoch table probe failed: %s",
-                          sqlite3_errmsg(w->db));
-            return -1;                       /* probe fault ≠ empty */
-        }
-        int step = sqlite3_step(chk);
-        sqlite3_finalize(chk);
-        if (step == SQLITE_DONE)             /* table genuinely absent */
-            return dna_v2_empty_root(DNA_V2_EMPTY_EPOCH_V2, out);
-        if (step != SQLITE_ROW) {
-            QGP_LOG_ERROR(LOG_TAG, "epoch table probe step failed (rc=%d)",
-                          step);
-            return -1;                       /* probe fault ≠ empty */
-        }
-        /* Table exists but the scan prepare failed: real error. */
-        QGP_LOG_ERROR(LOG_TAG, "epoch scan prepare failed: %s",
-                      sqlite3_errmsg(w->db));
-        return -1;
-    }
-
-    size_t cap = 4, n = 0;
-    uint64_t *starts = malloc(cap * sizeof(uint64_t));
-    uint8_t (*hashes)[64] = malloc(cap * sizeof(*hashes));
-    if (!starts || !hashes) {
-        free(starts); free(hashes); sqlite3_finalize(stmt);
-        return -1;
-    }
-    int fail = 0;
-    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-        if (n >= cap) {
-            size_t nc = cap * 2;
-            uint64_t *ns = realloc(starts, nc * sizeof(uint64_t));
-            uint8_t (*nh)[64] = realloc(hashes, nc * sizeof(*nh));
-            if (!ns || !nh) {
-                free(ns ? ns : starts);
-                free(nh ? nh : hashes);
-                sqlite3_finalize(stmt);
-                return -1;
-            }
-            starts = ns; hashes = nh; cap = nc;
-        }
-        const void *snap = sqlite3_column_blob(stmt, 2);
-        int snap_len     = sqlite3_column_bytes(stmt, 2);
-        if (!snap || snap_len != 64) {
-            /* The writer (nodus_witness_epoch.c) always wrote it
-             * full-length; that file is DELETED by tokenomics-v3 P2 and
-             * no writer of `epoch_state` remains, so on a version-3
-             * chain the table is empty and this leg is the constant
-             * empty root (n == 0 below). A NULL or short blob is
-             * corruption. FAIL, never substitute. */
-            QGP_LOG_ERROR(LOG_TAG, "epoch row %zu snapshot malformed — "
-                          "failing root", n);
-            fail = 1;
-            break;
-        }
-        starts[n] = (uint64_t)sqlite3_column_int64(stmt, 0);
-        if (dna_v2_epoch_leaf_hash(starts[n],
-                                   (uint64_t)sqlite3_column_int64(stmt, 1),
-                                   (const uint8_t *)snap, hashes[n]) != 0) {
-            fail = 1;
-            break;
-        }
-        n++;
-    }
-    if (!fail && rc != SQLITE_DONE) {
-        QGP_LOG_ERROR(LOG_TAG, "epoch scan aborted mid-stream (rc=%d) — "
-                      "failing root", rc);
-        fail = 1;
-    }
-    sqlite3_finalize(stmt);
-
-    int ret = -1;
-    if (!fail)
-        ret = dna_v2_epoch_root(starts, hashes, n, out);
-    free(starts);
-    free(hashes);
-    return ret;
-}
+/* Root-layout round (K2, 2026-09-25): the epoch_state leg
+ * (nodus_witness_epoch_root_v2) is DELETED together with the
+ * `epoch_state` table — no writer of it remained after tokenomics-v3
+ * P2, so the leg was a constant. SYSTEM is 7 legs ("DNA.SYS.v3"). */
 
 /* ── supply_root ────────────────────────────────────────────────────── */
 
@@ -256,7 +163,7 @@ int nodus_witness_supply_root_v2(nodus_witness_t *w, uint8_t out[64]) {
 }
 
 /* ── accrual_root (tokenomics-v3 P2, P2-8) ─────────────────────────────
- * The attendance/epoch legs' fail-closed shape: a malformed row FAILS
+ * The attendance leg's fail-closed shape: a malformed row FAILS
  * the computation, a scan fault is never a shorter table. No
  * sqlite_master probe: `v2_reward_accrual` is in WITNESS_DB_SCHEMA
  * (nodus_witness.c) and the S16 rung, so a missing table on a DB this
@@ -328,8 +235,8 @@ int nodus_witness_accrual_root_v2(nodus_witness_t *w, uint8_t out[64]) {
 }
 
 /* ── attendance_root (tokenomics-v3 P1, D-4 / S-2) ─────────────────────
- * Follows the epoch leg's pattern exactly (nodus_witness_epoch_root_v2
- * above): "no such table" via sqlite_master probe = the honest EMPTY
+ * Follows the (now deleted) epoch leg's pattern: "no such table" via
+ * sqlite_master probe = the honest EMPTY
  * state (pre-P1 database, or a chain that has not reached its first
  * boundary yet), a probe FAULT is never reported as empty, and a
  * malformed row FAILS the whole computation — never substituted.
@@ -426,34 +333,32 @@ int nodus_witness_attendance_root(nodus_witness_t *w, uint8_t out[64]) {
 int nodus_witness_system_payload_root_v2(nodus_witness_t *w,
                                          uint8_t out[64]) {
     if (!w || !out) return -1;
-    uint8_t validator_root[64], delegation_root[64], epoch_v2[64];
+    uint8_t validator_root[64], delegation_root[64];
     uint8_t chain_config_root[64], vset[64];
     if (nodus_witness_merkle_compute_validator_root(w, validator_root) != 0)
         return -1;
     if (nodus_witness_merkle_compute_delegation_root(w, delegation_root) != 0)
         return -1;
-    if (nodus_witness_epoch_root_v2(w, epoch_v2) != 0)
-        return -1;
     if (nodus_chain_config_compute_root(w, chain_config_root) != 0)
         return -1;
     if (nodus_witness_vset_root(w, vset) != 0)
         return -1;
+    /* "DNA.SYSPAYL.v2", 4 legs (root-layout round K2). */
     return dna_v2_system_payload_root(validator_root, delegation_root,
-                                      epoch_v2, chain_config_root, vset,
-                                      out);
+                                      chain_config_root, vset, out);
 }
 
 int nodus_witness_system_root_v2(nodus_witness_t *w, uint8_t out[64]) {
     if (!w || !out) return -1;
-    uint8_t validator_root[64], delegation_root[64], epoch_v2[64];
+    uint8_t validator_root[64], delegation_root[64];
     uint8_t chain_config_root[64], vset[64], domreg[64], manifest[64];
     uint8_t attendance[64];
     if (nodus_witness_merkle_compute_validator_root(w, validator_root) != 0)
         return -1;
     if (nodus_witness_merkle_compute_delegation_root(w, delegation_root) != 0)
         return -1;
-    if (nodus_witness_epoch_root_v2(w, epoch_v2) != 0)
-        return -1;
+    /* Root-layout round (K2): the epoch_state leg that sat here is
+     * DELETED; the composition tag moved "DNA.SYS.v2" -> "DNA.SYS.v3". */
     if (nodus_chain_config_compute_root(w, chain_config_root) != 0)
         return -1;
     /* S3: the real validator-set leg. An EMPTY validator_set_snapshots
@@ -476,7 +381,9 @@ int nodus_witness_system_root_v2(nodus_witness_t *w, uint8_t out[64]) {
      * pre-manifest chain. */
     if (nodus_witness_manifest_root_v2(w, manifest) != 0)
         return -1;
-    /* tokenomics-v3 P1 (D-4, S-2): the 8th leg. An empty
+    /* tokenomics-v3 P1 (D-4, S-2): the attendance leg (8th under
+     * "DNA.SYS.v2", 7th under "DNA.SYS.v3" since the root-layout round
+     * removed the epoch_state leg). An empty
      * `v2_attendance_epoch` (every pre-P1 chain, and every P1 chain
      * before its first epoch boundary) returns the SAME tagged empty
      * root DNA_V2_EMPTY_ATTENDANCE regardless — but the COMPOSITION tag
@@ -490,7 +397,7 @@ int nodus_witness_system_root_v2(nodus_witness_t *w, uint8_t out[64]) {
     /* GENERICITY CORRECTION (locked): the native supply_root is NOT a
      * SYSTEM leg — issuance belongs to the DNA_CORE runtime and is
      * committed by ITS state root below. */
-    return dna_v2_system_root(validator_root, delegation_root, epoch_v2,
+    return dna_v2_system_root(validator_root, delegation_root,
                               chain_config_root, vset, domreg, manifest,
                               attendance, out);
 }

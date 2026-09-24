@@ -2,8 +2,11 @@
 """
 Independent vector oracle for tokenomics-v3 P1's attendance leg
 (shared/dnac/ledger_roots_v2.{h,c}: dna_v2_attendance_digest,
-dna_v2_attendance_leaf_hash, dna_v2_attendance_root, and the 8-leg
-dna_v2_system_root).
+dna_v2_attendance_leaf_hash, dna_v2_attendance_root) and for the SYSTEM
+compositions: the 7-leg dna_v2_system_root ("DNA.SYS.v3") and the 4-leg
+dna_v2_system_payload_root ("DNA.SYSPAYL.v2") of the root-layout round
+(docs/plans/decisions/2026-09-25-root-layout-round.md K2), with the P1
+8-leg "DNA.SYS.v2" and the 7-leg "DNA.SYS.v1" as control legs.
 
 ── PROVENANCE — HONEST LABEL ────────────────────────────────────────────
 This is a SELF-CONSISTENCY oracle, not an external audit: this format is
@@ -27,10 +30,18 @@ Call it "self-consistent", never "independently audited".
                                  digest[64])
   attendance inner   = SHA3-512("DNA.ATNODE.v1" || left[64] || right[64])
   attendance empty   = SHA3-512("DNA.E.ATTND.v1")
-  system_state_root  = SHA3-512("DNA.SYS.v2" || 8 legs of 64 bytes, in
-      order: validator_root, delegation_root, epoch_state_root_v2,
-      chain_config_root, validator_set_root, domain_registry_root,
-      manifest_root, attendance_root)
+  system_state_root  = SHA3-512("DNA.SYS.v3" || 7 legs of 64 bytes, in
+      order: validator_root, delegation_root, chain_config_root,
+      validator_set_root, domain_registry_root, manifest_root,
+      attendance_root)
+      — root-layout round K2 (2026-09-25) removed the epoch_state leg
+      and moved the tag; the P1 composition was "DNA.SYS.v2" over 8 legs
+      (validator, delegation, epoch_state_root_v2, chain_config, vset,
+      domreg, manifest, attendance), kept below as a CONTROL leg only.
+  system_payload_root = SHA3-512("DNA.SYSPAYL.v2" || 4 legs of 64 bytes:
+      validator_root, delegation_root, chain_config_root,
+      validator_set_root)          — root-layout round K2; was
+      "DNA.SYSPAYL.v1" over 5 legs (… epoch_state_root_v2 …).
 
 Every tag is a FIXED 16-byte zero-padded ASCII string (ledger_roots_v2.h
 "TAG TABLE" convention) — this script pads exactly the same way the C
@@ -43,10 +54,14 @@ array initializers do (explicit NUL bytes filling out to 16), verified in
     (test_roots_v2.c), reproduced here byte-for-byte; a bug shared between
     the C fixture and this generator's `fill()` would agree with itself
     and prove nothing about the real hash.
- 3. `KAT_SYSTEM_8LEG` (the sanity re-derivation of the OLD 7-leg
-    "DNA.SYS.v1" vector) is checked against the value ALREADY pinned in
-    test_roots_v2.c before this script's method is trusted for the NEW
-    8-leg vector — if that check fails, nothing below it should be used.
+ 3. CONTROL LEGS: the OLD 7-leg "DNA.SYS.v1" vector and the OLD 8-leg
+    "DNA.SYS.v2" vector (both shipped pins of test_roots_v2.c) are
+    re-derived and asserted FIRST; if either fails, nothing below may be
+    used. There is NO control leg for "DNA.SYSPAYL.v1": no test in the
+    tree ever pinned a payload-root vector (grep of nodus/tests at
+    d2056c59: no dna_v2_system_payload_root KAT), so the new
+    SYSPAYL.v2 vector rests on the same method the SYS controls prove,
+    not on a reproduced payload pin.
 
 Read-only: opens nothing, writes nothing, prints to stdout.
 """
@@ -83,17 +98,26 @@ TAG_ATTEP = tag("DNA.ATTEP.v1")
 TAG_ATLEAF = tag("DNA.ATLEAF.v1")
 TAG_ATNODE = tag("DNA.ATNODE.v1")
 TAG_E_ATTND = tag("DNA.E.ATTND.v1")
+TAG_SYS_V3 = tag("DNA.SYS.v3")
 TAG_SYS_V2 = tag("DNA.SYS.v2")
 TAG_SYS_V1 = tag("DNA.SYS.v1")
+TAG_SYSPAYL_V2 = tag("DNA.SYSPAYL.v2")
 
 
 def _check_tag_padding():
     for name, t in (
         ("DNA.ATTEP.v1", TAG_ATTEP), ("DNA.ATLEAF.v1", TAG_ATLEAF),
         ("DNA.ATNODE.v1", TAG_ATNODE), ("DNA.E.ATTND.v1", TAG_E_ATTND),
-        ("DNA.SYS.v2", TAG_SYS_V2), ("DNA.SYS.v1", TAG_SYS_V1),
+        ("DNA.SYS.v3", TAG_SYS_V3), ("DNA.SYS.v2", TAG_SYS_V2),
+        ("DNA.SYS.v1", TAG_SYS_V1), ("DNA.SYSPAYL.v2", TAG_SYSPAYL_V2),
     ):
         assert len(t) == TAG_LEN, (name, len(t))
+    # The C spells the new tags with explicit NULs
+    # (shared/dnac/ledger_roots_v2.c): "DNA.SYS.v3\0\0\0\0\0" and
+    # "DNA.SYSPAYL.v2\0" — i.e. 10 + 6 and 14 + 2 bytes (the C string
+    # literal's own terminating NUL fills the last slot).
+    assert TAG_SYS_V3 == b"DNA.SYS.v3" + b"\x00" * 6
+    assert TAG_SYSPAYL_V2 == b"DNA.SYSPAYL.v2" + b"\x00" * 2
 
 
 def attendance_digest(epoch_start: int, rows) -> bytes:
@@ -142,16 +166,29 @@ def attendance_root(entries):
 
 
 def system_root_v2(legs8):
+    """RETIRED composition (tokenomics-v3 P1) — control leg only."""
     assert len(legs8) == 8
     return sha3_512(TAG_SYS_V2 + b"".join(legs8))
+
+
+def system_root_v3(legs7):
+    """Root-layout round K2: validator, delegation, chain_config, vset,
+    domreg, manifest, attendance."""
+    assert len(legs7) == 7
+    return sha3_512(TAG_SYS_V3 + b"".join(legs7))
+
+
+def system_payload_root_v2(legs4):
+    """Root-layout round K2: validator, delegation, chain_config, vset."""
+    assert len(legs4) == 4
+    return sha3_512(TAG_SYSPAYL_V2 + b"".join(legs4))
 
 
 def main():
     _check_tag_padding()
 
-    # Self-check against the value ALREADY pinned in test_roots_v2.c
-    # (KAT_SYSTEM, the retired 7-leg "DNA.SYS.v1" vector) before trusting
-    # this script's method for anything new.
+    # CONTROL LEG 1 — the value pinned in test_roots_v2.c before P1
+    # (KAT_SYSTEM, the retired 7-leg "DNA.SYS.v1" vector).
     legs7 = [fill(0x90 + i) for i in range(7)]
     old_sys = sha3_512(TAG_SYS_V1 + b"".join(legs7))
     OLD_KAT_SYSTEM = (
@@ -160,6 +197,17 @@ def main():
     )
     assert old_sys.hex() == OLD_KAT_SYSTEM, "method does not reproduce the pinned 7-leg vector"
     print("[self-check] 7-leg DNA.SYS.v1 vector reproduced:", old_sys.hex() == OLD_KAT_SYSTEM)
+
+    # CONTROL LEG 2 — the value SHIPPED in test_roots_v2.c at d2056c59
+    # (KAT_SYSTEM_8LEG, the retired 8-leg "DNA.SYS.v2" vector), re-derived
+    # before the root-layout round's new vectors are trusted.
+    OLD_KAT_SYSTEM_8LEG = (
+        "ec9fc33017c755d6555a867c02b618b39fec4bea9e9740733561446e064e9b9e"
+        "578691a670352277e14f021751da58e97b03fda0651ab7510500c3649ba22122"
+    )
+    old_sys8 = system_root_v2([fill(0x90 + i) for i in range(8)])
+    assert old_sys8.hex() == OLD_KAT_SYSTEM_8LEG, "method does not reproduce the shipped 8-leg vector"
+    print("[self-check] 8-leg DNA.SYS.v2 vector reproduced:", old_sys8.hex() == OLD_KAT_SYSTEM_8LEG)
 
     print()
     print("EMPTY_ATTENDANCE  =", sha3_512(TAG_E_ATTND).hex())
@@ -180,9 +228,14 @@ def main():
     root2 = attendance_root([(720, dg2), (1440, dg_b)])
     print("ATT_ROOT_2ENTRY   =", root2.hex(), "  (epochs 720 + 1440, second digest = fill(0x60))")
 
-    legs8 = [fill(0x90 + i) for i in range(8)]
-    sys8 = system_root_v2(legs8)
-    print("KAT_SYSTEM_8LEG   =", sys8.hex(), "  (DNA.SYS.v2, legs = fill(0x90..0x97))")
+    # Root-layout round K2 — the NEW vectors.
+    legs7_v3 = [fill(0x90 + i) for i in range(7)]
+    sys7 = system_root_v3(legs7_v3)
+    assert sys7 != old_sys, "SYS.v3 over the same 7 legs must differ from SYS.v1"
+    print("KAT_SYSTEM_7LEG_V3 =", sys7.hex(), "  (DNA.SYS.v3, legs = fill(0x90..0x96))")
+    legs4 = [fill(0xA0 + i) for i in range(4)]
+    payl = system_payload_root_v2(legs4)
+    print("KAT_SYSPAYL_V2    =", payl.hex(), "  (DNA.SYSPAYL.v2, legs = fill(0xA0..0xA3))")
 
 
 if __name__ == "__main__":

@@ -9,10 +9,12 @@
  * the snapshot the block header committed to, not looked up in the mutable
  * validators table.
  *
- * ACTIVATION: nothing in the live consensus path calls anything here. The
- * active chain keeps the legacy 144-byte commit certificate
- * (nodus_witness_cert.{h,c}) and the v3 five-input state_root byte-identical.
- * The snapshot layer activates only with the Ledger V2 devnet reset.
+ * ACTIVATION (historical note, S3): when written, nothing in the live
+ * consensus path called anything here and the chain kept the legacy
+ * commit certificate and the five-input state_root. The five-input root
+ * is DELETED (root-layout round K3, 2026-09-25); the snapshot hash now
+ * reaches the chain's state root through validator_set_root, a leg of
+ * the SYSTEM root ("DNA.SYS.v3", shared/dnac/ledger_roots_v2.h).
  *
  * Conventions (identical discipline to shared/dnac/ledger_roots_v2.h):
  *   - SHA3-512 everywhere (qgp_sha3_512);
@@ -42,7 +44,7 @@
  *
  * ── `epoch` SEMANTICS ──────────────────────────────────────────────────
  * `epoch` is the EPOCH START HEIGHT — the project's canonical epoch key,
- * the same value stored in epoch_state.epoch_start_height (schema:
+ * the same value stored in validator_set_snapshots.epoch_start (schema:
  * nodus/src/witness/nodus_witness.c) and passed as `e_start` to
  * nodus_committee_compute_for_epoch. It is NOT an epoch ordinal.
  *

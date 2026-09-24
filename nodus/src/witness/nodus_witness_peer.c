@@ -15,7 +15,6 @@
 #include "witness/nodus_witness_peer.h"
 #include "witness/nodus_witness_committee.h"   /* Task 59 — committee roster */
 #include "witness/nodus_witness_db.h"
-#include "witness/nodus_witness_merkle.h"
 #include "protocol/nodus_tier3.h"
 #include "protocol/nodus_tier2.h"
 #include "server/nodus_server.h"
@@ -504,33 +503,18 @@ int nodus_witness_peer_send_ident(nodus_witness_t *w,
     snprintf(msg.ident.address, sizeof(msg.ident.address),
              "%s:%u", ident_ip, ident_wport);
 
-    /* Block height, UTXO checksum, and view for sync/leader detection */
+    /* Block height for peer bookkeeping. */
     msg.ident.block_height = nodus_witness_block_height(w);
-    if (w->cached_state_root_valid) {
-        memcpy(msg.ident.state_root, w->cached_state_root, NODUS_KEY_BYTES);
-    } else {
-        /* Phase 3 / Task 10: peer identification advertises the composite
-         * state_root (utxo || validator || delegation || reward). */
-        if (nodus_witness_merkle_compute_state_root(w, msg.ident.state_root) != 0) {
-            /* D4 (2026-07-31) — was an unchecked call. Advertise the
-             * all-zero "unknown" checksum, EXPLICITLY: consumers skip a
-             * zero remote_checksum instead of scoring it as agreement or
-             * disagreement (nodus_witness_sync.c:305 and :434), so this
-             * node simply does not contribute to the divergence tally
-             * until it can compute a real root.
-             *
-             * The memset at the top of this function already zeroes msg,
-             * and compute_state_root leaves root_out untouched on failure
-             * — but relying on that pair was implicit correctness, and
-             * D2 made this failure path genuinely reachable. Re-zero so
-             * the guarantee is local and visible. */
-            memset(msg.ident.state_root, 0, NODUS_KEY_BYTES);
-            QGP_LOG_ERROR(LOG_TAG,
-                "IDENT: state_root compute failed — advertising all-zero "
-                "(unknown) checksum at height %llu",
-                (unsigned long long)msg.ident.block_height);
-        }
-    }
+    /* Root-layout round (K3, 2026-09-25): the `state_root` wire field STAYS
+     * (byte-identical IDENT frame, NODUS_T3_BFT_PROTOCOL_VER unchanged)
+     * and is sent ALL-ZERO — the value this code already used for
+     * "unknown" when the legacy root could not be computed. The legacy
+     * five-input root it used to carry is deleted; no block header held
+     * it, and no receiver read the field (its only sink, the peer's
+     * `remote_checksum`, had no reader and is deleted too). Zeroed
+     * explicitly so the guarantee is local, not implied by the memset
+     * at the top of this function. */
+    memset(msg.ident.state_root, 0, NODUS_KEY_BYTES);
     /* R3 W4 — `w->current_view` no longer exists: the legacy view counter
      * was deleted with the closed consensus lane. The wire field stays
      * (byte-identical IDENT frame) and is written 0; the receive side
@@ -941,11 +925,12 @@ int nodus_witness_peer_handle_ident(nodus_witness_t *w,
             w->peers[pi].version_compatible = compat;
         }
 
-        /* Store peer's chain state for sync decisions */
+        /* Store peer's chain height. Root-layout round (K3): the peer's
+         * advertised `state_root` is no longer stored — its sink
+         * (`remote_checksum`) had no reader and is deleted, and a
+         * current sender always advertises zero. */
         if (ident->has_block_height) {
             w->peers[pi].remote_height = ident->block_height;
-            memcpy(w->peers[pi].remote_checksum, ident->state_root,
-                   NODUS_KEY_BYTES);
 
             /* R3 W4 — `ident->current_view` is received and not acted on:
              * it stays on the wire as a gossip / observability field only

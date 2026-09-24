@@ -226,9 +226,10 @@ typedef struct {
     /* C-02: Outgoing auth state (client-side hello/auth on port 4004) */
     enum { PEER_AUTH_NONE, PEER_AUTH_HELLO_SENT, PEER_AUTH_OK } auth_state;
 
-    /* State sync: peer's chain state from w_ident */
+    /* State sync: peer's chain state from w_ident. Root-layout round
+     * (K3): `remote_checksum` (the peer's advertised legacy state_root)
+     * is DELETED — it was written and never read. */
     uint64_t    remote_height;              /* peer's block height */
-    uint8_t     remote_checksum[64];        /* peer's UTXO checksum */
 
     /* Phase 10 / Task 10.4 — clock skew probe.
      * (now - peer.ts_local) seconds, signed. Logged when |skew| > 10. */
@@ -398,11 +399,10 @@ typedef struct nodus_witness {
      * nodus_witness_mempool.c and nodus_witness_sync.c, all gone. The
      * version-3 lane's mempool is the Comet reactor's own (cmt_mem.c). */
 
-    /* Phase 10 / Task 10.1 — cached state_root (RFC 6962 Merkle root over
-     * the UTXO set), computed by nodus_witness_merkle_compute_utxo_root.
-     * Cached to avoid a full table scan on every epoch tick. */
-    uint8_t         cached_state_root[64];  /* NODUS_KEY_BYTES */
-    bool            cached_state_root_valid;
+    /* Root-layout round (K3, 2026-09-25): `cached_state_root` /
+     * `cached_state_root_valid` are DELETED — no code wrote them, so the
+     * two readers (IDENT send, the T2 status reply's legacy branch)
+     * always took their fallback. */
 
     /* v0.16 stage A.5: block_fee_pool field removed — fees no longer
      * accumulate in RAM. Stage C.3 wires route_tx_fee() to burn fees

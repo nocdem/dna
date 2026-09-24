@@ -4,7 +4,9 @@ Independent vector oracle for tokenomics-v3 P2's changes to the CORE
 state root (shared/dnac/ledger_roots_v2.{h,c}): the reward-pool field of
 the supply leaf ("DNA.SUPPLY.v2"), the reward-accrual leg
 (dna_v2_accrual_leaf_hash / dna_v2_accrual_root, empty tag
-"DNA.E.ACCRU.v1") and the 7-leg core_state_root ("DNA.CORE.v2").
+"DNA.E.ACCRU.v1") and the 7-leg core_state_root ("DNA.CORE.v2"); and,
+since the root-layout round (K1, 2026-09-25), the 340-byte UTXO leaf
+that feeds core_state_root's utxo_root leg.
 
 ── PROVENANCE — HONEST LABEL ────────────────────────────────────────────
 This is a SELF-CONSISTENCY oracle, not an external audit: the format is
@@ -29,6 +31,23 @@ ledger_roots_v2_attendance_oracle.py (P1).
                   utxo, token, pools, claims, names, supply, accrual)
 The Merkle rule is the file's own: leaves in strictly ascending key
 order, an unpaired node PROMOTED (never duplicated), n == 1 -> the leaf.
+
+  UTXO leaf (root-layout round K1, 2026-09-25 — the utxo_root leg of
+  the same core_state_root; nodus_witness_merkle.c
+  nodus_witness_merkle_leaf_hash + its client mirror
+  dnac_utxo_compute_leaf_hash):
+    digest = SHA3-512(nullifier[64] || owner[128, NUL-padded] ||
+                      amount(8 LE) || token_id[64] || tx_hash[64] ||
+                      output_index(4 LE) || unlock_block(8 LE))  — 340 B,
+             NO tag (the pre-K1 leaf was the first 332 bytes)
+    utxo_root is RFC 6962: leaf = SHA3-512(0x00 || digest), inner =
+    SHA3-512(0x01 || L || R), split at the largest power of two < n;
+    n == 1 -> SHA3-512(0x00 || digest).
+  NO control leg exists for the UTXO leaf: no test at d2056c59 pinned a
+  332-byte leaf or a non-empty utxo_root literal (grep of nodus/tests
+  for 128-hex literals in the merkle tests: only all-zero token_id
+  DEFAULTs). The C test reproduces the digest a SECOND way (hand-built
+  340-byte buffer hashed directly), which is the independent path.
 
 ── HOW THIS CAN LIE ──────────────────────────────────────────────────────
  1. Same-author, same-day: see PROVENANCE above.
@@ -117,6 +136,42 @@ def core_root_v2(legs7):
     return sha3_512(TAG_CORE_V2 + b"".join(legs7))
 
 
+def le64(v: int) -> bytes:
+    return struct.pack("<Q", v)
+
+
+def le32(v: int) -> bytes:
+    return struct.pack("<I", v)
+
+
+def utxo_leaf_digest(nullifier: bytes, owner: bytes, amount: int,
+                     token_id: bytes, tx_hash: bytes, output_index: int,
+                     unlock_block: int) -> bytes:
+    """Root-layout round K1 — the 340-byte untagged preimage."""
+    assert len(nullifier) == 64 and len(token_id) == 64 and len(tx_hash) == 64
+    assert len(owner) <= 128
+    pre = (nullifier + owner + b"\x00" * (128 - len(owner)) + le64(amount) +
+           token_id + tx_hash + le32(output_index) + le64(unlock_block))
+    assert len(pre) == 340
+    return sha3_512(pre)
+
+
+def utxo_root_1(digest: bytes) -> bytes:
+    """RFC 6962, n == 1: the leaf-tagged digest."""
+    return sha3_512(b"\x00" + digest)
+
+
+# The UTXO KAT fixture — transcribed byte-for-byte in
+# nodus/tests/test_merkle_utxo_root.c and dnac/tests/test_merkle_verify.c.
+UTXO_NULLIFIER = fill(0x11)
+UTXO_OWNER = b"ab" * 64                 # 128 ASCII bytes, no NUL padding needed
+UTXO_AMOUNT = 0x0102030405060708
+UTXO_TOKEN_ID = fill(0x22)
+UTXO_TX_HASH = fill(0x33)
+UTXO_OUTPUT_INDEX = 0x0A0B0C0D
+UTXO_UNLOCK_BLOCK = 0x1122334455667788
+
+
 def main():
     for t in (TAG_SUPPLY_V1, TAG_SUPPLY_V2, TAG_CORE_V1, TAG_CORE_V2,
               TAG_ACLEAF, TAG_ACNODE, TAG_E_ACCRU):
@@ -159,6 +214,23 @@ def main():
     print("KAT_CORE_7LEG     =",
           core_root_v2([fill(0xB0 + i) for i in range(7)]).hex(),
           "  (DNA.CORE.v2, legs = fill(0xB0..0xB6))")
+
+    # Root-layout round K1 — the UTXO leaf with unlock_block.
+    print()
+    d = utxo_leaf_digest(UTXO_NULLIFIER, UTXO_OWNER, UTXO_AMOUNT,
+                         UTXO_TOKEN_ID, UTXO_TX_HASH, UTXO_OUTPUT_INDEX,
+                         UTXO_UNLOCK_BLOCK)
+    d0 = utxo_leaf_digest(UTXO_NULLIFIER, UTXO_OWNER, UTXO_AMOUNT,
+                          UTXO_TOKEN_ID, UTXO_TX_HASH, UTXO_OUTPUT_INDEX, 0)
+    assert d != d0, "unlock_block must reach the leaf"
+    assert utxo_root_1(d) != utxo_root_1(d0), "unlock_block must reach the root"
+    print("KAT_UTXO_LEAF_UB  =", d.hex(),
+          "  (nullifier fill(0x11), owner 'ab'*64, amount 0x0102030405060708,"
+          " token fill(0x22), tx fill(0x33), idx 0x0A0B0C0D,"
+          " unlock_block 0x1122334455667788)")
+    print("KAT_UTXO_LEAF_UB0 =", d0.hex(), "  (same row, unlock_block 0)")
+    print("KAT_UTXO_ROOT_UB  =", utxo_root_1(d).hex(),
+          "  (utxo_root over that single row = SHA3-512(0x00 || leaf))")
 
 
 if __name__ == "__main__":

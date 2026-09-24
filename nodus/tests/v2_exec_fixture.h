@@ -12,8 +12,11 @@
  *     "DNA.EFFRES.v1" result bytes into call_data, so any effect shape
  *     (including malformed ones) is expressible from a test;
  *   - compiled TEST ADAPTERS over the same tables the retired raw-SQL
- *     ops used to mutate (utxo_set / supply_tracking / epoch_state /
- *     chain_config_history / domain_registry), probe+read+mutate, all
+ *     ops used to mutate (utxo_set / supply_tracking /
+ *     chain_config_history / domain_registry) plus one non-supply
+ *     SYSTEM bookkeeping field (validators.last_validator_update_block —
+ *     it replaced `epoch_state`, dropped by the root-layout round K2),
+ *     probe+read+mutate, all
  *     scoped by the authoritative domain id they are handed;
  *   - envelope/call/effect builders.
  *
@@ -267,17 +270,26 @@ static const nodus_domain_adapter_t V2X_CORE_ADAPTER = {
     .read = v2x_core_read
 };
 
-/* ── SYSTEM test adapter: chain_config_history + epoch_state +
- *    domain_registry ──────────────────────────────────────────────────
+/* ── SYSTEM test adapter: chain_config_history + a validator
+ *    bookkeeping field + domain_registry ───────────────────────────────
  * op 1 V2X_OP_CC     CREATE: key = param_id u32 BE ‖ effective_block
  *                    u64 BE (12 bytes), value = new_value u64 BE.
- * op 2 V2X_OP_EPOCH  SET: key = epoch_start_height u64 BE, value =
- *                    ABSOLUTE epoch_pool_accum u64 BE.
+ * op 2 V2X_OP_VBOOK  SET: key = validators.pubkey_hash (64 bytes),
+ *                    value = ABSOLUTE last_validator_update_block u64 BE.
+ *                    A NON-SUPPLY SYSTEM row whose change MOVES the
+ *                    SYSTEM root (the field is in the validator leaf,
+ *                    nodus_witness_merkle.c load_validator_leaves) — the
+ *                    engine rejects a touched domain whose root did not
+ *                    move (nodus_witness_v2_apply.c phase 9), so a test
+ *                    SYSTEM leg needs such a row. Root-layout round K2:
+ *                    this op was V2X_OP_EPOCH over
+ *                    epoch_state.epoch_pool_accum (key epoch_start u64);
+ *                    that table is dropped from the schema.
  * op 3 V2X_OP_DOMREG SET: key = domain_id u32 BE, value = the encoded
  *                    DNA_DOMREG_REC_ENC_LEN registry record.
  */
 #define V2X_OP_CC     1u
-#define V2X_OP_EPOCH  2u
+#define V2X_OP_VBOOK  2u
 #define V2X_OP_DOMREG 3u
 
 static nodus_adapter_status_t v2x_sys_probe(
@@ -297,13 +309,13 @@ static nodus_adapter_status_t v2x_sys_probe(
             return NODUS_ADAPTER_ERR_STORAGE_FAULT;
         sqlite3_bind_int64(st, 1, (sqlite3_int64)v2x_get32(key));
         sqlite3_bind_int64(st, 2, (sqlite3_int64)v2x_get64(key + 4));
-    } else if (op->op_id == V2X_OP_EPOCH) {
-        if (key_len != 8) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+    } else if (op->op_id == V2X_OP_VBOOK) {
+        if (key_len != 64) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
         if (sqlite3_prepare_v2(w->db,
-                "SELECT epoch_pool_accum FROM epoch_state WHERE "
-                "epoch_start_height=?1", -1, &st, NULL) != SQLITE_OK)
+                "SELECT last_validator_update_block FROM validators WHERE "
+                "pubkey_hash=?1", -1, &st, NULL) != SQLITE_OK)
             return NODUS_ADAPTER_ERR_STORAGE_FAULT;
-        sqlite3_bind_int64(st, 1, (sqlite3_int64)v2x_get64(key));
+        sqlite3_bind_blob(st, 1, key, 64, SQLITE_TRANSIENT);
     } else if (op->op_id == V2X_OP_DOMREG) {
         if (key_len != 4) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
         if (sqlite3_prepare_v2(w->db,
@@ -372,14 +384,14 @@ static nodus_adapter_status_t v2x_sys_mutate(
         sqlite3_bind_int64(st, 3, (sqlite3_int64)v2x_get64(key + 4));
         sqlite3_bind_int64(st, 4,
                            (sqlite3_int64)(v2x_get64(key + 4) & 0xffffff));
-    } else if (op->op_id == V2X_OP_EPOCH) {
-        if (key_len != 8 || value_len != 8)
+    } else if (op->op_id == V2X_OP_VBOOK) {
+        if (key_len != 64 || value_len != 8)
             return NODUS_ADAPTER_ERR_STORAGE_FAULT;
         if (sqlite3_prepare_v2(w->db,
-                "UPDATE epoch_state SET epoch_pool_accum=?2 WHERE "
-                "epoch_start_height=?1", -1, &st, NULL) != SQLITE_OK)
+                "UPDATE validators SET last_validator_update_block=?2 "
+                "WHERE pubkey_hash=?1", -1, &st, NULL) != SQLITE_OK)
             return NODUS_ADAPTER_ERR_STORAGE_FAULT;
-        sqlite3_bind_int64(st, 1, (sqlite3_int64)v2x_get64(key));
+        sqlite3_bind_blob(st, 1, key, 64, SQLITE_TRANSIENT);
         sqlite3_bind_int64(st, 2, (sqlite3_int64)v2x_get64(value));
     } else if (op->op_id == V2X_OP_DOMREG) {
         if (key_len != 4 || value_len == 0)
@@ -402,10 +414,10 @@ static nodus_adapter_status_t v2x_sys_mutate(
 static const nodus_adapter_op_t V2X_SYS_OPS[3] = {
     { V2X_OP_CC, NODUS_ADAPTER_KIND_BIT(DNA_EFFECT_CREATE),
       NODUS_ADAPTER_PRECOND_BIT(DNA_EFFECT_PRE_ABSENT), 12, 12, 8, 8 },
-    { V2X_OP_EPOCH, NODUS_ADAPTER_KIND_BIT(DNA_EFFECT_SET),
+    { V2X_OP_VBOOK, NODUS_ADAPTER_KIND_BIT(DNA_EFFECT_SET),
       (uint8_t)(NODUS_ADAPTER_PRECOND_BIT(DNA_EFFECT_PRE_EXISTS) |
                 NODUS_ADAPTER_PRECOND_BIT(DNA_EFFECT_PRE_EXISTS_VERSION)),
-      8, 8, 8, 8 },
+      64, 64, 8, 8 },
     { V2X_OP_DOMREG, NODUS_ADAPTER_KIND_BIT(DNA_EFFECT_SET),
       NODUS_ADAPTER_PRECOND_BIT(DNA_EFFECT_PRE_EXISTS),
       4, 4, 1, 256 }

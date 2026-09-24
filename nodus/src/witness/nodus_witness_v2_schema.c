@@ -1645,7 +1645,7 @@ int nodus_witness_db_migrate_v2s15_ex(nodus_witness_t *w,
          * any root by itself (ledger_roots_v2.h "attendance_root").
          * Round 2 (R2-1): both tables now ALSO live in the base schema
          * (WITNESS_DB_SCHEMA, nodus_witness.c) because they are
-         * lane-independent bookkeeping, same as validators/epoch_state/
+         * lane-independent bookkeeping, same as validators/
          * validator_stats — a fixture that migrates straight to an
          * earlier rung (e.g. S9) still needs them to exist. This
          * CREATE TABLE IF NOT EXISTS is now a no-op on any chain DB

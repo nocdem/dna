@@ -234,15 +234,14 @@ static const char *WITNESS_DB_SCHEMA =
     ");"
     "CREATE INDEX IF NOT EXISTS idx_delegator ON delegations (delegator_hash);"
     "CREATE INDEX IF NOT EXISTS idx_validator ON delegations (validator_hash);"
-    /* v0.16 stage B.1 — push-settlement epoch state. At most one row
-     * is active at a time (previous epoch deleted at settlement in
-     * Stage E). */
-    "CREATE TABLE IF NOT EXISTS epoch_state ("
-    "  epoch_start_height INTEGER PRIMARY KEY,"
-    "  epoch_pool_accum   INTEGER NOT NULL DEFAULT 0,"
-    "  snapshot_hash      BLOB NOT NULL,"
-    "  snapshot_blob      BLOB"
-    ");"
+    /* Root-layout round (K2, 2026-09-25): the v0.16 `epoch_state` table
+     * (push-settlement epoch pool + snapshot) is no longer created. Its
+     * last writer died with tokenomics-v3 P2; it was a constant leg of
+     * the SYSTEM root, the genesis payload root and the genesis bundle,
+     * and all three drop it (DNA.SYS.v3 / DNA.SYSPAYL.v2 /
+     * DNA.GBUNDLE.v4). A database an older build created keeps the
+     * (empty) table; nothing reads it — the planned devnet wipe removes
+     * it. */
     /* Supply counters. Historically this table was created ONLY by
      * nodus_witness_supply_init (nodus_witness_db.c:879-888), which runs
      * at genesis commit — so a node that created its chain DB and then
@@ -277,7 +276,7 @@ static const char *WITNESS_DB_SCHEMA =
     /* tokenomics-v3 P1 (round 2, R2-1): the two attendance tables are
      * LANE-INDEPENDENT bookkeeping — nothing about them depends on which
      * schema rung (S9, S14, S15, ...) a given chain DB has migrated to,
-     * exactly like validators/epoch_state/validator_stats above. They
+     * exactly like validators/validator_stats above. They
      * belong in the base schema so every chain DB has them from its
      * FIRST open, at any rung, not only once S15 runs. The S15 migration
      * (nodus_witness_v2_schema.c) keeps its own `CREATE TABLE IF NOT
@@ -347,8 +346,7 @@ static const char *WITNESS_DB_SCHEMA =
      * than lazily) keeps a node that made its DB before genesis from
      * silently having no such table — the class of bug the supply_tracking
      * comment above records.
-     *   epoch_start       EPOCH START HEIGHT, the canonical epoch key
-     *                     (same value as epoch_state.epoch_start_height).
+     *   epoch_start       EPOCH START HEIGHT, the canonical epoch key.
      *   snapshot_hash     64 bytes, dna_vset_hash of snapshot_blob.
      *   snapshot_blob     the canonical bytes (shared/dnac/vset_wire.h).
      *   created_at_height the block height that produced the row —

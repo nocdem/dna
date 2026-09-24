@@ -4,9 +4,11 @@
  * Every canonical preimage is pinned to a literal computed by an
  * INDEPENDENT implementation (python3 hashlib.sha3_512 — the oracle script
  * and its output are recorded in the S2 season report). Sections:
- *   1. Shared-layer KATs + negatives (empty tags, supply, tokens, epoch v2,
- *      DomainHead, domains_root incl. a THIRD future domain, composition,
- *      subroot mutation sweep, supply-committed-once).
+ *   1. Shared-layer KATs + negatives (empty tags, supply, tokens,
+ *      DomainHead, domains_root incl. a THIRD future domain, composition
+ *      incl. the SYSTEM payload root, subroot mutation sweep,
+ *      supply-committed-once). The epoch v2 leaf/root KATs are GONE with
+ *      the epoch_state leg (root-layout round K2, 2026-09-25).
  *   2. Witness loaders over real in-memory SQLite state: token-root
  *      insertion-order independence, duplicate/malformed/fail-closed,
  *      pre-genesis empty states.
@@ -21,6 +23,10 @@
 #include "witness/nodus_witness.h"
 #include "nodus/nodus_chain_config.h"
 #include "witness/nodus_witness_db.h"
+#include "witness/nodus_witness_merkle.h"
+#include "witness/nodus_witness_vset.h"
+#include "witness/nodus_witness_domreg.h"
+#include "witness/nodus_witness_v2_claims.h"
 
 #include <sqlite3.h>
 #include <stdio.h>
@@ -65,7 +71,8 @@ static const char *EMPTY_KAT[DNA_V2_EMPTY__COUNT] = {
     /* CLAIMS */ "b34a8d97ef88610cc933751fe9f2a8d61dd60c916f685a5ffc1667ca6c5d4f4abe0fe46a51e40251b859a870f28c6bb342b36cae3c45b525cccbdef051fba6a8",
     /* NAMES  */ "ef12a4d9657dc6711688a664ea0ac0a9295f8bdc595599121a7b60c7dae9467ec3e80e861e55a3cb99c76dfbf14c596e91fa0fa1b7a67317cbc155ce120db412",
     /* TOKENS */ "4098bc465307c3a6340c1374d020957372b82d4b670f5e2049b6a3fa13f9ade608eadcc34afe643079b6e4fcd890bab80f1b4582023e80c719bcffcf0ce093f3",
-    /* EPOCH2 */ "e49a53f12820a8589744a67123cfcb9b7e75d8be9197c168b4caee2ed2804cb9a1aee49c9127cc8697fb93982e2d6c1e4ee720f8a75c31a9efc166744159d126",
+    /* EPOCH2 — DELETED with DNA_V2_EMPTY_EPOCH_V2 (root-layout round K2);
+     * ATTND/ACCRU below keep their own values, only their index moved. */
     /* ATTND  */ "c917bcb22a2eef99ded15a92b70117d32a92996276f395ca3acbc8abfa17bcd66cda39856cc038582cc32f67e49ece48055434718ff5f4a94e95d1f6f60c0001",
     /* ACCRU  */ "225010d99df0cb442e76fc02469f95922ecf182b07678887e00924bdf4ee3f99bb010b0c983b5e66b92b44e39c9fb74cdbe3b3d20578cfc0d94cc6fd9e6c4ea8",
 };
@@ -90,9 +97,10 @@ static const char *KAT_ACC_ROOT_2   = "3f29e12e3f3d682b270f5ae70e79b47da0a6b282e
 static const char *KAT_ACC_ROOT_3   = "7cba36466f3e76be1ae037ec90b67067e6c8f397ce1b418a5dcce77cce022fd6ed999c664699d1eff13f12f7b6897fc2c2b0a417f287cda4c574ccdf3b292b51";
 static const char *KAT_TOKEN_LEAF_A = "29c4c9998ab9a29fe1a90bbcb021d743287ef733c03d896b67131d07cee9f9ef54347e2d2d64430814f900e804e298d86c085c051c8159d9e8fe471c5e720d47";
 static const char *KAT_TOKEN_ROOT   = "0b039f37cdf12fb0c30580bdd338246c393d9d434d686e9f21627152bf545efc8c88e4ddcaef74d0ebef915cbed1d293c45559ae84325e56cdd7d0f2e7bbb9d7";
-static const char *KAT_EPOCH_LEAF1  = "d8015bdc11119bed60d273b1c4089018513a29997765eac3d905b866264b237b20225f69f17060ab342eb557ca4bf1a79c1be7d5ab59dc42b99a92e45a31c468";
-static const char *KAT_EPOCH_ROOT   = "1837965787d805678abfe86ea24e898546a3e7d1712485098612abd8026eb5b0bad03b645aa96207776b4a60d3f7cb4d1fc3f682d0a68d7184ba7fd78396b1cd";
-static const char *KAT_DOMHEAD_SYS  = "e675d070c918dedf23fa5d1ebf8d2381345705b316ffb1340e85738b50b6e01d7753a3e0ef456f3ff588fddcd4bba1c35a1edf7274ee46c48d2bd988b645b0b5";
+/* Root-layout round K2: KAT_EPOCH_LEAF1 / KAT_EPOCH_ROOT ("DNA.EPOCH.v2"
+ * leaf and "DNA.EPNODE.v2" root) are DELETED with the functions they
+ * pinned — retired tags are removed, never re-derived. */
+static const char *KAT_DOMHEAD_SYS = "e675d070c918dedf23fa5d1ebf8d2381345705b316ffb1340e85738b50b6e01d7753a3e0ef456f3ff588fddcd4bba1c35a1edf7274ee46c48d2bd988b645b0b5";
 static const char *KAT_DOMAINS_2    = "bba32c948f2851a85dae113c7b27258d27f4a292ee423faca3a072f5e31634bcd80bb608386d0b664c934db4997539b0c02599c8ee1a5430dea4e5d68430838a";
 static const char *KAT_DOMAINS_3    = "823492dabf1bddd0b76b907d31233e4affeaf5b4f85caaccf55488eb5f6af5ad04d3c7993d38472887915535ec6a6cd608d8688ac8c7d6daa40efd0105c97d4e";
 /* GENERICITY CORRECTION re-pin (supply ownership): core_state_root is SIX
@@ -109,12 +117,28 @@ static const char *KAT_DOMAINS_3    = "823492dabf1bddd0b76b907d31233e4affeaf5b4f
  * self-checks against the retired 7-leg value before deriving the new
  * one. */
 /* RETIRED, tokenomics-v3 P1 (D-4, S-2): the 7-leg "DNA.SYS.v1" composition
- * is superseded by the 8-leg "DNA.SYS.v2" below (KAT_SYSTEM_8LEG) — a
- * changed composition is a new tag, never the same tag over different
- * bytes, so this value is never re-derived, only removed. Kept here as a
- * one-line historical note, not as a live vector:
- *   5de7c65076b43e882f7cf814971dce313ce35d39573c5bf73f78b420c5611986f5c9bcfe01b0841af5c9ef6ae469ea00b96067c3ddbf888b5d947e40572d6e57 */
-static const char *KAT_SYSTEM_8LEG  = "ec9fc33017c755d6555a867c02b618b39fec4bea9e9740733561446e064e9b9e578691a670352277e14f021751da58e97b03fda0651ab7510500c3649ba22122";
+ * was superseded by the 8-leg "DNA.SYS.v2" — a changed composition is a
+ * new tag, never the same tag over different bytes, so this value is
+ * never re-derived, only removed. Kept here as a one-line historical
+ * note, not as a live vector:
+ *   5de7c65076b43e882f7cf814971dce313ce35d39573c5bf73f78b420c5611986f5c9bcfe01b0841af5c9ef6ae469ea00b96067c3ddbf888b5d947e40572d6e57
+ * RETIRED, root-layout round K2 (2026-09-25): the 8-leg "DNA.SYS.v2"
+ * vector (legs fill 0x90..0x97, the 3rd = epoch_state_root_v2) is
+ * superseded by the 7-leg "DNA.SYS.v3" below. Historical note only:
+ *   KAT_SYSTEM_8LEG ec9fc33017c755d6555a867c02b618b39fec4bea9e9740733561446e064e9b9e578691a670352277e14f021751da58e97b03fda0651ab7510500c3649ba22122
+ * Both retired values are re-derived as CONTROL LEGS by
+ * shared/dnac/tests/ledger_roots_v2_attendance_oracle.py before it emits
+ * the two vectors below (same author, same day — SELF-CONSISTENT, not
+ * an external audit; see the script's PROVENANCE). No "DNA.SYSPAYL.v1"
+ * vector was ever pinned, so KAT_SYSPAYL_V2 has no payload-root control;
+ * it rests on the same method the two SYS controls prove.
+ *   KAT_SYSTEM_7LEG_V3: DNA.SYS.v3, legs fill(0x90..0x96) in the order
+ *     validator, delegation, chain_config, vset, domreg, manifest,
+ *     attendance.
+ *   KAT_SYSPAYL_V2: DNA.SYSPAYL.v2, legs fill(0xA0..0xA3) in the order
+ *     validator, delegation, chain_config, vset. */
+static const char *KAT_SYSTEM_7LEG_V3 = "841abb1a867749ac68b688469513bbbc447962a8bbead05663d14d97744fda86aaad6bc67230578050f743a7fc3b7e94176bb0074c7ee7f1b247b74fb9a356fd";
+static const char *KAT_SYSPAYL_V2     = "0bf7a1b805467d9c580faec171895abb0c63e3e1e9be83aa9ebfc263307c7ce123d685e607d9d5aa9c4b21b44cdad92c62de6d00f779a27b56b2b655432cdd4b";
 static const char *KAT_CORE_7LEG    = "6316f2646cbe34ef0fc5c5d0487d62a9f72b4e58ccdbf40b5b7c3217210aeecd96d1fff0a313ed25434f0ca0990aa98791e4787ff4546a4d57d948b8f326c765";
 static const char *KAT_GLOBAL       = "0c0d2fce1984bf15c2e5841eeef72a067aefe4cdf8790a713332f09326393f79185dc7277f3d403a6f9d47fbfc68b049ddb117a654f2da59e0e4218e45f7e681";
 /* ── tokenomics-v3 P1 (D-4, S-2) — attendance leg, SELF-CONSISTENT with
@@ -178,8 +202,8 @@ static int test_shared_layer(void) {
                   "empty roots not distinct"); OK();
         }
 
-    /* supply_root KAT + single-commitment-point proof: the v2 epoch leaf
-     * takes NO supply inputs, so different counters change ONLY supply_root. */
+    /* supply_root KAT: different counters change supply_root (the
+     * supply counters are committed exactly once, here). */
     CHECK(dna_v2_supply_root(100000000000000000ULL, 500, 300, 400, h) == 0,
           "supply");
     CHECK(hex_eq(h, KAT_SUPPLY_V2, "supply"), "supply KAT"); OK();
@@ -226,29 +250,6 @@ static int test_shared_layer(void) {
                                   acc_root) != 0,
               "duplicate owner_fp accepted"); OK();
     }
-    {
-        uint8_t snap[64], e1[64], e1b[64];
-        fill(snap, 64, 0x40);
-        CHECK(dna_v2_epoch_leaf_hash(720, 5000, snap, e1) == 0, "ep leaf");
-        CHECK(hex_eq(e1, KAT_EPOCH_LEAF1, "epoch leaf"), "epoch leaf KAT"); OK();
-        /* No supply parameter exists on the v2 leaf — recompute equality
-         * documents the relocation (supply committed exactly once). */
-        CHECK(dna_v2_epoch_leaf_hash(720, 5000, snap, e1b) == 0 &&
-              memcmp(e1, e1b, 64) == 0, "epoch leaf determinism"); OK();
-
-        uint8_t snap2[64], e2[64];
-        fill(snap2, 64, 0x50);
-        CHECK(dna_v2_epoch_leaf_hash(1440, 6000, snap2, e2) == 0, "ep leaf2");
-        uint64_t starts[2] = { 720, 1440 };
-        uint8_t leaves[2][64];
-        memcpy(leaves[0], e1, 64); memcpy(leaves[1], e2, 64);
-        CHECK(dna_v2_epoch_root(starts, leaves, 2, h) == 0, "ep root");
-        CHECK(hex_eq(h, KAT_EPOCH_ROOT, "epoch root"), "epoch root KAT"); OK();
-        uint64_t dup[2] = { 720, 720 };
-        CHECK(dna_v2_epoch_root(dup, leaves, 2, h) != 0,
-              "duplicate epoch accepted"); OK();
-    }
-
     /* Tokens: leaf + root KATs, order/duplicate rejection, field mutation. */
     {
         dna_v2_token_leaf_t t[3];
@@ -392,26 +393,54 @@ static int test_shared_layer(void) {
         }
     }
 
-    /* Composition KATs + full subroot mutation sweep. SYSTEM = 8 legs
-     * (validator/delegation/epoch/chain_config/vset/domreg/manifest/
-     * attendance — tokenomics-v3 P1, D-4); CORE = 7 legs
+    /* Composition KATs + full subroot mutation sweep. SYSTEM = 7 legs
+     * (validator/delegation/chain_config/vset/domreg/manifest/attendance
+     * — "DNA.SYS.v3", root-layout round K2 removed the epoch leg); the
+     * SYSTEM payload root = 4 legs (validator/delegation/chain_config/
+     * vset — "DNA.SYSPAYL.v2"); CORE = 7 legs
      * (utxo/token/pools/claims/names/SUPPLY/ACCRUAL — native issuance is
      * CORE's own asset commitment; the accrual leg and "DNA.CORE.v2" are
      * tokenomics-v3 P2, P2-8). */
     {
-        uint8_t legs[8][64];
-        for (int i = 0; i < 8; i++) fill(legs[i], 64, (uint8_t)(0x90 + i));
+        uint8_t legs[7][64];
+        for (int i = 0; i < 7; i++) fill(legs[i], 64, (uint8_t)(0x90 + i));
         CHECK(dna_v2_system_root(legs[0], legs[1], legs[2], legs[3], legs[4],
-                                 legs[5], legs[6], legs[7], h) == 0, "sys");
-        CHECK(hex_eq(h, KAT_SYSTEM_8LEG, "system"), "system KAT"); OK();
-        for (int i = 0; i < 8; i++) {
+                                 legs[5], legs[6], h) == 0, "sys");
+        CHECK(hex_eq(h, KAT_SYSTEM_7LEG_V3, "system"), "system KAT"); OK();
+        for (int i = 0; i < 7; i++) {
             legs[i][0] ^= 1;
             CHECK(dna_v2_system_root(legs[0], legs[1], legs[2], legs[3],
-                                     legs[4], legs[5], legs[6], legs[7],
+                                     legs[4], legs[5], legs[6],
                                      h2) == 0 && memcmp(h, h2, 64) != 0,
                   "system leg not bound"); OK();
             legs[i][0] ^= 1;
         }
+        /* Leg ORDER is bound: swapping two legs moves the root. */
+        CHECK(dna_v2_system_root(legs[1], legs[0], legs[2], legs[3],
+                                 legs[4], legs[5], legs[6], h2) == 0 &&
+              memcmp(h, h2, 64) != 0, "system leg order not bound"); OK();
+
+        uint8_t pl[4][64];
+        for (int i = 0; i < 4; i++) fill(pl[i], 64, (uint8_t)(0xA0 + i));
+        CHECK(dna_v2_system_payload_root(pl[0], pl[1], pl[2], pl[3], h) == 0,
+              "payload");
+        CHECK(hex_eq(h, KAT_SYSPAYL_V2, "system payload"),
+              "system payload KAT"); OK();
+        for (int i = 0; i < 4; i++) {
+            pl[i][0] ^= 1;
+            CHECK(dna_v2_system_payload_root(pl[0], pl[1], pl[2], pl[3],
+                                             h2) == 0 &&
+                  memcmp(h, h2, 64) != 0, "payload leg not bound"); OK();
+            pl[i][0] ^= 1;
+        }
+        /* The payload root and the full SYSTEM root are distinct tags:
+         * the same four legs padded with the 3 container-lifetime legs'
+         * bytes must not collide with the payload root. */
+        CHECK(dna_v2_system_root(pl[0], pl[1], pl[2], pl[3], pl[0], pl[1],
+                                 pl[2], h2) == 0 && memcmp(h, h2, 64) != 0,
+              "payload root collides with a system root"); OK();
+        CHECK(dna_v2_system_payload_root(NULL, pl[1], pl[2], pl[3], h2) != 0,
+              "payload root accepted a NULL leg"); OK();
         uint8_t cl[7][64];
         for (int i = 0; i < 7; i++) fill(cl[i], 64, (uint8_t)(0xB0 + i));
         CHECK(dna_v2_core_root(cl[0], cl[1], cl[2], cl[3], cl[4], cl[5],
@@ -456,17 +485,18 @@ static const char *SCHEMA_SQL =
     "  creator_fp TEXT NOT NULL, flags INTEGER NOT NULL DEFAULT 0,"
     "  block_height INTEGER NOT NULL DEFAULT 0,"
     "  timestamp INTEGER NOT NULL DEFAULT 0);"
-    "CREATE TABLE IF NOT EXISTS epoch_state ("
-    "  epoch_start_height INTEGER PRIMARY KEY,"
-    "  epoch_pool_accum INTEGER NOT NULL DEFAULT 0,"
-    "  snapshot_hash BLOB, snapshot_blob BLOB);"
+    /* Root-layout round K2: no `epoch_state` table (production's schema
+     * no longer creates it). K1: `unlock_block` is read by the UTXO leaf
+     * loader, so the hand-written utxo_set carries it as production's
+     * migrated table does (nodus_witness_db.c). */
     "CREATE TABLE IF NOT EXISTS utxo_set ("
     "  nullifier BLOB PRIMARY KEY, owner TEXT NOT NULL,"
     "  amount INTEGER NOT NULL,"
     "  token_id BLOB NOT NULL, tx_hash BLOB NOT NULL,"
     "  output_index INTEGER NOT NULL,"
     "  block_height INTEGER NOT NULL DEFAULT 0,"
-    "  created_at INTEGER NOT NULL DEFAULT 0);"
+    "  created_at INTEGER NOT NULL DEFAULT 0,"
+    "  unlock_block INTEGER NOT NULL DEFAULT 0);"
     "CREATE TABLE IF NOT EXISTS validators ("
     "  pubkey BLOB PRIMARY KEY, self_stake INTEGER NOT NULL,"
     "  total_delegated INTEGER NOT NULL DEFAULT 0,"
@@ -589,21 +619,8 @@ static int populate_fixture(nodus_witness_t *w, int reversed,
         if (insert_token(w, 0x20, "Beta", "BET", 6, 999999, cb, 1, 100,
                          ts_base + 7) != 0) return -1;
     }
-    /* Epoch row (fixture values match the oracle set: snapshot = fill 0x40). */
-    {
-        sqlite3_stmt *st = NULL;
-        if (sqlite3_prepare_v2(w->db,
-                "INSERT INTO epoch_state (epoch_start_height, "
-                "epoch_pool_accum, snapshot_hash) VALUES (720, 5000, ?)",
-                -1, &st, NULL) != SQLITE_OK)
-            return -1;
-        uint8_t snap[64];
-        fill(snap, 64, 0x40);
-        sqlite3_bind_blob(st, 1, snap, 64, SQLITE_TRANSIENT);
-        int rc = sqlite3_step(st);
-        sqlite3_finalize(st);
-        if (rc != SQLITE_DONE) return -1;
-    }
+    /* Root-layout round K2: the epoch_state row this fixture used to
+     * insert is gone with the table. */
     /* Supply row via the production initializer (creates supply_tracking). */
     uint8_t gh[64];
     fill(gh, 64, 0x77);
@@ -630,11 +647,32 @@ static int test_loaders(void) {
     /* The DB-loaded root equals the shared-layer oracle-pinned root. */
     CHECK(hex_eq(r1, KAT_TOKEN_ROOT, "db token root"), "db tok KAT"); OK();
 
-    /* Epoch v2 root from DB equals the oracle single-leaf value: with one
-     * row (720), root == leaf hash. */
-    CHECK(nodus_witness_epoch_root_v2(wa, h) == 0, "ep root");
-    CHECK(hex_eq(h, KAT_EPOCH_LEAF1, "db epoch root (1 leaf)"),
-          "db epoch KAT"); OK();
+    /* Root-layout round K2: the DB-loaded SYSTEM compositions equal the
+     * shared-layer functions over the individually loaded legs, IN THE
+     * K2 ORDER — the witness wiring cannot drift from the pinned
+     * composition (a leg dropped, duplicated or reordered moves it).
+     * KILLED BY: re-adding an epoch leg, or swapping two legs, in
+     * nodus_witness_system_root_v2 / _system_payload_root_v2. */
+    {
+        uint8_t v[64], dl[64], cc[64], vs[64], dr[64], mf[64], at[64];
+        uint8_t expect[64];
+        CHECK(nodus_witness_merkle_compute_validator_root(wa, v) == 0 &&
+              nodus_witness_merkle_compute_delegation_root(wa, dl) == 0 &&
+              nodus_chain_config_compute_root(wa, cc) == 0 &&
+              nodus_witness_vset_root(wa, vs) == 0 &&
+              nodus_witness_domreg_root(wa, dr) == 0 &&
+              nodus_witness_manifest_root_v2(wa, mf) == 0 &&
+              nodus_witness_attendance_root(wa, at) == 0, "legs");
+        CHECK(nodus_witness_system_root_v2(wa, h) == 0 &&
+              dna_v2_system_root(v, dl, cc, vs, dr, mf, at, expect) == 0 &&
+              memcmp(h, expect, 64) == 0,
+              "witness SYSTEM root != 7-leg DNA.SYS.v3 composition"); OK();
+        CHECK(nodus_witness_system_payload_root_v2(wa, h) == 0 &&
+              dna_v2_system_payload_root(v, dl, cc, vs, expect) == 0 &&
+              memcmp(h, expect, 64) == 0,
+              "witness payload root != 4-leg DNA.SYSPAYL.v2 composition");
+        OK();
+    }
 
     /* Supply root from DB (init writes genesis=1e17, minted=0, burned=0,
      * reward_pool=0). */
@@ -750,13 +788,8 @@ static int test_loaders(void) {
         CHECK(sqlite3_open(":memory:", &we->db) == SQLITE_OK, "open");
         CHECK(nodus_witness_token_root_v2(we, h) != 0,
               "missing tokens table did not fail"); OK();
-        /* Pre-genesis honest-empty states: epoch table absent → tagged
-         * empty root; supply row absent → zeros supply root. */
-        uint8_t expect[64];
-        CHECK(nodus_witness_epoch_root_v2(we, h) == 0 &&
-              dna_v2_empty_root(DNA_V2_EMPTY_EPOCH_V2, expect) == 0 &&
-              memcmp(h, expect, 64) == 0, "absent epoch table != empty root");
-        OK();
+        /* Root-layout round K2: the "absent epoch table -> tagged empty
+         * root" check that stood here is gone with the epoch leg. */
         teardown_w(we);
     }
     /* Empty (but present) registries: token_root = tagged empty. */

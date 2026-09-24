@@ -31,9 +31,10 @@
  * The bundle format is therefore a CONTAINER of already-canonical row
  * bytes, not a crypto-committed structure — no KAFADAN gate applies.
  *
- * ═══ CANONICAL LAYOUT (R3 W3, D-24 rev 4 (2)) ═══════════════════════════
- *   magic "DNA.GBUNDLE.v3\0\0" (16 B) ‖ manifest_len u32 BE ‖ manifest ‖
- *   table_count u32 BE ‖ per table:
+ * ═══ CANONICAL LAYOUT (R3 W3, D-24 rev 4 (2); root-layout round K2) ═════
+ *   magic "DNA.GBUNDLE.v4\0\0" (16 B) ‖ manifest_len u32 BE ‖ manifest ‖
+ *   table_count u32 BE (= 5: validators, delegations,
+ *   chain_config_history, supply_tracking, validator_stats) ‖ per table:
  *     name_len u16 BE ‖ name ‖ row_count u32 BE ‖ col_count u16 BE ‖
  *     per row (row_count of them), per column (col_count of them):
  *       type u8 (0 NULL / 1 INT / 2 TEXT / 3 BLOB — FLOAT rejects) ‖
@@ -43,8 +44,15 @@
  *   Rows are emitted in PRIMARY-KEY order (the table's ORDER BY), so two
  *   nodes serialize the same committed state to the same bytes.
  *
+ * ═══ ROOT-LAYOUT ROUND (K2, 2026-09-25) — v3 → v4 ═══════════════════════
+ * The `epoch_state` table is dropped from the schema, so the bundle
+ * carries FIVE tables (was six) and the magic moved to
+ * `DNA.GBUNDLE.v4\0\0`. A `DNA.GBUNDLE.v3\0\0` bundle is refused BY ITS
+ * MAGIC ("version-3 bundle format, refused"), the same way the v1 magic
+ * is below — never read as a v4 frame.
+ *
  * ═══ R3 W3 — THE MAGIC MOVED; THE OLD LANE CANNOT BE BUNDLED ════════════
- * The magic is now `DNA.GBUNDLE.v3\0\0`. A version-2 chain (no stored
+ * R3 W3 moved the magic to `DNA.GBUNDLE.v3\0\0`. A version-2 chain (no stored
  * genesis DOCUMENT — D-19 rev 6 is v3-only) CANNOT be bundled at all:
  * `nodus_witness_v2_bundle_persist` refuses when there is no document to
  * carry, which is D-17 rev 10 (9)'s closure of the old lane applied here
@@ -95,8 +103,15 @@
 extern "C" {
 #endif
 
-#define NODUS_V2_GBUNDLE_MAGIC   "DNA.GBUNDLE.v3\0\0"
+#define NODUS_V2_GBUNDLE_MAGIC   "DNA.GBUNDLE.v4\0\0"
 #define NODUS_V2_GBUNDLE_MAGIC_LEN 16
+
+/** The RETIRED six-table magic (root-layout round K2, 2026-09-25): a v3
+ * bundle carries `epoch_state`, which this build's schema no longer has.
+ * Kept only so `nodus_witness_v2_bundle_apply` names the refusal
+ * ("version-3 bundle format, refused"), exactly like the v1 magic below.
+ * Never written by this build. */
+#define NODUS_V2_GBUNDLE_MAGIC_V3_RETIRED "DNA.GBUNDLE.v3\0\0"
 
 /** The RETIRED version-2 magic, kept only so `nodus_witness_v2_bundle_
  * apply` can name the reason a pre-R3-W3 bundle is refused ("version-1

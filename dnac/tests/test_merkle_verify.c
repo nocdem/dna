@@ -3,11 +3,28 @@
  * @brief Fixed-vector test for dnac_merkle_verify_proof.
  *
  * The vector in merkle_vector.inc was produced by the server-side
- * nodus_witness_merkle_build_proof. If test_positive fails, the
- * direction convention between server and client has drifted — debug
- * dnac_merkle_verify_proof before any other work.
+ * nodus_witness_merkle_build_proof (DELETED since the root-layout round,
+ * K3 — the vector stays valid: it pins only the RFC 6962 verifier and
+ * its direction convention, which did not change). If test_positive
+ * fails, the direction convention between server and client has
+ * drifted — debug dnac_merkle_verify_proof before any other work.
+ *
+ * Root-layout round K1 (2026-09-25): test_leaf_kat_340 pins the client
+ * mirror dnac_utxo_compute_leaf_hash on the 340-byte preimage (the
+ * 332-byte leaf ‖ unlock_block u64 LE) — the SAME fixture row and the
+ * SAME literals as the node-side KAT in
+ * nodus/tests/test_merkle_utxo_root.c, both taken from
+ * shared/dnac/tests/ledger_roots_v2_accrual_oracle.py (same author,
+ * same day: SELF-CONSISTENT, not an external audit), and re-derived here
+ * from a hand-built preimage.
  */
 
+/* Every check in this file (and the EVP calls in test_leaf_kat_340) lives
+ * inside assert(). The dnac build is Release (-O3 -DNDEBUG, dnac/
+ * CMakeLists.txt:13-14), where assert() compiles to nothing and every
+ * failure would print FAIL and still exit 0. Force assertions on for this
+ * test regardless of build type (root-layout round zk-auditor N1). */
+#undef NDEBUG
 #include "dnac/ledger.h"
 #include <assert.h>
 #include <stdio.h>
@@ -144,6 +161,103 @@ static void test_single_leaf(void) {
     printf("PASS test_single_leaf\n");
 }
 
+/* ── Root-layout round K1 — the 340-byte client leaf ─────────────────── */
+
+static const char *KAT_UTXO_LEAF_UB =
+    "ea456d4a87981fd399ebdf635ff7707b9c8e7a3e502afb46f5880421fb1b17c6"
+    "dd28a87da24519a9e396686fd92db2a06d1ed6efa83be20c01e8701f2da2c86c";
+static const char *KAT_UTXO_LEAF_UB0 =
+    "f8f07fe0e0ddcfc238f52d3815ab4988a07033e9e6e6bedd9824d31b7a7edddb"
+    "544da24c962549fd8e6f6b99d6c7f67235f04cbde794663dd699d6f07b7448a0";
+
+static int kat_hex_eq(const uint8_t h[64], const char *hex) {
+    static const char *d = "0123456789abcdef";
+    char got[129];
+    for (int i = 0; i < 64; i++) {
+        got[2 * i] = d[h[i] >> 4];
+        got[2 * i + 1] = d[h[i] & 0xf];
+    }
+    got[128] = 0;
+    if (strcmp(got, hex) != 0) {
+        fprintf(stderr, "  pinned: %s\n  got:    %s\n", hex, got);
+        return 0;
+    }
+    return 1;
+}
+
+static void kat_fill(uint8_t *dst, size_t n, uint8_t seed) {
+    for (size_t i = 0; i < n; i++) dst[i] = (uint8_t)(seed + i * 7u);
+}
+
+static void test_leaf_kat_340(void) {
+    /* the oracle's fixture row (ledger_roots_v2_accrual_oracle.py UTXO_*) */
+    uint8_t nullifier[64], token_id[64], tx_hash[64];
+    char owner[129];
+    kat_fill(nullifier, 64, 0x11);
+    for (int i = 0; i < 128; i += 2) { owner[i] = 'a'; owner[i + 1] = 'b'; }
+    owner[128] = '\0';
+    kat_fill(token_id, 64, 0x22);
+    kat_fill(tx_hash, 64, 0x33);
+
+    uint8_t leaf[DNAC_MERKLE_ROOT_SIZE], leaf0[DNAC_MERKLE_ROOT_SIZE];
+    if (dnac_utxo_compute_leaf_hash(nullifier, owner,
+                                    0x0102030405060708ULL, token_id,
+                                    tx_hash, 0x0A0B0C0Du, leaf,
+                                    0x1122334455667788ULL) != 0 ||
+        dnac_utxo_compute_leaf_hash(nullifier, owner,
+                                    0x0102030405060708ULL, token_id,
+                                    tx_hash, 0x0A0B0C0Du, leaf0, 0) != 0) {
+        fprintf(stderr, "FAIL test_leaf_kat_340 — leaf hash failed\n");
+        assert(0);
+    }
+
+    /* Independent path: every byte of the 340-byte preimage written out
+     * by hand (little-endian scalars spelled explicitly), hashed with
+     * OpenSSL SHA3-512 directly. */
+    uint8_t pre[340];
+    size_t off = 0;
+    memcpy(pre + off, nullifier, 64); off += 64;
+    memcpy(pre + off, owner, 128);    off += 128;
+    static const uint8_t amount_le[8] =
+        { 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01 };
+    memcpy(pre + off, amount_le, 8);  off += 8;
+    memcpy(pre + off, token_id, 64);  off += 64;
+    memcpy(pre + off, tx_hash, 64);   off += 64;
+    static const uint8_t oi_le[4] = { 0x0D, 0x0C, 0x0B, 0x0A };
+    memcpy(pre + off, oi_le, 4);      off += 4;
+    static const uint8_t ub_le[8] =
+        { 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11 };
+    memcpy(pre + off, ub_le, 8);      off += 8;
+    assert(off == 340);
+
+    uint8_t manual[64];
+    EVP_MD_CTX *md = EVP_MD_CTX_new();
+    assert(md);
+    unsigned int hl = 0;
+    assert(EVP_DigestInit_ex(md, EVP_sha3_512(), NULL) == 1);
+    assert(EVP_DigestUpdate(md, pre, sizeof(pre)) == 1);
+    assert(EVP_DigestFinal_ex(md, manual, &hl) == 1 && hl == 64);
+    EVP_MD_CTX_free(md);
+
+    if (memcmp(leaf, manual, 64) != 0) {
+        fprintf(stderr, "FAIL test_leaf_kat_340 — client leaf != hand-built "
+                        "340-byte preimage\n");
+        assert(0);
+    }
+    if (!kat_hex_eq(leaf, KAT_UTXO_LEAF_UB) ||
+        !kat_hex_eq(leaf0, KAT_UTXO_LEAF_UB0)) {
+        fprintf(stderr, "FAIL test_leaf_kat_340 — client leaf drifted from "
+                        "the node-side pin\n");
+        assert(0);
+    }
+    if (memcmp(leaf, leaf0, 64) == 0) {
+        fprintf(stderr, "FAIL test_leaf_kat_340 — unlock_block does not "
+                        "reach the client leaf\n");
+        assert(0);
+    }
+    printf("PASS test_leaf_kat_340\n");
+}
+
 int main(void) {
     test_positive();
     test_tampered_sibling();
@@ -152,6 +266,7 @@ int main(void) {
     test_null_proof();
     test_invalid_depth();
     test_single_leaf();
+    test_leaf_kat_340();
     printf("ALL PASS\n");
     return 0;
 }

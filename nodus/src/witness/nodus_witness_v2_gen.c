@@ -1206,42 +1206,30 @@ static int gen_seed_state(nodus_witness_t *w2,
         }
     }
 
-    /* delegations and epoch_state are EMPTY at a pure-V2 genesis, and
-     * that emptiness is ASSERTED rather than produced by a DELETE — a
-     * future create_chain_db that seeded a row must fail loudly here, not
-     * be silently erased.
+    /* delegations is EMPTY at a pure-V2 genesis, and that emptiness is
+     * ASSERTED rather than produced by a DELETE — a future
+     * create_chain_db that seeded a row must fail loudly here, not be
+     * silently erased.
      *
      *   delegations           nothing has delegated yet.
-     *   epoch_state           CORRECTED (O15J Faz 2, review R2-F12):
-     *                         this used to say "the V2 lane has no
-     *                         emission and no settlement (L2-F5), so no
-     *                         pool accrues". Faz 2 ported both, so that
-     *                         reason is dead — but the ASSERTION is
-     *                         still right for a different one: at
-     *                         genesis no block has been minted yet, so
-     *                         the first pool row is created by the
-     *                         FIRST mint (nodus_witness_v2_econ.c, the
-     *                         epoch_insert seed branch), not by the
-     *                         builder. Fabricating an epoch-0 row here
-     *                         would mean inventing a snapshot_hash that
-     *                         no V2 reader produces or consumes. The
-     *                         supply invariant COALESCEs the absent sum
-     *                         to 0 (nodus_witness_v2_claims.c).
      *
      * chain_config_history is NO LONGER on this list — Block 2C commits
      * the economic parameters into it above, with its own exact-row
      * post-condition.
      *
-     * tokenomics-v3 P2: `epoch_state` stays EMPTY for the life of the
-     * chain now — the per-block mint that created its rows is deleted —
-     * and two tables join the list: `v2_reward_accrual` (nothing has
-     * been earned before the first boundary) and `v2_balance_copy` (the
-     * engine genesis writes copy(0) itself, nodus_witness_v2_apply.c,
-     * AFTER this seeder — a row here would collide with it). */
+     * tokenomics-v3 P2: two tables join the list: `v2_reward_accrual`
+     * (nothing has been earned before the first boundary) and
+     * `v2_balance_copy` (the engine genesis writes copy(0) itself,
+     * nodus_witness_v2_apply.c, AFTER this seeder — a row here would
+     * collide with it).
+     *
+     * Root-layout round (K2, 2026-09-25): `epoch_state` is OFF this list
+     * because the table no longer exists — the schema stopped creating
+     * it (nodus_witness.c), so a COUNT over it would fail the prepare
+     * and abort every derivation. */
     {
         static const char *const must_be_empty[] = {
-            "delegations", "epoch_state", "v2_reward_accrual",
-            "v2_balance_copy"
+            "delegations", "v2_reward_accrual", "v2_balance_copy"
         };
         for (size_t i = 0; i < sizeof(must_be_empty) /
                                sizeof(must_be_empty[0]); i++) {
@@ -2836,7 +2824,8 @@ int nodus_witness_v2_gen_derive_v3(const char *data_path,
 
         /* ── 12. The genesis bundle, persisted while the base tables
          * still hold their exact genesis-time bytes. The PRODUCER side
-         * reads the committed manifest and the six base tables — never
+         * reads the committed manifest and the five base tables
+         * (six before the root-layout round dropped epoch_state) — never
          * the height-0 block row — so it is carried unchanged here.
          *
          * Since R3 W3, `nodus_witness_v2_bundle_apply`

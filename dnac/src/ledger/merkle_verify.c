@@ -105,6 +105,11 @@ bool dnac_merkle_verify_proof(const dnac_merkle_proof_t *proof) {
  * nodus/src/witness/nodus_witness_merkle.c. Drift here silently breaks
  * every anchored UTXO proof — do not "refactor" the field layout without
  * updating both sides in lockstep and re-running test_anchored_proofs.
+ *
+ * Root-layout round (K1, 2026-09-25): the preimage is 340 bytes — the
+ * 332-byte leaf ‖ unlock_block u64 LE, appended last, no tag — and the
+ * signature gained `unlock_block` as its LAST parameter, identically on
+ * both sides.
  * ========================================================================== */
 
 int dnac_utxo_compute_leaf_hash(const uint8_t *nullifier,
@@ -113,7 +118,8 @@ int dnac_utxo_compute_leaf_hash(const uint8_t *nullifier,
                                  const uint8_t *token_id,
                                  const uint8_t *tx_hash,
                                  uint32_t output_index,
-                                 uint8_t out[DNAC_MERKLE_ROOT_SIZE]) {
+                                 uint8_t out[DNAC_MERKLE_ROOT_SIZE],
+                                 uint64_t unlock_block) {
     if (!nullifier || !owner || !token_id || !tx_hash || !out) return -1;
 
     /* Owner is a NUL-terminated 128-char hex fingerprint. Server hashes
@@ -135,6 +141,10 @@ int dnac_utxo_compute_leaf_hash(const uint8_t *nullifier,
     for (int i = 0; i < 4; i++) {
         oi_le[i] = (uint8_t)((output_index >> (8 * i)) & 0xFF);
     }
+    uint8_t ub_le[8];
+    for (int i = 0; i < 8; i++) {
+        ub_le[i] = (uint8_t)((unlock_block >> (8 * i)) & 0xFF);
+    }
 
     EVP_MD_CTX *md = EVP_MD_CTX_new();
     if (!md) return -1;
@@ -146,7 +156,8 @@ int dnac_utxo_compute_leaf_hash(const uint8_t *nullifier,
         (EVP_DigestUpdate(md, amount_le, 8) == 1) &&
         (EVP_DigestUpdate(md, token_id, 64) == 1) &&
         (EVP_DigestUpdate(md, tx_hash, 64) == 1) &&
-        (EVP_DigestUpdate(md, oi_le, 4) == 1);
+        (EVP_DigestUpdate(md, oi_le, 4) == 1) &&
+        (EVP_DigestUpdate(md, ub_le, 8) == 1);
 
     unsigned int hash_len = 0;
     if (ok) {

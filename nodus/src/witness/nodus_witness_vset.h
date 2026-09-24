@@ -16,14 +16,14 @@
  *     nodus_witness_vset_commit_next as the FINAL steps of
  *     apply_epoch_boundary_transitions.
  *
- * The stored snapshots do NOT enter the live state_root: that is the v3
- * five-input formula (utxo || validator || delegation || epoch_state ||
- * chain_config — nodus_witness_merkle.c
- * nodus_witness_merkle_compute_state_root), and validator_set_root is a
- * leg of nodus_witness_system_root_v2, which no live consumer calls. What
- * DOES reach state_root is the status byte the boundary flips write, via
- * the validator subtree — and on a 7-bonded / target-7 chain every flip
- * is ACTIVE→ACTIVE, so the committed bytes are unchanged.
+ * The stored snapshots enter the chain's state root through
+ * validator_set_root, a leg of nodus_witness_system_root_v2 ("DNA.SYS.v3",
+ * shared/dnac/ledger_roots_v2.h) — the SYSTEM domain root under the
+ * global root the block app_hash commits. (This comment used to say the
+ * snapshots did NOT enter the live state_root because that was the
+ * legacy five-input formula; that formula is DELETED by the root-layout
+ * round, K3.) The status byte the boundary flips write reaches the root
+ * through the validator subtree as well.
  *
  * Fail-closed discipline (v0.18.19 rule, nodus/CLAUDE.md): any DB
  * prepare/step error, wrong-width blob, hash mismatch or decode failure

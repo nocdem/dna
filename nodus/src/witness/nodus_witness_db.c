@@ -1993,10 +1993,11 @@ static void nodus_witness_db_migrate_v15_stake_delegation(nodus_witness_t *w) {
  *
  * That was survivable while supply_get treated a failed prepare as
  * "pre-genesis". It is not any more: supply_get now returns a hard -1 on
- * prepare failure (D1), the epoch_state leaf loader fails closed on that
- * (D3), and compute_state_root fails closed on that (D2) — so a missing
- * column would make the node reject every block and produce no
- * state_root at all.
+ * prepare failure (D1), and the supply leg of the state root fails
+ * closed on that (nodus_witness_supply_root_v2; the legacy epoch_state
+ * leaf loader / compute_state_root that did the same were deleted by
+ * the root-layout round, K2/K3) — so a missing column would make the
+ * node reject every block and produce no state root at all.
  *
  * Running it here makes it reachable on EVERY chain-DB open. Inside
  * supply_init it would only be reachable on a genesis (re-)commit —

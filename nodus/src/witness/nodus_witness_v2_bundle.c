@@ -42,15 +42,20 @@ typedef struct { const char *name; const char *order_by; } bundle_table_t;
 static const bundle_table_t BUNDLE_TABLES[] = {
     /* ORDER BY columns are the tables' actual PRIMARY KEYs (verified
      * against the DDL: nodus_witness.c validators/delegations/
-     * epoch_state/supply_tracking, nodus_witness_chain_config.c). A
-     * wrong name would fail the prepare and abort the derivation. */
+     * supply_tracking, nodus_witness_chain_config.c). A wrong name
+     * would fail the prepare and abort the derivation.
+     *
+     * Root-layout round (K2, 2026-09-25): `epoch_state` is no longer
+     * carried — the table is dropped from the schema — so the bundle is
+     * FIVE tables and its magic moved to "DNA.GBUNDLE.v4"
+     * (nodus_witness_v2_bundle.h). */
     { "validators",            "pubkey_hash ASC" },
     { "delegations",           "delegator_hash ASC, validator_hash ASC" },
-    { "epoch_state",           "epoch_start_height ASC" },
     { "chain_config_history",  "param_id ASC, effective_block ASC" },
     { "supply_tracking",       "id ASC" },
     /* O15J L1-F1 (HIGH) — validator_stats was MISSING. The producer
-     * carries SIX base tables; this table carried five, and
+     * carried six base tables then (five since the root-layout round);
+     * this table carried one fewer, and
      * validator_stats reaches NO committed root, so a joiner's genesis
      * matched its pin byte-for-byte while its `active_count` stayed at
      * the create_chain_db seed of 0 (nodus_witness.c:285) instead of the
@@ -484,12 +489,18 @@ int nodus_witness_v2_bundle_apply(nodus_witness_t *w2,
         /* R3 W3: an old-binary bundle is refused BY ITS MAGIC, never by
          * a short read further into the frame — the version-1 layout
          * has no doc_len/document tail at all, so reading this frame as
-         * a version-3 one would fail confusingly deep inside the table
+         * a version-4 one would fail confusingly deep inside the table
          * loop instead of here, at the one place that actually knows
          * why. */
         if (memcmp(magic, NODUS_V2_GBUNDLE_MAGIC_V1_RETIRED,
                    NODUS_V2_GBUNDLE_MAGIC_LEN) == 0)
             QGP_LOG_ERROR(LOG_TAG, "%s", "version-1 bundle format, refused");
+        /* Root-layout round (K2): a v3 bundle carries SIX tables
+         * including `epoch_state`, a table this build no longer has —
+         * refused BY ITS MAGIC, for the same reason as v1 above. */
+        else if (memcmp(magic, NODUS_V2_GBUNDLE_MAGIC_V3_RETIRED,
+                        NODUS_V2_GBUNDLE_MAGIC_LEN) == 0)
+            QGP_LOG_ERROR(LOG_TAG, "%s", "version-3 bundle format, refused");
         return -1;
     }
     uint32_t mlen = rd_u32(&r);

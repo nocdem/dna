@@ -2,11 +2,11 @@
  * Nodus - RFC 6962 tx_root inclusion proof tests
  *
  * Verifies nodus_witness_merkle_build_tx_proof (Tasks 32-35). The
- * function is symmetric to nodus_witness_merkle_build_proof but
- * operates on the block-scoped tx_root tree, fetching committed TX
- * hashes for a given block_height in tx_index order, applying the
- * RFC 6962 leaf domain tag, and driving the same rfc6962_path
- * recursion used for UTXO inclusion proofs.
+ * function operates on the block-scoped tx_root tree, fetching committed
+ * TX hashes for a given block_height in tx_index order, applying the
+ * RFC 6962 leaf domain tag, and driving the rfc6962_path recursion
+ * (which the UTXO proof builder, nodus_witness_merkle_build_proof,
+ * shared until the root-layout round deleted it — K3).
  *
  * Coverage:
  *   - positive round-trip: 4 TXs in block 1, prove tx #2, verify OK

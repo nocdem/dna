@@ -31,9 +31,11 @@
  *                legacy UTXOs             config's allocation list.
  *   seam step 5  INSERT … SELECT FROM   → REPLACED: validators,
  *                legacy.*                 delegations, validator_stats,
- *                                         epoch_state, supply_tracking
- *                                         and chain_config_history are
- *                                         seeded from the config.
+ *                                         supply_tracking and
+ *                                         chain_config_history are
+ *                                         seeded from the config
+ *                                         (epoch_state is gone —
+ *                                         root-layout round K2).
  *
  * ════════════════════════════════════════════════════════════════════
  * LIVE CONSUMERS (tokenomics-v3 P4, re-derived by grep): the genesis

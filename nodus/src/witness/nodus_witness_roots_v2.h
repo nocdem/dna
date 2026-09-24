@@ -1,15 +1,18 @@
 /**
  * @file nodus_witness_roots_v2.h
- * @brief Ledger V2 Season 2 — witness-side loaders for the INACTIVE V2
- *        state-root hierarchy.
+ * @brief Ledger V2 — witness-side loaders for the V2 state-root hierarchy.
  *
- * These functions read REAL current witness state (tokens table, epoch
- * table, supply_tracking, and the existing exported subtree roots) and
- * assemble the tagged V2 hierarchy defined in shared/dnac/ledger_roots_v2.h.
+ * These functions read REAL current witness state (tokens table,
+ * supply_tracking, the attendance / accrual tables and the exported
+ * subtree roots) and assemble the tagged V2 hierarchy defined in
+ * shared/dnac/ledger_roots_v2.h.
  *
- * ACTIVATION: called by tests and the S2 determinism harness ONLY — no
- * consensus path (PREVOTE/COMMIT/finalize) consults any V2 root. The
- * active chain keeps combine_v3 (nodus_witness_merkle.c) byte-identical.
+ * ACTIVATION: this is the version-3 chain's state root — the SYSTEM and
+ * CORE runtimes return nodus_witness_system_root_v2 / _core_root_v2 as
+ * their domain state roots (nodus_witness_v2_claims.c), and the global
+ * root over them is the block app_hash. The legacy five-input root
+ * (combine_v3) and the epoch_state leg are DELETED (root-layout round,
+ * docs/plans/decisions/2026-09-25-root-layout-round.md K2/K3).
  *
  * Fail-closed discipline (v0.18.19 rule): any DB prepare/step error, NULL
  * or short blob, or subtree failure fails the WHOLE computation — no
@@ -39,9 +42,8 @@ extern "C" {
  *  wall-clock `timestamp` column is EXCLUDED — node-divergent). */
 int nodus_witness_token_root_v2(nodus_witness_t *w, uint8_t out[64]);
 
-/** epoch_state_root_v2 — v2 leaves WITHOUT the supply counters (they are
- *  committed exactly once, in supply_root). */
-int nodus_witness_epoch_root_v2(nodus_witness_t *w, uint8_t out[64]);
+/* Root-layout round (K2): nodus_witness_epoch_root_v2 (the epoch_state
+ * leg) is DELETED with the `epoch_state` table. */
 
 /** supply_root from supply_tracking (three-valued read honored: absent
  *  row = honest pre-genesis zeros; DB error = fail). tokenomics-v3 P2:
@@ -57,13 +59,14 @@ int nodus_witness_supply_root_v2(nodus_witness_t *w, uint8_t out[64]);
 int nodus_witness_accrual_root_v2(nodus_witness_t *w, uint8_t out[64]);
 
 /** attendance_root (tokenomics-v3 P1, D-4 / S-2) over `v2_attendance_epoch`
- *  rows, epoch_start ASC. Follows the epoch leg's fail-closed pattern: a
+ *  rows, epoch_start ASC. Fail-closed: a
  *  missing table is the honest empty state (a pre-P1 database, or before
  *  the chain's first epoch boundary), a probe fault is never reported as
  *  empty, and a malformed row fails the whole computation. */
 int nodus_witness_attendance_root(nodus_witness_t *w, uint8_t out[64]);
 
-/** system_state_root per the V2 composition. The validator-set leg is now
+/** system_state_root per the V2 composition — 7 legs under "DNA.SYS.v3"
+ *  (root-layout round K2 removed the epoch_state leg). The validator-set leg is now
  *  REAL (S3): nodus_witness_vset_root over the validator_set_snapshots
  *  table. That table is empty until a later wave wires the genesis /
  *  epoch-boundary snapshot writes, and an empty table returns exactly the
@@ -79,8 +82,10 @@ int nodus_witness_system_root_v2(nodus_witness_t *w, uint8_t out[64]);
  *  tokenomics-v3 P2: 7 legs incl. accrual_root, tag "DNA.CORE.v2"). */
 int nodus_witness_core_root_v2(nodus_witness_t *w, uint8_t out[64]);
 
-/** S5 — SYSTEM runtime-owned genesis PAYLOAD root ("DNA.SYSPAYL.v1"):
- *  the six runtime legs WITHOUT domain_registry_root/manifest_root. The
+/** S5 — SYSTEM runtime-owned genesis PAYLOAD root ("DNA.SYSPAYL.v2",
+ *  root-layout round K2): the four runtime legs validator ‖ delegation ‖
+ *  chain_config ‖ validator_set, WITHOUT the container-lifetime legs
+ *  domain_registry_root / manifest_root / attendance_root. The
  *  genesis-cycle break: DomainManifest.genesis_state_root is THIS value
  *  for SYSTEM (dna_v2_system_payload_root in shared/dnac). */
 int nodus_witness_system_payload_root_v2(nodus_witness_t *w,

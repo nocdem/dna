@@ -3,14 +3,17 @@
  * @brief Ledger V2 Season 2 — the tagged state-root hierarchy (INACTIVE).
  *
  * Canonical hashing for the V2 hierarchy: SYSTEM/CORE composition, the
- * generic DomainHead + domains_root Merkle, global_state_root, supply_root,
- * token_root, and the v2 epoch leaf (supply counters relocated OUT of the
- * epoch leaves into supply_root — committed exactly once).
+ * generic DomainHead + domains_root Merkle, global_state_root, supply_root
+ * and token_root.
  *
- * ACTIVATION: nothing in live consensus calls any function here. The active
- * chain keeps the v3 five-input state_root (nodus_witness_merkle.c) and the
- * V1 block hash byte-identical. The V2 hierarchy activates only with the
- * Ledger V2 devnet reset (Season 11).
+ * ACTIVATION: this hierarchy IS the version-3 (cometbft) chain's state
+ * root — global_state_root is the app_hash every block commits
+ * (nodus_witness_cmt_app.c `resp->app_hash = blk->out_global_root`), and
+ * the SYSTEM / CORE runtimes' state roots are nodus_witness_system_root_v2
+ * / nodus_witness_core_root_v2 (nodus_witness_v2_claims.c). The legacy
+ * five-input state_root (nodus_witness_merkle.c combine_v3) and the
+ * `epoch_state` leg are DELETED by the tokenomics-v3 root-layout round
+ * (docs/plans/decisions/2026-09-25-root-layout-round.md K2/K3).
  *
  * Conventions (architecture report §5.1, S2 charter §1):
  *   - SHA3-512 everywhere (qgp_sha3_512 — same digest in both trees);
@@ -24,11 +27,13 @@
  *     no partial or fallback root is ever produced.
  *
  * ── TAG TABLE (each exactly 16 bytes, zero-padded) ────────────────────
- *   composition   "DNA.SYS.v2"      system_state_root (P1 added the
- *                                   attendance_root leg — a changed
- *                                   preimage is never hashed under the
- *                                   old tag; "DNA.SYS.v1" is HISTORY,
- *                                   the 7-leg composition before P1)
+ *   composition   "DNA.SYS.v3"      system_state_root (root-layout round
+ *                                   dropped the epoch_state leg — a
+ *                                   changed preimage is never hashed
+ *                                   under the old tag; "DNA.SYS.v2" is
+ *                                   HISTORY, the 8-leg composition of
+ *                                   P1, and "DNA.SYS.v1" the 7-leg one
+ *                                   before it)
  *                 "DNA.CORE.v2"     core_state_root (tokenomics-v3 P2
  *                                   added the accrual_root leg — a
  *                                   changed preimage is never hashed
@@ -43,9 +48,15 @@
  *                 "DNA.ACNODE.v1"   reward-accrual Merkle inner node
  *   tokens        "DNA.TOKLEAF.v1"  token leaf
  *                 "DNA.TOKNODE.v1"  token Merkle inner node
- *   epoch (v2)    "DNA.EPOCH.v2"    epoch leaf (NO supply counters)
- *                 "DNA.EPNODE.v2"   epoch Merkle inner node
- *   domains       "DNA.DOMHEAD.v1"  DomainHead hash
+ *   genesis       "DNA.SYSPAYL.v2"  system_payload_root (root-layout
+ *   payload                         round: 4 legs, epoch_state dropped;
+ *                                   "DNA.SYSPAYL.v1" is HISTORY, the
+ *                                   5-leg form)
+ *   RETIRED       "DNA.EPOCH.v2" / "DNA.EPNODE.v2" / "DNA.E.EPOCH.v2" —
+ *                 the epoch_state leg's leaf / inner node / empty root,
+ *                 DELETED with the leg (root-layout round K2). Never
+ *                 reused for another preimage.
+ *   domains      "DNA.DOMHEAD.v1"  DomainHead hash
  *                 "DNA.DOMNODE.v1"  domains Merkle inner node
  *   vset (S3)     "DNA.VSLEAF.v1"   validator-set snapshot leaf
  *                 "DNA.VSNODE.v1"   validator-set Merkle inner node
@@ -59,8 +70,7 @@
  *                 "DNA.E.CLAIMS.v1" claims_root          (until S6)
  *                 "DNA.E.NAMES.v1"  name_root            (timing open, O-7)
  *                 "DNA.E.TOKENS.v1" token_root of an EMPTY registry
- *                 "DNA.E.EPOCH.v2"  epoch_root_v2 of an EMPTY epoch table
- *                 "DNA.E.ATTND.v1"  attendance_root of an EMPTY
+ *                 "DNA.E.ATTND.v1" attendance_root of an EMPTY
  *                                   v2_attendance_epoch table (P1)
  *                 "DNA.E.ACCRU.v1"  accrual_root of an EMPTY
  *                                   v2_reward_accrual table (P2)
@@ -68,17 +78,18 @@
  *    empty domain list is a hard error, not an empty tree.)
  *
  * ── Composition preimages (exact) ─────────────────────────────────────
- *   system_state_root = SHA3-512("DNA.SYS.v2"  ‖ validator_root[64]
- *       ‖ delegation_root[64] ‖ epoch_state_root_v2[64]
- *       ‖ chain_config_root[64] ‖ validator_set_root[64]
- *       ‖ domain_registry_root[64] ‖ manifest_root[64]
- *       ‖ attendance_root[64])
- *     tokenomics-v3 P1 (D-4, S-2): the 8th leg and a NEW composition tag
- *     ("DNA.SYS.v1" -> "DNA.SYS.v2" — a changed composition is a new
- *     tag, never the same tag over different bytes). `system_payload_root`
- *     below is UNCHANGED (5 legs, its own tag) — attendance is a
- *     container-lifetime leg like domreg/manifest, empty at genesis, so
- *     the genesis payload derivation does not change shape.
+ *   system_state_root = SHA3-512("DNA.SYS.v3"  ‖ validator_root[64]
+ *       ‖ delegation_root[64] ‖ chain_config_root[64]
+ *       ‖ validator_set_root[64] ‖ domain_registry_root[64]
+ *       ‖ manifest_root[64] ‖ attendance_root[64])      — 7 legs
+ *     tokenomics-v3 P1 (D-4, S-2) added the attendance leg ("DNA.SYS.v1"
+ *     -> "DNA.SYS.v2"); the root-layout round (K2, 2026-09-25) removed
+ *     the epoch_state leg — its table had no writer left after P2 — and
+ *     moved the tag again ("DNA.SYS.v2" -> "DNA.SYS.v3"): a changed
+ *     composition is a new tag, never the same tag over different bytes.
+ *     `system_payload_root` below moved with it ("DNA.SYSPAYL.v2", 4
+ *     legs) — attendance stays a container-lifetime leg like
+ *     domreg/manifest, empty at genesis, so it is not a payload leg.
  *   core_state_root   = SHA3-512("DNA.CORE.v2" ‖ utxo_root[64]
  *       ‖ token_root[64] ‖ pools_root[64] ‖ claims_root[64]
  *       ‖ name_root[64] ‖ supply_root[64] ‖ accrual_root[64])
@@ -120,8 +131,6 @@
  *     (tokens.timestamp is EXCLUDED: it is bound from the LOCAL wall clock
  *      at apply time (nodus_witness_db.c token_add time(NULL)) and is
  *      therefore node-divergent — hashing it would fork the root.)
- *   epoch v2 leaf     = SHA3-512("DNA.EPOCH.v2" ‖ epoch_start_height(8 BE)
- *       ‖ epoch_pool_accum(8 BE) ‖ snapshot_hash[64])
  *   vset leaf (S3)    = SHA3-512("DNA.VSLEAF.v1" ‖ epoch(8 BE)
  *       ‖ snapshot_hash[64])       — `epoch` is the EPOCH START HEIGHT and
  *       `snapshot_hash` is dna_vset_hash of the canonical snapshot bytes
@@ -144,12 +153,13 @@
  *
  * ── Merkle construction (RFC6962-style, per tree) ─────────────────────
  *   leaves  = the already-tagged 64-byte hashes (DomainHead / token leaf /
- *             epoch leaf), in strictly ascending canonical-key order;
+ *             vset / attendance / accrual leaf), in strictly ascending
+ *             canonical-key order;
  *   inner   = SHA3-512(NODE_TAG[16] ‖ left[64] ‖ right[64]);
  *   an unpaired (odd) node is PROMOTED to the next level unchanged —
  *   the final leaf is NEVER duplicated;
  *   n == 1  → root = the single leaf hash;
- *   n == 0  → the tree's tagged EMPTY root (tokens/epoch) or an error
+ *   n == 0  → the tree's tagged EMPTY root (tokens/vset/...) or an error
  *             (domains — SYSTEM mandatory).
  *
  * Copyright (c) 2026 nocdem
@@ -179,7 +189,10 @@ typedef enum {
     DNA_V2_EMPTY_CLAIMS,       /* claims_root          (S6)  */
     DNA_V2_EMPTY_NAMES,        /* name_root            (O-7) */
     DNA_V2_EMPTY_TOKENS,       /* empty token registry       */
-    DNA_V2_EMPTY_EPOCH_V2,     /* empty epoch table          */
+    /* root-layout round (K2): DNA_V2_EMPTY_EPOCH_V2 ("DNA.E.EPOCH.v2")
+     * DELETED with the epoch_state leg. The enum is an index into the
+     * tag table only — no value of it is hashed or sent — so the members
+     * below shifting down one changes no byte of any root. */
     /* tokenomics-v3 P1 (D-4, S-2) — APPENDED. */
     DNA_V2_EMPTY_ATTENDANCE,   /* empty v2_attendance_epoch  */
     /* tokenomics-v3 P2 (P2-8) — APPENDED. */
@@ -250,19 +263,6 @@ int dna_v2_token_leaf_hash(const dna_v2_token_leaf_t *leaf,
  */
 int dna_v2_token_root(const dna_v2_token_leaf_t *leaves, size_t n,
                       uint8_t out[DNA_V2_ROOT_LEN]);
-
-/* ── epoch_state_root_v2 (supply counters relocated to supply_root) ──── */
-int dna_v2_epoch_leaf_hash(uint64_t epoch_start_height,
-                           uint64_t epoch_pool_accum,
-                           const uint8_t snapshot_hash[64],
-                           uint8_t out[DNA_V2_ROOT_LEN]);
-
-/** Root over v2 epoch leaf hashes, strictly ascending epoch_start order
- *  enforced by the caller passing key array; duplicates reject. n == 0
- *  yields the tagged empty-epoch root. */
-int dna_v2_epoch_root(const uint64_t *epoch_starts,
-                      const uint8_t (*leaf_hashes)[DNA_V2_ROOT_LEN],
-                      size_t n, uint8_t out[DNA_V2_ROOT_LEN]);
 
 /* ── validator_set_root (S3) ────────────────────────────────────────── */
 
@@ -369,11 +369,10 @@ int dna_v2_domains_root(const dna_v2_domain_head_t *heads, size_t n,
                         uint8_t out[DNA_V2_ROOT_LEN]);
 
 /* ── Composition ────────────────────────────────────────────────────── */
-/** tokenomics-v3 P1 (D-4, S-2): gained the 8th leg `attendance_root` and
- *  a new composition tag "DNA.SYS.v2" (was "DNA.SYS.v1"). */
+/** 7 legs under "DNA.SYS.v3" (root-layout round K2: the epoch_state leg
+ *  removed; was 8 legs under "DNA.SYS.v2", tokenomics-v3 P1). */
 int dna_v2_system_root(const uint8_t validator_root[64],
                        const uint8_t delegation_root[64],
-                       const uint8_t epoch_state_root_v2[64],
                        const uint8_t chain_config_root[64],
                        const uint8_t validator_set_root[64],
                        const uint8_t domain_registry_root[64],
@@ -397,18 +396,19 @@ int dna_v2_global_root(const uint8_t domains_root[64],
 
 /* ── SYSTEM runtime-owned genesis payload root (Ledger V2 S5) ─────────
  *
- * Tag "DNA.SYSPAYL.v1" (16 bytes, zero-padded — S5 JUDGMENT tag).
+ * Tag "DNA.SYSPAYL.v2" (16 bytes, zero-padded — S5 JUDGMENT tag; the
+ * root-layout round K2 moved it from "DNA.SYSPAYL.v1" because the
+ * epoch_state leg left the preimage).
  *
- *   system_payload_root = SHA3-512("DNA.SYSPAYL.v1" ‖ validator_root
- *       ‖ delegation_root ‖ epoch_state_root_v2 ‖ chain_config_root
- *       ‖ validator_set_root)
+ *   system_payload_root = SHA3-512("DNA.SYSPAYL.v2" ‖ validator_root
+ *       ‖ delegation_root ‖ chain_config_root ‖ validator_set_root)
+ *                                                            — 4 legs
  *
  * This is dna_v2_system_root MINUS the THREE container-lifetime legs
- * (domain_registry_root, manifest_root, and — since tokenomics-v3 P1's
- * "DNA.SYS.v2" — attendance_root) under a DISTINCT tag. attendance_root
- * joined this exclusion list unchanged in kind: it is empty at genesis
- * exactly like domreg/manifest, so this function's own 5-leg shape and
- * its genesis-cycle argument below do not change. It exists to break the
+ * (domain_registry_root, manifest_root, attendance_root) under a
+ * DISTINCT tag. attendance_root is empty at genesis exactly like
+ * domreg/manifest, so it is excluded for the same reason and the
+ * genesis-cycle argument below is unchanged. It exists to break the
  * genesis cycle: a DomainManifest's `genesis_state_root` is defined as
  * the domain's RUNTIME-OWNED genesis payload root — it never covers a
  * structure that commits that domain's own manifest, so
@@ -417,14 +417,13 @@ int dna_v2_global_root(const uint8_t domains_root[64],
  * issuance belongs to DNA_CORE, whose payload root IS its full
  * core_state_root — no self-reference exists for CORE, so the generic
  * rule holds trivially.) The FINAL SYSTEM DomainHead.state_root remains
- * the full 8-leg dna_v2_system_root. At domain ACTIVATION the payload
+ * the full 7-leg dna_v2_system_root. At domain ACTIVATION the payload
  * root is the value compared against the registry-committed
  * genesis_state_root (the runtime's optional payload_root hook —
  * nodus_witness_runtime.h; a runtime without the hook compares its
  * state_root directly). */
 int dna_v2_system_payload_root(const uint8_t validator_root[64],
                                const uint8_t delegation_root[64],
-                               const uint8_t epoch_state_root_v2[64],
                                const uint8_t chain_config_root[64],
                                const uint8_t validator_set_root[64],
                                uint8_t out[DNA_V2_ROOT_LEN]);

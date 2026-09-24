@@ -439,9 +439,14 @@ static int test_happy_path(void) {
     CHECK(q1(w->db, "SELECT value FROM validator_stats "
                     "WHERE key='active_count'") == (int64_t)N_VAL,
           "active_count == 7");
-    CHECK(q1(w->db, "SELECT COUNT(*) FROM delegations") == 0 &&
-          q1(w->db, "SELECT COUNT(*) FROM epoch_state") == 0,
-          "delegations / epoch_state are EMPTY");
+    CHECK(q1(w->db, "SELECT COUNT(*) FROM delegations") == 0,
+          "delegations are EMPTY");
+    /* Root-layout round K2: the schema no longer creates `epoch_state`
+     * at all — a derived chain has no such table. KILLED BY: restoring
+     * the CREATE TABLE in WITNESS_DB_SCHEMA (nodus_witness.c). */
+    CHECK(q1(w->db, "SELECT COUNT(*) FROM sqlite_master "
+                    "WHERE type='table' AND name='epoch_state'") == 0,
+          "the derived chain has NO epoch_state table");
     /* Block 2C — chain_config_history is NO LONGER empty: it carries the
      * committed economic parameters and NOTHING else. tokenomics-v3 P2:
      * THREE rows now (blocks_per_year, decimal_unit, epoch_length) — the

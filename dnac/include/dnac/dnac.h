@@ -202,7 +202,7 @@ extern "C" {
 
 /** Epoch length in blocks (~1 hour at 5s).
  *
- * Drives: committee rotation cadence, epoch_state snapshot cadence,
+ * Drives: committee rotation cadence, validator-set snapshot cadence,
  * reward settlement cadence, Rule O delegation hold (Phase 8), Rule K
  * VALIDATOR_UPDATE cooldown (Phase 8), AUTO_RETIRE counter.
  *

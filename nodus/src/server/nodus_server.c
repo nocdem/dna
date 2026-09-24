@@ -3847,9 +3847,11 @@ static void handle_t2_status(nodus_server_t *srv, nodus_session_t *sess,
                                                        info.state_root) != 0) {
                 memset(info.state_root, 0, sizeof(info.state_root));
             }
-        } else if (srv->witness->cached_state_root_valid) {
-            memcpy(info.state_root, srv->witness->cached_state_root, 64);
         }
+        /* Root-layout round (K3): the legacy `else` branch that copied
+         * `cached_state_root` is deleted with that field (it had no
+         * writer); a non-successor witness reports the zeroed
+         * state_root from the memset above, as it already did. */
         memcpy(info.chain_id, srv->witness->chain_id, 32);
     }
 

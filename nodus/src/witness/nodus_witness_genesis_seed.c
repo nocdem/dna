@@ -131,7 +131,8 @@ int nodus_witness_genesis_seed_validators(nodus_witness_t *w,
         /* v0.16: reward row seeding removed — the push-settlement model
          * has no per-validator reward state. The "epoch_state[0] is
          * seeded by genesis" note that stood here is stale: tokenomics-v3
-         * P2 replaced the epoch_state reward pool with
+         * P2 replaced the epoch_state reward pool (the table itself is
+         * gone since the root-layout round, K2) with
          * supply_tracking.reward_pool (P2-4; nodus_witness_v2_econ.c file
          * header, "WHAT P2 DELETED"), and the reward state a version-3
          * chain starts from is that pool plus the epoch-0 balance copy,

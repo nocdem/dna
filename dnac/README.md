@@ -1,6 +1,6 @@
 # DNAC — DNA Chain Client Library
 
-**Version:** v0.18.6-ledgerv2-o15b | **TX Wire:** v2 (since v0.17.1)
+**Version:** v0.18.11-ledgerv2-o15j | **TX Wire:** v2 (since v0.17.1)
 
 DNAC is the **client side** of the **DNA Chain** — the post-quantum UTXO
 blockchain of the DNA ecosystem. This library builds wallets and
@@ -78,7 +78,15 @@ The chain is implemented in three layers of the monorepo:
 - **Memo support** (up to 255 bytes), **name resolution** (send to a DNA
   name, auto-resolved to a fingerprint), **replay prevention**
 - **Client-side verification** — Merkle inclusion proofs, block/anchor
-  verification, chain-definition decoding (`src/ledger/`)
+  verification, chain-definition decoding (`src/ledger/`). The UTXO leaf
+  the client recomputes (`dnac_utxo_compute_leaf_hash`) is 340 bytes
+  since the root-layout round (dnac 0.18.11): nullifier ‖ owner(128,
+  NUL-padded) ‖ amount u64 LE ‖ token_id ‖ tx_hash ‖ output_index u32 LE
+  ‖ **unlock_block u64 LE** — byte-identical to the node's
+  `nodus_witness_merkle_leaf_hash`. A current witness sends every
+  `dnac_utxo` entry with a depth-0 proof and an all-zero root (the
+  legacy state root it anchored to is deleted), so wallets store coins
+  unverified, as they already did: no code installs a verified anchor.
 
 ## Architecture
 

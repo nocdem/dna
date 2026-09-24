@@ -513,13 +513,16 @@ int dnac_wallet_recover_from_witnesses(dnac_context_t *ctx,
                 dnac_merkle_proof_t proof;
                 memset(&proof, 0, sizeof(proof));
 
+                /* Root-layout round K1: the leaf commits the coin's
+                 * unlock_block too (set from the witness's "ub" above). */
                 if (dnac_utxo_compute_leaf_hash(e->nullifier,
                                                   utxo.owner_fingerprint,
                                                   e->amount,
                                                   e->token_id,
                                                   e->tx_hash,
                                                   e->output_index,
-                                                  proof.leaf_hash) == 0) {
+                                                  proof.leaf_hash,
+                                                  utxo.unlock_block) == 0) {
                     proof.proof_length = (int)e->proof_depth;
                     for (uint32_t si = 0; si < e->proof_depth; si++) {
                         memcpy(proof.siblings[si],

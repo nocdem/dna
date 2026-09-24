@@ -250,16 +250,16 @@ typedef struct {
      *   "wid\0\0\0\0\0" (8) || sender witness_id (32) || chain_id (32) ||
      *   ts_local (8 LE) || block_height (8 LE) || state_root (64) = 152
      *
-     * Receiver verifies before any halt-recovery-quorum tally consults
-     * peer.remote_checksum. Without this, a single Byzantine peer
-     * could spoof remote_checksum to coerce halt_recovery_check into
-     * either spurious DB drops or denial-of-recovery on honest halted
-     * nodes (B-3 + C-1 combined risk).
+     * The signature still covers state_root, but since the root-layout
+     * round (2026-09-25, K3) a sender always writes it all-zero and no
+     * receiver reads it (the legacy state root, peer.remote_checksum and
+     * halt_recovery_check are all deleted). The field stays on the wire
+     * so the frame is unchanged.
      *
      * Wire key: "csg" (bstr 4627B). Backward-compat: legacy peers
      * (pre Faz 4F) emit zeros; receiver treats all-zero as unsigned
-     * heartbeat — accepted for non-recovery uses (skew probe, height
-     * advertisement) but ignored by halt_recovery_check. */
+     * heartbeat — accepted for the skew probe and height
+     * advertisement (halt_recovery_check is deleted). */
     uint8_t         checksum_sig[NODUS_SIG_BYTES];
 } nodus_t3_ident_t;
 

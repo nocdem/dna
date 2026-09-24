@@ -26,8 +26,8 @@ extern "C" {
  * long time. Bump BOTH, together, every time. */
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  19
-#define NODUS_VERSION_PATCH  74
-#define NODUS_VERSION_STRING "0.19.74"
+#define NODUS_VERSION_PATCH  75
+#define NODUS_VERSION_STRING "0.19.75"
 
 /* Wire frame.
  *
@@ -305,7 +305,12 @@ extern "C" {
 #define NODUS_TREE_TAG_REWARD       0x04u  /* Legacy — retired in v0.16 reward redesign;
                                             * kept defined for combine_v2 archive-replay. */
 #define NODUS_TREE_TAG_CHAIN_CONFIG 0x05u  /* Hard-Fork v1 — chain_config_history tree */
-#define NODUS_TREE_TAG_EPOCH_STATE  0x06u  /* v0.16 — push-settlement epoch state tree */
+#define NODUS_TREE_TAG_EPOCH_STATE  0x06u  /* v0.16 — push-settlement epoch state tree.
+                                            * RETIRED in the root-layout round (K2,
+                                            * 2026-09-25) with the epoch_state table;
+                                            * no tree carries this tag any more. Kept
+                                            * defined so 0x06 is NEVER REUSED (the 0x07
+                                            * precedent below). */
 #define NODUS_TREE_TAG_ACTIVATION   0x07u  /* O15C — Ledger V2 activation authority tree.
                                             * RETIRED in O15J Faz 3 with the activation
                                             * ceremony; no tree carries this tag any more.
@@ -315,18 +320,20 @@ extern "C" {
  * Prefixed to the outer SHA3-512 combiner input so cross-version replay
  * between combiners is structurally impossible.
  *   0x01 = legacy 4-input formula (utxo || validator || delegation || reward)
- *   0x02 = 5-input (adds chain_config_root)
- *   0x03 = 5-input (v0.16: replaces reward_root with epoch_state_root) */
+ *   0x02 = 5-input (adds chain_config_root) — combine_v2, archive-replay
+ *   0x03 = 5-input (v0.16: replaces reward_root with epoch_state_root) —
+ *          RETIRED, root-layout round K3 (2026-09-25): its combiner
+ *          (nodus_merkle_combine_state_root_v3) and the legacy composite
+ *          state_root are DELETED and NODUS_STATE_ROOT_VERSION_V3 with
+ *          them (its only user). The byte 0x03 is NEVER REUSED. */
 #define NODUS_STATE_ROOT_VERSION_V1 0x01u
 #define NODUS_STATE_ROOT_VERSION_V2 0x02u
-#define NODUS_STATE_ROOT_VERSION_V3 0x03u
 /* O15C — 6-input: appended activation_root (Ledger V2 activation
  * authority). RETIRED in O15J Faz 3 together with the activation
  * ceremony and its combiner (nodus_merkle_combine_state_root_v4, now
  * deleted). It was emitted only by the ceremony's compile-gated
  * rehearsal builds, which never shipped, so NO chain in existence
- * carries a v4 state_root and no archive replay needs it — v3 is again
- * the only composition this tree emits. Kept defined so the version byte
+ * carries a v4 state_root and no archive replay needs it. Kept defined so the version byte
  * 0x04 is NEVER REUSED: the whole point of the prefix is that a byte
  * identifies exactly one formula, forever. */
 #define NODUS_STATE_ROOT_VERSION_V4 0x04u
@@ -546,8 +553,11 @@ typedef struct {
 } nodus_dnac_fee_info_t;
 
 /** Maximum inclusion-proof depth for anchored UTXO / TX proofs.
- * Matches the server-side DNAC_UTXO_PROOF_MAX_DEPTH and
- * DNAC_HISTORY_PROOF_MAX_DEPTH in nodus_witness_handlers.c. */
+ * Matches the server-side DNAC_HISTORY_PROOF_MAX_DEPTH in
+ * nodus_witness_handlers.c. (The UTXO side's DNAC_UTXO_PROOF_MAX_DEPTH
+ * is gone with the UTXO proof builder — root-layout round K3: every
+ * dnac_utxo entry now carries depth 0; the client still bounds a
+ * received depth by this value.) */
 #define NODUS_DNAC_PROOF_MAX_DEPTH  32
 #define NODUS_DNAC_PROOF_HASH_LEN   64   /* SHA3-512 */
 

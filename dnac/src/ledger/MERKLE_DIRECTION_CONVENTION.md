@@ -1,16 +1,18 @@
 # Merkle Direction Convention (Server <-> Client)
 
 **Source of truth:** `nodus/src/witness/nodus_witness_merkle.c`
-- `nodus_witness_merkle_verify_proof` (~line 494)
-- `nodus_witness_merkle_build_proof` (~line 413)
-- `rfc6962_path` (~line 351), `reverse_proof` (~line 396)
+- `nodus_witness_merkle_verify_proof` (~line 1149)
+- `nodus_witness_merkle_build_tx_proof` (~line 484) — the UTXO-set
+  builder `nodus_witness_merkle_build_proof` was deleted in the
+  root-layout round (2026-09-25, K3); `dnac_utxo` now sends depth-0 proofs
+- `rfc6962_path` (~line 412), `reverse_proof` (~line 457)
 
 ## RFC 6962 Domain Tags
 - `leaf_hash(d)     = SHA3-512(0x00 || d)`
 - `inner_hash(L, R) = SHA3-512(0x01 || L || R)`
 
 The caller passes a 64-byte composite digest (from
-`nodus_witness_merkle_leaf_hash`); both `build_proof` and `verify_proof`
+`nodus_witness_merkle_leaf_hash`); both `build_tx_proof` and `verify_proof`
 apply `leaf_hash` to that digest internally before walking.
 
 ## Server representation
