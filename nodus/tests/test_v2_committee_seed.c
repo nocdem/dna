@@ -1135,9 +1135,33 @@ int main(void) {
                     ord_legacy[b] = t;
                 }
 
+        /* tokenomics-v3 P3-1 ("okuma B"): the post-bootstrap selection
+         * ranks by the frozen copy of the lookback block's epoch —
+         * copy(0) here. This sub-fixture's validators carry self_stake 0
+         * (so the genesis supply equation balances at 0), which the copy
+         * writer skips, so copy(0) holds nothing and nobody would be
+         * seated — and the order loop below would then pass VACUOUSLY on
+         * count 0. Plant an EQUAL frozen row (amount 1) per validator so
+         * the tiebreak still decides the whole order, and pin the count. */
+        for (int i = 0; i < N_VAL; i++) {
+            uint8_t vfp[64];
+            CHECK(qgp_sha3_512(pks[i], DNAC_PUBKEY_SIZE, vfp) == 0, "vfp");
+            sqlite3_stmt *st = NULL;
+            CHECK(sqlite3_prepare_v2(lf.w->db,
+                      "INSERT INTO v2_balance_copy (epoch_start, "
+                      "validator_fp, owner_fp, amount) VALUES (0, ?1, ?1, 1)",
+                      -1, &st, NULL) == SQLITE_OK, "prep frozen row");
+            sqlite3_bind_blob(st, 1, vfp, 64, SQLITE_TRANSIENT);
+            CHECK(sqlite3_step(st) == SQLITE_DONE, "plant frozen row");
+            sqlite3_finalize(st);
+        }
+        OK();
+
         CHECK(nodus_committee_compute_for_epoch(lf.w, E_START, out,
                   DNAC_MAX_ACTIVE_VALIDATORS, &count) == 0,
               "legacy compute"); OK();
+        CHECK(count == N_VAL, "every legacy validator seated (no vacuous "
+              "order check)"); OK();
         int matched = 1;
         for (int i = 0; i < count && matched; i++)
             if (memcmp(out[i].pubkey, pks[ord_legacy[i]], DNAC_PUBKEY_SIZE)

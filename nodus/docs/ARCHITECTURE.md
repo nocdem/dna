@@ -2270,8 +2270,9 @@ recipient).
   validator) and per delegation, raw SHA3-512(pubkey) keys — is written
   at genesis (copy(0)) and at every boundary H (copy(H)) — written LAST,
   right after `commit_next` builds snapshot(H+E) from the same state,
-  with no stake movement in between — and every copy older than H−E is
-  pruned (`nodus_witness_v2_balance_copy_write`,
+  with no stake movement in between — and every copy older than H−2E is
+  pruned, i.e. three copies are kept (P3; was two in P2)
+  (`nodus_witness_v2_balance_copy_write`,
   `nodus_witness_v2_econ.c:313`). It is OUT of every root (a pure
   function of committed state at H). It exists because a snapshot entry
   carries only `total_stake` and `self_bond` per validator
@@ -2286,8 +2287,9 @@ recipient).
   a share: `base = floor(share × self_bond / total_stake)` (the entry's
   own fields), the entry's `commission_bps` on the rest, and the
   delegators split the net by their amounts in the SOURCE COPY — the copy
-  the governing snapshot was built from, `src(H) = H ≥ 2E ? H−2E : 0`
-  (`v2ec_source_copy`, `:828`), owner_fp ASC (`v2ec_pay_member`, `:928`).
+  the governing snapshot was built from, `src(H) = H ≥ 3E ? H−3E : 0`
+  since P3's "okuma B" (snapshot(H−E) is built at H−2E from copy(H−3E);
+  it was H−2E in P2) (`v2ec_source_copy`), owner_fp ASC (`v2ec_pay_member`, `:928`).
   **Consistency gate** (`v2ec_member_load`, `:857`): for every member the
   source copy's self row must equal `self_bond` and its delegator rows
   must sum to `total_stake − self_bond`, else FAULT (-2) — the two
@@ -2312,8 +2314,9 @@ recipient).
   exit boundary — is pinned in ONE function,
   `nodus_v2_power_exit_boundary` (`nodus_witness_v2_epoch.c:1473`):
   `nb(h) = ⌈h/E⌉·E` (h itself at a boundary, because a block's
-  transactions run before its boundary), `L(h) = nb(h) + E` (the first
-  set that no longer counts the stake takes effect there). The withdrawn
+  transactions run before its boundary), `L(h) = nb(h) + 2E` since P3
+  (the change enters copy(nb), is first used by the selection at nb+E,
+  and that set governs from nb+2E; it was `nb(h) + E` in P2). The withdrawn
   amount therefore keeps earning until `L(h)` and cannot be spent,
   re-delegated or moved to another validator before `L(h) + 12E + 1`: the
   three input gates (SPEND/BURN, TOKEN_CREATE, SYSFUND) refuse while
@@ -2325,9 +2328,9 @@ recipient).
   `nullifier, owner, amount, token_id, tx_hash, output_index`,
   `nodus_witness_merkle.c:187-188`) — same as the validator graduation
   lock; the operator decided it will be rooted in a separate root-layout
-  round. **P3:** when selection moves to the previous boundary's copy
-  ("okuma B"), `L(h)`, `src(H)` and the copy retention move TOGETHER
-  (`nodus_witness_v2_epoch.h`, P3 NOTE).
+  round. **P3 moved `L(h)`, `src(H)` and the copy retention TOGETHER**
+  (see the P3 section below; a change to only one of them makes the
+  consistency gate fault on every honest node).
 - **P2-7 — payday.** When `(H / E) % payout_interval_epochs == 0`
   (the committed genesis document's value; 24 on a chain with no stored
   document, a FAULT on a version-3 successor without one —
@@ -2417,6 +2420,61 @@ declared ceiling, not the work done, decides how many fit.
   transaction crosses every link several times (mempool gossip, block
   parts, votes). Localhost numbers; a real network adds latency.
 
+### tokenomics-v3 P3 — stake parameters (2026-09-24, nodus 0.19.72)
+
+Decisions: `docs/plans/decisions/2026-09-22-nodus-tokenomics-v3-operator.md`
+§1 and §3 (2026-09-23/24: 84/12, okuma B, re-stake after graduation,
+"P3 soruları" 1-4, delegator cap 2048, commission increase 2 epochs).
+
+- **Selection by frozen stake ("okuma B").** The snapshot built at
+  boundary B (for B+E) takes the LIVE eligible set — ACTIVE/ELIGIBLE with
+  live 2-epoch tenure (`nodus_validator_bonded_tenured`) — and ranks it by
+  the FROZEN total from copy(B−E): own copy row + Σ delegator rows,
+  absent = 0 (`nodus_witness_v2_balance_copy_frozen`); frozen total DESC,
+  then the seeded tiebreak; a candidate with frozen total 0 is not seated
+  (cometbft power 0 is removal). Entries carry the frozen `total_stake` /
+  `self_bond`; commission is the live row's. The commit and the Rule N
+  weight-floor preview share the core (`nodus_witness_committee.c`,
+  `vset_build_snapshot`).
+- **The coupled triple.** `L(h) = nb(h) + 2E`; `src(H) = H−3E`; three
+  copies kept — traced at E, 2E, 3E, 4E (copy(0) serves boundaries E, 2E
+  and 3E's distribution and is pruned after it at 3E).
+- **Seats.** `NODUS_V2_ACTIVE_SET_MAX` 32; default target
+  `DNAC_TARGET_ACTIVE_DEFAULT` 32 when the governance parameter is absent;
+  governance range [7, 32]. Beyond 32, candidates wait bonded (ELIGIBLE).
+- **Rule M.** STAKE (fresh or revive) is refused when the bonded counter
+  would exceed `DNAC_MAX_VALIDATORS` (128), so no boundary reader can
+  fault on a table built by ordinary transactions; the graduation scan is
+  bounded by 2 × 128 (RETIRING ≤ counter; AUTO_RETIRED at H = Rule N's
+  output at H−E).
+- **Locks.** Validator bond: `H_grad + 84·E` (`DNAC_VALIDATOR_UNBOND_EPOCHS`;
+  `DNAC_UNSTAKE_COOLDOWN_BLOCKS` deleted). Delegator: `L(h) + 12·E`.
+- **Exit with delegators.** Rule A is gone: UNSTAKE is accepted with any
+  number of delegators. At graduation (RETIRING and AUTO_RETIRED) every
+  remaining delegation is returned as a UTXO to its owner, locked to
+  `H_grad + 12·E`, rows deleted, totals zeroed, `delegator_hash ASC`;
+  identity = settlement tx_hash(H) + nullifier kind 0x23 + output index
+  `0x40000000 + rank` (one rank counter per boundary; the band stays below
+  2^31 so every signed-int index reader is exact). Fault stage 18 /
+  point 60.
+- **Delegation rules.** New row ≥ `DNAC_MIN_DELEGATION` (100 NODUS); a
+  top-up ≥ 1; a partial UNDELEGATE must leave 0 or ≥ 100 NODUS; at most
+  `NODUS_MAX_DELEGATORS_PER_VALIDATOR` = 2048 delegators per validator.
+- **Commission.** Cap `DNAC_COMMISSION_BPS_MAX` 5000 (all witness checks,
+  genesis, client tools). An increase is pending until the first boundary
+  ≥ `H + 2E` (under okuma B a delegator reacting at H+1 is then absent
+  from the copy the new rate is paid from); a decrease is immediate.
+- **Re-stake.** STAKE on an UNSTAKED row revives it (fresh bond,
+  commission, destination; `active_since = h`, tenure restarts; counters
+  and pending fields zero); every other existing state is refused (Rule I).
+- **Measured at 2048 × 32** (`test_v2_deleg_cap_bench`, one machine,
+  E = 720, root recomputation not included): boundary 4.7 s (balance copy
+  3.25 s, distribution 1.19 s, auto-release of 2048 0.17 s, selection
+  0.09 s); payday over 65 568 rows 3.1 s. Speed-up belongs to the
+  capacity phase before the wipe.
+- **Consensus-value change** (snapshot contents, locks, verdicts, UTXO
+  identities) → devnet wipe + stop-all.
+
 ### Consensus flow (cometbft @709fd12b, the only lane)
 
 ```
@@ -2466,7 +2524,7 @@ SQLite tables managed by the witness module (`nodus_witness_db.c`):
 | `epochs` | BFT-signed epoch roots |
 | `supply_tracking` | Genesis supply, `total_burned` (explicit burns only since tokenomics-v3 P2), `total_minted` (always 0), current supply, and `reward_pool` — the reserve every fee refills (P2). This row read `supply_state` / "burned fees" before P2; the table's name was always `supply_tracking` (`nodus_witness.c` base DDL). |
 | `v2_reward_accrual` | tokenomics-v3 P2: rewards credited at each boundary, one row per recipient fp, paid out and emptied at each payday; a leg of `core_state_root` |
-| `v2_balance_copy` | tokenomics-v3 P2: the stake frozen at each epoch's start (copy(H−E) and copy(H) kept); out of every root |
+| `v2_balance_copy` | tokenomics-v3 P2/P3: the stake frozen at each boundary (three copies kept since P3: H−2E, H−E, H); read by the selection (okuma B) and the reward split; out of every root |
 | `committed_transactions` | Full serialized TX data (hub/spoke queries) |
 
 ### Witness startup and chain-database faults

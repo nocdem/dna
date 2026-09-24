@@ -16,7 +16,7 @@
  * Sections:
  *   §1  THE BALANCE COPY — genesis writes copy(0) (one row per bond and
  *       per delegation, raw-fp keyed); a boundary writes copy(H) and
- *       keeps only H−E and H.
+ *       keeps H−2E, H−E and H (tokenomics-v3 P3-2; P2 kept two).
  *   §2  DISTRIBUTION MATH, through the engine at boundary E — payout =
  *       pool >> 16, 128-bit shares pro rata to the GOVERNING snapshot's
  *       power (design §7.1 "P2-6 rev 2"), the inner split (base on the
@@ -26,8 +26,10 @@
  *       equation closing term by term.
  *   §3  REVISION 2 (design §7.1; decision file §3 2026-09-24 "DELEGATOR
  *       = VALIDATOR GİBİ"), all through the engine: §3 the inner split
- *       reads the SOURCE copy src(H) = H−2E (0 below 2E) at E, 2E and
- *       3E; §3a the consistency gate — a tampered source-copy row
+ *       reads the SOURCE copy src(H) = H−3E (0 below 3E — P3-2, the copy
+ *       the governing snapshot was built from under P3-1's "okuma B") at
+ *       E, 2E, 3E and 4E; §3a the consistency gate — a tampered
+ *       source-copy row
  *       FAULTS the boundary (-2) with the pool untouched; §3b a
  *       delegator that withdraws mid-epoch is still paid for the epoch
  *       and until its stake leaves the voting power, and not after;
@@ -35,7 +37,12 @@
  *       withdrawn part paid only through L(h), the top-up first paid
  *       from the epoch whose governing snapshot was built after it, and
  *       never more earned than the capital locked that epoch;
- *       §3e the econ band's decimal_unit refusal. The rev-1 cases
+ *       §3e the econ band's decimal_unit refusal; §3f a commission
+ *       increase submitted in a boundary block is first paid two
+ *       boundaries after its activation, from a copy a delegator who left
+ *       in reaction is no longer in (P3 fix round, H + 2E), a mid-epoch
+ *       one activates at the first boundary >= its stored height, and the
+ *       old H + E writer is reproduced charging the leaver. The rev-1 cases
  *       (min() rule, flash delegation, departed delegator, top-up keeps
  *       its copy amount, leave-and-return) are DELETED with the rule
  *       they pinned — see the note where they stood.
@@ -55,7 +62,8 @@
  *
  * ── WHAT IT REQUIRES ───────────────────────────────────────────────────
  * Compile flags: none beyond a default build (DNAC_EPOCH_LENGTH 720 — the
- * cases drive up to 3E = 2160 zero-envelope blocks). Environment: none.
+ * cases drive up to 4E = 2880 zero-envelope blocks; §3f to 5E = 3600).
+ * Environment: none.
  * ── WHAT IT LEAVES BEHIND ──────────────────────────────────────────────
  * One /tmp/test_v2_econ_<tag>_XXXXXX directory per fixture, removed at
  * close; a case that aborts through CHECK leaves its directory behind.
@@ -628,7 +636,7 @@ static void split_specd(uint64_t payout, uint64_t a5, uint64_t a6,
 /* RED ON THE PRE-P2 TREE: the table and its writer do not exist.
  * KILLED BY: dropping the engine-genesis copy(0) write; keying the copy
  * by delegation-row hash instead of the raw fp; writing a zero-bond
- * validator; not pruning below H−E. */
+ * validator; not pruning below H−2E (P3-2 — was H−E). */
 static int t_balance_copy(void) {
     fixture_t fx;
     CHECK(fx_stage1(&fx, "copy", SPECD, 3, DELS, 2) == 0, "stage1");
@@ -665,25 +673,42 @@ static int t_balance_copy(void) {
     }
     OK();
 
-    /* boundary E writes copy(E), keeps copy(0); boundary 2E writes
-     * copy(2E) and prunes copy(0) */
+    /* RETENTION, tokenomics-v3 P3-2: boundary B keeps copy(B−2E),
+     * copy(B−E) and copy(B) — three copies (P2 kept two). By hand:
+     *   E:  copy(0), copy(E)            (nothing below E−2E to prune)
+     *   2E: copy(0), copy(E), copy(2E)  (prune below 0: nothing)
+     *   3E: copy(E), copy(2E), copy(3E) (prune below E: copy(0) goes)
+     * RED ON THE PRE-P3 TREE: boundary 2E pruned copy(0) (below 2E−E).
+     * KILLED BY: keeping two copies (copy(H−3E) gone before the
+     * distribution at H reads it); keeping none of the older. */
     CHECK(fx_drive(&fx, E, ALL3) == 0, "drive to E");
     CHECK(q1f(fx.w, "SELECT COUNT(*) FROM v2_balance_copy "
                     "WHERE epoch_start = %llu", E) == 5 &&
           q1(fx.w, "SELECT COUNT(*) FROM v2_balance_copy "
                    "WHERE epoch_start = 0") == 5,
-          "at E: copy(E) written, copy(0) = copy(H−E) kept");
+          "at E: copy(E) written, copy(0) kept");
     OK();
     CHECK(fx_drive(&fx, 2 * E, ALL3) == 0, "drive to 2E");
+    CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_balance_copy "
+                   "WHERE epoch_start = 0") == 5 &&
+          q1f(fx.w, "SELECT COUNT(*) FROM v2_balance_copy "
+                    "WHERE epoch_start = %llu", E) == 5 &&
+          q1f(fx.w, "SELECT COUNT(*) FROM v2_balance_copy "
+                    "WHERE epoch_start = %llu", 2 * E) == 5,
+          "at 2E: copy(0), copy(E) and copy(2E) all kept (P3-2)");
+    OK();
+    CHECK(fx_drive(&fx, 3 * E, ALL3) == 0, "drive to 3E");
     CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_balance_copy "
                    "WHERE epoch_start = 0") == 0 &&
           q1f(fx.w, "SELECT COUNT(*) FROM v2_balance_copy "
                     "WHERE epoch_start = %llu", E) == 5 &&
           q1f(fx.w, "SELECT COUNT(*) FROM v2_balance_copy "
-                    "WHERE epoch_start = %llu", 2 * E) == 5,
-          "at 2E: only copy(E) and copy(2E) remain");
+                    "WHERE epoch_start = %llu", 2 * E) == 5 &&
+          q1f(fx.w, "SELECT COUNT(*) FROM v2_balance_copy "
+                    "WHERE epoch_start = %llu", 3 * E) == 5,
+          "at 3E: copy(0) pruned — only copy(E), copy(2E), copy(3E)");
     OK();
-    CHECK(supply_closes(fx.w), "the equation closes after two boundaries");
+    CHECK(supply_closes(fx.w), "the equation closes after three boundaries");
     OK();
     fx_close(&fx);
     return 0;
@@ -855,37 +880,65 @@ static int copy_set(nodus_witness_t *w, uint64_t epoch, int vkey, int okey,
 #define SC_Q1_3     26470ULL     /* the 1/4 delegator at 3E */
 #define SC_Q3_3     79410ULL     /* the 3/4 delegator at 3E */
 #define SC_SUM3     999967ULL
+/* tokenomics-v3 P3-2 — boundary 4E of SPECD, every member attending:
+ *   pool after 3E = 65 534 012 367 − 999 967 = 65 533 012 400
+ *   payout(4E)    = floor(65 533 012 400 / 65 536) = 999 954
+ *                   (65 536 × 999 954 = 65 532 985 344, rest 27 056)
+ *   share0 = floor(999954 × 14/34) = floor(13 999 356 / 34) = 411 745
+ *   share1 = share2 = floor(9 999 540 / 34) = 294 104
+ *   base0  = floor(411745 × 5/7) = floor(2 058 725 / 7) = 294 103
+ *   gross 117 642, commission 11 764, net 105 878
+ *   with the SWAPPED copy(E) (key 5 = 1e14, key 6 = 3e14):
+ *   → key 0 += 305 867; key 5 (1/4) += floor(105 878 / 4) = 26 469,
+ *     key 6 (3/4) += floor(317 634 / 4) = 79 408;
+ *     Σ 305 867 + 26 469 + 79 408 + 2 × 294 104 = 999 952 */
+#define SC_POOL3    (SC_POOL2 - SC_SUM3)
+#define SC_PAYOUT4  999954ULL
+#define SC_V0_4     305867ULL
+#define SC_V12_4    294104ULL
+#define SC_Q1_4     26469ULL     /* the 1/4 delegator at 4E */
+#define SC_Q3_4     79408ULL     /* the 3/4 delegator at 4E */
+#define SC_SUM4     999952ULL
 
-/* Through the engine at E, 2E and 3E. Right after boundary E the copy(E)
- * amounts of keys 5 and 6 are SWAPPED by hand (5 → 1e14, 6 → 3e14; the
- * sum and the self row untouched, so the consistency gate still holds).
- *   E:  src(E) = 0 → copy(0), 3:1 → the §2 numbers.
- *   2E: src(2E) = 0 → copy(0), still 3:1 → key 5 += 79 411, key 6 +=
- *       26 470 (the swapped copy(E) is NOT read).
- *   3E: src(3E) = E → the swapped copy(E), 1:3 → key 5 += 26 470,
- *       key 6 += 79 410 (copy(2E), written at 2E from the unswapped live
- *       rows, is NOT read).
- * Retention is checked on the way: copy(0) still exists when 2E runs,
- * copy(E) when 3E runs.
- * RED ON THE PRE-REV2 TREE: the rev-1 split read copy(H−E) — at 2E the
- * swapped copy(E) (key 5 += 26 470, key 6 += 79 411), at 3E the
- * unswapped copy(2E).
- * KILLED BY: reading copy(H−E) or copy(H) instead of src(H); pruning
- * copy(H−2E) before the distribution; a src that is not 0 below 2E. */
+/* Through the engine at E, 2E, 3E and 4E. Right after boundary E the
+ * copy(E) amounts of keys 5 and 6 are SWAPPED by hand (5 → 1e14, 6 →
+ * 3e14; the sum and the self row untouched). tokenomics-v3 P3-2: the
+ * distribution at H splits by src(H) = H − 3E (0 below 3E), the copy the
+ * governing snapshot(H − E) was BUILT from under P3-1's "okuma B":
+ *   E:  src 0 → copy(0), 3:1 → the §2 numbers.
+ *   2E: src 0 → copy(0), still 3:1 → key 5 += 79 411, key 6 += 26 470.
+ *   3E: src 0 → copy(0) AGAIN (snapshot(2E) was built at E from copy(0)),
+ *       3:1 → key 5 += 79 410, key 6 += 26 470 (the swapped copy(E) is
+ *       NOT read yet). The snapshot(3E) commit_next(2E) stored was built
+ *       from the swapped copy(E) — same sum, so the gate holds at 4E.
+ *   4E: src = E → the swapped copy(E), 1:3 → key 5 += 26 469, key 6 +=
+ *       79 408 (copy(2E) and copy(3E), written from the unswapped live
+ *       rows, are NOT read).
+ * Retention on the way: copy(0) still exists when 3E runs (P3-2 keeps
+ * three), copy(E) when 4E runs, and copy(0) is gone after 3E.
+ * RED ON THE PRE-P3 TREE: src(3E) was E (H − 2E) — the swapped copy(E)
+ * split 3E 1:3 (key 5 += 26 470), and boundary 2E had already pruned
+ * copy(0).
+ * KILLED BY: src(H) = H − 2E or H − E; pruning copy(H − 3E) before the
+ * distribution; a src that is not 0 below 3E. */
 static int t_source_copy(void) {
     fixture_t fx;
     CHECK(fx_stage1(&fx, "srccopy", SPECD, 3, DELS, 2) == 0, "stage1");
     CHECK(fx_stage2(&fx) == 0, "stage2");
     {
-        split_t s2, s3;
+        split_t s2, s3, s4;
         split_specd(SC_PAYOUT2, D5_AMT, D6_AMT, &s2);
-        split_specd(SC_PAYOUT3, D6_AMT, D5_AMT, &s3);   /* swapped copy */
+        split_specd(SC_PAYOUT3, D5_AMT, D6_AMT, &s3);   /* copy(0) again */
+        split_specd(SC_PAYOUT4, D6_AMT, D5_AMT, &s4);   /* swapped copy */
         CHECK((SC_POOL1 >> 16) == SC_PAYOUT2 &&
               (SC_POOL2 >> 16) == SC_PAYOUT3 &&
+              (SC_POOL3 >> 16) == SC_PAYOUT4 &&
               s2.v0 == SC_V0_2 && s2.v12 == SC_V12_2 &&
               s2.d5 == SC_Q3_2 && s2.d6 == SC_Q1_2 && s2.sum == SC_SUM2 &&
               s3.v0 == SC_V0_3 && s3.v12 == SC_V12_3 &&
-              s3.d5 == SC_Q1_3 && s3.d6 == SC_Q3_3 && s3.sum == SC_SUM3,
+              s3.d5 == SC_Q3_3 && s3.d6 == SC_Q1_3 && s3.sum == SC_SUM3 &&
+              s4.v0 == SC_V0_4 && s4.v12 == SC_V12_4 &&
+              s4.d5 == SC_Q1_4 && s4.d6 == SC_Q3_4 && s4.sum == SC_SUM4,
               "FIXTURE GUARD: the hand constants match the formula");
     }
     OK();
@@ -921,23 +974,41 @@ static int t_source_copy(void) {
           "2E: the pool debited by exactly Σ credited");
     OK();
 
-    /* 3E — src = E */
+    /* 3E — src = 0 (P3-2: H − 3E) */
     CHECK(fx_drive(&fx, 3 * E - 1, ALL3) == 0, "drive to 3E-1");
-    CHECK(copy_of(fx.w, E, 0, 5) == D6_AMT &&
-          copy_of(fx.w, 0, 0, 5) == UINT64_MAX,
-          "RETENTION: copy(E) (swapped) exists when 3E runs; copy(0) is "
-          "gone");
+    CHECK(copy_of(fx.w, 0, 0, 5) == D5_AMT && copy_of(fx.w, E, 0, 5) ==
+              D6_AMT,
+          "RETENTION: copy(0) still exists when 3E runs (three copies "
+          "kept), next to the swapped copy(E)");
     CHECK(fx_drive(&fx, 3 * E, ALL3) == 0, "boundary 3E");
-    CHECK(accrual_of(fx.w, 5) == EXP_D5 + SC_Q3_2 + SC_Q1_3 &&
-          accrual_of(fx.w, 6) == EXP_D6 + SC_Q1_2 + SC_Q3_3,
-          "3E: split by the swapped copy(E) = src(3E), NOT by copy(2E)");
+    CHECK(accrual_of(fx.w, 5) == EXP_D5 + SC_Q3_2 + SC_Q3_3 &&
+          accrual_of(fx.w, 6) == EXP_D6 + SC_Q1_2 + SC_Q1_3,
+          "3E: split by copy(0) = src(3E), NOT by the swapped copy(E)");
     CHECK(accrual_of(fx.w, 0) == EXP_V0 + SC_V0_2 + SC_V0_3 &&
           accrual_of(fx.w, 1) == EXP_V12 + SC_V12_2 + SC_V12_3,
           "3E: the members by the governing snapshot(2E)'s power");
-    CHECK(q1(fx.w, "SELECT reward_pool FROM supply_tracking") ==
-              SC_POOL2 - SC_SUM3,
+    CHECK(q1(fx.w, "SELECT reward_pool FROM supply_tracking") == SC_POOL3,
           "3E: the pool debited by exactly Σ credited");
-    CHECK(supply_closes(fx.w), "the equation closes after 3E");
+    OK();
+
+    /* 4E — src = E */
+    CHECK(fx_drive(&fx, 4 * E - 1, ALL3) == 0, "drive to 4E-1");
+    CHECK(copy_of(fx.w, E, 0, 5) == D6_AMT &&
+          copy_of(fx.w, 0, 0, 5) == UINT64_MAX,
+          "RETENTION: copy(E) (swapped) exists when 4E runs; copy(0) is "
+          "gone (pruned by boundary 3E)");
+    CHECK(fx_drive(&fx, 4 * E, ALL3) == 0, "boundary 4E");
+    CHECK(accrual_of(fx.w, 5) == EXP_D5 + SC_Q3_2 + SC_Q3_3 + SC_Q1_4 &&
+          accrual_of(fx.w, 6) == EXP_D6 + SC_Q1_2 + SC_Q1_3 + SC_Q3_4,
+          "4E: split by the swapped copy(E) = src(4E), NOT by copy(2E) "
+          "or copy(3E)");
+    CHECK(accrual_of(fx.w, 0) == EXP_V0 + SC_V0_2 + SC_V0_3 + SC_V0_4 &&
+          accrual_of(fx.w, 1) == EXP_V12 + SC_V12_2 + SC_V12_3 + SC_V12_4,
+          "4E: the members by the governing snapshot(3E)'s power");
+    CHECK(q1(fx.w, "SELECT reward_pool FROM supply_tracking") ==
+              SC_POOL3 - SC_SUM4,
+          "4E: the pool debited by exactly Σ credited");
+    CHECK(supply_closes(fx.w), "the equation closes after 4E");
     OK();
     fx_close(&fx);
     return 0;
@@ -1058,42 +1129,46 @@ static int t_consistency_gate(void) {
 
 /* Key 6 (1e14 to key 0) FULLY withdraws between blocks E−1 and E — the
  * state a withdrawal executed in block E−1 or E leaves (both run before
- * boundary E; L(h) = 2E for both, nodus_v2_power_exit_boundary).
+ * boundary E, so the stake is out of copy(E); L(h) = 3E for both under
+ * tokenomics-v3 P3-2, nodus_v2_power_exit_boundary).
  *   E:  governing snapshot(0) and copy(0) both carry key 6 → the §2
  *       numbers, key 6 += 26 470 (EXP_D6).
  *   2E: governing snapshot(E) (genesis-built) and copy(0) still carry
- *       key 6 — it is still in the voting power for (E, 2E] → the §3 2E
- *       numbers, key 6 += 26 470 (SC_Q1_2).
- *   3E: governing snapshot(2E) was built at E from the live rows, without
- *       key 6, and so was copy(E) → key 6 += 0. By hand, with pool after
- *       2E = 65 534 012 367 and payout(3E) = 999 969 (§3 derivation):
+ *       key 6 → the §3 2E numbers, key 6 += 26 470 (SC_Q1_2).
+ *   3E: governing snapshot(2E) was built at E by "okuma B" from copy(0),
+ *       WITH key 6, and src(3E) = copy(0) → still paid: the §3 3E numbers
+ *       at 3:1, key 6 += 26 470 (SC_Q1_3), key 5 += 79 410 (SC_Q3_3).
+ *   4E: governing snapshot(3E) was built at 2E from copy(E), WITHOUT key
+ *       6, and src(4E) = E → key 6 += 0. By hand, pool after 3E =
+ *       65 533 012 400, payout(4E) = 999 954 (§3 derivation):
  *       power 1.3e7 / 1e7 / 1e7 (Σ 3.3e7)
- *       share0 = floor(999969 × 13/33) = floor(12 999 597 / 33) = 393 927
- *       share1 = share2 = floor(9 999 690 / 33) = 303 020
- *       base0  = floor(393927 × 10/13) = floor(3 939 270 / 13) = 303 020
- *       gross 90 907, commission 9 090, net 81 817 → key 5 (the only
- *       delegator left) += 81 817, key 0 += 312 110;
- *       Σ 312 110 + 81 817 + 2 × 303 020 = 999 967.
- * The withdrawn coin itself is locked until L(h) + 12E = 14E, pinned in
+ *       share0 = floor(999954 × 13/33) = floor(12 999 402 / 33) = 393 921
+ *       share1 = share2 = floor(9 999 540 / 33) = 303 016
+ *       base0  = floor(393921 × 10/13) = floor(3 939 210 / 13) = 303 016
+ *       gross 90 905, commission 9 090, net 81 815 → key 5 (the only
+ *       delegator left) += 81 815, key 0 += 312 106;
+ *       Σ 312 106 + 81 815 + 2 × 303 016 = 999 953.
+ * The withdrawn coin itself is locked until L(h) + 12E = 15E, pinned in
  * test_v2_native.c §13b — so it earns only while it cannot be spent.
  * RED ON THE PRE-REV2 TREE: the rev-1 min(copy, live) paid key 6 0 at E
- * (live 0) and spread its slice over the others.
+ * (live 0) and spread its slice over the others. RED ON THE PRE-P3 TREE:
+ * 3E read the live-built snapshot(2E) and copy(E) — key 6 += 0 at 3E.
  * KILLED BY: reading the live delegations at H; paying a withdrawn stake
- * past L(h) (at 3E); dropping it before L(h) (at 2E). */
-#define WD_V0_3    312110ULL
-#define WD_V12_3   303020ULL
-#define WD_D5_3    81817ULL
-#define WD_SUM3    999967ULL
+ * past L(h) (at 4E); dropping it before L(h) (at 2E or 3E). */
+#define WD_V0_4    312106ULL
+#define WD_V12_4   303016ULL
+#define WD_D5_4    81815ULL
+#define WD_SUM4    999953ULL
 static int t_withdrawn_mid_epoch(void) {
     fixture_t fx;
     CHECK(fx_stage1(&fx, "withdrawn", SPECD, 3, DELS, 2) == 0, "stage1");
     CHECK(fx_stage2(&fx) == 0, "stage2");
     {
-        split_t s3;
-        split_specd(SC_PAYOUT3, D5_AMT, 0, &s3);
-        CHECK(s3.v0 == WD_V0_3 && s3.v12 == WD_V12_3 && s3.d5 == WD_D5_3 &&
-              s3.d6 == 0 && s3.sum == WD_SUM3,
-              "FIXTURE GUARD: the 3E constants match the formula");
+        split_t s4;
+        split_specd(SC_PAYOUT4, D5_AMT, 0, &s4);
+        CHECK(s4.v0 == WD_V0_4 && s4.v12 == WD_V12_4 && s4.d5 == WD_D5_4 &&
+              s4.d6 == 0 && s4.sum == WD_SUM4,
+              "FIXTURE GUARD: the 4E constants match the formula");
     }
     CHECK(fx_drive(&fx, E - 1, ALL3) == 0, "drive to E-1");
     CHECK(copy_of(fx.w, 0, 0, 6) == D6_AMT, "key 6 is in copy(0)");
@@ -1122,16 +1197,26 @@ static int t_withdrawn_mid_epoch(void) {
     OK();
 
     CHECK(fx_drive(&fx, 3 * E, ALL3) == 0, "boundary 3E");
-    CHECK(accrual_of(fx.w, 6) == EXP_D6 + SC_Q1_2,
-          "3E: out of the voting power since 2E — no longer paid");
-    CHECK(accrual_of(fx.w, 5) == EXP_D5 + SC_Q3_2 + WD_D5_3 &&
-          accrual_of(fx.w, 0) == EXP_V0 + SC_V0_2 + WD_V0_3 &&
-          accrual_of(fx.w, 1) == EXP_V12 + SC_V12_2 + WD_V12_3,
-          "3E: the governing snapshot(2E) without it, by hand");
-    CHECK(q1(fx.w, "SELECT reward_pool FROM supply_tracking") ==
-              SC_POOL2 - WD_SUM3,
+    CHECK(accrual_of(fx.w, 6) == EXP_D6 + SC_Q1_2 + SC_Q1_3 &&
+          accrual_of(fx.w, 5) == EXP_D5 + SC_Q3_2 + SC_Q3_3 &&
+          accrual_of(fx.w, 0) == EXP_V0 + SC_V0_2 + SC_V0_3,
+          "3E: snapshot(2E) was built from copy(0) under okuma B — the "
+          "withdrawn stake still governs (2E, 3E] and is still paid");
+    CHECK(q1(fx.w, "SELECT reward_pool FROM supply_tracking") == SC_POOL3,
           "3E: the pool debited by Σ credited");
-    CHECK(supply_closes(fx.w), "the equation closes after 3E");
+    OK();
+
+    CHECK(fx_drive(&fx, 4 * E, ALL3) == 0, "boundary 4E");
+    CHECK(accrual_of(fx.w, 6) == EXP_D6 + SC_Q1_2 + SC_Q1_3,
+          "4E: out of the voting power since L = 3E — no longer paid");
+    CHECK(accrual_of(fx.w, 5) == EXP_D5 + SC_Q3_2 + SC_Q3_3 + WD_D5_4 &&
+          accrual_of(fx.w, 0) == EXP_V0 + SC_V0_2 + SC_V0_3 + WD_V0_4 &&
+          accrual_of(fx.w, 1) == EXP_V12 + SC_V12_2 + SC_V12_3 + WD_V12_4,
+          "4E: the governing snapshot(3E) without it, by hand");
+    CHECK(q1(fx.w, "SELECT reward_pool FROM supply_tracking") ==
+              SC_POOL3 - WD_SUM4,
+          "4E: the pool debited by Σ credited");
+    CHECK(supply_closes(fx.w), "the equation closes after 4E");
     OK();
     fx_close(&fx);
     return 0;
@@ -1151,7 +1236,8 @@ static int t_withdrawn_mid_epoch(void) {
  * the coin enters from outside (genesis/current supply += 2e14, exactly
  * seed-then-spend of a new coin). By hand: the changes stand for
  * transactions in block E, which run before boundary E (h = E is itself
- * a boundary): nb(E) = E, L(E) = 2E, release unlock = 2E + 12E = 14E.
+ * a boundary): nb(E) = E, L(E) = 3E (tokenomics-v3 P3-2, "okuma B"),
+ * release unlock = 3E + 12E = 15E.
  *
  * WHY THE CHANGES SIT RIGHT BEFORE A BOUNDARY BLOCK, honestly labelled:
  * the fixture lane cannot sign envelopes, so the moves are written by
@@ -1165,50 +1251,55 @@ static int t_withdrawn_mid_epoch(void) {
  *      1e14) → the §2 numbers: key 5 += 79 412.
  *   2E (governing snapshot(E) — built at GENESIS, before both moves —
  *      source copy(0)) → the §3 2E numbers: key 5 += 79 411 on 3e14.
- *      The withdrawn 1e14 is still paid (the stake is in the set that
- *      governs (E, 2E]: it leaves the voting power only at L = 2E); the
- *      2e14 top-up is NOT paid yet.
- *   3E (governing snapshot(2E), built at boundary E from the live rows
- *      AFTER both moves: key 0 total 1e15 + 4e14 + 1e14 = 1.5e15; source
- *      copy(E): key 5 = 4e14, key 6 = 1e14), payout 999 969 (§3):
+ *      The withdrawn 1e14 is still paid; the 2e14 top-up is NOT paid yet.
+ *   3E (tokenomics-v3 P3-2: governing snapshot(2E), built at boundary E
+ *      by "okuma B" from copy(0) — BEFORE both moves; source copy(0))
+ *      → the §3 3E numbers at 3:1: key 5 += 79 410 on 3e14. The
+ *      withdrawn 1e14 is still paid (it leaves the voting power at L =
+ *      3E); the top-up is still not.
+ *   4E (governing snapshot(3E), built at boundary 2E from copy(E) — AFTER
+ *      both moves: key 0 total 1e15 + 4e14 + 1e14 = 1.5e15; source
+ *      copy(E): key 5 = 4e14, key 6 = 1e14), payout 999 954 (§3):
  *      power 1.5e7 / 1e7 / 1e7 (Σ 3.5e7)
- *      share0 = floor(999969 × 15/35) = floor(2 999 907 / 7) = 428 558
- *      share1 = share2 = floor(1 999 938 / 7) = 285 705
- *      base0  = floor(428558 × 2/3) = floor(857 116 / 3) = 285 705
- *      gross 142 853, commission 14 285, net 128 568
- *      → key 5 += floor(128568 × 4/5) = floor(514 272 / 5) = 102 854,
- *        key 6 += floor(128 568 / 5) = 25 713, key 0 += 299 990;
- *        Σ 299 990 + 102 854 + 25 713 + 2 × 285 705 = 999 967.
- *      The top-up is paid from 3E — the first epoch whose governing
- *      snapshot was built after it — and the withdrawn 1e14 no longer.
+ *      share0 = floor(999954 × 15/35) = floor(2 999 862 / 7) = 428 551
+ *      share1 = share2 = floor(1 999 908 / 7) = 285 701
+ *      base0  = floor(428551 × 2/3) = floor(857 102 / 3) = 285 700
+ *      gross 142 851, commission 14 285, net 128 566
+ *      → key 5 += floor(128566 × 4/5) = floor(514 264 / 5) = 102 852,
+ *        key 6 += floor(128 566 / 5) = 25 713, key 0 += 299 985;
+ *        Σ 299 985 + 102 852 + 25 713 + 2 × 285 701 = 999 952.
+ *      The top-up is paid from 4E — the first epoch whose governing
+ *      snapshot was built from a copy taken after it — and the withdrawn
+ *      1e14 no longer.
  *
  * LOCKED CAPITAL per epoch, the minimum over the epoch of key 5's
  * bonded amount + its still-locked release (the release is locked until
- * 14E, beyond every boundary here):
+ * 15E, beyond every boundary here):
  *   (0, E]:   3e14 all epoch (the moves land in its last block and only
  *             re-label 1e14 from bonded to locked)       → earned on 3e14
  *   (E, 2E]:  4e14 bonded + 1e14 locked = 5e14           → earned on 3e14
- *   (2E, 3E]: 4e14 bonded + 1e14 locked = 5e14           → earned on 4e14
+ *   (2E, 3E]: 4e14 bonded + 1e14 locked = 5e14           → earned on 3e14
+ *   (3E, 4E]: 4e14 bonded + 1e14 locked = 5e14           → earned on 4e14
  * At no boundary does key 5 earn on more than it had locked; checked
  * below as increment <= split_specd(payout, locked, 1e14).d5.
  *
  * RED ON THE PRE-REV2 TREE: the rev-1 split read copy(H−E) and
  * min(copy, live): at 2E key 5 counted min(copy(E) 4e14, live 4e14) =
- * 4e14 — the top-up paid an epoch early, and the member's weight moved
- * off the governing power; and the release was unlock 0 (spendable while
- * it earned).
+ * 4e14 — the top-up paid an epoch early; and the release was unlock 0.
+ * RED ON THE PRE-P3 TREE: snapshot(2E) was built from the LIVE rows at E
+ * (after the moves), so 3E paid key 5 on 4e14 (102 854) and the release
+ * unlock was 14E.
  * KILLED BY: a distribution that reads the LIVE delegations (2E would
- * pay 4e14); one that reads copy(H−E) or copy(H) instead of src(H) (the
- * consistency gate faults 2E: copy(E) sums 5e14 against snapshot(E)'s
- * 4e14, and copy(2E) does not exist yet); one that keeps paying the
- * withdrawn part after L(h) (3E would pay 5e14). */
+ * pay 4e14); a selector that ranks the live stake (3E pays 4e14); one
+ * that reads a copy other than src(H) (the consistency gate faults); one
+ * that keeps paying the withdrawn part after L(h) (4E would pay 5e14). */
 #define PW_W       100000000000000ULL   /* the partial withdrawal, 1M */
 #define PW_T       200000000000000ULL   /* the fresh top-up, 2M       */
-#define PW_V0_3    299990ULL
-#define PW_V12_3   285705ULL
-#define PW_D5_3    102854ULL
-#define PW_D6_3    25713ULL
-#define PW_SUM3    999967ULL
+#define PW_V0_4    299985ULL
+#define PW_V12_4   285701ULL
+#define PW_D5_4    102852ULL
+#define PW_D6_4    25713ULL
+#define PW_SUM4    999952ULL
 
 /* Rewrite one delegation amount and move both of its validator's
  * delegated totals by `delta` (signed), by hand. @return 0 / -1. */
@@ -1243,19 +1334,19 @@ static int t_partial_withdraw_topup(void) {
     CHECK(fx_stage1(&fx, "pwtopup", SPECD, 3, DELS, 2) == 0, "stage1");
     CHECK(fx_stage2(&fx) == 0, "stage2");
     const uint64_t rel_unlock =
-        (2 + (uint64_t)DNAC_UNDELEGATE_LOCK_EPOCHS) * E;   /* L(E) + 12E */
+        (3 + (uint64_t)DNAC_UNDELEGATE_LOCK_EPOCHS) * E;   /* L(E) + 12E */
     {
-        split_t s3;
-        split_specd(SC_PAYOUT3, D5_AMT - PW_W + PW_T, D6_AMT, &s3);
+        split_t s4;
+        split_specd(SC_PAYOUT4, D5_AMT - PW_W + PW_T, D6_AMT, &s4);
         CHECK(D5_AMT - PW_W + PW_T == 400000000000000ULL &&
-              s3.v0 == PW_V0_3 && s3.v12 == PW_V12_3 &&
-              s3.d5 == PW_D5_3 && s3.d6 == PW_D6_3 && s3.sum == PW_SUM3,
-              "FIXTURE GUARD: the 3E constants match the formula");
+              s4.v0 == PW_V0_4 && s4.v12 == PW_V12_4 &&
+              s4.d5 == PW_D5_4 && s4.d6 == PW_D6_4 && s4.sum == PW_SUM4,
+              "FIXTURE GUARD: the 4E constants match the formula");
         uint64_t L = 0;
-        CHECK(nodus_v2_power_exit_boundary(E, &L) == 0 && L == 2 * E &&
-              rel_unlock > 3 * E,
-              "FIXTURE GUARD: L(E) = 2E, and the release stays locked "
-              "past every boundary this case drives");
+        CHECK(nodus_v2_power_exit_boundary(E, &L) == 0 && L == 3 * E &&
+              rel_unlock > 4 * E,
+              "FIXTURE GUARD: L(E) = 3E (P3-2), and the release stays "
+              "locked past every boundary this case drives");
     }
     OK();
 
@@ -1310,7 +1401,7 @@ static int t_partial_withdraw_topup(void) {
     const uint64_t k5_2e = accrual_of(fx.w, 5) - k5_e;
     CHECK(k5_2e == SC_Q3_2,
           "2E: paid on 3e14 — the withdrawn 1e14 still counts (it leaves "
-          "the power at L = 2E), the 2e14 top-up does not yet");
+          "the power at L = 3E), the 2e14 top-up does not yet");
     CHECK(accrual_of(fx.w, 0) == EXP_V0 + SC_V0_2 &&
           q1(fx.w, "SELECT reward_pool FROM supply_tracking") == SC_POOL2,
           "2E: the members by snapshot(E)'s power, pool debited by Σ");
@@ -1322,26 +1413,44 @@ static int t_partial_withdraw_topup(void) {
     }
     OK();
 
-    /* 3E */
+    /* 3E — P3-2: snapshot(2E) was built from copy(0), src(3E) = copy(0) */
     CHECK(fx_drive(&fx, 3 * E, ALL3) == 0, "boundary 3E");
     const uint64_t k5_3e = accrual_of(fx.w, 5) - k5_e - k5_2e;
-    CHECK(k5_3e == PW_D5_3,
-          "3E: paid on 4e14 — the top-up from the first epoch whose "
-          "governing snapshot was built after it, the withdrawn 1e14 no "
-          "longer");
-    CHECK(accrual_of(fx.w, 6) == EXP_D6 + SC_Q1_2 + PW_D6_3 &&
-          accrual_of(fx.w, 0) == EXP_V0 + SC_V0_2 + PW_V0_3 &&
-          accrual_of(fx.w, 1) == EXP_V12 + SC_V12_2 + PW_V12_3 &&
-          q1(fx.w, "SELECT reward_pool FROM supply_tracking") ==
-              SC_POOL2 - PW_SUM3,
-          "3E: the hand-derived split on the governing snapshot(2E)");
+    CHECK(k5_3e == SC_Q3_3,
+          "3E: paid on 3e14 — the withdrawn 1e14 still counts (it leaves "
+          "the power at L = 3E), the 2e14 top-up does not yet");
+    CHECK(accrual_of(fx.w, 6) == EXP_D6 + SC_Q1_2 + SC_Q1_3 &&
+          accrual_of(fx.w, 0) == EXP_V0 + SC_V0_2 + SC_V0_3 &&
+          q1(fx.w, "SELECT reward_pool FROM supply_tracking") == SC_POOL3,
+          "3E: the §3 3E numbers on the governing snapshot(2E)");
     {
         split_t cap;
         split_specd(SC_PAYOUT3, D5_AMT - PW_W + PW_T + PW_W, D6_AMT, &cap);
         CHECK(k5_3e <= cap.d5,
               "3E: earned <= on the capital locked (4e14 + 1e14)");
     }
-    CHECK(supply_closes(fx.w), "the equation closes after 3E");
+    OK();
+
+    /* 4E */
+    CHECK(fx_drive(&fx, 4 * E, ALL3) == 0, "boundary 4E");
+    const uint64_t k5_4e = accrual_of(fx.w, 5) - k5_e - k5_2e - k5_3e;
+    CHECK(k5_4e == PW_D5_4,
+          "4E: paid on 4e14 — the top-up from the first epoch whose "
+          "governing snapshot was built from a copy taken after it, the "
+          "withdrawn 1e14 no longer");
+    CHECK(accrual_of(fx.w, 6) == EXP_D6 + SC_Q1_2 + SC_Q1_3 + PW_D6_4 &&
+          accrual_of(fx.w, 0) == EXP_V0 + SC_V0_2 + SC_V0_3 + PW_V0_4 &&
+          accrual_of(fx.w, 1) == EXP_V12 + SC_V12_2 + SC_V12_3 + PW_V12_4 &&
+          q1(fx.w, "SELECT reward_pool FROM supply_tracking") ==
+              SC_POOL3 - PW_SUM4,
+          "4E: the hand-derived split on the governing snapshot(3E)");
+    {
+        split_t cap;
+        split_specd(SC_PAYOUT4, D5_AMT - PW_W + PW_T + PW_W, D6_AMT, &cap);
+        CHECK(k5_4e <= cap.d5,
+              "4E: earned <= on the capital locked (4e14 + 1e14)");
+    }
+    CHECK(supply_closes(fx.w), "the equation closes after 4E");
     OK();
     fx_close(&fx);
     return 0;
@@ -1418,6 +1527,181 @@ static int t_econ_params_decimal_unit(void) {
           "restored, the band loads again — the refusal was the value's");
     OK();
     fx_close(&fx);
+    return 0;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * §3f A COMMISSION INCREASE WAITS TWO EPOCHS (P3 fix round; decision file
+ * §3 2026-09-24 "komisyon artışı 2 epoch sonra") — engine
+ * ════════════════════════════════════════════════════════════════════ */
+
+/* The split of split_specd with key 0's commission as a parameter. */
+static void split_specd_c(uint64_t payout, uint64_t a5, uint64_t a6,
+                          uint64_t comm_bps, split_t *o) {
+    const uint64_t t0 = BOND_BASE + a5 + a6;
+    const uint64_t p0 = t0 / (uint64_t)DNAC_DECIMAL_UNIT;
+    const uint64_t p1 = BOND_BASE / (uint64_t)DNAC_DECIMAL_UNIT;
+    const uint64_t sp = p0 + 2 * p1;
+    const uint64_t s0 = mdiv(payout, p0, sp);
+    const uint64_t s1 = mdiv(payout, p1, sp);
+    const uint64_t base = mdiv(s0, BOND_BASE, t0);
+    const uint64_t gross = s0 - base;
+    const uint64_t com = mdiv(gross, comm_bps, 10000);
+    const uint64_t net = gross - com;
+    o->v0  = base + com;
+    o->v12 = s1;
+    o->d5  = (a5 + a6) ? mdiv(net, a5, a5 + a6) : 0;
+    o->d6  = (a5 + a6) ? mdiv(net, a6, a5 + a6) : 0;
+    o->sum = o->v0 + 2 * o->v12 + o->d5 + o->d6;
+}
+
+/* A pending increase written by hand: exactly the two columns
+ * rtn_vupd_exec's increase arm writes (pending rate + effective height);
+ * the current rate does not move. */
+static int pending_by_hand(fixture_t *fx, int key, uint16_t bps,
+                           uint64_t peff) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(fx->w->db,
+            "UPDATE validators SET pending_commission_bps = ?1, "
+            "pending_effective_block = ?2 WHERE pubkey = ?3",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int(st, 1, (int)bps);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)peff);
+    sqlite3_bind_blob(st, 3, g_pk[key], DNAC_PUBKEY_SIZE, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return (rc == SQLITE_DONE && sqlite3_changes(fx->w->db) == 1) ? 0 : -1;
+}
+
+/* The LIVE commission of `key`. */
+static uint64_t live_comm(fixture_t *fx, int key) {
+    dnac_validator_record_t v;
+    if (nodus_validator_get(fx->w, g_pk[key], &v) != 0) return UINT64_MAX;
+    return v.commission_bps;
+}
+
+/* The commission the snapshot of `epoch` froze for `key`; UINT64_MAX when
+ * the snapshot or the entry is absent. */
+static uint64_t snap_comm(fixture_t *fx, uint64_t epoch, int key) {
+    dna_vset_snapshot_t *s = NULL;
+    if (nodus_witness_vset_get(fx->w, epoch, &s, NULL) != 0 || !s)
+        return UINT64_MAX;
+    uint64_t c = UINT64_MAX;
+    for (uint16_t i = 0; i < s->active_count; i++)
+        if (memcmp(s->entries[i].pubkey, g_pk[key], DNAC_PUBKEY_SIZE) == 0)
+            c = s->entries[i].commission_bps;
+    dna_vset_free(&s);
+    return c;
+}
+
+/* THE WORKED EXAMPLE, under P3-1 "okuma B" (B = E):
+ *   Key 0 (10%, delegators key 5 = 3e14 and key 6 = 1e14) raises its
+ *   commission to 20% IN boundary block B — the by-hand write sits right
+ *   before block E, which is the state an envelope in block E leaves,
+ *   since envelopes apply before the boundary (nodus_witness_v2_apply.c
+ *   phase 6e). Key 5 reacts by leaving: a full UNDELEGATE right before
+ *   block 2E. For every copy this is the same as leaving at B+1: copy(E)
+ *   (written at boundary E) holds it, copy(2E) does not.
+ *   A rate a boundary X activates (step 1) is frozen by step 5's
+ *   commit_next(X) into snapshot(X+E), governs (X+E, X+2E] and is PAID
+ *   at X+2E by copy(X−E)'s weights (src = H−3E):
+ *     writer H+2E (TODAY): peff = 3E → activates at 3E → snapshot(4E)
+ *       carries 20% → first paid at 5E from copy(2E) — key 5 is NOT in
+ *       it. At 4E, snapshot(3E) (built at 2E) still carries 10% and pays
+ *       key 5 from copy(E) at the OLD rate.
+ *     writer H+E (the P3 tree): peff = 2E → activates at 2E → snapshot(3E)
+ *       carries 20% → paid at 4E from copy(E) — which still holds key 5:
+ *       key 5 pays the rate it left over. That is the finding the
+ *       decision cites; the second run below reproduces it.
+ *   A MID-EPOCH increase: key 1 (0%) gets pending 5% with peff = 3E + 1,
+ *   the value the writer stores for H = E + 1 (written by hand at E−1 —
+ *   the activator reads only the stored height, and a by-hand write can
+ *   only land before a boundary block). It must NOT activate at 3E and
+ *   must activate at 4E (the first boundary >= 3E + 1).
+ *   A DECREASE is immediate — pinned at block level in test_v2_native.c
+ *   §13 (VALIDATOR_UPDATE P1), not repeated here.
+ * RED ON THE P3 TREE: the writer stored H+E (test_v2_native.c H4); run 1
+ * with that peff is run 2, where key 5 IS charged 20% at 4E.
+ * KILLED BY: an activator that fires before its stored height; a
+ * snapshot that takes the commission from anywhere but the live row at
+ * its build; a distribution reading a copy other than src(H). */
+static int notice_run(const char *tag, uint64_t peff0, uint64_t want_c3,
+                      int full) {
+    fixture_t fx;
+    CHECK(fx_stage1(&fx, tag, SPECD, 3, DELS, 2) == 0, "stage1");
+    CHECK(fx_stage2(&fx) == 0, "stage2");
+    CHECK(fx_drive(&fx, E - 1, ALL3) == 0, "drive to E-1");
+    CHECK(pending_by_hand(&fx, 0, 2000, peff0) == 0,
+          "key 0's increase in boundary block E");
+    CHECK(pending_by_hand(&fx, 1, 500, 3 * E + 1) == 0,
+          "key 1's mid-epoch increase (stored height 3E+1)");
+    CHECK(fx_drive(&fx, 2 * E - 1, ALL3) == 0, "drive to 2E-1");
+    CHECK(live_comm(&fx, 0) == 1000, "no activation at E");
+    CHECK(copy_of(fx.w, E, 0, 5) == D5_AMT, "key 5 is in copy(E)");
+    CHECK(undelegate_by_hand(&fx, 5, 0, D5_AMT, 0xC5) == 0,
+          "key 5 leaves in reaction");
+    OK();
+    CHECK(fx_drive(&fx, 3 * E, ALL3) == 0, "drive to 3E");
+    CHECK(copy_of(fx.w, 2 * E, 0, 5) == UINT64_MAX,
+          "key 5 is not in copy(2E)");
+    CHECK(snap_comm(&fx, 3 * E, 0) == want_c3,
+          "snapshot(3E), built at 2E, carries the rate active at 2E");
+    CHECK(live_comm(&fx, 0) == 2000, "the increase is live by 3E");
+    CHECK(live_comm(&fx, 1) == 0 && snap_comm(&fx, 4 * E, 1) == 0,
+          "the mid-epoch increase (peff 3E+1) has NOT activated at 3E");
+    OK();
+
+    /* boundary 4E: governing snapshot(3E), source copy(E) — key 5 in */
+    const uint64_t pool4 = q1(fx.w, "SELECT reward_pool FROM supply_tracking");
+    const uint64_t pay4 = pool4 >> NODUS_V2_GEN_REWARD_DIVISOR_LOG2;
+    const uint64_t d5a = accrual_of(fx.w, 5), d6a = accrual_of(fx.w, 6);
+    split_t s4, s4_other;
+    split_specd_c(pay4, D5_AMT, D6_AMT, want_c3, &s4);
+    split_specd_c(pay4, D5_AMT, D6_AMT, want_c3 == 1000 ? 2000 : 1000,
+                  &s4_other);
+    CHECK(s4.d5 != s4_other.d5,
+          "FIXTURE GUARD: 10% and 20% give key 5 different amounts");
+    CHECK(fx_drive(&fx, 4 * E, ALL3) == 0, "boundary 4E");
+    CHECK(accrual_of(fx.w, 5) - d5a == s4.d5 &&
+          accrual_of(fx.w, 6) - d6a == s4.d6,
+          "4E pays key 5 and key 6 at snapshot(3E)'s rate on copy(E)");
+    CHECK(live_comm(&fx, 1) == 500,
+          "the mid-epoch increase activates at 4E, the first boundary >= "
+          "3E+1");
+    CHECK(supply_closes(fx.w), "the equation closes at 4E");
+    OK();
+    if (!full) { fx_close(&fx); return 0; }
+
+    /* boundary 5E: governing snapshot(4E), built at 3E from copy(2E) —
+     * the 20% rate, and key 5 absent */
+    CHECK(snap_comm(&fx, 4 * E, 0) == 2000,
+          "snapshot(4E), built at 3E, carries the new rate");
+    CHECK(snap_comm(&fx, 5 * E, 1) == 500,
+          "snapshot(5E), built at 4E, carries key 1's new rate");
+    const uint64_t pool5 = q1(fx.w, "SELECT reward_pool FROM supply_tracking");
+    const uint64_t pay5 = pool5 >> NODUS_V2_GEN_REWARD_DIVISOR_LOG2;
+    const uint64_t d5b = accrual_of(fx.w, 5), d6b = accrual_of(fx.w, 6);
+    split_t s5;
+    split_specd_c(pay5, 0, D6_AMT, 2000, &s5);
+    CHECK(fx_drive(&fx, 5 * E, ALL3) == 0, "boundary 5E");
+    CHECK(accrual_of(fx.w, 5) == d5b,
+          "5E: the new rate is first paid from copy(2E) — key 5, who left "
+          "in reaction, is never charged it");
+    CHECK(accrual_of(fx.w, 6) - d6b == s5.d6,
+          "5E: key 6, who stayed, pays the new rate");
+    CHECK(supply_closes(fx.w), "the equation closes at 5E");
+    OK();
+    fx_close(&fx);
+    return 0;
+}
+
+static int t_commission_notice(void) {
+    /* run 1 — TODAY's writer: peff = H + 2E = 3E for H = E */
+    if (notice_run("notice2", 3 * E, 1000, 1) != 0) return 1;
+    /* run 2 — the P3 tree's writer, peff = H + E = 2E: the defect the
+     * decision cites, reproduced (key 5 charged 20% at 4E) */
+    if (notice_run("notice1", 2 * E, 2000, 0) != 0) return 1;
     return 0;
 }
 
@@ -1768,6 +2052,8 @@ int main(void) {
           t_partial_withdraw_topup },
         { "§3e decimal_unit build-identity refusal",
           t_econ_params_decimal_unit },
+        { "§3f a commission increase waits two epochs (okuma B)",
+          t_commission_notice },
         { "§4 a bar miss forfeits the whole share", t_bar_miss },
         { "§5 payday", t_payday },
         { "§5 the payout interval reader", t_payout_interval },

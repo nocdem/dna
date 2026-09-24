@@ -9,6 +9,20 @@
  *       excludes a fresh validator.
  *   (4) Status filter: RETIRING / UNSTAKED / AUTO_RETIRED excluded.
  *   (5) Fewer eligible than requested: returns what exists.
+ *   (6) tokenomics-v3 P3-1 "OKUMA B" — the post-bootstrap selection ranks
+ *       by the FROZEN copy(e_start − 2E), not the live stake; status stays
+ *       live; a candidate absent from the copy is not seated; the emitted
+ *       total_stake / self_stake are the frozen values, commission the
+ *       live one.
+ *
+ * tokenomics-v3 P3-1 FIXTURE CHANGE (every post-bootstrap scenario): the
+ * selection now reads copy(e_start − 2E) (nodus_committee_compute_for_
+ * epoch), so the fixture writes that copy from the live rows after every
+ * stake-changing seed step (refresh_copy). Scenarios 1-5 keep their
+ * pre-P3 expectations: with the copy equal to the live rows, "okuma B"
+ * ranks exactly as the live read did — which is itself part of what they
+ * now pin. Scenario B3 (e_start = E+1, lookback 0) reads copy(0), written
+ * from the genesis rows as the engine genesis does.
  */
 
 #define NODUS_WITNESS_INTERNAL_API 1
@@ -17,6 +31,7 @@
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_validator.h"
 #include "witness/nodus_witness_committee.h"
+#include "witness/nodus_witness_v2_econ.h"   /* P3-1: the frozen copy */
 
 #include "dnac/dnac.h"
 #include "dnac/validator.h"
@@ -140,6 +155,43 @@ static void update_status(nodus_witness_t *w, const uint8_t *pubkey,
     sqlite3_finalize(stmt);
 }
 
+/* tokenomics-v3 P3-1: (re)write copy(epoch) from the LIVE validators /
+ * delegations rows — the frozen copy the post-bootstrap selection ranks
+ * by. The writer is a strict INSERT, so the epoch's old rows go first. */
+static void refresh_copy(nodus_witness_t *w, uint64_t epoch) {
+    sqlite3_stmt *stmt = NULL;
+    CHECK_EQ(sqlite3_prepare_v2(w->db,
+        "DELETE FROM v2_balance_copy WHERE epoch_start = ?",
+        -1, &stmt, NULL), SQLITE_OK);
+    sqlite3_bind_int64(stmt, 1, (int64_t)epoch);
+    CHECK_EQ(sqlite3_step(stmt), SQLITE_DONE);
+    sqlite3_finalize(stmt);
+    CHECK_EQ(nodus_witness_v2_balance_copy_write(w, epoch), 0);
+}
+
+/* tokenomics-v3 P3-1: overwrite ONE copy row's amount (the frozen side
+ * only — the live row is untouched), so a test can make the two
+ * disagree. owner == validator for the self row. */
+static void set_copy_amount(nodus_witness_t *w, uint64_t epoch,
+                            const uint8_t *vpk, const uint8_t *opk,
+                            uint64_t amount) {
+    uint8_t vfp[64], ofp[64];
+    qgp_sha3_512(vpk, DNAC_PUBKEY_SIZE, vfp);
+    qgp_sha3_512(opk, DNAC_PUBKEY_SIZE, ofp);
+    sqlite3_stmt *stmt = NULL;
+    CHECK_EQ(sqlite3_prepare_v2(w->db,
+        "UPDATE v2_balance_copy SET amount = ? WHERE epoch_start = ? "
+        "AND validator_fp = ? AND owner_fp = ?", -1, &stmt, NULL),
+        SQLITE_OK);
+    sqlite3_bind_int64(stmt, 1, (int64_t)amount);
+    sqlite3_bind_int64(stmt, 2, (int64_t)epoch);
+    sqlite3_bind_blob (stmt, 3, vfp, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_blob (stmt, 4, ofp, 64, SQLITE_TRANSIENT);
+    CHECK_EQ(sqlite3_step(stmt), SQLITE_DONE);
+    CHECK_EQ(sqlite3_changes(w->db), 1);
+    sqlite3_finalize(stmt);
+}
+
 /* Find a pubkey in an out[] array; returns index or -1. */
 static int find_pubkey(const nodus_committee_member_t *out, int count,
                         uint8_t pub_fill) {
@@ -187,6 +239,9 @@ int main(void) {
     CHECK_EQ(nodus_validator_insert(&w, &v3), 0);
     CHECK_EQ(nodus_validator_insert(&w, &v4), 0);
     CHECK_EQ(nodus_validator_insert(&w, &v5), 0);
+    /* P3-1: the set for e_start is ranked by copy(e_start − 2E). */
+    const uint64_t copy_e = e_start - 2 * (uint64_t)DNAC_EPOCH_LENGTH;
+    refresh_copy(&w, copy_e);
 
     nodus_committee_member_t out[DNAC_COMMITTEE_SIZE];
     int count = 0;
@@ -209,6 +264,7 @@ int main(void) {
     init_validator(&vt_b, 0xBB, 1, 1000, 0, DNAC_VALIDATOR_ACTIVE);
     CHECK_EQ(nodus_validator_insert(&w, &vt_a), 0);
     CHECK_EQ(nodus_validator_insert(&w, &vt_b), 0);
+    refresh_copy(&w, copy_e);
 
     CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, out, 2, &count), 0);
     CHECK_EQ(count, 2);
@@ -277,6 +333,7 @@ int main(void) {
                     e_start - (uint64_t)DNAC_MIN_TENURE_BLOCKS + 1,
                     10000, 0, DNAC_VALIDATOR_ACTIVE);
     CHECK_EQ(nodus_validator_insert(&w, &v_fresh), 0);
+    refresh_copy(&w, copy_e);
 
     CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, out,
                                                  DNAC_COMMITTEE_SIZE, &count), 0);
@@ -329,6 +386,107 @@ int main(void) {
     CHECK(find_pubkey(out, count, 0x66) == 0);
     CHECK(find_pubkey(out, count, 0x55) == 1);
     CHECK(find_pubkey(out, count, 0x44) == 2);
+
+    /* ── Scenario 6: tokenomics-v3 P3-1 "okuma B" ──────────────────
+     * RED ON THE PRE-P3 TREE: (6a) — the pre-P3 selector ranked by the
+     * LIVE self_stake + external_delegated (nodus_validator_top_n
+     * `ORDER BY (self_stake + external_delegated) DESC`), so it returns
+     * v_fresh(10000), v5(500), v4(400) and the first CHECK below fails;
+     * (6c) and (6d) likewise (the delegator copy row and the deleted
+     * copy row are invisible to a live read).
+     * KILLED BY: ranking on anything but copy(e_start − 2E); reading
+     * status from the copy (6b); seating a candidate the copy does not
+     * hold (6d); emitting the live stake instead of the frozen one.
+     * Hand-derived numbers: live stakes v4 400, v5 500, v_fresh 10000
+     * (scenario 5's survivors; v1 RETIRING, v2 UNSTAKED, v3
+     * AUTO_RETIRED); copy rows as refreshed after v_fresh's insert. */
+    printf("  (6) P3-1 okuma B — frozen copy ranks, live status filters\n");
+    /* (6a) frozen v4 = 20000 (live stays 400): v4 > v_fresh > v5. */
+    set_copy_amount(&w, copy_e, v4.pubkey, v4.pubkey, 20000);
+    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, out,
+                                                 DNAC_COMMITTEE_SIZE, &count), 0);
+    CHECK_EQ(count, 3);
+    CHECK(find_pubkey(out, count, 0x44) == 0);
+    CHECK(find_pubkey(out, count, 0x66) == 1);
+    CHECK(find_pubkey(out, count, 0x55) == 2);
+    CHECK_EQ(out[0].total_stake, 20000);        /* frozen, not live 400 */
+    CHECK_EQ(out[0].self_stake, 20000);
+    CHECK_EQ(out[0].commission_bps, 1000);      /* live row's           */
+
+    /* (6b) status is LIVE: v3 is AUTO_RETIRED live; a huge frozen row
+     * must not bring it back. */
+    set_copy_amount(&w, copy_e, v3.pubkey, v3.pubkey, 99999999);
+    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, out,
+                                                 DNAC_COMMITTEE_SIZE, &count), 0);
+    CHECK(find_pubkey(out, count, 0x33) < 0);
+    CHECK_EQ(count, 3);
+
+    /* (6c) a delegator row counts: v5 frozen = 500 own + 50000 delegated
+     * = 50500 -> first; self_bond stays its own row, 500. */
+    {
+        uint8_t dpk[DNAC_PUBKEY_SIZE], vfp[64], ofp[64];
+        memset(dpk, 0xD1, sizeof(dpk));
+        qgp_sha3_512(v5.pubkey, DNAC_PUBKEY_SIZE, vfp);
+        qgp_sha3_512(dpk, DNAC_PUBKEY_SIZE, ofp);
+        sqlite3_stmt *stmt = NULL;
+        CHECK_EQ(sqlite3_prepare_v2(w.db,
+            "INSERT INTO v2_balance_copy (epoch_start, validator_fp, "
+            "owner_fp, amount) VALUES (?, ?, ?, 50000)", -1, &stmt, NULL),
+            SQLITE_OK);
+        sqlite3_bind_int64(stmt, 1, (int64_t)copy_e);
+        sqlite3_bind_blob (stmt, 2, vfp, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_blob (stmt, 3, ofp, 64, SQLITE_TRANSIENT);
+        CHECK_EQ(sqlite3_step(stmt), SQLITE_DONE);
+        sqlite3_finalize(stmt);
+    }
+    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, out,
+                                                 DNAC_COMMITTEE_SIZE, &count), 0);
+    CHECK_EQ(count, 3);
+    CHECK(find_pubkey(out, count, 0x55) == 0);
+    CHECK(find_pubkey(out, count, 0x44) == 1);
+    CHECK(find_pubkey(out, count, 0x66) == 2);
+    CHECK_EQ(out[0].total_stake, 50500);
+    CHECK_EQ(out[0].self_stake, 500);
+
+    /* (6d) absent from the copy = frozen 0 = NOT seated, although v_fresh
+     * is live ACTIVE and tenured with a live 10000 bond. */
+    {
+        uint8_t vfp[64];
+        qgp_sha3_512(v_fresh.pubkey, DNAC_PUBKEY_SIZE, vfp);
+        sqlite3_stmt *stmt = NULL;
+        CHECK_EQ(sqlite3_prepare_v2(w.db,
+            "DELETE FROM v2_balance_copy WHERE epoch_start = ? "
+            "AND validator_fp = ?", -1, &stmt, NULL), SQLITE_OK);
+        sqlite3_bind_int64(stmt, 1, (int64_t)copy_e);
+        sqlite3_bind_blob (stmt, 2, vfp, 64, SQLITE_TRANSIENT);
+        CHECK_EQ(sqlite3_step(stmt), SQLITE_DONE);
+        CHECK_EQ(sqlite3_changes(w.db), 1);
+        sqlite3_finalize(stmt);
+    }
+    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, out,
+                                                 DNAC_COMMITTEE_SIZE, &count), 0);
+    CHECK_EQ(count, 2);
+    CHECK(find_pubkey(out, count, 0x66) < 0);
+    CHECK(find_pubkey(out, count, 0x55) == 0);
+    CHECK(find_pubkey(out, count, 0x44) == 1);
+
+    /* (6e) a LIVE stake change after the freeze does not move the rank:
+     * v4's live bond drops to 1, its frozen 20000 still ranks it. */
+    {
+        sqlite3_stmt *stmt = NULL;
+        CHECK_EQ(sqlite3_prepare_v2(w.db,
+            "UPDATE validators SET self_stake = 1 WHERE pubkey = ?",
+            -1, &stmt, NULL), SQLITE_OK);
+        sqlite3_bind_blob(stmt, 1, v4.pubkey, DNAC_PUBKEY_SIZE,
+                          SQLITE_STATIC);
+        CHECK_EQ(sqlite3_step(stmt), SQLITE_DONE);
+        sqlite3_finalize(stmt);
+    }
+    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, out,
+                                                 DNAC_COMMITTEE_SIZE, &count), 0);
+    CHECK_EQ(count, 2);
+    CHECK(find_pubkey(out, count, 0x44) == 1);
+    CHECK_EQ(out[1].total_stake, 20000);
 
     sqlite3_close(w.db);
     w.db = NULL;
@@ -395,6 +553,13 @@ int main(void) {
      * empty result was silently masked by a gossip-roster fallback and
      * never observed live (the devnet never reached E+1 with E=720). */
     printf("  (B3) non-bootstrap — genesis seed set stays tenured (S3)\n");
+    /* tokenomics-v3 P3-1: the post-bootstrap selection ranks by the
+     * frozen copy of the epoch its lookback block lies in — for e_start =
+     * E+1 the lookback is 0, so copy(0), which the engine genesis writes
+     * from the genesis rows. Written here from the same two rows; with
+     * no copy at all the two seed validators would hold no frozen stake
+     * and neither would be seated (count 0). */
+    refresh_copy(&wb, 0);
     CHECK_EQ(nodus_committee_compute_for_epoch(&wb,
                                                  (uint64_t)DNAC_EPOCH_LENGTH + 1,
                                                  out,

@@ -37,7 +37,14 @@
 #   (3) the stopped validator's own `v2_attendance.last_signed_height`
 #       is frozen for the ENTIRE window (it cannot sign — it is not
 #       running), while every other validator's keeps moving, and the
-#       chain never stalls (6 of 7 exceeds `dna_bft_quorum(7) = 5`).
+#       chain never stalls. The arithmetic depends on the set size (see
+#       "THE v2user STAKER" below): with the 7 genesis validators alone,
+#       6 signers of 7 exceed `dna_bft_quorum(7) = 5`; when the
+#       test_v2_stake.sh staker is seated too, the set is 8, the quorum is
+#       `dna_bft_quorum(8) = 2·8/3 + 1 = 6`, and with node 7 stopped AND
+#       the staker never signing exactly 6 of 8 sign — the chain still
+#       commits, but with ZERO margin: one more missing precommit in a
+#       round stalls that round until it re-forms.
 #   (4) resuming the validator lets it catch up and re-converge with the
 #       fleet — the retirement does not orphan it permanently on this
 #       lane (P1 does not touch rejoin; that is a later package).
@@ -106,6 +113,33 @@
 # e3, `commit_next(e2)` has already excluded it from snapshot(e3), so
 # R5-3's deferral condition does not hold and it graduates at e3 exactly
 # as this header already described. No step below needed adjustment.
+#
+# THE v2user STAKER (tokenomics-v3 P3 fix round, header only — NOT
+# re-measured, no assertion changed). test_v2_stake.sh, earlier in the
+# sweep, bonds a validator (`v2user`) that has no running node and
+# therefore never signs. Since P3 the default seat target is 32, so it is
+# no longer rotated in and out of a 7-seat set: once its bond is in the
+# frozen copy the selection reads (P3-1 "okuma B"), it is seated in
+# every snapshot until Rule N retires it. What happens to it, in plain
+# steps:
+#   - it staked at height h; its bond enters copy(nb(h)), nb(h) being the
+#     first boundary at or after h; the snapshot built one boundary later
+#     from that copy is the first one that seats it. Call the start of
+#     the epoch that snapshot governs S (S = nb(h) + 2E).
+#   - it signs nothing in (S, S+E] and (S+E, S+2E], so Rule N retires it
+#     at boundary S+2E, and cometbft drops it one boundary later, at
+#     S+3E — the same one-epoch lag this scenario proves for node 7.
+#   - node 7 is stopped at the aligned epoch start A; it is retired at
+#     e2 = A+2E and cometbft drops it at e3 = A+3E.
+# So the two removals land at the SAME boundary e3 only when S == A,
+# i.e. only when this scenario's alignment happens to pick exactly the
+# epoch at which the staker was first seated. Then node 1's log would
+# say `n_removed=2` at e3 and the `n_removed=1` grep below would FAIL on
+# a correct chain. In every other case the staker's removal lands at a
+# different boundary (usually earlier — the staker typically ran many
+# epochs before this scenario — in which case it is already gone and the
+# set is back to 7 when node 7 is stopped). Before assuming a FAIL here
+# is a consensus defect, compare the staker's retirement boundary to A.
 #
 # WHAT IT LEAVES BEHIND
 #   Node 7 SIGSTOPped and then SIGCONTed — an EXIT trap resumes it on

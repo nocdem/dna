@@ -1140,6 +1140,12 @@ static int epoch_stage_fault(void *ud, nodus_v2_epoch_stage_t s,
             return blk->fail_at == V2AP_FAIL_AFTER_PAYDAY_APPLIED;
         case NODUS_V2_EPST_BALANCE_COPY:
             return blk->fail_at == V2AP_FAIL_AFTER_BALANCE_COPY;
+        /* tokenomics-v3 P3-4 — the graduation's delegation release,
+         * mapped BY NAME onto the appended engine id F60; first graduate
+         * only, the F40/F41 convention. */
+        case NODUS_V2_EPST_GRAD_DELEG_RELEASED:
+            return graduate_index == 0 &&
+                   blk->fail_at == V2AP_FAIL_AFTER_FIRST_GRAD_DELEG_RELEASE;
         default:
             return 1;                    /* unknown stage: fail closed   */
     }

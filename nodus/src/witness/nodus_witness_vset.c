@@ -473,7 +473,8 @@ int nodus_witness_vset_build_for_epoch(nodus_witness_t *w,
 
 /* The epoch's target set size, read from committed chain_config_history.
  * Mirrors committee_target_for_epoch in nodus_witness_committee.c — same
- * param, same default, same clamp, and since O15J A2 the same fail-closed
+ * param, same default (DNAC_TARGET_ACTIVE_DEFAULT since tokenomics-v3
+ * P3-7), same clamp, and since O15J A2 the same fail-closed
  * rule — because the snapshot builder and the committee selector MUST
  * agree on how many seats an epoch has.
  *
@@ -486,7 +487,7 @@ static int vset_target_for_epoch(nodus_witness_t *w, uint64_t e_start,
     uint64_t target = 0;
     int crc = nodus_chain_config_get_u64(
         w, (uint8_t)DNAC_CFG_TARGET_ACTIVE_COUNT, e_start,
-        (uint64_t)DNAC_COMMITTEE_SIZE, &target);
+        (uint64_t)DNAC_TARGET_ACTIVE_DEFAULT, &target);
     if (crc < 0) {
         QGP_LOG_ERROR(LOG_TAG, "epoch %llu: TARGET_ACTIVE_COUNT is "
                       "unreadable — refusing to size a validator-set "
@@ -752,7 +753,11 @@ int nodus_witness_vset_commit_genesis(nodus_witness_t *w,
      * transaction, so they are visible to the builder.)
      *
      * No chain_config_history row for DNAC_CFG_TARGET_ACTIVE_COUNT can
-     * exist at genesis, so both targets resolve to DNAC_COMMITTEE_SIZE.
+     * exist at genesis, so both targets resolve to the default,
+     * DNAC_TARGET_ACTIVE_DEFAULT (32 since tokenomics-v3 P3-7; it was
+     * DNAC_COMMITTEE_SIZE = 7). A version-3 genesis seeds exactly
+     * DNAC_COMMITTEE_SIZE validators (Rule P.1, nodus_witness_v2_gen.c),
+     * so both snapshots still hold all seven.
      *
      * CORRECTED (O15J Faz 2 Block 2C): this used to read "No
      * chain_config_history row can exist at genesis", which is no longer

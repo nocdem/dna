@@ -62,8 +62,12 @@ int  nodus_witness_utxo_add(nodus_witness_t *w, const uint8_t *nullifier,
  * unlock_block == 0 ⇒ already spendable (same as nodus_witness_utxo_add).
  * unlock_block > 0  ⇒ UTXO is locked until chain height > unlock_block.
  *
- * Used by UNSTAKE commit to produce the time-locked return UTXO
- * (unlock_block = commit_block + DNAC_UNSTAKE_COOLDOWN_BLOCKS).
+ * Written by the legacy UNSTAKE commit for its time-locked return UTXO.
+ * (The version-3 lane writes its locked releases through its own adapters:
+ * a graduation's bond at H_grad + DNAC_VALIDATOR_UNBOND_EPOCHS × E and its
+ * delegations at H_grad + DNAC_UNDELEGATE_LOCK_EPOCHS × E —
+ * nodus_witness_v2_epoch.c; the DNAC_UNSTAKE_COOLDOWN_BLOCKS constant this
+ * comment used to name was deleted by tokenomics-v3 P3-3.)
  */
 int  nodus_witness_utxo_add_locked(nodus_witness_t *w, const uint8_t *nullifier,
                                      const char *owner, uint64_t amount,
@@ -99,9 +103,11 @@ typedef struct {
     uint32_t    output_index;
     uint64_t    block_height;
     /* O15B §7 — the height at or after which this coin becomes spendable.
-     * 0 = spendable now (every ordinary output). Non-zero only for the
-     * post-UNSTAKE principal release, which consensus locks for
-     * DNAC_UNSTAKE_COOLDOWN_BLOCKS.
+     * 0 = spendable now (every ordinary output). Non-zero only for a
+     * locked release: a graduation's bond (DNAC_VALIDATOR_UNBOND_EPOCHS
+     * epochs), an UNDELEGATE release or a graduation's delegation
+     * release (DNAC_UNDELEGATE_LOCK_EPOCHS epochs) — tokenomics-v3 P3-3;
+     * the older DNAC_UNSTAKE_COOLDOWN_BLOCKS is deleted.
      *
      * This field exists because consensus REJECTS a spend of a locked coin
      * (Rule D, nodus_witness_verify.c:730) while the wallet that chose it

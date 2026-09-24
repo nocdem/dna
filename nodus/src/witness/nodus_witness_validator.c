@@ -18,6 +18,9 @@
 #include "witness/nodus_witness_validator.h"
 #include "witness/nodus_witness_merkle.h"
 #include "dnac/dnac.h"
+#include "crypto/utils/qgp_log.h"   /* the P3-1 function logs through
+                                     * QGP_LOG_*, the project rule; the
+                                     * older functions keep fprintf */
 
 #include <stdio.h>
 #include <string.h>
@@ -340,6 +343,83 @@ int nodus_validator_top_n(nodus_witness_t *w,
     if (count < n && rc_step != SQLITE_DONE) {
         fprintf(stderr, "%s: top_n scan aborted mid-stream (rc=%d) — "
                 "refusing a truncated candidate set\n", LOG_TAG, rc_step);
+        sqlite3_finalize(stmt);
+        return -1;
+    }
+
+    sqlite3_finalize(stmt);
+    *count_out = count;
+    return 0;
+}
+
+/* ── Bonded + tenured candidate set (tokenomics-v3 P3-1) ───────────── */
+
+int nodus_validator_bonded_tenured(nodus_witness_t *w,
+                                   uint64_t tenure_anchor,
+                                   dnac_validator_record_t *out,
+                                   int cap,
+                                   int *count_out) {
+    if (!w || !w->db || !out || !count_out || cap <= 0) return -1;
+    *count_out = 0;
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(w->db,
+        "SELECT pubkey, self_stake, total_delegated, external_delegated,"
+        "       commission_bps, pending_commission_bps,"
+        "       pending_effective_block, status, active_since_block,"
+        "       unstake_commit_block, unstake_destination_fp,"
+        "       unstake_destination_pubkey, last_validator_update_block,"
+        "       consecutive_missed_epochs "
+        "FROM validators "
+        /* The SAME status and tenure filters as nodus_validator_top_n
+         * (S3 bonded set; Rule R tenure anchored at the epoch start, the
+         * genesis-seeded carve-out) — the STATUS and TENURE of "okuma B"
+         * come from the LIVE row (decision file §3 2026-09-24 "P3
+         * soruları" (1)). NO stake ORDER BY and NO LIMIT: the ranking is
+         * by FROZEN balances the caller reads from the copy, so the
+         * whole set must reach it — a LIMIT on the live stake would cut a
+         * candidate whose frozen total ranks it in. pubkey ASC is only
+         * the stable collect order. */
+        "WHERE status IN (?, ?) "
+        "  AND (active_since_block + ? <= ? OR active_since_block <= 1) "
+        "ORDER BY pubkey ASC",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "bonded_tenured prepare failed: %s",
+                      sqlite3_errmsg(w->db));
+        return -1;
+    }
+
+    sqlite3_bind_int(  stmt, 1, (int)DNAC_VALIDATOR_ACTIVE);
+    sqlite3_bind_int(  stmt, 2, (int)DNAC_VALIDATOR_ELIGIBLE);
+    sqlite3_bind_int64(stmt, 3, (int64_t)DNAC_MIN_TENURE_BLOCKS);
+    sqlite3_bind_int64(stmt, 4, (int64_t)tenure_anchor);
+
+    int count = 0;
+    int rc_step;
+    while ((rc_step = sqlite3_step(stmt)) == SQLITE_ROW) {
+        if (count >= cap) {
+            /* More bonded rows than the caller's capacity
+             * (DNAC_MAX_VALIDATORS, which STAKE's Rule M keeps the
+             * ACTIVE + ELIGIBLE count within). Truncating would rank a
+             * DIFFERENT set than a node with a larger buffer; fail
+             * closed — v2ep_rule_n refuses the same condition at the
+             * same boundary. */
+            QGP_LOG_ERROR(LOG_TAG, "bonded_tenured: more than %d bonded, "
+                          "tenured rows — refusing a truncated set", cap);
+            sqlite3_finalize(stmt);
+            return -1;
+        }
+        if (row_to_record(stmt, &out[count]) != 0) {
+            sqlite3_finalize(stmt);
+            return -1;
+        }
+        count++;
+    }
+    if (rc_step != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "bonded_tenured scan aborted mid-stream "
+                      "(rc=%d) — refusing a truncated candidate set",
+                      rc_step);
         sqlite3_finalize(stmt);
         return -1;
     }

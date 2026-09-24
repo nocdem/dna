@@ -2,7 +2,7 @@
  *
  * Rules covered here (client-side, no DB access):
  *   - signer_count == 1
- *   - commission_bps <= 10000
+ *   - commission_bps <= DNAC_COMMISSION_BPS_MAX (5000)
  *   - Σ DNAC input >= 10M + Σ DNAC output
  *
  * Rules I (pubkey NOT in validator_tree) and M (|validator_tree| < 128)
@@ -77,15 +77,19 @@ int main(void) {
     CHECK_OK(dnac_tx_verify_stake_rules(&tx));
 
     /* ──────────────────────────────────────────────────────────────
-     * 2. Commission > 10000 → reject.
+     * 2. Commission > DNAC_COMMISSION_BPS_MAX (5000 since
+     *    tokenomics-v3 P3-8; was 10000) → reject.
      * ────────────────────────────────────────────────────────────── */
     build_valid_stake_tx(&tx, ten_m_raw + ten_dnac);
-    tx.stake_fields.commission_bps = 10001;
+    tx.stake_fields.commission_bps = DNAC_COMMISSION_BPS_MAX + 1;
+    CHECK_ERR(dnac_tx_verify_stake_rules(&tx));
+    build_valid_stake_tx(&tx, ten_m_raw + ten_dnac);
+    tx.stake_fields.commission_bps = 10000;           /* the old cap */
     CHECK_ERR(dnac_tx_verify_stake_rules(&tx));
 
-    /* 2b. Commission = 10000 (boundary) → accept. */
+    /* 2b. Commission = DNAC_COMMISSION_BPS_MAX (boundary) → accept. */
     build_valid_stake_tx(&tx, ten_m_raw + ten_dnac);
-    tx.stake_fields.commission_bps = 10000;
+    tx.stake_fields.commission_bps = DNAC_COMMISSION_BPS_MAX;
     CHECK_OK(dnac_tx_verify_stake_rules(&tx));
 
     /* 2c. Commission = 0 (boundary) → accept. */

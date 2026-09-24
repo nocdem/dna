@@ -17,13 +17,15 @@
 #include "witness/nodus_witness_emission.h"  /* DNAC_DECIMAL_UNIT (Rule N
                                                 weight floor, round 6)   */
 
-#include "dnac/dnac.h"                 /* DNAC_EPOCH_LENGTH, cooldown    */
+#include "dnac/dnac.h"                 /* DNAC_EPOCH_LENGTH, the unbond
+                                          * lock epochs (P3-3, P3-4)      */
 #include "dnac/validator.h"            /* dnac_validator_record_t        */
 #include "dnac/cmt_pb.h"               /* CMT_PB_BLOCK_ID_FLAG_COMMIT (Q1) */
 #include "dnac/ledger_roots_v2.h"      /* dna_v2_attendance_digest (S-2) */
 #include "nodus/nodus_types.h"         /* NODUS_TREE_TAG_VALIDATOR       */
 #include "nodus/nodus_chain_config.h"  /* nodus_chain_config_derive_witness_id */
 #include "crypto/hash/qgp_sha3.h"
+#include "crypto/utils/qgp_fingerprint.h" /* qgp_fp_raw_to_hex (P3-4)    */
 #include "crypto/utils/qgp_log.h"
 
 #include <sqlite3.h>
@@ -141,8 +143,22 @@ int nodus_witness_v2_epoch_val_rec_ok(const dnac_validator_record_t *v) {
  * ⚠ LEGACY ARRIVAL-HEIGHT DEPENDENCE (found by the O12 R3 review;
  * RESTATED PRECISELY by O15A — the earlier wording was overstated).
  *
- * The writer stores pending_effective_block = max(next_boundary, H+E),
- * which is ALWAYS H+E: next_boundary = floor(H/E)*E + E <= H+E, with
+ * [P3 fix round, decision file §3 2026-09-24 "komisyon artışı 2 epoch
+ * sonra": the V2 writer now stores max(next_boundary, H+2E), which is
+ * ALWAYS H+2E (next_boundary <= H+E < H+2E). With this activator's `<=`
+ * predicate an increase submitted at H = B+k (B = the epoch start,
+ * 0 <= k < E) activates at the first boundary >= B+k+2E: B+2E for k = 0
+ * (a boundary block), B+3E otherwise. Under P3-1 "okuma B" the rate this
+ * step activates at X is frozen by step 5's commit_next(X) into
+ * snapshot(X+E) and first PAID at X+2E by copy(X−E)'s weights — B+4E
+ * from copy(B+E) for the boundary-block case, so a delegator who leaves
+ * in the very next block (B+1) is not in any copy the new rate is paid
+ * from. Worked example and tests: rtn_vupd_exec and test_v2_native.c.
+ * The paragraphs below describe the LEGACY (H+E) writer and stay true of
+ * it.]
+ *
+ * The legacy writer stores pending_effective_block = max(next_boundary,
+ * H+E), which is ALWAYS H+E: next_boundary = floor(H/E)*E + E <= H+E, with
  * equality iff H % E == 0, so the max's boundary arm is provably dead
  * (the "unreachable max arm" label at rtn_vupd_exec).
  *
@@ -221,10 +237,18 @@ static int v2ep_utxo_present(nodus_witness_t *w, const uint8_t nul[64]) {
  * convention: created_at pinned 0 (deterministic lane, audit-only column
  * excluded from the UTXO merkle leaf), token_id the all-zero native id,
  * domain_id bound EXPLICITLY (no schema default,
- * nodus_witness_v2_schema.c:211). */
+ * nodus_witness_v2_schema.c:211).
+ *
+ * tokenomics-v3 P3-4: ONE writer for both graduation releases — the
+ * validator's own bond (tx_hash = grad_id, output_index =
+ * NODUS_V2_EPGRAD_OUT_IDX) and each delegation it still holds (tx_hash =
+ * the settlement tx_hash of the boundary, output_index =
+ * NODUS_V2_GRAD_DELEG_OUT_IDX_BASE + rank), so the two can never drift
+ * into two row conventions. */
 static int v2ep_release_utxo(nodus_witness_t *w,
                              const uint8_t nullifier[64],
-                             const uint8_t grad_id[64],
+                             const uint8_t tx_hash[64],
+                             uint32_t output_index,
                              const uint8_t *owner_fp128,
                              uint64_t amount,
                              uint64_t block_height,
@@ -244,8 +268,8 @@ static int v2ep_release_utxo(nodus_witness_t *w,
     sqlite3_bind_text(st, 2, (const char *)owner_fp128, 128,
                       SQLITE_TRANSIENT);
     sqlite3_bind_int64(st, 3, (sqlite3_int64)amount);
-    sqlite3_bind_blob(st, 4, grad_id, 64, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st, 5, (sqlite3_int64)NODUS_V2_EPGRAD_OUT_IDX);
+    sqlite3_bind_blob(st, 4, tx_hash, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 5, (sqlite3_int64)output_index);
     sqlite3_bind_int64(st, 6, (sqlite3_int64)block_height);
     sqlite3_bind_int64(st, 7, (sqlite3_int64)unlock_block);
     sqlite3_bind_int64(st, 8, (sqlite3_int64)DNA_DOMAIN_CORE);
@@ -311,6 +335,178 @@ static int v2ep_pubkey_in_snapshot(const dna_vset_snapshot_t *snap,
     return 0;
 }
 
+/* ── stage 2 helper: the graduation's delegation release (P3-4) ───────
+ *
+ * tokenomics-v3 P3-4 (design docs/plans/2026-09-23-tokenomics-v3-
+ * consensus-binding-design.md §8 P3-4; decision file docs/plans/
+ * decisions/2026-09-22-nodus-tokenomics-v3-operator.md §3 2026-09-24
+ * "P3 soruları" (3): "validator mezun olduğunda kalan delegasyonlar
+ * otomatik olarak UNDELEGATE gibi, delegator kilidiyle (12 epoch)
+ * sahiplerine döner"). Every delegation row still naming the graduating
+ * validator becomes ONE locked UTXO owned by its delegator, and the row
+ * is deleted — what a full UNDELEGATE does (nodus_witness_rt_native.c
+ * rtn_undelegate_exec + rtn_sysfund_exec), done by the boundary:
+ *
+ *   owner   = lowercase hex of SHA3-512(delegator_pubkey) — the owner
+ *             rtn_sysfund_exec writes for an UNDELEGATE release and the
+ *             payday writes for an accrual (qgp_fp_raw_to_hex);
+ *   amount  = the delegation row's amount;
+ *   unlock  = `unlock` (the caller's H_grad + DNAC_UNDELEGATE_LOCK_EPOCHS
+ *             · E — the delegation's voting power ends at the graduation
+ *             boundary, operator-approved detail of the P3 dispatch);
+ *   tx_hash = `tx_hash`, the boundary's settlement tx_hash
+ *             (nodus_witness_v2_settlement_tx_hash(H_grad));
+ *   index   = NODUS_V2_GRAD_DELEG_OUT_IDX_BASE + rank, `rank` a running
+ *             counter over the WHOLE boundary (graduates in pubkey ASC
+ *             order, each graduate's delegations in delegator_hash ASC);
+ *   nullifier = nodus_witness_v2_settlement_nullifier(tx_hash,
+ *             NODUS_V2_GRAD_DELEG_KIND, index).
+ *
+ * ORDER: `delegator_hash ASC` — the table's own PK column
+ * (SHA3-512(0x03 ‖ delegator_pubkey), nodus_witness_delegation.h:9-10),
+ * a stable total key; the rows are selected by `validator_hash`, the
+ * same derivation for the validator side (idx_validator). Rows are
+ * collected FIRST, then written, then deleted in ONE statement bound to
+ * the count read — a SELECT is never held open across the writes.
+ *
+ * Every failure is -2: a malformed row (pubkey not 2592 bytes, amount
+ * not in [1, INT64_MAX]), an identity already present in utxo_set, a
+ * rank that would leave the index band, a DB error. There is no verdict
+ * class at a boundary.
+ *
+ * @param rank_io       the boundary's running rank; advanced by the
+ *                      number of rows released.
+ * @param released_out  Σ released amounts (checked).
+ * @return 0 / -2. */
+static int v2ep_release_delegations(nodus_witness_t *w, uint64_t h,
+                                    const uint8_t tx_hash[64],
+                                    const uint8_t vpk[DNAC_PUBKEY_SIZE],
+                                    uint64_t unlock,
+                                    uint32_t *rank_io,
+                                    uint64_t *released_out) {
+    *released_out = 0;
+
+    uint8_t pre[1 + DNAC_PUBKEY_SIZE];
+    pre[0] = (uint8_t)NODUS_TREE_TAG_DELEGATION;
+    memcpy(pre + 1, vpk, DNAC_PUBKEY_SIZE);
+    uint8_t vhash[64];
+    if (qgp_sha3_512(pre, sizeof(pre), vhash) != 0) return -2;
+
+    typedef struct {
+        uint8_t  dpk[DNAC_PUBKEY_SIZE];
+        uint64_t amount;
+    } v2ep_deleg_row_t;
+    v2ep_deleg_row_t *rows = NULL;
+    size_t n = 0, cap = 0;
+    uint64_t released = 0;
+    int ret = -2;
+    int rc;
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT delegator_pubkey, amount FROM delegations "
+            "WHERE validator_hash = ?1 ORDER BY delegator_hash ASC",
+            -1, &st, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "delegation release prepare failed: %s",
+                      sqlite3_errmsg(w->db));
+        return -2;
+    }
+    if (sqlite3_bind_blob(st, 1, vhash, 64, SQLITE_TRANSIENT) != SQLITE_OK) {
+        sqlite3_finalize(st);
+        return -2;
+    }
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const void *dpk = sqlite3_column_blob(st, 0);
+        int dpk_len = sqlite3_column_bytes(st, 0);
+        sqlite3_int64 a = sqlite3_column_int64(st, 1);
+        if (!dpk || dpk_len != DNAC_PUBKEY_SIZE || a <= 0) {
+            /* amount 0 is malformed too: UNDELEGATE deletes a drained
+             * row (rtn_undelegate_exec), so no committed row holds 0. */
+            QGP_LOG_ERROR(LOG_TAG, "delegation release: malformed "
+                          "delegation row (pubkey %d bytes, amount %lld)",
+                          dpk_len, (long long)a);
+            sqlite3_finalize(st);
+            goto done;
+        }
+        if (n == cap) {
+            size_t nc = cap ? cap * 2 : 16;
+            v2ep_deleg_row_t *nr = realloc(rows, nc * sizeof(*nr));
+            if (!nr) { sqlite3_finalize(st); goto done; }
+            rows = nr;
+            cap = nc;
+        }
+        memcpy(rows[n].dpk, dpk, DNAC_PUBKEY_SIZE);
+        rows[n].amount = (uint64_t)a;
+        n++;
+    }
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "delegation release scan failed (rc=%d): %s",
+                      rc, sqlite3_errmsg(w->db));
+        goto done;
+    }
+    if (n == 0) { ret = 0; goto done; }
+
+    for (size_t i = 0; i < n; i++) {
+        if (*rank_io > NODUS_V2_GRAD_DELEG_RANK_MAX) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "delegation release: the boundary's "
+                          "rank would leave the output-index band");
+            goto done;
+        }
+        const uint32_t idx = NODUS_V2_GRAD_DELEG_OUT_IDX_BASE + *rank_io;
+
+        uint8_t nul[64];
+        if (nodus_witness_v2_settlement_nullifier(tx_hash,
+                                                  NODUS_V2_GRAD_DELEG_KIND,
+                                                  idx, nul) != 0)
+            goto done;
+        int present = v2ep_utxo_present(w, nul);
+        if (present != 0) {
+            /* 1: the (tx_hash, kind) input domain is this function's
+             * alone (kind 0x23 is used by no other writer), so a present
+             * row is local corruption; -2: probe fault. */
+            QGP_LOG_ERROR(LOG_TAG, "delegation release id already present "
+                          "(rc=%d)", present);
+            goto done;
+        }
+
+        uint8_t ofp[64];
+        if (qgp_sha3_512(rows[i].dpk, DNAC_PUBKEY_SIZE, ofp) != 0) goto done;
+        char ofp_hex[QGP_FP_HEX_BUFFER];
+        qgp_fp_raw_to_hex(ofp, ofp_hex);
+
+        if (v2ep_release_utxo(w, nul, tx_hash, idx, (const uint8_t *)ofp_hex,
+                              rows[i].amount, h, unlock) != 0)
+            goto done;
+        if (released > UINT64_MAX - rows[i].amount) goto done;
+        released += rows[i].amount;
+        (*rank_io)++;
+    }
+
+    /* Delete exactly the rows just released — bound to the count read. */
+    if (sqlite3_prepare_v2(w->db,
+            "DELETE FROM delegations WHERE validator_hash = ?1",
+            -1, &st, NULL) != SQLITE_OK)
+        goto done;
+    if (sqlite3_bind_blob(st, 1, vhash, 64, SQLITE_TRANSIENT) != SQLITE_OK) {
+        sqlite3_finalize(st);
+        goto done;
+    }
+    rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE || (size_t)sqlite3_changes(w->db) != n) {
+        QGP_LOG_ERROR(LOG_TAG, "delegation release: the delegation rows did "
+                      "not delete as read (%zu rows, rc=%d)", n, rc);
+        goto done;
+    }
+
+    *released_out = released;
+    ret = 0;
+done:
+    free(rows);
+    return ret;
+}
+
 /* ── stage 2: RETIRING → UNSTAKED graduation ───────────────────────── */
 
 static int v2ep_graduate(nodus_witness_t *w, uint64_t h,
@@ -338,14 +534,43 @@ static int v2ep_graduate(nodus_witness_t *w, uint64_t h,
      * ORDER BY pubkey ASC is the stable total key on every node
      * (bft.c:2417-2422); the V2 grad_id no longer DEPENDS on the rank,
      * but a deterministic scan order still fixes the write order and
-     * therefore the stage-fault indices. */
+     * therefore the stage-fault indices.
+     *
+     * THE SCAN BOUND — 2 × DNAC_MAX_VALIDATORS (P3 fix round; the old
+     * comment claimed "the table itself is capped at
+     * DNAC_MAX_VALIDATORS", which nothing enforced). Derivation:
+     *   RETIRING rows are counted by validator_stats.active_count (UNSTAKE
+     *   does not decrement it; this function does, on graduation), and
+     *   STAKE's Rule M keeps active_count <= DNAC_MAX_VALIDATORS
+     *   (nodus_witness_rt_native.c rtn_stake_exec) → |RETIRING| <= 128.
+     *   AUTO_RETIRED rows LEFT active_count at Rule N, so the counter does
+     *   not bound them. But an AUTO_RETIRED row is retired at step 3 of
+     *   boundary H−E, BEFORE step 5's commit_next(H−E) builds snapshot(H)
+     *   from the ACTIVE/ELIGIBLE rows only — so it is never an entry of
+     *   the snapshot taking effect at H, the R5-3 deferral below never
+     *   holds it back, and it graduates at H (step 2, before H's own Rule
+     *   N). The AUTO_RETIRED rows present here are therefore exactly the
+     *   ones Rule N retired at H−E, a subset of the ACTIVE/ELIGIBLE rows
+     *   there → <= 128. STAKE cannot revive an AUTO_RETIRED row (P3-9:
+     *   UNSTAKED only). Total <= 256.
+     * The sequence that needs more than 128: Rule N retires k at H−E, k
+     * new STAKEs refill active_count to 128, and every counted row
+     * UNSTAKEs before H — 128 + k candidates, reachable by ordinary
+     * transactions. A 257th row is a broken invariant, not a value:
+     * fail closed. */
     uint8_t (*cand)[DNAC_PUBKEY_SIZE] =
-        calloc(DNAC_MAX_VALIDATORS, DNAC_PUBKEY_SIZE);
+        calloc(2u * (size_t)DNAC_MAX_VALIDATORS, DNAC_PUBKEY_SIZE);
     if (!cand) { dna_vset_free(&effective); return -2; }
     size_t n = 0;
     size_t n_graduated = 0;
     int ret = -2;
     int rc = SQLITE_OK;
+    /* P3-4: the delegation releases of EVERY graduate at this boundary
+     * share one tx_hash (the settlement tx_hash of H) and one running
+     * rank, advanced in the scan order below (pubkey ASC, then
+     * delegator_hash ASC inside a graduate). */
+    uint32_t deleg_rank = 0;
+    uint8_t  deleg_tx_hash[64];
 
     sqlite3_stmt *sel = NULL;
     if (sqlite3_prepare_v2(w->db,
@@ -369,13 +594,12 @@ static int v2ep_graduate(nodus_witness_t *w, uint64_t h,
             sqlite3_finalize(sel);
             goto done;
         }
-        if (n >= (size_t)DNAC_MAX_VALIDATORS) {
-            /* The table itself is capped at DNAC_MAX_VALIDATORS; more
-             * candidate rows than that means the cap was already broken
-             * (bft.c:2497-2500 relies on the same bound). */
+        if (n >= 2u * (size_t)DNAC_MAX_VALIDATORS) {
+            /* The derived bound above (Rule M + one boundary of
+             * AUTO_RETIRED) is broken: fail closed. */
             QGP_LOG_ERROR(LOG_TAG, "%s",
                           "more graduation candidates than "
-                          "DNAC_MAX_VALIDATORS");
+                          "2 x DNAC_MAX_VALIDATORS");
             sqlite3_finalize(sel);
             goto done;
         }
@@ -437,35 +661,97 @@ static int v2ep_graduate(nodus_witness_t *w, uint64_t h,
             goto done;
         }
 
-        /* unlock = H + cooldown, CHECKED, and bounded by the SQLite
+        /* The two lock heights, CHECKED, and bounded by the SQLite
          * storage maximum: an unlock height that round-trips negative
-         * would make the row spendable forever. */
-        uint64_t unlock = h + (uint64_t)DNAC_UNSTAKE_COOLDOWN_BLOCKS;
-        if (unlock < h || unlock > V2EP_STORE_MAX) {
-            QGP_LOG_ERROR(LOG_TAG, "%s",
-                          "unlock height overflows the storage bound");
-            goto done;
+         * would make the row spendable forever.
+         *   self (P3-3):        H + DNAC_VALIDATOR_UNBOND_EPOCHS · E
+         *   delegations (P3-4): H + DNAC_UNDELEGATE_LOCK_EPOCHS  · E
+         * Both start at THIS boundary: H is where the graduate is no
+         * longer an entry of the snapshot taking effect (the deferral
+         * above), i.e. where its — and its delegations' — voting power
+         * ends (decision §1 "Bekleme, ilgili stake'in aktif oy gücünden
+         * çıktığı anda başlayacak"). */
+        uint64_t self_unlock = 0, deleg_unlock = 0;
+        {
+            const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+            if ((uint64_t)DNAC_VALIDATOR_UNBOND_EPOCHS > UINT64_MAX / E ||
+                (uint64_t)DNAC_UNDELEGATE_LOCK_EPOCHS > UINT64_MAX / E)
+                goto done;
+            const uint64_t self_len =
+                (uint64_t)DNAC_VALIDATOR_UNBOND_EPOCHS * E;
+            const uint64_t deleg_len =
+                (uint64_t)DNAC_UNDELEGATE_LOCK_EPOCHS * E;
+            if (h > V2EP_STORE_MAX ||
+                self_len > V2EP_STORE_MAX - h ||
+                deleg_len > V2EP_STORE_MAX - h) {
+                QGP_LOG_ERROR(LOG_TAG, "%s",
+                              "unlock height overflows the storage bound");
+                goto done;
+            }
+            self_unlock  = h + self_len;
+            deleg_unlock = h + deleg_len;
         }
-        if (h > V2EP_STORE_MAX) goto done;
 
         /* S3 rule (bft.c:2482-2491): the ACTUAL self_stake, never the
          * DNAC_SELF_STAKE_AMOUNT literal — paying the literal would
          * strand a surplus bond or mint from nothing, and either way the
          * supply invariant (which sums validators.self_stake) refuses
          * the block. */
-        if (v2ep_release_utxo(w, nul, grad_id, v.unstake_destination_fp,
-                              v.self_stake, h, unlock) != 0)
+        if (v2ep_release_utxo(w, nul, grad_id, NODUS_V2_EPGRAD_OUT_IDX,
+                              v.unstake_destination_fp, v.self_stake, h,
+                              self_unlock) != 0)
             goto done;
         if (fault && fault(ud, NODUS_V2_EPST_GRAD_RELEASE, (uint32_t)i))
             goto done;
 
-        /* RETIRING/AUTO_RETIRED → UNSTAKED and ZERO the bond: its value
-         * just moved into the release UTXO, and leaving it on the record
-         * too would double-count it in the supply invariant's Σ
-         * self_stake term (bft.c:2516-2536). Nothing else on the row
-         * moves. */
+        /* ── P3-4: release every delegation the graduate still holds ──
+         * (decision §3 2026-09-24 "P3 soruları" (3); Rule A is gone from
+         * UNSTAKE, so a graduate may still carry delegators). BEFORE the
+         * row update below and — as step 2 of the boundary — before the
+         * balance copy at step 6, so copy(H) carries neither the bond nor
+         * the delegations. The released total must be EXACTLY the row's
+         * delegated totals: every writer moves total_delegated,
+         * external_delegated and the delegation rows by the same amount
+         * (rtn_delegate_exec / rtn_undelegate_exec), and the supply
+         * equation counts Σ total_delegated as the delegated bucket
+         * (nodus_witness_v2_claims.c) — a mismatch here would move value
+         * the equation does not see, so it is a FAULT, never a partial
+         * release. The value MOVES from the delegated bucket into the
+         * utxo bucket; the supply equation is unchanged. */
+        {
+            if (deleg_rank == 0 &&
+                nodus_witness_v2_settlement_tx_hash(h, deleg_tx_hash) != 0)
+                goto done;
+            uint64_t released = 0;
+            if (v2ep_release_delegations(w, h, deleg_tx_hash, v.pubkey,
+                                         deleg_unlock, &deleg_rank,
+                                         &released) != 0)
+                goto done;
+            if (released != v.total_delegated ||
+                released != v.external_delegated) {
+                QGP_LOG_ERROR(LOG_TAG,
+                    "graduate: released delegations %llu disagree with the "
+                    "row's total_delegated %llu / external_delegated %llu — "
+                    "refusing the boundary",
+                    (unsigned long long)released,
+                    (unsigned long long)v.total_delegated,
+                    (unsigned long long)v.external_delegated);
+                goto done;
+            }
+        }
+        if (fault && fault(ud, NODUS_V2_EPST_GRAD_DELEG_RELEASED,
+                           (uint32_t)i))
+            goto done;
+
+        /* RETIRING/AUTO_RETIRED → UNSTAKED and ZERO the bond and both
+         * delegated totals: their value just moved into the release
+         * UTXOs, and leaving it on the record too would double-count it
+         * in the supply invariant's Σ self_stake / Σ total_delegated
+         * terms (bft.c:2516-2536). Nothing else on the row moves. */
         v.status = (uint8_t)DNAC_VALIDATOR_UNSTAKED;
         v.self_stake = 0;
+        v.total_delegated = 0;
+        v.external_delegated = 0;
         if (nodus_validator_update(w, &v) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "%s", "graduate row update failed");
             goto done;
@@ -787,6 +1073,9 @@ static int v2ep_rule_n(nodus_witness_t *w, uint64_t h) {
             goto done;
         }
         if (n >= (size_t)DNAC_MAX_VALIDATORS) {
+            /* ACTIVE + ELIGIBLE ⊆ active_count, which STAKE's Rule M
+             * keeps <= DNAC_MAX_VALIDATORS: a 129th row is a broken
+             * invariant, never reachable through transactions. */
             QGP_LOG_ERROR(LOG_TAG, "%s",
                           "more bonded rows than DNAC_MAX_VALIDATORS");
             sqlite3_finalize(sel);
@@ -929,18 +1218,24 @@ static int v2ep_rule_n(nodus_witness_t *w, uint64_t h) {
      *   - seed: the lookback row at H+E-E-1 = H-1 (:258) — v2_blocks +
      *     the Comet BlockMeta (:271), or the legacy `blocks` row (:279);
      *     committed by an EARLIER block, written by none of the three.
-     *   - candidates: nodus_validator_top_n (:320 ->
-     *     nodus_witness_validator.c:303-313) — rows with status IN
-     *     (ACTIVE, ELIGIBLE), filtered on active_since_block, ordered on
-     *     self_stake + external_delegated then pubkey. The digest writes
-     *     v2_attendance_epoch and the reset writes v2_attendance
-     *     (v2ep_attendance_digest / v2ep_attendance_reset below); the
-     *     flips write ONLY validators.status, and only ACTIVE/ELIGIBLE ->
-     *     ELIGIBLE then ELIGIBLE -> ACTIVE (nodus_witness_vset.c:632,
-     *     :657), so the candidate SET, its stakes, tenure and order are
-     *     unchanged; the tiebreak (:340) hashes pubkey with the seed; the
-     *     emitted fields (emit_member :230 — pubkey, total_stake,
-     *     self_stake, commission_bps) are not written by any of them.
+     *   - candidates: nodus_validator_bonded_tenured
+     *     (nodus_witness_validator.c) — rows with status IN (ACTIVE,
+     *     ELIGIBLE), filtered on active_since_block; since tokenomics-v3
+     *     P3-1 ("okuma B") ranked by their FROZEN totals in copy(H−E)
+     *     (nodus_witness_v2_balance_copy_frozen, nodus_witness_v2_econ.c),
+     *     no longer by the live self_stake + external_delegated. The
+     *     digest writes v2_attendance_epoch and the reset writes
+     *     v2_attendance (v2ep_attendance_digest / v2ep_attendance_reset
+     *     below); the flips write ONLY validators.status, and only
+     *     ACTIVE/ELIGIBLE -> ELIGIBLE then ELIGIBLE -> ACTIVE
+     *     (nodus_witness_vset.c apply_boundary_flips), so the candidate
+     *     SET, its tenure and order are unchanged; NONE of the three
+     *     writes v2_balance_copy (this boundary's copy(H) is written at
+     *     step 6, after commit_next, and prunes only below H−2E), so the
+     *     frozen totals are unchanged too; the tiebreak hashes pubkey
+     *     with the seed; the emitted fields (emit_member — pubkey, frozen
+     *     total, frozen self row, live commission_bps) are not written by
+     *     any of them.
      * test_v2_epoch.c §12g checks the stored snapshot(H+E) hash equals
      * a preview built over the SAME post-boundary state — it proves the
      * builder is shared, NOT this input-by-input argument: a step later
@@ -1059,7 +1354,7 @@ static int v2ep_rule_n(nodus_witness_t *w, uint64_t h) {
                  * reader). active_count counts BONDED rows plus RETIRING
                  * rows not yet graduated (STAKE increments it, UNSTAKE
                  * does not decrement it — nodus_witness_rt_native.c
-                 * :3380-3381 — graduation of a RETIRING row does,
+                 * rtn_unstake_exec — graduation of a RETIRING row does,
                  * v2ep_graduate); retire_count is a subset of the ACTIVE
                  * rows, so cur < retire_count is unreachable — a genuine
                  * corruption, not a value. */
@@ -1236,7 +1531,8 @@ int nodus_witness_v2_epoch_boundary_apply(
      * accrual. ORDER IS LOAD-BEARING — the header's "WHY THE
      * DISTRIBUTION SITS AT 1b": it reads the ended epoch's attendance
      * (zeroed by the reset at 3c) and the source balance copy
-     * copy(H−2E), which this boundary's step 6 prunes. It deliberately
+     * copy(H−3E) (tokenomics-v3 P3-2), which this boundary's step 6
+     * prunes. It deliberately
      * does NOT reset attendance itself: step 3c does, inside this same
      * transaction. */
     if (nodus_witness_v2_settlement_apply(w, global_height, fault, fault_ud,
@@ -1355,7 +1651,9 @@ int nodus_witness_v2_epoch_boundary_apply(
     /* ── 6. THE FROZEN BALANCE COPY (tokenomics-v3 P2, P2-5) ──────────
      * LAST: the bonded balances the NEXT epoch starts from, after every
      * transition above (the graduation is the only one that moves a
-     * stake). The distribution at H+E reads it. Out of every root. */
+     * stake). The commit_next of boundary H+E ranks by it (P3-1 "okuma
+     * B") and the distribution at H+3E splits by it (P3-2). Out of every
+     * root. */
     if (nodus_witness_v2_balance_copy_write(w, global_height) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "balance copy failed at boundary %llu",
                       (unsigned long long)global_height);
@@ -1433,7 +1731,8 @@ int nodus_witness_v2_epoch_authority_for_epoch(
     /* O15F Task 1 — defence in depth. A successor snapshot larger than
      * NODUS_V2_ACTIVE_SET_MAX can never become an authority: the writer
      * guard (nodus_witness_vset_insert) already refuses to store one, so
-     * a >30 blob here means a corrupt row, which fails closed rather than
+     * a >NODUS_V2_ACTIVE_SET_MAX (32 since tokenomics-v3 P3-7) blob here
+     * means a corrupt row, which fails closed rather than
      * seating an oversized committee. Legacy chains keep the 128 bound
      * enforced above. */
     if (w->v2_successor && snap->active_count > NODUS_V2_ACTIVE_SET_MAX) {
@@ -1465,11 +1764,11 @@ int nodus_witness_v2_epoch_authority_for_height(
         snap_out, n_out, quorum_out);
 }
 
-/* ── tokenomics-v3 P2-10: the power exit boundary L(h) ────────────────
- * Contract and the derivation (why nb(h) + E) are in the header. Every
- * step is checked: ceil(h/E)·E and the + E can both leave 64 bits for a
- * height near UINT64_MAX, and a wrapped boundary would be a lock that
- * opens in the past. */
+/* ── tokenomics-v3 P2-10 / P3-2: the power exit boundary L(h) ─────────
+ * Contract and the derivation (why nb(h) + 2E under P3's "okuma B") are
+ * in the header. Every step is checked: ceil(h/E)·E and the + 2E can
+ * each leave 64 bits for a height near UINT64_MAX, and a wrapped
+ * boundary would be a lock that opens in the past. */
 int nodus_v2_power_exit_boundary(uint64_t h, uint64_t *out) {
     if (!out) return -1;
     const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
@@ -1482,7 +1781,10 @@ int nodus_v2_power_exit_boundary(uint64_t h, uint64_t *out) {
         if (q > UINT64_MAX / E) return -1;
         nb = q * E;
     }
+    /* L(h) = nb(h) + 2E, as two checked adds of E. */
     if (nb > UINT64_MAX - E) return -1;
-    *out = nb + E;
+    uint64_t l = nb + E;
+    if (l > UINT64_MAX - E) return -1;
+    *out = l + E;
     return 0;
 }

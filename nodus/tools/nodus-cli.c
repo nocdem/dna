@@ -1578,8 +1578,11 @@ static int cmd_stake(const char *server_ip, uint16_t server_port,
             return 1;
         }
     }
-    if (commission_bps > 10000) {
-        fprintf(stderr, "--commission must be 0..10000\n");
+    /* the witness bound (tokenomics-v3 P3-8, rtn_stake_exec): refuse here
+     * rather than build an envelope the chain rejects */
+    if (commission_bps > (uint64_t)DNAC_COMMISSION_BPS_MAX) {
+        fprintf(stderr, "--commission must be 0..%u\n",
+                (unsigned)DNAC_COMMISSION_BPS_MAX);
         return 1;
     }
     if (bond_raw < DNAC_SELF_STAKE_AMOUNT) {
@@ -2786,8 +2789,11 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
             "(--dry-run | --submit ip:port)\n");
         return 1;
     }
-    if (commission > 0xFFFFu) {
-        fprintf(stderr, "commission out of range\n");
+    /* the witness bound (tokenomics-v3 P3-8, rtn_stake_exec) — the u16
+     * wire field alone would admit values the chain refuses */
+    if (commission > (uint32_t)DNAC_COMMISSION_BPS_MAX) {
+        fprintf(stderr, "--commission must be 0..%u\n",
+                (unsigned)DNAC_COMMISSION_BPS_MAX);
         return 1;
     }
     uint8_t dest_fp[64];

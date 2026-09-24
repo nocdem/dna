@@ -36,8 +36,8 @@
  *   GOVERNED the epoch by that snapshot's own voting power; a member
  *   that failed the shared participation predicate forfeits its WHOLE
  *   share, delegators included; inside a member the split is by the
- *   frozen balance copy that snapshot was built from (src(H) = H−2E, 0
- *   for the genesis-governed epochs), checked against the snapshot entry
+ *   frozen balance copy that snapshot was built from (src(H) = H−3E since
+ *   tokenomics-v3 P3-2, 0 below 3E), checked against the snapshot entry
  *   first; every share is ACCRUED per recipient in `v2_reward_accrual`;
  *   every rounding remainder and every forfeited share stays in the
  *   pool. Nothing is burned. A stake withdrawn during the epoch is still
@@ -55,8 +55,9 @@
  *
  *   THE FROZEN BALANCE COPY (nodus_witness_v2_balance_copy_write): at
  *   every boundary (and at genesis) the bonded balances are copied into
- *   `v2_balance_copy`, out of every root; the H−E and H copies are kept,
- *   and the distribution at H + E reads the H−E one.
+ *   `v2_balance_copy`, out of every root; the H−2E, H−E and H copies are
+ *   kept (tokenomics-v3 P3-2). The selection at H + E ranks by copy(H)
+ *   (P3-1 "okuma B") and the distribution at H + 3E splits by it.
  *
  * ── FAULT/VERDICT CLASSIFICATION ────────────────────────────────────
  * Every entry point takes committed state and a height as its ONLY
@@ -168,16 +169,22 @@ int nodus_witness_v2_econ_params_load(nodus_witness_t *w,
  *       (epoch_start, fp(validator_pubkey), fp(delegator_pubkey), amount)
  * where fp = the raw 64-byte SHA3-512(pubkey) (the recipient identity the
  * accrual and the payday UTXO owner use). Then DELETES every row whose
- * epoch_start is below `epoch_start − DNAC_EPOCH_LENGTH` — the H−E and H
- * copies are kept, nothing older.
+ * epoch_start is below `epoch_start − 2·DNAC_EPOCH_LENGTH` — the H−2E,
+ * H−E and H copies are kept, nothing older (tokenomics-v3 P3-2; P2 kept
+ * two).
  *
- * The distribution at boundary H reads copy(H−2E) — the copy written at
- * the SAME boundary as the snapshot that governs (H−E, H], right after
- * commit_next (design §7.1 "P2-6 rev 2"; src(H) = 0 while H < 2E, the
- * genesis snapshots and copy(0) coming from the same genesis rows). So
- * the copy kept at boundary H as "H−E" is read by the distribution at
- * H + E, which runs before that boundary's own prune. P3 will read the
- * same copy for validator selection.
+ * TWO READERS (tokenomics-v3 P3-1, P3-2):
+ *   - SELECTION ("okuma B"): the commit_next of boundary B ranks the set
+ *     it stores for B+E by the frozen totals of copy(B−E)
+ *     (nodus_witness_v2_balance_copy_frozen below, called by
+ *     nodus_committee_compute_for_epoch) and writes them into the
+ *     snapshot entries;
+ *   - DISTRIBUTION: boundary H reads copy(H−3E) — the copy the governing
+ *     snapshot(H−E) was built from at boundary H−2E (src(H) = 0 while
+ *     H < 3E: the genesis snapshots 0 and E come from the genesis rows =
+ *     copy(0), and snapshot(2E) is built at E from copy(0)). The copy
+ *     kept at boundary H as "H−2E" is read by the distribution at H + E,
+ *     which runs before that boundary's own prune.
  *
  * OUT OF EVERY ROOT, deliberately: every row is a pure function of
  * `validators` and `delegations`, which ARE rooted, taken at a
@@ -203,6 +210,30 @@ int nodus_witness_v2_econ_params_load(nodus_witness_t *w,
  */
 int nodus_witness_v2_balance_copy_write(nodus_witness_t *w,
                                         uint64_t epoch_start);
+
+/**
+ * tokenomics-v3 P3-1 — one validator's FROZEN totals in copy(epoch_start):
+ *   *self_out  = the amount of its own row (owner_fp == validator_fp),
+ *                0 when that row is absent;
+ *   *total_out = its own row + Σ every delegator row of that validator,
+ *                0 when it has no row at all ("absent means 0").
+ * validator_fp = the raw 64-byte SHA3-512(pubkey) — the copy's key, NOT
+ * the validators table's pubkey_hash (SHA3-512(0x02 ‖ pubkey)).
+ *
+ * The selection core (nodus_committee_compute_for_epoch) ranks candidates
+ * by *total_out and writes *total_out / *self_out as the snapshot entry's
+ * total_stake / self_bond; the reward distribution later checks that
+ * entry against the same copy through the same row reader.
+ *
+ * Pure read. Query-lane convention: 0 read (including "absent" = 0/0),
+ * -1 fault (bad argument, hash failure, DB error, a stored-negative
+ * amount, a sum that overflows 64 bits). A fault is never a zero.
+ */
+int nodus_witness_v2_balance_copy_frozen(nodus_witness_t *w,
+                                         uint64_t epoch_start,
+                                         const uint8_t *pubkey,
+                                         uint64_t *self_out,
+                                         uint64_t *total_out);
 
 /**
  * The chain's payout interval, in epochs (tokenomics-v3 P2, P2-7):
@@ -232,10 +263,12 @@ int nodus_witness_v2_payout_interval(nodus_witness_t *w, uint64_t *out);
  *   payout   = reward_pool >> NODUS_V2_GEN_REWARD_DIVISOR_LOG2 (16)
  *   members  = snapshot(H−E) (nodus_witness_v2_epoch_authority_for_epoch;
  *              the set that GOVERNED the epoch, in its committed order)
- *   src      = H−2E when H >= 2E, else 0 — the frozen balance copy that
- *              snapshot was built from (the same boundary, right after
- *              commit_next; the genesis snapshots 0 and E and copy(0)
- *              all come from the genesis rows)
+ *   src      = H−3E when H >= 3E, else 0 — the frozen balance copy that
+ *              snapshot was built from (tokenomics-v3 P3-2: the
+ *              commit_next of boundary H−2E ranked it by copy(H−3E) —
+ *              P3-1 "okuma B"; the genesis snapshots 0 and E and copy(0)
+ *              all come from the genesis rows, and snapshot(2E) is built
+ *              at E from copy(0))
  *   PASS 1, for EVERY member v (snapshot order):
  *     CONSISTENCY GATE: copy(src)'s self row of v (absent = 0) must equal
  *                 the entry's self_bond, and Σ copy(src) delegator rows

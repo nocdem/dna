@@ -16,6 +16,8 @@
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_validator.h"
 #include "witness/nodus_witness_vset.h"   /* S3: snapshot-as-authority */
+#include "witness/nodus_witness_v2_econ.h" /* tokenomics-v3 P3-1: the frozen
+                                            * copy the selection ranks by */
 
 #include "nodus/nodus_types.h"       /* NODUS_TREE_TAG_VALIDATOR */
 #include "nodus/nodus_chain_config.h" /* nodus_chain_config_get_u64 */
@@ -41,10 +43,16 @@
 
 /* Per-validator work record used while sorting. Holds a pointer into
  * the caller's candidates[] array plus the pre-computed tiebreak hash
- * so qsort can run on POD entries without extra SHA3 calls. */
+ * so qsort can run on POD entries without extra SHA3 calls.
+ *
+ * tokenomics-v3 P3-1: `total_stake` and `self_stake` are the values the
+ * member is RANKED by and EMITTED with — the FROZEN totals of the copy on
+ * the post-bootstrap path ("okuma B"), the live row's on the bootstrap
+ * path. `rec` still supplies the pubkey and the LIVE commission. */
 typedef struct {
     const dnac_validator_record_t *rec;
     uint64_t total_stake;
+    uint64_t self_stake;
     uint8_t  tiebreak[64];
 } committee_work_t;
 
@@ -69,6 +77,22 @@ static int cmp_tiebreak_asc(const void *pa, const void *pb) {
     return memcmp(a->tiebreak, b->tiebreak, 64);
 }
 
+/* tokenomics-v3 P3-1 qsort comparator: FROZEN total DESC, then the SAME
+ * seeded tiebreak ASC. This is exactly the total order the pre-P3 path
+ * produced in two steps (top_n's stake DESC, then the in-group
+ * cmp_tiebreak_asc re-sort — the group re-sort erased the pubkey ASC
+ * secondary), expressed as one comparator because the candidate list no
+ * longer arrives pre-sorted by the stake it is ranked on. Two distinct
+ * pubkeys have distinct tiebreak hashes (SHA3-512 over distinct inputs),
+ * so the order is total and qsort's instability is unobservable. */
+static int cmp_frozen_desc_tiebreak_asc(const void *pa, const void *pb) {
+    const committee_work_t *a = (const committee_work_t *)pa;
+    const committee_work_t *b = (const committee_work_t *)pb;
+    if (a->total_stake != b->total_stake)
+        return a->total_stake > b->total_stake ? -1 : 1;
+    return memcmp(a->tiebreak, b->tiebreak, 64);
+}
+
 /* S3 — the epoch's target active-set size.
  *
  * Keyed on `e_start`, the epoch START height, NOT on the height being
@@ -79,10 +103,12 @@ static int cmp_tiebreak_asc(const void *pa, const void *pb) {
  * rows — the same source the INFLATION_START_BLOCK consumer uses inside
  * finalize_block (nodus_witness_bft.c).
  *
- * The default is DNAC_COMMITTEE_SIZE, so a chain with no governance row
- * (every chain today) selects exactly as it did before S3. The clamp is
- * the release ceiling, defence-in-depth on top of the apply-side range
- * check in nodus_chain_config_apply.
+ * The default — the target when no governance row applies — is
+ * DNAC_TARGET_ACTIVE_DEFAULT (32) since tokenomics-v3 P3-7 (decision file
+ * §3 2026-09-24 "P3 soruları" (4); it was DNAC_COMMITTEE_SIZE = 7, which
+ * stays the governed MINIMUM). The clamp is the release ceiling,
+ * defence-in-depth on top of the apply-side range check in
+ * nodus_chain_config_apply.
  *
  * O15J Block 2 (A2) — FAIL CLOSED. The lookup is three-valued now, and
  * `1` (genuinely no governance row) keeps the historical behaviour
@@ -100,7 +126,7 @@ static int committee_target_for_epoch(nodus_witness_t *w, uint64_t e_start,
     uint64_t target = 0;
     int crc = nodus_chain_config_get_u64(
         w, (uint8_t)DNAC_CFG_TARGET_ACTIVE_COUNT, e_start,
-        (uint64_t)DNAC_COMMITTEE_SIZE, &target);
+        (uint64_t)DNAC_TARGET_ACTIVE_DEFAULT, &target);
     if (crc < 0) {
         QGP_LOG_ERROR(LOG_TAG, "epoch %llu: TARGET_ACTIVE_COUNT is "
                       "unreadable — refusing to select a committee on a "
@@ -231,8 +257,9 @@ static void emit_member(const committee_work_t *w_in,
                          nodus_committee_member_t *out) {
     memcpy(out->pubkey, w_in->rec->pubkey, DNAC_PUBKEY_SIZE);
     out->total_stake    = w_in->total_stake;
-    out->self_stake     = w_in->rec->self_stake;   /* S3: snapshot self_bond */
-    out->commission_bps = w_in->rec->commission_bps;
+    out->self_stake     = w_in->self_stake;        /* S3: snapshot self_bond
+                                                    * (P3-1: frozen)       */
+    out->commission_bps = w_in->rec->commission_bps; /* LIVE, as before   */
 }
 
 int nodus_committee_compute_for_epoch(nodus_witness_t *w,
@@ -284,16 +311,87 @@ int nodus_committee_compute_for_epoch(nodus_witness_t *w,
         memcpy(state_seed, block_info.state_root, sizeof(state_seed));
     }
 
-    /* Widen the initial candidate set so we can re-apply the state_seed
-     * tiebreak to any ties that the DB sort (pubkey ASC) resolved
-     * differently. 3× max_entries is a heuristic: enough slack to
-     * capture tied-group ripples without exploding the SHA3 bill.
-     * Capped at DNAC_MAX_VALIDATORS (the full table). */
-    int widen = max_entries * 3;
-    if (widen > DNAC_MAX_VALIDATORS) widen = DNAC_MAX_VALIDATORS;
+    /* ── tokenomics-v3 P3-1: "OKUMA B" ────────────────────────────────
+     * Decision file docs/plans/decisions/2026-09-22-nodus-tokenomics-v3-
+     * operator.md §1 "Seçimde bir epoch önce dondurulan stake bakiyeleri
+     * kullanılacak", read as B (§3 2026-09-23) and pinned by §3
+     * 2026-09-24 "P3 soruları" (1): BALANCES from the frozen copy of the
+     * previous boundary, STATUS and TENURE from the live row. Design §8
+     * P3-1.
+     *
+     * The set stored for e_start = B + E is built at boundary B
+     * (nodus_witness_vset_commit_next), so the previous boundary's copy is
+     * copy(B − E) = copy(e_start − 2E). At B = E (e_start = 2E) that is
+     * copy(0), written by the engine genesis from the genesis rows
+     * (nodus_witness_v2_apply.c, both nodus_witness_v2_balance_copy_write
+     * (w, 0) calls). The bootstrap path above (e_start < E + 1, the
+     * genesis snapshots 0 and E) is UNCHANGED and ranks the live genesis
+     * rows — copy(0) does not exist yet when those two are built, and it
+     * holds the same rows.
+     *
+     * THE KEY, written so it cannot wrap: copy_epoch = the epoch start of
+     * the LOOKBACK block (e_start − E − 1, the height the tiebreak seed
+     * is read from above). For every production e_start — a multiple of
+     * E, >= 2E — that is exactly B − E: the lookback block B − 1 lies in
+     * the epoch [B − E, B). For the non-multiple keys only unit fixtures
+     * pass (e_start in (E, 2E) — the post-bootstrap cutoff is E + 1) it is
+     * copy(0), the copy of the epoch the seed block lies in; no
+     * subtraction below the lookback, which is already >= 0 here.
+     *
+     * THE CANDIDATE SET is fetched WHOLE (nodus_validator_bonded_tenured
+     * — live status IN (ACTIVE, ELIGIBLE), live tenure), not a
+     * live-stake-ranked, LIMITed prefix: the ranking key is the frozen
+     * total, so a LIMIT on the live stake (what nodus_validator_top_n
+     * does, with the old 3 × target "widen" heuristic) could cut a
+     * candidate whose frozen total ranks it in. It is bounded by
+     * DNAC_MAX_VALIDATORS through STAKE's Rule M (P3 fix round,
+     * nodus_witness_rt_native.c rtn_stake_exec): ACTIVE + ELIGIBLE rows
+     * are a subset of validator_stats.active_count, which Rule M keeps
+     * <= 128 after every STAKE, fresh or revived. A 129th row is
+     * therefore a broken invariant, not a value: it faults (-1), as
+     * v2ep_rule_n does on the same condition at the same boundary.
+     *
+     * THE RANKING KEY, per candidate, from copy(e_start − 2E)
+     * (nodus_witness_v2_balance_copy_frozen, nodus_witness_v2_econ.c):
+     * frozen total = its own row + Σ its delegator rows, absent = 0.
+     * The emitted entry carries the frozen total as total_stake and the
+     * frozen own row as self_bond (so cometbft's power, Rule N's weight
+     * floor and the reward distribution all see the frozen values; the
+     * distribution's consistency gate re-reads the same copy rows at
+     * src = e_start − 2E, nodus_witness_v2_econ.c v2ec_source_copy);
+     * commission_bps stays the LIVE row's, as before.
+     *
+     * A candidate whose frozen total is 0 is NOT SEATED. It has no stake
+     * in the copy the set is ranked by, so its voting power would be 0 —
+     * a cometbft ValidatorUpdate with power 0 is a REMOVAL, not a seat.
+     * On an honest chain the tenure gate makes this unreachable for
+     * every later joiner (active_since + 2E <= B + E puts its STAKE at or
+     * before block B − E, whose own transactions run before boundary
+     * B − E writes copy(B − E) — nodus_v2_power_exit_boundary's
+     * derivation, steps 1-2); the one reachable case is the tenure
+     * carve-out `active_since_block <= 1` meeting a STAKE executed IN
+     * block 1 (after genesis wrote copy(0)): skipping it seats it one
+     * boundary later, from copy(E), instead of faulting every node on a
+     * condition any staker could trigger.
+     *
+     * THE TIEBREAK is unchanged: SHA3-512(0x02 ‖ pubkey ‖ state_seed),
+     * ASC, inside equal frozen totals (cmp_frozen_desc_tiebreak_asc).
+     *
+     * CALL SITES (both through ONE core, so the snapshot Rule N judges
+     * and the snapshot commit_next stores are built by the same code):
+     *   - nodus_witness_vset_commit_next → vset_build_and_store →
+     *     nodus_witness_vset_build_for_epoch → vset_build_snapshot →
+     *     here (nodus_witness_vset.c);
+     *   - nodus_witness_vset_preview_next → vset_build_snapshot → here
+     *     (Rule N's weight floor, nodus_witness_v2_epoch.c v2ep_rule_n);
+     *   - nodus_committee_get_for_block's cache-miss recompute below, for
+     *     an epoch with no snapshot row (none >= E on a version-3 chain,
+     *     where every epoch's snapshot is stored one epoch ahead). */
+    const uint64_t copy_epoch = (lookback_block / (uint64_t)DNAC_EPOCH_LENGTH)
+                                * (uint64_t)DNAC_EPOCH_LENGTH;
 
     dnac_validator_record_t *candidates =
-        calloc((size_t)widen, sizeof(*candidates));
+        calloc((size_t)DNAC_MAX_VALIDATORS, sizeof(*candidates));
     if (!candidates) return -1;
 
     /* ── S3 tenure anchor fix (found by the 7→9→7 harness) ──────────────
@@ -317,8 +415,9 @@ int nodus_committee_compute_for_epoch(nodus_witness_t *w,
      * even the anchor fix leaves epoch 2E empty (1 + 2E ≤ 2E fails by
      * exactly the one block genesis occupies). */
     int cand_count = 0;
-    if (nodus_validator_top_n(w, widen, e_start,
-                               candidates, &cand_count) != 0) {
+    if (nodus_validator_bonded_tenured(w, e_start, candidates,
+                                       DNAC_MAX_VALIDATORS,
+                                       &cand_count) != 0) {
         free(candidates);
         return -1;
     }
@@ -328,37 +427,50 @@ int nodus_committee_compute_for_epoch(nodus_witness_t *w,
         return 0;   /* empty committee — count_out already 0 */
     }
 
-    /* Build the work table with pre-computed tiebreaks. */
+    /* Build the work table: frozen totals + pre-computed tiebreaks. */
     committee_work_t *work =
         calloc((size_t)cand_count, sizeof(*work));
     if (!work) { free(candidates); return -1; }
 
+    int n_work = 0;
     for (int i = 0; i < cand_count; i++) {
-        work[i].rec = &candidates[i];
-        work[i].total_stake =
-            candidates[i].self_stake + candidates[i].external_delegated;
+        uint64_t frozen_self = 0, frozen_total = 0;
+        if (nodus_witness_v2_balance_copy_frozen(w, copy_epoch,
+                                                 candidates[i].pubkey,
+                                                 &frozen_self,
+                                                 &frozen_total) != 0) {
+            /* A copy that cannot be read is never "absent, rank at 0". */
+            QGP_LOG_ERROR(LOG_TAG, "epoch %llu: frozen copy %llu unreadable "
+                          "for a candidate — failing closed",
+                          (unsigned long long)e_start,
+                          (unsigned long long)copy_epoch);
+            free(work);
+            free(candidates);
+            return -1;
+        }
+        if (frozen_total == 0) {
+            /* not seatable — see the P3-1 block above */
+            QGP_LOG_DEBUG(LOG_TAG, "epoch %llu: a bonded, tenured candidate "
+                          "has no stake in copy(%llu) — not seated",
+                          (unsigned long long)e_start,
+                          (unsigned long long)copy_epoch);
+            continue;
+        }
+        work[n_work].rec         = &candidates[i];
+        work[n_work].total_stake = frozen_total;
+        work[n_work].self_stake  = frozen_self;   /* <= total: own row is
+                                                   * one of the summands  */
         compute_tiebreak_hash(candidates[i].pubkey, state_seed,
-                              work[i].tiebreak);
+                              work[n_work].tiebreak);
+        n_work++;
     }
 
-    /* top_n already sorted by stake DESC + pubkey ASC. Walk consecutive
-     * groups with identical total_stake and re-sort each group by
-     * tiebreak ASC. The primary order is preserved because we never
-     * swap across groups. */
-    for (int i = 0; i < cand_count; ) {
-        int j = i + 1;
-        while (j < cand_count &&
-               work[j].total_stake == work[i].total_stake) {
-            j++;
-        }
-        if (j - i > 1) {
-            qsort(&work[i], (size_t)(j - i), sizeof(work[0]),
-                  cmp_tiebreak_asc);
-        }
-        i = j;
-    }
+    /* ONE total order: frozen total DESC, seeded tiebreak ASC. */
+    if (n_work > 1)
+        qsort(work, (size_t)n_work, sizeof(work[0]),
+              cmp_frozen_desc_tiebreak_asc);
 
-    int final_count = (cand_count < max_entries) ? cand_count : max_entries;
+    int final_count = (n_work < max_entries) ? n_work : max_entries;
     for (int i = 0; i < final_count; i++) {
         emit_member(&work[i], &out[i]);
     }
@@ -407,9 +519,9 @@ int nodus_committee_bootstrap_for_epoch(nodus_witness_t *w,
     /* S3 — the bootstrap epoch reads the SAME target at the SAME key
      * (e_start) as the post-lookback path, so the two never disagree on
      * how many seats the epoch has. At genesis no chain_config_history
-     * row for DNAC_CFG_TARGET_ACTIVE_COUNT exists, so this is
-     * DNAC_COMMITTEE_SIZE and the bootstrap committee is exactly what it
-     * was before S3.
+     * row for DNAC_CFG_TARGET_ACTIVE_COUNT exists, so this is the default
+     * DNAC_TARGET_ACTIVE_DEFAULT (32 since tokenomics-v3 P3-7; the seven
+     * genesis validators of a version-3 chain all fit under it).
      *
      * CORRECTED (O15J Faz 2 Block 2C): this used to read "no
      * chain_config_history row exists" — the pure-V2 builder now seeds
@@ -478,8 +590,11 @@ int nodus_committee_bootstrap_for_epoch(nodus_witness_t *w,
 
     for (int i = 0; i < cand_count; i++) {
         work[i].rec = &candidates[i];
+        /* bootstrap = the genesis snapshots: the LIVE genesis rows (the
+         * same rows copy(0) is later written from) */
         work[i].total_stake =
             candidates[i].self_stake + candidates[i].external_delegated;
+        work[i].self_stake = candidates[i].self_stake;
         compute_tiebreak_hash(candidates[i].pubkey, state_seed,
                               work[i].tiebreak);
     }

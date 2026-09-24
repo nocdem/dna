@@ -50,14 +50,28 @@ The chain is implemented in three layers of the monorepo:
   of the ended epoch in proportion to their voting power; a validator that
   missed the participation bar forfeits its whole share, delegators
   included. Inside a share the validator keeps the part earned by its own
-  bond plus its commission; delegators share the rest by their stake —
-  counted at the SMALLER of what they had when the epoch started and what
-  they have at its end (joining or leaving mid-epoch earns nothing for
-  that epoch; a top-up counts from the next one). Rewards accrue on the
+  bond plus its commission; delegators share the rest by their stake as
+  it stood when that epoch's validator set was chosen (the frozen balance
+  copy the set was built from — stake keeps earning until it leaves the
+  voting power, and a withdrawal is locked long past that, so money
+  cannot be pulled out, used and put back within an epoch). Rewards accrue on the
   chain and are paid as ordinary spendable coins every
   `payout_interval_epochs` boundaries (24 by default — a payday), including
   to a delegator that has since left. Every rounding remainder stays in
   the pool.
+- **Staking parameters (tokenomics-v3 P3, version-3 chain).** Minimum
+  self-stake 10M NODUS; up to 32 validators are seated, chosen by the
+  highest self-stake + delegations as frozen one boundary earlier (status
+  and the 2-epoch tenure read live); others wait bonded but unseated.
+  A validator's bond is locked 84 epochs after it leaves the set, a
+  delegator's withdrawal 12 epochs after its stake leaves voting power
+  (the same lock for everyone). A validator may exit even with
+  delegators — at graduation every delegation is returned automatically,
+  locked 12 epochs — and may stake again with the same key after it has
+  graduated. New delegations need at least 100 NODUS; a partial
+  withdrawal must leave 0 or at least 100 NODUS; up to 2048 delegators
+  per validator. Commission is capped at 50%; an increase takes effect
+  two epochs later, a decrease at once.
 - **Lock-aware coin selection** — the wallet skips UTXOs still inside
   their post-UNSTAKE cooldown (`unlock_block`), so it never builds a
   transaction consensus is guaranteed to reject
@@ -152,8 +166,9 @@ dna-connect-cli dna unstake ...
 dna-connect-cli dna delegate ...
 dna-connect-cli dna undelegate ...         # version-3 chain: the released coin is LOCKED
                                             # until L(h) + 12 epochs (L = the boundary where the
-                                            # stake leaves voting power; tokenomics-v3 P2-10)
-dna-connect-cli dna validator-update ...    # Commission change
+                                            # stake leaves voting power: next boundary + 2 epochs
+                                            # since P3; tokenomics-v3 P2-10)
+dna-connect-cli dna validator-update ...    # Commission change (max 50%; an increase waits 2 epochs)
 dna-connect-cli dna validator-list
 dna-connect-cli dna delegations
 dna-connect-cli dna committee               # Current committee

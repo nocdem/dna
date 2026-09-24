@@ -6,6 +6,8 @@
 #include "dnac/dnac.h"
 #include "dnac/validator.h"     /* S3: DNAC_VALIDATOR_ELIGIBLE */
 #include "dnac/ledger_ids.h"    /* S3: DNA_MAX_ACTIVE_VALIDATORS */
+#include "witness/nodus_witness.h"           /* P3-7: NODUS_V2_ACTIVE_SET_MAX */
+#include "witness/nodus_witness_delegation.h"/* P3-6: the delegator cap */
 #include <stdio.h>
 #include <stdint.h>
 
@@ -24,7 +26,22 @@ int main(void) {
     CHECK_EQ(DNAC_MIN_DELEGATION, 100ULL * 100000000ULL);
     CHECK_EQ(DNAC_MAX_DELEGATIONS_PER_DELEGATOR, 64);
     CHECK_EQ(DNAC_MAX_VALIDATORS, 128);
-    CHECK_EQ(DNAC_UNSTAKE_COOLDOWN_BLOCKS, 17280);
+    /* tokenomics-v3 P3 (decision file docs/plans/decisions/2026-09-22-
+     * nodus-tokenomics-v3-operator.md §1 and §3 2026-09-23/24; design §8):
+     *   P3-3 the validator lock is 84 EPOCHS (DNAC_UNSTAKE_COOLDOWN_BLOCKS
+     *        17280 = 24 epochs is DELETED);
+     *   the delegator lock is 12 epochs (P2-10, unchanged);
+     *   P3-6 the per-validator delegator cap is 2048 (was 64);
+     *   P3-7 the V2 active-set ceiling and the default target are 32
+     *        (were 30 and DNAC_COMMITTEE_SIZE = 7); the governed minimum
+     *        stays 7;
+     *   P3-8 the commission cap is 5000 bps (was 10000).
+     * RED ON THE PRE-P3 TREE: every one of these pins. */
+    CHECK_EQ(DNAC_VALIDATOR_UNBOND_EPOCHS, 84);
+    CHECK_EQ(DNAC_UNDELEGATE_LOCK_EPOCHS, 12);
+    CHECK_EQ(NODUS_MAX_DELEGATORS_PER_VALIDATOR, 2048);
+    CHECK_EQ(NODUS_V2_ACTIVE_SET_MAX, 32);
+    CHECK_EQ(DNAC_TARGET_ACTIVE_DEFAULT, 32);
     CHECK_EQ(DNAC_EPOCH_LENGTH, 720);
     CHECK_EQ(DNAC_MIN_TENURE_BLOCKS, 1440);
     /* S3: DNAC_COMMITTEE_SIZE is no longer "the" committee size — it is
@@ -74,7 +91,7 @@ int main(void) {
     CHECK_EQ(DNAC_LIVENESS_THRESHOLD_BPS, 5000);
     CHECK_EQ(DNAC_AUTO_RETIRE_EPOCHS, 2);
     CHECK_EQ(DNAC_SIGN_FRESHNESS_WINDOW, 32);
-    CHECK_EQ(DNAC_COMMISSION_BPS_MAX, 10000);
+    CHECK_EQ(DNAC_COMMISSION_BPS_MAX, 5000);          /* P3-8 */
     CHECK_EQ(DNAC_SETTLEMENT_ATTENDANCE_WINDOW_BLOCKS, 120);
     CHECK_EQ(DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS, 720);
     CHECK_EQ(DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS, 17280);

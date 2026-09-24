@@ -896,9 +896,11 @@ static int cc_appr_rules_chain_config(nodus_witness_t *w,
         snprintf(reason, reason_size, "scalar rules rejected");
         return -1;
     }
-    /* O15F D2 — the V2-lane TARGET_ACTIVE_COUNT ceiling (30), the same
-     * narrowing nodus_rt_system_exec applies beyond scalar_rules' wider
-     * [7..128]. */
+    /* O15F D2 — the V2-lane TARGET_ACTIVE_COUNT ceiling
+     * NODUS_V2_ACTIVE_SET_MAX, the same narrowing nodus_rt_system_exec
+     * applies beyond scalar_rules' wider [7..128]. tokenomics-v3 P3-7:
+     * the ceiling is 32 (was 30), so the governed range on this lane is
+     * [7, 32] (decision file §3 2026-09-24 "P3 soruları" (4)). */
     if (c.param_id == DNAC_CFG_TARGET_ACTIVE_COUNT &&
         c.new_value > NODUS_V2_ACTIVE_SET_MAX) {
         snprintf(reason, reason_size,

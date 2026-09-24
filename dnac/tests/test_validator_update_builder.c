@@ -34,7 +34,7 @@ int main(void) {
     CHECK(dnac_validator_update(dummy, 500, 0, NULL, NULL)
           == DNAC_ERROR_INVALID_PARAM);
 
-    /* new_commission_bps > DNAC_COMMISSION_BPS_MAX (10000). */
+    /* new_commission_bps > DNAC_COMMISSION_BPS_MAX (5000). */
     CHECK(dnac_validator_update(dummy,
                                 DNAC_COMMISSION_BPS_MAX + 1,
                                 sample_signed_block, NULL, NULL)

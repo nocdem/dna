@@ -60,7 +60,8 @@ static int verify_stake_rules(const dnac_transaction_t *tx) {
         return DNAC_ERROR_INVALID_SIGNATURE;
     }
 
-    /* commission_bps <= 10000 */
+    /* commission_bps <= DNAC_COMMISSION_BPS_MAX (5000 since tokenomics-v3
+     * P3-8 — the same macro the witness checks) */
     if (tx->stake_fields.commission_bps > DNAC_COMMISSION_BPS_MAX) {
         QGP_LOG_ERROR(LOG_TAG, "STAKE: commission_bps=%u > %u",
                       (unsigned)tx->stake_fields.commission_bps,
@@ -156,6 +157,14 @@ int dnac_tx_verify_stake_rules_internal(const dnac_transaction_t *tx) {
  *     lower bound — if `input − output < 100 DNAC` the actual delegation
  *     deposit (which is `input − output − fee`) is already below the
  *     minimum, so the TX is rejectable client-side.)
+ *     ⚠ DIFFERENCE FROM THE WITNESS, stated not changed (P3 fix round):
+ *     this client rule demands the minimum on EVERY delegate, a top-up
+ *     of an existing delegation included. The version-3 witness
+ *     (nodus_witness_rt_native.c rtn_delegate_exec, tokenomics-v3 P3-5)
+ *     demands DNAC_MIN_DELEGATION only when the DELEGATE OPENS a new
+ *     row; a top-up needs >= 1 raw. A top-up below 100 DNAC is therefore
+ *     chain-valid but refused by this client lane — stricter, never
+ *     looser, so it cannot admit what the chain rejects.
  *
  * Rules requiring witness-side DB access are deferred to state-apply:
  *   - Rule B: validator_pubkey IN validator_tree AND status == ACTIVE
@@ -243,9 +252,11 @@ int dnac_tx_verify_delegate_rules_internal(const dnac_transaction_t *tx) {
  *   - signer_count == 1
  *
  * All substantive checks require witness-side DB access:
- *   - Rule A (literal): NO delegation records exist with
- *     validator == signer[0].pubkey — validator must drain external
- *     delegators before exiting
+ *   - (Rule A — "no delegation records may exist for the validator" —
+ *     is GONE since tokenomics-v3 P3-4: the version-3 witness accepts an
+ *     UNSTAKE whatever its delegator count and releases the remaining
+ *     delegations at graduation, nodus_witness_v2_epoch.c
+ *     v2ep_release_delegations. This client lane never enforced it.)
  *   - signer[0].pubkey IN validator_tree AND status == ACTIVE
  *   - Fee paid per current fee schedule
  * These are deferred to Phase 8 Task 42 state-apply.
@@ -260,8 +271,8 @@ static int verify_unstake_rules(const dnac_transaction_t *tx) {
 
     /* TODO(Phase 8 Task 42 / witness-side):
      *   - signer[0].pubkey IN validator_tree AND status == ACTIVE
-     *   - Rule A (literal): NO delegation records where
-     *     validator == signer[0].pubkey (drain-before-exit)
+     *   - (Rule A, drain-before-exit, is removed by tokenomics-v3 P3-4 —
+     *     see the header above; nothing to add here for it)
      *   - Fee paid per current fee schedule
      * Requires nodus_validator_lookup / nodus_delegation_count_by_validator. */
 
@@ -339,7 +350,7 @@ int dnac_tx_verify_undelegate_rules_internal(const dnac_transaction_t *tx) {
  * Enforces the locally-verifiable subset of the VALIDATOR_UPDATE rule set:
  *
  *   - signer_count == 1
- *   - new_commission_bps <= DNAC_COMMISSION_BPS_MAX (10000)
+ *   - new_commission_bps <= DNAC_COMMISSION_BPS_MAX (5000 — P3-8)
  *   - signed_at_block > 0 (zero is the struct default; a valid update
  *     must anchor to a specific block for Rule K freshness to work)
  *
@@ -360,7 +371,8 @@ static int verify_validator_update_rules(const dnac_transaction_t *tx) {
         return DNAC_ERROR_INVALID_SIGNATURE;
     }
 
-    /* new_commission_bps <= 10000 */
+    /* new_commission_bps <= DNAC_COMMISSION_BPS_MAX (5000 since
+     * tokenomics-v3 P3-8) */
     if (tx->validator_update_fields.new_commission_bps > DNAC_COMMISSION_BPS_MAX) {
         QGP_LOG_ERROR(LOG_TAG,
                       "VALIDATOR_UPDATE: new_commission_bps=%u > %u",

@@ -80,10 +80,18 @@ static int failed = 0;
 /* A sentinel the callee must never write over on a fault. */
 #define UNTOUCHED 0x5A5A5A5A5A5A5A5AULL
 
-/* Nine bonded validators: enough that a TARGET_ACTIVE_COUNT override of 9
- * produces a visibly different committee size than the default 7, which
- * is what makes the consumer twins non-vacuous. */
-#define N_VALS   9
+/* Nine bonded validators and a TARGET_ACTIVE_COUNT override of 8: the
+ * default is DNAC_TARGET_ACTIVE_DEFAULT (32, tokenomics-v3 P3-7), which
+ * over nine bonded validators seats all nine — so an override of 8 is a
+ * visibly different committee size than the default would produce, and
+ * that is what makes the consumer twins non-vacuous. (Before P3-7 the
+ * default was 7 and the override was 9; with a default of 32 an override
+ * of 9 would equal the default's answer and the twins would pass without
+ * the override being read.) */
+#define N_VALS      9
+#define N_OVERRIDE  8
+_Static_assert(N_OVERRIDE < N_VALS && N_OVERRIDE < DNAC_TARGET_ACTIVE_DEFAULT,
+               "the override must differ from the default's answer");
 
 typedef struct {
     nodus_witness_t *w;
@@ -433,19 +441,20 @@ done:
  * snapshot_hash is built from.
  *
  * Non-vacuity twin: the SAME row, poison off, must change the committee
- * size from the default 7 to 9 — proving the override is genuinely being
- * read and that the -1 below is the poison talking, not the fixture.
+ * size from the default's answer (9 — all nine bonded, default 32) to 8 —
+ * proving the override is genuinely being read and that the -1 below is
+ * the poison talking, not the fixture.
  *
  * KILLED BY: reverting committee_target_for_epoch to return the clamped
- * default on rc < 0. The committee then comes back with 7 members and
+ * default on rc < 0. The committee then comes back with 9 members and
  * rc 0 — a well-formed answer no peer would agree with. */
 static void t_committee_fails_closed(void) {
     TEST("consumer: committee selection halts on an unreadable seat count");
     fx_t fx;
 
-    /* Twin: healthy override of 9 seats. */
+    /* Twin: healthy override of 8 seats. */
     if (fx_up(&fx, "cmt_ok", 1) != 0) { FAIL("fixture"); fx_free(&fx); return; }
-    if (cc_view(&fx, P_TAC, (uint64_t)N_VALS, 0ULL, 0) != 0) {
+    if (cc_view(&fx, P_TAC, (uint64_t)N_OVERRIDE, 0ULL, 0) != 0) {
         FAIL("view"); goto done;
     }
     {
@@ -456,7 +465,7 @@ static void t_committee_fails_closed(void) {
             goto done;
         }
         free(m);
-        if (n != N_VALS) {
+        if (n != N_OVERRIDE) {
             FAIL("the seat-count override was not applied — twin is vacuous");
             goto done;
         }
@@ -465,7 +474,7 @@ static void t_committee_fails_closed(void) {
 
     /* Same row, poisoned. */
     if (fx_up(&fx, "cmt_bad", 1) != 0) { FAIL("fixture"); fx_free(&fx); return; }
-    if (cc_view(&fx, P_TAC, (uint64_t)N_VALS, 0ULL, 1) != 0) {
+    if (cc_view(&fx, P_TAC, (uint64_t)N_OVERRIDE, 0ULL, 1) != 0) {
         FAIL("view"); goto done;
     }
     {
@@ -506,7 +515,7 @@ static void t_vset_fails_closed(void) {
 
     /* Twin: healthy. commit_genesis must seed both epoch rows. */
     if (fx_up(&fx, "vs_ok", 1) != 0) { FAIL("fixture"); fx_free(&fx); return; }
-    if (cc_view(&fx, P_TAC, (uint64_t)N_VALS, 0ULL, 0) != 0) {
+    if (cc_view(&fx, P_TAC, (uint64_t)N_OVERRIDE, 0ULL, 0) != 0) {
         FAIL("view"); goto done;
     }
     if (nodus_witness_vset_commit_genesis(fx.w, 1) != 0) {
@@ -514,7 +523,8 @@ static void t_vset_fails_closed(void) {
         goto done;
     }
     {
-        /* And it really used the override: 9 seats, not the default 7. */
+        /* And it really used the override: 8 seats, not the 9 the
+         * default (32) would seat from nine bonded validators. */
         dna_vset_snapshot_t *snap = NULL;
         if (nodus_witness_vset_get(fx.w, 0, &snap, NULL) != 0 || !snap) {
             FAIL("no genesis snapshot row");
@@ -522,7 +532,7 @@ static void t_vset_fails_closed(void) {
         }
         int ac = (int)snap->active_count;
         dna_vset_free(&snap);
-        if (ac != N_VALS) {
+        if (ac != N_OVERRIDE) {
             FAIL("the snapshot ignored the seat-count override");
             goto done;
         }
@@ -531,7 +541,7 @@ static void t_vset_fails_closed(void) {
 
     /* Same row, poisoned. */
     if (fx_up(&fx, "vs_bad", 1) != 0) { FAIL("fixture"); fx_free(&fx); return; }
-    if (cc_view(&fx, P_TAC, (uint64_t)N_VALS, 0ULL, 1) != 0) {
+    if (cc_view(&fx, P_TAC, (uint64_t)N_OVERRIDE, 0ULL, 1) != 0) {
         FAIL("view"); goto done;
     }
     if (nodus_witness_vset_commit_genesis(fx.w, 1) != -1) {

@@ -2,9 +2,11 @@
  * Nodus — Task 29 Rule D locked-UTXO verify test
  *
  * Rule D (design §3.8): SPEND verify rejects inputs whose referenced UTXO
- * has unlock_block > current_block. UNSTAKE commit produces a locked UTXO
- * whose unlock_block = commit_block + DNAC_UNSTAKE_COOLDOWN_BLOCKS (17280
- * blocks ≈ 24h at 5s/block).
+ * has unlock_block > current_block. A validator's graduation produces a
+ * locked UTXO whose unlock_block = H_grad + DNAC_VALIDATOR_UNBOND_EPOCHS ×
+ * DNAC_EPOCH_LENGTH (84 epochs — tokenomics-v3 P3-3; it was
+ * DNAC_UNSTAKE_COOLDOWN_BLOCKS = 17280 blocks, deleted), and a
+ * delegation's release a UTXO locked DNAC_UNDELEGATE_LOCK_EPOCHS epochs.
  *
  * This test exercises the lookup layer directly via
  * nodus_witness_utxo_lookup_ex — it verifies that the v15 unlock_block

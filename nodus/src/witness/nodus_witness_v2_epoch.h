@@ -40,7 +40,8 @@
  *   1b. REWARD DISTRIBUTION (tokenomics-v3 P2, P2-6) —
  *      nodus_witness_v2_settlement_apply(w, H): payout = reward_pool >>
  *      16 over snapshot(H−E) pro rata to its power, inner split on the
- *      source copy src(H) = H−2E (0 below 2E) after a consistency gate
+ *      source copy src(H) = H−3E (0 below 3E — tokenomics-v3 P3-2; it
+ *      was H−2E before P3's "okuma B") after a consistency gate
  *      against the snapshot entry (P2 revision 2, design §7.1),
  *      credited to `v2_reward_accrual`, reward_pool debited by exactly
  *      what was credited. Contract: nodus_witness_v2_econ.h.
@@ -53,7 +54,9 @@
  *      RETIRING-only; an AUTO_RETIRED member's bond is RETURNED, never
  *      cut — decision §3, 2026-09-23), selected ORDER BY pubkey ASC
  *      (bft.c:2416-2422; the order is load-bearing and is a stable total
- *      key on every node), bounded by DNAC_MAX_VALIDATORS.
+ *      key on every node), bounded by 2 × DNAC_MAX_VALIDATORS (Rule M
+ *      bounds RETIRING through active_count; the AUTO_RETIRED rows are
+ *      one boundary's Rule N output — derivation at v2ep_graduate).
  *
  *      ROUND 5 DEFERRAL (decision file §3 2026-09-23, "ayrılan
  *      validatorun MEZUNİYETİ … ertelenir"; O6 red-team L1-1): a
@@ -79,7 +82,13 @@
  *      not the one at which UNSTAKE was requested.
  *
  *      Per graduate, in the legacy order (bft.c:2465-2560): release UTXO
- *      → validators row → active_count — EXCEPT active_count is
+ *      (locked DNAC_VALIDATOR_UNBOND_EPOCHS · E past H — P3-3) → every
+ *      delegation it still holds released to its delegator as a UTXO
+ *      locked DNAC_UNDELEGATE_LOCK_EPOCHS · E past H, its rows deleted
+ *      (P3-4 — Rule A is gone from UNSTAKE; identity: the "graduation's
+ *      DELEGATION release identity" block below) → validators row (bond
+ *      and both delegated totals zeroed) → active_count — EXCEPT
+ *      active_count is
  *      decremented only for a graduate whose status WAS RETIRING; Rule N
  *      already decremented it for AUTO_RETIRED at the boundary that
  *      retired it, and decrementing twice would poison
@@ -106,7 +115,9 @@
  *   6. BALANCE COPY (tokenomics-v3 P2, P2-5) —
  *      nodus_witness_v2_balance_copy_write(w, H): the bonded balances as
  *      they stand AFTER every one of this boundary's transitions, pruned
- *      to the H−E and H copies. Out of every root.
+ *      to the H−2E, H−E and H copies (three — P3-2). Out of every root.
+ *      Read by the commit_next of boundary H+E (P3-1 "okuma B") and by
+ *      the distribution of boundary H+3E (src).
  *
  * ── WHY THE DISTRIBUTION SITS AT 1b (tokenomics-v3 P2) ──────────────
  * Three inputs decide it, and each fixes a bound on its position:
@@ -124,9 +135,10 @@
  *     pays a leaving validator for its last seated epoch — its snapshot
  *     entry does (the decision file §3 graduation deferral: it keeps
  *     signing that epoch and loses the share only by missing the bar).
- *   - THE FROZEN SIDE: the source copy src(H) = copy(H−2E) was written
- *     at the END of boundary H−2E (step 6), right after the commit_next
- *     that built snapshot(H−E); boundary H−E's prune kept it, and THIS
+ *   - THE FROZEN SIDE: the source copy src(H) = copy(H−3E) was written
+ *     at the END of boundary H−3E (step 6); the commit_next of boundary
+ *     H−2E ranked snapshot(H−E) by its frozen totals (P3-1 "okuma B");
+ *     the prunes of boundaries H−2E and H−E kept it, and THIS
  *     boundary's step 6 prune deletes it. So the distribution MUST run
  *     before step 6. copy(H) is written last and is not read here.
  * Rule N (3), the digest (3b) and the flips (4) write only statuses,
@@ -139,12 +151,16 @@
  * ── WHY THE BALANCE COPY SITS LAST (step 6) ─────────────────────────
  * The copy freezes the balances the NEXT epoch starts from. Of this
  * boundary's steps only the graduation (2) moves a stake (it zeroes a
- * graduate's self_stake, which drops it from the copy); Rule N and the
+ * graduate's self_stake and, since P3-4, releases and deletes its
+ * delegations, which drops all of them from the copy); Rule N and the
  * flips move statuses only, and the copy carries no status. Writing it
  * after step 5 therefore captures the post-boundary state, and it adds
  * nothing between Rule N and commit_next — the window Rule N's weight
  * floor argument (v2ep_rule_n) requires to stay free of writes to
- * committee inputs.
+ * committee inputs. Since P3-1 the copy IS a committee input — but the
+ * one commit_next reads is copy(H−E), written by the PREVIOUS boundary;
+ * this boundary's step 6 writes copy(H) and prunes below H−2E, touching
+ * neither copy(H−E) nor anything commit_next(H) reads.
  *
  * ── RULE N: REWRITTEN (tokenomics-v3 P1, D-3) ───────────────────────
  * The legacy boundary's third transition (liveness-based AUTO_RETIRED,
@@ -398,6 +414,66 @@ int nodus_witness_v2_epoch_val_rec_ok(const dnac_validator_record_t *v);
 #define NODUS_V2_EPGRAD_KIND     ((uint8_t)0x10)
 #define NODUS_V2_EPGRAD_OUT_IDX  ((uint32_t)200)
 
+/* ── tokenomics-v3 P3-4: the graduation's DELEGATION release identity ──
+ * A graduating validator's remaining delegations are released to their
+ * delegators at the graduation boundary H (nodus_witness_v2_epoch.c
+ * v2ep_release_delegations). Each release UTXO is identified by
+ *   tx_hash   = nodus_witness_v2_settlement_tx_hash(H)
+ *               (SHA3-512("settlement" ‖ u64be(H)), the payday's tx_hash)
+ *   index     = NODUS_V2_GRAD_DELEG_OUT_IDX_BASE + rank
+ *   nullifier = nodus_witness_v2_settlement_nullifier(tx_hash,
+ *               NODUS_V2_GRAD_DELEG_KIND, index)
+ *               = SHA3-512(tx_hash ‖ kind ‖ u32be(index))
+ * with `rank` a running counter over the whole boundary (graduates in
+ * pubkey ASC order, each graduate's delegations in delegator_hash ASC).
+ *
+ * THE KIND — 0x23, NEW. The synthetic-UTXO kind bytes already in use:
+ * 0x01 (the UNDELEGATE release, nodus_witness_rt_native.c
+ * RTN_SYSFUND_REL_KIND), 0x10 (the graduation bond release, above), 0x20
+ * / 0x21 (the O15J per-boundary settlement — RETIRED, never reused) and
+ * 0x22 (the P2 accrual payday, NODUS_V2_SETTLE_KIND_ACCRUAL,
+ * nodus_witness_v2_econ.h). 0x23 was repo-scanned before adoption: no
+ * nullifier derivation uses it. The payday shares this tx_hash at the
+ * same boundary; the kind byte alone already separates the two nullifier
+ * input domains.
+ *
+ * THE INDEX BAND — [2^30, 2^31), i.e. index = 0x40000000 + rank with
+ * rank <= 0x3FFFFFFF. The whole band sits BELOW 2^31 so every reader
+ * that narrows output_index through a signed 32-bit int
+ * (sqlite3_column_int in nodus_witness_merkle.c load_utxo_leaves and
+ * nodus_witness_db.c; sqlite3_bind_int in nodus_witness_tx_output_add)
+ * sees the exact value. (The P3 first cut used [2^31, 2^32); whether
+ * those indices survived a signed-int reader depended on how
+ * sqlite3_column_int narrows a value above INT32_MAX — the P3 fix round
+ * moved the band below 2^31, which removes that dependence.)
+ * The synthetic writers below it, in ascending order:
+ *   wire outputs 0 .. RTN_SPEND_MAX_OUT−1   (CORE SPEND and friends)
+ *   100             the UNDELEGATE release (RTN_SYSFUND_REL_INDEX)
+ *   200             the graduation bond release (NODUS_V2_EPGRAD_OUT_IDX,
+ *                   its own grad_id as tx_hash)
+ *   400 + i         the P2 accrual payday (NODUS_V2_SETTLE_OUT_IDX_BASE),
+ *                   at THIS SAME settlement tx_hash; the payday refuses
+ *                   (-2) a batch whose last index would reach this band
+ *                   (nodus_witness_v2_payday_apply), so the two
+ *                   (tx_hash, output_index) pairs a wallet sees can never
+ *                   coincide either.
+ * The ordering is pinned by static asserts in nodus_witness_v2_econ.c and
+ * nodus_witness_rt_native.c. Above the band there is nothing: a rank past
+ * NODUS_V2_GRAD_DELEG_RANK_MAX would leave it (and cross 2^31), and
+ * v2ep_release_delegations refuses it (-2). The real bound is the
+ * graduation scan bound (2 × DNAC_MAX_VALIDATORS = 256 graduates, see
+ * v2ep_graduate) × NODUS_MAX_DELEGATORS_PER_VALIDATOR (2048) = 524 288
+ * rows, far inside it. */
+#define NODUS_V2_GRAD_DELEG_KIND          ((uint8_t)0x23)
+#define NODUS_V2_GRAD_DELEG_OUT_IDX_BASE  ((uint32_t)0x40000000u)
+#define NODUS_V2_GRAD_DELEG_RANK_MAX      ((uint32_t)0x3FFFFFFFu)
+_Static_assert((uint64_t)NODUS_V2_GRAD_DELEG_OUT_IDX_BASE +
+                   (uint64_t)NODUS_V2_GRAD_DELEG_RANK_MAX <=
+                   (uint64_t)INT32_MAX,
+               "the graduation-delegation band must stay below 2^31");
+_Static_assert(NODUS_V2_EPGRAD_OUT_IDX < NODUS_V2_GRAD_DELEG_OUT_IDX_BASE,
+               "the bond release index must sit below the band");
+
 /**
  * Deterministic fault-injection stages of the boundary, mapped by the
  * apply engine onto its own append-only fault ids F39-F45
@@ -444,7 +520,13 @@ typedef enum {
     NODUS_V2_EPST_PAYDAY_EMITTED  = 15, /* every payday UTXO written,
                                          * accrual rows not yet deleted  */
     NODUS_V2_EPST_PAYDAY_APPLIED  = 16, /* accrual rows deleted          */
-    NODUS_V2_EPST_BALANCE_COPY    = 17  /* copy(H) written, older pruned */
+    NODUS_V2_EPST_BALANCE_COPY    = 17, /* copy(H) written, older pruned */
+    /* tokenomics-v3 P3-4 — APPENDED. Fires per graduate (graduate_index
+     * = its candidate index), after its bond release (2) and after every
+     * delegation it held has been released as a locked UTXO and its
+     * delegation rows deleted, BEFORE its validators row is rewritten
+     * (3). The engine maps it BY NAME. */
+    NODUS_V2_EPST_GRAD_DELEG_RELEASED = 18
     /* The numbers are append-only and NOT in firing order any more
      * (13-16 fire before 2); they are module-internal: the engine maps
      * them onto its own frozen fault ids BY NAME
@@ -787,43 +869,54 @@ static inline uint64_t nodus_v2_epoch_start_for_height(uint64_t h) {
  * With E = DNAC_EPOCH_LENGTH:
  *
  *   nb(h) = ceil(h / E) · E        (h itself when h is a boundary)
- *   L(h)  = nb(h) + E
+ *   L(h)  = nb(h) + 2E             (tokenomics-v3 P3-2, "okuma B")
  *
  * DERIVATION, from the code in this tree:
  *   1. A block's transactions run BEFORE its own boundary: the envelopes
  *      execute with ctx.global_height = blk->global_height
  *      (nodus_witness_v2_apply.c:1307, called at :3640) and the boundary
- *      is phase 6e, later in the same block (:4163). So the FIRST
- *      boundary whose commit_next sees a change made in block h is nb(h)
- *      — h itself when h is a boundary, because block h's transactions
- *      are already applied when block h's boundary runs.
- *   2. commit_next reads the LIVE stake, self_stake + external_delegated
- *      (nodus_witness_committee.c:338-339, the bootstrap twin :481-482).
- *   3. The set commit_next builds at boundary B is keyed B + E
- *      (nodus_witness_vset.c:703) — it governs (B+E, B+2E], not
- *      (B, B+E]. The boundary builds it at nodus_witness_v2_epoch.c:1348
- *      and writes the frozen balance copy right after (:1359), with no
- *      stake movement in between.
- *   So the set built at nb(h) is the first that excludes the change, and
- *   it takes effect at nb(h) + E = L(h). cometbft's own two-height
+ *      is phase 6e, later in the same block (:4163). So the stake tables
+ *      the boundary of block nb(h) freezes already carry a change made in
+ *      block h — h itself when h is a boundary.
+ *   2. That freeze is the balance copy: boundary B writes copy(B) as its
+ *      LAST step (nodus_witness_v2_epoch_boundary_apply step 6,
+ *      nodus_witness_v2_balance_copy_write). A change made in block h is
+ *      therefore first in copy(nb(h)).
+ *   3. Under "okuma B" (P3-1, decision file §3 2026-09-23 and 2026-09-24
+ *      "P3 soruları" (1)) the set commit_next builds at boundary B is
+ *      ranked by the FROZEN totals of copy(B − E), not the live stake
+ *      (nodus_committee_compute_for_epoch, nodus_witness_committee.c).
+ *      copy(nb(h)) is therefore first read by the commit_next of
+ *      boundary nb(h) + E.
+ *   4. The set commit_next builds at boundary B is keyed B + E
+ *      (nodus_witness_vset.c nodus_witness_vset_commit_next) — it
+ *      governs (B+E, B+2E].
+ *   So the set built at nb(h) + E is the first that reflects the change,
+ *   and it takes effect at nb(h) + 2E = L(h). cometbft's own two-height
  *   ValidatorUpdate delay is NOT included (decision §3 S-1).
  *
  * The UNDELEGATE release UTXO is born locked to L(h) +
  * DNAC_UNDELEGATE_LOCK_EPOCHS · E (nodus_witness_rt_native.c
  * rtn_sysfund_exec); the spend gates refuse it while unlock >= height.
  *
- * P3 NOTE: when P3's "okuma B" (the selection reads the frozen copy of
- * the PREVIOUS boundary) lands, a stake change is first seen by the set
- * built one boundary later, and L(h) becomes nb(h) + 2E. THREE things
- * move together, never this function alone (P2 rev 2 red-team,
- * 2026-09-24): (1) this function; (2) the distribution's source copy,
- * nodus_witness_v2_econ.c v2ec_source_copy — it must name the copy the
- * governing snapshot was BUILT from (H−3E instead of H−2E), or the
- * consistency gate faults on every honest node at the first boundary
- * after any delegation; (3) the copy retention in
- * nodus_witness_v2_balance_copy_write — it prunes below epoch_start − E
- * today, so copy(H−3E) would already be gone. D-9 also wants a status
- * column the copy does not carry.
+ * THE COUPLED TRIPLE (P3-2; P2 rev 2 red-team, 2026-09-24). This function
+ * moved from nb(h) + E to nb(h) + 2E TOGETHER with two others, and none
+ * of the three may move alone:
+ *   (1) this function;
+ *   (2) the distribution's source copy, nodus_witness_v2_econ.c
+ *       v2ec_source_copy: src(H) = H − 3E (0 below 3E) — the copy the
+ *       governing snapshot(H − E) was BUILT from (at boundary H − 2E,
+ *       reading copy(H − 3E)); naming any other copy makes the
+ *       distribution's consistency gate fault on every honest node at
+ *       the first boundary after a stake change;
+ *   (3) the copy retention in nodus_witness_v2_balance_copy_write: three
+ *       copies are kept (boundary B keeps B − 2E, B − E and B), so
+ *       copy(H − 3E) still exists when boundary H's distribution reads
+ *       it — boundary H's own prune runs after.
+ * The status column D-9 once asked for is NOT needed: the operator's
+ * reading of "okuma B" takes only the BALANCES from the copy; status and
+ * tenure come from the live row (decision file §3 2026-09-24 "P3
+ * soruları" (1)).
  *
  * Pure height arithmetic: no clock, no database, identical on every
  * node for the same h.

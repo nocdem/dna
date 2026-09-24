@@ -1944,6 +1944,11 @@ static int rtn_tc_exec(const rtn_tc_call_t *t,
 #define RTN_SYSFUND_REL_INDEX  ((uint32_t)100)
 _Static_assert(RTN_SYSFUND_REL_INDEX >= RTN_SPEND_MAX_OUT,
                "the release output index can collide with a wire output");
+/* the rest of the synthetic ladder (nodus_witness_v2_epoch.h "THE INDEX
+ * BAND"): 100 < the graduation bond release 200 < … < 0x40000000 */
+_Static_assert(RTN_SYSFUND_REL_INDEX < NODUS_V2_EPGRAD_OUT_IDX,
+               "the UNDELEGATE release index must sit below the bond "
+               "release index");
 
 /* The staking funding/release executor (O11) — the CORE half of every
  * SYSTEM stake-lifecycle envelope.
@@ -2090,8 +2095,10 @@ static int rtn_sysfund_exec(const rtn_spend_call_t *c,
          * refuses a locked funding coin) before L(h) + 12E + 1 — the
          * spend gates refuse while unlock >= height (rtn_xfer_exec,
          * rtn_tc_exec and the input loop above). Same shape as the
-         * validator graduation's locked release (nodus_witness_v2_epoch.c
-         * v2ep_graduate, unlock = H + DNAC_UNSTAKE_COOLDOWN_BLOCKS).
+         * validator graduation's locked releases (nodus_witness_v2_epoch.c
+         * v2ep_graduate: the bond at H + DNAC_VALIDATOR_UNBOND_EPOCHS · E,
+         * each remaining delegation at H + DNAC_UNDELEGATE_LOCK_EPOCHS ·
+         * E — tokenomics-v3 P3-3 / P3-4).
          *
          * Every step is checked, and the result is bounded by the SQLite
          * INTEGER maximum: an unlock that round-trips NEGATIVE would be
@@ -2729,7 +2736,9 @@ const nodus_domain_adapter_t NODUS_RT_CORE_ADAPTER = {
 #define RTN_SYS_OP_DELEGCNT  6u  /* READ-ONLY: delegations by validator  */
 #define RTN_SYS_OP_STATS     7u  /* SET + read: validator_stats counter  */
 
-/* The canonical validator record (exact 5397 bytes — O11). It is
+/* The canonical validator record (exact 5381 bytes — RTN_VAL_REC_LEN,
+ * pinned by the static assert below; O11 shipped it at 5397, see the
+ * tokenomics-v3 P1 note further down). It is
  * EXACTLY the sixteen columns the validator merkle leaf hashes, in leaf
  * order (nodus_witness_merkle.c:880-896 / load_validator_leaves), so the
  * mediated read serves precisely what the state root commits and nothing
@@ -3038,10 +3047,14 @@ static int rtn_delegate_read_plan(const dna_env_view_t *env,
     return 0;
 }
 
-/* UNSTAKE (O11) read plan: the validator's own row and Rule A's input —
- * how many delegations still reference it. Ascending: op 4 before op 6.
- * The two keys are DIFFERENT derivations of the same pubkey (validator
- * tree tag vs delegation row tag) — see rtn_deleg_key. */
+/* UNSTAKE (O11) read plan: the validator's own row — ONE read.
+ *
+ * tokenomics-v3 P3-4 (decision file §3 2026-09-24 "P3 soruları" (3)):
+ * Rule A ("no delegation may still reference the validator") is REMOVED,
+ * and with it the second read this plan used to carry (the op-6
+ * delegation COUNT, its only input). Keeping a read no rule consumes
+ * would be dead code that still charges a w_read; the plan and the
+ * exec's `n_reads != 1` contract move together. */
 static int rtn_unstake_read_plan(const dna_env_view_t *env,
                                  uint16_t leg_index,
                                  nodus_rt_read_req_t *reqs_out,
@@ -3052,18 +3065,13 @@ static int rtn_unstake_read_plan(const dna_env_view_t *env,
                               env->buf + env->call_off[leg_index],
                               env->leg[leg_index].call_len, &vpk) != 0)
         return -1;
-    if (max_reqs < 2) return -1;
+    if (max_reqs < 1) return -1;
     memset(&reqs_out[0], 0, sizeof(reqs_out[0]));
     reqs_out[0].op_id = RTN_SYS_OP_VAL;
     reqs_out[0].key_len = (uint16_t)RTN_VAL_KEY_LEN;
     if (rtn_tag_key(NODUS_TREE_TAG_VALIDATOR, vpk, reqs_out[0].key) != 0)
         return -2;
-    memset(&reqs_out[1], 0, sizeof(reqs_out[1]));
-    reqs_out[1].op_id = RTN_SYS_OP_DELEGCNT;
-    reqs_out[1].key_len = 64;
-    if (rtn_tag_key(NODUS_TREE_TAG_DELEGATION, vpk, reqs_out[1].key) != 0)
-        return -2;
-    *n_out = 2;
+    *n_out = 1;
     return 0;
 }
 
@@ -3139,6 +3147,12 @@ int nodus_rt_system_read_plan(const nodus_domain_runtime_t *rt,
     return 0;
 }
 
+/* The canonical writable-shape rules, defined with the compiled SYSTEM
+ * adapter below; the fault-class rationale is the block above
+ * rtn_delegate_exec. */
+static int rtn_val_rec_ok(const uint8_t *v, const uint8_t *key);
+static int rtn_del_rec_ok(const uint8_t *v, const uint8_t *key);
+
 /**
  * DNA_SYSRULE_STAKE (O11) — validator registration.
  *
@@ -3160,6 +3174,51 @@ int nodus_rt_system_read_plan(const nodus_domain_runtime_t *rt,
  * consumes the inputs and derives its lock from THIS call's bond field,
  * which is why the sibling leg's call must parse before anything is
  * written (a record leg whose funding leg is malformed must not commit).
+ *
+ * RE-STAKE AFTER GRADUATION (tokenomics-v3 P3-9; decision file docs/plans/
+ * decisions/2026-09-22-nodus-tokenomics-v3-operator.md §3 2026-09-23
+ * "MEZUNİYETTEN SONRA aynı anahtarla yeniden stake edilebilir"; design §8
+ * P3-9). Rule I is NARROWED by exactly one state: a row whose status is
+ * UNSTAKED — a validator that has graduated, whose bond already left the
+ * record as a locked release UTXO — is REVIVED instead of refused. Every
+ * other existing status (ACTIVE, ELIGIBLE, RETIRING, AUTO_RETIRED) is
+ * still refused: before graduation the principal is still on the record,
+ * and allowing a return then would let a validator undo its own exit
+ * (or a Rule N retirement) with no lock ever running (§3, "İZİN
+ * MEZUNİYETTEN ÖNCE VERİLMEZ").
+ * The revived record is built from scratch EXACTLY as a fresh STAKE
+ * builds it — the canonical record offsets RTN_VAL_* (defined with the
+ * SYSTEM adapter below; 5381 bytes):
+ *   [0..2591]    pubkey                      the staker (== the row's)
+ *   [2592..2599] self_stake                  := the new bond
+ *   [2600..2607] total_delegated             := 0
+ *   [2608..2615] external_delegated          := 0
+ *   [2616..2617] commission_bps              := the call's
+ *   [2618..2619] pending_commission_bps      := 0
+ *   [2620..2627] pending_effective_block     := 0
+ *   [2628]       status                      := ACTIVE (a fresh STAKE's)
+ *   [2629..2636] active_since_block          := h (tenure restarts)
+ *   [2637..2644] unstake_commit_block        := 0 (cleared)
+ *   [2645..2772] unstake_destination_fp      := the call's
+ *   [2773..5364] unstake_destination_pubkey  := the staker's key iff the
+ *                                               destination is its own
+ *                                               fingerprint, else zero
+ *   [5365..5372] last_validator_update_block := 0
+ *   [5373..5380] consecutive_missed_epochs   := 0
+ * and written as a SET bound by EXISTS_VHASH to the UNSTAKED record the
+ * mediated read observed (rtn_row_set_eff) instead of the fresh path's
+ * CREATE/ABSENT. The observed UNSTAKED record must carry self_stake 0
+ * and both delegated totals 0 (graduation zeroes all three — P3-4
+ * releases every delegation — so a nonzero value is a row this rewrite
+ * would silently erase from the supply equation): otherwise VERDICT -1,
+ * like the writable-shape gate rtn_val_rec_ok on the same record.
+ * validator_stats.active_count rises by one exactly as for a fresh
+ * STAKE — the graduation of a RETIRING row, or Rule N for an
+ * AUTO_RETIRED one, already took the row out of it.
+ *
+ * RULE M (P3 fix round): both paths are refused (VERDICT) when the
+ * incremented active_count would exceed DNAC_MAX_VALIDATORS (128) — the
+ * cap the boundary readers fault on. The reasoning sits at the check.
  *
  * @return 0 / -1 verdict / -2 node fault.
  */
@@ -3188,8 +3247,10 @@ static int rtn_stake_exec(const dna_env_view_t *env, uint16_t leg_index,
                                           * apply_stake copied
                                           * commission_bps into the row
                                           * unchecked (bft.c:1541, 1581)
-                                          * — the 0..10000 bound existed
-                                          * only in the CLIENT lane
+                                          * — the bound (then 0..10000;
+                                          * 0..5000 since tokenomics-v3
+                                          * P3-8) existed only in the
+                                          * CLIENT lane
                                           * (dnac verify.c / transaction.h
                                           * :495). Witness-enforced here,
                                           * fail-closed direction.       */
@@ -3211,10 +3272,33 @@ static int rtn_stake_exec(const dna_env_view_t *env, uint16_t leg_index,
 
     /* ── mediated reads ─────────────────────────────────────────────── */
     if (n_reads != 2 || !reads) return -2;
-    if (reads[0].present) return -1;     /* Rule I: this pubkey already
-                                          * has a validator row — reject
-                                          * whatever its status is, the
-                                          * legacy INSERT would too      */
+    uint8_t key[RTN_VAL_KEY_LEN];
+    if (rtn_tag_key(NODUS_TREE_TAG_VALIDATOR, c.staker_pubkey, key) != 0)
+        return -2;
+    int revive = 0;
+    if (reads[0].present) {
+        /* Rule I, narrowed by P3-9 (header block): an existing row is
+         * refused UNLESS it is UNSTAKED, which is revived. */
+        const nodus_rt_read_res_t *vr = &reads[0];
+        if (vr->value_len != RTN_VAL_REC_LEN) return -2;   /* own adapter
+                                          * out of contract: node fault  */
+        /* the status first: every existing row that is NOT UNSTAKED is
+         * the pre-P3 Rule I refusal, whatever else it holds */
+        if (vr->value[RTN_VAL_STATUS_OFF] != (uint8_t)DNAC_VALIDATOR_UNSTAKED)
+            return -1;                   /* Rule I: bonded / exiting /
+                                          * not yet graduated            */
+        if (memcmp(vr->value + RTN_VAL_PK_OFF, c.staker_pubkey,
+                   DNAC_PUBKEY_SIZE) != 0)
+            return -2;                   /* row/key disagreement: fault  */
+        if (!rtn_val_rec_ok(vr->value, key)) return -1;   /* write-frozen
+                                          * legacy-malformed row         */
+        if (rtn_get64(vr->value + RTN_VAL_SELF_OFF) != 0 ||
+            rtn_get64(vr->value + RTN_VAL_TOTDEL_OFF) != 0 ||
+            rtn_get64(vr->value + RTN_VAL_EXTDEL_OFF) != 0)
+            return -1;                   /* an UNSTAKED row still holding
+                                          * value: never overwritten     */
+        revive = 1;
+    }
     if (!reads[1].present) return -1;    /* no active_count row: a chain
                                           * whose validator_stats seed is
                                           * missing cannot be counted     */
@@ -3225,6 +3309,23 @@ static int rtn_stake_exec(const dna_env_view_t *env, uint16_t leg_index,
     if (dna_ck_add_u64(count_old, 1, &count_new) != 0) return -1;
     if (count_new > (uint64_t)INT64_MAX) return -1;   /* same storage
                                           * bound, same VERDICT class     */
+    /* Rule M — the validator-table cap (P3 fix round). active_count
+     * counts ACTIVE + ELIGIBLE + RETIRING rows (STAKE +1 here, a RETIRING
+     * graduation −1, a Rule N retirement −1 — nodus_witness_v2_epoch.c
+     * v2ep_graduate / v2ep_rule_n). Refusing count_new >
+     * DNAC_MAX_VALIDATORS keeps it <= 128 after every STAKE, fresh or
+     * revived (both paths reach this line). The boundary readers that
+     * FAULT on a 129th row read subsets of that count:
+     *   nodus_validator_bonded_tenured (committee selection) and
+     *   v2ep_rule_n scan ACTIVE + ELIGIBLE  ⊆ active_count <= 128;
+     * so neither can reach its `>= cap` fault through transactions.
+     * The graduation scan (RETIRING + AUTO_RETIRED) is the one reader
+     * this counter does not bound on its own — AUTO_RETIRED left the
+     * counter at Rule N — and its bound is derived at v2ep_graduate.
+     * The comparison is `>`, not `>=`: exactly 128 rows is legal (every
+     * reader holds 128 and faults only on a 129th). VERDICT class: the
+     * counter is committed state every node reads identically. */
+    if (count_new > (uint64_t)DNAC_MAX_VALIDATORS) return -1;
 
     /* ── the SIBLING funding leg must be a well-formed SYSFUND call ─── */
     {
@@ -3232,11 +3333,9 @@ static int rtn_stake_exec(const dna_env_view_t *env, uint16_t leg_index,
         if (rtn_sysfund_parse(env, 1, &fc) != 0) return -1;
     }
 
-    /* ── the canonical validator record ─────────────────────────────── */
-    uint8_t key[RTN_VAL_KEY_LEN];
+    /* ── the canonical validator record (fresh AND revived: the same
+     *    bytes — P3-9) ────────────────────────────────────────────────── */
     uint8_t val[RTN_VAL_REC_LEN];
-    if (rtn_tag_key(NODUS_TREE_TAG_VALIDATOR, c.staker_pubkey, key) != 0)
-        return -2;
     memset(val, 0, sizeof(val));
     memcpy(val + RTN_VAL_PK_OFF, c.staker_pubkey, DNAC_PUBKEY_SIZE);
     rtn_put64(val + RTN_VAL_SELF_OFF, c.bond);
@@ -3255,21 +3354,31 @@ static int rtn_stake_exec(const dna_env_view_t *env, uint16_t leg_index,
      * graduation season must resolve one. `staker_fp` is SHA3-512 of the
      * staker pubkey, already derived by the authority gate. */
 
-    /* ── effects: CREATE the row (kind 1), then SET the counter (kind
-     *    2) — the effect codec's canonical order is kind-major, so this
-     *    is the only legal sequence for this pair. ─────────────────── */
+    /* ── effects: the row (fresh: CREATE, kind 1; revived: SET, kind
+     *    2), then SET the counter (kind 2). The effect codec's canonical
+     *    order is kind-major, then op id: CREATE(4) < SET(7) on the fresh
+     *    path and SET(4) < SET(7) on the revive path — the row effect
+     *    precedes the counter either way. ─────────────────────────────── */
     uint8_t statk[1] = { (uint8_t)RTN_STATS_SEL_ACTIVE };
     uint8_t statv[8];
     rtn_put64(statv, count_new);
     dna_effect_in_t effs[2];
     memset(effs, 0, sizeof(effs));
-    effs[0].hdr.op_id = RTN_SYS_OP_VAL;
-    effs[0].hdr.effect_kind = DNA_EFFECT_CREATE;
-    effs[0].hdr.precond_tag = DNA_EFFECT_PRE_ABSENT;   /* Rule I backstop*/
-    effs[0].hdr.key_len = (uint16_t)RTN_VAL_KEY_LEN;
-    effs[0].hdr.value_len = RTN_VAL_REC_LEN;
-    effs[0].key = key;
-    effs[0].value = val;
+    if (revive) {
+        /* bound to the UNSTAKED record the read observed (EXISTS_VHASH) */
+        if (rtn_row_set_eff(&effs[0], RTN_SYS_OP_VAL, &reads[0],
+                            RTN_VAL_REC_LEN, key,
+                            (uint16_t)RTN_VAL_KEY_LEN, val) != 0)
+            return -2;
+    } else {
+        effs[0].hdr.op_id = RTN_SYS_OP_VAL;
+        effs[0].hdr.effect_kind = DNA_EFFECT_CREATE;
+        effs[0].hdr.precond_tag = DNA_EFFECT_PRE_ABSENT; /* Rule I backstop*/
+        effs[0].hdr.key_len = (uint16_t)RTN_VAL_KEY_LEN;
+        effs[0].hdr.value_len = RTN_VAL_REC_LEN;
+        effs[0].key = key;
+        effs[0].value = val;
+    }
     effs[1].hdr.op_id = RTN_SYS_OP_STATS;
     effs[1].hdr.effect_kind = DNA_EFFECT_SET;
     effs[1].hdr.precond_tag = DNA_EFFECT_PRE_EXISTS_VERSION;
@@ -3298,9 +3407,9 @@ static int rtn_stake_exec(const dna_env_view_t *env, uint16_t leg_index,
  * The mutate-side check remains as defence in depth; THIS check is the
  * first line, in the verdict class. A row that fails it is READ-legal
  * (roots still commit it) but WRITE-frozen for V2 until the activation
- * season's reconciliation (the migration-obligation block below). */
-static int rtn_val_rec_ok(const uint8_t *v, const uint8_t *key);
-static int rtn_del_rec_ok(const uint8_t *v, const uint8_t *key);
+ * season's reconciliation (the migration-obligation block below).
+ * (The two prototypes sit above rtn_stake_exec, whose P3-9 revive path
+ * is their first user.) */
 
 /**
  * DNA_SYSRULE_DELEGATE (O11) — bond someone else's stake to a validator.
@@ -3327,12 +3436,24 @@ static int rtn_del_rec_ok(const uint8_t *v, const uint8_t *key);
  * rtn_sysfund_exec). The client's Rule O TODO (dnac/src/transaction/
  * verify.c) is superseded by that lock.
  *
- * HONEST LABEL (not a narrowing — a deliberate NON-adoption): the
- * client lane's 100-DNAC MIN_DELEGATION (dnac/src/transaction/verify.c)
- * is NOT enforced here. The witness minimum is 1 (:1374 rejects only
- * zero) and the shipped witness code is the authority for what the
- * chain accepts; importing a client-side floor would reject
- * transactions the live lane commits.
+ * THE MINIMUM DELEGATION IS WITNESS-ENFORCED (tokenomics-v3 P3-5;
+ * decision file docs/plans/decisions/2026-09-22-nodus-tokenomics-v3-
+ * operator.md §3 2026-09-24 "P3 soruları" (2) "Zincir asgari delegasyon
+ * uygular: 100 NODUS"; design §8 P3-5). This REPLACES the earlier honest
+ * label that recorded a deliberate non-adoption ("the client lane's
+ * 100-DNAC MIN_DELEGATION is NOT enforced here; the witness minimum is
+ * 1") — the operator reversed that call so the 2048 delegator slots
+ * (P3-6) cannot be filled with 1-raw dust rows that keep an honest
+ * delegator out. The rule, one value with the client lane's Rule J
+ * (dnac/src/transaction/verify.c, DNAC_MIN_DELEGATION):
+ *   - a DELEGATE that OPENS a delegation row: amount >=
+ *     DNAC_MIN_DELEGATION;
+ *   - a TOP-UP of an existing row: amount >= 1 (the row already holds at
+ *     least the minimum — the UNDELEGATE rule below keeps it so);
+ *   - a partial UNDELEGATE must leave 0 or >= DNAC_MIN_DELEGATION
+ *     (rtn_undelegate_exec).
+ * Every refusal is a VERDICT (-1): a pure function of the call bytes and
+ * the committed row.
  *
  * ADDED, and NOT inherited from the legacy source: the per-validator
  * delegator cap (O15J Block 2, NODUS_MAX_DELEGATORS_PER_VALIDATOR). The
@@ -3407,6 +3528,12 @@ static int rtn_delegate_exec(const dna_env_view_t *env, uint16_t leg_index,
         if (!rtn_del_rec_ok(dr->value, dkey)) return -1;
     }
 
+    /* ── P3-5: the minimum delegation (header block above) — a NEW row
+     *    needs amount >= DNAC_MIN_DELEGATION; a top-up needs only the
+     *    amount >= 1 already enforced by the scalar rule. VERDICT. ──── */
+    if (!dr->present && c.amount < (uint64_t)DNAC_MIN_DELEGATION)
+        return -1;
+
     /* ── the per-validator delegator cap (O15J Block 2) ──────────────
      *
      * Introduced when the O15J epoch snapshot blob (nodus_witness_epoch.c,
@@ -3425,8 +3552,9 @@ static int rtn_delegate_exec(const dna_env_view_t *env, uint16_t leg_index,
      * which the engine turns into -2 before this exec is ever reached).
      * So an absent or mis-sized count here means the adapter broke its
      * own contract on THIS node — never a statement about committed
-     * state, therefore never a verdict. Same shape as rtn_unstake_exec's
-     * Rule A read.
+     * state, therefore never a verdict. (UNSTAKE's Rule A read had the
+     * same shape; tokenomics-v3 P3-4 removed both the rule and the read.)
+     * The cap is 2048 since P3-6 (nodus_witness_delegation.h).
      *
      * A TOP-UP is exempt: dr->present means this delegator ALREADY has a
      * row, so the count does not move. Only a CREATE — a delegator with no row yet — can push
@@ -3526,18 +3654,26 @@ static int rtn_delegate_exec(const dna_env_view_t *env, uint16_t leg_index,
  * Source semantics preserved from apply_unstake (nodus_witness_bft.c:
  * 1637-1694): the requester IS the validator; the row must exist and be
  * BONDED (ACTIVE or ELIGIBLE — a validator without a seat this epoch
- * must still be able to exit, :1661-1666); Rule A requires that NO
- * delegation still references it (:1670-1681); and exactly two columns
+ * must still be able to exit, :1661-1666); and exactly two columns
  * move — status := RETIRING and unstake_commit_block := the executing
  * height (:1683-1684).
  *
+ * DIVERGENCE, tokenomics-v3 P3-4 (decision file docs/plans/decisions/
+ * 2026-09-22-nodus-tokenomics-v3-operator.md §3 2026-09-24 "P3 soruları"
+ * (3) "Delegatoru olan validator çıkabilir"; design §8 P3-4): the legacy
+ * Rule A (:1670-1681 — "NO delegation may still reference it") is
+ * REMOVED. A validator with delegators may exit; every delegation it
+ * still holds is released to its delegator — a locked UTXO, the
+ * delegator lock — at the boundary where it graduates
+ * (nodus_witness_v2_epoch.c v2ep_release_delegations).
+ *
  * DEFERRED, and deliberately NOT reproduced here: the principal itself.
  * self_stake stays untouched and validator_stats.active_count is NOT
- * decremented — the legacy lane releases the bond and drops the counter
- * at the EPOCH BOUNDARY graduation (bft.c:2404-2560), which emits the
- * principal UTXO locked +17280 blocks to unstake_destination_fp. That
- * transition belongs to the epoch-transition season; inventing it here
- * would release value the chain has not yet agreed to release.
+ * decremented — the bond is released and the counter dropped at the
+ * EPOCH BOUNDARY graduation (nodus_witness_v2_epoch.c v2ep_graduate),
+ * which emits the principal UTXO locked DNAC_VALIDATOR_UNBOND_EPOCHS
+ * epochs (P3-3) to unstake_destination_fp. Inventing it here would
+ * release value the chain has not yet agreed to release.
  *
  * @return 0 / -1 verdict / -2 node fault.
  */
@@ -3559,8 +3695,10 @@ static int rtn_unstake_exec(const dna_env_view_t *env, uint16_t leg_index,
         if (rc != 0) return rc;          /* identity = the validator     */
     }
 
-    if (n_reads != 2 || !reads) return -2;
-    const nodus_rt_read_res_t *vr = &reads[0], *cr = &reads[1];
+    /* ONE read since P3-4 (rtn_unstake_read_plan) — Rule A and its
+     * delegation-count read are gone. */
+    if (n_reads != 1 || !reads) return -2;
+    const nodus_rt_read_res_t *vr = &reads[0];
     if (!vr->present) return -1;         /* unknown validator            */
     if (vr->value_len != RTN_VAL_REC_LEN) return -2;
     if (memcmp(vr->value + RTN_VAL_PK_OFF, vpk, DNAC_PUBKEY_SIZE) != 0)
@@ -3572,10 +3710,6 @@ static int rtn_unstake_exec(const dna_env_view_t *env, uint16_t leg_index,
             return -1;                   /* not BONDED — this also makes
                                           * a repeated UNSTAKE reject    */
     }
-    /* the delegation COUNT always answers (0 is a VALUE, not absence),
-     * so an absent result means the adapter broke its own contract */
-    if (!cr->present || cr->value_len != 8) return -2;
-    if (rtn_get64(cr->value) != 0) return -1;      /* Rule A            */
     {
         rtn_spend_call_t fc;
         if (rtn_sysfund_parse(env, 1, &fc) != 0) return -1;
@@ -3605,7 +3739,9 @@ static int rtn_unstake_exec(const dna_env_view_t *env, uint16_t leg_index,
  *
  * Source semantics preserved from apply_undelegate (nodus_witness_bft.c:
  * 1820-1908): the delegation must exist and 0 < amount <= its amount
- * (:1851-1858); the validator row must exist but its STATUS IS NOT
+ * (:1851-1858) — and, tokenomics-v3 P3-5, a partial withdrawal must leave
+ * 0 or >= DNAC_MIN_DELEGATION on the row (rtn_delegate_exec's header
+ * block); the validator row must exist but its STATUS IS NOT
  * GATED — the legacy comment (:1818-1821) states the rule outright, so
  * delegators of a RETIRING / UNSTAKED / AUTO_RETIRED validator can
  * always pull their principal; a fully drained row is DELETED, a partial
@@ -3663,6 +3799,14 @@ static int rtn_undelegate_exec(const dna_env_view_t *env,
         return -2;                       /* key/row disagreement: fault  */
     uint64_t have = rtn_get64(dr->value + RTN_DEL_AMT_OFF);
     if (c.amount < 1 || c.amount > have) return -1;   /* :1851-1858     */
+    /* tokenomics-v3 P3-5 (rtn_delegate_exec's header block): a PARTIAL
+     * withdrawal must leave either nothing (the row is deleted below) or
+     * at least DNAC_MIN_DELEGATION — never a dust row that holds one of
+     * the validator's NODUS_MAX_DELEGATORS_PER_VALIDATOR slots. VERDICT:
+     * a pure function of the call and the committed row. */
+    if (have - c.amount != 0 &&
+        have - c.amount < (uint64_t)DNAC_MIN_DELEGATION)
+        return -1;
     if (!vr->present) return -1;         /* the totals have no owner     */
     if (vr->value_len != RTN_VAL_REC_LEN) return -2;
     if (memcmp(vr->value + RTN_VAL_PK_OFF, c.validator_pubkey,
@@ -3744,10 +3888,13 @@ _Static_assert((uint64_t)DNAC_EPOCH_LENGTH > 0,
  *     ELIGIBLE is exactly what a seat-less validator tunes while trying
  *     to win a seat back and RETIRING keeps paying delegators through
  *     its cooldown; UNSTAKED / AUTO_RETIRED have frozen stake;
- *   - new > current is an INCREASE and is DEFERRED a full epoch of
+ *   - new > current is an INCREASE and is DEFERRED two full epochs of
  *     delegator notice: pending_commission_bps := new and
- *     pending_effective_block := max(next_epoch_boundary, H + epoch)
- *     (:1978-1987). The CURRENT rate does not move;
+ *     pending_effective_block := max(next_epoch_boundary, H + 2·epoch).
+ *     The legacy source (:1978-1987) deferred ONE epoch, H + epoch; the
+ *     operator widened it to two (decision file §3, 2026-09-24 "komisyon
+ *     artışı 2 epoch sonra" — the P3 fix round; worked example at the
+ *     computation below). The CURRENT rate does not move;
  *   - new <= current (a decrease, or an equal value) takes effect
  *     IMMEDIATELY and CLEARS any stale pending entry (:1987-1992). Equal
  *     deliberately falls through the decrease branch — that is the legacy
@@ -3835,9 +3982,9 @@ static int rtn_vupd_exec(const dna_env_view_t *env, uint16_t leg_index,
     uint32_t cur = ((uint32_t)vnew[RTN_VAL_COMM_OFF] << 8) |
                    vnew[RTN_VAL_COMM_OFF + 1];
     if ((uint32_t)c.new_commission_bps > cur) {
-        uint64_t plus_epoch = 0, boundary = 0;
-        if (rtn_add_bounded(H, (uint64_t)DNAC_EPOCH_LENGTH,
-                            &plus_epoch) != 0)
+        uint64_t plus_notice = 0, boundary = 0;
+        if (rtn_add_bounded(H, 2u * (uint64_t)DNAC_EPOCH_LENGTH,
+                            &plus_notice) != 0)
             return -1;                   /* the storage bound again, as a
                                           * VERDICT                      */
         boundary = (H / (uint64_t)DNAC_EPOCH_LENGTH) *
@@ -3845,18 +3992,31 @@ static int rtn_vupd_exec(const dna_env_view_t *env, uint16_t leg_index,
         if (rtn_add_bounded(boundary, (uint64_t)DNAC_EPOCH_LENGTH,
                             &boundary) != 0)
             return -1;
-        /* max(next_epoch_boundary, H + epoch), reproduced EXACTLY as
-         * bft.c:1984-1986 writes it.
-         * ⚠ ARITHMETIC NOTE (O12 S1, honest label): the boundary arm is
-         * UNREACHABLE. boundary = floor(H/E)*E + E and floor(H/E)*E <= H,
-         * so boundary <= H + E always, with equality exactly when H is a
-         * multiple of E. The ternary therefore always selects H + E and
-         * the two agree on an epoch boundary. It is preserved verbatim
-         * anyway — the source is the authority, an "equivalent"
-         * simplification here would be a semantic claim this slice has no
-         * mandate to make, and if E ever becomes per-epoch state the two
-         * expressions stop coinciding. */
-        uint64_t peff = boundary > plus_epoch ? boundary : plus_epoch;
+        /* max(next_epoch_boundary, H + 2·epoch) — the legacy shape
+         * (bft.c:1984-1986 wrote max(next_boundary, H + E)) with the
+         * notice widened to TWO epochs by the operator (decision file
+         * docs/plans/decisions/2026-09-22-nodus-tokenomics-v3-operator.md
+         * §3, 2026-09-24 "komisyon artışı 2 epoch sonra"). WHY two, under
+         * P3-1 "okuma B": the rate a boundary X activates (step 1) is the
+         * rate commit_next(X) (step 5) freezes into snapshot(X+E), which
+         * governs (X+E, X+2E] and is PAID at X+2E by the weights of
+         * copy(X−E) (src = H−3E, nodus_witness_v2_econ.c). With H+E, an
+         * increase sent IN boundary block B (envelopes apply before the
+         * boundary, nodus_witness_v2_apply.c phase 6e) activated at B+E and
+         * was paid at B+3E from copy(B) — which still holds a delegator
+         * who UNDELEGATEd at B+1, so that delegator paid a rate it had
+         * already reacted to. With H+2E it activates at B+2E and is first
+         * paid at B+4E from copy(B+E), which that delegator is no longer
+         * in. The activator (nodus_witness_v2_epoch.c
+         * v2ep_activate_commissions) fires at the FIRST boundary >= the
+         * stored height, so a mid-epoch H = B+k activates at B+3E.
+         * ⚠ ARITHMETIC NOTE (O12 S1, honest label, still true at 2E): the
+         * boundary arm is UNREACHABLE. boundary = floor(H/E)*E + E <=
+         * H + E < H + 2E, so the ternary always selects H + 2E. The
+         * shape is preserved anyway — if E ever becomes per-epoch state
+         * the two expressions stop coinciding, and the source is the
+         * authority for the shape. A DECREASE stays immediate (below). */
+        uint64_t peff = boundary > plus_notice ? boundary : plus_notice;
         vnew[RTN_VAL_PCOMM_OFF]     = (uint8_t)(c.new_commission_bps >> 8);
         vnew[RTN_VAL_PCOMM_OFF + 1] = (uint8_t)c.new_commission_bps;
         rtn_put64(vnew + RTN_VAL_PEFF_OFF, peff);
@@ -3941,13 +4101,15 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
                                         c.signed_at, c.valid_before,
                                         c.effective) != 0)
         return -1;
-    /* O15F D2 — V2-lane TARGET_ACTIVE_COUNT range narrowing [7..30].
+    /* O15F D2 — V2-lane TARGET_ACTIVE_COUNT range narrowing [7..32]
+     * (tokenomics-v3 P3-7: the ceiling moved 30 -> 32; decision file §3
+     * 2026-09-24 "P3 soruları" (4) "yönetişim aralığı [7, 32]").
      * The shared scalar rule above admits [7..128]; a successor's active
-     * set can never exceed NODUS_V2_ACTIVE_SET_MAX (30, the set-layer
+     * set can never exceed NODUS_V2_ACTIVE_SET_MAX (32, the set-layer
      * invariant, nodus_witness.h), so a runtime-op-6 CC envelope raising
-     * the target above 30 is a deterministic VERDICT reject. This exec
+     * the target above 32 is a deterministic VERDICT reject. This exec
      * hook is PURE (no witness handle), so the bound is V2-lane-GLOBAL —
-     * every production V2 chain is a successor, and a 30-bounded fixture
+     * every production V2 chain is a successor, and a 32-bounded fixture
      * chain is strictly safer; the legacy CC apply path never enters this
      * hook and keeps [7..128]. The set-layer guards (D1: target clamp /
      * insert / resolve / seam) are the defense-in-depth backstop. */
@@ -4066,7 +4228,8 @@ static int rtn_sys_cc_fetch(nodus_witness_t *w, const uint8_t *key,
  * blocked (bft.c:1816-1818). The reconciliation owner must repair such
  * rows BEFORE cutover precisely so that guarantee survives. */
 
-/* Build the canonical 5397-byte validator record from one row statement.
+/* Build the canonical RTN_VAL_REC_LEN-byte (5381) validator record from
+ * one row statement.
  * Column order = the SELECT below = the merkle leaf order. Fail-closed
  * on every malformed shape, exactly the checks load_validator_leaves
  * makes before hashing (merkle.c:941-1056) — a corrupt row is never

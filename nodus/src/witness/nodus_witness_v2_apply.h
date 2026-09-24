@@ -714,7 +714,19 @@ typedef enum {
     V2AP_FAIL_AFTER_DIST_APPLIED      = 56, /* reward pool debited       */
     V2AP_FAIL_AFTER_PAYDAY_EMITTED    = 57, /* payday UTXOs written      */
     V2AP_FAIL_AFTER_PAYDAY_APPLIED    = 58, /* accrual rows deleted      */
-    V2AP_FAIL_AFTER_BALANCE_COPY      = 59  /* copy(H) written, pruned   */
+    V2AP_FAIL_AFTER_BALANCE_COPY      = 59, /* copy(H) written, pruned   */
+
+    /* tokenomics-v3 P3-4 — the graduation's delegation release. APPENDED;
+     * 39-59 are pinned by shipped tests and are never renumbered. Fires
+     * on the FIRST graduate (candidate index 0, the F40/F41 convention)
+     * with its bond release UTXO written, every delegation it held
+     * released as a locked UTXO and its delegation rows deleted, and its
+     * validators row NOT yet rewritten (NODUS_V2_EPST_GRAD_DELEG_RELEASED,
+     * mapped BY NAME in epoch_stage_fault). The proof obligation: an
+     * interrupt there leaves no release UTXO, every delegation row and
+     * the row's delegated totals exactly as before the block. */
+    V2AP_FAIL_AFTER_FIRST_GRAD_DELEG_RELEASE = 60 /* graduate 0 delegations
+                                                   * released            */
 } nodus_v2_apply_fail_t;
 
 /*

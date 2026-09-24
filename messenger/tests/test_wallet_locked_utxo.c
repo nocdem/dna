@@ -21,7 +21,9 @@
  * `stagef_mk_funded_user` failed for five Genesis Protocol scenarios with
  * "fund failed after 3 attempts (chain verified empty)", while node1's log
  * showed `batch TX 0 rejected: input 1: UTXO locked (unlock_block=17289 >
- * current=9)` — 17289 = 9 + DNAC_UNSTAKE_COOLDOWN_BLOCKS.
+ * current=9)` — 17289 = 9 + DNAC_UNSTAKE_COOLDOWN_BLOCKS, the 17280-block
+ * lock of that time (the constant is deleted since tokenomics-v3 P3-3;
+ * the validator lock is now DNAC_VALIDATOR_UNBOND_EPOCHS epochs).
  *
  * ── WHAT THIS FILE DOES AND DOES NOT COVER ────────────────────────────
  * It exercises the PERSISTENCE half against a REAL wallet database built by

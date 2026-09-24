@@ -347,9 +347,10 @@ typedef struct {
 /**
  * The whole genesis config.
  *
- * ⚠ ROUGHLY 240 KB since the version-3 fields arrived — computed from
+ * ⚠ ROUGHLY 255 KB since the version-3 fields arrived — computed from
  * the field widths at the platform's natural alignment, not measured:
- * 30 validator entries of about 5.3 KB (2 × 2592 + 129 + 8 + 2) plus 30
+ * NODUS_V2_GEN_MAX_VALIDATORS (32 since tokenomics-v3 P3-7; was 30)
+ * validator entries of about 5.3 KB (2 × 2592 + 129 + 8 + 2) plus 32
  * Comet rows of about 2.7 KB (32 + 2592 + 8 + 1 + 64), the consensus
  * parameters and the scalars. HEAP-ALLOCATE IT (calloc); a stack
  * instance overflows the default thread stack in the same way

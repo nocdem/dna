@@ -17,7 +17,12 @@
  *     AND (active_since_block + MIN_TENURE_BLOCKS <= E_start
  *          OR active_since_block <= 1)   — genesis seed set: always tenured
  *
- *   rank by (self_stake + external_delegated) DESC,
+ *   rank by the FROZEN total in copy(E_start − 2·EPOCH_LENGTH) DESC
+ *     — tokenomics-v3 P3-1 "okuma B": the candidate's own copy row + Σ
+ *     its delegator rows, absent = 0 (nodus_witness_v2_balance_copy_
+ *     frozen); a candidate whose frozen total is 0 is not seated. Status
+ *     and tenure above stay LIVE. (Before P3 the key was the live
+ *     self_stake + external_delegated.)
  *   tiebreak by SHA3-512(0x02 || pubkey || state_seed) ASC (byte-lex).
  *
  *   committee = eligible[:target]
@@ -25,7 +30,9 @@
  * S3: the cut is `target`, not a literal 7 — see
  * nodus_committee_compute_for_epoch below. `target` is the
  * DNAC_CFG_TARGET_ACTIVE_COUNT chain-config value read at the epoch
- * START height, defaulting to DNAC_COMMITTEE_SIZE. Status ACTIVE vs
+ * START height, defaulting to DNAC_TARGET_ACTIVE_DEFAULT (32 since
+ * tokenomics-v3 P3-7; it was DNAC_COMMITTEE_SIZE). The bootstrap
+ * epochs (0 and EPOCH_LENGTH) rank the LIVE genesis rows. Status ACTIVE vs
  * ELIGIBLE is the marker for "was in the previous boundary's set"; both
  * are candidates here, so a validator that sat out one epoch is not
  * excluded from the next.
@@ -64,8 +71,10 @@ extern "C" {
  * miss now produce identical members. */
 typedef struct {
     uint8_t  pubkey[DNAC_PUBKEY_SIZE];
-    uint64_t total_stake;        /* self_stake + external_delegated (snapshot) */
-    uint64_t self_stake;         /* the validator's own bond               */
+    uint64_t total_stake;        /* the ranked total: frozen copy total
+                                  * (P3-1), live at bootstrap          */
+    uint64_t self_stake;         /* the validator's own bond (frozen /
+                                  * live, same rule)                   */
     uint16_t commission_bps;
 } nodus_committee_member_t;
 
@@ -82,7 +91,8 @@ typedef struct {
  * The per-epoch target is derived INTERNALLY, not from max_entries:
  *
  *     nodus_chain_config_get_u64(w, DNAC_CFG_TARGET_ACTIVE_COUNT,
- *                                e_start, DNAC_COMMITTEE_SIZE, &target)
+ *                                e_start, DNAC_TARGET_ACTIVE_DEFAULT,
+ *                                &target)
  *                   clamped to [1, DNAC_MAX_ACTIVE_VALIDATORS]
  *     final_count = min(cand_count, target, max_entries)
  *
@@ -95,8 +105,8 @@ typedef struct {
  * (nodus_witness_bft.c).
  *
  * O15J Block 2 (A2) — the lookup is THREE-VALUED and this function fails
- * closed on its fault code. "No governance row" (every chain today) still
- * yields DNAC_COMMITTEE_SIZE and selects exactly as before; "the override
+ * closed on its fault code. "No governance row" (every chain today) yields
+ * the default (DNAC_TARGET_ACTIVE_DEFAULT since P3-7); "the override
  * is unreadable" now returns -1 instead of quietly selecting a
  * default-sized committee that a healthy peer would not have selected.
  *

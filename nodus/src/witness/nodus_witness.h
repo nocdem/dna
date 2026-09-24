@@ -151,10 +151,26 @@ typedef struct {
  * (early v2_successor + terminal-set precondition + carried-CC reject).
  * LEGACY chains keep the DNAC_MAX_ACTIVE_VALIDATORS ceiling byte-for-byte
  * (every guard is gated on w->v2_successor / the seam's successor build).
- * 30 <= 128, so all round-state / QC / vote arrays already fit. */
-#define NODUS_V2_ACTIVE_SET_MAX     30
+ * 32 <= 128, so all round-state / QC / vote arrays already fit.
+ *
+ * tokenomics-v3 P3-7 (docs/plans/decisions/2026-09-22-nodus-tokenomics-
+ * v3-operator.md §3 2026-09-24 "P3 soruları" (4): "tavan 32 kodda sabit";
+ * design docs/plans/2026-09-23-tokenomics-v3-consensus-binding-design.md
+ * D-10): 30 -> 32. The same value is the default target
+ * (DNAC_TARGET_ACTIVE_DEFAULT, dnac.h) and the top of the governed
+ * TARGET_ACTIVE_COUNT range [7, 32] on this lane
+ * (nodus_witness_rt_native.c / nodus_witness_chain_config.c); the genesis
+ * config array (NODUS_V2_GEN_MAX_VALIDATORS) and the InitChain match
+ * table (nodus_witness_cmt_app.c) are sized by it. Going above 32 is a
+ * code change plus a separate operator decision. */
+#define NODUS_V2_ACTIVE_SET_MAX     32
 _Static_assert(NODUS_V2_ACTIVE_SET_MAX <= DNAC_MAX_ACTIVE_VALIDATORS,
                "successor active-set max exceeds resource ceiling");
+_Static_assert(DNAC_TARGET_ACTIVE_DEFAULT == NODUS_V2_ACTIVE_SET_MAX,
+               "the default target and the V2 active-set ceiling are one "
+               "operator number (N = 32)");
+_Static_assert(DNAC_COMMITTEE_SIZE <= NODUS_V2_ACTIVE_SET_MAX,
+               "the governed minimum must fit under the V2 ceiling");
 
 /* ── Vote types ──────────────────────────────────────────────────── */
 

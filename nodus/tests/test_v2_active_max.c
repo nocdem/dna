@@ -1,26 +1,33 @@
 /**
  * @file tests/test_v2_active_max.c
- * @brief Ledger V2 O15F Task 1 — the successor active-set maximum (30).
+ * @brief Ledger V2 O15F Task 1 — the successor active-set maximum (32 since
+ *        tokenomics-v3 P3-7; was 30).
  *
  * THE INVARIANT (D1): on a successor chain no `validator_set_snapshots`
- * row with active_count > NODUS_V2_ACTIVE_SET_MAX (30) can ever be
+ * row with active_count > NODUS_V2_ACTIVE_SET_MAX (32) can ever be
  * PERSISTED. The persisted snapshot is the SOLE committee authority
  * (nodus_committee_get_for_block serves it RAW), so the bound is enforced
  * at every WRITE / SEED / RESOLVE point, all fail-closed, and legacy
  * chains keep the 128 ceiling byte-identically. This test drives all of
  * them through the REAL production functions:
  *
- *   §1  target clamp  — commit_genesis on a successor with 31 candidates
- *                       and a chain_config TARGET=31 seeds a <=30 snapshot.
+ *   §1  target clamp  — commit_genesis on a successor with 33 candidates
+ *                       and a chain_config TARGET=33 seeds a <=32 snapshot;
+ *                       §1b with NO chain_config row the DEFAULT target
+ *                       (DNAC_TARGET_ACTIVE_DEFAULT = 32, P3-7) seats 32
+ *                       of 33 — RED ON THE PRE-P3 TREE (default 7).
  *   §2  committee_target clamp — isolated via bootstrap_for_epoch
  *                       (max_entries=128 so nothing else caps it).
- *   §3  insert reject — a hand-encoded 31-entry snapshot is refused on a
- *                       successor, accepted on legacy; 30 accepted on both.
- *   §4  resolve reject — a 31-entry row (seeded as legacy) resolves to no
- *                       authority once the handle is a successor; 30
- *                       resolves n=30, quorum=21.
+ *   §3  insert reject — a hand-encoded 33-entry snapshot is refused on a
+ *                       successor, accepted on legacy; 32 accepted on both
+ *                       (RED ON THE PRE-P3 TREE: 32 > 30 refused).
+ *   §4  resolve reject — a 33-entry row (seeded as legacy) resolves to no
+ *                       authority once the handle is a successor; 32
+ *                       resolves n=32, quorum = floor(64/3) + 1 = 22.
  *   §5  live serve    — a 20-entry successor snapshot serves 20 members
  *                       through get_for_block and yields quorum 14.
+ * P3-7 re-derivation (every 30/31 literal moved to 32/33 — the "one over
+ * the ceiling" and "the ceiling itself" roles are unchanged).
  *
  * O15J Faz 3 — §6 (seam terminal-set precondition) and §7 (seam carried
  * chain_config reconciliation) are GONE. They drove
@@ -204,14 +211,15 @@ static int64_t snap_active_count(nodus_witness_t *w, uint64_t epoch_start) {
 /* ════════════════════════════════════════════════════════════════════ */
 
 static int test_target_clamp(void) {
-    printf("§1 target clamp via commit_genesis (31 candidates, TARGET=31)\n");
+    printf("§1 target clamp via commit_genesis (33 candidates, TARGET=33)\n");
     char dir[128];
     nodus_witness_t *w = mk_witness(dir, "clamp");
     CHECK(w != NULL, "witness");
     if (!w) return 1;
 
-    CHECK(insert_validators(w, 31, 0x11) == 0, "31 ACTIVE validators");
-    CHECK(insert_cc_target(w, 31) == 0, "chain_config TARGET_ACTIVE_COUNT=31");
+    CHECK(NODUS_V2_ACTIVE_SET_MAX == 32, "FIXTURE GUARD: P3-7 ceiling 32");
+    CHECK(insert_validators(w, 33, 0x11) == 0, "33 ACTIVE validators");
+    CHECK(insert_cc_target(w, 33) == 0, "chain_config TARGET_ACTIVE_COUNT=33");
 
     /* A V2 chain seeds its genesis snapshots (epochs 0 and E) here; the
      * clamp must fire during seeding, which runs BEFORE the committed
@@ -229,14 +237,33 @@ static int test_target_clamp(void) {
 
     int64_t c0 = snap_active_count(w, 0);
     int64_t cE = snap_active_count(w, E);
-    CHECK(c0 == 30,
-          "epoch-0 seeded snapshot is clamped to 30 (not 31)");
-    CHECK(cE == 30,
-          "epoch-E seeded snapshot is clamped to 30 (not 31)");
+    CHECK(c0 == 32,
+          "epoch-0 seeded snapshot is clamped to 32 (not 33)");
+    CHECK(cE == 32,
+          "epoch-E seeded snapshot is clamped to 32 (not 33)");
 
     free_witness(w, dir);
     OK();
-    printf("  ok: successor genesis seeding clamps target 31 -> 30\n");
+    printf("  ok: successor genesis seeding clamps target 33 -> 32\n");
+
+    /* §1b tokenomics-v3 P3-7: NO chain_config row — the DEFAULT target.
+     * It is DNAC_TARGET_ACTIVE_DEFAULT (32), no longer DNAC_COMMITTEE_SIZE
+     * (7): 33 candidates seat 32. RED ON THE PRE-P3 TREE: 7 seats.
+     * KILLED BY: a default other than 32. */
+    printf("§1b default target 32 when no chain_config row applies\n");
+    w = mk_witness(dir, "dflt");
+    CHECK(w != NULL, "witness");
+    if (!w) return 1;
+    CHECK(DNAC_TARGET_ACTIVE_DEFAULT == 32, "FIXTURE GUARD: default 32");
+    CHECK(insert_validators(w, 33, 0x12) == 0, "33 ACTIVE validators");
+    w->v2_successor = 1;
+    CHECK(nodus_witness_vset_commit_genesis(w, 1) == 0,
+          "commit_genesis with no TARGET row");
+    CHECK(snap_active_count(w, 0) == 32 && snap_active_count(w, E) == 32,
+          "the default target seats 32, not DNAC_COMMITTEE_SIZE's 7");
+    free_witness(w, dir);
+    OK();
+    printf("  ok: default target 32\n");
     return 0;
 }
 
@@ -247,8 +274,8 @@ static int test_committee_target_clamp(void) {
     CHECK(w != NULL, "witness");
     if (!w) return 1;
 
-    CHECK(insert_validators(w, 31, 0x22) == 0, "31 ACTIVE validators");
-    CHECK(insert_cc_target(w, 31) == 0, "chain_config TARGET_ACTIVE_COUNT=31");
+    CHECK(insert_validators(w, 33, 0x22) == 0, "33 ACTIVE validators");
+    CHECK(insert_cc_target(w, 33) == 0, "chain_config TARGET_ACTIVE_COUNT=33");
 
     nodus_committee_member_t *m =
         calloc((size_t)DNAC_MAX_ACTIVE_VALIDATORS, sizeof(*m));
@@ -261,71 +288,69 @@ static int test_committee_target_clamp(void) {
     CHECK(nodus_committee_bootstrap_for_epoch(
               w, 0, m, DNAC_MAX_ACTIVE_VALIDATORS, &count) == 0,
           "legacy bootstrap");
-    CHECK(count == 31,
-          "legacy: committee_target 31 honored, no successor clamp");
+    CHECK(count == 33,
+          "legacy: committee_target 33 honored, no successor clamp");
 
     count = -1;
     w->v2_successor = 1;
     CHECK(nodus_committee_bootstrap_for_epoch(
               w, 0, m, DNAC_MAX_ACTIVE_VALIDATORS, &count) == 0,
           "successor bootstrap");
-    CHECK(count == 30,
-          "successor: committee_target clamped 31 -> 30");
+    CHECK(count == 32,
+          "successor: committee_target clamped 33 -> 32");
 
     free(m);
     free_witness(w, dir);
     OK();
-    printf("  ok: legacy 31 / successor 30\n");
+    printf("  ok: legacy 33 / successor 32\n");
     return 0;
 }
 
 static int test_insert_reject(void) {
-    printf("§3 insert reject on a successor for >30, off-by-one at 30\n");
+    printf("§3 insert reject on a successor for >32, off-by-one at 32\n");
     char dir[128];
     nodus_witness_t *w = mk_witness(dir, "ins");
     CHECK(w != NULL, "witness");
     if (!w) return 1;
 
-    /* successor: a 31-entry snapshot is refused and NOT stored */
+    /* successor: a 33-entry snapshot is refused and NOT stored */
     w->v2_successor = 1;
-    CHECK(seed_snapshot(w, 0, 31, 1) == -1,
-          "successor rejects a 31-entry snapshot");
+    CHECK(seed_snapshot(w, 0, 33, 1) == -1,
+          "successor rejects a 33-entry snapshot");
     CHECK(q1(w->db,
              "SELECT COUNT(*) FROM validator_set_snapshots "
              "WHERE epoch_start = 0") == 0,
-          "no 31-entry row was stored");
+          "no 33-entry row was stored");
 
-    /* successor: a 30-entry snapshot is accepted (accept side) */
-    CHECK(seed_snapshot(w, E, 30, 1) == 0,
-          "successor accepts a 30-entry snapshot");
-    CHECK(q1(w->db,
-             "SELECT active_count FROM validator_set_snapshots "
-             "WHERE epoch_start = ?") >= 0 ||
-          snap_active_count(w, E) == 30, "30-entry row present");
+    /* successor: a 32-entry snapshot is accepted (accept side; RED ON THE
+     * PRE-P3 TREE, whose ceiling was 30) */
+    CHECK(seed_snapshot(w, E, 32, 1) == 0,
+          "successor accepts a 32-entry snapshot");
+    CHECK(snap_active_count(w, E) == 32, "32-entry row present");
 
-    /* legacy: the same 31-entry snapshot is accepted (128 ceiling intact) */
+    /* legacy: the same 33-entry snapshot is accepted (128 ceiling intact) */
     w->v2_successor = 0;
-    CHECK(seed_snapshot(w, 2 * E, 31, 1) == 0,
-          "legacy accepts a 31-entry snapshot (unchanged)");
-    CHECK(snap_active_count(w, 2 * E) == 31, "legacy 31-entry row present");
+    CHECK(seed_snapshot(w, 2 * E, 33, 1) == 0,
+          "legacy accepts a 33-entry snapshot (unchanged)");
+    CHECK(snap_active_count(w, 2 * E) == 33, "legacy 33-entry row present");
 
     free_witness(w, dir);
     OK();
-    printf("  ok: successor 31 rejected / 30 accepted / legacy 31 accepted\n");
+    printf("  ok: successor 33 rejected / 32 accepted / legacy 33 accepted\n");
     return 0;
 }
 
 static int test_resolve_reject(void) {
-    printf("§4 resolver reject on a successor for >30, quorum at 30\n");
+    printf("§4 resolver reject on a successor for >32, quorum at 32\n");
     char dir[128];
     nodus_witness_t *w = mk_witness(dir, "res");
     CHECK(w != NULL, "witness");
     if (!w) return 1;
 
-    /* Seed a 31-entry row as LEGACY so the writer accepts it, then flip
+    /* Seed a 33-entry row as LEGACY so the writer accepts it, then flip
      * the handle to a successor: the resolver must refuse it. */
     w->v2_successor = 0;
-    CHECK(seed_snapshot(w, E, 31, 1) == 0, "seed 31-entry row as legacy");
+    CHECK(seed_snapshot(w, E, 33, 1) == 0, "seed 33-entry row as legacy");
 
     w->v2_successor = 1;
     {
@@ -333,28 +358,29 @@ static int test_resolve_reject(void) {
         uint32_t n = 0, q = 0;
         CHECK(nodus_witness_v2_epoch_authority_for_epoch(w, E, &s, &n, &q)
                   == -1,
-              "successor resolver refuses a 31-entry snapshot");
+              "successor resolver refuses a 33-entry snapshot");
         dna_vset_free(&s);
     }
 
-    /* A 30-entry row resolves: n=30, quorum = dna_bft_quorum(30) = 21. */
-    CHECK(seed_snapshot(w, 2 * E, 30, 1) == 0,
-          "seed 30-entry row (successor accepts)");
+    /* A 32-entry row resolves: n=32, quorum = dna_bft_quorum(32) =
+     * floor(2·32/3) + 1 = 21 + 1 = 22. */
+    CHECK(seed_snapshot(w, 2 * E, 32, 1) == 0,
+          "seed 32-entry row (successor accepts)");
     {
         dna_vset_snapshot_t *s = NULL;
         uint32_t n = 0, q = 0;
         CHECK(nodus_witness_v2_epoch_authority_for_epoch(w, 2 * E, &s, &n, &q)
                   == 0,
-              "successor resolver resolves a 30-entry snapshot");
-        CHECK(n == 30, "n = 30");
-        CHECK(q == 21, "quorum = dna_bft_quorum(30) = 21");
-        CHECK(q == dna_bft_quorum(30), "quorum literal matches the formula");
+              "successor resolver resolves a 32-entry snapshot");
+        CHECK(n == 32, "n = 32");
+        CHECK(q == 22, "quorum = dna_bft_quorum(32) = 22");
+        CHECK(q == dna_bft_quorum(32), "quorum literal matches the formula");
         dna_vset_free(&s);
     }
 
     free_witness(w, dir);
     OK();
-    printf("  ok: 31 refused / 30 resolves n=30 quorum=21\n");
+    printf("  ok: 33 refused / 32 resolves n=32 quorum=22\n");
     return 0;
 }
 
@@ -389,19 +415,20 @@ static int test_live_serve(void) {
      * serves 20 members, and dna_bft_quorum(20) == 14 is the same
      * formula every live caller reads directly (no wrapper needed). */
 
-    /* Invariant closure: the write reject (§3) guarantees no >30 row can
-     * ever be present to serve here, so the raw serve is always <=30. */
-    CHECK(seed_snapshot(w, 3 * E, 31, 1) == -1,
-          "a >30 snapshot can never be inserted to be served");
+    /* Invariant closure: the write reject (§3) guarantees no >32 row can
+     * ever be present to serve here, so the raw serve is always <=32. */
+    CHECK(seed_snapshot(w, 3 * E, 33, 1) == -1,
+          "a >32 snapshot can never be inserted to be served");
 
     free_witness(w, dir);
     OK();
-    printf("  ok: 20 served, quorum 14, >30 unserveable\n");
+    printf("  ok: 20 served, quorum 14, >32 unserveable\n");
     return 0;
 }
 
 int main(void) {
-    printf("=== Ledger V2 O15F Task 1 — successor active-set maximum 30 ===\n\n");
+    printf("=== Ledger V2 O15F Task 1 — successor active-set maximum 32 "
+           "(tokenomics-v3 P3-7) ===\n\n");
 
     /* Run every section (accumulate) so a failing run shows the FULL
      * failure set, not just the first — the vacuity guard for TDD. */

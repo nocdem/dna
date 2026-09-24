@@ -84,6 +84,15 @@
 
 #define LOG_TAG "W_V2ECON"
 
+/* The synthetic output-index ladder at one boundary (nodus_witness_
+ * v2_epoch.h "THE INDEX BAND"): bond release 200 < payday base 400 <
+ * graduation-delegation band 0x40000000, the band ending below 2^31. */
+_Static_assert(NODUS_V2_EPGRAD_OUT_IDX < NODUS_V2_SETTLE_OUT_IDX_BASE,
+               "the payday base must sit above the bond release index");
+_Static_assert(NODUS_V2_SETTLE_OUT_IDX_BASE <
+                   NODUS_V2_GRAD_DELEG_OUT_IDX_BASE,
+               "the payday base must sit below the delegation band");
+
 /* The stored SQLite INTEGER bound. Anything above it round-trips
  * NEGATIVE and would poison every later read — the V2EP_STORE_MAX rule
  * (nodus_witness_v2_epoch.c). */
@@ -435,13 +444,22 @@ int nodus_witness_v2_balance_copy_write(nodus_witness_t *w,
     }
     sqlite3_finalize(st);
 
-    /* ── 4. prune: keep epoch_start − E and epoch_start, nothing older.
-     * At genesis (epoch_start < E) there is nothing older to prune.
-     * The kept epoch_start − E copy is the SOURCE copy the NEXT
-     * boundary's distribution reads (src(H + E) = H − E, v2ec_source_copy
-     * below); that distribution runs before the next boundary's own
-     * prune. */
-    if (epoch_start >= (uint64_t)DNAC_EPOCH_LENGTH) {
+    /* ── 4. prune: keep epoch_start − 2E, epoch_start − E and
+     * epoch_start — THREE copies (tokenomics-v3 P3-2), nothing older.
+     * Below 2E there is nothing older than epoch_start − 2E to prune.
+     * Who reads what is kept (B = epoch_start):
+     *   copy(B)      the commit_next of boundary B + E ranks the set it
+     *                builds by it (P3-1 "okuma B",
+     *                nodus_committee_compute_for_epoch);
+     *   copy(B − E)  read by the commit_next of THIS boundary B, which
+     *                ran before this write;
+     *   copy(B − 2E) the SOURCE copy of the distribution at B + E
+     *                (src(B + E) = B − 2E, v2ec_source_copy below) — that
+     *                distribution runs at step 1b of boundary B + E,
+     *                before that boundary's own prune deletes it.
+     * Keeping two (the P2 rule, prune below B − E) would delete
+     * copy(B − 2E) one boundary before its reader. */
+    if (epoch_start >= 2 * (uint64_t)DNAC_EPOCH_LENGTH) {
         if (sqlite3_prepare_v2(w->db,
                 "DELETE FROM v2_balance_copy WHERE epoch_start < ?1",
                 -1, &st, NULL) != SQLITE_OK) {
@@ -451,7 +469,8 @@ int nodus_witness_v2_balance_copy_write(nodus_witness_t *w,
             goto done;
         }
         if (sqlite3_bind_int64(st, 1, (sqlite3_int64)
-                               (epoch_start - (uint64_t)DNAC_EPOCH_LENGTH))
+                               (epoch_start -
+                                2 * (uint64_t)DNAC_EPOCH_LENGTH))
             != SQLITE_OK) {
             QGP_LOG_ERROR(LOG_TAG, "balance copy %llu: prune bind failed",
                           (unsigned long long)epoch_start);
@@ -776,6 +795,42 @@ static int v2ec_member_copy(nodus_witness_t *w, uint64_t epoch_start,
     return 0;
 }
 
+/* tokenomics-v3 P3-1 — one validator's FROZEN totals in copy(epoch_start).
+ * Contract: nodus_witness_v2_econ.h. The SAME per-member reader the
+ * distribution's consistency gate uses (v2ec_member_copy), so the
+ * selector that writes a snapshot entry and the gate that checks it
+ * against the copy cannot read the copy two different ways. */
+int nodus_witness_v2_balance_copy_frozen(nodus_witness_t *w,
+                                         uint64_t epoch_start,
+                                         const uint8_t *pubkey,
+                                         uint64_t *self_out,
+                                         uint64_t *total_out) {
+    if (!w || !w->db || !pubkey || !self_out || !total_out) return -1;
+    if (epoch_start > V2EC_STORE_MAX) return -1;
+
+    uint8_t vfp[64];
+    if (qgp_sha3_512(pubkey, DNAC_PUBKEY_SIZE, vfp) != 0) return -1;
+    v2ec_row_t *rows = NULL;
+    size_t n = 0;
+    if (v2ec_member_copy(w, epoch_start, vfp, &rows, &n) != 0) return -1;
+
+    uint64_t self = 0, total = 0;
+    int ret = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (memcmp(rows[i].fp, vfp, 64) == 0)
+            self = rows[i].amount;          /* PK: at most one self row */
+        if (dna_ck_add_u64(total, rows[i].amount, &total) != 0) {
+            ret = -1;
+            break;
+        }
+    }
+    free(rows);
+    if (ret != 0) return -1;
+    *self_out = self;
+    *total_out = total;
+    return 0;
+}
+
 /* floor(a × b / d), 128-bit intermediate. The callers guarantee d != 0
  * and a result <= a (b <= d), so the quotient always fits 64 bits. */
 static uint64_t v2ec_muldiv(uint64_t a, uint64_t b, uint64_t d) {
@@ -802,32 +857,42 @@ static void v2ec_member_release(v2ec_member_t *m) {
 }
 
 /* The copy a governing snapshot was built FROM, for the distribution at
- * boundary H (design §7.1 "P2-6 rev 2"):
+ * boundary H (design §8 P3-2, revising §7.1 "P2-6 rev 2"):
  *
- *   src(H) = H − 2E  when H >= 2E, else 0
+ *   src(H) = H − 3E  when H >= 3E, else 0
  *
  * The distribution at H pays the epoch (H−E, H], governed by
- * snapshot(H−E). That snapshot was built at boundary H−2E by commit_next
- * (nodus_witness_vset.c:703 keys it boundary + E), and copy(H−2E) was
- * written at the SAME boundary right after it
- * (nodus_witness_v2_epoch.c:1348 commit_next, :1359 the copy), with no
- * stake movement in between. For H = E and H = 2E the governing
- * snapshots are the genesis ones (0 and E), both built from the genesis
- * rows by nodus_witness_vset_commit_genesis (nodus_witness_vset.c:
- * 766-768), and copy(0) is written by the engine genesis from the same
- * rows (nodus_witness_v2_apply.c:960, :5657) — so src is 0 for both.
+ * snapshot(H−E). Under P3-1's "okuma B" the snapshot the commit_next of
+ * boundary B stores for B+E ranks its set by the FROZEN totals of
+ * copy(B−E) and writes exactly those totals into the entries
+ * (nodus_committee_compute_for_epoch, nodus_witness_committee.c;
+ * vset_build_snapshot, nodus_witness_vset.c). snapshot(H−E) was built at
+ * B = H−2E, so it was built from copy(H−3E). The boundary cases:
  *
- * RETENTION. Boundary H−E's copy write prunes everything below H−2E
- * (nodus_witness_v2_balance_copy_write step 4), so copy(H−2E) exists
- * when boundary H begins; this distribution runs at step 1b
- * (nodus_witness_v2_epoch.c:1242), BEFORE boundary H's own copy write
- * (step 6, :1359) prunes it. At E: copy(0) (nothing pruned yet). At 2E:
- * copy(0) — boundary E pruned below 0, i.e. nothing. At 3E: copy(E) —
- * boundary 2E pruned only copy(0). Moving the distribution after step 6
- * would read a deleted copy. */
+ *   H = E    governing snapshot(0)  — genesis, built by
+ *            nodus_witness_vset_commit_genesis from the genesis rows; the
+ *            engine genesis writes copy(0) from the SAME rows
+ *            (nodus_witness_v2_apply.c, both nodus_witness_v2_balance_
+ *            copy_write(w, 0) calls). src = 0.
+ *   H = 2E   governing snapshot(E)  — genesis, same rows. src = 0.
+ *   H = 3E   governing snapshot(2E) — built at boundary E, reading
+ *            copy(E − E) = copy(0). src = 3E − 3E = 0.
+ *   H = 4E   governing snapshot(3E) — built at boundary 2E, reading
+ *            copy(E). src = 4E − 3E = E.
+ * and in general H >= 3E reads copy(H − 3E).
+ *
+ * RETENTION (nodus_witness_v2_balance_copy_write step 4: boundary B keeps
+ * B−2E, B−E and B). copy(H−3E) was written at boundary H−3E; the prunes
+ * of boundaries H−2E (below H−4E) and H−E (below H−3E) both keep it;
+ * THIS distribution runs at step 1b of boundary H
+ * (nodus_witness_v2_epoch_boundary_apply), BEFORE boundary H's own step
+ * 6 prunes below H−2E. copy(0) is kept by boundaries E and 2E (neither
+ * prunes: B < 2E, resp. "below 0") and first deleted by boundary 3E's
+ * step 6 — after boundary 3E's distribution read it. Moving the
+ * distribution after step 6 would read a deleted copy. */
 static uint64_t v2ec_source_copy(uint64_t boundary_height) {
     const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
-    return boundary_height >= 2 * E ? boundary_height - 2 * E : 0;
+    return boundary_height >= 3 * E ? boundary_height - 3 * E : 0;
 }
 
 /* PASS 1 — load ONE member of the governing snapshot and CHECK it
@@ -837,17 +902,21 @@ static uint64_t v2ec_source_copy(uint64_t boundary_height) {
  *                                      (an ABSENT self row counts 0)
  *   Σ copy(src) delegator rows      == entry.total_stake − entry.self_bond
  *
- * Both structures are derived from the SAME committed state at the SAME
- * boundary (v2ec_source_copy above): the entry's total_stake is
- * self_stake + external_delegated (nodus_witness_committee.c:338-339),
- * the copy writes self_stake as the self row when it is nonzero and
- * every `delegations` row (nodus_witness_v2_balance_copy_write), and
- * every writer keeps external_delegated == Σ delegations of that
- * validator (rtn_delegate_exec / rtn_undelegate_exec move both by the
- * same amount; every genesis writes 0 and no delegation). A mismatch is
- * therefore either local corruption of one node's copy or a broken
- * external_delegated writer — both halt rather than pay silently wrong
- * (design §7.1; threat G6: the chain stops at that boundary). FAULT -2.
+ * Since tokenomics-v3 P3-1 ("okuma B") the two sides are the SAME rows
+ * read twice: the entry's total_stake and self_bond were written by the
+ * commit_next that built the snapshot FROM copy(src) — total = the
+ * member's own copy row + Σ its delegator rows, self_bond = its own row
+ * (nodus_committee_compute_for_epoch, nodus_witness_committee.c) — and
+ * v2ec_source_copy names exactly that copy. For the genesis-governed
+ * epochs the entry comes from the live genesis rows (bootstrap path)
+ * and copy(0) from the same rows (self_stake as the self row, no
+ * delegation — every genesis writes none). On an honest node the gate
+ * holds by construction; a mismatch is therefore local corruption of
+ * one node's copy or snapshot (or a source-copy key that drifted out of
+ * step with the selector — the coupled triple, nodus_witness_v2_epoch.h
+ * nodus_v2_power_exit_boundary) — it halts rather than pays silently
+ * wrong (design §7.1; threat G6: the chain stops at that boundary).
+ * FAULT -2.
  *
  * `power` is the entry's own voting power, total_stake / DNAC_DECIMAL_UNIT
  * — the unit the ValidatorUpdate cometbft is told uses. `has_row` is
@@ -1184,9 +1253,20 @@ int nodus_witness_v2_payday_apply(nodus_witness_t *w,
     sqlite3_finalize(st);
     if (rc != SQLITE_DONE) { free(rows); return -2; }
     if (n == 0) { free(rows); return 0; }   /* nothing accrued yet     */
-    if (n > (size_t)(UINT32_MAX - NODUS_V2_SETTLE_OUT_IDX_BASE)) {
+    /* The payout indices 400 .. 400 + n − 1 share this boundary's
+     * tx_hash with the graduation's delegation releases, whose band is
+     * [NODUS_V2_GRAD_DELEG_OUT_IDX_BASE, 2^31) = [0x40000000, 0x80000000)
+     * (tokenomics-v3 P3-4, moved below 2^31 by the P3 fix round —
+     * nodus_witness_v2_epoch.h "THE INDEX BAND"). The kind byte already
+     * separates the nullifiers; this bound keeps the (tx_hash,
+     * output_index) pairs disjoint too: the last payday index
+     * 400 + n − 1 stays strictly below the band's first index. It also
+     * keeps every payday index below 2^31, so the signed-int readers of
+     * output_index never see a narrowed value. */
+    if (n > (size_t)(NODUS_V2_GRAD_DELEG_OUT_IDX_BASE -
+                     NODUS_V2_SETTLE_OUT_IDX_BASE)) {
         free(rows);
-        return -2;                          /* the index would wrap    */
+        return -2;                          /* would reach the P3-4 band */
     }
 
     int ret = -2;

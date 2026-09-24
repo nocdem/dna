@@ -104,10 +104,13 @@ static int set_indexed_validator_field(op_config_t *c, int idx,
     } else if (strcmp(field, "commission_bps") == 0) {
         char *end = NULL;
         long bps = strtol(value, &end, 10);
-        if (!end || *end != '\0' || bps < 0 || bps > 10000) {
+        /* the chain's commission cap (tokenomics-v3 P3-8) — a genesis
+         * validator may not start above what STAKE would accept */
+        if (!end || *end != '\0' || bps < 0 ||
+            bps > (long)DNAC_COMMISSION_BPS_MAX) {
             seterr(err, err_cap,
-                   "validator_%d_commission_bps: expected 0..10000, got '%s'",
-                   idx, value);
+                   "validator_%d_commission_bps: expected 0..%u, got '%s'",
+                   idx, (unsigned)DNAC_COMMISSION_BPS_MAX, value);
             return -1;
         }
         v->commission_bps = (uint16_t)bps;

@@ -16,7 +16,8 @@
  *      proof that root() reads stored HASHES ONLY and never decodes.
  *   3. Close/reopen identity.
  *   4. nodus_witness_vset_build_for_epoch over seeded validators: top-N
- *      by stake, self_bond taken from the validator record (not
+ *      by FROZEN stake (balance copy e_start − 2E, tokenomics-v3 P3-1),
+ *      self_bond taken from the frozen own row (not
  *      total_stake), voter_id == SHA3-512(pubkey)[0..31], and the
  *      production derivation helper agreeing with that definition.
  *
@@ -542,6 +543,38 @@ static int insert_block_row(nodus_witness_t *w, uint64_t height,
     return rc == SQLITE_DONE ? 0 : -1;
 }
 
+/* Tokenomics-v3 P3-1 (okuma B): the builder for snapshot(e_start) ranks by
+ * FROZEN totals read from the balance copy at the epoch start of its
+ * lookback block, copy(e_start − 2E) (nodus_witness_committee.c). Write
+ * that copy from the live rows: one own row (owner_fp == validator_fp) of
+ * self_stake, and one delegator row of external_delegated under a fixed
+ * foreign owner. frozen total == live total, frozen self == live self. */
+static int write_frozen_copy(nodus_witness_t *w, uint64_t epoch,
+                             const dnac_validator_record_t *v) {
+    uint8_t vfp[64], dfp[64], dpk[DNAC_PUBKEY_SIZE];
+    qgp_sha3_512(v->pubkey, DNAC_PUBKEY_SIZE, vfp);
+    memset(dpk, 0xDD, sizeof(dpk));
+    qgp_sha3_512(dpk, DNAC_PUBKEY_SIZE, dfp);
+    const uint64_t amt[2] = { v->self_stake, v->external_delegated };
+    for (int k = 0; k < 2; k++) {
+        if (amt[k] == 0) continue;
+        sqlite3_stmt *ins = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "INSERT INTO v2_balance_copy (epoch_start, validator_fp, "
+                "owner_fp, amount) VALUES (?, ?, ?, ?)", -1, &ins, NULL)
+            != SQLITE_OK)
+            return -1;
+        sqlite3_bind_int64(ins, 1, (int64_t)epoch);
+        sqlite3_bind_blob (ins, 2, vfp, 64, SQLITE_STATIC);
+        sqlite3_bind_blob (ins, 3, k == 0 ? vfp : dfp, 64, SQLITE_STATIC);
+        sqlite3_bind_int64(ins, 4, (int64_t)amt[k]);
+        int rc = sqlite3_step(ins);
+        sqlite3_finalize(ins);
+        if (rc != SQLITE_DONE) return -1;
+    }
+    return 0;
+}
+
 static int test_build(void) {
     fixture_t fx;
     CHECK(fx_open(&fx, 0xC4) == 0, "open");
@@ -561,6 +594,12 @@ static int test_build(void) {
     CHECK(nodus_validator_insert(fx.w, &v1) == 0, "insert v1");
     CHECK(nodus_validator_insert(fx.w, &v2) == 0, "insert v2");
     CHECK(nodus_validator_insert(fx.w, &v3) == 0, "insert v3");
+    {
+        const uint64_t copy_epoch = e_start - 2ULL * DNAC_EPOCH_LENGTH;
+        CHECK(write_frozen_copy(fx.w, copy_epoch, &v1) == 0, "copy v1");
+        CHECK(write_frozen_copy(fx.w, copy_epoch, &v2) == 0, "copy v2");
+        CHECK(write_frozen_copy(fx.w, copy_epoch, &v3) == 0, "copy v3");
+    }
 
     /* max_active bounds. */
     CHECK(nodus_witness_vset_build_for_epoch(fx.w, e_start, 0, NULL, NULL,

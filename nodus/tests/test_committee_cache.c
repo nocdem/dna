@@ -13,7 +13,16 @@
  *       up the mutated stake.
  *   (4) Init sentinel: freshly zeroed witness has
  *       cached_committee_epoch_start == UINT64_MAX before any lookup.
- */
+ *
+ * tokenomics-v3 P3-1 ("okuma B"): the recompute ranks by the FROZEN copy
+ * of the epoch its lookback block lies in — copy(e_start − 2E) — not the
+ * live stake (nodus_committee_compute_for_epoch). The fixture therefore
+ * writes copy(2E) (for e_start 4E) from the live rows before (1), and
+ * copy(3E) (for e_start 5E) after (2)'s mutation, standing for the copy
+ * the boundary AFTER the mutation would have frozen. (3b) changed
+ * meaning: going back to epoch 4E re-queries, and the re-query follows
+ * the FROZEN copy(2E) — which the live mutation did not move — so v2 is
+ * still first (pre-P3 the live re-read put v1 first). */
 
 #define NODUS_WITNESS_INTERNAL_API 1
 
@@ -21,6 +30,7 @@
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_validator.h"
 #include "witness/nodus_witness_committee.h"
+#include "witness/nodus_witness_v2_econ.h"   /* P3-1: the frozen copy */
 
 #include "dnac/dnac.h"
 #include "dnac/validator.h"
@@ -130,6 +140,19 @@ static void set_self_stake(nodus_witness_t *w, const uint8_t *pubkey,
     sqlite3_finalize(stmt);
 }
 
+/* P3-1: (re)write copy(epoch) from the live rows (strict-insert writer,
+ * so the epoch's old rows go first). */
+static void refresh_copy(nodus_witness_t *w, uint64_t epoch) {
+    sqlite3_stmt *stmt = NULL;
+    CHECK_EQ(sqlite3_prepare_v2(w->db,
+        "DELETE FROM v2_balance_copy WHERE epoch_start = ?", -1, &stmt,
+        NULL), SQLITE_OK);
+    sqlite3_bind_int64(stmt, 1, (int64_t)epoch);
+    CHECK_EQ(sqlite3_step(stmt), SQLITE_DONE);
+    sqlite3_finalize(stmt);
+    CHECK_EQ(nodus_witness_v2_balance_copy_write(w, epoch), 0);
+}
+
 static int find_pubkey(const nodus_committee_member_t *arr, int count,
                         uint8_t pub_fill) {
     uint8_t needle[DNAC_PUBKEY_SIZE];
@@ -185,6 +208,8 @@ int main(void) {
     init_validator(&v2, 0x22, 1, 200);
     CHECK_EQ(nodus_validator_insert(&w, &v1), 0);
     CHECK_EQ(nodus_validator_insert(&w, &v2), 0);
+    /* P3-1: freeze copy(2E), the copy epoch 4E ranks by */
+    refresh_copy(&w, e_start_a - 2 * epoch_len);
 
     /* ── Scenario 1: first call populates cache ──────────────────── */
     printf("  (1) first call within epoch — populates cache\n");
@@ -227,6 +252,9 @@ int main(void) {
 
     /* ── Scenario 3: new epoch forces recompute ──────────────────── */
     printf("  (3) epoch change triggers recompute\n");
+    /* P3-1: the mutation reaches a set only through a LATER frozen copy —
+     * copy(3E), the one epoch 5E ranks by */
+    refresh_copy(&w, e_start_b - 2 * epoch_len);
     uint64_t blk_in_b = e_start_b + 5;
     nodus_committee_member_t out3[DNAC_COMMITTEE_SIZE];
     int count3 = 0;
@@ -241,21 +269,20 @@ int main(void) {
     CHECK_EQ(out3[idx_v1].total_stake, 999);
 
     /* Going BACK to the old epoch re-queries; because the cache key
-     * only stores one epoch, this triggers another recompute. The
-     * returned committee reflects the CURRENT database state (v1=999
-     * now wins even under the old lookback because we used the same
-     * active_since for both validators). */
-    printf("  (3b) back to old epoch — re-query from live DB\n");
+     * only stores one epoch, this triggers another recompute.
+     * tokenomics-v3 P3-1: the recompute ranks by the FROZEN copy(2E),
+     * which the live mutation did not touch, so v2 (200) is still on top
+     * — the pre-P3 live re-read put v1 (999) first. The cache still pins
+     * ONE epoch at a time; ping-ponging re-queries (in production this
+     * never happens — block_height is monotonic). */
+    printf("  (3b) back to old epoch — re-query from its frozen copy\n");
     nodus_committee_member_t out4[DNAC_COMMITTEE_SIZE];
     int count4 = 0;
     CHECK_EQ(nodus_committee_get_for_block(&w, blk_in_a, out4,
                                              DNAC_COMMITTEE_SIZE, &count4), 0);
     CHECK_EQ(w.cached_committee_epoch_start, e_start_a);
-    /* v1 now on top — because the DB no longer reflects the old
-     * ranking. This is the expected behaviour: the cache pins ONE
-     * epoch at a time; ping-ponging between epochs re-queries. In
-     * production this never happens (block_height is monotonic). */
-    CHECK(find_pubkey(out4, count4, 0x11) == 0);
+    CHECK(find_pubkey(out4, count4, 0x22) == 0);
+    CHECK_EQ(out4[0].total_stake, 200);
 
     sqlite3_close(w.db);
     w.db = NULL;

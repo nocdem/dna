@@ -85,7 +85,7 @@ extern "C" {
 typedef struct {
     uint8_t  pubkey[DNAC_PUBKEY_SIZE];                          /**< Dilithium5 validator pubkey */
     char     unstake_destination_fp[DNAC_FINGERPRINT_SIZE];     /**< Hex fp receiving 10M on unstake */
-    uint16_t commission_bps;                                    /**< Initial commission (0-10000) */
+    uint16_t commission_bps;                                    /**< Initial commission (0..DNAC_COMMISSION_BPS_MAX = 5000) */
     char     endpoint[DNAC_INITIAL_VALIDATOR_ENDPOINT_LEN];     /**< DHT endpoint hint (host:port) */
 } dnac_chain_initial_validator_t;
 

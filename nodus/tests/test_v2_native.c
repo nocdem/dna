@@ -65,7 +65,8 @@
  *      transitions (decrease / equal / increase), ELIGIBLE and RETIRING
  *      updaters, sequential updates and fee-only conservation; a
  *      12-case negative matrix (unknown validator, UNSTAKED,
- *      AUTO_RETIRED, bps > 10000, call length ±1, all-zero identity,
+ *      AUTO_RETIRED, bps 5001 (> the P3-8 cap 5000), call length ±1,
+ *      all-zero identity,
  *      valid-signature-wrong-identity, kind-2 carriage, both single-leg
  *      forms, foreign sibling); ACTIVE-SET immutability,
  *      committed-intent replay, cross-chain separation and the
@@ -1759,15 +1760,20 @@ static int test_system_cc(void) {
     return 0;
 }
 
-/* ══ 3a. O15F — V2-lane TARGET_ACTIVE_COUNT range narrowing [7..30] ═══
+/* ══ 3a. O15F — V2-lane TARGET_ACTIVE_COUNT range narrowing [7..32] ═══
  *
  * D2: a runtime-op-6 CHAIN_CONFIG envelope raising TARGET_ACTIVE_COUNT
- * (param 4) above NODUS_V2_ACTIVE_SET_MAX (30) is a deterministic VERDICT
+ * (param 4) above NODUS_V2_ACTIVE_SET_MAX is a deterministic VERDICT
  * reject — checked in rtn_cc_exec AFTER the shared scalar rules, and the
  * exec hook is PURE (no witness handle), so the bound is V2-lane-GLOBAL.
- * The legacy scalar range [7..128] still ADMITS 31 (that is what makes
- * this the NEW rule); 30 (== max, accept side of the off-by-one) and 20
- * commit. */
+ * tokenomics-v3 P3-7 (decision file §3 2026-09-24 "P3 soruları" (4)
+ * "yönetişim aralığı [7, 32]"): the ceiling is 32 (was 30). The legacy
+ * scalar range [7..128] still ADMITS 33 (that is what makes this the NEW
+ * rule); 32 (== max, accept side of the off-by-one) and 31 commit; 6 is
+ * below the scalar floor (DNAC_CFG_MIN_TARGET_ACTIVE = DNAC_COMMITTEE_SIZE
+ * = 7) and rejects.
+ * RED ON THE PRE-P3 TREE: 32 and 31 (above the old 30) rejected.
+ * KILLED BY: a ceiling other than 32; a floor other than 7. */
 static int test_system_cc_target_active_max(void) {
     fixture_t fx;
     CHECK(fx_genesis(&fx, "ccmax") == 0, "genesis");
@@ -1782,48 +1788,62 @@ static int test_system_cc_target_active_max(void) {
      * both (scalar window + freshness). */
     const uint64_t EFF0 = 20000, EFF1 = 20001, VB = 30000;
 
-    /* 31 > 30: rejects as a deterministic verdict, DB byte-identical.
-     * The scalar rule [7..128] ACCEPTS 31, so before the D2 narrowing
-     * lands this envelope COMMITS and apply_reject FAILS here — the
-     * failing-test proof. */
-    CHECK(cc_env(&fx, &e, 1, DNAC_CFG_TARGET_ACTIVE_COUNT, 31, EFF0, 0x31,
-                 1, VB, voters5, 5, 0, NULL, NULL) == 0, "build 31");
+    CHECK(NODUS_V2_ACTIVE_SET_MAX == 32,
+          "FIXTURE GUARD: the P3-7 ceiling is 32"); OK();
+
+    /* 33 > 32: rejects as a deterministic verdict, DB byte-identical.
+     * The scalar rule [7..128] ACCEPTS 33, so without the D2 narrowing
+     * this envelope COMMITS and apply_reject FAILS here. */
+    CHECK(cc_env(&fx, &e, 1, DNAC_CFG_TARGET_ACTIVE_COUNT, 33, EFF0, 0x33,
+                 1, VB, voters5, 5, 0, NULL, NULL) == 0, "build 33");
     {
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
         CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
-              "TARGET_ACTIVE_COUNT=31 must reject (V2-lane max 30)");
+              "TARGET_ACTIVE_COUNT=33 must reject (V2-lane max 32)");
         OK();
     }
 
-    /* 30 == NODUS_V2_ACTIVE_SET_MAX: commits (accept side; the 31 reject
-     * left no row, so EFF0 is free). */
-    CHECK(cc_env(&fx, &e, 1, DNAC_CFG_TARGET_ACTIVE_COUNT, 30, EFF0, 0x30,
-                 1, VB, voters5, 5, 0, NULL, NULL) == 0, "build 30");
+    /* 32 == NODUS_V2_ACTIVE_SET_MAX: commits (accept side; the 33 reject
+     * left no row, so EFF0 is free). RED ON THE PRE-P3 TREE (max 30). */
+    CHECK(cc_env(&fx, &e, 1, DNAC_CFG_TARGET_ACTIVE_COUNT, 32, EFF0, 0x32,
+                 1, VB, voters5, 5, 0, NULL, NULL) == 0, "build 32");
     {
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
         CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
-              "TARGET_ACTIVE_COUNT=30 must commit");
+              "TARGET_ACTIVE_COUNT=32 must commit");
         OK();
     }
     CHECK((uint64_t)q1(fx.w, "SELECT new_value FROM chain_config_history "
-                   "WHERE param_id=4 AND effective_block=20000") == 30,
-          "target=30 row committed"); OK();
+                   "WHERE param_id=4 AND effective_block=20000") == 32,
+          "target=32 row committed"); OK();
 
-    /* 20 < max: commits at H=2 (distinct effective ⇒ distinct PK). */
-    CHECK(cc_env(&fx, &e, 2, DNAC_CFG_TARGET_ACTIVE_COUNT, 20, EFF1, 0x20,
-                 1, VB, voters5, 5, 0, NULL, NULL) == 0, "build 20");
+    /* 31 < max: commits at H=2 (distinct effective ⇒ distinct PK). RED ON
+     * THE PRE-P3 TREE (31 > the old 30). */
+    CHECK(cc_env(&fx, &e, 2, DNAC_CFG_TARGET_ACTIVE_COUNT, 31, EFF1, 0x31,
+                 1, VB, voters5, 5, 0, NULL, NULL) == 0, "build 31");
     {
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 2, &ve, 1);
         CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
-              "TARGET_ACTIVE_COUNT=20 must commit");
+              "TARGET_ACTIVE_COUNT=31 must commit");
         OK();
     }
     CHECK((uint64_t)q1(fx.w, "SELECT new_value FROM chain_config_history "
-                   "WHERE param_id=4 AND effective_block=20001") == 20,
-          "target=20 row committed"); OK();
+                   "WHERE param_id=4 AND effective_block=20001") == 31,
+          "target=31 row committed"); OK();
+
+    /* 6 < the governed floor 7 (the shared scalar rule): rejects. */
+    CHECK(cc_env(&fx, &e, 3, DNAC_CFG_TARGET_ACTIVE_COUNT, 6, EFF1 + 1,
+                 0x06, 1, VB, voters5, 5, 0, NULL, NULL) == 0, "build 6");
+    {
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 3, &ve, 1);
+        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+              "TARGET_ACTIVE_COUNT=6 must reject (floor 7)");
+        OK();
+    }
 
     fx_close(&fx);
     return 0;
@@ -5151,12 +5171,17 @@ static int test_system_stake(void) {
               "C6 bond below DNAC_SELF_STAKE_AMOUNT must reject");
         OK();
     }
-    /* C7 commission above the client bound (the LABELED NARROWING) */
+    /* C7 commission above the bound (the LABELED NARROWING). tokenomics-v3
+     * P3-8: the bound is 5000 (decision §1 "üst sınır %50"), so the
+     * probe is the LITERAL 5001 — RED ON THE PRE-P3 TREE (bound 10000,
+     * 5001 committed); KILLED BY any cap above 5000. The macro is pinned
+     * to 5000 in test_stake_constants.c. */
     {
         out_spec_t o[1] = { { 9, STAKE_CHANGE, 0x59, NULL } };
+        CHECK(DNAC_COMMISSION_BPS_MAX + 1 == 5001,
+              "FIXTURE GUARD: the P3-8 cap is 5000");
         uint32_t sl = stake_call_build(scall, sizeof(scall), 9,
-                                       DNAC_COMMISSION_BPS_MAX + 1,
-                                       STAKE_BOND, fp9);
+                                       5001u, STAKE_BOND, fp9);
         uint32_t fl = spend_call_build(fcall, sizeof(fcall), in9, 1, o, 1);
         CHECK(sl && fl, "call");
         CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_STAKE, scall, sl,
@@ -5165,7 +5190,7 @@ static int test_system_stake(void) {
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
         CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
-              "C7 commission_bps > 10000 must reject");
+              "C7 commission_bps 5001 (> the P3-8 cap 5000) must reject");
         OK();
     }
     /* C8 duplicate input nullifier, BALANCED for the doubled sum: if the
@@ -5540,6 +5565,30 @@ static int test_system_stake(void) {
     return 0;
 }
 
+/* Record offsets, RESTATED here rather than imported: the production
+ * macros live in nodus_witness_rt_native.c and are not exported, and an
+ * independent restatement is what catches a silent layout move. */
+#define TVAL_REC_LEN     5381u   /* tokenomics-v3 P1: 5397 -> 5381, the two
+                                  * trailing attendance fields removed    */
+#define TVAL_SELF_OFF    2592u
+#define TVAL_TOT_OFF     2600u
+#define TVAL_EXT_OFF     2608u
+/* the commission window (O12 S1 — restated independently, same rule as
+ * the offsets above: the production macros are not exported and an
+ * independent restatement is what catches a silent layout move) */
+#define TVAL_COMM_OFF    2616u
+#define TVAL_PCOMM_OFF   2618u
+#define TVAL_PEFF_OFF    2620u
+#define TVAL_STATUS_OFF  2628u
+#define TVAL_SINCE_OFF   2629u
+#define TVAL_UCOMMIT_OFF 2637u
+#define TVAL_DFP_OFF     2645u
+#define TVAL_DPK_OFF     2773u
+#define TVAL_LASTUPD_OFF 5365u
+#define TDEL_REC_LEN     5200u
+#define TDEL_AMT_OFF     5184u
+#define TDEL_AT_OFF      5192u
+
 /* ══ 12. O11 HOOK-LEVEL fail-closed pins ═══════════════════════════
  * Seams a block-level test cannot observe, because the next layer
  * produces the same block verdict:
@@ -5620,6 +5669,193 @@ static int test_o11_hook_pins(void) {
         CHECK(nodus_rt_system_exec(sys, &v, 0, &ctx, r2, nr, res,
                                    sizeof(res), &rl) == -1,
               "P1 present validator row must reject at the hook"); OK();
+    }
+    /* P1b-P1f — tokenomics-v3 P3-9, RE-STAKE AFTER GRADUATION (decision
+     * file §3 2026-09-23 "MEZUNİYETTEN SONRA aynı anahtarla yeniden stake
+     * edilebilir"; design §8 P3-9). A present row whose status is
+     * UNSTAKED is REVIVED; every other status keeps the Rule I refusal.
+     * The observed row is built here byte by byte at the independently
+     * restated TVAL_* offsets: key 9's pubkey, a stale commission 777, a
+     * stale since/commit/last-update/missed history, a valid destination
+     * window, and — as graduation leaves it — self_stake and both
+     * delegated totals 0.
+     * RED ON THE PRE-P3 TREE: P1b (any present row was -1, Rule I).
+     * KILLED BY: reviving any status but UNSTAKED; carrying any stale
+     * column into the revived record; a CREATE/ABSENT effect on the revive
+     * path (the adapter would refuse an existing key); reviving a row that
+     * still holds a bond or delegated value. */
+    {
+        uint8_t old[TVAL_REC_LEN];
+        static const char hexd[] = "0123456789abcdef";
+        memset(old, 0, sizeof(old));
+        memcpy(old, g_pk[9], 2592);
+        old[TVAL_COMM_OFF]     = (uint8_t)(777 >> 8);
+        old[TVAL_COMM_OFF + 1] = (uint8_t)(777 & 0xFF);
+        old[TVAL_STATUS_OFF]   = (uint8_t)DNAC_VALIDATOR_UNSTAKED;
+        for (int i = 0; i < 8; i++) {
+            old[TVAL_SINCE_OFF + i]   = (uint8_t)(55ULL >> (56 - 8 * i));
+            old[TVAL_UCOMMIT_OFF + i] = (uint8_t)(66ULL >> (56 - 8 * i));
+            old[TVAL_LASTUPD_OFF + i] = (uint8_t)(77ULL >> (56 - 8 * i));
+            old[TVAL_LASTUPD_OFF + 8 + i] = (uint8_t)(1ULL >> (56 - 8 * i));
+        }
+        for (int b = 0; b < 64; b++) {         /* a foreign destination */
+            old[TVAL_DFP_OFF + 2 * b]     = (uint8_t)hexd[(b * 7) & 0xF];
+            old[TVAL_DFP_OFF + 2 * b + 1] = (uint8_t)hexd[(b * 3) & 0xF];
+        }
+        nodus_rt_read_res_t r2[NODUS_RT_MAX_READS];
+        memcpy(r2, reads, sizeof(r2));
+        r2[0].present = 1;
+        r2[0].value_len = TVAL_REC_LEN;
+        memcpy(r2[0].value, old, TVAL_REC_LEN);
+
+        /* P1b the UNSTAKED row is revived */
+        CHECK(nodus_rt_system_exec(sys, &v, 0, &ctx, r2, nr, res,
+                                   sizeof(res), &rl) == 0,
+              "P1b an UNSTAKED row is revived by a fresh STAKE"); OK();
+        {
+            dna_effect_view_t ev;
+            CHECK(dna_effect_result_decode(res, rl, &ev) == 0 &&
+                  ev.effect_count == 2, "P1b two effects"); OK();
+            CHECK(ev.eff[0].op_id == 4 &&
+                  ev.eff[0].effect_kind == DNA_EFFECT_SET &&
+                  ev.eff[0].precond_tag == DNA_EFFECT_PRE_EXISTS_VHASH &&
+                  ev.eff[0].value_len == TVAL_REC_LEN &&
+                  ev.eff[1].op_id == 7 &&
+                  ev.eff[1].effect_kind == DNA_EFFECT_SET,
+                  "P1b the row is a SET bound to the observed record, then "
+                  "the counter SET"); OK();
+            /* the revived record, byte for byte: exactly a fresh STAKE's
+             * (bond, commission 500, ACTIVE, since = 1 the exec height,
+             * dest window = hex(fp9), dest pubkey = key 9 — its own
+             * fingerprint), every stale column cleared */
+            uint8_t want[TVAL_REC_LEN];
+            memset(want, 0, sizeof(want));
+            memcpy(want, g_pk[9], 2592);
+            for (int i = 0; i < 8; i++) {
+                want[TVAL_SELF_OFF + i] =
+                    (uint8_t)((uint64_t)STAKE_BOND >> (56 - 8 * i));
+                want[TVAL_SINCE_OFF + i] = (uint8_t)(1ULL >> (56 - 8 * i));
+            }
+            want[TVAL_COMM_OFF]     = (uint8_t)(STAKE_BPS >> 8);
+            want[TVAL_COMM_OFF + 1] = (uint8_t)(STAKE_BPS & 0xFF);
+            want[TVAL_STATUS_OFF]   = (uint8_t)DNAC_VALIDATOR_ACTIVE;
+            memcpy(want + TVAL_DFP_OFF, g_fp[9], 128);
+            memcpy(want + TVAL_DPK_OFF, g_pk[9], 2592);
+            CHECK(memcmp(ev.buf + ev.val_off[0], want, TVAL_REC_LEN) == 0,
+                  "P1b the revived record is a fresh STAKE's, byte for "
+                  "byte — tenure restarts, counters and unstake fields "
+                  "cleared"); OK();
+        }
+        /* P1c every other existing status keeps the Rule I refusal */
+        {
+            static const uint8_t others[4] = {
+                (uint8_t)DNAC_VALIDATOR_ACTIVE,
+                (uint8_t)DNAC_VALIDATOR_RETIRING,
+                (uint8_t)DNAC_VALIDATOR_AUTO_RETIRED,
+                (uint8_t)DNAC_VALIDATOR_ELIGIBLE };
+            for (int i = 0; i < 4; i++) {
+                nodus_rt_read_res_t r3[NODUS_RT_MAX_READS];
+                memcpy(r3, r2, sizeof(r3));
+                r3[0].value[TVAL_STATUS_OFF] = others[i];
+                CHECK(nodus_rt_system_exec(sys, &v, 0, &ctx, r3, nr, res,
+                                           sizeof(res), &rl) == -1,
+                      "P1c a non-UNSTAKED existing row is still Rule I");
+            }
+            OK();
+        }
+        /* P1d an UNSTAKED row still holding a bond or delegated value is
+         * never overwritten (graduation zeroes all three) */
+        {
+            static const uint32_t offs[3] = { TVAL_SELF_OFF, TVAL_TOT_OFF,
+                                              TVAL_EXT_OFF };
+            for (int i = 0; i < 3; i++) {
+                nodus_rt_read_res_t r3[NODUS_RT_MAX_READS];
+                memcpy(r3, r2, sizeof(r3));
+                r3[0].value[offs[i] + 7] = 1;
+                CHECK(nodus_rt_system_exec(sys, &v, 0, &ctx, r3, nr, res,
+                                           sizeof(res), &rl) == -1,
+                      "P1d an UNSTAKED row holding value is refused");
+            }
+            OK();
+        }
+        /* P1e an UNSTAKED row served under the key of a DIFFERENT pubkey:
+         * the adapter broke its contract on this node — fault */
+        {
+            nodus_rt_read_res_t r3[NODUS_RT_MAX_READS];
+            memcpy(r3, r2, sizeof(r3));
+            r3[0].value[5] ^= 0x01;
+            CHECK(nodus_rt_system_exec(sys, &v, 0, &ctx, r3, nr, res,
+                                       sizeof(res), &rl) == -2,
+                  "P1e row/key disagreement is a node FAULT"); OK();
+        }
+        /* P1f a legacy-malformed UNSTAKED row (a non-hex destination) is
+         * write-frozen: VERDICT */
+        {
+            nodus_rt_read_res_t r3[NODUS_RT_MAX_READS];
+            memcpy(r3, r2, sizeof(r3));
+            r3[0].value[TVAL_DFP_OFF] = 'Z';
+            CHECK(nodus_rt_system_exec(sys, &v, 0, &ctx, r3, nr, res,
+                                       sizeof(res), &rl) == -1,
+                  "P1f a write-frozen UNSTAKED row is refused"); OK();
+        }
+        /* P1g Rule M on the REVIVE path (P3 fix round): a revive is a
+         * STAKE and increments active_count exactly like a fresh one, so
+         * the same cap applies — the 128th is accepted, the 129th is a
+         * VERDICT. RED ON THE P3 TREE: the revive path had no cap. */
+        {
+            nodus_rt_read_res_t r3[NODUS_RT_MAX_READS];
+            memcpy(r3, r2, sizeof(r3));
+            for (int i = 0; i < 8; i++)
+                r3[1].value[i] = (uint8_t)(((uint64_t)DNAC_MAX_VALIDATORS - 1)
+                                           >> (56 - 8 * i));
+            CHECK(nodus_rt_system_exec(sys, &v, 0, &ctx, r3, nr, res,
+                                       sizeof(res), &rl) == 0,
+                  "P1g a revive that becomes the 128th counted validator "
+                  "is accepted"); OK();
+            for (int i = 0; i < 8; i++)
+                r3[1].value[i] = (uint8_t)((uint64_t)DNAC_MAX_VALIDATORS
+                                           >> (56 - 8 * i));
+            CHECK(nodus_rt_system_exec(sys, &v, 0, &ctx, r3, nr, res,
+                                       sizeof(res), &rl) == -1,
+                  "P1g a revive that would be the 129th counted validator "
+                  "is refused (Rule M)"); OK();
+        }
+    }
+    /* P2b Rule M on the FRESH path (P3 fix round). active_count counts
+     * ACTIVE + ELIGIBLE + RETIRING; the boundary readers
+     * (nodus_validator_bonded_tenured, v2ep_rule_n) fault on a 129th
+     * ACTIVE/ELIGIBLE row, so a STAKE that would take the counter past
+     * DNAC_MAX_VALIDATORS must be refused as a VERDICT.
+     * RED ON THE P3 TREE: the 129th STAKE was accepted (count_new was
+     * bounded only by INT64_MAX).
+     * KILLED BY: `>=` (would refuse the legal 128th), no check, or a
+     * fault (-2) instead of a verdict. */
+    {
+        nodus_rt_read_res_t r2[NODUS_RT_MAX_READS];
+        memcpy(r2, reads, sizeof(r2));
+        for (int i = 0; i < 8; i++)
+            r2[1].value[i] = (uint8_t)(((uint64_t)DNAC_MAX_VALIDATORS - 1)
+                                       >> (56 - 8 * i));
+        CHECK(nodus_rt_system_exec(sys, &v, 0, &ctx, r2, nr, res,
+                                   sizeof(res), &rl) == 0,
+              "P2b the 128th STAKE is accepted"); OK();
+        {
+            dna_effect_view_t ev;
+            CHECK(dna_effect_result_decode(res, rl, &ev) == 0 &&
+                  ev.effect_count == 2 && ev.eff[1].op_id == 7 &&
+                  ev.eff[1].value_len == 8, "P2b counter effect"); OK();
+            uint64_t nv = 0;
+            for (int i = 0; i < 8; i++)
+                nv = (nv << 8) | ev.buf[ev.val_off[1] + i];
+            CHECK(nv == (uint64_t)DNAC_MAX_VALIDATORS,
+                  "P2b the counter lands exactly on the cap"); OK();
+        }
+        for (int i = 0; i < 8; i++)
+            r2[1].value[i] = (uint8_t)((uint64_t)DNAC_MAX_VALIDATORS
+                                       >> (56 - 8 * i));
+        CHECK(nodus_rt_system_exec(sys, &v, 0, &ctx, r2, nr, res,
+                                   sizeof(res), &rl) == -1,
+              "P2b the 129th STAKE is refused (Rule M)"); OK();
     }
     /* P2: an ABSENT counter row rejects (a chain that cannot count its
      * validators must not pretend the counter was 0) */
@@ -5778,31 +6014,16 @@ static int test_o11_hook_pins(void) {
  * VAL_BOND, ACTIVE) are the delegation targets; no STAKE is needed
  * first, which keeps these tests independent of §11. */
 
-/* Record offsets, RESTATED here rather than imported: the production
- * macros live in nodus_witness_rt_native.c and are not exported, and an
- * independent restatement is what catches a silent layout move. */
-#define TVAL_REC_LEN     5381u   /* tokenomics-v3 P1: 5397 -> 5381, the two
-                                  * trailing attendance fields removed    */
-#define TVAL_SELF_OFF    2592u
-#define TVAL_TOT_OFF     2600u
-#define TVAL_EXT_OFF     2608u
-/* the commission window (O12 S1 — restated independently, same rule as
- * the offsets above: the production macros are not exported and an
- * independent restatement is what catches a silent layout move) */
-#define TVAL_COMM_OFF    2616u
-#define TVAL_PCOMM_OFF   2618u
-#define TVAL_PEFF_OFF    2620u
-#define TVAL_STATUS_OFF  2628u
-#define TVAL_SINCE_OFF   2629u
-#define TVAL_UCOMMIT_OFF 2637u
-#define TVAL_DFP_OFF     2645u
-#define TVAL_DPK_OFF     2773u
-#define TVAL_LASTUPD_OFF 5365u
-#define TDEL_REC_LEN     5200u
-#define TDEL_AMT_OFF     5184u
-#define TDEL_AT_OFF      5192u
+/* (The record offsets TVAL_* / TDEL_* moved above §12's hook pins, whose
+ * tokenomics-v3 P3-9 revive cases build a validator record by hand.) */
 
-#define DLG_AMOUNT   400000ULL
+/* tokenomics-v3 P3-5: a NEW delegation row needs amount >=
+ * DNAC_MIN_DELEGATION and a partial withdrawal must leave 0 or >= it, so
+ * the file's standard position is TWO minimums (was 400 000 raw, below
+ * the witness minimum the chain now enforces): half of it — the §U
+ * partial withdrawal — leaves exactly one minimum, the smallest legal
+ * remainder. */
+#define DLG_AMOUNT   (2ULL * (uint64_t)DNAC_MIN_DELEGATION)
 #define DLG_CHANGE   50000ULL
 /* funds a DELEGATE: the locked amount + the fee + one change output */
 #define DLG_FUND     (DLG_AMOUNT + FEE_MIN + DLG_CHANGE)
@@ -6070,6 +6291,30 @@ static int test_system_delegate(void) {
         mk_block(&b, 1, &ve, 1);
         CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
               "D8 signer fp != SHA3(call.delegator) must reject"); OK();
+    }
+
+    /* D13 tokenomics-v3 P3-5: a DELEGATE that OPENS a row below
+     * DNAC_MIN_DELEGATION (decision file §3 2026-09-24 "P3 soruları" (2)
+     * "Zincir asgari delegasyon uygular: 100 NODUS"). Balanced for the
+     * smaller amount (the change grows by what the lock shrinks), so the
+     * minimum is the only violated rule.
+     * RED ON THE PRE-P3 TREE: the witness minimum was 1 raw — committed.
+     * KILLED BY: applying the floor to top-ups only, or `<=` (MIN itself
+     * refused — P5 below accepts it). */
+    {
+        const uint64_t amt = (uint64_t)DNAC_MIN_DELEGATION - 1;
+        uint32_t sl = deleg_call_build(scall, sizeof(scall), 9, 0, amt);
+        uint32_t fl = fund_call(fcall, sizeof(fcall), f9, 9,
+                                DLG_CHANGE + (DLG_AMOUNT - amt), 0x19);
+        CHECK(sl && fl, "call");
+        CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_DELEGATE, scall, sl,
+                            DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                            s9, 1, s9, 1, NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+              "D13 a NEW delegation below DNAC_MIN_DELEGATION must reject");
+        OK();
     }
 
     /* ── POSITIVE 1: a new delegation ───────────────────────────────── */
@@ -6477,6 +6722,55 @@ static int test_system_delegate(void) {
         CHECK(nodus_rt_system_exec(&bt[0], &v, 0, &ctx, reads, nr, res,
                                    sizeof(res), &rl) == -1,
               "D12 n_signers != 1 must reject"); OK();
+    }
+
+    /* ── P5/P6 tokenomics-v3 P3-5, the accepted edges: a TOP-UP needs
+     *    only amount >= 1 (P5, 1 raw onto key 9's existing row, h = 5),
+     *    and a NEW row of EXACTLY DNAC_MIN_DELEGATION commits (P6, key 12
+     *    onto validator 1, h = 6). By hand: key 9's row goes 2 ×
+     *    DLG_AMOUNT (P1 + P2) → 2 × DLG_AMOUNT + 1.
+     *    KILLED BY: the minimum applied to top-ups (P5 rejected); `<=`
+     *    against the minimum (P6 rejected). ───────────────────────────── */
+    {
+        uint8_t f9t[64], f12[64], dk12_1[128];
+        int s12[1] = { 12 };
+        CHECK(seed_funding(&fx, 9, 1 + FEE_MIN + DLG_CHANGE, 0xD8, f9t) == 0,
+              "fund 9 top-up");
+        uint32_t sl = deleg_call_build(scall, sizeof(scall), 9, 0, 1);
+        uint32_t fl = fund_call(fcall, sizeof(fcall), f9t, 9, DLG_CHANGE,
+                                0x29);
+        CHECK(sl && fl, "call");
+        CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_DELEGATE, scall, sl,
+                            DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                            s9, 1, s9, 1, NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 5, &ve, 1);
+        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+              "P5 a 1-raw TOP-UP of an existing row commits"); OK();
+        uint8_t d[TDEL_REC_LEN];
+        CHECK(sysrow_read(fx.w, 5, dk90, 128, d, TDEL_REC_LEN) == 1 &&
+              tbe64(d + TDEL_AMT_OFF) == 2 * DLG_AMOUNT + 1,
+              "P5 the row grew by exactly 1 raw"); OK();
+
+        CHECK(seed_funding(&fx, 12, (uint64_t)DNAC_MIN_DELEGATION +
+                           FEE_MIN + DLG_CHANGE, 0xD9, f12) == 0,
+              "fund 12");
+        CHECK(deleg_key_of(12, 1, dk12_1) == 0, "key");
+        sl = deleg_call_build(scall, sizeof(scall), 12, 1,
+                              (uint64_t)DNAC_MIN_DELEGATION);
+        fl = fund_call(fcall, sizeof(fcall), f12, 12, DLG_CHANGE, 0x2A);
+        CHECK(sl && fl, "call");
+        CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_DELEGATE, scall, sl,
+                            DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                            s12, 1, s12, 1, NULL) == 0, "build");
+        nodus_v2_envelope_t ve2 = { e.bytes, e.len };
+        mk_block(&b, 6, &ve2, 1);
+        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+              "P6 a NEW row of exactly DNAC_MIN_DELEGATION commits"); OK();
+        CHECK(sysrow_read(fx.w, 5, dk12_1, 128, d, TDEL_REC_LEN) == 1 &&
+              tbe64(d + TDEL_AMT_OFF) == (uint64_t)DNAC_MIN_DELEGATION,
+              "P6 the row holds exactly the minimum"); OK();
+        CHECK(supply_identity_holds(fx.w), "P5/P6 supply identity"); OK();
     }
     fx_close(&fx);
     return 0;
@@ -6911,8 +7205,19 @@ static int test_system_unstake(void) {
         CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
               "U3 sub-floor fee must reject"); OK();
     }
-    /* ── U4 RULE A: a delegation still references validator 5 ───────── */
+    /* ── U4 RULE A IS GONE (tokenomics-v3 P3-4; decision file §3
+     *    2026-09-24 "P3 soruları" (3) "Delegatoru olan validator
+     *    çıkabilir"): a validator a delegation still references CAN
+     *    unstake — the delegation is released to its owner at the
+     *    graduation boundary instead (test_v2_epoch.c §2e).
+     * RED ON THE PRE-P3 TREE: the UNSTAKE rejected (Rule A, -1).
+     * KILLED BY: keeping any delegation-count gate on UNSTAKE; a
+     * two-read plan against a one-read exec (every UNSTAKE a node fault
+     * — the hook pin below). The UNSTAKE is funded by its OWN input
+     * (f9u), so the positive UP1 below still has f9. ────────────────── */
     {
+        uint8_t f9u[64];
+        CHECK(seed_funding(&fx, 9, NOLOCK_FUND, 0xC6, f9u) == 0, "fund u4");
         uint32_t sl = deleg_call_build(scall, sizeof(scall), 10, 5,
                                        DLG_AMOUNT);
         uint32_t fl = fund_call(fcall, sizeof(fcall), f10, 10, DLG_CHANGE,
@@ -6928,16 +7233,48 @@ static int test_system_unstake(void) {
               "U4 setup delegation commits"); OK();
 
         uint32_t sl2 = unstake_call_build(scall, sizeof(scall), 5);
-        uint32_t fl2 = fund_call(fcall, sizeof(fcall), f9, 9, DLG_CHANGE,
+        uint32_t fl2 = fund_call(fcall, sizeof(fcall), f9u, 9, DLG_CHANGE,
                                  0x35);
         CHECK(sl2 && fl2, "call");
         CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_UNSTAKE, scall, sl2,
                             DNA_CORERULE_SYSFUND, fcall, fl2, FEE_MIN,
                             s5, 1, s9, 1, NULL) == 0, "build");
+        /* hook level: UNSTAKE plans ONE read now (the validator row) */
+        {
+            size_t nb = 0;
+            const nodus_domain_runtime_t *bt =
+                nodus_runtime_builtin_table(&nb);
+            dna_env_view_t v;
+            nodus_rt_exec_ctx_t ctx;
+            nodus_rt_read_req_t reqs[NODUS_RT_MAX_READS];
+            uint16_t nr = 0;
+            uint8_t vk5[64];
+            memset(&ctx, 0, sizeof(ctx));
+            ctx.chain_id = fx.chain_id;
+            ctx.global_height = 2;
+            CHECK(bt && nb == 2 &&
+                  dna_env_decode(e.bytes, e.len, &v) == 0 &&
+                  val_key(5, vk5) == 0, "decode");
+            CHECK(nodus_rt_system_read_plan(&bt[0], &v, 0, &ctx, reqs,
+                                            NODUS_RT_MAX_READS, &nr) == 0 &&
+                  nr == 1 && reqs[0].op_id == 4 &&
+                  memcmp(reqs[0].key, vk5, 64) == 0,
+                  "U4 UNSTAKE plans exactly the validator-row read — the "
+                  "Rule A delegation count is gone"); OK();
+        }
         nodus_v2_envelope_t ve2 = { e.bytes, e.len };
         mk_block(&b, 2, &ve2, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
-              "U4 Rule A: a delegated validator cannot unstake"); OK();
+        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+              "U4 a delegated validator CAN unstake (Rule A removed)"); OK();
+        uint8_t vk5[64], v[TVAL_REC_LEN];
+        CHECK(val_key(5, vk5) == 0 &&
+              sysrow_read(fx.w, 4, vk5, 64, v, TVAL_REC_LEN) == 1, "row");
+        CHECK(v[TVAL_STATUS_OFF] == 1 &&
+              tbe64(v + TVAL_TOT_OFF) == DLG_AMOUNT &&
+              tbe64(v + TVAL_EXT_OFF) == DLG_AMOUNT,
+              "U4 RETIRING, its delegation still held until graduation");
+        OK();
+        CHECK(supply_identity_holds(fx.w), "U4 supply identity"); OK();
     }
 
     /* ── POSITIVE: validator 1 retires, funded by key 9's leg ────────
@@ -6958,7 +7295,8 @@ static int test_system_unstake(void) {
                             DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
                             s1, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
-        mk_block(&b, 2, &ve, 1);
+        /* height 3: U4's UNSTAKE now COMMITS at height 2 (P3-4) */
+        mk_block(&b, 3, &ve, 1);
         CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
               "UP1 UNSTAKE must commit"); OK();
     }
@@ -6969,7 +7307,7 @@ static int test_system_unstake(void) {
         memcpy(expect, v1_before, TVAL_REC_LEN);
         expect[TVAL_STATUS_OFF] = 1;                 /* RETIRING        */
         for (int i = 0; i < 8; i++)
-            expect[TVAL_UCOMMIT_OFF + i] = (uint8_t)(2ULL >> (56 - 8 * i));
+            expect[TVAL_UCOMMIT_OFF + i] = (uint8_t)(3ULL >> (56 - 8 * i));
         CHECK(memcmp(expect, v1_after, TVAL_REC_LEN) == 0,
               "UP1 ONLY status and unstake_commit_block moved"); OK();
         CHECK(tbe64(v1_after + TVAL_SELF_OFF) == VAL_BOND,
@@ -6997,15 +7335,15 @@ static int test_system_unstake(void) {
                             DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
                             s1, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
-        mk_block(&b, 3, &ve, 1);
+        mk_block(&b, 4, &ve, 1);
         CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
               "U5 a RETIRING validator cannot unstake again"); OK();
     }
     /* ── POSITIVE 2: a ZERO-CHANGE funding leg (out_count 0, the input
      *    is exactly the fee) — the BURN precedent, on the staking lane.
-     *    Validator 6 is used because it carries no delegation, so Rule A
-     *    is satisfied without any state surgery (U4 above owns the
-     *    Rule A pin; this case is only about the zero-change leg). */
+     *    Validator 6 carries no delegation (Rule A itself is gone since
+     *    tokenomics-v3 P3-4 — U4 above); this case is only about the
+     *    zero-change leg. */
     {
         uint8_t ins[1][64];
         memcpy(ins[0], f9d, 64);
@@ -7017,13 +7355,13 @@ static int test_system_unstake(void) {
                             DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
                             s6, 1, s9, 1, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
-        mk_block(&b, 3, &ve, 1);
+        mk_block(&b, 4, &ve, 1);
         CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
               "UP2 a zero-change fee-only funding leg must commit"); OK();
         uint8_t v[TVAL_REC_LEN];
         CHECK(sysrow_read(fx.w, 4, vk6, 64, v, TVAL_REC_LEN) == 1, "row");
         CHECK(v[TVAL_STATUS_OFF] == 1 &&
-              tbe64(v + TVAL_UCOMMIT_OFF) == 3, "UP2 row"); OK();
+              tbe64(v + TVAL_UCOMMIT_OFF) == 4, "UP2 row"); OK();
         CHECK(utxo_rows(fx.w, f9d) == 0,
               "UP2 the whole input went to the fee"); OK();
         CHECK(supply_identity_holds(fx.w), "UP2 supply identity"); OK();
@@ -7033,22 +7371,24 @@ static int test_system_unstake(void) {
 }
 
 /* The UNDELEGATE release UTXO's unlock height for a withdrawal executed
- * in block h (tokenomics-v3 P2-10, design §7.1), re-derived HERE from
- * the design's words and NOT through nodus_v2_power_exit_boundary, the
- * function under test:
+ * in block h (tokenomics-v3 P2-10, design §7.1, as moved by P3-2 — design
+ * §8 "L(h) = nb(h) + 2E"), re-derived HERE from the design's words and
+ * NOT through nodus_v2_power_exit_boundary, the function under test:
  *   nb(h) = ceil(h / E) · E     — written as (h + E − 1) / E · E, a
  *                                  different spelling from the
  *                                  production h % E branch
- *   L(h)  = nb(h) + E
+ *   L(h)  = nb(h) + 2E          (P3 "okuma B": the change is frozen into
+ *                                copy(nb), ranked by the commit_next of
+ *                                nb + E, whose set takes effect at nb + 2E)
  *   unlock = L(h) + DNAC_UNDELEGATE_LOCK_EPOCHS · E
  * Hand values with the decision's 12 epochs (checked by name in
- * test_undelegate_release_lock): h strictly inside epoch 0 → 14E;
- * h = E → 14E (block E's transactions run before boundary E, whose
- * commit_next already excludes them); h = E + 1 → 15E. */
+ * test_undelegate_release_lock): h strictly inside epoch 0 → 15E;
+ * h = E → 15E (block E's transactions run before boundary E, so they are
+ * in copy(E)); h = E + 1 → 16E. (Pre-P3: 14E / 14E / 15E.) */
 static uint64_t exp_release_unlock(uint64_t h) {
     const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
     const uint64_t nb = ((h + E - 1) / E) * E;
-    return nb + E + (uint64_t)DNAC_UNDELEGATE_LOCK_EPOCHS * E;
+    return nb + 2 * E + (uint64_t)DNAC_UNDELEGATE_LOCK_EPOCHS * E;
 }
 
 static int test_system_undelegate(void) {
@@ -7181,12 +7521,47 @@ static int test_system_undelegate(void) {
         sqlite3_finalize(st);
     }
 
+    /* ── N8/N9 tokenomics-v3 P3-5: a PARTIAL withdrawal must leave 0 or
+     *    >= DNAC_MIN_DELEGATION (decision file §3 2026-09-24 "P3 soruları"
+     *    (2); design §8 P3-5 "toz satır slot tutmasın"). The position is
+     *    DLG_AMOUNT = 2 × MIN. By hand: withdrawing DLG_AMOUNT − 1 leaves
+     *    1 raw; withdrawing MIN + 1 leaves MIN − 1 — both dust, both
+     *    VERDICTS. R1 below withdraws exactly MIN (half) and leaves
+     *    exactly MIN — the accepted edge. RED ON THE PRE-P3 TREE: both
+     *    committed. KILLED BY: `>` instead of `>=` against the minimum
+     *    (MIN − 1 accepted), or no remainder check at all. ───────────── */
+    {
+        const uint64_t bad[2] = { DLG_AMOUNT - 1,
+                                  (uint64_t)DNAC_MIN_DELEGATION + 1 };
+        CHECK(DLG_AMOUNT - bad[0] == 1 &&
+              DLG_AMOUNT - bad[1] == (uint64_t)DNAC_MIN_DELEGATION - 1,
+              "FIXTURE GUARD: the two dust remainders");
+        for (int i = 0; i < 2; i++) {
+            uint32_t sl = deleg_call_build(scall, sizeof(scall), 9, 0,
+                                           bad[i]);
+            uint32_t fl = fund_call(fcall, sizeof(fcall), f9b, 9, DLG_CHANGE,
+                                    (uint8_t)(0x4D + i));
+            CHECK(sl && fl, "call");
+            CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_UNDELEGATE, scall, sl,
+                                DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                                s9, 1, s9, 1, NULL) == 0, "build");
+            nodus_v2_envelope_t ve = { e.bytes, e.len };
+            mk_block(&b, 2, &ve, 1);
+            CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+                  "N8/N9 a partial withdrawal leaving a dust remainder "
+                  "(0 < rest < DNAC_MIN_DELEGATION) must reject");
+        }
+        OK();
+    }
+
     /* ── POSITIVE 1: PARTIAL withdrawal ─────────────────────────────── */
     uint8_t d_before[TDEL_REC_LEN];
     CHECK(sysrow_read(fx.w, 5, dk90, 128, d_before, TDEL_REC_LEN) == 1,
           "row"); OK();
     uint64_t at_before = tbe64(d_before + TDEL_AT_OFF);
     uint64_t half = DLG_AMOUNT / 2;
+    CHECK(DLG_AMOUNT - half == (uint64_t)DNAC_MIN_DELEGATION,
+          "FIXTURE GUARD: R1 leaves exactly the P3-5 minimum"); OK();
     uint8_t rel1[64], intent1[64];
     {
         env_t ep;
@@ -7254,7 +7629,8 @@ static int test_system_undelegate(void) {
                   exp_release_unlock(2) &&
               memcmp(sqlite3_column_blob(st, 6), zt, 64) == 0,
               "R1 the release UTXO's every column — born LOCKED to "
-              "L(2) + 12E = 14E (P2-10; was unlock 0 before revision 2)");
+              "L(2) + 12E = 15E (P2-10, L moved by P3-2; was unlock 0 "
+              "before revision 2)");
         sqlite3_finalize(st);
         OK();
     }
@@ -7311,9 +7687,11 @@ static int test_system_undelegate(void) {
           "R2 both release UTXOs coexist"); OK();
     /* The FULL drain's release is locked exactly like the partial one's
      * (tokenomics-v3 P2-10): h = 3 is inside epoch 0, so by hand
-     * nb(3) = E, L(3) = 2E, unlock = 2E + 12E = 14E (exp_release_unlock
-     * re-derives it independently of the function under test).
-     * RED ON THE PRE-REV2 TREE: the row read 0.
+     * nb(3) = E, L(3) = 3E (P3-2), unlock = 3E + 12E = 15E
+     * (exp_release_unlock re-derives it independently of the function
+     * under test).
+     * RED ON THE PRE-REV2 TREE: the row read 0. RED ON THE PRE-P3 TREE:
+     * the row read 14E (L = nb + E).
      * KILLED BY: computing the lock only on the partial path (the drain
      * path DELETEs the delegation row — rtn_undelegate_exec — and the
      * release must be locked all the same). */
@@ -7329,10 +7707,10 @@ static int test_system_undelegate(void) {
         sqlite3_finalize(st);
         CHECK(a2 == DLG_AMOUNT - half &&
               u2 == exp_release_unlock(3) &&
-              u2 == (2 + (uint64_t)DNAC_UNDELEGATE_LOCK_EPOCHS) *
+              u2 == (3 + (uint64_t)DNAC_UNDELEGATE_LOCK_EPOCHS) *
                         (uint64_t)DNAC_EPOCH_LENGTH,
               "R2 the full drain's release is born LOCKED to L(3) + 12E "
-              "= 14E");
+              "= 15E");
         OK();
     }
     CHECK(supply_identity_holds(fx.w), "R2 supply identity"); OK();
@@ -7537,7 +7915,11 @@ static int core_exec_at(fixture_t *fx, const dna_env_view_t *v,
     return nodus_rt_core_exec(core, v, leg, ctx, reads, nr, res, cap, rl);
 }
 
-#define RLK_BIG     4000000ULL   /* the delegated position              */
+/* tokenomics-v3 P3-5: the position opens a NEW row, so it must be >=
+ * DNAC_MIN_DELEGATION, and the partial withdrawal must leave >= it —
+ * 4 × MIN and 2 × MIN (were 4e6 / 2e6 raw, below the witness minimum the
+ * chain now enforces). RLK_LOCK2 is a TOP-UP of the existing row (>= 1). */
+#define RLK_BIG     (4ULL * (uint64_t)DNAC_MIN_DELEGATION) /* the position */
 #define RLK_HALF    (RLK_BIG / 2) /* the partial withdrawal              */
 #define RLK_LOCK2   500000ULL    /* a re-delegation the release funds   */
 /* RLK_HALF == FEE_MIN + RLK_LOCK2 + RLK_CHG2 (the SYSFUND equation) and
@@ -7551,8 +7933,9 @@ static int core_exec_at(fixture_t *fx, const dna_env_view_t *v,
  * — the "withdraw, use, re-delegate within the epoch" path of the
  * decision file's 2026-09-24 entry.
  * KILLED BY: dropping the lock; a floor-based nb (h inside epoch 0 →
- * 13E, E+1 → 14E); treating a boundary h as "the next boundary is
- * h + E" (h = E → 15E); L = nb(h) or nb(h) + 2E; counting the lock in
+ * 14E, E+1 → 15E); treating a boundary h as "the next boundary is
+ * h + E" (h = E → 16E); L = nb(h) + E (the pre-P3 value) or nb(h) + 3E;
+ * counting the lock in
  * blocks instead of epochs; locking the CHANGE output too; checking
  * `unlock > H` instead of `unlock >= H` in ANY of the three input gates
  * (SPEND/BURN rtn_xfer_exec — L5; SYSFUND rtn_sysfund_exec — L5;
@@ -7569,24 +7952,30 @@ static int test_undelegate_release_lock(void) {
           "L1 the delegator lock is the decision's 12 epochs (§1 "
           "\"Delegator bekleme süresi 12 epoch\")"); OK();
     CHECK(E > 2, "FIXTURE GUARD: an epoch long enough to have an inside");
-    CHECK(exp_release_unlock(E / 2) == 14 * E &&
-          exp_release_unlock(E) == 14 * E &&
-          exp_release_unlock(E + 1) == 15 * E &&
-          exp_release_unlock(2 * E) == 15 * E,
+    CHECK(exp_release_unlock(E / 2) == 15 * E &&
+          exp_release_unlock(E) == 15 * E &&
+          exp_release_unlock(E + 1) == 16 * E &&
+          exp_release_unlock(2 * E) == 16 * E,
           "FIXTURE GUARD: the independent re-derivation matches the hand "
-          "table (inside → 14E, boundary E → 14E, E+1 → 15E, 2E → 15E)");
+          "table (inside → 15E, boundary E → 15E, E+1 → 16E, 2E → 16E)");
     OK();
 
-    /* ── L2 L(h) itself, pure ─────────────────────────────────────────
-     * Hand: L(0) = 0 + E (0 is a boundary), L(1) = E + E, L(E−1) = 2E,
-     * L(E) = 2E, L(E+1) = 3E, L(2E) = 3E. */
+    /* ── L2 L(h) itself, pure — tokenomics-v3 P3-2: L(h) = nb(h) + 2E
+     * ("okuma B", design §8 P3-2; the P3 NOTE on
+     * nodus_v2_power_exit_boundary).
+     * Hand: L(0) = 0 + 2E (0 is a boundary), L(1) = E + 2E = 3E,
+     * L(E−1) = 3E, L(E) = 3E, L(E+1) = 4E, L(2E) = 4E.
+     * RED ON THE PRE-P3 TREE: every value one epoch short (nb + E), and
+     * the second overflow case below was ACCEPTED (nb + E fits, the
+     * second + E does not). */
     {
         const uint64_t hs[6]   = { 0, 1, E - 1, E, E + 1, 2 * E };
-        const uint64_t want[6] = { E, 2 * E, 2 * E, 2 * E, 3 * E, 3 * E };
+        const uint64_t want[6] = { 2 * E, 3 * E, 3 * E, 3 * E, 4 * E,
+                                   4 * E };
         for (int i = 0; i < 6; i++) {
             uint64_t got = 0;
             CHECK(nodus_v2_power_exit_boundary(hs[i], &got) == 0 &&
-                  got == want[i], "L2 L(h) = ceil(h/E)·E + E");
+                  got == want[i], "L2 L(h) = ceil(h/E)·E + 2E");
         }
         OK();
         uint64_t got = 7;
@@ -7595,7 +7984,16 @@ static int test_undelegate_release_lock(void) {
               "L2 an h whose ceil leaves 64 bits is refused, out untouched");
         CHECK(nodus_v2_power_exit_boundary((UINT64_MAX / E) * E, &got)
                   == -1 && got == 7,
-              "L2 a boundary h whose + E leaves 64 bits is refused");
+              "L2 a boundary h whose first + E leaves 64 bits is refused");
+        /* a boundary nb with nb + E <= UINT64_MAX but nb + 2E > it */
+        {
+            const uint64_t nb = (UINT64_MAX / E - 1) * E;
+            CHECK(nb <= UINT64_MAX - E && nb + E > UINT64_MAX - E,
+                  "FIXTURE GUARD: exactly the second add overflows");
+            CHECK(nodus_v2_power_exit_boundary(nb, &got) == -1 && got == 7,
+                  "L2 a boundary h whose SECOND + E leaves 64 bits is "
+                  "refused");
+        }
         CHECK(nodus_v2_power_exit_boundary(1, NULL) == -1,
               "L2 NULL out is refused");
         OK();
@@ -7802,7 +8200,8 @@ static int test_undelegate_release_lock(void) {
      *    coin only, so the release must be at least that large: a FULL
      *    drain of a TC_FEE-sized position to validator 1, through real
      *    blocks at h = 4 (DELEGATE) and h = 5 (UNDELEGATE). By hand:
-     *    h = 5 is inside epoch 0 → nb = E, L = 2E, unlock U5 = 14E.
+     *    h = 5 is inside epoch 0 → nb = E, L = 3E (P3-2), unlock U5 =
+     *    15E.
      *    The TOKEN_CREATE spends exactly that release (Σnative_in = fee,
      *    one 777-unit output of the new token) and is executed at the
      *    hook with ctx.global_height = U5 (refused) and U5 + 1 (accepted)
@@ -7847,8 +8246,8 @@ static int test_undelegate_release_lock(void) {
             CHECK(utxo_rows(fx.w, relT) == 1 &&
                   row_unlock(fx.w, relT) == exp_release_unlock(5) &&
                   exp_release_unlock(5) ==
-                      (2 + (uint64_t)DNAC_UNDELEGATE_LOCK_EPOCHS) * E,
-                  "L6 the TC_FEE release is locked to L(5) + 12E = 14E");
+                      (3 + (uint64_t)DNAC_UNDELEGATE_LOCK_EPOCHS) * E,
+                  "L6 the TC_FEE release is locked to L(5) + 12E = 15E");
             OK();
         }
         {
@@ -8372,7 +8771,9 @@ static int test_o11_vset_firewall(void) {
         CHECK(val_key(1, vk1) == 0 &&
               sysrow_read(fx.w, 4, vk1, 64, v, TVAL_REC_LEN) == 1, "row");
         CHECK(v[TVAL_STATUS_OFF] == 1 &&
-              tbe64(v + TVAL_PEFF_OFF) == 5 + (uint64_t)DNAC_EPOCH_LENGTH,
+              tbe64(v + TVAL_PEFF_OFF) ==
+                  5 + 2 * (uint64_t)DNAC_EPOCH_LENGTH,   /* H + 2E (P3 fix
+                                                          * round)       */
               "the deferral landed and the exit state did not move"); OK();
     }
     FIREWALL_HOLDS("after VALIDATOR_UPDATE");
@@ -8802,15 +9203,14 @@ static int test_o11_global(void) {
  *   - that the ACTIVE SET is untouched (snapshots + epoch_state).
  *
  * ⚠ ARITHMETIC LABEL, stated once here and once at rtn_vupd_exec: the
- * source deferral is max(next_epoch_boundary, H + E) and the BOUNDARY
- * ARM IS UNREACHABLE. next_epoch_boundary = floor(H/E)*E + E and
- * floor(H/E)*E <= H, so the boundary can never EXCEED H + E; it EQUALS
- * it exactly when H is a multiple of E. The tests below therefore pin
- * the two reachable cases — off-boundary (H + E strictly greater) and
- * on-boundary (the two expressions coincide) — rather than pretending a
- * third exists. The ternary is nevertheless preserved verbatim in the
- * runtime, so if E ever becomes per-epoch state the pin still applies to
- * the code the source wrote. */
+ * deferral is max(next_epoch_boundary, H + 2E) since the P3 fix round
+ * (decision file §3 2026-09-24 "komisyon artışı 2 epoch sonra"; the
+ * legacy source wrote H + E) and the BOUNDARY ARM IS UNREACHABLE.
+ * next_epoch_boundary = floor(H/E)*E + E <= H + E < H + 2E, so the max
+ * always selects H + 2E — on a boundary height and off one alike. The
+ * tests below pin both height classes. The ternary is nevertheless
+ * preserved in the runtime, so if E ever becomes per-epoch state the pin
+ * still applies to the code's shape. */
 
 /* Insert one extra validator row in a given status with ZERO self_stake.
  * Zero is load-bearing twice: the CORE supply identity sums self_stake
@@ -8943,8 +9343,12 @@ static int vupd_fixture(fixture_t *fx, const char *tag) {
     for (int k = 0; k < 7; k++)
         if (val_key(k, pkh[k]) != 0) return -1;
     /* key 0: a real current rate PLUS a stale pending entry — a decrease
-     * must clear it. key 1: the same, for the EQUAL path. */
-    if (set_commission(fx, pkh[0], 3000, 9999, 12345) != 0) return -1;
+     * must clear it. key 1: the same, for the EQUAL path.
+     * tokenomics-v3 P3-8: the stale pending entry is 4999 (was 9999) —
+     * above the new 5000 cap the row would be write-frozen as
+     * legacy-malformed (rtn_val_rec_ok) and P1 would reject for that
+     * reason instead of pinning the decrease. */
+    if (set_commission(fx, pkh[0], 3000, 4999, 12345) != 0) return -1;
     if (set_commission(fx, pkh[1], 3000, 4444, 777) != 0) return -1;
     /* key 6 keeps commission 0 — the increase path */
     if (seed_validator(fx, VU_ELIGIBLE, DNAC_VALIDATOR_ELIGIBLE, 500) != 0)
@@ -8956,6 +9360,225 @@ static int vupd_fixture(fixture_t *fx, const char *tag) {
     if (seed_validator(fx, VU_AUTORET, DNAC_VALIDATOR_AUTO_RETIRED, 500)
         != 0)
         return -1;
+    return 0;
+}
+
+/* ══ 17b. RE-STAKE AFTER GRADUATION, block level (tokenomics-v3 P3-9;
+ *    P3 fix round) ═════════════════════════════════════════════════════
+ *
+ * The whole life cycle through the REAL engine, every step a committed
+ * block: key 10 delegates to genesis validator 5 (h1); validator 5
+ * UNSTAKEs (h2) — RETIRING, its delegation still held; an attended empty
+ * drive crosses boundary E (5 is still an entry of snapshot(E), the
+ * genesis-frozen set, so its graduation is DEFERRED — R5-3) and boundary
+ * 2E (snapshot(2E) was built at E from ACTIVE/ELIGIBLE rows only, so 5
+ * graduates: UNSTAKED, bond released, its delegation released to key 10
+ * locked to 2E + 12E and the row deleted — P3-3/P3-4); then key 5 sends
+ * a fresh STAKE (2E+1), which REVIVES the row.
+ * Asserted after the revive: ACTIVE, the new bond, the new commission,
+ * active_since = 2E+1 (TENURE RESTARTS), both delegated totals 0, no
+ * delegation row names validator 5 (the old one did not come back), the
+ * unstake / Rule N / pending fields all 0, active_count + 1, and the
+ * supply equation closes. Key 10's release coin is still its own and
+ * still locked — the revive did not touch it.
+ * RED ON THE PRE-P3 TREE: the STAKE at 2E+1 was refused (Rule I — any
+ * existing row); and the graduation left the delegation bonded to an
+ * UNSTAKED validator.
+ * KILLED BY: reviving before graduation (the UNSTAKE→RETIRING row would
+ * be accepted); carrying the old active_since (tenure would not restart);
+ * reattaching or keeping the old delegation; a CREATE/ABSENT effect on
+ * the revive (the adapter refuses an existing key — the block rejects). */
+static int test_restake_after_graduation(void) {
+    printf("\n§17b re-stake after graduation, block level (P3-9)\n");
+    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    fixture_t fx;
+    env_t e;
+    nodus_v2_block_t b;
+    int s5[1] = { 5 }, s9[1] = { 9 }, s10[1] = { 10 };
+    /* 8192, not 4096: a DELEGATE call is 5192 B (deleg_call_build) —
+     * the first cut sized this at 4096 and the builder returned 0 */
+    static uint8_t scall[8192], fcall[8192];
+    uint8_t f9[64], f10[64], f5[64], fp5[64], vk5[64];
+    CHECK(fx_genesis(&fx, "restk") == 0, "genesis");
+    CHECK(key_fp_raw(5, fp5) == 0 && val_key(5, vk5) == 0, "keys");
+    /* This fixture starts with active_count 0 (pinned at the §17 header,
+     * "fixture starts with active_count 0") although it seeds bonded
+     * validators; a real version-3 genesis sets it to n_validators
+     * (nodus_witness_v2_gen.c UPDATE validator_stats ... active_count).
+     * A graduation decrements the counter and REFUSES to go below 0
+     * ("active_count 0 cannot absorb a graduation" — a FAULT, correctly),
+     * so this drive first makes the counter what genesis would: the
+     * bonded rows (ACTIVE / ELIGIBLE / RETIRING). Out of band, BEFORE h1,
+     * whose DELEGATE leg declares SYSTEM touched and absorbs the drift. */
+    CHECK(sqlite3_exec(fx.w->db,
+          "UPDATE validator_stats SET value = (SELECT COUNT(*) FROM "
+          "validators WHERE status IN (0, 1, 4)) WHERE key = 'active_count'",
+          NULL, NULL, NULL) == SQLITE_OK &&
+          sqlite3_changes(fx.w->db) == 1, "counter as genesis sets it");
+    CHECK(active_count(fx.w) > 0, "fixture guard: bonded validators seeded");
+    /* every out-of-band seed lands BEFORE h1, whose SYSFUND leg declares
+     * CORE touched and absorbs the drift (the §5 drive's note) */
+    CHECK(seed_funding(&fx, 10, DLG_FUND, 0xD1, f10) == 0, "fund 10");
+    CHECK(seed_funding(&fx, 9, NOLOCK_FUND, 0xD2, f9) == 0, "fund 9");
+    CHECK(seed_funding(&fx, 5, STAKE_FUND, 0xD3, f5) == 0, "fund 5");
+
+    /* h1: key 10 delegates to validator 5 */
+    {
+        uint32_t sl = deleg_call_build(scall, sizeof(scall), 10, 5,
+                                       DLG_AMOUNT);
+        uint32_t fl = fund_call(fcall, sizeof(fcall), f10, 10, DLG_CHANGE,
+                                0xD4);
+        CHECK(sl && fl, "call");
+        CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_DELEGATE, scall, sl,
+                            DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                            s10, 1, s10, 1, NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block_h(&b, 1, &ve, 1);
+        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+              "h1 the delegation commits"); OK();
+    }
+    /* h2: validator 5 UNSTAKEs (funded by key 9's leg) */
+    {
+        uint32_t sl = unstake_call_build(scall, sizeof(scall), 5);
+        uint32_t fl = fund_call(fcall, sizeof(fcall), f9, 9, DLG_CHANGE,
+                                0xD5);
+        CHECK(sl && fl, "call");
+        CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_UNSTAKE, scall, sl,
+                            DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                            s5, 1, s9, 1, NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block_h(&b, 2, &ve, 1);
+        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+              "h2 the UNSTAKE commits"); OK();
+        uint8_t v[TVAL_REC_LEN];
+        CHECK(sysrow_read(fx.w, 4, vk5, 64, v, TVAL_REC_LEN) == 1 &&
+              v[TVAL_STATUS_OFF] == (uint8_t)DNAC_VALIDATOR_RETIRING &&
+              tbe64(v + TVAL_TOT_OFF) == DLG_AMOUNT,
+              "h2 RETIRING, the delegation still held"); OK();
+    }
+
+    /* the attended empty drive across E and 2E (the §5 drive's shape:
+     * every genesis member's COMMIT vote per block, the legacy lookback
+     * rows planted before each boundary) */
+    {
+        uint8_t att_addrs[7][32];
+        int32_t att_flags[7];
+        for (int ai = 0; ai < 7; ai++) {
+            uint8_t digest[64];
+            CHECK(qgp_sha3_512(g_pk[ai], 2592, digest) == 0, "voter");
+            memcpy(att_addrs[ai], digest, 32);
+            att_flags[ai] = CMT_PB_BLOCK_ID_FLAG_COMMIT;
+        }
+        for (int k = 1; k <= 2; k++) {
+            sqlite3_stmt *st = NULL;
+            CHECK(sqlite3_prepare_v2(fx.w->db,
+                "INSERT OR IGNORE INTO blocks (height, tx_root, "
+                "tx_count, timestamp, proposer_id, prev_hash, "
+                "state_root, created_at) VALUES (?1, zeroblob(64), 0, "
+                "0, zeroblob(32), zeroblob(64), ?2, 0)",
+                -1, &st, NULL) == SQLITE_OK, "lookback prep");
+            uint8_t sr[64];
+            memset(sr, 0x5A, sizeof(sr));
+            sqlite3_bind_int64(st, 1, (sqlite3_int64)((uint64_t)k * E - 1));
+            sqlite3_bind_blob(st, 2, sr, 64, SQLITE_TRANSIENT);
+            CHECK(sqlite3_step(st) == SQLITE_DONE, "lookback row");
+            sqlite3_finalize(st);
+        }
+        for (uint64_t h = 3; h <= 2 * E; h++) {
+            mk_block_h(&b, h, NULL, 0);
+            b.cmt.votes_address       = (const uint8_t (*)[32])att_addrs;
+            b.cmt.votes_block_id_flag = att_flags;
+            b.cmt.votes_len           = 7;
+            if (nodus_witness_v2_apply_block(fx.w, &b) != 0) {
+                fprintf(stderr, "re-stake drive failed at height %llu: %s\n",
+                        (unsigned long long)h, b.out_reason);
+                return 1;
+            }
+            if (h == E) {
+                uint8_t v[TVAL_REC_LEN];
+                CHECK(sysrow_read(fx.w, 4, vk5, 64, v, TVAL_REC_LEN) == 1 &&
+                      v[TVAL_STATUS_OFF] ==
+                          (uint8_t)DNAC_VALIDATOR_RETIRING,
+                      "E: still RETIRING — an entry of snapshot(E), the "
+                      "graduation is deferred (R5-3)"); OK();
+            }
+        }
+        OK();
+    }
+    /* boundary 2E: graduated, the delegation released and deleted */
+    {
+        uint8_t v[TVAL_REC_LEN];
+        CHECK(sysrow_read(fx.w, 4, vk5, 64, v, TVAL_REC_LEN) == 1 &&
+              v[TVAL_STATUS_OFF] == (uint8_t)DNAC_VALIDATOR_UNSTAKED &&
+              tbe64(v + TVAL_SELF_OFF) == 0 &&
+              tbe64(v + TVAL_TOT_OFF) == 0 &&
+              tbe64(v + TVAL_EXT_OFF) == 0,
+              "2E: graduated — UNSTAKED, bond and delegated totals 0");
+        OK();
+        CHECK(q1(fx.w, "SELECT COUNT(*) FROM delegations") == 0,
+              "2E: the graduate's delegation row is deleted"); OK();
+        char sql[256];
+        snprintf(sql, sizeof(sql),
+                 "SELECT COUNT(*) FROM utxo_set WHERE owner = '%s' AND "
+                 "amount = %llu AND unlock_block = %llu",
+                 g_fp[10], (unsigned long long)DLG_AMOUNT,
+                 (unsigned long long)((2 + (uint64_t)
+                     DNAC_UNDELEGATE_LOCK_EPOCHS) * E));
+        CHECK(q1(fx.w, sql) == 1,
+              "2E: key 10's release coin, locked to 2E + 12E (P3-4)"); OK();
+        CHECK(supply_identity_holds(fx.w), "2E supply identity"); OK();
+    }
+
+    /* 2E+1: the fresh STAKE revives the row */
+    const uint64_t ac_before = active_count(fx.w);
+    {
+        uint8_t in5[1][64];
+        memcpy(in5[0], f5, 64);
+        out_spec_t o[1] = { { 5, STAKE_CHANGE, 0xD6, NULL } };
+        uint32_t sl = stake_call_build(scall, sizeof(scall), 5, STAKE_BPS,
+                                       STAKE_BOND, fp5);
+        uint32_t fl = spend_call_build(fcall, sizeof(fcall), in5, 1, o, 1);
+        CHECK(sl && fl, "call");
+        CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_STAKE, scall, sl,
+                            DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                            s5, 1, s5, 1, NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block_h(&b, 2 * E + 1, &ve, 1);
+        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+              "2E+1 a STAKE revives the UNSTAKED row"); OK();
+    }
+    {
+        uint8_t v[TVAL_REC_LEN];
+        CHECK(sysrow_read(fx.w, 4, vk5, 64, v, TVAL_REC_LEN) == 1, "row");
+        const uint32_t comm = ((uint32_t)v[TVAL_COMM_OFF] << 8) |
+                              v[TVAL_COMM_OFF + 1];
+        CHECK(v[TVAL_STATUS_OFF] == (uint8_t)DNAC_VALIDATOR_ACTIVE &&
+              tbe64(v + TVAL_SELF_OFF) == STAKE_BOND && comm == STAKE_BPS,
+              "revived: ACTIVE, the new bond, the new commission"); OK();
+        CHECK(tbe64(v + TVAL_SINCE_OFF) == 2 * E + 1,
+              "revived: active_since = the STAKE height — tenure restarts");
+        OK();
+        CHECK(tbe64(v + TVAL_TOT_OFF) == 0 && tbe64(v + TVAL_EXT_OFF) == 0 &&
+              tbe64(v + TVAL_UCOMMIT_OFF) == 0 &&
+              tbe64(v + TVAL_LASTUPD_OFF) == 0 &&
+              tbe64(v + TVAL_LASTUPD_OFF + 8) == 0 &&
+              tbe64(v + TVAL_PEFF_OFF) == 0,
+              "revived: delegated totals, unstake, Rule K / Rule N and "
+              "pending fields all 0"); OK();
+        char sql[256];
+        CHECK(q1(fx.w, "SELECT COUNT(*) FROM delegations") == 0,
+              "revived: no delegation came back with the row"); OK();
+        CHECK(active_count(fx.w) == ac_before + 1,
+              "revived: active_count + 1, exactly as a fresh STAKE"); OK();
+        snprintf(sql, sizeof(sql),
+                 "SELECT COUNT(*) FROM utxo_set WHERE owner = '%.128s' AND "
+                 "amount = %llu", g_fp[10], (unsigned long long)DLG_AMOUNT);
+        CHECK(q1(fx.w, sql) == 1,
+              "key 10's locked release coin is untouched by the revive");
+        OK();
+        CHECK(supply_identity_holds(fx.w), "revive supply identity"); OK();
+    }
+    fx_close(&fx);
     return 0;
 }
 
@@ -9023,14 +9646,16 @@ static int test_system_validator_update(void) {
         CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
               "N3 an AUTO_RETIRED validator must not update"); OK();
     }
-    /* N4 bps above the source bound (bft.c:1953-1957) */
+    /* N4 bps above the bound (bft.c:1953-1957; tokenomics-v3 P3-8: the
+     * bound is 5000, so the probe is the literal 5001 — RED ON THE
+     * PRE-P3 TREE, where 5001 < 10000 committed) */
     {
-        CHECK(vupd_env(&fx, &e, 0, DNAC_COMMISSION_BPS_MAX + 1, fneg, 9,
+        CHECK(vupd_env(&fx, &e, 0, 5001u, fneg, 9,
                        0xA3, FEE_MIN, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
         CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
-              "N4 commission_bps > 10000 must reject"); OK();
+              "N4 commission_bps 5001 (> the P3-8 cap) must reject"); OK();
     }
     /* N5/N6 call length ±1: EXACT 2594, never a prefix and never a
      * suffix. 2595 is also the shape a caller would produce by starting
@@ -9219,9 +9844,11 @@ static int test_system_validator_update(void) {
         CHECK(vupd_only_commission_moved(before, after) == 0,
               "P2 no other column moved"); OK();
     }
-    /* P3 INCREASE off a boundary — DEFERRED exactly one epoch, current
-     * rate untouched. H = 3, so H + E strictly exceeds the next epoch
-     * boundary and the max selects H + E. */
+    /* P3 INCREASE off a boundary — DEFERRED exactly TWO epochs (decision
+     * file §3 2026-09-24 "komisyon artışı 2 epoch sonra"; it was one
+     * before the P3 fix round), current rate untouched. H = 3, so H + 2E
+     * strictly exceeds the next epoch boundary and the max selects
+     * H + 2E. RED ON THE P3 TREE: peff was 3 + E. */
     {
         CHECK(sysrow_read(fx.w, 4, pkh6, 64, before, TVAL_REC_LEN) == 1,
               "before");
@@ -9235,8 +9862,9 @@ static int test_system_validator_update(void) {
               "after");
         vupd_window(after, &w);
         CHECK(w.cur == 0 && w.pending == 2500 &&
-              w.peff == 3 + (uint64_t)DNAC_EPOCH_LENGTH && w.last_upd == 3,
-              "P3 deferred one full epoch, current rate untouched"); OK();
+              w.peff == 3 + 2 * (uint64_t)DNAC_EPOCH_LENGTH &&
+              w.last_upd == 3,
+              "P3 deferred two full epochs, current rate untouched"); OK();
         CHECK(vupd_only_commission_moved(before, after) == 0,
               "P3 no other column moved"); OK();
     }
@@ -9276,7 +9904,8 @@ static int test_system_validator_update(void) {
               "after");
         vupd_window(after, &w);
         CHECK(w.cur == 500 && w.pending == 900 &&
-              w.peff == 5 + (uint64_t)DNAC_EPOCH_LENGTH && w.last_upd == 5 &&
+              w.peff == 5 + 2 * (uint64_t)DNAC_EPOCH_LENGTH &&
+              w.last_upd == 5 &&
               after[TVAL_STATUS_OFF] == (uint8_t)DNAC_VALIDATOR_RETIRING,
               "P5 deferral set, exit state untouched"); OK();
         CHECK(vupd_only_commission_moved(before, after) == 0,
@@ -9302,7 +9931,8 @@ static int test_system_validator_update(void) {
               "after");
         vupd_window(after, &w);
         CHECK(w.cur == 1000 && w.pending == 1200 &&
-              w.peff == 6 + (uint64_t)DNAC_EPOCH_LENGTH && w.last_upd == 6,
+              w.peff == 6 + 2 * (uint64_t)DNAC_EPOCH_LENGTH &&
+              w.last_upd == 6,
               "P6 last_validator_update_block advanced"); OK();
         CHECK(vupd_only_commission_moved(before, after) == 0,
               "P6 no other column moved"); OK();
@@ -9491,9 +10121,10 @@ static int test_system_validator_update(void) {
  *
  * Seams the block layer cannot separate, because the next layer produces
  * the same block verdict:
- *   - the ONE-EPOCH deferral arithmetic at heights the block layer would
- *     need a 720-block drive to reach (H = E-1 / E / E+1), including the
- *     ON-BOUNDARY case where next_epoch_boundary and H + E coincide;
+ *   - the TWO-EPOCH deferral arithmetic (P3 fix round) at heights the
+ *     block layer would need a 720-block drive to reach (H = E-1 / E /
+ *     E+1), including the ON-BOUNDARY case, and the boundary the
+ *     activator then fires at;
  *   - the call-identity binding: a LEGITIMATE one-signer verdict naming
  *     the wrong identity dies at exec, not at the authorization boundary;
  *   - the read plan's exact shape (one mediated read, no counter, no
@@ -9573,21 +10204,27 @@ static int test_vupd_hook_pins(void) {
     /* H4 the deferral arithmetic across the epoch boundary. The block
      * layer would need a 720-block drive to reach these heights; the
      * arithmetic is a pure function of ctx->global_height, so it is
-     * pinned here directly.
-     *   H = E-1  → boundary E,    H+E = 2E-1  → max = 2E-1  (off)
-     *   H = E    → boundary 2E,   H+E = 2E    → max = 2E    (COINCIDE)
-     *   H = E+1  → boundary 2E,   H+E = 2E+1  → max = 2E+1  (off)
-     * The middle row is the on-boundary case; note it is the ONLY height
-     * class where the two expressions agree, and the boundary never
-     * EXCEEDS H+E — see the section header's arithmetic label. */
+     * pinned here directly. The notice is TWO epochs since the P3 fix
+     * round (decision file §3 2026-09-24 "komisyon artışı 2 epoch
+     * sonra"); the activator then fires at the first boundary >= peff:
+     *   H = E-1  → boundary E,    H+2E = 3E-1 → max = 3E-1 → active 3E
+     *   H = E    → boundary 2E,   H+2E = 3E   → max = 3E   → active 3E
+     *   H = E+1  → boundary 2E,   H+2E = 3E+1 → max = 3E+1 → active 4E
+     * The boundary arm never wins (it is at most H+E). The consequence
+     * under "okuma B" — the boundary-block increase is first paid from a
+     * copy a delegator who left at H+1 is not in — is proven end to end
+     * in test_v2_econ.c §3f.
+     * RED ON THE P3 TREE: peff was H + E. */
     {
         const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
         const uint64_t hs[4]   = { 1, E - 1, E, E + 1 };
+        /* H = 1 lies in epoch (0, E]: B = 0, mid-epoch → B + 3E = 3E */
+        const uint64_t act[4]  = { 3 * E, 3 * E, 3 * E, 4 * E };
         for (int i = 0; i < 4; i++) {
             dna_effect_view_t ev;
             uint64_t H = hs[i];
             uint64_t boundary = ((H / E) + 1) * E;
-            uint64_t want = boundary > H + E ? boundary : H + E;
+            uint64_t want = boundary > H + 2 * E ? boundary : H + 2 * E;
             ctx.global_height = H;
             CHECK(nodus_rt_system_exec(sys, &v, 0, &ctx, reads, nr, res,
                                       sizeof(res), &rl) == 0, "exec");
@@ -9598,9 +10235,14 @@ static int test_vupd_hook_pins(void) {
             vupd_window(nv, &w);
             CHECK(w.cur == 0 && w.pending == 2500 && w.peff == want &&
                   w.last_upd == H,
-                  "H4 the deferral is max(next boundary, H + epoch)");
-            CHECK(w.peff == H + E,
-                  "H4 the boundary arm never exceeds H + epoch");
+                  "H4 the deferral is max(next boundary, H + 2·epoch)");
+            CHECK(w.peff == H + 2 * E,
+                  "H4 the boundary arm never exceeds H + 2·epoch");
+            /* the first boundary the activator's `<=` fires at */
+            uint64_t first = ((w.peff + E - 1) / E) * E;
+            CHECK(first == act[i],
+                  "H4 activation lands two boundaries out for a boundary-"
+                  "block submission, three for a mid-epoch one");
         }
         OK();
         ctx.global_height = 1;
@@ -9939,6 +10581,7 @@ int main(void) {
     if (test_o11_fault_matrix() != 0) return 1;
     if (test_o11_vset_firewall() != 0) return 1;
     if (test_o11_global() != 0) return 1;
+    if (test_restake_after_graduation() != 0) return 1;
     if (test_system_validator_update() != 0) return 1;
     if (test_vupd_hook_pins() != 0) return 1;
     if (test_spend_effect_decl() != 0) return 1;

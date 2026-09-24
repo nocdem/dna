@@ -1484,6 +1484,16 @@ register_witness_test(test_v2_epoch)
 # twin seeded in opposite validator order.
 register_witness_test(test_v2_econ)
 
+# tokenomics-v3 P3-6 — the 2048-delegator cap, MEASURED: one epoch
+# boundary with 32 validators × 2048 delegators plus a graduating
+# validator's 2048-delegation auto-release, and a payday over 65 568
+# accrual rows. Prints wall-clock numbers (never asserted) and asserts
+# correctness only; the operator judges feasibility against the 4 s
+# timeout_commit (design §8 P3-6). Labelled `bench` — it takes tens of
+# seconds (`ctest -LE bench` skips it).
+register_witness_test(test_v2_deleg_cap_bench)
+set_tests_properties(test_v2_deleg_cap_bench PROPERTIES LABELS "bench")
+
 # O15J Faz 2 Block 2C — the economic parameters are COMMITTED GENESIS
 # STATE. DNAC_BLOCKS_PER_YEAR / DNAC_DECIMAL_UNIT / DNAC_EPOCH_LENGTH are
 # -D-overridable and decide how much is minted and where epoch boundaries

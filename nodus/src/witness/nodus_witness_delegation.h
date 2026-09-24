@@ -95,8 +95,20 @@ extern "C" {
  *
  * COUNTING IS FAIL-CLOSED. A count that cannot be read is never
  * treated as "zero, therefore admit" — see the two enforcement sites.
+ *
+ * tokenomics-v3 P3-6: 64 -> 2048 (decision file docs/plans/decisions/
+ * 2026-09-22-nodus-tokenomics-v3-operator.md §1 "Validator başına
+ * delegator hedefi, uygulanabilir olması koşuluyla 2048 olacak"; design
+ * §8 P3-6). "Uygulanabilir olması koşuluyla" — the boundary cost at this
+ * cap (a 32 × 2048-row balance copy, the distribution over it, a payday
+ * over up to 65 536 accrual rows, a graduation releasing up to 2048
+ * delegations) is MEASURED by nodus/tests/test_v2_deleg_cap_bench.c and
+ * judged by the operator; nothing in this tree sizes an array or a stack
+ * buffer by this constant (every reader of the rows it bounds — the
+ * balance copy, the distribution, the graduation release — grows a heap
+ * buffer), so the value itself is only the admission bound.
  */
-#define NODUS_MAX_DELEGATORS_PER_VALIDATOR 64
+#define NODUS_MAX_DELEGATORS_PER_VALIDATOR 2048
 
 /**
  * Insert a delegation row. The PK (delegator_hash, validator_hash) is
@@ -140,8 +152,12 @@ int nodus_delegation_count_by_delegator(nodus_witness_t *w,
 
 /**
  * Count the number of delegations targeting the given validator pubkey.
- * Used by UNSTAKE verify Rule A — UNSTAKE is rejected if any delegation
- * record references the signer as validator.
+ * (It used to feed UNSTAKE Rule A — "no delegation may still reference
+ * the validator" — which tokenomics-v3 P3-4 REMOVED: a validator with
+ * delegators may exit, and its delegations are released to their owners
+ * at its graduation boundary, nodus_witness_v2_epoch.c v2ep_graduate.
+ * The version-3 runtime counts through its own mediated read,
+ * nodus_witness_rt_native.c rtn_sys_delegcnt_fetch.)
  *
  * @return 0 on success, -1 on error. *count_out is set on success.
  */

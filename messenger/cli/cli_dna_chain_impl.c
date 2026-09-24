@@ -2022,8 +2022,11 @@ static int query_current_block_height(uint64_t *out_height) {
 
 int dna_chain_cmd_unstake(dnac_context_t *ctx) {
     printf("Submitting UNSTAKE TX...\n");
-    printf("  (validator will transition ACTIVE -> RETIRING,\n"
-           "   self-stake unlocks after DNAC_UNSTAKE_COOLDOWN_BLOCKS)\n");
+    printf("  (validator will transition ACTIVE -> RETIRING; at the boundary\n"
+           "   where it leaves the active set it graduates: self-stake\n"
+           "   unlocks DNAC_VALIDATOR_UNBOND_EPOCHS (84) epochs later, and\n"
+           "   remaining delegations return to their delegators locked\n"
+           "   DNAC_UNDELEGATE_LOCK_EPOCHS (12) epochs)\n");
 
     int rc = dnac_unstake(ctx, NULL, NULL);
     if (rc != DNAC_SUCCESS) {

@@ -43,7 +43,7 @@ int main(void) {
     CHECK(dnac_stake(dummy, 500, NULL, NULL, NULL)
           == DNAC_ERROR_INVALID_PARAM);
 
-    /* commission_bps > 10000 */
+    /* commission_bps > DNAC_COMMISSION_BPS_MAX (5000) */
     CHECK(dnac_stake(dummy, (uint16_t)(DNAC_COMMISSION_BPS_MAX + 1),
                      VALID_FP, NULL, NULL)
           == DNAC_ERROR_INVALID_PARAM);

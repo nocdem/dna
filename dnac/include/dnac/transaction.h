@@ -156,7 +156,7 @@ extern const uint8_t DNAC_STAKE_PURPOSE_TAG[DNAC_STAKE_PURPOSE_TAG_LEN];
  * STAKE preimage and becomes a permanent validator property.
  */
 typedef struct {
-    uint16_t commission_bps;                                    /**< 0..10000 */
+    uint16_t commission_bps;                                    /**< 0..DNAC_COMMISSION_BPS_MAX (5000) */
     uint8_t  unstake_destination_fp[DNAC_STAKE_UNSTAKE_DEST_FP_SIZE];
                                                                 /**< raw 64B fingerprint hash */
 } dnac_tx_stake_fields_t;
@@ -198,13 +198,14 @@ typedef struct {
  *
  * Populated only when `dnac_transaction_t.type == DNAC_TX_VALIDATOR_UPDATE`.
  *
- * `new_commission_bps` is the validator's updated commission (0..10000 =
- * 0..100%). `signed_at_block` anchors the update to a specific block
+ * `new_commission_bps` is the validator's updated commission
+ * (0..DNAC_COMMISSION_BPS_MAX = 5000 = 0..50% since tokenomics-v3 P3; an
+ * increase takes effect two epochs later, a decrease at once). `signed_at_block` anchors the update to a specific block
  * height so replay of an old update-TX is detectable by witnesses
  * (they reject if signed_at_block < current validator.last_update_block).
  */
 typedef struct {
-    uint16_t new_commission_bps;   /**< 0..10000 */
+    uint16_t new_commission_bps;   /**< 0..DNAC_COMMISSION_BPS_MAX (5000) */
     uint64_t signed_at_block;      /**< Block height at signing */
 } dnac_tx_validator_update_fields_t;
 
@@ -492,7 +493,8 @@ int dnac_tx_add_signer(dnac_transaction_t *tx,
  * Rules enforced:
  *   - tx->type == DNAC_TX_STAKE
  *   - signer_count == 1
- *   - stake_fields.commission_bps <= DNAC_COMMISSION_BPS_MAX (10000)
+ *   - stake_fields.commission_bps <= DNAC_COMMISSION_BPS_MAX (5000 since
+ *     tokenomics-v3 P3-8)
  *   - Σ DNAC inputs >= DNAC_SELF_STAKE_AMOUNT + Σ DNAC outputs
  *
  * Rules requiring witness-side DB access (Rule I / Rule M / exact fee)

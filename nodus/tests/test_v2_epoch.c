@@ -7,14 +7,15 @@
  *   §1  DERIVATION MATRIX — the boundary fires exactly at H % E == 0 for
  *       H > 0; genesis does not fire; E−1 / E+1 do not fire; the module
  *       is a no-op on every non-boundary height (DB digest byte-identical);
- *       and the H + DNAC_UNSTAKE_COOLDOWN_BLOCKS storage-bound guard is
+ *       and the H + 84·E (DNAC_VALIDATOR_UNBOND_EPOCHS, P3-3) storage-bound
+ *       guard is
  *       fail-closed at a representable near-INT64_MAX multiple of E.
  *   §2  GRADUATION — a RETIRING row graduates at the boundary and NOT
  *       one block before; the release UTXO carries the record's ACTUAL
  *       bond (seeded ABOVE DNAC_SELF_STAKE_AMOUNT so the macro cannot
  *       pass by accident), the independently recomputed grad_id as
  *       tx_hash, the recomputed nullifier as the row key, the
- *       destination fp as owner, unlock H + cooldown, index 200,
+ *       destination fp as owner, unlock H + 84·E (P3-3), index 200,
  *       domain CORE, created_at 0; the bond zeroes, the status becomes
  *       UNSTAKED, everything else on the row is byte-unchanged,
  *       active_count drops by exactly one, and the supply gate is GREEN.
@@ -62,6 +63,10 @@
 #include "witness/nodus_witness_roots_v2.h"
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_emission.h"  /* DNAC_DECIMAL_UNIT (§12e-i) */
+#include "witness/nodus_witness_v2_econ.h"   /* P3: the balance copy (§12i)
+                                              * + the settlement identity
+                                              * (§2e)                     */
+#include "witness/nodus_witness_delegation.h"/* P3-4: seeded delegations  */
 #include "nodus/nodus_chain_config.h"
 #include "nodus/nodus_types.h"
 #include "dnac/dnac.h"
@@ -95,7 +100,16 @@ static int g_checks = 0;
 #define OK() do { g_checks++; } while (0)
 
 #define E   ((uint64_t)DNAC_EPOCH_LENGTH)
-#define CD  ((uint64_t)DNAC_UNSTAKE_COOLDOWN_BLOCKS)
+/* The graduation lock, tokenomics-v3 P3-3 (decision §1 "Validator bekleme
+ * süresi 84 epoch"): 84 epochs past the graduation boundary. Spelled with
+ * the LITERAL 84 rather than DNAC_VALIDATOR_UNBOND_EPOCHS, so a drift of
+ * the constant turns every `unlock == H + CD` below red (RED ON THE
+ * PRE-P3 TREE: the lock was DNAC_UNSTAKE_COOLDOWN_BLOCKS = 17280 = 24
+ * epochs at E = 720). */
+#define CD  (84ULL * E)
+/* the delegator lock the graduation's delegation release uses (P3-4):
+ * decision §1 "Delegator bekleme süresi 12 epoch", literal likewise */
+#define CD_DELEG  (12ULL * E)
 
 /* ── deterministic pseudo-keys ──────────────────────────────────────────
  * NO real Dilithium keypair is needed anywhere in this file: every block
@@ -796,7 +810,7 @@ static int test_derivation(void) {
     OK();
 
     /* THE STORAGE-BOUND GUARD. A representable multiple of E so close to
-     * INT64_MAX that H + DNAC_UNSTAKE_COOLDOWN_BLOCKS leaves the SQLite
+     * INT64_MAX that H + 84·E (P3-3) leaves the SQLite
      * INTEGER range: the release must be REFUSED, not stored as a value
      * that round-trips negative (which would make the output spendable
      * forever). Driven DIRECTLY at the module — reaching this height
@@ -1026,9 +1040,12 @@ static int test_boundary_chain(void) {
      * fixture — and still inside the pre-chain window. Its bond must
      * enter the supply equation too. */
     /* key 7 also carries the REAL-WORLD pending-commission shape the R3
-     * review found untested: an increase submitted OFF-boundary writes
+     * review found untested: an increase submitted OFF-boundary wrote
      * pending_effective_block = H + E, which is never boundary-aligned
-     * (here: a submission at H=3 → peff = E+3). Under the legacy
+     * (here: a submission at H=3 → peff = E+3). (The V2 writer stores
+     * H + 2E since the P3 fix round — decision file §3 2026-09-24; this
+     * case pins the ACTIVATOR's `<=` on a hand-set peff, whose subject
+     * does not depend on which writer produced it.) Under the legacy
      * equality match this NEVER activates (the dead path, bft.c:2386);
      * the V2 `<=` activator must hold it through the E boundary (notice
      * period not yet complete) and land it at 2E. */
@@ -1134,7 +1151,7 @@ static int test_boundary_chain(void) {
         CHECK(r.output_index == (int64_t)NODUS_V2_EPGRAD_OUT_IDX,
               "output_index 200");
         CHECK(r.unlock_block == E + CD,
-              "unlock = H + DNAC_UNSTAKE_COOLDOWN_BLOCKS");
+              "unlock = H + 84·E (P3-3; was H + 17280 = H + 24E)");
         CHECK(r.block_height == E, "block_height = the boundary height");
         CHECK(r.created_at == 0,
               "created_at is the pinned deterministic lane");
@@ -1282,7 +1299,7 @@ static int test_boundary_chain(void) {
         CHECK(memcmp(r3.owner, g_fp[3], 128) == 0,
               "owner is validator 3's unstake_destination_fp");
         CHECK(r3.unlock_block == E + CD,
-              "unlock = H + DNAC_UNSTAKE_COOLDOWN_BLOCKS, same as any "
+              "unlock = H + 84·E (P3-3), same as any "
               "other graduate");
         OK();
         printf("  ok: D-11 AUTO_RETIRED graduates alongside RETIRING, "
@@ -1428,6 +1445,269 @@ static int test_boundary_chain(void) {
         printf("  ok: restart preserves graduation + snapshot\n");
     }
 
+    fx_close(&fx);
+    return 0;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ * §2e THE GRADUATION RELEASES THE GRADUATE'S DELEGATIONS
+ *     (tokenomics-v3 P3-4; decision file §3 2026-09-24 "P3 soruları" (3)
+ *     "validator mezun olduğunda kalan delegasyonlar otomatik olarak
+ *     UNDELEGATE gibi, delegator kilidiyle (12 epoch) sahiplerine döner";
+ *     design §8 P3-4)
+ *
+ * Seed (every row pre-freeze or pre-genesis — the two-stage rule):
+ *   keys 0,1,2,4,5 ACTIVE; key 3 AUTO_RETIRED and key 6 RETIRING, both
+ *   seeded BEFORE the genesis snapshots so neither is an entry of
+ *   snapshot(E) — both graduate at E (the test_boundary_chain pattern).
+ *   Delegations: key 7 → key 3 (5·MIN), key 8 → key 6 (3·MIN),
+ *   key 9 → key 6 (2·MIN), and key 9 → key 0 (1·MIN, a NON-graduate —
+ *   must survive untouched). MIN = DNAC_MIN_DELEGATION.
+ *
+ * Expected at E, by hand:
+ *   tx_hash   = SHA3-512("settlement" ‖ u64be(E)) — recomputed here from
+ *               the bytes, not through the production helper;
+ *   ranks     = graduates in pubkey ASC (key 3's first byte 0x13 < key 6's
+ *               0x16), each graduate's delegations in delegator_hash ASC
+ *               (SHA3-512(0x03 ‖ pubkey), computed and ordered here):
+ *               key 3's one delegation rank 0, key 6's two ranks 1 and 2;
+ *   index     = 0x40000000 + rank (the band below 2^31 — P3 fix round;
+ *               the first cut's 0x80000000 needed signed narrowing);
+ *   nullifier = SHA3-512(tx_hash ‖ 0x23 ‖ u32be(index));
+ *   row       = owner hex(SHA3-512(delegator pk)), the delegation amount,
+ *               unlock E + 12E, block_height E, domain CORE, created_at 0;
+ *   the three delegation rows are DELETED, the two graduates' total/
+ *   external_delegated are 0, key 9 → key 0 is untouched, copy(E) holds no
+ *   row of either graduate, and the supply equation closes.
+ * F60 (V2AP_FAIL_AFTER_FIRST_GRAD_DELEG_RELEASE, first graduate = key 3)
+ * rolls the boundary back byte-identically — asserted here on the rows the
+ * release touched: no release UTXO at any of the three nullifiers, all
+ * four delegation rows back, and both graduates' status / bond / BOTH
+ * delegated totals exactly as seeded — and the clean retry commits.
+ *
+ * RED ON THE PRE-P3 TREE: the graduation released only the bond and left
+ * total_delegated on an UNSTAKED row — the delegations stayed bonded to
+ * a validator that no longer exists, no release UTXO appeared, and F60
+ * did not exist (an unknown stage id fails closed).
+ * KILLED BY: releasing to the validator's destination instead of the
+ * delegator; unlock at the 84-epoch validator lock or unlocked; a rank
+ * that restarts per graduate (key 6's first release would reuse index
+ * 0x40000000 — the same (tx_hash, index) pair as key 3's); a kind byte or
+ * index band shared with the payday; leaving the rows or the totals
+ * behind; running after the balance copy (copy(E) would hold them). */
+static int test_grad_deleg_release(void) {
+    printf("\n§2e graduation releases the graduate's delegations "
+           "(tokenomics-v3 P3-4)\n");
+    const uint64_t MIN = (uint64_t)DNAC_MIN_DELEGATION;
+    static const vspec_t specs[7] = {
+        { 0, BOND_BASE, DNAC_VALIDATOR_ACTIVE,       100, 0, 0 },
+        { 1, BOND_BASE, DNAC_VALIDATOR_ACTIVE,       100, 0, 0 },
+        { 2, BOND_BASE, DNAC_VALIDATOR_ACTIVE,       100, 0, 0 },
+        { 3, BOND_BASE, DNAC_VALIDATOR_AUTO_RETIRED, 100, 0, 0 },
+        { 4, BOND_BASE, DNAC_VALIDATOR_ACTIVE,       100, 0, 0 },
+        { 5, BOND_BASE, DNAC_VALIDATOR_ACTIVE,       100, 0, 0 },
+        { 6, BOND_BIG,  DNAC_VALIDATOR_RETIRING,     250, 0, 0 },
+    };
+    /* (delegator, validator, amount) */
+    const int      dl_d[4] = { 7, 8, 9, 9 };
+    const int      dl_v[4] = { 3, 6, 6, 0 };
+    const uint64_t dl_a[4] = { 5 * MIN, 3 * MIN, 2 * MIN, 1 * MIN };
+
+    fixture_t fx;
+    /* active_count 6: 5 ACTIVE + key 6 RETIRING (not yet graduated);
+     * key 3 AUTO_RETIRED already left it (test_boundary_chain's note) */
+    CHECK(fx_genesis(&fx, "gdel", specs, 7, 6) == 0, "genesis stage 1");
+    uint64_t dsum = 0;
+    for (int i = 0; i < 4; i++) {
+        dnac_delegation_record_t d;
+        memset(&d, 0, sizeof(d));
+        memcpy(d.delegator_pubkey, g_pk[dl_d[i]], DNAC_PUBKEY_SIZE);
+        memcpy(d.validator_pubkey, g_pk[dl_v[i]], DNAC_PUBKEY_SIZE);
+        d.amount = dl_a[i];
+        CHECK(nodus_delegation_insert(fx.w, &d) == 0, "seed delegation");
+        dnac_validator_record_t v;
+        CHECK(val_get(&fx, dl_v[i], &v) == 0, "get target");
+        v.total_delegated    += dl_a[i];
+        v.external_delegated += dl_a[i];
+        CHECK(nodus_validator_update(fx.w, &v) == 0, "target totals");
+        dsum += dl_a[i];
+    }
+    {
+        char sql[224];
+        snprintf(sql, sizeof(sql),
+                 "UPDATE supply_tracking SET genesis_supply = "
+                 "genesis_supply + %llu, current_supply = current_supply "
+                 "+ %llu WHERE id = 1",
+                 (unsigned long long)dsum, (unsigned long long)dsum);
+        CHECK(run_sql(fx.w->db, sql) == 0, "supply += delegated");
+    }
+    CHECK(fx_v2_genesis(&fx) == 0, "v2 genesis");
+    CHECK(nodus_witness_v2_supply_check(fx.w) == 0, "supply green at genesis");
+    OK();
+
+    /* ── the hand-derived identities ────────────────────────────────── */
+    uint8_t txh[64];
+    {
+        uint8_t pre[18];
+        memcpy(pre, "settlement", 10);
+        for (int i = 0; i < 8; i++)
+            pre[10 + i] = (uint8_t)(E >> (56 - 8 * i));
+        CHECK(qgp_sha3_512(pre, sizeof(pre), txh) == 0, "tx_hash");
+        uint8_t prod[64];
+        CHECK(nodus_witness_v2_settlement_tx_hash(E, prod) == 0 &&
+              memcmp(prod, txh, 64) == 0,
+              "FIXTURE GUARD: the hand tx_hash equals the payday's");
+    }
+    /* key 6's two delegators in delegator_hash ASC */
+    int k6_first = 8, k6_second = 9;
+    {
+        uint8_t pre[1 + DNAC_PUBKEY_SIZE], h8[64], h9[64];
+        pre[0] = (uint8_t)NODUS_TREE_TAG_DELEGATION;
+        memcpy(pre + 1, g_pk[8], DNAC_PUBKEY_SIZE);
+        CHECK(qgp_sha3_512(pre, sizeof(pre), h8) == 0, "h8");
+        memcpy(pre + 1, g_pk[9], DNAC_PUBKEY_SIZE);
+        CHECK(qgp_sha3_512(pre, sizeof(pre), h9) == 0, "h9");
+        if (memcmp(h9, h8, 64) < 0) { k6_first = 9; k6_second = 8; }
+    }
+    CHECK(g_pk[3][0] < g_pk[6][0], "FIXTURE GUARD: key 3 sorts first");
+    /* rank r → (delegator, amount) */
+    const int      r_del[3] = { 7, k6_first, k6_second };
+    const uint64_t r_amt[3] = { 5 * MIN,
+                                k6_first == 8 ? 3 * MIN : 2 * MIN,
+                                k6_first == 8 ? 2 * MIN : 3 * MIN };
+    uint8_t nul[3][64];
+    for (int r = 0; r < 3; r++) {
+        uint8_t pre[64 + 1 + 4];
+        const uint32_t idx = 0x40000000u + (uint32_t)r;
+        memcpy(pre, txh, 64);
+        pre[64] = 0x23;
+        pre[65] = (uint8_t)(idx >> 24); pre[66] = (uint8_t)(idx >> 16);
+        pre[67] = (uint8_t)(idx >> 8);  pre[68] = (uint8_t)idx;
+        CHECK(qgp_sha3_512(pre, sizeof(pre), nul[r]) == 0, "nul");
+    }
+    CHECK(NODUS_V2_GRAD_DELEG_KIND == 0x23 &&
+          NODUS_V2_GRAD_DELEG_OUT_IDX_BASE == 0x40000000u,
+          "FIXTURE GUARD: the P3-4 kind and band"); OK();
+
+    /* ── F60: interrupt after the first graduate's delegation release ─ */
+    CHECK(fx_drive_to(&fx, E - 1) == 0, "drive to E-1");
+    /* the pre-boundary image of every row the release touches */
+    dnac_validator_record_t pre3, pre6;
+    CHECK(val_get(&fx, 3, &pre3) == 0 && val_get(&fx, 6, &pre6) == 0,
+          "pre-boundary graduate rows");
+    CHECK(pre3.total_delegated == 5 * MIN &&
+          pre3.external_delegated == 5 * MIN &&
+          pre6.total_delegated == 5 * MIN &&
+          pre6.external_delegated == 5 * MIN,
+          "FIXTURE GUARD: both graduates hold their seeded delegations");
+    {
+        int rc = 0;
+        CHECK(fx_block_inject(&fx, V2AP_FAIL_AFTER_FIRST_GRAD_DELEG_RELEASE,
+                              &rc) == 0 && rc == -2,
+              "F60 rolls the boundary back byte-identically");
+        for (int r = 0; r < 3; r++) {
+            utxo_row_t u;
+            CHECK(utxo_get(fx.w, nul[r], &u) == 0 && !u.found,
+                  "F60 left no release UTXO");
+        }
+        CHECK(q1(fx.w, "SELECT COUNT(*) FROM delegations") == 4,
+              "F60 restored all four delegation rows (key 3's included — "
+              "its release ran before the fault)");
+        for (int i = 0; i < 3; i++) {
+            dnac_delegation_record_t d;
+            CHECK(nodus_delegation_get(fx.w, g_pk[dl_d[i]], g_pk[dl_v[i]],
+                                       &d) == 0 && d.amount == dl_a[i],
+                  "F60 restored the graduates' delegation rows and amounts");
+        }
+        dnac_validator_record_t v3, v6;
+        CHECK(val_get(&fx, 3, &v3) == 0 && val_get(&fx, 6, &v6) == 0,
+              "post-F60 graduate rows");
+        CHECK(v3.status == pre3.status && v3.self_stake == pre3.self_stake &&
+              v3.total_delegated == pre3.total_delegated &&
+              v3.external_delegated == pre3.external_delegated,
+              "F60 restored key 3's status, bond and BOTH delegated totals");
+        CHECK(v6.status == pre6.status && v6.self_stake == pre6.self_stake &&
+              v6.total_delegated == pre6.total_delegated &&
+              v6.external_delegated == pre6.external_delegated,
+              "F60 restored key 6's status, bond and BOTH delegated totals");
+        OK();
+    }
+
+    /* ── the clean boundary ─────────────────────────────────────────── */
+    {
+        int rc = 0;
+        CHECK(fx_block(&fx, NULL, &rc) == 0 && rc == 0 && fx.height == E,
+              "the boundary block commits");
+    }
+    for (int r = 0; r < 3; r++) {
+        utxo_row_t u;
+        CHECK(utxo_get(fx.w, nul[r], &u) == 0 && u.found,
+              "release UTXO present at its hand-derived nullifier");
+        CHECK(memcmp(u.owner, g_fp[r_del[r]], 128) == 0,
+              "owner = the DELEGATOR's fingerprint (hex)");
+        CHECK(u.amount == r_amt[r], "amount = the delegation amount");
+        CHECK(u.unlock_block == E + CD_DELEG,
+              "unlock = H_grad + 12E — the delegator lock, not 84E");
+        CHECK(u.block_height == E && u.created_at == 0 &&
+              u.domain_id == (int64_t)DNA_DOMAIN_CORE,
+              "block_height E, created_at 0, CORE");
+        CHECK(u.output_index == (int64_t)(0x40000000u + (uint32_t)r),
+              "output_index = the band base + the boundary-wide rank");
+        CHECK(u.txh_len == 64 && memcmp(u.tx_hash, txh, 64) == 0,
+              "tx_hash = the settlement tx_hash of H_grad");
+    }
+    OK();
+    CHECK(q1(fx.w, "SELECT COUNT(*) FROM delegations") == 1,
+          "the graduates' three delegation rows are deleted, key 9 → "
+          "key 0 survives"); OK();
+    {
+        dnac_validator_record_t v;
+        for (int k = 3; k <= 6; k += 3) {
+            CHECK(val_get(&fx, k, &v) == 0 &&
+                  v.status == (uint8_t)DNAC_VALIDATOR_UNSTAKED &&
+                  v.self_stake == 0 && v.total_delegated == 0 &&
+                  v.external_delegated == 0,
+                  "graduate UNSTAKED with bond and delegated totals 0");
+        }
+        CHECK(val_get(&fx, 0, &v) == 0 && v.total_delegated == MIN &&
+              v.external_delegated == MIN,
+              "a non-graduate's delegation totals are untouched");
+        uint8_t gid6[64], gnul6[64];
+        utxo_row_t u;
+        CHECK(nodus_witness_v2_epoch_grad_id(fx.chain_id, E, g_pk[6], gid6)
+                  == 0 &&
+              nodus_witness_v2_epoch_grad_nullifier(gid6, gnul6) == 0 &&
+              utxo_get(fx.w, gnul6, &u) == 0 && u.found &&
+              u.amount == BOND_BIG && u.unlock_block == E + CD,
+              "the graduate's own bond still releases at H + 84E (P3-3)");
+    }
+    OK();
+    {
+        uint8_t f3[64], f6[64];
+        CHECK(qgp_sha3_512(g_pk[3], DNAC_PUBKEY_SIZE, f3) == 0 &&
+              qgp_sha3_512(g_pk[6], DNAC_PUBKEY_SIZE, f6) == 0, "fps");
+        sqlite3_stmt *st = NULL;
+        CHECK(sqlite3_prepare_v2(fx.w->db,
+                  "SELECT COUNT(*) FROM v2_balance_copy WHERE epoch_start "
+                  "= ?1 AND (validator_fp = ?2 OR validator_fp = ?3)",
+                  -1, &st, NULL) == SQLITE_OK, "prep");
+        sqlite3_bind_int64(st, 1, (sqlite3_int64)E);
+        sqlite3_bind_blob(st, 2, f3, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(st, 3, f6, 64, SQLITE_TRANSIENT);
+        CHECK(sqlite3_step(st) == SQLITE_ROW &&
+              sqlite3_column_int64(st, 0) == 0,
+              "copy(E) holds no row of either graduate — the release ran "
+              "BEFORE the balance copy");
+        sqlite3_finalize(st);
+    }
+    CHECK(q1(fx.w, "SELECT value FROM validator_stats WHERE "
+                   "key='active_count'") == 5,
+          "active_count drops once, for the RETIRING graduate only");
+    CHECK(nodus_witness_v2_supply_check(fx.w) == 0,
+          "the supply equation closes — delegated bucket moved to utxo");
+    OK();
+    printf("  ok: 3 delegations released (ranks 0..2, kind 0x23, unlock "
+           "E + 12E), rows gone, totals 0, F60 atomic\n");
     fx_close(&fx);
     return 0;
 }
@@ -3675,7 +3955,7 @@ static int test_rule_n_graduation_deferral(void) {
         CHECK(r.found, "released at H+E, not at H");
         CHECK(r.amount == BOND_BIG, "pays the record's actual bond");
         CHECK(r.unlock_block == 2 * E + CD,
-              "unlock = (H+E) + DNAC_UNSTAKE_COOLDOWN_BLOCKS — H+E is "
+              "unlock = (H+E) + 84·E (P3-3) — H+E is "
               "the height it ACTUALLY graduates at, not the height "
               "UNSTAKE was requested");
         CHECK(q1(fx.w, "SELECT value FROM validator_stats WHERE "
@@ -3691,7 +3971,7 @@ static int test_rule_n_graduation_deferral(void) {
               "under the WRONG height either");
     }
     OK();
-    printf("  ok: graduated at 2E, unlock = 2E + cooldown, active_count "
+    printf("  ok: graduated at 2E, unlock = 2E + 84E, active_count "
            "moved exactly once\n");
 
     fx_close(&fx);
@@ -4103,6 +4383,16 @@ static int test_vset_preview_verdicts(void) {
         v.active_since_block = 2 * E;      /* 2E + 2E > 3E: untenured */
         CHECK(nodus_validator_update(fx.w, &v) == 0, "untenured bond");
     }
+    /* tokenomics-v3 P3-1 ("okuma B"): the set previewed at boundary 2E
+     * (for 3E) ranks by the frozen copy(E); this bare fixture never ran a
+     * boundary, so the copy is written here from the two live rows. Before
+     * it exists the tenured validator holds no frozen stake — not seated,
+     * so the preview is the EMPTY verdict. RED ON THE PRE-P3 TREE: the
+     * live read seated it (0) with no copy. */
+    CHECK(nodus_witness_vset_preview_next(fx.w, 2 * E, &s) == 1 && !s,
+          "P3-1: no frozen copy(E) -> nobody seatable -> EMPTY verdict");
+    CHECK(nodus_witness_v2_balance_copy_write(fx.w, E) == 0,
+          "write copy(E) from the live rows");
     CHECK(nodus_witness_vset_preview_next(fx.w, 2 * E, &s) == 0 && s,
           "one tenured validator: built (0)");
     int ok = s->active_count == 1 && s->epoch == 3 * E &&
@@ -4133,6 +4423,7 @@ int main(void) {
     /* S2 — the engine-mandatory boundary transition */
     if (test_derivation() != 0) return 1;
     if (test_boundary_chain() != 0) return 1;
+    if (test_grad_deleg_release() != 0) return 1;   /* tokenomics-v3 P3-4 */
     if (test_multi_graduate() != 0) return 1;
     if (test_commit_next() != 0) return 1;
     if (test_faults() != 0) return 1;

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ════════════════════════════════════════════════════════════════════
-# test_v2_grow_7_20.sh — a V2 committee grows 7 → 14 → 20 by governance
+# test_v2_grow_7_20.sh — a V2 committee grows 7 → 10 → 20 by governance
 # ════════════════════════════════════════════════════════════════════
 #
 # WHAT IT PROVES
@@ -16,7 +16,10 @@
 #     1. a non-validator with funds can bond and become a validator on a
 #        live chain — 13 of them
 #     2. the committee size is decided by a governance vote, not by a
-#        constant
+#        constant — made non-vacuous by voting the epoch-3E target BELOW
+#        what the default would seat (see THE ARITHMETIC): since
+#        tokenomics-v3 P3-7 the default target is 32, which alone would
+#        seat all 20, so a vote of 20 could land without deciding anything
 #     3. a target above this release's ceiling is refused, identically,
 #        by every node
 #     4. the growth happens AT the boundary and nowhere else, proven four
@@ -60,20 +63,33 @@
 #   epoch e only if active_since_block + 2E <= e. Genesis-seeded
 #   validators (active_since <= 1) are carved out and always tenured.
 #   Snapshots are built ONE EPOCH AHEAD: the row for epoch e is written
-#   at the boundary that starts epoch e-E.
+#   at the boundary that starts epoch e-E. Since tokenomics-v3 P3-1
+#   ("okuma B") that boundary RANKS by the frozen balance copy of the
+#   epoch before it — snapshot(e) is built at e-E from copy(e-2E) — and a
+#   candidate whose bond is not in that copy has frozen stake 0 and is
+#   not seated at all.
 #
 #   13 claims + 13 bonds land serially at heights 1..26, so the
 #   candidates' active_since values are 2,4,6,…,26.
-#     epoch 30  → needs active_since <= 0 → genesis seven only     → 7
-#     epoch 45  → needs active_since <= 15 → candidates 1..7 too   → 14
-#     epoch 60  → needs active_since <= 30 → all thirteen          → 20
-#   The vote is submitted at ~27 with effective=45; SAFETY grace is 15,
-#   so 45 >= 27+15 holds, and the row is committed well before height 30
-#   when the epoch-45 snapshot is built.
+#     epoch 30  → tenure needs active_since <= 0; copy(0) holds no
+#                 candidate                        → genesis seven → 7
+#     epoch 45  → tenure needs active_since <= 15; copy(15) holds the
+#                 bonds at heights 2..14            → 7 candidates → 14
+#                 eligible — the VOTE caps it at MID_TARGET = 10
+#     epoch 60  → tenure needs active_since <= 30; copy(30) holds all
+#                 thirteen                          → 20
+#   Two votes, both submitted at ~27: target MID_TARGET (10) effective 45
+#   and target 20 effective 60. SAFETY grace is 15, so 45 >= 27+15 and
+#   60 >= 27+15 hold, and both rows are committed well before height 30
+#   (when snapshot(45) is built) and 45 (snapshot(60)).
+#   Without the first vote the DEFAULT (32 since P3-7) would seat all 14
+#   eligible at 45; seeing exactly 10 there is what proves the size came
+#   from the vote. The 20 at 60 equals what the default would seat too —
+#   it proves growth, not governance, and is labelled that way.
 #
-#   That 7 → 14 → 20 ramp is not a compromise, it is the honest shape:
-#   tenure and governance are independent gates and the chain crosses
-#   them at different boundaries.
+#   That 7 → 10 → 20 ramp is not a compromise, it is the honest shape:
+#   tenure, the frozen copy and governance are independent gates and the
+#   chain crosses them at different boundaries.
 #
 # WHAT IT LEAVES BEHIND
 #   ⚠ THE HEAVIEST RESIDUE IN THE SUITE. Run it LAST or standalone.
@@ -102,7 +118,7 @@
 #     restored the check is a BLOCK, not a process count.
 #   - **Snapshot existence is not agreement.** Counts and hashes are
 #     compared across all 20 nodes, not read from node1.
-#   - **The 31-refusal must be a REFUSAL, not a submission failure.** A
+#   - **The 33-refusal must be a REFUSAL, not a submission failure.** A
 #     CLI that dies for an unrelated reason looks identical. The check is
 #     that no chain_config row for the illegal value exists on any node
 #     AFTER the attempt, plus that a LEGAL vote from the same path in the
@@ -113,6 +129,11 @@
 #     visibility latency, not by anything this scenario does. The waits
 #     are long on purpose and must not be "tuned down" when they fail —
 #     see feedback_no_timeout_tuning.
+#   - **NOT RE-RUN SINCE TOKENOMICS-v3 P3 (fix round, 2026-09-24).** The
+#     P3 edits (ceiling 32, illegal 33, the two-vote governance proof)
+#     were written against the source, not measured; other parts of this
+#     script predate the Comet lane (STEP 4c/4d read v2_blocks.vset_hash
+#     and .qc) and were not re-checked in that round either.
 #   - **A green here is green at E=15.** It proves the LOGIC — governance
 #     lands on a boundary, tenure gates selection, quorum tracks the set.
 #     It proves NOTHING about production magnitudes (E=720, grace 17280).
@@ -151,8 +172,11 @@ CONF="$BASE_DIR/v2_genesis.conf"
 PUMP="$BASE_DIR/v2pump/identity"
 BOND=1000000000000000              # DNAC_SELF_STAKE_AMOUNT
 COMMISSION=500
-V2_SET_MAX=30                      # NODUS_V2_ACTIVE_SET_MAX (nodus_witness.h:162)
-ILLEGAL=$(( V2_SET_MAX + 1 ))      # 31
+V2_SET_MAX=32                      # NODUS_V2_ACTIVE_SET_MAX (nodus_witness.h,
+                                   # 32 since tokenomics-v3 P3-7)
+ILLEGAL=$(( V2_SET_MAX + 1 ))      # 33
+MID_TARGET=10                      # the epoch-3E vote: BELOW the 14 the
+                                   # default would seat there (claim 2)
 
 # ── requirements, checked not assumed ───────────────────────────────
 [ -f "$CONF" ] || skip "not a Ledger V2 cluster (no v2_genesis.conf) — use stagef_up_v2.sh"
@@ -517,24 +541,35 @@ for n in $(seq 1 "$ORIG"); do
 done
 ok "STEP 3 — target $ILLEGAL (> $V2_SET_MAX) is on no node's chain"
 
-# 2 — the legal vote. This also retires the "the CLI was simply broken"
+# 2 — the legal votes. They also retire the "the CLI was simply broken"
 # reading of the refusal above: same binary, same path, same run.
-"$CLI" -s 127.0.0.1 -p "$PORT1" -i "$BASE_DIR/node1/identity" v2-envelope chain-config \
-    --db "$SDB" --keys "$KEYS" --param 4 --value "$TOTAL" --effective "$EFFECTIVE" \
-    --nonce 77002 > "$BASE_DIR/grow_cc_legal.log" 2>&1 || true
-landed=0
-for _ in $(seq 1 30); do
-    v=$(sqlite3 -readonly "$SDB" "SELECT new_value FROM chain_config_history WHERE param_id=4 AND effective_block=$EFFECTIVE;" 2>/dev/null)
-    [ "$v" = "$TOTAL" ] && { landed=1; break; }
-    sleep 2
-done
-[ "$landed" = 1 ] || { tail -5 "$BASE_DIR/grow_cc_legal.log" >&2; die "the legal vote (target $TOTAL) never committed — so the $ILLEGAL refusal above proves nothing about governance, only that this path is broken"; }
-val=$(assert_same "chain_config row" \
-      "SELECT new_value || '|' || effective_block FROM chain_config_history WHERE param_id=4 AND effective_block=$EFFECTIVE;" \
-      $(seq 1 "$ORIG"))
-ok "STEP 2 — committee target voted to $TOTAL, effective at $EFFECTIVE, identical on $ORIG nodes ($val)"
+#   vote A: target MID_TARGET (10) effective at 3E — BELOW the 14 the
+#           default (32) would seat there, so STEP 4a can tell a voted
+#           size from a default one (claim 2);
+#   vote B: target TOTAL (20) effective at 4E — the growth to the full
+#           set (the default would also seat 20 there: growth, not
+#           governance, is what 4E proves).
+cc_vote() {   # $1 value, $2 effective, $3 nonce, $4 log tag
+    "$CLI" -s 127.0.0.1 -p "$PORT1" -i "$BASE_DIR/node1/identity" v2-envelope chain-config \
+        --db "$SDB" --keys "$KEYS" --param 4 --value "$1" --effective "$2" \
+        --nonce "$3" > "$BASE_DIR/grow_cc_$4.log" 2>&1 || true
+    local landed=0 v
+    for _ in $(seq 1 30); do
+        v=$(sqlite3 -readonly "$SDB" "SELECT new_value FROM chain_config_history WHERE param_id=4 AND effective_block=$2;" 2>/dev/null)
+        [ "$v" = "$1" ] && { landed=1; break; }
+        sleep 2
+    done
+    [ "$landed" = 1 ] || { tail -5 "$BASE_DIR/grow_cc_$4.log" >&2; die "the legal vote (target $1 at $2) never committed — so the $ILLEGAL refusal above proves nothing about governance, only that this path is broken"; }
+    assert_same "chain_config row at $2" \
+        "SELECT new_value || '|' || effective_block FROM chain_config_history WHERE param_id=4 AND effective_block=$2;" \
+        $(seq 1 "$ORIG")
+}
+val=$(cc_vote "$MID_TARGET" "$EFFECTIVE" 77002 legal_mid) || exit 1
+ok "STEP 2 — committee target voted to $MID_TARGET, effective at $EFFECTIVE, identical on $ORIG nodes ($val)"
+val=$(cc_vote "$TOTAL" "$GROWTH_EPOCH" 77003 legal_full) || exit 1
+ok "STEP 2b — committee target voted to $TOTAL, effective at $GROWTH_EPOCH, identical on $ORIG nodes ($val)"
 
-# ⚠ do NOT re-submit this vote. A second identical vote is a transaction
+# ⚠ do NOT re-submit either vote. A second identical vote is a transaction
 # the engine deterministically rejects at apply — see the POISON BATCH
 # entry in nodus/BUGS.md. Survivable since v0.19.42, still a wasted round.
 
@@ -569,8 +604,8 @@ pump_to $(( 2 * E + 2 ))
 c=$(assert_same "epoch $(( 2 * E )) snapshot" \
     "SELECT active_count FROM validator_set_snapshots WHERE epoch_start=$(( 2 * E ));" \
     $(seq 1 "$ORIG"))
-[ "$c" = "$ORIG" ] || die "epoch $(( 2*E )) already has $c seats — Rule R did not gate the untenured candidates, and every growth assertion after this would be meaningless"
-ok "STEP 5 — epoch $(( 2*E )) is still $ORIG seats: tenure gates selection independently of the target"
+[ "$c" = "$ORIG" ] || die "epoch $(( 2*E )) already has $c seats — Rule R (and the frozen copy(0), which holds no candidate) did not gate the candidates, and every growth assertion after this would be meaningless"
+ok "STEP 5 — epoch $(( 2*E )) is still $ORIG seats: tenure and the frozen copy gate selection independently of the target"
 
 # ════════════════════════════════════════════════════════════════════
 # STEP 4 — the growth lands AT the boundaries, four ways
@@ -581,9 +616,12 @@ mid=$(assert_same "epoch $MID_EPOCH snapshot count" \
       "SELECT active_count FROM validator_set_snapshots WHERE epoch_start=$MID_EPOCH;" $ALL)
 info "epoch $MID_EPOCH committee: $mid seats"
 [ "$mid" -gt "$ORIG" ] || die "epoch $MID_EPOCH is still $mid seats — the first tenured candidates were not selected"
+# claim 2: 14 are eligible here (the arithmetic block); the DEFAULT target
+# (32) would seat all 14. Exactly MID_TARGET means the vote decided it.
+[ "$mid" = "$MID_TARGET" ] || die "epoch $MID_EPOCH has $mid seats, not the voted $MID_TARGET — the committee size did not come from the vote (14 = the default's answer)"
 assert_same "epoch $MID_EPOCH snapshot hash" \
     "SELECT hex(snapshot_hash) FROM validator_set_snapshots WHERE epoch_start=$MID_EPOCH;" $ALL > /dev/null
-ok "STEP 4a — epoch $MID_EPOCH grew to $mid seats, byte-identical on all $TOTAL nodes"
+ok "STEP 4a — epoch $MID_EPOCH grew to the voted $mid seats (the default would seat 14), byte-identical on all $TOTAL nodes"
 
 pump_to $(( GROWTH_EPOCH + 2 ))
 grown=$(assert_same "epoch $GROWTH_EPOCH snapshot count" \

@@ -117,7 +117,7 @@ typedef struct {
     /** Σ of delegations where delegator != validator — used for committee ranking. */
     uint64_t external_delegated;
 
-    /** Current commission rate, basis points (0–10000). */
+    /** Current commission rate, basis points (0..DNAC_COMMISSION_BPS_MAX = 5000). */
     uint16_t commission_bps;
 
     /** Pending commission rate (0 = no pending change). */

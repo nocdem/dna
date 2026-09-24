@@ -789,8 +789,10 @@ static int t_nonzero_fee(void) {
 }
 
 static int t_target_above_ceiling(void) {
-    /* param 4 = TARGET_ACTIVE_COUNT, value 31 > NODUS_V2_ACTIVE_SET_MAX (30) */
-    return refusal_case("target31", 0, NULL, 5, 4, 31,
+    /* param 4 = TARGET_ACTIVE_COUNT, value 33 > NODUS_V2_ACTIVE_SET_MAX
+     * (32 since tokenomics-v3 P3-7; was 31 > 30 — 31 is now a LEGAL
+     * target and would not be refused) */
+    return refusal_case("target33", 0, NULL, 5, 4, 33,
                         1000000000ULL, 1000100000ULL, 0,
                         NODUS_RT_AUTHKIND_DSA87_CC_V1,
                         "active-set ceiling") == 0 ? 0 : 1;

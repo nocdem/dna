@@ -142,7 +142,16 @@ extern "C" {
  *  (compile-time constant, not a chain_config_tx parameter in v0.17.x). */
 #define DNAC_MIN_FEE_RAW             1000000ULL   /* 0.01 DNAC = 10^6 raw */
 
-/** Minimum delegation amount: 100 DNAC (raised from 1 per F-DOS-02 audit finding) */
+/** Minimum delegation amount: 100 DNAC (raised from 1 per F-DOS-02 audit finding).
+ *
+ *  tokenomics-v3 P3-5 (decision file docs/plans/decisions/2026-09-22-
+ *  nodus-tokenomics-v3-operator.md §3 2026-09-24 "P3 soruları" (2)): the
+ *  version-3 WITNESS enforces this value too, not only the client lane —
+ *  a DELEGATE that opens a new delegation row needs amount >= this, a
+ *  top-up of an existing row needs amount >= 1, and a partial UNDELEGATE
+ *  must leave either 0 or >= this on the row
+ *  (nodus/src/witness/nodus_witness_rt_native.c rtn_delegate_exec /
+ *  rtn_undelegate_exec). */
 #define DNAC_MIN_DELEGATION          (100ULL * 100000000ULL)         /* 100 × 10^8 raw */
 
 /** Maximum number of delegations a single delegator can hold */
@@ -151,8 +160,23 @@ extern "C" {
 /** Maximum number of validator records in the tree (Rule M, F-DOS-01) */
 #define DNAC_MAX_VALIDATORS          128
 
-/** UNSTAKE locked-UTXO cooldown (24h at 5s block interval) */
-#define DNAC_UNSTAKE_COOLDOWN_BLOCKS  17280
+/** Validator unbonding lock, in EPOCHS (tokenomics-v3 P3-3).
+ *
+ *  docs/plans/decisions/2026-09-22-nodus-tokenomics-v3-operator.md §1
+ *  "Stake çözme": "Validator bekleme süresi 84 epoch" (2026-09-23,
+ *  halved from 168), the wait starting when the stake leaves the active
+ *  voting power. The version-3 witness graduates a RETIRING /
+ *  AUTO_RETIRED validator only at the boundary H_grad where it is no
+ *  longer an entry of the snapshot taking effect (the graduation
+ *  deferral, nodus_witness_v2_epoch.c v2ep_graduate), and releases its
+ *  bond as a UTXO LOCKED to
+ *    unlock_block = H_grad + DNAC_VALIDATOR_UNBOND_EPOCHS × DNAC_EPOCH_LENGTH.
+ *  Counted in epochs, never in blocks, so the lock scales with the epoch
+ *  length a build compiled (the short-epoch harness stays proportional).
+ *  REPLACES DNAC_UNSTAKE_COOLDOWN_BLOCKS (17280 blocks = 24 epochs at
+ *  E = 720), which is deleted. A compile-time constant for the whole
+ *  devnet (decision §3, 2026-09-23 "DEVNET BOYUNCA SABİT"). */
+#define DNAC_VALIDATOR_UNBOND_EPOCHS  84
 
 /** UNDELEGATE lock, in EPOCHS (tokenomics-v3 P2-10).
  *
@@ -165,7 +189,12 @@ extern "C" {
  *  unlock_block = L(h) + DNAC_UNDELEGATE_LOCK_EPOCHS × DNAC_EPOCH_LENGTH,
  *  where L(h) is the boundary at which the withdrawn stake leaves the
  *  voting power (nodus_v2_power_exit_boundary, nodus/src/witness/
- *  nodus_witness_v2_epoch.h). Counted in epochs, never in blocks, so the
+ *  nodus_witness_v2_epoch.h — nb(h) + 2E since tokenomics-v3 P3's
+ *  "okuma B"). The same epoch count locks every delegation a graduating
+ *  validator still holds, released automatically at its graduation
+ *  boundary H_grad to H_grad + DNAC_UNDELEGATE_LOCK_EPOCHS ×
+ *  DNAC_EPOCH_LENGTH (P3-4, decision §3 2026-09-24 "P3 soruları" (3);
+ *  nodus_witness_v2_epoch.c). Counted in epochs, never in blocks, so the
  *  lock scales with the epoch length a build compiled. A compile-time
  *  constant for the whole devnet (decision §3, 2026-09-23 "DEVNET
  *  BOYUNCA SABİT"). */
@@ -200,8 +229,28 @@ extern "C" {
  * number of validator seats the DNA genesis manifest bootstraps and
  * (b) the smallest active set this release's governance will accept
  * (see DNAC_CFG_MIN_TARGET_ACTIVE). The size of the set that actually
- * governs a given height comes from chain state, never from this macro. */
+ * governs a given height comes from chain state, never from this macro.
+ *
+ * tokenomics-v3 P3-7: it is NO LONGER the default target either — that is
+ * DNAC_TARGET_ACTIVE_DEFAULT below. It stays the MINIMUM (the lower bound
+ * of the governed TARGET_ACTIVE_COUNT range, DNAC_CFG_MIN_TARGET_ACTIVE)
+ * and the exact genesis validator count (Rule P.1). */
 #define DNAC_COMMITTEE_SIZE          7
+
+/** The DEFAULT target size of the active validator set — the value the
+ *  committee selector and the validator-set snapshot builder use when no
+ *  governed DNAC_CFG_TARGET_ACTIVE_COUNT row applies to the epoch
+ *  (nodus/src/witness/nodus_witness_committee.c committee_target_for_epoch,
+ *  nodus_witness_vset.c vset_target_for_epoch).
+ *
+ *  tokenomics-v3 P3-7 (docs/plans/decisions/2026-09-22-nodus-tokenomics-
+ *  v3-operator.md §1 "Aktif validator seçim hedefi N = 32"; §3 2026-09-24
+ *  "P3 soruları" (4) "Varsayılan set hedefi N = 32 … yönetişim aralığı
+ *  [7, 32]; tavan 32 kodda sabit"). Replaces DNAC_COMMITTEE_SIZE (7) as
+ *  the default. Equal to the version-3 active-set ceiling
+ *  NODUS_V2_ACTIVE_SET_MAX (nodus/src/witness/nodus_witness.h), which
+ *  pins the equality with a _Static_assert. */
+#define DNAC_TARGET_ACTIVE_DEFAULT   32
 
 /** Upper bound on the ACTIVE validator set for this software release.
  *
@@ -343,8 +392,20 @@ extern "C" {
  * nodus/src/witness/nodus_witness_v2_econ.c.
  * ========================================================================== */
 
-/** Maximum commission in basis points (100% = 10000) */
-#define DNAC_COMMISSION_BPS_MAX      10000
+/** Maximum commission in basis points: 5000 = 50%.
+ *
+ *  tokenomics-v3 P3-8 (docs/plans/decisions/2026-09-22-nodus-tokenomics-
+ *  v3-operator.md §1 "Ödüller ve ücretler": "Komisyonu validator
+ *  belirleyecek; üst sınır %50"). Was 10000 (100%). Every checker reads
+ *  this one macro: the witness STAKE / VALIDATOR_UPDATE rules and the
+ *  canonical validator-record reader (nodus_witness_rt_native.c), the
+ *  boundary's writable-shape predicate (nodus_witness_v2_epoch.c), the
+ *  reward distribution's snapshot-entry check (nodus_witness_v2_econ.c),
+ *  the version-3 genesis builder (nodus_witness_v2_gen.c) and the client
+ *  lane (dnac/src/transaction/stake.c, validator_update.c, verify.c).
+ *  Lowering the cap requires a chain wipe: a committed row or snapshot
+ *  entry above 5000 would fault the boundary that reads it. */
+#define DNAC_COMMISSION_BPS_MAX      5000
 
 /* ============================================================================
  * Forward Declarations
@@ -524,8 +585,11 @@ struct dnac_utxo {
      * O15B §7 — chain height at or after which consensus will accept this
      * coin as a spend input. 0 = spendable now (every ordinary output).
      *
-     * Non-zero only for the post-UNSTAKE principal release, which consensus
-     * locks for DNAC_UNSTAKE_COOLDOWN_BLOCKS. Spending a coin whose
+     * Non-zero only for a stake release: the graduated validator's
+     * principal (locked DNAC_VALIDATOR_UNBOND_EPOCHS epochs past its
+     * graduation boundary) and a delegation's principal — an UNDELEGATE,
+     * or the automatic release when its validator graduates (locked
+     * DNAC_UNDELEGATE_LOCK_EPOCHS epochs). Spending a coin whose
      * unlock_block exceeds the current chain height is rejected by EVERY
      * honest validator (Rule D, nodus_witness_verify.c:730), so a wallet
      * that selects one produces a transaction that can never commit — the
@@ -867,7 +931,8 @@ int dnac_get_current_fee(dnac_context_t *ctx, uint64_t *fee_out);
  * creates a validator record keyed by the caller's signing pubkey on commit.
  *
  * @param ctx                    DNAC context (must have identity + chain_id loaded)
- * @param commission_bps         Commission rate in basis points (0..10000)
+ * @param commission_bps         Commission rate in basis points
+ *                               (0..DNAC_COMMISSION_BPS_MAX == 5000)
  * @param unstake_destination_fp 128-char lowercase hex fingerprint that will
  *                               receive the post-cooldown UTXO when UNSTAKE
  *                               matures. By convention the caller's own
@@ -887,8 +952,11 @@ int dnac_stake(dnac_context_t *ctx,
  * @brief Submit an UNSTAKE TX — trigger validator RETIRING -> UNSTAKED.
  *
  * Fee-only TX with no appended fields. Actual self-stake return happens at
- * the epoch boundary via a locked UTXO whose
- * unlock_block = commit_block + DNAC_UNSTAKE_COOLDOWN_BLOCKS.
+ * the graduation boundary H_grad (the first boundary at which the validator
+ * is no longer in the set taking effect) via a locked UTXO whose
+ * unlock_block = H_grad + DNAC_VALIDATOR_UNBOND_EPOCHS × DNAC_EPOCH_LENGTH.
+ * Delegations the validator still holds are released to their delegators
+ * at the same boundary, locked DNAC_UNDELEGATE_LOCK_EPOCHS epochs.
  *
  * @param ctx        DNAC context
  * @param callback   Completion callback (can be NULL)
@@ -962,7 +1030,7 @@ int dnac_undelegate(dnac_context_t *ctx,
  *
  * @param ctx                 DNAC context
  * @param new_commission_bps  New commission rate in basis points
- *                            (0..DNAC_COMMISSION_BPS_MAX == 10000)
+ *                            (0..DNAC_COMMISSION_BPS_MAX == 5000)
  * @param signed_at_block     Block-height anchor for Rule K freshness
  *                            (witness rejects if the value is stale).
  *                            Must be > 0.
@@ -1055,7 +1123,7 @@ typedef struct {
     uint8_t  pubkey[DNAC_PUBKEY_SIZE];  /**< Dilithium5 pubkey (2592B) */
     uint64_t self_stake;                 /**< Operator's own stake (raw units) */
     uint64_t total_delegated;            /**< Sum of all delegations (raw units) */
-    uint16_t commission_bps;             /**< Commission 0..10000 */
+    uint16_t commission_bps;             /**< Commission 0..DNAC_COMMISSION_BPS_MAX (5000) */
     uint8_t  status;                     /**< dnac_validator_status_t */
     uint64_t active_since_block;         /**< Block height when ACTIVE */
 } dnac_validator_list_entry_t;

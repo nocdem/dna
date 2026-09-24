@@ -240,6 +240,71 @@ static int set_target_active(nodus_witness_t *w, uint64_t value,
     return 0;
 }
 
+/* tokenomics-v3 P3-1 ("okuma B") FIXTURE: the post-bootstrap selection
+ * ranks by the FROZEN copy(e_start − 2E), not the live stake
+ * (nodus_committee_compute_for_epoch). This file seeds `validators` rows
+ * directly (external_delegated with no `delegations` rows), so it writes
+ * the frozen side itself, EQUAL to the live rows: per validator one self
+ * row (self_stake) and — when external_delegated > 0 — one synthetic
+ * delegator row carrying that amount (owner = a fixed 0xDD pseudo-key),
+ * which is exactly what a real chain's copy would hold for that live
+ * state. Refreshed for every copy this file's selections read:
+ * compute/build at e_start = B read copy(2E); commit_next(B) builds B+E
+ * from copy(3E); commit_next(B+E) builds B+2E from copy(4E). Called after
+ * every live-stake change a test wants the selection to see; the
+ * pre-P3 expectations then hold unchanged (frozen == live). */
+static int write_frozen_copy(nodus_witness_t *w, uint64_t epoch) {
+    char sql[128];
+    snprintf(sql, sizeof(sql),
+             "DELETE FROM v2_balance_copy WHERE epoch_start = %llu",
+             (unsigned long long)epoch);
+    if (exec_sql(w, sql) != 0) return -1;
+
+    uint8_t dpk[DNAC_PUBKEY_SIZE], dfp[64];
+    memset(dpk, 0xDD, sizeof(dpk));
+    qgp_sha3_512(dpk, DNAC_PUBKEY_SIZE, dfp);
+
+    sqlite3_stmt *sel = NULL, *ins = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT pubkey, self_stake, external_delegated FROM validators "
+            "ORDER BY pubkey", -1, &sel, NULL) != SQLITE_OK)
+        return -1;
+    if (sqlite3_prepare_v2(w->db,
+            "INSERT INTO v2_balance_copy (epoch_start, validator_fp, "
+            "owner_fp, amount) VALUES (?, ?, ?, ?)", -1, &ins, NULL)
+        != SQLITE_OK) {
+        sqlite3_finalize(sel);
+        return -1;
+    }
+    int rc, ret = 0;
+    while ((rc = sqlite3_step(sel)) == SQLITE_ROW) {
+        uint8_t vfp[64];
+        qgp_sha3_512(sqlite3_column_blob(sel, 0), DNAC_PUBKEY_SIZE, vfp);
+        int64_t amt[2] = { sqlite3_column_int64(sel, 1),
+                           sqlite3_column_int64(sel, 2) };
+        for (int k = 0; k < 2; k++) {
+            if (amt[k] == 0) continue;
+            sqlite3_reset(ins);
+            sqlite3_bind_int64(ins, 1, (int64_t)epoch);
+            sqlite3_bind_blob (ins, 2, vfp, 64, SQLITE_TRANSIENT);
+            sqlite3_bind_blob (ins, 3, k == 0 ? vfp : dfp, 64,
+                               SQLITE_TRANSIENT);
+            sqlite3_bind_int64(ins, 4, amt[k]);
+            if (sqlite3_step(ins) != SQLITE_DONE) ret = -1;
+        }
+    }
+    if (rc != SQLITE_DONE) ret = -1;
+    sqlite3_finalize(sel);
+    sqlite3_finalize(ins);
+    return ret;
+}
+
+static int sync_frozen(nodus_witness_t *w) {
+    if (write_frozen_copy(w, B_HEIGHT - 2ULL * E_LEN) != 0) return -1;
+    if (write_frozen_copy(w, B_HEIGHT - E_LEN) != 0) return -1;
+    return write_frozen_copy(w, B_HEIGHT);
+}
+
 /* Seed `n` bonded validators, all tenured, with strictly DESCENDING
  * total stake as pub_fill decreases: fill 0x10+i, stake bonus (n-i). */
 static int seed_validators(nodus_witness_t *w, int n) {
@@ -255,7 +320,8 @@ static int seed_validators(nodus_witness_t *w, int n) {
     snprintf(sql, sizeof(sql),
              "UPDATE validator_stats SET value = %d WHERE key = 'active_count'",
              n);
-    return exec_sql(w, sql);
+    if (exec_sql(w, sql) != 0) return -1;
+    return sync_frozen(w);                 /* P3-1: frozen == live */
 }
 
 static int stats_active_count(nodus_witness_t *w) {
@@ -273,20 +339,23 @@ static int test_commit_next(void) {
     CHECK(insert_block_row(fx.w, LOOKBACK_NEXT, 0xBB) == 0, "block next");
     CHECK(seed_validators(fx.w, 9) == 0, "seed 9");
 
-    /* No governance row → the default target is DNAC_COMMITTEE_SIZE, so
-     * 9 candidates yield a 7-seat set. */
+    /* No governance row → the default target. tokenomics-v3 P3-7: that
+     * is DNAC_TARGET_ACTIVE_DEFAULT (32), no longer DNAC_COMMITTEE_SIZE
+     * (7), so all 9 candidates are seated (RED ON THE PRE-P3 TREE: 7
+     * seats; KILLED BY: a default of 7 or any value < 9). */
     CHECK(nodus_witness_vset_commit_next(fx.w, B_HEIGHT) == 0, "commit_next");
 
     dna_vset_snapshot_t *snap = NULL;
     CHECK(nodus_witness_vset_get(fx.w, B_HEIGHT + E_LEN, &snap, NULL) == 0,
           "snapshot(next) missing");
     CHECK(snap->epoch == B_HEIGHT + E_LEN, "snapshot keyed on next epoch");
-    CHECK(snap->active_count == DNAC_COMMITTEE_SIZE,
-          "default target is not DNAC_COMMITTEE_SIZE");
+    CHECK(DNAC_TARGET_ACTIVE_DEFAULT == 32, "default target is not 32");
+    CHECK(snap->active_count == 9,
+          "default target did not seat every one of the 9 candidates");
     CHECK(snap->selection_ruleset == DNA_VSET_RULESET_TOPN_V1, "ruleset");
 
-    /* Ranked by total stake DESC: 0x10 (bonus 9) first, 0x16 (bonus 3)
-     * last of the seven; 0x17/0x18 are cut. */
+    /* Ranked by total stake DESC: 0x10 (bonus 9) first, 0x18 (bonus 1)
+     * last of the nine. */
     for (uint16_t i = 0; i < snap->active_count; i++) {
         uint8_t want[DNAC_PUBKEY_SIZE];
         memset(want, (uint8_t)(0x10 + i), sizeof(want));
@@ -325,7 +394,8 @@ static int test_commit_next_conflict(void) {
                                     hash, B_HEIGHT) == 0, "pre-insert");
     free(blob);
 
-    /* commit_next would produce a 7-seat snapshot for the same epoch.
+    /* commit_next would produce a 9-seat snapshot (default target 32
+     * since P3-7) for the same epoch.
      * Two different validator sets claiming one epoch is a
      * validator_set_root divergence — fatal. */
     CHECK(nodus_witness_vset_commit_next(fx.w, B_HEIGHT) == -1,
@@ -397,6 +467,14 @@ static int test_flips(void) {
                  "total_delegated = 99000000000 WHERE status = %d",
                  (int)DNAC_VALIDATOR_ELIGIBLE);
         CHECK(exec_sql(fx.w, sql) == 0, "raise eligible stake");
+        /* P3-1: the raise must be in the frozen copy the selection reads */
+        CHECK(sync_frozen(fx.w) == 0, "sync frozen copy");
+        /* P3-7: the default target is 32 now, which would seat all nine
+         * and prove nothing about re-selection; pin the 7-seat target
+         * this case was written against, so 0x17/0x18 must win their
+         * seats on stake. */
+        CHECK(set_target_active(fx.w, DNAC_COMMITTEE_SIZE, 0) == 0,
+              "target 7");
     }
     {
         nodus_committee_member_t *m =
@@ -585,6 +663,9 @@ static int test_pending_and_extra_bond(void) {
                        /*external=*/900000000000ULL,   /* richest of all */
                        DNAC_VALIDATOR_ACTIVE);
         CHECK(nodus_validator_insert(fx.w, &v) == 0, "insert pending");
+        /* P3-1: frozen too, so its exclusion below is the TENURE gate's
+         * (live), not an absent copy row */
+        CHECK(sync_frozen(fx.w) == 0, "sync frozen copy");
     }
 
     nodus_committee_member_t *m =
@@ -616,6 +697,9 @@ static int test_pending_and_extra_bond(void) {
                  (unsigned long long)(DNAC_SELF_STAKE_AMOUNT + 50000000000ULL),
                  (int)DNAC_VALIDATOR_ACTIVE);
         CHECK(exec_sql(fx.w, sql) == 0, "extra bond");
+        /* P3-1: the selection ranks the FROZEN copy — freeze the new bond
+         * (the frozen self row is also what m[0].self_stake reports) */
+        CHECK(sync_frozen(fx.w) == 0, "sync frozen copy");
     }
     c = 0;
     CHECK(nodus_committee_compute_for_epoch(fx.w, B_HEIGHT, m,
@@ -682,6 +766,7 @@ static int test_insertion_order_independence(void) {
                            DNAC_VALIDATOR_ACTIVE);
             CHECK(nodus_validator_insert(fx.w, &v) == 0, "insert fwd");
         }
+        CHECK(sync_frozen(fx.w) == 0, "sync frozen fwd");       /* P3-1 */
         CHECK(nodus_witness_vset_build_for_epoch(fx.w, B_HEIGHT,
                                                  DNAC_COMMITTEE_SIZE, NULL,
                                                  &blob_fwd, &len_fwd,
@@ -700,6 +785,7 @@ static int test_insertion_order_independence(void) {
                            DNAC_VALIDATOR_ACTIVE);
             CHECK(nodus_validator_insert(fx.w, &v) == 0, "insert rev");
         }
+        CHECK(sync_frozen(fx.w) == 0, "sync frozen rev");       /* P3-1 */
         CHECK(nodus_witness_vset_build_for_epoch(fx.w, B_HEIGHT,
                                                  DNAC_COMMITTEE_SIZE, NULL,
                                                  &blob_rev, &len_rev,

@@ -516,13 +516,19 @@ int nodus_cmt_app_init_chain(void *vctx,
      * committed entry consumed at most once, "every request entry
      * matched" is multiset equality. */
     {
-        bool used[DNAC_COMMITTEE_SIZE];
+        /* tokenomics-v3 P3-7 (design D-10): the match table is sized by
+         * the version-3 active-set ceiling NODUS_V2_ACTIVE_SET_MAX (32),
+         * the same bound the snapshot writer, the resolver and the genesis
+         * config array (NODUS_V2_GEN_MAX_VALIDATORS) enforce — no longer
+         * by DNAC_COMMITTEE_SIZE (7), which is the genesis COUNT rule
+         * (P.1), not a set-size ceiling. */
+        bool used[NODUS_V2_ACTIVE_SET_MAX];
 
-        if ((size_t)snap->active_count > DNAC_COMMITTEE_SIZE) {
+        if ((size_t)snap->active_count > NODUS_V2_ACTIVE_SET_MAX) {
             QGP_LOG_ERROR(LOG_TAG, "InitChain: the committed snapshot holds "
-                          "%u validators, above the compiled committee size "
-                          "%u", (unsigned)snap->active_count,
-                          (unsigned)DNAC_COMMITTEE_SIZE);
+                          "%u validators, above the version-3 active-set "
+                          "ceiling %u", (unsigned)snap->active_count,
+                          (unsigned)NODUS_V2_ACTIVE_SET_MAX);
             goto done;
         }
         memset(used, 0, sizeof(used));

@@ -723,7 +723,8 @@ static int gen_plan_build(const nodus_v2_gen_config_t *cfg, gen_plan_t *p) {
 
     /* ── canonical validator order: pubkey bytes ASC ──────────────────
      * A strict total order (P.3 above proved the keys distinct).
-     * Insertion sort over an index array: N <= 30, no library
+     * Insertion sort over an index array: N <= NODUS_V2_GEN_MAX_VALIDATORS
+     * (32 since tokenomics-v3 P3-7), no library
      * comparator state, identical on every platform.
      *
      * This order fixes the ENCODING order and the INSERT order (hence
