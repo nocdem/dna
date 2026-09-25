@@ -394,6 +394,7 @@ should tick every interval on a healthy chain.
 |---|---|---|
 | `test_v2_grow_7_20.sh` | `-DDNAC_EPOCH_LENGTH=15` + `-DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15`, `STAGEF_V2_CANDIDATES=13` exported BEFORE bring-up (0 → skips). ~30 min. **Run standalone**: it leaves 13 extra nodes running, a permanent 20-node committee, every candidate leaf spent. | The committee grows 7 → 10 → 20 by governance. **Tokenomics-v3 P3 fix round (2026-09-24), written against the source and NOT re-run:** the V2 ceiling is 32, so the refused target is now 33 (was 31 > 30); and because the default target is now 32 (P3-7) — which alone would seat all 20 — the old single vote of 20 proved nothing about governance, so the script now casts TWO votes: 10 effective at 3E (below the 14 that are eligible there, so exactly 10 seats can only come from the vote — this is what "size decided by vote" rests on) and 20 effective at 4E (equal to what the default would seat: that boundary proves growth, not governance). Its arithmetic block also accounts for P3-1 "okuma B" (snapshot(e) is ranked from copy(e−2E); a bond not yet in that copy is not seated). **NOT converted to the Comet lane yet** — it still parses the CLI's `committed: height=` line (always 0 on this lane) and it is not in the runner; package W4-H decides convert-or-delete. Its FLAKY history (v0.19.48, a legacy view-boundary loss) belongs to the deleted lane. **R3 W4-C delta 4 (out-of-whitelist finding, NOT fixed here):** `nodus-cli.c`'s print this script greps for (`:248`, `:449`, `:469`, `grep -q '^committed: height='`) no longer exists — delta 4 reworded it to `"accepted: mempool CheckTx approved..."` because it was factually wrong on the Comet lane (see the README's own warning section above). This script is not in the runner and this file is outside delta 4's whitelist, so it was not touched; whoever runs or converts it next needs to update this grep too. |
 | `bench_tps_v2.sh` (in `stagef/`, not `tests/`) | Default build (`nodus-server` + `nodus-cli` from the same tree). `STAGEF_V2_PUMP_IDENTITIES=<K>` and `STAGEF_V2_PUMP_LEAVES=<N>` (per identity) exported BEFORE `stagef_up_v2.sh` — suggested for trial B: **K = 7, N = 150** (see "The TPS bench"); knobs `STAGEF_BENCH_WORKERS` (M, default 7 = one per node, max 7 — a node EVICTS an older session of the same identity, `SESSION_EVICT`, so two workers on one node kill each other's handshake; measured with M=8) and `STAGEF_BENCH_DURATION_S` (D, default 600). Optional: `ss` (iproute2) with `-i` byte counters for the bandwidth section (SKIPPED with a message otherwise; the bench still runs). **Run standalone** against its own fresh bring-up — it claims and churns the whole PUMP batch. rc 99 on a non-Comet cluster. | A **measurement, not a scenario**: sustained CORE SPEND TPS at today's unit budget, per-node TCP bandwidth during the load, and (nodus ≥ 0.19.76) each node's witness-port counters per direction / channel / message kind (NETSTATS). See "The TPS bench" below. |
+| `bench_tps_live.sh` (in `stagef/`, not `tests/`) | **Targets the LIVE 7-node devnet, not a localhost cluster.** Default build of this tree (the unit budget and the NETSTATS period are read from its headers; the live nodes and every client host's `nodus-cli` should be built from the same source). `ssh -o BatchMode=yes root@<node>` to all 7 nodes (each with `sqlite3`, `ss`, `journalctl`, `systemctl`, unit `nodus`, one `witness_*.db`); ssh to every remote client host in `BENCH_HOSTS`; the claimed test identities in `/home/nocdem/testkeys` (2026-09-25 devnet baseline genesis). Knobs `BENCH_HOSTS`, `BENCH_K`, `BENCH_COINS` (N, 150), `BENCH_WORKERS` (M, default K), `BENCH_DURATION_S` (D, 600), `BENCH_OUT`, `BENCH_CLIENT_IPS` — see "The live TPS bench". **Run by the operator / ORCHESTRATOR only**: it writes to the live chain. | A **measurement, not a scenario**: the same TPS / cap / CPU / bandwidth / NETSTATS report as `bench_tps_v2.sh`, over a real network, with the load from several client machines. See "The live TPS bench" below. |
 
 #### The TPS bench (`bench_tps_v2.sh`)
 
@@ -593,6 +594,171 @@ rules: a stall aborts the bench, 20 heights without inclusion counts the
 spend as DROPPED); refused and dropped spends are counted, never retried
 silently, and a worker fault aborts the whole bench with no partial
 result.
+
+#### The live TPS bench (`bench_tps_live.sh`)
+
+The live-devnet counterpart of `bench_tps_v2.sh`: the same worker loop,
+queries, output shapes and honesty rules, but the chain is the live
+7-node devnet reached over the network and the `nodus-cli` sessions run
+on several client machines. It is a MEASUREMENT, not a scenario — never
+add it to `genesis_protocol_v2.sh`. The script header has the full text
+of all four headings below.
+
+**What it measures.** M workers keep the live mempool fed for D seconds
+with `nodus-cli v2-envelope spend --amount all --count all --shard R/W`.
+Worker I spends pump identity `I mod K + 1` (the first K of the test
+identities in `BENCH_IDENTITIES`, default the 9 `test_*` key dirs of the
+2026-09-25 baseline genesis), with shard `I div K` of that identity's W
+workers, runs its CLI on client host `I mod H + 1`, and submits to,
+lists on and confirms on ONE node chosen so that no two workers of one
+identity share a node (a node evicts an older session of the same
+identity whatever the client IP: `nodus_auth.c:99-117` compares the
+fingerprint only — `SESSION_EVICT`). The worker LOOP runs on the
+controller; only the CLI call runs on the client host; the confirmation
+(the created `utxo_set` row per accepted intent id) is a read-only
+`sqlite3 -readonly` query to the worker's node over ssh. Before the
+load, a resumable PREPARATION gives every pump identity N spendable
+coins (`BENCH_COINS`, default 150) by halving splits with the existing
+CLI: per round, amount = (smallest coin − fee) / 2 and count =
+min(coins, N − coins, 100), `--to <own fp> --amount <amount> --count
+<count>`; the CLI picks each spend's inputs largest-first
+(`nodus-cli.c` `t6_spend_pick`), every coin covers amount + fee alone,
+and each spend returns two coins (amount + native change) — the coin
+count doubles per round, 8 rounds for N = 150, all K identities in
+parallel. A fixed `--amount` would not double: after one split the
+small output cannot cover amount + fee and the whole planned batch is
+refused before anything is sent. Identities already holding ≥ N coins
+are skipped. During the load one node's `v2_blocks` (`BENCH_REF_NODE`)
+is streamed over one ssh session (a read-only loop on the node polling
+about once a second, each new height stamped with the controller's
+clock on arrival), and every node streams its `nodus-server`
+`/proc/<pid>/stat` and `ss -tinpH` sockets about once a second. Output in
+`$BENCH_OUT` (default `/tmp/bench_tps_live.<UTC>`): `summary.txt`,
+`blocks.csv`, `worker_<I>.log` / `.stats`, `prep_<identity>.log`,
+`bandwidth_node<N>.csv`, `netstats.csv`, `nodes.txt`, `agreement.txt`,
+`cluster_status.txt` and the raw streams. The summary prints the
+parameters (hosts, K, N, M, D), the measured controller→node ssh round
+trip and node clock offsets, committed envelopes, window, TPS, blocks,
+mean / max / p50 envelopes per block, mean / max observed interval, the
+unit cap next to the measured max (with the CLIENTS / STRUCTURAL verdict
+of the local bench), per-node CPU%, per-node bandwidth by live port
+class, NETSTATS deltas, per-worker counts, and the closing agreement
+check over all nodes (7 on the live devnet): every node's tip, the
+minimum as a floor, then full `global_root` and `block_id` at that
+height on every node (`nodus-cli cluster-status` is
+printed after it, informational only — it shows current heights, read
+at different moments).
+
+**What it requires.** No compile flags beyond a default build of this
+tree (`NODUS_V2_GLOBAL_UNIT_BUDGET` from `nodus_witness_v2_apply.h`,
+`NODUS_CMT_NET_STATS_PERIOD_S` from `nodus_witness_cmt_net.h`, read at
+run time); the live nodes and the client hosts' CLIs should run binaries
+of the same source. Controller: bash ≥ 4.4 (checked), OpenSSH
+(ControlMaster), awk, sort, pgrep / pkill, a `nodus-cli` (`BENCH_CTRL_CLI`) for the preparation
+and `cluster-status`, the test key dirs (`BENCH_KEYS_SRC`, default
+`/home/nocdem/testkeys`). Nodes (`BENCH_NODES`, default the 7 live IPs;
+`ssh -o BatchMode=yes root@<ip>`): `sqlite3`, `ss` with `-i` byte
+counters, `journalctl`, `systemctl`, `getconf`, `nproc`, `awk`, the unit
+`nodus` running `nodus-server`, exactly one
+`/var/lib/nodus/data/witness_*.db` — all checked at start, refused with
+the reason. Client hosts (`BENCH_HOSTS`, space-separated
+`<host>:<nodus-cli path>:<key dir>`; `local` = this machine with key dir
+`-`; default `local:<tree>/nodus/build/nodus-cli:-`): BatchMode ssh from
+the controller, an executable `nodus-cli`, a writable key dir path. The
+chain: every pump identity's allocation CLAIMED (the bench never
+claims). Optional `BENCH_CLIENT_IPS` (the client hosts' public IPs, to
+separate the bench's client-port sockets as `in_client_bench`),
+`BENCH_FEE_RAW` (1 000 000, the CLI default). Limits: M ≤ 7 × K (one
+session per identity per node), W ≤ 100 (`--shard`).
+
+**What it leaves behind.** On the LIVE chain: the pump identities' coins
+split into N each and then churned (each spent coin replaced by one coin
+one fee smaller); every fee in the reward pool
+(`docs/plans/decisions/2026-09-22-nodus-tokenomics-v3-operator.md` §1);
+the chain many blocks further on. Nothing on any node is stopped,
+restarted or written — every node command is read-only (`sqlite3
+-readonly`, `journalctl`, `ss`, `/proc`, `systemctl show`); a WAL
+reader does update the read marks in the database's `-shm` index, as
+every SQLite reader does. On each remote client host: a copy of each
+test identity dir its workers use (all seven `nodus.*` files — a partial
+copy would let `nodus_identity_load` generate and write new KEM files),
+mode 0700 / 0600, NOT removed. On this machine: `$BENCH_OUT`, and an ssh
+control-socket dir `/tmp/btl.XXXXXX` removed at exit. On EVERY exit
+path (normal end, a fault, Ctrl-C / TERM — exit 130) the cleanup kills
+what the script started, and always runs to its end (its first act
+re-routes INT / TERM / HUP to a log line, so a second Ctrl-C cannot cut
+it short): each preparation job and each worker runs in
+its OWN process group, and the cleanup sends TERM, then KILL after 1 s,
+to the whole group — reaching the `nodus-cli` / ssh grandchild that a
+plain kill of the job's pid would orphan. `nodus-cli` does not stop on
+SIGINT during a spend (`nodus-cli.c:116-119` only clears a flag
+`cmd_v2_spend` never reads), so a Ctrl-C reaches only the script, whose
+trap kills the groups. Afterwards it runs `pgrep -af 'v2-envelope spend
+--keys <dir>/'` on the controller for every key dir it used and prints a
+`[warn]` for every survivor; if workers had started it also runs `pkill
+-f` with the same pattern on each remote client host and prints the
+hosts where that failed. The first failing preparation job stops the
+others the same way. A spend already submitted before the kill may still
+commit — a kill stops further submissions, it cannot recall one. The
+remote key copies are `chmod`ed 0700 / 0600 explicitly and the modes
+read back are printed. The remote read-only loops on the nodes end at
+their next write after their ssh session is gone, and stop by themselves
+after D + 1800 iterations.
+
+**How it can lie.** Real network latency and bandwidth between the
+nodes now, but the client hosts are the operator's machines, not the
+network's wallets — their links and CPUs shape the offered load. Block
+times are the controller's first sighting of one node's heights, ~1 s
+polling plus one-way ssh latency (the summary prints the measured round
+trip), not header time; one polling node. **Client pacing:** max per
+block below the unit cap means the clients were the bottleneck and the
+TPS is a floor (each round also pays a session over a real link and
+ssh-round-trip confirmation polls). The 100-row listing cap bounds
+in-flight coins to ≈ Σ min(100, N) over the identities with a worker
+(K = 9, N = 150: 900); the preparation reads coin counts from the DB
+directly and is not bounded by it. The cap is arithmetic at today's
+budget and weights. **The live DHT shares the nodes:** CPU% is the whole
+`nodus-server`; bandwidth `in/out_witness` (4004) is consensus only,
+`in/out_internode` (4002) is DHT replication (not consensus),
+`in_client` (4001) mixes real Connect users with the bench's own
+sessions — separated only when `BENCH_CLIENT_IPS` is set, otherwise the
+summary says it is not; UDP 4000 is never seen. Bandwidth windows are
+each node's own sampled span on its own clock. **NETSTATS come from
+journald** (`journalctl -u nodus --since @<edge − 2 periods − 10 s>
+--until @<edge>`, the newest complete snapshot as in the local bench):
+journald's receive time picks the slice, `t=` is the node's clock
+(offsets printed after removing the measured clock offset); a restart is
+detected by the unit's MainPID changing or a counter going down; the
+`@<epoch>` syntax is assumed to work on the nodes' journalctl — a node
+whose query fails is SKIPPED, never zeroed; NETSTATS count the witness
+port only, so the DHT does not pollute them. Stall and drop rules are
+the local bench's inline `stagef_cmt_wait_row` rules, with the stall
+measured in wall-clock seconds (180 s with the tip not moving) because a
+poll costs an ssh round trip. `tx_count` counts ANY submitter's
+envelopes on the live chain — the workers' own applied total is printed
+next to it. The preparation's blocks precede the window and are not
+counted. **An unreadable node is not a height:** a failed tip / row read
+is retried once a second, and a node with no valid answer for 180 s is
+declared UNREACHABLE — the worker or preparation fails with that status;
+it is never counted as a stall and never as DROPPED spends (the time a
+node was unreadable is kept off the stall clock, which counts readable
+time without progress only). **ssh
+session limit:** each node and client host is reached through ONE ssh
+ControlMaster connection, and sshd allows `MaxSessions` sessions per
+connection (default 10; the targets' real setting is not read). The
+bench refuses a placement whose concurrent sessions on one target (node:
+its workers + its sampler, + the block poller on the reference node, or
+its preparation jobs; client host: its workers) exceed
+`BENCH_MAX_SSH_SESSIONS` − 1 (default 9 — one kept free for the
+controller's own commands); a target configured lower refuses a session,
+ssh exits 255 and the worker fails loudly. Exit codes: 0 · 1 setup or
+worker fault · 2 divergence (two readable nodes differ at the floor
+height; always wins) · 3 incomplete: the readable nodes agree at the
+floor of THEIR tips, but at least one node (tip or row) could not be
+checked, or fewer than 2 nodes were readable — a divergence on an
+unchecked node is not excluded; the unchecked nodes are listed in
+`agreement.txt` · 129 hang-up (HUP, trapped so the cleanup still runs)
+· 130 interrupted (INT / TERM).
 
 #### Order matters on the Comet lane too (R3 W3, C2d)
 
