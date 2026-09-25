@@ -840,6 +840,93 @@ static int read_req_cmp(const nodus_rt_read_req_t *a,
     return 0;
 }
 
+/**
+ * CHECKTX-P1 — the adapter's DECISION without its MUTATION: the generic
+ * driver `nodus_witness_v2_effects_apply_ex` (nodus_witness_v2_adapter.c)
+ * step for step — validate, then per effect op lookup → probe → the ONE
+ * shipped precondition table (`nodus_adapter_precond_eval`) — stopping
+ * short of `ad->mutate` and of the test-only stop index. The probe
+ * coercion is the driver's: any probe answer other than OK is a
+ * node-local STORAGE fault, so a precondition status can only come from
+ * the shipped table. Used ONLY by the dry run; the apply path still calls
+ * the driver itself.
+ */
+static nodus_adapter_status_t effects_probe_only(
+        nodus_witness_t *w, const nodus_domain_runtime_t *rt,
+        const dna_effect_view_t *ev, uint16_t *fail_index_out) {
+    if (fail_index_out) *fail_index_out = 0;
+    if (!w) return NODUS_ADAPTER_ERR_ARG;
+    nodus_adapter_status_t st =
+        nodus_witness_v2_effects_validate(rt, ev, fail_index_out);
+    if (st != NODUS_ADAPTER_OK) return st;
+
+    const nodus_domain_adapter_t *ad = rt->adapter;
+    for (uint16_t i = 0; i < ev->effect_count; i++) {
+        const dna_effect_hdr_t *h = &ev->eff[i];
+        const nodus_adapter_op_t *op = nodus_adapter_op_lookup(ad, h->op_id);
+        if (!op) {
+            if (fail_index_out) *fail_index_out = i;
+            return NODUS_ADAPTER_ERR_UNKNOWN_OP;
+        }
+        nodus_adapter_row_facts_t facts;
+        memset(&facts, 0, sizeof(facts));
+        st = ad->probe(ad, w, rt->domain_id, op, ev->buf + ev->key_off[i],
+                       h->key_len, &facts);
+        if (st != NODUS_ADAPTER_OK) {
+            if (fail_index_out) *fail_index_out = i;
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        }
+        st = nodus_adapter_precond_eval(h->effect_kind, h->precond_tag,
+                                        h->expected_version,
+                                        h->expected_vhash, &facts);
+        if (st != NODUS_ADAPTER_OK) {
+            if (fail_index_out) *fail_index_out = i;
+            return st;
+        }
+    }
+    return NODUS_ADAPTER_OK;
+}
+
+/** CHECKTX-P1 — is this effect a ROW-IDENTITY claim (the apply.h
+ *  `nodus_v2_dry_run_row_t` rule)? A DELETE (any precondition) or a
+ *  PRE_ABSENT CREATE. Round 3: PRE_EXISTS_VHASH SETs are NOT claims —
+ *  in a block each item re-reads the row after the earlier items'
+ *  effects and derives its expected hash from that fresh read, so two
+ *  such SETs of one row both apply. */
+static int dry_run_row_claim(const dna_effect_hdr_t *h) {
+    return h->effect_kind == DNA_EFFECT_DELETE ||
+           h->precond_tag == DNA_EFFECT_PRE_ABSENT;
+}
+
+/** CHECKTX-P1 — append every row-identity effect of one decoded leg
+ *  result to the dry run's row list (heap, grown per leg).
+ *  @return 0 / -1 alloc. */
+static int dry_run_note_rows(nodus_v2_env_dry_run_t *dry,
+                             uint32_t domain_id,
+                             const dna_effect_view_t *ev) {
+    size_t add = 0;
+    for (uint16_t i = 0; i < ev->effect_count; i++)
+        if (dry_run_row_claim(&ev->eff[i])) add++;
+    if (add == 0) return 0;
+    nodus_v2_dry_run_row_t *grown =
+        realloc(dry->rows, (dry->n_rows + add) * sizeof(*grown));
+    if (!grown) return -1;
+    dry->rows = grown;
+    for (uint16_t i = 0; i < ev->effect_count; i++) {
+        const dna_effect_hdr_t *h = &ev->eff[i];
+        nodus_v2_dry_run_row_t *r;
+        if (!dry_run_row_claim(h)) continue;
+        if (h->key_len > DNA_EFFECT_MAX_KEY_LEN) return -1;  /* codec cap */
+        r = &dry->rows[dry->n_rows++];
+        memset(r, 0, sizeof(*r));
+        r->domain_id = domain_id;
+        r->op_id     = h->op_id;
+        r->key_len   = h->key_len;
+        memcpy(r->key, ev->buf + ev->key_off[i], h->key_len);
+    }
+    return 0;
+}
+
 /* Fires a native-auth-season per-leg fault point for THIS envelope. */
 #define ENV_FAIL_POINT(pt)                                              \
     do {                                                                \
@@ -869,6 +956,15 @@ static int read_req_cmp(const nodus_rt_read_req_t *a,
  * not overwrite what it is handed — the inner site always knows more
  * than "envelope N failed".
  *
+ * `dry` (CHECKTX-P1): NULL on the apply path. Non-NULL is the per-item
+ * DRY RUN (nodus_witness_v2_env_dry_run): every step below runs
+ * unchanged EXCEPT the adapter application, which is replaced by
+ * `effects_probe_only` (validate → probe → the ONE precondition table,
+ * no mutate), and every row-identity effect of the decoded result
+ * (every DELETE and every PRE_ABSENT CREATE — `dry_run_row_claim`) is
+ * recorded into `dry->rows`. The apply path's behaviour is byte-identical:
+ * with `dry == NULL` the only new code is the branch that selects it.
+ *
  * @return 0 / -1 verdict / -2 node fault. On a verdict the caller rolls
  * the item's SAVEPOINT back (item code EXEC); on a fault it aborts the
  * whole block — there is no partial-envelope outcome.
@@ -881,6 +977,7 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
                         const dna_env_preflight_t *pf, dna_meter_t *m,
                         const nodus_rt_auth_verdict_t *auths,
                         nodus_rt_read_res_t *reads, uint8_t *resbuf,
+                        nodus_v2_env_dry_run_t *dry,
                         char *reason, size_t reason_size) {
     /* RESERVED → ACTIVE. The reservation covered the fixed work by
      * construction, so any failure here is an accounting invariant
@@ -1132,9 +1229,22 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
             blk->fail_env_index == (uint32_t)env_index &&
             blk->fail_effect_index < ev.effect_count)
             stop_after = blk->fail_effect_index;
-        nodus_adapter_status_t ast =
-            nodus_witness_v2_effects_apply_ex(w, rt, &ev, &fidx,
-                                              stop_after);
+        nodus_adapter_status_t ast;
+        if (dry) {
+            /* CHECKTX-P1 dry run: the same decision, no mutation; the
+             * row-identity rows are the mempool's conflict keys. */
+            if (dry_run_note_rows(dry, d->domain_id, &ev) != 0) {
+                V2AP_ENV_FAULT("env %u leg %u domain %u: allocation of the "
+                               "dry run's row list failed",
+                               (unsigned)env_index, (unsigned)l,
+                               (unsigned)d->domain_id);
+                return -2;
+            }
+            ast = effects_probe_only(w, rt, &ev, &fidx);
+        } else {
+            ast = nodus_witness_v2_effects_apply_ex(w, rt, &ev, &fidx,
+                                                    stop_after);
+        }
         if (ast == NODUS_ADAPTER_ERR_STORAGE_FAULT ||
             ast == NODUS_ADAPTER_ERR_ARG) {
             V2AP_ENV_FAULT("env %u leg %u domain %u: storage/arg fault "
@@ -1338,13 +1448,127 @@ static int committee_snapshot_for_height(nodus_witness_t *w, uint64_t height,
 }
 
 /**
+ * THE ITEM'S REPLAY GUARD — the committed intent index, then the
+ * committed wire index (the SQL the item loop has always run; CheckTx's
+ * admission lane runs the intent half textually, nodus_witness_verify.c
+ * "Committed-intent replay"). FACTORED OUT of the Comet item loop with
+ * the statements and fault texts unchanged (CHECKTX-P1) so the dry run
+ * asks the SAME question.
+ *
+ * @param item  the item index, for the fault text only.
+ * @return 0 with `*hit` set (1 = replay); -2 a node-local fault, reason
+ *         written into (reason, reason_size).
+ */
+static int env_replay_guard(nodus_witness_t *w, const dna_env_preflight_t *p,
+                            size_t item, int *hit,
+                            char *reason, size_t reason_size)
+{
+    static const char *const guard_sql[2] = {
+        "SELECT 1 FROM v2_intent_index WHERE intent_id = ?1",
+        "SELECT 1 FROM v2_tx_index WHERE tx_id = ?1"
+    };
+    const uint8_t *guard_id[2] = { p->intent_id, p->wire_id };
+    int g;
+
+    *hit = 0;
+    for (g = 0; g < 2 && !*hit; g++) {
+        sqlite3_stmt *st = NULL;
+        int rc;
+
+        if (sqlite3_prepare_v2(w->db, guard_sql[g], -1, &st, NULL)
+            != SQLITE_OK) {
+            V2AP_ENV_FAULT("cometbft item %llu: the replay guard could not "
+                           "be prepared on this node",
+                           (unsigned long long)item);
+            return -2;
+        }
+        sqlite3_bind_blob(st, 1, guard_id[g], 64, SQLITE_TRANSIENT);
+        rc = sqlite3_step(st);
+        sqlite3_finalize(st);
+        if (rc == SQLITE_ROW) {
+            *hit = 1;
+        } else if (rc != SQLITE_DONE) {
+            V2AP_ENV_FAULT("cometbft item %llu: the replay guard failed to "
+                           "step on this node (sqlite rc %d)",
+                           (unsigned long long)item, rc);
+            return -2;
+        }
+    }
+    return 0;
+}
+
+/**
+ * THE ITEM'S PER-LEG ADMISSION — the resolved runtime exists and carries
+ * exec + auth hooks, the leg is an INVOKE, the committed ruleset OWNS the
+ * runtime_op, the auth_kind is on the runtime's allowlist, and the
+ * domain's committed per-block quota has room. FACTORED OUT of the Comet
+ * item loop with the predicate, the order and the classes unchanged
+ * (CHECKTX-P1) so the dry run asks the SAME question.
+ *
+ * @param n_envs  the block's envelope count (1 for the dry run's
+ *                one-item block) — the bound of the proven-unreachable
+ *                n_tx FAULT below.
+ * @param item    the item index, for the fault text only.
+ * @return 0 admitted; -1 refused with `*code` set (ADMISSION or
+ *         CAPACITY); -2 the one-leg-per-domain invariant broke on this
+ *         node, reason written into (reason, reason_size).
+ */
+static int env_admit_legs(const dna_env_view_t *v, dom_ctx_t *doms,
+                          size_t n_dom, uint64_t n_envs, size_t item,
+                          uint32_t *code, char *reason, size_t reason_size)
+{
+    uint16_t l;
+
+    for (l = 0; l < v->leg_count; l++) {
+        dom_ctx_t *d = dom_for(doms, n_dom, v->leg[l].domain_id);
+        uint8_t ak = v->leg[l].auth_kind;
+
+        if (!d || !d->rt || !d->rt->exec || !d->rt->auth ||
+            v->leg[l].access_mode != DNA_ENV_ACCESS_INVOKE ||
+            !rt_owns_runtime_op(d->rt, v->leg[l].runtime_op) ||
+            ak >= 32 ||
+            (d->rt->allowed_auth_kinds & NODUS_RT_AUTHKIND_BIT(ak)) == 0) {
+            *code = NODUS_V2_TX_ERR_ADMISSION;
+            return -1;
+        }
+        /* R3 W4 package C — PROVEN, not policy, and split from the quota
+         * check below (they used to share one `||` and one CAPACITY
+         * verdict). A domain cannot appear twice in one envelope's leg
+         * list (env_wire.c:364-365 decode / :276 encode both refuse a
+         * domain_id that is not strictly ascending), so this domain's
+         * `n_tx` — incremented once per LEG naming it — can never reach
+         * the block's own `n_envs`. Reaching this branch means that
+         * invariant broke on THIS node: a FAULT, never the CAPACITY
+         * verdict the quota half below still is. */
+        if (d->n_tx >= n_envs) {
+            V2AP_ENV_FAULT("cometbft item %llu leg %u: domain %u's n_tx "
+                           "reached the block's own n_envs (%llu) - the "
+                           "one-leg-per-domain-per-envelope invariant "
+                           "(env_wire.c:364-365) broke on this node",
+                           (unsigned long long)item, (unsigned)l,
+                           (unsigned)d->domain_id,
+                           (unsigned long long)n_envs);
+            return -2;
+        }
+        /* the committed manifest's own per-domain quota — CAPACITY,
+         * because it is about what is LEFT, not about the bytes */
+        if (d->man.quota_tx_per_block != 0 &&
+            d->n_tx + 1 > (uint32_t)d->man.quota_tx_per_block) {
+            *code = NODUS_V2_TX_ERR_CAPACITY;
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/**
  * THE PER-ENVELOPE AUTHORIZATION STAGE: every leg's authorization
  * COMMITMENT turned into a VERDICT by the resolved runtime's own `auth`
  * hook, against the ENGINE-DERIVED leg auth digest.
  *
  * This is the ONE implementation. The cometbft item loop calls it inside
- * the item's SAVEPOINT, and `nodus_witness_v2_env_authorize` calls it
- * for the mempool — because NOTHING ELSE in the tree verifies an
+ * the item's SAVEPOINT, and `nodus_witness_v2_env_dry_run` calls it for
+ * the mempool (CheckTx) — because NOTHING ELSE in the tree verifies an
  * envelope's signatures. `dna_env_preflight` says so in its own honest
  * label (env_preflight.h:57-63: it decides nothing about "whether any
  * authorization is VALID"), and the admission lane
@@ -1361,6 +1585,12 @@ static int committee_snapshot_for_height(nodus_witness_t *w, uint64_t height,
  * array the exec context later reads); a caller that only wants the
  * yes/no may point it at scratch.
  *
+ * `reuse` / `reused_out` (CHECKTX-P1, both NULL on the apply path): a
+ * caller-held verdict for an auth_kind-1 leg whose digest equals the one
+ * derived here is taken instead of re-running the hook — the recheck
+ * cache's light path. auth_kind 2 never takes this branch.
+ * `reused_out[l]` (DNA_ENV_MAX_LEGS slots) receives 1 for a reused leg.
+ *
  * @return 0 every leg authorized; -1 a leg REFUSED (deterministic — the
  *         same bytes give the same answer on every node); -2 a node-local
  *         backend failure. The reason goes into (reason, reason_size).
@@ -1371,6 +1601,8 @@ static int env_authorize_legs(nodus_witness_t *w,
                               const uint8_t chain_id[DNA_CHAIN_ID_LEN],
                               uint64_t height, uint64_t epoch,
                               const nodus_rt_committee_t *cm,
+                              const nodus_v2_auth_reuse_t *reuse,
+                              uint8_t *reused_out,
                               nodus_rt_auth_verdict_t *out_verdicts,
                               char *reason, size_t reason_size)
 {
@@ -1389,6 +1621,21 @@ static int env_authorize_legs(nodus_witness_t *w,
                            "engine invariant broken on this node",
                            (unsigned)v->leg[l].domain_id, (unsigned)l);
             return -2;
+        }
+        if (reused_out) {
+            reused_out[l] = 0;
+        }
+        if (reuse && l < reuse->leg_count && reuse->present &&
+            reuse->digest && reuse->verdict && reuse->present[l] &&
+            v->leg[l].auth_kind == NODUS_RT_AUTHKIND_DSA87_MULTI_V1 &&
+            memcmp(reuse->digest[l], p->auth_digest[l], 64) == 0 &&
+            reuse->verdict[l].n_signers >= 1 &&
+            reuse->verdict[l].n_signers <= NODUS_RT_AUTH_MAX_SIGNERS) {
+            out_verdicts[l] = reuse->verdict[l];
+            if (reused_out) {
+                reused_out[l] = 1;
+            }
+            continue;
         }
         memset(&actx, 0, sizeof(actx));
         actx.chain_id            = chain_id;
@@ -1423,33 +1670,62 @@ static int env_authorize_legs(nodus_witness_t *w,
     return 0;
 }
 
-int nodus_witness_v2_env_authorize(nodus_witness_t *w, const uint8_t *bytes,
-                                   size_t len, char *reason,
-                                   size_t reason_size)
-{
-    nodus_witness_v2_block_ctx_t *bctx = NULL;
-    dom_ctx_t                    *doms = NULL;
-    dna_env_preflight_t          *pf = NULL;
-    nodus_rt_auth_verdict_t      *verdicts = NULL;
-    uint8_t                      *cm_pubkeys = NULL;
-    uint8_t                     (*cm_fps)[64] = NULL;
-    nodus_rt_committee_t          cmview;
-    dna_env_leg_ctx_t             lctx[DNA_ENV_MAX_LEGS];
-    dna_env_view_t                probe;
+/**
+ * ONE ENVELOPE'S JUDGEMENT CONTEXT at the candidate height — the
+ * working set of the mempool-side entry `nodus_witness_v2_env_dry_run`:
+ * the candidate height, the chain id, the domain snapshot, the
+ * block-start context, the item's own preflight and the governing
+ * committee. CHECKTX-P1 lifted it, statement for statement, out of the
+ * former signature-only entry `nodus_witness_v2_env_authorize` (deleted
+ * in round 2 — the dry run subsumes it).
+ */
+typedef struct {
+    uint64_t                      height;
     uint8_t                       chain_id[DNA_CHAIN_ID_LEN];
-    uint64_t                      tip = 0, height;
-    size_t                        n_dom = 0;
-    uint16_t                      l;
-    int                           ret = -2;
+    nodus_witness_v2_block_ctx_t *bctx;
+    dom_ctx_t                    *doms;
+    size_t                        n_dom;
+    dna_env_preflight_t          *pf;
+    uint8_t                      *cm_pubkeys;
+    uint8_t                     (*cm_fps)[64];
+    nodus_rt_committee_t          cmview;
+} env_item_setup_t;
 
-    if (reason && reason_size) {
-        reason[0] = '\0';
-    }
-    if (!w || !w->db || !bytes || len == 0) {
-        return -2;
-    }
-    memset(&cmview, 0, sizeof(cmview));
+static void env_item_setup_free(env_item_setup_t *s)
+{
+    free(s->cm_pubkeys);
+    free(s->cm_fps);
+    free(s->pf);
+    doms_free(s->doms);
+    free(s->bctx);
+    memset(s, 0, sizeof(*s));
+}
+
+/**
+ * Build `s` for one envelope. The preflight classes follow the item
+ * loop's: a decode failure or a leg outside the committed context table
+ * is DECODE / CONTEXT; the preflight's own ERR_CTX_* is CONTEXT, every
+ * other preflight refusal DECODE, and ERR_HASH is this node's hash
+ * backend — a FAULT, never a verdict (env_preflight.h's rule, the item
+ * loop's own routing).
+ *
+ * @return 0 built; -1 refused with `*code` set; -2 node-local fault.
+ *         The reason goes into (reason, reason_size). `s` is always safe
+ *         to pass to env_item_setup_free.
+ */
+static int env_item_setup(nodus_witness_t *w, const uint8_t *bytes,
+                          size_t len, env_item_setup_t *s, uint32_t *code,
+                          char *reason, size_t reason_size)
+{
+    dna_env_leg_ctx_t          lctx[DNA_ENV_MAX_LEGS];
+    dna_env_view_t             probe;
+    dna_env_preflight_status_t pfst;
+    uint64_t                   tip = 0;
+    uint16_t                   l;
+
+    memset(s, 0, sizeof(*s));
     memset(&probe, 0, sizeof(probe));
+    *code = NODUS_V2_TX_OK;
 
     /* The CANDIDATE height, exactly as the admission lane picks it
      * (nodus_witness_verify.c:735-741): an envelope is judged at the
@@ -1463,43 +1739,42 @@ int nodus_witness_v2_env_authorize(nodus_witness_t *w, const uint8_t *bytes,
                        "node");
         return -2;
     }
-    height = tip + 1;
-    if (nodus_witness_v2_chain_id(w, chain_id) != 0) {
+    s->height = tip + 1;
+    if (nodus_witness_v2_chain_id(w, s->chain_id) != 0) {
         V2AP_ENV_FAULT("%s", "auth: the chain id is underivable on this "
                        "node");
         return -2;
     }
-    bctx     = calloc(1, sizeof(*bctx));
-    doms     = calloc(MAX_DOMS, sizeof(*doms));
-    pf       = calloc(1, sizeof(*pf));
-    verdicts = calloc(DNA_ENV_MAX_LEGS, sizeof(*verdicts));
-    if (!bctx || !doms || !pf || !verdicts) {
+    s->bctx = calloc(1, sizeof(*s->bctx));
+    s->doms = calloc(MAX_DOMS, sizeof(*s->doms));
+    s->pf   = calloc(1, sizeof(*s->pf));
+    if (!s->bctx || !s->doms || !s->pf) {
         V2AP_ENV_FAULT("%s", "auth: the working set could not be allocated");
-        goto done;
+        return -2;
     }
-    if (doms_load(w, doms, &n_dom, /*strict_active=*/1) != 0) {
+    if (doms_load(w, s->doms, &s->n_dom, /*strict_active=*/1) != 0) {
         V2AP_ENV_FAULT("%s", "auth: the domain registry / heads / runtime "
                        "tuples are unreadable on this node");
-        goto done;
+        return -2;
     }
-    if (block_ctx_from_doms(doms, n_dom, bctx) != 0) {
+    if (block_ctx_from_doms(s->doms, s->n_dom, s->bctx) != 0) {
         V2AP_ENV_FAULT("%s", "auth: the block-start context could not be "
                        "built on this node");
-        goto done;
+        return -2;
     }
     /* the positional ruleset table, as the item loop builds it */
     if (dna_env_decode(bytes, len, &probe) != 0) {
         V2AP_ENV_VERDICT("%s", "auth: the envelope does not decode");
-        ret = -1;
-        goto done;
+        *code = NODUS_V2_TX_ERR_DECODE;
+        return -1;
     }
     for (l = 0; l < probe.leg_count; l++) {
         size_t k;
         int    found = 0;
 
-        for (k = 0; k < bctx->n_rulesets; k++) {
-            if (bctx->rulesets[k].domain_id == probe.leg[l].domain_id) {
-                lctx[l] = bctx->rulesets[k];
+        for (k = 0; k < s->bctx->n_rulesets; k++) {
+            if (s->bctx->rulesets[k].domain_id == probe.leg[l].domain_id) {
+                lctx[l] = s->bctx->rulesets[k];
                 found = 1;
                 break;
             }
@@ -1508,40 +1783,197 @@ int nodus_witness_v2_env_authorize(nodus_witness_t *w, const uint8_t *bytes,
             V2AP_ENV_VERDICT("auth: leg %u names domain %u, which has no "
                              "entry in the committed context table",
                              (unsigned)l, (unsigned)probe.leg[l].domain_id);
-            ret = -1;
-            goto done;
+            *code = NODUS_V2_TX_ERR_CONTEXT;
+            return -1;
         }
     }
-    if (dna_env_preflight(bytes, len, chain_id, height, lctx,
-                          probe.leg_count, pf) != DNA_ENV_PF_OK) {
+    pfst = dna_env_preflight(bytes, len, s->chain_id, s->height, lctx,
+                             probe.leg_count, s->pf);
+    if (pfst != DNA_ENV_PF_OK) {
+        if (pfst == DNA_ENV_PF_ERR_HASH) {
+            V2AP_ENV_FAULT("%s", "auth: the preflight's hash backend failed "
+                           "on this node");
+            return -2;
+        }
         V2AP_ENV_VERDICT("%s", "auth: the envelope failed preflight");
-        ret = -1;
-        goto done;
+        *code = (pfst == DNA_ENV_PF_ERR_CTX_COUNT ||
+                 pfst == DNA_ENV_PF_ERR_CTX_DOMAIN ||
+                 pfst == DNA_ENV_PF_ERR_CTX_VERSION)
+                    ? NODUS_V2_TX_ERR_CONTEXT
+                    : NODUS_V2_TX_ERR_DECODE;
+        return -1;
     }
     /* the governing committee for the SAME candidate height the item
      * loop would use */
     {
-        int crc = committee_snapshot_for_height(w, height, &cmview,
-                                                &cm_pubkeys, &cm_fps,
+        int crc = committee_snapshot_for_height(w, s->height, &s->cmview,
+                                                &s->cm_pubkeys, &s->cm_fps,
                                                 reason, reason_size);
         if (crc != 0) {
             if (crc == 1) {
                 V2AP_ENV_FAULT("%s", "auth: the governing committee height "
                                "would be below genesis");
             }
-            goto done;                   /* the helper wrote the reason  */
+            return -2;                   /* the helper wrote the reason  */
         }
     }
-    ret = env_authorize_legs(w, pf, doms, n_dom, chain_id, height,
-                             nodus_v2_epoch_for_height(height), &cmview,
-                             verdicts, reason, reason_size);
+    return 0;
+}
+
+void nodus_witness_v2_env_dry_run_free(nodus_v2_env_dry_run_t *out)
+{
+    if (!out) {
+        return;
+    }
+    free(out->rows);
+    out->rows   = NULL;
+    out->n_rows = 0;
+}
+
+/* Contract: nodus_witness_v2_apply.h. The stage ORDER is the Comet item
+ * loop's (v2_apply_block_body, "4-6b"): preflight → replay → admission →
+ * reserve → authorization → execute. Every stage is the item loop's own
+ * helper; the one-item "block" the exec body is handed carries only the
+ * candidate height and its epoch (no fault injection, no claims). */
+int nodus_witness_v2_env_dry_run(nodus_witness_t *w, const uint8_t *bytes,
+                                 size_t len,
+                                 const nodus_v2_auth_reuse_t *reuse,
+                                 nodus_v2_env_dry_run_t *out,
+                                 char *reason, size_t reason_size)
+{
+    env_item_setup_t     s;
+    nodus_v2_block_t    *blk    = NULL;
+    dna_meter_t         *meter  = NULL;
+    nodus_rt_read_res_t *reads  = NULL;
+    uint8_t             *resbuf = NULL;
+    const dna_env_view_t *v;
+    uint32_t             code = NODUS_V2_TX_OK;
+    uint16_t             l;
+    int                  ret;
+
+    if (reason && reason_size) {
+        reason[0] = '\0';
+    }
+    if (!out) {
+        return -2;
+    }
+    memset(out, 0, sizeof(*out));
+    if (!w || !w->db || !bytes || len == 0) {
+        return -2;
+    }
+
+    /* ── preflight at tip + 1 (and the committee the auth stage reads) */
+    ret = env_item_setup(w, bytes, len, &s, &code, reason, reason_size);
+    if (ret != 0) {
+        goto done;
+    }
+    v = &s.pf->view;
+    memcpy(out->wire_id, s.pf->wire_id, 64);
+    memcpy(out->intent_id, s.pf->intent_id, 64);
+    out->leg_count = v->leg_count;
+    for (l = 0; l < v->leg_count; l++) {
+        out->auth_kind[l] = v->leg[l].auth_kind;
+        memcpy(out->leg_digest[l], s.pf->auth_digest[l], 64);
+    }
+
+    /* ── replay: the committed intent / wire index ─────────────────── */
+    {
+        int hit = 0;
+
+        ret = env_replay_guard(w, s.pf, 0, &hit, reason, reason_size);
+        if (ret != 0) {
+            goto done;
+        }
+        if (hit) {
+            V2AP_ENV_VERDICT("%s", "dry run: the intent or the wire id is "
+                             "already committed");
+            code = NODUS_V2_TX_ERR_REPLAY;
+            ret = -1;
+            goto done;
+        }
+    }
+
+    /* ── admission, per leg — a one-item block (n_envs 1) ──────────── */
+    ret = env_admit_legs(v, s.doms, s.n_dom, 1, 0, &code, reason,
+                         reason_size);
+    if (ret == -1) {
+        V2AP_ENV_VERDICT("dry run: per-leg admission refused the item "
+                         "(code %u)", (unsigned)code);
+    }
+    if (ret != 0) {
+        goto done;
+    }
+
+    /* ── reserve against a FRESH block budget (the block-start context
+     * this call built is untouched by anything else) ────────────────── */
+    meter = calloc(1, sizeof(*meter));
+    if (!meter) {
+        V2AP_ENV_FAULT("%s", "dry run: the meter could not be allocated");
+        ret = -2;
+        goto done;
+    }
+    {
+        dna_meter_status_t mst = dna_meter_reserve(meter, s.bctx->policy, v,
+                                                   &s.bctx->budget);
+
+        if (mst == DNA_METER_ERR_FAULT) {
+            V2AP_ENV_FAULT("%s", "dry run: the meter reported an accounting "
+                           "fault on this node");
+            ret = -2;
+            goto done;
+        }
+        if (mst != DNA_METER_OK) {
+            V2AP_ENV_VERDICT("dry run: the reservation against a fresh "
+                             "block budget refused the item (meter status "
+                             "%d)", (int)mst);
+            code = NODUS_V2_TX_ERR_CAPACITY;
+            ret = -1;
+            goto done;
+        }
+    }
+
+    /* ── authorization: the ONE stage (reuse only for kind 1) ──────── */
+    ret = env_authorize_legs(w, s.pf, s.doms, s.n_dom, s.chain_id, s.height,
+                             nodus_v2_epoch_for_height(s.height), &s.cmview,
+                             reuse, out->verdict_reused, out->verdict,
+                             reason, reason_size);
+    if (ret == -1) {
+        code = NODUS_V2_TX_ERR_AUTH;
+    }
+    if (ret != 0) {
+        goto done;
+    }
+
+    /* ── execute: the per-envelope body, probe-only ─────────────────── */
+    blk    = calloc(1, sizeof(*blk));
+    reads  = calloc(NODUS_RT_MAX_READS, sizeof(*reads));
+    resbuf = calloc(1, DNA_EFFECT_MAX_TOTAL_LEN);
+    if (!blk || !reads || !resbuf) {
+        V2AP_ENV_FAULT("%s", "dry run: the execution working set could not "
+                       "be allocated");
+        ret = -2;
+        goto done;
+    }
+    blk->global_height = s.height;
+    blk->epoch         = nodus_v2_epoch_for_height(s.height);
+    blk->fail_at       = V2AP_FAIL_NONE;
+    ret = exec_one_env(w, blk, 0, s.chain_id, blk->epoch, s.doms, s.n_dom,
+                       s.pf, meter, out->verdict, reads, resbuf, out,
+                       reason, reason_size);
+    if (ret == -1) {
+        code = NODUS_V2_TX_ERR_EXEC;
+    }
+
 done:
-    free(cm_pubkeys);
-    free(cm_fps);
-    free(verdicts);
-    free(pf);
-    doms_free(doms);
-    free(bctx);
+    if (meter) {
+        meters_abort_all(meter, 1);      /* a refused item's reservation */
+    }
+    out->code = (ret == -1) ? code : NODUS_V2_TX_OK;
+    free(resbuf);
+    free(reads);
+    free(blk);
+    free(meter);
+    env_item_setup_free(&s);
     return ret;
 }
 
@@ -1632,6 +2064,34 @@ static int claim_prescan_one(nodus_witness_t *w, const dna_claim_t *c,
     }
     *out_target = m.target_domain_id;
     return 0;
+}
+
+/* Contract: nodus_witness_v2_apply.h. The claim lane's own derivation,
+ * `claim_prescan_one`, over the claim's decoded bytes. */
+int nodus_witness_v2_claim_nullifier(nodus_witness_t *w, const uint8_t *bytes,
+                                     size_t len, uint8_t out_nul[64])
+{
+    dna_claim_t *c;
+    char         reason[NODUS_V2_APPLY_REASON_MAX];
+    uint32_t     target = 0;
+    int          rc;
+
+    if (!w || !w->db || !bytes || len == 0 || !out_nul) {
+        return -2;
+    }
+    c = calloc(1, sizeof(*c));                       /* large — heap     */
+    if (!c) {
+        return -2;
+    }
+    if (dna_claim_decode(bytes, len, c) != 0) {
+        free(c);
+        return -1;
+    }
+    reason[0] = '\0';
+    rc = claim_prescan_one(w, c, 0, out_nul, &target, reason,
+                           sizeof(reason));
+    free(c);
+    return rc;
 }
 
 /**
@@ -2436,41 +2896,13 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
              * applied envelope is refused REPLAY here — no state effect —
              * while a copy of a REFUSED one is judged afresh. */
             {
-                static const char *const guard_sql[2] = {
-                    "SELECT 1 FROM v2_intent_index WHERE intent_id = ?1",
-                    "SELECT 1 FROM v2_tx_index WHERE tx_id = ?1"
-                };
-                const uint8_t *guard_id[2] = { pf[i].intent_id,
-                                               pf[i].wire_id };
-                int g, hit = 0;
+                int hit = 0;
 
-                for (g = 0; g < 2 && !hit; g++) {
-                    sqlite3_stmt *st = NULL;
-                    int rc;
-
-                    if (sqlite3_prepare_v2(w->db, guard_sql[g], -1, &st,
-                                           NULL) != SQLITE_OK) {
-                        V2AP_FAULT("cometbft item %llu: the replay guard "
-                                   "could not be prepared on this node",
-                                   (unsigned long long)i);
-                        (void)nodus_witness_db_rollback_to_savepoint(w, sp);
-                        (void)cmt_savepoint_release(w, sp);
-                        goto fail_fault;
-                    }
-                    sqlite3_bind_blob(st, 1, guard_id[g], 64,
-                                      SQLITE_TRANSIENT);
-                    rc = sqlite3_step(st);
-                    sqlite3_finalize(st);
-                    if (rc == SQLITE_ROW) {
-                        hit = 1;
-                    } else if (rc != SQLITE_DONE) {
-                        V2AP_FAULT("cometbft item %llu: the replay guard "
-                                   "failed to step on this node (sqlite "
-                                   "rc %d)", (unsigned long long)i, rc);
-                        (void)nodus_witness_db_rollback_to_savepoint(w, sp);
-                        (void)cmt_savepoint_release(w, sp);
-                        goto fail_fault;
-                    }
+                if (env_replay_guard(w, &pf[i], i, &hit, blk->out_reason,
+                                     sizeof blk->out_reason) != 0) {
+                    (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                    (void)cmt_savepoint_release(w, sp);
+                    goto fail_fault;   /* the helper owns the reason     */
                 }
                 if (hit) {
                     code = NODUS_V2_TX_ERR_REPLAY;
@@ -2478,49 +2910,19 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
                 }
             }
 
-            /* ── ADMISSION, per leg ─────────────────────────────────── */
-            for (l = 0; l < v->leg_count; l++) {
-                dom_ctx_t *d = dom_for(doms, n_dom, v->leg[l].domain_id);
-                uint8_t ak = v->leg[l].auth_kind;
+            /* ── ADMISSION, per leg (env_admit_legs — the ONE predicate,
+             * shared with the CheckTx dry run) ──────────────────────── */
+            {
+                int arc = env_admit_legs(v, doms, n_dom, blk->n_envs, i,
+                                         &code, blk->out_reason,
+                                         sizeof blk->out_reason);
 
-                if (!d || !d->rt || !d->rt->exec || !d->rt->auth ||
-                    v->leg[l].access_mode != DNA_ENV_ACCESS_INVOKE ||
-                    !rt_owns_runtime_op(d->rt, v->leg[l].runtime_op) ||
-                    ak >= 32 ||
-                    (d->rt->allowed_auth_kinds &
-                     NODUS_RT_AUTHKIND_BIT(ak)) == 0) {
-                    code = NODUS_V2_TX_ERR_ADMISSION;
-                    goto cmt_item_failed;
-                }
-                /* R3 W4 package C — PROVEN, not policy, and split from
-                 * the quota check below (they used to share one `||` and
-                 * one CAPACITY verdict). A domain cannot appear twice in
-                 * one envelope's leg list (env_wire.c:364-365 decode /
-                 * :276 encode both refuse a domain_id that is not
-                 * strictly ascending), so this domain's `n_tx` —
-                 * incremented once per LEG naming it — can never reach
-                 * the block's own `n_envs`. Reaching this branch means
-                 * that invariant broke on THIS node: a FAULT, never the
-                 * CAPACITY verdict the quota half below still is. */
-                if (d->n_tx >= blk->n_envs) {
-                    V2AP_FAULT("cometbft item %llu leg %u: domain %u's "
-                               "n_tx reached the block's own n_envs "
-                               "(%llu) - the one-leg-per-domain-per-"
-                               "envelope invariant (env_wire.c:364-365) "
-                               "broke on this node",
-                               (unsigned long long)i, (unsigned)l,
-                               (unsigned)d->domain_id,
-                               (unsigned long long)blk->n_envs);
+                if (arc == -2) {
                     (void)nodus_witness_db_rollback_to_savepoint(w, sp);
                     (void)cmt_savepoint_release(w, sp);
-                    goto fail_fault;
+                    goto fail_fault;   /* the helper owns the reason     */
                 }
-                /* the committed manifest's own per-domain quota —
-                 * CAPACITY, because it is about what is LEFT, not about
-                 * the bytes */
-                if (d->man.quota_tx_per_block != 0 &&
-                    d->n_tx + 1 > (uint32_t)d->man.quota_tx_per_block) {
-                    code = NODUS_V2_TX_ERR_CAPACITY;
+                if (arc != 0) {
                     goto cmt_item_failed;
                 }
             }
@@ -2551,7 +2953,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
             {
                 int arc = env_authorize_legs(
                     w, &pf[i], doms, n_dom, chain_id, blk->global_height,
-                    blk->epoch, &cmview, auths,
+                    blk->epoch, &cmview, NULL, NULL, auths,
                     blk->out_reason, sizeof blk->out_reason);
 
                 if (arc == -2) {
@@ -2569,7 +2971,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
             {
                 int rc = exec_one_env(w, blk, i, chain_id, blk->epoch,
                                       doms, n_dom, &pf[i], &meters[i],
-                                      auths, reads, resbuf,
+                                      auths, reads, resbuf, NULL,
                                       blk->out_reason,
                                       sizeof blk->out_reason);
                 if (rc == -2) {

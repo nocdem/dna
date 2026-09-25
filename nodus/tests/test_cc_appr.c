@@ -12,8 +12,8 @@
  * is called exactly as the T3 dispatcher would call it, over a REAL
  * connected `nodus_tcp_conn_t` so `nodus_tcp_send` writes real bytes this
  * file reads back and decodes with `nodus_t3_decode`); the assembled
- * envelope is then handed to `nodus_witness_v2_env_authorize` — the SAME
- * function CheckTx calls — and it accepts. A second, INDEPENDENT
+ * envelope is then handed to `nodus_witness_v2_env_dry_run` — the per-item
+ * dry run CheckTx calls — and it accepts. A second, INDEPENDENT
  * recomputation of the "DNA.CCSET.v1" set hash and the "DNA.CCAPPR.v1"
  * approval digest (this file's own preimage bytes, not
  * `nodus_rt_committee_set_hash`/`nodus_rt_cc_approval_digest`) is checked
@@ -504,7 +504,7 @@ static int pre_env_reencode(pre_env_t *e, nodus_witness_t *w, uint64_t tip,
 
 /* Happy path: ALL 7 real committee seats, asked through the REAL
  * responder, each returning a valid approval; assembled and handed to
- * nodus_witness_v2_env_authorize — the SAME function CheckTx calls.
+ * nodus_witness_v2_env_dry_run — the per-item dry run CheckTx calls.
  * Plus an INDEPENDENT recomputation of set_hash/approval-digest against
  * the LAYOUT (not the two helpers under test), verified with
  * qgp_dsa87_verify. */
@@ -632,16 +632,26 @@ static int t_happy_path_all_seats(void) {
 
     CHECK(pre_env_reencode(&env, g.w, tip, &pf2) == 0, "pass-2 preflight");
 
+    /* CHECKTX-P1 round 2: the signature-only entry
+     * `nodus_witness_v2_env_authorize` is deleted; CheckTx's own check is
+     * the per-item dry run (its authorization stage is the item loop's
+     * `env_authorize_legs`), so that is what the assembled envelope is
+     * handed here. The dry run also runs the SYSTEM exec hook, probe
+     * only, at tip + 1. */
     char reason[256];
     reason[0] = '\0';
-    int arc = nodus_witness_v2_env_authorize(g.w, env.bytes, env.len,
-                                             reason, sizeof(reason));
-    CHECK(arc == 0, reason[0] ? reason : "env_authorize accepted the "
+    nodus_v2_env_dry_run_t *dry = calloc(1, sizeof(*dry));   /* ~70 KB */
+    CHECK(dry != NULL, "alloc");
+    int arc = nodus_witness_v2_env_dry_run(g.w, env.bytes, env.len, NULL,
+                                           dry, reason, sizeof(reason));
+    nodus_witness_v2_env_dry_run_free(dry);
+    free(dry);
+    CHECK(arc == 0, reason[0] ? reason : "the CheckTx dry run accepted the "
                                         "fully-assembled envelope");
 
     /* ORCHESTRATOR addition (W4-CC ORC-5): the dispatch asked for the
      * assembled envelope to COMMIT through the engine, not only to pass
-     * authorization. `env_authorize` proves the seven signatures bind
+     * authorization. The dry run proves the seven signatures bind
      * the digest; only the SYSTEM exec hook's own rules — the quorum
      * count against the engine verdict (n_approvals >= dna_bft_quorum(N)),
      * the scalar/grace rules at the EXECUTION height — and the

@@ -51,8 +51,17 @@ receipt, carries no height, no index and no witness signature. The client
 learns the commit by query. `CheckTx` itself is the application's row
 (`nodus_witness_cmt_app.c`, `check_tx`): the ledger's admission check
 (`nodus_witness_verify_transaction` in `NODUS_WITNESS_VERIFY_ADMISSION`
-mode, `nodus_witness_cmt_app.c:360`) followed by the envelope's
-authorization stage (`nodus_witness_v2_env_authorize`, R3-C1a-11).
+mode) followed, since 0.19.78 (CHECKTX-P1), by a write-free DRY RUN of
+the apply engine's own per-item stages at tip+1
+(`nodus_witness_v2_env_dry_run`: replay guard, per-leg admission, meter
+reservation against a fresh block budget, authorization — the stage
+`nodus_witness_v2_env_authorize` ran before it was deleted — read plan,
+reads, exec and a probe of every effect), a lifetime rule (`expiry_height`
+must be nonzero and ≤ tip + 100, `NODUS_CMT_APP_MAX_EXPIRY_AHEAD`,
+`docs/plans/decisions/2026-09-25-mempool-policy.md`) and a node-local
+pending conflict set (an entry's intent, its DELETE rows, its
+`PRE_ABSENT` CREATE keys; a claim's nullifier) cleared at every commit and
+rebuilt by the recheck. Full account: `ARCHITECTURE.md`, CHECKTX-P1.
 
 Since W4 the ADMISSION and VALIDATION modes of
 `nodus_witness_verify_transaction` are behaviourally identical: the

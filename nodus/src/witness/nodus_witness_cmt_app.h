@@ -249,6 +249,11 @@ extern "C" {
  * release` frees whichever of `prep_txs` / `fb_pb` / `val_updates`
  * happen to be non-NULL at teardown.
  */
+/* CHECKTX-P1 — opaque node-local mempool-state records (the .c owns
+ * their layout; see the context fields below). */
+struct nodus_cmt_app_pkey;
+struct nodus_cmt_app_acache;
+
 typedef struct {
     nodus_witness_t         *w;       /* the ledger                       */
     const cmt_genesis_doc_t *gendoc;  /* BORROWED; InitChain's app_hash   */
@@ -318,6 +323,48 @@ typedef struct {
      * "leave the current set". */
     cmt_pb_validator_update_t      *val_updates;
     size_t                          val_updates_cap;
+
+    /* ── CHECKTX-P1 — NODE-LOCAL mempool admission state. Nothing below
+     * is consensus data: no row, root, block or vote reads it. It shapes
+     * only which transactions THIS node's mempool holds.
+     *
+     * THE PENDING CONFLICT SET (`pend`, an open-addressing hash table of
+     * `pend_cap` slots holding `pend_n` keys): every key an ADMITTED
+     * mempool entry claims — its envelope intent_id, its claim
+     * nullifier, and every ROW-IDENTITY row its dry-run effects claim
+     * (every DELETE and every PRE_ABSENT CREATE — domain, adapter op, key;
+     * apply.h `nodus_v2_dry_run_row_t`) — with the entry's own identity
+     * as the key's OWNER. CheckTx (new and recheck) refuses an entry any
+     * of whose keys another entry already owns; the same owner
+     * re-checked is not a conflict. CLEARED in `nodus_cmt_app_commit`,
+     * after the COMMIT, and repopulated by the mempool's recheck in FIFO
+     * order (the host calls commit THEN mempool update,
+     * nodus_witness_cmt_host.c `blockexec_commit`). `pend_max` bounds it:
+     * `prep_bound × (1 + n_rt × DNA_EFFECT_MAX_COUNT)`, n_rt = the
+     * compiled runtime count (a leg's domain is distinct per envelope and
+     * must have a compiled runtime) — no admitted entry can claim more.
+     *
+     * THE VERIFIED-AUTH CACHE (`acache`, sorted by wire_id): the
+     * auth_kind-1 leg verdicts of an admitted envelope, reused by a
+     * RECHECK of the SAME wire_id (which commits every byte, the
+     * signatures included) so the recheck after every block does not
+     * re-verify ML-DSA-87 signatures whose answer cannot have changed.
+     * auth_kind 2 is never cached. Generation-swept at commit:
+     * `acache_gen` advances at every commit and an entry neither
+     * admitted nor rechecked since the previous commit is dropped, so the
+     * cache holds at most the entries touched in two consecutive
+     * inter-commit windows; `acache_max` (2 × prep_bound) is a hard cap —
+     * at the cap an entry is simply not cached (a miss re-verifies; no
+     * verdict ever depends on the cache). */
+    struct nodus_cmt_app_pkey     **pend;
+    size_t                          pend_n;
+    size_t                          pend_cap;
+    size_t                          pend_max;
+    struct nodus_cmt_app_acache   **acache;
+    size_t                          acache_n;
+    size_t                          acache_cap;
+    size_t                          acache_max;
+    uint64_t                        acache_gen;
 } nodus_cmt_app_ledger_t;
 
 /**
@@ -433,11 +480,26 @@ int nodus_cmt_app_finalize_block(void *ctx,
                                  nodus_abci_response_finalize_block_t *resp);
 
 /** abci/types/application.go's `Commit` — the COMMIT of the host's ONE
- *  transaction (D-23 rev 5 (5)). `retain_height` 0: no pruning in W2. */
+ *  transaction (D-23 rev 5 (5)). `retain_height` 0: no pruning in W2.
+ *  CHECKTX-P1: after the COMMIT, clears the pending conflict set and
+ *  sweeps the verified-auth cache (node-local; see the context fields). */
 int nodus_cmt_app_commit(void *ctx, nodus_abci_response_commit_t *resp);
 
 /** proxy/app_conn.go:33-34 — `CheckTx`, the ledger's ADMISSION check
- *  (D-23 rev 5 (9)). */
+ *  (D-23 rev 5 (9)).
+ *
+ *  CHECKTX-P1 — after the admission lane (`nodus_witness_verify_
+ *  transaction`, ADMISSION mode), an ENVELOPE must carry an expiry in
+ *  (tip, tip + NODUS_CMT_APP_MAX_EXPIRY_AHEAD] (nodus_types.h; decision
+ *  2026-09-25-mempool-policy.md, 1), then runs the apply engine's
+ *  per-item DRY RUN at tip + 1 (`nodus_witness_v2_env_dry_run`: replay,
+ *  per-leg admission, reservation against a fresh block budget,
+ *  authorization, read/exec/decode/charge/probe — no write), and every
+ *  entry's conflict keys are checked against and added to the pending
+ *  conflict set. On `req->type == CMT_MEM_CHECK_TX_TYPE_RECHECK` the
+ *  cached auth_kind-1 verdicts of the same wire_id are reused; every
+ *  state-dependent stage is re-run. A refusal is a nonzero code;
+ *  CMT_FAULT only for a node-local fault. */
 int nodus_cmt_app_check_tx(void *ctx, const cmt_mem_request_check_tx_t *req,
                            cmt_mem_response_check_tx_t *res);
 

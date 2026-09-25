@@ -564,7 +564,16 @@ static int build_cc_env(nodus_witness_t *w, const uint8_t chain32[32],
         }
         appr_epoch = nodus_v2_epoch_for_height(tip);
         quorum     = dna_bft_quorum((uint32_t)cmn);
-        eff = tip + 100000;
+        /* CHECKTX-P1 round 2b: the effective height is DISTINCT per
+         * nonce. A CHAIN_CONFIG leg CREATEs its history row under key
+         * param ‖ effective with PRE_ABSENT (nodus_witness_rt_native.c
+         * :4137-4138, :4152-4154), and CheckTx's pending conflict set
+         * keys every PRE_ABSENT row — so two envelopes with one
+         * (param, effective) are ONE row and the second is refused. The
+         * nonce offset keeps the three envelopes of t_txs_available_fires
+         * three distinct, independently admissible proposals. No upper
+         * horizon rule applies (nodus_chain_config_scalar_rules). */
+        eff = tip + 100000 + (nonce & 0xFFFFu);
         vb  = eff + 100000;
         call[0] = 4;                        /* DNAC_CFG_TARGET_ACTIVE_COUNT */
         for (i = 0; i < 8; i++) call[1 + i]  = (uint8_t)(nv    >> (56 - 8 * i));
@@ -593,7 +602,11 @@ static int build_cc_env(nodus_witness_t *w, const uint8_t chain32[32],
         leg.auth_data                = auth;
 
         memset(&env_in, 0, sizeof(env_in));
-        env_in.expiry_height       = 0;
+        /* CHECKTX-P1 round 2: CheckTx refuses expiry 0 and anything past
+         * tip + NODUS_CMT_APP_MAX_EXPIRY_AHEAD (nodus_types.h; decision
+         * 2026-09-25-mempool-policy.md 1) — the full window. */
+        env_in.expiry_height       = tip +
+                                     (uint64_t)NODUS_CMT_APP_MAX_EXPIRY_AHEAD;
         env_in.fee_amount          = 0;   /* a CHAIN_CONFIG leg requires 0 */
         env_in.res_max_total_units = CC_UNITS;
         env_in.leg_count           = 1;

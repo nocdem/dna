@@ -30,6 +30,8 @@
 #include "dnac/ledger_ids.h"
 
 #include "witness/nodus_witness_v2_env.h"
+#include "witness/nodus_witness_domreg.h"    /* the committed per-domain
+                                              * quota (PrepareProposal)  */
 #include "witness/nodus_witness_v2_produce.h"
 #include "witness/nodus_witness_roots_v2.h"
 #include "witness/nodus_witness_runtime.h"
@@ -71,6 +73,361 @@
  * DNAC_MAX_ACTIVE_VALIDATORS, dnac.h:201). */
 #define CMT_APP_MIN_VALS_FOR_BOUND ((int64_t)1)
 
+/* ═══════════════════════════════════════════════════════════════════════
+ * CHECKTX-P1 — node-local mempool admission state (the header's context
+ * fields say what each set is FOR; this section is only their mechanics).
+ * The pending conflict set is an OPEN-ADDRESSING HASH SET (linear
+ * probing, load ≤ 1/2, power-of-two table, O(1) average per key — round 2
+ * replaced the sorted array whose memmove insert made a recheck refill
+ * O(K²)). The slot hash is the first 8 bytes of SHA3-512 of the key
+ * bytes, so no submitter can steer keys into one probe chain; it is
+ * deterministic, and nothing iterates the table to decide anything. The
+ * auth cache stays a SORTED POINTER ARRAY with binary search (it is
+ * inserted into only on a NEW admission or a recheck miss).
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+/* Conflict-key tags: the first byte of every key, so the three key
+ * spaces can never collide with one another. */
+#define CMT_APP_PKEY_TAG_INTENT     ((uint8_t)1)   /* envelope intent_id   */
+#define CMT_APP_PKEY_TAG_NULLIFIER  ((uint8_t)2)   /* claim nullifier      */
+#define CMT_APP_PKEY_TAG_ROW        ((uint8_t)3)   /* a row-identity row   */
+
+/* tag ‖ domain u32 BE ‖ op u32 BE ‖ key_len u16 BE ‖ key — the longest
+ * key form (a 64-byte id key is 65). */
+#define CMT_APP_PKEY_MAX_LEN (1u + 4u + 4u + 2u + DNA_EFFECT_MAX_KEY_LEN)
+
+/** PrepareProposal refill passes (red-team F2/F3): after a seam refusal
+ *  names one offender, at most this many passes REFILL the freed room
+ *  from the remaining fee-ordered candidates; every pass after it drops
+ *  the offender AND halves what is left. See the drop loop's own bound
+ *  statement. */
+#define NODUS_CMT_APP_PREP_REFILL_MAX ((size_t)8)
+
+struct nodus_cmt_app_pkey {
+    uint64_t h;                /* the slot hash (see app_key_hash)        */
+    uint8_t  owner[64];        /* the entry identity that claimed the key */
+    uint16_t len;
+    uint8_t  key[];            /* `len` bytes                             */
+};
+
+struct nodus_cmt_app_acache {
+    uint8_t                  wire_id[64];
+    uint64_t                 gen;       /* last commit generation used    */
+    uint16_t                 leg_count;
+    uint8_t                 *present;   /* [leg_count] 1 = kind-1 verdict */
+    uint8_t                (*digest)[64];            /* [leg_count]       */
+    nodus_rt_auth_verdict_t *verdict;                /* [leg_count]       */
+};
+
+/** One candidate conflict key, built before the set is consulted. */
+typedef struct {
+    uint16_t len;
+    uint8_t  b[CMT_APP_PKEY_MAX_LEN];
+} app_key_t;
+
+/** The slot hash: the first 8 bytes (big-endian) of SHA3-512(key).
+ *  @return 0 / -1 hash backend (node-local). */
+static int app_key_hash(const uint8_t *key, uint16_t len, uint64_t *h)
+{
+    uint8_t d[64];
+    int     i;
+
+    if (qgp_sha3_512(key, len, d) != 0) {
+        return -1;
+    }
+    *h = 0;
+    for (i = 0; i < 8; i++) {
+        *h = (*h << 8) | d[i];
+    }
+    return 0;
+}
+
+/** The slot holding `key`, or the empty slot where it would go.
+ *  `ctx->pend_cap` must be a nonzero power of two with a free slot. */
+static size_t pend_slot(const nodus_cmt_app_ledger_t *ctx, uint64_t h,
+                        const uint8_t *key, uint16_t len, int *found)
+{
+    size_t mask = ctx->pend_cap - 1;
+    size_t at   = (size_t)h & mask;
+
+    *found = 0;
+    while (ctx->pend[at]) {
+        const struct nodus_cmt_app_pkey *k = ctx->pend[at];
+
+        if (k->h == h && k->len == len && memcmp(k->key, key, len) == 0) {
+            *found = 1;
+            return at;
+        }
+        at = (at + 1) & mask;
+    }
+    return at;
+}
+
+/** Grow the table to `want` slots (a power of two) and rehash.
+ *  @return 0 / -2 allocation failure (the table is untouched). */
+static int pend_grow(nodus_cmt_app_ledger_t *ctx, size_t want)
+{
+    struct nodus_cmt_app_pkey **old = ctx->pend;
+    size_t                      old_cap = ctx->pend_cap, i;
+    struct nodus_cmt_app_pkey **t = calloc(want, sizeof(*t));
+
+    if (!t) {
+        return -2;
+    }
+    ctx->pend     = t;
+    ctx->pend_cap = want;
+    for (i = 0; i < old_cap; i++) {
+        if (old[i]) {
+            int    found;
+            size_t at = pend_slot(ctx, old[i]->h, old[i]->key, old[i]->len,
+                                  &found);
+
+            t[at] = old[i];
+        }
+    }
+    free(old);
+    return 0;
+}
+
+/**
+ * Admit one entry's `n` keys, ALL OR NOTHING — every allocation happens
+ * before the first insert, so a failure leaves the set exactly as it was.
+ * @return 0 admitted (every key now owned by `owner`); 1 a key is owned
+ *         by ANOTHER entry (conflict — nothing inserted); 2 the set is at
+ *         its `pend_max` bound (nothing inserted); -2 allocation or hash
+ *         backend failure (nothing inserted).
+ */
+static int pend_admit(nodus_cmt_app_ledger_t *ctx, const uint8_t owner[64],
+                      const app_key_t *keys, size_t n)
+{
+    struct nodus_cmt_app_pkey **recs = NULL;
+    uint64_t *hs = NULL;
+    size_t    i, fresh = 0, used = 0;
+    int       rc = -2;
+
+    if (n == 0) {
+        return 0;
+    }
+    hs = (uint64_t *)calloc(n, sizeof(*hs));
+    if (!hs) {
+        return -2;
+    }
+    for (i = 0; i < n; i++) {
+        if (app_key_hash(keys[i].b, keys[i].len, &hs[i]) != 0) {
+            goto out;
+        }
+    }
+    /* 1. the verdict: any key another entry owns is a conflict */
+    for (i = 0; i < n && ctx->pend_cap; i++) {
+        int    found;
+        size_t at = pend_slot(ctx, hs[i], keys[i].b, keys[i].len, &found);
+
+        if (found && memcmp(ctx->pend[at]->owner, owner, 64) != 0) {
+            rc = 1;
+            goto out;
+        }
+    }
+    for (i = 0; i < n; i++) {
+        int found = 0;
+
+        if (ctx->pend_cap) {
+            (void)pend_slot(ctx, hs[i], keys[i].b, keys[i].len, &found);
+        }
+        if (!found) {
+            fresh++;
+        }
+    }
+    if (fresh == 0) {
+        rc = 0;                       /* this owner already holds all   */
+        goto out;
+    }
+    if (fresh > ctx->pend_max - ctx->pend_n) {
+        rc = 2;
+        goto out;
+    }
+    /* 2. every allocation BEFORE the first insert */
+    if ((ctx->pend_n + fresh) * 2 > ctx->pend_cap) {
+        size_t want = ctx->pend_cap ? ctx->pend_cap : 1024;
+
+        while ((ctx->pend_n + fresh) * 2 > want) {
+            want *= 2;
+        }
+        if (pend_grow(ctx, want) != 0) {
+            goto out;
+        }
+    }
+    recs = calloc(fresh, sizeof(*recs));
+    if (!recs) {
+        goto out;
+    }
+    for (i = 0; i < fresh; i++) {
+        recs[i] = (struct nodus_cmt_app_pkey *)
+            calloc(1, sizeof(struct nodus_cmt_app_pkey) + CMT_APP_PKEY_MAX_LEN);
+        if (!recs[i]) {
+            goto out;
+        }
+    }
+    /* 3. the inserts — nothing below can fail */
+    for (i = 0; i < n; i++) {
+        int    found;
+        size_t at = pend_slot(ctx, hs[i], keys[i].b, keys[i].len, &found);
+        struct nodus_cmt_app_pkey *k;
+
+        if (found) {
+            continue;                 /* this owner already holds it    */
+        }
+        k = recs[used];
+        recs[used++] = NULL;
+        k->h   = hs[i];
+        memcpy(k->owner, owner, 64);
+        k->len = keys[i].len;
+        memcpy(k->key, keys[i].b, keys[i].len);
+        ctx->pend[at] = k;
+        ctx->pend_n++;
+    }
+    rc = 0;
+out:
+    if (recs) {
+        for (i = 0; i < fresh; i++) {
+            free(recs[i]);            /* NULL for every record inserted */
+        }
+    }
+    free(recs);
+    free(hs);
+    return rc;
+}
+
+/** Commit: every pending key goes (the recheck repopulates). */
+static void pend_clear(nodus_cmt_app_ledger_t *ctx)
+{
+    size_t i;
+
+    for (i = 0; i < ctx->pend_cap; i++) {
+        free(ctx->pend[i]);
+        ctx->pend[i] = NULL;
+    }
+    ctx->pend_n = 0;
+}
+
+static void acache_entry_free(struct nodus_cmt_app_acache *e)
+{
+    if (e) {
+        free(e->present);
+        free(e->digest);
+        free(e->verdict);
+        free(e);
+    }
+}
+
+static size_t acache_find(const nodus_cmt_app_ledger_t *ctx,
+                          const uint8_t wire_id[64], int *found)
+{
+    size_t lo = 0, hi = ctx->acache_n;
+
+    *found = 0;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+
+        if (memcmp(ctx->acache[mid]->wire_id, wire_id, 64) < 0) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    if (lo < ctx->acache_n &&
+        memcmp(ctx->acache[lo]->wire_id, wire_id, 64) == 0) {
+        *found = 1;
+    }
+    return lo;
+}
+
+/**
+ * Cache the auth_kind-1 verdicts of an envelope the dry run just
+ * ADMITTED. Nothing is cached when no leg is kind 1, when the cache is at
+ * its cap, or when an allocation fails — a miss only means the next
+ * recheck verifies in full, so none of these is an error.
+ */
+static void acache_store(nodus_cmt_app_ledger_t *ctx,
+                         const nodus_v2_env_dry_run_t *dry)
+{
+    struct nodus_cmt_app_acache *e;
+    size_t   at;
+    int      found;
+    uint16_t l, n_kind1 = 0;
+
+    for (l = 0; l < dry->leg_count; l++) {
+        if (dry->auth_kind[l] == NODUS_RT_AUTHKIND_DSA87_MULTI_V1) {
+            n_kind1++;
+        }
+    }
+    if (n_kind1 == 0 || ctx->acache_n >= ctx->acache_max) {
+        return;
+    }
+    at = acache_find(ctx, dry->wire_id, &found);
+    if (found) {
+        ctx->acache[at]->gen = ctx->acache_gen;
+        return;
+    }
+    if (ctx->acache_n == ctx->acache_cap) {
+        size_t want = ctx->acache_cap ? ctx->acache_cap * 2 : 256;
+        struct nodus_cmt_app_acache **grown;
+
+        if (want > ctx->acache_max) {
+            want = ctx->acache_max;
+        }
+        grown = realloc(ctx->acache, want * sizeof(*grown));
+        if (!grown) {
+            return;
+        }
+        ctx->acache     = grown;
+        ctx->acache_cap = want;
+    }
+    e = (struct nodus_cmt_app_acache *)calloc(1, sizeof(*e));
+    if (!e) {
+        return;
+    }
+    e->present = (uint8_t *)calloc(dry->leg_count, sizeof(*e->present));
+    e->digest  = calloc(dry->leg_count, sizeof(*e->digest));
+    e->verdict = (nodus_rt_auth_verdict_t *)
+        calloc(dry->leg_count, sizeof(*e->verdict));
+    if (!e->present || !e->digest || !e->verdict) {
+        acache_entry_free(e);
+        return;
+    }
+    memcpy(e->wire_id, dry->wire_id, 64);
+    e->gen       = ctx->acache_gen;
+    e->leg_count = dry->leg_count;
+    for (l = 0; l < dry->leg_count; l++) {
+        if (dry->auth_kind[l] != NODUS_RT_AUTHKIND_DSA87_MULTI_V1) {
+            continue;              /* kind 2: never cached               */
+        }
+        e->present[l] = 1;
+        memcpy(e->digest[l], dry->leg_digest[l], 64);
+        e->verdict[l] = dry->verdict[l];
+    }
+    memmove(&ctx->acache[at + 1], &ctx->acache[at],
+            (ctx->acache_n - at) * sizeof(*ctx->acache));
+    ctx->acache[at] = e;
+    ctx->acache_n++;
+}
+
+/** Commit: drop every entry not used since the previous commit, then
+ *  open the next generation. Order-preserving compaction. */
+static void acache_sweep(nodus_cmt_app_ledger_t *ctx)
+{
+    size_t i, kept = 0;
+
+    for (i = 0; i < ctx->acache_n; i++) {
+        if (ctx->acache[i]->gen < ctx->acache_gen) {
+            acache_entry_free(ctx->acache[i]);
+        } else {
+            ctx->acache[kept++] = ctx->acache[i];
+        }
+    }
+    ctx->acache_n = kept;
+    ctx->acache_gen++;
+}
+
 /* ORCHESTRATOR delta 2, item A — only THREE arrays remain context-owned
  * across calls (the ABCI response-ownership rule; see the header's
  * struct comment) since round 2 added `val_updates` (§A); every other
@@ -91,6 +448,22 @@ void nodus_cmt_app_ledger_release(nodus_cmt_app_ledger_t *ctx)
     ctx->fb_pb_cap     = 0;
     ctx->val_updates     = NULL;
     ctx->val_updates_cap = 0;
+    /* CHECKTX-P1 — the node-local mempool admission state. */
+    pend_clear(ctx);
+    free(ctx->pend);
+    ctx->pend     = NULL;
+    ctx->pend_cap = 0;
+    {
+        size_t i;
+
+        for (i = 0; i < ctx->acache_n; i++) {
+            acache_entry_free(ctx->acache[i]);
+        }
+    }
+    free(ctx->acache);
+    ctx->acache     = NULL;
+    ctx->acache_n   = 0;
+    ctx->acache_cap = 0;
 }
 
 int nodus_cmt_app_ledger_init(nodus_cmt_app_ledger_t *ctx, nodus_witness_t *w,
@@ -131,6 +504,27 @@ int nodus_cmt_app_ledger_init(nodus_cmt_app_ledger_t *ctx, nodus_witness_t *w,
         }
         ctx->prep_bound = (size_t)mem_cfg_for_bound.size;
     }
+
+    /* CHECKTX-P1 — the two node-local admission sets' CEILINGS, from the
+     * same mempool size (nothing is allocated here; both grow on use).
+     * An envelope's legs address DISTINCT domains (env_wire.c's strictly
+     * ascending leg order) and a leg's domain must have a compiled
+     * runtime (the per-leg admission), so no admitted entry claims more
+     * conflict keys than one intent plus DNA_EFFECT_MAX_COUNT rows per
+     * COMPILED runtime; the auth cache holds at most two inter-commit
+     * windows of entries (the header's lifecycle note). */
+    {
+        size_t n_rt = 0;
+
+        if (!nodus_runtime_builtin_table(&n_rt) || n_rt == 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "the compiled runtime table is "
+                          "empty — the conflict-set bound cannot be sized");
+            return CMT_FAULT;
+        }
+        ctx->pend_max = ctx->prep_bound *
+                        (1u + n_rt * (size_t)DNA_EFFECT_MAX_COUNT);
+    }
+    ctx->acache_max = 2u * ctx->prep_bound;
 
     /* ENV_BOUND / CLAIM_BOUND: MaxDataBytes (types/block.go:281-300,
      * ported as cmt_max_data_bytes_no_evidence — evidence is never
@@ -336,6 +730,209 @@ done:
  *  `code == CodeTypeOK` (clist_mempool.go:412, :492). */
 #define NODUS_CMT_APP_CODE_REJECTED  ((uint32_t)1)
 
+/** Encode one 64-byte identity key (intent_id / claim nullifier). */
+static void app_key_id(app_key_t *k, uint8_t tag, const uint8_t id[64])
+{
+    k->b[0] = tag;
+    memcpy(k->b + 1, id, 64);
+    k->len = 65;
+}
+
+/** Encode one row-identity key: tag ‖ domain ‖ op ‖ key_len ‖ key. */
+static void app_key_row(app_key_t *k, const nodus_v2_dry_run_row_t *r)
+{
+    uint8_t *p = k->b;
+
+    p[0] = CMT_APP_PKEY_TAG_ROW;
+    p[1] = (uint8_t)(r->domain_id >> 24);
+    p[2] = (uint8_t)(r->domain_id >> 16);
+    p[3] = (uint8_t)(r->domain_id >> 8);
+    p[4] = (uint8_t)r->domain_id;
+    p[5] = (uint8_t)(r->op_id >> 24);
+    p[6] = (uint8_t)(r->op_id >> 16);
+    p[7] = (uint8_t)(r->op_id >> 8);
+    p[8] = (uint8_t)r->op_id;
+    p[9] = (uint8_t)(r->key_len >> 8);
+    p[10] = (uint8_t)r->key_len;
+    memcpy(p + 11, r->key, r->key_len);
+    k->len = (uint16_t)(11u + r->key_len);
+}
+
+/** Admit `keys` for the entry `owner` into the pending conflict set and
+ *  turn the answer into CheckTx's: CMT_OK with `*refused` set on a
+ *  conflict or a full set, CMT_FAULT on an allocation failure. */
+static int app_pend_admit(nodus_cmt_app_ledger_t *ctx,
+                          const uint8_t owner[64], const app_key_t *keys,
+                          size_t n, bool *refused)
+{
+    int prc = pend_admit(ctx, owner, keys, n);
+
+    if (prc == -2) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "check_tx: the pending conflict set "
+                      "could not grow on this node");
+        return CMT_FAULT;
+    }
+    if (prc == 1) {
+        QGP_LOG_DEBUG(LOG_TAG, "%s", "check_tx refused: a pending mempool "
+                      "entry already claims this intent / nullifier / row");
+        *refused = true;
+    } else if (prc == 2) {
+        QGP_LOG_WARN(LOG_TAG, "check_tx refused: the pending conflict set "
+                     "is at its bound (%zu keys)", ctx->pend_max);
+        *refused = true;
+    }
+    return CMT_OK;
+}
+
+/**
+ * CHECKTX-P1 — the ENVELOPE half after the admission lane: the per-item
+ * lifetime rule, the dry run, then the conflict keys (intent + every
+ * row-identity row), then the auth cache. On RECHECK the cached kind-1
+ * verdicts of this wire_id are
+ * offered to the dry run, which takes one only where the leg digest it
+ * derives again matches — and re-runs every state-dependent stage.
+ * @return CMT_OK (verdict in `*refused`) / CMT_FAULT node-local.
+ */
+static int app_check_envelope(nodus_cmt_app_ledger_t *ctx,
+                              const uint8_t *tx, size_t tx_len,
+                              const uint8_t id[64], bool is_recheck,
+                              bool *refused)
+{
+    nodus_v2_env_dry_run_t *dry  = NULL;
+    app_key_t              *keys = NULL;
+    nodus_v2_auth_reuse_t   reuse;
+    const nodus_v2_auth_reuse_t *reuse_p = NULL;
+    char   reason[256];
+    size_t i, nkeys;
+    int    drc;
+    int    rc = CMT_FAULT;
+
+    /* ── the mempool LIFETIME rule (docs/plans/decisions/2026-09-25-
+     * mempool-policy.md, decision 1), new AND recheck: an envelope must
+     * name an expiry, and no further than NODUS_CMT_APP_MAX_EXPIRY_AHEAD
+     * blocks past the committed tip. The lower side — an expiry already
+     * passed at tip + 1 — is the preflight's own refusal inside the dry
+     * run (env_preflight.c step 3), so every admitted envelope leaves
+     * the mempool at the first recheck after its expiry, at most that
+     * many blocks from admission. A mempool rule only: block validity
+     * (expiry 0 = "never") is unchanged. */
+    {
+        dna_env_view_t view;
+        uint64_t       tip = 0;
+
+        memset(&view, 0, sizeof(view));
+        if (dna_env_decode(tx, tx_len, &view) != 0) {
+            *refused = true;                 /* entry_identity decoded it;
+                                              * unreachable, fail closed  */
+            return CMT_OK;
+        }
+        if (nodus_witness_v2_tip_height(ctx->w, &tip) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "check_tx: the committed tip is "
+                          "unreadable on this node");
+            return CMT_FAULT;
+        }
+        if (view.expiry_height == 0 ||
+            view.expiry_height >
+                tip + (uint64_t)NODUS_CMT_APP_MAX_EXPIRY_AHEAD) {
+            QGP_LOG_DEBUG(LOG_TAG, "check_tx refused: expiry_height %" PRIu64
+                          " is 0 or beyond tip %" PRIu64 " + %u",
+                          view.expiry_height, tip,
+                          (unsigned)NODUS_CMT_APP_MAX_EXPIRY_AHEAD);
+            *refused = true;
+            return CMT_OK;
+        }
+    }
+
+    dry = (nodus_v2_env_dry_run_t *)calloc(1, sizeof(*dry));   /* ~70 KB */
+    if (!dry) {
+        return CMT_FAULT;
+    }
+    if (is_recheck) {
+        int    found = 0;
+        size_t at = acache_find(ctx, id, &found);
+
+        if (found) {
+            struct nodus_cmt_app_acache *e = ctx->acache[at];
+
+            e->gen = ctx->acache_gen;        /* used in this window     */
+            memset(&reuse, 0, sizeof(reuse));
+            reuse.leg_count = e->leg_count;
+            reuse.present   = e->present;
+            reuse.digest    = (const uint8_t (*)[64])e->digest;
+            reuse.verdict   = e->verdict;
+            reuse_p = &reuse;
+        }
+    }
+    reason[0] = '\0';
+    drc = nodus_witness_v2_env_dry_run(ctx->w, tx, tx_len, reuse_p, dry,
+                                       reason, sizeof(reason));
+    if (drc == -2) {
+        QGP_LOG_ERROR(LOG_TAG, "check_tx: the dry run could not be computed "
+                      "on this node: %s", reason);
+        goto done;                       /* never a verdict about the tx */
+    }
+    if (drc != 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "check_tx refused by the dry run (item code "
+                      "%u): %s", (unsigned)dry->code, reason);
+        *refused = true;
+        rc = CMT_OK;
+        goto done;
+    }
+    /* the conflict keys: the intent, then every row-identity row the
+     * effects claim (every DELETE, every PRE_ABSENT CREATE — apply.h
+     * `nodus_v2_dry_run_row_t`, which says why SETs are not keys) */
+    nkeys = 1 + dry->n_rows;
+    keys  = (app_key_t *)calloc(nkeys, sizeof(*keys));
+    if (!keys) {
+        goto done;
+    }
+    app_key_id(&keys[0], CMT_APP_PKEY_TAG_INTENT, dry->intent_id);
+    for (i = 0; i < dry->n_rows; i++) {
+        app_key_row(&keys[1 + i], &dry->rows[i]);
+    }
+    rc = app_pend_admit(ctx, id, keys, nkeys, refused);
+    if (rc == CMT_OK && !*refused) {
+        acache_store(ctx, dry);          /* NEW, or a RECHECK miss      */
+    }
+
+done:
+    free(keys);
+    nodus_witness_v2_env_dry_run_free(dry);
+    free(dry);
+    return rc;
+}
+
+/**
+ * CHECKTX-P1 — the CLAIM half after the admission lane: the claim's
+ * canonical nullifier (the apply lane's own derivation) is its conflict
+ * key, so K signature-variants of ONE claim — K distinct entry ids, one
+ * nullifier — admit only the first (red-team F5).
+ * @return CMT_OK (verdict in `*refused`) / CMT_FAULT node-local.
+ */
+static int app_check_claim(nodus_cmt_app_ledger_t *ctx,
+                           const uint8_t *tx, size_t tx_len,
+                           const uint8_t id[64], bool *refused)
+{
+    app_key_t key;
+    uint8_t   nul[64];
+    int       nrc;
+
+    nrc = nodus_witness_v2_claim_nullifier(ctx->w, tx, tx_len, nul);
+    if (nrc == -2) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "check_tx: the claim nullifier could "
+                      "not be derived on this node");
+        return CMT_FAULT;
+    }
+    if (nrc != 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "%s", "check_tx refused: the claim's "
+                      "nullifier derivation refused it");
+        *refused = true;
+        return CMT_OK;
+    }
+    app_key_id(&key, CMT_APP_PKEY_TAG_NULLIFIER, nul);
+    return app_pend_admit(ctx, id, &key, 1, refused);
+}
+
 int nodus_cmt_app_check_tx(void *vctx, const cmt_mem_request_check_tx_t *req,
                            cmt_mem_response_check_tx_t *res)
 {
@@ -343,6 +940,7 @@ int nodus_cmt_app_check_tx(void *vctx, const cmt_mem_request_check_tx_t *req,
     uint8_t  id[64];
     uint8_t  cls = 0;
     char     reason[256];
+    bool     refused = false;
     int      rc;
 
     if (!ctx || !ctx->w || !req || !res) {
@@ -382,10 +980,10 @@ int nodus_cmt_app_check_tx(void *vctx, const cmt_mem_request_check_tx_t *req,
         res->code = NODUS_CMT_APP_CODE_REJECTED;
         return CMT_OK;
     }
-    /* ── AND THE SIGNATURES ──────────────────────────────────────────
-     * The admission lane above verifies NONE. It runs the wire-family
-     * marker, the contextual ruleset table, the preflight, a `wire_id`
-     * comparison and the committed-intent guard
+    /* ── AND THE SIGNATURES, AND EVERYTHING ELSE THE ITEM WOULD MEET ──
+     * The admission lane above verifies NONE of the signatures. It runs
+     * the wire-family marker, the contextual ruleset table, the
+     * preflight, a `wire_id` comparison and the committed-intent guard
      * (nodus_witness_verify.c:674-784), and the preflight's own honest
      * label says it decides nothing about "whether any authorization is
      * VALID" (env_preflight.h:57-63). The `wire_id` comparison cannot
@@ -394,23 +992,27 @@ int nodus_cmt_app_check_tx(void *vctx, const cmt_mem_request_check_tx_t *req,
      * flipping a byte inside an approval signature changes both sides
      * and is accepted.
      *
-     * D-4 rev 3 (1) defines CheckTx as the ledger's admission check
-     * INCLUDING the signature, so the authorization stage runs here, on
-     * the same shared helper the apply engine's item loop uses. */
+     * CHECKTX-P1: nor does it run per-leg admission, the meter
+     * reservation or the execution — so entries the proposal seam (or
+     * the apply lane) then refuses sat in the mempool forever and were
+     * re-admitted by every recheck (red-team F1/F3, nodus/BUGS.md). The
+     * envelope now runs the apply engine's own per-item stages as a
+     * DRY RUN (nodus_witness_v2_env_dry_run), the authorization stage
+     * among them — the SAME helper the item loop uses, so D-4 rev 3 (1)'s
+     * "including the signature" is still met by one source. Then every
+     * entry's conflict keys meet the pending conflict set. */
     if (cls == NODUS_W_TX_V2_ENVELOPE) {
-        reason[0] = '\0';
-        rc = nodus_witness_v2_env_authorize(ctx->w, req->tx, req->tx_len,
-                                            reason, sizeof(reason));
-        if (rc == -2) {
-            QGP_LOG_ERROR(LOG_TAG, "check_tx: authorization could not be "
-                          "computed on this node: %s", reason);
-            return CMT_FAULT;            /* never a verdict about the tx */
-        }
-        if (rc != 0) {
-            QGP_LOG_DEBUG(LOG_TAG, "check_tx refused at authorization: %s",
-                          reason);
-            res->code = NODUS_CMT_APP_CODE_REJECTED;
-        }
+        rc = app_check_envelope(ctx, req->tx, req->tx_len, id,
+                                req->type == CMT_MEM_CHECK_TX_TYPE_RECHECK,
+                                &refused);
+    } else {
+        rc = app_check_claim(ctx, req->tx, req->tx_len, id, &refused);
+    }
+    if (rc != CMT_OK) {
+        return CMT_FAULT;                /* node-local: never a verdict  */
+    }
+    if (refused) {
+        res->code = NODUS_CMT_APP_CODE_REJECTED;
     }
     return CMT_OK;
 }
@@ -703,17 +1305,256 @@ static int app_seam_check(nodus_cmt_app_ledger_t *ctx,
     return rc;
 }
 
+/** The unit/quota inputs of one PrepareProposal (CHECKTX-P1 round 2):
+ *  the block-start budget and the committed per-domain quotas, read once
+ *  per call from the block context the seam itself builds. `policy` is
+ *  NULL when no envelope is a candidate. */
+typedef struct {
+    const dna_meter_policy_t *policy;
+    dna_meter_budget_t        budget;               /* fresh, per call   */
+    size_t                    n_quota;
+    uint32_t                  quota_dom[DNA_METER_MAX_DOMAINS];
+    uint16_t                  quota[DNA_METER_MAX_DOMAINS]; /* 0 = none  */
+    dna_env_view_t           *view;                 /* heap scratch      */
+    dna_meter_t              *meter;                /* heap scratch      */
+} app_prep_units_t;
+
+/** Index of `domain_id` in the quota table, or -1. */
+static int app_prep_quota_ix(const app_prep_units_t *u, uint32_t domain_id)
+{
+    size_t d;
+
+    for (d = 0; d < u->n_quota; d++) {
+        if (u->quota_dom[d] == domain_id) {
+            return (int)d;
+        }
+    }
+    return -1;
+}
+
+/**
+ * CHECKTX-P1 — PACK one proposal: ONE forward pass over the
+ * sorted (fee per unit, descending) `order[0..n)`, skipping every
+ * `excluded[]` request index, that keeps an entry only if ALL of these
+ * still hold with it
+ * added, and otherwise SKIPS it and goes on (red-team F2/F6: the 0.19.77
+ * pass STOPPED at the first envelope over the byte window, which cut
+ * every lower-fee entry behind it — claims included, although claims
+ * never count against the envelope window):
+ *
+ *  - `max_tx_bytes` bounds `ComputeProtoSizeForTxs` of the answer
+ *    (types/tx.go:188-192; the host validates it again at
+ *    nodus_witness_cmt_host.c:802 through `nodus_cmt_txs_validate`), so
+ *    the accumulation uses the same measure;
+ *  - `max_env_bytes` bounds the summed wire length of the ENVELOPE
+ *    entries, exactly `nodus_witness_v2_block_bytes_check`'s measure
+ *    (nodus_witness_v2_env.c): the seam sums `view.env_len` of the
+ *    envelope subset only (claims never enter it,
+ *    nodus_witness_v2_produce.c's class split), and `env_len` IS the
+ *    entry's length for every envelope that decodes (shared/dnac/
+ *    env_wire.c, "EXACT length" — every ENVELOPE in `order[]` decoded).
+ *    The bound is INCLUSIVE, as there. An envelope that ALONE exceeds
+ *    it fits no block (the legacy leader's own "genuinely poison" case)
+ *    and is skipped like any other that does not fit;
+ *  - R3 W4 package C — the PER-CLASS caps, now that the engine's own
+ *    scratch is heap and sized per-block (nodus_witness_v2_apply.c):
+ *    envelopes ≤ min(`env_bound`, `NODUS_V2_ENV_BATCH_MAX`) (delta 2
+ *    on: a derived MEMORY ceiling, 64 MiB scratch budget / 20 908 B per
+ *    envelope = 3 209 — NOT the chain-config hard cap of 10 delta 1
+ *    briefly tied it to; MAX_TXS_PER_BLOCK is RETIRED, apply.h; the
+ *    min() because this chain's own byte-derived env_bound can only be
+ *    SMALLER on a genesis document with an unusually small block) and
+ *    claims ≤ min(`claim_bound`, `NODUS_V2_APPLY_MAX_CLAIMS`) (the
+ *    smaller of this chain's own byte-derived claim capacity and the
+ *    most claims any cometbft block can carry, 14 162 —
+ *    nodus_witness_v2_apply.h). A class that reached its cap skips its
+ *    own lowest-fee remainder only. ⚠ CORRECTED CLAIM (was wrong here
+ *    through W3, R3-W3-C2a-19): a domain_id CANNOT repeat across one
+ *    envelope's legs — `dna_env_decode` (shared/dnac/env_wire.c:364-365)
+ *    and `dna_env_encode` (:276) both refuse a leg list that is not
+ *    STRICTLY ascending by domain_id — so the engine's per-domain
+ *    `d->n_tx` bound is a proven-unreachable FAULT, not a live risk;
+ *  - ORCHESTRATOR delta 11 — the engine's own per-block MIXED item
+ *    bound `NODUS_V2_APPLY_MAX_OPS` (R3-W3-C2a-19; package C made it
+ *    the DERIVED sum of the two class caps), the pass STOPS there: kept
+ *    as defense-in-depth behind the per-class caps, a no-op in practice.
+ *
+ * Shaping the proposal this way is squarely inside the Application's own
+ * contract — abci++_methods.md's PrepareProposal section: "The
+ * Application _can_ modify the raw proposal: it can reorder, remove or
+ * add transactions... If the Application considers that `tx` should not
+ * be proposed in this block ... then it should not include it in
+ * `PrepareProposalResponse.txs`" (spec/abci/abci++_methods.md:347-351,
+ * cometbft @709fd12b). Every kept entry keeps its sort order.
+ *
+ * CHECKTX-P1 round 2 (red-team HIGH "the hog", decision 2026-09-25-
+ * mempool-policy.md 2: "sığmayan işlem atlanır, arkasındaki sığanlar
+ * bloğa girer") — two more bounds, the ones the seam and the item loop
+ * enforce, so the seam no longer has a unit budget to refuse on:
+ *  - the UNIT budget: each envelope is reserved with the seam's OWN call,
+ *    `dna_meter_reserve` (res_meter.c:278-340 — the plan's declared
+ *    ceiling against the GLOBAL remainder, every leg's static units
+ *    against its DOMAIN remainder), against a scratch copy of the SAME
+ *    block-start budget the seam builds, in the SAME order the seam
+ *    reserves (the packed order). A GLOBAL/DOMAIN budget refusal SKIPS
+ *    the envelope and the pass goes on, so smaller later ones still fit;
+ *    any other reservation refusal (an unpriceable plan) is a property
+ *    of the bytes — the envelope is EXCLUDED for the call;
+ *  - the per-domain `quota_tx_per_block` of the committed manifest (the
+ *    item loop's CAPACITY rule, `env_admit_legs` in
+ *    nodus_witness_v2_apply.c; the seam has no such check): an envelope
+ *    one of whose leg domains already has its quota of packed envelopes
+ *    is SKIPPED.
+ * Claims are unmetered and quota-free (the seam and the item loop
+ * reserve and count ENVELOPES only), so a claim is packed whenever its
+ * class cap and `max_tx_bytes` allow, whatever the envelopes did.
+ *
+ * @return the packed count (written to `sel`, request indices);
+ *         `*env_total_out` receives the packed envelope bytes.
+ */
+static size_t app_prep_pack(const nodus_cmt_app_ledger_t *ctx,
+                            const nodus_abci_request_prepare_proposal_t *req,
+                            const size_t *order, size_t n,
+                            const uint8_t *class_arr, bool *excluded,
+                            uint64_t max_env_bytes,
+                            const app_prep_units_t *u, size_t *sel,
+                            uint64_t *env_total_out)
+{
+    size_t   env_cap = ctx->env_bound < NODUS_V2_ENV_BATCH_MAX
+                           ? ctx->env_bound
+                           : NODUS_V2_ENV_BATCH_MAX;
+    size_t   claim_cap = ctx->claim_bound < NODUS_V2_APPLY_MAX_CLAIMS
+                             ? ctx->claim_bound
+                             : NODUS_V2_APPLY_MAX_CLAIMS;
+    size_t   k, out = 0, env_kept = 0, claim_kept = 0;
+    int64_t  total = 0;
+    uint64_t env_total = 0;
+    dna_meter_budget_t budget;                   /* the scratch remainder */
+    uint32_t n_tx[DNA_METER_MAX_DOMAINS];        /* packed per quota dom  */
+
+    memset(&budget, 0, sizeof(budget));
+    memset(n_tx, 0, sizeof(n_tx));
+    if (u->policy) {
+        budget = u->budget;
+    }
+    for (k = 0; k < n && out < NODUS_V2_APPLY_MAX_OPS; k++) {
+        size_t  idx    = order[k];
+        size_t  len    = req->txs[idx].len;
+        int64_t cost   = nodus_cmt_compute_proto_size_for_tx(len);
+        bool    is_env = class_arr[idx] == NODUS_W_TX_V2_ENVELOPE;
+
+        if (excluded[idx]) {
+            continue;
+        }
+        if (is_env ? env_kept >= env_cap : claim_kept >= claim_cap) {
+            continue;                        /* this class's own overflow */
+        }
+        if (cost < 0 || total > req->max_tx_bytes - cost) {
+            continue;                        /* does not fit the budget   */
+        }
+        if (is_env && ((uint64_t)len > max_env_bytes ||
+                       env_total > max_env_bytes - (uint64_t)len)) {
+            continue;                        /* the ledger's byte bound   */
+        }
+        if (is_env) {
+            const dna_env_view_t *v = u->view;
+            dna_meter_status_t    ms;
+            uint16_t              l;
+            bool                  quota_full = false, unknown = false;
+
+            if (!u->policy || !u->view || !u->meter ||
+                dna_env_decode(req->txs[idx].data, len, u->view) != 0) {
+                excluded[idx] = true;        /* nothing to reserve with   */
+                continue;
+            }
+            for (l = 0; l < v->leg_count; l++) {
+                int qi = app_prep_quota_ix(u, v->leg[l].domain_id);
+
+                if (qi < 0) {
+                    unknown = true;          /* no ACTIVE runtime domain  */
+                    break;
+                }
+                if (u->quota[qi] != 0 &&
+                    n_tx[qi] + 1u > (uint32_t)u->quota[qi]) {
+                    quota_full = true;
+                }
+            }
+            if (unknown) {
+                excluded[idx] = true;
+                continue;
+            }
+            if (quota_full) {
+                continue;                    /* the domain's block quota  */
+            }
+            memset(u->meter, 0, sizeof(*u->meter));
+            ms = dna_meter_reserve(u->meter, u->policy, v, &budget);
+            if (ms == DNA_METER_ERR_GLOBAL_BUDGET ||
+                ms == DNA_METER_ERR_DOMAIN_BUDGET) {
+                continue;                    /* the unit budget: skip     */
+            }
+            if (ms != DNA_METER_OK) {
+                excluded[idx] = true;        /* the plan itself refused   */
+                continue;
+            }
+            for (l = 0; l < v->leg_count; l++) {
+                n_tx[app_prep_quota_ix(u, v->leg[l].domain_id)]++;
+            }
+            env_total += (uint64_t)len;
+            env_kept++;
+        } else {
+            claim_kept++;
+        }
+        total += cost;
+        sel[out++] = idx;
+    }
+    *env_total_out = env_total;
+    return out;
+}
+
+/* ── FEE PER UNIT, exactly (CHECKTX-P1 round 2, decision 2026-09-25-
+ * mempool-policy.md 2 — "gas çarpanı": fee / declared gas limit, no new
+ * wire field). Two ratios fee_a/units_a and fee_b/units_b compare as the
+ * 128-bit products fee_a·units_b and fee_b·units_a — integer only, no
+ * floating point, no rounding. A claim (no fee field) and an envelope
+ * declaring 0 units both rank as the ratio 0/1. */
+static void app_mul_u64(uint64_t a, uint64_t b, uint64_t *hi, uint64_t *lo)
+{
+    uint64_t a0 = a & 0xFFFFFFFFu, a1 = a >> 32;
+    uint64_t b0 = b & 0xFFFFFFFFu, b1 = b >> 32;
+    uint64_t p00 = a0 * b0, p01 = a0 * b1, p10 = a1 * b0, p11 = a1 * b1;
+    uint64_t mid = (p00 >> 32) + (p01 & 0xFFFFFFFFu) + (p10 & 0xFFFFFFFFu);
+
+    *lo = (p00 & 0xFFFFFFFFu) | (mid << 32);
+    *hi = p11 + (p01 >> 32) + (p10 >> 32) + (mid >> 32);
+}
+
+/** 1 when fee_a/units_a is STRICTLY greater than fee_b/units_b. */
+static bool app_ratio_gt(uint64_t fee_a, uint64_t units_a,
+                         uint64_t fee_b, uint64_t units_b)
+{
+    uint64_t lh, ll, rh, rl;
+
+    if (units_a == 0) { fee_a = 0; units_a = 1; }
+    if (units_b == 0) { fee_b = 0; units_b = 1; }
+    app_mul_u64(fee_a, units_b, &lh, &ll);
+    app_mul_u64(fee_b, units_a, &rh, &rl);
+    return lh > rh || (lh == rh && ll > rl);
+}
+
 int nodus_cmt_app_prepare_proposal(
         void *vctx, const nodus_abci_request_prepare_proposal_t *req,
         nodus_abci_response_prepare_proposal_t *resp)
 {
     nodus_cmt_app_ledger_t *ctx = (nodus_cmt_app_ledger_t *)vctx;
-    size_t   n = 0, i, k, kept;
-    int64_t  total = 0;
+    size_t   n = 0, i, k;
+    size_t   n_sel = 0;             /* the packed proposal, in `sel`     */
     uint64_t env_total = 0;         /* summed ENVELOPE bytes, the seam's
                                      * own block-byte measure           */
     uint64_t max_env_bytes = 0;     /* the policy's max_block_env_bytes  */
     bool     bytes_logged = false;  /* the unreachable-BYTES line, once  */
+    bool     cc_alone = false;      /* a chain_config rides alone        */
+    bool     refill_ok = true;      /* no tail drop happened yet         */
+    size_t   passes = 0;            /* seam refusals acted on            */
     size_t   guard;
     int      rc_out = CMT_FAULT;
 
@@ -722,11 +1563,20 @@ int nodus_cmt_app_prepare_proposal(
      * case), freed via goto-cleanup before every return. Only
      * `new_prep_txs` survives past this function — it becomes
      * `ctx->prep_txs`, the RESPONSE buffer the ABCI ownership rule keeps
-     * valid until the NEXT call to this same method. */
+     * valid until the NEXT call to this same method. CHECKTX-P1 adds
+     * `excluded` (per request index: out of this proposal for good) and
+     * `sel` (the packed proposal, request indices in sort order), both
+     * the same size and lifetime; round 2 adds `units` (each envelope's
+     * declared res_max_total_units, the sort's denominator) and `pu`
+     * (the unit/quota inputs of the pack, freed with its scratch). */
     uint64_t       *fee       = NULL;
+    uint64_t       *units     = NULL;
+    app_prep_units_t *pu      = NULL;
     uint8_t        *class_arr = NULL;
     bool           *is_cc     = NULL;
+    bool           *excluded  = NULL;
     size_t         *order     = NULL;
+    size_t         *sel       = NULL;
     cmt_pb_bytes_t *new_prep_txs = NULL;
 
     if (!ctx || !ctx->w || !req || !resp) {
@@ -763,7 +1613,12 @@ int nodus_cmt_app_prepare_proposal(
     class_arr = (uint8_t *)calloc(req->txs_len, sizeof(*class_arr));
     is_cc     = (bool *)calloc(req->txs_len, sizeof(*is_cc));
     order     = (size_t *)calloc(req->txs_len, sizeof(*order));
-    if (!fee || !class_arr || !is_cc || !order) {
+    excluded  = (bool *)calloc(req->txs_len, sizeof(*excluded));
+    sel       = (size_t *)calloc(req->txs_len, sizeof(*sel));
+    units     = (uint64_t *)calloc(req->txs_len, sizeof(*units));
+    pu        = (app_prep_units_t *)calloc(1, sizeof(*pu));
+    if (!fee || !class_arr || !is_cc || !order || !excluded || !sel ||
+        !units || !pu) {
         rc_out = CMT_FAULT;
         goto done;
     }
@@ -786,8 +1641,10 @@ int nodus_cmt_app_prepare_proposal(
             if (dna_env_decode(t->data, t->len, &view) != 0) {
                 continue;                    /* the engine would refuse it */
             }
-            /* env_wire.h:53 — `fee_amount` u64 BE at offset 25. */
+            /* env_wire.h:53-54 — `fee_amount` u64 BE at offset 25,
+             * `res_max_total_units` u64 BE at offset 33. */
             fee[i]   = view.fee_amount;
+            units[i] = view.res_max_total_units;
             is_cc[i] = env_is_chain_config(&view);
         }
         /* A CLAIM carries no fee field (dna_claim_t has none), so its
@@ -797,34 +1654,28 @@ int nodus_cmt_app_prepare_proposal(
         order[n++] = i;
     }
 
-    /* ── fee-descending, STABLE (ties keep arrival order) ────────────
-     * Insertion sort with a strict `>` test: an element moves past an
-     * earlier one only when its fee is strictly greater, so equal fees
-     * stay in request order. This was the legacy mempool's own ordering
-     * discipline (its insert went before the FIRST entry with a strictly
-     * smaller fee; that module was deleted in R3 W4 — the rule lives
-     * here now). */
+    /* ── fee PER UNIT descending, STABLE (ties keep arrival order) ────
+     * CHECKTX-P1 round 2, decision 2026-09-25-mempool-policy.md 2: the
+     * key is fee / declared res_max_total_units (the wallet's "gas
+     * multiplier" — no new wire field), compared EXACTLY by
+     * `app_ratio_gt` (128-bit cross products). A full-budget "hog" paying
+     * the minimum fee therefore sorts LAST, not second. Insertion sort
+     * with a strict `>` test: an element moves past an earlier one only
+     * when its ratio is strictly greater, so equal ratios stay in request
+     * order. This was the legacy mempool's own ordering discipline over
+     * the flat fee (its insert went before the FIRST entry with a
+     * strictly smaller fee; that module was deleted in R3 W4 — the rule
+     * lives here now). */
     for (k = 1; k < n; k++) {
         size_t cur = order[k];
         size_t j   = k;
 
-        while (j > 0 && fee[order[j - 1]] < fee[cur]) {
+        while (j > 0 && app_ratio_gt(fee[cur], units[cur],
+                                     fee[order[j - 1]], units[order[j - 1]])) {
             order[j] = order[j - 1];
             j--;
         }
         order[j] = cur;
-    }
-
-    /* ── a chain_config transaction rides alone ──────────────────────
-     * The legacy leader keeps the chain_config entry and requeues the
-     * rest (nodus_witness_bft.c:5434-5465); here the rest simply stay in
-     * the mempool, because PrepareProposal only chooses. */
-    for (k = 0; k < n; k++) {
-        if (is_cc[order[k]]) {
-            order[0] = order[k];
-            n = 1;
-            break;
-        }
     }
 
     /* ── the ledger's own envelope-byte bound, from the SAME authority
@@ -871,179 +1722,144 @@ int nodus_cmt_app_prepare_proposal(
         bcrc = nodus_witness_v2_block_ctx_build(ctx->w, bctx);
         if (bcrc == 0 && bctx->policy) {
             max_env_bytes = bctx->policy->max_block_env_bytes;
+            /* CHECKTX-P1 round 2 — the pack's unit/quota inputs from the
+             * SAME context: the sealed policy (BORROWED from the runtime
+             * registry, outlives this call), the fresh budget, and every
+             * budgeted domain's committed quota_tx_per_block (the manifest
+             * the item loop's admission reads — doms_load →
+             * nodus_witness_domreg_get). */
+            pu->policy  = bctx->policy;
+            pu->budget  = bctx->budget;
+            pu->n_quota = bctx->budget.n_domains;
+            for (i = 0; i < pu->n_quota && bcrc == 0; i++) {
+                dna_domain_manifest_t man;
+
+                pu->quota_dom[i] = bctx->budget.dom[i].domain_id;
+                if (nodus_witness_domreg_get(ctx->w, pu->quota_dom[i], NULL,
+                                             &man, NULL) != 0) {
+                    bcrc = -2;               /* registry unreadable here  */
+                } else {
+                    pu->quota[i] = man.quota_tx_per_block;
+                }
+            }
         }
-        free(bctx);                          /* `policy` is BORROWED from
-                                              * the runtime registry; only
-                                              * the scalar is kept         */
-        if (bcrc != 0 || max_env_bytes == 0) {
+        free(bctx);                          /* only scalars + the borrowed
+                                              * policy pointer are kept    */
+        pu->view  = (dna_env_view_t *)calloc(1, sizeof(*pu->view));
+        pu->meter = (dna_meter_t *)calloc(1, sizeof(*pu->meter));
+        if (bcrc != 0 || max_env_bytes == 0 || !pu->view || !pu->meter) {
             QGP_LOG_ERROR(LOG_TAG, "PrepareProposal: the block-start "
-                          "context (the envelope-byte bound) could not be "
-                          "built on this node (rc=%d)", bcrc);
+                          "context (the envelope-byte bound, the unit "
+                          "budget, the domain quotas) could not be built on "
+                          "this node (rc=%d)", bcrc);
             rc_out = CMT_FAULT;
             goto done;
         }
     }
 
-    /* ── the byte budgets: drop from the TAIL ────────────────────────
-     * ONE pass, TWO bounds, the first entry that breaks EITHER ends the
-     * list (the list is fee-descending, so the tail is the lowest-fee
-     * remainder):
-     *  - `max_tx_bytes` bounds `ComputeProtoSizeForTxs` of the answer
-     *    (types/tx.go:188-192; the host validates it again at
-     *    nodus_witness_cmt_host.c:802 through `nodus_cmt_txs_validate`),
-     *    so that accumulation uses the same measure;
-     *  - `max_env_bytes` bounds the summed wire length of the ENVELOPE
-     *    entries, exactly `nodus_witness_v2_block_bytes_check`'s measure
-     *    (nodus_witness_v2_env.c): the seam sums `view.env_len` of the
-     *    envelope subset only (claims never enter it,
-     *    nodus_witness_v2_produce.c's class split), and `env_len` IS the
-     *    entry's length for every envelope that decodes
-     *    (shared/dnac/env_wire.c, "EXACT length" — every ENVELOPE left in
-     *    `order[]` decoded above). The bound is INCLUSIVE, as there.
-     *    One envelope that ALONE exceeds it can never fit any block (the
-     *    legacy leader's own "genuinely poison" case) — it is left out
-     *    and the pass continues, so it can never hold every lower-fee
-     *    entry behind it out of every block. Unreachable at today's
-     *    policy (a decodable envelope is <= DNA_ENV_MAX_TOTAL_LEN, half
-     *    the bound); written so a repinned policy cannot turn it into a
-     *    permanent empty-block chain. */
-    kept = 0;
-    total = 0;
-    env_total = 0;
-    for (k = 0; k < n; k++) {
-        size_t  len  = req->txs[order[k]].len;
-        int64_t cost = nodus_cmt_compute_proto_size_for_tx(len);
-        bool    is_env = class_arr[order[k]] == NODUS_W_TX_V2_ENVELOPE;
-
-        if (is_env && (uint64_t)len > max_env_bytes) {
-            continue;                        /* fits no block, ever        */
-        }
-        if (cost < 0 || total > req->max_tx_bytes - cost) {
-            break;                           /* the tail does not fit      */
-        }
-        if (is_env) {
-            if (env_total > max_env_bytes - (uint64_t)len) {
-                break;                       /* the ledger's byte bound    */
-            }
-            env_total += (uint64_t)len;
-        }
-        total += cost;
-        order[kept++] = order[k];
-    }
-    n = kept;
-
-    /* ── R3 W4 package C — PER-CLASS caps, now that the engine's own
-     * scratch is heap and sized per-block (nodus_witness_v2_apply.c):
-     * envelopes ≤ `NODUS_V2_ENV_BATCH_MAX` (delta 2 on: a derived MEMORY
-     * ceiling, 64 MiB scratch budget / 20 908 B per envelope = 3 209 —
-     * NOT the chain-config hard cap of 10 delta 1 briefly tied it to;
-     * MAX_TXS_PER_BLOCK is RETIRED, apply.h) and claims ≤ `min(ctx->claim_bound,
-     * NODUS_V2_APPLY_MAX_CLAIMS)` (the smaller of this chain's own
-     * byte-derived claim capacity and the most claims any cometbft block
-     * can carry, 14 162 — nodus_witness_v2_apply.h). A single forward
-     * pass over the still fee-descending `order[]` keeps, for each
-     * class, exactly the first (highest-fee) entries up to that class's
-     * cap and drops the rest — which are that class's OWN lowest-fee
-     * remainder, because the scan visits `order[]` in fee order and only
-     * advances a class's counter when it sees a member of that class. ⚠
-     * CORRECTED CLAIM (was wrong here through W3, R3-W3-C2a-19): a
-     * domain_id CANNOT repeat across one envelope's legs —
-     * `dna_env_decode` (shared/dnac/env_wire.c:364-365) and
-     * `dna_env_encode` (:276) both refuse a leg list that is not
-     * STRICTLY ascending by domain_id, so "one envelope with many legs
-     * on one domain" is not a reachable shape at all. The per-domain
-     * `d->n_tx` bound this used to flag as an open gap is now itself a
-     * proven-unreachable FAULT in the engine (apply.c, the admission
-     * block's `d->n_tx >= blk->n_envs` check), not a live risk. */
-    {
-        size_t env_kept = 0, claim_kept = 0, out_n = 0;
-        /* R3 W4-C delta 2: the envelope cap is ALSO a min(), matching
-         * the claim cap's own shape — this chain's own byte-derived
-         * env_bound (from Block.MaxBytes) can only ever be SMALLER than
-         * the engine's memory ceiling on a genesis document configured
-         * with an unusually small block size; taking the min keeps this
-         * correct in that case instead of silently trusting the larger
-         * of the two. */
-        size_t env_cap = ctx->env_bound < NODUS_V2_ENV_BATCH_MAX
-                              ? ctx->env_bound
-                              : NODUS_V2_ENV_BATCH_MAX;
-        size_t claim_cap = ctx->claim_bound < NODUS_V2_APPLY_MAX_CLAIMS
-                                ? ctx->claim_bound
-                                : NODUS_V2_APPLY_MAX_CLAIMS;
-
-        for (k = 0; k < n; k++) {
-            uint8_t cls = class_arr[order[k]];
-
-            if (cls == NODUS_W_TX_V2_ENVELOPE) {
-                if (env_kept >= env_cap) {
-                    continue;              /* this class's own overflow */
-                }
-                env_kept++;
-            } else if (cls == NODUS_W_TX_V2_CLAIM) {
-                if (claim_kept >= claim_cap) {
-                    continue;              /* this class's own overflow */
-                }
-                claim_kept++;
-            }
-            order[out_n++] = order[k];
-        }
-        n = out_n;
-    }
-
-    /* ── ORCHESTRATOR delta 11 — the engine's own per-block MIXED ARRAY
-     * bound (R3-W3-C2a-19; R3-W4 package C repointed the value to the
-     * DERIVED sum, `NODUS_V2_ENV_BATCH_MAX + NODUS_V2_APPLY_MAX_CLAIMS`).
-     * Kept as defense-in-depth AFTER the per-class caps above: with both
-     * classes already within their own bound, their sum can never exceed
-     * this one, so this trim is now a no-op in practice — but it is the
-     * belt to the per-class caps' braces, in case a future class is ever
-     * added here without its own cap.
+    /* ── a chain_config transaction rides alone — IF IT CAN RIDE ──────
+     * The legacy leader keeps the chain_config entry and requeues the
+     * rest (nodus_witness_bft.c:5434-5465); here the rest simply stay in
+     * the mempool, because PrepareProposal only chooses.
      *
-     * Dropping the same TAIL the byte budget just dropped needs no new
-     * decision: the list is still fee-descending with chain_config alone
-     * first (above), so the tail is the lowest-fee remainder. Shaping
-     * the proposal this way is squarely inside the Application's own
-     * contract, not a deviation from it — abci++_methods.md's
-     * PrepareProposal section: "The Application _can_ modify the raw
-     * proposal: it can reorder, remove or add transactions... If the
-     * Application considers that `tx` should not be proposed in this
-     * block ... then it should not include it in
-     * `PrepareProposalResponse.txs`" (spec/abci/abci++_methods.md:347-
-     * 351, cometbft @709fd12b). Placed BEFORE the seam call below so an
-     * over-count proposal is trimmed before the seam ever runs the
-     * (much more expensive) per-item admission over items that would be
-     * dropped anyway. */
-    if (n > NODUS_V2_APPLY_MAX_OPS) {
-        n = NODUS_V2_APPLY_MAX_OPS;
+     * CHECKTX-P1 (red-team F1): the fee-first chain_config candidate
+     * used to ride alone UNCONDITIONALLY — so one the seam refuses (a
+     * SYSTEM CHAIN_CONFIG leg declaring res_max_total_units 0) emptied
+     * every block while it sat in the mempool. Now each chain_config
+     * candidate, in fee order, rides alone only if it fits the byte
+     * budgets and the seam accepts it ALONE; a refused one is left out
+     * (it stays in the mempool, where the CheckTx dry run keeps a new one
+     * from arriving) and the next is tried. Every chain_config candidate
+     * is excluded from the ordinary packing below either way — they
+     * never share a block. Bound: one one-item seam run per chain_config
+     * candidate. */
+    for (k = 0; k < n; k++) {
+        size_t  idx = order[k];
+        size_t  len;
+        int64_t cost;
+        int     crc;
+
+        if (!is_cc[idx]) {
+            continue;
+        }
+        excluded[idx] = true;
+        len  = req->txs[idx].len;
+        cost = nodus_cmt_compute_proto_size_for_tx(len);
+        if (cost < 0 || cost > req->max_tx_bytes ||
+            (uint64_t)len > max_env_bytes) {
+            continue;                        /* fits no block this round  */
+        }
+        crc = app_seam_check(ctx, req->txs, &order[k], 1, ctx->prep_bound,
+                             NULL, NULL);
+        if (crc == -2) {
+            QGP_LOG_ERROR(LOG_TAG, "%s",
+                          "PrepareProposal: the capacity seam faulted on "
+                          "this node (chain_config candidate)");
+            rc_out = CMT_FAULT;
+            goto done;
+        }
+        if (crc == 0) {
+            sel[0]  = idx;
+            n_sel   = 1;
+            cc_alone = true;
+            break;
+        }
+        QGP_LOG_INFO(LOG_TAG, "%s", "PrepareProposal: a chain_config "
+                     "candidate the seam refuses alone is left out; the "
+                     "rest are packed");
+    }
+
+    /* ── pack: the byte budgets, the unit budget, the domain quotas, the
+     * per-class caps and the mixed item bound, in ONE sorted pass
+     * (app_prep_pack — see its comment for why an entry that does not
+     * fit is SKIPPED, not a stop). ──────────────────────────────────── */
+    if (!cc_alone) {
+        n_sel = app_prep_pack(ctx, req, order, n, class_arr, excluded,
+                              max_env_bytes, pu, sel, &env_total);
     }
 
     /* ── the engine's own seam: never propose what apply would refuse ──
      * O15I capacity seam, with the O15I leader's KIND discrimination
      * (defa07c6 — the legacy leader in nodus_witness_bft.c, deleted in
      * R3 W4; nodus_witness_v2_env.h's nodus_v2_batch_fail_kind_t):
-     *  - ENTRY_INVALID at slot i: that entry never becomes valid — drop
-     *    it, re-run.
-     *  - CAPACITY_UNITS at slot i > 0: entries [0, i) reserved in this
-     *    very run, so that prefix is exactly what fits — TRUNCATE to it
-     *    in ONE step (the tail stays in the mempool; nothing valid is
-     *    destroyed), re-run once to propose only what the seam accepted
-     *    whole.
-     *  - CAPACITY_UNITS at slot 0: the entry alone exceeds the whole
-     *    budget — poison, drop it alone.
+     *  - ENTRY_INVALID at slot i: that entry never becomes valid — it
+     *    is EXCLUDED and the proposal is REPACKED from the remaining
+     *    sorted candidates (CHECKTX-P1, red-team F2: the freed room is
+     *    refilled, not left empty), re-run.
+     *  - CAPACITY_UNITS at ANY slot: unreachable in practice — the pack
+     *    reserved every envelope with the seam's own `dna_meter_reserve`,
+     *    in the seam's order, against the same block-start budget, and
+     *    skipped the ones that did not fit. Should it happen anyway, the
+     *    named entry is EXCLUDED and the proposal repacked, exactly like
+     *    ENTRY_INVALID. CHECKTX-P1 round 2 DELETED the 0.19.77
+     *    "truncate to the prefix [0, i)" answer: it discarded every
+     *    fitting entry behind a full-budget hog — claims included — and
+     *    the hog was re-admitted by every recheck (red-team HIGH).
      *  - CAPACITY_BYTES: its index is 0 BY DESIGN and accuses nobody
-     *    (nodus_witness_v2_produce.c). Unreachable after the envelope-
-     *    byte trim above (same bound, same measure); should it ever
-     *    happen, the tail is dropped — never slot 0 — and it is logged
-     *    once per call.
+     *    (nodus_witness_v2_produce.c). Unreachable after the pack's
+     *    envelope-byte bound (same bound, same measure); should it ever
+     *    happen, the tail is dropped — never slot 0 — no refill follows,
+     *    and it is logged once per call.
      *  - anything else is this node's fault: the proposal stops.
-     * Every pass strictly shrinks `n`, and the guard bounds the loop
-     * regardless. A full mempool now costs O(1) seam runs in the common
-     * case (one clean run, or one truncation + one clean run), not one
-     * run per dropped entry. */
-    for (guard = 0; guard <= ctx->prep_bound; guard++) {
+     *
+     * BOUND (red-team F2/F3). Let W = the packed count (at most
+     * NODUS_V2_APPLY_MAX_OPS) and R = NODUS_CMT_APP_PREP_REFILL_MAX.
+     * Passes 1..R that name an offender repack (each pass excludes one
+     * candidate for good, so a repack never re-proposes it); every later
+     * pass removes one entry AND halves what is left. So at most
+     * R + ceil(log2 W) + 1 seam runs follow the first, each over at most
+     * W entries: O((R + log W) · W) seam work, never the O(W^2) of one
+     * run per dropped entry. The CheckTx dry run (and its conflict set)
+     * is what makes an offender rare in the first place — every mempool
+     * entry already passed the seam's own per-item checks at this
+     * height, and the pack already applied the seam's byte and unit
+     * bounds. The guard below is only a belt. */
+    for (guard = 0; !cc_alone &&
+                    guard <= ctx->prep_bound + NODUS_CMT_APP_PREP_REFILL_MAX;
+         guard++) {
         int fail_slot = 0;
         nodus_v2_batch_fail_kind_t fkind = NODUS_V2_BATCH_FAIL_NONE;
-        int rc = app_seam_check(ctx, req->txs, order, n, ctx->prep_bound,
+        int rc = app_seam_check(ctx, req->txs, sel, n_sel, ctx->prep_bound,
                                 &fail_slot, &fkind);
 
         if (rc == 0) {
@@ -1056,31 +1872,28 @@ int nodus_cmt_app_prepare_proposal(
             rc_out = CMT_FAULT;
             goto done;
         }
-        if (n == 0) {
+        if (n_sel == 0) {
             break;                           /* nothing left to drop: an
                                               * EMPTY block is legal       */
         }
-        if (fkind == NODUS_V2_BATCH_FAIL_CAPACITY_UNITS && fail_slot > 0) {
-            QGP_LOG_INFO(LOG_TAG, "PrepareProposal: the unit budget fits "
-                         "%d of %zu candidates — truncating", fail_slot, n);
-            n = (size_t)fail_slot;
-            continue;
-        }
+        passes++;
         if (fkind == NODUS_V2_BATCH_FAIL_CAPACITY_BYTES) {
             if (!bytes_logged) {
                 QGP_LOG_ERROR(LOG_TAG, "PrepareProposal: the seam refused "
                               "%zu candidates on the envelope-byte bound "
                               "AFTER the byte trim (bound %llu, trimmed to "
-                              "%llu) — dropping from the tail", n,
+                              "%llu) — dropping from the tail", n_sel,
                               (unsigned long long)max_env_bytes,
                               (unsigned long long)env_total);
                 bytes_logged = true;
             }
-            n--;
-            continue;
-        }
-        if (fkind != NODUS_V2_BATCH_FAIL_ENTRY_INVALID &&
-            fkind != NODUS_V2_BATCH_FAIL_CAPACITY_UNITS) {
+            n_sel--;
+            refill_ok = false;
+            if (passes > NODUS_CMT_APP_PREP_REFILL_MAX && n_sel > 1) {
+                n_sel = (n_sel + 1) / 2;     /* the geometric tail bound  */
+            }
+        } else if (fkind != NODUS_V2_BATCH_FAIL_ENTRY_INVALID &&
+                   fkind != NODUS_V2_BATCH_FAIL_CAPACITY_UNITS) {
             /* rc -1 always carries one of the three verdict kinds
              * (nodus_witness_v2_produce.c); any other kind here is this
              * node failing to classify, never a verdict to act on. */
@@ -1089,33 +1902,52 @@ int nodus_cmt_app_prepare_proposal(
                           (int)fkind);
             rc_out = CMT_FAULT;
             goto done;
+        } else {
+            /* ENTRY_INVALID, or CAPACITY_UNITS (any slot — the pack
+             * should have made it unreachable), at fail_slot: that entry
+             * is out of this proposal for good. */
+            if (fkind == NODUS_V2_BATCH_FAIL_CAPACITY_UNITS) {
+                QGP_LOG_WARN(LOG_TAG, "PrepareProposal: the seam refused "
+                             "slot %d of %zu on the unit budget AFTER the "
+                             "pack reserved it — excluding it", fail_slot,
+                             n_sel);
+            }
+            excluded[sel[fail_slot]] = true;
+            if (refill_ok && passes <= NODUS_CMT_APP_PREP_REFILL_MAX) {
+                n_sel = app_prep_pack(ctx, req, order, n, class_arr,
+                                      excluded, max_env_bytes, pu, sel,
+                                      &env_total);
+                continue;                    /* the freed room, refilled  */
+            }
+            for (k = (size_t)fail_slot; k + 1 < n_sel; k++) {
+                sel[k] = sel[k + 1];
+            }
+            n_sel--;
+            if (passes > NODUS_CMT_APP_PREP_REFILL_MAX && n_sel > 1) {
+                n_sel = (n_sel + 1) / 2;     /* the geometric tail bound  */
+            }
         }
-        /* ENTRY_INVALID at fail_slot, or CAPACITY_UNITS at slot 0: drop
-         * exactly that entry. */
-        for (k = (size_t)fail_slot; k + 1 < n; k++) {
-            order[k] = order[k + 1];
-        }
-        n--;
     }
 
     /* ── the RESPONSE buffer: ctx-owned past this return, sized to the
-     * KEPT count `n`, never to prep_bound. ─────────────────────────── */
-    if (n > 0) {
-        new_prep_txs = (cmt_pb_bytes_t *)calloc(n, sizeof(*new_prep_txs));
+     * KEPT count `n_sel`, never to prep_bound. ──────────────────────── */
+    if (n_sel > 0) {
+        new_prep_txs = (cmt_pb_bytes_t *)calloc(n_sel,
+                                                sizeof(*new_prep_txs));
         if (!new_prep_txs) {
             rc_out = CMT_FAULT;
             goto done;
         }
-        for (k = 0; k < n; k++) {
-            new_prep_txs[k] = req->txs[order[k]];
+        for (k = 0; k < n_sel; k++) {
+            new_prep_txs[k] = req->txs[sel[k]];
         }
     }
-    ctx->prep_txs     = new_prep_txs;   /* NULL when n == 0, and that is
-                                         * a valid empty response         */
-    ctx->prep_txs_len = n;
-    ctx->prep_txs_cap = n;
+    ctx->prep_txs     = new_prep_txs;   /* NULL when n_sel == 0, and that
+                                         * is a valid empty response      */
+    ctx->prep_txs_len = n_sel;
+    ctx->prep_txs_cap = n_sel;
     resp->txs     = ctx->prep_txs;
-    resp->txs_len = n;
+    resp->txs_len = n_sel;
     rc_out = CMT_OK;
 
 done:
@@ -1123,6 +1955,14 @@ done:
     free(class_arr);
     free(is_cc);
     free(order);
+    free(excluded);
+    free(sel);
+    free(units);
+    if (pu) {
+        free(pu->view);
+        free(pu->meter);
+        free(pu);
+    }
     return rc_out;
 }
 
@@ -1884,6 +2724,15 @@ int nodus_cmt_app_commit(void *vctx, nodus_abci_response_commit_t *resp)
         sqlite3_free(err);
         return CMT_FAULT;
     }
+    /* CHECKTX-P1 — the committed state just moved, so every pending
+     * conflict key is stale: clear the set here, AFTER the COMMIT, and
+     * let the mempool's recheck repopulate it in FIFO order — the host
+     * calls this row and only then `mempool->update`, whose recheck
+     * re-runs CheckTx over every remaining entry
+     * (nodus_witness_cmt_host.c `blockexec_commit`; cmt_mem.c
+     * `mem_recheck_txs`). The auth cache advances one generation. */
+    pend_clear(ctx);
+    acache_sweep(ctx);
     /* `retain_height` 0: this application asks for no pruning in W2, so
      * `pruneBlocks` (execution.go:309-316) is not entered. */
     resp->retain_height = 0;

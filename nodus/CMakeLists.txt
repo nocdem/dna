@@ -1384,7 +1384,8 @@ add_test(NAME test_cmt_app COMMAND test_cmt_app)
 # D-16 rev 7 (W4-CC) — the SYSTEM-governance approval-collection
 # responder (nodus_witness_handle_cc_appr_req, verbs 40-41) over a REAL
 # derived version-3 chain with 7 REAL ML-DSA-87 committee keys: happy
-# path from every seat through nodus_witness_v2_env_authorize AND the
+# path from every seat through nodus_witness_v2_env_dry_run (CHECKTX-P1;
+# was nodus_witness_v2_env_authorize, deleted in 0.19.78) AND the
 # Comet apply lane (the chain_config_history row committed), an
 # independent digest recomputation, a refusal matrix (foreign chain id
 # in the T3 header, non-member, wrong auth_kind, nonzero fee, TARGET

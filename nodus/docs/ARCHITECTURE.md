@@ -181,7 +181,7 @@ nodus/
 │   ├── test_cmt_cs.c          # cometbft port R2-T + R2-T2: 39 whole-height scenarios from state_test.go / byzantine_test.go / mempool_test.go (every state_test.go func a single-node fixture can drive; 4 remain BLOCKED, listed with reasons); asserts WHICH block was committed; "how it can lie" items 11-21 (the fixture's 1-12 are in test_cmt_common.h)
 │   ├── test_cmt_multinode.h   # cometbft port R2-BYZ: the reactor stand-in — N fixtures, connectivity matrix, router porting the three gossip routines as rules, step budget instead of wall clock; R3 W3 P0 added a third timer rule (M16 MN_TICKER_QUIESCENT: an honest node's timeout fires only when the whole network was quiet for a full round) and the bad-header byzantine override
 │   ├── test_cmt_byzantine.c   # cometbft port R2-BYZ: TestByzantineConflictingProposalsWithPartition — 4 nodes, byzantine proposer, partition heals, all honest nodes commit the SAME block; + 2 C-only scenarios; + R3 W3 P0: the two part-set-bound OBLIGATION scenarios (atlas-dec-247e5c0e…): forged +2/3 prevotes for a BlockID the bound refuses → every honest node reaches setProposal / addVote / enterPrecommit, signs nil, commits an honest block later (parts_cap clause); forged precommits too → enterCommit parks the node with no block (MAX_PARTS clause)
-│   ├── test_cmt_app.c         # cometbft port R3-C1a: the application over a REAL version-3 chain — InitChain as a genesis check, FinalizeBlock with per-item SAVEPOINT isolation, both crash windows, Commit as the COMMIT, CheckTx (incl. the signature stage), PrepareProposal / ProcessProposal (incl. the envelope-byte trim and the seam's refusal-kind handling, with a seam-run count); 32 cases
+│   ├── test_cmt_app.c         # cometbft port R3-C1a: the application over a REAL version-3 chain — InitChain as a genesis check, FinalizeBlock with per-item SAVEPOINT isolation, both crash windows, Commit as the COMMIT, CheckTx (incl. the signature stage, the per-item dry run, the pending conflict set and the light recheck), PrepareProposal / ProcessProposal (incl. the envelope-byte trim, the seam's refusal-kind handling with a seam-run count, the refused-chain_config / refill / claims-past-the-window fixes, the mempool lifetime rule, row-identity conflict keys, the unit-aware pack and fee-per-unit ordering); 45 cases
 │   ├── test_cmt_node.c        # cometbft port R3-C1c: the startup table — genesis document loader (row / provider / refusals), the Handshaker's height cases and BOTH crash windows healed (real app / mock app), LoadOrGenFilePV, init/start/release; 14 cases
 │   └── test_cmt_net.c         # cometbft port R3 W3 C2b: the transport glue (nodus_witness_cmt_net) — peer-set scan over a hand-built witness peer table driving a REAL cmt_conr/cmt_memr pair, send refused for a down/quarantined slot, verb 35/39 receive routing, receive-before-tick, the 64 MiB receive-arena runway + latches, deferred close bookkeeping, scan waits for both reactors; 8 cases
 ├── CMakeLists.txt             # Build system
@@ -1616,7 +1616,8 @@ against the decoder with the duplicate branch disabled), `test_witness_protocol_
 version-3 chain with 7 REAL ML-DSA-87 keys and a REAL loopback `nodus_tcp_conn_t`: every seat
 asked THROUGH the responder, the `DNA.CCSET.v1` / `DNA.CCAPPR.v1` preimages recomputed
 independently and one seat's signature verified over them, the assembled envelope through
-`nodus_witness_v2_env_authorize` AND committed through the Comet apply lane with the
+`nodus_witness_v2_env_authorize` (since 0.19.78: the per-item CheckTx dry run
+`nodus_witness_v2_env_dry_run`, which replaced it) AND committed through the Comet apply lane with the
 `chain_config_history` row asserted — ORC-5; the refusal matrix; the INFLATION_START pair —
 ORC-6; the rate limit). The fixture clears the responder's rate-limit table before each seat
 (ORC-4: one witness plays seven nodes). Harness: `test_cmt_chain_config.sh` (short-grace
@@ -1932,7 +1933,7 @@ W3 makes the port the running consensus. Three packages landed after P0 and C2b 
 
 **The client lane (D-23 rev 7 (22)):** on a version-3 chain `handle_dnac_spend` runs `cmt_mem_check_tx` and answers the CheckTx result AT ONCE — `{status: APPROVED}` means accepted into the mempool (no block receipt, no `bnr`/`ti`/`wsig`); a refusal is mapped from the mempool's error kind or the application's code. The client learns the commit by query. There is no leader and no forward: the mempool reactor floods. `nodus-cli`'s submit print used to show zeros under a "committed: height=… index=…" label on this lane (package C2d's item, at the time reworded to "package W4-H"); package C delta 4 did the reword instead — see below.
 
-**The bounds (D-23 rev 7 (24)):** derived at bind time from the genesis document, never hardcoded — `prep_bound` = the mempool's configured size (5 000), `env_bound` = MaxDataBytes at one validator divided by an envelope's 73-byte framing minimum (293 525 at Block.MaxBytes 22 020 096), `claim_bound` = MaxDataBytes / `DNA_CLAIM_FIXED_LEN` (2 972); the executor's `max_txs` uses the same helper; `NODUS_CMT_APP_MAX_TXS` is retired. Every working array is per-request; only the two ABCI response buffers persist across calls. FinalizeBlock hands the engine a non-NULL results array even for an EMPTY block (the engine's precondition refuses NULL before the count; a quiet chain's first block is empty). PrepareProposal's seam loop is bounded by `prep_bound` passes, and since nodus 0.19.77 it reads the seam's refusal KIND, so a full mempool costs a constant number of seam runs (one clean run, or one unit truncation plus one clean run), not one run per dropped entry — see "PrepareProposal applies every byte bound the engine enforces" below; the O(prep_bound²) worst case remains only for a mempool full of individually INVALID entries (register R3-W3-C2a-11).
+**The bounds (D-23 rev 7 (24)):** derived at bind time from the genesis document, never hardcoded — `prep_bound` = the mempool's configured size (5 000), `env_bound` = MaxDataBytes at one validator divided by an envelope's 73-byte framing minimum (293 525 at Block.MaxBytes 22 020 096), `claim_bound` = MaxDataBytes / `DNA_CLAIM_FIXED_LEN` (2 972); the executor's `max_txs` uses the same helper; `NODUS_CMT_APP_MAX_TXS` is retired. Every working array is per-request; only the two ABCI response buffers persist across calls. FinalizeBlock hands the engine a non-NULL results array even for an EMPTY block (the engine's precondition refuses NULL before the count; a quiet chain's first block is empty). PrepareProposal's seam loop is bounded by `prep_bound` passes, and since nodus 0.19.77 it reads the seam's refusal KIND, so a full mempool costs a constant number of seam runs (0.19.77: one clean run, or one unit truncation plus one clean run; since 0.19.78 the pack reserves the unit budget itself and the truncation is deleted, so ONE run), not one run per dropped entry — see "PrepareProposal applies every byte bound the engine enforces" below; since nodus 0.19.78 an offender pass refills the freed room at most `NODUS_CMT_APP_PREP_REFILL_MAX` times and every later one halves the batch, so even a batch full of individually INVALID entries (register R3-W3-C2a-11) costs O((R + log W) · W) seam work, not O(prep_bound²), and CheckTx's per-item dry run keeps such entries out of the mempool in the first place — see "CheckTx runs the item's own stages" below.
 
 **The readiness side (C2c, D-17 rev 10 (8)):** the schema gates accept S14 — `nodus_witness_v2_pools_startup_check` and CORE `state_init` ADD S14 (the pool verification really runs there; before W3 an S14 database fell through `return 0` and was reported green), the preflight accepts S14 only, `nodus_witness_v2_genesis_cmt` narrows to S14 only. The derivation migrates to S14 FIRST (the W2 S12-then-climb order is withdrawn). The preflight's genesis check is rewritten against the stored DOCUMENT: present (`cmt_state` "genesisDoc") → the canonical-strict reader (`nodus_witness_v2_gen_stored_doc`) → its `chain_id` against the handle's 16-byte filename prefix → its `app_hash` against `nodus_witness_v2_committed_global_root` (NEW id 17 `GENESIS_APP_HASH_MISMATCH`, appended; ids 6 and 7 retired, never raised); the required-table list gains the five S14 stores. The whole-database digest is unchanged by a preflight (asserted).
 
@@ -2538,7 +2539,286 @@ truncated to 6 in one step: three seam runs (the unfixed loop needed
 eight); `prepare_entry_invalid_only` — an unpriced-op envelope in the
 middle is dropped and the entry after it survives, two runs. The run
 count is taken with `sqlite3_trace_v2` on the fixture's handle, counting
-the successor-tip read the seam issues once per run.
+the successor-tip read the seam issues once per run. *(Since 0.19.78
+round 2 both cases assert ONE seam run: the pack reserves the unit
+budget and refuses an unpriceable plan itself, and the unit truncation
+is deleted — see the next section.)*
+
+### CheckTx runs the item's own stages; a pending conflict set; PrepareProposal refills (2026-09-25, nodus 0.19.78)
+
+**Why.** The red-team of the 0.19.77 path (`nodus/BUGS.md`, top P0
+entry, "Red-team of the fixed path") found that CheckTx admitted what the
+proposal seam — or the apply lane — then refuses, and nothing ever
+removed it: the recheck after every block re-admitted it. CheckTx ran the
+admission lane (decode, ruleset table, preflight at tip + 1, `wire_id`
+match, committed-intent guard — `nodus_witness_verify.c`
+`verify_v2_successor_tx`) and the signature stage, and nothing else: no
+per-leg admission, no meter reservation, no execution. The findings this
+package closes: F1 — a fully authorized SYSTEM `CHAIN_CONFIG` envelope
+declaring `res_max_total_units` 0 entered the mempool, "rode alone" and
+was refused by the seam, so every block was empty while it sat there;
+F2 — the 0.19.77 pre-trim STOPPED at the first envelope over the byte
+window and nothing refilled the room a seam drop freed; F3 — seam-invalid
+top-fee entries cost one whole seam run each; F5 — K signature-variants
+of one claim (one nullifier) and DUP_INTENT variants of one envelope were
+all admitted; F6 — the stopping pre-trim also cut every claim behind the
+window although claims never count against it. Observed live the same
+day: two mempool envelopes spending the SAME coin were both admitted, and
+one failed at apply for free.
+
+**Scope — node-local only.** ProcessProposal's verdict, FinalizeBlock and
+every apply result, the state roots and every wire format are unchanged;
+0.19.78 is a rolling deploy with no wipe. The fee a failed item pays and
+the gas price (`docs/plans/decisions/2026-09-25-failed-tx-pays-fee.md`,
+`docs/plans/decisions/2026-09-25-gas-price.md`) are the NEXT package and
+are not implemented here; this one supplies the precondition the
+failed-tx decision names — an envelope's fee is only admissible if its
+inputs exist, are unspent and are the sender's at admission.
+
+1. **The per-item DRY RUN** (`nodus_witness_v2_env_dry_run`,
+   `nodus_witness_v2_apply.c`). CheckTx runs, for one envelope at the
+   candidate height tip + 1 against COMMITTED state, the apply lane's own
+   per-item stages in the item loop's order: preflight → replay guard
+   (committed intent / wire index) → per-leg admission (runtime exists
+   with exec + auth hooks, INVOKE, the committed ruleset owns the
+   runtime_op, the auth kind is on the runtime's allowlist, the domain's
+   per-block quota) → meter reservation against a FRESH block budget →
+   authorization → per leg: read plan, mediated reads, native exec,
+   strict effect decode, effect charge, and the adapter's validate /
+   probe / precondition decision. It writes nothing. ONE source: the
+   replay guard and the per-leg admission are the item loop's own code,
+   factored into `env_replay_guard` / `env_admit_legs`; the exec body is
+   `exec_one_env` itself, which in dry mode replaces ONLY the adapter's
+   mutate with `effects_probe_only` (the generic driver's validate →
+   probe → `nodus_adapter_precond_eval`, no mutate). Probe-only equals
+   apply for one item because an item's effects cannot observe each
+   other: logical keys are unique within a leg (strict effect codec), an
+   envelope's legs address distinct domains (strictly ascending leg
+   order), and every adapter call is scoped to its leg's domain — the one
+   residual assumption, read in both compiled adapters and not proven in
+   general, is that a probe of a key depends on that key's row alone.
+   The apply path is byte-identical: the engine passes `dry = NULL`.
+   A refusal is a nonzero `ResponseCheckTx.Code`; only a node-local fault
+   (-2) is CMT_FAULT. The old separate signature call
+   (`nodus_witness_v2_env_authorize`) is DELETED (round 2) — the dry
+   run's authorization stage is the same `env_authorize_legs`, and its
+   one test caller (`test_cc_appr.c`) now calls the dry run.
+2. **The PENDING CONFLICT SET** (`nodus_cmt_app_ledger_t.pend`, an
+   open-addressing hash set — linear probing, load ≤ ½, slot hash = the
+   first 8 bytes of SHA3-512 of the key, so no submitter can steer keys
+   into one probe chain; round 2 replaced the sorted array whose memmove
+   insert made a recheck refill O(K²)). Every admitted entry claims keys:
+   an envelope its `intent_id` and every ROW-IDENTITY row its dry-run
+   effects claim (domain, adapter op, key — read generically from the
+   decoded effect list, never from SPEND-specific parsing). EXACTLY two
+   classes are keyed, each a true conflict with ONE known exception
+   (below): every DELETE (once an earlier
+   item in the block deleted the row, a later item's mediated read of it
+   — taken inside the block transaction after the earlier item's
+   effects, `exec_one_env`: read_one :1098-1099, exec :1149,
+   effects_apply :1245 in nodus_witness_v2_apply.c — finds it absent)
+   and every `PRE_ABSENT` CREATE (once created, the key is present for
+   the later item's precondition). SETs are NOT keyed, whatever their
+   precondition: a `PRE_EXISTS_VHASH` SET derives its expected hash from
+   its OWN read (`rtn_row_set_eff`, nodus_witness_rt_native.c:2904-2905),
+   which sees the earlier items' writes, so two such SETs of one row both
+   apply in one block — round 2 keyed them and that was a FALSE conflict
+   (round 3): it let a node hold one pending DELEGATE per validator row
+   and let a min-fee, full-budget DELEGATE that never packs "squat" that
+   key for up to 100 blocks. `PRE_EXISTS` / `PRE_EXISTS_VERSION` SETs are
+   the shared counters, re-read the same way.
+   Native effects, read in `nodus_witness_rt_native.c` — KEYED: UTXO
+   CREATE `PRE_ABSENT` (:1509-1511, :1560-1562), input DELETE (:1613-1615),
+   TOKEN CREATE `PRE_ABSENT` (:1904-1906), delegation DELETE (:2926-2928),
+   validator CREATE `PRE_ABSENT` (:3374-3376), delegation CREATE
+   `PRE_ABSENT` (:3633-3635), chain_config history CREATE `PRE_ABSENT`,
+   key = param ‖ effective (:4137-4138, :4152-4154). NOT keyed: SYSTEM
+   row SET `EXISTS_VHASH` (`rtn_row_set_eff` :2907-2909 — the validator
+   row a DELEGATE / UNDELEGATE / UNSTAKE / validator update / revive
+   writes, and a partial UNDELEGATE's delegation row), the supply
+   counters SET `EXISTS_VERSION` (:1594-1596) and the validator stats
+   counter SET `EXISTS_VERSION` (:3382-3384). So N TOKEN_CREATEs of one
+   token_id, two fresh STAKEs for one validator, two FULL UNDELEGATEs of
+   one delegation, two proposals for one (param, effective): only the
+   first is admitted — while DELEGATEs from DIFFERENT delegators to one
+   validator are all admitted. **The known exception (a FALSE conflict,
+   accepted, `nodus/BUGS.md`, round-3 verifier T1):** two DELEGATEs from
+   ONE delegator to one validator it has no delegation with yet both emit
+   the delegation `PRE_ABSENT` CREATE, so only the first is admitted —
+   but in a block the second re-reads the row the first created and takes
+   the top-up path (`topup = dr->present`, nodus_witness_rt_native.c:3587;
+   two VHASH SETs, :3621-3630), which applies. Only that delegator can
+   trigger it; it re-sends after the first lands. A claim claims its
+   canonical nullifier
+   (`nodus_witness_v2_claim_nullifier` = the claim lane's
+   `claim_prescan_one`). CheckTx (new and recheck) refuses an entry any of
+   whose keys ANOTHER entry owns; the same entry re-checked (same
+   identity) is not a conflict. The set is cleared in
+   `nodus_cmt_app_commit` after the COMMIT, and the mempool's recheck —
+   which the host runs right after Commit (`nodus_witness_cmt_host.c`
+   `blockexec_commit`: `app->commit`, then `mempool->update`, whose
+   recheck walks the pool in FIFO order, `shared/dnac/cmt_mem.c`
+   `mem_recheck_txs`) — repopulates it, first come first kept. Bound:
+   `pend_max = prep_bound × (1 + n_rt × DNA_EFFECT_MAX_COUNT)` keys, n_rt
+   = the compiled runtime count (2: SYSTEM, CORE) — an envelope's legs
+   address distinct domains and each needs a compiled runtime — so
+   5 000 × 129 = 645 000 keys at most. What the native runtimes can
+   actually claim is far less: a SPEND is 1 intent + ≤ 15 input DELETEs
+   + ≤ 16 output CREATEs = 32 keys (`RTN_SPEND_MAX_IN` / `_MAX_OUT`,
+   nodus_witness_rt_native.c:355-356), a TOKEN_CREATE ≤ 1 + 14 + 16 + 1,
+   so a full native mempool holds ≤ ~160 000 keys; each key is one heap
+   record (≈ 220 B: hash, 64-byte owner, length, a 139-byte key buffer)
+   plus two 8-byte table slots, ≈ 38 MB at that worst native case and
+   ≈ 150 MB at `pend_max` (arithmetic, not measured). Heap,
+   grown on use; a full set refuses the entry; `pend_admit` is ALL OR
+   NOTHING — every allocation happens before the first insert, so an
+   allocation failure (CMT_FAULT) leaves the set as it was. Where the
+   mempool answers OK and still does not
+   hold the entry: `cmt_mem.c` `mem_res_cb_first_time` — "full again" is
+   unreachable (the same check refused before the app was asked, single
+   thread), "already there" is the SAME bytes, hence the SAME owner (no
+   new key); a `post_check` refusal (MaxGas is −1, so `post_check_max_gas`
+   answers OK), a recheck-time `post_check` refusal, `cmt_mem_flush` and
+   `cmt_mem_remove_tx_by_key` leave the entry's keys behind as PHANTOMS
+   until the next commit — they can only refuse a conflicting entry
+   falsely for one block, never admit one. With `recheck` switched off in
+   the mempool config (default ON, `cmt_mempool_config_default`) the set
+   would be empty after every commit: weaker, never wrong.
+3. **The LIGHT recheck** (`nodus_cmt_app_ledger_t.acache`, sorted by
+   `wire_id`). The auth_kind-1 leg verdicts of an admitted envelope are
+   cached by its `wire_id` (which commits every byte, the signatures
+   included) together with the leg digest; a RECHECK of the same
+   `wire_id` takes a cached verdict only where the leg digest it derives
+   again matches, and so re-verifies no ML-DSA-87 signature whose answer
+   cannot have changed. auth_kind 2 (committee approvals) is never cached
+   — its verdict depends on the committee snapshot. Everything
+   state-dependent (replay, admission, reservation, inputs, execution) is
+   re-run every time. Generation sweep at commit: an entry neither
+   admitted nor rechecked since the previous commit is dropped, so the
+   cache holds at most two inter-commit windows; hard cap
+   `2 × prep_bound`, at which an entry is simply not cached (a miss
+   re-verifies; no verdict depends on the cache).
+4. **PrepareProposal** (`nodus_witness_cmt_app.c`).
+   *Order* (round 2, decision `docs/plans/decisions/2026-09-25-mempool-
+   policy.md` 2): FEE PER UNIT — `fee_amount / res_max_total_units`, the
+   wallet's "gas multiplier", no new wire field — descending, compared
+   EXACTLY as 128-bit cross products (`app_ratio_gt`, no floating
+   point), stable insertion sort (ties keep request order); claims (no
+   fee) and 0-unit envelopes rank as 0. A full-budget hog paying the
+   minimum fee therefore ranks last.
+   *F1:* each chain_config candidate, in that order, rides alone only if
+   it fits the byte budgets and the seam accepts it ALONE; a refused one
+   is left out and the rest are packed normally (every chain_config is
+   kept out of the ordinary packing either way).
+   *The pack* (`app_prep_pack`, F2/F6 and the round-2 hog fix) is ONE
+   sorted pass that SKIPS an entry that does not fit and goes on:
+   `max_tx_bytes`, the envelope window (claims never count against it),
+   the class caps, the committed per-domain `quota_tx_per_block` (the
+   item loop's CAPACITY rule, which the seam does not check), and — round
+   2 — the UNIT budget: each envelope is reserved with the seam's OWN
+   `dna_meter_reserve` against a scratch copy of the same block-start
+   budget, in the seam's order; a GLOBAL/DOMAIN budget refusal skips it
+   (so smaller envelopes and every claim behind it still land), any other
+   plan refusal excludes it. The seam therefore has no unit budget left
+   to refuse on. Should it still answer `CAPACITY_UNITS` (at any slot),
+   the named entry is excluded and the batch repacked — the 0.19.77
+   "truncate to the prefix [0, i)" is DELETED: it cut every block to one
+   transaction behind a hog, dropped every claim, and the hog was
+   re-admitted by every recheck (red-team HIGH + MEDIUM).
+   *Seam refusals:* an offender (`ENTRY_INVALID`, `CAPACITY_UNITS`) is
+   excluded and the proposal REPACKED; `CAPACITY_BYTES` (unreachable —
+   the pack enforces the same bound with the same measure) drops the
+   tail. Bound, with W the packed count and R =
+   `NODUS_CMT_APP_PREP_REFILL_MAX` (8, this package's constant): at most
+   R repack passes; every later pass removes one entry AND halves what is
+   left — at most R + ⌈log₂ W⌉ + 1 seam runs after the first,
+   O((R + log W) · W) seam work instead of one run per dropped entry.
+   The dry run and the pack are what make a seam refusal rare: every
+   mempool entry already passed the seam's own per-item checks at this
+   height, and the pack already applied its byte and unit bounds.
+5. **The mempool LIFETIME** (round 2, decision
+   `docs/plans/decisions/2026-09-25-mempool-policy.md` 1;
+   `NODUS_CMT_APP_MAX_EXPIRY_AHEAD` = 100, `nodus_types.h`). CheckTx (new
+   and recheck) refuses an envelope whose `expiry_height` is 0 ("never")
+   or later than tip + 100; the lower side — already expired at tip + 1
+   — is the preflight's own refusal (`env_preflight.c` step 3), so every
+   admitted envelope leaves the mempool at the first recheck after its
+   expiry, at most 100 blocks after admission. A mempool rule only: a
+   block may still carry expiry 0 (no wipe). `nodus-cli` sets
+   `expiry_height = tip + CLI_ENV_EXPIRY_AHEAD` (= 100 − 10 = 90) in
+   every envelope it builds (`cc_appr_build_pass1` — chain-config
+   propose and `v2-envelope chain-config`; `v2-envelope stake`;
+   `v2-envelope spend`). The 10-block margin (round 3): the mempool
+   reactor gossips a tx to peers up to one block BEHIND its height
+   (`shared/dnac/cmt_memr.c:526-531`), and each peer applies the
+   tip + 100 rule against its OWN lower tip, so a tip + 100 envelope
+   would be refused by them; the margin also covers the time between the
+   CLI reading `tip` and the node receiving it. The CLI REFUSES to build
+   when its tip is 0 or unknown (round 3), because every node-reported
+   height is FAIL-OPEN (0 on a read fault — nodus_witness_db.c
+   `nodus_witness_block_height`) and an expiry anchored on it is wrong.
+   Tip sources: chain-config propose — the committee query's
+   `block_height − 1` (server: tip + 1 from the fail-open accessor,
+   nodus_witness_handlers.c `handle_dnac_committee_query`; refused when
+   `block_height ≤ 1`); `v2-envelope chain-config` and `v2-envelope
+   stake` — the local read-only database's `nodus_witness_v2_tip_height`
+   (a checked read; refused when 0 — a lagging copy only makes the
+   expiry earlier); `v2-envelope spend` — the UTXO query's
+   `block_height` (server: the fail-open accessor,
+   `handle_dnac_utxo`; refused when 0, where round 2 only warned).
+   Claims carry NO expiry field
+   (`dna_claim_t`, `shared/dnac/manifest_wire.h:459-473`); their only
+   window is the manifest's `claim_start_height`/`claim_end_height`
+   (`nodus_witness_v2_claims.c:558-559`) — nothing to bound here.
+
+**Determinism.** All of it is node-local mempool state — no row, root,
+block or vote reads it. The conflict set is a hash set probed by a
+SHA3-derived slot hash and the auth cache a sorted array searched by
+binary search; nothing is decided by iteration order, no clock, no
+randomness. PrepareProposal's answer is a function of the request bytes,
+their order and committed state (the budget and quotas it packs against
+are the committed block-start context).
+
+**Tests** (`test_cmt_app`, all written to fail on 84f331f3 except the
+kind-2 pin): `check_tx_dry_run` — a ceiling below the static cost, a
+ceiling above the block budget and a spend of an absent row are refused,
+a correct spend admitted; `check_tx_cc_poison` — the 0-unit
+CHAIN_CONFIG refused, the real one admitted; `check_tx_conflicts` — the
+second spend of one row and a second realization of one intent refused,
+the same bytes re-checked admitted; `check_tx_claim_variants` — a
+signature-variant of one claim refused; `check_tx_recheck_light` — after
+a block spends row A, the recheck drops its spend without re-verifying
+the signature, keeps the other, and the rebuilt set refuses a second
+spend of B; `check_tx_recheck_kind2` — a committee-approved envelope is
+verified again on recheck (pin); `prepare_cc_refused_packs_rest` — a
+refused chain_config no longer empties the proposal, a valid one behind
+it rides alone, and (c) the seam's duplicate refusal is excluded and
+repacked in two runs; `prepare_refill_after_drop` — the top-ranked
+envelope is unpriceable, the window is still filled to 34, in ONE seam
+run since round 2; `prepare_claims_past_env_window` — a claim behind the
+full envelope window is proposed. Round 2: `check_tx_expiry` — expiry 0
+and tip + 101 refused, tip + 100 and 1 admitted, the expiry-1 one dropped
+at recheck after a real block; `check_tx_row_keys` — a second
+`PRE_ABSENT` CREATE of one row refused, while two `PRE_EXISTS_VHASH`
+SETs of one row (round 3) and two independent spends sharing an
+`EXISTS_VERSION` counter are both admitted — at the scripted-runtime
+level: a native two-delegator DELEGATE case was not built (it needs two
+differently-owned funded coins; this fixture's distribution binds every
+leaf to one key); `check_tx` (round 3) — the corrupted-approval copy is
+checked FIRST, on an empty pending set, and the dry run's own item code
+pins the refusal to AUTHORIZATION; `prepare_hog_skipped` — the unit budget binds, the hog is
+skipped and the four small envelopes and the claim behind it land, one
+seam run; `prepare_fee_per_unit` — fee per unit, not flat fee, orders
+the proposal. `prepare_units_truncate` and `prepare_entry_invalid_only`
+now take ONE seam run (the pack reserves).
+
+**Not closed here.** F4 (a budget-filling envelope that fails at apply
+pays nothing) is the next package's fee rule. Two entries that both
+update a row guarded only by `PRE_EXISTS` / `PRE_EXISTS_VERSION` are
+not conflict keys by design (the shared counters). The pack's
+per-domain quota enforcement is not exercised by a test: every
+genesis manifest is built with `quota_tx_per_block = 0`, unbounded
+(`nodus_witness_domreg.c:312`), and no fixture raises it.
 
 ### tokenomics-v3 P3 — stake parameters (2026-09-24, nodus 0.19.72)
 
@@ -2727,11 +3007,16 @@ family no longer exist; OBLIGATION `atlas-dec-71525f3b4918f710b660707ac6bb5a3a`)
 
 **Admission (CheckTx) on the version-3 lane:** the ledger's admission
 check (`nodus_witness_verify_transaction`, ADMISSION mode — identical to
-VALIDATION since R3 W4) plus the envelope's authorization stage
-(`nodus_witness_v2_env_authorize`); a claim is admitted through
-`nodus_witness_v2_claim_admit`. Double-spend and replay are decided at
-apply by the engine's committed indexes (`v2_claims_spent`,
-`v2_intent_index`), never by a node-local pool.
+VALIDATION since R3 W4) plus — since nodus 0.19.78 — the mempool
+lifetime rule and the per-item dry run (`nodus_witness_v2_env_dry_run`,
+whose authorization stage is the item loop's own; the former
+`nodus_witness_v2_env_authorize` is deleted); a claim is admitted
+through `nodus_witness_v2_claim_admit`. Double-spend and replay are
+DECIDED at apply by the engine's committed indexes (`v2_claims_spent`,
+`v2_intent_index`); since 0.19.78 the node-local pending conflict set
+additionally keeps two conflicting entries out of one mempool — an
+admission filter, never a validity rule (see "CheckTx runs the item's
+own stages").
 
 ### Witness Database Schema
 

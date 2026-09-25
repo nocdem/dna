@@ -72,6 +72,23 @@
 #include "crypto/utils/qgp_fingerprint.h"      /* O15F T6: fp raw<->hex      */
 #endif
 
+/* CHECKTX-P1 round 3 — the expiry every envelope this CLI builds carries:
+ * tip + (NODUS_CMT_APP_MAX_EXPIRY_AHEAD − 10). CheckTx refuses an expiry
+ * past ITS node's tip + 100 (nodus_types.h; decision
+ * docs/plans/decisions/2026-09-25-mempool-policy.md 1), and the envelope
+ * is judged by more than one node: the mempool reactor gossips a tx to
+ * peers up to one block BEHIND its height (shared/dnac/cmt_memr.c:526-531
+ * — a peer at height h−1 still receives it), and each of them applies
+ * the rule against its own, lower, tip. A tip + 100 envelope would be
+ * refused by every such peer. The 10-block margin covers that lag plus
+ * the time between reading `tip` and the node receiving the submission.
+ * A `tip` of 0 is never used: the node-reported sources answer 0 on a
+ * read fault (nodus_witness_db.c nodus_witness_block_height, FAIL-OPEN),
+ * and an expiry built on it would be dead on arrival — each builder
+ * refuses a 0 tip before encoding. */
+#define CLI_ENV_EXPIRY_AHEAD \
+    ((uint64_t)NODUS_CMT_APP_MAX_EXPIRY_AHEAD - 10u)
+
 /* ── Globals ─────────────────────────────────────────────────────── */
 
 static nodus_identity_t identity;
@@ -923,7 +940,16 @@ static int cc_appr_build_pass1(cc_appr_envelope_t *b, dna_env_preflight_t *pf,
     b->leg.call_data = b->call;
     b->leg.auth_data = b->auth;   /* pass 1: zero-filled                 */
 
-    b->env_in.expiry_height       = 0;   /* none — race-proof            */
+    /* The mempool lifetime rule (docs/plans/decisions/2026-09-25-mempool-
+     * policy.md 1; nodus_types.h NODUS_CMT_APP_MAX_EXPIRY_AHEAD): CheckTx
+     * refuses expiry 0 and anything past tip + 100. CLI_ENV_EXPIRY_AHEAD
+     * (90) keeps the gossip margin; the rest is the collection window —
+     * the envelope is built, then every committee seat is asked over the
+     * network (round 1, maybe round 2) before it is submitted, and 90
+     * blocks at the 4 s commit timeout is ~6 minutes. The expiry is part
+     * of the signed digest, so it is fixed here, before anyone signs. */
+    if (tip == 0) return -1;     /* callers refuse a 0 tip first        */
+    b->env_in.expiry_height       = tip + CLI_ENV_EXPIRY_AHEAD;
     b->env_in.fee_amount          = 0;   /* SYSTEM leg rule               */
     b->env_in.res_max_total_units = 200000;
     b->env_in.leg_count           = 1;
@@ -1251,9 +1277,16 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
         fprintf(stderr, "committee query failed\n");
         goto done;
     }
-    if (committee->block_height == 0) {
-        fprintf(stderr, "committee query returned height 0 — cannot "
-                        "derive the governing tip\n");
+    /* block_height is the server's FAIL-OPEN tip + 1
+     * (nodus_witness_handlers.c handle_dnac_committee_query →
+     * nodus_witness_block_height, 0 on a read fault), so 1 means "tip 0
+     * or a faulted read" — neither yields a live expiry (CHECKTX-P1
+     * round 3: refuse, never build on it). */
+    if (committee->block_height <= 1) {
+        fprintf(stderr, "committee query returned height %llu — the node's "
+                        "tip is 0 or its height read faulted; refusing to "
+                        "build an envelope whose expiry would be wrong\n",
+                (unsigned long long)committee->block_height);
         goto done;
     }
     uint64_t tip = committee->block_height - 1;
@@ -1843,6 +1876,14 @@ static int cmd_v2_envelope(const char *server_ip, uint16_t server_port,
     if (nodus_witness_v2_chain_id(wr, chain32) != 0 ||
         nodus_witness_v2_tip_height(wr, &tip) != 0) {
         fprintf(stderr, "not a committed successor V2 database\n");
+        goto done;
+    }
+    if (tip == 0) {
+        /* CHECKTX-P1 round 3: the envelope's expiry is tip-relative, and
+         * a database with no committed block cannot anchor it. */
+        fprintf(stderr, "the database has no committed block (tip 0) — "
+                        "refusing to build an envelope whose expiry would "
+                        "be wrong; wait for the first block\n");
         goto done;
     }
 
@@ -2835,6 +2876,14 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
         fprintf(stderr, "not a committed successor V2 database\n");
         goto done;
     }
+    if (tip == 0) {
+        /* CHECKTX-P1 round 3: the envelope's expiry is tip-relative, and
+         * a database with no committed block cannot anchor it. */
+        fprintf(stderr, "the database has no committed block (tip 0) — "
+                        "refusing to build an envelope whose expiry would "
+                        "be wrong; wait for the first block\n");
+        goto done;
+    }
 
     dna_domain_manifest_t sys_man, core_man;
     if (nodus_witness_domreg_get(wr, DNA_DOMAIN_SYSTEM, NULL, &sys_man,
@@ -2974,7 +3023,12 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
 
     dna_env_in_t env_in;
     memset(&env_in, 0, sizeof(env_in));
-    env_in.expiry_height       = 0;
+    /* the mempool lifetime rule (decision 2026-09-25-mempool-policy.md 1):
+     * expiry within (tip, tip + NODUS_CMT_APP_MAX_EXPIRY_AHEAD], with the
+     * gossip margin (CLI_ENV_EXPIRY_AHEAD). `tip` is this read-only
+     * database's — a lagging copy only makes the expiry EARLIER, never
+     * past the node's own tip + 100; a 0 tip was refused above. */
+    env_in.expiry_height       = tip + CLI_ENV_EXPIRY_AHEAD;
     env_in.fee_amount          = fee;
     env_in.res_max_total_units = 400000;
     env_in.leg_count           = 2;
@@ -3529,14 +3583,19 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
     }
     utxos_valid = 1;
     const uint64_t tip = utxos.block_height;
-    if (tip == 0)
+    if (tip == 0) {
         /* The server fills block_height from its FAIL-OPEN accessor
-         * (nodus_witness_db.c nodus_witness_block_height: 0 on a read
-         * fault). Harmless to the build — every coin with a lock is then
-         * skipped — but it must not read as "the chain is at genesis". */
-        fprintf(stderr, "warning: the node reported tip 0 (a version-3 "
-                "chain past its first block never does; its height read "
-                "may have faulted) — locked coins are skipped\n");
+         * (nodus_witness_handlers.c handle_dnac_utxo →
+         * nodus_witness_db.c nodus_witness_block_height: 0 on a read
+         * fault). CHECKTX-P1 round 3: the envelope's expiry is anchored
+         * on this tip, so a 0 would build an envelope every node refuses
+         * (or that dies at once) — refuse instead of warning. */
+        fprintf(stderr, "the node reported tip 0 (a version-3 chain past "
+                "its first block never does; its height read may have "
+                "faulted) — refusing to build an envelope whose expiry "
+                "would be wrong\n");
+        goto done;
+    }
     if (utxos.count >= (int)NODUS_DNAC_MAX_UTXO_RESULTS)
         fprintf(stderr, "warning: the coin listing is capped at %d rows and "
                 "came back full — the server applies no ordering before its "
@@ -3750,7 +3809,11 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
 
         dna_env_in_t env_in;
         memset(&env_in, 0, sizeof(env_in));
-        env_in.expiry_height       = 0;      /* none — race-proof        */
+        /* the mempool lifetime rule (decision 2026-09-25-mempool-policy.md
+         * 1): expiry within (tip, tip + NODUS_CMT_APP_MAX_EXPIRY_AHEAD],
+         * with the gossip margin (CLI_ENV_EXPIRY_AHEAD); a 0 tip was
+         * refused above */
+        env_in.expiry_height       = tip + CLI_ENV_EXPIRY_AHEAD;
         env_in.fee_amount          = fee;
         env_in.leg_count           = 1;
         env_in.legs                = &leg;

@@ -130,6 +130,34 @@
  *     from the real block context: a policy repin that makes units bind
  *     first fails the premise, not the fix. Requirements: none beyond a
  *     default build; ~3 MiB of heap for the 48 fixture envelopes.
+ * 11. CHECKTX-P1 — the `t_check_tx_*` and `t_prepare_cc_refused_*` /
+ *     `_refill_after_drop` / `_claims_past_env_window` cases. They use no
+ *     FUNCTION the package adds (round 2's one constant,
+ *     NODUS_CMT_APP_MAX_EXPIRY_AHEAD, has an #ifndef fallback at the top
+ *     of this file), so this file builds against 84f331f3 and the
+ *     round-1 tree and each case can be run RED there (each case's
+ *     comment says what fails, and on which tree).
+ *     The light recheck's ONLY observable is the auth-hook COUNTER
+ *     (`ckt_counting_table`: the runtime table's hooks wrapped, verdicts
+ *     the original hook's); if a later change verifies through another
+ *     path the counts move and the case fails loudly. The "block" in
+ *     `t_check_tx_recheck_light` is a direct row DELETE inside a
+ *     host-style BEGIN plus the application's own Commit row — it
+ *     proves the Commit → recheck contract of this row, not the host's
+ *     ordering (read in nodus_witness_cmt_host.c `blockexec_commit`, not
+ *     driven here). The scripted CORE spend is the fixture adapter's
+ *     DELETE, not the native SPEND; the dry run's DELETE-row keys are
+ *     runtime-generic, so the native path shares the mechanism but is
+ *     not itself exercised here. Requirements: none beyond a default
+ *     build; ~3 MiB of heap for each 48-envelope case.
+ *     ROUND 2 (`t_check_tx_expiry`, `_row_keys`, `t_prepare_hog_skipped`,
+ *     `_fee_per_unit`): every fixture chain has tip 0, so CKT_EXPIRY
+ *     (= 100) is the full lifetime window; the expiry case advances the
+ *     tip with ONE real empty block through the host. The pack's
+ *     per-domain quota path is NOT driven (every genesis manifest has
+ *     quota 0 — nodus_witness_domreg.c:312). The round-2 hash set has no
+ *     dedicated case: its behaviour is pinned by every conflict case, its
+ *     O(1) insert and its all-or-none allocation are not observable here.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -191,6 +219,13 @@
 #include "../tests/v2_exec_fixture.h"    /* the SCRIPTED runtime table:
                                           * envelopes with a free
                                           * fee_amount and no committee */
+
+/* CHECKTX-P1 round 2 — the mempool lifetime constant (nodus_types.h).
+ * Guarded so this file still BUILDS against a tree that predates it and
+ * each new case can be run RED there. */
+#ifndef NODUS_CMT_APP_MAX_EXPIRY_AHEAD
+#define NODUS_CMT_APP_MAX_EXPIRY_AHEAD 100u
+#endif
 
 #define CHECK(cond, msg) do {                                              \
     if (!(cond)) {                                                         \
@@ -778,8 +813,12 @@ typedef struct {
     uint8_t  intent_id[64];
 } test_env_t;
 
-static int build_cc_env(nodus_witness_t *w, const uint8_t chain32[32],
-                        uint64_t nonce, test_env_t *out)
+/* CHECKTX-P1: `units` is the envelope's declared `res_max_total_units`
+ * (build_cc_env passes CC_UNITS); 0 builds the red-team F1 poison — a
+ * fully authorized chain_config whose reservation can never succeed. */
+static int build_cc_env_units(nodus_witness_t *w, const uint8_t chain32[32],
+                              uint64_t nonce, uint64_t units,
+                              test_env_t *out)
 {
     dna_domain_manifest_t     sys_man;
     nodus_committee_member_t *cm = NULL;
@@ -864,9 +903,15 @@ static int build_cc_env(nodus_witness_t *w, const uint8_t chain32[32],
         leg.auth_data                = auth;
 
         memset(&env_in, 0, sizeof(env_in));
-        env_in.expiry_height       = 0;
+        /* CHECKTX-P1 round 2: CheckTx refuses expiry 0 and anything past
+         * tip + NODUS_CMT_APP_MAX_EXPIRY_AHEAD (decision 2026-09-25-
+         * mempool-policy.md 1); the fixture uses the full window. Block
+         * validity is unchanged, so the FinalizeBlock cases that apply
+         * this envelope at a height <= tip + 100 are unaffected. */
+        env_in.expiry_height       = tip +
+                                     (uint64_t)NODUS_CMT_APP_MAX_EXPIRY_AHEAD;
         env_in.fee_amount          = 0;   /* a CHAIN_CONFIG leg requires 0 */
-        env_in.res_max_total_units = CC_UNITS;
+        env_in.res_max_total_units = units;
         env_in.leg_count           = 1;
         env_in.legs                = &leg;
 
@@ -950,6 +995,12 @@ static int build_cc_env(nodus_witness_t *w, const uint8_t chain32[32],
     free(fps);
     free(cm);
     return rc;
+}
+
+static int build_cc_env(nodus_witness_t *w, const uint8_t chain32[32],
+                        uint64_t nonce, test_env_t *out)
+{
+    return build_cc_env_units(w, chain32, nonce, CC_UNITS, out);
 }
 
 /* Bytes that classify as an ENVELOPE (the family marker is present) and
@@ -3506,31 +3557,59 @@ static int t_check_tx(void)
     req.tx = env.bytes;
     req.tx_len = env.len;
     req.type = CMT_MEM_CHECK_TX_TYPE_NEW;
-    memset(&res, 0, sizeof(res));
-    CHECK(mem.check_tx(mem.ctx, &req, &res) == CMT_OK, "the request is served");
-    CHECK(res.code == CMT_MEM_CODE_TYPE_OK, "a valid envelope is admitted");
-    CHECK(res.gas_wanted == 0, "gas_wanted is 0 while MaxGas is -1");
 
     /* The last byte of the envelope is the last byte of the last
      * committee approval's ML-DSA-87 signature, and the envelope carries
      * EXACTLY `dna_bft_quorum(7)` = 5 approvals (build_cc_env emits
      * `quorum` and fails otherwise), so breaking one leaves four — below
-     * quorum. Nothing in the ADMISSION lane looked at it before this
-     * round: the preflight decides nothing about authorization
-     * (env_preflight.h:57-63) and the `wire_id` comparison is a
-     * tautology because check_tx derives the id from the bytes it is
-     * checking. It is `nodus_witness_v2_env_authorize` that refuses it. */
+     * quorum. Nothing in the ADMISSION lane looks at it: the preflight
+     * decides nothing about authorization (env_preflight.h:57-63) and the
+     * `wire_id` comparison is a tautology because check_tx derives the id
+     * from the bytes it is checking. It is the authorization stage of the
+     * per-item dry run (`nodus_witness_v2_env_dry_run` →
+     * `env_authorize_legs`, CHECKTX-P1) that refuses it.
+     *
+     * CHECKTX-P1 round 3 (verifier UNCOVERED 1): the corrupted copy goes
+     * FIRST, on an EMPTY pending set. Checked after the valid copy, its
+     * refusal came from the pending intent key (same intent_id — the
+     * approvals are authorization evidence, outside the intent) and said
+     * nothing about the signature. Here nothing is pending, so the
+     * conflict set cannot be the refuser; the dry run's own item code
+     * pins the stage to AUTH. */
     env.bytes[env.len - 1] ^= 0xFF;
+    CHECK(app->pend_n == 0, "PREMISE: nothing is pending — the conflict "
+          "set cannot be what refuses the corrupted copy");
     memset(&res, 0, sizeof(res));
     CHECK(mem.check_tx(mem.ctx, &req, &res) == CMT_OK, "served");
     CHECK(res.code != CMT_MEM_CODE_TYPE_OK,
           "a corrupted APPROVAL SIGNATURE is refused at admission");
+    CHECK(app->pend_n == 0, "and the refusal claimed no pending key");
+    {
+        nodus_v2_env_dry_run_t *dry = calloc(1, sizeof(*dry));
+        char                    why[256];
+        int                     drc;
+
+        CHECK(dry != NULL, "alloc");
+        drc = nodus_witness_v2_env_dry_run(g.w, env.bytes, env.len, NULL, dry,
+                                           why, sizeof(why));
+        CHECK(drc == -1 && dry->code == (uint32_t)NODUS_V2_TX_ERR_AUTH,
+              "the stage that refuses it is AUTHORIZATION");
+        nodus_witness_v2_env_dry_run_free(dry);
+        free(dry);
+    }
     env.bytes[env.len - 1] ^= 0xFF;
+
+    memset(&res, 0, sizeof(res));
+    CHECK(mem.check_tx(mem.ctx, &req, &res) == CMT_OK, "the request is served");
+    CHECK(res.code == CMT_MEM_CODE_TYPE_OK,
+          "the restored (valid) envelope is admitted");
+    CHECK(res.gas_wanted == 0, "gas_wanted is 0 while MaxGas is -1");
 
     memset(&res, 0, sizeof(res));
     CHECK(mem.check_tx(mem.ctx, &req, &res) == CMT_OK, "served");
     CHECK(res.code == CMT_MEM_CODE_TYPE_OK,
-          "and the restored bytes are admitted again");
+          "and the same bytes checked again are admitted again (the key's "
+          "owner is the entry itself)");
 
     req.tx = POISON;
     req.tx_len = sizeof(POISON);
@@ -3585,16 +3664,15 @@ static int t_prepare_proposal(void)
     CHECK(resp.txs_len == 0,
           "an entry the engine would refuse is dropped, not proposed");
 
-    /* THE SEAM'S DROP LOOP, actually driven.
+    /* The SAME chain_config envelope twice, proposed ONCE.
      *
-     * The POISON case above never reaches it: undecodable bytes are
-     * dropped while the candidates are being classified, so the seam is
-     * called with an empty set. Here BOTH entries decode and both are
-     * individually valid — they are the SAME envelope twice — so the
-     * seam is what refuses, naming the SECOND as the duplicate
-     * (ERR_DUP / ERR_DUP_INTENT, nodus_witness_v2_env.h). The loop must
-     * drop that one and re-run, leaving the envelope proposed ONCE and
-     * still in its request position. */
+     * CHECKTX-P1: this no longer drives the seam's drop loop — each
+     * chain_config candidate is now probed ALONE by the seam and the
+     * first one it accepts rides alone, so the duplicate is simply the
+     * second candidate that is never tried. The duplicate-drop path of
+     * the drop loop (ERR_DUP at slot 1, excluded, repacked) is driven by
+     * `t_prepare_cc_refused_packs_rest` case (c), over two byte-identical
+     * ordinary envelopes. */
     txs[0].data = env.bytes; txs[0].len = env.len;
     txs[1].data = env.bytes; txs[1].len = env.len;
     req.txs_len = 2;
@@ -4749,17 +4827,17 @@ static int t_prepare_env_byte_bound(void)
 #define CAP_UNITS_POISON  3000000ull
 
 /**
- * (2) CAPACITY_UNITS truncates in ONE step, and at slot 0 drops only
- * the poison entry. The poison (fee 100) sorts first and alone exceeds
- * the whole unit budget: refused at slot 0, dropped alone. The twelve
- * (fee 7, a tie — request order kept) then fail at slot
- * floor(budget / 300 000) = 6: truncated to that prefix at once. Seam
- * runs: poison, truncate, clean = 3.
+ * (2) The UNIT budget, applied by the pack. The poison (fee 100 over
+ * 3 000 000 units — the higher fee per unit, so it sorts first) alone
+ * exceeds the whole unit budget; the twelve (fee 7 over 300 000, a tie —
+ * request order kept) fit floor(budget / 300 000) = 6 times. The kept
+ * set is those six, in request order, without the poison.
  *
- * RED on the unfixed code: the kept set is the same (dropping the entry
- * at the unit boundary one at a time converges on the same prefix), but
- * it took one run per dropped entry — 1 (poison) + 6 (slot 6, six
- * times) + 1 (clean) = 8 runs; the run-count check fails.
+ * History: 0.19.77 took three seam runs here (poison dropped at slot 0,
+ * one truncation, clean; the unfixed loop before it took eight).
+ * CHECKTX-P1 round 2 moved the reservation INTO the pack (the seam's own
+ * `dna_meter_reserve`, skipping what does not fit), so the seam runs
+ * ONCE — which is what this case now pins (RED on round 1: 3 runs).
  */
 static int t_prepare_units_truncate(void)
 {
@@ -4825,8 +4903,9 @@ static int t_prepare_units_truncate(void)
               "the prefix, in request order (a fee tie), without the "
               "poison");
     }
-    CHECK(g_seam_runs == 3, "three seam runs: poison dropped at slot 0, "
-          "ONE truncation, one clean run");
+    CHECK(g_seam_runs == 1, "ONE seam run: the pack reserved the units "
+          "itself (CHECKTX-P1 round 2), skipping the poison and every "
+          "envelope the budget no longer had room for");
 
     free(envs);
     free(bctx);
@@ -4840,12 +4919,13 @@ static int t_prepare_units_truncate(void)
  * (3) ENTRY_INVALID still drops ONLY the offender. The middle-fee
  * envelope names runtime_op 8, which the committed SYSTEM policy does
  * not price (ops 1..7 only, nodus_witness_runtime.c `sys_policy_build`):
- * the seam refuses it at ITS slot as ENTRY_INVALID (meter status
- * OP_WEIGHT, nodus_witness_v2_env.c `nodus_witness_v2_env_fail_kind`) —
- * a property of its bytes, not of a full block. The other two survive,
- * in fee order, after exactly two seam runs. Not a RED case: the
- * unfixed loop handled ENTRY_INVALID the same way; this pins that the
- * kind discrimination did not change it.
+ * its plan is refused (meter status OP_WEIGHT) — a property of its
+ * bytes, not of a full block. The other two survive, in fee order.
+ * Since CHECKTX-P1 round 2 the PACK makes that refusal itself (its
+ * `dna_meter_reserve` is the seam's), so the offender never reaches the
+ * seam: ONE run (round 1 and 0.19.77: two — the seam's ENTRY_INVALID,
+ * then clean). The seam's own ENTRY_INVALID → exclude → repack path is
+ * pinned by `t_prepare_cc_refused_packs_rest` (c), a duplicate.
  */
 static int t_prepare_entry_invalid_only(void)
 {
@@ -4896,7 +4976,1348 @@ static int t_prepare_entry_invalid_only(void)
     CHECK(resp.txs[1].data == envs[2].bytes,
           "fee 5 second — the entry AFTER the offender was not truncated "
           "away with it");
-    CHECK(g_seam_runs == 2, "two seam runs: the refusal, then clean");
+    CHECK(g_seam_runs == 1, "ONE seam run: the pack excluded the "
+          "unpriceable envelope itself");
+
+    free(envs);
+    free(bctx);
+    nodus_cmt_app_ledger_release(app);
+    free(app);
+    gfx_close(&g);
+    return 0;
+}
+
+/* ══ CHECKTX-P1 — CheckTx parity with the apply lane, the pending
+ * conflict set, the light recheck, and PrepareProposal's F1/F2/F6 ═══
+ *
+ * Every case below drives the REAL row (`nodus_cmt_app_check_tx` /
+ * `nodus_cmt_app_prepare_proposal`) and uses NO symbol this package adds,
+ * so the file builds against 84f331f3 too and each case can be run RED
+ * there. What each is RED on is stated in its own comment. The scripted
+ * cases use v2_exec_fixture.h's runtime table, whose CORE leg "spends" by
+ * DELETEing a `utxo_set` row (V2X_OP_UTXDEL, PRE_EXISTS — the generic
+ * shape of every input spend). */
+
+/** CheckTx over one request of `type`; `*code` receives the answer's
+ *  code (0 admitted). @return 0 served / -1 the row did not answer OK. */
+static int ckt_check(nodus_cmt_app_ledger_t *app, const uint8_t *bytes,
+                     size_t len, cmt_mem_check_tx_type_t type,
+                     uint32_t *code)
+{
+    cmt_mem_request_check_tx_t  req;
+    cmt_mem_response_check_tx_t res;
+
+    memset(&req, 0, sizeof(req));
+    memset(&res, 0, sizeof(res));
+    req.tx     = bytes;
+    req.tx_len = len;
+    req.type   = type;
+    if (nodus_cmt_app_check_tx(app, &req, &res) != CMT_OK) {
+        return -1;
+    }
+    *code = res.code;
+    return 0;
+}
+
+/** One committed CORE `utxo_set` row keyed by 64 bytes of `tag` — the
+ *  row the scripted adapter's probe reads (nullifier + domain_id,
+ *  v2_exec_fixture.h `v2x_utxo_row`). AMOUNT 0 (round 2b): the CORE
+ *  conservation invariant sums utxo_set amounts against the supply
+ *  counters (nodus_witness_v2_claims.c `nodus_rt_core_invariant`), so a
+ *  planted nonzero row makes committed state non-conserving and the
+ *  apply engine's PRE-APPLY supply gate refuses the next block
+ *  (nodus_witness_v2_apply.c, phase 2). A zero-amount row adds nothing
+ *  to that sum — the same device t_byte_bound_prepare_and_process uses
+ *  for its CREATEd rows — and the probe only needs the row to EXIST.
+ *  @return 0 / -1. */
+static int ckt_row_insert(nodus_witness_t *w, uint8_t tag)
+{
+    sqlite3_stmt *st = NULL;
+    uint8_t       key[64], txh[64];
+    int           rc;
+
+    memset(key, tag, sizeof(key));
+    memset(txh, tag, sizeof(txh));
+    if (sqlite3_prepare_v2(w->db,
+            "INSERT INTO utxo_set (nullifier, owner, amount, token_id, "
+            "tx_hash, output_index, block_height, created_at, unlock_block, "
+            "domain_id) VALUES (?1, 'fp', 0, zeroblob(64), ?2, 0, 1, 0, 0, "
+            "?3)", -1, &st, NULL) != SQLITE_OK) {
+        return -1;
+    }
+    sqlite3_bind_blob(st, 1, key, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(st, 2, txh, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 3, (sqlite3_int64)DNA_DOMAIN_CORE);
+    rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE ? 0 : -1;
+}
+
+/** Does the CORE row keyed by 64 bytes of `tag` exist? @return 1/0/-1. */
+static int ckt_row_exists(nodus_witness_t *w, uint8_t tag)
+{
+    sqlite3_stmt *st = NULL;
+    uint8_t       key[64];
+    int           rc;
+
+    memset(key, tag, sizeof(key));
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT 1 FROM utxo_set WHERE nullifier = ?1 AND domain_id = ?2",
+            -1, &st, NULL) != SQLITE_OK) {
+        return -1;
+    }
+    sqlite3_bind_blob(st, 1, key, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)DNA_DOMAIN_CORE);
+    rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_ROW ? 1 : (rc == SQLITE_DONE ? 0 : -1);
+}
+
+/** Delete row `tag` (a block spending it). @return rows deleted / -1. */
+static int ckt_row_delete(nodus_witness_t *w, uint8_t tag)
+{
+    sqlite3_stmt *st = NULL;
+    uint8_t       key[64];
+    int           rc;
+
+    memset(key, tag, sizeof(key));
+    if (sqlite3_prepare_v2(w->db,
+            "DELETE FROM utxo_set WHERE nullifier = ?1 AND domain_id = ?2",
+            -1, &st, NULL) != SQLITE_OK) {
+        return -1;
+    }
+    sqlite3_bind_blob(st, 1, key, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)DNA_DOMAIN_CORE);
+    rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE ? sqlite3_changes(w->db) : -1;
+}
+
+/* Every fixture chain here has NO block row, so its tip is 0 and the
+ * mempool lifetime rule (nodus_types.h NODUS_CMT_APP_MAX_EXPIRY_AHEAD,
+ * round 2) admits an expiry in [1, 100]: the full window. */
+#define CKT_EXPIRY ((uint64_t)NODUS_CMT_APP_MAX_EXPIRY_AHEAD)
+
+/** A scripted CORE envelope: one leg (runtime_op 1, owned and priced)
+ *  whose result is exactly `effs` (canonical order — the caller's job).
+ *  @return 0 / -1. */
+static int ckt_effs_env(v2x_env_t *e, const dna_effect_in_t *effs,
+                        uint16_t n_effs, uint64_t fee, uint64_t ceiling,
+                        uint64_t expiry)
+{
+    uint8_t   res[1024], script[1200];
+    size_t    rl = 0;
+    uint32_t  sl;
+    v2x_leg_t leg;
+
+    if (v2x_effres(res, sizeof(res), effs, n_effs, &rl) != 0) {
+        return -1;
+    }
+    sl = v2x_script_build(script, sizeof(script), NULL, 0, res, rl);
+    if (sl == 0) {
+        return -1;
+    }
+    memset(&leg, 0, sizeof(leg));
+    leg.domain_id        = DNA_DOMAIN_CORE;
+    leg.runtime_op       = 1;
+    leg.call             = script;
+    leg.call_len         = sl;
+    leg.max_effects      = 4;
+    leg.max_effect_bytes = 2048;
+    return v2x_env_build_ex(e, ceiling, expiry, fee, &leg, 1);
+}
+
+/** A scripted CORE "spend" with an explicit expiry: its result DELETEs
+ *  row `tag` with PRE_EXISTS. `fee` makes distinct intents over the same
+ *  row; `ceiling` is the declared unit ceiling. @return 0 / -1. */
+static int ckt_spend_env_x(v2x_env_t *e, uint8_t tag, uint64_t fee,
+                           uint64_t ceiling, uint64_t expiry)
+{
+    uint8_t         key[64];
+    dna_effect_in_t eff;
+
+    memset(key, tag, sizeof(key));
+    memset(&eff, 0, sizeof(eff));
+    eff.hdr.op_id       = V2X_OP_UTXDEL;
+    eff.hdr.effect_kind = DNA_EFFECT_DELETE;
+    eff.hdr.precond_tag = DNA_EFFECT_PRE_EXISTS;
+    eff.hdr.key_len     = 64;
+    eff.key             = key;
+    return ckt_effs_env(e, &eff, 1, fee, ceiling, expiry);
+}
+
+/** ckt_spend_env_x at the full lifetime window (CKT_EXPIRY). */
+static int ckt_spend_env(v2x_env_t *e, uint8_t tag, uint64_t fee,
+                         uint64_t ceiling)
+{
+    return ckt_spend_env_x(e, tag, fee, ceiling, CKT_EXPIRY);
+}
+
+/** wire_id and intent_id of one envelope at the candidate height, from
+ *  the committed context table (`bctx`). @return 0 / -1. */
+static int ckt_ids(const gfx_t *g, const nodus_witness_v2_block_ctx_t *bctx,
+                   const uint8_t *bytes, size_t len,
+                   uint8_t wire[64], uint8_t intent[64])
+{
+    dna_env_view_t       view;
+    dna_env_leg_ctx_t    lctx[DNA_ENV_MAX_LEGS];
+    dna_env_preflight_t *pf;
+    uint16_t             l;
+    size_t               k;
+    int                  rc = -1;
+
+    memset(&view, 0, sizeof(view));
+    if (dna_env_decode(bytes, len, &view) != 0) {
+        return -1;
+    }
+    for (l = 0; l < view.leg_count; l++) {
+        for (k = 0; k < bctx->n_rulesets; k++) {
+            if (bctx->rulesets[k].domain_id == view.leg[l].domain_id) {
+                lctx[l] = bctx->rulesets[k];
+                break;
+            }
+        }
+        if (k == bctx->n_rulesets) {
+            return -1;
+        }
+    }
+    pf = calloc(1, sizeof(*pf));
+    if (!pf) {
+        return -1;
+    }
+    if (dna_env_preflight(bytes, len, g->chain32, 1, lctx, view.leg_count,
+                          pf) == DNA_ENV_PF_OK) {
+        memcpy(wire, pf->wire_id, 64);
+        memcpy(intent, pf->intent_id, 64);
+        rc = 0;
+    }
+    free(pf);
+    return rc;
+}
+
+/* ── the auth-hook COUNTER: the light recheck's only observable ───────
+ * The runtime table's `auth` hooks are wrapped so every verification the
+ * engine asks for is counted and then answered by the ORIGINAL hook —
+ * nothing about the verdict changes. File-scope for the same reason as
+ * g_seam_runs: the table outlives the case. */
+static int              g_ckt_auth_calls = 0;
+static nodus_rt_auth_fn g_ckt_auth_orig[2];
+static nodus_domain_runtime_t g_ckt_table[2];
+
+static int ckt_auth0(const nodus_domain_runtime_t *rt,
+                     const dna_env_view_t *env, uint16_t leg,
+                     const nodus_rt_exec_ctx_t *ctx,
+                     nodus_rt_auth_verdict_t *out)
+{
+    g_ckt_auth_calls++;
+    return g_ckt_auth_orig[0](rt, env, leg, ctx, out);
+}
+
+static int ckt_auth1(const nodus_domain_runtime_t *rt,
+                     const dna_env_view_t *env, uint16_t leg,
+                     const nodus_rt_exec_ctx_t *ctx,
+                     nodus_rt_auth_verdict_t *out)
+{
+    g_ckt_auth_calls++;
+    return g_ckt_auth_orig[1](rt, env, leg, ctx, out);
+}
+
+/** Install a counting copy of `src` (the scripted table or the builtin
+ *  one) as the handle's runtime-table override. @return 0 / -1. */
+static int ckt_counting_table(nodus_witness_t *w,
+                              const nodus_domain_runtime_t *src, size_t n)
+{
+    if (!src || n != 2) {
+        return -1;
+    }
+    memcpy(g_ckt_table, src, sizeof(g_ckt_table));
+    g_ckt_auth_orig[0] = g_ckt_table[0].auth;
+    g_ckt_auth_orig[1] = g_ckt_table[1].auth;
+    if (!g_ckt_auth_orig[0] || !g_ckt_auth_orig[1]) {
+        return -1;
+    }
+    g_ckt_table[0].auth = ckt_auth0;
+    g_ckt_table[1].auth = ckt_auth1;
+    w->v2_runtime_table   = g_ckt_table;
+    w->v2_runtime_table_n = 2;
+    g_ckt_auth_calls = 0;
+    return 0;
+}
+
+/**
+ * CheckTx runs the item's own stages (red-team F1 class, CheckTx side):
+ * an envelope whose declared unit ceiling is BELOW its static cost, one
+ * whose ceiling EXCEEDS the whole block budget, and one that spends a row
+ * that does not exist are all REFUSED; the same spend over an existing
+ * row, correctly declared, is ADMITTED (so the refusals are not blanket).
+ *
+ * RED on 84f331f3: CheckTx ran only the admission lane (decode, ruleset,
+ * preflight, wire_id, committed intent) and the scripted auth stub —
+ * no reservation, no execution — so all three were admitted.
+ */
+static int t_check_tx_dry_run(void)
+{
+    gfx_t                         g;
+    cmt_genesis_doc_t             doc;
+    cmt_genesis_validator_t       gvals[DNAC_COMMITTEE_SIZE];
+    nodus_cmt_app_ledger_t       *app = NULL;
+    nodus_witness_v2_block_ctx_t *bctx = NULL;
+    v2x_env_t                    *e = NULL;
+    uint32_t                      code = 0;
+
+    CHECK(cap_fixture(&g, "ckt_dry", &doc, gvals, &app, &bctx) == 0,
+          "version-3 fixture, scripted runtime, bound app, block context");
+    e = calloc(4, sizeof(*e));
+    CHECK(e != NULL, "alloc");
+    CHECK(ckt_row_insert(g.w, 0xA1) == 0 && ckt_row_insert(g.w, 0xA2) == 0,
+          "two committed CORE rows");
+    CHECK(CAP_UNITS_POISON > bctx->budget.global_remaining,
+          "PREMISE: the over-budget ceiling exceeds the whole unit budget");
+
+    CHECK(ckt_spend_env(&e[0], 0xA1, 3, TEST_APP_ENV_CEILING) == 0,
+          "a correctly declared spend of an existing row");
+    CHECK(ckt_spend_env(&e[1], 0xA2, 3, 1) == 0,
+          "a spend declaring 1 unit — below its own static cost");
+    CHECK(ckt_spend_env(&e[2], 0xA2, 4, CAP_UNITS_POISON) == 0,
+          "a spend declaring more units than the whole block budget");
+    CHECK(ckt_spend_env(&e[3], 0xA3, 3, TEST_APP_ENV_CEILING) == 0,
+          "a spend of a row that was never committed");
+
+    CHECK(ckt_check(app, e[0].bytes, e[0].len, CMT_MEM_CHECK_TX_TYPE_NEW,
+                    &code) == 0 && code == CMT_MEM_CODE_TYPE_OK,
+          "the correct spend is admitted");
+    CHECK(ckt_check(app, e[1].bytes, e[1].len, CMT_MEM_CHECK_TX_TYPE_NEW,
+                    &code) == 0 && code != CMT_MEM_CODE_TYPE_OK,
+          "a ceiling below the static cost is refused at CheckTx");
+    CHECK(ckt_check(app, e[2].bytes, e[2].len, CMT_MEM_CHECK_TX_TYPE_NEW,
+                    &code) == 0 && code != CMT_MEM_CODE_TYPE_OK,
+          "a ceiling above the block budget is refused at CheckTx");
+    CHECK(ckt_check(app, e[3].bytes, e[3].len, CMT_MEM_CHECK_TX_TYPE_NEW,
+                    &code) == 0 && code != CMT_MEM_CODE_TYPE_OK,
+          "a spend of an absent row is refused at CheckTx (execution)");
+
+    free(e);
+    free(bctx);
+    nodus_cmt_app_ledger_release(app);
+    free(app);
+    gfx_close(&g);
+    return 0;
+}
+
+/**
+ * The red-team F1 poison at CheckTx, on the REAL runtime: a fully
+ * authorized SYSTEM CHAIN_CONFIG envelope (real committee approvals)
+ * declaring `res_max_total_units` 0 is REFUSED; the same envelope with
+ * its real ceiling is admitted.
+ *
+ * RED on 84f331f3: the poison passed the admission lane and the
+ * signature check (both are about the bytes and the committee, not the
+ * ceiling) and was admitted — the seam refused it later, every block.
+ */
+static int t_check_tx_cc_poison(void)
+{
+    gfx_t                   g;
+    cmt_genesis_doc_t       doc;
+    cmt_genesis_validator_t gvals[DNAC_COMMITTEE_SIZE];
+    nodus_cmt_app_ledger_t *app;
+    test_env_t              good, poison;
+    uint32_t                code = 0;
+
+    CHECK(gfx_open(&g, "ckt_ccpoison") == 0, "version-3 fixture");
+    app = calloc(1, sizeof(*app));
+    CHECK(app != NULL, "alloc");
+    CHECK(gfx_doc(&g, &doc, gvals) == 0, "the completed genesis document");
+    CHECK(nodus_cmt_app_ledger_init(app, g.w, &doc) == CMT_OK, "bind");
+    CHECK(build_cc_env(g.w, g.chain32, 0xC001, &good) == 0, "a real "
+          "chain_config envelope");
+    CHECK(build_cc_env_units(g.w, g.chain32, 0xC002, 0, &poison) == 0,
+          "the same shape declaring 0 units");
+
+    CHECK(ckt_check(app, poison.bytes, poison.len, CMT_MEM_CHECK_TX_TYPE_NEW,
+                    &code) == 0 && code != CMT_MEM_CODE_TYPE_OK,
+          "the 0-unit chain_config is refused at CheckTx");
+    CHECK(ckt_check(app, good.bytes, good.len, CMT_MEM_CHECK_TX_TYPE_NEW,
+                    &code) == 0 && code == CMT_MEM_CODE_TYPE_OK,
+          "the correctly declared one is admitted");
+
+    free(good.bytes);
+    free(poison.bytes);
+    nodus_cmt_app_ledger_release(app);
+    free(app);
+    gfx_close(&g);
+    return 0;
+}
+
+/**
+ * The PENDING CONFLICT SET: two envelopes spending the SAME row (two
+ * intents — different fees) — the second is REFUSED; two envelopes that
+ * are ONE intent under two wire ids (only the authorization byte
+ * differs — PREMISE-checked below) — the second is REFUSED; the very
+ * same bytes re-checked are still ADMITTED (the key's owner is the entry
+ * itself — the mempool's own "already there" path, cmt_mem.c
+ * mem_res_cb_first_time).
+ *
+ * RED on 84f331f3: no pending set existed — both double spends were
+ * admitted (the 2026-09-25 live observation), and the DUP_INTENT variant
+ * too (the scripted auth stub accepts any non-empty authorization).
+ */
+static int t_check_tx_conflicts(void)
+{
+    gfx_t                         g;
+    cmt_genesis_doc_t             doc;
+    cmt_genesis_validator_t       gvals[DNAC_COMMITTEE_SIZE];
+    nodus_cmt_app_ledger_t       *app = NULL;
+    nodus_witness_v2_block_ctx_t *bctx = NULL;
+    v2x_env_t                    *e = NULL;
+    uint8_t                       w0[64], i0[64], w1[64], i1[64];
+    uint32_t                      code = 0;
+
+    CHECK(cap_fixture(&g, "ckt_conf", &doc, gvals, &app, &bctx) == 0,
+          "version-3 fixture, scripted runtime, bound app, block context");
+    e = calloc(4, sizeof(*e));
+    CHECK(e != NULL, "alloc");
+    CHECK(ckt_row_insert(g.w, 0xB1) == 0 && ckt_row_insert(g.w, 0xB2) == 0,
+          "two committed CORE rows");
+
+    /* the double spend */
+    CHECK(ckt_spend_env(&e[0], 0xB1, 3, TEST_APP_ENV_CEILING) == 0 &&
+          ckt_spend_env(&e[1], 0xB1, 4, TEST_APP_ENV_CEILING) == 0,
+          "two spends of ONE row, different intents");
+    CHECK(ckt_check(app, e[0].bytes, e[0].len, CMT_MEM_CHECK_TX_TYPE_NEW,
+                    &code) == 0 && code == CMT_MEM_CODE_TYPE_OK,
+          "the first spend is admitted");
+    CHECK(ckt_check(app, e[1].bytes, e[1].len, CMT_MEM_CHECK_TX_TYPE_NEW,
+                    &code) == 0 && code != CMT_MEM_CODE_TYPE_OK,
+          "the second spend of the same row is refused");
+    CHECK(ckt_check(app, e[0].bytes, e[0].len, CMT_MEM_CHECK_TX_TYPE_NEW,
+                    &code) == 0 && code == CMT_MEM_CODE_TYPE_OK,
+          "the SAME bytes checked again are not a conflict with themselves");
+
+    /* one intent, two wire ids */
+    CHECK(ckt_spend_env(&e[2], 0xB2, 5, TEST_APP_ENV_CEILING) == 0,
+          "a spend of the second row");
+    memcpy(&e[3], &e[2], sizeof(e[3]));
+    e[3].bytes[e[3].len - 1] ^= 0x01;    /* the 1-byte auth stub, last */
+    CHECK(ckt_ids(&g, bctx, e[2].bytes, e[2].len, w0, i0) == 0 &&
+          ckt_ids(&g, bctx, e[3].bytes, e[3].len, w1, i1) == 0,
+          "both preflight");
+    CHECK(memcmp(i0, i1, 64) == 0 && memcmp(w0, w1, 64) != 0,
+          "PREMISE: ONE intent under TWO wire ids");
+    CHECK(ckt_check(app, e[2].bytes, e[2].len, CMT_MEM_CHECK_TX_TYPE_NEW,
+                    &code) == 0 && code == CMT_MEM_CODE_TYPE_OK,
+          "the first realization is admitted");
+    CHECK(ckt_check(app, e[3].bytes, e[3].len, CMT_MEM_CHECK_TX_TYPE_NEW,
+                    &code) == 0 && code != CMT_MEM_CODE_TYPE_OK,
+          "a second realization of the same intent is refused");
+
+    free(e);
+    free(bctx);
+    nodus_cmt_app_ledger_release(app);
+    free(app);
+    gfx_close(&g);
+    return 0;
+}
+
+/**
+ * K signature-variants of ONE claim (ML-DSA-87 signing is randomized —
+ * shared/crypto/sign/dsa/config.h:6 — so two signings give two byte
+ * strings, PREMISE-checked): distinct entry ids, ONE nullifier. The
+ * first is admitted, the second REFUSED; a claim on another leaf is
+ * admitted.
+ *
+ * RED on 84f331f3: both variants were admitted (red-team F5).
+ */
+static int t_check_tx_claim_variants(void)
+{
+    gfx_t                   g;
+    cmt_genesis_doc_t       doc;
+    cmt_genesis_validator_t gvals[DNAC_COMMITTEE_SIZE];
+    nodus_cmt_app_ledger_t *app;
+    uint8_t                *c1 = NULL, *c2 = NULL, *c3 = NULL;
+    size_t                  l1 = 0, l2 = 0, l3 = 0;
+    uint32_t                code = 0;
+
+    CHECK(gfx_open_n(&g, "ckt_claimvar", 2) == 0,
+          "version-3 fixture, two distribution leaves");
+    app = calloc(1, sizeof(*app));
+    c1 = malloc(DNA_CLAIM_MAX_WIRE);
+    c2 = malloc(DNA_CLAIM_MAX_WIRE);
+    c3 = malloc(DNA_CLAIM_MAX_WIRE);
+    CHECK(app && c1 && c2 && c3, "alloc");
+    CHECK(gfx_doc(&g, &doc, gvals) == 0, "the completed genesis document");
+    CHECK(nodus_cmt_app_ledger_init(app, g.w, &doc) == CMT_OK, "bind");
+    CHECK(build_claim_n(&g, 2, 0, c1, DNA_CLAIM_MAX_WIRE, &l1) == 0 &&
+          build_claim_n(&g, 2, 0, c2, DNA_CLAIM_MAX_WIRE, &l2) == 0 &&
+          build_claim_n(&g, 2, 1, c3, DNA_CLAIM_MAX_WIRE, &l3) == 0,
+          "two signings of leaf 0, one of leaf 1");
+    CHECK(l1 != l2 || memcmp(c1, c2, l1) != 0,
+          "PREMISE: the two signings of leaf 0 are different bytes");
+
+    CHECK(ckt_check(app, c1, l1, CMT_MEM_CHECK_TX_TYPE_NEW, &code) == 0 &&
+          code == CMT_MEM_CODE_TYPE_OK, "the first claim is admitted");
+    CHECK(ckt_check(app, c2, l2, CMT_MEM_CHECK_TX_TYPE_NEW, &code) == 0 &&
+          code != CMT_MEM_CODE_TYPE_OK,
+          "a signature-variant of the SAME claim is refused");
+    CHECK(ckt_check(app, c3, l3, CMT_MEM_CHECK_TX_TYPE_NEW, &code) == 0 &&
+          code == CMT_MEM_CODE_TYPE_OK, "a claim on another leaf is "
+          "admitted");
+
+    free(c1);
+    free(c2);
+    free(c3);
+    nodus_cmt_app_ledger_release(app);
+    free(app);
+    gfx_close(&g);
+    return 0;
+}
+
+/**
+ * COMMIT + RECHECK, and the LIGHT recheck (auth_kind 1). Two spends of
+ * two rows are admitted (two auth verifications). A "block" then spends
+ * row A (committed through the application's own Commit row, inside a
+ * host-style transaction). RECHECK of the spend of A is REFUSED — and
+ * its auth was NOT re-verified (the cache answered); RECHECK of the
+ * spend of B is ADMITTED, again without a re-verification. The pending
+ * set was rebuilt by that recheck: a NEW spend of B is refused.
+ *
+ * RED on 84f331f3: CheckTx ignored the request type and never executed,
+ * so the stale spend of A was re-admitted, and every recheck re-ran the
+ * auth hook.
+ */
+static int t_check_tx_recheck_light(void)
+{
+    gfx_t                         g;
+    cmt_genesis_doc_t             doc;
+    cmt_genesis_validator_t       gvals[DNAC_COMMITTEE_SIZE];
+    nodus_cmt_app_ledger_t       *app = NULL;
+    nodus_witness_v2_block_ctx_t *bctx = NULL;
+    nodus_abci_response_commit_t  cres;
+    v2x_env_t                    *e = NULL;
+    uint32_t                      code = 0;
+
+    CHECK(cap_fixture(&g, "ckt_recheck", &doc, gvals, &app, &bctx) == 0,
+          "version-3 fixture, scripted runtime, bound app, block context");
+    CHECK(ckt_counting_table(g.w, g_v2x_table, 2) == 0,
+          "the scripted table, auth hooks counted");
+    e = calloc(3, sizeof(*e));
+    CHECK(e != NULL, "alloc");
+    CHECK(ckt_row_insert(g.w, 0xC1) == 0 && ckt_row_insert(g.w, 0xC2) == 0,
+          "two committed CORE rows");
+    CHECK(ckt_spend_env(&e[0], 0xC1, 3, TEST_APP_ENV_CEILING) == 0 &&
+          ckt_spend_env(&e[1], 0xC2, 3, TEST_APP_ENV_CEILING) == 0 &&
+          ckt_spend_env(&e[2], 0xC2, 7, TEST_APP_ENV_CEILING) == 0,
+          "spend A, spend B, and a second spend of B");
+
+    CHECK(ckt_check(app, e[0].bytes, e[0].len, CMT_MEM_CHECK_TX_TYPE_NEW,
+                    &code) == 0 && code == CMT_MEM_CODE_TYPE_OK &&
+          ckt_check(app, e[1].bytes, e[1].len, CMT_MEM_CHECK_TX_TYPE_NEW,
+                    &code) == 0 && code == CMT_MEM_CODE_TYPE_OK,
+          "both spends admitted");
+    CHECK(g_ckt_auth_calls == 2, "two NEW admissions verified two legs");
+
+    /* the block: row A spent, then the application's Commit */
+    CHECK(run_sql(g.w->db, "BEGIN IMMEDIATE") == 0, "the host's BEGIN");
+    CHECK(ckt_row_delete(g.w, 0xC1) == 1, "row A spent (exactly one row)");
+    memset(&cres, 0, sizeof(cres));
+    CHECK(nodus_cmt_app_commit(app, &cres) == CMT_OK, "Commit");
+
+    /* the recheck, in mempool FIFO order */
+    CHECK(ckt_check(app, e[0].bytes, e[0].len,
+                    CMT_MEM_CHECK_TX_TYPE_RECHECK, &code) == 0 &&
+          code != CMT_MEM_CODE_TYPE_OK,
+          "the spend of the spent row is dropped at recheck");
+    CHECK(ckt_check(app, e[1].bytes, e[1].len,
+                    CMT_MEM_CHECK_TX_TYPE_RECHECK, &code) == 0 &&
+          code == CMT_MEM_CODE_TYPE_OK,
+          "the spend of the live row survives the recheck");
+    CHECK(g_ckt_auth_calls == 2, "the recheck re-verified NO kind-1 "
+          "signature (the cache answered for the same wire ids)");
+    CHECK(ckt_check(app, e[2].bytes, e[2].len, CMT_MEM_CHECK_TX_TYPE_NEW,
+                    &code) == 0 && code != CMT_MEM_CODE_TYPE_OK,
+          "the rebuilt pending set refuses a second spend of B");
+
+    free(e);
+    free(bctx);
+    nodus_cmt_app_ledger_release(app);
+    free(app);
+    gfx_close(&g);
+    return 0;
+}
+
+/**
+ * auth_kind 2 is NEVER taken from the cache: a real chain_config
+ * (committee approvals) admitted NEW and then RECHECKed runs the auth
+ * hook BOTH times, on the builtin runtime (auth hooks counted, verdicts
+ * the real hook's). A regression pin, not a RED case: 84f331f3 also
+ * verified it every time.
+ */
+static int t_check_tx_recheck_kind2(void)
+{
+    gfx_t                          g;
+    cmt_genesis_doc_t              doc;
+    cmt_genesis_validator_t        gvals[DNAC_COMMITTEE_SIZE];
+    nodus_cmt_app_ledger_t        *app;
+    const nodus_domain_runtime_t  *bt;
+    size_t                         nbt = 0;
+    test_env_t                     env;
+    uint32_t                       code = 0;
+
+    CHECK(gfx_open(&g, "ckt_kind2") == 0, "version-3 fixture");
+    bt = nodus_runtime_builtin_table(&nbt);
+    CHECK(ckt_counting_table(g.w, bt, nbt) == 0,
+          "the builtin table, auth hooks counted");
+    app = calloc(1, sizeof(*app));
+    CHECK(app != NULL, "alloc");
+    CHECK(gfx_doc(&g, &doc, gvals) == 0, "the completed genesis document");
+    CHECK(nodus_cmt_app_ledger_init(app, g.w, &doc) == CMT_OK, "bind");
+    CHECK(build_cc_env(g.w, g.chain32, 0xC201, &env) == 0, "a real "
+          "chain_config envelope");
+
+    CHECK(ckt_check(app, env.bytes, env.len, CMT_MEM_CHECK_TX_TYPE_NEW,
+                    &code) == 0 && code == CMT_MEM_CODE_TYPE_OK, "admitted");
+    CHECK(g_ckt_auth_calls == 1, "one kind-2 leg verified at admission");
+    CHECK(ckt_check(app, env.bytes, env.len, CMT_MEM_CHECK_TX_TYPE_RECHECK,
+                    &code) == 0 && code == CMT_MEM_CODE_TYPE_OK,
+          "still admitted at recheck");
+    CHECK(g_ckt_auth_calls == 2, "the kind-2 leg was verified AGAIN");
+
+    free(env.bytes);
+    nodus_cmt_app_ledger_release(app);
+    free(app);
+    gfx_close(&g);
+    return 0;
+}
+
+/**
+ * PrepareProposal, red-team F1: a chain_config candidate the seam refuses
+ * ALONE (0 declared units) no longer rides alone. (a) With two ordinary
+ * envelopes beside it, both are proposed, fee-descending. (b) With a
+ * VALID chain_config behind it (fee tie, request order), the valid one
+ * rides alone. (c) Coverage the chain_config change moved here: the drop
+ * loop's DUPLICATE path (ERR_DUP → excluded → repacked, two seam runs) —
+ * not a RED leg, 84f331f3 handled it the same way.
+ *
+ * RED on 84f331f3: the fee-first chain_config rode alone unconditionally,
+ * the seam refused it, and the proposal was EMPTY in both cases.
+ */
+static int t_prepare_cc_refused_packs_rest(void)
+{
+    gfx_t                                   g;
+    cmt_genesis_doc_t                       doc;
+    cmt_genesis_validator_t                 gvals[DNAC_COMMITTEE_SIZE];
+    nodus_cmt_app_ledger_t                 *app = NULL;
+    nodus_witness_v2_block_ctx_t           *bctx = NULL;
+    nodus_abci_request_prepare_proposal_t   req;
+    nodus_abci_response_prepare_proposal_t  resp;
+    v2x_env_t                              *envs = NULL;
+    test_env_t                              poison, good;
+    cmt_pb_bytes_t                          txs[3];
+    uint8_t                                 call[64];
+
+    CHECK(cap_fixture(&g, "ckt_ccprep", &doc, gvals, &app, &bctx) == 0,
+          "version-3 fixture, scripted runtime, bound app, block context");
+    envs = calloc(2, sizeof(*envs));
+    CHECK(envs != NULL, "alloc");
+    CHECK(build_cc_env_units(g.w, g.chain32, 0xC301, 0, &poison) == 0,
+          "a chain_config declaring 0 units");
+    CHECK(build_cc_env(g.w, g.chain32, 0xC302, &good) == 0,
+          "a correctly declared chain_config");
+    memset(call, 0x61, sizeof(call));
+    CHECK(cap_env_build(&envs[0], bctx->policy, call, sizeof(call), 1, 9, 0,
+                        NULL) == 0, "fee 9");
+    memset(call, 0x62, sizeof(call));
+    CHECK(cap_env_build(&envs[1], bctx->policy, call, sizeof(call), 1, 5, 0,
+                        NULL) == 0, "fee 5");
+
+    /* (a) [fee 5, poison chain_config, fee 9] */
+    txs[0].data = envs[1].bytes; txs[0].len = envs[1].len;
+    txs[1].data = poison.bytes;  txs[1].len = poison.len;
+    txs[2].data = envs[0].bytes; txs[2].len = envs[0].len;
+    memset(&req, 0, sizeof(req));
+    req.txs          = txs;
+    req.txs_len      = 3;
+    req.max_tx_bytes = 22020096;
+    memset(&resp, 0, sizeof(resp));
+    CHECK(nodus_cmt_app_prepare_proposal(app, &req, &resp) == CMT_OK,
+          "prepare answers");
+    CHECK(resp.txs_len == 2, "the refused chain_config is left out and the "
+          "other two are packed");
+    CHECK(resp.txs[0].data == envs[0].bytes &&
+          resp.txs[1].data == envs[1].bytes, "fee-descending");
+
+    /* (b) [poison chain_config, valid chain_config] */
+    txs[0].data = poison.bytes; txs[0].len = poison.len;
+    txs[1].data = good.bytes;   txs[1].len = good.len;
+    req.txs_len = 2;
+    memset(&resp, 0, sizeof(resp));
+    CHECK(nodus_cmt_app_prepare_proposal(app, &req, &resp) == CMT_OK,
+          "prepare answers");
+    CHECK(resp.txs_len == 1 && resp.txs[0].data == good.bytes,
+          "the valid chain_config rides alone");
+
+    /* (c) the drop loop's DUPLICATE path: the same ordinary envelope
+     * twice. The seam names the SECOND as ERR_DUP (nodus_witness_v2_env.c,
+     * the wire-level duplicate scan); it is excluded and the batch
+     * repacked — one kept, two seam runs. */
+    txs[0].data = envs[0].bytes; txs[0].len = envs[0].len;
+    txs[1].data = envs[0].bytes; txs[1].len = envs[0].len;
+    req.txs_len = 2;
+    memset(&resp, 0, sizeof(resp));
+    g_seam_runs = 0;
+    CHECK(sqlite3_trace_v2(g.w->db, SQLITE_TRACE_STMT, seam_run_trace,
+                           NULL) == SQLITE_OK, "install the run counter");
+    CHECK(nodus_cmt_app_prepare_proposal(app, &req, &resp) == CMT_OK,
+          "prepare answers");
+    sqlite3_trace_v2(g.w->db, 0, NULL, NULL);
+    CHECK(resp.txs_len == 1 && resp.txs[0].data == envs[0].bytes &&
+          resp.txs[0].len == envs[0].len, "the duplicate is dropped, the "
+          "envelope proposed once");
+    CHECK(g_seam_runs == 2, "two seam runs: the duplicate refusal, then "
+          "clean");
+
+    free(poison.bytes);
+    free(good.bytes);
+    free(envs);
+    free(bctx);
+    nodus_cmt_app_ledger_release(app);
+    free(app);
+    gfx_close(&g);
+    return 0;
+}
+
+/**
+ * PrepareProposal, red-team F2: the room an unfit candidate would take
+ * is FILLED. 48 equal ~60 KB envelopes against the 2 MiB envelope-byte
+ * bound (the t_prepare_env_byte_bound shape, k_fit of them fit); the
+ * top-ranked one (highest fee per unit: fee 1047 over a 60 000-unit
+ * ceiling) names the unpriced runtime_op 8. The answer is the k_fit
+ * highest-ranked VALID envelopes — the next one moved into the room.
+ *
+ * RED on 84f331f3: the byte pre-trim kept the k_fit highest fees
+ * INCLUDING the invalid one, the seam dropped it and nothing refilled
+ * the room: k_fit - 1 envelopes. RED on round 1 (0.19.78 first cut):
+ * the seam refused it and the repack refilled — right answer, TWO seam
+ * runs; round 2's pack refuses the unpriceable plan itself (the seam's
+ * own `dna_meter_reserve`), so ONE run.
+ */
+static int t_prepare_refill_after_drop(void)
+{
+    gfx_t                                   g;
+    cmt_genesis_doc_t                       doc;
+    cmt_genesis_validator_t                 gvals[DNAC_COMMITTEE_SIZE];
+    nodus_cmt_app_ledger_t                 *app = NULL;
+    nodus_witness_v2_block_ctx_t           *bctx = NULL;
+    nodus_abci_request_prepare_proposal_t   req;
+    nodus_abci_response_prepare_proposal_t  resp;
+    v2x_env_t                              *envs = NULL;
+    cmt_pb_bytes_t                         *txs = NULL;
+    uint8_t                                *call = NULL;
+    uint64_t                                bound, sum, ceil_max = 0;
+    size_t                                  i, k_fit;
+    const size_t                            bad = CAP_BYTES_N - 1;
+
+    CHECK(cap_fixture(&g, "ckt_refill", &doc, gvals, &app, &bctx) == 0,
+          "version-3 fixture, scripted runtime, bound app, block context");
+    bound = bctx->policy->max_block_env_bytes;
+    envs = calloc(CAP_BYTES_N, sizeof(*envs));     /* ~3 MiB: heap      */
+    txs  = calloc(CAP_BYTES_N, sizeof(*txs));
+    call = calloc(1, CAP_BYTES_CALL_LEN);
+    CHECK(envs && txs && call, "alloc");
+
+    for (i = 0; i < CAP_BYTES_N; i++) {
+        uint64_t st = 0;
+
+        memset(call, 0x5B, CAP_BYTES_CALL_LEN);
+        call[0] = (uint8_t)i;
+        call[1] = 0xD3;
+        if (i == bad) {
+            CHECK(cap_env_build(&envs[i], bctx->policy, call,
+                                CAP_BYTES_CALL_LEN, 8, 1000u + i, 60000,
+                                NULL) == 0,
+                  "the top-ranked candidate names the UNPRICED op 8");
+        } else {
+            CHECK(cap_env_build(&envs[i], bctx->policy, call,
+                                CAP_BYTES_CALL_LEN, 1, 1000u + i, 0,
+                                &st) == 0, "a ~60 KB priced envelope");
+            if (st > ceil_max) {
+                ceil_max = st;
+            }
+        }
+        txs[i].data = envs[i].bytes;
+        txs[i].len  = envs[i].len;
+    }
+    CHECK(envs[bad].len == envs[0].len, "PREMISE: every envelope is the "
+          "same length");
+    CHECK((uint64_t)(1000u + bad) * ceil_max >
+              (uint64_t)(1000u + bad - 1) * 60000u,
+          "PREMISE: the unpriced one ranks FIRST by fee per unit as well as "
+          "by fee");
+    k_fit = (size_t)(bound / envs[0].len);
+    CHECK(k_fit >= 2 && k_fit + 1 < CAP_BYTES_N, "PREMISE: a strict, "
+          "non-trivial prefix fits, with valid candidates beyond it");
+    CHECK((uint64_t)k_fit * ceil_max <= bctx->budget.global_remaining &&
+          (uint64_t)k_fit * ceil_max <= cap_core_units(bctx),
+          "PREMISE: the unit budgets are not the binding bound");
+
+    memset(&req, 0, sizeof(req));
+    req.txs          = txs;
+    req.txs_len      = CAP_BYTES_N;
+    req.max_tx_bytes = 22020096;
+    memset(&resp, 0, sizeof(resp));
+    g_seam_runs = 0;
+    CHECK(sqlite3_trace_v2(g.w->db, SQLITE_TRACE_STMT, seam_run_trace,
+                           NULL) == SQLITE_OK, "install the run counter");
+    CHECK(nodus_cmt_app_prepare_proposal(app, &req, &resp) == CMT_OK,
+          "prepare answers");
+    sqlite3_trace_v2(g.w->db, 0, NULL, NULL);
+
+    CHECK(resp.txs_len == k_fit, "the byte window is FULL again after the "
+          "offender was dropped");
+    sum = 0;
+    for (i = 0; i < resp.txs_len; i++) {
+        CHECK(resp.txs[i].data == envs[bad - 1 - i].bytes,
+              "the k_fit highest-fee VALID envelopes, fee-descending");
+        sum += resp.txs[i].len;
+    }
+    CHECK(sum <= bound, "within the envelope-byte bound");
+    CHECK(g_seam_runs == 1, "ONE seam run: the pack excluded the "
+          "unpriceable top candidate and filled its room");
+
+    free(call);
+    free(txs);
+    free(envs);
+    free(bctx);
+    nodus_cmt_app_ledger_release(app);
+    free(app);
+    gfx_close(&g);
+    return 0;
+}
+
+/**
+ * PrepareProposal, red-team F6: CLAIMS are not cut by the ENVELOPE-byte
+ * window. 48 ~60 KB envelopes (more than the window holds) and one
+ * genuinely admissible claim behind them (a claim's ordering key is 0,
+ * so it sorts after every paying envelope). The answer is the k_fit
+ * highest-fee envelopes AND the claim.
+ *
+ * RED on 84f331f3: the pre-trim STOPPED at the first envelope over the
+ * window, which cut the claim behind it — k_fit envelopes, no claim.
+ */
+static int t_prepare_claims_past_env_window(void)
+{
+    gfx_t                                   g;
+    cmt_genesis_doc_t                       doc;
+    cmt_genesis_validator_t                 gvals[DNAC_COMMITTEE_SIZE];
+    nodus_cmt_app_ledger_t                 *app = NULL;
+    nodus_witness_v2_block_ctx_t           *bctx = NULL;
+    nodus_abci_request_prepare_proposal_t   req;
+    nodus_abci_response_prepare_proposal_t  resp;
+    v2x_env_t                              *envs = NULL;
+    cmt_pb_bytes_t                         *txs = NULL;
+    uint8_t                                *call = NULL, *claim = NULL;
+    size_t                                  clen = 0, i, k_fit;
+    uint64_t                                bound, ceil_max = 0;
+
+    CHECK(gfx_open_n(&g, "ckt_claimwin", 2) == 0,
+          "version-3 fixture, two distribution leaves");
+    CHECK(v2x_table_init(g.w) == 0, "the scripted runtime table");
+    app  = calloc(1, sizeof(*app));
+    bctx = calloc(1, sizeof(*bctx));
+    envs = calloc(CAP_BYTES_N, sizeof(*envs));
+    txs  = calloc(CAP_BYTES_N + 1, sizeof(*txs));
+    call = calloc(1, CAP_BYTES_CALL_LEN);
+    claim = malloc(DNA_CLAIM_MAX_WIRE);
+    CHECK(app && bctx && envs && txs && call && claim, "alloc");
+    CHECK(gfx_doc(&g, &doc, gvals) == 0, "the completed genesis document");
+    CHECK(nodus_cmt_app_ledger_init(app, g.w, &doc) == CMT_OK, "bind");
+    CHECK(nodus_witness_v2_block_ctx_build(g.w, bctx) == 0 && bctx->policy,
+          "the block context");
+    bound = bctx->policy->max_block_env_bytes;
+
+    for (i = 0; i < CAP_BYTES_N; i++) {
+        uint64_t st = 0;
+
+        memset(call, 0x5C, CAP_BYTES_CALL_LEN);
+        call[0] = (uint8_t)i;
+        call[1] = 0xE4;
+        CHECK(cap_env_build(&envs[i], bctx->policy, call,
+                            CAP_BYTES_CALL_LEN, 1, 1000u + i, 0, &st) == 0,
+              "a ~60 KB priced envelope");
+        if (st > ceil_max) {
+            ceil_max = st;
+        }
+        txs[i].data = envs[i].bytes;
+        txs[i].len  = envs[i].len;
+    }
+    CHECK(build_claim_n(&g, 2, 0, claim, DNA_CLAIM_MAX_WIRE, &clen) == 0,
+          "an admissible claim");
+    txs[CAP_BYTES_N].data = claim;
+    txs[CAP_BYTES_N].len  = clen;
+    k_fit = (size_t)(bound / envs[0].len);
+    CHECK(k_fit >= 2 && k_fit < CAP_BYTES_N, "PREMISE: the envelopes "
+          "overflow the window");
+    CHECK((uint64_t)k_fit * ceil_max <= bctx->budget.global_remaining &&
+          (uint64_t)k_fit * ceil_max <= cap_core_units(bctx),
+          "PREMISE: the unit budgets are not the binding bound");
+
+    memset(&req, 0, sizeof(req));
+    req.txs          = txs;
+    req.txs_len      = CAP_BYTES_N + 1;
+    req.max_tx_bytes = 22020096;
+    memset(&resp, 0, sizeof(resp));
+    CHECK(nodus_cmt_app_prepare_proposal(app, &req, &resp) == CMT_OK,
+          "prepare answers");
+    CHECK(resp.txs_len == k_fit + 1, "the k_fit envelopes AND the claim");
+    for (i = 0; i < k_fit; i++) {
+        CHECK(resp.txs[i].data == envs[CAP_BYTES_N - 1 - i].bytes,
+              "the highest-fee envelopes, fee-descending");
+    }
+    CHECK(resp.txs[k_fit].data == claim, "the claim is proposed, after "
+          "them");
+
+    free(claim);
+    free(call);
+    free(txs);
+    free(envs);
+    free(bctx);
+    nodus_cmt_app_ledger_release(app);
+    free(app);
+    gfx_close(&g);
+    return 0;
+}
+
+/* ══ CHECKTX-P1 ROUND 2 — lifetime, row-identity keys, the unit-aware
+ * pack, fee per unit ════════════════════════════════════════════════
+ * Each case names the round-2 fix it targets and why it fails on the
+ * round-1 tree. */
+
+/**
+ * [fix 4 — lifetime] The mempool lifetime rule (decision
+ * 2026-09-25-mempool-policy.md 1; nodus_types.h
+ * NODUS_CMT_APP_MAX_EXPIRY_AHEAD). Block 1 — a real block through the
+ * host — CREATEs the two CORE rows the spends below need (amount 0, so
+ * the supply equation is untouched; CREATEd by an applied item, so the
+ * CORE root moves as a DECLARED touch — planting rows by SQL instead
+ * trips the engine's untouched-domain guard, apply.c phase 8, and a
+ * nonzero planted row its pre-apply supply gate, phase 2 — round 2b).
+ * At tip 1: expiry 0 and tip + 101 are REFUSED, tip + 100 and tip + 1
+ * ADMITTED. After a real EMPTY block 2 — the host's Commit clears the
+ * pending set, the rows are untouched, ONLY the tip moved — the RECHECK
+ * drops the tip + 1 = 2 envelope (expired at candidate height 3,
+ * env_preflight.c step 3) and keeps the tip + 100 one.
+ *
+ * RED on round 1: expiry 0 and tip + 101 were admitted.
+ */
+static int t_check_tx_expiry(void)
+{
+    gfx_t           g;
+    exec_t          x;
+    cmt_block_id_t  bid;
+    v2x_env_t      *e = NULL;
+    dna_effect_in_t mk[2];
+    uint8_t         k1[64], k2[64], zero8[8];
+    uint64_t        tip;
+    uint32_t        code = 0;
+
+    CHECK(gfx_open(&g, "ckt_expiry") == 0, "version-3 fixture");
+    CHECK(v2x_table_init(g.w) == 0, "the scripted runtime table");
+    CHECK(exec_init(&x, &g) == 0, "blockexec + real application");
+    e = calloc(5, sizeof(*e));
+    CHECK(e != NULL, "alloc");
+
+    /* ── block 1: CREATE rows 0xE1 and 0xE2 (amount 0) ─────────────── */
+    memset(k1, 0xE1, sizeof(k1));
+    memset(k2, 0xE2, sizeof(k2));
+    memset(zero8, 0, sizeof(zero8));
+    memset(mk, 0, sizeof(mk));
+    mk[0].hdr.op_id       = V2X_OP_UTXO;
+    mk[0].hdr.effect_kind = DNA_EFFECT_CREATE;
+    mk[0].hdr.precond_tag = DNA_EFFECT_PRE_ABSENT;
+    mk[0].hdr.key_len     = 64;
+    mk[0].hdr.value_len   = 8;
+    mk[0].key             = k1;              /* key order: 0xE1.. first  */
+    mk[0].value           = zero8;
+    mk[1]                 = mk[0];
+    mk[1].key             = k2;
+    CHECK(ckt_effs_env(&e[4], mk, 2, 1, TEST_APP_ENV_CEILING,
+                       CKT_EXPIRY) == 0, "the row-creating envelope");
+    x.txs[0].data = e[4].bytes;
+    x.txs[0].len  = e[4].len;
+    CHECK(exec_make_block(&x, 1, 1) == 0, "block 1");
+    CHECK(exec_block_id(&x, x.blk, &bid) == 0 && block_id_is_complete(&bid),
+          "a COMPLETE BlockID");
+    CHECK(nodus_cmt_host_apply_verified_block(x.be, &bid, x.blk, x.state)
+              == CMT_OK, "block 1 applies");
+    CHECK(x.ledger->fb_pb[0].det.code == (uint32_t)NODUS_V2_TX_OK,
+          "PREMISE: the row-creating item APPLIED");
+    CHECK(ckt_row_exists(g.w, 0xE1) == 1 && ckt_row_exists(g.w, 0xE2) == 1,
+          "PREMISE: both rows exist, committed by block 1");
+    tip = 1;
+    CHECK(q1(g.w->db, "SELECT COALESCE(MAX(global_height),0) FROM v2_blocks")
+              == (int64_t)tip, "PREMISE: the tip is 1");
+
+    /* ── at tip 1 ───────────────────────────────────────────────────── */
+    CHECK(ckt_spend_env_x(&e[0], 0xE1, 3, TEST_APP_ENV_CEILING, 0) == 0 &&
+          ckt_spend_env_x(&e[1], 0xE1, 4, TEST_APP_ENV_CEILING,
+                          tip + CKT_EXPIRY + 1) == 0 &&
+          ckt_spend_env_x(&e[2], 0xE1, 5, TEST_APP_ENV_CEILING,
+                          tip + CKT_EXPIRY) == 0 &&
+          ckt_spend_env_x(&e[3], 0xE2, 5, TEST_APP_ENV_CEILING,
+                          tip + 1) == 0,
+          "expiry 0, tip+101, tip+100, and tip+1");
+    CHECK(ckt_check(x.ledger, e[0].bytes, e[0].len,
+                    CMT_MEM_CHECK_TX_TYPE_NEW, &code) == 0 &&
+          code != CMT_MEM_CODE_TYPE_OK, "expiry 0 (\"never\") is refused");
+    CHECK(ckt_check(x.ledger, e[1].bytes, e[1].len,
+                    CMT_MEM_CHECK_TX_TYPE_NEW, &code) == 0 &&
+          code != CMT_MEM_CODE_TYPE_OK, "expiry tip + 101 is refused");
+    CHECK(ckt_check(x.ledger, e[2].bytes, e[2].len,
+                    CMT_MEM_CHECK_TX_TYPE_NEW, &code) == 0 &&
+          code == CMT_MEM_CODE_TYPE_OK, "expiry tip + 100 is admitted");
+    CHECK(ckt_check(x.ledger, e[3].bytes, e[3].len,
+                    CMT_MEM_CHECK_TX_TYPE_NEW, &code) == 0 &&
+          code == CMT_MEM_CODE_TYPE_OK, "expiry tip + 1 is admitted");
+
+    /* ── block 2, EMPTY: only the tip moves; the host's Commit runs ─── */
+    CHECK(exec_make_last_commit(&x, 1, &bid) == 0,
+          "a precommit from every validator for block 1");
+    CHECK(exec_make_block(&x, 2, 0) == 0, "block 2, empty");
+    CHECK(exec_block_id(&x, x.blk, &bid) == 0 && block_id_is_complete(&bid),
+          "block 2's COMPLETE BlockID");
+    CHECK(nodus_cmt_host_apply_verified_block(x.be, &bid, x.blk, x.state)
+              == CMT_OK, "block 2 applies");
+    CHECK(q1(g.w->db, "SELECT COALESCE(MAX(global_height),0) FROM v2_blocks")
+              == 2, "PREMISE: the tip is 2");
+    CHECK(ckt_row_exists(g.w, 0xE2) == 1, "PREMISE: the row the tip + 1 "
+          "envelope spends is still live — its refusal below is the "
+          "expiry, not the state");
+
+    CHECK(ckt_check(x.ledger, e[2].bytes, e[2].len,
+                    CMT_MEM_CHECK_TX_TYPE_RECHECK, &code) == 0 &&
+          code == CMT_MEM_CODE_TYPE_OK,
+          "the tip + 100 envelope survives the recheck");
+    CHECK(ckt_check(x.ledger, e[3].bytes, e[3].len,
+                    CMT_MEM_CHECK_TX_TYPE_RECHECK, &code) == 0 &&
+          code != CMT_MEM_CODE_TYPE_OK,
+          "the tip + 1 envelope is dropped at recheck once expired");
+
+    free(e);
+    exec_free(&x);
+    gfx_close(&g);
+    return 0;
+}
+
+/**
+ * [fix 5 — row-identity keys; round 3 — VHASH SETs are NOT keys]
+ * (a) Two envelopes CREATEing the SAME new row (PRE_ABSENT — a
+ * TOKEN_CREATE with one token_id, a STAKE for one validator): the second
+ * is REFUSED. (b) Two envelopes SETting the SAME existing row bound to
+ * its value hash (PRE_EXISTS_VHASH — the shape of two DELEGATEs to one
+ * validator row): BOTH are admitted, because in a block the second
+ * re-reads the row after the first wrote it and derives its expected
+ * hash from that read (nodus_witness_v2_apply.c exec_one_env;
+ * nodus_witness_rt_native.c rtn_row_set_eff) — both apply. (c) Two
+ * ordinary INDEPENDENT spends that both update the SAME shared counter
+ * under PRE_EXISTS_VERSION: BOTH are admitted.
+ *
+ * HOW IT CAN LIE: the effects here are the scripted runtime's STATIC
+ * bytes, not a native DELEGATE's; (b) pins the keying RULE (a VHASH SET
+ * is not a key), not the native runtime's re-derivation. A native
+ * two-delegator DELEGATE case was judged impractical in this file: it
+ * needs two differently-owned funded coins (this fixture's genesis
+ * distribution binds every leaf to g_ks[0]) plus a SYSFUND leg each.
+ *
+ * RED on round 1: (a) — only DELETE rows were keyed. RED on round 2:
+ * (b) — round 2 keyed VHASH SETs and refused the second. (c) passes on
+ * every round (the pin that counters are never keys).
+ */
+static int t_check_tx_row_keys(void)
+{
+    gfx_t                         g;
+    cmt_genesis_doc_t             doc;
+    cmt_genesis_validator_t       gvals[DNAC_COMMITTEE_SIZE];
+    nodus_cmt_app_ledger_t       *app = NULL;
+    nodus_witness_v2_block_ctx_t *bctx = NULL;
+    v2x_env_t                    *e = NULL;
+    dna_effect_in_t               eff[2];
+    uint8_t                       newk[64], rowk[64], dk1[64], dk2[64];
+    uint8_t                       val0[8], val6[8], oldv[8], pool_key[1];
+    uint8_t                       pool_new[8];
+    int64_t                       pool;
+    uint32_t                      code = 0;
+    int                           i;
+
+    CHECK(cap_fixture(&g, "ckt_rowkeys", &doc, gvals, &app, &bctx) == 0,
+          "version-3 fixture, scripted runtime, bound app, block context");
+    e = calloc(6, sizeof(*e));
+    CHECK(e != NULL, "alloc");
+    CHECK(ckt_row_insert(g.w, 0xD1) == 0 && ckt_row_insert(g.w, 0xD2) == 0 &&
+          ckt_row_insert(g.w, 0xD3) == 0, "three committed CORE rows");
+
+    /* (a) CREATE with PRE_ABSENT, one new key, two intents */
+    memset(newk, 0xDA, sizeof(newk));
+    memset(val0, 0, sizeof(val0));
+    memset(eff, 0, sizeof(eff));
+    eff[0].hdr.op_id       = V2X_OP_UTXO;
+    eff[0].hdr.effect_kind = DNA_EFFECT_CREATE;
+    eff[0].hdr.precond_tag = DNA_EFFECT_PRE_ABSENT;
+    eff[0].hdr.key_len     = 64;
+    eff[0].hdr.value_len   = 8;
+    eff[0].key             = newk;
+    eff[0].value           = val0;
+    CHECK(ckt_effs_env(&e[0], eff, 1, 3, TEST_APP_ENV_CEILING,
+                       CKT_EXPIRY) == 0 &&
+          ckt_effs_env(&e[1], eff, 1, 4, TEST_APP_ENV_CEILING,
+                       CKT_EXPIRY) == 0, "two CREATEs of one new row");
+    CHECK(ckt_check(app, e[0].bytes, e[0].len, CMT_MEM_CHECK_TX_TYPE_NEW,
+                    &code) == 0 && code == CMT_MEM_CODE_TYPE_OK,
+          "the first CREATE is admitted");
+    CHECK(ckt_check(app, e[1].bytes, e[1].len, CMT_MEM_CHECK_TX_TYPE_NEW,
+                    &code) == 0 && code != CMT_MEM_CODE_TYPE_OK,
+          "a second CREATE of the same row (PRE_ABSENT) is refused");
+
+    /* (b) SET with PRE_EXISTS_VHASH on the existing row 0xD1 (amount 0 —
+     * ckt_row_insert; the fixture adapter's value hash is over the 8-byte
+     * BE amount, v2_exec_fixture.h v2x_core_probe). The SET is only ever
+     * dry-run here, never applied. */
+    memset(rowk, 0xD1, sizeof(rowk));
+    memset(oldv, 0, sizeof(oldv));
+    memset(val6, 0, sizeof(val6));
+    val6[7] = 6;
+    memset(eff, 0, sizeof(eff));
+    eff[0].hdr.op_id       = V2X_OP_UTXO;
+    eff[0].hdr.effect_kind = DNA_EFFECT_SET;
+    eff[0].hdr.precond_tag = DNA_EFFECT_PRE_EXISTS_VHASH;
+    eff[0].hdr.key_len     = 64;
+    eff[0].hdr.value_len   = 8;
+    eff[0].key             = rowk;
+    eff[0].value           = val6;
+    CHECK(dna_effect_value_hash(oldv, 8, eff[0].hdr.expected_vhash) == 0,
+          "the row's current value hash");
+    CHECK(ckt_effs_env(&e[2], eff, 1, 3, TEST_APP_ENV_CEILING,
+                       CKT_EXPIRY) == 0 &&
+          ckt_effs_env(&e[3], eff, 1, 4, TEST_APP_ENV_CEILING,
+                       CKT_EXPIRY) == 0, "two VHASH-bound SETs of one row");
+    CHECK(ckt_check(app, e[2].bytes, e[2].len, CMT_MEM_CHECK_TX_TYPE_NEW,
+                    &code) == 0 && code == CMT_MEM_CODE_TYPE_OK,
+          "the first SET is admitted");
+    CHECK(ckt_check(app, e[3].bytes, e[3].len, CMT_MEM_CHECK_TX_TYPE_NEW,
+                    &code) == 0 && code == CMT_MEM_CODE_TYPE_OK,
+          "a second VHASH-bound SET of the same row is ALSO admitted — in a "
+          "block each item re-reads the row after the earlier item's write "
+          "and hashes THAT (round 3: not a conflict key)");
+
+    /* (c) two independent spends, each also crediting the reward-pool
+     * counter under PRE_EXISTS_VERSION (the native supply pattern) */
+    pool = q1(g.w->db, "SELECT reward_pool FROM supply_tracking WHERE id=1");
+    CHECK(pool >= 0, "PREMISE: the supply counter row exists");
+    pool_key[0] = 3;                                  /* reward_pool   */
+    for (i = 0; i < 8; i++) {
+        pool_new[i] = (uint8_t)(((uint64_t)pool + 1u) >> (56 - 8 * i));
+    }
+    memset(dk1, 0xD2, sizeof(dk1));
+    memset(dk2, 0xD3, sizeof(dk2));
+    for (i = 0; i < 2; i++) {
+        /* CANONICAL ORDER (shared/dnac/effect_wire.c eff_order_cmp):
+         * effect_kind FIRST, then op_id, then key — so the SET (kind 2)
+         * precedes the DELETE (kind 3) even though its op id (3) is the
+         * larger one. Round 2 had them the other way round and the
+         * encoder refused the result. */
+        memset(eff, 0, sizeof(eff));
+        eff[0].hdr.op_id            = V2X_OP_SUPPLY;
+        eff[0].hdr.effect_kind      = DNA_EFFECT_SET;
+        eff[0].hdr.precond_tag      = DNA_EFFECT_PRE_EXISTS_VERSION;
+        eff[0].hdr.expected_version = (uint64_t)pool;
+        eff[0].hdr.key_len          = 1;
+        eff[0].hdr.value_len        = 8;
+        eff[0].key                  = pool_key;
+        eff[0].value                = pool_new;
+        eff[1].hdr.op_id       = V2X_OP_UTXDEL;
+        eff[1].hdr.effect_kind = DNA_EFFECT_DELETE;
+        eff[1].hdr.precond_tag = DNA_EFFECT_PRE_EXISTS;
+        eff[1].hdr.key_len     = 64;
+        eff[1].key             = i == 0 ? dk1 : dk2;
+        CHECK(ckt_effs_env(&e[4 + i], eff, 2, 3, TEST_APP_ENV_CEILING,
+                           CKT_EXPIRY) == 0,
+              "a spend of its own row that also sets the shared counter");
+    }
+    CHECK(ckt_check(app, e[4].bytes, e[4].len, CMT_MEM_CHECK_TX_TYPE_NEW,
+                    &code) == 0 && code == CMT_MEM_CODE_TYPE_OK,
+          "the first independent spend is admitted");
+    CHECK(ckt_check(app, e[5].bytes, e[5].len, CMT_MEM_CHECK_TX_TYPE_NEW,
+                    &code) == 0 && code == CMT_MEM_CODE_TYPE_OK,
+          "the second is admitted too — the EXISTS_VERSION counter row is "
+          "not a conflict key");
+
+    free(e);
+    free(bctx);
+    nodus_cmt_app_ledger_release(app);
+    free(app);
+    gfx_close(&g);
+    return 0;
+}
+
+/**
+ * [fixes 1 + 2 — the hog] Ranked by fee per unit: a small top envelope,
+ * then a HOG declaring the WHOLE unit budget (fee high enough to rank
+ * second both by flat fee and by fee per unit — PREMISE-checked), then
+ * four small envelopes and one claim. The UNIT budget binds: after the
+ * top envelope the hog no longer fits, so the pack SKIPS it and packs
+ * the four small envelopes and the claim behind it, in ONE seam run.
+ *
+ * RED on round 1 (and 0.19.77): the pack had no unit budget; the seam
+ * refused the hog at slot 1 as CAPACITY_UNITS and the loop TRUNCATED the
+ * proposal to [top] — the four fitting envelopes and the claim were
+ * thrown away (red-team HIGH, and the claims MEDIUM).
+ */
+static int t_prepare_hog_skipped(void)
+{
+    gfx_t                                   g;
+    cmt_genesis_doc_t                       doc;
+    cmt_genesis_validator_t                 gvals[DNAC_COMMITTEE_SIZE];
+    nodus_cmt_app_ledger_t                 *app = NULL;
+    nodus_witness_v2_block_ctx_t           *bctx = NULL;
+    nodus_abci_request_prepare_proposal_t   req;
+    nodus_abci_response_prepare_proposal_t  resp;
+    v2x_env_t                              *envs = NULL;
+    cmt_pb_bytes_t                          txs[7];
+    uint8_t                                 call[64], *claim = NULL;
+    size_t                                  clen = 0, i;
+    uint64_t                                st_top = 0, st_small = 0, budget;
+
+    CHECK(gfx_open_n(&g, "ckt_hog", 2) == 0,
+          "version-3 fixture, two distribution leaves");
+    CHECK(v2x_table_init(g.w) == 0, "the scripted runtime table");
+    app   = calloc(1, sizeof(*app));
+    bctx  = calloc(1, sizeof(*bctx));
+    envs  = calloc(6, sizeof(*envs));
+    claim = malloc(DNA_CLAIM_MAX_WIRE);
+    CHECK(app && bctx && envs && claim, "alloc");
+    CHECK(gfx_doc(&g, &doc, gvals) == 0, "the completed genesis document");
+    CHECK(nodus_cmt_app_ledger_init(app, g.w, &doc) == CMT_OK, "bind");
+    CHECK(nodus_witness_v2_block_ctx_build(g.w, bctx) == 0 && bctx->policy,
+          "the block context");
+    budget = bctx->budget.global_remaining;
+
+    memset(call, 0x71, sizeof(call));
+    CHECK(cap_env_build(&envs[0], bctx->policy, call, sizeof(call), 1,
+                        1000000000000ull, 0, &st_top) == 0, "the top one");
+    memset(call, 0x72, sizeof(call));
+    CHECK(cap_env_build(&envs[1], bctx->policy, call, sizeof(call), 1,
+                        1000000000ull, budget, NULL) == 0,
+          "the HOG: the whole unit budget declared");
+    for (i = 2; i < 6; i++) {
+        memset(call, (int)(0x80 + i), sizeof(call));
+        CHECK(cap_env_build(&envs[i], bctx->policy, call, sizeof(call), 1,
+                            5, 0, &st_small) == 0, "a small one");
+    }
+    CHECK(build_claim_n(&g, 2, 0, claim, DNA_CLAIM_MAX_WIRE, &clen) == 0,
+          "an admissible claim");
+    CHECK(1000000000000ull * budget > 1000000000ull * st_top &&
+          1000000000ull * st_small > 5u * budget,
+          "PREMISE: top > hog > small by fee per unit (and by flat fee)");
+    CHECK(st_top + 4u * st_small <= budget && st_top > 0,
+          "PREMISE: everything but the hog fits the unit budget, and the "
+          "hog (the whole budget) no longer fits once the top one "
+          "reserved its nonzero static cost");
+
+    /* request order: small×4, hog, claim, top */
+    for (i = 0; i < 4; i++) {
+        txs[i].data = envs[2 + i].bytes;
+        txs[i].len  = envs[2 + i].len;
+    }
+    txs[4].data = envs[1].bytes; txs[4].len = envs[1].len;
+    txs[5].data = claim;         txs[5].len = clen;
+    txs[6].data = envs[0].bytes; txs[6].len = envs[0].len;
+
+    memset(&req, 0, sizeof(req));
+    req.txs          = txs;
+    req.txs_len      = 7;
+    req.max_tx_bytes = 22020096;
+    memset(&resp, 0, sizeof(resp));
+    g_seam_runs = 0;
+    CHECK(sqlite3_trace_v2(g.w->db, SQLITE_TRACE_STMT, seam_run_trace,
+                           NULL) == SQLITE_OK, "install the run counter");
+    CHECK(nodus_cmt_app_prepare_proposal(app, &req, &resp) == CMT_OK,
+          "prepare answers");
+    sqlite3_trace_v2(g.w->db, 0, NULL, NULL);
+
+    CHECK(resp.txs_len == 6, "top + four small + the claim — the hog is "
+          "skipped, nothing behind it is lost");
+    CHECK(resp.txs[0].data == envs[0].bytes, "the top one first");
+    for (i = 0; i < 4; i++) {
+        CHECK(resp.txs[1 + i].data == envs[2 + i].bytes,
+              "the four small ones, request order (a tie)");
+    }
+    CHECK(resp.txs[5].data == claim, "the claim lands too");
+    CHECK(g_seam_runs == 1, "ONE seam run: the pack applied the unit "
+          "budget itself");
+
+    free(claim);
+    free(envs);
+    free(bctx);
+    nodus_cmt_app_ledger_release(app);
+    free(app);
+    gfx_close(&g);
+    return 0;
+}
+
+/**
+ * [fix 3 — fee per unit] Three envelopes: A pays 100 over 10 000 units
+ * (0.01 per unit), B pays 50 over 1 000 (0.05), and a hog pays 1 000 —
+ * the highest FLAT fee — over the whole unit budget (~0.0005). Ranked by
+ * fee per unit the answer is [B, A]; the hog ranks last and no longer
+ * fits.
+ *
+ * RED on round 1: flat-fee order put the hog first; it reserved the whole
+ * budget and the loop truncated the proposal to [hog].
+ */
+static int t_prepare_fee_per_unit(void)
+{
+    gfx_t                                   g;
+    cmt_genesis_doc_t                       doc;
+    cmt_genesis_validator_t                 gvals[DNAC_COMMITTEE_SIZE];
+    nodus_cmt_app_ledger_t                 *app = NULL;
+    nodus_witness_v2_block_ctx_t           *bctx = NULL;
+    nodus_abci_request_prepare_proposal_t   req;
+    nodus_abci_response_prepare_proposal_t  resp;
+    v2x_env_t                              *envs = NULL;
+    cmt_pb_bytes_t                          txs[3];
+    uint8_t                                 call[64];
+    uint64_t                                st_a = 0, st_b = 0;
+
+    CHECK(cap_fixture(&g, "ckt_perunit", &doc, gvals, &app, &bctx) == 0,
+          "version-3 fixture, scripted runtime, bound app, block context");
+    envs = calloc(3, sizeof(*envs));
+    CHECK(envs != NULL, "alloc");
+    memset(call, 0x91, sizeof(call));
+    CHECK(cap_env_build(&envs[0], bctx->policy, call, sizeof(call), 1, 100,
+                        10000, &st_a) == 0, "A: 100 over 10 000");
+    memset(call, 0x92, sizeof(call));
+    CHECK(cap_env_build(&envs[1], bctx->policy, call, sizeof(call), 1, 50,
+                        1000, &st_b) == 0, "B: 50 over 1 000");
+    memset(call, 0x93, sizeof(call));
+    CHECK(cap_env_build(&envs[2], bctx->policy, call, sizeof(call), 1, 1000,
+                        bctx->budget.global_remaining, NULL) == 0,
+          "the hog: 1 000 over the whole budget");
+    CHECK(st_a <= 10000 && st_b <= 1000, "PREMISE: both ceilings cover "
+          "their static cost");
+
+    /* request order: A, hog, B */
+    txs[0].data = envs[0].bytes; txs[0].len = envs[0].len;
+    txs[1].data = envs[2].bytes; txs[1].len = envs[2].len;
+    txs[2].data = envs[1].bytes; txs[2].len = envs[1].len;
+    memset(&req, 0, sizeof(req));
+    req.txs          = txs;
+    req.txs_len      = 3;
+    req.max_tx_bytes = 22020096;
+    memset(&resp, 0, sizeof(resp));
+    CHECK(nodus_cmt_app_prepare_proposal(app, &req, &resp) == CMT_OK,
+          "prepare answers");
+    CHECK(resp.txs_len == 2, "the hog is not proposed");
+    CHECK(resp.txs[0].data == envs[1].bytes &&
+          resp.txs[1].data == envs[0].bytes,
+          "B (0.05 per unit) before A (0.01 per unit)");
 
     free(envs);
     free(bctx);
@@ -4984,6 +6405,24 @@ int main(void)
         { "prepare_env_byte_bound",     t_prepare_env_byte_bound },
         { "prepare_units_truncate",     t_prepare_units_truncate },
         { "prepare_entry_invalid_only", t_prepare_entry_invalid_only },
+        /* CHECKTX-P1 (CheckTx parity, conflict set, light recheck,
+         * PrepareProposal F1/F2/F6) */
+        { "check_tx_dry_run",           t_check_tx_dry_run },
+        { "check_tx_cc_poison",         t_check_tx_cc_poison },
+        { "check_tx_conflicts",         t_check_tx_conflicts },
+        { "check_tx_claim_variants",    t_check_tx_claim_variants },
+        { "check_tx_recheck_light",     t_check_tx_recheck_light },
+        { "check_tx_recheck_kind2",     t_check_tx_recheck_kind2 },
+        { "prepare_cc_refused_packs_rest", t_prepare_cc_refused_packs_rest },
+        { "prepare_refill_after_drop",  t_prepare_refill_after_drop },
+        { "prepare_claims_past_env_window",
+          t_prepare_claims_past_env_window },
+        /* CHECKTX-P1 round 2 (lifetime, row keys, the unit-aware pack,
+         * fee per unit) */
+        { "check_tx_expiry",            t_check_tx_expiry },
+        { "check_tx_row_keys",          t_check_tx_row_keys },
+        { "prepare_hog_skipped",        t_prepare_hog_skipped },
+        { "prepare_fee_per_unit",       t_prepare_fee_per_unit },
     };
     size_t i, failed = 0, ncases = sizeof(cases) / sizeof(cases[0]);
 

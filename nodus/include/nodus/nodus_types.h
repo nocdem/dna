@@ -26,8 +26,19 @@ extern "C" {
  * long time. Bump BOTH, together, every time. */
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  19
-#define NODUS_VERSION_PATCH  77
-#define NODUS_VERSION_STRING "0.19.77"
+#define NODUS_VERSION_PATCH  78
+#define NODUS_VERSION_STRING "0.19.78"
+
+/* Mempool lifetime ceiling (docs/plans/decisions/2026-09-25-mempool-
+ * policy.md, decision 1 — "100 block yeterli"): CheckTx (new AND
+ * recheck) refuses an envelope whose expiry_height is 0 ("never") or
+ * lies more than this many blocks past the committed tip, so every
+ * admitted envelope leaves the mempool at most this many blocks later.
+ * A MEMPOOL-ADMISSION rule only — block validity is unchanged (a block
+ * may still carry expiry 0; env_preflight.c step 3). Every client that
+ * builds an envelope (nodus-cli) sets expiry_height within
+ * [tip + 1, tip + this]. */
+#define NODUS_CMT_APP_MAX_EXPIRY_AHEAD  100u
 
 /* Wire frame.
  *

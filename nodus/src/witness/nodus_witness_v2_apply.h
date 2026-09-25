@@ -251,6 +251,8 @@
                                              * the BlockID it persists   */
 #include "dnac/dnac.h"                      /* DNAC_EPOCH_LENGTH         */
 #include "dnac/cmt_params.h"                /* CMT_MAX_BLOCK_SIZE_BYTES  */
+#include "dnac/effect_wire.h"               /* DNA_EFFECT_MAX_KEY_LEN    */
+#include "witness/nodus_witness_runtime.h"  /* nodus_rt_auth_verdict_t   */
 
 #include <stdint.h>
 #include <stddef.h>
@@ -1119,37 +1121,150 @@ int nodus_witness_v2_supply_check(nodus_witness_t *w);
  */
 int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk);
 
-/**
- * VERIFY ONE ENVELOPE'S AUTHORIZATION against committed state — the
- * stage that turns every leg's authorization COMMITMENT into a VERDICT
- * through the resolved runtime's own `auth` hook.
+/* ── THE PER-ITEM DRY RUN (CheckTx parity, package CHECKTX-P1) ─────────
  *
- * ⚠ NOTHING ELSE IN THE TREE VERIFIES AN ENVELOPE'S SIGNATURES.
+ * ⚠ NOTHING ELSE ON THE MEMPOOL SIDE VERIFIES AN ENVELOPE'S SIGNATURES.
  * `dna_env_preflight` derives commitments and identities and says so
  * itself (env_preflight.h:57-63: it decides nothing about "whether any
  * authorization is VALID"), and the admission lane
- * (`verify_v2_successor_tx`, nodus_witness_verify.c:674-784) runs the
- * wire-family marker, the contextual ruleset table, that preflight, a
- * `wire_id` comparison and the committed-intent guard — and no
- * signature check at all. A mempool that does not call this admits
- * forged and corrupted authorizations and only discovers them when a
- * block carrying them is applied, which is not what cometbft's CheckTx
- * contract promises (D-4 rev 3 (1): "signature, format, double spend,
- * size").
+ * (`verify_v2_successor_tx`, nodus_witness_verify.c:674-784) runs no
+ * signature check at all. This dry run's authorization stage (the item
+ * loop's own `env_authorize_legs`) is the CheckTx signature check —
+ * D-4 rev 3 (1): "signature, format, double spend, size". (The former
+ * signature-only entry `nodus_witness_v2_env_authorize` is deleted,
+ * CHECKTX-P1 round 2: this entry subsumes it and it had no production
+ * caller left.)
  *
- * The envelope is judged at the CANDIDATE height (tip + 1), against the
- * committed registry's contextual rulesets and the governing committee
- * snapshot for that height — the same inputs the apply engine resolves,
- * through the same functions.
+ * One envelope, judged by the SAME per-item stages the Comet apply lane
+ * runs for one item (nodus_witness_v2_apply.c, the item loop), against
+ * COMMITTED state at the candidate height tip + 1, WITHOUT A WRITE:
  *
- * @param reason optional; receives the class-tagged refusal text.
- * @return 0 authorized; -1 a deterministic REFUSAL (bytes + committed
- *         state only — every honest node agrees); -2 a node-local fault,
- *         which a caller must never turn into a verdict.
+ *   decode → positional ruleset table → dna_env_preflight →
+ *   replay guard (committed intent / wire index) → per-leg admission
+ *   (ownership, access mode, auth-kind allowlist, per-domain quota) →
+ *   meter reservation against a FRESH block budget → authorization
+ *   (the runtime's own auth hook, env_authorize_legs) → per leg:
+ *   read_plan + mediated reads + native exec + strict effect decode +
+ *   effect charge + the adapter's validate / probe / precondition
+ *   decision — every step the apply path runs EXCEPT the adapter's
+ *   mutate. `exec_one_env` is the ONE body both modes run; the dry mode
+ *   differs from apply in exactly that last step.
+ *
+ * WHY PROBE-ONLY EQUALS APPLY for one item: within one leg the effect
+ * list's logical keys are unique (the strict codec,
+ * dna_effect_result_decode), and one envelope's legs address distinct
+ * domains (env_wire.c's strictly ascending leg order), while every
+ * adapter call is scoped to its leg's own domain — so no effect of the
+ * item can observe another effect of the same item, and probing every
+ * effect against committed state answers what probe-then-mutate would.
+ * RESIDUAL ASSUMPTION (read in the two compiled adapters, not proven in
+ * general): an adapter's probe of one key depends on that key's row
+ * alone.
+ *
+ * NOT CONSENSUS-VISIBLE: nothing is written, no block is judged. The
+ * answer is a node-local admission decision (mempool CheckTx); the
+ * block's own verdicts stay the apply engine's.
  */
-int nodus_witness_v2_env_authorize(nodus_witness_t *w, const uint8_t *bytes,
-                                   size_t len, char *reason,
-                                   size_t reason_size);
+
+/** A leg authorization verdict a caller already holds for THESE bytes
+ *  (the CheckTx recheck cache). A leg's entry is consulted only when
+ *  `present[l]` is 1, the leg's auth_kind is 1 (NODUS_RT_AUTHKIND_DSA87_
+ *  MULTI_V1, whose verdict is a pure function of the bytes and the leg
+ *  digest — nodus_witness_runtime.h's auth contract) AND `digest[l]`
+ *  equals the digest this run derives. auth_kind 2 is ALWAYS verified
+ *  afresh: its verdict depends on the governing committee snapshot. */
+typedef struct {
+    uint16_t                       leg_count;
+    const uint8_t                 *present;   /* [leg_count]              */
+    const uint8_t                (*digest)[64]; /* [leg_count]            */
+    const nodus_rt_auth_verdict_t *verdict;   /* [leg_count]              */
+} nodus_v2_auth_reuse_t;
+
+/** One ROW-IDENTITY row an envelope's effects claim — reported
+ *  generically from the decoded effect list, never from any
+ *  runtime-specific call parsing. EXACTLY two classes are reported:
+ *
+ *   - every DELETE, whatever its precondition: once an earlier item in
+ *     the block deleted the row, a later item's mediated read of it
+ *     (taken inside the block transaction, after the earlier item's
+ *     effects — nodus_witness_v2_apply.c exec_one_env: read_one, then
+ *     exec, then effects_apply) finds it ABSENT, so the later item
+ *     cannot apply: a true conflict;
+ *   - every PRE_ABSENT CREATE: once an earlier item created the key, it
+ *     is PRESENT for the later item's precondition check — a true
+ *     conflict for an op whose CREATE has no other shape. ONE known
+ *     exception (nodus/BUGS.md, accepted): a DELEGATE picks its shape
+ *     from its own read (nodus_witness_rt_native.c `rtn_delegate_exec`,
+ *     `topup = dr->present`), so a second first-time DELEGATE from the
+ *     same delegator to the same validator would apply in the block as
+ *     a top-up; keying its CREATE refuses it at CheckTx (false conflict,
+ *     node-local, only that delegator is affected).
+ *
+ *  NOT reported: SETs of any precondition. A PRE_EXISTS_VHASH SET's
+ *  expected hash is computed by the runtime from ITS OWN mediated read
+ *  (nodus_witness_rt_native.c `rtn_row_set_eff`), and that read sees the
+ *  earlier items' writes — so two such SETs of one row (two DELEGATEs to
+ *  one validator, an UNDELEGATE beside a DELEGATE) BOTH apply in one
+ *  block; keying them was a false conflict (CHECKTX-P1 round 3). SETs
+ *  under PRE_EXISTS / PRE_EXISTS_VERSION are the shared counters
+ *  (supply, validator stats) every ordinary item updates, re-read the
+ *  same way. */
+typedef struct {
+    uint32_t domain_id;                       /* the leg's domain          */
+    uint32_t op_id;                           /* the adapter operation     */
+    uint16_t key_len;
+    uint8_t  key[DNA_EFFECT_MAX_KEY_LEN];
+} nodus_v2_dry_run_row_t;
+
+/** The dry run's answer. Large (per-leg verdicts) — heap-allocate it.
+ *  `rows` is owned by the struct: release it with
+ *  nodus_witness_v2_env_dry_run_free. */
+typedef struct {
+    uint32_t code;                /* nodus_v2_tx_code_t the apply lane
+                                   * would record; NODUS_V2_TX_OK on 0    */
+    uint8_t  wire_id[64];         /* valid once preflight passed           */
+    uint8_t  intent_id[64];
+    uint16_t leg_count;
+    uint8_t  auth_kind[DNA_ENV_MAX_LEGS];
+    uint8_t  leg_digest[DNA_ENV_MAX_LEGS][64];
+    nodus_rt_auth_verdict_t verdict[DNA_ENV_MAX_LEGS];
+    uint8_t  verdict_reused[DNA_ENV_MAX_LEGS]; /* 1 = taken from `reuse` */
+    nodus_v2_dry_run_row_t *rows;              /* heap, `n_rows` rows     */
+    size_t   n_rows;
+} nodus_v2_env_dry_run_t;
+
+/**
+ * Run the per-item dry run over one envelope (contract above).
+ *
+ * @param reuse   optional (NULL = verify every leg).
+ * @param out     zeroed and filled; release with _free on every return.
+ * @param reason  optional; the class-tagged refusal / fault text.
+ * @return 0 the item would APPLY at tip + 1 against committed state;
+ *         -1 the item would be REFUSED (`out->code` names the class the
+ *         apply lane would record); -2 a node-local fault — never a
+ *         verdict about the bytes.
+ */
+int nodus_witness_v2_env_dry_run(nodus_witness_t *w, const uint8_t *bytes,
+                                 size_t len,
+                                 const nodus_v2_auth_reuse_t *reuse,
+                                 nodus_v2_env_dry_run_t *out,
+                                 char *reason, size_t reason_size);
+
+/** Free what nodus_witness_v2_env_dry_run allocated inside `out`
+ *  (not `out` itself). NULL-safe. */
+void nodus_witness_v2_env_dry_run_free(nodus_v2_env_dry_run_t *out);
+
+/**
+ * One claim's canonical NULLIFIER from its wire bytes — the derivation
+ * the apply lane runs for that claim (`claim_prescan_one`: shape,
+ * committed manifest, distribution leaf hash, "DNA.CLNUL.v1"), exposed
+ * so the mempool can key a pending claim by what makes two claims the
+ * SAME claim. Reads committed state, writes nothing.
+ * @return 0 with `out_nul` filled; -1 the bytes do not decode or the
+ *         derivation refuses them (a verdict); -2 a node-local fault.
+ */
+int nodus_witness_v2_claim_nullifier(nodus_witness_t *w, const uint8_t *bytes,
+                                     size_t len, uint8_t out_nul[64]);
 
 /**
  * THE LEDGER'S COMMITTED GLOBAL ROOT — the one quantity that answers
