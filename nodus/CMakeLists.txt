@@ -1782,6 +1782,12 @@ add_executable(test_v2_env_meter tests/test_v2_env_meter.c)
 target_link_libraries(test_v2_env_meter nodus dsa nodus)
 add_test(NAME test_v2_env_meter COMMAND test_v2_env_meter)
 
+# nodus 0.19.79 — the chain-id cache of nodus_witness_v2_chain_id: armed
+# only by the post-open gate, answered without the document while armed,
+# never keyed on v2_successor (joiner / derivation scratch handles still
+# derive). Capacity measurements 2026-09-25 §5 A.
+register_witness_test(test_v2_chain_id_cache)
+
 # Hard-Fork v1 Stage E.2 — tier-3 client helper guard-path tests
 add_executable(test_cc_client tests/test_cc_client.c)
 target_link_libraries(test_cc_client nodus dsa nodus)

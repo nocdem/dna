@@ -2820,6 +2820,72 @@ per-domain quota enforcement is not exercised by a test: every
 genesis manifest is built with `quota_tx_per_block = 0`, unbounded
 (`nodus_witness_domreg.c:312`), and no fixture raises it.
 
+### The chain id is read once per open, not once per call (2026-09-26, nodus 0.19.79)
+
+**What.** `nodus_witness_v2_chain_id` (`nodus_witness_v2_claims.c`)
+used to re-derive the chain id from the stored genesis document on
+every call: read the ~91 KB "genesisDoc" row, validate it
+canonical-strict, re-encode, SHA3 — with a ~240 KB `calloc` each time
+(`nodus_witness_v2_gen_stored_chain_id`). It now answers from
+`w->v2_chain32` whenever a new flag, `w->v2_chain32_valid`, is set, and
+takes the old path unchanged otherwise.
+
+**Why.** CheckTx asks for the chain id several times per transaction
+(authorization, the batch preflight, the entry identity), and the
+mempool recheck after every block repeats that for every remaining
+entry; the apply engine's block-start snapshot, claim admission and the
+pool anchor check ask too. A local stack-sampling profile of one node
+under the TPS bench (Release binary, 120 samples, capacity measurements
+2026-09-25 §2c — a local profile, NOT a live measurement, ±5 %) put
+~35 % of the node's busy time in this re-derivation of a value that
+never changes once the document is written.
+
+**The flag's lifecycle** (contract in `nodus_witness.h`, next to the
+field). SET in exactly one place: `witness_post_open_gate`
+(`nodus_witness.c`), right after it has read the handle's stored
+document canonical-strict and copied the id into `v2_chain32` — the
+same value the node already used for every frame header. CLEARED:
+at the gate's own reset (beside `v2_successor` / `v2_chain32`), in
+`witness_db_open_attempt` before `db` is replaced, in
+`witness_db_open_fail`, in `nodus_witness_create_chain_db`'s close of
+the previous handle, and at shutdown's close. The genesis derivation's
+scratch handle (`nodus_witness_v2_gen.c`) and the joiner's
+re-derivation (`nodus_witness_v2_join.c`) DO pass the gate
+(`create_chain_db` runs it) but land in its "no genesis stored yet"
+outcome, so the flag stays false (verifier/red-team correction of the
+first wording, which said they never pass it); hand-built test and tool
+handles keep it false by `calloc` / `nodus_witness_init`'s `memset`.
+All of them derive from the document as before. **Rule for any future
+writer:** code that writes the stored document on a handle whose flag
+may be true must clear the flag in the same step — today no such writer
+exists (red-team LOW, hypothetical). **The key is the flag, never `v2_successor`:**
+both scratch handles set `v2_successor` by hand while `v2_chain32` is
+still zero; a cache keyed on it would answer zeros there and every join
+would be refused (the first design in the capacity note made exactly
+that mistake and was corrected before it was written).
+
+**What is given up.** A stored document altered on disk AFTER the gate
+accepted it is no longer caught by every CheckTx; it is caught at the
+next open, where the gate re-reads it canonical-strict and refuses the
+database. Such an alteration is node-local (nothing rewrites the row on
+an open chain: the three writers are the derivation's and the bundle's
+scratch databases and the node start-up's absent-row branch). No
+consensus value, root, wire byte or schema changes; the cached bytes are
+the bytes the derivation returns on the same document; no wipe.
+
+**Test.** `test_v2_chain_id_cache` (new): (a) on a chain opened through
+the production path the gate arms the flag and the answer equals the
+derivation; (b) after the "genesisDoc" row is deleted under the open
+handle the cached answer still comes back (this case fails without the
+cache), while the derivation, a never-gated handle and the flag-cleared
+handle fail closed, and a re-open is refused by the gate with the flag
+left false; (c) a never-gated handle with `v2_successor` set and
+`v2_chain32` garbage or zero still derives from the document; (d) the
+joiner's scratch sequence (create → `v2_successor` by hand → S16 →
+`bundle_apply` → chain id == pin) still reaches the pin with the flag
+false. `join_adopt` itself runs only in the Genesis Protocol harness
+(`test_v2_join.sh`).
+
 ### tokenomics-v3 P3 — stake parameters (2026-09-24, nodus 0.19.72)
 
 Decisions: `docs/plans/decisions/2026-09-22-nodus-tokenomics-v3-operator.md`

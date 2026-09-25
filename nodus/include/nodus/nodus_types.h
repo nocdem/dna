@@ -26,8 +26,8 @@ extern "C" {
  * long time. Bump BOTH, together, every time. */
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  19
-#define NODUS_VERSION_PATCH  78
-#define NODUS_VERSION_STRING "0.19.78"
+#define NODUS_VERSION_PATCH  79
+#define NODUS_VERSION_STRING "0.19.79"
 
 /* Mempool lifetime ceiling (docs/plans/decisions/2026-09-25-mempool-
  * policy.md, decision 1 — "100 block yeterli"): CheckTx (new AND

@@ -545,6 +545,7 @@ static int witness_db_open_fail(nodus_witness_t *witness) {
         sqlite3_close(witness->db);
         witness->db = NULL;
     }
+    witness->v2_chain32_valid = false;   /* the cache went with the handle */
     return -1;
 }
 
@@ -560,6 +561,10 @@ static int witness_db_open_fail(nodus_witness_t *witness) {
  * as idempotent. */
 static int witness_db_open_attempt(nodus_witness_t *witness,
                                    const char *db_path) {
+    /* `db` is about to be replaced: the chain-id cache belongs to the
+     * handle the post-open gate accepted, never to the next one
+     * (nodus_witness.h, v2_chain32_valid). */
+    witness->v2_chain32_valid = false;
     int rc = sqlite3_open(db_path, &witness->db);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "%s: failed to open %s: %s\n",
@@ -896,6 +901,7 @@ static int witness_post_open_gate(nodus_witness_t *witness,
      * "chain role undeterminable" must never be read as (b)'s absence. */
     witness->v2_successor = false;
     memset(witness->v2_chain32, 0, sizeof(witness->v2_chain32));
+    witness->v2_chain32_valid = false;   /* the chain-id cache (nodus_witness.h) */
 
     int cmt_state_present = witness_gate_table_exists(witness->db,
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='cmt_state'");
@@ -924,6 +930,11 @@ static int witness_post_open_gate(nodus_witness_t *witness,
         }
         witness->v2_successor = true;
         memcpy(witness->v2_chain32, v3_id, sizeof(witness->v2_chain32));
+        /* The ONE place the chain-id cache becomes valid: v2_chain32 now
+         * holds the id this handle's stored document hashes to, read
+         * canonical-strict just above. nodus_witness_v2_chain_id answers
+         * from it from here on (contract: nodus_witness.h). */
+        witness->v2_chain32_valid = true;
         fprintf(stderr, "%s: chain role: COMETBFT (version 3; the legacy "
                 "and pre-Comet lanes are closed)\n", LOG_TAG);
         return 0;
@@ -1280,6 +1291,7 @@ int nodus_witness_create_chain_db(nodus_witness_t *witness,
         sqlite3_close(witness->db);
         witness->db = NULL;
     }
+    witness->v2_chain32_valid = false;   /* the cache went with the handle */
 
     /* Build filename: witness_<first16bytes_hex>.db */
     char hex[33];
@@ -2560,6 +2572,7 @@ void nodus_witness_close(nodus_witness_t *witness) {
         sqlite3_close(witness->db);
         witness->db = NULL;
     }
+    witness->v2_chain32_valid = false;   /* the cache went with the handle */
 
     fprintf(stderr, "%s: shutdown complete\n", LOG_TAG);
 }

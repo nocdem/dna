@@ -506,8 +506,44 @@ typedef struct nodus_witness {
      * never produces a legacy block.
      *
      * `v2_chain32` caches nodus_witness_v2_chain_id() (derived from the
-     * committed genesis BlockID) for the QC-cert preimages and envelope
-     * admission; valid only while v2_successor is true.
+     * stored genesis document, nodus_witness_v2_gen_stored_chain_id) for
+     * the frame headers and envelope admission; valid only while
+     * v2_successor is true.
+     *
+     * `v2_chain32_valid` — THE CACHE CONTRACT of nodus_witness_v2_chain_id.
+     * True ONLY while `db` is the handle witness_post_open_gate accepted
+     * as a version-3 chain AND `v2_chain32` holds the id that gate read
+     * from that handle's stored genesis document (nodus_witness.c, set
+     * right after the memcpy). Cleared by every open that replaces `db`
+     * (witness_db_open_attempt, BEFORE sqlite3_open — so every path into
+     * the gate, including the gate's early refusals that close `db`,
+     * starts with it false), by the gate itself before it decides, and by
+     * the explicit closes in witness_db_open_fail, create_chain_db and
+     * nodus_witness_close (nodus_witness.c). While true,
+     * nodus_witness_v2_chain_id answers from `v2_chain32` without
+     * re-reading the document; while false it derives from the document
+     * exactly as before.
+     *
+     * Deliberately NOT keyed on `v2_successor`: the genesis derivation's
+     * scratch handle (nodus_witness_v2_gen.c) and the joiner's
+     * re-derivation (nodus_witness_v2_join.c) set `v2_successor` by hand
+     * while `v2_chain32` is still zero, and must keep reading the
+     * document. Those scratch handles DO pass the gate (create_chain_db
+     * runs it) but land in its "genesis not yet stored" outcome, so this
+     * flag stays false; calloc'd test and tool handles that never run the
+     * gate keep it false by zero-initialisation.
+     *
+     * RULE for any future writer: code that writes the stored genesis
+     * document ("genesisDoc" in cmt_state) on a handle whose flag may be
+     * true MUST clear this flag in the same step (or re-run the gate).
+     * Today no such writer exists — the three writers
+     * (nodus_witness_v2_gen.c, nodus_witness_v2_bundle.c on scratch
+     * handles, nodus_witness_cmt_node.c only when the row is absent)
+     * never touch an accepted handle (CHAINID-CACHE red-team, LOW).
+     *
+     * Given up: an on-disk alteration of the stored document AFTER the
+     * gate accepted it is no longer caught per call — only at the next
+     * open, where the gate re-reads it canonical-strict.
      *
      * R3 W4 — v2_certpool (the bounded per-height DNA.CERT.v2 collection
      * that assembled the closed lane's QC) is DELETED with it: its only
@@ -515,6 +551,7 @@ typedef struct nodus_witness {
      * _produce_commit) are gone. */
     bool        v2_successor;
     uint8_t     v2_chain32[32];
+    bool        v2_chain32_valid;
 
     /* O15E Faz B — the successor sync driver's RUNTIME state (never
      * persisted; LOCAL policy only, nothing here is consensus). R3 W4 —

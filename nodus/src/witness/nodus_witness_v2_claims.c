@@ -211,7 +211,27 @@ int nodus_witness_v2_chain_id(nodus_witness_t *w,
      * (nodus_witness_v2_genesis_ex) — nothing writes one any more.
      *
      * An absent document is a failure: a chain with no stored genesis
-     * document has no identity to bind anything to. */
+     * document has no identity to bind anything to.
+     *
+     * THE CACHE (capacity measurements 2026-09-25, §5 A). The derivation
+     * below reads the whole ~91 KB document, validates it canonical-strict,
+     * re-encodes and hashes it (~240 KB calloc) on every call, and CheckTx
+     * alone calls this several times per transaction. The post-open gate
+     * (witness_post_open_gate, nodus_witness.c) has already run that SAME
+     * derivation on THIS handle and kept the result in `v2_chain32`;
+     * `v2_chain32_valid` says so (contract: nodus_witness.h). The document
+     * is written once, before the gate accepts the chain, and nothing
+     * rewrites it on an open chain, so the cached bytes are the bytes the
+     * derivation would return. The flag — never `v2_successor` — is the
+     * key: scratch handles set `v2_successor` by hand with `v2_chain32`
+     * still zero and must keep deriving. */
+    _Static_assert(sizeof(((nodus_witness_t *)0)->v2_chain32)
+                       == DNA_CHAIN_ID_LEN,
+                   "the cached id is exactly one chain id");
+    if (w->v2_chain32_valid) {
+        memcpy(out, w->v2_chain32, DNA_CHAIN_ID_LEN);
+        return 0;
+    }
     return nodus_witness_v2_gen_stored_chain_id(w, out);
 }
 
