@@ -145,7 +145,7 @@ produces a DIFFERENT chain that cannot join — a loud refusal, not a silent spl
    The second line matters from the SECOND version-3 wipe on. The
    version-3 signer records the last height it signed in
    `$DATA_DIR/priv_validator_state.json` (`nodus_witness.c:1625`) and
-   refuses to sign any lower height (`shared/dnac/cmt_privval.c:116-117`,
+   refuses to sign any lower height (`shared/dnac/cmt_privval.c:117-118`,
    the reference's height-regression rule). A leftover file from the
    previous chain therefore stops the node voting on the new one, and with
    all seven affected the new chain never produces a block. The legacy
