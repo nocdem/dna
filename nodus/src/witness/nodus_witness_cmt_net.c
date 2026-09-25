@@ -41,6 +41,8 @@
 #include "crypto/utils/qgp_log.h"
 #include "dnac/cmt_mem.h"            /* CMT_MEM_CHANNEL */
 #include "dnac/cmt_part_set.h"       /* CMT_BLOCK_PART_SIZE_BYTES */
+#include "dnac/cmt_pb.h"             /* cmt_pb_get_uvarint, CMT_PB_CONS_MSG_* (NETSTATS kind) */
+#include "dnac/cmt_pb_mempool.h"     /* CMT_PB_MEMPOOL_MSG_TXS (NETSTATS kind) */
 #include "server/nodus_server.h"     /* w->server->identity.sk, w->server->witness_tcp */
 #include "transport/nodus_tcp.h"     /* nodus_tcp_send, nodus_tcp_disconnect */
 
@@ -103,6 +105,128 @@ static nodus_t3_msg_type_t net_channel_to_type(uint8_t channel_id)
     }
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+ * Inter-node traffic counters (NETSTATS) — OBSERVATION ONLY. Nothing in
+ * this section is read by any decision path; see the header's
+ * "INTER-NODE TRAFFIC COUNTERS" section.
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/* Kinds 1..9 are the consensus oneof field numbers used as indices
+ * directly (cmt_pb.h:853-863); the two extra kinds sit above them. */
+_Static_assert((int)CMT_PB_CONS_MSG_NEW_ROUND_STEP == 1 &&
+               (int)CMT_PB_CONS_MSG_VOTE_SET_BITS == 9 &&
+               (int)CMT_PB_CONS_MSG_VOTE_SET_BITS < (int)NODUS_CMT_NET_KIND_TXS,
+               "NETSTATS kind slots 1..9 must be the consensus Message oneof "
+               "field numbers (cmt_pb.h cmt_pb_cons_msg_kind_t)");
+
+/** Channel id -> counter slot; -1 for a channel that is not one of the
+ *  five (net_send has already refused those). */
+static int net_stat_ch_from_channel(uint8_t channel_id)
+{
+    switch (channel_id) {
+        case CMT_CONR_STATE_CHANNEL:         return NODUS_CMT_NET_CH_STATE;
+        case CMT_CONR_DATA_CHANNEL:          return NODUS_CMT_NET_CH_DATA;
+        case CMT_CONR_VOTE_CHANNEL:          return NODUS_CMT_NET_CH_VOTE;
+        case CMT_CONR_VOTE_SET_BITS_CHANNEL: return NODUS_CMT_NET_CH_VOTE_SET_BITS;
+        case CMT_MEM_CHANNEL:                return NODUS_CMT_NET_CH_MEMPOOL;
+        default:                             return -1;
+    }
+}
+
+/** T3 verb -> counter slot: verbs 35-39 to their channel (the same
+ *  pairing as net_channel_to_type / nodus_cmt_net_receive), every other
+ *  verb to the receive-only NON_ENVELOPE slot. */
+static int net_stat_ch_from_type(nodus_t3_msg_type_t type)
+{
+    switch (type) {
+        case NODUS_T3_CMT_STATE:         return NODUS_CMT_NET_CH_STATE;
+        case NODUS_T3_CMT_DATA:          return NODUS_CMT_NET_CH_DATA;
+        case NODUS_T3_CMT_VOTE:          return NODUS_CMT_NET_CH_VOTE;
+        case NODUS_T3_CMT_VOTE_SET_BITS: return NODUS_CMT_NET_CH_VOTE_SET_BITS;
+        case NODUS_T3_CMT_TXS:           return NODUS_CMT_NET_CH_MEMPOOL;
+        default:                         return NODUS_CMT_NET_CH_NON_ENVELOPE;
+    }
+}
+
+/**
+ * The message kind from the FIRST protobuf key of `m` — nothing past it
+ * is read. The key is a uvarint read with the codec's own reader
+ * (cmt_pb_get_uvarint, cmt_pb.h:438 / cmt_pb.c), so a multi-byte key is
+ * handled like any other; wire type = key & 7, field = key >> 3
+ * (cmt_pb_wire.h r_tag). A oneof branch is always length-delimited
+ * (wire type 2 — the decoder refuses anything else for fields 1..9,
+ * cmt_pb.c cons_message_merge). Consensus channels: fields 1..9
+ * (cmt_pb.h:853-863). Mempool channel: field 1 = Txs
+ * (cmt_pb_mempool.h:98-100). Anything else is UNKNOWN.
+ */
+static int net_stat_kind(int ch, const uint8_t *m, size_t m_len)
+{
+    size_t   off = 0;
+    uint64_t key;
+    uint64_t field;
+
+    if (ch == NODUS_CMT_NET_CH_NON_ENVELOPE) return NODUS_CMT_NET_KIND_NON_ENVELOPE;
+    if (m == NULL || m_len == 0) return NODUS_CMT_NET_KIND_UNKNOWN;
+    if (cmt_pb_get_uvarint(m, m_len, &off, &key) != CMT_OK) {
+        return NODUS_CMT_NET_KIND_UNKNOWN;
+    }
+    if ((key & 7u) != 2u) return NODUS_CMT_NET_KIND_UNKNOWN;
+    field = key >> 3;
+    if (ch == NODUS_CMT_NET_CH_MEMPOOL) {
+        return field == (uint64_t)CMT_PB_MEMPOOL_MSG_TXS
+               ? NODUS_CMT_NET_KIND_TXS : NODUS_CMT_NET_KIND_UNKNOWN;
+    }
+    if (field >= (uint64_t)CMT_PB_CONS_MSG_NEW_ROUND_STEP &&
+        field <= (uint64_t)CMT_PB_CONS_MSG_VOTE_SET_BITS) {
+        return (int)field;
+    }
+    return NODUS_CMT_NET_KIND_UNKNOWN;
+}
+
+static const char *net_stat_ch_label(int ch)
+{
+    static const char *const labels[NODUS_CMT_NET_STAT_CHANNELS] = {
+        "0x20", "0x21", "0x22", "0x23", "0x30", "t3"
+    };
+    return (ch >= 0 && ch < NODUS_CMT_NET_STAT_CHANNELS) ? labels[ch] : "?";
+}
+
+static const char *net_stat_kind_label(int kind)
+{
+    static const char *const labels[NODUS_CMT_NET_STAT_KINDS] = {
+        "unknown",
+        "new_round_step",   /* 1 CMT_PB_CONS_MSG_NEW_ROUND_STEP  */
+        "new_valid_block",  /* 2 CMT_PB_CONS_MSG_NEW_VALID_BLOCK */
+        "proposal",         /* 3 CMT_PB_CONS_MSG_PROPOSAL        */
+        "proposal_pol",     /* 4 CMT_PB_CONS_MSG_PROPOSAL_POL    */
+        "block_part",       /* 5 CMT_PB_CONS_MSG_BLOCK_PART      */
+        "vote",             /* 6 CMT_PB_CONS_MSG_VOTE            */
+        "has_vote",         /* 7 CMT_PB_CONS_MSG_HAS_VOTE        */
+        "vote_set_maj23",   /* 8 CMT_PB_CONS_MSG_VOTE_SET_MAJ23  */
+        "vote_set_bits",    /* 9 CMT_PB_CONS_MSG_VOTE_SET_BITS   */
+        "txs",              /* NODUS_CMT_NET_KIND_TXS            */
+        "other"             /* NODUS_CMT_NET_KIND_NON_ENVELOPE   */
+    };
+    return (kind >= 0 && kind < NODUS_CMT_NET_STAT_KINDS) ? labels[kind] : "?";
+}
+
+static bool net_stat_cell_zero(const nodus_cmt_net_stat_cell_t *c)
+{
+    return c->msgs == 0 && c->payload_bytes == 0 && c->frame_bytes == 0 &&
+           c->crypto_ops == 0 && c->fails == 0;
+}
+
+/** `net->now` in whole unix seconds; false on a missing or faulting
+ *  clock (the caller then skips / prints t=-1 — never a fault). */
+static bool net_stat_now_s(const nodus_cmt_net_t *net, int64_t *out_s)
+{
+    cmt_time_t t;
+
+    if (!net->now || net->now(net->now_ctx, &t) != CMT_OK) return false;
+    *out_s = cmt_time_unix_nano(t) / (int64_t)1000000000;
+    return true;
+}
+
 /** `net->now`, re-wrapped so the reactor's `host_ctx` (== `net`) reaches
  *  the ORIGINAL callback's own ctx (`net->now_ctx`), not `net` itself —
  *  cmt_conr_t calls `host.now(host_ctx, out)` (cmt_conr.c) and
@@ -160,10 +284,12 @@ static int net_fill_header(const nodus_cmt_net_t *net, nodus_t3_header_t *hdr)
 static bool net_send(void *ctx, int peer_idx, uint8_t channel_id,
                      const uint8_t *bytes, size_t len)
 {
-    nodus_cmt_net_t     *net = (nodus_cmt_net_t *)ctx;
-    nodus_t3_msg_type_t  type;
-    nodus_t3_msg_t       msg;
-    size_t               out_len = 0;
+    nodus_cmt_net_t            *net = (nodus_cmt_net_t *)ctx;
+    nodus_t3_msg_type_t         type;
+    nodus_t3_msg_t              msg;
+    size_t                      out_len = 0;
+    nodus_cmt_net_stat_cell_t  *stat;
+    int                         stat_ch;
 
     if (!net || !net->w || peer_idx < 0 || peer_idx >= NODUS_T3_MAX_WITNESSES) {
         return false;
@@ -183,12 +309,23 @@ static bool net_send(void *ctx, int peer_idx, uint8_t channel_id,
         return false;   /* peer not up — the reference's peer.IsRunning() == false */
     }
 
+    /* NETSTATS (observation only): from here on every outcome is
+     * counted in this (channel, kind) cell — a false return as `fails`,
+     * a successful encode as one signature, an accepted frame as
+     * msgs/payload/frame. The not-up refusal above is deliberately NOT
+     * counted (header: nodus_cmt_net_stat_cell_t). The channel is one
+     * of the five here: net_channel_to_type refused anything else. */
+    stat_ch = net_stat_ch_from_channel(channel_id);
+    if (stat_ch < 0) return false;   /* unreachable: same five channels */
+    stat = &net->stats.tx[stat_ch][net_stat_kind(stat_ch, bytes, len)];
+
     if (!net->w->server) {
         /* No identity to sign with — a fixture or a startup ordering
          * defect, never a live witness (w->server is set before the
          * peer table exists). Guarded so this reads as a clean false,
          * not a NULL dereference of identity.sk below (delta 2). */
         QGP_LOG_WARN(LOG_TAG, "send: w->server is NULL, cannot sign");
+        stat->fails++;
         return false;
     }
 
@@ -211,6 +348,7 @@ static bool net_send(void *ctx, int peer_idx, uint8_t channel_id,
                                      "to sign an envelope with a zero "
                                      "derived chain id");
             }
+            stat->fails++;
             return false;
         }
     }
@@ -221,6 +359,7 @@ static bool net_send(void *ctx, int peer_idx, uint8_t channel_id,
         /* item H: a failing clock is a node-local fault class, never a
          * silent 0 timestamp on the wire. */
         QGP_LOG_WARN(LOG_TAG, "send: net_fill_header failed (now() faulted)");
+        stat->fails++;
         return false;
     }
     msg.w_cmt.m     = bytes;    /* caller-owned for the duration of this call */
@@ -230,11 +369,22 @@ static bool net_send(void *ctx, int peer_idx, uint8_t channel_id,
                         net->encode_buf, net->encode_cap, &out_len) != 0) {
         QGP_LOG_WARN(LOG_TAG, "send: nodus_t3_encode failed (type %d, len %zu)",
                      (int)type, len);
+        stat->fails++;
         return false;
     }
+    /* One ML-DSA-87 signature per successful encode (nodus_tier3.c
+     * nodus_t3_encode, step 2) — one per peer per message. */
+    stat->crypto_ops++;
 
-    return nodus_tcp_send(net->w->peers[peer_idx].conn, net->encode_buf,
-                          out_len) == 0;
+    if (nodus_tcp_send(net->w->peers[peer_idx].conn, net->encode_buf,
+                       out_len) != 0) {
+        stat->fails++;
+        return false;
+    }
+    stat->msgs++;
+    stat->payload_bytes += (uint64_t)len;
+    stat->frame_bytes   += (uint64_t)out_len;
+    return true;
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -832,6 +982,26 @@ int nodus_cmt_net_tick(nodus_cmt_net_t *net, int64_t *out_next_deadline_ns)
         }
     }
 
+    /* (c) NETSTATS — the periodic snapshot. OBSERVATION ONLY: `net->now`
+     * is the node-local clock (CLOCK_REALTIME on a live witness,
+     * nodus_witness.c witness_cmt_now), read here only to decide WHEN to
+     * print counters; nothing it decides feeds a consensus value, a
+     * reactor, or this function's return. A faulting clock or one that
+     * moved backwards re-arms the period instead of printing. */
+    {
+        int64_t now_s;
+
+        if (!net_stat_now_s(net, &now_s)) {
+            net->stats.clock_started = false;
+        } else if (!net->stats.clock_started || now_s < net->stats.last_emit_s) {
+            net->stats.clock_started = true;
+            net->stats.last_emit_s   = now_s;
+        } else if (now_s - net->stats.last_emit_s >= (int64_t)NODUS_CMT_NET_STATS_PERIOD_S) {
+            net->stats.last_emit_s = now_s;
+            nodus_cmt_net_stats_emit(net, "periodic");
+        }
+    }
+
     if (out_next_deadline_ns) {
         int64_t earliest = d_conr;
         if (memr_has_deadline && d_memr < earliest) earliest = d_memr;
@@ -843,6 +1013,82 @@ int nodus_cmt_net_tick(nodus_cmt_net_t *net, int64_t *out_next_deadline_ns)
 size_t nodus_cmt_net_recv_arena_used(const nodus_cmt_net_t *net)
 {
     return net ? net->recv_arena.used : 0;
+}
+
+void nodus_cmt_net_stats_rx(nodus_cmt_net_t *net, const nodus_t3_msg_t *msg,
+                            size_t frame_len, bool verified, bool verify_ok)
+{
+    nodus_cmt_net_stat_cell_t *c;
+    int                        ch;
+    bool                       envelope;
+
+    if (!net || !msg) return;
+    ch       = net_stat_ch_from_type(msg->type);
+    envelope = (ch != NODUS_CMT_NET_CH_NON_ENVELOPE);
+    /* `w_cmt.m` is meaningful only for verbs 35-39 (the decoder fills it
+     * for those verbs alone); net_stat_kind never reads it for the
+     * non-envelope slot. */
+    c = &net->stats.rx[ch][net_stat_kind(ch, envelope ? msg->w_cmt.m : NULL,
+                                         envelope ? msg->w_cmt.m_len : 0)];
+    c->msgs++;
+    c->frame_bytes += (uint64_t)frame_len;
+    if (envelope) c->payload_bytes += (uint64_t)msg->w_cmt.m_len;
+    if (verified) {
+        c->crypto_ops++;
+        if (!verify_ok) c->fails++;
+    }
+}
+
+/**
+ * Line format (stable — bench_tps_v2.sh parses it; nodus/docs/
+ * ARCHITECTURE.md "Inter-node traffic counters"):
+ *   NETSTATS seq=<n> t=<unix s> dir=tx ch=<0x20|0x21|0x22|0x23|0x30>
+ *            kind=<name> msgs=<n> payload=<B> frame=<B> sign=<n> fail=<n>
+ *   NETSTATS seq=<n> t=<unix s> dir=rx ch=<…|t3> kind=<name> msgs=<n>
+ *            payload=<B> frame=<B> verify=<n> fail=<n>
+ *   NETSTATS seq=<n> t=<unix s> end lines=<k> reason=<periodic|shutdown>
+ * One line per NON-ZERO cell, tx before rx, channel slot then kind slot
+ * ascending — a fixed order, never hash order. Every value is
+ * CUMULATIVE since nodus_cmt_net_init; a cell absent from a snapshot
+ * that has its `end` line is zero. `t` is -1 when the clock faulted.
+ */
+void nodus_cmt_net_stats_emit(nodus_cmt_net_t *net, const char *reason)
+{
+    int64_t  now_s = -1;
+    unsigned lines = 0;
+    int      dir, ch, kind;
+
+    if (!net) return;
+    if (!net_stat_now_s(net, &now_s)) now_s = -1;
+    net->stats.seq++;
+
+    for (dir = 0; dir < 2; dir++) {
+        for (ch = 0; ch < NODUS_CMT_NET_STAT_CHANNELS; ch++) {
+            for (kind = 0; kind < NODUS_CMT_NET_STAT_KINDS; kind++) {
+                const nodus_cmt_net_stat_cell_t *c =
+                    dir == 0 ? &net->stats.tx[ch][kind] : &net->stats.rx[ch][kind];
+
+                if (net_stat_cell_zero(c)) continue;
+                QGP_LOG_INFO(LOG_TAG,
+                             "NETSTATS seq=%llu t=%lld dir=%s ch=%s kind=%s "
+                             "msgs=%llu payload=%llu frame=%llu %s=%llu fail=%llu",
+                             (unsigned long long)net->stats.seq,
+                             (long long)now_s,
+                             dir == 0 ? "tx" : "rx",
+                             net_stat_ch_label(ch), net_stat_kind_label(kind),
+                             (unsigned long long)c->msgs,
+                             (unsigned long long)c->payload_bytes,
+                             (unsigned long long)c->frame_bytes,
+                             dir == 0 ? "sign" : "verify",
+                             (unsigned long long)c->crypto_ops,
+                             (unsigned long long)c->fails);
+                lines++;
+            }
+        }
+    }
+    QGP_LOG_INFO(LOG_TAG, "NETSTATS seq=%llu t=%lld end lines=%u reason=%s",
+                 (unsigned long long)net->stats.seq, (long long)now_s, lines,
+                 reason ? reason : "unspecified");
 }
 
 int nodus_cmt_net_receive(nodus_cmt_net_t *net, const uint8_t sender_id[32],

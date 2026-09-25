@@ -66,6 +66,23 @@
 #   committed envelope per node and for the cluster; one CSV per node,
 #   $BASE_DIR/bench/bandwidth_node<N>.csv, and the raw samples in
 #   $BASE_DIR/bench/bw_samples.raw.
+#   INTER-NODE COUNTERS (nodus 0.19.76, NETSTATS): every node logs its own
+#   witness-port counters — per direction (tx = signed and handed to the
+#   transport by the Comet glue, rx = decoded and verified by the T3
+#   dispatcher), channel (0x20 state, 0x21 data, 0x22 vote, 0x23
+#   vote-set-bits, 0x30 mempool; rx also "t3" = every other verified
+#   tier-3 verb) and message kind (the first protobuf key of the envelope:
+#   new_round_step … vote_set_bits, txs, unknown) — messages, payload and
+#   frame bytes, ML-DSA-87 signatures (tx) / verifies (rx) and failures,
+#   CUMULATIVE since the node started, as "NETSTATS seq=… t=…" lines at
+#   most once per NODUS_CMT_NET_STATS_PERIOD_S (60 s). The bench marks
+#   every node log's line count at load start and at load end, takes the
+#   newest COMPLETE snapshot within each mark (see ns_snap), and prints
+#   the difference per (node, dir, channel, kind): messages, frame bytes,
+#   signatures / verifies, failures, frame bytes and signatures / verifies
+#   per committed envelope (the same window-block envelope count as the
+#   bandwidth section), plus per-direction totals and the cluster sum;
+#   also to $BASE_DIR/bench/netstats.csv.
 #   Ends with stagef_cmt_diff_at_floor "post-bench-tps".
 #
 # WHAT IT REQUIRES
@@ -113,7 +130,10 @@
 #   in the reward pool). The chain many blocks further on. Nothing is
 #   killed or restarted. $BASE_DIR/bench/ holds blocks.csv, summary.txt,
 #   one worker_<I>.log / worker_<I>.stats per worker and — when ss
-#   qualified — bw_samples.raw and bandwidth_node<N>.csv. A worker still
+#   qualified — bw_samples.raw and bandwidth_node<N>.csv; the NETSTATS
+#   snapshots it used (netstats_node<N>.start / .end), their row-level
+#   differences (netstats_delta.raw) and netstats.csv when at least one
+#   node had a usable pair. A worker still
 #   running when the bench aborts is killed; a nodus-cli it had started
 #   finishes on its own.
 #
@@ -206,6 +226,29 @@
 #     Consensus traffic flows with or without envelopes (idle blocks,
 #     votes), so bytes per envelope is an upper bound on what an
 #     envelope costs, not its marginal cost.
+#   - **The NETSTATS counters are 60 s snapshots, cumulative since the
+#     node started.** The start and end values are the newest complete
+#     snapshot AT OR BEFORE each mark, so each edge can be up to one
+#     period (plus a tick) EARLY: the counted span is shifted and can be
+#     up to ~60 s shorter or longer than the load window; the report
+#     prints each snapshot's own t= and its offset from the edge, and the
+#     counted span. Per-envelope figures divide that span's traffic by
+#     the window blocks' envelopes — two different intervals at the edges,
+#     and idle consensus traffic (empty blocks, votes) is inside it, so
+#     per envelope is an upper bound on the marginal cost. A window
+#     shorter than the period gives the SAME snapshot at both edges and
+#     the node is SKIPPED, as is a node with no complete snapshot before
+#     load start (not live long enough, or an older binary) or one that
+#     restarted — a skipped node is absent from the cluster sum, never a
+#     zero. "tx" counts frames the transport ACCEPTED (sent, buffered or
+#     queued behind an unfinished auth), not bytes on the wire; frame
+#     bytes exclude the 7-byte frame header and channel encryption (the
+#     ss section includes both). Tier-3 traffic sent OUTSIDE the Comet
+#     glue (ident, roster, genesis bundle, cc approval) is counted only on
+#     the receive side ("t3"); frames that fail tier-3 decode, and
+#     everything received before a node's Comet lane was constructed, are
+#     not counted at all. The kind is read from the envelope's FIRST
+#     protobuf key only.
 #   - **The fencepost.** TPS = envelopes in window blocks 2..n / (first-
 #     seen(n) − first-seen(1)): block 1's envelopes accumulated BEFORE the
 #     window opened, so they are excluded from the rate (printed in the
@@ -668,6 +711,215 @@ bw_report() {
     }' "$BW_RAW" || echo "bandwidth: report FAILED to aggregate $BW_RAW (awk error) — raw samples kept"
 }
 
+# NETSTATS (nodus 0.19.76): every node's witness-port counters, per
+# (direction, channel, message kind), CUMULATIVE since that node started,
+# printed by the node itself as one "NETSTATS seq=<n> t=<unix s> ..."
+# line per non-zero cell plus a closing "NETSTATS seq=<n> ... end
+# lines=<k> reason=..." line, at most once per NODUS_CMT_NET_STATS_PERIOD_S
+# (nodus_witness_cmt_net.c nodus_cmt_net_stats_emit). The node log has NO
+# timestamps of its own (nodus_log_shim.c), so the bench marks each log's
+# LINE COUNT (`wc -l`, complete lines only) at load start and at load end,
+# and reads, in the first N lines only, the NEWEST COMPLETE snapshot: the
+# highest seq whose `end` line is present AND whose data-line count equals
+# that line's `lines=` (a snapshot cut by the mark, or a line mangled by
+# another writer, fails the count and the previous snapshot is used). A
+# cell absent from a complete snapshot is zero there (only non-zero cells
+# are printed) — that is read, not invented. A node with no complete
+# snapshot at either edge, a restart in between, or the same snapshot at
+# both edges is SKIPPED with the reason; never filled with zeros.
+NS_CSV="$BENCH_DIR/netstats.csv"
+NS_DELTA="$BENCH_DIR/netstats_delta.raw"
+NS_H="$STAGEF_REPO_ROOT/nodus/src/witness/nodus_witness_cmt_net.h"
+NS_PERIOD=$(awk '$1 == "#define" && $2 == "NODUS_CMT_NET_STATS_PERIOD_S" { print $3; exit }' "$NS_H" 2>/dev/null || true)
+case "$NS_PERIOD" in ''|*[!0-9]*) NS_PERIOD="?" ;; esac
+rm -f "$NS_CSV" "$NS_DELTA" "$BENCH_DIR"/netstats_node*.start "$BENCH_DIR"/netstats_node*.end
+declare -a NS_L0 NS_L1
+ns_log() { echo "$(stagef_node_dir "$1")/nodus.log"; }
+
+# ns_mark 0|1 — every node log's complete-line count right now (-1 when
+# the log is not readable).
+ns_mark() {
+    local n l f
+    for n in $(seq 1 "$C"); do
+        f=$(ns_log "$n"); l=-1
+        if [ -r "$f" ]; then l=$(wc -l < "$f" 2>/dev/null || echo -1); fi
+        l=$(( l + 0 ))
+        if [ "$1" = 0 ]; then NS_L0[$n]=$l; else NS_L1[$n]=$l; fi
+    done
+}
+
+# ns_snap NODE LINES OUT — the newest complete snapshot in the log's first
+# LINES lines, to OUT: header "SNAP <seq> <t> <restarts>" (or "NONE -1 -1
+# <restarts>") then one "<dir> <ch> <kind> <msgs> <payload> <frame>
+# <crypto> <fail>" row per cell, in the node's own (fixed) emission order.
+# A restart shows as a seq that goes down or repeats after its own `end`
+# line; everything before it is dropped and <restarts> counts it.
+ns_snap() {
+    head -n "$2" "$(ns_log "$1")" 2>/dev/null | awk '
+    function reset() { split("", cnt); split("", endk); split("", tt); split("", rows) }
+    BEGIN { reset(); last = -1; restarts = 0 }
+    {
+        i = index($0, "NETSTATS seq=")
+        if (i == 0) next
+        n = split(substr($0, i + 9), f, " ")
+        split("", kv)
+        for (j = 1; j <= n; j++) {
+            p = index(f[j], "=")
+            if (p > 1) kv[substr(f[j], 1, p - 1)] = substr(f[j], p + 1)
+            else kv[f[j]] = ""
+        }
+        if (kv["seq"] !~ /^[0-9]+$/) next
+        sq = kv["seq"] + 0
+        if (sq < last || (sq in endk)) { reset(); restarts++ }
+        last = sq
+        if ("end" in kv) {
+            if (kv["lines"] ~ /^[0-9]+$/ && kv["t"] ~ /^-?[0-9]+$/) { endk[sq] = kv["lines"] + 0; tt[sq] = kv["t"] }
+            next
+        }
+        cr = ("sign" in kv) ? kv["sign"] : kv["verify"]
+        if (kv["dir"] !~ /^(tx|rx)$/ || kv["ch"] == "" || kv["kind"] == "") next
+        if (kv["msgs"] !~ /^[0-9]+$/ || kv["payload"] !~ /^[0-9]+$/ || kv["frame"] !~ /^[0-9]+$/ ||
+            cr !~ /^[0-9]+$/ || kv["fail"] !~ /^[0-9]+$/) next
+        cnt[sq]++
+        rows[sq, cnt[sq]] = kv["dir"] " " kv["ch"] " " kv["kind"] " " kv["msgs"] " " kv["payload"] " " kv["frame"] " " cr " " kv["fail"]
+    }
+    END {
+        best = -1
+        for (s in endk) if ((cnt[s] + 0) == endk[s] && s + 0 > best) best = s + 0
+        if (best < 0) { print "NONE -1 -1 " restarts; exit }
+        print "SNAP " best " " tt[best] " " restarts
+        for (j = 1; j <= cnt[best]; j++) print rows[best, j]
+    }' > "$3" || echo "NONE -1 -1 0" > "$3"
+}
+
+# ns_report — the per-node and cluster tables (stdout) and $NS_CSV.
+ns_report() {
+    local n s0 s1 h0 h1 k0 q0 t0 r0 k1 q1 t1 r1 used="" drc
+    echo "inter-node traffic — NETSTATS counters (witness port, cumulative snapshots every ${NS_PERIOD} s; window = end snapshot − start snapshot):"
+    : > "$NS_DELTA"
+    for n in $(seq 1 "$C"); do
+        s0="$BENCH_DIR/netstats_node$n.start"; s1="$BENCH_DIR/netstats_node$n.end"
+        if [ "${NS_L0[$n]:--1}" -lt 0 ] || [ "${NS_L1[$n]:--1}" -lt 0 ]; then
+            echo "  node$n: SKIPPED — $(ns_log "$n") was not readable at load start or load end"
+            continue
+        fi
+        if [ "${NS_L1[$n]}" -lt "${NS_L0[$n]}" ]; then
+            echo "  node$n: SKIPPED — its log has fewer lines at load end than at load start (rewritten / restarted)"
+            continue
+        fi
+        ns_snap "$n" "${NS_L0[$n]}" "$s0"
+        ns_snap "$n" "${NS_L1[$n]}" "$s1"
+        h0=$(head -n 1 "$s0"); h1=$(head -n 1 "$s1")
+        read -r k0 q0 t0 r0 <<< "$h0" || true
+        read -r k1 q1 t1 r1 <<< "$h1" || true
+        if [ "$k0" != SNAP ]; then
+            echo "  node$n: SKIPPED — no complete NETSTATS snapshot in its log before load start (first ${NS_L0[$n]} lines; a node prints one every ${NS_PERIOD} s once its Comet lane is live — older than nodus 0.19.76, or not live long enough)"
+            continue
+        fi
+        if [ "$k1" != SNAP ]; then
+            echo "  node$n: SKIPPED — no complete NETSTATS snapshot in its log before load end"
+            continue
+        fi
+        if [ "$r0" != "$r1" ]; then
+            echo "  node$n: SKIPPED — the node restarted between the two snapshots (its counters started over)"
+            continue
+        fi
+        if [ "$q0" = "$q1" ]; then
+            echo "  node$n: SKIPPED — the same snapshot (seq $q0) is the newest at both edges: the window is shorter than the ${NS_PERIOD} s cadence"
+            continue
+        fi
+        drc=0
+        awk -v node="$n" '
+        BEGIN {
+            nc = split("0x20 0x21 0x22 0x23 0x30 t3", c, " ")
+            for (i = 1; i <= nc; i++) co[c[i]] = i
+            nk = split("unknown new_round_step new_valid_block proposal proposal_pol block_part vote has_vote vote_set_maj23 vote_set_bits txs other", k, " ")
+            for (i = 1; i <= nk; i++) ko[k[i]] = i
+        }
+        FNR == 1 { next }
+        FILENAME == ARGV[1] {
+            key = $1 " " $2 " " $3
+            b4[key] = $4; b5[key] = $5; b6[key] = $6; b7[key] = $7; b8[key] = $8
+            next
+        }
+        {
+            key = $1 " " $2 " " $3; seen[key] = 1
+            d4 = $4 - b4[key]; d5 = $5 - b5[key]; d6 = $6 - b6[key]; d7 = $7 - b7[key]; d8 = $8 - b8[key]
+            if (d4 < 0 || d5 < 0 || d6 < 0 || d7 < 0 || d8 < 0) bad = 1
+            ord = ($1 == "tx" ? 0 : 1) * 10000 + (($2 in co) ? co[$2] : 99) * 100 + (($3 in ko) ? ko[$3] : 99)
+            printf "%d,%d,%s,%s,%s,%.0f,%.0f,%.0f,%.0f,%.0f\n", ord, node, $1, $2, $3, d4, d5, d6, d7, d8
+        }
+        END {
+            for (key in b4) if (!(key in seen) && (b4[key] + b5[key] + b6[key] + b7[key] + b8[key]) > 0) bad = 1
+            if (bad) exit 3
+        }' "$s0" "$s1" > "$NS_DELTA.node" || drc=$?
+        if [ "$drc" != 0 ]; then
+            echo "  node$n: SKIPPED — a counter went DOWN between the snapshots (an undetected restart, or awk rc $drc)"
+            continue
+        fi
+        cat "$NS_DELTA.node" >> "$NS_DELTA"
+        used="$used $n"
+        echo "  node$n: start snapshot seq $q0 t=$t0 ($(( t0 - LOAD_START )) s from load start), end snapshot seq $q1 t=$t1 ($(( t1 - BW_TEND )) s from load end) — counted span $(( t1 - t0 )) s"
+    done
+    rm -f "$NS_DELTA.node"
+    if [ -z "$used" ]; then
+        echo "  no node had a usable pair of snapshots — the NETSTATS table is ABSENT for this run (not zero)"
+        return 0
+    fi
+    echo "node,dir,ch,kind,msgs,payload_bytes,frame_bytes,sign_or_verify,fail,frame_bytes_per_env,sign_or_verify_per_env" > "$NS_CSV"
+    # per node: rows sorted by (node, fixed order), then per-direction totals
+    LC_ALL=C sort -t, -k2,2n -k1,1n "$NS_DELTA" | awk -F, -v env="$w_env" -v csv="$NS_CSV" '
+    function E(x, d) { return env > 0 ? sprintf("%." d "f", x / env) : "n/a" }
+    function flush(   d) {
+        if (cur == "") return
+        for (d = 0; d < 2; d++) {
+            dn = d == 0 ? "tx" : "rx"
+            if (!(dn in TM)) continue
+            printf "    %-2s %-4s %-15s %10.0f %14.0f %12.0f %8.0f %14s %10s\n", dn, "all", "ALL", TM[dn], TF[dn], TC[dn], TL[dn], E(TF[dn], 0), E(TC[dn], 2)
+            print "node" cur "," dn ",all,ALL," sprintf("%.0f,%.0f,%.0f,%.0f,%.0f", TM[dn], TP[dn], TF[dn], TC[dn], TL[dn]) "," E(TF[dn], 0) "," E(TC[dn], 2) >> csv
+        }
+        split("", TM); split("", TP); split("", TF); split("", TC); split("", TL)
+    }
+    {
+        if ($2 != cur) {
+            flush(); cur = $2
+            printf "  node%s  (%s committed envelopes in the window blocks; sign = tx, verify = rx)\n", cur, env
+            printf "    %-2s %-4s %-15s %10s %14s %12s %8s %14s %10s\n", "dir", "ch", "kind", "msgs", "frame_B", "sign/verify", "fail", "frame_B/env", "crypto/env"
+        }
+        printf "    %-2s %-4s %-15s %10.0f %14.0f %12.0f %8.0f %14s %10s\n", $3, $4, $5, $6, $8, $9, $10, E($8, 0), E($9, 2)
+        print "node" $2 "," $3 "," $4 "," $5 "," $6 "," $7 "," $8 "," $9 "," $10 "," E($8, 0) "," E($9, 2) >> csv
+        TM[$3] += $6; TP[$3] += $7; TF[$3] += $8; TC[$3] += $9; TL[$3] += $10
+    }
+    END { flush() }' || echo "  netstats: per-node table FAILED to aggregate $NS_DELTA (sort/awk error) — raw differences kept"
+    # cluster: the same cells summed over the nodes above, fixed order
+    LC_ALL=C sort -t, -k1,1n -k2,2n "$NS_DELTA" | awk -F, -v env="$w_env" -v csv="$NS_CSV" -v used="$used" '
+    function E(x, d) { return env > 0 ? sprintf("%." d "f", x / env) : "n/a" }
+    function row() {
+        if (ord == "") return
+        printf "    %-2s %-4s %-15s %10.0f %14.0f %12.0f %8.0f %14s %10s\n", dr, ch, kd, m, f, c, l, E(f, 0), E(c, 2)
+        print "cluster," dr "," ch "," kd "," sprintf("%.0f,%.0f,%.0f,%.0f,%.0f", m, p, f, c, l) "," E(f, 0) "," E(c, 2) >> csv
+        TM[dr] += m; TP[dr] += p; TF[dr] += f; TC[dr] += c; TL[dr] += l
+    }
+    BEGIN {
+        printf "  cluster total over node(s)%s  (node-to-node traffic counts once as tx on the sender and once as rx on the receiver)\n", used
+        printf "    %-2s %-4s %-15s %10s %14s %12s %8s %14s %10s\n", "dir", "ch", "kind", "msgs", "frame_B", "sign/verify", "fail", "frame_B/env", "crypto/env"
+    }
+    {
+        if ($1 != ord) { row(); ord = $1; dr = $3; ch = $4; kd = $5; m = 0; p = 0; f = 0; c = 0; l = 0 }
+        m += $6; p += $7; f += $8; c += $9; l += $10
+    }
+    END {
+        row()
+        for (d = 0; d < 2; d++) {
+            dn = d == 0 ? "tx" : "rx"
+            if (!(dn in TM)) continue
+            printf "    %-2s %-4s %-15s %10.0f %14.0f %12.0f %8.0f %14s %10s\n", dn, "all", "ALL", TM[dn], TF[dn], TC[dn], TL[dn], E(TF[dn], 0), E(TC[dn], 2)
+            print "cluster," dn ",all,ALL," sprintf("%.0f,%.0f,%.0f,%.0f,%.0f", TM[dn], TP[dn], TF[dn], TC[dn], TL[dn]) "," E(TF[dn], 0) "," E(TC[dn], 2) >> csv
+        }
+    }' || echo "  netstats: cluster table FAILED to aggregate $NS_DELTA (sort/awk error) — raw differences kept"
+    echo "  frame_B = the signed tier-3 message handed to / taken from the transport (no 7-byte frame header, no channel-encryption overhead — compare with the ss bandwidth above, which includes both); per envelope = window delta / the $w_env committed envelopes of the window blocks (snapshot edges and block window differ — see README)"
+}
+
 # ── (iii) start the load, sample while it runs ───────────────────────
 csv="$BENCH_DIR/blocks.csv"
 echo "height,first_seen_s,tx_count,in_window" > "$csv"
@@ -679,6 +931,7 @@ LOAD_START=$(date +%s)
 LOAD_END=$(( LOAD_START + D ))
 export LOAD_END
 bw_sample 0 "$LOAD_START"                        # the bandwidth baseline
+ns_mark 0                                        # NETSTATS: log line counts at load start
 for I in $(seq 0 $(( M - 1 ))); do
     worker "$I" &
     wpids[$I]=$!
@@ -715,6 +968,7 @@ while [ "$running" -gt 0 ]; do
         for n in $(seq 1 "$C"); do cpu1[$n]=$(cpu_ticks "$(node_pid "$n")"); done
         BW_TEND="$now_s"
         bw_sample 1 "$BW_TEND"                   # the window's last sample
+        ns_mark 1                                # NETSTATS: log line counts at load end
         cpu1_taken=1
     elif [ "$cpu1_taken" = 0 ]; then
         bw_sample 1 "$now_s"
@@ -738,6 +992,7 @@ if [ "$cpu1_taken" = 0 ]; then
     for n in $(seq 1 "$C"); do cpu1[$n]=$(cpu_ticks "$(node_pid "$n")"); done
     BW_TEND=$(date +%s)
     bw_sample 1 "$BW_TEND"
+    ns_mark 1
 fi
 trap - EXIT
 LOAD_DONE=$(date +%s)
@@ -843,10 +1098,13 @@ summary="$BENCH_DIR/summary.txt"
     done
     echo ""
     bw_report
+    echo ""
+    ns_report
 } > "$summary"
 cat "$summary"
 echo "[ok] per-block rows: $csv; summary: $summary"
 [ "$BW_OK" != 1 ] || echo "[ok] bandwidth: per-node CSVs $BENCH_DIR/bandwidth_node<N>.csv; raw samples $BW_RAW"
+[ ! -s "$NS_CSV" ] || echo "[ok] inter-node counters: $NS_CSV; the snapshots used: $BENCH_DIR/netstats_node<N>.start / .end"
 
 stagef_cmt_diff_at_floor "post-bench-tps" || { echo "[FAIL] 7/7 disagreement after the bench" | tee -a "$summary" >&2; exit 2; }
 echo "7/7 agreement at the floor after the bench: OK" >> "$summary"

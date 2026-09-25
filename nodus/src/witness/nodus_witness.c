@@ -2214,6 +2214,24 @@ void nodus_witness_tick(nodus_witness_t *witness) {
 
 /* ── Tier 3 dispatch (BFT message routing) ───────────────────────── */
 
+/**
+ * NETSTATS receive counting (nodus 0.19.76) — OBSERVATION ONLY: the
+ * counters live in the Comet transport glue's own object
+ * (nodus_cmt_net_t.stats, next to the send-side counters net_send
+ * writes), so both directions are emitted by one snapshot. Nothing reads
+ * them back on any decision path. The price of keeping them there
+ * rather than on nodus_witness_t: a frame received while
+ * `witness->cmt_net` is NULL (a node before its version-3 lane is
+ * constructed — pre-genesis roster/ident/bundle traffic) is not counted.
+ */
+static void witness_netstats_rx(nodus_witness_t *witness,
+                                const nodus_t3_msg_t *msg, size_t frame_len,
+                                bool verified, bool verify_ok) {
+    if (witness->cmt_net)
+        nodus_cmt_net_stats_rx((nodus_cmt_net_t *)witness->cmt_net, msg,
+                               frame_len, verified, verify_ok);
+}
+
 void nodus_witness_dispatch_t3(nodus_witness_t *witness,
                                struct nodus_tcp_conn *conn,
                                const uint8_t *payload, size_t len) {
@@ -2239,11 +2257,18 @@ void nodus_witness_dispatch_t3(nodus_witness_t *witness,
     int sender_idx = nodus_witness_roster_find(&witness->roster,
                                                  msg.header.sender_id);
 
+    /* NETSTATS (observation only): true once nodus_t3_verify below has
+     * run AND passed; IDENT is never verified here. Each path below
+     * counts the frame exactly once, where it concludes — the order of
+     * the checks is unchanged. */
+    bool netstats_verified = false;
+
     /* IDENT messages may come from unknown senders (Phase 5) */
     if (msg.type != NODUS_T3_IDENT) {
         if (sender_idx < 0) {
             fprintf(stderr, "%s: T3 %s from unknown sender, ignoring\n",
                     LOG_TAG, msg.method);
+            witness_netstats_rx(witness, &msg, len, false, false);
             return;
         }
 
@@ -2283,9 +2308,12 @@ void nodus_witness_dispatch_t3(nodus_witness_t *witness,
         if (nodus_t3_verify(&msg, &pk) != 0) {
             fprintf(stderr, "%s: T3 %s wsig verification failed (roster %d)\n",
                     LOG_TAG, msg.method, sender_idx);
+            witness_netstats_rx(witness, &msg, len, true, false);
             return;
         }
+        netstats_verified = true;
     }
+    witness_netstats_rx(witness, &msg, len, netstats_verified, true);
 
     /* ── O15C-D.4 — CONSENSUS PROTOCOL VERSION GATE ──────────────────
      *
@@ -2516,6 +2544,9 @@ void nodus_witness_close(nodus_witness_t *witness) {
         if (conr && witness->cmt_live) (void)cmt_conr_stop(conr);
         if (memr) { cmt_memr_free(memr); free(memr); }
         if (conr) { cmt_conr_free(conr); free(conr); }
+        /* NETSTATS (observation only): the final cumulative snapshot,
+         * so the counters since the last periodic line are not lost. */
+        if (net)  nodus_cmt_net_stats_emit(net, "shutdown");
         if (net)  { nodus_cmt_net_free(net); free(net); }
         if (node) { nodus_cmt_node_release(node); free(node); }
         witness->cmt_memr = NULL;

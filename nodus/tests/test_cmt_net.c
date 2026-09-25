@@ -246,6 +246,11 @@
 #include "dnac/cmt_merkle.h"
 #include "dnac/cmt_msgs.h"
 #include "dnac/cmt_pb.h"
+#include "dnac/cmt_pb_mempool.h"
+
+#include "crypto/nodus_identity.h"   /* nodus_identity_from_seed (NETSTATS test) */
+#include "server/nodus_server.h"     /* nodus_server_t.identity (NETSTATS test)  */
+#include "transport/nodus_tcp.h"     /* nodus_tcp_conn_t (NETSTATS test)         */
 
 #include "test_cmt_common.h"
 
@@ -1396,6 +1401,332 @@ out:
     free(fxB);
 }
 
+/* ── (NETSTATS, nodus 0.19.76) the inter-node traffic counters ────────
+ *
+ * WHAT IT PROVES: every accepted net_send moves its (channel, kind) cell
+ * by exactly one message, its own `len` in payload bytes, one signature
+ * and the encoded frame's length — cross-checked against the bytes the
+ * transport actually queued (conn->pending_len = Σ frame + 7-byte frame
+ * header); a transport refusal AFTER the encode counts the signature and
+ * one failure but no message; a send to a peer that is not up counts
+ * nothing; the receive-side counter keys by the verb's channel and the
+ * FIRST protobuf key of `m` (a real Vote, BlockPart and Txs, a 2-byte
+ * key, and three malformed keys), and counts verifies / verify failures
+ * as told; the periodic emitter fires only after
+ * NODUS_CMT_NET_STATS_PERIOD_S of `net->now`, never on the arming tick,
+ * and re-arms on a clock that moved backwards.
+ *
+ * WHAT IT NEEDS BEYOND THE SHARED FIXTURE: this is the ONE test in the
+ * file that sets `w->server` — a heap nodus_server_t whose ONLY field
+ * read is `identity.sk` (net_send's sign key), seeded deterministically
+ * with nodus_identity_from_seed — and gives slot 0 a REAL heap
+ * nodus_tcp_conn_t in the auth-pending state (auth_required, auth_state
+ * HELLO_SENT): nodus_tcp_send then appends each frame to the conn's own
+ * pending buffer (nodus_tcp.c pending_queue_append) and touches no
+ * socket, and auth_state FAILED makes it refuse (-1) the same way.
+ *
+ * HOW IT CAN LIE: the emitter's OUTPUT (the QGP_LOG lines) is not
+ * captured — only its sequence counter is asserted; the line format is
+ * pinned by the bench's parser, not by this file. The dispatcher's calls
+ * into nodus_cmt_net_stats_rx (nodus_witness.c) are not driven here —
+ * this calls the counting function directly. With `w->server` set, a
+ * tick that reached net_close_pass with a close_pending slot would call
+ * nodus_tcp_disconnect on a zeroed transport — this test never stops a
+ * peer, and ticks only while slot 0 is DOWN. */
+
+/** A real marshalled VoteMessage (consensus Message field 6). */
+static int build_vote(uint8_t *out, size_t cap, size_t *out_len) {
+    cmt_msg_t             *msg = (cmt_msg_t *)calloc(1, sizeof(*msg));
+    cmt_pb_cons_message_t *pb  = (cmt_pb_cons_message_t *)calloc(1, sizeof(*pb));
+    int                    rc  = -1;
+
+    if (msg && pb) {
+        msg->kind            = CMT_PB_CONS_MSG_VOTE;
+        msg->u.vote.has_vote = true;
+        cmt_pb_vote_init(&msg->u.vote.vote);
+        msg->u.vote.vote.type   = 1;     /* prevote */
+        msg->u.vote.vote.height = 5;
+        msg->u.vote.vote.round  = 0;
+        memset(msg->u.vote.vote.validator_address, 0x77, 32);
+        msg->u.vote.vote.validator_address_len = 32;
+        msg->u.vote.vote.validator_index       = 0;
+        memset(msg->u.vote.vote.signature, 0x5A, CMT_PB_SIG_MAX);
+        msg->u.vote.vote.signature_len = CMT_PB_SIG_MAX;
+
+        cmt_pb_cons_message_init(pb);
+        if (cmt_msg_to_proto(msg, pb) == CMT_OK &&
+            cmt_pb_cons_message_marshal(pb, out, cap, out_len) == CMT_OK) {
+            rc = 0;
+        }
+    }
+    free(pb);
+    free(msg);
+    return rc;
+}
+
+/** A marshalled mempool Message carrying ONE tx (field 1, Txs). */
+static int build_txs_one(uint8_t *out, size_t cap, size_t *out_len,
+                         const uint8_t *tx, size_t tx_len) {
+    cmt_pb_mempool_message_t pbm;
+    cmt_pb_bytes_t           one;
+
+    one.data = tx;
+    one.len  = tx_len;
+    /* slots first: cmt_pb_mempool_message_init keeps them (the same
+     * construction cmt_memr.c's broadcast routine uses). */
+    pbm.txs.txs     = &one;
+    pbm.txs.txs_cap = 1;
+    cmt_pb_mempool_message_init(&pbm);
+    pbm.sum         = CMT_PB_MEMPOOL_MSG_TXS;
+    pbm.txs.txs_len = 1;
+    return cmt_pb_mempool_message_marshal(&pbm, out, cap, out_len) == CMT_OK
+           ? 0 : -1;
+}
+
+static bool cell_is(const nodus_cmt_net_stat_cell_t *c, uint64_t msgs,
+                    uint64_t payload, uint64_t crypto, uint64_t fails) {
+    return c->msgs == msgs && c->payload_bytes == payload &&
+           c->crypto_ops == crypto && c->fails == fails;
+}
+
+static void test_netstats_counters(void) {
+    const char *name = "netstats_counters";
+    fx_t *fx = (fx_t *)calloc(1, sizeof(*fx));
+    nodus_server_t   *srv  = (nodus_server_t *)calloc(1, sizeof(*srv));
+    nodus_tcp_conn_t *conn = (nodus_tcp_conn_t *)calloc(1, sizeof(*conn));
+    static uint8_t vote[8192];
+    static uint8_t part[4096];
+    static uint8_t txs[512];
+    uint8_t part_payload[300];
+    uint8_t tx_body[200];
+    uint8_t seed[32];
+    size_t  vote_len = 0, part_len = 0, txs_len = 0;
+    const nodus_cmt_net_stat_cell_t *cv, *cp, *ct;
+    uint64_t frames_total;
+    nodus_t3_msg_t msg;
+
+    if (!fx || !srv || !conn) {
+        TEST_FAIL(name, "alloc fixture");
+        free(fx); free(srv); free(conn);
+        return;
+    }
+    if (fx_setup(fx) != 0) {
+        TEST_FAIL(name, "fixture setup");
+        free(fx); free(srv); free(conn);
+        return;
+    }
+
+    /* ── (1) the emitter's period, while slot 0 is DOWN (no gossip) ── */
+    if (nodus_cmt_net_tick(&fx->net, NULL) != CMT_OK) {
+        TEST_FAIL(name, "tick (arm)"); goto out;
+    }
+    if (!fx->net.stats.clock_started || fx->net.stats.seq != 0) {
+        TEST_FAIL(name, "the first tick must arm the period, not emit"); goto out;
+    }
+    fx->tc.now.seconds += (int64_t)NODUS_CMT_NET_STATS_PERIOD_S - 1;
+    if (nodus_cmt_net_tick(&fx->net, NULL) != CMT_OK || fx->net.stats.seq != 0) {
+        TEST_FAIL(name, "emitted before the period elapsed"); goto out;
+    }
+    fx->tc.now.seconds += 1;
+    if (nodus_cmt_net_tick(&fx->net, NULL) != CMT_OK || fx->net.stats.seq != 1) {
+        TEST_FAIL(name, "did not emit once the period elapsed"); goto out;
+    }
+    fx->tc.now.seconds -= 1000;   /* a clock that moved backwards */
+    if (nodus_cmt_net_tick(&fx->net, NULL) != CMT_OK || fx->net.stats.seq != 1 ||
+        fx->net.stats.last_emit_s != fx->tc.now.seconds) {
+        TEST_FAIL(name, "a backwards clock did not re-arm the period"); goto out;
+    }
+    /* Back to the fixture's own time line for the rest of the test (the
+     * send-side header timestamps); nothing below ticks again. The
+     * backwards tick above ran with NO peer in either reactor, so the
+     * reactors' per-peer sleep comparisons (cmt_conr_tick, cmt_memr_tick)
+     * had nothing to compare. */
+    fx->tc.now.seconds += 1000;
+    nodus_cmt_net_stats_emit(&fx->net, "shutdown");
+    if (fx->net.stats.seq != 2) {
+        TEST_FAIL(name, "a forced emission did not advance seq"); goto out;
+    }
+
+    /* ── (2) the send side ──────────────────────────────────────────── */
+    memset(seed, 0x42, sizeof(seed));
+    if (nodus_identity_from_seed(seed, &srv->identity) != 0) {
+        TEST_FAIL(name, "identity from seed"); goto out;
+    }
+    fx->w->server = srv;
+    conn->fd            = -1;
+    conn->auth_required = true;
+    conn->auth_state    = NODUS_CONN_AUTH_HELLO_SENT;  /* frames are queued */
+    memset(fx->w->peers[0].witness_id, 0x66, NODUS_T3_WITNESS_ID_LEN);
+    fx->w->peers[0].conn       = conn;
+    fx->w->peers[0].identified = true;
+
+    memset(part_payload, 0x3C, sizeof(part_payload));
+    memset(tx_body, 0x7E, sizeof(tx_body));
+    if (build_vote(vote, sizeof(vote), &vote_len) != 0 ||
+        build_block_part(part, sizeof(part), &part_len, part_payload,
+                         sizeof(part_payload)) != 0 ||
+        build_txs_one(txs, sizeof(txs), &txs_len, tx_body, sizeof(tx_body)) != 0) {
+        TEST_FAIL(name, "build the three messages"); goto out;
+    }
+    /* The codec's own first key: (field << 3) | 2 — field 6 Vote, field
+     * 5 BlockPart (cmt_pb.h:853-863), field 1 Txs (cmt_pb_mempool.h). */
+    if (vote[0] != 0x32 || part[0] != 0x2A || txs[0] != 0x0A) {
+        TEST_FAIL(name, "the marshalled first keys are not 0x32/0x2A/0x0A"); goto out;
+    }
+
+    if (!fx->net.conr_host.send(&fx->net, 0, CMT_CONR_VOTE_CHANNEL, vote, vote_len) ||
+        !fx->net.conr_host.send(&fx->net, 0, CMT_CONR_DATA_CHANNEL, part, part_len) ||
+        !fx->net.memr_host.send(&fx->net, 0, CMT_MEM_CHANNEL, txs, txs_len)) {
+        TEST_FAIL(name, "a send to an up peer was refused"); goto out;
+    }
+    cv = &fx->net.stats.tx[NODUS_CMT_NET_CH_VOTE][CMT_PB_CONS_MSG_VOTE];
+    cp = &fx->net.stats.tx[NODUS_CMT_NET_CH_DATA][CMT_PB_CONS_MSG_BLOCK_PART];
+    ct = &fx->net.stats.tx[NODUS_CMT_NET_CH_MEMPOOL][NODUS_CMT_NET_KIND_TXS];
+    if (!cell_is(cv, 1, vote_len, 1, 0) || !cell_is(cp, 1, part_len, 1, 0) ||
+        !cell_is(ct, 1, txs_len, 1, 0)) {
+        TEST_FAIL(name, "tx cells are not exactly 1 msg / len / 1 sign / 0 fail");
+        goto out;
+    }
+    /* Each frame carries its payload AND one ML-DSA-87 signature. */
+    if (cv->frame_bytes <= vote_len + NODUS_SIG_BYTES ||
+        cp->frame_bytes <= part_len + NODUS_SIG_BYTES ||
+        ct->frame_bytes <= txs_len + NODUS_SIG_BYTES) {
+        TEST_FAIL(name, "a frame is not larger than payload + signature"); goto out;
+    }
+    frames_total = cv->frame_bytes + cp->frame_bytes + ct->frame_bytes;
+    if ((uint64_t)conn->pending_len != frames_total + 3u * NODUS_FRAME_HEADER_SIZE) {
+        TEST_FAIL(name, "frame bytes disagree with what the transport queued");
+        goto out;
+    }
+
+    /* A transport refusal AFTER the encode: the signature was made. */
+    conn->auth_state = NODUS_CONN_AUTH_FAILED;
+    if (fx->net.conr_host.send(&fx->net, 0, CMT_CONR_VOTE_CHANNEL, vote, vote_len)) {
+        TEST_FAIL(name, "send succeeded on an auth-failed conn"); goto out;
+    }
+    if (!cell_is(cv, 1, vote_len, 2, 1)) {
+        TEST_FAIL(name, "a refused send must count 1 sign + 1 fail, no msg"); goto out;
+    }
+    conn->auth_state = NODUS_CONN_AUTH_HELLO_SENT;
+
+    /* An unknown first key on the state channel: counted under UNKNOWN. */
+    {
+        static const uint8_t varint_field1[2] = { 0x08, 0x01 };
+        if (!fx->net.conr_host.send(&fx->net, 0, CMT_CONR_STATE_CHANNEL,
+                                    varint_field1, sizeof(varint_field1)) ||
+            !cell_is(&fx->net.stats.tx[NODUS_CMT_NET_CH_STATE][NODUS_CMT_NET_KIND_UNKNOWN],
+                     1, sizeof(varint_field1), 1, 0)) {
+            TEST_FAIL(name, "a wire-type-0 first key was not counted as unknown");
+            goto out;
+        }
+    }
+
+    /* A peer that is not up: refused, and NOTHING counted. */
+    fx->w->peers[0].identified = false;
+    if (fx->net.conr_host.send(&fx->net, 0, CMT_CONR_VOTE_CHANNEL, vote, vote_len) ||
+        !cell_is(cv, 1, vote_len, 2, 1)) {
+        TEST_FAIL(name, "a send to a down peer moved a counter"); goto out;
+    }
+
+    /* ── (3) the receive side ───────────────────────────────────────── */
+    memset(&msg, 0, sizeof(msg));
+    msg.type        = NODUS_T3_CMT_VOTE;
+    msg.w_cmt.m     = vote;
+    msg.w_cmt.m_len = vote_len;
+    nodus_cmt_net_stats_rx(&fx->net, &msg, 9000, true, true);
+    nodus_cmt_net_stats_rx(&fx->net, &msg, 9001, true, false);
+    cv = &fx->net.stats.rx[NODUS_CMT_NET_CH_VOTE][CMT_PB_CONS_MSG_VOTE];
+    if (!cell_is(cv, 2, 2u * vote_len, 2, 1) || cv->frame_bytes != 18001u) {
+        TEST_FAIL(name, "rx vote cell wrong (2 msgs, 2 verifies, 1 failure)"); goto out;
+    }
+
+    msg.type        = NODUS_T3_CMT_DATA;
+    msg.w_cmt.m     = part;
+    msg.w_cmt.m_len = part_len;
+    nodus_cmt_net_stats_rx(&fx->net, &msg, 5000, true, true);
+    if (!cell_is(&fx->net.stats.rx[NODUS_CMT_NET_CH_DATA][CMT_PB_CONS_MSG_BLOCK_PART],
+                 1, part_len, 1, 0)) {
+        TEST_FAIL(name, "rx block part not keyed as block_part"); goto out;
+    }
+
+    msg.type        = NODUS_T3_CMT_TXS;
+    msg.w_cmt.m     = txs;
+    msg.w_cmt.m_len = txs_len;
+    nodus_cmt_net_stats_rx(&fx->net, &msg, 5100, true, true);
+    if (!cell_is(&fx->net.stats.rx[NODUS_CMT_NET_CH_MEMPOOL][NODUS_CMT_NET_KIND_TXS],
+                 1, txs_len, 1, 0)) {
+        TEST_FAIL(name, "rx Txs not keyed as txs"); goto out;
+    }
+
+    /* A NON-MINIMAL two-byte key (0xB2 0x00 = uvarint 0x32 = field 6,
+     * wire type 2) is still a vote: the key is read as a varint, not as
+     * a first byte. */
+    {
+        static const uint8_t two_byte_key[3] = { 0xB2, 0x00, 0x00 };
+        msg.type        = NODUS_T3_CMT_VOTE;
+        msg.w_cmt.m     = two_byte_key;
+        msg.w_cmt.m_len = sizeof(two_byte_key);
+        nodus_cmt_net_stats_rx(&fx->net, &msg, 100, true, true);
+        if (fx->net.stats.rx[NODUS_CMT_NET_CH_VOTE][CMT_PB_CONS_MSG_VOTE].msgs != 3) {
+            TEST_FAIL(name, "a two-byte vote key was not decoded as vote"); goto out;
+        }
+    }
+
+    /* Malformed keys -> UNKNOWN, never a real kind: field 16 (2-byte key
+     * 0x82 0x01) on a consensus channel, field 6 on the MEMPOOL channel
+     * (only field 1 is Txs there), a truncated varint, and an empty m. */
+    {
+        static const uint8_t field16[3]   = { 0x82, 0x01, 0x00 };
+        static const uint8_t field6[2]    = { 0x32, 0x00 };
+        static const uint8_t truncated[1] = { 0x80 };
+
+        msg.type = NODUS_T3_CMT_STATE;
+        msg.w_cmt.m = field16;   msg.w_cmt.m_len = sizeof(field16);
+        nodus_cmt_net_stats_rx(&fx->net, &msg, 10, false, false);
+        msg.w_cmt.m = truncated; msg.w_cmt.m_len = sizeof(truncated);
+        nodus_cmt_net_stats_rx(&fx->net, &msg, 10, false, false);
+        msg.w_cmt.m = NULL;      msg.w_cmt.m_len = 0;
+        nodus_cmt_net_stats_rx(&fx->net, &msg, 10, false, false);
+        if (!cell_is(&fx->net.stats.rx[NODUS_CMT_NET_CH_STATE][NODUS_CMT_NET_KIND_UNKNOWN],
+                     3, sizeof(field16) + sizeof(truncated), 0, 0)) {
+            TEST_FAIL(name, "malformed consensus keys not counted as unknown");
+            goto out;
+        }
+        msg.type = NODUS_T3_CMT_TXS;
+        msg.w_cmt.m = field6;    msg.w_cmt.m_len = sizeof(field6);
+        nodus_cmt_net_stats_rx(&fx->net, &msg, 10, true, true);
+        if (!cell_is(&fx->net.stats.rx[NODUS_CMT_NET_CH_MEMPOOL][NODUS_CMT_NET_KIND_UNKNOWN],
+                     1, sizeof(field6), 1, 0)) {
+            TEST_FAIL(name, "field 6 on the mempool channel not counted as unknown");
+            goto out;
+        }
+    }
+
+    /* A non-envelope verb (IDENT — never verified by the dispatcher):
+     * the receive-only slot, no payload, no verify. */
+    memset(&msg, 0, sizeof(msg));
+    msg.type = NODUS_T3_IDENT;
+    nodus_cmt_net_stats_rx(&fx->net, &msg, 777, false, false);
+    if (!cell_is(&fx->net.stats.rx[NODUS_CMT_NET_CH_NON_ENVELOPE][NODUS_CMT_NET_KIND_NON_ENVELOPE],
+                 1, 0, 0, 0) ||
+        fx->net.stats.rx[NODUS_CMT_NET_CH_NON_ENVELOPE][NODUS_CMT_NET_KIND_NON_ENVELOPE].frame_bytes != 777u) {
+        TEST_FAIL(name, "IDENT not counted in the non-envelope slot"); goto out;
+    }
+
+    TEST_PASS(name);
+out:
+    /* slot 0 back to a harmless state before teardown; nothing below
+     * ticks again, so net_close_pass never sees `w->server`. */
+    fx->w->peers[0].conn       = NULL;
+    fx->w->peers[0].identified = false;
+    fx->w->server              = NULL;
+    fx_teardown(fx);
+    free(conn->pending_buf);
+    free(conn);
+    free(srv);
+    free(fx);
+}
+
 int main(void) {
     fprintf(stderr, "=== nodus_witness_cmt_net tests ===\n");
 
@@ -1408,6 +1739,7 @@ int main(void) {
     test_close_pending_cleared_on_reconnect();
     test_scan_waits_for_running();
     test_memr_peer_ids_reserved_and_rpc_tx_gossiped();
+    test_netstats_counters();
 
     fprintf(stderr, "\n%d test(s) failed\n", failures);
     return failures > 0 ? 1 : 0;

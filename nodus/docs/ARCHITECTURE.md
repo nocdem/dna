@@ -1651,7 +1651,54 @@ a frame callback. The reactor's receive arena is owned by the glue
 `CMT_CONR_MAX_MSG_SIZE` (1 MiB) reset before every decode — the 50 % / 90 % latches and the
 accessor stay as regression guards. Known residual: the deferred close compares connection POINTERS; a same-witness
 reconnect inside one poll batch that reuses the freed address gets one spurious disconnect
-(no memory unsafety). Test: `test_cmt_net` (9 cases since the W3 harness run — see "THE LIVE FLIP" below for the mempool InitPeer defect the ninth case pins).
+(no memory unsafety). Test: `test_cmt_net` (9 cases since the W3 harness run — see "THE LIVE FLIP" below for the mempool InitPeer defect the ninth case pins; a tenth, `netstats_counters`, since 0.19.76 — see below).
+
+#### Inter-node traffic counters (NETSTATS, nodus 0.19.76)
+
+OBSERVATION ONLY: counters and one log line; no counter is read by any decision path (not by
+`net_send`'s return, not by routing, not by a reactor), so no block, vote, root or wire byte
+depends on them. They exist to break down the witness-port bandwidth (~131 KB sent per
+transaction per node at block capacity trial B,
+`docs/plans/decisions/2026-09-24-block-capacity-trial-b.md`) and the per-message ML-DSA-87 cost.
+
+- **Where.** `nodus_cmt_net_t.stats` (no globals). Send side in `net_send`: after the peer is up
+  (a send to a peer that is not up is the reference's `!IsRunning()` and is not counted), every
+  false return is a `fail`, every successful `nodus_t3_encode` is one `sign` (one signature per
+  peer per message — `nodus_tier3.c` `nodus_t3_encode` signs on every call), and a frame
+  `nodus_tcp_send` accepted adds `msgs`, `payload` (`m` length) and `frame` (the encoded T3
+  message, without the 7-byte frame header and channel encryption; "accepted" includes
+  buffered / queued-behind-auth). Receive side in `nodus_witness_dispatch_t3` through
+  `nodus_cmt_net_stats_rx`, once per decoded frame where its sender check / verify concludes
+  (unknown sender: counted, no verify; verify failure: `verify` + `fail`; otherwise `verify`
+  for every non-IDENT verb) — the order of the checks is unchanged. Frames that fail tier-3
+  decode and frames received while `witness->cmt_net` is NULL (before the Comet lane is
+  constructed) are not counted.
+- **Key.** Channel slot: 0x20, 0x21, 0x22, 0x23, 0x30, plus a receive-only `t3` slot for every
+  other tier-3 verb (ident, roster, genesis bundle, cc approval — sent outside the glue, so not
+  counted on the send side). Kind: the FIRST protobuf key of `m`, read as a uvarint with the
+  codec's own `cmt_pb_get_uvarint`; wire type must be 2; field 1-9 on 0x20-0x23 = the consensus
+  `Message` oneof (`cmt_pb.h` `cmt_pb_cons_msg_kind_t`: 1 `new_round_step`, 2 `new_valid_block`,
+  3 `proposal`, 4 `proposal_pol`, 5 `block_part`, 6 `vote`, 7 `has_vote`, 8 `vote_set_maj23`,
+  9 `vote_set_bits`), field 1 on 0x30 = `txs` (`cmt_pb_mempool.h` `CMT_PB_MEMPOOL_MSG_TXS`);
+  anything else `unknown`; the `t3` slot's kind is `other`. Nothing past the first key is read.
+- **Log.** From `nodus_cmt_net_tick`, at most once per `NODUS_CMT_NET_STATS_PERIOD_S` (60) of
+  `net->now` (the node's own clock — the only clock this module reads; the first tick arms the
+  period, a faulting or backwards clock re-arms it; never an input to consensus), and once at
+  shutdown from `nodus_witness_close` (`reason=shutdown`). Tag `W_CMTNET`, INFO. One line per
+  NON-ZERO cell, `tx` then `rx`, channel then kind in table order; every value CUMULATIVE since
+  `nodus_cmt_net_init`:
+
+  ```
+  NETSTATS seq=<n> t=<unix s> dir=tx ch=<0x20|0x21|0x22|0x23|0x30> kind=<name> msgs=<n> payload=<B> frame=<B> sign=<n> fail=<n>
+  NETSTATS seq=<n> t=<unix s> dir=rx ch=<0x20|…|0x30|t3> kind=<name> msgs=<n> payload=<B> frame=<B> verify=<n> fail=<n>
+  NETSTATS seq=<n> t=<unix s> end lines=<k> reason=<periodic|shutdown>
+  ```
+
+  A snapshot is complete when its `end` line is present and exactly `<k>` data lines carry its
+  `seq`; a cell absent from a complete snapshot is zero. `t=-1` means the clock faulted. `seq`
+  restarts at 1 with the process. `nodus/tests/integration/stagef/bench_tps_v2.sh` turns two
+  snapshots into a per-(node, dir, channel, kind) table and `bench/netstats.csv` (stagef
+  README, "The TPS bench").
 
 ### cometbft @709fd12b literal port — R1 types layer (`shared/dnac/cmt_*`, DORMANT, zero consumers)
 

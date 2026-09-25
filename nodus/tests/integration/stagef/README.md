@@ -393,7 +393,7 @@ should tick every interval on a healthy chain.
 | Script | Requires | Exercises |
 |---|---|---|
 | `test_v2_grow_7_20.sh` | `-DDNAC_EPOCH_LENGTH=15` + `-DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15`, `STAGEF_V2_CANDIDATES=13` exported BEFORE bring-up (0 → skips). ~30 min. **Run standalone**: it leaves 13 extra nodes running, a permanent 20-node committee, every candidate leaf spent. | The committee grows 7 → 10 → 20 by governance. **Tokenomics-v3 P3 fix round (2026-09-24), written against the source and NOT re-run:** the V2 ceiling is 32, so the refused target is now 33 (was 31 > 30); and because the default target is now 32 (P3-7) — which alone would seat all 20 — the old single vote of 20 proved nothing about governance, so the script now casts TWO votes: 10 effective at 3E (below the 14 that are eligible there, so exactly 10 seats can only come from the vote — this is what "size decided by vote" rests on) and 20 effective at 4E (equal to what the default would seat: that boundary proves growth, not governance). Its arithmetic block also accounts for P3-1 "okuma B" (snapshot(e) is ranked from copy(e−2E); a bond not yet in that copy is not seated). **NOT converted to the Comet lane yet** — it still parses the CLI's `committed: height=` line (always 0 on this lane) and it is not in the runner; package W4-H decides convert-or-delete. Its FLAKY history (v0.19.48, a legacy view-boundary loss) belongs to the deleted lane. **R3 W4-C delta 4 (out-of-whitelist finding, NOT fixed here):** `nodus-cli.c`'s print this script greps for (`:248`, `:449`, `:469`, `grep -q '^committed: height='`) no longer exists — delta 4 reworded it to `"accepted: mempool CheckTx approved..."` because it was factually wrong on the Comet lane (see the README's own warning section above). This script is not in the runner and this file is outside delta 4's whitelist, so it was not touched; whoever runs or converts it next needs to update this grep too. |
-| `bench_tps_v2.sh` (in `stagef/`, not `tests/`) | Default build (`nodus-server` + `nodus-cli` from the same tree). `STAGEF_V2_PUMP_IDENTITIES=<K>` and `STAGEF_V2_PUMP_LEAVES=<N>` (per identity) exported BEFORE `stagef_up_v2.sh` — suggested for trial B: **K = 7, N = 150** (see "The TPS bench"); knobs `STAGEF_BENCH_WORKERS` (M, default 7 = one per node, max 7 — a node EVICTS an older session of the same identity, `SESSION_EVICT`, so two workers on one node kill each other's handshake; measured with M=8) and `STAGEF_BENCH_DURATION_S` (D, default 600). Optional: `ss` (iproute2) with `-i` byte counters for the bandwidth section (SKIPPED with a message otherwise; the bench still runs). **Run standalone** against its own fresh bring-up — it claims and churns the whole PUMP batch. rc 99 on a non-Comet cluster. | A **measurement, not a scenario**: sustained CORE SPEND TPS at today's unit budget, and per-node TCP bandwidth during the load. See "The TPS bench" below. |
+| `bench_tps_v2.sh` (in `stagef/`, not `tests/`) | Default build (`nodus-server` + `nodus-cli` from the same tree). `STAGEF_V2_PUMP_IDENTITIES=<K>` and `STAGEF_V2_PUMP_LEAVES=<N>` (per identity) exported BEFORE `stagef_up_v2.sh` — suggested for trial B: **K = 7, N = 150** (see "The TPS bench"); knobs `STAGEF_BENCH_WORKERS` (M, default 7 = one per node, max 7 — a node EVICTS an older session of the same identity, `SESSION_EVICT`, so two workers on one node kill each other's handshake; measured with M=8) and `STAGEF_BENCH_DURATION_S` (D, default 600). Optional: `ss` (iproute2) with `-i` byte counters for the bandwidth section (SKIPPED with a message otherwise; the bench still runs). **Run standalone** against its own fresh bring-up — it claims and churns the whole PUMP batch. rc 99 on a non-Comet cluster. | A **measurement, not a scenario**: sustained CORE SPEND TPS at today's unit budget, per-node TCP bandwidth during the load, and (nodus ≥ 0.19.76) each node's witness-port counters per direction / channel / message kind (NETSTATS). See "The TPS bench" below. |
 
 #### The TPS bench (`bench_tps_v2.sh`)
 
@@ -435,6 +435,45 @@ cluster's range); then the cluster total. One CSV per node:
 received, B/s each, bytes per envelope each; a `total` row). Missing `ss`,
 or an `ss` without byte counters, SKIPS this section with a message and
 nothing else.
+
+**Inter-node counters (NETSTATS, nodus 0.19.76).** Where the bandwidth
+section says HOW MUCH a node sends, this one says WHAT. Every node counts
+its own witness-port traffic per direction, channel and message kind
+(`nodus_witness_cmt_net.c`, observation only — no counter is an input to
+anything) and logs the CUMULATIVE totals since it started, at most once
+per `NODUS_CMT_NET_STATS_PERIOD_S` (60 s, read from
+`nodus_witness_cmt_net.h` at run time), as
+`NETSTATS seq=<n> t=<unix s> dir=<tx|rx> ch=<0x20|0x21|0x22|0x23|0x30|t3> kind=<…> msgs=… payload=… frame=… sign|verify=… fail=…`
+lines closed by `NETSTATS seq=<n> t=… end lines=<k> reason=…`
+(format: `nodus/docs/ARCHITECTURE.md` "Inter-node traffic counters").
+`tx` = envelopes the Comet glue signed and handed to the transport (one
+ML-DSA-87 signature per peer per message: `sign`); `rx` = tier-3 frames
+the dispatcher decoded, with `verify` = signature checks performed.
+Kinds: `new_round_step`, `new_valid_block`, `proposal`, `proposal_pol`,
+`block_part`, `vote`, `has_vote`, `vote_set_maj23`, `vote_set_bits`
+(channels 0x20-0x23), `txs` (0x30), `unknown`, and `other` for every
+non-envelope verb on the receive-only `t3` channel. The node log has no
+timestamps, so the bench records each node log's LINE COUNT at load
+start and at load end and, within each prefix, uses the NEWEST COMPLETE
+snapshot — the highest `seq` whose `end` line is present and whose data
+lines number exactly its `lines=` (a snapshot cut by the mark, or a line
+mangled by a concurrent writer, fails that count and the previous one is
+used). A cell absent from a complete snapshot is zero there (only
+non-zero cells are printed). The summary prints, per node, the two
+snapshots used (seq, `t=`, offset from the load edge, counted span) and
+the difference per (dir, channel, kind): messages, frame bytes,
+signatures / verifies, failures, frame bytes per committed envelope and
+signatures / verifies per committed envelope (the same window-block
+envelope count as the bandwidth section), with per-direction `ALL` rows;
+then the cluster sum over the nodes that were usable. CSV:
+`$BASE_DIR/bench/netstats.csv` (`node,dir,ch,kind,msgs,payload_bytes,frame_bytes,sign_or_verify,fail,frame_bytes_per_env,sign_or_verify_per_env`;
+node `nodeN` or `cluster`); the snapshots used:
+`netstats_node<N>.start` / `.end`; the per-node differences:
+`netstats_delta.raw`. A node whose log has no complete snapshot before
+load start, whose two edges resolve to the same snapshot, that restarted
+in between, or whose counter went down is SKIPPED with the reason —
+never filled with zeros; if no node is usable the section says the table
+is ABSENT.
 
 **Why `--shard`.** One CLI call cannot keep blocks full: a second call
 made before the first batch commits lists the same unspent coins and
@@ -481,7 +520,9 @@ leaf (3000) at ≥ 2 000 leaves — the builder then refuses the duplicate
 **What it leaves behind.** Every pump identity's batch claimed; every spent coin
 replaced by one coin `STAGEF_PUMP_FEE_RAW` smaller; the chain many blocks
 further on; `$BASE_DIR/bench/` (including the bandwidth CSVs and raw
-samples when `ss` qualified). Nothing killed or restarted.
+samples when `ss` qualified, and `netstats.csv`, `netstats_delta.raw`
+and the `netstats_node<N>.start` / `.end` snapshots). Nothing killed or
+restarted.
 
 **Block capacity trial B (operator 2026-09-24,
 `docs/plans/decisions/2026-09-24-block-capacity-trial-b.md`) — ARITHMETIC,
@@ -531,7 +572,23 @@ as sent and once as received across the cluster; client (`nodus-cli`)
 sessions are measured on the server side only; bytes per envelope divide
 the wall-clock window's bytes by the window blocks' envelopes (edges
 differ) and include idle consensus traffic, so they are an upper bound,
-not a marginal cost. Every wait is progress-bounded (the inline `stagef_cmt_wait_row`
+not a marginal cost. **NETSTATS** are 60 s snapshots of counters
+cumulative since each node started: each edge is the newest complete
+snapshot AT OR BEFORE the mark, so it can be up to one period (plus a
+tick) early and the counted span can differ from the load window by up
+to ~60 s either way (the report prints both snapshot times and the
+span); per-envelope figures divide that span's traffic by the window
+blocks' envelopes (two different intervals) and include idle consensus
+traffic, so they are an upper bound; a load shorter than the period
+skips every node (same snapshot at both edges). `tx` counts frames the
+transport ACCEPTED (sent, buffered or queued behind an unfinished auth),
+not bytes on the wire; frame bytes exclude the 7-byte frame header and
+channel encryption (the `ss` numbers include both). Tier-3 traffic sent
+outside the Comet glue (ident, roster, genesis bundle, cc approval)
+appears only on the receive side (`t3`); frames that fail tier-3 decode,
+and anything received before a node's Comet lane was constructed, are
+not counted; the kind is read from the envelope's first protobuf key
+only. A skipped node is absent from the cluster sum, not zero. Every wait is progress-bounded (the inline `stagef_cmt_wait_row`
 rules: a stall aborts the bench, 20 heights without inclusion counts the
 spend as DROPPED); refused and dropped spends are counted, never retried
 silently, and a worker fault aborts the whole bench with no partial

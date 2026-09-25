@@ -109,6 +109,96 @@ _Static_assert(NODUS_CMT_NET_RECV_ARENA_BYTES == (uint32_t)CMT_CONR_MAX_MSG_SIZE
               "CMT_CONR_MAX_MSG_SIZE — see the receive-arena bound proof "
               "in cmt_conr.h \"THE RECEIVE ARENA\"");
 
+/* ══════════════════════════════════════════════════════════════════════
+ * INTER-NODE TRAFFIC COUNTERS — OBSERVATION ONLY (nodus 0.19.76)
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * Counts what crosses the witness port (4004) through this glue, so the
+ * operator can see where the per-transaction bandwidth and the
+ * per-message ML-DSA-87 signing / verifying cost go (block capacity
+ * trial B, docs/plans/decisions/2026-09-24-block-capacity-trial-b.md:
+ * ~131 KB sent per transaction per node, not yet broken down).
+ *
+ * NOTHING HERE IS A CONSENSUS INPUT. No counter is ever read by any
+ * decision path: not by `net_send`'s return value, not by the receive
+ * routing, not by either reactor. The counters are written, and read
+ * only by the NETSTATS log emitter below. Two nodes with different
+ * counters produce the same blocks, votes and state_root.
+ *
+ * KEY = (channel slot, message kind):
+ *   channel slot — the four consensus channels and the mempool channel
+ *     (cmt_ps.h CMT_CONR_*_CHANNEL, cmt_mem.h CMT_MEM_CHANNEL), plus ONE
+ *     receive-only slot for every other tier-3 verb verified on the
+ *     witness port (roster, ident, genesis bundle, cc approval) — those
+ *     are sent outside this glue and are NOT counted on the send side.
+ *   kind — the FIRST protobuf key of the envelope's `m`: the consensus
+ *     `Message` oneof field number 1..9 (cmt_pb.h:853-863) on the four
+ *     consensus channels, field 1 = `Txs` (cmt_pb_mempool.h:98-100) on
+ *     the mempool channel; anything else (empty `m`, a key that is not
+ *     wire type 2, a field outside that channel's range, a truncated
+ *     varint) is UNKNOWN. Nothing past the first key is decoded.
+ * ════════════════════════════════════════════════════════════════════════ */
+
+/** Channel slots of the counter table (fixed order = emission order). */
+enum {
+    NODUS_CMT_NET_CH_STATE        = 0,   /* 0x20 CMT_CONR_STATE_CHANNEL         */
+    NODUS_CMT_NET_CH_DATA         = 1,   /* 0x21 CMT_CONR_DATA_CHANNEL          */
+    NODUS_CMT_NET_CH_VOTE         = 2,   /* 0x22 CMT_CONR_VOTE_CHANNEL          */
+    NODUS_CMT_NET_CH_VOTE_SET_BITS = 3,  /* 0x23 CMT_CONR_VOTE_SET_BITS_CHANNEL */
+    NODUS_CMT_NET_CH_MEMPOOL      = 4,   /* 0x30 CMT_MEM_CHANNEL                */
+    NODUS_CMT_NET_CH_NON_ENVELOPE = 5,   /* every other T3 verb, receive only   */
+    NODUS_CMT_NET_STAT_CHANNELS   = 6
+};
+
+/** Kind slots. 1..9 ARE the consensus `Message` oneof field numbers
+ *  (cmt_pb_cons_msg_kind_t, cmt_pb.h:853-863), used as indices directly;
+ *  the .c file pins that with a _Static_assert. */
+enum {
+    NODUS_CMT_NET_KIND_UNKNOWN      = 0,
+    /* 1..9: CMT_PB_CONS_MSG_NEW_ROUND_STEP .. CMT_PB_CONS_MSG_VOTE_SET_BITS */
+    NODUS_CMT_NET_KIND_TXS          = 10,  /* mempool Message field 1       */
+    NODUS_CMT_NET_KIND_NON_ENVELOPE = 11,  /* the NON_ENVELOPE channel slot */
+    NODUS_CMT_NET_STAT_KINDS        = 12
+};
+
+/** The NETSTATS emission period, in seconds of `net->now`. */
+#define NODUS_CMT_NET_STATS_PERIOD_S 60
+
+/**
+ * One counter cell. Send side (`tx`): `msgs` / `payload_bytes` (the
+ * envelope's `m` length) / `frame_bytes` (the signed T3 message handed
+ * to nodus_tcp_send — WITHOUT the transport's 7-byte frame header and
+ * any channel-encryption overhead) count frames nodus_tcp_send ACCEPTED
+ * (sent, buffered, or queued behind an unfinished auth — accepted is not
+ * yet on the wire); `crypto_ops` = successful nodus_t3_encode calls, one
+ * ML-DSA-87 signature each (nodus_tier3.c nodus_t3_encode step 2);
+ * `fails` = every false return AFTER the peer was up (no server
+ * identity, zero chain id, clock fault, encode failure, transport
+ * refusal). A send to a peer that is not up is the reference's
+ * `!peer.IsRunning()` and is not counted at all. Receive side (`rx`):
+ * `msgs` / `frame_bytes` (the decoded T3 message's length) count every
+ * decoded frame that reached the sender lookup; `payload_bytes` = `m`
+ * length for verbs 35-39, 0 for the non-envelope slot; `crypto_ops` =
+ * nodus_t3_verify calls performed; `fails` = verify failures.
+ */
+typedef struct {
+    uint64_t msgs;
+    uint64_t payload_bytes;
+    uint64_t frame_bytes;
+    uint64_t crypto_ops;
+    uint64_t fails;
+} nodus_cmt_net_stat_cell_t;
+
+/** The counter table plus the emitter's state. Cumulative since
+ *  nodus_cmt_net_init; never reset. */
+typedef struct {
+    nodus_cmt_net_stat_cell_t tx[NODUS_CMT_NET_STAT_CHANNELS][NODUS_CMT_NET_STAT_KINDS];
+    nodus_cmt_net_stat_cell_t rx[NODUS_CMT_NET_STAT_CHANNELS][NODUS_CMT_NET_STAT_KINDS];
+    bool     clock_started;   /* the first tick only arms the period       */
+    int64_t  last_emit_s;     /* net->now seconds of the last emission     */
+    uint64_t seq;             /* snapshots emitted so far (1 = the first)  */
+} nodus_cmt_net_stats_t;
+
 /**
  * The glue's own state: the witness it scans, the store its bs_* rows
  * read, the clock it forwards untouched, the two reactors it feeds once
@@ -210,6 +300,10 @@ typedef struct {
     cmt_extended_commit_sig_t *ext_sigs;
     cmt_pb_arena_t             ext_load_arena;
     cmt_pb_arena_t             part_arena;
+
+    /* Inter-node traffic counters — observation only, never read by any
+     * decision path (see "INTER-NODE TRAFFIC COUNTERS" above). */
+    nodus_cmt_net_stats_t      stats;
 } nodus_cmt_net_t;
 
 /**
@@ -255,7 +349,12 @@ int nodus_cmt_net_bind(nodus_cmt_net_t *net, cmt_conr_t *conr,
  * or whose connection pointer changed while up (a reconnect), gets
  * `cmt_conr_remove_peer` + `cmt_memr_remove_peer` (and, for a
  * reconnect, the added calls right after) — THEN (b)
- * `cmt_conr_tick` and `cmt_memr_tick`, in that order, once each. The
+ * `cmt_conr_tick` and `cmt_memr_tick`, in that order, once each — THEN
+ * (c) the NETSTATS emitter: one `net->now` read, and a snapshot
+ * (nodus_cmt_net_stats_emit) if NODUS_CMT_NET_STATS_PERIOD_S have passed
+ * since the last one (the first tick only arms the period; a clock fault
+ * or a clock that went backwards re-arms it, never a CMT_FAULT —
+ * observation only, it never changes this function's return). The
  * scan itself (delta 5) also runs at the top of `nodus_cmt_net_receive`
  * — see that function's doc comment for why.
  *
@@ -336,6 +435,37 @@ size_t nodus_cmt_net_recv_arena_used(const nodus_cmt_net_t *net);
  */
 int nodus_cmt_net_receive(nodus_cmt_net_t *net, const uint8_t sender_id[32],
                           const nodus_t3_msg_t *msg);
+
+/**
+ * Receive-side counting, called by the witness T3 dispatcher
+ * (nodus_witness.c `nodus_witness_dispatch_t3`) exactly ONCE per decoded
+ * frame, at the point its sender check / signature verify concluded —
+ * never changing the order of those checks. Observation only.
+ *
+ * Verbs 35-39 are keyed by their channel and the first protobuf key of
+ * `msg->w_cmt.m`; every other verb goes to the NON_ENVELOPE slot.
+ * @param frame_len the decoded T3 message's byte length (the dispatcher's
+ *        `len` — the same quantity net_send counts as `frame_bytes`).
+ * @param verified  true when nodus_t3_verify was called for this frame
+ *        (false: IDENT, which is not verified there, or a frame dropped
+ *        for an unknown sender before any verify).
+ * @param verify_ok the verify's outcome; ignored when !verified.
+ * NULL `net` or `msg` is a no-op.
+ */
+void nodus_cmt_net_stats_rx(nodus_cmt_net_t *net, const nodus_t3_msg_t *msg,
+                            size_t frame_len, bool verified, bool verify_ok);
+
+/**
+ * Emits one NETSTATS snapshot NOW, unconditionally: one QGP_LOG_INFO line
+ * per non-zero (direction, channel, kind) cell, in fixed table order,
+ * then one closing `end` line (format: nodus/docs/ARCHITECTURE.md
+ * "Inter-node traffic counters"). Used by the periodic emitter inside
+ * nodus_cmt_net_tick (at most once per NODUS_CMT_NET_STATS_PERIOD_S of
+ * `net->now`) and by the witness shutdown path. Observation only.
+ * @param reason "periodic" or "shutdown" — printed in the `end` line.
+ * NULL `net` is a no-op.
+ */
+void nodus_cmt_net_stats_emit(nodus_cmt_net_t *net, const char *reason);
 
 #ifdef __cplusplus
 }
