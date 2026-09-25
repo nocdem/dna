@@ -140,7 +140,19 @@ produces a DIFFERENT chain that cannot join — a loud refusal, not a silent spl
    you want the forensics.
    ```bash
    rm "$DATA_DIR"/witness_*.db*
+   rm -f "$DATA_DIR"/priv_validator_state.json
    ```
+   The second line matters from the SECOND version-3 wipe on. The
+   version-3 signer records the last height it signed in
+   `$DATA_DIR/priv_validator_state.json` (`nodus_witness.c:1625`) and
+   refuses to sign any lower height (`shared/dnac/cmt_privval.c:116-117`,
+   the reference's height-regression rule). A leftover file from the
+   previous chain therefore stops the node voting on the new one, and with
+   all seven affected the new chain never produces a block. The legacy
+   binary (v0.18.x) never writes the file, so the first cutover is
+   unaffected. Only chain files go: `nodus.db`, `channels.db`,
+   `identity/` and `archive/` stay — they are the DHT/Connect store and
+   the node's identity.
 2b. **Check for leftover sentinels.** Two dot-files live beside the chain and
    **survive step 2** — `rm witness_*` does not match a name starting with a
    dot:
