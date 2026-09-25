@@ -72,7 +72,6 @@ static void make_validator(dnac_validator_record_t *v,
     memset(v->unstake_destination_pubkey, 0x77, DNAC_PUBKEY_SIZE);
     v->last_validator_update_block = 0;
     v->consecutive_missed_epochs   = 0;
-    v->last_signed_block           = 0;
 }
 
 static void rmrf(const char *path) {
@@ -89,7 +88,7 @@ int main(void) {
         return 1;
     }
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
     snprintf(w.data_path, sizeof(w.data_path), "%s", data_path);
 

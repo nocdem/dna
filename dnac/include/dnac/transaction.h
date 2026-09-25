@@ -102,6 +102,18 @@ typedef struct {
     uint64_t tx_binding[DNAC_SHIELDED_LANES];                               /**< = conf_txbind_map(sighash_v4); bytes at S5 */
     uint8_t *fri_proof;                                                     /**< opaque is_zk=1 aggregate proof blob (owned) */
     uint32_t fri_proof_len;                                                 /**< blob length in bytes */
+    /* ── Ledger V2 S8 additions — APPENDED, V3-ONLY ──────────────────────
+     * Carried by the V3 shielded body ONLY (shared/dnac/tx_wire.h §4,
+     * DNAC_TXW3_SHIELDED_FIXED = 359) and bound by sighash_v5 (§5).
+     * They are NOT part of the frozen legacy 334-byte V2 shielded section:
+     * DNAC_TX_SHIELDED_FIXED_SIZE is unchanged, the V2 read/write path
+     * (serialize.c read_shielded_section / write_shielded_section) never
+     * touches these three fields, and every legacy byte and the V4
+     * tx-hash/sighash preimages stay byte-identical. Appended at the end so
+     * no existing field's offset or meaning moves. */
+    uint64_t boundary_in;                                                   /**< V3 only: transparent → pool amount (< 2^63) */
+    uint64_t boundary_out;                                                  /**< V3 only: pool → transparent amount (< 2^63) */
+    uint64_t expiry_height;                                                 /**< V3 only: mirror of the V3 header expiry_height (header authoritative) */
 } dnac_tx_shielded_fields_t;
 
 /* Fixed (proof-independent) wire size of the shielded section, BIG-ENDIAN:
@@ -144,7 +156,7 @@ extern const uint8_t DNAC_STAKE_PURPOSE_TAG[DNAC_STAKE_PURPOSE_TAG_LEN];
  * STAKE preimage and becomes a permanent validator property.
  */
 typedef struct {
-    uint16_t commission_bps;                                    /**< 0..10000 */
+    uint16_t commission_bps;                                    /**< 0..DNAC_COMMISSION_BPS_MAX (5000) */
     uint8_t  unstake_destination_fp[DNAC_STAKE_UNSTAKE_DEST_FP_SIZE];
                                                                 /**< raw 64B fingerprint hash */
 } dnac_tx_stake_fields_t;
@@ -186,13 +198,14 @@ typedef struct {
  *
  * Populated only when `dnac_transaction_t.type == DNAC_TX_VALIDATOR_UPDATE`.
  *
- * `new_commission_bps` is the validator's updated commission (0..10000 =
- * 0..100%). `signed_at_block` anchors the update to a specific block
+ * `new_commission_bps` is the validator's updated commission
+ * (0..DNAC_COMMISSION_BPS_MAX = 5000 = 0..50% since tokenomics-v3 P3; an
+ * increase takes effect two epochs later, a decrease at once). `signed_at_block` anchors the update to a specific block
  * height so replay of an old update-TX is detectable by witnesses
  * (they reject if signed_at_block < current validator.last_update_block).
  */
 typedef struct {
-    uint16_t new_commission_bps;   /**< 0..10000 */
+    uint16_t new_commission_bps;   /**< 0..DNAC_COMMISSION_BPS_MAX (5000) */
     uint64_t signed_at_block;      /**< Block height at signing */
 } dnac_tx_validator_update_fields_t;
 
@@ -219,11 +232,23 @@ typedef struct {
  *   (DNAC_CHAIN_CONFIG_PURPOSE_TAG || chain_id || param_id || new_value_BE ||
  *    effective_block_BE || proposal_nonce_BE || signed_at_block_BE ||
  *    valid_before_block_BE)
- * and the proposer aggregates >=5 votes before submitting.
+ * and the proposer aggregates a quorum of votes before submitting.
  *
  * `committee_sig_count` is the number of occupied slots in
- * `committee_votes[]`. Must land in [DNAC_CHAIN_CONFIG_MIN_SIGS,
- * DNAC_CHAIN_CONFIG_MAX_SIGS] = [5, 7]. Unused trailing slots are zero.
+ * `committee_votes[]`. Must land in the SHAPE window
+ * [DNAC_CHAIN_CONFIG_MIN_SIGS, DNAC_CHAIN_CONFIG_MAX_SIGS] = [5, 128].
+ * Unused trailing slots are zero.
+ *
+ * S3 (Ledger V2): the slot array is sized to the release's active-validator
+ * ceiling, not to the 7 initial seats. Passing the shape window is NOT
+ * quorum — the witness requires dna_bft_quorum(committee_count) verified
+ * votes from the committee governing the signing height, and rejects a
+ * proposal carrying more votes than that committee has members. At the DNA
+ * chain's 7 seats this reproduces the historical 5-of-7 rule exactly.
+ *
+ * ⚠ SIZE: ~583 KiB (128 × 4659 B). This struct is embedded by value in
+ * dnac_transaction_t, so EVERY dnac_transaction_t must be heap-allocated
+ * (dnac_tx_create / calloc) — never a stack local.
  *
  * `signed_at_block` is bound into the proposal preimage (CC-AUDIT-004 / Q2)
  * so a vote cannot be replayed onto a different commit window than signers
@@ -236,8 +261,8 @@ typedef struct {
     uint64_t                 proposal_nonce;                        /**< BE-encoded; preimage entropy */
     uint64_t                 signed_at_block;                       /**< BE-encoded; sign-time anchor */
     uint64_t                 valid_before_block;                    /**< BE-encoded; freshness window */
-    uint8_t                  committee_sig_count;                   /**< 5..7 */
-    dnac_chain_config_vote_t committee_votes[DNAC_COMMITTEE_SIZE];  /**< canonical subset (Q13) */
+    uint8_t                  committee_sig_count;                   /**< 5..128 (shape) */
+    dnac_chain_config_vote_t committee_votes[DNAC_MAX_ACTIVE_VALIDATORS]; /**< canonical subset (Q13) */
 } dnac_tx_chain_config_fields_t;
 
 /**
@@ -468,7 +493,8 @@ int dnac_tx_add_signer(dnac_transaction_t *tx,
  * Rules enforced:
  *   - tx->type == DNAC_TX_STAKE
  *   - signer_count == 1
- *   - stake_fields.commission_bps <= DNAC_COMMISSION_BPS_MAX (10000)
+ *   - stake_fields.commission_bps <= DNAC_COMMISSION_BPS_MAX (5000 since
+ *     tokenomics-v3 P3-8)
  *   - Σ DNAC inputs >= DNAC_SELF_STAKE_AMOUNT + Σ DNAC outputs
  *
  * Rules requiring witness-side DB access (Rule I / Rule M / exact fee)
@@ -571,12 +597,16 @@ int dnac_tx_verify_validator_update_rules(const dnac_transaction_t *tx);
  *   - chain_config_fields.signed_at_block > 0
  *   - chain_config_fields.valid_before_block > chain_config_fields.effective_block_height
  *   - chain_config_fields.valid_before_block > chain_config_fields.signed_at_block
- *   - chain_config_fields.committee_sig_count ∈ [5, 7]
+ *   - chain_config_fields.committee_sig_count ∈
+ *       [DNAC_CHAIN_CONFIG_MIN_SIGS, DNAC_CHAIN_CONFIG_MAX_SIGS] = [5, 128]
  *   - committee_votes[0..sig_count-1].witness_id pairwise distinct
  *
- * Rules requiring chain state (current committee membership, signature
- * verification against committee pubkeys, current_block freshness, epoch
- * grace period) run witness-side only (design §6.4, Stage B).
+ * Rules requiring chain state run witness-side only (design §6.4, Stage B):
+ * current committee membership, signature verification against committee
+ * pubkeys, current_block freshness, epoch grace period, and — since S3 —
+ * the QUORUM rule itself (sig_count <= committee_count AND verified >=
+ * dna_bft_quorum(committee_count)). The [5, 128] bound above is a shape
+ * check only; it never decides quorum.
  *
  * @param tx Transaction (must be CHAIN_CONFIG type)
  * @return DNAC_SUCCESS if valid, error code otherwise
@@ -597,7 +627,8 @@ int dnac_tx_verify_chain_config_rules(const dnac_transaction_t *tx);
  *   - If tx->has_chain_def (new TXs, required for Task 56+):
  *     - chain_def.initial_validator_count == DNAC_COMMITTEE_SIZE (7)
  *     - Σ outputs (native DNAC) + 7 × DNAC_SELF_STAKE_AMOUNT ==
- *       DNAC_DEFAULT_TOTAL_SUPPLY
+ *       chain_def.initial_supply_raw  (committed per-chain supply,
+ *       S1/Addendum #2 B1 — matches the witness-side Rule P.2)
  *     - initial_validators[0..6].pubkey pairwise distinct
  *   - Else (legacy archive replay):
  *     - Σ outputs.amount (native DNAC) == DNAC_DEFAULT_TOTAL_SUPPLY

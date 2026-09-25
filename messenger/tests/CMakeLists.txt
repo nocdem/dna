@@ -112,8 +112,11 @@ message(STATUS "")
 message(STATUS "Test executables:")
 message(STATUS "  - test_aes256_gcm      : AES-256-GCM encryption/decryption")
 message(STATUS "  - test_key_encryption  : Key encryption (PBKDF2 + AES-256-GCM)")
-message(STATUS "  - test_kyber1024       : Kyber1024 (ML-KEM-1024) post-quantum KEM")
+message(STATUS "  - test_kyber1024       : Kyber1024 round-3 (LEGACY) KAT")
+message(STATUS "  - test_mlkem1024       : ML-KEM-1024 (FIPS 203) known-answer tests")
 message(STATUS "  - test_bip39_bip32     : BIP39/BIP32 mnemonic and HD key derivation")
+message(STATUS "  - test_mlkem_rollout   : KEM Faz 1 (M1) dual-key ML-KEM-1024 rollout")
+message(STATUS "  - test_mnemonic_password_repair : mnemonic.enc password-wrap repair")
 message(STATUS "  - test_db_encryption   : Database encryption (SQLCipher)")
 message(STATUS "")
 
@@ -132,6 +135,23 @@ target_link_libraries(test_seal_authorship ${TEST_LIBS})
 add_test(NAME test_seal_authorship COMMAND test_seal_authorship)
 
 # =============================================================================
+# Test: O15B §7 — locked-UTXO coin selection
+# =============================================================================
+# Consensus rejects a spend whose input is still inside its post-UNSTAKE
+# cooldown (Rule D, nodus_witness_verify.c:730). The wallet had no column,
+# no wire field and no query for that height, so it built transactions all
+# seven validators were guaranteed to reject — and the submitter saw only
+# "Operation timed out", on every retry. This pins the schema, the storage
+# round trip, the re-sync refresh and the observed-height accessors.
+add_executable(test_wallet_locked_utxo test_wallet_locked_utxo.c)
+# dnac headers: the wallet compiles into libdna, but dnac/include is not on
+# the suite-wide include path (no other test reaches into it).
+target_include_directories(test_wallet_locked_utxo PRIVATE
+                           ${DNA_ROOT}/../dnac/include)
+target_link_libraries(test_wallet_locked_utxo ${TEST_LIBS})
+add_test(NAME test_wallet_locked_utxo COMMAND test_wallet_locked_utxo)
+
+# =============================================================================
 # Test: Key Encryption (PBKDF2 + AES-256-GCM)
 # =============================================================================
 add_executable(test_key_encryption test_key_encryption.c)
@@ -139,11 +159,48 @@ target_link_libraries(test_key_encryption ${TEST_LIBS})
 add_test(NAME test_key_encryption COMMAND test_key_encryption)
 
 # =============================================================================
-# Test: Kyber1024 (ML-KEM-1024) Post-Quantum KEM
+# Test: Kyber1024 round-3 (LEGACY) KAT — kyber_r3_legacy_kat.h fixture
 # =============================================================================
 add_executable(test_kyber1024 test_kyber1024.c)
 target_link_libraries(test_kyber1024 ${TEST_LIBS})
 add_test(NAME test_kyber1024 COMMAND test_kyber1024)
+
+# =============================================================================
+# Test: ML-KEM-1024 (FIPS 203) known-answer tests
+# =============================================================================
+# fixtures/mlkem/modulus-ML-KEM-1024.txt.gz and acvp-ML-KEM-1024.txt.gz are
+# kept gzipped in the repo (fixtures/mlkem/PIN.md) and decompressed once,
+# here, at configure time.
+set(MLKEM_MODULUS_GZ "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/mlkem/modulus-ML-KEM-1024.txt.gz")
+set(MLKEM_MODULUS_TXT "${CMAKE_BINARY_DIR}/fixtures/modulus-ML-KEM-1024.txt")
+set(MLKEM_ACVP_GZ "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/mlkem/acvp-ML-KEM-1024.txt.gz")
+set(MLKEM_ACVP_TXT "${CMAKE_BINARY_DIR}/fixtures/acvp-ML-KEM-1024.txt")
+file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/fixtures")
+execute_process(
+    COMMAND gzip -dc "${MLKEM_MODULUS_GZ}"
+    OUTPUT_FILE "${MLKEM_MODULUS_TXT}"
+    RESULT_VARIABLE MLKEM_GUNZIP_RESULT
+)
+if(NOT MLKEM_GUNZIP_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to gunzip ${MLKEM_MODULUS_GZ} (exit ${MLKEM_GUNZIP_RESULT})")
+endif()
+execute_process(
+    COMMAND gzip -dc "${MLKEM_ACVP_GZ}"
+    OUTPUT_FILE "${MLKEM_ACVP_TXT}"
+    RESULT_VARIABLE MLKEM_ACVP_GUNZIP_RESULT
+)
+if(NOT MLKEM_ACVP_GUNZIP_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to gunzip ${MLKEM_ACVP_GZ} (exit ${MLKEM_ACVP_GUNZIP_RESULT})")
+endif()
+
+add_executable(test_mlkem1024 test_mlkem1024.c)
+target_link_libraries(test_mlkem1024 ${TEST_LIBS})
+target_compile_definitions(test_mlkem1024 PRIVATE
+    "MLKEM_FIXTURES_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/mlkem\""
+    "MLKEM_MODULUS_VECTORS=\"${MLKEM_MODULUS_TXT}\""
+    "MLKEM_ACVP_VECTORS=\"${MLKEM_ACVP_TXT}\""
+)
+add_test(NAME test_mlkem1024 COMMAND test_mlkem1024)
 
 # =============================================================================
 # Test: SEC-02 — qgp_key file size validation (exact-bounds rejection)
@@ -404,6 +461,33 @@ add_test(NAME test_fp_converter COMMAND test_fp_converter)
 add_executable(test_cli_send_bench test_cli_send_bench.c)
 add_test(NAME test_cli_send_bench COMMAND test_cli_send_bench)
 set_tests_properties(test_cli_send_bench PROPERTIES SKIP_RETURN_CODE 77)
+
+# =============================================================================
+# Test: KEM Faz 1 (M1) — dual-key ML-KEM-1024 rollout
+# =============================================================================
+# Seal alg 2/3 matrix, identity record mlkem_pubkey (signature preimage
+# exclusion + old-client compat), keyserver_cache migration, IKP v2/v3/mixed,
+# salt agreement (partial, DHT-dependent — see the comment in the test file),
+# call INVITE "alg" field, mnemonic.v2.enc round-trip.
+# dna_call_crypto.c is compiled directly (same pattern as test_call_signal.c
+# etc.) so dna_call_build_body/dna_call_parse_body's "alg" field additions
+# are exercised even though the header is also resolved via TEST_LIBS.
+add_executable(test_mlkem_rollout
+    test_mlkem_rollout.c
+    ${DNA_ROOT}/src/api/engine/dna_call_crypto.c)
+target_include_directories(test_mlkem_rollout PRIVATE ${DNA_ROOT}/src/api/engine)
+target_link_libraries(test_mlkem_rollout ${TEST_LIBS})
+add_test(NAME test_mlkem_rollout COMMAND test_mlkem_rollout)
+
+# =============================================================================
+# Test: mnemonic.enc password-wrap repair (pre-0.11.22 password-change defect)
+# =============================================================================
+# Reproduces the wrap with key_change_password, asserts mnemonic_storage_load
+# fails on it, and that mnemonic_storage_repair_password_wrap restores the raw
+# blob byte-for-byte. Default build only; /tmp/test_mnemonic_pw_repair_<pid>.
+add_executable(test_mnemonic_password_repair test_mnemonic_password_repair.c)
+target_link_libraries(test_mnemonic_password_repair ${TEST_LIBS})
+add_test(NAME test_mnemonic_password_repair COMMAND test_mnemonic_password_repair)
 
 # =============================================================================
 # CTest integration

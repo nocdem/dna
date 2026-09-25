@@ -1,0 +1,238 @@
+# ═════════════════════════════════════════════════════════════════════
+# NODUS CHAIN — VERSION-3 (cometbft) GENESIS CONFIG — TEMPLATE
+# ═════════════════════════════════════════════════════════════════════
+#
+# This file is a TEMPLATE. It does not derive as it stands: every
+# `REPLACE_ME_<WHAT>` marker is a key, an identity or a ceremony value the
+# operator must supply, and `check_genesis_conf.sh` refuses the file while
+# any marker remains. Nothing below is a real key or fingerprint.
+#
+# How to fill it in, check it and derive it: README.md in this directory.
+#
+# THE FILE IS THE CHAIN'S IDENTITY. The chain id is a hash of the genesis
+# document this file becomes, so every node of the fleet must derive from
+# the SAME file, byte for byte. Fill it in ONCE, check it ONCE, then copy
+# that one file to every node — never re-type it per node.
+#
+# Governing record for every number below:
+#   docs/plans/decisions/2026-09-22-nodus-tokenomics-v3-operator.md §1
+#   (cited below as "decision §1").
+#
+# Syntax: the parser is nodus/tools/nodus_v2_gen_config.c — `key = value`,
+# `#` comments, LF line endings, lowercase hex, base-10 integers with no
+# separators. Unknown, duplicate or missing keys are refused.
+# ═════════════════════════════════════════════════════════════════════
+
+# The cometbft genesis document. 3 is the only version this build derives.
+config_version        = 3
+
+# UTC milliseconds since the Unix epoch at which the chain starts. The
+# derivation never reads a clock: the producer writes this value, and it
+# is hashed into the chain id — so it is chosen once, written once, and
+# the same file is copied to every node.
+genesis_time_ms       = REPLACE_ME_GENESIS_TIME_MS
+
+# PLACEHOLDER — the operator's choice. 0 and 1 both start the chain at
+# height 1, but the raw value is part of the hashed document, so they are
+# two DIFFERENT chain ids (nodus_v2_gen_config.c, the version-3 required
+# key message). 1 is what the Genesis Protocol harness writes
+# (nodus/tests/integration/stagef/stagef_up_v2.sh).
+initial_height        = 1
+
+# decision §1 "Toplam arz 1.000.000.000 NODUS, sabit" — 1 000 000 000
+# NODUS × 10^8 raw units (decimal_unit below). Rule P.2 (gen_plan_build,
+# nodus_witness_v2_gen.c): Σ allocations + Σ self_stake +
+# reward_pool_initial == total_supply_raw.
+total_supply_raw      = 100000000000000000
+
+# decision §1 "Epoch uzunluğu 720 blok". Must equal the build's compiled
+# DNAC_EPOCH_LENGTH or the derivation refuses.
+epoch_length          = 720
+
+# The production blocks-per-year constant; must equal the build's
+# compiled DNAC_BLOCKS_PER_YEAR (nodus/src/witness/nodus_witness_emission.h)
+# or the derivation refuses.
+blocks_per_year       = 6307200
+
+# 1 NODUS = 10^8 raw units; must equal the compiled DNAC_DECIMAL_UNIT.
+decimal_unit          = 100000000
+
+# decision §1 "Yeni token basılmayacak" — the per-block mint is deleted
+# and 0 is the only value the builder accepts. The key stays because it is
+# a field of the canonical genesis encoding.
+inflation_start_block = 0
+
+# decision §1 "Konsensüs / validator ödülleri 200M" — 200 000 000 × 10^8.
+reward_pool_initial   = 20000000000000000
+
+# decision §1 "Ödeme her 24 epoch'ta yapılacak".
+payout_interval_epochs = 24
+
+# ─────────────────────────────────────────────────────────────────────
+# THE SEVEN GENESIS VALIDATORS
+#
+# decision §1 "Genesis'te 7 Foundation validatorı olacak. Her birine 10M
+# NODUS stake ayrılacak" — exactly 7 blocks (the builder's Rule P.1), each
+# self_stake = 10 000 000 × 10^8.
+#
+#   pubkey                     the validator's ML-DSA-87 public key
+#                              (2592 bytes = 5184 lowercase hex);
+#   unstake_destination_pubkey the payout key the self-bond is released
+#                              to at retirement (5184 lowercase hex);
+#   unstake_destination_fp     SHA3-512(unstake_destination_pubkey) as
+#                              128 lowercase hex — the builder REFUSES a
+#                              fingerprint that does not derive from the
+#                              payout key;
+#   commission_bps             PLACEHOLDER 500 (5 %). The commission is
+#                              the validator's own choice (decision §1
+#                              "Komisyonu validator belirleyecek; üst
+#                              sınır %50" — at most 5000); 500 is not a
+#                              policy, it is the value the harness writes.
+# ─────────────────────────────────────────────────────────────────────
+
+[validator]
+pubkey                     = REPLACE_ME_VALIDATOR_1_PUBKEY
+unstake_destination_pubkey = REPLACE_ME_VALIDATOR_1_UNSTAKE_DESTINATION_PUBKEY
+unstake_destination_fp     = REPLACE_ME_VALIDATOR_1_UNSTAKE_DESTINATION_FP
+self_stake                 = 1000000000000000
+commission_bps             = 500
+
+[validator]
+pubkey                     = REPLACE_ME_VALIDATOR_2_PUBKEY
+unstake_destination_pubkey = REPLACE_ME_VALIDATOR_2_UNSTAKE_DESTINATION_PUBKEY
+unstake_destination_fp     = REPLACE_ME_VALIDATOR_2_UNSTAKE_DESTINATION_FP
+self_stake                 = 1000000000000000
+commission_bps             = 500
+
+[validator]
+pubkey                     = REPLACE_ME_VALIDATOR_3_PUBKEY
+unstake_destination_pubkey = REPLACE_ME_VALIDATOR_3_UNSTAKE_DESTINATION_PUBKEY
+unstake_destination_fp     = REPLACE_ME_VALIDATOR_3_UNSTAKE_DESTINATION_FP
+self_stake                 = 1000000000000000
+commission_bps             = 500
+
+[validator]
+pubkey                     = REPLACE_ME_VALIDATOR_4_PUBKEY
+unstake_destination_pubkey = REPLACE_ME_VALIDATOR_4_UNSTAKE_DESTINATION_PUBKEY
+unstake_destination_fp     = REPLACE_ME_VALIDATOR_4_UNSTAKE_DESTINATION_FP
+self_stake                 = 1000000000000000
+commission_bps             = 500
+
+[validator]
+pubkey                     = REPLACE_ME_VALIDATOR_5_PUBKEY
+unstake_destination_pubkey = REPLACE_ME_VALIDATOR_5_UNSTAKE_DESTINATION_PUBKEY
+unstake_destination_fp     = REPLACE_ME_VALIDATOR_5_UNSTAKE_DESTINATION_FP
+self_stake                 = 1000000000000000
+commission_bps             = 500
+
+[validator]
+pubkey                     = REPLACE_ME_VALIDATOR_6_PUBKEY
+unstake_destination_pubkey = REPLACE_ME_VALIDATOR_6_UNSTAKE_DESTINATION_PUBKEY
+unstake_destination_fp     = REPLACE_ME_VALIDATOR_6_UNSTAKE_DESTINATION_FP
+self_stake                 = 1000000000000000
+commission_bps             = 500
+
+[validator]
+pubkey                     = REPLACE_ME_VALIDATOR_7_PUBKEY
+unstake_destination_pubkey = REPLACE_ME_VALIDATOR_7_UNSTAKE_DESTINATION_PUBKEY
+unstake_destination_fp     = REPLACE_ME_VALIDATOR_7_UNSTAKE_DESTINATION_FP
+self_stake                 = 1000000000000000
+commission_bps             = 500
+
+# ─────────────────────────────────────────────────────────────────────
+# THE TEN POOLS
+#
+# One [allocation] block per pool of decision §1's table (the reward
+# reserve is not an allocation — it is reward_pool_initial above).
+#
+#   source_id     64 bytes = 128 hex characters. The pools use the band
+#                 1..10, numbered in the ORDER OF decision §1's table,
+#                 written as a zero-padded decimal ordinal (the same
+#                 convention the harness uses). These ids are committed
+#                 into the genesis document; they are this template's
+#                 choice, documented here, not a protocol rule.
+#   dest_binding  SHA3-512(public key of the pool's claimant) as 128
+#                 lowercase hex — the claim pipeline compares it byte for
+#                 byte, so ONLY that key can ever claim the pool. Decision
+#                 §1: "Havuzların harcama yetkisi başlangıçta sende
+#                 olacak" — the operator's key(s).
+#   amount        raw units (× 10^8).
+#
+#   id  pool (decision §1)                     NODUS         raw
+#    1  Storage                                100 000 000   10000000000000000
+#    2  Compute                                100 000 000   10000000000000000
+#    3  VPN / Bandwidth                         50 000 000    5000000000000000
+#    4  Gelecekteki hizmetler (future services)  50 000 000    5000000000000000
+#    5  Güvenlik / bug bounty                   50 000 000    5000000000000000
+#    6  Likidite / market making               150 000 000   15000000000000000
+#    7  Founder                                 50 000 000    5000000000000000
+#    8  Ekosistem / geliştirici hibeleri        100 000 000   10000000000000000
+#    9  Foundation (100M − 70M validator stake) 30 000 000    3000000000000000
+#   10  Topluluk airdrop                         50 000 000    5000000000000000
+#
+# Foundation: decision §1 gives it 100M and says the 7 × 10M validator
+# stake "Foundation tahsisinden karşılanacak" — so its allocation is 30M.
+#
+# Check (NODUS): 200 reserve + 70 stake + 30 + 100 + 100 + 50 + 50 + 50
+#                + 150 + 50 + 100 + 50 = 1000 = total_supply_raw.
+# ─────────────────────────────────────────────────────────────────────
+
+# 1 — Storage
+[allocation]
+source_id    = 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001
+dest_binding = REPLACE_ME_STORAGE_DEST_BINDING
+amount       = 10000000000000000
+
+# 2 — Compute
+[allocation]
+source_id    = 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002
+dest_binding = REPLACE_ME_COMPUTE_DEST_BINDING
+amount       = 10000000000000000
+
+# 3 — VPN / Bandwidth
+[allocation]
+source_id    = 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003
+dest_binding = REPLACE_ME_VPN_BANDWIDTH_DEST_BINDING
+amount       = 5000000000000000
+
+# 4 — Future services
+[allocation]
+source_id    = 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004
+dest_binding = REPLACE_ME_FUTURE_SERVICES_DEST_BINDING
+amount       = 5000000000000000
+
+# 5 — Security / bug bounty
+[allocation]
+source_id    = 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000005
+dest_binding = REPLACE_ME_SECURITY_BUG_BOUNTY_DEST_BINDING
+amount       = 5000000000000000
+
+# 6 — Liquidity / market making
+[allocation]
+source_id    = 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006
+dest_binding = REPLACE_ME_LIQUIDITY_DEST_BINDING
+amount       = 15000000000000000
+
+# 7 — Founder
+[allocation]
+source_id    = 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007
+dest_binding = REPLACE_ME_FOUNDER_DEST_BINDING
+amount       = 5000000000000000
+
+# 8 — Ecosystem / developer grants
+[allocation]
+source_id    = 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008
+dest_binding = REPLACE_ME_ECOSYSTEM_GRANTS_DEST_BINDING
+amount       = 10000000000000000
+
+# 9 — Foundation (100M − 70M validator stake)
+[allocation]
+source_id    = 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000009
+dest_binding = REPLACE_ME_FOUNDATION_DEST_BINDING
+amount       = 3000000000000000
+
+# 10 — Community airdrop
+[allocation]
+source_id    = 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010
+dest_binding = REPLACE_ME_COMMUNITY_AIRDROP_DEST_BINDING
+amount       = 5000000000000000

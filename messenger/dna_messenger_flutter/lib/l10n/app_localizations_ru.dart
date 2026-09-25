@@ -1609,7 +1609,7 @@ class AppLocalizationsRu extends AppLocalizations {
   String get userProfileLastMonth => 'Last Month';
 
   @override
-  String get dnacTitle => 'Digital Cash';
+  String get dnacTitle => 'DNA Chain';
 
   @override
   String get dnacBalance => 'Balance';

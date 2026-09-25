@@ -34,6 +34,7 @@ One node at a time for a rolling deploy; all nodes at once for a stop-all.
 |---|---|
 | Anything that changes **which blocks are valid** (verify/admission rules, fee gates, consensus checks) | **STOP-ALL** |
 | `state_root` format / wire format / DB schema | **STOP-ALL + chain wipe** |
+| Any consensus change (the cometbft port's `cmt_*`, the application's ABCI rows, the genesis document) | **STOP-ALL + fresh chain** — a version-3 chain has no migration; §2.1 explains why there is no `pbft_state` step any more |
 | Logging, metrics, non-consensus tooling | Rolling, one node at a time |
 
 **Why stop-all for validity changes:** during a rolling window the cluster runs mixed
@@ -101,6 +102,171 @@ ls -la "$DATA_DIR/archive/$TS/"     # MUST list .db and, if WAL was active, -wal
 
 ---
 
+## 1.5 Birth of the Ledger V2 chain — the one-time ceremony (v0.19.37)
+
+**This is a HARD CUTOVER.** There is no migration, no coexistence, no V1→V2
+path. Every node stops, its V1 chain files are removed, each node derives the V2
+chain from one shared config file, and the fleet starts. **You do this once.**
+Everything below assumes §1's `DATA_DIR` check has already been done.
+
+### What actually creates the chain
+
+```
+nodus-server --derive-v2-genesis <config-file> -d "$DATA_DIR"
+```
+
+It parses the config, derives the chain, prints the chain id (`chain-id` and
+`v2-genesis-pin` — the same 32 bytes; a version-3 chain has no genesis
+block, the document is its genesis), and **exits**. It never opens a socket and never starts a server. That
+is deliberate: the genesis validator set comes only from the config file, and
+there is no running process for anything on the network to reach.
+
+### Determinism is the verification, not a formality
+
+The same config file produces a byte-identical chain on every host. So the
+config file is the ONLY artifact that travels — **never copy a derived database
+between machines.** Each node derives its own, and each prints the chain id. If
+two nodes print different chain ids, their configs differ; stop and fix the
+config before starting anything. A wrong config does not corrupt a chain, it
+produces a DIFFERENT chain that cannot join — a loud refusal, not a silent split.
+
+### Order of operations
+
+1. **Stop every node.** This is a chain wipe; rolling is not an option
+   (`feedback_consensus_deploy_stop_all`).
+2. **Remove the V1 chain on each node.** The derive command REFUSES to run
+   beside a foreign chain database — it will tell you to remove it first, by
+   name. This is devnet, so archiving is optional; use §1's archive procedure if
+   you want the forensics.
+   ```bash
+   rm "$DATA_DIR"/witness_*.db*
+   ```
+2b. **Check for leftover sentinels.** Two dot-files live beside the chain and
+   **survive step 2** — `rm witness_*` does not match a name starting with a
+   dot:
+
+   ```bash
+   ls -la "$DATA_DIR"/.bootstrap_in_progress "$DATA_DIR"/.recovery_in_progress 2>/dev/null
+   ```
+
+   Either one means a node died mid-operation and was never restarted since.
+   `--derive-v2-genesis` refuses while either is present and prints the remedy,
+   so you cannot walk past this by accident — but knowing why saves the
+   guesswork. `.bootstrap_in_progress` is the dangerous one: without that
+   refusal, the next start after a successful ceremony would ARCHIVE the chain
+   you just derived and come up reporting "no chain DB found — pre-genesis
+   state", with no error anywhere. Establish why the node died, then remove the
+   file.
+
+3. **Put the SAME config file on every node.** Byte-identical. Verify with a
+   checksum, do not eyeball it:
+   ```bash
+   sha256sum /etc/nodus/genesis.conf     # must match on all 7
+   ```
+4. **Derive on each node** with the command above. Record each node's printed
+   chain id.
+5. **Compare the chain ids.** All 7 identical, or stop.
+6. **Start the fleet.**
+
+### The config file
+
+Line-oriented text, `#` comments, `key = value`. Every key and fingerprint is
+lowercase hex. Deliberately not JSON: the server's JSON support is an optional
+build dependency, and a ceremony performed once must not depend on which
+libraries a host happened to have.
+
+A complete, commented template with the decision's numbers (1B supply, 200M
+reward reserve, 7 × 10M bonds, the ten pool allocations) and a checker live in
+`nodus/tools/genesis/` (`testnet_v3.conf.template`, `check_genesis_conf.sh`,
+`README.md`) — start from there. The shape:
+
+```
+config_version         = 3          # REQUIRED; only 3 is accepted (P4)
+genesis_time_ms        = <UTC ms, written ONCE, the same in every copy>
+initial_height         = 1
+total_supply_raw       = 100000000000000000
+epoch_length           = 720
+blocks_per_year        = 6307200
+decimal_unit           = 100000000
+inflation_start_block  = 0          # MUST be 0: the mint is deleted (P2)
+reward_pool_initial    = 20000000000000000
+payout_interval_epochs = 24
+
+[validator]                         # exactly 7 of these
+pubkey                     = <5184 hex chars>
+unstake_destination_pubkey = <5184 hex chars>
+unstake_destination_fp     = <128 hex chars — SHA3-512 of the payout pubkey>
+self_stake                 = 1000000000000000
+commission_bps             = 500
+
+[allocation]                        # 1 or more
+source_id    = <128 hex chars>
+dest_binding = <128 hex chars — SHA3-512 of the claimant's pubkey>
+amount       = 5000000000000
+```
+
+The parser refuses rather than repairs: a duplicate key, an unknown key, a
+missing key, an out-of-range number, uppercase hex, a wrong-length value or an
+over-long line each stop the derivation with the line number. It never fills a
+default for anything that reaches the chain identity.
+
+`epoch_length`, `blocks_per_year` and `decimal_unit` MUST equal the values the
+binary was compiled with, or the derivation refuses — the mismatch would
+otherwise produce a node that mints on a schedule its peers do not share.
+
+### Three values you are nailing down permanently
+
+- **`epoch_length`, `blocks_per_year`, `decimal_unit`** — governance cannot
+  reach these. Changing them later means a new chain.
+- **`inflation_start_block` must be `0`.** Tokenomics-v3 P2 deleted the
+  per-block mint and retired its governance parameter (id 3); the builder
+  refuses any other value. Rewards come only from `reward_pool_initial`.
+- **The validator payout fingerprints.** The builder now verifies that each one
+  derives from the payout key beside it, so a copy-paste error is refused rather
+  than stranding that validator's 10,000,000 DNAC self-bond at an address no key
+  opens. It cannot check that the KEY is the right key.
+
+### The distribution list does not travel on-chain
+
+Only its Merkle root and leaf count are committed. Whoever will claim an
+allocation needs the leaf data from you. Publishing it is part of the ceremony,
+not something the chain does.
+
+### Re-running the command
+
+Safe and idempotent, but only for the SAME config: it compares the stored
+genesis digest against the one your config produces. Same config → "nothing to
+derive", exit 0. Different config → refusal, printing both digests. It will
+never replace a chain in place.
+
+### After the first successful start
+
+`.witness_db_seen` appears in the data directory — written by the server, not by
+the derive command (see `BOOTSTRAP.md`, "Who writes `.witness_db_seen`"). Its
+presence is what arms the partial-wipe gate from then on. **It is normal for it
+to be absent between the derivation and the first successful start.**
+
+### Joining a node to an existing V2 chain
+
+Not the ceremony — this is for a node added later, or one rebuilt from scratch.
+Give it the chain id the ceremony printed (since R3 W3 the pin IS the 32-byte
+chain id — a version-3 chain has no genesis block to pin a BlockID to; the
+`chain-id` and `v2-genesis-pin` lines the ceremony prints carry the same
+64-hex value):
+
+```
+nodus-server --v2-genesis-pin <64 hex chars> -d "$DATA_DIR"
+```
+
+It pulls the genesis bundle (format v3: the six base tables plus the genesis
+document) from peers and adopts it only if the bundle re-derives to the pinned
+chain id AND its document's `app_hash` equals the ledger root the re-derivation
+actually produced; a 128-hex value is refused outright. `--derive-v2-genesis` and `--v2-genesis-pin` are
+mutually exclusive and the binary refuses both together — deriving and joining
+are opposite intents.
+
+---
+
 ## 2. Stop-all deploy
 
 1. **Record the rollback point before touching anything:**
@@ -125,6 +291,32 @@ inside a loop is very hard to reason about afterwards.
 
 ---
 
+## 2.1 View-authority cutover — DOES NOT APPLY to a version-3 (cometbft) chain
+
+This section used to describe the O15N Faz 2C2 stop-all cutover: quiesce the
+fleet, then clear the `pbft_state` row (`current_view` + `last_prepared_blob`)
+on every stopped node so that no node wakes on a view counter written under
+the old rules. **R3 W4 (2026-09-17) deleted the mechanism the step served**
+(OBLIGATION `atlas-dec-71525f3b4918f710b660707ac6bb5a3a`): there is no PBFT
+view counter, no `nodus_witness_db_load_pbft_state`, no prepared-value lock
+of that kind, and a fresh database no longer creates the `pbft_state` table.
+A version-3 chain's round state lives in the cometbft WAL (`cmt_wal`,
+`cmt_wal_sync`) and its last-sign state file, and it is replayed by the
+Handshaker at every start (`nodus_witness_cmt_node.c`, "ABCI replay blocks")
+— there is nothing to clear by hand, and clearing anything by hand there
+would be the defect, not the fix.
+
+A `pbft_state` table left on disk by an older binary is inert: nothing reads
+it. A stop-all deploy of a consensus change on this lane is §2 exactly as
+written — stop every node, deploy, start; with a **fresh chain** (no V1/V2
+ancestor) the ceremony in §1.5 births it, and the harness's restart scenario
+(`test_v2_restart_convergence.sh`) is the model of what a correct restart
+looks like: `chain role: COMETBFT`, `cometbft startup table built`,
+`ABCI replay blocks: app H, store H, state H`, `cometbft lane LIVE`, then
+the node catches up through the reactor's stored-part gossip.
+
+---
+
 ## 3. Post-deploy verification
 
 ```bash
@@ -132,21 +324,46 @@ nodus/build/nodus-cli cluster-status <host1:4001> <host2:4001> ...
 ```
 
 `cluster-status` prints, per node, `STATUS / HEIGHT / PEERS / UPTIME / DF% /
-WALL_CLOCK / STATE_ROOT` (`nodus/tools/nodus-cli.c:505-535`).
+WALL_CLOCK / STATE_ROOT` (`nodus/tools/nodus-cli.c:500-560`).
+
+**R3 W4 package H — on a version-3 chain `STATE_ROOT` is the committed
+GLOBAL ROOT of the tip** (`nodus_server.c` `handle_t2_status`: on a
+`v2_successor` chain it reads `nodus_witness_v2_committed_global_root`, the
+stored `v2_blocks.global_root` at `MAX(global_height)` — never a recompute;
+before W4-H it copied the legacy `cached_state_root`, which a version-3
+chain never fills, so the column printed empty). `HEIGHT` is the version-3
+tip: `nodus_witness_block_height` reads `MAX(global_height)` from
+`v2_blocks` (`nodus_witness_db.c`, the `v2_successor` branch of
+`nodus_witness_block_height_checked`). So the table's AGREEMENT check is
+now what it was on the legacy lane: every node at the same `HEIGHT` must
+print the same `STATE_ROOT` (a node one height behind prints the previous
+root — compare at equal heights). The per-node database read the harness
+uses (`stagef_cmt_diff_at_floor`) additionally compares `block_id`; use it
+when the CLI's table is not enough:
+
+```bash
+# on every node, the same three values must agree at the same height
+sqlite3 /var/lib/nodus/data/witness_*.db \
+  "SELECT global_height, hex(global_root), hex(block_id) FROM v2_blocks \
+   ORDER BY global_height DESC LIMIT 1;"
+```
 
 **The pass condition is agreement, not liveness:**
 
 - every node `UP`;
-- **every node reporting the SAME `HEIGHT` and the SAME `STATE_ROOT`** — a node that is
-  up and advancing while disagreeing is exactly the failure a consensus deploy can
-  introduce;
-- height advancing over successive samples once traffic exists.
+- **every node reporting the SAME `global_root` and `block_id` at the same
+  height** — a node that is up and advancing while disagreeing is exactly
+  the failure a consensus deploy can introduce;
+- height advancing over successive samples — on this lane a block every
+  ≈ 6 s whether or not there is traffic (every block is a proof block).
 
-Then check logs for divergence. The real log string is `state_root DIVERGED`
-(`nodus/src/witness/nodus_witness_bft.c:3251`):
+Then check logs. A version-3 node that stops participating says so with
+`CMT_FAULT` (the W1.7 rule: log + stop, never a peer blame); a decided
+block the engine refuses says `FinalizeBlock`; the readiness and
+quarantine lines keep their names:
 
 ```bash
-journalctl -u nodus -n 200 | grep -i "DIVERGED\|SUPPLY INVARIANT\|QUARANTINED"
+journalctl -u nodus -n 200 | grep -i "CMT_FAULT\|FinalizeBlock\|SUPPLY\|QUARANTINED\|REFUSING START"
 ```
 
 The same checks are automated by `nodus/tests/smoke_post_deploy.sh`, **rewritten

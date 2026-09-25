@@ -7,7 +7,9 @@
  * Public API for:
  *   - Active-override lookup (consumed by finalize_block in Stage D)
  *   - chain_config_root merkle tree construction
- *   - chain_config_tx apply logic (called from apply_tx_to_state)
+ *   - chain_config_tx apply logic (nodus_chain_config_apply; R3 W4
+ *     deleted apply_tx_to_state and nodus_witness_bft.c, its caller —
+ *     nodus_chain_config_apply currently has no production caller)
  *   - DB schema migration (CREATE TABLE chain_config_history)
  *
  * Copyright (c) 2026 nocdem
@@ -46,6 +48,57 @@ typedef struct nodus_witness nodus_witness_t;
  *     ON chain_config_history (param_id, effective_block);
  * ========================================================================== */
 
+/* ============================================================================
+ * RESERVED param_id BAND — GENESIS ECONOMICS (O15J Faz 2 Block 2C)
+ *
+ * ids 1..DNAC_CFG_PARAM_MAX_ID are the GOVERNANCE space: a committee can
+ * vote them. The band below is the opposite — values written ONCE, by the
+ * pure-V2 genesis builder, that no vote may ever change.
+ *
+ * WHY THIS TABLE. These parameters must be (a) readable by the runtime,
+ * (b) committed into a state root, and (c) carried to a joiner.
+ * chain_config_history is the only store in the tree that is all three:
+ * nodus_chain_config_compute_root scans it WITHOUT a param_id filter and
+ * its root is a SYSTEM leg (nodus_witness_roots_v2.c:266, :285), and
+ * nodus_witness_v2_bundle.c:47 replicates it to joiners.
+ *
+ * WHY GOVERNANCE CANNOT REACH IT. nodus_chain_config_scalar_rules rejects
+ * every id outside 1..CC_PARAM_MAX_ID and its switch has no case for these
+ * (nodus_witness_chain_config.c:497, :515-516), so no CHAIN_CONFIG tx can
+ * insert or replace a band row on either lane. (tokenomics-v3 P2: the
+ * emission schedule this used to protect is gone — nothing mints; the
+ * band stays because blocks_per_year / decimal_unit / epoch_length are
+ * still committed build identity, and epoch_length's refusal is still
+ * checked on every block, nodus_witness_v2_econ_params_load.)
+ *
+ * WHY 200+. The band must never collide with a future
+ * DNAC_CFG_* allocation, which grows upward from 1 (currently 4). Starting
+ * at 200 leaves 195 free governance ids; a future allocation that reaches
+ * this band collides with THIS COMMENT rather than silently overwriting a
+ * committed economic parameter. The ids fit uint8_t, which is what the
+ * merkle leaf preimage stores (nodus_witness_chain_config.c:387).
+ *
+ * NOT cached: cc_cache_warm_from_db skips every id >= CC_PARAM_SLOTS
+ * (nodus_witness_chain_config.c:195) and nodus_chain_config_get_u64
+ * returns default_value for them (:245). Band rows are therefore read by
+ * their own loader, nodus_witness_v2_econ_params_load.
+ * ========================================================================== */
+
+/** Blocks per tokenomic year — the committed DNAC_BLOCKS_PER_YEAR (the
+ *  halving period of the retired mint; still committed build identity). */
+#define NODUS_CC_ECON_BLOCKS_PER_YEAR   200u
+/** Raw base units per 1 DNAC — the committed DNAC_DECIMAL_UNIT. */
+#define NODUS_CC_ECON_DECIMAL_UNIT      201u
+/** Blocks per epoch — the committed DNAC_EPOCH_LENGTH. */
+#define NODUS_CC_ECON_EPOCH_LENGTH      202u
+
+/** Inclusive band bounds, for range assertions. */
+#define NODUS_CC_ECON_PARAM_MIN         NODUS_CC_ECON_BLOCKS_PER_YEAR
+#define NODUS_CC_ECON_PARAM_MAX         NODUS_CC_ECON_EPOCH_LENGTH
+
+/** Every band row is committed at genesis, so its effective_block is 0. */
+#define NODUS_CC_ECON_EFFECTIVE_BLOCK   0ULL
+
 /**
  * Idempotent CREATE TABLE migration. Uses IF NOT EXISTS so a second run on
  * an already-migrated DB is a no-op (CC-OPS-001 mitigation). Aborts on
@@ -62,28 +115,73 @@ int nodus_chain_config_db_migrate(nodus_witness_t *w);
  * ========================================================================== */
 
 /**
- * Return the currently-active value for `param_id` at `current_block`.
+ * Read the currently-active value for `param_id` at `current_block`.
  * Monotonic "latest effective_block wins" lookup — matches the canonical
  * SQL query in design §5.9.
  *
- * If no row exists for `param_id` with `effective_block <= current_block`,
- * returns `default_value`.
+ * ── THREE-VALUED SINCE O15J BLOCK 2 (A2). ────────────────────────────
+ * This function used to return `uint64_t` and had NO error channel: a
+ * prepare failure or a failed step handed the caller `default_value`,
+ * indistinguishable from "no override is active". Under an
+ * IOERR/CORRUPT class fault one node therefore used the DEFAULT
+ * fee / block-interval / inflation-start while its healthy peers used
+ * the governance-voted override — a consensus split with no Byzantine
+ * actor. The source named this itself as a "KNOWN REMAINING HOLE"
+ * (nodus_witness_chain_config.c, cc_cache_warm_from_db docblock).
  *
- * Consumer sites (Stage D):
- *   - dnac_block_reward(h, chain_config_get(INFLATION_START_BLOCK, h, 1))
- *   - max batch size clamp: chain_config_get(MAX_TXS_PER_BLOCK, h, default)
- *   - proposer timer: chain_config_get(BLOCK_INTERVAL_SEC, h, default)
+ * The contract is now the one `nodus_witness_supply_get` has carried
+ * since v0.18.19: ABSENT and FAULT are different answers.
+ *
+ *   0  an override row is active at `current_block`;
+ *      *value_out = that row's new_value.
+ *   1  no override row is active — genuinely absent (empty table, no
+ *      row at or below `current_block`, or the table does not exist on
+ *      a pre-migration fixture); *value_out = `default_value`, so a
+ *      caller that only cares about the value can use it directly.
+ *  -1  the answer could not be determined (null args, out-of-range
+ *      param id, no open DB, or any SQLite prepare/step failure).
+ *      *value_out is left UNTOUCHED. The caller MUST fail closed —
+ *      it must not vote, propose, seal or commit on a guess.
+ *
+ * Production consumer sites, all fail-closed on -1:
+ *   - epoch seat count:         nodus_witness_committee.c (committee),
+ *                               nodus_witness_vset.c (snapshot builder)
+ *   - proposer batch cap:       nodus_witness_bft.c (abstain from the
+ *                               round; no block on a guessed cap)
+ * R3 W4-C delta 2 (operator "kaldır" 2026-09-18): the former
+ * "block tx-count validation: nodus_witness_v2_apply.c" consumer is
+ * GONE — DNAC_CFG_MAX_TXS_PER_BLOCK (param id 1) is retired from
+ * governance entirely (nodus_witness_chain_config.c's scalar_rules and
+ * grace_for_param both refuse id 1 unconditionally now); the engine's
+ * envelope-count ceiling is a derived MEMORY bound
+ * (NODUS_V2_ENV_BATCH_MAX, nodus_witness_v2_apply.h), never read
+ * through this function. There is NO production reader of
+ * DNAC_CFG_BLOCK_INTERVAL_SEC through
+ * this function — the "proposer timer" consumer this docblock used to
+ * list does not exist in the tree (grep, O15J Block 2 A2). Only
+ * nodus-cli names the param, as a proposal argument.
+ * tokenomics-v3 P2 (P2-4): the two "inflation gate" consumers this list
+ * used to name are GONE — the V1 lane's with nodus_witness_bft.c (R3
+ * W4), the V2 lane's with the per-block mint
+ * (nodus_witness_v2_emission_apply, deleted) — and
+ * DNAC_CFG_INFLATION_START_BLOCK (param id 3) is retired from governance
+ * exactly as id 1 was (scalar_rules and grace_for_param refuse it).
  *
  * @param w              Witness context (w->db must be open).
- * @param param_id       dnac_chain_config_param_id_t value (1..3).
+ * @param param_id       dnac_chain_config_param_id_t value
+ *                       (1..DNAC_CFG_PARAM_MAX_ID; 4 = TARGET_ACTIVE_COUNT
+ *                       since Ledger V2 S3). Out-of-range ids are a
+ *                       caller bug and return -1.
  * @param current_block  Chain height at which to evaluate the override.
- * @param default_value  Returned if no active override exists.
- * @return Active value on success; default_value on no-row / null args.
+ * @param default_value  Written to *value_out when the answer is 1.
+ * @param value_out      [out] must be non-NULL.
+ * @return 0 override present, 1 genuinely absent, -1 cannot determine.
  */
-uint64_t nodus_chain_config_get_u64(nodus_witness_t *w,
-                                     uint8_t param_id,
-                                     uint64_t current_block,
-                                     uint64_t default_value);
+int nodus_chain_config_get_u64(nodus_witness_t *w,
+                                uint8_t param_id,
+                                uint64_t current_block,
+                                uint64_t default_value,
+                                uint64_t *value_out);
 
 /* ============================================================================
  * Merkle Root (state_root contributor)
@@ -108,7 +206,9 @@ uint64_t nodus_chain_config_get_u64(nodus_witness_t *w,
 int nodus_chain_config_compute_root(nodus_witness_t *w, uint8_t out_root[64]);
 
 /* ============================================================================
- * chain_config_tx Apply (called from apply_tx_to_state)
+ * chain_config_tx Apply (nodus_chain_config_apply — R3 W4 deleted its
+ * former caller, apply_tx_to_state in nodus_witness_bft.c; no
+ * production caller replaces it today)
  * ========================================================================== */
 
 /**
@@ -119,21 +219,36 @@ int nodus_chain_config_compute_root(nodus_witness_t *w, uint8_t out_root[64]);
  *   2. Re-verify local rules via dnac_tx_verify_chain_config_rules.
  *   3. Freshness: commit_block <= valid_before_block (Rule CC-G).
  *   4. Grace: effective_block >= commit_block + grace_period_for_param
- *      (Rule CC-C). Ergonomic params (MAX_TXS) use
- *      DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS (1 hour); safety-critical
- *      params (BLOCK_INTERVAL_SEC, INFLATION_START_BLOCK) use
- *      DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS (24 hours).
- *   5. Committee membership: each vote's witness_id MUST be in the
- *      current top-7 committee at commit_block - 1 (Rule CC-F).
+ *      (Rule CC-C). Safety-critical params (BLOCK_INTERVAL_SEC and —
+ *      since Ledger V2 S3 — TARGET_ACTIVE_COUNT; INFLATION_START_BLOCK
+ *      was one until tokenomics-v3 P2 retired it, and
+ *      `nodus_chain_config_grace_for_param` now refuses id 3 as it does
+ *      id 1) use DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS
+ *      (24 hours); every other (unassigned) id falls back to
+ *      DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS (1 hour), an ergonomic
+ *      class with NO current member — R3 W4-C delta 2 retired MAX_TXS,
+ *      its one occupant (`nodus_chain_config_grace_for_param` now
+ *      refuses id 1 outright, returning UINT64_MAX defensively rather
+ *      than reaching this default case in practice).
+ *   5. Committee membership + quorum (Rule CC-F). The committee governing
+ *      commit_block - 1 is read from chain state; its SIZE is whatever the
+ *      snapshot returns, never a compile-time constant. Two bounds:
+ *        (a) committee_sig_count <= committee_count — a proposal cannot
+ *            carry more votes than that committee has seats;
+ *        (b) verified >= dna_bft_quorum(committee_count).
+ *      At the DNA chain's 7 seats dna_bft_quorum(7) == 5, so this is
+ *      exactly the historical 5-of-7 rule.
  *   6. Signature verify: each committee_votes[i].signature valid against
  *      that witness's Dilithium5 pubkey over the proposal preimage.
- *   7. Monotonicity (Q5 mitigation): once INFLATION_START_BLOCK has been
- *      set non-zero, reject new_value == 0 or new_value > current_block.
+ *   7. (RETIRED, tokenomics-v3 P2 — the INFLATION_START_BLOCK
+ *      monotonicity rule left with parameter id 3, which step 2's
+ *      scalar rules now refuse.)
  *   8. INSERT row into chain_config_history (PK conflict = replay reject).
  *
- * Called from apply_tx_to_state in nodus_witness_bft.c. On any rule
- * violation, returns -1 and the enclosing DB transaction will be rolled
- * back by the caller.
+ * R3 W4 deleted apply_tx_to_state and nodus_witness_bft.c, the caller
+ * this function used to be reached from; it has no production caller
+ * today. On any rule violation, returns -1 and the enclosing DB
+ * transaction will be rolled back by the caller.
  *
  * @param w            Witness context.
  * @param tx_data      Serialized TX bytes (dnac_tx_serialize output).
@@ -158,6 +273,30 @@ int nodus_chain_config_apply(nodus_witness_t *w,
 #define NODUS_CC_SIG_SIZE        4627  /* Dilithium5 signature */
 #define NODUS_CC_DIGEST_SIZE     64    /* SHA3-512 proposal digest */
 #define NODUS_CC_WITNESS_ID_SIZE 32    /* first 32B of SHA3-512(pubkey) */
+
+/**
+ * The SCALAR half of the CHAIN_CONFIG local rules: param allowlist,
+ * per-param value bounds, and the signing/validity window shape
+ * (signed_at != 0; valid_before > effective; valid_before > signed_at).
+ * Pure function — the ONE authority both the legacy apply path
+ * (verify_cc_local_rules) and the Ledger V2 native SYSTEM runtime
+ * consume, so the rule set cannot fork between lanes. Vote-shape rules
+ * (sig-count window, distinct witness_ids) and the quorum decision are
+ * deliberately NOT here — they need the committee context.
+ * @return 0 legal / -1.
+ */
+int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
+                                    uint64_t signed_at_block,
+                                    uint64_t valid_before_block,
+                                    uint64_t effective_block_height);
+
+/**
+ * Per-param grace minimum in blocks (Q4 Option B tiers): the earliest
+ * legal effective_block_height for a proposal committed at height H is
+ * H + nodus_chain_config_grace_for_param(param_id). Pure function,
+ * exported for the same single-authority reason.
+ */
+uint64_t nodus_chain_config_grace_for_param(uint8_t param_id);
 
 /**
  * Compute the proposal-preimage digest that committee members sign.
@@ -222,31 +361,48 @@ int nodus_chain_config_derive_witness_id(const uint8_t pubkey[NODUS_CC_PUBKEY_SI
 void nodus_chain_config_log_stats(nodus_witness_t *w);
 
 /* Forward decl — full definitions in nodus_tier3.h / nodus_tcp.h;
- * callers that actually invoke nodus_witness_handle_cc_vote_req must
+ * callers that actually invoke nodus_witness_handle_cc_appr_req must
  * include those headers too (this avoids a deep include-chain for
  * chain_config consumers that only need the primitive API above). */
 struct nodus_t3_msg_t_tag;  /* nodus_t3_msg_t is an anonymous-struct typedef */
 struct nodus_tcp_conn;
 
 /**
- * Handle an incoming w_cc_vote_req (Stage C.2). Peer-side of the
- * committee vote-collect RPC: proposer sends a proposal, this handler
- * runs local-rule checks, signs the proposal digest with the local
- * Dilithium5 key, and replies with a w_cc_vote_rsp carrying
- * (witness_id, signature). Rejection returns a reason string.
+ * Handle an incoming w_cc_appr_req (D-16 rev 7, W4-CC). Peer-side of the
+ * SYSTEM-governance approval-collection RPC that replaces the retired
+ * Stage C.2 vote-collect pair (verbs 14-15): the request carries a
+ * PRE-AUTH single-leg SYSTEM-governance envelope (today exactly
+ * CHAIN_CONFIG); this handler decodes it through the engine's own
+ * preflight seam (never a private decoder), applies the SAME rules the
+ * op's exec applies at the local tip, rate-limits per proposer, resolves
+ * the governing committee, finds this node's own seat, computes the
+ * "DNA.CCAPPR.v1" approval digest itself from the seam-derived leg
+ * auth_digest, signs it, and replies with a w_cc_appr_rsp carrying
+ * (seat, signature, resolved-set hash, epoch) — or a refusal with a
+ * reason. It never signs a digest it did not compute. CHAIN BINDING
+ * (verifier finding on W4-CC, ORCHESTRATOR ORC-10): the envelope WIRE
+ * carries no chain id (shared/dnac/env_wire.h — `chain_id` is
+ * CONTEXTUAL, hashed into the AUTHCTX preimage), so there is nothing
+ * in `e` to compare against; the preflight seam derives THIS node's
+ * own chain id and hashes it into `auth_digest[0]`, and the signature
+ * below therefore verifies ONLY where the auth hook derives the same
+ * commitment — on this chain. The one chain-id REFUSAL is the T3
+ * header frame gate (`in->header.chain_id == w->v2_chain32`); a foreign
+ * chain is defended by digest BINDING, not by an envelope check.
  *
  * msg is declared `const void *` to avoid a circular include with
  * nodus_tier3.h; callers pass `&nodus_t3_msg_t_instance`.
  */
-int nodus_witness_handle_cc_vote_req(nodus_witness_t *w,
-                                      struct nodus_tcp_conn *conn,
-                                      const void *msg);
+int nodus_witness_handle_cc_appr_req(nodus_witness_t *w,
+                                     struct nodus_tcp_conn *conn,
+                                     const void *msg);
 
 /* ============================================================================
- * Stage C.3 — per-proposer rate-limit on w_cc_vote_req (CC-OPS-003 / Q15)
+ * Stage C.3 — per-proposer rate-limit on w_cc_appr_req (CC-OPS-003 / Q15;
+ * written for the retired w_cc_vote_req, unchanged by W4-CC's rewire)
  *
  * Prevents a hostile or buggy committee peer from amplifying load by
- * spamming w_cc_vote_req. Per-sender cooldown of NODUS_CC_RATE_LIMIT_
+ * spamming w_cc_appr_req. Per-sender cooldown of NODUS_CC_RATE_LIMIT_
  * WINDOW_MS milliseconds between accepted requests.
  *
  * Scope note: the design doc (§Q15) calls for BOTH a 5s timeout AND
@@ -261,7 +417,14 @@ int nodus_witness_handle_cc_vote_req(nodus_witness_t *w,
  * ========================================================================== */
 
 #define NODUS_CC_RATE_LIMIT_WINDOW_MS        5000u
-#define NODUS_CC_RATE_LIMIT_MAX_PROPOSERS    7u    /* = DNAC_COMMITTEE_SIZE */
+/* One slot per potentially-active validator (S3: was 7 = the initial seat
+ * count). Sized to DNA_MAX_ACTIVE_VALIDATORS so a committee larger than the
+ * bootstrap 7 cannot force LRU eviction between legitimate proposers. Kept
+ * as a literal — this header is deliberately free of shared/ and dnac/
+ * includes so libnodus builds standalone; the value is pinned against
+ * DNA_MAX_ACTIVE_VALIDATORS by a _Static_assert in
+ * nodus_witness_chain_config.c, alongside the other CC_* mirror pins. */
+#define NODUS_CC_RATE_LIMIT_MAX_PROPOSERS    128u
 
 /** One tracked proposer. `in_use` false = free slot. */
 typedef struct {
@@ -277,7 +440,7 @@ typedef struct {
 } nodus_cc_rate_limit_table_t;
 
 /**
- * Decide whether to accept a new w_cc_vote_req from `sender_id` at `now_ms`.
+ * Decide whether to accept a new w_cc_appr_req from `sender_id` at `now_ms`.
  *
  * Side-effect-free: no slot mutation. Call nodus_cc_rate_limit_record() on
  * the accept path AFTER all other validation passes, so rejected-by-rule
@@ -299,11 +462,12 @@ int nodus_cc_rate_limit_check(nodus_cc_rate_limit_table_t *t,
                                uint64_t *elapsed_ms_out);
 
 /**
- * Record an accepted w_cc_vote_req. Upserts into an existing slot if
+ * Record an accepted w_cc_appr_req. Upserts into an existing slot if
  * `sender_id` is already tracked, else claims the first free slot, else
- * evicts the oldest entry (LRU) — the table is sized to the committee
- * so eviction only happens if a non-committee witness_id somehow slips
- * through, in which case the oldest legitimate entry is preserved.
+ * evicts the oldest entry (LRU) — the table is sized to the maximum active
+ * validator set, so eviction only happens if a non-committee witness_id
+ * somehow slips through, in which case the oldest legitimate entry is
+ * preserved.
  *
  * The rate_limited_count counter is NOT touched here — only on reject.
  */

@@ -13,6 +13,10 @@
 #include <ctype.h>
 #include <json-c/json.h>
 #include "crypto/utils/qgp_safe_string.h"
+#include "crypto/utils/qgp_log.h"
+#include "crypto/enc/qgp_mlkem.h"   /* D9 (M1 delta 1): qgp_mlkem1024_ek_check at record intake */
+
+#define LOG_TAG "DNA_PROFILE"
 
 // Disallowed DNA names
 static const char *DISALLOWED_NAMES[] = {
@@ -214,6 +218,16 @@ static char* identity_to_json_internal(const dna_unified_identity_t *identity, b
     json_object_object_add(root, "version",
         json_object_new_int(identity->version));
 
+    // KEM Faz 1 (R5): mlkem_pubkey is deliberately OUTSIDE the signature
+    // preimage — emitted only in the signed/stored/transmitted JSON
+    // (include_signature == true), never in dna_identity_to_json_unsigned's
+    // output. This is what lets an old client drop the field, re-serialize,
+    // and still verify the unchanged main signature (design §1.4/§5.2).
+    if (include_signature && identity->has_mlkem_pubkey) {
+        bytes_to_hex(identity->mlkem_pubkey, sizeof(identity->mlkem_pubkey), hex);
+        json_object_object_add(root, "mlkem_pubkey", json_object_new_string(hex));
+    }
+
     // Signature (only if requested)
     if (include_signature) {
         bytes_to_hex(identity->signature, sizeof(identity->signature), hex);
@@ -268,6 +282,36 @@ int dna_identity_from_json(const char *json, dna_unified_identity_t **identity_o
         const char *hex = json_object_get_string(val);
         if (hex) hex_to_bytes(hex, identity->kyber_pubkey,
                              sizeof(identity->kyber_pubkey));
+    }
+
+    // KEM Faz 1 (R5): mlkem_pubkey, present only on migrated identities.
+    // Absent on old-format records — identity->has_mlkem_pubkey stays false
+    // (dna_identity_create() calloc'd the struct to all-zero).
+    //
+    // D9 (M1 delta 1, MED — verifier own finding, lens B F6; design D4 "ek
+    // check at intake"): a record can come from ANY node in the DHT
+    // (K4-accepted trust model), and nothing downstream ek_checks this
+    // field before encapsulating against it — messenger_encrypt_multi_recipient
+    // (messages.c) and ikp_build (gek.c) both hard-fail their WHOLE call on
+    // the first bad key, so one malformed mlkem_pubkey served by a single
+    // malicious/buggy node would block every Seal or group rekey that
+    // includes that peer. Run the FIPS 203 §7.2 encapsulation-key check
+    // here at intake; a failure is treated exactly like an absent field
+    // (has_mlkem_pubkey stays false), which the design already accepts as
+    // "no key" and falls back to alg 2 for that recipient.
+    if (json_object_object_get_ex(root, "mlkem_pubkey", &val)) {
+        const char *hex = json_object_get_string(val);
+        if (hex && hex_to_bytes(hex, identity->mlkem_pubkey,
+                                 sizeof(identity->mlkem_pubkey)) == 0) {
+            if (qgp_mlkem1024_ek_check(identity->mlkem_pubkey) == 0) {
+                identity->has_mlkem_pubkey = true;
+            } else {
+                QGP_LOG_WARN(LOG_TAG,
+                    "mlkem_pubkey for %.16s... failed FIPS 203 ek_check - treating as absent\n",
+                    identity->fingerprint);
+                memset(identity->mlkem_pubkey, 0, sizeof(identity->mlkem_pubkey));
+            }
+        }
     }
 
     // DNA name registration

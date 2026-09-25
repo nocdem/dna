@@ -1,6 +1,18 @@
 # DNA Connect - Comprehensive Architecture Documentation
 
-**Version:** 0.11.5 | **Nodus:** v0.17.7 | **Flutter:** v1.0.0-rc235 | **Last Updated:** 2026-04-24 | **Phase:** 7 (Flutter UI)
+**Version:** 0.11.18 | **Nodus:** v0.19.19 | **Flutter:** v1.0.0-rc241 | **Last Updated:** 2026-08-27 (audit pass) | **Phase:** 7 (Flutter UI)
+
+> ⚠ **STALE-ZONE WARNING (2026-08-27 doc-vs-code audit).** The security-relevant
+> errors in this document were fixed (SQLCipher rows, dead `dht_context` API,
+> seed list), but the following zones are still the April-2026 snapshot and are
+> KNOWN to disagree with the tree — verify against source before relying on them:
+> §2 directory tree (`crypto/` now lives in `shared/crypto/`; `transport/` is flat;
+> `messenger/gsk*.c` is now `gek.c`), §4 crypto "Location:" lines (same move),
+> §8.1/§12.2 per-fingerprint `<fp>/keys/<fp>.dsa` layout (real layout is flat
+> `keys/identity.dsa`), §9.1 wallet `.json` file table (removed v1.7.0), §9.9
+> roster paragraph (stake-delegation-v1 MERGED long ago; committee is chain-derived,
+> self-stake is >=10M since Ledger V2 S3), §10.4 function counts, §12.1 "Try P2P
+> Send" flow (removed v0.4.62). A full rewrite is queued as its own doc season.
 
 This document provides a complete technical architecture reference for DNA Connect, derived entirely from source code analysis.
 
@@ -29,13 +41,13 @@ This document provides a complete technical architecture reference for DNA Conne
 
 ### Overview
 
-DNA Connect is a post-quantum end-to-end encrypted messenger with integrated cryptocurrency wallet functionality. The system achieves **NIST Category 5 security** (256-bit quantum security level) using lattice-based cryptography.
+DNA Connect is a post-quantum end-to-end encrypted messenger with integrated cryptocurrency wallet functionality. Its lattice-based parameter sets target NIST security category 5; that is a security-strength target, not a certification.
 
 ### Technology Stack
 
 | Layer | Technology |
 |-------|------------|
-| **Key Encapsulation** | Kyber1024 round-3 (not ML-KEM-1024) |
+| **Key Encapsulation** | ML-KEM-1024 (FIPS 203); Kyber1024 round-3 as the legacy fallback |
 | **Digital Signatures** | Dilithium5 (ML-DSA-87) |
 | **Symmetric Encryption** | AES-256-GCM |
 | **Hash Function** | SHA3-512, Keccak-256 (ETH) |
@@ -94,7 +106,7 @@ DNA Connect is a post-quantum end-to-end encrypted messenger with integrated cry
 │   └── dna_engine.c          # Engine implementation
 │
 ├── crypto/                   # Post-quantum cryptography
-│   ├── kem/                  # Kyber1024 round-3
+│   ├── kem/                  # ML-KEM-1024 (round-3 legacy: enc/kyber_r3_legacy.c)
 │   ├── dsa/                  # Dilithium5 (ML-DSA-87)
 │   ├── cellframe_dilithium/  # Cellframe-compatible DSA
 │   ├── bip39/                # BIP39 mnemonic/seed derivation
@@ -296,9 +308,9 @@ cmake -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
 
 ## 4. Cryptographic Layer
 
-### 4.1 Kyber1024 round-3 (not ML-KEM-1024)
+### 4.1 ML-KEM-1024 (FIPS 203)
 
-**Location:** `crypto/kem/`
+**Location:** `shared/crypto/enc/kem/` (pq-crystals `standard` reference, wrapped by `qgp_mlkem.h`). The pre-FIPS-203 Kyber1024 round-3 path is kept as the legacy fallback in `shared/crypto/enc/kyber_r3_legacy.c` (wrapped by `qgp_kyber.h`); both share the sizes below and are NOT interoperable.
 
 **Parameters** (from `params.h`):
 ```c
@@ -489,8 +501,8 @@ qgp_log_enable_tag("P2P");
 | `keys/identity.dsa` | Dilithium5 private key (4896 bytes) | Password-based (optional) + TEE wrap (Android) |
 | `keys/identity.kem` | Kyber1024 private key (3168 bytes) | Password-based (optional) + TEE wrap (Android) |
 | `mnemonic.enc` | BIP39 mnemonic phrase | KEM + Password (optional) |
-| `db/messages.db` | Message history | Plaintext (SQLite) |
-| `db/contacts.db` | Contact list | Plaintext (SQLite) |
+| `db/messages.db` | Message history | **SQLCipher-encrypted** (v0.9.161+, `dna_db_open_encrypted`) |
+| `db/contacts.db` | Contact list | **SQLCipher-encrypted** (v0.9.161+) |
 | `wallets/wallet.dwallet` | Cellframe wallet | Password-based |
 
 #### Key Encryption (v1.7.0+)
@@ -551,47 +563,35 @@ Mobile apps must call `qgp_platform_set_app_dirs(data_dir, cache_dir)` at startu
 
 > **Storage model reference:** See **[DHT_STORAGE_MODEL.md](DHT_STORAGE_MODEL.md)** for detailed documentation of how each data type (DM, Groups, Wall, Channels) is stored on the DHT — including key formats, bucket strategies, serialization, and sync patterns.
 
-### 5.1 DHT Context
+### 5.1 DHT Operations (nodus_ops)
 
-**Location:** `dht/core/dht_context.h`
+**The old `dht_context_t` API documented here previously is REMOVED** — `dht_context_new`,
+`dht_put*`, `dht_get*` no longer exist. All DHT operations go through the Nodus
+singleton wrappers in `dht/shared/nodus_ops.{c,h}`:
 
-**Configuration:**
 ```c
-typedef struct {
-    uint16_t port;                    // UDP 4000 (default)
-    bool is_bootstrap;                // Bootstrap node flag
-    char identity[256];               // Node identity
-    char bootstrap_nodes[5][256];     // Up to 5 bootstrap nodes
-    size_t bootstrap_count;
-    char persistence_path[512];       // SQLite persistence
-} dht_config_t;
+int  nodus_ops_put(const uint8_t *key, size_t key_len,
+                   const uint8_t *data, size_t data_len,
+                   uint32_t ttl, uint64_t vid);
+int  nodus_ops_put_str(const char *str_key, const uint8_t *data, size_t data_len,
+                       uint32_t ttl, uint64_t vid);
+int  nodus_ops_put_permanent(const uint8_t *key, size_t key_len,
+                             const uint8_t *data, size_t data_len, uint64_t vid);
+int  nodus_ops_get(const uint8_t *key, size_t key_len,
+                   uint8_t **data_out, size_t *len_out);
+int  nodus_ops_get_all(const uint8_t *key, size_t key_len,
+                       uint8_t ***values_out, size_t **lens_out, size_t *count_out);
+size_t nodus_ops_listen(const uint8_t *key, size_t key_len,
+                        nodus_ops_listen_cb_t cb, void *ud,
+                        nodus_ops_listen_cleanup_t cleanup);
 ```
 
-**Operations:**
-```c
-// Lifecycle
-dht_context_t* dht_context_new(const dht_config_t *config);
-int dht_context_start(dht_context_t *ctx);
-void dht_context_stop(dht_context_t *ctx);
-void dht_context_free(dht_context_t *ctx);
-
-// Put operations
-int dht_put(ctx, key, key_len, value, value_len);           // 7-day TTL
-int dht_put_ttl(ctx, key, key_len, value, value_len, ttl);  // Custom TTL
-int dht_put_permanent(ctx, key, key_len, value, value_len); // Never expires
-int dht_put_signed(ctx, key, key_len, value, value_len,
-                   value_id, ttl);                           // Signed, replaceable
-
-// Get operations
-int dht_get(ctx, key, key_len, value_out, value_len_out);   // First value
-int dht_get_all(ctx, key, key_len, values_out, lens_out, count_out);
-void dht_get_async(ctx, key, key_len, callback, userdata);  // Non-blocking
-```
+See `DHT_SYSTEM.md` §3.1 for the full surface.
 
 **Value TTLs:**
-- **Permanent**: Identity keys, contact lists (never expire)
-- **365 days**: Name registrations
-- **7 days**: Profiles, groups, offline queue (default)
+- **Permanent**: Identity keys, contact lists, name registrations (never expire)
+- **7 days**: Offline queue, contact requests (default)
+- **30 days**: ACKs, wall/group metadata
 
 ### 5.2 DHT Keyserver
 
@@ -903,7 +903,8 @@ int messenger_mark_conversation_read(ctx, sender_identity);
 
 ### 7.5 Group Symmetric Key (GEK)
 
-**Location:** `messenger/gsk.h`
+**Location:** `messenger/gek.h` (the `gsk_*` names below are the OLD API — every
+function is now `gek_*`; see `gek.h` for the current surface)
 
 **Purpose:** 200x faster group encryption than per-member Kyber encapsulation.
 
@@ -1293,9 +1294,9 @@ Minimal transaction builder for DNA name registration and token transfers.
 
 ### 9.9 DNAC Witness Consensus (Chain-State-Authoritative Roster)
 
-DNAC (DNA Chain) is the project's native UTXO blockchain. Double-spend prevention uses PBFT witnessing embedded in `nodus-server` (not a separate binary). In `main`, the witness roster is *dynamic* — any online nodus node that is reachable via Kademlia routing participates automatically.
+DNAC (DNA Chain) is the project's own UTXO chain. Double-spend prevention uses BFT witnessing embedded in `nodus-server` (not a separate binary). Since stake-delegation-v1 merged (2026-04) the voting authority on `main` IS the **stake-weighted committee derived from on-chain state** — since Ledger V2 S3 (v0.19.0) served from per-epoch persisted validator-set snapshots, with governance-driven size (`TARGET_ACTIVE_COUNT`, 7 default) and self-stake **>= 10M DNAC** (not exactly 10M). The paragraph below describes that design as it was written pre-merge:
 
-On the `stake-delegation-v1` feature branch this is **replaced with a stake-weighted deterministic top-7 committee derived from on-chain state**. The witness roster and the client-side discovery path (`dnac_discover_witnesses()`) both consult the committee snapshot committed to chain via Merkle `state_root` — not DHT registrations, not TCP 4002 peer lists, not any routing-derived heuristic. Consequences:
+Historically (pre-merge framing): on the `stake-delegation-v1` feature branch this was **replaced with a stake-weighted deterministic top-7 committee derived from on-chain state**. The witness roster and the client-side discovery path (`dnac_discover_witnesses()`) both consult the committee snapshot committed to chain via Merkle `state_root` — not DHT registrations, not TCP 4002 peer lists, not any routing-derived heuristic. Consequences:
 
 - Roster authority moves from the DHT / routing layer to the chain itself. Membership is reproducible from block history alone.
 - Self-stake is a fixed 10,000,000 DNAC per witness; delegators may stake on top. Committee = top 7 by total stake.
@@ -1799,11 +1800,11 @@ All messages are signed with Dilithium5 before transmission:
 
 | Data | Encryption | Location |
 |------|------------|----------|
-| Private keys | PBKDF2 + AES-256-GCM (optional password), TEE wrap on Android | `<data_dir>/<fp>/keys/*.dsa`, `*.kem` |
-| Mnemonic | KEM + PBKDF2/AES-256-GCM (optional password) | `<data_dir>/<fp>/mnemonic.enc` |
-| Messages | AES-256-GCM (encrypted at rest) | `<data_dir>/<fp>/db/messages.db` |
-| Contacts | Plaintext | Per-identity SQLite |
-| Cache | Plaintext | Per-identity SQLite |
+| Private keys | PBKDF2 + AES-256-GCM (optional password), TEE wrap on Android | `<data_dir>/keys/identity.dsa`, `identity.kem` |
+| Mnemonic | KEM + PBKDF2/AES-256-GCM (optional password) | `<data_dir>/mnemonic.enc` |
+| Messages | SQLCipher (encrypted at rest, v0.9.161+) | `<data_dir>/db/messages.db` |
+| Contacts | SQLCipher (encrypted at rest, v0.9.161+) | Per-identity SQLite |
+| Public-data caches (keyserver, wall, profiles) | Plaintext (public DHT data only) | Per-identity SQLite |
 
 **Note:** `data_dir` defaults to `~/.dna` on desktop, app-specific directory on mobile.
 

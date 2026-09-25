@@ -113,7 +113,7 @@ static void test_stale_db_archived(void) {
     snprintf(stale, sizeof(stale), "%s/witness_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.db", g_tmpdir);
     touch(stale);
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     init_minimal_witness(&w);
 
     /* New chain_id — all 0xBB */
@@ -179,7 +179,7 @@ static void test_wal_shm_archived(void) {
     snprintf(shm, sizeof(shm), "%s/witness_cccccccccccccccccccccccccccccccc.db-shm", g_tmpdir);
     touch(db); touch(wal); touch(shm);
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     init_minimal_witness(&w);
 
     uint8_t new_id[32];
@@ -237,7 +237,7 @@ static void test_target_not_archived(void) {
     }
     sqlite3_close(seed_db);
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     init_minimal_witness(&w);
 
     uint8_t new_id[32];
@@ -286,7 +286,7 @@ static void test_non_witness_files_untouched(void) {
     touch(unrelated);
     touch(dht_db);
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     init_minimal_witness(&w);
 
     uint8_t new_id[32];

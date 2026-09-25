@@ -120,6 +120,12 @@ typedef struct nodus_tcp_conn {
     uint64_t            send_ok_count;      /* frames accepted into wbuf */
     uint64_t            send_full_count;    /* buf_ensure failed (wbuf cap exceeded) */
     uint64_t            send_bytes_total;   /* cumulative plaintext bytes offered to wbuf */
+    /* O15B §8: writes that failed unrecoverably (peer gone / fatal / stalled)
+     * in the immediate-send path, as opposed to send_full_count, which counts
+     * buffer-capacity refusals BEFORE anything reached the socket. Kept
+     * separate because "the peer hung up" and "we ran out of local buffer"
+     * call for opposite operator responses. */
+    uint64_t            send_error_count;
 
     /* Phase 3: parent transport back-pointer so send path can invoke the
      * pending-full callback without global state. Set in conn_alloc. */

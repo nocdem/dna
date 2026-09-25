@@ -32,6 +32,12 @@
   static int get_socket_error(void) { return WSAGetLastError(); }
   #define IS_EAGAIN(e) ((e) == WSAEWOULDBLOCK)
   #define IS_EINPROGRESS(e) ((e) == WSAEWOULDBLOCK)
+  /* O15B §8 — Winsock has no EINTR for socket I/O (WSAEINTR exists but is
+   * only raised by a cancelled blocking call, which we never make since the
+   * sockets are non-blocking). Peer-gone is the reset/abort family. */
+  #define IS_EINTR_IO(e) (0 && (e))
+  #define IS_PEER_GONE(e) ((e) == WSAECONNRESET || (e) == WSAECONNABORTED || \
+                           (e) == WSAESHUTDOWN  || (e) == WSAENOTCONN)
 #else
   #include <sys/epoll.h>
   #include <sys/socket.h>
@@ -42,7 +48,28 @@
   #include <unistd.h>
   #include <errno.h>
   #define poll_read(fd, buf, len)  read(fd, buf, len)
-  #define poll_write(fd, buf, len) write(fd, buf, len)
+  /* O15B §8 — writes MUST NOT be able to kill the process.
+   *
+   * This was a raw write(2). Writing to a socket whose peer has already
+   * closed raises SIGPIPE, whose default disposition is TERMINATE. Two of
+   * the three processes that link this transport install
+   * `signal(SIGPIPE, SIG_IGN)` in main() (nodus-server.c:269,
+   * nodus-cli.c:1557) — but the transport is a LIBRARY, and every other
+   * consumer (test_cc_client, the Messenger CLI `dna-connect-cli`, the
+   * Flutter FFI host, any embedder) inherits the default and dies on an
+   * ordinary peer disconnect. That is the pre-existing intermittent
+   * `test_cc_client` SIGPIPE recorded in BUGS.md.
+   *
+   * MSG_NOSIGNAL is the NARROWEST correct policy: it suppresses the signal
+   * for THIS call only and yields EPIPE instead, which the write sites below
+   * handle. A process-wide `signal(SIGPIPE, SIG_IGN)` installed from library
+   * code would silently change the disposition for the whole host program,
+   * including for file and pipe descriptors this library never touches — a
+   * library has no business making that decision for its embedder.
+   * Linux and Android/bionic both provide MSG_NOSIGNAL; the Windows arm
+   * above already uses send() and Windows raises no such signal.
+   */
+  #define poll_write(fd, buf, len) send(fd, buf, len, MSG_NOSIGNAL)
   static int set_nonblocking(int fd) {
       int flags = fcntl(fd, F_GETFL, 0);
       if (flags < 0) return -1;
@@ -51,6 +78,16 @@
   static int get_socket_error(void) { return errno; }
   #define IS_EAGAIN(e) ((e) == EAGAIN || (e) == EWOULDBLOCK)
   #define IS_EINPROGRESS(e) ((e) == EINPROGRESS)
+  /* O15B §8 — EINTR means the call was interrupted before transferring
+   * anything; nothing was lost and the operation is safe to repeat. Before
+   * this season every write site treated EINTR as a hard error and tore the
+   * connection down, so a signal delivered at the wrong instant destroyed a
+   * healthy connection (and, on the submit path, an in-flight transaction). */
+  #define IS_EINTR_IO(e) ((e) == EINTR)
+  /* The peer is definitively gone. EPIPE is what MSG_NOSIGNAL turns the old
+   * SIGPIPE into, so it MUST be handled here or the fix is only half done. */
+  #define IS_PEER_GONE(e) ((e) == EPIPE || (e) == ECONNRESET || \
+                           (e) == ENOTCONN || (e) == ESHUTDOWN)
 #endif
 #include <string.h>
 #include <stdlib.h>
@@ -60,6 +97,47 @@
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 
 #define MAX_EVENTS 64
+
+/* ── O15B §8: one classification of every socket I/O outcome ─────────
+ *
+ * Before this season each of the four I/O loops in this file re-derived its
+ * own partial policy, and all four agreed only on "n > 0 is progress" and
+ * "EAGAIN means stop". Everything else — EINTR, EPIPE, ECONNRESET, a
+ * zero-byte return — fell into a single "Real error" arm that tore the
+ * connection down (or, in nodus_tcp_send, into a bare `break` that reported
+ * SUCCESS to the caller). Naming the outcomes once means a reviewer can see
+ * the policy instead of reconstructing it four times.
+ *
+ * NTCP_IO_STALLED is deliberately distinct from NTCP_IO_WOULDBLOCK: a
+ * send()/read() that returns 0 for a NON-zero length is not a documented
+ * outcome for a stream socket in either direction (read()==0 is EOF and is
+ * handled before classification). Treating it as "would block" would spin;
+ * treating it as progress would advance wpos past bytes never written.
+ */
+typedef enum {
+    NTCP_IO_PROGRESS = 0,  /* n > 0 — n bytes transferred                  */
+    NTCP_IO_RETRY,         /* EINTR — nothing transferred, repeat the call  */
+    NTCP_IO_WOULDBLOCK,    /* EAGAIN/EWOULDBLOCK — socket buffer full       */
+    NTCP_IO_PEER_GONE,     /* EPIPE/ECONNRESET/... — peer is definitively gone */
+    NTCP_IO_STALLED,       /* 0 bytes for a non-zero request                */
+    NTCP_IO_FATAL          /* anything else                                 */
+} ntcp_io_t;
+
+static ntcp_io_t ntcp_classify(ssize_t n) {
+    if (n > 0) return NTCP_IO_PROGRESS;
+    if (n == 0) return NTCP_IO_STALLED;
+    int e = get_socket_error();
+    if (IS_EINTR_IO(e))  return NTCP_IO_RETRY;
+    if (IS_EAGAIN(e))    return NTCP_IO_WOULDBLOCK;
+    if (IS_PEER_GONE(e)) return NTCP_IO_PEER_GONE;
+    return NTCP_IO_FATAL;
+}
+
+/* An EINTR storm must not become an unbounded spin. Each loop below repeats
+ * only this many times on NTCP_IO_RETRY before giving up and letting the
+ * ordinary error path run; a real signal flood is then reported rather than
+ * silently absorbed. */
+#define NTCP_MAX_EINTR_RETRY 64
 
 /* ── Socket helpers ──────────────────────────────────────────────── */
 
@@ -447,6 +525,7 @@ static bool try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
 /* ── Event handlers ──────────────────────────────────────────────── */
 
 static void handle_read(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
+    int eintr_left = NTCP_MAX_EINTR_RETRY;
     for (;;) {
         if (buf_ensure(&conn->rbuf, &conn->rcap, conn->rlen + 4096) != 0) {
             if (tcp->on_disconnect)
@@ -460,10 +539,15 @@ static void handle_read(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
         if (n > 0) {
             conn->rlen += (size_t)n;
             conn->last_activity = nodus_time_now();
+            eintr_left = NTCP_MAX_EINTR_RETRY;   /* progress resets the budget */
             continue;
         }
         if (n == 0) {
-            /* Peer closed — process any buffered data before disconnect */
+            /* Orderly EOF: the peer closed its write side. Process any
+             * buffered data before disconnecting — a frame that arrived in
+             * the same segment as the FIN is still a valid frame. (This is
+             * read()'s EOF, NOT the NTCP_IO_STALLED case, which is why it is
+             * handled before ntcp_classify.) */
             bool freed = try_parse_frames(tcp, conn);
             if (!freed) {
                 if (tcp->on_disconnect)
@@ -473,9 +557,15 @@ static void handle_read(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             return;
         }
         /* n < 0 */
-        if (IS_EAGAIN(get_socket_error()))
-            break;
-        /* Real error */
+        ntcp_io_t io = ntcp_classify(n);
+        if (io == NTCP_IO_RETRY && eintr_left-- > 0)
+            continue;                    /* interrupted, nothing lost */
+        if (io == NTCP_IO_WOULDBLOCK)
+            break;                       /* drained for now */
+        /* NTCP_IO_PEER_GONE / NTCP_IO_FATAL / EINTR budget exhausted. A
+         * receive-side reset is still a disconnect, so the handling is the
+         * same — but it is now reached deliberately rather than by falling
+         * through from EINTR. */
         if (tcp->on_disconnect)
             tcp->on_disconnect(conn, tcp->cb_ctx);
         conn_free(tcp, conn);
@@ -485,17 +575,45 @@ static void handle_read(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     try_parse_frames(tcp, conn);
 }
 
-static void handle_write(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
+/* O15B §8 — the ONE write-drain loop.
+ *
+ * Pushes as much of [wpos, wlen) as the socket will take. Partial writes are
+ * the normal case on a non-blocking socket and are accounted by advancing
+ * wpos ONLY by the bytes the kernel accepted — never by the bytes offered.
+ *
+ * Returns the terminal classification:
+ *   NTCP_IO_PROGRESS   the buffer is fully drained
+ *   NTCP_IO_WOULDBLOCK partially drained; wpos is exact, retry on EPOLLOUT
+ *   NTCP_IO_PEER_GONE / NTCP_IO_STALLED / NTCP_IO_FATAL   unrecoverable
+ *
+ * It never frees the connection: teardown belongs to the caller, because two
+ * of the three call sites hold `conn` across the call and one of them is
+ * reached from a public API whose caller also holds it.
+ */
+static ntcp_io_t conn_flush_wbuf(nodus_tcp_conn_t *conn,
+                                 nodus_tcp_progress_cb progress_cb,
+                                 void *user_data) {
+    int eintr_left = NTCP_MAX_EINTR_RETRY;
     while (conn->wpos < conn->wlen) {
         ssize_t n = poll_write(conn->fd, conn->wbuf + conn->wpos,
                                conn->wlen - conn->wpos);
-        if (n > 0) {
+        ntcp_io_t io = ntcp_classify(n);
+        if (io == NTCP_IO_PROGRESS) {
             conn->wpos += (size_t)n;
+            eintr_left = NTCP_MAX_EINTR_RETRY;
+            if (progress_cb) progress_cb(conn->wpos, conn->wlen, user_data);
             continue;
         }
-        if (n < 0 && IS_EAGAIN(get_socket_error()))
-            break;
-        /* Error */
+        if (io == NTCP_IO_RETRY && eintr_left-- > 0)
+            continue;
+        return io;                       /* WOULDBLOCK, PEER_GONE, STALLED, FATAL */
+    }
+    return NTCP_IO_PROGRESS;
+}
+
+static void handle_write(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
+    ntcp_io_t io = conn_flush_wbuf(conn, NULL, NULL);
+    if (io != NTCP_IO_PROGRESS && io != NTCP_IO_WOULDBLOCK) {
         if (tcp->on_disconnect)
             tcp->on_disconnect(conn, tcp->cb_ctx);
         conn_free(tcp, conn);
@@ -521,11 +639,8 @@ static void handle_write(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
         pending_drain_to_wbuf(conn);
         /* If we queued more data into wbuf, try to push it out right now
          * so drain and send stay in lock-step. */
-        while (conn->wpos < conn->wlen) {
-            ssize_t n = poll_write(conn->fd, conn->wbuf + conn->wpos,
-                                   conn->wlen - conn->wpos);
-            if (n > 0) { conn->wpos += (size_t)n; continue; }
-            if (n < 0 && IS_EAGAIN(get_socket_error())) break;
+        io = conn_flush_wbuf(conn, NULL, NULL);
+        if (io != NTCP_IO_PROGRESS && io != NTCP_IO_WOULDBLOCK) {
             if (tcp->on_disconnect)
                 tcp->on_disconnect(conn, tcp->cb_ctx);
             conn_free(tcp, conn);
@@ -1099,25 +1214,39 @@ int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
     conn->send_bytes_total += send_len;
     free(enc_buf);  /* NULL-safe */
 
-    /* Try immediate send */
-    while (conn->wpos < conn->wlen) {
-        ssize_t n = poll_write(conn->fd, conn->wbuf + conn->wpos,
-                               conn->wlen - conn->wpos);
-        if (n > 0) {
-            conn->wpos += (size_t)n;
-            if (progress_cb)
-                progress_cb(conn->wpos, conn->wlen, user_data);
-            continue;
-        }
-        break;  /* Would block or error — let poll handle it */
-    }
+    /* Try immediate send.
+     *
+     * O15B §8 — this loop used to `break` on EVERY non-positive result and
+     * then `return 0`. A peer that had already closed therefore produced
+     * "send succeeded" at this API, and the caller went on to wait for a
+     * response that could never arrive: on the submit path that is a 60 s
+     * NODUS_ERR_TIMEOUT reported for a write that demonstrably failed.
+     * EAGAIN genuinely IS success-so-far (the bytes are buffered and the
+     * poll loop will flush them); a peer-gone or fatal error is not.
+     *
+     * The connection is NOT freed here. This function is public API and its
+     * callers hold `conn` across the call — nodus_client.c's send_request
+     * keeps `client->conn` — so freeing it here would hand every caller a
+     * dangling pointer. Teardown stays with the poll loop, which will reach
+     * the same error and run on_disconnect exactly once.
+     */
+    ntcp_io_t io = conn_flush_wbuf(conn, progress_cb, user_data);
 
     if (conn->wpos >= conn->wlen) {
         conn->wpos = 0;
         conn->wlen = 0;
     }
 
-    return 0;
+    if (io == NTCP_IO_PROGRESS || io == NTCP_IO_WOULDBLOCK)
+        return 0;
+
+    conn->send_error_count++;
+    QGP_LOG_WARN(LOG_TAG_TCP,
+                 "send: write failed peer=%s:%u slot=%d class=%d "
+                 "(%zu of %zu bytes accepted)",
+                 conn->ip, (unsigned)conn->port, conn->slot, (int)io,
+                 conn->wpos, conn->wlen);
+    return -1;
 }
 
 /* ── Poll: platform-specific ─────────────────────────────────────── */

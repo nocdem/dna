@@ -1,11 +1,14 @@
 /**
  * @file src/client/nodus_cc_client.c
- * @brief Hard-Fork v1 Stage C.2/E.2 — proposer-side tier-3 client helper.
+ * @brief D-16 rev 7 (W4-CC) — proposer-side tier-3 client helper for the
+ *        SYSTEM-governance approval-collection RPC.
  *
  * TCP 4004 requires Dilithium5 mutual auth (T2 hello → challenge → auth →
  * auth_ok) before accepting any T3 frame. This helper runs that handshake
- * against each committee peer before sending a w_cc_vote_req and awaiting a
- * verified w_cc_vote_rsp. Each call is a short-lived, authenticated session.
+ * against each committee peer before sending a w_cc_appr_req (a pre-auth
+ * envelope) and awaiting a verified w_cc_appr_rsp. Each call is a
+ * short-lived, authenticated session. Replaces the retired Stage C.2/E.2
+ * helper (nodus_client_cc_vote_send, verbs 14-15).
  *
  * Design notes
  *   - Committee-only: the receiving peer's dispatch guard in
@@ -17,7 +20,7 @@
  *     the Kyber handshake branch server-side. Saves one RTT of crypto.
  *   - w_ident drop: the server sends a w_ident to us right after auth_ok.
  *     The on_frame callback filters by msg.type, so anything that is not
- *     NODUS_T3_CC_VOTE_RSP is ignored — including w_ident, stray T2, etc.
+ *     NODUS_T3_CC_APPR_RSP is ignored — including w_ident, stray T2, etc.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -41,13 +44,32 @@
 typedef enum {
     CC_PHASE_AWAIT_CHALLENGE = 0,  /* hello sent, awaiting t2 challenge */
     CC_PHASE_AWAIT_AUTH_OK,        /* auth sent, awaiting t2 auth_ok */
-    CC_PHASE_AWAIT_VOTE_RSP,       /* w_cc_vote_req sent, awaiting rsp */
+    CC_PHASE_AWAIT_APPR_RSP,       /* w_cc_appr_req sent, awaiting rsp */
     CC_PHASE_DONE,
 } cc_phase_t;
 
-/* Per-call state threaded through the nodus_tcp poll callback. */
+/* Per-call state threaded through the nodus_tcp poll callback.
+ *
+ * Connection ownership contract
+ *   The nodus_tcp_conn_t returned by nodus_tcp_connect() is ALLOCATED and
+ *   OWNED by the transport (it lives in tcp->pool[slot]); this helper only
+ *   BORROWS the pointer — ownership never transfers. Any nodus_tcp_poll()
+ *   call may free the conn (connect failure, peer close, read/write error,
+ *   bad frame): every such teardown path fires tcp->on_disconnect BEFORE
+ *   conn_free, so cc_on_disconnect() below NULLs `conn` here and the alias
+ *   is invalid from that point on. All dereferences and sends therefore go
+ *   through ctx.conn and re-check it after every poll. The final release is
+ *   nodus_tcp_close() in the caller's cleanup, which frees whatever the
+ *   pool still holds — exactly once per conn on every path (a conn already
+ *   torn down by poll left a NULL pool slot behind, so close skips it).
+ *   Output parameter: *rsp_out is zeroed on entry and written only for a
+ *   verified response (rc 0) — on every failure return it stays zeroed. */
 typedef struct {
     cc_phase_t  phase;
+
+    /* Borrowed transport-owned connection. NULLed by cc_on_disconnect the
+     * moment the transport frees it; NEVER dereference without a check. */
+    nodus_tcp_conn_t *conn;
 
     /* Handshake state — filled by the callback, consumed by main loop. */
     bool        challenge_received;
@@ -62,7 +84,7 @@ typedef struct {
     bool                    response_received;
     bool                    wsig_fail;
     uint32_t                expected_txn_id;
-    nodus_t3_cc_vote_rsp_t *rsp_out;
+    nodus_t3_cc_appr_rsp_t *rsp_out;
     const nodus_pubkey_t   *expected_peer_pk;
 } cc_client_ctx_t;
 
@@ -107,7 +129,7 @@ static void cc_on_frame(nodus_tcp_conn_t *conn,
         return;
     }
 
-    if (ctx->phase != CC_PHASE_AWAIT_VOTE_RSP) return;
+    if (ctx->phase != CC_PHASE_AWAIT_APPR_RSP) return;
     if (ctx->response_received) return;
 
     nodus_t3_msg_t msg;
@@ -117,7 +139,7 @@ static void cc_on_frame(nodus_tcp_conn_t *conn,
          * t3_decode also fails on T2 frames, which is harmless here. */
         return;
     }
-    if (msg.type != NODUS_T3_CC_VOTE_RSP) return;    /* drop w_ident etc */
+    if (msg.type != NODUS_T3_CC_APPR_RSP) return;    /* drop w_ident etc */
     if (msg.txn_id != ctx->expected_txn_id)  return;
 
     if (nodus_t3_verify(&msg, ctx->expected_peer_pk) != 0) {
@@ -126,8 +148,19 @@ static void cc_on_frame(nodus_tcp_conn_t *conn,
         return;
     }
 
-    *ctx->rsp_out = msg.cc_vote_rsp;
+    *ctx->rsp_out = msg.cc_appr_rsp;
     ctx->response_received = true;
+}
+
+/* Transport teardown notification. Every conn_free the transport performs
+ * during nodus_tcp_poll (connect failure, peer close, read/write error,
+ * bad frame) fires this first — invalidate the borrowed alias so no later
+ * dereference or send can touch freed memory. */
+static void cc_on_disconnect(nodus_tcp_conn_t *conn, void *ctx_arg) {
+    cc_client_ctx_t *ctx = (cc_client_ctx_t *)ctx_arg;
+    if (!ctx) return;
+    if (ctx->conn == conn)
+        ctx->conn = NULL;
 }
 
 /* Parse "host:port" into host + numeric port. Missing :port falls back to
@@ -182,17 +215,18 @@ static bool response_done(cc_client_ctx_t *ctx) {
     return ctx->response_received;
 }
 
-int nodus_client_cc_vote_send(const char *peer_address,
-                                const nodus_pubkey_t *caller_pk,
-                                const nodus_seckey_t *caller_sk,
-                                const uint8_t caller_witness_id[32],
-                                const nodus_pubkey_t *expected_peer_pk,
-                                const uint8_t chain_id[32],
-                                const nodus_t3_cc_vote_req_t *req,
-                                uint32_t timeout_ms,
-                                nodus_t3_cc_vote_rsp_t *rsp_out) {
+int nodus_client_cc_appr_send(const char *peer_address,
+                              const nodus_pubkey_t *caller_pk,
+                              const nodus_seckey_t *caller_sk,
+                              const uint8_t caller_witness_id[32],
+                              const nodus_pubkey_t *expected_peer_pk,
+                              const uint8_t chain_id32[32],
+                              const uint8_t *env_bytes, size_t env_len,
+                              uint32_t timeout_ms,
+                              nodus_t3_cc_appr_rsp_t *rsp_out) {
     if (!peer_address || !caller_pk || !caller_sk || !caller_witness_id ||
-        !expected_peer_pk || !chain_id || !req || !rsp_out) {
+        !expected_peer_pk || !chain_id32 || !env_bytes || env_len == 0 ||
+        env_len > (size_t)NODUS_T3_CC_APPR_E_MAX || !rsp_out) {
         return -1;
     }
 
@@ -218,26 +252,30 @@ int nodus_client_cc_vote_send(const char *peer_address,
     ctx.expected_peer_pk = expected_peer_pk;
     ctx.phase            = CC_PHASE_AWAIT_CHALLENGE;
 
-    tcp.on_frame = cc_on_frame;
-    tcp.cb_ctx   = &ctx;
+    tcp.on_frame      = cc_on_frame;
+    tcp.on_disconnect = cc_on_disconnect;
+    tcp.cb_ctx        = &ctx;
 
     int rc = -1;
 
-    nodus_tcp_conn_t *conn = nodus_tcp_connect(&tcp, ip, port);
-    if (!conn) goto cleanup;
+    ctx.conn = nodus_tcp_connect(&tcp, ip, port);
+    if (!ctx.conn) goto cleanup;
 
     const uint64_t start_ms    = nodus_time_now_ms();
     const uint64_t deadline_ms = start_ms + (uint64_t)timeout_ms;
 
-    /* TCP connect handshake. */
-    while (conn->state != NODUS_CONN_CONNECTED) {
-        if (conn->state == NODUS_CONN_CLOSED) { rc = -1; goto cleanup; }
+    /* TCP connect handshake. nodus_tcp_poll may tear the conn down
+     * (connect refused, error) — cc_on_disconnect NULLs ctx.conn, so
+     * re-check it before every dereference. */
+    while (ctx.conn && ctx.conn->state != NODUS_CONN_CONNECTED) {
+        if (ctx.conn->state == NODUS_CONN_CLOSED) { rc = -1; goto cleanup; }
         uint64_t now = nodus_time_now_ms();
         if (now >= deadline_ms) { rc = -2; goto cleanup; }
         int slice = (int)(deadline_ms - now);
         if (slice > 100) slice = 100;
         nodus_tcp_poll(&tcp, slice);
     }
+    if (!ctx.conn) { rc = -1; goto cleanup; }   /* conn died during connect */
 
     /* Shared txn for hello/auth — correlates peer's challenge + auth_ok. */
     uint32_t auth_txn = (uint32_t)start_ms ^ (uint32_t)(uintptr_t)&ctx;
@@ -251,13 +289,13 @@ int nodus_client_cc_vote_send(const char *peer_address,
                             buf, sizeof(buf), &blen) != 0) {
             rc = -1; goto cleanup;
         }
-        if (nodus_tcp_send(conn, buf, blen) != 0) { rc = -1; goto cleanup; }
+        if (nodus_tcp_send(ctx.conn, buf, blen) != 0) { rc = -1; goto cleanup; }
     }
     if (poll_until(&tcp, &ctx, deadline_ms, challenge_or_error) != 0) {
         rc = -2; goto cleanup;
     }
     if (ctx.auth_error) {
-        fprintf(stderr, "cc_vote: hello rejected (code=%d msg=%s)\n",
+        fprintf(stderr, "cc_appr: hello rejected (code=%d msg=%s)\n",
                 ctx.auth_error_code, ctx.auth_error_msg);
         rc = -4; goto cleanup;
     }
@@ -275,24 +313,27 @@ int nodus_client_cc_vote_send(const char *peer_address,
         if (nodus_t2_auth(auth_txn, &sig, buf, sizeof(buf), &blen) != 0) {
             rc = -1; goto cleanup;
         }
-        if (nodus_tcp_send(conn, buf, blen) != 0) { rc = -1; goto cleanup; }
+        /* The poll that delivered the challenge may also have torn the conn
+         * down (peer sent challenge then closed) — the alias is NULL then. */
+        if (!ctx.conn) { rc = -1; goto cleanup; }
+        if (nodus_tcp_send(ctx.conn, buf, blen) != 0) { rc = -1; goto cleanup; }
         ctx.phase = CC_PHASE_AWAIT_AUTH_OK;
     }
     if (poll_until(&tcp, &ctx, deadline_ms, auth_ok_or_error) != 0) {
         rc = -2; goto cleanup;
     }
     if (ctx.auth_error) {
-        fprintf(stderr, "cc_vote: auth rejected (code=%d msg=%s)\n",
+        fprintf(stderr, "cc_appr: auth rejected (code=%d msg=%s)\n",
                 ctx.auth_error_code, ctx.auth_error_msg);
         rc = -4; goto cleanup;
     }
 
-    /* ── Phase 3: send w_cc_vote_req, await w_cc_vote_rsp ────────── */
-    ctx.phase = CC_PHASE_AWAIT_VOTE_RSP;
+    /* ── Phase 3: send w_cc_appr_req, await w_cc_appr_rsp ────────── */
+    ctx.phase = CC_PHASE_AWAIT_APPR_RSP;
 
     nodus_t3_msg_t msg;
     memset(&msg, 0, sizeof(msg));
-    msg.type   = NODUS_T3_CC_VOTE_REQ;
+    msg.type   = NODUS_T3_CC_APPR_REQ;
 
     /* txn_id distinct from auth_txn so a late auth_ok can't spoof as rsp. */
     uint32_t cc_txn = auth_txn + 1;
@@ -300,7 +341,7 @@ int nodus_client_cc_vote_send(const char *peer_address,
     msg.txn_id = cc_txn;
     ctx.expected_txn_id = cc_txn;
 
-    snprintf(msg.method, sizeof(msg.method), "w_cc_vote_req");
+    snprintf(msg.method, sizeof(msg.method), "w_cc_appr_req");
 
     msg.header.version   = NODUS_T3_BFT_PROTOCOL_VER;
     msg.header.round     = 0;
@@ -309,20 +350,33 @@ int nodus_client_cc_vote_send(const char *peer_address,
            NODUS_T3_WITNESS_ID_LEN);
     msg.header.timestamp = (uint64_t)time(NULL);
     nodus_random((uint8_t *)&msg.header.nonce, sizeof(msg.header.nonce));
-    memcpy(msg.header.chain_id, chain_id, 32);
+    memcpy(msg.header.chain_id, chain_id32, 32);
 
-    msg.cc_vote_req = *req;
+    msg.cc_appr_req.e     = env_bytes;
+    msg.cc_appr_req.e_len = env_len;
 
-    static uint8_t enc_buf[NODUS_T3_MAX_MSG_SIZE];
+    /* Heap-allocated at verb 40's OWN ceiling (DNA_ENV_MAX_TOTAL_LEN +
+     * envelope overhead, ~1 MB) — NODUS_T3_MAX_MSG_SIZE (128 KB) is too
+     * small for a maximal pre-auth envelope; using it here would silently
+     * truncate/fail the encode for exactly the large envelopes this verb
+     * exists to carry. */
+    size_t enc_cap = nodus_t3_max_msg_size(NODUS_T3_CC_APPR_REQ);
+    uint8_t *enc_buf = malloc(enc_cap);
+    if (!enc_buf) { rc = -1; goto cleanup; }
     size_t enc_len = 0;
     if (nodus_t3_encode(&msg, caller_sk,
-                         enc_buf, sizeof(enc_buf), &enc_len) != 0) {
+                         enc_buf, enc_cap, &enc_len) != 0) {
+        free(enc_buf);
         rc = -1; goto cleanup;
     }
 
-    if (nodus_tcp_send(conn, enc_buf, enc_len) != 0) {
+    /* Same hazard as above: the auth_ok poll may have freed the conn. */
+    if (!ctx.conn) { free(enc_buf); rc = -1; goto cleanup; }
+    if (nodus_tcp_send(ctx.conn, enc_buf, enc_len) != 0) {
+        free(enc_buf);
         rc = -1; goto cleanup;
     }
+    free(enc_buf);
 
     if (poll_until(&tcp, &ctx, deadline_ms, response_done) != 0) {
         rc = -2; goto cleanup;

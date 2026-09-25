@@ -1,21 +1,27 @@
 /**
  * Nodus — Witness Merkle Tree
  *
- * SHA3-512 Merkle tree over the UTXO set. Produces a deterministic
- * state_root that summarizes post-block UTXO state, enabling:
- *   - Block hash binding to consensus state (header includes state_root)
- *   - Light-client / SPV verification via Merkle proofs
- *   - Fraud-proof detection — a tampered witness response fails to
- *     verify against the chain-attested state_root
+ * SHA3-512 Merkle subtrees over the UTXO / validator / delegation tables
+ * (the UTXO root is the utxo_root leg of the V2 core_state_root,
+ * nodus_witness_roots_v2.c), plus the per-block tx_root and its proofs.
  *
- * Determinism rules (must be identical across all witnesses):
+ * Determinism rules for the UTXO tree (must be identical across all
+ * witnesses):
  *   - Leaves sorted by nullifier ASC (UTXO primary key, unique)
- *   - Leaf hash = SHA3-512(nullifier(64) || owner(128 hex ASCII)
- *                          || amount_le(8) || token_id(64)
- *                          || tx_hash(64) || output_index_le(4))
- *   - Internal node = SHA3-512(left(64) || right(64))
- *   - Odd sibling at any level: duplicated (Bitcoin convention)
- *   - Empty UTXO set: root = SHA3-512("") (deterministic zero-state)
+ *   - Leaf digest = SHA3-512(nullifier(64) || owner(128, NUL-padded)
+ *                            || amount_le(8) || token_id(64)
+ *                            || tx_hash(64) || output_index_le(4)
+ *                            || unlock_block_le(8))       — 340 bytes
+ *     (unlock_block joined in the root-layout round, K1 — 2026-09-25)
+ *   - RFC 6962: leaf = SHA3-512(0x00 || digest),
+ *     inner = SHA3-512(0x01 || left || right), split at the largest
+ *     power of two < n (no duplication)
+ *   - Empty UTXO set: root = SHA3-512(0x00) (RFC 6962 empty tree)
+ *
+ * Root-layout round (K3): the legacy five-input composite state_root
+ * (compute_state_root / combine_v3 / the epoch_state subtree) and the
+ * UTXO-set proof builder are DELETED — no block header carried that
+ * root (docs/plans/decisions/2026-09-25-root-layout-round.md).
  *
  * @file nodus_witness_merkle.h
  */
@@ -46,8 +52,9 @@ int nodus_witness_merkle_compute_utxo_root(nodus_witness_t *w,
                                              uint8_t *root_out);
 
 /**
- * Compute the SHA3-512 leaf hash for a single UTXO row.
- * Exposed for proof verification and unit tests.
+ * Compute the SHA3-512 leaf digest for a single UTXO row — the 340-byte
+ * preimage in the file header (root-layout round K1). Pure; the client
+ * mirror is dnac_utxo_compute_leaf_hash (dnac/include/dnac/ledger.h).
  *
  * @param nullifier     64-byte nullifier
  * @param owner         NUL-terminated owner fingerprint (128 hex chars)
@@ -56,6 +63,8 @@ int nodus_witness_merkle_compute_utxo_root(nodus_witness_t *w,
  * @param tx_hash       64-byte creating TX hash
  * @param output_index  Output index within TX
  * @param leaf_out      [out] 64-byte leaf hash
+ * @param unlock_block  the row's utxo_set.unlock_block (0 = spendable) —
+ *                      hashed LAST, u64 little-endian
  * @return 0 on success, -1 on error
  */
 int nodus_witness_merkle_leaf_hash(const uint8_t *nullifier,
@@ -64,37 +73,11 @@ int nodus_witness_merkle_leaf_hash(const uint8_t *nullifier,
                                      const uint8_t *token_id,
                                      const uint8_t *tx_hash,
                                      uint32_t output_index,
-                                     uint8_t *leaf_out);
+                                     uint8_t *leaf_out,
+                                     uint64_t unlock_block);
 
-/**
- * Build a Merkle proof path for a target leaf hash.
- * Proof consists of sibling hashes from leaf level up to root, plus
- * a bitfield of left/right positions (0 = sibling is right, 1 = left).
- *
- * Caller provides pre-allocated sibling buffer. Returns depth (number of
- * sibling hashes written) or -1 on error. depth=0 means the tree has a
- * single leaf equal to the root.
- *
- * @param w                Witness context
- * @param target_leaf      64-byte leaf hash to prove
- * @param siblings_out     [out] Array of up to max_depth sibling hashes
- *                         (each NODUS_MERKLE_HASH_LEN bytes, flat buffer)
- * @param positions_out    [out] Bitfield: bit i = 1 if sibling is on the
- *                         LEFT at level i, 0 if on the RIGHT
- * @param max_depth        Capacity of siblings_out in units of
- *                         NODUS_MERKLE_HASH_LEN
- * @param depth_out        [out] Actual depth written (number of siblings)
- * @param root_out         [out] Optional — 64-byte computed root
- *                         (may be NULL)
- * @return 0 on success, -1 on error or target_leaf not found
- */
-int nodus_witness_merkle_build_proof(nodus_witness_t *w,
-                                       const uint8_t *target_leaf,
-                                       uint8_t *siblings_out,
-                                       uint32_t *positions_out,
-                                       int max_depth,
-                                       int *depth_out,
-                                       uint8_t *root_out);
+/* Root-layout round (K3): nodus_witness_merkle_build_proof (the UTXO-set
+ * inclusion proof against the legacy state_root) is DELETED. */
 
 /**
  * Verify a Merkle proof against an expected root.
@@ -102,7 +85,7 @@ int nodus_witness_merkle_build_proof(nodus_witness_t *w,
  *
  * @param leaf        64-byte target leaf hash
  * @param siblings    Array of sibling hashes (flat, depth * 64 bytes)
- * @param positions   Position bitfield (same format as build_proof)
+ * @param positions   Position bitfield (same format as build_tx_proof)
  * @param depth       Number of siblings
  * @param expected_root  64-byte expected root
  * @return 0 if proof verifies, -1 otherwise
@@ -133,8 +116,7 @@ int nodus_witness_merkle_tx_root(const uint8_t *tx_hashes, size_t n, uint8_t out
 /**
  * @brief Build an inclusion proof for a TX hash within a specific block's tx_root.
  *
- * Symmetric to nodus_witness_merkle_build_proof but operates on the
- * block-scoped tx_root tree. The caller supplies a block_height; this
+ * Operates on the block-scoped tx_root tree. The caller supplies a block_height; this
  * function fetches the committed TX hashes for that block in commit
  * order (tx_index ASC), builds the RFC 6962 Merkle tree, and returns
  * the proof for target_tx_hash. The raw tx_hash is leaf-tagged
@@ -278,8 +260,9 @@ void nodus_merkle_combine_state_root_v1_legacy(const uint8_t utxo_root[64],
                                                 uint8_t out_state_root[64]);
 
 /* Hard-Fork v1 — 5-input combiner with outer version byte 0x02 and
- * chain_config_root contributor. v0.16 retains this cold for archive-
- * replay of pre-wipe blocks; live callers use combine_v3. */
+ * chain_config_root contributor. Retained cold for archive-replay of
+ * pre-wipe blocks; no live caller (the tree's state root is the V2
+ * hierarchy, nodus_witness_roots_v2.c). */
 void nodus_merkle_combine_state_root_v2(const uint8_t utxo_root[64],
                                          const uint8_t validator_root[64],
                                          const uint8_t delegation_root[64],
@@ -287,23 +270,11 @@ void nodus_merkle_combine_state_root_v2(const uint8_t utxo_root[64],
                                          const uint8_t chain_config_root[64],
                                          uint8_t out_state_root[64]);
 
-/* v0.16 — 5-input combiner with outer version byte 0x03 that replaces
- * the reward subtree slot with epoch_state. ALL live-chain callers
- * use this post-wipe.
- *
- * Returns 0 on success, -1 on a NULL argument or digest failure; on
- * failure out_state_root is filled with 64 zero bytes (deterministic,
- * but NOT a valid root — see nodus_merkle_empty_root). 2026-07-31: was
- * void. Because compute_state_root then returned 0 unconditionally,
- * this was the last remaining path that could hand a caller a
- * fabricated state_root while reporting success, which contradicted
- * the "exactly one way to emit a state_root" guarantee stated below. */
-int nodus_merkle_combine_state_root_v3(const uint8_t utxo_root[64],
-                                         const uint8_t validator_root[64],
-                                         const uint8_t delegation_root[64],
-                                         const uint8_t epoch_state_root[64],
-                                         const uint8_t chain_config_root[64],
-                                         uint8_t out_state_root[64]);
+/* Root-layout round (K3, 2026-09-25) — nodus_merkle_combine_state_root_v3
+ * (version byte 0x03: utxo ‖ validator ‖ delegation ‖ epoch_state ‖
+ * chain_config) is DELETED with the legacy composite state_root; O15J
+ * Faz 3 deleted the 6-input v4 before it. Version bytes 0x03 / 0x04 are
+ * retired, never reused. */
 
 /**
  * v0.16 — Compute the validator subtree Merkle root directly from the
@@ -320,41 +291,12 @@ int nodus_witness_merkle_compute_validator_root(nodus_witness_t *w,
 int nodus_witness_merkle_compute_delegation_root(nodus_witness_t *w,
                                                   uint8_t *root_out);
 
-/**
- * v0.16 — Compute the epoch_state subtree Merkle root from the
- * `epoch_state` table. Leaves embed the global total_minted/total_burned
- * counters from supply_tracking so supply-invariant coverage is included
- * in the top-level state_root.
- */
-int nodus_witness_merkle_compute_epoch_state_root(nodus_witness_t *w,
-                                                   uint8_t *root_out);
-
-/**
- * Compute the chain-level state_root from the current witness state.
- *
- * Combines five subtree roots — utxo, validator, delegation,
- * epoch_state, chain_config — through
- * nodus_merkle_combine_state_root_v3. Every one of them is read from
- * real table state; the "Phase 3 stub" era, in which validator /
- * delegation / reward defaulted to nodus_merkle_empty_root, is over.
- *
- * FAIL-CLOSED (2026-07-31): a fault in ANY subtree, or in the combiner
- * itself, returns -1 and leaves root_out untouched. There is exactly
- * one way to emit a state_root — all five subtrees computed from real
- * data. A caller that gets -1 has no root and must not advertise, vote,
- * or commit one. An empty TABLE is not a fault: it yields that
- * subtree's tagged-empty sentinel, which is a real value.
- *
- * Callers that previously used nodus_witness_merkle_compute_utxo_root
- * as the chain state_root MUST migrate to this function — otherwise
- * the chain-header state_root diverges from the design §3.1 formula.
- *
- * @param w         Witness context (uses w->db)
- * @param root_out  [out] 64-byte composite state_root; UNTOUCHED on error
- * @return 0 on success, -1 on error
- */
-int nodus_witness_merkle_compute_state_root(nodus_witness_t *w,
-                                            uint8_t *root_out);
+/* Root-layout round (K2/K3, 2026-09-25):
+ * nodus_witness_merkle_compute_epoch_state_root (the `epoch_state`
+ * subtree — the table is dropped from the schema) and
+ * nodus_witness_merkle_compute_state_root (the legacy five-input
+ * composite) are DELETED. The chain state root is the V2 hierarchy
+ * (nodus_witness_roots_v2.h). */
 
 #ifdef __cplusplus
 }

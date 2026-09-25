@@ -25,29 +25,32 @@ extern "C" {
  * Verification mode — separates DETERMINISTIC consensus validation from
  * per-node LOCAL ADMISSION policy.
  *
- * The dynamic fee surge (Check 5) scales the minimum acceptable fee with
- * w->mempool.count, which is node-local and arrival-order dependent. Two
- * honest witnesses holding different mempool depths therefore compute
- * different min_fee values for the SAME transaction. On the block
- * validation path a single TX reject drops the whole batch
- * (nodus_witness_bft.c: handle_propose / handle_commit verify loops), so a
- * follower with a fuller mempool would reject an honest leader's block —
- * a liveness split with no attacker involved. Surge is therefore evaluated
- * ONLY in ADMISSION mode; VALIDATION never reads w->mempool.count.
+ * R3 W4 — the dynamic fee surge (Check 5) that used to scale the minimum
+ * acceptable fee with w->mempool.count is DELETED with the closed
+ * consensus lane: the field it read no longer exists, and neither mode
+ * branches on `mode` anywhere in nodus_witness_verify.c any more (grep
+ * confirms zero `mode ==` comparisons left in that file) — ADMISSION and
+ * VALIDATION are behaviourally identical here now. The two-valued type
+ * itself is kept: it is still a caller-visible contract other callers
+ * (e.g. the cometbft application's check_tx in ADMISSION mode) pass
+ * explicitly, and nothing about this file requires collapsing it to one
+ * value.
  *
  * The deterministic fee floor is unaffected: Check 0 enforces
  * committed_fee >= DNAC_MIN_FEE_RAW in BOTH modes, and
- * DNAC_MIN_FEE_RAW == NODUS_W_BASE_TX_FEE, so VALIDATION still holds the
- * full base-fee bar.
+ * DNAC_MIN_FEE_RAW == NODUS_W_BASE_TX_FEE, so both modes hold the full
+ * base-fee bar identically.
  *
  * VALIDATION == 0 IS DELIBERATE AND MUST NOT BE REORDERED: a future call
  * site that leaves the field zero-initialised or forgets to pass a mode
  * falls into the DETERMINISTIC branch (fail-close for consensus), never
- * into the node-local one.
+ * into the node-local one — even though this file no longer distinguishes
+ * the two, a future check might, and the fail-closed direction must stay
+ * the zero value.
  */
 typedef enum {
-    NODUS_WITNESS_VERIFY_VALIDATION = 0,  /* block validation — deterministic, no surge */
-    NODUS_WITNESS_VERIFY_ADMISSION  = 1   /* mempool admission — local policy, surge on */
+    NODUS_WITNESS_VERIFY_VALIDATION = 0,  /* block validation — deterministic */
+    NODUS_WITNESS_VERIFY_ADMISSION  = 1   /* mempool admission — local policy */
 } nodus_witness_verify_mode_t;
 
 /**

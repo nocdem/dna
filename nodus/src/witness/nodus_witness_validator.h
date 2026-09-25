@@ -72,11 +72,39 @@ int nodus_validator_update(nodus_witness_t *w,
  *
  * @return 0 on success, -1 on error.
  */
+/* S3: the third parameter is the TENURE ANCHOR — the epoch start height
+ * (or INT64_MAX from the bootstrap path to disable the gate). The old
+ * lookback anchor made the gap epochs (E, 3E] unsatisfiable; genesis-
+ * seeded rows (active_since_block <= 1) are always tenured. */
 int nodus_validator_top_n(nodus_witness_t *w,
                            int n,
-                           uint64_t lookback_block,
+                           uint64_t tenure_anchor,
                            dnac_validator_record_t *out,
                            int *count_out);
+
+/**
+ * tokenomics-v3 P3-1 ("okuma B") — EVERY bonded, tenured validator row,
+ * in pubkey ASC order, unranked and untruncated: the candidate set of
+ * the post-bootstrap committee selection
+ * (nodus_committee_compute_for_epoch), which ranks it by the FROZEN
+ * balances of the previous boundary's copy rather than by the live
+ * stake nodus_validator_top_n orders on.
+ *
+ * Filters — identical to nodus_validator_top_n, both LIVE:
+ *   status IN (ACTIVE, ELIGIBLE)
+ *   active_since_block + DNAC_MIN_TENURE_BLOCKS <= tenure_anchor
+ *     OR active_since_block <= 1 (the genesis-seeded carve-out)
+ *
+ * @param cap  capacity of `out`. More matching rows than `cap` is a
+ *             FAULT (-1), never a truncation — two nodes must rank the
+ *             same set.
+ * @return 0 on success (*count_out set, may be 0), -1 on error.
+ */
+int nodus_validator_bonded_tenured(nodus_witness_t *w,
+                                   uint64_t tenure_anchor,
+                                   dnac_validator_record_t *out,
+                                   int cap,
+                                   int *count_out);
 
 /**
  * Return the ACTIVE validator count from the validator_stats key-value

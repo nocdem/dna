@@ -28,8 +28,12 @@
 
 static int fails = 0;
 
+/* Every reject vector below is a mutation of the CONSERVING honest trace, whose
+ * S8 Gate-2 terminal is BAL == boundary_out − boundary_in with both legs 0 —
+ * i.e. exactly the historical BAL == 0. The boundary-bound terminal itself is
+ * exercised by the S8 block near the end of main(). */
 static void expect_reject(const char *name, const uint64_t *bad) {
-    int v = conf_action_air_eval(bad, ROWS);
+    int v = conf_action_air_eval(bad, ROWS, 0, 0);
     if (v >= 1) {
         printf("  [reject] %-40s caught (%d viol) — OK\n", name, v);
     } else {
@@ -45,10 +49,19 @@ static void set(uint64_t *t, size_t row, size_t off, uint64_t val) {
 
 int main(void) {
     /* H=128 = 4 blocks of K=32. 3 real notes (blocks 0-2) + dummy-last (block 3).
-     * Conserving instance: INPUT 100 = OUTPUT 90 + FEE 10. */
+     * Conserving instance: INPUT 100 = OUTPUT 90 + OUTPUT 10, at
+     * boundary_in == boundary_out == 0.
+     * ⚠ LEDGER-V2 S8 Gate 2: block 2 used to be a CONF_ACTION_ROLE_FEE note.
+     * IS_FEE is now PINNED ZERO in the constraint system and
+     * conf_action_air_generate REJECTS a FEE-role block outright
+     * (conf_action_air.c:118-121), so it became a second OUTPUT of the SAME
+     * value. The note set stays conserving, so every downstream expectation
+     * (cm byte-match, frozen carries, BAL == 0 at the last row, all 40+ reject
+     * vectors) keeps its exact meaning. The FEE-role rejection itself is
+     * asserted in the S8 block below. */
     const uint64_t value[3] = {100, 90, 10};
     const uint8_t roles[3] = {CONF_ACTION_ROLE_INPUT, CONF_ACTION_ROLE_OUTPUT,
-                              CONF_ACTION_ROLE_FEE};
+                              CONF_ACTION_ROLE_OUTPUT};
     const uint64_t addr[3][CONF_ACTION_ADDR_LANES] = {
         {11, 22, 33, 44}, {51, 52, 53, 54}, {91, 92, 93, 94},
     };
@@ -70,7 +83,7 @@ int main(void) {
 
     /* The INPUT note (block 0) is addressed to (ak0[4], nk0[4]): addr =
      * Poseidon2 sponge. generate derives it; the test mirrors that for the cm
-     * byte-match target. OUTPUT/FEE keep their passed addresses. */
+     * byte-match target. OUTPUT notes keep their passed addresses. */
     uint64_t eff_addr[3][CONF_ACTION_ADDR_LANES];
     for (int i = 0; i < 3; i++)
         for (int j = 0; j < CONF_ACTION_ADDR_LANES; j++) eff_addr[i][j] = addr[i][j];
@@ -83,7 +96,8 @@ int main(void) {
 
     uint64_t honest[ROWS * CONF_ACTION_WIDTH];
     if (!conf_action_air_generate(LOG_H, value, &addr[0][0], &rcm[0][0], roles,
-                                  pos, nk, ak, 3, honest)) {
+                                  pos, nk, ak, 3, /*boundary_in=*/0,
+                                  /*boundary_out=*/0, honest)) {
         printf("FAIL: honest generate failed\n");
         return 1;
     }
@@ -94,7 +108,7 @@ int main(void) {
     printf("============================================================\n");
 
     /* ACCEPT: honest trace. */
-    int v = conf_action_air_eval(honest, ROWS);
+    int v = conf_action_air_eval(honest, ROWS, 0, 0);
     if (v == 0) {
         printf("  [accept] honest cycling trace                    0 viol — OK\n");
     } else {
@@ -336,7 +350,7 @@ int main(void) {
 
     /* ── S1d balance-conservation attacks ─────────────────────────────────── */
 
-    /* Sanity: BAL == 0 at the last row (Σin = Σout + fee). */
+    /* Sanity: BAL == 0 at the last row (Σin = Σout, boundaries both 0). */
     {
         uint64_t last_bal =
             honest[(ROWS - 1) * CONF_ACTION_WIDTH + CONF_ACTION_BAL_OFF];
@@ -549,7 +563,8 @@ int main(void) {
             memcpy(nk_bad, nk, sizeof nk_bad);
             nk_bad[lane] = GOLDILOCKS_P; /* block 0, this lane non-canonical */
             if (conf_action_air_generate(LOG_H, value, &addr[0][0], &rcm[0][0],
-                                         roles, pos, nk_bad, ak, 3, scratch))
+                                         roles, pos, nk_bad, ak, 3, 0, 0,
+                                         scratch))
                 ok = 0;
         }
         for (unsigned lane = 0; lane < CONF_ACTION_AK_LANES; lane++) {
@@ -557,7 +572,8 @@ int main(void) {
             memcpy(ak_bad, ak, sizeof ak_bad);
             ak_bad[lane] = GOLDILOCKS_P;
             if (conf_action_air_generate(LOG_H, value, &addr[0][0], &rcm[0][0],
-                                         roles, pos, nk, ak_bad, 3, scratch))
+                                         roles, pos, nk, ak_bad, 3, 0, 0,
+                                         scratch))
                 ok = 0;
         }
         printf("  [accept] F3 per-lane non-canonical ak/nk fail-close (8/8) %s\n",
@@ -578,12 +594,127 @@ int main(void) {
         if (!diff) fails++;
     }
 
+    /* ══ LEDGER-V2 S8 Gate 2 — the boundary-bound terminal + the IS_FEE zero-pin
+     * The last-row terminal is now BAL == boundary_out − boundary_in
+     * (conf_action_air.c:593-595); the historical BAL == 0 is the
+     * boundary_in == boundary_out case. generate carries the SAME relation as
+     * an honest-prover precondition (conf_action_air.c:149-153) and refuses a
+     * CONF_ACTION_ROLE_FEE block outright (conf_action_air.c:118-121, because
+     * conf_action_air.c:566 pins IS_FEE ≡ 0). ══ */
+
+    /* S8-1 (matrix 9): a note set whose Σ(sign·value) does NOT equal
+     * boundary_out − boundary_in is REJECTED by generate. The SAME note set at
+     * a pair that DOES satisfy the terminal is accepted — so the rejection is
+     * the RELATION, not a blanket refusal of non-zero boundaries. */
+    {
+        uint64_t scratch[ROWS * CONF_ACTION_WIDTH];
+        /* Σ = +100 − 90 − 10 = 0, so the terminal wants bout − bin == 0. */
+        int ok = !conf_action_air_generate(LOG_H, value, &addr[0][0], &rcm[0][0],
+                                           roles, pos, nk, ak, 3, 0, 5, scratch);
+        ok = ok && !conf_action_air_generate(LOG_H, value, &addr[0][0],
+                                             &rcm[0][0], roles, pos, nk, ak, 3,
+                                             5, 0, scratch);
+        ok = ok && conf_action_air_generate(LOG_H, value, &addr[0][0],
+                                            &rcm[0][0], roles, pos, nk, ak, 3,
+                                            7, 7, scratch);
+        ok = ok && conf_action_air_eval(scratch, ROWS, 7, 7) == 0;
+        printf("  [accept] S8 conservation mismatch rejected by generate  %s\n",
+               ok ? "OK" : "FAIL");
+        if (!ok) fails++;
+    }
+
+    /* S8-2 (matrix 1): the ZERO-INPUT SHIELD shape at the C1 level — no INPUT
+     * note, ONE OUTPUT of 100 ⇒ Σ = −100, satisfied EXACTLY at
+     * boundary_in = 100, boundary_out = 0 (100 transparent enters the pool).
+     * The same trace at any other boundary pair violates the terminal, and
+     * generate refuses to build the mismatched pair. */
+    {
+        uint64_t scratch[ROWS * CONF_ACTION_WIDTH];
+        const uint64_t sv[1] = {100};
+        const uint8_t sr[1] = {CONF_ACTION_ROLE_OUTPUT};
+        const uint64_t sa[1 * CONF_ACTION_ADDR_LANES] = {0xB1, 0xB2, 0xB3, 0xB4};
+        const uint64_t sc[1 * CONF_ACTION_RCM_LANES] = {0xC1, 0xC2};
+        const uint64_t sp[1] = {0};
+        const uint64_t snk[1 * CONF_ACTION_NK_LANES] = {0, 0, 0, 0};
+        const uint64_t sak[1 * CONF_ACTION_AK_LANES] = {0, 0, 0, 0};
+        int ok = conf_action_air_generate(LOG_H, sv, sa, sc, sr, sp, snk, sak, 1,
+                                          100, 0, scratch);
+        ok = ok && conf_action_air_eval(scratch, ROWS, 100, 0) == 0;
+        ok = ok && conf_action_air_eval(scratch, ROWS, 0, 0) >= 1;
+        ok = ok && conf_action_air_eval(scratch, ROWS, 100, 1) >= 1;
+        ok = ok && !conf_action_air_generate(LOG_H, sv, sa, sc, sr, sp, snk, sak,
+                                             1, 0, 0, scratch);
+        printf("  [accept] S8 zero-input SHIELD (bin=100 bout=0) terminal %s\n",
+               ok ? "OK" : "FAIL");
+        if (!ok) fails++;
+    }
+
+    /* S8-3 (matrix 2 + 3): FOUR outputs and NO notes at all. Four outputs
+     * (10+20+30+40) give Σ = −100, so the same bin=100/bout=0 turnstile holds;
+     * with NO note the terminal degenerates to boundary_in == boundary_out.
+     * H=256 (8 blocks) because E7 needs num_notes + 1 <= H/K and H=128 leaves
+     * room for only 3 real notes. */
+    {
+        const unsigned LOG_H8 = 8u;
+        const unsigned ROWS8 = 1u << 8;
+        uint64_t scratch[(1u << 8) * CONF_ACTION_WIDTH];
+        const uint64_t qv[4] = {10, 20, 30, 40};
+        const uint8_t qr[4] = {CONF_ACTION_ROLE_OUTPUT, CONF_ACTION_ROLE_OUTPUT,
+                               CONF_ACTION_ROLE_OUTPUT, CONF_ACTION_ROLE_OUTPUT};
+        const uint64_t qa[4 * CONF_ACTION_ADDR_LANES] = {
+            0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8,
+            0xD9, 0xDA, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF, 0xE0};
+        const uint64_t qc[4 * CONF_ACTION_RCM_LANES] = {0xE1, 0xE2, 0xE3, 0xE4,
+                                                        0xE5, 0xE6, 0xE7, 0xE8};
+        const uint64_t qp[4] = {0, 0, 0, 0};
+        const uint64_t qnk[4 * CONF_ACTION_NK_LANES] = {0};
+        const uint64_t qak[4 * CONF_ACTION_AK_LANES] = {0};
+        int ok = conf_action_air_generate(LOG_H8, qv, qa, qc, qr, qp, qnk, qak,
+                                          4, 100, 0, scratch);
+        ok = ok && conf_action_air_eval(scratch, ROWS8, 100, 0) == 0;
+        ok = ok && !conf_action_air_generate(LOG_H8, qv, qa, qc, qr, qp, qnk,
+                                             qak, 4, 99, 0, scratch);
+        /* zero notes: the terminal forces boundary_in == boundary_out */
+        ok = ok && conf_action_air_generate(LOG_H8, NULL, NULL, NULL, NULL, NULL,
+                                            NULL, NULL, 0, 9, 9, scratch);
+        ok = ok && conf_action_air_eval(scratch, ROWS8, 9, 9) == 0;
+        ok = ok && conf_action_air_eval(scratch, ROWS8, 9, 10) >= 1;
+        ok = ok && !conf_action_air_generate(LOG_H8, NULL, NULL, NULL, NULL,
+                                             NULL, NULL, NULL, 0, 9, 10,
+                                             scratch);
+        printf("  [accept] S8 zero-input 4-output + zero-note turnstile    %s\n",
+               ok ? "OK" : "FAIL");
+        if (!ok) fails++;
+    }
+
+    /* S8-4 (matrix 11): a CONF_ACTION_ROLE_FEE note is UNSATISFIABLE — generate
+     * returns false rather than emitting a trace the pinned IS_FEE ≡ 0
+     * constraint would reject. An unknown role tag fails the same way. */
+    {
+        uint64_t scratch[ROWS * CONF_ACTION_WIDTH];
+        const uint8_t fee_roles[3] = {CONF_ACTION_ROLE_INPUT,
+                                      CONF_ACTION_ROLE_OUTPUT,
+                                      CONF_ACTION_ROLE_FEE};
+        const uint8_t unk_roles[3] = {CONF_ACTION_ROLE_INPUT,
+                                      CONF_ACTION_ROLE_OUTPUT, 9};
+        int ok = !conf_action_air_generate(LOG_H, value, &addr[0][0], &rcm[0][0],
+                                           fee_roles, pos, nk, ak, 3, 0, 0,
+                                           scratch);
+        ok = ok && !conf_action_air_generate(LOG_H, value, &addr[0][0],
+                                             &rcm[0][0], unk_roles, pos, nk, ak,
+                                             3, 0, 0, scratch);
+        printf("  [accept] S8 ROLE_FEE / unknown role rejected by generate %s\n",
+               ok ? "OK" : "FAIL");
+        if (!ok) fails++;
+    }
+
     printf("------------------------------------------------------------\n");
     if (fails) {
         printf("C1 complete: %d FAIL\n", fails);
         return 1;
     }
     printf("C1 complete: honest accepted (cm byte-matches S0, BAL=0, addr=H(ak,nk)) + phase-counter,"
-           " freeze-carry, note-commitment & balance deviations rejected — PASS\n");
+           " freeze-carry, note-commitment & balance deviations rejected,"
+           " S8 boundary terminal + IS_FEE zero-pin enforced — PASS\n");
     return 0;
 }

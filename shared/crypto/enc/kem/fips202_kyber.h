@@ -1,36 +1,11 @@
-#ifndef FIPS202_H
-#define FIPS202_H
-
-#include <stddef.h>
-#include <stdint.h>
-
-#define FIPS202_NAMESPACE(s) pqcrystals_fips202_ref##s
-
-#define SHAKE128_RATE 168
-#define SHAKE256_RATE 136
-#define SHA3_256_RATE 136
-#define SHA3_512_RATE 72
-
-typedef struct {
-  uint64_t s[25];
-} keccak_state;
-
-#define shake128_absorb FIPS202_NAMESPACE(_shake128_absorb)
-void shake128_absorb(keccak_state *state, const uint8_t *in, size_t inlen);
-#define shake128_squeezeblocks FIPS202_NAMESPACE(_shake128_squeezeblocks)
-void shake128_squeezeblocks(uint8_t *out, size_t nblocks, keccak_state *state);
-
-#define shake256_absorb FIPS202_NAMESPACE(_shake256_absorb)
-void shake256_absorb(keccak_state *state, const uint8_t *in, size_t inlen);
-#define shake256_squeezeblocks FIPS202_NAMESPACE(_shake256_squeezeblocks)
-void shake256_squeezeblocks(uint8_t *out, size_t nblocks,  keccak_state *state);
-#define shake128 FIPS202_NAMESPACE(_shake128)
-void shake128(uint8_t *out, size_t outlen, const uint8_t *in, size_t inlen);
-#define shake256 FIPS202_NAMESPACE(_shake256)
-void shake256(uint8_t *out, size_t outlen, const uint8_t *in, size_t inlen);
-#define sha3_256 FIPS202_NAMESPACE(_sha3_256)
-void sha3_256(uint8_t h[32], const uint8_t *in, size_t inlen);
-#define sha3_512 FIPS202_NAMESPACE(_sha3_512)
-void sha3_512(uint8_t h[64], const uint8_t *in, size_t inlen);
-
-#endif
+/* SHIM — 2026-09-23 ML-KEM port. Old content (the round-3 vendored FIPS-202
+ * declarations, namespace pqcrystals_fips202_ref_*) is gone; std@d5b791c's
+ * own fips202.h is now the single fips202 implementation under kem/ (see
+ * CMakeLists.txt). This file exists only because
+ * shared/crypto/key/bip39/seed_derivation.c:22 includes
+ * "crypto/enc/kem/fips202_kyber.h" and calls shake256(...) — the upstream
+ * header #defines shake256 to its own namespaced symbol
+ * (pqcrystals_kyber_fips202_ref_shake256), so that call site compiles
+ * unchanged without editing seed_derivation.c. Do not add declarations here;
+ * add them to fips202.h (upstream) instead. */
+#include "fips202.h"

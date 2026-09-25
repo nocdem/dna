@@ -72,7 +72,7 @@ static bool marker_present(nodus_witness_t *w, uint8_t marker) {
 
 static void test_savepoint_rollback_undoes_inner_only(void) {
     TEST("savepoint rollback undoes only inner inserts");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { FAIL("setup"); return; }
 
     if (nodus_witness_db_begin(&w) != 0) { FAIL("begin"); cleanup_witness(&w); return; }
@@ -106,7 +106,7 @@ static void test_savepoint_rollback_undoes_inner_only(void) {
 
 static void test_outer_rollback_kills_everything(void) {
     TEST("outer rollback kills inserts before and after savepoint");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { FAIL("setup"); return; }
 
     if (nodus_witness_db_begin(&w) != 0) { FAIL("begin"); cleanup_witness(&w); return; }

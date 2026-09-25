@@ -15,6 +15,7 @@
 #include "crypto/utils/qgp_types.h"
 #include "../../messenger/gek.h"
 #include "../../messenger/groups.h"  // For groups_import_all() backward compat
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -434,7 +435,8 @@ int dht_message_backup_publish(
     const uint8_t *kyber_privkey,
     const uint8_t *dilithium_pubkey,
     const uint8_t *dilithium_privkey,
-    int *message_count_out)
+    int *message_count_out,
+    const uint8_t *mlkem_pubkey)
 {
     if (!msg_ctx || !fingerprint || !kyber_pubkey || !kyber_privkey ||
         !dilithium_pubkey || !dilithium_privkey) {
@@ -491,16 +493,25 @@ int dht_message_backup_publish(
     uint8_t *encrypted_data = NULL;
     size_t encrypted_len = 0;
 
+    // KEM Faz 1 (R7): self-encryption -> alg 3 (ML-KEM-1024) iff the caller
+    // passed a session-loaded mlkem_pubkey (D12, M1 delta 1b-2 — this used
+    // to do its OWN by-path qgp_key_load of identity.mlkem here with no
+    // session_password, so a password-protected identity's key loaded as
+    // garbage/failed silently and fell back to alg 2; that by-path load is
+    // DELETED, the key now comes from the parameter).
+    bool have_mlkem = (mlkem_pubkey != NULL);
+
     // Self-encryption: encrypt with own public key, sign with own private key
     uint64_t sync_timestamp = (uint64_t)time(NULL);
-    dna_error_t enc_result = dna_encrypt_message_raw(
+    dna_error_t enc_result = dna_encrypt_message_raw_alg(
         dna_ctx,
         (const uint8_t*)json_str,
         json_len,
-        kyber_pubkey,           // recipient_enc_pubkey (self)
+        have_mlkem ? mlkem_pubkey : kyber_pubkey,  // recipient_enc_pubkey (self)
         dilithium_pubkey,       // sender_sign_pubkey (self)
         dilithium_privkey,      // sender_sign_privkey (self)
         sync_timestamp,
+        have_mlkem ? (uint8_t)QGP_KEY_TYPE_MLKEM1024 : (uint8_t)QGP_KEY_TYPE_KEM1024,
         &encrypted_data,
         &encrypted_len
     );
@@ -598,7 +609,8 @@ int dht_message_backup_restore(
     const uint8_t *kyber_privkey,
     const uint8_t *dilithium_pubkey,
     int *restored_count_out,
-    int *skipped_count_out)
+    int *skipped_count_out,
+    const uint8_t *mlkem_privkey)
 {
     if (!msg_ctx || !fingerprint || !kyber_privkey || !dilithium_pubkey) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for restore");
@@ -728,12 +740,20 @@ int dht_message_backup_restore(
     size_t signature_out_len = 0;
     uint64_t sender_timestamp = 0;
 
+    // KEM Faz 1 (R7): the caller's mlkem_privkey (session-loaded, D12, M1
+    // delta 1b-2) lets a backup self-encrypted with alg 3 be decrypted.
+    // This function used to do its OWN by-path qgp_key_load of
+    // identity.mlkem here with no session_password — deleted; a
+    // password-protected identity's key would load as garbage/fail
+    // silently there (G6 data loss, D12).
+
     // Decrypt with own private key (self-decryption)
-    dna_error_t dec_result = dna_decrypt_message_raw(
+    dna_error_t dec_result = dna_decrypt_message_raw_alg(
         dna_ctx,
         encrypted_data,
         encrypted_len,
         kyber_privkey,
+        mlkem_privkey,
         &decrypted_data,
         &decrypted_len,
         &sender_pubkey_out,

@@ -1,7 +1,7 @@
 # DNA Connect Flutter UI
 
-**Last Updated:** 2026-04-24 | **App:** v1.0.0-rc235 | **Library:** v0.11.5
-**Status:** Phase 4 complete; Phase 5 (Platform Builds) shipping — Android APK + Linux builds live; iOS pending
+**Last Updated:** 2026-08-27 (header pass) | **App:** v1.0.0-rc241 | **Library:** v0.11.18
+**Status:** Live on Android APK + Linux + Windows; iOS pending. (The phase tables below use the doc's own historical numbering — treat them as history, not as a current plan.)
 **Target:** Mobile-first, all platforms from single codebase
 
 ---
@@ -270,7 +270,7 @@ final conversationProvider = AsyncNotifierProviderFamily<ConversationNotifier, L
      - Transfer message JSON includes `token`, `network`, and `chain` fields
      - Transfer bubble with gradient styling and blockchain verification (orange/green/red border)
    - **Note:** "Backbone" network name has been renamed to "Cellframe" throughout the codebase
-   - **DNAC Wallet:** DNA Chain integration via the `dna_engine_dnac.c` engine module
+   - **DNAC Wallet:** DNA Chain (DNAC) integrated via `dna_engine_dnac.c` engine module
      - Balance display, send, sync, transaction history, UTXO management
      - Witness-based consensus (not DHT-stored), syncs from nodus witness nodes
 
@@ -655,7 +655,7 @@ class DnaTheme {
 ## Internationalization (i18n)
 
 **Framework:** Flutter gen-l10n (official Flutter solution)
-**Supported Languages:** English (source), Turkish (Türkçe)
+**Supported Languages:** 11 (ar, de, en, es, it, ja, nl, pt, ru, tr, zh) — English is the source template, Turkish hand-maintained
 **Fallback:** English for unsupported locales
 
 ### File Structure

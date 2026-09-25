@@ -1,4 +1,4 @@
-// DNAC Provider - Digital cash wallet state management
+// DNAC Provider - DNA Chain wallet state management
 // Lazy init: DNAC context created on first access
 // 30s polling sync for wallet updates
 import 'dart:async';

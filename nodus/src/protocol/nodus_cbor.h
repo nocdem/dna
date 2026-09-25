@@ -21,7 +21,11 @@ extern "C" {
 
 /* ── CBOR major types ────────────────────────────────────────────── */
 #define CBOR_UINT     0   /* Major type 0: unsigned integer */
-#define CBOR_NEGINT   1   /* Major type 1: negative integer (unused) */
+/* Major type 1: negative integer. It has exactly two doors —
+ * cbor_decode_int (to read one) and cbor_decode_skip_signed (to step over
+ * one without reading it). cbor_decode_next still reports it as an error,
+ * deliberately (see those declarations). */
+#define CBOR_NEGINT   1
 #define CBOR_BSTR     2   /* Major type 2: byte string */
 #define CBOR_TSTR     3   /* Major type 3: text string */
 #define CBOR_ARRAY    4   /* Major type 4: array */
@@ -49,6 +53,10 @@ void cbor_encoder_init(cbor_encoder_t *enc, uint8_t *buf, size_t cap);
 
 /** Encode unsigned integer */
 void cbor_encode_uint(cbor_encoder_t *enc, uint64_t val);
+
+/** RFC 8949 §3.1: val >= 0 → major type 0; val < 0 → major type 1 with argument (-1 - val).
+ *  INT64_MIN → argument INT64_MAX (0x3B 7F FF FF FF FF FF FF FF). Shortest argument form. */
+void cbor_encode_int(cbor_encoder_t *enc, int64_t val);
 
 /** Encode byte string */
 void cbor_encode_bstr(cbor_encoder_t *enc, const uint8_t *data, size_t len);
@@ -125,14 +133,39 @@ typedef struct {
 /** Initialize decoder */
 void cbor_decoder_init(cbor_decoder_t *dec, const uint8_t *buf, size_t len);
 
-/** Decode next item */
+/** Decode next item.
+ *
+ * Major type 1 (negative integer) is reported as CBOR_ITEM_ERROR here and
+ * sets dec->error. That is NOT an oversight and must not be "fixed": every
+ * existing arg decoder in tier1/2/3 tests `val.type == CBOR_ITEM_UINT` and
+ * SKIPS anything else, so making this function return a negative item would
+ * silently turn "reject" into "accept, field left at zero" for every legacy
+ * message. Signed fields are read with cbor_decode_int below, which is the
+ * only door to major type 1. */
 cbor_item_t cbor_decode_next(cbor_decoder_t *dec);
+
+/** Reads ONE item that must be an integer: major type 0 with argument <= INT64_MAX, or major type 1
+ *  with argument <= INT64_MAX (value = -1 - argument). Any other major type, or an argument above
+ *  INT64_MAX, sets dec->error and returns false (*out untouched). cbor_decode_next / peek / skip are
+ *  UNCHANGED: major type 1 stays CBOR_ITEM_ERROR there — every legacy verb decoder keeps rejecting
+ *  negative bytes exactly as today. */
+bool cbor_decode_int(cbor_decoder_t *dec, int64_t *out);
 
 /** Peek at next item type without consuming */
 cbor_item_type_t cbor_decode_peek(const cbor_decoder_t *dec);
 
 /** Skip one complete item (including nested containers) */
 void cbor_decode_skip(cbor_decoder_t *dec);
+
+/** Skips ONE item exactly like cbor_decode_skip, except that a major type 1 item (negative
+ *  integer, RFC 8949 §3.1) is stepped over through cbor_decode_int instead of being an error,
+ *  and *saw_negint (may be NULL) is set to true when at least one was stepped over. Everything
+ *  else — truncation, reserved additional info, tags, floats, depth (CBOR_MAX_DEPTH), item
+ *  count (NODUS_CBOR_MAX_ITEMS) — behaves byte-for-byte as cbor_decode_skip. cbor_decode_next /
+ *  cbor_decode_peek / cbor_decode_skip stay UNCHANGED: ≈230 call sites in 12 files (measured
+ *  2026-09-09) across tier1, tier2, tier3, nodus_client, witness, nodus-cli and messenger
+ *  nodus_ops share them. */
+void cbor_decode_skip_signed(cbor_decoder_t *dec, bool *saw_negint);
 
 /**
  * Decode a map and look up a text-string key.

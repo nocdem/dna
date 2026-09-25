@@ -1,17 +1,14 @@
 # DNA Connect Function Reference
 
-**Library version represented by the current source tree:** 0.11.13
-**Reference status:** documentation snapshot; verify signatures against headers
+**Library version:** 0.11.18 (entries are updated in the same commit as signature changes — see `git log -- messenger/docs/functions/` for deltas)
+**Last full audit sweep:** 2026-04-24 (triage via code-hit grep)
 **Scope:** Public + static/internal function signatures, organized by module.
 
 This directory provides a function-level reference for the DNA Connect codebase. Functions are grouped by subsystem.
 
 > **Reading order:** start at `public-api.md` (the engine façade UI/FFI uses). Drop into subject files only when implementing a new feature in that subsystem.
 
-> **Authoritative note:** C headers and implementation files are the source of
-> truth. These generated/curated pages can lag. When a function signature
-> changes, update the corresponding `docs/functions/*.md` entry in the same
-> commit.
+> **Authoritative note:** file paths listed below are the current headers. When you update a function signature, update the corresponding `docs/functions/*.md` entry in the same commit.
 
 ---
 

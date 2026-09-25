@@ -93,7 +93,7 @@ static int insert_tx(nodus_witness_t *w, uint8_t marker, uint64_t height,
 
 static void test_empty_block_returns_zero(void) {
     TEST("empty block returns 0 rows");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup(&w) != 0) { FAIL("setup"); return; }
 
     nodus_witness_block_tx_row_t rows[NODUS_W_MAX_BLOCK_TXS];
@@ -107,7 +107,7 @@ static void test_empty_block_returns_zero(void) {
 
 static void test_rows_ordered_by_tx_index(void) {
     TEST("rows returned in tx_index order");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup(&w) != 0) { FAIL("setup"); return; }
 
     insert_tx(&w, 0x33, 7, 2, 0);
@@ -132,7 +132,7 @@ done:
 
 static void test_client_pk_sig_surfaced(void) {
     TEST("client_pubkey and client_sig surfaced when present");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup(&w) != 0) { FAIL("setup"); return; }
 
     insert_tx(&w, 0x55, 9, 0, 1);
@@ -165,7 +165,7 @@ done:
 
 static void test_other_blocks_not_returned(void) {
     TEST("other blocks rows excluded");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup(&w) != 0) { FAIL("setup"); return; }
 
     insert_tx(&w, 0xA1, 1, 0, 0);

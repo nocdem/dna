@@ -30,10 +30,10 @@ Thin wrappers that register subscriptions with Nodus under a messenger-specific 
 
 | Function | Description |
 |----------|-------------|
-| `int dht_keyserver_publish(...)` | Publish identity to DHT |
+| `int dht_keyserver_publish(const char *fingerprint, const char *name, const uint8_t *dilithium_pubkey, const uint8_t *kyber_pubkey, const uint8_t *dilithium_privkey, const char *wallet_address, const char *eth_address, const char *sol_address, const char *trx_address, const uint8_t *mlkem_pubkey)` | Publish identity to DHT. **CHANGED (KEM Faz 1):** gained trailing `mlkem_pubkey` (nullable — NULL if the identity has not migrated). Callers: `keygen.c:595` (passes local `identity.mlkem` ek when present), `keys.c:110` (passes NULL — predates ML-KEM, no local key available at that call site) |
 | `int dht_keyserver_publish_alias(dht_context_t*, const char*, const char*)` | Publish name → fingerprint alias |
 | `int dht_keyserver_lookup(dht_context_t*, const char*, dna_unified_identity_t**)` | Lookup identity by name or fingerprint |
-| `int dht_keyserver_update(dht_context_t*, const char*, const uint8_t*, const uint8_t*, const uint8_t*)` | Update public keys |
+| `int dht_keyserver_update(const char *identity, const uint8_t *new_dilithium_pubkey, const uint8_t *new_kyber_pubkey, const uint8_t *new_dilithium_privkey, const uint8_t *mlkem_pubkey)` | Update public keys (version-bump re-sign). **CHANGED (KEM Faz 1):** gained trailing `mlkem_pubkey` (nullable). Previously had ZERO callers in-tree; its first caller is the KEM Faz 1 migration path (`dna_engine_identity.c`, `dna_kem_f1_migrate_to_mlkem`) — passes the identity's OWN current Dilithium/Kyber pubkeys as "new" (no rotation, fingerprint unchanged) plus the freshly-derived `mlkem_pubkey`. Returns -2 if the identity has no published record yet (via its internal `dht_keyserver_lookup`) — the migration path treats that as non-fatal ("will attach on next normal publish") |
 | `int dht_keyserver_reverse_lookup(const char*, char**)` | Reverse lookup by fingerprint. Returns 0+name on success, -2 if no name, -3 if verification failed. `*identity_out` is NULL on any failure. |
 | `void dht_keyserver_reverse_lookup_async(const char*, void(*)(char*, void*), void*)` | Async reverse lookup. Callback receives NULL identity on any failure. |
 | `bool dht_keyserver_is_valid_registered_name(const char*)` | Rejects NULL/empty/overlong/fingerprint-format strings. Used as invariant check by reverse_lookup and as migration guard for stale caches. |
@@ -44,7 +44,7 @@ Thin wrappers that register subscriptions with Nodus under a messenger-specific 
 |----------|-------------|
 | `void dna_compute_fingerprint(const uint8_t*, char*)` | Compute SHA3-512 fingerprint |
 | `int dna_register_name(dht_context_t*, const char*, const char*, const char*, const char*, const uint8_t*)` | Register DNA name |
-| `int dna_update_profile(dht_context_t*, const char*, const dna_profile_data_t*, const uint8_t*, const uint8_t*, const uint8_t*)` | Update profile data |
+| `int dna_update_profile(const char *fingerprint, const dna_profile_t *profile, const uint8_t *dilithium_privkey, const uint8_t *dilithium_pubkey, const uint8_t *kyber_pubkey, const uint8_t *mlkem_pubkey)` | Update profile data. **CHANGED (D6, M1 delta 1b-2):** gained trailing `mlkem_pubkey` (nullable — sets identity->mlkem_pubkey/has_mlkem_pubkey on every branch when non-NULL, leaves the loaded record's field untouched when NULL). Note: this row previously showed a leading `dht_context_t*` parameter that does not exist in the actual header (`dht/core/dht_keyserver.h`) — pre-existing drift, corrected here along with the D6 param. |
 | `int dna_renew_name(dht_context_t*, const char*, const char*, const uint8_t*)` | Renew name registration |
 | `int dna_load_identity(dht_context_t*, const char*, dna_unified_identity_t**)` | Load identity from DHT |
 | `int dna_lookup_by_name(dht_context_t*, const char*, char**)` | Lookup fingerprint by name |
@@ -216,8 +216,8 @@ Per-identity encrypted GEK (Group Encryption Key) storage in DHT for multi-devic
 |----------|-------------|
 | `int dht_geks_init(void)` | Initialize GEK sync subsystem |
 | `void dht_geks_cleanup(void)` | Cleanup GEK sync subsystem |
-| `int dht_geks_publish(dht_context_t*, const char*, const dht_gek_entry_t*, size_t, ...)` | Publish encrypted GEK cache (Kyber1024 + Dilithium5) |
-| `int dht_geks_fetch(dht_context_t*, const char*, dht_gek_entry_t**, size_t*, ...)` | Fetch and decrypt GEK cache |
+| `int dht_geks_publish(dht_context_t*, const char*, const dht_gek_entry_t*, size_t, ...)` | Publish encrypted GEK cache (Kyber1024 + Dilithium5). **CHANGED (D12, M1 delta 1b-2):** gained trailing nullable `mlkem_pubkey` (session-loaded via `gek_get_mlkem_keys()` at the gek.c call site, D17) — self-encrypts alg 3 when non-NULL. No more by-path `identity.mlkem` load inside this file. |
+| `int dht_geks_fetch(dht_context_t*, const char*, dht_gek_entry_t**, size_t*, ...)` | Fetch and decrypt GEK cache. **CHANGED (D12):** gained trailing nullable `mlkem_privkey`, same source/reason as `dht_geks_publish` above. |
 | `void dht_geks_free_entries(dht_gek_entry_t*, size_t)` | Free entries array |
 | `void dht_geks_free_cache(dht_geks_cache_t*)` | Free cache structure |
 | `bool dht_geks_exists(dht_context_t*, const char*)` | Check if GEKs exist in DHT |
@@ -234,9 +234,9 @@ Per-identity encrypted GEK (Group Encryption Key) storage in DHT for multi-devic
 |----------|-------------|
 | `dna_unified_identity_t* dna_identity_create(void)` | Create new unified identity |
 | `void dna_identity_free(dna_unified_identity_t*)` | Free unified identity |
-| `char* dna_identity_to_json(const dna_unified_identity_t*)` | Serialize identity to JSON |
-| `char* dna_identity_to_json_unsigned(const dna_unified_identity_t*)` | Serialize identity without signature |
-| `int dna_identity_from_json(const char*, dna_unified_identity_t**)` | Parse identity from JSON |
+| `char* dna_identity_to_json(const dna_unified_identity_t*)` | Serialize identity to JSON (signed). **Behavior CHANGED (KEM Faz 1):** now includes `"mlkem_pubkey"` (hex) when `identity->has_mlkem_pubkey` |
+| `char* dna_identity_to_json_unsigned(const dna_unified_identity_t*)` | Serialize identity without signature (the signature preimage). **Does NOT and must never** include `mlkem_pubkey` (KEM Faz 1) — it stays outside the signed scope so old clients that drop the field still verify the unchanged main signature |
+| `int dna_identity_from_json(const char*, dna_unified_identity_t**)` | Parse identity from JSON. **Behavior CHANGED (KEM Faz 1):** reads `"mlkem_pubkey"` when present, setting `has_mlkem_pubkey=true`; absent on old-format records (defaults false, struct is calloc'd) |
 | `bool dna_validate_wallet_address(const char*, const char*)` | Validate wallet address format |
 | `bool dna_validate_name(const char*)` | Validate DNA name format |
 | `bool dna_network_is_cellframe(const char*)` | Check if Cellframe network |
@@ -337,8 +337,8 @@ Single-level threaded comment system for wall posts. Comments are stored as mult
 |----------|-------------|
 | `int dht_message_backup_init(void)` | Initialize message backup subsystem |
 | `void dht_message_backup_cleanup(void)` | Cleanup message backup subsystem |
-| `int dht_message_backup_publish(dht_context_t*, message_backup_context_t*, const char*, ...)` | Backup messages to DHT |
-| `int dht_message_backup_restore(dht_context_t*, message_backup_context_t*, const char*, ...)` | Restore messages from DHT |
+| `int dht_message_backup_publish(dht_context_t*, message_backup_context_t*, const char*, ...)` | Backup messages to DHT. **CHANGED (D12, M1 delta 1b-2):** gained trailing nullable `mlkem_pubkey` (session-loaded via `dna_load_mlkem_key(engine)` in `dna_engine_backup.c`) — self-encrypts alg 3 when non-NULL. No more by-path `identity.mlkem` load inside this file. |
+| `int dht_message_backup_restore(dht_context_t*, message_backup_context_t*, const char*, ...)` | Restore messages from DHT. **CHANGED (D12):** gained trailing nullable `mlkem_privkey`, same source/reason as `dht_message_backup_publish` above. |
 | `bool dht_message_backup_exists(dht_context_t*, const char*)` | Check if backup exists |
 | `int dht_message_backup_get_info(dht_context_t*, const char*, uint64_t*, int*)` | Get backup info |
 
@@ -369,6 +369,12 @@ Convenience wrappers around the Nodus singleton for DHT operations, presence, an
 |----------|-------------|
 | `int nodus_ops_put_with_timeout(const uint8_t *key, size_t key_len, const uint8_t *data, size_t data_len, uint32_t ttl, uint64_t vid, int timeout_ms)` | Same as `nodus_ops_put` but overrides the default 10s request timeout. Use for large payloads (debug logs, media) or mobile-link callers that need more time after reconnect bursts. `timeout_ms <= 0` falls back to client default. |
 
+### 12.3b Singleton endpoint introspection (`dht/shared/nodus_init.h`, v0.11.18+)
+
+| Function | Description |
+|----------|-------------|
+| `int nodus_messenger_get_connected_endpoint(char *ip_out, size_t ip_len, uint16_t *port_out)` | Endpoint the READY nodus singleton is currently connected to (live connection, not the possibly-stale config index). Returns 0 with `ip_out`/`port_out` filled, -1 when not connected. O15C-C D3: quorum fan-outs that open short-lived per-peer clients with the same identity MUST route this endpoint's query through the singleton — a rival same-fingerprint session would evict the singleton's session server-side (one session per fingerprint) and the next singleton RPC fails on a dead connection. |
+
 ### 12.4 LISTEN timeout semantics (v0.10.6+)
 
 `nodus_ops_listen()` / `nodus_ops_listen_v2()` treat `NODUS_ERR_TIMEOUT` from the underlying client as a **soft success**: the callback is still installed in the listener table and a valid token is returned. Rationale: when LISTEN times out, the server may already have registered the subscription (only the `listen_ok` response was lost). Discarding the callback would cause silent push-event loss. The nodus client also tracks the key in `listen_keys[]` so `resubscribe_all()` retries the LISTEN on the next reconnect.
@@ -389,11 +395,16 @@ Replaces the removed `dht_chunked_*` API. Hashes chunks, distributes them across
 
 ## 13. Salt Agreement (`dht/shared/dht_salt_agreement.h`)
 
-Per-contact salt agreement via DHT. Kyber1024 dual-encrypted, Dilithium5 signed.
+Per-contact salt agreement via DHT. Round-3 Kyber1024 dual-encrypted (v1) or,
+since KEM Faz 1, ML-KEM-1024 (v2, all-or-nothing gate) — Dilithium5 signed.
 
 | Function | Description |
 |----------|-------------|
 | `int salt_agreement_make_key(const char *fp_a, const char *fp_b, char *key_out, size_t key_out_size)` | Compute deterministic DHT key for contact pair. `SHA3-512(min(fp)+":"+max(fp)+":salt_agreement")`. Output: 128-char hex. |
-| `int salt_agreement_publish(const char *my_fp, const char *contact_fp, const uint8_t salt[32], const uint8_t *my_kyber_pub, const uint8_t *contact_kyber_pub, const uint8_t *my_dilithium_priv)` | Publish salt dual-encrypted for both parties. GEK pattern (Kyber1024 KEM + AES-256-GCM). Dilithium5 signed. Returns 0 on success. |
-| `int salt_agreement_fetch(const char *my_fp, const char *contact_fp, const uint8_t *my_kyber_priv, const uint8_t *my_sign_pub, const uint8_t *contact_sign_pub, uint8_t salt_out[32])` | Fetch authenticated salt from DHT. Uses `get_all`, verifies signatures against both parties, discards third-party values. Deterministic tiebreaker for diverged salts. Returns 0 on success, 2 on success with divergence (caller should re-publish winner), -1 on error, -2 if not found. |
-| `int salt_agreement_verify(const char *my_fp, const char *contact_fp, const uint8_t *my_kyber_pub, const uint8_t *my_kyber_priv, const uint8_t *contact_kyber_pub, const uint8_t *my_sign_pub, const uint8_t *my_dilithium_priv, const uint8_t *contact_sign_pub)` | Verify and reconcile salt for a contact. Compares local vs DHT, applies tiebreaker if diverged, re-publishes winner to overwrite stale entries (including when local matches winner). Returns 0 on success, 1 if pre-salt contact. |
+| `int salt_agreement_publish(const char *my_fp, const char *contact_fp, const uint8_t salt[32], const uint8_t *my_kyber_pub, const uint8_t *contact_kyber_pub, const uint8_t *my_dilithium_priv)` | Publish salt dual-encrypted for both parties (v1 only). **Signature UNCHANGED (KEM Faz 1)** — thin wrapper: `salt_agreement_publish_internal(..., NULL, NULL, ...)`. Returns 0 on success. |
+| `int salt_agreement_publish_v2(const char *my_fp, const char *contact_fp, const uint8_t salt[32], const uint8_t *my_kyber_pub, const uint8_t *contact_kyber_pub, const uint8_t *my_mlkem_pub, const uint8_t *contact_mlkem_pub, const uint8_t *my_dilithium_priv)` | **NEW (KEM Faz 1).** Publishes packet v2 (per-entry `alg` byte, ML-KEM-1024 for both parties) ONLY when BOTH `my_mlkem_pub` and `contact_mlkem_pub` are non-NULL; otherwise falls back to the unchanged v1 packet |
+| `int salt_agreement_fetch(const char *my_fp, const char *contact_fp, const uint8_t *my_kyber_priv, const uint8_t *my_sign_pub, const uint8_t *contact_sign_pub, uint8_t salt_out[32])` | Fetch authenticated salt from DHT. **Signature UNCHANGED (KEM Faz 1)** — thin wrapper: `salt_agreement_fetch_internal(..., NULL, ...)`; can verify/read v2 values but not decrypt an alg=ML-KEM entry without the key. Returns 0 on success, -1 on error, -2 if not found. |
+| `int salt_agreement_fetch_v2(const char *my_fp, const char *contact_fp, const uint8_t *my_kyber_priv, const uint8_t *my_mlkem_priv, const uint8_t *my_sign_pub, const uint8_t *contact_sign_pub, uint8_t salt_out[32])` | **NEW (KEM Faz 1).** Accepts both v1 and v2 values; `my_mlkem_priv` (nullable) decrypts a v2 entry whose alg is ML-KEM-1024 |
+| `int salt_agreement_verify(const char *my_fp, const char *contact_fp, const uint8_t *my_kyber_pub, const uint8_t *my_kyber_priv, const uint8_t *contact_kyber_pub, const uint8_t *my_sign_pub, const uint8_t *my_dilithium_priv, const uint8_t *contact_sign_pub)` | Verify and reconcile salt for a contact. **UNCHANGED (not wired to v2 in this package — its two callers, `dna_engine_contacts.c`/`dna_engine_listeners.c`, are outside package M1's whitelist)**. Compares local vs DHT, applies tiebreaker if diverged, re-publishes winner. Returns 0 on success, 1 if pre-salt contact. |
+
+**Constants (KEM Faz 1):** `SALT_AGREEMENT_VERSION_V2 = 2`, `SALT_AGREEMENT_ALG_KYBER_R3 = 2`, `SALT_AGREEMENT_ALG_MLKEM1024 = 3`.

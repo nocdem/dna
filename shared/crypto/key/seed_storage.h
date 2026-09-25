@@ -169,12 +169,91 @@ int mnemonic_storage_load(
 );
 
 /**
- * Check if encrypted mnemonic file exists
+ * Repair a mnemonic.enc that a pre-0.11.22 password change wrapped in the
+ * KEY_ENC ("DNAK") password header.
+ *
+ * mnemonic.enc is protected by the KEM key (ct||nonce||tag||enc) and must be
+ * stored raw; dna_engine_change_password_sync used to hand it to
+ * key_change_password(), which re-saved it wrapped, after which every reader
+ * (mnemonic_storage_load) failed. This function unwraps it with the given
+ * password (the one the wrap was made with = the identity's current
+ * password) and rewrites the raw blob atomically (temp + fsync + rename,
+ * owner-only permissions). Idempotent.
  *
  * @param identity_dir  Directory path (e.g., ~/.dna/)
- * @return              true if mnemonic.enc exists, false otherwise
+ * @param password      The identity's current password (session password)
+ * @return 1 repaired, 0 nothing to do (absent or already raw), -1 error
+ *         (no password, wrong password, malformed content — file untouched)
+ */
+int mnemonic_storage_repair_password_wrap(const char *identity_dir, const char *password);
+
+/**
+ * Check if encrypted mnemonic file exists (EITHER format, KEM Faz 1 R4)
+ *
+ * Returns true if the legacy round-3 mnemonic.enc OR the ML-KEM
+ * mnemonic.v2.enc is present. Callers that need to know WHICH format use
+ * qgp_platform_file_exists() directly with the specific filename.
+ *
+ * @param identity_dir  Directory path (e.g., ~/.dna/)
+ * @return              true if mnemonic.enc or mnemonic.v2.enc exists
  */
 bool mnemonic_storage_exists(const char *identity_dir);
+
+/* ============================================================================
+ * MNEMONIC STORAGE — ML-KEM-1024 (KEM Faz 1, R4)
+ * ============================================================================
+ * Same tag-less blob layout as mnemonic_storage_save/load
+ * (ct || nonce || tag || enc), but the KEM ciphertext is produced by
+ * qgp_mlkem1024_encapsulate/decapsulate (crypto/enc/qgp_mlkem.h) instead of
+ * qgp_kem1024_*. Ciphertext/pubkey/privkey sizes are byte-identical between
+ * the two algorithms (1568/1568/3168), so SEED_STORAGE_KEM_CT_SIZE and
+ * MNEMONIC_STORAGE_TOTAL_SIZE apply unchanged to the v2 file.
+ *
+ * File: <identity_dir>/mnemonic.v2.enc — kept alongside the legacy
+ * mnemonic.enc until Faz 3 (docs/plans/decisions/2026-09-23-kem-mlkem-
+ * migration.md, K5). The legacy file's format is NOT touched by this
+ * addition.
+ * ============================================================================ */
+
+#define MNEMONIC_STORAGE_V2_FILE "mnemonic.v2.enc"
+
+/**
+ * Save mnemonic encrypted with ML-KEM-1024 KEM (KEM Faz 1, R4)
+ *
+ * @param mnemonic      Null-terminated mnemonic string (max 255 chars)
+ * @param mlkem_pubkey  1568-byte ML-KEM-1024 public key
+ * @param identity_dir  Directory path (e.g., ~/.dna/)
+ * @return              0 on success, -1 on error
+ */
+int mnemonic_storage_save_v2(
+    const char *mnemonic,
+    const uint8_t mlkem_pubkey[1568],
+    const char *identity_dir
+);
+
+/**
+ * Load mnemonic decrypted with ML-KEM-1024 KEM (KEM Faz 1, R4)
+ *
+ * @param mnemonic_out      Output buffer (at least 256 bytes)
+ * @param mnemonic_size     Size of output buffer
+ * @param mlkem_privkey     3168-byte ML-KEM-1024 private key
+ * @param identity_dir      Directory path (e.g., ~/.dna/)
+ * @return                  0 on success, -1 on error
+ */
+int mnemonic_storage_load_v2(
+    char *mnemonic_out,
+    size_t mnemonic_size,
+    const uint8_t mlkem_privkey[3168],
+    const char *identity_dir
+);
+
+/**
+ * Check if the ML-KEM-1024 mnemonic file (mnemonic.v2.enc) exists
+ *
+ * @param identity_dir  Directory path (e.g., ~/.dna/)
+ * @return              true if mnemonic.v2.enc exists, false otherwise
+ */
+bool mnemonic_storage_v2_exists(const char *identity_dir);
 
 #ifdef __cplusplus
 }

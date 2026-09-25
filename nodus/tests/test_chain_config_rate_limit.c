@@ -11,6 +11,7 @@
  */
 
 #include "nodus/nodus_chain_config.h"
+#include "dnac/ledger_ids.h"   /* S3: DNA_MAX_ACTIVE_VALIDATORS */
 
 #include <stdio.h>
 #include <string.h>
@@ -127,11 +128,15 @@ static void test_record_upsert_same_sender(void) {
 }
 
 static void test_lru_eviction_when_table_full(void) {
-    /* Sized to committee max (7). Filling all slots and adding an 8th
-     * sender should evict the oldest slot, not refuse the new sender.
-     * In practice the dispatch guard prevents non-committee senders from
-     * reaching here, so this path tolerates a hypothetical roster drift
-     * without a panic. */
+    /* Sized to the maximum active validator set (S3: 128, was 7). Filling
+     * every slot and adding one more sender should evict the oldest slot,
+     * not refuse the new sender. In practice the dispatch guard prevents
+     * non-committee senders from reaching here, so this path tolerates a
+     * hypothetical roster drift without a panic.
+     *
+     * The loop is written against the macro, so it exercises whatever the
+     * current capacity is — the capacity VALUE is pinned separately in
+     * test_capacity_matches_active_ceiling(). */
     nodus_cc_rate_limit_table_t t;
     memset(&t, 0, sizeof(t));
 
@@ -194,8 +199,43 @@ static void test_null_args(void) {
         CHECK(t.slots[i].in_use == false);
 }
 
+/* S3: the slot table must cover the whole active-validator ceiling, not the
+ * 7 bootstrap seats. At the old capacity a 128-member committee would evict
+ * legitimate proposers on every round, handing an attacker a cheap way to
+ * clear another validator's cooldown. nodus_chain_config.h keeps the value
+ * as a literal (it deliberately has no shared/ includes), so this test is
+ * the second half of the pin — the first is the _Static_assert in
+ * nodus_witness_chain_config.c. */
+static void test_capacity_matches_active_ceiling(void) {
+    nodus_cc_rate_limit_table_t t;
+    memset(&t, 0, sizeof(t));
+
+    CHECK(NODUS_CC_RATE_LIMIT_MAX_PROPOSERS == DNA_MAX_ACTIVE_VALIDATORS);
+    CHECK(sizeof(t.slots) / sizeof(t.slots[0]) == DNA_MAX_ACTIVE_VALIDATORS);
+
+    /* A full active set coexists with no eviction: record every sender,
+     * then confirm each is still tracked (in cooldown) rather than dropped. */
+    for (uint32_t i = 0; i < DNA_MAX_ACTIVE_VALIDATORS; i++) {
+        uint8_t wid[NODUS_CC_WITNESS_ID_SIZE];
+        fill_wid(wid, (uint8_t)i);
+        nodus_cc_rate_limit_record(&t, wid, 1000 + i);
+    }
+    uint32_t used = 0;
+    for (uint32_t i = 0; i < NODUS_CC_RATE_LIMIT_MAX_PROPOSERS; i++)
+        if (t.slots[i].in_use) used++;
+    CHECK(used == DNA_MAX_ACTIVE_VALIDATORS);
+
+    for (uint32_t i = 0; i < DNA_MAX_ACTIVE_VALIDATORS; i++) {
+        uint8_t wid[NODUS_CC_WITNESS_ID_SIZE];
+        fill_wid(wid, (uint8_t)i);
+        /* Well inside the cooldown window for every recorded sender. */
+        CHECK(nodus_cc_rate_limit_check(&t, wid, 1000 + i + 1, NULL) == -1);
+    }
+}
+
 int main(void) {
     test_first_request_allowed();
+    test_capacity_matches_active_ceiling();
     test_cooldown_within_window();
     test_allowed_after_window();
     test_distinct_senders_independent();

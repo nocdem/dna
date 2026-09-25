@@ -22,6 +22,17 @@ tasks/
 *.dylib
 **/build-asan/
 
+# Out-of-tree CMake build directories (2026-08-28).
+#
+# Measured: these produced 75,612 of the repository's 75,887 untracked,
+# non-ignored files (99.6%), against 1,996 tracked ones. Only build-asan was
+# listed above, so every other variant counted as repository content.
+#
+# They are build output, not source: zero files under nodus/build-* are
+# tracked. The trailing slash matches directories only, so a file such as
+# messenger/build-android.sh is untouched.
+nodus/build-*/
+
 # Debug log files dumped at repo root
 dna_debug_*.log
 
@@ -51,6 +62,9 @@ docs/CPUNK_ROADMAP.md
 # Confidential documents
 docs/CPUNK_COUNCIL_DECISIONS.md
 docs/REPO_SECURITY_ASSESSMENT.md
+# Nodus website internal notes (removed tokenomics history, local plan references)
+website/CONTENT_SOURCES.md
+website/REVIEW.md
 
 # Claude Code instructions (contain infra details, IPs, deploy commands)
 CLAUDE.md
@@ -63,3 +77,16 @@ BUGS.md
 dnac/docs/WITNESS_NODES.md
 dnac/tools/check_witness_announce.c
 nodus/deploy/nodus.conf.example
+
+# ── Agent/protocol files — local only (2026-08-27) ────────────────────
+# CLAUDE.md carries the ORCHESTRATOR protocol and per-project rules;
+# .claude/agents/ the subagent definitions. They describe how this
+# repository is WORKED ON, not what it ships, and the repo is public.
+# NOTE: git history retains every version already pushed — this governs
+# what HEAD ships, not what has ever been exposed.
+CLAUDE.md
+**/CLAUDE.md
+.claude/
+
+# clangd per-project compilation-database pointers (local dev tooling)
+.clangd

@@ -1,10 +1,10 @@
 /**
  * @file dnac.h
- * @brief DNAC - Post-Quantum Digital Cash over DHT
+ * @brief DNAC - DNA Chain: post-quantum UTXO ledger
  *
  * Main public API for DNAC wallet operations.
  *
- * DNAC is a digital cash system using:
+ * DNAC (DNA Chain) is a post-quantum UTXO chain using:
  * - UTXO model for transactions
  * - Dilithium5 (PQ) signatures for authorization
  * - DHT for payment message transport
@@ -59,7 +59,16 @@ extern "C" {
 #define DNAC_ERROR_NOT_IMPLEMENTED     -22  /* Feature not yet implemented */
 #define DNAC_ERROR_OVERFLOW            -23  /* Integer overflow in amount arithmetic */
 
-/* Genesis configuration — unanimous (N/N) enforced server-side */
+/* Genesis configuration — unanimous (N/N) enforced server-side.
+ *
+ * S1 (Ledger V2, Addendum #2 B1): this is the OFFICIAL DNA-MAINNET manifest
+ * value and the DNA fixture DEFAULT — not a universal protocol law. The
+ * per-chain authority is the committed chain_def.initial_supply_raw
+ * (validated by genesis Rule P.2 on both client and witness; seeds
+ * supply_tracking.genesis_supply). Remaining macro consumers are the DNA
+ * fixture default (genesis_prepare.c), the legacy no-chain_def archive
+ * path (genesis.c), and one witness sanity cap (bft.c delegation bound) —
+ * full migration to manifest-sourced state completes in Season 6. */
 #define DNAC_DEFAULT_TOTAL_SUPPLY      100000000000000000ULL  /* 1B DNAC (10^17 raw, 8 decimals) */
 
 /* ============================================================================
@@ -116,7 +125,15 @@ extern "C" {
  * Stake & Delegation (v1)
  * ========================================================================== */
 
-/** Fixed self-stake amount per validator: exactly 10,000,000 DNAC */
+/** Fixed self-stake amount per validator: exactly 10,000,000 DNAC.
+ *
+ * S1 (Ledger V2, Addendum #2 B1): OFFICIAL DNA-MAINNET manifest value
+ * (= 1% of the DNA genesis supply), not a universal protocol law. The
+ * chain_def carries NO min_self_bond field yet, so every consumer of this
+ * macro (stake builder/verify, genesis Rule P.2 bond term on both client
+ * and witness, witness stake apply/unstake return/genesis seeding, CLI
+ * display) stays macro-sourced until the Season-6 manifest adds the field
+ * — explicitly deferred, no unverified runtime fallback introduced. */
 #define DNAC_SELF_STAKE_AMOUNT       (10000000ULL * 100000000ULL)   /* 10M × 10^8 raw */
 
 /** Minimum TX fee enforced at verify time (v0.17.1+).
@@ -125,7 +142,16 @@ extern "C" {
  *  (compile-time constant, not a chain_config_tx parameter in v0.17.x). */
 #define DNAC_MIN_FEE_RAW             1000000ULL   /* 0.01 DNAC = 10^6 raw */
 
-/** Minimum delegation amount: 100 DNAC (raised from 1 per F-DOS-02 audit finding) */
+/** Minimum delegation amount: 100 DNAC (raised from 1 per F-DOS-02 audit finding).
+ *
+ *  tokenomics-v3 P3-5 (decision file docs/plans/decisions/2026-09-22-
+ *  nodus-tokenomics-v3-operator.md §3 2026-09-24 "P3 soruları" (2)): the
+ *  version-3 WITNESS enforces this value too, not only the client lane —
+ *  a DELEGATE that opens a new delegation row needs amount >= this, a
+ *  top-up of an existing row needs amount >= 1, and a partial UNDELEGATE
+ *  must leave either 0 or >= this on the row
+ *  (nodus/src/witness/nodus_witness_rt_native.c rtn_delegate_exec /
+ *  rtn_undelegate_exec). */
 #define DNAC_MIN_DELEGATION          (100ULL * 100000000ULL)         /* 100 × 10^8 raw */
 
 /** Maximum number of delegations a single delegator can hold */
@@ -134,34 +160,165 @@ extern "C" {
 /** Maximum number of validator records in the tree (Rule M, F-DOS-01) */
 #define DNAC_MAX_VALIDATORS          128
 
-/** UNSTAKE locked-UTXO cooldown (24h at 5s block interval) */
-#define DNAC_UNSTAKE_COOLDOWN_BLOCKS  17280
+/** Validator unbonding lock, in EPOCHS (tokenomics-v3 P3-3).
+ *
+ *  docs/plans/decisions/2026-09-22-nodus-tokenomics-v3-operator.md §1
+ *  "Stake çözme": "Validator bekleme süresi 84 epoch" (2026-09-23,
+ *  halved from 168), the wait starting when the stake leaves the active
+ *  voting power. The version-3 witness graduates a RETIRING /
+ *  AUTO_RETIRED validator only at the boundary H_grad where it is no
+ *  longer an entry of the snapshot taking effect (the graduation
+ *  deferral, nodus_witness_v2_epoch.c v2ep_graduate), and releases its
+ *  bond as a UTXO LOCKED to
+ *    unlock_block = H_grad + DNAC_VALIDATOR_UNBOND_EPOCHS × DNAC_EPOCH_LENGTH.
+ *  Counted in epochs, never in blocks, so the lock scales with the epoch
+ *  length a build compiled (the short-epoch harness stays proportional).
+ *  REPLACES DNAC_UNSTAKE_COOLDOWN_BLOCKS (17280 blocks = 24 epochs at
+ *  E = 720), which is deleted. A compile-time constant for the whole
+ *  devnet (decision §3, 2026-09-23 "DEVNET BOYUNCA SABİT"). */
+#define DNAC_VALIDATOR_UNBOND_EPOCHS  84
+
+/** UNDELEGATE lock, in EPOCHS (tokenomics-v3 P2-10).
+ *
+ *  docs/plans/decisions/2026-09-22-nodus-tokenomics-v3-operator.md §1
+ *  "Stake çözme": "Delegator bekleme süresi 12 epoch" (2026-09-23, halved
+ *  from 24), and the wait starts when the stake leaves ACTIVE voting
+ *  power (§3 S-3; §3 2026-09-24 "DELEGATOR = VALIDATOR GİBİ" (d)).
+ *
+ *  The version-3 witness creates an UNDELEGATE's release UTXO LOCKED to
+ *  unlock_block = L(h) + DNAC_UNDELEGATE_LOCK_EPOCHS × DNAC_EPOCH_LENGTH,
+ *  where L(h) is the boundary at which the withdrawn stake leaves the
+ *  voting power (nodus_v2_power_exit_boundary, nodus/src/witness/
+ *  nodus_witness_v2_epoch.h — nb(h) + 2E since tokenomics-v3 P3's
+ *  "okuma B"). The same epoch count locks every delegation a graduating
+ *  validator still holds, released automatically at its graduation
+ *  boundary H_grad to H_grad + DNAC_UNDELEGATE_LOCK_EPOCHS ×
+ *  DNAC_EPOCH_LENGTH (P3-4, decision §3 2026-09-24 "P3 soruları" (3);
+ *  nodus_witness_v2_epoch.c). Counted in epochs, never in blocks, so the
+ *  lock scales with the epoch length a build compiled. A compile-time
+ *  constant for the whole devnet (decision §3, 2026-09-23 "DEVNET
+ *  BOYUNCA SABİT"). */
+#define DNAC_UNDELEGATE_LOCK_EPOCHS   12
 
 /** Epoch length in blocks (~1 hour at 5s).
  *
- * Drives: committee rotation cadence, epoch_state snapshot cadence,
+ * Drives: committee rotation cadence, validator-set snapshot cadence,
  * reward settlement cadence, Rule O delegation hold (Phase 8), Rule K
  * VALIDATOR_UPDATE cooldown (Phase 8), AUTO_RETIRE counter.
  *
  * chain_config_tx grace periods and settlement attendance window are
  * decoupled into their own constants below so they can be tuned
- * independently. */
+ * independently.
+ *
+ * The #ifndef is a test-harness compile-time override (e.g.
+ * -DDNAC_EPOCH_LENGTH=15 for the Genesis Protocol short-epoch scenarios);
+ * production builds never define these — the stagef harness docs are the
+ * only consumer. The default value is unchanged. */
+#ifndef DNAC_EPOCH_LENGTH
 #define DNAC_EPOCH_LENGTH            720
+#endif
 
 /** Minimum tenure in pending pool before committee eligibility (Rule R) —
  *  derived from EPOCH_LENGTH so the "pending-then-eligible" two-epoch
  *  discipline scales with the committee rotation cadence. */
 #define DNAC_MIN_TENURE_BLOCKS       (2 * DNAC_EPOCH_LENGTH)
 
-/** Fixed committee size (v1; v2 sortition may vary) */
+/** DNA's official INITIAL seat count, and the minimum-seats policy value.
+ *
+ * S3 (Ledger V2): this is NO LONGER "the" committee size. It is (a) the
+ * number of validator seats the DNA genesis manifest bootstraps and
+ * (b) the smallest active set this release's governance will accept
+ * (see DNAC_CFG_MIN_TARGET_ACTIVE). The size of the set that actually
+ * governs a given height comes from chain state, never from this macro.
+ *
+ * tokenomics-v3 P3-7: it is NO LONGER the default target either — that is
+ * DNAC_TARGET_ACTIVE_DEFAULT below. It stays the MINIMUM (the lower bound
+ * of the governed TARGET_ACTIVE_COUNT range, DNAC_CFG_MIN_TARGET_ACTIVE)
+ * and the exact genesis validator count (Rule P.1). */
 #define DNAC_COMMITTEE_SIZE          7
 
-/** Liveness threshold: fraction of epoch blocks a committee member must sign
- *  (in basis points — 8000 = 80%) to earn rewards that epoch (Rule N) */
-#define DNAC_LIVENESS_THRESHOLD_BPS  8000
+/** The DEFAULT target size of the active validator set — the value the
+ *  committee selector and the validator-set snapshot builder use when no
+ *  governed DNAC_CFG_TARGET_ACTIVE_COUNT row applies to the epoch
+ *  (nodus/src/witness/nodus_witness_committee.c committee_target_for_epoch,
+ *  nodus_witness_vset.c vset_target_for_epoch).
+ *
+ *  tokenomics-v3 P3-7 (docs/plans/decisions/2026-09-22-nodus-tokenomics-
+ *  v3-operator.md §1 "Aktif validator seçim hedefi N = 32"; §3 2026-09-24
+ *  "P3 soruları" (4) "Varsayılan set hedefi N = 32 … yönetişim aralığı
+ *  [7, 32]; tavan 32 kodda sabit"). Replaces DNAC_COMMITTEE_SIZE (7) as
+ *  the default. Equal to the version-3 active-set ceiling
+ *  NODUS_V2_ACTIVE_SET_MAX (nodus/src/witness/nodus_witness.h), which
+ *  pins the equality with a _Static_assert. */
+#define DNAC_TARGET_ACTIVE_DEFAULT   32
 
-/** Number of consecutive missed epochs before AUTO_RETIRED status (Rule N) */
-#define DNAC_AUTO_RETIRE_EPOCHS      3
+/** Upper bound on the ACTIVE validator set for this software release.
+ *
+ * Mirrors DNA_MAX_ACTIVE_VALIDATORS in shared/dnac/ledger_ids.h — pinned by
+ * a _Static_assert in dnac/src/transaction/serialize.c (the one translation
+ * unit that includes both headers). Duplicated rather than included so
+ * dnac.h stays free of shared/ dependencies, exactly like the nodus-side
+ * CC_* mirror macros.
+ *
+ * This is a SAFETY/RESOURCE ceiling for this release (memory, wire sizing,
+ * DoS bounds), NOT a permanent protocol maximum. Raising it is a coordinated
+ * software upgrade, never a wire-format change: every encoded count is
+ * already wide enough. */
+#define DNAC_MAX_ACTIVE_VALIDATORS   128
+
+/** Liveness threshold: fraction of epoch blocks a committee member must
+ *  SIGN — never propose — to stay ACTIVE and to earn rewards that epoch.
+ *  In basis points; 5000 = 50%.
+ *
+ *  tokenomics-v3 P1 round 3 (operator 2026-09-23, decision file §3 last
+ *  entry): 8000 -> 5000, and this ONE constant is now read by BOTH
+ *  consumers through ONE predicate
+ *  (`nodus_witness_v2_attendance_meets_bar`, nodus_witness_v2_epoch.{c,h}):
+ *  Rule N's AUTO_RETIRE test (`v2ep_rule_n`) and the settlement reward
+ *  bar (`nodus_witness_v2_econ.c`) — "tek kural, iki tüketici" (decision
+ *  §1 line 79's parenthetical). Previously the reward bar carried an
+ *  extra `× committee_count` factor left over from the retired
+ *  PROPOSER-credit era, which made its EFFECTIVE bar ~11% while Rule N's
+ *  was 80% — two different answers to one question; the shared predicate
+ *  ends that divergence.
+ *
+ *  The value sits BELOW cometbft's structural attendance FLOOR on
+ *  purpose (round 5 correction, decision file §3 2026-09-23 "ORCHESTRATOR
+ *  DÜZELTMESİ" — the earlier text here had the direction backwards). A
+ *  block commits on MORE than two-thirds of the committee's signatures,
+ *  so average attendance across a healthy, block-producing epoch is AT
+ *  LEAST ~67% (~73% in small sets) — a FLOOR, not a ceiling; the true
+ *  ceiling is 100%. The number that matters for this constant is the
+ *  WORST case: every block commits with exactly a quorum and the excluded
+ *  members rotate, so every member sits near q/n ≈ 70%. 8000 (80%) is
+ *  ABOVE that worst case, so a jittery-but-honest cluster could put its
+ *  ENTIRE active set below the bar in the same epoch — two such epochs
+ *  empty the validator list, and an empty list can build no next
+ *  snapshot, produce no block and admit no governance transaction to fix
+ *  it: an irreversible halt. Measured, not hypothetical: `test_v2_econ.c`
+ *  `t_settlement_offline` (a 3-validator fixture, no crash, no missed
+ *  block) produced "Rule N: auto-retired 3 validator(s)" then "epoch
+ *  2160: committee is empty (count=0)" then a -2 FAULT at the next
+ *  boundary, at the OLD 8000 value. 5000 sits below that ~70% worst case
+ *  at every committee size, so the bar ALONE cannot fail the whole set —
+ *  but the bar and the 120-block recency condition
+ *  (DNAC_SETTLEMENT_ATTENDANCE_WINDOW_BLOCKS) can fail DIFFERENT members
+ *  in the same boundary (measured: 5 of 7 in one worked example), which
+ *  is why Rule N carries a floor — the operator's initial "no floor
+ *  needed" call was reversed once that arithmetic was shown. Round 6
+ *  (decision file §3 2026-09-23 "Rule N TABANI WEIGHT ÜZERİNDEN") made
+ *  that floor a VOTING-POWER rule with no constant of its own: a
+ *  boundary retires nobody unless the NEXT epoch's seatable set still
+ *  commits with its largest member gone, (P - max) > P * 2 / 3 — see
+ *  `v2ep_rule_n` and the "ROUND 6: THE WEIGHT FLOOR" contract in
+ *  nodus_witness_v2_epoch.{c,h}. */
+#define DNAC_LIVENESS_THRESHOLD_BPS  5000
+
+/** Number of consecutive missed epochs before AUTO_RETIRED status (Rule N).
+ *  tokenomics-v3 §1 "iki ardışık epoch katılım koşullarını sağlayamayan
+ *  validator çıkarılacak" (decisions/2026-09-22-nodus-tokenomics-v3-
+ *  operator.md) — 3 -> 2 (P1). */
+#define DNAC_AUTO_RETIRE_EPOCHS      2
 
 /** VALIDATOR_UPDATE freshness window: TX rejected if signed_at_block is older than this */
 #define DNAC_SIGN_FRESHNESS_WINDOW   32   /* blocks (~160s at 5s blocks) */
@@ -171,115 +328,84 @@ extern "C" {
  *  runs, or its slot's pool is burned as offline. Decoupled from
  *  EPOCH_LENGTH to avoid the "1 sig in 1 hour" loophole that would
  *  otherwise trivialize the offline penalty. 120 blocks = 10 min of
- *  recent liveness required. */
+ *  recent liveness required.
+ *  tokenomics-v3 P1: read by the shared participation predicate
+ *  (`nodus_witness_v2_attendance_meets_bar`, nodus_witness_v2_epoch.c) as
+ *  the P2 term `last_signed_height >= (H > W ? H - W : 0)` against
+ *  `v2_attendance` — ONE reader, called by BOTH Rule N (`v2ep_rule_n`)
+ *  and the settlement liveness bar (`nodus_witness_v2_econ.c`). Before
+ *  round 3 nothing in this tree read this constant at all: the
+ *  settlement bar had its own `× committee_count` formula and Rule N had
+ *  no recency term — the "already read it" claim once written here was
+ *  false at base (round 5 correction). */
 #define DNAC_SETTLEMENT_ATTENDANCE_WINDOW_BLOCKS  120
 
-/** chain_config_tx grace — ergonomic params (MAX_TXS).
- *  Propose → effective gap must be >= this many blocks. */
+/** chain_config_tx grace — ergonomic params.
+ *  R3 W4-C delta 2 (operator "kaldır", 2026-09-18; atlas-dec-5b7568512b
+ *  95e6d2e671c4eaad2c1879 rev 1): MAX_TXS was this class's one member
+ *  and is RETIRED (DNAC_CFG_MAX_TXS_PER_BLOCK below) — no ergonomic
+ *  parameter is currently governed, so this constant has no live
+ *  consumer in `nodus_chain_config_grace_for_param` any more; kept
+ *  (not deleted) because a FUTURE ergonomic parameter needs a grace
+ *  value to fall back to, and the id space (1..4) is unchanged.
+ *  Propose → effective gap must be >= this many blocks.
+ *
+ *  The #ifndef is a test-harness compile-time override (e.g.
+ *  -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=15 alongside a short
+ *  DNAC_EPOCH_LENGTH for the Genesis Protocol short-epoch scenarios);
+ *  production builds never define these — the stagef harness docs are the
+ *  only consumer. The default value is unchanged. */
+#ifndef DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS
 #define DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS  720      /* 1 hour */
+#endif
 
 /** chain_config_tx grace — safety-critical params (BLOCK_INTERVAL,
- *  INFLATION_START). Decoupled from EPOCH_LENGTH so it can be tuned
- *  independently; 24 hours gives operators + auditors time to react. */
+ *  TARGET_ACTIVE_COUNT; INFLATION_START until tokenomics-v3 P2 retired
+ *  id 3). Decoupled from EPOCH_LENGTH so it
+ *  can be tuned independently; 24 hours gives operators + auditors time to
+ *  react.
+ *
+ *  Same test-harness compile-time override contract as
+ *  DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS above; production builds never
+ *  define it and the default value is unchanged. */
+#ifndef DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS
 #define DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS     17280    /* 24 hours */
+#endif
 
 /* ============================================================================
- * Block-Reward Inflation (v1) — validator incentive
+ * Block-Reward Inflation — RETIRED, and there is NO MINT ANY MORE.
  *
- * Halving is pinned to BLOCK COUNT, not real time. If the block interval
- * is tuned down later (e.g. 5s → 2.5s), halving cycles compress in real
- * time but the per-block reward curve stays identical — tokenomics stay
- * predictable from the ledger's own clock, independent of transport
- * latency choices.
- *
- * Schedule: halving every DNAC_HALVING_INTERVAL_BLOCKS, floor at 1 DNAC.
- *   halving 0:  16 DNAC/block
- *   halving 1:   8 DNAC/block
- *   halving 2:   4 DNAC/block
- *   halving 3:   2 DNAC/block
- *   halving 4+:  1 DNAC/block   (permanent floor)
- *
- * Per-halving mint: BASE × INTERVAL (halving 0 = 16 × 6.307M = 100.9M DNAC).
- * First-4-halving total: ~189M DNAC. Thereafter 1 × INTERVAL per halving
- * window, forever — sustainable perpetual validator incentive.
- *
- * At the current 5s block interval, INTERVAL = 6,307,200 blocks ≈ 1 year,
- * matching Bitcoin-style annual halving. At 2.5s, the same INTERVAL is
- * ~6 months. At 2s, ~4.8 months. Tune block interval per performance
- * needs without touching the halving-curve semantics.
- *
- * Minted DNAC flows into block_fee_pool and is distributed through the
- * existing Phase 9 Task 49 committee-reward pipeline (proportional to
- * total_stake, minus validator commission).
+ * The v1 inline curve that lived here (16-DNAC base, 4 halvings,
+ * dnac_block_reward / dnac_total_minted_at / DNAC_INFLATION_*_REWARD /
+ * DNAC_HALVING_INTERVAL_BLOCKS) was superseded by the v0.16 per-block
+ * emission redesign, and that redesign (the 32-DNAC / 5-halving curve,
+ * nodus_emission_per_block / nodus_emission_total_minted) is itself
+ * DELETED by tokenomics-v3 P2 (decision file
+ * docs/plans/decisions/2026-09-22-nodus-tokenomics-v3-operator.md §1:
+ * "Toplam arz 1.000.000.000 NODUS, sabit. Yeni token basılmayacak").
+ * Validator rewards are paid from a fixed reward reserve carved out of
+ * the genesis supply (the version-3 genesis document's
+ * reward_pool_initial, committed as supply_tracking.reward_pool): each
+ * epoch boundary pays out reward_pool >> 16, pro rata to voting power,
+ * accrued per recipient and paid every payout_interval_epochs; every
+ * transaction fee is credited back to the pool. Implementation:
+ * nodus/src/witness/nodus_witness_v2_econ.c.
  * ========================================================================== */
 
-/** Base block reward at inflation_start_block (16 DNAC × 10^8 raw). */
-#define DNAC_INFLATION_BASE_REWARD   (16ULL * 100000000ULL)
-
-/** Floor block reward after halving converges (1 DNAC × 10^8 raw). */
-#define DNAC_INFLATION_FLOOR_REWARD  (1ULL * 100000000ULL)
-
-/** Blocks between successive halvings — tokenomic clock, block-count based
- *  (NOT seconds-based). 6,307,200 is ≈ 1 year at the current 5s interval;
- *  if the block interval is retuned the halving cycle compresses/expands
- *  in real time but the per-block reward curve is unchanged. */
-#define DNAC_HALVING_INTERVAL_BLOCKS 6307200ULL
-
-/**
- * @brief Block reward at a given chain height (deterministic).
+/** Maximum commission in basis points: 5000 = 50%.
  *
- * Returns raw DNAC to mint at @p block_height. Before @p start_block,
- * or when start_block == 0 (disabled), returns 0. Halves every
- * DNAC_HALVING_INTERVAL_BLOCKS blocks until reaching
- * DNAC_INFLATION_FLOOR_REWARD, then stays at the floor forever.
- *
- * Implemented `static inline` so both dnac and nodus (whose build does
- * not compile dnac sources) get the same codepath without duplicating
- * translation units. Math is tight — loops only in total_minted_at.
- */
-static inline uint64_t dnac_block_reward(uint64_t block_height,
-                                           uint64_t start_block) {
-    if (start_block == 0 || block_height < start_block) return 0;
-    uint64_t elapsed  = block_height - start_block;
-    uint64_t halvings = elapsed / DNAC_HALVING_INTERVAL_BLOCKS;
-    /* log2(BASE/FLOOR) = 4 halvings (16→8→4→2→1). Floor thereafter. */
-    if (halvings >= 4) return DNAC_INFLATION_FLOOR_REWARD;
-    uint64_t reward = DNAC_INFLATION_BASE_REWARD >> halvings;
-    if (reward < DNAC_INFLATION_FLOOR_REWARD) reward = DNAC_INFLATION_FLOOR_REWARD;
-    return reward;
-}
-
-/**
- * @brief Cumulative DNAC minted from @p start_block through @p block_height
- *        inclusive (used by supply invariant).
- *
- * Deterministic — every witness reaches the same value for the same
- * (height, start) pair, so supply-invariant consensus is preserved.
- */
-static inline uint64_t dnac_total_minted_at(uint64_t block_height,
-                                              uint64_t start_block) {
-    if (start_block == 0 || block_height < start_block) return 0;
-    uint64_t elapsed = block_height - start_block;
-    uint64_t total   = 0;
-    uint64_t reward  = DNAC_INFLATION_BASE_REWARD;
-    for (int h = 0; h < 4; h++) {
-        if (elapsed == 0) return total;
-        uint64_t window_blocks = (elapsed >= DNAC_HALVING_INTERVAL_BLOCKS)
-                                  ? DNAC_HALVING_INTERVAL_BLOCKS : elapsed;
-        total   += reward * window_blocks;
-        elapsed -= window_blocks;
-        reward >>= 1;
-        if (reward < DNAC_INFLATION_FLOOR_REWARD) {
-            reward = DNAC_INFLATION_FLOOR_REWARD;
-            break;
-        }
-    }
-    if (elapsed > 0) total += DNAC_INFLATION_FLOOR_REWARD * elapsed;
-    return total;
-}
-
-/** Maximum commission in basis points (100% = 10000) */
-#define DNAC_COMMISSION_BPS_MAX      10000
+ *  tokenomics-v3 P3-8 (docs/plans/decisions/2026-09-22-nodus-tokenomics-
+ *  v3-operator.md §1 "Ödüller ve ücretler": "Komisyonu validator
+ *  belirleyecek; üst sınır %50"). Was 10000 (100%). Every checker reads
+ *  this one macro: the witness STAKE / VALIDATOR_UPDATE rules and the
+ *  canonical validator-record reader (nodus_witness_rt_native.c), the
+ *  boundary's writable-shape predicate (nodus_witness_v2_epoch.c), the
+ *  reward distribution's snapshot-entry check (nodus_witness_v2_econ.c),
+ *  the version-3 genesis builder (nodus_witness_v2_gen.c) and the client
+ *  lane (dnac/src/transaction/stake.c, validator_update.c, verify.c).
+ *  Lowering the cap requires a chain wipe: a committed row or snapshot
+ *  entry above 5000 would fault the boundary that reads it. */
+#define DNAC_COMMISSION_BPS_MAX      5000
 
 /* ============================================================================
  * Forward Declarations
@@ -320,9 +446,24 @@ typedef enum {
     DNAC_TX_UNDELEGATE       = 7,   /**< Delegator withdraws delegation (unbonding) */
     DNAC_TX_VALIDATOR_UPDATE = 9,   /**< Update validator metadata (commission, moniker, etc.) */
     DNAC_TX_CHAIN_CONFIG     = 10,  /**< Committee-voted consensus parameter change (hard-fork mechanism v1) */
-    DNAC_TX_SHIELDED         = 11   /**< Dual-mode shielded (confidential) TX — carries a STARK proof
+    DNAC_TX_SHIELDED         = 11,  /**< Dual-mode shielded (confidential) TX — carries a STARK proof
                                      *   over a hidden note set (dual-mode S5). ADDITIVE: not valid on
                                      *   the live chain until S6 (fail-closed rejected today). */
+    DNAC_TX_SHIELD           = 12,  /**< V3-ONLY: transparent → shielded pool boundary crossing
+                                     *   (Ledger V2 S9). Carried ONLY by the V3 wire — inadmissible on
+                                     *   the legacy V2 wire, whose acceptance set is FROZEN at 0..11.
+                                     *   REJECT-unconditional until activation. */
+    DNAC_TX_UNSHIELD         = 13   /**< V3-ONLY: shielded pool → transparent boundary crossing
+                                     *   (Ledger V2 S9). Same freeze as DNAC_TX_SHIELD: never valid on
+                                     *   the legacy V2 wire, REJECT-unconditional until activation. */
+    /* Types 14, 15 and 16 are UNASSIGNED and must stay that way.
+     * 14 was never assigned (the S9 pin). 15 and 16 were the O15J-removed
+     * Ledger V2 activation-authority types (SCHEDULE/CANCEL and READY):
+     * the chain is now born directly from a config, so there is no
+     * activation ceremony and no wire codec behind them. They are BURNED,
+     * not free — a future type MUST NOT recycle 14, 15 or 16, because
+     * historical activation-build wire bytes carrying 15/16 still exist
+     * and would silently reinterpret under a recycled meaning. */
 } dnac_tx_type_t;
 
 /* ============================================================================
@@ -333,23 +474,94 @@ typedef enum {
 
 /** Parameter IDs allowed by DNAC_TX_CHAIN_CONFIG (v1 allowlist, design §5.2). */
 typedef enum {
-    DNAC_CFG_MAX_TXS_PER_BLOCK     = 1,  /**< overrides chain_def.max_txs_per_block */
+    DNAC_CFG_MAX_TXS_PER_BLOCK     = 1,  /**< RETIRED (R3 W4-C delta 2, operator
+                                          *   "kaldır" 2026-09-18; atlas-dec-
+                                          *   5b7568512b95e6d2e671c4eaad2c1879
+                                          *   rev 1) — refused unconditionally
+                                          *   by both the witness-side scalar
+                                          *   rules and this client-side
+                                          *   mirror (verify.c); the id NEVER
+                                          *   activates again and is never
+                                          *   reassigned. */
     DNAC_CFG_BLOCK_INTERVAL_SEC    = 2,  /**< overrides chain_def.block_interval_sec */
-    DNAC_CFG_INFLATION_START_BLOCK = 3,  /**< overrides default 1 (0 = inflation off) */
-    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_INFLATION_START_BLOCK
+    DNAC_CFG_INFLATION_START_BLOCK = 3,  /**< RETIRED (tokenomics-v3 P2,
+                                          *   P2-4; decision file
+                                          *   2026-09-22-nodus-tokenomics-
+                                          *   v3-operator.md §3 S-4: the
+                                          *   per-block mint is DELETED,
+                                          *   "INFLATION_START parametresi
+                                          *   (id 3) emekli") — refused
+                                          *   unconditionally by the
+                                          *   witness-side scalar rules
+                                          *   and this client-side mirror
+                                          *   (verify.c); the id NEVER
+                                          *   activates again and is never
+                                          *   reassigned. */
+    DNAC_CFG_TARGET_ACTIVE_COUNT   = 4,  /**< S3: target size of the active validator set */
+    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_TARGET_ACTIVE_COUNT
 } dnac_chain_config_param_id_t;
 
 /** Value range bounds — consensus-critical (client + witness reject out-of-range).
- *  The compile-time cap mirrors NODUS_W_MAX_BLOCK_TXS in nodus_types.h so
- *  on-wire-wire values never exceed the committed buffer sizes witness-side. */
-#define DNAC_CFG_MAX_TXS_HARD_CAP           10ULL
+ *
+ * R3 W4-C delta 2 (operator "kaldır" 2026-09-18;
+ * atlas-dec-5b7568512b95e6d2e671c4eaad2c1879 rev 1): the parameter this
+ * bound governed (`DNAC_CFG_MAX_TXS_PER_BLOCK`, id 1) is RETIRED —
+ * `nodus_witness_chain_config.c`'s scalar rules and grace lookup both
+ * refuse id 1 unconditionally now, and the engine's own count VERDICT
+ * (`nodus_witness_v2_apply.c`'s former "global tx-count cap" block) is
+ * deleted. `DNAC_CFG_MAX_TXS_HARD_CAP` (the bound this parameter used to
+ * be checked against) is DELETED here in delta 3, once its last two
+ * consumers — `dnac/src/transaction/verify.c` (the CLIENT-side mirror,
+ * `dnac_tx_verify_chain_config_rules`, now refuses id 1 unconditionally
+ * instead of range-checking it) and
+ * `dnac/tests/test_chain_config_verify.c` — stopped referencing it
+ * (grep-verified across the whole tree; Atlas `atlas_code_impact` on the
+ * symbol returned zero remaining candidates). It had NO live consumer
+ * left on the witness side; `NODUS_W_MAX_BLOCK_TXS` (nodus_types.h) it
+ * used to mirror is itself only read by the legacy merkle helpers
+ * (`nodus_witness_merkle.c`), not the version-3 path. */
 #define DNAC_CFG_MIN_BLOCK_INTERVAL_SEC     1ULL
 #define DNAC_CFG_MAX_BLOCK_INTERVAL_SEC     15ULL   /* Q6 default — tightened from 60 */
-#define DNAC_CFG_MAX_INFLATION_START_BLOCK  281474976710656ULL  /* 2^48 */
+/* tokenomics-v3 P2: DNAC_CFG_MAX_INFLATION_START_BLOCK (the 2^48 bound of
+ * RETIRED param id 3) is DELETED, exactly as delta 3 deleted
+ * DNAC_CFG_MAX_TXS_HARD_CAP for id 1: verify.c refuses id 3
+ * unconditionally, the genesis builder refuses any nonzero
+ * inflation_start_block, and its last reference
+ * (dnac/tests/test_chain_config_verify.c) now asserts the refusal
+ * instead of probing the bound. */
 
-/** BFT supermajority threshold for chain_config_tx (2f+1 for N=DNAC_COMMITTEE_SIZE=7). */
+/** TARGET_ACTIVE_COUNT range (S3, param_id 4): [7, 128].
+ *
+ *  MIN = DNAC_COMMITTEE_SIZE — the OFFICIAL DNA minimum initial-seat policy,
+ *  not a universal protocol law. A generic per-manifest minimum arrives with
+ *  the Season-6 manifest; until then governance may not shrink the DNA chain
+ *  below its bootstrap seat count.
+ *  MAX = DNAC_MAX_ACTIVE_VALIDATORS — this release's resource ceiling.
+ *
+ *  EFFECTIVITY: the value is SAMPLED ONLY at epoch-start heights by the
+ *  committee-selection path (wired in a later S3 wave), so it is
+ *  epoch-boundary-effective by construction — a mid-epoch effective_block
+ *  cannot resize a live committee.
+ *  GRACE CLASS: SAFETY-CRITICAL (same tier as BLOCK_INTERVAL_SEC —
+ *  DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS; INFLATION_START_BLOCK was in it
+ *  until tokenomics-v3 P2 retired id 3). */
+#define DNAC_CFG_MIN_TARGET_ACTIVE          ((uint64_t)DNAC_COMMITTEE_SIZE)
+#define DNAC_CFG_MAX_TARGET_ACTIVE          ((uint64_t)DNAC_MAX_ACTIVE_VALIDATORS)
+
+/** chain_config_tx vote-count SHAPE bounds — NOT the quorum rule.
+ *
+ *  MAX is the wire/struct slot cap: no proposal can carry more votes than
+ *  the release supports active validators. MIN stays 5 as a cheap floor
+ *  because the committee can never be smaller than DNAC_COMMITTEE_SIZE = 7
+ *  in this release and dna_bft_quorum(7) == 5, so a sub-5 proposal can never
+ *  reach quorum at any legal set size.
+ *
+ *  The BINDING threshold is witness-side: dna_bft_quorum(committee_count)
+ *  over the committee governing the signing height
+ *  (nodus_witness_chain_config.c::nodus_chain_config_apply). At N=7 that is
+ *  exactly 5 — the live chain's behaviour is unchanged. */
 #define DNAC_CHAIN_CONFIG_MIN_SIGS          5
-#define DNAC_CHAIN_CONFIG_MAX_SIGS          DNAC_COMMITTEE_SIZE
+#define DNAC_CHAIN_CONFIG_MAX_SIGS          DNAC_MAX_ACTIVE_VALIDATORS
 
 /**
  * @brief Unspent Transaction Output
@@ -368,6 +580,26 @@ struct dnac_utxo {
     dnac_utxo_status_t status;                   /**< Current status */
     uint64_t received_at;                        /**< Unix timestamp when received */
     uint64_t spent_at;                           /**< Unix timestamp when spent (0 if unspent) */
+
+    /**
+     * O15B §7 — chain height at or after which consensus will accept this
+     * coin as a spend input. 0 = spendable now (every ordinary output).
+     *
+     * Non-zero only for a stake release: the graduated validator's
+     * principal (locked DNAC_VALIDATOR_UNBOND_EPOCHS epochs past its
+     * graduation boundary) and a delegation's principal — an UNDELEGATE,
+     * or the automatic release when its validator graduates (locked
+     * DNAC_UNDELEGATE_LOCK_EPOCHS epochs). Spending a coin whose
+     * unlock_block exceeds the current chain height is rejected by EVERY
+     * honest validator (Rule D, nodus_witness_verify.c:730), so a wallet
+     * that selects one produces a transaction that can never commit — the
+     * submitter sees only a timeout, on every retry, forever.
+     *
+     * Sourced from the witness `dnac_utxo` response key "ub". A pre-O15B
+     * witness omits it and this stays 0, which reproduces the old behaviour
+     * against an old server without pretending to be correct there.
+     */
+    uint64_t unlock_block;
 
     /* Phase 12 — Anchored verification state (runtime-only, NOT persisted).
      * true  = this UTXO has a valid Merkle proof against a BFT-anchored
@@ -699,7 +931,8 @@ int dnac_get_current_fee(dnac_context_t *ctx, uint64_t *fee_out);
  * creates a validator record keyed by the caller's signing pubkey on commit.
  *
  * @param ctx                    DNAC context (must have identity + chain_id loaded)
- * @param commission_bps         Commission rate in basis points (0..10000)
+ * @param commission_bps         Commission rate in basis points
+ *                               (0..DNAC_COMMISSION_BPS_MAX == 5000)
  * @param unstake_destination_fp 128-char lowercase hex fingerprint that will
  *                               receive the post-cooldown UTXO when UNSTAKE
  *                               matures. By convention the caller's own
@@ -719,8 +952,11 @@ int dnac_stake(dnac_context_t *ctx,
  * @brief Submit an UNSTAKE TX — trigger validator RETIRING -> UNSTAKED.
  *
  * Fee-only TX with no appended fields. Actual self-stake return happens at
- * the epoch boundary via a locked UTXO whose
- * unlock_block = commit_block + DNAC_UNSTAKE_COOLDOWN_BLOCKS.
+ * the graduation boundary H_grad (the first boundary at which the validator
+ * is no longer in the set taking effect) via a locked UTXO whose
+ * unlock_block = H_grad + DNAC_VALIDATOR_UNBOND_EPOCHS × DNAC_EPOCH_LENGTH.
+ * Delegations the validator still holds are released to their delegators
+ * at the same boundary, locked DNAC_UNDELEGATE_LOCK_EPOCHS epochs.
  *
  * @param ctx        DNAC context
  * @param callback   Completion callback (can be NULL)
@@ -794,7 +1030,7 @@ int dnac_undelegate(dnac_context_t *ctx,
  *
  * @param ctx                 DNAC context
  * @param new_commission_bps  New commission rate in basis points
- *                            (0..DNAC_COMMISSION_BPS_MAX == 10000)
+ *                            (0..DNAC_COMMISSION_BPS_MAX == 5000)
  * @param signed_at_block     Block-height anchor for Rule K freshness
  *                            (witness rejects if the value is stale).
  *                            Must be > 0.
@@ -812,16 +1048,23 @@ int dnac_validator_update(dnac_context_t *ctx,
  * @brief Submit a DNAC_TX_CHAIN_CONFIG TX (Hard-Fork v1 Stage E).
  *
  * Committee-voted consensus parameter change. Caller has already
- * collected >= DNAC_CHAIN_CONFIG_MIN_SIGS (5) Dilithium5 signatures
- * from distinct committee members over the proposal preimage
- * (typically via the Stage C.2 w_cc_vote_req RPC or the Stage C
- * local sign primitive for the proposer's own vote).
+ * collected enough Dilithium5 signatures from distinct committee members
+ * over the proposal preimage (typically via the Stage C.2 w_cc_vote_req
+ * RPC or the Stage C local sign primitive for the proposer's own vote).
+ *
+ * "Enough" is decided witness-side: dna_bft_quorum(committee_count) over
+ * the committee governing the signing height. This client entry only
+ * enforces the SHAPE bounds [DNAC_CHAIN_CONFIG_MIN_SIGS,
+ * DNAC_CHAIN_CONFIG_MAX_SIGS]; a proposal that satisfies them can still be
+ * rejected for missing quorum. At the DNA chain's 7 seats the quorum is 5,
+ * which is what the shape floor already demands.
  *
  * Fee-only TX with no non-change outputs; the override row is written
  * to chain_config_history by the witness at state-apply time.
  *
  * @param ctx              DNAC context
- * @param param_id         dnac_chain_config_param_id_t value (1..3)
+ * @param param_id         dnac_chain_config_param_id_t value
+ *                         (1..DNAC_CFG_PARAM_MAX_ID)
  * @param new_value        Per-param range-checked in dnac_tx_verify_chain_config_rules
  * @param effective_block  Block height at which override activates
  *                         (witness enforces >= commit + grace tier)
@@ -831,7 +1074,9 @@ int dnac_validator_update(dnac_context_t *ctx,
  * @param valid_before     Freshness expiry (witness rejects if
  *                         commit_block > this)
  * @param votes            Array of collected (witness_id, signature) tuples
- * @param vote_count       Number of votes — must be in [5, 7]
+ * @param vote_count       Number of votes — must be in
+ *                         [DNAC_CHAIN_CONFIG_MIN_SIGS,
+ *                          DNAC_CHAIN_CONFIG_MAX_SIGS] = [5, 128]
  * @param callback         Completion callback (can be NULL)
  * @param user_data        Callback user data
  * @return DNAC_SUCCESS or error code
@@ -878,7 +1123,7 @@ typedef struct {
     uint8_t  pubkey[DNAC_PUBKEY_SIZE];  /**< Dilithium5 pubkey (2592B) */
     uint64_t self_stake;                 /**< Operator's own stake (raw units) */
     uint64_t total_delegated;            /**< Sum of all delegations (raw units) */
-    uint16_t commission_bps;             /**< Commission 0..10000 */
+    uint16_t commission_bps;             /**< Commission 0..DNAC_COMMISSION_BPS_MAX (5000) */
     uint8_t  status;                     /**< dnac_validator_status_t */
     uint64_t active_since_block;         /**< Block height when ACTIVE */
 } dnac_validator_list_entry_t;
@@ -958,9 +1203,13 @@ int dnac_validator_list(dnac_context_t *ctx,
  * DNAC_COMMITTEE_SIZE; callers must trust *count_out rather than
  * assuming a full committee.
  *
+ * S3 (Ledger V2): the active set is dynamic, so the caller contract is
+ * now the release ceiling. out[] holds up to DNAC_MAX_ACTIVE_VALIDATORS
+ * entries (~336 KB) — HEAP-allocate it, never a stack array.
+ *
  * @param ctx        DNAC context
- * @param out        Caller-allocated array of >= DNAC_COMMITTEE_SIZE
- *                   entries
+ * @param out        Caller-allocated array of >=
+ *                   DNAC_MAX_ACTIVE_VALIDATORS entries (heap)
  * @param count_out  Number of committee members returned (always
  *                   written)
  * @return DNAC_SUCCESS once wired, DNAC_ERROR_NOT_IMPLEMENTED until

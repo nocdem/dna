@@ -18,7 +18,23 @@
  *   committee_sig_count(u8) ||
  *   votes[committee_sig_count] × { witness_id(32), signature(4627) }
  *
- * Header always 42 bytes. Per-vote 4659 bytes. Max block = 42 + 7*4659 = 32655.
+ * Header always 42 bytes. Per-vote 4659 bytes.
+ * Max block = 42 + 128*4659 = 596394 (Ledger V2 S3; was 42 + 7*4659 = 32655).
+ *
+ * S3 GENERALIZATION (Ledger V2): the vote-slot cap moved from the hardcoded
+ * 7-seat committee to DNA_MAX_ACTIVE_VALIDATORS. This is a STRICT WIRE
+ * SUPERSET — not a format change:
+ *   - Field order, field widths and offsets are untouched.
+ *   - committee_sig_count stays u8 (128 <= 255), so the fixed 42-byte header
+ *     is byte-identical for every transaction the live chain has ever seen.
+ *   - Every historical CHAIN_CONFIG tx (5..7 votes) encodes and decodes to
+ *     exactly the same bytes as before; only counts in 8..128 — which no
+ *     encoder could previously produce and no decoder previously accepted —
+ *     become representable.
+ * The SEMANTIC threshold is NOT on this wire: it is the witness-side
+ * "quorum of the committee that governs the signing height" check in
+ * nodus_witness_chain_config.c (dna_bft_quorum over the actual committee
+ * count). This header only bounds the shape.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -30,20 +46,43 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#include "dnac/ledger_ids.h"   /* DNA_MAX_ACTIVE_VALIDATORS (S3 release cap) */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 #define DNAC_CC_WIRE_WITNESS_ID_SIZE   32
 #define DNAC_CC_WIRE_SIGNATURE_SIZE    4627  /* Dilithium5 */
-#define DNAC_CC_WIRE_COMMITTEE_SIZE    7     /* max occupied vote slots */
-#define DNAC_CC_WIRE_MIN_SIGS          5     /* quorum threshold */
+
+/** Maximum occupied vote slots. Tracks the release's active-validator
+ *  ceiling — NOT a permanent protocol maximum (see ledger_ids.h). */
+#define DNAC_CC_WIRE_MAX_SLOTS         DNA_MAX_ACTIVE_VALIDATORS
+
+/** Cheap SHAPE floor, not the quorum rule.
+ *
+ *  5 remains a valid floor for this release because the committee can never
+ *  be smaller than the 7 initial seats (DNAC_COMMITTEE_SIZE), and
+ *  dna_bft_quorum(7) == 5 — so no honest proposal with fewer than 5 votes
+ *  can ever reach quorum, whatever the active-set size. Rejecting <5 early
+ *  therefore costs nothing and saves the decoder/verifier work.
+ *
+ *  The ACTUAL threshold is dna_bft_quorum(committee_count) evaluated
+ *  witness-side against the committee governing the signing height. If a
+ *  future release ever allows a committee smaller than 7 seats, this floor
+ *  must be revisited together with that change. */
+#define DNAC_CC_WIRE_MIN_SIGS          5
 #define DNAC_CC_WIRE_FIXED_LEN         42    /* bytes before votes[] */
 #define DNAC_CC_WIRE_PER_VOTE          (DNAC_CC_WIRE_WITNESS_ID_SIZE + \
                                          DNAC_CC_WIRE_SIGNATURE_SIZE)
 #define DNAC_CC_WIRE_MAX_LEN           (DNAC_CC_WIRE_FIXED_LEN + \
-                                         DNAC_CC_WIRE_COMMITTEE_SIZE * \
+                                         DNAC_CC_WIRE_MAX_SLOTS * \
                                          DNAC_CC_WIRE_PER_VOTE)
+
+/* NOTE: the cap invariants (slot count fits the u8 count byte; the sig floor
+ * sits below the cap) are asserted in chain_config_wire.c rather than here —
+ * this header carries an extern "C" guard, and _Static_assert is not a C++
+ * keyword, so a C++ consumer would fail to compile it. */
 
 /** One collected committee vote — matches the on-wire layout. */
 typedef struct {
@@ -51,7 +90,11 @@ typedef struct {
     uint8_t signature[DNAC_CC_WIRE_SIGNATURE_SIZE];
 } dnac_cc_wire_vote_t;
 
-/** Parsed / to-encode CHAIN_CONFIG extension fields. */
+/** Parsed / to-encode CHAIN_CONFIG extension fields.
+ *
+ * ⚠ SIZE: ~583 KiB since the S3 slot-cap generalization (128 × 4659 B).
+ * This struct MUST NOT be placed on the stack — heap-allocate it (calloc)
+ * and free it on every path, error paths included. */
 typedef struct {
     uint8_t  param_id;
     uint64_t new_value;
@@ -60,7 +103,7 @@ typedef struct {
     uint64_t signed_at_block;
     uint64_t valid_before_block;
     uint8_t  committee_sig_count;                 /* occupied entries in votes[] */
-    dnac_cc_wire_vote_t votes[DNAC_CC_WIRE_COMMITTEE_SIZE];
+    dnac_cc_wire_vote_t votes[DNAC_CC_WIRE_MAX_SLOTS];
 } dnac_cc_wire_ext_t;
 
 /**
@@ -84,7 +127,7 @@ int dnac_cc_wire_encode(const dnac_cc_wire_ext_t *fields,
 /**
  * Decode extension bytes starting at `src`. Validates:
  *   - src_len >= fixed_len
- *   - committee_sig_count <= committee cap
+ *   - committee_sig_count <= DNAC_CC_WIRE_MAX_SLOTS
  *   - src_len >= fixed_len + committee_sig_count * per_vote
  *
  * Does NOT enforce the [MIN_SIGS, MAX_SIGS] range or any semantic rule —

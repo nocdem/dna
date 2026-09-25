@@ -1,0 +1,16 @@
+{
+  "name": "nodus-website",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.mjs",
+    "start": "node server.mjs",
+    "build:portals": "node build-portals.mjs",
+    "package": "node package-public.mjs",
+    "check": "node --check app.js && node --check network.js && node --check visuals.js && node --check server.mjs && node --check portal.js && node --check scan/app.js && node --check wiki/search.js && node --check build-portals.mjs && node --check package-public.mjs && node --check public-files.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -34,20 +34,40 @@ static int tests_passed = 0;
 static nodus_server_t server;
 static volatile bool server_ready = false;
 
+/* O15H D6 — these ports MUST stay outside the Stage F harness range.
+ *
+ * This test used to bind 14000-14004, which is exactly
+ * `stagef_{udp,tcp,peer,chan,witness}_port(1)` — Stage F node 1
+ * (nodus/tests/integration/stagef/stagef_env.sh: 14000 + (n-1)*10, node
+ * 1..21, so the harness owns 14000-14204). `ctest` therefore passed or
+ * failed depending on whether a Stage F cluster happened to be up:
+ *
+ *   Failed to listen on TCP 127.0.0.1:14001 (Address already in use)
+ *
+ * Same command, different answer, for reasons unrelated to the code
+ * under test — the flakiness class this project forbids outright. 13900
+ * is below the harness base and outside its stride, so the two can run
+ * concurrently. Anything added here must stay clear of 14000-14204. */
+#define TS_UDP_PORT     13900
+#define TS_TCP_PORT     13901
+#define TS_PEER_PORT    13902
+#define TS_CH_PORT      13903
+#define TS_WITNESS_PORT 13904
+
 static void *server_thread(void *arg) {
     (void)arg;
 
     nodus_server_config_t config;
     memset(&config, 0, sizeof(config));
     snprintf(config.bind_ip, sizeof(config.bind_ip), "127.0.0.1");
-    config.udp_port = 14000;
-    config.tcp_port = 14001;
+    config.udp_port     = TS_UDP_PORT;
+    config.tcp_port     = TS_TCP_PORT;
     /* 2026-07-21: explicit peer/witness ports — unset (0) would bind the
      * PRODUCTION defaults 4002/4004 and collide with every other
      * server-spawning test under `ctest -j` (see test_client.c). */
-    config.peer_port = 14002;
-    config.ch_port  = 14003;
-    config.witness_port = 14004;
+    config.peer_port    = TS_PEER_PORT;
+    config.ch_port      = TS_CH_PORT;
+    config.witness_port = TS_WITNESS_PORT;
     snprintf(config.data_path, sizeof(config.data_path), "/tmp/nodus_test_%d", getpid());
 
     /* Create data dir */
@@ -82,7 +102,7 @@ static bool authenticated = false;
 /* Track channel notification (declared early — used by ch_on_frame) */
 static volatile bool seen_ch_ntf = false;
 
-/* ── Channel client (TCP 14003) ────────────────────────────────── */
+/* ── Channel client (TCP TS_CH_PORT) ────────────────────────────────── */
 
 static nodus_tcp_t ch_client_tcp;
 static nodus_tcp_conn_t *ch_client_conn = NULL;
@@ -168,7 +188,7 @@ static void test_connect(void) {
     client_tcp.on_frame = on_frame;
     client_tcp.on_disconnect = on_disconnect;
 
-    client_conn = nodus_tcp_connect(&client_tcp, "127.0.0.1", 14001);
+    client_conn = nodus_tcp_connect(&client_tcp, "127.0.0.1", TS_TCP_PORT);
     if (!client_conn) { FAIL("connect returned NULL"); return; }
 
     /* Wait for connection */
@@ -336,7 +356,7 @@ static void test_unauth_rejected(void) {
     volatile bool resp2_ready = false;
 
     /* We need a simple test — just connect and try a GET */
-    nodus_tcp_conn_t *conn2 = nodus_tcp_connect(&tcp2, "127.0.0.1", 14001);
+    nodus_tcp_conn_t *conn2 = nodus_tcp_connect(&tcp2, "127.0.0.1", TS_TCP_PORT);
     if (!conn2) { FAIL("connect2 returned NULL"); nodus_tcp_close(&tcp2); return; }
 
     for (int i = 0; i < 100 && conn2->state == NODUS_CONN_CONNECTING; i++)
@@ -451,7 +471,7 @@ static void test_get_all(void) {
     PASS();
 }
 
-/* ── Channel connect + auth (TCP 14003) ────────────────────────── */
+/* ── Channel connect + auth (TCP TS_CH_PORT) ────────────────────────── */
 
 static void test_ch_connect(void) {
     TEST("ch_client connects to channel port");
@@ -460,7 +480,7 @@ static void test_ch_connect(void) {
     ch_client_tcp.on_frame = ch_on_frame;
     ch_client_tcp.on_disconnect = ch_on_disconnect;
 
-    ch_client_conn = nodus_tcp_connect(&ch_client_tcp, "127.0.0.1", 14003);
+    ch_client_conn = nodus_tcp_connect(&ch_client_tcp, "127.0.0.1", TS_CH_PORT);
     if (!ch_client_conn) { FAIL("connect returned NULL"); return; }
 
     for (int i = 0; i < 100 && ch_client_conn->state == NODUS_CONN_CONNECTING; i++)
@@ -919,7 +939,7 @@ int main(void) {
     }
 
 #ifndef NODUS_CHANNELS_DISABLED
-    /* Channel tests require separate TCP 14003 connection */
+    /* Channel tests require separate TS_CH_PORT connection */
     test_ch_connect();
     if (ch_client_conn) test_ch_auth();
     if (ch_authenticated) {

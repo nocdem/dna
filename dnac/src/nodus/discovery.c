@@ -72,13 +72,19 @@ static int discover_from_committee(dnac_witness_info_t **out, int *count_out) {
     nodus_client_t *client = nodus_singleton_get();
     if (!client) return -1;
 
+    /* S3: the committee result is ~370 KB (entries sized to the release
+     * ceiling, nodus_types.h) — heap, never the stack. This function runs
+     * on dna_engine worker threads and on Android's 1 MB pthread stacks. */
+    nodus_dnac_committee_result_t *committee = calloc(1, sizeof(*committee));
+    if (!committee) return -1;
+
     nodus_singleton_lock();
-    nodus_dnac_committee_result_t committee;
-    int rc = nodus_client_dnac_committee(client, &committee);
+    int rc = nodus_client_dnac_committee(client, committee);
     nodus_singleton_unlock();
 
-    if (rc != 0 || committee.count <= 0) {
+    if (rc != 0 || committee->count <= 0) {
         /* -1 drives fallback; do not treat as hard error. */
+        free(committee);
         return -1;
     }
 
@@ -88,19 +94,19 @@ static int discover_from_committee(dnac_witness_info_t **out, int *count_out) {
      * through so the caller tries the legacy roster (which includes
      * DHT-sourced endpoints). */
     int addr_count = 0;
-    for (int i = 0; i < committee.count; i++) {
-        if (committee.entries[i].address[0] != '\0') addr_count++;
+    for (int i = 0; i < committee->count; i++) {
+        if (committee->entries[i].address[0] != '\0') addr_count++;
     }
-    if (addr_count == 0) return -1;
+    if (addr_count == 0) { free(committee); return -1; }
 
     dnac_witness_info_t *servers =
         calloc((size_t)addr_count, sizeof(dnac_witness_info_t));
-    if (!servers) return -1;
+    if (!servers) { free(committee); return -1; }
 
     static const char hex[] = "0123456789abcdef";
     int w = 0;
-    for (int i = 0; i < committee.count; i++) {
-        const nodus_dnac_committee_entry_t *e = &committee.entries[i];
+    for (int i = 0; i < committee->count; i++) {
+        const nodus_dnac_committee_entry_t *e = &committee->entries[i];
         if (e->address[0] == '\0') continue;
         dnac_witness_info_t *info = &servers[w];
 
@@ -128,6 +134,7 @@ static int discover_from_committee(dnac_witness_info_t **out, int *count_out) {
         w++;
     }
 
+    free(committee);
     *out = servers;
     *count_out = w;
     return 0;

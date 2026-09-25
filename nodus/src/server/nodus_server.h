@@ -10,6 +10,8 @@
 #ifndef NODUS_SERVER_H
 #define NODUS_SERVER_H
 
+#include <signal.h>                /* sig_atomic_t — see stop_requested */
+
 #include "nodus/nodus_types.h"
 #include "transport/nodus_tcp.h"
 #include "transport/nodus_udp.h"
@@ -80,20 +82,28 @@ typedef struct {
      * Default false for backward compat. Set true once all nodes are updated. */
     bool        require_peer_auth;
 
-    /* PR 3 Yol B / C-2 cold-DR escape (C4 in plan).
+    /* R3 W4 — is_cold_bootstrap (the PR 3 Yol B / C-2 cold-DR escape) is
+     * DELETED with the closed consensus lane, field and all: its one
+     * reader (nodus_witness_bootstrap.c, which bypassed the DISCOVER
+     * bootstrap state machine's C-2 cabal protection on incoming
+     * w_chain_q when this flag was set) is deleted with that file, and
+     * the field itself no longer exists in this struct — there is
+     * nothing left for the CLI/config to set. */
+
+    /* O15E Faz D — local successor genesis PIN for a fresh joiner. When
+     * `has_v2_genesis_pin` is set and the node has no successor chain,
+     * the joiner bootstrap pulls the canonical genesis bundle from a
+     * peer, re-derives the genesis, and adopts it ONLY if the derivation
+     * matches `v2_genesis_pin`. Operator-supplied (CLI/config), NEVER
+     * wire-settable. Without it a fresh node is not a successor joiner.
      *
-     * When all 7 nodes are wiped simultaneously, every fresh node sits
-     * in DISCOVER and refuses to respond to incoming w_chain_q (C-2
-     * cabal protection). The cluster deadlocks because no peer
-     * advertises a chain. The operator's escape: start ONE node with
-     * --cold-bootstrap so it bypasses the C-2 reject and answers
-     * w_chain_q queries even from its own (empty/bootstrapping) state.
-     * The other 6 fresh nodes then DISCOVER from this seed.
-     *
-     * MUST NOT be set on more than one node at a time — two
-     * cold-bootstrap nodes can re-create the cabal vulnerability they
-     * mitigate. Operator responsibility, not protocol-enforced. */
-    bool        is_cold_bootstrap;
+     * R3 W3 (D-24 rev 4 (1)): 32 bytes — the chain id, not a 64-byte
+     * genesis BlockID. A version-3 chain has no genesis BLOCK to pin to
+     * (D-19 rev 6 withdrew it); its only identity is the hash of its
+     * stored genesis DOCUMENT (D-18 rev 4), which is exactly what this
+     * field holds. */
+    bool        has_v2_genesis_pin;
+    uint8_t     v2_genesis_pin[32];
 } nodus_server_config_t;
 
 /* ── Inter-node session (lightweight — rate limiting only, no auth) ── */
@@ -464,6 +474,19 @@ typedef struct nodus_server {
     uint64_t                start_time;
 
     bool                    running;
+
+    /* Set by nodus_server_stop(), which nodus-server calls from its
+     * SIGINT/SIGTERM handler. SEPARATE from `running` because
+     * nodus_server_run() sets `running = true` on entry: a stop that
+     * arrives during nodus_server_init() — which is a long operation
+     * (storage migration, VACUUM, identity generation, witness init) —
+     * would otherwise be overwritten a moment later and the process
+     * would ignore the signal for the rest of its life. The Stage F
+     * harness kills its short-lived identity-generation spawns exactly
+     * in that window, so it hit this intermittently and hung
+     * stagef_up.sh in `wait`. sig_atomic_t because a signal handler
+     * writes it. */
+    volatile sig_atomic_t   stop_requested;
 } nodus_server_t;
 
 /**
@@ -568,6 +591,17 @@ int nodus_auth_handle_auth(nodus_server_t *srv, nodus_session_t *sess,
 int nodus_auth_handle_key_init(nodus_server_t *srv, nodus_session_t *sess,
                                 const uint8_t *kyber_ct, const uint8_t *nonce_c,
                                 uint32_t txn_id);
+
+/**
+ * Faz 1 KEM migration (docs/plans/decisions/2026-09-23-kem-mlkem-
+ * migration.md) — algorithm-aware KEY_INIT handler. key_alg: 0 = round-3
+ * Kyber (delegates to nodus_auth_handle_key_init() above, byte-identical
+ * to pre-Faz-1 behaviour), 1 = ML-KEM-1024. D11, N1 delta 1.
+ */
+int nodus_auth_handle_key_init_alg(nodus_server_t *srv, nodus_session_t *sess,
+                                    uint8_t key_alg,
+                                    const uint8_t *ct, const uint8_t *nonce_c,
+                                    uint32_t txn_id);
 
 #ifdef __cplusplus
 }

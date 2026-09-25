@@ -12,10 +12,10 @@
 #define DNAC_VERSION_H
 
 #define DNAC_VERSION_MAJOR 0
-#define DNAC_VERSION_MINOR 17
-#define DNAC_VERSION_PATCH 8
+#define DNAC_VERSION_MINOR 18
+#define DNAC_VERSION_PATCH 11
 
-#define DNAC_VERSION_STRING "0.17.8-stake.wip"
+#define DNAC_VERSION_STRING "0.18.11-ledgerv2-o15j"
 
 /**
  * @brief Get DNAC library version string

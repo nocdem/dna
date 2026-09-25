@@ -1,7 +1,8 @@
 /**
  * @file test_prover_agg.c
  * @brief Dual-mode S4b.4 — pure-C AGGREGATE prover byte-match vs the REAL
- *        Plonky3 proof (width 2318 post-F3, is_zk=1, num_qc=8, 43 publics).
+ *        Plonky3 proof (width CONF_AGGZK_WIDTH = 2378 at the LEDGER-V2 S8
+ *        Gate 2 depth D=24, is_zk=1, num_qc=8, CONF_AGGZK_NUM_PUBLICS = 45).
  *
  * d4.c-2 (2026-07-26): dnac_agg_prover_prove now DELEGATES to dnac_batch_prove
  * (1-instance is_zk=1 batch) — the v3 uni-stark pipeline retired. This test
@@ -10,8 +11,11 @@
  * wrapper's accessors (zeta/roots/final_poly/publics) byte-match the oracle —
  * the FULL proof byte-match lives in test_batch_shielded_agg (d4.c-1).
  *
- * Rebuilds the oracle instance (1-input: INPUT 100 = OUTPUT 70 + FEE 30, D=4
- * membership, log_height=7; 2in/4in variants) + the SmallRng(1) draw stream,
+ * Rebuilds the oracle instance (1-input: INPUT 100 = OUTPUT 70 + OUTPUT 30,
+ * D=CONF_AGG_TREE_DEPTH membership, log_height=7; 2in/4in variants) + the
+ * SmallRng(1) draw stream. The fee and the two boundary legs are PUBLICS with
+ * no in-circuit derivation left, so the fixture takes them from the pinned
+ * vector's public_values rather than restating them,
  * runs dnac_agg_prover_prove, and byte-matches against the named scenario in
  * tools/vectors/batch_shielded_agg.json:
  *
@@ -120,7 +124,10 @@ static gold_fp2_t parse_fp2_wrapped(js_t *s){
 }
 
 #define TP_FP 16
-#define TP_PUB 48  /* covers the 43 S4c publics (anchor||num_in||nf||num_out||ocommit||fee||txbind) */
+/* covers the S4c+S8 publics (anchor||num_in||nf||num_out||ocommit||fee||
+ * boundary_in||boundary_out||txbind) — macro-derived so a public-count bump
+ * cannot silently truncate the parse. */
+#define TP_PUB (CONF_AGGZK_NUM_PUBLICS + 3)
 
 typedef struct {
     char name[64];
@@ -221,13 +228,18 @@ int main(int argc,char **argv){
     /* F3: nk/ak are 4-lane-per-block arrays ([blk*4 + lane]). */
     uint64_t value[5], addr[5*4], rcm[5*2], pos[5], nk[5*4], ak[5*4];
     uint8_t roles[5];
-    uint64_t memb_siblings[5*4*4];
+    /* S8 Gate 2: sibling arrays are sized by the MACRO (D = 24), never a
+     * literal 4 — the stride below is D*4 lanes per note-block. */
+    const size_t SIB_STRIDE = (size_t)CONF_AGG_TREE_DEPTH * 4;
+    uint64_t memb_siblings[5 * CONF_AGG_TREE_DEPTH * 4];
     size_t num_notes = 3;
     memset(memb_siblings, 0, sizeof memb_siblings);
     if (four_in) {
-        /* 4 INPUT (25×4) = OUTPUT 100; all four in ONE depth-4 tree at pos 0..3
-         * (leaves 0/1 and 2/3 pair, subtree roots pair at level 1) → one anchor.
-         * Fills N_input to MAX_INPUTS=4 (all 4 slots) — the GAP-1 boundary. */
+        /* 4 INPUT (25×4) = OUTPUT 100; all four at pos 0..3 of ONE tree (leaves
+         * 0/1 and 2/3 pair, subtree roots pair at level 1) → one anchor. Levels
+         * 2..D−1 carry the SAME per-level filler for every block, so all four
+         * walks stay convergent at any depth. Fills N_input to MAX_INPUTS=4
+         * (all 4 slots) — the GAP-1 boundary. */
         num_notes = 5;
         for(int i=0;i<4;i++){ value[i]=25; roles[i]=CONF_ACTION_ROLE_INPUT; pos[i]=(uint64_t)i; }
         value[4]=100; roles[4]=CONF_ACTION_ROLE_OUTPUT; pos[4]=0;
@@ -250,14 +262,22 @@ int main(int argc,char **argv){
         uint64_t n01[4], n23[4];
         note_merkle_compress(cm[0],cm[1],n01);
         note_merkle_compress(cm[2],cm[3],n23);
-        const uint64_t e2[4]={0x3001,0x3002,0x3003,0x3004}, e3[4]={0x4001,0x4002,0x4003,0x4004};
         uint64_t *ms=memb_siblings;
         for(int j=0;j<4;j++){
-            ms[0*16+0*4+j]=cm[1][j]; ms[0*16+1*4+j]=n23[j]; ms[0*16+2*4+j]=e2[j]; ms[0*16+3*4+j]=e3[j];
-            ms[1*16+0*4+j]=cm[0][j]; ms[1*16+1*4+j]=n23[j]; ms[1*16+2*4+j]=e2[j]; ms[1*16+3*4+j]=e3[j];
-            ms[2*16+0*4+j]=cm[3][j]; ms[2*16+1*4+j]=n01[j]; ms[2*16+2*4+j]=e2[j]; ms[2*16+3*4+j]=e3[j];
-            ms[3*16+0*4+j]=cm[2][j]; ms[3*16+1*4+j]=n01[j]; ms[3*16+2*4+j]=e2[j]; ms[3*16+3*4+j]=e3[j];
+            ms[0*SIB_STRIDE+0*4+j]=cm[1][j]; ms[0*SIB_STRIDE+1*4+j]=n23[j];
+            ms[1*SIB_STRIDE+0*4+j]=cm[0][j]; ms[1*SIB_STRIDE+1*4+j]=n23[j];
+            ms[2*SIB_STRIDE+0*4+j]=cm[3][j]; ms[2*SIB_STRIDE+1*4+j]=n01[j];
+            ms[3*SIB_STRIDE+0*4+j]=cm[2][j]; ms[3*SIB_STRIDE+1*4+j]=n01[j];
         }
+        /* Levels 2..D−1: the SAME rule the old 4-level fixture used for its
+         * levels 2 and 3 — filler[L] = {0x(L+1)001..0x(L+1)004} — extended to
+         * every level, IDENTICAL across the four blocks so all walks converge.
+         * Levels 2 and 3 stay byte-identical to the pre-S8 e2/e3 constants. */
+        for(unsigned L=2;L<(unsigned)CONF_AGG_TREE_DEPTH;L++)
+            for(int b=0;b<4;b++)
+                for(int j=0;j<4;j++)
+                    ms[(size_t)b*SIB_STRIDE+(size_t)L*4+j]=
+                        (uint64_t)0x1000*(L+1)+0x0001+(uint64_t)j;
     } else if (two_in) {
         /* 2 INPUT (60+40) = OUTPUT 100; the two inputs are level-0 SIBLINGS of
          * each other (pos 0 and 1) so both walks converge to ONE anchor. */
@@ -276,13 +296,26 @@ int main(int argc,char **argv){
         uint64_t addr0[4],addr1[4],cm0[4],cm1[4];
         conf_action_derive_addr(&ak[0],&nk[0],addr0);  note_commit(value[0],addr0,&rcm[0],cm0);
         conf_action_derive_addr(&ak[4],&nk[4],addr1);  note_commit(value[1],addr1,&rcm[2],cm1);
-        const uint64_t up[3][4]={{0x2001,0x2002,0x2003,0x2004},{0x3001,0x3002,0x3003,0x3004},{0x4001,0x4002,0x4003,0x4004}};
-        for(int j=0;j<4;j++){ memb_siblings[0*16+0*4+j]=cm1[j]; memb_siblings[1*16+0*4+j]=cm0[j]; }
-        for(int l=0;l<3;l++) for(int j=0;j<4;j++){ memb_siblings[0*16+(l+1)*4+j]=up[l][j]; memb_siblings[1*16+(l+1)*4+j]=up[l][j]; }
+        for(int j=0;j<4;j++){ memb_siblings[0*SIB_STRIDE+0*4+j]=cm1[j]; memb_siblings[1*SIB_STRIDE+0*4+j]=cm0[j]; }
+        /* Levels 1..D−1 share ONE filler per level (the pre-S8 `up` rule
+         * {0x(L+1)001..0x(L+1)004}, extended from 3 levels to D−1) so both
+         * walks reach the SAME anchor. Levels 1-3 are byte-identical to the
+         * pre-S8 up[0..2]. */
+        for(unsigned L=1;L<(unsigned)CONF_AGG_TREE_DEPTH;L++)
+            for(int j=0;j<4;j++){
+                const uint64_t f=(uint64_t)0x1000*(L+1)+0x0001+(uint64_t)j;
+                memb_siblings[0*SIB_STRIDE+(size_t)L*4+j]=f;
+                memb_siblings[1*SIB_STRIDE+(size_t)L*4+j]=f;
+            }
     } else {
-        /* 1 INPUT 100 = OUTPUT 70 + FEE 30 (== dump_conf_action_agg_air_zk). */
+        /* 1 INPUT 100 = OUTPUT 70 + OUTPUT 30 (== dump_conf_action_agg_air_zk).
+         * ⚠ S8 Gate 2: note 2 WAS a CONF_ACTION_ROLE_FEE block. IS_FEE is now
+         * pinned ZERO and generate rejects a FEE-role note, so it became a
+         * second OUTPUT of the SAME value (the set stays conserving) and the
+         * fee PUBLIC is supplied through inst.fee instead — it no longer comes
+         * from a note block or the FEE_ACC column (stark_prover_agg.h:102-114). */
         const uint64_t v[3]={100,70,30};       memcpy(value,v,sizeof v);
-        const uint8_t  r[3]={CONF_ACTION_ROLE_INPUT,CONF_ACTION_ROLE_OUTPUT,CONF_ACTION_ROLE_FEE}; memcpy(roles,r,sizeof r);
+        const uint8_t  r[3]={CONF_ACTION_ROLE_INPUT,CONF_ACTION_ROLE_OUTPUT,CONF_ACTION_ROLE_OUTPUT}; memcpy(roles,r,sizeof r);
         const uint64_t p[3]={5,0,0};           memcpy(pos,p,sizeof p);
         const uint64_t k[3*4]={0x22222222ULL,0x22222223ULL,0x22222224ULL,0x22222225ULL,
                                0,0,0,0, 0,0,0,0}; memcpy(nk,k,sizeof k);
@@ -290,11 +323,14 @@ int main(int argc,char **argv){
                                0,0,0,0, 0,0,0,0}; memcpy(ak,a,sizeof a);
         const uint64_t ad[3*4]={0,0,0,0, 0xAA01,0xAA02,0xAA03,0xAA04, 0xFEE1,0xFEE2,0xFEE3,0xFEE4}; memcpy(addr,ad,sizeof ad);
         const uint64_t rc[3*2]={0x11,0x12, 0x21,0x22, 0x31,0x32}; memcpy(rcm,rc,sizeof rc);
-        const uint64_t sib[3*4*4]={
-            0x1001,0x1002,0x1003,0x1004, 0x2001,0x2002,0x2003,0x2004,
-            0x3001,0x3002,0x3003,0x3004, 0x4001,0x4002,0x4003,0x4004,
-            0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 };
-        memcpy(memb_siblings,sib,sizeof sib);
+        /* Block 0 (the only INPUT) walks D levels; the pre-S8 fixture spelled
+         * out 4 literal levels {0x(L+1)001..0x(L+1)004} — the SAME rule now
+         * fills all D, so levels 0-3 stay byte-identical. Blocks 1/2 are
+         * OUTPUTs: their sibling slots are never read (they stay 0). */
+        for(unsigned L=0;L<(unsigned)CONF_AGG_TREE_DEPTH;L++)
+            for(int j=0;j<4;j++)
+                memb_siblings[0*SIB_STRIDE+(size_t)L*4+j]=
+                    (uint64_t)0x1000*(L+1)+0x0001+(uint64_t)j;
     }
 
     const size_t need = DNAC_AGG_PROVER_TOTAL_DRAWS(height);
@@ -313,6 +349,17 @@ int main(int argc,char **argv){
     inst.value=value; inst.addr=addr; inst.rcm=rcm; inst.roles=roles;
     inst.pos=pos; inst.nk=nk; inst.ak=ak; inst.num_notes=num_notes;
     inst.memb_siblings=memb_siblings;
+    /* S8 Gate 2 turnstile + fee: these three publics have NO in-circuit
+     * derivation left (IS_FEE is pinned zero, so the fee no longer comes from a
+     * FEE-role note or FEE_ACC, and the two legs are publics the prover is
+     * simply told). The fixture must therefore take them FROM the pinned KAT
+     * rather than restate them — a hard-coded guess diverges silently and
+     * surfaces only as an opaque publics-mismatch. T6 below then asserts the
+     * full 45-public equality, so any future fixture/KAT drift fails there,
+     * naming the index. */
+    inst.fee          = fx->publics[CONF_AGGZK_PUB_FEE];
+    inst.boundary_in  = fx->publics[CONF_AGGZK_PUB_BIN];
+    inst.boundary_out = fx->publics[CONF_AGGZK_PUB_BOUT];
     /* Sample KAT tx_binding — MUST match the oracle's AGG_KAT_TXBIND (production
      * uses conf_txbind_map(sighash_v4)). Proves the interface carries a real
      * caller-provided tx_binding (not hardcoded 0) + the proof FS-welds to it. */
@@ -359,7 +406,8 @@ int main(int argc,char **argv){
         size_t n=0; const gold_fp_t *pub=dnac_agg_prover_proof_publics(pf,&n);
         int ok=(n==fx->num_publics);
         for(size_t i=0;ok&&i<n;i++) if(gold_fp_to_u64(pub[i])!=fx->publics[i])ok=0;
-        printf("  T6 publics (%zu = anchor||num_input||nf_slots) == REAL  %s\n", n,ok?"PASS":"FAIL");
+        printf("  T6 publics (%zu = anchor||counts||slots||fee||b_in||b_out||txbind) == REAL  %s\n",
+               n,ok?"PASS":"FAIL");
         if(!ok)fails++;
     }
     {
@@ -380,7 +428,9 @@ int main(int argc,char **argv){
     if(!two_in && !four_in){
         int ok=1;
         dnac_agg_prover_proof_t *bad=NULL;
-        /* (a) non-conserving balance: INPUT 100 != OUTPUT 60 + FEE 30. */
+        /* (a) non-conserving balance: INPUT 100 != OUTPUT 60 + OUTPUT 30, and
+         * the turnstile legs are both 0, so Σ = 10 != boundary_out −
+         * boundary_in = 0 (the S8 Gate-2 terminal, conf_action_air.c:149-153). */
         const uint64_t v_bad[3]={100,60,30};
         dnac_agg_prover_instance_t ci=inst; ci.value=v_bad;
         if(dnac_agg_prover_prove(&ci,&bad)!=DNAC_PROVER_ERR_RANGE)ok=0;
@@ -398,7 +448,28 @@ int main(int argc,char **argv){
          * membership walk cannot run -> agg_zk_generate fail-closes (RANGE). */
         ci=inst; ci.memb_siblings=NULL;
         if(dnac_agg_prover_prove(&ci,&bad)!=DNAC_PROVER_ERR_RANGE)ok=0;
-        printf("  T8 (S4b.5) cheat instances fail to prove (4/4 RANGE)  %s\n",
+        /* (e) S8 Gate 2: a FEE-role note is unsatisfiable (IS_FEE ≡ 0), so the
+         * generator refuses it rather than emitting an unprovable trace. */
+        const uint8_t r_fee[3]={CONF_ACTION_ROLE_INPUT,CONF_ACTION_ROLE_OUTPUT,
+                                CONF_ACTION_ROLE_FEE};
+        ci=inst; ci.roles=r_fee;
+        if(dnac_agg_prover_prove(&ci,&bad)!=DNAC_PROVER_ERR_RANGE)ok=0;
+        /* (f) S8 Gate 2: either transparent leg at or above 2^63 is outside the
+         * frozen B2 range the consensus entry enforces (ERR_BOUNDARY there), so
+         * the prover fail-closes rather than emit an unverifiable proof
+         * (stark_prover_agg.c:147-150). The conserving note set is untouched,
+         * which is itself the reason the pair is rejected: Σ = 0 could never
+         * equal the huge boundary delta. */
+        ci=inst; ci.boundary_in=(uint64_t)1<<63; ci.boundary_out=(uint64_t)1<<63;
+        if(dnac_agg_prover_prove(&ci,&bad)!=DNAC_PROVER_ERR_RANGE)ok=0;
+        ci=inst; ci.boundary_out=UINT64_MAX; ci.boundary_in=UINT64_MAX;
+        if(dnac_agg_prover_prove(&ci,&bad)!=DNAC_PROVER_ERR_RANGE)ok=0;
+        /* (g) S8 Gate 2: the fee is a PUBLIC field element now — a
+         * non-canonical value can never equal the verifier's recomputed public
+         * (stark_prover_agg.c:154-156). */
+        ci=inst; ci.fee=GOLDILOCKS_P;
+        if(dnac_agg_prover_prove(&ci,&bad)!=DNAC_PROVER_ERR_RANGE)ok=0;
+        printf("  T8 (S4b.5+S8) cheat instances fail to prove (8/8 RANGE) %s\n",
                ok?"PASS":"FAIL");
         if(!ok)fails++;
     }
@@ -407,8 +478,8 @@ int main(int argc,char **argv){
     free(draws);
     if(fails){ printf("test_prover_agg: FAIL (%d)\n",fails); free(fx); return 1; }
     printf("test_prover_agg: PASS\n");
-    printf("  pure-C AGGREGATE prove (width %d, num_qc=8, 43 publics) byte-matches\n",
-           (int)CONF_AGGZK_WIDTH);
+    printf("  pure-C AGGREGATE prove (width %d, num_qc=8, %d publics) byte-matches\n",
+           (int)CONF_AGGZK_WIDTH, (int)CONF_AGGZK_NUM_PUBLICS);
     printf("  the REAL Plonky3 is_zk=1 proof (zeta+roots+final_poly+publics) and\n");
     printf("  self-verifies (FRI + N-chunk constraint check). Rust-free end-to-end.\n");
     free(fx);

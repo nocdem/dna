@@ -398,6 +398,36 @@ int dnac_db_get_stored_chain_id(sqlite3 *db, uint8_t *chain_id_out);
  */
 int dnac_db_set_stored_chain_id(sqlite3 *db, const uint8_t *chain_id);
 
+/**
+ * @brief Get the chain height observed by the most recent UTXO sync.
+ *
+ * O15B §7. This is the `block_height` the witness reported in the SAME
+ * `dnac_utxo` response that produced the stored UTXO set, so the coins and
+ * the height a caller compares them against are always from one consistent
+ * observation.
+ *
+ * Coin selection uses it to skip coins still inside their post-UNSTAKE
+ * cooldown (`unlock_block > height`), which consensus would reject
+ * (nodus_witness_verify.c:730 Rule D).
+ *
+ * @param db          SQLite database handle
+ * @param height_out  Output; set to 0 and NOT_FOUND returned if never synced
+ * @return DNAC_SUCCESS, DNAC_ERROR_NOT_FOUND if never set, or error code
+ */
+int dnac_db_get_observed_height(sqlite3 *db, uint64_t *height_out);
+
+/**
+ * @brief Record the chain height observed by a UTXO sync.
+ *
+ * O15B §7. Stored big-endian so the value does not depend on host byte
+ * order. Call it in the same sync that stored the coins, never separately.
+ *
+ * @param db      SQLite database handle
+ * @param height  Latest committed height reported by the witness
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_db_set_observed_height(sqlite3 *db, uint64_t height);
+
 #ifdef __cplusplus
 }
 #endif

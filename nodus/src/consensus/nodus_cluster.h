@@ -61,6 +61,29 @@ void nodus_cluster_add_peer(nodus_cluster_t *cluster,
                               uint16_t udp_port, uint16_t tcp_port);
 
 /**
+ * Placeholder node_id for a CONFIGURED seed, before its real id is known.
+ *
+ * A seed is registered from operator config, where only its address is
+ * known; `nodus_cluster_on_pong` swaps in the real node_id on the first
+ * PONG, matching the entry by ip AND udp port. The placeholder must
+ * therefore identify an ENDPOINT — `nodus_cluster_add_peer` deduplicates
+ * on it, so two seeds that hash alike become one peer.
+ *
+ * Derived from "ip:udp_port". Deriving it from the IP alone collapsed
+ * every co-located seed onto a single entry: the heartbeat then reached
+ * one peer, the only cluster-side `nodus_routing_insert` (that peer's
+ * ALIVE transition) filled one routing slot, and
+ * `nodus_server_replicate_value` replicated every DHT value to exactly
+ * one node — which starved a joining witness's `nodus:pk` registry entry
+ * and left it stuck in bootstrap DISCOVER. See nodus/BUGS.md (O15B.1).
+ *
+ * Process-local: nothing derived here is written to a database, sent on
+ * the wire, or used in consensus.
+ */
+void nodus_cluster_seed_placeholder_id(const char *ip, uint16_t udp_port,
+                                        nodus_key_t *out);
+
+/**
  * Called from server run loop every iteration.
  * Sends heartbeats (every NODUS_CLUSTER_HEARTBEAT_SEC),
  * checks peer health.

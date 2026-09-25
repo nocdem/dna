@@ -20,10 +20,14 @@ extern "C" {
 
 /* ── Protocol constants ──────────────────────────────────────────── */
 
+/* ⚠ THESE FOUR MUST AGREE. NODUS_VERSION_STRING had drifted to "0.19.41"
+ * while NODUS_VERSION_PATCH read 48 — seven releases apart, so anything
+ * reading the string reported a version this binary had not been for a
+ * long time. Bump BOTH, together, every time. */
 #define NODUS_VERSION_MAJOR  0
-#define NODUS_VERSION_MINOR  18
-#define NODUS_VERSION_PATCH  22
-#define NODUS_VERSION_STRING "0.18.22"
+#define NODUS_VERSION_MINOR  19
+#define NODUS_VERSION_PATCH  76
+#define NODUS_VERSION_STRING "0.19.76"
 
 /* Wire frame.
  *
@@ -38,7 +42,7 @@ extern "C" {
  * pre-v0.18 client APKs continue to connect. The previous hard cutover
  * (commit 9494d402, 2026-05-02) reverted with this change because it
  * locked out every legacy client without a migration path. T3 BFT
- * messages still emit v0x02 via NODUS_T3_BFT_PROTOCOL_VER for
+ * messages carry their own NODUS_T3_BFT_PROTOCOL_VER (see below) for
  * cluster-internal traffic; legacy acceptance is purely a frame-layer
  * compatibility shim.
  */
@@ -64,11 +68,26 @@ extern "C" {
 #define NODUS_SIG_BYTES         4627        /* Signature */
 #define NODUS_SEED_BYTES        32          /* Identity seed */
 
-/* Crypto sizes (Kyber1024 / ML-KEM-1024) — channel encryption */
+/* Crypto sizes (Kyber round-3 — legacy channel encryption, see
+ * crypto/enc/kyber_r3_legacy.h). Kept for backward-compatible peers during
+ * the Faz 1 KEM migration (docs/plans/decisions/2026-09-23-kem-mlkem-
+ * migration.md). */
 #define NODUS_KYBER_PK_BYTES    1568        /* Kyber public key */
 #define NODUS_KYBER_SK_BYTES    3168        /* Kyber secret key */
 #define NODUS_KYBER_CT_BYTES    1568        /* Kyber ciphertext */
 #define NODUS_KYBER_SS_BYTES    32          /* Kyber shared secret */
+
+/* Crypto sizes (ML-KEM-1024 / FIPS 203 — crypto/enc/qgp_mlkem.h). Faz 1 KEM
+ * migration (docs/plans/decisions/2026-09-23-kem-mlkem-migration.md, K1-K6).
+ * Byte-identical to the NODUS_KYBER_* sizes above (same parameter set,
+ * K=4) — distinct names on purpose: the two algorithms are NOT
+ * interchangeable at the wire level (different FO wrapper, F1-F6 in the
+ * migration design doc §2), so nothing may assume the constants are
+ * aliases of each other even though their values match today. */
+#define NODUS_MLKEM_PK_BYTES    1568        /* ML-KEM-1024 encapsulation key */
+#define NODUS_MLKEM_SK_BYTES    3168        /* ML-KEM-1024 decapsulation key */
+#define NODUS_MLKEM_CT_BYTES    1568        /* ML-KEM-1024 ciphertext */
+#define NODUS_MLKEM_SS_BYTES    32          /* ML-KEM-1024 shared secret */
 
 /* Networking */
 #define NODUS_DEFAULT_UDP_PORT  4000
@@ -158,11 +177,85 @@ extern "C" {
 #define NODUS_T3_MAX_TX_INPUTS      16
 #define NODUS_T3_MAX_TX_OUTPUTS     16
 #define NODUS_T3_MAX_TX_WITNESSES   3
-#define NODUS_T3_ROUND_TIMEOUT_MS   15000
-#define NODUS_T3_VIEWCHG_TIMEOUT_MS 10000
-#define NODUS_T3_MAX_VIEW_CHANGES   3
+/* R3 W4 — NODUS_T3_ROUND_TIMEOUT_MS and NODUS_T3_VIEWCHG_TIMEOUT_MS are
+ * DELETED with the closed consensus lane: their only reader, the legacy
+ * PBFT round/view-change timeout check (nodus_witness_bft_check_timeout),
+ * is deleted. O15H's NODUS_T3_MAX_VIEW_CHANGES removal note, which cited
+ * that same function, is superseded by this same deletion. */
 #define NODUS_T3_EPOCH_DURATION_SEC 60      /* DNAC epoch = 60s */
-#define NODUS_T3_BFT_PROTOCOL_VER   2
+/* Witness BFT (Tier 3) protocol version — CLUSTER-INTERNAL ONLY.
+ *
+ * 7 (R3 wave W3, package C2b, D-16 rev 5): the Tendermint reactor verbs
+ *   28-34 and shared/dnac/tm_bounds.h are RETIRED — deleted, not merely
+ *   unused — and replaced by five cometbft envelope verbs, 35-39
+ *   (NODUS_T3_CMT_STATE/DATA/VOTE/VOTE_SET_BITS/TXS). Each carries a
+ *   single field, `{m: bstr}`, holding the cometbft reactor's own
+ *   already-marshalled protobuf bytes verbatim; this tier never
+ *   interprets them. The five map to the reference's own channel ids
+ *   (State 0x20, Data 0x21, Vote 0x22, VoteSetBits 0x23 — all four
+ *   consensus/reactor.go's — and Mempool 0x30, mempool/reactor.go's). A
+ *   v6 node has no decoder for any of the five and no entry for them in
+ *   the version gate or the quarantine switch, so it can neither
+ *   validate nor safely ignore them — mixed v6/v7 operation is
+ *   therefore refused, the same rule the v5/v6 bump below states.
+ *
+ * 6 (O15N Faz 2C1): two new consensus verbs carrying VIEW AUTHORITY —
+ *   NODUS_T3_VIEWOK (26), a bundle of 1..N per-node statements that a
+ *   view-change quorum was observed, and NODUS_T3_VIEWOK_REQ (27), the
+ *   request for one. A v5 node has no decoder for either and no entry
+ *   for them in the version gate or the quarantine switch, so it can
+ *   neither validate nor safely ignore them. Mixed v5/v6 operation is
+ *   therefore refused rather than degraded.
+ *
+ * 5 (O15N Faz 2A): the PREPARED per-voter SIGNATURE DOMAIN changed, in two
+ * independent ways, and both change the signed bytes.
+ *   (a) The preimage grew 76 -> 116 bytes and now leads with the ASCII tag
+ *       "prepared" and the 32-byte chain_id (compute_prepared_preimage,
+ *       nodus_witness_bft.c). Before this, the preimage was only
+ *       view||height||tx_hash, so a signature harvested from a wiped chain
+ *       stayed valid on its successor — this network wipes chains and
+ *       (view, height) pairs repeat.
+ *   (b) purpose 0x07 is now STRICT (nodus_sign_purpose_is_strict): it is
+ *       signed under the NDS1 tag and the raw-verify fallback is refused.
+ *       Previously nodus_sign_tagged DISCARDED the purpose byte and
+ *       nodus_verify_tagged fell back to a raw verify unconditionally, so
+ *       PREPARED had no domain separation at all.
+ * A v4 node and a v5 node therefore produce and accept DIFFERENT bytes for
+ * the same vote; neither can verify the other's prepared certificate.
+ *
+ * 4 (O15G): the PRECOMMIT/COMMIT cert ACCEPTANCE RULE changed — signer
+ * pubkeys and the verify quorum are now resolved from the committed
+ * committee snapshot for the block's height, not from the transient
+ * transport roster (nodus_witness_verify_certs_snapshot). The cert BYTES
+ * are unchanged, but a v3 and a v4 node can reach DIFFERENT accept/reject
+ * verdicts on the same COMMIT during roster propagation lag, so the two
+ * are not consensus-compatible and the exact-match gate must isolate them.
+ *
+ * 3 (O15C-D.4): NEW_VIEW carries the prepared CERTIFICATE (keys rpv/rns/
+ * rsg, O15C-D.3). Version 2 nodes skip those keys and fall back to the
+ * pre-D.3 local-subset semantics, so the two versions interpret the SAME
+ * NEW_VIEW under DIFFERENT rules. Measured on real binaries: a v2 node
+ * committed byte-identical blocks alongside v3 nodes AND its vote was
+ * counted toward quorum (4 current + 1 legacy = 5 advanced the chain).
+ *
+ * The bump alone changes nothing — `hdr->version` was decoded and never
+ * read. It is the DISCRIMINATOR for the receive-side gate in
+ * nodus_witness_dispatch_t3, which rejects consensus-affecting messages
+ * whose version is not exactly this value, before any BFT state changes.
+ *
+ * ⚠ NOT the frame version. NODUS_FRAME_VERSION (above) is the Tier-1/2
+ * client-facing frame, where a hard cutover was once reverted because it
+ * locked out phone APKs. This constant governs witness traffic on port
+ * 4004 between validators only, so that precedent does not apply.
+ *
+ * ⚠ Bumping REQUIRES a coordinated stop-all of the whole fleet
+ * (feedback_consensus_deploy_stop_all) — an older-version node cannot
+ * participate with a newer-version one by design, which is the entire
+ * point.
+ *
+ * Bootstrap messages deliberately carry version 1 and are NOT gated;
+ * they run before a committee exists. */
+#define NODUS_T3_BFT_PROTOCOL_VER   7
 
 /* Token creation fee: 1% of genesis supply (10M DNAC = 10^15 raw for 1B supply) */
 #define NODUS_W_TOKEN_CREATE_FEE  1000000000000000ULL
@@ -175,9 +268,30 @@ extern "C" {
 
 /* Block production (mempool + batch) */
 #define NODUS_W_BLOCK_INTERVAL_MS   5000    /* 5s between block proposals */
-#define NODUS_W_MAX_MEMPOOL         64      /* max pending TXs in mempool */
 #define NODUS_W_MAX_BLOCK_TXS       10      /* max TXs per batch/block */
-#define NODUS_W_MAX_PENDING_FWD     16      /* max pending forward slots */
+/* R3 W4 — NODUS_W_MAX_MEMPOOL (the legacy in-memory mempool's capacity)
+ * and NODUS_W_MAX_PENDING_FWD / NODUS_W_PENDING_FWD_TIMEOUT_S (the
+ * non-leader forward-response routing table and its MED-27 timeout) are
+ * DELETED with the closed consensus lane: the mempool and
+ * pending_forwards fields they sized no longer exist on
+ * nodus_witness_t. */
+
+/* O15K E1 — how long the chain-DB open waits out a lock before calling it
+ * permanent. A witness restarted immediately after `kill -9` races the
+ * dying process's WAL-recovery lock; without a busy timeout SQLite returns
+ * BUSY at once, the schema exec fails, and the node used to come up
+ * half-open with a ZEROED chain id — which silently disabled both the
+ * CRITICAL-2 cross-chain replay guard and the self-quarantine detector
+ * (nodus/BUGS.md, top OPEN entry).
+ *
+ * 5000 ms is not a new number: it is the value O15J's f08fbcdc already
+ * chose for the same class on the V2 probe connection
+ * (nodus_witness_v2_gen.c). Matching it keeps ONE answer in the tree to
+ * "how long is a lock allowed to be transient". It is also what draws the
+ * transient/permanent boundary without inventing a mechanism — SQLite
+ * retries internally for this long, so a BUSY that outlives it is a
+ * genuinely persistent lock and failing closed is then correct. */
+#define NODUS_W_DB_BUSY_TIMEOUT_MS 5000
 
 /* Merkle tree tags (v1 stake/delegation) — domain separators preventing
  * cross-tree leaf-key collisions (F-CRYPTO-04 red-team mitigation).
@@ -191,17 +305,38 @@ extern "C" {
 #define NODUS_TREE_TAG_REWARD       0x04u  /* Legacy — retired in v0.16 reward redesign;
                                             * kept defined for combine_v2 archive-replay. */
 #define NODUS_TREE_TAG_CHAIN_CONFIG 0x05u  /* Hard-Fork v1 — chain_config_history tree */
-#define NODUS_TREE_TAG_EPOCH_STATE  0x06u  /* v0.16 — push-settlement epoch state tree */
+#define NODUS_TREE_TAG_EPOCH_STATE  0x06u  /* v0.16 — push-settlement epoch state tree.
+                                            * RETIRED in the root-layout round (K2,
+                                            * 2026-09-25) with the epoch_state table;
+                                            * no tree carries this tag any more. Kept
+                                            * defined so 0x06 is NEVER REUSED (the 0x07
+                                            * precedent below). */
+#define NODUS_TREE_TAG_ACTIVATION   0x07u  /* O15C — Ledger V2 activation authority tree.
+                                            * RETIRED in O15J Faz 3 with the activation
+                                            * ceremony; no tree carries this tag any more.
+                                            * Kept defined so 0x07 is NEVER REUSED. */
 
 /* Composite state_root version byte (CC-AUDIT-002 / Q1 mitigation).
  * Prefixed to the outer SHA3-512 combiner input so cross-version replay
  * between combiners is structurally impossible.
  *   0x01 = legacy 4-input formula (utxo || validator || delegation || reward)
- *   0x02 = 5-input (adds chain_config_root)
- *   0x03 = 5-input (v0.16: replaces reward_root with epoch_state_root) */
+ *   0x02 = 5-input (adds chain_config_root) — combine_v2, archive-replay
+ *   0x03 = 5-input (v0.16: replaces reward_root with epoch_state_root) —
+ *          RETIRED, root-layout round K3 (2026-09-25): its combiner
+ *          (nodus_merkle_combine_state_root_v3) and the legacy composite
+ *          state_root are DELETED and NODUS_STATE_ROOT_VERSION_V3 with
+ *          them (its only user). The byte 0x03 is NEVER REUSED. */
 #define NODUS_STATE_ROOT_VERSION_V1 0x01u
 #define NODUS_STATE_ROOT_VERSION_V2 0x02u
-#define NODUS_STATE_ROOT_VERSION_V3 0x03u
+/* O15C — 6-input: appended activation_root (Ledger V2 activation
+ * authority). RETIRED in O15J Faz 3 together with the activation
+ * ceremony and its combiner (nodus_merkle_combine_state_root_v4, now
+ * deleted). It was emitted only by the ceremony's compile-gated
+ * rehearsal builds, which never shipped, so NO chain in existence
+ * carries a v4 state_root and no archive replay needs it. Kept defined so the version byte
+ * 0x04 is NEVER REUSED: the whole point of the prefix is that a byte
+ * identifies exactly one formula, forever. */
+#define NODUS_STATE_ROOT_VERSION_V4 0x04u
 
 /* CC-OPS-002 / Q14 — Chain-config schema version advertised in w_ident
  * handshake so binary skew (6-of-7 new binary + 1 old) is detected at
@@ -255,10 +390,16 @@ typedef struct {
     nodus_seckey_t sk;
     nodus_key_t    node_id;     /* SHA3-512(pk) */
     char           fingerprint[NODUS_KEY_HEX_LEN];
-    /* Kyber1024 for channel encryption (optional — backward compat) */
+    /* Kyber round-3 for channel encryption (legacy — backward compat during
+     * the Faz 1 KEM migration; see kyber_r3_legacy.h) */
     uint8_t        kyber_pk[NODUS_KYBER_PK_BYTES];
     uint8_t        kyber_sk[NODUS_KYBER_SK_BYTES];
     bool           has_kyber;
+    /* ML-KEM-1024 for channel encryption (Faz 1 KEM migration — optional,
+     * a node may not have generated one yet; see qgp_mlkem.h) */
+    uint8_t        mlkem_pk[NODUS_MLKEM_PK_BYTES];
+    uint8_t        mlkem_sk[NODUS_MLKEM_SK_BYTES];
+    bool           has_mlkem;
 } nodus_identity_t;
 
 /** DHT value type */
@@ -412,8 +553,11 @@ typedef struct {
 } nodus_dnac_fee_info_t;
 
 /** Maximum inclusion-proof depth for anchored UTXO / TX proofs.
- * Matches the server-side DNAC_UTXO_PROOF_MAX_DEPTH and
- * DNAC_HISTORY_PROOF_MAX_DEPTH in nodus_witness_handlers.c. */
+ * Matches the server-side DNAC_HISTORY_PROOF_MAX_DEPTH in
+ * nodus_witness_handlers.c. (The UTXO side's DNAC_UTXO_PROOF_MAX_DEPTH
+ * is gone with the UTXO proof builder — root-layout round K3: every
+ * dnac_utxo entry now carries depth 0; the client still bounds a
+ * received depth by this value.) */
 #define NODUS_DNAC_PROOF_MAX_DEPTH  32
 #define NODUS_DNAC_PROOF_HASH_LEN   64   /* SHA3-512 */
 
@@ -431,6 +575,27 @@ typedef struct {
     uint8_t  tx_hash[NODUS_T3_TX_HASH_LEN];
     uint32_t output_index;
     uint64_t block_height;
+
+    /* O15B §7 — wire key "ub". The height at or after which consensus will
+     * accept this coin as a spend input; 0 means spendable now.
+     *
+     * A coin with unlock_block > result.block_height is INSIDE its
+     * post-UNSTAKE cooldown and every honest validator will reject a
+     * transaction that spends it (Rule D, nodus_witness_verify.c:730).
+     * Selecting one produces a transaction that cannot commit at any
+     * timeout, on any node, ever — which is precisely the failure this
+     * field exists to make impossible.
+     *
+     * BACKWARD COMPATIBILITY, AND WHY THE DEFAULT IS THE UNSAFE ONE:
+     * a pre-O15B witness does not send "ub", so this stays 0 = "spendable".
+     * That reproduces exactly today's behaviour against an old server — it
+     * does not make it correct there. Defaulting to "locked" instead would
+     * make every coin unspendable against every older witness, which is a
+     * worse failure and would also be wrong for the overwhelming majority
+     * of coins, whose true unlock_block IS 0. The honest statement is:
+     * against a pre-O15B witness the client cannot know, and behaves as it
+     * did before. */
+    uint64_t unlock_block;
 
     /* Anchored Merkle proof (Task 38). Empty/zero if the witness did not
      * ship a proof (backward compat with pre-Phase 7 servers). */
@@ -667,13 +832,22 @@ typedef struct {
     char     address[256];       /* Empty string if unknown. */
 } nodus_dnac_committee_entry_t;
 
-/** Committee query result. Fixed-size entries[] array sized to
- * DNAC_COMMITTEE_SIZE (=7). */
+/** Committee query result.
+ *
+ * S3 (Ledger V2): entries[] is sized to the release's active-validator
+ * ceiling (NODUS_T3_MAX_WITNESSES = 128 — the same number as
+ * DNA_MAX_ACTIVE_VALIDATORS, pinned in nodus_witness_verify.c), not to
+ * the 7 initial seats. The CBOR wire is count-driven; decode stops at
+ * this capacity.
+ *
+ * ⚠ SIZE: ~370 KB. NEVER declare this struct on the stack — heap-allocate
+ * (calloc) at every consumer. libdna consumers run on Android pthread
+ * stacks (1 MB). */
 typedef struct {
     uint64_t block_height;
     uint64_t epoch_start;
     int      count;
-    nodus_dnac_committee_entry_t entries[7];   /* DNAC_COMMITTEE_SIZE */
+    nodus_dnac_committee_entry_t entries[NODUS_T3_MAX_WITNESSES];
 } nodus_dnac_committee_result_t;
 
 /** Validator list entry (Phase 14 / Task 63). Same field layout as

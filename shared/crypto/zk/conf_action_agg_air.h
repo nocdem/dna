@@ -3,12 +3,14 @@
  * @brief Dual-mode S4 — AGGREGATE Action AIR (C1 ⊕ C3 ⊕ C4), is_zk=0 gate.
  *
  * ⚠ AUTHORITATIVE-OBJECT NOTE (P3, 2026-07-17). Two formulations of this AIR exist:
- *   (1) THIS is_zk=0 CONSTRUCTION gate — WIDTH 2287 (was 1915 pre-F3), runtime
- *       φ-branches, filled by a C scatter/gather. Used ONLY by
- *       test_conf_action_agg_air.c. It verifies the constraint LOGIC by
- *       construction.
- *   (2) The is_zk=1 PROVEN AIR — WIDTH 1946 (pre-F3), committed is_zero SELECTOR
- *       columns (conf_action_agg_fold.{c,h} + the Rust oracle + stark_prover_agg.c).
+ *   (1) THIS is_zk=0 CONSTRUCTION gate — WIDTH 2287 (was 1915 pre-F3; the width
+ *       is D-INDEPENDENT — the runtime φ-branches need no per-level selector
+ *       columns, so S8's D 4→24 does NOT move it), runtime φ-branches, filled by
+ *       a C scatter/gather. Used ONLY by test_conf_action_agg_air.c. It verifies
+ *       the constraint LOGIC by construction.
+ *   (2) The is_zk=1 PROVEN AIR — WIDTH 2378 (post-S8 D=24; 2318 at D=4), committed
+ *       is_zero SELECTOR columns — 3 per level, so ITS width IS D-dependent
+ *       (conf_action_agg_fold.{c,h} + the Rust oracle + stark_prover_agg.c).
  *       This is what a REAL Plonky3 is_zk=1 proof commits; the C fold+prover
  *       BYTE-MATCH it (test_conf_action_agg_verify / test_prover_agg) and it was
  *       RED-TEAMED (S4f 10-agent + the 2026-07-17 re-audit, 0 CRITICAL).
@@ -80,6 +82,15 @@
  *     optimization.
  *   S4b-e: width-cap bump, Rust oracle + num_qc, fp2 fold, pure-C prover
  *     byte-match (all S1e precedent). S4f: 10+ agent red-team.
+ *   LEDGER-V2 S8 Gate 2 SLICE A (2026-08-06): production depth D 4 → 24, and the
+ *     balance semantics move to the turnstile —
+ *       · IS_FEE is PINNED ZERO (the fee never enters the balance; it stays
+ *         FS/sighash-bound only). The COLUMN is kept — the proven AIR's trace
+ *         width is frozen — so this is a zero-pin, not a column removal.
+ *       · the last-row terminal becomes BAL == boundary_out − boundary_in
+ *         (was BAL == 0, i.e. the boundary==0 special case).
+ *     Both are mirrored here from the proven AIR; see the eval doc below for
+ *     THIS formulation's completeness limit.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -100,10 +111,14 @@
 extern "C" {
 #endif
 
-/* Tree depth D — COMPILE-TIME consensus constant (DET-S4-2; ≤26 to fit K=32).
- * Small value for the construction-gate KATs; the production depth is pinned at
- * S6 with the real note-commitment tree. */
-#define CONF_AGG_TREE_DEPTH 4
+/* Tree depth D — COMPILE-TIME consensus constant (DET-S4-2; ≤26 to fit K=32:
+ * the membership walk occupies φ∈[1,D] and the nullifier φ=D+1, so D+1 ≤ K−1).
+ * LEDGER-V2 S8 Gate 2 (2026-08-06): 4 → 24 — the PRODUCTION note-commitment
+ * tree depth (2^24 = 16.7M note leaves). The phase schedule becomes
+ *   φ=0 note/balance · φ∈[1,24] membership · φ=25 nullifier · φ∈[26,31] inert.
+ * D is read by BOTH formulations (this gate and the proven AIR's
+ * CONF_AGGZK_D), so the widths below and CONF_AGGZK_WIDTH move together. */
+#define CONF_AGG_TREE_DEPTH 24
 
 /* ── Column layout (post-F3 numbers) ────────────────────────────────────────
  * [0, 1002)         C1 region (conf_action_air, offsets unchanged)
@@ -150,25 +165,42 @@ bool conf_action_agg_air_generate(unsigned log_height, const uint64_t *value,
                                   const uint64_t *nk, const uint64_t *ak,
                                   size_t num_notes,
                                   const uint64_t *memb_siblings,
+                                  uint64_t boundary_in, uint64_t boundary_out,
                                   uint64_t anchor_out[CONF_MEMB_LANES],
                                   uint64_t *nf_out, uint64_t *pub_nf_out,
                                   uint64_t *trace_out);
 
 /**
  * @brief Evaluate ALL aggregate constraints (S4a.1 C1 + is_nf; S4a.2 membership
- *        with §3 POSACC gating). Membership pins are gated on [φ∈1..D]·IS_INPUT;
- *        the root binds to the public `anchor`.
+ *        with §3 POSACC gating; S8 Gate-2 IS_FEE zero-pin + boundary-bound
+ *        balance terminal). Membership pins are gated on [φ∈1..D]·IS_INPUT; the
+ *        root binds to the public `anchor`.
  * @param trace   2^log_height rows × CONF_AGG_WIDTH canonical columns.
  * @param n_rows  number of rows (= 2^log_height).
  * @param anchor  the public note-tree root (verifier-substituted) the last
  *                membership level (φ=D) of every INPUT block must reach.
  * @param pub_nf  (n_rows / CONF_ACTION_K) × CONF_NF_LANES per-block public
  *                nullifiers; each block's φ=D+1 NF cell must equal its slot.
+ * @param boundary_in   the transparent-in turnstile public (S8 Gate 2).
+ * @param boundary_out  the transparent-out turnstile public (S8 Gate 2). The
+ *                last row must satisfy BAL == boundary_out − boundary_in.
  * @return number of violated constraints; 0 == valid witness.
+ *
+ * S8 Gate 2 — the boundary terminal is COMPLETE in this formulation too. The
+ * C1 region is still checked by REUSING conf_action_air_eval, which now takes
+ * the two transparent legs and carries the boundary-bound terminal
+ * (BAL == boundary_out − boundary_in) plus the IS_FEE ≡ 0 pin itself; the
+ * generator enforces the same relation as its honest-prover precondition and
+ * REJECTS a FEE-role note outright. Both legs are therefore threaded through
+ * generate/eval here rather than re-checked at this level — one owner per
+ * constraint. The AUTHORITATIVE object remains the proven AIR
+ * (conf_action_agg_fold.c + the Rust oracle), which carries the same terminal
+ * via the caller-owned `ctx` (dnac_conf_action_bnd_ctx_t).
  */
 int conf_action_agg_air_eval(const uint64_t *trace, size_t n_rows,
                              const uint64_t anchor[CONF_MEMB_LANES],
-                             const uint64_t *pub_nf);
+                             const uint64_t *pub_nf, uint64_t boundary_in,
+                             uint64_t boundary_out);
 
 #ifdef __cplusplus
 }

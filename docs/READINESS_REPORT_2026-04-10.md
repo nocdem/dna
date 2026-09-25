@@ -110,7 +110,7 @@ Targets: libdna.so (shared), dna-connect-cli
 | Social Wall + Timeline (posts, comments, polls) | COMPLETE |
 | Follow System | COMPLETE |
 | Contact Requests + Blocking | COMPLETE |
-| DNA Chain Integration | COMPLETE |
+| DNAC (DNA Chain) Integration | COMPLETE |
 | SQLCipher Database Encryption | COMPLETE |
 | Kyber Channel Encryption (all connections) | COMPLETE |
 | TEE Key Wrapping (Android) | COMPLETE |

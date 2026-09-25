@@ -103,8 +103,10 @@ static void rmrf(const char *path) {
  * return -2 ("already initialized") several statements BEFORE its own
  * ALTER, so that DB could never gain the column — and under the merged
  * D1/D2/D3 fail-close chain a missing column now makes supply_get return
- * a hard -1, which fails the epoch_state leaf load, which fails
- * compute_state_root, which rejects every block.
+ * a hard -1, which fails the state root's supply leg (then the
+ * epoch_state leaf load and compute_state_root — both deleted by the
+ * root-layout round; today nodus_witness_supply_root_v2 and the CORE
+ * root), which rejects every block.
  *
  * Nobody proved such a DB still exists (the chain was wiped) — these are
  * guard tests, not the reproduction of an observed incident.
@@ -208,7 +210,7 @@ static void test_supply_init_migrates_legacy_db(void) {
     memset(genesis_tx_hash, 0x22, sizeof(genesis_tx_hash));
 
     /* Still -2 — the row exists, so re-initialising is still refused… */
-    CHECK_EQ(nodus_witness_supply_init(w, 9999, genesis_tx_hash), -2);
+    CHECK_EQ(nodus_witness_supply_init(w, 9999, 0, genesis_tx_hash), -2);
     /* …but the column got added on the way there, and the existing row
      * is untouched (genesis_supply is still the legacy 5000, not 9999). */
     CHECK_TRUE(table_has_column(w->db, "supply_tracking", "total_minted"));
@@ -263,8 +265,8 @@ int main(void) {
      * under the three-valued contract merged alongside this change
      * (nodus_witness_db.h) that is EXACTLY 1 ("row genuinely absent"),
      * never -1 ("real error"). The distinction is load-bearing: the
-     * epoch_state leaf loader zeroes the supply counters on 1 and fails
-     * closed on -1. */
+     * supply leg (nodus_witness_supply_root_v2) hashes zero counters on
+     * 1 and fails closed on -1. */
     nodus_witness_supply_t supply;
     memset(&supply, 0, sizeof(supply));
     CHECK_EQ(nodus_witness_supply_get(w, &supply), 1);
@@ -280,16 +282,19 @@ int main(void) {
     /* ── supply_init still works on top of the open-time table ──── */
     uint8_t genesis_tx_hash[NODUS_T3_TX_HASH_LEN];
     memset(genesis_tx_hash, 0x11, sizeof(genesis_tx_hash));
-    CHECK_EQ(nodus_witness_supply_init(w, 1000, genesis_tx_hash), 0);
+    /* tokenomics-v3 P2 (P2-1): the reward pool is seeded with the row —
+     * carved out of the genesis supply, never added to it. */
+    CHECK_EQ(nodus_witness_supply_init(w, 1000, 200, genesis_tx_hash), 0);
     CHECK_EQ(table_row_count(w->db, "supply_tracking"), 1);
     CHECK_EQ(nodus_witness_supply_get(w, &supply), 0);
     CHECK_EQ(supply.genesis_supply, 1000);
     CHECK_EQ(supply.current_supply, 1000);
     CHECK_EQ(supply.total_minted, 0);
     CHECK_EQ(supply.total_burned, 0);
+    CHECK_EQ(supply.reward_pool, 200);
 
     /* Second call sees the row and refuses to re-initialise. */
-    CHECK_EQ(nodus_witness_supply_init(w, 2000, genesis_tx_hash), -2);
+    CHECK_EQ(nodus_witness_supply_init(w, 2000, 0, genesis_tx_hash), -2);
 
     /* ── Idempotence: reopen re-runs the schema, row survives ───── */
     sqlite3_close(w->db);

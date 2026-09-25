@@ -2,7 +2,8 @@
  *
  * Local rules covered here (client-side, no DB access):
  *   - signer_count == 1
- *   - new_commission_bps <= DNAC_COMMISSION_BPS_MAX (10000)
+ *   - new_commission_bps <= DNAC_COMMISSION_BPS_MAX (5000 since
+ *     tokenomics-v3 P3-8; was 10000)
  *   - signed_at_block > 0
  *
  * Rule K (freshness current_block − signed_at_block < 32), validator
@@ -61,12 +62,14 @@ int main(void) {
     build_valid_update(&tx, 0, 10000ULL);
     CHECK_OK(dnac_tx_verify_validator_update_rules(&tx));
 
-    /* 2b. commission == 10000 (100%, boundary) → accept */
-    build_valid_update(&tx, 10000, 10000ULL);
+    /* 2b. commission == DNAC_COMMISSION_BPS_MAX (50%, boundary) → accept */
+    build_valid_update(&tx, DNAC_COMMISSION_BPS_MAX, 10000ULL);
     CHECK_OK(dnac_tx_verify_validator_update_rules(&tx));
 
-    /* 2c. commission == 10001 → reject */
-    build_valid_update(&tx, 10001, 10000ULL);
+    /* 2c. commission == MAX + 1 → reject; the old 100% cap too */
+    build_valid_update(&tx, DNAC_COMMISSION_BPS_MAX + 1, 10000ULL);
+    CHECK_ERR(dnac_tx_verify_validator_update_rules(&tx));
+    build_valid_update(&tx, 10000, 10000ULL);
     CHECK_ERR(dnac_tx_verify_validator_update_rules(&tx));
 
     /* 2d. commission == UINT16_MAX → reject */

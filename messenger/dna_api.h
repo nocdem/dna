@@ -134,6 +134,33 @@ dna_error_t dna_encrypt_message_raw(
     size_t *ciphertext_len_out
 );
 
+/**
+ * Encrypt message with raw keys, algorithm-aware (KEM Faz 1, R7).
+ *
+ * Same as dna_encrypt_message_raw(), plus a `kem_alg` selector written into
+ * the Seal header's enc_key_type byte (today hard-coded to
+ * QGP_KEY_TYPE_KEM1024 = 2 in dna_encrypt_message_raw()). dna_encrypt_message_raw()
+ * is a thin wrapper: dna_encrypt_message_raw_alg(..., 2, ...).
+ *
+ * @param kem_alg: 2 (QGP_KEY_TYPE_KEM1024, round-3, uses
+ *        qgp_kem1024_encapsulate) or 3 (QGP_KEY_TYPE_MLKEM1024, ML-KEM-1024,
+ *        uses qgp_mlkem1024_encapsulate). recipient_enc_pubkey must be a
+ *        public key of THAT algorithm.
+ * @return DNA_ERROR_INVALID_ARG if kem_alg is neither 2 nor 3.
+ */
+dna_error_t dna_encrypt_message_raw_alg(
+    dna_context_t *ctx,
+    const uint8_t *plaintext,
+    size_t plaintext_len,
+    const uint8_t *recipient_enc_pubkey,
+    const uint8_t *sender_sign_pubkey,
+    const uint8_t *sender_sign_privkey,
+    uint64_t timestamp,
+    uint8_t kem_alg,
+    uint8_t **ciphertext_out,
+    size_t *ciphertext_len_out
+);
+
 // ============================================================================
 // MESSAGE DECRYPTION
 // ============================================================================
@@ -170,6 +197,38 @@ dna_error_t dna_decrypt_message_raw(
     const uint8_t *ciphertext,
     size_t ciphertext_len,
     const uint8_t *recipient_enc_privkey,
+    uint8_t **plaintext_out,
+    size_t *plaintext_len_out,
+    uint8_t **sender_sign_pubkey_out,
+    size_t *sender_sign_pubkey_len_out,
+    uint8_t **signature_out,
+    size_t *signature_len_out,
+    uint64_t *timestamp_out
+);
+
+/**
+ * Decrypt message with raw keys, algorithm-aware (KEM Faz 1, R7).
+ *
+ * Same as dna_decrypt_message_raw(), plus recipient_mlkem_privkey.
+ * Dispatches on the Seal header's enc_key_type byte (today parsed but never
+ * validated in dna_decrypt_message_raw()): 2 -> decapsulate with
+ * recipient_enc_privkey (round-3), 3 -> decapsulate with
+ * recipient_mlkem_privkey (ML-KEM-1024; DNA_ERROR_DECRYPT if NULL), anything
+ * else -> DNA_ERROR_DECRYPT. dna_decrypt_message_raw() is a thin wrapper:
+ * dna_decrypt_message_raw_alg(..., NULL, ...) — so it can still decrypt an
+ * enc_key_type=2 message; an enc_key_type=3 message then fails with
+ * DNA_ERROR_DECRYPT for lack of the ML-KEM key, same as a missing round-3
+ * key would.
+ *
+ * @param recipient_mlkem_privkey: 3168-byte ML-KEM-1024 private key, or NULL
+ *        if the local identity has not migrated (KEM Faz 1).
+ */
+dna_error_t dna_decrypt_message_raw_alg(
+    dna_context_t *ctx,
+    const uint8_t *ciphertext,
+    size_t ciphertext_len,
+    const uint8_t *recipient_enc_privkey,
+    const uint8_t *recipient_mlkem_privkey,
     uint8_t **plaintext_out,
     size_t *plaintext_len_out,
     uint8_t **sender_sign_pubkey_out,

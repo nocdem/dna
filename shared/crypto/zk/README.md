@@ -1,142 +1,76 @@
-# DNAC STARK / zero-knowledge implementation
+# shared/crypto/zk — STARK proof stack (DNA Chain shielded lane)
 
-This directory contains the C prover, verifier, AIR, transcript, MMCS and FRI
-components used by DNAC's shielded-transaction work.
+A clean-room C implementation of a batched STARK prover + verifier for
+the DNA Chain's shielded transaction lane (Goldilocks field, Poseidon2
+MMCS/transcript, FRI, LogUp lookups, range/balance AIRs, aggregate
+shielded statement verification).
 
-## Current status
+> **AUTHORITATIVE STATUS LIVES IN [`RESUME.md`](RESUME.md).** Read its
+> top block FIRST before touching anything here — per-module state,
+> grounding evidence, audit history and next steps are maintained there,
+> not in this file.
 
-The cryptographic stack is implemented and has a standalone test harness.
-The shielded verifier entry is compiled into Nodus, but shielded transactions
-are **not accepted by the current consensus path**.
+## What this module is
 
-| Layer | Source status | Runtime / consensus status |
-|-------|---------------|----------------------------|
-| Goldilocks field and fp2 | Implemented | Standalone/library component |
-| Poseidon2 transcript and MMCS | Implemented | Used by the current STARK stack |
-| FRI and batched STARK verifier | Implemented | Linked into Nodus |
-| Batched STARK prover | Implemented | Not a live consensus admission path |
-| Shielded wire decode + statement verification | Implemented | Linked, but not called on an accepting path |
-| Type-11 shielded transaction | Serialized and parsed | Rejected unconditionally by the witness until C3 |
-| Shielded state transition | Incomplete | No live nullifier-set / anchor-root / state-root-v4 apply path |
-| Ledger V2 | Separate work in progress | Not activated by this tree |
+- A **verify + prove** stack in pure C — no Rust at runtime. The wallet
+  side proves; the witness side verifies.
+- **Plonky3 is the reference oracle, not a dependency**: every public
+  function is byte-matched against test vectors emitted by
+  [`tools/plonky3_oracle/`](tools/plonky3_oracle/README.md), a
+  standalone Rust binary pinned to Plonky3 **tag v0.6.2**
+  (commit `11cc5849`; previous pin `82cfad73` — see the pin-history
+  note in `tools/plonky3_oracle/Cargo.toml`). Plonky3 source is never
+  copy-pasted into this tree.
+- **Consensus-linked but consensus-inert today:** the shielded verify
+  stack (entry `dnac_shielded_verify_statement`, plus the native V3
+  verifier `dnac_v3_native_verify_stateless`) compiles into `libnodus`
+  (`nodus/CMakeLists.txt`), but the witness still rejects shielded
+  transaction types (11/12/13) unconditionally. The accept-flip is a
+  separate, gated activation step.
 
-The decisive consensus boundary is
-`nodus/src/witness/nodus_witness_verify.c::verify_shielded_tx`: after
-fail-closed format checks it returns a rejection explaining that admission is
-disabled until C3. “Verifier linked” therefore does not mean “shielded pool
-live.”
+## What this module is NOT
 
-## Test and vector inventory
+- A general STARK framework — the AIRs prove exactly the DNA Chain
+  statement family (range + balance + commitment binding).
+- A SNARK / Bulletproof / KZG system — hash-based PQ security only.
+- A Plonky3 binding — Rust is used only at vector-generation time.
 
-The current Makefile registers **87** `test_*` binaries. The vector directory
-contains **60** JSON vector files. These are source-tree counts, not a claim
-that tests were executed for this README edit.
-
-```bash
-make -C shared/crypto/zk test
-```
-
-The Makefile compiles with warnings treated as errors and executes each
-registered binary. Vector hashes are pinned in
-`tools/vectors/.expected_hashes`.
-
-## Reference oracle
-
-`tools/plonky3_oracle/` is a build-time Rust program that generates reference
-vectors. It is not linked into production C binaries.
-
-Plonky3 dependencies are pinned in `Cargo.toml` to:
-
-```text
-11cc5849a1b57a2f520d6edc608b9e516517d841
-```
-
-This is the current v0.6.2-line pin. The older `82cfad73` pin is historical
-and must not be presented as the active dependency.
+## Build & test
 
 ```bash
-cargo build --release --frozen \
-  --manifest-path shared/crypto/zk/tools/plonky3_oracle/Cargo.toml
+cd /opt/dna/shared/crypto/zk
+make test        # builds + runs all test binaries (89 currently)
+make clean
 ```
 
-See [the oracle README](tools/plonky3_oracle/README.md) for vector-generation
-commands and determinism boundaries.
+Regenerating oracle vectors (only needed after touching the oracle or
+re-pinning Plonky3):
 
-## Current source layout
-
-```text
-shared/crypto/zk/
-├── field_goldilocks.*          Goldilocks base-field arithmetic
-├── field_goldilocks_ext.*      quadratic extension arithmetic
-├── poseidon2_goldilocks.*      Poseidon2 permutation
-├── duplex_challenger.*         Fiat-Shamir challenger
-├── poseidon2_mmcs.*            plain and hiding MMCS paths
-├── ntt_goldilocks.*            NTT / inverse NTT
-├── fri_fold.*                  FRI folding
-├── fri_verifier.*              FRI verification
-├── batch_priming.*             batched transcript priming
-├── batch_verify.*              batched STARK verification
-├── batch_prover.*              batched STARK proving
-├── shielded_verify.*           shielded statement verification entry
-├── shielded_tree.*             depth-24 note tree component
-├── conf_*                      confidential-action AIR components
-├── range_air.*                 amount range constraints
-├── sum_balance.*               balance constraints
-├── tests/                      C test binaries
-└── tools/
-    ├── plonky3_oracle/         pinned Rust reference generator
-    └── vectors/                committed JSON vectors and hashes
+```bash
+./run_tests.sh --regen   # rebuilds the Rust oracle, regenerates + hash-verifies vectors
 ```
 
-The retired `merkle_smt`, `sponge_sha3_512`, `stark_priming`,
-`stark_proof_codec` and single-instance v3 prover files are not part of the
-current source layout. Historical notes about them belong in archive/history,
-not in the current inventory.
+Vector JSON hashes are pinned in `tools/vectors/.expected_hashes`;
+drift fails fast and means the pin or the oracle changed.
 
-## Implementation boundaries
+## Rules specific to this module
 
-### Implemented
+- **Every cryptographic construct MUST cite a pinned reference**
+  (Plonky3 commit `file:line`, FIPS-202 page, NIST KAT). No invented
+  parameters, domain separators or constructions — see root `CLAUDE.md`
+  (`ANA HEDEF: KAFADAN KRİPTO YASAK`).
+- **Determinism is law.** Byte-identical output across platforms; no
+  `time()`, no unseeded randomness, scalar arithmetic in the verifier.
+- **No copy-paste from Plonky3.** Read for understanding, write from
+  scratch (license hygiene — see `feedback_cellframe_license_risk`).
+- **C99 + `__uint128_t`**, QGP_LOG_* logging, caller-allocated buffers
+  preferred.
+- Cross-validation gate: public functions byte-match the oracle before
+  merging.
 
-- Goldilocks and fp2 arithmetic;
-- NTT/LDE building blocks;
-- Poseidon2 permutation, challenger and transcript logic;
-- plain, mixed-height and hiding MMCS paths;
-- FRI folding, query verification and terminal checks;
-- range, balance and confidential-action AIR components;
-- batched proof encode/decode, prove and verify paths;
-- shielded statement verification;
-- a depth-24 note-tree component and cross-component KATs.
+## Design docs
 
-### Not established by this module
-
-- an accepting consensus path for type 11;
-- atomic insertion into a live nullifier set;
-- accepted-anchor management in witness state;
-- shielded state-root mutation and block application;
-- shield/unshield boundary transaction semantics;
-- production deployment, independent audit or certification;
-- recursive proof aggregation.
-
-## Security and evidence scope
-
-- Plonky3 is used as a pinned reference and vector oracle; the production path
-  remains C.
-- Deterministic KATs establish agreement with the pinned reference for the
-  covered inputs. They do not establish universal correctness or an external
-  security audit.
-- Fixed test seeds make committed vectors reproducible. Production prover
-  entropy must not reuse deterministic KAT randomness.
-- Hash-based/post-quantum design goals do not by themselves establish overall
-  system privacy. Consensus state transitions, key management, metadata and
-  boundary transactions remain part of the security model.
-
-## Status records
-
-`RESUME.md` contains a detailed engineering chronology and hand-off notes. It
-is useful for historical reasoning but may include dates, counts and local plan
-references from intermediate states. For current implementation claims, prefer
-the tracked source, Makefile, tests and pinned dependency files.
-
-## License
-
-This directory is covered by the repository's [Apache License 2.0](../../../LICENSE).
+Design docs live under `docs/plans/` and `dnac/docs/plans/`
+(**local-only, gitignored** — never `git add`). The historical design
+narrative (which modules shipped, were retired, or superseded) is
+tracked in `RESUME.md`.

@@ -108,10 +108,14 @@ int nodus_t2_circ_open(uint32_t txn, const uint8_t *token,
                         uint64_t cid, const nodus_key_t *peer_fp,
                         uint8_t *buf, size_t cap, size_t *out_len);
 
-/** circ_open with E2E Kyber ciphertext (onion layer) */
+/** circ_open with E2E KEM ciphertext (onion layer).
+ *  alg: 0 = Kyber round-3 (legacy), 1 = ML-KEM-1024 (Faz 1 KEM migration,
+ *  docs/plans/decisions/2026-09-23-kem-mlkem-migration.md). Emitted as
+ *  optional CBOR key "alg" ONLY when alg == 1 — an alg=0 caller produces
+ *  the byte-identical legacy frame, so old peers decode unchanged. */
 int nodus_t2_circ_open_e2e(uint32_t txn, const uint8_t *token,
                             uint64_t cid, const nodus_key_t *peer_fp,
-                            const uint8_t *e2e_ct,
+                            const uint8_t *e2e_ct, uint8_t alg,
                             uint8_t *buf, size_t cap, size_t *out_len);
 
 int nodus_t2_circ_open_ok(uint32_t txn, uint64_t cid,
@@ -123,9 +127,11 @@ int nodus_t2_circ_open_err(uint32_t txn, uint64_t cid, int code,
 int nodus_t2_circ_inbound(uint32_t txn, uint64_t cid, const nodus_key_t *peer_fp,
                            uint8_t *buf, size_t cap, size_t *out_len);
 
-/** circ_inbound with E2E Kyber ciphertext (relayed from circ_open) */
+/** circ_inbound with E2E KEM ciphertext (relayed opaquely from circ_open —
+ *  the server never decapsulates this, only forwards it and its alg tag).
+ *  alg: see nodus_t2_circ_open_e2e(). */
 int nodus_t2_circ_inbound_e2e(uint32_t txn, uint64_t cid, const nodus_key_t *peer_fp,
-                               const uint8_t *e2e_ct,
+                               const uint8_t *e2e_ct, uint8_t alg,
                                uint8_t *buf, size_t cap, size_t *out_len);
 
 int nodus_t2_circ_data(uint32_t txn, const uint8_t *token,
@@ -140,10 +146,11 @@ int nodus_t2_ri_open(uint32_t txn, uint64_t ups_cid,
                       const nodus_key_t *src_fp, const nodus_key_t *dst_fp,
                       uint8_t *buf, size_t cap, size_t *out_len);
 
-/** ri_open with E2E ciphertext (relayed opaquely) */
+/** ri_open with E2E ciphertext (relayed opaquely). alg: see
+ *  nodus_t2_circ_open_e2e(). */
 int nodus_t2_ri_open_e2e(uint32_t txn, uint64_t ups_cid,
                           const nodus_key_t *src_fp, const nodus_key_t *dst_fp,
-                          const uint8_t *e2e_ct,
+                          const uint8_t *e2e_ct, uint8_t alg,
                           uint8_t *buf, size_t cap, size_t *out_len);
 
 int nodus_t2_ri_open_ok(uint32_t txn, uint64_t ups_cid, uint64_t dns_cid,
@@ -287,16 +294,30 @@ int nodus_t2_auth_ok(uint32_t txn, const uint8_t *token,
 
 /** auth_ok with Kyber pubkey for channel encryption handshake.
  *  Includes server's Dilithium5 pubkey and signature over (kyber_pk || nonce)
- *  so the client can verify the server's identity and detect MITM. */
+ *  so the client can verify the server's identity and detect MITM.
+ *
+ *  Faz 1 KEM migration (docs/plans/decisions/2026-09-23-kem-mlkem-
+ *  migration.md): mlkem_pk/mpk_sig are OPTIONAL — pass NULL for both when
+ *  this identity has no ML-KEM keypair yet (has_mlkem == false), which
+ *  produces the byte-identical legacy 4-key map (map count 4). When both
+ *  are non-NULL the map gains "mpk" + "mpk_sig" (map count 6). kpk/kpk_sig
+ *  are UNCHANGED either way — this never removes the Kyber path, only adds
+ *  to it, so a pre-Faz-1 decoder (which skips unknown keys) sees exactly
+ *  what it saw before. */
 int nodus_t2_auth_ok_kyber(uint32_t txn, const uint8_t *token,
                             const uint8_t *kyber_pk,
                             const nodus_pubkey_t *server_pk,
                             const nodus_sig_t *kpk_sig,
+                            const uint8_t *mlkem_pk,
+                            const nodus_sig_t *mpk_sig,
                             uint8_t *buf, size_t cap, size_t *out_len);
 
-/** Client → Nodus: initiate channel encryption after auth_ok */
-int nodus_t2_key_init(uint32_t txn, const uint8_t *kyber_ct,
-                       const uint8_t *nonce_c,
+/** Client → Nodus: initiate channel encryption after auth_ok.
+ *  alg: 0 = Kyber round-3 (legacy), 1 = ML-KEM-1024. Emitted as optional
+ *  CBOR key "alg" ONLY when alg == 1 — an alg=0 caller produces the
+ *  byte-identical legacy frame an old server must still be able to decode. */
+int nodus_t2_key_init(uint32_t txn, const uint8_t *kem_ct,
+                       const uint8_t *nonce_c, uint8_t alg,
                        uint8_t *buf, size_t cap, size_t *out_len);
 
 /** Nodus → Client: acknowledge channel encryption setup */
@@ -587,8 +608,13 @@ typedef struct {
     bool            has_circ;
 
     /* Circuit E2E encryption (onion layer) */
-    uint8_t         e2e_ct[1568];       /* Kyber ciphertext for per-circuit E2E */
+    uint8_t         e2e_ct[1568];       /* KEM ciphertext for per-circuit E2E */
     bool            has_e2e_ct;
+    /* e2e_alg: circ_open/circ_inbound/ri_open "alg" (0 = Kyber round-3
+     * default, 1 = ML-KEM-1024). Faz 1 KEM migration. Zero-initialized by
+     * the memset() in nodus_t2_decode(), so a legacy frame with no "alg"
+     * key decodes as round-3 exactly as it always has. */
+    uint8_t         e2e_alg;
 
     /* Inter-node circuit fields (Faz 1) */
     uint64_t        ri_ups_cid;
@@ -611,10 +637,23 @@ typedef struct {
     bool            has_server_pk;
     nodus_sig_t     kpk_sig;            /* auth_ok: Dilithium5 sig over (kyber_pk || nonce) */
     bool            has_kpk_sig;
-    uint8_t         kyber_ct[1568];     /* key_init: Kyber ciphertext */
+    uint8_t         kyber_ct[1568];     /* key_init: KEM ciphertext (round-3 or ML-KEM) */
     bool            has_kyber_ct;
     uint8_t         key_nonce[32];      /* key_init: nonce_c / key_ack: nonce_s */
     bool            has_key_nonce;
+    /* key_alg: key_init "alg" (0 = Kyber round-3 default, 1 = ML-KEM-1024).
+     * Faz 1 KEM migration. Zero-initialized by the memset() in
+     * nodus_t2_decode(), so a legacy key_init with no "alg" key decodes as
+     * round-3 exactly as it always has. */
+    uint8_t         key_alg;
+
+    /* Channel encryption (Faz 1 KEM migration — server's ML-KEM-1024
+     * pubkey, optional; present only when the peer has one). Mirrors
+     * kyber_pk/has_kyber_pk/kpk_sig/has_kpk_sig above. */
+    uint8_t         mlkem_pk[1568];     /* auth_ok: server's ML-KEM-1024 pubkey */
+    bool            has_mlkem_pk;
+    nodus_sig_t     mpk_sig;            /* auth_ok: Dilithium5 sig over (mlkem_pk || nonce) */
+    bool            has_mpk_sig;
 
     /* Error */
     int             error_code;

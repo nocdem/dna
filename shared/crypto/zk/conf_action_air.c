@@ -90,7 +90,8 @@ bool conf_action_air_generate(unsigned log_height, const uint64_t *value,
                               const uint64_t *addr, const uint64_t *rcm,
                               const uint8_t *roles, const uint64_t *pos,
                               const uint64_t *nk, const uint64_t *ak,
-                              size_t num_notes, uint64_t *trace_out) {
+                              size_t num_notes, uint64_t boundary_in,
+                              uint64_t boundary_out, uint64_t *trace_out) {
     if (log_height < CONF_ACTION_MIN_LOG_HEIGHT ||
         log_height > CONF_ACTION_MAX_LOG_HEIGHT)
         return false;
@@ -105,13 +106,19 @@ bool conf_action_air_generate(unsigned log_height, const uint64_t *value,
         return false;
 
     /* Honest-prover preconditions: every value < 2^52, roles valid, all
-     * caller lanes canonical (< p), and the signed balance conserves
-     * (Σin = Σout + fee) so the last-row BAL=0 holds. */
+     * caller lanes canonical (< p), and the signed balance satisfies the S8
+     * Gate-2 terminal  Σin − Σout == boundary_out − boundary_in  so the
+     * last-row constraint holds. A FEE-role note is REJECTED outright: the fee
+     * left the balance AIR (IS_FEE is pinned zero), so such a block could never
+     * satisfy the constraint system and must not be encodable into a trace. */
     {
         gold_fp_t bal = gold_fp_zero();
         for (size_t i = 0; i < num_notes; i++) {
             if (value[i] >= ((uint64_t)1 << CONF_ACTION_VALUE_BITS)) return false;
-            if (roles[i] > CONF_ACTION_ROLE_FEE) return false;
+            /* S8 Gate-2: INPUT and OUTPUT are the only satisfiable roles. */
+            if (roles[i] != CONF_ACTION_ROLE_INPUT &&
+                roles[i] != CONF_ACTION_ROLE_OUTPUT)
+                return false;
             /* Reject NON-CANONICAL caller lanes (red-team S1f F1, fail-close):
              * generate stores addr/rcm/pos/nk/ak RAW into their cells, but the
              * poseidon2 blocks (and the Rust oracle trace builder) store them
@@ -139,7 +146,11 @@ bool conf_action_air_generate(unsigned log_height, const uint64_t *value,
                                  : gold_fp_neg(gold_fp_one());
             bal = add(bal, mul(sign, fp(value[i])));
         }
-        if (!gold_fp_is_zero(bal)) return false; /* non-conserving */
+        /* S8 Gate-2 terminal: BAL_last == boundary_out − boundary_in. Both legs
+         * are < 2^63 (the frozen B2 range the callers enforce), so the field
+         * subtraction below is the integer relation, never a wrap. */
+        if (!gold_fp_eq(bal, gold_fp_sub(fp(boundary_out), fp(boundary_in))))
+            return false; /* does not meet the boundary-bound terminal */
     }
 
     for (size_t i = 0; i < rows * CONF_ACTION_WIDTH; i++) trace_out[i] = 0;
@@ -255,7 +266,12 @@ bool conf_action_air_generate(unsigned log_height, const uint64_t *value,
             switch (roles[blk]) {
                 case CONF_ACTION_ROLE_INPUT:  is_in = 1;  break;
                 case CONF_ACTION_ROLE_OUTPUT: is_out = 1; break;
-                default:                      is_fee = 1; break; /* FEE */
+                /* S8 Gate-2: FEE is no longer a satisfiable role (IS_FEE is
+                 * pinned ZERO), and the precondition pass above rejects such a
+                 * note set before we get here — so this arm is unreachable and
+                 * deliberately leaves is_fee 0 rather than writing a cell no
+                 * constraint could satisfy. */
+                default:                      is_fee = 0; break;
             }
         }
         row[CONF_ACTION_ISIN_OFF] = is_in;
@@ -312,7 +328,8 @@ static int e15_freeze_check(const uint64_t *trace, size_t r, size_t carry_off,
     return viol;
 }
 
-int conf_action_air_eval(const uint64_t *trace, size_t n_rows) {
+int conf_action_air_eval(const uint64_t *trace, size_t n_rows,
+                         uint64_t boundary_in, uint64_t boundary_out) {
     if (!trace || n_rows == 0) return 1;
     int viol = 0;
 
@@ -546,6 +563,9 @@ int conf_action_air_eval(const uint64_t *trace, size_t n_rows) {
         if (!gold_fp_is_zero(bool_res(is_out))) viol++;
         if (!gold_fp_is_zero(bool_res(is_fee))) viol++;
         if (!gold_fp_eq(add(add(is_in, is_out), is_fee), is_real)) viol++;
+        /* S8 Gate-2: IS_FEE is PINNED ZERO — the fee left the balance AIR.
+         * Mirrors the fold's assert_zero(IS_FEE) at the same emission slot. */
+        if (!gold_fp_is_zero(is_fee)) viol++;
 
         /* PHI0: is_zero(φ): φ·inv0 = 1−phi_is0, φ·phi_is0 = 0, phi_is0²=phi_is0. */
         if (!gold_fp_is_zero(bool_res(phi_is0))) viol++;
@@ -570,7 +590,9 @@ int conf_action_air_eval(const uint64_t *trace, size_t n_rows) {
             if (!gold_fp_eq(bal, add(bal_prev, contrib))) viol++;
         }
         if (r == n_rows - 1) {
-            if (!gold_fp_is_zero(bal)) viol++;
+            /* S8 Gate-2 terminal: BAL == boundary_out − boundary_in (the
+             * historical BAL == 0 is the boundary_in == boundary_out case). */
+            if (!gold_fp_eq(bal, sub(fp(boundary_out), fp(boundary_in)))) viol++;
         }
 
         /* E17 role selectors per-block const (non-wrap transition). */

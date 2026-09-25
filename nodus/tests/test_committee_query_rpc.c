@@ -121,7 +121,7 @@ int main(void) {
     char data_path[] = "/tmp/test_committee_query_rpc_XXXXXX";
     CHECK(mkdtemp(data_path) != NULL);
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
     snprintf(w.data_path, sizeof(w.data_path), "%s", data_path);
     w.cached_committee_epoch_start = UINT64_MAX;
@@ -168,7 +168,12 @@ int main(void) {
     CHECK(count >= 2);
 
     /* Flip v2 to RETIRING directly in the validators table (simulates
-     * the state post-UNSTAKE apply, same as test_retiring_committee_membership). */
+     * the state post-UNSTAKE apply — test_retiring_committee_membership.c
+     * used to exercise the same flip and is deleted with the closed
+     * consensus lane, R3 W4; the RETIRING-membership property is now
+     * structural, via the frozen validator_set_snapshots row, and no
+     * version-3 test asserts it directly — a coverage gap, not
+     * something this file substitutes for). */
     v2.status = DNAC_VALIDATOR_RETIRING;
     CHECK_EQ(nodus_validator_update(&w, &v2), 0);
 

@@ -9,6 +9,10 @@
 #include "protocol/nodus_tier3.h"
 #include "protocol/nodus_cbor.h"
 #include "crypto/nodus_sign.h"
+/* D-16 rev 5 — the cometbft envelope (verbs 35-39) ties its per-verb
+ * ceiling to the reactor's own maxMsgSize; this is the one place that
+ * number is pinned against its source. */
+#include "dnac/cmt_ps.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -26,67 +30,127 @@
 
 const char *nodus_t3_type_to_method(nodus_t3_msg_type_t type) {
     switch (type) {
-        case NODUS_T3_PROPOSE:   return "w_propose";
-        case NODUS_T3_PREVOTE:   return "w_prevote";
-        case NODUS_T3_PRECOMMIT: return "w_precommit";
-        case NODUS_T3_COMMIT:    return "w_commit";
-        case NODUS_T3_VIEWCHG:   return "w_viewchg";
-        case NODUS_T3_NEWVIEW:   return "w_newview";
-        case NODUS_T3_FWD_REQ:   return "w_fwd_req";
-        case NODUS_T3_FWD_RSP:   return "w_fwd_rsp";
+        /* R3 W4 — the case arms for every retired verb (PROPOSE, PREVOTE,
+         * PRECOMMIT, COMMIT, VIEWCHG, NEWVIEW, FWD_REQ, FWD_RSP,
+         * SYNC_REQ, SYNC_RSP, CHAIN_Q, CHAIN_R, GENESIS_REQ, GENESIS_RSP,
+         * V2_BLOCK, V2_HEAD, V2_RANGE_REQ, V2_RANGE_RSP, VIEWOK,
+         * VIEWOK_REQ) are DELETED with the closed consensus lane; none
+         * of their enum values exists any more — they fall to
+         * `default: return NULL` below, exactly like verbs 28-34.
+         * R3 W4-CC retires CC_VOTE_REQ/CC_VOTE_RSP (14-15) the same way
+         * — CC_APPR_REQ/CC_APPR_RSP (40-41) below are their
+         * replacement. */
         case NODUS_T3_ROST_Q:    return "w_rost_q";
         case NODUS_T3_ROST_R:    return "w_rost_r";
         case NODUS_T3_IDENT:     return "w_ident";
-        case NODUS_T3_SYNC_REQ:  return "w_sync_req";
-        case NODUS_T3_SYNC_RSP:  return "w_sync_rsp";
-        case NODUS_T3_CC_VOTE_REQ: return "w_cc_vote_req";
-        case NODUS_T3_CC_VOTE_RSP: return "w_cc_vote_rsp";
-        case NODUS_T3_CHAIN_Q:     return "w_chain_q";
-        case NODUS_T3_CHAIN_R:     return "w_chain_r";
-        case NODUS_T3_GENESIS_REQ: return "w_genesis_req";
-        case NODUS_T3_GENESIS_RSP: return "w_genesis_rsp";
+        case NODUS_T3_V2_GBUNDLE_REQ: return "w_v2_gbundle_q";
+        case NODUS_T3_V2_GBUNDLE_RSP: return "w_v2_gbundle_r";
+        /* cometbft envelope (D-16 rev 5). All five verbs appear in BOTH
+         * tables, in enc_args's dispatch, in pass-2's dispatch and in
+         * nodus_t3_verify's range test — a verb named in one table only
+         * would make nodus_t3_decode return 0 with a zeroed struct (the
+         * pass-2 switch falls through `default: break`). Verbs 28-34 are
+         * RETIRED: they fall to `default: return NULL` below, exactly
+         * like any other unknown type. */
+        case NODUS_T3_CMT_STATE:         return "w_cmt_state";
+        case NODUS_T3_CMT_DATA:          return "w_cmt_data";
+        case NODUS_T3_CMT_VOTE:          return "w_cmt_vote";
+        case NODUS_T3_CMT_VOTE_SET_BITS: return "w_cmt_bits";
+        case NODUS_T3_CMT_TXS:           return "w_cmt_txs";
+        /* SYSTEM-governance approval collection (verbs 40-41; D-16
+         * rev 7, W4-CC) — same both-tables discipline as the cometbft
+         * envelope above. */
+        case NODUS_T3_CC_APPR_REQ: return "w_cc_appr_req";
+        case NODUS_T3_CC_APPR_RSP: return "w_cc_appr_rsp";
         default:                 return NULL;
     }
 }
 
 nodus_t3_msg_type_t nodus_t3_method_to_type(const char *method) {
     if (!method) return 0;
-    if (strcmp(method, "w_propose") == 0)    return NODUS_T3_PROPOSE;
-    if (strcmp(method, "w_prevote") == 0)    return NODUS_T3_PREVOTE;
-    if (strcmp(method, "w_precommit") == 0)  return NODUS_T3_PRECOMMIT;
-    if (strcmp(method, "w_commit") == 0)     return NODUS_T3_COMMIT;
-    if (strcmp(method, "w_viewchg") == 0)    return NODUS_T3_VIEWCHG;
-    if (strcmp(method, "w_newview") == 0)    return NODUS_T3_NEWVIEW;
-    if (strcmp(method, "w_fwd_req") == 0)    return NODUS_T3_FWD_REQ;
-    if (strcmp(method, "w_fwd_rsp") == 0)    return NODUS_T3_FWD_RSP;
+    /* R3 W4 — the method-string comparisons for every retired verb
+     * (w_propose, w_prevote, w_precommit, w_commit, w_viewchg, w_newview,
+     * w_fwd_req, w_fwd_rsp, w_sync_req, w_sync_rsp, w_chain_q, w_chain_r,
+     * w_genesis_req, w_genesis_rsp, w_v2_block, w_v2_head, w_v2_range_q,
+     * w_v2_range_r, w_viewok, w_viewok_q) are DELETED with the closed
+     * consensus lane; none of their method names is recognised any more
+     * — an incoming frame naming one falls through to the final
+     * `return 0` below, exactly like any other unknown method.
+     * R3 W4-CC retires w_cc_vote_req/w_cc_vote_rsp the same way —
+     * w_cc_appr_req/w_cc_appr_rsp below are their replacement. */
     if (strcmp(method, "w_rost_q") == 0)     return NODUS_T3_ROST_Q;
     if (strcmp(method, "w_rost_r") == 0)     return NODUS_T3_ROST_R;
     if (strcmp(method, "w_ident") == 0)      return NODUS_T3_IDENT;
-    if (strcmp(method, "w_sync_req") == 0)  return NODUS_T3_SYNC_REQ;
-    if (strcmp(method, "w_sync_rsp") == 0)  return NODUS_T3_SYNC_RSP;
-    if (strcmp(method, "w_cc_vote_req") == 0) return NODUS_T3_CC_VOTE_REQ;
-    if (strcmp(method, "w_cc_vote_rsp") == 0) return NODUS_T3_CC_VOTE_RSP;
-    if (strcmp(method, "w_chain_q") == 0)     return NODUS_T3_CHAIN_Q;
-    if (strcmp(method, "w_chain_r") == 0)     return NODUS_T3_CHAIN_R;
-    if (strcmp(method, "w_genesis_req") == 0) return NODUS_T3_GENESIS_REQ;
-    if (strcmp(method, "w_genesis_rsp") == 0) return NODUS_T3_GENESIS_RSP;
+    if (strcmp(method, "w_v2_gbundle_q") == 0) return NODUS_T3_V2_GBUNDLE_REQ;
+    if (strcmp(method, "w_v2_gbundle_r") == 0) return NODUS_T3_V2_GBUNDLE_RSP;
+    /* cometbft envelope — the same five verbs as the table above. */
+    if (strcmp(method, "w_cmt_state") == 0)    return NODUS_T3_CMT_STATE;
+    if (strcmp(method, "w_cmt_data") == 0)     return NODUS_T3_CMT_DATA;
+    if (strcmp(method, "w_cmt_vote") == 0)     return NODUS_T3_CMT_VOTE;
+    if (strcmp(method, "w_cmt_bits") == 0)     return NODUS_T3_CMT_VOTE_SET_BITS;
+    if (strcmp(method, "w_cmt_txs") == 0)      return NODUS_T3_CMT_TXS;
+    /* SYSTEM-governance approval collection (verbs 40-41; W4-CC). */
+    if (strcmp(method, "w_cc_appr_req") == 0)  return NODUS_T3_CC_APPR_REQ;
+    if (strcmp(method, "w_cc_appr_rsp") == 0)  return NODUS_T3_CC_APPR_RSP;
     return 0;
 }
 
-/* ── PR 3 Yol B — bootstrap sig domain separator ─────────────────── */
+/* ── Per-type message ceiling (D-14 rev 2; header contract) ──────── */
 
-/* H-3 mitigation: a wsig over (q, wh, a) for one bootstrap method must
- * not be reusable as a wsig for a different method. The 4 new bootstrap
- * messages prepend this fixed domain string + the method name into the
- * Dilithium5 signing input. Existing T3 message types (PROPOSE, COMMIT,
- * IDENT, ...) keep their legacy CBOR-only preimage so old/new binaries
- * remain wire-compatible during rolling deploy. */
-#define NODUS_T3_BOOTSTRAP_SIG_DOMAIN "nodus-t3-v1-bootstrap"
-
-static bool is_bootstrap_type(nodus_t3_msg_type_t t) {
-    return t == NODUS_T3_CHAIN_Q     || t == NODUS_T3_CHAIN_R ||
-           t == NODUS_T3_GENESIS_REQ || t == NODUS_T3_GENESIS_RSP;
+size_t nodus_t3_max_msg_size(nodus_t3_msg_type_t type) {
+    switch (type) {
+        case NODUS_T3_CMT_STATE:
+        case NODUS_T3_CMT_DATA:
+        case NODUS_T3_CMT_VOTE:
+        case NODUS_T3_CMT_VOTE_SET_BITS:
+            return (size_t)NODUS_T3_CMT_CONS_M_MAX + NODUS_T3_CMT_ENVELOPE_OVERHEAD;
+        case NODUS_T3_CMT_TXS:
+            return (size_t)NODUS_T3_CMT_TXS_M_MAX + NODUS_T3_CMT_ENVELOPE_OVERHEAD;
+        case NODUS_T3_CC_APPR_REQ:
+            return (size_t)NODUS_T3_CC_APPR_E_MAX + NODUS_T3_CMT_ENVELOPE_OVERHEAD;
+        case NODUS_T3_CC_APPR_RSP:
+            return (size_t)NODUS_T3_CC_APPR_RSP_MAX + NODUS_T3_CMT_ENVELOPE_OVERHEAD;
+        default:
+            /* Every legacy verb: the bound the legacy path actually uses
+             * today — nodus_t3_verify's fixed 1 MB heap allocation below.
+             * A type that is no verb at all (including the RETIRED 28-34)
+             * has no ceiling to report. */
+            return nodus_t3_type_to_method(type) ? (size_t)NODUS_W_MAX_SYNC_RSP_SIZE
+                                                 : (size_t)0;
+    }
 }
+
+/* D-16 rev 5 — the consensus channels' ceiling IS the reactor's own
+ * constant, pinned here so a drift in either fails the build. The
+ * mempool ceiling (NODUS_T3_CMT_TXS_M_MAX) cannot be pinned the same
+ * way: cmt_memr_get_channels computes it at runtime from
+ * cmt_mempool_config_t.max_tx_bytes, so it is not a compile-time
+ * constant on the cmt_memr side — test_tier3.c's
+ * test_tm_max_msg_size pins it against a live cmt_memr_get_channels()
+ * call instead. */
+_Static_assert(NODUS_T3_CMT_CONS_M_MAX == CMT_CONR_MAX_MSG_SIZE,
+               "T3 cmt consensus ceiling drifted from CMT_CONR_MAX_MSG_SIZE");
+/* The largest verb-39 frame this layer will ever try to send: its
+ * message ceiling, plus the 7-byte transport frame header
+ * (nodus_wire.c), plus one more ML-DSA-87 signature's worth of slack
+ * (NODUS_SIG_BYTES) so a future rounding of the envelope overhead does
+ * not silently approach NODUS_MAX_FRAME_TCP unnoticed. */
+_Static_assert((uint64_t)NODUS_T3_CMT_TXS_M_MAX + NODUS_T3_CMT_ENVELOPE_OVERHEAD
+               + 7u + NODUS_SIG_BYTES < (uint64_t)NODUS_MAX_FRAME_TCP,
+               "T3 cmt TXS ceiling exceeds NODUS_MAX_FRAME_TCP");
+/* D-16 rev 7 (W4-CC) — the same frame-size proof for verb 40, the larger
+ * of the two new governance verbs (verb 41's ceiling is a few KB). */
+_Static_assert((uint64_t)NODUS_T3_CC_APPR_E_MAX + NODUS_T3_CMT_ENVELOPE_OVERHEAD
+               + 7u + NODUS_SIG_BYTES < (uint64_t)NODUS_MAX_FRAME_TCP,
+               "T3 cc_appr_req ceiling exceeds NODUS_MAX_FRAME_TCP");
+
+/* R3 W4 — the PR 3 Yol B bootstrap sig domain separator
+ * (NODUS_T3_BOOTSTRAP_SIG_DOMAIN, is_bootstrap_type) is DELETED with the
+ * closed consensus lane: the 4 bootstrap message types it distinguished
+ * (CHAIN_Q, CHAIN_R, GENESIS_REQ, GENESIS_RSP) are all deleted, and
+ * nodus_t3_type_to_method now returns NULL for every one of them, so
+ * enc_sign_payload already refuses before is_bootstrap_type could ever
+ * be reached. */
 
 /* ══════════════════════════════════════════════════════════════════
  * ENCODE
@@ -109,169 +173,17 @@ static void enc_wh(cbor_encoder_t *enc, const nodus_t3_header_t *hdr) {
 
 /* ── Per-type args encode ────────────────────────────────────────── */
 
-/* Encode a single batch TX entry into CBOR (shared by propose + commit) */
-static void enc_batch_tx(cbor_encoder_t *enc, const nodus_t3_batch_tx_t *tx) {
-    cbor_encode_map(enc, 8);
-    cbor_encode_cstr(enc, "txh");  cbor_encode_bstr(enc, tx->tx_hash,
-                                                     NODUS_T3_TX_HASH_LEN);
-    cbor_encode_cstr(enc, "nlc");  cbor_encode_uint(enc, tx->nullifier_count);
-    cbor_encode_cstr(enc, "nls");
-    cbor_encode_array(enc, tx->nullifier_count);
-    for (int i = 0; i < tx->nullifier_count; i++)
-        cbor_encode_bstr(enc, tx->nullifiers[i], NODUS_T3_NULLIFIER_LEN);
-    cbor_encode_cstr(enc, "tty");  cbor_encode_uint(enc, tx->tx_type);
-    cbor_encode_cstr(enc, "txd");  cbor_encode_bstr(enc, tx->tx_data, tx->tx_len);
-    cbor_encode_cstr(enc, "pk");   cbor_encode_bstr(enc, tx->client_pubkey,
-                                                     NODUS_PK_BYTES);
-    cbor_encode_cstr(enc, "csig"); cbor_encode_bstr(enc, tx->client_sig,
-                                                     NODUS_SIG_BYTES);
-    cbor_encode_cstr(enc, "fee");  cbor_encode_uint(enc, tx->fee);
-}
+/* R3 W4 — enc_batch_tx and every retired-verb encoder it fed
+ * (enc_propose_args, enc_vote_args, enc_commit_certs, enc_commit_args,
+ * enc_viewchg_args, enc_newview_args) are DELETED with the closed
+ * consensus lane. See enc_args's own deletion note below for the full
+ * case list. */
 
-static void enc_propose_args(cbor_encoder_t *enc, const nodus_t3_propose_t *p) {
-    /* Phase 9 / Task 9.4 — wire key tr is the tx_root (RFC 6962 Merkle).
-     * A2 fix — wire key bh is the leader-claimed proposed-block height,
-     * carried so all witnesses sign the PREPARED preimage with the same
-     * height regardless of local block_height drift. */
-    cbor_encode_map(enc, 3);
-    cbor_encode_cstr(enc, "tr");
-    cbor_encode_bstr(enc, p->tx_root, NODUS_T3_TX_HASH_LEN);
-    cbor_encode_cstr(enc, "bh");
-    cbor_encode_uint(enc, p->block_height);
-    cbor_encode_cstr(enc, "btx");
-    cbor_encode_array(enc, (size_t)p->batch_count);
-    for (int i = 0; i < p->batch_count; i++)
-        enc_batch_tx(enc, &p->batch_txs[i]);
-}
-
-static void enc_vote_args(cbor_encoder_t *enc, const nodus_t3_vote_t *v) {
-    /* Phase 9 / Task 9.5 — wire key txh -> vh; field is vote_target.
-     * Phase 7.5 / Task 7.5.2 — cs cert_sig. */
-    cbor_encode_map(enc, 4);
-    cbor_encode_cstr(enc, "vh");  cbor_encode_bstr(enc, v->vote_target,
-                                                    NODUS_T3_TX_HASH_LEN);
-    cbor_encode_cstr(enc, "vt");  cbor_encode_uint(enc, v->vote);
-    cbor_encode_cstr(enc, "rsn"); cbor_encode_cstr(enc, v->reason);
-    cbor_encode_cstr(enc, "cs");  cbor_encode_bstr(enc, v->cert_sig,
-                                                    NODUS_SIG_BYTES);
-}
-
-/* Encode commit cert array (shared between batch and legacy) */
-static void enc_commit_certs(cbor_encoder_t *enc, const nodus_t3_commit_t *c) {
-    cbor_encode_cstr(enc, "pts");  cbor_encode_uint(enc, c->proposal_timestamp);
-    cbor_encode_cstr(enc, "pid");  cbor_encode_bstr(enc, c->proposer_id,
-                                                     NODUS_T3_WITNESS_ID_LEN);
-    cbor_encode_cstr(enc, "npc");  cbor_encode_uint(enc, c->n_precommits);
-    cbor_encode_cstr(enc, "sr");  cbor_encode_bstr(enc, c->state_root,
-                                                     NODUS_KEY_BYTES);
-    cbor_encode_cstr(enc, "cer");
-    cbor_encode_array(enc, c->n_precommits);
-    for (uint32_t i = 0; i < c->n_precommits; i++) {
-        cbor_encode_map(enc, 2);
-        cbor_encode_cstr(enc, "vid");
-        cbor_encode_bstr(enc, c->certs[i].voter_id, NODUS_T3_WITNESS_ID_LEN);
-        cbor_encode_cstr(enc, "sig");
-        cbor_encode_bstr(enc, c->certs[i].signature, NODUS_SIG_BYTES);
-    }
-}
-
-static void enc_commit_args(cbor_encoder_t *enc, const nodus_t3_commit_t *c) {
-    /* Phase 9 / Task 9.4 — wire key bh -> tr, field block_hash -> tx_root.
-     * 2026-05-02 — A2 simetri: "bh" key reintroduced as block_height
-     * (uint), bumping map size 7 -> 8. Decoder treats absent/zero as
-     * legacy-peer reject signal (mirrors enc_propose_args). */
-    cbor_encode_map(enc, 8);
-    cbor_encode_cstr(enc, "tr");
-    cbor_encode_bstr(enc, c->tx_root, NODUS_T3_TX_HASH_LEN);
-    cbor_encode_cstr(enc, "bh");
-    cbor_encode_uint(enc, c->block_height);
-    cbor_encode_cstr(enc, "btx");
-    cbor_encode_array(enc, (size_t)c->batch_count);
-    for (int i = 0; i < c->batch_count; i++)
-        enc_batch_tx(enc, &c->batch_txs[i]);
-    enc_commit_certs(enc, c);
-}
-
-static void enc_viewchg_args(cbor_encoder_t *enc, const nodus_t3_viewchg_t *v) {
-    /* C5 — when has_prepared, emit 5 additional keys: prepared_height,
-     * prepared_view, prepared_tx_hash, prepared_n_sigs, prepared_sigs. No
-     * explicit has_prepared wire key: receiver sets has_prepared=true
-     * when it decodes the prepared_tx_hash key (mirrors has_block_height
-     * pattern in enc_ident_args). */
-    cbor_encode_map(enc, v->has_prepared ? 7 : 2);
-    cbor_encode_cstr(enc, "nv");  cbor_encode_uint(enc, v->new_view);
-    cbor_encode_cstr(enc, "lcr"); cbor_encode_uint(enc, v->last_committed_round);
-    if (v->has_prepared) {
-        cbor_encode_cstr(enc, "ph");  cbor_encode_uint(enc, v->prepared_height);
-        cbor_encode_cstr(enc, "pv");  cbor_encode_uint(enc, v->prepared_view);
-        cbor_encode_cstr(enc, "pth");
-        cbor_encode_bstr(enc, v->prepared_tx_hash, NODUS_T3_TX_HASH_LEN);
-        cbor_encode_cstr(enc, "psc"); cbor_encode_uint(enc, v->prepared_n_sigs);
-        cbor_encode_cstr(enc, "psgs");
-        cbor_encode_array(enc, (size_t)v->prepared_n_sigs);
-        for (uint32_t i = 0; i < v->prepared_n_sigs; i++) {
-            cbor_encode_map(enc, 2);
-            cbor_encode_cstr(enc, "vid");
-            cbor_encode_bstr(enc, v->prepared_sigs[i].voter_id,
-                             NODUS_T3_WITNESS_ID_LEN);
-            cbor_encode_cstr(enc, "sig");
-            cbor_encode_bstr(enc, v->prepared_sigs[i].signature,
-                             NODUS_SIG_BYTES);
-        }
-    }
-}
-
-static void enc_newview_args(cbor_encoder_t *enc, const nodus_t3_newview_t *n) {
-    /* C5 — when has_reproposal, emit reproposal_height + reproposal_tx_hash.
-     * has_reproposal=false keeps 2-key backward-compat wire (no VIEW_CHANGE
-     * carried a prepared cert, so new leader is free). */
-    cbor_encode_map(enc, n->has_reproposal ? 4 : 2);
-    cbor_encode_cstr(enc, "nv"); cbor_encode_uint(enc, n->new_view);
-    cbor_encode_cstr(enc, "np"); cbor_encode_uint(enc, n->n_proofs);
-    if (n->has_reproposal) {
-        cbor_encode_cstr(enc, "rh"); cbor_encode_uint(enc, n->reproposal_height);
-        cbor_encode_cstr(enc, "rth");
-        cbor_encode_bstr(enc, n->reproposal_tx_hash, NODUS_T3_TX_HASH_LEN);
-    }
-}
-
-static void enc_fwd_req_args(cbor_encoder_t *enc, const nodus_t3_fwd_req_t *f) {
-    cbor_encode_map(enc, 6);
-    cbor_encode_cstr(enc, "txh");  cbor_encode_bstr(enc, f->tx_hash,
-                                                     NODUS_T3_TX_HASH_LEN);
-    cbor_encode_cstr(enc, "txd");  cbor_encode_bstr(enc, f->tx_data, f->tx_len);
-    cbor_encode_cstr(enc, "pk");   cbor_encode_bstr(enc, f->client_pubkey,
-                                                     NODUS_PK_BYTES);
-    cbor_encode_cstr(enc, "csig"); cbor_encode_bstr(enc, f->client_sig,
-                                                     NODUS_SIG_BYTES);
-    cbor_encode_cstr(enc, "fee");  cbor_encode_uint(enc, f->fee);
-    cbor_encode_cstr(enc, "fid");  cbor_encode_bstr(enc, f->forwarder_id,
-                                                     NODUS_T3_WITNESS_ID_LEN);
-}
-
-static void enc_fwd_rsp_args(cbor_encoder_t *enc, const nodus_t3_fwd_rsp_t *f) {
-    cbor_encode_map(enc, 7);
-    cbor_encode_cstr(enc, "st");  cbor_encode_uint(enc, f->status);
-    cbor_encode_cstr(enc, "txh"); cbor_encode_bstr(enc, f->tx_hash,
-                                                    NODUS_T3_TX_HASH_LEN);
-    cbor_encode_cstr(enc, "bnr"); cbor_encode_uint(enc, f->block_height);
-    cbor_encode_cstr(enc, "ti");  cbor_encode_uint(enc, (uint64_t)f->tx_index);
-    cbor_encode_cstr(enc, "cid"); cbor_encode_bstr(enc, f->chain_id, 32);
-    cbor_encode_cstr(enc, "wc");  cbor_encode_uint(enc, f->witness_count);
-    cbor_encode_cstr(enc, "ws");
-    cbor_encode_array(enc, f->witness_count);
-    for (uint32_t i = 0; i < f->witness_count; i++) {
-        const nodus_t3_witness_sig_t *w = &f->witnesses[i];
-        cbor_encode_map(enc, 4);
-        cbor_encode_cstr(enc, "wid"); cbor_encode_bstr(enc, w->witness_id,
-                                                        NODUS_T3_WITNESS_ID_LEN);
-        cbor_encode_cstr(enc, "sig"); cbor_encode_bstr(enc, w->signature,
-                                                        NODUS_SIG_BYTES);
-        cbor_encode_cstr(enc, "pk");  cbor_encode_bstr(enc, w->pubkey,
-                                                        NODUS_PK_BYTES);
-        cbor_encode_cstr(enc, "ts");  cbor_encode_uint(enc, w->timestamp);
-    }
-}
+/* R3 W4 — enc_viewok_args, enc_viewok_q_args, enc_fwd_req_args and
+ * enc_fwd_rsp_args are DELETED with the closed consensus lane: the
+ * view-authority bundle (verbs 26-27) and the non-leader forward path
+ * (verbs 7-8). See enc_args's own deletion note below for the full case
+ * list. */
 
 static void enc_rost_q_args(cbor_encoder_t *enc, const nodus_t3_rost_q_t *r) {
     cbor_encode_map(enc, 1);
@@ -305,31 +217,29 @@ static void enc_rost_r_args(cbor_encoder_t *enc, const nodus_t3_rost_r_t *r) {
     }
 }
 
-/* ── w_cc_vote_req / w_cc_vote_rsp args (Hard-Fork v1 Stage C.2) ──── */
+/* ── w_cc_appr_req / w_cc_appr_rsp args (D-16 rev 7, W4-CC) ──────────
+ * R3 W4-CC replaces the retired verbs 14-15 (Hard-Fork v1 Stage C.2)
+ * with this pair, over the pre-auth SYSTEM-governance envelope. */
 
-static void enc_cc_vote_req_args(cbor_encoder_t *enc,
-                                   const nodus_t3_cc_vote_req_t *r) {
-    cbor_encode_map(enc, 6);
-    cbor_encode_cstr(enc, "pid"); cbor_encode_uint(enc, r->param_id);
-    cbor_encode_cstr(enc, "nv");  cbor_encode_uint(enc, r->new_value);
-    cbor_encode_cstr(enc, "eb");  cbor_encode_uint(enc, r->effective_block_height);
-    cbor_encode_cstr(enc, "pn");  cbor_encode_uint(enc, r->proposal_nonce);
-    cbor_encode_cstr(enc, "sab"); cbor_encode_uint(enc, r->signed_at_block);
-    cbor_encode_cstr(enc, "vbb"); cbor_encode_uint(enc, r->valid_before_block);
+static void enc_cc_appr_req_args(cbor_encoder_t *enc,
+                                 const nodus_t3_cc_appr_req_t *r) {
+    cbor_encode_map(enc, 1);
+    cbor_encode_cstr(enc, "e"); cbor_encode_bstr(enc, r->e, r->e_len);
 }
 
-static void enc_cc_vote_rsp_args(cbor_encoder_t *enc,
-                                   const nodus_t3_cc_vote_rsp_t *r) {
-    if (r->accepted) {
-        cbor_encode_map(enc, 3);
-        cbor_encode_cstr(enc, "ok");  cbor_encode_uint(enc, 1);
-        cbor_encode_cstr(enc, "wid"); cbor_encode_bstr(enc, r->witness_id, 32);
-        cbor_encode_cstr(enc, "sig"); cbor_encode_bstr(enc, r->signature,
-                                                         NODUS_SIG_BYTES);
+static void enc_cc_appr_rsp_args(cbor_encoder_t *enc,
+                                 const nodus_t3_cc_appr_rsp_t *r) {
+    if (r->ok) {
+        cbor_encode_map(enc, 5);
+        cbor_encode_cstr(enc, "ok"); cbor_encode_bool(enc, true);
+        cbor_encode_cstr(enc, "i");  cbor_encode_uint(enc, r->seat);
+        cbor_encode_cstr(enc, "s");  cbor_encode_bstr(enc, r->sig, NODUS_SIG_BYTES);
+        cbor_encode_cstr(enc, "sh"); cbor_encode_bstr(enc, r->set_hash, 64);
+        cbor_encode_cstr(enc, "ep"); cbor_encode_uint(enc, r->epoch);
     } else {
         cbor_encode_map(enc, 2);
-        cbor_encode_cstr(enc, "ok");  cbor_encode_uint(enc, 0);
-        cbor_encode_cstr(enc, "rr");  cbor_encode_cstr(enc, r->reject_reason);
+        cbor_encode_cstr(enc, "ok"); cbor_encode_bool(enc, false);
+        cbor_encode_cstr(enc, "r");  cbor_encode_cstr(enc, r->reason);
     }
 }
 
@@ -359,122 +269,107 @@ static void enc_ident_args(cbor_encoder_t *enc, const nodus_t3_ident_t *id) {
     }
 }
 
-static void enc_sync_req_args(cbor_encoder_t *enc, const nodus_t3_sync_req_t *r) {
-    cbor_encode_map(enc, 1);
-    cbor_encode_cstr(enc, "h"); cbor_encode_uint(enc, r->height);
+/* R3 W4 — enc_sync_req_args, enc_sync_rsp_args (verbs 12-13),
+ * enc_w_chain_q_args, enc_w_chain_r_args, enc_w_genesis_req_args,
+ * enc_w_genesis_rsp_args (the PR 3 Yol B witness auto-bootstrap arg
+ * encoders, verbs 16-19) and enc_w_v2_block_q_args, enc_w_v2_head_args,
+ * enc_w_v2_range_q_args, enc_w_v2_range_r_args (the Ledger V2 old-lane
+ * sync arg encoders, verbs 20-23) are DELETED with the closed consensus
+ * lane. See enc_args's own deletion note below for the full case list. */
+
+static void enc_w_v2_gbundle_q_args(cbor_encoder_t *enc,
+                                    const nodus_t3_w_v2_gbundle_q_t *m) {
+    cbor_encode_map(enc, 3);
+    cbor_encode_cstr(enc, "c"); cbor_encode_bstr(enc, m->chain, 32);
+    cbor_encode_cstr(enc, "p"); cbor_encode_bstr(enc, m->pin, 32);
+    cbor_encode_cstr(enc, "o"); cbor_encode_uint(enc, m->offset);
 }
 
-static void enc_sync_rsp_args(cbor_encoder_t *enc, const nodus_t3_sync_rsp_t *r) {
-    /* Phase 11 / Task 11.2 — multi-tx sync_rsp encoder.
-     * 2026-05-02 — C3 fix follow-up: "sr" (state_root) added so the
-     * receiver can verify Byzantine peer rejection in replay_block.
-     * Map shape (found): f, h, ts, pid, ph, tr, sr, btx, cer = 9 keys. */
-    cbor_encode_map(enc, r->found ? 9 : 2);
-    cbor_encode_cstr(enc, "f");  cbor_encode_bool(enc, r->found);
-    cbor_encode_cstr(enc, "h");  cbor_encode_uint(enc, r->height);
-    if (!r->found) return;
-    cbor_encode_cstr(enc, "ts");  cbor_encode_uint(enc, r->timestamp);
-    cbor_encode_cstr(enc, "pid"); cbor_encode_bstr(enc, r->proposer_id,
-                                                    NODUS_T3_WITNESS_ID_LEN);
-    cbor_encode_cstr(enc, "ph");  cbor_encode_bstr(enc, r->prev_hash,
-                                                    NODUS_T3_TX_HASH_LEN);
-    cbor_encode_cstr(enc, "tr");  cbor_encode_bstr(enc, r->tx_root,
-                                                    NODUS_T3_TX_HASH_LEN);
-    cbor_encode_cstr(enc, "sr");  cbor_encode_bstr(enc, r->state_root,
-                                                    NODUS_KEY_BYTES);
-    cbor_encode_cstr(enc, "btx");
-    cbor_encode_array(enc, (size_t)r->tx_count);
-    for (int i = 0; i < r->tx_count; i++)
-        enc_batch_tx(enc, &r->batch_txs[i]);
-    cbor_encode_cstr(enc, "cer");
-    cbor_encode_array(enc, r->cert_count);
-    for (uint32_t i = 0; i < r->cert_count; i++) {
-        cbor_encode_map(enc, 2);
-        cbor_encode_cstr(enc, "vid");
-        cbor_encode_bstr(enc, r->certs[i].voter_id, NODUS_T3_WITNESS_ID_LEN);
-        cbor_encode_cstr(enc, "sig");
-        cbor_encode_bstr(enc, r->certs[i].signature, NODUS_SIG_BYTES);
-    }
-}
-
-/* ── PR 3 Yol B — witness auto-bootstrap arg encoders ────────────── */
-
-static void enc_w_chain_q_args(cbor_encoder_t *enc,
-                                const nodus_t3_w_chain_q_t *m) {
-    cbor_encode_map(enc, 1);
-    cbor_encode_cstr(enc, "n");
-    cbor_encode_bstr(enc, m->nonce, NODUS_W_BOOTSTRAP_NONCE_LEN);
-}
-
-static void enc_w_chain_r_args(cbor_encoder_t *enc,
-                                const nodus_t3_w_chain_r_t *m) {
+static void enc_w_v2_gbundle_r_args(cbor_encoder_t *enc,
+                                    const nodus_t3_w_v2_gbundle_r_t *m) {
     cbor_encode_map(enc, 5);
-    cbor_encode_cstr(enc, "cid"); cbor_encode_bstr(enc, m->cid, 32);
-    cbor_encode_cstr(enc, "tip"); cbor_encode_uint(enc, m->tip);
-    cbor_encode_cstr(enc, "gh");
-    cbor_encode_bstr(enc, m->gh, NODUS_T3_TX_HASH_LEN);
-    cbor_encode_cstr(enc, "cdh");
-    cbor_encode_bstr(enc, m->cdh, NODUS_T3_TX_HASH_LEN);
-    cbor_encode_cstr(enc, "n");
-    cbor_encode_bstr(enc, m->nonce, NODUS_W_BOOTSTRAP_NONCE_LEN);
+    cbor_encode_cstr(enc, "c"); cbor_encode_bstr(enc, m->chain, 32);
+    cbor_encode_cstr(enc, "p"); cbor_encode_bstr(enc, m->pin, 32);
+    cbor_encode_cstr(enc, "t"); cbor_encode_uint(enc, m->total);
+    cbor_encode_cstr(enc, "o"); cbor_encode_uint(enc, m->offset);
+    cbor_encode_cstr(enc, "d"); cbor_encode_bstr(enc, m->chunk, m->chunk_len);
 }
 
-static void enc_w_genesis_req_args(cbor_encoder_t *enc,
-                                    const nodus_t3_w_genesis_req_t *m) {
+/* ── cometbft envelope arg encoder (verbs 35-39; D-16 rev 5) ─────────
+ *
+ * One encoder for all five verbs: the args map is exactly { m: bstr },
+ * the reactor's own already-marshalled bytes. The class ceiling (35-38
+ * vs 39) is checked in enc_args below, before any byte is emitted, the
+ * same H-2 / O15E discipline already used for cdb, the range response
+ * and the gbundle chunk. */
+
+static void enc_w_cmt_args(cbor_encoder_t *enc, const nodus_t3_w_cmt_t *m) {
     cbor_encode_map(enc, 1);
-    cbor_encode_cstr(enc, "cid"); cbor_encode_bstr(enc, m->cid, 32);
-}
-
-static void enc_w_genesis_rsp_args(cbor_encoder_t *enc,
-                                    const nodus_t3_w_genesis_rsp_t *m) {
-    /* Sender side. The H-2 cap check happens upstream in enc_args
-     * before any bytes are emitted. */
-    cbor_encode_map(enc, 5);
-    cbor_encode_cstr(enc, "cid"); cbor_encode_bstr(enc, m->cid, 32);
-    cbor_encode_cstr(enc, "cdb"); cbor_encode_bstr(enc, m->cdb, m->cdb_len);
-    cbor_encode_cstr(enc, "gth");
-    cbor_encode_bstr(enc, m->gth, NODUS_T3_TX_HASH_LEN);
-    cbor_encode_cstr(enc, "gts"); cbor_encode_uint(enc, m->gts);
-    cbor_encode_cstr(enc, "gpid");
-    cbor_encode_bstr(enc, m->gpid, NODUS_T3_WITNESS_ID_LEN);
+    cbor_encode_cstr(enc, "m"); cbor_encode_bstr(enc, m->m, m->m_len);
 }
 
 /* ── Args dispatch ───────────────────────────────────────────────── */
 
 static int enc_args(cbor_encoder_t *enc, const nodus_t3_msg_t *msg) {
-    /* H-2 sender-side cap on chain_def_blob: refuse to emit oversize
-     * payload so a misconfigured/buggy responder cannot blast a
-     * fresh-node decoder with >64 KB cdb. The matching decoder cap
-     * lands in A4 (strict cap pass before sig verify). */
-    if (msg->type == NODUS_T3_GENESIS_RSP &&
-        msg->w_genesis_rsp.cdb_len > NODUS_W_MAX_CHAIN_DEF_BLOB) {
+    /* R3 W4 — the H-2 chain_def_blob cap (NODUS_T3_GENESIS_RSP) and the
+     * O15E Faz B range-response cap (NODUS_T3_V2_RANGE_RSP) are DELETED
+     * with the closed consensus lane: neither enum value exists any
+     * more. */
+    if (msg->type == NODUS_T3_V2_GBUNDLE_RSP &&
+        (msg->w_v2_gbundle_r.chunk_len > NODUS_T3_V2_GBUNDLE_CHUNK_MAX ||
+         (msg->w_v2_gbundle_r.chunk_len > 0 && !msg->w_v2_gbundle_r.chunk)))
         return -1;
+    /* cometbft envelope (verbs 35-39; D-16 rev 5) — the sender refuses an
+     * out-of-class `m` before emitting, so an encoder can never produce
+     * bytes its own decoder would reject (DG-13 bijection). The ceiling
+     * is the reactor's, not a T2 field range: 35-38 share the consensus
+     * reactor's class, 39 takes the (larger) mempool class. */
+    if (msg->type >= NODUS_T3_CMT_STATE && msg->type <= NODUS_T3_CMT_TXS) {
+        const nodus_t3_w_cmt_t *c = &msg->w_cmt;
+        size_t m_cap = (msg->type == NODUS_T3_CMT_TXS)
+                       ? (size_t)NODUS_T3_CMT_TXS_M_MAX
+                       : (size_t)NODUS_T3_CMT_CONS_M_MAX;
+        if ((c->m == NULL && c->m_len != 0) || c->m_len > m_cap)
+            return -1;
+    }
+    /* SYSTEM-governance approval collection (verbs 40-41; D-16 rev 7,
+     * W4-CC) — same out-of-class refusal-before-emit discipline as the
+     * cometbft envelope above (DG-13 bijection). */
+    if (msg->type == NODUS_T3_CC_APPR_REQ) {
+        const nodus_t3_cc_appr_req_t *r = &msg->cc_appr_req;
+        if ((r->e == NULL && r->e_len != 0) ||
+            r->e_len > (size_t)NODUS_T3_CC_APPR_E_MAX)
+            return -1;
     }
     cbor_encode_cstr(enc, "a");
     switch (msg->type) {
-        case NODUS_T3_PROPOSE:   enc_propose_args(enc, &msg->propose);   break;
-        case NODUS_T3_PREVOTE:
-        case NODUS_T3_PRECOMMIT: enc_vote_args(enc, &msg->vote);         break;
-        case NODUS_T3_COMMIT:    enc_commit_args(enc, &msg->commit);     break;
-        case NODUS_T3_VIEWCHG:   enc_viewchg_args(enc, &msg->viewchg);   break;
-        case NODUS_T3_NEWVIEW:   enc_newview_args(enc, &msg->newview);   break;
-        case NODUS_T3_FWD_REQ:   enc_fwd_req_args(enc, &msg->fwd_req);   break;
-        case NODUS_T3_FWD_RSP:   enc_fwd_rsp_args(enc, &msg->fwd_rsp);   break;
+        /* R3 W4 — the case arms for every retired verb (PROPOSE, PREVOTE,
+         * PRECOMMIT, COMMIT, VIEWCHG, NEWVIEW, FWD_REQ, FWD_RSP,
+         * SYNC_REQ, SYNC_RSP, CHAIN_Q, CHAIN_R, GENESIS_REQ, GENESIS_RSP,
+         * V2_BLOCK, V2_HEAD, V2_RANGE_REQ, V2_RANGE_RSP, VIEWOK,
+         * VIEWOK_REQ) are DELETED with the closed consensus lane; none
+         * of their enum values exists any more. R3 W4-CC retires
+         * CC_VOTE_REQ/CC_VOTE_RSP the same way — CC_APPR_REQ/CC_APPR_RSP
+         * below are their replacement. */
         case NODUS_T3_ROST_Q:    enc_rost_q_args(enc, &msg->rost_q);     break;
         case NODUS_T3_ROST_R:    enc_rost_r_args(enc, &msg->rost_r);     break;
         case NODUS_T3_IDENT:     enc_ident_args(enc, &msg->ident);       break;
-        case NODUS_T3_CC_VOTE_REQ: enc_cc_vote_req_args(enc, &msg->cc_vote_req); break;
-        case NODUS_T3_CC_VOTE_RSP: enc_cc_vote_rsp_args(enc, &msg->cc_vote_rsp); break;
-        case NODUS_T3_SYNC_REQ:  enc_sync_req_args(enc, &msg->sync_req); break;
-        case NODUS_T3_SYNC_RSP:  enc_sync_rsp_args(enc, &msg->sync_rsp); break;
-        case NODUS_T3_CHAIN_Q:
-            enc_w_chain_q_args(enc, &msg->w_chain_q);     break;
-        case NODUS_T3_CHAIN_R:
-            enc_w_chain_r_args(enc, &msg->w_chain_r);     break;
-        case NODUS_T3_GENESIS_REQ:
-            enc_w_genesis_req_args(enc, &msg->w_genesis_req); break;
-        case NODUS_T3_GENESIS_RSP:
-            enc_w_genesis_rsp_args(enc, &msg->w_genesis_rsp); break;
+        case NODUS_T3_V2_GBUNDLE_REQ:
+            enc_w_v2_gbundle_q_args(enc, &msg->w_v2_gbundle_q); break;
+        case NODUS_T3_V2_GBUNDLE_RSP:
+            enc_w_v2_gbundle_r_args(enc, &msg->w_v2_gbundle_r); break;
+        /* cometbft envelope (verbs 35-39; D-16 rev 5). */
+        case NODUS_T3_CMT_STATE:
+        case NODUS_T3_CMT_DATA:
+        case NODUS_T3_CMT_VOTE:
+        case NODUS_T3_CMT_VOTE_SET_BITS:
+        case NODUS_T3_CMT_TXS:
+            enc_w_cmt_args(enc, &msg->w_cmt);                 break;
+        /* SYSTEM-governance approval collection (verbs 40-41; W4-CC). */
+        case NODUS_T3_CC_APPR_REQ:
+            enc_cc_appr_req_args(enc, &msg->cc_appr_req);     break;
+        case NODUS_T3_CC_APPR_RSP:
+            enc_cc_appr_rsp_args(enc, &msg->cc_appr_rsp);     break;
         default: return -1;
     }
     return 0;
@@ -487,33 +382,19 @@ static int enc_sign_payload(const nodus_t3_msg_t *msg,
     const char *method = nodus_t3_type_to_method(msg->type);
     if (!method) return -1;
 
-    /* H-3 mitigation: bootstrap types (CHAIN_Q, CHAIN_R, GENESIS_REQ,
-     * GENESIS_RSP) prepend a fixed domain separator + the method name to
-     * the Dilithium5 sign input so a captured wsig over one method's
-     * (q, wh, a) cannot be passed off as a wsig for a different method.
-     * The prefix never enters the wire frame; it only conditions the
-     * signing/verifying input. Existing T3 message types keep the
-     * legacy CBOR-only preimage to remain wire-compatible with old
-     * binaries during rolling deploy. */
-    size_t prefix_len = 0;
-    if (is_bootstrap_type(msg->type)) {
-        const char *dom = NODUS_T3_BOOTSTRAP_SIG_DOMAIN;
-        size_t dom_len = strlen(dom);
-        size_t method_len = strlen(method);
-        if (dom_len + method_len > cap) return -1;
-        memcpy(buf, dom, dom_len);
-        memcpy(buf + dom_len, method, method_len);
-        prefix_len = dom_len + method_len;
-    }
-
+    /* R3 W4 — the bootstrap sig domain prefix (H-3 mitigation) is
+     * DELETED with the closed consensus lane: the 4 bootstrap types it
+     * conditioned the sign input for are all gone, and `method` above is
+     * already NULL for each of them, so this function never reached the
+     * prefix branch for any live type. */
     cbor_encoder_t enc;
-    cbor_encoder_init(&enc, buf + prefix_len, cap - prefix_len);
+    cbor_encoder_init(&enc, buf, cap);
     cbor_encode_map(&enc, 3);
     cbor_encode_cstr(&enc, "q"); cbor_encode_cstr(&enc, method);
     enc_wh(&enc, &msg->header);
     if (enc_args(&enc, msg) != 0) return -1;
 
-    *out_len = prefix_len + cbor_encoder_len(&enc);
+    *out_len = cbor_encoder_len(&enc);
     return *out_len > 0 ? 0 : -1;
 }
 
@@ -600,523 +481,16 @@ static void dec_wh(cbor_decoder_t *dec, size_t count, nodus_t3_header_t *hdr) {
 
 /* ── Per-type args decode ────────────────────────────────────────── */
 
-/* Decode a single batch TX entry from CBOR map */
-static void dec_batch_tx_entry(cbor_decoder_t *dec, size_t count,
-                                nodus_t3_batch_tx_t *tx) {
-    for (size_t i = 0; i < count; i++) {
-        cbor_item_t key = cbor_decode_next(dec);
-        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
+/* R3 W4 — dec_batch_tx_entry and every retired-verb decoder it fed
+ * (dec_propose_args, dec_vote_args, dec_commit_field, dec_commit_args,
+ * dec_viewchg_args) are DELETED with the closed consensus lane. See
+ * nodus_t3_decode's own deletion note below for the full dispatch case
+ * list. */
 
-        if (KEY_IS(key, "txh")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len == NODUS_T3_TX_HASH_LEN)
-                memcpy(tx->tx_hash, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
-        }
-        else if (KEY_IS(key, "nlc")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) {
-                tx->nullifier_count = (uint8_t)val.uint_val;
-                if (tx->nullifier_count > NODUS_T3_MAX_TX_INPUTS)
-                    tx->nullifier_count = NODUS_T3_MAX_TX_INPUTS;
-            }
-        }
-        else if (KEY_IS(key, "nls")) {
-            cbor_item_t arr = cbor_decode_next(dec);
-            if (arr.type == CBOR_ITEM_ARRAY) {
-                size_t max = arr.count < NODUS_T3_MAX_TX_INPUTS ?
-                             arr.count : NODUS_T3_MAX_TX_INPUTS;
-                for (size_t j = 0; j < max; j++) {
-                    cbor_item_t val = cbor_decode_next(dec);
-                    if (val.type == CBOR_ITEM_BSTR &&
-                        val.bstr.len == NODUS_T3_NULLIFIER_LEN)
-                        tx->nullifiers[j] = val.bstr.ptr;
-                }
-                for (size_t j = max; j < arr.count; j++)
-                    cbor_decode_skip(dec);
-            }
-        }
-        else if (KEY_IS(key, "tty")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) tx->tx_type = (uint8_t)val.uint_val;
-        }
-        else if (KEY_IS(key, "txd")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len <= NODUS_T3_MAX_TX_SIZE) {
-                tx->tx_data = val.bstr.ptr;
-                tx->tx_len = (uint32_t)val.bstr.len;
-            }
-        }
-        else if (KEY_IS(key, "pk")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_PK_BYTES)
-                tx->client_pubkey = val.bstr.ptr;
-        }
-        else if (KEY_IS(key, "csig")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_SIG_BYTES)
-                tx->client_sig = val.bstr.ptr;
-        }
-        else if (KEY_IS(key, "fee")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) tx->fee = val.uint_val;
-        }
-        else {
-            cbor_decode_skip(dec);
-        }
-    }
-}
-
-static void dec_propose_args(cbor_decoder_t *dec, size_t count,
-                              nodus_t3_propose_t *p) {
-    for (size_t i = 0; i < count; i++) {
-        cbor_item_t key = cbor_decode_next(dec);
-        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
-
-        /* Batch mode detection: "btx" key */
-        if (KEY_IS(key, "btx")) {
-            cbor_item_t arr = cbor_decode_next(dec);
-            if (arr.type == CBOR_ITEM_ARRAY) {
-                int max = (int)arr.count;
-                if (max > NODUS_W_MAX_BLOCK_TXS) max = NODUS_W_MAX_BLOCK_TXS;
-                p->batch_count = max;
-                for (int j = 0; j < max; j++) {
-                    cbor_item_t entry = cbor_decode_next(dec);
-                    if (entry.type == CBOR_ITEM_MAP)
-                        dec_batch_tx_entry(dec, entry.count, &p->batch_txs[j]);
-                }
-                /* Skip excess entries */
-                for (int j = max; j < (int)arr.count; j++)
-                    cbor_decode_skip(dec);
-            }
-        }
-        else if (KEY_IS(key, "tr")) {
-            /* Phase 9 / Task 9.4 — wire key bh -> tr */
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len == NODUS_T3_TX_HASH_LEN)
-                memcpy(p->tx_root, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
-        }
-        else if (KEY_IS(key, "bh")) {
-            /* A2 fix — leader-claimed proposed-block height (uint). If
-             * absent (e.g., legacy peer), p->block_height stays 0 and
-             * handle_propose's sanity check rejects the proposal so the
-             * follower triggers sync rather than signing under drift. */
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT)
-                p->block_height = val.uint_val;
-        }
-        /* Phase 9 / Task 9.2 — legacy single-TX propose keys
-         * (txh/nlc/nls/tty/txd/pk/csig/fee) decoder branches deleted. */
-        else {
-            cbor_decode_skip(dec);
-        }
-    }
-}
-
-static void dec_vote_args(cbor_decoder_t *dec, size_t count,
-                           nodus_t3_vote_t *v) {
-    for (size_t i = 0; i < count; i++) {
-        cbor_item_t key = cbor_decode_next(dec);
-        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
-
-        if (KEY_IS(key, "vh")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len == NODUS_T3_TX_HASH_LEN)
-                memcpy(v->vote_target, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
-        }
-        else if (KEY_IS(key, "vt")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) v->vote = (uint32_t)val.uint_val;
-        }
-        else if (KEY_IS(key, "rsn")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_TSTR) {
-                size_t clen = val.tstr.len < sizeof(v->reason) - 1 ?
-                              val.tstr.len : sizeof(v->reason) - 1;
-                memcpy(v->reason, val.tstr.ptr, clen);
-                v->reason[clen] = '\0';
-            }
-        }
-        else if (KEY_IS(key, "cs")) {
-            /* Phase 7.5 / Task 7.5.2 — cert preimage signature */
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len == NODUS_SIG_BYTES)
-                memcpy(v->cert_sig, val.bstr.ptr, NODUS_SIG_BYTES);
-        }
-        else {
-            cbor_decode_skip(dec);
-        }
-    }
-}
-
-/* Helper: decode commit-specific fields (certs, timestamps) — shared */
-static void dec_commit_field(cbor_decoder_t *dec, const cbor_item_t *key,
-                               nodus_t3_commit_t *c) {
-    if (KEY_IS(*key, "pts")) {
-        cbor_item_t val = cbor_decode_next(dec);
-        if (val.type == CBOR_ITEM_UINT) c->proposal_timestamp = val.uint_val;
-    }
-    else if (KEY_IS(*key, "pid")) {
-        cbor_item_t val = cbor_decode_next(dec);
-        if (val.type == CBOR_ITEM_BSTR &&
-            val.bstr.len == NODUS_T3_WITNESS_ID_LEN)
-            memcpy(c->proposer_id, val.bstr.ptr, NODUS_T3_WITNESS_ID_LEN);
-    }
-    else if (KEY_IS(*key, "bh")) {
-        /* 2026-05-02 — A2 simetri: leader-claimed block_height. Absent
-         * (legacy peer) leaves c->block_height = 0; handle_commit
-         * rejects 0 with sync trigger (mirrors propose A2 behavior). */
-        cbor_item_t val = cbor_decode_next(dec);
-        if (val.type == CBOR_ITEM_UINT) c->block_height = val.uint_val;
-    }
-    else if (KEY_IS(*key, "npc")) {
-        cbor_item_t val = cbor_decode_next(dec);
-        if (val.type == CBOR_ITEM_UINT) c->n_precommits = (uint32_t)val.uint_val;
-    }
-    else if (KEY_IS(*key, "sr")) {
-        cbor_item_t val = cbor_decode_next(dec);
-        if (val.type == CBOR_ITEM_BSTR &&
-            val.bstr.len == NODUS_KEY_BYTES)
-            memcpy(c->state_root, val.bstr.ptr, NODUS_KEY_BYTES);
-    }
-    else if (KEY_IS(*key, "cer")) {
-        cbor_item_t arr = cbor_decode_next(dec);
-        if (arr.type == CBOR_ITEM_ARRAY) {
-            size_t max = arr.count < NODUS_T3_MAX_WITNESSES ?
-                         arr.count : NODUS_T3_MAX_WITNESSES;
-            for (size_t j = 0; j < max; j++) {
-                cbor_item_t m = cbor_decode_next(dec);
-                if (m.type != CBOR_ITEM_MAP) { cbor_decode_skip(dec); continue; }
-                for (size_t k = 0; k < m.count; k++) {
-                    cbor_item_t mk = cbor_decode_next(dec);
-                    if (mk.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
-                    if (KEY_IS(mk, "vid")) {
-                        cbor_item_t v = cbor_decode_next(dec);
-                        if (v.type == CBOR_ITEM_BSTR &&
-                            v.bstr.len == NODUS_T3_WITNESS_ID_LEN)
-                            memcpy(c->certs[j].voter_id, v.bstr.ptr,
-                                   NODUS_T3_WITNESS_ID_LEN);
-                    } else if (KEY_IS(mk, "sig")) {
-                        cbor_item_t v = cbor_decode_next(dec);
-                        if (v.type == CBOR_ITEM_BSTR &&
-                            v.bstr.len == NODUS_SIG_BYTES)
-                            memcpy(c->certs[j].signature, v.bstr.ptr,
-                                   NODUS_SIG_BYTES);
-                    } else {
-                        cbor_decode_skip(dec);
-                    }
-                }
-            }
-            for (size_t j = max; j < arr.count; j++)
-                cbor_decode_skip(dec);
-        }
-    }
-    else {
-        cbor_decode_skip(dec);
-    }
-}
-
-static void dec_commit_args(cbor_decoder_t *dec, size_t count,
-                              nodus_t3_commit_t *c) {
-    for (size_t i = 0; i < count; i++) {
-        cbor_item_t key = cbor_decode_next(dec);
-        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
-
-        /* Batch mode detection */
-        if (KEY_IS(key, "btx")) {
-            cbor_item_t arr = cbor_decode_next(dec);
-            if (arr.type == CBOR_ITEM_ARRAY) {
-                int max = (int)arr.count;
-                if (max > NODUS_W_MAX_BLOCK_TXS) max = NODUS_W_MAX_BLOCK_TXS;
-                c->batch_count = max;
-                for (int j = 0; j < max; j++) {
-                    cbor_item_t entry = cbor_decode_next(dec);
-                    if (entry.type == CBOR_ITEM_MAP)
-                        dec_batch_tx_entry(dec, entry.count, &c->batch_txs[j]);
-                }
-                for (int j = max; j < (int)arr.count; j++)
-                    cbor_decode_skip(dec);
-            }
-        }
-        else if (KEY_IS(key, "tr")) {
-            /* Phase 9 / Task 9.4 — wire key bh -> tr */
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len == NODUS_T3_TX_HASH_LEN)
-                memcpy(c->tx_root, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
-        }
-        /* Phase 9 / Task 9.2 — legacy single-TX commit keys
-         * (txh/nlc/nls/tty/txd) decoder branches deleted. Falls through
-         * to commit-specific fields (certs / timestamps) or skip. */
-        else {
-            dec_commit_field(dec, &key, c);
-        }
-    }
-}
-
-static void dec_viewchg_args(cbor_decoder_t *dec, size_t count,
-                               nodus_t3_viewchg_t *v) {
-    /* v is already zero-initialized by the outer msg memset, so
-     * has_prepared defaults to false and is flipped to true when we see
-     * a valid prepared_tx_hash key. */
-    for (size_t i = 0; i < count; i++) {
-        cbor_item_t key = cbor_decode_next(dec);
-        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
-
-        if (KEY_IS(key, "nv")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) v->new_view = (uint32_t)val.uint_val;
-        }
-        else if (KEY_IS(key, "lcr")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT)
-                v->last_committed_round = val.uint_val;
-        }
-        else if (KEY_IS(key, "ph")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) v->prepared_height = val.uint_val;
-        }
-        else if (KEY_IS(key, "pv")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT)
-                v->prepared_view = (uint32_t)val.uint_val;
-        }
-        else if (KEY_IS(key, "pth")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len == NODUS_T3_TX_HASH_LEN) {
-                memcpy(v->prepared_tx_hash, val.bstr.ptr,
-                       NODUS_T3_TX_HASH_LEN);
-                v->has_prepared = true;
-            }
-        }
-        else if (KEY_IS(key, "psc")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT)
-                v->prepared_n_sigs = (uint32_t)val.uint_val;
-        }
-        else if (KEY_IS(key, "psgs")) {
-            cbor_item_t arr = cbor_decode_next(dec);
-            if (arr.type == CBOR_ITEM_ARRAY) {
-                size_t max = arr.count < NODUS_T3_MAX_WITNESSES ?
-                             arr.count : NODUS_T3_MAX_WITNESSES;
-                for (size_t j = 0; j < max; j++) {
-                    cbor_item_t m = cbor_decode_next(dec);
-                    if (m.type != CBOR_ITEM_MAP) {
-                        cbor_decode_skip(dec);
-                        continue;
-                    }
-                    for (size_t k = 0; k < m.count; k++) {
-                        cbor_item_t mk = cbor_decode_next(dec);
-                        if (mk.type != CBOR_ITEM_TSTR) {
-                            cbor_decode_skip(dec);
-                            continue;
-                        }
-                        if (KEY_IS(mk, "vid")) {
-                            cbor_item_t mv = cbor_decode_next(dec);
-                            if (mv.type == CBOR_ITEM_BSTR &&
-                                mv.bstr.len == NODUS_T3_WITNESS_ID_LEN)
-                                memcpy(v->prepared_sigs[j].voter_id,
-                                       mv.bstr.ptr,
-                                       NODUS_T3_WITNESS_ID_LEN);
-                        } else if (KEY_IS(mk, "sig")) {
-                            cbor_item_t mv = cbor_decode_next(dec);
-                            if (mv.type == CBOR_ITEM_BSTR &&
-                                mv.bstr.len == NODUS_SIG_BYTES)
-                                memcpy(v->prepared_sigs[j].signature,
-                                       mv.bstr.ptr, NODUS_SIG_BYTES);
-                        } else {
-                            cbor_decode_skip(dec);
-                        }
-                    }
-                }
-                for (size_t j = max; j < arr.count; j++)
-                    cbor_decode_skip(dec);
-            }
-        }
-        else {
-            cbor_decode_skip(dec);
-        }
-    }
-}
-
-static void dec_newview_args(cbor_decoder_t *dec, size_t count,
-                               nodus_t3_newview_t *n) {
-    /* n is zero-initialized by outer msg memset; has_reproposal flips to
-     * true when we see a valid reproposal_tx_hash key. */
-    for (size_t i = 0; i < count; i++) {
-        cbor_item_t key = cbor_decode_next(dec);
-        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
-
-        if (KEY_IS(key, "nv")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) n->new_view = (uint32_t)val.uint_val;
-        }
-        else if (KEY_IS(key, "np")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) n->n_proofs = (uint32_t)val.uint_val;
-        }
-        else if (KEY_IS(key, "rh")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT)
-                n->reproposal_height = val.uint_val;
-        }
-        else if (KEY_IS(key, "rth")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len == NODUS_T3_TX_HASH_LEN) {
-                memcpy(n->reproposal_tx_hash, val.bstr.ptr,
-                       NODUS_T3_TX_HASH_LEN);
-                n->has_reproposal = true;
-            }
-        }
-        else {
-            cbor_decode_skip(dec);
-        }
-    }
-}
-
-static void dec_fwd_req_args(cbor_decoder_t *dec, size_t count,
-                               nodus_t3_fwd_req_t *f) {
-    for (size_t i = 0; i < count; i++) {
-        cbor_item_t key = cbor_decode_next(dec);
-        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
-
-        if (KEY_IS(key, "txh")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len == NODUS_T3_TX_HASH_LEN)
-                memcpy(f->tx_hash, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
-        }
-        else if (KEY_IS(key, "txd")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len <= NODUS_T3_MAX_TX_SIZE) {
-                f->tx_data = val.bstr.ptr;
-                f->tx_len = (uint32_t)val.bstr.len;
-            }
-        }
-        else if (KEY_IS(key, "pk")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_PK_BYTES)
-                f->client_pubkey = val.bstr.ptr;
-        }
-        else if (KEY_IS(key, "csig")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_SIG_BYTES)
-                f->client_sig = val.bstr.ptr;
-        }
-        else if (KEY_IS(key, "fee")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) f->fee = val.uint_val;
-        }
-        else if (KEY_IS(key, "fid")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len == NODUS_T3_WITNESS_ID_LEN)
-                memcpy(f->forwarder_id, val.bstr.ptr, NODUS_T3_WITNESS_ID_LEN);
-        }
-        else {
-            cbor_decode_skip(dec);
-        }
-    }
-}
-
-static void dec_fwd_rsp_args(cbor_decoder_t *dec, size_t count,
-                               nodus_t3_fwd_rsp_t *f) {
-    for (size_t i = 0; i < count; i++) {
-        cbor_item_t key = cbor_decode_next(dec);
-        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
-
-        if (KEY_IS(key, "st")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) f->status = (uint32_t)val.uint_val;
-        }
-        else if (KEY_IS(key, "txh")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len == NODUS_T3_TX_HASH_LEN)
-                memcpy(f->tx_hash, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
-        }
-        else if (KEY_IS(key, "bnr")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) f->block_height = val.uint_val;
-        }
-        else if (KEY_IS(key, "ti")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT)
-                f->tx_index = (uint32_t)val.uint_val;
-        }
-        else if (KEY_IS(key, "cid")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 32)
-                memcpy(f->chain_id, val.bstr.ptr, 32);
-        }
-        else if (KEY_IS(key, "wc")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) {
-                f->witness_count = (uint32_t)val.uint_val;
-                if (f->witness_count > NODUS_T3_MAX_TX_WITNESSES)
-                    f->witness_count = NODUS_T3_MAX_TX_WITNESSES;
-            }
-        }
-        else if (KEY_IS(key, "ws")) {
-            cbor_item_t arr = cbor_decode_next(dec);
-            if (arr.type == CBOR_ITEM_ARRAY) {
-                size_t max = arr.count < NODUS_T3_MAX_TX_WITNESSES ?
-                             arr.count : NODUS_T3_MAX_TX_WITNESSES;
-                for (size_t j = 0; j < max; j++) {
-                    cbor_item_t em = cbor_decode_next(dec);
-                    if (em.type != CBOR_ITEM_MAP) {
-                        cbor_decode_skip(dec); continue;
-                    }
-                    nodus_t3_witness_sig_t *w = &f->witnesses[j];
-                    for (size_t k = 0; k < em.count; k++) {
-                        cbor_item_t ek = cbor_decode_next(dec);
-                        if (ek.type != CBOR_ITEM_TSTR) {
-                            cbor_decode_skip(dec); continue;
-                        }
-                        if (KEY_IS(ek, "wid")) {
-                            cbor_item_t val = cbor_decode_next(dec);
-                            if (val.type == CBOR_ITEM_BSTR &&
-                                val.bstr.len == NODUS_T3_WITNESS_ID_LEN)
-                                w->witness_id = val.bstr.ptr;
-                        }
-                        else if (KEY_IS(ek, "sig")) {
-                            cbor_item_t val = cbor_decode_next(dec);
-                            if (val.type == CBOR_ITEM_BSTR &&
-                                val.bstr.len == NODUS_SIG_BYTES)
-                                w->signature = val.bstr.ptr;
-                        }
-                        else if (KEY_IS(ek, "pk")) {
-                            cbor_item_t val = cbor_decode_next(dec);
-                            if (val.type == CBOR_ITEM_BSTR &&
-                                val.bstr.len == NODUS_PK_BYTES)
-                                w->pubkey = val.bstr.ptr;
-                        }
-                        else if (KEY_IS(ek, "ts")) {
-                            cbor_item_t val = cbor_decode_next(dec);
-                            if (val.type == CBOR_ITEM_UINT)
-                                w->timestamp = val.uint_val;
-                        }
-                        else {
-                            cbor_decode_skip(dec);
-                        }
-                    }
-                }
-                for (size_t j = max; j < arr.count; j++)
-                    cbor_decode_skip(dec);
-            }
-        }
-        else {
-            cbor_decode_skip(dec);
-        }
-    }
-}
+/* R3 W4 — dec_newview_args, dec_viewok_args, dec_viewok_q_args,
+ * dec_fwd_req_args and dec_fwd_rsp_args are DELETED with the closed
+ * consensus lane. See nodus_t3_decode's own deletion note below for the
+ * full dispatch case list. */
 
 static void dec_rost_q_args(cbor_decoder_t *dec, size_t count,
                               nodus_t3_rost_q_t *r) {
@@ -1305,310 +679,137 @@ static void dec_ident_args(cbor_decoder_t *dec, size_t count,
 
 /* ── Sync decode ────────────────────────────────────────────────── */
 
-static void dec_sync_req_args(cbor_decoder_t *dec, size_t count,
-                               nodus_t3_sync_req_t *r) {
+/* R3 W4 — dec_sync_req_args, dec_sync_rsp_args (verbs 12-13),
+ * dec_w_chain_q_args, dec_w_chain_r_args, dec_w_genesis_req_args and
+ * dec_w_genesis_rsp_args (the PR 3 Yol B witness auto-bootstrap arg
+ * decoders, verbs 16-19) are DELETED with the closed consensus lane.
+ * See nodus_t3_decode's own deletion note below for the full dispatch
+ * case list. */
+
+/* ── w_cc_appr_req / w_cc_appr_rsp decoders (D-16 rev 7, W4-CC) ──────
+ * Replace the retired verbs 14-15's loose decoders with the STRICT
+ * exact-key-set discipline the newer verbs (w_cmt, gbundle) use: an
+ * unrecognized key, a wrong-typed value, an oversize `e`, or a key the
+ * `ok` value does not admit are all `dec->error = true`, never a
+ * silently-skipped field. */
+
+static void dec_cc_appr_req_args(cbor_decoder_t *dec, size_t count,
+                                 nodus_t3_cc_appr_req_t *r) {
+    bool seen_e = false;
     for (size_t i = 0; i < count; i++) {
         cbor_item_t key = cbor_decode_next(dec);
-        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
-
-        if (KEY_IS(key, "h")) {
+        if (key.type != CBOR_ITEM_TSTR) { dec->error = true; return; }
+        if (KEY_IS(key, "e")) {
+            if (seen_e) { dec->error = true; return; }
+            seen_e = true;
             cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) r->height = val.uint_val;
-        }
-        else {
-            cbor_decode_skip(dec);
-        }
-    }
-}
-
-/* ── w_cc_vote_req / w_cc_vote_rsp decoders (Hard-Fork v1 Stage C.2) ── */
-
-static void dec_cc_vote_req_args(cbor_decoder_t *dec, size_t count,
-                                   nodus_t3_cc_vote_req_t *r) {
-    for (size_t i = 0; i < count; i++) {
-        cbor_item_t key = cbor_decode_next(dec);
-        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
-        if (KEY_IS(key, "pid")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) r->param_id = (uint8_t)val.uint_val;
-        } else if (KEY_IS(key, "nv")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) r->new_value = val.uint_val;
-        } else if (KEY_IS(key, "eb")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) r->effective_block_height = val.uint_val;
-        } else if (KEY_IS(key, "pn")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) r->proposal_nonce = val.uint_val;
-        } else if (KEY_IS(key, "sab")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) r->signed_at_block = val.uint_val;
-        } else if (KEY_IS(key, "vbb")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) r->valid_before_block = val.uint_val;
+            if (val.type != CBOR_ITEM_BSTR ||
+                val.bstr.len > (size_t)NODUS_T3_CC_APPR_E_MAX) {
+                dec->error = true;
+                return;
+            }
+            r->e     = val.bstr.ptr;
+            r->e_len = val.bstr.len;
         } else {
-            cbor_decode_skip(dec);
+            dec->error = true; return;
         }
     }
+    if (!seen_e) dec->error = true;   /* the key was missing */
 }
 
-static void dec_cc_vote_rsp_args(cbor_decoder_t *dec, size_t count,
-                                   nodus_t3_cc_vote_rsp_t *r) {
+/* `ok` gates which OTHER keys are legal: ok=true admits exactly
+ * {ok,i,s,sh,ep} (r absent); ok=false admits exactly {ok,r} (i/s/sh/ep
+ * absent). Every key is parsed once regardless of `ok`'s value (order on
+ * the wire is not load-bearing), and the cross-check runs after the
+ * loop — so a peer naming a key its own `ok` does not admit is refused,
+ * not silently accepted. */
+static void dec_cc_appr_rsp_args(cbor_decoder_t *dec, size_t count,
+                                 nodus_t3_cc_appr_rsp_t *r) {
+    bool seen_ok = false, ok_val = false;
+    bool seen_i = false, seen_s = false, seen_sh = false;
+    bool seen_ep = false, seen_r = false;
+
     for (size_t i = 0; i < count; i++) {
         cbor_item_t key = cbor_decode_next(dec);
-        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
+        if (key.type != CBOR_ITEM_TSTR) { dec->error = true; return; }
         if (KEY_IS(key, "ok")) {
+            if (seen_ok) { dec->error = true; return; }
+            seen_ok = true;
             cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) r->accepted = (val.uint_val != 0);
-        } else if (KEY_IS(key, "wid")) {
+            if (val.type != CBOR_ITEM_BOOL) { dec->error = true; return; }
+            ok_val = val.bool_val;
+            r->ok = ok_val;
+        } else if (KEY_IS(key, "i")) {
+            if (seen_i) { dec->error = true; return; }
+            seen_i = true;
             cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 32)
-                memcpy(r->witness_id, val.bstr.ptr, 32);
-        } else if (KEY_IS(key, "sig")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_SIG_BYTES)
-                memcpy(r->signature, val.bstr.ptr, NODUS_SIG_BYTES);
-        } else if (KEY_IS(key, "rr")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_TSTR) {
-                size_t clen = val.tstr.len < sizeof(r->reject_reason) - 1
-                            ? val.tstr.len : sizeof(r->reject_reason) - 1;
-                memcpy(r->reject_reason, val.tstr.ptr, clen);
-                r->reject_reason[clen] = '\0';
+            if (val.type != CBOR_ITEM_UINT || val.uint_val > UINT16_MAX) {
+                dec->error = true; return;
             }
+            r->seat = (uint16_t)val.uint_val;
+        } else if (KEY_IS(key, "s")) {
+            if (seen_s) { dec->error = true; return; }
+            seen_s = true;
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type != CBOR_ITEM_BSTR || val.bstr.len != NODUS_SIG_BYTES) {
+                dec->error = true; return;
+            }
+            memcpy(r->sig, val.bstr.ptr, NODUS_SIG_BYTES);
+        } else if (KEY_IS(key, "sh")) {
+            if (seen_sh) { dec->error = true; return; }
+            seen_sh = true;
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type != CBOR_ITEM_BSTR || val.bstr.len != 64) {
+                dec->error = true; return;
+            }
+            memcpy(r->set_hash, val.bstr.ptr, 64);
+        } else if (KEY_IS(key, "ep")) {
+            if (seen_ep) { dec->error = true; return; }
+            seen_ep = true;
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type != CBOR_ITEM_UINT) { dec->error = true; return; }
+            r->epoch = val.uint_val;
+        } else if (KEY_IS(key, "r")) {
+            if (seen_r) { dec->error = true; return; }
+            seen_r = true;
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type != CBOR_ITEM_TSTR ||
+                val.tstr.len > sizeof(r->reason) - 1) {
+                dec->error = true; return;
+            }
+            memcpy(r->reason, val.tstr.ptr, val.tstr.len);
+            r->reason[val.tstr.len] = '\0';
         } else {
-            cbor_decode_skip(dec);
+            dec->error = true; return;
         }
     }
-}
-
-static void dec_sync_rsp_args(cbor_decoder_t *dec, size_t count,
-                               nodus_t3_sync_rsp_t *r) {
-    /* Phase 11 / Task 11.2 — multi-tx sync_rsp decoder. */
-    for (size_t i = 0; i < count; i++) {
-        cbor_item_t key = cbor_decode_next(dec);
-        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
-
-        if (KEY_IS(key, "f")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BOOL) r->found = val.bool_val;
+    if (!seen_ok) { dec->error = true; return; }
+    if (ok_val) {
+        if (!seen_i || !seen_s || !seen_sh || !seen_ep || seen_r) {
+            dec->error = true; return;
         }
-        else if (KEY_IS(key, "h")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) r->height = val.uint_val;
+    } else {
+        if (!seen_r || seen_i || seen_s || seen_sh || seen_ep) {
+            dec->error = true; return;
         }
-        else if (KEY_IS(key, "ts")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) r->timestamp = val.uint_val;
-        }
-        else if (KEY_IS(key, "pid")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len == NODUS_T3_WITNESS_ID_LEN)
-                memcpy(r->proposer_id, val.bstr.ptr, NODUS_T3_WITNESS_ID_LEN);
-        }
-        else if (KEY_IS(key, "ph")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len == NODUS_T3_TX_HASH_LEN)
-                memcpy(r->prev_hash, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
-        }
-        else if (KEY_IS(key, "tr")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len == NODUS_T3_TX_HASH_LEN)
-                memcpy(r->tx_root, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
-        }
-        else if (KEY_IS(key, "sr")) {
-            /* 2026-05-02 — C3 fix follow-up: leader's state_root claim
-             * for the synced block. Receiver passes this to replay_block
-             * as expected_state_root so finalize_block can detect
-             * Byzantine peer fake blocks before any state mutation. */
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len == NODUS_KEY_BYTES)
-                memcpy(r->state_root, val.bstr.ptr, NODUS_KEY_BYTES);
-        }
-        else if (KEY_IS(key, "btx")) {
-            cbor_item_t arr = cbor_decode_next(dec);
-            if (arr.type == CBOR_ITEM_ARRAY) {
-                int max = (int)arr.count;
-                /* Phase 11 / Task 11.3 — three-tier guard, top tier */
-                if (max > NODUS_W_MAX_BLOCK_TXS) max = NODUS_W_MAX_BLOCK_TXS;
-                r->tx_count = max;
-                for (int j = 0; j < max; j++) {
-                    cbor_item_t entry = cbor_decode_next(dec);
-                    if (entry.type == CBOR_ITEM_MAP)
-                        dec_batch_tx_entry(dec, entry.count, &r->batch_txs[j]);
-                }
-                for (int j = max; j < (int)arr.count; j++)
-                    cbor_decode_skip(dec);
-            }
-        }
-        else if (KEY_IS(key, "cer")) {
-            cbor_item_t arr = cbor_decode_next(dec);
-            if (arr.type == CBOR_ITEM_ARRAY) {
-                size_t max = arr.count < NODUS_T3_MAX_WITNESSES ?
-                             arr.count : NODUS_T3_MAX_WITNESSES;
-                r->cert_count = (uint32_t)max;
-                for (size_t j = 0; j < max; j++) {
-                    cbor_item_t m = cbor_decode_next(dec);
-                    if (m.type != CBOR_ITEM_MAP) { cbor_decode_skip(dec); continue; }
-                    for (size_t k = 0; k < m.count; k++) {
-                        cbor_item_t mk = cbor_decode_next(dec);
-                        if (mk.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
-                        if (KEY_IS(mk, "vid")) {
-                            cbor_item_t v = cbor_decode_next(dec);
-                            if (v.type == CBOR_ITEM_BSTR &&
-                                v.bstr.len == NODUS_T3_WITNESS_ID_LEN)
-                                memcpy(r->certs[j].voter_id, v.bstr.ptr,
-                                       NODUS_T3_WITNESS_ID_LEN);
-                        } else if (KEY_IS(mk, "sig")) {
-                            cbor_item_t v = cbor_decode_next(dec);
-                            if (v.type == CBOR_ITEM_BSTR &&
-                                v.bstr.len == NODUS_SIG_BYTES)
-                                memcpy(r->certs[j].signature, v.bstr.ptr,
-                                       NODUS_SIG_BYTES);
-                        } else {
-                            cbor_decode_skip(dec);
-                        }
-                    }
-                }
-                for (size_t j = max; j < arr.count; j++)
-                    cbor_decode_skip(dec);
-            }
-        }
-        else {
-            cbor_decode_skip(dec);
-        }
-    }
-}
-
-/* ── PR 3 Yol B — witness auto-bootstrap arg decoders ────────────── */
-
-static void dec_w_chain_q_args(cbor_decoder_t *dec, size_t count,
-                                nodus_t3_w_chain_q_t *m) {
-    for (size_t i = 0; i < count; i++) {
-        cbor_item_t key = cbor_decode_next(dec);
-        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
-
-        if (KEY_IS(key, "n")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len == NODUS_W_BOOTSTRAP_NONCE_LEN)
-                memcpy(m->nonce, val.bstr.ptr, NODUS_W_BOOTSTRAP_NONCE_LEN);
-        }
-        else { cbor_decode_skip(dec); }
-    }
-}
-
-static void dec_w_chain_r_args(cbor_decoder_t *dec, size_t count,
-                                nodus_t3_w_chain_r_t *m) {
-    for (size_t i = 0; i < count; i++) {
-        cbor_item_t key = cbor_decode_next(dec);
-        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
-
-        if (KEY_IS(key, "cid")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 32)
-                memcpy(m->cid, val.bstr.ptr, 32);
-        }
-        else if (KEY_IS(key, "tip")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) m->tip = val.uint_val;
-        }
-        else if (KEY_IS(key, "gh")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len == NODUS_T3_TX_HASH_LEN)
-                memcpy(m->gh, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
-        }
-        else if (KEY_IS(key, "cdh")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len == NODUS_T3_TX_HASH_LEN)
-                memcpy(m->cdh, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
-        }
-        else if (KEY_IS(key, "n")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len == NODUS_W_BOOTSTRAP_NONCE_LEN)
-                memcpy(m->nonce, val.bstr.ptr, NODUS_W_BOOTSTRAP_NONCE_LEN);
-        }
-        else { cbor_decode_skip(dec); }
-    }
-}
-
-static void dec_w_genesis_req_args(cbor_decoder_t *dec, size_t count,
-                                    nodus_t3_w_genesis_req_t *m) {
-    for (size_t i = 0; i < count; i++) {
-        cbor_item_t key = cbor_decode_next(dec);
-        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
-
-        if (KEY_IS(key, "cid")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 32)
-                memcpy(m->cid, val.bstr.ptr, 32);
-        }
-        else { cbor_decode_skip(dec); }
-    }
-}
-
-static void dec_w_genesis_rsp_args(cbor_decoder_t *dec, size_t count,
-                                    nodus_t3_w_genesis_rsp_t *m) {
-    /* Receiver side. The chain_def_blob is plumbed through as a
-     * zero-copy pointer into the input CBOR buffer (matches tx_data
-     * pattern elsewhere). The strict 64 KB cap rejection lands in A4
-     * as a pre-sig-verify pass; A3 just decodes whatever the wire
-     * carried so the GREEN test can confirm roundtrip. */
-    for (size_t i = 0; i < count; i++) {
-        cbor_item_t key = cbor_decode_next(dec);
-        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
-
-        if (KEY_IS(key, "cid")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 32)
-                memcpy(m->cid, val.bstr.ptr, 32);
-        }
-        else if (KEY_IS(key, "cdb")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR) {
-                /* H-2 strict cap (A4): reject before sig verify so a
-                 * malicious peer cannot waste Dilithium5 verify cycles
-                 * (≈300 µs) with arbitrarily large cdb payloads. The
-                 * matching encoder cap (in enc_args dispatch) means
-                 * honest binaries never emit oversize cdb; this branch
-                 * defends against custom/forked encoders. dec->error
-                 * propagates to nodus_t3_decode return value -1. */
-                if (val.bstr.len > NODUS_W_MAX_CHAIN_DEF_BLOB) {
-                    dec->error = true;
-                    return;
-                }
-                m->cdb = val.bstr.ptr;
-                m->cdb_len = (uint32_t)val.bstr.len;
-            }
-        }
-        else if (KEY_IS(key, "gth")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len == NODUS_T3_TX_HASH_LEN)
-                memcpy(m->gth, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
-        }
-        else if (KEY_IS(key, "gts")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) m->gts = val.uint_val;
-        }
-        else if (KEY_IS(key, "gpid")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len == NODUS_T3_WITNESS_ID_LEN)
-                memcpy(m->gpid, val.bstr.ptr, NODUS_T3_WITNESS_ID_LEN);
-        }
-        else { cbor_decode_skip(dec); }
     }
 }
 
 /* ── Public decode ───────────────────────────────────────────────── */
+
+/* R3 W4 — the forward declarations for dec_w_v2_block_q_args,
+ * dec_w_v2_head_args, dec_w_v2_range_q_args and dec_w_v2_range_r_args
+ * (verbs 20-23) are DELETED with the closed consensus lane; their
+ * bodies are deleted below, near their encoder siblings. */
+static void dec_w_v2_gbundle_q_args(cbor_decoder_t *dec, size_t count,
+                                    nodus_t3_w_v2_gbundle_q_t *m);
+static void dec_w_v2_gbundle_r_args(cbor_decoder_t *dec, size_t count,
+                                    nodus_t3_w_v2_gbundle_r_t *m);
+/* cometbft envelope decoder (verbs 35-39; D-16 rev 5) — same arrangement.
+ * `type` selects the class ceiling (35-38 vs 39, D-16 rev 5 "envelope
+ * overhead on top"). */
+static void dec_w_cmt_args(cbor_decoder_t *dec, size_t count,
+                           nodus_t3_msg_type_t type, nodus_t3_w_cmt_t *m);
 
 int nodus_t3_decode(const uint8_t *buf, size_t len, nodus_t3_msg_t *msg) {
     if (!buf || !msg) return -1;
@@ -1623,6 +824,11 @@ int nodus_t3_decode(const uint8_t *buf, size_t len, nodus_t3_msg_t *msg) {
 
     /* Save position for second pass (args decode) */
     size_t entries_start = dec.pos;
+
+    /* D-22 rev 3 — set by the pass-1 walker if `a` contained a negative
+     * integer anywhere, at any nesting depth. The admitted set is now
+     * EMPTY: read below, unconditionally, once the verb is known. */
+    bool a_negint = false;
 
     /* Pass 1: extract method, txn_id, header, wsig.
      *
@@ -1663,8 +869,19 @@ int nodus_t3_decode(const uint8_t *buf, size_t len, nodus_t3_msg_t *msg) {
                 msg->wsig = val.bstr.ptr;
         }
         else if (KEY_IS(key, "a")) {
-            /* args body — dispatched in pass 2; skip here */
-            cbor_decode_skip(&dec);
+            /* args body — dispatched in pass 2; step over it here.
+             *
+             * D-22 rev 3: this still uses the SIGNED walker, not the
+             * shared cbor_decode_skip — the shared walker treats a major
+             * type 1 item as an error, which would die here in pass 1
+             * before reaching the method name and the wsig. The admitted
+             * set for `a_negint` is now EMPTY for every verb (below), so
+             * the walker's only remaining job is recording that a
+             * negative was present so the gate can refuse it; it costs
+             * nothing to keep the same primitive rather than reverting to
+             * cbor_decode_skip for an identical outcome. The shared
+             * walker and its ≈230 call sites are untouched. */
+            cbor_decode_skip_signed(&dec, &a_negint);
         }
         else if (KEY_IS(key, "y")) {
             /* message-type marker emitted by encoder; consume value */
@@ -1680,6 +897,16 @@ int nodus_t3_decode(const uint8_t *buf, size_t len, nodus_t3_msg_t *msg) {
     msg->type = nodus_t3_method_to_type(msg->method);
     if (msg->type == 0) return -1;
 
+    /* D-22 rev 3: the admitted set is EMPTY — a negative integer anywhere
+     * inside `a` is refused for EVERY verb, including the new envelope
+     * verbs 35-39 (whose only field is a byte string and never carries
+     * one). This is the same refusal pass 1 gave before
+     * cbor_decode_skip_signed existed, now stated unconditionally rather
+     * than as a two-verb exception (the retired verbs 28/29 were the only
+     * exception, and they are gone). */
+    if (a_negint)
+        return -1;
+
     /* Pass 2: decode args based on type */
     dec.pos = entries_start;
     dec.error = false;
@@ -1693,28 +920,18 @@ int nodus_t3_decode(const uint8_t *buf, size_t len, nodus_t3_msg_t *msg) {
             if (args.type != CBOR_ITEM_MAP) break;
 
             switch (msg->type) {
-                case NODUS_T3_PROPOSE:
-                    dec_propose_args(&dec, args.count, &msg->propose);
-                    break;
-                case NODUS_T3_PREVOTE:
-                case NODUS_T3_PRECOMMIT:
-                    dec_vote_args(&dec, args.count, &msg->vote);
-                    break;
-                case NODUS_T3_COMMIT:
-                    dec_commit_args(&dec, args.count, &msg->commit);
-                    break;
-                case NODUS_T3_VIEWCHG:
-                    dec_viewchg_args(&dec, args.count, &msg->viewchg);
-                    break;
-                case NODUS_T3_NEWVIEW:
-                    dec_newview_args(&dec, args.count, &msg->newview);
-                    break;
-                case NODUS_T3_FWD_REQ:
-                    dec_fwd_req_args(&dec, args.count, &msg->fwd_req);
-                    break;
-                case NODUS_T3_FWD_RSP:
-                    dec_fwd_rsp_args(&dec, args.count, &msg->fwd_rsp);
-                    break;
+                /* R3 W4 — the case arms for every retired verb (PROPOSE,
+                 * PREVOTE, PRECOMMIT, COMMIT, VIEWCHG, NEWVIEW, FWD_REQ,
+                 * FWD_RSP, SYNC_REQ, SYNC_RSP, CHAIN_Q, CHAIN_R,
+                 * GENESIS_REQ, GENESIS_RSP, V2_BLOCK, V2_HEAD,
+                 * V2_RANGE_REQ, V2_RANGE_RSP, VIEWOK, VIEWOK_REQ) are
+                 * DELETED with the closed consensus lane; none of their
+                 * enum values exists any more — a decoded method can
+                 * never resolve to one (nodus_t3_method_to_type returns 0
+                 * for their method strings), so this switch can never see
+                 * one. R3 W4-CC retires CC_VOTE_REQ/CC_VOTE_RSP the same
+                 * way — CC_APPR_REQ/CC_APPR_RSP below are their
+                 * replacement. */
                 case NODUS_T3_ROST_Q:
                     dec_rost_q_args(&dec, args.count, &msg->rost_q);
                     break;
@@ -1724,31 +941,32 @@ int nodus_t3_decode(const uint8_t *buf, size_t len, nodus_t3_msg_t *msg) {
                 case NODUS_T3_IDENT:
                     dec_ident_args(&dec, args.count, &msg->ident);
                     break;
-                case NODUS_T3_SYNC_REQ:
-                    dec_sync_req_args(&dec, args.count, &msg->sync_req);
+                case NODUS_T3_V2_GBUNDLE_REQ:
+                    dec_w_v2_gbundle_q_args(&dec, args.count,
+                                            &msg->w_v2_gbundle_q);
                     break;
-                case NODUS_T3_SYNC_RSP:
-                    dec_sync_rsp_args(&dec, args.count, &msg->sync_rsp);
+                case NODUS_T3_V2_GBUNDLE_RSP:
+                    dec_w_v2_gbundle_r_args(&dec, args.count,
+                                            &msg->w_v2_gbundle_r);
                     break;
-                case NODUS_T3_CC_VOTE_REQ:
-                    dec_cc_vote_req_args(&dec, args.count, &msg->cc_vote_req);
+                /* cometbft envelope (verbs 35-39; D-16 rev 5) — all five,
+                 * so `default: break` (which would return 0 with a zeroed
+                 * struct) can never be reached by one of these verbs. */
+                case NODUS_T3_CMT_STATE:
+                case NODUS_T3_CMT_DATA:
+                case NODUS_T3_CMT_VOTE:
+                case NODUS_T3_CMT_VOTE_SET_BITS:
+                case NODUS_T3_CMT_TXS:
+                    dec_w_cmt_args(&dec, args.count, msg->type, &msg->w_cmt);
                     break;
-                case NODUS_T3_CC_VOTE_RSP:
-                    dec_cc_vote_rsp_args(&dec, args.count, &msg->cc_vote_rsp);
+                /* SYSTEM-governance approval collection (verbs 40-41;
+                 * D-16 rev 7, W4-CC) — both, so `default: break` can
+                 * never be reached by one of these verbs either. */
+                case NODUS_T3_CC_APPR_REQ:
+                    dec_cc_appr_req_args(&dec, args.count, &msg->cc_appr_req);
                     break;
-                case NODUS_T3_CHAIN_Q:
-                    dec_w_chain_q_args(&dec, args.count, &msg->w_chain_q);
-                    break;
-                case NODUS_T3_CHAIN_R:
-                    dec_w_chain_r_args(&dec, args.count, &msg->w_chain_r);
-                    break;
-                case NODUS_T3_GENESIS_REQ:
-                    dec_w_genesis_req_args(&dec, args.count,
-                                            &msg->w_genesis_req);
-                    break;
-                case NODUS_T3_GENESIS_RSP:
-                    dec_w_genesis_rsp_args(&dec, args.count,
-                                            &msg->w_genesis_rsp);
+                case NODUS_T3_CC_APPR_RSP:
+                    dec_cc_appr_rsp_args(&dec, args.count, &msg->cc_appr_rsp);
                     break;
                 default:
                     break;
@@ -1763,21 +981,175 @@ int nodus_t3_decode(const uint8_t *buf, size_t len, nodus_t3_msg_t *msg) {
     return dec.error ? -1 : 0;
 }
 
+/* R3 W4 — dec_w_v2_block_q_args, dec_w_v2_head_args,
+ * dec_w_v2_range_q_args and dec_w_v2_range_r_args (the Ledger V2
+ * old-lane sync arg decoders, verbs 20-23) are DELETED with the closed
+ * consensus lane. The surviving genesis-bundle decoders (verbs 24-25)
+ * follow. */
+
+static void dec_w_v2_gbundle_q_args(cbor_decoder_t *dec, size_t count,
+                                    nodus_t3_w_v2_gbundle_q_t *m) {
+    for (size_t i = 0; i < count; i++) {
+        cbor_item_t key = cbor_decode_next(dec);
+        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
+        if (KEY_IS(key, "c")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 32)
+                memcpy(m->chain, val.bstr.ptr, 32);
+        } else if (KEY_IS(key, "p")) {
+            /* D-24 rev 4 (1): the pin is EXACTLY the 32-byte chain id —
+             * unlike most fixed-width fields in this file, a wrong length
+             * here is a HARD DECODE ERROR, not a silently-zeroed field.
+             * The pin is the whole of a joiner's trust decision
+             * (nodus_witness_v2_join.c / D-24); leaving it zero-filled on
+             * a malformed wire value would let a 31- or 33-byte `p` decode
+             * "successfully" into an all-zero pin that then fails the
+             * comparison downstream for the wrong reason — a decode bug
+             * disguised as a routine mismatch. */
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type != CBOR_ITEM_BSTR || val.bstr.len != 32) {
+                dec->error = true;
+                return;
+            }
+            memcpy(m->pin, val.bstr.ptr, 32);
+        } else if (KEY_IS(key, "o")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) m->offset = val.uint_val;
+        } else {
+            cbor_decode_skip(dec);
+        }
+    }
+}
+
+static void dec_w_v2_gbundle_r_args(cbor_decoder_t *dec, size_t count,
+                                    nodus_t3_w_v2_gbundle_r_t *m) {
+    for (size_t i = 0; i < count; i++) {
+        cbor_item_t key = cbor_decode_next(dec);
+        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
+        if (KEY_IS(key, "c")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 32)
+                memcpy(m->chain, val.bstr.ptr, 32);
+        } else if (KEY_IS(key, "p")) {
+            /* D-24 rev 4 (1) — see dec_w_v2_gbundle_q_args's "p" branch: a
+             * wrong-length pin is a hard decode error here too. */
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type != CBOR_ITEM_BSTR || val.bstr.len != 32) {
+                dec->error = true;
+                return;
+            }
+            memcpy(m->pin, val.bstr.ptr, 32);
+        } else if (KEY_IS(key, "t")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) m->total = val.uint_val;
+        } else if (KEY_IS(key, "o")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) m->offset = val.uint_val;
+        } else if (KEY_IS(key, "d")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR) {
+                if (val.bstr.len > NODUS_T3_V2_GBUNDLE_CHUNK_MAX) {
+                    dec->error = true;
+                    return;
+                }
+                m->chunk = val.bstr.ptr;
+                m->chunk_len = (uint32_t)val.bstr.len;
+            }
+        } else {
+            cbor_decode_skip(dec);
+        }
+    }
+}
+
+/* ── cometbft envelope arg decoder (verbs 35-39; D-16 rev 5) ─────────
+ *
+ * STRICTER THAN THE LEGACY dec_*_args, AND THAT IS THE SPECIFICATION —
+ * the same discipline the retired verbs 28-34 introduced: unlike the
+ * legacy decoders that skip an unrecognised key and leave a missing one
+ * at zero, this rejects on
+ *
+ *   - a non-text key, an unknown key, or "m" seen twice;
+ *   - a value that is not a byte string;
+ *   - a byte string above the verb's class ceiling (35-38 the consensus
+ *     reactor's, 39 the mempool's — D-16 rev 5 "envelope overhead on
+ *     top");
+ *   - a key set that is incomplete when the map ends (missing "m").
+ *
+ * That exactness is what keeps the codec bijective — encode(decode(b))
+ * == b and decode(encode(x)) == x (DG-13). `m` is ZERO-COPY: it points
+ * into the decode buffer and is valid only while that buffer is alive,
+ * the same idiom as w_v2_range_r's `frames` and dec_w_v2_gbundle_r_args's
+ * `chunk` above. The pass-2 cap follows dec_w_v2_gbundle_r_args's
+ * `NODUS_T3_V2_GBUNDLE_CHUNK_MAX` idiom (:2500-2503, this file). */
+static void dec_w_cmt_args(cbor_decoder_t *dec, size_t count,
+                           nodus_t3_msg_type_t type, nodus_t3_w_cmt_t *m) {
+    size_t m_cap = (type == NODUS_T3_CMT_TXS) ? (size_t)NODUS_T3_CMT_TXS_M_MAX
+                                              : (size_t)NODUS_T3_CMT_CONS_M_MAX;
+    bool seen_m = false;
+
+    for (size_t i = 0; i < count; i++) {
+        cbor_item_t key = cbor_decode_next(dec);
+        if (key.type != CBOR_ITEM_TSTR) { dec->error = true; return; }
+        if (KEY_IS(key, "m")) {
+            if (seen_m) { dec->error = true; return; }
+            seen_m = true;
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type != CBOR_ITEM_BSTR || val.bstr.len > m_cap) {
+                dec->error = true;
+                return;
+            }
+            m->m     = val.bstr.ptr;
+            m->m_len = val.bstr.len;
+        } else {
+            dec->error = true; return;
+        }
+    }
+    if (!seen_m) dec->error = true;   /* the key was missing */
+}
+
 /* ── Public verify ───────────────────────────────────────────────── */
 
 int nodus_t3_verify(const nodus_t3_msg_t *msg, const nodus_pubkey_t *pk) {
     if (!msg || !pk || !msg->wsig) return -1;
 
-    /* Heap-allocate sign buffer at NODUS_W_MAX_SYNC_RSP_SIZE (1 MB) so
-     * sync_rsp / COMMIT / PROPOSE messages whose {q, wh, a} payload
-     * exceeds the 128 KB NODUS_T3_MAX_MSG_SIZE — produced by the
-     * matching sender caps in nodus_witness_sync.c:647 and
-     * nodus_witness_bft.c — verify symmetrically. */
-    uint8_t *sign_buf = malloc(NODUS_W_MAX_SYNC_RSP_SIZE);
+    /* Heap-allocate the sign buffer at NODUS_W_MAX_SYNC_RSP_SIZE (1 MB)
+     * for every non-envelope verb that survives R3 W4 (9-11 roster/ident,
+     * 14-15 chain-config vote, 24-25 genesis bundle): the two senders
+     * that can exceed the 128 KB NODUS_T3_MAX_MSG_SIZE — the genesis
+     * bundle response (nodus_witness_v2_sync2.c handle_gbundle_q) and
+     * the joiner's bundle request (nodus_witness_v2_join.c) — encode
+     * into a heap buffer of the SAME size, so encode and verify stay
+     * symmetric. The sync_rsp / COMMIT / PROPOSE messages this bound was
+     * originally sized for were deleted with the legacy lane (R3 W4-D).
+     *
+     * D-16 rev 5: the cometbft envelope verbs 35-39 instead take their
+     * PER-CLASS bound (35-38 the consensus reactor's, 39 the larger
+     * mempool one), so a maximal mempool Txs message can be verified
+     * while a vote-set-bits reply never reserves more than its class.
+     * D-16 rev 7 (W4-CC): verbs 40-41 take their own per-class bound the
+     * same way — verb 40's ceiling (DNA_ENV_MAX_TOTAL_LEN + overhead) is
+     * LARGER than NODUS_W_MAX_SYNC_RSP_SIZE, so routing it through the
+     * legacy branch would under-allocate the sign buffer for a maximal
+     * pre-auth envelope. The legacy branch is written as the literal it
+     * always was, not routed through nodus_t3_max_msg_size, so "legacy
+     * allocation unchanged" is visible in this function rather than
+     * inferred from another one. This is the wire-walker's
+     * cross-component pair 4: send (enc_sign_payload's caller) and this
+     * verify are symmetric only because both read the SAME class for a
+     * given type — keep that property when adding a verb here. */
+    bool is_per_class = (msg->type >= NODUS_T3_CMT_STATE &&
+                        msg->type <= NODUS_T3_CMT_TXS) ||
+                       msg->type == NODUS_T3_CC_APPR_REQ ||
+                       msg->type == NODUS_T3_CC_APPR_RSP;
+    size_t sign_cap = is_per_class ? nodus_t3_max_msg_size(msg->type)
+                                   : (size_t)NODUS_W_MAX_SYNC_RSP_SIZE;
+    if (sign_cap == 0) return -1;
+
+    uint8_t *sign_buf = malloc(sign_cap);
     if (!sign_buf) return -1;
 
     size_t sign_len = 0;
-    if (enc_sign_payload(msg, sign_buf, NODUS_W_MAX_SYNC_RSP_SIZE, &sign_len) != 0) {
+    if (enc_sign_payload(msg, sign_buf, sign_cap, &sign_len) != 0) {
         free(sign_buf);
         return -1;
     }

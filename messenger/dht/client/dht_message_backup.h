@@ -130,6 +130,13 @@ void dht_message_backup_cleanup(void);
  * @param dilithium_pubkey Owner's Dilithium5 public key (2592 bytes) - for encryption
  * @param dilithium_privkey Owner's Dilithium5 private key (4896 bytes) - for signing
  * @param message_count_out Output: number of messages backed up (can be NULL)
+ * @param mlkem_pubkey Owner's ML-KEM-1024 public key (1568 bytes), or NULL
+ *        if the identity has not migrated (KEM Faz 1, R7/D12). Self-
+ *        encryption uses this (alg 3) instead of kyber_pubkey (alg 2) when
+ *        non-NULL. Caller must pass the SESSION-loaded key (e.g. via
+ *        dna_load_mlkem_key()) — this function no longer does its own
+ *        by-path load, which used to bypass the session password on a
+ *        protected identity (D12, M1 delta 1b-2).
  * @return 0 on success, -1 on error
  */
 int dht_message_backup_publish(
@@ -139,7 +146,8 @@ int dht_message_backup_publish(
     const uint8_t *kyber_privkey,
     const uint8_t *dilithium_pubkey,
     const uint8_t *dilithium_privkey,
-    int *message_count_out
+    int *message_count_out,
+    const uint8_t *mlkem_pubkey
 );
 
 /**
@@ -160,6 +168,12 @@ int dht_message_backup_publish(
  * @param dilithium_pubkey Owner's Dilithium5 public key (for signature verification)
  * @param restored_count_out Output: number of messages restored (can be NULL)
  * @param skipped_count_out Output: number of duplicates skipped (can be NULL)
+ * @param mlkem_privkey Owner's ML-KEM-1024 private key (3168 bytes), or NULL
+ *        if the identity has not migrated (KEM Faz 1, R7/D12). Needed to
+ *        decrypt a backup blob self-encrypted with alg 3. Caller must pass
+ *        the SESSION-loaded key — see dht_message_backup_publish()'s
+ *        mlkem_pubkey note (D12, M1 delta 1b-2): no more by-path load here
+ *        either.
  * @return 0 on success, -1 on error, -2 if not found
  */
 int dht_message_backup_restore(
@@ -168,7 +182,8 @@ int dht_message_backup_restore(
     const uint8_t *kyber_privkey,
     const uint8_t *dilithium_pubkey,
     int *restored_count_out,
-    int *skipped_count_out
+    int *skipped_count_out,
+    const uint8_t *mlkem_privkey
 );
 
 /**

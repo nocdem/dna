@@ -402,11 +402,12 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
-    /// DUAL-MODE S4b (+F3 ak/nk 4-lane) — the AGGREGATE Action AIR
-    /// (ConfActionAggAir, width 2318, main_next=true, 43 publics): C1 reuse + C3
-    /// membership + C4 nullifier (NF1/NF2/NF3) at forced φ-phase rows. GATE1
-    /// verify=Ok, measured num_qc MUST be 8 (STOP otherwise). h=128 conserving
-    /// instance.
+    /// DUAL-MODE S4b (+F3 ak/nk 4-lane, +LEDGER-V2 S8 Gate 2) — the AGGREGATE
+    /// Action AIR (ConfActionAggAir, D=24, width 2378, main_next=true, 45
+    /// publics): C1 reuse + C3 membership + C4 nullifier (NF1/NF2/NF3) at forced
+    /// φ-phase rows, IS_FEE/FEE_ACC pinned zero, terminal
+    /// BAL == boundary_out − boundary_in. GATE1 verify=Ok, measured num_qc MUST
+    /// be 8 (STOP otherwise). h=128 conserving instance.
     #[command(name = "dump-conf-action-agg-air-zk")]
     DumpConfActionAggAirZk {
         #[arg(long)]
@@ -422,7 +423,7 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
-    /// DUAL-MODE S4b.6 — FOUR-input aggregate KAT (all in one depth-4 tree;
+    /// DUAL-MODE S4b.6 — FOUR-input aggregate KAT (all in one depth-24 tree;
     /// N_input=MAX_INPUTS=4, all 4 slots used — the GAP-1 boundary). num_qc 8.
     #[command(name = "dump-conf-action-agg-air-zk-4in")]
     DumpConfActionAggAirZk4in {
@@ -430,6 +431,20 @@ enum Cmd {
         out: PathBuf,
         /// Phase-P tail (c): emit the h=256 SALTED (M3b) variant instead of
         /// plain — the salted KAT at the 3-FRI-round / MAX_INPUTS boundary.
+        #[arg(long)]
+        salted: bool,
+    },
+    /// LEDGER-V2 S8 Gate 2 — ZERO-INPUT (SHIELD-shaped) aggregate KAT: 0 INPUT
+    /// notes, 2 OUTPUT notes (70 + 30), fee 5 (FS-only), boundary_in = 100,
+    /// boundary_out = 0, all-zero anchor. The FIRST agg vector with a NON-ZERO
+    /// turnstile, so the terminal BAL == boundary_out − boundary_in is exercised
+    /// as −100 == −100. num_qc MUST be 8. `--salted` emits the M3b twin
+    /// (conf_action_agg_air_zk_0in_salted), mirroring the other agg dumps.
+    #[command(name = "dump-conf-action-agg-air-zk-0in")]
+    DumpConfActionAggAirZk0in {
+        #[arg(long)]
+        out: PathBuf,
+        /// Emit the SALTED (M3b MerkleTreeHidingMmcs) proof instead of plain.
         #[arg(long)]
         salted: bool,
     },
@@ -763,6 +778,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Cmd::DumpConfActionAggAirZk4in { out, salted } => {
             stark_priming::dump_conf_action_agg_air_zk_4in(&out, salted)?
+        }
+        Cmd::DumpConfActionAggAirZk0in { out, salted } => {
+            stark_priming::dump_conf_action_agg_air_zk_0in(&out, salted)?
         }
         Cmd::DumpSmallrngGoldilocks { count, out } => {
             stark_priming::dump_smallrng_goldilocks(count, &out)?
@@ -13924,10 +13942,24 @@ mod stark_priming {
         Ok(())
     }
 
-    /// The C1 Action AIR (conf_action_air.c). Width 813, main_next=true (E3
+    /// The C1 Action AIR (conf_action_air.c). Width 1002, main_next=true (E3
     /// forced counter, E4/E11 freeze, E15 carries, BAL transition, E17 roles all
-    /// read the next row), 0 public values.
-    pub struct ConfActionAir;
+    /// read the next row), 0 public values when standalone.
+    ///
+    /// LEDGER-V2 S8 Gate 2 — `bnd` is the OPTIONAL (boundary_in, boundary_out)
+    /// PUBLIC-INDEX pair for the last-row balance terminal; it mirrors the C
+    /// side's caller-owned `dnac_conf_action_bnd_ctx_t` installed through
+    /// `dnac_stark_air_t::ctx` (conf_action_fold.h):
+    ///   Some((i_in, i_out)) : last_row · (BAL − (pis[i_out] − pis[i_in]))
+    ///   None                : last_row · BAL — the historical terminal, so the
+    ///                         STANDALONE lift keeps 0 public values and its
+    ///                         constraint stream is unchanged.
+    /// The terminal keeps its EMISSION POSITION in both modes (the alpha-fold is
+    /// order-sensitive and ConfActionAggAir reuses this eval verbatim).
+    #[derive(Clone, Copy)]
+    pub struct ConfActionAir {
+        pub bnd: Option<(usize, usize)>,
+    }
 
     impl BaseAir<Goldilocks> for ConfActionAir {
         fn width(&self) -> usize {
@@ -13944,6 +13976,19 @@ mod stark_priming {
         AB: AirBuilder<F = Goldilocks>,
     {
         fn eval(&self, builder: &mut AB) {
+            // S8: read the OPTIONAL boundary publics FIRST so the immutable
+            // `public_values()` borrow ends before any mutable builder call.
+            // Emits nothing — the terminal below is the only consumer.
+            let bnd_delta: Option<AB::Expr> = match self.bnd {
+                Some((i_in, i_out)) => {
+                    let pis = builder.public_values();
+                    let b_in: AB::Expr = pis[i_in].into();
+                    let b_out: AB::Expr = pis[i_out].into();
+                    Some(b_out - b_in)
+                }
+                None => None,
+            };
+
             let main = builder.main();
             let ls: &[AB::Var] = main.current_slice();
             let ns: &[AB::Var] = main.next_slice();
@@ -14165,6 +14210,13 @@ mod stark_priming {
                 ls[CA_ISREAL],
                 ls[CA_ISIN].into() + ls[CA_ISOUT].into() + ls[CA_ISFEE].into(),
             );
+            // S8 Gate-2: IS_FEE PINNED ZERO — the fee LEFT the balance (it is
+            // FS/sighash-bound only, never a summand). Zero-PIN, NOT a column
+            // removal: the trace width is frozen. The ROLE sum above is
+            // UNCHANGED (a FEE-tagged block is now simply unsatisfiable), and
+            // E14 below is UNCHANGED — with IS_FEE ≡ 0 its
+            // BALCON·(ISIN−ISOUT−ISFEE) is identically BALCON·(ISIN−ISOUT).
+            builder.assert_zero(ls[CA_ISFEE]);
 
             // PHI0 is_zero(φ): φ·inv0 = 1−phi_is0, φ·phi_is0 = 0, phi_is0²=phi_is0.
             let phi_is0: AB::Expr = ls[CA_PHI0].into();
@@ -14182,14 +14234,23 @@ mod stark_priming {
             builder.assert_eq(ls[CA_BALCOEF], ls[CA_BALCON].into() * sign);
 
             // BAL accumulator: first = own contribution; transition adds this row's;
-            // last = 0 ⇒ Σin = Σout + fee.
+            // last = boundary_out − boundary_in (S8 Gate-2 TERMINAL; with no
+            // boundary ctx the delta is absent ⇒ the historical BAL == 0, i.e.
+            // Σin = Σout). The C mirror is conf_action_fold.c's `when(is_last_row,
+            // BAL − delta)` at the IDENTICAL emission position.
             builder
                 .when_first_row()
                 .assert_eq(ls[CA_BAL], ls[CA_BALCOEF].into() * ls[CA_VALUE]);
             builder.when_transition().assert_zero(
                 ns[CA_BAL].into() - ls[CA_BAL].into() - ns[CA_BALCOEF].into() * ns[CA_VALUE].into(),
             );
-            builder.when_last_row().assert_zero(ls[CA_BAL]);
+            match bnd_delta {
+                None => builder.when_last_row().assert_zero(ls[CA_BAL]),
+                Some(delta) => {
+                    let bal: AB::Expr = ls[CA_BAL].into();
+                    builder.when_last_row().assert_zero(bal - delta);
+                }
+            }
 
             // E17 role selectors per-block const (non-wrap transition).
             let g = AB::Expr::ONE - w.clone();
@@ -14213,9 +14274,17 @@ mod stark_priming {
     /// blocks per φ=0 real row (NC1/NC2 note-commitment, AC1/AC2 spend-auth) and
     /// the inert all-zero filler use the REAL p3_poseidon2_air::generate_trace_rows
     /// (one call per permutation), each cross-checked against the real permutation.
+    ///
+    /// LEDGER-V2 S8 Gate 2 — `bnd_delta` is the honest-prover EXPECTATION for the
+    /// last-row BAL cell, i.e. `boundary_out − boundary_in` (the AIR terminal at
+    /// :14230-14236 when `bnd = Some(..)`). Every FULLY-SHIELDED instance passes
+    /// `Goldilocks::ZERO` and reproduces the pre-S8 `Σin == Σout` check byte for
+    /// byte; a turnstile instance (transparent leg ≠ 0) passes the non-zero delta.
+    /// This is a GENERATOR-SIDE sanity assert only — it writes no trace cell.
     fn generate_conf_action_trace(
         log_height: usize,
         notes: &[ActionNote],
+        bnd_delta: Goldilocks,
     ) -> RowMajorMatrix<Goldilocks> {
         assert!(
             log_height >= CA_LOG_K && log_height <= 10,
@@ -14228,7 +14297,9 @@ mod stark_priming {
             "E7: last block MUST be dummy (conf_action_air.c:92-93)"
         );
 
-        // Honest-prover balance conservation: Σin − Σout − Σfee = 0 (field).
+        // Honest-prover balance relation (S8): Σin − Σout − Σfee == bnd_delta
+        // == boundary_out − boundary_in (field). bnd_delta == ZERO is the
+        // fully-shielded case and is EXACTLY the pre-S8 conservation check.
         {
             let mut bal = Goldilocks::ZERO;
             for note in notes {
@@ -14241,7 +14312,10 @@ mod stark_priming {
                 };
                 bal += sign * Goldilocks::from_u64(note.value);
             }
-            assert_eq!(bal, Goldilocks::ZERO, "non-conserving balance");
+            assert_eq!(
+                bal, bnd_delta,
+                "balance != boundary delta (S8 terminal BAL == boundary_out − boundary_in)"
+            );
         }
 
         let rc = RoundConstants::<Goldilocks, 8, 4, 22>::new(
@@ -14497,8 +14571,13 @@ mod stark_priming {
                 nk: [0; 4],
                 ak: [0; 4],
             },
+            // S8 Gate-2: this block WAS role=FEE (value 30). IS_FEE is now pinned
+            // ZERO, so a FEE-tagged block is unsatisfiable; it becomes a SECOND
+            // OUTPUT and the instance stays conserving (100 = 70 + 30) with the
+            // boundary delta at 0. The KAT's shape (3 real blocks + dummy-last,
+            // H=128) is otherwise unchanged.
             ActionNote {
-                role: CA_ROLE_FEE,
+                role: CA_ROLE_OUTPUT,
                 value: 30,
                 addr: [0xFEE1, 0xFEE2, 0xFEE3, 0xFEE4],
                 rcm: [0x31, 0x32],
@@ -14507,17 +14586,21 @@ mod stark_priming {
                 ak: [0; 4],
             },
         ];
-        let trace = generate_conf_action_trace(7, &notes); // H = 128 = 4 blocks
+        // S8: bnd = None below ⇒ the terminal is BAL == 0 ⇒ delta ZERO.
+        let trace = generate_conf_action_trace(7, &notes, Goldilocks::ZERO); // H = 128 = 4 blocks
         let pis: Vec<Goldilocks> = Vec::new(); // num_public_values = 0
         dump_is_zk_stark(
-            &ConfActionAir,
+            // S8: bnd = None ⇒ 0 publics and the historical last-row BAL == 0.
+            &ConfActionAir { bnd: None },
             trace,
             pis,
             "conf_action_air_zk",
-            "DUAL-MODE S1e (+F3 ak/nk 4-lane) — REAL is_zk=1 proof of the C1 Action \
-             AIR (conf_action_air, width 1002, main_next=true, 0 publics; forced \
-             phase-counter + freeze-carry + note-commitment + condition-3 \
-             spend-auth (AC1/AC2/AC3, 12-slot preimage) + balance conservation; \
+            "DUAL-MODE S1e (+F3 ak/nk 4-lane, +LEDGER-V2 S8 Gate 2) — REAL is_zk=1 \
+             proof of the C1 Action AIR (conf_action_air, width 1002, \
+             main_next=true, 0 publics; forced phase-counter + freeze-carry + \
+             note-commitment + condition-3 spend-auth (AC1/AC2/AC3, 12-slot \
+             preimage) + balance conservation with IS_FEE pinned ZERO and the \
+             last-row terminal in its no-boundary form (BAL == 0, bnd = None); \
              max degree 3, num_qc 8)",
             "DUAL-MODE S1e+F3 — C1 Action AIR real-STARK lift (h=128, num_qc=8)",
             Some(8),
@@ -14530,7 +14613,7 @@ mod stark_priming {
     // Action AIR (conf_action_agg_air.{c,h}, C1 ⊕ C3 membership ⊕ C4 nullifier).
     //
     // C1 is reused for FREE: `ConfActionAggAir::eval` calls `ConfActionAir.eval`
-    // on the wide builder — ConfActionAir touches ONLY columns [0,813), so it
+    // on the wide builder — ConfActionAir touches ONLY columns [0,1002), so it
     // re-emits every C1 constraint on the aggregate trace with ZERO duplication.
     //
     // The membership + nullifier phases run at FORCED φ-phase rows selected by
@@ -14589,40 +14672,48 @@ mod stark_priming {
     const AGG_NF_NF: usize = AGG_NF_NF3 + P2_NCOLS;
     const AGG_NF_WIDTH: usize = AGG_NF_NF + AGG_NF_LANES; // 913
 
-    const AGG_D: usize = 4; // CONF_AGG_TREE_DEPTH
+    // LEDGER-V2 S8 Gate 2 (2026-08-06): 4 → 24, the PRODUCTION note-tree depth
+    // (conf_action_agg_air.h CONF_AGG_TREE_DEPTH). 3 committed selector columns
+    // per level ⇒ the width moves 2318 → 2378 = 2306 + 3·D, and the nullifier
+    // phase moves to φ = D+1 = 25 (still ≤ K−1 = 31).
+    const AGG_D: usize = 24; // CONF_AGG_TREE_DEPTH
     const AGG_MEMB_OFF: usize = CA_W_WIDTH; // 1002 (CONF_AGG_MEMB_OFF)
     const AGG_NF_OFF: usize = AGG_MEMB_OFF + AGG_MEMB_WIDTH; // 1372
     const AGG_ISNF_OFF: usize = AGG_NF_OFF + AGG_NF_WIDTH; // 2285
     const AGG_INVNF_OFF: usize = AGG_ISNF_OFF + 1; // 2286
     const AGG_ISLVL_OFF: usize = AGG_INVNF_OFF + 1; // 2287  [.., +D)
-    const AGG_INVLVL_OFF: usize = AGG_ISLVL_OFF + AGG_D; // 2291 [.., +D)
-    const AGG_ACTLVL_OFF: usize = AGG_INVLVL_OFF + AGG_D; // 2295 [.., +D)
+    const AGG_INVLVL_OFF: usize = AGG_ISLVL_OFF + AGG_D; // 2311 [.., +D)
+    const AGG_ACTLVL_OFF: usize = AGG_INVLVL_OFF + AGG_D; // 2335 [.., +D)
     // S4b.2b nf-public routing columns.
-    const AGG_NIN_OFF: usize = AGG_ACTLVL_OFF + AGG_D; // 2299  running INPUT-block counter
+    const AGG_NIN_OFF: usize = AGG_ACTLVL_OFF + AGG_D; // 2359  running INPUT-block counter
     const AGG_MAX_INPUTS: usize = 4; // MAX_INPUTS — S6-pinned consensus constant (KAT: modest)
-    const AGG_SLOTSEL_OFF: usize = AGG_NIN_OFF + 1; // 2300 [.., +M) slot_sel[s]=is_zero(N_in−1−s)
-    const AGG_INVSLOT_OFF: usize = AGG_SLOTSEL_OFF + AGG_MAX_INPUTS; // 2304 [.., +M)
+    const AGG_SLOTSEL_OFF: usize = AGG_NIN_OFF + 1; // 2360 [.., +M) slot_sel[s]=is_zero(N_in−1−s)
+    const AGG_INVSLOT_OFF: usize = AGG_SLOTSEL_OFF + AGG_MAX_INPUTS; // 2364 [.., +M)
     // ── S4c output routing columns (OUTPUT analog of the N_input machinery). ──
     const AGG_MAX_OUTPUTS: usize = 4; // MAX_OUTPUTS — S6-pinned (mirrors MAX_INPUTS; 8in+8out height-budget OK)
-    const AGG_NOUT_OFF: usize = AGG_INVSLOT_OFF + AGG_MAX_INPUTS; // 2308 running OUTPUT-block counter
-    const AGG_OSLOTSEL_OFF: usize = AGG_NOUT_OFF + 1; // 2309 [.., +MO) oslot_sel[s]=is_zero(N_out−1−s)
-    const AGG_INVOSLOT_OFF: usize = AGG_OSLOTSEL_OFF + AGG_MAX_OUTPUTS; // 2313 [.., +MO)
-    const AGG_FEEACC_OFF: usize = AGG_INVOSLOT_OFF + AGG_MAX_OUTPUTS; // 2317 Σ IS_FEE·value accumulator
-    const AGG_ZK_WIDTH: usize = AGG_FEEACC_OFF + 1; // 2318
+    const AGG_NOUT_OFF: usize = AGG_INVSLOT_OFF + AGG_MAX_INPUTS; // 2368 running OUTPUT-block counter
+    const AGG_OSLOTSEL_OFF: usize = AGG_NOUT_OFF + 1; // 2369 [.., +MO) oslot_sel[s]=is_zero(N_out−1−s)
+    const AGG_INVOSLOT_OFF: usize = AGG_OSLOTSEL_OFF + AGG_MAX_OUTPUTS; // 2373 [.., +MO)
+    const AGG_FEEACC_OFF: usize = AGG_INVOSLOT_OFF + AGG_MAX_OUTPUTS; // 2377 Σ IS_FEE·value accumulator
+    const AGG_ZK_WIDTH: usize = AGG_FEEACC_OFF + 1; // 2378
 
-    const AGG_NF_PHI: u64 = (AGG_D + 1) as u64; // D+1 = 5
+    const AGG_NF_PHI: u64 = (AGG_D + 1) as u64; // D+1 = 25
 
-    // Public-value layout (S4c: 21 → 43):
+    // Public-value layout (S4c: 21 → 43; S8 Gate 2: 43 → 45 — the two turnstile
+    // publics are inserted AFTER fee and BEFORE tx_binding, shifting tx_binding
+    // 39..42 → 41..44):
     //   anchor[4] ‖ num_input ‖ nf_slot[MI][4] ‖ num_output ‖ output_commit[MO][4]
-    //   ‖ fee ‖ tx_binding[4].
+    //   ‖ fee ‖ boundary_in ‖ boundary_out ‖ tx_binding[4].
     const AGG_PUB_ANCHOR: usize = 0;
     const AGG_PUB_NUMIN: usize = AGG_PUB_ANCHOR + AGG_MEMB_LANES; // 4
     const AGG_PUB_NFSLOT: usize = AGG_PUB_NUMIN + 1; // 5
     const AGG_PUB_NUMOUT: usize = AGG_PUB_NFSLOT + AGG_MAX_INPUTS * AGG_NF_LANES; // 21
     const AGG_PUB_OCOMMIT: usize = AGG_PUB_NUMOUT + 1; // 22  [.., +MO*4)
-    const AGG_PUB_FEE: usize = AGG_PUB_OCOMMIT + AGG_MAX_OUTPUTS * CA_CMLANES; // 38
-    const AGG_PUB_TXBIND: usize = AGG_PUB_FEE + 1; // 39  [.., +4) FS-observed, eval-free
-    const AGG_NUM_PUBLICS: usize = AGG_PUB_TXBIND + AGG_MEMB_LANES; // 43
+    const AGG_PUB_FEE: usize = AGG_PUB_OCOMMIT + AGG_MAX_OUTPUTS * CA_CMLANES; // 38 (S8: FS-only)
+    const AGG_PUB_BIN: usize = AGG_PUB_FEE + 1; // 39  S8 transparent-IN
+    const AGG_PUB_BOUT: usize = AGG_PUB_BIN + 1; // 40  S8 transparent-OUT
+    const AGG_PUB_TXBIND: usize = AGG_PUB_BOUT + 1; // 41  [.., +4) FS-observed, eval-free
+    const AGG_NUM_PUBLICS: usize = AGG_PUB_TXBIND + AGG_MEMB_LANES; // 45
 
     // shielded_domsep.h:37,41 — SHA3-512("<string>")[0:8] BE (checked at runtime).
     const AGG_DOMSEP_RHO: u64 = 0x79b6_db2f_d9e0_0ea6; // "DNAC nullifier-rho v1"
@@ -14657,9 +14748,10 @@ mod stark_priming {
     }
 
     /// The aggregate Action AIR (conf_action_agg_air.c real-STARK form). Width
-    /// 2318 (post-F3), main_next=true (C1 + membership chaining + N_input counter
-    /// read the next row), 43 public values (anchor[4] ‖ num_input ‖ nf_slot[4][4]
-    /// ‖ num_output ‖ output_commit[4][4] ‖ fee ‖ tx_binding[4]).
+    /// 2378 (S8 D=24), main_next=true (C1 + membership chaining + N_input counter
+    /// read the next row), 45 public values (anchor[4] ‖ num_input ‖ nf_slot[4][4]
+    /// ‖ num_output ‖ output_commit[4][4] ‖ fee ‖ boundary_in ‖ boundary_out ‖
+    /// tx_binding[4]).
     #[derive(Clone)] /* d4.c: run_batch_proof_scenario's A: Clone bound */
     pub struct ConfActionAggAir;
 
@@ -14678,8 +14770,15 @@ mod stark_priming {
         AB: AirBuilder<F = Goldilocks>,
     {
         fn eval(&self, builder: &mut AB) {
-            // ── C1 reuse: emits every conf_action_air constraint on [0,813). ──
-            ConfActionAir.eval(builder);
+            // ── C1 reuse: emits every conf_action_air constraint on [0,1002).
+            // S8: the boundary-public index pair is handed to the C1 eval here
+            // — the exact analogue of the C side installing
+            // dnac_conf_action_bnd_ctx_t as the aggregate descriptor's `ctx`,
+            // which the REUSED C1 evaluator reads off the shared folder. ──
+            ConfActionAir {
+                bnd: Some((AGG_PUB_BIN, AGG_PUB_BOUT)),
+            }
+            .eval(builder);
 
             let main = builder.main();
             let pis = builder.public_values();
@@ -14695,7 +14794,10 @@ mod stark_priming {
             let ocommit_pub: [[AB::Expr; CA_CMLANES]; AGG_MAX_OUTPUTS] = core::array::from_fn(|s| {
                 core::array::from_fn(|j| pis[AGG_PUB_OCOMMIT + s * CA_CMLANES + j].into())
             });
-            let fee_pub: AB::Expr = pis[AGG_PUB_FEE].into();
+            // S8 Gate-2: `fee` is NO LONGER eval-read (the fee left the balance;
+            // it is FS/sighash-bound only, exactly like tx_binding). The read is
+            // kept so the layout stays self-documenting at its pinned index.
+            let _fee_pub: AB::Expr = pis[AGG_PUB_FEE].into();
             let ls: &[AB::Var] = main.current_slice();
             let ns: &[AB::Var] = main.next_slice();
 
@@ -15084,10 +15186,13 @@ mod stark_priming {
                 osum = osum + ls[AGG_OSLOTSEL_OFF + s].into();
             }
             builder.assert_zero(gate_out * (osum - AB::Expr::ONE));
-            // Fee promotion (A-6): fee_pub == Σ(IS_FEE·value) via a running FEE_ACC
-            // accumulator (mirrors N_input) — binds fee EVEN WHEN there is no FEE
-            // block (⇒ fee_pub forced 0); an unbound fee_pub would be a fee-pool mint.
-            // Increment at each FEE block's φ=0 row: next.PHI0·next.IS_FEE·next.value.
+            // Fee accumulator. S8 Gate-2: IS_FEE is pinned ZERO in the C1 eval,
+            // so every increment term PHI0·IS_FEE·value is identically 0 and the
+            // only satisfiable accumulator is the all-zero one — the last-row
+            // constraint is therefore `FEE_ACC == 0`, NOT `FEE_ACC == fee_pub`.
+            // The first-row and transition constraints are UNCHANGED (they are
+            // what force the zero row-by-row), and the COLUMNS stay: the trace
+            // width is frozen. Increment: next.PHI0·next.IS_FEE·next.value.
             builder
                 .when_first_row()
                 .assert_eq(ls[AGG_FEEACC_OFF], cphi0 * is_fee * ls[CA_VALUE].into());
@@ -15097,9 +15202,7 @@ mod stark_priming {
             builder.when_transition().assert_zero(
                 ns[AGG_FEEACC_OFF].into() - ls[AGG_FEEACC_OFF].into() - nphi0f * nisfee * nval,
             );
-            builder
-                .when_last_row()
-                .assert_eq(ls[AGG_FEEACC_OFF], fee_pub);
+            builder.when_last_row().assert_zero(ls[AGG_FEEACC_OFF]);
         }
     }
 
@@ -15109,10 +15212,16 @@ mod stark_priming {
     /// the forced is_zero selectors (is_nf, is_lvl[i], active_lvl[i]). Mirrors
     /// conf_action_agg_air_generate (conf_action_agg_air.c:67-234). Returns the
     /// trace + the common anchor (the INPUT notes' shared Merkle root = public).
+    ///
+    /// S8 Gate 2: `bnd_delta` (== boundary_out − boundary_in) is forwarded to the
+    /// C1 builder's honest-prover balance assert; it writes no cell of its own.
+    /// With ZERO INPUT notes no membership walk runs, so the returned anchor stays
+    /// all-zero — the frozen wire rule for a zero-input statement.
     fn generate_conf_action_agg_trace(
         log_height: usize,
         notes: &[ActionNote],
         memb_siblings: &[[[u64; AGG_MEMB_LANES]; AGG_D]],
+        bnd_delta: Goldilocks,
     ) -> (
         RowMajorMatrix<Goldilocks>,
         [Goldilocks; AGG_MEMB_LANES],
@@ -15122,7 +15231,7 @@ mod stark_priming {
         [[Goldilocks; CA_CMLANES]; AGG_MAX_OUTPUTS],
         Goldilocks,
     ) {
-        let c1 = generate_conf_action_trace(log_height, notes);
+        let c1 = generate_conf_action_trace(log_height, notes, bnd_delta);
         let rows = 1usize << log_height;
         let k = CA_K;
 
@@ -15395,10 +15504,14 @@ mod stark_priming {
         )
     }
 
-    /// Build the 43-public vector: anchor[4] ‖ num_input ‖ nf_slot[MI][4] ‖
-    /// num_output ‖ output_commit[MO][4] ‖ fee ‖ tx_binding[4]. tx_binding is the
-    /// FS-observed placeholder (0 in KATs; the S5 wire fills it via
-    /// conf_txbind_map(sighash_v4)).
+    /// Build the 45-public vector: anchor[4] ‖ num_input ‖ nf_slot[MI][4] ‖
+    /// num_output ‖ output_commit[MO][4] ‖ fee ‖ boundary_in ‖ boundary_out ‖
+    /// tx_binding[4]. tx_binding is the FS-observed statement binding (the S5
+    /// wire fills it via conf_txbind_map(sighash_v4)); `fee` is FS/sighash-bound
+    /// only since S8. The two boundary values MUST satisfy the AIR's last-row
+    /// terminal BAL == boundary_out − boundary_in, i.e.
+    ///   Σ INPUT value + boundary_in == Σ OUTPUT value + boundary_out.
+    #[allow(clippy::too_many_arguments)]
     fn agg_build_pis(
         anchor: [Goldilocks; AGG_MEMB_LANES],
         num_input: u64,
@@ -15406,6 +15519,8 @@ mod stark_priming {
         num_output: u64,
         output_commit: [[Goldilocks; CA_CMLANES]; AGG_MAX_OUTPUTS],
         fee: Goldilocks,
+        boundary_in: Goldilocks,
+        boundary_out: Goldilocks,
         tx_binding: [Goldilocks; AGG_MEMB_LANES],
     ) -> Vec<Goldilocks> {
         let mut pis: Vec<Goldilocks> = Vec::with_capacity(AGG_NUM_PUBLICS);
@@ -15423,6 +15538,8 @@ mod stark_priming {
             }
         }
         pis.push(fee);
+        pis.push(boundary_in); // S8 turnstile: transparent value entering the pool
+        pis.push(boundary_out); // S8 turnstile: transparent value leaving it
         for j in 0..AGG_MEMB_LANES {
             pis.push(tx_binding[j]); // FS-observed statement binding (caller-provided)
         }
@@ -15430,10 +15547,24 @@ mod stark_priming {
         pis
     }
 
-    /// S4b.2a instance: INPUT 100 = OUTPUT 70 + FEE 30 (conserving) + 1 dummy-last,
-    /// D=4 membership, the INPUT addressed to its own (ak,nk) via condition-3 and
-    /// a member of the tree at the computed anchor. Real is_zk=1 prove → GATE1
-    /// verify=Ok, GATE3 tampered-reject, num_qc STOP-gate == 8.
+    /// Deterministic KAT sibling digest for membership LEVEL `i`:
+    /// [(i+1)·0x1000 + 1 ..= +4]. S8 raised D 4 → 24, so a KAT path can no
+    /// longer be written out level-by-level as a literal. This rule REPRODUCES
+    /// the pre-S8 literals exactly for i ∈ [0,4) — 0x1001.., 0x2001.., 0x3001..,
+    /// 0x4001.. — and extends them to every level. Arbitrary but FIXED: only
+    /// INPUT blocks consume siblings, and the walk's root is the computed
+    /// anchor public, so the values only need to be deterministic and shared by
+    /// every input that must converge to one anchor.
+    fn agg_kat_sib_level(i: usize) -> [u64; AGG_MEMB_LANES] {
+        core::array::from_fn(|j| ((i as u64) + 1) * 0x1000 + (j as u64) + 1)
+    }
+
+    /// S4b.2a instance: INPUT 100 = OUTPUT 70 + OUTPUT 30 (conserving, boundary
+    /// delta 0) + 1 dummy-last, D=24 membership, the INPUT addressed to its own
+    /// (ak,nk) via condition-3 and a member of the tree at the computed anchor.
+    /// Real is_zk=1 prove → GATE1 verify=Ok, GATE3 tampered-reject, num_qc
+    /// STOP-gate == 8. (Pre-S8 the third block was FEE 30; IS_FEE is pinned zero
+    /// now, so it is a second OUTPUT.)
     pub fn dump_conf_action_agg_air_zk(
         out_path: &PathBuf,
         salted: bool,
@@ -15446,7 +15577,7 @@ mod stark_priming {
                 value: 100,
                 addr: [0; 4], // overridden (derived from ak,nk)
                 rcm: [0x11, 0x12],
-                pos: 5, // bits LSB-first over D=4: [1,0,1,0]
+                pos: 5, // bits LSB-first over D=24: [1,0,1,0,0,...,0]
                 // F3 4-lane keys — MUST match test_prover_agg.c's 1-input instance.
                 nk: [0x2222_2222, 0x2222_2223, 0x2222_2224, 0x2222_2225],
                 ak: [0x1111_1111, 0x1111_1112, 0x1111_1113, 0x1111_1114],
@@ -15460,8 +15591,11 @@ mod stark_priming {
                 nk: [0; 4],
                 ak: [0; 4],
             },
+            // S8 Gate-2: WAS role=FEE (value 30). IS_FEE is pinned ZERO now, so a
+            // FEE-tagged block is unsatisfiable; it becomes a SECOND OUTPUT and
+            // the instance stays conserving (100 = 70 + 30) at boundary delta 0.
             ActionNote {
-                role: CA_ROLE_FEE,
+                role: CA_ROLE_OUTPUT,
                 value: 30,
                 addr: [0xFEE1, 0xFEE2, 0xFEE3, 0xFEE4],
                 rcm: [0x31, 0x32],
@@ -15470,24 +15604,22 @@ mod stark_priming {
                 ak: [0; 4],
             },
         ];
-        // Arbitrary but fixed sibling digests for the INPUT's D=4 path (only the
-        // INPUT block's siblings are consumed; OUTPUT/FEE entries are ignored).
+        // Arbitrary but fixed sibling digests for the INPUT's D=24 path (only the
+        // INPUT block's siblings are consumed; OUTPUT entries are ignored).
         let memb_siblings: [[[u64; AGG_MEMB_LANES]; AGG_D]; 3] = [
-            [
-                [0x1001, 0x1002, 0x1003, 0x1004],
-                [0x2001, 0x2002, 0x2003, 0x2004],
-                [0x3001, 0x3002, 0x3003, 0x3004],
-                [0x4001, 0x4002, 0x4003, 0x4004],
-            ],
+            core::array::from_fn(agg_kat_sib_level),
             [[0; 4]; AGG_D],
             [[0; 4]; AGG_D],
         ];
         let (trace, anchor, num_input, nf_slots, num_output, output_commit, fee) =
-            generate_conf_action_agg_trace(7, &notes, &memb_siblings); // H=128=4 blocks
+            generate_conf_action_agg_trace(7, &notes, &memb_siblings, Goldilocks::ZERO); // H=128=4 blocks
         let kat_txbind: [Goldilocks; AGG_MEMB_LANES] =
             core::array::from_fn(|j| Goldilocks::from_u64(AGG_KAT_TXBIND[j]));
+        // S8 turnstile: this KAT is fully shielded (nothing crosses the
+        // boundary), so boundary_in == boundary_out == 0 and the terminal
+        // BAL == boundary_out − boundary_in degenerates to the pre-S8 BAL == 0.
         let pis = agg_build_pis(anchor, num_input, nf_slots, num_output, output_commit, fee,
-                                kat_txbind);
+                                Goldilocks::ZERO, Goldilocks::ZERO, kat_txbind);
         if salted {
             dump_is_zk_stark_salted(
                 &ConfActionAggAir,
@@ -15507,14 +15639,16 @@ mod stark_priming {
                 trace,
                 pis,
                 "conf_action_agg_air_zk",
-                "DUAL-MODE S4c (+F3 ak/nk 4-lane) — REAL is_zk=1 proof of the \
-                 AGGREGATE Action AIR (conf_action_agg_air, width 2318, \
-                 main_next=true, 43 publics = anchor[4] ‖ num_input ‖ nf_slot[4][4] \
-                 ‖ num_output ‖ output_commit[4][4] ‖ fee ‖ tx_binding[4]; C1 reuse \
-                 + C3 membership + C4 nullifier (NF1/NF2/NF3) + nf routing + \
-                 OUTPUT-block routing (N_output counter) + fee promotion; \
+                "LEDGER-V2 S8 Gate 2 (+S4c, +F3 ak/nk 4-lane) — REAL is_zk=1 proof \
+                 of the AGGREGATE Action AIR (conf_action_agg_air, D=24, width \
+                 2378, main_next=true, 45 publics = anchor[4] ‖ num_input ‖ \
+                 nf_slot[4][4] ‖ num_output ‖ output_commit[4][4] ‖ fee ‖ \
+                 boundary_in ‖ boundary_out ‖ tx_binding[4]; C1 reuse + C3 \
+                 membership (24 levels) + C4 nullifier (NF1/NF2/NF3, φ=25) + nf \
+                 routing + OUTPUT-block routing (N_output counter) + IS_FEE/FEE_ACC \
+                 pinned ZERO + terminal BAL == boundary_out − boundary_in; \
                  max degree 4, num_qc 8)",
-                "DUAL-MODE S4c+F3 — aggregate Action AIR + output/fee promotion (h=128, num_qc=8)",
+                "LEDGER-V2 S8 Gate 2 — aggregate Action AIR at D=24, boundary-bound balance (h=128, num_qc=8)",
                 Some(8),
                 out_path,
             )
@@ -15602,9 +15736,10 @@ mod stark_priming {
     }
 
     /// S4b.6 boundary KAT: FOUR INPUT notes (25×4 = OUTPUT 100) at positions 0..3
-    /// of ONE depth-4 tree (leaves 0/1 and 2/3 pair up; the two subtree roots pair
-    /// at level 1), so all four converge to ONE anchor. Fills N_input to
-    /// MAX_INPUTS=4 (all four nf slots used) — the GAP-1 boundary. h=256 (8 blocks).
+    /// of ONE depth-24 tree (leaves 0/1 and 2/3 pair up; the two subtree roots
+    /// pair at level 1; levels 2..23 are a shared filler path), so all four
+    /// converge to ONE anchor. Fills N_input to MAX_INPUTS=4 (all four nf slots
+    /// used) — the GAP-1 boundary. h=256 (8 blocks).
     pub fn dump_conf_action_agg_air_zk_4in(
         out_path: &PathBuf,
         salted: bool,
@@ -15634,22 +15769,31 @@ mod stark_priming {
         let n01 = u(agg_compress(cm[0], cm[1]));
         let n23 = u(agg_compress(cm[2], cm[3]));
         let (c0, c1, c2, c3) = (u(cm[0]), u(cm[1]), u(cm[2]), u(cm[3]));
-        let e2: [u64; 4] = [0x3001, 0x3002, 0x3003, 0x3004];
-        let e3: [u64; 4] = [0x4001, 0x4002, 0x4003, 0x4004];
-        // in0:[cm1,N23,E2,E3] in1:[cm0,N23,E2,E3] in2:[cm3,N01,E2,E3] in3:[cm2,N01,E2,E3]
+        // Levels 0-1 pair the four leaves; levels 2..D are the SHARED filler path
+        // (identical for all four inputs, bit=0 since pos < 4), so all four walks
+        // converge to ONE anchor at D=24 exactly as they did at D=4.
+        // in0:[cm1,N23,·] in1:[cm0,N23,·] in2:[cm3,N01,·] in3:[cm2,N01,·]
+        let sibs = |lvl0: [u64; 4], lvl1: [u64; 4]| -> [[u64; AGG_MEMB_LANES]; AGG_D] {
+            core::array::from_fn(|i| match i {
+                0 => lvl0,
+                1 => lvl1,
+                _ => agg_kat_sib_level(i),
+            })
+        };
         let memb_siblings: [[[u64; AGG_MEMB_LANES]; AGG_D]; 5] = [
-            [c1, n23, e2, e3],
-            [c0, n23, e2, e3],
-            [c3, n01, e2, e3],
-            [c2, n01, e2, e3],
+            sibs(c1, n23),
+            sibs(c0, n23),
+            sibs(c3, n01),
+            sibs(c2, n01),
             [[0; 4]; AGG_D],
         ];
         let (trace, anchor, num_input, nf_slots, num_output, output_commit, fee) =
-            generate_conf_action_agg_trace(8, &notes, &memb_siblings); // H=256=8 blocks
+            generate_conf_action_agg_trace(8, &notes, &memb_siblings, Goldilocks::ZERO); // H=256=8 blocks
         let kat_txbind: [Goldilocks; AGG_MEMB_LANES] =
             core::array::from_fn(|j| Goldilocks::from_u64(AGG_KAT_TXBIND[j]));
+        // S8: fully shielded instance ⇒ boundary_in == boundary_out == 0.
         let pis = agg_build_pis(anchor, num_input, nf_slots, num_output, output_commit, fee,
-                                kat_txbind);
+                                Goldilocks::ZERO, Goldilocks::ZERO, kat_txbind);
         if salted {
             dump_is_zk_stark_salted(
                 &ConfActionAggAir,
@@ -15671,7 +15815,7 @@ mod stark_priming {
                 pis,
                 "conf_action_agg_air_zk_4in",
                 "DUAL-MODE S4b.6 — FOUR-input aggregate Action AIR (all four in one \
-                 depth-4 tree → one anchor; N_input=MAX_INPUTS=4, all 4 nf slots used; \
+                 depth-24 tree → one anchor; N_input=MAX_INPUTS=4, all 4 nf slots used; \
                  the GAP-1 boundary)",
                 "DUAL-MODE S4b.6 — 4-input aggregate real-STARK lift (h=256, num_qc=8)",
                 Some(8),
@@ -15680,9 +15824,9 @@ mod stark_priming {
         }
     }
 
-    /// S4b.6 multi-input KAT: TWO INPUT notes (60 + 40 = OUTPUT 100, fee 0) that
-    /// are level-0 SIBLINGS of each other (pos 0 and 1), so both membership walks
-    /// converge to ONE anchor with shared upper siblings. Exercises N_input → 2,
+    /// S4b.6 multi-input KAT: TWO INPUT notes (60 + 40 = OUTPUT 100, no fee, no
+    /// boundary) that are level-0 SIBLINGS of each other (pos 0 and 1), so both
+    /// membership walks converge to ONE anchor with shared upper siblings. Exercises N_input → 2,
     /// slot routing to slots 0 AND 1, and the GAP-1 exactly-one-slot bound with
     /// >1 input. h=128 (4 blocks, fits the KAT draw stream). Real is_zk=1 prove →
     /// verify + num_qc 8.
@@ -15710,24 +15854,24 @@ mod stark_priming {
         let cm1 = agg_input_note_cm(notes[1].ak, notes[1].nk, notes[1].value, notes[1].rcm);
         let cm0u: [u64; 4] = core::array::from_fn(|j| p3_field::PrimeField64::as_canonical_u64(&cm0[j]));
         let cm1u: [u64; 4] = core::array::from_fn(|j| p3_field::PrimeField64::as_canonical_u64(&cm1[j]));
-        // Shared upper siblings (levels 1..D), arbitrary but fixed.
-        let up: [[u64; AGG_MEMB_LANES]; 3] = [
-            [0x2001, 0x2002, 0x2003, 0x2004],
-            [0x3001, 0x3002, 0x3003, 0x3004],
-            [0x4001, 0x4002, 0x4003, 0x4004],
-        ];
+        // Shared upper siblings (levels 1..D−1), arbitrary but fixed — identical
+        // for both inputs, so the two walks converge to ONE anchor.
         // input0 (pos0, bit0=0): sib0 = cm1 ; input1 (pos1, bit0=1): sib0 = cm0.
+        let sibs = |lvl0: [u64; 4]| -> [[u64; AGG_MEMB_LANES]; AGG_D] {
+            core::array::from_fn(|i| if i == 0 { lvl0 } else { agg_kat_sib_level(i) })
+        };
         let memb_siblings: [[[u64; AGG_MEMB_LANES]; AGG_D]; 3] = [
-            [cm1u, up[0], up[1], up[2]],
-            [cm0u, up[0], up[1], up[2]],
+            sibs(cm1u),
+            sibs(cm0u),
             [[0; 4]; AGG_D],
         ];
         let (trace, anchor, num_input, nf_slots, num_output, output_commit, fee) =
-            generate_conf_action_agg_trace(7, &notes, &memb_siblings); // H=128=4 blocks
+            generate_conf_action_agg_trace(7, &notes, &memb_siblings, Goldilocks::ZERO); // H=128=4 blocks
         let kat_txbind: [Goldilocks; AGG_MEMB_LANES] =
             core::array::from_fn(|j| Goldilocks::from_u64(AGG_KAT_TXBIND[j]));
+        // S8: fully shielded instance ⇒ boundary_in == boundary_out == 0.
         let pis = agg_build_pis(anchor, num_input, nf_slots, num_output, output_commit, fee,
-                                kat_txbind);
+                                Goldilocks::ZERO, Goldilocks::ZERO, kat_txbind);
         dump_is_zk_stark(
             &ConfActionAggAir,
             trace,
@@ -15740,6 +15884,141 @@ mod stark_priming {
             Some(8),
             out_path,
         )
+    }
+
+    /// LEDGER-V2 S8 Gate 2 — the ZERO-INPUT (SHIELD-shaped) aggregate KAT: the
+    /// FIRST agg vector with a NON-ZERO turnstile, so it is the first one whose
+    /// terminal exercises the DELTA arithmetic rather than degenerating to
+    /// `BAL == 0`.
+    ///
+    ///   0 INPUT notes, 2 OUTPUT notes (70 + 30), fee 5,
+    ///   boundary_in = 100 = Σ output value, boundary_out = 0, anchor = [0,0,0,0].
+    ///
+    /// Terminal check (AIR: last_row · (BAL − (boundary_out − boundary_in)) at
+    /// :14235-14241): BAL accumulates Σin − Σout = 0 − 100 = −100, and
+    /// boundary_out − boundary_in = 0 − 100 = −100. Equal ⇒ satisfied. This is
+    /// the SHIELD relation: transparent value enters the pool and becomes
+    /// private outputs.
+    ///
+    /// Shape notes:
+    ///  * ZERO inputs ⇒ no membership walk runs ⇒ the anchor is ALL-ZERO (the
+    ///    frozen wire rule for a zero-input statement), N_input == 0, every nf
+    ///    slot zero, and `gate_nf ≡ 0` makes the whole nullifier/routing region
+    ///    vacuous (nothing is dropped: there is nothing to route).
+    ///  * TWO outputs ⇒ N_output reaches 2 and BOTH output slots are routed, so
+    ///    the output machinery is exercised past the single-slot case.
+    ///  * `fee` is a NON-ZERO public with NO in-circuit consumer since S8 (it is
+    ///    FS/sighash-bound only, exactly like tx_binding). It is deliberately NOT
+    ///    a note block: IS_FEE is pinned ZERO, so a FEE-role block is
+    ///    unsatisfiable. FEE_ACC therefore stays 0 and its last-row constraint
+    ///    (`FEE_ACC == 0`) is what proves no fee block sneaked in.
+    ///  * h=128 (4 blocks: 2 real + 2 dummy, E7 dummy-last satisfied).
+    pub fn dump_conf_action_agg_air_zk_0in(
+        out_path: &PathBuf,
+        salted: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        conf_action_check_domseps()?;
+        conf_agg_check_domseps()?;
+        const OUT0_VALUE: u64 = 70;
+        const OUT1_VALUE: u64 = 30;
+        const KAT_FEE: u64 = 5; // NON-ZERO, FS/sighash-bound only (no eval consumer).
+        let notes = [
+            ActionNote {
+                role: CA_ROLE_OUTPUT,
+                value: OUT0_VALUE,
+                addr: [0xBB01, 0xBB02, 0xBB03, 0xBB04],
+                rcm: [0x41, 0x42],
+                pos: 0,
+                nk: [0; 4],
+                ak: [0; 4],
+            },
+            ActionNote {
+                role: CA_ROLE_OUTPUT,
+                value: OUT1_VALUE,
+                addr: [0xCC01, 0xCC02, 0xCC03, 0xCC04],
+                rcm: [0x43, 0x44],
+                pos: 0,
+                nk: [0; 4],
+                ak: [0; 4],
+            },
+        ];
+        // No INPUT block ⇒ generate_conf_action_agg_trace consumes NO siblings
+        // (pass 2 skips every non-INPUT block). Zeroed per-note entries are the
+        // existing generator contract for a block that owns no path.
+        let memb_siblings: [[[u64; AGG_MEMB_LANES]; AGG_D]; 2] = [[[0; 4]; AGG_D]; 2];
+        // S8 turnstile: value ENTERS the pool (boundary_in) and leaves as the two
+        // private outputs; nothing leaves transparently (boundary_out = 0).
+        let boundary_in = Goldilocks::from_u64(OUT0_VALUE + OUT1_VALUE);
+        let boundary_out = Goldilocks::ZERO;
+        let (trace, anchor, num_input, nf_slots, num_output, output_commit, gen_fee) =
+            generate_conf_action_agg_trace(
+                7,
+                &notes,
+                &memb_siblings,
+                boundary_out - boundary_in, // == BAL = Σin − Σout = −100
+            ); // H=128=4 blocks
+        // ── Shape gates: STOP (no vector) if the instance is not the intended
+        //    zero-input SHIELD shape. Guards against a silent regression that
+        //    would make this vector a duplicate of the shielded KATs. ──
+        if num_input != 0 {
+            return Err(format!("0in shape GATE FAILED: num_input == {num_input}, expected 0").into());
+        }
+        if anchor != [Goldilocks::ZERO; AGG_MEMB_LANES] {
+            return Err("0in shape GATE FAILED: anchor must be all-zero with no INPUT notes".into());
+        }
+        if nf_slots != [[Goldilocks::ZERO; AGG_NF_LANES]; AGG_MAX_INPUTS] {
+            return Err("0in shape GATE FAILED: every nf slot must be zero with no INPUT notes".into());
+        }
+        if num_output != 2 {
+            return Err(format!("0in shape GATE FAILED: num_output == {num_output}, expected 2").into());
+        }
+        if gen_fee != Goldilocks::ZERO {
+            return Err("0in shape GATE FAILED: FEE_ACC != 0 — a FEE-role block is present".into());
+        }
+        // The fee PUBLIC is caller-provided and NON-ZERO; it is not the (always
+        // zero) FEE_ACC terminal value. Proves the statement CARRIES a fee that
+        // the FS transcript binds while no constraint reads it.
+        let fee = Goldilocks::from_u64(KAT_FEE);
+        let kat_txbind: [Goldilocks; AGG_MEMB_LANES] =
+            core::array::from_fn(|j| Goldilocks::from_u64(AGG_KAT_TXBIND[j]));
+        let pis = agg_build_pis(anchor, num_input, nf_slots, num_output, output_commit, fee,
+                                boundary_in, boundary_out, kat_txbind);
+        if salted {
+            dump_is_zk_stark_salted(
+                &ConfActionAggAir,
+                trace,
+                pis,
+                "conf_action_agg_air_zk_0in_salted",
+                "LEDGER-V2 S8 Gate 2 — SALTED (M3b MerkleTreeHidingMmcs, \
+                 SALT_ELEMS=2, seed=1) ZERO-INPUT (SHIELD-shaped) aggregate proof: \
+                 0 inputs / 2 outputs (70+30), fee 5 (FS-only), boundary_in 100, \
+                 boundary_out 0, all-zero anchor; the salted twin of the first \
+                 NON-ZERO-turnstile KAT (fixed KAT seed; production hiding = OS \
+                 entropy).",
+                "LEDGER-V2 S8 Gate 2 — salted zero-input SHIELD aggregate (h=128, num_qc=8)",
+                Some(8),
+                out_path,
+            )
+        } else {
+            dump_is_zk_stark(
+                &ConfActionAggAir,
+                trace,
+                pis,
+                "conf_action_agg_air_zk_0in",
+                "LEDGER-V2 S8 Gate 2 — ZERO-INPUT (SHIELD-shaped) aggregate Action \
+                 AIR proof: 0 INPUT notes, 2 OUTPUT notes (70 + 30), fee 5 \
+                 (FS/sighash-bound only, NOT a note block — IS_FEE is pinned ZERO), \
+                 boundary_in = 100 = Σ output value, boundary_out = 0, anchor = \
+                 [0,0,0,0] (no membership walk runs). The FIRST agg vector with a \
+                 NON-ZERO turnstile: the terminal BAL == boundary_out − boundary_in \
+                 holds as −100 == −100 instead of degenerating to BAL == 0. \
+                 N_input = 0 (nullifier/routing region vacuous), N_output = 2 (both \
+                 output slots routed), FEE_ACC == 0; max degree 4, num_qc 8.",
+                "LEDGER-V2 S8 Gate 2 — zero-input SHIELD aggregate, non-zero boundary (h=128, num_qc=8)",
+                Some(8),
+                out_path,
+            )
+        }
     }
 
     /// DNAC-stack StarkConfig with log_final_poly_len=0 (works for degree_bits 2 AND 3,
@@ -18886,8 +19165,9 @@ mod stark_priming {
                     nk: [0; 4],
                     ak: [0; 4],
                 },
+                // S8 Gate-2: WAS role=FEE (value 30) — IS_FEE is pinned ZERO now.
                 ActionNote {
-                    role: CA_ROLE_FEE,
+                    role: CA_ROLE_OUTPUT,
                     value: 30,
                     addr: [0xFEE1, 0xFEE2, 0xFEE3, 0xFEE4],
                     rcm: [0x31, 0x32],
@@ -18897,19 +19177,15 @@ mod stark_priming {
                 },
             ];
             let memb_siblings: [[[u64; AGG_MEMB_LANES]; AGG_D]; 3] = [
-                [
-                    [0x1001, 0x1002, 0x1003, 0x1004],
-                    [0x2001, 0x2002, 0x2003, 0x2004],
-                    [0x3001, 0x3002, 0x3003, 0x3004],
-                    [0x4001, 0x4002, 0x4003, 0x4004],
-                ],
+                core::array::from_fn(agg_kat_sib_level),
                 [[0; 4]; AGG_D],
                 [[0; 4]; AGG_D],
             ];
             let (trace, anchor, num_input, nf_slots, num_output, output_commit, fee) =
-                generate_conf_action_agg_trace(7, &notes, &memb_siblings);
+                generate_conf_action_agg_trace(7, &notes, &memb_siblings, Goldilocks::ZERO);
             let pis = agg_build_pis(anchor, num_input, nf_slots, num_output,
-                                    output_commit, fee, kat_txbind());
+                                    output_commit, fee, Goldilocks::ZERO,
+                                    Goldilocks::ZERO, kat_txbind());
             (trace, pis)
         };
 
@@ -18932,20 +19208,19 @@ mod stark_priming {
             let cm1 = agg_input_note_cm(notes[1].ak, notes[1].nk, notes[1].value, notes[1].rcm);
             let cm0u: [u64; 4] = core::array::from_fn(|j| p3_field::PrimeField64::as_canonical_u64(&cm0[j]));
             let cm1u: [u64; 4] = core::array::from_fn(|j| p3_field::PrimeField64::as_canonical_u64(&cm1[j]));
-            let up: [[u64; AGG_MEMB_LANES]; 3] = [
-                [0x2001, 0x2002, 0x2003, 0x2004],
-                [0x3001, 0x3002, 0x3003, 0x3004],
-                [0x4001, 0x4002, 0x4003, 0x4004],
-            ];
+            let sibs = |lvl0: [u64; 4]| -> [[u64; AGG_MEMB_LANES]; AGG_D] {
+                core::array::from_fn(|i| if i == 0 { lvl0 } else { agg_kat_sib_level(i) })
+            };
             let memb_siblings: [[[u64; AGG_MEMB_LANES]; AGG_D]; 3] = [
-                [cm1u, up[0], up[1], up[2]],
-                [cm0u, up[0], up[1], up[2]],
+                sibs(cm1u),
+                sibs(cm0u),
                 [[0; 4]; AGG_D],
             ];
             let (trace, anchor, num_input, nf_slots, num_output, output_commit, fee) =
-                generate_conf_action_agg_trace(7, &notes, &memb_siblings);
+                generate_conf_action_agg_trace(7, &notes, &memb_siblings, Goldilocks::ZERO);
             let pis = agg_build_pis(anchor, num_input, nf_slots, num_output,
-                                    output_commit, fee, kat_txbind());
+                                    output_commit, fee, Goldilocks::ZERO,
+                                    Goldilocks::ZERO, kat_txbind());
             (trace, pis)
         };
 
@@ -18972,19 +19247,25 @@ mod stark_priming {
             let n01 = u(agg_compress(cm[0], cm[1]));
             let n23 = u(agg_compress(cm[2], cm[3]));
             let (c0, c1, c2, c3) = (u(cm[0]), u(cm[1]), u(cm[2]), u(cm[3]));
-            let e2: [u64; 4] = [0x3001, 0x3002, 0x3003, 0x3004];
-            let e3: [u64; 4] = [0x4001, 0x4002, 0x4003, 0x4004];
+            let sibs = |lvl0: [u64; 4], lvl1: [u64; 4]| -> [[u64; AGG_MEMB_LANES]; AGG_D] {
+                core::array::from_fn(|i| match i {
+                    0 => lvl0,
+                    1 => lvl1,
+                    _ => agg_kat_sib_level(i),
+                })
+            };
             let memb_siblings: [[[u64; AGG_MEMB_LANES]; AGG_D]; 5] = [
-                [c1, n23, e2, e3],
-                [c0, n23, e2, e3],
-                [c3, n01, e2, e3],
-                [c2, n01, e2, e3],
+                sibs(c1, n23),
+                sibs(c0, n23),
+                sibs(c3, n01),
+                sibs(c2, n01),
                 [[0; 4]; AGG_D],
             ];
             let (trace, anchor, num_input, nf_slots, num_output, output_commit, fee) =
-                generate_conf_action_agg_trace(8, &notes, &memb_siblings);
+                generate_conf_action_agg_trace(8, &notes, &memb_siblings, Goldilocks::ZERO);
             let pis = agg_build_pis(anchor, num_input, nf_slots, num_output,
-                                    output_commit, fee, kat_txbind());
+                                    output_commit, fee, Goldilocks::ZERO,
+                                    Goldilocks::ZERO, kat_txbind());
             (trace, pis)
         };
 

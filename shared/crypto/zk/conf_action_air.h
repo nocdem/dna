@@ -64,6 +64,19 @@
  *       E14    bal_coeff = IS_BAL_CONTRIB·(IS_INPUT − IS_OUTPUT − IS_FEE) (deg-2)
  *       BAL    first row BAL = bal_coeff·value; transition next.BAL = local.BAL +
  *              next.bal_coeff·next.value; last row BAL = 0 ⇒ Σin = Σout + fee.
+ *              ⚠ LEDGER-V2 S8 Gate 2 (2026-08-06) CHANGED BOTH of these in the
+ *              PROVEN AIR (conf_action_fold.c — the authoritative object) and
+ *              did NOT change THIS construction gate, which is unmodified:
+ *                proven: IS_FEE is PINNED ZERO (fee leaves the balance; it is
+ *                        FS/sighash-bound only) and the terminal is
+ *                        BAL == boundary_out − boundary_in;
+ *                here  : no IS_FEE pin (a FEE-role block is still accepted by
+ *                        conf_action_air_generate/_eval) and the terminal is
+ *                        still BAL == 0 (the boundary == 0 special case).
+ *              The two formulations therefore DIVERGE at S8 until this .c is
+ *              re-lifted. The aggregate construction gate re-adds both checks
+ *              on top of its C1 reuse (conf_action_agg_air.c), so the AGGREGATE
+ *              gate does mirror the proven AIR; the STANDALONE C1 gate does not.
  *     The value cell IS the note-commitment preimage value (S1c) AND the balance
  *     summand — completing the E9′ same-row value↔cm↔balance chain.
  *   S1-E15 (+F3 widening): the nk/pos/addr FROZEN CARRIES — composition plumbing.
@@ -87,8 +100,11 @@
  *   lanes here are the SAME nk_src cells C4 nullifies (per-lane bind). ak[4] is
  *   a witness. F3 (2026-07-21, A_LANES=N_LANES=4): ak/nk widened 1→4 lanes so
  *   nk searched ALONE (via public ρ/nf) costs ≥2^128 Grover (G2/G4).
- *   Scoped OUT (own step): shield/deshield BOUNDARY public binding (C6 turnstile,
- *   needs AIR public inputs).
+ *   Scoped OUT of THIS construction gate: shield/deshield BOUNDARY public binding
+ *   (C6 turnstile, needs AIR public inputs). ⚠ LEDGER-V2 S8 Gate 2 LANDED it in
+ *   the PROVEN AIR instead — conf_action_fold.c reads boundary_in/boundary_out
+ *   through the optional dnac_conf_action_bnd_ctx_t and the aggregate publishes
+ *   them at CONF_AGGZK_PUB_BIN/_BOUT. This gate still has no public inputs.
  *   Later: S1e constraint-eval fold + degree/num_qc, S1f prover + self-verify.
  *
  * ── Block structure ────────────────────────────────────────────────────────
@@ -205,6 +221,10 @@ extern "C" {
  * @param rcm         num_notes × CONF_ACTION_RCM_LANES commitment randomness.
  * @param roles       num_notes per-block role tags (CONF_ACTION_ROLE_*). The
  *                    signed balance MUST conserve: Σ INPUT − Σ OUTPUT − Σ FEE = 0.
+ *                    ⚠ S8: the PROVEN AIR pins IS_FEE ≡ 0, so a CONF_ACTION_ROLE_FEE
+ *                    block — still accepted here — produces a trace that the proven
+ *                    AIR (and the aggregate construction gate) REJECT. Callers that
+ *                    feed both formulations must use INPUT/OUTPUT roles only.
  * @param pos         num_notes tree positions (E15 pos_carry source; C3 reads it).
  * @param nk          num_notes × CONF_ACTION_NK_LANES spend-key nullifier lanes,
  *                    indexed [blk*4 + lane] (E15 nk_carry source; C4 reads it).
@@ -224,7 +244,8 @@ bool conf_action_air_generate(unsigned log_height, const uint64_t *value,
                               const uint64_t *addr, const uint64_t *rcm,
                               const uint8_t *roles, const uint64_t *pos,
                               const uint64_t *nk, const uint64_t *ak,
-                              size_t num_notes, uint64_t *trace_out);
+                              size_t num_notes, uint64_t boundary_in,
+                              uint64_t boundary_out, uint64_t *trace_out);
 
 /**
  * @brief Evaluate ALL constraints over a trace (see file header for the set).
@@ -232,7 +253,8 @@ bool conf_action_air_generate(unsigned log_height, const uint64_t *value,
  * @param n_rows  number of rows (= 2^log_height).
  * @return number of violated constraints; 0 == valid witness.
  */
-int conf_action_air_eval(const uint64_t *trace, size_t n_rows);
+int conf_action_air_eval(const uint64_t *trace, size_t n_rows,
+                         uint64_t boundary_in, uint64_t boundary_out);
 
 /**
  * @brief Derive a shielded input-note address addr_pub = Poseidon2(ak[4], nk[4])

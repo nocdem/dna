@@ -13,7 +13,7 @@
 
 # DNAC Implementation Roadmap (HISTORICAL — frozen at v0.10.2)
 
-**Project:** DNAC — DNA Chain (historical DHT-ledger implementation)
+**Project:** DNAC - DNA Chain (post-quantum UTXO ledger)
 **Version:** v0.10.2 (FROZEN — current is v0.14.3, see STATUS.md)
 **Status:** Phase 24 Complete (P0 Security Audit)
 
@@ -21,8 +21,7 @@
 
 ## Overview
 
-DNAC is the DNA Chain project. At this frozen v0.10.2 stage, it used a
-post-quantum UTXO ledger integrated with DNA Connect:
+DNAC (DNA Chain) is a post-quantum UTXO chain that integrates with DNA Connect:
 - **UTXO model** for transactions
 - **DHT** for transport (payments as messages)
 - **Nodus servers** for nullifier witnessing (2-of-3 consensus)
@@ -212,7 +211,7 @@ conservation is enforced by the native cleartext witness check today). Proof siz
 - [x] Documentation: `docs/archive/CLI_COMMANDS.md` (archived 2026-04-24 — CLI now in `dna-connect-cli dna <verb>`)
 
 ### Phase 17: Permanent DHT Storage ✅ COMPLETE (v0.1.29)
-- [x] All DHT data stored permanently (payment records do not expire)
+- [x] All DHT data stored permanently (cash doesn't expire)
 - [x] Payments now permanent
 - [x] Witness attestations permanent
 - [x] Nullifier replication permanent

@@ -13,6 +13,7 @@
 #include "crypto/nodus_sign.h"
 #include "crypto/nodus_channel_crypto.h"
 #include "crypto/enc/qgp_kyber.h"
+#include "crypto/enc/qgp_mlkem.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -143,14 +144,93 @@ int nodus_auth_handle_auth(nodus_server_t *srv, nodus_session_t *sess,
             return 0;
         }
 
+        /* Faz 1 KEM migration (docs/plans/decisions/2026-09-23-kem-mlkem-
+         * migration.md): also bind the ML-KEM-1024 pubkey, if this
+         * identity has one, under the new MLKEM_BIND purpose (0x09) —
+         * same ROLE as kpk_sig, new purpose byte, no new signing
+         * mechanism (still nodus_sign_tagged()). UNLIKE kpk_sig, this
+         * purpose IS in nodus_sign_purpose_is_strict() (N1 delta 1, D2):
+         * (mlkem_pk || nonce) is the same length/shape as (kyber_pk ||
+         * nonce), so a non-strict raw signature here would be
+         * interchangeable with a kpk_sig — the NDS1 tag is what keeps
+         * them from being swappable. kpk/kpk_sig above are untouched
+         * either way. */
+        const uint8_t *mlkem_pk_ptr = NULL;
+        const nodus_sig_t *mpk_sig_ptr = NULL;
+        nodus_sig_t mpk_sig;
+        if (srv->identity.has_mlkem) {
+            uint8_t msign_data[NODUS_MLKEM_PK_BYTES + NODUS_NONCE_LEN];
+            memcpy(msign_data, srv->identity.mlkem_pk, NODUS_MLKEM_PK_BYTES);
+            memcpy(msign_data + NODUS_MLKEM_PK_BYTES, sess->nonce, NODUS_NONCE_LEN);
+            if (nodus_sign_mlkem_bind(&mpk_sig, msign_data, sizeof(msign_data),
+                                       &srv->identity.sk) == 0) {
+                mlkem_pk_ptr = srv->identity.mlkem_pk;
+                mpk_sig_ptr = &mpk_sig;
+            } else {
+                fprintf(stderr, "AUTH: Failed to sign ML-KEM PK for AUTH_OK\n");
+            }
+        }
+
         nodus_t2_auth_ok_kyber(txn_id, sess->token, srv->identity.kyber_pk,
                                 &srv->identity.pk, &kpk_sig,
+                                mlkem_pk_ptr, mpk_sig_ptr,
                                 buf, sizeof(buf), &len);
     } else {
         nodus_t2_auth_ok(txn_id, sess->token,
                           buf, sizeof(buf), &len);
     }
     nodus_tcp_send(sess->conn, buf, len);
+
+    return 0;
+}
+
+/* Faz 1 KEM migration — algorithm-independent KEY_INIT tail, shared by the
+ * round-3 and ML-KEM-1024 paths below: generate the server nonce, send
+ * KEY_ACK (plaintext — B3 ordering, see below), init channel crypto, log.
+ * shared_secret is always NODUS_KYBER_SS_BYTES == NODUS_MLKEM_SS_BYTES (32)
+ * bytes regardless of which KEM produced it; zeroed on every exit path. */
+static int key_init_complete_responder(nodus_session_t *sess,
+                                        uint8_t *shared_secret,
+                                        const uint8_t *nonce_c,
+                                        const char *alg_label,
+                                        uint32_t txn_id) {
+    uint8_t buf[8192];
+
+    /* Generate server nonce */
+    uint8_t nonce_s[NODUS_NONCE_LEN];
+    nodus_random(nonce_s, NODUS_NONCE_LEN);
+
+    /* B3 fix — KEY_ACK MUST go out plaintext (peer hasn't completed
+     * its side of the handshake yet, has no derived AES key). So we:
+     *   (1) build + send KEY_ACK while conn->channel_crypto.established
+     *       is still false (encrypt path early-returns)
+     *   (2) THEN call nodus_channel_crypto_init which flips established=true
+     * From the next frame onward, encrypt is active. This matches the
+     * pre-B3 ordering where conn->crypto was attached only after KEY_ACK
+     * was on the wire. */
+    size_t len = 0;
+    nodus_t2_key_ack(txn_id, nonce_s, buf, sizeof(buf), &len);
+    nodus_tcp_send_raw(sess->conn, buf, len);
+
+    /* Init channel crypto AFTER KEY_ACK is queued for send. Storage lives
+     * on the conn struct (B3); no separate session-level alias. */
+    /* We ACCEPTED this client connection → responder. */
+    int rc = nodus_channel_crypto_init(&sess->conn->channel_crypto,
+                                        shared_secret, nonce_c, nonce_s,
+                                        NODUS_CHANNEL_ROLE_RESPONDER);
+    qgp_secure_memzero(shared_secret, 32);
+    if (rc != 0) {
+        size_t err_len = 0;
+        nodus_t2_error(txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                        "channel crypto init failed", buf, sizeof(buf), &err_len);
+        nodus_tcp_send(sess->conn, buf, err_len);
+        return -1;
+    }
+
+    /* Phase 3.2b-inv: tagged format consistent with inter-node crypto logs */
+    fprintf(stderr,
+            "CRYPTO: SET_CLIENT slot=%d peer=%s:%u (client channel %s+AES-256-GCM)\n",
+            sess->conn->slot, sess->conn->ip, (unsigned)sess->conn->port, alg_label);
 
     return 0;
 }
@@ -174,41 +254,53 @@ int nodus_auth_handle_key_init(nodus_server_t *srv, nodus_session_t *sess,
         return -1;
     }
 
-    /* Generate server nonce */
-    uint8_t nonce_s[NODUS_NONCE_LEN];
-    nodus_random(nonce_s, NODUS_NONCE_LEN);
+    return key_init_complete_responder(sess, shared_secret, nonce_c,
+                                        "Kyber1024", txn_id);
+}
 
-    /* B3 fix — KEY_ACK MUST go out plaintext (peer hasn't completed
-     * its side of the handshake yet, has no derived AES key). So we:
-     *   (1) build + send KEY_ACK while conn->channel_crypto.established
-     *       is still false (encrypt path early-returns)
-     *   (2) THEN call nodus_channel_crypto_init which flips established=true
-     * From the next frame onward, encrypt is active. This matches the
-     * pre-B3 ordering where conn->crypto was attached only after KEY_ACK
-     * was on the wire. */
-    size_t len = 0;
-    nodus_t2_key_ack(txn_id, nonce_s, buf, sizeof(buf), &len);
-    nodus_tcp_send_raw(sess->conn, buf, len);
+/* Faz 1 KEM migration (docs/plans/decisions/2026-09-23-kem-mlkem-
+ * migration.md) — algorithm-aware KEY_INIT handler. key_alg: 0 = round-3
+ * Kyber (delegates to nodus_auth_handle_key_init() above, byte-identical to
+ * pre-Faz-1 behaviour), 1 = ML-KEM-1024. Declared in nodus_server.h beside
+ * nodus_auth_handle_key_init (D11, N1 delta 1 — the whitelist was extended
+ * by that one line; the earlier local `extern` prototype in
+ * nodus_server.c is gone). */
+int nodus_auth_handle_key_init_alg(nodus_server_t *srv, nodus_session_t *sess,
+                                    uint8_t key_alg,
+                                    const uint8_t *ct, const uint8_t *nonce_c,
+                                    uint32_t txn_id) {
+    if (!srv || !sess || !ct || !nonce_c) return -1;
 
-    /* Init channel crypto AFTER KEY_ACK is queued for send. Storage lives
-     * on the conn struct (B3); no separate session-level alias. */
-    /* We ACCEPTED this client connection → responder. */
-    rc = nodus_channel_crypto_init(&sess->conn->channel_crypto,
-                                    shared_secret, nonce_c, nonce_s,
-                                    NODUS_CHANNEL_ROLE_RESPONDER);
-    qgp_secure_memzero(shared_secret, sizeof(shared_secret));
-    if (rc != 0) {
-        size_t err_len = 0;
+    if (key_alg != 1)
+        return nodus_auth_handle_key_init(srv, sess, ct, nonce_c, txn_id);
+
+    uint8_t buf[8192];
+
+    /* D7 (N1 delta 1): answer, don't hang. A silent return here left the
+     * client blocked on wait_response() until connect_timeout_ms elapsed
+     * — the same wire-visible outcome the client already handles for a
+     * real decapsulation failure below, so send the identical error
+     * frame rather than invent a new error code for what is, from the
+     * client's side, the same "cannot proceed with ML-KEM here" fact. */
+    if (!srv->identity.has_mlkem) {
+        size_t len = 0;
         nodus_t2_error(txn_id, NODUS_ERR_PROTOCOL_ERROR,
-                        "channel crypto init failed", buf, sizeof(buf), &err_len);
-        nodus_tcp_send(sess->conn, buf, err_len);
+                        "KEM decapsulation failed", buf, sizeof(buf), &len);
+        nodus_tcp_send(sess->conn, buf, len);
         return -1;
     }
 
-    /* Phase 3.2b-inv: tagged format consistent with inter-node crypto logs */
-    fprintf(stderr,
-            "CRYPTO: SET_CLIENT slot=%d peer=%s:%u (client channel Kyber1024+AES-256-GCM)\n",
-            sess->conn->slot, sess->conn->ip, (unsigned)sess->conn->port);
+    /* Decapsulate: shared_secret = MLKEM_decap(ct, server_sk) */
+    uint8_t shared_secret[NODUS_MLKEM_SS_BYTES];
+    int rc = qgp_mlkem1024_decapsulate(shared_secret, ct, srv->identity.mlkem_sk);
+    if (rc != 0) {
+        size_t len = 0;
+        nodus_t2_error(txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                        "KEM decapsulation failed", buf, sizeof(buf), &len);
+        nodus_tcp_send(sess->conn, buf, len);
+        return -1;
+    }
 
-    return 0;
+    return key_init_complete_responder(sess, shared_secret, nonce_c,
+                                        "ML-KEM-1024", txn_id);
 }

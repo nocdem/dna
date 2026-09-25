@@ -65,7 +65,9 @@ static void print_dna_chain_help(void) {
     printf("  unstake                         Trigger validator retirement (fee-only TX;\n");
     printf("                                  self-stake unlocks after cooldown)\n");
     printf("  validator-update --commission-bps N\n");
-    printf("                                  Change validator commission rate (0..10000)\n");
+    printf("                                  Change validator commission rate (0..%u;\n",
+           (unsigned)DNAC_COMMISSION_BPS_MAX);
+    printf("                                  an increase takes effect 2 epochs later)\n");
     printf("  delegate <validator_pubkey_hex> <amount> [memo]\n");
     printf("                                  Delegate DNAC to a validator\n");
     printf("                                  (amount >= DNAC_MIN_DELEGATION, raw units)\n");
@@ -335,10 +337,11 @@ int dispatch_dna_chain(dna_engine_t *engine, int argc, char **argv, int sub) {
                 char *endptr = NULL;
                 errno = 0;
                 unsigned long v = strtoul(argv[i + 1], &endptr, 10);
-                if (errno != 0 || !endptr || *endptr != '\0' || v > 10000) {
+                if (errno != 0 || !endptr || *endptr != '\0' ||
+                    v > (unsigned long)DNAC_COMMISSION_BPS_MAX) {
                     fprintf(stderr,
-                            "Error: invalid --commission-bps '%s' (0..10000)\n",
-                            argv[i + 1]);
+                            "Error: invalid --commission-bps '%s' (0..%u)\n",
+                            argv[i + 1], (unsigned)DNAC_COMMISSION_BPS_MAX);
                     result = 1;
                     goto stake_done;
                 }
@@ -394,10 +397,11 @@ int dispatch_dna_chain(dna_engine_t *engine, int argc, char **argv, int sub) {
                 char *endptr = NULL;
                 errno = 0;
                 unsigned long v = strtoul(argv[i + 1], &endptr, 10);
-                if (errno != 0 || !endptr || *endptr != '\0' || v > 10000) {
+                if (errno != 0 || !endptr || *endptr != '\0' ||
+                    v > (unsigned long)DNAC_COMMISSION_BPS_MAX) {
                     fprintf(stderr,
-                            "Error: invalid --commission-bps '%s' (0..10000)\n",
-                            argv[i + 1]);
+                            "Error: invalid --commission-bps '%s' (0..%u)\n",
+                            argv[i + 1], (unsigned)DNAC_COMMISSION_BPS_MAX);
                     result = 1;
                     goto validator_update_done;
                 }

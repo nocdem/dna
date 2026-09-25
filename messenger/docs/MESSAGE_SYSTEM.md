@@ -1,8 +1,8 @@
 # DNA Connect - Message System Documentation
 
-**Version:** v0.12 (Message Deletion + Cross-Device Sync + SQLCipher + Media)
-**Last Updated:** 2026-04-24
-**Library:** v0.11.5 | **Nodus:** v0.17.7
+**Version:** v0.14 (KEM Faz 1: dual-key ML-KEM-1024 rollout, backward compatible)
+**Last Updated:** 2026-09-23
+**Library:** v0.11.20 | **Nodus:** v0.19.64
 **Security Level:** NIST Category 5 (256-bit quantum)
 
 This document describes how the DNA Connect message system works, with all facts verified directly from source code.
@@ -359,11 +359,11 @@ Note: v9 added GEK group tables (groups, group_members, group_geks, pending_invi
 │  ───────────────────────────────────────────────────────────────────────     │
 │                                                                              │
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │ HEADER (22 bytes)                                                    │    │
+│  │ HEADER (20 bytes)                                                    │    │
 │  ├──────┬─────────┬────────────────────────────────────────────────────┤    │
 │  │  0   │    8    │ magic[8] = "PQSIGENC"                              │    │
 │  │  8   │    1    │ version = 0x08                                     │    │
-│  │  9   │    1    │ enc_key_type = 2 (QGP_KEY_TYPE_KEM1024)            │    │
+│  │  9   │    1    │ enc_key_type = 2 (round-3, legacy) or 3 (ML-KEM-1024, KEM Faz 1) │    │
 │  │  10  │    1    │ recipient_count (1-255)                            │    │
 │  │  11  │    1    │ message_type (0=direct, 1=group)                   │    │
 │  │  12  │    4    │ encrypted_size (uint32_t, little-endian)           │    │
@@ -373,10 +373,11 @@ Note: v9 added GEK group tables (groups, group_members, group_geks, pending_invi
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │ RECIPIENT ENTRIES (1608 bytes × recipient_count)                     │    │
 │  ├──────┬─────────┬────────────────────────────────────────────────────┤    │
-│  │  0   │  1568   │ kyber_ciphertext[1568] (Kyber1024 encapsulation)   │    │
+│  │  0   │  1568   │ kyber_ciphertext[1568] (encapsulation, per header.enc_key_type) │    │
 │  │ 1568 │   40    │ wrapped_dek[40] (AES-wrapped DEK: 32+8 bytes)      │    │
 │  └──────┴─────────┴────────────────────────────────────────────────────┘    │
-│  (Repeated for each recipient)                                              │
+│  (Repeated for each recipient — ALL recipients in one message use the SAME  │
+│  algorithm; header.enc_key_type is recipient-general, not per-entry)        │
 │                                                                              │
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │ NONCE (12 bytes)                                                     │    │
@@ -416,7 +417,7 @@ Note: v9 added GEK group tables (groups, group_members, group_geks, pending_invi
 typedef struct {
     char magic[8];              // "PQSIGENC"
     uint8_t version;            // 0x08 (Category 5 + encrypted timestamp)
-    uint8_t enc_key_type;       // QGP_KEY_TYPE_KEM1024 (2)
+    uint8_t enc_key_type;       // QGP_KEY_TYPE_KEM1024 (2, round-3 legacy) or QGP_KEY_TYPE_MLKEM1024 (3, KEM Faz 1) — validated on decrypt since KEM Faz 1
     uint8_t recipient_count;    // Number of recipients (1-255)
     uint8_t message_type;       // MSG_TYPE_DIRECT_PQC or MSG_TYPE_GROUP_GEK
     uint32_t encrypted_size;    // Size of encrypted data
@@ -439,17 +440,17 @@ typedef struct {
 For a message with N recipients:
 
 ```
-Total Size = Header(22) + Recipients(1608×N) + Nonce(12) + Encrypted(var) + Tag(16) + Signature(~4627)
+Total Size = Header(20) + Recipients(1608×N) + Nonce(12) + Encrypted(var) + Tag(16) + Signature(~4627)
 
 Example for 1 recipient, 100-byte plaintext:
-  Header:      22 bytes
+  Header:      20 bytes (sizeof(messenger_enc_header_t) — packs with no padding)
   Recipients:  1608 bytes (1 × 1608)
   Nonce:       12 bytes
   Encrypted:   172 bytes (64 + 8 + 100)
   Tag:         16 bytes
   Signature:   ~4627 bytes
   ─────────────────────
-  Total:       ~6457 bytes
+  Total:       ~6455 bytes
 ```
 
 ### 3.5 Version History
@@ -762,9 +763,9 @@ execution restrictions make P2P connections unreliable.
 │  │ dht_chunked_publish(key, messages)                         │             │
 │  │                                                             │             │
 │  │ - Uses Dilithium5 signature for authentication             │             │
-│  │ - Chunked storage (supports large message lists)           │             │
+│  │ - Single signed PUT per bucket (no chunking layer)         │             │
 │  │ - TTL: 7 days (auto-expire, no pruning needed)             │             │
-│  │ - Max 500 messages per day bucket (DoS prevention)         │             │
+│  │ - Max 50 messages per day bucket (DoS prevention)          │             │
 │  └────────────────────────────────────────────────────────────┘             │
 │                                                                             │
 │  SYNC STRATEGY (3-day parallel):                                            │
@@ -864,12 +865,13 @@ typedef struct {
 │                      INITIAL KEY PACKET (GEK Distribution)                   │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  HEADER (45 bytes)                                                          │
+│  HEADER (77 bytes — IKP v2, CORE-04; old "GEK " v1 no longer accepted)      │
 │  ┌───────┬──────────┬──────────────────────────────────────────────────┐   │
-│  │  0    │    4     │ magic (0x47454B20 = "GEK ")                      │   │
+│  │  0    │    4     │ magic (0x47454B32 = "GEK2")                      │   │
 │  │  4    │   36     │ group_uuid[36] (UUID v4)                         │   │
 │  │  40   │    4     │ version (uint32_t, GEK version number)           │   │
 │  │  44   │    1     │ member_count (uint8_t, 1-16)                     │   │
+│  │  45   │   32     │ dht_salt[32] (per-group DHT key salt, CORE-04)   │   │
 │  └───────┴──────────┴──────────────────────────────────────────────────┘   │
 │                                                                             │
 │  MEMBER ENTRIES (1672 bytes × member_count)                                 │
@@ -887,9 +889,9 @@ typedef struct {
 │  │  3    │  ~4627   │ signature (Dilithium5 over header+entries)       │   │
 │  └───────┴──────────┴──────────────────────────────────────────────────┘   │
 │                                                                             │
-│  TOTAL SIZE: 45 + (1672 × N) + 4630 bytes                                  │
+│  TOTAL SIZE: 77 + (1672 × N) + 4630 bytes                                  │
 │                                                                             │
-│  Example for 10 members: 45 + 16720 + 4630 = 21,395 bytes                  │
+│  Example for 10 members: 77 + 16720 + 4630 = 21,427 bytes                  │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -979,14 +981,17 @@ Group messages use a single-key multi-writer architecture where ALL members writ
 #### Key Format
 
 ```
-dna:group:<uuid>:out:<day>
+dna:group:<uuid>:out:<day>:<salt_hex>
 
 Where:
   <uuid>       = Group UUID (36 chars)
   <day>        = Day bucket (Unix timestamp / 86400)
+  <salt_hex>   = 64-char hex of the per-group 32-byte salt (CORE-04, REQUIRED —
+                 distributed in the owner-signed IKP v2 header; hard cutover,
+                 no unsalted fallback)
 
 Example:
-  dna:group:550e8400-e29b-41d4-a716-446655440000:out:20089
+  dna:group:550e8400-e29b-41d4-a716-446655440000:out:20089:a1b2c3...
 ```
 
 #### Architecture Benefits
@@ -1204,13 +1209,63 @@ CREATE TABLE IF NOT EXISTS group_messages (
 ~/.dna/
 ├── keys/
 │   └── identity.dsa      # Dilithium5 private key (4896 bytes)
-│   └── identity.kem      # Kyber1024 private key (3168 bytes)
+│   └── identity.kem      # Kyber1024 round-3 private key (3168 bytes, legacy — always present, always readable)
+│   └── identity.mlkem    # ML-KEM-1024 (FIPS 203) private key (3168 bytes, KEM Faz 1 — absent until migrated)
+├── mnemonic.enc          # Recovery phrase, encrypted with identity.kem (legacy). RAW KEM blob, never password-wrapped:
+│                         #   a password change does not touch it (0.11.22); a file wrapped by an older password
+│                         #   change is repaired at the next password-protected load (mnemonic_storage_repair_password_wrap)
+├── mnemonic.v2.enc       # Recovery phrase, encrypted with identity.mlkem (KEM Faz 1, present once migrated)
 ├── db/
 │   ├── messages.db       # SQLCipher - Direct messages only (v0.4.63+, encrypted v0.9.161+)
 │   ├── groups.db         # SQLCipher - All group data (v0.4.63+, encrypted v0.9.161+)
-│   └── keyserver_cache.db    # Public key cache (7-day TTL)
+│   └── keyserver_cache.db    # Public key cache (7-day TTL; mlkem_pubkey column added KEM Faz 1)
 └── ...
 ```
+
+**KEM Faz 1 migration (2026-09-23, updated M1 delta 1b-2 D4/D6):** on first
+load after this ships, if `identity.mlkem` is absent and a mnemonic file
+exists, the engine derives it from the mnemonic
+(`SHAKE256(master_seed || "nodus-mlkem-1024", 64)` ->
+`qgp_mlkem1024_keypair_derand`), writes `identity.mlkem` + `mnemonic.v2.enc`,
+refreshes the SELF keyserver-cache row immediately (D2), and feeds the new
+key into the GEK subsystem for this session. It does NOT attempt a DHT
+republish itself (that attempt was deleted, D4 — it ran before the DHT was
+connected and could never succeed). The DHT record is attached separately,
+later, from the post-stabilization callback
+(`dna_auto_republish_own_profile`, D6): if the record already verifies but
+lacks `mlkem_pubkey` while this device has migrated, it is attached via a
+version-bump re-sign (no Dilithium/Kyber rotation); any OTHER profile
+update (bio edit, wallet refresh, etc.) also carries `mlkem_pubkey` from
+then on, via `dna_update_profile`'s new trailing parameter. Idempotent — a
+no-op on every later start. Identities with neither a mnemonic file
+(pre-RC alpha, before 2025-12-11) stay on legacy round-3 with no UI prompt
+(operator decision K2, `docs/plans/decisions/2026-09-23-kem-mlkem-migration.md`).
+
+**Self-encryption (message backup + GEK sync) and the session password
+(D12, M1 delta 1b-2):** the DHT-facing self-encryption paths
+(`dht_message_backup_publish`/`_restore` and `dht_geks_publish`/`_fetch`)
+take `mlkem_pubkey`/`mlkem_privkey` as parameters — they never load
+`identity.mlkem` from disk themselves. The caller (`dna_engine_backup.c`
+for message backup, via `dna_load_mlkem_key(engine)`; `gek.c`'s
+`gek_sync_to_dht`/`gek_sync_from_dht` for GEK sync, via
+`gek_get_mlkem_keys()`, which reads the key `gek_set_mlkem_keys()` already
+loaded under the session password at identity load) supplies the SAME
+key the rest of the session uses. Before this fix, both DHT-facing
+functions loaded `identity.mlkem` by its well-known path with NO password
+at all. The ML-KEM key itself is the same on every device of an identity
+(it is derived deterministically from the mnemonic, §4.3 of the design);
+the failure was in WHO could open the file: on a device with no password
+the by-path load succeeded and the blob went out under alg 3, while on a
+password-protected device of the same identity the by-path load failed,
+the DHT layer got a NULL key, and `dna_decrypt_message_raw_alg` returned
+DECRYPT for every alg-3 blob. Since each identity has
+exactly ONE backup slot and ONE GEKS slot in the DHT (overwritten on every
+publish), a device without a password publishing under alg 3 could make
+the entire message history and every group key UNREADABLE on a
+password-protected device of the same identity — a data-loss bug (verifier
+G6), not merely a decrypt failure. The fix removes the by-path load
+entirely; the alg-3 blob is now only ever produced or read using the
+key the CALLING device's own session already has in hand.
 
 **Database Separation (v0.4.63):**
 - **messages.db**: Direct user-to-user messages only
@@ -1300,7 +1355,26 @@ On every engine startup, before listener setup, each contact's salt is verified:
 
 - **Contact request send** (`dna_engine_contacts.c`): generates salt → publishes to agreement key
 - **Engine startup** (`dna_engine_listeners.c`): verifies all contacts before listener setup
-- **Sync fallback** (`dht_dm_outbox.c`): if salted key has no messages, tries unsalted key (backward compat)
+- **No unsalted fallback** (CORE-04, v0.9.196+): `dht_dm_outbox_make_key` returns -1 on
+  `salt == NULL` — a contact without an agreed salt cannot be queued to at all; the
+  pre-CORE-04 "try unsalted key" backward-compat branch was deleted.
+
+### 9.7 KEM Faz 1 — v2 packet DEFINED but NOT EMITTED (D7, M1 delta 1)
+
+A v2 packet format exists (per-entry 1-byte `alg` field, 2=round-3/3=ML-KEM-1024;
+full layout in `PROTOCOL.md`'s salt appendix) and `salt_agreement_publish_v2()`/
+`salt_agreement_fetch_v2()` are implemented and unit-tested, but **neither is
+called from either real integration point above** — both `dna_engine_contacts.c`
+and `dna_engine_listeners.c` still call the v1-only
+`salt_agreement_publish()`/`salt_agreement_fetch()`. This is an ORCHESTRATOR
+decision, not an oversight: the §9.4 tiebreaker picks the lowest SHA3 hash over
+the salts each party can decrypt; a Faz-0 device of the SAME identity (an
+accepted mixed-device state, K1) cannot decrypt a v2 value at all, so the two
+parties would compute the tiebreak over different candidate sets and could
+converge on DIFFERENT salts instead of the same one — the only Faz-1 surface
+where a mixed read set breaks a deterministic AGREEMENT, not just one blob's
+decode. `_v2` is the Faz-2 hook, wired only once every device of an identity is
+expected to carry an ML-KEM key.
 
 **Source:** `dht/shared/dht_salt_agreement.h`, `dht/shared/dht_salt_agreement.c`
 
@@ -1445,10 +1519,16 @@ CREATE TABLE IF NOT EXISTS group_members (
 );
 
 -- Group Encryption Keys (GEK) per version
+-- D13c (M1 delta 1): stays round-3 Kyber1024-encrypted in KEM Faz 1 even
+-- for an identity that has migrated. gek_store()/gek_load() (gek.c:270-430)
+-- always call gek_encrypt()/gek_decrypt() — the round-3-only wrappers —
+-- never gek_encrypt_alg()/gek_decrypt_alg() with alg=3, so this LOCAL
+-- at-rest blob has no alg byte and is never ML-KEM. At-rest migration of
+-- these rows to ML-KEM is a Faz 3 item.
 CREATE TABLE IF NOT EXISTS group_geks (
   group_uuid TEXT NOT NULL,
   version INTEGER NOT NULL,
-  encrypted_key BLOB NOT NULL,   -- Kyber1024-encrypted (1628 bytes)
+  encrypted_key BLOB NOT NULL,   -- Kyber1024-encrypted (1628 bytes), round-3 only (Faz 1)
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
   PRIMARY KEY (group_uuid, version)
@@ -1550,10 +1630,10 @@ CREATE TABLE IF NOT EXISTS group_messages (
 |------|----------|---------|
 | `crypto/utils/qgp_aes.c` | `qgp_aes256_encrypt()` | AES-256-GCM encryption |
 | `crypto/utils/qgp_aes.c` | `qgp_aes256_decrypt()` | AES-256-GCM decryption |
-| `crypto/utils/qgp_kyber.c` | `qgp_kem1024_encapsulate()` | Kyber1024 encapsulation |
-| `crypto/utils/qgp_kyber.c` | `qgp_kem1024_decapsulate()` | Kyber1024 decapsulation |
-| `crypto/utils/qgp_dilithium.c` | `qgp_dsa87_sign()` | Dilithium5 signing |
-| `crypto/utils/qgp_dilithium.c` | `qgp_dsa87_verify()` | Dilithium5 verification |
+| `crypto/enc/qgp_kyber.c` | `qgp_kem1024_encapsulate()` | Kyber1024 encapsulation |
+| `crypto/enc/qgp_kyber.c` | `qgp_kem1024_decapsulate()` | Kyber1024 decapsulation |
+| `crypto/sign/qgp_dilithium.c` | `qgp_dsa87_sign()` | Dilithium5 signing |
+| `crypto/sign/qgp_dilithium.c` | `qgp_dsa87_verify()` | Dilithium5 verification |
 | `crypto/utils/qgp_sha3.c` | `qgp_sha3_512()` | SHA3-512 hashing |
 | `crypto/utils/aes_keywrap.c` | `aes256_wrap_key()` | RFC 3394 key wrapping |
 
@@ -1588,9 +1668,9 @@ CREATE TABLE IF NOT EXISTS group_messages (
 
 | Scenario | Calculation | Total Size |
 |----------|-------------|------------|
-| 1 recipient, 100-char message | 22 + 1608 + 12 + 172 + 16 + 4627 | ~6,457 bytes |
-| 5 recipients, 100-char message | 22 + 8040 + 12 + 172 + 16 + 4627 | ~12,889 bytes |
-| 1 recipient, 1000-char message | 22 + 1608 + 12 + 1072 + 16 + 4627 | ~7,357 bytes |
+| 1 recipient, 100-char message | 20 + 1608 + 12 + 172 + 16 + 4627 | ~6,455 bytes |
+| 5 recipients, 100-char message | 20 + 8040 + 12 + 172 + 16 + 4627 | ~12,887 bytes |
+| 1 recipient, 1000-char message | 20 + 1608 + 12 + 1072 + 16 + 4627 | ~7,355 bytes |
 
 ## Appendix B: Version History
 

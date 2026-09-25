@@ -90,7 +90,8 @@ typedef struct {
 typedef struct {
     /* Composite leaf digest (pre-tag). For UTXO proofs this is the output of
      * nodus_witness_merkle_leaf_hash(nullifier || owner || amount || token_id
-     *                                 || tx_hash || output_index). For TX
+     *                                 || tx_hash || output_index
+     *                                 || unlock_block). For TX
      * proofs this is the raw tx_hash. In either case, the verifier applies
      * the 0x00 leaf tag internally. */
     uint8_t  leaf_hash[DNAC_MERKLE_ROOT_SIZE];
@@ -285,14 +286,16 @@ bool dnac_merkle_verify_proof(const dnac_merkle_proof_t *proof);
  *
  * Mirrors the server-side `nodus_witness_merkle_leaf_hash` byte layout
  * exactly — a single-bit drift anywhere here silently breaks every
- * anchored UTXO proof in the chain. Layout (all little-endian):
+ * anchored UTXO proof in the chain. Layout (all little-endian, 340 bytes,
+ * no tag — root-layout round K1, 2026-09-25 appended unlock_block):
  *
  *   SHA3-512( nullifier(64)
  *           || owner_fingerprint(128, NUL-padded)
  *           || amount_le(8)
  *           || token_id(64)
  *           || tx_hash(64)
- *           || output_index_le(4) )
+ *           || output_index_le(4)
+ *           || unlock_block_le(8) )
  *
  * The output is the "leaf_hash" field of `dnac_merkle_proof_t`. The
  * verifier (`dnac_merkle_verify_proof`) applies the RFC 6962 0x00 leaf
@@ -305,6 +308,8 @@ bool dnac_merkle_verify_proof(const dnac_merkle_proof_t *proof);
  * @param tx_hash       64-byte creating transaction hash.
  * @param output_index  UTXO index within its transaction.
  * @param out           Output buffer, DNAC_MERKLE_ROOT_SIZE bytes.
+ * @param unlock_block  The coin's unlock_block (0 = spendable) — the
+ *                      witness's `ub` field; hashed last.
  * @return 0 on success, -1 on NULL arg or OpenSSL failure.
  */
 int dnac_utxo_compute_leaf_hash(const uint8_t *nullifier,
@@ -313,7 +318,8 @@ int dnac_utxo_compute_leaf_hash(const uint8_t *nullifier,
                                  const uint8_t *token_id,
                                  const uint8_t *tx_hash,
                                  uint32_t output_index,
-                                 uint8_t out[DNAC_MERKLE_ROOT_SIZE]);
+                                 uint8_t out[DNAC_MERKLE_ROOT_SIZE],
+                                 uint64_t unlock_block);
 
 /* ============================================================================
  * Block Anchor — binds a block header to its 2f+1 PRECOMMIT signatures

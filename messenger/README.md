@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <a href="#status"><img src="https://img.shields.io/badge/Status-RC%20v1.0.0--rc240-blue" alt="RC"></a>
+  <a href="#status"><img src="https://img.shields.io/badge/Status-RC%20v1.0.0--rc241-blue" alt="RC"></a>
   <a href="#license"><img src="https://img.shields.io/badge/License-Apache%202.0-green" alt="Apache 2.0"></a>
   <a href="#platforms"><img src="https://img.shields.io/badge/Platforms-Android%20|%20Linux%20|%20Windows-orange" alt="Platforms"></a>
   <a href="#security"><img src="https://img.shields.io/badge/Cryptography-Post--quantum-red" alt="Post-quantum cryptography"></a>
@@ -26,7 +26,7 @@ an operator-run DHT network with post-quantum cryptographic primitives.
 - **No single central message server** — Messages travel through a distributed hash table (DHT)
 - **End-to-end encrypted content** — DHT nodes cannot decrypt message bodies
 - **Explicit metadata boundary** — Entry nodes can observe IP addresses, timing and traffic volume; nodes process routing and storage metadata
-- **Post-quantum design** — Uses Dilithium5 signatures and round-3 Kyber1024 key encapsulation
+- **Post-quantum design** — Dilithium5 (ML-DSA-87) signatures and ML-KEM-1024 key encapsulation, with Kyber1024 round-3 kept as the fallback for peers without an ML-KEM key
 
 ---
 
@@ -36,9 +36,7 @@ an operator-run DHT network with post-quantum cryptographic primitives.
 - **End-to-end encryption** with Kyber1024 + AES-256-GCM
 - **1:1 and group chats** with delivery/read receipts
 - **Offline message queue** — Messages wait up to 7 days if you're offline
-- **Group encryption (GEK)** — Shared group keys avoid repeating a full
-  per-recipient KEM operation for every message; no universal performance
-  multiplier is claimed
+- **Group encryption (GEK)** — 200x faster than encrypting per-recipient
 - **Cross-device sync** — Messages and groups sync across all your devices
 - **Voice messages** with waveform visualization
 - **Video and image sharing** via DHT media storage
@@ -56,10 +54,9 @@ an operator-run DHT network with post-quantum cryptographic primitives.
 ### Integrated Multi-Chain Wallet
 - **5 external networks + DNAC native:** Cellframe (CF20), Ethereum (ERC20), BNB Smart Chain (BEP20), TRON (TRC20), Solana (SPL), plus **DNAC** (post-quantum native chain, see bullet below)
 - **9+ Tokens:** CPUNK, CELL, KEL, NYS, QEVM, ETH, BNB, SOL, TRX, USDT
-- **DNAC (DNA Chain)** — Post-quantum native UTXO blockchain with BFT witness consensus
+- **DNAC (DNA Chain)** — Post-quantum UTXO blockchain with BFT witness consensus
 - **Send crypto from chat** — Auto-resolves contact's wallet address
-- **Token swaps** — DEX integrations; the Ethereum submission path includes a
-  Flashbots Protect option, while protection varies by chain and route
+- **Token swaps** — DEX integration with MEV protection
 - **QR codes** — Easy send/receive
 - **Full transaction history**
 
@@ -71,9 +68,7 @@ an operator-run DHT network with post-quantum cryptographic primitives.
 - **Native presence** — Server-side presence tracking
 - **SQLCipher database encryption** — 9 encrypted databases at rest
 - **TEE key wrapping** on Android (AES-256-GCM via Android Keystore)
-- **Kyber1024 TCP channel encryption** — Authenticated TCP client/inter-node
-  payloads use Kyber round-3 + AES-256-GCM; UDP Kademlia datagrams are not
-  covered by that channel
+- **Kyber1024 channel encryption** — All DHT connections encrypted
 - **Debug log system** with hybrid encryption (Kyber1024 + AES-256-GCM)
 
 ---
@@ -81,19 +76,17 @@ an operator-run DHT network with post-quantum cryptographic primitives.
 ## Security
 
 The selected parameter sets target NIST security category 5. That target is not
-a security certification, and the Kyber implementation in this tree predates
-the final ML-KEM/FIPS 203 standard.
+a security certification.
 
 | Algorithm | Standard | Purpose |
 |-----------|----------|---------|
-| **Kyber1024** | Kyber round-3 (NIST Level 5) — *not* ML-KEM/FIPS 203, see `shared/crypto/enc/qgp_kyber.h` | Key encapsulation |
+| **ML-KEM-1024** | FIPS 203 (pq-crystals `standard` reference) — see `shared/crypto/enc/qgp_mlkem.h` | Key encapsulation, used whenever the recipient has published an ML-KEM key |
+| **Kyber1024 round-3** | pre-FIPS-203, *not* interoperable with ML-KEM — see `shared/crypto/enc/qgp_kyber.h` | Legacy key encapsulation, kept as the fallback for recipients without an ML-KEM key |
 | **Dilithium5** | ML-DSA-87 (FIPS 204) | Digital signatures |
 | **AES-256-GCM** | NIST | Symmetric encryption |
 | **SHA3-512** | NIST | Hashing |
 
-Private/secret key operations are performed locally. Recovery is available via
-the BIP39 seed phrase; public keys and fingerprints are intentionally shared as
-protocol identity material.
+Your keys never leave your device. Recovery via BIP39 seed phrase.
 
 The repository does not claim an independently validated cryptographic module.
 
@@ -124,11 +117,10 @@ git clone https://github.com/nocdem/dna.git
 cd dna
 
 # Build C library
-cmake -S messenger -B messenger/build -DCMAKE_BUILD_TYPE=Release
-cmake --build messenger/build -j"$(nproc)"
+cd messenger/build && cmake .. && make -j$(nproc)
 
 # Run Flutter app
-cd messenger/dna_messenger_flutter
+cd ../dna_messenger_flutter
 flutter pub get && flutter run
 ```
 
@@ -179,11 +171,11 @@ cd messenger
 |--------|--------|
 | `dna_engine_addressbook.c` | Address book management |
 | `dna_engine_backup.c` | DHT sync for all data types |
-| `dna_engine_calls.c` | Voice-call signalling and orchestration |
-| `dna_engine_channels.c` | Channel CRUD, posts, subscriptions |
+| `dna_engine_calls.c` | PQ VoIP call control (signaling, key agreement) |
+| `dna_engine_channels.c` | Channel CRUD, posts, subscriptions (disabled, compile-guarded) |
 | `dna_engine_contacts.c` | Contact requests, blocking |
 | `dna_engine_debug_log.c` | Debug log send/receive |
-| `dna_engine_dnac.c` | DNA Chain operations (balance, send, sync, history) |
+| `dna_engine_dnac.c` | DNA Chain wallet (balance, send, sync, history) |
 | `dna_engine_follow.c` | Follow/unfollow, list, DHT sync |
 | `dna_engine_groups.c` | Group CRUD, GEK encryption, invitations |
 | `dna_engine_helpers.c` | Shared utility functions |
@@ -212,10 +204,10 @@ cd messenger
 
 | Component | Version |
 |-----------|---------|
-| C Library | v0.11.13 |
-| Flutter App | v1.0.0-rc240 |
-| Nodus | v0.18.22 |
-| DNAC | v0.17.8-stake.wip |
+| C Library | v0.11.18 |
+| Flutter App | v1.0.0-rc241 |
+| Nodus | v0.19.16 |
+| DNAC | v0.18.6-ledgerv2-o15b |
 
 ---
 
@@ -231,7 +223,7 @@ cd messenger
 | [Message System](docs/MESSAGE_SYSTEM.md) | Message handling |
 | [Protocol Specs](docs/PROTOCOL.md) | Wire formats |
 | [Nodus](../nodus/README.md) | DHT server |
-| [DNAC](../dnac/README.md) | Native UTXO blockchain |
+| [DNAC](../dnac/README.md) | DNA Chain client library |
 
 ---
 

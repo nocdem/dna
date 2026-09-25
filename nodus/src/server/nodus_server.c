@@ -9,6 +9,7 @@
 #include "server/nodus_media_handler.h"
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_peer.h"
+#include "witness/nodus_witness_v2_apply.h"   /* nodus_witness_v2_committed_global_root (W4-H) */
 #include "channel/nodus_channel_server.h"
 #include "channel/nodus_channel_replication.h"
 #include "channel/nodus_channel_ring.h"
@@ -20,6 +21,7 @@
 #include "crypto/nodus_sign.h"
 #include "crypto/nodus_channel_crypto.h"
 #include "crypto/enc/qgp_kyber.h"
+#include "crypto/enc/qgp_mlkem.h"
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_log.h"
 
@@ -2668,9 +2670,35 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
             }
         }
 
-        /* Kyber encapsulate → shared secret + ciphertext */
+        /* Faz 1 KEM migration (docs/plans/decisions/2026-09-23-kem-mlkem-
+         * migration.md): if the peer ALSO advertised a signed ML-KEM-1024
+         * pubkey, verify it under MLKEM_BIND against the SAME pinned
+         * server_pk (the CRIT-1 block above already proved server_pk is
+         * the peer we dialed) and prefer it; otherwise fall back to Kyber
+         * round-3 exactly as today. */
+        bool use_mlkem = false;
+        if (msg.has_mlkem_pk && msg.has_mpk_sig) {
+            uint8_t msign_data[NODUS_MLKEM_PK_BYTES + NODUS_NONCE_LEN];
+            memcpy(msign_data, msg.mlkem_pk, NODUS_MLKEM_PK_BYTES);
+            memcpy(msign_data + NODUS_MLKEM_PK_BYTES,
+                   c->challenge_nonce, NODUS_NONCE_LEN);
+            if (nodus_verify_mlkem_bind(&msg.mpk_sig, msign_data, sizeof(msign_data),
+                                         &msg.server_pk) == 0) {
+                use_mlkem = true;
+            } else {
+                fprintf(stderr,
+                        "BF: mlkem_pk signature INVALID from %s:%u — falling "
+                        "back to Kyber round-3\n", c->ip, (unsigned)c->port);
+            }
+        }
+
+        /* KEM encapsulate → shared secret + ciphertext */
         uint8_t ct[NODUS_KYBER_CT_BYTES], ss[NODUS_KYBER_SS_BYTES];
-        if (qgp_kem1024_encapsulate(ct, ss, msg.kyber_pk) != 0) {
+        uint8_t alg = use_mlkem ? 1 : 0;
+        int enc_rc = use_mlkem
+            ? qgp_mlkem1024_encapsulate(ct, ss, msg.mlkem_pk)
+            : qgp_kem1024_encapsulate(ct, ss, msg.kyber_pk);
+        if (enc_rc != 0) {
             nodus_t2_msg_free(&msg);
             bf_forward_fail(srv, b, c); return;
         }
@@ -2686,7 +2714,7 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
         /* Build key_init frame */
         uint8_t ki_buf[4096];
         size_t ki_len = 0;
-        if (nodus_t2_key_init(authok_txn, ct, nc, ki_buf, sizeof(ki_buf), &ki_len) != 0 ||
+        if (nodus_t2_key_init(authok_txn, ct, nc, alg, ki_buf, sizeof(ki_buf), &ki_len) != 0 ||
             bf_build_frame(&c->send_buf, &c->send_len, ki_buf, ki_len) != 0) {
             bf_forward_fail(srv, b, c); return;
         }
@@ -3321,8 +3349,11 @@ static void handle_t2_circ_open(nodus_server_t *srv, nodus_session_t *sess,
         uint8_t obuf[2048]; size_t olen = 0;
         int ri_rc;
         if (msg->has_e2e_ct) {
+            /* Faz 1 KEM migration: propagate the originator's e2e_alg
+             * opaquely — this server never decapsulates "ect", only relays
+             * it and the algorithm tag it was encapsulated under. */
             ri_rc = nodus_t2_ri_open_e2e(msg->txn_id, ic->our_cid, &sess->client_fp,
-                                          &msg->circ_peer_fp, msg->e2e_ct,
+                                          &msg->circ_peer_fp, msg->e2e_ct, msg->e2e_alg,
                                           obuf, sizeof(obuf), &olen);
         } else {
             ri_rc = nodus_t2_ri_open(msg->txn_id, ic->our_cid, &sess->client_fp,
@@ -3389,8 +3420,10 @@ static void handle_t2_circ_open(nodus_server_t *srv, nodus_session_t *sess,
     uint8_t ibuf[2048];
     size_t ilen = 0;
     if (msg->has_e2e_ct) {
+        /* Faz 1 KEM migration: propagate e2e_alg opaquely, see the
+         * ri_open_e2e comment above. */
         nodus_t2_circ_inbound_e2e(0, c_dst->local_cid, &sess->client_fp,
-                                   msg->e2e_ct, ibuf, sizeof(ibuf), &ilen);
+                                   msg->e2e_ct, msg->e2e_alg, ibuf, sizeof(ibuf), &ilen);
     } else {
         nodus_t2_circ_inbound(0, c_dst->local_cid, &sess->client_fp,
                                ibuf, sizeof(ibuf), &ilen);
@@ -3531,8 +3564,10 @@ static void handle_inter_ri_open(nodus_server_t *srv, nodus_inter_session_t *ses
     /* Push circ_inbound to target user (pass e2e_ct opaquely for onion layer) */
     uint8_t ibuf[2048]; size_t ilen = 0;
     if (msg->has_e2e_ct) {
+        /* Faz 1 KEM migration: propagate e2e_alg, see the ri_open_e2e
+         * comment in handle_t2_circ_open() above. */
         nodus_t2_circ_inbound_e2e(0, c->local_cid, &msg->ri_src_fp,
-                                   msg->e2e_ct, ibuf, sizeof(ibuf), &ilen);
+                                   msg->e2e_ct, msg->e2e_alg, ibuf, sizeof(ibuf), &ilen);
     } else {
         nodus_t2_circ_inbound(0, c->local_cid, &msg->ri_src_fp, ibuf, sizeof(ibuf), &ilen);
     }
@@ -3798,9 +3833,25 @@ static void handle_t2_status(nodus_server_t *srv, nodus_session_t *sess,
 
     if (srv->witness && srv->witness->db) {
         info.block_height = nodus_witness_block_height(srv->witness);
-        if (srv->witness->cached_state_root_valid) {
-            memcpy(info.state_root, srv->witness->cached_state_root, 64);
+        if (srv->witness->v2_successor) {
+            /* R3 W4 package H: on a version-3 chain the legacy cached
+             * state root is never written (the Comet apply lane keeps
+             * no `blocks` row), so the column was EMPTY while HEIGHT
+             * already reported the `v2_blocks` tip. Report the committed
+             * GLOBAL ROOT of that tip instead — the row the engine wrote
+             * (`nodus_witness_v2_committed_global_root`: the authority is
+             * the stored `v2_blocks.global_root`, never a recompute), the
+             * same quantity `stagef_cmt_diff_at_floor` compares across
+             * nodes. A chain with no committed row yet leaves it zero. */
+            if (nodus_witness_v2_committed_global_root(srv->witness,
+                                                       info.state_root) != 0) {
+                memset(info.state_root, 0, sizeof(info.state_root));
+            }
         }
+        /* Root-layout round (K3): the legacy `else` branch that copied
+         * `cached_state_root` is deleted with that field (it had no
+         * writer); a non-successor witness reports the zeroed
+         * state_root from the memset above, as it already did. */
         memcpy(info.chain_id, srv->witness->chain_id, 32);
     }
 
@@ -4025,6 +4076,32 @@ static void idle_timeout_sweep(nodus_server_t *srv) {
                                         nodus_time_now_ms(), 10000);
 }
 
+/* Faz 1 KEM migration (docs/plans/decisions/2026-09-23-kem-mlkem-
+ * migration.md): sign this identity's ML-KEM-1024 pubkey under MLKEM_BIND
+ * (N2) — nodus_sign_mlkem_bind() routes through the SAME nodus_sign_tagged()
+ * engine kpk_sig uses, but MLKEM_BIND is in the strict set
+ * (nodus_sign_purpose_is_strict(), N1 delta 1 D2) so it always signs the
+ * NDS1-tagged preimage, never raw — unlike kpk_sig/KYBER_BIND, whose
+ * (kyber_pk || nonce) preimage has the same length/shape and would
+ * otherwise be swappable with this one. Returns false (leaves
+ * *mpk_sig_out untouched) when the identity has no ML-KEM keypair yet, or
+ * signing fails — callers then omit mpk from the AUTH_OK they send,
+ * falling back to Kyber-only exactly as before this migration. Shared by
+ * the two nodus_t2_auth_ok_kyber senders in this file (dispatch_inter
+ * below, on_witness_frame further down) — nodus_auth.c's client-facing
+ * sender (port 4001) has its own copy since it lives in a different
+ * translation unit. */
+static bool sign_mlkem_bind_for_auth_ok(const nodus_identity_t *identity,
+                                          const uint8_t *nonce,
+                                          nodus_sig_t *mpk_sig_out) {
+    if (!identity->has_mlkem) return false;
+    uint8_t sign_data[NODUS_MLKEM_PK_BYTES + NODUS_NONCE_LEN];
+    memcpy(sign_data, identity->mlkem_pk, NODUS_MLKEM_PK_BYTES);
+    memcpy(sign_data + NODUS_MLKEM_PK_BYTES, nonce, NODUS_NONCE_LEN);
+    return nodus_sign_mlkem_bind(mpk_sig_out, sign_data, sizeof(sign_data),
+                                  &identity->sk) == 0;
+}
+
 /* ── Inter-node frame dispatch (peer port) ──────────────────────── */
 
 static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
@@ -4191,13 +4268,40 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                     return;
                 }
 
+                /* Faz 1 KEM migration (docs/plans/decisions/2026-09-23-kem-
+                 * mlkem-migration.md): if the peer ALSO advertised a signed
+                 * ML-KEM-1024 pubkey, verify it under MLKEM_BIND against
+                 * the SAME pinned server_pk (bind_ok above already proved
+                 * it) and prefer it; otherwise fall back to the Kyber kpk
+                 * exactly as today. */
+                bool use_mlkem = false;
+                if (msg.has_mlkem_pk && msg.has_mpk_sig) {
+                    uint8_t msign_data[NODUS_MLKEM_PK_BYTES + NODUS_NONCE_LEN];
+                    memcpy(msign_data, msg.mlkem_pk, NODUS_MLKEM_PK_BYTES);
+                    memcpy(msign_data + NODUS_MLKEM_PK_BYTES,
+                           sess->challenge_nonce, NODUS_NONCE_LEN);
+                    if (nodus_verify_mlkem_bind(&msg.mpk_sig, msign_data, sizeof(msign_data),
+                                                 &msg.server_pk) == 0) {
+                        use_mlkem = true;
+                    } else {
+                        fprintf(stderr,
+                                "INTER: mlkem_pk signature INVALID from %s:%u — "
+                                "falling back to Kyber round-3\n",
+                                sess->conn->ip, (unsigned)sess->conn->port);
+                    }
+                }
+
                 uint8_t ct[NODUS_KYBER_CT_BYTES], ss_buf[NODUS_KYBER_SS_BYTES];
-                if (qgp_kem1024_encapsulate(ct, ss_buf, msg.kyber_pk) == 0) {
+                uint8_t alg = use_mlkem ? 1 : 0;
+                int enc_rc = use_mlkem
+                    ? qgp_mlkem1024_encapsulate(ct, ss_buf, msg.mlkem_pk)
+                    : qgp_kem1024_encapsulate(ct, ss_buf, msg.kyber_pk);
+                if (enc_rc == 0) {
                     uint8_t nc[NODUS_NONCE_LEN];
                     nodus_random(nc, NODUS_NONCE_LEN);
                     uint8_t ki_buf[4096];
                     size_t ki_len = 0;
-                    nodus_t2_key_init(msg.txn_id, ct, nc, ki_buf, sizeof(ki_buf), &ki_len);
+                    nodus_t2_key_init(msg.txn_id, ct, nc, alg, ki_buf, sizeof(ki_buf), &ki_len);
                     nodus_tcp_send_raw(sess->conn, ki_buf, ki_len);
                     /* Store shared secret + nonce for key_ack */
                     memcpy(sess->pending_ss, ss_buf, 32);
@@ -4327,8 +4431,15 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                         nodus_sig_t kpk_sig;
                         /* C2: KYBER_BIND domain */
                         if (nodus_sign_kyber_bind(&kpk_sig, sign_data, sizeof(sign_data), &srv->identity.sk) == 0) {
+                            /* Faz 1 KEM migration: also bind mlkem_pk, if
+                             * this identity has one (N2 MLKEM_BIND). */
+                            nodus_sig_t mpk_sig;
+                            bool have_mpk = sign_mlkem_bind_for_auth_ok(&srv->identity,
+                                                                         sess->nonce, &mpk_sig);
                             nodus_t2_auth_ok_kyber(msg.txn_id, token, srv->identity.kyber_pk,
                                                     &srv->identity.pk, &kpk_sig,
+                                                    have_mpk ? srv->identity.mlkem_pk : NULL,
+                                                    have_mpk ? &mpk_sig : NULL,
                                                     resp_buf, sizeof(resp_buf), &rlen);
                         } else {
                             nodus_t2_auth_ok(msg.txn_id, token,
@@ -4356,20 +4467,27 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
             return;
         }
 
-        /* Inter-node key_init: accepting side Kyber handshake */
+        /* Inter-node key_init: accepting side KEM handshake. key_alg (Faz
+         * 1 KEM migration) selects round-3 (0, default) vs ML-KEM-1024 (1)
+         * — set by whichever algorithm the encapsulating side chose above. */
         if (strcmp(msg.method, "key_init") == 0 && msg.has_kyber_ct && msg.has_key_nonce) {
+            bool use_mlkem = (msg.key_alg == 1);
+            bool have_key = use_mlkem ? srv->identity.has_mlkem : srv->identity.has_kyber;
             /* Phase 3.2b-inv: KEY_INIT receive visibility */
             fprintf(stderr,
-                    "CRYPTO: KEY_INIT_RX slot=%d peer=%s:%u has_kyber=%d "
+                    "CRYPTO: KEY_INIT_RX slot=%d peer=%s:%u alg=%u have_key=%d "
                     "sess=%p sess_conn=%p\n",
                     sess->conn ? sess->conn->slot : -1,
                     sess->conn ? sess->conn->ip : "?",
                     sess->conn ? (unsigned)sess->conn->port : 0,
-                    srv->identity.has_kyber ? 1 : 0,
+                    (unsigned)msg.key_alg, have_key ? 1 : 0,
                     (void *)sess, (void *)(sess->conn));
-            if (srv->identity.has_kyber) {
+            if (have_key) {
                 uint8_t ss_buf[NODUS_KYBER_SS_BYTES];
-                if (qgp_kem1024_decapsulate(ss_buf, msg.kyber_ct, srv->identity.kyber_sk) == 0) {
+                int dec_rc = use_mlkem
+                    ? qgp_mlkem1024_decapsulate(ss_buf, msg.kyber_ct, srv->identity.mlkem_sk)
+                    : qgp_kem1024_decapsulate(ss_buf, msg.kyber_ct, srv->identity.kyber_sk);
+                if (dec_rc == 0) {
                     uint8_t ns[NODUS_NONCE_LEN];
                     nodus_random(ns, NODUS_NONCE_LEN);
                     uint8_t ka_buf[4096];
@@ -4395,12 +4513,18 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                             (size_t)NODUS_KYBER_CT_BYTES);
                 }
             } else {
-                /* Phase 3.2b-inv: identity missing kyber keys was SILENT */
+                /* Phase 3.2b-inv: identity missing kyber keys was SILENT.
+                 * E4 (N1 delta 2): name the algorithm ACTUALLY missing —
+                 * before this fix the text always said "no kyber key" even
+                 * when use_mlkem was true and the real gap was ML-KEM.
+                 * Text/label only, no wire change, no new error code. */
                 fprintf(stderr,
-                        "CRYPTO: NO_KYBER slot=%d peer=%s:%u (identity has no kyber key)\n",
+                        "CRYPTO: NO_KEY slot=%d peer=%s:%u (identity has no "
+                        "%s key)\n",
                         sess->conn ? sess->conn->slot : -1,
                         sess->conn ? sess->conn->ip : "?",
-                        sess->conn ? (unsigned)sess->conn->port : 0);
+                        sess->conn ? (unsigned)sess->conn->port : 0,
+                        use_mlkem ? "ML-KEM-1024" : "Kyber round-3");
             }
             nodus_t2_msg_free(&msg);
             return;
@@ -4958,8 +5082,15 @@ static void on_witness_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
                     nodus_sig_t kpk_sig;
                     /* C2: KYBER_BIND domain */
                     if (nodus_sign_kyber_bind(&kpk_sig, sign_data, sizeof(sign_data), &srv->identity.sk) == 0) {
+                        /* Faz 1 KEM migration: also bind mlkem_pk, if this
+                         * identity has one (N2 MLKEM_BIND). */
+                        nodus_sig_t mpk_sig;
+                        bool have_mpk = sign_mlkem_bind_for_auth_ok(&srv->identity,
+                                                                     conn->auth_nonce, &mpk_sig);
                         nodus_t2_auth_ok_kyber(msg.txn_id, token, srv->identity.kyber_pk,
                                                 &srv->identity.pk, &kpk_sig,
+                                                have_mpk ? srv->identity.mlkem_pk : NULL,
+                                                have_mpk ? &mpk_sig : NULL,
                                                 resp_buf, sizeof(resp_buf), &rlen);
                     } else {
                         nodus_t2_auth_ok(msg.txn_id, token,
@@ -5084,9 +5215,11 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
         return;
     }
 
-    /* Post-auth key exchange: key_init has no token (transition message) */
+    /* Post-auth key exchange: key_init has no token (transition message).
+     * Faz 1 KEM migration: dispatch by msg.key_alg (0 = round-3 default). */
     if (strcmp(msg.method, "key_init") == 0 && msg.has_kyber_ct && msg.has_key_nonce) {
-        nodus_auth_handle_key_init(srv, sess, msg.kyber_ct, msg.key_nonce, msg.txn_id);
+        nodus_auth_handle_key_init_alg(srv, sess, msg.key_alg,
+                                        msg.kyber_ct, msg.key_nonce, msg.txn_id);
         nodus_t2_msg_free(&msg);
         return;
     }
@@ -6062,16 +6195,46 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
 
     /* Add seed nodes to cluster.
      * Seeds don't have node_ids yet — they'll be discovered via PING/PONG.
-     * For now, create placeholder node_ids from IP hash. The real node_id
-     * will be learned when the seed responds to our PING. */
-    for (int i = 0; i < config->seed_count; i++) {
-        nodus_key_t seed_id;
-        nodus_hash((const uint8_t *)config->seed_nodes[i],
-                    strlen(config->seed_nodes[i]), &seed_id);
-        nodus_cluster_add_peer(&srv->cluster, &seed_id,
-                              config->seed_nodes[i],
-                              config->seed_ports[i],
-                              config->seed_ports[i] + 2);  /* Peer TCP = UDP + 2 */
+     * For now, create placeholder node_ids from the seed's ENDPOINT. The
+     * real node_id will be learned when the seed responds to our PING.
+     *
+     * O15B.1 — the placeholder used to be a hash of the IP STRING alone,
+     * while nodus_cluster_add_peer deduplicates on the id. Every seed on
+     * a shared address therefore collapsed onto one peer, and six of the
+     * harness's seven seeds were dropped without a word. Downstream that
+     * left one Kademlia routing entry and a DHT replication fan-out of
+     * one, which is what stranded a joining witness in bootstrap
+     * DISCOVER (nodus/BUGS.md). Keyed by ip:udp_port the seeds stay
+     * distinct.
+     *
+     * A node is also NOT its own seed. The Stage F harness — and any
+     * co-located deployment — hands every node the full seed list,
+     * itself included; without this skip the node registers a phantom
+     * peer for its own address, heartbeats itself, and injects a
+     * placeholder-id entry for itself into its own routing table, where
+     * it consumes a replication slot forever (nodus_cluster_on_pong
+     * rewrites the cluster row's id but never the routing entry). */
+    {
+        const char *self_ip = config->external_ip[0] ? config->external_ip
+                                                     : config->bind_ip;
+        for (int i = 0; i < config->seed_count; i++) {
+            if (config->seed_ports[i] == config->udp_port &&
+                strcmp(config->seed_nodes[i], self_ip) == 0) {
+                fprintf(stderr,
+                        "CLUSTER: skipping own address %s:%u in seed list\n",
+                        config->seed_nodes[i],
+                        (unsigned)config->seed_ports[i]);
+                continue;
+            }
+            nodus_key_t seed_id;
+            nodus_cluster_seed_placeholder_id(config->seed_nodes[i],
+                                              config->seed_ports[i],
+                                              &seed_id);
+            nodus_cluster_add_peer(&srv->cluster, &seed_id,
+                                  config->seed_nodes[i],
+                                  config->seed_ports[i],
+                                  config->seed_ports[i] + 2);  /* Peer TCP = UDP + 2 */
+        }
     }
 
     /* Initialize witness module (all nodes are automatic witnesses) */
@@ -6082,11 +6245,147 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     }
     srv->witness->tcp = &srv->witness_tcp;  /* Set before init (preserved across memset) */
     if (nodus_witness_init(srv->witness, srv, &config->witness) != 0) {
-        fprintf(stderr, "Witness module init failed\n");
         free(srv->witness);
         srv->witness = NULL;
-        /* Non-fatal — server can run without witness */
-        fprintf(stderr, "WARNING: running without witness module\n");
+
+        /* ── O15L Faz 2 — A DEGRADED NODE SAYS SO, LOUDLY ─────────────
+         *
+         * This used to be two lines — "Witness module init failed" and
+         * "WARNING: running without witness module" — and neither said
+         * what it COSTS. A reader had to already know that the witness
+         * module is the consensus role to understand that the node just
+         * stopped validating blocks, voting and certifying, and would go
+         * on serving DHT traffic as if nothing had happened. In a journal
+         * full of startup chatter that is indistinguishable from noise.
+         *
+         * The process deliberately does NOT exit. nodus is dual-role, and
+         * the DHT half is fine; killing it to retire the witness half
+         * costs a working service for nothing. Worse, exiting is not free
+         * even for the witness half: nodus/deploy/nodus.service carries
+         * Restart=on-failure with StartLimitBurst=3 and
+         * StartLimitIntervalSec=300, so three exits inside five minutes
+         * leave the unit permanently stopped — the failure mode a
+         * transient database fault must not be able to cause. The
+         * witness-less mode is safe, not latent — but NOT because every
+         * call site is guarded, which is what this comment used to claim
+         * and is false. The two dispatch_t3 sites differ:
+         *
+         *   - on_witness_data (witness port) calls
+         *     nodus_witness_dispatch_t3(srv->witness, ...) with NO
+         *     `if (srv->witness)` around it. What protects it is the
+         *     CALLEE: nodus_witness_dispatch_t3's first line is
+         *     `if (!witness || !payload || len == 0) return;`
+         *     (nodus_witness.c), so a NULL witness is dropped there, not
+         *     here. Any future call site on this path inherits that
+         *     contract and nothing else.
+         *   - dispatch_t2's `w_` branch (client port) IS guarded:
+         *     `strncmp(msg.method, "w_", 2) == 0 && srv->witness`.
+         *
+         * The periodic nodus_witness_tick call in the server loop is
+         * guarded by `if (srv->witness)` AND NULL-checks its own argument
+         * (`if (!witness || !witness->running) return;`), so that one is
+         * safe from either side.
+         *
+         * fprintf(stderr) rather than QGP_LOG_ERROR matches the block
+         * this replaces and the adjacent init logging (this file uses
+         * both); the witness module logs exclusively this way, so the
+         * WITNESS lines this message points at are interleaved with it in
+         * the journal rather than filtered separately. */
+        fprintf(stderr,
+            "ERROR: WITNESS MODULE INIT FAILED — THIS NODE IS RUNNING "
+            "DEGRADED\n");
+        fprintf(stderr,
+            "ERROR:   consensus: NOT PARTICIPATING. This node validates no "
+            "block, casts no vote,\n"
+            "ERROR:              signs no certificate and produces no "
+            "block for as long as it runs.\n");
+        fprintf(stderr,
+            "ERROR:   DHT:       unaffected — Kademlia, storage and client "
+            "service continue.\n");
+        fprintf(stderr,
+            "ERROR:   cause:     named in the WITNESS lines above — a chain "
+            "database that is\n"
+            "ERROR:              PRESENT but unusable (with its sqlite "
+            "fault), a refused startup\n"
+            "ERROR:              gate, or an unmet bootstrap "
+            "precondition.\n");
+        fprintf(stderr,
+            "ERROR:   action:    the process is NOT exiting on purpose "
+            "(nodus.service would stop\n"
+            "ERROR:              the unit after 3 restarts in 300 s, "
+            "retiring the DHT role too).\n"
+            "ERROR:              Fix the database, then restart this "
+            "node.\n");
+    }
+
+    /* ── O16A — ARM THE PARTIAL-WIPE GATE, HERE AND NOWHERE ELSE ──────
+     *
+     * WHAT THE MARKER ASSERTS. Not "a chain exists" — "this node has
+     * completed a normal boot with a chain". That distinction is the
+     * whole reason this write sits at the bottom of init rather than
+     * where a chain is first produced. The gate it arms
+     * (nodus_server_check_partial_wipe, called near the top of this
+     * function) demands that nodus.db, channels.db and witness_*.db be
+     * all-present or all-absent, and refuses the start otherwise. The
+     * three are not functionally coupled; the rule is an ACCIDENT
+     * DETECTOR for an operator who removed one of them by hand
+     * (docs/BOOTSTRAP.md, "Operator wiped one of the 3 SQLite DBs by
+     * accident"). Arming it is only honest once all three are real.
+     *
+     * WHY NOT IN THE V2 GENESIS BUILDER. That was the first cut and it
+     * was wrong: the genesis derivation (nodus_witness_v2_gen_derive_v3
+     * today; the version-2 nodus_witness_v2_gen_derive where the defect
+     * was found is deleted, tokenomics-v3 P4) runs as an offline one-shot
+     * that creates exactly ONE of the three, and this gate runs BEFORE
+     * nodus_storage_open and nodus_channel_store_open create the other
+     * two. A marker written there fails the gate on the very next start
+     * of a freshly provisioned host, and the refusal's printed remedy is
+     * to delete all three — the chain the ceremony just produced.
+     *
+     * WHAT THIS PLACEMENT ALSO FIXES, for free:
+     *   - a crash or a failed write during the ceremony self-heals on the
+     *     next boot, because this runs on every successful start;
+     *   - a node that JOINED rather than derived is covered, which the
+     *     builder-side write structurally could not do — the joiner
+     *     builds in its own scratch directory (nodus_witness_v2_join.c)
+     *     and nodus_witness_create_chain_db's own marker write lands
+     *     there and is discarded with it (nodus_witness.c:1173-1180);
+     *   - a legacy node keeps the behaviour it already had: its
+     *     create_chain_db wrote the marker at genesis, and re-writing an
+     *     existing file changes nothing.
+     *
+     * GATED ON AN OPEN CHAIN. `srv->witness->db` is non-NULL only when a
+     * chain database was found and opened (nodus_witness_scan_chain_db).
+     * A pre-genesis node has no chain, has not crossed the boundary the
+     * marker records, and must not arm the gate — doing so would make
+     * its perfectly legitimate two-of-three state a refusal.
+     *
+     * NOT FATAL, BUT LOUD. A node is not worse off for a missing marker
+     * than it is today, and the next boot retries; but a gate silently
+     * staying open is exactly what an operator would never otherwise
+     * learn. The file's presence is the signal — its contents are never
+     * read. */
+    if (srv->witness && srv->witness->db) {
+        char marker[640];
+        int mk = snprintf(marker, sizeof(marker), "%s/%s",
+                          config->data_path[0] ? config->data_path : "/tmp",
+                          NODUS_PARTIAL_WIPE_GENESIS_MARKER);
+        if (mk < 0 || (size_t)mk >= sizeof(marker)) {
+            fprintf(stderr,
+                "NODUS_SRV: WARNING data path too long to form %s — the "
+                "partial-wipe gate stays OPEN on this node\n",
+                NODUS_PARTIAL_WIPE_GENESIS_MARKER);
+        } else {
+            FILE *mf = fopen(marker, "w");
+            if (mf) {
+                fclose(mf);
+            } else {
+                fprintf(stderr,
+                    "NODUS_SRV: WARNING failed to write %s: %s — the "
+                    "partial-wipe gate stays OPEN on this node's next "
+                    "boot\n", marker, strerror(errno));
+            }
+        }
     }
 
     /* Publish identity to DHT for witness discovery */
@@ -6119,6 +6418,18 @@ fail:
 
 int nodus_server_run(nodus_server_t *srv) {
     if (!srv) return -1;
+
+    /* A stop that already arrived must not be resurrected. `running` is
+     * set below, so a SIGTERM delivered while nodus_server_init() was
+     * still working (storage migration, VACUUM, identity generation)
+     * would be overwritten here and the process would then ignore the
+     * signal forever — it never blocks long enough to be interrupted
+     * again, it just polls. See stop_requested in nodus_server.h. */
+    if (srv->stop_requested) {
+        fprintf(stderr, "Nodus: stop requested during init — not starting\n");
+        return 0;
+    }
+
     srv->running = true;
     srv->start_time = (uint64_t)time(NULL);
 
@@ -6132,7 +6443,7 @@ int nodus_server_run(nodus_server_t *srv) {
 #endif
     fprintf(stderr, "  UDP port: %d\n", srv->udp.port);
 
-    while (srv->running) {
+    while (srv->running && !srv->stop_requested) {
         /* Poll client TCP events */
         nodus_tcp_poll(&srv->tcp, 50);
 
@@ -6244,7 +6555,11 @@ int nodus_server_run(nodus_server_t *srv) {
 }
 
 void nodus_server_stop(nodus_server_t *srv) {
-    if (srv) srv->running = false;
+    if (!srv) return;
+    /* Latch FIRST: nodus_server_run() consults stop_requested before it
+     * sets running, so a stop delivered during init is not lost. */
+    srv->stop_requested = 1;
+    srv->running = false;
 }
 
 void nodus_server_close(nodus_server_t *srv) {

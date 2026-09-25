@@ -14,12 +14,14 @@
 #include "crypto/sign/qgp_dilithium.h"
 #include "crypto/enc/qgp_kyber.h"
 #include "../dna_api.h"
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <json-c/json.h>
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_types.h"
 
 #define LOG_TAG "DHT_GEKS"
 
@@ -386,7 +388,8 @@ int dht_geks_publish(
     const uint8_t *kyber_privkey,
     const uint8_t *dilithium_pubkey,
     const uint8_t *dilithium_privkey,
-    uint32_t ttl_seconds)
+    uint32_t ttl_seconds,
+    const uint8_t *mlkem_pubkey)
 {
     if (!identity || !kyber_pubkey || !kyber_privkey || !dilithium_pubkey || !dilithium_privkey) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for publish\n");
@@ -436,16 +439,25 @@ int dht_geks_publish(
     uint8_t *encrypted_data = NULL;
     size_t encrypted_len = 0;
 
+    // KEM Faz 1 (R7): self-encryption -> alg 3 (ML-KEM-1024) iff the caller
+    // passed a session-loaded mlkem_pubkey (D12, M1 delta 1b-2 — this used
+    // to do its OWN by-path qgp_key_load of identity.mlkem here with no
+    // session_password, so a password-protected identity's key loaded as
+    // garbage/failed silently and fell back to alg 2; that by-path load is
+    // DELETED, the key now comes from the parameter).
+    bool have_mlkem = (mlkem_pubkey != NULL);
+
     // Self-encryption: encrypt with own public key, sign with own private key
     uint64_t sync_timestamp = (uint64_t)time(NULL);
-    dna_error_t enc_result = dna_encrypt_message_raw(
+    dna_error_t enc_result = dna_encrypt_message_raw_alg(
         dna_ctx,
         (const uint8_t*)json_str,
         json_len,
-        kyber_pubkey,           // recipient_enc_pubkey (self)
+        have_mlkem ? mlkem_pubkey : kyber_pubkey,  // recipient_enc_pubkey (self)
         dilithium_pubkey,       // sender_sign_pubkey (self)
         dilithium_privkey,      // sender_sign_privkey (self)
         sync_timestamp,         // v0.08: sync timestamp
+        have_mlkem ? (uint8_t)QGP_KEY_TYPE_MLKEM1024 : (uint8_t)QGP_KEY_TYPE_KEM1024,
         &encrypted_data,        // output ciphertext (allocated by function)
         &encrypted_len          // output length
     );
@@ -540,7 +552,8 @@ int dht_geks_fetch(
     dht_gek_entry_t **entries_out,
     size_t *count_out,
     const uint8_t *kyber_privkey,
-    const uint8_t *dilithium_pubkey)
+    const uint8_t *dilithium_pubkey,
+    const uint8_t *mlkem_privkey)
 {
     if (!identity || !entries_out || !count_out || !kyber_privkey || !dilithium_pubkey) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for fetch\n");
@@ -663,12 +676,22 @@ int dht_geks_fetch(
     size_t signature_out_len = 0;
     uint64_t sender_timestamp = 0;
 
+    // KEM Faz 1 (R7): the caller's mlkem_privkey (session-loaded, D12, M1
+    // delta 1b-2) lets a GEK sync blob self-encrypted with alg 3 be
+    // decrypted. This function used to do its OWN by-path qgp_key_load of
+    // identity.mlkem here with no session_password — deleted; a
+    // password-protected identity's key would load as garbage/fail
+    // silently there, producing mlkem_privkey_buf=NULL and a decrypt
+    // failure on device B while device A (no password) could read it fine
+    // (G6 data loss, D12).
+
     // Decrypt with own private key (self-decryption)
-    dna_error_t dec_result = dna_decrypt_message_raw(
+    dna_error_t dec_result = dna_decrypt_message_raw_alg(
         dna_ctx,
         encrypted_data,
         encrypted_len,
         kyber_privkey,              // recipient_enc_privkey (self)
+        mlkem_privkey,              // recipient_mlkem_privkey (self, KEM Faz 1)
         &decrypted_data,            // output plaintext (allocated by function)
         &decrypted_len,             // output length
         &sender_pubkey_out,         // v0.07: sender's fingerprint (64 bytes)

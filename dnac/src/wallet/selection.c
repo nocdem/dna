@@ -15,6 +15,13 @@
 
 /**
  * @brief Compare UTXOs by amount (for qsort)
+ *
+ * DETERMINISM: amount alone is not a total order — two coins of equal value
+ * would sort in an implementation-defined relative order, so two wallets
+ * holding the same coin set could build different (both valid) transactions.
+ * The nullifier is unique per coin, so it breaks every tie and makes the
+ * order total. (nodus/CLAUDE.md forbids selection that depends on unordered
+ * iteration; `dnac/CLAUDE.md` names coin selection explicitly.)
  */
 static int compare_utxo_amount(const void *a, const void *b) {
     const dnac_utxo_t *ua = (const dnac_utxo_t *)a;
@@ -22,7 +29,44 @@ static int compare_utxo_amount(const void *a, const void *b) {
 
     if (ua->amount < ub->amount) return -1;
     if (ua->amount > ub->amount) return 1;
-    return 0;
+    return memcmp(ua->nullifier, ub->nullifier, DNAC_NULLIFIER_SIZE);
+}
+
+/**
+ * @brief Drop coins consensus would refuse as inputs, in place.
+ *
+ * O15B §7. A coin whose `unlock_block` exceeds the chain height is still
+ * inside its post-UNSTAKE cooldown; EVERY honest validator rejects a
+ * transaction that spends it (Rule D, nodus_witness_verify.c:730). Selecting
+ * one produces a transaction that cannot commit at any timeout, on any node —
+ * the failure surfaces to the user as "Operation timed out" with no
+ * diagnosis, forever, on every retry.
+ *
+ * The height comes from the wallet's last observed sync, which is the same
+ * response the coins came from. If no sync has ever run, `height` is 0 and
+ * only coins with `unlock_block == 0` survive — the conservative reading, and
+ * the correct one: with no view of the chain we cannot claim any lock has
+ * expired.
+ *
+ * @return the number of spendable coins left at the front of `utxos`.
+ */
+static int filter_spendable(dnac_utxo_t *utxos, int count, uint64_t height) {
+    int kept = 0;
+    for (int i = 0; i < count; i++) {
+        if (utxos[i].unlock_block > height) continue;   /* still locked */
+        if (kept != i) utxos[kept] = utxos[i];
+        kept++;
+    }
+    return kept;
+}
+
+/** Best-effort read of the last synced chain height; 0 when unknown. */
+static uint64_t observed_height(dnac_context_t *ctx) {
+    sqlite3 *db = dnac_get_db(ctx);
+    if (!db) return 0;
+    uint64_t h = 0;
+    if (dnac_db_get_observed_height(db, &h) != DNAC_SUCCESS) return 0;
+    return h;
 }
 
 /**
@@ -67,6 +111,14 @@ int dnac_wallet_select_utxos(dnac_context_t *ctx,
     }
 
     if (count == 0) {
+        return DNAC_ERROR_INSUFFICIENT_FUNDS;
+    }
+
+    /* O15B §7 — drop coins consensus would refuse BEFORE any arithmetic, so
+     * neither the availability total nor the selection can see them. */
+    count = filter_spendable(utxos, count, observed_height(ctx));
+    if (count == 0) {
+        free(utxos);
         return DNAC_ERROR_INSUFFICIENT_FUNDS;
     }
 
@@ -155,6 +207,15 @@ int dnac_wallet_select_utxos_token(dnac_context_t *ctx,
     }
 
     if (count == 0) {
+        return DNAC_ERROR_INSUFFICIENT_FUNDS;
+    }
+
+    /* O15B §7 — locked coins are unspendable regardless of which token they
+     * carry, so the cooldown filter runs FIRST and the token filter narrows
+     * what survives it. */
+    count = filter_spendable(utxos, count, observed_height(ctx));
+    if (count == 0) {
+        free(utxos);
         return DNAC_ERROR_INSUFFICIENT_FUNDS;
     }
 

@@ -95,7 +95,7 @@ static void make_hash(uint8_t out[64], uint8_t seed) {
 static void test_found(void) {
     T_START("lookup after insert returns coords");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { T_FAIL("setup"); return; }
 
     uint8_t h[64];
@@ -122,7 +122,7 @@ static void test_found(void) {
 static void test_not_found(void) {
     T_START("lookup of missing tx_hash returns -1");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { T_FAIL("setup"); return; }
 
     uint8_t h[64];
@@ -140,7 +140,7 @@ static void test_not_found(void) {
 static void test_multiple_rows(void) {
     T_START("lookup picks the right row out of many");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { T_FAIL("setup"); return; }
 
     uint8_t h1[64], h2[64], h3[64];
@@ -171,7 +171,7 @@ static void test_multiple_rows(void) {
 static void test_null_args(void) {
     T_START("NULL args return -1");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { T_FAIL("setup"); return; }
 
     uint64_t bh = 0;

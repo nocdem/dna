@@ -116,7 +116,9 @@ int messenger_store_pubkey(
         NULL,  // wallet_address not available here
         NULL,  // eth_address not available here
         NULL,  // sol_address not available here
-        NULL   // trx_address not available here
+        NULL,  // trx_address not available here
+        NULL   // mlkem_pubkey: this restore-from-.pub-bundle path predates KEM Faz 1;
+               // no local ML-KEM key available here (KEM Faz 1, R5)
     );
 
     qgp_key_free(key);
@@ -214,7 +216,12 @@ int messenger_load_pubkey(
     size_t kyber_len = DHT_KEYSERVER_KYBER_PUBKEY_SIZE;
 
     // Store in cache for future lookups (using fingerprint as key)
-    keyserver_cache_put(dht_identity->fingerprint, dil_decoded, dil_len, kyber_decoded, kyber_len, 0);
+    // KEM Faz 1 (R6): also cache mlkem_pubkey when the DHT record has one
+    // (cache symmetry — absent record -> NULL, same as a field-level miss).
+    keyserver_cache_put(dht_identity->fingerprint, dil_decoded, dil_len, kyber_decoded, kyber_len,
+                         dht_identity->has_mlkem_pubkey ? dht_identity->mlkem_pubkey : NULL,
+                         dht_identity->has_mlkem_pubkey ? sizeof(dht_identity->mlkem_pubkey) : 0,
+                         0);
 
     // Return fingerprint if requested
     if (fingerprint_out) {

@@ -36,6 +36,7 @@ typedef struct {
     void *user_data;
     qgp_key_t *kyber_key;
     qgp_key_t *dilithium_key;
+    qgp_key_t *mlkem_key;   /* D12 (M1 delta 1b-2): NULL if identity has not migrated */
 } backup_thread_ctx_t;
 
 /* Context for async restore thread */
@@ -46,6 +47,7 @@ typedef struct {
     void *user_data;
     qgp_key_t *kyber_key;
     qgp_key_t *dilithium_key;
+    qgp_key_t *mlkem_key;   /* D12 (M1 delta 1b-2): NULL if identity has not migrated */
 } restore_thread_ctx_t;
 
 /* Background thread for message backup (never blocks UI) */
@@ -63,6 +65,7 @@ static void *backup_thread_func(void *arg) {
         }
         qgp_key_free(ctx->kyber_key);
         qgp_key_free(ctx->dilithium_key);
+        if (ctx->mlkem_key) qgp_key_free(ctx->mlkem_key);
         /* HIGH-8: Mark thread as done */
         /* SEC-05: atomic_store pairs with atomic_load in dna_engine_destroy */
         if (engine) atomic_store(&engine->backup_thread_running, false);
@@ -79,11 +82,17 @@ static void *backup_thread_func(void *arg) {
         }
         qgp_key_free(ctx->kyber_key);
         qgp_key_free(ctx->dilithium_key);
+        if (ctx->mlkem_key) qgp_key_free(ctx->mlkem_key);
         free(ctx);
         return NULL;
     }
 
-    /* Perform backup (slow DHT operation) */
+    /* Perform backup (slow DHT operation).
+     * D12 (M1 delta 1b-2): mlkem_key was loaded on the main thread via
+     * dna_load_mlkem_key(engine) (session-password-aware, NULL if the
+     * identity has not migrated) — pass its pubkey through so self-backup
+     * uses alg 3 when available, instead of dht_message_backup_publish
+     * doing its own by-path load with no session password. */
     int message_count = 0;
     int result = dht_message_backup_publish(
         msg_ctx,
@@ -92,12 +101,14 @@ static void *backup_thread_func(void *arg) {
         ctx->kyber_key->private_key,
         ctx->dilithium_key->public_key,
         ctx->dilithium_key->private_key,
-        &message_count
+        &message_count,
+        ctx->mlkem_key ? ctx->mlkem_key->public_key : NULL
     );
 
     /* Cleanup keys */
     qgp_key_free(ctx->kyber_key);
     qgp_key_free(ctx->dilithium_key);
+    if (ctx->mlkem_key) qgp_key_free(ctx->mlkem_key);
 
     /* Invoke callback with results */
     if (result == 0) {
@@ -134,6 +145,7 @@ static void *restore_thread_func(void *arg) {
         }
         qgp_key_free(ctx->kyber_key);
         qgp_key_free(ctx->dilithium_key);
+        if (ctx->mlkem_key) qgp_key_free(ctx->mlkem_key);
         /* HIGH-8: Mark thread as done */
         /* SEC-05: atomic_store pairs with atomic_load in dna_engine_destroy */
         if (engine) atomic_store(&engine->restore_thread_running, false);
@@ -150,13 +162,17 @@ static void *restore_thread_func(void *arg) {
         }
         qgp_key_free(ctx->kyber_key);
         qgp_key_free(ctx->dilithium_key);
+        if (ctx->mlkem_key) qgp_key_free(ctx->mlkem_key);
         /* SEC-05: atomic_store pairs with atomic_load in dna_engine_destroy */
         atomic_store(&engine->restore_thread_running, false);
         free(ctx);
         return NULL;
     }
 
-    /* Perform restore (slow DHT operation) */
+    /* Perform restore (slow DHT operation).
+     * D12 (M1 delta 1b-2): mlkem_key (session-loaded, NULL if unmigrated)
+     * lets a backup blob self-encrypted with alg 3 be decrypted, instead
+     * of dht_message_backup_restore doing its own by-path load. */
     int restored_count = 0;
     int skipped_count = 0;
     int result = dht_message_backup_restore(
@@ -165,12 +181,14 @@ static void *restore_thread_func(void *arg) {
         ctx->kyber_key->private_key,
         ctx->dilithium_key->public_key,
         &restored_count,
-        &skipped_count
+        &skipped_count,
+        ctx->mlkem_key ? ctx->mlkem_key->private_key : NULL
     );
 
     /* Cleanup keys */
     qgp_key_free(ctx->kyber_key);
     qgp_key_free(ctx->dilithium_key);
+    if (ctx->mlkem_key) qgp_key_free(ctx->mlkem_key);
 
     /* Invoke callback with results */
     if (result == 0) {
@@ -264,12 +282,18 @@ dna_request_id_t dna_engine_backup_messages(
         }
     }
 
+    /* D12 (M1 delta 1b-2): session-loaded ML-KEM key, NULL when this
+     * identity has not migrated (non-fatal — absent is fine, backup falls
+     * back to alg 2, same as before D12). */
+    qgp_key_t *mlkem_key = dna_load_mlkem_key(engine);
+
     /* Allocate thread context - keys ownership transferred to thread */
     backup_thread_ctx_t *ctx = (backup_thread_ctx_t *)malloc(sizeof(backup_thread_ctx_t));
     if (!ctx) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to allocate backup thread context");
         qgp_key_free(kyber_key);
         qgp_key_free(dilithium_key);
+        if (mlkem_key) qgp_key_free(mlkem_key);
         callback(request_id, -1, 0, 0, user_data);
         return request_id;
     }
@@ -280,6 +304,7 @@ dna_request_id_t dna_engine_backup_messages(
     ctx->user_data = user_data;
     ctx->kyber_key = kyber_key;
     ctx->dilithium_key = dilithium_key;
+    ctx->mlkem_key = mlkem_key;
 
     /* HIGH-8: Join any previous backup thread before spawning new one */
     /* SEC-05: atomic_load/atomic_store pair with writes in backup_thread_func */
@@ -293,6 +318,7 @@ dna_request_id_t dna_engine_backup_messages(
         QGP_LOG_ERROR(LOG_TAG, "Failed to spawn backup thread");
         qgp_key_free(kyber_key);
         qgp_key_free(dilithium_key);
+        if (mlkem_key) qgp_key_free(mlkem_key);
         free(ctx);
         callback(request_id, -1, 0, 0, user_data);
         return request_id;
@@ -370,12 +396,17 @@ dna_request_id_t dna_engine_restore_messages(
         }
     }
 
+    /* D12 (M1 delta 1b-2): session-loaded ML-KEM key, NULL when this
+     * identity has not migrated (non-fatal). */
+    qgp_key_t *mlkem_key = dna_load_mlkem_key(engine);
+
     /* Allocate thread context - keys ownership transferred to thread */
     restore_thread_ctx_t *ctx = (restore_thread_ctx_t *)malloc(sizeof(restore_thread_ctx_t));
     if (!ctx) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to allocate restore thread context");
         qgp_key_free(kyber_key);
         qgp_key_free(dilithium_key);
+        if (mlkem_key) qgp_key_free(mlkem_key);
         callback(request_id, -1, 0, 0, user_data);
         return request_id;
     }
@@ -386,6 +417,7 @@ dna_request_id_t dna_engine_restore_messages(
     ctx->user_data = user_data;
     ctx->kyber_key = kyber_key;
     ctx->dilithium_key = dilithium_key;
+    ctx->mlkem_key = mlkem_key;
 
     /* HIGH-8: Join any previous restore thread before spawning new one */
     /* SEC-05: atomic_load/atomic_store pair with writes in restore_thread_func */
@@ -399,6 +431,7 @@ dna_request_id_t dna_engine_restore_messages(
         QGP_LOG_ERROR(LOG_TAG, "Failed to spawn restore thread");
         qgp_key_free(kyber_key);
         qgp_key_free(dilithium_key);
+        if (mlkem_key) qgp_key_free(mlkem_key);
         free(ctx);
         callback(request_id, -1, 0, 0, user_data);
         return request_id;

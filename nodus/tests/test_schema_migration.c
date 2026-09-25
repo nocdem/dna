@@ -107,7 +107,7 @@ static void test_migration_adds_tx_index_and_composite_index(void) {
     sqlite3 *db = NULL;
     if (setup_pre_v12(&db) != 0) { FAIL("setup"); return; }
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
     w.db = db;
 
@@ -142,7 +142,7 @@ static void test_migration_idempotent(void) {
     sqlite3 *db = NULL;
     if (setup_pre_v12(&db) != 0) { FAIL("setup"); return; }
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
     w.db = db;
 

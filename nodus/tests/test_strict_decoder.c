@@ -25,19 +25,23 @@ static nodus_identity_t test_id;
 static void test_canonical_envelope_decodes(void) {
     TEST("canonical 6-key envelope decodes");
 
-    /* Build a minimal valid w_sync_req via the encoder so we know
-     * the layout matches production. */
+    /* Build a minimal valid w_rost_q via the encoder so we know
+     * the layout matches production. R3 W4 retired the sync/legacy verbs
+     * this fixture used to build (NODUS_T3_SYNC_REQ / w_sync_req); w_rost_q
+     * (verb 9, the peer-mesh roster query) is the live verb with the
+     * simplest payload, and this test only needs SOME canonical envelope
+     * that round-trips through the real encoder/decoder. */
     nodus_identity_generate(&test_id);
     nodus_t3_msg_t in;
     memset(&in, 0, sizeof(in));
-    in.type = NODUS_T3_SYNC_REQ;
+    in.type = NODUS_T3_ROST_Q;
     in.txn_id = 1;
     in.header.version = NODUS_T3_BFT_PROTOCOL_VER;
     memcpy(in.header.sender_id, test_id.node_id.bytes, NODUS_T3_WITNESS_ID_LEN);
     in.header.timestamp = 1700000000;
     in.header.nonce = 1;
     memset(in.header.chain_id, 0xC0, 32);
-    in.sync_req.height = 5;
+    in.rost_q.version = 5;
 
     uint8_t buf[8192];
     size_t len = 0;
@@ -64,11 +68,11 @@ static void test_extra_top_level_key_rejected(void) {
     cbor_encode_map(&enc, 7);
     cbor_encode_cstr(&enc, "t");    cbor_encode_uint(&enc, 1);
     cbor_encode_cstr(&enc, "y");    cbor_encode_cstr(&enc, "q");
-    cbor_encode_cstr(&enc, "q");    cbor_encode_cstr(&enc, "w_sync_req");
+    cbor_encode_cstr(&enc, "q");    cbor_encode_cstr(&enc, "w_rost_q");
     /* fake wh map with empty content */
     cbor_encode_cstr(&enc, "wh");   cbor_encode_map(&enc, 0);
     cbor_encode_cstr(&enc, "a");    cbor_encode_map(&enc, 1);
-    cbor_encode_cstr(&enc, "h");    cbor_encode_uint(&enc, 1);
+    cbor_encode_cstr(&enc, "v");    cbor_encode_uint(&enc, 1);
     cbor_encode_cstr(&enc, "wsig"); cbor_encode_bstr(&enc, (uint8_t[NODUS_SIG_BYTES]){0}, NODUS_SIG_BYTES);
     /* SHADOW: bogus key */
     cbor_encode_cstr(&enc, "XXX");  cbor_encode_uint(&enc, 0xDEADBEEF);
@@ -93,7 +97,7 @@ static void test_unknown_key_in_first_position_rejected(void) {
     cbor_encode_cstr(&enc, "Z");    cbor_encode_uint(&enc, 0);
     cbor_encode_cstr(&enc, "t");    cbor_encode_uint(&enc, 1);
     cbor_encode_cstr(&enc, "y");    cbor_encode_cstr(&enc, "q");
-    cbor_encode_cstr(&enc, "q");    cbor_encode_cstr(&enc, "w_sync_req");
+    cbor_encode_cstr(&enc, "q");    cbor_encode_cstr(&enc, "w_rost_q");
     cbor_encode_cstr(&enc, "wh");   cbor_encode_map(&enc, 0);
     cbor_encode_cstr(&enc, "a");    cbor_encode_map(&enc, 0);
 

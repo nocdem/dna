@@ -1,7 +1,8 @@
 /**
  * @file test_conf_action_agg_verify.c
  * @brief Dual-mode S4b.3 — C fold-layer vs the REAL Plonky3 verifier on the
- *        AGGREGATE Action AIR (width 1936, is_zk=1, num_qc=8), 82cfad73.
+ *        AGGREGATE Action AIR (width CONF_AGGZK_WIDTH = 2378 at the LEDGER-V2
+ *        S8 Gate 2 depth D=24, is_zk=1, num_qc=8), 82cfad73.
  *
  * Consumes tools/vectors/conf_action_agg_air_zk.json (a REAL p3_uni_stark
  * is_zk=1 proof of ConfActionAggAir). The gate proves the C fp2 fold
@@ -10,11 +11,13 @@
  * for C1 reuse + C3 membership + C4 nullifier + nf-public routing.
  *
  * Gates:
- *   T1  shape: num_qc==8, log_num_qc==2, publics==21.
+ *   T1  shape: num_qc==8, log_num_qc==2, publics==CONF_AGGZK_NUM_PUBLICS (45
+ *       since S8 Gate 2: fee ‖ boundary_in ‖ boundary_out ‖ tx_binding[4]).
  *   T6  folded * inv_vanishing == quotient(zeta): the combined air_eval fold,
  *       driven by the REAL opened values, verifies OK.
  *   T7  negatives: tampered C1/membership/nullifier/counter cell + tampered
- *       anchor public -> OOD; wrong publics count / missing trace_next -> SHAPE.
+ *       anchor / boundary_in / boundary_out public -> OOD; wrong publics count
+ *       / missing trace_next -> SHAPE.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -76,10 +79,12 @@ static size_t parse_fp2_decimal_array(js_t *s,gold_fp2_t *out,size_t cap){
 }
 
 /* ===== fixture (CV_W covers CONF_AGGZK_WIDTH + 4 random merged — macro-derived
- * so F3-class width changes can't silently overflow; CV_PUB covers 43) ===== */
+ * so F3/S8-class width changes can't silently overflow; CV_PUB covers the 45
+ * S8 publics and is pinned to the macro so a public-count bump cannot silently
+ * truncate the parse) ===== */
 #define CV_W (CONF_AGGZK_WIDTH + 4)
 #define CV_QC 8
-#define CV_PUB 48
+#define CV_PUB (CONF_AGGZK_NUM_PUBLICS + 3)
 
 typedef struct {
     size_t degree_bits, num_quotient_chunks;
@@ -153,7 +158,8 @@ int main(int argc,char **argv){
               && fx->num_quotient_chunks==((size_t)1<<(fx->log_num_qc+is_zk))
               && fx->num_quot_chunks_parsed==fx->num_quotient_chunks
               && fx->num_public_values==CONF_AGGZK_NUM_PUBLICS;
-        printf("  T1 shape: num_qc=8, log_num_qc=2, publics=43           %s\n", ok?"PASS":"FAIL");
+        printf("  T1 shape: num_qc=8, log_num_qc=2, publics=%d           %s\n",
+               (int)CONF_AGGZK_NUM_PUBLICS, ok?"PASS":"FAIL");
         if(!ok){ printf("     (num_qc=%zu log_num_qc=%zu publics=%zu)\n",fx->num_quotient_chunks,fx->log_num_qc,fx->num_public_values); fails++; }
     }
 
@@ -166,7 +172,8 @@ int main(int argc,char **argv){
 
     /* T6 — the fold gate: folded * inv_vanishing == quotient(zeta). The trace
      * vectors are the merged (base ++ 4 random) opened values; the constraint
-     * layer consumes the UNMERGED first 1936 (hiding_pcs split = len - 4). */
+     * layer consumes the UNMERGED first CONF_AGGZK_WIDTH (hiding_pcs split =
+     * len - 4). */
     {
         int ok = fx->trace_local_len==W+4 && fx->trace_next_len==W+4;
         dnac_stark_verify_status_t st = dnac_stark_verify_constraints_nchunk(
@@ -205,7 +212,19 @@ int main(int argc,char **argv){
         fx->public_values[CONF_AGGZK_PUB_ANCHOR]=gold_fp_add(fx->public_values[CONF_AGGZK_PUB_ANCHOR],gold_fp_one());
         if(RUN_NCHUNK()!=DNAC_STARK_VERIFY_ERR_OOD_MISMATCH)neg=0;
         fx->public_values[CONF_AGGZK_PUB_ANCHOR]=gold_fp_sub(fx->public_values[CONF_AGGZK_PUB_ANCHOR],gold_fp_one());
-        /* (f) wrong publics count (20 != 21) -> SHAPE */
+        /* (e2) S8 Gate 2 — the TWO TRANSPARENT LEGS are constraint-bearing
+         * publics: the last-row terminal is BAL == PUB[BOUT] − PUB[BIN]
+         * (conf_action_fold.h:31-34), so moving either one alone breaks the
+         * identity at zeta. Without this the turnstile publics could be free. */
+        #define TAMPER_PUB_OOD(IDX) do { \
+            fx->public_values[(IDX)]=gold_fp_add(fx->public_values[(IDX)],gold_fp_one()); \
+            if(RUN_NCHUNK()!=DNAC_STARK_VERIFY_ERR_OOD_MISMATCH)neg=0; \
+            fx->public_values[(IDX)]=gold_fp_sub(fx->public_values[(IDX)],gold_fp_one()); \
+        } while(0)
+        TAMPER_PUB_OOD(CONF_AGGZK_PUB_BIN);
+        TAMPER_PUB_OOD(CONF_AGGZK_PUB_BOUT);
+        #undef TAMPER_PUB_OOD
+        /* (f) wrong publics count (NUM_PUBLICS-1 != NUM_PUBLICS) -> SHAPE */
         if(dnac_stark_verify_constraints_nchunk(&DNAC_CONF_ACTION_AGG_FOLD_AIR,
             fx->trace_local,W,fx->trace_next,W,fx->public_values,CONF_AGGZK_NUM_PUBLICS-1,
             fx->zeta,fx->degree_bits,fx->log_num_qc,is_zk,fx->alpha,flat,CV_QC,stride)
@@ -216,7 +235,8 @@ int main(int argc,char **argv){
             fx->zeta,fx->degree_bits,fx->log_num_qc,is_zk,fx->alpha,flat,CV_QC,stride)
             !=DNAC_STARK_VERIFY_ERR_SHAPE)neg=0;
         #undef RUN_NCHUNK
-        printf("  T7 negatives: 4x OOD (phi/CUR/NF/N_input) + 1x pub OOD + 2x SHAPE  %s\n", neg?"PASS":"FAIL");
+        printf("  T7 negatives: 4x OOD (phi/CUR/NF/N_input) + 3x pub OOD"
+               " (anchor/b_in/b_out) + 2x SHAPE  %s\n", neg?"PASS":"FAIL");
         if(!neg)fails++;
     }
 

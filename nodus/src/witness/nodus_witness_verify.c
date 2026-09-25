@@ -22,14 +22,14 @@
  *   signatures, nullifier state, fee, ownership) — no field is trusted
  *   from the leader's PROPOSE message without independent recompute.
  *
- *   Post-commit state_root binding is enforced separately in
- *   nodus_witness_bft.c::nodus_witness_bft_handle_commit, where each
- *   follower independently computes state_root via
- *   nodus_witness_merkle_compute_state_root() and compares the result
- *   against the leader's COMMIT-message state_root. A compromised
- *   leader therefore cannot force followers to adopt an invalid
- *   post-block state. See tests/test_prevote_state_root_mutation.c for
- *   the regression guard.
+ *   R3 W4 — the post-commit state_root binding this paragraph used to
+ *   describe (nodus_witness_bft_handle_commit's independent
+ *   nodus_witness_merkle_compute_state_root recompute against the
+ *   leader's COMMIT-message state_root) is DELETED with the closed
+ *   consensus lane: nodus_witness_bft.c, and the legacy COMMIT message
+ *   it verified, are both gone. A version-3 chain's post-block state
+ *   binding is the cometbft application layer's own concern, outside
+ *   this file.
  *
  * @file nodus_witness_verify.c
  */
@@ -41,12 +41,25 @@
 #include "dnac/dnac.h"            /* DNAC_PROTOCOL_VERSION, DNAC_MIN_FEE_RAW */
 #include "dnac/transaction.h"     /* DNAC_TX_HEADER_SIZE, dnac_tx_read_committed_fee */
 #include "dnac/safe_math.h"       /* safe_add_u64 (SEC-01 consistency check) */
+#include "dnac/tx_wire.h"         /* S1: shared legacy tx-hash (dnac_txw_legacy_tx_hash) */
+/* O15D — successor admission lane */
+#include "dnac/env_wire.h"                    /* family marker, decode   */
+#include "dnac/env_preflight.h"               /* dna_env_preflight_t     */
+#include "dnac/manifest_wire.h"               /* claim codec (class 201) */
+#include "witness/nodus_witness_v2_env.h"     /* the engine's seam       */
+#include "witness/nodus_witness_v2_gate.h"    /* armed probe             */
+#include "witness/nodus_witness_v2_claims.h"  /* claim admit (class 201) */
+#include "witness/nodus_witness_v2_produce.h" /* class + nullifier helper*/
+#include "witness/nodus_witness_domreg.h"     /* committed ruleset ctx   */
+#include <sqlite3.h>                          /* v2_intent_index lookup  */
 
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+#include "crypto/utils/qgp_log.h"           /* TV3-P0 item 2: QGP_LOG_ERROR on a
+                                              * claim-admission node fault      */
 
 #define LOG_TAG "WITNESS-VERIFY"
 
@@ -82,6 +95,26 @@
 #define NODUS_T3_MAX_TX_SIGNERS 4
 #define SIGNER_SIZE (NODUS_PK_BYTES + NODUS_SIG_BYTES)
 
+/* S1 drift guards — the shared tx_wire codec's mirrored constants must
+ * equal the nodus-side authoritative values (chain_config_wire.h pattern;
+ * drift between the trees is a compile error, never a silent break). */
+_Static_assert(DNAC_TXW_PK_LEN == NODUS_PK_BYTES, "tx_wire pubkey size drift");
+_Static_assert(DNAC_TXW_SIG_LEN == NODUS_SIG_BYTES, "tx_wire signature size drift");
+_Static_assert(DNAC_TXW_MAX_SIGNERS == NODUS_T3_MAX_TX_SIGNERS, "tx_wire signer cap drift");
+_Static_assert(DNAC_TXW_MAX_INPUTS == NODUS_T3_MAX_TX_INPUTS, "tx_wire input cap drift");
+_Static_assert(DNAC_TXW_MAX_OUTPUTS == NODUS_T3_MAX_TX_OUTPUTS, "tx_wire output cap drift");
+_Static_assert(DNAC_TXW_CC_VOTE_BOUND == NODUS_T3_MAX_WITNESSES, "tx_wire cc vote bound drift");
+/* S3: the release's active-validator ceiling and the T3 wire provisioning
+ * must be ONE number — if either moves without the other, client and
+ * witness would disagree on how many chain-config votes a preimage may
+ * carry (ledger_ids.h names NODUS_T3_MAX_WITNESSES as its anchor). */
+_Static_assert(DNA_MAX_ACTIVE_VALIDATORS == NODUS_T3_MAX_WITNESSES,
+               "active-validator ceiling drift vs T3 wire provisioning");
+_Static_assert(DNAC_TXW_LEGACY_HEADER == DNAC_TX_HEADER_SIZE, "tx_wire header size drift");
+_Static_assert(DNAC_TXW_TYPE_SHIELDED == NODUS_W_TX_SHIELDED, "tx_wire shielded type drift");
+_Static_assert(DNAC_TXW_SHIELDED_FIXED == DNAC_TX_SHIELDED_FIXED_SIZE, "tx_wire shielded size drift");
+_Static_assert(DNAC_TXW3_MAX_TX_SIZE == NODUS_T3_MAX_TX_SIZE, "tx_wire v3 tx-size cap drift");
+
 /* ════════════════════════════════════════════════════════════════════
  * Recompute TX hash from serialized data
  * ════════════════════════════════════════════════════════════════════ */
@@ -110,300 +143,23 @@
 /* Chain ID length (matches DNAC chain_id[32]). */
 #define TX_CHAIN_ID_LEN              32
 
-/* Big-endian u64 writer for preimage encoding. Matches
- * dnac/src/transaction/transaction.c::tx_be64_into. */
-static void be64_into(uint64_t v, uint8_t out[8]) {
-    for (int i = 7; i >= 0; i--) {
-        out[i] = (uint8_t)(v & 0xff);
-        v >>= 8;
-    }
-}
-
-/* LE u64 reader for parsing wire-format timestamp and amounts. The wire
- * format uses native (LE on x86) via memcpy — see
- * dnac/src/transaction/serialize.c WRITE_U64/READ_U64. */
-static uint64_t le64_read(const uint8_t *p) {
-    uint64_t v;
-    memcpy(&v, p, 8);
-    return v;
-}
-
 int nodus_witness_recompute_tx_hash(const uint8_t *chain_id,
                                      const uint8_t *tx_data, uint32_t tx_len,
                                      const uint8_t *signer_pubkeys,
                                      uint8_t signer_count,
                                      uint8_t *hash_out) {
-    if (!chain_id || !tx_data || !hash_out || tx_len < TX_HEADER_SIZE + 1)
-        return -1;
-    if (!signer_pubkeys && signer_count > 0)
-        return -1;
-    if (signer_count > NODUS_T3_MAX_TX_SIGNERS)
-        return -1;
-
-    /* Assemble the canonical preimage in a single growable buffer, then
-     * SHA3-512 it. Upper bound: tx_len (all wire bytes we may echo) +
-     * chain_id(32) + 1 + signer_count * NODUS_PK_BYTES + tx_len (type-spec). */
-    size_t upper = (size_t)tx_len + TX_CHAIN_ID_LEN + 1
-                 + (size_t)NODUS_T3_MAX_TX_SIGNERS * NODUS_PK_BYTES
-                 + (size_t)tx_len;
-    uint8_t *buf = malloc(upper);
-    if (!buf) return -1;
-
-    size_t buf_pos = 0;
-    const uint8_t *p = tx_data;
-    size_t remaining = tx_len;
-
-    /* ── Domain separator (SEC-06, 11 bytes each). A shielded (type-11) TX
-     * hashes under its OWN tag "DNAC_TX_V4\0" so a shielded preimage can
-     * never collide with a V2 preimage — byte-match of libdna
-     * dnac_tx_compute_hash (transaction.c:212-220, re-audit Finding 5).
-     * The type byte is peeked from the wire (entry check guarantees
-     * tx_len >= TX_HEADER_SIZE + 1 > 2). ────────────────────────────── */
-    if (tx_data[1] == TX_TYPE_SHIELDED) {
-        memcpy(buf + buf_pos, DNAC_TX_PREIMAGE_DOMAIN_V4,
-               DNAC_TX_PREIMAGE_DOMAIN_V4_LEN);
-        buf_pos += DNAC_TX_PREIMAGE_DOMAIN_V4_LEN;
-    } else {
-        memcpy(buf + buf_pos, DNAC_TX_PREIMAGE_DOMAIN_V2,
-               DNAC_TX_PREIMAGE_DOMAIN_V2_LEN);
-        buf_pos += DNAC_TX_PREIMAGE_DOMAIN_V2_LEN;
-    }
-
-    /* ── Header: version(u8) || type(u8) || timestamp(u64 BE) || chain_id[32] ── */
-    if (remaining < 10) goto fail;
-    uint8_t version_byte = p[0];
-    uint8_t type_byte    = p[1];
-    uint64_t timestamp   = le64_read(p + 2);
-    p += 10;
-    remaining -= 10;
-
-    buf[buf_pos++] = version_byte;
-    buf[buf_pos++] = type_byte;
-    be64_into(timestamp, buf + buf_pos);
-    buf_pos += 8;
-    memcpy(buf + buf_pos, chain_id, TX_CHAIN_ID_LEN);
-    buf_pos += TX_CHAIN_ID_LEN;
-
-    /* Skip embedded tx_hash (64 bytes) */
-    if (remaining < 64) goto fail;
-    p += 64;
-    remaining -= 64;
-
-    /* ── committed_fee (u64 BE, v0.17.1+) — read from wire, add to preimage ── */
-    if (remaining < 8) goto fail;
-    uint64_t committed_fee = 0;
-    for (int i = 0; i < 8; i++)
-        committed_fee = (committed_fee << 8) | (uint64_t)p[i];
-    be64_into(committed_fee, buf + buf_pos);
-    buf_pos += 8;
-    p += 8;
-    remaining -= 8;
-
-    /* ── Inputs: nullifier(64) || amount(u64 BE) || token_id(64) ── */
-    if (remaining < 1) goto fail;
-    uint8_t input_count = *p++;
-    remaining--;
-    if (input_count > NODUS_T3_MAX_TX_INPUTS) goto fail;
-
-    for (int i = 0; i < input_count; i++) {
-        if (remaining < INPUT_SIZE) goto fail;
-        /* nullifier */
-        memcpy(buf + buf_pos, p, INPUT_NULLIFIER_LEN);
-        buf_pos += INPUT_NULLIFIER_LEN;
-        /* amount: read LE from wire, encode BE into preimage */
-        uint64_t amt = le64_read(p + INPUT_NULLIFIER_LEN);
-        be64_into(amt, buf + buf_pos);
-        buf_pos += 8;
-        /* token_id */
-        memcpy(buf + buf_pos, p + INPUT_NULLIFIER_LEN + 8, INPUT_TOKEN_ID_LEN);
-        buf_pos += INPUT_TOKEN_ID_LEN;
-
-        p += INPUT_SIZE;
-        remaining -= INPUT_SIZE;
-    }
-
-    /* ── Outputs: version(u8) || fp(129) || amount(u64 BE) || token_id(64) ||
-     *           seed(32) || memo_len(u8) || memo(memo_len) ── */
-    if (remaining < 1) goto fail;
-    uint8_t output_count = *p++;
-    remaining--;
-    if (output_count > NODUS_T3_MAX_TX_OUTPUTS) goto fail;
-
-    for (int i = 0; i < output_count; i++) {
-        if (remaining < OUTPUT_FIXED_SIZE) goto fail;
-
-        uint8_t memo_len = p[OUTPUT_FIXED_SIZE - 1];
-        size_t output_total = OUTPUT_FIXED_SIZE + memo_len;
-        if (remaining < output_total) goto fail;
-
-        /* version */
-        buf[buf_pos++] = p[0];
-        /* fp(129) */
-        memcpy(buf + buf_pos, p + OUTPUT_VERSION_LEN, OUTPUT_FP_LEN);
-        buf_pos += OUTPUT_FP_LEN;
-        /* amount: LE on wire → BE in preimage */
-        uint64_t amt = le64_read(p + OUTPUT_VERSION_LEN + OUTPUT_FP_LEN);
-        be64_into(amt, buf + buf_pos);
-        buf_pos += 8;
-        /* token_id + seed */
-        memcpy(buf + buf_pos,
-               p + OUTPUT_VERSION_LEN + OUTPUT_FP_LEN + OUTPUT_AMOUNT_LEN,
-               OUTPUT_TOKEN_ID_LEN + OUTPUT_SEED_LEN);
-        buf_pos += OUTPUT_TOKEN_ID_LEN + OUTPUT_SEED_LEN;
-        /* memo_len */
-        buf[buf_pos++] = memo_len;
-        /* memo bytes */
-        if (memo_len > 0) {
-            memcpy(buf + buf_pos, p + OUTPUT_FIXED_SIZE, memo_len);
-            buf_pos += memo_len;
-        }
-
-        p += output_total;
-        remaining -= output_total;
-    }
-
-    /* ── Signers: signer_count(u8) || signer_pubkeys[0..signer_count] ──
-     * The caller supplies the pubkey concatenation (already extracted from
-     * tx_data). This matches the client-side preimage exactly: signatures
-     * are NOT hashed. */
-    buf[buf_pos++] = signer_count;
-    for (int i = 0; i < signer_count; i++) {
-        memcpy(buf + buf_pos,
-               signer_pubkeys + (size_t)i * NODUS_PK_BYTES,
-               NODUS_PK_BYTES);
-        buf_pos += NODUS_PK_BYTES;
-    }
-
-    /* ── Type-specific appended fields ──
-     * At this point the wire cursor `p` is already positioned after signers
-     * (we walked inputs/outputs above but NOT the wire signers/witnesses
-     * sections — the wire has witnesses then signers between outputs and
-     * the type-specific tail). Rather than re-walk, we jump the wire cursor
-     * past witnesses + signers to reach the appended section. */
-
-    /* Skip witnesses(count + count * (32+sig+8+pk)) on the wire */
-    if (remaining < 1) goto fail;
-    uint8_t witness_count = *p++;
-    remaining--;
-    {
-        size_t witness_size = 32 + NODUS_SIG_BYTES + 8 + NODUS_PK_BYTES;
-        size_t witnesses_total = (size_t)witness_count * witness_size;
-        if (remaining < witnesses_total) goto fail;
-        p += witnesses_total;
-        remaining -= witnesses_total;
-    }
-
-    /* Skip signers on the wire */
-    if (remaining < 1) goto fail;
-    uint8_t wire_signer_count = *p++;
-    remaining--;
-    if (wire_signer_count > NODUS_T3_MAX_TX_SIGNERS) goto fail;
-    {
-        size_t signers_total = (size_t)wire_signer_count * SIGNER_SIZE;
-        if (remaining < signers_total) goto fail;
-        p += signers_total;
-        remaining -= signers_total;
-    }
-
-    /* Per-type appended — wire already encodes u16/u64 BE here, so we can
-     * memcpy directly into the preimage. */
-    if (type_byte == TX_TYPE_STAKE) {
-        size_t need = 2 + TX_STAKE_UNSTAKE_DEST_FP_LEN + TX_STAKE_PURPOSE_TAG_LEN;
-        if (remaining < need) goto fail;
-        memcpy(buf + buf_pos, p, need);
-        buf_pos += need;
-        p += need;
-        remaining -= need;
-    } else if (type_byte == TX_TYPE_DELEGATE) {
-        /* v0.17.1+: DELEGATE appended = validator_pubkey(2592) + delegation_amount(u64 BE). */
-        size_t need = NODUS_PK_BYTES + 8;
-        if (remaining < need) goto fail;
-        memcpy(buf + buf_pos, p, need);
-        buf_pos += need;
-        p += need;
-        remaining -= need;
-    } else if (type_byte == TX_TYPE_UNDELEGATE) {
-        size_t need = NODUS_PK_BYTES + 8;
-        if (remaining < need) goto fail;
-        memcpy(buf + buf_pos, p, need);
-        buf_pos += need;
-        p += need;
-        remaining -= need;
-    } else if (type_byte == TX_TYPE_VALIDATOR_UPDATE) {
-        size_t need = 2 + 8;
-        if (remaining < need) goto fail;
-        memcpy(buf + buf_pos, p, need);
-        buf_pos += need;
-        p += need;
-        remaining -= need;
-    } else if (type_byte == TX_TYPE_CHAIN_CONFIG) {
-        /* Hard-Fork v1 CHAIN_CONFIG variable-length appended:
-         *   param_id(1) + new_value(8) + effective_block(8) +
-         *   proposal_nonce(8) + signed_at_block(8) + valid_before_block(8) +
-         *   committee_sig_count(1) + votes[n] each: witness_id(32) +
-         *   signature(DNAC_SIGNATURE_SIZE = NODUS_SIG_BYTES).
-         * All BE integers on both wire and preimage so we can memcpy. */
-        size_t fixed = 1 + 8 + 8 + 8 + 8 + 8 + 1;
-        if (remaining < fixed) goto fail;
-        memcpy(buf + buf_pos, p, fixed);
-        buf_pos += fixed;
-        uint8_t cc_sig_count = p[fixed - 1];
-        p += fixed;
-        remaining -= fixed;
-        /* Bound check: <= compile-time committee cap, matches client. */
-        if (cc_sig_count > NODUS_T3_MAX_WITNESSES) goto fail;
-        size_t per_vote = 32 + NODUS_SIG_BYTES;
-        size_t votes_total = (size_t)cc_sig_count * per_vote;
-        if (remaining < votes_total) goto fail;
-        if (votes_total > 0) {
-            memcpy(buf + buf_pos, p, votes_total);
-            buf_pos += votes_total;
-            p += votes_total;
-            remaining -= votes_total;
-        }
-    } else if (type_byte == TX_TYPE_SHIELDED) {
-        /* Phase-C C2.2 — V4 shielded statement. The wire section's statement
-         * fields (anchor[4] ‖ num_input ‖ nf_set[4][4] ‖ num_output ‖
-         * output_commit[4][4] ‖ fee ‖ tx_binding[4] — 330 B, all BE, SAME
-         * field order as the preimage) are hashed VERBATIM; fri_proof_len(4)
-         * + the proof blob are NOT hashed (a re-randomized proof of the same
-         * statement is the same TX). Byte-match of libdna
-         * dnac_tx_compute_hash's shielded arm (transaction.c:341-367) over
-         * the serialize.c wire layout (write_shielded_section:166-193). */
-        const size_t stmt_len = (size_t)DNAC_TX_SHIELDED_FIXED_SIZE - 4;
-        if (remaining < (size_t)DNAC_TX_SHIELDED_FIXED_SIZE) goto fail;
-        memcpy(buf + buf_pos, p, stmt_len);
-        buf_pos += stmt_len;
-        uint32_t fri_len = ((uint32_t)p[stmt_len] << 24)
-                         | ((uint32_t)p[stmt_len + 1] << 16)
-                         | ((uint32_t)p[stmt_len + 2] << 8)
-                         |  (uint32_t)p[stmt_len + 3];
-        p += DNAC_TX_SHIELDED_FIXED_SIZE;
-        remaining -= DNAC_TX_SHIELDED_FIXED_SIZE;
-        /* Blob bounds: a truncated shielded TX fails the recompute
-         * (fail-close) instead of silently hashing a malformed wire. */
-        if (remaining < fri_len) goto fail;
-        p += fri_len;
-        remaining -= fri_len;
-    }
-    /* UNSTAKE, GENESIS, SPEND, BURN, TOKEN_CREATE: no appended fields. */
-
-    /* Suppress unused-variable warnings for optimized paths. */
-    (void)version_byte;
-
-    /* Hash the assembled buffer with SHA3-512 */
-    nodus_key_t hash;
-    int rc = nodus_hash(buf, buf_pos, &hash);
-    free(buf);
-
-    if (rc != 0) return -1;
-
-    memcpy(hash_out, hash.bytes, NODUS_KEY_BYTES);
-    return 0;
-
-fail:
-    free(buf);
-    return -1;
+    /* S1 (Ledger V2): the hand-written preimage walk that lived here was
+     * RETIRED — libdna and libnodus now share the single canonical
+     * implementation in shared/dnac/tx_wire.c (dnac_txw_legacy_tx_hash),
+     * an exact port of this function's pre-S1 body. Byte identity is
+     * pinned by test_tx_hash_kat (fixed literals captured from the pre-S1
+     * algorithm before the port went live) and by
+     * test_witness_tx_hash_parity (an independent third implementation of
+     * the same preimage). Semantics are unchanged: the CALLER-SUPPLIED
+     * signer pubkeys are hashed; the wire's own signers section is
+     * length-walked but never hashed. */
+    return dnac_txw_legacy_tx_hash(chain_id, tx_data, (size_t)tx_len,
+                                   signer_pubkeys, signer_count, hash_out);
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -563,8 +319,11 @@ static uint64_t be64_read(const uint8_t *p) {
  * (D7.1), NO signers (spend authority IS the proof's ak/nk binding —
  * signer_count pinned 0), and its nullifiers live in the shielded section
  * only (G-SEC-8 — never routed through the transparent Check-4 walk).
- * Returning here also structurally guarantees the per-node mempool-dependent
- * Check 5 never runs for type-11 (G-DET-1 / MED-1).
+ * Returning here also structurally guarantees Check 5 never runs for
+ * type-11 (G-DET-1 / MED-1). R3 W4 — Check 5's own mempool-dependent
+ * surge is separately deleted with the closed consensus lane, so this
+ * guarantee is now belt-and-braces rather than the only reason type-11
+ * cannot see node-local state through Check 5.
  *
  * ⚠ ADMISSION IS UNCONDITIONALLY REJECT THROUGH ALL OF C2 (CRIT-2/G-SEC-7/
  * G-SEC-9): even a fully-VALID proof cannot be admitted pre-C3 — the apply
@@ -753,6 +512,300 @@ static int verify_shielded_tx(nodus_witness_t *w,
 }
 
 /* ════════════════════════════════════════════════════════════════════
+ * Ledger V2 successor CLAIM admission (O15F Task 3, transport class 201)
+ * ════════════════════════════════════════════════════════════════════
+ *
+ * Reached when a successor entry does NOT begin with the envelope wire-
+ * family marker (nodus_witness_v2_classify_entry). A claim is NOT a wire
+ * transaction and carries no client-transport signature; its authority is
+ * the codec + the ONE admission function. Fail-closed:
+ *   - strict dna_claim_decode (exact length, full structural validation);
+ *   - BYTE CANONICALITY: dna_claim_encode of the decoded claim must equal
+ *     the submitted bytes (one accepted encoding per claim);
+ *   - tx_hash == SHA3-512(claim bytes);
+ *   - nodus_witness_v2_claim_admit (chain binding, committed manifest,
+ *     height window, Merkle membership, converted amount, sig+dest, target
+ *     runtime, spent set incl. cross-block, remaining cover);
+ *   - SEMANTIC DEDUP: the spent set is covered by claim_admit alone.
+ *     R3 W4 — the ADMISSION-only pending-mempool nullifier scan that used
+ *     to run in addition (a local intake gate over w->mempool, now
+ *     deleted with the closed consensus lane) is removed; cross-block
+ *     dedup never depended on it.
+ */
+static int verify_v2_successor_claim(nodus_witness_t *w,
+                                     const uint8_t *tx_data, uint32_t tx_len,
+                                     const uint8_t *tx_hash, uint8_t tx_type,
+                                     nodus_witness_verify_mode_t mode,
+                                     char *reject_reason, size_t reason_size) {
+    if (tx_type != NODUS_W_TX_V2_CLAIM) {
+        snprintf(reject_reason, reason_size,
+                 "claim bytes must ride the V2 claim entry class");
+        return -1;
+    }
+
+    dna_claim_t *c = calloc(1, sizeof(*c));        /* large — heap */
+    uint8_t *reenc = malloc(DNA_CLAIM_MAX_WIRE);
+    int rc = -1;
+    do {
+        if (!c || !reenc) {
+            snprintf(reject_reason, reason_size, "allocation failed");
+            break;
+        }
+        if (dna_claim_decode(tx_data, (size_t)tx_len, c) != 0) {
+            snprintf(reject_reason, reason_size, "claim decode rejected");
+            break;
+        }
+        size_t wr = 0;
+        if (dna_claim_encode(c, reenc, DNA_CLAIM_MAX_WIRE, &wr) != 0) {
+            snprintf(reject_reason, reason_size, "claim re-encode failed");
+            break;
+        }
+        if (wr != (size_t)tx_len || memcmp(reenc, tx_data, tx_len) != 0) {
+            snprintf(reject_reason, reason_size,
+                     "claim bytes are not canonical");
+            break;
+        }
+        uint8_t h[64];
+        if (qgp_sha3_512(tx_data, tx_len, h) != 0) {
+            snprintf(reject_reason, reason_size, "claim hash failed");
+            break;
+        }
+        if (memcmp(tx_hash, h, NODUS_T3_TX_HASH_LEN) != 0) {
+            snprintf(reject_reason, reason_size,
+                     "submitted hash is not SHA3-512(claim bytes)");
+            break;
+        }
+        nodus_v2_claim_admit_t adm;
+        /* O15O Faz 1 — claim_admit checks the claim's HEIGHT WINDOW at
+         * this candidate. A fault answering 0 would judge every claim
+         * against height 1: the wrong window, and in VALIDATION mode a
+         * verdict a healthy peer would not reach. Take this function's
+         * own local-fault exit (reject_reason + break, rc stays -1),
+         * identical to the "allocation failed" branch at the top. */
+        uint64_t claim_tip = 0;
+        if (nodus_witness_block_height_checked(w, &claim_tip) != 0) {
+            snprintf(reject_reason, reason_size,
+                     "chain-height read faulted — cannot judge the claim "
+                     "height window");
+            break;
+        }
+        uint64_t candidate = claim_tip + 1;
+        /* TV3-P0 item 2 — claim_admit now answers 0 / -1 VERDICT / -2
+         * FAULT (nodus_witness_v2_claims.h). This admission lane's own
+         * established convention (every branch above: allocation
+         * failure, the chain-height read fault) is a SINGLE reject
+         * return here — admission decisions are mempool-local, never
+         * consensus data, so a -2 refusing the transaction is harmless
+         * even if another node's mempool disagrees. The addition is
+         * ERROR-level logging on -2 alone, so a node whose own storage
+         * is failing is loud about it instead of looking like it is
+         * just refusing invalid claims. */
+        {
+            int arc = nodus_witness_v2_claim_admit(w, c, candidate, &adm);
+            if (arc == -2) {
+                QGP_LOG_ERROR(LOG_TAG, "%s", "claim admission faulted on "
+                              "this node (chain id / manifest / spent-set "
+                              "/ remaining-cover read, runtime resolution, "
+                              "or a SHA3 backend call) — refusing at "
+                              "admission, never consensus data");
+                snprintf(reject_reason, reason_size,
+                         "claim admission faulted on this node (local "
+                         "storage)");
+                break;
+            }
+            if (arc != 0) {
+                snprintf(reject_reason, reason_size,
+                         "claim admission rejected");
+                break;
+            }
+        }
+        /* R3 W4 — the pending-mempool dedup that used to run here in
+         * ADMISSION mode (a local intake gate over w->mempool, now
+         * deleted) is removed with the closed consensus lane. Cross-block
+         * dedup (v2_claims_spent) still runs unconditionally inside
+         * claim_admit above and is unaffected: this deletion only drops
+         * the additional same-height, not-yet-committed duplicate check
+         * a local in-memory pool made possible. */
+        (void)mode;
+        rc = 0;
+    } while (0);
+    free(reenc);
+    free(c);
+    return rc;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ * Ledger V2 successor admission (O15D)
+ * ════════════════════════════════════════════════════════════════════
+ *
+ * On a SUCCESSOR chain (w->v2_successor — committed state, derived at
+ * open) this is the ONLY acceptance lane: every legacy wire form, the V3
+ * wire (types 11/12/13) and everything else is refused BY THIS BRANCH,
+ * so a successor can never admit — and therefore never produce — a
+ * legacy transaction. Classification authority is byte-driven
+ * (nodus_witness_v2_classify_entry): the envelope wire-family marker at
+ * offset 0 selects the ENVELOPE lane (200), everything else the CLAIM
+ * lane (201), never a caller-supplied type byte.
+ *
+ * The FULL authorization/execution verdict belongs to the ONE engine at
+ * commit; this lane runs exactly the engine's own pre-commit seam
+ * (nodus_witness_v2_env_preflight_batch: strict decode, contextual
+ * ruleset match against the committed registry, chain binding, expiry
+ * against the candidate height, canonical commitments) plus the two
+ * facts admission owns: the submitted hash must BE the derived wire_id,
+ * and an intent already committed on this chain is refused here rather
+ * than poisoning a whole block at apply. Deterministic from bytes +
+ * committed state in every mode. The outer client transport signature is
+ * deliberately ignored — an envelope carries its own verified
+ * authorization, and a second, unbound signer would add nothing.
+ */
+static int verify_v2_successor_tx(nodus_witness_t *w,
+                                  const uint8_t *tx_data, uint32_t tx_len,
+                                  const uint8_t *tx_hash, uint8_t tx_type,
+                                  nodus_witness_verify_mode_t mode,
+                                  char *reject_reason, size_t reason_size) {
+    /* "DNA.ENVWIRE.v1" (14 chars) + 2 zero bytes — pinned at
+     * env_wire.c:25-27; explicit initialisers, padding visible. */
+    static const uint8_t ENV_FAMILY[DNA_ENV_WIRE_FAMILY_LEN] = {
+        'D','N','A','.','E','N','V','W','I','R','E','.','v','1', 0, 0
+    };
+
+    if (!nodus_witness_v2_ingress_is_armed(w)) {
+        snprintf(reject_reason, reason_size,
+                 "successor chain not armed (activation gate closed)");
+        return -1;
+    }
+
+    /* Byte-driven class: the same authority ingress and round entry use. */
+    if (nodus_witness_v2_classify_entry(tx_data, tx_len) ==
+        NODUS_W_TX_V2_CLAIM)
+        return verify_v2_successor_claim(w, tx_data, tx_len, tx_hash,
+                                         tx_type, mode, reject_reason,
+                                         reason_size);
+
+    /* ── ENVELOPE lane (marker present) ─────────────────────────────── */
+    if (tx_len < DNA_ENV_WIRE_FAMILY_LEN ||
+        memcmp(tx_data, ENV_FAMILY, DNA_ENV_WIRE_FAMILY_LEN) != 0) {
+        snprintf(reject_reason, reason_size,
+                 "successor chain accepts Ledger V2 envelopes only "
+                 "(wire-family marker absent)");
+        return -1;
+    }
+    if (tx_type != NODUS_W_TX_V2_ENVELOPE) {
+        snprintf(reject_reason, reason_size,
+                 "envelope bytes must ride the V2 envelope entry class");
+        return -1;
+    }
+
+    /* Local view only to learn the leg domains (the seam re-decodes). */
+    dna_env_view_t view;
+    if (dna_env_decode(tx_data, (size_t)tx_len, &view) != 0) {
+        snprintf(reject_reason, reason_size, "envelope decode rejected");
+        return -1;
+    }
+
+    /* Contextual ruleset table from the COMMITTED registry — the same
+     * authority the engine resolves. Envelope legs are strictly
+     * ascending by domain, so the table is ascending by construction. */
+    dna_env_leg_ctx_t rulesets[DNA_ENV_MAX_LEGS];
+    size_t n_rulesets = 0;
+    for (uint16_t l = 0; l < view.leg_count; l++) {
+        if (n_rulesets > 0 &&
+            rulesets[n_rulesets - 1].domain_id == view.leg[l].domain_id)
+            continue;                      /* one entry per domain        */
+        dna_domain_manifest_t man;
+        if (nodus_witness_domreg_get(w, view.leg[l].domain_id, NULL,
+                                     &man, NULL) != 0) {
+            snprintf(reject_reason, reason_size,
+                     "leg %u addresses unregistered domain %u",
+                     (unsigned)l, (unsigned)view.leg[l].domain_id);
+            return -1;
+        }
+        rulesets[n_rulesets].domain_id       = view.leg[l].domain_id;
+        rulesets[n_rulesets].ruleset_version = man.ruleset_version;
+        memcpy(rulesets[n_rulesets].ruleset_hash, man.ruleset_hash,
+               DNA_ENV_RULESET_HASH_LEN);
+        n_rulesets++;
+    }
+    if (n_rulesets == 0) {
+        snprintf(reject_reason, reason_size, "envelope carries no legs");
+        return -1;
+    }
+
+    /* The engine's own seam, over this ONE envelope, at the CANDIDATE
+     * height (multi-KB result — heap, per the repo discipline). */
+    int rc = -1;
+    dna_env_preflight_t *pf = calloc(1, sizeof(*pf));
+    if (!pf) {
+        snprintf(reject_reason, reason_size, "allocation failed");
+        return -1;
+    }
+    do {
+        nodus_v2_envelope_t env = { tx_data, (size_t)tx_len };
+        size_t fail_i = 0;
+        dna_env_preflight_status_t pst = DNA_ENV_PF_OK;
+        /* O15O Faz 1 — the CANDIDATE HEIGHT the engine's preflight seam
+         * evaluates the envelope at. A fault answering 0 would preflight
+         * every envelope at height 1, producing a verdict that depends on
+         * this node's DB health rather than on bytes plus committed
+         * state — the F02 discipline this file states two paragraphs
+         * above. Take the function's own local-fault exit (reject_reason
+         * + break, rc stays -1), as the calloc failure just above does. */
+        uint64_t env_tip = 0;
+        if (nodus_witness_block_height_checked(w, &env_tip) != 0) {
+            snprintf(reject_reason, reason_size,
+                     "chain-height read faulted — cannot preflight the "
+                     "envelope at a candidate height");
+            break;
+        }
+        uint64_t candidate = env_tip + 1;
+        nodus_v2_env_status_t est = nodus_witness_v2_env_preflight_batch(
+            w, candidate, rulesets, n_rulesets, &env, 1, pf, &fail_i, &pst);
+        if (est != NODUS_V2_ENV_OK) {
+            snprintf(reject_reason, reason_size,
+                     "envelope preflight rejected (seam=%d pf=%d)",
+                     (int)est, (int)pst);
+            break;
+        }
+        if (memcmp(tx_hash, pf->wire_id, NODUS_T3_TX_HASH_LEN) != 0) {
+            snprintf(reject_reason, reason_size,
+                     "submitted hash is not the envelope wire_id");
+            break;
+        }
+        /* Committed-intent replay: refuse at admission what the engine
+         * would refuse (as a whole-block verdict) at apply. Committed
+         * state only — deterministic in VALIDATION mode too. */
+        {
+            sqlite3_stmt *st = NULL;
+            if (sqlite3_prepare_v2(w->db,
+                    "SELECT 1 FROM v2_intent_index WHERE intent_id = ?1",
+                    -1, &st, NULL) != SQLITE_OK) {
+                snprintf(reject_reason, reason_size,
+                         "intent-index lookup failed");
+                break;
+            }
+            sqlite3_bind_blob(st, 1, pf->intent_id, DNA_ENV_HASH_LEN,
+                              SQLITE_STATIC);
+            int srvalidate = sqlite3_step(st);
+            sqlite3_finalize(st);
+            if (srvalidate == SQLITE_ROW) {
+                snprintf(reject_reason, reason_size,
+                         "intent already committed on this chain");
+                break;
+            }
+            if (srvalidate != SQLITE_DONE) {
+                snprintf(reject_reason, reason_size,
+                         "intent-index lookup failed");
+                break;
+            }
+        }
+        rc = 0;
+    } while (0);
+    free(pf);
+    return rc;
+}
+
+/* ════════════════════════════════════════════════════════════════════
  * Full transaction verification
  * ════════════════════════════════════════════════════════════════════ */
 
@@ -768,6 +821,25 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
     if (!w || !tx_data || !tx_hash) {
         if (reject_reason)
             snprintf(reject_reason, reason_size, "null parameter");
+        return -1;
+    }
+
+    /* ── Ledger V2 O15D/O15F: a SUCCESSOR chain has exactly one lane ── */
+    if (w->v2_successor) {
+        (void)nullifiers; (void)nullifier_count;
+        (void)client_pubkey; (void)client_signature;
+        (void)declared_fee;
+        return verify_v2_successor_tx(w, tx_data, tx_len, tx_hash,
+                                      tx_type, mode, reject_reason,
+                                      reason_size);
+    }
+    /* O15D/O15F — the transport-local envelope (200) and claim (201) entry
+     * classes never enter the legacy lanes: on a legacy chain both are
+     * refused by name. */
+    if (tx_type == NODUS_W_TX_V2_ENVELOPE ||
+        tx_type == NODUS_W_TX_V2_CLAIM) {
+        snprintf(reject_reason, reason_size,
+                 "V2 envelope/claim entries are successor-chain only");
         return -1;
     }
 
@@ -857,6 +929,56 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
         return -1;
     }
 
+    /* ── Ledger V2 S9: V3-only types (12/13) named reject ────────
+     * SHIELD/UNSHIELD are carried ONLY by the V3 wire; the legacy V2 wire
+     * acceptance set is frozen at 0..11. These types already died here as a
+     * FALLTHROUGH (no per-type lane, no runtime ownership, deserialize gate
+     * rejects the type byte client-side) — this branch only makes the reject
+     * NAMED rather than implicit, so a 12/13 attempt is diagnosable. Placed
+     * right after Check 2 exactly like the type-11 dispatch below, leaving the
+     * tx-hash-integrity ordering argument unchanged, and firing on EITHER the
+     * caller-declared type or the WIRE type byte for the same forged-pair
+     * reason. Admission stays REJECT-unconditional until activation. */
+    if (tx_type == NODUS_W_TX_SHIELD   || tx_data[1] == NODUS_W_TX_SHIELD ||
+        tx_type == NODUS_W_TX_UNSHIELD || tx_data[1] == NODUS_W_TX_UNSHIELD) {
+        unsigned offending =
+            (tx_type == NODUS_W_TX_SHIELD || tx_type == NODUS_W_TX_UNSHIELD)
+                ? (unsigned)tx_type : (unsigned)tx_data[1];
+        snprintf(reject_reason, reason_size,
+                 "type %u is V3-only (SHIELD/UNSHIELD); legacy V2 wire admission is frozen",
+                 offending);
+        return -1;
+    }
+
+    /* ── Ledger V2 activation-authority types (15/16) — PERMANENT ────
+     * O15J Faz 3 removed the activation ceremony: a V2 chain is now born
+     * V2 and there is no V1→V2 transition for a type-15/16 transaction to
+     * schedule or signal readiness for. The apply lanes, the boundary
+     * state machine and the build option that once admitted these are all
+     * deleted, so these type bytes are PERMANENTLY INADMISSIBLE — no
+     * build of this tree accepts them.
+     *
+     * The reject stays UNCONDITIONAL and NAMED rather than becoming a
+     * fallthrough, exactly like the frozen SHIELD/UNSHIELD (12/13) branch
+     * above: this function has no generic unknown-type reject, so without
+     * this branch a type-15 frame would die namelessly and undiagnosably.
+     * Fires on EITHER the caller-declared type or the WIRE type byte, for
+     * the same forged-pair reason as 12/13. */
+    if (tx_type == NODUS_W_TX_V2_SCHEDULE ||
+        tx_data[1] == NODUS_W_TX_V2_SCHEDULE ||
+        tx_type == NODUS_W_TX_V2_READY ||
+        tx_data[1] == NODUS_W_TX_V2_READY) {
+        unsigned offending =
+            (tx_type == NODUS_W_TX_V2_SCHEDULE ||
+             tx_type == NODUS_W_TX_V2_READY)
+                ? (unsigned)tx_type : (unsigned)tx_data[1];
+        snprintf(reject_reason, reason_size,
+                 "type %u (V2 activation authority) is permanently "
+                 "inadmissible — the activation ceremony is gone",
+                 offending);
+        return -1;
+    }
+
     /* ── Phase-C C2.2: shielded (type-11) dispatch ───────────────
      * Right after Check 2 (the V4 tx-hash bound the full shielded
      * statement above); REPLACES-and-RETURNS Checks 3-6 (design v2
@@ -867,8 +989,9 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
      * from 11, so this reorder cannot capture a genuine genesis (C2.4
      * red-team, 2026-07-22: closes the ordering wart the fail-close comment
      * had overclaimed). In C2 every shielded path rejects unconditionally.
-     * Returning here also guarantees the per-node mempool read in Check 5
-     * never touches a type-11 verdict (G-DET-1). */
+     * Returning here also guarantees Check 5 never touches a type-11
+     * verdict. R3 W4 — Check 5 no longer reads any per-node mempool state
+     * for ANY type, so this guarantee is now belt-and-braces (G-DET-1). */
     if (tx_type == NODUS_W_TX_SHIELDED || tx_data[1] == NODUS_W_TX_SHIELDED) {
         return verify_shielded_tx(w, tx_data, tx_len,
                                   reject_reason, reason_size);
@@ -945,7 +1068,19 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
      * a UTXO with unlock_block > current_block is still in its post-UNSTAKE
      * cooldown window and cannot be spent yet. UTXOs with unlock_block == 0
      * are the normal unlocked case (default for all non-UNSTAKE outputs). */
-    uint64_t current_block = nodus_witness_block_height(w);
+    /* O15O Faz 1 — Rule D's cutoff. A fault answering 0 would make
+     * `unlock_block > current_block` true for every locked UTXO and
+     * reject legitimate spends, and worse, it is the shape where a node's
+     * VALIDATION verdict stops being a function of committed state.
+     * Refuse with this function's own local-fault exit (reject_reason +
+     * return -1), as the null-parameter guard at its top does. */
+    uint64_t current_block = 0;
+    if (nodus_witness_block_height_checked(w, &current_block) != 0) {
+        snprintf(reject_reason, reason_size,
+                 "chain-height read faulted — cannot apply the locked-UTXO "
+                 "cutoff (Rule D)");
+        return -1;
+    }
 
     for (int i = 0; i < nullifier_count; i++) {
         const uint8_t *nul = nullifiers + i * NODUS_T3_NULLIFIER_LEN;
@@ -1034,60 +1169,28 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
         /* ── Check 5: Dynamic fee (DNAC-only) ─────────────────── */
         uint64_t actual_fee = total_input - total_output;
 
-        /* Check 5 is TWO gates, in this order:
-         *   (a) a deterministic FLOOR on actual_fee  -- both modes, below;
-         *   (b) the mempool SURGE above that floor   -- ADMISSION only.
+        /* Check 5 is a deterministic FLOOR on actual_fee, in both modes.
          *
-         * Why (b) is ADMISSION-ONLY (G-DET-2): w->mempool.count is node-LOCAL and
-         * arrival-order dependent, so two honest witnesses compute
-         * different min_fee for the SAME TX. This function also runs on
-         * the block VALIDATION paths (nodus_witness_bft.c:4118 propose,
-         * :4878 F02 commit re-verify) where a single TX reject drops the
-         * ENTIRE batch (bft.c:4126-4132) — a follower holding 8 pending
-         * TXs would reject the honest block of a leader holding 7.
-         * Evaluating it there is a chain-liveness split with no attacker.
+         * R3 W4 — the ADMISSION-only mempool SURGE that used to run above
+         * this floor is DELETED with the closed consensus lane: it read
+         * w->mempool.count, node-LOCAL and arrival-order dependent state
+         * that no longer exists. The floor below is unaffected — it never
+         * depended on the surge or on `mode` — and this function's
+         * behavior in ADMISSION and VALIDATION is now identical for
+         * Check 5, closing the only place the two modes used to diverge.
          *
-         * VALIDATION does not merely skip the comparison: it never READS
-         * w->mempool.count, so the deterministic path has no dependency
-         * on node-local state at all.
-         *
-         * The floor on actual_fee is kept BELOW, in both modes. It is NOT
-         * covered by Check 0: Check 0 bounds the header field
-         * committed_fee@74 (line 796), whereas the surge bounded
-         * actual_fee = Sum(inputs) - Sum(outputs). Nothing in this
+         * The floor on actual_fee is NOT covered by Check 0: Check 0 bounds
+         * the header field committed_fee@74 (line 796), whereas this floor
+         * bounds actual_fee = Sum(inputs) - Sum(outputs). Nothing in this
          * function binds those two quantities for a transparent TX --
          * declared_fee is a caller parameter (the wire btx->fee on the
-         * propose path) and is only ever compared to actual_fee. Dropping
-         * the surge without a replacement floor would therefore let
-         * actual_fee == declared_fee == 1 pass VALIDATION. That is caught
-         * later and deterministically by check_supply_invariant_v016
-         * (nodus_witness_bft.c:3304) -- route_tx_fee burns committed_fee
-         * while the UTXO delta only removes actual_fee -- but "caught" then
-         * means the WHOLE BLOCK is rolled back at finalize instead of one
-         * TX being dropped here. Hence the explicit deterministic floor. */
+         * propose path) and is only ever compared to actual_fee below. */
         if (actual_fee < NODUS_W_BASE_TX_FEE) {
             snprintf(reject_reason, reason_size,
                      "fee too low: actual=%lu < min=%lu",
                      (unsigned long)actual_fee,
                      (unsigned long)NODUS_W_BASE_TX_FEE);
             return -1;
-        }
-
-        /* Surge ABOVE that floor -- ADMISSION only. Same base constant, so
-         * this branch is a strict superset of the floor above and can only
-         * ever raise the bar, never lower it. */
-        if (mode == NODUS_WITNESS_VERIFY_ADMISSION) {
-            int mp_count = w->mempool.count;
-            uint64_t min_fee = NODUS_W_BASE_TX_FEE *
-                               (1 + (uint64_t)mp_count / NODUS_W_FEE_SURGE_STEP);
-
-            if (actual_fee < min_fee) {
-                snprintf(reject_reason, reason_size,
-                         "fee too low: actual=%lu < min=%lu (mempool=%d)",
-                         (unsigned long)actual_fee, (unsigned long)min_fee,
-                         mp_count);
-                return -1;
-            }
         }
 
         /* Deterministic in BOTH modes: fee identity is a property of the

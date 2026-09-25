@@ -13,11 +13,8 @@
  */
 
 #include "witness/nodus_witness_peer.h"
-#include "witness/nodus_witness_bft.h"
 #include "witness/nodus_witness_committee.h"   /* Task 59 — committee roster */
 #include "witness/nodus_witness_db.h"
-#include "witness/nodus_witness_merkle.h"
-#include "witness/nodus_witness_handlers.h"
 #include "protocol/nodus_tier3.h"
 #include "protocol/nodus_tier2.h"
 #include "server/nodus_server.h"
@@ -26,9 +23,7 @@
 #include "protocol/nodus_cbor.h"
 #include "core/nodus_storage.h"
 #include "core/nodus_value.h"
-#include "witness/nodus_witness_sync.h"
 #include "crypto/utils/qgp_log.h"
-#include "dnac/transaction.h"   /* DNAC_TX_HEADER_SIZE (v0.17.1) */
 
 #include <stdio.h>
 #include <string.h>
@@ -63,6 +58,54 @@ static int send_rost_q(nodus_witness_t *w, struct nodus_tcp_conn *conn);
 /* Reconnect timing */
 #define RECONNECT_BASE_SEC   5
 #define RECONNECT_MAX_SHIFT  5      /* Max exponential backoff: 2^5 = 32x */
+
+/* ── Roster ──────────────────────────────────────────────────────── */
+
+/* R3 W4 — moved verbatim from nodus_witness_bft.c (deleted with the closed
+ * consensus lane, bft.c:1300 and :1353). F17 A4 — roster is transport-only
+ * (peer discovery + witness_id<->pubkey map); the committee is the frozen
+ * epoch validator set the cometbft application state reads, not derived
+ * from this roster. */
+
+int nodus_witness_roster_find(const nodus_witness_roster_t *roster,
+                                const uint8_t *witness_id) {
+    if (!roster || !witness_id) return -1;
+
+    for (uint32_t i = 0; i < roster->n_witnesses; i++) {
+        if (memcmp(roster->witnesses[i].witness_id, witness_id,
+                   NODUS_T3_WITNESS_ID_LEN) == 0)
+            return (int)i;
+    }
+    return -1;
+}
+
+int nodus_witness_roster_add(nodus_witness_t *w,
+                               const nodus_witness_roster_entry_t *entry) {
+    if (!w || !entry) return -1;
+
+    if (w->roster.n_witnesses >= NODUS_T3_MAX_WITNESSES)
+        return -1;
+
+    /* Duplicate check */
+    if (nodus_witness_roster_find(&w->roster, entry->witness_id) >= 0)
+        return 0;
+
+    memcpy(&w->roster.witnesses[w->roster.n_witnesses], entry,
+           sizeof(nodus_witness_roster_entry_t));
+    w->roster.n_witnesses++;
+    w->roster.version++;
+
+    /* F17 A4 — roster is now transport-only (peer discovery +
+     * witness_id↔pubkey map). The committee is the frozen epoch
+     * validator set the cometbft application state reads, not derived
+     * from this roster. No my_index tracking needed: self-identity in
+     * consensus paths is resolved via w->server->identity.pk against
+     * the committee pubkey list. */
+
+    fprintf(stderr, "%s: roster add (now %u witnesses, transport)\n",
+            LOG_TAG, w->roster.n_witnesses);
+    return 0;
+}
 
 /* ── Address parsing ─────────────────────────────────────────────── */
 
@@ -384,12 +427,43 @@ int nodus_witness_rebuild_roster_from_peers(nodus_witness_t *w,
         }
         if (dup) continue;
 
+        /* ⚠ AN ENTRY WE CANNOT KEY IS WORSE THAN NO ENTRY — DO NOT ADD IT.
+         *
+         * This block used to write the witness_id unconditionally and the
+         * pubkey only `if (ri >= 0)`. `out` is memset to zero at the top of
+         * this function, so a peer whose key this node has not learned yet
+         * was added with a REAL id and an ALL-ZERO public key.
+         *
+         * What that costs, and it is permanent:
+         *   1. nodus_witness_roster_find() matches on witness_id, so the
+         *      lookup SUCCEEDS and nodus_t3_verify runs against the zero
+         *      key — every frame from that peer fails
+         *      (`T3 <method> wsig verification failed (roster N)`).
+         *   2. The duplicate check at the top of this same merge is ALSO
+         *      by witness_id, so once the keyless entry exists the correct
+         *      one can never replace it. The node is locked out of that
+         *      peer for good.
+         *
+         * Measured on test_v2_grow_7_20.sh STEP 6c at N=20 (nodus/BUGS.md,
+         * N=20 entry): `cand3` logged 143 consecutive verification failures,
+         * all against one roster index, and stalled at 13/13 prevotes
+         * needing 14 — the single peer it could not verify was the missing
+         * vote. `cand1` and `cand4` showed the same shape, 132 and 133
+         * failures against a different index, on an earlier run. At exact
+         * quorum every alive node must vote, so ONE unverifiable peer is
+         * the difference between a chain that commits and one that cannot.
+         *
+         * Skipping is safe and self-healing: the peer is added on a later
+         * rebuild, once its key arrives through IDENT or the DHT `nodus:pk`
+         * registry. A missing entry costs one rebuild; a keyless one costs
+         * the peer forever. */
+        int ri = nodus_witness_roster_find(&w->roster, peer->witness_id);
+        if (ri < 0) continue;
+
         nodus_witness_roster_entry_t *entry =
             &out->witnesses[out->n_witnesses];
         memcpy(entry->witness_id, peer->witness_id, NODUS_T3_WITNESS_ID_LEN);
-        int ri = nodus_witness_roster_find(&w->roster, peer->witness_id);
-        if (ri >= 0)
-            memcpy(entry->pubkey, w->roster.witnesses[ri].pubkey, NODUS_PK_BYTES);
+        memcpy(entry->pubkey, w->roster.witnesses[ri].pubkey, NODUS_PK_BYTES);
         snprintf(entry->address, sizeof(entry->address), "%s", peer->address);
         entry->active = true;
         out->n_witnesses++;
@@ -429,34 +503,24 @@ int nodus_witness_peer_send_ident(nodus_witness_t *w,
     snprintf(msg.ident.address, sizeof(msg.ident.address),
              "%s:%u", ident_ip, ident_wport);
 
-    /* Block height, UTXO checksum, and view for sync/leader detection */
+    /* Block height for peer bookkeeping. */
     msg.ident.block_height = nodus_witness_block_height(w);
-    if (w->cached_state_root_valid) {
-        memcpy(msg.ident.state_root, w->cached_state_root, NODUS_KEY_BYTES);
-    } else {
-        /* Phase 3 / Task 10: peer identification advertises the composite
-         * state_root (utxo || validator || delegation || reward). */
-        if (nodus_witness_merkle_compute_state_root(w, msg.ident.state_root) != 0) {
-            /* D4 (2026-07-31) — was an unchecked call. Advertise the
-             * all-zero "unknown" checksum, EXPLICITLY: consumers skip a
-             * zero remote_checksum instead of scoring it as agreement or
-             * disagreement (nodus_witness_sync.c:305 and :434), so this
-             * node simply does not contribute to the divergence tally
-             * until it can compute a real root.
-             *
-             * The memset at the top of this function already zeroes msg,
-             * and compute_state_root leaves root_out untouched on failure
-             * — but relying on that pair was implicit correctness, and
-             * D2 made this failure path genuinely reachable. Re-zero so
-             * the guarantee is local and visible. */
-            memset(msg.ident.state_root, 0, NODUS_KEY_BYTES);
-            QGP_LOG_ERROR(LOG_TAG,
-                "IDENT: state_root compute failed — advertising all-zero "
-                "(unknown) checksum at height %llu",
-                (unsigned long long)msg.ident.block_height);
-        }
-    }
-    msg.ident.current_view = w->current_view;
+    /* Root-layout round (K3, 2026-09-25): the `state_root` wire field STAYS
+     * (byte-identical IDENT frame, NODUS_T3_BFT_PROTOCOL_VER unchanged)
+     * and is sent ALL-ZERO — the value this code already used for
+     * "unknown" when the legacy root could not be computed. The legacy
+     * five-input root it used to carry is deleted; no block header held
+     * it, and no receiver read the field (its only sink, the peer's
+     * `remote_checksum`, had no reader and is deleted too). Zeroed
+     * explicitly so the guarantee is local, not implied by the memset
+     * at the top of this function. */
+    memset(msg.ident.state_root, 0, NODUS_KEY_BYTES);
+    /* R3 W4 — `w->current_view` no longer exists: the legacy view counter
+     * was deleted with the closed consensus lane. The wire field stays
+     * (byte-identical IDENT frame) and is written 0; the receive side
+     * already never acts on it (see nodus_witness_peer_handle_ident's own
+     * comment below). */
+    msg.ident.current_view = 0;
     msg.ident.roster_size = w->roster.n_witnesses;
     msg.ident.ts_local = (uint64_t)time(NULL);  /* Phase 10 / Task 10.4 */
     msg.ident.has_block_height = true;
@@ -519,16 +583,55 @@ int nodus_witness_peer_send_ident(nodus_witness_t *w,
  */
 #define WITNESS_CHAIN_QUORUM_WINDOW_SEC  300
 
-static void witness_chain_quorum_observe(nodus_witness_t *w,
-                                          const uint8_t *peer_id,
-                                          const uint8_t *peer_chain_id) {
+/* R3 W4 — non-static so a test can still pin the DG-2 matrix directly, but
+ * this function's former shared declaration site (nodus_witness_bft_internal.h,
+ * alongside its twin verify_chain_id) is DELETED with the rest of the closed
+ * consensus lane; verify_chain_id was bft.c's own and went with it.
+ * QUESTION for the CONVERT resolution (test_v2_restart_gate.c, package
+ * W4-P): that test currently includes nodus_witness_bft_internal.h for this
+ * prototype under NODUS_WITNESS_INTERNAL_API — it needs a new declaration
+ * site (this file's own header, gated the same way, is the natural one) once
+ * its surviving cases are decided. Not resolved here: this package does not
+ * touch test files. */
+void witness_chain_quorum_observe(nodus_witness_t *w,
+                                    const uint8_t *peer_id,
+                                    const uint8_t *peer_chain_id) {
     if (!w || !peer_id || !peer_chain_id) return;
     if (w->quarantined) return;  /* Already decided — sticky */
 
-    /* Skip if we are still pre-genesis (all-zero chain_id) */
     static const uint8_t zero[32] = {0};
-    if (memcmp(w->chain_id, zero, 32) == 0) return;
-    /* Skip if peer is pre-genesis (no opinion) */
+
+    /* O15L DG-2 (G3) — THE SAME (chain_id, db) MATRIX verify_chain_id
+     * takes (nodus_witness_bft.c). This is the self-quarantine detector,
+     * so the failure mode of the old all-zero skip was the mirror of the
+     * one there: a node with a zeroed identity went BLIND to its own
+     * divergence at exactly the moment it was most likely to be the
+     * diverged one. Both consumers of that exemption move together, or
+     * fixing one just relocates the hole.
+     *
+     * The observable here is whether an observation is COUNTED:
+     *
+     *   chain_id != 0, db != NULL   healthy               -> OBSERVE
+     *   chain_id != 0, db == NULL   open failed, id kept  -> OBSERVE
+     *   chain_id == 0, db == NULL   genuine pre-genesis   -> skip
+     *   chain_id == 0, db != NULL   invariant violation   -> skip, loudly
+     *
+     * Rows 3 and 4 both count nothing — a node with no identity has no
+     * opinion to compare a peer against — and differ only in that row 4
+     * is a violated invariant and says so. */
+    if (memcmp(w->chain_id, zero, 32) == 0) {
+        if (w->db) {
+            fprintf(stderr,
+                    "%s: INVARIANT VIOLATION — chain_id is all-zero while "
+                    "the chain database is OPEN; the chain-quorum detector "
+                    "cannot judge dissent and is standing down.\n", LOG_TAG);
+        }
+        /* Row 3 (silent) and row 4 (logged): nothing to compare against. */
+        return;
+    }
+
+    /* Skip if peer is pre-genesis (no opinion) — unchanged by O15L; this
+     * is a statement about the PEER, not about us. */
     if (memcmp(peer_chain_id, zero, 32) == 0) return;
 
     /* Only check within startup window — after this we trust the cluster
@@ -598,33 +701,97 @@ int nodus_witness_peer_handle_ident(nodus_witness_t *w,
      *
      * Pre-genesis (committee empty) is handled liberally — the check
      * is a no-op until the chain has any validators. Otherwise,
-     * reject ident from any pubkey not in the current committee. */
+     * reject ident from any pubkey not in the current committee.
+     *
+     * tokenomics-v3 P1 round 5 (O6 red-team L1-2): cometbft's own
+     * two-height lag means a validator set change the LEDGER already
+     * applied is not yet the set cometbft is voting with — it still
+     * validates heights H and H+1 with the PREVIOUS set. A member that
+     * is still an honest voter under that previous set could be refused
+     * here purely because this gate only ever asked the FORWARD
+     * committee, and once refused it cannot redial to keep signing.
+     * Accept the ident if the pubkey is a member of EITHER the committee
+     * for `peer_tip + 1` (forward — unchanged) OR the committee for
+     * `peer_tip - 1` (the set cometbft can still be using, guarded
+     * against underflow at low heights). This gate has NO counterpart in
+     * the cometbft reference — p2p there does not filter peers by
+     * validator set at all — so it remains registered attack surface,
+     * not a ported behaviour, whichever committee(s) it consults. */
     {
-        nodus_committee_member_t committee[DNAC_COMMITTEE_SIZE];
-        int cm_count = 0;
-        if (nodus_committee_get_for_block(w,
-                                            nodus_witness_block_height(w) + 1,
-                                            committee,
-                                            DNAC_COMMITTEE_SIZE,
-                                            &cm_count) == 0 && cm_count > 0) {
+        /* S3: heap — a DNAC_MAX_ACTIVE_VALIDATORS committee is ~334 KB. */
+        bool reject = false;
+        /* O15O Faz 1 — a faulted height read takes the SAME path this
+         * gate already takes for a committee-lookup failure and for
+         * cm_count == 0: `reject` stays false and the ident is accepted
+         * liberally. That is deliberate and it is the safer of the two
+         * directions HERE, because the alternative is not "refuse" but
+         * "resolve the committee for height 1": a bogus height would ask
+         * the wrong committee and could evict a legitimate peer from the
+         * mesh, which is a liveness failure with no security gain. This
+         * is a defence-in-depth transport gate (F17 B1); vote-time
+         * authorization (A3) is the line that must not fail open, and it
+         * resolves its own committee on the checked accessor. */
+        uint64_t peer_tip = 0;
+        if (nodus_witness_block_height_checked(w, &peer_tip) != 0) {
+            fprintf(stderr,
+                    "%s: w_ident — chain-height read faulted; treating the "
+                    "admission gate as pre-genesis (accept) rather than "
+                    "resolving the committee at height 1\n", LOG_TAG);
+        } else {
             bool in_committee = false;
-            for (int i = 0; i < cm_count; i++) {
-                if (memcmp(committee[i].pubkey, ident->pubkey,
-                            DNAC_PUBKEY_SIZE) == 0) {
-                    in_committee = true;
-                    break;
+            bool fwd_resolved = false;
+
+            nodus_committee_member_t *fwd = NULL;
+            int fwd_count = 0;
+            if (nodus_committee_get_for_block_alloc(w, peer_tip + 1, &fwd,
+                                                    &fwd_count) == 0 &&
+                fwd_count > 0) {
+                fwd_resolved = true;
+                for (int i = 0; i < fwd_count; i++) {
+                    if (memcmp(fwd[i].pubkey, ident->pubkey,
+                              DNAC_PUBKEY_SIZE) == 0) {
+                        in_committee = true;
+                        break;
+                    }
                 }
             }
-            if (!in_committee) {
-                fprintf(stderr,
-                        "%s: w_ident rejected — peer pubkey not in "
-                        "current committee (transport admission gate)\n",
-                        LOG_TAG);
-                return -1;
+            free(fwd);
+
+            /* The lagging committee can only WIDEN admission — it is
+             * consulted only when the forward committee resolved and
+             * refused. A forward lookup that failed or came back empty
+             * keeps its pre-round-5 meaning (accept), whatever the lag
+             * lookup would say (O6 verifier, round 5). */
+            if (fwd_resolved && !in_committee && peer_tip >= 1) {
+                nodus_committee_member_t *lag = NULL;
+                int lag_count = 0;
+                if (nodus_committee_get_for_block_alloc(w, peer_tip - 1,
+                                                        &lag,
+                                                        &lag_count) == 0 &&
+                    lag_count > 0) {
+                    for (int i = 0; i < lag_count; i++) {
+                        if (memcmp(lag[i].pubkey, ident->pubkey,
+                                  DNAC_PUBKEY_SIZE) == 0) {
+                            in_committee = true;
+                            break;
+                        }
+                    }
+                }
+                free(lag);
             }
+
+            /* Forward committee failed or empty: pre-genesis / bootstrap
+             * / lookup fault — accept liberally, exactly as before. */
+            reject = fwd_resolved && !in_committee;
         }
-        /* cm_count == 0: pre-genesis / bootstrap — accept liberally so
-         * committee can be established. */
+        if (reject) {
+            fprintf(stderr,
+                    "%s: w_ident rejected — peer pubkey not in "
+                    "the forward or the lagging committee (transport "
+                    "admission gate)\n",
+                    LOG_TAG);
+            return -1;
+        }
     }
 
     /* Fix 3: chain_id quorum tracking — piggybacks on T3 message header */
@@ -758,34 +925,24 @@ int nodus_witness_peer_handle_ident(nodus_witness_t *w,
             w->peers[pi].version_compatible = compat;
         }
 
-        /* Store peer's chain state for sync decisions */
+        /* Store peer's chain height. Root-layout round (K3): the peer's
+         * advertised `state_root` is no longer stored — its sink
+         * (`remote_checksum`) had no reader and is deleted, and a
+         * current sender always advertises zero. */
         if (ident->has_block_height) {
             w->peers[pi].remote_height = ident->block_height;
-            memcpy(w->peers[pi].remote_checksum, ident->state_root,
-                   NODUS_KEY_BYTES);
 
-            /* View sync: adopt higher view from peer.
-             * Prevents leader election mismatch after restart.
-             * Bounded: reject jumps > 10000 to prevent manipulation.
-             * current_view is not persisted — resets to 0 on restart.
-             * 10000 ~= 14 hours of continuous leader failure at 5s intervals. */
-            if (ident->current_view > w->current_view) {
-                uint32_t delta = ident->current_view - w->current_view;
-                if (delta <= 10000) {
-                    QGP_LOG_INFO(LOG_TAG, "adopting higher view %u from peer "
-                            "(was %u)", ident->current_view, w->current_view);
-                    w->current_view = ident->current_view;
-                } else {
-                    QGP_LOG_WARN(LOG_TAG, "rejecting view jump "
-                            "%u -> %u (delta=%u > 10000)",
-                            w->current_view, ident->current_view, delta);
-                }
-            }
+            /* R3 W4 — `ident->current_view` is received and not acted on:
+             * it stays on the wire as a gossip / observability field only
+             * (this node's own send side writes it 0, see
+             * nodus_witness_peer_send_ident above). There is no local
+             * `w->current_view` left to adopt it into — the legacy view
+             * counter and the round machinery that read it were deleted
+             * with the closed consensus lane. IDENT is also EXEMPT from
+             * the wsig verify (nodus_witness.c dispatch_t3), so its claims
+             * are unauthenticated regardless. */
         }
     }
-
-    /* Trigger sync check — peer may be ahead of us */
-    nodus_witness_sync_check(w);
 
     /* Roster gossip: request peer's roster if their roster size differs.
      * This is the root cause fix for roster inconsistency after restart:
@@ -817,197 +974,14 @@ int nodus_witness_peer_handle_ident(nodus_witness_t *w,
     return 0;
 }
 
-/* ── Forward request (non-leader → leader) ───────────────────────── */
-
-int nodus_witness_peer_handle_fwd_req(nodus_witness_t *w,
-                                      const nodus_t3_msg_t *msg) {
-    if (!w || !msg) return -1;
-
-    const nodus_t3_fwd_req_t *fwd = &msg->fwd_req;
-
-    /* F17 A2 — transport-layer roster swap (no BFT config copy). */
-    if (w->pending_roster_ready &&
-        w->pending_roster.n_witnesses != w->roster.n_witnesses) {
-        memcpy(&w->roster, &w->pending_roster, sizeof(w->roster));
-        w->pending_roster_ready = false;
-    }
-
-    /* Only leader handles forward requests */
-    if (!nodus_witness_bft_is_leader(w)) {
-        fprintf(stderr, "%s: w_fwd_req but not leader\n", LOG_TAG);
-        return -1;
-    }
-
-    if (!fwd->tx_data || fwd->tx_len == 0 ||
-        fwd->tx_len > NODUS_T3_MAX_TX_SIZE) {
-        fprintf(stderr, "%s: w_fwd_req invalid tx_data\n", LOG_TAG);
-        return -1;
-    }
-
-    fprintf(stderr, "%s: w_fwd_req (tx_len=%u, fee=%lu)\n",
-            LOG_TAG, fwd->tx_len, (unsigned long)fwd->fee);
-
-    /* Extract nullifiers from tx_data for mempool entry.
-     * DNAC v0.17.1 serialization:
-     *   [version(1)] [type(1)] [timestamp(8)] [tx_hash(64)] [committed_fee(8)]
-     *   [input_count(1)] [inputs...]
-     * Each input: [nullifier(64)] [amount(8)] [token_id(64)]. */
-    const size_t input_count_offset = DNAC_TX_HEADER_SIZE;
-
-    if (fwd->tx_len < 2) return -1;
-    uint8_t tx_type = fwd->tx_data[1];
-    uint8_t nullifiers[NODUS_T3_MAX_TX_INPUTS][NODUS_T3_NULLIFIER_LEN];
-    uint8_t nullifier_count = 0;
-
-    if (tx_type != NODUS_W_TX_GENESIS) {
-        if (fwd->tx_len < input_count_offset + 1) return -1;
-        nullifier_count = fwd->tx_data[input_count_offset];
-        if (nullifier_count > NODUS_T3_MAX_TX_INPUTS) return -1;
-
-        size_t offset = input_count_offset + 1;
-        for (int i = 0; i < nullifier_count; i++) {
-            if (offset + NODUS_T3_NULLIFIER_LEN > fwd->tx_len)
-                return -1;
-            memcpy(nullifiers[i], fwd->tx_data + offset,
-                   NODUS_T3_NULLIFIER_LEN);
-            offset += NODUS_T3_NULLIFIER_LEN + 8 + 64; /* nullifier + amount + token_id */
-        }
-    }
-
-    /* Phase 7 / Task 7.5 — forwarded genesis goes through batch-of-1
-     * BFT round. Phase 6 commit_genesis dispatch (Task 7.6) handles
-     * chain DB bootstrap at commit time. */
-    if (tx_type == NODUS_W_TX_GENESIS) {
-        fprintf(stderr, "%s: forwarded genesis TX — batch-of-1 BFT path\n",
-                LOG_TAG);
-
-        nodus_witness_mempool_entry_t *e = calloc(1, sizeof(*e));
-        if (!e) return -1;
-        memcpy(e->tx_hash, fwd->tx_hash, NODUS_T3_TX_HASH_LEN);
-        e->tx_type = tx_type;
-        e->nullifier_count = nullifier_count;
-        for (int i = 0; i < nullifier_count; i++)
-            memcpy(e->nullifiers[i], nullifiers[i], NODUS_T3_NULLIFIER_LEN);
-        e->tx_data = malloc(fwd->tx_len);
-        if (!e->tx_data) { free(e); return -1; }
-        memcpy(e->tx_data, fwd->tx_data, fwd->tx_len);
-        e->tx_len = fwd->tx_len;
-        if (fwd->client_pubkey)
-            memcpy(e->client_pubkey, fwd->client_pubkey, NODUS_PK_BYTES);
-        if (fwd->client_sig)
-            memcpy(e->client_sig, fwd->client_sig, NODUS_SIG_BYTES);
-        e->fee = fwd->fee;
-        e->client_conn = NULL;
-        e->is_forwarded = true;
-        memcpy(e->forwarder_id, fwd->forwarder_id, NODUS_T3_WITNESS_ID_LEN);
-
-        nodus_witness_mempool_entry_t *entries[1] = { e };
-        int rc = nodus_witness_bft_start_round_from_entries(w, entries, 1);
-        if (rc != 0) {
-            nodus_witness_mempool_entry_free(e);
-        }
-        return rc;
-    }
-
-    /* Add forwarded TX to mempool instead of immediate BFT round */
-    nodus_witness_mempool_entry_t *entry = calloc(1, sizeof(*entry));
-    if (!entry) return -1;
-
-    memcpy(entry->tx_hash, fwd->tx_hash, NODUS_T3_TX_HASH_LEN);
-    entry->nullifier_count = nullifier_count;
-    for (int i = 0; i < nullifier_count; i++)
-        memcpy(entry->nullifiers[i], nullifiers[i], NODUS_T3_NULLIFIER_LEN);
-    entry->tx_type = tx_type;
-    entry->tx_data = malloc(fwd->tx_len);
-    if (!entry->tx_data) { free(entry); return -1; }
-    memcpy(entry->tx_data, fwd->tx_data, fwd->tx_len);
-    entry->tx_len = fwd->tx_len;
-    if (fwd->client_pubkey)
-        memcpy(entry->client_pubkey, fwd->client_pubkey, NODUS_PK_BYTES);
-    if (fwd->client_sig)
-        memcpy(entry->client_sig, fwd->client_sig, NODUS_SIG_BYTES);
-    entry->fee = fwd->fee;
-    entry->client_conn = NULL;  /* No direct client conn for forwarded TX */
-    entry->is_forwarded = true;
-    memcpy(entry->forwarder_id, fwd->forwarder_id, NODUS_T3_WITNESS_ID_LEN);
-
-    int rc = nodus_witness_mempool_add(&w->mempool, entry);
-    if (rc != 0) {
-        fprintf(stderr, "%s: fwd_req mempool add failed: %d\n", LOG_TAG, rc);
-        nodus_witness_mempool_entry_free(entry);
-    }
-
-    return rc;
-}
-
-/* ── Forward response (leader → forwarder) ───────────────────────── */
-
-int nodus_witness_peer_handle_fwd_rsp(nodus_witness_t *w,
-                                      const nodus_t3_msg_t *msg) {
-    if (!w || !msg) return -1;
-
-    const nodus_t3_fwd_rsp_t *rsp = &msg->fwd_rsp;
-
-    fprintf(stderr, "%s: w_fwd_rsp status=%u (%u witness sigs)\n",
-            LOG_TAG, rsp->status, rsp->witness_count);
-
-    /* Match pending forward by tx_hash */
-    int pf_idx = -1;
-    for (int i = 0; i < NODUS_W_MAX_PENDING_FWD; i++) {
-        if (w->pending_forwards[i].active &&
-            memcmp(w->pending_forwards[i].tx_hash, rsp->tx_hash,
-                   NODUS_T3_TX_HASH_LEN) == 0) {
-            pf_idx = i;
-            break;
-        }
-    }
-    if (pf_idx < 0) {
-        fprintf(stderr, "%s: w_fwd_rsp no matching pending forward\n",
-                LOG_TAG);
-        return -1;
-    }
-
-    struct nodus_tcp_conn *client_conn = w->pending_forwards[pf_idx].client_conn;
-    uint32_t client_txn_id = w->pending_forwards[pf_idx].client_txn_id;
-
-    /* Clear pending forward slot */
-    w->pending_forwards[pf_idx].active = false;
-    w->pending_forwards[pf_idx].client_conn = NULL;
-    if (w->pending_forward_count > 0) w->pending_forward_count--;
-
-    if (!client_conn) {
-        fprintf(stderr, "%s: w_fwd_rsp client conn gone\n", LOG_TAG);
-        return -1;
-    }
-
-    /* Send spend result to original client. Phase 13 / Task 13.2 — the
-     * fwd_rsp wire now carries block_height / tx_index / chain_id from
-     * the leader, so the forwarder can pass the full receipt through to
-     * the client instead of hardcoding 0/0. */
-    if (rsp->status == 0) {
-        nodus_witness_mempool_entry_t stack_entry;
-        memset(&stack_entry, 0, sizeof(stack_entry));
-        memcpy(stack_entry.tx_hash, rsp->tx_hash, NODUS_T3_TX_HASH_LEN);
-        stack_entry.client_conn = client_conn;
-        stack_entry.client_txn_id = client_txn_id;
-        stack_entry.committed_block_height = rsp->block_height;
-        stack_entry.committed_tx_index = rsp->tx_index;
-        nodus_witness_send_spend_result(w, &stack_entry, 0, NULL);
-    } else {
-        /* Send error response */
-        uint8_t err_buf[512];
-        size_t err_len = 0;
-        nodus_t2_error(client_txn_id, NODUS_ERR_PROTOCOL_ERROR,
-                        "consensus rejected",
-                        err_buf, sizeof(err_buf), &err_len);
-        if (err_len > 0)
-            nodus_tcp_send(client_conn, err_buf, err_len);
-    }
-
-    fprintf(stderr, "%s: forwarded spend result to client (txn=%u)\n",
-            LOG_TAG, client_txn_id);
-    return 0;
-}
+/* R3 W4 — nodus_witness_peer_handle_fwd_req (the FWD_REQ intake, O15K
+ * pool-then-forward, the legacy admission/validation verify calls) and
+ * nodus_witness_peer_handle_fwd_rsp (the FWD_RSP receipt path) are DELETED
+ * with the closed consensus lane: verbs FWD_REQ/FWD_RSP are dropped by the
+ * dispatcher (D-16 rev 5) and never reach a handler; their only callers —
+ * nodus_witness_bft_start_round_from_entries, nodus_witness_send_spend_result,
+ * the legacy pending_forwards table, the legacy mempool — are deleted
+ * with them. */
 
 /* ── Send roster query ──────────────────────────────────────────── */
 
@@ -1306,9 +1280,10 @@ int nodus_witness_peer_init(nodus_witness_t *w) {
      * At init time, witness TCP connections may not be established yet.
      * Full roster will be built on first epoch tick (60s).
      *
-     * F17 A2/A4 — roster is transport-only; BFT config is refreshed
-     * from the chain committee at round-start, and self-identity
-     * queries resolve through the committee pubkey lookup. */
+     * F17 A2/A4 — roster is transport-only; the committee is the frozen
+     * epoch validator set the cometbft application state reads, and
+     * self-identity queries resolve through the committee pubkey
+     * lookup. */
     nodus_witness_rebuild_roster_from_peers(w, &w->roster);
 
     /* Bootstrap: connect to all seed nodes on witness TCP port (4004).
@@ -1552,59 +1527,6 @@ void nodus_witness_peer_conn_closed(nodus_witness_t *w,
             w->peers[i].identified = false;
         }
     }
-
-    /* Also clear any BFT round state referencing this conn */
-    if (w->round_state.client_conn == conn)
-        w->round_state.client_conn = NULL;
-
-    /* H-15: Clear pending forwards referencing this connection */
-    for (int pfi = 0; pfi < NODUS_W_MAX_PENDING_FWD; pfi++) {
-        if (w->pending_forwards[pfi].active &&
-            w->pending_forwards[pfi].client_conn == conn) {
-            w->pending_forwards[pfi].active = false;
-            w->pending_forwards[pfi].client_conn = NULL;
-            if (w->pending_forward_count > 0) w->pending_forward_count--;
-        }
-    }
-
-    /* Remove mempool entries for this connection */
-    nodus_witness_mempool_remove_by_conn(&w->mempool, conn);
-
-    /* Clear batch_entries refs to this conn (active round) */
-    for (int bi = 0; bi < w->round_state.batch_count; bi++) {
-        if (w->round_state.batch_entries[bi] &&
-            w->round_state.batch_entries[bi]->client_conn == conn) {
-            w->round_state.batch_entries[bi]->client_conn = NULL;
-        }
-    }
-}
-
-/* ── Phase 13 / Task 59 — Committee-snapshot BFT roster ──────────── */
-
-/**
- * Return the BFT peer set (committee) authoritative for a given block
- * height. Thin pass-through over the Task 53 committee cache.
- *
- * Invariants:
- *   - For every block height within a single epoch, all 7 witnesses
- *     derive bit-identical committees from the same committed DB state
- *     (design §3.6: post-commit lookback + state_seed tiebreak).
- *   - The underlying cache is keyed on e_start; the transition to a
- *     new epoch is observed transparently on the first query whose
- *     block_height crosses the boundary.
- *   - Mid-epoch STAKE / DELEGATE / UNSTAKE mutate the validator table
- *     but NOT the frozen committee membership — the cache intentionally
- *     ignores them. BFT quorum on block N therefore never races a
- *     mid-block stake change.
- */
-int nodus_witness_peer_current_set(nodus_witness_t *w,
-                                     uint64_t block_height,
-                                     nodus_committee_member_t *out,
-                                     int max_entries,
-                                     int *count_out) {
-    if (!w || !out || !count_out || max_entries <= 0) return -1;
-    return nodus_committee_get_for_block(w, block_height, out,
-                                           max_entries, count_out);
 }
 
 /* ── Close ───────────────────────────────────────────────────────── */

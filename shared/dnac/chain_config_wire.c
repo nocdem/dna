@@ -14,6 +14,13 @@
 
 #include <string.h>
 
+/* S3 cap invariants — asserted here rather than in the header so the header
+ * stays compilable from C++ (it carries an extern "C" guard). */
+_Static_assert(DNAC_CC_WIRE_MAX_SLOTS <= 255,
+               "committee_sig_count is u8 on the wire");
+_Static_assert(DNAC_CC_WIRE_MIN_SIGS <= DNAC_CC_WIRE_MAX_SLOTS,
+               "chain_config wire sig floor above the slot cap");
+
 /* Internal big-endian helpers — scoped to this file to avoid leaking a
  * third definition into the header include graph. */
 static void be64_store(uint64_t v, uint8_t out[8]) {
@@ -41,7 +48,7 @@ static uint64_t be64_load(const uint8_t in[8]) {
 size_t dnac_cc_wire_encoded_size(const dnac_cc_wire_ext_t *fields) {
     if (!fields) return 0;
     uint8_t n = fields->committee_sig_count;
-    if (n > DNAC_CC_WIRE_COMMITTEE_SIZE) n = DNAC_CC_WIRE_COMMITTEE_SIZE;
+    if (n > DNAC_CC_WIRE_MAX_SLOTS) n = DNAC_CC_WIRE_MAX_SLOTS;
     return DNAC_CC_WIRE_FIXED_LEN + (size_t)n * DNAC_CC_WIRE_PER_VOTE;
 }
 
@@ -51,7 +58,7 @@ int dnac_cc_wire_encode(const dnac_cc_wire_ext_t *fields,
     if (!fields || !dst || !bytes_written_out) return -1;
 
     uint8_t n = fields->committee_sig_count;
-    if (n > DNAC_CC_WIRE_COMMITTEE_SIZE) n = DNAC_CC_WIRE_COMMITTEE_SIZE;
+    if (n > DNAC_CC_WIRE_MAX_SLOTS) n = DNAC_CC_WIRE_MAX_SLOTS;
     size_t need = DNAC_CC_WIRE_FIXED_LEN + (size_t)n * DNAC_CC_WIRE_PER_VOTE;
     if (dst_cap < need) return -1;
 
@@ -92,7 +99,10 @@ int dnac_cc_wire_decode(const uint8_t *src, size_t src_len,
     out->valid_before_block     = be64_load(p); p += 8;
     out->committee_sig_count    = *p++;
 
-    if (out->committee_sig_count > DNAC_CC_WIRE_COMMITTEE_SIZE) return -1;
+    /* Slot cap. Historical transactions (5..7 votes) take exactly the same
+     * path they always did — this bound only widened, it never moved a byte
+     * offset, so their decode is byte-identical to the pre-S3 decoder. */
+    if (out->committee_sig_count > DNAC_CC_WIRE_MAX_SLOTS) return -1;
 
     size_t votes_len = (size_t)out->committee_sig_count *
                         DNAC_CC_WIRE_PER_VOTE;

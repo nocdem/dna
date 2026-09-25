@@ -21,6 +21,7 @@
 #include "crypto/key/key_encryption.h"
 #include "crypto/sign/qgp_dilithium.h"  /* SEC-02: QGP_DSA87_*BYTES exact sizes */
 #include "crypto/enc/qgp_kyber.h"       /* SEC-02: QGP_KEM1024_*BYTES exact sizes */
+#include "crypto/enc/qgp_mlkem.h"       /* SEC-02: QGP_MLKEM1024_*BYTES exact sizes (KEM Faz 1) */
 #include "qgp.h"  /* For write_armored_file */
 
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
@@ -43,9 +44,10 @@ typedef struct {
 } qgp_key_size_spec_t;
 
 static const qgp_key_size_spec_t qgp_key_expected_sizes[] = {
-    [QGP_KEY_TYPE_INVALID] = { 0, 0 },
-    [QGP_KEY_TYPE_DSA87]   = { QGP_DSA87_PUBLICKEYBYTES,   QGP_DSA87_SECRETKEYBYTES   },
-    [QGP_KEY_TYPE_KEM1024] = { QGP_KEM1024_PUBLICKEYBYTES, QGP_KEM1024_SECRETKEYBYTES },
+    [QGP_KEY_TYPE_INVALID]    = { 0, 0 },
+    [QGP_KEY_TYPE_DSA87]      = { QGP_DSA87_PUBLICKEYBYTES,     QGP_DSA87_SECRETKEYBYTES     },
+    [QGP_KEY_TYPE_KEM1024]    = { QGP_KEM1024_PUBLICKEYBYTES,   QGP_KEM1024_SECRETKEYBYTES   },
+    [QGP_KEY_TYPE_MLKEM1024]  = { QGP_MLKEM1024_PUBLICKEYBYTES, QGP_MLKEM1024_SECRETKEYBYTES },
 };
 
 #define QGP_KEY_TYPE_COUNT (sizeof(qgp_key_expected_sizes) / sizeof(qgp_key_expected_sizes[0]))

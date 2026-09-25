@@ -1,6 +1,6 @@
 # P2P Architecture - Transport Layer
 
-**Current Version:** Nodus v0.17.7, Messenger v0.11.5 | **Last Updated:** 2026-04-24
+**Current Version:** Nodus v0.19.19, Messenger v0.11.18 | **Last Updated:** 2026-08-27 (header pass; body verified 2026-04-24)
 
 ## Overview
 

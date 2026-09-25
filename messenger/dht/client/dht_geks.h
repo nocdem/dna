@@ -131,6 +131,13 @@ void dht_geks_cleanup(void);
  * @param dilithium_pubkey Owner's Dilithium5 public key (2592 bytes)
  * @param dilithium_privkey Owner's Dilithium5 private key (4896 bytes)
  * @param ttl_seconds Time-to-live in seconds (0 = use default 7 days)
+ * @param mlkem_pubkey Owner's ML-KEM-1024 public key (1568 bytes), or NULL
+ *        if the identity has not migrated (KEM Faz 1, R7/D12). Self-
+ *        encryption uses this (alg 3) instead of kyber_pubkey (alg 2) when
+ *        non-NULL. Caller must pass the SESSION-loaded key (e.g. via
+ *        gek_get_mlkem_keys()/dna_load_mlkem_key()) — this function no
+ *        longer does its own by-path load, which used to bypass the
+ *        session password on a protected identity (D12, M1 delta 1b-2).
  * @return 0 on success, -1 on error
  */
 int dht_geks_publish(
@@ -141,7 +148,8 @@ int dht_geks_publish(
     const uint8_t *kyber_privkey,
     const uint8_t *dilithium_pubkey,
     const uint8_t *dilithium_privkey,
-    uint32_t ttl_seconds
+    uint32_t ttl_seconds,
+    const uint8_t *mlkem_pubkey
 );
 
 /**
@@ -159,6 +167,13 @@ int dht_geks_publish(
  * @param count_out Output number of entries
  * @param kyber_privkey Owner's Kyber1024 private key (for decryption)
  * @param dilithium_pubkey Owner's Dilithium5 public key (for signature verification)
+ * @param mlkem_privkey Owner's ML-KEM-1024 private key (3168 bytes), or NULL
+ *        if the identity has not migrated (KEM Faz 1, R7/D12). The stored
+ *        blob's own alg byte (via dna_decrypt_message_raw_alg) selects
+ *        which key it needs; passing NULL when the blob is alg 3 fails the
+ *        decrypt, same as any other missing key. Caller must pass the
+ *        SESSION-loaded key — see dht_geks_publish()'s mlkem_pubkey note
+ *        (D12, M1 delta 1b-2): no more by-path load here either.
  * @return 0 on success, -1 on error, -2 if not found
  */
 int dht_geks_fetch(
@@ -166,7 +181,8 @@ int dht_geks_fetch(
     dht_gek_entry_t **entries_out,
     size_t *count_out,
     const uint8_t *kyber_privkey,
-    const uint8_t *dilithium_pubkey
+    const uint8_t *dilithium_pubkey,
+    const uint8_t *mlkem_privkey
 );
 
 /**

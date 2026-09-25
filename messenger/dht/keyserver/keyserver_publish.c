@@ -29,7 +29,8 @@ int dht_keyserver_publish(
     const char *wallet_address,  // Optional - Cellframe wallet address
     const char *eth_address,     // Optional - Ethereum wallet address
     const char *sol_address,     // Optional - Solana wallet address
-    const char *trx_address      // Optional - TRON wallet address
+    const char *trx_address,     // Optional - TRON wallet address
+    const uint8_t *mlkem_pubkey  // Optional - ML-KEM-1024 pubkey (KEM Faz 1, R5)
 ) {
     QGP_LOG_INFO(LOG_TAG, "[PROFILE_PUBLISH] dht_keyserver_publish: name=%s, fp=%.16s...\n",
            name, fingerprint);
@@ -88,6 +89,14 @@ int dht_keyserver_publish(
     strncpy(identity->fingerprint, fingerprint, sizeof(identity->fingerprint) - 1);
     memcpy(identity->dilithium_pubkey, dilithium_pubkey, sizeof(identity->dilithium_pubkey));
     memcpy(identity->kyber_pubkey, kyber_pubkey, sizeof(identity->kyber_pubkey));
+
+    // KEM Faz 1 (R5): attach mlkem_pubkey when the caller has one. Outside
+    // the signature preimage (dna_identity_to_json_unsigned never emits it) —
+    // see dna_profile.h / identity_to_json_internal.
+    if (mlkem_pubkey) {
+        memcpy(identity->mlkem_pubkey, mlkem_pubkey, sizeof(identity->mlkem_pubkey));
+        identity->has_mlkem_pubkey = true;
+    }
 
     // Set name registration
     identity->has_registered_name = true;
@@ -256,7 +265,8 @@ int dht_keyserver_update(
     const char *name_or_fingerprint,
     const uint8_t *new_dilithium_pubkey,
     const uint8_t *new_kyber_pubkey,
-    const uint8_t *new_dilithium_privkey
+    const uint8_t *new_dilithium_privkey,
+    const uint8_t *mlkem_pubkey
 ) {
     if (!name_or_fingerprint || !new_dilithium_pubkey || !new_kyber_pubkey || !new_dilithium_privkey) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments\n");
@@ -280,6 +290,17 @@ int dht_keyserver_update(
     memcpy(identity->dilithium_pubkey, new_dilithium_pubkey, sizeof(identity->dilithium_pubkey));
     memcpy(identity->kyber_pubkey, new_kyber_pubkey, sizeof(identity->kyber_pubkey));
     strncpy(identity->fingerprint, new_fingerprint, sizeof(identity->fingerprint) - 1);
+
+    // KEM Faz 1 (R5): attach mlkem_pubkey when provided. Used by the
+    // migration republish path to attach the newly-derived ML-KEM key
+    // without rotating Dilithium/Kyber (caller passes the SAME
+    // new_dilithium_pubkey/new_kyber_pubkey, so the fingerprint above is
+    // unchanged — this call is a version-bump re-sign, not a key rotation).
+    if (mlkem_pubkey) {
+        memcpy(identity->mlkem_pubkey, mlkem_pubkey, sizeof(identity->mlkem_pubkey));
+        identity->has_mlkem_pubkey = true;
+    }
+
     identity->timestamp = time(NULL);
     identity->updated_at = identity->timestamp;
     identity->version++;

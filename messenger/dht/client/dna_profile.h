@@ -67,7 +67,18 @@ typedef struct {
     // ===== MESSENGER KEYS =====
     char fingerprint[129];               /**< SHA3-512 hex (128 chars + null) */
     uint8_t dilithium_pubkey[2592];      /**< Dilithium5 public key (Category 5) */
-    uint8_t kyber_pubkey[1568];          /**< Kyber1024 public key (Category 5) */
+    uint8_t kyber_pubkey[1568];          /**< Kyber1024 round-3 public key (Category 5, legacy) */
+
+    /* ===== ML-KEM-1024 (KEM Faz 1, R5) =====
+     * NOT part of the main signature preimage (dna_identity_to_json_unsigned
+     * never emits it — see identity_to_json_internal). Integrity comes from
+     * server-side ownership (session identity + value signature + EXCLUSIVE
+     * key), not a binding signature — operator decision K4,
+     * docs/plans/decisions/2026-09-23-kem-mlkem-migration.md §5.2. An old
+     * client that has never heard of this field re-serializes without it and
+     * its main-signature verification is UNCHANGED. */
+    uint8_t mlkem_pubkey[1568];          /**< ML-KEM-1024 public key (FIPS 203), only if has_mlkem_pubkey */
+    bool has_mlkem_pubkey;               /**< true if mlkem_pubkey is set (identity has migrated) */
 
     // ===== DNA NAME REGISTRATION =====
     bool has_registered_name;            /**< true if name registered */

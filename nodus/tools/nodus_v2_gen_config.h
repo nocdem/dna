@@ -1,0 +1,168 @@
+/**
+ * @file nodus/tools/nodus_v2_gen_config.h
+ * @brief O16A / D2 — the operator-facing TEXT form of a pure-V2 genesis
+ *        config, and the parser that turns it into the struct the
+ *        builder consumes.
+ *
+ * The struct this produces (`nodus_v2_gen_config_t`,
+ * nodus_witness_v2_gen.h:251-280) has existed and been tested since
+ * O15J Faz 1, but nothing outside the test suite could construct one:
+ * there was no way for an operator to EXPRESS a genesis config. This
+ * module is that expression, and nothing more. It decides no value, it
+ * validates no genesis rule, and it applies no default to any field
+ * that reaches `source_commit`.
+ *
+ * ── WHY A HAND-WRITTEN TEXT FORMAT AND NOT JSON ─────────────────────
+ * The server's JSON loader is compiled only when json-c was found
+ * (`NODUS_HAS_JSONC`, nodus/tools/nodus-server.c:101,
+ * nodus/CMakeLists.txt:1797-1800). json-c is an OPTIONAL dependency.
+ * A genesis ceremony that is performed exactly once, on seven hosts,
+ * must not depend on which optional library each host's build happened
+ * to find, so the format is parsed by this file and by nothing else.
+ *
+ * ── DETERMINISM (design invariant D-I5) ─────────────────────────────
+ * The parser is a PURE FUNCTION OF THE FILE'S BYTES: the same file
+ * produces the same struct on every machine, every locale and every
+ * build. That is not a nicety here — `source_commit` is
+ * SHA3-512(canonical encoding of this struct), it feeds the genesis
+ * BlockID and therefore the chain id (nodus_witness_v2_gen.h:66-70), so
+ * two operators whose parsers disagreed by one byte would derive two
+ * chains and could never join each other. Every rule in the
+ * implementation that exists to hold that property says so at its site.
+ *
+ * The consequences an operator sees, all of them deliberate:
+ *   - Every malformed input is a REFUSAL naming the line number. There
+ *     is no clamping, no truncation, no "best effort" value.
+ *   - A duplicate key refuses. Not last-wins, not first-wins: two
+ *     plausible precedence rules are two chains.
+ *   - An unknown key refuses. A typo'd key must not derive a chain with
+ *     a structural default sitting in the slot the operator meant to
+ *     fill.
+ *   - A missing key refuses. Absent is never zero.
+ *
+ * ── THE TWO FIELDS THE FILE MAY NOT NAME ────────────────────────────
+ * `claim_start_height` and `claim_end_height` are set by this parser and
+ * are NOT settable from the file; naming either is an unknown key. This
+ * is NOT a hidden default. Each has exactly one legal value and
+ * `gen_plan_build` refuses every other one (the claim window rule in
+ * nodus_witness_v2_gen.c), so there is no alternative value a silent
+ * default could be masking. A settable field with a one-element domain
+ * would only give the operator a way to fail later, in the builder,
+ * instead of never.
+ *
+ * `config_version` is the opposite case: REQUIRED in the file, and 3 is
+ * its only legal value (tokenomics-v3 P4 deleted version 2, OBLIGATION
+ * atlas-dec-71525f3b). It is required rather than forced so that a file
+ * written for the deleted schema is refused instead of being silently
+ * read as the new one.
+ *
+ * ── THE FORMAT ──────────────────────────────────────────────────────
+ * Line-oriented ASCII. `#` begins a comment that runs to end of line.
+ * Blank lines are ignored. `key = value`, with optional ' ' / '\t'
+ * around the `=`. `[validator]` and `[allocation]` open a repeated
+ * block; every key of the open block must appear exactly once before
+ * the next block header or EOF. The five top-level keys must appear
+ * before the first block header (after a header the open scope is the
+ * block, and a top-level key is then simply not one of that block's
+ * keys — i.e. an unknown key).
+ *
+ * A complete, minimal example — one validator block shown; a derivable
+ * config needs exactly DNAC_COMMITTEE_SIZE of them (Rule P.1,
+ * nodus_witness_v2_gen.c:559-564), and at least one allocation:
+ *
+ *     # DNA Chain — version-3 (cometbft) genesis config
+ *     config_version        = 3          # REQUIRED; 3 is the only value
+ *     genesis_time_ms       = <UTC ms>   # REQUIRED
+ *     initial_height        = 1          # REQUIRED (0 and 1 differ in
+ *                                        # chain id)
+ *     total_supply_raw      = 100000000000000000
+ *     epoch_length          = 720
+ *     blocks_per_year       = 6307200
+ *     decimal_unit          = 100000000
+ *     inflation_start_block = 0          # MUST be 0: the mint is gone
+ *                                        # (tokenomics-v3 P2-4); any
+ *                                        # other value is refused by
+ *                                        # gen_plan_build. The key stays
+ *                                        # required: it is a field of the
+ *                                        # canonical genesis encoding.
+ *     reward_pool_initial    = 20000000000000000  # optional, default
+ *                                        # 200M × 10^8 (v2_gen.c
+ *                                        # GEN_V3_REWARD_POOL_INITIAL);
+ *                                        # Rule P.2: Σ allocations +
+ *                                        # Σ self_stake + this ==
+ *                                        # total_supply_raw
+ *     payout_interval_epochs = 24        # optional, default 24; >= 1
+ *
+ *     [validator]
+ *     pubkey                     = <5184 lowercase hex chars>
+ *     unstake_destination_pubkey = <5184 lowercase hex chars>
+ *     unstake_destination_fp     = <128 lowercase hex chars>
+ *     self_stake                 = 1000000000000000
+ *     commission_bps             = 500
+ *
+ *     [allocation]
+ *     source_id    = <128 lowercase hex chars>
+ *     dest_binding = <128 lowercase hex chars>
+ *     amount       = 5000000000000
+ *
+ * `unstake_destination_fp` MUST be SHA3-512(unstake_destination_pubkey)
+ * rendered as lowercase hex. The parser only checks its SHAPE; the
+ * DERIVATION is checked by the builder (gen_plan_build), because that
+ * is the one place every producer of a config passes through.
+ *
+ * Copyright (c) 2026 nocdem
+ * SPDX-License-Identifier: MIT
+ */
+
+#ifndef NODUS_V2_GEN_CONFIG_H
+#define NODUS_V2_GEN_CONFIG_H
+
+#include "witness/nodus_witness_v2_gen.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/**
+ * Parse `path` into a heap-allocated config.
+ *
+ * The config struct is ~160 KB and its allocation array is variable
+ * length; BOTH are allocated here and BOTH are owned by the returned
+ * pointer (the struct's `allocs` field is declared const because the
+ * BUILDER never writes through it, nodus_witness_v2_gen.h:279 — it is
+ * not a statement about ownership). Release with
+ * nodus_v2_gen_config_free and nothing else.
+ *
+ * On failure `*out_cfg` is left NULL, everything allocated so far is
+ * released, and the reason — with the line number it was found on — has
+ * been written to stderr. The file is typed by hand, once, by a human
+ * under ceremony conditions: a refusal that does not name the line is a
+ * refusal that costs an hour.
+ *
+ * The file must say `config_version = 3` (the only schema since
+ * tokenomics-v3 P4; a version-2 file, and a file with no version, is
+ * refused). The contract is WIDER than well-formedness, and
+ * deliberately (register row R3-C1b-3): deriving the Comet
+ * validator rows (`nodus_witness_v2_gen_v3_fill_comet_rows`) runs the
+ * builder's SHARED genesis rules through `gen_plan_build`, so a
+ * well-formed version-3 file whose configuration is not derivable is
+ * refused HERE, with the builder's reason logged above the parser's line.
+ * The version-3-only rules (`nodus_witness_v2_gen_v3_validate`) are still
+ * the derivation's, not this parser's.
+ *
+ * @param path     the config file.
+ * @param out_cfg  receives the parsed config on success.
+ * @return 0 parsed; -1 refused (the reason is on stderr).
+ */
+int nodus_v2_gen_config_parse_file(const char *path,
+                                   nodus_v2_gen_config_t **out_cfg);
+
+/** Release a config produced by nodus_v2_gen_config_parse_file.
+ *  NULL is a no-op. */
+void nodus_v2_gen_config_free(nodus_v2_gen_config_t *cfg);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* NODUS_V2_GEN_CONFIG_H */

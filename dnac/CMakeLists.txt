@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(dnac VERSION 0.6.0 LANGUAGES C)
 
 # ============================================================================
-# DNAC - Post-Quantum Digital Cash over DHT
+# DNAC - DNA Chain: Post-Quantum UTXO ledger
 # ============================================================================
 
 set(CMAKE_C_STANDARD 11)

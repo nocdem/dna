@@ -1181,6 +1181,28 @@ const nodus_identity_t *nodus_messenger_get_identity_ref(void) {
     return &g_stored_identity;
 }
 
+int nodus_messenger_get_connected_endpoint(char *ip_out, size_t ip_len,
+                                            uint16_t *port_out) {
+    if (!ip_out || ip_len == 0 || !port_out) return -1;
+    if (!atomic_load(&g_initialized)) return -1;
+
+    nodus_client_t *client = nodus_singleton_get();
+    if (!client) return -1;
+
+    int rc = -1;
+    /* Same read pattern as the TOFU snapshot above: the live connection
+     * (client->conn), never config.servers[server_idx] — the index can
+     * be stale after failover. */
+    nodus_tcp_conn_t *conn = (nodus_tcp_conn_t *)client->conn;
+    if (conn && conn->ip[0] && conn->port > 0) {
+        snprintf(ip_out, ip_len, "%s", conn->ip);
+        *port_out = conn->port;
+        rc = 0;
+    }
+    nodus_singleton_release();
+    return rc;
+}
+
 void nodus_messenger_set_status_callback(nodus_messenger_status_cb_t cb, void *user_data) {
     /* CONCURRENCY.md L3: g_nodus_init_mutex
      * Store cb + user_data under the mutex to avoid a torn fn-ptr/user-data

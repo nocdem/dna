@@ -138,12 +138,13 @@ set(COMMON_SOURCES
     ${SHARED_DIR}/crypto/key/bip39/bip39.c
     ${SHARED_DIR}/crypto/key/bip39/bip39_pbkdf2.c
     ${SHARED_DIR}/crypto/key/bip39/seed_derivation.c
-    ${SHARED_DIR}/crypto/enc/kyber_deterministic.c
+    ${SHARED_DIR}/crypto/enc/kyber_r3_legacy.c
     dna_config.c
     # SDK Independence: New crypto modules
     ${SHARED_DIR}/crypto/utils/qgp_random.c
     ${SHARED_DIR}/crypto/enc/qgp_aes.c
     ${SHARED_DIR}/crypto/enc/qgp_kyber.c
+    ${SHARED_DIR}/crypto/enc/qgp_mlkem.c
     ${SHARED_DIR}/crypto/sign/qgp_dilithium.c
     ${SHARED_DIR}/crypto/key/seed_storage.c
     ${SHARED_DIR}/crypto/hash/qgp_sha3.c         # SHA3-512 for Category 5 security
@@ -216,7 +217,7 @@ if(BUILD_SHARED_LIB)
         src/api/engine/dna_call_orch.c
         src/api/engine/dna_engine_calls.c
         src/reaction/reaction_json.c
-        # DNAC (digital cash) — compiled into libdna for single .so
+        # DNAC (DNA Chain) — compiled into libdna for single .so
         ${CMAKE_SOURCE_DIR}/../dnac/src/version.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/wallet/wallet.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/wallet/utxo.c
@@ -242,6 +243,48 @@ if(BUILD_SHARED_LIB)
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/delegate.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/validator_update.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/chain_config.c
+        # Ledger V2 S1 correction #3 — libdna OWNS its compile of the shared
+        # TX codec (one source file, one compile unit per library; the same
+        # source sits in NODUS_SOURCES). dnac_tx_compute_hash delegates to
+        # dnac_txw_legacy_tx_hash, and libdna must not depend on the
+        # transitive dht_lib→nodus archive to supply that symbol.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/tx_wire.c
+        # Ledger V2 K1 — INACTIVE generic transaction ENVELOPE codec + the
+        # four commitment helpers, owned by libdna the same way as tx_wire.c.
+        # A separate wire family from V3; no caller yet.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/env_wire.c
+        # Ledger V2 — INACTIVE generic typed-effect RESULT codec (generic
+        # CREATE/SET/DELETE mutations over opaque keys/values), owned by
+        # libdna the same way as env_wire.c. No caller yet.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/effect_wire.c
+        # Ledger V2 — INACTIVE deterministic envelope preflight over those
+        # helpers (derived tx_id, expiry + contextual-ruleset gates),
+        # owned by libdna the same way as env_wire.c. No caller yet.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/env_preflight.c
+        # Ledger V2 — INACTIVE deterministic resource metering + reservation
+        # (checked u64 arithmetic, sealed policy snapshot, reservation plans,
+        # meter lifecycle), owned by libdna the same way as env_wire.c.
+        # No caller yet.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/res_meter.c
+        # Ledger V2 S2 — shared V2 root/header codecs (inactive), owned by
+        # libdna the same way as tx_wire.c.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/ledger_roots_v2.c
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/block_v2.c
+        # Ledger V2 S3 — INACTIVE validator-set snapshot codec + QC V2
+        # (certificate codec + historical verification), owned by libdna
+        # the same way as ledger_roots_v2.c. No consensus caller.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/vset_wire.c
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/qc_v2.c
+        # Ledger V2 S4 — INACTIVE domain manifest/registry/readiness codec,
+        # owned by libdna the same way as ledger_roots_v2.c. No consensus caller.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/domain_wire.c
+        # Ledger V2 S6 — INACTIVE generic genesis/distribution manifest +
+        # claim codec, owned by libdna the same way as domain_wire.c.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/manifest_wire.c
+        # Ledger V2 S7 — INACTIVE canonical shielded-pool state
+        # commitments (pure SHA3-512, zk-include-free), owned by libdna
+        # the same way as manifest_wire.c. No consensus caller.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/pool_wire.c
         # Note: shared/dnac/chain_config_wire.c (Hard-Fork v1) is linked in
         # via libnodus.a — no separate entry needed here. See nodus/CMakeLists.txt.
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/validator_queries.c
@@ -349,7 +392,7 @@ else()
         src/api/engine/dna_call_orch.c
         src/api/engine/dna_engine_calls.c
         src/reaction/reaction_json.c
-        # DNAC (digital cash) — compiled into libdna for single .so
+        # DNAC (DNA Chain) — compiled into libdna for single .so
         ${CMAKE_SOURCE_DIR}/../dnac/src/version.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/wallet/wallet.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/wallet/utxo.c
@@ -375,6 +418,48 @@ else()
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/delegate.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/validator_update.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/chain_config.c
+        # Ledger V2 S1 correction #3 — libdna OWNS its compile of the shared
+        # TX codec (one source file, one compile unit per library; the same
+        # source sits in NODUS_SOURCES). dnac_tx_compute_hash delegates to
+        # dnac_txw_legacy_tx_hash, and libdna must not depend on the
+        # transitive dht_lib→nodus archive to supply that symbol.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/tx_wire.c
+        # Ledger V2 K1 — INACTIVE generic transaction ENVELOPE codec + the
+        # four commitment helpers, owned by libdna the same way as tx_wire.c.
+        # A separate wire family from V3; no caller yet.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/env_wire.c
+        # Ledger V2 — INACTIVE generic typed-effect RESULT codec (generic
+        # CREATE/SET/DELETE mutations over opaque keys/values), owned by
+        # libdna the same way as env_wire.c. No caller yet.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/effect_wire.c
+        # Ledger V2 — INACTIVE deterministic envelope preflight over those
+        # helpers (derived tx_id, expiry + contextual-ruleset gates),
+        # owned by libdna the same way as env_wire.c. No caller yet.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/env_preflight.c
+        # Ledger V2 — INACTIVE deterministic resource metering + reservation
+        # (checked u64 arithmetic, sealed policy snapshot, reservation plans,
+        # meter lifecycle), owned by libdna the same way as env_wire.c.
+        # No caller yet.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/res_meter.c
+        # Ledger V2 S2 — shared V2 root/header codecs (inactive), owned by
+        # libdna the same way as tx_wire.c.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/ledger_roots_v2.c
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/block_v2.c
+        # Ledger V2 S3 — INACTIVE validator-set snapshot codec + QC V2
+        # (certificate codec + historical verification), owned by libdna
+        # the same way as ledger_roots_v2.c. No consensus caller.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/vset_wire.c
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/qc_v2.c
+        # Ledger V2 S4 — INACTIVE domain manifest/registry/readiness codec,
+        # owned by libdna the same way as ledger_roots_v2.c. No consensus caller.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/domain_wire.c
+        # Ledger V2 S6 — INACTIVE generic genesis/distribution manifest +
+        # claim codec, owned by libdna the same way as domain_wire.c.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/manifest_wire.c
+        # Ledger V2 S7 — INACTIVE canonical shielded-pool state
+        # commitments (pure SHA3-512, zk-include-free), owned by libdna
+        # the same way as manifest_wire.c. No consensus caller.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/pool_wire.c
         # Note: shared/dnac/chain_config_wire.c (Hard-Fork v1) is linked in
         # via libnodus.a — no separate entry needed here. See nodus/CMakeLists.txt.
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/validator_queries.c
@@ -512,7 +597,7 @@ target_include_directories(dna PUBLIC
     ${CMAKE_SOURCE_DIR}/blockchain/cellframe  # Cellframe blockchain headers
     ${CMAKE_SOURCE_DIR}/blockchain/solana     # Solana blockchain headers
     ${CMAKE_SOURCE_DIR}/blockchain/tron       # TRON blockchain headers
-    ${CMAKE_SOURCE_DIR}/../dnac/include       # DNAC (digital cash) headers
+    ${CMAKE_SOURCE_DIR}/../dnac/include       # DNAC (DNA Chain) headers
     ${CMAKE_SOURCE_DIR}/../dnac/src           # DNAC internal headers
     ${OPENSSL_INCLUDE_DIR}
     # JUICE_INCLUDE_DIRS removed in v0.4.61 - libjuice no longer used

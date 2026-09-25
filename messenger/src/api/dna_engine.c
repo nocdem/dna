@@ -578,12 +578,16 @@ void *dna_engine_stabilization_retry_thread(void *arg) {
                             strncpy(profile.website, identity->website, sizeof(profile.website) - 1);
                             strncpy(profile.telegram, identity->socials.telegram, sizeof(profile.telegram) - 1);
 
+                            /* D6 (M1 delta 1b-2): NULL when unmigrated (fine). */
+                            qgp_key_t *mlkem_key = dna_load_mlkem_key(engine);
                             int update_rc = dna_update_profile(engine->fingerprint, &profile,
                                                                sign_key->private_key, sign_key->public_key,
-                                                               enc_key->public_key);
+                                                               enc_key->public_key,
+                                                               mlkem_key ? mlkem_key->public_key : NULL);
                             if (update_rc == 0) {
                                 QGP_LOG_INFO(LOG_TAG, "[RETRY] Profile re-published with recovered registered_name");
                             }
+                            if (mlkem_key) qgp_key_free(mlkem_key);
                             qgp_key_free(enc_key);
                         }
                         qgp_key_free(sign_key);
@@ -1516,7 +1520,7 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
             dna_handle_debug_log_send(engine, task);
             break;
 
-        /* DNAC digital cash */
+        /* DNAC — DNA Chain */
         case TASK_DNAC_GET_BALANCE:
             dna_handle_dnac_get_balance(engine, task);
             break;

@@ -77,6 +77,22 @@ void cbor_encode_uint(cbor_encoder_t *enc, uint64_t val) {
     enc_head(enc, CBOR_UINT, val);
 }
 
+void cbor_encode_int(cbor_encoder_t *enc, int64_t val) {
+    if (val >= 0) {
+        enc_head(enc, CBOR_UINT, (uint64_t)val);
+    } else {
+        /* RFC 8949 §3.1: "A negative integer in the range -2^64..-1
+         * inclusive. The value of the item is -1 minus the argument", so
+         * argument = -1 - val. It is written as -(val + 1) because that is
+         * the only form that is free of signed overflow at INT64_MIN:
+         * val + 1 is representable, and -(INT64_MIN + 1) == INT64_MAX.
+         * Computing -val or -1 - val directly would be undefined there.
+         *
+         * enc_head already emits the shortest argument form (§4.2.1). */
+        enc_head(enc, CBOR_NEGINT, (uint64_t)(-(val + 1)));
+    }
+}
+
 void cbor_encode_bstr(cbor_encoder_t *enc, const uint8_t *data, size_t len) {
     enc_head(enc, CBOR_BSTR, len);
     enc_raw(enc, data, len);
@@ -267,6 +283,49 @@ cbor_item_t cbor_decode_next(cbor_decoder_t *dec) {
     return item;
 }
 
+bool cbor_decode_int(cbor_decoder_t *dec, int64_t *out) {
+    if (!out) {
+        dec->error = true;
+        return false;
+    }
+    if (!dec_has(dec, 1)) {
+        dec->error = true;
+        return false;
+    }
+
+    uint8_t ib = dec_byte(dec);
+    uint8_t mt = (ib >> 5) & 0x07;
+    uint8_t ai = ib & 0x1F;
+
+    /* Only the two integer major types. Everything else — including a
+     * byte string whose first byte happens to look plausible — is an
+     * error, not a value. */
+    if (mt != CBOR_UINT && mt != CBOR_NEGINT) {
+        dec->error = true;
+        return false;
+    }
+
+    uint64_t arg = dec_arg(dec, ai);
+    if (dec->error) return false;          /* truncated or reserved ai */
+
+    /* The CBOR range is -2^64..2^64-1; int64_t is not. Both halves outside
+     * it reject rather than wrap: argument 2^63 as a positive is 2^63 which
+     * does not fit, and argument 2^64-1 as a negative is -2^64. */
+    if (arg > (uint64_t)INT64_MAX) {
+        dec->error = true;
+        return false;
+    }
+
+    if (mt == CBOR_UINT) {
+        *out = (int64_t)arg;
+    } else {
+        /* value = -1 - argument, in the overflow-free order: at
+         * argument INT64_MAX this yields exactly INT64_MIN. */
+        *out = -(int64_t)arg - 1;
+    }
+    return true;
+}
+
 cbor_item_type_t cbor_decode_peek(const cbor_decoder_t *dec) {
     if (dec->error || dec->pos >= dec->len)
         return (dec->pos >= dec->len) ? CBOR_ITEM_END : CBOR_ITEM_ERROR;
@@ -306,6 +365,47 @@ void cbor_decode_skip(cbor_decoder_t *dec) {
         dec->depth++;
         for (size_t i = 0; i < item.count && !dec->error; i++)
             cbor_decode_skip(dec);
+        dec->depth--;
+    }
+    /* Scalars (uint, bstr, tstr, bool, null) are already consumed */
+}
+
+void cbor_decode_skip_signed(cbor_decoder_t *dec, bool *saw_negint) {
+    /* THE ONE DIFFERENCE from cbor_decode_skip, and it is deliberately
+     * confined to this function: a major type 1 item is stepped over rather
+     * than rejected. The initial byte is inspected WITHOUT consuming it —
+     * cbor_decode_peek cannot serve here because it reports major type 1 as
+     * an error by design, which is exactly the behaviour every legacy
+     * caller relies on. */
+    if (!dec->error && dec->pos < dec->len &&
+        (((dec->buf[dec->pos] >> 5) & 0x07) == CBOR_NEGINT)) {
+        int64_t v = 0;
+        /* cbor_decode_int already sets dec->error on a truncated or
+         * reserved argument and on an argument above INT64_MAX, so the
+         * failure modes stay identical to the plain walker's. */
+        if (cbor_decode_int(dec, &v) && saw_negint)
+            *saw_negint = true;
+        return;
+    }
+
+    /* From here down this mirrors cbor_decode_skip line for line, except
+     * that the recursion re-enters THIS function so a negative nested
+     * inside a map or an array is stepped over too. */
+    cbor_item_t item = cbor_decode_next(dec);
+    if (item.type == CBOR_ITEM_ERROR || item.type == CBOR_ITEM_END)
+        return;
+
+    if (item.type == CBOR_ITEM_MAP) {
+        if (dec->depth >= CBOR_MAX_DEPTH) { dec->error = true; return; }
+        dec->depth++;
+        for (size_t i = 0; i < item.count * 2 && !dec->error; i++)
+            cbor_decode_skip_signed(dec, saw_negint);
+        dec->depth--;
+    } else if (item.type == CBOR_ITEM_ARRAY) {
+        if (dec->depth >= CBOR_MAX_DEPTH) { dec->error = true; return; }
+        dec->depth++;
+        for (size_t i = 0; i < item.count && !dec->error; i++)
+            cbor_decode_skip_signed(dec, saw_negint);
         dec->depth--;
     }
     /* Scalars (uint, bstr, tstr, bool, null) are already consumed */

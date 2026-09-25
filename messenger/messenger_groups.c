@@ -639,6 +639,15 @@ int messenger_accept_group_invitation(messenger_context_t *ctx, const char *grou
             break;
         }
 
+        // KEM Faz 1 (R1/R7/R8): identity.mlkem loaded the same way right
+        // beside identity.kem — absent file -> NULL, never an error.
+        char mlkem_path[512];
+        snprintf(mlkem_path, sizeof(mlkem_path), "%s/keys/identity.mlkem", data_dir);
+        qgp_key_t *mlkem_key = NULL;
+        if (qgp_key_load(mlkem_path, &mlkem_key) != 0) {
+            mlkem_key = NULL;
+        }
+
         // Load Dilithium public key to compute fingerprint
         char dilithium_path[512];
         snprintf(dilithium_path, sizeof(dilithium_path), "%s/keys/identity.dsa", data_dir);
@@ -647,6 +656,7 @@ int messenger_accept_group_invitation(messenger_context_t *ctx, const char *grou
         if (qgp_key_load(dilithium_path, &dilithium_key) != 0 || !dilithium_key) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to load Dilithium key for fingerprint\n");
             qgp_key_free(kyber_key);
+            if (mlkem_key) qgp_key_free(mlkem_key);
             break;
         }
 
@@ -655,6 +665,7 @@ int messenger_accept_group_invitation(messenger_context_t *ctx, const char *grou
         if (qgp_sha3_512(dilithium_key->public_key, 2592, my_fingerprint) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to compute fingerprint\n");
             qgp_key_free(kyber_key);
+            if (mlkem_key) qgp_key_free(mlkem_key);
             qgp_key_free(dilithium_key);
             break;
         }
@@ -666,6 +677,7 @@ int messenger_accept_group_invitation(messenger_context_t *ctx, const char *grou
         if (ret != 0 || !group_meta) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to get group metadata for GEK version\n");
             qgp_key_free(kyber_key);
+            if (mlkem_key) qgp_key_free(mlkem_key);
             break;
         }
 
@@ -682,22 +694,26 @@ int messenger_accept_group_invitation(messenger_context_t *ctx, const char *grou
             QGP_LOG_WARN(LOG_TAG, "No GEK v%u found in DHT for group %s (may be published later)\n",
                          gek_version, group_uuid);
             qgp_key_free(kyber_key);
+            if (mlkem_key) qgp_key_free(mlkem_key);
             break;
         }
 
         QGP_LOG_INFO(LOG_TAG, "Found IKP for group %s version %u (%zu bytes)\n",
                      group_uuid, gek_version, ikp_size);
 
-        // Extract GEK from IKP using my fingerprint and Kyber private key
+        // Extract GEK from IKP using my fingerprint and Kyber/ML-KEM private
+        // key (KEM Faz 1, R8: ikp_extract_alg accepts v2 AND v3 packets)
         // CORE-04: also extract the per-group DHT privacy salt
         uint8_t gek[GEK_KEY_SIZE];
         uint32_t extracted_version = 0;
         uint8_t dht_salt[IKP_DHT_SALT_SIZE];
-        ret = ikp_extract(ikp_packet, ikp_size, my_fingerprint,
-                          kyber_key->private_key, gek, &extracted_version,
-                          dht_salt);
+        ret = ikp_extract_alg(ikp_packet, ikp_size, my_fingerprint,
+                              kyber_key->private_key,
+                              mlkem_key ? mlkem_key->private_key : NULL,
+                              gek, &extracted_version, dht_salt);
         free(ikp_packet);
         qgp_key_free(kyber_key);
+        if (mlkem_key) qgp_key_free(mlkem_key);
 
         if (ret != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to extract GEK from IKP (not a member?)\n");
@@ -813,6 +829,15 @@ int messenger_sync_group_gek(const char *group_uuid) {
         return -1;
     }
 
+    // KEM Faz 1 (R1/R7/R8): identity.mlkem loaded the same way right
+    // beside identity.kem — absent file -> NULL, never an error.
+    char mlkem_path[512];
+    snprintf(mlkem_path, sizeof(mlkem_path), "%s/keys/identity.mlkem", data_dir);
+    qgp_key_t *mlkem_key = NULL;
+    if (qgp_key_load(mlkem_path, &mlkem_key) != 0) {
+        mlkem_key = NULL;
+    }
+
     // Load Dilithium public key to compute fingerprint
     char dilithium_path[512];
     snprintf(dilithium_path, sizeof(dilithium_path), "%s/keys/identity.dsa", data_dir);
@@ -821,6 +846,7 @@ int messenger_sync_group_gek(const char *group_uuid) {
     if (qgp_key_load(dilithium_path, &dilithium_key) != 0 || !dilithium_key) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to load Dilithium key for fingerprint\n");
         qgp_key_free(kyber_key);
+        if (mlkem_key) qgp_key_free(mlkem_key);
         return -1;
     }
 
@@ -829,6 +855,7 @@ int messenger_sync_group_gek(const char *group_uuid) {
     if (qgp_sha3_512(dilithium_key->public_key, 2592, my_fingerprint) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to compute fingerprint\n");
         qgp_key_free(kyber_key);
+        if (mlkem_key) qgp_key_free(mlkem_key);
         qgp_key_free(dilithium_key);
         return -1;
     }
@@ -840,6 +867,7 @@ int messenger_sync_group_gek(const char *group_uuid) {
     if (ret != 0 || !group_meta) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to get group metadata for GEK sync\n");
         qgp_key_free(kyber_key);
+        if (mlkem_key) qgp_key_free(mlkem_key);
         return -1;
     }
 
@@ -855,22 +883,26 @@ int messenger_sync_group_gek(const char *group_uuid) {
     if (ret != 0 || !ikp_packet || ikp_size == 0) {
         QGP_LOG_WARN(LOG_TAG, "No GEK v%u found in DHT for group %s\n", gek_version, group_uuid);
         qgp_key_free(kyber_key);
+        if (mlkem_key) qgp_key_free(mlkem_key);
         return -1;
     }
 
     QGP_LOG_INFO(LOG_TAG, "Found IKP for group %s version %u (%zu bytes)\n",
                  group_uuid, gek_version, ikp_size);
 
-    // Extract GEK from IKP using my fingerprint and Kyber private key
+    // Extract GEK from IKP using my fingerprint and Kyber/ML-KEM private key
+    // (KEM Faz 1, R8: ikp_extract_alg accepts v2 AND v3 packets)
     // CORE-04: also extract per-group DHT privacy salt
     uint8_t gek[GEK_KEY_SIZE];
     uint32_t extracted_version = 0;
     uint8_t dht_salt[IKP_DHT_SALT_SIZE];
-    ret = ikp_extract(ikp_packet, ikp_size, my_fingerprint,
-                      kyber_key->private_key, gek, &extracted_version,
-                      dht_salt);
+    ret = ikp_extract_alg(ikp_packet, ikp_size, my_fingerprint,
+                          kyber_key->private_key,
+                          mlkem_key ? mlkem_key->private_key : NULL,
+                          gek, &extracted_version, dht_salt);
     free(ikp_packet);
     qgp_key_free(kyber_key);
+    if (mlkem_key) qgp_key_free(mlkem_key);
 
     if (ret != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to extract GEK from IKP (not a member?)\n");

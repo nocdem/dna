@@ -9,9 +9,7 @@
 #include "witness/nodus_witness_merkle.h"
 #include "witness/nodus_witness_db.h"
 #include "nodus/nodus_types.h"
-#include "nodus/nodus_chain_config.h"  /* Hard-Fork v1: chain_config_root in compute_state_root */
-#include "crypto/utils/qgp_bench.h"    /* perf harness — ((void)0) in production */
-#include "crypto/utils/qgp_log.h"      /* QGP_LOG_* (new code; legacy lines use fprintf) */
+#include "crypto/utils/qgp_log.h"     /* QGP_LOG_* (new code; legacy lines use fprintf) */
 
 #include <openssl/evp.h>
 #include <sqlite3.h>
@@ -133,13 +131,23 @@ static int merkle_root_rfc6962(const uint8_t *leaves, size_t n, uint8_t out[64])
 
 /* ── Leaf hash ─────────────────────────────────────────────────────── */
 
+/* Preimage (340 bytes, no tag — root-layout round K1, 2026-09-25):
+ *   nullifier[64] ‖ owner[128, NUL-padded] ‖ amount u64 LE
+ *   ‖ token_id[64] ‖ tx_hash[64] ‖ output_index u32 LE
+ *   ‖ unlock_block u64 LE
+ * The first 332 bytes are the pre-K1 leaf unchanged; unlock_block is
+ * appended LAST (operator 2026-09-24 "Root'a girsin", 2026-09-25 "Sona,
+ * 8 bayt LE"). The old and new preimages differ in length, so no tag
+ * is needed to keep them apart. Client mirror: dnac_utxo_compute_leaf_hash
+ * (dnac/src/ledger/merkle_verify.c) — byte for byte. */
 int nodus_witness_merkle_leaf_hash(const uint8_t *nullifier,
                                      const char *owner,
                                      uint64_t amount,
                                      const uint8_t *token_id,
                                      const uint8_t *tx_hash,
                                      uint32_t output_index,
-                                     uint8_t *leaf_out) {
+                                     uint8_t *leaf_out,
+                                     uint64_t unlock_block) {
     if (!nullifier || !owner || !token_id || !tx_hash || !leaf_out) return -1;
 
     /* Owner fingerprint is a null-terminated 128-char hex string. Hash
@@ -156,6 +164,8 @@ int nodus_witness_merkle_leaf_hash(const uint8_t *nullifier,
     enc_u64_le(amount, amount_le);
     uint8_t oi_le[4];
     enc_u32_le(output_index, oi_le);
+    uint8_t ub_le[8];
+    enc_u64_le(unlock_block, ub_le);
 
     EVP_MD_CTX *md = NULL;
     if (sha3_512_init(&md) != 0) return -1;
@@ -165,7 +175,8 @@ int nodus_witness_merkle_leaf_hash(const uint8_t *nullifier,
         EVP_DigestUpdate(md, amount_le, 8) != 1 ||
         EVP_DigestUpdate(md, token_id, 64) != 1 ||
         EVP_DigestUpdate(md, tx_hash, 64) != 1 ||
-        EVP_DigestUpdate(md, oi_le, 4) != 1) {
+        EVP_DigestUpdate(md, oi_le, 4) != 1 ||
+        EVP_DigestUpdate(md, ub_le, 8) != 1) {
         EVP_MD_CTX_free(md);
         return -1;
     }
@@ -184,8 +195,11 @@ static int load_utxo_leaves(nodus_witness_t *w,
     *count_out = 0;
 
     sqlite3_stmt *stmt;
+    /* Root-layout round K1: unlock_block joins the leaf. The ORDER BY is
+     * unchanged (D2); only the column list grew. */
     int rc = sqlite3_prepare_v2(w->db,
-        "SELECT nullifier, owner, amount, token_id, tx_hash, output_index "
+        "SELECT nullifier, owner, amount, token_id, tx_hash, output_index, "
+        "unlock_block "
         "FROM utxo_set ORDER BY nullifier ASC", -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "%s: utxo scan prepare failed: %s\n",
@@ -228,6 +242,21 @@ static int load_utxo_leaves(nodus_witness_t *w,
         const uint8_t *tx_hash = sqlite3_column_blob(stmt, 4);
         int thlen = sqlite3_column_bytes(stmt, 4);
         uint32_t output_index = (uint32_t)sqlite3_column_int(stmt, 5);
+        sqlite3_int64 unlock_raw = sqlite3_column_int64(stmt, 6);
+
+        /* Root-layout round K1: a NEGATIVE unlock_block is never a
+         * height (0 = spendable, otherwise the block the lock ends).
+         * Fail closed — the decision record's rule for the adapter row
+         * readers, "a malformed row is never surfaced as a huge u64"
+         * (docs/plans/decisions/2026-09-25-root-layout-round.md K1);
+         * casting it would hash a value the row does not hold. */
+        if (unlock_raw < 0) {
+            QGP_LOG_ERROR(LOG_TAG, "utxo row: negative unlock_block %lld — "
+                          "failing utxo leaf load", (long long)unlock_raw);
+            free(buf);
+            sqlite3_finalize(stmt);
+            return -1;
+        }
 
         /* Fail close, never skip: two nodes holding different corrupt
          * rows would otherwise each drop a DIFFERENT leaf and report
@@ -249,7 +278,8 @@ static int load_utxo_leaves(nodus_witness_t *w,
         if (nodus_witness_merkle_leaf_hash(nullifier, owner, amount,
                                              token_id, tx_hash,
                                              output_index,
-                                             buf + n * 64) != 0) {
+                                             buf + n * 64,
+                                             (uint64_t)unlock_raw) != 0) {
             free(buf);
             sqlite3_finalize(stmt);
             return -1;
@@ -305,7 +335,8 @@ int nodus_witness_merkle_tx_root(const uint8_t *tx_hashes, size_t n, uint8_t out
  * Pipeline:
  *   1. SQL: load every UTXO row, build a 64-byte composite digest
  *      from (nullifier || owner || amount || token_id || tx_hash ||
- *      output_index) — this is the existing nodus_witness_merkle_leaf_hash.
+ *      output_index || unlock_block) — nodus_witness_merkle_leaf_hash
+ *      (unlock_block joined in the root-layout round, K1).
  *   2. RFC 6962 leaf_hash: prepend 0x00 to every composite digest so
  *      leaves cannot collide with internal nodes (closes CVE-2012-2459
  *      for the UTXO Merkle as well as the TX Merkle).
@@ -353,6 +384,11 @@ int nodus_witness_merkle_compute_utxo_root(nodus_witness_t *w,
 }
 
 /* ── Proof generation (RFC 6962, Phase 2 / Task 2.6) ──────────────────
+ *
+ * Used by nodus_witness_merkle_build_tx_proof. (The UTXO-set proof
+ * builder nodus_witness_merkle_build_proof is DELETED — root-layout round
+ * K3: it anchored to the legacy five-input state_root, which no block
+ * header carries; the dnac_utxo response now always sends depth 0.)
  *
  * The proof structure follows RFC 6962 §2.1.1: walk the recursive split
  * from root to leaf, recording the OPPOSITE subtree's root at every
@@ -435,94 +471,15 @@ static void reverse_proof(uint8_t *siblings, uint32_t *positions, int depth) {
     *positions = out;
 }
 
-int nodus_witness_merkle_build_proof(nodus_witness_t *w,
-                                       const uint8_t *target_leaf,
-                                       uint8_t *siblings_out,
-                                       uint32_t *positions_out,
-                                       int max_depth,
-                                       int *depth_out,
-                                       uint8_t *root_out) {
-    if (!w || !w->db || !target_leaf || !siblings_out || !positions_out ||
-        !depth_out || max_depth <= 0) return -1;
-
-    *depth_out = 0;
-    *positions_out = 0;
-
-    /* Caller's target_leaf is the 64-byte composite digest produced by
-     * nodus_witness_merkle_leaf_hash (UTXO row → digest). build_proof
-     * leaf-hashes that digest internally to match the prehash compute_root
-     * applies in Task 2.5. */
-    uint8_t target_prehashed[64];
-    if (leaf_hash(target_leaf, 64, target_prehashed) != 0) return -1;
-
-    uint8_t *leaves = NULL;
-    size_t n = 0;
-    if (load_utxo_leaves(w, &leaves, &n) != 0) return -1;
-
-    if (n == 0) {
-        free(leaves);
-        return -1; /* target cannot be in empty set */
-    }
-
-    /* Apply the leaf domain tag in place, then locate the target. */
-    for (size_t i = 0; i < n; i++) {
-        uint8_t prehashed[64];
-        if (leaf_hash(leaves + i * 64, 64, prehashed) != 0) {
-            free(leaves);
-            return -1;
-        }
-        memcpy(leaves + i * 64, prehashed, 64);
-    }
-
-    ssize_t target_idx = -1;
-    for (size_t i = 0; i < n; i++) {
-        if (memcmp(leaves + i * 64, target_prehashed, 64) == 0) {
-            target_idx = (ssize_t)i;
-            break;
-        }
-    }
-    if (target_idx < 0) {
-        free(leaves);
-        return -1;
-    }
-
-    /* Single-leaf tree: empty proof, root == leaf. */
-    if (n == 1) {
-        if (root_out) memcpy(root_out, leaves, 64);
-        free(leaves);
-        return 0;
-    }
-
-    if (rfc6962_path(leaves, n, (size_t)target_idx,
-                      siblings_out, positions_out, depth_out, max_depth) != 0) {
-        free(leaves);
-        return -1;
-    }
-
-    /* rfc6962_path collects root-to-leaf; flip to leaf-to-root for the
-     * verifier. */
-    reverse_proof(siblings_out, positions_out, *depth_out);
-
-    if (root_out) {
-        if (merkle_root_rfc6962(leaves, n, root_out) != 0) {
-            free(leaves);
-            return -1;
-        }
-    }
-
-    free(leaves);
-    return 0;
-}
-
 /* ── Public: build inclusion proof for a TX in a block's tx_root ─────
  *
- * Symmetric to nodus_witness_merkle_build_proof but scoped to a single
- * block's tx_root tree. Fetches committed TX hashes for block_height
+ * Scoped to a single block's tx_root tree. Fetches committed TX hashes
+ * for block_height
  * in commit order (tx_index ASC) — mirrors the ordering used by
  * nodus_witness_block_txs_get() and therefore by tx_root computation.
  * Applies the RFC 6962 leaf domain tag (0x00 prefix) to each raw
- * tx_hash, locates target_tx_hash, and drives the same rfc6962_path
- * recursion used for UTXO inclusion proofs.
+ * tx_hash, locates target_tx_hash, and drives the rfc6962_path
+ * recursion above.
  */
 int nodus_witness_merkle_build_tx_proof(nodus_witness_t *w,
                                           uint64_t block_height,
@@ -618,7 +575,7 @@ int nodus_witness_merkle_build_tx_proof(nodus_witness_t *w,
     }
 
     /* rfc6962_path collects root-to-leaf; flip to leaf-to-root for the
-     * verifier (same convention as nodus_witness_merkle_build_proof). */
+     * verifier (the convention nodus_witness_merkle_verify_proof reads). */
     reverse_proof(siblings_out, positions_out, *depth_out);
 
     if (root_out) {
@@ -776,9 +733,10 @@ void nodus_merkle_combine_state_root(const uint8_t utxo_root[64],
  *                           || delegation_root(64) || reward_root(64)
  *                           || chain_config_root(64) )
  *
- * v0.16 note: superseded by combine_v3 (which replaces reward_root with
- * epoch_state_root). Retained __attribute__((cold)) purely for archive-
- * replay of pre-wipe blocks. Live hot-path callers use combine_v3.
+ * v0.16 note: superseded by combine_v3 (which replaced reward_root with
+ * epoch_state_root); combine_v3 itself was deleted in the root-layout
+ * round (2026-09-25, K3) — no block header carries either composition.
+ * Retained __attribute__((cold)); its only callers are tests.
  *
  * Pure function; safe to call from any thread.
  */
@@ -817,57 +775,15 @@ void nodus_merkle_combine_state_root_v2(const uint8_t utxo_root[64],
     }
 }
 
-/* ── Composite state_root combiner — 5-input v3 (v0.16 reward redesign) ──
- *
- * state_root_v3 = SHA3-512( NODUS_STATE_ROOT_VERSION_V3 (1 byte)
- *                           || utxo_root(64) || validator_root(64)
- *                           || delegation_root(64) || epoch_state_root(64)
- *                           || chain_config_root(64) )
- *
- * Replaces v2's reward_root with epoch_state_root — the push-settlement
- * model keeps no per-validator reward accumulator state, only the current
- * epoch's pool + snapshot. Domain-separation byte 0x03 prevents replay
- * against v1/v2 roots. combine_v2 stays available as __attribute__((cold))
- * for archive-replay of pre-wipe blocks.
- */
-/* Returns 0 / -1 (2026-07-31) — see the header. The byte-for-byte
- * formula is UNCHANGED; only the failure signalling is new, so every
- * existing state_root KAT still holds. */
-int nodus_merkle_combine_state_root_v3(const uint8_t utxo_root[64],
-                                        const uint8_t validator_root[64],
-                                        const uint8_t delegation_root[64],
-                                        const uint8_t epoch_state_root[64],
-                                        const uint8_t chain_config_root[64],
-                                        uint8_t out_state_root[64]) {
-    if (!out_state_root) return -1;
-    if (!utxo_root || !validator_root || !delegation_root ||
-        !epoch_state_root || !chain_config_root) {
-        merkle_tag_hash_zero_on_fail(out_state_root);
-        return -1;
-    }
-
-    EVP_MD_CTX *md = NULL;
-    if (sha3_512_init(&md) != 0) {
-        merkle_tag_hash_zero_on_fail(out_state_root);
-        return -1;
-    }
-    const uint8_t version = NODUS_STATE_ROOT_VERSION_V3;
-    if (EVP_DigestUpdate(md, &version,          1)  != 1 ||
-        EVP_DigestUpdate(md, utxo_root,         64) != 1 ||
-        EVP_DigestUpdate(md, validator_root,    64) != 1 ||
-        EVP_DigestUpdate(md, delegation_root,   64) != 1 ||
-        EVP_DigestUpdate(md, epoch_state_root,  64) != 1 ||
-        EVP_DigestUpdate(md, chain_config_root, 64) != 1) {
-        EVP_MD_CTX_free(md);
-        merkle_tag_hash_zero_on_fail(out_state_root);
-        return -1;
-    }
-    if (sha3_512_final(md, out_state_root) != 0) {
-        merkle_tag_hash_zero_on_fail(out_state_root);
-        return -1;
-    }
-    return 0;
-}
+/* Root-layout round (K3, 2026-09-25): the 5-input v3 combiner
+ * (nodus_merkle_combine_state_root_v3 — version byte 0x03 ‖ utxo ‖
+ * validator ‖ delegation ‖ epoch_state ‖ chain_config) is DELETED with
+ * the legacy state root it composed. No block header carried that root
+ * (the cometbft chain commits the V2 global root as app_hash); its only
+ * consumers were the IDENT `state_root` field, which no receiver read,
+ * and the dnac_utxo proof, which no client could verify. The O15J Faz 3
+ * v4 combiner was deleted before it. Version bytes 0x03 and 0x04 are
+ * retired, never reused (nodus/include/nodus/nodus_types.h). */
 
 /* ── Stage B.5 — validator_root (real) ─────────────────────────────── */
 
@@ -876,7 +792,14 @@ static void be64_into(uint64_t v, uint8_t out[8]) {
     for (int i = 7; i >= 0; i--) { out[i] = (uint8_t)(v & 0xff); v >>= 8; }
 }
 
-/* Validator leaf value hash:
+/* Validator leaf value hash — v2 of this preimage (tokenomics-v3 P1,
+ * Q2 "clean path"): the two per-block attendance counters
+ * (`last_signed_block`, `signed_blocks_this_epoch`) are DROPPED from the
+ * leaf. Attendance now lives out-of-root in `v2_attendance`
+ * (nodus_witness_v2_epoch.c) and enters `system_state_root` only through
+ * the epoch-boundary digest leg (`nodus_witness_attendance_root`,
+ * shared/dnac/ledger_roots_v2.c). The 0x02 tag byte is UNCHANGED — this
+ * is a shorter preimage under the same tree tag, not a new tag.
  *   SHA3-512( 0x02                      // tag
  *          || pubkey[2592]
  *          || self_stake[8 BE]
@@ -891,9 +814,7 @@ static void be64_into(uint64_t v, uint8_t out[8]) {
  *          || unstake_destination_fp[128 ASCII]
  *          || unstake_destination_pubkey[2592]
  *          || last_validator_update_block[8 BE]
- *          || consecutive_missed_epochs[8 BE]
- *          || last_signed_block[8 BE]
- *          || signed_blocks_this_epoch[8 BE] )
+ *          || consecutive_missed_epochs[8 BE] )
  * Canonical: ORDER BY pubkey ASC. */
 static int load_validator_leaves(nodus_witness_t *w,
                                   uint8_t **leaves_out,
@@ -908,8 +829,7 @@ static int load_validator_leaves(nodus_witness_t *w,
         "       pending_effective_block, status, active_since_block,"
         "       unstake_commit_block, unstake_destination_fp,"
         "       unstake_destination_pubkey, last_validator_update_block,"
-        "       consecutive_missed_epochs, last_signed_block,"
-        "       signed_blocks_this_epoch "
+        "       consecutive_missed_epochs "
         "FROM validators ORDER BY pubkey ASC", -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "%s: validator scan prepare failed: %s\n",
@@ -1058,10 +978,6 @@ static int load_validator_leaves(nodus_witness_t *w,
         be64_into((uint64_t)sqlite3_column_int64(stmt, 12), be);
         EVP_DigestUpdate(md, be, 8);
         be64_into((uint64_t)sqlite3_column_int64(stmt, 13), be);
-        EVP_DigestUpdate(md, be, 8);
-        be64_into((uint64_t)sqlite3_column_int64(stmt, 14), be);
-        EVP_DigestUpdate(md, be, 8);
-        be64_into((uint64_t)sqlite3_column_int64(stmt, 15), be);
         EVP_DigestUpdate(md, be, 8);
 
         if (sha3_512_final(md, buf + n * 64) != 0) {
@@ -1222,241 +1138,12 @@ int nodus_witness_merkle_compute_delegation_root(nodus_witness_t *w,
     return rc;
 }
 
-/* ── Stage B.4 — epoch_state_root (real) ───────────────────────────── */
-
-/* epoch_state leaf value hash:
- *   SHA3-512( 0x06 || epoch_start_height[8 BE] || epoch_pool_accum[8 BE]
- *          || snapshot_hash[64] || total_minted[8 BE] || total_burned[8 BE] )
- *
- * total_minted + total_burned come from supply_tracking (global, not
- * per-epoch) — embedding them in every epoch_state leaf provides
- * state_root coverage for the supply-invariant counters without adding
- * a separate supply_root subtree.
- *
- * Canonical: ORDER BY epoch_start_height ASC. */
-static int load_epoch_state_leaves(nodus_witness_t *w,
-                                    uint8_t **leaves_out,
-                                    size_t *count_out) {
-    *leaves_out = NULL;
-    *count_out = 0;
-
-    /* Fetch global total_minted + total_burned once — same for every leaf. */
-    nodus_witness_supply_t supply;
-    memset(&supply, 0, sizeof(supply));
-    int sup_rc = nodus_witness_supply_get(w, &supply);
-    if (sup_rc < 0) {
-        /* D3 (2026-07-31) — FAIL CLOSE. These counters are hashed into
-         * every epoch_state leaf below (be64 total_minted/total_burned),
-         * so they are inside state_root. Hashing zeros on a DB fault made
-         * this witness emit a structurally valid but DIFFERENT root than
-         * its peers — a chain split with no Byzantine actor. */
-        QGP_LOG_ERROR(LOG_TAG,
-                      "epoch_state leaves: supply_get DB error — refusing "
-                      "to substitute zeroed supply counters");
-        return -1;
-    }
-    /* sup_rc == 1: the supply_tracking row is genuinely absent (pre-genesis).
-     * Zeroed counters are then the honest value — nothing has been minted or
-     * burned yet — and `supply` is already zeroed above. The old comment
-     * claimed the epoch_state table "is also empty" so the sentinel path
-     * would be taken anyway; that only holds pre-genesis, and it was the
-     * justification a DB error borrowed to hide behind. */
-
-    sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(w->db,
-        "SELECT epoch_start_height, epoch_pool_accum, snapshot_hash "
-        "FROM epoch_state ORDER BY epoch_start_height ASC",
-        -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr, "%s: epoch_state scan prepare failed: %s\n",
-                LOG_TAG, sqlite3_errmsg(w->db));
-        return -1;
-    }
-
-    size_t cap = 4, n = 0;
-    uint8_t *buf = malloc(cap * 64);
-    if (!buf) { sqlite3_finalize(stmt); return -1; }
-
-    /* rc carries the step result out of the loop — see load_utxo_leaves. */
-    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-        if (n >= cap) {
-            size_t new_cap = cap * 2;
-            uint8_t *new_buf = realloc(buf, new_cap * 64);
-            if (!new_buf) { free(buf); sqlite3_finalize(stmt); return -1; }
-            buf = new_buf; cap = new_cap;
-        }
-
-        EVP_MD_CTX *md = NULL;
-        if (sha3_512_init(&md) != 0) {
-            free(buf); sqlite3_finalize(stmt); return -1;
-        }
-        const uint8_t tag = NODUS_TREE_TAG_EPOCH_STATE;
-        EVP_DigestUpdate(md, &tag, 1);
-
-        uint8_t be[8];
-        be64_into((uint64_t)sqlite3_column_int64(stmt, 0), be);
-        EVP_DigestUpdate(md, be, 8);
-        be64_into((uint64_t)sqlite3_column_int64(stmt, 1), be);
-        EVP_DigestUpdate(md, be, 8);
-
-        /* snapshot_hash is always written full-length —
-         * nodus_witness_epoch.c:58-59 binds NODUS_EPOCH_SNAPSHOT_HASH_LEN
-         * (64, nodus_witness_epoch.h:30) — so a NULL or short blob is
-         * corruption, not a legitimate empty state. Substituting 64 zeros
-         * for it put a value in the leaf that no peer could reproduce.
-         * Note sqlite3_column_blob() returns NULL for a zero-length blob,
-         * so `!snap` and "empty" are the same signal here; both are
-         * rejected, which is correct because empty is never written. */
-        const void *snap = sqlite3_column_blob(stmt, 2);
-        int snap_len = sqlite3_column_bytes(stmt, 2);
-        if (!snap || snap_len != 64) {
-            EVP_MD_CTX_free(md);
-            QGP_LOG_ERROR(LOG_TAG, "epoch_state row: bad snapshot_hash "
-                          "(len=%d) — failing epoch_state leaf load",
-                          snap_len);
-            free(buf); sqlite3_finalize(stmt); return -1;
-        }
-        EVP_DigestUpdate(md, snap, 64);
-
-        be64_into(supply.total_minted, be);
-        EVP_DigestUpdate(md, be, 8);
-        be64_into(supply.total_burned, be);
-        EVP_DigestUpdate(md, be, 8);
-
-        if (sha3_512_final(md, buf + n * 64) != 0) {
-            free(buf); sqlite3_finalize(stmt); return -1;
-        }
-        n++;
-    }
-
-    sqlite3_finalize(stmt);
-
-    if (rc != SQLITE_DONE) {
-        QGP_LOG_ERROR(LOG_TAG, "epoch_state scan step failed rc=%d — leaf set "
-                      "truncated, refusing to report success", rc);
-        free(buf);
-        return -1;
-    }
-
-    *leaves_out = buf;
-    *count_out  = n;
-    return 0;
-}
-
-int nodus_witness_merkle_compute_epoch_state_root(nodus_witness_t *w,
-                                                   uint8_t *root_out) {
-    if (!w || !w->db || !root_out) return -1;
-    uint8_t *leaves = NULL;
-    size_t n = 0;
-    if (load_epoch_state_leaves(w, &leaves, &n) != 0) return -1;
-
-    if (n == 0) {
-        free(leaves);
-        /* See compute_validator_root — the sentinel is state_root input. */
-        return nodus_merkle_empty_root(NODUS_TREE_TAG_EPOCH_STATE, root_out);
-    }
-
-    for (size_t i = 0; i < n; i++) {
-        uint8_t prehashed[64];
-        if (leaf_hash(leaves + i * 64, 64, prehashed) != 0) {
-            free(leaves); return -1;
-        }
-        memcpy(leaves + i * 64, prehashed, 64);
-    }
-    int rc = merkle_root_rfc6962(leaves, n, root_out);
-    free(leaves);
-    return rc;
-}
-
-/* ── Composite state_root: compute-from-witness wrapper ──────────────
- *
- * v0.16 (Stage B.7): state_root_v3 combines utxo + validator + delegation
- * + epoch_state + chain_config. The reward-tree slot from v2 is retired
- * with the accumulator reward system. validator and delegation subtrees
- * are now computed from real table scans (Stages B.5 + B.6), not empty
- * sentinels. epoch_state subtree is new (Stage B.4).
- *
- * compute_utxo_root remains the authoritative UTXO subtree; proofs built
- * via nodus_witness_merkle_build_proof still anchor there.
- *
- * Returns 0 with root_out written, or -1 with root_out UNTOUCHED. There
- * is exactly one way to emit a state_root: all five subtrees computed
- * from real data (D2, 2026-07-31). A caller that gets -1 has no root and
- * must not advertise, vote, or commit one.
- */
-int nodus_witness_merkle_compute_state_root(nodus_witness_t *w,
-                                            uint8_t *root_out) {
-    if (!w || !root_out) return -1;
-    QGP_BENCH_START(QGP_BENCH_MERKLE_COMPUTE);
-
-    uint8_t utxo_root[64];
-    if (nodus_witness_merkle_compute_utxo_root(w, utxo_root) != 0) {
-        QGP_BENCH_END(QGP_BENCH_MERKLE_COMPUTE);
-        return -1;
-    }
-
-    /* D2 (2026-07-31) — every subtree fails CLOSED, symmetric with the
-     * utxo branch above. The four tagged-empty sentinel fallbacks that
-     * used to live here converted a transient DB fault into a
-     * structurally valid but DIVERGENT state_root: the faulting witness
-     * voted a root none of its peers could reproduce. No root at all is
-     * strictly safer than a substituted one — under BFT with 7 witnesses
-     * a silent node is tolerated (f = 2), a lying one forks the chain. */
-    uint8_t validator_root[64];
-    if (nodus_witness_merkle_compute_validator_root(w, validator_root) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "compute_state_root: validator_root failed");
-        QGP_BENCH_END(QGP_BENCH_MERKLE_COMPUTE);
-        return -1;
-    }
-
-    uint8_t delegation_root[64];
-    if (nodus_witness_merkle_compute_delegation_root(w, delegation_root) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "compute_state_root: delegation_root failed");
-        QGP_BENCH_END(QGP_BENCH_MERKLE_COMPUTE);
-        return -1;
-    }
-
-    uint8_t epoch_state_root[64];
-    if (nodus_witness_merkle_compute_epoch_state_root(w, epoch_state_root) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "compute_state_root: epoch_state_root failed");
-        QGP_BENCH_END(QGP_BENCH_MERKLE_COMPUTE);
-        return -1;
-    }
-
-    uint8_t chain_config_root[64];
-    if (nodus_chain_config_compute_root(w, chain_config_root) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "compute_state_root: chain_config_root failed");
-        QGP_BENCH_END(QGP_BENCH_MERKLE_COMPUTE);
-        return -1;
-    }
-
-    /* The combiner is the last fabrication hole: on a digest failure it
-     * writes 64 zero bytes into its output, and returning 0 here
-     * regardless would have handed the caller that sentinel as a
-     * state_root.
-     *
-     * Combine into a LOCAL buffer and copy out only on success, so the
-     * "root_out is UNTOUCHED on failure" guarantee this function
-     * documents holds for the combiner leg too — not just for the five
-     * subtree legs, which return before writing anything. A caller's
-     * pre-existing buffer contents are then never silently replaced by
-     * the zero sentinel. */
-    uint8_t combined[64];
-    if (nodus_merkle_combine_state_root_v3(utxo_root,
-                                            validator_root,
-                                            delegation_root,
-                                            epoch_state_root,
-                                            chain_config_root,
-                                            combined) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "compute_state_root: combine_v3 failed — "
-                      "no root emitted");
-        QGP_BENCH_END(QGP_BENCH_MERKLE_COMPUTE);
-        return -1;
-    }
-    memcpy(root_out, combined, 64);
-    QGP_BENCH_END(QGP_BENCH_MERKLE_COMPUTE);
-    return 0;
-}
+/* Root-layout round (K2/K3, 2026-09-25): the epoch_state subtree
+ * (load_epoch_state_leaves / nodus_witness_merkle_compute_epoch_state_root)
+ * and the legacy composite nodus_witness_merkle_compute_state_root are
+ * DELETED. The chain's state root is the V2 hierarchy
+ * (nodus_witness_roots_v2.c); this file keeps the UTXO / validator /
+ * delegation subtrees it composes. */
 
 /* ── Proof verification (pure function, RFC 6962) ───────────────────── */
 

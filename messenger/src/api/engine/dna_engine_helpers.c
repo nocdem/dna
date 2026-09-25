@@ -71,6 +71,41 @@ qgp_key_t* dna_load_encryption_key(dna_engine_t *engine) {
     return key;
 }
 
+/* Get ML-KEM-1024 key (KEM Faz 1, D6/D12, M1 delta 1b-2 — caller frees with
+ * qgp_key_free). Mirrors dna_load_encryption_key() exactly, for the same
+ * "session-password loaded, never a by-path load that bypasses it" reason
+ * D12 fixes at the DHT layer. NULL when the identity has not migrated —
+ * this is the common case (K2 or pre-migration), not an error, so a file-
+ * exists check runs FIRST: without it, every profile update / backup /
+ * GEKS sync on an unmigrated identity would call qgp_key_load(_encrypted)
+ * on a path that does not exist and print "Cannot open file" ERROR on
+ * every call — the exact noise D15 already removed from the identity-load
+ * path; this helper must not reintroduce it at its own call sites. */
+qgp_key_t* dna_load_mlkem_key(dna_engine_t *engine) {
+    if (!engine || !engine->identity_loaded) {
+        return NULL;
+    }
+
+    char key_path[512];
+    snprintf(key_path, sizeof(key_path), "%s/keys/identity.mlkem", engine->data_dir);
+
+    if (!qgp_platform_file_exists(key_path)) {
+        return NULL;
+    }
+
+    qgp_key_t *key = NULL;
+    int load_rc;
+    if (engine->keys_encrypted && engine->session_password) {
+        load_rc = qgp_key_load_encrypted(key_path, engine->session_password, &key);
+    } else {
+        load_rc = qgp_key_load(key_path, &key);
+    }
+    if (load_rc != 0 || !key) {
+        return NULL;
+    }
+    return key;
+}
+
 /* ============================================================================
  * DHT STABILIZATION
  * ============================================================================ */

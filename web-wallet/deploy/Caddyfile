@@ -1,0 +1,10 @@
+# Set WALLET_HOST to your domain, WALLET_DIST to the absolute web-wallet/dist path.
+{$WALLET_HOST} {
+    header {
+        Content-Security-Policy "frame-ancestors 'none'"
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+    }
+    root * {$WALLET_DIST}
+    file_server
+}

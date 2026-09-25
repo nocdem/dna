@@ -2,7 +2,7 @@
 
 ## Overview
 
-DNA Connect uses a modular blockchain architecture with 5 wallet chains. Each blockchain is a self-contained module that implements the `blockchain_ops_t` interface. Additionally, DNAC (DNA Chain) provides a native UTXO blockchain through BFT witnesses embedded in Nodus.
+DNA Connect uses a modular blockchain architecture with 5 wallet chains. Each blockchain is a self-contained module that implements the `blockchain_ops_t` interface. Additionally, DNAC (DNA Chain) provides a native UTXO-based chain with BFT witness consensus.
 
 ## Architecture
 
@@ -360,11 +360,11 @@ Wallets are managed separately in `blockchain/blockchain_wallet.c`. After adding
 
 ## DNAC (DNA Chain) Integration
 
-DNAC is a native UTXO blockchain whose authoritative state is maintained by BFT witnesses embedded in Nodus. Unlike the external wallet chains above (which use `blockchain_ops_t`), DNAC has its own dedicated API and is not part of the blockchain registry.
+DNAC (DNA Chain) is a separate UTXO-based chain that operates over Nodus with BFT witness consensus. Unlike the blockchain wallet chains above (which use `blockchain_ops_t`), DNAC has its own dedicated API and is not part of the blockchain registry.
 
 ### Architecture
 
-DNAC lives in a separate top-level directory (`/opt/dna/dnac/`) and is linked into the messenger as `libdnac`. The engine module `src/api/engine/dna_engine_dnac.c` wraps the DNAC library for async access.
+DNAC lives in a separate top-level directory (`/opt/dna/dnac/`); its sources are compiled **directly into `libdna.so`** by the messenger build (there is no separate `libdnac` in the production link path). The engine module `src/api/engine/dna_engine_dnac.c` wraps the DNAC API for async access.
 
 ### Key Differences from Wallet Chains
 

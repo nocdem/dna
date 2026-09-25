@@ -41,7 +41,7 @@
 #include "crypto/utils/qgp_types.h"  // For qgp_key_load, qgp_key_free
 #include "qgp.h"  // For cmd_gen_key_from_seed, cmd_export_pubkey
 #include "crypto/key/bip39/bip39.h"  // For BIP39_MAX_MNEMONIC_LENGTH, bip39_validate_mnemonic, qgp_derive_seeds_from_mnemonic
-#include "crypto/enc/kyber_deterministic.h"  // For crypto_kem_keypair_derand
+#include "crypto/enc/kyber_r3_legacy.h"  // For kyber_r3_keypair_derand
 #include "crypto/enc/qgp_aes.h"  // For qgp_aes256_encrypt
 #include "crypto/enc/aes_keywrap.h"  // For aes256_wrap_key
 #include "crypto/utils/qgp_random.h"  // For qgp_randombytes

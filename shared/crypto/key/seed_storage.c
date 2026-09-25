@@ -10,7 +10,9 @@
 
 #include "crypto/key/seed_storage.h"
 #include "crypto/enc/qgp_kyber.h"
+#include "crypto/enc/qgp_mlkem.h"
 #include "crypto/enc/qgp_aes.h"
+#include "crypto/key/key_encryption.h"   /* KEY_ENC_MAGIC, key_load_encrypted — password-wrap repair */
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/utils/qgp_log.h"
 
@@ -518,6 +520,20 @@ int mnemonic_storage_load(
         goto cleanup;
     }
 
+    /* A mnemonic.enc written by a pre-0.11.22 password change is wrapped in
+     * the KEY_ENC ("DNAK") password header (dna_engine_change_password_sync
+     * handed it to key_change_password, which re-saves through
+     * key_save_encrypted). Its bytes are NOT ct||nonce||tag||enc, so
+     * decapsulating them only yields a misleading "decrypt failed". Say what
+     * it is; the caller that holds the session password repairs it with
+     * mnemonic_storage_repair_password_wrap(). */
+    if (memcmp(file_buffer, KEY_ENC_MAGIC, KEY_ENC_MAGIC_SIZE) == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "mnemonic.enc is password-wrapped (legacy password-change "
+                      "defect) - needs mnemonic_storage_repair_password_wrap() with the "
+                      "session password before it can be read");
+        goto cleanup;
+    }
+
     fclose(fp);
     fp = NULL;
 
@@ -578,6 +594,144 @@ cleanup:
     return result;
 }
 
+int mnemonic_storage_repair_password_wrap(const char *identity_dir, const char *password) {
+    if (!identity_dir) {
+        return -1;
+    }
+
+    char mnemonic_path[512];
+    if (build_mnemonic_path(identity_dir, mnemonic_path, sizeof(mnemonic_path)) != 0) {
+        return -1;
+    }
+
+    /* Nothing to do unless the file exists AND starts with the KEY_ENC magic. */
+    uint8_t magic[KEY_ENC_MAGIC_SIZE];
+    FILE *fp = fopen(mnemonic_path, "rb");
+    if (!fp) {
+        return 0;
+    }
+    size_t got = fread(magic, 1, sizeof(magic), fp);
+    long file_size = -1;
+    if (fseek(fp, 0, SEEK_END) == 0) {
+        file_size = ftell(fp);
+    }
+    fclose(fp);
+    if (got != sizeof(magic) || memcmp(magic, KEY_ENC_MAGIC, KEY_ENC_MAGIC_SIZE) != 0) {
+        return 0;
+    }
+
+    /* The only legitimate wrapped form is KEY_ENC header + the raw blob.
+     * Anything else is refused BEFORE decryption: key_load_encrypted()
+     * decrypts into the caller's buffer without bounding the output by its
+     * size (key_encryption.c key_decrypt — pre-existing, see messenger/
+     * BUGS.md), so an oversized "DNAK" file must never reach it. The buffer
+     * below is sized from the file itself as a second guard. */
+    if (file_size != (long)(KEY_ENC_HEADER_SIZE + MNEMONIC_STORAGE_TOTAL_SIZE)) {
+        QGP_LOG_ERROR(LOG_TAG, "mnemonic.enc repair: wrapped file has size %ld, expected %d - refusing",
+                      file_size, (int)(KEY_ENC_HEADER_SIZE + MNEMONIC_STORAGE_TOTAL_SIZE));
+        return -1;
+    }
+
+    if (!password || password[0] == '\0') {
+        QGP_LOG_ERROR(LOG_TAG, "mnemonic.enc is password-wrapped but no password is available to repair it");
+        return -1;
+    }
+
+    /* The wrap is exactly what key_change_password() produced:
+     * key_save_encrypted(raw mnemonic blob, password). Unwrap with the SAME
+     * primitive and require the result to be a well-formed blob. */
+    int result = -1;
+    const size_t raw_cap = (size_t)file_size;   /* >= any ciphertext the file can hold */
+    uint8_t *raw = malloc(raw_cap);
+    size_t raw_len = 0;
+    FILE *out = NULL;
+    char tmp_path[600];
+#ifdef _WIN32
+    char bak_path[600];
+    bak_path[0] = '\0';
+#endif
+    int n;
+    tmp_path[0] = '\0';
+    if (!raw) {
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed");
+        return -1;
+    }
+    if (key_load_encrypted(mnemonic_path, password, raw, raw_cap, &raw_len) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "mnemonic.enc repair: could not unwrap with the session password");
+        goto cleanup;
+    }
+    if (raw_len != MNEMONIC_STORAGE_TOTAL_SIZE) {
+        QGP_LOG_ERROR(LOG_TAG, "mnemonic.enc repair: unwrapped %zu bytes, expected %d - leaving file untouched",
+                      raw_len, (int)MNEMONIC_STORAGE_TOTAL_SIZE);
+        goto cleanup;
+    }
+
+    /* Write the raw blob back atomically: temp file, flush, sync, rename. */
+    n = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", mnemonic_path);
+    if (n < 0 || (size_t)n >= sizeof(tmp_path)) {
+        goto cleanup;
+    }
+    out = fopen(tmp_path, "wb");
+    if (!out) {
+        QGP_LOG_ERROR(LOG_TAG, "mnemonic.enc repair: cannot create %s (%s)", tmp_path, strerror(errno));
+        goto cleanup;
+    }
+    set_file_permissions(tmp_path);
+    if (fwrite(raw, 1, raw_len, out) != raw_len || fflush(out) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "mnemonic.enc repair: write failed");
+        goto cleanup;
+    }
+#ifndef _WIN32
+    if (fsync(fileno(out)) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "mnemonic.enc repair: fsync failed (%s)", strerror(errno));
+        goto cleanup;
+    }
+#endif
+    fclose(out);
+    out = NULL;
+#ifdef _WIN32
+    /* rename() does not replace an existing file on Windows: move the wrapped
+     * original aside first, and put it back if the final rename fails, so a
+     * failure never leaves the identity without its mnemonic file. */
+    n = snprintf(bak_path, sizeof(bak_path), "%s.wrapped.bak", mnemonic_path);
+    if (n < 0 || (size_t)n >= sizeof(bak_path)) {
+        remove(tmp_path);
+        goto cleanup;
+    }
+    remove(bak_path);
+    if (rename(mnemonic_path, bak_path) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "mnemonic.enc repair: cannot move original aside (%s)", strerror(errno));
+        remove(tmp_path);
+        goto cleanup;
+    }
+    if (rename(tmp_path, mnemonic_path) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "mnemonic.enc repair: rename failed (%s) - original restored", strerror(errno));
+        rename(bak_path, mnemonic_path);
+        remove(tmp_path);
+        goto cleanup;
+    }
+    remove(bak_path);
+#else
+    if (rename(tmp_path, mnemonic_path) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "mnemonic.enc repair: rename failed (%s)", strerror(errno));
+        remove(tmp_path);
+        goto cleanup;
+    }
+#endif
+    set_file_permissions(mnemonic_path);
+    QGP_LOG_WARN(LOG_TAG, "mnemonic.enc was password-wrapped by an old password change - repaired (raw KEM blob restored)");
+    result = 1;
+
+cleanup:
+    if (out) {
+        fclose(out);
+        remove(tmp_path);
+    }
+    qgp_secure_memzero(raw, raw_cap);
+    free(raw);
+    return result;
+}
+
 bool mnemonic_storage_exists(const char *identity_dir) {
     if (!identity_dir) {
         return false;
@@ -585,6 +739,277 @@ bool mnemonic_storage_exists(const char *identity_dir) {
 
     char mnemonic_path[512];
     if (build_mnemonic_path(identity_dir, mnemonic_path, sizeof(mnemonic_path)) != 0) {
+        return false;
+    }
+
+    FILE *fp = fopen(mnemonic_path, "rb");
+    if (fp) {
+        fclose(fp);
+        return true;
+    }
+
+    /* KEM Faz 1 (R4): a v2-only identity (mnemonic re-encrypted under
+     * ML-KEM, legacy mnemonic.enc not yet removed until Faz 3) still counts
+     * as "mnemonic present" — EITHER format satisfies this check. */
+    return mnemonic_storage_v2_exists(identity_dir);
+}
+
+/* ============================================================================
+ * MNEMONIC STORAGE — ML-KEM-1024 IMPLEMENTATION (KEM Faz 1, R4)
+ * ============================================================================ */
+
+/**
+ * Build full path to the ML-KEM-1024 mnemonic file (mnemonic.v2.enc)
+ */
+static int build_mnemonic_v2_path(const char *identity_dir, char *path_out, size_t path_size) {
+    if (!identity_dir || !path_out || path_size < 32) {
+        return -1;
+    }
+
+    int written = snprintf(path_out, path_size, "%s/%s", identity_dir, MNEMONIC_STORAGE_V2_FILE);
+    if (written < 0 || (size_t)written >= path_size) {
+        return -1;
+    }
+
+    return 0;
+}
+
+int mnemonic_storage_save_v2(
+    const char *mnemonic,
+    const uint8_t mlkem_pubkey[1568],
+    const char *identity_dir
+) {
+    if (!mnemonic || !mlkem_pubkey || !identity_dir) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to mnemonic_storage_save_v2");
+        return -1;
+    }
+
+    size_t mnemonic_len = strlen(mnemonic);
+    if (mnemonic_len == 0 || mnemonic_len >= MNEMONIC_STORAGE_DATA_SIZE) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid mnemonic length: %zu", mnemonic_len);
+        return -1;
+    }
+
+    int result = -1;
+    FILE *fp = NULL;
+    uint8_t *file_buffer = NULL;
+
+    /* Buffers for KEM and AES. ML-KEM-1024 ct/ss sizes are byte-identical to
+     * legacy Kyber1024 round-3 (1568/32) — same SEED_STORAGE_* constants. */
+    uint8_t kem_ciphertext[SEED_STORAGE_KEM_CT_SIZE];
+    uint8_t shared_secret[32];
+    uint8_t nonce[SEED_STORAGE_NONCE_SIZE];
+    uint8_t tag[SEED_STORAGE_TAG_SIZE];
+    uint8_t plaintext[MNEMONIC_STORAGE_DATA_SIZE];
+    uint8_t encrypted_data[MNEMONIC_STORAGE_DATA_SIZE];
+    size_t encrypted_len = 0;
+
+    /* Zero-pad the plaintext buffer and copy mnemonic */
+    memset(plaintext, 0, MNEMONIC_STORAGE_DATA_SIZE);
+    memcpy(plaintext, mnemonic, mnemonic_len);
+
+    /* Build file path */
+    char mnemonic_path[512];
+    if (build_mnemonic_v2_path(identity_dir, mnemonic_path, sizeof(mnemonic_path)) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to build mnemonic.v2.enc path");
+        goto cleanup;
+    }
+
+    /* Step 1: ML-KEM-1024 encapsulation */
+    QGP_LOG_DEBUG(LOG_TAG, "Performing ML-KEM-1024 encapsulation for mnemonic...");
+    if (qgp_mlkem1024_encapsulate(kem_ciphertext, shared_secret, mlkem_pubkey) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "ML-KEM-1024 encapsulation failed");
+        goto cleanup;
+    }
+
+    /* Step 2: AES-256-GCM encryption */
+    QGP_LOG_DEBUG(LOG_TAG, "Encrypting mnemonic with AES-256-GCM (v2)...");
+    if (qgp_aes256_encrypt(
+            shared_secret,
+            plaintext, MNEMONIC_STORAGE_DATA_SIZE,
+            NULL, 0,
+            encrypted_data, &encrypted_len,
+            nonce, tag) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "AES-256-GCM encryption failed");
+        goto cleanup;
+    }
+
+    if (encrypted_len != MNEMONIC_STORAGE_DATA_SIZE) {
+        QGP_LOG_ERROR(LOG_TAG, "Unexpected encrypted length: %zu", encrypted_len);
+        goto cleanup;
+    }
+
+    /* Step 3: Write to file — same layout as mnemonic_storage_save:
+     * kem_ciphertext || nonce || tag || encrypted_data */
+    file_buffer = malloc(MNEMONIC_STORAGE_TOTAL_SIZE);
+    if (!file_buffer) {
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed");
+        goto cleanup;
+    }
+
+    size_t offset = 0;
+    memcpy(file_buffer + offset, kem_ciphertext, SEED_STORAGE_KEM_CT_SIZE);
+    offset += SEED_STORAGE_KEM_CT_SIZE;
+    memcpy(file_buffer + offset, nonce, SEED_STORAGE_NONCE_SIZE);
+    offset += SEED_STORAGE_NONCE_SIZE;
+    memcpy(file_buffer + offset, tag, SEED_STORAGE_TAG_SIZE);
+    offset += SEED_STORAGE_TAG_SIZE;
+    memcpy(file_buffer + offset, encrypted_data, MNEMONIC_STORAGE_DATA_SIZE);
+
+    fp = fopen(mnemonic_path, "wb");
+    if (!fp) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to open file for writing: %s (%s)",
+                      mnemonic_path, strerror(errno));
+        goto cleanup;
+    }
+    set_file_permissions(mnemonic_path);
+
+    if (fwrite(file_buffer, 1, MNEMONIC_STORAGE_TOTAL_SIZE, fp) != MNEMONIC_STORAGE_TOTAL_SIZE) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to write mnemonic.v2.enc file");
+        goto cleanup;
+    }
+
+    fclose(fp);
+    fp = NULL;
+
+    set_file_permissions(mnemonic_path);
+
+    QGP_LOG_INFO(LOG_TAG, "Mnemonic (v2, ML-KEM-1024) saved securely to %s", mnemonic_path);
+    result = 0;
+
+cleanup:
+    qgp_secure_memzero(shared_secret, sizeof(shared_secret));
+    qgp_secure_memzero(plaintext, sizeof(plaintext));
+    qgp_secure_memzero(encrypted_data, sizeof(encrypted_data));
+    if (file_buffer) {
+        qgp_secure_memzero(file_buffer, MNEMONIC_STORAGE_TOTAL_SIZE);
+        free(file_buffer);
+    }
+    if (fp) {
+        fclose(fp);
+    }
+
+    return result;
+}
+
+int mnemonic_storage_load_v2(
+    char *mnemonic_out,
+    size_t mnemonic_size,
+    const uint8_t mlkem_privkey[3168],
+    const char *identity_dir
+) {
+    if (!mnemonic_out || mnemonic_size < MNEMONIC_STORAGE_DATA_SIZE || !mlkem_privkey || !identity_dir) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to mnemonic_storage_load_v2");
+        return -1;
+    }
+
+    int result = -1;
+    FILE *fp = NULL;
+    uint8_t *file_buffer = NULL;
+
+    uint8_t shared_secret[32];
+    uint8_t decrypted_data[MNEMONIC_STORAGE_DATA_SIZE];
+    size_t decrypted_len = 0;
+
+    /* Build file path */
+    char mnemonic_path[512];
+    if (build_mnemonic_v2_path(identity_dir, mnemonic_path, sizeof(mnemonic_path)) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to build mnemonic.v2.enc path");
+        goto cleanup;
+    }
+
+    /* Check if file exists */
+    if (!mnemonic_storage_v2_exists(identity_dir)) {
+        QGP_LOG_DEBUG(LOG_TAG, "mnemonic.v2.enc does not exist: %s", mnemonic_path);
+        goto cleanup;
+    }
+
+    /* Read file */
+    fp = fopen(mnemonic_path, "rb");
+    if (!fp) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to open mnemonic.v2.enc: %s (%s)",
+                      mnemonic_path, strerror(errno));
+        goto cleanup;
+    }
+
+    file_buffer = malloc(MNEMONIC_STORAGE_TOTAL_SIZE);
+    if (!file_buffer) {
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed");
+        goto cleanup;
+    }
+
+    if (fread(file_buffer, 1, MNEMONIC_STORAGE_TOTAL_SIZE, fp) != MNEMONIC_STORAGE_TOTAL_SIZE) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to read mnemonic.v2.enc (truncated?)");
+        goto cleanup;
+    }
+
+    fclose(fp);
+    fp = NULL;
+
+    /* Parse file buffer */
+    size_t offset = 0;
+    const uint8_t *kem_ciphertext = file_buffer + offset;
+    offset += SEED_STORAGE_KEM_CT_SIZE;
+    const uint8_t *nonce = file_buffer + offset;
+    offset += SEED_STORAGE_NONCE_SIZE;
+    const uint8_t *tag = file_buffer + offset;
+    offset += SEED_STORAGE_TAG_SIZE;
+    const uint8_t *encrypted_data = file_buffer + offset;
+
+    /* Step 1: ML-KEM-1024 decapsulation */
+    QGP_LOG_DEBUG(LOG_TAG, "Performing ML-KEM-1024 decapsulation for mnemonic...");
+    if (qgp_mlkem1024_decapsulate(shared_secret, kem_ciphertext, mlkem_privkey) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "ML-KEM-1024 decapsulation failed");
+        goto cleanup;
+    }
+
+    /* Step 2: AES-256-GCM decryption */
+    QGP_LOG_DEBUG(LOG_TAG, "Decrypting mnemonic with AES-256-GCM (v2)...");
+    if (qgp_aes256_decrypt(
+            shared_secret,
+            encrypted_data, MNEMONIC_STORAGE_DATA_SIZE,
+            NULL, 0,
+            nonce, tag,
+            decrypted_data, &decrypted_len) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "AES-256-GCM decryption failed");
+        qgp_secure_memzero(mnemonic_out, mnemonic_size);
+        goto cleanup;
+    }
+
+    if (decrypted_len != MNEMONIC_STORAGE_DATA_SIZE) {
+        QGP_LOG_ERROR(LOG_TAG, "Unexpected decrypted length: %zu", decrypted_len);
+        qgp_secure_memzero(mnemonic_out, mnemonic_size);
+        goto cleanup;
+    }
+
+    /* Copy to output (null-terminated string in decrypted_data) */
+    memcpy(mnemonic_out, decrypted_data, MNEMONIC_STORAGE_DATA_SIZE);
+    mnemonic_out[MNEMONIC_STORAGE_DATA_SIZE - 1] = '\0';
+
+    QGP_LOG_INFO(LOG_TAG, "Mnemonic (v2, ML-KEM-1024) loaded successfully");
+    result = 0;
+
+cleanup:
+    qgp_secure_memzero(shared_secret, sizeof(shared_secret));
+    qgp_secure_memzero(decrypted_data, sizeof(decrypted_data));
+    if (file_buffer) {
+        qgp_secure_memzero(file_buffer, MNEMONIC_STORAGE_TOTAL_SIZE);
+        free(file_buffer);
+    }
+    if (fp) {
+        fclose(fp);
+    }
+
+    return result;
+}
+
+bool mnemonic_storage_v2_exists(const char *identity_dir) {
+    if (!identity_dir) {
+        return false;
+    }
+
+    char mnemonic_path[512];
+    if (build_mnemonic_v2_path(identity_dir, mnemonic_path, sizeof(mnemonic_path)) != 0) {
         return false;
     }
 

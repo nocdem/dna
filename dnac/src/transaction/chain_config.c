@@ -43,6 +43,11 @@ int dnac_chain_config_propose(dnac_context_t *ctx,
                                dnac_callback_t callback,
                                void *user_data) {
     if (!ctx || !votes) return DNAC_ERROR_INVALID_PARAM;
+    /* SHAPE window only ([5,128] since S3). Quorum is decided witness-side
+     * against the committee governing signed_at_block — a proposal that
+     * passes here can still be rejected for missing
+     * dna_bft_quorum(committee_count) or for carrying more votes than that
+     * committee has members. */
     if (vote_count < DNAC_CHAIN_CONFIG_MIN_SIGS ||
         vote_count > DNAC_CHAIN_CONFIG_MAX_SIGS) {
         QGP_LOG_ERROR(LOG_TAG, "vote_count=%u outside [%d,%d]",
@@ -51,6 +56,9 @@ int dnac_chain_config_propose(dnac_context_t *ctx,
                       DNAC_CHAIN_CONFIG_MAX_SIGS);
         return DNAC_ERROR_INVALID_PARAM;
     }
+    /* param_id 4 (TARGET_ACTIVE_COUNT) is accepted here via the generic
+     * bound; its value range is enforced by
+     * dnac_tx_verify_chain_config_rules and again witness-side. */
     if (param_id < 1 || param_id > DNAC_CFG_PARAM_MAX_ID) {
         return DNAC_ERROR_INVALID_PARAM;
     }

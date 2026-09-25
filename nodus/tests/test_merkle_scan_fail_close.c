@@ -34,10 +34,21 @@
  * fixture with the fault disabled must still load successfully, so a
  * failure can only come from the injected fault and not from the
  * fixture itself.
+ *
+ * Root-layout round (2026-09-25, docs/plans/decisions/
+ * 2026-09-25-root-layout-round.md): K2 deleted the epoch_state subtree
+ * and K3 the legacy composite state_root, so their cases (the
+ * epoch_state step error / short snapshot, combine_v3's NULL handling)
+ * are GONE; the composite step-error case now runs against the CORE
+ * root (nodus_witness_core_root_v2), the root the utxo subtree feeds on
+ * the live chain. K1 added unlock_block to the UTXO leaf: the fixtures
+ * carry the column, and a NEGATIVE stored value is a malformed row that
+ * must fail the load (a new K1 case below).
  */
 
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_merkle.h"
+#include "witness/nodus_witness_roots_v2.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -97,13 +108,16 @@ static int utxo_view_fixture(nodus_witness_t *w, int bad_row) {
         "  token_id BLOB NOT NULL,"
         "  tx_hash BLOB NOT NULL,"
         "  output_index INTEGER NOT NULL,"
+        "  unlock_block INTEGER NOT NULL DEFAULT 0,"
         "  bad INTEGER NOT NULL DEFAULT 0"
         ");") != 0) return -1;
 
+    /* unlock_block is projected too — the K1 leaf loader SELECTs it. */
     if (exec_sql(w,
         "CREATE VIEW utxo_set AS SELECT nullifier, owner,"
         "  CASE WHEN bad = 1 THEN " OVERFLOW_EXPR " ELSE amount END AS amount,"
-        "  token_id, tx_hash, output_index FROM utxo_raw;") != 0) return -1;
+        "  token_id, tx_hash, output_index, unlock_block FROM utxo_raw;") != 0)
+        return -1;
 
     for (int i = 1; i <= 4; i++) {
         uint8_t nullifier[64], token_id[64], tx_hash[64];
@@ -133,9 +147,13 @@ static int utxo_view_fixture(nodus_witness_t *w, int bad_row) {
     return 0;
 }
 
-/* Real utxo_set table. `short_row` (1-based, 0 = none) gets a 32-byte
- * nullifier instead of 64 — the malformed-row case. */
-static int utxo_table_fixture(nodus_witness_t *w, int short_row) {
+/* Real utxo_set table. Row `fault_row` (1-based, 0 = none) is malformed:
+ * a 32-byte nullifier instead of 64 (`neg_unlock` == 0), or a NEGATIVE
+ * unlock_block (`neg_unlock` == 1 — root-layout round K1). Every other
+ * row carries a real lock height, so the unlock_block column is read on
+ * every row of the clean twin too. */
+static int utxo_rows_fixture(nodus_witness_t *w, int fault_row,
+                             int neg_unlock) {
     if (exec_sql(w,
         "CREATE TABLE utxo_set ("
         "  nullifier BLOB PRIMARY KEY,"
@@ -143,7 +161,8 @@ static int utxo_table_fixture(nodus_witness_t *w, int short_row) {
         "  amount INTEGER NOT NULL,"
         "  token_id BLOB NOT NULL,"
         "  tx_hash BLOB NOT NULL,"
-        "  output_index INTEGER NOT NULL"
+        "  output_index INTEGER NOT NULL,"
+        "  unlock_block INTEGER NOT NULL DEFAULT 0"
         ");") != 0) return -1;
 
     for (int i = 1; i <= 4; i++) {
@@ -155,12 +174,17 @@ static int utxo_table_fixture(nodus_witness_t *w, int short_row) {
         memset(owner, 'a', 128);
         owner[128] = '\0';
 
-        int nlen = (i == short_row) ? 32 : 64;
+        int faulty = (i == fault_row);
+        int nlen = (faulty && !neg_unlock) ? 32 : 64;
+        sqlite3_int64 unlock = (faulty && neg_unlock)
+                                   ? (sqlite3_int64)-1
+                                   : (sqlite3_int64)(i * 720);
 
         sqlite3_stmt *stmt = NULL;
         if (sqlite3_prepare_v2(w->db,
             "INSERT INTO utxo_set (nullifier, owner, amount, token_id, "
-            "tx_hash, output_index) VALUES (?, ?, ?, ?, ?, ?)",
+            "tx_hash, output_index, unlock_block) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             -1, &stmt, NULL) != SQLITE_OK) return -1;
         sqlite3_bind_blob(stmt, 1, nullifier, nlen, SQLITE_STATIC);
         sqlite3_bind_text(stmt, 2, owner, 128, SQLITE_STATIC);
@@ -168,11 +192,20 @@ static int utxo_table_fixture(nodus_witness_t *w, int short_row) {
         sqlite3_bind_blob(stmt, 4, token_id, 64, SQLITE_STATIC);
         sqlite3_bind_blob(stmt, 5, tx_hash, 64, SQLITE_STATIC);
         sqlite3_bind_int(stmt, 6, i);
+        sqlite3_bind_int64(stmt, 7, unlock);
         int rc = sqlite3_step(stmt);
         sqlite3_finalize(stmt);
         if (rc != SQLITE_DONE) return -1;
     }
     return 0;
+}
+
+static int utxo_table_fixture(nodus_witness_t *w, int short_row) {
+    return utxo_rows_fixture(w, short_row, 0);
+}
+
+static int utxo_neg_unlock_fixture(nodus_witness_t *w, int fault_row) {
+    return utxo_rows_fixture(w, fault_row, 1);
 }
 
 /* ── Validator fixtures ────────────────────────────────────────────── */
@@ -211,9 +244,7 @@ static const char *VALIDATOR_COLUMNS =
     "  unstake_destination_fp TEXT,"
     "  unstake_destination_pubkey BLOB,"
     "  last_validator_update_block INTEGER NOT NULL,"
-    "  consecutive_missed_epochs INTEGER NOT NULL,"
-    "  last_signed_block INTEGER NOT NULL,"
-    "  signed_blocks_this_epoch INTEGER NOT NULL";
+    "  consecutive_missed_epochs INTEGER NOT NULL";
 
 /* Insert 4 validator rows into `table`. Row `fault_row` (1-based,
  * 0 = none) gets the malformed value named by `fault_kind`. `bad_row`
@@ -246,9 +277,8 @@ static int validator_rows(nodus_witness_t *w, const char *table,
             " pending_effective_block, status, active_since_block,"
             " unstake_commit_block, unstake_destination_fp,"
             " unstake_destination_pubkey, last_validator_update_block,"
-            " consecutive_missed_epochs, last_signed_block,"
-            " signed_blocks_this_epoch%s) VALUES (?, 10, 0, 0, 100, 0, 0, 1,"
-            " 1, 0, ?, ?, 0, 0, 0, 0%s)",
+            " consecutive_missed_epochs%s) VALUES (?, 10, 0, 0, 100, 0, 0, 1,"
+            " 1, 0, ?, ?, 0, 0%s)",
             table, has_bad ? ", bad" : "", has_bad ? ", ?" : "");
 
         sqlite3_stmt *stmt = NULL;
@@ -295,8 +325,7 @@ static int validator_view_fixture(nodus_witness_t *w, int bad_row) {
         "  pending_commission_bps, pending_effective_block, status,"
         "  active_since_block, unstake_commit_block, unstake_destination_fp,"
         "  unstake_destination_pubkey, last_validator_update_block,"
-        "  consecutive_missed_epochs, last_signed_block,"
-        "  signed_blocks_this_epoch FROM validators_raw;") != 0) return -1;
+        "  consecutive_missed_epochs FROM validators_raw;") != 0) return -1;
 
     return validator_rows(w, "validators_raw", 1, bad_row, VF_NONE, 0);
 }
@@ -393,14 +422,14 @@ static int delegation_table_fixture(nodus_witness_t *w, int short_row) {
     return delegation_rows(w, "delegations", 0, 0, short_row);
 }
 
-/* ── epoch_state fixtures ──────────────────────────────────────────── */
+/* ── Composite (CORE root) companion tables ─────────────────────────── */
 
-/* Present but EMPTY. load_epoch_state_leaves reads the supply counters
- * before it touches epoch_state, and since the D1/D3 change merged a
- * MISSING supply_tracking is a hard error there (supply_get returns -1
- * for "no such table"), not "pre-genesis". Without this the clean run of
- * every epoch_state case would fail too and the fault case would be
- * vacuous. An empty table yields supply_get == 1, which IS pre-genesis. */
+/* Present but EMPTY. The CORE root's supply leg (nodus_witness_supply_root_v2)
+ * reads the supply counters, and since the D1 change a MISSING
+ * supply_tracking is a hard error there (supply_get returns -1 for "no
+ * such table"), not "pre-genesis". Without this the clean run of the
+ * composite case would fail too and the fault case would be vacuous. An
+ * empty table yields supply_get == 1, which IS pre-genesis. */
 static int create_empty_supply_tracking(nodus_witness_t *w) {
     return exec_sql(w,
         "CREATE TABLE supply_tracking ("
@@ -410,109 +439,36 @@ static int create_empty_supply_tracking(nodus_witness_t *w) {
         "  total_minted INTEGER NOT NULL DEFAULT 0,"
         "  current_supply INTEGER NOT NULL,"
         "  last_tx_hash BLOB NOT NULL,"
-        "  last_sequence INTEGER NOT NULL"
+        "  last_sequence INTEGER NOT NULL,"
+        /* tokenomics-v3 P2: read by nodus_witness_supply_get (the
+         * production DDL, nodus_witness.c) */
+        "  reward_pool INTEGER NOT NULL DEFAULT 0"
         ");");
-}
-
-/* Insert 4 epoch_state rows. `short_row` (1-based, 0 = none) gets a
- * 32-byte snapshot_hash instead of 64. */
-static int epoch_state_rows(nodus_witness_t *w, const char *table,
-                            int has_bad, int bad_row, int short_row) {
-    for (int i = 1; i <= 4; i++) {
-        uint8_t snap[64];
-        memset(snap, (uint8_t)i, sizeof(snap));
-        int snaplen = (i == short_row) ? 32 : 64;
-
-        char sql[512];
-        snprintf(sql, sizeof(sql),
-            "INSERT INTO %s (epoch_start_height, epoch_pool_accum,"
-            " snapshot_hash%s) VALUES (?, ?, ?%s)",
-            table, has_bad ? ", bad" : "", has_bad ? ", ?" : "");
-
-        sqlite3_stmt *stmt = NULL;
-        if (sqlite3_prepare_v2(w->db, sql, -1, &stmt, NULL) != SQLITE_OK)
-            return -1;
-        sqlite3_bind_int64(stmt, 1, (sqlite3_int64)(i * 10));
-        sqlite3_bind_int64(stmt, 2, (sqlite3_int64)i);
-        sqlite3_bind_blob(stmt, 3, snap, snaplen, SQLITE_STATIC);
-        if (has_bad) sqlite3_bind_int(stmt, 4, (i == bad_row) ? 1 : 0);
-        int rc = sqlite3_step(stmt);
-        sqlite3_finalize(stmt);
-        if (rc != SQLITE_DONE) return -1;
-    }
-    return 0;
-}
-
-static int epoch_state_view_fixture(nodus_witness_t *w, int bad_row) {
-    if (create_empty_supply_tracking(w) != 0) return -1;
-
-    if (exec_sql(w,
-        "CREATE TABLE epoch_state_raw ("
-        "  epoch_start_height INTEGER PRIMARY KEY,"
-        "  epoch_pool_accum INTEGER NOT NULL,"
-        "  snapshot_hash BLOB NOT NULL,"
-        "  bad INTEGER NOT NULL DEFAULT 0"
-        ");") != 0) return -1;
-
-    if (exec_sql(w,
-        "CREATE VIEW epoch_state AS SELECT epoch_start_height,"
-        "  CASE WHEN bad = 1 THEN " OVERFLOW_EXPR " ELSE epoch_pool_accum END"
-        "    AS epoch_pool_accum,"
-        "  snapshot_hash FROM epoch_state_raw;") != 0) return -1;
-
-    return epoch_state_rows(w, "epoch_state_raw", 1, bad_row, 0);
-}
-
-static int epoch_state_table_fixture(nodus_witness_t *w, int short_row) {
-    if (create_empty_supply_tracking(w) != 0) return -1;
-
-    if (exec_sql(w,
-        "CREATE TABLE epoch_state ("
-        "  epoch_start_height INTEGER PRIMARY KEY,"
-        "  epoch_pool_accum INTEGER NOT NULL,"
-        "  snapshot_hash BLOB NOT NULL"
-        ");") != 0) return -1;
-
-    return epoch_state_rows(w, "epoch_state", 0, 0, short_row);
 }
 
 /* ── Composite fixture ─────────────────────────────────────────────── */
 
-/* The four subtrees compute_state_root needs besides utxo, created EMPTY
- * so each returns its tagged-empty sentinel, plus supply_tracking.
- *
- * All five are required since the D1-D4 change merged: compute_state_root
- * now fails closed on every subtree (the tagged-empty fallbacks it used
- * to substitute are gone), and load_epoch_state_leaves fails closed when
- * nodus_witness_supply_get reports a DB error — which is what a missing
- * supply_tracking table produces. An empty-but-present supply_tracking
- * reports "row absent" (1) instead, which is the legitimate pre-genesis
- * state and keeps the clean run green. */
+/* The CORE root's other fail-closed legs, created EMPTY so each returns
+ * its tagged-empty value: `tokens` (token_root fails on an absent table),
+ * `v2_reward_accrual` (accrual_root fails on an absent table — it is in
+ * the base schema), and supply_tracking (above). pools / claims answer
+ * an absent table with their tagged-empty root, and names is a constant
+ * — so those need nothing. The DDL mirrors production's
+ * (nodus_witness.c). */
 static int create_companion_tables(nodus_witness_t *w) {
-    char sql[2048];
-
-    snprintf(sql, sizeof(sql), "CREATE TABLE validators (%s);",
-             VALIDATOR_COLUMNS);
-    if (exec_sql(w, sql) != 0) return -1;
-
-    snprintf(sql, sizeof(sql), "CREATE TABLE delegations (%s, "
-             DELEGATION_PK ");", DELEGATION_COLUMNS);
-    if (exec_sql(w, sql) != 0) return -1;
-
     if (exec_sql(w,
-        "CREATE TABLE epoch_state ("
-        "  epoch_start_height INTEGER PRIMARY KEY,"
-        "  epoch_pool_accum INTEGER NOT NULL,"
-        "  snapshot_hash BLOB NOT NULL"
+        "CREATE TABLE tokens ("
+        "  token_id BLOB PRIMARY KEY, name TEXT NOT NULL,"
+        "  symbol TEXT NOT NULL, decimals INTEGER NOT NULL DEFAULT 8,"
+        "  supply INTEGER NOT NULL, creator_fp TEXT NOT NULL,"
+        "  flags INTEGER NOT NULL DEFAULT 0,"
+        "  block_height INTEGER NOT NULL DEFAULT 0,"
+        "  timestamp INTEGER NOT NULL DEFAULT 0"
         ");") != 0) return -1;
 
     if (exec_sql(w,
-        "CREATE TABLE chain_config_history ("
-        "  param_id INTEGER NOT NULL,"
-        "  new_value INTEGER NOT NULL,"
-        "  effective_block INTEGER NOT NULL,"
-        "  commit_block INTEGER NOT NULL,"
-        "  proposal_nonce INTEGER NOT NULL"
+        "CREATE TABLE v2_reward_accrual ("
+        "  owner_fp BLOB PRIMARY KEY, amount INTEGER NOT NULL"
         ");") != 0) return -1;
 
     return create_empty_supply_tracking(w);
@@ -619,16 +575,15 @@ static void test_empty_fp_root_is_real(void) {
     PASS();
 }
 
-/* Item 4 — the two hash helpers that used to return void now report
- * failure. Their EVP-failure path cannot be provoked without mocking
- * OpenSSL, but the NULL-argument leg is reachable and is the same
- * contract: a caller must be able to tell "no root" from "a root". */
+/* Item 4 — the hash helper that used to return void now reports failure.
+ * Its EVP-failure path cannot be provoked without mocking OpenSSL, but
+ * the NULL-argument leg is reachable and is the same contract: a caller
+ * must be able to tell "no root" from "a root". (combine_v3, the second
+ * helper this case covered, is DELETED by the root-layout round, K3.) */
 static void test_hash_helpers_report_failure(void) {
-    TEST("empty_root / combine_v3 report failure instead of zeros");
+    TEST("empty_root reports failure instead of zeros");
 
     uint8_t out[64];
-    uint8_t sub[64];
-    memset(sub, 0x11, sizeof(sub));
 
     if (nodus_merkle_empty_root(NODUS_TREE_TAG_VALIDATOR, NULL) == 0) {
         FAIL("empty_root(NULL) reported success"); return;
@@ -637,24 +592,11 @@ static void test_hash_helpers_report_failure(void) {
         FAIL("empty_root failed on a valid call"); return;
     }
 
-    if (nodus_merkle_combine_state_root_v3(sub, sub, sub, sub, sub,
-                                            NULL) == 0) {
-        FAIL("combine_v3(out=NULL) reported success"); return;
-    }
-    if (nodus_merkle_combine_state_root_v3(NULL, sub, sub, sub, sub,
-                                            out) == 0) {
-        FAIL("combine_v3(utxo=NULL) reported success"); return;
-    }
-    if (nodus_merkle_combine_state_root_v3(sub, sub, sub, sub, sub,
-                                            out) != 0) {
-        FAIL("combine_v3 failed on a valid call"); return;
-    }
-
-    /* Non-vacuity: a valid combine produces a real digest, not the
+    /* Non-vacuity: a valid call produces a real digest, not the
      * all-zero sentinel the failure path writes. */
     uint8_t zero[64];
     memset(zero, 0, sizeof(zero));
-    if (memcmp(out, zero, 64) == 0) { FAIL("valid combine produced zeros"); return; }
+    if (memcmp(out, zero, 64) == 0) { FAIL("valid empty_root produced zeros"); return; }
 
     PASS();
 }
@@ -670,23 +612,20 @@ int main(void) {
              validator_view_fixture, nodus_witness_merkle_compute_validator_root);
     run_case("K3  delegation scan error is not silent truncation",
              delegation_view_fixture, nodus_witness_merkle_compute_delegation_root);
-    run_case("K3  epoch_state scan error is not silent truncation",
-             epoch_state_view_fixture, nodus_witness_merkle_compute_epoch_state_root);
 
-    /* K3 — the composite state_root inherits a mid-scan step error.
+    /* K3 — the composite root inherits a mid-scan step error.
      *
-     * MERGE NOTE (2026-07-31): this case used to run on a utxo-only
-     * fixture and lean on compute_state_root substituting tagged-empty
-     * sentinels for the four other subtrees. The D1-D4 change deleted
-     * those fallbacks — every subtree now fails closed — so the fixture
-     * builds all five subtree tables (empty) plus supply_tracking, and
-     * the ONLY difference between the clean and faulty runs is the
-     * injected utxo step error. Fault-mode coverage that the merged
-     * test_witness_state_root_failclose does not have: it injects
+     * Root-layout round (K3): this case ran against the legacy
+     * compute_state_root, which is DELETED; it now runs against the
+     * CORE root (nodus_witness_core_root_v2), whose utxo leg is the same
+     * loader. The fixture builds the CORE root's other fail-closed
+     * tables (empty), so the ONLY difference between the clean and
+     * faulty runs is the injected utxo step error. Fault-mode coverage
+     * that test_witness_state_root_failclose does not have: it injects
      * DROP TABLE (prepare fails), this injects a mid-SCAN step error
      * after rows have already been returned. */
-    run_case("K3  composite state_root fails when utxo scan errors",
-             composite_fixture, nodus_witness_merkle_compute_state_root);
+    run_case("K3  composite CORE root fails when utxo scan errors",
+             composite_fixture, nodus_witness_core_root_v2);
 
     /* K3b — a malformed row fails the load instead of being skipped. */
     run_case("K3b utxo malformed row fails the load",
@@ -695,6 +634,13 @@ int main(void) {
              validator_table_fixture, nodus_witness_merkle_compute_validator_root);
     run_case("K3b delegation malformed row fails the load",
              delegation_table_fixture, nodus_witness_merkle_compute_delegation_root);
+
+    /* Root-layout round K1 — a NEGATIVE unlock_block is a malformed row:
+     * the whole load fails, the row is never skipped and never hashed as
+     * a huge u64. The clean twin reads a non-zero unlock_block on every
+     * row. */
+    run_case("K1  utxo negative unlock_block fails the load",
+             utxo_neg_unlock_fixture, nodus_witness_merkle_compute_utxo_root);
 
     /* Round-3 item 3 — the three columns that still substituted zeros
      * INSIDE a leaf the loops above already guarded. Each one made two
@@ -709,9 +655,8 @@ int main(void) {
     run_case("R3  validator short unstake_destination_pubkey fails the load",
              validator_short_upk_fixture,
              nodus_witness_merkle_compute_validator_root);
-    run_case("R3  epoch_state short snapshot_hash fails the load",
-             epoch_state_table_fixture,
-             nodus_witness_merkle_compute_epoch_state_root);
+    /* (The "R3 epoch_state short snapshot_hash" case is DELETED with
+     * the epoch_state subtree — root-layout round K2.) */
 
     /* …and the non-vacuity guards for that fail-close: an EMPTY fp is a
      * legitimate value and must still load. */

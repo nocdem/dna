@@ -9,6 +9,12 @@
  * C1's frozen cm_carry/pos_carry, poseidon always-on + pins gated on
  * [φ∈1..D]·IS_INPUT.
  *
+ * LEDGER-V2 S8 Gate 2 (2026-08-06): D = 24 (production depth) and the balance
+ * semantics move to the turnstile — IS_FEE pinned ZERO + last-row
+ * BAL == boundary_out − boundary_in. Both are added at the AGGREGATE level
+ * (the reused conf_action_air_eval is unmodified); see the header for the
+ * resulting completeness limit of this formulation.
+ *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -89,6 +95,7 @@ bool conf_action_agg_air_generate(unsigned log_height, const uint64_t *value,
                                   const uint64_t *nk, const uint64_t *ak,
                                   size_t num_notes,
                                   const uint64_t *memb_siblings,
+                                  uint64_t boundary_in, uint64_t boundary_out,
                                   uint64_t anchor_out[CONF_MEMB_LANES],
                                   uint64_t *nf_out, uint64_t *pub_nf_out,
                                   uint64_t *trace_out) {
@@ -107,7 +114,8 @@ bool conf_action_agg_air_generate(unsigned log_height, const uint64_t *value,
     uint64_t *c1 = (uint64_t *)calloc(rows * CONF_ACTION_WIDTH, sizeof(uint64_t));
     if (!c1) return false;
     if (!conf_action_air_generate(log_height, value, addr, rcm, roles, pos, nk,
-                                  ak, num_notes, c1)) {
+                                  ak, num_notes, boundary_in, boundary_out,
+                                  c1)) {
         free(c1);
         return false;
     }
@@ -259,7 +267,8 @@ bool conf_action_agg_air_generate(unsigned log_height, const uint64_t *value,
 
 int conf_action_agg_air_eval(const uint64_t *trace, size_t n_rows,
                              const uint64_t anchor[CONF_MEMB_LANES],
-                             const uint64_t *pub_nf) {
+                             const uint64_t *pub_nf, uint64_t boundary_in,
+                             uint64_t boundary_out) {
     if (!trace || n_rows == 0 || !anchor || !pub_nf) return 1;
     int viol = 0;
     const gold_fp_t one = gold_fp_one();
@@ -271,7 +280,7 @@ int conf_action_agg_air_eval(const uint64_t *trace, size_t n_rows,
         memcpy(c1 + r * CONF_ACTION_WIDTH,
                trace + r * CONF_AGG_WIDTH + CONF_AGG_C1_OFF,
                CONF_ACTION_WIDTH * sizeof(uint64_t));
-    viol += conf_action_air_eval(c1, n_rows);
+    viol += conf_action_air_eval(c1, n_rows, boundary_in, boundary_out);
     free(c1);
 
     /* Precompute the verifier-known level weights 2^level, level ∈ [0, D). */
@@ -302,6 +311,13 @@ int conf_action_agg_air_eval(const uint64_t *trace, size_t n_rows,
             if (!gold_fp_eq(mul(d, inv), sub(one, is_nf))) viol++;
             if (!gold_fp_is_zero(mul(d, is_nf))) viol++;
         }
+
+        /* S8 Gate-2 balance semantics (IS_FEE ≡ 0 and the boundary-bound
+         * last-row terminal) are checked by the DELEGATED conf_action_air_eval
+         * above, which now takes the two legs — the same single-source reuse
+         * this gate has always used for the C1 region. They are deliberately
+         * NOT re-checked here: a second copy would double-count violations and
+         * give the C1 constraint set two owners. */
 
         /* ── C3 membership (always-on poseidon; pins gated on active). ── */
         viol += poseidon2_air_eval_row(mc1);

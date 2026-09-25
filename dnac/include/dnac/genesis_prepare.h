@@ -61,7 +61,7 @@ extern "C" {
  *   - All pubkey hex fields are 5184 chars (2592 bytes)
  *   - All fp fields are at most 128 chars
  *   - All endpoint fields are at most 127 chars (leave room for terminating NUL)
- *   - commission_bps in [0, 10000]
+ *   - commission_bps in [0, DNAC_COMMISSION_BPS_MAX] (5000)
  *   - pairwise-distinct validator_N_pubkey (Rule P.3 canary; final authority
  *     is the genesis TX verify, but catching it here gives better errors)
  */

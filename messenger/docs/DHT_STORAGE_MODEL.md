@@ -1,8 +1,8 @@
 # DHT Storage Model
 
-**Last Updated:** 2026-04-24
-**Version:** Library v0.11.5 | Nodus v0.17.7
-**Status:** Verified from source code (2026-04-10); versions refreshed 2026-04-24
+**Last Updated:** 2026-08-27 (constants/salt pass)
+**Version:** Library v0.11.18 | Nodus v0.19.19
+**Status:** Verified from source code (2026-04-10); constants re-verified 2026-08-27
 
 This document describes how each data type in DNA Connect is stored on the Nodus DHT network. It covers key derivation, bucket strategies, serialization formats, TTLs, ownership models, and sync patterns.
 
@@ -29,7 +29,7 @@ This document describes how each data type in DNA Connect is stored on the Nodus
 
 ## 1. Overview
 
-All persistent data in DNA Connect is stored on the Nodus DHT via the `nodus_ops` abstraction layer (`dht/shared/nodus_ops.c`). There is **no chunked storage layer** — each value is stored as a single DHT PUT (up to 1MB, the Nodus native limit).
+All persistent data in DNA Connect is stored on the Nodus DHT via the `nodus_ops` abstraction layer (`dht/shared/nodus_ops.c`). There is **no chunked storage layer** — each value is stored as a single DHT PUT (up to 4MB, `NODUS_MAX_VALUE_SIZE`).
 
 ### Storage Strategies Used
 
@@ -60,7 +60,7 @@ Each sender maintains their own outbox for each recipient, partitioned by day.
 <sender_fp>:outbox:<recipient_fp>:<day_bucket>
 ```
 
-With per-contact salt (privacy enhancement):
+With per-contact salt (REQUIRED since CORE-04 / v0.9.196 — `salt == NULL` returns -1, no unsalted fallback):
 ```
 <sender_fp>:outbox:<recipient_fp>:<day_bucket>:<salt_hex>
 ```
@@ -68,7 +68,7 @@ With per-contact salt (privacy enhancement):
 Where:
 - `sender_fp` / `recipient_fp` = 128-char hex SHA3-512 fingerprint
 - `day_bucket` = `unix_timestamp / 86400` (integer days since epoch)
-- `salt_hex` = 64-char hex of 32-byte per-contact salt (optional)
+- `salt_hex` = 64-char hex of 32-byte per-contact salt (REQUIRED)
 
 ### Properties
 
@@ -114,10 +114,10 @@ For each message:
 
 Delivery confirmation uses a separate key:
 ```
-<recipient_fp>:ack:<sender_fp>[:<salt_hex>]
+<recipient_fp>:ack:<sender_fp>:<salt_hex>     (salt REQUIRED since v0.9.196)
 ```
 - Value: 8-byte big-endian timestamp
-- TTL: 7 days
+- TTL: 30 days (`DHT_ACK_TTL`)
 - Recipient publishes ACK after fetching messages
 - Sender listens for ACK to update message status to RECEIVED
 
@@ -138,12 +138,13 @@ All group members write to the same DHT key using different `value_id` values. E
 ### Key Format
 
 ```
-dna:group:<group_uuid>:out:<day_bucket>
+dna:group:<group_uuid>:out:<day_bucket>:<salt_hex>
 ```
 
 Where:
 - `group_uuid` = UUID v4 (36 chars)
 - `day_bucket` = `unix_timestamp / 86400`
+- `salt_hex` = 64-char hex of the per-group 32-byte salt (CORE-04, REQUIRED — distributed in the owner-signed IKP v2)
 
 ### Properties
 
@@ -424,7 +425,7 @@ DNAC does not use DHT PUT/GET for ledger data. The relationship with Nodus is th
 
 ### Key Observations
 
-- **No chunked storage**: Nodus supports up to 1MB per value natively. No chunking abstraction is used.
+- **No chunked storage**: Nodus supports up to 4MB per value natively. No chunking abstraction is used.
 - **Daily buckets vs single key**: High-volume or time-series data (messages, posts) uses daily buckets. Low-volume or entity-centric data (wall, metadata) uses single key.
 - **Multi-owner via value_id**: Nodus stores multiple values per key (one per writer's `value_id`). `nodus_ops_get_all()` retrieves all writers' values.
 - **TTL-based cleanup**: No manual garbage collection. DHT entries expire automatically after their TTL.
@@ -483,14 +484,15 @@ DHT Key: shared_key
 - `nodus_ops_get_all()` retrieves all writers' values at once
 - No coordination needed between writers — each manages their own slot
 
-### 11.4 Salt-Based Privacy (DM Only)
+### 11.4 Salt-Based Privacy (DM + Groups)
 
-DM keys include an optional per-contact salt:
+DM keys carry a REQUIRED per-contact salt, group outbox keys a REQUIRED per-group salt (CORE-04, v0.9.196+):
 ```
 sender_fp:outbox:recipient_fp:day:SALT_HEX
+dna:group:<uuid>:out:<day>:SALT_HEX
 ```
 
-Without salt, anyone who knows both fingerprints can derive the outbox key and monitor message activity (not content — it's encrypted). The 32-byte salt makes the key unpredictable to third parties.
+Without salt, anyone who knows both fingerprints (or the group UUID) could derive the key and monitor message activity (not content — it's encrypted). The 32-byte salt makes the key unpredictable to third parties. The pre-CORE-04 unsalted fallback branches were deleted — `salt == NULL` is an error, not a legacy path.
 
 ---
 

@@ -1,8 +1,11 @@
 /**
- * Nodus — Witness Module (DNAC BFT Consensus)
+ * Nodus — Witness Module (DNAC Consensus)
  *
  * All nodus nodes are automatic witnesses. Provides:
- *   - BFT consensus for DNAC transaction witnessing
+ *   - cometbft @709fd12b consensus for DNAC transaction witnessing on a
+ *     version-3 chain (R3 W4 — the legacy PBFT lane this module ran
+ *     before is deleted; DNAC client query handlers stay on their
+ *     legacy tables per the hub/spoke boundary, unaffected by the port)
  *   - Nullifier/ledger/UTXO/block SQLite storage
  *   - Witness peer mesh over nodus TCP connections
  *   - DNAC client query handlers (dnac_* Tier 2 methods)
@@ -10,7 +13,7 @@
  * Roster is dynamically built from DHT pubkey registry + witness peer mesh
  * and refreshed every 60 seconds (epoch tick).
  *
- * All BFT messages use Tier 3 protocol ("w_" prefixed CBOR methods)
+ * Consensus messages use Tier 3 protocol ("w_" prefixed CBOR methods)
  * over dedicated witness TCP port 4004.
  * Single-threaded: all state transitions in the epoll event loop.
  *
@@ -22,7 +25,6 @@
 
 #include "nodus/nodus_types.h"
 #include "nodus/nodus_chain_config.h"  /* nodus_cc_rate_limit_table_t */
-#include "witness/nodus_witness_mempool.h"
 #include "dnac/dnac.h"        /* DNAC_COMMITTEE_SIZE, DNAC_PUBKEY_SIZE */
 #include <sqlite3.h>
 #include <stdbool.h>
@@ -43,23 +45,14 @@ struct nodus_tcp_conn;
 /* ── Witness configuration ───────────────────────────────────────── */
 
 typedef struct {
-    /* 2026-05-02 audit B-3 — halt-recovery auto policy.
-     *
-     * Default false: when finalize_block latches safety_halt, the node
-     * REMAINS halted until an operator clears the recovery sentinel
-     * file (Faz 4B) and restarts the service. Default chosen to deny
-     * an "all-Byzantine peer" attacker the ability to coerce an
-     * isolated honest node into wiping its own (correct) DB and
-     * re-syncing from the attacker's chain.
-     *
-     * When true: halt_recovery_check (Faz 4D-E) evaluates same-height
-     * disagreement quorum against the historical committee snapshot
-     * pinned at halt_block_height; if quorum is clear the node auto-
-     * drops its DB + re-syncs. Use only in trusted-network deployments
-     * (test/staging clusters) or after operator review.
-     *
-     * Wire/JSON key: "halt_auto_recover" (bool). */
-    bool     halt_auto_recover;
+    /* R3 W4 — halt_auto_recover (and the halt_recovery_check it gated)
+     * is deleted with the closed consensus lane: the legacy safety_halt
+     * / halt_committee snapshot it read no longer exists. The recovery
+     * sentinel FILE it used to arm is still checked at boot (witness.c,
+     * nodus_witness_init) for the reason recorded there — a stale file
+     * from an older binary must still refuse a silent boot — but nothing
+     * in this tree can set safety_halt or arm a new sentinel again. */
+    char     _reserved;
 } nodus_witness_config_t;
 
 /* ── Roster entry ────────────────────────────────────────────────── */
@@ -104,6 +97,80 @@ typedef struct {
  * C3's first commit, atomically with the shielded apply case + state_root
  * v4 (C2 design v2 CRIT-2/G-SEC-7/G-SEC-9). */
 #define NODUS_W_TX_SHIELDED         11
+/* Ledger V2 S9 — pool boundary crossings. MUST equal DNAC_TX_SHIELD = 12 /
+ * DNAC_TX_UNSHIELD = 13 (dnac_tx_type_t, dnac/include/dnac/dnac.h). Both are
+ * V3-ONLY: they are carried exclusively by the V3 wire and are inadmissible on
+ * the legacy V2 wire, whose acceptance set is FROZEN at 0..11. Admission is
+ * REJECT-unconditional until activation — nodus_witness_verify.c rejects them
+ * by name right after the tx-hash check. Type 14 stays UNASSIGNED. */
+#define NODUS_W_TX_SHIELD           12
+#define NODUS_W_TX_UNSHIELD         13
+/* O15C — Ledger V2 activation authority (legacy-wire governance types).
+ * RETIRED by O15J Faz 3, which deleted the activation ceremony: a V2 chain
+ * is born V2, so there is no transition for these to schedule or signal.
+ * The ids are KEPT DEFINED and PERMANENTLY INADMISSIBLE — no build accepts
+ * them, nodus_witness_verify.c rejects both by name right after the
+ * tx-hash check, and 15/16 are never reused for a new type. Type 14 stays
+ * UNASSIGNED. */
+#define NODUS_W_TX_V2_SCHEDULE      15
+#define NODUS_W_TX_V2_READY         16
+/* O15D — TRANSPORT-LOCAL discriminator for a Ledger V2 ENVELOPE riding
+ * the witness mempool / T3 batch surfaces on a SUCCESSOR chain. This is
+ * NOT a chain transaction type: the dnac_tx_type_t space is untouched
+ * (14 stays UNASSIGNED), no wire walker or verify lane keys on it, and
+ * the AUTHORITY for classification is always the envelope's 16-byte
+ * wire-family marker at offset 0 ("DNA.ENVWIRE.v1", env_wire.h) — this
+ * value only labels an entry whose bytes already carried that marker.
+ * Deliberately far outside the chain type space so a collision with a
+ * future chain type is impossible to miss. */
+#define NODUS_W_TX_V2_ENVELOPE      200
+
+/* O15F Task 3 — TRANSPORT-LOCAL discriminator for a Ledger V2 CLAIM
+ * riding the witness mempool / T3 batch surfaces on a SUCCESSOR chain.
+ * Like NODUS_W_TX_V2_ENVELOPE this is NOT a chain transaction type: a
+ * claim has NO live wire type (the dnac_tx_type_t space and types 11-14
+ * are untouched), no wire walker keys on it, and the classification
+ * AUTHORITY is byte-driven — an entry whose bytes do NOT begin with the
+ * envelope wire-family marker ("DNA.ENVWIRE.v1", env_wire.c:25-27) on a
+ * successor is a claim; strict dna_claim_decode + admission decide
+ * validity. Deliberately adjacent to 200 and far outside the chain type
+ * space so a collision is impossible to miss. */
+#define NODUS_W_TX_V2_CLAIM         201
+
+/* O15F Task 1 — the SUCCESSOR active-set maximum.
+ *
+ * THE INVARIANT: on a successor chain no `validator_set_snapshots` row
+ * with active_count > NODUS_V2_ACTIVE_SET_MAX can ever be PERSISTED. The
+ * persisted snapshot is the SOLE committee authority
+ * (nodus_committee_get_for_block serves it RAW to every live consumer),
+ * so bounding every WRITE / SEED / RESOLVE point makes every reader safe
+ * WITHOUT a divergence-prone reader clamp. Enforced fail-closed at the
+ * target clamps (committee_target_for_epoch / vset_target_for_epoch), the
+ * writer (nodus_witness_vset_insert), the resolver
+ * (nodus_witness_v2_epoch_authority_for_epoch) and the seam
+ * (early v2_successor + terminal-set precondition + carried-CC reject).
+ * LEGACY chains keep the DNAC_MAX_ACTIVE_VALIDATORS ceiling byte-for-byte
+ * (every guard is gated on w->v2_successor / the seam's successor build).
+ * 32 <= 128, so all round-state / QC / vote arrays already fit.
+ *
+ * tokenomics-v3 P3-7 (docs/plans/decisions/2026-09-22-nodus-tokenomics-
+ * v3-operator.md §3 2026-09-24 "P3 soruları" (4): "tavan 32 kodda sabit";
+ * design docs/plans/2026-09-23-tokenomics-v3-consensus-binding-design.md
+ * D-10): 30 -> 32. The same value is the default target
+ * (DNAC_TARGET_ACTIVE_DEFAULT, dnac.h) and the top of the governed
+ * TARGET_ACTIVE_COUNT range [7, 32] on this lane
+ * (nodus_witness_rt_native.c / nodus_witness_chain_config.c); the genesis
+ * config array (NODUS_V2_GEN_MAX_VALIDATORS) and the InitChain match
+ * table (nodus_witness_cmt_app.c) are sized by it. Going above 32 is a
+ * code change plus a separate operator decision. */
+#define NODUS_V2_ACTIVE_SET_MAX     32
+_Static_assert(NODUS_V2_ACTIVE_SET_MAX <= DNAC_MAX_ACTIVE_VALIDATORS,
+               "successor active-set max exceeds resource ceiling");
+_Static_assert(DNAC_TARGET_ACTIVE_DEFAULT == NODUS_V2_ACTIVE_SET_MAX,
+               "the default target and the V2 active-set ceiling are one "
+               "operator number (N = 32)");
+_Static_assert(DNAC_COMMITTEE_SIZE <= NODUS_V2_ACTIVE_SET_MAX,
+               "the governed minimum must fit under the V2 ceiling");
 
 /* ── Vote types ──────────────────────────────────────────────────── */
 
@@ -111,28 +178,6 @@ typedef enum {
     NODUS_W_VOTE_APPROVE = 0,
     NODUS_W_VOTE_REJECT  = 1,
 } nodus_witness_vote_t;
-
-/* ── BFT configuration (derived from roster size) ────────────────── */
-
-typedef struct {
-    uint32_t    n_witnesses;
-    uint32_t    f_tolerance;        /* (n-1)/3 */
-    uint32_t    quorum;             /* 2f+1 */
-    uint32_t    round_timeout_ms;
-    uint32_t    viewchg_timeout_ms;
-    uint32_t    max_view_changes;
-} nodus_witness_bft_config_t;
-
-/* ── BFT consensus phase ─────────────────────────────────────────── */
-
-typedef enum {
-    NODUS_W_PHASE_IDLE       = 0,
-    NODUS_W_PHASE_PROPOSE    = 1,
-    NODUS_W_PHASE_PREVOTE    = 2,
-    NODUS_W_PHASE_PRECOMMIT  = 3,
-    NODUS_W_PHASE_COMMIT     = 4,
-    NODUS_W_PHASE_VIEW_CHANGE = 5,
-} nodus_witness_phase_t;
 
 /* ── Vote record ─────────────────────────────────────────────────── */
 
@@ -149,113 +194,24 @@ typedef struct {
      *     time (safe because witness_id = H(pubkey) per
      *     nodus_chain_config.h:157, see F17 design A15).
      * Cert reads from DB (nodus_witness_cert_get) leave this field
-     * ZERO — callers on the read path MUST NOT trust pubkey. The read
-     * path is used only by sync verification, which resolves pubkey
-     * separately via nodus_witness_verify_sync_certs. */
+     * ZERO — callers on the read path MUST NOT trust pubkey. R3 W4 — the
+     * sync verification path that used to resolve pubkey separately
+     * (nodus_witness_verify_sync_certs) is deleted with the closed
+     * consensus lane; the one surviving reader, handle_dnac_block
+     * (nodus_witness_handlers.c), never reads this field at all — it
+     * encodes only voter_id and signature to the client. */
     uint8_t     pubkey[DNAC_PUBKEY_SIZE];
 } nodus_witness_vote_record_t;
 
-/* ── Round state ─────────────────────────────────────────────────── */
-
-typedef struct {
-    uint64_t    round;
-    uint32_t    view;
-    nodus_witness_phase_t phase;
-
-    /* A2 fix — proposed block's height for THIS round. Set once at
-     * round start (leader: nodus_witness_block_height(w)+1; follower:
-     * prop->block_height after sanity check). All callers of
-     * compute_prepared_preimage MUST source height from here, not from
-     * nodus_witness_block_height(w)+1, so sender and verifier agree on
-     * the round's anchor regardless of local-state drift. */
-    uint64_t    block_height;
-
-    /* tx_hash mirrors block_hash for vote message addressing — every
-     * round is now batch-shaped (Phase 7), so the two values are equal
-     * by construction. Kept as a separate field only so vote message
-     * dispatch does not have to know about block_hash semantics. */
-    uint8_t     tx_hash[NODUS_T3_TX_HASH_LEN];
-    /* tx_type carried for diagnostics / future per-type handling. All TX
-     * types (including genesis) now use standard BFT 2f+1 quorum — the
-     * former genesis-unanimous override was removed because it blocked
-     * liveness without providing additional safety. Set by
-     * bft_start_round_internal from entries[0]->tx_type. */
-    uint8_t     tx_type;
-
-    /* Votes — sized to DNAC_COMMITTEE_SIZE per F17: consensus is
-     * committee-bound, so vote arrays hold at most committee-many
-     * entries. Previously these were NODUS_T3_MAX_WITNESSES (128)
-     * legacy gossip-roster cap, which cost ~1.7 MB per round_state
-     * after A1's pubkey widening — enough to stack-overflow test
-     * binaries that allocate nodus_witness_t on the stack. Type
-     * enforces F17 invariant: "vote_count can never exceed committee
-     * size." */
-    nodus_witness_vote_record_t prevotes[DNAC_COMMITTEE_SIZE];
-    int         prevote_count;
-    int         prevote_approve_count;
-
-    nodus_witness_vote_record_t precommits[DNAC_COMMITTEE_SIZE];
-    int         precommit_count;
-    int         precommit_approve_count;
-
-    /* Timing */
-    uint64_t    phase_start_time;
-
-    /* Block production */
-    uint64_t    proposal_timestamp;
-    uint8_t     proposer_id[NODUS_T3_WITNESS_ID_LEN];
-
-    /* Forwarder info */
-    bool        is_forwarded;
-    uint8_t     forwarder_id[NODUS_T3_WITNESS_ID_LEN];
-
-    /* Client session (deprecated — entries carry their own conn after Phase 12) */
-    struct nodus_tcp_conn *client_conn;
-    uint32_t    client_txn_id;
-
-    /* Batch mode (multi-TX block) */
-    int                                batch_count;
-    nodus_witness_mempool_entry_t     *batch_entries[NODUS_W_MAX_BLOCK_TXS];
-    /* Phase 9 / Task 9.4 — tx_root, NOT block_hash. RFC 6962 Merkle
-     * root over the batch's tx hashes. */
-    uint8_t     tx_root[NODUS_T3_TX_HASH_LEN];
-} nodus_witness_round_state_t;
-
-/* ── View change record ──────────────────────────────────────────── */
-
-typedef struct {
-    uint32_t    target_view;
-    uint8_t     voter_id[NODUS_T3_WITNESS_ID_LEN];
-    uint64_t    last_committed_round;
-    uint8_t     signature[NODUS_SIG_BYTES];
-    /* C5 — prepared cert carried on the VIEW_CHANGE wire. Populated by
-     * handle_viewchg only after the incoming prepared_sigs verify
-     * against the PREPARED preimage + committee pubkey lookup AND reach
-     * 2f+1 quorum. has_prepared stays false if verification fails, if
-     * the sender did not carry a prepared cert, or if the cert had
-     * fewer than quorum-many valid sigs. Used by the new-leader scan at
-     * view-change quorum to pick the PBFT reproposal (highest height).
-     *
-     * sigs[] is sized to DNAC_COMMITTEE_SIZE (not NODUS_T3_MAX_WITNESSES)
-     * because prepared is committee-bound like prevotes/precommits —
-     * at most 2f+1 sigs fit. view_changes[DNAC_COMMITTEE_SIZE] × sigs
-     * [NODUS_T3_MAX_WITNESSES=64] would have blown past the stack
-     * budget of tests that stack-allocate nodus_witness_t (see F17 A1
-     * note above). Wire format stays NODUS_T3_MAX_WITNESSES-sized
-     * (nodus_tier3.h); handle_viewchg caps the decode loop at
-     * DNAC_COMMITTEE_SIZE when copying into this struct. */
-    struct {
-        bool       has_prepared;
-        uint64_t   height;
-        uint32_t   view;
-        uint8_t    tx_hash[NODUS_T3_TX_HASH_LEN];
-        uint32_t   n_sigs;
-        struct {
-            uint8_t voter_id[NODUS_T3_WITNESS_ID_LEN];
-            uint8_t signature[NODUS_SIG_BYTES];
-        } sigs[DNAC_COMMITTEE_SIZE];
-    } prepared;
-} nodus_witness_vc_record_t;
+/* R3 W4 — the out-of-order vote buffer (nodus_witness_pending_vote_t,
+ * NODUS_W_VOTE_BUFFER_ROUND_AHEAD/_VIEW_AHEAD/_CAP), the round state
+ * (nodus_witness_round_state_t, the live PROPOSE/PREVOTE/PRECOMMIT
+ * machinery), the view-change record (nodus_witness_vc_record_t,
+ * nodus_witness_prepared_sig_t, nodus_witness_vc_record_clear) and the
+ * VIEW_OK statement set (nodus_witness_view_ok_set_t) are all DELETED
+ * with the closed consensus lane: they existed only to run the legacy
+ * PBFT round, view-change and view-authority machinery, none of which
+ * this build ever starts (D-17 rev 10 (9)). */
 
 /* ── Witness peer connection ─────────────────────────────────────── */
 
@@ -270,9 +226,10 @@ typedef struct {
     /* C-02: Outgoing auth state (client-side hello/auth on port 4004) */
     enum { PEER_AUTH_NONE, PEER_AUTH_HELLO_SENT, PEER_AUTH_OK } auth_state;
 
-    /* State sync: peer's chain state from w_ident */
+    /* State sync: peer's chain state from w_ident. Root-layout round
+     * (K3): `remote_checksum` (the peer's advertised legacy state_root)
+     * is DELETED — it was written and never read. */
     uint64_t    remote_height;              /* peer's block height */
-    uint8_t     remote_checksum[64];        /* peer's UTXO checksum */
 
     /* Phase 10 / Task 10.4 — clock skew probe.
      * (now - peer.ts_local) seconds, signed. Logged when |skew| > 10. */
@@ -291,13 +248,11 @@ typedef struct {
     uint32_t    remote_chain_config_schema;
     bool        version_compatible;         /* false if schema/version mismatch */
 
-    /* PR 3 / E3 — H-1 per-source rate limit on incoming w_chain_q.
-     * A sign-amplification adversary spams w_chain_q expecting a
-     * Dilithium5-signed w_chain_r per request — this timestamp records
-     * the last response we sent to this peer (monotonic ms) so the
-     * bootstrap handler can drop excess requests inside the
-     * NODUS_W_BOOTSTRAP_CHAIN_Q_MIN_INTERVAL_MS window. */
-    uint64_t    last_chain_q_response_ms;
+    /* R3 W4 — last_chain_q_response_ms (the legacy w_chain_q bootstrap
+     * rate limit) and sync_bad_until (the legacy sync peer-selection
+     * cooldown) are deleted with the closed consensus lane: their only
+     * readers/writers were nodus_witness_bootstrap.c and
+     * nodus_witness_sync.c, both gone. */
 } nodus_witness_peer_t;
 
 /* ── Main witness context ────────────────────────────────────────── */
@@ -322,30 +277,42 @@ typedef struct nodus_witness {
     /* Roster */
     nodus_witness_roster_t  roster;
 
-    /* BFT consensus state */
-    uint64_t    current_round;
-    uint32_t    current_view;
-    uint64_t    last_committed_round;
-    nodus_witness_round_state_t round_state;
-
-    /* View change tracking */
-    nodus_witness_vc_record_t view_changes[DNAC_COMMITTEE_SIZE];
-    int         view_change_count;
-    uint32_t    view_change_target;
-    bool        view_change_in_progress;
-
-    /* BFT config (computed from roster) */
-    nodus_witness_bft_config_t  bft_config;
+    /* R3 W4 — the legacy BFT consensus state (current_round,
+     * current_view, last_committed_round, round_state), view-change
+     * tracking (view_changes[], view_change_count/target/in_progress/
+     * voted), the VIEW_OK authority store (viewok_acc/proof/req_sent_ms/
+     * rsp_sent_ms), the P2 post-view-change deadman
+     * (awaiting_propose_deadline_ms), the P3 demand-armed follower
+     * deadman (last_seen_tip, tip_since_ms), the out-of-order vote
+     * buffer (vote_buffer[]) and the BFT config derived from the roster
+     * (bft_config) are all DELETED with the closed consensus lane: they
+     * existed only to run the legacy PBFT round, view-change and
+     * view-authority machinery, which this build never starts. The
+     * IDENT wire's `current_view` field stays byte-identical (written 0
+     * by nodus_witness_peer_send_ident; there is nothing left to adopt
+     * it into on receipt). */
 
     /* Dynamic roster — epoch-based refresh. F17 A2: transport-only now
      * (peer discovery / witness_id→pubkey lookup). BFT config comes
      * from the chain committee at round-start, not from this roster. */
     uint64_t    last_epoch;                     /* Timestamp of last roster rebuild */
     nodus_witness_roster_t  pending_roster;     /* Built each epoch from DHT + peers */
-    bool        pending_roster_ready;           /* Pending roster waiting to swap */
 
     /* Zone chain ID */
     uint8_t     chain_id[32];
+
+    /* R3 W4 — g_quorum_cdh / g_quorum_cdh_set (the DISCOVER-agreed
+     * genesis chain_def anchor for the legacy genesis-sync leg) are
+     * deleted with the closed consensus lane: their only writer
+     * (nodus_witness_bootstrap.c) and reader (nodus_witness_sync.c) are
+     * both gone. */
+
+    /* Ledger V2 (INACTIVE) — optional domain-runtime table override.
+     * NULL = the compiled production table (nodus_runtime_builtin_table).
+     * Tests inject synthetic runtimes here to exercise the GENERIC
+     * registry/dispatch boundary; production never sets it. */
+    const struct nodus_domain_runtime *v2_runtime_table;
+    size_t                             v2_runtime_table_n;
 
     /* CC-OPS-005 / Q17 — chain_config observability counters.
      *
@@ -390,13 +357,16 @@ typedef struct nodus_witness {
      *     restart warms from DB which has the (maybe) committed state.
      *     No stale cache can survive a restart.
      *
-     * Sized to hold 3 params × 64 rows — far more than any chain
-     * governance would ever produce. */
+     * Sized to hold every governed param × 64 rows — far more than any
+     * chain governance would ever produce. The first dimension is derived
+     * from DNAC_CFG_PARAM_MAX_ID (index 0 is unused, param ids start at 1)
+     * so adding a param id cannot leave the new param silently
+     * unreachable behind a stale literal. */
     struct {
         uint64_t new_value;
         uint64_t effective_block;
-    }           chain_config_cache[4 /* DNAC_CFG_PARAM_MAX_ID + 1 */][64];
-    int         chain_config_cache_count[4];   /* rows per param */
+    }           chain_config_cache[DNAC_CFG_PARAM_MAX_ID + 1][64];
+    int         chain_config_cache_count[DNAC_CFG_PARAM_MAX_ID + 1]; /* rows per param */
     bool        chain_config_cache_warm;
 
     /* Startup chain_id quorum verification (Fix 3 — fork detection).
@@ -420,33 +390,19 @@ typedef struct nodus_witness {
     nodus_witness_peer_t    peers[NODUS_T3_MAX_WITNESSES];
     int                     peer_count;
 
-    /* Pending forwards (non-leader → client response routing) */
-    struct {
-        bool        active;
-        uint8_t     tx_hash[NODUS_T3_TX_HASH_LEN];
-        struct nodus_tcp_conn *client_conn;
-        uint32_t    client_txn_id;
-        uint64_t    started_at;     /* H-15: timestamp for timeout (seconds) */
-    } pending_forwards[NODUS_W_MAX_PENDING_FWD];
-    int pending_forward_count;
+    /* R3 W4 — pending_forwards[]/pending_forward_count (the legacy
+     * non-leader forward-response routing table), mempool (the legacy
+     * in-memory TX queue) and sync_state (the legacy block-replay
+     * driver) are deleted with the closed consensus lane: their only
+     * readers/writers were nodus_witness_peer.c's FWD_REQ/FWD_RSP
+     * handlers, nodus_witness_handlers.c's leader/forward branch,
+     * nodus_witness_mempool.c and nodus_witness_sync.c, all gone. The
+     * version-3 lane's mempool is the Comet reactor's own (cmt_mem.c). */
 
-    /* Transaction mempool (leader: fee-sorted pending TX queue) */
-    nodus_witness_mempool_t mempool;
-
-    /* State sync (block replay from peers) */
-    struct {
-        bool        syncing;              /* sync in progress */
-        int         sync_peer_idx;        /* which peer we're syncing from */
-        uint64_t    sync_target_height;   /* peer's height */
-        uint64_t    sync_current_height;  /* next block to request */
-        uint64_t    last_sync_attempt;    /* rate limit (timestamp) */
-    } sync_state;
-
-    /* Phase 10 / Task 10.1 — cached state_root (RFC 6962 Merkle root over
-     * the UTXO set), computed by nodus_witness_merkle_compute_utxo_root.
-     * Cached to avoid a full table scan on every epoch tick. */
-    uint8_t         cached_state_root[64];  /* NODUS_KEY_BYTES */
-    bool            cached_state_root_valid;
+    /* Root-layout round (K3, 2026-09-25): `cached_state_root` /
+     * `cached_state_root_valid` are DELETED — no code wrote them, so the
+     * two readers (IDENT send, the T2 status reply's legacy branch)
+     * always took their fallback. */
 
     /* v0.16 stage A.5: block_fee_pool field removed — fees no longer
      * accumulate in RAM. Stage C.3 wires route_tx_fee() to burn fees
@@ -467,14 +423,24 @@ typedef struct nodus_witness {
      * include. Callers MUST go through the get_for_block accessor
      * rather than touching these fields directly.
      *
-     * DNAC_COMMITTEE_SIZE (7) members × (2592 pubkey + 8 stake + 2
-     * commission + padding) ≈ 18.4 KB. Kept in-struct rather than
-     * malloc-d because nodus_witness_t itself is already heap-allocated. */
+     * S3: sized to DNAC_MAX_ACTIVE_VALIDATORS (128) members ×
+     * (2592 pubkey + 8 total_stake + 8 self_stake + 2 commission) ≈
+     * 333 KB. Kept in-struct rather than malloc-d because
+     * nodus_witness_t itself is already heap-allocated
+     * (nodus/src/server/nodus_server.c:6078).
+     *
+     * cached_committee_self_stakes is the S3 addition that closes the
+     * cache's old asymmetry: before it, a cache HIT reported
+     * nodus_committee_member_t.self_stake as 0 while a cache MISS
+     * reported the real bond. A cache hit must produce the same answer
+     * as a cache miss (root CLAUDE.md, "Verify cache symmetry"), so the
+     * bond now has its own parallel array and both paths agree. */
     uint64_t        cached_committee_epoch_start;
     int             cached_committee_count;
-    uint8_t         cached_committee_pubkeys[DNAC_COMMITTEE_SIZE][DNAC_PUBKEY_SIZE];
-    uint64_t        cached_committee_stakes[DNAC_COMMITTEE_SIZE];
-    uint16_t        cached_committee_commission_bps[DNAC_COMMITTEE_SIZE];
+    uint8_t         cached_committee_pubkeys[DNAC_MAX_ACTIVE_VALIDATORS][DNAC_PUBKEY_SIZE];
+    uint64_t        cached_committee_stakes[DNAC_MAX_ACTIVE_VALIDATORS];
+    uint64_t        cached_committee_self_stakes[DNAC_MAX_ACTIVE_VALIDATORS];
+    uint16_t        cached_committee_commission_bps[DNAC_MAX_ACTIVE_VALIDATORS];
 
     /* Witness database (separate from DHT storage) */
     sqlite3     *db;
@@ -488,136 +454,161 @@ typedef struct nodus_witness {
      * inside exactly one outer transaction (design F-STATE-02). */
     bool        in_block_transaction;
 
-    /* C3 fix — safety halt on state_root divergence.
-     *
-     * Set by commit_batch/finalize_block when the follower's locally
-     * computed state_root doesn't match the leader's claim. Once set,
-     * every BFT handler refuses to participate: no PREVOTE, no PRECOMMIT,
-     * no COMMIT applied, no new PROPOSE issued. The operator must
-     * investigate (divergence root cause) and restart the process after
-     * remediation. halt_block_height records the height at which the
-     * divergence was detected for diagnostics. */
-    bool        safety_halt;
-    uint64_t    halt_block_height;
-    /* 2026-05-02 audit B-3 + C-4 + M-3 — halt-recovery snapshot.
-     *
-     * Set when finalize_block latches safety_halt. Pinning the
-     * committee at halt_block_height defends against an attacker
-     * spawning phantom committee members during the halt window to
-     * inflate disagree-quorum votes — halt_recovery_check (Faz 4D-E)
-     * counts only members of THIS snapshot, not the gossip-current
-     * roster. halt_timestamp drives the 60s cooldown gate (M-3
-     * expedite). halt_committee_count == 0 means snapshot capture
-     * itself failed; halt_recovery_check treats this as inconclusive
-     * and blocks auto-drop. */
-    uint64_t    halt_timestamp;
-    /* Pubkey snapshot only — sufficient for membership check during
-     * halt-recovery quorum tally. Mirrors cached_committee_pubkeys
-     * pattern below to avoid pulling nodus_committee_member_t into
-     * this header. */
-    uint8_t     halt_committee_pubkeys[DNAC_COMMITTEE_SIZE][DNAC_PUBKEY_SIZE];
-    int         halt_committee_count;
-
-    /* C5 — PBFT prepared-cert tracker.
-     *
-     * When PREVOTE quorum reached for (view, height, tx_hash), populate
-     * this slot with the 2f+1 prevoter sigs over PREPARED preimage.
-     * Cleared on successful commit_batch of that block, or on a NEW_VIEW
-     * that rolls past this height. Carried on VIEW_CHANGE so the new
-     * leader respects the "re-propose highest prepared or null" rule.
-     */
-    struct {
-        bool      present;
-        uint64_t  height;
-        uint32_t  view;
-        uint32_t  round;
-        uint8_t   tx_hash[64];                     /* NODUS_T3_TX_HASH_LEN */
-        uint32_t  n_sigs;
-        struct {
-            uint8_t voter_id[32];                 /* NODUS_T3_WITNESS_ID_LEN */
-            uint8_t signature[4627];              /* NODUS_SIG_BYTES */
-        } sigs[64];                                /* NODUS_T3_MAX_WITNESSES */
-    } last_prepared;
-
-    /* C5 — NEW_VIEW re-proposal binding.
-     *
-     * Set in handle_newview when the leader's NEW_VIEW arrives with
-     * has_reproposal=true: this witness will only accept a PROPOSE
-     * matching reproposal_tx_hash at reproposal_height as the first
-     * proposal under the new view. Cleared on first matching PROPOSE
-     * (gate satisfied) or on a subsequent NEW_VIEW that resets. */
-    bool        reproposal_required;
-    uint64_t    reproposal_height;
-    uint8_t     reproposal_tx_hash[NODUS_T3_TX_HASH_LEN];
-
-    /* PR 3 Yol B — auto-bootstrap state machine fields.
-     *
-     * bootstrap_state moves through INIT → HAVE_CHAIN | DISCOVER →
-     * FETCH_GENESIS → BOOTSTRAP_CONFIG → DONE during witness startup.
-     * After DONE the existing nodus_witness_sync_check + replay path
-     * takes over; nothing in steady state mutates these fields.
-     *
-     * bootstrap_settle_until_ms (H-4 mitigation): wall-clock deadline
-     * after which this witness will accept being elected leader. While
-     * the field is in the future the leader-election path treats this
-     * node as ineligible so a mid-round bootstrap completion does not
-     * disrupt an in-flight consensus round on peers. Set when state
-     * transitions out of BOOTSTRAP_CONFIG; 0 means "no settle window
-     * required" (legacy / pre-bootstrap nodes). */
-    int         bootstrap_state;            /* nodus_witness_bootstrap_state_t */
-    uint64_t    bootstrap_settle_until_ms;
-
-    /* DISCOVER-state retry + quorum tracking. attempt counts the
-     * w_chain_q rounds emitted (1..10); next_attempt_ms is the
-     * monotonic wall after which the next w_chain_q broadcast may
-     * fire (exponential backoff schedule from design Section 3);
-     * round_deadline_ms is the monotonic wall after which the current
-     * round's collect window expires. round_nonce is the random 16B
-     * seed echoed back in w_chain_r — captured responses with a stale
-     * nonce do not count toward quorum. */
-    int         bootstrap_attempt;
-    uint64_t    bootstrap_next_attempt_ms;
-    uint64_t    bootstrap_round_deadline_ms;
-    uint8_t     bootstrap_round_nonce[16];   /* NODUS_W_BOOTSTRAP_NONCE_LEN */
-
-    /* PR 3 / E2 — bootstrap observability. discover_entered_ms is the
-     * monotonic timestamp at which the state machine first transitioned
-     * into DISCOVER (set ONCE per bootstrap_start; not reset across
-     * round attempts). last_heartbeat_log_ms is the last hourly stuck-
-     * in-DISCOVER heartbeat we emitted; both 0 outside DISCOVER. The
-     * heartbeat fires once per hour while DISCOVER persists past the
-     * first hour so an operator monitoring journalctl sees a steady
-     * pulse rather than going silent. */
-    uint64_t    bootstrap_discover_entered_ms;
-    uint64_t    bootstrap_last_heartbeat_log_ms;
-
+    /* R3 W4 — safety_halt / halt_block_height / halt_timestamp /
+     * halt_committee_pubkeys / halt_committee_count (the C3
+     * state_root-divergence halt and its Faz 4D-E recovery snapshot),
+     * last_prepared (the C5 PBFT prepared-cert tracker), reproposal_*
+     * (the C5 NEW_VIEW re-proposal binding), retained_batch (MED-28's
+     * retained reproposal batch), parked_propose (the O15R B′ parked
+     * next-view PROPOSE) and the PR 3 Yol B auto-bootstrap state machine
+     * fields (bootstrap_state and all bootstrap_* timers) are all
+     * DELETED with the closed consensus lane: they existed only to run
+     * or recover the legacy PBFT round and the legacy DISCOVER bootstrap,
+     * neither of which this build ever starts. */
     bool        running;
+
+    /* ── Ledger V2 ingress reachability (O15B) ───────────────────────
+     *
+     * `v2_ingress_armed` is the ONLY thing that makes a V2 wire message
+     * dispatchable on this node. It is set exclusively by
+     * nodus_witness_v2_ingress_arm(), which refuses unless the activation
+     * gate is OPEN — and the gate can never be OPEN in this build (no
+     * committed activation authority exists, and the preflight is
+     * structurally never ready). See nodus_witness_v2_gate.h.
+     *
+     * It is deliberately a RUNTIME field and not a persisted one: a
+     * database bit would be an operator override by another name, and the
+     * ruling for this season forbids any such bypass. It is also what
+     * preflight issue 13 (INGRESS_ENABLED) is COMPUTED from, so the
+     * preflight reports what this node is actually doing rather than
+     * arguing from the structural claim that ingress code does not exist
+     * — a claim O15B itself retired by writing that code.
+     *
+     * `v2_gate_test_*` exist only in builds that define
+     * NODUS_V2_TEST_AUTHORITY (test targets only; absent from libnodus and
+     * nodus-server, proven by `nm` in test_v2_gate_linked). They are
+     * declared unconditionally so the struct layout does not depend on a
+     * build flag — a layout that changed with a test macro would make
+     * every test exercise a different object than production does. */
+    bool        v2_ingress_armed;
+    bool        v2_gate_test_authority;
+    bool        v2_gate_test_allow_unready;
+
+    /* ── Ledger V2 successor production (O15D) ────────────────────────
+     *
+     * `v2_successor` is derived at every database open from COMMITTED
+     * state only (the height-0 successor genesis manifest carrying the
+     * "DNA.LEGACY.TERM.v1" source binding — the same committed authority
+     * the activation gate reads); no env var, flag, config or peer input
+     * can set it. While true, this chain's producer/verify/commit paths
+     * run the Ledger V2 engine and the LEGACY lanes (genesis, spend
+     * apply, legacy sync, legacy cert store) refuse — a successor chain
+     * never produces a legacy block.
+     *
+     * `v2_chain32` caches nodus_witness_v2_chain_id() (derived from the
+     * committed genesis BlockID) for the QC-cert preimages and envelope
+     * admission; valid only while v2_successor is true.
+     *
+     * R3 W4 — v2_certpool (the bounded per-height DNA.CERT.v2 collection
+     * that assembled the closed lane's QC) is DELETED with it: its only
+     * producers (nodus_witness_v2_qc_try_attach, _cert_note,
+     * _produce_commit) are gone. */
+    bool        v2_successor;
+    uint8_t     v2_chain32[32];
+
+    /* O15E Faz B — the successor sync driver's RUNTIME state (never
+     * persisted; LOCAL policy only, nothing here is consensus). R3 W4 —
+     * trimmed to the one field the surviving gbundle serve path uses;
+     * req_peer/req_from/req_count/req_sent_ms/last_head_ms/
+     * last_qcfetch_ms/qc_rr were the range-request driver's own state
+     * (handle_head/_range_q/_tick, deleted with the old-lane V2 block
+     * sync verbs 20-23). `last_serve_ms` (H-1 sign-amplification guard)
+     * still throttles nodus_witness_v2_sync_handle_gbundle_q. */
+    struct {
+        uint64_t last_serve_ms;
+    } v2_sync;
+
+    /* O15E Faz D — pinned-genesis joiner bootstrap RUNTIME state. Active
+     * only on a fresh node with a local pin and no successor chain yet;
+     * cleared the moment the successor DB is adopted (the node then
+     * behaves as an ordinary successor). While `active`, the node MUST
+     * NOT propose or vote (role safety). Nothing here is persisted. */
+    struct {
+        int      active;                 /* 1 = fetching/deriving        */
+        /* R3 W3 (D-24 rev 4 (1)): 32 bytes — the chain id. A version-3
+         * chain has no genesis BLOCK to pin a 64-byte BlockID to (D-19
+         * rev 6 withdrew it); the chain's only identity is the hash of
+         * its stored genesis DOCUMENT (D-18 rev 4). */
+        uint8_t  pin[32];                /* local trust anchor (copy)    */
+        uint8_t *acc;                    /* bundle accumulator           */
+        size_t   acc_len;                /* bytes received contiguously  */
+        size_t   acc_total;              /* expected total (0 = unknown) */
+        uint64_t last_req_ms;            /* fetch throttle               */
+        /* Round-robin cursor over the witness-peer table, added
+         * 2026-09-03. Before it, the tick took the FIRST identified peer
+         * and broke, so a joiner whose peers[0] would not serve it asked
+         * that same peer forever — measured: 1 of 13 simultaneous joiners
+         * never adopted, over 9 minutes and again over 4 after a clean
+         * restart. Advancing per attempt costs one interval per unhelpful
+         * peer instead of the whole join. See nodus/BUGS.md. */
+        uint32_t peer_rr;
+        /* Rate limit for the "why am I not asking" diagnostic below, so a
+         * stuck joiner names its own early return once a minute instead
+         * of never (its logs showed the arm line and then silence). */
+        uint64_t last_diag_ms;
+    } v2_join;
+
+    /* ── FLEET-TM-R3 W3 package C2a — the cometbft server binding ──────
+     *
+     * `void *` here, DELIBERATELY, not the real pointer types
+     * (`nodus_cmt_node_t *`, `nodus_cmt_net_t *`, `cmt_conr_t *`,
+     * `cmt_memr_t *`): `nodus_witness_cmt_node.h` and
+     * `nodus_witness_cmt_net.h` both `#include "witness/nodus_witness.h"`
+     * for `nodus_witness_t`, and `nodus_cmt_net_t` / `cmt_conr_t` /
+     * `cmt_memr_t` are anonymous struct typedefs with no tag this header
+     * could forward-declare — a real pointer field here would be a
+     * circular include. Every site that dereferences these includes the
+     * real headers first and casts back (nodus_witness.c, nodus_server.c
+     * — never this header).
+     *
+     * Heap-allocated because none of it belongs on this already-large
+     * struct or on any stack: `nodus_cmt_node_t` alone carries three
+     * ~1 MB `cmt_state_storage_t` and an ~85 KB application context
+     * (nodus_witness_cmt_node.h's own warning), and `nodus_cmt_net_t`
+     * embeds several `NODUS_T3_MAX_WITNESSES`-sized arrays plus a 64 MiB
+     * receive arena.
+     *
+     * NULL/false until `nodus_witness_init` constructs them — which it
+     * does only when `v2_successor` is true, i.e. only on a chain the
+     * post-open gate above accepted as version-3. `cmt_live` becomes true
+     * once the tick has started the two reactors (node.go:518-524's
+     * genesis-time wait, checked on the tick — see witness_cmt_tick). */
+    void    *cmt_node;   /* nodus_cmt_node_t*, owned                      */
+    void    *cmt_net;    /* nodus_cmt_net_t*,  owned                      */
+    void    *cmt_conr;   /* cmt_conr_t*,       owned                      */
+    void    *cmt_memr;   /* cmt_memr_t*,       owned                      */
+    bool     cmt_live;
+    /* ORCHESTRATOR delta 1, item C (D-23 rev 7 (19)) — the earliest of
+     * the glue's and the timer's next deadline, as witness_cmt_tick last
+     * returned it (host-clock nanoseconds, cmt_time_unix_nano's units).
+     * Read by nodus_witness_tick to narrow the NEXT call's witness TCP
+     * poll wait below 50 ms when a deadline is closer than that ("poll
+     * wait = min(50 ms, the earliest deadline)"). RUNTIME ONLY: never
+     * persisted, never hashed, never a consensus input — it only shapes
+     * how promptly THIS node's own event loop notices its own timers,
+     * never what it decides. INT64_MAX (nodus_witness_init's explicit
+     * set, not the struct's zero-init) means "no deadline yet / lane not
+     * live" and leaves the poll at its ordinary fixed 50 ms. */
+    int64_t  cmt_next_deadline_ns;
 } nodus_witness_t;
 
-/* Phase 4 / Task 4.2 — intra-batch chained-UTXO context.
- *
- * Carried by apply_tx_to_state across the N-TX batch loop so the
- * layer-3 in-memory check (Task 4.3) can detect a TX whose input
- * nullifier matches a previous TX's output future-nullifier. Layer 2
- * (propose_batch, Task 4.1) catches the same pattern at proposal time;
- * layer 3 catches anything that slipped past — bug, attack, or test
- * hook bypass.
- *
- * Sized for the worst case: NODUS_W_MAX_BLOCK_TXS (10) TXs each
- * producing NODUS_T3_MAX_TX_INPUTS (16) outputs = 160 entries.
- *
- * Pass NULL to apply_tx_to_state from single-TX paths and from the
- * SAVEPOINT attribution replay (Task 6.2) — the layer-3 check is
- * skipped under NULL.
- */
-typedef struct {
-    uint8_t seen_nullifiers[NODUS_W_MAX_BLOCK_TXS * NODUS_T3_MAX_TX_INPUTS]
-                          [NODUS_T3_NULLIFIER_LEN];
-    int     seen_count;
-} nodus_witness_batch_ctx_t;
-
-_Static_assert(sizeof(nodus_witness_batch_ctx_t) < 16384,
-               "batch_ctx exceeds 16 KB stack budget");
+/* R3 W4 — nodus_witness_genesis_derive_chain_id (shared by the legacy
+ * commit_genesis and the legacy genesis-sync anchor check, both deleted),
+ * the NODUS_WITNESS_INTERNAL_API sync-peer-selection pair
+ * (nodus_witness_sync_find_peer/_rotate_peer, un-static'd from the now
+ * -deleted nodus_witness_sync.c) and nodus_witness_batch_ctx_t (carried
+ * across the legacy apply_tx_to_state's N-TX batch loop, bft.c's own) are
+ * all DELETED with the closed consensus lane. */
 
 /* ── Lifecycle ───────────────────────────────────────────────────── */
 
@@ -636,10 +627,20 @@ int nodus_witness_init(nodus_witness_t *witness,
 
 /**
  * Periodic tick — called from main event loop.
- * Checks BFT timeouts, retries peer connections.
+ * Retries peer connections (witness_mesh_tick), then drives the cometbft
+ * reactor (witness_cmt_tick) on a version-3 chain or the pinned-genesis
+ * joiner (nodus_witness_v2_join_tick) otherwise. R3 W4 — no longer checks
+ * any legacy BFT round timeout; that lane is deleted.
  */
 void nodus_witness_tick(nodus_witness_t *witness);
 
+/* R3 W4 — nodus_witness_pending_forward_expire, nodus_witness_pool_local_demand,
+ * nodus_witness_entry_verdict_t / nodus_witness_v2_entry_verdict,
+ * nodus_witness_v2_entry_is_decided and nodus_witness_mempool_evict_committed
+ * are all DELETED with the closed consensus lane: they judged and drained
+ * the legacy `pending_forwards` table and the legacy in-memory mempool,
+ * both deleted. See nodus_witness.c's own deletion note at the same names
+ * for the full reasoning. */
 /**
  * Clean up witness resources. Closes DB, clears state.
  */
@@ -648,13 +649,21 @@ void nodus_witness_close(nodus_witness_t *witness);
 /* ── Dispatch (called from nodus_server.c) ───────────────────────── */
 
 /**
- * Dispatch a Tier 3 witness BFT message ("w_*" methods).
+ * Dispatch a Tier 3 witness message ("w_*" methods): the surviving
+ * roster/ident/genesis-bundle verbs and the cometbft envelope verbs
+ * (35-39, "verb IS the channel"). R3 W4 — the legacy PBFT verbs these
+ * once carried (1-8/12-23/26-27) are retired, never reused.
  * These are pre-auth, self-authenticated via Dilithium5 wsig.
  * Raw payload is passed for CBOR re-decode with T3 schema.
  */
 void nodus_witness_dispatch_t3(nodus_witness_t *witness,
                                struct nodus_tcp_conn *conn,
                                const uint8_t *payload, size_t len);
+
+/* R3 W4 — nodus_witness_parked_propose_store / _clear (the O15R B′
+ * parked next-view PROPOSE slot) are DELETED with the closed consensus
+ * lane: the slot they filled (`parked_propose`) and the round state that
+ * read it are both gone from nodus_witness_t. */
 
 /**
  * Dispatch a DNAC client query ("dnac_*" methods).
@@ -668,42 +677,78 @@ void nodus_witness_dispatch_dnac(nodus_witness_t *witness,
 
 /**
  * Notify witness module that a TCP connection is being closed.
- * Clears any peer or BFT state references to prevent dangling pointers.
+ * Clears any peer-table references to this connection to prevent
+ * dangling pointers. R3 W4 — no longer clears round_state / pending
+ * forwards / mempool / batch entries; that state is deleted.
  */
 void nodus_witness_peer_conn_closed(nodus_witness_t *witness,
                                      struct nodus_tcp_conn *conn);
 
-#ifdef QGP_FAULT_INJECT
-/**
- * Faz 5.4 — Fault injection: drop-frame predicate.
- *
- * When set, dispatch_t3 calls the predicate against every decoded
- * inbound T3 message. Predicate returning true causes the message
- * to be silently dropped (handler never invoked) — used by stagef
- * harness to simulate network partition / round skip without
- * iptables. Pass NULL to clear.
- *
- * `msg` is a `const nodus_t3_msg_t *` — declared as `void *` in
- * the public header to avoid pulling protocol/nodus_tier3.h into
- * every consumer. Tests cast back to `nodus_t3_msg_t *` when
- * dereferencing fields.
- *
- * Compiled in only when -DQGP_FAULT_INJECT=ON. Release builds
- * reject the flag at CMake time (mirrors NODUS_WITNESS_TEST_HOOKS).
- */
-typedef bool (*nodus_witness_drop_predicate_t)(
-    const void *msg, const uint8_t *peer_id);
-
-void nodus_witness_test_inject_drop(nodus_witness_drop_predicate_t pred);
-#endif /* QGP_FAULT_INJECT */
+/* R3 W4 — the QGP_FAULT_INJECT drop-predicate hook
+ * (nodus_witness_drop_predicate_t, nodus_witness_test_inject_drop,
+ * nodus_witness_fault_init_from_env) is DELETED with the closed
+ * consensus lane: nodus_witness_dispatch_t3 no longer consults any drop
+ * predicate, nodus_witness_init no longer arms one, and its only
+ * implementation (nodus_witness_fault.c) is gone. tests/test_fault_inject_
+ * round_skip.c still calls this API — flagged for the test-package pass,
+ * not resolved here (out of this delta's whitelist: sources only). */
 
 /**
  * Create chain-specific witness DB on genesis commit.
  * Filename: witness_<chain_id_hex>.db in data directory.
  * Sets chain_id and opens the new database.
  */
+/**
+ * ENGINE-INTERNAL, exposed for direct test (the precedent is
+ * nodus_witness_v2_local_index_find). The RESTART path: scan
+ * `witness->data_path` for a `witness_<32 hex>.db`, adopt the
+ * lexicographically smallest valid name, open it, and run the SAME
+ * post-open integrity gate `nodus_witness_create_chain_db` runs.
+ *
+ * O15A made three guarantees testable here: the gate is not skipped on
+ * restart; a filename that does not carry exactly 32 hex characters is
+ * IGNORED rather than parsed into a zero-padded chain id; and selection
+ * follows a stable total order over names instead of readdir order.
+ *
+ * @return 0 with the database open and `chain_id` set, -1 when no usable
+ *         chain database was found (pre-genesis) or the gate refused one.
+ */
+int nodus_witness_scan_chain_db(nodus_witness_t *witness);
+
 int nodus_witness_create_chain_db(nodus_witness_t *witness,
                                     const uint8_t *chain_id);
+
+/**
+ * ORCHESTRATOR delta 10 (R3-W3-C2a-18) — EXPORTED, was `static
+ * witness_cmt_live_init` (nodus_witness.c). Constructs the cometbft
+ * startup table and transport glue for a version-3 chain: the SAME
+ * construction `nodus_witness_init` runs on a version-3 chain at process
+ * start, now also callable a second way — by the pinned-genesis joiner,
+ * immediately after its own `nodus_witness_scan_chain_db(w)` (above)
+ * adopts a chain mid-life. Without this second call, an adopted joiner
+ * holds the chain (role set by the SAME post-open gate this scan runs)
+ * but never runs consensus and never catches up — there is no blocksync
+ * in this port; catch-up is the reactor's own stored-part gossip, which
+ * needs the reactor this function builds. See the function's own doc
+ * comment in nodus_witness.c for the full precondition proof (both
+ * callers reach it only after `v2_successor`/`v2_chain32` are set by the
+ * SAME gate, with `w->server`/`w->data_path` already populated at
+ * process start either way) and why no tick can land between a caller's
+ * scan and its call to this function.
+ *
+ * The entry guard (an already-populated `cmt_node`/`cmt_net`/`cmt_conr`/
+ * `cmt_memr` refuses with -1, logged) makes a second call over an
+ * existing construction safe to attempt — it will never silently leak
+ * or double-construct — but no caller is expected to actually trigger
+ * it: each of the two callers reaches this function on a path that runs
+ * at most once per witness lifetime.
+ *
+ * @return 0 on success (`witness->cmt_node`/`net`/`conr`/`memr`
+ *         populated, `cmt_live` false); -1 on any failure (including the
+ *         entry guard), with every partial allocation released and the
+ *         witness fields left NULL.
+ */
+int nodus_witness_cmt_live_init(nodus_witness_t *witness);
 
 /**
  * PR 3 / E0 — Orphan bootstrap sentinel check (H-7 startup-side closure).

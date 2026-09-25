@@ -68,8 +68,9 @@ static const uint8_t GENESIS_NATIVE_TOKEN_ID[DNAC_TOKEN_ID_SIZE] = {0};
  * Rule P (full spec, enforced here as of Phase 12 Task 56):
  *   (1) chain_def.initial_validator_count == DNAC_COMMITTEE_SIZE (7)
  *   (2) Σ outputs.amount (native DNAC) + 7 × DNAC_SELF_STAKE_AMOUNT ==
- *       DNAC_DEFAULT_TOTAL_SUPPLY  (self-stake locked out of circulation
- *       at genesis)
+ *       chain_def.initial_supply_raw  (the committed per-chain supply —
+ *       S1/Addendum #2 B1; self-stake locked out of circulation at
+ *       genesis. Legacy no-chain_def TXs check DNAC_DEFAULT_TOTAL_SUPPLY.)
  *   (3) all 7 initial_validators[i].pubkey pairwise distinct
  *   (4) tx->input_count == 0 (genesis creates coins, never spends)
  *
@@ -117,27 +118,39 @@ static int verify_genesis_rules(const dnac_transaction_t *tx) {
             return DNAC_ERROR_INVALID_PROOF;
         }
 
-        /* Rule P.2 — outputs + 7 × 10M == total supply.
-         * 10M × 10^8 × 7 = 7×10^15, fits easily in uint64 (no overflow).
-         * safe_mul_u64 is defensive even though the inputs are compile-
-         * time constants — keeps the overflow-safe style consistent with
-         * the rest of DNAC. */
+        /* Rule P.2 — outputs + 7 × 10M == the chain's committed supply.
+         *
+         * S1 (Ledger V2, Addendum #2 B1): the supply side of this rule now
+         * reads the PER-CHAIN committed value tx->chain_def.initial_supply_raw
+         * instead of the DNA-mainnet macro. This RESTORES client↔witness
+         * consistency — the witness-side Rule P.2 has validated against the
+         * chain_def value all along (nodus_witness_bft.c: cd_supply from
+         * nodus_witness_parse_cd_supply, expected = cd_supply − stake_locked)
+         * and seeds supply_tracking.genesis_supply from it. For the official
+         * DNA chain_def (initial_supply_raw = 10^17, genesis_prepare.c) the
+         * accepted set is byte-identical.
+         *
+         * The self-bond term stays on DNAC_SELF_STAKE_AMOUNT on BOTH sides:
+         * chain_def carries no min_self_bond field until the S6 manifest —
+         * explicitly deferred (S1 report §9). */
         uint64_t expected_stake_locked = 0;
         if (safe_mul_u64(DNAC_SELF_STAKE_AMOUNT,
                          (uint64_t)DNAC_COMMITTEE_SIZE,
                          &expected_stake_locked) != 0) {
             return DNAC_ERROR_OVERFLOW;
         }
-        if (expected_stake_locked > DNAC_DEFAULT_TOTAL_SUPPLY) {
-            QGP_LOG_ERROR(LOG_TAG, "GENESIS: stake-lock exceeds total_supply (Rule P.2)");
+        uint64_t committed_supply = tx->chain_def.initial_supply_raw;
+        if (expected_stake_locked > committed_supply) {
+            QGP_LOG_ERROR(LOG_TAG,
+                          "GENESIS: stake-lock exceeds committed initial_supply_raw (Rule P.2)");
             return DNAC_ERROR_OVERFLOW;
         }
-        uint64_t expected_outputs_sum = DNAC_DEFAULT_TOTAL_SUPPLY - expected_stake_locked;
+        uint64_t expected_outputs_sum = committed_supply - expected_stake_locked;
         if (outputs_sum != expected_outputs_sum) {
             QGP_LOG_ERROR(LOG_TAG,
-                          "GENESIS: outputs_sum=%llu + 7×10M != total_supply=%llu (Rule P.2)",
+                          "GENESIS: outputs_sum=%llu + 7×10M != initial_supply_raw=%llu (Rule P.2)",
                           (unsigned long long)outputs_sum,
-                          (unsigned long long)DNAC_DEFAULT_TOTAL_SUPPLY);
+                          (unsigned long long)committed_supply);
             return DNAC_ERROR_INVALID_PROOF;
         }
 

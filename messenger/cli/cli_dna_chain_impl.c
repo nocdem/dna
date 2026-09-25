@@ -460,6 +460,7 @@ int dna_chain_cmd_history(dnac_context_t *ctx, int limit) {
     int count = 0;
 
     /* Fetch from Nodus (authoritative source) */
+    int local_only = 0;
     int rc = dnac_get_remote_history(ctx, &history, &count);
     if (rc != DNAC_SUCCESS) {
         /* Fallback to local cache if network fails */
@@ -470,11 +471,50 @@ int dna_chain_cmd_history(dnac_context_t *ctx, int limit) {
             fprintf(stderr, "Error: %s\n", dnac_error_string(rc));
             return 1;
         }
+        local_only = 1;
+    } else if (count == 0) {
+        /* THE NETWORK ANSWERED, AND ANSWERED ZERO.
+         *
+         * The fallback above fires only when the CALL fails, which is
+         * not the case that matters on a Ledger V2 chain: there the RPC
+         * succeeds and truthfully returns nothing, because the node
+         * answers it from two LEGACY tables that the V2 engine never
+         * writes and no V2 reader exists yet (see the pre-V2 list). The
+         * wallet's own record of what THIS wallet sent is sitting in the
+         * local database the whole time, and the old control flow walked
+         * straight past it to print "No transaction history."
+         *
+         * A successful empty answer is therefore a reason to CONSULT the
+         * local record, not to conclude there is none. It is NOT a
+         * reason to overrule the network: what the local database holds
+         * is this wallet's own outgoing side, so anything shown from it
+         * is labelled as such rather than presented as chain state.
+         *
+         * A local read that fails here is not fatal — the network's
+         * "zero" is still a valid answer, and printing an error over it
+         * would turn a working empty history into a failure. */
+        dnac_tx_history_t *local = NULL;
+        int local_count = 0;
+        if (dnac_get_history(ctx, &local, &local_count) == DNAC_SUCCESS &&
+            local_count > 0) {
+            dnac_free_history(history, count);
+            history = local;
+            count = local_count;
+            local_only = 1;
+        } else {
+            dnac_free_history(local, local_count);
+        }
     }
 
     if (count == 0) {
         printf("No transaction history.\n");
         return 0;
+    }
+
+    if (local_only) {
+        printf("Showing this wallet's own record — the network reported no "
+               "transactions for this address.\n"
+               "Anything sent TO you will not appear here.\n");
     }
 
     int display_count = (limit > 0 && limit < count) ? limit : count;
@@ -1950,16 +1990,20 @@ static int query_current_block_height(uint64_t *out_height) {
         return -1;
     }
 
-    nodus_dnac_committee_result_t res = {0};
+    /* S3: ~370 KB struct (entries sized to the release ceiling) — heap. */
+    nodus_dnac_committee_result_t *res = calloc(1, sizeof(*res));
+    if (!res) return -1;
     nodus_singleton_lock();
-    int rc = nodus_client_dnac_committee(client, &res);
+    int rc = nodus_client_dnac_committee(client, res);
     nodus_singleton_unlock();
     if (rc != 0) {
         fprintf(stderr,
                 "Error: nodus_client_dnac_committee failed (%d)\n", rc);
+        free(res);
         return -1;
     }
-    *out_height = res.block_height;
+    *out_height = res->block_height;
+    free(res);
     return 0;
 }
 
@@ -1978,8 +2022,11 @@ static int query_current_block_height(uint64_t *out_height) {
 
 int dna_chain_cmd_unstake(dnac_context_t *ctx) {
     printf("Submitting UNSTAKE TX...\n");
-    printf("  (validator will transition ACTIVE -> RETIRING,\n"
-           "   self-stake unlocks after DNAC_UNSTAKE_COOLDOWN_BLOCKS)\n");
+    printf("  (validator will transition ACTIVE -> RETIRING; at the boundary\n"
+           "   where it leaves the active set it graduates: self-stake\n"
+           "   unlocks DNAC_VALIDATOR_UNBOND_EPOCHS (84) epochs later, and\n"
+           "   remaining delegations return to their delegators locked\n"
+           "   DNAC_UNDELEGATE_LOCK_EPOCHS (12) epochs)\n");
 
     int rc = dnac_unstake(ctx, NULL, NULL);
     if (rc != DNAC_SUCCESS) {
@@ -2040,6 +2087,7 @@ static const char *validator_status_str(uint8_t status) {
         case DNAC_VALIDATOR_RETIRING:     return "RETIRING";
         case DNAC_VALIDATOR_UNSTAKED:     return "UNSTAKED";
         case DNAC_VALIDATOR_AUTO_RETIRED: return "AUTO_RETIRED";
+        case DNAC_VALIDATOR_ELIGIBLE:     return "ELIGIBLE";  /* S3 */
         default:                          return "?";
     }
 }
@@ -2112,24 +2160,30 @@ int dna_chain_cmd_committee(dnac_context_t *ctx) {
         return 1;
     }
 
-    nodus_dnac_committee_result_t res = {0};
+    /* S3: ~370 KB struct (entries sized to the release ceiling) — heap. */
+    nodus_dnac_committee_result_t *res = calloc(1, sizeof(*res));
+    if (!res) {
+        fprintf(stderr, "Error: out of memory\n");
+        return 1;
+    }
     nodus_singleton_lock();
-    int rc = nodus_client_dnac_committee(client, &res);
+    int rc = nodus_client_dnac_committee(client, res);
     nodus_singleton_unlock();
     if (rc != 0) {
         fprintf(stderr,
                 "Error: nodus_client_dnac_committee failed (%d)\n", rc);
+        free(res);
         return 1;
     }
 
     printf("DNAC Committee (epoch_start=%" PRIu64 ", head=%" PRIu64 ")\n",
-           res.epoch_start, res.block_height);
+           res->epoch_start, res->block_height);
     printf("%-4s  %-16s  %-14s  %-18s  %-6s  %s\n",
            "SLOT", "PUBKEY", "STATUS", "TOTAL_STAKE", "COMM%", "ADDRESS");
     printf("----  ----------------  --------------  ------------------"
            "  ------  ----------------------------------\n");
-    for (int i = 0; i < res.count; i++) {
-        const nodus_dnac_committee_entry_t *e = &res.entries[i];
+    for (int i = 0; i < res->count; i++) {
+        const nodus_dnac_committee_entry_t *e = &res->entries[i];
         char pk_short[17];
         pubkey_short(e->pubkey, pk_short);
         char stake_str[32];
@@ -2141,6 +2195,7 @@ int dna_chain_cmd_committee(dnac_context_t *ctx) {
                (double)e->commission_bps / 100.0,
                e->address[0] ? e->address : "(unknown)");
     }
+    free(res);
     return 0;
 }
 

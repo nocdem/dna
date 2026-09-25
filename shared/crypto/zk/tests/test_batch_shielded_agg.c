@@ -10,11 +10,12 @@
  * salted) are re-proved via prove_batch as 1-instance is_zk=1 batches. For each
  * the C KAT rebuilds the SAME notes/siblings witness (== test_prover_agg), runs
  * the aggregate S1 generator (dnac_agg_zk_generate_trace_testonly) to get the
- * raw 2318-wide base trace + 43 publics, then proves the 1-instance batch from
- * scratch through dnac_batch_prove and byte-matches EVERYTHING:
+ * raw CONF_AGGZK_WIDTH-wide base trace + CONF_AGGZK_NUM_PUBLICS publics, then
+ * proves the 1-instance batch from scratch through dnac_batch_prove and
+ * byte-matches EVERYTHING:
  *   - commitments (main / quotient / random present; prep / perm absent)
  *   - the sampled constraint-α and ζ
- *   - the OOD opened values (trace_local[2318], trace_next[2318],
+ *   - the OOD opened values (trace_local[W], trace_next[W],
  *     quotient_chunks[8][2], random[2]; permutation empty)
  *   - the ENTIRE FRI opening proof (commit-phase commits, PoW witnesses, final
  *     poly, per-query input rows + sibling paths + commit-phase steps)
@@ -143,7 +144,10 @@ static void parse_digest_arr(js_t *s, dnac_p2_digest_t *d){
 #define OV_MAXQ     2
 #define OV_MAXB     3
 #define OV_MAXM     8      /* quotient batch = 8 chunk matrices */
-#define OV_MAXW     2322   /* trace committed width (2318 + 4 zk codewords) */
+/* trace committed width (CONF_AGGZK_WIDTH + 4 zk codewords) — macro-derived so
+ * an AIR width change (S8 Gate 2 moved it 2318 -> 2378 at D=24) cannot silently
+ * truncate the parse into a false byte-match. */
+#define OV_MAXW     (CONF_AGGZK_WIDTH + 4)
 #define OV_MAXDEPTH 12
 #define OV_MAXCPC   8
 #define OV_MAXSE    4
@@ -377,10 +381,13 @@ static void parse_scenario(js_t *s, ov_t *o){
 }
 
 /* ===== aggregate fixture builders (== test_prover_agg.c) ===== */
+/* S8 Gate 2: sibling stride is D levels x 4 lanes, sized by the MACRO (D = 24),
+ * never a literal 4. */
+#define BSA_SIB_STRIDE ((size_t)CONF_AGG_TREE_DEPTH * 4)
 typedef struct {
     uint64_t value[5], addr[5*4], rcm[5*2], pos[5], nk[5*4], ak[5*4];
     uint8_t  roles[5];
-    uint64_t memb_siblings[5*4*4];
+    uint64_t memb_siblings[5 * CONF_AGG_TREE_DEPTH * 4];
     uint64_t txbind[4];
 } agg_fixture_t;
 
@@ -414,14 +421,21 @@ static unsigned build_agg_fixture(int kind, agg_fixture_t *fx,
         uint64_t n01[4], n23[4];
         note_merkle_compress(cm[0],cm[1],n01);
         note_merkle_compress(cm[2],cm[3],n23);
-        const uint64_t e2[4]={0x3001,0x3002,0x3003,0x3004}, e3[4]={0x4001,0x4002,0x4003,0x4004};
         uint64_t *ms=fx->memb_siblings;
         for(int j=0;j<4;j++){
-            ms[0*16+0*4+j]=cm[1][j]; ms[0*16+1*4+j]=n23[j]; ms[0*16+2*4+j]=e2[j]; ms[0*16+3*4+j]=e3[j];
-            ms[1*16+0*4+j]=cm[0][j]; ms[1*16+1*4+j]=n23[j]; ms[1*16+2*4+j]=e2[j]; ms[1*16+3*4+j]=e3[j];
-            ms[2*16+0*4+j]=cm[3][j]; ms[2*16+1*4+j]=n01[j]; ms[2*16+2*4+j]=e2[j]; ms[2*16+3*4+j]=e3[j];
-            ms[3*16+0*4+j]=cm[2][j]; ms[3*16+1*4+j]=n01[j]; ms[3*16+2*4+j]=e2[j]; ms[3*16+3*4+j]=e3[j];
+            ms[0*BSA_SIB_STRIDE+0*4+j]=cm[1][j]; ms[0*BSA_SIB_STRIDE+1*4+j]=n23[j];
+            ms[1*BSA_SIB_STRIDE+0*4+j]=cm[0][j]; ms[1*BSA_SIB_STRIDE+1*4+j]=n23[j];
+            ms[2*BSA_SIB_STRIDE+0*4+j]=cm[3][j]; ms[2*BSA_SIB_STRIDE+1*4+j]=n01[j];
+            ms[3*BSA_SIB_STRIDE+0*4+j]=cm[2][j]; ms[3*BSA_SIB_STRIDE+1*4+j]=n01[j];
         }
+        /* Levels 2..D-1: the pre-S8 e2/e3 rule {0x(L+1)001..0x(L+1)004}
+         * extended to every level, IDENTICAL across the four blocks so all
+         * walks converge on ONE anchor. Levels 2/3 stay byte-identical. */
+        for(unsigned L=2;L<(unsigned)CONF_AGG_TREE_DEPTH;L++)
+            for(int b=0;b<4;b++)
+                for(int j=0;j<4;j++)
+                    ms[(size_t)b*BSA_SIB_STRIDE+(size_t)L*4+j]=
+                        (uint64_t)0x1000*(L+1)+0x0001+(uint64_t)j;
     } else if(kind==1){
         const uint64_t v[3]={60,40,100};       memcpy(fx->value,v,sizeof v);
         const uint8_t  r[3]={CONF_ACTION_ROLE_INPUT,CONF_ACTION_ROLE_INPUT,CONF_ACTION_ROLE_OUTPUT}; memcpy(fx->roles,r,sizeof r);
@@ -437,12 +451,23 @@ static unsigned build_agg_fixture(int kind, agg_fixture_t *fx,
         uint64_t addr0[4],addr1[4],cm0[4],cm1[4];
         conf_action_derive_addr(&fx->ak[0],&fx->nk[0],addr0);  note_commit(fx->value[0],addr0,&fx->rcm[0],cm0);
         conf_action_derive_addr(&fx->ak[4],&fx->nk[4],addr1);  note_commit(fx->value[1],addr1,&fx->rcm[2],cm1);
-        const uint64_t up[3][4]={{0x2001,0x2002,0x2003,0x2004},{0x3001,0x3002,0x3003,0x3004},{0x4001,0x4002,0x4003,0x4004}};
-        for(int j=0;j<4;j++){ fx->memb_siblings[0*16+0*4+j]=cm1[j]; fx->memb_siblings[1*16+0*4+j]=cm0[j]; }
-        for(int l=0;l<3;l++) for(int j=0;j<4;j++){ fx->memb_siblings[0*16+(l+1)*4+j]=up[l][j]; fx->memb_siblings[1*16+(l+1)*4+j]=up[l][j]; }
+        for(int j=0;j<4;j++){ fx->memb_siblings[0*BSA_SIB_STRIDE+0*4+j]=cm1[j]; fx->memb_siblings[1*BSA_SIB_STRIDE+0*4+j]=cm0[j]; }
+        /* Levels 1..D-1 share ONE filler per level (the pre-S8 `up` rule
+         * {0x(L+1)001..0x(L+1)004} extended from 3 levels to D-1) so both walks
+         * reach the SAME anchor. Levels 1-3 stay byte-identical. */
+        for(unsigned L=1;L<(unsigned)CONF_AGG_TREE_DEPTH;L++)
+            for(int j=0;j<4;j++){
+                const uint64_t f=(uint64_t)0x1000*(L+1)+0x0001+(uint64_t)j;
+                fx->memb_siblings[0*BSA_SIB_STRIDE+(size_t)L*4+j]=f;
+                fx->memb_siblings[1*BSA_SIB_STRIDE+(size_t)L*4+j]=f;
+            }
     } else {
+        /* ⚠ S8 Gate 2: note 2 WAS a CONF_ACTION_ROLE_FEE block. IS_FEE is pinned
+         * ZERO and generate rejects a FEE-role note, so it is now a second
+         * OUTPUT of the SAME value (the set stays conserving); the fee reaches
+         * the statement as the independent public inst->fee, set below. */
         const uint64_t v[3]={100,70,30};       memcpy(fx->value,v,sizeof v);
-        const uint8_t  r[3]={CONF_ACTION_ROLE_INPUT,CONF_ACTION_ROLE_OUTPUT,CONF_ACTION_ROLE_FEE}; memcpy(fx->roles,r,sizeof r);
+        const uint8_t  r[3]={CONF_ACTION_ROLE_INPUT,CONF_ACTION_ROLE_OUTPUT,CONF_ACTION_ROLE_OUTPUT}; memcpy(fx->roles,r,sizeof r);
         const uint64_t p[3]={5,0,0};           memcpy(fx->pos,p,sizeof p);
         const uint64_t k[3*4]={0x22222222ULL,0x22222223ULL,0x22222224ULL,0x22222225ULL,
                                0,0,0,0, 0,0,0,0}; memcpy(fx->nk,k,sizeof k);
@@ -450,17 +475,27 @@ static unsigned build_agg_fixture(int kind, agg_fixture_t *fx,
                                0,0,0,0, 0,0,0,0}; memcpy(fx->ak,a,sizeof a);
         const uint64_t ad[3*4]={0,0,0,0, 0xAA01,0xAA02,0xAA03,0xAA04, 0xFEE1,0xFEE2,0xFEE3,0xFEE4}; memcpy(fx->addr,ad,sizeof ad);
         const uint64_t rc[3*2]={0x11,0x12, 0x21,0x22, 0x31,0x32}; memcpy(fx->rcm,rc,sizeof rc);
-        const uint64_t sib[3*4*4]={
-            0x1001,0x1002,0x1003,0x1004, 0x2001,0x2002,0x2003,0x2004,
-            0x3001,0x3002,0x3003,0x3004, 0x4001,0x4002,0x4003,0x4004,
-            0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 };
-        memcpy(fx->memb_siblings,sib,sizeof sib);
+        /* Block 0 (the only INPUT) walks D levels; the pre-S8 fixture spelled
+         * out 4 literal levels {0x(L+1)001..0x(L+1)004} — the SAME rule now
+         * fills all D, so levels 0-3 stay byte-identical. Blocks 1/2 are
+         * OUTPUTs: their sibling slots are never read. */
+        for(unsigned L=0;L<(unsigned)CONF_AGG_TREE_DEPTH;L++)
+            for(int j=0;j<4;j++)
+                fx->memb_siblings[0*BSA_SIB_STRIDE+(size_t)L*4+j]=
+                    (uint64_t)0x1000*(L+1)+0x0001+(uint64_t)j;
     }
     memset(inst,0,sizeof *inst);
     inst->value=fx->value; inst->addr=fx->addr; inst->rcm=fx->rcm; inst->roles=fx->roles;
     inst->pos=fx->pos; inst->nk=fx->nk; inst->ak=fx->ak; inst->num_notes=num_notes;
     inst->memb_siblings=fx->memb_siblings; inst->tx_binding=fx->txbind;
     inst->log_height=log_height;
+    /* S8 Gate 2 turnstile + fee: these three are PUBLICS with no in-circuit
+     * derivation left (the fee stopped being a FEE-role note's value when
+     * IS_FEE was pinned zero, and the boundary legs are pure publics), so the
+     * fixture MUST NOT invent them — a hard-coded guess silently diverges from
+     * the pinned KAT and shows up as an opaque "computed publics != oracle"
+     * cascade. The caller binds all three FROM the parsed vector immediately
+     * after this returns; leave them zeroed here (memset above). */
     return log_height;
 }
 
@@ -599,6 +634,19 @@ int main(int argc,char **argv){
         agg_fixture_t fx;
         dnac_agg_prover_instance_t inst;
         unsigned log_height=build_agg_fixture(kind,&fx,&inst);
+        /* R1 (S8 Gate 2): bind the three non-derivable publics FROM the pinned
+         * KAT rather than hard-coding them in the fixture. fee is FS/sighash-
+         * bound only after the IS_FEE zero-pin, and the two turnstile legs are
+         * publics the prover is simply TOLD — so the vector is their single
+         * source of truth here. Any future fixture/KAT drift then surfaces on
+         * the publics equality check below, at the exact index, instead of as
+         * an unexplained byte-match cascade. */
+        CHK(o->n_pub==CONF_AGGZK_NUM_PUBLICS,
+            "%s: oracle publics %zu != %d",o->name,o->n_pub,
+            (int)CONF_AGGZK_NUM_PUBLICS);
+        inst.fee          = o->pub[CONF_AGGZK_PUB_FEE];
+        inst.boundary_in  = o->pub[CONF_AGGZK_PUB_BIN];
+        inst.boundary_out = o->pub[CONF_AGGZK_PUB_BOUT];
         const size_t height=(size_t)1<<log_height;
 
         uint64_t *trace=(uint64_t*)malloc(height*CONF_AGGZK_WIDTH*sizeof(uint64_t));
@@ -633,9 +681,11 @@ int main(int argc,char **argv){
         size_t need = nd>ns?nd:ns;
         if(g_ndraws<need){ CHK(0,"%s: draw stream too short %zu<%zu",o->name,g_ndraws,need); free(trace); free(pubs); free(o); continue; }
 
-        /* publics sanity: agg_zk_generate must reproduce the oracle's 43 publics
-         * (anchor/num_in/nf_slots/num_out/output_commit/fee/tx_binding) exactly —
-         * a divergence here would shift alpha and fail the whole byte-match. */
+        /* publics sanity: agg_zk_generate must reproduce the oracle's
+         * CONF_AGGZK_NUM_PUBLICS publics (anchor / num_in / nf_slots /
+         * num_out / output_commit / fee / boundary_in / boundary_out /
+         * tx_binding) exactly — a divergence here would shift alpha and fail
+         * the whole byte-match. */
         { int pm=(o->n_pub==CONF_AGGZK_NUM_PUBLICS);
           for(size_t i=0;i<o->n_pub&&i<CONF_AGGZK_NUM_PUBLICS;i++) if(gold_fp_to_u64(pubs[i])!=o->pub[i]) pm=0;
           CHK(pm,"%s: computed publics != oracle public_values",o->name); }

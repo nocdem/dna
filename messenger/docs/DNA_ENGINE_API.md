@@ -1,16 +1,20 @@
 # DNA Engine API Reference
 
-**Version:** 1.22.0
-**Date:** 2026-04-24
+**Version:** 1.22.1
+**Date:** 2026-08-27 (header + dead-section pass; per-function bodies from earlier syncs)
 **Location:** `include/dna/dna_engine.h`
-**Library at last sync:** v0.11.5
+**Library at last sync:** v0.11.18
+**Coverage note (2026-08-27):** the newer public `dna_engine_*` functions (DNAC
+stake/delegate family, reactions, wall boost, shutdown pair, cached balances) are
+documented in `docs/functions/public-api.md` (appended sections); calls are in
+`docs/functions/calls.md`. The header stays authoritative.
 
 **Changelog:**
-- v1.22.0 (2026-04-23): Added DNAC Delegations query API — `dna_engine_dnac_my_delegations` for listing the current identity's delegations + accrued rewards. Backed by witness T3 RPC and dnac engine task queue. See commit `5a8609fb` for release.
+- v1.22.0 (2026-04-23): Added DNAC Delegations query API — engine symbol `dna_engine_dnac_get_delegations` (wraps `dnac_get_my_delegations`) for listing the current identity's delegations + accrued rewards. Backed by witness T3 RPC and dnac engine task queue. See commit `5a8609fb` for release.
 - v1.21.0 (2026-04-17+): Stake-delegation v1 API surface — validator set, per-block reward accrual, delegate/undelegate flows, validator commission updates. TX types `STAKE`, `UNSTAKE`, `DELEGATE`, `UNDELEGATE`, `CLAIM_REWARD`, `VALIDATOR_UPDATE`. Exposed via existing dnac engine handler.
 - v1.20.0 (2026-04-09+): Follow graph API (section 11) — `dna_engine_follow`, `dna_engine_unfollow`, `dna_engine_get_following`, `dna_engine_is_following`, `dna_engine_sync_following_to_dht`, `dna_engine_sync_following_from_dht`. New types: `dna_following_t`, `dna_following_cb`. Free: `dna_free_following`. Plus updated Debug Log API: `dna_engine_debug_log_send`, `_message`, `_message_level`, `_export`.
 - v1.19.0 (2026-04-10): Added DNAC Multi-Token API (section 11c) — `dna_engine_dnac_token_list`, `dna_engine_dnac_token_create`, `dna_engine_dnac_token_balance`. New types: `dna_dnac_token_t`, `dna_dnac_token_list_cb`. Free function: `dna_engine_dnac_free_tokens`.
-- v1.18.0 (2026-04-09): Added DNA Chain API (section 11b) — `dna_engine_dnac_get_balance`, `dna_engine_dnac_send`, `dna_engine_dnac_sync`, `dna_engine_dnac_get_history`, `dna_engine_dnac_get_utxos`, `dna_engine_dnac_estimate_fee`. New types: `dna_dnac_balance_t`, `dna_dnac_history_t`, `dna_dnac_utxo_t`. Callbacks: `dna_dnac_balance_cb`, `dna_dnac_history_cb`, `dna_dnac_utxos_cb`, `dna_dnac_fee_cb`. Free functions: `dna_engine_dnac_free_history`, `dna_engine_dnac_free_utxos`.
+- v1.18.0 (2026-04-09): Added DNAC (DNA Chain) API (section 11b) — `dna_engine_dnac_get_balance`, `dna_engine_dnac_send`, `dna_engine_dnac_sync`, `dna_engine_dnac_get_history`, `dna_engine_dnac_get_utxos`, `dna_engine_dnac_estimate_fee`. New types: `dna_dnac_balance_t`, `dna_dnac_history_t`, `dna_dnac_utxo_t`. Callbacks: `dna_dnac_balance_cb`, `dna_dnac_history_cb`, `dna_dnac_utxos_cb`, `dna_dnac_fee_cb`. Free functions: `dna_engine_dnac_free_history`, `dna_engine_dnac_free_utxos`.
 - v1.17.0 (2026-04-09): Added Follow API (section 11) — `dna_engine_follow`, `dna_engine_unfollow`, `dna_engine_get_following`, `dna_engine_is_following`, `dna_engine_sync_following_to_dht`, `dna_engine_sync_following_from_dht`. New types: `dna_following_t`, `dna_following_cb`. Free function: `dna_free_following`. Updated Debug Log API (section 10) with `dna_engine_debug_log_send`, `dna_engine_debug_log_message`, `dna_engine_debug_log_message_level`, `dna_engine_debug_log_export`.
 - v1.16.0 (2026-03-11): Added Message Deletion API — `dna_engine_delete_message`, `dna_engine_delete_conversation`, `dna_engine_delete_all_messages`. Three deletion scopes (single, conversation, all) with local delete + DHT outbox rebuild + DELETE notices to contacts + cross-device sync via self-addressed outbox messages. New types: `deleted_by_sender` field in `dna_message_t`, `MESSAGE_TYPE_DELETE` (3), `delete_action_t` enum. DB schema v17: `deleted_by_sender` column.
 - v1.15.0 (2026-03-10): Added mandatory version enforcement — `dna_version_check_result_t` now includes `library_below_minimum` and `app_below_minimum` flags. When local version is below DHT-published minimum, Flutter app blocks usage with UpdateRequiredScreen.
@@ -1398,246 +1402,14 @@ Manage pending group invitations.
 
 ---
 
-## 5a. Feeds v2
+## 5a. Feeds v2 — REMOVED
 
-Topic-based public feeds with categories and tags. All data is signed with Dilithium5 and stored in DHT with 30-day TTL. No voting (deferred to future version).
-
-### Data Structures
-
-```c
-// Topic information returned by callbacks
-typedef struct {
-    char topic_uuid[37];              // UUID v4
-    char author_fingerprint[129];     // Creator's fingerprint
-    char *title;                      // Topic title (max 200 chars)
-    char *body;                       // Topic body (max 4000 chars)
-    char category_id[65];             // SHA256 of lowercase category
-    char tags[5][33];                 // Up to 5 tags, 32 chars each
-    int tag_count;
-    uint64_t created_at;              // Unix timestamp
-    bool deleted;                     // Soft delete flag
-    uint64_t deleted_at;              // When deleted (0 if not)
-    bool verified;                    // Signature verified
-} dna_feed_topic_info_t;
-
-// Comment information
-typedef struct {
-    char comment_uuid[37];
-    char topic_uuid[37];
-    char author_fingerprint[129];
-    char *body;                       // Comment body (max 2000 chars)
-    uint64_t created_at;
-    bool verified;
-} dna_feed_comment_info_t;
-```
-
-### Callbacks
-
-```c
-// Single topic callback
-typedef void (*dna_feed_topic_cb)(
-    dna_request_id_t request_id,
-    int error,
-    dna_feed_topic_info_t *topic,
-    void *user_data
-);
-
-// Multiple topics callback
-typedef void (*dna_feed_topics_cb)(
-    dna_request_id_t request_id,
-    int error,
-    dna_feed_topic_info_t *topics,
-    int count,
-    void *user_data
-);
-
-// Single comment callback (for add)
-typedef void (*dna_feed_comment_cb)(
-    dna_request_id_t request_id,
-    int error,
-    dna_feed_comment_info_t *comment,
-    void *user_data
-);
-
-// Multiple comments callback
-typedef void (*dna_feed_comments_cb)(
-    dna_request_id_t request_id,
-    int error,
-    dna_feed_comment_info_t *comments,
-    int count,
-    void *user_data
-);
-```
-
----
-
-### dna_engine_feed_create_topic
-
-```c
-dna_request_id_t dna_engine_feed_create_topic(
-    dna_engine_t *engine,
-    const char *title,
-    const char *body,
-    const char *category,
-    const char *tags_json,
-    dna_feed_topic_cb callback,
-    void *user_data
-);
-```
-
-Creates a new topic in the public feed.
-
-**Parameters:**
-- `title` - Topic title (max 200 chars)
-- `body` - Topic body (max 4000 chars)
-- `category` - Category name (default categories: general, technology, help, announcements, trading, offtopic)
-- `tags_json` - JSON array of tags, e.g., `["rust", "webdev"]` (max 5 tags, 32 chars each)
-- `callback` - Called with created topic info
-- `user_data` - User data for callback
-
-**Example:**
-```c
-dna_engine_feed_create_topic(engine,
-    "My Topic",
-    "This is the body text",
-    "technology",
-    "[\"rust\", \"webdev\"]",
-    on_topic_created, NULL);
-```
-
----
-
-### dna_engine_feed_get_topic
-
-```c
-dna_request_id_t dna_engine_feed_get_topic(
-    dna_engine_t *engine,
-    const char *uuid,
-    dna_feed_topic_cb callback,
-    void *user_data
-);
-```
-
-Gets a topic by UUID.
-
----
-
-### dna_engine_feed_delete_topic
-
-```c
-dna_request_id_t dna_engine_feed_delete_topic(
-    dna_engine_t *engine,
-    const char *uuid,
-    dna_completion_cb callback,
-    void *user_data
-);
-```
-
-Soft-deletes a topic (author only). Topic remains in DHT with `deleted=true` until TTL expires.
-
-**Errors:**
-- `DNA_ENGINE_ERROR_PERMISSION` - Not the topic author
-
----
-
-### dna_engine_feed_add_comment
-
-```c
-dna_request_id_t dna_engine_feed_add_comment(
-    dna_engine_t *engine,
-    const char *topic_uuid,
-    const char *parent_comment_uuid,
-    const char *body,
-    const char *mentions_json,
-    dna_feed_comment_cb callback,
-    void *user_data
-);
-```
-
-Adds a comment to a topic using multi-owner DHT pattern. Supports single-level threading (replies to comments).
-
-**Parameters:**
-- `topic_uuid` - UUID of topic to comment on
-- `parent_comment_uuid` - UUID of parent comment for replies, or NULL for top-level comment
-- `body` - Comment body (max 2000 chars)
-- `mentions_json` - JSON array of mentioned fingerprints, e.g., `["5a8f2c3d..."]` (max 10)
-- `callback` - Called with created comment info
-- `user_data` - User data for callback
-
-**Threading Model:**
-- Comments can reply to other comments (single level only - no reply-to-reply)
-- Top-level comments: `parent_comment_uuid = NULL`
-- Replies: `parent_comment_uuid = "<uuid of parent comment>"`
-- `dna_feed_comment_info_t.parent_comment_uuid` contains the parent UUID (empty string for top-level)
-
----
-
-### dna_engine_feed_get_comments
-
-```c
-dna_request_id_t dna_engine_feed_get_comments(
-    dna_engine_t *engine,
-    const char *topic_uuid,
-    dna_feed_comments_cb callback,
-    void *user_data
-);
-```
-
-Gets all comments for a topic.
-
-**Memory:** Free with `dna_free_feed_comments(comments, count)`
-
----
-
-### dna_engine_feed_get_category
-
-```c
-dna_request_id_t dna_engine_feed_get_category(
-    dna_engine_t *engine,
-    const char *category,
-    int days_back,
-    dna_feed_topics_cb callback,
-    void *user_data
-);
-```
-
-Gets topics in a category from the last N days using day-bucket indexing.
-
-**Parameters:**
-- `category` - Category name
-- `days_back` - Number of days to look back (1-30)
-- `callback` - Called with topic list
-- `user_data` - User data for callback
-
-**Memory:** Free with `dna_free_feed_topics(topics, count)`
-
----
-
-### dna_engine_feed_get_all
-
-```c
-dna_request_id_t dna_engine_feed_get_all(
-    dna_engine_t *engine,
-    int days_back,
-    dna_feed_topics_cb callback,
-    void *user_data
-);
-```
-
-Gets all topics from the last N days across all categories.
-
-**Memory:** Free with `dna_free_feed_topics(topics, count)`
-
----
-
-### Memory Management
-
-```c
-void dna_free_feed_topic(dna_feed_topic_info_t *topic);
-void dna_free_feed_topics(dna_feed_topic_info_t *topics, int count);
-void dna_free_feed_comment(dna_feed_comment_info_t *comment);
-void dna_free_feed_comments(dna_feed_comment_info_t *comments, int count);
-```
+> **The Feeds v2 API no longer exists in the codebase.** None of the
+> `dna_engine_feed_*` functions, `dna_feed_*` types or `dna_free_feed_*` helpers
+> appear in `dna_engine.h` or the engine sources — the subsystem was removed after
+> the v1.12.0 changelog entry (which is kept above as history). This section was
+> deleted 2026-08-27 by the doc-vs-code audit; do not call or re-document these
+> symbols without reintroducing the feature.
 
 ---
 
@@ -2015,6 +1787,10 @@ Checks if media exists on DHT (deduplication check before upload).
 
 ## 5d. Channels (RSS-like Public Channels)
 
+> **DISABLED since 2026-03-28** — the whole channel subsystem is soft-disabled behind
+> `DNA_CHANNELS_ENABLED` (not defined in current builds). The API below compiles only
+> when that flag is set; the Flutter UI has no channel surface.
+
 Named channels with flat text posts. Posts stored in daily DHT buckets for scalable retrieval.
 
 ### dna_engine_channel_get_posts
@@ -2191,17 +1967,12 @@ Sync contacts between local database and DHT for multi-device support.
 
 ---
 
-### dna_engine_subscribe_to_contacts
+### Contact subscriptions (renamed)
 
-```c
-dna_request_id_t dna_engine_subscribe_to_contacts(
-    dna_engine_t *engine,
-    dna_completion_cb callback,
-    void *user_data
-);
-```
-
-Enables real-time push notifications via DHT listen().
+`dna_engine_subscribe_to_contacts` no longer exists. Listener setup happens
+automatically inside `dna_engine_load_identity()`; the related public entry today is
+`dna_engine_listen_all_contacts` (dna_engine.h:2820 — the `_minimal` variant was
+removed in v0.6.15). *(Corrected 2026-08-27.)*
 
 ---
 
@@ -2495,7 +2266,7 @@ Free following list returned by `dna_engine_get_following`.
 
 ## 11b. DNAC (DNA Chain)
 
-DNA Chain integration (v0.9.173+). DNAC is a native UTXO blockchain with BFT witness consensus. All amounts are in raw units (1 DNAC = 100,000,000 raw).
+DNAC (DNA Chain) integration (v0.9.173+). UTXO-based chain with BFT witness consensus. All amounts are in raw units (1 DNAC = 100,000,000 raw).
 
 ### Data Types
 

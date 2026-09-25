@@ -1,0 +1,72 @@
+{
+  "source": "@solana/spl-token 0.4.15 reference before removal",
+  "owner": "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk",
+  "recipient": "9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu",
+  "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  "sourceAccount": "GyGKxMyg1p9SsHfm15MkNUu1u9TN2JtTspcdmrtGUdse",
+  "associatedAccount": "ASZ2TDDNJG2n42TxAezqNNzwWipykHrENDKMCoLKgzup",
+  "instructions": [
+    {
+      "programId": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+      "keys": [
+        {
+          "pubkey": "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk",
+          "isSigner": true,
+          "isWritable": true
+        },
+        {
+          "pubkey": "ASZ2TDDNJG2n42TxAezqNNzwWipykHrENDKMCoLKgzup",
+          "isSigner": false,
+          "isWritable": true
+        },
+        {
+          "pubkey": "9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu",
+          "isSigner": false,
+          "isWritable": false
+        },
+        {
+          "pubkey": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "isSigner": false,
+          "isWritable": false
+        },
+        {
+          "pubkey": "11111111111111111111111111111111",
+          "isSigner": false,
+          "isWritable": false
+        },
+        {
+          "pubkey": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "isSigner": false,
+          "isWritable": false
+        }
+      ],
+      "data": "01"
+    },
+    {
+      "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "keys": [
+        {
+          "pubkey": "GyGKxMyg1p9SsHfm15MkNUu1u9TN2JtTspcdmrtGUdse",
+          "isSigner": false,
+          "isWritable": true
+        },
+        {
+          "pubkey": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "isSigner": false,
+          "isWritable": false
+        },
+        {
+          "pubkey": "ASZ2TDDNJG2n42TxAezqNNzwWipykHrENDKMCoLKgzup",
+          "isSigner": false,
+          "isWritable": true
+        },
+        {
+          "pubkey": "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk",
+          "isSigner": true,
+          "isWritable": false
+        }
+      ],
+      "data": "0c801a06000000000006"
+    }
+  ]
+}
