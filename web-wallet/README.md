@@ -41,7 +41,9 @@ For Caddy, `deploy/Caddyfile` serves the static files and supplies the response 
 Create, restore and saved-wallet unlock automatically read balances across all
 four supported external networks. Like Connect, the dashboard shows an estimated
 USD total and groups preset assets such as USDT across networks. Expand a token
-to see its network amounts and choose Send or Receive on that exact network.
+to see its network amounts and choose Send or Receive on that exact network
+(since 0.1.22, clicking the network row itself also selects that network in the
+Send / Receive panel).
 Network filters affect the asset list; the hero total always spans all four
 networks. Hide balances masks the portfolio amounts until shown again or locked.
 
@@ -99,12 +101,15 @@ requests or recovery words.
 
 ## Open-wallet sections and storage consent (0.1.10)
 
-The open wallet separates the portfolio, assets/receive, sending, activity and
-device settings. (Until 0.1.21 the native Nodus address also had its own panel
-beside the portfolio; since 0.1.21 NODUS is the first entry of the asset list
-and network selector instead — see "NODUS in the asset list (0.1.21)".) Send and
-Receive shortcuts bring the relevant section into view without submitting a
-transfer. The selected network appears beside both flows; unrequested or failed balance reads are not
+The open wallet separates the portfolio, the asset list (02), one Send / Receive
+panel (03), activity (04) and device settings (05). (Until 0.1.21 the native Nodus
+address also had its own panel beside the portfolio; since 0.1.21 NODUS is the
+first entry of the asset list and network selector instead — see "NODUS in the
+asset list (0.1.21)". Until 0.1.22 the receive address sat at the bottom of the
+asset list and sending had its own panel; since 0.1.22 both are one panel — see
+"Send and receive in one panel, QR codes, third-party licenses (0.1.22)".) The
+Send and Receive shortcuts bring the send or receive block of that panel into
+view without submitting a transfer. The selected network appears beside both flows; unrequested or failed balance reads are not
 presented as zero. The layout keeps the Nodus website's fonts and colors and uses
 the DNA Connect wallet's identity/actions/assets hierarchy as a reference.
 
@@ -160,9 +165,10 @@ phrase. The native coin is **NODUS**. Switching to another network never changes
 the native address. Copy is available only after derivation succeeds;
 lock clears the address and cancels pending work. This release displays the
 address only: no native balance, sending, registration or claim is implied.
-Since 0.1.21 the address is shown in the receive panel when Nodus (the first,
-default-selected network) is selected, and copied with the shared Copy button,
-instead of in a separate panel.
+Since 0.1.21 the address is shown in the receive block (since 0.1.22 part of the
+Send / Receive panel, with a QR code) when Nodus (the first, default-selected
+network) is selected, and copied with the shared Copy button, instead of in a
+separate panel.
 
 Creation and restore accept only the 24-word Nodus base phrase. Other mnemonic
 lengths and BIP39 passphrases are unsupported. This is the project’s existing
@@ -309,11 +315,13 @@ A scoped `@solana/web3.js` dependency override uses Jayson 5.0.0, removing vulne
 - `src/activity.js`, `src/activity-storage.js`: public confirmation tracking and bounded, authenticated encrypted activity storage.
 - `src/vault.js`: optional authenticated local encryption.
 - `src/app.js`, `index.html`, `src/style.css`: accountless responsive UI.
+- `src/qr.js` (0.1.22): draws the receive-address QR code as SVG DOM nodes with `qrcode-generator`; `src/app.js` `setReceiveAddress()` is the only writer of the address text and its QR.
+- `scripts/third-party-licenses.mjs`, `vite.config.js` (0.1.22): collect the license notice of every npm package rendered into the bundle and write `dist/THIRD-PARTY-LICENSES.txt`; the build fails for a bundled package with no license field and no license file.
 - `test/`: offline and fully intercepted browser verification.
 
 ## Connect-compatible Cellframe address derivation
 
-Open or restore your Nodus wallet: the Cellframe (CPUNK) address derives automatically in the browser, right alongside the Nodus address, with no separate panel or button (0.1.13). Select **Cellframe** from the network list to see it in the receive panel; reading the derived public balance for the portfolio's CPUNK row is a separate, automatic step that starts once the address is ready. This mode accepts the same normalized, checksum-valid English BIP39 phrase as the multichain wallet. Arbitrary non-BIP39 Cellframe strings are not supported; there is no field to paste one. No recovery phrase is sent to the RPC.
+Open or restore your Nodus wallet: the Cellframe (CPUNK) address derives automatically in the browser, right alongside the Nodus address, with no separate panel or button (0.1.13). Select **Cellframe** from the network list (or click its row in the asset list) to see it, with its QR code, in the receive block of the Send / Receive panel; reading the derived public balance for the portfolio's CPUNK row is a separate, automatic step that starts once the address is ready. This mode accepts the same normalized, checksum-valid English BIP39 phrase as the multichain wallet. Arbitrary non-BIP39 Cellframe strings are not supported; there is no field to paste one. No recovery phrase is sent to the RPC.
 
 The temporary `src/cpunk/` module compiles the repository's unchanged legacy Cellframe Dilithium MODE_1 C, not modern ML-DSA. It matches native `EVP_sha3_256(mnemonic)` (not Keccak), the key generator’s subsequent SHA3, 1196-byte serialized public key and 77-byte Backbone address/checksum. A fresh WASM instance is used per derivation and its memory is overwritten afterward; JavaScript string erasure cannot be guaranteed. The open wallet retains its phrase in RAM until lock to support derivation.
 
@@ -620,3 +628,110 @@ The portfolio card now stands on its own.
   Nodus selected. **How these can lie:** the checks run against intercepted
   traffic and a fixture phrase; they prove no NODUS balance request is made by
   the portfolio code paths exercised, not that a future balance source is correct.
+
+## Send and receive in one panel, QR codes, third-party licenses (0.1.22)
+
+Operator, 2026-09-25: send and receive belong in one place, and the bundle must
+carry the license notices of the packages it contains.
+
+- **One Send / Receive panel.** The former "03 / Send assets" panel is now
+  "03 / Send / Receive · <network>" (the heading follows the selected network
+  through the existing `.selected-network-name` labels). The network selector
+  `#chain` stays at the top for keyboard use. Below it, the **receive block**
+  (moved out of the asset list, element ids unchanged: `#receive-panel`,
+  `#receive-title`, `#receive-address`, `#copy-address`, the per-network status
+  lines) now shows a QR code above the address; below that, the **send block**
+  (`#send-block`, "Send on <network> · Mainnet") holds the send fields, or the
+  receive-only note for Nodus, Cellframe and Ixios exactly as before. The Copy
+  button stays `type="button"`, so it never submits the send form. The
+  navigation link reads "Send / Receive"; the Send and Receive shortcuts focus
+  the send or receive block of that panel.
+- **Clicking a network row selects it.** In the expanded asset list, clicking a
+  network row (outside its Send/Receive buttons) switches the panel to that
+  network without moving focus; the network name is a button, so Enter/Space do
+  the same from the keyboard. The selected network's rows are marked
+  (`aria-current="true"`, class `selected`) and stay marked across the periodic
+  re-render. On screens up to 900px wide, where the panel sits below the asset
+  list, selecting a row scrolls the panel into view. The per-row Send/Receive
+  buttons still select the network and focus the matching block.
+- **QR = exactly the displayed address.** `src/qr.js` encodes the text of
+  `#receive-address` itself — no URI scheme, no amount, no prefix — with
+  qrcode-generator (error correction M, smallest version that fits) and draws it
+  as SVG DOM nodes: a white background and one `<path>` of dark modules, 4-module
+  quiet zone, `shape-rendering="crispEdges"`, `role="img"`,
+  `aria-label="QR code for the receive address"`, 168px wide. No markup string,
+  data URL, `innerHTML` or inline style is produced (the page CSP is
+  `style-src 'self'`). `setReceiveAddress()` in `src/app.js` is the only writer
+  of the address text, so the QR changes with it everywhere: network selection,
+  the late Nodus / Cellframe / Ixios derivations, and lock (empty address ⇒ empty
+  QR). Text that is not printable ASCII draws no QR, because the library's
+  default byte encoder keeps only the low 8 bits of each character; every
+  address this wallet shows is ASCII.
+- **How QR correctness is tested.** `test/browser-smoke.js` serializes the drawn
+  `<svg>`, renders it through an image onto a white canvas at 4 px per module,
+  and decodes the pixels with jsQR (a dev dependency, run in Node because the
+  page CSP blocks an injected inline script). The decoded text must equal the
+  `#receive-address` text for Nodus, Ethereum, BNB Smart Chain, Solana and TRON;
+  `test/browser-ixios.js` does the same for the checksummed Ixios address. The
+  smoke test also checks that the QR is empty after lock and that the dashboard
+  has no horizontal overflow at 320px and 390px with the QR visible. **How these
+  can lie:** jsQR is a second implementation of the QR standard, not a phone
+  camera; a code that jsQR reads could still be hard to scan on a low-quality
+  screen, and the checks run only in headless Chromium.
+- **Third-party licenses.** The 0.1.21 bundle carried no license notices although
+  it bundles MIT, ISC, BSD and Apache-2.0 packages. A small build plugin in
+  `vite.config.js` now passes every module rendered into the output (`modules` of
+  each output chunk with `renderedLength > 0`) to
+  `scripts/third-party-licenses.mjs`, which finds each module's owning npm
+  package (nearest `package.json` with a name and version, nested `node_modules`
+  and scoped packages included), deduplicates by name and version, and writes
+  `dist/THIRD-PARTY-LICENSES.txt`: a header, the pointer to the font license
+  `assets/fonts/OFL.txt`, then per package "name@version — license" and the full
+  text of its LICENSE / LICENCE / COPYING files, sorted by name. The footer links
+  it as "Licenses". **The build fails, naming the package, if a bundled package
+  has neither a license field nor a license file.** A package with a license field
+  but no license file is listed with "(no license file in package; license field
+  only)"; in 0.1.22 that applies to `@solana-program/token`, `bs58` and
+  `qrcode-generator`. Only npm packages are covered: Vite's own small runtime
+  helpers (virtual modules `\0vite/preload-helper.js`,
+  `\0vite/modulepreload-polyfill.js`), the @rollup/plugin-commonjs helpers
+  (`\0commonjsHelpers.js`, applied through Vite's bundled copy) and the WASM modules built from this repository's C
+  code are not listed. `test/licenses.test.js` runs the resolver on real
+  `node_modules` files and on synthetic packages (nested copy; no license at all
+  ⇒ error). Reviewing the licenses in the list is a separate step.
+- **Full license texts (appendix).** Some packages only refer to a license text
+  they do not ship. When a bundled package's license expression contains
+  `LGPL-3.0`, the file ends with an "Appendix: full license texts" section holding
+  the full LGPL-3.0 text and the GPL-3.0 text (LGPL-3.0 incorporates GPL-3.0 by
+  reference); when it contains `Apache-2.0` and none of the package's own license
+  files contains the Apache terms, the Apache-2.0 text is appended too. Each text
+  appears once however many packages need it, and every entry that relies on one
+  ends with "full text: see Appendix — <license>". In 0.1.22: `rpc-websockets`
+  (LGPL-3.0-only; its own LICENSE, a copyright line and a pointer to gnu.org, is
+  kept above the reference) and `@solana-program/token` (Apache-2.0, no license
+  file). The texts live in `licenses/` (`LGPL-3.0.txt`, `GPL-3.0.txt`,
+  `Apache-2.0.txt`): byte-for-byte copies of this machine's Debian
+  `/usr/share/common-licenses/{LGPL-3,GPL-3,Apache-2.0}` (package `base-files`
+  12.4+deb12u15); `licenses/SOURCES.txt` records each source path, the owning
+  Debian package and version, and the SHA-256. `test/licenses.test.js` checks the
+  copies against the Debian originals when those files exist and says so when it
+  skips.
+- **Copyright lines for packages without a license file.** For a package with a
+  license field but no license file, the generator takes the Copyright line(s)
+  of the first comment block containing "Copyright", searching the package's
+  `module` and `main` entry files first and then every other file in the package
+  (sorted, binary files skipped), and prints each line verbatim followed by
+  "(copyright line from <file>:<line>)". For such an MIT package it then adds the
+  MIT permission paragraphs verbatim from the LICENSE file of the bundled
+  top-level `@noble/hashes` (Debian ships no MIT text); the build fails if that
+  package is not in the bundle. If no copyright line is found, the entry says
+  "(no copyright line found in package files)" and the build prints a warning
+  naming the package (not an error). In 0.1.22: `qrcode-generator` →
+  `// Copyright (c) 2009 Kazuhiko Arase` (`dist/qrcode.mjs:5`); `bs58` 4.0.1 and
+  `@solana-program/token` 0.16.1 have no copyright line in any of their files,
+  so both are warned about.
+- **Dependency pins.** `qrcode-generator` 2.0.4 (runtime, MIT;
+  `sha512-mZSiP6RnbHl4xL2Ap5HfkjLnmxfKcPWpWe/c+5XxCuetEenqmNFf1FH/ftXPCtFG5/TDobjsjz6sSNL0Sr8Z9g==`)
+  and `jsqr` 1.4.0 (dev only, Apache-2.0;
+  `sha512-dxLob7q65Xg2DvstYkRpkYtmKm2sPJ9oFhrhmudT1dZvNFFTlroai3AWSpLey/w5vMcLBXRgOJsbXpdN9HzU/A==`),
+  both exact versions. No other dependency changed.

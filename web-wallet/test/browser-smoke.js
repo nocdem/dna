@@ -3,6 +3,10 @@ import { pastePhrase, readPhrase } from './browser-phrase.js';
 // Run after npm run build + npm run preview. Every external request is intercepted.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+// jsQR decodes the receive QR in Node. The page CSP (script-src 'self') blocks
+// an injected inline <script>, so the pixels are drawn in the page and decoded here.
+const jsQR = createRequire(import.meta.url)('jsqr');
 const nodusAddress = JSON.parse(readFileSync(new URL('./fixtures/nodus-addresses.json', import.meta.url))).vectors[0].address;
 import { spawn } from 'node:child_process';
 import { setTimeout } from 'node:timers/promises';
@@ -40,6 +44,24 @@ await page.route('**/*', async route => {
 // "released" is waited for (the 10 s page timeout fails it if it never happens).
 const sessionHeld = () => page.evaluate(async () => (await navigator.locks.query()).held.some(lock => lock.name === 'nodus.wallet.session'));
 const sessionReleased = () => page.waitForFunction(async () => !(await navigator.locks.query()).held.some(lock => lock.name === 'nodus.wallet.session'));
+// Serializes the receive QR <svg>, draws it through an <img> (data: URL, allowed
+// by img-src) onto a white canvas at 4 px per module, and decodes the pixels
+// with jsQR. Returns the decoded text, or undefined when nothing decodes.
+async function decodeQr() {
+  const image = await page.evaluate(async () => {
+    const svg = document.querySelector('#receive-qr svg');
+    if (!svg) return null;
+    const size = Number(svg.getAttribute('width')) * 4, img = new Image();
+    await new Promise((loaded, failed) => { img.onload = loaded; img.onerror = failed; img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(new XMLSerializer().serializeToString(svg)); });
+    const canvas = document.createElement('canvas'); canvas.width = size; canvas.height = size;
+    const context = canvas.getContext('2d'); context.imageSmoothingEnabled = false;
+    context.fillStyle = '#ffffff'; context.fillRect(0, 0, size, size); context.drawImage(img, 0, 0, size, size);
+    return { width: size, height: size, data: Array.from(context.getImageData(0, 0, size, size).data) };
+  });
+  assert.ok(image, 'receive QR is drawn');
+  return jsQR(Uint8ClampedArray.from(image.data), image.width, image.height)?.data;
+}
+const qrEmpty = () => page.locator('#receive-qr').evaluate(node => node.childElementCount === 0);
 try {
   await page.goto(url);
   await page.waitForFunction(() => typeof document.querySelector('#restore').onclick === 'function');
@@ -54,6 +76,11 @@ try {
   assert.equal(await page.locator('#chain').inputValue(), 'nodus');
   await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#receive-address').textContent));
   assert.equal(await page.locator('#receive-address').innerText(), nodusAddress);
+  // Send / Receive panel: heading names the selected network; the QR encodes exactly the shown address.
+  assert.equal(await page.locator('#send-title').innerText(), 'Send / Receive · Nodus');
+  assert.equal(await page.locator('#receive-qr svg').getAttribute('role'), 'img');
+  assert.equal(await page.locator('#receive-qr svg').getAttribute('aria-label'), 'QR code for the receive address');
+  assert.equal(await decodeQr(), await page.locator('#receive-address').innerText());
   assert.equal(await page.locator('#nodus-address-status').isVisible(), true);
   assert.match(await page.locator('#nodus-address-status').innerText(), /Derived locally/);
   assert.equal(await page.locator('#cellframe-address-status').isVisible(), false);
@@ -76,15 +103,58 @@ try {
   assert.doesNotMatch(await nodusGroup.innerText(), /Reading|Not read|Balance unavailable|\b0\.0\b/);
   assert.deepEqual(await nodusGroup.locator('.holding-actions button').allTextContents(), ['Receive']);
   await nodusGroup.locator('summary').click();
+  // Clicking a holding row (outside its buttons) switches the Send / Receive
+  // panel to that network and marks the row; the network name is the row's
+  // keyboard control and does the same on Enter.
+  const solGroup = page.locator('.asset-group[data-symbol="SOL"]');
+  await solGroup.locator('summary').click();
+  await solGroup.locator('.chain-holding .holding-value').click();
+  assert.equal(await page.locator('#chain').inputValue(), 'solana');
+  assert.equal(await page.locator('#send-title').innerText(), 'Send / Receive · Solana');
+  assert.equal(await page.locator('#receive-address').innerText(), '3Cy3YNTFywCmxoxt8n7UH6hg6dLo5uACowX3CFceaSnx');
+  assert.equal(await solGroup.locator('.holding-select').getAttribute('aria-current'), 'true');
+  assert.equal(await solGroup.locator('.chain-holding').evaluate(node => node.classList.contains('selected')), true);
+  assert.equal(await page.locator('#review-dialog').isVisible(), false);
+  await nodusGroup.locator('summary').click();
+  await nodusGroup.locator('.holding-select').focus(); await page.keyboard.press('Enter');
+  assert.equal(await page.locator('#chain').inputValue(), 'nodus');
+  assert.equal(await page.locator('#send-title').innerText(), 'Send / Receive · Nodus');
+  assert.equal(await page.locator('#receive-address').innerText(), nodusAddress);
+  assert.equal(await nodusGroup.locator('.holding-select').getAttribute('aria-current'), 'true');
+  assert.equal(await solGroup.locator('.holding-select').getAttribute('aria-current'), null);
+  assert.equal(await nodusGroup.locator('.holding-select').evaluate(el => el === document.activeElement), true, 'selecting does not move focus');
+  assert.equal(await decodeQr(), nodusAddress);
+  // Single-column dashboard (max-width 900px, src/style.css): the panel sits below
+  // the asset list, so selecting a row scrolls it into view — checked on a phone
+  // width and on a width between the 760px and 900px breakpoints.
+  const panelTop = () => page.locator('#send-form').evaluate(node => node.getBoundingClientRect().top);
+  for (const width of [390, 820]) {
+    await page.setViewportSize({ width, height: 844 });
+    await nodusGroup.locator('.holding-select').click(); assert.equal(await page.locator('#chain').inputValue(), 'nodus');
+    await page.evaluate(() => scrollTo(0, 0));
+    assert.ok(await panelTop() >= await page.evaluate(() => innerHeight), `panel starts below the fold at ${width}px`);
+    await solGroup.locator('.chain-holding .holding-value').click();
+    assert.equal(await page.locator('#chain').inputValue(), 'solana');
+    const top = await panelTop();
+    assert.ok(top >= 0 && top < await page.evaluate(() => innerHeight / 2), `Send / Receive panel scrolled into view at ${width}px (top ${top})`);
+  }
+  await page.setViewportSize({ width: 1280, height: 960 });
+  await nodusGroup.locator('.holding-select').click();
+  assert.equal(await page.locator('#chain').inputValue(), 'nodus');
+  await nodusGroup.locator('summary').click(); await solGroup.locator('summary').click();
   assert.match(await page.locator('#portfolio-scope').innerText(), /NODUS is shown, but its balance is not shown yet/);
   assert.match(await page.locator('#wallet-storage-state').innerText(), /Temporary session/);
+  // Both shortcuts lead to the same Send / Receive panel: send block below, receive block on top.
+  assert.equal(await page.locator('.wallet-navigation a[href="#send-form"]').innerText(), 'Send / Receive');
   await page.locator('#quick-send').click();
-  assert.equal(await page.locator('#send-title').evaluate(el => el === document.activeElement), true);
+  assert.equal(await page.locator('#send-block-title').evaluate(el => el === document.activeElement), true);
   await page.locator('#quick-receive').click();
   assert.equal(await page.locator('#receive-title').evaluate(el => el === document.activeElement), true);
+  assert.equal(await page.locator('#send-form #receive-panel + #send-block').count(), 1, 'receive block directly above the send block');
   for (const width of [320, 390, 820, 1280]) {
     await page.setViewportSize({ width, height: 960 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `Dashboard overflow at ${width}px`);
+    assert.equal(await page.locator('#receive-qr svg').isVisible(), true, `QR visible at ${width}px`);
   }
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
   // Nodus is still the selected network: the shared Copy button copies its address.
@@ -102,6 +172,8 @@ try {
   await page.selectOption('#chain', 'cellframe');
   await page.waitForFunction(() => /^[1-9A-HJ-NP-Za-km-z]{100,110}$/.test(document.querySelector('#receive-address').textContent));
   assert.match(await page.locator('#cellframe-address-status').innerText(), /Derived locally/);
+  // The longest address format (100–110 characters) still decodes exactly.
+  assert.equal(await decodeQr(), await page.locator('#receive-address').innerText(), 'cellframe QR decodes to the shown address');
   assert.equal(await page.locator('#send-fields').isVisible(), false);
   assert.match(await page.locator('#send-disabled-note').innerText(), /Sending CPUNK is not available/);
   assert.equal(await page.locator('#account-explorer').isVisible(), false);
@@ -110,6 +182,8 @@ try {
     await page.selectOption('#chain', chain); assert.equal(await page.locator('#receive-address').innerText(), expected);
     const selectedName = await page.locator('#chain option:checked').innerText();
     assert.ok((await page.locator('.selected-network-name').allTextContents()).every(name => name === selectedName));
+    assert.equal(await page.locator('#send-title').innerText(), `Send / Receive · ${selectedName}`);
+    assert.equal(await decodeQr(), expected, `${chain} QR decodes to the shown address`);
   }
   // Paket C: RPC provider select — populated per network, TRON has no custom
   // option, and picking "Custom HTTPS endpoint..." reveals the free-text box.
@@ -175,7 +249,8 @@ try {
   const stored = await page.evaluate(() => JSON.stringify({ ...localStorage })); assert.ok(!stored.includes(phrase)); assert.ok(!stored.includes('public-test-password-123'));
   // Lock with Nodus selected: its address and status are cleared.
   await page.selectOption('#chain', 'nodus'); assert.equal(await page.locator('#receive-address').innerText(), nodusAddress);
-  await page.locator('#lock').click(); assert.equal(await page.locator('#receive-address').textContent(), ''); assert.equal(await page.locator('#nodus-address-status').textContent(), ''); assert.equal(await page.locator('#cellframe-address-status').innerText(), ''); await sessionReleased();
+  assert.equal(await qrEmpty(), false);
+  await page.locator('#lock').click(); assert.equal(await page.locator('#receive-address').textContent(), ''); assert.equal(await qrEmpty(), true); assert.equal(await page.locator('#nodus-address-status').textContent(), ''); assert.equal(await page.locator('#cellframe-address-status').innerText(), ''); await sessionReleased();
   await page.locator('#unlock-password').fill('incorrect-password-123'); await page.locator('#unlock-wallet').click();
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('Incorrect password'));
   // A failed unlock gives the session lock back.
@@ -216,8 +291,19 @@ try {
   await page.locator('#phrase-submit').click(); await page.locator('#wallet-open').waitFor({ state: 'visible' });
   await page.selectOption('#chain', 'nodus');
   await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#receive-address').textContent));
-  await page.locator('#lock').click(); assert.equal(await page.locator('#receive-address').textContent(), ''); assert.equal(await page.locator('#nodus-address-status').textContent(), '');
+  await page.locator('#lock').click(); assert.equal(await page.locator('#receive-address').textContent(), ''); assert.equal(await qrEmpty(), true); assert.equal(await page.locator('#nodus-address-status').textContent(), '');
   await page.setViewportSize({ width: 390, height: 844 }); assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  // Third-party license notices ship at the dist root and are linked from the footer.
+  assert.equal(await page.locator('.wallet-footer a[href="/THIRD-PARTY-LICENSES.txt"]').innerText(), 'Licenses');
+  const licenses = await fetch(url + '/THIRD-PARTY-LICENSES.txt');
+  assert.equal(licenses.status, 200);
+  const licenseText = await licenses.text();
+  for (const name of ['qrcode-generator', '@noble/hashes', 'ethers']) assert.match(licenseText, new RegExp(`^${name.replace(/[/.]/g, '\\$&')}@\\S+ — `, 'm'), `${name} listed`);
+  // Full LGPL-3.0 text in the appendix (rpc-websockets) and the copyright line
+  // taken from qrcode-generator's own source (it ships no license file).
+  assert.ok(licenseText.includes('GNU LESSER GENERAL PUBLIC LICENSE'), 'LGPL-3.0 full text');
+  assert.ok(licenseText.includes('Version 3, 29 June 2007'), 'LGPL-3.0 version line');
+  assert.ok(licenseText.includes('Copyright (c) 2009 Kazuhiko Arase\n(copyright line from dist/qrcode.mjs:5)'), 'qrcode-generator copyright line');
   assert.deepEqual(errors, []);
-  console.log('Browser smoke passed: create/backup/restore, NODUS first and default-selected (receive-only row, no balance shown, no Send), Nodus native address/copy/lock/reopen, 4 external chain addresses, ETH/ERC20 signed mocked broadcasts, wrong-network guard, automatic Cellframe address derivation + CPUNK balance display/error, send disabled on Cellframe, finalized scoped activity, encrypted save/unlock/change/reload/delete, KDF cancellation, temporary storage behavior, mobile layout. No external request reached a blockchain.');
+  console.log('Browser smoke passed: create/backup/restore, NODUS first and default-selected (receive-only row, no balance shown, no Send), Nodus native address/copy/lock/reopen, 4 external chain addresses, one Send / Receive panel whose heading follows the selected network and whose QR decodes to exactly the shown address (Nodus, Ethereum, BNB Smart Chain, Solana, TRON) and clears on lock, holding-row click/keyboard selection, ETH/ERC20 signed mocked broadcasts, wrong-network guard, automatic Cellframe address derivation + CPUNK balance display/error, send disabled on Cellframe, finalized scoped activity, encrypted save/unlock/change/reload/delete, KDF cancellation, temporary storage behavior, mobile layout with the QR shown, third-party license file served. No external request reached a blockchain.');
 } catch (error) { console.error('UI status:', await page.locator('#wallet-status').textContent(), 'Cellframe:', await page.locator('#cellframe-address-status').textContent(), 'Page errors:', errors, 'Methods:', calls.map(c => c?.method)); throw error; } finally { await browser.close(); server?.kill(); }

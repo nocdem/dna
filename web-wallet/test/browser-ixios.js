@@ -12,7 +12,25 @@ import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { chromium } from 'playwright';
+// Decodes the receive QR in Node (the page CSP blocks an injected inline script);
+// same procedure as test/browser-smoke.js decodeQr().
+const jsQR = createRequire(import.meta.url)('jsqr');
+async function decodeQr(page) {
+  const image = await page.evaluate(async () => {
+    const svg = document.querySelector('#receive-qr svg');
+    if (!svg) return null;
+    const size = Number(svg.getAttribute('width')) * 4, img = new Image();
+    await new Promise((loaded, failed) => { img.onload = loaded; img.onerror = failed; img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(new XMLSerializer().serializeToString(svg)); });
+    const canvas = document.createElement('canvas'); canvas.width = size; canvas.height = size;
+    const context = canvas.getContext('2d'); context.imageSmoothingEnabled = false;
+    context.fillStyle = '#ffffff'; context.fillRect(0, 0, size, size); context.drawImage(img, 0, 0, size, size);
+    return { width: size, height: size, data: Array.from(context.getImageData(0, 0, size, size).data) };
+  });
+  assert.ok(image, 'receive QR is drawn');
+  return jsQR(Uint8ClampedArray.from(image.data), image.width, image.height)?.data;
+}
 const app = fileURLToPath(new URL('..', import.meta.url));
 const vite = join(app, 'node_modules/vite/bin/vite.js');
 const { Phrase: phrase, Checksummed: expected } = JSON.parse(readFileSync(new URL('./fixtures/ixios-checksum.json', import.meta.url))).vectors[0];
@@ -180,6 +198,10 @@ try {
   assert.equal(await page.locator('#cellframe-address-status').isVisible(), false);
   assert.equal(await page.locator('#account-explorer').isVisible(), false);
   assert.match(await page.locator('#receive-title').innerText(), /Receive on Ixios/);
+  assert.equal(await page.locator('#send-title').innerText(), 'Send / Receive · Ixios');
+  // The QR encodes exactly the checksummed Ixios address shown.
+  assert.equal(await page.locator('#receive-address').innerText(), expected);
+  assert.equal(await decodeQr(page), expected);
   assert.match(on.nodusAddress, /^[0-9a-f]{128}$/);
   assert.notEqual(on.nodusAddress.slice(-96), expected.slice(2).toLowerCase(), 'Ixios key must differ from the Nodus identity');
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
@@ -219,6 +241,7 @@ try {
   assert.ok(on.wasm.every(path => !/mldsa87-sign/.test(path)));
   await page.locator('#lock').click();
   assert.equal(await page.locator('#receive-address').textContent(), '');
+  assert.equal(await page.locator('#receive-qr').evaluate(node => node.childElementCount), 0);
   assert.equal(await page.locator('#ixios-address-status').textContent(), '');
   assert.equal(await page.locator('#balances').textContent(), '');
   assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
@@ -243,7 +266,7 @@ try {
   assert.equal(await off.page.evaluate(() => localStorage.length + sessionStorage.length), 0);
   assert.deepEqual(off.ixiosRequests, []);
   assert.deepEqual(off.unexpected, []); assert.deepEqual(off.errors, []);
-  console.log('Ixios browser checks passed: flag-on build lists Ixios in the network selector, portfolio filters, badges and assets (IXIOS row: Receive only, balance read like CPUNK after a genesis-block identity check, outside the USD total; a wrong genesis gives the shared "Balance unavailable" state with no balance read); selecting it shows the checksummed receive address, hides the send fields and shows the Ixios note while Cellframe keeps its own; Ixios requests go only to the configured RPC; lock clears it; loads only the keygen module (?ixios). Flag-off build shows no Ixios anywhere and ships no Ixios JavaScript; neither build ships mldsa87-sign.wasm or Ixios markup; no unmocked external requests or storage.');
+  console.log('Ixios browser checks passed: flag-on build lists Ixios in the network selector, portfolio filters, badges and assets (IXIOS row: Receive only, balance read like CPUNK after a genesis-block identity check, outside the USD total; a wrong genesis gives the shared "Balance unavailable" state with no balance read); selecting it shows the checksummed receive address (its QR decodes to exactly that address; lock clears the QR), hides the send fields and shows the Ixios note while Cellframe keeps its own; Ixios requests go only to the configured RPC; lock clears it; loads only the keygen module (?ixios). Flag-off build shows no Ixios anywhere and ships no Ixios JavaScript; neither build ships mldsa87-sign.wasm or Ixios markup; no unmocked external requests or storage.');
 } finally {
   await browser?.close();
   for (const server of servers) server.kill();

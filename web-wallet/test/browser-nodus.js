@@ -138,6 +138,11 @@ try {
   assert.equal(await readPhrase(page), vectors[0].phrase);
   await page.locator('#phrase-24').fill('abandon');
   await page.locator('#backup-confirm').check(); await page.locator('#phrase-submit').click();
+  // The checksum error is thrown by deriveWallet(), which runs only after the
+  // asynchronous single-tab session claim (app.js phrase-form onsubmit), so the
+  // status is written after the click returns — wait for it instead of reading
+  // it once (the synchronous "24-word" errors above are already set by then).
+  await page.waitForFunction(() => /invalid/.test(document.querySelector('#wallet-status').textContent));
   assert.match(await page.locator('#wallet-status').innerText(), /invalid/);
   assert.equal(await page.locator('#wallet-open').isVisible(), false);
   await page.locator('#phrase-cancel').click();

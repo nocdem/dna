@@ -13,7 +13,16 @@ import { adapters, prepareTransfer } from './wallet.js';
 import { endpointUrl } from './core.js';
 import { createPhraseFields } from './phrase-fields.js';
 import { createPortfolio } from './portfolio-view.js';
+import { renderQr } from './qr.js';
 const $ = id => document.getElementById(id);
+// Must equal the src/style.css media query that sets `.dashboard-grid` to one
+// column (`@media (max-width: 900px)`): below it the Send / Receive panel sits
+// under the asset list, off screen after a row click.
+const SINGLE_COLUMN_DASHBOARD = '(max-width: 900px)';
+// The only writer of #receive-address: the QR below it always encodes exactly
+// the text shown (empty text, e.g. after lock or before a derivation settles,
+// clears the QR).
+function setReceiveAddress(text) { $('receive-address').textContent = text; renderQr($('receive-qr'), text); }
 const phraseFields = createPhraseFields($('phrase-grid'), $('phrase-error'));
 // Build-time flag: whether Cellframe/CPUNK appears in the network list, the
 // endpoint map and the portfolio at all. This is a plain boolean used only for
@@ -153,9 +162,14 @@ const portfolio = createPortfolio({
     ? cellframeReader(address, endpoint, options)
     : chain === ixiosChain ? ixiosReader(address, endpoint, options)
     : adapters[chain].balances(chain, address, endpoint, options),
+  // action 'send' / 'receive' (the row's buttons) also moves focus to that block
+  // of the Send / Receive panel; 'select' (a click on the row itself) only
+  // switches the panel's network, and when the dashboard is single-column (the
+  // panel below the asset list: SINGLE_COLUMN_DASHBOARD) scrolls it into view.
   selectAsset(chain, symbol, action) {
     if (!wallet) return;
     $('chain').value = chain; selectChain(); $('asset').value = symbol;
+    if (action === 'select') { if (matchMedia(SINGLE_COLUMN_DASHBOARD).matches) $('send-form').scrollIntoView({ block: 'start' }); return; }
     $(action === 'send' ? 'quick-send' : 'quick-receive').click();
   },
   leadingNetworks,
@@ -207,7 +221,7 @@ function lock() {
   $('discard-activity').hidden = true;
   $('phrase-form').hidden = true; $('wallet-open').hidden = true; $('welcome').hidden = false;
   history.length = 0; $('account-explorer').removeAttribute('href');
-  $('activity').replaceChildren(); $('receive-address').textContent = ''; $('balances').replaceChildren(); $('recipient').value = ''; $('amount').value = '';
+  $('activity').replaceChildren(); setReceiveAddress(''); $('balances').replaceChildren(); $('recipient').value = ''; $('amount').value = '';
   for (const id of ['unlock-password', 'vault-password', 'vault-old-password']) $(id).value = '';
   $('vault-risk-confirm').checked = false;
   updateVaultUI(); clearTimeout(lockTimer); message('Wallet locked. Restore your recovery phrase or unlock your saved wallet.');
@@ -270,7 +284,7 @@ async function showNodusAddress() {
     const address = await deriveNodusAddress(source.recoveryPhrase, { signal: operation.signal });
     if (!current()) return;
     source.addresses.nodus = address;
-    if ($('chain').value === NODUS_ASSET.chain) $('receive-address').textContent = address;
+    if ($('chain').value === NODUS_ASSET.chain) setReceiveAddress(address);
     $('nodus-address-status').textContent = 'Derived locally from this wallet’s recovery phrase.';
   } catch {
     if (current()) $('nodus-address-status').textContent = 'Nodus address unavailable. Lock and reopen your wallet to retry.';
@@ -305,7 +319,7 @@ if (import.meta.env.VITE_ENABLE_CPUNK !== 'false') {
         const address = await deriveCpunkAddress(source.recoveryPhrase, { signal: operation.signal });
         if (!current()) return;
         source.addresses.cellframe = address;
-        if ($('chain').value === 'cellframe') $('receive-address').textContent = address;
+        if ($('chain').value === 'cellframe') setReceiveAddress(address);
         $('cellframe-address-status').textContent = 'Derived locally from this wallet’s recovery phrase.';
         portfolio.setAddress('cellframe', address);
       } catch {
@@ -360,7 +374,7 @@ if (import.meta.env.VITE_ENABLE_IXIOS === 'true') {
         if (!current()) return;
         const address = ixiosChecksumAddress(bytes);
         source.addresses[chain] = address;
-        if ($('chain').value === chain) $('receive-address').textContent = address;
+        if ($('chain').value === chain) setReceiveAddress(address);
         status.textContent = 'Derived locally from this wallet’s recovery phrase.';
         portfolio.setAddress(chain, address);
       } catch {
@@ -377,7 +391,8 @@ function selectChain() {
   revision++; closeReview(); const chain = $('chain').value; const c = networkFor(chain);
   for (const label of document.querySelectorAll('.selected-network-name')) label.textContent = c.name;
   const address = wallet.addresses[chain];
-  $('receive-address').textContent = address || '';
+  setReceiveAddress(address || '');
+  portfolio.setSelected(chain);
   // A network with no RPC to choose (Nodus) hides the connection settings.
   $('rpc-settings').hidden = !c.rpcOptions; if (c.rpcOptions) populateRpcChoice(chain, c);
   $('asset').replaceChildren(...[c.symbol, ...c.tokens.map(t => t.symbol)].map(s => new Option(s, s)));
@@ -392,9 +407,11 @@ function selectChain() {
   for (const [key, node] of Object.entries(addressStatus)) node.hidden = chain !== key;
 }
 $('chain').onchange = selectChain;
+// Both shortcuts lead to the same Send / Receive panel: receive block on top,
+// send block below it.
 $('quick-send').onclick = () => {
-  $('send-title').focus({ preventScroll: true });
-  $('send-form').scrollIntoView({ block: 'start' });
+  $('send-block-title').focus({ preventScroll: true });
+  $('send-block').scrollIntoView({ block: 'start' });
 };
 $('quick-receive').onclick = () => {
   $('receive-title').focus({ preventScroll: true });

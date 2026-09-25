@@ -43,7 +43,9 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
   const flagged = ({ network, asset }) => network.balanceUnavailable ? { ...asset, balanceUnavailable: true } : asset;
   const assets = [...leadingNetworks.map(flagged), ...ASSETS, ...extraNetworks.map(flagged)];
   const chains = Object.keys(networks).filter(chain => !networks[chain].balanceUnavailable);
-  let addresses, endpoints, balances = {}, quotes = {}, filter = 'all', hidden = false, session = 0, timer, priceJob;
+  // `selected`: the network chosen in the Send / Receive panel, set by the app
+  // through setSelected(). It is UI state, not wallet state, so clear() keeps it.
+  let addresses, endpoints, balances = {}, quotes = {}, filter = 'all', hidden = false, session = 0, timer, priceJob, selected;
   const jobs = new Map();
   const text = value => hidden ? '••••' : value;
   function render() {
@@ -77,8 +79,17 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
         el('small', '', text(`${usdText(group.usd, group.positive)}${group.partialValue && group.usd !== null ? ' known' : ''}`)));
       summary.append(icon(group.symbol, home), name, value, el('span', 'asset-chevron', '⌄')); detail.append(summary);
       for (const row of group.rows) {
-        const entry = el('div', 'chain-holding'), identity = el('span', 'holding-network');
+        // The whole row selects its network for the Send / Receive panel (0.1.22);
+        // the network name is the row's keyboard control. Its aria-label is unique
+        // within the group, so the focus restore below finds it after a re-render.
+        const entry = el('div', `chain-holding${row.chain === selected ? ' selected' : ''}`);
+        entry.dataset.chain = row.chain;
+        const identity = el('button', 'holding-network holding-select'); identity.type = 'button';
+        identity.setAttribute('aria-label', `Select ${row.symbol} on ${networks[row.chain].name}`);
+        if (row.chain === selected) identity.setAttribute('aria-current', 'true');
         identity.append(networkIcon(networks[row.chain]), el('span', '', networks[row.chain].name));
+        identity.onclick = () => selectAsset(row.chain, row.symbol, 'select');
+        entry.onclick = event => { if (!event.target.closest('button')) selectAsset(row.chain, row.symbol, 'select'); };
         const value = el('span', 'holding-value');
         const state = row.state === 'unsupported' ? 'Balance not shown yet' : row.state === 'loading' ? 'Reading…' : row.state === 'stale' ? 'Balance out of date' : row.state === 'idle' ? 'Not read' : 'Balance unavailable';
         value.append(el('strong', '', text(row.balance === null ? state : `${row.balance} ${row.symbol}`)),
@@ -158,6 +169,16 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
     if (!address) { for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'error' }; render(); return; }
     void readChainBalances(chain, session);
   }
+  // Marks the selected network's rows in place (no re-render, so no focus change);
+  // render() applies the same marks to rows it builds later.
+  function setSelected(chain) {
+    selected = chain;
+    for (const entry of $('balances').querySelectorAll('.chain-holding')) {
+      const current = entry.dataset.chain === chain, control = entry.querySelector('.holding-select');
+      entry.classList.toggle('selected', current);
+      if (current) control?.setAttribute('aria-current', 'true'); else control?.removeAttribute('aria-current');
+    }
+  }
   $('portfolio-refresh').onclick = refresh;
   $('refresh').onclick = refresh;
   $('portfolio-hide').onclick = () => { hidden = !hidden; render(); };
@@ -166,5 +187,5 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
     button.onclick = () => { filter = chain; render(); }; return button;
   }));
   render();
-  return { open, clear, refresh, changeEndpoint, setAddress };
+  return { open, clear, refresh, changeEndpoint, setAddress, setSelected };
 }

@@ -1,0 +1,21 @@
+Full license texts appended to dist/THIRD-PARTY-LICENSES.txt (web wallet 0.1.22).
+Each file is a byte-for-byte copy (cp, verified with cmp) of the Debian original below.
+
+LGPL-3.0.txt
+  source:  /usr/share/common-licenses/LGPL-3
+  package: base-files 12.4+deb12u15 (dpkg -S: base-files; dpkg-query -W base-files)
+  sha256:  e3a994d82e644b03a792a930f574002658412f62407f5fee083f2555c5f23118
+
+GPL-3.0.txt
+  source:  /usr/share/common-licenses/GPL-3
+  package: base-files 12.4+deb12u15 (dpkg -S: base-files; dpkg-query -W base-files)
+  sha256:  3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986
+
+Apache-2.0.txt
+  source:  /usr/share/common-licenses/Apache-2.0
+  package: base-files 12.4+deb12u15 (dpkg -S: base-files; dpkg-query -W base-files)
+  sha256:  cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30
+
+No MIT text is kept here: Debian ships none in /usr/share/common-licenses. MIT
+entries without their own license file use the permission paragraphs of a
+bundled package's LICENSE file instead (see scripts/third-party-licenses.mjs).

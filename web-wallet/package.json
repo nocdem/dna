@@ -1,6 +1,6 @@
 {
   "name": "nodus-web-wallet",
-  "version": "0.1.21",
+  "version": "0.1.22",
   "private": true,
   "type": "module",
   "scripts": {
@@ -22,9 +22,11 @@
     "@solana/web3.js": "1.99.0",
     "buffer": "6.0.3",
     "ethers": "6.17.0",
+    "qrcode-generator": "2.0.4",
     "tronweb": "6.5.1"
   },
   "devDependencies": {
+    "jsqr": "1.4.0",
     "playwright": "1.58.2",
     "vite": "7.3.6"
   },

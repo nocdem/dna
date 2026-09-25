@@ -222,7 +222,7 @@ body:has(#wallet-open:not([hidden])) .privacy-card { position: static; }
 body:has(#wallet-open:not([hidden])) .privacy-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 28px; }
 body:has(#wallet-open:not([hidden])) .privacy-facts > div + div { margin: 0; padding: 0 0 0 28px; border-top: 0; border-left: 1px solid var(--line); }
 body:has(#wallet-open:not([hidden])) .wallet-card { background: #171c13; }
-.wallet-card, .dashboard-panel, .receive-panel { scroll-margin-top: 24px; }
+.wallet-card, .dashboard-panel, .receive-panel, .send-block { scroll-margin-top: 24px; }
 .wallet-session { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
 .wallet-session > div { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; color: #c6d7b4; }
 .session-indicator { width: 6px; height: 6px; background: var(--lime); border-radius: 50%; }
@@ -250,7 +250,7 @@ body:has(#wallet-open:not([hidden])) .wallet-card { background: #171c13; }
 .network-select > span { color: var(--muted); font-size: 11px; }
 .network-select select { grid-column: 1 / -1; }
 .balance-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 24px 0 12px; }
-.balance-heading h4, .receive-panel h4 { font-size: 12px; font-weight: 500; margin: 0; }
+.balance-heading h4, .receive-panel h4, .send-block h4 { font-size: 12px; font-weight: 500; margin: 0; }
 .balance-heading > span { font-size: 10px; color: var(--muted); }
 .assets-panel .balances { min-height: 90px; line-height: 1.7; padding: 14px 16px; background: #11150f70; border-color: #d5f99814; }
 .assets-panel .balances > div { padding: 12px 0; align-items: baseline; }
@@ -260,9 +260,14 @@ body:has(#wallet-open:not([hidden])) .wallet-card { background: #171c13; }
 .receive-panel { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--line); }
 .receive-panel h4 { margin-bottom: 12px; }
 .receive-panel .hint { margin-bottom: 0; }
-.network-context { color: var(--muted); font-size: 12px; margin: 0; }
-.network-context strong { color: var(--lime); font-weight: 500; }
-.network-context span { white-space: nowrap; }
+/* Receive block QR (src/qr.js): dark modules on a white background with its own
+   4-module quiet zone, so no extra padding is needed for scanners. */
+.receive-qr { margin: 0 0 12px; }
+.receive-qr:empty { display: none; }
+.receive-qr svg { display: block; width: 168px; height: 168px; max-width: 100%; border-radius: 6px; }
+/* Send block: below the receive block in the same Send / Receive panel. */
+.send-block { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--line); }
+.send-block-network { color: var(--muted); font-weight: 400; white-space: nowrap; }
 .send-panel { display: flex; flex-direction: column; }
 .send-panel .hint { margin-bottom: 0; }
 .send-panel #review-button { margin-top: 24px; }
@@ -284,6 +289,8 @@ body:has(#wallet-open:not([hidden])) .wallet-card { background: #171c13; }
 .device-panel > details:last-child { margin-bottom: 0; }
 .device-panel > details > summary { color: var(--text); }
 #vault-password + .hint { max-width: 650px; }
+/* Keep in step with SINGLE_COLUMN_DASHBOARD in src/app.js (row click scrolls
+   the Send / Receive panel into view only when the grid is one column). */
 @media (max-width: 900px) {
   .dashboard-grid { grid-template-columns: minmax(0, 1fr); }
   body:has(#wallet-open:not([hidden])) .privacy-facts { grid-template-columns: minmax(0, 1fr); gap: 18px; }
@@ -341,6 +348,13 @@ body:has(#wallet-open:not([hidden])) .wallet-card { background: #171c13; }
 .chain-holding { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: center; gap: 12px; padding: 16px; border-top: 1px solid #d5f99814; }
 .holding-network { display: flex; align-items: center; gap: 8px; font-size: 11px; color: #c9d2c0; }
 .holding-network .coin-icon { width: 22px; height: 22px; }
+/* A holding row selects its network for the Send / Receive panel (0.1.22). */
+.chain-holding { cursor: pointer; }
+.chain-holding:hover { background: #d5f99806; }
+.chain-holding.selected { background: #d5f9980d; box-shadow: inset 2px 0 0 var(--lime); }
+.holding-select { justify-self: start; min-width: 0; padding: 4px 6px; margin: -4px -6px; border: 0; border-radius: 5px; background: transparent; box-shadow: none; font-weight: 400; text-align: left; }
+.holding-select span { float: none; overflow-wrap: anywhere; }
+.chain-holding.selected .holding-select { color: var(--lime); }
 .holding-value { text-align: right; display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .holding-value strong { color: var(--text); font-size: 11px; font-weight: 400; overflow-wrap: anywhere; }
 .holding-value small { font-size: 10px; }
@@ -348,7 +362,6 @@ body:has(#wallet-open:not([hidden])) .wallet-card { background: #171c13; }
 .holding-actions button { margin: 0; font-size: 10px; padding: 6px 12px; }
 #portfolio-updated, .price-source { font-size: 10px; line-height: 1.7; }
 .price-source { margin-bottom: 0; }
-.send-panel .network-context { margin-top: 14px; }
 .dashboard-grid { align-items: start; }
 body:has(#wallet-open:not([hidden])) .hero-copy { display: none; }
 body:has(#wallet-open:not([hidden])) .hero { display: block; padding-block: 20px; }
