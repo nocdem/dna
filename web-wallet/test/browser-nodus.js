@@ -170,21 +170,39 @@ try {
     await page.locator('#backup-confirm').check(); await page.locator('#phrase-submit').click();
     await page.locator('#wallet-open').waitFor({ state: 'visible' });
   }
+  // Nodus is the network selected on page load, so its address (once derived)
+  // is the receive address, and the shared Copy button has nothing to copy
+  // before then.
+  const copyUnavailable = async () => {
+    const before = await page.evaluate(() => navigator.clipboard.readText());
+    await page.locator('#copy-address').click();
+    assert.equal(await page.locator('#wallet-status').innerText(), 'Address not available yet.');
+    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), before);
+  };
   await restore(vectors[0].phrase); await seen.promise;
+  assert.equal(await page.locator('#chain').inputValue(), 'nodus');
+  assert.equal(await page.locator('#receive-address').textContent(), '');
+  assert.equal(await page.locator('#nodus-address-status').innerText(), 'Calculating your Nodus address locally…');
+  await copyUnavailable();
   await page.locator('#lock').click();
-  assert.equal(await page.locator('#nodus-address').innerText(), '');
-  assert.equal(await page.locator('#copy-nodus-address').isDisabled(), true);
+  assert.equal(await page.locator('#receive-address').textContent(), '');
+  assert.equal(await page.locator('#nodus-address-status').textContent(), '');
   await restore(vectors[1].phrase);
-  await page.waitForFunction(address => document.querySelector('#nodus-address').textContent === address, vectors[1].address);
+  await page.waitForFunction(address => document.querySelector('#receive-address').textContent === address, vectors[1].address);
   release.resolve(); await completed.promise;
-  assert.equal(await page.locator('#nodus-address').innerText(), vectors[1].address);
+  assert.equal(await page.locator('#receive-address').innerText(), vectors[1].address);
+  assert.equal(await page.locator('#nodus-address-status').innerText(), 'Derived locally from this wallet’s recovery phrase.');
   await page.selectOption('#chain', 'solana');
-  assert.equal(await page.locator('#nodus-address').innerText(), vectors[1].address);
+  assert.notEqual(await page.locator('#receive-address').innerText(), vectors[1].address);
+  assert.equal(await page.locator('#nodus-address-status').isVisible(), false);
+  await page.selectOption('#chain', 'nodus');
+  assert.equal(await page.locator('#receive-address').innerText(), vectors[1].address);
   await page.locator('#lock').click(); failLoad = true;
   await restore(vectors[0].phrase);
-  await page.waitForFunction(() => document.querySelector('#nodus-status').textContent.includes('unavailable'));
-  assert.equal(await page.locator('#nodus-address').innerText(), '');
-  assert.equal(await page.locator('#copy-nodus-address').isDisabled(), true);
+  await page.waitForFunction(() => document.querySelector('#nodus-address-status').textContent.includes('unavailable'));
+  assert.equal(await page.locator('#nodus-address-status').innerText(), 'Nodus address unavailable. Lock and reopen your wallet to retry.');
+  assert.equal(await page.locator('#receive-address').textContent(), '');
+  await copyUnavailable();
   assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
   assert.equal(wasmRequests, 3);
   // No request other than the mocked, shape-checked Cellframe balance reads

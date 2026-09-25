@@ -60,6 +60,10 @@ export async function readPrices({ signal, fetcher } = {}) {
 }
 export function portfolioSnapshot(balances, quotes, now = Date.now(), assets = ASSETS) {
   const rows = assets.map(asset => {
+    // An asset with no balance source yet (NODUS, flagged by portfolio-view.js)
+    // is always 'unsupported', whatever `balances` holds: never read, never an
+    // amount, a zero or an error, and never priced.
+    if (asset.balanceUnavailable) return { ...asset, state: 'unsupported', balance: null, usd: null, positive: false, priceMissing: false };
     const balance = balances[asset.key] || { state: 'idle' }, quote = quotes[asset.key];
     const priced = asset.priceId !== undefined;
     const freshBalance = balance.state === 'ready' && now - balance.observedAt <= BALANCE_MAX_AGE && balance.observedAt <= now;
@@ -75,7 +79,9 @@ export function portfolioSnapshot(balances, quotes, now = Date.now(), assets = A
   const priced = rows.filter(row => row.priceId !== undefined);
   const known = priced.filter(row => row.usd !== null), total = known.reduce((sum, row) => sum + row.usd, 0n);
   const complete = known.length === priced.length;
-  const state = rows.every(r => r.state === 'idle') ? 'idle' : rows.some(r => r.state === 'loading') ? 'loading' : complete ? 'complete' : 'partial';
+  // 'unsupported' rows are never read, so they take no part in the load state.
+  const tracked = rows.filter(r => r.state !== 'unsupported');
+  const state = tracked.every(r => r.state === 'idle') ? 'idle' : tracked.some(r => r.state === 'loading') ? 'loading' : complete ? 'complete' : 'partial';
   // The "X balances / Y prices unavailable" hero summary, like the total and
   // completeness above, is scoped to the priced assets only: an unpriced
   // asset's own load state is already visible on its own row and never was
@@ -101,7 +107,8 @@ export function groupAssets(rows, filter = 'all') {
   }).sort((a, b) => {
     // A symbol missing from this list (an optional network's asset, added by
     // portfolio-view.js) sorts after every listed one instead of first (-1).
-    const order = ['USDT', 'USDC', 'ETH', 'BNB', 'SOL', 'TRX', 'DAI', 'USDD', 'CPUNK'];
+    // NODUS, the wallet's native coin, is listed first.
+    const order = ['NODUS', 'USDT', 'USDC', 'ETH', 'BNB', 'SOL', 'TRX', 'DAI', 'USDD', 'CPUNK'];
     const rank = symbol => { const index = order.indexOf(symbol); return index < 0 ? order.length : index; };
     return rank(a.symbol) - rank(b.symbol);
   });

@@ -7,6 +7,7 @@ import { CPUNK_ASSET } from './portfolio.js';
 // Pure data, referenced only inside `if (import.meta.env.VITE_ENABLE_IXIOS === 'true')`
 // blocks below, so a disabled build tree-shakes the whole module away.
 import { IXIOS_NETWORK, IXIOS_ASSET } from './ixios/network.js';
+import { NODUS_NETWORK, NODUS_ASSET } from './nodus/network.js';
 import { deriveWallet, disposeWallet, newPhrase, normalizePhrase } from './keys.js';
 import { adapters, prepareTransfer } from './wallet.js';
 import { endpointUrl } from './core.js';
@@ -28,7 +29,7 @@ let cellframeDerivation, cellframeReader, nodusDerivation;
 let doShowIxiosAddress, stopIxiosAddress = () => {}, ixiosChain, ixiosReader;
 // Receive-panel derivation status line per receive-only network, shown only
 // while that network is selected. The Ixios entry is added by its flag block.
-const addressStatus = { cellframe: $('cellframe-address-status') };
+const addressStatus = { nodus: $('nodus-address-status'), cellframe: $('cellframe-address-status') };
 // index.html's #send-disabled-note text is Cellframe's; a network may carry its own `sendNote`.
 const DEFAULT_SEND_DISABLED_NOTE = $('send-disabled-note').textContent;
 let activitySession = null, activityBlocked = false, historyWrites = Promise.resolve(), vaultOperation = 0;
@@ -129,8 +130,11 @@ function renderActivity(save = true) {
 function trackActivity() { stopTracking(); renderActivity(); if (wallet) stopTracking = watchActivity(visibleActivity, renderActivity); }
 const endpoints = Object.fromEntries(Object.entries(CHAINS).map(([key, chain]) => [key, chain.endpoint]));
 // Receive-only networks outside CHAINS, in display order (network selector,
-// portfolio filters, badges and asset rows). Neither can be sent to: src/wallet.js
-// has no adapter for them.
+// portfolio filters, badges and asset rows). None can be sent to: src/wallet.js
+// has no adapter for them. Nodus leads every list (and so is the network
+// selected when the page loads); Cellframe and Ixios follow CHAINS. Nodus has
+// no endpoint: nothing reads a balance for it (src/nodus/network.js).
+const leadingNetworks = [{ network: NODUS_NETWORK, asset: NODUS_ASSET }];
 const extraNetworks = [];
 if (CPUNK_ENABLED) { endpoints.cellframe = CELLFRAME.endpoint; extraNetworks.push({ network: CELLFRAME, asset: CPUNK_ASSET }); }
 // Ixios: receive-only, like Cellframe (see src/ixios/network.js).
@@ -138,7 +142,7 @@ if (import.meta.env.VITE_ENABLE_IXIOS === 'true') {
   ixiosChain = IXIOS_ASSET.chain;
   endpoints[ixiosChain] = IXIOS_NETWORK.endpoint; extraNetworks.push({ network: IXIOS_NETWORK, asset: IXIOS_ASSET });
 }
-const receiveOnlyNetworks = Object.fromEntries(extraNetworks.map(({ network, asset }) => [asset.chain, network]));
+const receiveOnlyNetworks = Object.fromEntries([...leadingNetworks, ...extraNetworks].map(({ network, asset }) => [asset.chain, network]));
 function networkFor(chain) { return CHAINS[chain] || receiveOnlyNetworks[chain]; }
 const portfolio = createPortfolio({
   // cellframeReader / ixiosReader are set, in the same module-load callback as
@@ -154,21 +158,24 @@ const portfolio = createPortfolio({
     $('chain').value = chain; selectChain(); $('asset').value = symbol;
     $(action === 'send' ? 'quick-send' : 'quick-receive').click();
   },
+  leadingNetworks,
   extraNetworks
 });
 const message = text => { $('wallet-status').textContent = text; };
+for (const { network, asset } of leadingNetworks) $('chain').add(new Option(network.name, asset.chain));
 for (const [key, chain] of Object.entries(CHAINS)) $('chain').add(new Option(chain.name, key));
 for (const { network, asset } of extraNetworks) $('chain').add(new Option(network.name, asset.chain));
 if (CPUNK_ENABLED) {
   // The default HTML text (kept for a disabled build, where it stays true
   // unedited) says CPUNK is "not included"; with the module enabled its
-  // balance IS shown here, just never priced into the total.
-  $('portfolio-scope').textContent = 'Supported assets on Ethereum, BNB Smart Chain, Solana, TRON and Cellframe. NODUS and CPUNK balances are shown, but only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total.';
+  // balance IS shown here, just never priced into the total. NODUS is listed
+  // in every build, but has no balance to show yet.
+  $('portfolio-scope').textContent = 'Supported assets on Ethereum, BNB Smart Chain, Solana, TRON and Cellframe. NODUS is shown, but its balance is not shown yet. The CPUNK balance is shown, but only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total.';
 }
 if (import.meta.env.VITE_ENABLE_IXIOS === 'true') {
   $('portfolio-scope').textContent = CPUNK_ENABLED
-    ? 'Supported assets on Ethereum, BNB Smart Chain, Solana, TRON, Cellframe and Ixios. NODUS, CPUNK and IXIOS balances are shown, but only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total.'
-    : 'Supported assets on Ethereum, BNB Smart Chain, Solana, TRON and Ixios. The IXIOS balance is shown, but only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total. NODUS and CPUNK are not included.';
+    ? 'Supported assets on Ethereum, BNB Smart Chain, Solana, TRON, Cellframe and Ixios. NODUS is shown, but its balance is not shown yet. CPUNK and IXIOS balances are shown, but only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total.'
+    : 'Supported assets on Ethereum, BNB Smart Chain, Solana, TRON and Ixios. NODUS is shown, but its balance is not shown yet. The IXIOS balance is shown, but only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total. CPUNK is not included.';
 }
 function expireIdle() {
   if (idleDeadline && Date.now() >= idleDeadline) { lock(); return true; }
@@ -191,10 +198,10 @@ function lock() {
   portfolio.clear();
   phraseFields.clear();
   nodusDerivation?.abort(); nodusDerivation = undefined;
+  $('nodus-address-status').textContent = '';
   cellframeDerivation?.abort(); cellframeDerivation = undefined;
   $('cellframe-address-status').textContent = '';
   stopIxiosAddress();
-  $('nodus-address').textContent = ''; $('nodus-status').textContent = ''; $('copy-nodus-address').disabled = true;
   revision++; vaultOperation++; activitySession = null; activityBlocked = false; idleDeadline = 0; stopTracking(); closeReview(); disposeWallet(wallet); wallet = undefined; generatedPhrase = undefined;
   releaseSession(); $('session-conflict').hidden = true;
   $('discard-activity').hidden = true;
@@ -247,23 +254,26 @@ $('phrase-form').onsubmit = async event => {
   } catch (error) { if (operation === vaultOperation) message(error.message); }
   finally { if (claimed) unclaimSession(); }
 };
+// The Nodus address is shown in the receive panel when Nodus is the selected
+// network, like Cellframe's and Ixios's below. It is stored on the wallet
+// (source.addresses.nodus) only once current() passes, so #copy-address finds
+// nothing to copy until then. No balance is read for it (src/nodus/network.js).
 async function showNodusAddress() {
   nodusDerivation?.abort();
   const operation = new AbortController(), source = wallet;
   nodusDerivation = operation;
-  $('nodus-address').textContent = ''; $('copy-nodus-address').disabled = true;
-  $('nodus-status').textContent = 'Calculating your Nodus address locally…';
+  $('nodus-address-status').textContent = 'Calculating your Nodus address locally…';
   const current = () => nodusDerivation === operation && source === wallet && !source.locked && !operation.signal.aborted;
   try {
     const { deriveNodusAddress } = await import('./nodus/derive.js');
     if (!current()) return;
     const address = await deriveNodusAddress(source.recoveryPhrase, { signal: operation.signal });
     if (!current()) return;
-    source.nodusAddress = address;
-    $('nodus-address').textContent = address; $('copy-nodus-address').disabled = false;
-    $('nodus-status').textContent = 'Derived locally from this wallet’s recovery phrase.';
+    source.addresses.nodus = address;
+    if ($('chain').value === NODUS_ASSET.chain) $('receive-address').textContent = address;
+    $('nodus-address-status').textContent = 'Derived locally from this wallet’s recovery phrase.';
   } catch {
-    if (current()) $('nodus-status').textContent = 'Nodus address unavailable. Lock and reopen your wallet to retry.';
+    if (current()) $('nodus-address-status').textContent = 'Nodus address unavailable. Lock and reopen your wallet to retry.';
   }
 }
 // Same pattern as showNodusAddress(): AbortController, current() guard, aborted
@@ -313,12 +323,6 @@ if (import.meta.env.VITE_ENABLE_CPUNK !== 'false') {
   }).catch(() => { if (wallet && !wallet.locked) $('cellframe-address-status').textContent = 'Cellframe address unavailable. Lock and reopen your wallet to retry.'; });
 }
 function showCellframeAddress() { void doShowCellframeAddress?.(); }
-$('copy-nodus-address').onclick = async () => {
-  const source = wallet;
-  if (!source || source.locked || !source.nodusAddress) return;
-  try { await navigator.clipboard.writeText(source.nodusAddress); if (source === wallet && !source.locked) $('nodus-status').textContent = 'Nodus address copied.'; }
-  catch { if (source === wallet && !source.locked) $('nodus-status').textContent = 'Copy unavailable. Select and copy the address above.'; }
-};
 // Ixios receive-only address (default OFF), shown in the receive panel when
 // Ixios is the selected network, like Cellframe's. Same pattern as
 // showNodusAddress() and doShowCellframeAddress(): AbortController, current()
@@ -373,7 +377,9 @@ function selectChain() {
   revision++; closeReview(); const chain = $('chain').value; const c = networkFor(chain);
   for (const label of document.querySelectorAll('.selected-network-name')) label.textContent = c.name;
   const address = wallet.addresses[chain];
-  $('receive-address').textContent = address || ''; populateRpcChoice(chain, c);
+  $('receive-address').textContent = address || '';
+  // A network with no RPC to choose (Nodus) hides the connection settings.
+  $('rpc-settings').hidden = !c.rpcOptions; if (c.rpcOptions) populateRpcChoice(chain, c);
   $('asset').replaceChildren(...[c.symbol, ...c.tokens.map(t => t.symbol)].map(s => new Option(s, s)));
   $('solana-send-hint').hidden = chain !== 'solana';
   const explorers = { ethereum: 'https://etherscan.io/address/', bsc: 'https://bscscan.com/address/', solana: 'https://solscan.io/account/', tron: 'https://tronscan.org/#/address/' };
@@ -396,7 +402,8 @@ $('quick-receive').onclick = () => {
 };
 $('lock').onclick = lock;
 $('copy-address').onclick = async () => {
-  const address = wallet.addresses[$('chain').value];
+  // Nodus/Cellframe/Ixios addresses are absent until their local derivation settles.
+  const address = wallet?.addresses[$('chain').value];
   if (!address) { message('Address not available yet.'); return; }
   try { await navigator.clipboard.writeText(address); message('Address copied.'); }
   catch { message('Copy unavailable. Select and copy the address above.'); }
@@ -425,11 +432,12 @@ function populateRpcChoice(chain, c) {
 }
 $('rpc-choice').onchange = () => {
   const chain = $('chain').value, c = networkFor(chain), value = $('rpc-choice').value;
+  if (!c.rpcOptions) return;
   if (value === CUSTOM_RPC) { setRpcCustomVisible(true); $('rpc-endpoint').value = ''; $('rpc-endpoint').focus(); setRpcNote(undefined); return; }
   const option = c.rpcOptions[Number(value)];
   setRpcCustomVisible(false); $('rpc-endpoint').value = option.url; setRpcNote(option.note);
 };
-$('save-rpc').onclick = () => { try { const chain = $('chain').value, endpoint = endpointUrl($('rpc-endpoint').value); if (chain === 'tron' && endpoint !== endpointUrl(CHAINS.tron.endpoint)) throw new Error('TRON requires the mainnet provider.'); endpoints[chain] = endpoint; revision++; closeReview(); stopTracking(); for (const row of visibleActivity()) row.endpoint = endpoints[$('chain').value]; trackActivity(); portfolio.changeEndpoint(chain, endpoint); message('RPC updated for this tab.'); } catch (error) { message(error.message); } };
+$('save-rpc').onclick = () => { if (!networkFor($('chain').value).rpcOptions) return; try { const chain = $('chain').value, endpoint = endpointUrl($('rpc-endpoint').value); if (chain === 'tron' && endpoint !== endpointUrl(CHAINS.tron.endpoint)) throw new Error('TRON requires the mainnet provider.'); endpoints[chain] = endpoint; revision++; closeReview(); stopTracking(); for (const row of visibleActivity()) row.endpoint = endpoints[$('chain').value]; trackActivity(); portfolio.changeEndpoint(chain, endpoint); message('RPC updated for this tab.'); } catch (error) { message(error.message); } };
 $('send-form').onsubmit = async event => {
   event.preventDefault(); if (busy) return;
   // Belt-and-suspenders: the send fields are hidden/disabled for a receive-only

@@ -96,9 +96,12 @@ async function openWallet(url) {
   await page.locator('#restore').click(); await pastePhrase(page, phrase);
   await page.locator('#backup-confirm').check(); await page.locator('#phrase-submit').click();
   await page.locator('#wallet-open').waitFor({ state: 'visible' });
-  // The Nodus address is independent of the flag and proves the wallet finished opening.
-  await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#nodus-address').textContent));
-  return { page, unexpected, errors, wasm, ixiosRequests };
+  // The Nodus address is independent of the flag and proves the wallet finished
+  // opening. Nodus is the network selected on page load, so it is the receive address.
+  assert.equal(await page.locator('#chain').inputValue(), 'nodus');
+  await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#receive-address').textContent));
+  const nodusAddress = await page.locator('#receive-address').innerText();
+  return { page, unexpected, errors, wasm, ixiosRequests, nodusAddress };
 }
 async function portfolioDone(page) {
   await page.waitForFunction(() => !document.querySelector('#portfolio-refresh').disabled && document.querySelector('#portfolio-updated').textContent.startsWith('Last refresh:'));
@@ -125,11 +128,12 @@ try {
   const on = await openWallet(await serve(enabledDir, 4193));
   const page = on.page;
   assert.equal(await page.locator('#ixios-address-panel').count(), 0, 'no separate top panel');
-  // Network selector: Ixios after the sendable chains and Cellframe.
-  assert.deepEqual(await page.locator('#chain option').evaluateAll(options => options.map(o => o.value)), ['ethereum', 'bsc', 'solana', 'tron', 'cellframe', 'ixios']);
+  // Network selector: Nodus first, Ixios after the sendable chains and Cellframe.
+  assert.deepEqual(await page.locator('#chain option').evaluateAll(options => options.map(o => o.value)), ['nodus', 'ethereum', 'bsc', 'solana', 'tron', 'cellframe', 'ixios']);
   assert.equal(await page.locator('#chain option[value="ixios"]').textContent(), 'Ixios');
-  // Scope text: IXIOS mentioned exactly as CPUNK is (balance shown, not in the total).
-  assert.equal(await page.locator('#portfolio-scope').innerText(), 'Supported assets on Ethereum, BNB Smart Chain, Solana, TRON, Cellframe and Ixios. NODUS, CPUNK and IXIOS balances are shown, but only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total.');
+  // Scope text: IXIOS mentioned exactly as CPUNK is (balance shown, not in the
+  // total); NODUS is shown with no balance yet.
+  assert.equal(await page.locator('#portfolio-scope').innerText(), 'Supported assets on Ethereum, BNB Smart Chain, Solana, TRON, Cellframe and Ixios. NODUS is shown, but its balance is not shown yet. CPUNK and IXIOS balances are shown, but only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total.');
   // Portfolio: filter, health badge, and an IXIOS row read like the CPUNK row.
   assert.equal(await page.locator('.network-filter[data-chain="ixios"]').innerText(), 'Ixios');
   const badge = page.locator('#portfolio-networks .network-health', { hasText: 'Ixios' });
@@ -176,7 +180,8 @@ try {
   assert.equal(await page.locator('#cellframe-address-status').isVisible(), false);
   assert.equal(await page.locator('#account-explorer').isVisible(), false);
   assert.match(await page.locator('#receive-title').innerText(), /Receive on Ixios/);
-  assert.notEqual((await page.locator('#nodus-address').innerText()).slice(-96), expected.slice(2).toLowerCase(), 'Ixios key must differ from the Nodus identity');
+  assert.match(on.nodusAddress, /^[0-9a-f]{128}$/);
+  assert.notEqual(on.nodusAddress.slice(-96), expected.slice(2).toLowerCase(), 'Ixios key must differ from the Nodus identity');
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
   await page.locator('#copy-address').click();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), expected);

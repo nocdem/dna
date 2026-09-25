@@ -48,9 +48,35 @@ try {
   await page.locator('#wallet-open').waitFor({ state: 'visible' });
   // Single-tab rule: an open wallet holds the session lock; one tab alone is never refused.
   assert.equal(await sessionHeld(), true); assert.equal(await page.locator('#session-conflict').isVisible(), false);
-  await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#nodus-address').textContent));
-  assert.equal(await page.locator('#receive-address').innerText(), '0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb');
-  assert.equal(await page.locator('#nodus-address').innerText(), nodusAddress);
+  // NODUS leads every list and is the network selected when the page loads: its
+  // locally derived address is the receive address, sending is off, no explorer.
+  assert.equal(await page.locator('#chain option').first().getAttribute('value'), 'nodus');
+  assert.equal(await page.locator('#chain').inputValue(), 'nodus');
+  await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#receive-address').textContent));
+  assert.equal(await page.locator('#receive-address').innerText(), nodusAddress);
+  assert.equal(await page.locator('#nodus-address-status').isVisible(), true);
+  assert.match(await page.locator('#nodus-address-status').innerText(), /Derived locally/);
+  assert.equal(await page.locator('#cellframe-address-status').isVisible(), false);
+  assert.equal(await page.locator('#send-fields').isVisible(), false);
+  assert.equal(await page.locator('#send-disabled-note').innerText(), 'Sending NODUS is not available in this release.');
+  assert.equal(await page.locator('#account-explorer').isVisible(), false);
+  assert.equal(await page.locator('#rpc-settings').isVisible(), false);
+  assert.equal(await page.locator('#activity').innerText(), '');
+  // Portfolio: NODUS is the first asset group, badge and network filter; its row
+  // has only Receive and shows no balance (no amount, no zero, no read state).
+  assert.equal(await page.locator('#balances .asset-group').first().getAttribute('data-symbol'), 'NODUS');
+  assert.equal(await page.locator('#portfolio-networks .network-health').first().innerText(), 'Nodus · Balance not shown yet');
+  assert.deepEqual((await page.locator('#portfolio-filters button').allTextContents()).slice(0, 2), ['All networks', 'Nodus']);
+  const nodusGroup = page.locator('.asset-group[data-symbol="NODUS"]');
+  assert.ok((await nodusGroup.locator('summary img.coin-icon').getAttribute('src')).endsWith('/assets/coins/nodus.svg'));
+  assert.equal(await nodusGroup.locator('.asset-value strong').innerText(), '—');
+  await nodusGroup.locator('summary').click();
+  assert.equal(await nodusGroup.locator('.chain-holding').count(), 1);
+  assert.match(await nodusGroup.locator('.chain-holding').innerText(), /Balance not shown yet/);
+  assert.doesNotMatch(await nodusGroup.innerText(), /Reading|Not read|Balance unavailable|\b0\.0\b/);
+  assert.deepEqual(await nodusGroup.locator('.holding-actions button').allTextContents(), ['Receive']);
+  await nodusGroup.locator('summary').click();
+  assert.match(await page.locator('#portfolio-scope').innerText(), /NODUS is shown, but its balance is not shown yet/);
   assert.match(await page.locator('#wallet-storage-state').innerText(), /Temporary session/);
   await page.locator('#quick-send').click();
   assert.equal(await page.locator('#send-title').evaluate(el => el === document.activeElement), true);
@@ -61,9 +87,15 @@ try {
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `Dashboard overflow at ${width}px`);
   }
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
-  await page.locator('#copy-nodus-address').click();
+  // Nodus is still the selected network: the shared Copy button copies its address.
+  assert.equal(await page.locator('#chain').inputValue(), 'nodus');
+  await page.locator('#copy-address').click();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), nodusAddress);
   assert.equal(await readPhrase(page), '');
+  await page.selectOption('#chain', 'ethereum');
+  assert.equal(await page.locator('#receive-address').innerText(), '0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb');
+  assert.equal(await page.locator('#nodus-address-status').isVisible(), false);
+  assert.equal(await page.locator('#rpc-settings').isVisible(), true);
   // Cellframe/CPUNK now lives inside the wallet like any other asset: its
   // address is derived automatically (started right after the wallet opened,
   // same as Nodus), and there is no separate panel or manual derive button.
@@ -123,7 +155,11 @@ try {
   assert.match(await page.locator('#activity').innerText(), /pending/);
   finalized = true; await page.selectOption('#chain', 'bsc'); assert.equal(await page.locator('#activity').innerText(), ''); await page.selectOption('#chain', 'ethereum');
   await page.waitForFunction(() => document.querySelector('#activity').textContent.includes('confirmed'));
-  assert.equal(await page.locator('#nodus-address').innerText(), nodusAddress);
+  // The Nodus address is unchanged after sends on other networks, and Nodus has no activity.
+  await page.selectOption('#chain', 'nodus');
+  assert.equal(await page.locator('#receive-address').innerText(), nodusAddress); assert.equal(await page.locator('#activity').innerText(), '');
+  await page.selectOption('#chain', 'ethereum');
+  await page.waitForFunction(() => document.querySelector('#activity').textContent.includes('confirmed'));
   await page.locator('#recipient').fill('0x0000000000000000000000000000000000000001'); await page.locator('#amount').fill('0.01');
   networkId = '0x38'; await page.locator('#review-button').click(); await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('wrong network')); assert.equal(broadcasts.length, 2);
   // A CPUNK read failure shows "Balance unavailable" on its own row, never an
@@ -137,14 +173,17 @@ try {
   await page.locator('#vault-password').fill('public-test-password-123'); await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click();
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('Encrypted wallet saved'));
   const stored = await page.evaluate(() => JSON.stringify({ ...localStorage })); assert.ok(!stored.includes(phrase)); assert.ok(!stored.includes('public-test-password-123'));
-  await page.locator('#lock').click(); assert.equal(await page.locator('#nodus-address').innerText(), ''); assert.equal(await page.locator('#cellframe-address-status').innerText(), ''); await sessionReleased();
+  // Lock with Nodus selected: its address and status are cleared.
+  await page.selectOption('#chain', 'nodus'); assert.equal(await page.locator('#receive-address').innerText(), nodusAddress);
+  await page.locator('#lock').click(); assert.equal(await page.locator('#receive-address').textContent(), ''); assert.equal(await page.locator('#nodus-address-status').textContent(), ''); assert.equal(await page.locator('#cellframe-address-status').innerText(), ''); await sessionReleased();
   await page.locator('#unlock-password').fill('incorrect-password-123'); await page.locator('#unlock-wallet').click();
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('Incorrect password'));
   // A failed unlock gives the session lock back.
   await page.waitForFunction(() => !document.querySelector('#unlock-wallet').disabled); await sessionReleased();
   await page.locator('#unlock-password').fill('public-test-password-123'); await page.locator('#unlock-wallet').click(); await page.locator('#wallet-open').waitFor({ state: 'visible' });
   assert.equal(await sessionHeld(), true); assert.equal(await page.locator('#session-conflict').isVisible(), false);
-  await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#nodus-address').textContent));
+  assert.equal(await page.locator('#chain').inputValue(), 'nodus');
+  await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#receive-address').textContent));
   await page.locator('#vault-password').fill('changed-test-password-123'); await page.locator('#vault-old-password').fill('public-test-password-123');
   assert.equal(await page.locator('#vault-risk-confirm').isChecked(), false);
   await page.locator('#vault-change').click();
@@ -154,14 +193,16 @@ try {
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('Local password changed'));
   await page.reload(); await page.waitForFunction(() => typeof document.querySelector('#restore').onclick === 'function');
   await page.locator('#unlock-password').fill('changed-test-password-123'); await page.locator('#unlock-wallet').click(); await page.locator('#wallet-open').waitFor({ state: 'visible' });
-  await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#nodus-address').textContent));
+  await page.selectOption('#chain', 'nodus');
+  await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#receive-address').textContent));
+  assert.equal(await page.locator('#receive-address').innerText(), nodusAddress);
+  await page.selectOption('#chain', 'ethereum');
   await page.waitForFunction(() => document.querySelector('#activity').textContent.includes('confirmed'));
-  assert.equal(await page.locator('#nodus-address').innerText(), nodusAddress);
   await page.getByText('Delete saved wallet from this device', { exact: true }).click(); await page.locator('#vault-delete-confirm').check(); await page.locator('#vault-delete').click();
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('saved activity deleted'));
   assert.equal(await page.evaluate(() => localStorage.length), 0);
   await page.getByText('Save wallet on this device (optional)', { exact: true }).click();
-  await page.locator('#vault-password').fill('public-test-password-123'); await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click(); await page.locator('#lock').click(); assert.equal(await page.locator('#nodus-address').innerText(), '');
+  await page.locator('#vault-password').fill('public-test-password-123'); await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click(); await page.locator('#lock').click(); assert.equal(await page.locator('#nodus-address-status').textContent(), '');
   await page.waitForFunction(() => !document.querySelector('#vault-save').disabled); assert.equal(await page.evaluate(() => localStorage.length), 0);
   await page.locator('#welcome').waitFor({ state: 'visible' }); assert.equal(await page.locator('#receive-address').innerText(), '');
   assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
@@ -173,9 +214,10 @@ try {
   await page.locator('#phrase-submit').click(); await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('does not match'));
   for (const [i, word] of created.split(' ').entries()) await boxes.nth(i).fill(word);
   await page.locator('#phrase-submit').click(); await page.locator('#wallet-open').waitFor({ state: 'visible' });
-  await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#nodus-address').textContent));
-  await page.locator('#lock').click(); assert.equal(await page.locator('#nodus-address').innerText(), '');
+  await page.selectOption('#chain', 'nodus');
+  await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#receive-address').textContent));
+  await page.locator('#lock').click(); assert.equal(await page.locator('#receive-address').textContent(), ''); assert.equal(await page.locator('#nodus-address-status').textContent(), '');
   await page.setViewportSize({ width: 390, height: 844 }); assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   assert.deepEqual(errors, []);
-  console.log('Browser smoke passed: create/backup/restore, Nodus native address/copy/lock/reopen, 4 external chain addresses, ETH/ERC20 signed mocked broadcasts, wrong-network guard, automatic Cellframe address derivation + CPUNK balance display/error, send disabled on Cellframe, finalized scoped activity, encrypted save/unlock/change/reload/delete, KDF cancellation, temporary storage behavior, mobile layout. No external request reached a blockchain.');
+  console.log('Browser smoke passed: create/backup/restore, NODUS first and default-selected (receive-only row, no balance shown, no Send), Nodus native address/copy/lock/reopen, 4 external chain addresses, ETH/ERC20 signed mocked broadcasts, wrong-network guard, automatic Cellframe address derivation + CPUNK balance display/error, send disabled on Cellframe, finalized scoped activity, encrypted save/unlock/change/reload/delete, KDF cancellation, temporary storage behavior, mobile layout. No external request reached a blockchain.');
 } catch (error) { console.error('UI status:', await page.locator('#wallet-status').textContent(), 'Cellframe:', await page.locator('#cellframe-address-status').textContent(), 'Page errors:', errors, 'Methods:', calls.map(c => c?.method)); throw error; } finally { await browser.close(); server?.kill(); }

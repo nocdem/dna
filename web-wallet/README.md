@@ -99,10 +99,12 @@ requests or recovery words.
 
 ## Open-wallet sections and storage consent (0.1.10)
 
-The open wallet separates native Nodus identity, external-network assets/receive,
-sending, activity and device settings. Send and Receive shortcuts bring the
-relevant section into view without submitting a transfer. The selected external
-network appears beside both flows; unrequested or failed balance reads are not
+The open wallet separates the portfolio, assets/receive, sending, activity and
+device settings. (Until 0.1.21 the native Nodus address also had its own panel
+beside the portfolio; since 0.1.21 NODUS is the first entry of the asset list
+and network selector instead — see "NODUS in the asset list (0.1.21)".) Send and
+Receive shortcuts bring the relevant section into view without submitting a
+transfer. The selected network appears beside both flows; unrequested or failed balance reads are not
 presented as zero. The layout keeps the Nodus website's fonts and colors and uses
 the DNA Connect wallet's identity/actions/assets hierarchy as a reference.
 
@@ -154,10 +156,13 @@ of this wallet.
 
 New wallets create **24 BIP39 words** and automatically show the **Nodus address**
 as the primary address. Restore and encrypted unlock reproduce it from the same
-phrase. The native coin is **NODUS**. The separate external-network selector does
-not change the native address. Copy is available only after derivation succeeds;
+phrase. The native coin is **NODUS**. Switching to another network never changes
+the native address. Copy is available only after derivation succeeds;
 lock clears the address and cancels pending work. This release displays the
 address only: no native balance, sending, registration or claim is implied.
+Since 0.1.21 the address is shown in the receive panel when Nodus (the first,
+default-selected network) is selected, and copied with the shared Copy button,
+instead of in a separate panel.
 
 Creation and restore accept only the 24-word Nodus base phrase. Other mnemonic
 lengths and BIP39 passphrases are unsupported. This is the project’s existing
@@ -295,7 +300,7 @@ A scoped `@solana/web3.js` dependency override uses Jayson 5.0.0, removing vulne
 
 - `src/config.js`: permanent mainnet/token registry, browser RPC defaults, full Solana genesis hash, and the temporary read-only `CELLFRAME` network definition (name/symbol/decimals/endpoint, `icon`, `receiveOnly: true`; kept out of the sendable `CHAINS` registry). Every `CHAINS` entry and `CELLFRAME` carry an explicit `icon` file name (0.1.14) so `src/portfolio-view.js` never guesses one from the symbol.
 - `src/keys.js`: local 24-word generation, recovery and external-chain derivation.
-- `src/nodus/`, `crypto/nodus-*.c`, `scripts/build-nodus-*.sh`: permanent native Nodus address derivation and native compatibility verifier.
+- `src/nodus/`, `crypto/nodus-*.c`, `scripts/build-nodus-*.sh`: permanent native Nodus address derivation and native compatibility verifier; `src/nodus/network.js` (0.1.21) is the receive-only Nodus network entry listed first in the wallet (no endpoint, `balanceUnavailable`).
 - `src/core.js`, `src/rpc-transport.js`: exact units, bounded JSON/stream parsing and shared timeout-limited transport for direct RPC plus Ethers, Solana and TRON SDK calls.
 - `src/wallet.js`: common adapter routing and single-use transfer review.
 - `src/adapters/{evm,solana,tron}.js`: permanent balance and send adapters.
@@ -574,3 +579,44 @@ itself and says "Wallet was opened in another tab. This tab was locked." The
 activity write lock `nodus.wallet.storage` is unchanged. Covered by
 `test/browser-security.js` (refuse / take over / reopen after close) and
 `test/browser-smoke.js` (hold, release, failed unlock gives the lock back).
+
+## NODUS in the asset list (0.1.21)
+
+The separate Nodus address panel above the assets is gone (operator,
+2026-09-25: NODUS belongs where the other coins are, first in every list; the
+deferred first request in `docs/plans/decisions/2026-09-25-web-wallet-nodus-send-transport.md`).
+The portfolio card now stands on its own.
+
+- NODUS is a receive-only network (`src/nodus/network.js`), listed **first** in
+  the network selector, the portfolio health badges and filters, and the asset
+  list (a NODUS row with the Nodus mark, `public/assets/coins/nodus.svg`, and
+  only a Receive action). Because it is the first option, **Nodus is the network
+  selected when the page loads**. Selecting it shows the locally derived Nodus
+  address in the receive panel with its own status line ("Calculating your Nodus
+  address locally…" / "Derived locally from this wallet’s recovery phrase." /
+  "Nodus address unavailable. Lock and reopen your wallet to retry."), hides the
+  send fields with the note "Sending NODUS is not available in this release.",
+  and hides the account-explorer link and the network connection settings (Nodus
+  has no RPC to choose). Nodus activity is empty. The shared Copy button says
+  "Address not available yet." until derivation succeeds; lock clears the
+  address and its status and cancels the derivation.
+- **The NODUS balance is not shown yet.** No balance is read for it (no request
+  to any host), and none is implied: the row says "Balance not shown yet", the
+  badge "Nodus · Balance not shown yet", the amount "—" — never a read state, an
+  error or a zero. NODUS is unpriced, outside the USD total and outside the
+  "X of N" and "all balances included" counts; its row does not change the
+  portfolio's idle/updating/complete state or the Refresh buttons.
+- **No sending.** Nothing in this release sends NODUS, registers or claims
+  anything. Balance and sending need the separate browser↔chain path described
+  in the decision above; none of it is built here.
+- `CHAINS` and the 14 priced `ASSETS` are unchanged. `createPortfolio` takes a
+  `leadingNetworks` list (placed before `CHAINS`) next to `extraNetworks`; a
+  network with `balanceUnavailable` is never read and its rows are reported
+  `'unsupported'` by `portfolioSnapshot`.
+- Tests: `test/portfolio.test.js` (an unsupported row keeps the state idle and
+  stays out of totals and completeness; NODUS sorts first);
+  `test/browser-smoke.js`, `test/browser-nodus.js`, `test/browser-ixios.js`,
+  `test/browser-security.js` read the address through the receive panel with
+  Nodus selected. **How these can lie:** the checks run against intercepted
+  traffic and a fixture phrase; they prove no NODUS balance request is made by
+  the portfolio code paths exercised, not that a future balance source is correct.

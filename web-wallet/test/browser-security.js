@@ -41,7 +41,8 @@ await context.route('**/*', async route => {
 async function fresh() { const p = await context.newPage(); p.setDefaultTimeout(10000); p.on('pageerror', error => errors.push(error.message)); await p.goto(url); await p.waitForFunction(() => typeof document.querySelector('#restore').onclick === 'function'); return p; }
 async function restore(p) { await p.locator('#restore').click(); await pastePhrase(p, phrase); await p.locator('#backup-confirm').check(); await p.locator('#phrase-submit').click(); await p.locator('#wallet-open').waitFor({ state: 'visible' }); }
 async function unlock(p) { await p.locator('#unlock-password').fill(password); await p.locator('#unlock-wallet').click(); await p.locator('#wallet-open').waitFor({ state: 'visible' }); }
-async function review(p) { await p.locator('#recipient').fill('0x0000000000000000000000000000000000000001'); await p.locator('#amount').fill('0.01'); await p.locator('#review-button').click(); await p.locator('#review-dialog').waitFor({ state: 'visible' }); }
+// Nodus (receive-only) is the network selected on page load; sends here are on Ethereum.
+async function review(p) { await p.selectOption('#chain', 'ethereum'); await p.locator('#recipient').fill('0x0000000000000000000000000000000000000001'); await p.locator('#amount').fill('0.01'); await p.locator('#review-button').click(); await p.locator('#review-dialog').waitFor({ state: 'visible' }); }
 try {
   page = await fresh(); await page.clock.install();
   for (const stage of ['create', 'verify', 'restore']) {
@@ -110,7 +111,7 @@ try {
     assert.equal(await p.locator('#session-takeover').innerText(), 'Use it here instead');
     assert.equal(await p.locator('#wallet-open').isVisible(), false); assert.equal(await p.locator('#phrase-form').isVisible(), false);
     assert.equal(await readPhrase(p), ''); assert.equal(await p.locator('#unlock-password').inputValue(), '');
-    assert.equal(await p.locator('#nodus-address').textContent(), ''); assert.equal(await p.locator('#receive-address').textContent(), '');
+    assert.equal(await p.locator('#nodus-address-status').textContent(), ''); assert.equal(await p.locator('#receive-address').textContent(), '');
     assert.equal(await p.locator('#cellframe-address-status').textContent(), '');
   }
   // Waits for an unlock attempt to finish: the handler disables the button and
@@ -130,12 +131,14 @@ try {
   await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('Wallet was opened in another tab. This tab was locked.'));
   assert.equal(await page.locator('#wallet-open').isVisible(), false); assert.equal(await page.locator('#welcome').isVisible(), true);
   assert.equal(await page.locator('#send-form').isVisible(), false); assert.equal(await page.locator('#review-button').isVisible(), false);
-  assert.equal(await page.locator('#nodus-address').textContent(), '');
+  assert.equal(await page.locator('#nodus-address-status').textContent(), ''); assert.equal(await page.locator('#receive-address').textContent(), '');
   assert.equal(await page.locator('#review-details').textContent(), '');
   assert.equal(await page.locator('#review-error').textContent(), '');
   assert.equal(await page.locator('#account-explorer').getAttribute('href'), null);
   await peer.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('Enter your local password again'));
   await unlock(peer);
+  // A fresh tab opens on Nodus, which has no sends; the Ethereum send is listed there.
+  assert.equal(await peer.locator('#chain').inputValue(), 'nodus'); await peer.selectOption('#chain', 'ethereum');
   await peer.waitForFunction(() => document.querySelector('#activity').textContent.includes('0.01'));
   assert.equal(await peer.locator('#session-conflict').isVisible(), false);
   await page.locator('#unlock-password').fill(password); await page.locator('#unlock-wallet').click(); await unlockSettled(page);

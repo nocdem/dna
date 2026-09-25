@@ -96,8 +96,9 @@ try {
   await cpunk.locator('summary').click();
   const usdt = page.locator('.asset-group[data-symbol="USDT"]');
   // A VITE_ENABLE_IXIOS=true dist adds one IXIOS group (last), shown like CPUNK:
-  // a read balance, no USD value. The default build has none.
-  assert.equal(await page.locator('.asset-group').count(), ixiosShown ? 10 : 9);
+  // a read balance, no USD value. The default build has none. The NODUS group
+  // (first, never read — 0.1.21) is counted in both.
+  assert.equal(await page.locator('.asset-group').count(), ixiosShown ? 11 : 10);
   if (ixiosShown) {
     const ixios = page.locator('.asset-group[data-symbol="IXIOS"]');
     assert.equal(await page.locator('.asset-group').last().getAttribute('data-symbol'), 'IXIOS');

@@ -32,10 +32,17 @@ function networkIcon(c) { return c.icon ? iconImg(c.icon) : icon(c.symbol); }
 // deriveWallet()), so their balance reads are not started at open() alongside
 // the rest; a read starts once setAddress() reports the derived address, or the
 // row is marked errored if derivation fails.
-export function createPortfolio({ readBalances, selectAsset, extraNetworks = [] }) {
-  const networks = { ...CHAINS, ...Object.fromEntries(extraNetworks.map(({ network, asset }) => [asset.chain, network])) };
-  const assets = [...ASSETS, ...extraNetworks.map(({ asset }) => asset)];
-  const chains = Object.keys(networks);
+// `leadingNetworks` has the same shape but is placed before CHAINS (Nodus, the
+// wallet's native network, listed first in badges and filters). A network with
+// `balanceUnavailable` has no balance source yet: its assets are flagged so
+// portfolioSnapshot() reports them 'unsupported', and its chain is left out of
+// `chains`, so readBalances is never called for it.
+export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [], extraNetworks = [] }) {
+  const entries = (list) => Object.fromEntries(list.map(({ network, asset }) => [asset.chain, network]));
+  const networks = { ...entries(leadingNetworks), ...CHAINS, ...entries(extraNetworks) };
+  const flagged = ({ network, asset }) => network.balanceUnavailable ? { ...asset, balanceUnavailable: true } : asset;
+  const assets = [...leadingNetworks.map(flagged), ...ASSETS, ...extraNetworks.map(flagged)];
+  const chains = Object.keys(networks).filter(chain => !networks[chain].balanceUnavailable);
   let addresses, endpoints, balances = {}, quotes = {}, filter = 'all', hidden = false, session = 0, timer, priceJob;
   const jobs = new Map();
   const text = value => hidden ? '••••' : value;
@@ -53,7 +60,7 @@ export function createPortfolio({ readBalances, selectAsset, extraNetworks = [] 
     $('portfolio-hide').setAttribute('aria-pressed', String(hidden));
     $('portfolio-networks').replaceChildren(...Object.entries(networks).map(([chain, c]) => {
       const rows = snap.rows.filter(r => r.chain === chain), ready = rows.every(r => r.balance !== null);
-      const status = rows.some(r => r.state === 'loading') ? 'Reading' : ready ? 'Balances read' : rows.every(r => r.state === 'idle') ? 'Not read' : 'Incomplete';
+      const status = c.balanceUnavailable ? 'Balance not shown yet' : rows.some(r => r.state === 'loading') ? 'Reading' : ready ? 'Balances read' : rows.every(r => r.state === 'idle') ? 'Not read' : 'Incomplete';
       const badge = el('span', 'network-health'); badge.append(networkIcon(c), el('span', '', `${c.name} · ${status}`)); return badge;
     }));
     for (const button of $('portfolio-filters').querySelectorAll('button')) button.setAttribute('aria-pressed', String(button.dataset.chain === filter));
@@ -73,7 +80,7 @@ export function createPortfolio({ readBalances, selectAsset, extraNetworks = [] 
         const entry = el('div', 'chain-holding'), identity = el('span', 'holding-network');
         identity.append(networkIcon(networks[row.chain]), el('span', '', networks[row.chain].name));
         const value = el('span', 'holding-value');
-        const state = row.state === 'loading' ? 'Reading…' : row.state === 'stale' ? 'Balance out of date' : row.state === 'idle' ? 'Not read' : 'Balance unavailable';
+        const state = row.state === 'unsupported' ? 'Balance not shown yet' : row.state === 'loading' ? 'Reading…' : row.state === 'stale' ? 'Balance out of date' : row.state === 'idle' ? 'Not read' : 'Balance unavailable';
         value.append(el('strong', '', text(row.balance === null ? state : `${row.balance} ${row.symbol}`)),
           el('small', '', text(row.priceMissing ? 'Price unavailable' : usdText(row.usd, row.positive))));
         const actions = el('span', 'holding-actions');
@@ -140,12 +147,13 @@ export function createPortfolio({ readBalances, selectAsset, extraNetworks = [] 
     $('portfolio-status').textContent = 'Network endpoint changed. Refresh all to read balances again.';
   }
   // Reports a late-arriving address (Cellframe, Ixios), or its failure (falsy
-  // address), once local derivation settles. A session guard is unnecessary here
+  // address), once local derivation settles. Ignored for a network with no
+  // balance source (Nodus), which is never read. A session guard is unnecessary here
   // beyond the `addresses` check: open()/clear() always run before a stale
   // wallet's caller could reach this, and readChainBalances re-checks `session`
   // itself.
   function setAddress(chain, address) {
-    if (!addresses) return;
+    if (!addresses || !chains.includes(chain)) return;
     addresses[chain] = address;
     if (!address) { for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'error' }; render(); return; }
     void readChainBalances(chain, session);

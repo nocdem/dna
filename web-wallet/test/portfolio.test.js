@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ASSETS, CPUNK_ASSET, PRICE_URL, BALANCE_MAX_AGE, PRICE_MAX_AGE, balanceUnits, chainBalances, parsePrices, readPrices, portfolioSnapshot, groupAssets, usdText } from '../src/portfolio.js';
 import { IXIOS_NETWORK, IXIOS_ASSET } from '../src/ixios/network.js';
+import { NODUS_NETWORK, NODUS_ASSET } from '../src/nodus/network.js';
 const now = 1789918200000;
 const coins = () => Object.fromEntries(ASSETS.map(a => [a.priceId, { price: 2, symbol: a.symbol, decimals: a.decimals, timestamp: now / 1000, confidence: .99 }]));
 const ready = () => Object.fromEntries(ASSETS.map(a => [a.key, { state: 'ready', units: 0n, observedAt: now }]));
@@ -108,6 +109,45 @@ test('IXIOS is an unpriced, receive-only row like CPUNK: no priceId, no PRICE_UR
   snap = portfolioSnapshot(balances, parsePrices({ coins: coins() }, now), now, withBoth);
   row = snap.rows.find(r => r.key === 'ixios:IXIOS');
   assert.equal(snap.complete, true); assert.equal(row.state, 'error'); assert.equal(row.balance, null); assert.equal(row.usd, null);
+});
+test('NODUS is listed first but never read: an unsupported row takes no part in the load state, totals or completeness', () => {
+  assert.deepEqual(NODUS_ASSET, { chain: 'nodus', symbol: 'NODUS', decimals: 8, key: 'nodus:NODUS' });
+  assert.equal(NODUS_NETWORK.symbol, NODUS_ASSET.symbol); assert.equal(NODUS_NETWORK.icon, 'nodus.svg');
+  assert.equal(NODUS_NETWORK.receiveOnly, true); assert.equal(NODUS_NETWORK.balanceUnavailable, true);
+  assert.equal(NODUS_NETWORK.endpoint, undefined); assert.equal(NODUS_NETWORK.rpcOptions, undefined); assert.deepEqual(NODUS_NETWORK.tokens, []);
+  assert.equal(NODUS_NETWORK.sendNote, 'Sending NODUS is not available in this release.');
+  assert.ok(!/nodus/i.test(PRICE_URL));
+  // The asset as portfolio-view.js merges it for a balanceUnavailable network.
+  const nodus = { ...NODUS_ASSET, balanceUnavailable: true };
+  const withNodus = [nodus, ...ASSETS, CPUNK_ASSET];
+  // Every other row idle: the portfolio stays 'idle', not 'partial' or 'loading'.
+  let snap = portfolioSnapshot({}, {}, now, withNodus);
+  assert.equal(snap.state, 'idle');
+  let row = snap.rows.find(r => r.key === 'nodus:NODUS');
+  assert.equal(row.state, 'unsupported'); assert.equal(row.balance, null); assert.equal(row.usd, null); assert.equal(row.priceMissing, false);
+  // Whatever `balances` holds for it (a refresh marks every asset 'loading'), the row stays unsupported.
+  snap = portfolioSnapshot({ 'nodus:NODUS': { state: 'loading' } }, {}, now, withNodus);
+  assert.equal(snap.state, 'idle'); assert.equal(snap.rows.find(r => r.key === 'nodus:NODUS').state, 'unsupported');
+  // Every other row read: complete, the same total and counters as without the NODUS row.
+  const balances = { ...ready(), 'cellframe:CPUNK': { state: 'ready', units: 0n, observedAt: now }, 'nodus:NODUS': { state: 'ready', units: 10n ** 8n, observedAt: now } };
+  balances['ethereum:ETH'].units = 10n ** 18n;
+  const quotes = parsePrices({ coins: coins() }, now);
+  snap = portfolioSnapshot(balances, quotes, now, withNodus);
+  const without = portfolioSnapshot(balances, quotes, now, [...ASSETS, CPUNK_ASSET]);
+  assert.equal(snap.state, 'complete'); assert.equal(snap.complete, true); assert.equal(snap.total, 200000000n);
+  for (const field of ['state', 'complete', 'total', 'known', 'positive', 'missingBalances', 'missingPrices']) assert.equal(snap[field], without[field], field);
+  row = snap.rows.find(r => r.key === 'nodus:NODUS');
+  assert.equal(row.state, 'unsupported'); assert.equal(row.balance, null); assert.equal(row.usd, null);
+  // A failed priced read still reports 'partial', unaffected by the NODUS row.
+  balances['solana:SOL'] = { state: 'error' };
+  snap = portfolioSnapshot(balances, quotes, now, withNodus);
+  assert.equal(snap.state, 'partial'); assert.equal(snap.missingBalances, 1);
+  // Grouping: NODUS first, no balance and no USD value ('—').
+  const grouped = groupAssets(snap.rows);
+  assert.equal(grouped[0].symbol, 'NODUS'); assert.equal(grouped[0].balance, null); assert.equal(grouped[0].usd, null); assert.equal(usdText(grouped[0].usd), '—');
+  assert.deepEqual(groupAssets(snap.rows, 'nodus').map(g => g.symbol), ['NODUS']);
+  // Registry unchanged: NODUS is not one of the 14 priced ASSETS.
+  assert.equal(ASSETS.length, 14); assert.ok(!ASSETS.some(a => a.chain === 'nodus'));
 });
 test('price requests contain only pinned asset identifiers and honor cancellation', async () => {
   let called=false;
