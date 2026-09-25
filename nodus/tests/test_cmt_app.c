@@ -119,6 +119,17 @@
  *     (apply.c's admission block) is therefore a PROVEN-UNREACHABLE
  *     FAULT in the engine, never a live risk this test suite needs to
  *     cover.
+ * 10. 2026-09-25 devnet halt — `t_prepare_env_byte_bound`,
+ *     `t_prepare_units_truncate`, `t_prepare_entry_invalid_only`. The
+ *     seam-run counter is `sqlite3_trace_v2` counting ONE SQL text (the
+ *     successor-tip read the seam issues once per run); if a later
+ *     change routes another tip read through PrepareProposal the counts
+ *     rise and the cases FAIL — they cannot pass silently. The byte case
+ *     proves the BYTE bound only because its premise CHECK (the kept
+ *     prefix also fits the global AND the CORE unit budget) is asserted
+ *     from the real block context: a policy repin that makes units bind
+ *     first fails the premise, not the fix. Requirements: none beyond a
+ *     default build; ~3 MiB of heap for the 48 fixture envelopes.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -4453,6 +4464,448 @@ static int t_prepare_fee_order(void)
     return 0;
 }
 
+/* ══ PrepareProposal vs the ledger's own capacity (2026-09-25 halt) ══
+ *
+ * The live devnet halted at height 135: ~827 envelopes (~6 MB) reached
+ * the capacity seam, the seam refused the batch on the SYSTEM policy's
+ * absolute envelope-byte bound (`max_block_env_bytes`, 2 MiB) with its
+ * by-design fail index 0, and PrepareProposal's drop loop read that 0 as
+ * an offender: it dropped the HIGHEST-fee envelope and re-ran the whole
+ * seam, one envelope per pass. The three cases below pin the repaired
+ * behaviour; the first two also COUNT the seam runs.
+ *
+ * THE COUNTER is an existing SQLite hook, not a production change:
+ * `sqlite3_trace_v2(SQLITE_TRACE_STMT)` on the fixture's own handle,
+ * counting statements whose SQL is the successor-tip read
+ * "SELECT COALESCE(MAX(global_height),0) FROM v2_blocks". On the
+ * PrepareProposal path that statement is issued ONLY by
+ * `nodus_witness_v2_tip_height` (nodus_witness_v2_produce.c), which the
+ * seam calls exactly once per run with a non-empty batch
+ * (produce_batch_check_impl's candidate-height read). The other two
+ * sites carrying the same SQL text are the apply engine (never reached
+ * by PrepareProposal) and `nodus_witness_block_height_checked`
+ * (nodus_witness_db.c — callers in verify.c/peer.c/handlers.c only,
+ * none on this path). PrepareProposal's own envelope-byte read goes
+ * through `nodus_witness_v2_block_ctx_build`, which does not read the
+ * tip. So the count IS the number of seam runs. HOW IT CAN LIE: if a
+ * later change routes another tip read through this path, the counts
+ * below rise and the case fails loudly — it cannot pass silently.
+ *
+ * The counter is a file-scope static because a failing CHECK returns
+ * before the trace is cleared, and the hook must never point at a dead
+ * stack frame. */
+static int g_seam_runs = 0;
+
+static int seam_run_trace(unsigned mask, void *ctx, void *p, void *x)
+{
+    const char *sql;
+
+    (void)ctx;
+    (void)x;
+    if (mask != SQLITE_TRACE_STMT || !p) {
+        return 0;
+    }
+    sql = sqlite3_sql((sqlite3_stmt *)p);
+    if (sql &&
+        strcmp(sql, "SELECT COALESCE(MAX(global_height),0) FROM v2_blocks")
+            == 0) {
+        g_seam_runs++;
+    }
+    return 0;
+}
+
+/**
+ * One CORE envelope over the scripted runtime (runtime_op `op`), with
+ * `call` as its call data and `fee` as its fee. `ceiling == 0` means
+ * "declare EXACTLY the static cost the engine's own plan computes"
+ * (build once with a generous ceiling, decode, `dna_meter_plan_build`
+ * against the SAME policy the seam uses, rebuild with that figure — the
+ * t_byte_bound_prepare_and_process pattern); any other value is
+ * declared verbatim. Admission never EXECUTES (it preflights and
+ * reserves only — nodus_witness_v2_produce.c), so the call bytes need
+ * not be a runnable script; they only have to hash, and a differing
+ * byte gives a differing call commitment, hence a distinct intent.
+ * `*static_out` (may be NULL) receives the plan's static total.
+ * @return 0 / -1.
+ */
+static int cap_env_build(v2x_env_t *e, const dna_meter_policy_t *pol,
+                         const uint8_t *call, uint32_t call_len,
+                         uint32_t op, uint64_t fee, uint64_t ceiling,
+                         uint64_t *static_out)
+{
+    v2x_leg_t        leg;
+    dna_env_view_t   view;
+    dna_meter_plan_t plan;
+
+    memset(&leg, 0, sizeof(leg));
+    leg.domain_id        = DNA_DOMAIN_CORE;
+    leg.runtime_op       = op;
+    leg.call             = call;
+    leg.call_len         = call_len;
+    leg.max_effects      = 0;
+    leg.max_effect_bytes = 0;
+    if (v2x_env_build_ex(e, 1000000000ull, 0, fee, &leg, 1) != 0) {
+        return -1;
+    }
+    memset(&view, 0, sizeof(view));
+    memset(&plan, 0, sizeof(plan));
+    if (dna_env_decode(e->bytes, e->len, &view) != 0) {
+        return -1;
+    }
+    if (dna_meter_plan_build(pol, &view, &plan) == DNA_METER_OK) {
+        if (static_out) {
+            *static_out = plan.static_total;
+        }
+        if (ceiling == 0) {
+            ceiling = plan.static_total;
+        }
+    } else if (ceiling == 0) {
+        return -1;              /* an unpriceable op has no exact ceiling */
+    }
+    return v2x_env_build_ex(e, ceiling, 0, fee, &leg, 1);
+}
+
+/** Bind an application to `g`, with the scripted runtime table and the
+ *  block-start context the seam itself builds (`*bctx_out`, heap — its
+ *  `policy` is the SYSTEM runtime's sealed meter policy). */
+static int cap_fixture(gfx_t *g, const char *tag, cmt_genesis_doc_t *doc,
+                       cmt_genesis_validator_t *gvals,
+                       nodus_cmt_app_ledger_t **app_out,
+                       nodus_witness_v2_block_ctx_t **bctx_out)
+{
+    *app_out  = NULL;
+    *bctx_out = NULL;
+    if (gfx_open(g, tag) != 0 || v2x_table_init(g->w) != 0) {
+        return -1;
+    }
+    *app_out  = calloc(1, sizeof(**app_out));
+    *bctx_out = calloc(1, sizeof(**bctx_out));
+    if (!*app_out || !*bctx_out) {
+        return -1;
+    }
+    if (gfx_doc(g, doc, gvals) != 0 ||
+        nodus_cmt_app_ledger_init(*app_out, g->w, doc) != CMT_OK) {
+        return -1;
+    }
+    if (nodus_witness_v2_block_ctx_build(g->w, *bctx_out) != 0 ||
+        !(*bctx_out)->policy) {
+        return -1;
+    }
+    return 0;
+}
+
+/** The CORE domain's per-block unit remainder in a fresh context. */
+static uint64_t cap_core_units(const nodus_witness_v2_block_ctx_t *bctx)
+{
+    size_t d;
+
+    for (d = 0; d < bctx->budget.n_domains; d++) {
+        if (bctx->budget.dom[d].domain_id == DNA_DOMAIN_CORE) {
+            return bctx->budget.dom[d].remaining_units;
+        }
+    }
+    return 0;
+}
+
+/* 48 envelopes of ~60 KB: ~2.9 MB of envelope bytes against the 2 MiB
+ * bound — well over it, and each one still inside the fixture's 64 KiB
+ * envelope buffer (V2X_ENV_BUF_LEN). */
+#define CAP_BYTES_N        48u
+#define CAP_BYTES_CALL_LEN 60000u
+
+/**
+ * (1) THE HALT, pinned. A request whose envelopes total well over the
+ * policy's `max_block_env_bytes` is answered CMT_OK with the
+ * fee-descending PREFIX that fits the bound — the HIGHEST fees — in ONE
+ * seam run.
+ *
+ * Every envelope declares EXACTLY its static cost as its reservation
+ * ceiling, so per envelope units = bytes - 71 (1 base + 1 op + call +
+ * 1 auth, against 43 + 30 + call + 1 wire bytes): whatever fits the
+ * byte bound also fits the unit budget, which the case asserts from the
+ * real context before relying on it — so the only bound this request
+ * can meet is the BYTE bound, and the case proves the trim, not the
+ * unit truncation.
+ *
+ * RED on the unfixed code (reasoned from nodus_witness_cmt_app.c as it
+ * was at 4189b97b, :812-944): the only byte trim was `max_tx_bytes`
+ * (22 MB here, so all 48 reached the seam); the seam refused with
+ * CAPACITY_BYTES at index 0; the loop dropped slot 0 — the HIGHEST fee —
+ * and re-ran, until only the k LOWEST fees remained (every envelope is
+ * the same 60 074 bytes, so k = floor(2 097 152 / 60 074) = 34 either
+ * way). The response then starts with the 34th-lowest fee, not the top
+ * one, so the first identity check fails; and the seam ran
+ * 48 - 34 + 1 = 15 times, which fails the run-count check too.
+ */
+static int t_prepare_env_byte_bound(void)
+{
+    gfx_t                                   g;
+    cmt_genesis_doc_t                       doc;
+    cmt_genesis_validator_t                 gvals[DNAC_COMMITTEE_SIZE];
+    nodus_cmt_app_ledger_t                 *app = NULL;
+    nodus_witness_v2_block_ctx_t           *bctx = NULL;
+    nodus_abci_request_prepare_proposal_t   req;
+    nodus_abci_response_prepare_proposal_t  resp;
+    v2x_env_t                              *envs = NULL;
+    cmt_pb_bytes_t                         *txs = NULL;
+    uint8_t                                *call = NULL;
+    uint64_t                                bound, sum, all, ceil_max = 0;
+    size_t                                  i, k_fit;
+
+    CHECK(cap_fixture(&g, "envbytes", &doc, gvals, &app, &bctx) == 0,
+          "version-3 fixture, scripted runtime, bound app, block context");
+    bound = bctx->policy->max_block_env_bytes;
+    CHECK(bound > 0, "the SYSTEM policy carries an envelope-byte bound");
+
+    envs = calloc(CAP_BYTES_N, sizeof(*envs));     /* ~3 MiB: heap      */
+    txs  = calloc(CAP_BYTES_N, sizeof(*txs));
+    call = calloc(1, CAP_BYTES_CALL_LEN);
+    CHECK(envs && txs && call, "alloc");
+
+    /* request order = ASCENDING fee (fee 1000 + i), so the fee sort has
+     * to reverse it: the highest fee is the LAST request entry. */
+    for (i = 0; i < CAP_BYTES_N; i++) {
+        uint64_t st = 0;
+
+        memset(call, 0x5A, CAP_BYTES_CALL_LEN);
+        call[0] = (uint8_t)i;                      /* distinct intent   */
+        call[1] = 0xC7;
+        CHECK(cap_env_build(&envs[i], bctx->policy, call,
+                            CAP_BYTES_CALL_LEN, 1, 1000u + i, 0, &st) == 0,
+              "a ~60 KB CORE envelope with an exact ceiling");
+        if (st > ceil_max) {
+            ceil_max = st;
+        }
+        txs[i].data = envs[i].bytes;
+        txs[i].len  = envs[i].len;
+    }
+
+    /* the expected answer, from the bound itself: the longest
+     * fee-descending prefix whose envelope bytes stay <= bound */
+    sum = 0;
+    all = 0;
+    k_fit = 0;
+    for (i = 0; i < CAP_BYTES_N; i++) {
+        size_t j = CAP_BYTES_N - 1 - i;            /* fee-descending    */
+
+        all += envs[j].len;
+        if (k_fit == i && sum + envs[j].len <= bound) {
+            sum += envs[j].len;
+            k_fit++;
+        }
+    }
+    CHECK(all > bound, "PREMISE: the request's envelope bytes exceed the "
+          "ledger's per-block bound");
+    CHECK(k_fit >= 2 && k_fit < CAP_BYTES_N, "PREMISE: a strict, "
+          "non-trivial prefix fits");
+    CHECK((uint64_t)k_fit * ceil_max <= bctx->budget.global_remaining &&
+          (uint64_t)k_fit * ceil_max <= cap_core_units(bctx),
+          "PREMISE: the byte-fitting prefix also fits the global AND the "
+          "CORE unit budget — the byte bound is the only one in play");
+
+    memset(&req, 0, sizeof(req));
+    req.txs          = txs;
+    req.txs_len      = CAP_BYTES_N;
+    req.max_tx_bytes = 22020096;                   /* not the binding one */
+    memset(&resp, 0, sizeof(resp));
+    g_seam_runs = 0;
+    CHECK(sqlite3_trace_v2(g.w->db, SQLITE_TRACE_STMT, seam_run_trace,
+                           NULL) == SQLITE_OK, "install the run counter");
+    CHECK(nodus_cmt_app_prepare_proposal(app, &req, &resp) == CMT_OK,
+          "prepare answers CMT_OK over a mempool above the byte bound");
+    sqlite3_trace_v2(g.w->db, 0, NULL, NULL);
+
+    CHECK(resp.txs_len == k_fit,
+          "exactly the fee-descending prefix that fits the bound is kept");
+    sum = 0;
+    for (i = 0; i < resp.txs_len; i++) {
+        CHECK(resp.txs[i].data == envs[CAP_BYTES_N - 1 - i].bytes,
+              "slot i holds the i-th HIGHEST fee — the top fees survive, "
+              "they are not the ones thrown away");
+        sum += resp.txs[i].len;
+    }
+    CHECK(sum <= bound, "the proposal's envelope bytes are within the bound");
+    CHECK(g_seam_runs == 1,
+          "ONE seam run: the byte trim happened before the seam, so the "
+          "seam accepted the first batch it saw (the unfixed loop ran it "
+          "once per dropped envelope)");
+
+    free(call);
+    free(txs);
+    free(envs);
+    free(bctx);
+    nodus_cmt_app_ledger_release(app);
+    free(app);
+    gfx_close(&g);
+    return 0;
+}
+
+/* (2)'s shape: twelve small envelopes each declaring 300 000 units, so
+ * floor(NODUS_V2_GLOBAL_UNIT_BUDGET / 300 000) of them reserve and the
+ * next one is a CAPACITY_UNITS refusal at that slot; plus one POISON
+ * envelope declaring more units than the whole block budget. */
+#define CAP_UNITS_N       12u
+#define CAP_UNITS_CEILING 300000ull
+#define CAP_UNITS_POISON  3000000ull
+
+/**
+ * (2) CAPACITY_UNITS truncates in ONE step, and at slot 0 drops only
+ * the poison entry. The poison (fee 100) sorts first and alone exceeds
+ * the whole unit budget: refused at slot 0, dropped alone. The twelve
+ * (fee 7, a tie — request order kept) then fail at slot
+ * floor(budget / 300 000) = 6: truncated to that prefix at once. Seam
+ * runs: poison, truncate, clean = 3.
+ *
+ * RED on the unfixed code: the kept set is the same (dropping the entry
+ * at the unit boundary one at a time converges on the same prefix), but
+ * it took one run per dropped entry — 1 (poison) + 6 (slot 6, six
+ * times) + 1 (clean) = 8 runs; the run-count check fails.
+ */
+static int t_prepare_units_truncate(void)
+{
+    gfx_t                                   g;
+    cmt_genesis_doc_t                       doc;
+    cmt_genesis_validator_t                 gvals[DNAC_COMMITTEE_SIZE];
+    nodus_cmt_app_ledger_t                 *app = NULL;
+    nodus_witness_v2_block_ctx_t           *bctx = NULL;
+    nodus_abci_request_prepare_proposal_t   req;
+    nodus_abci_response_prepare_proposal_t  resp;
+    v2x_env_t                              *envs = NULL;
+    cmt_pb_bytes_t                          txs[CAP_UNITS_N + 1];
+    uint8_t                                 call[64];
+    uint64_t                                fit, st = 0;
+    size_t                                  i;
+
+    CHECK(cap_fixture(&g, "unitstrunc", &doc, gvals, &app, &bctx) == 0,
+          "version-3 fixture, scripted runtime, bound app, block context");
+    envs = calloc(CAP_UNITS_N + 1, sizeof(*envs));
+    CHECK(envs != NULL, "alloc");
+
+    for (i = 0; i < CAP_UNITS_N; i++) {
+        memset(call, 0x33, sizeof(call));
+        call[0] = (uint8_t)i;
+        CHECK(cap_env_build(&envs[i], bctx->policy, call, sizeof(call), 1,
+                            7, CAP_UNITS_CEILING, &st) == 0,
+              "a small envelope declaring 300 000 units");
+        CHECK(st <= CAP_UNITS_CEILING, "its static cost is under that");
+        txs[i].data = envs[i].bytes;
+        txs[i].len  = envs[i].len;
+    }
+    memset(call, 0x44, sizeof(call));
+    CHECK(cap_env_build(&envs[CAP_UNITS_N], bctx->policy, call, sizeof(call),
+                        1, 100, CAP_UNITS_POISON, NULL) == 0,
+          "the poison envelope");
+    txs[CAP_UNITS_N].data = envs[CAP_UNITS_N].bytes;   /* LAST in the   */
+    txs[CAP_UNITS_N].len  = envs[CAP_UNITS_N].len;     /* request order */
+
+    fit = bctx->budget.global_remaining / CAP_UNITS_CEILING;
+    CHECK(CAP_UNITS_POISON > bctx->budget.global_remaining,
+          "PREMISE: the poison alone exceeds the whole unit budget");
+    CHECK(fit >= 1 && fit < CAP_UNITS_N, "PREMISE: the twelve do not all "
+          "fit the unit budget, some do");
+    CHECK(fit * st <= cap_core_units(bctx), "PREMISE: the CORE domain "
+          "quota is not the binding one");
+
+    memset(&req, 0, sizeof(req));
+    req.txs          = txs;
+    req.txs_len      = CAP_UNITS_N + 1;
+    req.max_tx_bytes = 22020096;
+    memset(&resp, 0, sizeof(resp));
+    g_seam_runs = 0;
+    CHECK(sqlite3_trace_v2(g.w->db, SQLITE_TRACE_STMT, seam_run_trace,
+                           NULL) == SQLITE_OK, "install the run counter");
+    CHECK(nodus_cmt_app_prepare_proposal(app, &req, &resp) == CMT_OK,
+          "prepare answers");
+    sqlite3_trace_v2(g.w->db, 0, NULL, NULL);
+
+    CHECK(resp.txs_len == fit, "truncated to the prefix the unit budget "
+          "fits");
+    for (i = 0; i < resp.txs_len; i++) {
+        CHECK(resp.txs[i].data == envs[i].bytes,
+              "the prefix, in request order (a fee tie), without the "
+              "poison");
+    }
+    CHECK(g_seam_runs == 3, "three seam runs: poison dropped at slot 0, "
+          "ONE truncation, one clean run");
+
+    free(envs);
+    free(bctx);
+    nodus_cmt_app_ledger_release(app);
+    free(app);
+    gfx_close(&g);
+    return 0;
+}
+
+/**
+ * (3) ENTRY_INVALID still drops ONLY the offender. The middle-fee
+ * envelope names runtime_op 8, which the committed SYSTEM policy does
+ * not price (ops 1..7 only, nodus_witness_runtime.c `sys_policy_build`):
+ * the seam refuses it at ITS slot as ENTRY_INVALID (meter status
+ * OP_WEIGHT, nodus_witness_v2_env.c `nodus_witness_v2_env_fail_kind`) —
+ * a property of its bytes, not of a full block. The other two survive,
+ * in fee order, after exactly two seam runs. Not a RED case: the
+ * unfixed loop handled ENTRY_INVALID the same way; this pins that the
+ * kind discrimination did not change it.
+ */
+static int t_prepare_entry_invalid_only(void)
+{
+    gfx_t                                   g;
+    cmt_genesis_doc_t                       doc;
+    cmt_genesis_validator_t                 gvals[DNAC_COMMITTEE_SIZE];
+    nodus_cmt_app_ledger_t                 *app = NULL;
+    nodus_witness_v2_block_ctx_t           *bctx = NULL;
+    nodus_abci_request_prepare_proposal_t   req;
+    nodus_abci_response_prepare_proposal_t  resp;
+    v2x_env_t                              *envs = NULL;
+    cmt_pb_bytes_t                          txs[3];
+    uint8_t                                 call[64];
+
+    CHECK(cap_fixture(&g, "entryinv", &doc, gvals, &app, &bctx) == 0,
+          "version-3 fixture, scripted runtime, bound app, block context");
+    envs = calloc(3, sizeof(*envs));
+    CHECK(envs != NULL, "alloc");
+
+    memset(call, 0x11, sizeof(call));
+    CHECK(cap_env_build(&envs[0], bctx->policy, call, sizeof(call), 1, 9, 0,
+                        NULL) == 0, "fee 9, priced op");
+    memset(call, 0x22, sizeof(call));
+    CHECK(cap_env_build(&envs[1], bctx->policy, call, sizeof(call), 8, 7,
+                        200000, NULL) == 0, "fee 7, UNPRICED op 8");
+    memset(call, 0x33, sizeof(call));
+    CHECK(cap_env_build(&envs[2], bctx->policy, call, sizeof(call), 1, 5, 0,
+                        NULL) == 0, "fee 5, priced op");
+    /* request order [fee 5, fee 7 (invalid), fee 9] */
+    txs[0].data = envs[2].bytes; txs[0].len = envs[2].len;
+    txs[1].data = envs[1].bytes; txs[1].len = envs[1].len;
+    txs[2].data = envs[0].bytes; txs[2].len = envs[0].len;
+
+    memset(&req, 0, sizeof(req));
+    req.txs          = txs;
+    req.txs_len      = 3;
+    req.max_tx_bytes = 22020096;
+    memset(&resp, 0, sizeof(resp));
+    g_seam_runs = 0;
+    CHECK(sqlite3_trace_v2(g.w->db, SQLITE_TRACE_STMT, seam_run_trace,
+                           NULL) == SQLITE_OK, "install the run counter");
+    CHECK(nodus_cmt_app_prepare_proposal(app, &req, &resp) == CMT_OK,
+          "prepare answers");
+    sqlite3_trace_v2(g.w->db, 0, NULL, NULL);
+
+    CHECK(resp.txs_len == 2, "only the offender is dropped");
+    CHECK(resp.txs[0].data == envs[0].bytes, "fee 9 first");
+    CHECK(resp.txs[1].data == envs[2].bytes,
+          "fee 5 second — the entry AFTER the offender was not truncated "
+          "away with it");
+    CHECK(g_seam_runs == 2, "two seam runs: the refusal, then clean");
+
+    free(envs);
+    free(bctx);
+    nodus_cmt_app_ledger_release(app);
+    free(app);
+    gfx_close(&g);
+    return 0;
+}
+
 /** Binding a LEGACY chain is refused. */
 static int t_bind_refuses_legacy(void)
 {
@@ -4527,6 +4980,10 @@ int main(void)
         /* ORCHESTRATOR delta 11 (R3-W3-C2a-19) */
         { "prepare_proposal_item_cap",  t_prepare_proposal_item_cap },
         { "process_proposal_item_cap",  t_process_proposal_item_cap },
+        /* 2026-09-25 devnet halt (PrepareProposal vs the byte bound) */
+        { "prepare_env_byte_bound",     t_prepare_env_byte_bound },
+        { "prepare_units_truncate",     t_prepare_units_truncate },
+        { "prepare_entry_invalid_only", t_prepare_entry_invalid_only },
     };
     size_t i, failed = 0, ncases = sizeof(cases) / sizeof(cases[0]);
 

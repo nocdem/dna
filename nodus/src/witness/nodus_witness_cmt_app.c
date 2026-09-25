@@ -640,14 +640,22 @@ static bool env_is_chain_config(const dna_env_view_t *v)
  * both call sites refuse a larger request before this function is ever
  * reached, so this is a second, cheap belt-and-braces check inside
  * `nodus_witness_v2_produce_batch_check_capped`, not a live guard.
- * @return 0 clean, -1 with `*fail_slot` naming the offending SLOT of
- *         `order`, -2 node-local fault (including an allocation
- *         failure for the view array itself).
+ *
+ * `kind` (may be NULL) receives the seam's CLASSIFIED refusal
+ * (`nodus_v2_batch_check_result_t.kind`, nodus_witness_v2_env.h): on a
+ * -1 it says whether `*fail_slot` names an offender (ENTRY_INVALID), a
+ * fit boundary (CAPACITY_UNITS) or nothing at all (CAPACITY_BYTES,
+ * whose index is 0 by design — nodus_witness_v2_produce.c, the
+ * "accuses nobody" note). PrepareProposal must read it; a caller that
+ * does not is exactly the 2026-09-25 devnet halt.
+ * @return 0 clean, -1 with `*fail_slot` naming the SLOT of `order` the
+ *         seam reported (read it through `*kind`), -2 node-local fault
+ *         (including an allocation failure for the view array itself).
  */
 static int app_seam_check(nodus_cmt_app_ledger_t *ctx,
                           const cmt_pb_bytes_t *txs,
                           const size_t *order, size_t n, size_t cap,
-                          int *fail_slot)
+                          int *fail_slot, nodus_v2_batch_fail_kind_t *kind)
 {
     nodus_witness_batch_item_t   *view = NULL;
     nodus_v2_batch_check_result_t result;
@@ -657,6 +665,9 @@ static int app_seam_check(nodus_cmt_app_ledger_t *ctx,
 
     if (fail_slot) {
         *fail_slot = 0;
+    }
+    if (kind) {
+        *kind = NODUS_V2_BATCH_FAIL_NONE;
     }
     if (n == 0) {
         return 0;                            /* an empty block is legal   */
@@ -685,6 +696,9 @@ static int app_seam_check(nodus_cmt_app_ledger_t *ctx,
     if (rc == -1 && fail_slot) {
         *fail_slot = (fi >= 0 && (size_t)fi < n) ? fi : 0;
     }
+    if (rc != 0 && kind) {
+        *kind = result.kind;
+    }
     free(view);
     return rc;
 }
@@ -696,6 +710,10 @@ int nodus_cmt_app_prepare_proposal(
     nodus_cmt_app_ledger_t *ctx = (nodus_cmt_app_ledger_t *)vctx;
     size_t   n = 0, i, k, kept;
     int64_t  total = 0;
+    uint64_t env_total = 0;         /* summed ENVELOPE bytes, the seam's
+                                     * own block-byte measure           */
+    uint64_t max_env_bytes = 0;     /* the policy's max_block_env_bytes  */
+    bool     bytes_logged = false;  /* the unreachable-BYTES line, once  */
     size_t   guard;
     int      rc_out = CMT_FAULT;
 
@@ -809,22 +827,108 @@ int nodus_cmt_app_prepare_proposal(
         }
     }
 
-    /* ── the byte budget: drop from the TAIL ─────────────────────────
-     * `max_tx_bytes` bounds `ComputeProtoSizeForTxs` of the answer
-     * (types/tx.go:188-192; the host validates it again at
-     * nodus_witness_cmt_host.c:802 through `nodus_cmt_txs_validate`), so
-     * the accumulation must use the same measure. */
+    /* ── the ledger's own envelope-byte bound, from the SAME authority
+     * the seam reads ─────────────────────────────────────────────────
+     * INVARIANT: PrepareProposal applies every byte bound the engine
+     * enforces BEFORE the seam runs. The engine's absolute per-block
+     * envelope-byte bound is the SYSTEM runtime's sealed meter policy's
+     * `max_block_env_bytes` (nodus_witness_runtime.c `sys_policy_build`,
+     * 2 x DNA_ENV_MAX_TOTAL_LEN), enforced as a whole-batch SUM in the
+     * reserve seam (nodus_witness_v2_env.c, step 4b). It is read here
+     * through the ONE block-start context builder the seam itself uses
+     * (nodus_witness_v2_produce.c, the envelope subset), never
+     * hard-coded, so a repinned policy moves both sides together.
+     *
+     * 2026-09-25 devnet halt at height 135: this bound was NOT applied
+     * here, ~827 envelopes (~6 MB) reached the seam, the seam answered
+     * CAPACITY_BYTES with its by-design index 0, and the drop loop below
+     * read that 0 as an offender — it dropped the HIGHEST-fee envelope
+     * and re-ran the full seam, one envelope per pass: O(n^2), minutes
+     * per PrepareProposal on the single event loop, every round late,
+     * the chain halted with the mempool full.
+     *
+     * Built only when an ENVELOPE is a candidate: the seam builds the
+     * context only for a non-empty envelope subset too, so a claims-only
+     * proposal behaves exactly as before. A build failure is the same
+     * condition the seam reports as a node-local fault (-1 and -2 both,
+     * nodus_witness_v2_produce.c's block-context branch), which the drop
+     * loop below already turns into CMT_FAULT — answered the same way
+     * here, just earlier. */
+    for (k = 0; k < n; k++) {
+        if (class_arr[order[k]] == NODUS_W_TX_V2_ENVELOPE) {
+            break;
+        }
+    }
+    if (k < n) {
+        nodus_witness_v2_block_ctx_t *bctx =
+            (nodus_witness_v2_block_ctx_t *)calloc(1, sizeof(*bctx));
+        int bcrc;
+
+        if (!bctx) {
+            rc_out = CMT_FAULT;
+            goto done;
+        }
+        bcrc = nodus_witness_v2_block_ctx_build(ctx->w, bctx);
+        if (bcrc == 0 && bctx->policy) {
+            max_env_bytes = bctx->policy->max_block_env_bytes;
+        }
+        free(bctx);                          /* `policy` is BORROWED from
+                                              * the runtime registry; only
+                                              * the scalar is kept         */
+        if (bcrc != 0 || max_env_bytes == 0) {
+            QGP_LOG_ERROR(LOG_TAG, "PrepareProposal: the block-start "
+                          "context (the envelope-byte bound) could not be "
+                          "built on this node (rc=%d)", bcrc);
+            rc_out = CMT_FAULT;
+            goto done;
+        }
+    }
+
+    /* ── the byte budgets: drop from the TAIL ────────────────────────
+     * ONE pass, TWO bounds, the first entry that breaks EITHER ends the
+     * list (the list is fee-descending, so the tail is the lowest-fee
+     * remainder):
+     *  - `max_tx_bytes` bounds `ComputeProtoSizeForTxs` of the answer
+     *    (types/tx.go:188-192; the host validates it again at
+     *    nodus_witness_cmt_host.c:802 through `nodus_cmt_txs_validate`),
+     *    so that accumulation uses the same measure;
+     *  - `max_env_bytes` bounds the summed wire length of the ENVELOPE
+     *    entries, exactly `nodus_witness_v2_block_bytes_check`'s measure
+     *    (nodus_witness_v2_env.c): the seam sums `view.env_len` of the
+     *    envelope subset only (claims never enter it,
+     *    nodus_witness_v2_produce.c's class split), and `env_len` IS the
+     *    entry's length for every envelope that decodes
+     *    (shared/dnac/env_wire.c, "EXACT length" — every ENVELOPE left in
+     *    `order[]` decoded above). The bound is INCLUSIVE, as there.
+     *    One envelope that ALONE exceeds it can never fit any block (the
+     *    legacy leader's own "genuinely poison" case) — it is left out
+     *    and the pass continues, so it can never hold every lower-fee
+     *    entry behind it out of every block. Unreachable at today's
+     *    policy (a decodable envelope is <= DNA_ENV_MAX_TOTAL_LEN, half
+     *    the bound); written so a repinned policy cannot turn it into a
+     *    permanent empty-block chain. */
     kept = 0;
     total = 0;
+    env_total = 0;
     for (k = 0; k < n; k++) {
-        int64_t cost =
-            nodus_cmt_compute_proto_size_for_tx(req->txs[order[k]].len);
+        size_t  len  = req->txs[order[k]].len;
+        int64_t cost = nodus_cmt_compute_proto_size_for_tx(len);
+        bool    is_env = class_arr[order[k]] == NODUS_W_TX_V2_ENVELOPE;
 
+        if (is_env && (uint64_t)len > max_env_bytes) {
+            continue;                        /* fits no block, ever        */
+        }
         if (cost < 0 || total > req->max_tx_bytes - cost) {
             break;                           /* the tail does not fit      */
         }
+        if (is_env) {
+            if (env_total > max_env_bytes - (uint64_t)len) {
+                break;                       /* the ledger's byte bound    */
+            }
+            env_total += (uint64_t)len;
+        }
         total += cost;
-        kept++;
+        order[kept++] = order[k];
     }
     n = kept;
 
@@ -914,14 +1018,33 @@ int nodus_cmt_app_prepare_proposal(
     }
 
     /* ── the engine's own seam: never propose what apply would refuse ──
-     * O15I capacity seam. A named offender is dropped and the seam re-run
-     * (the leader's own handling, nodus_witness_bft.c:5286-5296 — rc −1
-     * with a trustworthy index names an entry, anything else is this
-     * node's fault and opens no round); a fault stops the proposal. */
+     * O15I capacity seam, with the O15I leader's KIND discrimination
+     * (defa07c6 — the legacy leader in nodus_witness_bft.c, deleted in
+     * R3 W4; nodus_witness_v2_env.h's nodus_v2_batch_fail_kind_t):
+     *  - ENTRY_INVALID at slot i: that entry never becomes valid — drop
+     *    it, re-run.
+     *  - CAPACITY_UNITS at slot i > 0: entries [0, i) reserved in this
+     *    very run, so that prefix is exactly what fits — TRUNCATE to it
+     *    in ONE step (the tail stays in the mempool; nothing valid is
+     *    destroyed), re-run once to propose only what the seam accepted
+     *    whole.
+     *  - CAPACITY_UNITS at slot 0: the entry alone exceeds the whole
+     *    budget — poison, drop it alone.
+     *  - CAPACITY_BYTES: its index is 0 BY DESIGN and accuses nobody
+     *    (nodus_witness_v2_produce.c). Unreachable after the envelope-
+     *    byte trim above (same bound, same measure); should it ever
+     *    happen, the tail is dropped — never slot 0 — and it is logged
+     *    once per call.
+     *  - anything else is this node's fault: the proposal stops.
+     * Every pass strictly shrinks `n`, and the guard bounds the loop
+     * regardless. A full mempool now costs O(1) seam runs in the common
+     * case (one clean run, or one truncation + one clean run), not one
+     * run per dropped entry. */
     for (guard = 0; guard <= ctx->prep_bound; guard++) {
         int fail_slot = 0;
+        nodus_v2_batch_fail_kind_t fkind = NODUS_V2_BATCH_FAIL_NONE;
         int rc = app_seam_check(ctx, req->txs, order, n, ctx->prep_bound,
-                                &fail_slot);
+                                &fail_slot, &fkind);
 
         if (rc == 0) {
             break;
@@ -937,6 +1060,38 @@ int nodus_cmt_app_prepare_proposal(
             break;                           /* nothing left to drop: an
                                               * EMPTY block is legal       */
         }
+        if (fkind == NODUS_V2_BATCH_FAIL_CAPACITY_UNITS && fail_slot > 0) {
+            QGP_LOG_INFO(LOG_TAG, "PrepareProposal: the unit budget fits "
+                         "%d of %zu candidates — truncating", fail_slot, n);
+            n = (size_t)fail_slot;
+            continue;
+        }
+        if (fkind == NODUS_V2_BATCH_FAIL_CAPACITY_BYTES) {
+            if (!bytes_logged) {
+                QGP_LOG_ERROR(LOG_TAG, "PrepareProposal: the seam refused "
+                              "%zu candidates on the envelope-byte bound "
+                              "AFTER the byte trim (bound %llu, trimmed to "
+                              "%llu) — dropping from the tail", n,
+                              (unsigned long long)max_env_bytes,
+                              (unsigned long long)env_total);
+                bytes_logged = true;
+            }
+            n--;
+            continue;
+        }
+        if (fkind != NODUS_V2_BATCH_FAIL_ENTRY_INVALID &&
+            fkind != NODUS_V2_BATCH_FAIL_CAPACITY_UNITS) {
+            /* rc -1 always carries one of the three verdict kinds
+             * (nodus_witness_v2_produce.c); any other kind here is this
+             * node failing to classify, never a verdict to act on. */
+            QGP_LOG_ERROR(LOG_TAG, "PrepareProposal: the capacity seam "
+                          "refused with an unclassified kind %d",
+                          (int)fkind);
+            rc_out = CMT_FAULT;
+            goto done;
+        }
+        /* ENTRY_INVALID at fail_slot, or CAPACITY_UNITS at slot 0: drop
+         * exactly that entry. */
         for (k = (size_t)fail_slot; k + 1 < n; k++) {
             order[k] = order[k + 1];
         }
@@ -1098,7 +1253,7 @@ int nodus_cmt_app_process_proposal(
         }
         order[n++] = i;
     }
-    rc = app_seam_check(ctx, req->txs, order, n, ctx->env_bound, NULL);
+    rc = app_seam_check(ctx, req->txs, order, n, ctx->env_bound, NULL, NULL);
     if (rc == -2) {
         QGP_LOG_ERROR(LOG_TAG, "%s",
                       "ProcessProposal: the capacity seam faulted on this "

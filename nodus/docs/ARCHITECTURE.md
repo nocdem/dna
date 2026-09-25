@@ -181,7 +181,7 @@ nodus/
 │   ├── test_cmt_cs.c          # cometbft port R2-T + R2-T2: 39 whole-height scenarios from state_test.go / byzantine_test.go / mempool_test.go (every state_test.go func a single-node fixture can drive; 4 remain BLOCKED, listed with reasons); asserts WHICH block was committed; "how it can lie" items 11-21 (the fixture's 1-12 are in test_cmt_common.h)
 │   ├── test_cmt_multinode.h   # cometbft port R2-BYZ: the reactor stand-in — N fixtures, connectivity matrix, router porting the three gossip routines as rules, step budget instead of wall clock; R3 W3 P0 added a third timer rule (M16 MN_TICKER_QUIESCENT: an honest node's timeout fires only when the whole network was quiet for a full round) and the bad-header byzantine override
 │   ├── test_cmt_byzantine.c   # cometbft port R2-BYZ: TestByzantineConflictingProposalsWithPartition — 4 nodes, byzantine proposer, partition heals, all honest nodes commit the SAME block; + 2 C-only scenarios; + R3 W3 P0: the two part-set-bound OBLIGATION scenarios (atlas-dec-247e5c0e…): forged +2/3 prevotes for a BlockID the bound refuses → every honest node reaches setProposal / addVote / enterPrecommit, signs nil, commits an honest block later (parts_cap clause); forged precommits too → enterCommit parks the node with no block (MAX_PARTS clause)
-│   ├── test_cmt_app.c         # cometbft port R3-C1a: the application over a REAL version-3 chain — InitChain as a genesis check, FinalizeBlock with per-item SAVEPOINT isolation, both crash windows, Commit as the COMMIT, CheckTx (incl. the signature stage), PrepareProposal / ProcessProposal; 18 cases
+│   ├── test_cmt_app.c         # cometbft port R3-C1a: the application over a REAL version-3 chain — InitChain as a genesis check, FinalizeBlock with per-item SAVEPOINT isolation, both crash windows, Commit as the COMMIT, CheckTx (incl. the signature stage), PrepareProposal / ProcessProposal (incl. the envelope-byte trim and the seam's refusal-kind handling, with a seam-run count); 32 cases
 │   ├── test_cmt_node.c        # cometbft port R3-C1c: the startup table — genesis document loader (row / provider / refusals), the Handshaker's height cases and BOTH crash windows healed (real app / mock app), LoadOrGenFilePV, init/start/release; 14 cases
 │   └── test_cmt_net.c         # cometbft port R3 W3 C2b: the transport glue (nodus_witness_cmt_net) — peer-set scan over a hand-built witness peer table driving a REAL cmt_conr/cmt_memr pair, send refused for a down/quarantined slot, verb 35/39 receive routing, receive-before-tick, the 64 MiB receive-arena runway + latches, deferred close bookkeeping, scan waits for both reactors; 8 cases
 ├── CMakeLists.txt             # Build system
@@ -1907,7 +1907,7 @@ today has that row and takes the old branch unchanged.
 
 | Module | cometbft source | What it is |
 |---|---|---|
-| `nodus/src/witness/nodus_witness_cmt_app.{h,c}` | `abci/types/application.go`, `proxy/app_conn.go`, `consensus/replay.go:318-373`, `state/execution.go:101-323` | the APPLICATION behind `AppConnConsensus`/`AppConnMempool` over the ledger: InitChain as a genesis CHECK (chain id, committed global root == the document's `app_hash`, validators as a multiset), PrepareProposal (the ledger's fee order and chain_config-alone rules, the byte budget, the capacity seam), ProcessProposal, the vote-extension defaults, FinalizeBlock over the engine's Comet lane, Commit = the SQL `COMMIT` of the host's transaction, CheckTx = the ledger's admission check PLUS the envelope's authorization stage (D-23 rev 5, D-4 rev 3) |
+| `nodus/src/witness/nodus_witness_cmt_app.{h,c}` | `abci/types/application.go`, `proxy/app_conn.go`, `consensus/replay.go:318-373`, `state/execution.go:101-323` | the APPLICATION behind `AppConnConsensus`/`AppConnMempool` over the ledger: InitChain as a genesis CHECK (chain id, committed global root == the document's `app_hash`, validators as a multiset), PrepareProposal (the ledger's fee order and chain_config-alone rules, the byte budgets — `max_tx_bytes` and the meter policy's `max_block_env_bytes` —, the capacity seam read by refusal kind), ProcessProposal, the vote-extension defaults, FinalizeBlock over the engine's Comet lane, Commit = the SQL `COMMIT` of the host's transaction, CheckTx = the ledger's admission check PLUS the envelope's authorization stage (D-23 rev 5, D-4 rev 3) |
 | `nodus/src/witness/nodus_witness_v2_apply.{h,c}` (Comet lane) | `state/execution.go:224-323` | `nodus_v2_block_t.cmt`: every item in its own SAVEPOINT inside the host's transaction, a per-item `nodus_v2_tx_code_t` (consensus data), claims as items, the ten-column S14 block row with consensus's own block hash, `tx_root`/`tx_count` over applied items only, the committed-global-root reader, `nodus_witness_v2_genesis_cmt` (no height-0 row) |
 | `nodus/src/witness/nodus_witness_v2_gen.{h,c}` (version 3), `nodus/tools/nodus_v2_gen_config.c` | `types/genesis.go`, `proto/tendermint/types/params.proto`, `node/setup.go:551` | the version-3 genesis DOCUMENT (D-18 rev 4): v2 body ‖ Comet tail; two hashes (chain id with its own field zeroed, source commit with `app_hash` zeroed too); `derive_v3` (ledger genesis at S12, climb to S14, store under "genesisDoc"); the CANONICAL-STRICT reader (four checks); the tool's v3 keys; an independent Python oracle |
 | `nodus/src/witness/nodus_witness_cmt_node.{h,c}` | `node/node.go:285-422`, `node/setup.go:551-611`, `consensus/replay.go:201-565`, `consensus/replay_stubs.go:60-79`, `consensus/state.go:318-405`, `privval/file.go:237-245` | THE STARTUP TABLE: `NewNodeWithContext` step for step, the Handshaker (InitChain branch, six edge cases, five height outcomes, replayBlocks/replayBlock), the mock application (its `commit` issues the COMMIT), the genesis document loader's three-way table, `LoadOrGenFilePV` on the state file, OnStart minus the file WAL; the first production caller of `cmt_cs_init` |
@@ -1932,7 +1932,7 @@ W3 makes the port the running consensus. Three packages landed after P0 and C2b 
 
 **The client lane (D-23 rev 7 (22)):** on a version-3 chain `handle_dnac_spend` runs `cmt_mem_check_tx` and answers the CheckTx result AT ONCE — `{status: APPROVED}` means accepted into the mempool (no block receipt, no `bnr`/`ti`/`wsig`); a refusal is mapped from the mempool's error kind or the application's code. The client learns the commit by query. There is no leader and no forward: the mempool reactor floods. `nodus-cli`'s submit print used to show zeros under a "committed: height=… index=…" label on this lane (package C2d's item, at the time reworded to "package W4-H"); package C delta 4 did the reword instead — see below.
 
-**The bounds (D-23 rev 7 (24)):** derived at bind time from the genesis document, never hardcoded — `prep_bound` = the mempool's configured size (5 000), `env_bound` = MaxDataBytes at one validator divided by an envelope's 73-byte framing minimum (293 525 at Block.MaxBytes 22 020 096), `claim_bound` = MaxDataBytes / `DNA_CLAIM_FIXED_LEN` (2 972); the executor's `max_txs` uses the same helper; `NODUS_CMT_APP_MAX_TXS` is retired. Every working array is per-request; only the two ABCI response buffers persist across calls. FinalizeBlock hands the engine a non-NULL results array even for an EMPTY block (the engine's precondition refuses NULL before the count; a quiet chain's first block is empty). PrepareProposal's seam drop loop is bounded by `prep_bound` passes — worst case O(prep_bound²) item evaluations on a mempool full of budget-exceeding envelopes (a liveness/cost note for R3-T, register R3-W3-C2a-11).
+**The bounds (D-23 rev 7 (24)):** derived at bind time from the genesis document, never hardcoded — `prep_bound` = the mempool's configured size (5 000), `env_bound` = MaxDataBytes at one validator divided by an envelope's 73-byte framing minimum (293 525 at Block.MaxBytes 22 020 096), `claim_bound` = MaxDataBytes / `DNA_CLAIM_FIXED_LEN` (2 972); the executor's `max_txs` uses the same helper; `NODUS_CMT_APP_MAX_TXS` is retired. Every working array is per-request; only the two ABCI response buffers persist across calls. FinalizeBlock hands the engine a non-NULL results array even for an EMPTY block (the engine's precondition refuses NULL before the count; a quiet chain's first block is empty). PrepareProposal's seam loop is bounded by `prep_bound` passes, and since nodus 0.19.77 it reads the seam's refusal KIND, so a full mempool costs a constant number of seam runs (one clean run, or one unit truncation plus one clean run), not one run per dropped entry — see "PrepareProposal applies every byte bound the engine enforces" below; the O(prep_bound²) worst case remains only for a mempool full of individually INVALID entries (register R3-W3-C2a-11).
 
 **The readiness side (C2c, D-17 rev 10 (8)):** the schema gates accept S14 — `nodus_witness_v2_pools_startup_check` and CORE `state_init` ADD S14 (the pool verification really runs there; before W3 an S14 database fell through `return 0` and was reported green), the preflight accepts S14 only, `nodus_witness_v2_genesis_cmt` narrows to S14 only. The derivation migrates to S14 FIRST (the W2 S12-then-climb order is withdrawn). The preflight's genesis check is rewritten against the stored DOCUMENT: present (`cmt_state` "genesisDoc") → the canonical-strict reader (`nodus_witness_v2_gen_stored_doc`) → its `chain_id` against the handle's 16-byte filename prefix → its `app_hash` against `nodus_witness_v2_committed_global_root` (NEW id 17 `GENESIS_APP_HASH_MISMATCH`, appended; ids 6 and 7 retired, never raised); the required-table list gains the five S14 stores. The whole-database digest is unchanged by a preflight (asserted).
 
@@ -2469,6 +2469,77 @@ declared ceiling, not the work done, decides how many fit.
   transaction crosses every link several times (mempool gossip, block
   parts, votes). Localhost numbers; a real network adds latency.
 
+### PrepareProposal applies every byte bound the engine enforces (2026-09-25, nodus 0.19.77)
+
+**The incident.** The live devnet
+(`docs/plans/decisions/2026-09-25-devnet-baseline-genesis.md`) halted
+permanently at height 135 with ~827 envelopes (~6 MB) in the mempool.
+PrepareProposal (`nodus_witness_cmt_app.c`) trimmed its fee-ordered
+candidates only against cometbft's `max_tx_bytes` (~22 MB), never
+against the ledger's own `max_block_env_bytes` (2 MiB), so the whole
+6 MB reached the capacity seam. The seam refuses an over-bound batch as
+a whole-batch SUM before any reservation (`nodus_witness_v2_env.c`,
+step 4b) — kind `CAPACITY_BYTES`, fail index 0 — and that 0 names
+nobody (`nodus_witness_v2_produce.c`: "the caller is told so by `kind`
+and must not read the index as an offender"). The drop loop never read
+the kind: it dropped slot 0 — the HIGHEST-fee envelope — and re-ran the
+whole seam, one envelope per pass. O(n²) seam work, minutes per
+PrepareProposal on the single event loop; every proposal late, every
+round failed, the chain stopped while the mempool stayed full, and the
+top fees were the ones thrown away.
+
+**The fix — the proposer's choice only.** Nothing a validator ACCEPTS
+changed: ProcessProposal, the engine's validity rules, the seam's own
+verdicts and every consensus value are untouched (nodus/CLAUDE.md NO
+FLAKY: only the proposer chooses the transactions).
+
+1. *The envelope-byte bound, before the seam.* The bound is read from
+   the SAME authority the seam uses — `nodus_witness_v2_block_ctx_build`
+   → the SYSTEM runtime's sealed meter policy → `max_block_env_bytes` —
+   never hard-coded, so a repinned policy moves both sides together.
+   It is applied in the SAME single tail-trim pass as `max_tx_bytes`:
+   the pass sums the wire length of ENVELOPE entries only (the seam's
+   exact measure — `view.env_len`, which equals the entry length for
+   every envelope that decodes; claims never enter the byte check) and
+   stops at the first entry that would take the sum above the
+   INCLUSIVE bound. Fee-descending order is kept; the tail (lowest fee)
+   is what is left for the next block. An envelope that alone exceeds
+   the bound (unreachable today: a decodable envelope is at most
+   `DNA_ENV_MAX_TOTAL_LEN`, half the bound) is left out without
+   stopping the pass, so it can never hold the lower fees behind it
+   out of every block. The context is built only when an envelope is a
+   candidate (the seam builds it only for a non-empty envelope subset
+   too); a build failure is a node-local fault, as it already was when
+   the seam hit it.
+2. *The seam's refusal kind is read* (`app_seam_check` now returns
+   `nodus_v2_batch_check_result_t.kind`), the O15I leader's
+   discrimination (`defa07c6`): `ENTRY_INVALID` at slot i → drop that
+   entry; `CAPACITY_UNITS` at slot i > 0 → truncate to the prefix
+   [0, i) in ONE step (it reserved in that very run); `CAPACITY_UNITS`
+   at slot 0 → drop that one entry (it alone exceeds the block's unit
+   budget); `CAPACITY_BYTES` → unreachable after (1), handled as
+   drop-from-the-tail and logged once per call, never as an offender
+   at slot 0; any other kind on a refusal → node-local fault.
+
+**The invariant.** PrepareProposal applies every byte bound the engine
+enforces before the seam runs; the seam is the check that what is
+proposed will apply, not the tool that shapes it. Derived from the
+figures in "Block capacity" above, not measured: at the 1-in/1-out
+spend (8 221 units, ≈ 7.6 KB) the byte trim keeps ≈ 276, the seam then
+refuses on units at ≈ 255 and the loop truncates there once — two seam
+runs per PrepareProposal, whatever the mempool holds.
+
+**Tests** (`test_cmt_app`): `prepare_env_byte_bound` — 48 envelopes of
+60 074 B (≈ 2.9 MB) against the 2 MiB bound → CMT_OK with exactly the
+34 highest fees, in ONE seam run (RED on the unfixed loop: the 34
+lowest fees after 15 runs); `prepare_units_truncate` — a unit-poison
+entry at slot 0 dropped alone, then twelve 300 000-unit envelopes
+truncated to 6 in one step: three seam runs (the unfixed loop needed
+eight); `prepare_entry_invalid_only` — an unpriced-op envelope in the
+middle is dropped and the entry after it survives, two runs. The run
+count is taken with `sqlite3_trace_v2` on the fixture's handle, counting
+the successor-tip read the seam issues once per run.
+
 ### tokenomics-v3 P3 — stake parameters (2026-09-24, nodus 0.19.72)
 
 Decisions: `docs/plans/decisions/2026-09-22-nodus-tokenomics-v3-operator.md`
@@ -2635,7 +2706,8 @@ Client → any witness → CheckTx (mempool admission) → answered AT ONCE
 every ≈ 4-5 s with demand, or ≈ 60 s idle (tokenomics-v3 P1, D-4 — attendance
 is out-of-root, so an empty block no longer forces the ≈ 6 s "proof block"
 pace; see MEMPOOL_BLOCK_TIME.md), the round's PROPOSER (weighted round-robin over the frozen epoch validator set):
-  PrepareProposal (fee-descending, chain_config alone, byte budget,
+  PrepareProposal (fee-descending, chain_config alone, byte budgets
+                   (max_tx_bytes + the policy's max_block_env_bytes),
                    per-class caps: envelopes <= 3 209 (memory ceiling),
                    claims <= 14 162 (cometbft byte ceiling), mixed <= 17 371)
   → Proposal + BlockParts (verbs 35/36) → Prevote → Precommit (verb 37) → +2/3
