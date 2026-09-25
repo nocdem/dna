@@ -1,7 +1,7 @@
 import { HDNodeWallet, Mnemonic, randomBytes, getBytes } from 'ethers';
 import { hmac } from '@noble/hashes/hmac';
 import { sha512 } from '@noble/hashes/sha512';
-import { PublicKey } from '@solana/web3.js';
+import { getAddressDecoder } from '@solana/kit';
 import { ed25519 } from '@noble/curves/ed25519';
 import { TronWeb } from 'tronweb';
 import { validateNodusPhrase } from './recovery.js';
@@ -27,15 +27,16 @@ export function deriveWallet(phrase) {
     const evm = root.derivePath("m/44'/60'/0'/0/0");
     const tron = root.derivePath("m/44'/195'/0'/0/0");
     const solSeed = solanaSeed(seed);
-    // Keypair.secretKey returns a copy. Own the long-lived Signer buffer so
-    // disposal overwrites the material actually used by tx.sign().
+    // The wallet owns the one long-lived signing buffer: seed (0-31) + public key
+    // (32-63). Solana signing reads its first 32 bytes in place (adapters/solana.js),
+    // so disposal overwrites the material actually used to sign.
     let solana;
     try {
       const publicBytes = ed25519.getPublicKey(solSeed), secretKey = new Uint8Array(64);
       secretKey.set(solSeed); secretKey.set(publicBytes, 32);
-      solana = { publicKey: new PublicKey(publicBytes), secretKey };
+      solana = { publicKey: getAddressDecoder().decode(publicBytes), secretKey };
     } finally { solSeed.fill(0); }
-    return { recoveryPhrase: normalized, evm, solana, tronPrivateKey: tron.privateKey.slice(2), addresses: { ethereum: evm.address, bsc: evm.address, solana: solana.publicKey.toBase58(), tron: TronWeb.address.fromPrivateKey(tron.privateKey.slice(2)) } };
+    return { recoveryPhrase: normalized, evm, solana, tronPrivateKey: tron.privateKey.slice(2), addresses: { ethereum: evm.address, bsc: evm.address, solana: solana.publicKey, tron: TronWeb.address.fromPrivateKey(tron.privateKey.slice(2)) } };
   } finally { seed.fill(0); }
 }
 // Keys live only in this tab. JS strings cannot be reliably wiped; locking drops references.

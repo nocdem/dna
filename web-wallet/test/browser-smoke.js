@@ -299,10 +299,12 @@ try {
   assert.equal(licenses.status, 200);
   const licenseText = await licenses.text();
   for (const name of ['qrcode-generator', '@noble/hashes', 'ethers']) assert.match(licenseText, new RegExp(`^${name.replace(/[/.]/g, '\\$&')}@\\S+ — `, 'm'), `${name} listed`);
-  // Full LGPL-3.0 text in the appendix (rpc-websockets) and the copyright line
-  // taken from qrcode-generator's own source (it ships no license file).
-  assert.ok(licenseText.includes('GNU LESSER GENERAL PUBLIC LICENSE'), 'LGPL-3.0 full text');
-  assert.ok(licenseText.includes('Version 3, 29 June 2007'), 'LGPL-3.0 version line');
+  // No LGPL/GPL package is bundled since 0.1.23 (rpc-websockets left with
+  // @solana/web3.js), and the copyright line is taken from qrcode-generator's
+  // own source (it ships no license file).
+  assert.ok(!licenseText.includes('GNU LESSER GENERAL PUBLIC LICENSE'), 'no LGPL-3.0 text');
+  assert.ok(!licenseText.includes('GNU GENERAL PUBLIC LICENSE'), 'no GPL-3.0 text');
+  assert.doesNotMatch(licenseText, /^\S+@\S+ — \S*GPL/m, 'no package declares a GPL-family license');
   assert.ok(licenseText.includes('Copyright (c) 2009 Kazuhiko Arase\n(copyright line from dist/qrcode.mjs:5)'), 'qrcode-generator copyright line');
   assert.deepEqual(errors, []);
   console.log('Browser smoke passed: create/backup/restore, NODUS first and default-selected (receive-only row, no balance shown, no Send), Nodus native address/copy/lock/reopen, 4 external chain addresses, one Send / Receive panel whose heading follows the selected network and whose QR decodes to exactly the shown address (Nodus, Ethereum, BNB Smart Chain, Solana, TRON) and clears on lock, holding-row click/keyboard selection, ETH/ERC20 signed mocked broadcasts, wrong-network guard, automatic Cellframe address derivation + CPUNK balance display/error, send disabled on Cellframe, finalized scoped activity, encrypted save/unlock/change/reload/delete, KDF cancellation, temporary storage behavior, mobile layout with the QR shown, third-party license file served. No external request reached a blockchain.');

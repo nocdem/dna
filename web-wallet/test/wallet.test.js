@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { HDNodeWallet, Transaction as EthTransaction } from 'ethers';
-import { SystemProgram, Transaction as SolTransaction, Keypair } from '@solana/web3.js';
+import { ed25519 } from '@noble/curves/ed25519';
+import { AccountRole, getAddressDecoder, getAddressEncoder, pipe, createTransactionMessage, setTransactionMessageFeePayer, setTransactionMessageLifetimeUsingBlockhash, appendTransactionMessageInstruction, compileTransaction, getTransactionEncoder, getTransactionDecoder, getCompiledTransactionMessageDecoder, decompileTransactionMessage } from '@solana/kit';
+import { getTransferSolInstruction, parseTransferSolInstruction } from '@solana-program/system';
 import { TronWeb } from 'tronweb';
 import { deriveWallet, disposeWallet, newPhrase } from '../src/keys.js';
 import { amountUnits, rawInteger, endpointUrl, request } from '../src/core.js';
@@ -61,9 +63,14 @@ test('offline ETH and SOL signatures serialize and recover the intended sender a
   const signed = await wallet.evm.signTransaction({ to, value: 123456789012345678n, chainId: 1, nonce: 0, gasLimit: 21000n, gasPrice: 1000000000n, type: 0 });
   const decoded = EthTransaction.from(signed);
   assert.equal(decoded.from, wallet.addresses.ethereum); assert.equal(decoded.to, to); assert.equal(decoded.value, 123456789012345678n); assert.equal(decoded.chainId, 1n);
-  const target = Keypair.fromSeed(new Uint8Array(32).fill(2)).publicKey;
-  const tx = new SolTransaction({ feePayer: wallet.solana.publicKey, recentBlockhash: '11111111111111111111111111111111' }).add(SystemProgram.transfer({ fromPubkey: wallet.solana.publicKey, toPubkey: target, lamports: 12345n }));
-  tx.sign(wallet.solana); const parsed = SolTransaction.from(tx.serialize()); assert.equal(parsed.verifySignatures(), true); assert.equal(parsed.instructions[0].keys[1].pubkey.toBase58(), target.toBase58());
+  // The wallet's Solana buffer is seed || public key; signing uses its first 32 bytes (adapters/solana.js).
+  const target = getAddressDecoder().decode(ed25519.getPublicKey(new Uint8Array(32).fill(2))), owner = wallet.solana.publicKey;
+  const unsigned = compileTransaction(pipe(createTransactionMessage({ version: 'legacy' }), m => setTransactionMessageFeePayer(owner, m), m => setTransactionMessageLifetimeUsingBlockhash({ blockhash: '11111111111111111111111111111111', lastValidBlockHeight: 0n }, m), m => appendTransactionMessageInstruction(getTransferSolInstruction({ source: { address: owner, role: AccountRole.WRITABLE_SIGNER }, destination: target, amount: 12345n }), m)));
+  const signature = ed25519.sign(unsigned.messageBytes, wallet.solana.secretKey.subarray(0, 32));
+  const parsed = getTransactionDecoder().decode(getTransactionEncoder().encode({ ...unsigned, signatures: { [owner]: signature } }));
+  assert.deepEqual(Object.keys(parsed.signatures), [wallet.addresses.solana]); assert.equal(ed25519.verify(parsed.signatures[owner], parsed.messageBytes, getAddressEncoder().encode(owner)), true);
+  const transfer = parseTransferSolInstruction(decompileTransactionMessage(getCompiledTransactionMessageDecoder().decode(parsed.messageBytes)).instructions[0]);
+  assert.equal(transfer.accounts.destination.address, target); assert.equal(transfer.data.amount, 12345n);
 });
 test('TRON rejects altered recipients, amounts, permissions and unexpected calls before signing', async () => {
   const wallet = deriveWallet(phrase);

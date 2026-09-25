@@ -1,6 +1,6 @@
 {
   "name": "nodus-web-wallet",
-  "version": "0.1.22",
+  "version": "0.1.23",
   "private": true,
   "type": "module",
   "scripts": {
@@ -18,8 +18,10 @@
   "dependencies": {
     "@noble/curves": "1.9.7",
     "@noble/hashes": "1.8.0",
+    "@solana-program/system": "0.14.1",
     "@solana-program/token": "0.16.1",
-    "@solana/web3.js": "1.99.0",
+    "@solana/kit": "8.3.0",
+    "@solana/rpc-spec-types": "8.3.0",
     "buffer": "6.0.3",
     "ethers": "6.17.0",
     "qrcode-generator": "2.0.4",
@@ -32,10 +34,5 @@
   },
   "engines": {
     "node": ">=22.12.0"
-  },
-  "overrides": {
-    "@solana/web3.js": {
-      "jayson": "5.0.0"
-    }
   }
 }

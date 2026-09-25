@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { FetchRequest } from 'ethers';
-import { Connection } from '@solana/web3.js';
+import { prepare as prepareSolana } from '../src/adapters/solana.js';
 import { TronWeb, utils } from 'tronweb';
 import { deriveWallet, disposeWallet } from '../src/keys.js';
 import { validateNewPassword, encryptVault, decryptVault } from '../src/vault.js';
@@ -73,8 +73,13 @@ test('RT-05 bounds the real Ethers, Solana and TRON SDK transport paths', async 
   globalThis.fetch = async () => Response.json({ result: 'x'.repeat(1024 * 1024) });
   const req = new FetchRequest(endpoint); req.getUrlFunc = ethersGetUrl; req.body = JSON.stringify({ method: 'eth_chainId' });
   await assert.rejects(req.send(), /too large/);
-  const sol = new Connection(endpoint, { fetch: rpcFetch, disableRetryOnRateLimit: true });
-  await assert.rejects(sol.getGenesisHash(), /too large/);
+  // Solana's kit RPC (adapters/solana.js) runs after the genesis check made through
+  // core.rpc; answer that one normally so the oversized reply reaches the kit transport.
+  globalThis.fetch = async (_, options) => JSON.parse(options.body).method === 'getGenesisHash' ? Response.json({ jsonrpc: '2.0', id: 1, result: CHAINS.solana.genesisHash }) : Response.json({ result: 'x'.repeat(1024 * 1024) });
+  const solWallet = deriveWallet(phrase);
+  await assert.rejects(prepareSolana({ wallet: solWallet, to: solWallet.addresses.solana, asset: { symbol: 'SOL', decimals: 9 }, units: 1n, endpoint }), /too large/);
+  disposeWallet(solWallet);
+  globalThis.fetch = async () => Response.json({ result: 'x'.repeat(1024 * 1024) });
   const tron = createTronClient(endpoint); await assert.rejects(tron.trx.getCurrentBlock(), /too large/);
   let seen;
   globalThis.fetch = async (url, options) => { seen = { url, options }; return Response.json({ blockID: 'example', block_header: {} }); };

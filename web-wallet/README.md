@@ -8,10 +8,11 @@ The product is Nodus Wallet. CPUNK is the temporary CF-20 integration until the 
 
 Requires Node.js 22.12+ and a modern browser with Web Crypto and BigInt. Saved-wallet operations also require the Web Locks API to serialize storage changes across tabs.
 
-The lockfile includes Jayson's optional `ws` peer `utf-8-validate` 5.0.10 separately
-from `rpc-websockets`' 6.x dependency. Both records are needed for a clean
-`npm ci` with npm 10.9.4 (verified with Node.js 22.22.1); do not remove the 5.x
-record just because a 6.x copy is also present.
+Since 0.1.23 the lockfile holds a single `utf-8-validate` record (6.0.6, the
+optional `ws` peer of `ethers` and `@solana/kit`; `ws` is not in the browser
+bundle). The separate 5.0.10 record that Jayson needed left with
+`@solana/web3.js`; `npm ci` from the 0.1.23 lockfile was verified clean with
+npm 10.9.9 on Node.js 22.23.3.
 
 ```sh
 cd web-wallet
@@ -298,9 +299,7 @@ npm run test:portfolio
 
 The browser test starts its own preview server and intercepts **all external HTTPS requests**, so it never broadcasts to a real chain. Set `CHROMIUM_PATH` to use an existing Chromium binary or `WALLET_URL` to test an already running preview. Offline tests cover deterministic recovery addresses, exact amounts, malformed responses, CPUNK public-only requests, review lifecycle, ETH/SOL signatures and TRON transaction tampering. Browser smoke covers create/backup/restore, chain selection (including Cellframe), mocked ETH/ERC-20 send review/finality/scoped activity, network mismatch, automatic Cellframe address derivation and CPUNK balance display/error, send disabled on Cellframe, lock, temporary no-storage mode, encrypted save/unlock/password change/delete, reload/history recovery, KDF-lock cancellation and mobile overflow. Browser portfolio checks additionally cover the CPUNK row's grouping, its exclusion from the USD total and completeness, and its receive-only actions.
 
-`npm audit --json` on 2026-09-19 reports **0 vulnerabilities** across all severities; the recorded result is `test/fixtures/dependency-audit.json`. `@solana/web3.js` is pinned to 1.99.0. Legacy `@solana/spl-token` and its vulnerable `bigint-buffer` tree were removed in favor of the maintained generated `@solana-program/token` 0.16.1 instruction client. A small adapter converts standard instruction account roles to the existing web3.js signer; golden prior-SPL instruction bytes/account roles, ATA derivation, rejection of substituted source accounts and signed native/SPL RPC flows are regression-tested.
-
-A scoped `@solana/web3.js` dependency override uses Jayson 5.0.0, removing vulnerable `stream-json` and old `uuid` dependencies. Its browser request/callback API was inspected and exercised through the SDK’s real RPC transport in deterministic tests. This is a deliberate tested major dependency override; reassess it on future SDK upgrades. No advisory is suppressed and `npm audit fix --force` was not used. A zero-advisory result is not a security audit or assurance against unknown vulnerabilities. The existing large chain-library bundle warning remains (~1.37 MB before gzip).
+`npm audit --json` on 2026-09-19 reports **0 vulnerabilities** across all severities; the recorded result is `test/fixtures/dependency-audit.json`. Since 0.1.23 the Solana path runs on `@solana/kit` 8.3.0 with the generated `@solana-program/system` 0.14.1 and `@solana-program/token` 0.16.1 instruction clients (all exact pins); `@solana/web3.js` and its scoped Jayson 5.0.0 override are gone — see "Solana on @solana/kit, no LGPL dependency (0.1.23)". Legacy `@solana/spl-token` and its vulnerable `bigint-buffer` tree were removed earlier in favor of `@solana-program/token`; golden prior-SPL instruction bytes/account roles, ATA derivation, rejection of substituted source accounts and signed native/SPL RPC flows are regression-tested. `npm audit` on the 0.1.23 lockfile (2026-09-25) reports 0 vulnerabilities; the recorded 2026-09-19 fixture above predates it. No advisory is suppressed and `npm audit fix --force` was not used. A zero-advisory result is not a security audit or assurance against unknown vulnerabilities. The large chain-library bundle warning remains (app chunk ~1.26 MB before gzip in 0.1.23, ~1.42 MB in 0.1.22).
 
 ## Source layout
 
@@ -351,7 +350,7 @@ Saving also stores **authenticated encrypted activity** (chain, sender/recipient
 
 Writes are serialized across tabs using Web Locks and scoped to the active wallet/vault. Each write authenticates and merges the latest stored history before encryption. Vault changes, deletion and explicit history discard use the same lock. A phrase-only restore must lock and unlock the saved wallet before changing its password; it cannot overwrite unread or damaged history. A saved wallet's signed transaction ID is encrypted and stored before the first broadcast; storage failure or a lock/vault change during this operation stops submission. The adapters recheck the lock after this asynchronous step. Old unauthenticated version-1 history and damaged activity are not imported or automatically overwritten: the wallet can still unlock, but sending remains blocked until the user checks the explorer and explicitly discards the unreadable local history. This does not delete the saved wallet or move funds. Previously completed statuses are rechecked after unlock; custom RPC settings remain in memory and restored activity uses chain defaults.
 
-Solana uses an application-owned mutable `Signer.secretKey` buffer, which is overwritten on lock. The SDK `Keypair.secretKey` getter returns copies and is not used for long-lived secret storage. JavaScript, cryptographic-library temporaries and immutable strings still cannot provide guaranteed physical-memory erasure.
+Solana uses an application-owned mutable 64-byte `secretKey` buffer (seed ‖ public key, `src/keys.js`), which is overwritten on lock. Signing reads its first 32 bytes in place with `@noble/curves` Ed25519 (`src/adapters/solana.js`); the SDK's own WebCrypto key-pair signers, whose keys cannot be overwritten, are not used. JavaScript, cryptographic-library temporaries and immutable strings still cannot provide guaranteed physical-memory erasure.
 
 ## Security regression checks
 
@@ -735,3 +734,130 @@ carry the license notices of the packages it contains.
   and `jsqr` 1.4.0 (dev only, Apache-2.0;
   `sha512-dxLob7q65Xg2DvstYkRpkYtmKm2sPJ9oFhrhmudT1dZvNFFTlroai3AWSpLey/w5vMcLBXRgOJsbXpdN9HzU/A==`),
   both exact versions. No other dependency changed.
+
+## Solana on @solana/kit, no LGPL dependency (0.1.23)
+
+Decision: `docs/plans/decisions/2026-09-25-web-wallet-solana-kit.md` (operator,
+2026-09-25).
+
+- **Why.** The 0.1.22 license list showed one LGPL package in the bundle:
+  `rpc-websockets` 9.3.9 (LGPL-3.0-only), pulled in by `@solana/web3.js` 1.99.0
+  (a static import; the wallet never opened a socket). LGPL-3.0 §4d (the user
+  can relink a modified library) is not met by a single minified bundle. The
+  Solana path now uses `@solana/kit` 8.3.0 (MIT), `@solana-program/system`
+  0.14.1 and `@solana-program/token` 0.16.1 (Apache-2.0), all exact pins, plus
+  `@solana/rpc-spec-types` 8.3.0 (MIT, already in kit's tree) pinned directly for
+  its bigint-preserving JSON helpers. `@solana/web3.js` and its Jayson 5.0.0
+  override are removed.
+- **What changed.** `src/keys.js:37` stores the Solana address as a base58 string
+  (kit `Address`) instead of a web3.js `PublicKey`; the 64-byte `secretKey`
+  buffer and its wipe on lock (`src/keys.js:35-38, 47`) are unchanged.
+  `src/adapters/solana.js` builds a legacy (non-versioned) transaction message
+  with kit (`createTransactionMessage({ version: 'legacy' })`, fee payer, blockhash
+  lifetime, instructions), compiles it once, sends those message bytes to
+  `getFeeForMessage`, and signs the same bytes at send time. The native transfer
+  comes from `@solana-program/system` `getTransferSolInstruction`; the token
+  instructions from `@solana-program/token` as before, now used directly without
+  a conversion to web3.js objects (`src/adapters/solana-token.js`). Every guard
+  of the send path stays: address check (`Invalid Solana address.` — web3.js
+  said `Invalid public key input`), genesis check, u64 amount bound, only the
+  wallet's own associated token account as source, token account owner / mint /
+  state / decimals checks, balance ≥ amount + fee + rent, expiry against block
+  height, lock checks before signing and after the activity write, one broadcast
+  with `maxRetries: 0` and preflight on, returned-ID match. kit returns RPC
+  integers as `bigint`; the adapter rejects any fee, balance, rent, block height
+  or `lastValidBlockHeight` that is not a non-negative bigint, and the blockhash
+  must have a 32-byte base58 shape (`src/adapters/solana.js:66-68`). The
+  recipient token account lookup (`getAccountInfo`) counts as "absent" only for a
+  well-formed `{ value: null }` and as "present" only for a well-formed account
+  object; any other reply stops the send with `RPC returned an invalid recipient
+  token account.` (`src/adapters/solana.js:57-64, 120-122`) — web3.js's
+  response validation rejected such replies too.
+  `lastValidBlockHeight` is handed to activity tracking as a Number, as before.
+  kit's production error texts ("Solana error #…; Decode this error by running
+  npx …") never reach the UI: RPC errors become `RPC rejected …` text
+  (`src/adapters/solana.js:32-38`), and errors from building, compiling, signing
+  or encoding the transaction become `Invalid Solana transaction …` text
+  (`src/adapters/solana.js:42-54`); a recipient that is a program address (for
+  example SOL sent to the System Program address) reads `Invalid Solana
+  transaction: the recipient is a program address and cannot receive this
+  transfer.`
+- **Behaviour changes beyond the SDK swap.**
+  - The signature check and the 1232-byte size check (web3.js did both inside
+    `serialize()`, i.e. just before broadcast, after the activity record was
+    written) now run at signing time, before `onBroadcast` writes the activity
+    record (`src/adapters/solana.js:147-149`). A transaction that fails either
+    check is therefore never recorded.
+  - New guard `Unexpected Solana transaction signers.`: the compiled transaction
+    must require exactly one signature, the wallet's (`src/adapters/solana.js:74`).
+  - web3.js checked the JSON-RPC reply shape: `jsonrpc` must be `'2.0'` and `id`
+    must be a string, with `result` or `error` (`createRpcResult`,
+    `@solana/web3.js/lib/index.browser.esm.js:3967-3977` in 1.99.0). kit reads
+    `error`/`result` and checks neither `jsonrpc` nor `id`. Jayson never matched
+    the reply id to the request either. The adapter's transport only rejects a reply that is
+    not a JSON object (`src/adapters/solana.js:26`).
+  - If `getMinimumBalanceForRentExemption` returns an RPC error, the send stops;
+    web3.js returned 0 rent and continued.
+- **Signing stays noble over the raw buffer.** kit's key-pair signers hold the
+  Ed25519 key as a non-extractable WebCrypto key that lock cannot overwrite, so
+  they are not used. `src/adapters/solana.js:72-85` signs the compiled message
+  with `ed25519.sign(message, secretKey.subarray(0, 32))` — the call web3.js
+  1.99.0 made (`ed25519.sign(message, secretKey.slice(0, 32))`). The wallet no
+  longer makes web3.js's `.slice(0, 32)` copy of the seed; `@noble/curves` still
+  copies the key internally while signing (`Uint8Array.from` in its
+  `ensureBytes`, `node_modules/@noble/curves/esm/utils.js:86`), and those
+  temporaries are not wiped. It then, like web3.js `serialize()`, verifies the
+  signature against the fee payer's key and refuses a transaction over the
+  1232-byte limit. The recipient on-curve check keeps web3.js's exact test,
+  `ed25519.ExtendedPoint.fromHex` on the 32 address bytes
+  (`src/adapters/solana-token.js:8`).
+- **Transport keeps the rpc-transport.js protections.** kit's default HTTP
+  transport calls the global `fetch` and accepts no custom one. The adapter
+  builds kit's RPC from its own transport (`createSolanaRpcFromTransport`,
+  `src/adapters/solana.js:21-29`) that posts through `rpcFetch`, so the response
+  size limit, stream bound, JSON shape check, 15 s timeout, no-redirect /
+  no-credentials request and the public endpoint's read pacing all still apply;
+  bodies are serialized and parsed with kit's bigint-preserving JSON helpers.
+  kit adds `commitment: 'confirmed'` (`preflightCommitment` for
+  `sendTransaction`) by default, which is what web3.js sent.
+- **Parity proof.** Before any source change, `scripts/make-solana-parity-fixture.mjs`
+  ran once against the 0.1.22 web3.js code with every RPC response stubbed to a
+  fixed value (no network) and wrote `test/fixtures/solana-kit-parity.json` for
+  three sends by the public test phrase: a SOL transfer, a USDC transfer to an
+  existing associated account, and a USDC transfer that creates it. For each it
+  recorded the JSON-RPC method and params of every request in order, the fee
+  estimate message, the broadcast wire bytes, the message bytes, the signature,
+  the fee text and the broadcast details. `test/solana-kit-parity.test.js`
+  replays the same responses into the kit code and requires identical request
+  sequences and params, byte-identical wire transactions, messages and
+  signatures (Ed25519 is deterministic), the same fee text and the same
+  broadcast details; it also checks the fixture on its own (fee message = sent
+  message, signature verifies under the wallet key). **Provenance:** the
+  fixture's `source` field is a constant the generator always writes, so it
+  proves nothing about which code produced the file. Provenance was proven
+  separately (orchestrator, 2026-09-25): the generator was re-run on the
+  pre-migration tree (`git archive 84f331f3` with `@solana/web3.js` 1.99.0 in
+  `node_modules`) and its output compared byte-for-byte (`cmp`) with the
+  committed fixture — identical. **How it can lie:** re-running the generator on
+  the kit code rewrites the reference from the code under test, and the test
+  then compares the code with itself. Both paths run in Node with stubbed
+  replies; a real RPC's reply shapes and a funded mainnet transfer are not
+  covered.
+- **Removed from the bundle** (`dist/THIRD-PARTY-LICENSES.txt`, 0.1.22 → 0.1.23):
+  `rpc-websockets` 9.3.9 (LGPL-3.0-only), `@solana/web3.js` 1.99.0,
+  `@solana/buffer-layout` 4.0.1, `@solana/codecs-core` / `codecs-numbers` /
+  `errors` 5.5.1 (web3.js's older copies), `base-x` 3.0.11, `bn.js` 5.2.5,
+  `borsh` 0.7.0, `bs58` 4.0.1, `eventemitter3` 5.0.4, `jayson` 5.0.0,
+  `safe-buffer` 5.2.1, `superstruct` 2.0.2, `text-encoding-utf-8` 1.0.2.
+  **Added:** `@solana-program/system` 0.14.1 (Apache-2.0) and the kit 8.3.0
+  packages `@solana/functional`, `promises`, `rpc`, `rpc-api`, `rpc-spec`,
+  `rpc-spec-types`, `rpc-transformers`, `rpc-types`, `subscribable`,
+  `transaction-messages`, `transactions` (MIT). No package in the list declares
+  an LGPL or GPL license, so the file carries no LGPL/GPL text (the appendix
+  keeps Apache-2.0 for the two `@solana-program` packages, which ship no license
+  file and no copyright line; the build warns about both). `npm ls` finds no
+  `rpc-websockets`, `@solana/web3.js` or `jayson`.
+- **Size.** 0.1.22 release build vs the 0.1.23 `VITE_ENABLE_IXIOS=true` build
+  (the variant with the same chunk set): app chunk 1,417,995 → 1,256,428 bytes,
+  all JavaScript chunks 1,477,466 → 1,315,743 bytes. The default build's app
+  chunk is 1,254,356 bytes.

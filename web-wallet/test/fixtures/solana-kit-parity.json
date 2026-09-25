@@ -1,0 +1,540 @@
+{
+  "source": "Generated once by scripts/make-solana-parity-fixture.mjs from web wallet 0.1.22 (84f331f3), Solana path on @solana/web3.js 1.99.0, before the @solana/kit migration. Regenerating after the migration replaces the reference with the code under test.",
+  "phrase": "test mnemonic: abandon x23 + art (same as test/*.test.js)",
+  "endpoint": "https://rpc.example",
+  "owner": "3Cy3YNTFywCmxoxt8n7UH6hg6dLo5uACowX3CFceaSnx",
+  "recipient": "9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu",
+  "blockhash": "8ZZTA5u25V1L5EEatyra3U6e4D53rXiVQEoEBH71CiQQ",
+  "ownerAta": "DVzExN61F5LA4AQ8GPucUqWs3y5MMKDuagtDvAMCHpgP",
+  "cases": [
+    {
+      "name": "sol-transfer",
+      "asset": {
+        "symbol": "SOL",
+        "decimals": 9
+      },
+      "units": "1500000",
+      "ataExists": true,
+      "responses": {
+        "getGenesisHash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+        "getTokenAccountsByOwner": {
+          "context": {
+            "slot": 1
+          },
+          "value": [
+            {
+              "pubkey": "DVzExN61F5LA4AQ8GPucUqWs3y5MMKDuagtDvAMCHpgP",
+              "account": {
+                "executable": false,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "lamports": 2039280,
+                "rentEpoch": 0,
+                "space": 165,
+                "data": {
+                  "program": "spl-token",
+                  "space": 165,
+                  "parsed": {
+                    "type": "account",
+                    "info": {
+                      "isNative": false,
+                      "state": "initialized",
+                      "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                      "owner": "3Cy3YNTFywCmxoxt8n7UH6hg6dLo5uACowX3CFceaSnx",
+                      "tokenAmount": {
+                        "amount": "5000000",
+                        "decimals": 6,
+                        "uiAmount": 5,
+                        "uiAmountString": "5"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "getAccountInfo": {
+          "context": {
+            "slot": 1
+          },
+          "value": {
+            "data": [
+              "",
+              "base64"
+            ],
+            "executable": false,
+            "lamports": 2039280,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "rentEpoch": 0,
+            "space": 165
+          }
+        },
+        "getMinimumBalanceForRentExemption": 2039280,
+        "getLatestBlockhash": {
+          "context": {
+            "slot": 1
+          },
+          "value": {
+            "blockhash": "8ZZTA5u25V1L5EEatyra3U6e4D53rXiVQEoEBH71CiQQ",
+            "lastValidBlockHeight": 300000123
+          }
+        },
+        "getFeeForMessage": {
+          "context": {
+            "slot": 1
+          },
+          "value": 5000
+        },
+        "getBalance": {
+          "context": {
+            "slot": 1
+          },
+          "value": 1000000000
+        },
+        "getBlockHeight": 300000000
+      },
+      "requests": [
+        {
+          "url": "https://rpc.example/",
+          "method": "getGenesisHash",
+          "params": []
+        },
+        {
+          "url": "https://rpc.example/",
+          "method": "getLatestBlockhash",
+          "params": [
+            {
+              "commitment": "confirmed"
+            }
+          ]
+        },
+        {
+          "url": "https://rpc.example/",
+          "method": "getFeeForMessage",
+          "params": [
+            "AQABAyDIIbZRCDSuHEcITG9h/ZeGTV8S1zH5X0sG/kd7HvtFgTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5QAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHBZFjk7izQ3/WqSLl3ZmhcwZpqIQMwJcj3hsPOac5OJAQICAAEMAgAAAGDjFgAAAAAA",
+            {
+              "commitment": "confirmed"
+            }
+          ]
+        },
+        {
+          "url": "https://rpc.example/",
+          "method": "getBalance",
+          "params": [
+            "3Cy3YNTFywCmxoxt8n7UH6hg6dLo5uACowX3CFceaSnx",
+            {
+              "commitment": "confirmed"
+            }
+          ]
+        },
+        {
+          "url": "https://rpc.example/",
+          "method": "getGenesisHash",
+          "params": []
+        },
+        {
+          "url": "https://rpc.example/",
+          "method": "getBlockHeight",
+          "params": [
+            {
+              "commitment": "confirmed"
+            }
+          ]
+        },
+        {
+          "url": "https://rpc.example/",
+          "method": "sendTransaction",
+          "params": [
+            "Aa6Zo9WccesL2J0SL3msPd8+WIOLoR17TO3YRVV0ywrat9SB+L/AXejzPjPuepcvyoM2yFoiGAH6wKDCRoUxdwgBAAEDIMghtlEINK4cRwhMb2H9l4ZNXxLXMflfSwb+R3se+0WBOXcOqH0XX1ajVGbDTH7My42KkbTuN6Jd9g9bj8mzlAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAcFkWOTuLNDf9apIuXdmaFzBmmohAzAlyPeGw85pzk4kBAgIAAQwCAAAAYOMWAAAAAAA=",
+            {
+              "encoding": "base64",
+              "maxRetries": 0,
+              "preflightCommitment": "confirmed"
+            }
+          ]
+        }
+      ],
+      "fee": "0.000005 SOL fee",
+      "broadcast": {
+        "hash": "4VU7AMoL3KjzcS46kLX8PFWky6vEYXtY9Y1yPaqptY216ynpe4m31qVA9SztjjyfgwBp4asrd2bv5g5dcTtKKxis",
+        "lastValidBlockHeight": 300000123
+      },
+      "returned": "4VU7AMoL3KjzcS46kLX8PFWky6vEYXtY9Y1yPaqptY216ynpe4m31qVA9SztjjyfgwBp4asrd2bv5g5dcTtKKxis",
+      "wireBase64": "Aa6Zo9WccesL2J0SL3msPd8+WIOLoR17TO3YRVV0ywrat9SB+L/AXejzPjPuepcvyoM2yFoiGAH6wKDCRoUxdwgBAAEDIMghtlEINK4cRwhMb2H9l4ZNXxLXMflfSwb+R3se+0WBOXcOqH0XX1ajVGbDTH7My42KkbTuN6Jd9g9bj8mzlAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAcFkWOTuLNDf9apIuXdmaFzBmmohAzAlyPeGw85pzk4kBAgIAAQwCAAAAYOMWAAAAAAA=",
+      "messageBase64": "AQABAyDIIbZRCDSuHEcITG9h/ZeGTV8S1zH5X0sG/kd7HvtFgTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5QAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHBZFjk7izQ3/WqSLl3ZmhcwZpqIQMwJcj3hsPOac5OJAQICAAEMAgAAAGDjFgAAAAAA",
+      "signatureBase58": "4VU7AMoL3KjzcS46kLX8PFWky6vEYXtY9Y1yPaqptY216ynpe4m31qVA9SztjjyfgwBp4asrd2bv5g5dcTtKKxis",
+      "signatureHex": "ae99a3d59c71eb0bd89d122f79ac3ddf3e58838ba11d7b4cedd8455574cb0adab7d481f8bfc05de8f33e33ee7a972fca8336c85a221801fac0a0c24685317708"
+    },
+    {
+      "name": "spl-transfer-existing-ata",
+      "asset": {
+        "symbol": "USDC",
+        "decimals": 6,
+        "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+      },
+      "units": "1250000",
+      "ataExists": true,
+      "responses": {
+        "getGenesisHash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+        "getTokenAccountsByOwner": {
+          "context": {
+            "slot": 1
+          },
+          "value": [
+            {
+              "pubkey": "DVzExN61F5LA4AQ8GPucUqWs3y5MMKDuagtDvAMCHpgP",
+              "account": {
+                "executable": false,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "lamports": 2039280,
+                "rentEpoch": 0,
+                "space": 165,
+                "data": {
+                  "program": "spl-token",
+                  "space": 165,
+                  "parsed": {
+                    "type": "account",
+                    "info": {
+                      "isNative": false,
+                      "state": "initialized",
+                      "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                      "owner": "3Cy3YNTFywCmxoxt8n7UH6hg6dLo5uACowX3CFceaSnx",
+                      "tokenAmount": {
+                        "amount": "5000000",
+                        "decimals": 6,
+                        "uiAmount": 5,
+                        "uiAmountString": "5"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "getAccountInfo": {
+          "context": {
+            "slot": 1
+          },
+          "value": {
+            "data": [
+              "",
+              "base64"
+            ],
+            "executable": false,
+            "lamports": 2039280,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "rentEpoch": 0,
+            "space": 165
+          }
+        },
+        "getMinimumBalanceForRentExemption": 2039280,
+        "getLatestBlockhash": {
+          "context": {
+            "slot": 1
+          },
+          "value": {
+            "blockhash": "8ZZTA5u25V1L5EEatyra3U6e4D53rXiVQEoEBH71CiQQ",
+            "lastValidBlockHeight": 300000123
+          }
+        },
+        "getFeeForMessage": {
+          "context": {
+            "slot": 1
+          },
+          "value": 5000
+        },
+        "getBalance": {
+          "context": {
+            "slot": 1
+          },
+          "value": 1000000000
+        },
+        "getBlockHeight": 300000000
+      },
+      "requests": [
+        {
+          "url": "https://rpc.example/",
+          "method": "getGenesisHash",
+          "params": []
+        },
+        {
+          "url": "https://rpc.example/",
+          "method": "getTokenAccountsByOwner",
+          "params": [
+            "3Cy3YNTFywCmxoxt8n7UH6hg6dLo5uACowX3CFceaSnx",
+            {
+              "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            {
+              "encoding": "jsonParsed",
+              "commitment": "confirmed"
+            }
+          ]
+        },
+        {
+          "url": "https://rpc.example/",
+          "method": "getAccountInfo",
+          "params": [
+            "ASZ2TDDNJG2n42TxAezqNNzwWipykHrENDKMCoLKgzup",
+            {
+              "encoding": "base64",
+              "commitment": "confirmed"
+            }
+          ]
+        },
+        {
+          "url": "https://rpc.example/",
+          "method": "getLatestBlockhash",
+          "params": [
+            {
+              "commitment": "confirmed"
+            }
+          ]
+        },
+        {
+          "url": "https://rpc.example/",
+          "method": "getFeeForMessage",
+          "params": [
+            "AQAFCCDIIbZRCDSuHEcITG9h/ZeGTV8S1zH5X0sG/kd7HvtFjETp04tB+SqkMwRAOxAkRbfcj4nLfZEMLTVLT/56fhO5uTpY1yl3NovsccNmibOGo3HlJIBP4VduFPrtddeX+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5SMlyWPTiSJ8bs9ECkUjg2DC1oTmdr/EIQEjnvY2+n4Wcb6evO+2606PWXzaqvJdDGxu+TC0vbg5HymAgNFL11hBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKlwWRY5O4s0N/1qki5d2ZoXMGaaiEDMCXI94bDzmnOTiQIFBgABBAYDBwEBBwQCBgEACgzQEhMAAAAAAAY=",
+            {
+              "commitment": "confirmed"
+            }
+          ]
+        },
+        {
+          "url": "https://rpc.example/",
+          "method": "getBalance",
+          "params": [
+            "3Cy3YNTFywCmxoxt8n7UH6hg6dLo5uACowX3CFceaSnx",
+            {
+              "commitment": "confirmed"
+            }
+          ]
+        },
+        {
+          "url": "https://rpc.example/",
+          "method": "getGenesisHash",
+          "params": []
+        },
+        {
+          "url": "https://rpc.example/",
+          "method": "getBlockHeight",
+          "params": [
+            {
+              "commitment": "confirmed"
+            }
+          ]
+        },
+        {
+          "url": "https://rpc.example/",
+          "method": "sendTransaction",
+          "params": [
+            "AWtRP+g7aFBGKJHzMvSlgHmTAehWklLHwlfJIcy3OR8kK5ak/ReTd9pTg5z7IlLh1Fg91xFQyyYLh81ql9yetAwBAAUIIMghtlEINK4cRwhMb2H9l4ZNXxLXMflfSwb+R3se+0WMROnTi0H5KqQzBEA7ECRFt9yPict9kQwtNUtP/np+E7m5OljXKXc2i+xxw2aJs4ajceUkgE/hV24U+u1115f4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACBOXcOqH0XX1ajVGbDTH7My42KkbTuN6Jd9g9bj8mzlIyXJY9OJInxuz0QKRSODYMLWhOZ2v8QhASOe9jb6fhZxvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWEG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqXBZFjk7izQ3/WqSLl3ZmhcwZpqIQMwJcj3hsPOac5OJAgUGAAEEBgMHAQEHBAIGAQAKDNASEwAAAAAABg==",
+            {
+              "encoding": "base64",
+              "maxRetries": 0,
+              "preflightCommitment": "confirmed"
+            }
+          ]
+        }
+      ],
+      "fee": "0.000005 SOL fee",
+      "broadcast": {
+        "hash": "39SrrdeEkE4SCVBtvKLD3B3K7VV9v9QS25c5ydTnCRBtesx869tapjdn2LwkrJmN7mc9nEfzg7YYnS4QwM9SRVbR",
+        "lastValidBlockHeight": 300000123
+      },
+      "returned": "39SrrdeEkE4SCVBtvKLD3B3K7VV9v9QS25c5ydTnCRBtesx869tapjdn2LwkrJmN7mc9nEfzg7YYnS4QwM9SRVbR",
+      "wireBase64": "AWtRP+g7aFBGKJHzMvSlgHmTAehWklLHwlfJIcy3OR8kK5ak/ReTd9pTg5z7IlLh1Fg91xFQyyYLh81ql9yetAwBAAUIIMghtlEINK4cRwhMb2H9l4ZNXxLXMflfSwb+R3se+0WMROnTi0H5KqQzBEA7ECRFt9yPict9kQwtNUtP/np+E7m5OljXKXc2i+xxw2aJs4ajceUkgE/hV24U+u1115f4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACBOXcOqH0XX1ajVGbDTH7My42KkbTuN6Jd9g9bj8mzlIyXJY9OJInxuz0QKRSODYMLWhOZ2v8QhASOe9jb6fhZxvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWEG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqXBZFjk7izQ3/WqSLl3ZmhcwZpqIQMwJcj3hsPOac5OJAgUGAAEEBgMHAQEHBAIGAQAKDNASEwAAAAAABg==",
+      "messageBase64": "AQAFCCDIIbZRCDSuHEcITG9h/ZeGTV8S1zH5X0sG/kd7HvtFjETp04tB+SqkMwRAOxAkRbfcj4nLfZEMLTVLT/56fhO5uTpY1yl3NovsccNmibOGo3HlJIBP4VduFPrtddeX+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5SMlyWPTiSJ8bs9ECkUjg2DC1oTmdr/EIQEjnvY2+n4Wcb6evO+2606PWXzaqvJdDGxu+TC0vbg5HymAgNFL11hBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKlwWRY5O4s0N/1qki5d2ZoXMGaaiEDMCXI94bDzmnOTiQIFBgABBAYDBwEBBwQCBgEACgzQEhMAAAAAAAY=",
+      "signatureBase58": "39SrrdeEkE4SCVBtvKLD3B3K7VV9v9QS25c5ydTnCRBtesx869tapjdn2LwkrJmN7mc9nEfzg7YYnS4QwM9SRVbR",
+      "signatureHex": "6b513fe83b6850462891f332f4a580799301e8569252c7c257c921ccb7391f242b96a4fd179377da53839cfb2252e1d4583dd71150cb260b87cd6a97dc9eb40c"
+    },
+    {
+      "name": "spl-transfer-creates-ata",
+      "asset": {
+        "symbol": "USDC",
+        "decimals": 6,
+        "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+      },
+      "units": "1250000",
+      "ataExists": false,
+      "responses": {
+        "getGenesisHash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+        "getTokenAccountsByOwner": {
+          "context": {
+            "slot": 1
+          },
+          "value": [
+            {
+              "pubkey": "DVzExN61F5LA4AQ8GPucUqWs3y5MMKDuagtDvAMCHpgP",
+              "account": {
+                "executable": false,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "lamports": 2039280,
+                "rentEpoch": 0,
+                "space": 165,
+                "data": {
+                  "program": "spl-token",
+                  "space": 165,
+                  "parsed": {
+                    "type": "account",
+                    "info": {
+                      "isNative": false,
+                      "state": "initialized",
+                      "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                      "owner": "3Cy3YNTFywCmxoxt8n7UH6hg6dLo5uACowX3CFceaSnx",
+                      "tokenAmount": {
+                        "amount": "5000000",
+                        "decimals": 6,
+                        "uiAmount": 5,
+                        "uiAmountString": "5"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "getAccountInfo": {
+          "context": {
+            "slot": 1
+          },
+          "value": null
+        },
+        "getMinimumBalanceForRentExemption": 2039280,
+        "getLatestBlockhash": {
+          "context": {
+            "slot": 1
+          },
+          "value": {
+            "blockhash": "8ZZTA5u25V1L5EEatyra3U6e4D53rXiVQEoEBH71CiQQ",
+            "lastValidBlockHeight": 300000123
+          }
+        },
+        "getFeeForMessage": {
+          "context": {
+            "slot": 1
+          },
+          "value": 5000
+        },
+        "getBalance": {
+          "context": {
+            "slot": 1
+          },
+          "value": 1000000000
+        },
+        "getBlockHeight": 300000000
+      },
+      "requests": [
+        {
+          "url": "https://rpc.example/",
+          "method": "getGenesisHash",
+          "params": []
+        },
+        {
+          "url": "https://rpc.example/",
+          "method": "getTokenAccountsByOwner",
+          "params": [
+            "3Cy3YNTFywCmxoxt8n7UH6hg6dLo5uACowX3CFceaSnx",
+            {
+              "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            {
+              "encoding": "jsonParsed",
+              "commitment": "confirmed"
+            }
+          ]
+        },
+        {
+          "url": "https://rpc.example/",
+          "method": "getAccountInfo",
+          "params": [
+            "ASZ2TDDNJG2n42TxAezqNNzwWipykHrENDKMCoLKgzup",
+            {
+              "encoding": "base64",
+              "commitment": "confirmed"
+            }
+          ]
+        },
+        {
+          "url": "https://rpc.example/",
+          "method": "getMinimumBalanceForRentExemption",
+          "params": [
+            165,
+            {
+              "commitment": "confirmed"
+            }
+          ]
+        },
+        {
+          "url": "https://rpc.example/",
+          "method": "getLatestBlockhash",
+          "params": [
+            {
+              "commitment": "confirmed"
+            }
+          ]
+        },
+        {
+          "url": "https://rpc.example/",
+          "method": "getFeeForMessage",
+          "params": [
+            "AQAFCCDIIbZRCDSuHEcITG9h/ZeGTV8S1zH5X0sG/kd7HvtFjETp04tB+SqkMwRAOxAkRbfcj4nLfZEMLTVLT/56fhO5uTpY1yl3NovsccNmibOGo3HlJIBP4VduFPrtddeX+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5SMlyWPTiSJ8bs9ECkUjg2DC1oTmdr/EIQEjnvY2+n4Wcb6evO+2606PWXzaqvJdDGxu+TC0vbg5HymAgNFL11hBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKlwWRY5O4s0N/1qki5d2ZoXMGaaiEDMCXI94bDzmnOTiQIFBgABBAYDBwEBBwQCBgEACgzQEhMAAAAAAAY=",
+            {
+              "commitment": "confirmed"
+            }
+          ]
+        },
+        {
+          "url": "https://rpc.example/",
+          "method": "getBalance",
+          "params": [
+            "3Cy3YNTFywCmxoxt8n7UH6hg6dLo5uACowX3CFceaSnx",
+            {
+              "commitment": "confirmed"
+            }
+          ]
+        },
+        {
+          "url": "https://rpc.example/",
+          "method": "getGenesisHash",
+          "params": []
+        },
+        {
+          "url": "https://rpc.example/",
+          "method": "getBlockHeight",
+          "params": [
+            {
+              "commitment": "confirmed"
+            }
+          ]
+        },
+        {
+          "url": "https://rpc.example/",
+          "method": "sendTransaction",
+          "params": [
+            "AWtRP+g7aFBGKJHzMvSlgHmTAehWklLHwlfJIcy3OR8kK5ak/ReTd9pTg5z7IlLh1Fg91xFQyyYLh81ql9yetAwBAAUIIMghtlEINK4cRwhMb2H9l4ZNXxLXMflfSwb+R3se+0WMROnTi0H5KqQzBEA7ECRFt9yPict9kQwtNUtP/np+E7m5OljXKXc2i+xxw2aJs4ajceUkgE/hV24U+u1115f4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACBOXcOqH0XX1ajVGbDTH7My42KkbTuN6Jd9g9bj8mzlIyXJY9OJInxuz0QKRSODYMLWhOZ2v8QhASOe9jb6fhZxvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWEG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqXBZFjk7izQ3/WqSLl3ZmhcwZpqIQMwJcj3hsPOac5OJAgUGAAEEBgMHAQEHBAIGAQAKDNASEwAAAAAABg==",
+            {
+              "encoding": "base64",
+              "maxRetries": 0,
+              "preflightCommitment": "confirmed"
+            }
+          ]
+        }
+      ],
+      "fee": "0.000005 SOL fee + 0.00203928 SOL account rent",
+      "broadcast": {
+        "hash": "39SrrdeEkE4SCVBtvKLD3B3K7VV9v9QS25c5ydTnCRBtesx869tapjdn2LwkrJmN7mc9nEfzg7YYnS4QwM9SRVbR",
+        "lastValidBlockHeight": 300000123
+      },
+      "returned": "39SrrdeEkE4SCVBtvKLD3B3K7VV9v9QS25c5ydTnCRBtesx869tapjdn2LwkrJmN7mc9nEfzg7YYnS4QwM9SRVbR",
+      "wireBase64": "AWtRP+g7aFBGKJHzMvSlgHmTAehWklLHwlfJIcy3OR8kK5ak/ReTd9pTg5z7IlLh1Fg91xFQyyYLh81ql9yetAwBAAUIIMghtlEINK4cRwhMb2H9l4ZNXxLXMflfSwb+R3se+0WMROnTi0H5KqQzBEA7ECRFt9yPict9kQwtNUtP/np+E7m5OljXKXc2i+xxw2aJs4ajceUkgE/hV24U+u1115f4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACBOXcOqH0XX1ajVGbDTH7My42KkbTuN6Jd9g9bj8mzlIyXJY9OJInxuz0QKRSODYMLWhOZ2v8QhASOe9jb6fhZxvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWEG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqXBZFjk7izQ3/WqSLl3ZmhcwZpqIQMwJcj3hsPOac5OJAgUGAAEEBgMHAQEHBAIGAQAKDNASEwAAAAAABg==",
+      "messageBase64": "AQAFCCDIIbZRCDSuHEcITG9h/ZeGTV8S1zH5X0sG/kd7HvtFjETp04tB+SqkMwRAOxAkRbfcj4nLfZEMLTVLT/56fhO5uTpY1yl3NovsccNmibOGo3HlJIBP4VduFPrtddeX+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5SMlyWPTiSJ8bs9ECkUjg2DC1oTmdr/EIQEjnvY2+n4Wcb6evO+2606PWXzaqvJdDGxu+TC0vbg5HymAgNFL11hBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKlwWRY5O4s0N/1qki5d2ZoXMGaaiEDMCXI94bDzmnOTiQIFBgABBAYDBwEBBwQCBgEACgzQEhMAAAAAAAY=",
+      "signatureBase58": "39SrrdeEkE4SCVBtvKLD3B3K7VV9v9QS25c5ydTnCRBtesx869tapjdn2LwkrJmN7mc9nEfzg7YYnS4QwM9SRVbR",
+      "signatureHex": "6b513fe83b6850462891f332f4a580799301e8569252c7c257c921ccb7391f242b96a4fd179377da53839cfb2252e1d4583dd71150cb260b87cd6a97dc9eb40c"
+    }
+  ]
+}
