@@ -2820,6 +2820,106 @@ per-domain quota enforcement is not exercised by a test: every
 genesis manifest is built with `quota_tx_per_block = 0`, unbounded
 (`nodus_witness_domreg.c:312`), and no fixture raises it.
 
+### HF-1 — the gas price, the first live height-activated hard fork (2026-09-26, nodus 0.19.80, dnac 0.18.12)
+
+**Governing records:** `docs/plans/decisions/2026-09-25-gas-price.md`
+(incl. section "HF-1 O4": ceiling 1 000 000; the CLI reads the price from
+`dnac_fee_info`), `docs/plans/decisions/2026-09-26-hard-fork-lagging-node.md`
+(a node that misses the vote is recovered by wipe + genesis-pin rejoin),
+design `docs/plans/2026-09-26-hf1-gas-price-design.md` (local).
+
+**The parameter.** Chain-config id 5, `GAS_PRICE_RAW_PER_UNIT`
+(`DNAC_CFG_GAS_PRICE_RAW_PER_UNIT`, `dnac/include/dnac/dnac.h`;
+`CC_PARAM_GAS_PRICE`, `nodus_witness_chain_config.c`, pinned to each other
+by `_Static_assert`). Range `[0, 1 000 000]` raw per declared gas unit
+(`DNAC_CFG_MAX_GAS_PRICE` / `CC_MAX_GAS_PRICE`); 0 is legal and switches
+the rule off again. Grace class ERGONOMIC. `DNAC_CFG_PARAM_MAX_ID` / the
+witness `CC_PARAM_MAX_ID` move 4 → 5; the client mirror
+(`dnac/src/transaction/verify.c`) applies the same range. It is voted like
+every other parameter (`nodus-cli chain-config propose --param
+GAS_PRICE_RAW_PER_UNIT …`, verbs 40/41); activation is the chain-config
+row's own `effective_block` — the lookup is `effective_block <= height`,
+so the rule is ON from block H itself and never in the block that wrote
+the row.
+
+**The rule** (`env_gas_price_check`, `nodus_witness_v2_apply.c`). For an
+envelope at height H: read the committed price at H through the
+three-valued `nodus_chain_config_get_u64`; a read fault is a node FAULT
+(never a verdict against a guessed price); price 0 → nothing else runs;
+an envelope whose legs are ALL `DNA_DOMAIN_SYSTEM` is exempt (governance
+must stay usable at any price); otherwise `required = res_max_total_units
+× price` (checked multiply — an overflow is a refusal, since no u64 fee can
+pay it) and the item is refused unless `fee_amount >= max(required, the
+flat 0.01 floor)`. Refusal = item code **9 `NODUS_V2_TX_ERR_FEE`**
+(appended to `nodus_v2_tx_code_t`; codes are consensus data). The check
+runs at the SAME stage in both places: after per-leg admission and BEFORE
+the meter reservation — in the Comet item loop at `blk->global_height`
+(the item reserves and pays nothing: gas_wanted = gas_used = 0, SAVEPOINT
+rolled back, the block stays valid) and in the CheckTx dry run
+(`nodus_witness_v2_env_dry_run`) at tip + 1. PrepareProposal /
+ProcessProposal never evaluate the price; a stale underpayer admitted
+before H leaves at the post-commit recheck.
+
+**Byte-identical while off.** With no param-5 row the check returns
+before touching `*code`; `compute_root` hashes existing rows only; app
+version stays 0 — so a chain without the vote produces the same roots as
+0.19.79 (the harness's rolling-upgrade steps prove 7/7 agreement across
+the mixed fleet).
+
+**`dnac_fee_info`** (`handle_dnac_fee_info`, `nodus_witness_handlers.c`)
+adds `gas_price` = the committed price at tip + 1 (checked height). A
+height or price read FAULT now answers an error instead of a 0 price.
+`nodus_dnac_fee_info_t.gas_price` (`nodus_types.h`) carries it; an older
+server sends no key and the client reads 0.
+
+**CLI** (`nodus-cli`). `v2-envelope spend` sizes its fee as
+`units × gas_price` by a bounded fixed-point (≤ 8 planning passes: plan at
+the current fee, re-plan until the fee covers the plan's own units),
+self-checks every envelope against the rule before submit, and refuses an
+explicit `--fee` below what the plan needs (it is never raised silently).
+`v2-envelope stake --submit` opens the client session first, reads
+`dnac_fee_info` and pays `max(floor, 400 000 × gas_price)` (the stake
+envelope declares 400 000 units); `--dry-run` says the price is unknown
+offline. The one-shot `t6_submit` wrapper is deleted (callers use
+`t6_submit_on` on the open session).
+
+**Chain-config cache (bundled fix, `nodus/BUGS.md` "cache keeps only the
+OLDEST 64 rows").** `cc_cache_warm_from_db` used to `continue` past 64 rows
+per parameter; the scan is `ORDER BY effective_block ASC`, so it dropped
+the NEWEST rows and the warm cache answered a stale value forever while
+the DB fallback answered the real one (cache ≠ DB). Now `CC_CACHE_ROWS` is
+derived from the array's own size, and a parameter that outgrows it
+discards the fill and leaves the cache COLD (every lookup takes the DB
+path; logged once). ⚠ This changes the answer only on a chain with more
+than 64 rows of one parameter — none exists — but it IS a behaviour
+change with no height gate: a mixed fleet that ever reached 65 rows would
+split, so it follows the same rule as HF-1 itself (the whole fleet on
+0.19.80 before any such chain state).
+
+**Activation procedure and the lagging node** — `nodus/docs/DEPLOY_RUNBOOK.md`
+"Height-activated parameter (hard fork)". In short: every validator on
+the new binary BEFORE the vote; an old binary does not know id 5, refuses
+the vote's item per-item (code 7) but still COMMITS the block, so its state
+diverges at the vote's block and it halts on the next header
+(`wrong Block.Header.AppHash`); a restart on the new binary does NOT
+recover it (the ABCI handshake at app == store == state height re-executes
+nothing); wipe + `--v2-genesis-pin` rejoin does.
+
+**Tests.** `test_v2_gas_price` (new, 4 cases: the scalar-rule matrix,
+the price rule incl. the SYSTEM exemption and the overflow, rule-off
+inertness, cache capacity past the array), `test_cc_appr` (+2: a param-5
+proposal through the responder), `dnac/tests/test_chain_config_verify.c`
+(case 8b, the client range). Harness `test_cmt_hf1_gas_upgrade.sh`
+(standalone, two binaries; `nodus/tests/integration/stagef/README.md`):
+positive mode = rolling OLD → NEW with 7/7 after every step, the rule OFF
+between the vote and H (an OLD-CLI floor-fee spend applied below H), ON at
+H (the same spend refused at CheckTx, a NEW-CLI spend paying
+`units × price` applied), a fee-0 governance vote still landing; negative
+mode = node 7 left on OLD forks at the vote's block, a restart on NEW does
+not recover it, wipe + pin rejoin does (7/7). Both PASS at grace 15/15
+(the short-grace build) — the LOGIC only, nothing about the production
+grace.
+
 ### The chain id is read once per open, not once per call (2026-09-26, nodus 0.19.79)
 
 **What.** `nodus_witness_v2_chain_id` (`nodus_witness_v2_claims.c`)

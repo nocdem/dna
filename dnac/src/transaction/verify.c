@@ -436,7 +436,9 @@ int dnac_tx_verify_validator_update_rules_internal(const dnac_transaction_t *tx)
  *                                no per-block mint left to start
  *       TARGET_ACTIVE_COUNT    : [DNAC_CFG_MIN_TARGET_ACTIVE=7,
  *                                 DNAC_CFG_MAX_TARGET_ACTIVE=128]  (S3)
- *   - signed_at_block > 0                (CC-AUDIT-008)
+ *       GAS_PRICE_RAW_PER_UNIT : [0, DNAC_CFG_MAX_GAS_PRICE=1000000] (HF-1;
+ *                                0 = the price rule is off)
+ *   - signed_at_block > 0               (CC-AUDIT-008)
  *   - valid_before_block > effective_block_height
  *   - valid_before_block > signed_at_block
  *   - committee_sig_count ∈ [DNAC_CHAIN_CONFIG_MIN_SIGS,
@@ -507,6 +509,19 @@ static int verify_chain_config_rules(const dnac_transaction_t *tx) {
                               (unsigned long long)cc->new_value,
                               (unsigned long long)DNAC_CFG_MIN_TARGET_ACTIVE,
                               (unsigned long long)DNAC_CFG_MAX_TARGET_ACTIVE);
+                return DNAC_ERROR_INVALID_PARAM;
+            }
+            break;
+        case DNAC_CFG_GAS_PRICE_RAW_PER_UNIT:
+            /* HF-1 (decision 2026-09-25-gas-price.md), mirroring
+             * nodus_witness_chain_config.c's scalar_rules: [0, MAX].
+             * 0 is LEGAL (it switches the price rule off again), so an
+             * unsigned value needs no lower-bound test. */
+            if (cc->new_value > DNAC_CFG_MAX_GAS_PRICE) {
+                QGP_LOG_ERROR(LOG_TAG,
+                              "CHAIN_CONFIG: GAS_PRICE_RAW_PER_UNIT=%llu out of [0,%llu]",
+                              (unsigned long long)cc->new_value,
+                              (unsigned long long)DNAC_CFG_MAX_GAS_PRICE);
                 return DNAC_ERROR_INVALID_PARAM;
             }
             break;

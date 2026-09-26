@@ -76,11 +76,12 @@
 #define CC_MAX_SIGS                 CC_MAX_ACTIVE
 #define CC_PURPOSE_TAG_LEN          16
 #define CC_TX_TYPE                  10    /* DNAC_TX_CHAIN_CONFIG */
-#define CC_PARAM_MAX_ID             4
+#define CC_PARAM_MAX_ID             5
 #define CC_PARAM_MAX_TXS            1
 #define CC_PARAM_BLOCK_INTERVAL     2
 #define CC_PARAM_INFLATION_START    3
 #define CC_PARAM_TARGET_ACTIVE      4     /* S3 — DNAC_CFG_TARGET_ACTIVE_COUNT */
+#define CC_PARAM_GAS_PRICE          5     /* HF-1 — DNAC_CFG_GAS_PRICE_RAW_PER_UNIT */
 /* Number of per-param cache rows dimensions: param ids are 1..CC_PARAM_MAX_ID
  * and index 0 is unused, so the arrays are CC_PARAM_MAX_ID + 1 wide. */
 #define CC_PARAM_SLOTS              (CC_PARAM_MAX_ID + 1)
@@ -92,6 +93,10 @@
  * CC_PARAM_INFLATION_START — no live consumer. */
 #define CC_MIN_TARGET_ACTIVE        ((uint64_t)CC_COMMITTEE_SIZE)
 #define CC_MAX_TARGET_ACTIVE        ((uint64_t)CC_MAX_ACTIVE)
+/* HF-1 GAS_PRICE_RAW_PER_UNIT ceiling (decision 2026-09-25-gas-price.md,
+ * "HF-1 O4": 1 000 000 raw/unit). The floor is 0, and 0 is legal: a vote
+ * for 0 switches the price rule off again. */
+#define CC_MAX_GAS_PRICE            1000000ULL
 
 static const uint8_t CC_PURPOSE_TAG[CC_PURPOSE_TAG_LEN] = {
     'D','N','A','C','_','C','C','_','v','1',0,0,0,0,0,0
@@ -125,6 +130,10 @@ _Static_assert(CC_MIN_TARGET_ACTIVE == DNAC_CFG_MIN_TARGET_ACTIVE,
                "TARGET_ACTIVE_COUNT floor drift vs dnac");
 _Static_assert(CC_MAX_TARGET_ACTIVE == DNAC_CFG_MAX_TARGET_ACTIVE,
                "TARGET_ACTIVE_COUNT ceiling drift vs dnac");
+_Static_assert(CC_PARAM_GAS_PRICE == DNAC_CFG_GAS_PRICE_RAW_PER_UNIT,
+               "CC_PARAM_GAS_PRICE drift vs dnac param id");
+_Static_assert(CC_MAX_GAS_PRICE == DNAC_CFG_MAX_GAS_PRICE,
+               "GAS_PRICE_RAW_PER_UNIT ceiling drift vs dnac");
 /* nodus_chain_config.h keeps this as a bare literal so it stays free of
  * shared/ includes — pin it here, the one TU that sees both. */
 _Static_assert(NODUS_CC_RATE_LIMIT_MAX_PROPOSERS == CC_MAX_ACTIVE,
@@ -176,6 +185,14 @@ int nodus_chain_config_db_migrate(nodus_witness_t *w) {
  * Active-override lookup
  * ========================================================================== */
 
+/* Rows the lookup cache holds per param — DERIVED from the array itself
+ * (nodus_witness.h, `chain_config_cache[DNAC_CFG_PARAM_MAX_ID + 1][64]`,
+ * whose second dimension is a bare literal with no named constant), so
+ * this bound can never disagree with the storage it guards. */
+#define CC_CACHE_ROWS                                                     \
+    ((int)(sizeof(((nodus_witness_t *)0)->chain_config_cache[0]) /       \
+           sizeof(((nodus_witness_t *)0)->chain_config_cache[0][0])))
+
 /* Cache warm-up (CC-OPS-004 / Q16). Pulls every row from
  * chain_config_history grouped by param_id, sorted ascending by
  * effective_block so lookup can walk backwards for latest-effective-wins.
@@ -205,11 +222,23 @@ static int cc_cache_warm_from_db(nodus_witness_t *w) {
      * parameters silently diverging between nodes, which is a consensus
      * split with no Byzantine actor. */
     int rc;
+    int overflow_param = -1;
     while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
         int param_id = sqlite3_column_int(stmt, 0);
         if (param_id < 0 || param_id >= CC_PARAM_SLOTS) continue;  /* defense */
         int slot = w->chain_config_cache_count[param_id];
-        if (slot >= 64) continue;  /* cache full — unlikely */
+        if (slot >= CC_CACHE_ROWS) {
+            /* nodus/BUGS.md "chain_config cache keeps only the OLDEST 64
+             * rows": this used to `continue`, and because the scan is
+             * ORDER BY effective_block ASC the rows it dropped were the
+             * NEWEST — the warm cache then answered the last cached row's
+             * value forever while the DB fallback answered the real
+             * latest row (cache != DB, chain-split class). A param that
+             * outgrows the cache is not cached at all: stop here and stay
+             * cold (below). */
+            overflow_param = param_id;
+            break;
+        }
         w->chain_config_cache[param_id][slot].new_value =
             (uint64_t)sqlite3_column_int64(stmt, 1);
         w->chain_config_cache[param_id][slot].effective_block =
@@ -217,6 +246,29 @@ static int cc_cache_warm_from_db(nodus_witness_t *w) {
         w->chain_config_cache_count[param_id] = slot + 1;
     }
     sqlite3_finalize(stmt);
+
+    if (overflow_param >= 0) {
+        /* Discard the fill exactly as the mid-scan fault path below does
+         * and stay COLD: every lookup then takes the DB-direct fallback in
+         * nodus_chain_config_get_u64, which answers the same question with
+         * the same three outcomes over ALL rows. The cost is speed (one
+         * scan attempt + one indexed SELECT per lookup), never an answer.
+         * Logged once per process — the attempt repeats on every lookup
+         * while cold, and the condition cannot clear (history rows are
+         * never deleted). */
+        static int cc_overflow_logged = 0;
+        for (int i = 0; i < CC_PARAM_SLOTS; i++)
+            w->chain_config_cache_count[i] = 0;
+        w->chain_config_cache_warm = false;
+        if (!cc_overflow_logged) {
+            cc_overflow_logged = 1;
+            QGP_LOG_WARN(LOG_TAG, "cache warm: param %d has more than %d "
+                         "chain_config_history rows — lookup cache "
+                         "DISABLED, every lookup reads the database",
+                         overflow_param, CC_CACHE_ROWS);
+        }
+        return -1;
+    }
 
     if (rc != SQLITE_DONE) {
         /* Discard the partial fill and stay COLD, so every lookup goes
@@ -316,9 +368,12 @@ int nodus_chain_config_get_u64(nodus_witness_t *w,
 
     /* Fast path: walk cache backwards (rows sorted by effective_block
      * ascending), first row with effective_block <= current_block wins.
-     * The cache is only ever marked warm after a COMPLETE scan
-     * (cc_cache_warm_from_db discards any partial fill), so a hit here
-     * and the fallback below answer identically. */
+     * The cache is only ever marked warm after a COMPLETE scan that
+     * cached EVERY row of every param: cc_cache_warm_from_db discards
+     * the fill and stays cold both on a mid-scan fault and when any
+     * param has more rows than the cache holds (CC_CACHE_ROWS). So when
+     * warm, the cache holds exactly the rows the fallback's SELECT
+     * reads, and a hit here and the fallback below answer identically. */
     if (w->chain_config_cache_warm) {
         w->chain_config_cache_hits++;
         int n = w->chain_config_cache_count[param_id];
@@ -602,6 +657,12 @@ int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
             if (new_value < CC_MIN_TARGET_ACTIVE ||
                 new_value > CC_MAX_TARGET_ACTIVE) return -1;
             break;
+        case CC_PARAM_GAS_PRICE:
+            /* HF-1: [0, CC_MAX_GAS_PRICE]. The lower bound is 0 and needs
+             * no test on an unsigned value — 0 is LEGAL (it switches the
+             * price rule off again, decision 2026-09-25-gas-price.md). */
+            if (new_value > CC_MAX_GAS_PRICE) return -1;
+            break;
         default:
             return -1;
     }
@@ -636,6 +697,10 @@ uint64_t nodus_chain_config_grace_for_param(uint8_t param_id) {
              * somehow reaches this function directly with the retired
              * id. */
             return (uint64_t)-1;
+        case CC_PARAM_GAS_PRICE:
+            /* HF-1 — ERGONOMIC by decision (2026-09-25-gas-price.md,
+             * detail decision 3: "bekleme süresi 720 blok"). Named
+             * explicitly rather than left to `default:`. */
         default:
             return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS;
     }

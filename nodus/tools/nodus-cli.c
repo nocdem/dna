@@ -1033,6 +1033,9 @@ static int cc_param_name_to_id(const char *name, uint8_t *out_id) {
         { "block_interval_sec",   DNAC_CFG_BLOCK_INTERVAL_SEC },
         { "TARGET_ACTIVE_COUNT",  DNAC_CFG_TARGET_ACTIVE_COUNT },
         { "target_active_count",  DNAC_CFG_TARGET_ACTIVE_COUNT },
+        /* HF-1 (decision 2026-09-25-gas-price.md) — param id 5 */
+        { "GAS_PRICE_RAW_PER_UNIT", DNAC_CFG_GAS_PRICE_RAW_PER_UNIT },
+        { "gas_price_raw_per_unit", DNAC_CFG_GAS_PRICE_RAW_PER_UNIT },
     };
     for (size_t i = 0; i < sizeof(map)/sizeof(map[0]); i++) {
         if (strcmp(name, map[i].n) == 0) { *out_id = map[i].id; return 0; }
@@ -1195,11 +1198,14 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
             "Params (--value range):\n"
             "  BLOCK_INTERVAL_SEC     [%llu, %llu]\n"
             "  TARGET_ACTIVE_COUNT    [%llu, %llu]   "
-            "(active validator set; epoch-boundary effective)\n",
+            "(active validator set; epoch-boundary effective)\n"
+            "  GAS_PRICE_RAW_PER_UNIT [0, %llu]   "
+            "(raw per declared gas unit; 0 = rule off)\n",
             (unsigned long long)DNAC_CFG_MIN_BLOCK_INTERVAL_SEC,
             (unsigned long long)DNAC_CFG_MAX_BLOCK_INTERVAL_SEC,
             (unsigned long long)DNAC_CFG_MIN_TARGET_ACTIVE,
-            (unsigned long long)DNAC_CFG_MAX_TARGET_ACTIVE);
+            (unsigned long long)DNAC_CFG_MAX_TARGET_ACTIVE,
+            (unsigned long long)DNAC_CFG_MAX_GAS_PRICE);
         return 1;
     }
     uint8_t param_id = 0;
@@ -2149,30 +2155,9 @@ static int t6_submit_on(nodus_client_t *client, nodus_identity_t *id,
     return 0;
 }
 
-/* One-shot wrapper for a single-item caller (v2-envelope stake,
- * chain-config): connect -> t6_submit_on -> close, same external
- * contract as before the delta-4 split (0 accepted / -1 anything
- * else). */
-static int t6_submit(const char *ip, uint16_t port, nodus_identity_t *id,
-                     const uint8_t tx_hash[64], const uint8_t *bytes,
-                     uint32_t len) {
-    nodus_client_t client;
-    nodus_client_config_t cfg;
-    memset(&cfg, 0, sizeof(cfg));
-    snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "%s", ip);
-    cfg.servers[0].port = port;
-    cfg.server_count    = 1;
-    cfg.auto_reconnect  = false;
-    if (nodus_client_init(&client, &cfg, id) != 0 ||
-        nodus_client_connect(&client) != 0) {
-        fprintf(stderr, "client connect failed (%s:%u)\n", ip, port);
-        nodus_client_close(&client);
-        return -1;
-    }
-    int rc = t6_submit_on(&client, id, tx_hash, bytes, len) == 0 ? 0 : -1;
-    nodus_client_close(&client);
-    return rc;
-}
+/* (HF-1: the one-shot connect → t6_submit_on → close wrapper `t6_submit`
+ * is DELETED — its last caller, `v2-envelope stake`, now opens its
+ * session before the build to read the gas price and submits on it.) */
 
 /* ── O15F Task 6 — `v2-claim` (successor GENESIS_CLAIM builder) ──────
  *
@@ -2698,7 +2683,9 @@ done:
  * caller's successor utxo_set rows). Conservation Σin == Σchange + fee +
  * lock is enforced by the exec (the lock = bond derives from the SYSTEM
  * sibling); the CLI just supplies inputs summing to bond + fee + change.
- * fee = max(DNAC_MIN_FEE_RAW, NODUS_W_BASE_TX_FEE). Each leg carries a
+ * fee = max(DNAC_MIN_FEE_RAW, NODUS_W_BASE_TX_FEE), raised under HF-1 to
+ * 400 000 units × the node's gas_price (dnac_fee_info) with --submit;
+ * --dry-run is offline and keeps the floor. Each leg carries a
  * kind-1 single-signer auth blob (the staker) over the ENGINE-derived leg
  * auth_digest — the two-pass build cmd_v2_envelope uses (zero-fill →
  * preflight → sign → re-encode → re-preflight self-check).
@@ -2850,6 +2837,15 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     uint8_t *auth0 = NULL, *auth1 = NULL, *env_bytes = NULL;
     dna_env_preflight_t *pf = NULL;
     uint8_t *scall = NULL, *fcall = NULL;
+    /* HF-1: --submit opens its ONE node session up front (the gas price
+     * comes from it, and the envelope is submitted on it) */
+    nodus_client_t client;
+    int connected = 0;
+    memset(&client, 0, sizeof(client));
+    /* the envelope's declared unit ceiling (fixed; right-sizing it like
+     * the spend builder is separate work, decision 2026-09-25-gas-price.md
+     * detail 2) — also what the gas-price fee is computed from */
+    const uint64_t stake_units = 400000;
 
     keys = calloc(4, sizeof(*keys));
     if (!keys) return 1;
@@ -2904,6 +2900,66 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
 
     uint64_t fee = DNAC_MIN_FEE_RAW > NODUS_W_BASE_TX_FEE
                  ? DNAC_MIN_FEE_RAW : NODUS_W_BASE_TX_FEE;
+
+    /* HF-1 — the gas price (decision 2026-09-25-gas-price.md "HF-1 O4":
+     * the CLI price source is dnac_fee_info's gas_price). --submit: open
+     * the session NOW, read the committed price at tip + 1 on it, and
+     * pay max(floor, stake_units × gas_price); the envelope is submitted
+     * on this same session below. An older server sends no gas_price
+     * key → 0 → the flat floor, exactly as before HF-1. A failed query
+     * is not "price 0": refuse. --dry-run is OFFLINE and has no price
+     * source — it keeps the flat floor and says so; it never reads a
+     * price from the local database. */
+    if (!dry_run) {
+        char sip[64];
+        uint16_t sport = 0;
+        if (t6_resolve_target(submit, server_ip, server_port, sip,
+                              &sport) != 0) {
+            fprintf(stderr, "invalid --submit target\n");
+            goto done;
+        }
+        nodus_client_config_t cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "%s", sip);
+        cfg.servers[0].port = sport;
+        cfg.server_count    = 1;
+        cfg.auto_reconnect  = false;
+        if (nodus_client_init(&client, &cfg, &keys[0]) != 0) {
+            fprintf(stderr, "client_init failed\n");
+            goto done;
+        }
+        connected = 1;                      /* init succeeded: close owed */
+        if (nodus_client_connect(&client) != 0) {
+            fprintf(stderr, "client connect failed (%s:%u)\n", sip, sport);
+            goto done;
+        }
+        nodus_dnac_fee_info_t fi;
+        memset(&fi, 0, sizeof(fi));
+        int frc = nodus_client_dnac_fee_info(&client, &fi);
+        if (frc != 0) {
+            fprintf(stderr, "dnac_fee_info query failed (rc=%d) — the gas "
+                    "price is unknown, refusing to size a fee\n", frc);
+            goto done;
+        }
+        if (fi.gas_price != 0) {
+            if (stake_units > UINT64_MAX / fi.gas_price) {
+                fprintf(stderr, "units %llu x gas price %llu overflows "
+                        "u64 — no fee can pay it\n",
+                        (unsigned long long)stake_units,
+                        (unsigned long long)fi.gas_price);
+                goto done;
+            }
+            uint64_t required = stake_units * fi.gas_price;
+            if (required > fee) fee = required;
+        }
+    } else {
+        printf("v2-envelope stake --dry-run: offline, the gas price is "
+               "unknown — built with the flat floor fee %llu; --submit "
+               "reads the gas price from the node (dnac_fee_info) and pays "
+               "max(floor, %llu units x gas_price)\n",
+               (unsigned long long)fee, (unsigned long long)stake_units);
+    }
+
     uint64_t need = bond;
     if (need > UINT64_MAX - fee) { fprintf(stderr, "bond+fee overflow\n"); goto done; }
     need += fee;
@@ -3030,7 +3086,7 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
      * past the node's own tip + 100; a 0 tip was refused above. */
     env_in.expiry_height       = tip + CLI_ENV_EXPIRY_AHEAD;
     env_in.fee_amount          = fee;
-    env_in.res_max_total_units = 400000;
+    env_in.res_max_total_units = stake_units;
     env_in.leg_count           = 2;
     env_in.legs                = legs;
 
@@ -3065,20 +3121,15 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
         printf("\n  PREFLIGHT SELF-CHECK: OK (2 legs SYSTEM STAKE + CORE "
                "SYSFUND)\n");
     } else {
-        char sip[64];
-        uint16_t sport = 0;
-        if (t6_resolve_target(submit, server_ip, server_port, sip,
-                              &sport) != 0) {
-            fprintf(stderr, "invalid --submit target\n");
-            goto done;
-        }
-        if (t6_submit(sip, sport, &keys[0], pf->wire_id, env_bytes,
-                      (uint32_t)env_len) != 0)
+        /* on the session the gas price was read from (opened above) */
+        if (t6_submit_on(&client, &keys[0], pf->wire_id, env_bytes,
+                         (uint32_t)env_len) != 0)
             goto done;
     }
     rc = 0;
 
 done:
+    if (connected) nodus_client_close(&client);
     free(scall);
     free(fcall);
     free(auth0);
@@ -3170,7 +3221,11 @@ done:
  * so and submits nothing (exit 0).
  *
  * Fee: default max(DNAC_MIN_FEE_RAW, NODUS_W_BASE_TX_FEE) — the stake
- * builder's rule. Per the operator's tokenomics decision
+ * builder's rule — raised, once HF-1's gas price is active, to
+ * units × gas_price of the batch's largest spend (gas_price read from
+ * dnac_fee_info on the same session; decision 2026-09-25-gas-price.md).
+ * An explicit --fee below that is refused, never raised. Per the
+ * operator's tokenomics decision
  * (docs/plans/decisions/2026-09-22-nodus-tokenomics-v3-operator.md §1)
  * fees belong to the reward pool, and since tokenomics-v3 P2 the chain
  * credits them there (rtn_xfer_exec's pool SET, nodus_witness_rt_native.c
@@ -3356,6 +3411,54 @@ static int t6_spend_ceiling(dna_env_in_t *env_in,
     return rc;
 }
 
+/* HF-1 — the res_max_total_units a CORE SPEND envelope of THIS SHAPE
+ * (n_in inputs, n_out outputs) will declare, computed BEFORE its coins
+ * are fixed, so the gas-price fee can be known while planning.
+ *
+ * The ceiling t6_spend_ceiling derives is a function of the envelope's
+ * LENGTHS and DECLARATIONS only — call_len = 2 + 64·n_in + 232·n_out,
+ * auth_len, the leg's exact effect declaration (t6_spend_effect_decl)
+ * and the fixed-width header fields (expiry, fee and units are u64s
+ * whatever their value) — never of the nullifier, owner, amount or seed
+ * bytes. So a zero-filled call of the same shape prices exactly what the
+ * real build below prices; the build re-derives its own units and checks
+ * them against the planned fee anyway. @return 0 / -1. */
+static int t6_spend_units_for_shape(const nodus_domain_runtime_t *core_rt,
+                                    const dna_meter_policy_t *pol,
+                                    uint32_t alen, int n_in, int n_out,
+                                    uint64_t *units_out) {
+    size_t call_len = 2 + (size_t)n_in * 64 + (size_t)n_out * T6_SPEND_OUT_LEN;
+    uint8_t *call = calloc(1, call_len);
+    uint8_t *auth = calloc(1, alen);
+    int rc = -1;
+    if (call && auth) {
+        call[0] = (uint8_t)n_in;
+        call[1 + (size_t)n_in * 64] = (uint8_t)n_out;
+        dna_env_leg_in_t leg;
+        memset(&leg, 0, sizeof(leg));
+        leg.hdr.domain_id       = DNA_DOMAIN_CORE;
+        leg.hdr.runtime_op      = DNA_CORERULE_SPEND;
+        leg.hdr.ruleset_version = core_rt->ruleset_version;
+        leg.hdr.access_mode     = DNA_ENV_ACCESS_INVOKE;
+        leg.hdr.auth_kind       = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
+        leg.hdr.call_len        = (uint32_t)call_len;
+        leg.hdr.auth_len        = alen;
+        t6_spend_effect_decl((uint32_t)n_in, (uint32_t)n_out,
+                             &leg.hdr.res_max_effects,
+                             &leg.hdr.res_max_effect_bytes);
+        leg.call_data = call;
+        leg.auth_data = auth;
+        dna_env_in_t env_in;
+        memset(&env_in, 0, sizeof(env_in));
+        env_in.leg_count = 1;
+        env_in.legs      = &leg;
+        rc = t6_spend_ceiling(&env_in, pol, (uint32_t)n_in + 1u, units_out);
+    }
+    free(auth);
+    free(call);
+    return rc;
+}
+
 static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
                         int argc, char **argv, int cmd_start) {
     const char *keys_csv = NULL, *to_hex = NULL, *token_hex = NULL;
@@ -3433,7 +3536,12 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
             "res_max_effect_bytes =\n"
             "  116 + 148*inputs + 432*outputs; res_max_total_units is "
             "sized from that\n"
-            "  (printed as effects= / effect_bytes= / units=).\n",
+            "  (printed as effects= / effect_bytes= / units=).\n"
+            "  Fee: default the chain floor; when the node reports a gas "
+            "price > 0\n"
+            "  (dnac_fee_info gas_price), max(floor, units x gas_price) of "
+            "the batch's\n"
+            "  largest spend. A --fee below that is refused.\n",
             (int)NODUS_DNAC_MAX_UTXO_RESULTS);
         return 1;
     }
@@ -3496,13 +3604,9 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
         return 1;
     }
     const int is_native = memcmp(token, native_tok, 64) == 0;
-    uint64_t native_need = fee;
-    if (is_native) {
-        if (amount > UINT64_MAX - fee) {
-            fprintf(stderr, "amount + fee overflows u64\n");
-            return 1;
-        }
-        native_need = amount + fee;
+    if (is_native && amount > UINT64_MAX - fee) {
+        fprintf(stderr, "amount + fee overflows u64\n");
+        return 1;
     }
 
     int rc = 1;
@@ -3575,6 +3679,24 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
         goto done;
     }
 
+    /* HF-1 — the committed gas price at tip + 1, on the SAME session
+     * (decision 2026-09-25-gas-price.md "HF-1 O4": the CLI price source
+     * is dnac_fee_info's gas_price). An older server sends no key and
+     * the decoder leaves 0 = the rule is off; the fee then stays exactly
+     * what it was before HF-1. A failed query is not "price 0": refuse. */
+    uint64_t gas_price = 0;
+    {
+        nodus_dnac_fee_info_t fi;
+        memset(&fi, 0, sizeof(fi));
+        int frc = nodus_client_dnac_fee_info(&client, &fi);
+        if (frc != 0) {
+            fprintf(stderr, "dnac_fee_info query failed (rc=%d) — the gas "
+                    "price is unknown, refusing to size a fee\n", frc);
+            goto done;
+        }
+        gas_price = fi.gas_price;
+    }
+
     int urc = nodus_client_dnac_utxo(&client, sender_fp,
                                      NODUS_DNAC_MAX_UTXO_RESULTS, &utxos);
     if (urc != 0) {
@@ -3626,6 +3748,41 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
     }
     qsort(coins, (size_t)n_coins, sizeof(*coins), t6_coin_cmp);
 
+    const uint32_t alen = 1u + NODUS_RT_AUTH_SIGNER_LEN;   /* kind-1, 1 sig */
+
+    /* ── plan EVERY envelope before submitting ANY — and, under HF-1,
+     * find the fee the plan needs ──────────────────────────────────────
+     * The chain requires fee >= max(floor, units × gas_price) for a
+     * non-SYSTEM envelope (nodus_witness_v2_apply.c env_gas_price_check).
+     * `units` depends on the envelope's SHAPE (inputs, outputs), the
+     * shape on the coin selection, and the selection on the fee — so the
+     * fee is found by a bounded fixed-point: plan at the current fee,
+     * price the largest shape the batch uses, and if that needs more,
+     * raise the fee to it and plan again from scratch. One fee for the
+     * whole batch (the largest shape's), exactly as before HF-1 one fee
+     * served every spend.
+     *
+     * gas_price 0 (the rule is off, or an older server): the loop runs
+     * ONCE and never prices anything — the plans, the fee and every
+     * envelope are byte-identical to the pre-HF-1 builder.
+     * An explicit --fee is never raised: below what the plan needs, it
+     * is refused here with the numbers, before anything is submitted. */
+    for (int pass = 0; ; pass++) {
+        uint64_t native_need = fee;
+        if (is_native) {
+            if (amount > UINT64_MAX - fee) {
+                fprintf(stderr, "amount + fee overflows u64\n");
+                goto done;
+            }
+            native_need = amount + fee;
+        }
+        for (int i = 0; i < n_coins; i++) coins[i].used = 0;
+        free(plans);
+        plans = NULL;
+        /* (the pass body below — the --count all resolution and the
+         * plan loop — keeps its pre-HF-1 indentation so the diff shows
+         * only what changed; it ends at "the plan's fee covers it") */
+
     /* --amount all: an eligible coin is native and can pay the fee with
      * at least 1 raw left for the output (a zero-value output is a
      * deterministic reject). --count all = every eligible coin. */
@@ -3645,7 +3802,6 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
         count = n_elig;
     }
 
-    /* ── plan EVERY envelope before submitting ANY ───────────────────── */
     plans = calloc((size_t)count, sizeof(*plans));
     if (!plans) goto done;
     for (long k = 0; k < count; k++) {
@@ -3707,8 +3863,54 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
         for (int j = 0; j < p->n_in; j++) coins[p->idx[j]].used = 1;
     }
 
+        if (gas_price == 0) break;          /* rule off: one pass, as before */
+
+        /* price the LARGEST shape this batch uses */
+        uint64_t max_units = 0;
+        for (long k = 0; k < count; k++) {
+            const t6_spend_plan_t *p = &plans[k];
+            int n_out = 1 + ((!is_native && p->token_change > 0) ? 1 : 0) +
+                        (p->native_change > 0 ? 1 : 0);
+            uint64_t u = 0;
+            if (t6_spend_units_for_shape(core_rt, sys_rt->meter_policy, alen,
+                                         p->n_in, n_out, &u) != 0) {
+                fprintf(stderr, "could not size res_max_total_units for a "
+                        "%d-in/%d-out spend (the metering plan refused "
+                        "it)\n", p->n_in, n_out);
+                goto done;
+            }
+            if (u > max_units) max_units = u;
+        }
+        uint64_t required = 0;
+        if (max_units > UINT64_MAX / gas_price) {
+            fprintf(stderr, "units %llu x gas price %llu overflows u64 — no "
+                    "fee can pay it\n", (unsigned long long)max_units,
+                    (unsigned long long)gas_price);
+            goto done;
+        }
+        required = max_units * gas_price;
+        if (required <= fee) break;         /* the plan's fee covers it  */
+        if (have_fee) {
+            fprintf(stderr, "--fee %llu is below the chain's gas-price "
+                    "requirement: %llu units x gas price %llu = %llu raw "
+                    "(the largest spend of this batch) — nothing was "
+                    "submitted\n", (unsigned long long)fee,
+                    (unsigned long long)max_units,
+                    (unsigned long long)gas_price,
+                    (unsigned long long)required);
+            goto done;
+        }
+        if (pass >= 7) {
+            fprintf(stderr, "the gas-price fee did not settle after %d "
+                    "planning passes (last: fee %llu, required %llu) — "
+                    "nothing was submitted\n", pass + 1,
+                    (unsigned long long)fee, (unsigned long long)required);
+            goto done;
+        }
+        fee = required;                     /* re-plan at the higher fee */
+    }
+
     /* ── build, self-check and (unless --dry-run) submit each ────────── */
-    const uint32_t alen = 1u + NODUS_RT_AUTH_SIGNER_LEN;   /* kind-1, 1 sig */
     call = malloc(2 + (size_t)T6_SPEND_MAX_IN * 64 +
                   (size_t)T6_SPEND_MAX_OUTS * T6_SPEND_OUT_LEN);
     auth = calloc(1, alen);
@@ -3826,6 +4028,18 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
             goto done;
         }
         env_in.res_max_total_units = units;
+        /* HF-1 self-check: the planner priced this shape already
+         * (t6_spend_units_for_shape); an envelope whose own units need
+         * more than the fee would be refused by every node (code 9) —
+         * stop instead of submitting it. Never true while gas_price 0. */
+        if (gas_price != 0 &&
+            (units > UINT64_MAX / gas_price || units * gas_price > fee)) {
+            fprintf(stderr, "spend %ld/%ld: %llu units x gas price %llu "
+                    "exceeds the planned fee %llu — not submitted\n",
+                    k + 1, count, (unsigned long long)units,
+                    (unsigned long long)gas_price, (unsigned long long)fee);
+            goto done;
+        }
 
         uint8_t *auths[1] = { auth };
         size_t env_len = 0;
@@ -3913,7 +4127,8 @@ static void usage(const char *prog) {
     fprintf(stderr, "  chain-config propose --param <NAME> --value <N> --effective <BLOCK>\n");
     fprintf(stderr, "  stake [--commission BPS] [--bond RAW]   Bond this node identity as validator (S3)\n");
     fprintf(stderr, "                              [--nonce <N>]  (committee operator only)\n");
-    fprintf(stderr, "                  NAME: BLOCK_INTERVAL_SEC | TARGET_ACTIVE_COUNT\n");
+    fprintf(stderr, "                  NAME: BLOCK_INTERVAL_SEC | TARGET_ACTIVE_COUNT |\n");
+    fprintf(stderr, "                        GAS_PRICE_RAW_PER_UNIT\n");
     fprintf(stderr, "                  run without --value for per-param ranges\n");
     fprintf(stderr, "  v2-claim --legacy-db <t.db> --db <s.db> --keys <dir>\n");
     fprintf(stderr, "           (--dry-run | --submit ip:port)   Successor GENESIS_CLAIM\n");

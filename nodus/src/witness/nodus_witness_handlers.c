@@ -33,6 +33,8 @@
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_u128.h"
 #include "witness/nodus_witness_spend_preimage.h"
+#include "nodus/nodus_chain_config.h"       /* HF-1: dnac_fee_info gas_price */
+#include "dnac/dnac.h"                      /* DNAC_CFG_GAS_PRICE_RAW_PER_UNIT */
 
 #include <stdio.h>
 #include <string.h>
@@ -356,8 +358,18 @@ static void handle_dnac_supply(nodus_witness_t *w,
 /* ══════════════════════���═════════════════════════════════════════════
  * dnac_fee_info — Return current dynamic fee parameters
  *
- * Response: { base_fee, mempool_count, min_fee }
+ * Response: { base_fee, mempool, min_fee, gas_price }
  * Client uses min_fee directly when building TX.
+ *
+ * gas_price (HF-1, decision 2026-09-25-gas-price.md "HF-1 O4": the CLI
+ * price source) = the committed GAS_PRICE_RAW_PER_UNIT active at tip + 1
+ * — the height the next envelope is judged at by CheckTx — 0 when no row
+ * is active (the rule is off). A client builds fee = max(min_fee,
+ * res_max_total_units × gas_price). An older server sends no such key;
+ * the client decoder then leaves it 0, which again means "rule off".
+ * A height or price READ FAULT answers an error, never a gas_price of 0:
+ * a fabricated 0 would tell the client the rule is off and it would
+ * build an envelope every node refuses.
  * ════════════════════════════════════════════════════════════════════ */
 
 static void handle_dnac_fee_info(nodus_witness_t *w,
@@ -371,21 +383,47 @@ static void handle_dnac_fee_info(nodus_witness_t *w,
      * key) and the surge-step constant stay meaningful if a future engine
      * re-derives this from the Comet mempool's own size. */
     int mp_count = 0;
-    (void)w;
     uint64_t base_fee = NODUS_W_BASE_TX_FEE;
     uint64_t min_fee = base_fee * (1 + (uint64_t)mp_count / NODUS_W_FEE_SURGE_STEP);
 
+    /* HF-1: the price at tip + 1, read on the CHECKED height accessor
+     * (the fail-open nodus_witness_block_height answers 0 on a fault,
+     * which would ask for the price at height 1). A node with no chain
+     * open yet (pre-genesis: chain_id all zero, db NULL — the checked
+     * accessor's first arm) holds no chain_config rows at all: 0 is the
+     * true answer there, and get_u64 would refuse a NULL db. */
+    uint64_t gas_price = 0;
+    uint64_t tip = 0;
+    if (nodus_witness_block_height_checked(w, &tip) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "chain height unreadable");
+        return;
+    }
+    if (w->db &&
+        nodus_chain_config_get_u64(w, (uint8_t)DNAC_CFG_GAS_PRICE_RAW_PER_UNIT,
+                                   tip + 1, 0ULL, &gas_price) < 0) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "gas price unreadable");
+        return;
+    }
+
+    /* 4 keys: the longest reply is 1 map header + "dnac_fee_info"
+     * framing (enc_dnac_response) + 4 short keys + 4 uint64 values at
+     * 9 bytes each — well inside 256; the rlen check below still
+     * refuses an overflow rather than sending a truncated map. */
     uint8_t buf[256];
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, sizeof(buf));
 
-    enc_dnac_response(&enc, txn_id, "dnac_fee_info", 3);
+    enc_dnac_response(&enc, txn_id, "dnac_fee_info", 4);
     cbor_encode_cstr(&enc, "base_fee");
     cbor_encode_uint(&enc, base_fee);
     cbor_encode_cstr(&enc, "mempool");
     cbor_encode_uint(&enc, (uint64_t)mp_count);
     cbor_encode_cstr(&enc, "min_fee");
     cbor_encode_uint(&enc, min_fee);
+    cbor_encode_cstr(&enc, "gas_price");
+    cbor_encode_uint(&enc, gas_price);
 
     size_t rlen = cbor_encoder_len(&enc);
     if (rlen > 0) {

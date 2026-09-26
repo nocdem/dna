@@ -375,8 +375,11 @@ int main(void) {
     CHECK(run_sql(w->db, "COMMIT") == 0, "commit boundary");
     CHECK(out.fired == 1 && out.n_graduates == 1 && out.dist_accrued > 0,
           "fired, one graduate, a paying distribution");
+    /* the auto-release band is [2^30, 2^31): index = 0x40000000 + rank
+     * (NODUS_V2_GRAD_DELEG_OUT_IDX_BASE, nodus_witness_v2_epoch.h:468 —
+     * moved below 2^31 in the P3 fix round) */
     CHECK(q1(w, "SELECT COUNT(*) FROM utxo_set WHERE output_index >= "
-                "2147483648") == N_DEL,
+                "1073741824 AND output_index < 2147483648") == N_DEL,
           "the graduate's 2048 delegations released as 2048 UTXOs");
     CHECK(q1(w, "SELECT COUNT(*) FROM delegations") ==
               (int64_t)N_VAL * N_DEL,

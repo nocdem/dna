@@ -758,6 +758,17 @@ typedef enum {
  *                than -2).
  *   8 CLAIM      a claim's derivation, admission or target runtime
  *                refused it (`claim_prescan_one` / `claim_execute_one`).
+ *   9 FEE        HF-1 (decision docs/plans/decisions/2026-09-25-gas-
+ *                price.md): the committed GAS_PRICE_RAW_PER_UNIT at the
+ *                item's height is > 0, the envelope has at least one
+ *                non-SYSTEM leg, and its fee_amount is below
+ *                max(res_max_total_units x price, the flat 0.01 floor) —
+ *                or that product overflows u64, which no u64 fee can
+ *                pay (`env_gas_price_check`, run after admission and
+ *                BEFORE the reservation, so the item reserves and pays
+ *                nothing: gas_wanted = gas_used = 0). NEVER produced
+ *                while no price row is active (price 0 = rule off).
+ *                APPENDED — codes are consensus data; never renumber.
  *
  * ⚠ HONEST LABEL ON CODE 8, and an OPEN ROW FOR R3-C2 (operator ruling
  * 2026-09-16: no change in W2). The helpers the claim stage calls —
@@ -785,7 +796,8 @@ typedef enum {
     NODUS_V2_TX_ERR_CAPACITY  = 5,
     NODUS_V2_TX_ERR_AUTH      = 6,
     NODUS_V2_TX_ERR_EXEC      = 7,
-    NODUS_V2_TX_ERR_CLAIM     = 8
+    NODUS_V2_TX_ERR_CLAIM     = 8,
+    NODUS_V2_TX_ERR_FEE       = 9     /* HF-1: below units x gas price */
 } nodus_v2_tx_code_t;
 
 /**
@@ -1142,6 +1154,8 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk);
  *   decode → positional ruleset table → dna_env_preflight →
  *   replay guard (committed intent / wire index) → per-leg admission
  *   (ownership, access mode, auth-kind allowlist, per-domain quota) →
+ *   the HF-1 gas-price fee rule at tip + 1 (`env_gas_price_check`;
+ *   inert while no GAS_PRICE_RAW_PER_UNIT row is active) →
  *   meter reservation against a FRESH block budget → authorization
  *   (the runtime's own auth hook, env_authorize_legs) → per leg:
  *   read_plan + mediated reads + native exec + strict effect decode +

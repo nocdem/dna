@@ -71,6 +71,19 @@ keeps only its deterministic floor). The `dnac_fee_info` query's surge
 term is therefore always 0 and `min_fee == base_fee`
 (`nodus_witness_handlers.c` `handle_dnac_fee_info`).
 
+**HF-1 gas price (nodus 0.19.80; `ARCHITECTURE.md` "HF-1").** Once a
+committed chain-config row for `GAS_PRICE_RAW_PER_UNIT` (id 5) is active at
+the height being judged, the dry run refuses (and the block's item loop
+refuses with item code 9, `NODUS_V2_TX_ERR_FEE`) any envelope with a
+non-SYSTEM leg whose `fee_amount` is below
+`max(res_max_total_units × price, the 0.01 floor)`. CheckTx judges it at
+tip + 1, apply at the block's own height; the post-commit recheck drops an
+underpayer admitted before the price took effect. `dnac_fee_info` now
+also returns `gas_price` (the committed price at tip + 1; 0 = rule off,
+or an older server) and answers an ERROR on a height/price read fault
+rather than a 0 price. The price does not change the block-packing order:
+PrepareProposal still sorts by fee per unit and never evaluates the price.
+
 **Measured, not promised:** admission does not mean next-block inclusion.
 A stake envelope APPROVED at tip 2 landed at tip 4; a claim submitted to
 one node landed when a proposer's pool held it. The harness therefore

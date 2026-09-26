@@ -1788,6 +1788,14 @@ add_test(NAME test_v2_env_meter COMMAND test_v2_env_meter)
 # derive). Capacity measurements 2026-09-25 §5 A.
 register_witness_test(test_v2_chain_id_cache)
 
+# nodus 0.19.80 — HF-1: the gas price as chain_config param id 5
+# (GAS_PRICE_RAW_PER_UNIT) and the engine's fee rule (item code 9): the
+# scalar rule matrix, get_u64 cache == DB for id 5, the CheckTx dry run
+# and the Comet apply lane on a real derived version-3 chain (scripted
+# runtime), and the rule-off inertness twin (design D3's unit half).
+# Decision docs/plans/decisions/2026-09-25-gas-price.md.
+register_witness_test(test_v2_gas_price)
+
 # Hard-Fork v1 Stage E.2 — tier-3 client helper guard-path tests
 add_executable(test_cc_client tests/test_cc_client.c)
 target_link_libraries(test_cc_client nodus dsa nodus)

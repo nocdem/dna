@@ -26,8 +26,8 @@ extern "C" {
  * long time. Bump BOTH, together, every time. */
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  19
-#define NODUS_VERSION_PATCH  79
-#define NODUS_VERSION_STRING "0.19.79"
+#define NODUS_VERSION_PATCH  80
+#define NODUS_VERSION_STRING "0.19.80"
 
 /* Mempool lifetime ceiling (docs/plans/decisions/2026-09-25-mempool-
  * policy.md, decision 1 — "100 block yeterli"): CheckTx (new AND
@@ -561,6 +561,11 @@ typedef struct {
     uint64_t base_fee;      /**< Base fee (0.01 DNAC = 1000000 raw) */
     uint64_t mempool_count; /**< Current mempool pending TX count */
     uint64_t min_fee;       /**< Current minimum required fee */
+    uint64_t gas_price;     /**< HF-1: committed GAS_PRICE_RAW_PER_UNIT at
+                             *   tip + 1 (raw per declared gas unit);
+                             *   0 = the rule is off, or an older server
+                             *   that does not send the key. A builder
+                             *   pays max(min_fee, units x gas_price). */
 } nodus_dnac_fee_info_t;
 
 /** Maximum inclusion-proof depth for anchored UTXO / TX proofs.

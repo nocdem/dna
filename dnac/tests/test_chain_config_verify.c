@@ -104,7 +104,7 @@ int main(void) {
      * governable id this case checks accepts a valid value. */
     build_valid_chain_config(&tx, 0, 5);
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
-    build_valid_chain_config(&tx, DNAC_CFG_PARAM_MAX_ID + 1, 0);
+    build_valid_chain_config(&tx, DNAC_CFG_PARAM_MAX_ID + 1, 0);   /* 6 */
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
     build_valid_chain_config(&tx, DNAC_CFG_BLOCK_INTERVAL_SEC, 5);
     CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
@@ -149,6 +149,23 @@ int main(void) {
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
     build_valid_chain_config(&tx, DNAC_CFG_INFLATION_START_BLOCK,
                              281474976710656ULL);           /* 2^48 */
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+
+    /* 8b. GAS_PRICE_RAW_PER_UNIT (id 5, HF-1 — decision
+     * 2026-09-25-gas-price.md, "HF-1 O4"): [0, DNAC_CFG_MAX_GAS_PRICE].
+     * 0 is LEGAL (it switches the price rule off again); MAX + 1 is the
+     * first refused value. Mirrors the witness-side scalar_rules. RED on
+     * the pre-HF-1 tree: id 5 was > DNAC_CFG_PARAM_MAX_ID (4), so the
+     * three accepting lines below failed. */
+    build_valid_chain_config(&tx, DNAC_CFG_GAS_PRICE_RAW_PER_UNIT, 0);
+    CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, DNAC_CFG_GAS_PRICE_RAW_PER_UNIT, 121);
+    CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, DNAC_CFG_GAS_PRICE_RAW_PER_UNIT,
+                             DNAC_CFG_MAX_GAS_PRICE);
+    CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, DNAC_CFG_GAS_PRICE_RAW_PER_UNIT,
+                             DNAC_CFG_MAX_GAS_PRICE + 1);
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
 
     /* 9. signed_at_block == 0 rejected (CC-AUDIT-008). */

@@ -72,8 +72,9 @@ typedef struct nodus_witness nodus_witness_t;
  * checked on every block, nodus_witness_v2_econ_params_load.)
  *
  * WHY 200+. The band must never collide with a future
- * DNAC_CFG_* allocation, which grows upward from 1 (currently 4). Starting
- * at 200 leaves 195 free governance ids; a future allocation that reaches
+ * DNAC_CFG_* allocation, which grows upward from 1 (currently 5 — HF-1's
+ * GAS_PRICE_RAW_PER_UNIT). Starting at 200 leaves 194 free governance
+ * ids; a future allocation that reaches
  * this band collides with THIS COMMENT rather than silently overwriting a
  * committed economic parameter. The ids fit uint8_t, which is what the
  * merkle leaf preimage stores (nodus_witness_chain_config.c:387).

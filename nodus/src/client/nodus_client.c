@@ -2573,6 +2573,11 @@ int nodus_client_dnac_fee_info(nodus_client_t *client,
         } else if (key.tstr.len == 7 && memcmp(key.tstr.ptr, "min_fee", 7) == 0) {
             cbor_item_t v = cbor_decode_next(&dec);
             if (v.type == CBOR_ITEM_UINT) result_out->min_fee = v.uint_val;
+        } else if (key.tstr.len == 9 && memcmp(key.tstr.ptr, "gas_price", 9) == 0) {
+            /* HF-1: absent on an older server -> stays 0 (memset above),
+             * which means "the price rule is off". */
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_UINT) result_out->gas_price = v.uint_val;
         } else {
             cbor_decode_skip(&dec);
         }

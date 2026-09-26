@@ -498,7 +498,21 @@ typedef enum {
                                           *   activates again and is never
                                           *   reassigned. */
     DNAC_CFG_TARGET_ACTIVE_COUNT   = 4,  /**< S3: target size of the active validator set */
-    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_TARGET_ACTIVE_COUNT
+    DNAC_CFG_GAS_PRICE_RAW_PER_UNIT = 5, /**< HF-1 (decision file
+                                          *   docs/plans/decisions/2026-09-25-
+                                          *   gas-price.md): the minimum
+                                          *   price, in raw units, of ONE
+                                          *   declared gas unit
+                                          *   (res_max_total_units). An
+                                          *   envelope with a non-SYSTEM leg
+                                          *   must pay fee_amount >=
+                                          *   max(units x price, the flat
+                                          *   0.01 floor). No row / value 0
+                                          *   = the rule is OFF (byte-
+                                          *   identical to 0.19.79). Range
+                                          *   [0, DNAC_CFG_MAX_GAS_PRICE];
+                                          *   grace class ERGONOMIC. */
+    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_GAS_PRICE_RAW_PER_UNIT
 } dnac_chain_config_param_id_t;
 
 /** Value range bounds — consensus-critical (client + witness reject out-of-range).
@@ -547,6 +561,15 @@ typedef enum {
  *  until tokenomics-v3 P2 retired id 3). */
 #define DNAC_CFG_MIN_TARGET_ACTIVE          ((uint64_t)DNAC_COMMITTEE_SIZE)
 #define DNAC_CFG_MAX_TARGET_ACTIVE          ((uint64_t)DNAC_MAX_ACTIVE_VALIDATORS)
+
+/** GAS_PRICE_RAW_PER_UNIT ceiling (HF-1, param_id 5): 1 000 000 raw/unit.
+ *
+ *  Operator-approved at the HF-1 O4 (docs/plans/decisions/2026-09-25-
+ *  gas-price.md, section "HF-1 O4"): a mistaken vote must not be able to
+ *  make every transaction permanently unpayable — at this price a simple
+ *  1-in/1-out transfer (8 221 declared units) costs <= ~82 NODUS. The
+ *  floor is 0 and 0 is LEGAL: it switches the rule off again. */
+#define DNAC_CFG_MAX_GAS_PRICE              1000000ULL
 
 /** chain_config_tx vote-count SHAPE bounds — NOT the quorum rule.
  *

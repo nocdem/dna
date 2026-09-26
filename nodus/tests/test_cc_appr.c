@@ -26,7 +26,8 @@
  * note; non-member, wrong auth_kind, nonzero fee, TARGET_ACTIVE_COUNT
  * above the V2 ceiling, effective below the grace floor, the RETIRED
  * INFLATION_START parameter (tokenomics-v3 P2 — it replaces the ORC-6
- * monotonicity pair), the per-proposer rate limit) each drives ONE call
+ * monotonicity pair), HF-1's GAS_PRICE_RAW_PER_UNIT above its ceiling,
+ * the per-proposer rate limit) each drives ONE call
  * and checks `ok == false` plus a specific `reason` substring — never a
  * signature. "valid_before already past" is NOT in the matrix (HOW IT
  * CAN LIE 1b).
@@ -849,6 +850,72 @@ static int t_inflation_start_retired_refused(void) {
                         "scalar rules rejected") == 0 ? 0 : 1;
 }
 
+/* HF-1 (decision 2026-09-25-gas-price.md, "HF-1 O4"): GAS_PRICE_RAW_PER_
+ * UNIT (param id 5) above its 1 000 000 raw/unit ceiling is refused by
+ * the responder's scalar-rules gate — never signed. RED on the pre-HF-1
+ * tree for a different reason: id 5 was outside the allowlist entirely,
+ * so this refusal fired there too; the ACCEPTANCE case below is the one
+ * that is RED before HF-1. */
+static int t_gas_price_above_ceiling_refused(void) {
+    return refusal_case("gasmax", 0, NULL, 5,
+                        DNAC_CFG_GAS_PRICE_RAW_PER_UNIT,
+                        DNAC_CFG_MAX_GAS_PRICE + 1, 1 + 200000, 1 + 300000,
+                        0, NODUS_RT_AUTHKIND_DSA87_CC_V1,
+                        "scalar rules rejected") == 0 ? 0 : 1;
+}
+
+/* HF-1: a LEGAL id-5 proposal is APPROVED by a committee seat through the
+ * real responder — the decision's own initial price (121) and the
+ * rule-off value 0, both with an effective height past the ERGONOMIC
+ * grace floor. RED on the pre-HF-1 tree: scalar_rules' `param_id >
+ * CC_PARAM_MAX_ID` (then 4) refused id 5, so the seat answered ok=false
+ * "scalar rules rejected". */
+static int t_gas_price_legal_signs(void) {
+    static const uint64_t values[2] = { 121, 0 };
+
+    for (int i = 0; i < 2; i++) {
+        gfx_t  g;
+        loop_t lp;
+        dna_env_preflight_t pf1;
+        pre_env_t env;
+        uint64_t tip = 0;
+
+        CHECK(gfx_open(&g, i == 0 ? "gas121" : "gas0") == 0,
+              "version-3 fixture");
+        CHECK(loop_open(&lp) == 0, "loopback conn");
+        CHECK(nodus_witness_v2_tip_height(g.w, &tip) == 0, "tip height");
+        CHECK(pre_env_build(g.w, tip, 5, DNAC_CFG_GAS_PRICE_RAW_PER_UNIT,
+                            values[i], tip + 1 + 200000, tip + 1 + 300000, 0,
+                            NODUS_RT_AUTHKIND_DSA87_CC_V1, &env, &pf1) == 0,
+              "pass-1 build");
+        {
+            uint8_t *p = env.auth;
+            p[0] = 1;
+            memcpy(p + 1, g_ks[0].pk, DNAC_PUBKEY_SIZE);
+            size_t sl = 0;
+            CHECK(qgp_dsa87_sign(p + 1 + DNAC_PUBKEY_SIZE, &sl,
+                                 pf1.auth_digest[0], 64, g_ks[0].sk) == 0,
+                  "submitter sign");
+            p += 1 + NODUS_RT_AUTH_SIGNER_LEN;
+            p[0] = 0;
+            p[1] = 5;
+        }
+        bind_identity(&g, 1);
+
+        nodus_t3_cc_appr_rsp_t rsp;
+        memset(&rsp, 0, sizeof(rsp));
+        CHECK(ask(&g, &lp, g.chain32, g_ks[0].voter, env.bytes, env.len,
+                 &rsp) == 0, "ask");
+        CHECK(rsp.ok, rsp.ok ? "the seat approved the id-5 proposal"
+                             : rsp.reason);
+
+        pre_env_free(&env);
+        loop_close(&lp);
+        gfx_close(&g);
+    }
+    return 0;
+}
+
 /* The per-proposer rate limit (unchanged, nodus_cc_rate_limit_check):
  * the SAME sender_id asked twice for the SAME seat within the 5 s
  * cooldown — the second request is refused "rate-limited", never
@@ -909,6 +976,9 @@ int main(void) {
         { "effective_below_floor",      t_effective_below_floor },
         { "inflation_start_retired_refused",
                                         t_inflation_start_retired_refused },
+        { "gas_price_above_ceiling_refused",
+                                        t_gas_price_above_ceiling_refused },
+        { "gas_price_legal_signs",      t_gas_price_legal_signs },
         { "rate_limited_second_request", t_rate_limited_second_request },
     };
     size_t failed = 0, ncases = sizeof(cases) / sizeof(cases[0]);

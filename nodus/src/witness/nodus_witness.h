@@ -357,8 +357,12 @@ typedef struct nodus_witness {
      *     restart warms from DB which has the (maybe) committed state.
      *     No stale cache can survive a restart.
      *
-     * Sized to hold every governed param × 64 rows — far more than any
-     * chain governance would ever produce. The first dimension is derived
+     * Sized to hold every governed param × 64 rows. A param with MORE
+     * rows is not cached at all (HF-1, 0.19.80): the fill stops, the
+     * cache stays COLD and every lookup takes the DB-direct path — it
+     * used to keep the OLDEST 64 and answer the 64th forever
+     * (nodus_witness_chain_config.c CC_CACHE_ROWS, which reads the
+     * second dimension from this array). The first dimension is derived
      * from DNAC_CFG_PARAM_MAX_ID (index 0 is unused, param ids start at 1)
      * so adding a param id cannot leave the new param silently
      * unreachable behind a stale literal. */

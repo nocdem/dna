@@ -32,13 +32,18 @@
                                                 * (D-18 rev 4)           */
 #include "witness/nodus_witness_committee.h"   /* capacity season: the
                                         * governing snapshot resolution */
-/* R3 W4-C delta 2: nodus/nodus_chain_config.h dropped — its only use in
- * this file was nodus_chain_config_get_u64(DNAC_CFG_MAX_TXS_PER_BLOCK),
- * deleted with the retired parameter (the global tx-count cap block,
- * "global tx-count cap (chain config) + per-domain tx quotas"). */
+/* HF-1: nodus/nodus_chain_config.h is back (R3 W4-C delta 2 had dropped
+ * it with the retired DNAC_CFG_MAX_TXS_PER_BLOCK read). Its one use here
+ * is env_gas_price_check's nodus_chain_config_get_u64 of
+ * DNAC_CFG_GAS_PRICE_RAW_PER_UNIT. */
+#include "nodus/nodus_chain_config.h"
+#include "nodus/nodus_types.h"         /* NODUS_W_BASE_TX_FEE            */
 
 #include "dnac/dnac.h"                 /* DNAC_EPOCH_LENGTH (via apply.h,
-                                        * kept explicit here too)       */
+                                        * kept explicit here too),
+                                        * DNAC_MIN_FEE_RAW, DNAC_CFG_*  */
+#include "dnac/ledger_ids.h"           /* DNA_DOMAIN_SYSTEM              */
+#include "dnac/res_meter.h"            /* dna_ck_mul_u64                 */
 #include "crypto/hash/qgp_sha3.h"      /* committee member fingerprints */
 #include "crypto/utils/qgp_log.h"
 
@@ -1562,6 +1567,97 @@ static int env_admit_legs(const dna_env_view_t *v, dom_ctx_t *doms,
 }
 
 /**
+ * THE HF-1 GAS-PRICE FEE RULE (decision docs/plans/decisions/2026-09-25-
+ * gas-price.md; design docs/plans/2026-09-26-hf1-gas-price-design.md
+ * §2.2). ONE helper, two callers: the Comet item loop at the block's own
+ * height and the CheckTx dry run at tip + 1 — both right after per-leg
+ * admission and BEFORE the meter reservation, so a refused item has
+ * reserved nothing.
+ *
+ *   price = the committed GAS_PRICE_RAW_PER_UNIT row active at `height`
+ *           (nodus_chain_config_get_u64, default 0 — no row = 0).
+ *   price 0            → the rule is OFF: return 0 before ANY other
+ *                        test. No floor check here, no comparison — the
+ *                        flat floors stay where they were (the CORE exec
+ *                        hooks, nodus_witness_rt_native.c), so a chain
+ *                        without a price row behaves byte-identically to
+ *                        0.19.79 (design D3).
+ *   all legs SYSTEM    → exempt (governance; its fee must be 0 anyway,
+ *                        rt_native's CHAIN_CONFIG exec) — a vote can
+ *                        always lower the price again (design G3).
+ *   otherwise          → required = res_max_total_units × price, checked
+ *                        u64 multiply. An overflow is a VERDICT, not a
+ *                        fault: no u64 fee_amount can pay a product that
+ *                        does not fit in u64, so "overflow ⇒ refuse" is
+ *                        exactly the 128-bit comparison. Refuse when
+ *                        fee_amount < max(required, the flat floor).
+ *
+ * DETERMINISM: the price is read ONLY from committed chain_config rows
+ * at the caller's height (the cache and the DB fallback answer
+ * identically, nodus_witness_chain_config.c); the exemption reads only
+ * the envelope's leg domains; the comparison is total integer
+ * arithmetic. No clock, no local setting, no mempool state.
+ *
+ * @return 0 pass (rule off, exempt, or paid); -1 refused with `*code` =
+ *         NODUS_V2_TX_ERR_FEE; -2 the committed price could not be read
+ *         on this node — a FAULT, never a verdict (the three-valued
+ *         get_u64 contract, nodus_chain_config.h), reason written into
+ *         (reason, reason_size).
+ */
+static int env_gas_price_check(nodus_witness_t *w, const dna_env_view_t *v,
+                               uint64_t height, uint32_t *code,
+                               char *reason, size_t reason_size)
+{
+    uint64_t price = 0, required = 0, floor_fee;
+    uint16_t l;
+    int      crc, all_system = 1;
+
+    crc = nodus_chain_config_get_u64(
+        w, (uint8_t)DNAC_CFG_GAS_PRICE_RAW_PER_UNIT, height, 0ULL, &price);
+    if (crc < 0) {
+        V2AP_ENV_FAULT("gas price: GAS_PRICE_RAW_PER_UNIT at height %llu "
+                       "is unreadable on this node - refusing to judge a "
+                       "fee against a guessed price",
+                       (unsigned long long)height);
+        return -2;
+    }
+    if (price == 0) {
+        return 0;                        /* rule OFF: nothing else runs  */
+    }
+    for (l = 0; l < v->leg_count; l++) {
+        if (v->leg[l].domain_id != DNA_DOMAIN_SYSTEM) {
+            all_system = 0;
+            break;
+        }
+    }
+    if (all_system) {
+        return 0;                        /* governance: exempt           */
+    }
+    if (dna_ck_mul_u64(v->res_max_total_units, price, &required) != 0) {
+        V2AP_ENV_VERDICT("gas price: res_max_total_units %llu x price %llu "
+                         "overflows u64 - no fee can pay it",
+                         (unsigned long long)v->res_max_total_units,
+                         (unsigned long long)price);
+        *code = NODUS_V2_TX_ERR_FEE;
+        return -1;
+    }
+    floor_fee = DNAC_MIN_FEE_RAW > NODUS_W_BASE_TX_FEE
+                    ? DNAC_MIN_FEE_RAW : NODUS_W_BASE_TX_FEE;
+    if (v->fee_amount < required || v->fee_amount < floor_fee) {
+        V2AP_ENV_VERDICT("gas price: fee %llu < max(units %llu x price "
+                         "%llu = %llu, floor %llu)",
+                         (unsigned long long)v->fee_amount,
+                         (unsigned long long)v->res_max_total_units,
+                         (unsigned long long)price,
+                         (unsigned long long)required,
+                         (unsigned long long)floor_fee);
+        *code = NODUS_V2_TX_ERR_FEE;
+        return -1;
+    }
+    return 0;
+}
+
+/**
  * THE PER-ENVELOPE AUTHORIZATION STAGE: every leg's authorization
  * COMMITMENT turned into a VERDICT by the resolved runtime's own `auth`
  * hook, against the ENGINE-DERIVED leg auth digest.
@@ -1832,7 +1928,8 @@ void nodus_witness_v2_env_dry_run_free(nodus_v2_env_dry_run_t *out)
 
 /* Contract: nodus_witness_v2_apply.h. The stage ORDER is the Comet item
  * loop's (v2_apply_block_body, "4-6b"): preflight → replay → admission →
- * reserve → authorization → execute. Every stage is the item loop's own
+ * gas price (HF-1) → reserve → authorization → execute. Every stage is
+ * the item loop's own
  * helper; the one-item "block" the exec body is handed carries only the
  * candidate height and its epoch (no fault injection, no claims). */
 int nodus_witness_v2_env_dry_run(nodus_witness_t *w, const uint8_t *bytes,
@@ -1900,6 +1997,14 @@ int nodus_witness_v2_env_dry_run(nodus_witness_t *w, const uint8_t *bytes,
         V2AP_ENV_VERDICT("dry run: per-leg admission refused the item "
                          "(code %u)", (unsigned)code);
     }
+    if (ret != 0) {
+        goto done;
+    }
+
+    /* ── HF-1 gas price at the SAME candidate height (tip + 1) the
+     * preflight and the committee used — the item loop's own helper,
+     * which writes its own verdict / fault text ─────────────────────── */
+    ret = env_gas_price_check(w, v, s.height, &code, reason, reason_size);
     if (ret != 0) {
         goto done;
     }
@@ -2923,6 +3028,26 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
                     goto fail_fault;   /* the helper owns the reason     */
                 }
                 if (arc != 0) {
+                    goto cmt_item_failed;
+                }
+            }
+
+            /* ── HF-1 GAS PRICE at the block's own height (the ONE
+             * helper, shared with the CheckTx dry run) — BEFORE the
+             * reservation, so a refused item reserves nothing (code 9,
+             * gas_wanted = gas_used = 0). Inert while no price row is
+             * active. ─────────────────────────────────────────────── */
+            {
+                int grc = env_gas_price_check(w, v, blk->global_height,
+                                              &code, blk->out_reason,
+                                              sizeof blk->out_reason);
+
+                if (grc == -2) {
+                    (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                    (void)cmt_savepoint_release(w, sp);
+                    goto fail_fault;   /* the helper owns the reason     */
+                }
+                if (grc != 0) {
                     goto cmt_item_failed;
                 }
             }

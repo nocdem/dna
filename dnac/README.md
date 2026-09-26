@@ -37,7 +37,13 @@ The chain is implemented in three layers of the monorepo:
   it scheduled is deleted, and both the witness's vote rules and this
   library's mirror (`dnac/src/transaction/verify.c`) refuse it. Ids 2
   and 4 (BLOCK_INTERVAL_SEC, TARGET_ACTIVE_COUNT) are unaffected; ids
-  never renumber and a retired id is never reused), GENESIS
+  never renumber and a retired id is never reused. **HF-1 (dnac 0.18.12 /
+  nodus 0.19.80):** id 5 `GAS_PRICE_RAW_PER_UNIT`
+  (`DNAC_CFG_GAS_PRICE_RAW_PER_UNIT`, range [0, `DNAC_CFG_MAX_GAS_PRICE`
+  = 1 000 000] raw per declared gas unit, 0 = rule off) — the witness
+  refuses an envelope with a non-SYSTEM leg that pays less than
+  `max(units × price, floor)` from the row's effective height; the
+  mirror in `verify.c` applies the same range), GENESIS
 - **Explicit committed fee** on the wire (v2 header) with a min-fee
   gate. **Since tokenomics-v3 P2 every fee goes to the chain's REWARD
   POOL** (`supply_tracking.reward_pool`) — it is neither burned nor paid

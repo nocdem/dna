@@ -35,6 +35,7 @@ One node at a time for a rolling deploy; all nodes at once for a stop-all.
 | Anything that changes **which blocks are valid** (verify/admission rules, fee gates, consensus checks) | **STOP-ALL** |
 | `state_root` format / wire format / DB schema | **STOP-ALL + chain wipe** |
 | Any consensus change (the cometbft port's `cmt_*`, the application's ABCI rows, the genesis document) | **STOP-ALL + fresh chain** — a version-3 chain has no migration; §2.1 explains why there is no `pbft_state` step any more |
+| A **height-activated** rule that is inert until a chain-config vote turns it on (HF-1 gas price, nodus 0.19.80) | **Rolling** binary upgrade (the rule is byte-identical to the old binary while no row exists) — then the vote, ONLY after 7/7 run the new binary. §2.2 |
 | Logging, metrics, non-consensus tooling | Rolling, one node at a time |
 
 **Why stop-all for validity changes:** during a rolling window the cluster runs mixed
@@ -42,13 +43,14 @@ versions. If the new binary accepts a block the old one rejects (or vice versa),
 disagreement *is* a chain split. This is not hypothetical — it is the failure mode the
 v0.18.17 fee-gate fix was written to remove.
 
-⚠ **The code will NOT stop you from getting this wrong.** There is a mixed-version
-fail-fast (`nodus_witness_bootstrap.c:500-520`, `exit(3)`), but it only runs in the
-DISCOVER branch — i.e. for a **fresh node with an empty chain DB**. A node that already
-has a chain (`tip >= 1`) takes the HAVE_CHAIN branch and goes straight to
-`BOOTSTRAP_DONE` (`nodus_witness_bootstrap.c:340-357`) without ever evaluating peer
-versions. Restarting existing production nodes on mixed versions is therefore
-**silently permitted**. The discipline is yours, not the binary's.
+⚠ **The code will NOT stop you from getting this wrong.** The old mixed-version
+fail-fast lived in `nodus_witness_bootstrap.c`, which was deleted with the legacy lane
+(W4-D, `e72d8cb5`, v0.19.62). What remains is a LOG, not a gate: every IDENT carries
+the peer's nodus version and chain-config schema, and a node that sees a different one
+logs `PEER SCHEMA MISMATCH peer=… local_nv=0x… remote_nv=0x…` on every handshake
+(`nodus_witness_peer.c`, the CC-OPS-002 probe) and keeps running. Restarting nodes on
+mixed versions is therefore **silently permitted**. The discipline is yours, not the
+binary's.
 
 ---
 
@@ -302,6 +304,57 @@ are opposite intents.
 inside a loop is very hard to reason about afterwards.
 
 ---
+
+## 2.2 Height-activated parameter (hard fork) — the HF-1 gas price procedure
+
+Decisions: `docs/plans/decisions/2026-09-25-gas-price.md`,
+`docs/plans/decisions/2026-09-26-hard-fork-lagging-node.md`. Mechanism:
+`ARCHITECTURE.md` "HF-1". Proven on localhost only, at grace 15/15
+(`test_cmt_hf1_gas_upgrade.sh`, both modes PASS) — the LOGIC of the cutover, nothing
+about the production grace (720 blocks).
+
+**Why the order matters.** A binary older than the rule does not know the parameter
+id. When the vote's envelope lands in block R, the old binary refuses that ITEM (item
+code 7) but still COMMITS block R — its chain_config state now differs from every new
+node's, so on block R+1 it reports `wrong Block.Header.AppHash` and stops participating
+(`CMT_FAULT in cmt_cs_step`). It diverges at the VOTE's block, not at the activation
+height. If nodes holding more than 1/3 of the voting power are still old, the whole
+chain halts.
+
+1. **Rolling binary upgrade, one node at a time** (§0 rules: one SSH session per node,
+   record the rollback commit). No wipe — while no row for the new parameter exists the
+   new binary produces the same roots as the old one. After each node: it is back at the
+   tip, the chain advanced, and 7/7 agree (§3).
+2. **Verify 7/7 are on the new binary BEFORE voting.** On every node:
+   `journalctl -u nodus | grep 'Nodus v.* running'` (`nodus_server.c` startup line)
+   shows the new version as the LAST such line, and a fresh
+   `PEER SCHEMA MISMATCH` line must NOT appear after the last restart (every peer now
+   reports the same version). There is no on-chain "how many upgraded" indicator yet
+   (planned: `docs/plans/decisions/2026-09-26-governance-before-testnet.md`).
+3. **Vote** with the new CLI:
+   `nodus-cli chain-config propose --param GAS_PRICE_RAW_PER_UNIT --value <P> --effective <H>`
+   (`<P>` ≤ 1 000 000; `<H>` ≥ tip + grace, ERGONOMIC class). The row must appear
+   identically on 7/7 (`chain_config_history`: param_id 5, same commit_block and tx_hash).
+4. **Before H** nothing changes (the rule is off). **From H** every envelope with a
+   non-SYSTEM leg must pay `max(res_max_total_units × P, 0.01)`; underpayers are refused
+   at CheckTx and, if carried in a block, refused per item with code 9. Wallets/CLIs must
+   read `gas_price` from `dnac_fee_info` (the 0.19.80 CLI does). An old CLI's floor-fee
+   transfer still passes while `units × P` stays under the floor.
+5. **Turning it off**: vote the same parameter to 0 at a later effective height.
+   ⚠ The shipped CLI's approval round 2 re-asks every seat within 5 s and hits the
+   per-proposer rate limit, so a vote with ANY non-approving seat fails today — a price
+   change needs all seats to approve in round 1 (HF-1 red-team R3-F1; the real fix is the
+   on-chain governance package).
+
+**A node that missed the vote (still on the old binary when R committed):**
+- Upgrading its binary and restarting does **NOT** recover it: the ABCI handshake at
+  app == store == state height re-executes nothing, so the diverged state carries over
+  (measured: stuck at R while the fleet advanced).
+- Recovery = **wipe + genesis-pin rejoin on the new binary** (§1.5 "Joining a node to
+  an existing V2 chain"): stop it; archive/remove its chain DB files, the markers and
+  `archive/` (keep the identity directory); start the NEW binary with
+  `--v2-genesis-pin <the fleet's pin>`; it re-derives the chain, including the vote's
+  block under the new rules, and must match the fleet's `state_root` at a common height.
 
 ## 2.1 View-authority cutover — DOES NOT APPLY to a version-3 (cometbft) chain
 
