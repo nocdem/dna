@@ -45,12 +45,13 @@ v0.18.17 fee-gate fix was written to remove.
 
 ⚠ **The code will NOT stop you from getting this wrong.** The old mixed-version
 fail-fast lived in `nodus_witness_bootstrap.c`, which was deleted with the legacy lane
-(W4-D, `e72d8cb5`, v0.19.62). What remains is a LOG, not a gate: every IDENT carries
-the peer's nodus version and chain-config schema, and a node that sees a different one
-logs `PEER SCHEMA MISMATCH peer=… local_nv=0x… remote_nv=0x…` on every handshake
-(`nodus_witness_peer.c`, the CC-OPS-002 probe) and keeps running. Restarting nodes on
-mixed versions is therefore **silently permitted**. The discipline is yours, not the
-binary's.
+(W4-D, `e72d8cb5`, v0.19.62). Since 0.20.0 the `PEER SCHEMA MISMATCH` log is gone too
+(the IDENT message that carried the version was deleted with the old 4004 transport,
+P2P-PORT F5). What the 4004 p2p port checks is the p2p protocol version and the chain id
+in NodeInfo (`CompatibleWith`) — so a 0.19.x node cannot join a 0.20.x mesh — but two
+0.20.x builds that differ in a consensus rule connect without complaint. Restarting
+nodes on mixed versions is therefore **silently permitted**. The discipline is yours,
+not the binary's.
 
 ---
 
@@ -63,8 +64,8 @@ format change). Not required for an ordinary code deploy.
 
 `data_path` defaults to `/var/lib/nodus` (`nodus/tools/nodus-server.c:162`) but is
 overridden by `data_path` in the node's config (`nodus-server.c:113-114`) or by `-d`
-(`:178`). Note the tree is inconsistent about this: an operator-facing log line at
-`nodus/src/witness/nodus_witness_peer.c:558` points at `/var/lib/nodus/data/`. So:
+(`:178`). (Until 0.19.x a log line in the since-deleted `nodus_witness_peer.c`
+pointed at `/var/lib/nodus/data/`; the source no longer names that path.) So:
 
 ```bash
 grep -E '"?data_path"?' /etc/nodus.conf || echo "not set — default /var/lib/nodus"
@@ -143,7 +144,13 @@ produces a DIFFERENT chain that cannot join — a loud refusal, not a silent spl
    ```bash
    rm "$DATA_DIR"/witness_*.db*
    rm -f "$DATA_DIR"/priv_validator_state.json
+   rm -rf "$DATA_DIR"/cs.wal                  # 0.20.0+: the consensus WAL file group
+   rm -f "$DATA_DIR"/p2p_addrbook.pb          # 0.20.0+: the old chain's peer addresses
    ```
+   **`cs.wal/` must go with the chain (0.20.0+).** The consensus WAL left the
+   chain database for the reference's file group `$DATA_DIR/cs.wal/wal`
+   (decision `2026-09-26-cmt-wal-file-group.md`). A new chain started beside
+   the old chain's `cs.wal` replays the OLD chain's round messages at start.
    The second line matters from the SECOND version-3 wipe on. The
    version-3 signer records the last height it signed in
    `$DATA_DIR/priv_validator_state.json` (`nodus_witness.c:1625`) and
@@ -303,6 +310,50 @@ are opposite intents.
 **One SSH session per node.** Do not write a 7-node `for` loop — a partial failure
 inside a loop is very hard to reason about afterwards.
 
+## 2.3 The 4004 p2p port (0.19.x → 0.20.0) — STOP-ALL, NO WIPE
+
+0.20.0 replaces the witness port 4004 with a literal port of cometbft's p2p
+layer (secret connection, MConnection, switch, PEX — `docs/ARCHITECTURE.md`
+"The 4004 p2p port"). An old node cannot talk to a new one on 4004, so this is
+§2's stop-all, **without** §1's archive: the chain continues on the same data
+directories (decision `2026-09-26-witness-port-session.md`, "Deploy: zincir
+SİLİNMEZ"). Proven on localhost by `test_p2p_stopall_nowipe.sh`.
+
+1. **Publish the network file first** and point every node at it — nodus.json
+   key `network_file` (or `--network-file <path>`):
+   ```json
+   { "v2_genesis_pin": "<the chain id, 64 hex>",
+     "persistent_peers": ["<p2p id>@<ip>:4004", "..."] }
+   ```
+   A node's p2p ID is `nodus-cli -i <identity dir> whoami` → `P2P ID:`. A pin
+   that differs from the chain the node holds REFUSES the start. A node with a
+   chain and zero connected peers logs `this node holds a chain but has … 0
+   connected` at ERROR every 60 s — it is not refused, but it cannot vote.
+2. **Stop every node inside an idle window.** The consensus WAL moves from the
+   chain database (SQLite `cmt_wal`) to `$DATA_DIR/cs.wal/wal`; 0.20.0 copies
+   the old tail over ONCE at its first start (decision
+   `2026-09-26-cmt-wal-file-group.md` item 6 AMENDED — log line
+   `consensus WAL carry-over: N rows …`). Without that copy, a stop landing
+   while ≥ 1/3 of the voting power has already signed at the next height halts
+   the chain for good (proven: the scenario's negative control). The copy makes
+   the stop safe at any moment; stopping right after a commit (an idle chain
+   waits 60 s for the next block) keeps the carried tail small.
+3. Build and start as §2 steps 4-5; verify per §3, plus on every node:
+   `grep 'consensus WAL carry-over' <log>` (one line per node that held rows)
+   and `grep 'persistent peer(s)' <log>`.
+
+**Rolling back 0.20.0 → 0.19.x (and forward again).** 0.19.x reads only the
+SQLite rows, so a node that signed at the next height under 0.20.0 has that
+vote only in `cs.wal`. Therefore:
+- Roll back only in an idle window, and on every node confirm, before
+  starting 0.19.x, that `priv_validator_state.json`'s `height` is ≤ the chain
+  tip (a node that has signed past the tip cannot replay that vote on 0.19.x;
+  with ≥ 1/3 of the power in that state the chain halts).
+- Before rolling FORWARD to 0.20.0 again, move each node's `cs.wal/` aside
+  (`mv "$DATA_DIR"/cs.wal "$DATA_DIR/archive/cs.wal-$(date +%s)"`). The copy
+  runs only when `cs.wal/wal` is empty; a `cs.wal` left from the first 0.20.0
+  run would hide the rows 0.19.x wrote during the rollback.
+
 ---
 
 ## 2.2 Height-activated parameter (hard fork) — the HF-1 gas price procedure
@@ -365,7 +416,8 @@ the old rules. **R3 W4 (2026-09-17) deleted the mechanism the step served**
 (OBLIGATION `atlas-dec-71525f3b4918f710b660707ac6bb5a3a`): there is no PBFT
 view counter, no `nodus_witness_db_load_pbft_state`, no prepared-value lock
 of that kind, and a fresh database no longer creates the `pbft_state` table.
-A version-3 chain's round state lives in the cometbft WAL (`cmt_wal`,
+A version-3 chain's round state lives in the cometbft WAL (since 0.20.0 the
+file group `$DATA_DIR/cs.wal/wal`; before, the SQLite tables `cmt_wal`,
 `cmt_wal_sync`) and its last-sign state file, and it is replayed by the
 Handshaker at every start (`nodus_witness_cmt_node.c`, "ABCI replay blocks")
 — there is nothing to clear by hand, and clearing anything by hand there
@@ -492,7 +544,6 @@ If a step fails, stop and diagnose. Do not improvise a partial cluster.
   happens on chain-wipe deploys, so an ordinary deploy has no DB safety net — which is
   acceptable only because an ordinary deploy does not touch the DB.
 - No health-check or rollback automation exists; every step here is manual.
-- The `data_path` inconsistency between `nodus-server.c:162` (`/var/lib/nodus`) and
-  `nodus_witness_peer.c:558` (`/var/lib/nodus/data/`) is unresolved in the code. §1
-  works around it by verifying rather than assuming; the underlying inconsistency
-  should be fixed.
+- The old `data_path` inconsistency (`nodus_witness_peer.c:558` naming
+  `/var/lib/nodus/data/`) left with that file in 0.20.0; §1 still verifies the data
+  directory rather than assuming it.

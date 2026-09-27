@@ -2137,6 +2137,23 @@ static int host_wal_read_next(void *vctx, cmt_timed_wal_message_t *out,
     return nodus_cmt_wal_read_next(ctx->wal, out, out_eof);
 }
 
+/* state.go:352-385 — the WAL repair `cmt_cs_start` runs on a
+ * DataCorruptionError (decision 2026-09-26-cmt-wal-file-group.md 4b).
+ * A FAULT on a NULL wal, like `read_next`: the repair is reached only
+ * from a replay, which runs only after the real WAL is bound; the
+ * reference's nilWAL has no Stop to fail and is never repaired. The
+ * handle is reopened IN PLACE (nodus_cmt_wal_repair), so `ctx->wal`
+ * stays valid. */
+static int host_wal_repair(void *vctx)
+{
+    nodus_cmt_blockexec_t *ctx = (nodus_cmt_blockexec_t *)vctx;
+
+    if (!ctx || !ctx->wal) {
+        return CMT_FAULT;
+    }
+    return nodus_cmt_wal_repair(ctx->wal);
+}
+
 /* ── decode_block (state.go:2005-2019) ─────────────────────────────── */
 
 static int host_decode_block(void *vctx, const uint8_t *bytes, size_t len,
@@ -2280,6 +2297,7 @@ int nodus_cmt_host_build(cmt_cs_host_t *out, nodus_cmt_blockexec_t *ctx)
     out->wal_flush_and_sync              = host_wal_flush_and_sync;
     out->wal_search_end_height           = host_wal_search_end_height;
     out->wal_read_next                   = host_wal_read_next;
+    out->wal_repair                      = host_wal_repair;
     /* decode, clock, timer */
     out->decode_block                    = host_decode_block;
     out->now                             = host_now;

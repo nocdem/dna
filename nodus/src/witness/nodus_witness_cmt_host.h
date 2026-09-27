@@ -2,7 +2,7 @@
  * @file nodus/src/witness/nodus_witness_cmt_host.h
  * @brief cometbft @709fd12b `state/execution.go` (BlockExecutor) and
  *        `state/validation.go`, literal, as the HOST behind
- *        `cmt_cs_host_t` — every one of its 26 rows — with the ABCI
+ *        `cmt_cs_host_t` — every one of its 27 rows — with the ABCI
  *        application, mempool and evidence-pool interface tables the
  *        BlockExecutor talks to.
  *
@@ -27,7 +27,7 @@
  * plus what the other host rows forward to: the WAL storage, the file
  * privval, the clock, the block slots and the vote-extension arena.
  *
- * ── THE 26 ROWS OF cmt_cs_host_t (cmt_cs.h:367-563) ────────────────────
+ * ── THE 27 ROWS OF cmt_cs_host_t (cmt_cs.h, `cmt_cs_host_t`) ──────────
  *   6 BlockExecutor  create_proposal_block :101, process_proposal :162,
  *                    validate_block :190, apply_verified_block :199,
  *                    extend_vote :325, verify_vote_extension :356
@@ -40,11 +40,15 @@
  *                    adapters over the `cmt_file_pv_t` R3-C2 binds
  *   3 WAL write      wal_write, wal_write_sync, wal_flush_and_sync
  *   2 WAL read       wal_search_end_height, wal_read_next
+ *   1 WAL repair     wal_repair (state.go:352-385) → nodus_cmt_wal_repair
+ *                    — added with decision 2026-09-26-cmt-wal-file-
+ *                    group.md item 4b
  *   1 decode_block   state.go:2005-2019 → nodus_cmt_block_decode into the
  *                    slot's storage
  *   1 now            the ONE clock, forwarded
  *   2 timer          timer_arm, timer_disarm — one pending deadline
- * The dispatch counted 27; the table has 26 (reported).
+ * The original dispatch counted 27 when the table had 26 (reported then);
+ * the repair row makes it 27.
  *
  * ── PORT ROWS OF execution.go, and where each is ────────────────────────
  *   NewBlockExecutor :58 → nodus_cmt_blockexec_init; Store :85 →

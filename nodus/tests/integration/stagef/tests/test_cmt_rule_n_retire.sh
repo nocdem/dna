@@ -148,8 +148,8 @@
 #   chain (UNSTAKED after its own next graduation boundary, per D-11) —
 #   this is NOT reversible within this bring-up; a scenario run AFTER
 #   this one that assumes 7 ACTIVE validators will not find them. The
-#   runner places it immediately before `test_cmt_arena_runway.sh`
-#   (which only reads receive-arena latches) and after everything else.
+#   runner places it immediately before `test_p2p_seam_faults.sh`
+#   (which only reads node logs) and after everything else.
 #   When pumped: node 3's genesis leaf CLAIMED by the first pump step (if
 #   no earlier scenario's pump already claimed it) and every pump step's
 #   fee (STAGEF_PUMP_FEE_RAW) gone from node 3's coin; node 3's coin

@@ -10,7 +10,6 @@
  */
 
 #include "server/nodus_server.h"
-#include "witness/nodus_witness_peer.h"   /* PR 3 / F4 — mock_version setter */
 #include "witness/nodus_witness_v2_gen.h" /* O16A / D1 — the genesis builder */
 #include "nodus_v2_gen_config.h"          /* O16A / D2 — its text config     */
 #include "nodus/nodus_types.h"
@@ -51,7 +50,9 @@ static void usage(const char *prog) {
     fprintf(stderr, "  -W <witness_port> Witness BFT TCP port (default: %d)\n", NODUS_DEFAULT_WITNESS_PORT);
     fprintf(stderr, "  -i <identity_dir> Identity directory\n");
     fprintf(stderr, "  -d <data_dir>     Data directory (default: /var/lib/nodus)\n");
-    fprintf(stderr, "  -s <ip:port>      Add seed node (repeatable)\n");
+    fprintf(stderr, "  -s [id@]<ip:port> Add seed node (repeatable). With id@ (the\n");
+    fprintf(stderr, "                    node's 64-hex p2p ID) the node is also a\n");
+    fprintf(stderr, "                    witness-port persistent peer at port + 4.\n");
     fprintf(stderr, "  --v2-genesis-pin <64hex>\n");
     fprintf(stderr, "                    JOIN an existing chain: the local trust\n");
     fprintf(stderr, "                    anchor (the 32-byte chain id) a pulled\n");
@@ -62,6 +63,16 @@ static void usage(const char *prog) {
     fprintf(stderr, "                    id, and EXIT. Offline one-shot: no socket\n");
     fprintf(stderr, "                    is opened and no server is constructed.\n");
     fprintf(stderr, "                    Mutually exclusive with --v2-genesis-pin.\n");
+    fprintf(stderr, "  --network-file <path>\n");
+    fprintf(stderr, "                    The published network file (JSON:\n");
+    fprintf(stderr, "                    \"v2_genesis_pin\", \"persistent_peers\";\n");
+    fprintf(stderr, "                    nodus.json key \"network_file\"). A pin\n");
+    fprintf(stderr, "                    joins when there is no chain and must\n");
+    fprintf(stderr, "                    equal the chain's id when there is one\n");
+    fprintf(stderr, "                    (else the node does not start); peers\n");
+    fprintf(stderr, "                    join the witness-port persistent peers.\n");
+    fprintf(stderr, "                    With --derive-v2-genesis the derived\n");
+    fprintf(stderr, "                    chain id is written into an EMPTY pin.\n");
     fprintf(stderr, "  -h                Show this help\n");
 }
 
@@ -70,14 +81,17 @@ static void usage(const char *prog) {
  * R3 W4 — LONGOPT_COLD_BOOTSTRAP (and the "cold-bootstrap" option it
  * named) is DELETED with the closed consensus lane: its one reader,
  * nodus_witness_bootstrap.c, is deleted. */
-#define LONGOPT_MOCK_NODUS_VER    1001
+/* P2P-PORT F5 — LONGOPT_MOCK_NODUS_VER ("--mock-nodus-version", 1001) is
+ * DELETED: its only consumer was the w_ident packed-version field, deleted
+ * with IDENT. 1001 is not reused. */
 #define LONGOPT_V2_GENESIS_PIN    1002
 #define LONGOPT_DERIVE_V2_GENESIS 1003
+#define LONGOPT_NETWORK_FILE      1004   /* P2P-PORT F6 */
 
 static const struct option g_longopts[] = {
-    {"mock-nodus-version", required_argument, NULL, LONGOPT_MOCK_NODUS_VER},
     {"v2-genesis-pin",     required_argument, NULL, LONGOPT_V2_GENESIS_PIN},
     {"derive-v2-genesis",  required_argument, NULL, LONGOPT_DERIVE_V2_GENESIS},
+    {"network-file",       required_argument, NULL, LONGOPT_NETWORK_FILE},
     {0, 0, 0, 0}
 };
 
@@ -188,27 +202,15 @@ static int find_single_chain_db(const char *dir, char *out, size_t out_len) {
  * @return 0 / -1. */
 static int read_genesis_chain_id(const char *db_path,
                                  uint8_t out[NODUS_V2_GEN_CHAIN_ID_LEN]) {
-    /* Heap-allocated, never on the stack — the project convention for
-     * every nodus_witness_t instance (it is far larger than a fixture
-     * needs to be to overflow a default thread stack). */
-    nodus_witness_t *w = calloc(1, sizeof(*w));
-    if (!w) return -1;
-    if (sqlite3_open_v2(db_path, &w->db, SQLITE_OPEN_READONLY, NULL)
-        != SQLITE_OK) {
-        if (w->db) sqlite3_close(w->db);
-        free(w);
-        fprintf(stderr, "cannot open the derived chain database %s\n",
-                db_path);
-        return -1;
-    }
-    int rc = nodus_witness_v2_gen_stored_chain_id(w, out);
-    sqlite3_close(w->db);
-    free(w);
+    /* P2P-PORT F6: the reader itself moved to nodus_server.c
+     * (nodus_server_read_chain_id) so the network file's pin-at-start
+     * check reads the chain id through the SAME code as this ceremony. */
+    int rc = nodus_server_read_chain_id(db_path, out);
     if (rc != 0)
         fprintf(stderr,
-                "the derived chain database %s has no readable genesis "
-                "document identity — the W_V2GEN lines above name the "
-                "reason\n", db_path);
+                "the derived chain database %s could not be opened or has "
+                "no readable genesis document identity — the W_V2GEN lines "
+                "above name the reason\n", db_path);
     return rc;
 }
 
@@ -312,11 +314,46 @@ static int derive_precheck_sentinels(const char *data_path) {
     return bad ? -1 : 0;
 }
 
-static int run_derive_v2_genesis(const char *cfg_path, const char *data_path) {
+/* P2P-PORT F6 — `network_file` (may be NULL): the published network file
+ * the ceremony writes the derived chain id into ("Pin'i tören yazar",
+ * decision 2026-09-26-witness-port-session.md). An EMPTY pin is filled;
+ * the SAME pin is left alone (several nodes deriving independently all
+ * reach this case after the first); a DIFFERENT pin stops the ceremony
+ * and is never overwritten. */
+static int run_derive_v2_genesis(const char *cfg_path, const char *data_path,
+                                 const char *network_file) {
     /* BEFORE the config is even parsed: nothing has been done yet, so a
      * refusal here costs the operator nothing but a message. */
     if (derive_precheck_sentinels(data_path) != 0)
         return 1;
+
+#ifdef NODUS_HAS_JSONC
+    if (network_file) {
+        nodus_network_file_t nf;
+        if (nodus_network_file_load(network_file, &nf) != 0) {
+            fprintf(stderr, "network file %s was REFUSED (the lines above "
+                    "say why) — nothing derived.\n", network_file);
+            return 1;
+        }
+        /* A data directory that already holds a chain lets the pin be
+         * compared BEFORE anything is written (the derivation is
+         * idempotent there). Without a chain the id exists only after
+         * the derivation, and the comparison happens at the write. */
+        if (nf.has_pin &&
+            nodus_server_check_chain_pin(data_path, nf.pin) != 0) {
+            fprintf(stderr, "network file %s pins a different chain than "
+                    "the one in %s — nothing derived.\n", network_file,
+                    data_path);
+            return 1;
+        }
+    }
+#else
+    if (network_file) {
+        fprintf(stderr, "--network-file / \"network_file\" needs a build "
+                "with json-c — nothing derived.\n");
+        return 1;
+    }
+#endif
 
     nodus_v2_gen_config_t *cfg = NULL;
     if (nodus_v2_gen_config_parse_file(cfg_path, &cfg) != 0) {
@@ -379,6 +416,21 @@ static int run_derive_v2_genesis(const char *cfg_path, const char *data_path) {
             "  nodus-server --v2-genesis-pin <that 64-hex string> ...\n"
             "It is that node's LOCAL trust anchor: it adopts a peer's "
             "genesis bundle only if the bundle re-derives to it.\n");
+
+#ifdef NODUS_HAS_JSONC
+    if (network_file) {
+        int wrc = nodus_network_file_write_pin(network_file, chain_id);
+        if (wrc < 0) {
+            fprintf(stderr, "network file %s: the pin was NOT written (the "
+                    "lines above say why) — the ceremony is NOT complete. "
+                    "The chain above is derived in %s.\n", network_file,
+                    data_path);
+            return 1;
+        }
+        printf("network-file   %s %s\n", network_file,
+               wrc == 0 ? "pin-written" : "pin-already-equal");
+    }
+#endif
     return 0;
 }
 
@@ -397,7 +449,106 @@ static int parse_seed(const char *str, char *ip, size_t ip_len, uint16_t *port) 
     return 0;
 }
 
+/* P2P-PORT F5 — one seed entry (`-s` / "seed_nodes"): "ip:udp_port" seeds
+ * the DHT cluster, as before; "id@ip:udp_port" ALSO makes that node a
+ * witness-port persistent peer "id@ip:(udp_port + 4)" — the same "+4"
+ * witness-port derivation the deleted seed dial used
+ * (nodus_witness_peer.c before F5). An entry without an ID cannot be a
+ * persistent peer: the 4004 p2p layer never dials unpinned (R-P2P-33).
+ * @return 0; -1 malformed / full. */
+static int add_seed_entry(nodus_server_config_t *cfg, const char *s) {
+    const char *at = strchr(s, '@');
+    const char *hostport = at ? at + 1 : s;
+
+    if (cfg->seed_count >= NODUS_MAX_SEED_NODES) return -1;
+    if (parse_seed(hostport, cfg->seed_nodes[cfg->seed_count],
+                   sizeof(cfg->seed_nodes[0]),
+                   &cfg->seed_ports[cfg->seed_count]) != 0)
+        return -1;
+    if (at) {
+        char pp[CMT_P2P_NETADDR_STR_MAX];
+        const char *ip = cfg->seed_nodes[cfg->seed_count];
+        bool v6 = strchr(ip, ':') != NULL && ip[0] != '[';
+        int n = snprintf(pp, sizeof(pp), "%.*s@%s%s%s:%u", (int)(at - s), s,
+                         v6 ? "[" : "", ip, v6 ? "]" : "",
+                         (unsigned)(cfg->seed_ports[cfg->seed_count] + 4));
+
+        if (n < 0 || (size_t)n >= sizeof(pp) ||
+            nodus_p2p_config_add_persistent(&cfg->p2p, pp) != 0) {
+            fprintf(stderr, "seed %s: witness persistent peer list full or "
+                    "entry too long\n", s);
+            return -1;
+        }
+    }
+    cfg->seed_count++;
+    return 0;
+}
+
 #ifdef NODUS_HAS_JSONC
+/* A config.go list key: a JSON array of strings, or one comma-separated
+ * string (the reference's TOML form). */
+static void load_list(struct json_object *val, nodus_p2p_config_t *c,
+                      int (*add)(nodus_p2p_config_t *, const char *),
+                      const char *key) {
+    if (json_object_is_type(val, json_type_array)) {
+        int n = json_object_array_length(val);
+        for (int i = 0; i < n; i++) {
+            const char *s = json_object_get_string(json_object_array_get_idx(val, i));
+            if (s && s[0] && add(c, s) != 0)
+                fprintf(stderr, "config %s: entry \"%s\" dropped (list full "
+                        "or too long)\n", key, s);
+        }
+    } else if (json_object_is_type(val, json_type_string)) {
+        char buf[NODUS_P2P_MAX_PEER_LIST * CMT_P2P_NETADDR_STR_MAX];
+        char *save = NULL;
+        snprintf(buf, sizeof(buf), "%s", json_object_get_string(val));
+        for (char *tok = strtok_r(buf, ", ", &save); tok;
+             tok = strtok_r(NULL, ", ", &save)) {
+            if (add(c, tok) != 0)
+                fprintf(stderr, "config %s: entry \"%s\" dropped (list full "
+                        "or too long)\n", key, tok);
+        }
+    }
+}
+
+/* P2P-PORT F5 — the witness port's P2P section: reference config.go
+ * P2P key names (p2p-port design §4), top-level nodus.json keys. */
+static void load_p2p_json(struct json_object *root, nodus_p2p_config_t *c) {
+    struct json_object *val;
+
+    if (json_object_object_get_ex(root, "persistent_peers", &val))
+        load_list(val, c, nodus_p2p_config_add_persistent, "persistent_peers");
+    if (json_object_object_get_ex(root, "unconditional_peer_ids", &val))
+        load_list(val, c, nodus_p2p_config_add_unconditional,
+                  "unconditional_peer_ids");
+    if (json_object_object_get_ex(root, "private_peer_ids", &val))
+        load_list(val, c, nodus_p2p_config_add_private, "private_peer_ids");
+    if (json_object_object_get_ex(root, "pex", &val))
+        c->pex = json_object_get_boolean(val);
+    if (json_object_object_get_ex(root, "addr_book_strict", &val))
+        c->addr_book_strict = json_object_get_boolean(val);
+    if (json_object_object_get_ex(root, "allow_duplicate_ip", &val))
+        c->allow_duplicate_ip = json_object_get_boolean(val);
+    if (json_object_object_get_ex(root, "max_num_inbound_peers", &val))
+        c->max_num_inbound_peers = json_object_get_int(val);
+    if (json_object_object_get_ex(root, "max_num_outbound_peers", &val))
+        c->max_num_outbound_peers = json_object_get_int(val);
+    if (json_object_object_get_ex(root, "flush_throttle_timeout", &val))
+        c->flush_throttle_timeout_ms = json_object_get_int64(val);
+    if (json_object_object_get_ex(root, "max_packet_msg_payload_size", &val))
+        c->max_packet_msg_payload_size = json_object_get_int(val);
+    if (json_object_object_get_ex(root, "send_rate", &val))
+        c->send_rate = json_object_get_int64(val);
+    if (json_object_object_get_ex(root, "recv_rate", &val))
+        c->recv_rate = json_object_get_int64(val);
+    if (json_object_object_get_ex(root, "handshake_timeout", &val))
+        c->handshake_timeout_ms = json_object_get_int64(val);
+    if (json_object_object_get_ex(root, "dial_timeout", &val))
+        c->dial_timeout_ms = json_object_get_int64(val);
+    if (json_object_object_get_ex(root, "moniker", &val))
+        snprintf(c->moniker, sizeof(c->moniker), "%s", json_object_get_string(val));
+}
+
 static int load_config_json(const char *path, nodus_server_config_t *cfg) {
     struct json_object *root = json_object_from_file(path);
     if (!root) {
@@ -434,24 +585,31 @@ static int load_config_json(const char *path, nodus_server_config_t *cfg) {
      * field is replaced by a reserved byte (nodus_witness.h), and its only
      * reader, the legacy safety_halt recovery check, is deleted. */
 
+    /* P2P-PORT F5: the witness-port list keys first, so an "id@" seed
+     * below appends to a persistent_peers list that is already loaded. */
+    load_p2p_json(root, &cfg->p2p);
+
     if (json_object_object_get_ex(root, "seed_nodes", &val) &&
         json_object_is_type(val, json_type_array)) {
         int n = json_object_array_length(val);
         for (int i = 0; i < n && cfg->seed_count < NODUS_MAX_SEED_NODES; i++) {
             struct json_object *entry = json_object_array_get_idx(val, i);
             const char *s = json_object_get_string(entry);
-            if (s) {
-                parse_seed(s, cfg->seed_nodes[cfg->seed_count],
-                           sizeof(cfg->seed_nodes[0]),
-                           &cfg->seed_ports[cfg->seed_count]);
-                cfg->seed_count++;
-            }
+            if (s)
+                (void)add_seed_entry(cfg, s);
         }
     }
 
-    /* C-01/C-02: Optional peer authentication enforcement */
+    /* C-01: Optional peer authentication enforcement (port 4002 only
+     * since P2P-PORT F5 — nodus_server.h). */
     if (json_object_object_get_ex(root, "require_peer_auth", &val))
         cfg->require_peer_auth = json_object_get_boolean(val);
+
+    /* P2P-PORT F6 — the published network file's path (loaded in main,
+     * after both option passes; `--network-file` overrides it). */
+    if (json_object_object_get_ex(root, "network_file", &val))
+        snprintf(cfg->network_file, sizeof(cfg->network_file), "%s",
+                 json_object_get_string(val));
 
     /* R3 W4 — the "cold_bootstrap" config key is DELETED with the closed
      * consensus lane: is_cold_bootstrap's one reader
@@ -475,6 +633,7 @@ int main(int argc, char **argv) {
     config.ch_port = NODUS_DEFAULT_CH_PORT;
     config.witness_port = NODUS_DEFAULT_WITNESS_PORT;
     snprintf(config.data_path, sizeof(config.data_path), "/var/lib/nodus");
+    nodus_p2p_config_default(&config.p2p);
 
     const char *config_file = NULL;
     /* O16A / D1 — held as a LOCAL, exactly like config_file, and for the
@@ -482,6 +641,8 @@ int main(int argc, char **argv) {
      * struct, so anything recorded in it during the first parse pass is
      * lost when -c is also given. */
     const char *derive_v2_genesis_cfg = NULL;
+    /* P2P-PORT F6 — `--network-file`, a local for the same reason. */
+    const char *network_file_opt = NULL;
     int opt;
 
     while ((opt = getopt_long(argc, argv, "c:b:u:t:p:C:W:i:d:s:h",
@@ -497,13 +658,7 @@ int main(int argc, char **argv) {
         case 'i': snprintf(config.identity_path, sizeof(config.identity_path), "%s", optarg); break;
         case 'd': snprintf(config.data_path, sizeof(config.data_path), "%s", optarg); break;
         case 's':
-            if (config.seed_count < NODUS_MAX_SEED_NODES) {
-                parse_seed(optarg,
-                           config.seed_nodes[config.seed_count],
-                           sizeof(config.seed_nodes[0]),
-                           &config.seed_ports[config.seed_count]);
-                config.seed_count++;
-            }
+            (void)add_seed_entry(&config, optarg);
             break;
         case LONGOPT_V2_GENESIS_PIN:
             if (parse_v2_pin(optarg, config.v2_genesis_pin) != 0) {
@@ -518,16 +673,9 @@ int main(int argc, char **argv) {
         case LONGOPT_DERIVE_V2_GENESIS:
             derive_v2_genesis_cfg = optarg;
             break;
-        case LONGOPT_MOCK_NODUS_VER: {
-            uint32_t mock = (uint32_t)strtoul(optarg, NULL, 0);
-            nodus_witness_peer_set_mock_version(mock);
-            fprintf(stderr,
-                "[dev] mock nodus_version active: 0x%06x — w_ident "
-                "advertises this packed value instead of compiled "
-                "version. Used by F4 mixed-version harness only.\n",
-                (unsigned)mock);
+        case LONGOPT_NETWORK_FILE:
+            network_file_opt = optarg;
             break;
-        }
         case 'h':
         default:
             usage(argv[0]);
@@ -547,6 +695,7 @@ int main(int argc, char **argv) {
         file_cfg.ch_port = NODUS_DEFAULT_CH_PORT;
         file_cfg.witness_port = NODUS_DEFAULT_WITNESS_PORT;
         snprintf(file_cfg.data_path, sizeof(file_cfg.data_path), "/var/lib/nodus");
+        nodus_p2p_config_default(&file_cfg.p2p);
 
         if (load_config_json(config_file, &file_cfg) != 0)
             return 1;
@@ -569,19 +718,8 @@ int main(int argc, char **argv) {
             case 'i': snprintf(config.identity_path, sizeof(config.identity_path), "%s", optarg); break;
             case 'd': snprintf(config.data_path, sizeof(config.data_path), "%s", optarg); break;
             case 's':
-                if (config.seed_count < NODUS_MAX_SEED_NODES) {
-                    parse_seed(optarg,
-                               config.seed_nodes[config.seed_count],
-                               sizeof(config.seed_nodes[0]),
-                               &config.seed_ports[config.seed_count]);
-                    config.seed_count++;
-                }
+                (void)add_seed_entry(&config, optarg);
                 break;
-            case LONGOPT_MOCK_NODUS_VER: {
-                uint32_t mock = (uint32_t)strtoul(optarg, NULL, 0);
-                nodus_witness_peer_set_mock_version(mock);
-                break;
-            }
             case LONGOPT_V2_GENESIS_PIN:
                 /* O15E Faz D — the re-parse pass (after `config = file_cfg`
                  * clobbers the first pass) MUST re-apply the pin, or a node
@@ -601,6 +739,9 @@ int main(int argc, char **argv) {
                  * passes, which is the shape the pin's own bug had. */
                 derive_v2_genesis_cfg = optarg;
                 break;
+            case LONGOPT_NETWORK_FILE:
+                network_file_opt = optarg;
+                break;
             default: break;
             }
         }
@@ -619,6 +760,14 @@ int main(int argc, char **argv) {
      * struct. That is the property D1 rests on, and it is expressed as
      * an early return rather than as a flag some later branch consults,
      * because a flag is something a future edit can forget to check. */
+    /* P2P-PORT F6 — the effective network file: `--network-file` over the
+     * nodus.json "network_file" key. Final only here, after both passes. */
+    if (network_file_opt)
+        snprintf(config.network_file, sizeof(config.network_file), "%s",
+                 network_file_opt);
+    const char *network_file = config.network_file[0]
+                             ? config.network_file : NULL;
+
     if (derive_v2_genesis_cfg) {
         if (config.has_v2_genesis_pin) {
             /* Deriving CREATES the first chain; pinning JOINS one that
@@ -633,8 +782,35 @@ int main(int argc, char **argv) {
                     "one that already exists. Give exactly one.\n");
             return 1;
         }
+        /* A network file's pin is NOT refused here, unlike the CLI pin
+         * above: the ceremony is the one writer of that pin, and a node
+         * deriving after another has already written it must find its
+         * own id equal (nothing written) or different (stop) —
+         * run_derive_v2_genesis. */
         return run_derive_v2_genesis(derive_v2_genesis_cfg,
-                                     config.data_path);
+                                     config.data_path, network_file);
+    }
+
+    /* P2P-PORT F6 — a running node READS the network file, never writes
+     * it: the pin arms the joiner (no chain) and the start check in
+     * nodus_server_init (a chain), the peers join the witness port's
+     * persistent peers. A malformed file refuses the start. */
+    if (network_file) {
+#ifdef NODUS_HAS_JSONC
+        nodus_network_file_t nf;
+        if (nodus_network_file_load(network_file, &nf) != 0 ||
+            nodus_network_file_apply(&nf, &config) != 0) {
+            fprintf(stderr, "network file %s was REFUSED (the lines above "
+                    "say why) — not starting\n", network_file);
+            return 1;
+        }
+        fprintf(stderr, "network file %s: pin %s, %d persistent peer(s)\n",
+                network_file, nf.has_pin ? "set" : "empty", nf.n_peers);
+#else
+        fprintf(stderr, "a network file is configured but this build has "
+                "no json-c — not starting\n");
+        return 1;
+#endif
     }
 
     signal(SIGINT, sighandler);

@@ -38,27 +38,47 @@
  *  · privval/file.go's state file round-trips file_test.go:82-105's
  *    exact JSON, an atomic write leaves the target (0600) and no temp
  *    file, and the decoder refuses what libs/json refuses.
- *  · The WAL storage keeps D-13 + D-15 rev 5 (4): EVERY row of both
- *    classes is a single AUTOCOMMIT statement — a `Write` lands on the
- *    MAIN connection (NORMAL: committed and visible at once, NOT
- *    fsynced) and a `WriteSync` on the second, FULL one (its own commit
- *    IS the fsync, and it covers every pending `Write` with it). The
- *    `FlushAndSync` barrier is observed through its counter row, not
- *    through visibility. Also: seq restores as max+1, a flipped bit or a
- *    bad kind is a FAULT on read, SearchForEndHeight positions the
- *    cursor after the LAST EndHeight(h), rows appended during a cursor
- *    are seen, `start` writes EndHeight(0) into an empty log only, the
- *    flush deadline fires at now+2s, prune removes heights below.
- *  · The MEASURED two-connection interaction, in three legs: the
- *    approved routing runs ten `finalizeCommit`-order heights — WAL
- *    `Write`, the REAL `SaveBlock` (store.go:434-457: `BEGIN IMMEDIATE`
- *    … `COMMIT` on the main connection, ten blocks with part sets and
- *    seen commits, the store's height reaching 10), WAL `WriteSync
- *    (EndHeight)` — with NO contention; the CONTROL proves that is not
- *    vacuous (an OPEN transaction on either connection does block the
- *    other — the W1 shape that was withdrawn before the commit); and a
- *    `Write` issued inside a store transaction is rolled back with it
- *    (the caller contract).
+ *  · The consensus WAL is consensus/wal.go over libs/autofile's file
+ *    group (docs/plans/decisions/2026-09-26-cmt-wal-file-group.md):
+ *    `NewWAL` makes `cs.wal/` 0700 and an empty 0600 head; `OnStart`
+ *    writes EndHeight{0} into an EMPTY head only, durable at return; a
+ *    record is crc32c(P) BE ‖ len(P) BE ‖ P with P the TimedWALMessage;
+ *    `Write` stays in the head buffer (file size unchanged) until a
+ *    FlushAndSync, a WriteSync, the 2 s ticker or close puts it in the
+ *    file; a kind-NONE message is REJECT on Write and FAULT on WriteSync.
+ *  · SearchForEndHeight scans files newest → oldest, returns at the FIRST
+ *    EndHeight(h) of the newest file holding one, stops early once it
+ *    has seen a lower height (wal.go:256), and its reader reads ON into
+ *    the later files; the replay reader sees only FLUSHED bytes; with no
+ *    search, reading starts at the first file.
+ *  · Corruption: a flipped payload byte is skipped by the search
+ *    (IgnoreDataCorruptionErrors) and is CMT_REJECT on `read_next`; a
+ *    torn length, a length above the bound, a zero length and a short
+ *    payload are CMT_REJECT; a torn CRC (1-3 bytes) is a clean EOF; a
+ *    MsgInfo failing ValidateBasic is corruption too (the decoder runs
+ *    msgs.go:232-234 itself).
+ *  · Repair (state.go:352-385, repairWalFile :2621-2653): refused on a
+ *    WAL never started; `wal.CORRUPTED` is the old head; the new head is
+ *    exactly the records before the first bad one, byte for byte; the
+ *    handle is reopened and started in place and replays cleanly.
+ *  · The one-time SQLite → file carry-over (decision item 6 AMENDED,
+ *    NOT GROUNDED): from OLD-format rows (SHA3-512(P) ‖ P) only the tail
+ *    from the latest EndHeight of protocol 1 reaches an absent head, P
+ *    byte for byte in seq order, found by SearchForEndHeight and
+ *    replayed; the rows are untouched; a spoiled digest, a lying height
+ *    column or no EndHeight row refuse with no head and no temp file;
+ *    a non-empty head, a rotated file, an absent or empty table are
+ *    no-ops. (Old rows are built by this file's own encoder — the old
+ *    writer is not linked, so the row shape is re-stated, not replayed.)
+ *  · The host table has 27 rows, all filled (`wal_repair` is the 27th).
+ *  · Size: 10 MB head / 1 GB total — the reference's defaults — are the
+ *    shipped limits; at lowered
+ *    limits the 5 s check rotates the head and removes the OLDEST files,
+ *    replay from the newest EndHeight still reads exactly the records
+ *    after it, an old EndHeight is gone, and a head that alone exceeds
+ *    the bound is kept.
+ *  · The store's `get` copy contract (R3-W3-C2a-17) against a commit
+ *    made by ANOTHER connection on the same file.
  *  · execution.go/validation.go behave as TestApplyBlock,
  *    TestFinalizeBlockDecidedLastCommit, TestFinalizeBlockValidators,
  *    TestProcessProposal, TestValidateValidatorUpdates,
@@ -109,30 +129,21 @@
  *  6. The 1500-block TestPruneBlocks and the 100001-height PruneStates
  *     row take seconds of SQLite time; a machine that kills the test on
  *     a wall-clock budget reports a failure that is not a defect.
- *  7. The two-connection interaction's CONTROL leg is measured with the
- *     WAL's own busy timeout (NODUS_W_DB_BUSY_TIMEOUT_MS / 3 ≈ 1.7 s),
- *     once per direction; the case WAITS that long TWICE, by design.
- *     The first leg — the approved routing — waits for nothing, and a
- *     green there proves an ABSENCE of contention, which is only
- *     meaningful because the control leg produces it on demand AND
- *     because that leg drives the real `nodus_cmt_bs_save_block` (the
- *     store's own transaction, the very statement the withdrawn shape
- *     locked against) rather than a lone autocommit row; a leg that
- *     wrote only `blockStore` state would be green under BOTH shapes.
- *     The blocks carry a one-signature test commit that is never
- *     verified (store_test.go's makeTestExtCommit), so the leg proves
- *     lock behaviour, not commit validity.
+ *  7. The WAL's fsync is not observable from inside the process: the
+ *     durability classes are asserted as "the bytes are in the file"
+ *     (file size) versus "still in the head buffer", not across a power
+ *     cut. The shipped 10 MB / 1 GB limits are asserted as values;
+ *     the rotation and removal run at lowered limits.
  *  8. R3-W3-C2a-17 (delta 9) — `t_store_get_then_full_write_then_main_
  *     write` reproduces the Genesis Protocol harness's SQLITE_BUSY_
- *     SNAPSHOT stall with ONE `get`/one FULL-connection commit; it does
- *     NOT reproduce the harness's own timing (many own-vote WriteSyncs
- *     racing many stores reads under real network load) or prove the
- *     fix holds under concurrency — SQLite access here is single-
- *     threaded, as everywhere else in this file. It proves the
+ *     SNAPSHOT stall with ONE `get` and one commit by a SECOND connection
+ *     on the same file. The harness's second connection was the old
+ *     SQLite WAL's; that WAL is now a file group, so no production code
+ *     opens a second connection today — the case pins the store's copy
+ *     contract should one ever come back. Single-threaded; it proves the
  *     MECHANISM (a stepped-and-unreset SELECT statement pins a read
- *     snapshot that a FULL-connection commit then makes stale for every
- *     main-connection write), not a load-bearing guarantee under
- *     contention.
+ *     snapshot that another connection's commit makes stale for every
+ *     main-connection write), not behaviour under contention.
  *  NOT PORTED — BLOCKED BY:
  *   · TestFinalizeBlockRecoveryUsingLegacyABCIResponses
  *     (state/store_test.go:309) — no legacy format in this chain (D-23).
@@ -2510,7 +2521,8 @@ static int t_privval_save_load(void)
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * WAL storage — D-15 rev 5 / S24
+ * WAL — consensus/wal.go over libs/autofile's file group
+ * (docs/plans/decisions/2026-09-26-cmt-wal-file-group.md)
  * ══════════════════════════════════════════════════════════════════════ */
 
 static void wal_end_height(cmt_wal_message_t *m, int64_t h)
@@ -2540,392 +2552,1088 @@ static void wal_round_state(cmt_wal_message_t *m, int64_t h, int32_t r)
     m->u.event_data_round_state.step_len = 18;
 }
 
-static int wal_rows_main(sqlite3 *db, int *out)
+/* A WAL in a fresh `test_cmt_host.XXXXXX` directory, at the production
+ * shape `<dir>/cs.wal/wal` so NewWAL's EnsureDir runs. */
+typedef struct {
+    char dir[64];
+    char file[128];
+} walfx_t;
+
+static int walfx_open(walfx_t *fx)
 {
-    return count_q(db, "SELECT COUNT(*) FROM cmt_wal", out);
-}
-
-/* The FlushAndSync barrier's counter. It is observable ONLY as a count:
- * the fsync it exists for is not, from inside the process. */
-static int wal_sync_n(sqlite3 *db, int *out)
-{
-    return count_q(db, "SELECT n FROM cmt_wal_sync WHERE protocol_id = 1", out);
-}
-
-static int t_wal_write_classes_and_visibility(void)
-{
-    dbfx_t fx;
-    nodus_cmt_wal_t *w;
-    cmt_wal_message_t *m;
-    int n = -1, sn = -1;
-    int64_t dl = 0;
-
-    CHECK(dbfx_open_live(&fx) == 0, "fixture");
-    w = (nodus_cmt_wal_t *)calloc(1, sizeof(*w));
-    m = (cmt_wal_message_t *)calloc(1, sizeof(*m));
-    CHECK(w && m, "alloc");
-    CHECK(nodus_cmt_wal_open(w, fx.w->db, t_now, NULL) == CMT_OK, "open");
-    CHECK(w->next_seq == 0 && !w->unsynced, "fresh log");
-    CHECK(wal_sync_n(fx.w->db, &sn) == 0 && sn == 0, "barrier row seeded at 0");
-    /* D-13 / D-15 rev 5 (4): the Write class is an AUTOCOMMIT row on the
-     * MAIN connection, so it is committed — and visible — at once; what
-     * it is NOT is fsynced, which is what the deadline tracks. */
-    wal_round_state(m, 1, 0);
-    CHECK(nodus_cmt_wal_write(w, m) == CMT_OK && w->unsynced, "Write leaves it unsynced");
-    CHECK(wal_rows_main(fx.w->db, &n) == 0 && n == 1, "Write row committed at once");
-    CHECK(nodus_cmt_wal_next_flush_deadline(w, &dl) && dl == g_now.seconds * 1000000000LL +
-          NODUS_CMT_WAL_FLUSH_INTERVAL_NS, "deadline = now + 2s");
-    /* flush_if_due before the deadline does nothing */
-    CHECK(nodus_cmt_wal_flush_if_due(w, dl - 1) == CMT_OK && w->unsynced, "not yet due");
-    CHECK(wal_sync_n(fx.w->db, &sn) == 0 && sn == 0, "no barrier before the deadline");
-    CHECK(nodus_cmt_wal_flush_if_due(w, dl) == CMT_OK && !w->unsynced, "due → barrier");
-    CHECK(wal_sync_n(fx.w->db, &sn) == 0 && sn == 1, "barrier ran exactly once");
-    CHECK(!nodus_cmt_wal_next_flush_deadline(w, &dl), "deadline cleared");
-    /* WriteSync goes to the FULL connection: its own commit is the fsync,
-     * so it needs no barrier of its own. */
-    wal_timeout(m, 1, 0);
-    CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_OK && !w->unsynced, "WriteSync syncs");
-    CHECK(wal_rows_main(fx.w->db, &n) == 0 && n == 2, "sync row visible");
-    CHECK(wal_sync_n(fx.w->db, &sn) == 0 && sn == 1, "WriteSync needs no barrier");
-    /* A WriteSync after a Write covers it: same file, one fsync. */
-    wal_round_state(m, 1, 1);
-    CHECK(nodus_cmt_wal_write(w, m) == CMT_OK && w->unsynced, "Write");
-    wal_timeout(m, 1, 1);
-    CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_OK && !w->unsynced,
-          "WriteSync covers the pending Write");
-    CHECK(wal_sync_n(fx.w->db, &sn) == 0 && sn == 1, "still no barrier needed");
-    CHECK(!nodus_cmt_wal_next_flush_deadline(w, &dl), "deadline cleared by WriteSync");
-    /* FlushAndSync runs the barrier for a pending Write, and is a no-op
-     * when nothing is pending — the reference's :157-159 shape. */
-    wal_round_state(m, 1, 2);
-    CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "Write");
-    CHECK(nodus_cmt_wal_flush_and_sync(w) == CMT_OK && !w->unsynced, "FlushAndSync");
-    CHECK(wal_sync_n(fx.w->db, &sn) == 0 && sn == 2, "barrier ran again");
-    CHECK(nodus_cmt_wal_flush_and_sync(w) == CMT_OK, "FlushAndSync with nothing pending");
-    CHECK(wal_sync_n(fx.w->db, &sn) == 0 && sn == 2, "a no-op writes nothing");
-    CHECK(wal_rows_main(fx.w->db, &n) == 0 && n == 5, "five rows so far");
-    /* seq is per protocol and monotonic ACROSS the two connections — one
-     * counter, whichever class wrote the row. */
-    wal_end_height(m, 1);
-    CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_OK && w->next_seq == 6, "seq 5 written");
-    {
-        sqlite3_stmt *st = NULL;
-        /* kind by seq: 1 round state (Write, main) / 3 timeout
-         * (WriteSync, full) / 1 / 3 / 1 / 4 EndHeight (WriteSync). */
-        static const int want_kind[6] = { 1, 3, 1, 3, 1, 4 };
-        int i;
-
-        CHECK(sqlite3_prepare_v2(fx.w->db,
-                  "SELECT height, seq, kind FROM cmt_wal ORDER BY height, seq", -1, &st, NULL)
-                  == SQLITE_OK, "prepare");
-        for (i = 0; i < 6; i++) {
-            CHECK(sqlite3_step(st) == SQLITE_ROW &&
-                  sqlite3_column_int64(st, 0) == 1 &&
-                  sqlite3_column_int64(st, 1) == i &&
-                  sqlite3_column_int(st, 2) == want_kind[i], "row in order");
-        }
-        CHECK(sqlite3_step(st) == SQLITE_DONE, "no seventh row");
-        sqlite3_finalize(st);
+    snprintf(fx->dir, sizeof(fx->dir), "test_cmt_host.XXXXXX");
+    if (!mkdtemp(fx->dir)) {
+        return -1;
     }
-    /* the row bytes are SHA3-512(P) ‖ P */
-    {
-        sqlite3_stmt *st = NULL;
-        const uint8_t *blob;
-        int blen;
-        uint8_t d[64];
-
-        CHECK(sqlite3_prepare_v2(fx.w->db, "SELECT bytes FROM cmt_wal WHERE seq = 3", -1,
-                                 &st, NULL) == SQLITE_OK && sqlite3_step(st) == SQLITE_ROW,
-              "select");
-        blob = (const uint8_t *)sqlite3_column_blob(st, 0);
-        blen = sqlite3_column_bytes(st, 0);
-        CHECK(blen > 64 && qgp_sha3_512(blob + 64, (size_t)blen - 64, d) == 0 &&
-              memcmp(d, blob, 64) == 0, "digest prefix");
-        sqlite3_finalize(st);
-    }
-    /* close runs the barrier for a pending Write (wal.go:168 `OnStop`) and
-     * the reopen restores seq as max+1 */
-    wal_round_state(m, 2, 0);
-    CHECK(nodus_cmt_wal_write(w, m) == CMT_OK && w->unsynced, "pending at close");
-    nodus_cmt_wal_close(w);
-    CHECK(wal_rows_main(fx.w->db, &n) == 0 && n == 7, "the row is there");
-    CHECK(wal_sync_n(fx.w->db, &sn) == 0 && sn == 3, "close ran the barrier");
-    CHECK(nodus_cmt_wal_open(w, fx.w->db, t_now, NULL) == CMT_OK && w->next_seq == 7,
-          "seq restored as max+1");
-    /* a kind NONE message will not encode */
-    memset(m, 0, sizeof *m);
-    CHECK(nodus_cmt_wal_write(w, m) == CMT_REJECT, "kind NONE refused");
-    nodus_cmt_wal_close(w);
-    /* an in-memory main DB is refused before anything is opened */
-    {
-        sqlite3 *mem = NULL;
-        nodus_cmt_wal_t w2;
-
-        CHECK(sqlite3_open(":memory:", &mem) == SQLITE_OK, "memdb");
-        CHECK(nodus_cmt_wal_open(&w2, mem, t_now, NULL) == CMT_FAULT, ":memory: refused");
-        sqlite3_close(mem);
-    }
-    free(w); free(m);
-    dbfx_close(&fx);
+    snprintf(fx->file, sizeof(fx->file), "%s/cs.wal/wal", fx->dir);
     return 0;
 }
 
-static int t_wal_start_and_search(void)
+/* -1 when the file does not exist */
+static long long wal_fsize(const char *path)
 {
-    dbfx_t fx;
-    nodus_cmt_wal_t *w;
-    cmt_wal_message_t *m;
-    cmt_timed_wal_message_t *tw;
-    bool found = false, eof = false;
-    int n = -1;
+    struct stat st;
 
-    CHECK(dbfx_open_live(&fx) == 0, "fixture");
+    return stat(path, &st) == 0 ? (long long)st.st_size : -1;
+}
+
+/* The whole file, heap-allocated (NULL on error). */
+static uint8_t *wal_slurp(const char *path, size_t *out_len)
+{
+    FILE    *f = fopen(path, "rb");
+    uint8_t *buf;
+    long     sz;
+
+    if (!f) {
+        return NULL;
+    }
+    if (fseek(f, 0, SEEK_END) != 0 || (sz = ftell(f)) < 0 ||
+        fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return NULL;
+    }
+    buf = (uint8_t *)malloc((size_t)sz + 1);
+    if (!buf || fread(buf, 1, (size_t)sz, f) != (size_t)sz) {
+        free(buf);
+        fclose(f);
+        return NULL;
+    }
+    fclose(f);
+    *out_len = (size_t)sz;
+    return buf;
+}
+
+static uint32_t wal_be32(const uint8_t *b)
+{
+    return ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) |
+           ((uint32_t)b[2] << 8) | (uint32_t)b[3];
+}
+
+/* The byte offset of record `k` (0-based), walking the 8-byte headers
+ * (wal.go:288). @return 0, -1 when the file has fewer records. */
+static int wal_rec_off(const uint8_t *buf, size_t len, int k, size_t *off)
+{
+    size_t o = 0;
+    int    i;
+
+    for (i = 0; i < k; i++) {
+        if (o + 8 > len) {
+            return -1;
+        }
+        o += 8 + wal_be32(buf + 4 + o);
+    }
+    if (o + 8 > len) {
+        return -1;
+    }
+    *off = o;
+    return 0;
+}
+
+/* XOR one byte of `path` at `off` with 0xFF. */
+static int wal_flip(const char *path, long off)
+{
+    FILE *f = fopen(path, "r+b");
+    int   c;
+
+    if (!f) {
+        return -1;
+    }
+    if (fseek(f, off, SEEK_SET) != 0 || (c = fgetc(f)) == EOF ||
+        fseek(f, off, SEEK_SET) != 0 || fputc(c ^ 0xFF, f) == EOF) {
+        fclose(f);
+        return -1;
+    }
+    return fclose(f) == 0 ? 0 : -1;
+}
+
+static int wal_append_raw(const char *path, const uint8_t *b, size_t n)
+{
+    FILE *f = fopen(path, "ab");
+
+    if (!f) {
+        return -1;
+    }
+    if (n > 0 && fwrite(b, 1, n, f) != n) {
+        fclose(f);
+        return -1;
+    }
+    return fclose(f) == 0 ? 0 : -1;
+}
+
+/* wal.go:91-218 — NewWAL, OnStart, the three write classes, the record
+ * layout, the 2 s ticker, close. */
+static int t_wal_write_classes_and_layout(void)
+{
+    walfx_t                  fx;
+    nodus_cmt_wal_t         *w;
+    cmt_wal_message_t       *m;
+    cmt_timed_wal_message_t *tw;
+    long long                s0, s1, s2;
+    int64_t                  dl = 0, t0;
+
+    CHECK(walfx_open(&fx) == 0, "fixture");
     w = (nodus_cmt_wal_t *)calloc(1, sizeof(*w));
     m = (cmt_wal_message_t *)calloc(1, sizeof(*m));
     tw = (cmt_timed_wal_message_t *)calloc(1, sizeof(*tw));
     CHECK(w && m && tw, "alloc");
-    CHECK(nodus_cmt_wal_open(w, fx.w->db, t_now, NULL) == CMT_OK, "open");
-    /* wal.go:124-131: an empty log gets EndHeight(0), once */
-    CHECK(nodus_cmt_wal_start(w) == CMT_OK && wal_rows_main(fx.w->db, &n) == 0 && n == 1,
-          "start wrote EndHeight(0)");
-    CHECK(nodus_cmt_wal_start(w) == CMT_OK && wal_rows_main(fx.w->db, &n) == 0 && n == 1,
-          "start on a non-empty log writes nothing");
-    CHECK(nodus_cmt_wal_search_end_height(w, 0, &found) == CMT_OK && found, "EndHeight(0) found");
-    CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && eof, "nothing after it");
-    /* height 1: two rows, then EndHeight(1); height 2: one row */
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK, "NewWAL");
+    CHECK(wal_fsize(fx.file) == 0, "OpenGroup made an empty head");
+    {
+        struct stat st;
+        char        d[128];
+
+        snprintf(d, sizeof(d), "%s/cs.wal", fx.dir);
+        CHECK(stat(d, &st) == 0 && S_ISDIR(st.st_mode) && (st.st_mode & 0777) == 0700,
+              "EnsureDir(cs.wal, 0700) (wal.go:92)");
+        CHECK(stat(fx.file, &st) == 0 && (st.st_mode & 0777) == 0600,
+              "the head is 0600 (autofile.go:38)");
+    }
+    CHECK(w->group.head_size_limit == 10LL * 1024 * 1024 &&
+          w->group.total_size_limit == 1024LL * 1024 * 1024 &&
+          NODUS_CMT_GROUP_TOTAL_SIZE_LIMIT == 1024LL * 1024 * 1024,
+          "10 MB head (group.go:21), 1 GB total (group.go:22), no option "
+          "(decision item 4)");
+    CHECK(!nodus_cmt_wal_next_flush_deadline(w, &dl), "no ticker before OnStart");
+
+    /* wal.go:124-131: an empty head gets WriteSync(EndHeight{0}) — in the
+     * file when OnStart returns */
+    CHECK(nodus_cmt_wal_start(w) == CMT_OK, "OnStart");
+    s0 = wal_fsize(fx.file);
+    CHECK(s0 > 8 && nodus_cmt_group_buffered(&w->group) == 0,
+          "EndHeight(0) is in the file");
+    CHECK(nodus_cmt_wal_start(w) == CMT_FAULT, "a second Start is refused");
+    /* wal.go:316-326: crc32c(P) BE ‖ len(P) BE ‖ P */
+    {
+        size_t                  len = 0;
+        uint8_t                *buf = wal_slurp(fx.file, &len);
+        nodus_cmt_crc32_table_t tab;
+        uint8_t                 abuf[256];
+        cmt_pb_arena_t          arena = { abuf, sizeof(abuf), 0 };
+        uint32_t                plen;
+
+        CHECK(buf != NULL && len == (size_t)s0, "read the head");
+        plen = wal_be32(buf + 4);
+        nodus_cmt_crc32_make_table(NODUS_CMT_CRC32C_POLY, tab);
+        CHECK((size_t)plen + 8 == len, "one record: the 8-byte header and P");
+        CHECK(nodus_cmt_crc32_update(0, tab, buf + 8, plen) == wal_be32(buf),
+              "the first four bytes are crc32c(P), big-endian");
+        CHECK(cmt_timed_wal_message_decode(buf + 8, plen, tw, &arena) == CMT_OK &&
+              tw->msg.kind == CMT_PB_WAL_END_HEIGHT &&
+              tw->msg.u.end_height.height == 0 &&
+              tw->time.seconds == g_now.seconds,
+              "P is TimedWALMessage{now, EndHeight{0}}");
+        free(buf);
+    }
+
+    /* Write (:184-196): buffered, not in the file */
     wal_round_state(m, 1, 0);
-    CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "w1");
-    wal_timeout(m, 1, 0);
-    CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "w2");
-    wal_end_height(m, 1);
-    CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_OK, "end 1");
+    CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "Write");
+    CHECK(wal_fsize(fx.file) == s0 && nodus_cmt_group_buffered(&w->group) > 8,
+          "a Write stays in the head buffer");
+    /* FlushAndSync (:157-159) */
+    CHECK(nodus_cmt_wal_flush_and_sync(w) == CMT_OK, "FlushAndSync");
+    s1 = wal_fsize(fx.file);
+    CHECK(s1 > s0 && nodus_cmt_group_buffered(&w->group) == 0, "flushed into the file");
+    CHECK(nodus_cmt_wal_flush_and_sync(w) == CMT_OK && wal_fsize(fx.file) == s1,
+          "FlushAndSync with nothing buffered adds nothing");
+    /* WriteSync (:201-217) carries a pending Write with it */
+    wal_round_state(m, 1, 1);
+    CHECK(nodus_cmt_wal_write(w, m) == CMT_OK && wal_fsize(fx.file) == s1, "Write");
+    wal_timeout(m, 1, 1);
+    CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_OK, "WriteSync");
+    s2 = wal_fsize(fx.file);
+    CHECK(s2 > s1 && nodus_cmt_group_buffered(&w->group) == 0,
+          "both records are in the file when WriteSync returns");
+
+    /* the two tickers, armed by OnStart at `now` */
+    t0 = cmt_time_unix_nano(g_now);
+    {
+        int64_t gdl = 0;
+
+        CHECK(nodus_cmt_wal_next_group_check_deadline(w, &gdl) &&
+              gdl == t0 + NODUS_CMT_GROUP_CHECK_DURATION_NS,
+              "group check at start + 5 s (group.go:20, :139)");
+    }
+    CHECK(nodus_cmt_wal_next_flush_deadline(w, &dl) &&
+          dl == t0 + NODUS_CMT_WAL_FLUSH_INTERVAL_NS, "flush at start + 2 s (wal.go:28, :137)");
+    wal_round_state(m, 1, 2);
+    CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "Write");
+    CHECK(nodus_cmt_wal_flush_if_due(w, dl - 1) == CMT_OK && wal_fsize(fx.file) == s2,
+          "one ns early: nothing");
+    CHECK(nodus_cmt_wal_flush_if_due(w, dl) == CMT_OK && wal_fsize(fx.file) > s2,
+          "due: FlushAndSync");
+    CHECK(nodus_cmt_wal_next_flush_deadline(w, &dl) &&
+          dl == t0 + 2 * NODUS_CMT_WAL_FLUSH_INTERVAL_NS, "the next tick one period on");
+
+    /* a kind NONE message will not encode: nothing is written */
+    s1 = wal_fsize(fx.file);
+    memset(m, 0, sizeof *m);
+    CHECK(nodus_cmt_wal_write(w, m) == CMT_REJECT &&
+          nodus_cmt_group_buffered(&w->group) == 0, "kind NONE: REJECT, nothing buffered");
+    CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_FAULT,
+          "WriteSync of it: FAULT (the reference panics, state.go:841-844)");
+
+    /* OnStop (:164-173) flushes a pending Write */
     wal_round_state(m, 2, 0);
-    CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "w3 (Write class, main connection)");
-    /* replay.go:129: search EndHeight(1), then read to EOF — the read
-     * side is on the MAIN connection too (R3-B-WAL-4), so a Write is
-     * visible to the cursor with no flush in between (D-15 rev 5 (5)) */
+    CHECK(nodus_cmt_wal_write(w, m) == CMT_OK && wal_fsize(fx.file) == s1, "pending at close");
+    nodus_cmt_wal_close(w);
+    s2 = wal_fsize(fx.file);
+    CHECK(s2 > s1, "close flushed it");
+    /* a non-empty head gets no second EndHeight(0) */
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+          nodus_cmt_wal_start(w) == CMT_OK && wal_fsize(fx.file) == s2,
+          "OnStart on a non-empty head writes nothing");
+    nodus_cmt_wal_close(w);
+    nodus_cmt_wal_close(w);                     /* a second close is harmless */
+
+    CHECK(nodus_cmt_wal_open(w, "", t_now, NULL) == CMT_FAULT, "an empty path is refused");
+    {
+        char p[192];
+
+        /* `<dir>/cs.wal/wal` is a FILE, so EnsureDir of it fails */
+        snprintf(p, sizeof(p), "%s/cs.wal/wal/x", fx.dir);
+        CHECK(nodus_cmt_wal_open(w, p, t_now, NULL) == CMT_FAULT,
+              "EnsureDir over a file is refused");
+    }
+    free(w); free(m); free(tw);
+    rmrf(fx.dir);
+    return 0;
+}
+
+/* replay.go:94-167 / wal.go:231-284 — SearchForEndHeight and the replay
+ * reader, within one file and across rotated files. */
+static int t_wal_search_and_replay(void)
+{
+    walfx_t                  fx;
+    nodus_cmt_wal_t         *w;
+    cmt_wal_message_t       *m;
+    cmt_timed_wal_message_t *tw;
+    bool                     found = false, eof = false;
+    int                      count;
+
+    CHECK(walfx_open(&fx) == 0, "fixture");
+    w = (nodus_cmt_wal_t *)calloc(1, sizeof(*w));
+    m = (cmt_wal_message_t *)calloc(1, sizeof(*m));
+    tw = (cmt_timed_wal_message_t *)calloc(1, sizeof(*tw));
+    CHECK(w && m && tw, "alloc");
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK, "open");
+    CHECK(nodus_cmt_wal_start(w) == CMT_OK, "OnStart: EndHeight(0)");
+    CHECK(nodus_cmt_wal_search_end_height(w, 0, &found) == CMT_OK && found,
+          "EndHeight(0) found");
+    CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && eof, "nothing after it");
+
+    /* file A: EndHeight(0) rs(1,0) to(1,0) EndHeight(1) rs(2,0) */
+    wal_round_state(m, 1, 0);
+    CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "rs(1,0)");
+    wal_timeout(m, 1, 0);
+    CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "to(1,0)");
+    wal_end_height(m, 1);
+    CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_OK, "EndHeight(1)");
+    wal_round_state(m, 2, 0);
+    CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "rs(2,0), buffered");
+
+    /* the reader reads the FILES: the buffered rs(2,0) is not there yet
+     * (the reference's own TODO, wal.go:73-75) */
     CHECK(nodus_cmt_wal_search_end_height(w, 1, &found) == CMT_OK && found, "EndHeight(1)");
+    CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && eof,
+          "a buffered Write is not visible to the reader");
+    CHECK(nodus_cmt_wal_flush_and_sync(w) == CMT_OK, "flush");
     CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && !eof &&
           tw->msg.kind == CMT_PB_WAL_EVENT_DATA_ROUND_STATE &&
           tw->msg.u.event_data_round_state.height == 2 &&
-          tw->time.seconds == g_now.seconds, "the height-2 row, stamped now");
-    /* a row appended DURING the cursor is seen next (D-15 rev 5 point 5) */
+          tw->time.seconds == g_now.seconds, "after the flush: rs(2,0), stamped now");
+    /* appended during replay: seen once flushed, as above */
     wal_timeout(m, 2, 1);
-    CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "append during replay");
-    CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && !eof &&
+    CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "to(2,1) during replay");
+    CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && eof, "not yet flushed");
+    CHECK(nodus_cmt_wal_flush_and_sync(w) == CMT_OK &&
+          nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && !eof &&
           tw->msg.kind == CMT_PB_WAL_TIMEOUT_INFO && tw->msg.u.timeout_info.round == 1,
-          "appended row read");
+          "flushed: read next");
     CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && eof, "EOF");
-    /* search for an absent height */
-    CHECK(nodus_cmt_wal_search_end_height(w, 7, &found) == CMT_OK && !found, "absent");
-    /* from the start of the log (no search): every row in (height, seq) */
-    {
-        nodus_cmt_wal_t *w2 = (nodus_cmt_wal_t *)calloc(1, sizeof(*w2));
-        int count = 0;
 
-        CHECK(w2 != NULL, "alloc");
-        /* Not needed for VISIBILITY any more — every row is autocommit
-         * and both handles read the main connection — but the reference
-         * flushes before a second reader (wal.go:157-159) and so does
-         * this, so the barrier stays on the path the test walks. */
-        CHECK(nodus_cmt_wal_flush_and_sync(w) == CMT_OK, "flush before a 2nd handle");
-        CHECK(nodus_cmt_wal_open(w2, fx.w->db, t_now, NULL) == CMT_OK, "open 2");
-        for (;;) {
-            CHECK(nodus_cmt_wal_read_next(w2, tw, &eof) == CMT_OK, "read");
-            if (eof) {
-                break;
-            }
-            count++;
+    /* absent: not found, and no cursor — read_next then starts at the
+     * first file and reads all six records */
+    CHECK(nodus_cmt_wal_search_end_height(w, 7, &found) == CMT_OK && !found, "absent");
+    for (count = 0;;) {
+        CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK, "read from the start");
+        if (eof) {
+            break;
         }
-        CHECK(count == 6, "six rows from the start");
-        nodus_cmt_wal_close(w2);
-        free(w2);
+        count++;
     }
-    /* the LAST EndHeight(h) when there are two (the reference's
-     * newest-file-first match) — a second EndHeight(1) written later */
+    CHECK(count == 6, "six records from the start");
+
+    /* two EndHeight(1) in ONE file: the search stops at the FIRST it
+     * meets in that file (wal.go:272-277) — rs(2,0) follows it */
     wal_end_height(m, 1);
-    CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_OK, "second EndHeight(1)");
+    CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_OK, "a second EndHeight(1)");
     CHECK(nodus_cmt_wal_search_end_height(w, 1, &found) == CMT_OK && found &&
-          w->cursor_seq == 6, "cursor after the LAST EndHeight(1)");
-    /* (height, seq) order: the late EndHeight(1) carries height 1, so it
-     * sorts BEFORE the height-2 rows even though it was written after
-     * them. The reference has no such case (its cursor is a byte offset
-     * into a file group), so there is nothing to match — the behaviour
-     * is pinned here so a later change to the replay order is seen. */
+          nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && !eof &&
+          tw->msg.kind == CMT_PB_WAL_EVENT_DATA_ROUND_STATE &&
+          tw->msg.u.event_data_round_state.height == 2,
+          "the first EndHeight(1) of the file");
+
+    /* file A → wal.000; file B: rs(3,0) EndHeight(3) → wal.001;
+     * head C: rs(4,0) rs(4,1) */
+    CHECK(nodus_cmt_group_rotate_file(&w->group) == CMT_OK, "rotate A");
+    wal_round_state(m, 3, 0);
+    CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "rs(3,0)");
+    wal_end_height(m, 3);
+    CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_OK, "EndHeight(3)");
+    CHECK(nodus_cmt_group_rotate_file(&w->group) == CMT_OK, "rotate B");
+    wal_round_state(m, 4, 0);
+    CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "rs(4,0)");
+    wal_round_state(m, 4, 1);
+    CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "rs(4,1)");
+    CHECK(nodus_cmt_wal_flush_and_sync(w) == CMT_OK, "flush C");
+    CHECK(w->group.min_index == 0 && w->group.max_index == 2, "three files");
+
+    /* EndHeight(3) is in B; the reader reads ON into C (group.go:486-488) */
+    CHECK(nodus_cmt_wal_search_end_height(w, 3, &found) == CMT_OK && found, "EndHeight(3)");
     CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && !eof &&
-          tw->msg.u.event_data_round_state.height == 2, "height 2 follows");
-    /* prune below 2 removes the height-0 and height-1 rows */
-    CHECK(nodus_cmt_wal_prune_below(w, 2) == CMT_OK && wal_rows_main(fx.w->db, &n) == 0 && n == 2,
-          "prune below 2");
-    CHECK(nodus_cmt_wal_search_end_height(w, 1, &found) == CMT_OK && !found, "pruned away");
+          tw->msg.u.event_data_round_state.height == 4 &&
+          tw->msg.u.event_data_round_state.round == 0, "rs(4,0) from the next file");
+    CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && !eof &&
+          tw->msg.u.event_data_round_state.round == 1, "rs(4,1)");
+    CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && eof, "then EOF");
+    /* EndHeight(1) is in the OLDEST file: C and B are scanned first */
+    CHECK(nodus_cmt_wal_search_end_height(w, 1, &found) == CMT_OK && found &&
+          nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && !eof &&
+          tw->msg.u.event_data_round_state.height == 2,
+          "found in wal.000 after the newer files");
+    /* wal.go:256: B's EndHeight(3) < 9 ends the search before A */
+    CHECK(nodus_cmt_wal_search_end_height(w, 9, &found) == CMT_OK && !found, "9 absent");
+    /* 2 is absent everywhere: A is reached, its EndHeight(1) < 2 ends it */
+    CHECK(nodus_cmt_wal_search_end_height(w, 2, &found) == CMT_OK && !found, "2 absent");
+
     nodus_cmt_wal_close(w);
     free(w); free(m); free(tw);
-    dbfx_close(&fx);
+    rmrf(fx.dir);
     return 0;
 }
 
-static int t_wal_corruption_faults(void)
+/* Reopen the WAL (no OnStart), search EndHeight(1), and read `k` good
+ * records after it. @return 0 or the failing step. */
+static int wal_reopen_after_end1(nodus_cmt_wal_t *w, const char *file,
+                                 cmt_timed_wal_message_t *tw, int k)
 {
-    dbfx_t fx;
-    nodus_cmt_wal_t *w;
-    cmt_wal_message_t *m;
-    cmt_timed_wal_message_t *tw;
-    bool eof = false, found = false;
+    bool found = false, eof = false;
+    int  i;
 
-    CHECK(dbfx_open_live(&fx) == 0, "fixture");
+    nodus_cmt_wal_close(w);
+    if (nodus_cmt_wal_open(w, file, t_now, NULL) != CMT_OK) {
+        return 1;
+    }
+    if (nodus_cmt_wal_search_end_height(w, 1, &found) != CMT_OK || !found) {
+        return 2;
+    }
+    for (i = 0; i < k; i++) {
+        if (nodus_cmt_wal_read_next(w, tw, &eof) != CMT_OK || eof) {
+            return 3;
+        }
+    }
+    return 0;
+}
+
+/* wal.go:332-420 — DataCorruptionError: skipped by the search
+ * (IgnoreDataCorruptionErrors, replay.go:106/:129, wal.go:263-266),
+ * CMT_REJECT from read_next (replay.go:151-156; cmt_cs_start then
+ * proceeds, as state.go:344-350 does); a torn CRC is a clean EOF
+ * (:369-371). */
+static int t_wal_corruption(void)
+{
+    walfx_t                  fx;
+    nodus_cmt_wal_t         *w;
+    cmt_wal_message_t       *m;
+    cmt_timed_wal_message_t *tw;
+    bool                     found = false, eof = false;
+    uint8_t                 *buf;
+    size_t                   len = 0, off1 = 0;
+    long long                good;
+
+    CHECK(walfx_open(&fx) == 0, "fixture");
     w = (nodus_cmt_wal_t *)calloc(1, sizeof(*w));
     m = (cmt_wal_message_t *)calloc(1, sizeof(*m));
     tw = (cmt_timed_wal_message_t *)calloc(1, sizeof(*tw));
     CHECK(w && m && tw, "alloc");
-    CHECK(nodus_cmt_wal_open(w, fx.w->db, t_now, NULL) == CMT_OK, "open");
+    /* EndHeight(0) rs(1,0) EndHeight(1) rs(2,0) */
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+          nodus_cmt_wal_start(w) == CMT_OK, "open + start");
     wal_round_state(m, 1, 0);
-    CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_OK, "row");
-    /* flip one payload bit through the main connection */
-    CHECK(run_sql(fx.w->db,
-              "UPDATE cmt_wal SET bytes = substr(bytes,1,64) || X'FF' || substr(bytes,66)"
-              " WHERE seq = 0") == 0, "flip");
-    CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_FAULT, "digest mismatch FAULTs");
-    /* a kind outside 1-4 */
-    CHECK(run_sql(fx.w->db, "DELETE FROM cmt_wal") == 0, "clear");
-    w->cursor_valid = false;
-    wal_round_state(m, 1, 0);
-    CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_OK, "row 2");
-    CHECK(run_sql(fx.w->db, "UPDATE cmt_wal SET kind = 9") == 0, "bad kind");
-    CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_FAULT, "kind 9 FAULTs");
-    /* a kind column disagreeing with the payload's oneof */
-    CHECK(run_sql(fx.w->db, "UPDATE cmt_wal SET kind = 4") == 0, "wrong kind");
-    CHECK(nodus_cmt_wal_search_end_height(w, 1, &found) == CMT_FAULT,
-          "kind-4 row that is not an EndHeight FAULTs the search");
-    /* a row shorter than its digest */
-    CHECK(run_sql(fx.w->db, "UPDATE cmt_wal SET kind = 1, bytes = X'00'") == 0, "short");
-    CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_FAULT, "short row FAULTs");
+    CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "rs(1,0)");
+    wal_end_height(m, 1);
+    CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_OK, "EndHeight(1)");
+    wal_round_state(m, 2, 0);
+    CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_OK, "rs(2,0)");
     nodus_cmt_wal_close(w);
+    good = wal_fsize(fx.file);
+    buf = wal_slurp(fx.file, &len);
+    CHECK(buf != NULL && (long long)len == good && wal_rec_off(buf, len, 1, &off1) == 0,
+          "record 1's offset");
+    free(buf);
+
+    /* (1) a flipped payload byte in rs(1,0): the search skips it and
+     * still finds EndHeight(1); read_next on it is REJECT */
+    CHECK(wal_flip(fx.file, (long)(off1 + 8 + 2)) == 0, "flip");
+    CHECK(wal_reopen_after_end1(w, fx.file, tw, 1) == 0,
+          "search skips the corrupted record; rs(2,0) follows EndHeight(1)");
+    CHECK(tw->msg.u.event_data_round_state.height == 2, "rs(2,0)");
+    nodus_cmt_wal_close(w);
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK, "reopen");
+    CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && !eof &&
+          tw->msg.kind == CMT_PB_WAL_END_HEIGHT, "from the start: EndHeight(0)");
+    CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_REJECT,
+          "checksum mismatch: REJECT (DataCorruptionError, wal.go:399-402)");
+    CHECK(wal_flip(fx.file, (long)(off1 + 8 + 2)) == 0, "flip back");
+
+    /* (2) a torn LENGTH at the tail (a crash between two buffer flushes) */
+    {
+        static const uint8_t torn[6] = { 1, 2, 3, 4, 0, 0 };
+
+        CHECK(wal_append_raw(fx.file, torn, sizeof(torn)) == 0, "torn length");
+        CHECK(wal_reopen_after_end1(w, fx.file, tw, 1) == 0, "rs(2,0)");
+        CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_REJECT,
+              "failed to read length: REJECT (wal.go:379-382)");
+        nodus_cmt_wal_close(w);
+        CHECK(truncate(fx.file, (off_t)good) == 0, "cut back");
+    }
+    /* (3) a torn CRC (two bytes): a clean EOF (wal.go:369-371) */
+    {
+        static const uint8_t torn[2] = { 9, 9 };
+
+        CHECK(wal_append_raw(fx.file, torn, sizeof(torn)) == 0, "torn crc");
+        CHECK(wal_reopen_after_end1(w, fx.file, tw, 1) == 0, "rs(2,0)");
+        CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && eof,
+              "1-3 CRC bytes then EOF is io.EOF");
+        nodus_cmt_wal_close(w);
+        CHECK(truncate(fx.file, (off_t)good) == 0, "cut back");
+    }
+    /* (4) a length above maxMsgSizeBytes (wal.go:385-390) */
+    {
+        static const uint8_t big[8] = { 0, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF };
+
+        CHECK(wal_append_raw(fx.file, big, sizeof(big)) == 0, "huge length");
+        CHECK(wal_reopen_after_end1(w, fx.file, tw, 1) == 0, "rs(2,0)");
+        CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_REJECT,
+              "length over the bound: REJECT");
+        nodus_cmt_wal_close(w);
+        CHECK(truncate(fx.file, (off_t)good) == 0, "cut back");
+    }
+    /* (5) a zero length: GroupReader's "given empty slice" */
+    {
+        static const uint8_t zero[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+
+        CHECK(wal_append_raw(fx.file, zero, sizeof(zero)) == 0, "zero length");
+        CHECK(wal_reopen_after_end1(w, fx.file, tw, 1) == 0, "rs(2,0)");
+        CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_REJECT,
+              "zero length: REJECT (group.go:462-464 → wal.go:393-396)");
+        nodus_cmt_wal_close(w);
+        CHECK(truncate(fx.file, (off_t)good) == 0, "cut back");
+    }
+    /* (6) a short payload: 100 announced, 10 present */
+    {
+        static const uint8_t hdr[18] = { 0, 0, 0, 0, 0, 0, 0, 100,
+                                         1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
+
+        CHECK(wal_append_raw(fx.file, hdr, sizeof(hdr)) == 0, "short payload");
+        CHECK(wal_reopen_after_end1(w, fx.file, tw, 1) == 0, "rs(2,0)");
+        CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_REJECT,
+              "failed to read data: REJECT (wal.go:392-396)");
+        /* and the search still finds EndHeight(1) past the torn tail */
+        CHECK(nodus_cmt_wal_search_end_height(w, 1, &found) == CMT_OK && found,
+              "the search is not stopped by a torn tail");
+        nodus_cmt_wal_close(w);
+    }
     free(w); free(m); free(tw);
-    dbfx_close(&fx);
+    rmrf(fx.dir);
     return 0;
 }
 
-/* The two connections share one file, and SQLite allows ONE writer at a
- * time. This case pins the three facts that follow from it, in the order
- * that matters:
- *
- *   (1) the approved routing (D-13, D-15 rev 5 (4)) never contends — the
- *       `finalizeCommit` order runs ten heights with no failure, because
- *       every write of both classes is a single autocommit statement and
- *       the store's own `BEGIN IMMEDIATE … COMMIT` (SaveBlock's batch,
- *       store.go:439-454 → `batch_begin`) opens and closes BETWEEN them.
- *       The block store is driven through the REAL `nodus_cmt_bs_save_
- *       block` — the multi-statement transaction the withdrawn W1 shape
- *       deadlocked against — not through a lone autocommit row;
- *   (2) the CONTROL that proves (1) is not vacuous: an OPEN transaction
- *       on either connection does block the other, so the earlier W1
- *       shape (a WAL transaction left open across `Write`s) really did
- *       deadlock against the store's `SaveBlock`;
- *   (3) the surviving caller contract: a `Write` issued while the store
- *       holds a transaction on the MAIN connection joins it, so the host
- *       must not do that — here it is only asserted that the row is
- *       written and then ROLLED BACK with the store's work.
- *
- * (2) waits the busy timeout twice (HOW IT CAN LIE 7). The fixture is
- * the execution tests' `t_env_t` (its store and DB, helpers_test.go's
- * makeState(1, 1)) so the blocks are the same makeBlock/MakeNTxs shape
- * as `env_save_n_blocks`; the seen commit is store_test.go's
- * makeTestExtCommit → `ToCommit()`, as TestLoadBlockExtendedCommit's
- * plain-commit row builds it. */
-static int t_wal_main_connection_interaction(void)
+/* A NewRoundStep MsgInfo record — our own (peer id empty, state.go:839). */
+static void wal_new_round_step(cmt_wal_message_t *m, int64_t h)
 {
-    t_env_t e;
-    nodus_cmt_wal_t *w;
-    cmt_wal_message_t *m;
-    cmt_block_t *b;
-    cmt_commit_t *empty, *commit;
-    cmt_commit_sig_t *sigs;
-    cmt_part_set_t ps;
-    cmt_extended_commit_t ec;
-    cmt_extended_commit_sig_t ecs[1];
-    cmt_data_t data;
-    cmt_validator_t proposer;
-    cmt_pb_block_store_state_t bss = { 1, 10 };
-    int i, n = -1;
+    memset(m, 0, sizeof *m);
+    m->kind = CMT_PB_WAL_MSG_INFO;
+    m->u.msg_info.peer_id_len = 0;
+    m->u.msg_info.msg.kind = CMT_PB_CONS_MSG_NEW_ROUND_STEP;
+    m->u.msg_info.msg.u.new_round_step.height = h;
+    m->u.msg_info.msg.u.new_round_step.round = 0;
+    m->u.msg_info.msg.u.new_round_step.step = (uint8_t)CMT_ROUND_STEP_NEW_HEIGHT;
+    m->u.msg_info.msg.u.new_round_step.last_commit_round = -1;
+}
 
-    CHECK(env_make_state(&e, 1, 1) == 0, "makeState(1, 1): S14 fixture + store");
+/* The decoder runs ValidateBasic (msgs.go:232-234 inside wal.go:410's
+ * WALFromProto): a MsgInfo that fails it is a DataCorruptionError —
+ * skipped by the search, CMT_REJECT on read_next. And the repair
+ * (state.go:352-385, repairWalFile :2621-2653) through the WAL module:
+ * `.CORRUPTED` is the head byte for byte, the new head holds exactly the
+ * records before the first bad one, the handle is reopened and started
+ * in place, and a repair of a WAL that was never started is refused
+ * (Stop's ErrNotStarted, :359-361). */
+static int t_wal_validate_basic_and_repair(void)
+{
+    walfx_t                  fx;
+    nodus_cmt_wal_t         *w;
+    cmt_wal_message_t       *m;
+    cmt_timed_wal_message_t *tw;
+    bool                     found = false, eof = false;
+    char                     bak[192];
+    long long                good, bad_size;
+    uint8_t                 *hb, *bb;
+    size_t                   hl = 0, bl = 0;
+
+    CHECK(walfx_open(&fx) == 0, "fixture");
+    snprintf(bak, sizeof(bak), "%s%s", fx.file, NODUS_CMT_WAL_CORRUPTED_SUFFIX);
     w = (nodus_cmt_wal_t *)calloc(1, sizeof(*w));
     m = (cmt_wal_message_t *)calloc(1, sizeof(*m));
-    b = (cmt_block_t *)calloc(1, sizeof(*b));
-    empty = (cmt_commit_t *)calloc(1, sizeof(*empty));
-    commit = (cmt_commit_t *)calloc(1, sizeof(*commit));
-    sigs = (cmt_commit_sig_t *)calloc(CMT_VALSET_MAX, sizeof(*sigs));
-    CHECK(w && m && b && empty && commit && sigs, "alloc");
-    CHECK(nodus_cmt_wal_open(w, e.fx.w->db, t_now, NULL) == CMT_OK, "wal open");
-    {
-        cmt_validator_set_t vals;
-        cmt_validator_t *vstor = (cmt_validator_t *)calloc(CMT_VALSET_MAX, sizeof(cmt_validator_t));
+    tw = (cmt_timed_wal_message_t *)calloc(1, sizeof(*tw));
+    CHECK(w && m && tw, "alloc");
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK, "open");
+    CHECK(nodus_cmt_wal_repair(w) == CMT_FAULT,
+          "repair of a WAL that was never started: refused (ErrNotStarted)");
+    CHECK(wal_fsize(bak) == -1, "and nothing was copied");
+    CHECK(nodus_cmt_wal_start(w) == CMT_OK, "start: EndHeight(0)");
 
-        CHECK(vstor && cmt_validator_set_init(&vals, vstor, CMT_VALSET_MAX) == CMT_OK &&
-              cmt_validator_set_copy(&e.state->validators, &vals) == CMT_OK &&
-              cmt_validator_set_get_proposer(&vals, &proposer) == CMT_OK, "proposer");
-        free(vstor);
-    }
+    /* EndHeight(0) NRS(1) EndHeight(1) — good; then NRS(-1) — fails
+     * ValidateBasic (height < 0); then rs(2,0) after it */
+    wal_new_round_step(m, 1);
+    CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "NewRoundStep(1)");
+    wal_end_height(m, 1);
+    CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_OK, "EndHeight(1)");
+    good = wal_fsize(fx.file);
+    wal_new_round_step(m, -1);
+    CHECK(cmt_msg_validate_basic(&m->u.msg_info.msg) == CMT_REJECT,
+          "the record's message does fail ValidateBasic");
+    CHECK(nodus_cmt_wal_write(w, m) == CMT_OK,
+          "the WRITE side does not validate (the reference's Encode does "
+          "not either, wal.go:301-330)");
+    wal_round_state(m, 2, 0);
+    CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_OK, "rs(2,0)");
+    bad_size = wal_fsize(fx.file);
 
-    /* (1) ten heights in the reference's own order: newStep's Write
-     * (state.go:760), the REAL SaveBlock (:1737 — the ToCommit branch;
-     * store.go:434-457 with its batch), WriteSync(EndHeight) (:1760).
-     * Contiguous heights (store.go:516-518), complete part sets
-     * (:519-521), the seen commit at the block's height (:522-524). */
-    for (i = 1; i <= 10; i++) {
-        cmt_time_t ts = g_now;
+    /* the search skips it, read_next reports it */
+    CHECK(nodus_cmt_wal_search_end_height(w, 1, &found) == CMT_OK && found,
+          "EndHeight(1)");
+    CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_REJECT,
+          "ValidateBasic failure: REJECT, the corruption class");
+    CHECK(nodus_cmt_wal_search_end_height(w, 5, &found) == CMT_OK && !found,
+          "a search over the bad record skips it and ends normally");
 
-        ts.seconds += i;
-        wal_round_state(m, i, 0);
-        CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "Write (state.go:760)");
-        CHECK(env_make_n_txs(&e, i, 10, &data) == 0 &&
-              cmt_state_make_block(e.state, i, &data, empty, NULL, proposer.address,
-                                   proposer.address_len, e.bscratch, b) == CMT_OK &&
-              env_make_part_set(&e, b, &ps) == 0, "makeBlock(h) + part set");
-        make_test_ext_commit(i, ts, 1, (unsigned)(0xC0 + i), ecs, &ec);
-        CHECK(cmt_extended_commit_to_commit(&ec, sigs, CMT_VALSET_MAX, commit) == CMT_OK,
-              "seenExtendedCommit.ToCommit() (state.go:1737)");
-        CHECK(nodus_cmt_bs_save_block(e.store, b, &ps, commit, e.size_scratch,
-                                      e.part_scratch_cap) == CMT_OK,
-              "SaveBlock (state.go:1737): BEGIN IMMEDIATE … COMMIT on the main connection");
-        wal_end_height(m, i);
-        CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_OK, "WriteSync(EndHeight) (state.go:1760)");
-    }
-    CHECK(wal_rows_main(e.fx.w->db, &n) == 0 && n == 20, "twenty rows, no contention");
-    CHECK(nodus_cmt_bs_height(e.store) == 10 && nodus_cmt_bs_base(e.store) == 1,
-          "the store saved ten blocks (store.go:448-451): the real SaveBlock ran");
-
-    /* (2) the control, both directions */
-    CHECK(run_sql(e.fx.w->db, "BEGIN IMMEDIATE") == 0, "main txn open");
-    CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_FAULT,
-          "a WriteSync on the FULL connection FAULTs while a main txn is open");
-    CHECK(run_sql(e.fx.w->db, "COMMIT") == 0, "main commit");
-    {
-        char *err = NULL;
-        CHECK(sqlite3_exec(w->full, "BEGIN IMMEDIATE", NULL, NULL, &err) == SQLITE_OK,
-              "WAL-connection txn open");
-        sqlite3_free(err);
-        CHECK(nodus_cmt_bs_save_block_store_state(e.store, &bss) == CMT_FAULT,
-              "the store FAULTs while the WAL connection holds a txn — the W1 shape");
-        CHECK(sqlite3_exec(w->full, "ROLLBACK", NULL, NULL, &err) == SQLITE_OK, "rollback");
-        sqlite3_free(err);
-    }
-    CHECK(nodus_cmt_bs_save_block_store_state(e.store, &bss) == CMT_OK,
-          "the same store write succeeds once nothing holds a transaction");
-
-    /* (3) the caller contract, stated as an observation: a Write inside
-     * the store's transaction is rolled back with it. */
-    CHECK(wal_rows_main(e.fx.w->db, &n) == 0 && n == 20, "twenty before");
-    CHECK(run_sql(e.fx.w->db, "BEGIN IMMEDIATE") == 0, "main txn open");
-    wal_round_state(m, 99, 0);
-    CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "the Write joins the open txn");
-    CHECK(run_sql(e.fx.w->db, "ROLLBACK") == 0, "main rollback");
-    CHECK(wal_rows_main(e.fx.w->db, &n) == 0 && n == 20,
-          "the WAL row went with it — why the host must not do this");
-
+    /* the repair */
+    CHECK(nodus_cmt_wal_repair(w) == CMT_OK, "repair");
+    CHECK(wal_fsize(bak) == bad_size, "wal.CORRUPTED has the old head's size");
+    hb = wal_slurp(fx.file, &hl);
+    bb = wal_slurp(bak, &bl);
+    CHECK(hb && bb && (long long)hl == good && (long long)bl == bad_size &&
+          memcmp(hb, bb, (size_t)good) == 0,
+          "the new head is exactly the records before the first bad one, "
+          "re-encoded to the same bytes (Time kept, :2646)");
+    free(hb);
+    free(bb);
+    CHECK(w->started && w->group.head_buf != NULL, "reopened and started in place");
+    CHECK(nodus_cmt_wal_search_end_height(w, 1, &found) == CMT_OK && found &&
+          nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && eof,
+          "the retried replay from EndHeight(1) reads to a clean EOF");
+    /* the reloaded WAL writes */
+    wal_round_state(m, 2, 1);
+    CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_OK && wal_fsize(fx.file) > good,
+          "and it is usable");
     nodus_cmt_wal_close(w);
-    free(w); free(m); free(b); free(empty); free(commit); free(sigs);
-    env_free(&e);
+    free(w); free(m); free(tw);
+    rmrf(fx.dir);
+    return 0;
+}
+
+/* The size bound (decision 2026-09-26-cmt-wal-file-group.md item 4;
+ * group.go:239-299): at lowered limits, thirty heights with the 5 s
+ * check fired after each — the head rotates, the OLDEST files go, the
+ * total ends below the bound, replay from the newest EndHeight reads
+ * exactly what follows it, and an old EndHeight is gone. */
+static int t_wal_size_bound_rotates_and_removes_oldest(void)
+{
+    walfx_t                  fx;
+    nodus_cmt_wal_t         *w;
+    cmt_wal_message_t       *m;
+    cmt_timed_wal_message_t *tw;
+    nodus_cmt_group_info_t   gi;
+    bool                     found = false, eof = false;
+    int64_t                  t0;
+    int                      h;
+
+    CHECK(walfx_open(&fx) == 0, "fixture");
+    w = (nodus_cmt_wal_t *)calloc(1, sizeof(*w));
+    m = (cmt_wal_message_t *)calloc(1, sizeof(*m));
+    tw = (cmt_timed_wal_message_t *)calloc(1, sizeof(*tw));
+    CHECK(w && m && tw, "alloc");
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+          nodus_cmt_wal_start(w) == CMT_OK, "open + start");
+    t0 = cmt_time_unix_nano(g_now);
+    /* the reference's option functions (group.go:122-134), lowered */
+    w->group.head_size_limit = 256;
+    w->group.total_size_limit = 1024;
+
+    for (h = 1; h <= 30; h++) {
+        wal_round_state(m, h, 0);
+        CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "rs(h,0)");
+        wal_timeout(m, h, 0);
+        CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "to(h,0)");
+        wal_end_height(m, h);
+        CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_OK, "EndHeight(h)");
+        /* one 5 s tick per height */
+        CHECK(nodus_cmt_wal_group_check_if_due(w, t0 + (int64_t)h *
+                                               NODUS_CMT_GROUP_CHECK_DURATION_NS)
+              == CMT_OK, "group check");
+    }
+    CHECK(w->group.max_index > 3, "the head rotated several times");
+    CHECK(nodus_cmt_group_read_info(&w->group, &gi) == CMT_OK, "GroupInfo");
+    CHECK(gi.min_index > 0, "the oldest files were removed");
+    CHECK(gi.total_size < 1024, "the group ends below its total limit");
+
+    /* replay from the newest marker: nothing after it; from the one
+     * before: exactly height 30's three records */
+    CHECK(nodus_cmt_wal_search_end_height(w, 30, &found) == CMT_OK && found &&
+          nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && eof,
+          "EndHeight(30), then EOF");
+    CHECK(nodus_cmt_wal_search_end_height(w, 29, &found) == CMT_OK && found, "EndHeight(29)");
+    CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && !eof &&
+          tw->msg.kind == CMT_PB_WAL_EVENT_DATA_ROUND_STATE &&
+          tw->msg.u.event_data_round_state.height == 30, "rs(30,0)");
+    CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && !eof &&
+          tw->msg.kind == CMT_PB_WAL_TIMEOUT_INFO && tw->msg.u.timeout_info.height == 30,
+          "to(30,0)");
+    CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && !eof &&
+          tw->msg.kind == CMT_PB_WAL_END_HEIGHT && tw->msg.u.end_height.height == 30,
+          "EndHeight(30)");
+    CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && eof, "then EOF");
+    CHECK(nodus_cmt_wal_search_end_height(w, 1, &found) == CMT_OK && !found,
+          "EndHeight(1) went with the oldest file");
+
+    /* the head is never removed (group.go:281-285): no rotation, a
+     * bound of one byte — every rotated file goes, four per check, and
+     * the head stays with its bytes */
+    w->group.head_size_limit = 0;
+    w->group.total_size_limit = 1;
+    wal_end_height(m, 31);
+    CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_OK, "EndHeight(31) in the head");
+    for (h = 31; h <= 40; h++) {
+        CHECK(nodus_cmt_wal_group_check_if_due(w, t0 + (int64_t)h *
+                                               NODUS_CMT_GROUP_CHECK_DURATION_NS)
+              == CMT_OK, "group check");
+    }
+    CHECK(nodus_cmt_group_read_info(&w->group, &gi) == CMT_OK &&
+          gi.min_index == gi.max_index && gi.head_size > 0 &&
+          gi.total_size == gi.head_size, "only the head is left, above the bound");
+    CHECK(nodus_cmt_wal_search_end_height(w, 31, &found) == CMT_OK && found,
+          "EndHeight(31) survives in the head");
+    nodus_cmt_wal_close(w);
+    free(w); free(m); free(tw);
+    rmrf(fx.dir);
+    return 0;
+}
+
+/* ══ the one-time carry-over from the SQLite-era WAL ═════════════════
+ * Decision 2026-09-26-cmt-wal-file-group.md item 6 AMENDED (NOT
+ * GROUNDED — the reference never migrates WAL storage). The OLD rows are
+ * built here the way nodus 0.19.80 wrote them (d123b7e6
+ * nodus_witness_cmt_wal.c: protocol_id 1, bytes = SHA3-512(P) ‖ P, P =
+ * the TimedWALMessage marshal, seq monotonic across heights) into the
+ * S14 DDL copied from nodus_witness_v2_schema.c. */
+
+static const char CARRY_DDL[] =
+    "CREATE TABLE IF NOT EXISTS cmt_wal ("
+    "  protocol_id INTEGER NOT NULL,"
+    "  height INTEGER NOT NULL,"
+    "  seq INTEGER NOT NULL,"
+    "  kind INTEGER NOT NULL,"
+    "  bytes BLOB NOT NULL,"
+    "  PRIMARY KEY (protocol_id, height, seq)"
+    ")";
+
+#define CARRY_P_MAX 4096
+
+/* One OLD row. `height_col` is the row's height column (the payload's
+ * own height unless a test forges a disagreement); `flip_digest` spoils
+ * the digest's first byte. P is copied to `p_out` (CARRY_P_MAX). */
+static int carry_insert(sqlite3 *db, int64_t protocol, int64_t seq,
+                        int64_t height_col, const cmt_wal_message_t *m,
+                        int64_t sec, bool flip_digest,
+                        uint8_t *p_out, size_t *p_len)
+{
+    cmt_timed_wal_message_t *tw = (cmt_timed_wal_message_t *)calloc(1, sizeof(*tw));
+    uint8_t                 *row = (uint8_t *)malloc(64 + CARRY_P_MAX);
+    sqlite3_stmt            *st = NULL;
+    size_t                   plen = 0;
+    int                      rc = -1;
+
+    if (!tw || !row) {
+        goto out;
+    }
+    tw->time.seconds = sec;
+    tw->msg = *m;
+    if (cmt_timed_wal_message_encode(tw, row + 64, CARRY_P_MAX, &plen) != CMT_OK ||
+        qgp_sha3_512(row + 64, plen, row) != 0) {
+        goto out;
+    }
+    if (flip_digest) {
+        row[0] ^= 0xFF;
+    }
+    if (sqlite3_prepare_v2(db, "INSERT INTO cmt_wal (protocol_id, height, seq, "
+                           "kind, bytes) VALUES (?1, ?2, ?3, ?4, ?5)", -1, &st,
+                           NULL) != SQLITE_OK) {
+        goto out;
+    }
+    sqlite3_bind_int64(st, 1, protocol);
+    sqlite3_bind_int64(st, 2, height_col);
+    sqlite3_bind_int64(st, 3, seq);
+    sqlite3_bind_int(st, 4, (int)m->kind);
+    sqlite3_bind_blob(st, 5, row, (int)(64 + plen), SQLITE_TRANSIENT);
+    if (sqlite3_step(st) != SQLITE_DONE) {
+        goto out;
+    }
+    if (p_out) {
+        memcpy(p_out, row + 64, plen);
+        *p_len = plen;
+    }
+    rc = 0;
+out:
+    sqlite3_finalize(st);
+    free(tw);
+    free(row);
+    return rc;
+}
+
+/* Every row of the table as one text value (protocol, seq order), so a
+ * test can assert the carry changed nothing. Heap; NULL on error. */
+static char *carry_table_dump(sqlite3 *db)
+{
+    sqlite3_stmt *st = NULL;
+    char         *out = NULL;
+
+    if (sqlite3_prepare_v2(db, "SELECT COALESCE(group_concat(r, ';'), '') FROM "
+                           "(SELECT protocol_id || ',' || height || ',' || seq "
+                           "|| ',' || kind || ',' || hex(bytes) AS r FROM cmt_wal "
+                           "ORDER BY protocol_id, seq, height)", -1, &st,
+                           NULL) != SQLITE_OK) {
+        return NULL;
+    }
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        const char *t = (const char *)sqlite3_column_text(st, 0);
+
+        out = strdup(t ? t : "");
+    }
+    sqlite3_finalize(st);
+    return out;
+}
+
+/* A chain-DB stand-in inside the fixture directory, with or without the
+ * S14 `cmt_wal` table. */
+static int carry_db_open(const walfx_t *fx, bool with_table, sqlite3 **out)
+{
+    char path[160];
+
+    snprintf(path, sizeof(path), "%s/chain.db", fx->dir);
+    if (sqlite3_open(path, out) != SQLITE_OK) {
+        return -1;
+    }
+    return with_table ? run_sql(*out, CARRY_DDL) : 0;
+}
+
+/* The OLD log of the task: EndHeight(3) at seq 10, height-4 records,
+ * EndHeight(4) at seq 14, three height-5 records (a round state, our own
+ * NewRoundStep MsgInfo, a timeout) at seq 15-17, and one row of ANOTHER
+ * protocol at a later seq. `bad_seq` (0 = none) gets a spoiled digest;
+ * `lie_seq` (0 = none) gets a height column one above its payload's.
+ * P of seq 14..17 lands in p[0..3]. */
+static int carry_fill(sqlite3 *db, cmt_wal_message_t *m, int64_t bad_seq,
+                      int64_t lie_seq, uint8_t p[4][CARRY_P_MAX],
+                      size_t plen[4])
+{
+    int64_t seq;
+
+    for (seq = 1; seq <= 17; seq++) {
+        int64_t h;
+        uint8_t *pp = (seq >= 14) ? p[seq - 14] : NULL;
+        size_t  *pl = (seq >= 14) ? &plen[seq - 14] : NULL;
+
+        switch (seq) {
+        case 10: wal_end_height(m, 3); h = 3; break;
+        case 11: wal_round_state(m, 4, 0); h = 4; break;
+        case 12: wal_new_round_step(m, 4); h = 4; break;
+        case 13: wal_timeout(m, 4, 0); h = 4; break;
+        case 14: wal_end_height(m, 4); h = 4; break;
+        case 15: wal_round_state(m, 5, 0); h = 5; break;
+        case 16: wal_new_round_step(m, 5); h = 5; break;
+        case 17: wal_timeout(m, 5, 1); h = 5; break;
+        default:
+            /* seq 1..9: heights 1..3 before EndHeight(3) */
+            if (seq == 1) {
+                wal_end_height(m, 0); h = 0;
+            } else {
+                h = 1 + (seq - 2) / 3;
+                wal_round_state(m, h, (int32_t)(seq % 3));
+            }
+            break;
+        }
+        if (carry_insert(db, NODUS_CMT_WAL_SQLITE_PROTOCOL_ID, seq,
+                         h + (seq == lie_seq ? 1 : 0), m, 1700000000LL + seq,
+                         seq == bad_seq, pp, pl) != 0) {
+            return -1;
+        }
+    }
+    wal_timeout(m, 5, 2);
+    return carry_insert(db, 2, 18, 5, m, 1700000018LL, false, NULL, NULL);
+}
+
+static int carry_tmp_exists(const walfx_t *fx)
+{
+    char        t[192];
+    struct stat st;
+
+    snprintf(t, sizeof(t), "%s/cs.wal/%s", fx->dir, NODUS_CMT_WAL_CARRY_TMP_NAME);
+    return stat(t, &st) == 0;
+}
+
+/* The tail from the LATEST EndHeight is re-framed into an absent head:
+ * byte-identical P in seq order, found by SearchForEndHeight(4), replayed
+ * as exactly the height-5 records; nothing before EndHeight(4) and no row
+ * of another protocol is carried; the rows are untouched; a stale temp
+ * file is replaced; the second call (head non-empty) is a no-op; and the
+ * WAL's OnStart then adds no EndHeight{0}. */
+static int t_wal_carry_sqlite_tail(void)
+{
+    walfx_t                  fx;
+    sqlite3                 *db = NULL;
+    nodus_cmt_wal_t         *w;
+    cmt_wal_message_t       *m;
+    cmt_timed_wal_message_t *tw;
+    uint8_t                (*p)[CARRY_P_MAX];
+    size_t                   plen[4] = { 0 };
+    char                    *dump0, *dump1;
+    uint8_t                 *buf;
+    size_t                   len = 0, rows = 99, off = 0;
+    bool                     found = false, eof = false;
+    long long                s0;
+    int                      k;
+
+    CHECK(walfx_open(&fx) == 0, "fixture");
+    w = (nodus_cmt_wal_t *)calloc(1, sizeof(*w));
+    m = (cmt_wal_message_t *)calloc(1, sizeof(*m));
+    tw = (cmt_timed_wal_message_t *)calloc(1, sizeof(*tw));
+    p = (uint8_t (*)[CARRY_P_MAX])calloc(4, CARRY_P_MAX);
+    CHECK(w && m && tw && p, "alloc");
+    CHECK(carry_db_open(&fx, true, &db) == 0, "the S14 cmt_wal table");
+    CHECK(carry_fill(db, m, 0, 0, p, plen) == 0, "the OLD rows");
+    dump0 = carry_table_dump(db);
+    CHECK(dump0 != NULL && dump0[0] != '\0', "table dump before");
+
+    /* a temp file a crashed attempt left behind */
+    {
+        char d[160], t[192];
+
+        snprintf(d, sizeof(d), "%s/cs.wal", fx.dir);
+        CHECK(mkdir(d, 0700) == 0, "cs.wal");
+        snprintf(t, sizeof(t), "%s/%s", d, NODUS_CMT_WAL_CARRY_TMP_NAME);
+        CHECK(wal_append_raw(t, (const uint8_t *)"junk", 4) == 0, "stale temp");
+    }
+
+    CHECK(nodus_cmt_wal_carry_sqlite(db, fx.file, &rows) == CMT_OK && rows == 4,
+          "carried: EndHeight(4) and the three height-5 rows");
+    CHECK(!carry_tmp_exists(&fx), "no temp file after the rename");
+    {
+        struct stat st;
+
+        CHECK(stat(fx.file, &st) == 0 && (st.st_mode & 0777) == 0600,
+              "the head is 0600, as autofile.go:38 creates it");
+    }
+
+    /* the file, record by record: crc32c(P) BE ‖ len(P) BE ‖ P with P
+     * byte-identical to seq 14, 15, 16, 17 */
+    buf = wal_slurp(fx.file, &len);
+    CHECK(buf != NULL, "read the head");
+    {
+        nodus_cmt_crc32_table_t tab;
+        size_t                  end = 0;
+
+        nodus_cmt_crc32_make_table(NODUS_CMT_CRC32C_POLY, tab);
+        for (k = 0; k < 4; k++) {
+            CHECK(wal_rec_off(buf, len, k, &off) == 0, "record present");
+            CHECK(wal_be32(buf + off + 4) == plen[k] &&
+                  memcmp(buf + off + 8, p[k], plen[k]) == 0,
+                  "P carried byte for byte, in seq order");
+            CHECK(nodus_cmt_crc32_update(0, tab, buf + off + 8, plen[k]) ==
+                  wal_be32(buf + off), "crc32c(P) big-endian");
+            end = off + 8 + plen[k];
+        }
+        CHECK(end == len, "exactly four records");
+    }
+    free(buf);
+
+    /* the replay a restarted node runs (replay.go:106-147) */
+    s0 = wal_fsize(fx.file);
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+          nodus_cmt_wal_start(w) == CMT_OK && wal_fsize(fx.file) == s0,
+          "OnStart on the carried head writes no EndHeight{0}");
+    CHECK(nodus_cmt_wal_search_end_height(w, 3, &found) == CMT_OK && !found,
+          "EndHeight(3) (before the latest EndHeight) was not carried");
+    CHECK(nodus_cmt_wal_search_end_height(w, 4, &found) == CMT_OK && found,
+          "SearchForEndHeight(4)");
+    CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && !eof &&
+          tw->msg.kind == CMT_PB_WAL_EVENT_DATA_ROUND_STATE &&
+          tw->msg.u.event_data_round_state.height == 5 &&
+          tw->time.seconds == 1700000015LL, "seq 15: rs(5,0), its own stamp");
+    CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && !eof &&
+          tw->msg.kind == CMT_PB_WAL_MSG_INFO &&
+          tw->msg.u.msg_info.msg.kind == CMT_PB_CONS_MSG_NEW_ROUND_STEP &&
+          tw->msg.u.msg_info.msg.u.new_round_step.height == 5,
+          "seq 16: our NewRoundStep(5)");
+    CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && !eof &&
+          tw->msg.kind == CMT_PB_WAL_TIMEOUT_INFO &&
+          tw->msg.u.timeout_info.height == 5 && tw->msg.u.timeout_info.round == 1,
+          "seq 17: to(5,1)");
+    CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && eof,
+          "then EOF: protocol 2's row was not carried");
+    nodus_cmt_wal_close(w);
+
+    /* the second start: the head is not empty — nothing happens */
+    s0 = wal_fsize(fx.file);
+    CHECK(nodus_cmt_wal_carry_sqlite(db, fx.file, &rows) == CMT_OK && rows == 0 &&
+          wal_fsize(fx.file) == s0, "a non-empty head: no-op");
+
+    dump1 = carry_table_dump(db);
+    CHECK(dump1 != NULL && strcmp(dump0, dump1) == 0,
+          "the SQLite rows are neither deleted nor modified");
+    free(dump0);
+    free(dump1);
+    sqlite3_close(db);
+    free(w); free(m); free(tw); free(p);
+    rmrf(fx.dir);
+    return 0;
+}
+
+/* The refusals (a spoiled digest, a height column that disagrees with
+ * its payload) leave NO head and NO temp file; the no-ops (a head that
+ * already holds bytes, a rotated `wal.000` beside an empty head, an
+ * absent table, an empty table) change nothing — and on an empty table
+ * the WAL then starts with its own EndHeight{0}, as without the carry. */
+static int t_wal_carry_sqlite_refusals_and_noops(void)
+{
+    walfx_t                  fx;
+    sqlite3                 *db = NULL;
+    nodus_cmt_wal_t         *w;
+    cmt_wal_message_t       *m;
+    uint8_t                (*p)[CARRY_P_MAX];
+    size_t                   plen[4] = { 0 };
+    size_t                   rows = 99;
+    bool                     found = false;
+    char                    *dump0, *dump1;
+    char                     path[192];
+
+    w = (nodus_cmt_wal_t *)calloc(1, sizeof(*w));
+    m = (cmt_wal_message_t *)calloc(1, sizeof(*m));
+    p = (uint8_t (*)[CARRY_P_MAX])calloc(4, CARRY_P_MAX);
+    CHECK(w && m && p, "alloc");
+
+    /* a spoiled digest in the tail (seq 16) */
+    CHECK(walfx_open(&fx) == 0, "fixture");
+    CHECK(carry_db_open(&fx, true, &db) == 0 &&
+          carry_fill(db, m, 16, 0, p, plen) == 0, "rows, seq 16 spoiled");
+    dump0 = carry_table_dump(db);
+    CHECK(dump0 != NULL, "dump");
+    CHECK(nodus_cmt_wal_carry_sqlite(db, fx.file, &rows) == CMT_FAULT && rows == 0,
+          "a digest mismatch refuses the start");
+    CHECK(wal_fsize(fx.file) == -1 && !carry_tmp_exists(&fx),
+          "no head and no temp file left behind");
+    dump1 = carry_table_dump(db);
+    CHECK(dump1 != NULL && strcmp(dump0, dump1) == 0, "the rows are untouched");
+    free(dump0);
+    free(dump1);
+    sqlite3_close(db);
+    rmrf(fx.dir);
+
+    /* a spoiled digest BEFORE the latest EndHeight is never read */
+    CHECK(walfx_open(&fx) == 0, "fixture");
+    CHECK(carry_db_open(&fx, true, &db) == 0 &&
+          carry_fill(db, m, 12, 0, p, plen) == 0, "rows, seq 12 spoiled");
+    CHECK(nodus_cmt_wal_carry_sqlite(db, fx.file, &rows) == CMT_OK && rows == 4,
+          "a row outside the tail is not the carry's business");
+    sqlite3_close(db);
+    rmrf(fx.dir);
+
+    /* a height column that disagrees with its payload (seq 15) */
+    CHECK(walfx_open(&fx) == 0, "fixture");
+    CHECK(carry_db_open(&fx, true, &db) == 0 &&
+          carry_fill(db, m, 0, 15, p, plen) == 0, "rows, seq 15 lies");
+    CHECK(nodus_cmt_wal_carry_sqlite(db, fx.file, &rows) == CMT_FAULT,
+          "columns disagreeing with the payload refuse the start");
+    CHECK(wal_fsize(fx.file) == -1 && !carry_tmp_exists(&fx),
+          "no head and no temp file left behind");
+    sqlite3_close(db);
+    rmrf(fx.dir);
+
+    /* rows of the protocol but no EndHeight row (the old writer cannot
+     * produce it: its OnStart seeded EndHeight{0}) */
+    CHECK(walfx_open(&fx) == 0, "fixture");
+    CHECK(carry_db_open(&fx, true, &db) == 0, "table");
+    wal_round_state(m, 1, 0);
+    CHECK(carry_insert(db, NODUS_CMT_WAL_SQLITE_PROTOCOL_ID, 0, 1, m,
+                       1700000000LL, false, NULL, NULL) == 0, "one row");
+    CHECK(nodus_cmt_wal_carry_sqlite(db, fx.file, &rows) == CMT_FAULT &&
+          wal_fsize(fx.file) == -1 && !carry_tmp_exists(&fx),
+          "no EndHeight row: refused, nothing written");
+    sqlite3_close(db);
+    rmrf(fx.dir);
+
+    /* a head that already holds bytes */
+    CHECK(walfx_open(&fx) == 0, "fixture");
+    CHECK(carry_db_open(&fx, true, &db) == 0 &&
+          carry_fill(db, m, 0, 0, p, plen) == 0, "rows");
+    snprintf(path, sizeof(path), "%s/cs.wal", fx.dir);
+    CHECK(mkdir(path, 0700) == 0 &&
+          wal_append_raw(fx.file, (const uint8_t *)"head", 4) == 0, "a head");
+    CHECK(nodus_cmt_wal_carry_sqlite(db, fx.file, &rows) == CMT_OK && rows == 0 &&
+          wal_fsize(fx.file) == 4 && !carry_tmp_exists(&fx),
+          "a non-empty head: no-op, file unchanged");
+    sqlite3_close(db);
+    rmrf(fx.dir);
+
+    /* an empty head beside a rotated file */
+    CHECK(walfx_open(&fx) == 0, "fixture");
+    CHECK(carry_db_open(&fx, true, &db) == 0 &&
+          carry_fill(db, m, 0, 0, p, plen) == 0, "rows");
+    snprintf(path, sizeof(path), "%s/cs.wal", fx.dir);
+    CHECK(mkdir(path, 0700) == 0 &&
+          wal_append_raw(fx.file, NULL, 0) == 0, "an empty head");
+    snprintf(path, sizeof(path), "%s/cs.wal/wal.000", fx.dir);
+    CHECK(wal_append_raw(path, (const uint8_t *)"old", 3) == 0, "wal.000");
+    CHECK(nodus_cmt_wal_carry_sqlite(db, fx.file, &rows) == CMT_OK && rows == 0 &&
+          wal_fsize(fx.file) == 0 && wal_fsize(path) == 3,
+          "a rotated file exists: no-op");
+    sqlite3_close(db);
+    rmrf(fx.dir);
+
+    /* no cmt_wal table at all */
+    CHECK(walfx_open(&fx) == 0, "fixture");
+    CHECK(carry_db_open(&fx, false, &db) == 0, "a database without the table");
+    CHECK(nodus_cmt_wal_carry_sqlite(db, fx.file, &rows) == CMT_OK && rows == 0 &&
+          wal_fsize(fx.file) == -1, "an absent table: no-op, not an error");
+    sqlite3_close(db);
+    rmrf(fx.dir);
+
+    /* an empty table — the WAL then seeds its own EndHeight{0} */
+    CHECK(walfx_open(&fx) == 0, "fixture");
+    CHECK(carry_db_open(&fx, true, &db) == 0, "an empty table");
+    CHECK(nodus_cmt_wal_carry_sqlite(db, fx.file, &rows) == CMT_OK && rows == 0 &&
+          wal_fsize(fx.file) == -1, "an empty table: no-op");
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+          nodus_cmt_wal_start(w) == CMT_OK &&
+          nodus_cmt_wal_search_end_height(w, 0, &found) == CMT_OK && found,
+          "OnStart wrote EndHeight{0}, as without the carry (wal.go:124-131)");
+    nodus_cmt_wal_close(w);
+    sqlite3_close(db);
+    rmrf(fx.dir);
+
+    free(w); free(m); free(p);
     return 0;
 }
 
@@ -2936,41 +3644,36 @@ static int t_wal_main_connection_interaction(void)
  * EVERY node's Write-class WAL rows on the MAIN connection failed
  * ("database is locked", ≈50 times) and finally the store's own `BEGIN
  * IMMEDIATE` failed the same way, stopping `cmt_cs_step` on every node
- * (`/tmp/stagef-20260917T032550Z`, torn down). `t_wal_main_connection_
- * interaction` above never caught this — it never interleaves a
- * MATERIALISED `get` (one that returned SQLITE_ROW and was never reset)
- * with a FULL-connection commit. This case does exactly that:
- * `nodus_cmt_store_get` used to leave its statement STEPPED across the
- * return (the row pointer valid "until the next call" MEANT the
- * statement stayed unreset that long), pinning an open READ transaction
- * — a WAL snapshot — on the main connection. The moment the WAL's
- * separate FULL connection commits (a WriteSync, in production every
- * own-vote message), the main connection's snapshot is stale, and
- * SQLite's rule that a read transaction can never be promoted to a
- * write one once another connection has written since the snapshot was
- * taken means EVERY subsequent main-connection write returns
+ * (`/tmp/stagef-20260917T032550Z`, torn down). The second connection
+ * there was the SQLite consensus WAL's synchronous=FULL one; the WAL is
+ * now a file group (decision 2026-09-26-cmt-wal-file-group.md) and opens
+ * no connection, so this case makes the commit through a plain second
+ * connection on the same file instead — the store-side mechanism is
+ * unchanged. `nodus_cmt_store_get` used to leave its statement STEPPED
+ * across the return (the row pointer valid "until the next call" MEANT
+ * the statement stayed unreset that long), pinning an open READ
+ * transaction — a WAL-journal snapshot — on the main connection. The
+ * moment another connection commits, the main connection's snapshot is
+ * stale, and SQLite's rule that a read transaction can never be promoted
+ * to a write one once another connection has written since the snapshot
+ * was taken means EVERY subsequent main-connection write returns
  * SQLITE_BUSY_SNAPSHOT — the busy handler is NOT invoked for it, so no
  * timeout ever resolves it; it persists until the statement is reset.
  *
  * RED before the fix, at assertion (a): the `get` below leaves `bs_get`
- * stepped; `nodus_cmt_wal_write_sync` then commits on the FULL
- * connection; the very next main-connection write — `nodus_cmt_wal_
- * write`, one `INSERT INTO cmt_wal` — hits SQLITE_BUSY_SNAPSHOT and
- * `host_wal_write`/`nodus_cmt_wal_write`'s own error path logs "cmt_wal
- * insert failed: database is locked" and returns CMT_FAULT, so
- * assertion (a) reads CMT_FAULT where it expects CMT_OK — exactly the
- * harness's own log line. GREEN after the fix: `get` copies the row and
+ * stepped; the second connection then commits; the very next
+ * main-connection write — a store SET — hits SQLITE_BUSY_SNAPSHOT and
+ * returns CMT_FAULT. GREEN after the fix: `get` copies the row and
  * resets `bs_get` (+ clears its bindings) before returning, so the main
- * connection holds no transaction across the FULL connection's commit,
- * and (a)/(b)/(c) below all succeed normally; (d) confirms the COPY
- * contract — the pointer `get` returned keeps reading the same bytes
- * long after its own statement was reset and reused.
+ * connection holds no transaction across the other connection's commit,
+ * and (a)/(b) below succeed; (c) confirms the COPY contract — the
+ * pointer `get` returned keeps reading the same bytes long after its own
+ * statement was reset and reused.
  */
 static int t_store_get_then_full_write_then_main_write(void)
 {
     t_env_t                    e;
-    nodus_cmt_wal_t           *w;
-    cmt_wal_message_t         *m;
+    sqlite3                   *other = NULL;
     cmt_block_t               *b;
     cmt_commit_t              *empty, *commit;
     cmt_commit_sig_t          *sigs;
@@ -2984,15 +3687,14 @@ static int t_store_get_then_full_write_then_main_write(void)
     static const uint8_t       blob[8] = { 'd','e','l','t','a','9','!','!' };
 
     CHECK(env_make_state(&e, 1, 1) == 0, "makeState(1, 1): S14 fixture + store");
-    w = (nodus_cmt_wal_t *)calloc(1, sizeof(*w));
-    m = (cmt_wal_message_t *)calloc(1, sizeof(*m));
     b = (cmt_block_t *)calloc(1, sizeof(*b));
     empty = (cmt_commit_t *)calloc(1, sizeof(*empty));
     commit = (cmt_commit_t *)calloc(1, sizeof(*commit));
     sigs = (cmt_commit_sig_t *)calloc(CMT_VALSET_MAX, sizeof(*sigs));
-    CHECK(w && m && b && empty && commit && sigs, "alloc");
-    CHECK(nodus_cmt_wal_open(w, e.fx.w->db, t_now, NULL) == CMT_OK,
-          "wal open — the FULL connection, same file as the store's main");
+    CHECK(b && empty && commit && sigs, "alloc");
+    CHECK(sqlite3_open_v2(sqlite3_db_filename(e.fx.w->db, "main"), &other,
+                          SQLITE_OPEN_READWRITE, NULL) == SQLITE_OK,
+          "a second connection on the store's file");
     {
         cmt_validator_set_t vals;
         cmt_validator_t *vstor = (cmt_validator_t *)
@@ -3007,7 +3709,7 @@ static int t_store_get_then_full_write_then_main_write(void)
     /* set a blockstore key, then get it and KEEP the returned pointer —
      * on the OLD code this leaves bs_get stepped (an open read txn on
      * the main connection, the exact state the harness's nodes were in
-     * between a store read and the next WAL write). */
+     * between a store read and the next write). */
     CHECK(nodus_cmt_store_set(e.store, false, "delta9-key", blob, sizeof(blob))
               == CMT_OK, "set");
     CHECK(nodus_cmt_store_get(e.store, false, "delta9-key", &got, &got_len)
@@ -3016,24 +3718,20 @@ static int t_store_get_then_full_write_then_main_write(void)
           "get reads back the value — keep this pointer live across "
           "everything below");
 
-    /* the trigger: one FULL-connection commit (in production, any
-     * own-vote WriteSync). */
-    wal_round_state(m, 1, 0);
-    CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_OK,
-          "a FULL-connection commit — the trigger");
+    /* the trigger: one commit by the OTHER connection. The row goes into
+     * `cmt_wal_sync`, an S14 table no code uses any more (decision
+     * 2026-09-26-cmt-wal-file-group.md item 6) — any committed write
+     * would do. */
+    CHECK(run_sql(other, "INSERT OR REPLACE INTO cmt_wal_sync (protocol_id, n) "
+                         "VALUES (1, 1)") == 0,
+          "a second-connection commit — the trigger");
 
-    /* (a) RED on the old code: a Write-class row on the MAIN connection. */
-    CHECK(nodus_cmt_wal_write(w, m) == CMT_OK,
-          "(a) a main-connection WAL write after the FULL commit — "
-          "CMT_FAULT here (\"cmt_wal insert failed: database is "
-          "locked\", SQLITE_BUSY_SNAPSHOT) is exactly the harness's "
-          "stall");
-
-    /* (b) a plain store SET on main. */
+    /* (a) RED on the old code: a store SET on the MAIN connection. */
     CHECK(nodus_cmt_store_set(e.store, false, "delta9-key2", blob, sizeof(blob))
-              == CMT_OK, "(b) a store SET on main after the FULL commit");
+              == CMT_OK, "(a) a store SET on main after the other commit — "
+          "CMT_FAULT here (SQLITE_BUSY_SNAPSHOT) is exactly the harness's stall");
 
-    /* (c) a REAL nodus_cmt_bs_save_block batch — its own BEGIN IMMEDIATE
+    /* (b) a REAL nodus_cmt_bs_save_block batch — its own BEGIN IMMEDIATE
      * … COMMIT, the same multi-statement transaction the harness's own
      * "SQL failed (BEGIN IMMEDIATE): database is locked" line names. */
     CHECK(env_make_n_txs(&e, 1, 10, &data) == 0 &&
@@ -3046,17 +3744,17 @@ static int t_store_get_then_full_write_then_main_write(void)
               == CMT_OK, "seenExtendedCommit.ToCommit()");
     CHECK(nodus_cmt_bs_save_block(e.store, b, &ps, commit, e.size_scratch,
                                   e.part_scratch_cap) == CMT_OK,
-          "(c) a REAL SaveBlock batch (its own BEGIN IMMEDIATE) on main");
+          "(b) a REAL SaveBlock batch (its own BEGIN IMMEDIATE) on main");
 
-    /* (d) the FIRST get's pointer still reads its own value — the COPY
+    /* (c) the FIRST get's pointer still reads its own value — the COPY
      * contract: valid until the NEXT get on the SAME table, unaffected
      * by anything else that ran on either connection above. */
     CHECK(got_len == sizeof(blob) && memcmp(got, blob, sizeof(blob)) == 0,
-          "(d) the first get's pointer still reads its own value after "
-          "(a)/(b)/(c) — the copy contract holds");
+          "(c) the first get's pointer still reads its own value after "
+          "(a)/(b) — the copy contract holds");
 
-    nodus_cmt_wal_close(w);
-    free(w); free(m); free(b); free(empty); free(commit); free(sigs);
+    sqlite3_close(other);
+    free(b); free(empty); free(commit); free(sigs);
     env_free(&e);
     return 0;
 }
@@ -5674,8 +6372,9 @@ static int t_host_table_and_timer(void)
     CHECK(env_make_state(&e, 1, 1) == 0, "state");
     CHECK(exec_init(&x, &e) == 0, "executor");
     CHECK(nodus_cmt_host_build(&h, x.be) == CMT_OK, "build");
-    /* all 26 rows filled — the struct is 26 function pointers */
-    CHECK(n == 26, "cmt_cs_host_t has 26 rows");
+    /* all 27 rows filled — the struct is 27 function pointers (the 27th,
+     * `wal_repair`, is decision 2026-09-26-cmt-wal-file-group.md 4b) */
+    CHECK(n == 27, "cmt_cs_host_t has 27 rows");
     p = (const void **)&h;
     for (i = 0; i < n; i++) {
         CHECK(p[i] != NULL, "a row is NULL");
@@ -5760,10 +6459,14 @@ int main(void)
         { "privval_unmarshal_validator_state",     t_privval_unmarshal_validator_state },
         { "privval_decoder_rules",                 t_privval_decoder_rules },
         { "privval_save_load",                     t_privval_save_load },
-        { "wal_write_classes_and_visibility",      t_wal_write_classes_and_visibility },
-        { "wal_start_and_search",                  t_wal_start_and_search },
-        { "wal_corruption_faults",                 t_wal_corruption_faults },
-        { "wal_main_connection_interaction",       t_wal_main_connection_interaction },
+        { "wal_write_classes_and_layout",          t_wal_write_classes_and_layout },
+        { "wal_search_and_replay",                 t_wal_search_and_replay },
+        { "wal_corruption",                        t_wal_corruption },
+        { "wal_validate_basic_and_repair",         t_wal_validate_basic_and_repair },
+        { "wal_size_bound_rotates_and_removes_oldest",
+                                    t_wal_size_bound_rotates_and_removes_oldest },
+        { "wal_carry_sqlite_tail",                 t_wal_carry_sqlite_tail },
+        { "wal_carry_sqlite_refusals_and_noops",   t_wal_carry_sqlite_refusals_and_noops },
         { "store_get_then_full_write_then_main_write",
                                     t_store_get_then_full_write_then_main_write },
         { "store_load_block_store_state",          t_store_load_block_store_state },

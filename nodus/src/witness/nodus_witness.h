@@ -7,15 +7,16 @@
  *     before is deleted; DNAC client query handlers stay on their
  *     legacy tables per the hub/spoke boundary, unaffected by the port)
  *   - Nullifier/ledger/UTXO/block SQLite storage
- *   - Witness peer mesh over nodus TCP connections
  *   - DNAC client query handlers (dnac_* Tier 2 methods)
  *
- * Roster is dynamically built from DHT pubkey registry + witness peer mesh
- * and refreshed every 60 seconds (epoch tick).
- *
- * Consensus messages use Tier 3 protocol ("w_" prefixed CBOR methods)
- * over dedicated witness TCP port 4004.
- * Single-threaded: all state transitions in the epoll event loop.
+ * The witness port 4004 is the ported cometbft p2p layer (fleet P2P-PORT
+ * F5, nodus_witness_p2p.h): secret connections, MConnection channels
+ * (consensus 0x20-0x23, mempool 0x30, genesis bundle 0x70, governance
+ * approval 0x71), PEX with validator-signed ADDR records. The tier-3
+ * envelope, the IDENT/roster mesh and the DHT `nodus:pk` registry are
+ * deleted.
+ * Single-threaded state transitions in the event loop; only the p2p
+ * handshake / ADDR-record signature work runs on its worker threads.
  *
  * @file nodus_witness.h
  */
@@ -25,6 +26,7 @@
 
 #include "nodus/nodus_types.h"
 #include "nodus/nodus_chain_config.h"  /* nodus_cc_rate_limit_table_t */
+#include "protocol/nodus_tier3.h"      /* nodus_t3_cc_appr_{req,rsp}_t (0x71) */
 #include "dnac/dnac.h"        /* DNAC_COMMITTEE_SIZE, DNAC_PUBKEY_SIZE */
 #include <sqlite3.h>
 #include <stdbool.h>
@@ -37,10 +39,20 @@ extern "C" {
 /* Forward declarations */
 struct nodus_server;
 struct nodus_tcp_conn;
+struct nodus_witness_p2p;
 
-/* nodus_tcp_t is an anonymous struct typedef in transport/nodus_tcp.h.
- * We cannot forward-declare it, so we use void* for the witness TCP pointer
- * and cast in implementation files where the full type is available. */
+/* The node-side governance approval collection (`dnac_cc_collect`),
+ * opaque — nodus_witness_chain_config.c. */
+typedef struct nodus_cc_collect nodus_cc_collect_t;
+
+/** How long one approval collection waits for the seats it asked, from
+ *  its start, in milliseconds of the MONOTONIC clock (nodus_p2p_mono_ns).
+ *  The per-seat budget the CLI used when it dialed each seat itself
+ *  (nodus-cli.c:1077 before this change, `nodus_client_cc_appr_send(...,
+ *  5000, ...)`), kept as one total per decision
+ *  2026-09-26-cc-approval-via-own-node.md (3). Tooling, not consensus:
+ *  it bounds how long a CLI waits, never what any node decides. */
+#define NODUS_CC_COLLECT_DEADLINE_MS  5000u
 
 /* ── Witness configuration ───────────────────────────────────────── */
 
@@ -55,24 +67,11 @@ typedef struct {
     char     _reserved;
 } nodus_witness_config_t;
 
-/* ── Roster entry ────────────────────────────────────────────────── */
-
-typedef struct {
-    uint8_t     witness_id[NODUS_T3_WITNESS_ID_LEN];
-    uint8_t     pubkey[NODUS_PK_BYTES];
-    char        address[256];
-    uint64_t    joined_epoch;
-    bool        active;
-} nodus_witness_roster_entry_t;
-
-/* ── Roster ──────────────────────────────────────────────────────── */
-
-typedef struct {
-    uint32_t    version;
-    uint32_t    n_witnesses;
-    nodus_witness_roster_entry_t witnesses[NODUS_T3_MAX_WITNESSES];
-    uint8_t     signature[NODUS_SIG_BYTES];
-} nodus_witness_roster_t;
+/* P2P-PORT F5 — nodus_witness_roster_entry_t / nodus_witness_roster_t (the
+ * transport roster built from the DHT `nodus:pk` registry, ROST_R gossip
+ * and IDENT) are DELETED with every writer they had: the witness port is
+ * the p2p switch now, and "who is a validator" is the chain's bonded set
+ * (nodus_witness_p2p.h). */
 
 /* ── Transaction types (DNAC) ────────────────────────────────────── */
 
@@ -213,47 +212,11 @@ typedef struct {
  * PBFT round, view-change and view-authority machinery, none of which
  * this build ever starts (D-17 rev 10 (9)). */
 
-/* ── Witness peer connection ─────────────────────────────────────── */
-
-typedef struct {
-    uint8_t     witness_id[NODUS_T3_WITNESS_ID_LEN];
-    char        address[256];
-    struct nodus_tcp_conn *conn;
-    bool        identified;                 /* w_ident exchanged */
-    uint64_t    last_attempt;               /* Last reconnect attempt */
-    int         connect_failures;           /* Exponential backoff counter */
-
-    /* C-02: Outgoing auth state (client-side hello/auth on port 4004) */
-    enum { PEER_AUTH_NONE, PEER_AUTH_HELLO_SENT, PEER_AUTH_OK } auth_state;
-
-    /* State sync: peer's chain state from w_ident. Root-layout round
-     * (K3): `remote_checksum` (the peer's advertised legacy state_root)
-     * is DELETED — it was written and never read. */
-    uint64_t    remote_height;              /* peer's block height */
-
-    /* Phase 10 / Task 10.4 — clock skew probe.
-     * (now - peer.ts_local) seconds, signed. Logged when |skew| > 10. */
-    int64_t     last_skew_sec;
-
-    /* Gossip rate limit */
-    uint64_t    last_rost_q_time;           /* last w_rost_q sent to this peer */
-
-    /* CC-OPS-002 / Q14 — peer binary + schema version advertised in w_ident.
-     * Both 0 for legacy peers (pre hard-fork v1). When either mismatches
-     * the local values, handle_ident emits PEER SCHEMA MISMATCH log and
-     * marks version_compatible = false. BFT participation gate lives in
-     * Q14 v2 — for now this is observability-only so quorum math is not
-     * inadvertently degraded. */
-    uint32_t    remote_nodus_version;
-    uint32_t    remote_chain_config_schema;
-    bool        version_compatible;         /* false if schema/version mismatch */
-
-    /* R3 W4 — last_chain_q_response_ms (the legacy w_chain_q bootstrap
-     * rate limit) and sync_bad_until (the legacy sync peer-selection
-     * cooldown) are deleted with the closed consensus lane: their only
-     * readers/writers were nodus_witness_bootstrap.c and
-     * nodus_witness_sync.c, both gone. */
-} nodus_witness_peer_t;
+/* P2P-PORT F5 — nodus_witness_peer_t (the 4004 peer table: connection,
+ * IDENT state, the T2 hello/auth state, reconnect backoff, the IDENT
+ * height / skew / version advertisements) is DELETED with the 4004 half
+ * of nodus_witness_peer.c. A 4004 peer is a `cmt_p2p_peer_t` owned by the
+ * switch (nodus_witness_p2p.h). */
 
 /* ── Main witness context ────────────────────────────────────────── */
 
@@ -261,8 +224,10 @@ typedef struct nodus_witness {
     /* Parent server (non-owning) */
     struct nodus_server     *server;
 
-    /* Dedicated witness TCP transport (port 4004, non-owning — owned by server) */
-    void                    *tcp;       /* nodus_tcp_t* — cast in .c files */
+    /* The witness port 4004 (P2P-PORT F5): the p2p host, OWNED here.
+     * NULL on a node that holds no chain and no genesis pin (it has no
+     * network to join) and on a node without an ML-KEM-1024 key. */
+    struct nodus_witness_p2p *p2p;
 
     /* Configuration */
     nodus_witness_config_t  config;
@@ -274,9 +239,6 @@ typedef struct nodus_witness {
      * w->server->identity.pk.bytes. Transport paths that need
      * "skip self" use memcmp of witness_id against w->my_id. */
 
-    /* Roster */
-    nodus_witness_roster_t  roster;
-
     /* R3 W4 — the legacy BFT consensus state (current_round,
      * current_view, last_committed_round, round_state), view-change
      * tracking (view_changes[], view_change_count/target/in_progress/
@@ -287,16 +249,11 @@ typedef struct nodus_witness {
      * buffer (vote_buffer[]) and the BFT config derived from the roster
      * (bft_config) are all DELETED with the closed consensus lane: they
      * existed only to run the legacy PBFT round, view-change and
-     * view-authority machinery, which this build never starts. The
-     * IDENT wire's `current_view` field stays byte-identical (written 0
-     * by nodus_witness_peer_send_ident; there is nothing left to adopt
-     * it into on receipt). */
+     * view-authority machinery, which this build never starts. */
 
-    /* Dynamic roster — epoch-based refresh. F17 A2: transport-only now
-     * (peer discovery / witness_id→pubkey lookup). BFT config comes
-     * from the chain committee at round-start, not from this roster. */
-    uint64_t    last_epoch;                     /* Timestamp of last roster rebuild */
-    nodus_witness_roster_t  pending_roster;     /* Built each epoch from DHT + peers */
+    /* P2P-PORT F5 — `roster`, `pending_roster` and `last_epoch` (the
+     * transport roster and its 60 s rebuild) are DELETED: see the
+     * deletion note where the roster types stood. */
 
     /* Zone chain ID */
     uint8_t     chain_id[32];
@@ -330,12 +287,21 @@ typedef struct nodus_witness {
     uint64_t    chain_config_proposals_rejected;    /* apply path rejected */
     uint64_t    chain_config_cache_hits;            /* get_u64 cache hit */
     uint64_t    chain_config_cache_misses;          /* get_u64 cache miss / warm-up */
-    uint64_t    chain_config_peer_schema_mismatch;  /* CC-OPS-002 mismatch counter */
+    /* P2P-PORT F5 — chain_config_peer_schema_mismatch (CC-OPS-002) is
+     * DELETED: its only writer was the IDENT handler's version
+     * comparison, deleted with IDENT. */
 
     /* CC-OPS-003 / Q15 Stage C.3 — per-proposer rate-limit state for the
      * w_cc_vote_req handler. Embedded (not heap) so it's zero-initialized
      * with the rest of the witness struct and needs no explicit free. */
     nodus_cc_rate_limit_table_t  cc_rate_limit;
+
+    /* The pending node-side approval collection (`dnac_cc_collect`), or
+     * NULL. At most one at a time; heap, freed when it ends and when the
+     * p2p host is freed (nodus_witness_p2p_free →
+     * nodus_witness_cc_collect_abort). RUNTIME ONLY — never persisted,
+     * never a consensus input. */
+    nodus_cc_collect_t          *cc_collect;
 
     /* CC-OPS-004 / Q16 — chain_config_history lookup cache.
      *
@@ -373,26 +339,14 @@ typedef struct nodus_witness {
     int         chain_config_cache_count[DNAC_CFG_PARAM_MAX_ID + 1]; /* rows per param */
     bool        chain_config_cache_warm;
 
-    /* Startup chain_id quorum verification (Fix 3 — fork detection).
-     * Tracks distinct peers that agree/disagree with our local chain_id
-     * during the first 300s after activation. If a strict majority of
-     * observed peers disagree (and >= 2 dissenters seen), the witness
-     * quarantines itself — refuses to participate in BFT consensus until
-     * operator intervention. Piggybacks on the chain_id field in every
-     * T3 message header (no new wire protocol). */
-    uint64_t    activated_at_sec;
-    bool        quarantined;
-    uint32_t    chain_dissent_count;
-    uint32_t    chain_agree_count;
-    uint8_t     chain_dissent_ids[NODUS_T3_MAX_WITNESSES][NODUS_T3_WITNESS_ID_LEN];
-    uint8_t     chain_agree_ids[NODUS_T3_MAX_WITNESSES][NODUS_T3_WITNESS_ID_LEN];
-
-    /* Transaction ID counter (monotonic) */
-    uint32_t    next_txn_id;
-
-    /* Witness peer connections */
-    nodus_witness_peer_t    peers[NODUS_T3_MAX_WITNESSES];
-    int                     peer_count;
+    /* P2P-PORT F5 — the startup chain-id quorum quarantine (Fix 3:
+     * activated_at_sec, quarantined, chain_dissent_* / chain_agree_*) is
+     * DELETED (witness-port session design §2R4 P1): a 4004 session whose
+     * chain id differs from ours is refused before any crypto (N9) and at
+     * NodeInfo CompatibleWith, and every vote's sign bytes carry the chain
+     * id — the reference has no quarantine either. `next_txn_id` (the
+     * tier-3 txn counter) and `peers[]` / `peer_count` (the 4004 peer
+     * table) are deleted with the tier-3 envelope and the IDENT mesh. */
 
     /* R3 W4 — pending_forwards[]/pending_forward_count (the legacy
      * non-leader forward-response routing table), mempool (the legacy
@@ -602,22 +556,20 @@ typedef struct nodus_witness {
     /* ── FLEET-TM-R3 W3 package C2a — the cometbft server binding ──────
      *
      * `void *` here, DELIBERATELY, not the real pointer types
-     * (`nodus_cmt_node_t *`, `nodus_cmt_net_t *`, `cmt_conr_t *`,
-     * `cmt_memr_t *`): `nodus_witness_cmt_node.h` and
-     * `nodus_witness_cmt_net.h` both `#include "witness/nodus_witness.h"`
-     * for `nodus_witness_t`, and `nodus_cmt_net_t` / `cmt_conr_t` /
-     * `cmt_memr_t` are anonymous struct typedefs with no tag this header
-     * could forward-declare — a real pointer field here would be a
-     * circular include. Every site that dereferences these includes the
-     * real headers first and casts back (nodus_witness.c, nodus_server.c
-     * — never this header).
+     * (`nodus_cmt_node_t *`, `cmt_conr_t *`, `cmt_memr_t *`):
+     * `nodus_witness_cmt_node.h` includes `witness/nodus_witness.h` for
+     * `nodus_witness_t`, and `cmt_conr_t` / `cmt_memr_t` are anonymous
+     * struct typedefs with no tag this header could forward-declare — a
+     * real pointer field here would be a circular include. Every site that
+     * dereferences these includes the real headers first and casts back
+     * (nodus_witness.c — never this header). The reactors' host tables and
+     * receive arena live in the p2p host (`p2p`, above;
+     * nodus_witness_p2p.h "THE CONSENSUS SEAM").
      *
      * Heap-allocated because none of it belongs on this already-large
      * struct or on any stack: `nodus_cmt_node_t` alone carries three
      * ~1 MB `cmt_state_storage_t` and an ~85 KB application context
-     * (nodus_witness_cmt_node.h's own warning), and `nodus_cmt_net_t`
-     * embeds several `NODUS_T3_MAX_WITNESSES`-sized arrays plus a 64 MiB
-     * receive arena.
+     * (nodus_witness_cmt_node.h's own warning).
      *
      * NULL/false until `nodus_witness_init` constructs them — which it
      * does only when `v2_successor` is true, i.e. only on a chain the
@@ -625,14 +577,13 @@ typedef struct nodus_witness {
      * once the tick has started the two reactors (node.go:518-524's
      * genesis-time wait, checked on the tick — see witness_cmt_tick). */
     void    *cmt_node;   /* nodus_cmt_node_t*, owned                      */
-    void    *cmt_net;    /* nodus_cmt_net_t*,  owned                      */
     void    *cmt_conr;   /* cmt_conr_t*,       owned                      */
     void    *cmt_memr;   /* cmt_memr_t*,       owned                      */
     bool     cmt_live;
     /* ORCHESTRATOR delta 1, item C (D-23 rev 7 (19)) — the earliest of
      * the glue's and the timer's next deadline, as witness_cmt_tick last
      * returned it (host-clock nanoseconds, cmt_time_unix_nano's units).
-     * Read by nodus_witness_tick to narrow the NEXT call's witness TCP
+     * Read by nodus_witness_tick to narrow the NEXT call's 4004 p2p
      * poll wait below 50 ms when a deadline is closer than that ("poll
      * wait = min(50 ms, the earliest deadline)"). RUNTIME ONLY: never
      * persisted, never hashed, never a consensus input — it only shapes
@@ -654,7 +605,8 @@ typedef struct nodus_witness {
 /* ── Lifecycle ───────────────────────────────────────────────────── */
 
 /**
- * Initialize witness module. Opens witness.db, builds initial roster.
+ * Initialize witness module. Opens the chain database and, when the node
+ * holds a chain or a genesis pin, starts the 4004 p2p host.
  * Called from nodus_server_init() — all nodes are automatic witnesses.
  *
  * @param witness  Allocated witness context (caller owns)
@@ -668,10 +620,10 @@ int nodus_witness_init(nodus_witness_t *witness,
 
 /**
  * Periodic tick — called from main event loop.
- * Retries peer connections (witness_mesh_tick), then drives the cometbft
- * reactor (witness_cmt_tick) on a version-3 chain or the pinned-genesis
- * joiner (nodus_witness_v2_join_tick) otherwise. R3 W4 — no longer checks
- * any legacy BFT round timeout; that lane is deleted.
+ * One pass of the 4004 p2p host (nodus_witness_p2p_poll — sockets,
+ * handshakes, every peer, PEX), then the cometbft lane (witness_cmt_tick)
+ * on a version-3 chain or the pinned-genesis joiner
+ * (nodus_witness_v2_join_tick) otherwise.
  */
 void nodus_witness_tick(nodus_witness_t *witness);
 
@@ -689,17 +641,12 @@ void nodus_witness_close(nodus_witness_t *witness);
 
 /* ── Dispatch (called from nodus_server.c) ───────────────────────── */
 
-/**
- * Dispatch a Tier 3 witness message ("w_*" methods): the surviving
- * roster/ident/genesis-bundle verbs and the cometbft envelope verbs
- * (35-39, "verb IS the channel"). R3 W4 — the legacy PBFT verbs these
- * once carried (1-8/12-23/26-27) are retired, never reused.
- * These are pre-auth, self-authenticated via Dilithium5 wsig.
- * Raw payload is passed for CBOR re-decode with T3 schema.
- */
-void nodus_witness_dispatch_t3(nodus_witness_t *witness,
-                               struct nodus_tcp_conn *conn,
-                               const uint8_t *payload, size_t len);
+/* P2P-PORT F5 — nodus_witness_dispatch_t3 (the tier-3 envelope decoder,
+ * wsig verifier, protocol-version gate, quarantine switch and verb
+ * router, reached from the 4004 frame callback and from the 4001 `w_*`
+ * forward) is DELETED: every 4004 message arrives on its channel at the
+ * p2p host's reactors (nodus_witness_p2p.h), and the client port refuses
+ * `w_*` methods. */
 
 /* R3 W4 — nodus_witness_parked_propose_store / _clear (the O15R B′
  * parked next-view PROPOSE slot) are DELETED with the closed consensus
@@ -716,14 +663,85 @@ void nodus_witness_dispatch_dnac(nodus_witness_t *witness,
                                  const uint8_t *payload, size_t payload_len,
                                  const char *method, uint32_t txn_id);
 
+/* ── Governance approvals (decision 2026-09-26-cc-approval-via-own-node.md) */
+
 /**
- * Notify witness module that a TCP connection is being closed.
- * Clears any peer-table references to this connection to prevent
- * dangling pointers. R3 W4 — no longer clears round_state / pending
- * forwards / mempool / batch entries; that state is deleted.
+ * The 4001 method `dnac_cc_collect` (nodus_witness_handlers.c), routed by
+ * nodus_server.c WITH the requesting session's identity: `client_pk` and
+ * `token` are that authenticated session's key and session token. Args
+ * {"e": bstr — the pre-auth envelope, <= NODUS_T3_CC_APPR_E_MAX}. Starts
+ * a collection (nodus_witness_cc_collect_start) or answers an error.
  */
-void nodus_witness_peer_conn_closed(nodus_witness_t *witness,
-                                     struct nodus_tcp_conn *conn);
+void nodus_witness_handle_cc_collect(nodus_witness_t *w,
+                                     struct nodus_tcp_conn *conn,
+                                     const uint8_t client_pk[NODUS_PK_BYTES],
+                                     const uint8_t token[NODUS_SESSION_TOKEN_LEN],
+                                     const uint8_t *payload, size_t len,
+                                     uint32_t txn_id);
+
+/**
+ * Start the node-side approval collection: refused unless `requester_pk`
+ * is THIS node's own identity key, `e_len` is in (0, E_MAX], no
+ * collection is pending ("busy"), the node is on a version-3 chain and
+ * holds a seat of the committee it resolves at its tip. Then every OTHER
+ * seat is sent the 0x71 request over its existing 4004 connection, or is
+ * recorded "not connected" / "send failed". When nothing was sent the
+ * collection ends at once (the reply is sent from inside this call).
+ * `now_ms` is the monotonic clock in ms (the deadline's base).
+ * @return 0 started (the reply follows, possibly already sent); -1
+ *         refused, `err` filled — the caller answers the error.
+ */
+int nodus_witness_cc_collect_start(nodus_witness_t *w,
+                                   const uint8_t requester_pk[NODUS_PK_BYTES],
+                                   const uint8_t token[NODUS_SESSION_TOKEN_LEN],
+                                   uint32_t txn_id,
+                                   const uint8_t *e, size_t e_len,
+                                   int64_t now_ms,
+                                   char *err, size_t err_size);
+
+/**
+ * A 0x71 RESPONSE from the connected peer `peer_id` (nodus_witness_p2p.c
+ * cc_receive). Taken ONLY when a collection is pending and `peer_id` is a
+ * seat it asked and has not heard from; the last awaited answer ends the
+ * collection. @return true taken; false not awaited (the caller drops it).
+ */
+bool nodus_witness_cc_collect_on_rsp(nodus_witness_t *w, const char *peer_id,
+                                     const nodus_t3_cc_appr_rsp_t *rsp);
+
+/** Driven from the witness tick (nodus_witness_p2p_poll): ends the pending
+ *  collection once `now_ms` (monotonic) reaches its deadline. */
+void nodus_witness_cc_collect_tick(nodus_witness_t *w, int64_t now_ms);
+
+/** Drop the pending collection with no reply (the p2p host is going). */
+void nodus_witness_cc_collect_abort(nodus_witness_t *w);
+
+/** nodus_witness_cc_appr_answer: the request is DROPPED — no reply at all
+ *  (a requester outside the bonded set, red-team H1). */
+#define NODUS_CC_APPR_DROPPED 2
+
+/**
+ * The 0x71 responder's verdict WITHOUT the send (nodus_chain_config.h
+ * nodus_witness_handle_cc_appr_req is this plus the send). `peer_wid` is
+ * the requester's authenticated witness id (first 32 bytes of SHA3-512 of
+ * its key); `requester_bonded` is whether its p2p ID is in the p2p host's
+ * in-memory bonded set (nodus_witness_p2p_is_bonded — the caller asks).
+ * Order: the per-proposer rate limit → the bonded gate (a non-bonded
+ * requester is dropped before any DB work) → the rate-limit slot is
+ * RECORDED for this attempt → committee resolution → the seat gate → the
+ * preflight and the approval table.
+ * `rsp_out` is zeroed first; a refusal never carries a signature.
+ * @return 1 signed (rsp_out->ok); 0 refused (rsp_out->reason);
+ *         NODUS_CC_APPR_DROPPED — send nothing; -1 bad arguments.
+ */
+int nodus_witness_cc_appr_answer(nodus_witness_t *w,
+                                 const uint8_t peer_wid[NODUS_CC_WITNESS_ID_SIZE],
+                                 bool requester_bonded,
+                                 const nodus_t3_cc_appr_req_t *req,
+                                 nodus_t3_cc_appr_rsp_t *rsp_out);
+
+/* P2P-PORT F5 — nodus_witness_peer_conn_closed (cleared the 4004 peer
+ * table's pointers to a closing nodus_tcp connection) is DELETED with the
+ * table; 4004 connections are the p2p host's, never nodus_tcp's. */
 
 /* R3 W4 — the QGP_FAULT_INJECT drop-predicate hook
  * (nodus_witness_drop_predicate_t, nodus_witness_test_inject_drop,
@@ -762,7 +780,8 @@ int nodus_witness_create_chain_db(nodus_witness_t *witness,
 /**
  * ORCHESTRATOR delta 10 (R3-W3-C2a-18) — EXPORTED, was `static
  * witness_cmt_live_init` (nodus_witness.c). Constructs the cometbft
- * startup table and transport glue for a version-3 chain: the SAME
+ * startup table and the two reactors over the p2p host's seam
+ * (`witness->p2p`, which must exist) for a version-3 chain: the SAME
  * construction `nodus_witness_init` runs on a version-3 chain at process
  * start, now also callable a second way — by the pinned-genesis joiner,
  * immediately after its own `nodus_witness_scan_chain_db(w)` (above)
@@ -777,14 +796,14 @@ int nodus_witness_create_chain_db(nodus_witness_t *witness,
  * process start either way) and why no tick can land between a caller's
  * scan and its call to this function.
  *
- * The entry guard (an already-populated `cmt_node`/`cmt_net`/`cmt_conr`/
+ * The entry guard (an already-populated `cmt_node`/`cmt_conr`/
  * `cmt_memr` refuses with -1, logged) makes a second call over an
  * existing construction safe to attempt — it will never silently leak
  * or double-construct — but no caller is expected to actually trigger
  * it: each of the two callers reaches this function on a path that runs
  * at most once per witness lifetime.
  *
- * @return 0 on success (`witness->cmt_node`/`net`/`conr`/`memr`
+ * @return 0 on success (`witness->cmt_node`/`conr`/`memr`
  *         populated, `cmt_live` false); -1 on any failure (including the
  *         entry guard), with every partial allocation released and the
  *         witness fields left NULL.

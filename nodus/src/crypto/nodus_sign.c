@@ -100,11 +100,25 @@ static size_t build_tagged_preimage(uint8_t *buf, size_t buf_cap,
  * signature, so there is no pre-existing wide compat behaviour to
  * preserve (unlike 0x01-0x05, which predate the NDS1 tag itself). An old
  * peer that doesn't understand `mpk`/`mpk_sig` never calls into this
- * purpose at all; it just skips those CBOR keys (nodus_t2_decode()). */
+ * purpose at all; it just skips those CBOR keys (nodus_t2_decode()).
+ *
+ * NODUS_PURPOSE_SESSION_AUTH (0x0A) and NODUS_PURPOSE_WITNESS_ADDR (0x0B)
+ * ARE here (decision record docs/plans/decisions/2026-09-26-witness-port-
+ * session.md: "oturum imzası yeni katı imza türü 0x0A"; "yeni KATI amaç
+ * 0x0B"), for the same reason as 0x09: both are brand new in the 4004
+ * session package — no shipped binary has ever produced or verified a
+ * 0x0A/0x0B signature — so strict costs no compatibility. Without the
+ * tag, 0x0A's raw preimage (a 32-byte challenge) would be byte-shape-
+ * identical to AUTH_CHALLENGE's (0x01) 32-byte nonce, whose raw fallback
+ * stays open — a session signature and an auth-challenge signature would
+ * verify against each other's bytes. 0x0B is the session design's
+ * "same strict class as 0x0A" (§2R3 N7 FINAL). */
 bool nodus_sign_purpose_is_strict(uint8_t purpose) {
     return purpose == NODUS_PURPOSE_PREPARED ||
            purpose == NODUS_PURPOSE_VIEWOK ||
-           purpose == NODUS_PURPOSE_MLKEM_BIND;
+           purpose == NODUS_PURPOSE_MLKEM_BIND ||
+           purpose == NODUS_PURPOSE_SESSION_AUTH ||
+           purpose == NODUS_PURPOSE_WITNESS_ADDR;
 }
 
 /* ───── Tagged sign/verify (internal engine) ────────────────────────── */
@@ -120,9 +134,10 @@ int nodus_sign_tagged(nodus_sig_t *sig_out,
          * refuses the raw fallback for exactly these purposes, so signer
          * and verifier move together. No compat concern for
          * PREPARED/VIEWOK — those domains are witness-to-witness on port
-         * 4004 and never reach a shipped client; the wire break rides
-         * NODUS_T3_BFT_PROTOCOL_VER. MLKEM_BIND (0x09) IS tier-2 (ports
-         * 4001/4002/4004) and DOES reach every client — but it is brand
+         * 4004 and never reach a shipped client; the wire break rode
+         * NODUS_T3_BFT_PROTOCOL_VER (deleted in P2P-PORT F5 — P2P
+         * protocol version 8 is the 4004 gate now). MLKEM_BIND (0x09) IS
+         * tier-2 (ports 4001/4002) and DOES reach every client — but it is brand
          * new in this same migration (N1 delta 1, D2/D8), so there is no
          * shipped verifier expecting a raw signature for it to break;
          * "no compat concern" holds for it too, for that reason instead. */
@@ -273,19 +288,37 @@ int nodus_verify_mlkem_bind(const nodus_sig_t *sig,
                                 sign_data, sign_data_len, pk);
 }
 
-int nodus_sign_t3_envelope(nodus_sig_t *sig_out,
-                           const uint8_t *envelope, size_t envelope_len,
-                           const nodus_seckey_t *sk) {
-    return nodus_sign_tagged(sig_out, NODUS_PURPOSE_T3_ENVELOPE,
-                              envelope, envelope_len, sk);
+int nodus_sign_session_auth(nodus_sig_t *sig_out,
+                            const uint8_t *challenge, size_t challenge_len,
+                            const nodus_seckey_t *sk) {
+    return nodus_sign_tagged(sig_out, NODUS_PURPOSE_SESSION_AUTH,
+                              challenge, challenge_len, sk);
 }
 
-int nodus_verify_t3_envelope(const nodus_sig_t *sig,
-                             const uint8_t *envelope, size_t envelope_len,
-                             const nodus_pubkey_t *pk) {
-    return nodus_verify_tagged(sig, NODUS_PURPOSE_T3_ENVELOPE,
-                                envelope, envelope_len, pk);
+int nodus_verify_session_auth(const nodus_sig_t *sig,
+                              const uint8_t *challenge, size_t challenge_len,
+                              const nodus_pubkey_t *pk) {
+    return nodus_verify_tagged(sig, NODUS_PURPOSE_SESSION_AUTH,
+                                challenge, challenge_len, pk);
 }
+
+int nodus_sign_witness_addr(nodus_sig_t *sig_out,
+                            const uint8_t *record, size_t record_len,
+                            const nodus_seckey_t *sk) {
+    return nodus_sign_tagged(sig_out, NODUS_PURPOSE_WITNESS_ADDR,
+                              record, record_len, sk);
+}
+
+int nodus_verify_witness_addr(const nodus_sig_t *sig,
+                              const uint8_t *record, size_t record_len,
+                              const nodus_pubkey_t *pk) {
+    return nodus_verify_tagged(sig, NODUS_PURPOSE_WITNESS_ADDR,
+                                record, record_len, pk);
+}
+
+/* P2P-PORT F5 — nodus_sign_t3_envelope / nodus_verify_t3_envelope are
+ * DELETED with the tier-3 envelope they signed (no caller remained).
+ * Purpose 0x03 stays reserved (nodus_sign.h). */
 
 int nodus_sign_value_store(nodus_sig_t *sig_out,
                            const uint8_t *payload, size_t payload_len,

@@ -59,7 +59,7 @@
  *     (:137); they are served oldest-first and a stale one is DROPPED by
  *     :970, while an eleventh is CMT_FAULT because Go's eleventh send
  *     would park a goroutine and a single thread cannot (R3-AUD-8);
- *   · (W1.7) `cmt_cs_init` refuses a host table with ANY of its 26 rows
+ *   · (W1.7) `cmt_cs_init` refuses a host table with ANY of its 27 rows
  *     NULL, so a missing callback is a construction-time CMT_FAULT and
  *     not a segfault mid-round — the reference's one defaulted row,
  *     `wal`, defaults to the NO-OP nilWAL and never to nil (state.go:174,
@@ -350,6 +350,15 @@ static int h_wal_read_next(void *ctx, cmt_timed_wal_message_t *out, bool *eof)
     return CMT_OK;
 }
 
+/* state.go:352-385 — the WAL repair (cmt_cs.h `wal_repair`). This
+ * fixture's `h_wal_read_next` never returns CMT_REJECT, so the row is
+ * never reached; a call would be a defect, and answers CMT_FAULT. */
+static int h_wal_repair(void *ctx)
+{
+    (void)ctx;
+    return CMT_FAULT;
+}
+
 /* Every row below is deliberately a FAILURE. A passing run never reaches
  * one; a test that started to would break loudly instead of drifting. */
 static int h_create_block(void *c, int64_t h, const cmt_state_t *s,
@@ -492,6 +501,7 @@ static void build_host(cmt_cs_host_t *h)
     h->wal_flush_and_sync                = h_wal_flush;
     h->wal_search_end_height             = h_wal_search_end_height;
     h->wal_read_next                     = h_wal_read_next;
+    h->wal_repair                        = h_wal_repair;
     h->decode_block                      = h_decode_block;
     h->now                               = h_now;
     h->timer_arm                         = h_timer_arm;
@@ -645,10 +655,11 @@ static int t_host_rows_mandatory(void)
     } while (0)
 
     /* Every row is a function pointer and there is nothing else in the
-     * table, so this pins the COUNT: a 27th row added without a NULL
-     * check fails here rather than on someone's node. */
-    CHECK(sizeof(cmt_cs_host_t) == 26u * sizeof(void (*)(void)),
-          "cmt_cs_host_t is 26 function pointers and nothing else"); OK();
+     * table, so this pins the COUNT: a 28th row added without a NULL
+     * check fails here rather than on someone's node. (27: `wal_repair`,
+     * decision 2026-09-26-cmt-wal-file-group.md item 4b.) */
+    CHECK(sizeof(cmt_cs_host_t) == 27u * sizeof(void (*)(void)),
+          "cmt_cs_host_t is 27 function pointers and nothing else"); OK();
 
     if (cmt_config_default(&g_config) != CMT_OK) {
         return 1;
@@ -675,6 +686,7 @@ static int t_host_rows_mandatory(void)
     NULL_ROW(wal_flush_and_sync);
     NULL_ROW(wal_search_end_height);
     NULL_ROW(wal_read_next);
+    NULL_ROW(wal_repair);
     NULL_ROW(decode_block);
     NULL_ROW(now);
     NULL_ROW(timer_arm);
@@ -682,7 +694,7 @@ static int t_host_rows_mandatory(void)
     OK();
 #undef NULL_ROW
 
-    /* And the complete table still constructs, so the 26 refusals above
+    /* And the complete table still constructs, so the 27 refusals above
      * are not passing because construction fails for some other reason. */
     CHECK(fresh_cs() == 0, "a complete host table constructs"); OK();
     cmt_cs_free(g_cs);

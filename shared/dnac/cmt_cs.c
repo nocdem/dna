@@ -4434,11 +4434,17 @@ int cmt_cs_read_replay_message(cmt_cs_t *cs,
          * which names a digest mismatch and an out-of-range kind; a
          * ValidateBasic failure is the same class by EXTENSION, recorded
          * as such in atlas-dec-b02c8de1f52854b20dbfd64f6c987b34 item 4,
-         * not quoted from D-15. The reference's repair path
-         * (state.go:338-386: stop the WAL, copy it to `.CORRUPTED`,
-         * `repairWalFile` at :374, retry catchupReplay ONCE) is NOT
-         * ported, so there is nothing else to do with a record that
-         * fails. Deviation register R3-AUD-5. */
+         * not quoted from D-15.
+         *
+         * SINCE THE FILE WAL (decision 2026-09-26-cmt-wal-file-group.md
+         * item 4b) the reference's repair path IS ported (cmt_cs_start,
+         * the `wal_repair` row), and the nodus host's decoder runs this
+         * same gate inside its `Decode` (nodus_witness_cmt_wal.c), so a
+         * failing record arrives there as `wal_read_next`'s CMT_REJECT —
+         * the DataCorruptionError the reference repairs on — and never
+         * reaches this line. This gate stays as a second line for a host
+         * whose decoder does not run it; reaching it is that host's
+         * defect, so it stays CMT_FAULT. Deviation register R3-AUD-5. */
         rc = cmt_msg_validate_basic(&msg->msg.u.msg_info.msg);
         if (rc != CMT_OK) {
             QGP_LOG_ERROR(LOG_TAG, "replay: WAL MsgInfo failed ValidateBasic "
@@ -4465,13 +4471,22 @@ int cmt_cs_read_replay_message(cmt_cs_t *cs,
     }
 }
 
-int cmt_cs_catchup_replay(cmt_cs_t *cs, int64_t cs_height)
+/* `catchupReplay` with the corruption class carried out: `*out_corrupted`
+ * is set exactly when the replay ended on `wal_read_next`'s CMT_REJECT —
+ * the reference's DataCorruptionError from `dec.Decode()` (replay.go:151-
+ * 153), the only error `OnStart` repairs on (state.go:348,
+ * `IsDataCorruptionError`). Every other REJECT this function returns (the
+ * END_HEIGHT rule, a refused record) leaves it false, as the reference's
+ * plain `fmt.Errorf`s would fail `IsDataCorruptionError`. */
+static int cs_catchup_replay(cmt_cs_t *cs, int64_t cs_height,
+                             bool *out_corrupted)
 {
     cmt_timed_wal_message_t *msg;
     int64_t                  end_height;
     bool                     found;
     int                      rc;
 
+    *out_corrupted = false;
     if (cs == NULL) {
         return CMT_FAULT;
     }
@@ -4531,7 +4546,9 @@ int cmt_cs_catchup_replay(cmt_cs_t *cs, int64_t cs_height)
         rc = cs->host.wal_read_next(cs->host_ctx, msg, &eof);     /* :147 */
         if (rc != CMT_OK) {
             /* :151-156 — a corruption error and any other error both end
-             * the replay with that error. */
+             * the replay with that error; the row's CMT_REJECT is the
+             * corruption class (cmt_cs.h, `wal_read_next`). */
+            *out_corrupted = (rc == CMT_REJECT);
             free(msg);
             cs->replay_mode = false;
             return rc;
@@ -4552,6 +4569,13 @@ int cmt_cs_catchup_replay(cmt_cs_t *cs, int64_t cs_height)
     free(msg);
     cs->replay_mode = false;                                     /* :98 */
     return CMT_OK;                                               /* :166 */
+}
+
+int cmt_cs_catchup_replay(cmt_cs_t *cs, int64_t cs_height)
+{
+    bool corrupted = false;
+
+    return cs_catchup_replay(cs, cs_height, &corrupted);
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -4607,12 +4631,13 @@ int cmt_cs_init(cmt_cs_t *cs,
         host->wal_flush_and_sync == NULL ||
         host->wal_search_end_height == NULL ||
         host->wal_read_next == NULL ||
+        host->wal_repair == NULL ||
         host->decode_block == NULL ||
         host->now == NULL ||
         host->timer_arm == NULL ||
         host->timer_disarm == NULL) {
         QGP_LOG_ERROR(LOG_TAG, "cmt_cs_init: the host left a mandatory row "
-                               "NULL (all 26 of cmt_cs_host_t are required)");
+                               "NULL (all 27 of cmt_cs_host_t are required)");
         return CMT_FAULT;
     }
     if (state_storage == scratch_storage) {
@@ -4766,22 +4791,41 @@ int cmt_cs_start(cmt_cs_t *cs)
      * cmt_cs_init already initialised, disarmed (ticker.go:41-53). */
 
     if (cs->do_wal_catchup) {                                     /* :338 */
-        rc = cmt_cs_catchup_replay(cs, cs->rs.height);            /* :343 */
-        if (rc == CMT_FAULT) {
-            return rc;
-        }
-        if (rc != CMT_OK) {
-            /* :348-350 — the reference distinguishes a data-corruption
-             * error, which it tries to REPAIR (:352-385, a file WAL this
-             * port does not have), from every other error, which it logs
-             * before starting anyway. With no repair path, both are
-             * logged and the state machine starts: refusing to start on a
-             * replay that found nothing to replay would be a stricter
-             * rule than the reference's, and that is a decision for the
-             * operator rather than for this port. Recorded as a QUESTION
-             * in the wave report. */
-            QGP_LOG_ERROR(LOG_TAG, "error on catchup replay; proceeding to "
-                                   "start state anyway (rc %d)", rc);
+        bool repair_attempted = false;                            /* :339 */
+
+        for (;;) {                                                /* :341 LOOP */
+            bool corrupted = false;
+
+            rc = cs_catchup_replay(cs, cs->rs.height, &corrupted); /* :343 */
+            if (rc == CMT_OK) {
+                break;                                            /* :345-346 */
+            }
+            if (rc == CMT_FAULT) {
+                /* port-local: a host failure, not a reference error */
+                return rc;
+            }
+            if (!corrupted) {                                     /* :348-350 */
+                QGP_LOG_ERROR(LOG_TAG, "error on catchup replay; proceeding "
+                                       "to start state anyway (rc %d)", rc);
+                break;
+            }
+            if (repair_attempted) {                               /* :352-353 */
+                QGP_LOG_ERROR(LOG_TAG, "%s", "the WAL is still corrupted "
+                              "after one repair; not starting");
+                return rc;
+            }
+            QGP_LOG_ERROR(LOG_TAG, "%s", "the WAL file is corrupted; "
+                          "attempting repair");                   /* :356 */
+            /* :358-384 — Stop, back up, repairWalFile, loadWalFile: the
+             * WAL is the host's, so the four steps are one host row that
+             * returns at the first failure, as the reference does. */
+            repair_attempted = true;                              /* :363 */
+            rc = cs->host.wal_repair(cs->host_ctx);
+            if (rc != CMT_OK) {
+                QGP_LOG_ERROR(LOG_TAG, "the WAL repair failed (rc %d)", rc);
+                return rc;                     /* :360, :367, :376, :383 */
+            }
+            QGP_LOG_INFO(LOG_TAG, "%s", "successful WAL repair"); /* :379 */
         }
     }
     /* :388-390 — evsw.Start, not ported. */

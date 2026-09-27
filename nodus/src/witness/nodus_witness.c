@@ -7,7 +7,7 @@
 
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_db.h"
-#include "witness/nodus_witness_peer.h"
+#include "witness/nodus_witness_p2p.h"      /* the 4004 p2p host (P2P-PORT F5) */
 #include "witness/nodus_witness_handlers.h"
 #include "witness/nodus_witness_v2_pools.h"  /* S7 startup check      */
 #include "witness/nodus_witness_v2_gate.h"      /* O15B activation gate  */
@@ -37,23 +37,20 @@
 #include "witness/nodus_witness_v2_produce.h"   /* classify_entry / tip  */
 #include "witness/nodus_witness_domreg.h"       /* contextual rulesets   */
 /* FLEET-TM-R3 W3 package C2a — the cometbft server binding: the startup
- * table, the transport glue (package C2b) and the two reactors it binds.
- * nodus_witness.h declares cmt_node/cmt_net/cmt_conr/cmt_memr as `void *`
- * for exactly the circular-include reason these headers exist below the
- * types they need — see that struct's comment. */
+ * table and the two reactors, whose host tables are the p2p host's
+ * (P2P-PORT F5; the C2b transport glue nodus_witness_cmt_net is deleted).
+ * nodus_witness.h declares cmt_node/cmt_conr/cmt_memr as `void *` for
+ * exactly the circular-include reason these headers exist below the types
+ * they need — see that struct's comment. */
 #include "witness/nodus_witness_cmt_node.h"
-#include "witness/nodus_witness_cmt_net.h"
 #include "dnac/cmt_conr.h"
 #include "dnac/cmt_memr.h"
 #include "crypto/sign/qgp_dilithium.h"          /* ML-DSA-87 raw_sign    */
-#include "nodus/nodus_chain_config.h"  /* w_cc_appr_req handler (D-16 rev 7) */
 #include "crypto/utils/qgp_log.h"
 #include "crypto/hash/qgp_sha3.h"
-#include "protocol/nodus_tier3.h"
 #include "protocol/nodus_tier2.h"  /* MED-27: pending_forward timeout error */
 #include "server/nodus_server.h"
 #include "crypto/nodus_identity.h"
-#include "transport/nodus_tcp.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -74,12 +71,12 @@
 /* FLEET-TM-R3 W3 package C2a — witness_cmt_tick's per-tick cmt_cs_step
  * bound (item 3(b)). D-23 rev 7 (19)'s own arithmetic: one maximal block
  * is ~337 parts (CMT_BITS_BLOCK_PART_SIZE_BYTES 65 536,
- * DefaultBlockParams().max_bytes 22 020 096 — nodus_witness_cmt_net.h's
- * "THE RECEIVE ARENA" note). This bound is comfortably above that so an
- * ordinary tick drains a whole proposal in one pass; it exists only to
- * stop a pathological flood of events (many peers' votes/precommits
- * arriving in the same tick) from starving nodus_cmt_net_tick's peer
- * scan and deferred-close pass for an unbounded time. */
+ * DefaultBlockParams().max_bytes 22 020 096 — cmt_conr.h's "THE RECEIVE
+ * ARENA" note). This bound is comfortably above that so an ordinary tick
+ * drains a whole proposal in one pass; it exists only to stop a
+ * pathological flood of events (many peers' votes/precommits arriving in
+ * the same tick) from starving the reactors' own ticks and the 4004 p2p
+ * host for an unbounded time. */
 #define WITNESS_CMT_STEP_BUDGET 512
 
 /* ── Database schema ─────────────────────────────────────────────── */
@@ -1489,14 +1486,6 @@ static void witness_setup_identity(nodus_witness_t *witness) {
            NODUS_T3_WITNESS_ID_LEN);
 }
 
-/* ── Roster initialization ───────────────────────────────────────── */
-
-static void witness_init_roster(nodus_witness_t *witness) {
-    memset(&witness->roster, 0, sizeof(witness->roster));
-    witness->roster.version = 1;
-    witness->last_epoch = 0;
-}
-
 /* ── FLEET-TM-R3 W3 package C2a — the cometbft server binding ────────── */
 
 /**
@@ -1551,14 +1540,14 @@ static int witness_cmt_raw_sign(void *ctx, const uint8_t *sign_bytes,
 
 /**
  * Item 2 — constructs the startup table (`nodus_cmt_node_init`,
- * node.go:285-422) and the transport glue (package C2b,
- * `nodus_cmt_net_init` + `cmt_conr_init` + `cmt_memr_init` +
- * `nodus_cmt_net_bind`), then runs `nodus_cmt_node_start`'s WAL-only half
- * (node.go's OnStart, state.go:319-336). Called ONLY when
- * `witness->v2_successor` is true — the post-open gate above has already
- * refused every chain database that is not version-3, and
- * `nodus_cmt_net_init`'s precondition (item I, nodus_witness_cmt_net.h)
- * that `v2_chain32` is populated is satisfied by that same gate.
+ * node.go:285-422) and the two reactors over the 4004 p2p host's seam
+ * (P2P-PORT F5: `nodus_witness_p2p_lane_prepare` + `cmt_conr_init` +
+ * `cmt_memr_init` + `nodus_witness_p2p_lane_bind`), then runs
+ * `nodus_cmt_node_start`'s WAL-only half (node.go's OnStart,
+ * state.go:319-336). Called ONLY when `witness->v2_successor` is true —
+ * the post-open gate above has already refused every chain database that
+ * is not version-3 — and only with `witness->p2p` built (the reactors
+ * have no transport otherwise).
  *
  * The two REACTORS (`cmt_conr_start` / `cmt_memr_start`, which is what
  * reaches `cmt_cs_start` — nodus_witness_cmt_node.c's own comment) are
@@ -1602,7 +1591,7 @@ static int witness_cmt_raw_sign(void *ctx, const uint8_t *sign_bytes,
  * re-derive or open), so the guard is never expected to fire in
  * practice, but it is the correct backstop either way.
  *
- * @return 0 on success (witness->cmt_node/net/conr/memr populated,
+ * @return 0 on success (witness->cmt_node/conr/memr populated,
  *         cmt_live false); -1 on any failure, with every partial
  *         allocation released and the witness fields left NULL.
  */
@@ -1610,25 +1599,28 @@ int nodus_witness_cmt_live_init(nodus_witness_t *witness) {
     /* delta 8, item C — an explicit entry guard, not an assumption: this
      * function now has TWO legitimate callers (delta 10's doc comment
      * above), and a second call over an already-built construction would
-     * leak the first one's four heap objects and its running node
-     * underneath the caller regardless of which caller it was. Made
-     * explicit so that stays true even if a future caller ever gets this
-     * wrong. */
-    if (witness->cmt_node || witness->cmt_net || witness->cmt_conr ||
-        witness->cmt_memr) {
+     * leak the first one's heap objects and its running node underneath
+     * the caller regardless of which caller it was. Made explicit so that
+     * stays true even if a future caller ever gets this wrong. */
+    if (witness->cmt_node || witness->cmt_conr || witness->cmt_memr) {
         fprintf(stderr, "%s: nodus_witness_cmt_live_init called on an "
                 "already-constructed cometbft server binding — refusing "
                 "to leak the first one\n", LOG_TAG);
         return -1;
     }
+    if (!witness->p2p) {
+        fprintf(stderr, "%s: no 4004 p2p host — the consensus reactors "
+                "have no transport; this node cannot run its chain\n",
+                LOG_TAG);
+        return -1;
+    }
     nodus_cmt_node_t *node = (nodus_cmt_node_t *)calloc(1, sizeof(*node));
-    nodus_cmt_net_t  *net  = (nodus_cmt_net_t  *)calloc(1, sizeof(*net));
     cmt_conr_t       *conr = (cmt_conr_t       *)calloc(1, sizeof(*conr));
     cmt_memr_t       *memr = (cmt_memr_t       *)calloc(1, sizeof(*memr));
     char pvpath[768];
     int  pn;
 
-    if (!node || !net || !conr || !memr) {
+    if (!node || !conr || !memr) {
         fprintf(stderr, "%s: out of memory constructing the cometbft "
                 "server binding\n", LOG_TAG);
         goto fail;
@@ -1662,10 +1654,15 @@ int nodus_witness_cmt_live_init(nodus_witness_t *witness) {
         }
     }
 
-    if (nodus_cmt_net_init(net, witness, &node->store, witness_cmt_now,
-                           NULL) != CMT_OK) {
-        fprintf(stderr, "%s: the cometbft transport glue could not be "
-                "built\n", LOG_TAG);
+    /* The seam's host tables (P2P-PORT F5): the block-store rows read
+     * this node's store; `now` is the SAME callback the state machine's
+     * `now` is (cmt_conr.h). Prepared once per p2p host — a second
+     * construction on the same host is refused by the entry guard above
+     * (the lane is built at most once per witness lifetime). */
+    if (nodus_witness_p2p_lane_prepare(witness->p2p, &node->store,
+                                       witness_cmt_now, NULL) != CMT_OK) {
+        fprintf(stderr, "%s: the p2p host's consensus seam could not be "
+                "prepared\n", LOG_TAG);
         goto fail;
     }
 
@@ -1673,26 +1670,23 @@ int nodus_witness_cmt_live_init(nodus_witness_t *witness) {
      * block sync is not ported (R3-S); a node behind its peers catches
      * up through the consensus reactor's own stored-part gossip
      * (reactor.go:575-590, ported), never a separate blocksync reactor.
-     * recv_arena = net->recv_arena, per nodus_witness_cmt_net.h's own
-     * "THE RECEIVE ARENA" note — see this package's report for the
-     * discrepancy against D-23 rev 7 (17)'s "the node's ext_arena". */
-    if (cmt_conr_init(conr, node->cs, /*wait_sync=*/false, &net->conr_host,
-                      net, &net->recv_arena) != CMT_OK) {
+     * recv_arena = the p2p host's, per cmt_conr.h's "THE RECEIVE ARENA"
+     * note (one message's bound, reset by every receive). */
+    if (cmt_conr_init(conr, node->cs, /*wait_sync=*/false,
+                      nodus_witness_p2p_conr_host(witness->p2p),
+                      witness->p2p,
+                      nodus_witness_p2p_recv_arena(witness->p2p)) != CMT_OK) {
         fprintf(stderr, "%s: the consensus reactor could not be built\n",
                 LOG_TAG);
         goto fail;
     }
-    if (cmt_memr_init(memr, &node->mem_config, node->mem, &net->memr_host)
-        != CMT_OK) {
+    if (cmt_memr_init(memr, &node->mem_config, node->mem,
+                      nodus_witness_p2p_memr_host(witness->p2p)) != CMT_OK) {
         fprintf(stderr, "%s: the mempool reactor could not be built\n",
                 LOG_TAG);
         goto fail;
     }
-    if (nodus_cmt_net_bind(net, conr, memr) != CMT_OK) {
-        fprintf(stderr, "%s: the transport glue could not be bound to its "
-                "reactors\n", LOG_TAG);
-        goto fail;
-    }
+    nodus_witness_p2p_lane_bind(witness->p2p, conr, memr);
 
     if (nodus_cmt_node_start(node) != CMT_OK) {
         fprintf(stderr, "%s: the cometbft consensus WAL could not be "
@@ -1701,10 +1695,12 @@ int nodus_witness_cmt_live_init(nodus_witness_t *witness) {
     }
 
     witness->cmt_node = node;
-    witness->cmt_net  = net;
     witness->cmt_conr = conr;
     witness->cmt_memr = memr;
     witness->cmt_live = false;   /* the tick starts the reactors */
+    /* K2 / N5 — the bonded set now reads the adopted chain (a joiner's
+     * was empty until here). */
+    nodus_witness_p2p_refresh_bonded(witness->p2p);
     fprintf(stderr, "%s: cometbft startup table built at height %llu — "
             "the consensus and mempool reactors start once genesis time "
             "is reached\n", LOG_TAG,
@@ -1712,9 +1708,9 @@ int nodus_witness_cmt_live_init(nodus_witness_t *witness) {
     return 0;
 
 fail:
+    nodus_witness_p2p_lane_unbind(witness->p2p);
     if (conr) { cmt_conr_free(conr); free(conr); }
     if (memr) { cmt_memr_free(memr); free(memr); }
-    if (net)  { nodus_cmt_net_free(net); free(net); }
     if (node) { nodus_cmt_node_release(node); free(node); }
     return -1;
 }
@@ -1725,7 +1721,8 @@ fail:
  * transport poll (item 3(a), already done by the caller) and drives:
  * (b) the state machine, bounded per tick; (c) the transport glue's peer
  * scan, deferred closes and both reactors' own ticks; (d) the host's
- * timer when due; returns (e) the earlier of the two next deadlines.
+ * timer when due; (d2) the consensus WAL's 2 s flush and 5 s size check
+ * when due; returns (e) the earliest of the next deadlines.
  *
  * A CMT_FAULT anywhere is node-local (the W1.7 rule): logged, and this
  * node stops participating in consensus by clearing `witness->running`
@@ -1735,8 +1732,9 @@ fail:
  * (verbs 35-39) also stop being routed once halted — see the dispatch
  * function's `witness->running` check.
  *
- * @return the earliest of the glue's and the timer's next deadline, in
- *         nanoseconds (host clock); INT64_MAX when neither is pending
+ * @return the earliest of the glue's, the timer's and the WAL tickers'
+ *         next deadline, in nanoseconds (host clock); INT64_MAX when none
+ *         is pending
  *         or the lane is not yet live. NOT currently threaded into the
  *         server's poll wait (nodus_server.c still polls at a fixed
  *         50 ms) — see this package's report, item 3, for why that is
@@ -1768,20 +1766,20 @@ fail:
  * this path, a harmless no-op by construction rather than by luck. */
 static int64_t witness_cmt_tick(nodus_witness_t *witness) {
     nodus_cmt_node_t *n    = (nodus_cmt_node_t *)witness->cmt_node;
-    nodus_cmt_net_t  *net  = (nodus_cmt_net_t  *)witness->cmt_net;
     cmt_conr_t       *conr = (cmt_conr_t       *)witness->cmt_conr;
     cmt_memr_t       *memr = (cmt_memr_t       *)witness->cmt_memr;
 
     /* delta 10: a harmless no-op, never observed to actually happen — see
      * this function's own doc comment above for why no tick can land
      * here between join_adopt's scan and its live_init call. */
-    if (!n || !net || !conr || !memr) return INT64_MAX;
+    if (!n || !conr || !memr || !witness->p2p) return INT64_MAX;
 
     /* node.go:518-524 — the genesis-time wait. Not blockable inside an
      * event loop: checked here, once per tick, logged once on the
-     * transition. Peers are admitted only once both reactors are
-     * running (nodus_witness_cmt_net.h), so a frame arriving before this
-     * point is dropped with a WARN by the glue, never faulted. */
+     * transition. The p2p host admits peers into the two reactors only
+     * once both are running (nodus_witness_p2p_lane_live, R-P2P-47), so a
+     * message arriving before this point is dropped by the host, never
+     * faulted. */
     if (!witness->cmt_live) {
         cmt_time_t now_t;
         if (n->now(n->now_ctx, &now_t) != CMT_OK) {
@@ -1816,6 +1814,15 @@ static int64_t witness_cmt_tick(nodus_witness_t *witness) {
         n->cs_started = true;   /* nodus_witness_cmt_node.h's contract:
                                   * the caller sets this once cmt_conr_start
                                   * has actually reached cmt_cs_start. */
+        /* Both reactors run: every connected peer enters them now, in
+         * the reference's addPeer order (R-P2P-47). */
+        if (nodus_witness_p2p_lane_live(witness->p2p) != CMT_OK) {
+            fprintf(stderr, "%s: CMT_FAULT admitting the connected peers "
+                    "into the reactors — consensus participation stops\n",
+                    LOG_TAG);
+            witness->running = false;
+            return INT64_MAX;
+        }
         witness->cmt_live = true;
         fprintf(stderr, "%s: cometbft lane LIVE — genesis time reached\n",
                 LOG_TAG);
@@ -1840,14 +1847,12 @@ static int64_t witness_cmt_tick(nodus_witness_t *witness) {
         if (!worked) break;
     }
 
-    /* (c) — peer-mesh maintenance and both reactors' own ticks, every
-     * iteration, AFTER the transport poll and never from inside an
-     * on_frame callback (nodus_cmt_net.h's CALLER CONTRACT — this
-     * function is reached only from nodus_witness_tick, never from
-     * nodus_witness_dispatch_t3). */
+    /* (c) — both reactors' own ticks (and the StopPeerForErrors they
+     * raised), every iteration, AFTER the p2p host's pass (nodus_witness_
+     * tick) and never from inside a reactor callback. */
     int64_t net_deadline = INT64_MAX;
-    if (nodus_cmt_net_tick(net, &net_deadline) != CMT_OK) {
-        fprintf(stderr, "%s: CMT_FAULT in nodus_cmt_net_tick — consensus "
+    if (nodus_witness_p2p_lane_tick(witness->p2p, &net_deadline) != CMT_OK) {
+        fprintf(stderr, "%s: CMT_FAULT in a reactor tick — consensus "
                 "participation stops\n", LOG_TAG);
         witness->running = false;
         return INT64_MAX;
@@ -1886,10 +1891,61 @@ static int64_t witness_cmt_tick(nodus_witness_t *witness) {
         }
     }
 
-    /* (e) — the earlier of the two deadlines. */
+    /* (d2) — the consensus WAL's two tickers (decision
+     * 2026-09-26-cmt-wal-file-group.md item 4a): wal.go:137-153
+     * `processFlushTicks` (FlushAndSync every 2 s) and group.go:239-250
+     * `processTicks` (checkHeadSizeLimit + checkTotalSizeLimit every
+     * 5 s), as deadlines on this loop — the single-loop form of the two
+     * goroutines' waits. The clock is `now_t2`, the reading step (d)
+     * just took through `n->now` — the same callback the WAL stamps its
+     * records with (nodus_cmt_node_start opens the WAL with n->now).
+     *
+     * A CMT_FAULT from either stops this node, like every other FAULT in
+     * this function. The reference is softer at one of the two sites:
+     * a failed periodic flush is only LOGGED ("Periodic WAL flush
+     * failed", wal.go:146-148) and the ticker keeps running — but the
+     * failure leaves bufio's error sticky (bufio.go:636-638), so the
+     * next own-message WriteSync fails and panics (state.go:840-845).
+     * The group check panics directly on a failed rotation (group.go:
+     * 309-323) or directory scan (:363-371). The WAL functions log
+     * their own error first. */
+    if (n->wal_open) {
+        int64_t now_ns = cmt_time_unix_nano(now_t2);
+
+        if (nodus_cmt_wal_flush_if_due(&n->wal, now_ns) != CMT_OK) {
+            fprintf(stderr, "%s: CMT_FAULT in the consensus WAL's periodic "
+                    "flush — consensus participation stops\n", LOG_TAG);
+            witness->running = false;
+            return INT64_MAX;
+        }
+        if (nodus_cmt_wal_group_check_if_due(&n->wal, now_ns) != CMT_OK) {
+            fprintf(stderr, "%s: CMT_FAULT in the consensus WAL's size "
+                    "check (rotation / directory scan) — consensus "
+                    "participation stops\n", LOG_TAG);
+            witness->running = false;
+            return INT64_MAX;
+        }
+    }
+
+    /* (e) — the earliest of the deadlines: the network's, the consensus
+     * timer's and the WAL's two tickers'. */
     int64_t timer_deadline = INT64_MAX;
+    int64_t deadline;
     (void)nodus_cmt_host_next_deadline(n->be, &timer_deadline);
-    return net_deadline < timer_deadline ? net_deadline : timer_deadline;
+    deadline = net_deadline < timer_deadline ? net_deadline : timer_deadline;
+    if (n->wal_open) {
+        int64_t wal_deadline;
+
+        if (nodus_cmt_wal_next_flush_deadline(&n->wal, &wal_deadline) &&
+            wal_deadline < deadline) {
+            deadline = wal_deadline;
+        }
+        if (nodus_cmt_wal_next_group_check_deadline(&n->wal, &wal_deadline) &&
+            wal_deadline < deadline) {
+            deadline = wal_deadline;
+        }
+    }
+    return deadline;
 }
 
 /* ── Public API ──────────────────────────────────────────────────── */
@@ -1899,11 +1955,8 @@ int nodus_witness_init(nodus_witness_t *witness,
                        const nodus_witness_config_t *config) {
     if (!witness || !server || !config) return -1;
 
-    /* Preserve tcp pointer (set by server before init) */
-    void *saved_tcp = witness->tcp;
     memset(witness, 0, sizeof(*witness));
     witness->server = server;
-    witness->tcp = saved_tcp;  /* Restore dedicated witness TCP transport */
     witness->config = *config;
     witness->running = true;
 
@@ -2030,21 +2083,49 @@ int nodus_witness_init(nodus_witness_t *witness,
      * pulls the bundle and adopts on a pin match. */
     (void)nodus_witness_v2_join_arm(witness);
 
-    /* Fix 3: record activation time for the chain_id quorum-check window.
-     * Within the first 300s after activation, every incoming w_ident is
-     * compared against our local chain_id; if a strict majority of
-     * observed peers disagree (and >=2 dissenters), the witness
-     * quarantines itself. See nodus_witness_peer_handle_ident. */
-    witness->activated_at_sec = (uint64_t)time(NULL);
-    witness->quarantined = false;
-    witness->chain_dissent_count = 0;
-    witness->chain_agree_count = 0;
+    /* P2P-PORT F5 — the 4004 p2p host (nodus_witness_p2p.h). Its network
+     * is the chain this node runs or, for a pinned joiner, the pin (the
+     * same 32 bytes the chain id will be); a node with neither has no
+     * network to join and opens no 4004 port (witness-port session design
+     * §2R4 P5 "a node with neither refuses to dial"). The chain-quorum
+     * quarantine that stood here is DELETED (§2R4 P1). */
+    {
+        const uint8_t *network = NULL;
 
-    /* Initialize roster */
-    witness_init_roster(witness);
+        if (witness->v2_successor) {
+            network = witness->v2_chain32;
+        } else if (witness->v2_join.active) {
+            network = witness->v2_join.pin;
+        }
+        if (network) {
+            nodus_witness_p2p_params_t prm;
+            uint16_t wport = server->config.witness_port
+                           ? server->config.witness_port
+                           : NODUS_DEFAULT_WITNESS_PORT;
 
-    /* Initialize peer mesh (builds roster, connects seeds on witness port) */
-    nodus_witness_peer_init(witness);
+            memset(&prm, 0, sizeof(prm));
+            prm.identity      = &server->identity;
+            prm.chain_id      = network;
+            prm.cfg           = &server->config.p2p;
+            prm.listen_ip     = server->config.bind_ip;
+            prm.listen_port   = wport;
+            prm.external_ip   = server->config.external_ip;
+            prm.data_path     = witness->data_path;
+            prm.seq_dir       = server->config.identity_path[0]
+                              ? server->config.identity_path
+                              : witness->data_path;
+            prm.open_listener = true;
+            witness->p2p = nodus_witness_p2p_new(witness, &prm);
+            if (!witness->p2p) {
+                fprintf(stderr, "%s: the 4004 p2p host could not be "
+                        "started — refusing init\n", LOG_TAG);
+                return -1;
+            }
+        } else {
+            fprintf(stderr, "%s: no chain and no genesis pin — port 4004 "
+                    "is not opened\n", LOG_TAG);
+        }
+    }
 
     /* R3 W4 — the PR 3 Yol B / C6 auto-bootstrap state machine
      * (nodus_witness_bootstrap_start, DISCOVER/HAVE_CHAIN/FETCH_GENESIS)
@@ -2069,24 +2150,21 @@ int nodus_witness_init(nodus_witness_t *witness,
             fprintf(stderr,
                     "%s: the cometbft server binding could not be built — "
                     "refusing init\n", LOG_TAG);
+            /* The caller frees `witness` without nodus_witness_close on a
+             * failed init (nodus_server.c): stop the p2p host's threads
+             * and sockets here. */
+            nodus_witness_p2p_free(witness->p2p);
+            witness->p2p = NULL;
             return -1;
         }
     }
 
-    fprintf(stderr, "%s: initialized (roster=%d witnesses, "
-            "chain_db=%s)\n",
-            LOG_TAG, witness->roster.n_witnesses,
+    fprintf(stderr, "%s: initialized (p2p=%s, chain_db=%s)\n",
+            LOG_TAG, witness->p2p ? "on" : "off",
             witness->db ? "active" : "pre-genesis");
 
     return 0;
 }
-
-/* R3 W4 — the epoch-tick roster rebuild interval. Named alongside the
- * legacy block timer for historical reasons; the block timer itself
- * (mempool-driven batch proposal) is deleted with the closed consensus
- * lane, but the transport-mesh epoch rebuild in witness_mesh_tick still
- * uses this constant. */
-#define WITNESS_EPOCH_SECS  60
 
 /* R3 W4 — nodus_witness_pending_forward_expire, nodus_witness_v2_entry_verdict,
  * nodus_witness_v2_entry_is_decided, nodus_witness_mempool_evict_committed and
@@ -2097,73 +2175,11 @@ int nodus_witness_init(nodus_witness_t *witness,
  * class-routed nullifier-vs-claims judgement O15K V-3 and O15I V1 built up,
  * are gone with the state they judged. */
 
-/**
- * MESH MAINTENANCE. Called unconditionally, once per tick, before the
- * role-specific branch: dead-connection cleanup, dialing every roster
- * witness with backoff, the IDENT exchange that sets `peers[i].identified`
- * (`nodus_witness_peer_tick`), then the 60 s epoch roster rebuild below.
- * Both surviving roles need it — a version-3 successor needs identified
- * peers for the Comet transport glue's `net_scan_peers`, and a pre-genesis
- * node needs them for the pinned joiner's gbundle fetch — so it no longer
- * has a legacy-only call site to be unchanged at.
- *
- * @return true when there was NO roster change this tick (the epoch
- *         timer fired and the rebuilt roster is identical to the
- *         current one). THE CALLER MUST IGNORE THIS RETURN VALUE ON A
- *         VERSION-3 CHAIN: there is no legacy round phase left to defer
- *         a swap for, so the swap below is always the IMMEDIATE branch,
- *         and "no change" is simply nothing left to do this tick — never
- *         a reason to skip draining the Comet state machine.
- */
-static bool witness_mesh_tick(nodus_witness_t *witness) {
-    /* Peer mesh: reconnection, IDENT exchange */
-    nodus_witness_peer_tick(witness);
-
-    /* Epoch tick: rebuild roster every 60s */
-    uint64_t now = nodus_time_now();
-    if (now - witness->last_epoch >= WITNESS_EPOCH_SECS) {
-        witness->last_epoch = now;
-
-        /* F17 A2 — rebuild transport-layer peer discovery roster. BFT
-         * config is NOT derived from this roster; it's recomputed from
-         * the chain-derived committee at round-start. */
-        nodus_witness_rebuild_roster_from_peers(witness, &witness->pending_roster);
-
-        /* Check if roster actually changed */
-        bool changed = (witness->pending_roster.n_witnesses != witness->roster.n_witnesses);
-        if (!changed) {
-            for (uint32_t i = 0; i < witness->roster.n_witnesses; i++) {
-                if (memcmp(witness->roster.witnesses[i].witness_id,
-                           witness->pending_roster.witnesses[i].witness_id,
-                           NODUS_T3_WITNESS_ID_LEN) != 0) {
-                    changed = true;
-                    break;
-                }
-            }
-        }
-
-        if (!changed) {
-            /* No change — skip swap. See this function's own doc
-             * comment for how each call site treats this return. */
-            return true;
-        }
-
-        /* R3 W4 — always immediate: there is no legacy round-active
-         * window left to defer a swap for (the legacy round_state and
-         * its phase are deleted with the closed consensus lane). F17
-         * A2 — transport-only swap; BFT config is refreshed from the
-         * chain committee at round-start (no gossip-driven quorum
-         * changes). */
-        memcpy(&witness->roster, &witness->pending_roster,
-               sizeof(nodus_witness_roster_t));
-
-        fprintf(stderr, "WITNESS: epoch roster swap: %u witnesses "
-                "(transport)\n",
-                witness->roster.n_witnesses);
-    }
-
-    return false;
-}
+/* P2P-PORT F5 — witness_mesh_tick (the 4004 peer tick: reconnect by
+ * address, IDENT, the 60 s roster rebuild from the DHT registry) is
+ * DELETED: the p2p switch reconnects persistent peers (switch.go:343-357,
+ * :399-447), PEX finds the rest, and the bonded set replaces the roster
+ * (nodus_witness_p2p.h). */
 
 void nodus_witness_tick(nodus_witness_t *witness) {
     if (!witness || !witness->running) return;
@@ -2173,7 +2189,7 @@ void nodus_witness_tick(nodus_witness_t *witness) {
      *
      * The reference's "poll wait = min(50 ms, the earliest deadline)"
      * governs the ONE wait this port controls without touching
-     * nodus_server.c's multi-poll loop: the witness TCP poll below.
+     * nodus_server.c's multi-poll loop: the 4004 p2p host's wait below.
      * witness->cmt_next_deadline_ns is what the PREVIOUS tick's
      * witness_cmt_tick returned (INT64_MAX — the doc default — until a
      * version-3 chain's Comet lane has run at least once); the server's
@@ -2193,27 +2209,20 @@ void nodus_witness_tick(nodus_witness_t *witness) {
         }
     }
 
-    /* Poll dedicated witness TCP transport (port 4004) — item 3(a). This
-     * runs UNCONDITIONALLY, on both a legacy and a version-3 chain: it is
-     * what feeds nodus_witness_dispatch_t3, which routes verbs 35-39 into
-     * the Comet lane below regardless of which tick body runs. The
-     * timeout computed above narrows this wait on a version-3 chain;
-     * a legacy chain keeps the fixed 50 ms it always had. */
-    if (witness->tcp)
-        nodus_tcp_poll((nodus_tcp_t *)witness->tcp, witness_poll_timeout_ms);
+    /* The 4004 p2p host — item 3(a): sockets, handshakes, every peer's
+     * MConnection (which delivers the reactors' messages), PEX. It runs
+     * UNCONDITIONALLY: a version-3 successor's reactors need its peers,
+     * a pinned joiner fetches its genesis bundle over it. The timeout
+     * computed above narrows its wait on a version-3 chain. A node with
+     * no p2p host (no chain, no pin) has nothing to poll. */
+    if (witness->p2p)
+        nodus_witness_p2p_poll(witness->p2p, witness_poll_timeout_ms);
 
-    /* R3 W4 — THE OLD LANE IS DELETED, NOT MERELY CLOSED. Mesh
-     * maintenance runs unconditionally (poll -> peer tick -> roster
-     * refresh), because BOTH remaining roles need it: a version-3
-     * successor needs identified peers for the Comet transport glue's
-     * net_scan_peers, and a pre-genesis node needs them for the pinned
-     * joiner's gbundle fetch (see witness_mesh_tick's own doc comment).
-     * What runs next is role-exclusive: a successor drains the Comet
+    /* What runs next is role-exclusive: a successor drains the Comet
      * lane; anything else (pre-genesis, no role assigned yet —
      * witness_post_open_gate's outcome (b)) drives the pinned-genesis
      * joiner tick instead. There is no third role: the post-open gate
      * refuses every chain that is not version-3 at open. */
-    (void)witness_mesh_tick(witness);
     if (witness->v2_successor) {
         witness->cmt_next_deadline_ns = witness_cmt_tick(witness);
     } else {
@@ -2224,296 +2233,17 @@ void nodus_witness_tick(nodus_witness_t *witness) {
     }
 }
 
-/* ── Tier 3 dispatch (BFT message routing) ───────────────────────── */
-
-/**
- * NETSTATS receive counting (nodus 0.19.76) — OBSERVATION ONLY: the
- * counters live in the Comet transport glue's own object
- * (nodus_cmt_net_t.stats, next to the send-side counters net_send
- * writes), so both directions are emitted by one snapshot. Nothing reads
- * them back on any decision path. The price of keeping them there
- * rather than on nodus_witness_t: a frame received while
- * `witness->cmt_net` is NULL (a node before its version-3 lane is
- * constructed — pre-genesis roster/ident/bundle traffic) is not counted.
- */
-static void witness_netstats_rx(nodus_witness_t *witness,
-                                const nodus_t3_msg_t *msg, size_t frame_len,
-                                bool verified, bool verify_ok) {
-    if (witness->cmt_net)
-        nodus_cmt_net_stats_rx((nodus_cmt_net_t *)witness->cmt_net, msg,
-                               frame_len, verified, verify_ok);
-}
-
-void nodus_witness_dispatch_t3(nodus_witness_t *witness,
-                               struct nodus_tcp_conn *conn,
-                               const uint8_t *payload, size_t len) {
-    if (!witness || !payload || len == 0) return;
-
-    /* Decode T3 message */
-    nodus_t3_msg_t msg;
-    memset(&msg, 0, sizeof(msg));
-
-    if (nodus_t3_decode(payload, len, &msg) != 0) {
-        /* Malformed T3 frame — log with context for diagnosis */
-        char hex[49] = {0};
-        size_t dump_len = len < 24 ? len : 24;
-        for (size_t i = 0; i < dump_len; i++)
-            snprintf(hex + i*2, 3, "%02x", payload[i]);
-        fprintf(stderr, "%s: T3 decode failed (%zu bytes) src=%s:%u head=%s\n",
-                LOG_TAG, len,
-                conn ? conn->ip : "?", conn ? conn->port : 0, hex);
-        return;
-    }
-
-    /* Look up sender in roster to get public key for verification */
-    int sender_idx = nodus_witness_roster_find(&witness->roster,
-                                                 msg.header.sender_id);
-
-    /* NETSTATS (observation only): true once nodus_t3_verify below has
-     * run AND passed; IDENT is never verified here. Each path below
-     * counts the frame exactly once, where it concludes — the order of
-     * the checks is unchanged. */
-    bool netstats_verified = false;
-
-    /* IDENT messages may come from unknown senders (Phase 5) */
-    if (msg.type != NODUS_T3_IDENT) {
-        if (sender_idx < 0) {
-            fprintf(stderr, "%s: T3 %s from unknown sender, ignoring\n",
-                    LOG_TAG, msg.method);
-            witness_netstats_rx(witness, &msg, len, false, false);
-            return;
-        }
-
-        /* Verify wsig against sender's roster public key.
-         *
-         * ── KNOWN, ACCEPTED RESIDUAL (nodus/BUGS.md O15N-L4) ────────────
-         *
-         * This verify authorizes the FRAME on the transport roster, and the
-         * roster admits any self-published DHT `nodus:pk` record that has a
-         * valid signature, is unexpired and is not a duplicate — there is
-         * no committee filter (nodus_witness_peer.c). A T3 sender identity
-         * therefore costs one Dilithium keypair plus one DHT put.
-         *
-         * O15O Faz 4 closed the consequence that mattered: every
-         * consensus-affecting T3 consumer re-authorizes the sender against
-         * the chain-derived committee inside its own handler. The closed
-         * lane's COMMIT handler did this at bft.c's own gate; on the
-         * version-3 lane the equivalent authority is the Comet reactor's
-         * own validator-set check, inside the transport glue below.
-         *
-         * BINDING THIS VERIFY ITSELF TO THE COMMITTEE IS NOT DONE, AND NOT
-         * AN OVERSIGHT. Resolving a committee requires a height, and no
-         * height is authenticated at this point — the message has not been
-         * signature-checked yet, so nothing inside it can be trusted to
-         * select an authority. The only height available here is this
-         * node's LOCAL tip, and using it would make a node that is BEHIND
-         * refuse frames from a legitimately-seated new validator, including
-         * the very frames that would let it catch up. The residual is
-         * therefore accepted deliberately: an unadmitted identity can spend
-         * this node's Dilithium verify budget on the epoll thread, but it
-         * cannot influence consensus state. */
-        nodus_pubkey_t pk;
-        memcpy(pk.bytes,
-               witness->roster.witnesses[sender_idx].pubkey,
-               NODUS_PK_BYTES);
-
-        if (nodus_t3_verify(&msg, &pk) != 0) {
-            fprintf(stderr, "%s: T3 %s wsig verification failed (roster %d)\n",
-                    LOG_TAG, msg.method, sender_idx);
-            witness_netstats_rx(witness, &msg, len, true, false);
-            return;
-        }
-        netstats_verified = true;
-    }
-    witness_netstats_rx(witness, &msg, len, netstats_verified, true);
-
-    /* ── O15C-D.4 — CONSENSUS PROTOCOL VERSION GATE ──────────────────
-     *
-     * Placed HERE deliberately: after the wsig verification above, so the
-     * version we act on is the AUTHENTICATED one (hdr->version lives
-     * inside the Dilithium5 envelope preimage — nodus_tier3.c enc_wh, via
-     * enc_sign_payload — so a peer signs version and args TOGETHER and
-     * cannot advertise one while another party signs a different one);
-     * and BEFORE nodus_witness_peer_ensure below, which is the first
-     * state mutation on this path. A rejected message therefore leaves
-     * zero residue: no peer registration, no vote, no BFT state.
-     *
-     * WHY THIS EXISTS. O15C-D.3 added three proof-bearing NEW_VIEW keys
-     * (rpv/rns/rsg). CBOR decoders SKIP unknown keys, and nothing read
-     * hdr->version, so a v2 node silently processed a v3 NEW_VIEW under
-     * the pre-D.3 local-subset semantics. Reproduced on real binaries
-     * (bc0ff148 vs c65c8cd1): the legacy node committed byte-identical
-     * blocks AND its vote counted toward quorum — with two current nodes
-     * stopped, 4 current + 1 legacy = 5 advanced the chain. Different
-     * rules, same messages, silent participation.
-     *
-     * SCOPE. Exactly the consensus-affecting set the quarantine switch
-     * below already treats as such — that list is the source's own
-     * definition, not a new judgement. R3 W4 deleted the legacy
-     * bootstrap/sync verbs this comment used to name; the gate list is
-     * now exactly verbs 35-39. IDENT and roster (9-11) are NOT gated:
-     * IDENT is not wsig-verified at this point, so its version claim is
-     * unauthenticated and must not be acted on. A stale peer may still
-     * become known to the mesh; it simply cannot influence consensus.
-     * The SYSTEM-governance approval-collection RPC (40-41, D-16 rev 7,
-     * W4-CC — replacing the retired vote-collect pair 14-15) and the
-     * genesis bundle (24-25) are not gated either — 40 is routed to its
-     * own handler below regardless of version (it is a governance RPC,
-     * not a BFT round primitive) and 41 falls to the dispatcher's
-     * `default:` log-and-drop (a server never receives it), while 24-25
-     * is pre-consensus bootstrap traffic, not a live BFT round.
-     *
-     * BOTH directions fail closed: an older version and an unknown newer
-     * version are equally rejected by the exact-match test.
-     *
-     * FLEET-TM-R3 W3/W4 (D-16 rev 5, atlas-dec-0c86593601db977cd5af648b78910004
-     * rev 5, APPROVED) — THIS LIST IS EXACTLY VERBS 35-39. The old lane's
-     * eight consensus-affecting verbs (PROPOSE/PREVOTE/PRECOMMIT/COMMIT/
-     * VIEWCHG/NEWVIEW/FWD_REQ/FWD_RSP) and the two view-authority verbs
-     * (VIEWOK/VIEWOK_REQ) are DELETED, not merely unheld here: their enum
-     * values are retired and their decoders are gone, so a frame naming
-     * one never reaches this authenticated gate at all — there is no
-     * protocol version of the OLD lane left to protect. The identical
-     * list in the quarantine switch below must move with this one. */
-    switch (msg.type) {
-    case NODUS_T3_CMT_STATE:
-    case NODUS_T3_CMT_DATA:
-    case NODUS_T3_CMT_VOTE:
-    case NODUS_T3_CMT_VOTE_SET_BITS:
-    case NODUS_T3_CMT_TXS:
-        if (msg.header.version != NODUS_T3_BFT_PROTOCOL_VER) {
-            fprintf(stderr,
-                    "%s: INCOMPATIBLE PEER — dropping %s from roster %d: "
-                    "BFT protocol v%u, this node requires v%u. The peer "
-                    "cannot participate in consensus until both run the "
-                    "same protocol version.\n",
-                    LOG_TAG, msg.method, sender_idx,
-                    (unsigned)msg.header.version,
-                    (unsigned)NODUS_T3_BFT_PROTOCOL_VER);
-            return;
-        }
-        break;
-    default:
-        break;
-    }
-
-    /* Register inbound conn as peer so broadcasts reach this sender */
-    if (sender_idx >= 0 && conn)
-        nodus_witness_peer_ensure(witness, msg.header.sender_id, conn);
-
-    /* Fix 3: if we have self-quarantined due to chain_id disagreement with a
-     * majority of peers on startup, refuse to participate in BFT consensus.
-     * R3 W4 deleted the legacy sync verbs this comment used to name; the
-     * quarantine switch below refuses exactly verbs 35-39 (the only
-     * consensus-affecting set) and lets everything else through — IDENT /
-     * ROST_Q/R (so the peer mesh stays alive), the SYSTEM-governance
-     * approval-collection RPC (40-41, W4-CC — 40 routed normally, 41
-     * dropped at `default:` regardless, a server never receives it) and
-     * the genesis bundle (24-25) — so an operator can diagnose and
-     * recover without tearing the node down. */
-    if (witness->quarantined) {
-        switch (msg.type) {
-        /* FLEET-TM-R3 W3 (D-16 rev 5) — the same list as the version gate
-         * above, for the same reason: only verbs 35-39 are consensus in
-         * the Comet lane now. */
-        case NODUS_T3_CMT_STATE:
-        case NODUS_T3_CMT_DATA:
-        case NODUS_T3_CMT_VOTE:
-        case NODUS_T3_CMT_VOTE_SET_BITS:
-        case NODUS_T3_CMT_TXS:
-            fprintf(stderr, "%s: QUARANTINED — dropping %s (chain_id disagreement with quorum)\n",
-                    LOG_TAG, msg.method);
-            return;
-        default:
-            break;
-        }
-    }
-
-    /* Route to appropriate handler.
-     *
-     * R3 W4 — verbs 1-8 (legacy consensus + forward), 12-13/16-23
-     * (legacy sync, bootstrap discovery/genesis fetch, old-lane V2 block
-     * sync) and 26-27 (view authority) are DELETED, not merely dropped:
-     * their enum values are retired numbers (see nodus_tier3.h) and
-     * their decoders are gone, so a frame naming one never reaches
-     * nodus_t3_decode successfully and never reaches this switch at all
-     * — the `default:` case below is what answers it.
-     *
-     * D-16 rev 7 (W4-CC) retires verbs 14-15 (chain_config vote-collect)
-     * and REBUILDS the RPC as verbs 40-41 over the pre-auth envelope: 40
-     * (w_cc_appr_req) has a live case below, routed to
-     * nodus_witness_handle_cc_appr_req regardless of chain version (a
-     * governance RPC, not a BFT round primitive — NOT gated above); 41
-     * (w_cc_appr_rsp) is a client-only reply a server never receives —
-     * it has no case here and falls to `default:`, which logs and drops
-     * it, the same shape 14-15 fell to before this rewire.
-     *
-     * Verbs 9-11 (roster, ident — the transport mesh) and 24-25 (genesis
-     * bundle) are KEPT, byte-identical to before. Verbs 35-39 (the
-     * cometbft envelope) are the verb IS the channel: this layer decodes
-     * nothing inside it — nodus_cmt_net_receive routes by channel to the
-     * reactor that marshalled the bytes. */
-    switch (msg.type) {
-    /* Peer mesh messages — KEPT (D-16 rev 5): the transport mesh, not
-     * consensus. */
-    case NODUS_T3_ROST_Q:
-        nodus_witness_peer_handle_rost_q(witness, conn, &msg);
-        break;
-    case NODUS_T3_ROST_R:
-        nodus_witness_peer_handle_rost_r(witness, &msg);
-        break;
-    case NODUS_T3_IDENT:
-        nodus_witness_peer_handle_ident(witness, conn, &msg);
-        break;
-
-    /* ── cometbft envelope verbs 35-39 (D-16 rev 5) ───────────────────
-     * Routed whole to the transport glue; a CMT_FAULT from the glue is
-     * node-local (the W1.7 rule) and is handled by the tick, which is
-     * where witness->running is cleared — not here. A halted node
-     * (witness->running false) or a node whose Comet lane never came up
-     * (witness->cmt_net NULL — not a version-3 chain, or construction
-     * failed at init) drops the frame silently: routing into a state
-     * machine that is not running would either no-op inside the glue's
-     * own guards or, for a halted node, feed a state machine this node
-     * has deliberately stopped trusting. */
-    case NODUS_T3_CMT_STATE:
-    case NODUS_T3_CMT_DATA:
-    case NODUS_T3_CMT_VOTE:
-    case NODUS_T3_CMT_VOTE_SET_BITS:
-    case NODUS_T3_CMT_TXS:
-        if (!witness->running || !witness->cmt_net) break;
-        (void)nodus_cmt_net_receive((nodus_cmt_net_t *)witness->cmt_net,
-                                    msg.header.sender_id, &msg);
-        break;
-
-    /* ── O15E Faz D — Ledger V2 successor genesis bundle (verbs 24-25) —
-     * KEPT (D-16 rev 5): package C2c's, not consensus. */
-    case NODUS_T3_V2_GBUNDLE_REQ:
-        nodus_witness_v2_sync_handle_gbundle_q(witness, conn, &msg);
-        break;
-    case NODUS_T3_V2_GBUNDLE_RSP:
-        /* Joiner-side accumulation (O15E Faz D) is handled by the joiner
-         * bootstrap module, wired where the joiner state lives; a
-         * committed successor node has nothing to do with a bundle
-         * response. */
-        nodus_witness_v2_join_handle_gbundle_r(witness, conn, &msg);
-        break;
-
-    /* ── SYSTEM-governance approval collection (verb 40; D-16 rev 7,
-     * W4-CC) — a governance RPC, not a consensus verb: routed regardless
-     * of chain version or quarantine state (neither switch above gates
-     * it). Verb 41 (the reply) is client-only and falls to `default:`
-     * below, unchanged from how 14-15 fell there before this rewire. */
-    case NODUS_T3_CC_APPR_REQ:
-        nodus_witness_handle_cc_appr_req(witness, conn, &msg);
-        break;
-
-    default:
-        fprintf(stderr, "%s: unknown T3 message type %d\n",
-                LOG_TAG, msg.type);
-        break;
-    }
-}
+/* P2P-PORT F5 — the tier-3 dispatcher (nodus_witness_dispatch_t3) and
+ * its NETSTATS receive counter (witness_netstats_rx) are DELETED — see
+ * the deletion note at their former declaration (nodus_witness.h). The
+ * message kinds that survive arrive on their 4004 channels at the p2p
+ * host's reactors: consensus 0x20-0x23 → cmt_conr, mempool 0x30 →
+ * cmt_memr, genesis bundle 0x70 → nodus_witness_v2_sync_handle_gbundle_q
+ * / nodus_witness_v2_join_handle_gbundle_r, governance approval 0x71 →
+ * nodus_witness_handle_cc_appr_req (nodus_witness_p2p.c). The protocol-
+ * version gate that stood here is the P2P version 8 every 4004 connection
+ * checks in HELLO (N9) and carries in NodeInfo; the quarantine switch is
+ * deleted with the quarantine (§2R4 P1). */
 
 void nodus_witness_dispatch_dnac(nodus_witness_t *witness,
                                  struct nodus_tcp_conn *conn,
@@ -2538,35 +2268,35 @@ void nodus_witness_close(nodus_witness_t *witness) {
      * consensus lane: round_state, retained_batch, parked_propose and
      * view_changes[] no longer exist on nodus_witness_t. */
 
-    /* Close peer mesh (clears conn references) */
-    nodus_witness_peer_close(witness);
-
     /* FLEET-TM-R3 W3 (package C2a) — the cometbft server binding, torn
      * down in reverse construction order, BEFORE witness->db closes.
-     * cmt_conr_stop reaches cmt_cs_stop itself (reactor.go:95-103), ahead
-     * of nodus_cmt_node_release's own (idempotent — "already stopped" is
-     * a CMT_REJECT, not a fault) cmt_cs_stop call. */
+     * The p2p host lets go of the two reactors first (every peer leaves
+     * them); cmt_conr_stop reaches cmt_cs_stop itself (reactor.go:95-103),
+     * ahead of nodus_cmt_node_release's own (idempotent — "already
+     * stopped" is a CMT_REJECT, not a fault) cmt_cs_stop call. */
     {
         cmt_memr_t       *memr = (cmt_memr_t *)witness->cmt_memr;
         cmt_conr_t       *conr = (cmt_conr_t *)witness->cmt_conr;
-        nodus_cmt_net_t  *net  = (nodus_cmt_net_t *)witness->cmt_net;
         nodus_cmt_node_t *node = (nodus_cmt_node_t *)witness->cmt_node;
 
+        nodus_witness_p2p_lane_unbind(witness->p2p);
         if (memr && witness->cmt_live) (void)cmt_memr_stop(memr);
         if (conr && witness->cmt_live) (void)cmt_conr_stop(conr);
         if (memr) { cmt_memr_free(memr); free(memr); }
         if (conr) { cmt_conr_free(conr); free(conr); }
-        /* NETSTATS (observation only): the final cumulative snapshot,
-         * so the counters since the last periodic line are not lost. */
-        if (net)  nodus_cmt_net_stats_emit(net, "shutdown");
-        if (net)  { nodus_cmt_net_free(net); free(net); }
         if (node) { nodus_cmt_node_release(node); free(node); }
         witness->cmt_memr = NULL;
         witness->cmt_conr = NULL;
-        witness->cmt_net  = NULL;
         witness->cmt_node = NULL;
         witness->cmt_live = false;
     }
+
+    /* P2P-PORT F5 — the 4004 p2p host: the switch stops (the address book
+     * is saved), every worker job is finished or dropped, every socket is
+     * closed. After the reactors (above), before the database (below):
+     * nothing of it reads the database once stopped. */
+    nodus_witness_p2p_free(witness->p2p);
+    witness->p2p = NULL;
 
     if (witness->db) {
         sqlite3_close(witness->db);

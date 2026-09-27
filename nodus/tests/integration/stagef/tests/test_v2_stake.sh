@@ -26,6 +26,20 @@
 #   allocation first, rather than depending on another scenario having
 #   run. Each node has its own leaf precisely so scenarios need not be
 #   ordered.
+#   P2P-PORT F6: a nodus-cli from the same tree as the server — the stake
+#   builder takes NO --db any more (decision K3: chain id, coins, tip and
+#   gas price are read from the node, `v2-envelope spend`'s sources); an
+#   older CLI that still demands --db fails the build step, loudly.
+#
+# P2P-PORT F6 — THE intent_id IS READ FROM THE SUBMIT, NOT THE DRY RUN
+#   intent_id is signature-independent (DELTA 3 below) but it DOES commit
+#   expiry_height = tip + CLI_ENV_EXPIRY_AHEAD. The dry run and the submit
+#   are two builds at two moments; a block landing between them gives two
+#   different intent_ids, and a wait keyed on the dry run's would run into
+#   its 20-height bound on a healthy chain (a false RED). The CLI now
+#   prints wire_id / intent_id on the submit path too, and this scenario
+#   takes the intent_id from there; the dry run remains a build +
+#   self-check gate only.
 #
 # R3 W3 (C2d) — THE SUBMIT ANSWER NO LONGER CARRIES A HEIGHT
 #   `dnac_spend` answers CheckTx AT ONCE on this lane — `APPROVED` means
@@ -261,26 +275,37 @@ echo "[ok] the user identity funded by its own claim (tip $t0 -> $t1, live tip w
 # AUTHORIZATION-WITNESS-INDEPENDENT identity: it is IDENTICAL whether
 # read from this dry-run or from the real submission, so it is the value
 # safe to capture once and match later.
+#
+# P2P-PORT F6 (K3): the CLI takes NO local database any more (--db is
+# retired) — chain id, coins, tip and gas price all come from the node
+# over one session. The dry run therefore also asks the node; it stays
+# as a "the envelope builds and self-checks" gate, but the intent_id
+# waited for below is read from the SUBMIT's own output: intent_id
+# commits expiry_height = tip + CLI_ENV_EXPIRY_AHEAD
+# (shared/dnac/env_wire.h intent_id preimage), so a block landing
+# between a dry run and the submit would give the two builds DIFFERENT
+# intent_ids and an unwinnable wait (a false RED at 20 heights).
 dlog="$BASE_DIR/v2stake_envelope_dry.log"
-if ! "$CLI" -s 127.0.0.1 -p "$port" v2-envelope stake --db "$sdb" \
+if ! "$CLI" -s 127.0.0.1 -p "$port" v2-envelope stake \
        --keys "$keys" --bond "$BOND" --commission "$COMMISSION" \
        --dest-fp "$destfp" --dry-run > "$dlog" 2>&1; then
     cat "$dlog" >&2
-    die "stake envelope could not be BUILT (local self-check failed)"
+    die "stake envelope could not be BUILT (self-check against node $REF failed)"
 fi
-intent_id=$(awk '/^ *intent_id=/{sub(/^ *intent_id=/,""); print}' "$dlog")
-[ "${#intent_id}" = 128 ] || die "could not read a 64-byte intent_id from the stake dry-run"
-echo "[ok] stake envelope builds locally (intent_id=${intent_id:0:16}...)"
+grep -q 'PREFLIGHT SELF-CHECK: OK' "$dlog" || { cat "$dlog" >&2; die "the stake dry run printed no self-check verdict"; }
+echo "[ok] stake envelope builds and self-checks (dry run, nothing submitted)"
 
 slog="$BASE_DIR/v2stake_envelope.log"
-if ! "$CLI" -s 127.0.0.1 -p "$port" v2-envelope stake --db "$sdb" \
+if ! "$CLI" -s 127.0.0.1 -p "$port" v2-envelope stake \
        --keys "$keys" --bond "$BOND" --commission "$COMMISSION" \
        --dest-fp "$destfp" --submit "127.0.0.1:$port" \
        > "$slog" 2>&1; then
     cat "$slog" >&2
     die "stake envelope was REJECTED (CheckTx admission failed) — read the log above BEFORE assuming consensus"
 fi
-echo "[ok] stake envelope APPROVED into the mempool (bond=$BOND commission=${COMMISSION}bps)"
+intent_id=$(awk '/^ *intent_id=/{sub(/^ *intent_id=/,""); print}' "$slog")
+[ "${#intent_id}" = 128 ] || die "could not read a 64-byte intent_id from the stake SUBMIT output"
+echo "[ok] stake envelope APPROVED into the mempool (bond=$BOND commission=${COMMISSION}bps, intent_id=${intent_id:0:16}...)"
 
 # The chain must move AT ALL after the stake submission (liveness only —
 # NOT proof the stake itself was included; without SOME delta here the

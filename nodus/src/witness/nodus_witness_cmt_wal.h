@@ -1,186 +1,160 @@
 /**
  * @file nodus/src/witness/nodus_witness_cmt_wal.h
- * @brief cometbft @709fd12b `consensus/wal.go`'s STORAGE side — the
- *        `BaseWAL` write classes (:184-217), the periodic flush
- *        (:137-155), `SearchForEndHeight` (:231-292) and the record
- *        reader `catchupReplay` drives (replay.go:147) — over the
- *        `cmt_wal` SQLite table of D-15 rev 5 / D-17 rev 5.
+ * @brief cometbft @709fd12b `consensus/wal.go` — `BaseWAL` (:76-218),
+ *        `SearchForEndHeight` (:231-284), `WALEncoder` (:289-330) and
+ *        `WALDecoder` (:356-420) — over the file group of
+ *        `libs/autofile` (nodus_witness_cmt_autofile.h).
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * FLEET-TM-R3 wave W1, package R3-B. Nothing in the running chain calls
- * anything here; R3-C2 binds the five row functions into
- * `cmt_cs_host_t` and drives the flush deadline from the server tick.
- * ════════════════════════════════════════════════════════════════════════
+ * Governing record: docs/plans/decisions/2026-09-26-cmt-wal-file-group.md
+ * (operator APPROVED 2026-09-26). It supersedes the STORAGE half of D-15
+ * rev 5/6 (rows in `cmt_wal`, two SQLite connections, the `cmt_wal_sync`
+ * barrier) and the row-truncation MECHANISM of
+ * 2026-09-26-cmt-wal-size-bound.md; its item 4 replaces that record's
+ * 32 MB bound with the reference's 1 GB (see SIZE). The S14
+ * tables `cmt_wal` / `cmt_wal_sync` are left in the schema, unused
+ * (decision item 6): nothing here writes them, and the only read is the
+ * one-time carry-over of item 6's AMENDED block
+ * (`nodus_cmt_wal_carry_sqlite`, NOT GROUNDED).
  *
- * ── WHAT THIS FILE IS ──────────────────────────────────────────────────
- * `shared/dnac/cmt_wal.h` is the RECORD (the four kinds, their proto
- * form, `P` = the marshalled TimedWALMessage). This module is the LOG:
+ * `shared/dnac/cmt_wal.h` is the RECORD (the four kinds and the
+ * TimedWALMessage codec, `P`). This module is the LOG.
  *
- *   row     (protocol_id, height, seq, kind, bytes)          D-15 rev 5
- *           protocol_id  = 1
- *           height       = the height the message carries (below)
- *           seq          = per protocol_id, monotonic ACROSS heights,
- *                          restored as max(seq)+1 at open
- *           kind         = the WALMessage oneof field number, 1-4
- *           bytes        = SHA3-512(P) ‖ P
+ * ── ON DISK ────────────────────────────────────────────────────────────
+ * Head `<data_path>/cs.wal/wal` (config.go:1019 `filepath.Join(
+ * DefaultDataDir, "cs.wal", "wal")` — the witness's data_path is the
+ * reference's data dir: the priv-validator state file sits beside it,
+ * nodus_witness.c's `<data_path>/priv_validator_state.json`), rotated
+ * files `wal.000`, `wal.001`, … (group.go:26-53, :413-418). The
+ * directory is created 0700 (wal.go:92). Each record (wal.go:288,
+ * :316-326):
  *
- * ── THE THREE WRITE CLASSES (D-13 + D-15 rev 5 (4), both APPROVED) ─────
- * The reference writes every record into an autofile group BUFFER and
- * fsyncs that buffer at three distinct call classes; it never holds a
- * transaction of any kind (`Write`, wal.go:184-197, is a buffered write
- * whose own comment says "does not call fsync()"). The approved records
- * map those classes onto two connections, and EVERY row is written in
- * AUTOCOMMIT — no transaction is ever left open here:
+ *     crc32c(P)  4 bytes big-endian   Castagnoli, replay.go:20
+ *     len(P)     4 bytes big-endian   len(P) <= CMT_WAL_MAX_MSG_SIZE_BYTES
+ *     P          the marshalled TimedWALMessage (cmt_timed_wal_message_encode)
  *
- *   `Write` (wal.go:184-197; state.go:760 round state, :831 peer
- *            message, :859 timeout) — one INSERT on the MAIN connection,
- *            which the witness opened at `synchronous=NORMAL`
- *            (nodus_witness.c:486-487). In WAL journal mode a NORMAL
- *            commit appends to the `-wal` file and does NOT fsync
- *            (measured: three such rows issue zero `fdatasync`), which
- *            is exactly the reference's buffered write. D-13: "received
- *            messages and timeout records are inserted through the
- *            existing synchronous=NORMAL connection".
- *   `WriteSync` (wal.go:201-217; state.go:839 own message, :1760
- *            EndHeight) — one INSERT on the SECOND connection, opened at
- *            `synchronous=FULL`, so the autocommit IS the fsync of :211
- *            (measured: exactly one `fdatasync`, on the `-wal` fd).
- *            D-13: the INSERT must return before the message is handed
- *            to the network.
- *   `FlushAndSync` (wal.go:157-159; state.go:1232 before publishing the
- *            proposal, :2374 before signing a vote) — D-15 rev 5 (4)
- *            makes this a HOST OBLIGATION ("every row written before
- *            that point is durable before the signature exists") and
- *            leaves the MECHANISM to R3 under D-13. SQLite has no
- *            fsync-on-demand and an EMPTY transaction commits nothing
- *            and syncs nothing (measured), so the mechanism is: bump the
- *            one `cmt_wal_sync` counter row on the FULL connection. That
- *            commit fdatasyncs the `-wal` file — the SAME file the main
- *            connection appended its Write-class rows to — so every one
- *            of them becomes durable with it (measured across the two
- *            connections). It is a no-op when nothing is pending.
- *            `PRAGMA wal_checkpoint` was the alternative and is REFUSED:
- *            it can return BUSY and then syncs nothing, so durability
- *            would depend on timing (NO FLAKY).
- *   the 2 s ticker (wal.go:28 `walDefaultFlushInterval`, :137-155
- *            `processFlushTicks`) — a `not_before` deadline armed at
- *            the first UNSYNCED Write-class row; the host's tick asks
- *            `nodus_cmt_wal_next_flush_deadline` and calls
- *            `nodus_cmt_wal_flush_if_due(now_ns)`; there is no thread.
+ * `CMT_WAL_MAX_MSG_SIZE_BYTES` (shared/dnac/cmt_wal.h:100) is wal.go:25
+ * `maxMsgSizeBytes = maxMsgSize + 24`, where `maxMsgSize` is
+ * reactor.go:30 (1 MiB) = cmt_wal.h:95 `CMT_MAX_MSG_SIZE`, which
+ * cmt_conr.c:30-33 static-asserts equal to the port's own consensus
+ * reactor bound `CMT_CONR_MAX_MSG_SIZE`: one value, 1 048 600.
  *
- * ── ONE CONTRACT THE CALLER MUST HONOUR ────────────────────────────────
- * A Write-class row joins whatever transaction the MAIN connection has
- * open, so the host must never call `nodus_cmt_wal_write` from INSIDE a
- * store transaction — a rolled-back ledger apply would take the WAL row
- * with it. The single-threaded event loop satisfies this by
- * construction: the ledger's transaction opens and closes inside
- * `apply_block`, and the core makes no WAL call from within it.
+ * ── THE THREE WRITE CLASSES (wal.go) ───────────────────────────────────
+ *   `Write` (:184-196; state.go:760, :831, :859) — encode into the
+ *            group's 40 KiB head buffer. NO fsync. Bytes reach the file
+ *            when the buffer fills (bufio), at a FlushAndSync, at a
+ *            rotation, or at close.
+ *   `WriteSync` (:201-217; state.go:839, :1760) — `Write`, then
+ *            `FlushAndSync`: durable before it returns.
+ *   `FlushAndSync` (:155-159 → group.go:227-237; state.go:1232, :2374,
+ *            and the 2 s ticker) — flush the head buffer, then fsync the
+ *            head file. Always both; there is no "nothing pending"
+ *            shortcut in the reference and there is none here.
  *
- * `TimedWALMessage.Time` is stamped here from the host's `now`
- * (wal.go:189 `cmttime.Now()`); replay never reads it (cmt_wal.h).
+ * ── THE TWO TICKERS, AS DEADLINES ──────────────────────────────────────
+ * The reference runs two goroutines: `processFlushTicks` (wal.go:137-153,
+ * every `walDefaultFlushInterval` = 2 s, :28) and the group's
+ * `processTicks` (group.go:239-250, every 5 s, :20: `checkHeadSizeLimit`
+ * then `checkTotalSizeLimit`). Here both are deadlines armed by
+ * `nodus_cmt_wal_start` (wal.go:133 `group.Start()`, :137 `NewTicker`)
+ * and fired by `nodus_cmt_wal_flush_if_due` / `nodus_cmt_wal_group_check_
+ * if_due` from the owner's event-loop tick; the next deadline follows
+ * the Go runtime ticker's grid rule (nodus_witness_cmt_autofile.h).
  *
- * ── THE READ SIDE READS THROUGH THE MAIN CONNECTION ────────────────────
- * `SearchForEndHeight` and the record reader run on the MAIN connection.
- * Every row of both classes is committed the moment it is written, so
- * either connection can see all of them; the main one is chosen because
- * D-15 rev 5 point 5 requires rows appended DURING a replay to be
- * visible to the cursor in order, and during a replay the core's
- * `newStep` writes are Write-class — i.e. the main connection's own. A
- * reader there sees its own writes without waiting for anything. The
- * cursor is (height, seq); `wal_read_next` fetches the first row
- * strictly after it in `ORDER BY height, seq` and advances.
+ * The caller is the witness loop, `witness_cmt_tick` (nodus_witness.c),
+ * which also folds both deadlines into the deadline it returns
+ * (decision 2026-09-26-cmt-wal-file-group.md item 4a).
  *
- * `SearchForEndHeight` (wal.go:231-292) scans files newest → oldest and
- * returns at the FIRST EndHeight(h) it meets in the newest file holding
- * one; with one EndHeight per height (state.go:1760 writes it once per
- * height) that is the LAST EndHeight(h) in the log, which is what the
- * query below returns. The reference skips corrupted entries while
- * searching (`IgnoreDataCorruptionErrors: true`, replay.go:106); D-15
- * rev 5 makes a digest mismatch a STOP, so a corrupted EndHeight row is
- * CMT_FAULT here, never skipped — the strictness is the storage
- * layer's, stated in cmt_cs.h at the row.
+ * ── SIZE ───────────────────────────────────────────────────────────────
+ * The reference's defaults, unchanged (decision item 4): the head file
+ * rotates at `NODUS_CMT_GROUP_HEAD_SIZE_LIMIT` (10 MB, group.go:21) and
+ * the group's total is bounded at `NODUS_CMT_GROUP_TOTAL_SIZE_LIMIT`
+ * (1 GB, group.go:22 `defaultTotalSizeLimit`) — `NewWAL(walFile)` with
+ * no group option, as state.go:452-453 `OpenWAL` calls it. At each 5 s check
+ * the OLDEST files are removed while the total is at or above the bound,
+ * at most 4 per check, never the head (group.go:268-299). A head that
+ * alone exceeds the bound is logged ("Group's head may grow without
+ * bound") and kept. The limits stay per-handle fields
+ * (`group.head_size_limit`, `group.total_size_limit`) so a test can
+ * lower them, as the reference's option functions do (group.go:122-134).
  *
- * ── THE ROW DIGEST IS THE ONLY INTEGRITY CHECK ─────────────────────────
- * A kind-2/3 row carries no signature. On read the 64-byte prefix is
- * recomputed over P; a mismatch, a row shorter than the prefix, a kind
- * outside 1-4, a kind column disagreeing with the oneof inside P, or a
- * P longer than `CMT_WAL_MAX_MSG_SIZE_BYTES` (wal.go:385-390) is
- * CMT_FAULT. Replay stops; nothing is skipped (D-15 rev 5 (1)).
+ * ── THE READ SIDE ──────────────────────────────────────────────────────
+ * `SearchForEndHeight` (wal.go:231-284): for every file index from the
+ * newest to the oldest, a GroupReader starting at that file (and reading
+ * ON into the later files, group.go:486-488) decodes records until EOF;
+ * the first `EndHeight(height)` found leaves that reader as the replay
+ * cursor. Both reference callers (replay.go:106, :129) pass
+ * `IgnoreDataCorruptionErrors: true`, and the host row has no option
+ * argument, so a corrupted record is logged and SKIPPED here (:263-266).
+ * `nodus_cmt_wal_read_next` is `dec.Decode()` on that cursor
+ * (replay.go:147). The reader sees what is in the FILES: a Write-class
+ * record still in the head buffer is not visible until a flush — the
+ * reference's own behaviour (its TODO, wal.go:73-75).
  *
- * ── WHERE EACH KIND KEEPS ITS HEIGHT (the row's `height` column) ───────
- *   1 EventDataRoundState  .height                   (events.go:94)
- *   2 MsgInfo              the consensus message's own height:
- *                          NewRoundStep/NewValidBlock/ProposalPOL/
- *                          BlockPart/HasVote/VoteSetMaj23/VoteSetBits
- *                          `.height`; Proposal `.proposal.height`;
- *                          Vote `.vote.height` (0 when the message
- *                          carries no vote — cmt_msgs.h says that is
- *                          unreachable in practice)
- *   3 timeoutInfo          .height                   (state.go:56)
- *   4 EndHeightMessage     .height                   (wal.go:43)
+ * ── CORRUPTION (wal.go:332-420) ────────────────────────────────────────
+ * `Decode` classes: EOF while reading the CRC (0-3 bytes — `errors.Is(err,
+ * io.EOF)`, :369-371) is a clean EOF; a short length, a length above
+ * the bound, a zero length (group.go:462-464 "given empty slice"), a
+ * short payload, a CRC mismatch, a payload that does not unmarshal or
+ * convert, and a MsgInfo whose message fails `ValidateBasic` — each is a
+ * `DataCorruptionError`. The last one is msgs.go:316 `MsgFromProto`,
+ * whose final act is `ValidateBasic()` (msgs.go:232-234), reached from
+ * wal.go:410 `WALFromProto`; the port's `cmt_timed_wal_message_decode`
+ * stops short of it (cmt_wal.h), so the decoder here runs it itself.
  *
- * ── THE TWO CONNECTIONS SHARE ONE FILE — measured ──────────────────────
- * SQLite allows ONE writer at a time on a file. While either connection
- * holds an OPEN write transaction the other's write waits out its busy
- * timeout and fails "database is locked" — measured, in both directions,
- * reads unaffected. That is why nothing here opens one: both classes are
- * single-statement autocommit, so each writer holds the lock only for
- * the duration of its own statement. The one remaining rule is the
- * caller contract above — the host must not call `Write` while the
- * ledger's own transaction is open on the main connection, and the
- * single-threaded loop never does.
+ * THE CORRUPTION CLASS (cmt_cs.h, `wal_read_next`): `read_next` returns
+ * CMT_REJECT for a DataCorruptionError and for NOTHING else — the
+ * reference's `Decode` has no other error class (wal.go:366-420 wraps
+ * every failure in DataCorruptionError), so the row's REJECT IS the
+ * reference's `IsDataCorruptionError(err)` (wal.go:333-336, used at
+ * state.go:348 and replay.go:151). `cmt_cs_start` repairs on it
+ * (state.go:338-386). DEVIATION, stated: an OS-level read error
+ * (read(2)/open(2) failing, not a content check) is CMT_FAULT here; the
+ * reference wraps it as a DataCorruptionError too (:373-374, :380-381,
+ * :394-395), and its search loop's `continue` on such an error never
+ * terminates while the error persists (:263-266).
  *
- * ⚠ HISTORY, so the earlier shape is not restored by accident: W1 first
- * shipped a version in which the `Write` class opened a transaction on
- * the WAL connection and left it open until the next COMMIT. That was an
- * ORCHESTRATOR mistranslation of the approved records, not a rule of
- * either: `finalizeCommit` saves the block on the main connection
- * (state.go:1737) while such a transaction would still be open from the
- * round-state and peer-message writes (:760, :831), so the store's write
- * deadlocked against the WAL's. The approved routing above has no such
- * state and the interaction disappears.
+ * ── REPAIR (state.go:352-385, `repairWalFile` :2621-2653) ─────────────
+ * `nodus_cmt_wal_repair` is the host's half of the reference's retry
+ * loop: stop the WAL, copy the HEAD file to `<wal>.CORRUPTED`
+ * (state.go:366, `cmtos.CopyFile` libs/os/os.go:88-112), re-encode every
+ * record of that copy up to the first decode error into a fresh head
+ * (os.Create — truncated), and reload the WAL (`loadWalFile` → `OpenWAL`
+ * → `NewWAL` + `Start`, state.go:420-429, :452-467). Only the head is touched:
+ * `cs.config.WalFile()` is the head path (config.go:1087-1092, default
+ * `data/cs.wal/wal` at :1019), and rotated `wal.NNN` files are left as
+ * they are — a corruption in one of them survives the repair, and the
+ * retried replay then refuses to start, as the reference's does.
  *
- * ── `OnStart`'s ONE WRITE ──────────────────────────────────────────────
- * wal.go:124-131: an EMPTY log gets `WriteSync(EndHeightMessage{0})`
- * before anything else, and `catchupReplay` depends on it: replay.go
- * :125-128 sets `endHeight = 0` when `csHeight == InitialHeight`, :129
- * searches for it and :135-137 refuses to replay when it is absent.
- * "OnStart is YOK" in cmt_wal.h covers the lifecycle boilerplate, not
- * this write; it is `nodus_cmt_wal_start`, called once after open by
- * whoever owns the startup order — R3-C1's STARTUP TABLE, which is
- * where that call site lands. Not an operator question: the reference
- * fixes both the write and its position, only the owner is ours.
+ * ── OnStart's ONE WRITE ────────────────────────────────────────────────
+ * wal.go:124-131: when the HEAD FILE's size is 0 — the head, not the
+ * group; after a rotation with no later write the fresh head is empty
+ * and gets it again, harmless because the search needs
+ * `lastHeightFound > 0` to stop early (:256) — `WriteSync(EndHeight{0})`.
+ * `catchupReplay` depends on it (replay.go:125-137).
  *
- * ── PRUNE ──────────────────────────────────────────────────────────────
- * The reference's autofile group rotates and drops old files
- * (`auto.Group`, YOK); D-15 rev 5 names "prune below" instead:
- * `nodus_cmt_wal_prune_below(h)` deletes every row with height < h.
- * One caller later (R3-C1's height-close order).
- *
- * ── BUSY TIMEOUT ───────────────────────────────────────────────────────
- * The main connection waits `NODUS_W_DB_BUSY_TIMEOUT_MS /
- * NODUS_W_DB_OPEN_ATTEMPTS` per lock (nodus_witness.c:404-406, :484).
- * Both macros are file-local there, so this module re-derives the same
- * figure from the same published root (nodus_types.h:269) and the same
- * divisor — exactly as the deleted `nodus_witness_tm_wal.c` did. Two
- * connections contending on one file must wait the same amount.
+ * ── ERRORS ─────────────────────────────────────────────────────────────
+ * The reference returns errors from Write/WriteSync/FlushAndSync and its
+ * callers panic at the WriteSync sites (state.go:841-844, :1761-1764);
+ * the port keeps each function's CMT_OK / CMT_REJECT / CMT_FAULT
+ * contract below. Go's bufio error is STICKY (bufio.go:636-638, :691-
+ * 693): after one failed write to the head file every later
+ * Write/FlushAndSync fails too.
  *
  * ── DETERMINISM ────────────────────────────────────────────────────────
- * The clock is read only to stamp `TimedWALMessage.Time` (wal.go:189)
- * and to arm the flush deadline; neither value reaches consensus. The
- * replay order is the (height, seq) primary key, a total order.
+ * Node-local: no byte of this log reaches a hash, a vote or a block. The
+ * clock is read to stamp `TimedWALMessage.Time` (wal.go:189 — replay
+ * never reads it, cmt_wal.h) and to arm the two tickers at start. The
+ * record order is the append order, a total order.
  *
  * Reference @709fd12b (SHA-256 verified before use):
  *   consensus/wal.go     434 lines
  *                        f6bd6d512bbda08f31231d535b97df3c9c6feb3ddaf01a2054e2f0cf994f2a2d
- *   consensus/replay.go  565 lines (:94-167)
- *                        5609c4d4174a536389cb2814bac09557a66e3299292141b54c635e31425284fe
- * Governing records: D-15 rev 6 (atlas-dec-c0bfc5344204b9282ceaaa5e06042350,
- * APPROVED 2026-09-14 — rev 5's routing plus the FlushAndSync barrier),
- * D-17 rev 6 (atlas-dec-9d96e2ec31ad4840cf258df21732b67f, APPROVED
- * 2026-09-14 — S14 with cmt_wal_sync), D-13 rev 1
- * (atlas-dec-c4ad532ce8434fe7d434ed61bc22804a), umbrella rev 5
- * (atlas-dec-d5e766defde138eb6dd02e5b81e735a8).
+ *   consensus/replay.go  :20 (crc32c table), :94-167 (catchupReplay)
+ *   libs/autofile        see nodus_witness_cmt_autofile.h
+ * crc32 (the reference's `hash/crc32`, Go 1.21.5 at /usr/local/go/src,
+ * NOT in the pinned tree): Castagnoli polynomial 0x82f63b78
+ * (hash/crc32/crc32.go:34), `simplePopulateTable` / `simpleUpdate`
+ * (hash/crc32/crc32_generic.go:26-48).
  */
 
 #ifndef NODUS_WITNESS_CMT_WAL_H
@@ -190,152 +164,238 @@
 #include <stddef.h>
 #include <stdbool.h>
 
-#include <sqlite3.h>
+#include <sqlite3.h>             /* nodus_cmt_wal_carry_sqlite     */
 
 #include "dnac/cmt_tmhash.h"     /* CMT_OK / CMT_REJECT / CMT_FAULT */
 #include "dnac/cmt_time.h"       /* cmt_now_fn                      */
 #include "dnac/cmt_wal.h"        /* cmt_wal_message_t, timed, codec */
+#include "witness/nodus_witness_cmt_autofile.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/** D-15 rev 5: the consensus protocol's row namespace. */
-#define NODUS_CMT_WAL_PROTOCOL_ID 1u
-
 /** wal.go:28 `walDefaultFlushInterval = 2 * time.Second`, in ns. */
 #define NODUS_CMT_WAL_FLUSH_INTERVAL_NS 2000000000LL
 
-/** The digest prefix of every row: SHA3-512. */
-#define NODUS_CMT_WAL_DIGEST_LEN 64u
+/** state.go:366 `fmt.Sprintf("%s.CORRUPTED", cs.config.WalFile())`. */
+#define NODUS_CMT_WAL_CORRUPTED_SUFFIX ".CORRUPTED"
+
+/** wal.go:288 — the 4-byte CRC and the 4-byte length before `P`. */
+#define NODUS_CMT_WAL_RECORD_HEADER_LEN 8u
+
+/** Go 1.21.5 hash/crc32/crc32.go:34 `Castagnoli = 0x82f63b78` (the
+ *  reversed polynomial), the table replay.go:20 builds. */
+#define NODUS_CMT_CRC32C_POLY 0x82F63B78u
+
+/** hash/crc32 `Table` — 256 entries. */
+typedef uint32_t nodus_cmt_crc32_table_t[256];
+
+/** Go 1.21.5 hash/crc32/crc32_generic.go:26-38 `simplePopulateTable`. */
+void nodus_cmt_crc32_make_table(uint32_t poly, nodus_cmt_crc32_table_t tab);
+
+/** Go 1.21.5 hash/crc32/crc32_generic.go:42-48 `simpleUpdate`;
+ *  `crc32.Checksum(data, tab)` is `update(0, tab, data)`. */
+uint32_t nodus_cmt_crc32_update(uint32_t crc,
+                                const nodus_cmt_crc32_table_t tab,
+                                const uint8_t *p, size_t n);
 
 typedef struct {
-    sqlite3 *full;              /* OWNED — the second, synchronous=FULL   */
-    sqlite3 *main_db;           /* BORROWED — the witness's, NORMAL       */
-    uint32_t protocol_id;
-    uint64_t next_seq;          /* max(seq)+1 at open, then monotonic     */
-    bool     unsynced;          /* a Write-class row is not yet fsynced   */
+    nodus_cmt_group_t group;          /* wal.go:79 group               */
+    nodus_cmt_crc32_table_t crc32c;   /* replay.go:20                  */
+    char     path[NODUS_CMT_AUTOFILE_PATH_MAX]; /* walFile (wal.go:91);
+                                       * the repair reopens it         */
 
-    cmt_now_fn now;             /* wal.go:189 `cmttime.Now()`             */
+    cmt_now_fn now;                   /* wal.go:189 `cmttime.Now()`    */
     void      *now_ctx;
 
-    bool     flush_armed;       /* the ticker, as a deadline              */
+    bool     started;                 /* OnStart ran (service state)   */
+    int64_t  flush_interval_ns;       /* wal.go:83-84, :104            */
+    bool     flush_armed;             /* wal.go:83 flushTicker         */
     int64_t  flush_deadline_ns;
 
-    /* read cursor (SearchForEndHeight / Decode) */
+    /* the replay cursor — the GroupReader `SearchForEndHeight` returns
+     * (wal.go:276) and `Decode` reads from (replay.go:143-147) */
     bool     cursor_valid;
-    int64_t  cursor_height;
-    uint64_t cursor_seq;
+    nodus_cmt_group_reader_t *cursor; /* heap: carries a 4 KiB buffer  */
 
-    /* host-owned storage for the record reader */
-    cmt_pb_arena_t read_arena;  /* reset at every `wal_read_next`         */
-    uint8_t *enc_buf;           /* CMT_WAL_MAX_MSG_SIZE_BYTES + digest    */
+    cmt_timed_wal_message_t *stamp;   /* heap scratch for Write (:189) */
+    uint8_t *enc_buf;                 /* header + CMT_WAL_MAX_MSG_SIZE_BYTES */
     size_t   enc_cap;
-
-    sqlite3_stmt *st_insert;      /* WriteSync class — on `full`          */
-    sqlite3_stmt *st_insert_main; /* Write class     — on `main_db`       */
-    sqlite3_stmt *st_sync;        /* the FlushAndSync barrier — on `full` */
-    sqlite3_stmt *st_max_seq;
-    sqlite3_stmt *st_search;
-    sqlite3_stmt *st_next;
-    sqlite3_stmt *st_prune;
+    uint8_t *dec_buf;                 /* CMT_WAL_MAX_MSG_SIZE_BYTES    */
+    cmt_pb_arena_t read_arena;        /* reset at every decoded record */
 } nodus_cmt_wal_t;
 
 /**
- * Opens the second connection on `sqlite3_db_filename(main_db, "main")`
- * (a file-less database is refused with CMT_FAULT before anything is
- * opened), sets WAL journal mode and `synchronous=FULL`, the shared busy
- * timeout, prepares the statements on BOTH connections, seeds the
- * `cmt_wal_sync` barrier row and restores `next_seq`. `main_db` is
- * BORROWED and must outlive this handle; the caller keeps it at
- * `synchronous=NORMAL`.
- * The `cmt_wal` and `cmt_wal_sync` tables must already exist (schema S14;
- * a chain opened by this build is at S16, the live rung as of
- * tokenomics-v3 P2 — neither S15 nor S16 touches these tables: S15
- * changed `validators` and added the attendance tables, S16 added the
- * reward pool column and the reward tables).
+ * wal.go:91-108 `NewWAL(walFile)` — `EnsureDir(filepath.Dir(walFile),
+ * 0700)` (:92; os.MkdirAll), then `auto.OpenGroup(walFile)` (:97) with
+ * the reference's default limits, the 2 s flush interval (:104), and the
+ * buffers. Nothing is written.
+ * @param wal_file the head path, `<data_path>/cs.wal/wal` in production.
  * @return CMT_OK, CMT_FAULT.
  */
-int nodus_cmt_wal_open(nodus_cmt_wal_t *w, sqlite3 *main_db,
+int nodus_cmt_wal_open(nodus_cmt_wal_t *w, const char *wal_file,
                        cmt_now_fn now, void *now_ctx);
 
 /**
- * wal.go:124-131 — the write inside `OnStart`: when the log holds no
- * row for this protocol, `WriteSync(EndHeightMessage{0})`.
+ * wal.go:124-140 `OnStart` — when the head file's size is 0,
+ * `WriteSync(EndHeightMessage{0})`; then `group.Start()` (the 5 s
+ * check deadline) and the 2 s flush deadline, both from `now`.
  * @return CMT_OK, CMT_FAULT.
  */
 int nodus_cmt_wal_start(nodus_cmt_wal_t *w);
 
-/** Runs the durability barrier if anything is unsynced (wal.go:168 —
- *  `FlushAndSync` in `OnStop`), finalizes the statements on both
- *  connections and closes the OWNED one. `main_db` is not closed. */
+/** wal.go:164-173 `OnStop` + `group.Close()` — when started: disarm the
+ *  flush ticker, FlushAndSync (an error is logged, "error on flush data
+ *  to disk"), `group.Stop()` (group.go:146-151); then `group.Close()`
+ *  (group.go:161-169) and free the buffers. Safe on a zeroed handle. */
 void nodus_cmt_wal_close(nodus_cmt_wal_t *w);
 
 /* ── the five host rows (ctx is a `nodus_cmt_wal_t *`) ────────────── */
 
-/** state.go:760 / :831 / :859 — `wal.Write(msg)` (wal.go:184-197): one
- *  autocommit INSERT on the MAIN connection, no fsync. MUST NOT be
- *  called while a store transaction is open on that connection (see the
- *  header's caller contract). @return CMT_OK; CMT_REJECT for the reference's
- *  :190-194 error (the record will not encode, or exceeds
- *  CMT_WAL_MAX_MSG_SIZE_BYTES — wal.go:318-320); CMT_FAULT when SQLite
- *  fails. The caller logs, as the reference does. */
+/** state.go:760 / :831 / :859 — `wal.Write(msg)` (wal.go:184-196):
+ *  stamp, encode, append to the head buffer. No fsync.
+ *  @return CMT_OK; CMT_REJECT for the reference's `Encode` error (the
+ *  message does not convert, or `len(P)` exceeds the bound — :302-305,
+ *  :318-320), logged as :190-191; CMT_FAULT when the clock or the group
+ *  write fails. */
 int nodus_cmt_wal_write(void *ctx, const cmt_wal_message_t *msg);
 
-/** state.go:839 / :1760 — `wal.WriteSync(msg)` (wal.go:201-217): one
- *  autocommit INSERT on the FULL connection, which IS the fsync, and
- *  which also makes every earlier Write-class row durable (same `-wal`
- *  file), so the flush deadline is disarmed by it. @return CMT_OK;
- *  CMT_FAULT for anything else — the reference panics at both sites. */
+/** state.go:839 / :1760 — `wal.WriteSync(msg)` (wal.go:201-217):
+ *  `Write`, then `FlushAndSync`; durable when CMT_OK returns.
+ *  @return CMT_OK; CMT_FAULT for any failure — the reference panics at
+ *  both call sites (state.go:841-844, :1761-1764). */
 int nodus_cmt_wal_write_sync(void *ctx, const cmt_wal_message_t *msg);
 
-/** state.go:1232 / :2374 — `wal.FlushAndSync()` (wal.go:157-159): the
- *  `cmt_wal_sync` barrier on the FULL connection when a Write-class row
- *  is unsynced, otherwise nothing. @return CMT_OK, CMT_FAULT. */
+/** state.go:1232 / :2374 — `wal.FlushAndSync()` (wal.go:157-159 →
+ *  group.go:227-237): flush the head buffer and fsync the head file.
+ *  @return CMT_OK, CMT_FAULT. */
 int nodus_cmt_wal_flush_and_sync(void *ctx);
 
-/** replay.go:106 / :129 — `wal.SearchForEndHeight(height, …)`
- *  (wal.go:231-292). On `*out_found` the cursor sits just after that
- *  EndHeight row. @return CMT_OK; CMT_FAULT for a corrupted row or a
- *  SQLite failure. */
+/** replay.go:106 / :129 — `wal.SearchForEndHeight(height,
+ *  &WALSearchOptions{IgnoreDataCorruptionErrors: true})` (wal.go:231-
+ *  284). Any previous cursor is closed first. On `*out_found` the cursor
+ *  sits just after that EndHeight record.
+ *  @return CMT_OK; CMT_FAULT for an OS-level read/open error or a
+ *  failed allocation (header: CORRUPTION). */
 int nodus_cmt_wal_search_end_height(void *ctx, int64_t height,
                                     bool *out_found);
 
-/** replay.go:147 — `dec.Decode()` (wal.go:366-420's message half after
- *  the row digest). `*out` and every payload it points at live in the
- *  module's arena until the NEXT call. Without a prior successful
- *  search the cursor is the start of the log (a GroupReader from the
- *  first file). @return CMT_OK with `*out_eof`; CMT_FAULT for a
- *  corrupted row (see the header). */
+/** replay.go:147 — `dec.Decode()` (wal.go:366-420) on the cursor.
+ *  Without a cursor (no successful search) one is opened at the group's
+ *  first file (`NewReader(MinIndex)`). `*out` and every payload it points
+ *  at live in the module's arena until the NEXT call.
+ *  @return CMT_OK with `*out_eof`; CMT_REJECT for a DataCorruptionError
+ *  and for nothing else (header: THE CORRUPTION CLASS); CMT_FAULT for an
+ *  OS-level read/open error or a failed allocation. */
 int nodus_cmt_wal_read_next(void *ctx, cmt_timed_wal_message_t *out,
                             bool *out_eof);
 
-/* ── the flush ticker as a deadline ───────────────────────────────── */
+/** The host's half of state.go:352-385 (header: REPAIR), on a STARTED
+ *  WAL: `wal.Stop()` (:359-361 — a WAL that was never started is the
+ *  reference's ErrNotStarted, CMT_FAULT), `CopyFile(walFile,
+ *  walFile+".CORRUPTED")` (:366-369), `repairWalFile(corrupted, walFile)`
+ *  (:374-377, :2621-2653), `loadWalFile()` (:382-384) — reopened and
+ *  started into the SAME handle, so a host that holds `w` keeps a valid
+ *  pointer. The clock callback is carried over.
+ *  @return CMT_OK; CMT_FAULT at the first failing step (the reference
+ *  returns that error from OnStart, :360/:367/:376/:383 — the node does
+ *  not start). After a failure the handle is closed. */
+int nodus_cmt_wal_repair(nodus_cmt_wal_t *w);
 
-/** @return true with the deadline when a flush is pending. */
+/* ── the two tickers as deadlines (header: THE TWO TICKERS) ─────────── */
+
+/* ── the one-time carry-over from the SQLite-era WAL ───────────────── */
+
+/** `cmt_wal.protocol_id` of every row the SQLite-era WAL wrote (the old
+ *  header's `NODUS_CMT_WAL_PROTOCOL_ID 1u`, nodus 0.19.80 /
+ *  d123b7e6 nodus_witness_cmt_wal.h:204). */
+#define NODUS_CMT_WAL_SQLITE_PROTOCOL_ID 1
+
+/** The old row's `bytes` prefix: SHA3-512(P) (old header :210
+ *  `NODUS_CMT_WAL_DIGEST_LEN 64u`). */
+#define NODUS_CMT_WAL_SQLITE_DIGEST_LEN 64u
+
+/** The carry's temporary file, in the head's directory. Its name does
+ *  not start with the head's base name, so `readGroupInfo`'s prefix
+ *  match (group.go:380) never counts or indexes it. */
+#define NODUS_CMT_WAL_CARRY_TMP_NAME "carry-sqlite.tmp"
+
+/**
+ * ⚠ NOT GROUNDED — the reference never migrates WAL storage. Decision
+ * 2026-09-26-cmt-wal-file-group.md item 6, AMENDED 2026-09-27 (operator
+ * "1 aktarma kodu", red-team R5 F1): the SQLite-era WAL (schema S14
+ * table `cmt_wal`, rows `(protocol_id, height, seq, kind,
+ * SHA3-512(P) ‖ P)`, written by nodus <= 0.19.80) is read ONCE, at the
+ * first start of the file-WAL build, and its TAIL is re-framed into the
+ * file group, so a node that had signed at the tip before a stop-all
+ * upgrade replays its own signed messages instead of starting at
+ * (H, round 0) against a privval that refuses to sign again.
+ *
+ * Runs only when ALL hold — otherwise it is a no-op (CMT_OK, `*out_rows`
+ * 0): the head `wal_file` is absent or 0 bytes; no rotated `wal.NNN`
+ * exists; the table `cmt_wal` exists; it holds rows of protocol 1.
+ *
+ * The TAIL is the latest EndHeight row (kind 4, the highest seq) and
+ * every row of the protocol after it, in seq order — the append order,
+ * which is the file's order (the SQLite reader's replay order was
+ * (height, seq); the file group's is the append order, wal.go:231-284).
+ * Every row is checked exactly as the old reader's `wal_decode_row` did
+ * (d123b7e6 nodus_witness_cmt_wal.c:455-506): the digest prefix present,
+ * `len(P) <= CMT_WAL_MAX_MSG_SIZE_BYTES`, SHA3-512(P) equal, kind 1-4,
+ * P decodes, the decoded kind and height equal the row's columns. The
+ * payload P is written unchanged as `crc32c(P) ‖ len(P) ‖ P`.
+ *
+ * A row that fails a check, a seq that does not increase, or rows with
+ * no EndHeight row at all (unreachable: the old OnStart seeded
+ * EndHeight{0} into an empty table and nothing ever deleted a row) is
+ * CMT_FAULT with an ERROR naming it, and NO file is left behind: the
+ * rows were written under D-15 rev 5 "stop, never skip", so the node
+ * refuses to start and recovery is manual (the rows are untouched —
+ * rolling back to the old build replays them).
+ *
+ * Atomic: the directory is ensured (0700, as `nodus_cmt_wal_open`), a
+ * stale temp file is removed, the frames go to
+ * `<dir>/NODUS_CMT_WAL_CARRY_TMP_NAME` (0600, autofile.go:38's mode),
+ * which is fsynced, renamed onto `wal_file`, and the directory fsynced.
+ * Any failure removes the temp file (and, when only the directory fsync
+ * after the rename failed, the renamed head too, so the next start
+ * carries again). The SQLite rows are NEVER deleted
+ * or modified. Memory is bounded by one row (sqlite3_step streaming).
+ *
+ * The carried head may exceed the 10 MB head limit; the group's 5 s
+ * check rotates it whole on its first tick (`checkHeadSizeLimit`,
+ * group.go:263-265 `size >= limit` → `RotateFile`).
+ *
+ * @param db       the chain DB's main connection (read only here).
+ * @param wal_file the head path, `<data_path>/cs.wal/wal`.
+ * @param out_rows optional: rows carried (0 on a no-op).
+ * @return CMT_OK (carried, or nothing to do), CMT_FAULT.
+ */
+int nodus_cmt_wal_carry_sqlite(sqlite3 *db, const char *wal_file,
+                               size_t *out_rows);
+
+/** @return true with the deadline when the 2 s flush ticker is armed. */
 bool nodus_cmt_wal_next_flush_deadline(const nodus_cmt_wal_t *w,
                                        int64_t *out_deadline_ns);
 
-/** wal.go:142-153 — one tick: if a flush is pending and `now_ns` has
- *  reached the deadline, `FlushAndSync`. @return CMT_OK, CMT_FAULT (the
- *  reference logs the error at :146 and keeps ticking; so may the
- *  caller). */
+/** wal.go:142-153 `processFlushTicks`, one wake-up: if armed and
+ *  `now_ns` has reached the deadline, `FlushAndSync`, and the deadline
+ *  moves on. @return CMT_OK, CMT_FAULT (the reference logs "Periodic
+ *  WAL flush failed" at :146-148 and keeps ticking — so does this, the
+ *  deadline moves on either way). */
 int nodus_cmt_wal_flush_if_due(nodus_cmt_wal_t *w, int64_t now_ns);
 
-/* ── prune (D-15 rev 5 "prune below") ─────────────────────────────── */
+/** @return true with the deadline when the group's 5 s check ticker is
+ *  armed. */
+bool nodus_cmt_wal_next_group_check_deadline(const nodus_cmt_wal_t *w,
+                                             int64_t *out_deadline_ns);
 
-/** Deletes every row of this protocol with height < `height`, as one
- *  autocommit statement on the FULL connection — so the delete is
- *  itself fsynced and, sharing the `-wal` file, it also makes any
- *  pending Write-class row durable; the flush deadline is disarmed with
- *  it. @return CMT_OK, CMT_FAULT. */
-int nodus_cmt_wal_prune_below(nodus_cmt_wal_t *w, int64_t height);
-
-/* ── exposed for the tests ────────────────────────────────────────── */
-
-/** The row's `height` for a message (table in the header).
- *  @return CMT_OK; CMT_REJECT for kind NONE or an unknown MsgInfo kind. */
-int nodus_cmt_wal_message_height(const cmt_wal_message_t *msg, int64_t *out);
+/** group.go:239-250 `processTicks`, one wake-up —
+ *  `nodus_cmt_group_check_if_due` on the WAL's group (rotation at 10 MB,
+ *  the 1 GB total). @return CMT_OK; CMT_FAULT when the rotation or the
+ *  directory scan failed (the reference panics there). */
+int nodus_cmt_wal_group_check_if_due(nodus_cmt_wal_t *w, int64_t now_ns);
 
 #ifdef __cplusplus
 }

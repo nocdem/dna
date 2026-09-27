@@ -94,6 +94,8 @@
  *   · `wal_read_next` — replay.go:147.
  *   The dispatch's table covers only the WAL WRITE side; `catchupReplay`
  *   cannot be ported without the read side.
+ *   · `wal_repair` — state.go:352-385, added later with the file WAL
+ *     (decision 2026-09-26-cmt-wal-file-group.md item 4b).
  *
  * NOT host and NOT ported, deliberately: `eventBus.PublishEvent*` and
  * every `metrics.*` call. They are neither PORT nor HOST rows of the port
@@ -234,11 +236,14 @@
  *     anything reaches this module (register R3-A-6);
  *   · `cmt_cs_read_replay_message` BELOW, on every WAL MsgInfo record —
  *     the reference reaches the same line through wal.go:410 from
- *     replay.go:147, and a failure there is a DataCorruptionError. Here
- *     it is CMT_FAULT: a WAL record is this node's own file, so a record
- *     that fails the gate is CORRUPTION, and D-15 rev 6 stops on
- *     corruption. The reference's repair path (state.go:338-386, with
- *     `repairWalFile` at :374) is not ported. Register R3-AUD-5.
+ *     replay.go:147, and a failure there is a DataCorruptionError. The
+ *     nodus host's decoder now runs the gate itself, inside its `Decode`
+ *     (nodus_witness_cmt_wal.c), so such a record reaches this module
+ *     as `wal_read_next`'s CMT_REJECT and is repaired (state.go:338-386,
+ *     decision 2026-09-26-cmt-wal-file-group.md item 4b). The gate here
+ *     stays, and answers CMT_FAULT: it is reached only through a host
+ *     whose decoder skipped the check, which is that host's defect, not
+ *     a record to repair. Register R3-AUD-5.
  * Through R2 nothing ran it and every message field was a raw peer
  * number; two guards added then are KEPT (a test or a future caller may
  * feed this module directly): the `vote.Height+1` of :2137 is formed as
@@ -295,11 +300,11 @@
  *   · `SetTimeoutTicker` (:298-302) — the reference swaps the ticker
  *     through an interface for its tests; the ticker is a value here
  *     (cmt_ticker.h) and there is nothing to swap.
- *   · `OpenWAL` (:452-467), `loadWalFile` (:420-429), `repairWalFile`
- *     (:2621-2653) and the WAL-repair loop inside OnStart (:339-385) —
- *     a file WAL. This port's WAL is SQLite rows written by the host
- *     (D-15, atlas-dec-c0bfc5344204b9282ceaaa5e06042350), so there is no
- *     file to repair.
+ *   · `OpenWAL` (:452-467), `loadWalFile` (:420-429) and `repairWalFile`
+ *     (:2621-2653) — the WAL file itself is the host's
+ *     (nodus_witness_cmt_wal.h); they are the host row `wal_repair`.
+ *     The retry LOOP inside OnStart (:338-386) IS ported, in
+ *     `cmt_cs_start` (decision 2026-09-26-cmt-wal-file-group.md 4b).
  *   · `startRoutines` (:409-417), `Wait` (:446-448), the `recover()`
  *     handler and `onExit` (:785-812) — goroutine lifecycle.
  *   · `(ti *timeoutInfo) String()` (:61-63) — a two-line Sprintf for a log
@@ -436,17 +441,17 @@ void cmt_cs_fail_point(void);
  * Everything `consensus/state.go` reaches outside its own package, as one
  * table the caller supplies. Every row carries the Go call site.
  *
- * ⚠ EVERY POINTER IS REQUIRED — all 26 — and `cmt_cs_init` REFUSES a
+ * ⚠ EVERY POINTER IS REQUIRED — all 27 — and `cmt_cs_init` REFUSES a
  * table with any of them NULL (CMT_FAULT), rather than letting the site
  * that calls it segfault mid-round; the sites themselves do not test.
- * The 26: create_proposal_block, process_proposal, validate_block,
+ * The 27: create_proposal_block, process_proposal, validate_block,
  * apply_verified_block, extend_vote, verify_vote_extension, bs_height,
  * bs_load_block_commit, bs_load_block_extended_commit,
  * bs_load_block_meta, bs_load_seen_commit, bs_save_block,
  * bs_save_block_with_extended_commit, report_conflicting_votes,
  * sign_vote, sign_proposal, get_pub_key, wal_write, wal_write_sync,
- * wal_flush_and_sync, wal_search_end_height, wal_read_next, decode_block,
- * now, timer_arm, timer_disarm. The reference's only DEFAULTED row is
+ * wal_flush_and_sync, wal_search_end_height, wal_read_next, wal_repair,
+ * decode_block, now, timer_arm, timer_disarm. The reference's only DEFAULTED row is
  * `wal`, and its default is `nilWAL{}` (state.go:174) — a no-op
  * implementation (wal.go:426-434), NOT a nil pointer — so a host that
  * wants the WAL to do nothing supplies rows that do nothing, exactly as
@@ -618,13 +623,36 @@ typedef struct {
      *  cursor `wal_search_end_height` left.
      *  @param out_eof true is the reference's `io.EOF` (:149-150), which
      *         ends the replay loop normally.
-     *  @return CMT_OK; CMT_FAULT for a corrupted record — D-15 (rev 4
-     *          APPROVED) makes a digest mismatch or an out-of-range kind
-     *          a stop, which is stricter than replay.go:151-153's
-     *          "return the error"; the strictness is the storage layer's
-     *          and is stated here so a reader is not surprised. */
+     *  @return CMT_OK; CMT_REJECT for the reference's DataCorruptionError
+     *          and for NOTHING ELSE — THIS REJECT IS THE CORRUPTION CLASS:
+     *          `catchupReplay` returns the decoder's error (replay.go:
+     *          151-156) and `OnStart` asks `IsDataCorruptionError(err)`
+     *          (state.go:348, wal.go:333-336) to choose between repairing
+     *          and proceeding. The reference's `Decode` has no other
+     *          error class (wal.go:366-420 wraps every failure), so a
+     *          host must not return CMT_REJECT here for any other reason;
+     *          cmt_cs_start repairs on it (state.go:338-386, the
+     *          `wal_repair` row below). CMT_FAULT for a host failure
+     *          (the node does not start). Decision
+     *          docs/plans/decisions/2026-09-26-cmt-wal-file-group.md
+     *          item 4b; the D-15 "corruption = stop" rule this row used
+     *          to carry is superseded there. */
     int (*wal_read_next)(void *ctx, cmt_timed_wal_message_t *out,
                          bool *out_eof);
+
+    /** state.go:352-385 — the WAL repair `OnStart` runs when the catch-up
+     *  replay failed with a DataCorruptionError: `cs.wal.Stop()`
+     *  (:359-361), copy the WAL file to `<file>.CORRUPTED` (:365-369),
+     *  `repairWalFile` (:374-377, :2621-2653: re-encode every record up
+     *  to the first decode error into a fresh file), `loadWalFile()`
+     *  (:382-384). ONE row because every step is the host's (the WAL is
+     *  the host's) and the reference returns at the first failing one.
+     *  ADDED with decision 2026-09-26-cmt-wal-file-group.md item 4b.
+     *  After CMT_OK the `wal_*` rows read and write the reloaded WAL.
+     *  @return CMT_OK; any other value is the reference's `return err`
+     *          (:360, :367, :376, :383) — cmt_cs_start returns it and the
+     *          state machine does not start. */
+    int (*wal_repair)(void *ctx);
 
     /* ── the block wire decoder — ADDED; see the header ────────────── */
 
@@ -1057,21 +1085,28 @@ int cmt_cs_load_commit(cmt_cs_t *cs, int64_t height, cmt_commit_t *out,
 
 /**
  * cometbft@709fd12b consensus/state.go:318-405 — `OnStart()`, minus the
- * file-WAL half.
+ * WAL open (:319-325, the host's).
  *
- * PORTED: the catch-up replay when `do_wal_catchup` is set (:338-343,
- * :345-350), the double-signing check (:393-395) and `scheduleRound0`
- * (:402). NOT PORTED: the WAL repair loop (:352-385), `evsw.Start` (:388)
- * and `go cs.receiveRoutine` (:398) — the caller drives `cmt_cs_step`.
+ * PORTED: the catch-up replay and its repair loop when `do_wal_catchup`
+ * is set (:338-386), the double-signing check (:393-395) and
+ * `scheduleRound0` (:402). NOT PORTED: `evsw.Start` (:388) and `go
+ * cs.receiveRoutine` (:398) — the caller drives `cmt_cs_step`.
  *
- * The reference's classification at :344-350 is kept: a catch-up replay
- * that fails with something other than data corruption is LOGGED and the
- * state machine starts anyway (:348-350); a corruption error, which the
- * reference would try to repair, has no repair path here and is returned.
+ * The loop (:341-386): a replay that succeeds ends it; one that fails
+ * with anything other than data corruption is LOGGED ("error on catchup
+ * replay; proceeding to start state anyway", :348-350) and the state
+ * machine starts anyway; data corruption — `wal_read_next`'s CMT_REJECT,
+ * the only corruption carrier (see that row) — is repaired through the
+ * host's `wal_repair` row (:356-384) and the replay retried ONCE; a
+ * second corruption is returned (:352-353) and the state machine does
+ * not start. A port-local CMT_FAULT from the replay is returned at once,
+ * as before (a host failure, not a reference error).
  *
  * @return CMT_OK; CMT_REJECT when the double-sign check found this key in
- *         a past block (:393-395 returning ErrSignatureFoundInPastBlocks);
- *         CMT_FAULT on NULL or a host failure.
+ *         a past block (:393-395 returning ErrSignatureFoundInPastBlocks)
+ *         or when the WAL was still corrupt after one repair (:352-353);
+ *         the `wal_repair` row's own failure value when the repair failed
+ *         (:360, :367, :376, :383); CMT_FAULT on NULL or a host failure.
  */
 int cmt_cs_start(cmt_cs_t *cs);
 
@@ -1344,12 +1379,16 @@ int cmt_cs_read_replay_message(cmt_cs_t *cs,
  * the reference appends cleanly. The ported core calls the same WAL
  * callbacks it does live — D-15 rev 5 states the host must not suppress
  * them — and what the host does with a replay-time write is the host's
- * (the SQLite WAL is keyed by (protocol, height, seq), so nothing is
- * overwritten there). W1.7 audit-4 finding, corrected in W2.
+ * (the nodus file WAL appends it to the head buffer; the replay reader
+ * sees it once it is flushed — wal.go:73-75's own TODO). W1.7 audit-4
+ * finding, corrected in W2.
  *
- * @return CMT_OK; CMT_REJECT when the END_HEIGHT rule is violated or the
- *         height is below the initial height (:122-124); CMT_FAULT on
- *         NULL or a host failure.
+ * @return CMT_OK; CMT_REJECT when the END_HEIGHT rule is violated, the
+ *         height is below the initial height (:122-124), a replayed
+ *         record is refused, or `wal_read_next` reported data corruption;
+ *         CMT_FAULT on NULL or a host failure. The REJECT classes are not
+ *         told apart here; `cmt_cs_start` uses the internal form that
+ *         reports the corruption class separately (cmt_cs.c).
  */
 int cmt_cs_catchup_replay(cmt_cs_t *cs, int64_t cs_height);
 

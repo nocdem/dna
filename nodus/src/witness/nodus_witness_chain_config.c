@@ -33,10 +33,14 @@
 #include "witness/nodus_witness_v2_claims.h"  /* nodus_witness_v2_chain_id            */
 #include "witness/nodus_witness_v2_apply.h"   /* nodus_v2_epoch_for_height            */
 
-#include "protocol/nodus_tier3.h"     /* NODUS_T3_NULLIFIER_LEN, cc_appr_{req,rsp} */
-#include "transport/nodus_tcp.h"      /* nodus_tcp_send — reply path */
-#include "server/nodus_server.h"      /* w->server->identity fields */
-#include "crypto/nodus_sign.h"        /* nodus_random for header nonce */
+#include "protocol/nodus_tier3.h"     /* cc_appr_{req,rsp} (channel 0x71) */
+#include "protocol/nodus_cbor.h"      /* the dnac_cc_collect reply          */
+#include "witness/nodus_witness_p2p.h" /* the 0x71 reply path (P2P-PORT F5) */
+#include "server/nodus_server.h"      /* w->server->identity, ->sessions */
+#include "transport/nodus_tcp.h"      /* nodus_tcp_send (the 4001 reply)  */
+#include "nodus/nodus.h"              /* NODUS_CC_COLLECT_ST_* (the wire's
+                                       * status values, shared with the
+                                       * client SDK's decoder)             */
 
 #include "crypto/sign/qgp_dilithium.h"
 #include "crypto/hash/qgp_sha3.h"
@@ -1021,72 +1025,109 @@ static const cc_appr_table_row_t CC_APPR_TABLE[] = {
 #define CC_APPR_TABLE_LEN \
     (sizeof(CC_APPR_TABLE) / sizeof(CC_APPR_TABLE[0]))
 
-/* Build a refusal reply and send it (never a signature — the caller's
- * `rsp` is otherwise zeroed). */
-static int cc_appr_send_refusal(nodus_witness_t *w, struct nodus_tcp_conn *conn,
-                                nodus_t3_msg_t *rsp, const char *reason) {
-    rsp->cc_appr_rsp.ok = false;
-    snprintf(rsp->cc_appr_rsp.reason, sizeof(rsp->cc_appr_rsp.reason),
-             "%s", reason ? reason : "fault");
-    uint8_t *buf = malloc(NODUS_T3_MAX_MSG_SIZE);
+/* Send the reply on channel 0x71 to the peer that asked (P2P-PORT F5: the
+ * secret connection authenticates it — the tier-3 envelope and its 0x03
+ * signature this used to build are deleted). */
+static int cc_appr_send(nodus_witness_t *w, const char *peer_id,
+                        const nodus_t3_cc_appr_rsp_t *rsp) {
+    uint8_t *buf = malloc(NODUS_T3_CC_APPR_RSP_MAX + 256u);
     if (!buf) return -1;
     size_t len = 0;
-    int rc = nodus_t3_encode(rsp, &w->server->identity.sk, buf,
-                             NODUS_T3_MAX_MSG_SIZE, &len);
-    if (rc != 0) { free(buf); return -1; }
-    rc = nodus_tcp_send((nodus_tcp_conn_t *)conn, buf, len);
+    int rc = nodus_t3_cc_appr_rsp_encode(rsp, buf, NODUS_T3_CC_APPR_RSP_MAX + 256u,
+                                         &len);
+    if (rc == 0 && !nodus_witness_p2p_send(w->p2p, peer_id, NODUS_P2P_CH_CC_APPR,
+                                           buf, len))
+        rc = -1;
     free(buf);
     return rc;
 }
 
-int nodus_witness_handle_cc_appr_req(nodus_witness_t *w,
-                                     struct nodus_tcp_conn *conn,
-                                     const void *imsg) {
-    if (!w || !conn || !imsg) return -1;
-    const nodus_t3_msg_t *in = (const nodus_t3_msg_t *)imsg;
-    const nodus_t3_cc_appr_req_t *req = &in->cc_appr_req;
+/* Fill a refusal (never a signature — the caller's `rsp` is zeroed) and
+ * report it as one. */
+static int cc_appr_refuse(nodus_t3_cc_appr_rsp_t *rsp, const char *reason) {
+    rsp->ok = false;
+    snprintf(rsp->reason, sizeof(rsp->reason), "%s", reason ? reason : "fault");
+    return 0;
+}
 
-    nodus_t3_msg_t rsp;
-    memset(&rsp, 0, sizeof(rsp));
-    rsp.type = NODUS_T3_CC_APPR_RSP;
-    rsp.txn_id = in->txn_id;   /* correlate response to request */
-    rsp.header.version = NODUS_T3_BFT_PROTOCOL_VER;
-    memcpy(rsp.header.sender_id, w->my_id, NODUS_T3_WITNESS_ID_LEN);
-    rsp.header.timestamp = (uint64_t)time(NULL);
-    nodus_random((uint8_t *)&rsp.header.nonce, sizeof(rsp.header.nonce));
-    /* w->v2_chain32 (never the legacy half-zero w->chain_id) — the same
-     * derived 32-byte chain id verbs 35-39's frame gate uses; explicitly
-     * zeroed when !v2_successor (nodus_witness.h:492), which the (i)
-     * check right below refuses anyway. */
-    memcpy(rsp.header.chain_id, w->v2_chain32, 32);
+/* The governing committee at the local tip and every member's SHA3-512
+ * fingerprint, resolved ONE way for both users — the 0x71 responder below
+ * and the node-side approval collection (decision 2026-09-26-cc-approval-
+ * via-own-node.md (3): "the node resolves the committee at its tip").
+ * The ENGINE's own expression is nodus_committee_get_for_block at H-1
+ * with H the EXECUTION height; the candidate is H = tip+1, so H-1 = tip
+ * (matches the offline CLI builder's own committee query). The caller
+ * frees `*cm_out` and `*fps_out`. @return 0; -1 a fault (nothing to
+ * free). */
+static int cc_appr_resolve(nodus_witness_t *w, uint64_t *tip_out,
+                           nodus_committee_member_t **cm_out, int *n_out,
+                           uint8_t (**fps_out)[64]) {
+    uint64_t tip = 0;
+    nodus_committee_member_t *committee = NULL;
+    int cm_count = 0;
+
+    *cm_out = NULL;
+    *fps_out = NULL;
+    *n_out = 0;
+    if (nodus_witness_v2_tip_height(w, &tip) != 0) return -1;
+    if (nodus_committee_get_for_block_alloc(w, tip, &committee, &cm_count) != 0 ||
+        cm_count < 1) {
+        free(committee);
+        return -1;
+    }
+    uint8_t (*fps)[64] = malloc((size_t)cm_count * 64);
+    if (!fps) {
+        free(committee);
+        return -1;
+    }
+    for (int i = 0; i < cm_count; i++) {
+        if (qgp_sha3_512(committee[i].pubkey, NODUS_CC_PUBKEY_SIZE, fps[i]) != 0) {
+            free(fps);
+            free(committee);
+            return -1;
+        }
+    }
+    *tip_out = tip;
+    *cm_out = committee;
+    *n_out = cm_count;
+    *fps_out = fps;
+    return 0;
+}
+
+int nodus_witness_cc_appr_answer(nodus_witness_t *w,
+                                 const uint8_t peer_wid[NODUS_CC_WITNESS_ID_SIZE],
+                                 bool requester_bonded,
+                                 const nodus_t3_cc_appr_req_t *req,
+                                 nodus_t3_cc_appr_rsp_t *rsp_out) {
+    if (!w || !peer_wid || !req || !rsp_out) return -1;
+    nodus_t3_cc_appr_rsp_t *rsp = rsp_out;
+    memset(rsp, 0, sizeof(*rsp));
 
     /* (i) refuse unless this is a version-3 chain. */
     if (!w->v2_successor) {
-        return cc_appr_send_refusal(w, conn, &rsp,
-                                    "this node is not on a version-3 chain");
+        return cc_appr_refuse(rsp, "this node is not on a version-3 chain");
     }
 
-    /* Frame gate (matches D-16 rev 5 F10's wh.cid discipline for verbs
-     * 35-39): the T3 header's chain_id must be THIS chain's derived id
-     * before anything else runs. */
-    if (memcmp(in->header.chain_id, w->v2_chain32, 32) != 0) {
-        return cc_appr_send_refusal(w, conn, &rsp, "foreign chain id");
-    }
+    /* The former tier-3 header frame gate (`wh.cid == w->v2_chain32`) is
+     * gone with the envelope: the requester's connection could only be
+     * established with THIS chain's id (the secret connection's N9 check
+     * and NodeInfo CompatibleWith, p2p-port design §3), and the approval
+     * digest below binds this chain regardless (the header comment). */
 
     /* (v) per-proposer rate limit — unchanged (nodus_cc_rate_limit_check
-     * / _record), keyed on the T3 header's authenticated sender_id.
+     * / _record), keyed on `peer_wid`: the requesting connection's
+     * AUTHENTICATED identity (SHA3-512 of the key its secret connection
+     * verified), never a decoded field.
      * ORCHESTRATOR correction (W4-CC ORC-7): checked HERE, before the
      * preflight — the retired handler ran it "before the expensive
      * digest + Dilithium5 sign so a hostile proposer cannot burn CPU by
      * spamming", and this handler's expensive work now starts one step
      * earlier, at the engine seam's decode + SHA3 over an envelope of up
-     * to DNA_ENV_MAX_TOTAL_LEN. The check has no side effect (the slot is
-     * recorded on the accept path only, at the end), so its position
-     * changes no verdict — only which refusal a cooled-down proposer
-     * reads, and how much work a refused request costs this node. */
+     * to DNA_ENV_MAX_TOTAL_LEN. The check itself has no side effect; the
+     * slot is recorded below, after the bonded gate (red-team H1). */
     uint64_t now_ms = nodus_time_now_ms();
     uint64_t elapsed_ms = 0;
-    if (nodus_cc_rate_limit_check(&w->cc_rate_limit, in->header.sender_id,
+    if (nodus_cc_rate_limit_check(&w->cc_rate_limit, peer_wid,
                                   now_ms, &elapsed_ms) != 0) {
         w->cc_rate_limit.rate_limited_count++;
         char rl_reason[128];
@@ -1094,7 +1135,71 @@ int nodus_witness_handle_cc_appr_req(nodus_witness_t *w,
                  "rate-limited (cooldown %ums, elapsed %llums)",
                  (unsigned)NODUS_CC_RATE_LIMIT_WINDOW_MS,
                  (unsigned long long)elapsed_ms);
-        return cc_appr_send_refusal(w, conn, &rsp, rl_reason);
+        return cc_appr_refuse(rsp, rl_reason);
+    }
+
+    /* (v-a) the BONDED gate, before any DB work (red-team H1). Only a
+     * committee seat may make this node sign (decision
+     * 2026-09-26-cc-approval-via-own-node.md (5)), and every seat of the
+     * committee at the tip is in the p2p host's in-memory bonded set
+     * (ACTIVE ∪ ELIGIBLE ∪ the committees at tip ± 1,
+     * nodus_witness_p2p_refresh_bonded). A requester outside it is
+     * DROPPED: no reply, no committee resolution, nothing recorded, and
+     * NOT stopped — the set is refreshed once per poll and can be one
+     * poll stale for a seat that just bonded (fix proposals 2026-09-27
+     * "REVISED" H1). No reference counterpart: channel 0x71 is nodus's
+     * own (R-P2P-5). The rate limit above cannot hold it back: a
+     * requester is recorded only after this gate. */
+    if (!requester_bonded) {
+        QGP_LOG_DEBUG(LOG_TAG, "0x71 approval request from a requester "
+                      "outside the bonded set — dropped, no reply");
+        return NODUS_CC_APPR_DROPPED;
+    }
+
+    /* (v-b) RECORD the attempt: every bonded request that passed the
+     * check above holds the requester's slot for the whole cooldown
+     * window, whatever the verdict below — a seat that floods invalid
+     * envelopes is throttled like one that floods valid ones (red-team
+     * H1; previously only a SENT approval was recorded). The requesting
+     * CLI waits the window out before its round 2 (nodus-cli.c). The
+     * table has NODUS_CC_RATE_LIMIT_MAX_PROPOSERS = 128 slots (pinned to
+     * the active-validator ceiling above); a bonded set larger than that
+     * evicts the least recently recorded (nodus_cc_rate_limit_record). */
+    nodus_cc_rate_limit_record(&w->cc_rate_limit, peer_wid, now_ms);
+
+    /* (vi) resolve the governing committee at the tip (cc_appr_resolve —
+     * the same resolution the node-side collection uses; the committee
+     * itself is epoch-cached, nodus_witness_committee.c). Resolved HERE,
+     * before the preflight, because the requester gate below needs it. */
+    uint64_t tip = 0;
+    nodus_committee_member_t *committee = NULL;
+    int cm_count = 0;
+    uint8_t (*fps)[64] = NULL;
+    if (cc_appr_resolve(w, &tip, &committee, &cm_count, &fps) != 0) {
+        return cc_appr_refuse(rsp, "fault");
+    }
+
+    /* (vi-a) the REQUESTER must be a seat of that committee (decision
+     * 2026-09-26-cc-approval-via-own-node.md (5): "Only validators can
+     * make a validator sign an approval"). `peer_wid` is the first 32
+     * bytes of SHA3-512(the requester's AUTHENTICATED key) — the p2p
+     * host's derivation (nodus_witness_p2p.c peer_wid) and
+     * nodus_chain_config_derive_witness_id's — so it is compared with the
+     * same 32 bytes of each seat's fingerprint. Cheap and BEFORE the
+     * preflight: a non-seat never costs this node a decode, a digest or a
+     * signature. Its attempt is already recorded (v-b). */
+    {
+        bool requester_is_seat = false;
+        for (int i = 0; i < cm_count; i++) {
+            if (memcmp(fps[i], peer_wid, NODUS_CC_WITNESS_ID_SIZE) == 0) {
+                requester_is_seat = true;
+                break;
+            }
+        }
+        if (!requester_is_seat) {
+            free(fps); free(committee);
+            return cc_appr_refuse(rsp, "requester is not a committee seat");
+        }
     }
 
     /* (ii) decode `e` with the ENGINE'S OWN preflight seam — never a
@@ -1107,25 +1212,20 @@ int nodus_witness_handle_cc_appr_req(nodus_witness_t *w,
      * says so explicitly — so it succeeds on a zero-filled auth blob
      * exactly as the proposer's own pass-1 build does
      * (nodus-cli.c:944-946), which is what makes it usable BEFORE
-     * anyone has signed. */
-    uint64_t tip = 0;
-    if (nodus_witness_v2_tip_height(w, &tip) != 0) {
-        return cc_appr_send_refusal(w, conn, &rsp, "fault");
-    }
+     * anyone has signed. The candidate height is the resolved tip + 1. */
     uint64_t h = tip + 1;
 
     nodus_witness_v2_block_ctx_t *bctx = calloc(1, sizeof(*bctx));
     dna_env_preflight_t          *pf   = calloc(1, sizeof(*pf));
     if (!bctx || !pf) {
-        free(bctx); free(pf);
-        return cc_appr_send_refusal(w, conn, &rsp, "fault");
+        free(bctx); free(pf); free(fps); free(committee);
+        return cc_appr_refuse(rsp, "fault");
     }
     int bcrc = nodus_witness_v2_block_ctx_build(w, bctx);
     if (bcrc != 0) {
-        free(bctx); free(pf);
-        return cc_appr_send_refusal(w, conn, &rsp,
-                                    bcrc == -1 ? "SYSTEM is not ACTIVE"
-                                               : "fault");
+        free(bctx); free(pf); free(fps); free(committee);
+        return cc_appr_refuse(rsp, bcrc == -1 ? "SYSTEM is not ACTIVE"
+                                              : "fault");
     }
     nodus_v2_envelope_t env;
     env.env_bytes = req->e;
@@ -1137,9 +1237,8 @@ int nodus_witness_handle_cc_appr_req(nodus_witness_t *w,
         &fail_idx, &pf_status);
     free(bctx);
     if (pbrc != NODUS_V2_ENV_OK) {
-        free(pf);
-        return cc_appr_send_refusal(w, conn, &rsp,
-                                    "the envelope failed preflight");
+        free(pf); free(fps); free(committee);
+        return cc_appr_refuse(rsp, "the envelope failed preflight");
     }
 
     /* (iii) the APPROVAL TABLE: exactly one leg, matching a row, under
@@ -1147,9 +1246,9 @@ int nodus_witness_handle_cc_appr_req(nodus_witness_t *w,
     const dna_env_view_t *v = &pf->view;
     if (v->leg_count != 1 || v->fee_amount != 0 ||
         v->leg[0].auth_kind != NODUS_RT_AUTHKIND_DSA87_CC_V1) {
-        free(pf);
-        return cc_appr_send_refusal(w, conn, &rsp,
-                                    "not a single-leg auth_kind-2 zero-fee envelope");
+        free(pf); free(fps); free(committee);
+        return cc_appr_refuse(rsp,
+                              "not a single-leg auth_kind-2 zero-fee envelope");
     }
     const cc_appr_table_row_t *row = NULL;
     for (size_t i = 0; i < CC_APPR_TABLE_LEN; i++) {
@@ -1160,9 +1259,8 @@ int nodus_witness_handle_cc_appr_req(nodus_witness_t *w,
         }
     }
     if (!row || v->leg[0].call_len != row->call_len) {
-        free(pf);
-        return cc_appr_send_refusal(w, conn, &rsp,
-                                    "operation is not in the approval table");
+        free(pf); free(fps); free(committee);
+        return cc_appr_refuse(rsp, "operation is not in the approval table");
     }
 
     /* (iv) the op's own rules, at the SAME candidate height `h`. */
@@ -1171,25 +1269,13 @@ int nodus_witness_handle_cc_appr_req(nodus_witness_t *w,
     int rulerc = row->rule(w, v->buf + v->call_off[0], v->leg[0].call_len,
                           h, reason, sizeof(reason));
     if (rulerc != 0) {
-        free(pf);
-        return cc_appr_send_refusal(w, conn, &rsp, reason);
+        free(pf); free(fps); free(committee);
+        return cc_appr_refuse(rsp, reason);
     }
 
-    /* (v) the per-proposer rate limit ran above, before the preflight
-     * (ORC-7); it is recorded on the accept path at the end. */
-
-    /* (vi) resolve the governing committee — the ENGINE's own
-     * expression is nodus_committee_get_for_block at H-1 with H the
-     * EXECUTION height; here H = tip+1, so H-1 = tip (matches the
-     * offline CLI builder's own committee query, nodus-cli.c:1834). */
-    nodus_committee_member_t *committee = NULL;
-    int cm_count = 0;
-    if (nodus_committee_get_for_block_alloc(w, tip, &committee, &cm_count) != 0 ||
-        cm_count < 1) {
-        free(pf);
-        free(committee);
-        return cc_appr_send_refusal(w, conn, &rsp, "fault");
-    }
+    /* (v) the per-proposer rate limit was checked and recorded above,
+     * before the preflight (ORC-7, red-team H1). (vi) the committee was
+     * resolved above, before the requester gate. */
 
     /* find this node's own seat by direct pubkey comparison against the
      * resolved snapshot — the same comparison the offline CLI builder
@@ -1203,32 +1289,18 @@ int nodus_witness_handle_cc_appr_req(nodus_witness_t *w,
         }
     }
     if (seat < 0) {
-        free(committee);
-        free(pf);
-        return cc_appr_send_refusal(w, conn, &rsp, "not a committee seat");
+        free(fps); free(committee); free(pf);
+        return cc_appr_refuse(rsp, "not a committee seat");
     }
 
     /* (vii) the resolved-set hash + epoch + the digest ITSELF, computed
      * from the seam-derived leg auth_digest — never a digest this node
      * did not compute. */
-    uint8_t (*fps)[64] = malloc((size_t)cm_count * 64);
-    if (!fps) {
-        free(committee); free(pf);
-        return cc_appr_send_refusal(w, conn, &rsp, "fault");
-    }
-    int hash_fault = 0;
-    for (int i = 0; i < cm_count; i++) {
-        if (qgp_sha3_512(committee[i].pubkey, NODUS_CC_PUBKEY_SIZE, fps[i]) != 0) {
-            hash_fault = 1;
-            break;
-        }
-    }
     uint8_t set_hash[64];
-    if (hash_fault ||
-        nodus_rt_committee_set_hash((const uint8_t (*)[64])fps,
+    if (nodus_rt_committee_set_hash((const uint8_t (*)[64])fps,
                                     (uint32_t)cm_count, set_hash) != 0) {
         free(fps); free(committee); free(pf);
-        return cc_appr_send_refusal(w, conn, &rsp, "fault");
+        return cc_appr_refuse(rsp, "fault");
     }
     uint64_t epoch = nodus_v2_epoch_for_height(tip);
 
@@ -1236,22 +1308,23 @@ int nodus_witness_handle_cc_appr_req(nodus_witness_t *w,
     if (nodus_rt_cc_approval_digest(pf->auth_digest[0], set_hash, epoch,
                                     (uint16_t)seat, adigest) != 0) {
         free(fps); free(committee); free(pf);
-        return cc_appr_send_refusal(w, conn, &rsp, "fault");
+        return cc_appr_refuse(rsp, "fault");
     }
 
     uint8_t scratch_witness_id[NODUS_CC_WITNESS_ID_SIZE];
     if (nodus_chain_config_sign_vote(w->server->identity.pk.bytes,
                                      w->server->identity.sk.bytes,
                                      adigest, scratch_witness_id,
-                                     rsp.cc_appr_rsp.sig) != 0) {
+                                     rsp->sig) != 0) {
+        memset(rsp->sig, 0, sizeof(rsp->sig));
         free(fps); free(committee); free(pf);
-        return cc_appr_send_refusal(w, conn, &rsp, "sign failed");
+        return cc_appr_refuse(rsp, "sign failed");
     }
 
-    rsp.cc_appr_rsp.ok    = true;
-    rsp.cc_appr_rsp.seat  = (uint16_t)seat;
-    memcpy(rsp.cc_appr_rsp.set_hash, set_hash, 64);
-    rsp.cc_appr_rsp.epoch = epoch;
+    rsp->ok    = true;
+    rsp->seat  = (uint16_t)seat;
+    memcpy(rsp->set_hash, set_hash, 64);
+    rsp->epoch = epoch;
 
     QGP_LOG_INFO(LOG_TAG,
         "CC_APPR_SIGNED domain=%u op=%u seat=%d epoch=%llu",
@@ -1261,25 +1334,328 @@ int nodus_witness_handle_cc_appr_req(nodus_witness_t *w,
     free(fps);
     free(committee);
     free(pf);
+    return 1;
+}
 
-    uint8_t *buf = malloc(NODUS_T3_MAX_MSG_SIZE);
-    if (!buf) return -1;
-    size_t len = 0;
-    int rc = nodus_t3_encode(&rsp, &w->server->identity.sk, buf,
-                             NODUS_T3_MAX_MSG_SIZE, &len);
-    if (rc != 0) { free(buf); return -1; }
-    rc = nodus_tcp_send((nodus_tcp_conn_t *)conn, buf, len);
+int nodus_witness_handle_cc_appr_req(nodus_witness_t *w,
+                                     const char *peer_id,
+                                     const uint8_t peer_wid[NODUS_CC_WITNESS_ID_SIZE],
+                                     const void *ireq) {
+    if (!w || !peer_id || !peer_wid || !ireq) return -1;
+
+    nodus_t3_cc_appr_rsp_t rsp;
+    /* The bonded set is the p2p host's, in memory (a bsearch); the
+     * verdict takes the answer as an argument so it stays callable
+     * without a host (test_cc_appr). */
+    bool bonded = nodus_witness_p2p_is_bonded(w->p2p, peer_id);
+    int arc = nodus_witness_cc_appr_answer(w, peer_wid, bonded,
+                                           (const nodus_t3_cc_appr_req_t *)ireq,
+                                           &rsp);
+    if (arc < 0) return -1;
+    if (arc == NODUS_CC_APPR_DROPPED) return 0;           /* no reply */
+
+    /* The rate-limit slot was recorded inside the verdict, on the
+     * attempt (red-team H1) — it no longer waits for a sent approval
+     * (the former ORC-11 placement): a refused attempt holds the slot
+     * too, and the requesting CLI waits the window out before its round
+     * 2 whatever it was answered (nodus-cli.c). */
+    return cc_appr_send(w, peer_id, &rsp);
+}
+
+/* ============================================================================
+ * The node-side approval collection (`dnac_cc_collect`, decision
+ * docs/plans/decisions/2026-09-26-cc-approval-via-own-node.md): the
+ * proposer's CLI hands its OWN node the pre-auth envelope over 4001; the
+ * node asks every other committee seat on channel 0x71 over the 4004
+ * connections it already holds, and answers the CLI with one result per
+ * seat. Tooling, not consensus: nothing here feeds a block, a vote or the
+ * state root — each approval is verified by the SYSTEM runtime at
+ * execution, exactly as before (decision "Consequences").
+ *
+ * Bounded: ONE collection at a time per node (a second request is
+ * refused "busy"); every seat is asked at most once; the collection ends
+ * when every asked seat answered or NODUS_CC_COLLECT_DEADLINE_MS after it
+ * began, whichever is first; the state is freed when it ends (and when
+ * the p2p host is freed, with no reply).
+ * ========================================================================== */
+
+/* Internal only — a seat that was sent the request and has not answered
+ * yet. Never on the wire: at the end it becomes
+ * NODUS_CC_COLLECT_ST_NO_ANSWER. */
+#define CC_COLLECT_ST_ASKED  0xFFu
+
+/* The client SDK must wait past the node's own deadline, or a slow seat
+ * turns every collection into a client timeout. */
+_Static_assert(NODUS_DNAC_CC_COLLECT_TIMEOUT_MS > NODUS_CC_COLLECT_DEADLINE_MS,
+               "the client's dnac_cc_collect wait must exceed the node's "
+               "collection deadline");
+/* The client decodes at most NODUS_T3_MAX_WITNESSES entries; a reply
+ * carries one per seat but self, and a committee never exceeds the
+ * active-validator ceiling. */
+_Static_assert(DNA_MAX_ACTIVE_VALIDATORS <= NODUS_T3_MAX_WITNESSES,
+               "a dnac_cc_collect reply must fit the client's result");
+
+typedef struct {
+    uint16_t                seat;
+    uint8_t                 status;          /* NODUS_CC_COLLECT_ST_* */
+    char                    peer_id[CMT_P2P_ID_CAP];
+    nodus_t3_cc_appr_rsp_t  rsp;             /* status ANSWERED only  */
+} cc_collect_seat_t;
+
+struct nodus_cc_collect {
+    /* The requesting 4001 session, by IDENTITY + SESSION TOKEN — never a
+     * connection pointer (decision (4)): looked up again at reply time. */
+    uint8_t             requester_pk[NODUS_PK_BYTES];
+    uint8_t             token[NODUS_SESSION_TOKEN_LEN];
+    uint32_t            txn_id;
+    int64_t             deadline_ms;         /* monotonic, ms         */
+    int                 n_seats;             /* every seat but self   */
+    int                 n_waiting;           /* status ASKED          */
+    cc_collect_seat_t  *seats;
+};
+
+/* The requesting session, if it is still authenticated as the same
+ * identity in the same session (its token). @return its connection, or
+ * NULL (gone / re-authenticated / never existed). */
+static struct nodus_tcp_conn *cc_collect_session_conn(nodus_witness_t *w,
+                                                      const nodus_cc_collect_t *c) {
+    if (!w->server) return NULL;
+    for (int i = 0; i < NODUS_MAX_SESSIONS; i++) {
+        const nodus_session_t *s = &w->server->sessions[i];
+        if (s->authenticated && s->conn != NULL &&
+            memcmp(s->token, c->token, NODUS_SESSION_TOKEN_LEN) == 0 &&
+            memcmp(s->client_pk.bytes, c->requester_pk, NODUS_PK_BYTES) == 0) {
+            return s->conn;
+        }
+    }
+    return NULL;
+}
+
+/* The reply: {"t": txn, "y": "r", "q": "dnac_cc_collect", "r": {"res":
+ * [entry...]}} — the dnac_* response header (nodus_witness_handlers.c
+ * enc_dnac_response) — one entry per seat other than this node's own,
+ * ascending seat order:
+ *   {"i": seat, "st": status, "ok": bool}                  not answered
+ *   {"i", "st", "ok": false, "r": reason}                   refused
+ *   {"i", "st", "ok": true, "rs": the responder's own seat,
+ *    "s": signature, "sh": set hash, "ep": epoch}            approved
+ * @return the encoded length, or 0 on overflow. */
+static size_t cc_collect_encode_reply(const nodus_cc_collect_t *c,
+                                      uint8_t *buf, size_t cap) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    cbor_encode_map(&enc, 4);
+    cbor_encode_cstr(&enc, "t");  cbor_encode_uint(&enc, c->txn_id);
+    cbor_encode_cstr(&enc, "y");  cbor_encode_cstr(&enc, "r");
+    cbor_encode_cstr(&enc, "q");  cbor_encode_cstr(&enc, "dnac_cc_collect");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "res");
+    cbor_encode_array(&enc, (size_t)c->n_seats);
+    for (int i = 0; i < c->n_seats; i++) {
+        const cc_collect_seat_t *s = &c->seats[i];
+        bool answered = s->status == NODUS_CC_COLLECT_ST_ANSWERED;
+        bool ok = answered && s->rsp.ok;
+        cbor_encode_map(&enc, ok ? 7u : (answered ? 4u : 3u));
+        cbor_encode_cstr(&enc, "i");  cbor_encode_uint(&enc, s->seat);
+        cbor_encode_cstr(&enc, "st"); cbor_encode_uint(&enc, s->status);
+        cbor_encode_cstr(&enc, "ok"); cbor_encode_bool(&enc, ok);
+        if (ok) {
+            cbor_encode_cstr(&enc, "rs"); cbor_encode_uint(&enc, s->rsp.seat);
+            cbor_encode_cstr(&enc, "s");
+            cbor_encode_bstr(&enc, s->rsp.sig, NODUS_SIG_BYTES);
+            cbor_encode_cstr(&enc, "sh");
+            cbor_encode_bstr(&enc, s->rsp.set_hash, 64);
+            cbor_encode_cstr(&enc, "ep"); cbor_encode_uint(&enc, s->rsp.epoch);
+        } else if (answered) {
+            cbor_encode_cstr(&enc, "r");  cbor_encode_cstr(&enc, s->rsp.reason);
+        }
+    }
+    return cbor_encoder_len(&enc);
+}
+
+static void cc_collect_free(nodus_cc_collect_t *c) {
+    if (!c) return;
+    free(c->seats);
+    free(c);
+}
+
+/* End the pending collection: every seat still ASKED becomes NO_ANSWER,
+ * the reply goes to the requesting session if it is still there
+ * (decision (4)), and the state is freed. */
+static void cc_collect_finish(nodus_witness_t *w) {
+    nodus_cc_collect_t *c = w->cc_collect;
+    if (!c) return;
+    w->cc_collect = NULL;
+
+    int n_ok = 0;
+    for (int i = 0; i < c->n_seats; i++) {
+        if (c->seats[i].status == CC_COLLECT_ST_ASKED)
+            c->seats[i].status = NODUS_CC_COLLECT_ST_NO_ANSWER;
+        if (c->seats[i].status == NODUS_CC_COLLECT_ST_ANSWERED &&
+            c->seats[i].rsp.ok)
+            n_ok++;
+    }
+
+    struct nodus_tcp_conn *conn = cc_collect_session_conn(w, c);
+    if (!conn) {
+        QGP_LOG_WARN(LOG_TAG, "CC_COLLECT_DONE approved=%d/%d — the "
+                     "requesting session is gone, reply dropped",
+                     n_ok, c->n_seats);
+        cc_collect_free(c);
+        return;
+    }
+    /* Worst case per entry: the signature, the set hash, the key strings
+     * and the CBOR headers, or a <=128-character reason. */
+    size_t cap = 256 + (size_t)c->n_seats * (NODUS_SIG_BYTES + 64 + 256);
+    uint8_t *buf = malloc(cap);
+    size_t len = buf ? cc_collect_encode_reply(c, buf, cap) : 0;
+    if (len == 0 || nodus_tcp_send(conn, buf, len) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "CC_COLLECT_DONE approved=%d/%d — the reply "
+                      "could not be sent", n_ok, c->n_seats);
+    } else {
+        QGP_LOG_INFO(LOG_TAG, "CC_COLLECT_DONE approved=%d/%d", n_ok,
+                     c->n_seats);
+    }
     free(buf);
-    if (rc != 0) return rc;
+    cc_collect_free(c);
+}
 
-    /* Stage C.3 — record on the accept path only, and only once the
-     * reply has actually been handed to the transport (ORCHESTRATOR
-     * ORC-11, verifier finding F4): recording before the encode/send
-     * would cool the proposer down for NODUS_CC_RATE_LIMIT_WINDOW_MS
-     * over a signature it never received. */
-    nodus_cc_rate_limit_record(&w->cc_rate_limit, in->header.sender_id,
-                               nodus_time_now_ms());
+int nodus_witness_cc_collect_start(nodus_witness_t *w,
+                                   const uint8_t requester_pk[NODUS_PK_BYTES],
+                                   const uint8_t token[NODUS_SESSION_TOKEN_LEN],
+                                   uint32_t txn_id,
+                                   const uint8_t *e, size_t e_len,
+                                   int64_t now_ms,
+                                   char *err, size_t err_size) {
+    if (!w || !w->server || !requester_pk || !token || !e || !err ||
+        err_size == 0)
+        return -1;
+    err[0] = '\0';
+
+    /* Decision (2): served ONLY to a session authenticated with THIS
+     * node's own identity key — the proposer is this node's seat. */
+    if (memcmp(requester_pk, w->server->identity.pk.bytes, NODUS_PK_BYTES) != 0) {
+        snprintf(err, err_size, "dnac_cc_collect is served only to this "
+                                "node's own identity");
+        return -1;
+    }
+    if (e_len == 0 || e_len > NODUS_T3_CC_APPR_E_MAX) {
+        snprintf(err, err_size, "envelope length out of range");
+        return -1;
+    }
+    if (w->cc_collect) {
+        snprintf(err, err_size, "busy: an approval collection is pending");
+        return -1;
+    }
+    if (!w->v2_successor) {
+        snprintf(err, err_size, "this node is not on a version-3 chain");
+        return -1;
+    }
+
+    uint64_t tip = 0;
+    nodus_committee_member_t *committee = NULL;
+    int cm_count = 0;
+    uint8_t (*fps)[64] = NULL;
+    if (cc_appr_resolve(w, &tip, &committee, &cm_count, &fps) != 0) {
+        snprintf(err, err_size, "committee resolution failed");
+        return -1;
+    }
+    free(fps);                     /* the seats' IDs derive from the keys */
+
+    int self_seat = -1;
+    for (int i = 0; i < cm_count; i++) {
+        if (memcmp(committee[i].pubkey, w->server->identity.pk.bytes,
+                   NODUS_CC_PUBKEY_SIZE) == 0) {
+            self_seat = i;
+            break;
+        }
+    }
+    if (self_seat < 0) {
+        free(committee);
+        snprintf(err, err_size, "this node is not a committee seat");
+        return -1;
+    }
+
+    nodus_cc_collect_t *c = calloc(1, sizeof(*c));
+    uint8_t *msg = malloc(e_len + 256u);
+    if (c) c->seats = calloc((size_t)cm_count, sizeof(*c->seats));
+    size_t msg_len = 0;
+    nodus_t3_cc_appr_req_t req = { .e = e, .e_len = e_len };
+    if (!c || !c->seats || !msg ||
+        nodus_t3_cc_appr_req_encode(&req, msg, e_len + 256u, &msg_len) != 0) {
+        free(msg);
+        cc_collect_free(c);
+        free(committee);
+        snprintf(err, err_size, "fault");
+        return -1;
+    }
+    memcpy(c->requester_pk, requester_pk, NODUS_PK_BYTES);
+    memcpy(c->token, token, NODUS_SESSION_TOKEN_LEN);
+    c->txn_id = txn_id;
+    c->deadline_ms = now_ms + (int64_t)NODUS_CC_COLLECT_DEADLINE_MS;
+
+    /* Every seat but self, ascending (committee resolution order): over
+     * the EXISTING 4004 connection to that seat's p2p ID (decision (3)),
+     * or "not connected". No new connection is ever dialed here. */
+    for (int i = 0; i < cm_count; i++) {
+        if (i == self_seat) continue;
+        cc_collect_seat_t *s = &c->seats[c->n_seats++];
+        s->seat = (uint16_t)i;
+        if (cmt_p2p_pubkey_to_id(committee[i].pubkey, s->peer_id) != CMT_OK) {
+            s->status = NODUS_CC_COLLECT_ST_SEND_FAILED;
+        } else if (!nodus_witness_p2p_has_peer(w->p2p, s->peer_id)) {
+            s->status = NODUS_CC_COLLECT_ST_NOT_CONNECTED;
+        } else if (!nodus_witness_p2p_send(w->p2p, s->peer_id,
+                                           NODUS_P2P_CH_CC_APPR, msg, msg_len)) {
+            s->status = NODUS_CC_COLLECT_ST_SEND_FAILED;
+        } else {
+            s->status = CC_COLLECT_ST_ASKED;
+            c->n_waiting++;
+        }
+    }
+    free(msg);
+    free(committee);
+
+    QGP_LOG_INFO(LOG_TAG, "CC_COLLECT_START seats=%d asked=%d tip=%llu",
+                 c->n_seats, c->n_waiting, (unsigned long long)tip);
+    w->cc_collect = c;
+    if (c->n_waiting == 0) {
+        cc_collect_finish(w);      /* nothing to wait for: answer at once */
+    }
     return 0;
+}
+
+bool nodus_witness_cc_collect_on_rsp(nodus_witness_t *w, const char *peer_id,
+                                     const nodus_t3_cc_appr_rsp_t *rsp) {
+    if (!w || !peer_id || !rsp || !w->cc_collect) return false;
+    nodus_cc_collect_t *c = w->cc_collect;
+    for (int i = 0; i < c->n_seats; i++) {
+        cc_collect_seat_t *s = &c->seats[i];
+        if (s->status != CC_COLLECT_ST_ASKED ||
+            strcmp(s->peer_id, peer_id) != 0)
+            continue;
+        s->rsp = *rsp;
+        s->status = NODUS_CC_COLLECT_ST_ANSWERED;
+        if (--c->n_waiting == 0) {
+            cc_collect_finish(w);
+        }
+        return true;
+    }
+    return false;          /* not a peer this collection is waiting on */
+}
+
+void nodus_witness_cc_collect_tick(nodus_witness_t *w, int64_t now_ms) {
+    if (!w || !w->cc_collect) return;
+    if (now_ms >= w->cc_collect->deadline_ms) {
+        cc_collect_finish(w);
+    }
+}
+
+void nodus_witness_cc_collect_abort(nodus_witness_t *w) {
+    if (!w || !w->cc_collect) return;
+    cc_collect_free(w->cc_collect);
+    w->cc_collect = NULL;
 }
 
 /* Q17 / CC-OPS-005 — observability dump. Single-line structured log
@@ -1288,13 +1664,11 @@ void nodus_chain_config_log_stats(nodus_witness_t *w) {
     if (!w) return;
     QGP_LOG_INFO(LOG_TAG,
         "CHAIN_CONFIG_STATS committed=%llu rejected=%llu "
-        "cache_hits=%llu cache_misses=%llu peer_schema_mismatch=%llu "
-        "rate_limited=%llu",
+        "cache_hits=%llu cache_misses=%llu rate_limited=%llu",
         (unsigned long long)w->chain_config_proposals_committed,
         (unsigned long long)w->chain_config_proposals_rejected,
         (unsigned long long)w->chain_config_cache_hits,
         (unsigned long long)w->chain_config_cache_misses,
-        (unsigned long long)w->chain_config_peer_schema_mismatch,
         (unsigned long long)w->cc_rate_limit.rate_limited_count);
 }
 

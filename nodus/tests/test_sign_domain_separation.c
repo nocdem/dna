@@ -24,8 +24,10 @@
  * new in that migration, so no shipped client has ever produced or
  * verified a raw 0x09 signature — see §A below.):
  *
- *   §A the strict set is exactly {0x07, 0x08, 0x09} and nothing else
- *      (0x09 MLKEM_BIND joined in KEM Faz 1, 2026-09-23 — tier-2, brand new)
+ *   §A the strict set is exactly {0x07, 0x08, 0x09, 0x0A, 0x0B} and nothing else
+ *      (0x09 MLKEM_BIND joined in KEM Faz 1, 2026-09-23 — tier-2, brand new;
+ *      0x0A SESSION_AUTH and 0x0B WITNESS_ADDR joined in P2P-PORT F1,
+ *      2026-09-26 — brand new)
  *   §B the 116-byte PREPARED preimage, byte for byte (layout KAT)
  *   §E cross-domain — 0x07 and 0x08 do not interchange
  *   §F the bypass is really lifted — a RAW signature is refused for both
@@ -50,8 +52,9 @@
  * ── What a green run does NOT prove ───────────────────────────────────
  *
  * Nothing about wire compatibility with a running cluster: the domain
- * change is a consensus break and rides NODUS_T3_BFT_PROTOCOL_VER
- * (4 -> 5), enforced in test_witness_protocol_version_gate. Nothing about
+ * change is a consensus break and rode NODUS_T3_BFT_PROTOCOL_VER
+ * (4 -> 5), enforced then by test_witness_protocol_version_gate (both
+ * deleted with the tier-3 envelope in P2P-PORT F5). Nothing about
  * VIEWOK's message plumbing either — 0x08 has no producer on the wire
  * yet; this file pins its DOMAIN so the plumbing cannot later land on an
  * unseparated purpose. Nothing, any more, about a witness-BFT wrapper
@@ -125,15 +128,21 @@ static void test_kyber_bind_roundtrip(void) {
     PASS();
 }
 
-static void test_t3_envelope_roundtrip(void) {
-    TEST("t3_envelope sign+verify roundtrip");
-    uint8_t data[256];
-    nodus_random(data, sizeof(data));
+/* P2P-PORT F5 fix round 1 — nodus_sign_t3_envelope / nodus_verify_t3_
+ * envelope are DELETED with the tier-3 envelope (no caller remained);
+ * their roundtrip test went with them. Purpose 0x03 stays RESERVED
+ * (nodus_sign.h) and inside the non-strict bridge (§G below). The
+ * disabled pairwise matrix keeps its 0x03 column through these two
+ * test-local wrappers over the generic engine, so the matrix still says
+ * exactly what it said when it was written. */
+static int t3_sign(nodus_sig_t *sig, const uint8_t *d, size_t len,
+                   const nodus_seckey_t *sk) {
+    return nodus_sign_tagged(sig, NODUS_PURPOSE_T3_ENVELOPE, d, len, sk);
+}
 
-    nodus_sig_t sig;
-    if (nodus_sign_t3_envelope(&sig, data, sizeof(data), &g_sk) != 0) { FAIL("sign"); return; }
-    if (nodus_verify_t3_envelope(&sig, data, sizeof(data), &g_pk) != 0) { FAIL("verify"); return; }
-    PASS();
+static int t3_verify(const nodus_sig_t *sig, const uint8_t *d, size_t len,
+                     const nodus_pubkey_t *pk) {
+    return nodus_verify_tagged(sig, NODUS_PURPOSE_T3_ENVELOPE, d, len, pk);
 }
 
 static void test_value_store_roundtrip(void) {
@@ -185,7 +194,7 @@ static void test_every_pair_rejects(void) {
     nodus_sig_t sigs[5];
     if (nodus_sign_auth_challenge(&sigs[0], data, &g_sk) != 0) { FAIL("sign ac"); return; }
     if (nodus_sign_kyber_bind(&sigs[1], data, sizeof(data), &g_sk) != 0) { FAIL("sign kb"); return; }
-    if (nodus_sign_t3_envelope(&sigs[2], data, sizeof(data), &g_sk) != 0) { FAIL("sign t3"); return; }
+    if (t3_sign(&sigs[2], data, sizeof(data), &g_sk) != 0) { FAIL("sign t3"); return; }
     if (nodus_sign_value_store(&sigs[3], data, sizeof(data), &g_sk) != 0) { FAIL("sign vs"); return; }
     if (nodus_sign_cert(&sigs[4], data, sizeof(data), &g_sk) != 0) { FAIL("sign ct"); return; }
 
@@ -196,7 +205,7 @@ static void test_every_pair_rejects(void) {
     /* Matching cases (5) */
     if (nodus_verify_auth_challenge(&sigs[0], data, &g_pk) != 0) { FAIL("ac→ac should pass"); return; }
     if (nodus_verify_kyber_bind(&sigs[1], data, other_len, &g_pk) != 0) { FAIL("kb→kb"); return; }
-    if (nodus_verify_t3_envelope(&sigs[2], data, other_len, &g_pk) != 0) { FAIL("t3→t3"); return; }
+    if (t3_verify(&sigs[2], data, other_len, &g_pk) != 0) { FAIL("t3→t3"); return; }
     if (nodus_verify_value_store(&sigs[3], data, other_len, &g_pk) != 0) { FAIL("vs→vs"); return; }
     if (nodus_verify_cert(&sigs[4], data, other_len, &g_pk) != 0) { FAIL("ct→ct"); return; }
 
@@ -209,12 +218,12 @@ static void test_every_pair_rejects(void) {
 
     /* sigs[0] (AC sig) attempted against every other verifier */
     CHECK_REJECT(nodus_verify_kyber_bind,  &sigs[0], data, ac_len,    "ac→kb");
-    CHECK_REJECT(nodus_verify_t3_envelope, &sigs[0], data, ac_len,    "ac→t3");
+    CHECK_REJECT(t3_verify,                &sigs[0], data, ac_len,    "ac→t3");
     CHECK_REJECT(nodus_verify_value_store, &sigs[0], data, ac_len,    "ac→vs");
     CHECK_REJECT(nodus_verify_cert,        &sigs[0], data, ac_len,    "ac→ct");
     /* sigs[1] (KB sig) */
     if (nodus_verify_auth_challenge(&sigs[1], data, &g_pk) == 0)     { FAIL("kb→ac"); return; }
-    CHECK_REJECT(nodus_verify_t3_envelope, &sigs[1], data, other_len, "kb→t3");
+    CHECK_REJECT(t3_verify,                &sigs[1], data, other_len, "kb→t3");
     CHECK_REJECT(nodus_verify_value_store, &sigs[1], data, other_len, "kb→vs");
     CHECK_REJECT(nodus_verify_cert,        &sigs[1], data, other_len, "kb→ct");
     /* sigs[2] (T3 sig) */
@@ -225,12 +234,12 @@ static void test_every_pair_rejects(void) {
     /* sigs[3] (VS sig) */
     if (nodus_verify_auth_challenge(&sigs[3], data, &g_pk) == 0)     { FAIL("vs→ac"); return; }
     CHECK_REJECT(nodus_verify_kyber_bind,  &sigs[3], data, other_len, "vs→kb");
-    CHECK_REJECT(nodus_verify_t3_envelope, &sigs[3], data, other_len, "vs→t3");
+    CHECK_REJECT(t3_verify,                &sigs[3], data, other_len, "vs→t3");
     CHECK_REJECT(nodus_verify_cert,        &sigs[3], data, other_len, "vs→ct");
     /* sigs[4] (CT sig) */
     if (nodus_verify_auth_challenge(&sigs[4], data, &g_pk) == 0)     { FAIL("ct→ac"); return; }
     CHECK_REJECT(nodus_verify_kyber_bind,  &sigs[4], data, other_len, "ct→kb");
-    CHECK_REJECT(nodus_verify_t3_envelope, &sigs[4], data, other_len, "ct→t3");
+    CHECK_REJECT(t3_verify,                &sigs[4], data, other_len, "ct→t3");
     CHECK_REJECT(nodus_verify_value_store, &sigs[4], data, other_len, "ct→vs");
 
     #undef CHECK_REJECT
@@ -323,7 +332,7 @@ static const uint8_t KAT_CHAIN_ID[32] = {
 /* ── §A — the strictness predicate itself ─────────────────────────── */
 
 static void test_strict_set_is_exactly_07_08(void) {
-    TEST("§A strict set is exactly {PREPARED 0x07, VIEWOK 0x08, MLKEM_BIND 0x09}");
+    TEST("§A strict set is exactly {0x07, 0x08, 0x09, SESSION_AUTH 0x0A, WITNESS_ADDR 0x0B}");
     if (!nodus_sign_purpose_is_strict(NODUS_PURPOSE_PREPARED)) {
         FAIL("PREPARED (0x07) must be strict"); return; }
     if (!nodus_sign_purpose_is_strict(NODUS_PURPOSE_VIEWOK)) {
@@ -334,9 +343,16 @@ static void test_strict_set_is_exactly_07_08(void) {
      * kpk_sig presented as mpk_sig must not verify (test_mlkem_handshake). */
     if (!nodus_sign_purpose_is_strict(NODUS_PURPOSE_MLKEM_BIND)) {
         FAIL("MLKEM_BIND (0x09) must be strict"); return; }
+    /* P2P-PORT F1 (decision 2026-09-26-witness-port-session.md): the 4004
+     * session signature and the signed witness address record are brand
+     * new, so both are strict from their first byte on the wire. */
+    if (!nodus_sign_purpose_is_strict(NODUS_PURPOSE_SESSION_AUTH)) {
+        FAIL("SESSION_AUTH (0x0A) must be strict"); return; }
+    if (!nodus_sign_purpose_is_strict(NODUS_PURPOSE_WITNESS_ADDR)) {
+        FAIL("WITNESS_ADDR (0x0B) must be strict"); return; }
     /* The shipped-client bridge must stay EXACTLY as wide as it was:
      * none of 0x01-0x05 may become strict by accident. 0x06 is
-     * reserved-unimplemented, 0x0A unassigned. */
+     * reserved-unimplemented, 0x0C unassigned. */
     if (nodus_sign_purpose_is_strict(NODUS_PURPOSE_AUTH_CHALLENGE)) {
         FAIL("AUTH_CHALLENGE (0x01) must NOT be strict"); return; }
     if (nodus_sign_purpose_is_strict(NODUS_PURPOSE_KYBER_BIND)) {
@@ -349,7 +365,7 @@ static void test_strict_set_is_exactly_07_08(void) {
         FAIL("CERT (0x05) must NOT be strict"); return; }
     if (nodus_sign_purpose_is_strict(0x00)) { FAIL("0x00 strict"); return; }
     if (nodus_sign_purpose_is_strict(0x06)) { FAIL("0x06 strict"); return; }
-    if (nodus_sign_purpose_is_strict(0x0A)) { FAIL("0x0A strict"); return; }
+    if (nodus_sign_purpose_is_strict(0x0C)) { FAIL("0x0C strict"); return; }
     PASS();
 }
 
@@ -572,7 +588,6 @@ int main(void) {
 
     test_auth_challenge_roundtrip();
     test_kyber_bind_roundtrip();
-    test_t3_envelope_roundtrip();
     test_value_store_roundtrip();
     test_cert_roundtrip();
     /* STILL DISABLED, AND DELIBERATELY SO — these two cover purposes

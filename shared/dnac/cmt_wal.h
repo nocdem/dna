@@ -9,25 +9,25 @@
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── WHAT THIS FILE IS, AND WHAT IT DELIBERATELY IS NOT ─────────────────
- * It is the RECORD: the four things a WAL row can hold, the conversion
+ * It is the RECORD: the four things a WAL record can hold, the conversion
  * between them and their proto3 form, and the encode/decode of one
  * `TimedWALMessage` to and from the bytes `P`.
  *
  * It is NOT the log. The reference stores those bytes in an autofile group
  * behind a four-byte CRC32c and a four-byte length
- * (`WALEncoder.Encode` wal.go:288-330, `WALDecoder.Decode` :356-420); this
- * chain stores them as a SQLite row `SHA3-512(P) ‖ P` with the WALMessage
- * oneof's field number in the row's `kind` column (D-15 rev 5,
- * atlas-dec-c0bfc5344204b9282ceaaa5e06042350 — PROPOSED at the time this
- * file was written; the wave report says so). Everything on that side is
- * the HOST's and belongs to wave R3.
+ * (`WALEncoder.Encode` wal.go:288-330, `WALDecoder.Decode` :356-420), and
+ * so does this chain: the nodus host's WAL (nodus/src/witness/
+ * nodus_witness_cmt_wal.{h,c} over nodus_witness_cmt_autofile.{h,c}),
+ * decision docs/plans/decisions/2026-09-26-cmt-wal-file-group.md. (The
+ * earlier SQLite row `SHA3-512(P) ‖ P` of D-15 rev 5 is superseded
+ * there.) Everything on that side is the HOST's.
  *
- * taşınmadı, with the reason:
+ * taşınmadı HERE, with the reason:
  *   · `WALEncoder` (:289-296) with `NewWALEncoder` (:294-296) and `Encode`
  *     (:301-330), and `WALDecoder` (:356-363) with `NewWALDecoder`
- *     (:361-363) and `Decode` (:366-420) — the FILE CONTAINER. The crc32c
- *     frame is replaced by the row digest; the MESSAGE half of Encode and
- *     Decode is `cmt_timed_wal_message_encode` / `_decode` below.
+ *     (:361-363) and `Decode` (:366-420) — the FILE CONTAINER, the host's
+ *     (nodus_witness_cmt_wal.c); the MESSAGE half of Encode and Decode is
+ *     `cmt_timed_wal_message_encode` / `_decode` below.
  *   · the `WAL` interface (:58-69) — a Go interface.
  *   · `BaseWAL` (:76-85) and every method on it: `NewWAL` (:91-...),
  *     `SetFlushInterval` (:111), `Group` (:115), `SetLogger` (:119),
@@ -40,8 +40,8 @@
  *     JSON codec.
  *   · `IsDataCorruptionError` (:333-336) and `DataCorruptionError` with
  *     its `Error` and `Cause` (:339-349) — the error type the file
- *     container raises. The row digest raises the equivalent at the host,
- *     as CMT_FAULT (D-15: digest mismatch = stop, no skip).
+ *     container raises. The host raises it as `wal_read_next`'s CMT_REJECT
+ *     (cmt_cs.h), the one corruption carrier `cmt_cs_start` repairs on.
  *   · `maxMsgSizeBytes` (:25) is REPRODUCED below because it bounds a
  *     record, but the check that uses it (:318-320, :385-390) is the file
  *     container's and is the host's to make.
@@ -56,7 +56,7 @@
  *
  * ── DETERMINISM ────────────────────────────────────────────────────────
  * Pure functions of their arguments. No clock, no allocation, no global
- * state. The `kind` values are fixed by the .proto and are the row's.
+ * state. The `kind` values are fixed by the .proto.
  *
  * Reference @709fd12b (SHA-256 verified before use):
  *   consensus/wal.go   434 lines
@@ -68,7 +68,8 @@
  *                      13d8f653492d87fb90d1512ed0495d7d178839b371884e785b2620c29aae3cd5
  *   consensus/reactor.go:30 — maxMsgSize.
  * Governing records: umbrella rev 5 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
- * D-15 rev 6 (atlas-dec-c0bfc5344204b9282ceaaa5e06042350, APPROVED),
+ * D-15 rev 6 (atlas-dec-c0bfc5344204b9282ceaaa5e06042350, APPROVED; its
+ * storage half superseded by 2026-09-26-cmt-wal-file-group.md),
  * K-1 rev 2 (atlas-dec-3ba8153088b0d60c63083028023b61be),
  * INVARIANT (atlas-dec-7495d3372e004b24b4f6cc7bff5caf07).
  *
@@ -121,8 +122,7 @@ typedef struct {
  * cometbft@709fd12b consensus/wal.go:46 — `type WALMessage interface{}`,
  * as a tagged union of the FOUR kinds the oneof admits.
  *
- * THE TAG IS THE ONEOF FIELD NUMBER, 1-4 (consensus/wal.proto:33-40), and
- * it is the value the host stores in the row's `kind` column (D-15 rev 5).
+ * THE TAG IS THE ONEOF FIELD NUMBER, 1-4 (consensus/wal.proto:33-40).
  * `CMT_PB_WAL_NONE` is Go's nil interface, which both directions refuse:
  * `WALToProto` falls to its default (msgs.go:290-291) and `WALFromProto`
  * refuses a nil message (:299-301).
@@ -202,8 +202,8 @@ int cmt_wal_from_proto(const cmt_pb_wal_message_t *msg,
  * built around it (:306-309) and `proto.Marshal` (:311).
  *
  * Produces `P` — the bytes the reference then frames with a CRC and a
- * length (:316-326) and this chain stores as `SHA3-512(P) ‖ P`. NO CRC,
- * NO LENGTH PREFIX, NO FRAME.
+ * length (:316-326) — the host's frame (nodus_witness_cmt_wal.c), not
+ * this function's. NO CRC, NO LENGTH PREFIX, NO FRAME.
  *
  * `v->time` is whatever the caller stamped; this function reads no clock.
  *
@@ -228,8 +228,8 @@ int cmt_timed_wal_message_encode(const cmt_timed_wal_message_t *v,
  * (:404-408) and `WALFromProto` on its `Msg` (:410-413), then the pair
  * `{Time, Msg}` of :414-417.
  *
- * The caller has already checked the row digest and knows the length; the
- * CRC and length reads of :367-402 are the container's.
+ * The caller has already checked the record's CRC and knows the length;
+ * the CRC and length reads of :367-402 are the container's.
  *
  * ALLOCATES and frees one `cmt_pb_timed_wal_message_t`, for the reason
  * `cmt_timed_wal_message_encode` gives. The ARENA is separate and is the

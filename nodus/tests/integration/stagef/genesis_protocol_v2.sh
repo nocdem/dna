@@ -57,10 +57,11 @@
 #   EPOCHS=2 exported before bring-up); this sentence read "the only
 #   scenario" until tokenomics-v3 P2 corrected it. (The CLI-SPEND pump
 #   those three use claims node 3's own leaf, never the PUMP batch.)
-#   test_cmt_arena_runway.sh runs absolute LAST because its subject is
-#   the CUMULATIVE receive-arena usage every other node in this sweep
-#   has already produced — reading it any earlier would read a partial
-#   history.
+#   test_p2p_seam_faults.sh runs absolute LAST because its subject is
+#   every node's CUMULATIVE log of the 4004 reactor seam across the whole
+#   sweep — reading it any earlier would read a partial history.
+#   (P2P-PORT F6: it replaced test_cmt_arena_runway.sh, whose receive-
+#   arena latches died with the deleted nodus_witness_cmt_net.c.)
 #
 # ── LEAF BUDGET ─────────────────────────────────────────────────────
 #   A genesis leaf can be claimed exactly ONCE. The bring-up mints one per
@@ -177,14 +178,14 @@ SCENARIOS_ONLY=0
 #     SKIPS (99) at the shipped epoch length (needs THREE boundaries'
 #     worth of idle-only wall time, its own header explains why three,
 #     not two). Placed AFTER every leaf-spending and epoch-boundary
-#     scenario and BEFORE arena_runway: it PERMANENTLY AUTO_RETIREs node
-#     7 (its own "WHAT IT LEAVES BEHIND" — not reversible within this
-#     bring-up), so nothing after it may assume 7 ACTIVE validators.
-#     arena_runway only READS accumulated counters, unaffected by which
-#     validators are still ACTIVE.
-#   test_cmt_arena_runway.sh   LAST, unconditionally: it reads the
-#     receive-arena usage every OTHER node has accumulated across the
-#     whole sweep and asserts no latch fired ACROSS ALL OF IT.
+#     scenario and BEFORE test_p2p_seam_faults.sh: it PERMANENTLY
+#     AUTO_RETIREs node 7 (its own "WHAT IT LEAVES BEHIND" — not
+#     reversible within this bring-up), so nothing after it may assume 7
+#     ACTIVE validators. The seam scan only READS logs, unaffected by
+#     which validators are still ACTIVE.
+#   test_p2p_seam_faults.sh    LAST, unconditionally: it reads every
+#     node's log across the whole sweep and asserts the 4004 host started
+#     and no consensus/mempool reactor reported a node-local CMT_FAULT.
 V2_TESTS="
 test_cmt_empty_blocks.sh
 test_v2_claim.sh
@@ -200,7 +201,7 @@ test_cmt_env_flood.sh
 test_v2_epoch_boundary.sh
 test_v2_rewards.sh
 test_cmt_rule_n_retire.sh
-test_cmt_arena_runway.sh
+test_p2p_seam_faults.sh
 "
 
 if [ "$SCENARIOS_ONLY" = 0 ]; then
@@ -212,6 +213,15 @@ if [ "$SCENARIOS_ONLY" = 0 ]; then
         echo "[FAIL] V2 bring-up failed — nothing was run" >&2
         exit 1
     fi
+    # stagef_env.sh (sourced above) EXPORTED the BASE_DIR of whatever run
+    # the pointer named at start — a cluster Phase 1 just tore down — and
+    # every scenario inherits the environment, where an exported BASE_DIR
+    # wins over the pointer. Re-read it from the pointer Phase 2 just
+    # wrote. Found 2026-09-27: a sweep started while a previous cluster
+    # was still up failed all 15 scenarios with "no chain DB for node1";
+    # reproduced with a fake pointer (ORCHESTRATOR repair).
+    BASE_DIR="$(cat "$STAGEF_POINTER")"
+    export BASE_DIR
 fi
 
 pass=0; fail=0; skip=0

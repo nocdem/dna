@@ -127,7 +127,7 @@ nodus/
 │       │                            #   glue — the ONLY consensus lane since R3 W3; the legacy PBFT
 │       │                            #   lane (nodus_witness_bft/sync/cert/bootstrap/mempool) was
 │       │                            #   DELETED in R3 W4
-│       ├── nodus_witness_peer.c/h   # TCP peer mesh management + the transport roster (find/add)
+│       ├── nodus_witness_p2p.c/h    # 4004 p2p glue: the cometbft switch (cmt_p2p_*), reactor host rows, bonded set (0.20.0; replaced nodus_witness_peer.c/h)
 │       ├── nodus_witness_handlers.c/h # DNAC message dispatch (spend, query, block)
 │       ├── nodus_witness_verify.c/h # TX verification (hash, sig, balance, fee, nullifiers)
 │       └── nodus_witness_v2_schema.c/h # Ledger V2 versioned schema S5..S13 (S13 = tm_wal, tm_state, v2_blocks.commit_cert;
@@ -3141,6 +3141,109 @@ entry "Root'a girsin" (2026-09-24) in
 - **Consensus-value change** (every SYSTEM root, every UTXO leaf, the
   bundle format) → devnet wipe + stop-all. dnac 0.18.11 / messenger
   0.11.24 carry the client leaf; no user-visible effect, no forced update.
+
+### The 4004 p2p port — a literal port of cometbft @709fd12b's p2p layer (2026-09-26/27, nodus 0.20.0)
+
+TCP 4004 no longer carries the T3 CBOR envelope with a per-message ML-DSA
+signature. It carries cometbft's own p2p stack, ported function by function
+from `p2p/`, `p2p/conn/`, `p2p/pex/`, `libs/flowrate` and `libs/protoio`;
+every C function names the Go lines it ports, and every departure is a
+numbered register row (R-P2P-n) in the local design doc
+`docs/plans/2026-09-26-p2p-port-design.md`. Governing decision:
+`docs/plans/decisions/2026-09-26-witness-port-session.md` (local).
+4001 and 4002 are untouched.
+
+- **Files.** `shared/dnac/cmt_p2p_secret` (secret connection),
+  `cmt_p2p_mconn` (MConnection: channels, priorities, send queues, packet
+  split/merge, ping/pong), `cmt_flowrate`, `cmt_p2p_protoio`,
+  `cmt_p2p_transport` (listener limit, handshake worker, dial, upgrade),
+  `cmt_p2p_switch`, `cmt_p2p_peer`, `cmt_p2p_nodeinfo`, `cmt_p2p_netaddr`,
+  `cmt_p2p_pex` + `cmt_p2p_addrbook`; nodus glue
+  `nodus/src/witness/nodus_witness_p2p.{c,h}` (owns the switch, maps the
+  consensus and mempool reactor host rows onto `Send`/`TrySend`/
+  `StopPeerForError`, supplies the bonded set). The old glue
+  `nodus_witness_cmt_net.c`, `nodus_witness_peer.{c,h}`, the DHT
+  `nodus:pk` roster and the chain-quorum quarantine are deleted.
+  `NODUS_T3_BFT_PROTOCOL_VER` is deleted (last value 7); the p2p protocol
+  version is `CMT_P2P_PROTOCOL_VERSION` 8 (`cmt_p2p_nodeinfo.h:83`).
+- **Handshake (R-P2P-9, operator-approved).** The reference's X25519/ed25519/
+  merlin/HKDF-SHA256 become: ML-KEM-1024 encapsulation to the responder's
+  static key (`nodus.mlkem_*`), one SHA3-512 transcript tagged
+  `nodus.wsess.transcript.v1`, two HKDF-SHA3-256 calls (`nodus.wsess.keys.v1/aead`,
+  `/challenge`, `cmt_p2p_secret.h:220-224`), each side signing the challenge
+  with its ML-DSA-87 node key under the STRICT purpose 0x0A. Frames: the
+  reference's 1024-byte data frame sealed with AES-256-GCM (R-P2P-1), nonce =
+  role ‖ 00 00 00 ‖ u64 BE counter, refused at `UINT64_MAX`. The chain id and
+  protocol version ride in the transcript and in NodeInfo (`Network` = the
+  32-byte chain id in hex); `CompatibleWith` refuses another chain. The first
+  frame after the key exchange must carry the AUTHSIG — an empty sealed frame
+  there closes the connection (R-P2P-63).
+- **Channels.** PEX 0x00; consensus 0x20-0x23; mempool 0x30 (reference
+  descriptors); two nodus channels (R-P2P-5): **0x70** genesis bundle (the
+  pinned joiner accepts a response only from the peer and offset it asked,
+  R-P2P-60; serving is gated per requester) and **0x71** governance approval
+  (a requester outside the bonded set is dropped silently; a bonded attempt
+  holds its 5 s cooldown slot whatever the verdict, R-P2P-61).
+- **Governance approvals via the proposer's own node.** `nodus-cli
+  chain-config propose` no longer dials 4004: it sends one `dnac_cc_collect`
+  request on 4001 to its own node, which asks every seat over 0x71 and answers
+  with per-seat results (`nodus_witness_cc_collect_start`,
+  `nodus_client_dnac_cc_collect`); decision `2026-09-26-cc-approval-via-own-node.md`.
+  `nodus_cc_client.c` and `test_cc_client` are deleted.
+- **Admission and discovery.** Reference limits (`max_num_inbound_peers` 40,
+  `max_num_outbound_peers` 10, duplicate ID refused, `LimitListener`); the
+  chain's bonded set (ACTIVE ∪ ELIGIBLE ∪ the committees at tip ± 1) is added
+  to the unconditional IDs at run time (R-P2P-7). PEX address entries for a
+  bonded identity must carry an ADDR record signed by that validator under the
+  strict purpose 0x0B (R-P2P-4); a bonded ID is never banned and its stale
+  unsigned entries are purged when it bonds (R-P2P-62). Handshake crypto runs on
+  a bounded worker thread (R-P2P-8); the event loop never blocks on it.
+- **Configuration.** nodus.json keys follow the reference names:
+  `persistent_peers`, `unconditional_peer_ids`, `private_peer_ids`, `pex`,
+  `addr_book_strict`, `max_num_inbound_peers`, `max_num_outbound_peers`,
+  `allow_duplicate_ip` (test only). The published **network file**
+  (`network_file` key or `--network-file`) is
+  `{"v2_genesis_pin": "<64 hex or empty>", "persistent_peers": ["id@ip:4004", …]}`
+  (`nodus_server.c` `NF_KEY_PIN`/`NF_KEY_PEERS`); a pin that differs from the
+  chain the node holds refuses the start. A node's p2p ID is
+  `nodus-cli whoami`'s `P2P ID:`. A chain-holding node with no connected peer
+  logs an ERROR every 60 s (never refused). Peer addresses persist in
+  `$DATA_DIR/p2p_addrbook.pb`.
+- **One event loop.** The reference's per-connection goroutines become
+  per-tick steps on the witness loop (monotonic clock). Sockets are read and
+  written continuously within a poll pass up to a per-call budget
+  (R-P2P-55/56 — a one-buffer read per pass had capped a connection at
+  ≈ 46 KB/s and made every 32-validator round time out). The consensus
+  reactor's blocking `peerMsgQueue <-` becomes a receive gate: a connection
+  delivers a message only while the state machine's peer queue has room for
+  one, asked before every message; nothing read is ever dropped (R-P2P-57).
+  When the queue is nearly full each peer delivers one message per pass, and
+  both receive walks start just past the last peer served (R-P2P-58/59), so no
+  peer starves another or its pongs.
+- **Consensus WAL = the reference's file group.** The WAL moved from the
+  SQLite `cmt_wal` rows to `$DATA_DIR/cs.wal/wal` (`libs/autofile` port
+  `nodus_witness_cmt_autofile.{c,h}`, `nodus_witness_cmt_wal.{c,h}`): record
+  `crc32c ‖ length ‖ TimedWALMessage`, buffered `Write`, fsync on own signed
+  messages / EndHeight / every 2 s, head 10 MB, total 1 GB, repair on start
+  (`<wal>.CORRUPTED`) — decision `2026-09-26-cmt-wal-file-group.md`. The move
+  removed the fsync-per-received-message stall found at 32 validators. At the
+  first start of a 0.20.0 node whose `cs.wal/wal` is empty, the SQLite tail
+  from the latest EndHeight is copied into the file group once,
+  digest-verified and atomically (`nodus_cmt_wal_carry_sqlite`, item 6
+  AMENDED, NOT GROUNDED — the reference never migrates WAL storage). Without
+  it, a stop-all landing while ≥ 1/3 of the power had signed at the next
+  height halts the chain (privval refuses the round-0 regression).
+- **Deploy.** STOP-ALL, NO WIPE (`DEPLOY_RUNBOOK.md` §2.3). An old node cannot
+  join the new mesh.
+- **Tests.** ctest `test_p2p_secret`, `test_p2p_mconn`, `test_p2p_switch`,
+  `test_p2p_pex`, `test_witness_p2p`, `test_cmt_autofile`, `test_cc_collect`,
+  `test_cmt_host` (`wal_carry_sqlite_*`); harness `test_p2p_seam_faults.sh`
+  (in the sweep), `test_p2p_stopall_nowipe.sh` (standalone: OLD → NEW with the
+  dangerous signed-at-next-height precondition built and proven, plus an
+  opt-in negative control that halts without the carry), `test_v2_grow_7_32.sh`
+  (standalone, E=30: 7 → 32 validators, commits with 22 running, halts with 21).
+  Red-teamed in two rounds (11 + 5 read-only agents, 2026-09-27); round-1 fixes
+  in fleet P2P-FIX-1.
 
 ### Consensus flow (cometbft @709fd12b, the only lane)
 

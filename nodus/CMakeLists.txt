@@ -141,7 +141,10 @@ set(NODUS_SOURCES
     src/client/nodus_client.c
     src/client/nodus_singleton.c
     src/client/nodus_republish.c
-    src/client/nodus_cc_client.c
+    # nodus_cc_client.c (the CLI's short-lived 4004 p2p peer) is DELETED:
+    # governance approvals are collected by the proposer's own node
+    # (decision docs/plans/decisions/2026-09-26-cc-approval-via-own-node.md,
+    # the dnac_cc_collect call in nodus_client.c).
 
     # Shared dnac wire format (Hard-Fork v1 — single source of truth for
     # the CHAIN_CONFIG TX extension block encoder/decoder shared with dnac)
@@ -203,18 +206,19 @@ set(NODUS_SOURCES
     # cmt_cs_host_t — state/execution.go's BlockExecutor and
     # state/validation.go, the Comet key-value stores (store/store.go +
     # state/store.go over SQLite, schema S14, D-17 rev 5), the consensus WAL
-    # storage (D-15 rev 5, second connection) and the privval last-sign-state
+    # (consensus/wal.go over libs/autofile's file group, decision
+    # 2026-09-26-cmt-wal-file-group.md) and the privval last-sign-state
     # file (privval/file.go + libs/tempfile, plus a directory fsync).
     # Production-dormant: the live V2 lane still runs at S12 and the engine
     # binding is R3-C1's.
     src/witness/nodus_witness_cmt_store.c
+    src/witness/nodus_witness_cmt_autofile.c
     src/witness/nodus_witness_cmt_wal.c
     src/witness/nodus_witness_cmt_privval.c
     src/witness/nodus_witness_cmt_host.c
-    # FLEET-TM-R3 W3 (C2b) — the transport glue: the p2p.Switch/Peer
-    # stand-in over the witness peer table (host tables for cmt_conr and
-    # cmt_memr, the peer-set scan tick, the verb 35-39 receive router).
-    src/witness/nodus_witness_cmt_net.c
+    # FLEET-TM-R3 W3 (C2b) — the transport glue nodus_witness_cmt_net.c
+    # is DELETED (P2P-PORT F5): its successor is the 4004 p2p host
+    # nodus_witness_p2p.c (Linux-only list below).
 
     # FLEET-TM-R3 W2 (R3-C1a) — the APPLICATION behind cometbft's
     # AppConnConsensus/AppConnMempool, over the Ledger V2 engine
@@ -426,6 +430,47 @@ set(NODUS_SOURCES
     ${SHARED_DIR}/dnac/cmt_mem.c
     ${SHARED_DIR}/dnac/cmt_memr.c
 
+    # cometbft @709fd12b → C port, fleet P2P-PORT phase F1:
+    # p2p/conn/secret_connection.go — the 4004 secret connection as a
+    # byte-fed handshake state machine (ML-KEM-1024 + ML-DSA-87, R-P2P-9)
+    # and 1024-byte AES-256-GCM sealed frames (R-P2P-1). Zero runtime
+    # consumers: the transport that drives it is phase F3.
+    ${SHARED_DIR}/dnac/cmt_p2p_secret.c
+
+    # cometbft @709fd12b → C port, fleet P2P-PORT phase F2:
+    # p2p/conn/connection.go — the MConnection (prioritized channels, packet
+    # split/reassembly, ping/pong, throttled flush) as per-tick steps on one
+    # event loop, with libs/timer's ThrottleTimer inline; libs/flowrate (the
+    # send/recv rate Monitor); libs/protoio's delimited reader, byte-fed.
+    # Zero runtime consumers: the peer that drives it is phase F3.
+    ${SHARED_DIR}/dnac/cmt_flowrate.c
+    ${SHARED_DIR}/dnac/cmt_p2p_protoio.c
+    ${SHARED_DIR}/dnac/cmt_p2p_mconn.c
+
+    # cometbft @709fd12b → C port, fleet P2P-PORT phase F3:
+    # p2p/netaddress.go + key.go + errors.go (id@ip:port, the ID),
+    # p2p/node_info.go (DefaultNodeInfo + its protobuf codec),
+    # p2p/peer.go + peer_set.go + conn_set.go, p2p/transport.go (bounded
+    # accept, filters, the upgrade, dial), p2p/switch.go (reactors, limits,
+    # reconnect) — socket-free and clock-free, driven by a host. Zero
+    # runtime consumers: the nodus glue that owns the 4004 sockets is F5.
+    ${SHARED_DIR}/dnac/cmt_p2p_netaddr.c
+    ${SHARED_DIR}/dnac/cmt_p2p_nodeinfo.c
+    ${SHARED_DIR}/dnac/cmt_p2p_peer.c
+    ${SHARED_DIR}/dnac/cmt_p2p_transport.c
+    ${SHARED_DIR}/dnac/cmt_p2p_switch.c
+
+    # cometbft @709fd12b → C port, fleet P2P-PORT phase F4:
+    # p2p/pex/addrbook.go + known_address.go + params.go + file.go (the
+    # address book: new/old buckets, PickAddress, GetSelection, ban,
+    # persisted through host callbacks) and p2p/pex/pex_reactor.go (PEX on
+    # channel 0x00: request / addrs, rate limit, unsolicited-list ban,
+    # ensurePeers, dialSeeds), with the operator-approved signed ADDR
+    # records (R-P2P-4, purpose 0x0B, verified by the host). Socket-free,
+    # driven by a host. Zero runtime consumers: the nodus glue is F5.
+    ${SHARED_DIR}/dnac/cmt_p2p_addrbook.c
+    ${SHARED_DIR}/dnac/cmt_p2p_pex.c
+
     # Ledger V2 O15B — canonical BlockMessage v1 wire codec. Structure and
     # bounds ONLY: it computes no consensus value and touches no committed
     # state, so it can never become a second engine. Production-dormant with
@@ -467,7 +512,10 @@ if(NOT WIN32)
         src/witness/nodus_witness_db.c
         src/witness/nodus_witness_merkle.c
         src/witness/nodus_witness_verify.c
-        src/witness/nodus_witness_peer.c
+        # P2P-PORT F5 — nodus_witness_peer.c (the 4004 IDENT / roster /
+        # reconnect mesh) is DELETED; the witness port is the ported
+        # cometbft p2p layer driven by its host:
+        src/witness/nodus_witness_p2p.c
         src/witness/nodus_witness_handlers.c
         src/witness/nodus_witness_spend_preimage.c
         src/witness/nodus_witness_validator.c
@@ -638,6 +686,27 @@ if(NODUS_STANDALONE OR NOT DEFINED NODUS_STANDALONE)
 else()
     # Within messenger tree — messenger handles linking OpenSSL and SQLite3
     target_link_libraries(nodus PUBLIC dsa)
+endif()
+# libm: cmt_flowrate.c (P2P-PORT F2) ports libs/flowrate's float64 EMA
+# (`math.Exp`, flowrate.go:239) and util.go's round (`math.Modf/Ceil/Floor`).
+if(NOT WIN32)
+    target_link_libraries(nodus PUBLIC m)
+    # P2P-PORT F5: the 4004 p2p host's handshake / ADDR-verify worker
+    # threads (nodus_witness_p2p.c, R-P2P-8 / R-P2P-43). Threads::Threads,
+    # not a literal `pthread`: Android's bionic has no separate libpthread
+    # (messenger/CMakeLists.txt links `pthread` for Linux only for the same
+    # reason), and FindThreads resolves to nothing there.
+    find_package(Threads REQUIRED)
+    target_link_libraries(nodus PUBLIC Threads::Threads)
+endif()
+# P2P-PORT F6: the published network file (nodus_server.c
+# nodus_network_file_*) is parsed with json-c, as nodus-server's own
+# config is. Compiled in only when json-c is found (standalone: the
+# pkg_check_modules above; in the messenger tree: the parent's).
+if(JSONC_FOUND)
+    target_compile_definitions(nodus PUBLIC NODUS_HAS_JSONC)
+    target_include_directories(nodus PUBLIC ${JSONC_INCLUDE_DIRS})
+    target_link_libraries(nodus PUBLIC ${JSONC_LIBRARIES})
 endif()
 
 # Security flags
@@ -1168,18 +1237,89 @@ add_executable(test_cmt_memr tests/test_cmt_memr.c)
 target_link_libraries(test_cmt_memr nodus dsa nodus crypto)
 add_test(NAME test_cmt_memr COMMAND test_cmt_memr)
 
-# cometbft @709fd12b → C port, R3 W3 (C2b) — the transport glue
-# (nodus_witness_cmt_net): channel↔verb mapping, the peer-set scan over a
-# hand-built witness peer table driving a REAL cmt_conr/cmt_memr pair,
-# send refused for a down slot, the verb 35/39 receive routing.
-add_executable(test_cmt_net tests/test_cmt_net.c)
-target_link_libraries(test_cmt_net nodus dsa nodus crypto)
-add_test(NAME test_cmt_net COMMAND test_cmt_net)
+# cometbft @709fd12b → C port, fleet P2P-PORT phase F1 —
+# p2p/conn/secret_connection_test.go: the handshake over an in-memory pipe
+# with REAL ML-KEM-1024 + ML-DSA-87 keys, the ReadWrite chunking case,
+# and the session design's negative cases (tampered transcript inputs,
+# version / chain mismatch before KEM, KEYX twice, round-3 ciphertext and
+# public key, counter replay / gap / reflection / overflow, AUTHSIG verify
+# failure, 0x0A strictness). No clock, no sockets, no files; default
+# build, `ctest -j` safe; the file header says how it can lie.
+add_executable(test_p2p_secret tests/test_p2p_secret.c)
+target_link_libraries(test_p2p_secret nodus dsa kem nodus crypto)
+add_test(NAME test_p2p_secret COMMAND test_p2p_secret)
 
-# R3 W3 C2a — the live flip: nodus_witness_init -> tick -> dispatch over a real version-3 chain
+# cometbft @709fd12b → C port, fleet P2P-PORT phase F2 —
+# p2p/conn/connection_test.go's single-threaded cases (send/receive over a
+# loopback pair, TrySend on a full queue, unknown channel, long message,
+# pong timeout, multiple pings/pongs, bad encoding, unknown message type,
+# channel overflow, ConnVectors) + split/reassembly, priority selection,
+# flowrate and flush-throttle timing on a FAKE clock, FlushStop, and one
+# end-to-end run over two real F1 SecretConnections. No real clock, no
+# sockets, no files; default build, `ctest -j` safe.
+add_executable(test_p2p_mconn tests/test_p2p_mconn.c)
+target_link_libraries(test_p2p_mconn nodus dsa kem nodus crypto)
+add_test(NAME test_p2p_mconn COMMAND test_p2p_mconn)
+
+# cometbft @709fd12b → C port, fleet P2P-PORT phase F3 —
+# p2p/netaddress.go, key.go, node_info.go (codec vectors, Validate,
+# CompatibleWith) and, over in-memory pipes with REAL ML-DSA-87 /
+# ML-KEM-1024 keys, transport.go + switch.go: connect and exchange,
+# wrong chain / network / P2P version, the dial pin before Encaps,
+# duplicate ID / IP, the listener limit and the bonded exemption (K2),
+# the 3 s handshake deadline, a stale-generation job result, StopPeerForError,
+# persistent redial with backoff, the cross-dial tie-break. Fake clock and
+# fixed rand; no sockets, no files, no threads; default build, `ctest -j`
+# safe; the file header says how it can lie.
+add_executable(test_p2p_switch tests/test_p2p_switch.c)
+target_link_libraries(test_p2p_switch nodus dsa kem nodus crypto)
+add_test(NAME test_p2p_switch COMMAND test_p2p_switch)
+
+# cometbft @709fd12b → C port, fleet P2P-PORT phase F4 —
+# p2p/pex/addrbook_test.go + pex_reactor_test.go's single-threaded cases:
+# the NetAddress proto conversions; the address book (add / pick / mark
+# good / bad / reinstate, bucket placement with a fixed key, selection
+# sizes, save / load round trip with signed records re-verified and a
+# tampered one dropped); the signed ADDR record (R-P2P-4: chain id, key,
+# ip / port, 0x0B, seq — each refusal); and, over in-memory pipes with
+# REAL ML-DSA-87 / ML-KEM-1024 keys, the PEX reactor: request → addrs,
+# the unsolicited-list ban, the request-rate stop, private IDs never
+# gossiped, the own-record push, ensurePeers up to the outbound limit and
+# a split response. Fake clock, seeded PRNG; no sockets, no files, no
+# threads; default build, `ctest -j` safe; the file header says how it
+# can lie.
+add_executable(test_p2p_pex tests/test_p2p_pex.c)
+target_link_libraries(test_p2p_pex nodus dsa kem nodus crypto)
+add_test(NAME test_p2p_pex COMMAND test_p2p_pex)
+
+# P2P-PORT F5 — test_cmt_net (the deleted nodus_witness_cmt_net glue) is
+# DELETED with its subject; its successor is test_witness_p2p below.
+# test_cmt_live is PORTED onto the 4004 host (fix round 1): the genesis-
+# time gate with a real p2p peer admitted at go-live, CheckTx through the
+# live mempool, a restart reopening the same role.
+# P2P-PORT F6 — the published network file + the pin-at-start check
+# (nodus_server.c). Only with json-c, which the subject needs.
+if(JSONC_FOUND)
+    register_witness_test(test_network_file)
+endif()
+
 add_executable(test_cmt_live tests/test_cmt_live.c)
-target_link_libraries(test_cmt_live nodus dsa nodus crypto)
+target_link_libraries(test_cmt_live nodus dsa kem nodus crypto)
 add_test(NAME test_cmt_live COMMAND test_cmt_live)
+
+# cometbft @709fd12b → C port, fleet P2P-PORT phase F5 — the 4004 p2p
+# host (nodus_witness_p2p): two in-process nodes on 127.0.0.1 with REAL
+# keys over REAL sockets and the REAL worker threads — consensus reactor
+# messages on 0x20-0x23, mempool on 0x30, a 0x71 approval round trip
+# collected by a node for its own identity (dnac_cc_collect: request on
+# 0x71 to a seat, the seat's refusal back, the reply read off the
+# requesting 4001 session's socket), a 0x70 bundle request/response, the
+# unbonded inbound cap with a bonded peer admitted, a wrong-chain peer
+# refused, a restart re-dialing its persistent peers. Needs loopback TCP;
+# the file header says how it can lie.
+add_executable(test_witness_p2p tests/test_witness_p2p.c)
+target_link_libraries(test_witness_p2p nodus dsa kem nodus crypto pthread)
+add_test(NAME test_witness_p2p COMMAND test_witness_p2p)
 
 # Ledger V2 O15A — obligation 1: an allocation failure in or beneath the
 # QC path is a NODE FAULT, never a consensus verdict. malloc/calloc are
@@ -1304,19 +1444,16 @@ add_test(NAME test_v2_supply_linked
 # rather than readdir order (first-match-wins once activated the wrong
 # chain in production — see witness_archive_stale_chain_dbs).
 #
-# O15L Faz 5 — NODUS_WITNESS_INTERNAL_API is added so this executable can
-# see witness_chain_quorum_observe's declaration, now in
-# nodus_witness_peer.h (R3 W4 deleted nodus_witness_bft_internal.h,
-# which used to carry that prototype, along with verify_chain_id, its
-# now-deleted twin gate — see nodus_witness_peer.h's own note at the
-# declaration). witness_chain_quorum_observe is the one chain-identity
-# gate this test still drives. NOT migrated to the register_witness_test
+# O15L Faz 5 — NODUS_WITNESS_INTERNAL_API was added so this executable
+# could see witness_chain_quorum_observe's declaration; P2P-PORT F5
+# deleted that gate with nodus_witness_peer.{c,h} (the chain-quorum
+# quarantine, session design §2R4 P1) and the section of this test that
+# drove it, so the define is removed (no header gates on it any more).
+# NOT migrated to the register_witness_test
 # macro: that macro links `nodus dsa nodus` and this target additionally
-# needs `crypto`, so the migration would drop a library. One define is
-# the whole delta.
+# needs `crypto`, so the migration would drop a library.
 add_executable(test_v2_restart_gate tests/test_v2_restart_gate.c)
 target_link_libraries(test_v2_restart_gate nodus dsa nodus crypto)
-target_compile_definitions(test_v2_restart_gate PRIVATE NODUS_WITNESS_INTERNAL_API)
 add_test(NAME test_v2_restart_gate COMMAND test_v2_restart_gate)
 
 # Ledger V2 O15A — obligation 7 (and obligation 8's fail-closed gate): the
@@ -1365,6 +1502,16 @@ target_link_libraries(test_cmt_host nodus dsa nodus crypto)
 target_compile_definitions(test_cmt_host PRIVATE NODUS_WITNESS_INTERNAL_API)
 add_test(NAME test_cmt_host COMMAND test_cmt_host)
 
+# The consensus WAL's file group (libs/autofile: AutoFile, Group,
+# GroupReader) and the crc32c its records carry — rotation at the head
+# limit, the total limit removing the oldest file and never the head,
+# FlushAndSync, reopen, crc32c KATs. Makes and removes a
+# `test_cmt_autofile.XXXXXX` directory in the cwd; default build, no
+# environment.
+add_executable(test_cmt_autofile tests/test_cmt_autofile.c)
+target_link_libraries(test_cmt_autofile nodus dsa nodus crypto)
+add_test(NAME test_cmt_autofile COMMAND test_cmt_autofile)
+
 # FLEET-TM-R3 W2 (R3-C1a) — the Comet application over the Ledger V2
 # engine, the engine's COMETBFT APPLY LANE and the host's
 # ledger-transaction bracket: InitChain as a genesis check, FinalizeBlock
@@ -1382,19 +1529,20 @@ target_compile_definitions(test_cmt_app PRIVATE NODUS_WITNESS_INTERNAL_API)
 add_test(NAME test_cmt_app COMMAND test_cmt_app)
 
 # D-16 rev 7 (W4-CC) — the SYSTEM-governance approval-collection
-# responder (nodus_witness_handle_cc_appr_req, verbs 40-41) over a REAL
-# derived version-3 chain with 7 REAL ML-DSA-87 committee keys: happy
-# path from every seat through nodus_witness_v2_env_dry_run (CHECKTX-P1;
-# was nodus_witness_v2_env_authorize, deleted in 0.19.78) AND the
-# Comet apply lane (the chain_config_history row committed), an
-# independent digest recomputation, a refusal matrix (foreign chain id
-# in the T3 header, non-member, wrong auth_kind, nonzero fee, TARGET
-# above the V2 ceiling, effective below the grace floor, the
-# per-proposer rate limit) and the INFLATION_START pair (inflation-off
-# chain signs a future start; a set start refuses moving past the
-# candidate height). Default build, no environment. See the file's own
-# "HOW IT CAN LIE" for what is NOT covered (two legs; valid_before-past,
-# unreachable at tip == 0).
+# responder's verdict (nodus_witness_cc_appr_answer — the channel-0x71
+# responder without its send) over a REAL derived version-3 chain with 7
+# REAL ML-DSA-87 committee keys: happy path from every seat through
+# nodus_witness_v2_env_dry_run (CHECKTX-P1; was
+# nodus_witness_v2_env_authorize, deleted in 0.19.78) AND the Comet apply
+# lane (the chain_config_history row committed), an independent digest
+# recomputation, a refusal matrix (a requester that is not a seat —
+# decision 2026-09-26-cc-approval-via-own-node.md (5) — non-member,
+# wrong auth_kind, nonzero fee, TARGET above the V2 ceiling, effective
+# below the grace floor, the retired INFLATION_START, the gas-price
+# ceiling, the per-proposer rate limit) and a legal gas price signed.
+# Default build, no environment. See the file's own "HOW IT CAN LIE" for
+# what is NOT covered (two legs; valid_before-past, unreachable at
+# tip == 0; the 0x71 transport, which is test_witness_p2p's).
 add_executable(test_cc_appr tests/test_cc_appr.c)
 target_link_libraries(test_cc_appr nodus dsa nodus crypto)
 target_compile_definitions(test_cc_appr PRIVATE NODUS_WITNESS_INTERNAL_API)
@@ -1796,10 +1944,19 @@ register_witness_test(test_v2_chain_id_cache)
 # Decision docs/plans/decisions/2026-09-25-gas-price.md.
 register_witness_test(test_v2_gas_price)
 
-# Hard-Fork v1 Stage E.2 — tier-3 client helper guard-path tests
-add_executable(test_cc_client tests/test_cc_client.c)
-target_link_libraries(test_cc_client nodus dsa nodus)
-add_test(NAME test_cc_client COMMAND test_cc_client)
+# test_cc_client (nodus_client_cc_appr_send's guard paths) is DELETED with
+# the client it tested (decision docs/plans/decisions/2026-09-26-cc-
+# approval-via-own-node.md (7)). Its successor is test_cc_collect: the
+# node-side approval collection (dnac_cc_collect) — the own-identity gate,
+# "busy", per-seat results, a seat with no connection, the deadline, a
+# response from a peer that was not asked, a reply dropped when the
+# requesting session is gone — over REAL loopback p2p hosts and a real
+# derived version-3 chain. Needs loopback TCP and socketpair(2); the file
+# header says how it can lie.
+add_executable(test_cc_collect tests/test_cc_collect.c)
+target_link_libraries(test_cc_collect nodus dsa kem nodus crypto pthread)
+target_compile_definitions(test_cc_collect PRIVATE NODUS_WITNESS_INTERNAL_API)
+add_test(NAME test_cc_collect COMMAND test_cc_collect)
 
 # Hard-Fork v1 Stage C.3 — per-proposer rate-limit pure-function tests
 add_executable(test_chain_config_rate_limit
@@ -1834,8 +1991,8 @@ add_executable(test_merkle_tx_proof tests/test_merkle_tx_proof.c)
 target_link_libraries(test_merkle_tx_proof nodus dsa nodus)
 add_test(NAME test_merkle_tx_proof COMMAND test_merkle_tx_proof)
 
-# Witness peer table dedup / slot leak regression tests
-register_witness_test(test_witness_peer_dedup)
+# P2P-PORT F5 — test_witness_peer_dedup (the deleted 4004 peer table) is
+# DELETED; one connection per identity is the switch's (test_p2p_switch).
 
 # Phase 11 follow-up — block_txs_get DB query test
 register_witness_test(test_block_txs_get)
@@ -1848,10 +2005,9 @@ add_executable(test_spend_preimage tests/test_spend_preimage.c)
 target_link_libraries(test_spend_preimage nodus dsa nodus crypto)
 add_test(NAME test_spend_preimage COMMAND test_spend_preimage)
 
-# Phase 9 / Task 9.6 — strict top-level decoder tests
-add_executable(test_strict_decoder tests/test_strict_decoder.c)
-target_link_libraries(test_strict_decoder nodus dsa nodus crypto)
-add_test(NAME test_strict_decoder COMMAND test_strict_decoder)
+# P2P-PORT F5 — test_strict_decoder (the tier-3 envelope's top-level key
+# set) is DELETED with the envelope; the surviving bodies' strictness is
+# test_tier3's.
 
 # Phase 12 follow-up — spend_result sign/verify roundtrip
 add_executable(test_spend_signed_roundtrip tests/test_spend_signed_roundtrip.c)
@@ -2096,9 +2252,10 @@ register_witness_test(test_committee_cache)
 # 2026-04-19 — Genesis ghost-stake fix: parse_cd_supply helper for Rule P.2
 register_witness_test(test_parse_cd_supply)
 
-# O15C-D.4 — consensus messages from an incompatible protocol version
-# must be rejected before they can change any BFT state.
-register_witness_test(test_witness_protocol_version_gate)
+# P2P-PORT F5 — test_witness_protocol_version_gate (the tier-3 header's
+# NODUS_T3_BFT_PROTOCOL_VER gate) is DELETED with the envelope; a peer on
+# another P2P protocol version is refused at the secret connection's
+# HELLO (test_p2p_secret, test_p2p_switch).
 
 # ── O15O Faz 1 — a DB failure is never a height ──────────────────────
 # Bug ref: nodus/BUGS.md O15N-L2. nodus_witness_block_height answered 0
@@ -2142,7 +2299,8 @@ register_witness_test(test_witness_block_height_checked)
 register_witness_test(test_delegation_list_order)
 
 # ── Faz 1C — CRITICAL (audit C-1..C-5) ────────────────────────────────
-register_witness_test(test_heartbeat_signed_checksum)
+# P2P-PORT F5 — test_heartbeat_signed_checksum (the IDENT heartbeat
+# signature field) is DELETED with IDENT.
 
 register_witness_test(test_replay_block_historical_committee)
 register_witness_test(test_wire_protocol_version_reject)

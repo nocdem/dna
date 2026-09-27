@@ -1,17 +1,17 @@
 /**
  * @file nodus/tests/test_cc_appr.c
  * @brief D-16 rev 7 (W4-CC) — the SYSTEM-governance approval-collection
- *        responder (`nodus_witness_handle_cc_appr_req`, verbs 40-41)
- *        driven over a REAL derived version-3 chain with 7 REAL
- *        ML-DSA-87 committee keys.
+ *        responder's verdict (`nodus_witness_cc_appr_answer` — the
+ *        channel-0x71 responder `nodus_witness_handle_cc_appr_req`
+ *        without its send) driven over a REAL derived version-3 chain
+ *        with 7 REAL ML-DSA-87 committee keys.
  *
  * ── WHAT THIS PROVES ────────────────────────────────────────────────────
  * That the responder signs a digest the CHAIN actually accepts: each of
  * the 7 real committee seats is asked for its approval THROUGH THE
- * RESPONDER (never a local shortcut — `nodus_witness_handle_cc_appr_req`
- * is called exactly as the T3 dispatcher would call it, over a REAL
- * connected `nodus_tcp_conn_t` so `nodus_tcp_send` writes real bytes this
- * file reads back and decodes with `nodus_t3_decode`); the assembled
+ * RESPONDER'S VERDICT (never a local shortcut — the SAME function the
+ * 0x71 handler runs before it sends; the handler adds only the send and
+ * the rate-limit record after it); the assembled
  * envelope is then handed to `nodus_witness_v2_env_dry_run` — the per-item
  * dry run CheckTx calls — and it accepts. A second, INDEPENDENT
  * recomputation of the "DNA.CCSET.v1" set hash and the "DNA.CCAPPR.v1"
@@ -21,21 +21,25 @@
  * pinned to the LAYOUT, not merely self-consistent with the two helpers
  * it also exercises.
  *
- * The refusal matrix below (foreign chain id in the T3 HEADER — the
- * envelope wire carries no chain id, see nodus_chain_config.h's handler
- * note; non-member, wrong auth_kind, nonzero fee, TARGET_ACTIVE_COUNT
+ * The refusal matrix below (a REQUESTER that is not a committee seat —
+ * decision 2026-09-26-cc-approval-via-own-node.md (5) — a responder that
+ * is not a seat, wrong auth_kind, nonzero fee, TARGET_ACTIVE_COUNT
  * above the V2 ceiling, effective below the grace floor, the RETIRED
  * INFLATION_START parameter (tokenomics-v3 P2 — it replaces the ORC-6
  * monotonicity pair), HF-1's GAS_PRICE_RAW_PER_UNIT above its ceiling,
  * the per-proposer rate limit) each drives ONE call
- * and checks `ok == false` plus a specific `reason` substring — never a
- * signature. "valid_before already past" is NOT in the matrix (HOW IT
- * CAN LIE 1b).
+ * and checks `ok == false` plus a specific `reason` substring and an
+ * all-zero signature field — never a signature. The requester case also
+ * checks that the refused (bonded) attempt IS recorded in the rate-limit
+ * table (red-team H1) and that a SEAT requester is still served by the
+ * same witness; a requester outside the bonded set is DROPPED with no
+ * reply and nothing recorded (t_requester_not_bonded_dropped).
+ * "valid_before already past" is NOT in the matrix (HOW IT CAN LIE 1b).
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: none beyond a default build. Environment: none. SQLite
  * >= 3.35.0 (the S14 rung's own requirement, inherited from
- * `nodus_witness_v2_gen_derive_v3`).
+ * `nodus_witness_v2_gen_derive_v3`). No network.
  *
  * ── WHAT IT LEAVES BEHIND ───────────────────────────────────────────────
  * One `/tmp/test_cc_appr_*` directory per fixture, removed at close. A
@@ -73,7 +77,22 @@
  *  4. RED-first, honestly: on 7e5d867e (this package's base commit) this
  *     file does not compile — `nodus_witness_handle_cc_appr_req` and the
  *     verb-40/41 types are undeclared. There is no separate behavioral
- *     RED to demonstrate; the responder did not exist.
+ *     RED to demonstrate; the responder did not exist. The requester-seat
+ *     case is RED on the tree before decision 2026-09-26 (5): the
+ *     responder signed for a non-seat requester (ok == true).
+ *  5. The 0x71 TRANSPORT is not exercised here: the verdict is called
+ *     directly, so the channel's CBOR, the send, and the handler's
+ *     bonded-set lookup (nodus_witness_p2p_is_bonded — this file passes
+ *     its answer as `bonded`) are outside this file. The rate-limit
+ *     record IS inside the verdict since red-team H1. The transport
+ *     half is test_witness_p2p (2d)
+ *     (a 0x71 request and its reply over real sockets) and test_cc_collect
+ *     (the node-side collection). A requester on a FOREIGN chain never
+ *     reaches the responder: its connection is refused at the secret
+ *     connection's chain-id check — test_witness_p2p (2c). Those two
+ *     transport-level cases (foreign chain id; asking one's own seat,
+ *     refused as a dial to self) were driven through the deleted
+ *     nodus_client_cc_appr_send and left with it.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -87,11 +106,6 @@
 #include <string.h>
 #include <unistd.h>
 #include <sqlite3.h>
-
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <poll.h>
-#include <sys/socket.h>
 
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/sign/qgp_dilithium.h"
@@ -110,8 +124,9 @@
 #include "nodus/nodus_chain_config.h"
 
 #include "protocol/nodus_tier3.h"
-#include "protocol/nodus_wire.h"
-#include "transport/nodus_tcp.h"
+#include "transport/nodus_tcp.h"              /* nodus_time_now_ms — the
+                                                * clock the handler's
+                                                * rate-limit record uses */
 
 #include "dnac/dnac.h"
 #include "dnac/ledger_ids.h"
@@ -302,106 +317,61 @@ static void bind_identity(gfx_t *g, int k) {
     memcpy(g->w->my_id, g_ks[k].voter, 32);
 }
 
-/* ══ a REAL loopback nodus_tcp_conn_t, so nodus_tcp_send has somewhere
- * real to write ═══════════════════════════════════════════════════════
+/* ══ the ask — the responder's verdict for a requester key ═════════════
  *
- * The responder is called DIRECTLY (never through
- * nodus_witness_dispatch_t3 — no CBOR envelope needed for the REQUEST,
- * this file builds the nodus_t3_msg_t in memory exactly as test_tier3.c
- * does), but it still calls nodus_tcp_send(conn, ...) on success or
- * refusal alike, so `conn` must be a REAL, CONNECTED nodus_tcp_conn_t —
- * test_cmt_live.c's own NULL-conn calls (nodus_witness_dispatch_t3(w,
- * NULL, ...), :684) never reach a verb whose handler replies, so that
- * shortcut does not apply here. */
+ * `ask` hands the fixture witness (with its CURRENT identity, see
+ * bind_identity) a 0x71 request from `g_ks[requester]` exactly as the p2p
+ * host's cc_receive does: the requester's witness id is the first 32
+ * bytes of SHA3-512 of its key (`voter` — the host's peer_wid
+ * derivation). `bonded` is the p2p host's in-memory bonded-set answer the
+ * handler passes (nodus_witness_handle_cc_appr_req asks
+ * nodus_witness_p2p_is_bonded; this fixture has no p2p host).
+ * @return nodus_witness_cc_appr_answer's rc: 1 signed, 0 refused,
+ * NODUS_CC_APPR_DROPPED dropped (no reply), -1 bad arguments. */
+static int ask_b(gfx_t *g, int requester, bool bonded, const uint8_t *e,
+                 size_t e_len, nodus_t3_cc_appr_rsp_t *rsp_out) {
+    nodus_t3_cc_appr_req_t req;
 
-typedef struct {
-    nodus_tcp_t       tcp;
-    nodus_tcp_conn_t *conn;
-    int               lfd;
-    int               afd;
-} loop_t;
+    req.e = e;
+    req.e_len = e_len;
+    return nodus_witness_cc_appr_answer(g->w, g_ks[requester].voter, bonded,
+                                        &req, rsp_out);
+}
 
-static int loop_open(loop_t *lp) {
-    memset(lp, 0, sizeof(*lp));
-    lp->lfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (lp->lfd < 0) return -1;
-    int yes = 1;
-    setsockopt(lp->lfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    addr.sin_port = 0;
-    if (bind(lp->lfd, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
-        listen(lp->lfd, 1) != 0) {
-        close(lp->lfd); return -1;
+/* The common case: the requester is in the bonded set. */
+static int ask(gfx_t *g, int requester, const uint8_t *e, size_t e_len,
+               nodus_t3_cc_appr_rsp_t *rsp_out) {
+    return ask_b(g, requester, true, e, e_len, rsp_out);
+}
+
+/* Whether the per-proposer table holds a slot for `requester`. */
+static bool rate_slot_for(const gfx_t *g, int requester) {
+    for (uint32_t i = 0; i < NODUS_CC_RATE_LIMIT_MAX_PROPOSERS; i++) {
+        const nodus_cc_rate_limit_slot_t *s = &g->w->cc_rate_limit.slots[i];
+        if (s->in_use && memcmp(s->witness_id, g_ks[requester].voter,
+                                NODUS_CC_WITNESS_ID_SIZE) == 0)
+            return true;
     }
-    socklen_t alen = sizeof(addr);
-    getsockname(lp->lfd, (struct sockaddr *)&addr, &alen);
-
-    if (nodus_tcp_init(&lp->tcp, -1) != 0) { close(lp->lfd); return -1; }
-    lp->conn = nodus_tcp_connect(&lp->tcp, "127.0.0.1", ntohs(addr.sin_port));
-    if (!lp->conn) { close(lp->lfd); return -1; }
-
-    lp->afd = accept(lp->lfd, NULL, NULL);
-    if (lp->afd < 0) return -1;
-
-    for (int i = 0; i < 200 && lp->conn->state != NODUS_CONN_CONNECTED; i++)
-        nodus_tcp_poll(&lp->tcp, 10);
-    if (lp->conn->state != NODUS_CONN_CONNECTED) return -1;
-    return 0;
+    return false;
 }
 
-static void loop_close(loop_t *lp) {
-    if (lp->afd >= 0) close(lp->afd);
-    if (lp->lfd >= 0) close(lp->lfd);
-    nodus_tcp_close(&lp->tcp);
+/* True when the refusal carries no signature (the verdict zeroes the
+ * response first and a refusal never fills `sig`). */
+static bool sig_is_zero(const nodus_t3_cc_appr_rsp_t *rsp) {
+    for (size_t i = 0; i < sizeof(rsp->sig); i++)
+        if (rsp->sig[i] != 0) return false;
+    return true;
 }
 
-/* Read exactly one T3 frame off the accepted fd and decode it. */
-static int loop_read_rsp(loop_t *lp, nodus_t3_msg_t *out) {
-    static uint8_t buf[16384];
-    size_t got = 0;
-    for (;;) {
-        struct pollfd pfd = { .fd = lp->afd, .events = POLLIN };
-        if (poll(&pfd, 1, 2000) <= 0) return -1;
-        ssize_t n = read(lp->afd, buf + got, sizeof(buf) - got);
-        if (n <= 0) return -1;
-        got += (size_t)n;
-        nodus_frame_t frame;
-        int rc = nodus_frame_decode(buf, got, &frame);
-        if (rc < 0) return -1;
-        if (rc > 0)
-            return nodus_t3_decode(frame.payload, frame.payload_len, out);
-        if (got >= sizeof(buf)) return -1;
-    }
-}
-
-/* Ask the fixture's CURRENT identity (see bind_identity) for its
- * approval over `(e, e_len)`, through the REAL responder over the REAL
- * loopback conn. `header_chain32` lets the foreign-chain-id case supply
- * a mismatched value. */
-static int ask(gfx_t *g, loop_t *lp, const uint8_t header_chain32[32],
-              const uint8_t sender_id[32], const uint8_t *e, size_t e_len,
-              nodus_t3_cc_appr_rsp_t *rsp_out) {
-    nodus_t3_msg_t msg;
-    memset(&msg, 0, sizeof(msg));
-    msg.type = NODUS_T3_CC_APPR_REQ;
-    msg.txn_id = 777;
-    msg.header.version = NODUS_T3_BFT_PROTOCOL_VER;
-    memcpy(msg.header.sender_id, sender_id, 32);
-    memcpy(msg.header.chain_id, header_chain32, 32);
-    msg.cc_appr_req.e     = e;
-    msg.cc_appr_req.e_len = e_len;
-
-    if (nodus_witness_handle_cc_appr_req(g->w, (struct nodus_tcp_conn *)lp->conn,
-                                        &msg) != 0)
-        return -1;
-    nodus_t3_msg_t out;
-    if (loop_read_rsp(lp, &out) != 0) return -1;
-    if (out.type != NODUS_T3_CC_APPR_RSP) return -1;
-    *rsp_out = out.cc_appr_rsp;
-    return 0;
+/* The requester key for an ask of the fixture's CURRENT seat: key 0 (the
+ * proposer this file signs as), unless the seat IS key 0 — then key 1.
+ * Both are committee seats, so the requester gate passes either way;
+ * production never asks its own seat (the node skips its own seat and
+ * the CLI signs it locally — nodus-cli.c cc_propose_judge_seat), so this
+ * file does not either. */
+static int requester_not_seat(const gfx_t *g) {
+    return memcmp(g->srv->identity.pk.bytes, g_ks[0].pk, NODUS_PK_BYTES) == 0
+               ? 1 : 0;
 }
 
 /* ══ the pre-auth CHAIN_CONFIG envelope — test_cmt_app.c's build_cc_env,
@@ -511,7 +481,6 @@ static int pre_env_reencode(pre_env_t *e, nodus_witness_t *w, uint64_t tip,
  * qgp_dsa87_verify. */
 static int t_happy_path_all_seats(void) {
     gfx_t  g;
-    loop_t lp;
     dna_env_preflight_t pf1, pf2;
     pre_env_t env;
     nodus_committee_member_t *cm = NULL;
@@ -519,7 +488,6 @@ static int t_happy_path_all_seats(void) {
     uint64_t tip = 0;
 
     CHECK(gfx_open(&g, "happy") == 0, "version-3 fixture");
-    CHECK(loop_open(&lp) == 0, "loopback conn");
     CHECK(nodus_witness_v2_tip_height(g.w, &tip) == 0, "tip height");
     CHECK(nodus_committee_get_for_block_alloc(g.w, tip, &cm, &cmn) == 0 &&
           cmn == N_KEYS, "committee resolves to all 7 seats");
@@ -588,14 +556,16 @@ static int t_happy_path_all_seats(void) {
          * sender, so seat 1 was refused "rate-limited (cooldown 5000ms,
          * elapsed 3ms)" — a fixture artefact, not the responder's rule
          * (that rule is pinned by t_rate_limited_second_request). Clear
-         * the table as the next node would have it. */
+         * the table as the next node would have it: the verdict records
+         * every bonded attempt (red-team H1), so without the clear the
+         * second seat WOULD refuse this sender. */
         memset(&g.w->cc_rate_limit, 0, sizeof(g.w->cc_rate_limit));
         uint8_t *p = env.auth + 1 + NODUS_RT_AUTH_SIGNER_LEN + 2 +
                     (size_t)seat * NODUS_RT_AUTH_APPROVAL_LEN;
         nodus_t3_cc_appr_rsp_t rsp;
         memset(&rsp, 0, sizeof(rsp));
-        CHECK(ask(&g, &lp, g.chain32, g_ks[0].voter, env.bytes, env.len,
-                 &rsp) == 0, "ask seat");
+        CHECK(ask(&g, requester_not_seat(&g), env.bytes, env.len, &rsp) == 1,
+              rsp.reason[0] ? rsp.reason : "ask seat");
         CHECK(rsp.ok, rsp.ok ? "seat approved" : rsp.reason);
         CHECK(rsp.seat == (uint16_t)seat, "seat index echoed");
         CHECK(memcmp(rsp.set_hash, indep_set_hash, 64) == 0,
@@ -708,27 +678,24 @@ static int t_happy_path_all_seats(void) {
 
     pre_env_free(&env);
     free(cm);
-    loop_close(&lp);
     gfx_close(&g);
     return 0;
 }
 
 /* One shared "build a pre-auth envelope, ask ONE seat, expect ok=false
- * with `reason` containing `expect_substr`" case, parameterized. */
-static int refusal_case(const char *tag, int rebind_seat,
-                        const uint8_t *header_chain32_or_null,
+ * with `reason` containing `expect_substr` and no signature" case,
+ * parameterized. `requester` < 0 = requester_not_seat(). */
+static int refusal_case(const char *tag, int rebind_seat, int requester,
                         uint32_t n_appr, uint8_t param_id, uint64_t new_value,
                         uint64_t effective, uint64_t valid_before,
                         uint64_t fee_amount, uint8_t auth_kind,
                         const char *expect_substr) {
     gfx_t  g;
-    loop_t lp;
     dna_env_preflight_t pf1;
     pre_env_t env;
     uint64_t tip = 0;
 
     CHECK(gfx_open(&g, tag) == 0, "version-3 fixture");
-    CHECK(loop_open(&lp) == 0, "loopback conn");
     CHECK(nodus_witness_v2_tip_height(g.w, &tip) == 0, "tip height");
 
     CHECK(pre_env_build(g.w, tip, n_appr, param_id, new_value, effective,
@@ -750,50 +717,146 @@ static int refusal_case(const char *tag, int rebind_seat,
 
     if (rebind_seat >= 0) bind_identity(&g, rebind_seat);
 
-    const uint8_t *hdr_chain = header_chain32_or_null ? header_chain32_or_null
-                                                      : g.chain32;
     nodus_t3_cc_appr_rsp_t rsp;
     memset(&rsp, 0xAA, sizeof(rsp));
-    CHECK(ask(&g, &lp, hdr_chain, g_ks[0].voter, env.bytes, env.len,
-             &rsp) == 0, "ask");
+    CHECK(ask(&g, requester >= 0 ? requester : requester_not_seat(&g),
+              env.bytes, env.len, &rsp) == 0, "ask refused");
     CHECK(!rsp.ok, "refused (not approved)");
     CHECK(strstr(rsp.reason, expect_substr) != NULL, rsp.reason);
+    /* "not a committee seat" (this node's own seat) and "requester is not
+     * a committee seat" share a substring — keep the two apart. */
+    if (strstr(expect_substr, "requester") == NULL)
+        CHECK(strstr(rsp.reason, "requester") == NULL, rsp.reason);
+    CHECK(sig_is_zero(&rsp), "a refusal carries no signature");
 
     pre_env_free(&env);
-    loop_close(&lp);
     gfx_close(&g);
     return 0;
 }
 
-static int t_foreign_chain_id(void) {
-    uint8_t foreign[32];
-    memset(foreign, 0x99, sizeof(foreign));
-    /* effective/valid_before are 0 on purpose: the T3 header frame gate
-     * fires BEFORE the envelope is even decoded, so the proposal's own
-     * fields never reach a rule (a would-be "scalar rules rejected" is
-     * unreachable here — the asserted reason proves which gate fired). */
-    return refusal_case("foreign", 0, foreign, 5, 4, 7, 0, 0,
-                        0, NODUS_RT_AUTHKIND_DSA87_CC_V1, "foreign chain id")
-           == 0 ? 0 : 1;
+/* Decision 2026-09-26-cc-approval-via-own-node.md (5): a requester whose
+ * authenticated identity is NOT a seat of the committee the responder
+ * resolves is refused WITHOUT a signature — with an envelope every seat
+ * would otherwise approve (the happy path's own shape), so the requester
+ * is the only reason. The requester here IS in the bonded set (an
+ * ELIGIBLE validator without a seat), so it gets the refusal — and since
+ * red-team H1 its ATTEMPT is recorded: a second request inside the
+ * window is refused "rate-limited" (a seat or bonded peer flooding
+ * requests is throttled whatever its verdict; RED on the tree before H1:
+ * nothing was recorded and the second ask was refused as a non-seat
+ * again). The SAME witness still serves a seat requester: the gate is on
+ * the requester, not a state the refusal left behind. RED on the tree
+ * before the decision: ok == true. */
+static int t_requester_not_a_seat(void) {
+    gfx_t  g;
+    dna_env_preflight_t pf1;
+    pre_env_t env;
+    uint64_t tip = 0;
+    nodus_t3_cc_appr_rsp_t rsp;
+
+    CHECK(gfx_open(&g, "reqnonseat") == 0, "version-3 fixture");
+    CHECK(nodus_witness_v2_tip_height(g.w, &tip) == 0, "tip height");
+    CHECK(pre_env_build(g.w, tip, 5, 4, 7, tip + 1 + 200000, tip + 1 + 300000,
+                        0, NODUS_RT_AUTHKIND_DSA87_CC_V1, &env, &pf1) == 0,
+          "pass-1 build");
+    bind_identity(&g, 1);                        /* the responder: a seat */
+
+    memset(&rsp, 0xAA, sizeof(rsp));
+    CHECK(ask(&g, N_KEYS /* not in the committee */, env.bytes, env.len,
+              &rsp) == 0, "a non-seat requester is refused");
+    CHECK(!rsp.ok, "no approval for a non-seat requester");
+    CHECK(strstr(rsp.reason, "requester is not a committee seat") != NULL,
+          rsp.reason);
+    CHECK(sig_is_zero(&rsp), "the refusal carries no signature");
+    CHECK(rate_slot_for(&g, N_KEYS),
+          "the refused bonded attempt is recorded (red-team H1)");
+    memset(&rsp, 0xAA, sizeof(rsp));
+    CHECK(ask(&g, N_KEYS, env.bytes, env.len, &rsp) == 0,
+          "a second attempt inside the window is refused");
+    CHECK(strstr(rsp.reason, "rate-limited") != NULL, rsp.reason);
+    CHECK(sig_is_zero(&rsp), "the rate-limited refusal carries no signature");
+
+    memset(&rsp, 0, sizeof(rsp));
+    CHECK(ask(&g, 0 /* a seat */, env.bytes, env.len, &rsp) == 1,
+          rsp.reason[0] ? rsp.reason : "a seat requester is still served");
+    CHECK(rsp.ok && rsp.seat < N_KEYS, "the seat requester got an approval");
+
+    pre_env_free(&env);
+    gfx_close(&g);
+    return 0;
+}
+
+/* Red-team H1: a requester OUTSIDE the p2p host's bonded set is DROPPED —
+ * rc NODUS_CC_APPR_DROPPED (the handler sends nothing), before any DB
+ * work and before the attempt is recorded.
+ *  · A non-seat, non-bonded requester (key N_KEYS): DROPPED, not the
+ *    "requester is not a committee seat" refusal — that refusal can only
+ *    come out of cc_appr_resolve, so a DROPPED verdict proves the
+ *    committee was never resolved (RED before H1: rc 0 with that
+ *    reason).
+ *  · A SEAT requester the bonded set does not (yet) hold — one poll
+ *    stale: DROPPED too, and nothing is recorded, so the SAME requester
+ *    asking again once bonded is served at once, not "rate-limited"
+ *    (RED if the drop recorded the attempt).
+ * The response is zeroed (the verdict clears it first) and carries no
+ * signature. */
+static int t_requester_not_bonded_dropped(void) {
+    gfx_t  g;
+    dna_env_preflight_t pf1;
+    pre_env_t env;
+    uint64_t tip = 0;
+    nodus_t3_cc_appr_rsp_t rsp;
+    static const nodus_t3_cc_appr_rsp_t zero;
+
+    CHECK(gfx_open(&g, "reqnotbonded") == 0, "version-3 fixture");
+    CHECK(nodus_witness_v2_tip_height(g.w, &tip) == 0, "tip height");
+    CHECK(pre_env_build(g.w, tip, 5, 4, 7, tip + 1 + 200000, tip + 1 + 300000,
+                        0, NODUS_RT_AUTHKIND_DSA87_CC_V1, &env, &pf1) == 0,
+          "pass-1 build");
+    bind_identity(&g, 1);                        /* the responder: a seat */
+
+    memset(&rsp, 0xAA, sizeof(rsp));
+    CHECK(ask_b(&g, N_KEYS, false, env.bytes, env.len, &rsp) ==
+          NODUS_CC_APPR_DROPPED, "a non-bonded non-seat requester is dropped");
+    CHECK(memcmp(&rsp, &zero, sizeof(rsp)) == 0,
+          "the dropped request's response is all zero (nothing to send)");
+    CHECK(!rate_slot_for(&g, N_KEYS), "the drop recorded nothing");
+
+    memset(&rsp, 0xAA, sizeof(rsp));
+    CHECK(ask_b(&g, 0, false, env.bytes, env.len, &rsp) ==
+          NODUS_CC_APPR_DROPPED, "a seat outside the bonded set is dropped");
+    CHECK(!rsp.ok && sig_is_zero(&rsp), "no approval, no signature");
+    CHECK(!rate_slot_for(&g, 0), "the drop recorded nothing");
+
+    memset(&rsp, 0, sizeof(rsp));
+    CHECK(ask_b(&g, 0, true, env.bytes, env.len, &rsp) == 1,
+          rsp.reason[0] ? rsp.reason : "once bonded, the seat is served");
+    CHECK(rsp.ok, "approved — not rate-limited by the earlier drop");
+    CHECK(rate_slot_for(&g, 0), "the served attempt is recorded");
+
+    pre_env_free(&env);
+    gfx_close(&g);
+    return 0;
 }
 
 static int t_not_committee_member(void) {
-    /* rebind to g_ks[N_KEYS] — the 8th key, not in the committee. */
-    return refusal_case("nonmember", N_KEYS, NULL, 5, 4, 7,
+    /* rebind to g_ks[N_KEYS] — the 8th key, not in the committee: the
+     * RESPONDER holds no seat (its requester, key 0, is a seat). */
+    return refusal_case("nonmember", N_KEYS, -1, 5, 4, 7,
                         1000000000ULL, 1000100000ULL, 0,
                         NODUS_RT_AUTHKIND_DSA87_CC_V1, "not a committee seat")
            == 0 ? 0 : 1;
 }
 
 static int t_wrong_auth_kind(void) {
-    return refusal_case("authkind1", 0, NULL, 5, 4, 7,
+    return refusal_case("authkind1", 0, -1, 5, 4, 7,
                         1000000000ULL, 1000100000ULL, 0,
                         NODUS_RT_AUTHKIND_DSA87_MULTI_V1,
                         "auth_kind-2") == 0 ? 0 : 1;
 }
 
 static int t_nonzero_fee(void) {
-    return refusal_case("fee", 0, NULL, 5, 4, 7,
+    return refusal_case("fee", 0, -1, 5, 4, 7,
                         1000000000ULL, 1000100000ULL, 1 /* fee */,
                         NODUS_RT_AUTHKIND_DSA87_CC_V1, "zero-fee")
            == 0 ? 0 : 1;
@@ -803,7 +866,7 @@ static int t_target_above_ceiling(void) {
     /* param 4 = TARGET_ACTIVE_COUNT, value 33 > NODUS_V2_ACTIVE_SET_MAX
      * (32 since tokenomics-v3 P3-7; was 31 > 30 — 31 is now a LEGAL
      * target and would not be refused) */
-    return refusal_case("target33", 0, NULL, 5, 4, 33,
+    return refusal_case("target33", 0, -1, 5, 4, 33,
                         1000000000ULL, 1000100000ULL, 0,
                         NODUS_RT_AUTHKIND_DSA87_CC_V1,
                         "active-set ceiling") == 0 ? 0 : 1;
@@ -815,7 +878,7 @@ static int t_effective_below_floor(void) {
      * so and t_happy_path_all_seats's tip read confirms it), so the
      * candidate height h = tip+1 = 1 is known without opening a probe
      * fixture. effective == h is always below ANY nonzero grace floor. */
-    return refusal_case("efffloor", 0, NULL, 5, 4, 7,
+    return refusal_case("efffloor", 0, -1, 5, 4, 7,
                         1 /* effective == h */, 2 /* valid_before > h */, 0,
                         NODUS_RT_AUTHKIND_DSA87_CC_V1,
                         "grace floor") == 0 ? 0 : 1;
@@ -843,7 +906,7 @@ static int t_effective_below_floor(void) {
  * param-3 row. RED on the pre-P2 tree: the responder signed this
  * proposal (the exact ORC-6 positive case). */
 static int t_inflation_start_retired_refused(void) {
-    return refusal_case("inflretired", 0, NULL, 5,
+    return refusal_case("inflretired", 0, -1, 5,
                         DNAC_CFG_INFLATION_START_BLOCK,
                         1 + 5000, 1 + 200000, 1 + 300000, 0,
                         NODUS_RT_AUTHKIND_DSA87_CC_V1,
@@ -857,7 +920,7 @@ static int t_inflation_start_retired_refused(void) {
  * so this refusal fired there too; the ACCEPTANCE case below is the one
  * that is RED before HF-1. */
 static int t_gas_price_above_ceiling_refused(void) {
-    return refusal_case("gasmax", 0, NULL, 5,
+    return refusal_case("gasmax", 0, -1, 5,
                         DNAC_CFG_GAS_PRICE_RAW_PER_UNIT,
                         DNAC_CFG_MAX_GAS_PRICE + 1, 1 + 200000, 1 + 300000,
                         0, NODUS_RT_AUTHKIND_DSA87_CC_V1,
@@ -875,14 +938,12 @@ static int t_gas_price_legal_signs(void) {
 
     for (int i = 0; i < 2; i++) {
         gfx_t  g;
-        loop_t lp;
         dna_env_preflight_t pf1;
         pre_env_t env;
         uint64_t tip = 0;
 
         CHECK(gfx_open(&g, i == 0 ? "gas121" : "gas0") == 0,
               "version-3 fixture");
-        CHECK(loop_open(&lp) == 0, "loopback conn");
         CHECK(nodus_witness_v2_tip_height(g.w, &tip) == 0, "tip height");
         CHECK(pre_env_build(g.w, tip, 5, DNAC_CFG_GAS_PRICE_RAW_PER_UNIT,
                             values[i], tip + 1 + 200000, tip + 1 + 300000, 0,
@@ -904,33 +965,33 @@ static int t_gas_price_legal_signs(void) {
 
         nodus_t3_cc_appr_rsp_t rsp;
         memset(&rsp, 0, sizeof(rsp));
-        CHECK(ask(&g, &lp, g.chain32, g_ks[0].voter, env.bytes, env.len,
-                 &rsp) == 0, "ask");
+        CHECK(ask(&g, requester_not_seat(&g), env.bytes, env.len, &rsp) == 1,
+              rsp.reason[0] ? rsp.reason : "ask");
         CHECK(rsp.ok, rsp.ok ? "the seat approved the id-5 proposal"
                              : rsp.reason);
 
         pre_env_free(&env);
-        loop_close(&lp);
         gfx_close(&g);
     }
     return 0;
 }
 
-/* The per-proposer rate limit (unchanged, nodus_cc_rate_limit_check):
- * the SAME sender_id asked twice for the SAME seat within the 5 s
- * cooldown — the second request is refused "rate-limited", never
- * signed. D-16 rev 7's own design tension (BLOCKED ON, see the CLI
- * report): a round-2 rebuild re-asking the same accepting seat within
- * the cooldown hits exactly this refusal. */
+/* The per-proposer rate limit (nodus_cc_rate_limit_check): the SAME
+ * sender_id asked twice for the SAME seat within the 5 s cooldown — the
+ * second request is refused "rate-limited", never signed. Since red-team
+ * H1 the VERDICT records the attempt itself (before the committee is
+ * resolved), so no record is made by hand between the two asks. A
+ * round-2 rebuild re-asking the same seat within the cooldown would hit
+ * exactly this refusal — which is why nodus-cli waits the window (plus a
+ * margin) out before round 2 (decision
+ * 2026-09-26-cc-approval-via-own-node.md (6)). */
 static int t_rate_limited_second_request(void) {
     gfx_t  g;
-    loop_t lp;
     dna_env_preflight_t pf1;
     pre_env_t env;
     uint64_t tip = 0;
 
     CHECK(gfx_open(&g, "ratelimit") == 0, "version-3 fixture");
-    CHECK(loop_open(&lp) == 0, "loopback conn");
     CHECK(nodus_witness_v2_tip_height(g.w, &tip) == 0, "tip height");
     CHECK(pre_env_build(g.w, tip, 5, 4, 7, tip + 1000000, tip + 1100000, 0,
                         NODUS_RT_AUTHKIND_DSA87_CC_V1, &env, &pf1) == 0,
@@ -948,19 +1009,29 @@ static int t_rate_limited_second_request(void) {
     nodus_t3_cc_appr_rsp_t rsp1, rsp2;
     memset(&rsp1, 0, sizeof(rsp1));
     memset(&rsp2, 0xAA, sizeof(rsp2));
-    CHECK(ask(&g, &lp, g.chain32, g_ks[0].voter, env.bytes, env.len,
-             &rsp1) == 0, "first ask");
+    CHECK(ask(&g, 0, env.bytes, env.len, &rsp1) == 1, "first ask");
     CHECK(rsp1.ok, "first request approved");
-    CHECK(ask(&g, &lp, g.chain32, g_ks[0].voter, env.bytes, env.len,
-             &rsp2) == 0, "second ask");
+    /* The verdict's own record (above). The limit keys on the
+     * requester's AUTHENTICATED identity (the key its secret connection
+     * proved), which a new connection cannot shed. */
+    CHECK(rate_slot_for(&g, 0), "the first attempt is recorded");
+    CHECK(ask(&g, 0, env.bytes, env.len, &rsp2) == 0, "second ask");
     CHECK(!rsp2.ok, "second request (same sender, same seat, <5s) refused");
     CHECK(strstr(rsp2.reason, "rate-limited") != NULL, rsp2.reason);
+    CHECK(sig_is_zero(&rsp2), "the rate-limited refusal carries no signature");
 
     pre_env_free(&env);
-    loop_close(&lp);
     gfx_close(&g);
     return 0;
 }
+
+/* The transport-level cases this file used to carry — a proposer on a
+ * FOREIGN chain id (refused at the secret connection, N9) and a proposer
+ * asking ITS OWN seat (refused as a dial to self) — were driven through
+ * nodus_client_cc_appr_send, deleted with decision
+ * 2026-09-26-cc-approval-via-own-node.md (7). The wrong-chain refusal is
+ * test_witness_p2p (2c); a node never asks its own seat
+ * (nodus_witness_cc_collect_start skips it — test_cc_collect). */
 
 int main(void) {
     static const struct {
@@ -968,7 +1039,8 @@ int main(void) {
         int (*fn)(void);
     } cases[] = {
         { "happy_path_all_seats",       t_happy_path_all_seats },
-        { "foreign_chain_id",           t_foreign_chain_id },
+        { "requester_not_a_seat",       t_requester_not_a_seat },
+        { "requester_not_bonded_dropped", t_requester_not_bonded_dropped },
         { "not_committee_member",       t_not_committee_member },
         { "wrong_auth_kind",            t_wrong_auth_kind },
         { "nonzero_fee",                t_nonzero_fee },

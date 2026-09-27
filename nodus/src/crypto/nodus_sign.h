@@ -36,7 +36,9 @@ extern "C" {
 /** Purpose byte identifies the signing domain. */
 #define NODUS_PURPOSE_AUTH_CHALLENGE 0x01  /**< 32-byte nonce at auth handshake */
 #define NODUS_PURPOSE_KYBER_BIND     0x02  /**< nonce + server kyber_pk bind */
-#define NODUS_PURPOSE_T3_ENVELOPE    0x03  /**< Tier-3 BFT wire envelope */
+#define NODUS_PURPOSE_T3_ENVELOPE    0x03  /**< RETIRED (P2P-PORT F5): the
+                                              Tier-3 envelope; reserved,
+                                              never reassigned */
 #define NODUS_PURPOSE_VALUE_STORE    0x04  /**< DHT PUT value signature */
 #define NODUS_PURPOSE_CERT           0x05  /**< BFT commit certificate */
 /* 0x06 reserved for POST (channel posts); not implemented — channels disabled */
@@ -57,6 +59,24 @@ extern "C" {
  *  NDS1 tag a kpk_sig and an mpk_sig would be interchangeable. 0x09 is
  *  the next free value after VIEWOK. */
 #define NODUS_PURPOSE_MLKEM_BIND     0x09
+/** 4004 session authentication (docs/plans/decisions/2026-09-26-witness-
+ *  port-session.md "Etiketler"; session design §2.1 row 7) — each side of
+ *  the secret connection (shared/dnac/cmt_p2p_secret.h) signs the 32-byte
+ *  challenge derived from the handshake's shared secret, the port of
+ *  cometbft @709fd12b p2p/conn/secret_connection.go:163 signChallenge.
+ *  STRICT (nodus_sign_purpose_is_strict()): brand new, no shipped binary
+ *  has produced or checked a 0x0A signature, and a 32-byte raw preimage
+ *  is byte-shape-identical to AUTH_CHALLENGE's (0x01, non-strict, raw
+ *  compat fallback) 32-byte nonce — without the NDS1 tag a session
+ *  signature and an auth-challenge signature would verify against each
+ *  other's bytes. 0x0A is the next free value after MLKEM_BIND. */
+#define NODUS_PURPOSE_SESSION_AUTH   0x0A
+/** Signed witness address record (decision record "N7 ADDR bayt düzeni",
+ *  session design §2R3 N7 FINAL; p2p-port design R-P2P-4) — a validator's
+ *  own ADDR record "nodus.wsess.addr.v1" ‖ chain_id32 ‖ pk_fp ‖ ip ‖ port ‖
+ *  seq, gossiped by PEX (phase F4). STRICT, same class as 0x0A: brand new,
+ *  no compat to keep. 0x0B is the next free value after SESSION_AUTH. */
+#define NODUS_PURPOSE_WITNESS_ADDR   0x0B
 
 /** Tagged preimage layout:
  *    MAGIC (4) || purpose (1) || data_len_be (4) || data (data_len)
@@ -94,7 +114,10 @@ int nodus_verify(const nodus_sig_t *sig,
  *
  * Strict today: NODUS_PURPOSE_PREPARED (0x07), NODUS_PURPOSE_VIEWOK (0x08),
  * NODUS_PURPOSE_MLKEM_BIND (0x09, Faz 1 KEM migration, corrected 2026-09-23
- * — N1 delta 1, D2). MLKEM_BIND is strict DESPITE being a tier-2 client/
+ * — N1 delta 1, D2), NODUS_PURPOSE_SESSION_AUTH (0x0A) and
+ * NODUS_PURPOSE_WITNESS_ADDR (0x0B) (4004 session, decision record
+ * 2026-09-26-witness-port-session.md — brand new, strict from their first
+ * line, like 0x09). MLKEM_BIND is strict DESPITE being a tier-2 client/
  * inter-node auth-time binding like its non-strict sibling KYBER_BIND
  * (0x02): without the tag, its preimage (mlkem_pk || nonce, 1600 bytes) is
  * byte-shape-identical to KYBER_BIND's (kyber_pk || nonce), so a raw
@@ -164,13 +187,29 @@ int nodus_verify_mlkem_bind(const nodus_sig_t *sig,
                             const uint8_t *sign_data, size_t sign_data_len,
                             const nodus_pubkey_t *pk);
 
-/** T3_ENVELOPE domain — Tier-3 BFT wire envelope. */
-int nodus_sign_t3_envelope(nodus_sig_t *sig_out,
-                           const uint8_t *envelope, size_t envelope_len,
-                           const nodus_seckey_t *sk);
-int nodus_verify_t3_envelope(const nodus_sig_t *sig,
-                             const uint8_t *envelope, size_t envelope_len,
-                             const nodus_pubkey_t *pk);
+/** SESSION_AUTH domain (4004 secret connection, session design §2.1 rows
+ *  7 and 9) — the 32-byte challenge. IS in nodus_sign_purpose_is_strict():
+ *  always the NDS1-tagged preimage, no raw fallback either direction. */
+int nodus_sign_session_auth(nodus_sig_t *sig_out,
+                            const uint8_t *challenge, size_t challenge_len,
+                            const nodus_seckey_t *sk);
+int nodus_verify_session_auth(const nodus_sig_t *sig,
+                              const uint8_t *challenge, size_t challenge_len,
+                              const nodus_pubkey_t *pk);
+
+/** WITNESS_ADDR domain (signed ADDR record, session design §2R3 N7 FINAL
+ *  bytes; consumer: PEX, phase F4). IS in nodus_sign_purpose_is_strict():
+ *  always the NDS1-tagged preimage, no raw fallback either direction. */
+int nodus_sign_witness_addr(nodus_sig_t *sig_out,
+                            const uint8_t *record, size_t record_len,
+                            const nodus_seckey_t *sk);
+int nodus_verify_witness_addr(const nodus_sig_t *sig,
+                              const uint8_t *record, size_t record_len,
+                              const nodus_pubkey_t *pk);
+
+/* P2P-PORT F5 — the T3_ENVELOPE sign/verify pair is DELETED with the
+ * tier-3 envelope (port 4004 authenticates by its secret connection,
+ * purpose 0x0A). Purpose 0x03 stays reserved, never reassigned. */
 
 /** VALUE_STORE domain — DHT PUT value signature. */
 int nodus_sign_value_store(nodus_sig_t *sig_out,

@@ -44,27 +44,10 @@
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_v2_schema.h"
 
-/* ── O15L Faz 1 — the chain-identity gate still under test ────────────
- *
- *   witness_chain_quorum_observe  defined in nodus_witness_peer.c
- *
- * R3 W4-D — verify_chain_id (nodus_witness_bft.c) is DELETED with the
- * closed consensus lane; only witness_chain_quorum_observe survives.
- * It is non-static in the library for exactly the reason
- * nodus_witness_peer.h's own gated declaration comment records:
- * "static + test linkage is incompatible in CMake's normal flow ... the
- * protection is 'no public header references them' rather than 'static
- * qualifier'." Production code reaching for it is a code-review
- * failure, not a linker error.
- *
- * The canonical prototype now lives in nodus_witness_peer.h, gated on
- * NODUS_WITNESS_INTERNAL_API (nodus/CMakeLists.txt's register_witness_
- * test macro defines it for this target) exactly as
- * nodus_witness_bft_internal.h used to gate its own whole file before
- * that file was deleted. Including peer.h (below) makes the call
- * signature-checked against the one declaration instead of against a
- * locally repeated copy. */
-#include "witness/nodus_witness_peer.h"
+/* P2P-PORT F5 — the chain-identity gate this file also tested,
+ * witness_chain_quorum_observe (nodus_witness_peer.c), is DELETED with
+ * the chain-quorum quarantine (session design §2R4 P1), and with it
+ * nodus_witness_peer.{c,h}. */
 
 /* ── O15L Faz 2 — the scan's THREE outcomes, MIRRORED ─────────────────
  *
@@ -117,36 +100,10 @@ static void close_witness(nodus_witness_t *w) {
     free(w);
 }
 
-/* ── O15L — a witness pinned into ONE cell of the DG-1 matrix.
- *
- * `cid16` NULL means the all-zero identity; a non-NULL one is installed
- * in the canonical 16-bytes-then-zero layout nodus_witness_set_chain_id
- * produces. `with_db` attaches a REAL in-memory handle — never a fake
- * pointer, because close_witness calls sqlite3_close on it.
- *
- * The witness is heap-allocated (multi-MB struct) and one is built per
- * case, so a quarantine latched by one case cannot bleed into the next:
- * witness_chain_quorum_observe's flag is sticky by design. */
-static nodus_witness_t *matrix_witness(const uint8_t *cid16, int with_db) {
-    nodus_witness_t *w = calloc(1, sizeof(*w));
-    if (!w) return NULL;
-    if (cid16) {
-        memcpy(w->chain_id, cid16, 16);
-        memset(w->chain_id + 16, 0, 16);
-    }
-    if (with_db && sqlite3_open(":memory:", &w->db) != SQLITE_OK) {
-        if (w->db) sqlite3_close(w->db);
-        free(w);
-        return NULL;
-    }
-    /* The observation window (WITNESS_CHAIN_QUORUM_WINDOW_SEC, 300 s from
-     * activated_at_sec) is checked AFTER the identity matrix. Left at the
-     * calloc'd zero it has always expired, so every observation would be
-     * skipped for a reason that has nothing to do with the matrix and the
-     * ENFORCE rows below would pass while proving nothing. */
-    w->activated_at_sec = (uint64_t)time(NULL);
-    return w;
-}
+/* P2P-PORT F5 — matrix_witness (a witness pinned into one cell of the
+ * DG-1 matrix, for the self-quarantine detector case) is DELETED with that
+ * case and its subject, witness_chain_quorum_observe (session design
+ * §2R4 P1). */
 
 /* Create a chain database in `dir`, then close the handle, leaving the
  * file on disk exactly as a restart would find it. */
@@ -411,124 +368,16 @@ int main(void) {
      * successor for the "reject a foreign chain_id on a BFT message"
      * property — the version-3 lane's own chain-id derivation and
      * cross-chain replay protection is a different mechanism, out of
-     * this file's scope). The matrix_witness fixture stays: the next
-     * case still uses it. Every case number from here on is renumbered
+     * this file's scope). Every case number from here on is renumbered
      * down by one to close the gap. */
 
-    /* ── 6. O15L Faz 1 / DG-2 · G3 — THE SELF-QUARANTINE DETECTOR TAKES
-     *      THE SAME MATRIX.
-     *
-     * WHAT THIS PROVES. witness_chain_quorum_observe carries the
-     * `chain_id == 0 -> return` exemption for genuine pre-genesis, and
-     * fails closed / enforces exactly as verify_chain_id (deleted along
-     * with the rest of the closed consensus lane) used to, so a node can
-     * still notice that IT is the diverged one even though the BFT-side
-     * gate it once mirrored is gone.
-     *
-     * The function returns void, so the observable is whether the
-     * observation was COUNTED: chain_agree_count / chain_dissent_count.
-     * ENFORCE rows count; EXEMPT and FAIL-CLOSED rows do not (a node with
-     * no identity has no opinion to compare against). Rows 3 and 4 are
-     * therefore count-identical and differ only in row 4's loud log.
-     *
-     * HOW IT COULD LIE. Every case sets activated_at_sec to now in
-     * matrix_witness — left at zero the 300 s window has expired and
-     * NOTHING is ever counted, which would make the two zero-count rows
-     * pass for entirely the wrong reason. Case A counting proves the
-     * window is genuinely open, so the zero-count rows below mean what
-     * they say. */
-    {
-        uint8_t mine[16], other[16];
-        memset(mine, 0x11, sizeof(mine));
-        memset(other, 0x22, sizeof(other));
-
-        uint8_t mine32[32], other32[32], zero32[32];
-        memset(mine32, 0, sizeof(mine32));
-        memset(other32, 0, sizeof(other32));
-        memset(zero32, 0, sizeof(zero32));
-        memcpy(mine32, mine, 16);
-        memcpy(other32, other, 16);
-
-        /* One observation per case against a fresh witness, so a single
-         * peer id cannot collide with the dedup list of another case. */
-        uint8_t peer[NODUS_T3_WITNESS_ID_LEN];
-        memset(peer, 0x91, sizeof(peer));
-
-        /* Row 1 — (id != 0, db != NULL), peer agrees: counted as agree. */
-        {
-            nodus_witness_t *w = matrix_witness(mine, 1);
-            CHECK(w != NULL, "alloc observe row 1 agree");
-            witness_chain_quorum_observe(w, peer, mine32);
-            CHECK(w->chain_agree_count == 1,
-                  "row 1: an agreeing peer must be counted — if this is 0 "
-                  "the 300 s window is shut and the whole section is void");
-            CHECK(w->chain_dissent_count == 0, "row 1: not a dissenter");
-            close_witness(w);
-        }
-
-        /* Row 1 — same cell, peer dissents: counted as dissent. */
-        {
-            nodus_witness_t *w = matrix_witness(mine, 1);
-            CHECK(w != NULL, "alloc observe row 1 dissent");
-            witness_chain_quorum_observe(w, peer, other32);
-            CHECK(w->chain_dissent_count == 1,
-                  "row 1: a dissenting peer must be counted");
-            CHECK(w->chain_agree_count == 0, "row 1: not an agreer");
-            close_witness(w);
-        }
-
-        /* Row 2 — (id != 0, db == NULL): STILL OBSERVES.  ← THE PIN
-         * The node that lost its database is exactly the node most
-         * likely to be the diverged one; blinding it here is how the
-         * O15K defect stayed invisible. */
-        {
-            nodus_witness_t *w = matrix_witness(mine, 0);
-            CHECK(w != NULL, "alloc observe row 2");
-            witness_chain_quorum_observe(w, peer, other32);
-            CHECK(w->chain_dissent_count == 1,
-                  "ROW 2: A NODE WITH AN IDENTITY BUT NO DATABASE MUST "
-                  "STILL SEE ITS OWN DISSENT — a 'db == NULL -> skip' "
-                  "detector can never self-quarantine after a failed open");
-            close_witness(w);
-        }
-
-        /* Row 3 — (id == 0, db == NULL): no identity, no opinion. */
-        {
-            nodus_witness_t *w = matrix_witness(NULL, 0);
-            CHECK(w != NULL, "alloc observe row 3");
-            witness_chain_quorum_observe(w, peer, other32);
-            CHECK(w->chain_dissent_count == 0 && w->chain_agree_count == 0,
-                  "row 3: genuine pre-genesis has nothing to compare "
-                  "against, so nothing is counted");
-            close_witness(w);
-        }
-
-        /* Row 4 — (id == 0, db != NULL): invariant violation, counts
-         * nothing and says so loudly. */
-        {
-            nodus_witness_t *w = matrix_witness(NULL, 1);
-            CHECK(w != NULL, "alloc observe row 4");
-            witness_chain_quorum_observe(w, peer, other32);
-            CHECK(w->chain_dissent_count == 0 && w->chain_agree_count == 0,
-                  "row 4: a zero identity with an open database must not "
-                  "feed the quarantine tally");
-            close_witness(w);
-        }
-
-        /* PRESERVED — a peer that is itself pre-genesis has no opinion,
-         * and that check is untouched by this season. Row 1 cell, so the
-         * only thing that can suppress the count is the peer's own
-         * all-zero id. */
-        {
-            nodus_witness_t *w = matrix_witness(mine, 1);
-            CHECK(w != NULL, "alloc observe peer-zero");
-            witness_chain_quorum_observe(w, peer, zero32);
-            CHECK(w->chain_dissent_count == 0 && w->chain_agree_count == 0,
-                  "a peer with an all-zero chain_id expresses no opinion "
-                  "and must still be ignored");
-            close_witness(w);
-        }
-    }
+    /* P2P-PORT F5 — case 6, the self-quarantine detector
+     * (witness_chain_quorum_observe) over the DG-1 matrix, is DELETED
+     * with its subject: the chain-quorum quarantine is removed (session
+     * design §2R4 P1 — a wrong-chain 4004 session is refused before any
+     * crypto, N9, and every vote's sign bytes carry the chain id).
+     * test_p2p_secret.c pins the chain-id refusal; test_witness_p2p.c pins
+     * it end to end. The case numbers below keep their old values. */
 
     /* ── 7. O15L Faz 1 item 3 / DG-1 · F-4 — THE CREATE PATH INSTALLS
      *      THE IDENTITY BEFORE THE OPEN, AS THE SCAN PATH DOES.

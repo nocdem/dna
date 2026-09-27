@@ -12,6 +12,7 @@
 #include "protocol/nodus_tier2.h"
 #include "protocol/nodus_cbor.h"
 #include "protocol/nodus_wire.h"
+#include "protocol/nodus_tier3.h"     /* NODUS_T3_CC_APPR_E_MAX (dnac_cc_collect) */
 #include "crypto/nodus_sign.h"
 #include "crypto/nodus_channel_crypto.h"
 #include "crypto/enc/qgp_kyber.h"
@@ -4257,6 +4258,149 @@ int nodus_client_dnac_committee(nodus_client_t *client,
 
     free_pending(client, req);
     return 0;
+}
+
+/* ── dnac_cc_collect (decision 2026-09-26-cc-approval-via-own-node.md) ── */
+
+int nodus_dnac_cc_collect_decode(const uint8_t *raw, size_t raw_len,
+                                 nodus_dnac_cc_collect_result_t *result_out) {
+    if (!raw || !result_out) return -1;
+    memset(result_out, 0, sizeof(*result_out));
+
+    cbor_decoder_t dec;
+    size_t mc;
+    if (find_response_map(raw, raw_len, &dec, &mc) != 0) return -1;
+
+    bool have_res = false;
+    for (size_t i = 0; i < mc; i++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        /* cbor_decode_next reports running off the buffer as
+         * CBOR_ITEM_END WITHOUT setting dec.error (nodus_cbor.c:195-197),
+         * so a map short of its claimed pairs must be caught here. */
+        if (key.type == CBOR_ITEM_END || key.type == CBOR_ITEM_ERROR)
+            return -1;
+        if (key.type != CBOR_ITEM_TSTR || !KEY_EQ(key, "res")) {
+            cbor_decode_skip(&dec);
+            continue;
+        }
+        /* One "res" key only. A second one would append its entries after
+         * the first's (`count` runs on across both) and index past
+         * `entries[]` — the node's encoder writes exactly one (no
+         * reference counterpart: a nodus 4001 reply). */
+        if (have_res) return -1;
+        cbor_item_t arr = cbor_decode_next(&dec);
+        size_t cap = sizeof(result_out->entries) / sizeof(result_out->entries[0]);
+        if (arr.type != CBOR_ITEM_ARRAY || arr.count > cap) return -1;
+        for (size_t j = 0; j < arr.count; j++) {
+            cbor_item_t emap = cbor_decode_next(&dec);
+            if (emap.type != CBOR_ITEM_MAP) return -1;
+            nodus_dnac_cc_collect_entry_t *e = &result_out->entries[j];
+            bool have_i = false, have_st = false;
+            for (size_t k = 0; k < emap.count; k++) {
+                cbor_item_t ek = cbor_decode_next(&dec);
+                if (ek.type == CBOR_ITEM_END || ek.type == CBOR_ITEM_ERROR)
+                    return -1;
+                if (ek.type != CBOR_ITEM_TSTR) {
+                    cbor_decode_skip(&dec);
+                    continue;
+                }
+                cbor_item_t v = cbor_decode_next(&dec);
+                if (v.type == CBOR_ITEM_END) return -1;
+                if (KEY_EQ(ek, "i") && v.type == CBOR_ITEM_UINT &&
+                    v.uint_val <= UINT16_MAX) {
+                    e->seat = (uint16_t)v.uint_val;
+                    have_i = true;
+                } else if (KEY_EQ(ek, "st") && v.type == CBOR_ITEM_UINT &&
+                           v.uint_val <= UINT8_MAX) {
+                    e->status = (uint8_t)v.uint_val;
+                    have_st = true;
+                } else if (KEY_EQ(ek, "ok") && v.type == CBOR_ITEM_BOOL) {
+                    e->ok = v.bool_val;
+                } else if (KEY_EQ(ek, "rs") && v.type == CBOR_ITEM_UINT &&
+                           v.uint_val <= UINT16_MAX) {
+                    e->rsp_seat = (uint16_t)v.uint_val;
+                } else if (KEY_EQ(ek, "s") && v.type == CBOR_ITEM_BSTR &&
+                           v.bstr.len == NODUS_SIG_BYTES) {
+                    memcpy(e->sig, v.bstr.ptr, NODUS_SIG_BYTES);
+                } else if (KEY_EQ(ek, "sh") && v.type == CBOR_ITEM_BSTR &&
+                           v.bstr.len == 64) {
+                    memcpy(e->set_hash, v.bstr.ptr, 64);
+                } else if (KEY_EQ(ek, "ep") && v.type == CBOR_ITEM_UINT) {
+                    e->epoch = v.uint_val;
+                } else if (KEY_EQ(ek, "r") && v.type == CBOR_ITEM_TSTR) {
+                    size_t cl = v.tstr.len < sizeof(e->reason) - 1 ?
+                                v.tstr.len : sizeof(e->reason) - 1;
+                    memcpy(e->reason, v.tstr.ptr, cl);
+                    e->reason[cl] = '\0';
+                } else if (v.type == CBOR_ITEM_ARRAY || v.type == CBOR_ITEM_MAP ||
+                           v.type == CBOR_ITEM_ERROR) {
+                    return -1;     /* no entry value is a container */
+                }
+            }
+            if (!have_i || !have_st) return -1;
+            result_out->count++;
+        }
+        have_res = true;
+    }
+    /* A truncated argument or payload sets the decoder's sticky flag;
+     * running off the END of the buffer does not (CBOR_ITEM_END, checked
+     * at each key read above) — ORCHESTRATOR repair, test_cc_collect
+     * decode_hardening RED on the first cut. */
+    if (dec.error) return -1;
+    return have_res ? 0 : -1;
+}
+
+int nodus_client_dnac_cc_collect(nodus_client_t *client,
+                                 const uint8_t *env_bytes, size_t env_len,
+                                 nodus_dnac_cc_collect_result_t *result_out) {
+    if (!nodus_client_is_ready(client) || !env_bytes || env_len == 0 ||
+        env_len > NODUS_T3_CC_APPR_E_MAX || !result_out)
+        return -1;
+
+    memset(result_out, 0, sizeof(*result_out));
+
+    /* Sized to the envelope — an approval envelope for a large committee
+     * exceeds CLIENT_BUF_SIZE. 512 bytes cover the header, the token and
+     * the key. */
+    size_t cap = env_len + 512;
+    uint8_t *buf = malloc(cap);
+    if (!buf) return -1;
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    enc_dnac_query(&enc, txn, client->token, "dnac_cc_collect", 1);
+    cbor_encode_cstr(&enc, "e");
+    cbor_encode_bstr(&enc, env_bytes, env_len);
+
+    size_t len = cbor_encoder_len(&enc);
+    if (len == 0) { free_pending(client, req); free(buf); return -1; }
+    if (send_request(client, buf, len) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
+    free(buf);
+
+    /* The node answers when every asked seat answered or its own
+     * collection deadline passed — never sooner than it can; wait past
+     * that deadline (NODUS_DNAC_CC_COLLECT_TIMEOUT_MS). */
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    int wait_ms = client->config.request_timeout_ms > NODUS_DNAC_CC_COLLECT_TIMEOUT_MS
+                  ? client->config.request_timeout_ms
+                  : NODUS_DNAC_CC_COLLECT_TIMEOUT_MS;
+    if (!wait_response(client, req, wait_ms)) {
+        free_pending(client, req); return NODUS_ERR_TIMEOUT;
+    }
+    if (resp->type == 'e') {
+        QGP_LOG_WARN(LOG_TAG, "dnac_cc_collect refused by the node: %s",
+                     resp->error_msg);
+        int rc = resp->error_code; free_pending(client, req); return rc;
+    }
+    int drc = nodus_dnac_cc_collect_decode(req->raw_response,
+                                           req->raw_response_len, result_out);
+    free_pending(client, req);
+    return drc == 0 ? 0 : NODUS_ERR_PROTOCOL_ERROR;
 }
 
 int nodus_client_dnac_validator_list(nodus_client_t *client,

@@ -8,7 +8,7 @@
 #include "server/nodus_server.h"
 #include "server/nodus_media_handler.h"
 #include "witness/nodus_witness_db.h"
-#include "witness/nodus_witness_peer.h"
+#include "witness/nodus_witness_p2p.h"      /* the 4004 listen port (log) */
 #include "witness/nodus_witness_v2_apply.h"   /* nodus_witness_v2_committed_global_root (W4-H) */
 #include "channel/nodus_channel_server.h"
 #include "channel/nodus_channel_replication.h"
@@ -24,6 +24,7 @@
 #include "crypto/enc/qgp_mlkem.h"
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_log.h"
+#include "witness/nodus_witness_v2_gen.h"     /* stored chain id (P2P-PORT F6) */
 
 #define LOG_TAG "NODUS_SRV"
 
@@ -44,6 +45,10 @@ extern void qgp_secure_memzero(void *ptr, size_t len);
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <sqlite3.h>                        /* chain id reader (P2P-PORT F6) */
+#ifdef NODUS_HAS_JSONC
+#include <json-c/json.h>                    /* the network file (P2P-PORT F6) */
+#endif
 
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 
@@ -4086,9 +4091,10 @@ static void idle_timeout_sweep(nodus_server_t *srv) {
  * otherwise be swappable with this one. Returns false (leaves
  * *mpk_sig_out untouched) when the identity has no ML-KEM keypair yet, or
  * signing fails — callers then omit mpk from the AUTH_OK they send,
- * falling back to Kyber-only exactly as before this migration. Shared by
- * the two nodus_t2_auth_ok_kyber senders in this file (dispatch_inter
- * below, on_witness_frame further down) — nodus_auth.c's client-facing
+ * falling back to Kyber-only exactly as before this migration. Used by
+ * the nodus_t2_auth_ok_kyber sender in dispatch_inter below (the second
+ * one, the 4004 T2 auth handler, is deleted with that path, P2P-PORT
+ * F5) — nodus_auth.c's client-facing
  * sender (port 4001) has its own copy since it lives in a different
  * translation unit. */
 static bool sign_mlkem_bind_for_auth_ok(const nodus_identity_t *identity,
@@ -4985,205 +4991,16 @@ static void on_inter_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
     if (sess) {
         inter_session_clear(sess, conn->slot, "on_inter_disconnect");
     }
-
-    /* Notify witness module so it can clear peer references */
-    if (srv->witness)
-        nodus_witness_peer_conn_closed(srv->witness, conn);
 }
 
-/* ── Witness TCP callbacks (dedicated port 4004) ─────────────────── */
-
-static void on_witness_connect(nodus_tcp_conn_t *conn, void *ctx) {
-    nodus_server_t *srv = (nodus_server_t *)ctx;
-    conn->is_nodus = true;
-
-    /* When require_peer_auth is enabled, send T2 hello to initiate
-     * Dilithium5 auth before T3 w_ident exchange can proceed. */
-    if (srv->config.require_peer_auth) {
-        uint8_t hello_buf[8192];
-        size_t hello_len = 0;
-        if (nodus_t2_hello(0, &srv->identity.pk, &srv->identity.node_id,
-                            hello_buf, sizeof(hello_buf), &hello_len) == 0) {
-            nodus_tcp_send_raw(conn, hello_buf, hello_len);
-            conn->auth_state = NODUS_CONN_AUTH_HELLO_SENT;
-            /* Sync peer auth_state so peer_tick doesn't send a duplicate hello */
-            if (srv->witness) {
-                for (int i = 0; i < srv->witness->peer_count; i++) {
-                    if (srv->witness->peers[i].conn == conn) {
-                        srv->witness->peers[i].auth_state = PEER_AUTH_HELLO_SENT;
-                        break;
-                    }
-                }
-            }
-        } else {
-            conn->auth_state = NODUS_CONN_AUTH_FAILED;
-        }
-    }
-}
-
-static void on_witness_accept(nodus_tcp_conn_t *conn, void *ctx) {
-    (void)ctx;
-    conn->is_nodus = true;
-}
-
-static void on_witness_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
-                              size_t len, void *ctx) {
-    nodus_server_t *srv = (nodus_server_t *)ctx;
-    if (!srv->witness) return;
-
-    /* C-02: Dilithium5 authentication on witness port.
-     * Pre-auth: only hello and auth messages allowed.
-     * Enforcement controlled by require_peer_auth config flag. */
-    if (srv->config.require_peer_auth && !conn->authenticated) {
-        nodus_tier2_msg_t msg;
-        memset(&msg, 0, sizeof(msg));
-        if (nodus_t2_decode(payload, len, &msg) != 0) {
-            nodus_t2_msg_free(&msg);
-            return;
-        }
-        if (strcmp(msg.method, "hello") == 0) {
-            nodus_key_t computed_fp;
-            nodus_fingerprint(&msg.pk, &computed_fp);
-            if (nodus_key_cmp(&computed_fp, &msg.fp) != 0) {
-                size_t rlen = 0;
-                nodus_t2_error(msg.txn_id, NODUS_ERR_INVALID_SIGNATURE,
-                                "fingerprint mismatch", resp_buf, sizeof(resp_buf), &rlen);
-                nodus_tcp_send_raw(conn, resp_buf, rlen);
-            } else {
-                conn->peer_pk = msg.pk;
-                conn->peer_id = msg.fp;
-                nodus_random(conn->auth_nonce, NODUS_NONCE_LEN);
-                conn->auth_nonce_pending = true;
-                size_t rlen = 0;
-                nodus_t2_challenge(msg.txn_id, conn->auth_nonce,
-                                    resp_buf, sizeof(resp_buf), &rlen);
-                nodus_tcp_send_raw(conn, resp_buf, rlen);
-            }
-        } else if (strcmp(msg.method, "auth") == 0 && conn->auth_nonce_pending) {
-            /* C2: domain-tagged AUTH_CHALLENGE verify */
-            int rc = nodus_verify_auth_challenge(&msg.sig, conn->auth_nonce, &conn->peer_pk);
-            if (rc != 0) {
-                size_t rlen = 0;
-                nodus_t2_error(msg.txn_id, NODUS_ERR_INVALID_SIGNATURE,
-                                "auth failed", resp_buf, sizeof(resp_buf), &rlen);
-                nodus_tcp_send_raw(conn, resp_buf, rlen);
-            } else {
-                conn->authenticated = true;
-                conn->auth_state = NODUS_CONN_AUTH_OK;
-                conn->auth_nonce_pending = false;
-                conn->peer_id_set = true;
-                uint8_t token[NODUS_SESSION_TOKEN_LEN];
-                nodus_random(token, NODUS_SESSION_TOKEN_LEN);
-                size_t rlen = 0;
-                if (srv->identity.has_kyber && msg.proto_version >= 2) {
-                    uint8_t sign_data[NODUS_KYBER_PK_BYTES + NODUS_NONCE_LEN];
-                    memcpy(sign_data, srv->identity.kyber_pk, NODUS_KYBER_PK_BYTES);
-                    memcpy(sign_data + NODUS_KYBER_PK_BYTES, conn->auth_nonce, NODUS_NONCE_LEN);
-                    nodus_sig_t kpk_sig;
-                    /* C2: KYBER_BIND domain */
-                    if (nodus_sign_kyber_bind(&kpk_sig, sign_data, sizeof(sign_data), &srv->identity.sk) == 0) {
-                        /* Faz 1 KEM migration: also bind mlkem_pk, if this
-                         * identity has one (N2 MLKEM_BIND). */
-                        nodus_sig_t mpk_sig;
-                        bool have_mpk = sign_mlkem_bind_for_auth_ok(&srv->identity,
-                                                                     conn->auth_nonce, &mpk_sig);
-                        nodus_t2_auth_ok_kyber(msg.txn_id, token, srv->identity.kyber_pk,
-                                                &srv->identity.pk, &kpk_sig,
-                                                have_mpk ? srv->identity.mlkem_pk : NULL,
-                                                have_mpk ? &mpk_sig : NULL,
-                                                resp_buf, sizeof(resp_buf), &rlen);
-                    } else {
-                        nodus_t2_auth_ok(msg.txn_id, token,
-                                          resp_buf, sizeof(resp_buf), &rlen);
-                    }
-                } else {
-                    nodus_t2_auth_ok(msg.txn_id, token,
-                                      resp_buf, sizeof(resp_buf), &rlen);
-                }
-                nodus_tcp_send_raw(conn, resp_buf, rlen);
-                /* Send w_ident after auth completes */
-                nodus_witness_peer_send_ident(srv->witness, conn);
-                fprintf(stderr, "WITNESS_AUTH_OK: inbound peer authenticated on port 4004\n");
-            }
-        } else if (strcmp(msg.method, "challenge") == 0) {
-            /* Outbound auth: sign the nonce and send auth response.
-             * C2 fix: outbound-only gate + domain-tagged sign. */
-            if (!conn->auth_initiated_by_us) {
-                fprintf(stderr, "WITNESS: challenge on inbound conn — refusing to sign (C2)\n");
-                size_t rlen = 0;
-                nodus_t2_error(msg.txn_id, NODUS_ERR_PROTOCOL_ERROR,
-                                "unexpected challenge on inbound conn",
-                                resp_buf, sizeof(resp_buf), &rlen);
-                nodus_tcp_send_raw(conn, resp_buf, rlen);
-            } else {
-                nodus_sig_t sig;
-                nodus_sign_auth_challenge(&sig, msg.nonce, &srv->identity.sk);
-                size_t rlen = 0;
-                nodus_t2_auth(msg.txn_id, &sig, resp_buf, sizeof(resp_buf), &rlen);
-                nodus_tcp_send_raw(conn, resp_buf, rlen);
-            }
-        } else if (strcmp(msg.method, "auth_ok") == 0) {
-            /* Outbound auth complete — send w_ident immediately */
-            conn->authenticated = true;
-            conn->auth_state = NODUS_CONN_AUTH_OK;
-            conn->peer_id_set = true;
-            if (srv->witness) {
-                for (int i = 0; i < srv->witness->peer_count; i++) {
-                    if (srv->witness->peers[i].conn == conn) {
-                        srv->witness->peers[i].auth_state = PEER_AUTH_OK;
-                        srv->witness->peers[i].identified = true;
-                        nodus_witness_peer_send_ident(srv->witness, conn);
-                        break;
-                    }
-                }
-            }
-            fprintf(stderr, "WITNESS_AUTH_OK: outbound peer authenticated on port 4004\n");
-        } else if (strcmp(msg.method, "error") == 0 || msg.type == 'e') {
-            /* Auth error from peer — ignore.
-             * T2 error responses lack "q" field → method is empty.
-             * Check msg.type == 'e' to catch these. */
-        } else {
-            size_t rlen = 0;
-            nodus_t2_error(msg.txn_id, NODUS_ERR_NOT_AUTHENTICATED,
-                            "authenticate first", resp_buf, sizeof(resp_buf), &rlen);
-            nodus_tcp_send_raw(conn, resp_buf, rlen);
-        }
-        nodus_t2_msg_free(&msg);
-        return;
-    }
-
-    /* H8 fix: Post-auth stale-challenge branch removed. It was a secondary
-     * signing oracle (any post-auth peer could pump for sigs). Legitimate
-     * stale challenges simply get ignored or error-replied via the default
-     * case below — no signing. */
-    {
-        nodus_tier2_msg_t msg;
-        memset(&msg, 0, sizeof(msg));
-        if (nodus_t2_decode(payload, len, &msg) == 0) {
-            if (strcmp(msg.method, "auth_ok") == 0) {
-                /* Already authenticated — ignore */
-                nodus_t2_msg_free(&msg);
-                return;
-            } else if (strcmp(msg.method, "error") == 0) {
-                /* Auth or other error from peer */
-                nodus_t2_msg_free(&msg);
-                return;
-            }
-            nodus_t2_msg_free(&msg);
-        }
-    }
-
-    /* All other frames on witness port are T3 BFT messages — dispatch directly */
-    nodus_witness_dispatch_t3(srv->witness, conn, payload, len);
-}
-
-static void on_witness_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
-    nodus_server_t *srv = (nodus_server_t *)ctx;
-
-    /* Notify witness module so it can clear peer references */
-    if (srv->witness)
-        nodus_witness_peer_conn_closed(srv->witness, conn);
-}
+/* P2P-PORT F5 — the witness-port callbacks on_witness_connect /
+ * on_witness_accept / on_witness_frame / on_witness_disconnect (the 4004
+ * nodus_tcp transport: the T2 hello → challenge → auth → auth_ok
+ * exchange gated by require_peer_auth, the IDENT send after it, and the
+ * hand-off of every other frame to the tier-3 dispatcher) are DELETED.
+ * Port 4004 is the witness's p2p host (nodus_witness_p2p.h): every
+ * connection runs the secret-connection handshake, no T2 message is
+ * spoken there, and no frame reaches a dispatcher unauthenticated. */
 
 /* ── TCP frame dispatch ──────────────────────────────────────────── */
 
@@ -5234,9 +5051,32 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
         return;
     }
 
-    /* Witness BFT messages in post-auth path (peer may have authenticated) */
-    if (strncmp(msg.method, "w_", 2) == 0 && srv->witness) {
-        nodus_witness_dispatch_t3(srv->witness, sess->conn, payload, len);
+    /* P2P-PORT F5 (witness-port session design §2R R16; p2p-port design
+     * §3): the `w_*` witness methods are REFUSED on the client port. The
+     * forward to the tier-3 dispatcher that stood here is deleted with the
+     * dispatcher; every witness message now travels only on port 4004,
+     * inside a secret connection. No T2 method and no client string starts
+     * with `w_` (grep 2026-09-26), so only a stale peer is refused here. */
+    if (strncmp(msg.method, "w_", 2) == 0) {
+        size_t rlen = 0;
+        nodus_t2_error(msg.txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                        "witness methods are not served on the client port",
+                        resp_buf, sizeof(resp_buf), &rlen);
+        nodus_tcp_send(sess->conn, resp_buf, rlen);
+        nodus_t2_msg_free(&msg);
+        return;
+    }
+
+    /* The node-side governance approval collection (decision
+     * 2026-09-26-cc-approval-via-own-node.md): the ONE dnac_* method that
+     * receives the requesting session's identity, because it is served
+     * only to this node's own identity key (checked by the witness,
+     * nodus_witness_cc_collect_start). Every other dnac_* method takes the
+     * generic route below, unchanged. */
+    if (strcmp(msg.method, "dnac_cc_collect") == 0 && srv->witness) {
+        nodus_witness_handle_cc_collect(srv->witness, sess->conn,
+                                        sess->client_pk.bytes, sess->token,
+                                        payload, len, msg.txn_id);
         nodus_t2_msg_free(&msg);
         return;
     }
@@ -5591,10 +5431,6 @@ static void on_tcp_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
         session_teardown_circuits(srv, sess);
         session_clear(sess);
     }
-
-    /* Clear any witness peer references before conn is freed */
-    if (srv->witness)
-        nodus_witness_peer_conn_closed(srv->witness, conn);
 }
 
 /* ── Channel post replication callback ────────────────────────── */
@@ -5643,70 +5479,13 @@ static int ch_dht_put_signed(const uint8_t *key_hash, size_t key_len,
 }
 #endif /* !NODUS_CHANNELS_DISABLED — ch callbacks */
 
-/* ── Identity publish to DHT ──────────────────────────────────────
- * Every nodus server publishes its pubkey to a well-known DHT key.
- * Witness module reads all entries to build the roster.
- * TTL = 10 min, refreshed every 60s. Dead nodes expire automatically. */
-
-#define NODUS_PK_REGISTRY_TTL  600   /* 10 minutes */
-
-static int nodus_server_publish_identity(nodus_server_t *srv) {
-    /* Derive DHT key: SHA3-512("nodus:pk") */
-    static const char key_str[] = "nodus:pk";
-    nodus_key_t key;
-    nodus_hash((const uint8_t *)key_str, sizeof(key_str) - 1, &key);
-
-    /* Encode payload: CBOR { "id": node_id, "pk": pubkey, "ip": ip, "port": port, "kpk": kyber_pk } */
-    uint8_t payload[8192];
-    cbor_encoder_t enc;
-    cbor_encoder_init(&enc, payload, sizeof(payload));
-    cbor_encode_map(&enc, srv->identity.has_kyber ? 5 : 4);
-
-    cbor_encode_cstr(&enc, "id");
-    cbor_encode_bstr(&enc, srv->identity.node_id.bytes, NODUS_KEY_BYTES);
-
-    cbor_encode_cstr(&enc, "pk");
-    cbor_encode_bstr(&enc, srv->identity.pk.bytes, NODUS_PK_BYTES);
-
-    cbor_encode_cstr(&enc, "ip");
-    const char *ip = srv->config.external_ip[0]
-                   ? srv->config.external_ip
-                   : srv->config.bind_ip;
-    cbor_encode_cstr(&enc, ip);
-
-    cbor_encode_cstr(&enc, "port");
-    uint16_t pub_wport = srv->config.witness_port
-                       ? srv->config.witness_port
-                       : NODUS_DEFAULT_WITNESS_PORT;
-    cbor_encode_uint(&enc, pub_wport);
-
-    if (srv->identity.has_kyber) {
-        cbor_encode_cstr(&enc, "kpk");
-        cbor_encode_bstr(&enc, srv->identity.kyber_pk, NODUS_KYBER_PK_BYTES);
-    }
-
-    size_t payload_len = cbor_encoder_len(&enc);
-    if (payload_len == 0) return -1;
-
-    /* Create DHT value */
-    nodus_value_t *val = NULL;
-    int rc = nodus_value_create(&key, payload, payload_len,
-                                 NODUS_VALUE_EPHEMERAL,
-                                 NODUS_PK_REGISTRY_TTL,
-                                 0, (uint64_t)time(NULL),
-                                 &srv->identity.pk, &val);
-    if (rc != 0 || !val) return -1;
-
-    rc = nodus_value_sign(val, &srv->identity.sk);
-    if (rc != 0) { nodus_value_free(val); return -1; }
-
-    rc = nodus_storage_put(&srv->storage, val);
-    if (rc != 0) { nodus_value_free(val); return -1; }
-
-    nodus_server_replicate_value(srv, val);
-    nodus_value_free(val);
-    return 0;
-}
+/* P2P-PORT F5 — nodus_server_publish_identity (the DHT `nodus:pk`
+ * registry record {id, pk, ip, witness port, kpk}, re-published every
+ * 60 s with a 10-minute TTL) is DELETED with both of its readers (the
+ * witness transport roster, nodus_witness_peer.c): validator addresses
+ * left the DHT (decision record 2026-09-26-witness-port-session.md "N7
+ * SON") and travel as self-signed ADDR records over the 4004 PEX
+ * reactor. Rows already stored under the key expire by their TTL. */
 
 /* ── Channel startup rejoin ───────────────────────────────────────
  * Called once from the main loop after hashring has ≥2 members.
@@ -5928,6 +5707,363 @@ int nodus_server_check_partial_wipe(const char *data_path) {
     return -1;
 }
 
+/* ── P2P-PORT F6 — chain id reader + the pin-at-start check ─────── */
+
+int nodus_server_read_chain_id(const char *db_path, uint8_t out[32]) {
+    if (!db_path || !out) return -1;
+    /* Heap, never stack: nodus_witness_t is multi-MB. Only `db` is used
+     * by the stored-chain-id reader (nodus_witness_v2_gen.h). */
+    nodus_witness_t *w = calloc(1, sizeof(*w));
+    if (!w) return -1;
+    if (sqlite3_open_v2(db_path, &w->db, SQLITE_OPEN_READONLY, NULL)
+        != SQLITE_OK) {
+        if (w->db) sqlite3_close(w->db);
+        free(w);
+        return -1;
+    }
+    int rc = nodus_witness_v2_gen_stored_chain_id(w, out);
+    sqlite3_close(w->db);
+    free(w);
+    return rc == 0 ? 0 : -1;
+}
+
+static void hex32_lower(const uint8_t b[32], char out[65]) {
+    static const char hd[] = "0123456789abcdef";
+    for (int i = 0; i < 32; i++) {
+        out[2 * i]     = hd[b[i] >> 4];
+        out[2 * i + 1] = hd[b[i] & 0x0F];
+    }
+    out[64] = '\0';
+}
+
+/* The witness scan's filename predicate, restated (nodus_witness.c
+ * witness_chain_id_from_name is file-static): "witness_" + EXACTLY 32
+ * LOWERCASE hex digits + ".db", nothing after (-wal / -shm rejected, an
+ * upper-case alias rejected). Restated rather than shared because the
+ * witness header is outside this change; the two MUST stay identical —
+ * a drift would make the start check look at a different file than the
+ * one the node runs. */
+static bool chain_db_name_ok(const char *d_name) {
+    if (strncmp(d_name, "witness_", 8) != 0) return false;
+    const char *hex = d_name + 8;
+    const char *dot = strstr(hex, ".db");
+    if (!dot || dot[3] != '\0' || (size_t)(dot - hex) != 32) return false;
+    for (size_t i = 0; i < 32; i++) {
+        char c = hex[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+    }
+    return true;
+}
+
+int nodus_server_check_chain_pin(const char *data_path, const uint8_t pin[32]) {
+    if (!data_path || !pin) return -1;
+    DIR *dir = opendir(data_path);
+    if (!dir) {
+        /* An absent data directory holds no chain; any other failure is
+         * "could not establish", which is not "no chain". */
+        if (errno == ENOENT) return 0;
+        QGP_LOG_ERROR(LOG_TAG, "network file pin: cannot read data "
+                      "directory %s (%s) — refusing to start without "
+                      "knowing whether it holds a chain", data_path,
+                      strerror(errno));
+        return -1;
+    }
+    /* The ONE file the witness will open: the lexicographically smallest
+     * canonical name (nodus_witness_scan_chain_db, O15A deterministic
+     * selection). Other files in the directory are never opened by the
+     * node and are not judged here either. */
+    char best[256];
+    bool have = false;
+    struct dirent *e;
+    while ((e = readdir(dir)) != NULL) {
+        if (!chain_db_name_ok(e->d_name)) continue;
+        if (!have || strcmp(e->d_name, best) < 0) {
+            snprintf(best, sizeof(best), "%s", e->d_name);
+            have = true;
+        }
+    }
+    closedir(dir);
+    if (!have) return 0;                         /* no chain: a joiner */
+
+    char want[65];
+    hex32_lower(pin, want);
+    char p[640];
+    int n = snprintf(p, sizeof(p), "%s/%s", data_path, best);
+    if (n < 0 || (size_t)n >= sizeof(p)) {
+        QGP_LOG_ERROR(LOG_TAG, "network file pin: chain database path under "
+                      "%s too long — refusing to start", data_path);
+        return -1;
+    }
+    uint8_t id[32];
+    if (nodus_server_read_chain_id(p, id) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "network file pin: %s holds no readable "
+                      "version-3 chain id — cannot verify it against the "
+                      "pin %s; refusing to start", p, want);
+        return -1;
+    }
+    if (memcmp(id, pin, 32) != 0) {
+        char have_hex[65];
+        hex32_lower(id, have_hex);
+        QGP_LOG_ERROR(LOG_TAG, "REFUSING START — the network file pins chain "
+                      "%s but this node's database %s is chain %s. A wrong "
+                      "database is caught here, locally, before it can talk "
+                      "to the network. Fix the network file or the data "
+                      "directory.", want, p, have_hex);
+        return -1;
+    }
+    return 0;
+}
+
+#ifdef NODUS_HAS_JSONC
+/* ── P2P-PORT F6 — the network file (nodus_server.h) ────────────── */
+
+#define NF_KEY_PIN   "v2_genesis_pin"
+#define NF_KEY_PEERS "persistent_peers"
+
+static int nf_hexval(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/* A pin value: "" → no pin (0, *has = false); 64 hex digits → the pin;
+ * anything else → -1. */
+static int nf_parse_pin(struct json_object *v, bool *has, uint8_t out[32]) {
+    *has = false;
+    if (!json_object_is_type(v, json_type_string)) return -1;
+    const char *s = json_object_get_string(v);
+    size_t n = (size_t)json_object_get_string_len(v);
+    if (n == 0) return 0;
+    if (n != 64 || strlen(s) != 64) return -1;
+    for (int i = 0; i < 32; i++) {
+        int hi = nf_hexval(s[2 * i]), lo = nf_hexval(s[2 * i + 1]);
+        if (hi < 0 || lo < 0) return -1;
+        out[i] = (uint8_t)((hi << 4) | lo);
+    }
+    *has = true;
+    return 0;
+}
+
+/* Validate a parsed root object into `out`. `path` is for messages. */
+static int nf_validate(struct json_object *root, const char *path,
+                       nodus_network_file_t *out) {
+    memset(out, 0, sizeof(*out));
+    if (!json_object_is_type(root, json_type_object)) {
+        QGP_LOG_ERROR(LOG_TAG, "network file %s: not a JSON object", path);
+        return -1;
+    }
+    json_object_object_foreach(root, key, val) {
+        if (strcmp(key, NF_KEY_PIN) == 0) {
+            if (nf_parse_pin(val, &out->has_pin, out->pin) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "network file %s: \"%s\" must be a "
+                              "string of 64 hex digits or empty", path, key);
+                return -1;
+            }
+        } else if (strcmp(key, NF_KEY_PEERS) == 0) {
+            if (!json_object_is_type(val, json_type_array)) {
+                QGP_LOG_ERROR(LOG_TAG, "network file %s: \"%s\" must be an "
+                              "array of \"id@ip:port\" strings", path, key);
+                return -1;
+            }
+            size_t n = json_object_array_length(val);
+            if (n > NODUS_P2P_MAX_PEER_LIST) {
+                QGP_LOG_ERROR(LOG_TAG, "network file %s: %zu persistent "
+                              "peers, at most %d", path, n,
+                              NODUS_P2P_MAX_PEER_LIST);
+                return -1;
+            }
+            for (size_t i = 0; i < n; i++) {
+                struct json_object *it = json_object_array_get_idx(val, i);
+                if (!json_object_is_type(it, json_type_string)) {
+                    QGP_LOG_ERROR(LOG_TAG, "network file %s: peer %zu is "
+                                  "not a string", path, i);
+                    return -1;
+                }
+                const char *s = json_object_get_string(it);
+                size_t sl = (size_t)json_object_get_string_len(it);
+                cmt_p2p_netaddr_t na;
+                if (sl == 0 || sl >= CMT_P2P_NETADDR_STR_MAX ||
+                    strlen(s) != sl ||
+                    cmt_p2p_netaddr_new_string(s, sl, &na) !=
+                        CMT_P2P_ERR_NONE) {
+                    /* NO_ID included: the 4004 layer never dials an
+                     * unpinned address (R-P2P-33); a non-IP host is
+                     * ErrNetAddressLookup (R-P2P-24). */
+                    QGP_LOG_ERROR(LOG_TAG, "network file %s: peer \"%s\" is "
+                                  "not id@ip:port with a valid ID and an IP "
+                                  "literal", path, s);
+                    return -1;
+                }
+                for (int j = 0; j < out->n_peers; j++) {
+                    if (strcmp(out->peers[j], s) == 0) {
+                        QGP_LOG_ERROR(LOG_TAG, "network file %s: peer "
+                                      "\"%s\" listed twice", path, s);
+                        return -1;
+                    }
+                }
+                memcpy(out->peers[out->n_peers], s, sl + 1);
+                out->n_peers++;
+            }
+        } else {
+            /* A typo'd pin key would otherwise read as "no pin" and
+             * silently change what the node does. */
+            QGP_LOG_ERROR(LOG_TAG, "network file %s: unknown key \"%s\" "
+                          "(allowed: \"%s\", \"%s\")", path, key,
+                          NF_KEY_PIN, NF_KEY_PEERS);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int nodus_network_file_load(const char *path, nodus_network_file_t *out) {
+    if (!path || !out) return -1;
+    memset(out, 0, sizeof(*out));
+    struct json_object *root = json_object_from_file(path);
+    if (!root) {
+        QGP_LOG_ERROR(LOG_TAG, "network file %s: missing, unreadable or not "
+                      "JSON (%s)", path, json_util_get_last_err()
+                      ? json_util_get_last_err() : "?");
+        return -1;
+    }
+    int rc = nf_validate(root, path, out);
+    json_object_put(root);
+    if (rc != 0) memset(out, 0, sizeof(*out));
+    return rc;
+}
+
+int nodus_network_file_apply(const nodus_network_file_t *nf,
+                             nodus_server_config_t *cfg) {
+    if (!nf || !cfg) return -1;
+    if (nf->has_pin) {
+        if (cfg->has_v2_genesis_pin &&
+            memcmp(cfg->v2_genesis_pin, nf->pin, 32) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "--v2-genesis-pin and the network file's "
+                          "pin differ — two different chains named; "
+                          "refusing");
+            return -1;
+        }
+        memcpy(cfg->v2_genesis_pin, nf->pin, 32);
+        cfg->has_v2_genesis_pin = true;
+        memcpy(cfg->network_pin, nf->pin, 32);
+        cfg->has_network_pin = true;
+    }
+    for (int i = 0; i < nf->n_peers; i++) {
+        bool dup = false;
+        for (int j = 0; j < cfg->p2p.n_persistent_peers; j++) {
+            if (strcmp(cfg->p2p.persistent_peers[j], nf->peers[i]) == 0) {
+                dup = true;
+                break;
+            }
+        }
+        if (dup) continue;
+        if (nodus_p2p_config_add_persistent(&cfg->p2p, nf->peers[i]) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "network file peer \"%s\": the persistent "
+                          "peer list is full (%d)", nf->peers[i],
+                          NODUS_P2P_MAX_PEER_LIST);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int nodus_network_file_write_pin(const char *path, const uint8_t chain32[32]) {
+    if (!path || !chain32) return -1;
+    struct json_object *root = json_object_from_file(path);
+    if (!root) {
+        QGP_LOG_ERROR(LOG_TAG, "network file %s: missing, unreadable or not "
+                      "JSON — the pin was NOT written", path);
+        return -1;
+    }
+    nodus_network_file_t nf;
+    int rc = -1;
+    char hex[65];
+    char tmp[600];
+    int fd = -1;
+    tmp[0] = '\0';
+    hex32_lower(chain32, hex);
+
+    /* Never write into a file the loader would refuse. */
+    if (nf_validate(root, path, &nf) != 0) goto out;
+    if (nf.has_pin) {
+        if (memcmp(nf.pin, chain32, 32) == 0) { rc = 1; goto out; }
+        char have[65];
+        hex32_lower(nf.pin, have);
+        QGP_LOG_ERROR(LOG_TAG, "network file %s already pins chain %s, this "
+                      "ceremony derived %s — NOT overwritten; the ceremony "
+                      "stops here", path, have, hex);
+        goto out;
+    }
+
+    /* Replaces an existing "" in place (json-c keeps the key's position)
+     * or appends the key; every other key is untouched. */
+    if (json_object_object_add(root, NF_KEY_PIN,
+                               json_object_new_string(hex)) != 0)
+        goto out;
+    const char *text = json_object_to_json_string_ext(
+        root, JSON_C_TO_STRING_PRETTY | JSON_C_TO_STRING_NOSLASHESCAPE);
+    if (!text) goto out;
+    size_t tlen = strlen(text);
+
+    struct stat st;
+    mode_t mode = 0644;
+    if (stat(path, &st) == 0) mode = st.st_mode & 0777;
+
+    int n = snprintf(tmp, sizeof(tmp), "%s.tmp.%ld", path, (long)getpid());
+    if (n < 0 || (size_t)n >= sizeof(tmp)) { tmp[0] = '\0'; goto out; }
+    fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, mode);
+    if (fd < 0) {
+        QGP_LOG_ERROR(LOG_TAG, "network file %s: cannot create %s (%s)",
+                      path, tmp, strerror(errno));
+        tmp[0] = '\0';
+        goto out;
+    }
+    size_t off = 0;
+    while (off < tlen) {
+        ssize_t w = write(fd, text + off, tlen - off);
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            goto io_fail;
+        }
+        off += (size_t)w;
+    }
+    if (write(fd, "\n", 1) != 1) goto io_fail;
+    if (fsync(fd) != 0) goto io_fail;
+    if (close(fd) != 0) { fd = -1; goto io_fail; }
+    fd = -1;
+    if (rename(tmp, path) != 0) goto io_fail;
+    tmp[0] = '\0';                              /* now the real file */
+    {
+        /* make the rename itself durable */
+        char dir[600];
+        snprintf(dir, sizeof(dir), "%s", path);
+        char *slash = strrchr(dir, '/');
+        if (slash == dir) dir[1] = '\0';
+        else if (slash) *slash = '\0';
+        else snprintf(dir, sizeof(dir), ".");
+        int dfd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (dfd >= 0) {
+            if (fsync(dfd) != 0)
+                QGP_LOG_WARN(LOG_TAG, "network file: directory fsync of %s "
+                             "failed (%s)", dir, strerror(errno));
+            close(dfd);
+        }
+    }
+    rc = 0;
+    goto out;
+
+io_fail:
+    QGP_LOG_ERROR(LOG_TAG, "network file %s: writing the pin failed (%s) — "
+                  "the file is unchanged", path, strerror(errno));
+out:
+    if (fd >= 0) close(fd);
+    if (tmp[0]) unlink(tmp);
+    json_object_put(root);
+    return rc;
+}
+#endif /* NODUS_HAS_JSONC */
+
 /* ── Public API ──────────────────────────────────────────────────── */
 
 int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) {
@@ -5943,7 +6079,7 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
      * never-initialized members would touch fd 0. */
     bool have_bf = false, have_storage = false, have_media = false,
          have_ch = false, have_tcp = false, have_udp = false,
-         have_inter = false, have_wtcp = false;
+         have_inter = false;
 #ifndef NODUS_CHANNELS_DISABLED
     bool have_chsrv = false;
 #endif
@@ -5956,6 +6092,22 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
      * storage opens). */
     if (config->data_path[0] != '\0') {
         if (nodus_server_check_partial_wipe(config->data_path) != 0) {
+            return -1;
+        }
+    }
+
+    /* P2P-PORT F6 — the network file's pin, checked against the chain
+     * this node already holds (decision 2026-09-26-witness-port-
+     * session.md "Ağ config dosyası": pin set + local chain → must equal,
+     * or the node does not start). After the partial-wipe gate, so its
+     * message wins on a half-wiped directory; before anything opens a
+     * database or a socket. Refusing here makes main() exit 1 — a
+     * witness-init failure would not (the process keeps its DHT half). */
+    if (config->has_network_pin) {
+        /* the witness scans config->data_path as given (nodus_witness.c
+         * init), so the same directory is checked here */
+        if (nodus_server_check_chain_pin(config->data_path,
+                                         config->network_pin) != 0) {
             return -1;
         }
     }
@@ -6151,7 +6303,10 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     fprintf(stderr, "  Channels: DISABLED (NODUS_CHANNELS_DISABLED)\n");
 #endif
 
-    /* Init witness BFT TCP transport (dedicated port 4004) */
+    /* The witness port (4004) — P2P-PORT F5: it is opened by the
+     * witness's p2p host (nodus_witness_p2p_new, from nodus_witness_init
+     * below), not by a nodus_tcp transport; only the port-collision check
+     * stays here. */
     uint16_t witness_port = config->witness_port ? config->witness_port : NODUS_DEFAULT_WITNESS_PORT;
 #ifndef NODUS_CHANNELS_DISABLED
     if (witness_port == config->tcp_port || witness_port == peer_port || witness_port == ch_port) {
@@ -6168,23 +6323,6 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
         goto fail;
     }
 #endif
-    if (nodus_tcp_init(&srv->witness_tcp, -1) != 0)
-        goto fail;
-    have_wtcp = true;
-    srv->witness_tcp.on_accept     = on_witness_accept;
-    srv->witness_tcp.on_connect    = on_witness_connect;
-    srv->witness_tcp.on_frame      = on_witness_frame;
-    srv->witness_tcp.on_disconnect = on_witness_disconnect;
-    srv->witness_tcp.cb_ctx        = srv;
-    /* Witness uses T3 protocol with its own w_ident auth — NOT T2 hello.
-     * Do not set auth_required on witness transport. */
-    srv->witness_tcp.auth_ctx      = &srv->identity;
-
-    if (nodus_tcp_listen(&srv->witness_tcp, config->bind_ip, witness_port) != 0) {
-        fprintf(stderr, "Failed to listen on witness TCP %s:%d (%s)\n",
-                config->bind_ip, witness_port, strerror(errno));
-        goto fail;
-    }
 
     /* Bind UDP */
     if (nodus_udp_bind(&srv->udp, config->bind_ip, config->udp_port) != 0) {
@@ -6243,7 +6381,6 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
         fprintf(stderr, "Failed to allocate witness context\n");
         goto fail;
     }
-    srv->witness->tcp = &srv->witness_tcp;  /* Set before init (preserved across memset) */
     if (nodus_witness_init(srv->witness, srv, &config->witness) != 0) {
         free(srv->witness);
         srv->witness = NULL;
@@ -6268,18 +6405,10 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
          * transient database fault must not be able to cause. The
          * witness-less mode is safe, not latent — but NOT because every
          * call site is guarded, which is what this comment used to claim
-         * and is false. The two dispatch_t3 sites differ:
-         *
-         *   - on_witness_data (witness port) calls
-         *     nodus_witness_dispatch_t3(srv->witness, ...) with NO
-         *     `if (srv->witness)` around it. What protects it is the
-         *     CALLEE: nodus_witness_dispatch_t3's first line is
-         *     `if (!witness || !payload || len == 0) return;`
-         *     (nodus_witness.c), so a NULL witness is dropped there, not
-         *     here. Any future call site on this path inherits that
-         *     contract and nothing else.
-         *   - dispatch_t2's `w_` branch (client port) IS guarded:
-         *     `strncmp(msg.method, "w_", 2) == 0 && srv->witness`.
+         * and is false. P2P-PORT F5: the two tier-3 dispatch sites this
+         * paragraph used to describe are deleted — a witness-less node
+         * opens no port 4004 at all (its p2p host lives inside the
+         * witness), and the client port refuses `w_*` methods regardless.
          *
          * The periodic nodus_witness_tick call in the server loop is
          * guarded by `if (srv->witness)` AND NULL-checks its own argument
@@ -6388,9 +6517,6 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
         }
     }
 
-    /* Publish identity to DHT for witness discovery */
-    nodus_server_publish_identity(srv);
-
     return 0;
 
 fail:
@@ -6401,7 +6527,6 @@ fail:
 #ifndef NODUS_CHANNELS_DISABLED
     if (have_chsrv) nodus_channel_server_close(&srv->ch_server);
 #endif
-    if (have_wtcp) nodus_tcp_close(&srv->witness_tcp);
     if (have_inter) nodus_tcp_close(&srv->inter_tcp);
     if (have_udp) nodus_udp_close(&srv->udp);
     if (have_tcp) nodus_tcp_close(&srv->tcp);
@@ -6437,7 +6562,9 @@ int nodus_server_run(nodus_server_t *srv) {
     fprintf(stderr, "  Identity: %s\n", srv->identity.fingerprint);
     fprintf(stderr, "  TCP port: %d\n", srv->tcp.port);
     fprintf(stderr, "  Peer port: %d\n", srv->inter_tcp.port);
-    fprintf(stderr, "  Witness port: %d\n", srv->witness_tcp.port);
+    fprintf(stderr, "  Witness port: %d%s\n",
+            srv->witness ? (int)nodus_witness_p2p_listen_port(srv->witness->p2p) : 0,
+            (srv->witness && srv->witness->p2p) ? "" : " (not opened)");
 #ifndef NODUS_CHANNELS_DISABLED
     fprintf(stderr, "  Channel port: %d\n", srv->ch_server.port);
 #endif
@@ -6450,7 +6577,8 @@ int nodus_server_run(nodus_server_t *srv) {
         /* Poll inter-node TCP events */
         nodus_tcp_poll(&srv->inter_tcp, 50);
 
-        /* Witness BFT TCP (port 4004) is polled inside nodus_witness_tick() */
+        /* The witness port 4004 (the p2p host) is polled inside
+         * nodus_witness_tick() */
 
 #ifndef NODUS_CHANNELS_DISABLED
         /* Poll new channel server (TCP 4003) */
@@ -6469,17 +6597,7 @@ int nodus_server_run(nodus_server_t *srv) {
         /* CRIT-4: Disconnect idle TCP connections */
         idle_timeout_sweep(srv);
 
-        /* Refresh identity in DHT (every 60s) */
-        {
-            static uint64_t last_pk_publish = 0;
-            uint64_t pk_now = nodus_time_now();
-            if (pk_now - last_pk_publish >= 60) {
-                last_pk_publish = pk_now;
-                nodus_server_publish_identity(srv);
-            }
-        }
-
-        /* Witness BFT: timeout checks, peer reconnection */
+        /* Witness: the 4004 p2p host and the consensus lane */
         if (srv->witness)
             nodus_witness_tick(srv->witness);
 
@@ -6596,7 +6714,6 @@ void nodus_server_close(nodus_server_t *srv) {
 #endif
     nodus_tcp_close(&srv->tcp);
     nodus_tcp_close(&srv->inter_tcp);
-    nodus_tcp_close(&srv->witness_tcp);
     nodus_udp_close(&srv->udp);
     nodus_media_storage_close(&srv->media_storage);
     nodus_storage_close(&srv->storage);

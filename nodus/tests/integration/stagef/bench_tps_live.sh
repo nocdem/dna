@@ -62,17 +62,16 @@
 #   envelopes per block, mean / max observed block interval, the
 #   theoretical per-block cap floor(NODUS_V2_GLOBAL_UNIT_BUDGET / the
 #   declared units) next to the measured max, per-node CPU%, per-node
-#   bandwidth by port class (bandwidth_node<N>.csv), NETSTATS deltas per
-#   node / direction / channel / kind (netstats.csv, read from journald),
-#   per-worker counts, the measured controller->node ssh round trip, the
+#   bandwidth by port class (bandwidth_node<N>.csv) (P2P-PORT F6: the
+#   NETSTATS per-channel section is deleted — no such counters on the new
+#   stack), per-worker counts, the measured controller->node ssh round trip, the
 #   node clock offsets, and the closing agreement of all nodes (7 on the
 #   live devnet) at a common height.
 #
 # WHAT IT REQUIRES
 #   Compile flags: none beyond a default build. The per-block cap is read
 #   from THIS tree's nodus/src/witness/nodus_witness_v2_apply.h
-#   (NODUS_V2_GLOBAL_UNIT_BUDGET) and NODUS_CMT_NET_STATS_PERIOD_S from
-#   nodus_witness_cmt_net.h: the live nodes must run a binary built from
+#   (NODUS_V2_GLOBAL_UNIT_BUDGET): the live nodes must run a binary built from
 #   the same source, and every client host's nodus-cli should too (the CLI
 #   takes the CORE ruleset from its own compiled table; the summary warns
 #   when the CLIs declared different unit ceilings).
@@ -84,7 +83,7 @@
 #   Nodes: `ssh -o BatchMode=yes root@<ip>` from the controller (key auth,
 #   no prompt); on each node: sqlite3, ss (iproute2; a node whose
 #   `ss -tinpH` prints no bytes_received / bytes_acked counters at start
-#   has its bandwidth SKIPPED, the rest still runs), journalctl,
+#   has its bandwidth SKIPPED, the rest still runs),
 #   systemctl, getconf, nproc, awk; the systemd
 #   unit BENCH_NODE_UNIT (default `nodus`) running nodus-server; exactly
 #   ONE chain DB matching BENCH_NODE_DATA_DIR/witness_*.db. Every one of
@@ -137,7 +136,7 @@
 #   §1; the chain credits it there, nodus-cli.c cmd_v2_spend header). The
 #   chain many blocks further on. Nothing is stopped, restarted or
 #   written on any node: every node command is read-only (sqlite3
-#   -readonly, journalctl, ss, /proc, systemctl show). NOTE: SQLite
+#   -readonly, ss, /proc, systemctl show). NOTE: SQLite
 #   readers of a WAL database update the read marks in its -shm shared
 #   memory index — that is how any WAL reader works; no file is created.
 #   ON EACH REMOTE CLIENT HOST: a copy of every test identity dir that
@@ -148,9 +147,8 @@
 #   they are test keys; remove them by hand when the host is done.
 #   ON THIS MACHINE: $BENCH_OUT (summary.txt, blocks.csv, blocks.raw,
 #   prep_<identity>.log, worker_<I>.log / .stats, node_<N>.stream,
-#   bw_samples.raw, bandwidth_node<N>.csv, netstats_node<N>.start / .end,
-#   netstats_node<N>.jstart / .jend (the journald slices), netstats_delta.raw,
-#   netstats.csv, nodes.txt, agreement.txt, cluster_status.txt) and a
+#   bw_samples.raw, bandwidth_node<N>.csv, nodes.txt, agreement.txt,
+#   cluster_status.txt) and a
 #   short-lived ssh ControlMaster socket dir /tmp/btl.XXXXXX (removed at
 #   exit; a master left by a killed run exits after 600 s idle).
 #   On EVERY exit path (normal end, a fault, Ctrl-C / TERM) the cleanup
@@ -221,8 +219,10 @@
 #     real users with the bench's own sessions — separated ONLY when
 #     BENCH_CLIENT_IPS names the client hosts' public IPs (then
 #     in_client_bench), otherwise NOT separated and the summary says so.
-#     UDP 4000 (Kademlia) is never seen (`ss -t`). NETSTATS counts the
-#     witness port only, so it is not polluted by the DHT.
+#     UDP 4000 (Kademlia) is never seen (`ss -t`). On the new stack
+#     4004 also carries PEX, the 0x70/0x71 channels and the secret-
+#     connection handshake + AES-GCM framing — in/out_witness is ALL of
+#     it, with no per-channel split (the NETSTATS counters are gone).
 #   - **Bandwidth is TCP payload, sampled ~1 s.** Same rules as the local
 #     bench (bytes_sent / bytes_acked, bytes_received; last value per
 #     socket; baseline = the node's first sample; a socket opened and
@@ -230,17 +230,6 @@
 #     re-use). Each node's window is its OWN first-to-last sample span on
 #     its own clock (printed), not the controller's load window; the
 #     sampler's own ssh session (port 22) is outside every class.
-#   - **NETSTATS come from journald.** The start / end values are the
-#     newest COMPLETE snapshot (end line present, data-line count =
-#     lines=) in `journalctl -u <unit> --since @<edge - 2 periods - 10 s>
-#     --until @<edge>` — journald's receive time decides the slice, the
-#     snapshot's own t= is the node's clock (offsets are printed against
-#     the controller's edge together with the measured clock offset). A
-#     restart between the edges is detected by the unit's MainPID changing
-#     or a counter going down; journald rate limiting or a cut slice fails
-#     the line count and the previous snapshot is used. `--since @<epoch>`
-#     is assumed to be supported by the nodes' journalctl (systemd.time
-#     epoch syntax) — a node whose query fails is SKIPPED, never zeroed.
 #   - **Refused and dropped spends are COUNTED, never retried silently**,
 #     with the local bench's inline stagef_cmt_wait_row rules: stall =
 #     180 s (3 x the 60 s idle interval, stagef_env.sh:466) of WALL CLOCK
@@ -293,7 +282,6 @@ fi
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd) || { echo "[FAIL] cannot resolve the script dir" >&2; exit 1; }
 REPO_ROOT=$(cd "$SCRIPT_DIR/../../../.." && pwd) || { echo "[FAIL] cannot resolve the repo root" >&2; exit 1; }
 APPLY_H="$REPO_ROOT/nodus/src/witness/nodus_witness_v2_apply.h"
-NS_H="$REPO_ROOT/nodus/src/witness/nodus_witness_cmt_net.h"
 
 die() { echo "[FAIL] $*" >&2; exit 1; }
 
@@ -408,8 +396,6 @@ done
 
 BUDGET=$(awk '$1 == "#define" && $2 == "NODUS_V2_GLOBAL_UNIT_BUDGET" { v = $3; sub(/u$/, "", v); print v; exit }' "$APPLY_H" 2>/dev/null || true)
 is_uint "$BUDGET" || die "could not read NODUS_V2_GLOBAL_UNIT_BUDGET from $APPLY_H"
-NS_PERIOD=$(awk '$1 == "#define" && $2 == "NODUS_CMT_NET_STATS_PERIOD_S" { print $3; exit }' "$NS_H" 2>/dev/null || true)
-is_uint "$NS_PERIOD" || die "could not read NODUS_CMT_NET_STATS_PERIOD_S from $NS_H"
 
 mkdir -p "$BENCH_OUT" || die "cannot create $BENCH_OUT"
 rm -f "$BENCH_OUT"/worker_*.log "$BENCH_OUT"/worker_*.stats "$BENCH_OUT"/prep_*.log \
@@ -574,7 +560,7 @@ trap 'exit 129' HUP
 NODE_CHECK_SH='
 set -u
 d="$1"; u="$2"
-for t in sqlite3 ss journalctl systemctl getconf nproc awk; do
+for t in sqlite3 ss systemctl getconf nproc awk; do
     command -v "$t" >/dev/null 2>&1 || { echo "ERR missing tool: $t"; exit 3; }
 done
 set -- "$d"/witness_*.db
@@ -1108,10 +1094,6 @@ last_seen=$(awk -F, 'BEGIN { m = -1 } $1 + 0 > m { m = $1 + 0 } END { print m }'
 [ "$last_seen" -ge "$base_h" ] || last_seen="$base_h"
 node_sql "$REF" "SELECT global_height || ',' || tx_count FROM v2_blocks WHERE global_height > $last_seen ORDER BY global_height;" \
     2>/dev/null | stamp >> "$BENCH_OUT/blocks.raw"
-NODE_PID1=()
-for n in $(seq 1 "$NN"); do
-    NODE_PID1[n]=$(node_ssh "$n" "systemctl show -p MainPID --value '$NODE_UNIT'" 2>/dev/null || echo "?")
-done
 
 # ── (iv) report ──────────────────────────────────────────────────────
 csv="$BENCH_OUT/blocks.csv"
@@ -1288,173 +1270,11 @@ bw_report() {
     }' "$BW_RAW" || echo "bandwidth: report FAILED to aggregate $BW_RAW (awk error) — raw samples kept"
 }
 
-# NETSTATS: the newest COMPLETE snapshot in a journald slice (the local
-# bench's ns_snap, reading a file instead of a log prefix)
-NS_CSV="$BENCH_OUT/netstats.csv"
-NS_DELTA="$BENCH_OUT/netstats_delta.raw"
-ns_snap() {
-    awk '
-    function reset() { split("", cnt); split("", endk); split("", tt); split("", rows) }
-    BEGIN { reset(); last = -1; restarts = 0 }
-    {
-        i = index($0, "NETSTATS seq=")
-        if (i == 0) next
-        n = split(substr($0, i + 9), f, " ")
-        split("", kv)
-        for (j = 1; j <= n; j++) {
-            p = index(f[j], "=")
-            if (p > 1) kv[substr(f[j], 1, p - 1)] = substr(f[j], p + 1)
-            else kv[f[j]] = ""
-        }
-        if (kv["seq"] !~ /^[0-9]+$/) next
-        sq = kv["seq"] + 0
-        if (sq < last || (sq in endk)) { reset(); restarts++ }
-        last = sq
-        if ("end" in kv) {
-            if (kv["lines"] ~ /^[0-9]+$/ && kv["t"] ~ /^-?[0-9]+$/) { endk[sq] = kv["lines"] + 0; tt[sq] = kv["t"] }
-            next
-        }
-        cr = ("sign" in kv) ? kv["sign"] : kv["verify"]
-        if (kv["dir"] !~ /^(tx|rx)$/ || kv["ch"] == "" || kv["kind"] == "") next
-        if (kv["msgs"] !~ /^[0-9]+$/ || kv["payload"] !~ /^[0-9]+$/ || kv["frame"] !~ /^[0-9]+$/ ||
-            cr !~ /^[0-9]+$/ || kv["fail"] !~ /^[0-9]+$/) next
-        cnt[sq]++
-        rows[sq, cnt[sq]] = kv["dir"] " " kv["ch"] " " kv["kind"] " " kv["msgs"] " " kv["payload"] " " kv["frame"] " " cr " " kv["fail"]
-    }
-    END {
-        best = -1
-        for (s in endk) if ((cnt[s] + 0) == endk[s] && s + 0 > best) best = s + 0
-        if (best < 0) { print "NONE -1 -1 " restarts; exit }
-        print "SNAP " best " " tt[best] " " restarts
-        for (j = 1; j <= cnt[best]; j++) print rows[best, j]
-    }' "$1" > "$2" 2>/dev/null || echo "NONE -1 -1 0" > "$2"
-}
-# ns_fetch NODE EDGE OUT — journald slice [EDGE - 2 periods - 10 s, EDGE]
-ns_fetch() {
-    node_ssh "$1" "journalctl -q -u '$NODE_UNIT' -o cat --no-pager --since @$(( $2 - 2 * NS_PERIOD - 10 )) --until @$2" > "$3" 2>/dev/null
-}
-
-ns_report() {
-    local n s0 s1 j0 j1 h0 h1 k0 q0 t0 r0 k1 q1 t1 r1 used="" drc
-    echo "inter-node traffic — NETSTATS counters from journald (witness port, cumulative snapshots every ${NS_PERIOD} s; window = end snapshot − start snapshot):"
-    : > "$NS_DELTA"
-    for n in $(seq 1 "$NN"); do
-        s0="$BENCH_OUT/netstats_node$n.start"; s1="$BENCH_OUT/netstats_node$n.end"
-        j0="$BENCH_OUT/netstats_node$n.jstart"; j1="$BENCH_OUT/netstats_node$n.jend"
-        if ! ns_fetch "$n" "$LOAD_START" "$j0" || ! ns_fetch "$n" "$BW_TEND" "$j1"; then
-            echo "  node$n: SKIPPED — journalctl -u $NODE_UNIT --since/--until @<epoch> failed on the node"
-            continue
-        fi
-        if [ "${NODE_PID1[n]}" != "${NODE_PID0[n]}" ]; then
-            echo "  node$n: SKIPPED — its nodus-server MainPID is unreadable or changed (${NODE_PID0[n]} -> ${NODE_PID1[n]}): a restart would have started the counters over"
-            continue
-        fi
-        ns_snap "$j0" "$s0"
-        ns_snap "$j1" "$s1"
-        h0=$(head -n 1 "$s0"); h1=$(head -n 1 "$s1")
-        read -r k0 q0 t0 r0 <<< "$h0" || true
-        read -r k1 q1 t1 r1 <<< "$h1" || true
-        if [ "$k0" != SNAP ]; then
-            echo "  node$n: SKIPPED — no complete NETSTATS snapshot in journald in the $(( 2 * NS_PERIOD + 10 )) s before load start (older than nodus 0.19.76, rate-limited, or not live long enough)"
-            continue
-        fi
-        if [ "$k1" != SNAP ]; then
-            echo "  node$n: SKIPPED — no complete NETSTATS snapshot in journald in the $(( 2 * NS_PERIOD + 10 )) s before load end"
-            continue
-        fi
-        if [ "$q0" = "$q1" ]; then
-            echo "  node$n: SKIPPED — the same snapshot (seq $q0) is the newest at both edges: the window is shorter than the ${NS_PERIOD} s cadence"
-            continue
-        fi
-        drc=0
-        awk -v node="$n" '
-        BEGIN {
-            nc = split("0x20 0x21 0x22 0x23 0x30 t3", c, " ")
-            for (i = 1; i <= nc; i++) co[c[i]] = i
-            nk = split("unknown new_round_step new_valid_block proposal proposal_pol block_part vote has_vote vote_set_maj23 vote_set_bits txs other", k, " ")
-            for (i = 1; i <= nk; i++) ko[k[i]] = i
-        }
-        FNR == 1 { next }
-        FILENAME == ARGV[1] {
-            key = $1 " " $2 " " $3
-            b4[key] = $4; b5[key] = $5; b6[key] = $6; b7[key] = $7; b8[key] = $8
-            next
-        }
-        {
-            key = $1 " " $2 " " $3; seen[key] = 1
-            d4 = $4 - b4[key]; d5 = $5 - b5[key]; d6 = $6 - b6[key]; d7 = $7 - b7[key]; d8 = $8 - b8[key]
-            if (d4 < 0 || d5 < 0 || d6 < 0 || d7 < 0 || d8 < 0) bad = 1
-            ord = ($1 == "tx" ? 0 : 1) * 10000 + (($2 in co) ? co[$2] : 99) * 100 + (($3 in ko) ? ko[$3] : 99)
-            printf "%d,%d,%s,%s,%s,%.0f,%.0f,%.0f,%.0f,%.0f\n", ord, node, $1, $2, $3, d4, d5, d6, d7, d8
-        }
-        END {
-            for (key in b4) if (!(key in seen) && (b4[key] + b5[key] + b6[key] + b7[key] + b8[key]) > 0) bad = 1
-            if (bad) exit 3
-        }' "$s0" "$s1" > "$NS_DELTA.node" || drc=$?
-        if [ "$drc" != 0 ]; then
-            echo "  node$n: SKIPPED — a counter went DOWN between the snapshots (an undetected restart, or awk rc $drc)"
-            continue
-        fi
-        cat "$NS_DELTA.node" >> "$NS_DELTA"
-        used="$used $n"
-        echo "  node$n: start snapshot seq $q0 t=$t0 ($(( t0 - NODE_SKEW[n] - LOAD_START )) s from load start after removing the node's ${NODE_SKEW[n]} s clock offset), end snapshot seq $q1 t=$t1 ($(( t1 - NODE_SKEW[n] - BW_TEND )) s from load end) — counted span $(( t1 - t0 )) s"
-    done
-    rm -f "$NS_DELTA.node"
-    if [ -z "$used" ]; then
-        echo "  no node had a usable pair of snapshots — the NETSTATS table is ABSENT for this run (not zero)"
-        return 0
-    fi
-    echo "node,dir,ch,kind,msgs,payload_bytes,frame_bytes,sign_or_verify,fail,frame_bytes_per_env,sign_or_verify_per_env" > "$NS_CSV"
-    LC_ALL=C sort -t, -k2,2n -k1,1n "$NS_DELTA" | awk -F, -v env="$w_env" -v csv="$NS_CSV" '
-    function E(x, d) { return env > 0 ? sprintf("%." d "f", x / env) : "n/a" }
-    function flush(   d) {
-        if (cur == "") return
-        for (d = 0; d < 2; d++) {
-            dn = d == 0 ? "tx" : "rx"
-            if (!(dn in TM)) continue
-            printf "    %-2s %-4s %-15s %10.0f %14.0f %12.0f %8.0f %14s %10s\n", dn, "all", "ALL", TM[dn], TF[dn], TC[dn], TL[dn], E(TF[dn], 0), E(TC[dn], 2)
-            print "node" cur "," dn ",all,ALL," sprintf("%.0f,%.0f,%.0f,%.0f,%.0f", TM[dn], TP[dn], TF[dn], TC[dn], TL[dn]) "," E(TF[dn], 0) "," E(TC[dn], 2) >> csv
-        }
-        split("", TM); split("", TP); split("", TF); split("", TC); split("", TL)
-    }
-    {
-        if ($2 != cur) {
-            flush(); cur = $2
-            printf "  node%s  (%s committed envelopes in the window blocks; sign = tx, verify = rx)\n", cur, env
-            printf "    %-2s %-4s %-15s %10s %14s %12s %8s %14s %10s\n", "dir", "ch", "kind", "msgs", "frame_B", "sign/verify", "fail", "frame_B/env", "crypto/env"
-        }
-        printf "    %-2s %-4s %-15s %10.0f %14.0f %12.0f %8.0f %14s %10s\n", $3, $4, $5, $6, $8, $9, $10, E($8, 0), E($9, 2)
-        print "node" $2 "," $3 "," $4 "," $5 "," $6 "," $7 "," $8 "," $9 "," $10 "," E($8, 0) "," E($9, 2) >> csv
-        TM[$3] += $6; TP[$3] += $7; TF[$3] += $8; TC[$3] += $9; TL[$3] += $10
-    }
-    END { flush() }' || echo "  netstats: per-node table FAILED to aggregate $NS_DELTA (sort/awk error) — raw differences kept"
-    LC_ALL=C sort -t, -k1,1n -k2,2n "$NS_DELTA" | awk -F, -v env="$w_env" -v csv="$NS_CSV" -v used="$used" '
-    function E(x, d) { return env > 0 ? sprintf("%." d "f", x / env) : "n/a" }
-    function row() {
-        if (ord == "") return
-        printf "    %-2s %-4s %-15s %10.0f %14.0f %12.0f %8.0f %14s %10s\n", dr, ch, kd, m, f, c, l, E(f, 0), E(c, 2)
-        print "cluster," dr "," ch "," kd "," sprintf("%.0f,%.0f,%.0f,%.0f,%.0f", m, p, f, c, l) "," E(f, 0) "," E(c, 2) >> csv
-        TM[dr] += m; TP[dr] += p; TF[dr] += f; TC[dr] += c; TL[dr] += l
-    }
-    BEGIN {
-        printf "  cluster total over node(s)%s  (node-to-node traffic counts once as tx on the sender and once as rx on the receiver)\n", used
-        printf "    %-2s %-4s %-15s %10s %14s %12s %8s %14s %10s\n", "dir", "ch", "kind", "msgs", "frame_B", "sign/verify", "fail", "frame_B/env", "crypto/env"
-    }
-    {
-        if ($1 != ord) { row(); ord = $1; dr = $3; ch = $4; kd = $5; m = 0; p = 0; f = 0; c = 0; l = 0 }
-        m += $6; p += $7; f += $8; c += $9; l += $10
-    }
-    END {
-        row()
-        for (d = 0; d < 2; d++) {
-            dn = d == 0 ? "tx" : "rx"
-            if (!(dn in TM)) continue
-            printf "    %-2s %-4s %-15s %10.0f %14.0f %12.0f %8.0f %14s %10s\n", dn, "all", "ALL", TM[dn], TF[dn], TC[dn], TL[dn], E(TF[dn], 0), E(TC[dn], 2)
-            print "cluster," dn ",all,ALL," sprintf("%.0f,%.0f,%.0f,%.0f,%.0f", TM[dn], TP[dn], TF[dn], TC[dn], TL[dn]) "," E(TF[dn], 0) "," E(TC[dn], 2) >> csv
-        }
-    }' || echo "  netstats: cluster table FAILED to aggregate $NS_DELTA (sort/awk error) — raw differences kept"
-    echo "  frame_B = the signed tier-3 message handed to / taken from the transport (no frame header, no channel encryption — the ss bandwidth above includes both); per envelope = window delta / the $w_env committed envelopes of the window blocks (snapshot edges and block window differ)"
-}
+# P2P-PORT F6 — the NETSTATS section (per-channel witness-port counters
+# read from journald) is DELETED: its emitter, nodus_witness_cmt_net.c,
+# and the header its period was read from are gone with the 4004 p2p port
+# (p2p-port design §2); a node on the new stack logs no such counters. The
+# ss bandwidth section above still measures 4004 traffic per port class.
 
 # closing agreement: every READABLE node's tip first, the minimum of those
 # as a floor, then the full global_root and block_id AT that height on
@@ -1568,13 +1388,10 @@ agree_out=$(agreement); agree_rc=$?
     echo ""
     bw_report
     echo ""
-    ns_report
-    echo ""
     echo "$agree_out"
 } > "$summary"
 cat "$summary"
 echo "[ok] per-block rows: $csv; summary: $summary; node streams: $BENCH_OUT/node_<N>.stream"
-[ ! -s "$NS_CSV" ] || echo "[ok] inter-node counters: $NS_CSV; the snapshots used: $BENCH_OUT/netstats_node<N>.start / .end"
 
 # informational only: each node's CURRENT height and 8 root bytes, read
 # at different moments (it races ongoing production — the verdict is the

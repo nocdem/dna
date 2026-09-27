@@ -15,7 +15,7 @@
 
 #include "witness/nodus_witness_handlers.h"
 #include "witness/nodus_witness_db.h"
-#include "witness/nodus_witness_peer.h"
+#include "witness/nodus_witness_p2p.h"    /* bonded set + signed ADDR (F5) */
 #include "witness/nodus_witness_merkle.h"
 #include "witness/nodus_witness_validator.h"
 #include "witness/nodus_witness_delegation.h"
@@ -26,6 +26,7 @@
 #include "dnac/cmt_mem.h"
 #include "protocol/nodus_cbor.h"
 #include "protocol/nodus_tier2.h"
+#include "protocol/nodus_tier3.h"   /* nodus_t3_tx_size_limit (was via peer.h) */
 #include "transport/nodus_tcp.h"
 #include "server/nodus_server.h"
 #include "crypto/nodus_sign.h"
@@ -739,13 +740,106 @@ static void handle_dnac_ledger_range(nodus_witness_t *w,
  * Response: "r": {"version":N, "count":N, "witnesses":[{...},...]}
  * ════════════════════════════════════════════════════════════════════ */
 
+/* P2P-PORT F5 — the reply's source. The transport roster this used to
+ * serve (built from the DHT `nodus:pk` registry, IDENT and ROST_R —
+ * HEAD nodus_witness_peer.c nodus_witness_rebuild_roster_from_peers) is
+ * deleted. Its CONTENT rules are kept (fix round 1):
+ *   · THIS node is always listed, at its configured address —
+ *     external_ip, else bind_ip, with the witness port (HEAD
+ *     nodus_witness_peer.c:300-313, the same expression);
+ *   · every BONDED identity (validators ACTIVE / ELIGIBLE ∪ the tip ± 1
+ *     committees, nodus_witness_p2p.h) is listed, with the address its
+ *     validator-signed ADDR record names (R-P2P-4) — or an EMPTY address
+ *     when this node holds no record for it, as HEAD listed a registry
+ *     entry without ip/port (HEAD :396-398);
+ *   · the list is sorted by witness id (HEAD roster_cmp, :473-476 — the
+ *     self-first insertion there is re-sorted too, so "first" was the
+ *     build order, never the reply order).
+ * Same reply shape (wid, pk, addr "ip:port", active=true), at most
+ * NODUS_T3_MAX_WITNESSES entries (the client's array bound,
+ * nodus_types.h nodus_dnac_roster_result_t). `version` is the chain height
+ * the reply was built at (HEAD: a roster rebuild counter). */
+typedef struct {
+    uint8_t wid[NODUS_T3_WITNESS_ID_LEN];
+    uint8_t pk[NODUS_PK_BYTES];
+    char    addr[CMT_P2P_NETADDR_STR_MAX];
+} roster_row_t;
+
+static int roster_row_cmp(const void *a, const void *b) {
+    return memcmp(((const roster_row_t *)a)->wid, ((const roster_row_t *)b)->wid,
+                  NODUS_T3_WITNESS_ID_LEN);
+}
+
+/* The address a roster / committee reply names for `pk`: this node's own
+ * configured witness address (HEAD nodus_witness_peer.c:300-313), else
+ * the member's signed ADDR record, else "" (no record held). */
+static void witness_reply_addr(nodus_witness_t *w, const uint8_t *pk,
+                               char *out, size_t cap) {
+    out[0] = '\0';
+    if (w->server &&
+        memcmp(pk, w->server->identity.pk.bytes, NODUS_PK_BYTES) == 0) {
+        const char *my_ip = w->server->config.external_ip[0]
+                          ? w->server->config.external_ip
+                          : w->server->config.bind_ip;
+        uint16_t my_wport = w->server->config.witness_port
+                          ? w->server->config.witness_port
+                          : NODUS_DEFAULT_WITNESS_PORT;
+        snprintf(out, cap, "%s:%u", my_ip, (unsigned)my_wport);
+        return;
+    }
+    if (!w->p2p || !nodus_witness_p2p_signed_addr(w->p2p, pk, out, cap))
+        out[0] = '\0';
+}
+
 static void handle_dnac_roster(nodus_witness_t *w,
                                  struct nodus_tcp_conn *conn,
                                  uint32_t txn_id) {
+    roster_row_t *rows = calloc(NODUS_T3_MAX_WITNESSES, sizeof(*rows));
+    uint32_t n_rows = 0;
+    uint64_t version = 0;
+
+    if (!rows) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "allocation failed");
+        return;
+    }
+    /* This node, always. */
+    if (w->server) {
+        uint8_t fp[64];
+        roster_row_t *r = &rows[n_rows];
+        memcpy(r->pk, w->server->identity.pk.bytes, NODUS_PK_BYTES);
+        if (qgp_sha3_512(r->pk, NODUS_PK_BYTES, fp) == 0) {
+            memcpy(r->wid, fp, NODUS_T3_WITNESS_ID_LEN);
+            witness_reply_addr(w, r->pk, r->addr, sizeof(r->addr));
+            n_rows++;
+        }
+    }
+    /* Every bonded identity (self already listed). */
+    if (w->p2p) {
+        int nb = nodus_witness_p2p_bonded_count(w->p2p);
+        for (int i = 0; i < nb && n_rows < NODUS_T3_MAX_WITNESSES; i++) {
+            roster_row_t *r = &rows[n_rows];
+            uint8_t fp[64];
+            if (!nodus_witness_p2p_bonded_at(w->p2p, i, NULL, r->pk) ||
+                (w->server && memcmp(r->pk, w->server->identity.pk.bytes,
+                                     NODUS_PK_BYTES) == 0) ||
+                qgp_sha3_512(r->pk, NODUS_PK_BYTES, fp) != 0)
+                continue;
+            memcpy(r->wid, fp, NODUS_T3_WITNESS_ID_LEN);
+            witness_reply_addr(w, r->pk, r->addr, sizeof(r->addr));
+            n_rows++;
+        }
+    }
+    if (n_rows > 1)
+        qsort(rows, n_rows, sizeof(*rows), roster_row_cmp);
+    if (w->db)
+        (void)nodus_witness_block_height_checked(w, &version);
+
     /* Encode response */
-    size_t buf_size = 512 + (w->roster.n_witnesses * (64 + NODUS_PK_BYTES + 256));
+    size_t buf_size = 512 + ((size_t)n_rows * (64 + NODUS_PK_BYTES + 256));
     uint8_t *buf = malloc(buf_size);
     if (!buf) {
+        free(rows);
         send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
                     "allocation failed");
         return;
@@ -756,27 +850,26 @@ static void handle_dnac_roster(nodus_witness_t *w,
     enc_dnac_response(&enc, txn_id, "dnac_roster", 3);
 
     cbor_encode_cstr(&enc, "version");
-    cbor_encode_uint(&enc, w->roster.version);
+    cbor_encode_uint(&enc, version);
 
     cbor_encode_cstr(&enc, "count");
-    cbor_encode_uint(&enc, w->roster.n_witnesses);
+    cbor_encode_uint(&enc, n_rows);
 
     cbor_encode_cstr(&enc, "witnesses");
-    cbor_encode_array(&enc, w->roster.n_witnesses);
+    cbor_encode_array(&enc, n_rows);
 
-    for (uint32_t i = 0; i < w->roster.n_witnesses; i++) {
+    for (uint32_t i = 0; i < n_rows; i++) {
         cbor_encode_map(&enc, 4);
         cbor_encode_cstr(&enc, "wid");
-        cbor_encode_bstr(&enc, w->roster.witnesses[i].witness_id,
-                          NODUS_T3_WITNESS_ID_LEN);
+        cbor_encode_bstr(&enc, rows[i].wid, NODUS_T3_WITNESS_ID_LEN);
         cbor_encode_cstr(&enc, "pk");
-        cbor_encode_bstr(&enc, w->roster.witnesses[i].pubkey,
-                          NODUS_PK_BYTES);
+        cbor_encode_bstr(&enc, rows[i].pk, NODUS_PK_BYTES);
         cbor_encode_cstr(&enc, "addr");
-        cbor_encode_cstr(&enc, w->roster.witnesses[i].address);
+        cbor_encode_cstr(&enc, rows[i].addr);
         cbor_encode_cstr(&enc, "active");
-        cbor_encode_bool(&enc, w->roster.witnesses[i].active);
+        cbor_encode_bool(&enc, true);
     }
+    free(rows);
 
     size_t rlen = cbor_encoder_len(&enc);
     if (rlen > 0) {
@@ -2206,19 +2299,12 @@ static void handle_dnac_committee_query(nodus_witness_t *w,
             status = v_rec.status;
         }
 
-        /* Roster endpoint lookup: committee pubkey matches a witness
-         * pubkey when the committee member is running a witness node.
-         * Every committee member MUST be running a witness node for
-         * BFT to work, but during rollout we tolerate no-match and
-         * ship empty addr. */
-        const char *addr = "";
-        for (uint32_t j = 0; j < w->roster.n_witnesses; j++) {
-            if (memcmp(w->roster.witnesses[j].pubkey, committee[i].pubkey,
-                       DNAC_PUBKEY_SIZE) == 0) {
-                addr = w->roster.witnesses[j].address;
-                break;
-            }
-        }
+        /* Endpoint lookup (P2P-PORT F5): the roster's own rule
+         * (witness_reply_addr) — this node's configured witness address
+         * for itself, else the address the member's signed ADDR record
+         * names (R-P2P-4), else an empty addr, as a roster miss was. */
+        char addr[CMT_P2P_NETADDR_STR_MAX];
+        witness_reply_addr(w, committee[i].pubkey, addr, sizeof(addr));
 
         cbor_encode_map(&enc, 5);
         cbor_encode_cstr(&enc, "pk");
@@ -2377,6 +2463,68 @@ static void handle_dnac_validator_list_query(nodus_witness_t *w,
 
     free(buf);
     free(vals);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ * dnac_cc_collect — the node-side governance approval collection
+ * (decision docs/plans/decisions/2026-09-26-cc-approval-via-own-node.md)
+ *
+ * Request:  "a": {"e": bstr — the pre-auth SYSTEM-governance envelope,
+ *                  <= NODUS_T3_CC_APPR_E_MAX}
+ * Response: "r": {"res": [ one entry per seat but this node's own ]}
+ *           (nodus_witness_chain_config.c cc_collect_encode_reply) — sent
+ *           when every asked seat answered or NODUS_CC_COLLECT_DEADLINE_MS
+ *           passed; an error reply at once when the request is refused.
+ *
+ * Reached from nodus_server.c with the requesting session's identity —
+ * the only dnac_* method that receives it (it is served to this node's
+ * own identity only, decision (2)).
+ * ════════════════════════════════════════════════════════════════════ */
+
+void nodus_witness_handle_cc_collect(nodus_witness_t *w,
+                                     struct nodus_tcp_conn *conn,
+                                     const uint8_t client_pk[NODUS_PK_BYTES],
+                                     const uint8_t token[NODUS_SESSION_TOKEN_LEN],
+                                     const uint8_t *payload, size_t len,
+                                     uint32_t txn_id) {
+    if (!w || !conn || !client_pk || !token || !payload) return;
+
+    cbor_decoder_t dec;
+    size_t args_count;
+    if (decode_args(payload, len, &dec, &args_count) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR, "missing args map");
+        return;
+    }
+    const uint8_t *e = NULL;
+    size_t e_len = 0;
+    for (size_t i = 0; i < args_count; i++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        if (key_match(&key, "e")) {
+            cbor_item_t val = cbor_decode_next(&dec);
+            if (val.type == CBOR_ITEM_BSTR) {
+                e = val.bstr.ptr;
+                e_len = val.bstr.len;
+            }
+        } else {
+            cbor_decode_skip(&dec);
+        }
+    }
+    if (!e || e_len == 0) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR, "missing e");
+        return;
+    }
+    if (e_len > NODUS_T3_CC_APPR_E_MAX) {
+        send_error(conn, txn_id, NODUS_ERR_TOO_LARGE, "envelope too large");
+        return;
+    }
+
+    char err[160] = "";
+    if (nodus_witness_cc_collect_start(w, client_pk, token, txn_id, e, e_len,
+                                       nodus_p2p_mono_ns(NULL) / 1000000,
+                                       err, sizeof(err)) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                   err[0] ? err : "approval collection refused");
+    }
 }
 
 /* ════════════════════════════════════════════════════════════════════

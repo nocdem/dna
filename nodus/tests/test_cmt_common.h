@@ -1426,6 +1426,15 @@ static int tc_wal_read_next(void *ctx, cmt_timed_wal_message_t *out,
     return CMT_OK;
 }
 
+/** state.go:352-385 — the WAL repair (cmt_cs.h `wal_repair`). This
+ *  fixture's reader never reports corruption, so the row is never
+ *  reached; a call would be a defect, and answers CMT_FAULT. */
+static int tc_wal_repair(void *ctx)
+{
+    (void)ctx;
+    return CMT_FAULT;
+}
+
 /**
  * state.go:2005-2019 — `io.ReadAll` + `proto.Unmarshal` +
  * `types.BlockFromProto`, as ONE row because cmt_pb.h:1043 says this tree
@@ -1518,6 +1527,7 @@ static void tc_build_host(cmt_cs_host_t *h)
     h->wal_flush_and_sync                 = tc_wal_flush_and_sync;
     h->wal_search_end_height              = tc_wal_search_end_height;
     h->wal_read_next                      = tc_wal_read_next;
+    h->wal_repair                         = tc_wal_repair;
     h->decode_block                       = tc_decode_block;
     h->now                                = tc_now;
     h->timer_arm                          = tc_timer_arm;

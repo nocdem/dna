@@ -20,11 +20,14 @@
 #include "crypto/nodus_sign.h"
 #include "crypto/hash/qgp_sha3.h"   /* S3: stake verb unstake-dest fp */
 #include "crypto/nodus_identity.h"
-#include "nodus/nodus.h"                    /* Stage E.2 helper + dnac_committee */
+#include "nodus/nodus.h"                    /* dnac_cc_collect + dnac_committee */
 #include "nodus/nodus_types.h"
 #include "nodus/nodus_chain_config.h"       /* Stage C vote primitives */
 #include "protocol/nodus_cbor.h"
+#include "dnac/cmt_p2p_netaddr.h"           /* P2P-PORT F6: whoami's P2P ID */
+#include "dnac/ledger_ids.h"                /* dna_bft_quorum (witness)    */
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -279,126 +282,82 @@ static int cmd_get(const char *key_str) {
     return 0;
 }
 
-static int cmd_witness(const char *connected_ip) {
-    /* Get all entries from "nodus:pk" DHT key */
-    nodus_key_t key;
-    nodus_hash((const uint8_t *)"nodus:pk", 8, &key);
+/* P2P-PORT F6 — `witness`: the committee as THIS node's chain states it.
+ *
+ * It used to read the DHT key "nodus:pk", which nothing publishes any
+ * more (the publisher and both readers were deleted with the 4004 T3
+ * roster, p2p-port design §3 "Deleted"), so it could only ever print
+ * "No witnesses registered". Rewritten on the dnac_committee RPC — the
+ * committee that governs the NEXT block (tip + 1), in resolution order,
+ * answered from the chain's own signed records (handle_dnac_committee_
+ * query, nodus_witness_handlers.c). One nodus_client_t session, like
+ * `chain-config propose`. Read-only: nothing is signed or submitted. */
+static int cmd_witness(const char *server_ip, uint16_t server_port) {
+    nodus_client_t client;
+    nodus_client_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "%s", server_ip);
+    cfg.servers[0].port = server_port;
+    cfg.server_count    = 1;
+    cfg.auto_reconnect  = false;
 
-    size_t len = 0;
-    uint32_t txn = next_txn++;
-    nodus_t2_get_all(txn, session_token, &key,
-                      proto_buf, sizeof(proto_buf), &len);
-    nodus_tcp_send(server_conn, proto_buf, len);
-
-    if (!wait_response(5000)) {
-        fprintf(stderr, "No response to GET_ALL\n");
+    if (nodus_client_init(&client, &cfg, &identity) != 0) {
+        fprintf(stderr, "client_init failed\n");
+        return 1;
+    }
+    if (nodus_client_connect(&client) != 0) {
+        fprintf(stderr, "client connect failed (%s:%u)\n", server_ip,
+                (unsigned)server_port);
+        nodus_client_close(&client);
         return 1;
     }
 
-    if (last_response.type == 'e') {
-        fprintf(stderr, "GET_ALL error: [%d] %s\n",
-                last_response.error_code, last_response.error_msg);
-        return 1;
+    int rc = 1;
+    /* ~370 KB — heap, never stack (nodus_types.h) */
+    nodus_dnac_committee_result_t *c = calloc(1, sizeof(*c));
+    if (!c) { fprintf(stderr, "out of memory\n"); goto done; }
+    if (nodus_client_dnac_committee(&client, c) != 0) {
+        fprintf(stderr, "dnac_committee query failed\n");
+        goto done;
     }
 
-    if (!last_response.values || last_response.value_count == 0) {
-        printf("No witnesses registered in DHT.\n");
-        return 0;
-    }
-
-    /* connected_ip is the server we're talking to */
-
-    printf("Witness Roster (from DHT \"nodus:pk\")\n");
+    printf("Committee for block %llu (epoch start %llu), from %s:%u\n",
+           (unsigned long long)c->block_height,
+           (unsigned long long)c->epoch_start, server_ip,
+           (unsigned)server_port);
     printf("=====================================\n");
-    printf("Total entries: %zu\n\n", last_response.value_count);
-
-    int my_index = -1;
-    int valid_count = 0;
-
-    for (size_t i = 0; i < last_response.value_count; i++) {
-        nodus_value_t *val = last_response.values[i];
-        if (!val || !val->data || val->data_len == 0) continue;
-
-        /* Verify signature */
-        bool sig_ok = (nodus_value_verify(val) == 0);
-
-        /* Check expiry */
-        bool expired = nodus_value_is_expired(val, (uint64_t)time(NULL));
-
-        /* Decode CBOR payload */
-        cbor_decoder_t dec;
-        cbor_decoder_init(&dec, val->data, val->data_len);
-        cbor_item_t top = cbor_decode_next(&dec);
-        if (top.type != CBOR_ITEM_MAP) continue;
-
-        char node_id_hex[NODUS_KEY_BYTES * 2 + 1] = {0};
-        char ip[64] = {0};
-        uint16_t port = 0;
-        bool has_id = false;
-
-        for (size_t m = 0; m < top.count; m++) {
-            cbor_item_t k = cbor_decode_next(&dec);
-            if (k.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
-
-            if (k.tstr.len == 2 && memcmp(k.tstr.ptr, "id", 2) == 0) {
-                cbor_item_t v = cbor_decode_next(&dec);
-                if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_KEY_BYTES) {
-                    for (int b = 0; b < NODUS_KEY_BYTES; b++)
-                        snprintf(node_id_hex + b * 2, sizeof(node_id_hex) - b * 2, "%02x", v.bstr.ptr[b]);
-                    has_id = true;
-                }
-            } else if (k.tstr.len == 2 && memcmp(k.tstr.ptr, "ip", 2) == 0) {
-                cbor_item_t v = cbor_decode_next(&dec);
-                if (v.type == CBOR_ITEM_TSTR && v.tstr.len < sizeof(ip)) {
-                    memcpy(ip, v.tstr.ptr, v.tstr.len);
-                    ip[v.tstr.len] = '\0';
-                }
-            } else if (k.tstr.len == 4 && memcmp(k.tstr.ptr, "port", 4) == 0) {
-                cbor_item_t v = cbor_decode_next(&dec);
-                if (v.type == CBOR_ITEM_UINT)
-                    port = (uint16_t)v.uint_val;
-            } else {
-                cbor_decode_skip(&dec);
-            }
+    for (int i = 0; i < c->count; i++) {
+        const nodus_dnac_committee_entry_t *e = &c->entries[i];
+        uint8_t fp[64];
+        char p2p_id[CMT_P2P_ID_CAP];
+        if (qgp_sha3_512(e->pubkey, sizeof(e->pubkey), fp) != 0 ||
+            cmt_p2p_pubkey_to_id(e->pubkey, p2p_id) != CMT_OK) {
+            fprintf(stderr, "seat %d: key hash failed\n", i);
+            goto done;
         }
-
-        if (!has_id) continue;
-        valid_count++;
-
-        /* Check if this is the server we're connected to (match by IP) */
-        bool is_connected = (connected_ip && ip[0] &&
-                             strcmp(ip, connected_ip) == 0);
-        if (is_connected) my_index = valid_count - 1;
-
-        printf("[%d] %s%s\n", valid_count - 1,
-               is_connected ? "(CONNECTED) " : "",
-               expired ? "(EXPIRED) " : "");
-        printf("    node_id:  %.32s...\n", node_id_hex);
-        printf("    address:  %s:%u\n", ip, port);
-        printf("    sig:      %s\n", sig_ok ? "VALID" : "INVALID");
-        printf("    seq:      %lu\n", (unsigned long)val->seq);
-        printf("    expires:  %lds from now\n",
-               (long)(val->expires_at - (uint64_t)time(NULL)));
-        printf("\n");
+        printf("[%d]\n", i);
+        printf("    fingerprint: ");
+        for (int b = 0; b < 16; b++) printf("%02x", fp[b]);
+        printf("...\n");
+        printf("    p2p id:      %s\n", p2p_id);
+        printf("    address:     %s\n", e->address[0] ? e->address
+                                                     : "(unknown)");
+        printf("    status:      %u\n", (unsigned)e->status);
+        printf("    stake:       %llu\n", (unsigned long long)e->total_stake);
+        printf("    commission:  %u bps\n", (unsigned)e->commission_bps);
     }
-
     printf("─────────────────────────────────\n");
-    printf("Valid witnesses: %d\n", valid_count);
-    printf("Server index:    %d\n", my_index);
+    printf("Committee size:  %d\n", c->count);
+    if (c->count > 0)
+        printf("Quorum (seats):  %u  (dna_bft_quorum; the chain weighs "
+               "votes by power)\n",
+               (unsigned)dna_bft_quorum((uint32_t)c->count));
+    rc = 0;
 
-    /* BFT config */
-    if (valid_count >= NODUS_T3_MIN_WITNESSES) {
-        uint32_t f = (valid_count - 1) / 3;
-        uint32_t quorum = 2 * f + 1;
-        printf("Consensus:       ACTIVE\n");
-        printf("f_tolerance:     %u\n", f);
-        printf("Quorum:          %u\n", quorum);
-    } else {
-        printf("Consensus:       DISABLED (need %d, have %d)\n",
-               NODUS_T3_MIN_WITNESSES, valid_count);
-    }
-
-    return 0;
+done:
+    free(c);
+    nodus_client_close(&client);
+    return rc;
 }
 
 static int cmd_listen(const char *key_str) {
@@ -875,6 +834,16 @@ static void cmd_whoami(void) {
     printf("Node ID:     ");
     for (int i = 0; i < 8; i++) printf("%02x", identity.node_id.bytes[i]);
     printf("...\n");
+    /* P2P-PORT F6 — the witness-port (4004) p2p ID of this identity:
+     * cmt_p2p_pubkey_to_id (the reference's PubKeyToID, key.go:44), the
+     * value a network file's "persistent_peers" entry "id@ip:port"
+     * names. Printed in full: a harness or an operator writes it into
+     * that file. */
+    char p2p_id[CMT_P2P_ID_CAP];
+    if (cmt_p2p_pubkey_to_id(identity.pk.bytes, p2p_id) == CMT_OK)
+        printf("P2P ID:      %s\n", p2p_id);
+    else
+        fprintf(stderr, "P2P ID: derivation failed\n");
 }
 
 #ifdef NODUS_CLI_HAS_DNAC
@@ -1057,34 +1026,42 @@ static int cc_hex_to_bytes32(const char *hex, uint8_t out[32]) {
     return 0;
 }
 
-/* Ask ONE committee seat for its CCAPPR approval over the envelope
- * currently held in `env_bytes`/`env_len` (whose leg auth_digest is
- * `auth_digest0`) — or, when `seat == self_idx`, sign it locally with
- * no network round trip. Validates a networked reply's (seat, sh, ep)
- * against the caller's own locally-computed values before accepting a
- * signature — a mismatch is treated as a refusal, never silently
- * accepted (D-16 rev 7 (5): "every reply must be ok, sh==local,
- * ep==local").
+/* Judge ONE seat's CCAPPR approval over the envelope whose leg
+ * auth_digest is `auth_digest0`. This proposer's OWN seat is signed here,
+ * locally, with no round trip (this CLI holds the node's key — the node
+ * serves dnac_cc_collect to that key only — so the node skips its own
+ * seat). Every other seat's answer comes from `res`, the node's
+ * dnac_cc_collect reply (decision 2026-09-26-cc-approval-via-own-node.md
+ * (4)), and is checked exactly as a direct reply was: the replied seat,
+ * set_hash and epoch must equal this proposer's own locally computed
+ * values (D-16 rev 7 (5): "every reply must be ok, sh==local,
+ * ep==local") — a mismatch is a refusal, never silently accepted.
+ *
+ * ADDED with the relay: the signature itself is verified against the
+ * seat's committee key and the locally computed approval digest. A 0x71
+ * reply carries no request id, so a seat that answers a PREVIOUS
+ * collection after that collection's deadline is taken by the node as an
+ * answer to the next one it asked the same seat; such a signature binds
+ * the other envelope's digest and passes the seat/sh/ep equality. It is
+ * refused here instead of being carried into an envelope CheckTx refuses.
  *
  * @return 0 accepted (sig_out filled), 1 refused (a line was already
  *         printed explaining why), -1 a local fault (sign/digest).
  */
-static int cc_propose_ask_seat(int seat, int self_idx,
-                               nodus_identity_t *identity,
-                               const nodus_dnac_committee_entry_t *ent,
-                               const uint8_t caller_wid[32],
-                               const uint8_t chain32[32],
-                               const uint8_t local_set_hash[64],
-                               uint64_t local_epoch,
-                               const uint8_t *env_bytes, size_t env_len,
-                               const uint8_t auth_digest0[64],
-                               uint8_t sig_out[NODUS_SIG_BYTES]) {
+static int cc_propose_judge_seat(int seat, int self_idx,
+                                 const nodus_identity_t *identity,
+                                 const nodus_dnac_committee_entry_t *ent,
+                                 const nodus_dnac_cc_collect_result_t *res,
+                                 const uint8_t local_set_hash[64],
+                                 uint64_t local_epoch,
+                                 const uint8_t auth_digest0[64],
+                                 uint8_t sig_out[NODUS_SIG_BYTES]) {
+    uint8_t adg[64];
+    if (nodus_rt_cc_approval_digest(auth_digest0, local_set_hash,
+                                    local_epoch, (uint16_t)seat, adg) != 0)
+        return -1;
+
     if (seat == self_idx) {
-        uint8_t adg[64];
-        if (nodus_rt_cc_approval_digest(auth_digest0, local_set_hash,
-                                        local_epoch, (uint16_t)seat,
-                                        adg) != 0)
-            return -1;
         size_t sl = 0;
         if (qgp_dsa87_sign(sig_out, &sl, adg, 64, identity->sk.bytes) != 0)
             return -1;
@@ -1092,53 +1069,97 @@ static int cc_propose_ask_seat(int seat, int self_idx,
         return 0;
     }
 
-    printf("Requesting approval from seat %d", seat);
+    printf("Seat %d", seat);
     if (ent->address[0]) printf(" (%s)", ent->address);
-    printf("... ");
-    fflush(stdout);
-    if (ent->address[0] == '\0') { printf("SKIP (address unknown)\n"); return 1; }
+    printf(": ");
 
-    nodus_pubkey_t peer_pk;
-    memcpy(peer_pk.bytes, ent->pubkey, NODUS_PK_BYTES);
-
-    nodus_t3_cc_appr_rsp_t rsp;
-    memset(&rsp, 0, sizeof(rsp));
-    int vrc = nodus_client_cc_appr_send(ent->address, &identity->pk,
-                                        &identity->sk, caller_wid, &peer_pk,
-                                        chain32, env_bytes, env_len,
-                                        5000, &rsp);
-    if (vrc == 0 && rsp.ok) {
-        if (rsp.seat != (uint16_t)seat) {
-            printf("MISMATCH (replied seat %u != requested %d — refusing "
-                   "the signature)\n", (unsigned)rsp.seat, seat);
-            return 1;
-        }
-        if (memcmp(rsp.set_hash, local_set_hash, 64) != 0 ||
-            rsp.epoch != local_epoch) {
-            printf("MISMATCH (peer's set_hash/epoch differ from this "
-                   "proposer's own — peer epoch=%llu, local epoch=%llu; "
-                   "refusing the signature)\n",
-                   (unsigned long long)rsp.epoch,
-                   (unsigned long long)local_epoch);
-            return 1;
-        }
-        memcpy(sig_out, rsp.sig, NODUS_SIG_BYTES);
-        printf("APPROVED\n");
-        return 0;
-    } else if (vrc == 0) {
-        printf("REFUSED: %s\n", rsp.reason[0] ? rsp.reason
-                                              : "(no reason given)");
-        return 1;
-    } else if (vrc == -2) {
-        printf("TIMEOUT\n");
-        return 1;
-    } else if (vrc == -3) {
-        printf("BAD WSIG\n");
-        return 1;
-    } else {
-        printf("ERROR (rc=%d)\n", vrc);
+    const nodus_dnac_cc_collect_entry_t *r = NULL;
+    for (int i = 0; i < res->count; i++) {
+        if (res->entries[i].seat == (uint16_t)seat) { r = &res->entries[i]; break; }
+    }
+    if (!r) {
+        printf("MISSING (the node reported no result for this seat)\n");
         return 1;
     }
+    switch (r->status) {
+    case NODUS_CC_COLLECT_ST_ANSWERED:
+        break;
+    case NODUS_CC_COLLECT_ST_NOT_CONNECTED:
+        printf("SKIP (this node has no connection to the seat)\n");
+        return 1;
+    case NODUS_CC_COLLECT_ST_NO_ANSWER:
+        printf("TIMEOUT\n");
+        return 1;
+    case NODUS_CC_COLLECT_ST_SEND_FAILED:
+        printf("ERROR (the node could not send the request)\n");
+        return 1;
+    default:
+        printf("ERROR (unknown status %u)\n", (unsigned)r->status);
+        return 1;
+    }
+    if (!r->ok) {
+        printf("REFUSED: %s\n", r->reason[0] ? r->reason : "(no reason given)");
+        return 1;
+    }
+    if (r->rsp_seat != (uint16_t)seat) {
+        printf("MISMATCH (replied seat %u != requested %d — refusing "
+               "the signature)\n", (unsigned)r->rsp_seat, seat);
+        return 1;
+    }
+    if (memcmp(r->set_hash, local_set_hash, 64) != 0 ||
+        r->epoch != local_epoch) {
+        printf("MISMATCH (peer's set_hash/epoch differ from this "
+               "proposer's own — peer epoch=%llu, local epoch=%llu; "
+               "refusing the signature)\n",
+               (unsigned long long)r->epoch,
+               (unsigned long long)local_epoch);
+        return 1;
+    }
+    if (nodus_chain_config_verify_vote(ent->pubkey, adg, r->sig) != 0) {
+        printf("BAD SIGNATURE (does not verify over this envelope's "
+               "approval digest — refusing it)\n");
+        return 1;
+    }
+    memcpy(sig_out, r->sig, NODUS_SIG_BYTES);
+    printf("APPROVED\n");
+    return 0;
+}
+
+/* One collection round over the envelope in `b` (whose leg auth_digest is
+ * `pf->auth_digest[0]`): the node collects every other seat's answer in
+ * ONE dnac_cc_collect call, then each seat with `want[seat]` (NULL = every
+ * seat) is judged (cc_propose_judge_seat). @return the number accepted,
+ * or -1 (a line was printed: the call failed or a local fault). */
+static int cc_propose_round(nodus_client_t *client, int N, int self_idx,
+                            const nodus_dnac_committee_result_t *committee,
+                            const bool *want, const cc_appr_envelope_t *b,
+                            const dna_env_preflight_t *pf,
+                            const uint8_t set_hash[64], uint64_t epoch,
+                            nodus_dnac_cc_collect_result_t *res,
+                            bool *ok_out, uint8_t (*sigs_out)[NODUS_SIG_BYTES]) {
+    printf("Collecting approvals through this node...\n");
+    fflush(stdout);
+    int crc = nodus_client_dnac_cc_collect(client, b->env_bytes, b->env_len, res);
+    if (crc != 0) {
+        fprintf(stderr, "dnac_cc_collect failed (rc=%d) — the node refused "
+                        "or did not answer (busy, not this node's own "
+                        "identity, or a timeout)\n", crc);
+        return -1;
+    }
+    int accepted = 0;
+    for (int seat = 0; seat < N; seat++) {
+        if (want && !want[seat]) continue;
+        int r = cc_propose_judge_seat(seat, self_idx, &identity,
+                                      &committee->entries[seat], res,
+                                      set_hash, epoch, pf->auth_digest[0],
+                                      sigs_out[seat]);
+        if (r == 0) { ok_out[seat] = true; accepted++; }
+        else if (r < 0) {
+            fprintf(stderr, "local fault at seat %d\n", seat);
+            return -1;
+        }
+    }
+    return accepted;
 }
 
 /* chain-config propose flow (D-16 rev 7, W4-CC — rebuilt on the
@@ -1159,13 +1180,17 @@ static int cc_propose_ask_seat(int seat, int self_idx,
  * cross-check: a mismatch aborts rather than silently using either
  * value.
  *
- * Round 1 asks EVERY committee seat (self signs locally, no network
- * round trip); if k refuse and the accepting set (N-k) still reaches
- * quorum, round 2 REBUILDS the envelope with exactly that count (the
- * approval COUNT is bound into the leg auth_digest through auth_len —
- * D-16 rev 7 (3) — so round 1's signatures, including self's, are
- * invalid under the new auth_len and everyone accepting is re-asked) and
- * any refusal there aborts the whole proposal — there is no round 3. */
+ * Round 1 asks EVERY committee seat: self signs locally (no round trip),
+ * every other seat is asked by THIS NODE over its existing 4004
+ * connections, in one dnac_cc_collect call (decision
+ * 2026-09-26-cc-approval-via-own-node.md — this CLI never dials 4004).
+ * If k refuse and the accepting set (N-k) still reaches quorum, round 2
+ * REBUILDS the envelope with exactly that count (the approval COUNT is
+ * bound into the leg auth_digest through auth_len — D-16 rev 7 (3) — so
+ * round 1's signatures, including self's, are invalid under the new
+ * auth_len and everyone accepting is re-asked) and any refusal there
+ * aborts the whole proposal — there is no round 3. Round 2 first waits
+ * out the responders' per-proposer cooldown (decision (6)). */
 static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
                                      int argc, char **argv, int cmd_start) {
     /* 1. Parse sub-flags --param / --value / --effective / [--nonce] /
@@ -1249,6 +1274,7 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
     nodus_dnac_committee_result_t *committee = NULL;  /* ~370 KB, heap  */
     bool           *ok    = NULL;   /* per-seat accepted-this-round      */
     uint8_t       (*sigs)[NODUS_SIG_BYTES] = NULL;   /* per-seat sig     */
+    nodus_dnac_cc_collect_result_t *cres = NULL;     /* ~620 KB, heap    */
     dna_env_preflight_t *pf = NULL;
     cc_appr_envelope_t   b;
     memset(&b, 0, sizeof(b));
@@ -1305,13 +1331,9 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
     }
 
     /* 5. Caller must be a committee member — found by PUBKEY, the same
-     * comparison the responder uses to find its own seat. */
-    uint8_t caller_wid[32];
-    if (nodus_chain_config_derive_witness_id(identity.pk.bytes,
-                                             caller_wid) != 0) {
-        fprintf(stderr, "derive caller witness_id failed\n");
-        goto done;
-    }
+     * comparison the responder uses to find its own seat. (The caller's
+     * witness id this step also derived was the retired 4004 client's
+     * sender id; the node now asks the seats with its own identity.) */
     int self_idx = -1;
     for (int i = 0; i < N; i++) {
         if (memcmp(committee->entries[i].pubkey, identity.pk.bytes,
@@ -1413,11 +1435,13 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
         }
     }
 
-    /* 10. Round 1 — ask every seat (self signs locally). */
+    /* 10. Round 1 — ask every seat (self signs locally, the node asks the
+     * others). */
     pf = calloc(1, sizeof(*pf));
     ok = calloc((size_t)N, sizeof(*ok));
     sigs = calloc((size_t)N, sizeof(*sigs));
-    if (!pf || !ok || !sigs) { fprintf(stderr, "out of memory\n"); goto done; }
+    cres = calloc(1, sizeof(*cres));
+    if (!pf || !ok || !sigs || !cres) { fprintf(stderr, "out of memory\n"); goto done; }
 
     if (cc_appr_build_pass1(&b, pf, chain32, tip, sys_rt->ruleset_version,
                             sys_rt->ruleset_hash, (uint8_t)param_id,
@@ -1426,16 +1450,9 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
         fprintf(stderr, "round-1 envelope build/preflight failed\n");
         goto done;
     }
-    int accepted = 0;
-    for (int seat = 0; seat < N; seat++) {
-        int r = cc_propose_ask_seat(seat, self_idx, &identity,
-                                    &committee->entries[seat], caller_wid,
-                                    chain32, set_hash, epoch,
-                                    b.env_bytes, b.env_len,
-                                    pf->auth_digest[0], sigs[seat]);
-        if (r == 0) { ok[seat] = true; accepted++; }
-        else if (r < 0) { fprintf(stderr, "local fault at seat %d\n", seat); goto done; }
-    }
+    int accepted = cc_propose_round(&client, N, self_idx, committee, NULL, &b,
+                                    pf, set_hash, epoch, cres, ok, sigs);
+    if (accepted < 0) goto done;
     printf("\nRound 1: %d/%d approved (need >= %u for quorum).\n",
            accepted, N, quorum);
 
@@ -1453,6 +1470,38 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
         int k = N - accepted;
         printf("Rebuilding with %d approver(s) (round 1 refused %d)...\n",
                accepted, k);
+        /* Every seat this node asked in round 1 recorded this node's
+         * identity in its per-proposer cooldown when the request ARRIVED
+         * (nodus_cc_rate_limit_record, on every bonded attempt — so before
+         * the node's reply reached this CLI) and would refuse the re-ask
+         * as "rate-limited" for NODUS_CC_RATE_LIMIT_WINDOW_MS. Wait that
+         * window out (decision 2026-09-26-cc-approval-via-own-node.md
+         * (6)) PLUS CLI_CC_ROUND2_MARGIN_MS. Why a margin: the seat
+         * measures the window on CLOCK_REALTIME (nodus_time_now_ms,
+         * nodus_tcp.c:793-800) truncated to whole ms, and its test is
+         * `elapsed < window` (nodus_cc_rate_limit_check). The sleep starts
+         * after the seat's record, so nominally elapsed >= the sleep; what
+         * can eat into that is the ms truncation on each side (< 2 ms) and
+         * NTP slew of the seat's wall clock (<= 500 ppm → <= 2.5 ms over
+         * 5 s) — about 5 ms, grounded. The rest of the 1000 ms is
+         * JUDGMENT: headroom a human never notices next to a 5 s wait. No
+         * margin covers a wall-clock STEP on a seat (a step backwards
+         * reads as elapsed 0, chain_config.c's clock-skew rule); such a
+         * seat refuses round 2 and the proposal aborts — retry it. The
+         * envelope's expiry (CLI_ENV_EXPIRY_AHEAD blocks) covers the
+         * wait. No reference counterpart (nodus governance tooling). */
+        const uint32_t CLI_CC_ROUND2_MARGIN_MS = 1000u;
+        const uint32_t wait_ms = NODUS_CC_RATE_LIMIT_WINDOW_MS +
+                                 CLI_CC_ROUND2_MARGIN_MS;
+        printf("Waiting %u ms for the seats' per-proposer cooldown before "
+               "round 2...\n", (unsigned)wait_ms);
+        fflush(stdout);
+        {
+            struct timespec ts;
+            ts.tv_sec  = (time_t)(wait_ms / 1000u);
+            ts.tv_nsec = (long)(wait_ms % 1000u) * 1000000L;
+            while (nanosleep(&ts, &ts) != 0 && errno == EINTR) { }
+        }
         cc_appr_envelope_free(&b);
         memset(&b, 0, sizeof(b));
         if (cc_appr_build_pass1(&b, pf, chain32, tip, sys_rt->ruleset_version,
@@ -1469,15 +1518,14 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
             free(ok2); free(sigs2);
             fprintf(stderr, "out of memory\n"); goto done;
         }
-        int accepted2 = 0;
-        for (int seat = 0; seat < N; seat++) {
-            if (!ok[seat]) continue;
-            int r = cc_propose_ask_seat(seat, self_idx, &identity,
-                                        &committee->entries[seat],
-                                        caller_wid, chain32, set_hash,
-                                        epoch, b.env_bytes, b.env_len,
-                                        pf->auth_digest[0], sigs2[seat]);
-            if (r == 0) { ok2[seat] = true; accepted2++; }
+        /* The node asks every other seat again (its request carries only
+         * the envelope); only the round-1 accepting seats are judged. */
+        int accepted2 = cc_propose_round(&client, N, self_idx, committee, ok,
+                                         &b, pf, set_hash, epoch, cres, ok2,
+                                         sigs2);
+        if (accepted2 < 0) {
+            free(ok2); free(sigs2);
+            goto done;
         }
         if (accepted2 != accepted) {
             fprintf(stderr, "Round 2: a previously-accepting seat refused "
@@ -1554,6 +1602,7 @@ done:
     cc_appr_envelope_free(&b);
     free(ok);
     free(sigs);
+    free(cres);
     free(committee);
     nodus_client_close(&client);
     return rc;
@@ -2675,23 +2724,25 @@ done:
 
 /* ── O15F Task 6 — `v2-envelope stake` (O11 two-leg STAKE builder) ───
  *
- * Builds the canonical O11 staking envelope entirely from the committed
- * successor database and the operator key dir: leg0 = SYSTEM STAKE
+ * Builds the canonical O11 staking envelope from what the NODE reports
+ * (P2P-PORT F6 / K3 — no local database; see cmd_v2_stake's own header)
+ * and the operator key dir: leg0 = SYSTEM STAKE
  * (runtime_op 1, call = staker_pk[2592] ‖ commission u16 ‖ bond u64 ‖
  * dest_fp[64 RAW] = 2666, nodus_witness_rt_native.c:199-200), leg1 = CORE
  * SYSFUND (runtime_op 7, call = the SPEND transfer section funded from the
- * caller's successor utxo_set rows). Conservation Σin == Σchange + fee +
- * lock is enforced by the exec (the lock = bond derives from the SYSTEM
- * sibling); the CLI just supplies inputs summing to bond + fee + change.
- * fee = max(DNAC_MIN_FEE_RAW, NODUS_W_BASE_TX_FEE), raised under HF-1 to
- * 400 000 units × the node's gas_price (dnac_fee_info) with --submit;
- * --dry-run is offline and keeps the floor. Each leg carries a
+ * caller's CORE coins as dnac_utxo lists them). Conservation Σin ==
+ * Σchange + fee + lock is enforced by the exec (the lock = bond derives
+ * from the SYSTEM sibling); the CLI just supplies inputs summing to
+ * bond + fee + change. fee = max(DNAC_MIN_FEE_RAW, NODUS_W_BASE_TX_FEE),
+ * raised under HF-1 to 400 000 units × the node's gas_price
+ * (dnac_fee_info) — on both --dry-run and --submit. Each leg carries a
  * kind-1 single-signer auth blob (the staker) over the ENGINE-derived leg
  * auth_digest — the two-pass build cmd_v2_envelope uses (zero-fill →
  * preflight → sign → re-encode → re-preflight self-check).
  *
- * Reuses cmd_v2_envelope's registry-ruleset lookup, derived chain id,
- * dna_env_encode, dna_env_preflight self-check and the dnac_spend lane.
+ * Reuses the compiled ruleset table (cli_builtin_runtime), the node's
+ * chain id, dna_env_encode, dna_env_preflight self-check and the
+ * dnac_spend lane — the `v2-envelope spend` sources.
  */
 /* SYSFUND / SPEND transfer-section wire widths (nodus_witness_rt_native.c:
  * RTN_SPEND_MAX_IN=15, RTN_SPEND_OUT_LEN=232 = fp128 + amount8 + token64 +
@@ -2699,6 +2750,22 @@ done:
  * with their source citation, not #included). */
 #define T6_SPEND_MAX_IN   15u
 #define T6_SPEND_OUT_LEN  232u
+
+/* One listed coin, as the networked builders (`v2-envelope stake`,
+ * `v2-envelope spend`) select from a dnac_utxo reply. `nul` MUST stay the
+ * first member: t6_nul_cmp orders both a bare 64-byte nullifier array and
+ * a t6_coin_t array by it. */
+typedef struct {
+    uint8_t  nul[64];
+    uint64_t amount;
+    uint8_t  kind;      /* 0 native · 1 the requested token · 2 any other */
+    uint8_t  used;
+} t6_coin_t;
+
+/* Ascending by the first 64 bytes (a nullifier). */
+static int t6_nul_cmp(const void *a, const void *b) {
+    return memcmp(a, b, 64);
+}
 
 /* Write ONE transfer-section output record (T6_SPEND_OUT_LEN = 232 bytes):
  *   [0..127]   owner fingerprint, 128 lowercase-hex chars (NOT raw — the
@@ -2788,18 +2855,33 @@ fail:
     return -1;
 }
 
+/* P2P-PORT F6 (K3, decision 2026-09-26-witness-port-session.md): no
+ * local database. Everything comes from the node over ONE session
+ * authenticated AS THE STAKER, exactly as `v2-envelope spend`:
+ *   - chain id: dnac_supply's chain_id32 (nodus_client_dnac_chain_id32);
+ *   - SYSTEM / CORE ruleset: the compiled table (cli_builtin_runtime);
+ *   - the funding coins + their unlock heights + the tip: dnac_utxo (the
+ *     server lists CORE-domain coins only — nodus_witness_utxo_by_owner);
+ *   - the gas price: dnac_fee_info.
+ * So a candidate stakes without ever touching 4004 (K2's "a new
+ * candidate is never stuck"). `--dry-run` therefore needs the node too:
+ * it lists the coins and reads the gas price, builds and self-checks the
+ * envelope, and submits nothing. Both paths print wire_id and intent_id;
+ * intent_id commits expiry_height = tip + CLI_ENV_EXPIRY_AHEAD
+ * (env_wire.h intent_id preimage), so a dry run and a later submit can
+ * differ when a block lands in between — a caller that needs the
+ * submitted envelope's intent_id reads it from the SUBMIT output. */
 static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
                         int argc, char **argv, int cmd_start) {
-    const char *db_path = NULL, *keys_csv = NULL, *dest_fp_hex = NULL;
+    const char *keys_csv = NULL, *dest_fp_hex = NULL;
     const char *submit = NULL;
     uint64_t bond = 0;
     uint32_t commission = 0;
-    int dry_run = 0, have_bond = 0, have_comm = 0;
+    int dry_run = 0, have_bond = 0, have_comm = 0, bad_arg = 0;
 
     for (int i = cmd_start + 2; i < argc; i++) {   /* skip the "stake" word */
         const char *a = argv[i];
-        if      (!strcmp(a, "--db")         && i + 1 < argc) db_path = argv[++i];
-        else if (!strcmp(a, "--keys")       && i + 1 < argc) keys_csv = argv[++i];
+        if      (!strcmp(a, "--keys")       && i + 1 < argc) keys_csv = argv[++i];
         else if (!strcmp(a, "--bond")       && i + 1 < argc) {
             bond = strtoull(argv[++i], NULL, 10); have_bond = 1;
         } else if (!strcmp(a, "--commission") && i + 1 < argc) {
@@ -2807,14 +2889,20 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
         } else if (!strcmp(a, "--dest-fp")  && i + 1 < argc) dest_fp_hex = argv[++i];
         else if (!strcmp(a, "--submit")     && i + 1 < argc) submit = argv[++i];
         else if (!strcmp(a, "--dry-run"))                    dry_run = 1;
-        else { db_path = NULL; break; }
+        else { bad_arg = 1; break; }   /* incl. the retired --db */
     }
-    if (!db_path || !keys_csv || !dest_fp_hex || !have_bond || !have_comm ||
+    if (bad_arg || !keys_csv || !dest_fp_hex || !have_bond || !have_comm ||
         (!submit && !dry_run)) {
         fprintf(stderr,
-            "Usage: v2-envelope stake --db <successor.db> --keys <keydir> "
-            "--bond <raw> --commission <bps> --dest-fp <hex128> "
-            "(--dry-run | --submit ip:port)\n");
+            "Usage: v2-envelope stake --keys <keydir> --bond <raw> "
+            "--commission <bps> --dest-fp <hex128>\n"
+            "       (--dry-run | --submit ip:port)\n"
+            "  Everything (chain id, coins, tip, gas price) is read from "
+            "the node over ONE\n"
+            "  session: --submit, or the outer -s server for --dry-run. No "
+            "local database\n"
+            "  (--db is retired). --dry-run builds and self-checks, submits "
+            "nothing.\n");
         return 1;
     }
     /* the witness bound (tokenomics-v3 P3-8, rtn_stake_exec) — the u16
@@ -2831,14 +2919,17 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     }
 
     int rc = 1;
-    nodus_witness_t *wr = NULL;
     nodus_identity_t *keys = NULL;
     int n_keys = 0;
     uint8_t *auth0 = NULL, *auth1 = NULL, *env_bytes = NULL;
     dna_env_preflight_t *pf = NULL;
     uint8_t *scall = NULL, *fcall = NULL;
-    /* HF-1: --submit opens its ONE node session up front (the gas price
-     * comes from it, and the envelope is submitted on it) */
+    t6_coin_t *coins = NULL;
+    nodus_dnac_utxo_result_t utxos;
+    memset(&utxos, 0, sizeof(utxos));
+    int utxos_valid = 0;
+    /* ONE node session for the whole flow (chain id, coins, gas price,
+     * submission) — dry run included */
     nodus_client_t client;
     int connected = 0;
     memset(&client, 0, sizeof(client));
@@ -2855,42 +2946,17 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
         goto done;
     }
 
-    wr = calloc(1, sizeof(*wr));
-    if (!wr) goto done;
-    wr->cached_committee_epoch_start = UINT64_MAX;
-    wr->cached_committee_count = -1;
-    if (sqlite3_open_v2(db_path, &wr->db, SQLITE_OPEN_READONLY, NULL)
-        != SQLITE_OK || !wr->db) {
-        fprintf(stderr, "cannot open %s read-only\n", db_path);
+    /* SYSTEM + CORE ruleset from the compiled table — the registry a
+     * version-3 chain is seeded with (cli_builtin_runtime's own comment). */
+    const nodus_domain_runtime_t *sys_rt  = cli_builtin_runtime(DNA_DOMAIN_SYSTEM);
+    const nodus_domain_runtime_t *core_rt = cli_builtin_runtime(DNA_DOMAIN_CORE);
+    if (!sys_rt || !core_rt) {
+        fprintf(stderr, "SYSTEM / CORE runtime not found in the compiled "
+                "production table\n");
         goto done;
     }
 
-    uint8_t chain32[DNA_CHAIN_ID_LEN];
-    uint64_t tip = 0;
-    if (nodus_witness_v2_chain_id(wr, chain32) != 0 ||
-        nodus_witness_v2_tip_height(wr, &tip) != 0) {
-        fprintf(stderr, "not a committed successor V2 database\n");
-        goto done;
-    }
-    if (tip == 0) {
-        /* CHECKTX-P1 round 3: the envelope's expiry is tip-relative, and
-         * a database with no committed block cannot anchor it. */
-        fprintf(stderr, "the database has no committed block (tip 0) — "
-                        "refusing to build an envelope whose expiry would "
-                        "be wrong; wait for the first block\n");
-        goto done;
-    }
-
-    dna_domain_manifest_t sys_man, core_man;
-    if (nodus_witness_domreg_get(wr, DNA_DOMAIN_SYSTEM, NULL, &sys_man,
-                                 NULL) != 0 ||
-        nodus_witness_domreg_get(wr, DNA_DOMAIN_CORE, NULL, &core_man,
-                                 NULL) != 0) {
-        fprintf(stderr, "registry ruleset unreadable\n");
-        goto done;
-    }
-
-    /* Staker fingerprint (128 lowercase hex) — the utxo_set owner form and
+    /* Staker fingerprint (128 lowercase hex) — the dnac_utxo owner key and
      * the change-output owner. */
     uint8_t staker_raw[64];
     char staker_fp[QGP_FP_HEX_BUFFER];
@@ -2898,24 +2964,13 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
         goto done;
     qgp_fp_raw_to_hex(staker_raw, staker_fp);
 
-    uint64_t fee = DNAC_MIN_FEE_RAW > NODUS_W_BASE_TX_FEE
-                 ? DNAC_MIN_FEE_RAW : NODUS_W_BASE_TX_FEE;
-
-    /* HF-1 — the gas price (decision 2026-09-25-gas-price.md "HF-1 O4":
-     * the CLI price source is dnac_fee_info's gas_price). --submit: open
-     * the session NOW, read the committed price at tip + 1 on it, and
-     * pay max(floor, stake_units × gas_price); the envelope is submitted
-     * on this same session below. An older server sends no gas_price
-     * key → 0 → the flat floor, exactly as before HF-1. A failed query
-     * is not "price 0": refuse. --dry-run is OFFLINE and has no price
-     * source — it keeps the flat floor and says so; it never reads a
-     * price from the local database. */
-    if (!dry_run) {
+    /* ── ONE session, authenticated as the staker ─────────────────── */
+    {
         char sip[64];
         uint16_t sport = 0;
         if (t6_resolve_target(submit, server_ip, server_port, sip,
                               &sport) != 0) {
-            fprintf(stderr, "invalid --submit target\n");
+            fprintf(stderr, "invalid --submit target (and no -s server)\n");
             goto done;
         }
         nodus_client_config_t cfg;
@@ -2933,6 +2988,29 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
             fprintf(stderr, "client connect failed (%s:%u)\n", sip, sport);
             goto done;
         }
+    }
+
+    uint8_t chain32[DNA_CHAIN_ID_LEN];
+    {
+        bool has_chain32 = false;
+        if (nodus_client_dnac_chain_id32(&client, &has_chain32, chain32) != 0 ||
+            !has_chain32) {
+            fprintf(stderr, "this node is not on a version-3 chain (no "
+                    "chain_id32 in its dnac_supply reply) — v2-envelope "
+                    "stake needs a version-3 chain\n");
+            goto done;
+        }
+    }
+
+    uint64_t fee = DNAC_MIN_FEE_RAW > NODUS_W_BASE_TX_FEE
+                 ? DNAC_MIN_FEE_RAW : NODUS_W_BASE_TX_FEE;
+
+    /* HF-1 — the gas price (decision 2026-09-25-gas-price.md "HF-1 O4":
+     * the CLI price source is dnac_fee_info's gas_price), read on this
+     * session: pay max(floor, stake_units × gas_price). An older server
+     * sends no gas_price key → 0 → the flat floor, exactly as before
+     * HF-1. A failed query is not "price 0": refuse. */
+    {
         nodus_dnac_fee_info_t fi;
         memset(&fi, 0, sizeof(fi));
         int frc = nodus_client_dnac_fee_info(&client, &fi);
@@ -2952,54 +3030,73 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
             uint64_t required = stake_units * fi.gas_price;
             if (required > fee) fee = required;
         }
-    } else {
-        printf("v2-envelope stake --dry-run: offline, the gas price is "
-               "unknown — built with the flat floor fee %llu; --submit "
-               "reads the gas price from the node (dnac_fee_info) and pays "
-               "max(floor, %llu units x gas_price)\n",
-               (unsigned long long)fee, (unsigned long long)stake_units);
     }
+
+    /* The staker's CORE coins and the committed tip (dnac_utxo answers
+     * only for the session's own fingerprint, and CORE rows only —
+     * nodus_witness_handlers.c handle_dnac_utxo, nodus_witness_db.c
+     * nodus_witness_utxo_by_owner). */
+    {
+        int urc = nodus_client_dnac_utxo(&client, staker_fp,
+                                         NODUS_DNAC_MAX_UTXO_RESULTS, &utxos);
+        if (urc != 0) {
+            fprintf(stderr, "dnac_utxo query failed (rc=%d)\n", urc);
+            goto done;
+        }
+        utxos_valid = 1;
+    }
+    const uint64_t tip = utxos.block_height;
+    if (tip == 0) {
+        /* CHECKTX-P1 round 3: the envelope's expiry is tip-relative; the
+         * server's height read is FAIL-OPEN (0 on a fault) — refuse. */
+        fprintf(stderr, "the node reported tip 0 (a version-3 chain past "
+                "its first block never does; its height read may have "
+                "faulted) — refusing to build an envelope whose expiry "
+                "would be wrong\n");
+        goto done;
+    }
+    if (utxos.count >= (int)NODUS_DNAC_MAX_UTXO_RESULTS)
+        fprintf(stderr, "warning: the coin listing is capped at %d rows and "
+                "came back full — the server applies no ordering before its "
+                "cap, so coins beyond it are invisible to this selection\n",
+                (int)NODUS_DNAC_MAX_UTXO_RESULTS);
 
     uint64_t need = bond;
     if (need > UINT64_MAX - fee) { fprintf(stderr, "bond+fee overflow\n"); goto done; }
     need += fee;
 
-    /* Select native, unlocked, CORE-domain funding inputs owned by the
-     * staker, ascending by nullifier (canonical), until the sum covers
-     * bond + fee. */
+    /* Select native, unlocked funding inputs owned by the staker,
+     * ascending by nullifier (canonical — the order the database-backed
+     * builder's SELECT used), until the sum covers bond + fee. */
     uint8_t nulls[T6_SPEND_MAX_IN][64];
     int n_in = 0;
     uint64_t sum_in = 0;
     {
-        sqlite3_stmt *st = NULL;
-        if (sqlite3_prepare_v2(wr->db,
-                "SELECT nullifier, amount, token_id, unlock_block "
-                "FROM utxo_set WHERE owner = ?1 AND domain_id = ?2 "
-                "ORDER BY nullifier ASC", -1, &st, NULL) != SQLITE_OK)
-            goto done;
-        sqlite3_bind_text(st, 1, staker_fp, 128, SQLITE_TRANSIENT);
-        sqlite3_bind_int(st, 2, (int)DNA_DOMAIN_CORE);
         static const uint8_t native_tok[64] = {0};
-        int step, scan_bad = 0;
-        while ((step = sqlite3_step(st)) == SQLITE_ROW &&
-               sum_in < need && n_in < (int)T6_SPEND_MAX_IN) {
-            const void *nul = sqlite3_column_blob(st, 0);
-            sqlite3_int64 amt = sqlite3_column_int64(st, 1);
-            const void *tok = sqlite3_column_blob(st, 2);
-            sqlite3_int64 unlock = sqlite3_column_int64(st, 3);
-            if (!nul || sqlite3_column_bytes(st, 0) != 64 || amt <= 0 ||
-                !tok || sqlite3_column_bytes(st, 2) != 64) {
-                scan_bad = 1; break;
+        int n_coins = 0;
+        coins = calloc((size_t)(utxos.count > 0 ? utxos.count : 1),
+                       sizeof(*coins));
+        if (!coins) goto done;
+        for (int i = 0; i < utxos.count; i++) {
+            const nodus_dnac_utxo_entry_t *e = &utxos.entries[i];
+            if (e->amount == 0) continue;
+            if (memcmp(e->token_id, native_tok, 64) != 0) continue; /* non-native */
+            if (e->unlock_block > tip) continue;                    /* locked     */
+            memcpy(coins[n_coins].nul, e->nullifier, 64);
+            coins[n_coins].amount = e->amount;
+            n_coins++;
+        }
+        qsort(coins, (size_t)n_coins, sizeof(*coins), t6_nul_cmp);
+        for (int i = 0; i < n_coins && sum_in < need &&
+                        n_in < (int)T6_SPEND_MAX_IN; i++) {
+            if (sum_in > UINT64_MAX - coins[i].amount) {
+                fprintf(stderr, "the funding input sum overflows u64\n");
+                goto done;
             }
-            if (memcmp(tok, native_tok, 64) != 0) continue;   /* non-native */
-            if ((uint64_t)unlock > tip) continue;             /* locked     */
-            memcpy(nulls[n_in], nul, 64);
-            if (sum_in > UINT64_MAX - (uint64_t)amt) { scan_bad = 1; break; }
-            sum_in += (uint64_t)amt;
+            memcpy(nulls[n_in], coins[i].nul, 64);
+            sum_in += coins[i].amount;
             n_in++;
         }
-        sqlite3_finalize(st);
-        if (scan_bad) { fprintf(stderr, "malformed funding row\n"); goto done; }
     }
     if (n_in < 1 || sum_in < need) {
         fprintf(stderr, "insufficient native funding: have %llu, need %llu "
@@ -3056,7 +3153,7 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     memset(legs, 0, sizeof(legs));
     legs[0].hdr.domain_id            = DNA_DOMAIN_SYSTEM;
     legs[0].hdr.runtime_op           = DNA_SYSRULE_STAKE;
-    legs[0].hdr.ruleset_version      = sys_man.ruleset_version;
+    legs[0].hdr.ruleset_version      = sys_rt->ruleset_version;
     legs[0].hdr.access_mode          = DNA_ENV_ACCESS_INVOKE;
     legs[0].hdr.auth_kind            = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
     legs[0].hdr.call_len             = scall_len;
@@ -3067,7 +3164,7 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     legs[0].auth_data = auth0;
     legs[1].hdr.domain_id            = DNA_DOMAIN_CORE;
     legs[1].hdr.runtime_op           = DNA_CORERULE_SYSFUND;
-    legs[1].hdr.ruleset_version      = core_man.ruleset_version;
+    legs[1].hdr.ruleset_version      = core_rt->ruleset_version;
     legs[1].hdr.access_mode          = DNA_ENV_ACCESS_INVOKE;
     legs[1].hdr.auth_kind            = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
     legs[1].hdr.call_len             = fcall_len;
@@ -3081,9 +3178,8 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     memset(&env_in, 0, sizeof(env_in));
     /* the mempool lifetime rule (decision 2026-09-25-mempool-policy.md 1):
      * expiry within (tip, tip + NODUS_CMT_APP_MAX_EXPIRY_AHEAD], with the
-     * gossip margin (CLI_ENV_EXPIRY_AHEAD). `tip` is this read-only
-     * database's — a lagging copy only makes the expiry EARLIER, never
-     * past the node's own tip + 100; a 0 tip was refused above. */
+     * gossip margin (CLI_ENV_EXPIRY_AHEAD). `tip` is the node's own
+     * committed tip from the dnac_utxo reply; a 0 tip was refused above. */
     env_in.expiry_height       = tip + CLI_ENV_EXPIRY_AHEAD;
     env_in.fee_amount          = fee;
     env_in.res_max_total_units = stake_units;
@@ -3093,11 +3189,11 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     dna_env_leg_ctx_t lctx[2];
     memset(lctx, 0, sizeof(lctx));
     lctx[0].domain_id       = DNA_DOMAIN_SYSTEM;
-    lctx[0].ruleset_version = sys_man.ruleset_version;
-    memcpy(lctx[0].ruleset_hash, sys_man.ruleset_hash, 64);
+    lctx[0].ruleset_version = sys_rt->ruleset_version;
+    memcpy(lctx[0].ruleset_hash, sys_rt->ruleset_hash, 64);
     lctx[1].domain_id       = DNA_DOMAIN_CORE;
-    lctx[1].ruleset_version = core_man.ruleset_version;
-    memcpy(lctx[1].ruleset_hash, core_man.ruleset_hash, 64);
+    lctx[1].ruleset_version = core_rt->ruleset_version;
+    memcpy(lctx[1].ruleset_hash, core_rt->ruleset_hash, 64);
 
     /* Sign each leg's auth_digest with the staker sk (kind-1: count=1 ‖
      * pubkey ‖ sig). One key covers BOTH legs: it is the STAKE identity
@@ -3109,19 +3205,25 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
                             &env_bytes, &env_len, pf) != 0)
         goto done;
 
+    /* Printed on BOTH paths (P2P-PORT F6): the submitted envelope's own
+     * intent_id is what a caller waits for — a dry run's may differ (its
+     * expiry is tip-relative, see this function's header). */
+    printf("v2-envelope stake: %zu bytes, inputs=%d sum_in=%llu "
+           "bond=%llu fee=%llu change=%llu tip=%llu\n", env_len, n_in,
+           (unsigned long long)sum_in, (unsigned long long)bond,
+           (unsigned long long)fee, (unsigned long long)change,
+           (unsigned long long)tip);
+    printf("  wire_id=");
+    for (int b = 0; b < 64; b++) printf("%02x", pf->wire_id[b]);
+    printf("\n  intent_id=");
+    for (int b = 0; b < 64; b++) printf("%02x", pf->intent_id[b]);
+    printf("\n");
+    fflush(stdout);
     if (dry_run) {
-        printf("v2-envelope stake: %zu bytes, inputs=%d sum_in=%llu "
-               "bond=%llu fee=%llu change=%llu\n", env_len, n_in,
-               (unsigned long long)sum_in, (unsigned long long)bond,
-               (unsigned long long)fee, (unsigned long long)change);
-        printf("  wire_id=");
-        for (int b = 0; b < 64; b++) printf("%02x", pf->wire_id[b]);
-        printf("\n  intent_id=");
-        for (int b = 0; b < 64; b++) printf("%02x", pf->intent_id[b]);
-        printf("\n  PREFLIGHT SELF-CHECK: OK (2 legs SYSTEM STAKE + CORE "
-               "SYSFUND)\n");
+        printf("  PREFLIGHT SELF-CHECK: OK (2 legs SYSTEM STAKE + CORE "
+               "SYSFUND) — not submitted (--dry-run)\n");
     } else {
-        /* on the session the gas price was read from (opened above) */
+        /* on the session the gas price and the coins were read from */
         if (t6_submit_on(&client, &keys[0], pf->wire_id, env_bytes,
                          (uint32_t)env_len) != 0)
             goto done;
@@ -3129,17 +3231,15 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     rc = 0;
 
 done:
+    if (utxos_valid) nodus_client_free_utxo_result(&utxos);
     if (connected) nodus_client_close(&client);
+    free(coins);
     free(scall);
     free(fcall);
     free(auth0);
     free(auth1);
     free(env_bytes);
     free(pf);
-    if (wr) {
-        if (wr->db) sqlite3_close(wr->db);
-        free(wr);
-    }
     if (keys) {
         for (int i = 0; i < 4; i++) nodus_identity_clear(&keys[i]);
         free(keys);
@@ -3254,13 +3354,6 @@ done:
 #define T6_SPEND_MAX_OUTS  3u   /* recipient + token change + native change */
 
 typedef struct {
-    uint8_t  nul[64];
-    uint64_t amount;
-    uint8_t  kind;      /* 0 native · 1 the requested token · 2 any other */
-    uint8_t  used;
-} t6_coin_t;
-
-typedef struct {
     int      idx[T6_SPEND_MAX_IN];   /* into the sorted coin array        */
     int      n_in;
     uint64_t native_in, token_in;
@@ -3275,10 +3368,6 @@ static int t6_coin_cmp(const void *a, const void *b) {
     const t6_coin_t *y = (const t6_coin_t *)b;
     if (x->amount != y->amount) return x->amount > y->amount ? -1 : 1;
     return memcmp(x->nul, y->nul, 64);
-}
-
-static int t6_nul_cmp(const void *a, const void *b) {
-    return memcmp(a, b, 64);
 }
 
 /* Append unused coins of `kind`, largest first, to plan->idx until their
@@ -4121,7 +4210,7 @@ static void usage(const char *prog) {
     fprintf(stderr, "  servers          List cluster servers\n");
     fprintf(stderr, "  presence [fp..]  Query presence (self + optional fps)\n");
     fprintf(stderr, "  hold             Stay connected (test presence visibility)\n");
-    fprintf(stderr, "  witness          Show witness roster + BFT status\n");
+    fprintf(stderr, "  witness          Show the committee for the next block\n");
     fprintf(stderr, "  ch_listen <uuid> [logfile]  Subscribe to channel on TCP 4003, log posts\n");
 #ifdef NODUS_CLI_HAS_DNAC
     fprintf(stderr, "  chain-config propose --param <NAME> --value <N> --effective <BLOCK>\n");
@@ -4132,7 +4221,7 @@ static void usage(const char *prog) {
     fprintf(stderr, "                  run without --value for per-param ranges\n");
     fprintf(stderr, "  v2-claim --legacy-db <t.db> --db <s.db> --keys <dir>\n");
     fprintf(stderr, "           (--dry-run | --submit ip:port)   Successor GENESIS_CLAIM\n");
-    fprintf(stderr, "  v2-envelope stake --db <s.db> --keys <dir> --bond <raw>\n");
+    fprintf(stderr, "  v2-envelope stake --keys <dir> --bond <raw>\n");
     fprintf(stderr, "           --commission <bps> --dest-fp <hex128>\n");
     fprintf(stderr, "           (--dry-run | --submit ip:port)   O11 two-leg STAKE\n");
     fprintf(stderr, "  v2-envelope spend --keys <dir> --to <fp128hex> --amount <raw|all>\n");
@@ -4228,6 +4317,13 @@ int main(int argc, char **argv) {
      * does not use the default single-target connection below. */
     if (strcmp(command, "cluster-status") == 0) {
         int rc = cmd_cluster_status(argc, argv, optind);
+        nodus_identity_clear(&identity);
+        return rc;
+    }
+
+    /* witness: its own nodus_client_t session (dnac_committee). */
+    if (strcmp(command, "witness") == 0) {
+        int rc = cmd_witness(server_ip, server_port);
         nodus_identity_clear(&identity);
         return rc;
     }
@@ -4351,8 +4447,6 @@ int main(int argc, char **argv) {
         } else {
             rc = cmd_get(argv[optind + 1]);
         }
-    } else if (strcmp(command, "witness") == 0) {
-        rc = cmd_witness(server_ip);
     } else if (strcmp(command, "presence") == 0) {
         rc = cmd_presence(argc, argv, optind);
     } else if (strcmp(command, "hold") == 0) {

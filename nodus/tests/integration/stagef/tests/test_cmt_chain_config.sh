@@ -7,21 +7,24 @@
 # WHAT IT PROVES
 #   That `nodus-cli chain-config propose`, run from a validator's OWN
 #   identity against ITS OWN node, collects committee approvals over
-#   the network (verbs 40-41, the SYSTEM-governance approval-collection
-#   RPC this package rebuilds the retired vote-collect pair, 14-15,
-#   into) and lands a `chain_config_history` row that is BYTE-IDENTICAL
-#   on all 7 nodes. The property that would be false if it failed: *a
-#   governance proposal collected over the network reaches the same
-#   committed row everywhere* — the same determinism guarantee every
-#   other Comet-lane scenario checks for a transfer or a stake, now for
-#   a governance change.
+#   the network and lands a `chain_config_history` row that is
+#   BYTE-IDENTICAL on all 7 nodes. Since decision
+#   docs/plans/decisions/2026-09-26-cc-approval-via-own-node.md the CLI
+#   never dials 4004: it hands the envelope to its own node on 4001
+#   (`dnac_cc_collect`), and that node asks every other seat on channel
+#   0x71 (the former verbs 40-41) over its EXISTING 4004 connections,
+#   then answers the CLI with one result per seat. The property that
+#   would be false if it failed: *a governance proposal collected over
+#   the network reaches the same committed row everywhere* — the same
+#   determinism guarantee every other Comet-lane scenario checks for a
+#   transfer or a stake, now for a governance change.
 #
-#   This is the FIRST networked exercise of verbs 40-41 anywhere in the
-#   tree — test_cc_appr.c drives the responder directly (no network,
-#   no CLI), and test_tier3.c is wire-codec-only. This scenario is what
-#   proves the CLI's round-1/round-2 collection flow (nodus-cli.c) and
-#   the responder (nodus_witness_handle_cc_appr_req) actually agree
-#   over a REAL TCP connection, against REAL validator processes.
+#   This is the only networked exercise of the whole path — CLI →
+#   own node (4001) → seats (0x71 on 4004) → responders → back — against
+#   REAL validator processes. test_cc_appr.c drives the responder's
+#   verdict directly (no network), test_cc_collect.c the node-side
+#   collection with injected answers, test_witness_p2p.c (2d) one 0x71
+#   round trip between two in-process hosts, test_tier3.c the codec.
 #
 # WHAT IT REQUIRES
 #   ⚠ **A SHORT-GRACE BINARY. Both halves, or it skips.**
@@ -60,14 +63,18 @@
 #     block** (`stagef_cmt_wait_row`'s own doc comment, DELTA 2) — the
 #     wait is for the row itself, bounded by both a stall detector and
 #     a height budget, never a bare "tip+1" read.
-#   - **The per-proposer rate limit is real and can make round 2 refuse
-#     a seat that accepted round 1** (nodus_chain_config.h:382,
-#     `NODUS_CC_RATE_LIMIT_WINDOW_MS` = 5000 ms; register
-#     R3-W4-CC-writer's own BLOCKED ON). This scenario asks all 7 seats
-#     in round 1, so it only reaches round 2 if a real network hiccup
-#     refuses one — if it fails here with "Round 2: a previously-
-#     accepting seat refused", that is this design tension surfacing
-#     live, not a defect in the harness.
+#   - **Round 2 is rarely exercised here.** This scenario asks all 7
+#     seats in round 1, so it only reaches round 2 if a seat refuses,
+#     is not connected to the proposer's node, or misses the node's
+#     5000 ms collection deadline. The CLI then waits out the seats'
+#     per-proposer cooldown (`NODUS_CC_RATE_LIMIT_WINDOW_MS` = 5000 ms)
+#     before re-asking (decision (6)), so a round-2 "rate-limited"
+#     refusal would be a defect, not the old design tension. A green
+#     run with "Round 1: 7/7 approved" says nothing about round 2.
+#   - **A seat not connected to the proposer's node is reported
+#     "SKIP (this node has no connection to the seat)"** — on a healthy
+#     7-node cluster every seat is connected; a SKIP line means the 4004
+#     mesh was incomplete when the proposal ran, not a governance defect.
 #   - **rc=99 means the short-grace build is absent** — the coverage
 #     did not happen, never a pass.
 #   - **This scenario does NOT prove the effective-height CUTOVER** —

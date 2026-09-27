@@ -25,9 +25,9 @@ extern "C" {
  * reading the string reported a version this binary had not been for a
  * long time. Bump BOTH, together, every time. */
 #define NODUS_VERSION_MAJOR  0
-#define NODUS_VERSION_MINOR  19
-#define NODUS_VERSION_PATCH  80
-#define NODUS_VERSION_STRING "0.19.80"
+#define NODUS_VERSION_MINOR  20
+#define NODUS_VERSION_PATCH  0
+#define NODUS_VERSION_STRING "0.20.0"
 
 /* Mempool lifetime ceiling (docs/plans/decisions/2026-09-25-mempool-
  * policy.md, decision 1 — "100 block yeterli"): CheckTx (new AND
@@ -52,10 +52,10 @@ extern "C" {
  * NODUS_FRAME_VERSION_LEGACY (0x01) accepted at validate-time so
  * pre-v0.18 client APKs continue to connect. The previous hard cutover
  * (commit 9494d402, 2026-05-02) reverted with this change because it
- * locked out every legacy client without a migration path. T3 BFT
- * messages carry their own NODUS_T3_BFT_PROTOCOL_VER (see below) for
- * cluster-internal traffic; legacy acceptance is purely a frame-layer
- * compatibility shim.
+ * locked out every legacy client without a migration path. The witness
+ * port 4004 does not use these frames at all (P2P-PORT F5: the ported
+ * cometbft p2p layer, with its own P2P protocol version); legacy
+ * acceptance is purely a frame-layer compatibility shim.
  */
 #define NODUS_FRAME_MAGIC          0x4E44   /* "ND" */
 #define NODUS_FRAME_VERSION        0x02
@@ -194,7 +194,21 @@ extern "C" {
  * is deleted. O15H's NODUS_T3_MAX_VIEW_CHANGES removal note, which cited
  * that same function, is superseded by this same deletion. */
 #define NODUS_T3_EPOCH_DURATION_SEC 60      /* DNAC epoch = 60s */
-/* Witness BFT (Tier 3) protocol version — CLUSTER-INTERNAL ONLY.
+/* NODUS_T3_BFT_PROTOCOL_VER — DELETED in P2P-PORT F5 (last value 7).
+ *
+ * It travelled, signed, in every tier-3 envelope header and was the
+ * exact-match discriminator of the tier-3 dispatcher's gate. The envelope
+ * and the dispatcher are deleted (the witness port 4004 is the ported
+ * cometbft p2p layer), so no header carries it any more. Its job — an
+ * older-protocol node cannot take part with a newer one, and a mixed
+ * fleet fails cleanly — is now done by the P2P protocol version 8
+ * (CMT_P2P_PROTOCOL_VERSION, shared/dnac/cmt_p2p_nodeinfo.h) that EVERY
+ * 4004 connection checks in its HELLO before any key exchange (session
+ * design N9, cmt_p2p_secret.h rows 1-2) and carries in its NodeInfo. A
+ * 0.19.x node sends nodus_tcp frames on 4004, which a 0.20 node's secret
+ * connection refuses as a malformed HELLO; the change still needs the
+ * coordinated stop-all (feedback_consensus_deploy_stop_all) every bump
+ * of the old constant needed. Its history, kept for the record:
  *
  * 7 (R3 wave W3, package C2b, D-16 rev 5): the Tendermint reactor verbs
  *   28-34 and shared/dnac/tm_bounds.h are RETIRED — deleted, not merely
@@ -264,9 +278,8 @@ extern "C" {
  * participate with a newer-version one by design, which is the entire
  * point.
  *
- * Bootstrap messages deliberately carry version 1 and are NOT gated;
- * they run before a committee exists. */
-#define NODUS_T3_BFT_PROTOCOL_VER   7
+ * Bootstrap messages deliberately carried version 1 and were NOT gated;
+ * they ran before a committee existed. */
 
 /* Token creation fee: 1% of genesis supply (10M DNAC = 10^15 raw for 1B supply) */
 #define NODUS_W_TOKEN_CREATE_FEE  1000000000000000ULL

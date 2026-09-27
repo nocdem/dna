@@ -86,11 +86,17 @@
  *  3. THE SIGNER IS THE TEST'S. `raw_sign` is this file's ML-DSA-87
  *     callback over `g_ks[0]`; R3-C2 binds the production one. A green
  *     here says nothing about the production signing path.
- *  4. `t_start_and_release` observes the WAL only as ROW COUNTS and the
- *     transaction state only through `sqlite3_get_autocommit`. It proves
- *     the WAL was seeded and that no transaction was open around the
- *     call; it does NOT prove the fsync the WAL's durability rests on,
- *     which is not observable from inside the process.
+ *  4. `t_start_and_release` observes the WAL as the FILE
+ *     `<data_path>/cs.wal/wal` (decision 2026-09-26-cmt-wal-file-
+ *     group.md): its record count and its first record. It proves the
+ *     WAL was seeded once and that a Write lands on FlushAndSync; it does
+ *     NOT prove the fsync the WAL's durability rests on, which is not
+ *     observable from inside the process. `t_wal_repair_on_start` and
+ *     `t_wal_repair_second_corruption_refuses` call `cmt_cs_start`
+ *     DIRECTLY (the witness reaches it through cmt_conr_start) and prove
+ *     the repair path's file outcome and its start/refuse result, not
+ *     that a replayed round state matters (both replayed records are
+ *     no-ops, replay.go:41-63).
  *  4b. `t_genesis_doc_loader`'s case (f) — the tampered STORED row beside
  *     a valid provider — would LIE if the flipped byte landed outside the
  *     encoded document: a trailing byte the decoder never reads would
@@ -141,6 +147,7 @@
 #include <unistd.h>
 #include <inttypes.h>
 #include <sqlite3.h>
+#include <sys/stat.h>
 
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/sign/qgp_dilithium.h"
@@ -1970,6 +1977,139 @@ static int t_genesis_doc_loader(void)
     return 0;
 }
 
+/* ══ the consensus WAL, as a node leaves it on disk ═══════════════════
+ *
+ * The WAL is a file group under the data dir (decision
+ * docs/plans/decisions/2026-09-26-cmt-wal-file-group.md, nodus_witness_
+ * cmt_wal.h): head `<data_path>/cs.wal/wal`, records
+ * crc32c(4 BE) ‖ len(4 BE) ‖ TimedWALMessage (wal.go:288, :316-326). The
+ * fixture's data_path is `g->dir` (gfx_open). */
+
+static void node_wal_path(const gfx_t *g, const char *suffix, char *out,
+                          size_t cap)
+{
+    snprintf(out, cap, "%s/cs.wal/wal%s", g->dir, suffix ? suffix : "");
+}
+
+static long long file_size_or_neg(const char *path)
+{
+    struct stat st;
+
+    return stat(path, &st) == 0 ? (long long)st.st_size : -1;
+}
+
+/* -1 when the head does not exist */
+static long long node_wal_size(const gfx_t *g)
+{
+    char p[512];
+
+    node_wal_path(g, NULL, p, sizeof(p));
+    return file_size_or_neg(p);
+}
+
+/* The whole file into a heap buffer; NULL on error. */
+static uint8_t *node_slurp(const char *path, size_t *out_len)
+{
+    FILE    *f = fopen(path, "rb");
+    uint8_t *buf;
+    long     sz;
+
+    if (!f) {
+        return NULL;
+    }
+    if (fseek(f, 0, SEEK_END) != 0 || (sz = ftell(f)) < 0 ||
+        fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return NULL;
+    }
+    buf = (uint8_t *)malloc((size_t)sz + 1);
+    if (!buf || fread(buf, 1, (size_t)sz, f) != (size_t)sz) {
+        free(buf);
+        fclose(f);
+        return NULL;
+    }
+    fclose(f);
+    *out_len = (size_t)sz;
+    return buf;
+}
+
+static uint32_t node_be32(const uint8_t *b)
+{
+    return ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) |
+           ((uint32_t)b[2] << 8) | (uint32_t)b[3];
+}
+
+/* Whole records in the head (walking the 8-byte headers); -1 when the
+ * head is missing or ends inside a record. */
+static int node_wal_records(const gfx_t *g)
+{
+    char     p[512];
+    size_t   len = 0, off = 0;
+    uint8_t *buf;
+    int      n = 0;
+
+    node_wal_path(g, NULL, p, sizeof(p));
+    buf = node_slurp(p, &len);
+    if (!buf) {
+        return -1;
+    }
+    while (off < len) {
+        if (off + 8 > len || off + 8 + node_be32(buf + off + 4) > len) {
+            free(buf);
+            return -1;
+        }
+        off += 8 + node_be32(buf + off + 4);
+        n++;
+    }
+    free(buf);
+    return n;
+}
+
+/* The head's first record decodes to TimedWALMessage{_, EndHeight{0}}. */
+static bool node_wal_first_is_end_height_0(const gfx_t *g)
+{
+    char                     p[512];
+    size_t                   len = 0;
+    uint8_t                 *buf;
+    uint8_t                  abuf[256];
+    cmt_pb_arena_t           arena = { abuf, sizeof(abuf), 0 };
+    cmt_timed_wal_message_t *tw;
+    bool                     ok = false;
+
+    node_wal_path(g, NULL, p, sizeof(p));
+    buf = node_slurp(p, &len);
+    tw = (cmt_timed_wal_message_t *)calloc(1, sizeof(*tw));
+    if (buf && tw && len >= 8 && 8 + (size_t)node_be32(buf + 4) <= len &&
+        cmt_timed_wal_message_decode(buf + 8, node_be32(buf + 4), tw,
+                                     &arena) == CMT_OK) {
+        ok = tw->msg.kind == CMT_PB_WAL_END_HEIGHT &&
+             tw->msg.u.end_height.height == 0;
+    }
+    free(tw);
+    free(buf);
+    return ok;
+}
+
+/* Append raw bytes to a file (a torn or corrupt record, as a crash or a
+ * bad disk would leave one). */
+static int node_append(const char *path, const uint8_t *b, size_t n)
+{
+    FILE *f = fopen(path, "ab");
+
+    if (!f) {
+        return -1;
+    }
+    if (fwrite(b, 1, n, f) != n) {
+        fclose(f);
+        return -1;
+    }
+    return fclose(f) == 0 ? 0 : -1;
+}
+
+/* A record header whose length exceeds maxMsgSizeBytes: a
+ * DataCorruptionError at wal.go:385-390 whatever follows it. */
+static const uint8_t NODE_BAD_RECORD[8] = { 0, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF };
+
 /* ══ CASE 10 — init, start, release ══════════════════════════════════ */
 
 /**
@@ -2089,11 +2229,10 @@ static int t_start_and_release(void)
     CHECK(n->handshake_nblocks == 0, "a fresh chain replays nothing");
     CHECK(state_key_count(g.w->db, "stateKey") == 1,
           "the handshake saved the genesis state");
-    CHECK(q1(g.w->db, "SELECT COUNT(*) FROM cmt_wal") == 0,
-          "no WAL row before start");
-    CHECK(sqlite3_get_autocommit(g.w->db) == 1,
-          "no transaction is open across the start boundary "
-          "(nodus_witness_cmt_wal.h's §B.4 caller contract)");
+    /* The WAL is a file group under the data dir (decision
+     * 2026-09-26-cmt-wal-file-group.md): `<data_path>/cs.wal/wal`
+     * (config.go:1019). Nothing exists before start. */
+    CHECK(node_wal_size(&g) == -1, "no WAL file before start");
 
     /* ORCHESTRATOR delta 7, item A — the DIRECT proof: the exact host
      * row `cmt_cs_init` itself calls, isolated from its own internals.
@@ -2113,22 +2252,23 @@ static int t_start_and_release(void)
         CHECK(n->host.wal_write(n->be, &msg) == CMT_OK,
               "a WAL write reaching the host before start is the "
               "nilWAL's silent no-op (CMT_OK), not a fault");
-        CHECK(q1(g.w->db, "SELECT COUNT(*) FROM cmt_wal") == 0,
-              "and it still landed NOWHERE — the row count is unchanged");
+        CHECK(node_wal_size(&g) == -1,
+              "and it still landed NOWHERE — no WAL file exists");
     }
 
     CHECK(nodus_cmt_node_start(n) == CMT_OK, "the node starts");
-    CHECK(q1(g.w->db, "SELECT COUNT(*) FROM cmt_wal") == 1,
-          "start wrote EndHeight(0) exactly once (wal.go:124-131)");
-    CHECK(sqlite3_get_autocommit(g.w->db) == 1,
-          "and left no transaction open");
+    CHECK(node_wal_records(&g) == 1 && node_wal_first_is_end_height_0(&g),
+          "start wrote EndHeight(0) exactly once, in the file when start "
+          "returned (wal.go:124-131, WriteSync)");
 
     /* ORCHESTRATOR delta 7, item A — the SAME row, called the SAME way,
      * now reaches the REAL bound-and-open WAL: a genuine second row
      * lands. RED if `nodus_cmt_node_start` failed to bind the real WAL
      * via `nodus_cmt_blockexec_set_wal` (the write would either fault
      * again, or — if some future change silently restored a permanent
-     * no-op — return CMT_OK while the row count stayed at 1). */
+     * no-op — return CMT_OK while the file kept one record). A `Write`
+     * is buffered (wal.go:184-196), so the record is observed after the
+     * host's own FlushAndSync row. */
     {
         cmt_wal_message_t msg;
 
@@ -2138,9 +2278,12 @@ static int t_start_and_release(void)
         CHECK(n->host.wal_write(n->be, &msg) == CMT_OK,
               "a WAL write after start succeeds against the REAL, open "
               "WAL");
-        CHECK(q1(g.w->db, "SELECT COUNT(*) FROM cmt_wal") == 2,
-              "and a genuine second row lands — the WAL is truly bound "
-              "now, not still silently discarding writes");
+        CHECK(node_wal_records(&g) == 1,
+              "a Write is buffered: still one record in the file");
+        CHECK(n->host.wal_flush_and_sync(n->be) == CMT_OK &&
+              node_wal_records(&g) == 2,
+              "and a genuine second record lands on FlushAndSync — the WAL "
+              "is truly bound now, not still silently discarding writes");
     }
     /* ORCHESTRATOR delta 1, item 2 / E — the state machine is NOT
      * running after nodus_cmt_node_start: no armed propose timer (the
@@ -2157,7 +2300,14 @@ static int t_start_and_release(void)
               "that reaches cmt_cs_start through cmt_conr_start may set "
               "it");
     }
-    CHECK(nodus_cmt_node_start(n) == CMT_FAULT, "a second start is refused");
+    {
+        long long before = node_wal_size(&g);
+
+        CHECK(nodus_cmt_node_start(n) == CMT_FAULT,
+              "a second start is refused");
+        CHECK(node_wal_size(&g) == before && node_wal_records(&g) == 2,
+              "and it wrote nothing to the WAL");
+    }
 
     nodus_cmt_node_release(n);
     free(n);
@@ -2165,6 +2315,140 @@ static int t_start_and_release(void)
      * the release — a restart must find it. */
     CHECK(access(g.pvpath, F_OK) == 0,
           "the last-sign-state file is on disk after release");
+    CHECK(node_wal_records(&g) == 2, "so does the WAL, with both records");
+    gfx_close(&g);
+    return 0;
+}
+
+/* ══ CASE 10b — the WAL repair on start (state.go:338-386) ════════════
+ *
+ * WHAT IT PROVES: `cmt_cs_start` over the REAL nodus host — a head whose
+ * tail is corrupt makes the catch-up replay report data corruption
+ * (`wal_read_next` CMT_REJECT), the host's `wal_repair` row backs the
+ * head up as `wal.CORRUPTED` (byte-identical), rewrites the head with
+ * exactly the records before the first bad one (repairWalFile,
+ * state.go:2621-2653), reloads it, and the retried replay succeeds.
+ * `cmt_cs_start` is called DIRECTLY here (the witness reaches it through
+ * cmt_conr_start); the node is marked started afterwards so release
+ * stops it.
+ *
+ * HOW IT CAN LIE: it does not prove the replayed round state matters —
+ * the two records are EndHeight(0) and an EventDataRoundState, both no-ops
+ * in `readReplayMessage` (replay.go:41-63); it proves the corruption path
+ * and the file outcome only. */
+static int t_wal_repair_on_start(void)
+{
+    gfx_t                 g;
+    nodus_cmt_node_opts_t o;
+    nodus_cmt_node_t     *n;
+    cmt_wal_message_t     msg;
+    char                  head[512], bak[512];
+    long long             good;
+    size_t                hl = 0, bl = 0;
+    uint8_t              *hb, *bb;
+
+    CHECK(gfx_open(&g, "walrepair") == 0, "version-3 fixture");
+    n = (nodus_cmt_node_t *)calloc(1, sizeof(*n));
+    CHECK(n != NULL, "alloc");
+    opts_default(&g, &o);
+    CHECK(nodus_cmt_node_init(n, g.w, &o) == CMT_OK, "the node builds");
+    CHECK(nodus_cmt_node_start(n) == CMT_OK, "the node starts (EndHeight(0))");
+
+    /* EndHeight(0) ‖ rs(1,0), both in the file */
+    memset(&msg, 0, sizeof(msg));
+    msg.kind = CMT_PB_WAL_EVENT_DATA_ROUND_STATE;
+    msg.u.event_data_round_state.height = 1;
+    CHECK(n->host.wal_write(n->be, &msg) == CMT_OK &&
+          n->host.wal_flush_and_sync(n->be) == CMT_OK &&
+          node_wal_records(&g) == 2, "two good records");
+    good = node_wal_size(&g);
+    /* then a corrupt record at the tail */
+    node_wal_path(&g, NULL, head, sizeof(head));
+    node_wal_path(&g, ".CORRUPTED", bak, sizeof(bak));
+    CHECK(node_append(head, NODE_BAD_RECORD, sizeof(NODE_BAD_RECORD)) == 0,
+          "corrupt tail appended");
+    CHECK(file_size_or_neg(bak) == -1, "no backup yet");
+
+    CHECK(cmt_cs_start(n->cs) == CMT_OK,
+          "the replay met corruption, the WAL was repaired, the retry "
+          "succeeded and the state machine started (state.go:341-386)");
+    n->cs_started = true;                   /* so release runs cmt_cs_stop */
+
+    CHECK(file_size_or_neg(bak) == good + (long long)sizeof(NODE_BAD_RECORD),
+          "the head was backed up as wal.CORRUPTED (state.go:366-369)");
+    hb = node_slurp(head, &hl);
+    bb = node_slurp(bak, &bl);
+    CHECK(hb && bb && hl >= (size_t)good && bl == (size_t)good + 8 &&
+          memcmp(hb, bb, (size_t)good) == 0 &&
+          memcmp(bb + good, NODE_BAD_RECORD, 8) == 0,
+          "the backup is the corrupt head byte for byte; the new head "
+          "starts with exactly the two good records");
+    free(hb);
+    free(bb);
+    CHECK(node_wal_records(&g) >= 2 && node_wal_first_is_end_height_0(&g),
+          "the repaired head is well formed and starts with EndHeight(0)");
+    CHECK(n->wal_open, "the reloaded WAL is still the node's");
+
+    nodus_cmt_node_release(n);
+    free(n);
+    gfx_close(&g);
+    return 0;
+}
+
+/* ══ CASE 10c — a corruption the repair cannot reach: start refuses ═══
+ *
+ * WHAT IT PROVES: the reference repairs the HEAD only
+ * (`cs.config.WalFile()`, state.go:366-377; config.go:1087-1092) and
+ * retries ONCE (`repairAttempted`, :339/:352-353/:363). A corrupt record
+ * in a ROTATED file right after EndHeight(0) survives the repair, the
+ * retried replay meets it again, and `cmt_cs_start` returns the error —
+ * the state machine does not start. The rotated file is untouched; the
+ * head was still backed up. */
+static int t_wal_repair_second_corruption_refuses(void)
+{
+    gfx_t                 g;
+    nodus_cmt_node_opts_t o;
+    nodus_cmt_node_t     *n;
+    cmt_wal_message_t     msg;
+    char                  head[512], bak[512], rot[512];
+    long long             rot_size;
+    int                   rc;
+
+    CHECK(gfx_open(&g, "walrepair2") == 0, "version-3 fixture");
+    n = (nodus_cmt_node_t *)calloc(1, sizeof(*n));
+    CHECK(n != NULL, "alloc");
+    opts_default(&g, &o);
+    CHECK(nodus_cmt_node_init(n, g.w, &o) == CMT_OK, "the node builds");
+    CHECK(nodus_cmt_node_start(n) == CMT_OK, "the node starts (EndHeight(0))");
+    node_wal_path(&g, NULL, head, sizeof(head));
+    node_wal_path(&g, ".CORRUPTED", bak, sizeof(bak));
+    node_wal_path(&g, ".000", rot, sizeof(rot));
+
+    /* wal.000 = EndHeight(0) ‖ bad; head = rs(1,0) */
+    CHECK(node_append(head, NODE_BAD_RECORD, sizeof(NODE_BAD_RECORD)) == 0,
+          "corrupt record after EndHeight(0)");
+    CHECK(nodus_cmt_group_rotate_file(&n->wal.group) == CMT_OK &&
+          file_size_or_neg(rot) > 8, "rotated into wal.000");
+    memset(&msg, 0, sizeof(msg));
+    msg.kind = CMT_PB_WAL_EVENT_DATA_ROUND_STATE;
+    msg.u.event_data_round_state.height = 1;
+    CHECK(n->host.wal_write(n->be, &msg) == CMT_OK &&
+          n->host.wal_flush_and_sync(n->be) == CMT_OK &&
+          node_wal_records(&g) == 1, "a good head");
+    rot_size = file_size_or_neg(rot);
+
+    rc = cmt_cs_start(n->cs);
+    CHECK(rc != CMT_OK && rc != CMT_FAULT,
+          "the second corruption is returned (state.go:352-353) — the "
+          "state machine does not start");
+    CHECK(!n->cs_started, "and nothing marked it started");
+    CHECK(file_size_or_neg(bak) > 0, "the head was backed up once");
+    CHECK(file_size_or_neg(rot) == rot_size,
+          "the rotated file is untouched — the repair is head-only");
+    CHECK(node_wal_records(&g) == 1, "the repaired head kept its record");
+
+    nodus_cmt_node_release(n);
+    free(n);
     gfx_close(&g);
     return 0;
 }
@@ -2476,6 +2760,9 @@ int main(void)
         { "edge_state_ahead",         t_edge_state_ahead_of_store},
         { "genesis_doc_loader",       t_genesis_doc_loader       },
         { "start_and_release",        t_start_and_release        },
+        { "wal_repair_on_start",      t_wal_repair_on_start      },
+        { "wal_repair_second_corruption_refuses",
+                                      t_wal_repair_second_corruption_refuses },
         { "txs_available_fires",      t_txs_available_fires      },
         { "privval_load_or_gen",      t_privval_load_or_gen      },
         { "init_invariants",          t_init_invariants          },

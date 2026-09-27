@@ -257,8 +257,8 @@ static int g_checks = 0;
 
 /* ══ deterministic REAL keys — test_v2_produce.c:83-102's shape ══════
  * test_v2_produce.c is deleted with the closed consensus lane (R3 W4);
- * this shape is kept here and this behaviour is now proven only in
- * this file and test_cmt_live.c. */
+ * this shape is kept here (test_cmt_live.c and test_cc_appr.c keep their
+ * own copies of the same deterministic-key idiom). */
 
 #define N_KEYS ((int)DNAC_COMMITTEE_SIZE)
 #define TREASURY_RAW 93000000000000000ULL   /* test_v2_gen.c:66          */
@@ -801,7 +801,10 @@ static void gfx_close(gfx_t *g)
  * Copied (that file's copy is static and its fixture type differs); the
  * logic is that function's, retyped over a `nodus_witness_t *`.
  * test_v2_produce.c is deleted with the closed consensus lane (R3 W4);
- * this behaviour is now proven only here and in test_cmt_live.c. */
+ * this behaviour (a real CHAIN_CONFIG envelope through the chain) is now
+ * proven only here — test_cmt_live.c never built one (neither its first
+ * version nor its P2P-PORT F5 port); test_cc_appr.c builds the pre-auth
+ * form of the same envelope for the approval responder. */
 
 #define CC_CALL_LEN 41u
 #define CC_UNITS    200000u

@@ -23,6 +23,7 @@
 #include "witness/nodus_witness_v2_schema.h"
 #include "witness/nodus_witness_v2_claims.h"
 #include "witness/nodus_witness_db.h"
+#include "witness/nodus_witness_p2p.h"   /* the 0x70 channel (P2P-PORT F5) */
 #include "server/nodus_server.h"
 #include "nodus/nodus_chain_config.h"
 
@@ -264,12 +265,25 @@ static int join_adopt(nodus_witness_t *w) {
 }
 
 void nodus_witness_v2_join_handle_gbundle_r(nodus_witness_t *w,
-                                            struct nodus_tcp_conn *conn,
-                                            const nodus_t3_msg_t *msg) {
-    (void)conn;
-    if (!w || !msg || !w->v2_join.active) return;
+                                            const char *peer_id,
+                                            const nodus_t3_w_v2_gbundle_r_t *r) {
+    if (!w || !peer_id || !r || !w->v2_join.active) return;
 
-    const nodus_t3_w_v2_gbundle_r_t *r = &msg->w_v2_gbundle_r;
+    /* Red-team H2: a chunk is taken ONLY as the answer to this joiner's
+     * one outstanding request — from the peer it asked, for the offset
+     * it asked (nodus_witness_p2p_gb_take). Anything else is DROPPED
+     * before it can cost a buffer or a join_adopt (scratch DB +
+     * migrations): an unsolicited response, a second copy, or a late
+     * honest answer to a request the tick has since replaced. The sender
+     * is NOT stopped — that late honest answer looks exactly like an
+     * unsolicited one (fix proposals 2026-09-27 "REVISED" H2). No
+     * reference counterpart: channel 0x70 is nodus's own (R-P2P-5). */
+    if (!nodus_witness_p2p_gb_take(w->p2p, peer_id, r->offset)) {
+        QGP_LOG_DEBUG(LOG_TAG, "0x70 response from %s @%llu is not the "
+                      "outstanding request — dropped", peer_id,
+                      (unsigned long long)r->offset);
+        return;
+    }
 
     /* R3 W3 (D-24 rev 4 (1)): the pin IS the 32-byte chain id — `r->pin`
      * and `r->chain` now name the same identity (nodus_witness_v2_sync2.c
@@ -321,17 +335,20 @@ static void join_diag(nodus_witness_t *w, uint64_t now, const char *why) {
         now - w->v2_join.last_diag_ms < 60000ULL) return;
     w->v2_join.last_diag_ms = now;
     QGP_LOG_WARN(LOG_TAG, "joiner is NOT requesting a genesis bundle: %s "
-                 "(peer_count=%d, bytes accumulated=%zu) — it holds no "
+                 "(p2p peers=%d, bytes accumulated=%zu) — it holds no "
                  "chain and is serving DHT only",
-                 why, w->peer_count, w->v2_join.acc_len);
+                 why, nodus_witness_p2p_peer_count(w->p2p),
+                 w->v2_join.acc_len);
 }
 
 void nodus_witness_v2_join_tick(nodus_witness_t *w) {
     if (!w || !w->v2_join.active) return;
 
     uint64_t now = join_mono_ms();
-    if (w->peer_count <= 0) {
-        join_diag(w, now, "no witness peers in the table");
+    int n_peers = nodus_witness_p2p_peer_count(w->p2p);
+    if (n_peers <= 0) {
+        join_diag(w, now, w->p2p ? "no p2p peer connected"
+                                 : "no p2p host (port 4004 is not running)");
         return;
     }
 
@@ -339,72 +356,41 @@ void nodus_witness_v2_join_tick(nodus_witness_t *w) {
         now - w->v2_join.last_req_ms < V2JOIN_REQ_INTERVAL_MS)
         return;
 
-    /* One request to one identified peer per interval, at the current
+    /* One request to one connected peer per interval, at the current
      * accumulated offset. The response accumulates; when complete, the
      * handler adopts.
      *
-     * ROUND-ROBIN, AND IT IS REAL NOW. This loop used to take peers[0]
-     * and break, while the comment claimed "round-robin over peers by
-     * tick timing" — rotation that only happened if something else
-     * reordered the array. A peer can decline to serve for two reasons a
-     * joiner cannot see: it holds no chain itself (another joiner — they
-     * enter each other's transport rosters through the DHT registry,
-     * which applies no committee filter), or it holds the chain but has
-     * not yet learned this sender's pubkey and answers
-     * "w_v2_gbundle_q from unknown sender, ignoring". Either way the
-     * request is wasted, and without rotation EVERY later request is
-     * wasted the same way. Measured before this change: 1 of 13
-     * simultaneous joiners never adopted, twice.
-     *
-     * The cursor advances once per ATTEMPT, not per candidate, so one
-     * unhelpful peer costs exactly one interval. */
-    struct nodus_tcp_conn *conn = NULL;
-    if (w->peer_count > 0) {
-        for (int k = 0; k < w->peer_count; k++) {
-            int i = (int)((w->v2_join.peer_rr + (uint32_t)k) %
-                          (uint32_t)w->peer_count);
-            if (w->peers[i].conn && w->peers[i].identified) {
-                conn = w->peers[i].conn;
-                w->v2_join.peer_rr = (uint32_t)((i + 1) % w->peer_count);
-                break;
-            }
-        }
-    }
-    if (!conn) {
-        join_diag(w, now, "no peer in the table is both connected and "
-                          "identified");
+     * ROUND-ROBIN over the switch's peer set (its List() order). A peer
+     * can decline to serve for a reason a joiner cannot see — it holds no
+     * chain itself (another joiner) — so a request to it is wasted, and
+     * without rotation EVERY later request would be wasted the same way
+     * (measured before rotation existed: 1 of 13 simultaneous joiners
+     * never adopted). The cursor advances once per ATTEMPT, so one
+     * unhelpful peer costs exactly one interval. Every connected peer has
+     * authenticated its identity and our chain id (the pin) at the secret
+     * connection and NodeInfo (P2P-PORT F5); the serve side authorizes by
+     * the pin equalling its committed genesis. */
+    char peer_id[CMT_P2P_ID_CAP];
+    int i = (int)(w->v2_join.peer_rr % (uint32_t)n_peers);
+    if (!nodus_witness_p2p_peer_id_at(w->p2p, i, peer_id)) {
+        join_diag(w, now, "the p2p peer set changed under the cursor");
         return;
     }
+    w->v2_join.peer_rr = (uint32_t)((i + 1) % n_peers);
 
-    nodus_t3_msg_t req;
+    nodus_t3_w_v2_gbundle_q_t req;
     memset(&req, 0, sizeof(req));
-    req.type = NODUS_T3_V2_GBUNDLE_REQ;
-    memcpy(req.w_v2_gbundle_q.chain, w->v2_join.pin, 32);
-    memcpy(req.w_v2_gbundle_q.pin, w->v2_join.pin, 32);
-    req.w_v2_gbundle_q.offset = (uint64_t)w->v2_join.acc_len;
+    memcpy(req.chain, w->v2_join.pin, 32);
+    memcpy(req.pin, w->v2_join.pin, 32);
+    req.offset = (uint64_t)w->v2_join.acc_len;
 
-    const char *method = nodus_t3_type_to_method(req.type);
-    if (method) snprintf(req.method, sizeof(req.method), "%s", method);
-    req.header.version = 1;
-    memcpy(req.header.sender_id, w->my_id, NODUS_T3_WITNESS_ID_LEN);
-    req.header.timestamp = (uint64_t)time(NULL);
-    /* A joiner has no chain_id yet — leave the header chain_id zero. This
-     * is safe: verify_chain_id() runs ONLY inside the BFT round handlers
-     * (nodus_witness_bft.c handle_propose/vote/commit/viewchg/newview),
-     * never on the sync/serve dispatch path, so a zero chain_id in a
-     * gbundle request is not rejected. The serve side authenticates the
-     * request by the sender's roster pubkey (the joiner is admitted to
-     * committee members' TRANSPORT rosters via the DHT nodus:pk registry
-     * — rebuild_roster_from_peers, which applies NO committee filter —
-     * with the O15B.1 ~2-minute visibility latency) and authorizes it by
-     * the pin equalling the committed genesis. */
-
-    uint8_t *buf = malloc(NODUS_W_MAX_SYNC_RSP_SIZE);
-    if (!buf) return;
+    uint8_t buf[128];
     size_t len = 0;
-    if (nodus_t3_encode(&req, &w->server->identity.sk, buf,
-                        NODUS_W_MAX_SYNC_RSP_SIZE, &len) == 0)
-        (void)nodus_tcp_send(conn, buf, len);
-    free(buf);
+    /* Sent through the host so it remembers (peer, offset) as the one
+     * outstanding request — the only answer handle_gbundle_r takes. */
+    if (nodus_t3_gbundle_q_encode(&req, buf, sizeof(buf), &len) == 0 &&
+        !nodus_witness_p2p_gb_request(w->p2p, peer_id, req.offset, buf, len))
+        QGP_LOG_WARN(LOG_TAG, "genesis bundle request to %s not queued",
+                     peer_id);
     w->v2_join.last_req_ms = now;
 }

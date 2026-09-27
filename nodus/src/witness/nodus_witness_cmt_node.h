@@ -538,8 +538,8 @@ typedef struct {
      *  longer sets this itself: it stops at the WAL open, and `cs`'s
      *  actual start happens only inside `cmt_conr_start(conr)`, which the
      *  caller (nodus_witness_init) builds and owns because the reactor's
-     *  host table lives on `nodus_cmt_net_t`, not on this struct (package
-     *  C2b). The caller sets `n->cs_started = true` itself, directly,
+     *  host table lives on the 4004 p2p host (nodus_witness_p2p.h,
+     *  P2P-PORT F5), not on this struct. The caller sets `n->cs_started = true` itself, directly,
      *  right after `cmt_conr_start` returns CMT_OK — this field is
      *  public exactly so it can. `nodus_cmt_node_release`'s cleanup order
      *  depends on it being accurate: an unset `cs_started` on a node
@@ -613,8 +613,8 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
  * `!conr->wait_sync` — always true under D-23 rev 7 item 18's
  * no-blocksync deviation. The caller (nodus_witness_init) builds and
  * starts `cmt_conr_t` AFTER this function returns, because the reactor's
- * host table is a field of `nodus_cmt_net_t` (package C2b), which this
- * module does not depend on. See `nodus_cmt_node_start`'s own comment
+ * host table belongs to the 4004 p2p host (nodus_witness_p2p.h, P2P-PORT
+ * F5), which this module does not depend on. See `nodus_cmt_node_start`'s own comment
  * (the .c file) for the discrepancy this leaves against D-23 rev 7 (17)'s
  * literal text.
  *

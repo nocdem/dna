@@ -48,9 +48,7 @@
 
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_v2_result.h"
-#include "protocol/nodus_tier3.h"       /* verb 24-25 gbundle handler  */
-
-struct nodus_tcp_conn;
+#include "protocol/nodus_tier3.h"       /* the 0x70 message bodies      */
 
 #ifdef __cplusplus
 extern "C" {
@@ -88,14 +86,16 @@ extern "C" {
  * closed consensus lane: T3 verbs 20-23 are retired, never reused. The
  * surviving genesis-bundle handler (verb 24-25) follows. */
 
-/** verb 24 — a genesis bundle chunk request (O15E Faz D). Serves one
- *  offset chunk of the persisted canonical bundle to a joiner whose pin
- *  equals this successor's committed genesis BlockID. Refuses any other
- *  chain / pin (a bundle is never served for a genesis this node did not
- *  commit). */
+/** A genesis bundle chunk request (O15E Faz D; channel 0x70, the former
+ *  verb 24 — P2P-PORT F5). Serves one offset chunk of the persisted
+ *  canonical bundle, as a 0x70 response, to the connected p2p peer
+ *  `peer_id` whose pin equals this successor's chain id. Refuses any
+ *  other chain / pin (a bundle is never served for a genesis this node
+ *  did not commit). At most one chunk per 100 ms to each requester
+ *  (nodus_witness_p2p_gb_serve_allow). */
 void nodus_witness_v2_sync_handle_gbundle_q(nodus_witness_t *w,
-                                            struct nodus_tcp_conn *conn,
-                                            const nodus_t3_msg_t *msg);
+                                            const char *peer_id,
+                                            const nodus_t3_w_v2_gbundle_q_t *q);
 
 /* R3 W4 — nodus_witness_v2_sync_tick (the successor sync driver called
  * from the witness tick) and nodus_witness_v2_qc_first_missing (the

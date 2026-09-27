@@ -55,7 +55,26 @@
 #   timestamps), so every sweep scenario's chain is unchanged. K > 1 is
 #   a DIFFERENT chain id (more leaves in the hashed document).
 #
+#   P2P-PORT F6: on a server that reads the network file (its -h lists
+#   --network-file) the bring-up also needs a nodus-cli that prints
+#   "P2P ID:" from `whoami` (STAGEF_NODUSCLI_BIN, or STAGEF_P2PID_CLI) to
+#   list the seven nodes' 4004 IDs; with an older server it needs
+#   neither and writes no network file.
+#
+#   P2P-PORT F6 ALSO PROVES (p2p-aware server only): the 4004 mesh is
+#   formed from ONE published network file — every node started with its
+#   seven persistent peers (the "p2p on … 7 persistent peer(s)" line) —
+#   and the ceremony's pin-auto: node 1's derivation wrote the chain id
+#   into the file's empty pin, nodes 2..7 found it equal, and the file
+#   holds exactly the chain id every node derived. That every node then
+#   commits (section 6) is what shows the mesh actually formed.
+#
 # WHAT IT LEAVES BEHIND
+#   $BASE_DIR/nodus.json (require_peer_auth, "network_file", and the two
+#   HARNESS-ONLY p2p settings allow_duplicate_ip = true, addr_book_strict
+#   = false) and, on a p2p-aware server, $BASE_DIR/network.json (pin + the
+#   seven "id@127.0.0.1:<witness port>" peers) — every restart in this
+#   harness passes -c nodus.json and so re-reads both.
 #   A full 7-node cluster running under $BASE_DIR, its path in
 #   /tmp/stagef_current, pids in $BASE_DIR/pids.txt — the same contract
 #   the now-deleted stagef_up.sh left, so stagef_down.sh tears this down
@@ -102,6 +121,12 @@
 #     script that starts seven nodes and says nothing about whether they
 #     are on the same chain — they would simply fail to talk to each
 #     other later, somewhere less obvious.
+#   - **P2P-PORT F6: the "persistent peer(s)" line is config, not
+#     connection.** It says what the node was TOLD to dial; the mesh is
+#     proven only by every node reaching height 1 and the 7/7 first-block
+#     comparison. On an older server the network-file checks do not run
+#     at all (P2P_AWARE=0 is printed), so a bring-up on such a binary says
+#     nothing about the new stack.
 #   - **A node that fails its witness role still LISTENS.** nodus keeps
 #     serving DHT traffic when the witness module refuses to init
 #     (nodus_server.c), so "all 7 ports accept" is not evidence of 7
@@ -145,8 +170,15 @@ for n in $(seq 1 "$C"); do
         -i "$node_dir/identity" -d "$node_dir/data" \
         > "$node_dir/identity_gen.log" 2>&1 &
     ig=$!
+    # P2P-PORT F6: also wait for nodus.mlkem_sk — nodus_identity_save
+    # writes pk, sk, fp, kyber_*, mlkem_pk and mlkem_sk LAST
+    # (nodus_identity.c), and the 4004 host needs the ML-KEM pair. Killing
+    # the spawn earlier would leave `nodus-cli whoami` (stagef_p2p_id,
+    # below) to generate and write the node's static ML-KEM key through
+    # nodus_identity_load's auto-generate path instead of the server.
     for _ in $(seq 1 40); do
-        [ -s "$node_dir/identity/nodus.pk" ] && [ -s "$node_dir/identity/nodus.fp" ] && break
+        [ -s "$node_dir/identity/nodus.pk" ] && [ -s "$node_dir/identity/nodus.fp" ] && \
+            [ -s "$node_dir/identity/nodus.mlkem_sk" ] && break
         sleep 0.25
     done
     kill "$ig" 2>/dev/null || true; wait "$ig" 2>/dev/null || true
@@ -265,8 +297,10 @@ if [ "$CANDIDATES" -gt 0 ]; then
             -i "$cd_dir/identity" -d "$cd_dir/data" \
             > "$cd_dir/identity_gen.log" 2>&1 &
         cg=$!
+        # mlkem_sk too — the candidates run as 4004 nodes (see section 1)
         for _ in $(seq 1 40); do
-            [ -s "$cd_dir/identity/nodus.pk" ] && [ -s "$cd_dir/identity/nodus.fp" ] && break
+            [ -s "$cd_dir/identity/nodus.pk" ] && [ -s "$cd_dir/identity/nodus.fp" ] && \
+                [ -s "$cd_dir/identity/nodus.mlkem_sk" ] && break
             sleep 0.25
         done
         kill "$cg" 2>/dev/null || true; wait "$cg" 2>/dev/null || true
@@ -321,6 +355,29 @@ fi
 # beside a FOREIGN chain database but does not care about these, and
 # the partial-wipe gate wants all three present — which is exactly the
 # state a real host is in after its first start. Left alone on purpose.
+
+# ── 1e. P2P-PORT F6 — nodus.json + the network file ─────────────────
+# nodus.json (require_peer_auth, "network_file", the two harness-only p2p
+# settings — stagef_env.sh "THE 4004 MESH") is written for EVERY binary:
+# an older server ignores the keys it does not know. The network file
+# itself is produced only for a server that reads it (its -h lists
+# --network-file): the seven p2p IDs come from the identities just
+# generated (stagef_p2p_id — never guessed), and the pin starts EMPTY
+# because the chain does not exist yet; the ceremony below writes it
+# (operator: "pin auto genesis'te"). An older server (the HF-1 and
+# stop-all scenarios bring up on one) meshes through the -s seeds and
+# the DHT as it always did, and no file is written for it.
+stagef_write_nodus_json
+if stagef_server_has_network_file "$STAGEF_NODUS_BIN"; then
+    P2P_AWARE=1
+    rm -f "$(stagef_network_file)"
+    stagef_write_network_file "" || { echo "[FAIL] could not write the network file (p2p IDs — see above)" >&2; exit 4; }
+    echo "[ok] network file with $C persistent peers, pin empty: $(stagef_network_file)"
+else
+    P2P_AWARE=0
+    rm -f "$(stagef_network_file)"
+    echo "[ok] $STAGEF_NODUS_BIN predates the network file — no file written; the old stack meshes through the -s seeds"
+fi
 
 # ── 2. the genesis config ───────────────────────────────────────────
 # THE ECONOMIC PARAMETERS MUST MATCH THE BINARY, and there is no way to
@@ -574,7 +631,11 @@ CHAIN_ID=""; GENESIS_PIN=""
 for n in $(seq 1 "$C"); do
     nd=$(stagef_node_dir "$n")
     out="$nd/derive.log"
-    if ! "$STAGEF_NODUS_BIN" --derive-v2-genesis "$CONF" -d "$nd/data" \
+    # -c nodus.json: its "network_file" key makes a p2p-aware ceremony
+    # write the derived chain id into the file's empty pin (node 1) and
+    # find it equal afterwards (nodes 2..7) — asserted below.
+    if ! "$STAGEF_NODUS_BIN" -c "$BASE_DIR/nodus.json" \
+         --derive-v2-genesis "$CONF" -d "$nd/data" \
          > "$out" 2> "$nd/derive.err"; then
         echo "[FAIL] node $n derivation refused — full output:" >&2
         cat "$out" "$nd/derive.err" >&2
@@ -602,6 +663,30 @@ echo "[ok] all $C nodes derived a byte-identical chain"
 echo "     chain-id       $CHAIN_ID"
 echo "     v2-genesis-pin $GENESIS_PIN"
 
+# P2P-PORT F6 — pin-auto, asserted: exactly ONE ceremony run (the first)
+# wrote the pin, every later one found it already equal, and the file now
+# holds exactly the chain id. An older server wrote nothing.
+if [ "$P2P_AWARE" = 1 ]; then
+    written=0 equal=0
+    for n in $(seq 1 "$C"); do
+        l=$(awk '/^network-file/{print $3}' "$(stagef_node_dir "$n")/derive.log")
+        case "$l" in
+            pin-written)       written=$(( written + 1 )) ;;
+            pin-already-equal) equal=$(( equal + 1 )) ;;
+            *) echo "[FAIL] node $n's ceremony printed no network-file line ('$l')" >&2; exit 6 ;;
+        esac
+    done
+    fpin=$(stagef_network_file_pin)
+    if [ "$written" != 1 ] || [ "$equal" != $(( C - 1 )) ] || [ "$fpin" != "$CHAIN_ID" ]; then
+        echo "[FAIL] pin-auto: written=$written equal=$equal (want 1 / $(( C - 1 ))), file pin '$fpin' vs chain $CHAIN_ID" >&2
+        exit 6
+    fi
+    echo "[ok] pin-auto: node 1's ceremony wrote the pin, $(( C - 1 )) found it equal; the network file pins $CHAIN_ID"
+elif [ -e "$(stagef_network_file)" ]; then
+    echo "[FAIL] an older server's ceremony left a network file behind" >&2
+    exit 6
+fi
+
 # Persist both, because a scenario that needs the pin must not re-derive
 # it: re-derivation would be a SECOND opinion about the chain's identity,
 # and a scenario is supposed to check the fleet's, not form its own.
@@ -609,11 +694,11 @@ printf '%s\n' "$CHAIN_ID"    > "$BASE_DIR/v2_chain_id"
 printf '%s\n' "$GENESIS_PIN" > "$BASE_DIR/v2_genesis_pin"
 
 # ── 4. spawn ────────────────────────────────────────────────────────
+# The -s seeds form the DHT cluster (4000/4002); without an "id@" prefix
+# they add no witness-port peer. The 4004 mesh comes from the network
+# file named in nodus.json (section 1e) on a p2p-aware server.
 SEEDS=""
 for n in $(seq 1 "$C"); do SEEDS="$SEEDS -s 127.0.0.1:$(stagef_udp_port "$n")"; done
-cat > "$BASE_DIR/nodus.json" <<'EOF'
-{ "require_peer_auth": true }
-EOF
 
 : > "$BASE_DIR/pids.txt"
 for n in $(seq 1 "$C"); do
@@ -688,6 +773,16 @@ for n in $(seq 1 "$C"); do
     done
     if [ "$role_ok" = 1 ] && [ "$startup_ok" = 1 ] && [ "$live_ok" = 1 ]; then
         echo "[ok] node $n role=COMETBFT startup-table=built lane=LIVE"
+        # P2P-PORT F6: the p2p host's start line names how many
+        # persistent peers it was given (nodus_witness_p2p.c "p2p on …");
+        # the network file lists all $C. Config evidence only — that the
+        # mesh FORMED is what section 6 proves (every node commits).
+        if [ "$P2P_AWARE" = 1 ] && \
+           ! grep -q "p2p on .* $C persistent peer(s)" "$nd/nodus.log"; then
+            echo "[FAIL] node $n did not start its 4004 host with the network file's $C persistent peers" >&2
+            grep -E 'p2p on|network file' "$nd/nodus.log" | tail -5 >&2
+            bad=1
+        fi
     else
         echo "[FAIL] node $n incomplete: role=$role_ok startup-table=$startup_ok lane-live=$live_ok" >&2
         grep -E 'REFUSING|chain role|cometbft|CMT_FAULT' "$nd/nodus.log" | tail -10 >&2

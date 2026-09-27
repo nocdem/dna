@@ -16,6 +16,7 @@
 #include "nodus/nodus_chain_config.h"  /* Hard-Fork v1 schema migration */
 #include "crypto/nodus_sign.h"
 #include "dnac/transaction.h"          /* DNAC_TX_HEADER_SIZE (v0.17.1) */
+#include "dnac/ledger_ids.h"           /* DNA_DOMAIN_CORE (P2P-PORT F6) */
 #include <string.h>
 #include <time.h>
 #include <stdio.h>
@@ -297,6 +298,25 @@ int nodus_witness_utxo_sum_by_token(nodus_witness_t *w,
  * by the RFC 6962 nodus_witness_merkle_compute_utxo_root in
  * nodus_witness_merkle.c. */
 
+/* P2P-PORT F6 (K3) — 1 = utxo_set has a domain_id column, 0 = not (a
+ * pre-S5 shape — all CORE by the legacy definition, the same rule the
+ * CORE invariant applies, nodus_witness_v2_claims.c
+ * nodus_rt_core_invariant), -1 = fault. */
+static int utxo_domain_col_present(sqlite3 *db) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, "PRAGMA table_info(utxo_set)", -1, &st,
+                           NULL) != SQLITE_OK)
+        return -1;
+    int found = 0, rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const unsigned char *name = sqlite3_column_text(st, 1);
+        if (name && strcmp((const char *)name, "domain_id") == 0) found = 1;
+    }
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) return -1;
+    return found;
+}
+
 int nodus_witness_utxo_by_owner(nodus_witness_t *w, const char *owner,
                                    nodus_witness_utxo_entry_t *out,
                                    int max_entries, int *count_out) {
@@ -305,19 +325,40 @@ int nodus_witness_utxo_by_owner(nodus_witness_t *w, const char *owner,
 
     *count_out = 0;
 
+    /* P2P-PORT F6 (K3, decision 2026-09-26-witness-port-session.md) — the
+     * dnac_utxo answer lists CORE-domain coins only, so a networked
+     * builder (`nodus-cli v2-envelope stake` / `spend`) can never select
+     * a coin its CORE leg cannot spend. Filtered HERE rather than carried
+     * on the wire: no reply field, no struct change, so every libdna
+     * caller (dnac/src/nodus/tcp_client.c, messenger/cli) compiles and
+     * behaves unchanged — on a version-3 chain the CORE invariant already
+     * refuses any non-CORE row (nodus_rt_core_invariant), so what they
+     * receive today is exactly this set. */
+    int has_dom = utxo_domain_col_present(w->db);
+    if (has_dom < 0) return -1;
+
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
         /* O15B §7: unlock_block is SELECTed so the caller can tell a
          * spendable coin from one still inside its post-UNSTAKE cooldown.
          * Omitting it is what let the wallet build transactions consensus
          * was guaranteed to reject (Rule D, nodus_witness_verify.c:730). */
-        "SELECT nullifier, owner, amount, token_id, tx_hash, output_index, "
-        "block_height, unlock_block "
-        "FROM utxo_set WHERE owner = ? LIMIT ?", -1, &stmt, NULL);
+        has_dom
+        ? "SELECT nullifier, owner, amount, token_id, tx_hash, output_index, "
+          "block_height, unlock_block "
+          "FROM utxo_set WHERE owner = ? AND domain_id = ? LIMIT ?"
+        : "SELECT nullifier, owner, amount, token_id, tx_hash, output_index, "
+          "block_height, unlock_block "
+          "FROM utxo_set WHERE owner = ? LIMIT ?", -1, &stmt, NULL);
     if (rc != SQLITE_OK) return -1;
 
     sqlite3_bind_text(stmt, 1, owner, -1, SQLITE_STATIC);
-    sqlite3_bind_int(stmt, 2, max_entries);
+    if (has_dom) {
+        sqlite3_bind_int64(stmt, 2, (sqlite3_int64)DNA_DOMAIN_CORE);
+        sqlite3_bind_int(stmt, 3, max_entries);
+    } else {
+        sqlite3_bind_int(stmt, 2, max_entries);
+    }
 
     int count = 0;
     while (sqlite3_step(stmt) == SQLITE_ROW && count < max_entries) {

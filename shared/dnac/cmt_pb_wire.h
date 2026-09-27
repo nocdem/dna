@@ -5,7 +5,12 @@
  *
  * ═══ INTERNAL ═══════════════════════════════════════════════════════════
  * This is NOT part of the codec's public surface (`cmt_pb.h` is). Nothing
- * outside a `shared/dnac/cmt_pb*.c` includes it, and no consumer of the
+ * outside a `shared/dnac/cmt_pb*.c` and the p2p Packet codec
+ * (`shared/dnac/cmt_p2p_mconn.c`, P2P-PORT F2) and the p2p DefaultNodeInfo
+ * codec (`shared/dnac/cmt_p2p_nodeinfo.c`, P2P-PORT F3) and the p2p
+ * NetAddress / PEX message / address-book file codecs
+ * (`shared/dnac/cmt_p2p_netaddr.c`, `cmt_p2p_pex.c`, `cmt_p2p_addrbook.c`,
+ * P2P-PORT F4) includes it, and no consumer of the
  * codecs needs it: it holds the backward writer and the forward reader
  * helpers that every generated-encoder port repeats — varint, tag, bytes,
  * skip, length-delimited payload, arena copy.

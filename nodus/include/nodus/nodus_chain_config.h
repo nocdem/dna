@@ -361,15 +361,10 @@ int nodus_chain_config_derive_witness_id(const uint8_t pubkey[NODUS_CC_PUBKEY_SI
  */
 void nodus_chain_config_log_stats(nodus_witness_t *w);
 
-/* Forward decl — full definitions in nodus_tier3.h / nodus_tcp.h;
- * callers that actually invoke nodus_witness_handle_cc_appr_req must
- * include those headers too (this avoids a deep include-chain for
- * chain_config consumers that only need the primitive API above). */
-struct nodus_t3_msg_t_tag;  /* nodus_t3_msg_t is an anonymous-struct typedef */
-struct nodus_tcp_conn;
-
 /**
- * Handle an incoming w_cc_appr_req (D-16 rev 7, W4-CC). Peer-side of the
+ * Handle an incoming governance approval request (D-16 rev 7, W4-CC;
+ * since P2P-PORT F5 a message on the 4004 channel 0x71, the former verb
+ * w_cc_appr_req). Peer-side of the
  * SYSTEM-governance approval-collection RPC that replaces the retired
  * Stage C.2 vote-collect pair (verbs 14-15): the request carries a
  * PRE-AUTH single-leg SYSTEM-governance envelope (today exactly
@@ -387,16 +382,23 @@ struct nodus_tcp_conn;
  * in `e` to compare against; the preflight seam derives THIS node's
  * own chain id and hashes it into `auth_digest[0]`, and the signature
  * below therefore verifies ONLY where the auth hook derives the same
- * commitment — on this chain. The one chain-id REFUSAL is the T3
- * header frame gate (`in->header.chain_id == w->v2_chain32`); a foreign
- * chain is defended by digest BINDING, not by an envelope check.
+ * commitment — on this chain. A foreign chain is refused one layer
+ * lower as well: the requester's connection was admitted only with this
+ * chain's id (the secret connection's N9 check and NodeInfo
+ * CompatibleWith), which replaced the tier-3 header's frame gate.
  *
- * msg is declared `const void *` to avoid a circular include with
- * nodus_tier3.h; callers pass `&nodus_t3_msg_t_instance`.
+ * The reply goes back on channel 0x71 to the connected p2p peer `peer_id`.
+ * `peer_wid` is SHA3-512(that connection's AUTHENTICATED ML-DSA-87 key)
+ * [0..31] — the per-proposer rate limit keys on it, never on a decoded
+ * field.
+ *
+ * `req` is a `const nodus_t3_cc_appr_req_t *`, declared `const void *` to
+ * avoid a circular include with nodus_tier3.h.
  */
 int nodus_witness_handle_cc_appr_req(nodus_witness_t *w,
-                                     struct nodus_tcp_conn *conn,
-                                     const void *msg);
+                                     const char *peer_id,
+                                     const uint8_t peer_wid[NODUS_CC_WITNESS_ID_SIZE],
+                                     const void *req);
 
 /* ============================================================================
  * Stage C.3 — per-proposer rate-limit on w_cc_appr_req (CC-OPS-003 / Q15;

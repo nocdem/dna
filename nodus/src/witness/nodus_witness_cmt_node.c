@@ -1922,8 +1922,7 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
 
     /* ── 5. node.go:356-362 — doHandshake (setup.go:173-190) ──────────
      * Every ledger apply the handshake performs COMMITS before it
-     * returns; nothing below it opens a transaction. That is what lets
-     * the WAL open in `nodus_cmt_node_start` outside one. */
+     * returns; nothing below it opens a transaction. */
     hs = (nodus_cmt_handshaker_t *)calloc(1, sizeof(*hs));
     if (!hs) {
         goto fail;
@@ -2174,23 +2173,53 @@ int nodus_cmt_node_start(nodus_cmt_node_t *n)
         return CMT_FAULT;
     }
     /* ── state.go:319-325 — OpenWAL ───────────────────────────────────
-     * The reference opens a FILE WAL inside `OnStart`; this port's WAL is
-     * SQLite rows on a second connection (D-15), opened by the HOST and
-     * handed to the executor. It is opened HERE, and not in
-     * `nodus_cmt_node_init`, for the §B.4 caller contract
-     * (nodus_witness_cmt_wal.h): a WAL write must not happen while a
-     * store transaction is open on the main connection. Nothing holds a
-     * transaction at this point — the Handshaker's applies all committed
-     * during init, which is the reference's own order (node.go:360
-     * precedes state.go:319). */
-    if (!sqlite3_get_autocommit(n->w->db)) {
-        QGP_LOG_ERROR(LOG_TAG, "%s", "start: the ledger connection is inside a "
-                      "transaction — the WAL must not be opened here");
-        return CMT_FAULT;
-    }
-    if (nodus_cmt_wal_open(&n->wal, n->w->db, n->now, n->now_ctx) != CMT_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "%s", "the consensus WAL could not be opened");
-        return CMT_FAULT;
+     * The reference opens its FILE WAL inside `OnStart`
+     * (state.go:319-325 → :420-461 `OpenWAL(cs.config.WalFile())`);
+     * so does this, at the reference's default location under the data
+     * dir: config.go:1019 `filepath.Join(DefaultDataDir, "cs.wal",
+     * "wal")`, the witness's data_path being that data dir
+     * (decision 2026-09-26-cmt-wal-file-group.md item 1). It is opened
+     * HERE, and not in `nodus_cmt_node_init`, because the reference's
+     * order is node.go:360 (the Handshaker) before state.go:319. An empty
+     * data_path is refused: it would put the WAL at `/cs.wal/wal`. */
+    {
+        char walfile[NODUS_CMT_AUTOFILE_PATH_MAX];
+        int  pn;
+
+        if (!n->w->data_path[0]) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "start: the witness has no data "
+                          "path — nowhere to put the consensus WAL");
+            return CMT_FAULT;
+        }
+        pn = snprintf(walfile, sizeof(walfile), "%s/cs.wal/wal",
+                      n->w->data_path);
+        if (pn < 0 || (size_t)pn >= sizeof(walfile)) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "start: the data path is too long "
+                          "for the consensus WAL path");
+            return CMT_FAULT;
+        }
+        /* ⚠ NOT GROUNDED (the reference never migrates WAL storage) —
+         * decision 2026-09-26-cmt-wal-file-group.md item 6, AMENDED
+         * 2026-09-27: at the first start of the file-WAL build, the tail
+         * of the SQLite-era `cmt_wal` rows (from the latest EndHeight) is
+         * carried into an absent/empty head BEFORE NewWAL, so a node that
+         * signed at the tip before a stop-all upgrade replays its own
+         * signed messages instead of starting at (H, round 0) against a
+         * privval that refuses to sign again. A bad row refuses the start
+         * like an open failure: the rows are untouched and recovery is
+         * manual (nodus_witness_cmt_wal.h). */
+        if (nodus_cmt_wal_carry_sqlite(n->w->db, walfile, NULL) != CMT_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "the SQLite-era consensus WAL "
+                          "could not be carried into the file WAL — "
+                          "refusing to start");
+            return CMT_FAULT;
+        }
+        if (nodus_cmt_wal_open(&n->wal, walfile, n->now, n->now_ctx)
+            != CMT_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "the consensus WAL could not be "
+                          "opened");
+            return CMT_FAULT;
+        }
     }
     n->wal_open = true;
     /* wal.go:124-131 — the EndHeight{0} seed when the log is empty. */
@@ -2226,8 +2255,9 @@ int nodus_cmt_node_start(nodus_cmt_node_t *n)
      * that branch is always taken.
      *
      * `nodus_cmt_node_t` does not own a `cmt_conr_t`: the reactor's host
-     * table (`cmt_conr_host_t`) is a field of `nodus_cmt_net_t`
-     * (package C2b, nodus_witness_cmt_net.h), which this module has no
+     * table (`cmt_conr_host_t`) belongs to the 4004 p2p host
+     * (nodus_witness_p2p.h, P2P-PORT F5; package C2b's
+     * nodus_witness_cmt_net held it before), which this module has no
      * reason to depend on. The caller (nodus_witness_init) therefore
      * builds `cmt_conr_t` itself, over `n->cs`, AFTER this function
      * returns, and starts it — which is what reaches `cmt_cs_start`. This
@@ -2237,8 +2267,10 @@ int nodus_cmt_node_start(nodus_cmt_node_t *n)
      * QUESTION for the ORCHESTRATOR, not resolved by editing that
      * decision.
      *
-     * NOT ported here and not by the caller either: the WAL repair loop
-     * (:352-385), `evsw.Start` (:388) and `go cs.receiveRoutine` (:398) —
-     * the caller drives `cmt_cs_step`, which is W3's tick. */
+     * The WAL repair loop (:338-386) is ported inside `cmt_cs_start`
+     * (host row `wal_repair`, decision 2026-09-26-cmt-wal-file-group 4b).
+     * NOT ported here and not by the caller either: `evsw.Start` (:388)
+     * and `go cs.receiveRoutine` (:398) — the caller drives `cmt_cs_step`,
+     * which is W3's tick. */
     return CMT_OK;
 }

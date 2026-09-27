@@ -6,11 +6,13 @@
  * successor genesis pin acquires the successor chain WITHOUT trusting any
  * peer's claimed genesis:
  *
- *   1. it enters the ordinary peer mesh (IDENT), so committee members add
- *      it to their TRANSPORT roster (not the BFT committee — F17);
- *   2. it pulls the canonical genesis BUNDLE in offset chunks
- *      (w_v2_gbundle_q/r) from any peer whose committed genesis equals
- *      the pin;
+ *   1. it joins the 4004 p2p network like any other node (P2P-PORT F5):
+ *      its NodeInfo network is its pin (the same 32 bytes as the chain
+ *      id it expects), it dials its persistent peers, and it is admitted
+ *      as an ordinary (unbonded) peer — never into the BFT committee;
+ *   2. it pulls the canonical genesis BUNDLE in offset chunks (channel
+ *      0x70, the former w_v2_gbundle_q/r) from any connected peer whose
+ *      committed genesis equals the pin;
  *   3. it re-derives the genesis from the bundle bytes and requires the
  *      chain id the engine recomputes from those bytes to EQUAL the
  *      LOCAL pin (nodus_witness_v2_bundle_apply) — a version-3 chain has
@@ -50,8 +52,6 @@
 #include "witness/nodus_witness.h"
 #include "protocol/nodus_tier3.h"
 
-struct nodus_tcp_conn;
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -71,14 +71,19 @@ int nodus_witness_v2_join_arm(nodus_witness_t *w);
 int nodus_witness_v2_join_active(nodus_witness_t *w);
 
 /**
- * Joiner tick: while armed and at least one transport peer is known,
- * emit a bounded bundle-chunk request at the accumulated offset
- * (self-throttled). No-op once adopted. Called from the witness tick.
+ * Joiner tick: while armed and at least one p2p peer is connected, send a
+ * bounded bundle-chunk request (channel 0x70) at the accumulated offset
+ * to the next peer in round-robin order (self-throttled). No-op once
+ * adopted. Called from the witness tick.
  */
 void nodus_witness_v2_join_tick(nodus_witness_t *w);
 
 /**
- * verb 25 — accumulate a genesis-bundle chunk. On the final chunk,
+ * Channel 0x70 response (the former verb 25) from the connected peer
+ * `peer_id` — accumulate a genesis-bundle chunk, but ONLY when it answers
+ * this joiner's one outstanding request (that peer, that offset —
+ * nodus_witness_p2p_gb_take); any other response is dropped, its sender
+ * never stopped (red-team H2). On the final chunk,
  * re-derive the genesis against the local pin and, on a match, adopt the
  * successor DB in place, open the main witness on it and build its
  * cometbft server binding (R3 W3 delta 9 — the node becomes an ordinary,
@@ -91,8 +96,8 @@ void nodus_witness_v2_join_tick(nodus_witness_t *w);
  * see `join_adopt`'s own comment (nodus_witness_v2_join.c) for why.
  */
 void nodus_witness_v2_join_handle_gbundle_r(nodus_witness_t *w,
-                                            struct nodus_tcp_conn *conn,
-                                            const nodus_t3_msg_t *msg);
+                                            const char *peer_id,
+                                            const nodus_t3_w_v2_gbundle_r_t *r);
 
 #ifdef __cplusplus
 }

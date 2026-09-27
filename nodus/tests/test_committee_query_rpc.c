@@ -2,20 +2,21 @@
  * Nodus — Task 62 dnac_committee_query RPC shape test
  *
  * The handler is thin glue over nodus_committee_get_for_block +
- * nodus_validator_get (for status) + the server roster array (for
- * endpoint). The committee computation itself is covered end-to-end by
- * test_committee_cache / test_committee_election. This test validates
- * the pieces the RPC adds:
+ * nodus_validator_get (for status) + the p2p host's signed ADDR records
+ * (for endpoint, P2P-PORT F5). The committee computation itself is
+ * covered end-to-end by test_committee_cache / test_committee_election.
+ * This test validates the pieces the RPC adds:
  *
  *   1. epoch_start math: (target_h / EPOCH_LENGTH) * EPOCH_LENGTH.
  *   2. committee->validator status resolution — RETIRING propagates.
- *   3. roster address matches when pubkey is present; empty string
- *      otherwise.
+ *   3. with no p2p host, every member's address is empty (the held-
+ *      record case is test_witness_p2p.c's).
  */
 
 #define NODUS_WITNESS_INTERNAL_API 1
 
 #include "witness/nodus_witness.h"
+#include "witness/nodus_witness_p2p.h"
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_validator.h"
 #include "witness/nodus_witness_committee.h"
@@ -192,37 +193,21 @@ int main(void) {
     CHECK_EQ(seen_active, 1);
     fprintf(stderr, "[2/3] status resolution OK (cache frozen, status live)\n");
 
-    /* ── (3) roster endpoint match-by-pubkey ──────────────────────── */
-    /* Seed the witness roster so v1's pubkey has an address; v2 does
-     * not appear — the RPC MUST leave its address empty. */
-    memset(&w.roster, 0, sizeof(w.roster));
-    w.roster.version = 7;
-    w.roster.n_witnesses = 1;
-    memcpy(w.roster.witnesses[0].pubkey, v1.pubkey, NODUS_PK_BYTES);
-    memcpy(w.roster.witnesses[0].witness_id, "id000000000000000000000000000001",
-           NODUS_T3_WITNESS_ID_LEN);
-    snprintf(w.roster.witnesses[0].address,
-             sizeof(w.roster.witnesses[0].address),
-             "witness-01.test:4004");
-    w.roster.witnesses[0].active = true;
-
-    /* Mirror the handler's roster lookup: scan for pubkey match. */
+    /* ── (3) endpoint lookup (P2P-PORT F5) ────────────────────────── */
+    /* The transport roster this case used to seed is deleted: the RPC's
+     * address is now the member's own signed ADDR record held by the p2p
+     * host (nodus_witness_p2p_signed_addr — test_witness_p2p.c covers a
+     * record that IS held). Here there is no p2p host, so every member's
+     * address is empty — the handler's own rule for "no record". */
+    CHECK(w.p2p == NULL);
     for (int i = 0; i < count; i++) {
-        const char *addr = "";
-        for (uint32_t j = 0; j < w.roster.n_witnesses; j++) {
-            if (memcmp(w.roster.witnesses[j].pubkey, committee[i].pubkey,
-                       DNAC_PUBKEY_SIZE) == 0) {
-                addr = w.roster.witnesses[j].address;
-                break;
-            }
-        }
-        if (memcmp(committee[i].pubkey, v1.pubkey, DNAC_PUBKEY_SIZE) == 0) {
-            CHECK(strcmp(addr, "witness-01.test:4004") == 0);
-        } else {
-            CHECK(addr[0] == '\0');
-        }
+        char addr[CMT_P2P_NETADDR_STR_MAX];
+        addr[0] = '\0';
+        CHECK(!nodus_witness_p2p_signed_addr(w.p2p, committee[i].pubkey,
+                                             addr, sizeof(addr)));
+        CHECK(addr[0] == '\0');
     }
-    fprintf(stderr, "[3/3] roster endpoint lookup OK\n");
+    fprintf(stderr, "[3/3] endpoint lookup (no p2p host → empty) OK\n");
 
     (void)insert_block_row; /* reserved for future full-epoch lookback tests */
 

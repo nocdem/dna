@@ -909,3 +909,114 @@ stagef_cmt_diff_at_floor() {
     fi
     bash "$(dirname "${BASH_SOURCE[0]}")/stagef_diff.sh" --at-height "$floor" "$label"
 }
+
+# ──────────────────────────────────────────────────────────────────────
+# P2P-PORT F6 — THE 4004 MESH ON THE NEW STACK: network file + nodus.json
+#
+# The witness port (4004) is a literal port of cometbft's p2p layer
+# (docs/plans/2026-09-26-p2p-port-design.md). A node dials only its
+# PERSISTENT PEERS ("id@ip:port", the ID pinned — R-P2P-33); the DHT
+# "nodus:pk" roster the old stack discovered peers through is deleted.
+# The harness gives every node the SAME published network file
+# ($BASE_DIR/network.json: "v2_genesis_pin" + "persistent_peers" — decision
+# 2026-09-26-witness-port-session.md "Ağ config dosyası") through the
+# "network_file" key of $BASE_DIR/nodus.json, which EVERY start and
+# restart in this harness already passes with -c. A node's own entry in
+# the shared list is harmless: the dial is refused as self and never
+# retried (cmt_p2p_switch.c dial_outcome, ErrRejected isSelf).
+#
+# HARNESS-ONLY p2p settings, also in nodus.json: all nodes share
+# 127.0.0.1, so "allow_duplicate_ip": true (reference config.go:601,
+# "test only") and "addr_book_strict": false (loopback addresses are not
+# routable under the strict rule, addrbook.go:670). A production node
+# never sets either.
+#
+# The file is passed as a nodus.json KEY, never as `--network-file` on
+# the command line: an older nodus-server (the stop-all no-wipe and HF-1
+# scenarios' OLD binary) ignores an unknown JSON key but REFUSES an
+# unknown option (getopt → usage → exit 1).
+# ──────────────────────────────────────────────────────────────────────
+
+stagef_network_file() { echo "$BASE_DIR/network.json"; }
+
+# stagef_server_has_network_file BIN — 0 if nodus-server BIN understands
+# the network file (its -h banner lists --network-file), 1 if it is an
+# older build. Decides whether bring-up must produce the file and see
+# the ceremony write its pin.
+stagef_server_has_network_file() {
+    # No pipe into `grep -q`: the server writes its usage to stderr in 36
+    # separate write(2) calls and `--network-file` is line 27, so an early
+    # `grep -q` exit SIGPIPEs the server and, under the callers' `set -o
+    # pipefail`, the answer turns false at random (GROW-7-32 run 2026-09-27
+    # 17:47 refused its own bring-up; reproduced 118/200 with both ends
+    # pinned to one CPU). Read the whole output, then match.
+    local h
+    h=$("$1" -h 2>&1) || true
+    case "$h" in *--network-file*) return 0 ;; *) return 1 ;; esac
+}
+
+# stagef_p2p_id IDENTITY_DIR — the identity's 4004 p2p ID (64 hex), from
+# `nodus-cli -i DIR whoami`'s "P2P ID:" line (cmt_p2p_pubkey_to_id). Uses
+# STAGEF_P2PID_CLI when set, else STAGEF_NODUSCLI_BIN — a CLI older than
+# P2P-PORT F6 prints no such line, and this FAILS rather than guess.
+stagef_p2p_id() {
+    local cli="${STAGEF_P2PID_CLI:-$STAGEF_NODUSCLI_BIN}" id
+    id=$("$cli" -i "$1" whoami 2>/dev/null | awk '/^P2P ID:/{print $3; exit}')
+    case "$id" in
+        *[!0-9a-f]*|'') echo "[FAIL] stagef_p2p_id: $cli printed no P2P ID for $1 (a pre-F6 nodus-cli? set STAGEF_P2PID_CLI)" >&2; return 1 ;;
+    esac
+    [ "${#id}" = 64 ] || { echo "[FAIL] stagef_p2p_id: '$id' is not 64 hex" >&2; return 1; }
+    echo "$id"
+}
+
+# stagef_write_network_file PIN [DIR_1 PORT_1 DIR_2 PORT_2 ...]
+#   Writes $(stagef_network_file) with "v2_genesis_pin" = PIN ("" = the
+#   ceremony has not run yet) and one persistent peer
+#   "<p2p id>@127.0.0.1:<witness port>" per (identity dir, witness port)
+#   pair; with no pairs, nodes 1..STAGEF_COMMITTEE_SIZE. Written to a temp
+#   file and renamed, so a starting node never reads half a file.
+stagef_write_network_file() {
+    local pin="$1"; shift
+    local out tmp id n peers="" sep=""
+    out="$(stagef_network_file)"
+    tmp="$out.tmp.$$"
+    if [ $# -eq 0 ]; then
+        for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
+            set -- "$@" "$(stagef_node_dir "$n")/identity" "$(stagef_witness_port "$n")"
+        done
+    fi
+    # every ID first — a failure leaves no half-written file behind
+    while [ $# -ge 2 ]; do
+        id=$(stagef_p2p_id "$1") || return 1
+        peers="$peers$sep
+    \"$id@127.0.0.1:$2\""
+        sep=","
+        shift 2
+    done
+    printf '{\n  "v2_genesis_pin": "%s",\n  "persistent_peers": [%s\n  ]\n}\n' \
+        "$pin" "$peers" > "$tmp" || { rm -f "$tmp"; return 1; }
+    mv -f "$tmp" "$out"
+}
+
+# stagef_write_nodus_json — $BASE_DIR/nodus.json: the 4002 auth rule the
+# harness always ran with, the network file, and the two harness-only
+# p2p settings above.
+stagef_write_nodus_json() {
+    cat > "$BASE_DIR/nodus.json" <<NJ
+{
+  "require_peer_auth": true,
+  "network_file": "$(stagef_network_file)",
+  "allow_duplicate_ip": true,
+  "addr_book_strict": false
+}
+NJ
+}
+
+# stagef_network_file_pin — the pin currently in the network file ("" if
+# empty or the file is absent).
+stagef_network_file_pin() {
+    local f
+    f="$(stagef_network_file)"
+    [ -f "$f" ] || { echo ""; return 0; }
+    sed -n 's/^[[:space:]]*"v2_genesis_pin":[[:space:]]*"\([0-9a-fA-F]*\)".*/\1/p' "$f" | head -1
+}

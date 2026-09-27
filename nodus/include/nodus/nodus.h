@@ -23,7 +23,6 @@
 #include "core/nodus_media_storage.h"
 #include "channel/nodus_channel_store.h"
 #include "crypto/nodus_channel_crypto.h"
-#include "protocol/nodus_tier3.h"    /* D-16 rev 7 — cc_appr_{req,rsp} types */
 #include <pthread.h>
 #include <stdatomic.h>
 
@@ -968,51 +967,79 @@ void nodus_client_free_block_range_result(nodus_dnac_block_range_result_t *resul
 int nodus_client_dnac_committee(nodus_client_t *client,
                                   nodus_dnac_committee_result_t *result_out);
 
+/* ── Governance approvals collected by the proposer's OWN node ────────
+ * (decision docs/plans/decisions/2026-09-26-cc-approval-via-own-node.md)
+ *
+ * Method `dnac_cc_collect`, args {"e": bstr — the pre-auth SYSTEM-
+ * governance envelope}. Served ONLY to a session authenticated with the
+ * node's OWN identity key. The node asks every OTHER seat of the committee
+ * it resolves at its tip, on channel 0x71 over its existing 4004
+ * connections, and answers once every asked seat answered or its
+ * collection deadline passed (nodus_witness.h NODUS_CC_COLLECT_DEADLINE_MS,
+ * 5000 ms):
+ *   "r": {"res": [ {"i": seat, "st": status, "ok": bool,
+ *                   ["rs": the responder's own seat, "s": signature,
+ *                    "sh": set hash (64), "ep": epoch]   when ok,
+ *                   ["r": reason]                         when refused} ]}
+ * One entry per seat except the node's own, ascending seat order. A
+ * busy node (one collection at a time) or a refused request answers an
+ * error instead. */
+
+/** Status of one seat in a `dnac_cc_collect` reply (the wire's "st"). */
+#define NODUS_CC_COLLECT_ST_ANSWERED       0  /* the seat replied: "ok" / "r"  */
+#define NODUS_CC_COLLECT_ST_NOT_CONNECTED  1  /* no 4004 connection to it now  */
+#define NODUS_CC_COLLECT_ST_NO_ANSWER      2  /* asked; no reply by deadline   */
+#define NODUS_CC_COLLECT_ST_SEND_FAILED    3  /* connected; request not queued */
+
+/** How long `nodus_client_dnac_cc_collect` waits for the node's answer:
+ *  the node's own 5000 ms collection deadline plus 10 s for the committee
+ *  resolution, the 4001 round trip and a loaded node's loop. Pinned above
+ *  the node's deadline by a _Static_assert in
+ *  nodus_witness_chain_config.c. */
+#define NODUS_DNAC_CC_COLLECT_TIMEOUT_MS   15000
+
+/** One seat's result in a `dnac_cc_collect` reply. */
+typedef struct {
+    uint16_t seat;                    /* "i": the seat the node asked     */
+    uint8_t  status;                  /* "st": NODUS_CC_COLLECT_ST_*      */
+    bool     ok;                      /* "ok": an approval came back      */
+    uint16_t rsp_seat;                /* "rs": the seat the reply names   */
+    uint8_t  sig[NODUS_SIG_BYTES];    /* "s"  (ok only)                   */
+    uint8_t  set_hash[64];            /* "sh" (ok only)                   */
+    uint64_t epoch;                   /* "ep" (ok only)                   */
+    char     reason[129];             /* "r"  (refused only), NUL-ended   */
+} nodus_dnac_cc_collect_entry_t;
+
+/** A `dnac_cc_collect` reply. ⚠ SIZE: ~620 KB — heap-allocate it, never
+ *  a stack variable (the nodus_dnac_committee_result_t rule). */
+typedef struct {
+    int count;
+    nodus_dnac_cc_collect_entry_t entries[NODUS_T3_MAX_WITNESSES];
+} nodus_dnac_cc_collect_result_t;
+
 /**
- * D-16 rev 7 (W4-CC) — proposer-side helper to ask ONE committee peer to
- * approve a pre-auth SYSTEM-governance envelope. Replaces the retired
- * Stage E.2 helper (nodus_client_cc_vote_send, verbs 14-15) over the
- * pre-auth envelope carrier (verbs 40-41).
+ * Ask the connected node to collect governance approvals for the pre-auth
+ * envelope `env_bytes` (dnac_cc_collect, above). The client must be
+ * authenticated with the node's own identity. Waits up to
+ * NODUS_DNAC_CC_COLLECT_TIMEOUT_MS.
  *
- * Opens a short-lived TCP connection to `peer_address` (format "ip:port";
- * port defaults to NODUS_DEFAULT_WITNESS_PORT when omitted), sends a
- * single w_cc_appr_req signed with `caller_sk` carrying `env_bytes`, waits
- * up to `timeout_ms` for the corresponding w_cc_appr_rsp, verifies the
- * response wsig against `expected_peer_pk`, and writes the decoded
- * response to `*rsp_out`.
- *
- * The caller must be a committee member — the receiving peer drops any
- * tier-3 request from an unknown sender_id (see
- * nodus/src/witness/nodus_witness.c dispatch guard). Out-of-committee
- * callers surface as a timeout (-2) rather than a visible error.
- *
- * @param peer_address       "ip:port" of the target committee member
- * @param caller_pk          Proposer Dilithium5 public key (T2 hello)
- * @param caller_sk          Proposer Dilithium5 secret key (wsig source)
- * @param caller_witness_id  first 32B of SHA3-512(caller_pk) — t3 sender_id
- * @param expected_peer_pk   Target member's Dilithium5 pubkey (rsp verify)
- * @param chain_id32         The 32-byte derived chain id — t3 header cid
- * @param env_bytes          The pre-auth envelope bytes
- * @param env_len            Their length (<= NODUS_T3_CC_APPR_E_MAX)
- * @param timeout_ms         Total deadline (handshake + send + recv combined)
- * @param rsp_out            Decoded response on success
- *
- * @return  0   on verified response (callers check rsp_out->ok to
- *              distinguish approval vs refusal)
- *         -1   invalid args / encode / transport failure
- *         -2   timeout at any phase
- *         -3   response decoded but wsig verification failed
- *         -4   peer rejected T2 auth (see stderr for code+msg)
+ * @return 0 and `result_out` filled; a NODUS_ERR_* code the node answered
+ *         (busy, not its own identity, …) or NODUS_ERR_TIMEOUT; -1 on
+ *         invalid arguments / encode / transport failure.
  */
-int nodus_client_cc_appr_send(const char *peer_address,
-                              const nodus_pubkey_t *caller_pk,
-                              const nodus_seckey_t *caller_sk,
-                              const uint8_t caller_witness_id[32],
-                              const nodus_pubkey_t *expected_peer_pk,
-                              const uint8_t chain_id32[32],
-                              const uint8_t *env_bytes, size_t env_len,
-                              uint32_t timeout_ms,
-                              nodus_t3_cc_appr_rsp_t *rsp_out);
+int nodus_client_dnac_cc_collect(nodus_client_t *client,
+                                 const uint8_t *env_bytes, size_t env_len,
+                                 nodus_dnac_cc_collect_result_t *result_out);
+
+/**
+ * Decode a raw `dnac_cc_collect` response message (the T2 map the node
+ * sends) into `result_out` — the decoder nodus_client_dnac_cc_collect
+ * uses, exported for tests that read the node's reply off a socket.
+ * Entries beyond NODUS_T3_MAX_WITNESSES are refused, not truncated.
+ * @return 0; -1 malformed.
+ */
+int nodus_dnac_cc_collect_decode(const uint8_t *raw, size_t raw_len,
+                                 nodus_dnac_cc_collect_result_t *result_out);
 
 /**
  * Page through the full validator table on the witness (all statuses).
