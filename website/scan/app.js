@@ -29,7 +29,7 @@
     const fraction = (magnitude % 100000000n).toString().padStart(8, '0').replace(/0+$/, '');
     return (negative ? '-' : '') + (magnitude / 100000000n) + (fraction ? '.' + fraction : '');
   }
-  const money = raw => amount(raw) === '—' ? '—' : amount(raw) + ' DNAC';
+  const money = raw => amount(raw) === '—' ? '—' : amount(raw) + ' NODUS';
   const short = value => value.length > 28 ? value.slice(0, 14) + '…' + value.slice(-10) : value;
   function hash(value, destination) {
     if (typeof value !== 'string' || !value) return el('span', '—', 'muted');
@@ -70,7 +70,7 @@
   // sent as it is (all of [0-9a-f:], legal in a path and a query); anything else is encoded.
   const apiValue = value => /^[0-9a-f:]+$/.test(String(value)) ? String(value) : encodeURIComponent(value);
   const txHref = item => 'tx.html?hash=' + encodeURIComponent(position(item));
-  const token = value => value === zeroToken ? el('span', 'DNAC', 'token-native') : el('span', typeof value === 'string' ? short(value) : '—', 'mono');
+  const token = value => value === zeroToken ? el('span', 'NODUS', 'token-native') : el('span', typeof value === 'string' ? short(value) : '—', 'mono');
   async function api(path) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 12000);
@@ -128,14 +128,13 @@
     if (!$('stats-cards')) return;
     $('stat-height').textContent = indexed ?? '—';
     $('stat-supply').textContent = money(stats.supply_current);
-    $('stat-burned').textContent = money(stats.supply_burned);
     $('stat-chain-id').textContent = typeof stats.chain_id === 'string' ? stats.chain_id.slice(0,8) + '…' + stats.chain_id.slice(-6) : '—';
     $('stat-chain-id').title = stats.chain_id ?? '';
   }
   function statsUnavailable() {
     $('api-status').textContent = t('Index unavailable', 'İndekse erişilemiyor');
     $('staleness-banner').classList.add('hidden');
-    for (const id of ['height', 'supply', 'burned', 'chain-id']) if ($('stat-' + id)) $('stat-' + id).textContent = '—';
+    for (const id of ['height', 'supply', 'chain-id']) if ($('stat-' + id)) $('stat-' + id).textContent = '—';
   }
   async function loadBlocks(requested, fresh = false, providedStats) {
     const current = ++blockRequest, body = $('blocks-tbody');
