@@ -1598,21 +1598,58 @@ int nodus_t2_ch_ring_rejoin(uint32_t txn,
  * ("cid", "d", "code", "fp", "src", "dst"). This relies on the encoder
  * writing the "q" (method) field BEFORE "a" (args) in the top-level map.
  * All encoders in this file follow that order via enc_query_header /
- * enc_response_header — do not reorder them. */
-int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
-    if (!buf || !msg) return -1;
-    memset(msg, 0, sizeof(*msg));
+ * enc_response_header — do not reorder them.
+ *
+ * Duplicate keys and owned fields (P0-A, 2026-09-28). The server decodes a
+ * whole frame BEFORE its auth gate, so this decoder is pre-auth surface.
+ * Two rules keep every heap field single-owner:
+ *   1. Every map — top level, "a", "r" and each array-entry map — refuses
+ *      a repeated text key (nodus_map_key_once, nodus_value.h). A repeated
+ *      "val"/"d"/"vals"/... used to overwrite and leak the previous
+ *      allocation on every repeat; a repeated top-level "a" re-ran the
+ *      whole args branch.
+ *   2. Several heap fields are reachable from different keys in different
+ *      maps (batch_keys: "ks" in "a", "batch"/"counts" in "r"; pq_fps:
+ *      "fps" / "ps"; data: "d" in "a" and in "r"; value: "val" in both).
+ *      A site that allocates such a field refuses the frame when the field
+ *      is already owned, so a count (batch_key_count, pq_count, ...) is
+ *      only ever written by the site that allocated what it counts.
+ * An allocation failure refuses the frame too: skipping the array's
+ * elements would leave the stream mid-array.
+ * No encoder in this file writes a key twice into one map, so these rules
+ * refuse only malformed input. Every -1 is freed by nodus_t2_decode(). */
 
+/* The batch_* fields are owned by exactly one of "ks", "batch", "counts". */
+static bool t2_batch_owned(const nodus_tier2_msg_t *msg) {
+    return msg->batch_keys || msg->batch_vals || msg->batch_val_counts ||
+           msg->batch_counts || msg->batch_has_mine;
+}
+
+/* The pq_* fields are owned by exactly one of "fps" (a) or "ps" (r). */
+static bool t2_pq_owned(const nodus_tier2_msg_t *msg) {
+    return msg->pq_fps || msg->pq_online || msg->pq_peers || msg->pq_last_seen;
+}
+
+#define T2_KEY_ONCE(ks, item) \
+    do { \
+        if (nodus_map_key_once(&(ks), (item).tstr.ptr, (item).tstr.len) != 0) \
+            return -1; \
+    } while (0)
+
+static int t2_decode_body(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
     cbor_decoder_t dec;
     cbor_decoder_init(&dec, buf, len);
 
     cbor_item_t top = cbor_decode_next(&dec);
     if (top.type != CBOR_ITEM_MAP) return -1;
     size_t map_count = top.count;
+    nodus_map_keys_t top_ks;
+    memset(&top_ks, 0, sizeof(top_ks));
 
     for (size_t i = 0; i < map_count; i++) {
         cbor_item_t key = cbor_decode_next(&dec);
         if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+        T2_KEY_ONCE(top_ks, key);
 
         /* "t" → transaction ID */
         if (key.tstr.len == 1 && key.tstr.ptr[0] == 't') {
@@ -1648,12 +1685,15 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
         else if (key.tstr.len == 1 && key.tstr.ptr[0] == 'a') {
             cbor_item_t args = cbor_decode_next(&dec);
             if (args.type != CBOR_ITEM_MAP) continue;
+            nodus_map_keys_t aks;
+            memset(&aks, 0, sizeof(aks));
 
             for (size_t j = 0; j < args.count; j++) {
                 cbor_item_t akey = cbor_decode_next(&dec);
                 if (akey.type != CBOR_ITEM_TSTR) {
                     cbor_decode_skip(&dec); continue;
                 }
+                T2_KEY_ONCE(aks, akey);
 
                 /* pk (hello) */
                 if (akey.tstr.len == 2 && memcmp(akey.tstr.ptr, "pk", 2) == 0) {
@@ -1805,6 +1845,7 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                     cbor_item_t val = cbor_decode_next(&dec);
                     if (val.type == CBOR_ITEM_BSTR && val.bstr.len > 0) {
                         if (strcmp(msg->method, "circ_data") == 0) {
+                            if (msg->circ_data) return -1;
                             msg->circ_data = malloc(val.bstr.len);
                             if (msg->circ_data) {
                                 memcpy(msg->circ_data, val.bstr.ptr, val.bstr.len);
@@ -1812,6 +1853,7 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                                 msg->has_circ = true;
                             }
                         } else if (strcmp(msg->method, "ri_data") == 0) {
+                            if (msg->ri_data) return -1;
                             msg->ri_data = malloc(val.bstr.len);
                             if (msg->ri_data) {
                                 memcpy(msg->ri_data, val.bstr.ptr, val.bstr.len);
@@ -1819,6 +1861,7 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                                 msg->has_ri = true;
                             }
                         } else {
+                            if (msg->data) return -1;   /* "d" in "r" too */
                             msg->data = malloc(val.bstr.len);
                             if (msg->data) {
                                 memcpy(msg->data, val.bstr.ptr, val.bstr.len);
@@ -1860,8 +1903,10 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                 /* val (value_changed, serialized value) */
                 else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "val", 3) == 0) {
                     cbor_item_t val = cbor_decode_next(&dec);
-                    if (val.type == CBOR_ITEM_BSTR)
+                    if (val.type == CBOR_ITEM_BSTR) {
+                        if (msg->value) return -1;      /* "val" in "r" too */
                         nodus_value_deserialize(val.bstr.ptr, val.bstr.len, &msg->value);
+                    }
                 }
                 /* ch (channel UUID) */
                 else if (akey.tstr.len == 2 && memcmp(akey.tstr.ptr, "ch", 2) == 0) {
@@ -1937,19 +1982,19 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                 else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "fps", 3) == 0) {
                     cbor_item_t arr = cbor_decode_next(&dec);
                     if (arr.type == CBOR_ITEM_ARRAY && arr.count > 0) {
+                        if (t2_pq_owned(msg)) return -1;
                         size_t cap = arr.count > NODUS_MAX_WIRE_FPS ? NODUS_MAX_WIRE_FPS : arr.count;
                         msg->pq_fps = calloc(cap, sizeof(nodus_key_t));
-                        if (msg->pq_fps) {
-                            msg->pq_count = 0;
-                            for (size_t k = 0; k < arr.count; k++) {
-                                cbor_item_t vi = cbor_decode_next(&dec);
-                                if (vi.type == CBOR_ITEM_BSTR &&
-                                    vi.bstr.len == NODUS_KEY_BYTES &&
-                                    (size_t)msg->pq_count < cap) {
-                                    memcpy(msg->pq_fps[msg->pq_count].bytes,
-                                           vi.bstr.ptr, NODUS_KEY_BYTES);
-                                    msg->pq_count++;
-                                }
+                        if (!msg->pq_fps) return -1;
+                        msg->pq_count = 0;
+                        for (size_t k = 0; k < arr.count; k++) {
+                            cbor_item_t vi = cbor_decode_next(&dec);
+                            if (vi.type == CBOR_ITEM_BSTR &&
+                                vi.bstr.len == NODUS_KEY_BYTES &&
+                                (size_t)msg->pq_count < cap) {
+                                memcpy(msg->pq_fps[msg->pq_count].bytes,
+                                       vi.bstr.ptr, NODUS_KEY_BYTES);
+                                msg->pq_count++;
                             }
                         }
                     }
@@ -2064,20 +2109,22 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                 else if (akey.tstr.len == 2 && memcmp(akey.tstr.ptr, "ks", 2) == 0) {
                     cbor_item_t arr = cbor_decode_next(&dec);
                     if (arr.type == CBOR_ITEM_ARRAY && arr.count > 0) {
+                        /* batch_key_count must describe THIS allocation —
+                         * never a "batch"/"counts" array's in "r". */
+                        if (t2_batch_owned(msg)) return -1;
                         size_t bk_cap = arr.count > NODUS_MAX_BATCH_KEYS ?
                                         NODUS_MAX_BATCH_KEYS : arr.count;
                         msg->batch_keys = calloc(bk_cap, sizeof(nodus_key_t));
-                        if (msg->batch_keys) {
-                            msg->batch_key_count = 0;
-                            for (size_t k = 0; k < arr.count; k++) {
-                                cbor_item_t vi = cbor_decode_next(&dec);
-                                if (vi.type == CBOR_ITEM_BSTR &&
-                                    vi.bstr.len == NODUS_KEY_BYTES &&
-                                    (size_t)msg->batch_key_count < bk_cap) {
-                                    memcpy(msg->batch_keys[msg->batch_key_count].bytes,
-                                           vi.bstr.ptr, NODUS_KEY_BYTES);
-                                    msg->batch_key_count++;
-                                }
+                        if (!msg->batch_keys) return -1;
+                        msg->batch_key_count = 0;
+                        for (size_t k = 0; k < arr.count; k++) {
+                            cbor_item_t vi = cbor_decode_next(&dec);
+                            if (vi.type == CBOR_ITEM_BSTR &&
+                                vi.bstr.len == NODUS_KEY_BYTES &&
+                                (size_t)msg->batch_key_count < bk_cap) {
+                                memcpy(msg->batch_keys[msg->batch_key_count].bytes,
+                                       vi.bstr.ptr, NODUS_KEY_BYTES);
+                                msg->batch_key_count++;
                             }
                         }
                     }
@@ -2091,12 +2138,15 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
         else if (key.tstr.len == 1 && key.tstr.ptr[0] == 'r') {
             cbor_item_t res = cbor_decode_next(&dec);
             if (res.type != CBOR_ITEM_MAP) continue;
+            nodus_map_keys_t rks;
+            memset(&rks, 0, sizeof(rks));
 
             for (size_t j = 0; j < res.count; j++) {
                 cbor_item_t rkey = cbor_decode_next(&dec);
                 if (rkey.type != CBOR_ITEM_TSTR) {
                     cbor_decode_skip(&dec); continue;
                 }
+                T2_KEY_ONCE(rks, rkey);
 
                 /* nonce (challenge) */
                 if (rkey.tstr.len == 5 && memcmp(rkey.tstr.ptr, "nonce", 5) == 0) {
@@ -2163,24 +2213,26 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                 /* val (result single) */
                 else if (rkey.tstr.len == 3 && memcmp(rkey.tstr.ptr, "val", 3) == 0) {
                     cbor_item_t val = cbor_decode_next(&dec);
-                    if (val.type == CBOR_ITEM_BSTR)
+                    if (val.type == CBOR_ITEM_BSTR) {
+                        if (msg->value) return -1;      /* "val" in "a" too */
                         nodus_value_deserialize(val.bstr.ptr, val.bstr.len, &msg->value);
+                    }
                 }
                 /* vals (result multi) */
                 else if (rkey.tstr.len == 4 && memcmp(rkey.tstr.ptr, "vals", 4) == 0) {
                     cbor_item_t arr = cbor_decode_next(&dec);
                     if (arr.type == CBOR_ITEM_ARRAY && arr.count > 0) {
+                        if (msg->values) return -1;
                         size_t cap = arr.count > NODUS_MAX_WIRE_VALUES ? NODUS_MAX_WIRE_VALUES : arr.count;
                         msg->values = calloc(cap, sizeof(nodus_value_t *));
-                        if (msg->values) {
-                            msg->value_count = 0;
-                            for (size_t k = 0; k < arr.count; k++) {
-                                cbor_item_t vi = cbor_decode_next(&dec);
-                                if (vi.type == CBOR_ITEM_BSTR && msg->value_count < cap) {
-                                    nodus_value_t *v = NULL;
-                                    if (nodus_value_deserialize(vi.bstr.ptr, vi.bstr.len, &v) == 0)
-                                        msg->values[msg->value_count++] = v;
-                                }
+                        if (!msg->values) return -1;
+                        msg->value_count = 0;
+                        for (size_t k = 0; k < arr.count; k++) {
+                            cbor_item_t vi = cbor_decode_next(&dec);
+                            if (vi.type == CBOR_ITEM_BSTR && msg->value_count < cap) {
+                                nodus_value_t *v = NULL;
+                                if (nodus_value_deserialize(vi.bstr.ptr, vi.bstr.len, &v) == 0)
+                                    msg->values[msg->value_count++] = v;
                             }
                         }
                     }
@@ -2189,67 +2241,75 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                 else if (rkey.tstr.len == 5 && memcmp(rkey.tstr.ptr, "batch", 5) == 0) {
                     cbor_item_t arr = cbor_decode_next(&dec);
                     if (arr.type == CBOR_ITEM_ARRAY && arr.count > 0) {
+                        if (t2_batch_owned(msg)) return -1;
                         size_t bk_cap = arr.count > NODUS_MAX_BATCH_KEYS ?
                                         NODUS_MAX_BATCH_KEYS : arr.count;
                         msg->batch_keys = calloc(bk_cap, sizeof(nodus_key_t));
                         msg->batch_vals = calloc(bk_cap, sizeof(nodus_value_t **));
                         msg->batch_val_counts = calloc(bk_cap, sizeof(size_t));
-                        if (msg->batch_keys && msg->batch_vals && msg->batch_val_counts) {
-                            msg->batch_key_count = 0;
-                            for (size_t ki = 0; ki < arr.count; ki++) {
-                                cbor_item_t emap = cbor_decode_next(&dec);
-                                if (emap.type != CBOR_ITEM_MAP) continue;
-                                if ((size_t)msg->batch_key_count >= bk_cap) {
-                                    for (size_t m = 0; m < emap.count; m++) {
-                                        cbor_decode_skip(&dec);
-                                        cbor_decode_skip(&dec);
-                                    }
-                                    continue;
-                                }
-                                int bi = msg->batch_key_count;
-                                msg->batch_vals[bi] = NULL;
-                                msg->batch_val_counts[bi] = 0;
+                        if (!msg->batch_keys || !msg->batch_vals || !msg->batch_val_counts)
+                            return -1;
+                        msg->batch_key_count = 0;
+                        for (size_t ki = 0; ki < arr.count; ki++) {
+                            cbor_item_t emap = cbor_decode_next(&dec);
+                            if (emap.type != CBOR_ITEM_MAP) continue;
+                            if ((size_t)msg->batch_key_count >= bk_cap) {
                                 for (size_t m = 0; m < emap.count; m++) {
-                                    cbor_item_t ek = cbor_decode_next(&dec);
-                                    if (ek.type != CBOR_ITEM_TSTR) {
-                                        cbor_decode_skip(&dec); continue;
-                                    }
-                                    if (ek.tstr.len == 1 && ek.tstr.ptr[0] == 'k') {
-                                        cbor_item_t ev = cbor_decode_next(&dec);
-                                        if (ev.type == CBOR_ITEM_BSTR &&
-                                            ev.bstr.len == NODUS_KEY_BYTES)
-                                            memcpy(msg->batch_keys[bi].bytes,
-                                                   ev.bstr.ptr, NODUS_KEY_BYTES);
-                                    } else if (ek.tstr.len == 2 &&
-                                               memcmp(ek.tstr.ptr, "vs", 2) == 0) {
-                                        cbor_item_t varr = cbor_decode_next(&dec);
-                                        if (varr.type == CBOR_ITEM_ARRAY) {
-                                            size_t vc = varr.count > NODUS_MAX_WIRE_VALUES ?
-                                                        NODUS_MAX_WIRE_VALUES : varr.count;
-                                            if (vc > 0) {
-                                                msg->batch_vals[bi] = calloc(vc,
-                                                    sizeof(nodus_value_t *));
-                                            }
-                                            if (msg->batch_vals[bi] || vc == 0) {
-                                                for (size_t vi2 = 0; vi2 < varr.count; vi2++) {
-                                                    cbor_item_t vitem = cbor_decode_next(&dec);
-                                                    if (vitem.type == CBOR_ITEM_BSTR &&
-                                                        msg->batch_val_counts[bi] < vc) {
-                                                        nodus_value_t *v = NULL;
-                                                        if (nodus_value_deserialize(
-                                                                vitem.bstr.ptr, vitem.bstr.len,
-                                                                &v) == 0)
-                                                            msg->batch_vals[bi][
-                                                                msg->batch_val_counts[bi]++] = v;
-                                                    }
-                                                }
+                                    cbor_decode_skip(&dec);
+                                    cbor_decode_skip(&dec);
+                                }
+                                continue;
+                            }
+                            int bi = msg->batch_key_count;
+                            /* Commit the slot BEFORE parsing it: a refusal
+                             * inside this entry then leaves batch_vals[bi]
+                             * inside the range nodus_t2_msg_free() walks.
+                             * The slot is calloc-zeroed (NULL / 0). */
+                            msg->batch_key_count++;
+                            nodus_map_keys_t eks;
+                            memset(&eks, 0, sizeof(eks));
+                            for (size_t m = 0; m < emap.count; m++) {
+                                cbor_item_t ek = cbor_decode_next(&dec);
+                                if (ek.type != CBOR_ITEM_TSTR) {
+                                    cbor_decode_skip(&dec); continue;
+                                }
+                                T2_KEY_ONCE(eks, ek);
+                                if (ek.tstr.len == 1 && ek.tstr.ptr[0] == 'k') {
+                                    cbor_item_t ev = cbor_decode_next(&dec);
+                                    if (ev.type == CBOR_ITEM_BSTR &&
+                                        ev.bstr.len == NODUS_KEY_BYTES)
+                                        memcpy(msg->batch_keys[bi].bytes,
+                                               ev.bstr.ptr, NODUS_KEY_BYTES);
+                                } else if (ek.tstr.len == 2 &&
+                                           memcmp(ek.tstr.ptr, "vs", 2) == 0) {
+                                    cbor_item_t varr = cbor_decode_next(&dec);
+                                    if (varr.type == CBOR_ITEM_ARRAY) {
+                                        /* batch_val_counts[bi] counts only
+                                         * THIS allocation of vc slots. */
+                                        if (msg->batch_vals[bi]) return -1;
+                                        size_t vc = varr.count > NODUS_MAX_WIRE_VALUES ?
+                                                    NODUS_MAX_WIRE_VALUES : varr.count;
+                                        if (vc > 0) {
+                                            msg->batch_vals[bi] = calloc(vc,
+                                                sizeof(nodus_value_t *));
+                                            if (!msg->batch_vals[bi]) return -1;
+                                        }
+                                        for (size_t vi2 = 0; vi2 < varr.count; vi2++) {
+                                            cbor_item_t vitem = cbor_decode_next(&dec);
+                                            if (vitem.type == CBOR_ITEM_BSTR &&
+                                                msg->batch_val_counts[bi] < vc) {
+                                                nodus_value_t *v = NULL;
+                                                if (nodus_value_deserialize(
+                                                        vitem.bstr.ptr, vitem.bstr.len,
+                                                        &v) == 0)
+                                                    msg->batch_vals[bi][
+                                                        msg->batch_val_counts[bi]++] = v;
                                             }
                                         }
-                                    } else {
-                                        cbor_decode_skip(&dec);
                                     }
+                                } else {
+                                    cbor_decode_skip(&dec);
                                 }
-                                msg->batch_key_count++;
                             }
                         }
                     }
@@ -2258,50 +2318,54 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                 else if (rkey.tstr.len == 6 && memcmp(rkey.tstr.ptr, "counts", 6) == 0) {
                     cbor_item_t arr = cbor_decode_next(&dec);
                     if (arr.type == CBOR_ITEM_ARRAY && arr.count > 0) {
+                        if (t2_batch_owned(msg)) return -1;
                         size_t bk_cap = arr.count > NODUS_MAX_BATCH_KEYS ?
                                         NODUS_MAX_BATCH_KEYS : arr.count;
                         msg->batch_keys = calloc(bk_cap, sizeof(nodus_key_t));
                         msg->batch_counts = calloc(bk_cap, sizeof(size_t));
                         msg->batch_has_mine = calloc(bk_cap, sizeof(bool));
-                        if (msg->batch_keys && msg->batch_counts && msg->batch_has_mine) {
-                            msg->batch_key_count = 0;
-                            for (size_t ki = 0; ki < arr.count; ki++) {
-                                cbor_item_t emap = cbor_decode_next(&dec);
-                                if (emap.type != CBOR_ITEM_MAP) continue;
-                                if ((size_t)msg->batch_key_count >= bk_cap) {
-                                    for (size_t m = 0; m < emap.count; m++) {
-                                        cbor_decode_skip(&dec);
-                                        cbor_decode_skip(&dec);
-                                    }
-                                    continue;
-                                }
-                                int ci = msg->batch_key_count;
+                        if (!msg->batch_keys || !msg->batch_counts || !msg->batch_has_mine)
+                            return -1;
+                        msg->batch_key_count = 0;
+                        for (size_t ki = 0; ki < arr.count; ki++) {
+                            cbor_item_t emap = cbor_decode_next(&dec);
+                            if (emap.type != CBOR_ITEM_MAP) continue;
+                            if ((size_t)msg->batch_key_count >= bk_cap) {
                                 for (size_t m = 0; m < emap.count; m++) {
-                                    cbor_item_t ek = cbor_decode_next(&dec);
-                                    if (ek.type != CBOR_ITEM_TSTR) {
-                                        cbor_decode_skip(&dec); continue;
-                                    }
-                                    if (ek.tstr.len == 1 && ek.tstr.ptr[0] == 'k') {
-                                        cbor_item_t ev = cbor_decode_next(&dec);
-                                        if (ev.type == CBOR_ITEM_BSTR &&
-                                            ev.bstr.len == NODUS_KEY_BYTES)
-                                            memcpy(msg->batch_keys[ci].bytes,
-                                                   ev.bstr.ptr, NODUS_KEY_BYTES);
-                                    } else if (ek.tstr.len == 1 && ek.tstr.ptr[0] == 'c') {
-                                        cbor_item_t ev = cbor_decode_next(&dec);
-                                        if (ev.type == CBOR_ITEM_UINT)
-                                            msg->batch_counts[ci] = (size_t)ev.uint_val;
-                                    } else if (ek.tstr.len == 2 &&
-                                               memcmp(ek.tstr.ptr, "my", 2) == 0) {
-                                        cbor_item_t ev = cbor_decode_next(&dec);
-                                        if (ev.type == CBOR_ITEM_BOOL)
-                                            msg->batch_has_mine[ci] = ev.bool_val;
-                                    } else {
-                                        cbor_decode_skip(&dec);
-                                    }
+                                    cbor_decode_skip(&dec);
+                                    cbor_decode_skip(&dec);
                                 }
-                                msg->batch_key_count++;
+                                continue;
                             }
+                            int ci = msg->batch_key_count;
+                            nodus_map_keys_t eks;
+                            memset(&eks, 0, sizeof(eks));
+                            for (size_t m = 0; m < emap.count; m++) {
+                                cbor_item_t ek = cbor_decode_next(&dec);
+                                if (ek.type != CBOR_ITEM_TSTR) {
+                                    cbor_decode_skip(&dec); continue;
+                                }
+                                T2_KEY_ONCE(eks, ek);
+                                if (ek.tstr.len == 1 && ek.tstr.ptr[0] == 'k') {
+                                    cbor_item_t ev = cbor_decode_next(&dec);
+                                    if (ev.type == CBOR_ITEM_BSTR &&
+                                        ev.bstr.len == NODUS_KEY_BYTES)
+                                        memcpy(msg->batch_keys[ci].bytes,
+                                               ev.bstr.ptr, NODUS_KEY_BYTES);
+                                } else if (ek.tstr.len == 1 && ek.tstr.ptr[0] == 'c') {
+                                    cbor_item_t ev = cbor_decode_next(&dec);
+                                    if (ev.type == CBOR_ITEM_UINT)
+                                        msg->batch_counts[ci] = (size_t)ev.uint_val;
+                                } else if (ek.tstr.len == 2 &&
+                                           memcmp(ek.tstr.ptr, "my", 2) == 0) {
+                                    cbor_item_t ev = cbor_decode_next(&dec);
+                                    if (ev.type == CBOR_ITEM_BOOL)
+                                        msg->batch_has_mine[ci] = ev.bool_val;
+                                } else {
+                                    cbor_decode_skip(&dec);
+                                }
+                            }
+                            msg->batch_key_count++;
                         }
                     }
                 }
@@ -2315,63 +2379,70 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                 else if (rkey.tstr.len == 5 && memcmp(rkey.tstr.ptr, "posts", 5) == 0) {
                     cbor_item_t arr = cbor_decode_next(&dec);
                     if (arr.type == CBOR_ITEM_ARRAY && arr.count > 0) {
+                        if (msg->ch_posts) return -1;
                         size_t cap = arr.count > NODUS_MAX_WIRE_POSTS ? NODUS_MAX_WIRE_POSTS : arr.count;
                         msg->ch_posts = calloc(cap, sizeof(nodus_channel_post_t));
-                        if (msg->ch_posts) {
-                            msg->ch_post_count = 0;
-                            for (size_t k = 0; k < arr.count; k++) {
-                                cbor_item_t pmap = cbor_decode_next(&dec);
-                                if (pmap.type != CBOR_ITEM_MAP) continue;
-                                if ((size_t)msg->ch_post_count >= cap) {
-                                    for (size_t m = 0; m < pmap.count; m++) {
-                                        cbor_decode_skip(&dec);
-                                        cbor_decode_skip(&dec);
-                                    }
-                                    continue;
-                                }
-                                nodus_channel_post_t *p = &msg->ch_posts[msg->ch_post_count];
-                                memset(p, 0, sizeof(*p));
+                        if (!msg->ch_posts) return -1;
+                        msg->ch_post_count = 0;
+                        for (size_t k = 0; k < arr.count; k++) {
+                            cbor_item_t pmap = cbor_decode_next(&dec);
+                            if (pmap.type != CBOR_ITEM_MAP) continue;
+                            if ((size_t)msg->ch_post_count >= cap) {
                                 for (size_t m = 0; m < pmap.count; m++) {
-                                    cbor_item_t pk = cbor_decode_next(&dec);
-                                    if (pk.type != CBOR_ITEM_TSTR) {
-                                        cbor_decode_skip(&dec); continue;
-                                    }
-                                    if (pk.tstr.len == 2 && memcmp(pk.tstr.ptr, "ra", 2) == 0) {
-                                        cbor_item_t v = cbor_decode_next(&dec);
-                                        if (v.type == CBOR_ITEM_UINT) p->received_at = v.uint_val;
-                                    } else if (pk.tstr.len == 3 && memcmp(pk.tstr.ptr, "pid", 3) == 0) {
-                                        cbor_item_t v = cbor_decode_next(&dec);
-                                        if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_UUID_BYTES)
-                                            memcpy(p->post_uuid, v.bstr.ptr, NODUS_UUID_BYTES);
-                                    } else if (pk.tstr.len == 3 && memcmp(pk.tstr.ptr, "afp", 3) == 0) {
-                                        cbor_item_t v = cbor_decode_next(&dec);
-                                        if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_KEY_BYTES)
-                                            memcpy(p->author_fp.bytes, v.bstr.ptr, NODUS_KEY_BYTES);
-                                    } else if (pk.tstr.len == 2 && memcmp(pk.tstr.ptr, "ts", 2) == 0) {
-                                        cbor_item_t v = cbor_decode_next(&dec);
-                                        if (v.type == CBOR_ITEM_UINT) p->timestamp = v.uint_val;
-                                    } else if (pk.tstr.len == 1 && pk.tstr.ptr[0] == 'd') {
-                                        cbor_item_t v = cbor_decode_next(&dec);
-                                        if (v.type == CBOR_ITEM_BSTR && v.bstr.len > 0) {
-                                            p->body = malloc(v.bstr.len + 1);
-                                            if (p->body) {
-                                                memcpy(p->body, v.bstr.ptr, v.bstr.len);
-                                                p->body[v.bstr.len] = '\0';
-                                                p->body_len = v.bstr.len;
-                                            }
-                                        }
-                                    } else if (pk.tstr.len == 3 && memcmp(pk.tstr.ptr, "sig", 3) == 0) {
-                                        cbor_item_t v = cbor_decode_next(&dec);
-                                        if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_SIG_BYTES)
-                                            memcpy(p->signature.bytes, v.bstr.ptr, NODUS_SIG_BYTES);
-                                    } else if (pk.tstr.len == 2 && memcmp(pk.tstr.ptr, "ra", 2) == 0) {
-                                        cbor_item_t v = cbor_decode_next(&dec);
-                                        if (v.type == CBOR_ITEM_UINT) p->received_at = v.uint_val;
-                                    } else {
-                                        cbor_decode_skip(&dec);
-                                    }
+                                    cbor_decode_skip(&dec);
+                                    cbor_decode_skip(&dec);
                                 }
-                                msg->ch_post_count++;
+                                continue;
+                            }
+                            nodus_channel_post_t *p = &msg->ch_posts[msg->ch_post_count];
+                            memset(p, 0, sizeof(*p));
+                            /* Commit the slot BEFORE parsing it: a refusal
+                             * inside this post then leaves p->body inside
+                             * the range nodus_t2_msg_free() walks. */
+                            msg->ch_post_count++;
+                            nodus_map_keys_t pks;
+                            memset(&pks, 0, sizeof(pks));
+                            for (size_t m = 0; m < pmap.count; m++) {
+                                cbor_item_t pk = cbor_decode_next(&dec);
+                                if (pk.type != CBOR_ITEM_TSTR) {
+                                    cbor_decode_skip(&dec); continue;
+                                }
+                                T2_KEY_ONCE(pks, pk);
+                                if (pk.tstr.len == 2 && memcmp(pk.tstr.ptr, "ra", 2) == 0) {
+                                    cbor_item_t v = cbor_decode_next(&dec);
+                                    if (v.type == CBOR_ITEM_UINT) p->received_at = v.uint_val;
+                                } else if (pk.tstr.len == 3 && memcmp(pk.tstr.ptr, "pid", 3) == 0) {
+                                    cbor_item_t v = cbor_decode_next(&dec);
+                                    if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_UUID_BYTES)
+                                        memcpy(p->post_uuid, v.bstr.ptr, NODUS_UUID_BYTES);
+                                } else if (pk.tstr.len == 3 && memcmp(pk.tstr.ptr, "afp", 3) == 0) {
+                                    cbor_item_t v = cbor_decode_next(&dec);
+                                    if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_KEY_BYTES)
+                                        memcpy(p->author_fp.bytes, v.bstr.ptr, NODUS_KEY_BYTES);
+                                } else if (pk.tstr.len == 2 && memcmp(pk.tstr.ptr, "ts", 2) == 0) {
+                                    cbor_item_t v = cbor_decode_next(&dec);
+                                    if (v.type == CBOR_ITEM_UINT) p->timestamp = v.uint_val;
+                                } else if (pk.tstr.len == 1 && pk.tstr.ptr[0] == 'd') {
+                                    cbor_item_t v = cbor_decode_next(&dec);
+                                    if (v.type == CBOR_ITEM_BSTR && v.bstr.len > 0) {
+                                        if (p->body) return -1;
+                                        p->body = malloc(v.bstr.len + 1);
+                                        if (p->body) {
+                                            memcpy(p->body, v.bstr.ptr, v.bstr.len);
+                                            p->body[v.bstr.len] = '\0';
+                                            p->body_len = v.bstr.len;
+                                        }
+                                    }
+                                } else if (pk.tstr.len == 3 && memcmp(pk.tstr.ptr, "sig", 3) == 0) {
+                                    cbor_item_t v = cbor_decode_next(&dec);
+                                    if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_SIG_BYTES)
+                                        memcpy(p->signature.bytes, v.bstr.ptr, NODUS_SIG_BYTES);
+                                } else if (pk.tstr.len == 2 && memcmp(pk.tstr.ptr, "ra", 2) == 0) {
+                                    cbor_item_t v = cbor_decode_next(&dec);
+                                    if (v.type == CBOR_ITEM_UINT) p->received_at = v.uint_val;
+                                } else {
+                                    cbor_decode_skip(&dec);
+                                }
                             }
                         }
                     }
@@ -2380,63 +2451,66 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                 else if (rkey.tstr.len == 8 && memcmp(rkey.tstr.ptr, "channels", 8) == 0) {
                     cbor_item_t arr = cbor_decode_next(&dec);
                     if (arr.type == CBOR_ITEM_ARRAY && arr.count > 0) {
+                        if (msg->ch_metas) return -1;
                         size_t cap2 = arr.count > 200 ? 200 : arr.count;
                         msg->ch_metas = calloc(cap2, sizeof(nodus_channel_meta_t));
-                        if (msg->ch_metas) {
-                            msg->ch_meta_count = 0;
-                            for (size_t k = 0; k < arr.count; k++) {
-                                cbor_item_t cmap = cbor_decode_next(&dec);
-                                if (cmap.type != CBOR_ITEM_MAP) continue;
-                                if (msg->ch_meta_count >= cap2) {
-                                    for (size_t m2 = 0; m2 < cmap.count; m2++) {
-                                        cbor_decode_skip(&dec);
-                                        cbor_decode_skip(&dec);
-                                    }
-                                    continue;
-                                }
-                                nodus_channel_meta_t *cm = &msg->ch_metas[msg->ch_meta_count];
-                                memset(cm, 0, sizeof(*cm));
+                        if (!msg->ch_metas) return -1;
+                        msg->ch_meta_count = 0;
+                        for (size_t k = 0; k < arr.count; k++) {
+                            cbor_item_t cmap = cbor_decode_next(&dec);
+                            if (cmap.type != CBOR_ITEM_MAP) continue;
+                            if (msg->ch_meta_count >= cap2) {
                                 for (size_t m2 = 0; m2 < cmap.count; m2++) {
-                                    cbor_item_t ck = cbor_decode_next(&dec);
-                                    if (ck.type != CBOR_ITEM_TSTR) {
-                                        cbor_decode_skip(&dec); continue;
-                                    }
-                                    if (ck.tstr.len == 4 && memcmp(ck.tstr.ptr, "uuid", 4) == 0) {
-                                        cbor_item_t v = cbor_decode_next(&dec);
-                                        if (v.type == CBOR_ITEM_TSTR && v.tstr.len == 32) {
-                                            /* Parse 32-char hex to 16-byte binary */
-                                            for (int b = 0; b < NODUS_UUID_BYTES; b++) {
-                                                unsigned int byte;
-                                                if (sscanf(v.tstr.ptr + b * 2, "%2x", &byte) == 1)
-                                                    cm->uuid[b] = (uint8_t)byte;
-                                            }
-                                        }
-                                    } else if (ck.tstr.len == 4 && memcmp(ck.tstr.ptr, "name", 4) == 0) {
-                                        cbor_item_t v = cbor_decode_next(&dec);
-                                        if (v.type == CBOR_ITEM_TSTR)
-                                            snprintf(cm->name, sizeof(cm->name), "%.*s",
-                                                     (int)v.tstr.len, v.tstr.ptr);
-                                    } else if (ck.tstr.len == 4 && memcmp(ck.tstr.ptr, "desc", 4) == 0) {
-                                        cbor_item_t v = cbor_decode_next(&dec);
-                                        if (v.type == CBOR_ITEM_TSTR)
-                                            snprintf(cm->description, sizeof(cm->description), "%.*s",
-                                                     (int)v.tstr.len, v.tstr.ptr);
-                                    } else if (ck.tstr.len == 2 && memcmp(ck.tstr.ptr, "fp", 2) == 0) {
-                                        cbor_item_t v = cbor_decode_next(&dec);
-                                        if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_KEY_BYTES) {
-                                            memcpy(cm->creator_fp.bytes, v.bstr.ptr, NODUS_KEY_BYTES);
-                                            cm->has_creator_fp = true;
-                                        }
-                                    } else if (ck.tstr.len == 2 && memcmp(ck.tstr.ptr, "ts", 2) == 0) {
-                                        cbor_item_t v = cbor_decode_next(&dec);
-                                        if (v.type == CBOR_ITEM_UINT) cm->created_at = v.uint_val;
-                                    } else {
-                                        cbor_decode_skip(&dec);
-                                    }
+                                    cbor_decode_skip(&dec);
+                                    cbor_decode_skip(&dec);
                                 }
-                                cm->is_public = true;  /* Only public channels in list */
-                                msg->ch_meta_count++;
+                                continue;
                             }
+                            nodus_channel_meta_t *cm = &msg->ch_metas[msg->ch_meta_count];
+                            memset(cm, 0, sizeof(*cm));
+                            nodus_map_keys_t cks;
+                            memset(&cks, 0, sizeof(cks));
+                            for (size_t m2 = 0; m2 < cmap.count; m2++) {
+                                cbor_item_t ck = cbor_decode_next(&dec);
+                                if (ck.type != CBOR_ITEM_TSTR) {
+                                    cbor_decode_skip(&dec); continue;
+                                }
+                                T2_KEY_ONCE(cks, ck);
+                                if (ck.tstr.len == 4 && memcmp(ck.tstr.ptr, "uuid", 4) == 0) {
+                                    cbor_item_t v = cbor_decode_next(&dec);
+                                    if (v.type == CBOR_ITEM_TSTR && v.tstr.len == 32) {
+                                        /* Parse 32-char hex to 16-byte binary */
+                                        for (int b = 0; b < NODUS_UUID_BYTES; b++) {
+                                            unsigned int byte;
+                                            if (sscanf(v.tstr.ptr + b * 2, "%2x", &byte) == 1)
+                                                cm->uuid[b] = (uint8_t)byte;
+                                        }
+                                    }
+                                } else if (ck.tstr.len == 4 && memcmp(ck.tstr.ptr, "name", 4) == 0) {
+                                    cbor_item_t v = cbor_decode_next(&dec);
+                                    if (v.type == CBOR_ITEM_TSTR)
+                                        snprintf(cm->name, sizeof(cm->name), "%.*s",
+                                                 (int)v.tstr.len, v.tstr.ptr);
+                                } else if (ck.tstr.len == 4 && memcmp(ck.tstr.ptr, "desc", 4) == 0) {
+                                    cbor_item_t v = cbor_decode_next(&dec);
+                                    if (v.type == CBOR_ITEM_TSTR)
+                                        snprintf(cm->description, sizeof(cm->description), "%.*s",
+                                                 (int)v.tstr.len, v.tstr.ptr);
+                                } else if (ck.tstr.len == 2 && memcmp(ck.tstr.ptr, "fp", 2) == 0) {
+                                    cbor_item_t v = cbor_decode_next(&dec);
+                                    if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_KEY_BYTES) {
+                                        memcpy(cm->creator_fp.bytes, v.bstr.ptr, NODUS_KEY_BYTES);
+                                        cm->has_creator_fp = true;
+                                    }
+                                } else if (ck.tstr.len == 2 && memcmp(ck.tstr.ptr, "ts", 2) == 0) {
+                                    cbor_item_t v = cbor_decode_next(&dec);
+                                    if (v.type == CBOR_ITEM_UINT) cm->created_at = v.uint_val;
+                                } else {
+                                    cbor_decode_skip(&dec);
+                                }
+                            }
+                            cm->is_public = true;  /* Only public channels in list */
+                            msg->ch_meta_count++;
                         }
                     }
                 }
@@ -2444,51 +2518,56 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                 else if (rkey.tstr.len == 2 && memcmp(rkey.tstr.ptr, "ps", 2) == 0) {
                     cbor_item_t arr = cbor_decode_next(&dec);
                     if (arr.type == CBOR_ITEM_ARRAY && arr.count > 0) {
+                        if (t2_pq_owned(msg)) return -1;   /* "fps" in "a" */
                         size_t cap = arr.count > NODUS_MAX_WIRE_FPS ? NODUS_MAX_WIRE_FPS : arr.count;
                         msg->pq_fps = calloc(cap, sizeof(nodus_key_t));
                         msg->pq_online = calloc(cap, sizeof(bool));
                         msg->pq_peers = calloc(cap, sizeof(uint8_t));
                         msg->pq_last_seen = calloc(cap, sizeof(uint64_t));
-                        if (msg->pq_fps && msg->pq_online && msg->pq_peers) {
-                            msg->pq_count = 0;
-                            for (size_t k = 0; k < arr.count; k++) {
-                                cbor_item_t emap = cbor_decode_next(&dec);
-                                if (emap.type != CBOR_ITEM_MAP) continue;
-                                if ((size_t)msg->pq_count >= cap) {
-                                    /* Skip remaining entries beyond cap */
-                                    for (size_t m = 0; m < emap.count; m++) {
-                                        cbor_decode_skip(&dec);
-                                        cbor_decode_skip(&dec);
-                                    }
-                                    continue;
-                                }
-                                int ci = msg->pq_count;
-                                msg->pq_online[ci] = true;
+                        if (!msg->pq_fps || !msg->pq_online || !msg->pq_peers ||
+                            !msg->pq_last_seen)
+                            return -1;
+                        msg->pq_count = 0;
+                        for (size_t k = 0; k < arr.count; k++) {
+                            cbor_item_t emap = cbor_decode_next(&dec);
+                            if (emap.type != CBOR_ITEM_MAP) continue;
+                            if ((size_t)msg->pq_count >= cap) {
+                                /* Skip remaining entries beyond cap */
                                 for (size_t m = 0; m < emap.count; m++) {
-                                    cbor_item_t ek = cbor_decode_next(&dec);
-                                    if (ek.type != CBOR_ITEM_TSTR) {
-                                        cbor_decode_skip(&dec); continue;
-                                    }
-                                    if (ek.tstr.len == 2 && memcmp(ek.tstr.ptr, "fp", 2) == 0) {
-                                        cbor_item_t ev = cbor_decode_next(&dec);
-                                        if (ev.type == CBOR_ITEM_BSTR &&
-                                            ev.bstr.len == NODUS_KEY_BYTES)
-                                            memcpy(msg->pq_fps[ci].bytes,
-                                                   ev.bstr.ptr, NODUS_KEY_BYTES);
-                                    } else if (ek.tstr.len == 2 && memcmp(ek.tstr.ptr, "pi", 2) == 0) {
-                                        cbor_item_t ev = cbor_decode_next(&dec);
-                                        if (ev.type == CBOR_ITEM_UINT)
-                                            msg->pq_peers[ci] = (uint8_t)ev.uint_val;
-                                    } else if (ek.tstr.len == 2 && memcmp(ek.tstr.ptr, "ls", 2) == 0) {
-                                        cbor_item_t ev = cbor_decode_next(&dec);
-                                        if (ev.type == CBOR_ITEM_UINT && msg->pq_last_seen)
-                                            msg->pq_last_seen[ci] = ev.uint_val;
-                                    } else {
-                                        cbor_decode_skip(&dec);
-                                    }
+                                    cbor_decode_skip(&dec);
+                                    cbor_decode_skip(&dec);
                                 }
-                                msg->pq_count++;
+                                continue;
                             }
+                            int ci = msg->pq_count;
+                            msg->pq_online[ci] = true;
+                            nodus_map_keys_t eks;
+                            memset(&eks, 0, sizeof(eks));
+                            for (size_t m = 0; m < emap.count; m++) {
+                                cbor_item_t ek = cbor_decode_next(&dec);
+                                if (ek.type != CBOR_ITEM_TSTR) {
+                                    cbor_decode_skip(&dec); continue;
+                                }
+                                T2_KEY_ONCE(eks, ek);
+                                if (ek.tstr.len == 2 && memcmp(ek.tstr.ptr, "fp", 2) == 0) {
+                                    cbor_item_t ev = cbor_decode_next(&dec);
+                                    if (ev.type == CBOR_ITEM_BSTR &&
+                                        ev.bstr.len == NODUS_KEY_BYTES)
+                                        memcpy(msg->pq_fps[ci].bytes,
+                                               ev.bstr.ptr, NODUS_KEY_BYTES);
+                                } else if (ek.tstr.len == 2 && memcmp(ek.tstr.ptr, "pi", 2) == 0) {
+                                    cbor_item_t ev = cbor_decode_next(&dec);
+                                    if (ev.type == CBOR_ITEM_UINT)
+                                        msg->pq_peers[ci] = (uint8_t)ev.uint_val;
+                                } else if (ek.tstr.len == 2 && memcmp(ek.tstr.ptr, "ls", 2) == 0) {
+                                    cbor_item_t ev = cbor_decode_next(&dec);
+                                    if (ev.type == CBOR_ITEM_UINT)
+                                        msg->pq_last_seen[ci] = ev.uint_val;
+                                } else {
+                                    cbor_decode_skip(&dec);
+                                }
+                            }
+                            msg->pq_count++;
                         }
                     }
                 }
@@ -2496,43 +2575,46 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                 else if (rkey.tstr.len == 2 && memcmp(rkey.tstr.ptr, "os", 2) == 0) {
                     cbor_item_t arr = cbor_decode_next(&dec);
                     if (arr.type == CBOR_ITEM_ARRAY && arr.count > 0) {
+                        if (msg->os_fps || msg->os_last_seen) return -1;
                         size_t cap = arr.count > NODUS_MAX_WIRE_FPS ? NODUS_MAX_WIRE_FPS : arr.count;
                         msg->os_fps = calloc(cap, sizeof(nodus_key_t));
                         msg->os_last_seen = calloc(cap, sizeof(uint64_t));
-                        if (msg->os_fps && msg->os_last_seen) {
-                            msg->os_count = 0;
-                            for (size_t k = 0; k < arr.count; k++) {
-                                cbor_item_t emap = cbor_decode_next(&dec);
-                                if (emap.type != CBOR_ITEM_MAP) continue;
-                                if ((size_t)msg->os_count >= cap) {
-                                    for (size_t m = 0; m < emap.count; m++) {
-                                        cbor_decode_skip(&dec);
-                                        cbor_decode_skip(&dec);
-                                    }
-                                    continue;
-                                }
-                                int ci = msg->os_count;
+                        if (!msg->os_fps || !msg->os_last_seen) return -1;
+                        msg->os_count = 0;
+                        for (size_t k = 0; k < arr.count; k++) {
+                            cbor_item_t emap = cbor_decode_next(&dec);
+                            if (emap.type != CBOR_ITEM_MAP) continue;
+                            if ((size_t)msg->os_count >= cap) {
                                 for (size_t m = 0; m < emap.count; m++) {
-                                    cbor_item_t ek = cbor_decode_next(&dec);
-                                    if (ek.type != CBOR_ITEM_TSTR) {
-                                        cbor_decode_skip(&dec); continue;
-                                    }
-                                    if (ek.tstr.len == 2 && memcmp(ek.tstr.ptr, "fp", 2) == 0) {
-                                        cbor_item_t ev = cbor_decode_next(&dec);
-                                        if (ev.type == CBOR_ITEM_BSTR &&
-                                            ev.bstr.len == NODUS_KEY_BYTES)
-                                            memcpy(msg->os_fps[ci].bytes,
-                                                   ev.bstr.ptr, NODUS_KEY_BYTES);
-                                    } else if (ek.tstr.len == 2 && memcmp(ek.tstr.ptr, "ls", 2) == 0) {
-                                        cbor_item_t ev = cbor_decode_next(&dec);
-                                        if (ev.type == CBOR_ITEM_UINT)
-                                            msg->os_last_seen[ci] = ev.uint_val;
-                                    } else {
-                                        cbor_decode_skip(&dec);
-                                    }
+                                    cbor_decode_skip(&dec);
+                                    cbor_decode_skip(&dec);
                                 }
-                                msg->os_count++;
+                                continue;
                             }
+                            int ci = msg->os_count;
+                            nodus_map_keys_t eks;
+                            memset(&eks, 0, sizeof(eks));
+                            for (size_t m = 0; m < emap.count; m++) {
+                                cbor_item_t ek = cbor_decode_next(&dec);
+                                if (ek.type != CBOR_ITEM_TSTR) {
+                                    cbor_decode_skip(&dec); continue;
+                                }
+                                T2_KEY_ONCE(eks, ek);
+                                if (ek.tstr.len == 2 && memcmp(ek.tstr.ptr, "fp", 2) == 0) {
+                                    cbor_item_t ev = cbor_decode_next(&dec);
+                                    if (ev.type == CBOR_ITEM_BSTR &&
+                                        ev.bstr.len == NODUS_KEY_BYTES)
+                                        memcpy(msg->os_fps[ci].bytes,
+                                               ev.bstr.ptr, NODUS_KEY_BYTES);
+                                } else if (ek.tstr.len == 2 && memcmp(ek.tstr.ptr, "ls", 2) == 0) {
+                                    cbor_item_t ev = cbor_decode_next(&dec);
+                                    if (ev.type == CBOR_ITEM_UINT)
+                                        msg->os_last_seen[ci] = ev.uint_val;
+                                } else {
+                                    cbor_decode_skip(&dec);
+                                }
+                            }
+                            msg->os_count++;
                         }
                     }
                 }
@@ -2546,11 +2628,14 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                             if (smap.type != CBOR_ITEM_MAP) continue;
                             int idx = msg->server_count;
                             memset(&msg->servers[idx], 0, sizeof(msg->servers[idx]));
+                            nodus_map_keys_t sks;
+                            memset(&sks, 0, sizeof(sks));
                             for (size_t m = 0; m < smap.count; m++) {
                                 cbor_item_t sk = cbor_decode_next(&dec);
                                 if (sk.type != CBOR_ITEM_TSTR) {
                                     cbor_decode_skip(&dec); continue;
                                 }
+                                T2_KEY_ONCE(sks, sk);
                                 if (sk.tstr.len == 2 && memcmp(sk.tstr.ptr, "ip", 2) == 0) {
                                     cbor_item_t sv = cbor_decode_next(&dec);
                                     if (sv.type == CBOR_ITEM_TSTR) {
@@ -2643,11 +2728,14 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                             if (rmap.type != CBOR_ITEM_MAP) continue;
                             int idx = msg->server_count;
                             memset(&msg->servers[idx], 0, sizeof(msg->servers[idx]));
+                            nodus_map_keys_t eks;
+                            memset(&eks, 0, sizeof(eks));
                             for (size_t m = 0; m < rmap.count; m++) {
                                 cbor_item_t rk = cbor_decode_next(&dec);
                                 if (rk.type != CBOR_ITEM_TSTR) {
                                     cbor_decode_skip(&dec); continue;
                                 }
+                                T2_KEY_ONCE(eks, rk);
                                 if (rk.tstr.len == 2 && memcmp(rk.tstr.ptr, "ip", 2) == 0) {
                                     cbor_item_t rv = cbor_decode_next(&dec);
                                     if (rv.type == CBOR_ITEM_TSTR) {
@@ -2744,6 +2832,7 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                 else if (rkey.tstr.len == 1 && rkey.tstr.ptr[0] == 'd') {
                     cbor_item_t val = cbor_decode_next(&dec);
                     if (val.type == CBOR_ITEM_BSTR && val.bstr.len > 0) {
+                        if (msg->data) return -1;       /* "d" in "a" too */
                         msg->data = malloc(val.bstr.len);
                         if (msg->data) {
                             memcpy(msg->data, val.bstr.ptr, val.bstr.len);
@@ -2786,6 +2875,24 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
     }
 
     return dec.error ? -1 : 0;
+}
+
+#undef T2_KEY_ONCE
+
+int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
+    if (!buf || !msg) return -1;
+    memset(msg, 0, sizeof(*msg));
+
+    if (t2_decode_body(buf, len, msg) != 0) {
+        /* Callers differ on whether they free after a failed decode
+         * (nodus_server.c does, nodus_channel_server.c does not); free
+         * here so no failure path leaks, and leave msg zeroed so a caller's
+         * own nodus_t2_msg_free() is a no-op. */
+        nodus_t2_msg_free(msg);
+        memset(msg, 0, sizeof(*msg));
+        return -1;
+    }
+    return 0;
 }
 
 void nodus_t2_msg_free(nodus_tier2_msg_t *msg) {

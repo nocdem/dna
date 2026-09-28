@@ -74,6 +74,30 @@ int nodus_value_sign_payload(const nodus_value_t *val,
     return 0;
 }
 
+/* ── Type / map-key validation ───────────────────────────────────── */
+
+bool nodus_value_type_valid(uint64_t type) {
+    return type == NODUS_VALUE_EPHEMERAL ||
+           type == NODUS_VALUE_PERMANENT ||
+           type == NODUS_VALUE_EXCLUSIVE;
+}
+
+int nodus_map_key_once(nodus_map_keys_t *ks, const char *key, size_t key_len) {
+    if (!ks || (!key && key_len > 0))
+        return -1;
+    for (size_t j = 0; j < ks->n; j++) {
+        if (ks->l[j] == key_len &&
+            (key_len == 0 || memcmp(ks->p[j], key, key_len) == 0))
+            return -1;                           /* duplicate key       */
+    }
+    if (ks->n >= NODUS_MAP_MAX_KEYS)
+        return -1;                               /* check must stay complete */
+    ks->p[ks->n] = key;
+    ks->l[ks->n] = key_len;
+    ks->n++;
+    return 0;
+}
+
 /* ── Create ──────────────────────────────────────────────────────── */
 
 int nodus_value_create(const nodus_key_t *key_hash,
@@ -83,6 +107,11 @@ int nodus_value_create(const nodus_key_t *key_hash,
                        const nodus_pubkey_t *owner_pk,
                        nodus_value_t **val_out) {
     if (!key_hash || !owner_pk || !val_out)
+        return -1;
+    /* The T2 PUT path hands the wire "type" straight in
+     * (nodus_server.c handle_t2_put → msg->val_type); 259 would sign as 3
+     * and then escape the EXCLUSIVE checks. */
+    if (!nodus_value_type_valid((uint64_t)type))
         return -1;
     if (data_len > 0 && !data)
         return -1;
@@ -275,7 +304,9 @@ int nodus_value_serialize(const nodus_value_t *val,
 
 int nodus_value_deserialize(const uint8_t *buf, size_t len,
                             nodus_value_t **val_out) {
-    if (!buf || !val_out || len == 0)
+    /* *val_out must be empty: a decoder that re-enters with the previous
+     * value still in place would otherwise overwrite (and leak) it. */
+    if (!buf || !val_out || *val_out || len == 0)
         return -1;
 
     cbor_decoder_t dec;
@@ -291,6 +322,9 @@ int nodus_value_deserialize(const uint8_t *buf, size_t len,
         return -1;
 
     size_t map_count = item.count;
+    nodus_map_keys_t ks;
+    memset(&ks, 0, sizeof(ks));
+    uint64_t raw_type = 0;          /* checked against the legal set below */
 
     for (size_t i = 0; i < map_count && !dec.error; i++) {
         /* Key */
@@ -298,6 +332,10 @@ int nodus_value_deserialize(const uint8_t *buf, size_t len,
         if (k.type != CBOR_ITEM_TSTR) {
             cbor_decode_skip(&dec);
             continue;
+        }
+        if (nodus_map_key_once(&ks, k.tstr.ptr, k.tstr.len) != 0) {
+            nodus_value_free(val);
+            return -1;
         }
 
         /* Value */
@@ -320,7 +358,7 @@ int nodus_value_deserialize(const uint8_t *buf, size_t len,
             }
         } else if (k.tstr.len == 4 && memcmp(k.tstr.ptr, "type", 4) == 0) {
             if (v.type == CBOR_ITEM_UINT)
-                val->type = (nodus_value_type_t)v.uint_val;
+                raw_type = v.uint_val;
         } else if (k.tstr.len == 3 && memcmp(k.tstr.ptr, "ttl", 3) == 0) {
             if (v.type == CBOR_ITEM_UINT)
                 val->ttl = (uint32_t)v.uint_val;
@@ -346,6 +384,17 @@ int nodus_value_deserialize(const uint8_t *buf, size_t len,
         nodus_value_free(val);
         return -1;
     }
+
+    /* The signature covers only the low byte of the type
+     * (nodus_value_sign_payload); a wider integer such as 259 would verify
+     * as 3 while failing every `type == NODUS_VALUE_EXCLUSIVE` check. Only
+     * the three defined types decode; an absent "type" (0) is refused too —
+     * nodus_value_serialize always writes it. */
+    if (!nodus_value_type_valid(raw_type)) {
+        nodus_value_free(val);
+        return -1;
+    }
+    val->type = (nodus_value_type_t)raw_type;
 
     /* Compute expires_at */
     if (val->type == NODUS_VALUE_PERMANENT || val->type == NODUS_VALUE_EXCLUSIVE || val->ttl == 0) {

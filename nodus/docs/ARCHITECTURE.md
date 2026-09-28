@@ -273,6 +273,27 @@ All messages share a common CBOR map structure:
 }
 ```
 
+### Duplicate map keys are refused
+
+No encoder in this tree writes the same key twice into one map, so a
+repeated key is always a malformed or hostile frame. The decoders refuse it
+(2026-09-28, P0-A / P0-B):
+
+| Decoder | Rule |
+|---|---|
+| `nodus_t2_decode`, `nodus_t1_decode` | Every map — the top level, `"a"`, `"r"` and each array-entry map (batch, counts, posts, channels, presence, servers, ring, peer list) — accepts each text key once; a repeat fails the whole decode (`-1`). A map with more than `NODUS_MAP_MAX_KEYS` (64) text keys is refused, so the check is always complete. |
+| `nodus_t2_decode` (cross-map) | A heap field reachable from two maps is written once per frame: `batch_*` (`"ks"` in `"a"` / `"batch"` / `"counts"`), `pq_*` (`"fps"` / `"ps"`), `data` (`"d"` in `"a"` / `"r"`), `value` (`"val"` in `"a"` / `"r"`). A second writer fails the decode, so each count (`batch_key_count`, `pq_count`, …) describes the allocation it counts. An allocation failure fails the decode too. |
+| `nodus_t1_decode` | `"target"` and `"k"` fill one field — both in one `"a"` is refused. A malformed `"nodes"` list fails the decode. |
+| `nodus_value_deserialize` | Refuses a repeated key, a non-NULL `*val_out` (nothing allocated, pointer untouched), and any `"type"` outside {1, 2, 3} — see §6. |
+| Client `nodus_client_dnac_*` reply decoders | Each key of the `"r"` map once (a repeat → `NODUS_ERR_PROTOCOL_ERROR`, result freed); entry writes bounded by the array actually allocated; a server `"count"` is informational — `result.count` is always the decoded length. `cc_collect`, `v3_block` and `balance` decoders already worked this way (`v3d_keys_t`). |
+
+Every `-1` from `nodus_t2_decode` / `nodus_t1_decode` has already freed the
+message and left it zeroed, so a caller's own `*_msg_free()` afterwards is a
+no-op. Well-formed frames decode exactly as before; this is refusal of
+malformed input only, not a wire-format change. The shared helper is
+`nodus_map_key_once()` (`src/core/nodus_value.h`). Tests:
+`tests/test_decode_dupkey.c`, `tests/test_client_dup_array.c`.
+
 ---
 
 ## 4. Tier 1 Protocol — Server-to-Server
@@ -674,7 +695,7 @@ typedef struct {
     uint64_t        value_id;       // Writer-specific identifier
     uint8_t        *data;           // Payload (up to 1 MB)
     size_t          data_len;
-    nodus_value_type_t type;        // EPHEMERAL (0x01) or PERMANENT (0x02)
+    nodus_value_type_t type;        // EPHEMERAL (0x01), PERMANENT (0x02) or EXCLUSIVE (0x03)
     uint32_t        ttl;            // Seconds until expiry (0 = permanent)
     uint64_t        created_at;     // Unix timestamp
     uint64_t        expires_at;     // 0 if permanent
@@ -703,6 +724,13 @@ seq         (8 bytes, LE)
 ```
 
 A typical serialized value is ~7.3 KB due to Dilithium5 key/signature sizes.
+
+**Legal types.** Only EPHEMERAL (1), PERMANENT (2) and EXCLUSIVE (3) exist
+(`nodus_value_type_valid`). The signature payload carries only the low byte
+of the type, so a wider integer such as 259 would verify as 3 while failing
+every `type == NODUS_VALUE_EXCLUSIVE` check; `nodus_value_deserialize` (T1
+replication) and `nodus_value_create` (the T2 PUT path) refuse any other
+value, including an absent `"type"` (0).
 
 ### nodus_identity_t
 

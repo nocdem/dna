@@ -330,8 +330,12 @@ static void client_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
      * would zero the response data before the caller reads it. */
     nodus_tier2_msg_t tmp;
     memset(&tmp, 0, sizeof(tmp));
-    if (nodus_t2_decode(payload, len, &tmp) != 0)
+    if (nodus_t2_decode(payload, len, &tmp) != 0) {
+        /* nodus_t2_decode() already freed a refused frame; this keeps the
+         * server's "free after every decode" pattern and is a no-op. */
+        nodus_t2_msg_free(&tmp);
         return;
+    }
 
     /* Push notifications (async — not a response to a request) */
     if (strcmp(tmp.method, "value_changed") == 0) {
@@ -2588,6 +2592,16 @@ int nodus_client_dnac_fee_info(nodus_client_t *client,
     return 0;
 }
 
+/* Response decoders split from their request functions so the decode can be
+ * fed a crafted reply without a network (test_client_dup_array.c, through
+ * the NODUS_CLIENT_TEST_SEAM wrappers at the end of the DNAC section). */
+static int dnac_utxo_parse(const uint8_t *raw, size_t raw_len,
+                           nodus_dnac_utxo_result_t *result_out);
+static int dnac_ledger_range_parse(const uint8_t *raw, size_t raw_len,
+                                   nodus_dnac_range_result_t *result_out);
+static int dnac_block_parse(const uint8_t *raw, size_t raw_len,
+                            nodus_dnac_block_result_t *result_out);
+
 int nodus_client_dnac_utxo(nodus_client_t *client,
                              const char *owner,
                              int max_results,
@@ -2636,21 +2650,43 @@ int nodus_client_dnac_utxo(nodus_client_t *client,
 
     QGP_LOG_DEBUG(LOG_TAG, "dnac_utxo: got response raw_len=%zu", req->raw_response_len);
 
+    int prc = dnac_utxo_parse(req->raw_response, req->raw_response_len,
+                              result_out);
+    free_pending(client, req);
+    return prc;
+}
+
+/* Decode a dnac_utxo reply ("r": {"count", "block_height", "utxos"}).
+ * Returns 0, NODUS_ERR_PROTOCOL_ERROR (malformed: missing "r", a repeated
+ * key) or NODUS_ERR_INTERNAL_ERROR (allocation); on any error no heap
+ * array is left behind (nodus_client_free_utxo_result: entries NULL, count
+ * 0 — scalar fields may hold what was decoded). P0-B (2026-09-28): a second "utxos" used to re-calloc
+ * entries without resetting count and write at entries[count] — a heap
+ * overflow driven by any server the client talks to. Every key of the
+ * response map is now accepted once, and each entry write is bounded by the
+ * capacity actually allocated. */
+static int dnac_utxo_parse(const uint8_t *raw, size_t raw_len,
+                           nodus_dnac_utxo_result_t *result_out) {
     cbor_decoder_t dec;
     size_t mc;
-    if (find_response_map(req->raw_response, req->raw_response_len,
-                           &dec, &mc) != 0) {
+    if (find_response_map(raw, raw_len, &dec, &mc) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "dnac_utxo: find_response_map failed");
-        free_pending(client, req);
         return NODUS_ERR_PROTOCOL_ERROR;
     }
 
     QGP_LOG_DEBUG(LOG_TAG, "dnac_utxo: response map entries=%zu", mc);
 
+    nodus_map_keys_t ks;
+    memset(&ks, 0, sizeof(ks));
     int count = 0;
     for (size_t i = 0; i < mc; i++) {
         cbor_item_t key = cbor_decode_next(&dec);
         if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+        if (nodus_map_key_once(&ks, key.tstr.ptr, key.tstr.len) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "dnac_utxo: repeated key in response — refused");
+            nodus_client_free_utxo_result(result_out);
+            return NODUS_ERR_PROTOCOL_ERROR;
+        }
 
         if (key.tstr.len == 5 && memcmp(key.tstr.ptr, "count", 5) == 0) {
             cbor_item_t v = cbor_decode_next(&dec);
@@ -2668,15 +2704,20 @@ int nodus_client_dnac_utxo(nodus_client_t *client,
             cbor_item_t arr = cbor_decode_next(&dec);
             if (arr.type != CBOR_ITEM_ARRAY) continue;
 
-            if (arr.count > 0) {
-                result_out->entries = calloc(arr.count,
+            size_t cap = arr.count;
+            if (cap > 0) {
+                result_out->entries = calloc(cap,
                                               sizeof(nodus_dnac_utxo_entry_t));
-                if (!result_out->entries) { free_pending(client, req); return NODUS_ERR_INTERNAL_ERROR; }
+                if (!result_out->entries) return NODUS_ERR_INTERNAL_ERROR;
             }
 
             for (size_t j = 0; j < arr.count; j++) {
                 cbor_item_t emap = cbor_decode_next(&dec);
                 if (emap.type != CBOR_ITEM_MAP) continue;
+                if ((size_t)result_out->count >= cap) {
+                    nodus_client_free_utxo_result(result_out);
+                    return NODUS_ERR_PROTOCOL_ERROR;
+                }
 
                 nodus_dnac_utxo_entry_t *e =
                     &result_out->entries[result_out->count];
@@ -2782,7 +2823,6 @@ int nodus_client_dnac_utxo(nodus_client_t *client,
                   count, result_out->count);
 
     (void)count;  /* Server count for cross-check, not used */
-    free_pending(client, req);
     return 0;
 }
 
@@ -2818,17 +2858,36 @@ int nodus_client_dnac_ledger_range(nodus_client_t *client,
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
     if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
 
+    int prc = dnac_ledger_range_parse(req->raw_response,
+                                      req->raw_response_len, result_out);
+    free_pending(client, req);
+    return prc;
+}
+
+/* Decode a dnac_ledger_range reply ("r": {"total", "count", "entries"}).
+ * Return values and cleanup as dnac_utxo_parse. P0-B (2026-09-28): a
+ * "count" AFTER "entries" used to overwrite the decoded count with any
+ * server-chosen value, so callers walked entries[] past its allocation.
+ * result_out->count is now only ever the number of entries decoded; the
+ * server's "count" is informational (the node writes it equal to the array
+ * length, nodus_witness_handlers.c handle_dnac_ledger_range). */
+static int dnac_ledger_range_parse(const uint8_t *raw, size_t raw_len,
+                                   nodus_dnac_range_result_t *result_out) {
     cbor_decoder_t dec;
     size_t mc;
-    if (find_response_map(req->raw_response, req->raw_response_len,
-                           &dec, &mc) != 0) {
-        free_pending(client, req);
+    if (find_response_map(raw, raw_len, &dec, &mc) != 0)
         return NODUS_ERR_PROTOCOL_ERROR;
-    }
 
+    nodus_map_keys_t ks;
+    memset(&ks, 0, sizeof(ks));
     for (size_t i = 0; i < mc; i++) {
         cbor_item_t key = cbor_decode_next(&dec);
         if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+        if (nodus_map_key_once(&ks, key.tstr.ptr, key.tstr.len) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "dnac_ledger_range: repeated key in response — refused");
+            nodus_client_free_range_result(result_out);
+            return NODUS_ERR_PROTOCOL_ERROR;
+        }
 
         if (key.tstr.len == 5 && memcmp(key.tstr.ptr, "total", 5) == 0) {
             cbor_item_t v = cbor_decode_next(&dec);
@@ -2836,23 +2895,26 @@ int nodus_client_dnac_ledger_range(nodus_client_t *client,
                 result_out->total_entries = v.uint_val;
         } else if (key.tstr.len == 5 && memcmp(key.tstr.ptr, "count", 5) == 0) {
             cbor_item_t v = cbor_decode_next(&dec);
-            if (v.type == CBOR_ITEM_UINT)
-                result_out->count = (int)v.uint_val;
+            (void)v;   /* informational — the count is the decoded length */
         } else if (key.tstr.len == 7 &&
                    memcmp(key.tstr.ptr, "entries", 7) == 0) {
             cbor_item_t arr = cbor_decode_next(&dec);
             if (arr.type != CBOR_ITEM_ARRAY) continue;
 
-            if (arr.count > 0) {
-                result_out->entries = calloc(arr.count,
+            size_t cap = arr.count;
+            if (cap > 0) {
+                result_out->entries = calloc(cap,
                                               sizeof(nodus_dnac_range_entry_t));
-                if (!result_out->entries) { free_pending(client, req); return NODUS_ERR_INTERNAL_ERROR; }
-                result_out->count = 0;
+                if (!result_out->entries) return NODUS_ERR_INTERNAL_ERROR;
             }
 
             for (size_t j = 0; j < arr.count; j++) {
                 cbor_item_t emap = cbor_decode_next(&dec);
                 if (emap.type != CBOR_ITEM_MAP) continue;
+                if ((size_t)result_out->count >= cap) {
+                    nodus_client_free_range_result(result_out);
+                    return NODUS_ERR_PROTOCOL_ERROR;
+                }
 
                 nodus_dnac_range_entry_t *e =
                     &result_out->entries[result_out->count];
@@ -2907,7 +2969,6 @@ int nodus_client_dnac_ledger_range(nodus_client_t *client,
         }
     }
 
-    free_pending(client, req);
     return 0;
 }
 
@@ -2945,9 +3006,20 @@ int nodus_client_dnac_roster(nodus_client_t *client,
         return NODUS_ERR_PROTOCOL_ERROR;
     }
 
+    /* P0-B (2026-09-28): every response key once; "count" is informational
+     * — a server "count" after "witnesses" used to overwrite the decoded
+     * count and send callers past entries[NODUS_T3_MAX_WITNESSES]. */
+    nodus_map_keys_t ks;
+    memset(&ks, 0, sizeof(ks));
     for (size_t i = 0; i < mc; i++) {
         cbor_item_t key = cbor_decode_next(&dec);
         if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+        if (nodus_map_key_once(&ks, key.tstr.ptr, key.tstr.len) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "dnac_roster: repeated key in response — refused");
+            memset(result_out, 0, sizeof(*result_out));
+            free_pending(client, req);
+            return NODUS_ERR_PROTOCOL_ERROR;
+        }
 
         if (key.tstr.len == 7 && memcmp(key.tstr.ptr, "version", 7) == 0) {
             cbor_item_t v = cbor_decode_next(&dec);
@@ -2956,8 +3028,7 @@ int nodus_client_dnac_roster(nodus_client_t *client,
         } else if (key.tstr.len == 5 &&
                    memcmp(key.tstr.ptr, "count", 5) == 0) {
             cbor_item_t v = cbor_decode_next(&dec);
-            if (v.type == CBOR_ITEM_UINT)
-                result_out->count = (int)v.uint_val;
+            (void)v;   /* informational — the count is the decoded length */
         } else if (key.tstr.len == 9 &&
                    memcmp(key.tstr.ptr, "witnesses", 9) == 0) {
             cbor_item_t arr = cbor_decode_next(&dec);
@@ -3091,9 +3162,20 @@ int nodus_client_dnac_history(nodus_client_t *client,
         return NODUS_ERR_PROTOCOL_ERROR;
     }
 
+    /* P0-B (2026-09-28): every response key once (a second "entries" used
+     * to re-calloc without resetting count, then write past the new
+     * allocation); entry writes bounded by the capacity allocated. */
+    nodus_map_keys_t ks;
+    memset(&ks, 0, sizeof(ks));
     for (size_t i = 0; i < mc; i++) {
         cbor_item_t key = cbor_decode_next(&dec);
         if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+        if (nodus_map_key_once(&ks, key.tstr.ptr, key.tstr.len) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "dnac_history: repeated key in response — refused");
+            nodus_client_free_history_result(result_out);
+            free_pending(client, req);
+            return NODUS_ERR_PROTOCOL_ERROR;
+        }
 
         if (key.tstr.len == 5 && memcmp(key.tstr.ptr, "count", 5) == 0) {
             cbor_item_t v = cbor_decode_next(&dec);
@@ -3102,8 +3184,9 @@ int nodus_client_dnac_history(nodus_client_t *client,
             cbor_item_t arr = cbor_decode_next(&dec);
             if (arr.type != CBOR_ITEM_ARRAY) continue;
 
-            if (arr.count > 0) {
-                result_out->entries = calloc(arr.count,
+            size_t cap = arr.count;
+            if (cap > 0) {
+                result_out->entries = calloc(cap,
                                               sizeof(nodus_dnac_history_entry_t));
                 if (!result_out->entries) { free_pending(client, req); return NODUS_ERR_INTERNAL_ERROR; }
             }
@@ -3111,6 +3194,11 @@ int nodus_client_dnac_history(nodus_client_t *client,
             for (size_t j = 0; j < arr.count; j++) {
                 cbor_item_t emap = cbor_decode_next(&dec);
                 if (emap.type != CBOR_ITEM_MAP) continue;
+                if ((size_t)result_out->count >= cap) {
+                    nodus_client_free_history_result(result_out);
+                    free_pending(client, req);
+                    return NODUS_ERR_PROTOCOL_ERROR;
+                }
 
                 nodus_dnac_history_entry_t *e =
                     &result_out->entries[result_out->count];
@@ -3292,9 +3380,19 @@ int nodus_client_dnac_delegations(nodus_client_t *client,
         return NODUS_ERR_PROTOCOL_ERROR;
     }
 
+    /* P0-B (2026-09-28): every response key once; entry writes bounded by
+     * the capacity allocated (see nodus_client_dnac_history). */
+    nodus_map_keys_t ks;
+    memset(&ks, 0, sizeof(ks));
     for (size_t i = 0; i < mc; i++) {
         cbor_item_t key = cbor_decode_next(&dec);
         if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+        if (nodus_map_key_once(&ks, key.tstr.ptr, key.tstr.len) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "dnac_delegations: repeated key in response — refused");
+            nodus_client_free_delegations_result(result_out);
+            free_pending(client, req);
+            return NODUS_ERR_PROTOCOL_ERROR;
+        }
 
         if (key.tstr.len == 5 && memcmp(key.tstr.ptr, "count", 5) == 0) {
             cbor_item_t v = cbor_decode_next(&dec);
@@ -3303,8 +3401,9 @@ int nodus_client_dnac_delegations(nodus_client_t *client,
             cbor_item_t arr = cbor_decode_next(&dec);
             if (arr.type != CBOR_ITEM_ARRAY) continue;
 
-            if (arr.count > 0) {
-                result_out->entries = calloc(arr.count,
+            size_t cap = arr.count;
+            if (cap > 0) {
+                result_out->entries = calloc(cap,
                                               sizeof(nodus_dnac_delegation_entry_t));
                 if (!result_out->entries) {
                     free_pending(client, req);
@@ -3315,6 +3414,11 @@ int nodus_client_dnac_delegations(nodus_client_t *client,
             for (size_t j = 0; j < arr.count; j++) {
                 cbor_item_t emap = cbor_decode_next(&dec);
                 if (emap.type != CBOR_ITEM_MAP) continue;
+                if ((size_t)result_out->count >= cap) {
+                    nodus_client_free_delegations_result(result_out);
+                    free_pending(client, req);
+                    return NODUS_ERR_PROTOCOL_ERROR;
+                }
 
                 nodus_dnac_delegation_entry_t *e =
                     &result_out->entries[result_out->count];
@@ -3396,9 +3500,19 @@ int nodus_client_dnac_tx(nodus_client_t *client,
         return NODUS_ERR_PROTOCOL_ERROR;
     }
 
+    /* P0-B (2026-09-28): every response key once — a second "tx" used to
+     * malloc over (and leak) the first tx_data. */
+    nodus_map_keys_t ks;
+    memset(&ks, 0, sizeof(ks));
     for (size_t i = 0; i < mc; i++) {
         cbor_item_t key = cbor_decode_next(&dec);
         if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+        if (nodus_map_key_once(&ks, key.tstr.ptr, key.tstr.len) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "dnac_tx: repeated key in response — refused");
+            nodus_client_free_tx_result(result_out);
+            free_pending(client, req);
+            return NODUS_ERR_PROTOCOL_ERROR;
+        }
 
         if (key.tstr.len == 5 && memcmp(key.tstr.ptr, "found", 5) == 0) {
             cbor_item_t v = cbor_decode_next(&dec);
@@ -3583,17 +3697,34 @@ int nodus_client_dnac_block(nodus_client_t *client,
     if (!wait_response(client, req, 10000)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
     if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
 
+    int prc = dnac_block_parse(req->raw_response, req->raw_response_len,
+                               result_out);
+    free_pending(client, req);
+    return prc;
+}
+
+/* Decode a dnac_block reply. Return values and cleanup as dnac_utxo_parse.
+ * P0-B (2026-09-28): a second "commit_cert" used to re-calloc the array
+ * WITHOUT resetting commit_cert_count, so a shorter second array was
+ * written past its end. Every key of the response map is now accepted
+ * once, and each signature write is bounded by the capacity allocated. */
+static int dnac_block_parse(const uint8_t *raw, size_t raw_len,
+                            nodus_dnac_block_result_t *result_out) {
     cbor_decoder_t dec;
     size_t mc;
-    if (find_response_map(req->raw_response, req->raw_response_len,
-                           &dec, &mc) != 0) {
-        free_pending(client, req);
+    if (find_response_map(raw, raw_len, &dec, &mc) != 0)
         return NODUS_ERR_PROTOCOL_ERROR;
-    }
 
+    nodus_map_keys_t ks;
+    memset(&ks, 0, sizeof(ks));
     for (size_t i = 0; i < mc; i++) {
         cbor_item_t key = cbor_decode_next(&dec);
         if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+        if (nodus_map_key_once(&ks, key.tstr.ptr, key.tstr.len) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "dnac_block: repeated key in response — refused");
+            nodus_client_free_block_result(result_out);
+            return NODUS_ERR_PROTOCOL_ERROR;
+        }
 
         if (key.tstr.len == 5 && memcmp(key.tstr.ptr, "found", 5) == 0) {
             cbor_item_t v = cbor_decode_next(&dec);
@@ -3648,6 +3779,10 @@ int nodus_client_dnac_block(nodus_client_t *client,
                     for (size_t ci = 0; ci < arr.count; ci++) {
                         cbor_item_t cmap = cbor_decode_next(&dec);
                         if (cmap.type != CBOR_ITEM_MAP) continue;
+                        if ((size_t)result_out->commit_cert_count >= arr.count) {
+                            nodus_client_free_block_result(result_out);
+                            return NODUS_ERR_PROTOCOL_ERROR;
+                        }
                         nodus_dnac_commit_sig_t *sig =
                             &result_out->commit_cert[result_out->commit_cert_count];
                         bool have_signer = false, have_sig = false;
@@ -3695,7 +3830,6 @@ int nodus_client_dnac_block(nodus_client_t *client,
         }
     }
 
-    free_pending(client, req);
     return 0;
 }
 
@@ -3741,9 +3875,21 @@ int nodus_client_dnac_block_range(nodus_client_t *client,
         return NODUS_ERR_PROTOCOL_ERROR;
     }
 
+    /* P0-B (2026-09-28): every response key once; "count" is informational
+     * (a "count" after "blocks" used to overwrite the decoded count — and on
+     * a failed calloc it was the ONLY count, beside a NULL blocks array);
+     * block writes bounded by the capacity allocated. */
+    nodus_map_keys_t ks;
+    memset(&ks, 0, sizeof(ks));
     for (size_t i = 0; i < mc; i++) {
         cbor_item_t key = cbor_decode_next(&dec);
         if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+        if (nodus_map_key_once(&ks, key.tstr.ptr, key.tstr.len) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "dnac_block_range: repeated key in response — refused");
+            nodus_client_free_block_range_result(result_out);
+            free_pending(client, req);
+            return NODUS_ERR_PROTOCOL_ERROR;
+        }
 
         if (key.tstr.len == 5 && memcmp(key.tstr.ptr, "total", 5) == 0) {
             cbor_item_t v = cbor_decode_next(&dec);
@@ -3751,16 +3897,19 @@ int nodus_client_dnac_block_range(nodus_client_t *client,
                 result_out->total_blocks = v.uint_val;
         } else if (key.tstr.len == 5 && memcmp(key.tstr.ptr, "count", 5) == 0) {
             cbor_item_t v = cbor_decode_next(&dec);
-            if (v.type == CBOR_ITEM_UINT)
-                result_out->count = (int)v.uint_val;
+            (void)v;   /* informational — the count is the decoded length */
         } else if (key.tstr.len == 6 && memcmp(key.tstr.ptr, "blocks", 6) == 0) {
             cbor_item_t arr = cbor_decode_next(&dec);
             if (arr.type != CBOR_ITEM_ARRAY) continue;
 
-            if (arr.count > 0) {
-                result_out->blocks = calloc(arr.count,
+            size_t cap = arr.count;
+            if (cap > 0) {
+                result_out->blocks = calloc(cap,
                                               sizeof(nodus_dnac_block_result_t));
-                if (!result_out->blocks) continue;
+                if (!result_out->blocks) {
+                    free_pending(client, req);
+                    return NODUS_ERR_INTERNAL_ERROR;
+                }
             }
 
             result_out->count = 0;
@@ -3769,6 +3918,11 @@ int nodus_client_dnac_block_range(nodus_client_t *client,
                 if (emap.type != CBOR_ITEM_MAP) {
                     cbor_decode_skip(&dec);
                     continue;
+                }
+                if ((size_t)result_out->count >= cap) {
+                    nodus_client_free_block_range_result(result_out);
+                    free_pending(client, req);
+                    return NODUS_ERR_PROTOCOL_ERROR;
                 }
 
                 nodus_dnac_block_result_t *b =
@@ -3878,9 +4032,19 @@ int nodus_client_dnac_genesis(nodus_client_t *client,
         return NODUS_ERR_PROTOCOL_ERROR;
     }
 
+    /* P0-B (2026-09-28): every response key once — a second "chain_def"
+     * used to malloc over (and leak) the first blob. */
+    nodus_map_keys_t ks;
+    memset(&ks, 0, sizeof(ks));
     for (size_t i = 0; i < mc; i++) {
         cbor_item_t key = cbor_decode_next(&dec);
         if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+        if (nodus_map_key_once(&ks, key.tstr.ptr, key.tstr.len) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "dnac_genesis: repeated key in response — refused");
+            nodus_client_free_genesis_result(result_out);
+            free_pending(client, req);
+            return NODUS_ERR_PROTOCOL_ERROR;
+        }
 
         if (key.tstr.len == 5 && memcmp(key.tstr.ptr, "found", 5) == 0) {
             cbor_item_t v = cbor_decode_next(&dec);
@@ -3974,16 +4138,27 @@ int nodus_client_dnac_token_list(nodus_client_t *client,
         return NODUS_ERR_PROTOCOL_ERROR;
     }
 
+    /* P0-B (2026-09-28): every response key once; token writes bounded by
+     * the capacity allocated (see nodus_client_dnac_history). */
+    nodus_map_keys_t ks;
+    memset(&ks, 0, sizeof(ks));
     for (size_t i = 0; i < mc; i++) {
         cbor_item_t key = cbor_decode_next(&dec);
         if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+        if (nodus_map_key_once(&ks, key.tstr.ptr, key.tstr.len) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "dnac_token_list: repeated key in response — refused");
+            nodus_client_free_token_list_result(result_out);
+            free_pending(client, req);
+            return NODUS_ERR_PROTOCOL_ERROR;
+        }
 
         if (key.tstr.len == 6 && memcmp(key.tstr.ptr, "tokens", 6) == 0) {
             cbor_item_t arr = cbor_decode_next(&dec);
             if (arr.type != CBOR_ITEM_ARRAY) continue;
 
-            if (arr.count > 0) {
-                result_out->tokens = calloc(arr.count,
+            size_t cap = arr.count;
+            if (cap > 0) {
+                result_out->tokens = calloc(cap,
                                               sizeof(nodus_dnac_token_info_t));
                 if (!result_out->tokens) { free_pending(client, req); return NODUS_ERR_INTERNAL_ERROR; }
             }
@@ -3991,6 +4166,11 @@ int nodus_client_dnac_token_list(nodus_client_t *client,
             for (size_t j = 0; j < arr.count; j++) {
                 cbor_item_t emap = cbor_decode_next(&dec);
                 if (emap.type != CBOR_ITEM_MAP) continue;
+                if ((size_t)result_out->count >= cap) {
+                    nodus_client_free_token_list_result(result_out);
+                    free_pending(client, req);
+                    return NODUS_ERR_PROTOCOL_ERROR;
+                }
 
                 nodus_dnac_token_info_t *t =
                     &result_out->tokens[result_out->count];
@@ -4194,9 +4374,19 @@ int nodus_client_dnac_committee(nodus_client_t *client,
         return NODUS_ERR_PROTOCOL_ERROR;
     }
 
+    /* P0-B (2026-09-28): every response key once. The entry writes are
+     * already bounded by the fixed entries[] capacity below. */
+    nodus_map_keys_t ks;
+    memset(&ks, 0, sizeof(ks));
     for (size_t i = 0; i < mc; i++) {
         cbor_item_t key = cbor_decode_next(&dec);
         if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+        if (nodus_map_key_once(&ks, key.tstr.ptr, key.tstr.len) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "dnac_committee: repeated key in response — refused");
+            memset(result_out, 0, sizeof(*result_out));
+            free_pending(client, req);
+            return NODUS_ERR_PROTOCOL_ERROR;
+        }
 
         if (KEY_EQ(key, "block_height")) {
             cbor_item_t v = cbor_decode_next(&dec);
@@ -5091,9 +5281,19 @@ int nodus_client_dnac_validator_list(nodus_client_t *client,
         return NODUS_ERR_PROTOCOL_ERROR;
     }
 
+    /* P0-B (2026-09-28): every response key once; entry writes bounded by
+     * the capacity allocated (see nodus_client_dnac_history). */
+    nodus_map_keys_t ks;
+    memset(&ks, 0, sizeof(ks));
     for (size_t i = 0; i < mc; i++) {
         cbor_item_t key = cbor_decode_next(&dec);
         if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+        if (nodus_map_key_once(&ks, key.tstr.ptr, key.tstr.len) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "dnac_validator_list: repeated key in response — refused");
+            nodus_client_free_validator_list_result(result_out);
+            free_pending(client, req);
+            return NODUS_ERR_PROTOCOL_ERROR;
+        }
 
         if (KEY_EQ(key, "count")) {
             cbor_item_t v = cbor_decode_next(&dec);
@@ -5105,9 +5305,10 @@ int nodus_client_dnac_validator_list(nodus_client_t *client,
         } else if (KEY_EQ(key, "validators")) {
             cbor_item_t arr = cbor_decode_next(&dec);
             if (arr.type != CBOR_ITEM_ARRAY) continue;
-            if (arr.count > 0) {
+            size_t cap = arr.count;
+            if (cap > 0) {
                 result_out->entries =
-                    calloc(arr.count, sizeof(nodus_dnac_validator_list_entry_t));
+                    calloc(cap, sizeof(nodus_dnac_validator_list_entry_t));
                 if (!result_out->entries) {
                     free_pending(client, req);
                     return NODUS_ERR_INTERNAL_ERROR;
@@ -5116,6 +5317,11 @@ int nodus_client_dnac_validator_list(nodus_client_t *client,
             for (size_t j = 0; j < arr.count; j++) {
                 cbor_item_t emap = cbor_decode_next(&dec);
                 if (emap.type != CBOR_ITEM_MAP) continue;
+                if ((size_t)result_out->count >= cap) {
+                    nodus_client_free_validator_list_result(result_out);
+                    free_pending(client, req);
+                    return NODUS_ERR_PROTOCOL_ERROR;
+                }
                 nodus_dnac_validator_list_entry_t *e =
                     &result_out->entries[result_out->count];
                 memset(e, 0, sizeof(*e));
@@ -5171,6 +5377,41 @@ void nodus_client_free_validator_list_result(nodus_dnac_validator_list_result_t 
     result->count = 0;
     result->total = 0;
 }
+
+#ifdef NODUS_CLIENT_TEST_SEAM
+/* Test-only entry points to the split response decoders above
+ * (tests/test_client_dup_array.c). Compiled ONLY when a test target builds
+ * this TU itself with NODUS_CLIENT_TEST_SEAM=1 — never into libnodus — the
+ * arrangement nodus/CMakeLists.txt uses for NODUS_V2_TEST_SUPPLY: libnodus
+ * is static, so the test's own object satisfies every symbol and the
+ * archive member is never pulled. These only decode bytes; they bypass
+ * nothing. The request functions zero result_out before decoding; so do
+ * these. */
+int nodus_client_test_parse_utxo(const uint8_t *raw, size_t raw_len,
+                                 nodus_dnac_utxo_result_t *out);
+int nodus_client_test_parse_ledger_range(const uint8_t *raw, size_t raw_len,
+                                         nodus_dnac_range_result_t *out);
+int nodus_client_test_parse_block(const uint8_t *raw, size_t raw_len,
+                                  nodus_dnac_block_result_t *out);
+
+int nodus_client_test_parse_utxo(const uint8_t *raw, size_t raw_len,
+                                 nodus_dnac_utxo_result_t *out) {
+    memset(out, 0, sizeof(*out));
+    return dnac_utxo_parse(raw, raw_len, out);
+}
+
+int nodus_client_test_parse_ledger_range(const uint8_t *raw, size_t raw_len,
+                                         nodus_dnac_range_result_t *out) {
+    memset(out, 0, sizeof(*out));
+    return dnac_ledger_range_parse(raw, raw_len, out);
+}
+
+int nodus_client_test_parse_block(const uint8_t *raw, size_t raw_len,
+                                  nodus_dnac_block_result_t *out) {
+    memset(out, 0, sizeof(*out));
+    return dnac_block_parse(raw, raw_len, out);
+}
+#endif /* NODUS_CLIENT_TEST_SEAM */
 
 #undef KEY_EQ
 
@@ -5267,8 +5508,10 @@ static void ch_conn_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
 
     nodus_tier2_msg_t tmp;
     memset(&tmp, 0, sizeof(tmp));
-    if (nodus_t2_decode(payload, len, &tmp) != 0)
+    if (nodus_t2_decode(payload, len, &tmp) != 0) {
+        nodus_t2_msg_free(&tmp);   /* no-op: the decoder freed it already */
         return;
+    }
 
     /* Push notification: channel post notify */
     if (strcmp(tmp.method, "ch_ntf") == 0) {
