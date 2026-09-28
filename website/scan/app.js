@@ -1,4 +1,5 @@
-// Nodus Scan. Wire fields and base units follow explorer/src/exp_http.c.
+// Nodus Scan. Wire fields and base units follow explorer/src/exp_http.c (index schema v2,
+// version-3 chain: blocks carry items, an item is addressed by "height:index").
 // Amounts stay decimal strings / BigInt. API data is never rendered as HTML.
 (() => {
   'use strict';
@@ -6,12 +7,12 @@
   const t = (en, turkish) => tr ? turkish : en;
   const $ = id => document.getElementById(id);
   const zeroToken = '0'.repeat(128);
-  const types = { 0:'GENESIS',1:'SPEND',2:'BURN',3:'TOKEN_CREATE',4:'STAKE',5:'DELEGATE',6:'UNSTAKE',7:'UNDELEGATE',9:'VALIDATOR_UPDATE',10:'CHAIN_CONFIG',11:'SHIELDED' };
   const page = document.body.dataset.page;
   const query = new URLSearchParams(location.search);
-  const identifier = query.get(page === 'block' ? 'h' : page === 'tx' ? 'hash' : 'fp');
+  const rawIdentifier = query.get(page === 'block' ? 'h' : page === 'tx' ? 'hash' : 'fp');
+  const identifier = rawIdentifier && /^[a-fA-F0-9]{128}$/.test(rawIdentifier) ? rawIdentifier.toLowerCase() : rawIdentifier;
   let pageNumber = 1, snapshotTip = null, lastPage = 1, blockRequest = 0, searchRequest = 0;
-  let oldestSequence = null, historyLoading = false, refreshing = false;
+  let nextCursor = null, historyLoading = false, refreshing = false;
   const el = (tag, text, className) => {
     const node = document.createElement(tag);
     if (text !== undefined && text !== null) node.textContent = String(text);
@@ -50,13 +51,25 @@
     });
     wrap.append(full, copy); return wrap;
   }
-  function time(seconds) {
-    const date = new Date(Number(seconds) * 1000);
-    if (!Number.isFinite(date.getTime()) || Number(seconds) <= 0) return el('span', '—');
+  // Block time is milliseconds since the Unix epoch (the block header's time).
+  function time(ms) {
+    const date = new Date(Number(ms));
+    if (!Number.isFinite(date.getTime()) || Number(ms) <= 0) return el('span', '—');
     const node = el('time', date.toISOString().slice(0, 19).replace('T', ' ') + ' UTC');
     node.dateTime = date.toISOString(); return node;
   }
-  const type = value => el('span', types[value] ?? 'TYPE ' + value, 'badge');
+  const opLabel = item => typeof item.op === 'string' && item.op ? item.op.toUpperCase() : String(item.kind ?? '—').toUpperCase();
+  function opBadges(item) {
+    const wrap = el('span', undefined, 'tx-title-row');
+    wrap.append(el('span', opLabel(item), 'badge'));
+    if (item.refused) wrap.append(el('span', t('Refused', 'Reddedildi') + ' · ' + t('code ', 'kod ') + item.code, 'badge'));
+    return wrap;
+  }
+  const position = item => typeof item.position === 'string' ? item.position : '—';
+  // The index API does not percent-decode: a height, a hex id or a "height:index" position is
+  // sent as it is (all of [0-9a-f:], legal in a path and a query); anything else is encoded.
+  const apiValue = value => /^[0-9a-f:]+$/.test(String(value)) ? String(value) : encodeURIComponent(value);
+  const txHref = item => 'tx.html?hash=' + encodeURIComponent(position(item));
   const token = value => value === zeroToken ? el('span', 'DNAC', 'token-native') : el('span', typeof value === 'string' ? short(value) : '—', 'mono');
   async function api(path) {
     const controller = new AbortController();
@@ -99,15 +112,21 @@
     entries.forEach(([label, value]) => { const node = el('div', undefined, 'detail-value'); node.append(value instanceof Node ? value : document.createTextNode(String(value))); grid.append(el('div', label, 'detail-label'), node); });
     return grid;
   }
+  function moreButton(onClick) {
+    const more = el('button', t('Load more', 'Daha fazla yükle'), 'btn-secondary'); more.id = 'load-more-btn'; more.type = 'button';
+    more.hidden = nextCursor === null; more.addEventListener('click', onClick);
+    const error = el('div'); error.id = 'history-error'; error.setAttribute('role', 'status');
+    return [error, more];
+  }
   function displayStats(stats) {
-    const indexed = stats.indexed_seq, tip = stats.tip_seq;
+    const indexed = stats.indexed_height, tip = stats.tip_height;
     const known = Number.isSafeInteger(indexed) && Number.isSafeInteger(tip);
     const behind = known && tip > indexed;
     const banner = $('staleness-banner'); banner.classList.toggle('hidden', !behind);
-    banner.textContent = behind ? t(`Index catching up: ${indexed} of ${tip} transactions indexed.`, `İndeks güncelleniyor: ${tip} işlemin ${indexed} adedi indekslendi.`) : '';
-    $('api-status').textContent = known ? (behind ? t('Index catching up', 'İndeks güncelleniyor') : t('Index matches the last reported tip', 'İndeks son bildirilen kayıtla eşleşiyor')) : t('Index connected · synchronization status unknown', 'İndekse bağlandı · eşitleme durumu bilinmiyor');
+    banner.textContent = behind ? t(`Index catching up: ${indexed} of ${tip} blocks indexed.`, `İndeks güncelleniyor: ${tip} bloğun ${indexed} adedi indekslendi.`) : '';
+    $('api-status').textContent = known ? (behind ? t('Index catching up', 'İndeks güncelleniyor') : t('Index matches the last reported tip', 'İndeks son bildirilen blokla eşleşiyor')) : t('Index connected · synchronization status unknown', 'İndekse bağlandı · eşitleme durumu bilinmiyor');
     if (!$('stats-cards')) return;
-    $('stat-height').textContent = stats.indexed_height ?? '—';
+    $('stat-height').textContent = indexed ?? '—';
     $('stat-supply').textContent = money(stats.supply_current);
     $('stat-burned').textContent = money(stats.supply_burned);
     $('stat-chain-id').textContent = typeof stats.chain_id === 'string' ? stats.chain_id.slice(0,8) + '…' + stats.chain_id.slice(-6) : '—';
@@ -125,6 +144,10 @@
         const stats = providedStats ?? await api('/stats');
         if (current !== blockRequest) return;
         displayStats(stats);
+        if (stats.indexed_height === null || stats.indexed_height === undefined) {
+          messageRow(body, t('No blocks indexed yet.', 'Henüz indekslenmiş blok yok.'), 4);
+          $('blocks-pager').classList.add('hidden'); return;
+        }
         if (!Number.isSafeInteger(stats.indexed_height) || stats.indexed_height < 0) {
           messageRow(body, t('Indexed height is not available yet.', 'İndeks yüksekliği henüz bilinmiyor.'), 4);
           $('blocks-pager').classList.add('hidden'); return;
@@ -139,7 +162,7 @@
       const data = await api('/blocks?before=' + (snapshotTip - (target - 1) * 25 + 1) + '&limit=25');
       if (current !== blockRequest) return;
       if (!Array.isArray(data.blocks)) throw new Error(t('Unexpected block response.', 'Beklenmeyen blok yanıtı.'));
-      body.replaceChildren(...data.blocks.map(b => row([link('block.html?h=' + encodeURIComponent(b.height), b.height), hash(b.block_hash, b.block_hash ? 'block.html?h=' + encodeURIComponent(b.block_hash) : null), time(b.timestamp), b.tx_count])));
+      body.replaceChildren(...data.blocks.map(b => row([link('block.html?h=' + encodeURIComponent(b.height), b.height), hash(b.block_id, b.block_id ? 'block.html?h=' + encodeURIComponent(b.block_id) : null), time(b.time), b.n_items])));
       if (!data.blocks.length) messageRow(body, t('No blocks on this page.', 'Bu sayfada blok yok.'), 4);
       pageNumber = target;
       $('pg-total').textContent = lastPage; $('pg-input').value = pageNumber;
@@ -151,67 +174,85 @@
       messageRow(body, error.message, 4, true);
     }
   }
-  const txRow = tx => row([hash(tx.hash, 'tx.html?hash=' + encodeURIComponent(tx.hash)), type(tx.tx_type), money(tx.fee), time(tx.timestamp)]);
-  const historyRow = tx => row([hash(tx.hash, 'tx.html?hash=' + encodeURIComponent(tx.hash)), type(tx.tx_type), link('block.html?h=' + encodeURIComponent(tx.height), tx.height), time(tx.timestamp), money(tx.fee)]);
-  const assetAmount = io => io.token_id === zeroToken ? money(io.amount) : String(io.amount ?? '—') + t(' base units', ' temel birim');
-  const ioRow = io => row([hash(io.address, 'address.html?fp=' + encodeURIComponent(io.address)), assetAmount(io), token(io.token_id)]);
+  const itemRow = item => row([link(txHref(item), position(item)), opBadges(item), money(item.fee), hash(item.wire_id, item.wire_id ? 'tx.html?hash=' + encodeURIComponent(item.wire_id) : null)]);
+  const historyRow = item => row([link(txHref(item), position(item)), opBadges(item), link('block.html?h=' + encodeURIComponent(item.height), item.height), time(item.time), money(item.fee)]);
+  const assetAmount = io => io.token_id === zeroToken ? money(io.amount) : (io.amount === null || io.amount === undefined ? '—' : String(io.amount) + t(' base units', ' temel birim'));
+  const addressCell = io => typeof io.address === 'string' ? hash(io.address, 'address.html?fp=' + encodeURIComponent(io.address)) : el('span', t('Not in the index', 'İndekste yok'), 'muted');
+  const inputRow = io => row([el('span', short(io.coin_id ?? '—'), 'mono'), addressCell(io), assetAmount(io), io.token_id ? token(io.token_id) : el('span', '—', 'muted')]);
+  const outputRow = io => row([el('span', short(io.coin_id ?? '—'), 'mono'), addressCell(io), assetAmount(io), token(io.token_id), io.unlock_block ? io.unlock_block : t('Unlocked', 'Kilitsiz')]);
   function renderBlock(data, content) {
-    if (!data.block || !Array.isArray(data.txs)) throw new Error(t('Unexpected block response.', 'Beklenmeyen blok yanıtı.'));
+    if (!data.block || !Array.isArray(data.items)) throw new Error(t('Unexpected block response.', 'Beklenmeyen blok yanıtı.'));
     const b = data.block;
+    const previous = Number(b.height) > 1 ? link('block.html?h=' + encodeURIComponent(Number(b.height) - 1), short(b.prev_id ?? '—')) : hash(b.prev_id);
     content.replaceChildren(fields([
-      [t('Height','Yükseklik'), b.height], [t('Block hash','Blok hash’i'), b.block_hash ? hash(b.block_hash) : t('Not available in the index', 'İndekste mevcut değil')],
-      [t('Transaction root','İşlem kökü'), hash(b.tx_root)], [t('Timestamp','Zaman damgası'), time(b.timestamp)], [t('Proposer','Öneren'), hash(b.proposer)], [t('Transactions','İşlemler'), b.tx_count]
-    ]), el('h2', t('Transactions','İşlemler')), table([t('Hash','Hash'),t('Type','Tür'),t('Fee','Ücret'),t('Time','Zaman')], data.txs.map(txRow), t('No transactions in this block.','Bu blokta işlem yok.')));
+      [t('Height','Yükseklik'), b.height], [t('Block ID','Blok kimliği'), hash(b.block_id)], [t('Previous block','Önceki blok'), previous],
+      [t('Timestamp','Zaman damgası'), time(b.time)], [t('Proposer','Öneren'), hash(b.proposer)], [t('State root','Durum kökü'), hash(b.global_root)],
+      [t('Applied transactions','Uygulanan işlemler'), b.applied_count], [t('Items in block','Bloktaki kayıtlar'), b.n_items]
+    ]), el('h2', t('Transactions','İşlemler')), table([t('Position','Konum'),t('Type','Tür'),t('Fee','Ücret'),t('Wire ID','Kablo kimliği')], data.items.map(itemRow), t('No transactions in this block.','Bu blokta işlem yok.'), 'block-items-tbody'));
+    nextCursor = Number.isSafeInteger(data.next_from) ? data.next_from : null;
+    content.append(...moreButton(() => loadMore('/block/' + apiValue(identifier) + '?from=', 'block-items-tbody', 'items', itemRow, d => Number.isSafeInteger(d.next_from) ? d.next_from : null)));
+  }
+  const recordNames = { stake: t('Stake','Stake'), delegate: t('Delegation','Delegasyon'), unstake: t('Unstake','Stake çözme'), undelegate: t('Undelegation','Delegasyon çözme'), validator_update: t('Validator update','Doğrulayıcı güncellemesi'), chain_config: t('Chain configuration','Zincir yapılandırması') };
+  function renderRecord(record) {
+    const entries = [[t('Record','Kayıt'), recordNames[record.kind] ?? String(record.kind)]];
+    const fp = (label, value) => { if (typeof value === 'string') entries.push([label, hash(value, 'address.html?fp=' + encodeURIComponent(value))]); };
+    fp(t('Validator','Doğrulayıcı'), record.validator); fp(t('Delegator','Delege eden'), record.delegator); fp(t('Destination','Hedef'), record.destination);
+    if (record.kind === 'chain_config') entries.push([t('Parameter','Parametre'), record.param_id], [t('New value','Yeni değer'), record.new_value], [t('Effective height','Geçerlilik yüksekliği'), record.effective_height]);
+    else { entries.push([t('Amount','Tutar'), money(record.amount)]); if (record.kind === 'validator_update' || record.kind === 'stake') entries.push([t('Commission','Komisyon'), (Number(record.commission_bps) / 100) + ' %']); }
+    return fields(entries);
   }
   function renderTx(data, content) {
-    if (!data.tx || !Array.isArray(data.ios)) throw new Error(t('Unexpected transaction response.', 'Beklenmeyen işlem yanıtı.'));
-    const tx = data.tx, badges = el('div', undefined, 'tx-title-row'); badges.append(type(tx.tx_type));
-    if (tx.multi_signer) badges.append(el('span',t('Multi-signer','Çok imzalı'),'badge'));
-    content.replaceChildren(badges, fields([[t('Hash','Hash'),hash(tx.hash)],[t('Block height','Blok yüksekliği'),link('block.html?h='+encodeURIComponent(tx.height),tx.height)],[t('Sequence','Sıra'),tx.seq],[t('Timestamp','Zaman damgası'),time(tx.timestamp)],[t('Fee','Ücret'),money(tx.fee)],[t('Size','Boyut'),tx.size + t(' bytes',' bayt')]]));
-    for (const [direction, label] of [['in',t('Inputs','Girdiler')],['out',t('Outputs','Çıktılar')]]) {
-      const ios = data.ios.filter(io=>io.direction===direction);
-      content.append(el('h2',label+' ('+ios.length+')'),table([t('Address','Adres'),t('Amount','Tutar'),t('Token','Token')],ios.map(ioRow),t('None','Yok')));
-    }
-    if (typeof data.raw === 'string' && data.raw) {
-      const details = el('details',undefined,'raw-hex');
-      details.append(el('summary',t('Raw transaction','Ham işlem')+' ('+data.raw.length/2+t(' bytes)',' bayt)')),el('pre',data.raw,'mono raw-hex-body')); content.append(details);
-    }
+    if (!data.tx || !Array.isArray(data.inputs) || !Array.isArray(data.outputs)) throw new Error(t('Unexpected transaction response.', 'Beklenmeyen işlem yanıtı.'));
+    const tx = data.tx;
+    const entries = [[t('Position','Konum'), position(tx)], [t('Block height','Blok yüksekliği'), link('block.html?h=' + encodeURIComponent(tx.height), tx.height)], [t('Timestamp','Zaman damgası'), time(tx.time)],
+      [t('Status','Durum'), tx.refused ? t('Refused by the chain (code ','Zincir tarafından reddedildi (kod ') + tx.code + ')' : t('Applied','Uygulandı')],
+      [t('Wire ID','Kablo kimliği'), tx.wire_id ? hash(tx.wire_id) : el('span', t('Not assigned','Atanmadı'), 'muted')], [t('Intent ID','Niyet kimliği'), tx.intent_id ? hash(tx.intent_id) : el('span', '—', 'muted')],
+      [t('Fee','Ücret'), money(tx.fee)]];
+    if (tx.burned !== null && tx.burned !== undefined) entries.push([t('Burned','Yakılan'), money(tx.burned)]);
+    content.replaceChildren(opBadges(tx), fields(entries));
+    if (tx.refused) content.append(el('p', t('A refused transaction stays in the block but changes nothing: no coins are spent or created.', 'Reddedilen işlem blokta kalır ama hiçbir şeyi değiştirmez: coin harcanmaz, oluşturulmaz.'), 'muted'));
+    if (tx.record) content.append(el('h2', t('Recorded change','Kaydedilen değişiklik')), renderRecord(tx.record));
+    content.append(el('h2', t('Inputs','Girdiler') + ' (' + data.inputs.length + ')'), table([t('Coin','Coin'),t('Address','Adres'),t('Amount','Tutar'),t('Token','Token')], data.inputs.map(inputRow), t('None','Yok')));
+    content.append(el('h2', t('Outputs','Çıktılar') + ' (' + data.outputs.length + ')'), table([t('Coin','Coin'),t('Address','Adres'),t('Amount','Tutar'),t('Token','Token'),t('Unlock block','Kilit açılış bloğu')], data.outputs.map(outputRow), t('None','Yok')));
+  }
+  // Balances come from the network (the node's dnac_balance, transparent coins only): per token the
+  // total, the part spendable in the next block (locked coins excluded) and the coin count.
+  // "unavailable" is shown as such — never as a zero.
+  const balanceRow = b => row([token(b.token_id), assetAmount({ token_id: b.token_id, amount: b.total }), assetAmount({ token_id: b.token_id, amount: b.spendable }), Number.isSafeInteger(b.coins) ? b.coins : '—']);
+  function balanceSummary(data) {
+    if (data.balance_status !== 'ok' || !Array.isArray(data.balances)) return el('span', t('Unavailable right now — the network did not answer. Try refreshing shortly.', 'Şu an alınamıyor — ağ yanıt vermedi. Biraz sonra yenilemeyi dene.'), 'muted');
+    const native = data.balances.find(b => b && b.token_id === zeroToken);
+    return money(native ? native.total : '0');
   }
   function renderAddress(data, content) {
-    if (!Array.isArray(data.balances) || !Array.isArray(data.txs)) throw new Error(t('Unexpected address response.', 'Beklenmeyen adres yanıtı.'));
-    const native = data.balances.find(b=>b.token==='DNAC');
-    content.replaceChildren(fields([[t('Address','Adres'),hash(identifier)],[t('Indexed native balance','İndekslenmiş yerel bakiye'),money(native?.balance)],[t('Transaction count','İşlem sayısı'),native?.tx_count ?? '—']]));
-    content.append(el('h2',t('Unspent outputs · witness data','Harcanmamış çıktılar · doğrulayıcı verisi')));
-    const utxos = data.utxos;
-    if (!utxos || utxos.error || !Array.isArray(utxos.entries)) content.append(el('p',t('Live witness data is unavailable. The indexed balance above is a separate source.','Canlı doğrulayıcı verisine erişilemiyor. Yukarıdaki indekslenmiş bakiye ayrı bir kaynaktır.'),'muted'));
-    else {
-      content.append(el('p',t('Reported at witness block ','Doğrulayıcı blok yüksekliği: ')+utxos.block_height,'muted'));
-      content.append(table([t('Nullifier','Nullifier'),t('Amount','Tutar'),t('Token','Token'),t('Source transaction','Kaynak işlem'),t('Block','Blok')],utxos.entries.map(u=>row([el('span',short(u.nullifier),'mono'),assetAmount(u),token(u.token_id),hash(u.tx_hash,'tx.html?hash='+encodeURIComponent(u.tx_hash)),link('block.html?h='+encodeURIComponent(u.block_height),u.block_height)])),t('No unspent outputs.','Harcanmamış çıktı yok.')));
+    if (!Array.isArray(data.items)) throw new Error(t('Unexpected address response.', 'Beklenmeyen adres yanıtı.'));
+    content.replaceChildren(fields([[t('Address','Adres'),hash(identifier)],[t('Balance','Bakiye'),balanceSummary(data)]]));
+    if (data.balance_status === 'ok' && Array.isArray(data.balances)) {
+      content.append(el('h2', t('Balances by token', 'Token bazında bakiyeler')), table([t('Token','Token'),t('Total','Toplam'),t('Spendable now','Şu an harcanabilir'),t('Coins','Coin sayısı')], data.balances.filter(b => b && typeof b === 'object').map(balanceRow), t('This address holds no coins.', 'Bu adreste coin yok.')));
     }
-    oldestSequence = data.txs.length ? Math.min(...data.txs.map(tx=>tx.seq)) : null;
-    content.append(el('h2',t('Transaction history','İşlem geçmişi')),table([t('Hash','Hash'),t('Type','Tür'),t('Height','Yükseklik'),t('Time','Zaman'),t('Fee','Ücret')],data.txs.map(historyRow),t('No transactions for this address.','Bu adres için işlem yok.'),'address-history-tbody'));
-    const more = el('button',t('Load more','Daha fazla yükle'),'btn-secondary'); more.id='load-more-btn';more.type='button';more.hidden=data.txs.length<25;more.addEventListener('click',loadMore);
-    const error=el('div');error.id='history-error';error.setAttribute('role','status');content.append(error,more);
+    nextCursor = typeof data.next_before === 'string' ? data.next_before : null;
+    content.append(el('h2',t('Transaction history','İşlem geçmişi')),table([t('Position','Konum'),t('Type','Tür'),t('Height','Yükseklik'),t('Time','Zaman'),t('Fee','Ücret')],data.items.map(historyRow),t('No transactions for this address.','Bu adres için işlem yok.'),'address-history-tbody'));
+    content.append(...moreButton(() => loadMore('/address/' + apiValue(identifier) + '?limit=25&before=', 'address-history-tbody', 'items', historyRow, d => typeof d.next_before === 'string' ? d.next_before : null)));
   }
-  async function loadMore() {
-    if (historyLoading || oldestSequence === null) return;
+  async function loadMore(prefix, tbodyId, key, render, cursorOf) {
+    if (historyLoading || nextCursor === null) return;
     historyLoading=true;const button=$('load-more-btn');button.disabled=true;$('history-error').replaceChildren();
     try {
-      const data=await api('/address/'+encodeURIComponent(identifier)+'?before='+oldestSequence+'&limit=25');
-      if (!Array.isArray(data.txs)) throw new Error(t('Unexpected address response.','Beklenmeyen adres yanıtı.'));
-      $('address-history-tbody').append(...data.txs.map(historyRow));
-      if (data.txs.length) oldestSequence=Math.min(...data.txs.map(tx=>tx.seq));
-      button.hidden=data.txs.length<25;
+      const data=await api(prefix+apiValue(nextCursor));
+      if (!Array.isArray(data[key])) throw new Error(t('Unexpected index response.','Beklenmeyen indeks yanıtı.'));
+      $(tbodyId).append(...data[key].map(render));
+      nextCursor=cursorOf(data);
+      button.hidden=nextCursor===null;
     } catch(error) {errorBox($('history-error'),error);}
     finally {historyLoading=false;button.disabled=false;}
   }
   async function loadDetail() {
     const content=$(page+'-content');
-    const valid = identifier && (page==='block' ? /^(?:[1-9]\d*|[a-fA-F0-9]{128})$/.test(identifier) : /^[a-fA-F0-9]{128}$/.test(identifier));
+    const valid = identifier && (page==='block' ? /^(?:[1-9]\d*|[a-f0-9]{128})$/.test(identifier) : page==='tx' ? /^(?:[a-f0-9]{128}|[1-9]\d*:\d+)$/.test(identifier) : /^[a-f0-9]{128}$/.test(identifier));
     if (!valid) {errorBox(content,new Error(t('Use the search above to choose a valid record.','Geçerli bir kayıt seçmek için yukarıdaki aramayı kullan.')));return;}
     content.replaceChildren(el('div',t('Loading…','Yükleniyor…'),'loading'));
     try {
-      const data=await api('/'+page+'/'+encodeURIComponent(identifier)+(page==='address'?'?limit=25&utxos=1':''));
+      const data=await api('/'+page+'/'+apiValue(identifier)+(page==='address'?'?limit=25':''));
       if(page==='block')renderBlock(data,content);else if(page==='tx')renderTx(data,content);else renderAddress(data,content);
     } catch(error){errorBox(content,error);}
   }
@@ -225,10 +266,11 @@
     finally {await detail;refreshing=false;$('refresh-data').disabled=false;}
   }
   $('search-form').addEventListener('submit',async event=>{
-    event.preventDefault();const term=$('search-input').value.trim();if(!term)return;
+    event.preventDefault();const typed=$('search-input').value.trim();if(!typed)return;
+    const term=/^[a-fA-F0-9]{128}$/.test(typed)?typed.toLowerCase():typed;
     const current=++searchRequest,results=$('search-results');results.replaceChildren(el('div',t('Searching…','Aranıyor…'),'loading'));
     try{
-      const data=await api('/search?q='+encodeURIComponent(term));if(current!==searchRequest)return;
+      const data=await api('/search?q='+apiValue(term));if(current!==searchRequest)return;
       if(!Array.isArray(data.matches))throw new Error(t('Unexpected search response.','Beklenmeyen arama yanıtı.'));
       const matches=data.matches.filter(m=>['tx','block','address'].includes(m.type)&&typeof m.target==='string');
       const href=m=>m.type+'.html?'+(m.type==='tx'?'hash':m.type==='block'?'h':'fp')+'='+encodeURIComponent(m.target);

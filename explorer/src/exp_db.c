@@ -1,98 +1,132 @@
 /**
- * exp_db — DNAC Explorer sqlite index DB module.
+ * exp_db — DNAC Explorer sqlite index DB module (index schema v2). See
+ * exp_db.h for the schema, the rebuild-on-version-mismatch rule and the
+ * consumed-coin resolution rule.
  *
  * Prepared-statement pattern follows nodus/src/core/nodus_storage.c: every
  * statement used on a hot path is prepared once at open() and reused via
- * sqlite3_reset(); exp_db_verify_addr_stats (a diagnostic/audit call, not a
- * hot path) prepares its diff query ad-hoc, same as nodus_storage's
- * nodus_storage_count_key.
+ * sqlite3_reset(); exp_db_verify_index (a diagnostic call, not a hot path)
+ * prepares its checks ad-hoc.
  */
 
 #include "exp_db.h"
 
 #include <sqlite3.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "crypto/utils/qgp_log.h"
 #define LOG_TAG "EXP_DB"
 
-/* ── Schema (design doc §3 + plan Task 2's txs.multi_signer / txs.raw) ── */
+/* ── Schema v2 ──────────────────────────────────────────────────────── */
 
+/* Every table the explorer has ever created, v1 (ledger-sequence index:
+ * blocks/txs/tx_io/addr_stats) and v2. A schema-version mismatch drops
+ * them all before SCHEMA_SQL recreates v2 — the index is derived data. */
+static const char *DROP_ALL_SQL =
+    "DROP TABLE IF EXISTS addr_stats;"
+    "DROP TABLE IF EXISTS tx_io;"
+    "DROP TABLE IF EXISTS txs;"
+    "DROP TABLE IF EXISTS item_records;"
+    "DROP TABLE IF EXISTS item_io;"
+    "DROP TABLE IF EXISTS items;"
+    "DROP TABLE IF EXISTS blocks;"
+    "DROP TABLE IF EXISTS meta;";
+
+/* SYSTEM records live in their own typed table (item_records), not in a
+ * JSON column: the address history must find an item by the record's
+ * validator / delegator / destination fingerprint, which wants a plain
+ * indexed column; typed columns also keep the stored form a direct copy
+ * of the decoded fields (no second encoding to parse back on read) and
+ * need no JSON1 extension in the linked sqlite. */
 static const char *SCHEMA_SQL =
-    "CREATE TABLE IF NOT EXISTS blocks ("
-    "  height     INTEGER PRIMARY KEY,"
-    "  block_hash BLOB,"                 /* NULL until the child block is seen */
-    "  tx_root    BLOB,"
-    "  timestamp  INTEGER,"
-    "  proposer   BLOB,"
-    "  tx_count   INTEGER"
-    ");"
-    "CREATE TABLE IF NOT EXISTS txs ("
-    "  hash         BLOB PRIMARY KEY,"
-    "  seq          INTEGER UNIQUE,"     /* ledger sequence — total order */
-    "  height       INTEGER,"
-    "  tx_type      INTEGER,"
-    "  fee          INTEGER,"
-    "  size         INTEGER,"
-    "  timestamp    INTEGER,"            /* from the deserialized TX, never envelope wall-clock */
-    "  multi_signer INTEGER,"
-    "  raw          BLOB"
-    ");"
-    "CREATE TABLE IF NOT EXISTS tx_io ("
-    "  tx_hash   BLOB,"
-    "  io_index  INTEGER,"
-    "  direction INTEGER,"               /* 0=in 1=out */
-    "  address   TEXT,"
-    "  token_id  BLOB,"
-    "  amount    INTEGER,"
-    "  PRIMARY KEY(tx_hash, direction, io_index)"
-    ");"
-    "CREATE TABLE IF NOT EXISTS addr_stats ("
-    "  address           TEXT,"
-    "  token_id          BLOB,"
-    "  balance           INTEGER,"       /* signed accumulation: credits - debits */
-    "  tx_count          INTEGER,"
-    "  first_seen_height INTEGER,"
-    "  last_seen_height  INTEGER,"
-    "  PRIMARY KEY(address, token_id)"
-    ");"
     "CREATE TABLE IF NOT EXISTS meta ("
     "  key   TEXT PRIMARY KEY,"
     "  value BLOB"
     ");"
-    "CREATE INDEX IF NOT EXISTS idx_txs_height ON txs(height);"
-    "CREATE INDEX IF NOT EXISTS idx_txs_seq ON txs(seq);"
-    "CREATE INDEX IF NOT EXISTS idx_tx_io_addr ON tx_io(address, tx_hash);";
+    "CREATE TABLE IF NOT EXISTS blocks ("
+    "  height        INTEGER PRIMARY KEY,"
+    "  block_id      BLOB NOT NULL,"
+    "  prev_id       BLOB NOT NULL,"
+    "  time_ms       INTEGER NOT NULL,"
+    "  proposer      BLOB NOT NULL,"
+    "  global_root   BLOB NOT NULL,"
+    "  applied_count INTEGER NOT NULL,"
+    "  n_items       INTEGER NOT NULL"
+    ");"
+    "CREATE TABLE IF NOT EXISTS items ("
+    "  height      INTEGER NOT NULL,"
+    "  idx         INTEGER NOT NULL,"
+    "  kind        INTEGER NOT NULL,"
+    "  code        INTEGER NOT NULL,"
+    "  wire_id     BLOB,"                  /* NULL = absent (refused envelope) */
+    "  intent_id   BLOB,"                  /* NULL = absent (not an applied envelope) */
+    "  fee         INTEGER,"               /* NULL = absent */
+    "  op          TEXT,"                  /* NULL = unnamed */
+    "  has_effects INTEGER NOT NULL,"
+    "  burned      INTEGER NOT NULL,"
+    "  PRIMARY KEY(height, idx)"
+    ");"
+    "CREATE TABLE IF NOT EXISTS item_io ("
+    "  height       INTEGER NOT NULL,"
+    "  idx          INTEGER NOT NULL,"
+    "  dir          INTEGER NOT NULL,"     /* 0 consumed, 1 created */
+    "  pos          INTEGER NOT NULL,"     /* call order within (item, dir) */
+    "  coin_id      BLOB NOT NULL,"
+    "  address      TEXT,"                 /* NULL = consumed, creator not indexed */
+    "  token        BLOB,"
+    "  amount       INTEGER,"
+    "  unlock_block INTEGER,"
+    "  PRIMARY KEY(height, idx, dir, pos)"
+    ");"
+    "CREATE TABLE IF NOT EXISTS item_records ("
+    "  height         INTEGER NOT NULL,"
+    "  idx            INTEGER NOT NULL,"
+    "  kind           INTEGER NOT NULL,"
+    "  validator      TEXT,"
+    "  delegator      TEXT,"
+    "  dest           TEXT,"
+    "  amount         INTEGER NOT NULL,"
+    "  commission_bps INTEGER NOT NULL,"
+    "  param_id       INTEGER NOT NULL,"
+    "  new_value      INTEGER NOT NULL,"
+    "  effective      INTEGER NOT NULL,"
+    "  PRIMARY KEY(height, idx)"
+    ");"
+    "CREATE INDEX IF NOT EXISTS idx_blocks_id ON blocks(block_id);"
+    "CREATE INDEX IF NOT EXISTS idx_items_wire ON items(wire_id);"
+    "CREATE INDEX IF NOT EXISTS idx_items_intent ON items(intent_id);"
+    "CREATE INDEX IF NOT EXISTS idx_io_coin ON item_io(coin_id, dir);"
+    "CREATE INDEX IF NOT EXISTS idx_io_addr ON item_io(address);"
+    "CREATE INDEX IF NOT EXISTS idx_rec_validator ON item_records(validator);"
+    "CREATE INDEX IF NOT EXISTS idx_rec_delegator ON item_records(delegator);"
+    "CREATE INDEX IF NOT EXISTS idx_rec_dest ON item_records(dest);";
 
 /* ── Prepared statement SQL ─────────────────────────────────────────── */
 
 static const char *INSERT_BLOCK_SQL =
-    "INSERT OR REPLACE INTO blocks (height, block_hash, tx_root, timestamp, proposer, tx_count) "
-    "VALUES (?,?,?,?,?,?)";
+    "INSERT INTO blocks (height, block_id, prev_id, time_ms, proposer, global_root, "
+    "applied_count, n_items) VALUES (?,?,?,?,?,?,?,?)";
 
-static const char *SET_BLOCK_HASH_SQL =
-    "UPDATE blocks SET block_hash = ? WHERE height = ?";
+static const char *INSERT_ITEM_SQL =
+    "INSERT INTO items (height, idx, kind, code, wire_id, intent_id, fee, op, "
+    "has_effects, burned) VALUES (?,?,?,?,?,?,?,?,?,?)";
 
-static const char *INSERT_TX_SQL =
-    "INSERT OR IGNORE INTO txs (hash, seq, height, tx_type, fee, size, timestamp, multi_signer, raw) "
-    "VALUES (?,?,?,?,?,?,?,?,?)";
+static const char *INSERT_RECORD_SQL =
+    "INSERT INTO item_records (height, idx, kind, validator, delegator, dest, amount, "
+    "commission_bps, param_id, new_value, effective) VALUES (?,?,?,?,?,?,?,?,?,?,?)";
 
 static const char *INSERT_IO_SQL =
-    "INSERT INTO tx_io (tx_hash, io_index, direction, address, token_id, amount) "
-    "VALUES (?,?,?,?,?,?)";
+    "INSERT INTO item_io (height, idx, dir, pos, coin_id, address, token, amount, "
+    "unlock_block) VALUES (?,?,?,?,?,?,?,?,?)";
 
-/* ?1=address ?2=token_id ?3=signed delta ?4=tx_count delta (0 or 1, first-touch-in-this-tx)
- * ?5=height. Numbered params repeat intentionally (same bound value used in
- * both the INSERT branch and the ON CONFLICT UPDATE branch). */
-static const char *UPSERT_ADDR_STATS_SQL =
-    "INSERT INTO addr_stats(address, token_id, balance, tx_count, first_seen_height, last_seen_height) "
-    "VALUES (?1, ?2, ?3, ?4, ?5, ?5) "
-    "ON CONFLICT(address, token_id) DO UPDATE SET "
-    "  balance = balance + ?3, "
-    "  tx_count = tx_count + ?4, "
-    "  first_seen_height = MIN(first_seen_height, ?5), "
-    "  last_seen_height = MAX(last_seen_height, ?5)";
+/* The creating row of a coin. A coin id is created once (the utxo_set
+ * key); ORDER BY + LIMIT 1 keeps a (never expected) duplicate
+ * deterministic. */
+static const char *RESOLVE_COIN_SQL =
+    "SELECT address, token, amount FROM item_io WHERE coin_id = ? AND dir = 1 "
+    "ORDER BY height ASC, idx ASC, pos ASC LIMIT 1";
 
 static const char *GET_META_SQL =
     "SELECT value FROM meta WHERE key = ?";
@@ -101,48 +135,54 @@ static const char *SET_META_SQL =
     "INSERT INTO meta(key, value) VALUES(?, ?) "
     "ON CONFLICT(key) DO UPDATE SET value = excluded.value";
 
-/* Cursor: strict `height < ?1` — see exp_db.h header comment (the strict
- * `<` makes 0 unusable as an "unbounded" sentinel on its own; callers pass
- * UINT64_MAX for the first page). */
+#define BLOCK_COLS \
+    "height, block_id, prev_id, time_ms, proposer, global_root, applied_count, n_items"
+
 static const char *QUERY_BLOCKS_SQL =
-    "SELECT height, block_hash, tx_root, timestamp, proposer, tx_count "
-    "FROM blocks WHERE height < ? "
-    "ORDER BY height DESC LIMIT ?";
+    "SELECT " BLOCK_COLS " FROM blocks WHERE height < ? ORDER BY height DESC LIMIT ?";
 
 static const char *QUERY_BLOCK_BY_HEIGHT_SQL =
-    "SELECT height, block_hash, tx_root, timestamp, proposer, tx_count "
-    "FROM blocks WHERE height = ?";
+    "SELECT " BLOCK_COLS " FROM blocks WHERE height = ?";
 
-/* block_hash has no UNIQUE constraint in the spec'd schema; ORDER BY+LIMIT 1
- * keeps the (should-never-happen) collision case deterministic (D2). */
-static const char *QUERY_BLOCK_BY_HASH_SQL =
-    "SELECT height, block_hash, tx_root, timestamp, proposer, tx_count "
-    "FROM blocks WHERE block_hash = ? "
-    "ORDER BY height ASC LIMIT 1";
+static const char *QUERY_BLOCK_BY_ID_SQL =
+    "SELECT " BLOCK_COLS " FROM blocks WHERE block_id = ? ORDER BY height ASC LIMIT 1";
 
-static const char *QUERY_TXS_BY_HEIGHT_SQL =
-    "SELECT hash, seq, height, tx_type, fee, size, timestamp, multi_signer "
-    "FROM txs WHERE height = ? "
-    "ORDER BY seq ASC LIMIT ?";
+#define ITEM_COLS \
+    "i.height, i.idx, i.kind, i.code, i.wire_id, i.intent_id, i.fee, i.op, " \
+    "i.has_effects, i.burned, r.kind, r.validator, r.delegator, r.dest, r.amount, " \
+    "r.commission_bps, r.param_id, r.new_value, r.effective, b.time_ms"
 
-static const char *QUERY_TX_SQL =
-    "SELECT hash, seq, height, tx_type, fee, size, timestamp, multi_signer, raw "
-    "FROM txs WHERE hash = ?";
+#define ITEM_JOINS \
+    "JOIN blocks b ON b.height = i.height " \
+    "LEFT JOIN item_records r ON r.height = i.height AND r.idx = i.idx "
 
-static const char *QUERY_TX_IOS_SQL =
-    "SELECT tx_hash, io_index, direction, address, token_id, amount "
-    "FROM tx_io WHERE tx_hash = ? "
-    "ORDER BY direction ASC, io_index ASC";
+#define ITEM_FROM " FROM items i " ITEM_JOINS
 
-/* txs.seq is UNIQUE (ledger total order) so DESC-by-seq has no ties. */
+static const char *QUERY_ITEMS_SQL =
+    "SELECT " ITEM_COLS ITEM_FROM
+    "WHERE i.height = ? AND i.idx >= ? ORDER BY i.idx ASC LIMIT ?";
+
+static const char *QUERY_ITEM_SQL =
+    "SELECT " ITEM_COLS ITEM_FROM "WHERE i.height = ? AND i.idx = ?";
+
+static const char *QUERY_ITEM_BY_ID_SQL =
+    "SELECT " ITEM_COLS ITEM_FROM
+    "WHERE i.wire_id = ?1 OR i.intent_id = ?1 ORDER BY i.height ASC, i.idx ASC LIMIT 1";
+
+static const char *QUERY_IOS_SQL =
+    "SELECT height, idx, dir, pos, coin_id, address, token, amount, unlock_block "
+    "FROM item_io WHERE height = ? AND idx = ? ORDER BY dir ASC, pos ASC LIMIT ?";
+
+/* UNION de-duplicates an item that touches the address more than once. */
 static const char *QUERY_ADDRESS_SQL =
-    "SELECT DISTINCT t.hash, t.seq, t.height, t.tx_type, t.fee, t.size, t.timestamp, t.multi_signer "
-    "FROM txs t JOIN tx_io io ON io.tx_hash = t.hash "
-    "WHERE io.address = ? AND t.seq < ? "
-    "ORDER BY t.seq DESC LIMIT ?";
-
-static const char *QUERY_BALANCE_SQL =
-    "SELECT balance, tx_count FROM addr_stats WHERE address = ? AND token_id = ?";
+    "SELECT " ITEM_COLS " FROM ("
+    "  SELECT height, idx FROM item_io WHERE address = ?1 "
+    "  UNION "
+    "  SELECT height, idx FROM item_records WHERE validator = ?1 OR delegator = ?1 OR dest = ?1"
+    ") t JOIN items i ON i.height = t.height AND i.idx = t.idx "
+    ITEM_JOINS
+    "WHERE i.height < ?2 OR (i.height = ?2 AND i.idx < ?3) "
+    "ORDER BY i.height DESC, i.idx DESC LIMIT ?4";
 
 /* ── DB handle ───────────────────────────────────────────────────────── */
 
@@ -150,91 +190,206 @@ struct exp_db {
     sqlite3 *conn;
 
     sqlite3_stmt *stmt_insert_block;
-    sqlite3_stmt *stmt_set_block_hash;
-    sqlite3_stmt *stmt_insert_tx;
+    sqlite3_stmt *stmt_insert_item;
+    sqlite3_stmt *stmt_insert_record;
     sqlite3_stmt *stmt_insert_io;
-    sqlite3_stmt *stmt_upsert_addr_stats;
+    sqlite3_stmt *stmt_resolve_coin;
     sqlite3_stmt *stmt_get_meta;
     sqlite3_stmt *stmt_set_meta;
     sqlite3_stmt *stmt_query_blocks;
     sqlite3_stmt *stmt_query_block_by_height;
-    sqlite3_stmt *stmt_query_block_by_hash;
-    sqlite3_stmt *stmt_query_txs_by_height;
-    sqlite3_stmt *stmt_query_tx;
-    sqlite3_stmt *stmt_query_tx_ios;
+    sqlite3_stmt *stmt_query_block_by_id;
+    sqlite3_stmt *stmt_query_items;
+    sqlite3_stmt *stmt_query_item;
+    sqlite3_stmt *stmt_query_item_by_id;
+    sqlite3_stmt *stmt_query_ios;
     sqlite3_stmt *stmt_query_address;
-    sqlite3_stmt *stmt_query_balance;
 };
 
+/* ── Batch ───────────────────────────────────────────────────────────── */
+
+void exp_block_batch_init(exp_block_batch_t *b) {
+    if (!b) return;
+    memset(b, 0, sizeof(*b));
+}
+
+void exp_block_batch_free(exp_block_batch_t *b) {
+    if (!b) return;
+    free(b->items);
+    free(b->ios);
+    memset(b, 0, sizeof(*b));
+}
+
 /* ── Row decode helpers ─────────────────────────────────────────────── */
+
+static int col_blob64(sqlite3_stmt *s, int col, uint8_t out[64]) {
+    const void *p = sqlite3_column_blob(s, col);
+    int n = sqlite3_column_bytes(s, col);
+    if (p && n == 64) {
+        memcpy(out, p, 64);
+        return 1;
+    }
+    return 0;
+}
+
+static void col_text129(sqlite3_stmt *s, int col, char out[129]) {
+    const unsigned char *p = sqlite3_column_text(s, col);
+    out[0] = '\0';
+    if (p) {
+        strncpy(out, (const char *)p, 128);
+        out[128] = '\0';
+    }
+}
 
 static void row_to_block(sqlite3_stmt *s, exp_block_row_t *b) {
     memset(b, 0, sizeof(*b));
     b->height = (uint64_t)sqlite3_column_int64(s, 0);
-
-    const void *bh = sqlite3_column_blob(s, 1);
-    int bh_len = sqlite3_column_bytes(s, 1);
-    if (bh && bh_len == 64) {
-        memcpy(b->block_hash, bh, 64);
-        b->has_block_hash = 1;
-    }
-
-    const void *tr = sqlite3_column_blob(s, 2);
-    int tr_len = sqlite3_column_bytes(s, 2);
-    if (tr && tr_len == 64) memcpy(b->tx_root, tr, 64);
-
-    b->timestamp = (uint64_t)sqlite3_column_int64(s, 3);
+    col_blob64(s, 1, b->block_id);
+    col_blob64(s, 2, b->prev_id);
+    b->time_ms = (uint64_t)sqlite3_column_int64(s, 3);
 
     const void *pr = sqlite3_column_blob(s, 4);
     int pr_len = sqlite3_column_bytes(s, 4);
-    if (pr && pr_len == 32) memcpy(b->proposer, pr, 32);
+    if (pr && pr_len > 0 && pr_len <= 64) {
+        memcpy(b->proposer, pr, (size_t)pr_len);
+        b->proposer_len = (uint32_t)pr_len;
+    }
 
-    b->tx_count = (uint32_t)sqlite3_column_int(s, 5);
+    col_blob64(s, 5, b->global_root);
+    b->applied_count = (uint64_t)sqlite3_column_int64(s, 6);
+    b->n_items = (uint32_t)sqlite3_column_int64(s, 7);
 }
 
-/* Reads the shared 8-column tx projection (hash, seq, height, tx_type, fee,
- * size, timestamp, multi_signer) at columns 0..7. QUERY_TX_SQL has a 9th
- * (raw) column that callers read separately. */
-static void row_to_tx(sqlite3_stmt *s, exp_tx_row_t *t) {
-    memset(t, 0, sizeof(*t));
+/* The ITEM_COLS projection (20 columns). */
+static void row_to_item(sqlite3_stmt *s, exp_item_row_t *it) {
+    memset(it, 0, sizeof(*it));
+    it->height = (uint64_t)sqlite3_column_int64(s, 0);
+    it->idx = (uint32_t)sqlite3_column_int64(s, 1);
+    it->kind = sqlite3_column_int(s, 2);
+    it->code = (uint32_t)sqlite3_column_int64(s, 3);
+    it->has_wire_id = col_blob64(s, 4, it->wire_id);
+    it->has_intent_id = col_blob64(s, 5, it->intent_id);
+    if (sqlite3_column_type(s, 6) != SQLITE_NULL) {
+        it->has_fee = 1;
+        it->fee = (uint64_t)sqlite3_column_int64(s, 6);
+    }
+    const unsigned char *op = sqlite3_column_text(s, 7);
+    if (op) {
+        strncpy(it->op, (const char *)op, sizeof(it->op) - 1);
+        it->op[sizeof(it->op) - 1] = '\0';
+    }
+    it->has_effects = sqlite3_column_int(s, 8);
+    it->burned = (uint64_t)sqlite3_column_int64(s, 9);
 
-    const void *h = sqlite3_column_blob(s, 0);
-    int h_len = sqlite3_column_bytes(s, 0);
-    if (h && h_len == 64) memcpy(t->hash, h, 64);
-
-    t->seq = (uint64_t)sqlite3_column_int64(s, 1);
-    t->height = (uint64_t)sqlite3_column_int64(s, 2);
-    t->tx_type = sqlite3_column_int(s, 3);
-    t->fee = (uint64_t)sqlite3_column_int64(s, 4);
-    t->size = (uint32_t)sqlite3_column_int(s, 5);
-    t->timestamp = (uint64_t)sqlite3_column_int64(s, 6);
-    t->multi_signer = sqlite3_column_int(s, 7);
+    if (sqlite3_column_type(s, 10) != SQLITE_NULL) {
+        it->rec.kind = sqlite3_column_int(s, 10);
+        col_text129(s, 11, it->rec.validator);
+        col_text129(s, 12, it->rec.delegator);
+        col_text129(s, 13, it->rec.dest);
+        it->rec.amount = (uint64_t)sqlite3_column_int64(s, 14);
+        it->rec.commission_bps = (uint32_t)sqlite3_column_int64(s, 15);
+        it->rec.param_id = (uint32_t)sqlite3_column_int64(s, 16);
+        it->rec.new_value = (uint64_t)sqlite3_column_int64(s, 17);
+        it->rec.effective = (uint64_t)sqlite3_column_int64(s, 18);
+    }
+    it->block_time_ms = (uint64_t)sqlite3_column_int64(s, 19);
 }
 
 static void row_to_io(sqlite3_stmt *s, exp_io_row_t *io) {
     memset(io, 0, sizeof(*io));
-
-    const void *h = sqlite3_column_blob(s, 0);
-    int h_len = sqlite3_column_bytes(s, 0);
-    if (h && h_len == 64) memcpy(io->tx_hash, h, 64);
-
-    io->io_index = sqlite3_column_int(s, 1);
-    io->direction = sqlite3_column_int(s, 2);
-
-    const unsigned char *addr = sqlite3_column_text(s, 3);
-    if (addr) {
-        strncpy(io->address, (const char *)addr, sizeof(io->address) - 1);
-        io->address[sizeof(io->address) - 1] = '\0';
+    io->height = (uint64_t)sqlite3_column_int64(s, 0);
+    io->idx = (uint32_t)sqlite3_column_int64(s, 1);
+    io->dir = sqlite3_column_int(s, 2);
+    io->pos = (uint32_t)sqlite3_column_int64(s, 3);
+    col_blob64(s, 4, io->coin_id);
+    if (sqlite3_column_type(s, 5) != SQLITE_NULL) {
+        io->has_owner = 1;
+        col_text129(s, 5, io->address);
+        col_blob64(s, 6, io->token_id);
+        io->amount = (uint64_t)sqlite3_column_int64(s, 7);
     }
-
-    const void *tid = sqlite3_column_blob(s, 4);
-    int tid_len = sqlite3_column_bytes(s, 4);
-    if (tid && tid_len == 64) memcpy(io->token_id, tid, 64);
-
-    io->amount = (uint64_t)sqlite3_column_int64(s, 5);
+    io->unlock_block = (uint64_t)sqlite3_column_int64(s, 8);
 }
 
 /* ── Open / close ────────────────────────────────────────────────────── */
+
+/* Reads meta "schema_version" straight off the connection (the prepared
+ * statements do not exist yet, and on a pre-v2 file the meta table may
+ * not either — a prepare failure is "no version"). */
+static int read_schema_version(sqlite3 *conn, int64_t *ver_out) {
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(conn, "SELECT value FROM meta WHERE key = 'schema_version'",
+                           -1, &s, NULL) != SQLITE_OK) {
+        return -1;
+    }
+    int rc = -1;
+    if (sqlite3_step(s) == SQLITE_ROW && sqlite3_column_type(s, 0) == SQLITE_INTEGER) {
+        *ver_out = sqlite3_column_int64(s, 0);
+        rc = 0;
+    }
+    sqlite3_finalize(s);
+    return rc;
+}
+
+static int count_tables(sqlite3 *conn, int64_t *n_out) {
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(conn, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'",
+                           -1, &s, NULL) != SQLITE_OK) {
+        return -1;
+    }
+    int rc = -1;
+    if (sqlite3_step(s) == SQLITE_ROW) {
+        *n_out = sqlite3_column_int64(s, 0);
+        rc = 0;
+    }
+    sqlite3_finalize(s);
+    return rc;
+}
+
+/* Brings the schema to v2: a matching version is left as it is; anything
+ * else is dropped and recreated with its version, in one transaction. */
+static int ensure_schema(sqlite3 *conn) {
+    int64_t ver = 0;
+    char *err = NULL;
+
+    if (read_schema_version(conn, &ver) == 0 && ver == EXP_DB_SCHEMA_VERSION) {
+        if (sqlite3_exec(conn, SCHEMA_SQL, NULL, NULL, &err) != SQLITE_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "schema exec failed: %s", err ? err : "?");
+            sqlite3_free(err);
+            return -1;
+        }
+        return 0;
+    }
+
+    int64_t n_tables = 0;
+    if (count_tables(conn, &n_tables) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "cannot read sqlite_master: %s", sqlite3_errmsg(conn));
+        return -1;
+    }
+    if (n_tables > 0) {
+        QGP_LOG_WARN(LOG_TAG, "index schema is not v%d — dropping it; the index is rebuilt from height 1",
+                     EXP_DB_SCHEMA_VERSION);
+    }
+
+    if (sqlite3_exec(conn, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "schema BEGIN failed: %s", err ? err : "?");
+        sqlite3_free(err);
+        return -1;
+    }
+    char set_ver[96];
+    snprintf(set_ver, sizeof(set_ver),
+             "INSERT INTO meta(key, value) VALUES('schema_version', %d)", EXP_DB_SCHEMA_VERSION);
+    if (sqlite3_exec(conn, DROP_ALL_SQL, NULL, NULL, &err) != SQLITE_OK ||
+        sqlite3_exec(conn, SCHEMA_SQL, NULL, NULL, &err) != SQLITE_OK ||
+        sqlite3_exec(conn, set_ver, NULL, NULL, &err) != SQLITE_OK ||
+        sqlite3_exec(conn, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "schema v%d create failed: %s", EXP_DB_SCHEMA_VERSION, err ? err : "?");
+        sqlite3_free(err);
+        sqlite3_exec(conn, "ROLLBACK", NULL, NULL, NULL);
+        return -1;
+    }
+    return 0;
+}
 
 int exp_db_open(const char *path, exp_db_t **db_out) {
     if (!path || !db_out) return -1;
@@ -243,11 +398,12 @@ int exp_db_open(const char *path, exp_db_t **db_out) {
     exp_db_t *db = calloc(1, sizeof(*db));
     if (!db) return -1;
 
-    /* Task 7: explicit open flags + FULLMUTEX — the sync thread (writer)
-     * and the HTTP thread (reader) share this one sqlite3* handle;
-     * FULLMUTEX serializes their calls into libsqlite3 so concurrent use of
-     * the same connection is safe (WAL still lets readers see a consistent
-     * snapshot without blocking the writer). */
+    /* FULLMUTEX: the sync thread (writer) and the HTTP thread (reader)
+     * share this one sqlite3* handle; FULLMUTEX serializes their calls
+     * into libsqlite3. A reader on the same connection WOULD see an
+     * uncommitted height mid-write — the sync thread therefore holds the
+     * caller's db_lock as a writer around each exp_db_write_height
+     * (exp_sync.c), and the HTTP thread reads under the reader side. */
     if (sqlite3_open_v2(path, &db->conn,
                          SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
                          NULL) != SQLITE_OK) {
@@ -257,38 +413,31 @@ int exp_db_open(const char *path, exp_db_t **db_out) {
         return -1;
     }
 
-    /* Bound how long a caller blocks on SQLITE_BUSY (e.g. transient WAL
-     * writer-lock contention) instead of failing immediately. */
     sqlite3_exec(db->conn, "PRAGMA busy_timeout=5000", NULL, NULL, NULL);
-
-    /* WAL mode (no-op/ignored on ":memory:" — SQLite keeps in-memory journaling there). */
+    /* WAL mode (ignored on ":memory:"). */
     sqlite3_exec(db->conn, "PRAGMA journal_mode=WAL", NULL, NULL, NULL);
-    sqlite3_exec(db->conn, "PRAGMA foreign_keys=ON", NULL, NULL, NULL);
 
-    char *err = NULL;
-    if (sqlite3_exec(db->conn, SCHEMA_SQL, NULL, NULL, &err) != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "schema exec failed: %s", err ? err : "?");
-        sqlite3_free(err);
+    if (ensure_schema(db->conn) != 0) {
         sqlite3_close(db->conn);
         free(db);
         return -1;
     }
 
     if (sqlite3_prepare_v2(db->conn, INSERT_BLOCK_SQL, -1, &db->stmt_insert_block, NULL) != SQLITE_OK ||
-        sqlite3_prepare_v2(db->conn, SET_BLOCK_HASH_SQL, -1, &db->stmt_set_block_hash, NULL) != SQLITE_OK ||
-        sqlite3_prepare_v2(db->conn, INSERT_TX_SQL, -1, &db->stmt_insert_tx, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(db->conn, INSERT_ITEM_SQL, -1, &db->stmt_insert_item, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(db->conn, INSERT_RECORD_SQL, -1, &db->stmt_insert_record, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db->conn, INSERT_IO_SQL, -1, &db->stmt_insert_io, NULL) != SQLITE_OK ||
-        sqlite3_prepare_v2(db->conn, UPSERT_ADDR_STATS_SQL, -1, &db->stmt_upsert_addr_stats, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(db->conn, RESOLVE_COIN_SQL, -1, &db->stmt_resolve_coin, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db->conn, GET_META_SQL, -1, &db->stmt_get_meta, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db->conn, SET_META_SQL, -1, &db->stmt_set_meta, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db->conn, QUERY_BLOCKS_SQL, -1, &db->stmt_query_blocks, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db->conn, QUERY_BLOCK_BY_HEIGHT_SQL, -1, &db->stmt_query_block_by_height, NULL) != SQLITE_OK ||
-        sqlite3_prepare_v2(db->conn, QUERY_BLOCK_BY_HASH_SQL, -1, &db->stmt_query_block_by_hash, NULL) != SQLITE_OK ||
-        sqlite3_prepare_v2(db->conn, QUERY_TXS_BY_HEIGHT_SQL, -1, &db->stmt_query_txs_by_height, NULL) != SQLITE_OK ||
-        sqlite3_prepare_v2(db->conn, QUERY_TX_SQL, -1, &db->stmt_query_tx, NULL) != SQLITE_OK ||
-        sqlite3_prepare_v2(db->conn, QUERY_TX_IOS_SQL, -1, &db->stmt_query_tx_ios, NULL) != SQLITE_OK ||
-        sqlite3_prepare_v2(db->conn, QUERY_ADDRESS_SQL, -1, &db->stmt_query_address, NULL) != SQLITE_OK ||
-        sqlite3_prepare_v2(db->conn, QUERY_BALANCE_SQL, -1, &db->stmt_query_balance, NULL) != SQLITE_OK) {
+        sqlite3_prepare_v2(db->conn, QUERY_BLOCK_BY_ID_SQL, -1, &db->stmt_query_block_by_id, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(db->conn, QUERY_ITEMS_SQL, -1, &db->stmt_query_items, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(db->conn, QUERY_ITEM_SQL, -1, &db->stmt_query_item, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(db->conn, QUERY_ITEM_BY_ID_SQL, -1, &db->stmt_query_item_by_id, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(db->conn, QUERY_IOS_SQL, -1, &db->stmt_query_ios, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(db->conn, QUERY_ADDRESS_SQL, -1, &db->stmt_query_address, NULL) != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "prepare failed: %s", sqlite3_errmsg(db->conn));
         exp_db_close(db);
         return -1;
@@ -301,391 +450,233 @@ int exp_db_open(const char *path, exp_db_t **db_out) {
 void exp_db_close(exp_db_t *db) {
     if (!db) return;
 
-    if (db->stmt_insert_block) sqlite3_finalize(db->stmt_insert_block);
-    if (db->stmt_set_block_hash) sqlite3_finalize(db->stmt_set_block_hash);
-    if (db->stmt_insert_tx) sqlite3_finalize(db->stmt_insert_tx);
-    if (db->stmt_insert_io) sqlite3_finalize(db->stmt_insert_io);
-    if (db->stmt_upsert_addr_stats) sqlite3_finalize(db->stmt_upsert_addr_stats);
-    if (db->stmt_get_meta) sqlite3_finalize(db->stmt_get_meta);
-    if (db->stmt_set_meta) sqlite3_finalize(db->stmt_set_meta);
-    if (db->stmt_query_blocks) sqlite3_finalize(db->stmt_query_blocks);
-    if (db->stmt_query_block_by_height) sqlite3_finalize(db->stmt_query_block_by_height);
-    if (db->stmt_query_block_by_hash) sqlite3_finalize(db->stmt_query_block_by_hash);
-    if (db->stmt_query_txs_by_height) sqlite3_finalize(db->stmt_query_txs_by_height);
-    if (db->stmt_query_tx) sqlite3_finalize(db->stmt_query_tx);
-    if (db->stmt_query_tx_ios) sqlite3_finalize(db->stmt_query_tx_ios);
-    if (db->stmt_query_address) sqlite3_finalize(db->stmt_query_address);
-    if (db->stmt_query_balance) sqlite3_finalize(db->stmt_query_balance);
+    sqlite3_stmt *stmts[] = {
+        db->stmt_insert_block, db->stmt_insert_item, db->stmt_insert_record,
+        db->stmt_insert_io, db->stmt_resolve_coin, db->stmt_get_meta, db->stmt_set_meta,
+        db->stmt_query_blocks, db->stmt_query_block_by_height, db->stmt_query_block_by_id,
+        db->stmt_query_items, db->stmt_query_item, db->stmt_query_item_by_id,
+        db->stmt_query_ios, db->stmt_query_address,
+    };
+    for (size_t i = 0; i < sizeof(stmts) / sizeof(stmts[0]); i++) {
+        if (stmts[i]) sqlite3_finalize(stmts[i]);
+    }
 
     if (db->conn) sqlite3_close(db->conn);
     free(db);
 }
 
-/* ── Blocks ──────────────────────────────────────────────────────────── */
+/* ── Write one height ───────────────────────────────────────────────── */
 
-int exp_db_insert_block(exp_db_t *db, const exp_block_row_t *b) {
-    if (!db || !db->conn || !b) return -1;
+/* Structural checks before any write: header present, items exactly
+ * 0..n-1 of this height, io rows of applied items of this batch in
+ * (idx, dir, pos) ascending order — the order write_height inserts them,
+ * which is what makes a same-block consumption resolve against a creation
+ * at a lower index. */
+static int batch_valid(const exp_block_batch_t *b) {
+    if (!b->have_header) return 0;
+    if (b->block.height == 0) return 0;
+    if (b->n_items != (size_t)b->block.n_items) return 0;
+    if (b->n_items > 0 && !b->items) return 0;
+    if (b->n_ios > 0 && !b->ios) return 0;
 
-    sqlite3_stmt *s = db->stmt_insert_block;
-    sqlite3_reset(s);
+    for (size_t i = 0; i < b->n_items; i++) {
+        const exp_item_row_t *it = &b->items[i];
+        if (it->height != b->block.height || it->idx != (uint32_t)i) return 0;
+        if (!it->has_effects && (it->rec.kind != 0 || it->burned != 0)) return 0;
+    }
+    for (size_t k = 0; k < b->n_ios; k++) {
+        const exp_io_row_t *io = &b->ios[k];
+        if (io->height != b->block.height || io->idx >= b->n_items) return 0;
+        if (io->dir != 0 && io->dir != 1) return 0;
+        if (!b->items[io->idx].has_effects) return 0;
+        if (io->dir == 1 && !io->has_owner) return 0;
+        if (k > 0) {
+            const exp_io_row_t *p = &b->ios[k - 1];
+            int ordered = (io->idx > p->idx) ||
+                          (io->idx == p->idx && io->dir > p->dir) ||
+                          (io->idx == p->idx && io->dir == p->dir && io->pos > p->pos);
+            if (!ordered) return 0;
+        }
+    }
+    return 1;
+}
 
-    sqlite3_bind_int64(s, 1, (sqlite3_int64)b->height);
-    if (b->has_block_hash)
-        sqlite3_bind_blob(s, 2, b->block_hash, 64, SQLITE_STATIC);
-    else
-        sqlite3_bind_null(s, 2);
-    sqlite3_bind_blob(s, 3, b->tx_root, 64, SQLITE_STATIC);
-    sqlite3_bind_int64(s, 4, (sqlite3_int64)b->timestamp);
-    sqlite3_bind_blob(s, 5, b->proposer, 32, SQLITE_STATIC);
-    sqlite3_bind_int(s, 6, (int)b->tx_count);
-
+static int step_done(exp_db_t *db, sqlite3_stmt *s, const char *what) {
     int rc = sqlite3_step(s);
+    sqlite3_reset(s);
     if (rc != SQLITE_DONE) {
-        QGP_LOG_ERROR(LOG_TAG, "insert_block(%llu) failed: %s",
-                      (unsigned long long)b->height, sqlite3_errmsg(db->conn));
+        QGP_LOG_ERROR(LOG_TAG, "%s failed: %s", what, sqlite3_errmsg(db->conn));
         return -1;
     }
     return 0;
 }
 
-int exp_db_set_block_hash(exp_db_t *db, uint64_t height, const uint8_t hash[64]) {
-    if (!db || !db->conn || !hash) return -1;
-
-    sqlite3_stmt *s = db->stmt_set_block_hash;
-    sqlite3_reset(s);
-
-    sqlite3_bind_blob(s, 1, hash, 64, SQLITE_STATIC);
-    sqlite3_bind_int64(s, 2, (sqlite3_int64)height);
-
-    int rc = sqlite3_step(s);
-    if (rc != SQLITE_DONE) {
-        QGP_LOG_ERROR(LOG_TAG, "set_block_hash(%llu) failed: %s",
-                      (unsigned long long)height, sqlite3_errmsg(db->conn));
-        return -1;
-    }
-    return (sqlite3_changes(db->conn) > 0) ? 0 : -1;  /* height not found */
+static void bind_text_or_null(sqlite3_stmt *s, int col, const char *v) {
+    if (v && v[0]) sqlite3_bind_text(s, col, v, -1, SQLITE_STATIC);
+    else sqlite3_bind_null(s, col);
 }
 
-int exp_db_query_blocks(exp_db_t *db, uint64_t before_height, int limit, exp_block_row_t *rows, int *count_out) {
-    if (!db || !db->conn || !rows || !count_out || limit <= 0) return -1;
-
-    /* Defensive clamp: before_height is a user-supplied HTTP cursor
-     * (Task 6). Values at/above 2^63 wrap to negative in sqlite3_bind_int64
-     * and silently match nothing per the header's cursor contract; clamp
-     * to INT64_MAX instead of letting a malformed cursor wrap. */
-    if (before_height > (uint64_t)INT64_MAX) before_height = (uint64_t)INT64_MAX;
-
-    sqlite3_stmt *s = db->stmt_query_blocks;
+static int insert_item(exp_db_t *db, const exp_item_row_t *it) {
+    sqlite3_stmt *s = db->stmt_insert_item;
     sqlite3_reset(s);
-    sqlite3_bind_int64(s, 1, (sqlite3_int64)before_height);
-    sqlite3_bind_int(s, 2, limit);
+    sqlite3_bind_int64(s, 1, (sqlite3_int64)it->height);
+    sqlite3_bind_int64(s, 2, (sqlite3_int64)it->idx);
+    sqlite3_bind_int(s, 3, it->kind);
+    sqlite3_bind_int64(s, 4, (sqlite3_int64)it->code);
+    if (it->has_wire_id) sqlite3_bind_blob(s, 5, it->wire_id, 64, SQLITE_STATIC);
+    else sqlite3_bind_null(s, 5);
+    if (it->has_intent_id) sqlite3_bind_blob(s, 6, it->intent_id, 64, SQLITE_STATIC);
+    else sqlite3_bind_null(s, 6);
+    if (it->has_fee) sqlite3_bind_int64(s, 7, (sqlite3_int64)it->fee);
+    else sqlite3_bind_null(s, 7);
+    bind_text_or_null(s, 8, it->op);
+    sqlite3_bind_int(s, 9, it->has_effects ? 1 : 0);
+    sqlite3_bind_int64(s, 10, (sqlite3_int64)it->burned);
+    if (step_done(db, s, "insert item") != 0) return -1;
 
-    int n = 0;
-    while (n < limit) {
-        int rc = sqlite3_step(s);
-        if (rc == SQLITE_DONE) break;
-        if (rc != SQLITE_ROW) {
-            QGP_LOG_ERROR(LOG_TAG, "query_blocks step failed: %s", sqlite3_errmsg(db->conn));
-            *count_out = n;
+    if (it->rec.kind == 0) return 0;
+
+    const exp_record_row_t *r = &it->rec;
+    s = db->stmt_insert_record;
+    sqlite3_reset(s);
+    sqlite3_bind_int64(s, 1, (sqlite3_int64)it->height);
+    sqlite3_bind_int64(s, 2, (sqlite3_int64)it->idx);
+    sqlite3_bind_int(s, 3, r->kind);
+    bind_text_or_null(s, 4, r->validator);
+    bind_text_or_null(s, 5, r->delegator);
+    bind_text_or_null(s, 6, r->dest);
+    sqlite3_bind_int64(s, 7, (sqlite3_int64)r->amount);
+    sqlite3_bind_int64(s, 8, (sqlite3_int64)r->commission_bps);
+    sqlite3_bind_int64(s, 9, (sqlite3_int64)r->param_id);
+    sqlite3_bind_int64(s, 10, (sqlite3_int64)r->new_value);
+    sqlite3_bind_int64(s, 11, (sqlite3_int64)r->effective);
+    return step_done(db, s, "insert record");
+}
+
+/* A consumed row takes its owner/token/amount from the coin's creating
+ * row when the index holds it; NULL columns otherwise (exp_db.h). */
+static int insert_io(exp_db_t *db, const exp_io_row_t *io) {
+    char     address[129];
+    uint8_t  token[64];
+    uint64_t amount = 0;
+    int      has_owner = 0;
+
+    if (io->dir == 1) {
+        memcpy(address, io->address, sizeof(address));
+        address[128] = '\0';
+        memcpy(token, io->token_id, 64);
+        amount = io->amount;
+        has_owner = 1;
+    } else {
+        sqlite3_stmt *r = db->stmt_resolve_coin;
+        sqlite3_reset(r);
+        sqlite3_bind_blob(r, 1, io->coin_id, 64, SQLITE_STATIC);
+        int rc = sqlite3_step(r);
+        if (rc == SQLITE_ROW) {
+            const unsigned char *a = sqlite3_column_text(r, 0);
+            const void *t = sqlite3_column_blob(r, 1);
+            if (a && t && sqlite3_column_bytes(r, 1) == 64) {
+                strncpy(address, (const char *)a, 128);
+                address[128] = '\0';
+                memcpy(token, t, 64);
+                amount = (uint64_t)sqlite3_column_int64(r, 2);
+                has_owner = 1;
+            }
+        } else if (rc != SQLITE_DONE) {
+            QGP_LOG_ERROR(LOG_TAG, "resolve coin failed: %s", sqlite3_errmsg(db->conn));
+            sqlite3_reset(r);
             return -1;
         }
-        row_to_block(s, &rows[n]);
-        n++;
+        sqlite3_reset(r);
     }
-    *count_out = n;
-    return 0;
-}
 
-int exp_db_query_block_by_height(exp_db_t *db, uint64_t height, exp_block_row_t *row_out) {
-    if (!db || !db->conn || !row_out) return -1;
-
-    sqlite3_stmt *s = db->stmt_query_block_by_height;
+    sqlite3_stmt *s = db->stmt_insert_io;
     sqlite3_reset(s);
-    sqlite3_bind_int64(s, 1, (sqlite3_int64)height);
-
-    int rc = sqlite3_step(s);
-    if (rc != SQLITE_ROW) return -1;
-
-    row_to_block(s, row_out);
-    return 0;
+    sqlite3_bind_int64(s, 1, (sqlite3_int64)io->height);
+    sqlite3_bind_int64(s, 2, (sqlite3_int64)io->idx);
+    sqlite3_bind_int(s, 3, io->dir);
+    sqlite3_bind_int64(s, 4, (sqlite3_int64)io->pos);
+    sqlite3_bind_blob(s, 5, io->coin_id, 64, SQLITE_STATIC);
+    if (has_owner) {
+        sqlite3_bind_text(s, 6, address, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(s, 7, token, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(s, 8, (sqlite3_int64)amount);
+    } else {
+        sqlite3_bind_null(s, 6);
+        sqlite3_bind_null(s, 7);
+        sqlite3_bind_null(s, 8);
+    }
+    sqlite3_bind_int64(s, 9, (sqlite3_int64)(io->dir == 1 ? io->unlock_block : 0));
+    return step_done(db, s, "insert item_io");
 }
 
-int exp_db_query_block_by_hash(exp_db_t *db, const uint8_t hash[64], exp_block_row_t *row_out) {
-    if (!db || !db->conn || !hash || !row_out) return -1;
-
-    sqlite3_stmt *s = db->stmt_query_block_by_hash;
-    sqlite3_reset(s);
-    sqlite3_bind_blob(s, 1, hash, 64, SQLITE_STATIC);
-
-    int rc = sqlite3_step(s);
-    if (rc != SQLITE_ROW) return -1;
-
-    row_to_block(s, row_out);
-    return 0;
-}
-
-/* ── Transactions ────────────────────────────────────────────────────── */
-
-int exp_db_insert_tx(exp_db_t *db, const exp_tx_row_t *tx,
-                     const uint8_t *raw, size_t raw_len,
-                     const exp_io_row_t *ios, int io_count) {
-    if (!db || !db->conn || !tx) return -1;
-    if (io_count < 0) return -1;
-    if (io_count > 0 && !ios) return -1;
+int exp_db_write_height(exp_db_t *db, const exp_block_batch_t *b) {
+    if (!db || !db->conn || !b) return -1;
+    if (!batch_valid(b)) {
+        QGP_LOG_ERROR(LOG_TAG, "write_height: malformed batch for height %llu",
+                      (unsigned long long)b->block.height);
+        return -1;
+    }
 
     char *err = NULL;
     if (sqlite3_exec(db->conn, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "insert_tx: BEGIN failed: %s", err ? err : "?");
+        QGP_LOG_ERROR(LOG_TAG, "write_height: BEGIN failed: %s", err ? err : "?");
         sqlite3_free(err);
         return -1;
     }
 
-    sqlite3_stmt *s = db->stmt_insert_tx;
-    sqlite3_reset(s);
-    sqlite3_bind_blob(s, 1, tx->hash, 64, SQLITE_STATIC);
-    sqlite3_bind_int64(s, 2, (sqlite3_int64)tx->seq);
-    sqlite3_bind_int64(s, 3, (sqlite3_int64)tx->height);
-    sqlite3_bind_int(s, 4, tx->tx_type);
-    sqlite3_bind_int64(s, 5, (sqlite3_int64)tx->fee);
-    sqlite3_bind_int(s, 6, (int)tx->size);
-    sqlite3_bind_int64(s, 7, (sqlite3_int64)tx->timestamp);
-    sqlite3_bind_int(s, 8, tx->multi_signer);
-    if (raw && raw_len > 0)
-        sqlite3_bind_blob(s, 9, raw, (int)raw_len, SQLITE_STATIC);
-    else
-        sqlite3_bind_null(s, 9);
-
-    int rc = sqlite3_step(s);
-    if (rc != SQLITE_DONE) {
-        QGP_LOG_ERROR(LOG_TAG, "insert_tx: txs insert failed: %s", sqlite3_errmsg(db->conn));
+    /* Read the watermark INSIDE the transaction — the order check and the
+     * write are one atomic step. */
+    uint64_t last = 0;
+    int have_last = (exp_db_get_meta_u64(db, "last_indexed_height", &last) == 0);
+    uint64_t expected = have_last ? last + 1 : 1;
+    if (b->block.height != expected) {
+        QGP_LOG_ERROR(LOG_TAG, "write_height: height %llu is not the next height (%llu)",
+                      (unsigned long long)b->block.height, (unsigned long long)expected);
         sqlite3_exec(db->conn, "ROLLBACK", NULL, NULL, NULL);
         return -1;
     }
 
-    if (sqlite3_changes(db->conn) == 0) {
-        /* duplicate txs.hash — no-op per INSERT OR IGNORE contract */
-        if (sqlite3_exec(db->conn, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
-            QGP_LOG_ERROR(LOG_TAG, "insert_tx: COMMIT (dup) failed: %s", err ? err : "?");
-            sqlite3_free(err);
-            sqlite3_exec(db->conn, "ROLLBACK", NULL, NULL, NULL);
-            return -1;
-        }
-        return 0;
-    }
+    const exp_block_row_t *bl = &b->block;
+    sqlite3_stmt *s = db->stmt_insert_block;
+    sqlite3_reset(s);
+    sqlite3_bind_int64(s, 1, (sqlite3_int64)bl->height);
+    sqlite3_bind_blob(s, 2, bl->block_id, 64, SQLITE_STATIC);
+    sqlite3_bind_blob(s, 3, bl->prev_id, 64, SQLITE_STATIC);
+    sqlite3_bind_int64(s, 4, (sqlite3_int64)bl->time_ms);
+    sqlite3_bind_blob(s, 5, bl->proposer,
+                      (int)(bl->proposer_len <= 64 ? bl->proposer_len : 64), SQLITE_STATIC);
+    sqlite3_bind_blob(s, 6, bl->global_root, 64, SQLITE_STATIC);
+    sqlite3_bind_int64(s, 7, (sqlite3_int64)bl->applied_count);
+    sqlite3_bind_int64(s, 8, (sqlite3_int64)bl->n_items);
+    if (step_done(db, s, "insert block") != 0) goto fail;
 
-    for (int i = 0; i < io_count; i++) {
-        const exp_io_row_t *io = &ios[i];
-
-        sqlite3_stmt *is = db->stmt_insert_io;
-        sqlite3_reset(is);
-        /* Bind tx->hash, not io->tx_hash: the row's parent tx is the tx
-         * being inserted in this call, never a caller-supplied io->tx_hash
-         * (which is thereby ignored on insert) — eliminates the
-         * foreign-hash divergence hazard where a caller-populated io row
-         * could point tx_io at a different tx than the one it's nested
-         * under. */
-        sqlite3_bind_blob(is, 1, tx->hash, 64, SQLITE_STATIC);
-        sqlite3_bind_int(is, 2, io->io_index);
-        sqlite3_bind_int(is, 3, io->direction);
-        sqlite3_bind_text(is, 4, io->address, -1, SQLITE_STATIC);
-        sqlite3_bind_blob(is, 5, io->token_id, 64, SQLITE_STATIC);
-        sqlite3_bind_int64(is, 6, (sqlite3_int64)io->amount);
-
-        if (sqlite3_step(is) != SQLITE_DONE) {
-            QGP_LOG_ERROR(LOG_TAG, "insert_tx: tx_io insert failed: %s", sqlite3_errmsg(db->conn));
-            sqlite3_exec(db->conn, "ROLLBACK", NULL, NULL, NULL);
-            return -1;
-        }
-
-        /* First-touch-in-this-tx detection for (address, token_id): tx_count
-         * increments exactly once per distinct key touched by this tx,
-         * matching exp_db_verify_addr_stats' COUNT(DISTINCT tx_hash) rule —
-         * same derivation, two mechanics (brief, Task 2 Step 3). */
-        int first_touch = 1;
-        for (int j = 0; j < i; j++) {
-            if (strcmp(ios[j].address, io->address) == 0 &&
-                memcmp(ios[j].token_id, io->token_id, 64) == 0) {
-                first_touch = 0;
-                break;
-            }
-        }
-
-        int64_t delta = (io->direction == 1) ? (int64_t)io->amount : -(int64_t)io->amount;
-
-        sqlite3_stmt *as = db->stmt_upsert_addr_stats;
-        sqlite3_reset(as);
-        sqlite3_bind_text(as, 1, io->address, -1, SQLITE_STATIC);
-        sqlite3_bind_blob(as, 2, io->token_id, 64, SQLITE_STATIC);
-        sqlite3_bind_int64(as, 3, (sqlite3_int64)delta);
-        sqlite3_bind_int(as, 4, first_touch ? 1 : 0);
-        sqlite3_bind_int64(as, 5, (sqlite3_int64)tx->height);
-
-        if (sqlite3_step(as) != SQLITE_DONE) {
-            QGP_LOG_ERROR(LOG_TAG, "insert_tx: addr_stats upsert failed: %s", sqlite3_errmsg(db->conn));
-            sqlite3_exec(db->conn, "ROLLBACK", NULL, NULL, NULL);
-            return -1;
+    /* Items, then each item's io rows in batch order (grouped by item,
+     * consumed before created) — so a consumption in item j resolves a
+     * creation in item i < j of this same block. */
+    size_t k = 0;
+    for (size_t i = 0; i < b->n_items; i++) {
+        if (insert_item(db, &b->items[i]) != 0) goto fail;
+        while (k < b->n_ios && b->ios[k].idx == (uint32_t)i) {
+            if (insert_io(db, &b->ios[k]) != 0) goto fail;
+            k++;
         }
     }
+    if (k != b->n_ios) goto fail;   /* unreachable after batch_valid */
+
+    if (exp_db_set_meta_u64(db, "last_indexed_height", bl->height) != 0) goto fail;
 
     if (sqlite3_exec(db->conn, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "insert_tx: COMMIT failed: %s", err ? err : "?");
+        QGP_LOG_ERROR(LOG_TAG, "write_height: COMMIT failed: %s", err ? err : "?");
         sqlite3_free(err);
-        sqlite3_exec(db->conn, "ROLLBACK", NULL, NULL, NULL);
-        return -1;
-    }
-
-    return 0;
-}
-
-int exp_db_query_txs_by_height(exp_db_t *db, uint64_t height, exp_tx_row_t *rows, int max, int *count_out) {
-    if (!db || !db->conn || !rows || !count_out || max <= 0) return -1;
-
-    sqlite3_stmt *s = db->stmt_query_txs_by_height;
-    sqlite3_reset(s);
-    sqlite3_bind_int64(s, 1, (sqlite3_int64)height);
-    sqlite3_bind_int(s, 2, max);
-
-    int n = 0;
-    while (n < max) {
-        int rc = sqlite3_step(s);
-        if (rc == SQLITE_DONE) break;
-        if (rc != SQLITE_ROW) {
-            QGP_LOG_ERROR(LOG_TAG, "query_txs_by_height step failed: %s", sqlite3_errmsg(db->conn));
-            *count_out = n;
-            return -1;
-        }
-        row_to_tx(s, &rows[n]);
-        n++;
-    }
-    *count_out = n;
-    return 0;
-}
-
-int exp_db_query_tx(exp_db_t *db, const uint8_t hash[64], exp_tx_row_t *tx_out,
-                    exp_io_row_t *ios, int max_ios, int *io_count_out, uint8_t **raw_out, size_t *raw_len_out) {
-    if (!db || !db->conn || !hash || !tx_out || !io_count_out) return -1;
-
-    /* Initialize the out-params unconditionally (each guarded on its own
-     * pointer, independent of the other) so the error path below can
-     * safely test/free *raw_out even when a caller passes raw_out != NULL
-     * with raw_len_out == NULL — previously *raw_out was left uninitialized
-     * in that combination, making the error path's free() operate on
-     * garbage. */
-    if (raw_out) *raw_out = NULL;
-    if (raw_len_out) *raw_len_out = 0;
-
-    sqlite3_stmt *s = db->stmt_query_tx;
-    sqlite3_reset(s);
-    sqlite3_bind_blob(s, 1, hash, 64, SQLITE_STATIC);
-
-    int rc = sqlite3_step(s);
-    if (rc != SQLITE_ROW) {
-        sqlite3_reset(s);
-        return -1;
-    }
-
-    row_to_tx(s, tx_out);
-
-    if (raw_out && raw_len_out) {
-        const void *raw = sqlite3_column_blob(s, 8);
-        int raw_len = sqlite3_column_bytes(s, 8);
-        if (raw && raw_len > 0) {
-            uint8_t *copy = malloc((size_t)raw_len);
-            if (!copy) {
-                sqlite3_reset(s);
-                return -1;
-            }
-            memcpy(copy, raw, (size_t)raw_len);
-            *raw_out = copy;
-            *raw_len_out = (size_t)raw_len;
-        } else {
-            *raw_out = NULL;
-            *raw_len_out = 0;
-        }
-    }
-
-    sqlite3_reset(s);  /* release the read snapshot before opening a second statement */
-
-    *io_count_out = 0;
-    if (ios && max_ios > 0) {
-        sqlite3_stmt *is = db->stmt_query_tx_ios;
-        sqlite3_reset(is);
-        sqlite3_bind_blob(is, 1, hash, 64, SQLITE_STATIC);
-
-        int n = 0;
-        while (n < max_ios) {
-            int irc = sqlite3_step(is);
-            if (irc == SQLITE_DONE) break;
-            if (irc != SQLITE_ROW) {
-                QGP_LOG_ERROR(LOG_TAG, "query_tx: ios step failed: %s", sqlite3_errmsg(db->conn));
-                sqlite3_reset(is);
-                if (raw_out && *raw_out) { free(*raw_out); *raw_out = NULL; }
-                return -1;
-            }
-            row_to_io(is, &ios[n]);
-            n++;
-        }
-        sqlite3_reset(is);
-        *io_count_out = n;
-    }
-
-    return 0;
-}
-
-int exp_db_query_address(exp_db_t *db, const char *fp, uint64_t before_seq, int limit,
-                         exp_tx_row_t *rows, int *count_out) {
-    if (!db || !db->conn || !fp || !rows || !count_out || limit <= 0) return -1;
-
-    /* Defensive clamp: before_seq is a user-supplied HTTP cursor (Task 6).
-     * Values at/above 2^63 wrap to negative in sqlite3_bind_int64 and
-     * silently match nothing per the header's cursor contract; clamp to
-     * INT64_MAX instead of letting a malformed cursor wrap. */
-    if (before_seq > (uint64_t)INT64_MAX) before_seq = (uint64_t)INT64_MAX;
-
-    sqlite3_stmt *s = db->stmt_query_address;
-    sqlite3_reset(s);
-    sqlite3_bind_text(s, 1, fp, -1, SQLITE_STATIC);
-    sqlite3_bind_int64(s, 2, (sqlite3_int64)before_seq);
-    sqlite3_bind_int(s, 3, limit);
-
-    int n = 0;
-    while (n < limit) {
-        int rc = sqlite3_step(s);
-        if (rc == SQLITE_DONE) break;
-        if (rc != SQLITE_ROW) {
-            QGP_LOG_ERROR(LOG_TAG, "query_address step failed: %s", sqlite3_errmsg(db->conn));
-            *count_out = n;
-            return -1;
-        }
-        row_to_tx(s, &rows[n]);
-        n++;
-    }
-    *count_out = n;
-    return 0;
-}
-
-int exp_db_query_balance(exp_db_t *db, const char *fp, const uint8_t token_id[64], uint64_t *balance_out, uint64_t *txc_out) {
-    if (!db || !db->conn || !fp || !token_id || !balance_out || !txc_out) return -1;
-
-    sqlite3_stmt *s = db->stmt_query_balance;
-    sqlite3_reset(s);
-    sqlite3_bind_text(s, 1, fp, -1, SQLITE_STATIC);
-    sqlite3_bind_blob(s, 2, token_id, 64, SQLITE_STATIC);
-
-    int rc = sqlite3_step(s);
-    if (rc == SQLITE_ROW) {
-        /* balance is a signed accumulation (may be negative); reinterpret
-         * the two's-complement bit pattern into the uint64_t out-param —
-         * caller casts back to int64_t to recover the sign. */
-        int64_t bal = sqlite3_column_int64(s, 0);
-        *balance_out = (uint64_t)bal;
-        *txc_out = (uint64_t)sqlite3_column_int64(s, 1);
-    } else {
-        /* No activity for this (address, token_id) — zero, not an error. */
-        *balance_out = 0;
-        *txc_out = 0;
+        goto fail;
     }
     return 0;
+
+fail:
+    sqlite3_exec(db->conn, "ROLLBACK", NULL, NULL, NULL);
+    QGP_LOG_ERROR(LOG_TAG, "write_height(%llu) rolled back", (unsigned long long)bl->height);
+    return -1;
 }
 
 /* ── Meta ────────────────────────────────────────────────────────────── */
@@ -697,12 +688,13 @@ int exp_db_get_meta_u64(exp_db_t *db, const char *key, uint64_t *val_out) {
     sqlite3_reset(s);
     sqlite3_bind_text(s, 1, key, -1, SQLITE_STATIC);
 
-    int rc = sqlite3_step(s);
-    if (rc != SQLITE_ROW) return -1;
-    if (sqlite3_column_type(s, 0) != SQLITE_INTEGER) return -1;
-
-    *val_out = (uint64_t)sqlite3_column_int64(s, 0);
-    return 0;
+    int rc = -1;
+    if (sqlite3_step(s) == SQLITE_ROW && sqlite3_column_type(s, 0) == SQLITE_INTEGER) {
+        *val_out = (uint64_t)sqlite3_column_int64(s, 0);
+        rc = 0;
+    }
+    sqlite3_reset(s);
+    return rc;
 }
 
 int exp_db_set_meta_u64(exp_db_t *db, const char *key, uint64_t val) {
@@ -712,13 +704,7 @@ int exp_db_set_meta_u64(exp_db_t *db, const char *key, uint64_t val) {
     sqlite3_reset(s);
     sqlite3_bind_text(s, 1, key, -1, SQLITE_STATIC);
     sqlite3_bind_int64(s, 2, (sqlite3_int64)val);
-
-    int rc = sqlite3_step(s);
-    if (rc != SQLITE_DONE) {
-        QGP_LOG_ERROR(LOG_TAG, "set_meta_u64(%s) failed: %s", key, sqlite3_errmsg(db->conn));
-        return -1;
-    }
-    return 0;
+    return step_done(db, s, "set_meta_u64");
 }
 
 int exp_db_get_meta_blob(exp_db_t *db, const char *key, uint8_t *buf, size_t buflen, size_t *len_out) {
@@ -728,17 +714,18 @@ int exp_db_get_meta_blob(exp_db_t *db, const char *key, uint8_t *buf, size_t buf
     sqlite3_reset(s);
     sqlite3_bind_text(s, 1, key, -1, SQLITE_STATIC);
 
-    int rc = sqlite3_step(s);
-    if (rc != SQLITE_ROW) return -1;
-    if (sqlite3_column_type(s, 0) != SQLITE_BLOB) return -1;
-
-    const void *blob = sqlite3_column_blob(s, 0);
-    int blob_len = sqlite3_column_bytes(s, 0);
-    if (blob_len < 0 || (size_t)blob_len > buflen) return -1;
-
-    if (blob_len > 0 && blob) memcpy(buf, blob, (size_t)blob_len);
-    *len_out = (size_t)blob_len;
-    return 0;
+    int rc = -1;
+    if (sqlite3_step(s) == SQLITE_ROW && sqlite3_column_type(s, 0) == SQLITE_BLOB) {
+        const void *blob = sqlite3_column_blob(s, 0);
+        int blob_len = sqlite3_column_bytes(s, 0);
+        if (blob_len >= 0 && (size_t)blob_len <= buflen) {
+            if (blob_len > 0 && blob) memcpy(buf, blob, (size_t)blob_len);
+            *len_out = (size_t)blob_len;
+            rc = 0;
+        }
+    }
+    sqlite3_reset(s);
+    return rc;
 }
 
 int exp_db_set_meta_blob(exp_db_t *db, const char *key, const uint8_t *buf, size_t len) {
@@ -748,70 +735,238 @@ int exp_db_set_meta_blob(exp_db_t *db, const char *key, const uint8_t *buf, size
     sqlite3_reset(s);
     sqlite3_bind_text(s, 1, key, -1, SQLITE_STATIC);
     sqlite3_bind_blob(s, 2, buf, (int)len, SQLITE_STATIC);
+    return step_done(db, s, "set_meta_blob");
+}
 
-    int rc = sqlite3_step(s);
-    if (rc != SQLITE_DONE) {
-        QGP_LOG_ERROR(LOG_TAG, "set_meta_blob(%s) failed: %s", key, sqlite3_errmsg(db->conn));
+/* ── --verify-index ─────────────────────────────────────────────────── */
+
+static int scalar_i64(exp_db_t *db, const char *sql, int64_t *out) {
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db->conn, sql, -1, &s, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "verify: prepare failed: %s", sqlite3_errmsg(db->conn));
         return -1;
+    }
+    int rc = -1;
+    if (sqlite3_step(s) == SQLITE_ROW) {
+        *out = sqlite3_column_int64(s, 0);
+        rc = 0;
+    }
+    sqlite3_finalize(s);
+    return rc;
+}
+
+int exp_db_verify_index(exp_db_t *db) {
+    if (!db || !db->conn) return -1;
+
+    uint64_t last = 0;
+    if (exp_db_get_meta_u64(db, "last_indexed_height", &last) != 0) last = 0;
+
+    int64_t n_blocks = 0, min_h = 0, max_h = 0;
+    if (scalar_i64(db, "SELECT COUNT(*) FROM blocks", &n_blocks) != 0 ||
+        scalar_i64(db, "SELECT IFNULL(MIN(height), 0) FROM blocks", &min_h) != 0 ||
+        scalar_i64(db, "SELECT IFNULL(MAX(height), 0) FROM blocks", &max_h) != 0) {
+        return -1;
+    }
+    /* height is the PRIMARY KEY (unique): count == max with min == 1
+     * means exactly 1..max. */
+    int heights_ok = (last == 0) ? (n_blocks == 0)
+                                 : ((uint64_t)n_blocks == last && min_h == 1 && (uint64_t)max_h == last);
+    if (!heights_ok) {
+        QGP_LOG_ERROR(LOG_TAG, "verify: blocks are not exactly heights 1..%llu (count %lld, min %lld, max %lld)",
+                      (unsigned long long)last, (long long)n_blocks, (long long)min_h, (long long)max_h);
+        return -1;
+    }
+
+    /* applied_count is v2_blocks.tx_count: the count of items classified
+     * ENVELOPE whose result is OK (nodus_witness_v2_apply.c phase 13,
+     * "the ROW'S OWN RULE" loop over blk->n_envs; n_envs counts the items
+     * nodus_witness_v2_classify_entry calls ENVELOPE,
+     * nodus_witness_cmt_app.c FinalizeBlock) — and dnac_v3_block sets
+     * kind 1 with that same classifier (nodus_witness_handlers.c v3b_item)
+     * and code from the stored per-item result. So applied_count equals
+     * the stored items with kind 1 AND code 0. */
+    static const struct { const char *what; const char *sql; } checks[] = {
+        { "block item count / applied_count",
+          "SELECT COUNT(*) FROM blocks b WHERE "
+          "b.n_items != (SELECT COUNT(*) FROM items i WHERE i.height = b.height) OR "
+          "b.applied_count != (SELECT COUNT(*) FROM items i WHERE i.height = b.height "
+          "                    AND i.kind = 1 AND i.code = 0)" },
+        { "item without a block",
+          "SELECT COUNT(*) FROM items i WHERE NOT EXISTS "
+          "(SELECT 1 FROM blocks b WHERE b.height = i.height)" },
+        { "io row without an applied item",
+          "SELECT COUNT(*) FROM item_io o WHERE NOT EXISTS "
+          "(SELECT 1 FROM items i WHERE i.height = o.height AND i.idx = o.idx "
+          " AND i.code = 0 AND i.has_effects = 1)" },
+        { "record without an applied item",
+          "SELECT COUNT(*) FROM item_records r WHERE NOT EXISTS "
+          "(SELECT 1 FROM items i WHERE i.height = r.height AND i.idx = r.idx "
+          " AND i.code = 0 AND i.has_effects = 1)" },
+        { "refused item with effects",
+          "SELECT COUNT(*) FROM items WHERE code != 0 AND (has_effects != 0 OR burned != 0)" },
+    };
+
+    for (size_t c = 0; c < sizeof(checks) / sizeof(checks[0]); c++) {
+        int64_t bad = 0;
+        if (scalar_i64(db, checks[c].sql, &bad) != 0) return -1;
+        if (bad != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "verify: %lld row(s) fail check '%s'", (long long)bad, checks[c].what);
+            return -1;
+        }
     }
     return 0;
 }
 
-/* ── D3: addr_stats symmetric-derivation verify ─────────────────────── */
+/* ── Read side ───────────────────────────────────────────────────────── */
 
-int exp_db_verify_addr_stats(exp_db_t *db) {
-    if (!db || !db->conn) return -1;
+static sqlite3_int64 clamp_cursor(uint64_t v) {
+    return (v > (uint64_t)INT64_MAX) ? (sqlite3_int64)INT64_MAX : (sqlite3_int64)v;
+}
 
-    char *err = NULL;
+int exp_db_query_blocks(exp_db_t *db, uint64_t before_height, int limit,
+                        exp_block_row_t *rows, int *count_out) {
+    if (!db || !db->conn || !rows || !count_out || limit <= 0) return -1;
 
-    sqlite3_exec(db->conn, "DROP TABLE IF EXISTS tmp_addr_recompute", NULL, NULL, NULL);
+    sqlite3_stmt *s = db->stmt_query_blocks;
+    sqlite3_reset(s);
+    sqlite3_bind_int64(s, 1, clamp_cursor(before_height));
+    sqlite3_bind_int(s, 2, limit);
 
-    /* Same credit/debit rule as the incremental path in exp_db_insert_tx:
-     * balance = Σ(direction=1 amount) − Σ(direction=0 amount) per
-     * (address, token_id); tx_count = COUNT(DISTINCT tx_hash) touching
-     * that key — one derivation, two mechanics (D3). */
-    static const char *RECOMPUTE_SQL =
-        "CREATE TEMP TABLE tmp_addr_recompute AS "
-        "SELECT tx_io.address AS address, tx_io.token_id AS token_id, "
-        "       SUM(CASE WHEN tx_io.direction = 1 THEN tx_io.amount ELSE -tx_io.amount END) AS balance, "
-        "       COUNT(DISTINCT tx_io.tx_hash) AS tx_count, "
-        "       MIN(txs.height) AS first_seen_height, "
-        "       MAX(txs.height) AS last_seen_height "
-        "FROM tx_io JOIN txs ON tx_io.tx_hash = txs.hash "
-        "GROUP BY tx_io.address, tx_io.token_id";
-
-    if (sqlite3_exec(db->conn, RECOMPUTE_SQL, NULL, NULL, &err) != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "verify_addr_stats: recompute failed: %s", err ? err : "?");
-        sqlite3_free(err);
-        return -1;
+    int n = 0, rc = 0;
+    while (n < limit) {
+        int st = sqlite3_step(s);
+        if (st == SQLITE_DONE) break;
+        if (st != SQLITE_ROW) {
+            QGP_LOG_ERROR(LOG_TAG, "query_blocks step failed: %s", sqlite3_errmsg(db->conn));
+            rc = -1;
+            break;
+        }
+        row_to_block(s, &rows[n]);
+        n++;
     }
+    sqlite3_reset(s);
+    *count_out = n;
+    return rc;
+}
 
-    static const char *DIFF_SQL =
-        "SELECT "
-        "  (SELECT COUNT(*) FROM ("
-        "     SELECT address,token_id,balance,tx_count,first_seen_height,last_seen_height FROM addr_stats "
-        "     EXCEPT "
-        "     SELECT address,token_id,balance,tx_count,first_seen_height,last_seen_height FROM tmp_addr_recompute)) "
-        "+ "
-        "  (SELECT COUNT(*) FROM ("
-        "     SELECT address,token_id,balance,tx_count,first_seen_height,last_seen_height FROM tmp_addr_recompute "
-        "     EXCEPT "
-        "     SELECT address,token_id,balance,tx_count,first_seen_height,last_seen_height FROM addr_stats))";
-
-    sqlite3_stmt *stmt = NULL;
-    if (sqlite3_prepare_v2(db->conn, DIFF_SQL, -1, &stmt, NULL) != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "verify_addr_stats: diff prepare failed: %s", sqlite3_errmsg(db->conn));
-        sqlite3_exec(db->conn, "DROP TABLE IF EXISTS tmp_addr_recompute", NULL, NULL, NULL);
-        return -1;
+static int query_one_block(sqlite3_stmt *s, exp_block_row_t *row_out) {
+    int rc = -1;
+    if (sqlite3_step(s) == SQLITE_ROW) {
+        row_to_block(s, row_out);
+        rc = 0;
     }
+    sqlite3_reset(s);
+    return rc;
+}
 
-    int mismatch = -1;
-    if (sqlite3_step(stmt) == SQLITE_ROW)
-        mismatch = sqlite3_column_int(stmt, 0);
-    sqlite3_finalize(stmt);
+int exp_db_query_block_by_height(exp_db_t *db, uint64_t height, exp_block_row_t *row_out) {
+    if (!db || !db->conn || !row_out) return -1;
+    sqlite3_stmt *s = db->stmt_query_block_by_height;
+    sqlite3_reset(s);
+    sqlite3_bind_int64(s, 1, clamp_cursor(height));
+    return query_one_block(s, row_out);
+}
 
-    sqlite3_exec(db->conn, "DROP TABLE IF EXISTS tmp_addr_recompute", NULL, NULL, NULL);
+int exp_db_query_block_by_id(exp_db_t *db, const uint8_t block_id[64], exp_block_row_t *row_out) {
+    if (!db || !db->conn || !block_id || !row_out) return -1;
+    sqlite3_stmt *s = db->stmt_query_block_by_id;
+    sqlite3_reset(s);
+    sqlite3_bind_blob(s, 1, block_id, 64, SQLITE_STATIC);
+    return query_one_block(s, row_out);
+}
 
-    if (mismatch < 0) return -1;
-    return (mismatch == 0) ? 0 : -1;
+static int query_items_list(exp_db_t *db, sqlite3_stmt *s, int max,
+                            exp_item_row_t *rows, int *count_out, const char *what) {
+    int n = 0, rc = 0;
+    while (n < max) {
+        int st = sqlite3_step(s);
+        if (st == SQLITE_DONE) break;
+        if (st != SQLITE_ROW) {
+            QGP_LOG_ERROR(LOG_TAG, "%s step failed: %s", what, sqlite3_errmsg(db->conn));
+            rc = -1;
+            break;
+        }
+        row_to_item(s, &rows[n]);
+        n++;
+    }
+    sqlite3_reset(s);
+    *count_out = n;
+    return rc;
+}
+
+int exp_db_query_items(exp_db_t *db, uint64_t height, uint32_t from_idx, int max,
+                       exp_item_row_t *rows, int *count_out) {
+    if (!db || !db->conn || !rows || !count_out || max <= 0) return -1;
+    sqlite3_stmt *s = db->stmt_query_items;
+    sqlite3_reset(s);
+    sqlite3_bind_int64(s, 1, clamp_cursor(height));
+    sqlite3_bind_int64(s, 2, (sqlite3_int64)from_idx);
+    sqlite3_bind_int(s, 3, max);
+    return query_items_list(db, s, max, rows, count_out, "query_items");
+}
+
+static int query_one_item(sqlite3_stmt *s, exp_item_row_t *row_out) {
+    int rc = -1;
+    if (sqlite3_step(s) == SQLITE_ROW) {
+        row_to_item(s, row_out);
+        rc = 0;
+    }
+    sqlite3_reset(s);
+    return rc;
+}
+
+int exp_db_query_item(exp_db_t *db, uint64_t height, uint32_t idx, exp_item_row_t *row_out) {
+    if (!db || !db->conn || !row_out) return -1;
+    sqlite3_stmt *s = db->stmt_query_item;
+    sqlite3_reset(s);
+    sqlite3_bind_int64(s, 1, clamp_cursor(height));
+    sqlite3_bind_int64(s, 2, (sqlite3_int64)idx);
+    return query_one_item(s, row_out);
+}
+
+int exp_db_query_item_by_id(exp_db_t *db, const uint8_t id[64], exp_item_row_t *row_out) {
+    if (!db || !db->conn || !id || !row_out) return -1;
+    sqlite3_stmt *s = db->stmt_query_item_by_id;
+    sqlite3_reset(s);
+    sqlite3_bind_blob(s, 1, id, 64, SQLITE_STATIC);
+    return query_one_item(s, row_out);
+}
+
+int exp_db_query_item_ios(exp_db_t *db, uint64_t height, uint32_t idx,
+                          exp_io_row_t *rows, int max, int *count_out) {
+    if (!db || !db->conn || !rows || !count_out || max <= 0) return -1;
+    sqlite3_stmt *s = db->stmt_query_ios;
+    sqlite3_reset(s);
+    sqlite3_bind_int64(s, 1, clamp_cursor(height));
+    sqlite3_bind_int64(s, 2, (sqlite3_int64)idx);
+    sqlite3_bind_int(s, 3, max);
+
+    int n = 0, rc = 0;
+    while (n < max) {
+        int st = sqlite3_step(s);
+        if (st == SQLITE_DONE) break;
+        if (st != SQLITE_ROW) {
+            QGP_LOG_ERROR(LOG_TAG, "query_item_ios step failed: %s", sqlite3_errmsg(db->conn));
+            rc = -1;
+            break;
+        }
+        row_to_io(s, &rows[n]);
+        n++;
+    }
+    sqlite3_reset(s);
+    *count_out = n;
+    return rc;
+}
+
+int exp_db_query_address(exp_db_t *db, const char *fp,
+                         uint64_t before_height, uint32_t before_idx, int limit,
+                         exp_item_row_t *rows, int *count_out) {
+    if (!db || !db->conn || !fp || !rows || !count_out || limit <= 0) return -1;
+    sqlite3_stmt *s = db->stmt_query_address;
+    sqlite3_reset(s);
+    sqlite3_bind_text(s, 1, fp, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(s, 2, clamp_cursor(before_height));
+    sqlite3_bind_int64(s, 3, (sqlite3_int64)before_idx);
+    sqlite3_bind_int(s, 4, limit);
+    return query_items_list(db, s, limit, rows, count_out, "query_address");
 }

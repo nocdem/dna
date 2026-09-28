@@ -6,8 +6,8 @@
  *   --db PATH        sqlite index db path (default /var/lib/dna-explorer/index.db)
  *   --port N         JSON API listen port (default 8390), 127.0.0.1 only
  *   --once           run a single exp_sync_tick() and exit (smoke tests)
- *   --verify-index   run exp_db_verify_addr_stats() against --db and exit
- *                     0 (OK) / 1 (mismatch), no network involved
+ *   --verify-index   run exp_db_verify_index() against --db and exit
+ *                     0 (consistent) / 1 (inconsistent), no network involved
  *   --version        print version and exit
  */
 #include <signal.h>
@@ -25,7 +25,9 @@
 #include "crypto/utils/qgp_log.h"
 #define LOG_TAG "EXPLORER"
 
-#define EXPLORERD_VERSION "0.1.1"
+/* 0.2.0: version-3 chain — height walk over dnac_v3_block, index schema
+ * v2 (rebuilt from height 1 on first start). */
+#define EXPLORERD_VERSION "0.2.0"
 
 #define EXPLORERD_DEFAULT_CONFIG "/etc/dna-explorer.conf"
 #define EXPLORERD_DEFAULT_DB     "/var/lib/dna-explorer/index.db"
@@ -85,8 +87,8 @@ int main(int argc, char **argv) {
             printf("verify-index: FAILED to open db %s\n", db_path);
             return 1;
         }
-        int rc = exp_db_verify_addr_stats(db);
-        printf("verify-index: %s\n", rc == 0 ? "OK (addr_stats matches tx_io derivation)" : "MISMATCH");
+        int rc = exp_db_verify_index(db);
+        printf("verify-index: %s\n", rc == 0 ? "OK (index consistent)" : "INCONSISTENT (see log)");
         exp_db_close(db);
         return rc == 0 ? 0 : 1;
     }
@@ -119,13 +121,17 @@ int main(int argc, char **argv) {
         memset(&fsm, 0, sizeof(fsm));
         exp_sync_preseed(db, &fsm);
 
+        exp_sync_source_t src;
+        exp_sync_source_chain(&src, chain);
+
         /* Single-shot, single-threaded: no concurrent HTTP reader exists,
-         * so no db_lock is needed (Task 7). */
-        int rc = exp_sync_tick(chain, &db, db_path, &fsm, NULL);
+         * so no db_lock is needed. rc 1 (more heights remain) is a
+         * successful tick. */
+        int rc = exp_sync_tick(&src, &db, db_path, &fsm, NULL);
 
         exp_db_close(db);
         exp_chain_close(chain);
-        return rc == 0 ? 0 : 1;
+        return rc >= 0 ? 0 : 1;
     }
 
     /* Daemon mode: sync thread + JSON API on the main thread + signal-driven
@@ -135,31 +141,41 @@ int main(int argc, char **argv) {
     signal(SIGINT, handle_stop_signal);
     signal(SIGTERM, handle_stop_signal);
 
-    /* Task 7 (chain-client-sharing race): the HTTP thread's ?utxos=1
-     * passthrough gets its OWN exp_chain_t, opened against the same server
-     * list, rather than sharing `chain` with the sync thread. Sharing meant
-     * a failing HTTP utxo query could exp_chain_rotate -> nodus_client_close
-     * a connection the sync thread was mid-call on (remotely triggerable
-     * UAF). A failed open here is non-fatal — the utxos section already has
-     * a "witness-live unavailable" degrade path (exp_http.c route_address)
-     * for ctx->chain == NULL. */
-    exp_chain_t *http_chain = NULL;
-    if (exp_chain_open(&http_chain, servers, server_count) != 0) {
-        QGP_LOG_WARN(LOG_TAG, "failed to open dedicated HTTP chain client — ?utxos=1 will report unavailable");
-        http_chain = NULL;
-    }
-
-    /* Task 7 (db-swap race): guards *db against the sync thread's
-     * confirmed-chain-reset close/rename/reopen swap racing an in-flight
-     * HTTP request on the old handle. */
+    /* Guards *db against (a) the sync thread's confirmed-chain-reset
+     * close/rename/reopen swap racing an in-flight HTTP request on the old
+     * handle, and (b) an HTTP read on the shared connection seeing a
+     * height mid-write (exp_sync.c takes the writer side around each
+     * exp_db_write_height). The HTTP thread's one chain query (the
+     * address balance, dnac_balance) runs on http_chain below — never on
+     * the sync thread's `chain`, and never under db_lock. */
     pthread_rwlock_t db_lock;
     if (pthread_rwlock_init(&db_lock, NULL) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "failed to init db_lock");
-        exp_chain_close(http_chain);
         exp_db_close(db);
         exp_chain_close(chain);
         return 1;
     }
+
+    /* scan-v3 (decision 2026-09-28-scan-v3-query.md 3a) — a SECOND chain
+     * handle (its own ephemeral identity, its own connection) that only
+     * the HTTP serve thread uses, behind the cached balance source
+     * (exp_http.h). One thread, one handle: no lock is needed on it. A
+     * failure to open it is fatal at startup, exactly like the sync
+     * handle above — a daemon that silently served "unavailable" for
+     * every address would hide a broken configuration. */
+    exp_chain_t *http_chain = NULL;
+    exp_balance_chain_t *balance_chain = NULL;
+    if (exp_chain_open(&http_chain, servers, server_count) != 0 ||
+        exp_balance_chain_open(&balance_chain, http_chain) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "failed to open the HTTP thread's chain handle");
+        exp_chain_close(http_chain);
+        pthread_rwlock_destroy(&db_lock);
+        exp_db_close(db);
+        exp_chain_close(chain);
+        return 1;
+    }
+    exp_balance_source_t balance_src;
+    exp_balance_source_chain(&balance_src, balance_chain);
 
     exp_sync_args_t sync_args;
     sync_args.chain = chain;
@@ -171,8 +187,9 @@ int main(int argc, char **argv) {
     pthread_t sync_tid;
     if (pthread_create(&sync_tid, NULL, exp_sync_thread, &sync_args) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "failed to spawn sync thread");
-        pthread_rwlock_destroy(&db_lock);
+        exp_balance_chain_close(balance_chain);
         exp_chain_close(http_chain);
+        pthread_rwlock_destroy(&db_lock);
         exp_db_close(db);
         exp_chain_close(chain);
         return 1;
@@ -184,10 +201,10 @@ int main(int argc, char **argv) {
      * instead of dereferencing a copy that goes stale the moment the swap
      * happens. */
     http_ctx.db = &db;
-    http_ctx.chain = http_chain;
     http_ctx.port = (uint16_t)port;
     http_ctx.stop = &g_stop;
     http_ctx.db_lock = &db_lock;
+    http_ctx.balance = &balance_src;
 
     if (exp_http_serve(&http_ctx) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "exp_http_serve failed — requesting shutdown");
@@ -196,10 +213,12 @@ int main(int argc, char **argv) {
 
     pthread_join(sync_tid, NULL);
 
+    exp_balance_chain_close(balance_chain);
+    exp_chain_close(http_chain);
+
     pthread_rwlock_destroy(&db_lock);
     exp_db_close(db);
     exp_chain_close(chain);
-    exp_chain_close(http_chain);
     QGP_LOG_INFO(LOG_TAG, "dna-explorerd shutting down");
     return 0;
 }

@@ -25,6 +25,10 @@
  *      from nodus_chain_config_apply (nodus_witness_chain_config.c).
  *      The INFLATION_START monotonicity rule left with parameter id 3
  *      (tokenomics-v3 P2, P2-4 — RETIRED, refused by the scalar rules).
+ *      Since 0.20.3 the scalar rules also refuse every id the running
+ *      consensus does not read (dnac.h dnac_cfg_param_read_by_consensus:
+ *      4 and 5), so an id-2 (BLOCK_INTERVAL_SEC) leg is an item refusal
+ *      here, in block apply — no chain_config_history row is written.
  *
  *   2. DNA_CORE / DNA_CORERULE_SPEND (runtime_op 1, legacy tx 1): the
  *      canonical transparent DNAC UTXO transfer. Source semantics
@@ -299,6 +303,7 @@
 
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_runtime.h"
+#include "witness/nodus_witness_rt_native.h"   /* scan-v3 describer   */
 #include "witness/nodus_witness_v2_adapter.h"
 #include "witness/nodus_witness_delegation.h"
                             /* NODUS_MAX_DELEGATORS_PER_VALIDATOR — the
@@ -1950,6 +1955,89 @@ _Static_assert(RTN_SYSFUND_REL_INDEX < NODUS_V2_EPGRAD_OUT_IDX,
                "the UNDELEGATE release index must sit below the bond "
                "release index");
 
+/* The UNDELEGATE release coin — its lock height, identity and record.
+ * The ONE derivation, called by rtn_sysfund_exec (which creates the row)
+ * and by nodus_rt_native_describe_leg (scan-v3, which reports it); moved
+ * here from rtn_sysfund_exec's body byte-for-byte, so the two can never
+ * disagree about which coin an UNDELEGATE created.
+ *
+ * THE RELEASE IS BORN LOCKED (tokenomics-v3 P2-10; design §7.1;
+ * decision file §1 "Stake çözme" — "Delegator bekleme süresi 12
+ * epoch", the wait starting where the stake leaves the voting
+ * power — and §3 2026-09-24 "DELEGATOR = VALIDATOR GİBİ"):
+ *
+ *   unlock = L(h) + DNAC_UNDELEGATE_LOCK_EPOCHS · E
+ *
+ * with h = the executing height and L(h) the boundary at which a
+ * set that no longer counts this stake takes effect
+ * (nodus_v2_power_exit_boundary — the derivation lives there,
+ * and only there). The withdrawn amount keeps earning until L(h)
+ * (it stays in the governing snapshot and in the source copy the
+ * distribution reads), so it must not be spendable before it has
+ * stopped earning; with the lock it cannot be spent, re-delegated
+ * or moved to another validator (the SYSFUND input gate refuses a
+ * locked funding coin) before L(h) + 12E + 1 — the spend gates
+ * refuse while unlock >= height (rtn_xfer_exec, rtn_tc_exec and
+ * rtn_sysfund_exec's input loop). Same shape as the validator
+ * graduation's locked releases (nodus_witness_v2_epoch.c
+ * v2ep_graduate: the bond at H + DNAC_VALIDATOR_UNBOND_EPOCHS · E,
+ * each remaining delegation at H + DNAC_UNDELEGATE_LOCK_EPOCHS ·
+ * E — tokenomics-v3 P3-3 / P3-4).
+ *
+ * Every step is checked, and the result is bounded by the SQLite
+ * INTEGER maximum: an unlock that round-trips NEGATIVE would be
+ * refused by the row reader (rtn_core_row_record) as a malformed
+ * row forever. An overflow here is a VERDICT, like every checked
+ * add in rtn_sysfund_exec: it is a deterministic function of the
+ * block height, identical on every node.
+ *
+ * `spc`/`spl` are the SIBLING SYSTEM leg's call bytes (the UNDELEGATE
+ * record); `rel_rec` receives the owner fp (128 hex) and the amount in
+ * the wire-output record layout, token left as the caller zeroed it.
+ * @return 0 / -1 verdict / -2 hash-backend fault. */
+static int rtn_sysfund_release_coin(const uint8_t *spc, uint32_t spl,
+                                    uint64_t global_height,
+                                    const uint8_t intent_id[64],
+                                    uint64_t release,
+                                    uint8_t rel_id[64],
+                                    uint8_t rel_rec[RTN_SPEND_OUT_LEN],
+                                    uint64_t *rel_unlock) {
+    uint64_t exit_b = 0, lock_len = 0;
+    if (nodus_v2_power_exit_boundary(global_height, &exit_b) != 0)
+        return -1;
+    if ((uint64_t)DNAC_UNDELEGATE_LOCK_EPOCHS >
+        UINT64_MAX / (uint64_t)DNAC_EPOCH_LENGTH)
+        return -1;
+    lock_len = (uint64_t)DNAC_UNDELEGATE_LOCK_EPOCHS *
+               (uint64_t)DNAC_EPOCH_LENGTH;
+    if (dna_ck_add_u64(exit_b, lock_len, rel_unlock) != 0 ||
+        *rel_unlock > (uint64_t)INT64_MAX)
+        return -1;
+    /* identity = SHA3-512(tx_hash ‖ kind ‖ u32be(index)) with
+     * tx_hash = the canonical INTENT identity: this row is consensus
+     * state (the UTXO merkle leaf commits tx_hash), so two valid
+     * authorization realizations must derive the SAME nullifier. */
+    uint8_t pre[64 + 1 + 4];
+    memcpy(pre, intent_id, 64);
+    pre[64] = RTN_SYSFUND_REL_KIND;
+    rtn_put32(pre + 65, RTN_SYSFUND_REL_INDEX);
+    if (qgp_sha3_512(pre, sizeof(pre), rel_id) != 0) return -2;
+    /* owner = the DELEGATOR named in the SYSTEM call (bft.c:1873
+     * pays signer_pubkey; here the call-carried identity, which the
+     * SYSTEM leg's own auth gate binds to the verified signer) */
+    rtn_deleg_call_t d;
+    if (rtn_deleg_parse(spc, spl, &d) != 0) return -1;
+    uint8_t ofp[64];
+    if (qgp_sha3_512(d.delegator_pubkey, DNAC_PUBKEY_SIZE, ofp) != 0)
+        return -2;
+    rtn_fp_hex(ofp, rel_rec);                    /* owner fp (128)   */
+    rtn_put64(rel_rec + 128, release);           /* amount           */
+    /* token stays the 64 native zeros; the seed window is unused —
+     * this row's identity is passed explicitly, not derived from a
+     * seed (the synthetic-UTXO rule, not the wire-output rule) */
+    return 0;
+}
+
 /* The staking funding/release executor (O11) — the CORE half of every
  * SYSTEM stake-lifecycle envelope.
  *
@@ -2077,68 +2165,13 @@ static int rtn_sysfund_exec(const rtn_spend_call_t *c,
     memset(rel_id, 0, sizeof(rel_id));
     memset(rel_rec, 0, sizeof(rel_rec));
     if (release > 0) {
-        /* THE RELEASE IS BORN LOCKED (tokenomics-v3 P2-10; design §7.1;
-         * decision file §1 "Stake çözme" — "Delegator bekleme süresi 12
-         * epoch", the wait starting where the stake leaves the voting
-         * power — and §3 2026-09-24 "DELEGATOR = VALIDATOR GİBİ"):
-         *
-         *   unlock = L(h) + DNAC_UNDELEGATE_LOCK_EPOCHS · E
-         *
-         * with h = the executing height and L(h) the boundary at which a
-         * set that no longer counts this stake takes effect
-         * (nodus_v2_power_exit_boundary — the derivation lives there,
-         * and only there). The withdrawn amount keeps earning until L(h)
-         * (it stays in the governing snapshot and in the source copy the
-         * distribution reads), so it must not be spendable before it has
-         * stopped earning; with the lock it cannot be spent, re-delegated
-         * or moved to another validator (the SYSFUND input gate below
-         * refuses a locked funding coin) before L(h) + 12E + 1 — the
-         * spend gates refuse while unlock >= height (rtn_xfer_exec,
-         * rtn_tc_exec and the input loop above). Same shape as the
-         * validator graduation's locked releases (nodus_witness_v2_epoch.c
-         * v2ep_graduate: the bond at H + DNAC_VALIDATOR_UNBOND_EPOCHS · E,
-         * each remaining delegation at H + DNAC_UNDELEGATE_LOCK_EPOCHS ·
-         * E — tokenomics-v3 P3-3 / P3-4).
-         *
-         * Every step is checked, and the result is bounded by the SQLite
-         * INTEGER maximum: an unlock that round-trips NEGATIVE would be
-         * refused by the row reader (rtn_core_row_record) as a malformed
-         * row forever. An overflow here is a VERDICT, like every checked
-         * add in this function: it is a deterministic function of the
-         * block height, identical on every node. */
-        uint64_t exit_b = 0, lock_len = 0;
-        if (nodus_v2_power_exit_boundary(ctx->global_height, &exit_b) != 0)
-            return -1;
-        if ((uint64_t)DNAC_UNDELEGATE_LOCK_EPOCHS >
-            UINT64_MAX / (uint64_t)DNAC_EPOCH_LENGTH)
-            return -1;
-        lock_len = (uint64_t)DNAC_UNDELEGATE_LOCK_EPOCHS *
-                   (uint64_t)DNAC_EPOCH_LENGTH;
-        if (dna_ck_add_u64(exit_b, lock_len, &rel_unlock) != 0 ||
-            rel_unlock > (uint64_t)INT64_MAX)
-            return -1;
-        /* identity = SHA3-512(tx_hash ‖ kind ‖ u32be(index)) with
-         * tx_hash = the canonical INTENT identity: this row is consensus
-         * state (the UTXO merkle leaf commits tx_hash), so two valid
-         * authorization realizations must derive the SAME nullifier. */
-        uint8_t pre[64 + 1 + 4];
-        memcpy(pre, ctx->intent_id, 64);
-        pre[64] = RTN_SYSFUND_REL_KIND;
-        rtn_put32(pre + 65, RTN_SYSFUND_REL_INDEX);
-        if (qgp_sha3_512(pre, sizeof(pre), rel_id) != 0) return -2;
-        /* owner = the DELEGATOR named in the SYSTEM call (bft.c:1873
-         * pays signer_pubkey; here the call-carried identity, which the
-         * SYSTEM leg's own auth gate binds to the verified signer) */
-        rtn_deleg_call_t d;
-        if (rtn_deleg_parse(spc, spl, &d) != 0) return -1;
-        uint8_t ofp[64];
-        if (qgp_sha3_512(d.delegator_pubkey, DNAC_PUBKEY_SIZE, ofp) != 0)
-            return -2;
-        rtn_fp_hex(ofp, rel_rec);                    /* owner fp (128)   */
-        rtn_put64(rel_rec + 128, release);           /* amount           */
-        /* token stays the 64 native zeros; the seed window is unused —
-         * this row's identity is passed explicitly, not derived from a
-         * seed (the synthetic-UTXO rule, not the wire-output rule) */
+        /* THE RELEASE IS BORN LOCKED — the lock, the identity and the
+         * record are derived by rtn_sysfund_release_coin (above), the ONE
+         * derivation this exec and the read-only describer share. */
+        int rrc = rtn_sysfund_release_coin(spc, spl, ctx->global_height,
+                                           ctx->intent_id, release, rel_id,
+                                           rel_rec, &rel_unlock);
+        if (rrc != 0) return rrc;
     }
 
     /* ── the CREATE run: change outputs AND the release UTXO ─────────
@@ -4096,7 +4129,12 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
     uint64_t H = ctx->global_height;
     if (H == 0) return -1;
 
-    /* the SAME scalar authority the legacy apply consumes */
+    /* the SAME scalar authority the legacy apply and the 0x71 approval
+     * answer consume. This is where a CHAIN_CONFIG leg for an id the
+     * running consensus does not read dies IN CONSENSUS (block apply),
+     * not only at admission: retired ids 1 and 3 and, since 0.20.3, id 2
+     * (BLOCK_INTERVAL_SEC) — dnac_cfg_param_read_by_consensus. The item
+     * is refused before the one effect below, so no history row. */
     if (nodus_chain_config_scalar_rules(c.param_id, c.new_value,
                                         c.signed_at, c.valid_before,
                                         c.effective) != 0)
@@ -4825,3 +4863,202 @@ const nodus_domain_adapter_t NODUS_RT_SYSTEM_ADAPTER = {
     .mutate = rtn_sys_mutate,
     .read = rtn_sys_read
 };
+
+/* ══════════════════════════════════════════════════════════════════════
+ * scan-v3 — the READ-ONLY leg describer (nodus_witness_rt_native.h)
+ *
+ * Reports what an APPLIED leg did, recomputed from its call bytes by the
+ * SAME static decoders and identity derivations the exec hooks above
+ * run: no byte offset and no preimage is restated here. It executes
+ * nothing, reads no state, allocates nothing and re-judges nothing (no
+ * ownership / balance / lock / quorum check) — the caller establishes
+ * from the stored FinalizeBlock response that the leg was applied.
+ * ════════════════════════════════════════════════════════════════════ */
+
+/* The transfer section's inputs (in CALL order) and its wire outputs,
+ * each output carrying the identity rtn_out_ids derives — the one the
+ * exec hook wrote as the utxo_set key. @return 0 / -1 / -2 (rtn_out_ids'
+ * own classes: a duplicate identity, which an applied leg cannot carry,
+ * or a hash-backend fault). */
+static int rtn_desc_xfer(const rtn_spend_call_t *c, nodus_rt_leg_desc_t *out) {
+    uint8_t nul[RTN_SPEND_MAX_OUT][64];
+    uint8_t sorted[RTN_SPEND_MAX_OUT];
+
+    if (c->in_count > NODUS_RT_DESC_MAX_IN ||
+        c->out_count > RTN_SPEND_MAX_OUT)
+        return -1;                       /* the parsers' own bounds       */
+    for (uint8_t i = 0; i < c->in_count; i++)
+        memcpy(out->consumed[i], c->ins + (size_t)i * 64, 64);
+    out->n_consumed = c->in_count;
+    if (c->out_count > 0) {
+        int rc = rtn_out_ids(c, nul, sorted);
+        if (rc != 0) return rc;
+    }
+    for (uint8_t o = 0; o < c->out_count; o++) {
+        const uint8_t *rec = c->outs + (size_t)o * RTN_SPEND_OUT_LEN;
+        nodus_rt_desc_coin_t *k = &out->created[o];
+        memcpy(k->id, nul[o], 64);
+        memcpy(k->owner_hex, rec, 128);
+        k->amount = rtn_get64(rec + 128);
+        memcpy(k->token_id, rec + 136, 64);
+        k->unlock_block = 0;             /* every wire output is unlocked
+                                          * (rtn_xfer_exec / rtn_tc_exec /
+                                          * rtn_sysfund_exec pass 0)      */
+    }
+    out->n_created = c->out_count;
+    return 0;
+}
+
+static int rtn_desc_core(const dna_env_view_t *env, uint16_t leg,
+                         uint64_t global_height, const uint8_t *intent_id,
+                         nodus_rt_leg_desc_t *out) {
+    switch (env->leg[leg].runtime_op) {
+    case DNA_CORERULE_SPEND: {
+        rtn_spend_call_t c;
+        if (rtn_spend_parse(env, leg, &c) != 0) return -1;
+        return rtn_desc_xfer(&c, out);
+    }
+    case DNA_CORERULE_BURN: {
+        rtn_spend_call_t c;
+        uint64_t burn = 0;
+        if (rtn_burn_parse(env, leg, &c, &burn) != 0) return -1;
+        out->burned = burn;
+        return rtn_desc_xfer(&c, out);
+    }
+    case DNA_CORERULE_TOKEN_CREATE: {
+        rtn_tc_call_t t;
+        if (rtn_tc_parse(env, leg, &t) != 0) return -1;
+        return rtn_desc_xfer(&t.xfer, out);
+    }
+    case DNA_CORERULE_SYSFUND: {
+        rtn_spend_call_t c;
+        uint64_t lock = 0, release = 0;
+        if (rtn_sysfund_shape(env, leg) != 0) return -1;
+        if (rtn_sysfund_parse(env, leg, &c) != 0) return -1;
+        /* the SIBLING SYSTEM leg decides the flow, from CALL BYTES —
+         * rtn_sysfund_exec's own first step */
+        const uint8_t *spc = env->buf + env->call_off[0];
+        uint32_t       spl = env->leg[0].call_len;
+        if (rtn_sys_call_flow(env->leg[0].runtime_op, spc, spl, &lock,
+                              &release) != 0)
+            return -1;
+        int rc = rtn_desc_xfer(&c, out);
+        if (rc != 0) return rc;
+        if (release > 0) {
+            uint8_t  rel_id[64];
+            uint8_t  rel_rec[RTN_SPEND_OUT_LEN];
+            uint64_t rel_unlock = 0;
+            if (!intent_id) return -2;   /* the caller must supply it    */
+            memset(rel_id, 0, sizeof(rel_id));
+            memset(rel_rec, 0, sizeof(rel_rec));
+            rc = rtn_sysfund_release_coin(spc, spl, global_height,
+                                          intent_id, release, rel_id,
+                                          rel_rec, &rel_unlock);
+            if (rc != 0) return rc;
+            /* rtn_sysfund_exec refuses a release id equal to a change id;
+             * an applied leg therefore never carries one */
+            for (uint8_t k = 0; k < out->n_created; k++)
+                if (memcmp(out->created[k].id, rel_id, 64) == 0)
+                    return -1;
+            if (out->n_created >= NODUS_RT_DESC_MAX_OUT) return -1;
+            nodus_rt_desc_coin_t *k = &out->created[out->n_created++];
+            memcpy(k->id, rel_id, 64);
+            memcpy(k->owner_hex, rel_rec, 128);
+            k->amount = rtn_get64(rel_rec + 128);
+            memset(k->token_id, 0, 64);  /* native — the release record's
+                                          * token window stays zero       */
+            k->unlock_block = rel_unlock;
+        }
+        return 0;
+    }
+    default:
+        return -1;                       /* not an op this file executes */
+    }
+}
+
+static int rtn_desc_system(const dna_env_view_t *env, uint16_t leg,
+                           nodus_rt_leg_desc_t *out) {
+    const uint8_t *p = env->buf + env->call_off[leg];
+    uint32_t len = env->leg[leg].call_len;
+
+    switch (env->leg[leg].runtime_op) {
+    case DNA_SYSRULE_STAKE: {
+        rtn_stake_call_t c;
+        if (rtn_sys_stake_shape(env, leg) != 0) return -1;
+        if (rtn_stake_parse(p, len, &c) != 0) return -1;
+        if (qgp_sha3_512(c.staker_pubkey, DNAC_PUBKEY_SIZE,
+                         out->rec_validator_fp) != 0)
+            return -2;
+        memcpy(out->rec_dest_fp, c.dest_fp, 64);
+        out->rec_amount = c.bond;
+        out->rec_commission_bps = c.commission_bps;
+        out->rec = NODUS_RT_DESC_REC_STAKE;
+        return 0;
+    }
+    case DNA_SYSRULE_DELEGATE:
+    case DNA_SYSRULE_UNDELEGATE: {
+        rtn_deleg_call_t c;
+        if (rtn_sys_stake_shape(env, leg) != 0) return -1;
+        if (rtn_deleg_parse(p, len, &c) != 0) return -1;
+        if (qgp_sha3_512(c.delegator_pubkey, DNAC_PUBKEY_SIZE,
+                         out->rec_delegator_fp) != 0 ||
+            qgp_sha3_512(c.validator_pubkey, DNAC_PUBKEY_SIZE,
+                         out->rec_validator_fp) != 0)
+            return -2;
+        out->rec_amount = c.amount;
+        out->rec = env->leg[leg].runtime_op == DNA_SYSRULE_DELEGATE
+                       ? NODUS_RT_DESC_REC_DELEGATE
+                       : NODUS_RT_DESC_REC_UNDELEGATE;
+        return 0;
+    }
+    case DNA_SYSRULE_UNSTAKE: {
+        const uint8_t *vpk = NULL;
+        if (rtn_sys_stake_shape(env, leg) != 0) return -1;
+        if (rtn_sys_call_identity(DNA_SYSRULE_UNSTAKE, p, len, &vpk) != 0)
+            return -1;
+        if (qgp_sha3_512(vpk, DNAC_PUBKEY_SIZE, out->rec_validator_fp) != 0)
+            return -2;
+        out->rec = NODUS_RT_DESC_REC_UNSTAKE;
+        return 0;
+    }
+    case DNA_SYSRULE_VALIDATOR_UPDATE: {
+        rtn_vupd_call_t c;
+        if (rtn_sys_stake_shape(env, leg) != 0) return -1;
+        if (rtn_vupd_parse(p, len, &c) != 0) return -1;
+        if (qgp_sha3_512(c.validator_pubkey, DNAC_PUBKEY_SIZE,
+                         out->rec_validator_fp) != 0)
+            return -2;
+        out->rec_commission_bps = c.new_commission_bps;
+        out->rec = NODUS_RT_DESC_REC_VALIDATOR_UPDATE;
+        return 0;
+    }
+    case DNA_SYSRULE_CHAIN_CONFIG: {
+        rtn_cc_call_t c;
+        if (rtn_cc_parse(env, leg, &c) != 0) return -1;
+        out->cc_param_id  = c.param_id;
+        out->cc_new_value = c.new_value;
+        out->cc_effective = c.effective;
+        out->rec = NODUS_RT_DESC_REC_CHAIN_CONFIG;
+        return 0;
+    }
+    default:
+        return -1;                       /* not an op this file executes */
+    }
+}
+
+int nodus_rt_native_describe_leg(const dna_env_view_t *env,
+                                 uint16_t leg_index,
+                                 uint64_t global_height,
+                                 const uint8_t *intent_id,
+                                 nodus_rt_leg_desc_t *out) {
+    if (!env || !out || !env->buf) return -2;
+    if (leg_index >= env->leg_count) return -2;
+    memset(out, 0, sizeof(*out));
+    out->domain_id  = env->leg[leg_index].domain_id;
+    out->runtime_op = env->leg[leg_index].runtime_op;
+    if (out->domain_id == DNA_DOMAIN_CORE)
+        return rtn_desc_core(env, leg_index, global_height, intent_id, out);
+    if (out->domain_id == DNA_DOMAIN_SYSTEM)
+        return rtn_desc_system(env, leg_index, out);
+    return -1;                           /* no compiled native runtime   */
+}

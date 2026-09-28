@@ -17,6 +17,7 @@
 #include "crypto/nodus_sign.h"
 #include "dnac/transaction.h"          /* DNAC_TX_HEADER_SIZE (v0.17.1) */
 #include "dnac/ledger_ids.h"           /* DNA_DOMAIN_CORE (P2P-PORT F6) */
+#include "dnac/res_meter.h"            /* dna_ck_add_u64 (scan-v3 balance) */
 #include <string.h>
 #include <time.h>
 #include <stdio.h>
@@ -414,6 +415,89 @@ int nodus_witness_utxo_by_owner(nodus_witness_t *w, const char *owner,
         return -1;
     }
 
+    *count_out = count;
+    return 0;
+}
+
+/* scan-v3 — the dnac_balance source (contract: nodus_witness_db.h). The
+ * sum is taken in C, not with SQL SUM(): SQLite's SUM coerces a numeric
+ * TEXT value to an integer (sqlite3_value_numeric_type) and its overflow
+ * behaviour has changed across releases, so the one checked addition this
+ * answer rests on is dna_ck_add_u64 over rows whose types are verified
+ * one by one. */
+int nodus_witness_utxo_balance_by_owner(nodus_witness_t *w,
+                                        const char *owner,
+                                        uint64_t spend_h,
+                                        nodus_witness_balance_entry_t *out,
+                                        int max_entries, int *count_out) {
+    if (!w || !w->db || !owner || !out || !count_out || max_entries <= 0)
+        return -1;
+    *count_out = 0;
+
+    int has_dom = utxo_domain_col_present(w->db);
+    if (has_dom < 0) return -1;
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(w->db,
+        has_dom
+        ? "SELECT token_id, amount, unlock_block FROM utxo_set "
+          "WHERE owner = ?1 AND domain_id = ?2 "
+          "ORDER BY token_id, nullifier"
+        : "SELECT token_id, amount, unlock_block FROM utxo_set "
+          "WHERE owner = ?1 "
+          "ORDER BY token_id, nullifier", -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    sqlite3_bind_text(stmt, 1, owner, -1, SQLITE_STATIC);
+    if (has_dom)
+        sqlite3_bind_int64(stmt, 2, (sqlite3_int64)DNA_DOMAIN_CORE);
+
+    int count = 0;
+    int result = 0;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        const void *tid = sqlite3_column_blob(stmt, 0);
+        if (sqlite3_column_type(stmt, 0) != SQLITE_BLOB || !tid ||
+            sqlite3_column_bytes(stmt, 0) != 64 ||
+            sqlite3_column_type(stmt, 1) != SQLITE_INTEGER ||
+            sqlite3_column_type(stmt, 2) != SQLITE_INTEGER) {
+            result = -1;
+            break;
+        }
+        sqlite3_int64 amount = sqlite3_column_int64(stmt, 1);
+        sqlite3_int64 unlock = sqlite3_column_int64(stmt, 2);
+        if (amount < 0 || unlock < 0) {           /* never a huge u64 */
+            result = -1;
+            break;
+        }
+
+        /* rows arrive grouped by token (ORDER BY token_id): a new token
+         * opens the next entry */
+        if (count == 0 || memcmp(out[count - 1].token_id, tid, 64) != 0) {
+            if (count == max_entries) {
+                result = NODUS_WITNESS_BALANCE_TOO_MANY;
+                break;
+            }
+            memset(&out[count], 0, sizeof(out[count]));
+            memcpy(out[count].token_id, tid, 64);
+            count++;
+        }
+        nodus_witness_balance_entry_t *e = &out[count - 1];
+        if (dna_ck_add_u64(e->total, (uint64_t)amount, &e->total) != 0 ||
+            dna_ck_add_u64(e->coins, 1, &e->coins) != 0 ||
+            ((uint64_t)unlock < spend_h &&
+             dna_ck_add_u64(e->spendable, (uint64_t)amount,
+                            &e->spendable) != 0)) {
+            result = -1;
+            break;
+        }
+    }
+    if (result == 0 && rc != SQLITE_DONE) result = -1;   /* mid-scan fault */
+    sqlite3_finalize(stmt);
+
+    if (result != 0) {
+        *count_out = 0;
+        return result;
+    }
     *count_out = count;
     return 0;
 }

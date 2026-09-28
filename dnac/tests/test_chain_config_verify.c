@@ -3,6 +3,8 @@
  * Local rules covered (client-side, no DB):
  *   - signer_count == 1
  *   - param_id in {1..DNAC_CFG_PARAM_MAX_ID}
+ *   - param_id read by the running consensus (0.20.3,
+ *     dnac_cfg_param_read_by_consensus: 4 and 5)
  *   - new_value in per-param range
  *   - signed_at_block > 0
  *   - valid_before_block > effective_block_height
@@ -73,17 +75,22 @@ int main(void) {
      * MAX_TXS_PER_BLOCK (id 1) is RETIRED — verify_chain_config_rules'
      * switch refuses it unconditionally, before signed_at/valid_before/
      * committee_sig_count/duplicate-witness are ever reached (verify.c).
-     * Every "any valid param" vehicle below that is NOT specifically
-     * testing param_id itself moves to the surviving
-     * DNAC_CFG_BLOCK_INTERVAL_SEC (id 2, range [1,15], value 5 already
-     * fits) so it keeps isolating what it claims to isolate. */
+     * 0.20.3: BLOCK_INTERVAL_SEC (id 2), the vehicle that replaced id 1,
+     * is itself refused now — the running consensus does not read it
+     * (dnac_cfg_param_read_by_consensus). Every "any valid param" vehicle
+     * below that is NOT specifically testing param_id itself moves to
+     * TARGET_ACTIVE_COUNT (id 4, a parameter the consensus reads; value
+     * 9 inside [DNAC_CFG_MIN_TARGET_ACTIVE, DNAC_CFG_MAX_TARGET_ACTIVE])
+     * so it keeps isolating what it claims to isolate. */
+#define VEH_PARAM  ((uint8_t)DNAC_CFG_TARGET_ACTIVE_COUNT)
+#define VEH_VALUE  9ULL
 
-    /* 1. Baseline: valid BLOCK_INTERVAL_SEC proposal, 5 sigs. */
-    build_valid_chain_config(&tx, DNAC_CFG_BLOCK_INTERVAL_SEC, 5);
+    /* 1. Baseline: valid TARGET_ACTIVE_COUNT proposal, 5 sigs. */
+    build_valid_chain_config(&tx, VEH_PARAM, VEH_VALUE);
     CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
 
     /* 2. Wrong tx_type → INVALID_TX_TYPE. */
-    build_valid_chain_config(&tx, DNAC_CFG_BLOCK_INTERVAL_SEC, 5);
+    build_valid_chain_config(&tx, VEH_PARAM, VEH_VALUE);
     tx.type = DNAC_TX_SPEND;
     CHECK(dnac_tx_verify_chain_config_rules(&tx) == DNAC_ERROR_INVALID_TX_TYPE);
 
@@ -91,23 +98,34 @@ int main(void) {
     CHECK(dnac_tx_verify_chain_config_rules(NULL) == DNAC_ERROR_INVALID_PARAM);
 
     /* 4. signer_count != 1. */
-    build_valid_chain_config(&tx, DNAC_CFG_BLOCK_INTERVAL_SEC, 5);
+    build_valid_chain_config(&tx, VEH_PARAM, VEH_VALUE);
     tx.signer_count = 0;
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
-    build_valid_chain_config(&tx, DNAC_CFG_BLOCK_INTERVAL_SEC, 5);
+    build_valid_chain_config(&tx, VEH_PARAM, VEH_VALUE);
     tx.signer_count = 2;
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
 
     /* 5. param_id bounds — 0 and >MAX_ID rejected; ids 1
      * (MAX_TXS_PER_BLOCK) and 3 (INFLATION_START_BLOCK) are IN
-     * [1, MAX_ID] but RETIRED (cases 6 and 8 below, not here); the
-     * governable id this case checks accepts a valid value. */
+     * [1, MAX_ID] but RETIRED (cases 6 and 8 below, not here), id 2 is
+     * not read by the running consensus (case 7); the governable id this
+     * case checks accepts a valid value. */
     build_valid_chain_config(&tx, 0, 5);
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
     build_valid_chain_config(&tx, DNAC_CFG_PARAM_MAX_ID + 1, 0);   /* 6 */
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
-    build_valid_chain_config(&tx, DNAC_CFG_BLOCK_INTERVAL_SEC, 5);
+    build_valid_chain_config(&tx, VEH_PARAM, VEH_VALUE);
     CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
+
+    /* 5b. The read list itself: exactly {4, 5} of the governed id space
+     * are read by the running consensus. MUTANT KILLED: adding an id to
+     * dnac_cfg_param_read_by_consensus without a reader, or dropping 4/5
+     * (the witness-side scalar_rules consumes the same predicate). */
+    for (unsigned id = 0; id <= 255u; id++) {
+        const bool want = (id == DNAC_CFG_TARGET_ACTIVE_COUNT ||
+                           id == DNAC_CFG_GAS_PRICE_RAW_PER_UNIT);
+        CHECK(dnac_cfg_param_read_by_consensus((uint8_t)id) == want);
+    }
 
     /* 6. MAX_TXS_PER_BLOCK (id 1) is RETIRED: every value refuses, even
      * the shapes that used to be the valid [1,10] range — the hard cap
@@ -122,16 +140,37 @@ int main(void) {
     build_valid_chain_config(&tx, DNAC_CFG_MAX_TXS_PER_BLOCK, 11);
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
 
-    /* 7. BLOCK_INTERVAL_SEC range [1, 15]. Default Q6 tightened from 60. */
+    /* 7. BLOCK_INTERVAL_SEC (id 2) is NOT READ by the running consensus
+     * (0.20.3; decision file 2026-09-23-height-activated-upgrades-before-
+     * testnet.md item 1): refused for EVERY value — including the whole
+     * [1, 15] range this case used to ACCEPT (1, 5, 15), so a restored
+     * range check or a restored read-list entry fails here. RED on the
+     * pre-0.20.3 tree: 1, 5 and 15 passed. */
+    build_valid_chain_config(&tx, DNAC_CFG_BLOCK_INTERVAL_SEC, 1);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, DNAC_CFG_BLOCK_INTERVAL_SEC, 5);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, DNAC_CFG_BLOCK_INTERVAL_SEC, 15);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
     build_valid_chain_config(&tx, DNAC_CFG_BLOCK_INTERVAL_SEC, 0);
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
-    build_valid_chain_config(&tx, DNAC_CFG_BLOCK_INTERVAL_SEC, 1);
-    CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
-    build_valid_chain_config(&tx, DNAC_CFG_BLOCK_INTERVAL_SEC, 15);
-    CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
-    build_valid_chain_config(&tx, DNAC_CFG_BLOCK_INTERVAL_SEC, 16);
+
+    /* 7b. TARGET_ACTIVE_COUNT (id 4) range [DNAC_CFG_MIN_TARGET_ACTIVE,
+     * DNAC_CFG_MAX_TARGET_ACTIVE] = [7, 128] on the client mirror (the
+     * version-3 lane narrows the ceiling to 32 witness-side,
+     * NODUS_V2_ACTIVE_SET_MAX — not a client rule). Both edges and one
+     * past each. */
+    build_valid_chain_config(&tx, DNAC_CFG_TARGET_ACTIVE_COUNT,
+                             DNAC_CFG_MIN_TARGET_ACTIVE - 1);
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
-    build_valid_chain_config(&tx, DNAC_CFG_BLOCK_INTERVAL_SEC, 60);
+    build_valid_chain_config(&tx, DNAC_CFG_TARGET_ACTIVE_COUNT,
+                             DNAC_CFG_MIN_TARGET_ACTIVE);
+    CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, DNAC_CFG_TARGET_ACTIVE_COUNT,
+                             DNAC_CFG_MAX_TARGET_ACTIVE);
+    CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, DNAC_CFG_TARGET_ACTIVE_COUNT,
+                             DNAC_CFG_MAX_TARGET_ACTIVE + 1);
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
 
     /* 8. INFLATION_START_BLOCK (id 3) is RETIRED (tokenomics-v3 P2, P2-4;
@@ -169,33 +208,33 @@ int main(void) {
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
 
     /* 9. signed_at_block == 0 rejected (CC-AUDIT-008). */
-    build_valid_chain_config(&tx, DNAC_CFG_BLOCK_INTERVAL_SEC, 5);
+    build_valid_chain_config(&tx, VEH_PARAM, VEH_VALUE);
     tx.chain_config_fields.signed_at_block = 0;
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
 
     /* 10. valid_before <= effective rejected. */
-    build_valid_chain_config(&tx, DNAC_CFG_BLOCK_INTERVAL_SEC, 5);
+    build_valid_chain_config(&tx, VEH_PARAM, VEH_VALUE);
     tx.chain_config_fields.valid_before_block = tx.chain_config_fields.effective_block_height;
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
-    build_valid_chain_config(&tx, DNAC_CFG_BLOCK_INTERVAL_SEC, 5);
+    build_valid_chain_config(&tx, VEH_PARAM, VEH_VALUE);
     tx.chain_config_fields.valid_before_block =
         tx.chain_config_fields.effective_block_height - 1;
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
 
     /* 11. valid_before <= signed_at rejected. */
-    build_valid_chain_config(&tx, DNAC_CFG_BLOCK_INTERVAL_SEC, 5);
+    build_valid_chain_config(&tx, VEH_PARAM, VEH_VALUE);
     tx.chain_config_fields.signed_at_block = tx.chain_config_fields.valid_before_block + 1;
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
 
     /* 12. committee_sig_count boundaries. */
     for (uint8_t n = 0; n < DNAC_CHAIN_CONFIG_MIN_SIGS; n++) {
-        build_valid_chain_config(&tx, DNAC_CFG_BLOCK_INTERVAL_SEC, 5);
+        build_valid_chain_config(&tx, VEH_PARAM, VEH_VALUE);
         tx.chain_config_fields.committee_sig_count = n;
         CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
     }
     /* Accepted: 5, 6, 7. */
     for (uint8_t n = DNAC_CHAIN_CONFIG_MIN_SIGS; n <= DNAC_CHAIN_CONFIG_MAX_SIGS; n++) {
-        build_valid_chain_config(&tx, DNAC_CFG_BLOCK_INTERVAL_SEC, 5);
+        build_valid_chain_config(&tx, VEH_PARAM, VEH_VALUE);
         tx.chain_config_fields.committee_sig_count = n;
         /* Extend distinct witness_ids up to n. */
         for (uint8_t i = 0; i < n; i++) {
@@ -204,12 +243,12 @@ int main(void) {
         CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
     }
     /* n > 7 rejected. */
-    build_valid_chain_config(&tx, DNAC_CFG_BLOCK_INTERVAL_SEC, 5);
+    build_valid_chain_config(&tx, VEH_PARAM, VEH_VALUE);
     tx.chain_config_fields.committee_sig_count = DNAC_CHAIN_CONFIG_MAX_SIGS + 1;
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
 
     /* 13. Duplicate witness_ids rejected. */
-    build_valid_chain_config(&tx, DNAC_CFG_BLOCK_INTERVAL_SEC, 5);
+    build_valid_chain_config(&tx, VEH_PARAM, VEH_VALUE);
     /* Make votes[0] and votes[3] collide. */
     memcpy(tx.chain_config_fields.committee_votes[3].witness_id,
            tx.chain_config_fields.committee_votes[0].witness_id, 32);

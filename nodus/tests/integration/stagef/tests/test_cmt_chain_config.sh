@@ -26,6 +26,24 @@
 #   collection with injected answers, test_witness_p2p.c (2d) one 0x71
 #   round trip between two in-process hosts, test_tier3.c the codec.
 #
+#   THE PARAMETER (0.20.3): TARGET_ACTIVE_COUNT (param id 4) = 32.
+#   Until 0.20.3 this scenario voted BLOCK_INTERVAL_SEC (id 2), which the
+#   Comet lane never reads — and since 0.20.3 CHAIN_CONFIG refuses every
+#   parameter the running consensus does not read (dnac.h
+#   dnac_cfg_param_read_by_consensus = {4, 5}; decision file
+#   docs/plans/decisions/2026-09-23-height-activated-upgrades-before-
+#   testnet.md item 1, which also names this move). Why 32: it is the
+#   value the chain already uses when NO row exists
+#   (DNAC_TARGET_ACTIVE_DEFAULT = NODUS_V2_ACTIVE_SET_MAX = 32, read by
+#   nodus_witness_committee.c committee_target_for_epoch and
+#   nodus_witness_vset.c vset_target_for_epoch), and the version-3 lane's
+#   governed range is [7, 32]. So when the chain later passes the
+#   effective height, every seat count a later scenario in the same sweep
+#   sees is byte-identical to a sweep without this row — including the
+#   8th validator test_v2_stake.sh bonds, which any target below 8 would
+#   rotate out. The cost is honesty about what the value proves: see HOW
+#   IT CAN LIE.
+#
 # WHAT IT REQUIRES
 #   ⚠ **A SHORT-GRACE BINARY. Both halves, or it skips.**
 #     compile: -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15
@@ -36,20 +54,25 @@
 #              these into the genesis config, and a build compiled with
 #              a DIFFERENT grace than the config declares fails the
 #              config/binary agreement check at bring-up, not here.
-#   At the shipped grace (17280 blocks, ~29 h at 6 s/block) BLOCK_INTERVAL
-#   _SEC's own effective height would need to be tens of thousands of
-#   blocks past the proposal — this scenario SKIPS (rc=99) rather than
-#   wait for that.
+#   At the shipped grace (17280 blocks — about 19 h at the 4 s commit
+#   timeout under constant load, far longer on an idle chain that makes
+#   an empty block every 60 s) TARGET_ACTIVE_COUNT's own effective height
+#   (a SAFETY-class parameter) would need to be that far past the
+#   proposal — this scenario SKIPS (rc=99) rather than wait for that.
 #   A cluster from stagef_up_v2.sh. No pump / funded user needed — this
 #   scenario never spends a UTXO, it only proposes a governance change.
 #
 # WHAT IT LEAVES BEHIND
-#   One committed `chain_config_history` row (BLOCK_INTERVAL_SEC ->
-#   6, effective at the height this run picked) on every node. The
-#   chain's block interval itself does not change — chain_config_get_u64
-#   readers evaluate the override only once the chain reaches the
-#   effective height, and nothing in this scenario waits that far.
-#   Nothing is killed or restarted.
+#   One committed `chain_config_history` row (TARGET_ACTIVE_COUNT ->
+#   32, param_id 4, effective at the height this run picked, ~21 blocks
+#   ahead at grace 15) on every node. Nothing waits for it here, but the
+#   chain WILL pass that height if later scenarios run on the same
+#   cluster: from the first epoch boundary at or after it, the committee
+#   and snapshot builders read the row's 32 where they read the no-row
+#   default 32 before — the same number, so no seat count changes. A scenario that asserts
+#   "no TARGET_ACTIVE_COUNT row exists" (test_v2_grow_7_32.sh) must not
+#   share this cluster; the README already runs it standalone on its
+#   own fresh bring-up. Nothing is killed or restarted.
 #
 # HOW IT CAN LIE
 #   - **The CLI's exit code is the RPC round's own verdict, not
@@ -79,10 +102,18 @@
 #     did not happen, never a pass.
 #   - **This scenario does NOT prove the effective-height CUTOVER** —
 #     nothing here waits for the chain to reach the proposal's
-#     effective height and read back the NEW block interval; it proves
-#     only that the proposal round-trips and commits identically
-#     everywhere. That is test_v2_epoch_boundary.sh-adjacent territory,
-#     not this scenario's.
+#     effective height and read back the new target; it proves only
+#     that the proposal round-trips and commits identically everywhere.
+#     And because the value (32) equals the no-row default, even a run
+#     that DID wait could not tell "the row was applied" from "the row
+#     was ignored" by counting seats — deliberately, so this row stays
+#     harmless to the rest of a sweep. Observing the cutover needs a
+#     value that differs from the default (the decision's item 2, a
+#     separate scenario).
+#   - **It does NOT prove the refusal of an unread parameter** (id 2)
+#     over the network — that is pinned in the unit tests
+#     (test_chain_config_verify.c, test_v2_econ_params.c, test_cc_appr.c
+#     block_interval_unread_refused, test_v2_native.c), not here.
 #
 # ════════════════════════════════════════════════════════════════════
 set -euo pipefail
@@ -125,14 +156,19 @@ fi
 
 tip0=$(stagef_cmt_tip "$ref_db")
 [ "$tip0" -ge 0 ] || die "no Comet block on node$REF yet"
-# BLOCK_INTERVAL_SEC is a SAFETY-CRITICAL param (same grace tier as
-# INFLATION_START_BLOCK / TARGET_ACTIVE_COUNT) — the grace floor is
+# TARGET_ACTIVE_COUNT is a SAFETY-CRITICAL param
+# (nodus_chain_config_grace_for_param) — the grace floor is
 # STAGEF_CC_GRACE_SAFETY blocks past the candidate height. Generous
 # margin (+5) over the exact floor so a few blocks of collection-round
 # latency cannot itself invalidate the proposal.
 effective=$(( tip0 + 1 + STAGEF_CC_GRACE_SAFETY + 5 ))
+# 32 = the no-row default and the version-3 ceiling — see the header
+# ("THE PARAMETER") for why this value and what it cannot prove.
+CC_PARAM_NAME=TARGET_ACTIVE_COUNT
+CC_PARAM_ID=4
+CC_VALUE=32
 
-echo "[ok] node$REF at tip $tip0, proposing BLOCK_INTERVAL_SEC=6 effective=$effective"
+echo "[ok] node$REF at tip $tip0, proposing $CC_PARAM_NAME=$CC_VALUE effective=$effective"
 
 stagef_cmt_diff_at_floor "pre-cc-propose" || exit 2
 
@@ -144,7 +180,7 @@ log="$BASE_DIR/cc_propose_node${REF}.log"
 propose_rc=0
 "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$REF")" \
     -i "$(stagef_node_dir "$REF")/identity" \
-    chain-config propose --param BLOCK_INTERVAL_SEC --value 6 \
+    chain-config propose --param "$CC_PARAM_NAME" --value "$CC_VALUE" \
     --effective "$effective" > "$log" 2>&1 || propose_rc=$?
 cat "$log"
 [ "$propose_rc" -eq 0 ] || die "chain-config propose exited $propose_rc (see $log)"
@@ -152,11 +188,12 @@ grep -q "proposal accepted" "$log" || die "propose did not report acceptance (se
 
 echo "[ok] proposal round-trip accepted — waiting for the committed row"
 
-# The row's PRIMARY KEY is (param_id, effective_block) — param_id 2 is
-# BLOCK_INTERVAL_SEC (nodus_chain_config.h). Wait for the row itself,
-# never a bare tip+1 (stagef_cmt_wait_row's own DELTA 2 rationale).
+# The row's PRIMARY KEY is (param_id, effective_block) — param_id 4 is
+# TARGET_ACTIVE_COUNT (dnac.h dnac_chain_config_param_id_t). Wait for the
+# row itself, never a bare tip+1 (stagef_cmt_wait_row's own DELTA 2
+# rationale).
 row_h=$(stagef_cmt_wait_row "$ref_db" \
-    "SELECT COUNT(*) FROM chain_config_history WHERE param_id=2 AND effective_block=$effective;") \
+    "SELECT COUNT(*) FROM chain_config_history WHERE param_id=$CC_PARAM_ID AND effective_block=$effective AND new_value=$CC_VALUE;") \
     || { rc=$?; [ "$rc" -eq 1 ] && die "stalled waiting for the chain_config_history row"; \
          die "chain advanced past its height budget without the row appearing (dropped, not delayed)"; }
 echo "[ok] chain_config_history row committed by height $row_h"
@@ -169,7 +206,7 @@ for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
         || die "node$n never reached height $row_h (mesh replication stalled)"
     r=$(sqlite3 "$(stagef_node_chain_db "$n")" \
         "SELECT new_value || ':' || hex(tx_hash) FROM chain_config_history \
-         WHERE param_id=2 AND effective_block=$effective;" 2>/dev/null || echo ERR)
+         WHERE param_id=$CC_PARAM_ID AND effective_block=$effective;" 2>/dev/null || echo ERR)
     rows="$rows node$n=$r"
     if [ -z "$first" ]; then first="$r"
     elif [ "$r" != "$first" ]; then

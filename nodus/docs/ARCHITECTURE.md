@@ -2920,6 +2920,109 @@ not recover it, wipe + pin rejoin does (7/7). Both PASS at grace 15/15
 (the short-grace build) — the LOGIC only, nothing about the production
 grace.
 
+### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
+
+**Records:** `docs/plans/2026-09-28-scan-v3-design.md`, decision
+`docs/plans/decisions/2026-09-28-scan-v3-query.md` (item 3a: public balance).
+Nodus Scan was empty since the chain became version 3: `dna-explorerd` walked
+`dnac_ledger_range` / `dnac_tx` / `dnac_block`, which read legacy tables the
+version-3 lane never writes (`ledger_entries` has no writer).
+
+- **`dnac_v3_block` {h, i, b}** — one block, paged by a byte budget (1 KiB..1 MiB,
+  ≤ 256 items per page): the header (cometbft block hash checked against
+  `v2_blocks.block_id`, previous hash, header time, proposer address, global
+  root, applied envelope count, total items, chain tip) and each item with its
+  kind (envelope / claim), result code from the stored FinalizeBlock response,
+  wire and intent ids (applied envelopes), fee, op name and — for applied items —
+  its effects: coins consumed and created (id, owner, amount, token, unlock),
+  burned amount, and the SYSTEM record (stake / delegate / undelegate / unstake /
+  validator update / chain config). Effects come from the apply engine's own
+  decoders through one read-only describer (`nodus_rt_native_describe_leg`); the
+  UNDELEGATE release-coin derivation is one helper shared with the exec
+  (`rtn_sysfund_release_coin`). Pure read: no write, no clock, no cache; refused
+  while a ledger transaction is open; any store/decode fault fails the request.
+  Wire keys: `nodus.h` (the `dnac_v3_block` comment).
+- **`dnac_balance` {owner}** — PUBLIC, TRANSPARENT coins only: per token the
+  total, the spendable part (`unlock_block < tip + 1`, the spend exec's lock
+  rule) and the coin count, summed in C with overflow checks (SQL SUM switches
+  to floating point on overflow in some SQLite versions). No coin list, no
+  history: `dnac_utxo` / `dnac_history` keep the C11 session-owner gate
+  (`d40b89d1`). Never extended to a shielded pool.
+- **`dnac_supply`** gains an optional `tip` key.
+- **Explorer (`dna-explorerd` 0.2.0):** walks heights, one sqlite transaction
+  per height, index schema v2 (rebuilt from height 1 on first start),
+  chain-reset check keyed on the 32-byte chain id; `/api/address` balances from
+  `dnac_balance` (5 s cache, separate client handle for the HTTP thread).
+  Frontend `website/scan/app.js` shows position (height:index), op names,
+  refused items and per-token balances.
+- Tests: `test_v3_block_query` (real chain: header/codes/effects/paging/balance,
+  hostile client replies), `explorer/tests/test_explorer.c` (schema, page loop,
+  partial-height watermark, reset check, routes).
+
+### Chain-config accepts only parameters the consensus reads (0.20.3)
+
+**Governing record:** `docs/plans/decisions/2026-09-23-height-activated-upgrades-before-testnet.md`
+item 1 (operator, 2026-09-23): CHAIN_CONFIG refuses a parameter the
+RUNNING consensus does not read; each consensus declares its own list and
+the list ships in the binary. The number is NOT deleted — permanent
+retirement (the id-1 treatment) was the rejected alternative.
+
+**The list.** `dnac_cfg_param_read_by_consensus(param_id)`
+(`dnac/include/dnac/dnac.h`, `static inline`) — true for exactly
+`TARGET_ACTIVE_COUNT` (4; read by `committee_target_for_epoch`,
+`nodus_witness_committee.c`, and `vset_target_for_epoch`,
+`nodus_witness_vset.c`) and `GAS_PRICE_RAW_PER_UNIT` (5; read by
+`env_gas_price_check`, `nodus_witness_v2_apply.c`, and the fee quote in
+`nodus_witness_handlers.c`). Ids 1 and 3 stay RETIRED; id 2
+(`BLOCK_INTERVAL_SEC`) is off the list because the Comet lane's block
+pace is a compile-time node setting (`nodus_witness_cmt_node.c`, the
+consensus-config block: "has NO effect on this lane and is not read").
+
+**The rule, one predicate on both sides.** `nodus_chain_config_scalar_rules`
+(`nodus_witness_chain_config.c`) consults the predicate right after the
+`1..CC_PARAM_MAX_ID` bound, so every path that routes through it refuses
+an unread id: the SYSTEM CHAIN_CONFIG exec in block apply
+(`nodus_rt_system_exec`, `nodus_witness_rt_native.c` — the item is
+refused before its one effect, no `chain_config_history` row; the CheckTx
+dry run executes the same exec), the 0x71 approval answer
+(`cc_appr_rules_chain_config` — "scalar rules rejected", no signature),
+the legacy `verify_cc_local_rules`, and the nodus-cli pre-check.
+`nodus_chain_config_grace_for_param` returns `UINT64_MAX` for id 2, as for
+1 and 3. The client mirror `dnac_tx_verify_chain_config_rules`
+(`dnac/src/transaction/verify.c`) consults the SAME predicate, so the two
+lists cannot drift. `nodus-cli chain-config propose` names only the read
+parameters and prints them in its usage.
+
+**History is history.** The predicate judges NEW proposals only.
+`nodus_chain_config_get_u64`, the chain-config merkle root and the joiner
+bundle never consult it — an id-2 row committed before 0.20.3 is still
+read, hashed and replicated. The id-2 bounds
+(`DNAC_CFG_MIN/MAX_BLOCK_INTERVAL_SEC`, [1, 15]) stay in `dnac.h` as the
+parameter's definition; a consensus that reads the block interval puts
+id 2 back on the list, restores its range check and its SAFETY grace.
+
+**Consensus change, no height gate.** A 0.20.2 node commits an id-2 item a
+0.20.3 node refuses, so a fleet mixing the two splits at any block
+carrying such an item — the same class as HF-1's lagging node. A 0.20.3
+seat also refuses to sign an id-2 approval, so once a quorum of seats runs
+0.20.3 no id-2 envelope can collect its approvals; the safe order is the
+whole fleet on 0.20.3 (stop-all) with no id-2 proposal in flight.
+Replaying a chain from genesis with 0.20.3 diverges if that chain ever
+COMMITTED an id-2 item — check `chain_config_history` for `param_id = 2`
+before deploying on a non-wiped chain.
+
+**Tests.** `dnac/tests/test_chain_config_verify.c` (case 5b: the predicate
+is exactly {4, 5}; case 7: id 2 refused at 0, 1, 5, 15; the vehicle moved
+to id 4), `test_v2_econ_params` (id 2 refused by the scalar rules at 1, 5,
+15, grace `UINT64_MAX`), `test_cc_appr` (`block_interval_unread_refused`:
+the responder answers "scalar rules rejected"), `test_v2_native` (an
+id-2 envelope that committed before 0.20.3 is refused in block apply and
+writes no row; every vehicle moved to id 4). `test_chain_config_witness`
+and `test_chain_config_cache_failclose` keep inserting id-2 rows directly
+and reading them — the "history stays readable" side. Harness
+`test_cmt_chain_config.sh` moved to `TARGET_ACTIVE_COUNT = 32` (the no-row
+default, so it changes no seat count in a sweep).
+
 ### The chain id is read once per open, not once per call (2026-09-26, nodus 0.19.79)
 
 **What.** `nodus_witness_v2_chain_id` (`nodus_witness_v2_claims.c`)

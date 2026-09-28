@@ -359,9 +359,11 @@ extern "C" {
 #define DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS  720      /* 1 hour */
 #endif
 
-/** chain_config_tx grace — safety-critical params (BLOCK_INTERVAL,
- *  TARGET_ACTIVE_COUNT; INFLATION_START until tokenomics-v3 P2 retired
- *  id 3). Decoupled from EPOCH_LENGTH so it
+/** chain_config_tx grace — safety-critical params (TARGET_ACTIVE_COUNT;
+ *  INFLATION_START until tokenomics-v3 P2 retired id 3; BLOCK_INTERVAL
+ *  while a consensus reads it — the running Comet lane does not, so id 2
+ *  is refused since 0.20.3, dnac_cfg_param_read_by_consensus). Decoupled
+ *  from EPOCH_LENGTH so it
  *  can be tuned independently; 24 hours gives operators + auditors time to
  *  react.
  *
@@ -483,7 +485,23 @@ typedef enum {
                                           *   mirror (verify.c); the id NEVER
                                           *   activates again and is never
                                           *   reassigned. */
-    DNAC_CFG_BLOCK_INTERVAL_SEC    = 2,  /**< overrides chain_def.block_interval_sec */
+    DNAC_CFG_BLOCK_INTERVAL_SEC    = 2,  /**< NOT READ by the running consensus
+                                          *   (0.20.3; decision file
+                                          *   2026-09-23-height-activated-
+                                          *   upgrades-before-testnet.md
+                                          *   item 1): the Comet lane's
+                                          *   block pace is a compile-time
+                                          *   node setting
+                                          *   (nodus_witness_cmt_node.c,
+                                          *   "has NO effect on this lane
+                                          *   and is not read"), so a vote
+                                          *   is refused — see
+                                          *   dnac_cfg_param_read_by_
+                                          *   consensus below. NOT retired:
+                                          *   the number stays, and a
+                                          *   consensus that reads the
+                                          *   block interval makes it
+                                          *   votable again. */
     DNAC_CFG_INFLATION_START_BLOCK = 3,  /**< RETIRED (tokenomics-v3 P2,
                                           *   P2-4; decision file
                                           *   2026-09-22-nodus-tokenomics-
@@ -515,6 +533,37 @@ typedef enum {
     DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_GAS_PRICE_RAW_PER_UNIT
 } dnac_chain_config_param_id_t;
 
+/** The chain-config parameters the RUNNING consensus reads — the one list
+ *  (0.20.3, decision file 2026-09-23-height-activated-upgrades-before-
+ *  testnet.md item 1: "CHAIN_CONFIG, o an çalışan konsensüsün okumadığı
+ *  bir parametreyi reddeder ... liste konsensüsle birlikte binary'de
+ *  gelir").
+ *
+ *  The running consensus is the Comet lane (cometbft @709fd12b port).
+ *  Its readers of chain_config_history, by grep:
+ *    - TARGET_ACTIVE_COUNT (4): nodus_witness_committee.c
+ *      committee_target_for_epoch, nodus_witness_vset.c
+ *      vset_target_for_epoch;
+ *    - GAS_PRICE_RAW_PER_UNIT (5): nodus_witness_v2_apply.c
+ *      env_gas_price_check, nodus_witness_handlers.c (the fee quote).
+ *  No other governed id has a reader: 1 and 3 are RETIRED (above), and 2
+ *  (BLOCK_INTERVAL_SEC) is not read on this lane.
+ *
+ *  Both sides of the rule consume THIS predicate — the witness-side
+ *  nodus_chain_config_scalar_rules (the one authority for the 0x71
+ *  approval answer and the SYSTEM CHAIN_CONFIG exec in block apply) and
+ *  the client-side mirror dnac_tx_verify_chain_config_rules (verify.c) —
+ *  so the two lists cannot drift. Only NEW proposals are judged by it;
+ *  reading committed chain_config_history rows (nodus_chain_config_get_u64,
+ *  the chain_config merkle root) never consults it.
+ *
+ *  A consensus change that reads another id adds it HERE, with its reader
+ *  cited, in the same change that adds the reader. */
+static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
+    return param_id == (uint8_t)DNAC_CFG_TARGET_ACTIVE_COUNT ||
+           param_id == (uint8_t)DNAC_CFG_GAS_PRICE_RAW_PER_UNIT;
+}
+
 /** Value range bounds — consensus-critical (client + witness reject out-of-range).
  *
  * R3 W4-C delta 2 (operator "kaldır" 2026-09-18;
@@ -533,7 +582,15 @@ typedef enum {
  * symbol returned zero remaining candidates). It had NO live consumer
  * left on the witness side; `NODUS_W_MAX_BLOCK_TXS` (nodus_types.h) it
  * used to mirror is itself only read by the legacy merkle helpers
- * (`nodus_witness_merkle.c`), not the version-3 path. */
+ * (`nodus_witness_merkle.c`), not the version-3 path.
+ *
+ * BLOCK_INTERVAL_SEC's [1, 15] below is the parameter's definition, kept
+ * with its number (decision file 2026-09-23-height-activated-upgrades-
+ * before-testnet.md item 1: "numara SİLİNMEZ"). Since 0.20.3 no range
+ * check consumes it: the running consensus does not read id 2
+ * (dnac_cfg_param_read_by_consensus refuses it first). A consensus that
+ * reads the block interval puts id 2 back on that list and range-checks
+ * against these bounds again. */
 #define DNAC_CFG_MIN_BLOCK_INTERVAL_SEC     1ULL
 #define DNAC_CFG_MAX_BLOCK_INTERVAL_SEC     15ULL   /* Q6 default — tightened from 60 */
 /* tokenomics-v3 P2: DNAC_CFG_MAX_INFLATION_START_BLOCK (the 2^48 bound of
@@ -556,9 +613,10 @@ typedef enum {
  *  committee-selection path (wired in a later S3 wave), so it is
  *  epoch-boundary-effective by construction — a mid-epoch effective_block
  *  cannot resize a live committee.
- *  GRACE CLASS: SAFETY-CRITICAL (same tier as BLOCK_INTERVAL_SEC —
- *  DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS; INFLATION_START_BLOCK was in it
- *  until tokenomics-v3 P2 retired id 3). */
+ *  GRACE CLASS: SAFETY-CRITICAL (DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS;
+ *  INFLATION_START_BLOCK was in it until tokenomics-v3 P2 retired id 3,
+ *  and BLOCK_INTERVAL_SEC is refused since 0.20.3 — not read by the
+ *  running consensus). */
 #define DNAC_CFG_MIN_TARGET_ACTIVE          ((uint64_t)DNAC_COMMITTEE_SIZE)
 #define DNAC_CFG_MAX_TARGET_ACTIVE          ((uint64_t)DNAC_MAX_ACTIVE_VALIDATORS)
 

@@ -25,7 +25,9 @@
  *      count/framing/truncation/trailing, wrong member, wrong epoch,
  *      wrong set hash, kind-1-no-approvals, allowlist), snapshot
  *      ROTATION, validity-window shape, FRESHNESS, grace, duplicate
- *      (param, effective), retired param 3 (INFLATION_START), nonzero
+ *      (param, effective), retired param 3 (INFLATION_START), param 2
+ *      (BLOCK_INTERVAL_SEC — not read by the running consensus, 0.20.3,
+ *      no row written), nonzero
  *      fee_amount — each refused as an item, the ledger byte-identical;
  *      CC fault matrix F13/F31/F37 (the cometbft lane's points).
  *   4. CORE slice — SPEND: valid transfer + change; multi-input/multi-
@@ -1408,13 +1410,15 @@ static int test_system_cc(void) {
         for (int i = 0; i < 3; i++) {
             /* R3 W4-C delta 3: param 1 (MAX_TXS_PER_BLOCK) is retired
              * (nodus_witness_chain_config.c's scalar_rules refuses it
-             * unconditionally) — moved to the surviving
-             * DNAC_CFG_BLOCK_INTERVAL_SEC (id 2, range [1,15]). These
+             * unconditionally) — moved to DNAC_CFG_BLOCK_INTERVAL_SEC
+             * (id 2), and in 0.20.3 to DNAC_CFG_TARGET_ACTIVE_COUNT
+             * (id 4, value 9 in [7, 32]) because the running consensus
+             * does not read id 2 and refuses it. These
              * three cases die at the SCALAR shape/grace check itself
              * (window shape, grace), reached identically regardless of
              * which surviving param carries them, so no other value
              * needs to move. */
-            CHECK(cc_env(&fx, &e, 1, DNAC_CFG_BLOCK_INTERVAL_SEC, 5,
+            CHECK(cc_env(&fx, &e, 1, DNAC_CFG_TARGET_ACTIVE_COUNT, 9,
                          sneg[i].eff, 0x42, 1,
                          sneg[i].vb, voters5, 5, sneg[i].fee, NULL,
                          NULL) == 0, "build");
@@ -1482,14 +1486,15 @@ static int test_system_cc(void) {
                         "binding transitively via leg_auth_digest)";
         cneg[13].so.chain_id = other_chain2;
         for (int i = 0; i < 14; i++) {
-            /* R3 W4-C delta 3: param 1 -> id 2 (surviving). Every case
+            /* R3 W4-C delta 3: param 1 -> id 2; 0.20.3: -> id 4 (id 2
+             * is not read by the running consensus). Every case
              * here is an AUTH/quorum-matrix defect, caught at the
              * committee_n/quorum gate (nodus_witness_rt_native.c ~:3767-
              * 3770) BEFORE the scalar param check ever runs — moving off
              * the retired id keeps these cases isolating what they claim
              * to isolate instead of silently short-circuiting on
              * retirement. */
-            CHECK(cc_env(&fx, &e, 1, DNAC_CFG_BLOCK_INTERVAL_SEC, 5, 1000,
+            CHECK(cc_env(&fx, &e, 1, DNAC_CFG_TARGET_ACTIVE_COUNT, 9, 1000,
                          0x42, 1, 2000,
                          cneg[i].voters, cneg[i].nv, 0, &cneg[i].co,
                          &cneg[i].so) == 0, "build");
@@ -1506,10 +1511,11 @@ static int test_system_cc(void) {
             sign_opt_t so;
             memset(&so, 0, sizeof(so));
             so.call_flip = 1;
-            /* param 1 -> 2 (retired id): this case dies on the call-byte
-             * substitution invalidating every signature, before any
-             * scalar check runs. */
-            CHECK(cc_env(&fx, &e, 1, DNAC_CFG_BLOCK_INTERVAL_SEC, 5, 1000,
+            /* param 1 (retired) -> 2 -> 4 (id 2 unread since 0.20.3):
+             * this case dies on the call-byte substitution
+             * invalidating every signature, before any scalar check
+             * runs. */
+            CHECK(cc_env(&fx, &e, 1, DNAC_CFG_TARGET_ACTIVE_COUNT, 9, 1000,
                          0x42, 1, 2000, voters5,
                          5, 0, NULL, &so) == 0, "build");
             nodus_v2_envelope_t ve = { e.bytes, e.len };
@@ -1523,11 +1529,12 @@ static int test_system_cc(void) {
          * the quorum gate — approvals cannot be implied */
         {
             uint8_t call41[41];
-            /* param 1 -> 2 (retired id): a kind-1 leg carries zero
-             * approvals (committee_n == 0), rejected at the quorum gate
-             * before the scalar param check runs. */
+            /* param 1 (retired) -> 2 -> 4 (id 2 unread since 0.20.3):
+             * a kind-1 leg carries zero approvals (committee_n == 0),
+             * rejected at the quorum gate before the scalar param
+             * check runs. */
             CHECK(cc_call_build(call41, sizeof(call41),
-                                DNAC_CFG_BLOCK_INTERVAL_SEC, 5, 1000, 0x42,
+                                DNAC_CFG_TARGET_ACTIVE_COUNT, 9, 1000, 0x42,
                                 1, 2000) == 41, "call");
             int sub[1] = { 0 };
             CHECK(env_build_signed(&fx, &e, DNA_DOMAIN_SYSTEM,
@@ -1546,9 +1553,10 @@ static int test_system_cc(void) {
             sign_opt_t so;
             memset(&so, 0, sizeof(so));
             so.auth_kind = 3;
-            /* param 1 -> 2 (retired id): an unknown auth kind dies at
-             * admission, before the scalar param check runs. */
-            CHECK(cc_env(&fx, &e, 1, DNAC_CFG_BLOCK_INTERVAL_SEC, 5, 1000,
+            /* param 1 (retired) -> 2 -> 4 (id 2 unread since 0.20.3):
+             * an unknown auth kind dies at admission, before the
+             * scalar param check runs. */
+            CHECK(cc_env(&fx, &e, 1, DNAC_CFG_TARGET_ACTIVE_COUNT, 9, 1000,
                          0x42, 1, 2000, voters5,
                          5, 0, NULL, &so) == 0, "build");
             nodus_v2_envelope_t ve = { e.bytes, e.len };
@@ -1609,16 +1617,45 @@ static int test_system_cc(void) {
           "no row for the retired id can ever exist");
     OK();
 
+    /* 0.20.3 (decision file 2026-09-23-height-activated-upgrades-before-
+     * testnet.md item 1): BLOCK_INTERVAL_SEC (id 2) is NOT READ by the
+     * running consensus, so the SYSTEM CHAIN_CONFIG exec refuses it IN
+     * BLOCK APPLY (nodus_rt_system_exec -> nodus_chain_config_scalar_rules
+     * -> dnac_cfg_param_read_by_consensus), not only at admission.
+     * The envelope has the same shape this file COMMITTED before 0.20.3
+     * as its positive case (quorum 5 of 7, value 5 inside the old
+     * [1, 15], effective 20000 past the SAFETY grace, valid_before
+     * 30000; only the nonce differs) — so the ONLY thing refusing it is
+     * the read list. RED on the pre-0.20.3
+     * tree: this envelope committed and wrote a (2, 20000) row.
+     * KILLED BY: putting id 2 back on the read list, or restoring its
+     * range check in scalar_rules. */
+    CHECK(cc_env(&fx, &e, 1, DNAC_CFG_BLOCK_INTERVAL_SEC, 5, 20000, 0x45,
+                 1, 30000, voters5, 5, 0, NULL, NULL) == 0, "build");
+    {
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(item_refused(fx.w, &b) == 0,
+              "param id 2 (not read by the running consensus) must refuse "
+              "an otherwise-valid quorum proposal in block apply");
+        OK();
+    }
+    CHECK(q1(fx.w, "SELECT COUNT(*) FROM chain_config_history WHERE "
+                   "param_id=2") == 0,
+          "no row is written for a parameter the consensus does not read");
+    OK();
+
     /* POSITIVE: quorum (5 of 7) commits; scheduled activation holds.
-     * R3 W4-C delta 3: moved off the retired param 1 to the surviving
-     * DNAC_CFG_BLOCK_INTERVAL_SEC (id 2, range [1,15], value 5 already
-     * fits). id 2 carries the SAFETY grace class
+     * R3 W4-C delta 3 moved this off the retired param 1 to id 2; 0.20.3
+     * moved it again to TARGET_ACTIVE_COUNT (id 4, a parameter the
+     * running consensus reads — id 2 is refused above), value 9 inside
+     * the version-3 lane's [7, 32]. id 4 carries the SAFETY grace class
      * (nodus_chain_config_grace_for_param), so `effective` must clear
      * H + DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS (17280 in the default
      * build) — 20000 at H=1 does, reusing the same EFF0 shape
      * test_system_cc_target_active_max already uses below. valid_before
      * (30000) exceeds both the scalar window and the freshness gate. */
-    CHECK(cc_env(&fx, &e, 1, DNAC_CFG_BLOCK_INTERVAL_SEC, 5, 20000, 0x42,
+    CHECK(cc_env(&fx, &e, 1, DNAC_CFG_TARGET_ACTIVE_COUNT, 9, 20000, 0x42,
                  1, 30000, voters5, 5, 0,
                  NULL, NULL) == 0, "build");
     {
@@ -1629,13 +1666,13 @@ static int test_system_cc(void) {
         OK();
     }
     CHECK(q1(fx.w, "SELECT new_value FROM chain_config_history WHERE "
-                   "param_id=2 AND effective_block=20000") == 5,
+                   "param_id=4 AND effective_block=20000") == 9,
           "row committed");
     CHECK(q1(fx.w, "SELECT commit_block FROM chain_config_history WHERE "
-                   "param_id=2 AND effective_block=20000") == 1,
+                   "param_id=4 AND effective_block=20000") == 1,
           "commit height recorded");
     CHECK(q1(fx.w, "SELECT created_at_unix FROM chain_config_history "
-                   "WHERE param_id=2 AND effective_block=20000") == 0,
+                   "WHERE param_id=4 AND effective_block=20000") == 0,
           "no wall clock in the deterministic lane");
     OK();
     /* scheduled-transition semantics: value governs only from its
@@ -1647,11 +1684,11 @@ static int test_system_cc(void) {
      * from "unreadable". */
     {
         uint64_t v = 0;
-        CHECK(nodus_chain_config_get_u64(fx.w, DNAC_CFG_BLOCK_INTERVAL_SEC,
-                                         19999, 10, &v) == 1 && v == 10,
+        CHECK(nodus_chain_config_get_u64(fx.w, DNAC_CFG_TARGET_ACTIVE_COUNT,
+                                         19999, 32, &v) == 1 && v == 32,
               "not active before effective height");
-        CHECK(nodus_chain_config_get_u64(fx.w, DNAC_CFG_BLOCK_INTERVAL_SEC,
-                                         20000, 10, &v) == 0 && v == 5,
+        CHECK(nodus_chain_config_get_u64(fx.w, DNAC_CFG_TARGET_ACTIVE_COUNT,
+                                         20000, 32, &v) == 0 && v == 9,
               "active from effective height");
     }
     OK();
@@ -1673,11 +1710,11 @@ static int test_system_cc(void) {
         OK();
     }
     /* a second scheduled transition commits at H=2 so the chain reaches
-     * a height where the FRESHNESS gate becomes reachable. param 1 -> 2;
-     * effective 20001 clears the H=2 SAFETY-grace floor (2 + 17280) and
+     * a height where the FRESHNESS gate becomes reachable. param 1 -> 2
+     * -> 4 (0.20.3); effective 20001 clears the H=2 SAFETY-grace floor (2 + 17280) and
      * is a distinct PK from the first commit's 20000; valid_before
      * 30000 clears both the scalar window and freshness. */
-    CHECK(cc_env(&fx, &e, 2, DNAC_CFG_BLOCK_INTERVAL_SEC, 6, 20001, 0x77,
+    CHECK(cc_env(&fx, &e, 2, DNAC_CFG_TARGET_ACTIVE_COUNT, 10, 20001, 0x77,
                  1, 30000, voters5, 5, 0,
                  NULL, NULL) == 0, "build");
     {
@@ -1691,13 +1728,13 @@ static int test_system_cc(void) {
      * commit height rejects at the freshness mirror, with the scalar
      * window intact (vb 2 > effective 1 > 0, signed_at 1 < vb) —
      * reachable only at H > vb, hence the H=3 placement */
-    /* param 1 -> 2: freshness (H > valid_before, rt_native.c:3797) is
-     * checked BEFORE grace (rt_native.c:3798-3804), so this tiny
+    /* param 1 -> 2 -> 4: freshness (H > valid_before, rt_native.c) is
+     * checked BEFORE grace (rt_native.c), so this tiny
      * (effective=1, valid_before=2) shape still isolates the freshness
      * gate specifically for any surviving param — the scalar window
      * (valid_before > effective, valid_before > signed_at) passes first,
      * then freshness fires at H=3 before grace is ever evaluated. */
-    CHECK(cc_env(&fx, &e, 3, DNAC_CFG_BLOCK_INTERVAL_SEC, 5, 1, 0x88, 1,
+    CHECK(cc_env(&fx, &e, 3, DNAC_CFG_TARGET_ACTIVE_COUNT, 9, 1, 0x88, 1,
                  2, voters5, 5, 0,
                  NULL, NULL) == 0, "build");
     {
@@ -1708,11 +1745,11 @@ static int test_system_cc(void) {
         OK();
     }
     /* duplicate (param, effective) is a replayed transition — rejects.
-     * param 1 -> 2; effective 20000 deliberately REUSES the first
-     * commit's PK (param=2, effective=20000) above, so this exercises
+     * param 1 -> 2 -> 4; effective 20000 deliberately REUSES the first
+     * commit's PK (param=4, effective=20000) above, so this exercises
      * the replay/duplicate-PK guard specifically — valid_before 30000
      * clears the scalar window so the duplicate check is what fires. */
-    CHECK(cc_env(&fx, &e, 3, DNAC_CFG_BLOCK_INTERVAL_SEC, 5, 20000, 0x99,
+    CHECK(cc_env(&fx, &e, 3, DNAC_CFG_TARGET_ACTIVE_COUNT, 9, 20000, 0x99,
                  2, 30000, voters5, 5, 0,
                  NULL, NULL) == 0, "build");
     {
@@ -1741,13 +1778,13 @@ static int test_system_cc(void) {
     {
         env_t *stale = malloc(sizeof(*stale));
         CHECK(stale != NULL, "alloc");
-        /* param 1 -> 2; effective 20002 (grace-safe at H=3, distinct PK
+        /* param 1 -> 2 -> 4; effective 20002 (grace-safe at H=3, distinct PK
          * from the two commits above) and valid_before 30000 — this
          * rejection is decided at the AUTH boundary (stale committee
          * snapshot), reached before the scalar/grace checks, but the
          * FRESH re-signed build right below reuses the same values and
          * DOES need to clear grace to commit. */
-        CHECK(cc_env(&fx, stale, 3, DNAC_CFG_BLOCK_INTERVAL_SEC, 7, 20002,
+        CHECK(cc_env(&fx, stale, 3, DNAC_CFG_TARGET_ACTIVE_COUNT, 7, 20002,
                      0xAB, 3, 30000, voters5,
                      5, 0, NULL, NULL) == 0, "build stale");
         /* rotate: 6 out, 15 in */
@@ -1780,7 +1817,7 @@ static int test_system_cc(void) {
         /* the ROTATED-IN validator signs under the NEW snapshot: fresh
          * approvals with key 15 in the set commit */
         int votersr[5] = { 0, 1, 2, 3, 15 };
-        CHECK(cc_env(&fx, fresh, 3, DNAC_CFG_BLOCK_INTERVAL_SEC, 7, 20002,
+        CHECK(cc_env(&fx, fresh, 3, DNAC_CFG_TARGET_ACTIVE_COUNT, 7, 20002,
                      0xAB, 3, 30000, votersr,
                      5, 0, NULL, NULL) == 0, "build fresh");
         nodus_v2_envelope_t vsf[2] = {
@@ -1793,7 +1830,7 @@ static int test_system_cc(void) {
         OK();
         CHECK(b.cmt.results[1].code == NODUS_V2_TX_OK &&
               q1(fx.w, "SELECT new_value FROM chain_config_history WHERE "
-                       "param_id=2 AND effective_block=20002") == 7,
+                       "param_id=4 AND effective_block=20002") == 7,
               "rotated-in committee signs under the new snapshot");
         OK();
         free(fresh);
@@ -1820,14 +1857,14 @@ static int test_system_cc(void) {
         };
         int votersr[5] = { 0, 1, 2, 3, 15 };
         for (int p = 0; p < 3; p++) {
-            /* param 1 -> 2; effective 20003 clears the H=4 SAFETY-grace
+            /* param 1 -> 2 -> 4; effective 20003 clears the H=4 SAFETY-grace
              * floor (4 + 17280) and is a distinct PK from every earlier
              * commit — each of these must be otherwise FULLY VALID
              * (quorum, scalar window, freshness, grace all pass) so the
              * INJECTED fault (b.fail_at below) is the only thing that
              * interrupts the commit; valid_before 30000 clears the
              * window. */
-            CHECK(cc_env(&fx, &e, 4, DNAC_CFG_BLOCK_INTERVAL_SEC, 8, 20003,
+            CHECK(cc_env(&fx, &e, 4, DNAC_CFG_TARGET_ACTIVE_COUNT, 8, 20003,
                          0xC0 + (uint64_t)p, 4,
                          30000, votersr, 5, 0, NULL, NULL) == 0, "build");
             nodus_v2_envelope_t ve = { e.bytes, e.len };
@@ -1840,10 +1877,10 @@ static int test_system_cc(void) {
             OK();
         }
         /* clean re-apply commits (budgets and snapshot state intact).
-         * Same (param=2, effective=20003) PK as the faulted attempts
+         * Same (param=4, effective=20003) PK as the faulted attempts
          * above — each of those left the database byte-identical, so the
          * PK is still free for this one to actually commit. */
-        CHECK(cc_env(&fx, &e, 4, DNAC_CFG_BLOCK_INTERVAL_SEC, 8, 20003,
+        CHECK(cc_env(&fx, &e, 4, DNAC_CFG_TARGET_ACTIVE_COUNT, 8, 20003,
                      0xC9, 4, 30000, votersr, 5,
                      0, NULL, NULL) == 0, "build");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
@@ -1995,10 +2032,10 @@ static int test_committee_capacity(void) {
         env_t e;
         nodus_v2_block_t b;
         /* quorum(12) = 9 > the retired cap 8: NINE approvals commit.
-         * param 1 -> 2 (retired id); effective 20000 clears the H=1
-         * SAFETY-grace floor (17281); valid_before 30000 clears the
-         * window. */
-        CHECK(cc_env(&fx, &e, 1, DNAC_CFG_BLOCK_INTERVAL_SEC, 5, 20000,
+         * param 1 (retired) -> 2 -> 4 (id 2 unread since 0.20.3);
+         * effective 20000 clears the H=1 SAFETY-grace floor (17281);
+         * valid_before 30000 clears the window. */
+        CHECK(cc_env(&fx, &e, 1, DNAC_CFG_TARGET_ACTIVE_COUNT, 9, 20000,
                      0x42, 1, 30000, q9, 9, 0,
                      NULL, NULL) == 0, "build 9");
         nodus_v2_envelope_t ve = { e.bytes, e.len };
@@ -2008,8 +2045,8 @@ static int test_committee_capacity(void) {
         OK();
         /* quorum-1 = 8 (the exact retired cap) fails — the quorum gate
          * fires before the scalar param check, independent of which
-         * surviving param this carries; param 1 -> 2 for hygiene. */
-        CHECK(cc_env(&fx, &e, 2, DNAC_CFG_BLOCK_INTERVAL_SEC, 6, 3000,
+         * readable param this carries; param 1 -> 2 -> 4 for hygiene. */
+        CHECK(cc_env(&fx, &e, 2, DNAC_CFG_TARGET_ACTIVE_COUNT, 10, 3000,
                      0x43, 1, 4000, q8, 8, 0,
                      NULL, NULL) == 0, "build 8");
         nodus_v2_envelope_t v8 = { e.bytes, e.len };
@@ -2055,8 +2092,11 @@ static int test_committee_capacity(void) {
                         * (delta 2) and every survivor is SAFETY-grace
                         * (17 280), so BLOCK_INTERVAL_SEC (2) with
                         * effective >= H + 17 280 — the writer's delta-3
-                        * sweep missed this helper's three call sites. */
-                       DNAC_CFG_BLOCK_INTERVAL_SEC, 5, 20000, 0x42, 1,
+                        * sweep missed this helper's three call sites.
+                        * 0.20.3: id 2 is not read by the running
+                        * consensus and refused — TARGET_ACTIVE_COUNT
+                        * (4, same SAFETY grace, values in [7, 32]). */
+                       DNAC_CFG_TARGET_ACTIVE_COUNT, 9, 20000, 0x42, 1,
                        30000, 0, 750000,
                        voters, NMAX, NULL, NULL) == 0, "build 32");
         /* P4 FIX ROUND: the pre-P4 leg asserted elen > 590 000 — the
@@ -2084,7 +2124,7 @@ static int test_committee_capacity(void) {
         CHECK(cc_build(&fx, buf, cap, &elen, 2,
                        (const uint8_t (*)[2592])g_bpk,
                        (const uint8_t (*)[4896])g_bsk, NMAX, 0,
-                       DNAC_CFG_BLOCK_INTERVAL_SEC, 6, 20001, 0x43, 2,
+                       DNAC_CFG_TARGET_ACTIVE_COUNT, 10, 20001, 0x43, 2,
                        30000, 0, 750000,
                        voters, (int)Q, NULL, NULL) == 0, "build 22");
         {
@@ -2098,7 +2138,7 @@ static int test_committee_capacity(void) {
         CHECK(cc_build(&fx, buf, cap, &elen, 3,
                        (const uint8_t (*)[2592])g_bpk,
                        (const uint8_t (*)[4896])g_bsk, NMAX, 0,
-                       DNAC_CFG_BLOCK_INTERVAL_SEC, 7, 20002, 0x44, 3,
+                       DNAC_CFG_TARGET_ACTIVE_COUNT, 7, 20002, 0x44, 3,
                        30000, 0, 750000,
                        voters, (int)Q - 1, NULL, NULL) == 0, "build 21");
         {
@@ -3186,18 +3226,18 @@ static int test_intent_engine(void) {
         int q2v[5] = { 1, 2, 3, 4, 5 };
         int q7v[7] = { 0, 1, 2, 3, 4, 5, 6 };
         env_t ea, eb, ec;
-        /* R3 W4-C delta 3: param 1 -> 2 (retired id); effective 20000
-         * clears the H=1 SAFETY-grace floor (17281), valid_before 30000
+        /* R3 W4-C delta 3: param 1 (retired) -> 2 -> 4 (id 2 unread
+         * since 0.20.3); effective 20000 clears the H=1 SAFETY-grace floor (17281), valid_before 30000
          * clears the window — all three twins must actually COMMIT for
          * this test (SYSTEM state / roots twin-identity) to mean
          * anything. */
-        CHECK(cc_env(&a, &ea, 1, DNAC_CFG_BLOCK_INTERVAL_SEC, 5, 20000,
+        CHECK(cc_env(&a, &ea, 1, DNAC_CFG_TARGET_ACTIVE_COUNT, 9, 20000,
                      0x42, 1, 30000, q1v, 5, 0,
                      NULL, NULL) == 0, "build ccA");
-        CHECK(cc_env(&b2, &eb, 1, DNAC_CFG_BLOCK_INTERVAL_SEC, 5, 20000,
+        CHECK(cc_env(&b2, &eb, 1, DNAC_CFG_TARGET_ACTIVE_COUNT, 9, 20000,
                      0x42, 1, 30000, q2v, 5, 0,
                      NULL, NULL) == 0, "build ccB");
-        CHECK(cc_env(&c, &ec, 1, DNAC_CFG_BLOCK_INTERVAL_SEC, 5, 20000,
+        CHECK(cc_env(&c, &ec, 1, DNAC_CFG_TARGET_ACTIVE_COUNT, 9, 20000,
                      0x42, 1, 30000, q7v, 7, 0,
                      NULL, NULL) == 0, "build ccC (all validators)");
 
@@ -3249,7 +3289,7 @@ static int test_intent_engine(void) {
             sqlite3_stmt *st = NULL;
             CHECK(sqlite3_prepare_v2(a.w->db,
                   "SELECT tx_hash FROM chain_config_history WHERE "
-                  "param_id=2 AND effective_block=20000",
+                  "param_id=4 AND effective_block=20000",
                   -1, &st, NULL) == SQLITE_OK &&
                   sqlite3_step(st) == SQLITE_ROW &&
                   memcmp(sqlite3_column_blob(st, 0), ia, 64) == 0,
@@ -3265,11 +3305,11 @@ static int test_intent_engine(void) {
         {
             env_t er;
             int q3v[5] = { 2, 3, 4, 5, 6 };
-            /* SAME (param=2, value=5, effective=20000, valid_before
+            /* SAME (param=4, value=9, effective=20000, valid_before
              * 30000) as fixture a's already-committed proposal above —
              * same intent, different committee subset, applied a block
              * later; must reject via the intent guard. */
-            CHECK(cc_env(&a, &er, 2, DNAC_CFG_BLOCK_INTERVAL_SEC, 5, 20000,
+            CHECK(cc_env(&a, &er, 2, DNAC_CFG_TARGET_ACTIVE_COUNT, 9, 20000,
                          0x42, 1, 30000, q3v, 5,
                          0, NULL, NULL) == 0, "build replay");
             nodus_v2_envelope_t vr = { er.bytes, er.len };
@@ -3292,7 +3332,7 @@ static int test_intent_engine(void) {
             sign_opt_t so;
             memset(&so, 0, sizeof(so));
             so.break_sig = 1;
-            CHECK(cc_env(&a, &ebad, 2, DNAC_CFG_BLOCK_INTERVAL_SEC, 5,
+            CHECK(cc_env(&a, &ebad, 2, DNAC_CFG_TARGET_ACTIVE_COUNT, 9,
                          20000, 0x42, 1, 30000, q4v,
                          5, 0, NULL, &so) == 0, "build bad-sig replay");
             nodus_v2_envelope_t vb2 = { ebad.bytes, ebad.len };
@@ -5568,11 +5608,12 @@ static int test_system_stake(void) {
         uint8_t cc41[41];
         out_spec_t o[1] = { { 9, STAKE_CHANGE, 0x5E, NULL } };
         uint32_t fl = spend_call_build(fcall, sizeof(fcall), in9, 1, o, 1);
-        /* param 1 -> 2 (retired id): this kind-1 CC leg carries zero
+        /* param 1 (retired) -> 2 -> 4 (0.20.3: id 2 is not read by
+         * the running consensus): this kind-1 CC leg carries zero
          * approvals (committee_n == 0), rejected at the quorum gate
          * before the scalar param check runs — independent of which
-         * surviving param it names. */
-        CHECK(cc_call_build(cc41, sizeof(cc41), DNAC_CFG_BLOCK_INTERVAL_SEC,
+         * readable param it names. */
+        CHECK(cc_call_build(cc41, sizeof(cc41), DNAC_CFG_TARGET_ACTIVE_COUNT,
                             7, 100, 1, 0,
                             UINT64_MAX) == 41 && fl, "call");
         CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_CHAIN_CONFIG, cc41, 41,

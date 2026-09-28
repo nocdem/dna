@@ -7,36 +7,30 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 
-#include "dnac/transaction.h"     /* DNAC_TX_MAX_INPUTS / DNAC_TX_MAX_OUTPUTS */
-#include "nodus/nodus.h"          /* nodus_client_free_utxo_result */
+#include "nodus/nodus.h"          /* NODUS_DNAC_V3_* kinds, bounds */
 
 #include "crypto/utils/qgp_log.h"
 #define LOG_TAG "EXP_HTTP"
 
 /* ── Small parsing / formatting helpers (no I/O) ────────────────────── */
 
-/* Hard limit G3: list endpoints clamp to <= 100 rows, default 25. */
+/* Hard limit G3: list endpoints clamp to <= 100 rows, default 25 (a
+ * block's item list defaults to the maximum, 100). */
 #define EXP_HTTP_LIMIT_DEFAULT 25
 #define EXP_HTTP_LIMIT_MAX     100
 
 /* 8 KB request line/header buffer (G3) — anything longer is 413. */
 #define EXP_HTTP_MAX_REQUEST 8192
 
-/* input_count + output_count never exceeds this (dnac/transaction.h) —
- * same bound exp_sync.c uses for its io scratch buffer. */
-#define EXP_HTTP_MAX_IOS (DNAC_TX_MAX_INPUTS + DNAC_TX_MAX_OUTPUTS)
-
-/* A block's tx list has no fixed compile-time bound (DNAC_CFG_MAX_TXS_PER_BLOCK
- * is a runtime chain-config value, not a header constant) — heap-allocate a
- * generously-sized scratch array rather than risk an oversized stack frame
- * or a silently-too-small fixed one. */
-#define EXP_HTTP_MAX_BLOCK_TXS 4096
+/* An item's io rows never exceed the node's per-item bounds. */
+#define EXP_HTTP_MAX_IOS (NODUS_DNAC_V3_ITEM_MAX_IN + NODUS_DNAC_V3_ITEM_MAX_OUT)
 
 static int is_lower_hex_char(char c) {
     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
@@ -86,10 +80,30 @@ static int parse_u64_strict(const char *s, uint64_t *out) {
     return 1;
 }
 
+/* A position "<height>:<index>" — both strict decimal, height >= 1, index
+ * within 32 bits. */
+static int parse_position(const char *s, uint64_t *h_out, uint32_t *i_out) {
+    if (!s) return 0;
+    const char *colon = strchr(s, ':');
+    if (!colon || colon == s || colon[1] == '\0') return 0;
+
+    char hbuf[24];
+    size_t hlen = (size_t)(colon - s);
+    if (hlen >= sizeof(hbuf)) return 0;
+    memcpy(hbuf, s, hlen);
+    hbuf[hlen] = '\0';
+
+    uint64_t h = 0, i = 0;
+    if (!parse_u64_strict(hbuf, &h) || h == 0) return 0;
+    if (!parse_u64_strict(colon + 1, &i) || i > UINT32_MAX) return 0;
+    *h_out = h;
+    *i_out = (uint32_t)i;
+    return 1;
+}
+
 /* Splits "path?query" into path_out/query_out (both NUL-terminated,
- * truncated defensively if they don't fit — a request line under 8 KB
- * always fits these generously-sized stack buffers in practice). No query
- * string ('?' absent) leaves query_out empty. */
+ * truncated defensively if they don't fit). No query string ('?' absent)
+ * leaves query_out empty. */
 static void split_path_query(const char *full, char *path_out, size_t path_cap,
                               char *query_out, size_t query_cap) {
     const char *q = strchr(full, '?');
@@ -109,9 +123,10 @@ static void split_path_query(const char *full, char *path_out, size_t path_cap,
 }
 
 /* Finds `key=value` in an '&'-joined query string and copies the raw value
- * (no percent-decoding — every value this API accepts is plain
- * digits/lowercase-hex/the literal "1", none of which needs it) into `out`.
- * Returns 1 if the key was present (even with an empty value), else 0. */
+ * (no percent-decoding — every value this API accepts is plain digits,
+ * lowercase hex or a "height:index" position; a client that percent-encodes
+ * the ':' gets a 400) into `out`. Returns 1 if the key was present (even
+ * with an empty value), else 0. */
 static int query_get(const char *qs, const char *key, char *out, size_t outcap) {
     if (!qs || !*qs || !key || !out || outcap == 0) return 0;
 
@@ -135,23 +150,11 @@ static int query_get(const char *qs, const char *key, char *out, size_t outcap) 
     return 0;
 }
 
-/* Parses the "before"/"limit" pagination pair shared by /api/blocks and
- * /api/address. before_out defaults to UINT64_MAX ("start from the most
- * recent row" — exp_db.h clamps this to INT64_MAX internally, same as the
- * tests' EXP_CURSOR_TOP). limit_out defaults to EXP_HTTP_LIMIT_DEFAULT and
- * is clamped to EXP_HTTP_LIMIT_MAX. Returns 0 on success, -1 on a malformed
- * (present but not a valid positive integer) before/limit value — the
- * caller turns that into a 400. */
-static int parse_pagination(const char *query, uint64_t *before_out, int *limit_out) {
-    *before_out = UINT64_MAX;
-    *limit_out = EXP_HTTP_LIMIT_DEFAULT;
-
+/* "limit": absent -> def, present -> strict positive integer clamped to
+ * EXP_HTTP_LIMIT_MAX. -1 on a malformed value (-> 400). */
+static int parse_limit(const char *query, int def, int *limit_out) {
+    *limit_out = def;
     char val[32];
-    if (query_get(query, "before", val, sizeof(val))) {
-        uint64_t parsed;
-        if (!parse_u64_strict(val, &parsed)) return -1;
-        *before_out = parsed;
-    }
     if (query_get(query, "limit", val, sizeof(val))) {
         uint64_t parsed;
         if (!parse_u64_strict(val, &parsed) || parsed == 0) return -1;
@@ -166,116 +169,169 @@ static void json_error(exp_json_t *j, const char *msg) {
     exp_json_raw(j, "}");
 }
 
-/* Signed balance (addr_stats.balance is a signed credits-minus-debits
- * accumulation, see exp_db.h) formatted as a JSON string (e.g. "-500"),
- * not a bare number — same precision reasoning as exp_json_u64_str for
- * the other money fields. Magnitude computed without negating INT64_MIN
- * (UB). */
-static void json_i64(exp_json_t *j, int64_t v) {
-    char buf[32];
-    if (v < 0) {
-        uint64_t mag = (uint64_t)(-(v + 1)) + 1u;
-        snprintf(buf, sizeof(buf), "-%llu", (unsigned long long)mag);
-    } else {
-        snprintf(buf, sizeof(buf), "%llu", (unsigned long long)v);
-    }
+static void json_position(exp_json_t *j, uint64_t h, uint32_t i) {
+    char buf[48];
+    snprintf(buf, sizeof(buf), "%llu:%u", (unsigned long long)h, (unsigned)i);
     exp_json_str(j, buf);
+}
+
+static const char *kind_name(int kind) {
+    switch (kind) {
+    case NODUS_DNAC_V3_KIND_EMPTY:    return "empty";
+    case NODUS_DNAC_V3_KIND_ENVELOPE: return "envelope";
+    case NODUS_DNAC_V3_KIND_CLAIM:    return "claim";
+    default:                          return "unknown";
+    }
+}
+
+static const char *record_name(int kind) {
+    switch (kind) {
+    case NODUS_DNAC_V3_REC_STAKE:            return "stake";
+    case NODUS_DNAC_V3_REC_DELEGATE:         return "delegate";
+    case NODUS_DNAC_V3_REC_UNSTAKE:          return "unstake";
+    case NODUS_DNAC_V3_REC_UNDELEGATE:       return "undelegate";
+    case NODUS_DNAC_V3_REC_VALIDATOR_UPDATE: return "validator_update";
+    case NODUS_DNAC_V3_REC_CHAIN_CONFIG:     return "chain_config";
+    default:                                 return "unknown";
+    }
 }
 
 /* ── Row -> JSON emitters ────────────────────────────────────────────── */
 
-static void emit_block(exp_json_t *j, const exp_block_row_t *b) {
+static void emit_block(exp_json_t *j, const exp_block_row_t *b, int detail) {
     exp_json_raw(j, "{\"height\":");
     exp_json_u64(j, b->height);
-    exp_json_raw(j, ",\"block_hash\":");
-    if (b->has_block_hash) exp_json_hex(j, b->block_hash, 64);
-    else exp_json_raw(j, "null");
-    exp_json_raw(j, ",\"tx_root\":");
-    exp_json_hex(j, b->tx_root, 64);
-    exp_json_raw(j, ",\"timestamp\":");
-    exp_json_u64(j, b->timestamp);
+    exp_json_raw(j, ",\"block_id\":");
+    exp_json_hex(j, b->block_id, 64);
+    exp_json_raw(j, ",\"time\":");
+    exp_json_u64(j, b->time_ms);
     exp_json_raw(j, ",\"proposer\":");
-    exp_json_hex(j, b->proposer, 32);
-    exp_json_raw(j, ",\"tx_count\":");
-    exp_json_u64(j, b->tx_count);
+    exp_json_hex(j, b->proposer, b->proposer_len);
+    exp_json_raw(j, ",\"applied_count\":");
+    exp_json_u64(j, b->applied_count);
+    exp_json_raw(j, ",\"n_items\":");
+    exp_json_u64(j, b->n_items);
+    if (detail) {
+        exp_json_raw(j, ",\"prev_id\":");
+        exp_json_hex(j, b->prev_id, 64);
+        exp_json_raw(j, ",\"global_root\":");
+        exp_json_hex(j, b->global_root, 64);
+    }
     exp_json_raw(j, "}");
 }
 
-static void emit_tx_summary(exp_json_t *j, const exp_tx_row_t *t) {
-    exp_json_raw(j, "{\"hash\":");
-    exp_json_hex(j, t->hash, 64);
-    exp_json_raw(j, ",\"seq\":");
-    exp_json_u64(j, t->seq);
+/* Summary fields shared by every item view (no closing brace — callers
+ * append view-specific fields, then "}"). */
+static void emit_item_fields(exp_json_t *j, const exp_item_row_t *it) {
+    exp_json_raw(j, "{\"position\":");
+    json_position(j, it->height, it->idx);
     exp_json_raw(j, ",\"height\":");
-    exp_json_u64(j, t->height);
-    exp_json_raw(j, ",\"tx_type\":");
-    exp_json_u64(j, (uint64_t)t->tx_type);
+    exp_json_u64(j, it->height);
+    exp_json_raw(j, ",\"index\":");
+    exp_json_u64(j, it->idx);
+    exp_json_raw(j, ",\"time\":");
+    exp_json_u64(j, it->block_time_ms);
+    exp_json_raw(j, ",\"kind\":");
+    exp_json_str(j, kind_name(it->kind));
+    exp_json_raw(j, ",\"op\":");
+    if (it->op[0]) exp_json_str(j, it->op); else exp_json_raw(j, "null");
+    exp_json_raw(j, ",\"code\":");
+    exp_json_u64(j, it->code);
+    exp_json_raw(j, it->code != 0 ? ",\"refused\":true" : ",\"refused\":false");
+    exp_json_raw(j, ",\"wire_id\":");
+    if (it->has_wire_id) exp_json_hex(j, it->wire_id, 64); else exp_json_raw(j, "null");
+    exp_json_raw(j, ",\"intent_id\":");
+    if (it->has_intent_id) exp_json_hex(j, it->intent_id, 64); else exp_json_raw(j, "null");
     exp_json_raw(j, ",\"fee\":");
-    exp_json_u64_str(j, t->fee);
-    exp_json_raw(j, ",\"size\":");
-    exp_json_u64(j, t->size);
-    exp_json_raw(j, ",\"timestamp\":");
-    exp_json_u64(j, t->timestamp);
-    exp_json_raw(j, ",\"multi_signer\":");
-    exp_json_u64(j, (uint64_t)t->multi_signer);
+    if (it->has_fee) exp_json_u64_str(j, it->fee); else exp_json_raw(j, "null");
+    exp_json_raw(j, ",\"burned\":");
+    if (it->has_effects && it->burned > 0) exp_json_u64_str(j, it->burned);
+    else exp_json_raw(j, "null");
+}
+
+static void emit_item_summary(exp_json_t *j, const exp_item_row_t *it) {
+    emit_item_fields(j, it);
     exp_json_raw(j, "}");
 }
 
-static void emit_io(exp_json_t *j, const exp_io_row_t *io) {
-    exp_json_raw(j, "{\"direction\":");
-    exp_json_raw(j, io->direction == 1 ? "\"out\"" : "\"in\"");
-    exp_json_raw(j, ",\"io_index\":");
-    exp_json_u64(j, (uint64_t)io->io_index);
+static void emit_fp_or_null(exp_json_t *j, const char *fp) {
+    if (fp && fp[0]) exp_json_str(j, fp); else exp_json_raw(j, "null");
+}
+
+static void emit_record(exp_json_t *j, const exp_record_row_t *r) {
+    exp_json_raw(j, "{\"kind\":");
+    exp_json_str(j, record_name(r->kind));
+    exp_json_raw(j, ",\"validator\":");
+    emit_fp_or_null(j, r->validator);
+    exp_json_raw(j, ",\"delegator\":");
+    emit_fp_or_null(j, r->delegator);
+    exp_json_raw(j, ",\"destination\":");
+    emit_fp_or_null(j, r->dest);
+    exp_json_raw(j, ",\"amount\":");
+    exp_json_u64_str(j, r->amount);
+    exp_json_raw(j, ",\"commission_bps\":");
+    exp_json_u64(j, r->commission_bps);
+    exp_json_raw(j, ",\"param_id\":");
+    exp_json_u64(j, r->param_id);
+    exp_json_raw(j, ",\"new_value\":");
+    exp_json_u64_str(j, r->new_value);
+    exp_json_raw(j, ",\"effective_height\":");
+    exp_json_u64(j, r->effective);
+    exp_json_raw(j, "}");
+}
+
+static void emit_input(exp_json_t *j, const exp_io_row_t *io) {
+    exp_json_raw(j, "{\"coin_id\":");
+    exp_json_hex(j, io->coin_id, 64);
+    if (io->has_owner) {
+        exp_json_raw(j, ",\"address\":");
+        exp_json_str(j, io->address);
+        exp_json_raw(j, ",\"token_id\":");
+        exp_json_hex(j, io->token_id, 64);
+        exp_json_raw(j, ",\"amount\":");
+        exp_json_u64_str(j, io->amount);
+    } else {
+        /* the coin's creating item is not in the index (a coin created at
+         * a block boundary — a reward payout or a stake release) */
+        exp_json_raw(j, ",\"address\":null,\"token_id\":null,\"amount\":null");
+    }
+    exp_json_raw(j, "}");
+}
+
+static void emit_output(exp_json_t *j, const exp_io_row_t *io) {
+    exp_json_raw(j, "{\"coin_id\":");
+    exp_json_hex(j, io->coin_id, 64);
     exp_json_raw(j, ",\"address\":");
     exp_json_str(j, io->address);
     exp_json_raw(j, ",\"token_id\":");
     exp_json_hex(j, io->token_id, 64);
     exp_json_raw(j, ",\"amount\":");
     exp_json_u64_str(j, io->amount);
-    exp_json_raw(j, "}");
-}
-
-static void emit_utxo_entry(exp_json_t *j, const nodus_dnac_utxo_entry_t *e) {
-    exp_json_raw(j, "{\"nullifier\":");
-    exp_json_hex(j, e->nullifier, sizeof(e->nullifier));
-    exp_json_raw(j, ",\"owner\":");
-    exp_json_str(j, e->owner);
-    exp_json_raw(j, ",\"amount\":");
-    exp_json_u64_str(j, e->amount);
-    exp_json_raw(j, ",\"token_id\":");
-    exp_json_hex(j, e->token_id, sizeof(e->token_id));
-    exp_json_raw(j, ",\"tx_hash\":");
-    exp_json_hex(j, e->tx_hash, sizeof(e->tx_hash));
-    exp_json_raw(j, ",\"output_index\":");
-    exp_json_u64(j, e->output_index);
-    exp_json_raw(j, ",\"block_height\":");
-    exp_json_u64(j, e->block_height);
+    exp_json_raw(j, ",\"unlock_block\":");
+    exp_json_u64(j, io->unlock_block);
     exp_json_raw(j, "}");
 }
 
 /* ── Endpoint handlers ───────────────────────────────────────────────── */
 
 static void route_stats(exp_db_t *db, exp_json_t *j, int *status) {
-    uint64_t indexed_seq = 0, indexed_height = 0, tip_seq = 0;
+    uint64_t indexed_height = 0, tip_height = 0;
     uint64_t supply_current = 0, supply_burned = 0, supply_genesis = 0;
     uint8_t chain_id[32];
     size_t chain_id_len = 0;
 
-    int have_indexed_seq    = (exp_db_get_meta_u64(db, "last_indexed_seq", &indexed_seq) == 0);
-    int have_indexed_height = (exp_db_get_meta_u64(db, "last_block_height", &indexed_height) == 0);
-    int have_tip_seq        = (exp_db_get_meta_u64(db, "tip_seq", &tip_seq) == 0);
+    int have_indexed_height = (exp_db_get_meta_u64(db, "last_indexed_height", &indexed_height) == 0);
+    int have_tip_height     = (exp_db_get_meta_u64(db, "tip_height", &tip_height) == 0);
     int have_supply_current = (exp_db_get_meta_u64(db, "supply_current", &supply_current) == 0);
     int have_supply_burned  = (exp_db_get_meta_u64(db, "supply_burned", &supply_burned) == 0);
     int have_supply_genesis = (exp_db_get_meta_u64(db, "supply_genesis", &supply_genesis) == 0);
-    int have_chain_id = (exp_db_get_meta_blob(db, "chain_id", chain_id, sizeof(chain_id), &chain_id_len) == 0
+    int have_chain_id = (exp_db_get_meta_blob(db, "chain_id32", chain_id, sizeof(chain_id), &chain_id_len) == 0
                           && chain_id_len == 32);
 
-    exp_json_raw(j, "{\"indexed_seq\":");
-    if (have_indexed_seq) exp_json_u64(j, indexed_seq); else exp_json_raw(j, "null");
-    exp_json_raw(j, ",\"tip_seq\":");
-    if (have_tip_seq) exp_json_u64(j, tip_seq); else exp_json_raw(j, "null");
-    exp_json_raw(j, ",\"indexed_height\":");
+    exp_json_raw(j, "{\"indexed_height\":");
     if (have_indexed_height) exp_json_u64(j, indexed_height); else exp_json_raw(j, "null");
+    exp_json_raw(j, ",\"tip_height\":");
+    if (have_tip_height) exp_json_u64(j, tip_height); else exp_json_raw(j, "null");
     exp_json_raw(j, ",\"chain_id\":");
     if (have_chain_id) exp_json_hex(j, chain_id, 32); else exp_json_raw(j, "null");
     exp_json_raw(j, ",\"supply_current\":");
@@ -290,10 +346,16 @@ static void route_stats(exp_db_t *db, exp_json_t *j, int *status) {
 }
 
 static void route_blocks(exp_db_t *db, const char *query, exp_json_t *j, int *status) {
-    uint64_t before;
+    uint64_t before = UINT64_MAX;
     int limit;
-    if (parse_pagination(query, &before, &limit) != 0) {
-        json_error(j, "invalid 'before'/'limit'");
+    char val[32];
+    if (query_get(query, "before", val, sizeof(val)) && !parse_u64_strict(val, &before)) {
+        json_error(j, "invalid 'before'");
+        *status = 400;
+        return;
+    }
+    if (parse_limit(query, EXP_HTTP_LIMIT_DEFAULT, &limit) != 0) {
+        json_error(j, "invalid 'limit'");
         *status = 400;
         return;
     }
@@ -309,20 +371,24 @@ static void route_blocks(exp_db_t *db, const char *query, exp_json_t *j, int *st
     exp_json_raw(j, "{\"blocks\":[");
     for (int i = 0; i < count; i++) {
         if (i) exp_json_raw(j, ",");
-        emit_block(j, &rows[i]);
+        emit_block(j, &rows[i], 0);
     }
     exp_json_raw(j, "]}");
     *status = 200;
 }
 
-static void route_block(exp_db_t *db, const char *ident, exp_json_t *j, int *status) {
+/* /api/block/<height|block_id>?from=<index>&limit=<n> — the block and one
+ * page of its items (index-ascending from `from`, default 0; limit default
+ * and maximum 100); "next_from" names the next page's first index, null on
+ * the last page. */
+static void route_block(exp_db_t *db, const char *ident, const char *query, exp_json_t *j, int *status) {
     exp_block_row_t row;
     int found;
 
     if (is_hash128(ident)) {
-        uint8_t hash[64];
-        hex128_decode(ident, hash);
-        found = (exp_db_query_block_by_hash(db, hash, &row) == 0);
+        uint8_t id[64];
+        hex128_decode(ident, id);
+        found = (exp_db_query_block_by_id(db, id, &row) == 0);
     } else if (is_all_decimal(ident)) {
         uint64_t height;
         if (!parse_u64_strict(ident, &height)) {
@@ -332,7 +398,17 @@ static void route_block(exp_db_t *db, const char *ident, exp_json_t *j, int *sta
         }
         found = (exp_db_query_block_by_height(db, height, &row) == 0);
     } else {
-        json_error(j, "invalid block identifier (expected height or 128-hex hash)");
+        json_error(j, "invalid block identifier (expected height or 128-hex block id)");
+        *status = 400;
+        return;
+    }
+
+    uint64_t from = 0;
+    int limit;
+    char val[32];
+    if ((query_get(query, "from", val, sizeof(val)) && (!parse_u64_strict(val, &from) || from > UINT32_MAX)) ||
+        parse_limit(query, EXP_HTTP_LIMIT_MAX, &limit) != 0) {
+        json_error(j, "invalid 'from'/'limit'");
         *status = 400;
         return;
     }
@@ -343,166 +419,323 @@ static void route_block(exp_db_t *db, const char *ident, exp_json_t *j, int *sta
         return;
     }
 
-    exp_tx_row_t *txs = malloc(sizeof(exp_tx_row_t) * EXP_HTTP_MAX_BLOCK_TXS);
-    if (!txs) {
+    exp_item_row_t *items = malloc(sizeof(exp_item_row_t) * EXP_HTTP_LIMIT_MAX);
+    if (!items) {
         json_error(j, "out of memory");
         *status = 500;
         return;
     }
-
-    int tx_count = 0;
-    if (exp_db_query_txs_by_height(db, row.height, txs, EXP_HTTP_MAX_BLOCK_TXS, &tx_count) != 0) {
-        free(txs);
+    int count = 0;
+    if (exp_db_query_items(db, row.height, (uint32_t)from, limit, items, &count) != 0) {
+        free(items);
         json_error(j, "query failed");
         *status = 500;
         return;
     }
 
     exp_json_raw(j, "{\"block\":");
-    emit_block(j, &row);
-    exp_json_raw(j, ",\"txs\":[");
-    for (int i = 0; i < tx_count; i++) {
+    emit_block(j, &row, 1);
+    exp_json_raw(j, ",\"items\":[");
+    for (int i = 0; i < count; i++) {
         if (i) exp_json_raw(j, ",");
-        emit_tx_summary(j, &txs[i]);
+        emit_item_summary(j, &items[i]);
     }
-    exp_json_raw(j, "]}");
+    exp_json_raw(j, "],\"next_from\":");
+    if (count > 0 && (uint64_t)items[count - 1].idx + 1 < row.n_items)
+        exp_json_u64(j, (uint64_t)items[count - 1].idx + 1);
+    else
+        exp_json_raw(j, "null");
+    exp_json_raw(j, "}");
 
-    free(txs);
+    free(items);
     *status = 200;
 }
 
+/* /api/tx/<wire_id|intent_id|height:index> — one item with its inputs
+ * (consumed coins), outputs (created coins) and record. A refused envelope
+ * carries no ids (dnac_v3_block), so the position form is its only
+ * address. */
 static void route_tx(exp_db_t *db, const char *ident, exp_json_t *j, int *status) {
-    if (!is_hash128(ident)) {
-        json_error(j, "invalid tx hash (expected 128-hex)");
+    exp_item_row_t it;
+    int found;
+    uint64_t h;
+    uint32_t idx;
+
+    if (is_hash128(ident)) {
+        uint8_t id[64];
+        hex128_decode(ident, id);
+        found = (exp_db_query_item_by_id(db, id, &it) == 0);
+    } else if (parse_position(ident, &h, &idx)) {
+        found = (exp_db_query_item(db, h, idx, &it) == 0);
+    } else {
+        json_error(j, "invalid tx identifier (expected 128-hex wire/intent id or height:index)");
         *status = 400;
         return;
     }
 
-    uint8_t hash[64];
-    hex128_decode(ident, hash);
-
-    exp_tx_row_t tx;
-    exp_io_row_t ios[EXP_HTTP_MAX_IOS];
-    int io_count = 0;
-    uint8_t *raw = NULL;
-    size_t raw_len = 0;
-
-    if (exp_db_query_tx(db, hash, &tx, ios, EXP_HTTP_MAX_IOS, &io_count, &raw, &raw_len) != 0) {
+    if (!found) {
         json_error(j, "tx not found");
         *status = 404;
         return;
     }
 
-    exp_json_raw(j, "{\"tx\":");
-    emit_tx_summary(j, &tx);
-    exp_json_raw(j, ",\"ios\":[");
-    for (int i = 0; i < io_count; i++) {
-        if (i) exp_json_raw(j, ",");
-        emit_io(j, &ios[i]);
+    exp_io_row_t ios[EXP_HTTP_MAX_IOS];
+    int io_count = 0;
+    if (exp_db_query_item_ios(db, it.height, it.idx, ios, EXP_HTTP_MAX_IOS, &io_count) != 0) {
+        json_error(j, "query failed");
+        *status = 500;
+        return;
     }
-    exp_json_raw(j, "],\"raw\":");
-    if (raw && raw_len > 0) exp_json_hex(j, raw, raw_len);
-    else exp_json_raw(j, "null");
-    exp_json_raw(j, "}");
 
-    free(raw);
+    exp_json_raw(j, "{\"tx\":");
+    emit_item_fields(j, &it);
+    exp_json_raw(j, ",\"record\":");
+    if (it.rec.kind != 0) emit_record(j, &it.rec); else exp_json_raw(j, "null");
+    exp_json_raw(j, "},\"inputs\":[");
+    int first = 1;
+    for (int i = 0; i < io_count; i++) {
+        if (ios[i].dir != 0) continue;
+        if (!first) exp_json_raw(j, ",");
+        emit_input(j, &ios[i]);
+        first = 0;
+    }
+    exp_json_raw(j, "],\"outputs\":[");
+    first = 1;
+    for (int i = 0; i < io_count; i++) {
+        if (ios[i].dir != 1) continue;
+        if (!first) exp_json_raw(j, ",");
+        emit_output(j, &ios[i]);
+        first = 0;
+    }
+    exp_json_raw(j, "]}");
     *status = 200;
 }
 
-static void route_address(exp_http_ctx_t *ctx, exp_db_t *db, const char *fp, const char *query,
-                           exp_json_t *j, int *status) {
+/* ── The chain-backed balance source (contract: exp_http.h) ─────────── */
+
+typedef struct {
+    int      used;
+    char     owner[129];
+    uint64_t at_ms;
+    nodus_dnac_balance_result_t res;
+} exp_balance_slot_t;
+
+struct exp_balance_chain {
+    exp_chain_t        *chain;
+    exp_balance_slot_t  slots[EXP_BALANCE_CACHE_SLOTS];
+};
+
+/* CLOCK_MONOTONIC in ms — the cache's age only (display data, no
+ * consensus path). @return 0 / -1 (the cache is then bypassed). */
+static int mono_ms(uint64_t *out) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return -1;
+    *out = (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+    return 0;
+}
+
+/* Deep copy (the token list is heap). @return 0 / -1 (dst left empty). */
+static int balance_copy(nodus_dnac_balance_result_t *dst,
+                        const nodus_dnac_balance_result_t *src) {
+    memset(dst, 0, sizeof(*dst));
+    if (src->count > 0) {
+        if (!src->tokens || src->count > NODUS_DNAC_BALANCE_MAX_TOKENS) return -1;
+        dst->tokens = malloc(src->count * sizeof(*dst->tokens));
+        if (!dst->tokens) return -1;
+        memcpy(dst->tokens, src->tokens, src->count * sizeof(*dst->tokens));
+    }
+    dst->count = src->count;
+    dst->tip = src->tip;
+    return 0;
+}
+
+static int balance_chain_get(void *vctx, const char *owner_hex,
+                             nodus_dnac_balance_result_t *out) {
+    exp_balance_chain_t *b = (exp_balance_chain_t *)vctx;
+    if (!b || !owner_hex || !out) return -1;
+    memset(out, 0, sizeof(*out));
+
+    uint64_t now = 0;
+    int have_now = (mono_ms(&now) == 0);
+
+    if (have_now) {
+        for (int i = 0; i < EXP_BALANCE_CACHE_SLOTS; i++) {
+            exp_balance_slot_t *s = &b->slots[i];
+            if (s->used && strcmp(s->owner, owner_hex) == 0 &&
+                now >= s->at_ms && now - s->at_ms <= EXP_BALANCE_CACHE_TTL_MS) {
+                if (balance_copy(out, &s->res) == 0) return 0;
+                break;                     /* allocation: ask the node */
+            }
+        }
+    }
+
+    if (exp_chain_balance(b->chain, owner_hex, out) != 0) {
+        nodus_client_free_balance_result(out);
+        return -1;                         /* a failure is never cached */
+    }
+
+    if (have_now && strlen(owner_hex) == 128) {
+        /* the owner's own slot, else a free one, else the oldest */
+        exp_balance_slot_t *slot = NULL;
+        for (int i = 0; i < EXP_BALANCE_CACHE_SLOTS && !slot; i++)
+            if (b->slots[i].used && strcmp(b->slots[i].owner, owner_hex) == 0)
+                slot = &b->slots[i];
+        for (int i = 0; i < EXP_BALANCE_CACHE_SLOTS && !slot; i++)
+            if (!b->slots[i].used) slot = &b->slots[i];
+        if (!slot) {
+            slot = &b->slots[0];
+            for (int i = 1; i < EXP_BALANCE_CACHE_SLOTS; i++)
+                if (b->slots[i].at_ms < slot->at_ms) slot = &b->slots[i];
+        }
+        nodus_client_free_balance_result(&slot->res);
+        slot->used = 0;
+        if (balance_copy(&slot->res, out) == 0) {
+            memcpy(slot->owner, owner_hex, 129);
+            slot->at_ms = now;
+            slot->used = 1;
+        }
+    }
+    return 0;
+}
+
+int exp_balance_chain_open(exp_balance_chain_t **out, exp_chain_t *chain) {
+    if (!out) return -1;
+    *out = NULL;
+    if (!chain) return -1;
+    exp_balance_chain_t *b = calloc(1, sizeof(*b));
+    if (!b) return -1;
+    b->chain = chain;
+    *out = b;
+    return 0;
+}
+
+void exp_balance_chain_close(exp_balance_chain_t *b) {
+    if (!b) return;
+    for (int i = 0; i < EXP_BALANCE_CACHE_SLOTS; i++)
+        nodus_client_free_balance_result(&b->slots[i].res);
+    free(b);
+}
+
+void exp_balance_source_chain(exp_balance_source_t *src,
+                              exp_balance_chain_t *b) {
+    if (!src) return;
+    src->ctx = b;
+    src->get = balance_chain_get;
+}
+
+/* "balances" + "balance_status" (the leading comma included). */
+static void emit_balances(exp_json_t *j, int have,
+                          const nodus_dnac_balance_result_t *bal) {
+    if (!have) {
+        exp_json_raw(j, ",\"balances\":null,\"balance_status\":\"unavailable\"");
+        return;
+    }
+    exp_json_raw(j, ",\"balances\":[");
+    for (size_t i = 0; i < bal->count; i++) {
+        const nodus_dnac_balance_token_t *tk = &bal->tokens[i];
+        if (i) exp_json_raw(j, ",");
+        exp_json_raw(j, "{\"token_id\":");
+        exp_json_hex(j, tk->token_id, 64);
+        exp_json_raw(j, ",\"total\":");
+        exp_json_u64_str(j, tk->total);
+        exp_json_raw(j, ",\"spendable\":");
+        exp_json_u64_str(j, tk->spendable);
+        exp_json_raw(j, ",\"coins\":");
+        exp_json_u64(j, tk->coins);
+        exp_json_raw(j, "}");
+    }
+    exp_json_raw(j, "],\"balance_status\":\"ok\"");
+}
+
+/* /api/address/<fp>?before=<height:index>&limit=<n> — the items touching
+ * the address, newest first; "next_before" is the cursor of the next page
+ * (null when this page is short). "balances" comes from ctx->balance (the
+ * node's dnac_balance), fetched BEFORE the index read lock is taken: the
+ * round trip never runs under ctx->db_lock. */
+static void route_address(exp_http_ctx_t *ctx, const char *fp, const char *query,
+                          exp_json_t *j, int *status) {
     if (!is_hash128(fp)) {
         json_error(j, "invalid address fingerprint (expected 128-hex)");
         *status = 400;
         return;
     }
 
-    uint64_t before;
+    uint64_t before_h = UINT64_MAX;
+    uint32_t before_i = UINT32_MAX;
     int limit;
-    if (parse_pagination(query, &before, &limit) != 0) {
-        json_error(j, "invalid 'before'/'limit'");
+    char val[48];
+    if (query_get(query, "before", val, sizeof(val)) && !parse_position(val, &before_h, &before_i)) {
+        json_error(j, "invalid 'before' (expected height:index)");
+        *status = 400;
+        return;
+    }
+    if (parse_limit(query, EXP_HTTP_LIMIT_DEFAULT, &limit) != 0) {
+        json_error(j, "invalid 'limit'");
         *status = 400;
         return;
     }
 
-    int want_utxos = 0;
-    char val[8];
-    if (query_get(query, "utxos", val, sizeof(val)) && strcmp(val, "1") == 0) {
-        want_utxos = 1;
-    }
-
-    /* native DNAC = all-zero token_id (design doc §3 F5 / brief). Per the
-     * design doc's stated v1 scope ("v1 UI renders only the native DNAC
-     * token; other tokens display as 'token balances present' without
-     * detail pages") this endpoint surfaces the native balance in full and
-     * does not attempt to enumerate every token_id ever touched by this
-     * address — exp_db.h has no such enumeration query, only per-key
-     * balance lookups. */
-    uint8_t native_token[64];
-    memset(native_token, 0, sizeof(native_token));
-    uint64_t native_balance = 0, native_txc = 0;
-    /* fix round 1, finding 3: was previously ignored — a real DB error
-     * (-1) fell through with native_balance/native_txc left at their
-     * zero-initialized values and rendered as a legitimate zero balance
-     * instead of surfacing the failure. */
-    if (exp_db_query_balance(db, fp, native_token, &native_balance, &native_txc) != 0) {
-        json_error(j, "query failed");
+    exp_item_row_t *rows = malloc(sizeof(exp_item_row_t) * EXP_HTTP_LIMIT_MAX);
+    if (!rows) {
+        json_error(j, "out of memory");
         *status = 500;
         return;
     }
 
-    exp_tx_row_t rows[EXP_HTTP_LIMIT_MAX];
+    /* the balance: no lock held (exp_http.h, db_lock) */
+    nodus_dnac_balance_result_t bal;
+    memset(&bal, 0, sizeof(bal));
+    int have_bal = (ctx->balance && ctx->balance->get &&
+                    ctx->balance->get(ctx->balance->ctx, fp, &bal) == 0);
+    if (!have_bal) nodus_client_free_balance_result(&bal);
+
+    /* the index: under the read lock, one *db deref (exp_http_route) */
     int count = 0;
-    if (exp_db_query_address(db, fp, before, limit, rows, &count) != 0) {
-        json_error(j, "query failed");
-        *status = 500;
+    int db_rc;
+    if (ctx->db_lock) pthread_rwlock_rdlock(ctx->db_lock);
+    exp_db_t *db = ctx->db ? *ctx->db : NULL;
+    db_rc = db ? exp_db_query_address(db, fp, before_h, before_i, limit, rows, &count) : 1;
+    if (ctx->db_lock) pthread_rwlock_unlock(ctx->db_lock);
+
+    if (db_rc != 0) {
+        free(rows);
+        nodus_client_free_balance_result(&bal);
+        json_error(j, db ? "query failed" : "index unavailable");
+        *status = db ? 500 : 503;
         return;
     }
 
-    exp_json_raw(j, "{\"balances\":[{\"token\":\"DNAC\",\"token_id\":");
-    exp_json_hex(j, native_token, 64);
-    exp_json_raw(j, ",\"balance\":");
-    json_i64(j, (int64_t)native_balance);
-    exp_json_raw(j, ",\"tx_count\":");
-    exp_json_u64(j, native_txc);
-    exp_json_raw(j, "}]");
-
-    exp_json_raw(j, ",\"txs\":[");
+    exp_json_raw(j, "{\"address\":");
+    exp_json_str(j, fp);
+    emit_balances(j, have_bal, &bal);
+    exp_json_raw(j, ",\"items\":[");
     for (int i = 0; i < count; i++) {
         if (i) exp_json_raw(j, ",");
-        emit_tx_summary(j, &rows[i]);
+        emit_item_summary(j, &rows[i]);
     }
-    exp_json_raw(j, "]");
-
-    if (want_utxos) {
-        exp_json_raw(j, ",\"utxos\":");
-        if (!ctx->chain) {
-            exp_json_raw(j, "{\"source\":\"witness-live\",\"error\":\"unavailable\"}");
-        } else {
-            nodus_dnac_utxo_result_t ur;
-            memset(&ur, 0, sizeof(ur));
-            if (exp_chain_utxos(ctx->chain, fp, &ur) != 0) {
-                exp_json_raw(j, "{\"source\":\"witness-live\",\"error\":\"unavailable\"}");
-            } else {
-                exp_json_raw(j, "{\"source\":\"witness-live\",\"block_height\":");
-                exp_json_u64(j, ur.block_height);
-                exp_json_raw(j, ",\"entries\":[");
-                for (int i = 0; i < ur.count; i++) {
-                    if (i) exp_json_raw(j, ",");
-                    emit_utxo_entry(j, &ur.entries[i]);
-                }
-                exp_json_raw(j, "]}");
-                nodus_client_free_utxo_result(&ur);
-            }
-        }
-    }
-
+    exp_json_raw(j, "],\"next_before\":");
+    if (count == limit) json_position(j, rows[count - 1].height, rows[count - 1].idx);
+    else exp_json_raw(j, "null");
     exp_json_raw(j, "}");
+
+    free(rows);
+    nodus_client_free_balance_result(&bal);
     *status = 200;
 }
 
-/* precedence: tx hash -> block hash -> address (F7). ALL matches are
- * reported, never short-circuited on the first hit. */
+static void emit_match(exp_json_t *j, int *wrote, const char *type, const char *target) {
+    if (*wrote) exp_json_raw(j, ",");
+    exp_json_raw(j, "{\"type\":");
+    exp_json_str(j, type);
+    exp_json_raw(j, ",\"target\":");
+    exp_json_str(j, target);
+    exp_json_raw(j, "}");
+    *wrote = 1;
+}
+
+/* Every match is reported, never short-circuited on the first hit:
+ * decimal -> block height; "height:index" -> tx position; 128-hex -> tx
+ * (wire or intent id), block id, address (has indexed history). */
 static void route_search(exp_db_t *db, const char *query, exp_json_t *j, int *status) {
     char q[512];
     if (!query_get(query, "q", q, sizeof(q)) || q[0] == '\0') {
@@ -513,59 +746,44 @@ static void route_search(exp_db_t *db, const char *query, exp_json_t *j, int *st
 
     exp_json_raw(j, "{\"matches\":[");
     int wrote = 0;
+    uint64_t h;
+    uint32_t idx;
 
     if (is_all_decimal(q)) {
-        uint64_t height;
-        if (parse_u64_strict(q, &height)) {
+        if (parse_u64_strict(q, &h)) {
             exp_block_row_t row;
-            if (exp_db_query_block_by_height(db, height, &row) == 0) {
-                exp_json_raw(j, "{\"type\":\"block\",\"target\":");
-                exp_json_str(j, q);
-                exp_json_raw(j, "}");
-                wrote = 1;
-            }
+            if (exp_db_query_block_by_height(db, h, &row) == 0) emit_match(j, &wrote, "block", q);
         }
+    } else if (parse_position(q, &h, &idx)) {
+        exp_item_row_t it;
+        if (exp_db_query_item(db, h, idx, &it) == 0) emit_match(j, &wrote, "tx", q);
     } else if (is_hash128(q)) {
         uint8_t bytes[64];
         hex128_decode(q, bytes);
 
-        exp_tx_row_t tx_row;
-        int io_count_tmp = 0;
-        if (exp_db_query_tx(db, bytes, &tx_row, NULL, 0, &io_count_tmp, NULL, NULL) == 0) {
-            if (wrote) exp_json_raw(j, ",");
-            exp_json_raw(j, "{\"type\":\"tx\",\"target\":");
-            exp_json_str(j, q);
-            exp_json_raw(j, "}");
-            wrote = 1;
-        }
+        exp_item_row_t it;
+        if (exp_db_query_item_by_id(db, bytes, &it) == 0) emit_match(j, &wrote, "tx", q);
 
         exp_block_row_t block_row;
-        if (exp_db_query_block_by_hash(db, bytes, &block_row) == 0) {
-            if (wrote) exp_json_raw(j, ",");
-            exp_json_raw(j, "{\"type\":\"block\",\"target\":");
-            exp_json_str(j, q);
-            exp_json_raw(j, "}");
-            wrote = 1;
-        }
+        if (exp_db_query_block_by_id(db, bytes, &block_row) == 0) emit_match(j, &wrote, "block", q);
 
-        exp_tx_row_t addr_probe[1];
-        int addr_count = 0;
-        if (exp_db_query_address(db, q, UINT64_MAX, 1, addr_probe, &addr_count) == 0 && addr_count > 0) {
-            if (wrote) exp_json_raw(j, ",");
-            exp_json_raw(j, "{\"type\":\"address\",\"target\":");
-            exp_json_str(j, q);
-            exp_json_raw(j, "}");
-            wrote = 1;
-        }
+        exp_item_row_t probe;
+        int n = 0;
+        if (exp_db_query_address(db, q, UINT64_MAX, UINT32_MAX, 1, &probe, &n) == 0 && n > 0)
+            emit_match(j, &wrote, "address", q);
     }
-    /* neither decimal nor 128-hex: no match shape applies — empty matches
-     * array, not an error (F7: search is a lookup, not a format validator). */
+    /* none of the shapes: empty matches — search is a lookup, not a
+     * format validator. */
 
     exp_json_raw(j, "]}");
     *status = 200;
 }
 
 /* ── Dispatch ────────────────────────────────────────────────────────── */
+
+static void route_index(exp_http_ctx_t *ctx, const char *path_only,
+                        const char *query, exp_json_t *body_out,
+                        int *status_out);
 
 int exp_http_route(exp_http_ctx_t *ctx, const char *method, const char *path,
                     exp_json_t *body_out, int *status_out) {
@@ -579,55 +797,64 @@ int exp_http_route(exp_http_ctx_t *ctx, const char *method, const char *path,
         return 0;
     }
 
-    /* Fix round 1, C1: ctx->db is exp_db_t** (points at the SAME location
-     * the sync thread's handle_confirmed_reset swaps, e.g. main.c's `&db`)
-     * — deref exactly once here, under the caller's rdlock span
-     * (handle_client wraps this whole exp_http_route call; unit tests call
-     * this function directly, single-threaded, no lock needed). A NULL
-     * *ctx->db is a real, expected transient state (handle_confirmed_reset
-     * can leave *db_ptr NULL on its reopen/set_meta failure paths) — every
-     * route needs the db, so this single check covers all of them instead
-     * of each handler re-deref'ing ctx->db (and racing the swap) on its
-     * own. */
-    exp_db_t *db = ctx->db ? *ctx->db : NULL;
-    if (!db) {
-        *status_out = 503;
-        json_error(body_out, "index unavailable");
-        return 0;
-    }
-
     char path_only[1024];
     char query[4096];
     split_path_query(path, path_only, sizeof(path_only), query, sizeof(query));
 
+    /* /api/address takes the read lock itself, AFTER its balance round
+     * trip (route_address) — a witness query never runs under db_lock. */
+    if (strncmp(path_only, "/api/address/", 13) == 0) {
+        route_address(ctx, path_only + 13, query, body_out, status_out);
+        return 0;
+    }
+
+    /* Every other route is index-only: the read lock spans the *db deref
+     * and the queries, and is released before the caller writes the
+     * response. */
+    if (ctx->db_lock) pthread_rwlock_rdlock(ctx->db_lock);
+    route_index(ctx, path_only, query, body_out, status_out);
+    if (ctx->db_lock) pthread_rwlock_unlock(ctx->db_lock);
+    return 0;
+}
+
+/* The index-only routes; the caller holds ctx->db_lock (when set). */
+static void route_index(exp_http_ctx_t *ctx, const char *path_only,
+                        const char *query, exp_json_t *body_out,
+                        int *status_out) {
+    /* ctx->db is exp_db_t** (the SAME location the sync thread's
+     * handle_confirmed_reset swaps) — deref exactly once here, under the
+     * rdlock span. A NULL *ctx->db is a real transient state (a reset's
+     * reopen failure) — one check covers every route. */
+    exp_db_t *db = ctx->db ? *ctx->db : NULL;
+    if (!db) {
+        *status_out = 503;
+        json_error(body_out, "index unavailable");
+        return;
+    }
+
     if (strcmp(path_only, "/api/stats") == 0) {
         route_stats(db, body_out, status_out);
-        return 0;
+        return;
     }
     if (strcmp(path_only, "/api/blocks") == 0) {
         route_blocks(db, query, body_out, status_out);
-        return 0;
+        return;
     }
     if (strncmp(path_only, "/api/block/", 11) == 0) {
-        route_block(db, path_only + 11, body_out, status_out);
-        return 0;
+        route_block(db, path_only + 11, query, body_out, status_out);
+        return;
     }
     if (strncmp(path_only, "/api/tx/", 8) == 0) {
         route_tx(db, path_only + 8, body_out, status_out);
-        return 0;
-    }
-    if (strncmp(path_only, "/api/address/", 13) == 0) {
-        route_address(ctx, db, path_only + 13, query, body_out, status_out);
-        return 0;
+        return;
     }
     if (strcmp(path_only, "/api/search") == 0) {
         route_search(db, query, body_out, status_out);
-        return 0;
+        return;
     }
 
     *status_out = 404;
     json_error(body_out, "not found");
-    return 0;
 }
 
 /* ── Blocking poll() accept loop (Task 9 smoke, NOT unit-tested) ────── */
@@ -727,12 +954,10 @@ static void handle_client(exp_http_ctx_t *ctx, int cfd) {
     exp_json_t body;
     int status = 500;
 
-    /* Task 7 (db-swap race): rdlock spans exactly the db access — the
-     * exp_http_route call — and is released before send_response's socket
-     * I/O. NULL ctx->db_lock (unit tests) skips locking entirely. */
-    if (ctx->db_lock) pthread_rwlock_rdlock(ctx->db_lock);
+    /* Task 7 (db-swap race): exp_http_route takes the rdlock itself for
+     * exactly the db access (and NOT around /api/address's balance round
+     * trip); it is released before send_response's socket I/O. */
     exp_http_route(ctx, method, reqpath, &body, &status);
-    if (ctx->db_lock) pthread_rwlock_unlock(ctx->db_lock);
 
     send_response(cfd, status, body.buf ? body.buf : "{}");
     exp_json_freebuf(&body);

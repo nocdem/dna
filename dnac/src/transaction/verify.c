@@ -419,6 +419,8 @@ int dnac_tx_verify_validator_update_rules_internal(const dnac_transaction_t *tx)
  *
  *   - signer_count == 1
  *   - chain_config_fields.param_id ∈ {1..DNAC_CFG_PARAM_MAX_ID}
+ *   - dnac_cfg_param_read_by_consensus(param_id) (0.20.3) — the running
+ *     consensus reads the parameter; today {4, 5}
  *   - chain_config_fields.new_value in per-param range (§5.2):
  *       MAX_TXS_PER_BLOCK      : RETIRED (R3 W4-C delta 2, operator
  *                                "kaldır" 2026-09-18;
@@ -429,7 +431,10 @@ int dnac_tx_verify_validator_update_rules_internal(const dnac_transaction_t *tx)
  *                                bytes and units only now
  *                                (nodus_witness_v2_apply.h's derived
  *                                envelope ceiling)
- *       BLOCK_INTERVAL_SEC     : [1, 15]
+ *       BLOCK_INTERVAL_SEC     : NOT READ by the running consensus
+ *                                (0.20.3) — refused; its [1, 15]
+ *                                definition stays in dnac.h for a
+ *                                consensus that reads it
  *       INFLATION_START_BLOCK  : RETIRED (tokenomics-v3 P2, P2-4) — id 3
  *                                is refused unconditionally, mirroring
  *                                the witness-side scalar_rules; there is
@@ -463,44 +468,23 @@ static int verify_chain_config_rules(const dnac_transaction_t *tx) {
         return DNAC_ERROR_INVALID_PARAM;
     }
 
-    /* new_value in per-param range (Rule CC-B). */
+    /* 0.20.3: a parameter the RUNNING consensus does not read is refused
+     * (decision file 2026-09-23-height-activated-upgrades-before-testnet.md
+     * item 1). The list is dnac.h's dnac_cfg_param_read_by_consensus —
+     * the SAME predicate the witness-side nodus_chain_config_scalar_rules
+     * consumes, so the client mirror and the witness cannot drift. */
+    if (!dnac_cfg_param_read_by_consensus(cc->param_id)) {
+        QGP_LOG_ERROR(LOG_TAG,
+                      "CHAIN_CONFIG: param_id=%u is not read by the running "
+                      "consensus", (unsigned)cc->param_id);
+        return DNAC_ERROR_INVALID_PARAM;
+    }
+
+    /* new_value in per-param range (Rule CC-B). Only ids ON the read list
+     * reach here — why 1 (retired), 2 (not read) and 3 (retired) are off
+     * it is written at nodus_witness_chain_config.c's scalar_rules; their
+     * former cases were unreachable after the gate and were removed. */
     switch ((dnac_chain_config_param_id_t)cc->param_id) {
-        case DNAC_CFG_MAX_TXS_PER_BLOCK:
-            /* RETIRED (R3 W4-C delta 3, whitelist extension over delta
-             * 2's operator "kaldır" ruling;
-             * atlas-dec-5b7568512b95e6d2e671c4eaad2c1879 rev 1): the
-             * per-block transaction-count cap left governance entirely —
-             * this client-side mirror now refuses id 1 unconditionally,
-             * the same way nodus_witness_chain_config.c's scalar_rules
-             * already does witness-side. This id is NEVER accepted
-             * again; ids 2-4 keep their numbers. */
-            QGP_LOG_ERROR(LOG_TAG,
-                          "CHAIN_CONFIG: param_id=1 (MAX_TXS_PER_BLOCK) "
-                          "is retired");
-            return DNAC_ERROR_INVALID_PARAM;
-        case DNAC_CFG_BLOCK_INTERVAL_SEC:
-            if (cc->new_value < DNAC_CFG_MIN_BLOCK_INTERVAL_SEC ||
-                cc->new_value > DNAC_CFG_MAX_BLOCK_INTERVAL_SEC) {
-                QGP_LOG_ERROR(LOG_TAG,
-                              "CHAIN_CONFIG: BLOCK_INTERVAL_SEC=%llu out of [%llu,%llu]",
-                              (unsigned long long)cc->new_value,
-                              (unsigned long long)DNAC_CFG_MIN_BLOCK_INTERVAL_SEC,
-                              (unsigned long long)DNAC_CFG_MAX_BLOCK_INTERVAL_SEC);
-                return DNAC_ERROR_INVALID_PARAM;
-            }
-            break;
-        case DNAC_CFG_INFLATION_START_BLOCK:
-            /* RETIRED (tokenomics-v3 P2, P2-4; decision file §3 S-4):
-             * the per-block mint this parameter gated is deleted, so the
-             * id left governance exactly as id 1 did above — refused
-             * unconditionally here, mirroring
-             * nodus_witness_chain_config.c's scalar_rules witness-side.
-             * This id is NEVER accepted again; ids 2 and 4 keep their
-             * numbers. */
-            QGP_LOG_ERROR(LOG_TAG,
-                          "CHAIN_CONFIG: param_id=3 (INFLATION_START_BLOCK) "
-                          "is retired");
-            return DNAC_ERROR_INVALID_PARAM;
         case DNAC_CFG_TARGET_ACTIVE_COUNT:
             if (cc->new_value < DNAC_CFG_MIN_TARGET_ACTIVE ||
                 cc->new_value > DNAC_CFG_MAX_TARGET_ACTIVE) {
@@ -590,7 +574,7 @@ static int verify_chain_config_rules(const dnac_transaction_t *tx) {
      *     effective_block_height (for ergonomic params: MAX_TXS).
      *   - commit_block + DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS <=
      *     effective_block_height (for safety-critical params:
-     *     BLOCK_INTERVAL, TARGET_ACTIVE_COUNT).
+     *     TARGET_ACTIVE_COUNT).
      *   - commit_block <= valid_before_block (freshness).
      *   - Exclusive-block rule (Q7): block containing chain_config_tx has
      *     tx_count == 1. */

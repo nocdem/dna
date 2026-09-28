@@ -1548,6 +1548,21 @@ target_link_libraries(test_cc_appr nodus dsa nodus crypto)
 target_compile_definitions(test_cc_appr PRIVATE NODUS_WITNESS_INTERNAL_API)
 add_test(NAME test_cc_appr COMMAND test_cc_appr)
 
+# scan-v3 (decision docs/plans/decisions/2026-09-28-scan-v3-query.md) —
+# the dnac_v3_block client query (nodus_witness_v3_block_build) over a
+# REAL version-3 chain committed through the host pipeline (a claim, a
+# native SPEND, a double spend refused, a chain_config, an undecodable
+# item): header = v2_blocks row, codes = the stored FinalizeBlock
+# response, created coins = the utxo_set rows the apply wrote, paging,
+# byte-identical answers; and the client decoder over hostile replies
+# (duplicate key, truncation, oversize arrays, bad paging). Links kem
+# for the client SDK (test_cc_collect's line). Default build, no
+# environment. See the file's own "HOW IT CAN LIE".
+add_executable(test_v3_block_query tests/test_v3_block_query.c)
+target_link_libraries(test_v3_block_query nodus dsa kem nodus crypto pthread)
+target_compile_definitions(test_v3_block_query PRIVATE NODUS_WITNESS_INTERNAL_API)
+add_test(NAME test_v3_block_query COMMAND test_v3_block_query)
+
 # FLEET-TM-R3 W2 (R3-C1c) — THE STARTUP TABLE over a REAL version-3
 # chain: the genesis document loader (stored row, provider, refusals),
 # InitChain called exactly once and never again, the Handshaker's height

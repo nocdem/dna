@@ -1041,6 +1041,265 @@ int nodus_client_dnac_cc_collect(nodus_client_t *client,
 int nodus_dnac_cc_collect_decode(const uint8_t *raw, size_t raw_len,
                                  nodus_dnac_cc_collect_result_t *result_out);
 
+/* ── dnac_v3_block — one committed version-3 block, paged (scan-v3) ────
+ * (decision docs/plans/decisions/2026-09-28-scan-v3-query.md; design
+ * docs/plans/2026-09-28-scan-v3-design.md item 1)
+ *
+ * Request  "a": {"h": u64 height >= 1,
+ *                "i": u32 first item index (absent = 0),
+ *                "b": u32 item-byte budget (absent/0 = BUDGET_MAX;
+ *                     clamped to [BUDGET_MIN, BUDGET_MAX])}
+ * Response "r" — the header keys, then "it" LAST:
+ *   "h"   u64     the height
+ *   "bid" bstr64  block id — the cometbft header hash (v2_blocks.block_id)
+ *   "pb"  bstr64  previous block id (v2_blocks.prev_block_id)
+ *   "tm"  u64     header time, ms since the Unix epoch (BlockMeta header)
+ *   "pa"  bstr    proposer address (header; 32 bytes on this chain)
+ *   "gr"  bstr64  global root after the block (v2_blocks.global_root)
+ *   "ac"  u64     applied envelopes (v2_blocks.tx_count — claims excluded)
+ *   "n"   u32     items the block carries (applied AND refused)
+ *   "tip" u64     the node's committed tip (MAX(v2_blocks.global_height))
+ *   "nx"  u32     the next item index — PRESENT ONLY when the page ended
+ *                 early (budget or item-count bound); ask again with i=nx
+ *   "it"  array   one map per item, index-ascending from "i":
+ *     "i"  u32     item index in the block
+ *     "k"  u8      NODUS_DNAC_V3_KIND_* (1 envelope, 2 claim, 0 empty)
+ *     "c"  u32     result code, the stored FinalizeBlock response's
+ *                  tx_results[i].code — 0 = APPLIED, anything else =
+ *                  refused (the ledger's nodus_v2_tx_code_t)
+ *     "w"  bstr64  wire id — an APPLIED envelope: the id v2_tx_index
+ *                  stores; a claim that decodes: SHA3-512(claim bytes)
+ *                  (v2_claim_bytes.claim_hash). ABSENT on a refused
+ *                  envelope: its wire id binds the block-start ruleset
+ *                  context, which a historic height does not keep.
+ *     "in" bstr64  intent id (an APPLIED envelope only)
+ *     "f"  u64     declared fee (an envelope that decodes)
+ *     "op" tstr    "spend" "burn" "token_create" "sysfund" "stake"
+ *                  "delegate" "unstake" "undelegate" "validator_update"
+ *                  "chain_config" "claim" — absent when unnamed
+ *     EFFECTS — present on APPLIED items only (a refused item has none):
+ *     "sp" array   consumed coin ids (bstr64), call order
+ *     "cr" array   created coins, call order, each
+ *                  {"id" bstr64 coin id (the utxo_set key),
+ *                   "o"  tstr  owner fp, 128 lowercase hex (dnac_utxo's
+ *                              "owner" format),
+ *                   "a"  u64   amount, "t" bstr64 token id (zero = native),
+ *                   "u"  u64   unlock block (0 = unlocked)}
+ *     "bu" u64     burned amount (BURN only)
+ *     "rc" map     the SYSTEM record written:
+ *                  {"k" u8 NODUS_DNAC_V3_REC_*,
+ *                   "v" tstr128 validator fp, "d" tstr128 delegator fp,
+ *                   "ds" tstr128 unstake destination fp, "a" u64 amount,
+ *                   "cm" u16 commission bps, "p" u8 param id,
+ *                   "nv" u64 new value, "ef" u64 effective height}
+ * An error reply (NODUS_ERR_NOT_FOUND: not committed / not held;
+ * NODUS_ERR_INTERNAL_ERROR: a store/decode fault on the node) is never a
+ * partial page. */
+
+#define NODUS_DNAC_V3_BLOCK_BUDGET_MIN      1024u
+#define NODUS_DNAC_V3_BLOCK_BUDGET_MAX      (1024u * 1024u)
+/** Items one page may carry — bounds the client's allocation. */
+#define NODUS_DNAC_V3_BLOCK_PAGE_MAX_ITEMS  256u
+/** Consumed / created coins per item (the node's native CORE bounds:
+ *  15 inputs; 16 wire outputs + the UNDELEGATE release coin). */
+#define NODUS_DNAC_V3_ITEM_MAX_IN           15u
+#define NODUS_DNAC_V3_ITEM_MAX_OUT          17u
+#define NODUS_DNAC_V3_OP_MAX                24u
+
+#define NODUS_DNAC_V3_KIND_EMPTY            0
+#define NODUS_DNAC_V3_KIND_ENVELOPE         1
+#define NODUS_DNAC_V3_KIND_CLAIM            2
+
+#define NODUS_DNAC_V3_REC_NONE              0
+#define NODUS_DNAC_V3_REC_STAKE             1
+#define NODUS_DNAC_V3_REC_DELEGATE          2
+#define NODUS_DNAC_V3_REC_UNSTAKE           3
+#define NODUS_DNAC_V3_REC_UNDELEGATE        4
+#define NODUS_DNAC_V3_REC_VALIDATOR_UPDATE  5
+#define NODUS_DNAC_V3_REC_CHAIN_CONFIG      6
+
+/** One created coin ("cr" entry). */
+typedef struct {
+    uint8_t  id[64];
+    char     owner[129];              /* 128 lowercase hex + NUL          */
+    uint64_t amount;
+    uint8_t  token_id[64];
+    uint64_t unlock_block;
+} nodus_dnac_v3_coin_t;
+
+/** One item of a `dnac_v3_block` page (~6 KB). */
+typedef struct {
+    uint32_t index;
+    uint8_t  kind;                    /* NODUS_DNAC_V3_KIND_*             */
+    uint32_t code;                    /* 0 = applied                      */
+    bool     has_wire_id;
+    uint8_t  wire_id[64];
+    bool     has_intent_id;
+    uint8_t  intent_id[64];
+    bool     has_fee;
+    uint64_t fee;
+    char     op[NODUS_DNAC_V3_OP_MAX + 1];   /* "" when absent            */
+    bool     has_effects;             /* "sp"/"cr" present (applied)      */
+    uint8_t  n_consumed;
+    uint8_t  consumed[NODUS_DNAC_V3_ITEM_MAX_IN][64];
+    uint8_t  n_created;
+    nodus_dnac_v3_coin_t created[NODUS_DNAC_V3_ITEM_MAX_OUT];
+    uint64_t burned;
+    uint8_t  rec_kind;                /* NODUS_DNAC_V3_REC_*              */
+    char     rec_validator_fp[129];   /* "" when absent                   */
+    char     rec_delegator_fp[129];
+    char     rec_dest_fp[129];
+    uint64_t rec_amount;
+    uint16_t rec_commission_bps;
+    uint8_t  cc_param_id;
+    uint64_t cc_new_value;
+    uint64_t cc_effective;
+} nodus_dnac_v3_item_t;
+
+/** One `dnac_v3_block` page. `items` is heap (count entries) — free with
+ *  nodus_client_free_v3_block_result. */
+typedef struct {
+    uint64_t height;
+    uint8_t  block_id[64];
+    uint8_t  prev_block_id[64];
+    uint64_t time_ms;
+    uint8_t  proposer[64];
+    size_t   proposer_len;
+    uint8_t  global_root[64];
+    uint64_t applied_count;
+    uint32_t total_items;
+    uint64_t tip;
+    bool     has_next;
+    uint32_t next_index;
+    size_t   count;
+    nodus_dnac_v3_item_t *items;
+} nodus_dnac_v3_block_result_t;
+
+/**
+ * Fetch one page of a committed version-3 block (dnac_v3_block, above).
+ * Walk a block with from_index = 0, then result.next_index while
+ * result.has_next.
+ *
+ * @param budget  item-byte budget (0 = the node's maximum)
+ * @return 0 and `result_out` filled (free it with
+ *         nodus_client_free_v3_block_result); the NODUS_ERR_* code the
+ *         node answered; NODUS_ERR_PROTOCOL_ERROR for a reply the decoder
+ *         refuses; -1 on invalid arguments / encode / transport failure.
+ */
+int nodus_client_dnac_v3_block(nodus_client_t *client, uint64_t height,
+                               uint32_t from_index, uint32_t budget,
+                               nodus_dnac_v3_block_result_t *result_out);
+
+/**
+ * Decode a raw `dnac_v3_block` response message (the T2 map the node
+ * sends) — the decoder nodus_client_dnac_v3_block uses, exported for
+ * tests. STRICT (the reply is a server's, possibly hostile): every
+ * header key required and type-checked, a duplicate key refused, every
+ * array bounded BEFORE it is walked (items <= PAGE_MAX_ITEMS, consumed
+ * <= ITEM_MAX_IN, created <= ITEM_MAX_OUT), item indices strictly
+ * ascending and below "n", "nx" consistent with the last item, a
+ * truncated message refused. Unknown keys are skipped. On any refusal
+ * `result_out` is left empty (nothing to free).
+ * @return 0; -1 malformed.
+ */
+int nodus_dnac_v3_block_decode(const uint8_t *raw, size_t raw_len,
+                               nodus_dnac_v3_block_result_t *result_out);
+
+/** Free a `dnac_v3_block` result's items (NULL-safe; the struct is
+ *  zeroed). */
+void nodus_client_free_v3_block_result(nodus_dnac_v3_block_result_t *result);
+
+/**
+ * Read the node's committed version-3 tip through the dnac_supply RPC
+ * (scan-v3 — the ADDITIVE "tip" key; the nodus_client_dnac_chain_id32
+ * pattern: nodus_dnac_supply_result_t is not grown). A legacy node's
+ * reply carries no such key; `*has_out` tells that case apart.
+ * @return 0 (*has_out meaningful either way); error code on
+ *         transport/RPC failure.
+ */
+int nodus_client_dnac_supply_tip(nodus_client_t *client, bool *has_out,
+                                 uint64_t *tip_out);
+
+/* ── dnac_balance — one owner's TRANSPARENT balance, per token (scan-v3) ─
+ * (decision docs/plans/decisions/2026-09-28-scan-v3-query.md item 3a)
+ *
+ * PUBLIC: any session may ask about any owner (no session-owner gate —
+ * unlike dnac_utxo / dnac_history, which keep theirs, C11). It answers
+ * totals only: no coin ids, no history. TRANSPARENT coins only — the
+ * CORE-domain rows of utxo_set; never a shielded pool's notes (never to
+ * be extended there).
+ *
+ * Request  "a": {"owner": tstr — exactly 128 lowercase hex characters}
+ * Response "r":
+ *   "tip" u64    the node's committed tip (MAX(v2_blocks.global_height))
+ *   "tk"  array  one map per token the owner holds, token id strictly
+ *                ascending (bytewise), at most NODUS_DNAC_BALANCE_MAX_TOKENS:
+ *     "t" bstr64  token id (all zero = native)
+ *     "a" u64     total: Σ amount of the owner's unspent coins of the token
+ *     "s" u64     spendable: Σ amount of those with unlock_block < tip + 1
+ *                 (the native exec's lock gate judged for the next block;
+ *                 s <= a)
+ *     "c" u64     number of those coins (>= 1)
+ *   An owner holding nothing answers an EMPTY "tk" — a real zero.
+ * Errors (never a partial or zeroed answer):
+ *   NODUS_ERR_PROTOCOL_ERROR  owner missing / duplicated / not 128
+ *                             lowercase hex
+ *   NODUS_ERR_NOT_FOUND       the node serves no version-3 chain
+ *   NODUS_ERR_TOO_LARGE       the owner holds more than
+ *                             NODUS_DNAC_BALANCE_MAX_TOKENS tokens
+ *   NODUS_ERR_INTERNAL_ERROR  a store fault, an overflow, a malformed row
+ */
+
+/** Tokens one dnac_balance answer carries at most (~26 KB of reply). */
+#define NODUS_DNAC_BALANCE_MAX_TOKENS  256u
+
+typedef struct {
+    uint8_t  token_id[64];
+    uint64_t total;
+    uint64_t spendable;
+    uint64_t coins;
+} nodus_dnac_balance_token_t;
+
+/** One `dnac_balance` answer. `tokens` is heap (count entries; NULL when
+ *  count is 0) — free with nodus_client_free_balance_result. */
+typedef struct {
+    uint64_t tip;
+    size_t   count;
+    nodus_dnac_balance_token_t *tokens;
+} nodus_dnac_balance_result_t;
+
+/**
+ * Query one owner's transparent balance (dnac_balance, above).
+ * @param owner_hex  exactly 128 lowercase hex characters (checked here
+ *                   before anything is sent)
+ * @return 0 and `result_out` filled (free with
+ *         nodus_client_free_balance_result); the NODUS_ERR_* code the node
+ *         answered; NODUS_ERR_PROTOCOL_ERROR for a reply the decoder
+ *         refuses; -1 on invalid arguments / encode / transport failure.
+ */
+int nodus_client_dnac_balance(nodus_client_t *client, const char *owner_hex,
+                              nodus_dnac_balance_result_t *result_out);
+
+/**
+ * Decode a raw `dnac_balance` response message — the decoder
+ * nodus_client_dnac_balance uses, exported for tests. STRICT: "tip" and
+ * "tk" required, a duplicate key refused (top level and per token), every
+ * read checked for END/ERROR, "tk" bounded by
+ * NODUS_DNAC_BALANCE_MAX_TOKENS before it is walked, every token map
+ * carries all four of its keys typed, token ids strictly ascending,
+ * s <= a, c >= 1, dec.error checked at the end. Unknown keys (top level
+ * or per token) are skipped by a walker that refuses truncation. On any
+ * refusal
+ * `result_out` is left empty (nothing to free).
+ * @return 0; -1 malformed.
+ */
+int nodus_dnac_balance_decode(const uint8_t *raw, size_t raw_len,
+                              nodus_dnac_balance_result_t *result_out);
+
+/** Free a `dnac_balance` result's tokens (NULL-safe; the struct is
+ *  zeroed). */
+void nodus_client_free_balance_result(nodus_dnac_balance_result_t *result);
+
 /**
  * Page through the full validator table on the witness (all statuses).
  *

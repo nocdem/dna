@@ -35,9 +35,19 @@ The chain is implemented in three layers of the monorepo:
   count). **tokenomics-v3 P2 (2026-09-24):** parameter id 3
   (`INFLATION_START_BLOCK`) is RETIRED the same way — the per-block mint
   it scheduled is deleted, and both the witness's vote rules and this
-  library's mirror (`dnac/src/transaction/verify.c`) refuse it. Ids 2
-  and 4 (BLOCK_INTERVAL_SEC, TARGET_ACTIVE_COUNT) are unaffected; ids
-  never renumber and a retired id is never reused. **HF-1 (dnac 0.18.12 /
+  library's mirror (`dnac/src/transaction/verify.c`) refuse it. Id 4
+  (TARGET_ACTIVE_COUNT) is unaffected; ids never renumber and a retired
+  id is never reused. **dnac 0.18.13 / nodus 0.20.3:** a CHAIN_CONFIG
+  proposal is accepted only for a parameter the RUNNING consensus reads
+  — the one list is `dnac_cfg_param_read_by_consensus`
+  (`dnac/include/dnac/dnac.h`), consumed by both the witness's scalar
+  rules and this library's mirror: today ids 4 and 5. Id 2
+  (`BLOCK_INTERVAL_SEC`) is refused — the Comet lane's block pace is a
+  compile-time node setting and never reads it — but it is NOT retired:
+  the number and its [1, 15] definition stay, and a consensus that reads
+  the block interval makes it votable again (decision
+  `docs/plans/decisions/2026-09-23-height-activated-upgrades-before-testnet.md`
+  item 1). Already-committed id-2 rows stay readable. **HF-1 (dnac 0.18.12 /
   nodus 0.19.80):** id 5 `GAS_PRICE_RAW_PER_UNIT`
   (`DNAC_CFG_GAS_PRICE_RAW_PER_UNIT`, range [0, `DNAC_CFG_MAX_GAS_PRICE`
   = 1 000 000] raw per declared gas unit, 0 = rule off) — the witness

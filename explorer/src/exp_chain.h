@@ -9,10 +9,15 @@
  * never persisted) and one nodus_client_t connection to a single server at
  * a time, chosen from a caller-supplied server list. exp_chain_rotate()
  * advances to the next server in the list (wrapping around) on failure;
- * the network query wrappers below (exp_chain_supply/ledger_range/tx/
- * block/utxos) are thin pass-throughs to the matching nodus_client_dnac_*
- * call, guarded by nodus_client_is_ready() and retried once via
- * exp_chain_rotate() on failure before returning an error.
+ * the network query wrappers below (exp_chain_tip / exp_chain_v3_page) are
+ * thin pass-throughs to the version-3 nodus_client_dnac_* calls, guarded
+ * by nodus_client_is_ready() and retried once via exp_chain_rotate() on
+ * failure before returning an error; exp_chain_balance tries every server.
+ *
+ * One exp_chain_t is used by ONE thread: the sync thread owns the handle
+ * main.c opens for it, the HTTP thread owns a second, separate handle
+ * (own identity, own connection) for the address balance — the two never
+ * share a nodus_client_t.
  *
  * F4 chain-reset FSM (exp_reset_fsm_t / exp_reset_fsm_feed): pure logic,
  * no I/O, no globals — safe to unit test without a network. See the
@@ -23,7 +28,7 @@
 
 #include <stdint.h>
 
-#include "nodus/nodus_types.h"   /* nodus_dnac_*_result_t */
+#include "nodus/nodus.h"         /* nodus_dnac_v3_block_result_t */
 
 #ifdef __cplusplus
 extern "C" {
@@ -106,17 +111,46 @@ int exp_chain_current_server(const exp_chain_t *c);
 /* ── Read-only DNAC query wrappers (G1: read-only only) ──────────────
  * Each: if not ready, rotate once; issue the query; on failure, rotate
  * once more and retry; return the final result code. 0 on success,
- * -1 on failure (rotate exhausted) or the nodus_client_dnac_* error code
- * (see nodus/nodus_types.h NODUS_ERR_*) on a failed-but-connected query.
- * Free heap-allocated result fields with the matching
- * nodus_client_free_*_result() (declared in nodus/nodus.h) — unchanged
- * from the underlying Nodus client API, not duplicated here. */
+ * -1 on failure (rotate exhausted, or a node that is not on a version-3
+ * chain) or the nodus_client_dnac_* error code (NODUS_ERR_*) on a
+ * failed-but-connected query. */
 
-int exp_chain_supply(exp_chain_t *c, nodus_dnac_supply_result_t *out);
-int exp_chain_ledger_range(exp_chain_t *c, uint64_t from, uint64_t to, nodus_dnac_range_result_t *out);
-int exp_chain_tx(exp_chain_t *c, const uint8_t hash[64], nodus_dnac_tx_result_t *out);
-int exp_chain_block(exp_chain_t *c, uint64_t height, nodus_dnac_block_result_t *out);
-int exp_chain_utxos(exp_chain_t *c, const char *owner_fp, nodus_dnac_utxo_result_t *out);
+/* One observation of the server's chain: the 32-byte version-3 chain id
+ * (dnac_supply "chain_id32" — the F4 reset FSM's key), the committed tip
+ * height (dnac_supply "tip", MAX(v2_blocks.global_height)) and the supply
+ * figures (display only). */
+typedef struct {
+    uint8_t  chain_id32[32];
+    uint64_t tip;
+    uint64_t supply_genesis;
+    uint64_t supply_burned;
+    uint64_t supply_current;
+} exp_chain_tip_t;
+
+/* Three dnac_supply round trips on ONE connection (nodus_client_dnac_supply
+ * for the figures, _chain_id32, _supply_tip — the SDK reads the additive
+ * keys through separate accessors); a failure of any of them rotates and
+ * redoes all three on the next server, so one observation never mixes two
+ * servers. A reply without "chain_id32" or "tip" (a node not on the
+ * version-3 chain) is a failure — a missing tip is never read as 0. */
+int exp_chain_tip(exp_chain_t *c, exp_chain_tip_t *out);
+
+/* One dnac_v3_block page (the node's maximum page budget). Free `out` with
+ * nodus_client_free_v3_block_result. Walking a whole block is
+ * exp_sync_collect_block's job (exp_sync.h). */
+int exp_chain_v3_page(exp_chain_t *c, uint64_t height, uint32_t from_index,
+                      nodus_dnac_v3_block_result_t *out);
+
+/* One owner's TRANSPARENT balance per token (dnac_balance — decision
+ * docs/plans/decisions/2026-09-28-scan-v3-query.md 3a; wire in nodus.h).
+ * Unlike the wrappers above this one tries EVERY configured server before
+ * it gives up (the current one if ready, then one rotation per further
+ * attempt, `count` attempts in all): a failure answer is shown to the user
+ * as "unavailable", so it must mean "no server answered", not "the first
+ * one did not". Free `out` with nodus_client_free_balance_result.
+ * @return 0; the last attempt's error otherwise (`out` then empty). */
+int exp_chain_balance(exp_chain_t *c, const char *owner_hex,
+                      nodus_dnac_balance_result_t *out);
 
 /* ── F4 chain-reset FSM ──────────────────────────────────────────────
  *
@@ -130,9 +164,11 @@ int exp_chain_utxos(exp_chain_t *c, const char *owner_fp, nodus_dnac_utxo_result
  * call either (a) adopts chain_id as the reference if the caller left
  * ref_chain_id zeroed, or (b) is compared against a caller-preseeded
  * reference (e.g. loaded from db meta before the first feed) like any
- * other observation. A real DNAC chain_id (SHA3-512-derived, see
- * nodus_dnac_supply_result_t.chain_id) is vanishingly unlikely to be
- * all-zero, so this sentinel does not collide with real chain state.
+ * other observation. The FSM is fed the version-3 32-byte chain id
+ * (exp_chain_tip_t.chain_id32, dnac_supply "chain_id32"), never the legacy
+ * dnac_supply "chain_id" key; a real chain id (hash-derived) is vanishingly
+ * unlikely to be all-zero, so this sentinel does not collide with real
+ * chain state.
  *
  * Semantics:
  *   - chain_id == ref_chain_id (match): resets FSM tracking state fully

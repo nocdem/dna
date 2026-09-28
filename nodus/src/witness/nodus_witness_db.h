@@ -123,6 +123,47 @@ int  nodus_witness_utxo_by_owner(nodus_witness_t *w, const char *owner,
                                    nodus_witness_utxo_entry_t *out,
                                    int max_entries, int *count_out);
 
+/* scan-v3 (decision docs/plans/decisions/2026-09-28-scan-v3-query.md,
+ * item 3a) — one owner's TRANSPARENT balance, per token. */
+typedef struct {
+    uint8_t  token_id[64];   /* all-zero = native                          */
+    uint64_t total;          /* Σ amount of every CORE coin of the token   */
+    uint64_t spendable;      /* Σ amount of those with unlock < spend_h    */
+    uint64_t coins;          /* number of those coins (>= 1)               */
+} nodus_witness_balance_entry_t;
+
+#define NODUS_WITNESS_BALANCE_TOO_MANY  (-2)
+
+/**
+ * Per-token totals of `owner`'s unspent coins in `utxo_set`, CORE domain
+ * only (DNA_DOMAIN_CORE — the transparent coins; a shielded pool's notes
+ * live in v2_pools, never in utxo_set, and are never read here). Rows are
+ * read ordered by (token_id, nullifier) and summed in C with checked
+ * addition (dna_ck_add_u64): an overflow is a fault, never a wrap.
+ *
+ * `spend_h` is the height the spend rule is judged at: a coin counts as
+ * spendable iff unlock_block < spend_h — the native exec's lock gate
+ * (nodus_witness_rt_native.c rtn_xfer_exec, "unlock >= ctx->global_height
+ * rejects") at global_height = spend_h.
+ *
+ * Fail-closed ("A DB failure is never a value", nodus/CLAUDE.md): a
+ * non-integer / NULL / NEGATIVE amount or unlock_block, a token id that
+ * is not a 64-byte blob, an overflow, or a step error mid-scan answers -1
+ * with *count_out = 0 — never a partial or guessed total.
+ *
+ * Output is token_id-ascending (memcmp order), deterministic.
+ *
+ * @return 0 (count_out = tokens written, 0 = the owner holds nothing);
+ *         NODUS_WITNESS_BALANCE_TOO_MANY when the owner holds more than
+ *         max_entries distinct tokens (nothing usable written);
+ *         -1 on a fault or bad arguments.
+ */
+int  nodus_witness_utxo_balance_by_owner(nodus_witness_t *w,
+                                         const char *owner,
+                                         uint64_t spend_h,
+                                         nodus_witness_balance_entry_t *out,
+                                         int max_entries, int *count_out);
+
 /* ── Token registry operations ──────────────────────────────────── */
 
 int  nodus_witness_token_add(nodus_witness_t *w, const uint8_t *token_id,

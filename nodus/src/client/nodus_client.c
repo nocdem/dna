@@ -4403,6 +4403,640 @@ int nodus_client_dnac_cc_collect(nodus_client_t *client,
     return drc == 0 ? 0 : NODUS_ERR_PROTOCOL_ERROR;
 }
 
+/* ── dnac_v3_block (scan-v3; wire: nodus.h) ───────────────────────────
+ *
+ * The decoder treats the reply as HOSTILE (design G4): every read checks
+ * CBOR_ITEM_END / CBOR_ITEM_ERROR (nodus_cbor.c reports running off the
+ * buffer as END WITHOUT setting dec.error — the nodus_dnac_cc_collect_
+ * decode lesson), every container count is bounded against the bytes
+ * left BEFORE it is walked, every map refuses a duplicate key, unknown
+ * keys are skipped by a walker that itself refuses truncation, and
+ * dec.error is checked at the end. */
+
+/** Keys seen in one map — a duplicate (or more than V3D_MAX_KEYS keys)
+ *  refuses the reply. */
+#define V3D_MAX_KEYS 32
+typedef struct {
+    const char *p[V3D_MAX_KEYS];
+    size_t      l[V3D_MAX_KEYS];
+    size_t      n;
+} v3d_keys_t;
+
+static int v3d_key_add(v3d_keys_t *ks, const cbor_item_t *k)
+{
+    for (size_t j = 0; j < ks->n; j++)
+        if (ks->l[j] == k->tstr.len &&
+            memcmp(ks->p[j], k->tstr.ptr, k->tstr.len) == 0)
+            return -1;                           /* duplicate key       */
+    if (ks->n >= V3D_MAX_KEYS) return -1;
+    ks->p[ks->n] = k->tstr.ptr;
+    ks->l[ks->n] = k->tstr.len;
+    ks->n++;
+    return 0;
+}
+
+static size_t v3d_left(const cbor_decoder_t *d)
+{
+    return d->pos < d->len ? d->len - d->pos : 0;
+}
+
+static int v3d_next(cbor_decoder_t *d, cbor_item_t *it)
+{
+    *it = cbor_decode_next(d);
+    if (it->type == CBOR_ITEM_END || it->type == CBOR_ITEM_ERROR || d->error)
+        return -1;
+    /* a container can never claim more elements than bytes remain */
+    if (it->type == CBOR_ITEM_ARRAY && it->count > v3d_left(d)) return -1;
+    if (it->type == CBOR_ITEM_MAP && it->count > v3d_left(d) / 2) return -1;
+    return 0;
+}
+
+/** Skip one value, refusing truncation anywhere inside it. */
+static int v3d_skip(cbor_decoder_t *d, int depth)
+{
+    cbor_item_t it;
+    if (depth > 8 || v3d_next(d, &it) != 0) return -1;
+    if (it.type == CBOR_ITEM_ARRAY) {
+        for (size_t j = 0; j < it.count; j++)
+            if (v3d_skip(d, depth + 1) != 0) return -1;
+    } else if (it.type == CBOR_ITEM_MAP) {
+        for (size_t j = 0; j < it.count * 2; j++)
+            if (v3d_skip(d, depth + 1) != 0) return -1;
+    }
+    return 0;
+}
+
+/** The next map KEY: a text string, not seen before in this map. */
+static int v3d_key(cbor_decoder_t *d, v3d_keys_t *ks, cbor_item_t *k)
+{
+    if (v3d_next(d, k) != 0 || k->type != CBOR_ITEM_TSTR) return -1;
+    return v3d_key_add(ks, k);
+}
+
+static int v3d_u64(cbor_decoder_t *d, uint64_t max, uint64_t *out)
+{
+    cbor_item_t v;
+    if (v3d_next(d, &v) != 0 || v.type != CBOR_ITEM_UINT ||
+        v.uint_val > max)
+        return -1;
+    *out = v.uint_val;
+    return 0;
+}
+
+static int v3d_b64(cbor_decoder_t *d, uint8_t out[64])
+{
+    cbor_item_t v;
+    if (v3d_next(d, &v) != 0 || v.type != CBOR_ITEM_BSTR ||
+        v.bstr.len != 64)
+        return -1;
+    memcpy(out, v.bstr.ptr, 64);
+    return 0;
+}
+
+/** A fingerprint: exactly 128 lowercase hex characters. */
+static int v3d_hex128(cbor_decoder_t *d, char out[129])
+{
+    cbor_item_t v;
+    if (v3d_next(d, &v) != 0 || v.type != CBOR_ITEM_TSTR ||
+        v.tstr.len != 128)
+        return -1;
+    for (size_t j = 0; j < 128; j++) {
+        char ch = v.tstr.ptr[j];
+        if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')))
+            return -1;
+    }
+    memcpy(out, v.tstr.ptr, 128);
+    out[128] = '\0';
+    return 0;
+}
+
+static int v3d_coin(cbor_decoder_t *d, nodus_dnac_v3_coin_t *c)
+{
+    cbor_item_t m, k;
+    v3d_keys_t  ks;
+    unsigned    have = 0;
+
+    memset(&ks, 0, sizeof(ks));
+    if (v3d_next(d, &m) != 0 || m.type != CBOR_ITEM_MAP) return -1;
+    for (size_t j = 0; j < m.count; j++) {
+        if (v3d_key(d, &ks, &k) != 0) return -1;
+        if (KEY_EQ(k, "id")) {
+            if (v3d_b64(d, c->id) != 0) return -1;
+            have |= 1u;
+        } else if (KEY_EQ(k, "o")) {
+            if (v3d_hex128(d, c->owner) != 0) return -1;
+            have |= 2u;
+        } else if (KEY_EQ(k, "a")) {
+            if (v3d_u64(d, UINT64_MAX, &c->amount) != 0) return -1;
+            have |= 4u;
+        } else if (KEY_EQ(k, "t")) {
+            if (v3d_b64(d, c->token_id) != 0) return -1;
+            have |= 8u;
+        } else if (KEY_EQ(k, "u")) {
+            if (v3d_u64(d, UINT64_MAX, &c->unlock_block) != 0) return -1;
+            have |= 16u;
+        } else if (v3d_skip(d, 0) != 0) {
+            return -1;
+        }
+    }
+    return have == 31u ? 0 : -1;
+}
+
+static int v3d_record(cbor_decoder_t *d, nodus_dnac_v3_item_t *it)
+{
+    cbor_item_t m, k;
+    v3d_keys_t  ks;
+    uint64_t    v;
+
+    memset(&ks, 0, sizeof(ks));
+    if (v3d_next(d, &m) != 0 || m.type != CBOR_ITEM_MAP) return -1;
+    for (size_t j = 0; j < m.count; j++) {
+        if (v3d_key(d, &ks, &k) != 0) return -1;
+        if (KEY_EQ(k, "k")) {
+            if (v3d_u64(d, NODUS_DNAC_V3_REC_CHAIN_CONFIG, &v) != 0 ||
+                v == NODUS_DNAC_V3_REC_NONE)
+                return -1;
+            it->rec_kind = (uint8_t)v;
+        } else if (KEY_EQ(k, "v")) {
+            if (v3d_hex128(d, it->rec_validator_fp) != 0) return -1;
+        } else if (KEY_EQ(k, "d")) {
+            if (v3d_hex128(d, it->rec_delegator_fp) != 0) return -1;
+        } else if (KEY_EQ(k, "ds")) {
+            if (v3d_hex128(d, it->rec_dest_fp) != 0) return -1;
+        } else if (KEY_EQ(k, "a")) {
+            if (v3d_u64(d, UINT64_MAX, &it->rec_amount) != 0) return -1;
+        } else if (KEY_EQ(k, "cm")) {
+            if (v3d_u64(d, UINT16_MAX, &v) != 0) return -1;
+            it->rec_commission_bps = (uint16_t)v;
+        } else if (KEY_EQ(k, "p")) {
+            if (v3d_u64(d, UINT8_MAX, &v) != 0) return -1;
+            it->cc_param_id = (uint8_t)v;
+        } else if (KEY_EQ(k, "nv")) {
+            if (v3d_u64(d, UINT64_MAX, &it->cc_new_value) != 0) return -1;
+        } else if (KEY_EQ(k, "ef")) {
+            if (v3d_u64(d, UINT64_MAX, &it->cc_effective) != 0) return -1;
+        } else if (v3d_skip(d, 0) != 0) {
+            return -1;
+        }
+    }
+    return it->rec_kind != NODUS_DNAC_V3_REC_NONE ? 0 : -1;
+}
+
+static int v3d_item(cbor_decoder_t *d, nodus_dnac_v3_item_t *it)
+{
+    cbor_item_t m, k, a;
+    v3d_keys_t  ks;
+    uint64_t    v;
+    unsigned    have = 0;                /* 1 i, 2 k, 4 c, 8 sp, 16 cr   */
+
+    memset(&ks, 0, sizeof(ks));
+    if (v3d_next(d, &m) != 0 || m.type != CBOR_ITEM_MAP) return -1;
+    for (size_t j = 0; j < m.count; j++) {
+        if (v3d_key(d, &ks, &k) != 0) return -1;
+        if (KEY_EQ(k, "i")) {
+            if (v3d_u64(d, UINT32_MAX, &v) != 0) return -1;
+            it->index = (uint32_t)v;
+            have |= 1u;
+        } else if (KEY_EQ(k, "k")) {
+            if (v3d_u64(d, NODUS_DNAC_V3_KIND_CLAIM, &v) != 0) return -1;
+            it->kind = (uint8_t)v;
+            have |= 2u;
+        } else if (KEY_EQ(k, "c")) {
+            if (v3d_u64(d, UINT32_MAX, &v) != 0) return -1;
+            it->code = (uint32_t)v;
+            have |= 4u;
+        } else if (KEY_EQ(k, "w")) {
+            if (v3d_b64(d, it->wire_id) != 0) return -1;
+            it->has_wire_id = true;
+        } else if (KEY_EQ(k, "in")) {
+            if (v3d_b64(d, it->intent_id) != 0) return -1;
+            it->has_intent_id = true;
+        } else if (KEY_EQ(k, "f")) {
+            if (v3d_u64(d, UINT64_MAX, &it->fee) != 0) return -1;
+            it->has_fee = true;
+        } else if (KEY_EQ(k, "op")) {
+            cbor_item_t s;
+            if (v3d_next(d, &s) != 0 || s.type != CBOR_ITEM_TSTR ||
+                s.tstr.len == 0 || s.tstr.len > NODUS_DNAC_V3_OP_MAX)
+                return -1;
+            for (size_t c = 0; c < s.tstr.len; c++) {
+                char ch = s.tstr.ptr[c];
+                if (!((ch >= 'a' && ch <= 'z') || ch == '_')) return -1;
+            }
+            memcpy(it->op, s.tstr.ptr, s.tstr.len);
+            it->op[s.tstr.len] = '\0';
+        } else if (KEY_EQ(k, "sp")) {
+            if (v3d_next(d, &a) != 0 || a.type != CBOR_ITEM_ARRAY ||
+                a.count > NODUS_DNAC_V3_ITEM_MAX_IN)
+                return -1;
+            for (size_t c = 0; c < a.count; c++)
+                if (v3d_b64(d, it->consumed[c]) != 0) return -1;
+            it->n_consumed = (uint8_t)a.count;
+            have |= 8u;
+        } else if (KEY_EQ(k, "cr")) {
+            if (v3d_next(d, &a) != 0 || a.type != CBOR_ITEM_ARRAY ||
+                a.count > NODUS_DNAC_V3_ITEM_MAX_OUT)
+                return -1;
+            for (size_t c = 0; c < a.count; c++)
+                if (v3d_coin(d, &it->created[c]) != 0) return -1;
+            it->n_created = (uint8_t)a.count;
+            have |= 16u;
+        } else if (KEY_EQ(k, "bu")) {
+            if (v3d_u64(d, UINT64_MAX, &it->burned) != 0) return -1;
+        } else if (KEY_EQ(k, "rc")) {
+            if (v3d_record(d, it) != 0) return -1;
+        } else if (v3d_skip(d, 0) != 0) {
+            return -1;
+        }
+    }
+    if ((have & 7u) != 7u) return -1;          /* i, k, c are required  */
+    /* effects come as a pair, and only on an applied item */
+    it->has_effects = (have & 24u) == 24u;
+    if ((have & 24u) != 0 && (!it->has_effects || it->code != 0))
+        return -1;
+    if (!it->has_effects &&
+        (it->burned != 0 || it->rec_kind != NODUS_DNAC_V3_REC_NONE))
+        return -1;
+    return 0;
+}
+
+void nodus_client_free_v3_block_result(nodus_dnac_v3_block_result_t *result)
+{
+    if (!result) return;
+    free(result->items);
+    memset(result, 0, sizeof(*result));
+}
+
+int nodus_dnac_v3_block_decode(const uint8_t *raw, size_t raw_len,
+                               nodus_dnac_v3_block_result_t *result_out)
+{
+    cbor_decoder_t dec;
+    size_t         mc;
+    v3d_keys_t     ks;
+    cbor_item_t    k;
+    uint64_t       v;
+    unsigned       have = 0;
+    bool           have_items = false;
+
+    if (!raw || !result_out) return -1;
+    memset(result_out, 0, sizeof(*result_out));
+    memset(&ks, 0, sizeof(ks));
+    if (find_response_map(raw, raw_len, &dec, &mc) != 0) return -1;
+    if (mc > V3D_MAX_KEYS || mc > v3d_left(&dec) / 2) return -1;
+
+    for (size_t i = 0; i < mc; i++) {
+        if (v3d_key(&dec, &ks, &k) != 0) goto bad;
+        if (KEY_EQ(k, "h")) {
+            if (v3d_u64(&dec, UINT64_MAX, &result_out->height) != 0) goto bad;
+            have |= 1u;
+        } else if (KEY_EQ(k, "bid")) {
+            if (v3d_b64(&dec, result_out->block_id) != 0) goto bad;
+            have |= 2u;
+        } else if (KEY_EQ(k, "pb")) {
+            if (v3d_b64(&dec, result_out->prev_block_id) != 0) goto bad;
+            have |= 4u;
+        } else if (KEY_EQ(k, "tm")) {
+            if (v3d_u64(&dec, UINT64_MAX, &result_out->time_ms) != 0) goto bad;
+            have |= 8u;
+        } else if (KEY_EQ(k, "pa")) {
+            cbor_item_t b;
+            if (v3d_next(&dec, &b) != 0 || b.type != CBOR_ITEM_BSTR ||
+                b.bstr.len == 0 || b.bstr.len > sizeof(result_out->proposer))
+                goto bad;
+            memcpy(result_out->proposer, b.bstr.ptr, b.bstr.len);
+            result_out->proposer_len = b.bstr.len;
+            have |= 16u;
+        } else if (KEY_EQ(k, "gr")) {
+            if (v3d_b64(&dec, result_out->global_root) != 0) goto bad;
+            have |= 32u;
+        } else if (KEY_EQ(k, "ac")) {
+            if (v3d_u64(&dec, UINT64_MAX, &result_out->applied_count) != 0)
+                goto bad;
+            have |= 64u;
+        } else if (KEY_EQ(k, "n")) {
+            if (v3d_u64(&dec, UINT32_MAX, &v) != 0) goto bad;
+            result_out->total_items = (uint32_t)v;
+            have |= 128u;
+        } else if (KEY_EQ(k, "tip")) {
+            if (v3d_u64(&dec, UINT64_MAX, &result_out->tip) != 0) goto bad;
+            have |= 256u;
+        } else if (KEY_EQ(k, "nx")) {
+            if (v3d_u64(&dec, UINT32_MAX, &v) != 0) goto bad;
+            result_out->next_index = (uint32_t)v;
+            result_out->has_next = true;
+        } else if (KEY_EQ(k, "it")) {
+            cbor_item_t a;
+            if (v3d_next(&dec, &a) != 0 || a.type != CBOR_ITEM_ARRAY ||
+                a.count > NODUS_DNAC_V3_BLOCK_PAGE_MAX_ITEMS)
+                goto bad;
+            result_out->items = calloc(a.count ? a.count : 1,
+                                       sizeof(*result_out->items));
+            if (!result_out->items) goto bad;
+            for (size_t j = 0; j < a.count; j++) {
+                if (v3d_item(&dec, &result_out->items[j]) != 0) goto bad;
+                result_out->count = j + 1;
+            }
+            have_items = true;
+        } else if (v3d_skip(&dec, 0) != 0) {
+            goto bad;
+        }
+    }
+    if (dec.error || have != 511u || !have_items) goto bad;
+
+    /* consistency: a page is a contiguous, ascending run of the block's
+     * items; "nx" names the item right after it; no "nx" = the block's
+     * last item is on this page */
+    if (result_out->height == 0 || result_out->tip < result_out->height)
+        goto bad;
+    for (size_t j = 0; j < result_out->count; j++) {
+        uint32_t idx = result_out->items[j].index;
+        if (idx >= result_out->total_items) goto bad;
+        if (j > 0 && idx != result_out->items[j - 1].index + 1) goto bad;
+    }
+    if (result_out->count == 0) {
+        if (result_out->total_items != 0 || result_out->has_next) goto bad;
+    } else {
+        uint32_t last = result_out->items[result_out->count - 1].index;
+        if (result_out->has_next) {
+            if (result_out->next_index != last + 1 ||
+                result_out->next_index >= result_out->total_items)
+                goto bad;
+        } else if (last + 1 != result_out->total_items) {
+            goto bad;
+        }
+    }
+    return 0;
+
+bad:
+    nodus_client_free_v3_block_result(result_out);
+    return -1;
+}
+
+int nodus_client_dnac_v3_block(nodus_client_t *client, uint64_t height,
+                               uint32_t from_index, uint32_t budget,
+                               nodus_dnac_v3_block_result_t *result_out)
+{
+    if (!nodus_client_is_ready(client) || !result_out || height == 0)
+        return -1;
+
+    memset(result_out, 0, sizeof(*result_out));
+
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, CLIENT_BUF_SIZE);
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    enc_dnac_query(&enc, txn, client->token, "dnac_v3_block", 3);
+    cbor_encode_cstr(&enc, "h");
+    cbor_encode_uint(&enc, height);
+    cbor_encode_cstr(&enc, "i");
+    cbor_encode_uint(&enc, from_index);
+    cbor_encode_cstr(&enc, "b");
+    cbor_encode_uint(&enc, budget);
+
+    size_t len = cbor_encoder_len(&enc);
+    if (len == 0) { free_pending(client, req); free(buf); return -1; }
+    if (send_request(client, buf, len) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) {
+        free_pending(client, req); return NODUS_ERR_TIMEOUT;
+    }
+    if (resp->type == 'e') {
+        int rc = resp->error_code; free_pending(client, req); return rc;
+    }
+    int drc = nodus_dnac_v3_block_decode(req->raw_response,
+                                         req->raw_response_len, result_out);
+    free_pending(client, req);
+    if (drc != 0) return NODUS_ERR_PROTOCOL_ERROR;
+    /* the node answers the height it was asked for, never another */
+    if (result_out->height != height ||
+        (result_out->count > 0 && result_out->items[0].index != from_index)) {
+        nodus_client_free_v3_block_result(result_out);
+        return NODUS_ERR_PROTOCOL_ERROR;
+    }
+    return 0;
+}
+
+int nodus_client_dnac_supply_tip(nodus_client_t *client, bool *has_out,
+                                 uint64_t *tip_out)
+{
+    if (!nodus_client_is_ready(client) || !has_out || !tip_out)
+        return -1;
+    *has_out = false;
+
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, CLIENT_BUF_SIZE);
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    /* SAME request as nodus_client_dnac_supply — the additive key rides
+     * the existing dnac_supply reply (nodus_witness_handlers.c
+     * handle_dnac_supply); nodus_client_dnac_chain_id32's pattern. */
+    enc_dnac_query(&enc, txn, client->token, "dnac_supply", 0);
+
+    size_t len = cbor_encoder_len(&enc);
+    if (len == 0) { free_pending(client, req); free(buf); return -1; }
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
+
+    cbor_decoder_t dec;
+    size_t mc;
+    if (find_response_map(req->raw_response, req->raw_response_len,
+                           &dec, &mc) != 0) {
+        free_pending(client, req);
+        return NODUS_ERR_PROTOCOL_ERROR;
+    }
+
+    for (size_t i = 0; i < mc; i++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        if (key.type == CBOR_ITEM_END || key.type == CBOR_ITEM_ERROR) {
+            *has_out = false;
+            free_pending(client, req);
+            return NODUS_ERR_PROTOCOL_ERROR;
+        }
+        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+
+        if (KEY_EQ(key, "tip")) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_UINT) {
+                *tip_out = v.uint_val;
+                *has_out = true;
+            }
+        } else {
+            cbor_decode_skip(&dec);
+        }
+    }
+    if (dec.error) {
+        *has_out = false;
+        free_pending(client, req);
+        return NODUS_ERR_PROTOCOL_ERROR;
+    }
+
+    free_pending(client, req);
+    return 0;
+}
+
+/* ── dnac_balance (scan-v3; wire: nodus.h) ────────────────────────────
+ * Hostile-reply decoder on the v3d_* readers above (the same END/ERROR,
+ * container-count, duplicate-key and truncation discipline). */
+
+static int bald_token(cbor_decoder_t *d, nodus_dnac_balance_token_t *t)
+{
+    cbor_item_t m, k;
+    v3d_keys_t  ks;
+    unsigned    have = 0;
+
+    memset(&ks, 0, sizeof(ks));
+    if (v3d_next(d, &m) != 0 || m.type != CBOR_ITEM_MAP ||
+        m.count > V3D_MAX_KEYS)
+        return -1;
+    for (size_t j = 0; j < m.count; j++) {
+        if (v3d_key(d, &ks, &k) != 0) return -1;
+        if (KEY_EQ(k, "t")) {
+            if (v3d_b64(d, t->token_id) != 0) return -1;
+            have |= 1u;
+        } else if (KEY_EQ(k, "a")) {
+            if (v3d_u64(d, UINT64_MAX, &t->total) != 0) return -1;
+            have |= 2u;
+        } else if (KEY_EQ(k, "s")) {
+            if (v3d_u64(d, UINT64_MAX, &t->spendable) != 0) return -1;
+            have |= 4u;
+        } else if (KEY_EQ(k, "c")) {
+            if (v3d_u64(d, UINT64_MAX, &t->coins) != 0) return -1;
+            have |= 8u;
+        } else if (v3d_skip(d, 0) != 0) {
+            return -1;
+        }
+    }
+    if (have != 15u) return -1;
+    if (t->spendable > t->total || t->coins == 0) return -1;
+    return 0;
+}
+
+void nodus_client_free_balance_result(nodus_dnac_balance_result_t *result)
+{
+    if (!result) return;
+    free(result->tokens);
+    memset(result, 0, sizeof(*result));
+}
+
+int nodus_dnac_balance_decode(const uint8_t *raw, size_t raw_len,
+                              nodus_dnac_balance_result_t *result_out)
+{
+    cbor_decoder_t dec;
+    size_t         mc;
+    v3d_keys_t     ks;
+    cbor_item_t    k;
+    bool           have_tip = false, have_tk = false;
+
+    if (!raw || !result_out) return -1;
+    memset(result_out, 0, sizeof(*result_out));
+    memset(&ks, 0, sizeof(ks));
+    if (find_response_map(raw, raw_len, &dec, &mc) != 0) return -1;
+    if (mc > V3D_MAX_KEYS || mc > v3d_left(&dec) / 2) return -1;
+
+    for (size_t i = 0; i < mc; i++) {
+        if (v3d_key(&dec, &ks, &k) != 0) goto bad;
+        if (KEY_EQ(k, "tip")) {
+            if (v3d_u64(&dec, UINT64_MAX, &result_out->tip) != 0) goto bad;
+            have_tip = true;
+        } else if (KEY_EQ(k, "tk")) {
+            cbor_item_t a;
+            if (v3d_next(&dec, &a) != 0 || a.type != CBOR_ITEM_ARRAY ||
+                a.count > NODUS_DNAC_BALANCE_MAX_TOKENS)
+                goto bad;
+            if (a.count > 0) {
+                result_out->tokens = calloc(a.count,
+                                            sizeof(*result_out->tokens));
+                if (!result_out->tokens) goto bad;
+            }
+            for (size_t j = 0; j < a.count; j++) {
+                nodus_dnac_balance_token_t *t = &result_out->tokens[j];
+                if (bald_token(&dec, t) != 0) goto bad;
+                /* strictly ascending token ids: one entry per token, in
+                 * the node's ORDER BY token_id */
+                if (j > 0 &&
+                    memcmp(result_out->tokens[j - 1].token_id,
+                           t->token_id, 64) >= 0)
+                    goto bad;
+                result_out->count = j + 1;
+            }
+            have_tk = true;
+        } else if (v3d_skip(&dec, 0) != 0) {
+            goto bad;
+        }
+    }
+    if (dec.error || !have_tip || !have_tk) goto bad;
+    return 0;
+
+bad:
+    nodus_client_free_balance_result(result_out);
+    return -1;
+}
+
+int nodus_client_dnac_balance(nodus_client_t *client, const char *owner_hex,
+                              nodus_dnac_balance_result_t *result_out)
+{
+    if (!nodus_client_is_ready(client) || !owner_hex || !result_out)
+        return -1;
+    memset(result_out, 0, sizeof(*result_out));
+
+    /* the node refuses anything but 128 lowercase hex — refuse it here
+     * first, before a round trip */
+    size_t olen = strnlen(owner_hex, 129);
+    if (olen != 128) return -1;
+    for (size_t i = 0; i < 128; i++) {
+        char ch = owner_hex[i];
+        if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')))
+            return -1;
+    }
+
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, CLIENT_BUF_SIZE);
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    enc_dnac_query(&enc, txn, client->token, "dnac_balance", 1);
+    cbor_encode_cstr(&enc, "owner");
+    cbor_encode_cstr(&enc, owner_hex);
+
+    size_t len = cbor_encoder_len(&enc);
+    if (len == 0) { free_pending(client, req); free(buf); return -1; }
+    if (send_request(client, buf, len) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) {
+        free_pending(client, req); return NODUS_ERR_TIMEOUT;
+    }
+    if (resp->type == 'e') {
+        int rc = resp->error_code; free_pending(client, req); return rc;
+    }
+    int drc = nodus_dnac_balance_decode(req->raw_response,
+                                        req->raw_response_len, result_out);
+    free_pending(client, req);
+    return drc == 0 ? 0 : NODUS_ERR_PROTOCOL_ERROR;
+}
+
 int nodus_client_dnac_validator_list(nodus_client_t *client,
                                        int filter_status,
                                        int offset,

@@ -3,9 +3,10 @@
  * See exp_chain.h for the full contract. This file has two independent
  * halves:
  *   - Network wrappers (exp_chain_open/close/rotate/current_server +
- *     exp_chain_supply/ledger_range/tx/block/utxos): thin pass-throughs to
- *     the Nodus client SDK. Not unit-tested here (no network in tests,
- *     see Task 4 plan) — exercised live in Task 9.
+ *     exp_chain_tip / exp_chain_v3_page / exp_chain_balance): thin
+ *     pass-throughs to the Nodus
+ *     client SDK. Not unit-tested here (no network in tests) — the sync
+ *     logic above them is tested through exp_sync_source_t fakes.
  *   - exp_reset_fsm_feed: pure logic, unit-tested directly.
  */
 
@@ -225,64 +226,85 @@ static int ensure_ready(exp_chain_t *c) {
     return exp_chain_rotate(c);
 }
 
-int exp_chain_supply(exp_chain_t *c, nodus_dnac_supply_result_t *out) {
+/* One tip observation on the current connection: the three dnac_supply
+ * round trips back to back, nothing in between that could rotate. */
+static int tip_once(exp_chain_t *c, exp_chain_tip_t *out) {
+    nodus_dnac_supply_result_t supply;
+    memset(&supply, 0, sizeof(supply));
+    int rc = nodus_client_dnac_supply(c->nc, &supply);
+    if (rc != 0) return rc;
+
+    bool has_cid = false;
+    rc = nodus_client_dnac_chain_id32(c->nc, &has_cid, out->chain_id32);
+    if (rc != 0) return rc;
+
+    bool has_tip = false;
+    rc = nodus_client_dnac_supply_tip(c->nc, &has_tip, &out->tip);
+    if (rc != 0) return rc;
+
+    if (!has_cid || !has_tip) {
+        QGP_LOG_ERROR(LOG_TAG, "%s:%u answers no chain_id32/tip — not a version-3 node",
+                      c->servers[c->current].host, (unsigned)c->servers[c->current].port);
+        return -1;
+    }
+
+    out->supply_genesis = supply.genesis_supply;
+    out->supply_burned = supply.total_burned;
+    out->supply_current = supply.current_supply;
+    return 0;
+}
+
+int exp_chain_tip(exp_chain_t *c, exp_chain_tip_t *out) {
     if (!c || !out) return -1;
     if (ensure_ready(c) != 0) return -1;
 
-    int rc = nodus_client_dnac_supply(c->nc, out);
+    memset(out, 0, sizeof(*out));
+    int rc = tip_once(c, out);
     if (rc != 0) {
         if (exp_chain_rotate(c) != 0) return -1;
-        rc = nodus_client_dnac_supply(c->nc, out);
+        memset(out, 0, sizeof(*out));
+        rc = tip_once(c, out);
     }
     return rc;
 }
 
-int exp_chain_ledger_range(exp_chain_t *c, uint64_t from, uint64_t to, nodus_dnac_range_result_t *out) {
-    if (!c || !out) return -1;
+int exp_chain_v3_page(exp_chain_t *c, uint64_t height, uint32_t from_index,
+                      nodus_dnac_v3_block_result_t *out) {
+    if (!c || !out || height == 0) return -1;
     if (ensure_ready(c) != 0) return -1;
 
-    int rc = nodus_client_dnac_ledger_range(c->nc, from, to, out);
+    /* budget 0 = the node's maximum page (NODUS_DNAC_V3_BLOCK_BUDGET_MAX) */
+    int rc = nodus_client_dnac_v3_block(c->nc, height, from_index, 0, out);
     if (rc != 0) {
         if (exp_chain_rotate(c) != 0) return -1;
-        rc = nodus_client_dnac_ledger_range(c->nc, from, to, out);
+        rc = nodus_client_dnac_v3_block(c->nc, height, from_index, 0, out);
     }
     return rc;
 }
 
-int exp_chain_tx(exp_chain_t *c, const uint8_t hash[64], nodus_dnac_tx_result_t *out) {
-    if (!c || !hash || !out) return -1;
-    if (ensure_ready(c) != 0) return -1;
+int exp_chain_balance(exp_chain_t *c, const char *owner_hex,
+                      nodus_dnac_balance_result_t *out) {
+    if (!c || !c->nc || !owner_hex || !out || c->count <= 0) return -1;
+    memset(out, 0, sizeof(*out));
 
-    int rc = nodus_client_dnac_tx(c->nc, hash, out);
-    if (rc != 0) {
-        if (exp_chain_rotate(c) != 0) return -1;
-        rc = nodus_client_dnac_tx(c->nc, hash, out);
+    int rc = -1;
+    for (int attempt = 0; attempt < c->count; attempt++) {
+        /* attempt 0 uses the current server if it is ready; every other
+         * attempt (and a not-ready start) moves to the next one — so
+         * `count` attempts visit every server at most once */
+        if (attempt > 0 || !nodus_client_is_ready(c->nc)) {
+            if (exp_chain_rotate(c) != 0) {
+                rc = -1;
+                continue;
+            }
+        }
+        rc = nodus_client_dnac_balance(c->nc, owner_hex, out);
+        if (rc == 0) return 0;
+        QGP_LOG_WARN(LOG_TAG, "dnac_balance on %s:%u failed (rc=%d)",
+                     c->servers[c->current].host,
+                     (unsigned)c->servers[c->current].port, rc);
     }
-    return rc;
-}
-
-int exp_chain_block(exp_chain_t *c, uint64_t height, nodus_dnac_block_result_t *out) {
-    if (!c || !out) return -1;
-    if (ensure_ready(c) != 0) return -1;
-
-    int rc = nodus_client_dnac_block(c->nc, height, out);
-    if (rc != 0) {
-        if (exp_chain_rotate(c) != 0) return -1;
-        rc = nodus_client_dnac_block(c->nc, height, out);
-    }
-    return rc;
-}
-
-int exp_chain_utxos(exp_chain_t *c, const char *owner_fp, nodus_dnac_utxo_result_t *out) {
-    if (!c || !owner_fp || !out) return -1;
-    if (ensure_ready(c) != 0) return -1;
-
-    int rc = nodus_client_dnac_utxo(c->nc, owner_fp, 100, out);
-    if (rc != 0) {
-        if (exp_chain_rotate(c) != 0) return -1;
-        rc = nodus_client_dnac_utxo(c->nc, owner_fp, 100, out);
-    }
-    return rc;
+    return rc != 0 ? rc : -1;
 }
 
 /* ── F4 chain-reset FSM ─────────────────────────────────────────────── */

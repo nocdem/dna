@@ -996,10 +996,13 @@ static int cc_param_name_to_id(const char *name, uint8_t *out_id) {
      * witness-side scalar_rules refuses id 1 unconditionally as
      * defense in depth regardless. tokenomics-v3 P2 (P2-4): the same
      * for INFLATION_START_BLOCK (param id 3) — RETIRED with the
-     * per-block mint, removed from this table, refused witness-side. */
+     * per-block mint, removed from this table, refused witness-side.
+     * 0.20.3: BLOCK_INTERVAL_SEC (param id 2) is NOT READ by the running
+     * consensus (dnac.h dnac_cfg_param_read_by_consensus) — removed from
+     * this table for the same reason and refused witness-side; unlike ids
+     * 1 and 3 it is not retired, and returns here when a consensus reads
+     * it. This table names exactly the ids on that list. */
     static const struct { const char *n; uint8_t id; } map[] = {
-        { "BLOCK_INTERVAL_SEC",   DNAC_CFG_BLOCK_INTERVAL_SEC },
-        { "block_interval_sec",   DNAC_CFG_BLOCK_INTERVAL_SEC },
         { "TARGET_ACTIVE_COUNT",  DNAC_CFG_TARGET_ACTIVE_COUNT },
         { "target_active_count",  DNAC_CFG_TARGET_ACTIVE_COUNT },
         /* HF-1 (decision 2026-09-25-gas-price.md) — param id 5 */
@@ -1223,14 +1226,13 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
         fprintf(stderr,
             "Usage: chain-config propose --param <NAME> --value <N> "
             "--effective <BLOCK> [--nonce <N>] [--chain-id <64-hex>]\n"
-            "Params (--value range):\n"
-            "  BLOCK_INTERVAL_SEC     [%llu, %llu]\n"
+            "Params the running consensus reads (--value range):\n"
             "  TARGET_ACTIVE_COUNT    [%llu, %llu]   "
             "(active validator set; epoch-boundary effective)\n"
             "  GAS_PRICE_RAW_PER_UNIT [0, %llu]   "
-            "(raw per declared gas unit; 0 = rule off)\n",
-            (unsigned long long)DNAC_CFG_MIN_BLOCK_INTERVAL_SEC,
-            (unsigned long long)DNAC_CFG_MAX_BLOCK_INTERVAL_SEC,
+            "(raw per declared gas unit; 0 = rule off)\n"
+            "BLOCK_INTERVAL_SEC is not read by the running consensus "
+            "and is refused.\n",
             (unsigned long long)DNAC_CFG_MIN_TARGET_ACTIVE,
             (unsigned long long)DNAC_CFG_MAX_TARGET_ACTIVE,
             (unsigned long long)DNAC_CFG_MAX_GAS_PRICE);
@@ -1238,7 +1240,10 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
     }
     uint8_t param_id = 0;
     if (cc_param_name_to_id(param_name, &param_id) != 0) {
-        fprintf(stderr, "Unknown param name: %s\n", param_name);
+        fprintf(stderr, "Unknown param name: %s - accepted: "
+                "TARGET_ACTIVE_COUNT | GAS_PRICE_RAW_PER_UNIT "
+                "(the parameters the running consensus reads)\n",
+                param_name);
         return 1;
     }
     if (!has_nonce) {
@@ -4219,8 +4224,8 @@ static void usage(const char *prog) {
     fprintf(stderr, "  chain-config propose --param <NAME> --value <N> --effective <BLOCK>\n");
     fprintf(stderr, "  stake [--commission BPS] [--bond RAW]   Bond this node identity as validator (S3)\n");
     fprintf(stderr, "                              [--nonce <N>]  (committee operator only)\n");
-    fprintf(stderr, "                  NAME: BLOCK_INTERVAL_SEC | TARGET_ACTIVE_COUNT |\n");
-    fprintf(stderr, "                        GAS_PRICE_RAW_PER_UNIT\n");
+    fprintf(stderr, "                  NAME: TARGET_ACTIVE_COUNT | GAS_PRICE_RAW_PER_UNIT\n");
+    fprintf(stderr, "                        (the parameters the running consensus reads)\n");
     fprintf(stderr, "                  run without --value for per-param ranges\n");
     fprintf(stderr, "  v2-claim --legacy-db <t.db> --db <s.db> --keys <dir>\n");
     fprintf(stderr, "           (--dry-run | --submit ip:port)   Successor GENESIS_CLAIM\n");

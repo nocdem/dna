@@ -159,8 +159,11 @@ int nodus_chain_config_db_migrate(nodus_witness_t *w);
  * through this function. There is NO production reader of
  * DNAC_CFG_BLOCK_INTERVAL_SEC through
  * this function — the "proposer timer" consumer this docblock used to
- * list does not exist in the tree (grep, O15J Block 2 A2). Only
- * nodus-cli names the param, as a proposal argument.
+ * list does not exist in the tree (grep, O15J Block 2 A2). Since 0.20.3
+ * a NEW id-2 proposal is refused (scalar_rules consults dnac.h's
+ * dnac_cfg_param_read_by_consensus, which lists 4 and 5) and nodus-cli no
+ * longer names it; an id-2 row committed before that stays readable
+ * through this function — it never consults the read list.
  * tokenomics-v3 P2 (P2-4): the two "inflation gate" consumers this list
  * used to name are GONE — the V1 lane's with nodus_witness_bft.c (R3
  * W4), the V2 lane's with the per-block mint
@@ -220,11 +223,12 @@ int nodus_chain_config_compute_root(nodus_witness_t *w, uint8_t out_root[64]);
  *   2. Re-verify local rules via dnac_tx_verify_chain_config_rules.
  *   3. Freshness: commit_block <= valid_before_block (Rule CC-G).
  *   4. Grace: effective_block >= commit_block + grace_period_for_param
- *      (Rule CC-C). Safety-critical params (BLOCK_INTERVAL_SEC and —
- *      since Ledger V2 S3 — TARGET_ACTIVE_COUNT; INFLATION_START_BLOCK
- *      was one until tokenomics-v3 P2 retired it, and
- *      `nodus_chain_config_grace_for_param` now refuses id 3 as it does
- *      id 1) use DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS
+ *      (Rule CC-C). Safety-critical params (since Ledger V2 S3
+ *      TARGET_ACTIVE_COUNT; INFLATION_START_BLOCK was one until
+ *      tokenomics-v3 P2 retired it, and BLOCK_INTERVAL_SEC until 0.20.3
+ *      refused it as not read by the running consensus —
+ *      `nodus_chain_config_grace_for_param` now refuses ids 2 and 3 as
+ *      it does id 1) use DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS
  *      (24 hours); every other (unassigned) id falls back to
  *      DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS (1 hour), an ergonomic
  *      class with NO current member — R3 W4-C delta 2 retired MAX_TXS,
@@ -279,6 +283,10 @@ int nodus_chain_config_apply(nodus_witness_t *w,
  * The SCALAR half of the CHAIN_CONFIG local rules: param allowlist,
  * per-param value bounds, and the signing/validity window shape
  * (signed_at != 0; valid_before > effective; valid_before > signed_at).
+ * Since 0.20.3 the allowlist is the RUNNING consensus's read list —
+ * dnac.h dnac_cfg_param_read_by_consensus (4 and 5), shared with the
+ * client mirror dnac_tx_verify_chain_config_rules — so a proposal for an
+ * id this consensus does not read (2) is refused like the retired 1 and 3.
  * Pure function — the ONE authority both the legacy apply path
  * (verify_cc_local_rules) and the Ledger V2 native SYSTEM runtime
  * consume, so the rule set cannot fork between lanes. Vote-shape rules

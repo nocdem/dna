@@ -342,6 +342,16 @@ SİLİNMEZ"). Proven on localhost by `test_p2p_stopall_nowipe.sh`.
    `grep 'consensus WAL carry-over' <log>` (one line per node that held rows)
    and `grep 'persistent peer(s)' <log>`.
 
+**0.20.3 is a consensus-rule change (chain-config param 2 refused) — STOP-ALL.**
+A 0.20.2 node would commit a param-2 vote a 0.20.3 node refuses. Stop all,
+build, start all (no wipe; the devnet had no param-2 row, checked 2026-09-28).
+Then update Nodus Scan (node BEFORE explorer — the explorer needs
+`dnac_v3_block` / `dnac_balance`): on the explorer host
+`git -C /opt/dna pull && cmake -S /opt/dna/messenger -B /opt/dna/messenger/build
+&& make -C /opt/dna/messenger/build -j$(nproc) dna-explorerd && systemctl restart
+dna-explorerd`; the index rebuilds from height 1 (schema v2). Then the static
+site per `website/deploy/README.md`.
+
 **0.20.0 and 0.20.1 do not mix.** 0.20.1 adds a request digest (`rq`) to the
 0x71 governance-approval response; a 0.20.0 node's response without it is
 refused. 0.20.0 was never deployed — deploy 0.20.1 (or later) to every node in

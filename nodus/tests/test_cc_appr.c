@@ -26,7 +26,8 @@
  * is not a seat, wrong auth_kind, nonzero fee, TARGET_ACTIVE_COUNT
  * above the V2 ceiling, effective below the grace floor, the RETIRED
  * INFLATION_START parameter (tokenomics-v3 P2 — it replaces the ORC-6
- * monotonicity pair), HF-1's GAS_PRICE_RAW_PER_UNIT above its ceiling,
+ * monotonicity pair), BLOCK_INTERVAL_SEC — not read by the running
+ * consensus since 0.20.3 — HF-1's GAS_PRICE_RAW_PER_UNIT above its ceiling,
  * the per-proposer rate limit) each drives ONE call
  * and checks `ok == false` plus a specific `reason` substring and an
  * all-zero signature field — never a signature. The requester case also
@@ -917,6 +918,22 @@ static int t_inflation_start_retired_refused(void) {
                         "scalar rules rejected") == 0 ? 0 : 1;
 }
 
+/* 0.20.3 (decision file 2026-09-23-height-activated-upgrades-before-
+ * testnet.md item 1): BLOCK_INTERVAL_SEC (param id 2) is NOT READ by the
+ * running consensus (dnac.h dnac_cfg_param_read_by_consensus), so the
+ * responder's scalar-rules gate refuses it — a seat never signs an
+ * approval for it. The value 5 and the effective past the SAFETY grace
+ * floor are the shape this responder APPROVED before 0.20.3 (id 2 was
+ * range-checked [1, 15], SAFETY grace), so this case is RED on the
+ * pre-0.20.3 tree: the seat signed. */
+static int t_block_interval_unread_refused(void) {
+    return refusal_case("blkintv", 0, -1, 5,
+                        DNAC_CFG_BLOCK_INTERVAL_SEC,
+                        5, 1 + 200000, 1 + 300000, 0,
+                        NODUS_RT_AUTHKIND_DSA87_CC_V1,
+                        "scalar rules rejected") == 0 ? 0 : 1;
+}
+
 /* HF-1 (decision 2026-09-25-gas-price.md, "HF-1 O4"): GAS_PRICE_RAW_PER_
  * UNIT (param id 5) above its 1 000 000 raw/unit ceiling is refused by
  * the responder's scalar-rules gate — never signed. RED on the pre-HF-1
@@ -1064,6 +1081,8 @@ int main(void) {
         { "effective_below_floor",      t_effective_below_floor },
         { "inflation_start_retired_refused",
                                         t_inflation_start_retired_refused },
+        { "block_interval_unread_refused",
+                                        t_block_interval_unread_refused },
         { "gas_price_above_ceiling_refused",
                                         t_gas_price_above_ceiling_refused },
         { "gas_price_legal_signs",      t_gas_price_legal_signs },

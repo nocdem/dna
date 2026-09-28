@@ -1,8 +1,11 @@
 /**
- * DNA Explorer — exp_db unit tests
+ * DNA Explorer — unit tests (index schema v2, version-3 chain).
  *
  * Macro style follows nodus/tests/test_storage.c (TEST/PASS/FAIL + counters).
- * Every test opens exp_db on ":memory:".
+ * No network: the sync paths run against exp_sync_source_t fakes that
+ * answer dnac_v3_block pages from fixtures. Databases are ":memory:" unless
+ * a test needs a file (schema rebuild, chain-reset rename) — those use
+ * mkstemp paths, never fixed names (CI parallelism).
  */
 
 #include "exp_db.h"
@@ -11,23 +14,15 @@
 #include "exp_sync.h"
 #include "exp_json.h"
 #include "exp_http.h"
-#include "dnac/dnac.h"
-#include "dnac/transaction.h"
-#include "crypto/hash/qgp_sha3.h"
+#include "nodus/nodus.h"
+#include <sqlite3.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <unistd.h>
 
-/* Cursor sentinel for "start from the most recent row" — see exp_db.h.
- * Cursors are bound to sqlite as signed 64-bit, so INT64_MAX (not
- * UINT64_MAX) is the usable ceiling; production uses UINT64_MAX
- * (exp_http.c parse_pagination's default) since the HTTP layer never binds
- * `before` through a signed sqlite column directly. */
-#define EXP_CURSOR_TOP INT64_MAX
-
-#define TEST(name) do { printf("  %-50s", name); } while(0)
+#define TEST(name) do { printf("  %-60s", name); } while(0)
 #define PASS()     do { printf("PASS\n"); passed++; } while(0)
 #define FAIL(msg)  do { printf("FAIL: %s\n", msg); failed++; } while(0)
 
@@ -38,792 +33,673 @@ static void fill(uint8_t *buf, size_t n, uint8_t v) {
     memset(buf, v, n);
 }
 
-/* fix round 1: exp_extract_tx now rejects owner_fingerprint blobs that
- * aren't exactly 128 lowercase-hex chars + NUL (see exp_extract.c). Build
- * valid-format test fingerprints (128 repeats of one hex char + NUL) rather
- * than hand-typing a 128-char literal, which is easy to miscount. `fp_out`
- * must have room for 129 bytes. */
+/* 128 repeats of one hex char + NUL — a well-formed fingerprint. */
 static void set_test_fp(char *fp_out, char hexchar) {
     memset(fp_out, hexchar, 128);
     fp_out[128] = '\0';
 }
 
-/* ── t1: open creates schema; meta roundtrip u64 + blob ────────────── */
+static void bytes_to_hex128(const uint8_t b[64], char out[129]) {
+    static const char hexchars[] = "0123456789abcdef";
+    for (int i = 0; i < 64; i++) {
+        out[i * 2]     = hexchars[(b[i] >> 4) & 0xF];
+        out[i * 2 + 1] = hexchars[b[i] & 0xF];
+    }
+    out[128] = '\0';
+}
 
-static void test_meta_roundtrip(void) {
-    TEST("meta u64 + blob roundtrip");
+/* Count non-overlapping occurrences of `needle` in `hay`. */
+static int count_substr(const char *hay, const char *needle) {
+    int n = 0;
+    const char *p = hay;
+    size_t nlen = strlen(needle);
+    while ((p = strstr(p, needle)) != NULL) {
+        n++;
+        p += nlen;
+    }
+    return n;
+}
+
+static void unlink_db_files(const char *path) {
+    char buf[512];
+    unlink(path);
+    snprintf(buf, sizeof(buf), "%s-wal", path);
+    unlink(buf);
+    snprintf(buf, sizeof(buf), "%s-shm", path);
+    unlink(buf);
+}
+
+/* ── Page fixtures ─────────────────────────────────────────────────── */
+
+/* The header every fixture page of height h carries. */
+static void page_header(nodus_dnac_v3_block_result_t *p, uint64_t h, uint32_t n,
+                        uint64_t applied, uint64_t tip) {
+    memset(p, 0, sizeof(*p));
+    p->height = h;
+    fill(p->block_id, 64, (uint8_t)(0x10 + h));
+    fill(p->prev_block_id, 64, (uint8_t)(0x10 + h - 1));
+    p->time_ms = 1700000000000ULL + h * 1000;
+    fill(p->proposer, 32, 0xA0);
+    p->proposer_len = 32;
+    fill(p->global_root, 64, 0x77);
+    p->applied_count = applied;
+    p->total_items = n;
+    p->tip = tip;
+}
+
+/* The fixture block used by the db/http tests (height h):
+ *   item 0: applied spend — creates coin X (owner A, 500 native)
+ *   item 1: refused envelope — code 7, a fee, no ids, no effects
+ *   item 2: applied delegate — consumes X, creates Y (owner B, 400),
+ *           consumes an unknown coin U (created outside the index),
+ *           writes a DELEGATE record (validator V, delegator A) */
+static void fixture_page(nodus_dnac_v3_block_result_t *p, uint64_t h) {
+    page_header(p, h, 3, 2, h);
+    p->count = 3;
+    p->items = calloc(3, sizeof(nodus_dnac_v3_item_t));
+
+    nodus_dnac_v3_item_t *it = &p->items[0];
+    it->index = 0;
+    it->kind = NODUS_DNAC_V3_KIND_ENVELOPE;
+    it->code = 0;
+    it->has_wire_id = true;   fill(it->wire_id, 64, 0x31);
+    it->has_intent_id = true; fill(it->intent_id, 64, 0x41);
+    it->has_fee = true;       it->fee = 1000;
+    strcpy(it->op, "spend");
+    it->has_effects = true;
+    it->n_created = 1;
+    fill(it->created[0].id, 64, 0xC1);
+    set_test_fp(it->created[0].owner, 'a');
+    it->created[0].amount = 500;
+
+    it = &p->items[1];
+    it->index = 1;
+    it->kind = NODUS_DNAC_V3_KIND_ENVELOPE;
+    it->code = 7;
+    it->has_fee = true;       it->fee = 2000;
+    strcpy(it->op, "spend");
+
+    it = &p->items[2];
+    it->index = 2;
+    it->kind = NODUS_DNAC_V3_KIND_ENVELOPE;
+    it->code = 0;
+    it->has_wire_id = true;   fill(it->wire_id, 64, 0x33);
+    it->has_intent_id = true; fill(it->intent_id, 64, 0x43);
+    it->has_fee = true;       it->fee = 3000;
+    strcpy(it->op, "delegate");
+    it->has_effects = true;
+    it->n_consumed = 2;
+    fill(it->consumed[0], 64, 0xC1);   /* X, created by item 0 */
+    fill(it->consumed[1], 64, 0xEE);   /* U, never indexed */
+    it->n_created = 1;
+    fill(it->created[0].id, 64, 0xC2);
+    set_test_fp(it->created[0].owner, 'b');
+    it->created[0].amount = 400;
+    it->rec_kind = NODUS_DNAC_V3_REC_DELEGATE;
+    set_test_fp(it->rec_validator_fp, 'c');
+    set_test_fp(it->rec_delegator_fp, 'a');
+    it->rec_amount = 100;
+}
+
+/* Index the fixture block at height 1 into `db`. */
+static int seed_fixture(exp_db_t *db) {
+    nodus_dnac_v3_block_result_t p;
+    fixture_page(&p, 1);
+    exp_block_batch_t b;
+    exp_block_batch_init(&b);
+    int rc = exp_extract_page(&p, &b);
+    if (rc == 0) rc = exp_db_write_height(db, &b);
+    exp_block_batch_free(&b);
+    nodus_client_free_v3_block_result(&p);
+    return rc;
+}
+
+/* Index an empty block at height h. */
+static int write_empty_height(exp_db_t *db, uint64_t h) {
+    nodus_dnac_v3_block_result_t p;
+    page_header(&p, h, 0, 0, h);
+    exp_block_batch_t b;
+    exp_block_batch_init(&b);
+    int rc = exp_extract_page(&p, &b);
+    if (rc == 0) rc = exp_db_write_height(db, &b);
+    exp_block_batch_free(&b);
+    return rc;
+}
+
+/* ── Fake sync source ──────────────────────────────────────────────── */
+
+typedef struct {
+    uint8_t  chain_id32[32];
+    uint64_t tip;
+    int      server;
+    int      rotations;
+    uint32_t n_items;       /* items per height (all applied, one coin each) */
+    uint32_t page_size;     /* items per page */
+    uint64_t fail_height;   /* 0 = never fail */
+    uint32_t fail_from;     /* the page (by first index) that fails */
+    int      page_calls;
+} fake_src_t;
+
+static int fake_tip(void *ctx, exp_chain_tip_t *out) {
+    fake_src_t *f = ctx;
+    memset(out, 0, sizeof(*out));
+    memcpy(out->chain_id32, f->chain_id32, 32);
+    out->tip = f->tip;
+    out->supply_current = 123;
+    return 0;
+}
+
+static int fake_page(void *ctx, uint64_t h, uint32_t from, nodus_dnac_v3_block_result_t *out) {
+    fake_src_t *f = ctx;
+    f->page_calls++;
+    if (f->fail_height == h && f->fail_from == from) return NODUS_ERR_TIMEOUT;
+
+    page_header(out, h, f->n_items, f->n_items, f->tip);
+    uint32_t left = f->n_items - from;
+    uint32_t cnt = left < f->page_size ? left : f->page_size;
+    out->count = cnt;
+    out->items = calloc(cnt ? cnt : 1, sizeof(nodus_dnac_v3_item_t));
+    if (!out->items) return -1;
+    for (uint32_t j = 0; j < cnt; j++) {
+        nodus_dnac_v3_item_t *it = &out->items[j];
+        it->index = from + j;
+        it->kind = NODUS_DNAC_V3_KIND_ENVELOPE;
+        it->has_wire_id = true;
+        fill(it->wire_id, 64, (uint8_t)(from + j));
+        it->wire_id[0] = (uint8_t)h;
+        strcpy(it->op, "spend");
+        it->has_effects = true;
+        it->n_created = 1;
+        fill(it->created[0].id, 64, (uint8_t)(from + j));
+        it->created[0].id[0] = (uint8_t)h;
+        it->created[0].id[1] = 0xCC;
+        set_test_fp(it->created[0].owner, 'd');
+        it->created[0].amount = 1 + from + j;
+    }
+    if (from + cnt < f->n_items) {
+        out->has_next = true;
+        out->next_index = from + cnt;
+    }
+    return 0;
+}
+
+static int fake_server(void *ctx) {
+    return ((fake_src_t *)ctx)->server;
+}
+
+static void fake_rotate(void *ctx) {
+    fake_src_t *f = ctx;
+    f->rotations++;
+    f->server++;
+}
+
+static void fake_source(exp_sync_source_t *src, fake_src_t *f) {
+    src->ctx = f;
+    src->tip = fake_tip;
+    src->page = fake_page;
+    src->server = fake_server;
+    src->rotate = fake_rotate;
+}
+
+/* ── exp_db: schema v2 ─────────────────────────────────────────────── */
+
+static void test_db_schema_version(void) {
+    TEST("exp_db: fresh index carries schema_version 2");
 
     exp_db_t *db = NULL;
-    if (exp_db_open(":memory:", &db) != 0 || !db) {
-        FAIL("exp_db_open failed");
+    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
+    uint64_t v = 0;
+    if (exp_db_get_meta_u64(db, "schema_version", &v) != 0 || v != EXP_DB_SCHEMA_VERSION) {
+        FAIL("schema_version missing or wrong");
+        exp_db_close(db);
+        return;
+    }
+    exp_db_close(db);
+    PASS();
+}
+
+/* A v1 index (ledger-sequence tables, no schema_version) is dropped and
+ * rebuilt as v2 on open; a v2 index is kept across a reopen. */
+static void test_db_schema_rebuild_on_mismatch(void) {
+    TEST("exp_db: v1 index dropped + rebuilt as v2; v2 kept on reopen");
+
+    char path[] = "/tmp/exp_db_v1_XXXXXX";
+    int fd = mkstemp(path);
+    if (fd < 0) { FAIL("mkstemp failed"); return; }
+    close(fd);
+
+    sqlite3 *raw = NULL;
+    if (sqlite3_open(path, &raw) != SQLITE_OK) { FAIL("raw open failed"); unlink_db_files(path); return; }
+    const char *v1 =
+        "CREATE TABLE txs (hash BLOB PRIMARY KEY, seq INTEGER);"
+        "CREATE TABLE addr_stats (address TEXT, token_id BLOB, balance INTEGER);"
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value BLOB);"
+        "INSERT INTO meta VALUES ('last_indexed_seq', 5);"
+        "INSERT INTO meta VALUES ('chain_id', x'4242424242424242424242424242424242424242424242424242424242424242');";
+    if (sqlite3_exec(raw, v1, NULL, NULL, NULL) != SQLITE_OK) {
+        FAIL("v1 seed failed");
+        sqlite3_close(raw);
+        unlink_db_files(path);
+        return;
+    }
+    sqlite3_close(raw);
+
+    exp_db_t *db = NULL;
+    if (exp_db_open(path, &db) != 0) { FAIL("open of v1 file failed"); unlink_db_files(path); return; }
+
+    uint64_t v = 0, seq = 0;
+    uint8_t blob[32];
+    size_t len = 0;
+    int ok = exp_db_get_meta_u64(db, "schema_version", &v) == 0 && v == EXP_DB_SCHEMA_VERSION &&
+             exp_db_get_meta_u64(db, "last_indexed_seq", &seq) != 0 &&
+             exp_db_get_meta_blob(db, "chain_id", blob, sizeof(blob), &len) != 0;
+    if (!ok) { FAIL("v1 meta survived or version not set"); exp_db_close(db); unlink_db_files(path); return; }
+
+    if (seed_fixture(db) != 0) { FAIL("write into rebuilt index failed"); exp_db_close(db); unlink_db_files(path); return; }
+    exp_db_close(db);
+
+    /* the v1 tables are gone */
+    if (sqlite3_open(path, &raw) != SQLITE_OK) { FAIL("raw reopen failed"); unlink_db_files(path); return; }
+    sqlite3_stmt *s = NULL;
+    int n_v1 = -1;
+    if (sqlite3_prepare_v2(raw, "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('txs','addr_stats','tx_io')",
+                           -1, &s, NULL) == SQLITE_OK && sqlite3_step(s) == SQLITE_ROW) {
+        n_v1 = sqlite3_column_int(s, 0);
+    }
+    sqlite3_finalize(s);
+    sqlite3_close(raw);
+    if (n_v1 != 0) { FAIL("v1 tables still present"); unlink_db_files(path); return; }
+
+    /* v2 reopen keeps the data */
+    if (exp_db_open(path, &db) != 0) { FAIL("v2 reopen failed"); unlink_db_files(path); return; }
+    uint64_t last = 0;
+    if (exp_db_get_meta_u64(db, "last_indexed_height", &last) != 0 || last != 1) {
+        FAIL("v2 reopen lost the index");
+        exp_db_close(db);
+        unlink_db_files(path);
+        return;
+    }
+    exp_db_close(db);
+    unlink_db_files(path);
+    PASS();
+}
+
+/* ── exp_extract + exp_db: mapping and queries ─────────────────────── */
+
+static void test_write_height_and_queries(void) {
+    TEST("write_height: block/items/ios/record + consumed-coin resolution");
+
+    exp_db_t *db = NULL;
+    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
+    if (seed_fixture(db) != 0) { FAIL("seed failed"); exp_db_close(db); return; }
+
+    exp_block_row_t blk;
+    if (exp_db_query_block_by_height(db, 1, &blk) != 0 || blk.n_items != 3 ||
+        blk.applied_count != 2 || blk.proposer_len != 32 || blk.time_ms != 1700000001000ULL) {
+        FAIL("block row mismatch");
+        exp_db_close(db);
+        return;
+    }
+    uint8_t bid[64];
+    fill(bid, 64, 0x11);
+    exp_block_row_t by_id;
+    if (exp_db_query_block_by_id(db, bid, &by_id) != 0 || by_id.height != 1) {
+        FAIL("block by id failed");
+        exp_db_close(db);
         return;
     }
 
-    uint64_t val = 0;
-    if (exp_db_get_meta_u64(db, "last_indexed_seq", &val) != -1) {
-        FAIL("expected -1 for missing key");
+    exp_item_row_t items[4];
+    int n = 0;
+    if (exp_db_query_items(db, 1, 0, 4, items, &n) != 0 || n != 3) { FAIL("items count"); exp_db_close(db); return; }
+    if (items[1].code != 7 || items[1].has_effects || items[1].has_wire_id || !items[1].has_fee ||
+        items[1].fee != 2000) {
+        FAIL("refused item row mismatch");
+        exp_db_close(db);
+        return;
+    }
+    if (items[2].rec.kind != NODUS_DNAC_V3_REC_DELEGATE || items[2].rec.amount != 100 ||
+        items[2].rec.validator[0] != 'c' || items[2].rec.delegator[0] != 'a' || items[2].rec.dest[0] != '\0') {
+        FAIL("record mismatch");
+        exp_db_close(db);
+        return;
+    }
+    if (items[0].block_time_ms != 1700000001000ULL || strcmp(items[2].op, "delegate") != 0) {
+        FAIL("item time/op mismatch");
         exp_db_close(db);
         return;
     }
 
-    if (exp_db_set_meta_u64(db, "last_indexed_seq", 123456789ULL) != 0) {
-        FAIL("set_meta_u64 failed");
+    uint8_t id[64];
+    exp_item_row_t it;
+    fill(id, 64, 0x33);
+    if (exp_db_query_item_by_id(db, id, &it) != 0 || it.idx != 2) { FAIL("by wire id"); exp_db_close(db); return; }
+    fill(id, 64, 0x41);
+    if (exp_db_query_item_by_id(db, id, &it) != 0 || it.idx != 0) { FAIL("by intent id"); exp_db_close(db); return; }
+
+    exp_io_row_t ios[8];
+    int nio = 0;
+    if (exp_db_query_item_ios(db, 1, 2, ios, 8, &nio) != 0 || nio != 3) { FAIL("ios count"); exp_db_close(db); return; }
+    /* (dir, pos) order: consumed X, consumed U, created Y */
+    char fp_a[129], fp_b[129];
+    set_test_fp(fp_a, 'a');
+    set_test_fp(fp_b, 'b');
+    if (ios[0].dir != 0 || !ios[0].has_owner || strcmp(ios[0].address, fp_a) != 0 || ios[0].amount != 500) {
+        FAIL("consumed X not resolved to its creator");
         exp_db_close(db);
         return;
     }
-    if (exp_db_get_meta_u64(db, "last_indexed_seq", &val) != 0 || val != 123456789ULL) {
-        FAIL("u64 roundtrip mismatch");
+    if (ios[1].dir != 0 || ios[1].has_owner) { FAIL("consumed U should stay unresolved"); exp_db_close(db); return; }
+    if (ios[2].dir != 1 || strcmp(ios[2].address, fp_b) != 0 || ios[2].amount != 400) {
+        FAIL("created Y mismatch");
         exp_db_close(db);
         return;
     }
 
-    /* overwrite same key */
-    if (exp_db_set_meta_u64(db, "last_indexed_seq", 42ULL) != 0 ||
-        exp_db_get_meta_u64(db, "last_indexed_seq", &val) != 0 || val != 42ULL) {
-        FAIL("u64 overwrite mismatch");
+    /* history: A = created X (item 0) + consumed X / delegator (item 2) */
+    exp_item_row_t hist[4];
+    int nh = 0;
+    if (exp_db_query_address(db, fp_a, UINT64_MAX, UINT32_MAX, 4, hist, &nh) != 0 || nh != 2 ||
+        hist[0].idx != 2 || hist[1].idx != 0) {
+        FAIL("address A history");
+        exp_db_close(db);
+        return;
+    }
+    /* cursor strictly before 1:2 */
+    if (exp_db_query_address(db, fp_a, 1, 2, 4, hist, &nh) != 0 || nh != 1 || hist[0].idx != 0) {
+        FAIL("address cursor");
+        exp_db_close(db);
+        return;
+    }
+    char fp_c[129];
+    set_test_fp(fp_c, 'c');
+    if (exp_db_query_address(db, fp_c, UINT64_MAX, UINT32_MAX, 4, hist, &nh) != 0 || nh != 1 || hist[0].idx != 2) {
+        FAIL("validator history via record");
         exp_db_close(db);
         return;
     }
 
-    uint8_t chain_id[8] = {0x11,0x22,0x33,0x44,0x55,0x66,0x77,0x88};
-    if (exp_db_set_meta_blob(db, "chain_id", chain_id, sizeof(chain_id)) != 0) {
-        FAIL("set_meta_blob failed");
-        exp_db_close(db);
-        return;
-    }
-
-    uint8_t out[16];
-    size_t out_len = 0;
-    if (exp_db_get_meta_blob(db, "chain_id", out, sizeof(out), &out_len) != 0 ||
-        out_len != sizeof(chain_id) || memcmp(out, chain_id, sizeof(chain_id)) != 0) {
-        FAIL("blob roundtrip mismatch");
-        exp_db_close(db);
-        return;
-    }
-
-    /* buffer-too-small must fail cleanly, not overrun */
-    uint8_t tiny[2];
-    size_t tiny_len = 0;
-    if (exp_db_get_meta_blob(db, "chain_id", tiny, sizeof(tiny), &tiny_len) == 0) {
-        FAIL("expected failure for undersized buffer");
-        exp_db_close(db);
-        return;
-    }
+    if (exp_db_verify_index(db) != 0) { FAIL("verify_index on a clean index"); exp_db_close(db); return; }
 
     exp_db_close(db);
     PASS();
 }
 
-/* ── t2: insert_block + query_blocks ordering + set_block_hash backfill ── */
-
-static void test_blocks_ordering(void) {
-    TEST("insert_block ordering + set_block_hash backfill");
+static void test_write_height_order_enforced(void) {
+    TEST("write_height: only the next height is accepted");
 
     exp_db_t *db = NULL;
     if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
 
-    exp_block_row_t b1 = {0}, b2 = {0}, b3 = {0};
+    if (write_empty_height(db, 2) == 0) { FAIL("height 2 on an empty index accepted"); exp_db_close(db); return; }
+    if (write_empty_height(db, 1) != 0) { FAIL("height 1 refused"); exp_db_close(db); return; }
+    if (write_empty_height(db, 1) == 0) { FAIL("height 1 accepted twice"); exp_db_close(db); return; }
+    if (write_empty_height(db, 3) == 0) { FAIL("gap accepted"); exp_db_close(db); return; }
 
-    b1.height = 1; fill(b1.tx_root, 64, 0x01); b1.timestamp = 1000; fill(b1.proposer, 32, 0xA1); b1.tx_count = 2; b1.has_block_hash = 0;
-    b2.height = 2; fill(b2.tx_root, 64, 0x02); b2.timestamp = 2000; fill(b2.proposer, 32, 0xA2); b2.tx_count = 3; b2.has_block_hash = 0;
-    b3.height = 3; fill(b3.tx_root, 64, 0x03); b3.timestamp = 3000; fill(b3.proposer, 32, 0xA3); b3.tx_count = 1; b3.has_block_hash = 0;
-
-    if (exp_db_insert_block(db, &b1) != 0 || exp_db_insert_block(db, &b2) != 0 || exp_db_insert_block(db, &b3) != 0) {
-        FAIL("insert_block failed");
+    uint64_t last = 0;
+    if (exp_db_get_meta_u64(db, "last_indexed_height", &last) != 0 || last != 1) {
+        FAIL("watermark moved on a refused write");
         exp_db_close(db);
         return;
     }
+    exp_db_close(db);
+    PASS();
+}
 
-    exp_block_row_t rows[8];
-    int count = -1;
-    if (exp_db_query_blocks(db, EXP_CURSOR_TOP, 10, rows, &count) != 0 || count != 3) {
-        FAIL("query_blocks count mismatch");
-        exp_db_close(db);
+static void test_verify_index_detects_gap(void) {
+    TEST("verify_index: watermark beyond the stored blocks -> inconsistent");
+
+    exp_db_t *db = NULL;
+    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
+    for (uint64_t h = 1; h <= 3; h++) {
+        if (write_empty_height(db, h) != 0) { FAIL("seed failed"); exp_db_close(db); return; }
+    }
+    if (exp_db_verify_index(db) != 0) { FAIL("clean index reported inconsistent"); exp_db_close(db); return; }
+    exp_db_set_meta_u64(db, "last_indexed_height", 5);
+    if (exp_db_verify_index(db) == 0) { FAIL("gap not detected"); exp_db_close(db); return; }
+    exp_db_close(db);
+    PASS();
+}
+
+static void test_extract_refuses_mismatched_page(void) {
+    TEST("extract_page: other block's page / index gap refused, batch kept");
+
+    nodus_dnac_v3_block_result_t p1, p2;
+    page_header(&p1, 5, 4, 4, 9);
+    p1.count = 2;
+    p1.items = calloc(2, sizeof(nodus_dnac_v3_item_t));
+    p1.items[0].index = 0;
+    p1.items[1].index = 1;
+    p1.has_next = true;
+    p1.next_index = 2;
+
+    exp_block_batch_t b;
+    exp_block_batch_init(&b);
+    if (exp_extract_page(&p1, &b) != 0 || b.n_items != 2) { FAIL("first page refused"); goto out1; }
+
+    /* same height, different block id (another server after a rotate) */
+    page_header(&p2, 5, 4, 4, 9);
+    fill(p2.block_id, 64, 0x99);
+    p2.count = 2;
+    p2.items = calloc(2, sizeof(nodus_dnac_v3_item_t));
+    p2.items[0].index = 2;
+    p2.items[1].index = 3;
+    if (exp_extract_page(&p2, &b) == 0 || b.n_items != 2) { FAIL("foreign header accepted"); goto out2; }
+
+    /* right header, but it skips item 2 */
+    fill(p2.block_id, 64, (uint8_t)(0x10 + 5));
+    p2.items[0].index = 3;
+    p2.count = 1;
+    if (exp_extract_page(&p2, &b) == 0 || b.n_items != 2) { FAIL("index gap accepted"); goto out2; }
+
+    /* the correct continuation */
+    p2.items[0].index = 2;
+    p2.count = 2;
+    if (exp_extract_page(&p2, &b) != 0 || b.n_items != 4) { FAIL("continuation refused"); goto out2; }
+
+    PASS();
+out2:
+    nodus_client_free_v3_block_result(&p2);
+out1:
+    nodus_client_free_v3_block_result(&p1);
+    exp_block_batch_free(&b);
+}
+
+/* ── exp_sync ──────────────────────────────────────────────────────── */
+
+static void test_sync_collect_concatenates_pages(void) {
+    TEST("collect_block: 10 items in pages of 3 -> 4 pages, in order");
+
+    fake_src_t f;
+    memset(&f, 0, sizeof(f));
+    f.tip = 1;
+    f.n_items = 10;
+    f.page_size = 3;
+    exp_sync_source_t src;
+    fake_source(&src, &f);
+
+    exp_block_batch_t b;
+    exp_block_batch_init(&b);
+    if (exp_sync_collect_block(&src, 1, &b) != 0) { FAIL("collect failed"); exp_block_batch_free(&b); return; }
+    if (f.page_calls != 4 || b.n_items != 10 || b.n_ios != 10) {
+        FAIL("page/item/io count");
+        exp_block_batch_free(&b);
         return;
     }
-    if (rows[0].height != 3 || rows[1].height != 2 || rows[2].height != 1) {
-        FAIL("query_blocks not DESC by height");
-        exp_db_close(db);
-        return;
+    for (size_t i = 0; i < b.n_items; i++) {
+        if (b.items[i].idx != i || b.ios[i].idx != i || b.ios[i].amount != 1 + i) {
+            FAIL("items/ios not concatenated in index order");
+            exp_block_batch_free(&b);
+            return;
+        }
     }
+    exp_block_batch_free(&b);
+    PASS();
+}
 
-    /* cursor: before_height=3 excludes height 3 */
-    int count2 = -1;
-    if (exp_db_query_blocks(db, 3, 10, rows, &count2) != 0 || count2 != 2 ||
-        rows[0].height != 2 || rows[1].height != 1) {
-        FAIL("query_blocks before_height cursor wrong");
-        exp_db_close(db);
-        return;
-    }
+static void test_sync_partial_height_keeps_watermark(void) {
+    TEST("tick: a failed page mid-height leaves the watermark, then resumes");
 
-    /* genesis-boundary: walking below the lowest indexed height (1, this
-     * witness implementation's genesis height) must terminate with zero
-     * rows, never wrap back to the top — the strict `<` comparison makes 0
-     * unusable as an "unbounded" sentinel on its own (see exp_db.h). */
-    int count_boundary = -1;
-    if (exp_db_query_blocks(db, 1, 10, rows, &count_boundary) != 0 || count_boundary != 0) {
-        FAIL("query_blocks should return 0 rows below the lowest height");
-        exp_db_close(db);
-        return;
-    }
+    exp_db_t *db = NULL;
+    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
 
-    uint8_t hash1[64], hash2[64];
-    fill(hash1, 64, 0xB1);
-    fill(hash2, 64, 0xB2);
+    fake_src_t f;
+    memset(&f, 0, sizeof(f));
+    fill(f.chain_id32, 32, 0x42);
+    f.tip = 3;
+    f.n_items = 5;
+    f.page_size = 2;
+    f.fail_height = 2;
+    f.fail_from = 2;           /* the second page of height 2 */
+    exp_sync_source_t src;
+    fake_source(&src, &f);
 
-    if (exp_db_set_block_hash(db, 1, hash1) != 0 || exp_db_set_block_hash(db, 2, hash2) != 0) {
-        FAIL("set_block_hash failed");
-        exp_db_close(db);
-        return;
-    }
+    exp_reset_fsm_t fsm;
+    memset(&fsm, 0, sizeof(fsm));
+    if (exp_sync_tick(&src, &db, ":memory:", &fsm, NULL) != -1) { FAIL("tick should fail"); exp_db_close(db); return; }
 
+    uint64_t last = 0;
     exp_block_row_t row;
-    if (exp_db_query_block_by_height(db, 1, &row) != 0 || !row.has_block_hash ||
-        memcmp(row.block_hash, hash1, 64) != 0 || row.timestamp != 1000 || row.tx_count != 2 ||
-        memcmp(row.proposer, b1.proposer, 32) != 0 || memcmp(row.tx_root, b1.tx_root, 64) != 0) {
-        FAIL("query_block_by_height(1) mismatch");
+    if (exp_db_get_meta_u64(db, "last_indexed_height", &last) != 0 || last != 1 ||
+        exp_db_query_block_by_height(db, 2, &row) == 0) {
+        FAIL("height 2 partially written or watermark advanced");
         exp_db_close(db);
         return;
     }
 
-    if (exp_db_query_block_by_height(db, 3, &row) != 0 || row.has_block_hash) {
-        FAIL("tip block_hash should still be unset");
+    f.fail_height = 0;
+    if (exp_sync_tick(&src, &db, ":memory:", &fsm, NULL) != 0) { FAIL("retry tick failed"); exp_db_close(db); return; }
+    exp_item_row_t items[8];
+    int n = 0;
+    if (exp_db_get_meta_u64(db, "last_indexed_height", &last) != 0 || last != 3 ||
+        exp_db_query_items(db, 2, 0, 8, items, &n) != 0 || n != 5) {
+        FAIL("resume did not index heights 2..3 whole");
         exp_db_close(db);
         return;
     }
-
-    if (exp_db_query_block_by_hash(db, hash2, &row) != 0 || row.height != 2) {
-        FAIL("query_block_by_hash(hash2) mismatch");
-        exp_db_close(db);
-        return;
-    }
-
-    uint8_t bogus[64];
-    fill(bogus, 64, 0xFF);
-    if (exp_db_query_block_by_hash(db, bogus, &row) == 0) {
-        FAIL("query_block_by_hash should miss on unknown hash");
-        exp_db_close(db);
-        return;
-    }
-
+    if (exp_db_verify_index(db) != 0) { FAIL("index inconsistent after resume"); exp_db_close(db); return; }
     exp_db_close(db);
     PASS();
 }
 
-/* ── t3: insert_tx (2 outputs, different token_ids, 1 input) ───────── */
-
-static void test_tx_insert_and_balance(void) {
-    TEST("insert_tx + query_tx + query_balance + verify_addr_stats");
+static void test_sync_tick_height_bound(void) {
+    TEST("tick: stops at the per-tick height bound and returns 1");
 
     exp_db_t *db = NULL;
     if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
 
-    uint8_t token_a[64], token_b[64];
-    fill(token_a, 64, 0x00);   /* native token */
-    fill(token_b, 64, 0xAA);
+    fake_src_t f;
+    memset(&f, 0, sizeof(f));
+    fill(f.chain_id32, 32, 0x42);
+    f.tip = EXP_SYNC_MAX_HEIGHTS_PER_TICK + 10;
+    f.n_items = 0;
+    f.page_size = 1;
+    exp_sync_source_t src;
+    fake_source(&src, &f);
 
-    exp_tx_row_t tx = {0};
-    fill(tx.hash, 64, 0x10);
-    tx.seq = 1;
-    tx.height = 1;
-    tx.tx_type = 5;
-    tx.fee = 1000;
-    tx.timestamp = 1700000000ULL;
-    tx.multi_signer = 0;
-
-    static const char raw_bytes[] = "test-raw-tx-bytes-for-hash-10";
-    tx.size = (uint32_t)strlen(raw_bytes);
-
-    exp_io_row_t ios[3];
-    memset(ios, 0, sizeof(ios));
-
-    memcpy(ios[0].tx_hash, tx.hash, 64);
-    ios[0].io_index = 0; ios[0].direction = 1; /* out */
-    strcpy(ios[0].address, "addr_recipient_1");
-    memcpy(ios[0].token_id, token_a, 64);
-    ios[0].amount = 100;
-
-    memcpy(ios[1].tx_hash, tx.hash, 64);
-    ios[1].io_index = 1; ios[1].direction = 1; /* out */
-    strcpy(ios[1].address, "addr_recipient_2");
-    memcpy(ios[1].token_id, token_b, 64);
-    ios[1].amount = 250;
-
-    memcpy(ios[2].tx_hash, tx.hash, 64);
-    ios[2].io_index = 0; ios[2].direction = 0; /* in */
-    strcpy(ios[2].address, "addr_signer_1");
-    memcpy(ios[2].token_id, token_a, 64);
-    ios[2].amount = 100;
-
-    if (exp_db_insert_tx(db, &tx, (const uint8_t *)raw_bytes, strlen(raw_bytes), ios, 3) != 0) {
-        FAIL("insert_tx failed");
+    exp_reset_fsm_t fsm;
+    memset(&fsm, 0, sizeof(fsm));
+    uint64_t last = 0;
+    if (exp_sync_tick(&src, &db, ":memory:", &fsm, NULL) != 1 ||
+        exp_db_get_meta_u64(db, "last_indexed_height", &last) != 0 || last != EXP_SYNC_MAX_HEIGHTS_PER_TICK) {
+        FAIL("first tick should stop at the bound with rc 1");
         exp_db_close(db);
         return;
     }
-
-    /* query_tx: row + ios + raw bytes */
-    exp_tx_row_t tx_out = {0};
-    exp_io_row_t ios_out[8];
-    int io_count = -1;
-    uint8_t *raw_out = NULL;
-    size_t raw_len_out = 0;
-
-    if (exp_db_query_tx(db, tx.hash, &tx_out, ios_out, 8, &io_count, &raw_out, &raw_len_out) != 0) {
-        FAIL("query_tx failed");
+    if (exp_sync_tick(&src, &db, ":memory:", &fsm, NULL) != 0 ||
+        exp_db_get_meta_u64(db, "last_indexed_height", &last) != 0 || last != f.tip) {
+        FAIL("second tick should finish at the tip with rc 0");
         exp_db_close(db);
         return;
     }
-    if (tx_out.seq != 1 || tx_out.height != 1 || tx_out.tx_type != 5 || tx_out.fee != 1000 ||
-        tx_out.size != tx.size || tx_out.timestamp != 1700000000ULL || tx_out.multi_signer != 0) {
-        FAIL("query_tx row field mismatch");
-        free(raw_out);
+    uint64_t tip = 0, supply = 0;
+    if (exp_db_get_meta_u64(db, "tip_height", &tip) != 0 || tip != f.tip ||
+        exp_db_get_meta_u64(db, "supply_current", &supply) != 0 || supply != 123) {
+        FAIL("tip/supply meta not stored");
         exp_db_close(db);
         return;
     }
-    if (io_count != 3) {
-        FAIL("query_tx io_count mismatch");
-        free(raw_out);
-        exp_db_close(db);
-        return;
-    }
-    if (!raw_out || raw_len_out != strlen(raw_bytes) || memcmp(raw_out, raw_bytes, raw_len_out) != 0) {
-        FAIL("query_tx raw bytes mismatch");
-        free(raw_out);
-        exp_db_close(db);
-        return;
-    }
-    free(raw_out);
-
-    /* query_balance: credit-only recipient addrs, debit on signer addr */
-    uint64_t bal = 0, txc = 0;
-    if (exp_db_query_balance(db, "addr_recipient_1", token_a, &bal, &txc) != 0 || bal != 100 || txc != 1) {
-        FAIL("balance mismatch for addr_recipient_1/token_a");
-        exp_db_close(db);
-        return;
-    }
-    if (exp_db_query_balance(db, "addr_recipient_2", token_b, &bal, &txc) != 0 || bal != 250 || txc != 1) {
-        FAIL("balance mismatch for addr_recipient_2/token_b");
-        exp_db_close(db);
-        return;
-    }
-    if (exp_db_query_balance(db, "addr_signer_1", token_a, &bal, &txc) != 0 || (int64_t)bal != -100 || txc != 1) {
-        FAIL("balance mismatch for addr_signer_1/token_a (expected -100)");
-        exp_db_close(db);
-        return;
-    }
-
-    if (exp_db_verify_addr_stats(db) != 0) {
-        FAIL("verify_addr_stats reported divergence");
-        exp_db_close(db);
-        return;
-    }
-
     exp_db_close(db);
     PASS();
 }
 
-/* ── t4: duplicate tx insert is a no-op ─────────────────────────────── */
+/* The F4 FSM is keyed on chain_id32: the reference lives in meta
+ * "chain_id32" (a legacy "chain_id" blob is ignored), a different
+ * chain_id32 from one server is PENDING (nothing indexed, rotate), the
+ * same one from a second server CONFIRMS and archives the index. */
+static void test_sync_fsm_keys_on_chain_id32(void) {
+    TEST("tick: reset FSM keyed on chain_id32 (adopt / PENDING / CONFIRMED)");
 
-static void test_duplicate_insert_noop(void) {
-    TEST("duplicate insert_tx is a no-op");
+    char path[] = "/tmp/exp_sync_fsm_XXXXXX";
+    int fd = mkstemp(path);
+    if (fd < 0) { FAIL("mkstemp failed"); return; }
+    close(fd);
 
     exp_db_t *db = NULL;
-    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
+    if (exp_db_open(path, &db) != 0) { FAIL("open failed"); unlink_db_files(path); return; }
 
-    uint8_t token_a[64];
-    fill(token_a, 64, 0x00);
+    uint8_t legacy[32];
+    fill(legacy, 32, 0x55);
+    exp_db_set_meta_blob(db, "chain_id", legacy, 32);
 
-    exp_tx_row_t tx = {0};
-    fill(tx.hash, 64, 0x20);
-    tx.seq = 1; tx.height = 1; tx.tx_type = 1; tx.fee = 10; tx.timestamp = 5000; tx.multi_signer = 0;
+    exp_reset_fsm_t fsm;
+    memset(&fsm, 0, sizeof(fsm));
+    exp_sync_preseed(db, &fsm);
+    uint8_t zero[32] = {0};
+    if (memcmp(fsm.ref_chain_id, zero, 32) != 0) { FAIL("legacy chain_id preseeded the FSM"); goto out; }
 
-    static const char raw_bytes[] = "dup-raw";
-    tx.size = (uint32_t)strlen(raw_bytes);
+    fake_src_t f;
+    memset(&f, 0, sizeof(f));
+    fill(f.chain_id32, 32, 0x42);
+    f.tip = 2;
+    f.n_items = 1;
+    f.page_size = 4;
+    exp_sync_source_t src;
+    fake_source(&src, &f);
 
-    exp_io_row_t io = {0};
-    memcpy(io.tx_hash, tx.hash, 64);
-    io.io_index = 0; io.direction = 1;
-    strcpy(io.address, "addr_dup_target");
-    memcpy(io.token_id, token_a, 64);
-    io.amount = 50;
-
-    if (exp_db_insert_tx(db, &tx, (const uint8_t *)raw_bytes, strlen(raw_bytes), &io, 1) != 0) {
-        FAIL("first insert failed");
-        exp_db_close(db);
-        return;
+    /* first observation adopts 0x42 and indexes */
+    uint8_t got[32];
+    size_t len = 0;
+    if (exp_sync_tick(&src, &db, path, &fsm, NULL) != 0 ||
+        exp_db_get_meta_blob(db, "chain_id32", got, sizeof(got), &len) != 0 || len != 32 ||
+        memcmp(got, f.chain_id32, 32) != 0) {
+        FAIL("chain_id32 not adopted into meta");
+        goto out;
     }
 
-    /* second insert: same hash, different (bogus) io payload — must be ignored entirely */
-    exp_io_row_t io2 = io;
-    io2.amount = 999999;
-    if (exp_db_insert_tx(db, &tx, (const uint8_t *)raw_bytes, strlen(raw_bytes), &io2, 1) != 0) {
-        FAIL("second insert (duplicate) should return 0, not error");
-        exp_db_close(db);
-        return;
+    /* another chain from server 0: PENDING, rotate, nothing indexed */
+    fill(f.chain_id32, 32, 0x99);
+    f.tip = 5;
+    int calls = f.page_calls;
+    uint64_t last = 0;
+    if (exp_sync_tick(&src, &db, path, &fsm, NULL) != 0 || f.rotations != 1 || f.page_calls != calls ||
+        exp_db_get_meta_u64(db, "last_indexed_height", &last) != 0 || last != 2) {
+        FAIL("PENDING tick indexed or did not rotate");
+        goto out;
     }
 
-    exp_tx_row_t tx_out = {0};
-    exp_io_row_t ios_out[8];
-    int io_count = -1;
-    uint8_t *raw_out = NULL;
-    size_t raw_len_out = 0;
-    if (exp_db_query_tx(db, tx.hash, &tx_out, ios_out, 8, &io_count, &raw_out, &raw_len_out) != 0 ||
-        io_count != 1) {
-        FAIL("duplicate insert changed io row count");
-        free(raw_out);
-        exp_db_close(db);
-        return;
+    /* the same from server 1: CONFIRMED -> index archived, fresh db */
+    if (exp_sync_tick(&src, &db, path, &fsm, NULL) != 0 || !db) { FAIL("CONFIRMED tick failed"); goto out; }
+    if (exp_db_get_meta_blob(db, "chain_id32", got, sizeof(got), &len) != 0 ||
+        memcmp(got, f.chain_id32, 32) != 0 ||
+        exp_db_get_meta_u64(db, "last_indexed_height", &last) == 0) {
+        FAIL("fresh index not re-keyed on the new chain_id32");
+        goto out;
     }
-    free(raw_out);
-
-    uint64_t bal = 0, txc = 0;
-    if (exp_db_query_balance(db, "addr_dup_target", token_a, &bal, &txc) != 0 || bal != 50 || txc != 1) {
-        FAIL("duplicate insert double-counted addr_stats");
-        exp_db_close(db);
-        return;
+    char stale[512];
+    if (exp_sync_stale_name(path, f.chain_id32, stale, sizeof(stale)) != 0 || access(stale, F_OK) != 0) {
+        FAIL("stale index not archived");
+        goto out;
     }
-
-    if (exp_db_verify_addr_stats(db) != 0) {
-        FAIL("verify_addr_stats reported divergence after duplicate insert");
-        exp_db_close(db);
-        return;
-    }
-
-    exp_db_close(db);
+    unlink_db_files(stale);
     PASS();
+out:
+    if (db) exp_db_close(db);
+    unlink_db_files(path);
 }
 
-/* ── t5: query_address pagination, seq DESC, exactly-once coverage ─── */
-
-static void test_address_pagination(void) {
-    TEST("query_address pagination (limit 2, before_seq walk)");
-
-    exp_db_t *db = NULL;
-    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
-
-    uint8_t token_a[64];
-    fill(token_a, 64, 0x00);
-
-    uint64_t seqs[3] = {1, 2, 3};
-    uint64_t heights[3] = {1, 1, 2};
-    uint64_t amounts[3] = {10, 20, 30};
-
-    for (int i = 0; i < 3; i++) {
-        exp_tx_row_t tx = {0};
-        fill(tx.hash, 64, (uint8_t)(0x30 + i));
-        tx.seq = seqs[i];
-        tx.height = heights[i];
-        tx.tx_type = 1;
-        tx.fee = 1;
-        tx.timestamp = 6000 + i;
-        tx.multi_signer = 0;
-
-        char raw_buf[16];
-        snprintf(raw_buf, sizeof(raw_buf), "raw_%d", i);
-        tx.size = (uint32_t)strlen(raw_buf);
-
-        exp_io_row_t io = {0};
-        memcpy(io.tx_hash, tx.hash, 64);
-        io.io_index = 0; io.direction = 1;
-        strcpy(io.address, "addr_walker");
-        memcpy(io.token_id, token_a, 64);
-        io.amount = amounts[i];
-
-        if (exp_db_insert_tx(db, &tx, (const uint8_t *)raw_buf, strlen(raw_buf), &io, 1) != 0) {
-            FAIL("insert_tx failed while seeding pagination test");
-            exp_db_close(db);
-            return;
-        }
-    }
-
-    exp_tx_row_t rows[8];
-    int count = -1;
-
-    if (exp_db_query_address(db, "addr_walker", EXP_CURSOR_TOP, 2, rows, &count) != 0 || count != 2 ||
-        rows[0].seq != 3 || rows[1].seq != 2) {
-        FAIL("first page wrong (expected seq 3,2 DESC)");
-        exp_db_close(db);
-        return;
-    }
-
-    uint64_t cursor = rows[count - 1].seq; /* = 2 */
-    int count2 = -1;
-    if (exp_db_query_address(db, "addr_walker", cursor, 2, rows, &count2) != 0 || count2 != 1 ||
-        rows[0].seq != 1) {
-        FAIL("second page wrong (expected seq 1 only)");
-        exp_db_close(db);
-        return;
-    }
-
-    /* one more page should be empty */
-    uint64_t cursor2 = rows[count2 - 1].seq; /* = 1 */
-    int count3 = -1;
-    if (exp_db_query_address(db, "addr_walker", cursor2, 2, rows, &count3) != 0 || count3 != 0) {
-        FAIL("third page should be empty");
-        exp_db_close(db);
-        return;
-    }
-
-    exp_db_close(db);
-    PASS();
-}
-
-/* ── t6-t9: exp_extract_tx (Task 3) ─────────────────────────────────── */
-
-#define EXP_TEST_TX_BUF_SIZE 32768
-
-static void test_extract_basic_mapping(void) {
-    TEST("exp_extract_tx basic mapping (1 in, 2 out, 1 signer)");
-
-    dnac_transaction_t tx;
-    memset(&tx, 0, sizeof(tx));
-
-    tx.version = DNAC_PROTOCOL_VERSION;
-    tx.type = DNAC_TX_SPEND;
-    tx.timestamp = 999999999ULL;   /* fixed, deliberately not "now" (D4/F6) */
-    fill(tx.tx_hash, DNAC_TX_HASH_SIZE, 0xCC);
-    tx.committed_fee = 555555ULL;
-
-    tx.input_count = 1;
-    fill(tx.inputs[0].nullifier, DNAC_NULLIFIER_SIZE, 0xAA);
-    tx.inputs[0].amount = 700;
-    /* token_id left zero == native DNAC */
-
-    /* fix round 1: owner_fingerprint is now validated as exactly 128
-     * lowercase-hex chars + NUL (see exp_extract.c) — use valid-format
-     * fixtures rather than arbitrary strings. */
-    char fp_one[129], fp_two[129];
-    set_test_fp(fp_one, '1');
-    set_test_fp(fp_two, '2');
-
-    tx.output_count = 2;
-    tx.outputs[0].version = 1;
-    strcpy(tx.outputs[0].owner_fingerprint, fp_one);
-    tx.outputs[0].amount = 300;
-    /* token_id left zero == native DNAC */
-
-    tx.outputs[1].version = 1;
-    strcpy(tx.outputs[1].owner_fingerprint, fp_two);
-    tx.outputs[1].amount = 400;
-    fill(tx.outputs[1].token_id, DNAC_TOKEN_ID_SIZE, 0xBB);
-
-    tx.witness_count = 0;
-
-    tx.signer_count = 1;
-    fill(tx.signers[0].pubkey, DNAC_PUBKEY_SIZE, 0x11);
-    fill(tx.signers[0].signature, DNAC_SIGNATURE_SIZE, 0x00);
-
-    char expected_fp0[129];
-    if (qgp_sha3_512_hex(tx.signers[0].pubkey, DNAC_PUBKEY_SIZE, expected_fp0, sizeof(expected_fp0)) != 0) {
-        FAIL("qgp_sha3_512_hex for expected fp0 failed");
-        return;
-    }
-
-    uint8_t buf[EXP_TEST_TX_BUF_SIZE];
-    size_t written = 0;
-    if (dnac_tx_serialize(&tx, buf, sizeof(buf), &written) != DNAC_SUCCESS) {
-        FAIL("dnac_tx_serialize failed");
-        return;
-    }
-
-    exp_tx_row_t tx_row;
-    exp_io_row_t ios[8];
-    int io_count = -1;
-    if (exp_extract_tx(buf, written, 42, 7, &tx_row, ios, 8, &io_count) != 0) {
-        FAIL("exp_extract_tx failed");
-        return;
-    }
-
-    if (io_count != 3) { FAIL("io_count mismatch"); return; }
-    if (memcmp(tx_row.hash, tx.tx_hash, 64) != 0) { FAIL("hash mismatch"); return; }
-    if (tx_row.seq != 42 || tx_row.height != 7) { FAIL("seq/height mismatch"); return; }
-    if (tx_row.tx_type != (int)DNAC_TX_SPEND) { FAIL("tx_type mismatch"); return; }
-    if (tx_row.fee != 555555ULL) { FAIL("fee mismatch"); return; }
-    if (tx_row.size != written) { FAIL("size mismatch"); return; }
-    if (tx_row.timestamp != 999999999ULL) { FAIL("timestamp not from deserialized tx (D4/F6)"); return; }
-    if (tx_row.multi_signer != 0) { FAIL("multi_signer should be 0 for 1 signer"); return; }
-
-    /* io[0]: input 0, direction=in, attributed to signer[0] fp */
-    if (ios[0].direction != 0 || ios[0].io_index != 0 || ios[0].amount != 700) {
-        FAIL("ios[0] input fields mismatch");
-        return;
-    }
-    if (strcmp(ios[0].address, expected_fp0) != 0) { FAIL("ios[0] address != signer[0] fp"); return; }
-    if (memcmp(ios[0].tx_hash, tx.tx_hash, 64) != 0) { FAIL("ios[0] tx_hash mismatch"); return; }
-
-    /* io[1]: output 0 */
-    if (ios[1].direction != 1 || ios[1].io_index != 0 || ios[1].amount != 300) {
-        FAIL("ios[1] output0 fields mismatch");
-        return;
-    }
-    if (strcmp(ios[1].address, fp_one) != 0) { FAIL("ios[1] address mismatch"); return; }
-
-    /* io[2]: output 1 */
-    if (ios[2].direction != 1 || ios[2].io_index != 1 || ios[2].amount != 400) {
-        FAIL("ios[2] output1 fields mismatch");
-        return;
-    }
-    if (strcmp(ios[2].address, fp_two) != 0) { FAIL("ios[2] address mismatch"); return; }
-    if (memcmp(ios[2].token_id, tx.outputs[1].token_id, 64) != 0) { FAIL("ios[2] token_id mismatch"); return; }
-
-    PASS();
-}
-
-static void test_extract_multi_signer(void) {
-    TEST("exp_extract_tx multi_signer flag + both inputs -> signer[0] fp");
-
-    dnac_transaction_t tx;
-    memset(&tx, 0, sizeof(tx));
-
-    tx.version = DNAC_PROTOCOL_VERSION;
-    tx.type = DNAC_TX_SPEND;
-    tx.timestamp = 888888888ULL;
-    fill(tx.tx_hash, DNAC_TX_HASH_SIZE, 0xDD);
-    tx.committed_fee = 20000ULL;
-
-    tx.input_count = 2;
-    fill(tx.inputs[0].nullifier, DNAC_NULLIFIER_SIZE, 0x01);
-    tx.inputs[0].amount = 111;
-    fill(tx.inputs[1].nullifier, DNAC_NULLIFIER_SIZE, 0x02);
-    tx.inputs[1].amount = 222;
-
-    /* fix round 1: owner_fingerprint is now validated as exactly 128
-     * lowercase-hex chars + NUL (see exp_extract.c). */
-    char fp_multi[129];
-    set_test_fp(fp_multi, '3');
-
-    tx.output_count = 1;
-    tx.outputs[0].version = 1;
-    strcpy(tx.outputs[0].owner_fingerprint, fp_multi);
-    tx.outputs[0].amount = 300;
-
-    tx.signer_count = 2;
-    fill(tx.signers[0].pubkey, DNAC_PUBKEY_SIZE, 0x11);
-    fill(tx.signers[0].signature, DNAC_SIGNATURE_SIZE, 0x00);
-    fill(tx.signers[1].pubkey, DNAC_PUBKEY_SIZE, 0x22);
-    fill(tx.signers[1].signature, DNAC_SIGNATURE_SIZE, 0x00);
-
-    char expected_fp0[129];
-    if (qgp_sha3_512_hex(tx.signers[0].pubkey, DNAC_PUBKEY_SIZE, expected_fp0, sizeof(expected_fp0)) != 0) {
-        FAIL("qgp_sha3_512_hex for expected fp0 failed");
-        return;
-    }
-
-    uint8_t buf[EXP_TEST_TX_BUF_SIZE];
-    size_t written = 0;
-    if (dnac_tx_serialize(&tx, buf, sizeof(buf), &written) != DNAC_SUCCESS) {
-        FAIL("dnac_tx_serialize failed");
-        return;
-    }
-
-    exp_tx_row_t tx_row;
-    exp_io_row_t ios[8];
-    int io_count = -1;
-    if (exp_extract_tx(buf, written, 99, 12, &tx_row, ios, 8, &io_count) != 0) {
-        FAIL("exp_extract_tx failed");
-        return;
-    }
-
-    if (io_count != 3) { FAIL("io_count mismatch"); return; }
-    if (tx_row.multi_signer != 1) { FAIL("multi_signer should be 1 for 2 signers"); return; }
-
-    if (ios[0].direction != 0 || ios[0].amount != 111 || strcmp(ios[0].address, expected_fp0) != 0) {
-        FAIL("ios[0] not attributed to signer[0]");
-        return;
-    }
-    if (ios[1].direction != 0 || ios[1].amount != 222 || strcmp(ios[1].address, expected_fp0) != 0) {
-        FAIL("ios[1] not attributed to signer[0]");
-        return;
-    }
-    if (ios[2].direction != 1 || ios[2].amount != 300) { FAIL("ios[2] output mismatch"); return; }
-
-    PASS();
-}
-
-static void test_signer_fingerprint_kat(void) {
-    TEST("exp_signer_fingerprint == SHA3-512 hex, lowercase, 128 chars");
-
-    uint8_t buf[64];
-    for (int i = 0; i < 64; i++) buf[i] = (uint8_t)i;
-
-    uint8_t digest[QGP_SHA3_512_DIGEST_LENGTH];
-    if (qgp_sha3_512(buf, sizeof(buf), digest) != 0) {
-        FAIL("qgp_sha3_512 failed");
-        return;
-    }
-    char expected[129];
-    for (int i = 0; i < QGP_SHA3_512_DIGEST_LENGTH; i++) {
-        snprintf(expected + i * 2, 3, "%02x", digest[i]);
-    }
-    expected[128] = '\0';
-
-    char fp_out[129];
-    if (exp_signer_fingerprint(buf, sizeof(buf), fp_out) != 0) {
-        FAIL("exp_signer_fingerprint failed");
-        return;
-    }
-
-    if (strlen(fp_out) != 128) { FAIL("fingerprint length != 128"); return; }
-    if (strcmp(fp_out, expected) != 0) { FAIL("fingerprint != independently-computed SHA3-512 hex"); return; }
-    for (size_t i = 0; i < strlen(fp_out); i++) {
-        char c = fp_out[i];
-        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
-            FAIL("fingerprint not lowercase hex");
-            return;
-        }
-    }
-
-    PASS();
-}
-
-static void test_extract_signer_count_zero(void) {
-    TEST("exp_extract_tx rejects signer_count == 0 (defensive)");
-
-    dnac_transaction_t tx;
-    memset(&tx, 0, sizeof(tx));
-
-    tx.version = DNAC_PROTOCOL_VERSION;
-    tx.type = DNAC_TX_SPEND;
-    tx.timestamp = 123456789ULL;
-    fill(tx.tx_hash, DNAC_TX_HASH_SIZE, 0xEE);
-    tx.committed_fee = 1000ULL;
-
-    tx.input_count = 1;
-    fill(tx.inputs[0].nullifier, DNAC_NULLIFIER_SIZE, 0x03);
-    tx.inputs[0].amount = 50;
-
-    tx.output_count = 1;
-    tx.outputs[0].version = 1;
-    strcpy(tx.outputs[0].owner_fingerprint, "recipient_fp_zero_signer");
-    tx.outputs[0].amount = 50;
-
-    tx.signer_count = 0;  /* malformed but structurally deserializable —
-                            * dnac_tx_deserialize only rejects
-                            * signer_count > DNAC_TX_MAX_SIGNERS. */
-
-    uint8_t buf[EXP_TEST_TX_BUF_SIZE];
-    size_t written = 0;
-    if (dnac_tx_serialize(&tx, buf, sizeof(buf), &written) != DNAC_SUCCESS) {
-        FAIL("dnac_tx_serialize failed");
-        return;
-    }
-
-    exp_tx_row_t tx_row;
-    exp_io_row_t ios[8];
-    int io_count = -1;
-    if (exp_extract_tx(buf, written, 1, 1, &tx_row, ios, 8, &io_count) == 0) {
-        FAIL("exp_extract_tx should reject signer_count == 0");
-        return;
-    }
-
-    PASS();
-}
-
-/* ── Fix round 1 regression: hostile owner_fingerprint rejected ────── */
-static void test_extract_rejects_malformed_output_fingerprint(void) {
-    TEST("exp_extract_tx rejects non-hex/unterminated owner_fingerprint");
-
-    dnac_transaction_t tx;
-    memset(&tx, 0, sizeof(tx));
-
-    tx.version = DNAC_PROTOCOL_VERSION;
-    tx.type = DNAC_TX_SPEND;
-    tx.timestamp = 135791113ULL;
-    fill(tx.tx_hash, DNAC_TX_HASH_SIZE, 0xFF);
-    tx.committed_fee = 12345ULL;
-
-    tx.input_count = 1;
-    fill(tx.inputs[0].nullifier, DNAC_NULLIFIER_SIZE, 0x04);
-    tx.inputs[0].amount = 900;
-
-    /* Hostile output: 129 raw bytes, all 'A' — valid length (129) but no
-     * NUL within the field and not lowercase hex. This is the exact shape
-     * dnac_tx_deserialize accepts as an unvalidated blob (see finding:
-     * exp_extract.c pre-fix memcpy'd this straight into row->address,
-     * which exp_db.c then binds with strlen-based sqlite3_bind_text —
-     * OOB read on a hostile TX). */
-    tx.output_count = 1;
-    tx.outputs[0].version = 1;
-    memset(tx.outputs[0].owner_fingerprint, 'A', 129);
-    tx.outputs[0].amount = 50;
-
-    tx.signer_count = 1;
-    fill(tx.signers[0].pubkey, DNAC_PUBKEY_SIZE, 0x11);
-    fill(tx.signers[0].signature, DNAC_SIGNATURE_SIZE, 0x00);
-
-    uint8_t buf[EXP_TEST_TX_BUF_SIZE];
-    size_t written = 0;
-    if (dnac_tx_serialize(&tx, buf, sizeof(buf), &written) != DNAC_SUCCESS) {
-        FAIL("dnac_tx_serialize failed");
-        return;
-    }
-
-    exp_tx_row_t tx_row;
-    exp_io_row_t ios[8];
-    int io_count = -1;
-    if (exp_extract_tx(buf, written, 1, 1, &tx_row, ios, 8, &io_count) == 0) {
-        FAIL("exp_extract_tx should reject malformed owner_fingerprint");
-        return;
-    }
-
-    PASS();
-}
-
-/* ── Fix round 2 regression: charset branch specifically ────────────── */
-static void test_extract_rejects_non_hex_charset_output_fingerprint(void) {
-    TEST("exp_extract_tx rejects output fingerprint failing charset check");
-
-    dnac_transaction_t tx;
-    memset(&tx, 0, sizeof(tx));
-
-    tx.version = DNAC_PROTOCOL_VERSION;
-    tx.type = DNAC_TX_SPEND;
-    tx.timestamp = 246813579ULL;
-    fill(tx.tx_hash, DNAC_TX_HASH_SIZE, 0x77);
-    tx.committed_fee = 6789ULL;
-
-    tx.input_count = 1;
-    fill(tx.inputs[0].nullifier, DNAC_NULLIFIER_SIZE, 0x05);
-    tx.inputs[0].amount = 400;
-
-    /* Output fingerprint: 128 x 'A' + NUL at [128] — passes the NUL@128
-     * and strlen==128 checks but fails the lowercase-hex charset loop
-     * ('A' is uppercase, not in [0-9a-f]). This exercises the charset
-     * rejection branch specifically, distinct from the round-1 test's
-     * unterminated/wrong-length 129-byte blob. */
-    tx.output_count = 1;
-    tx.outputs[0].version = 1;
-    set_test_fp(tx.outputs[0].owner_fingerprint, 'A');
-    tx.outputs[0].amount = 25;
-
-    tx.signer_count = 1;
-    fill(tx.signers[0].pubkey, DNAC_PUBKEY_SIZE, 0x22);
-    fill(tx.signers[0].signature, DNAC_SIGNATURE_SIZE, 0x00);
-
-    uint8_t buf[EXP_TEST_TX_BUF_SIZE];
-    size_t written = 0;
-    if (dnac_tx_serialize(&tx, buf, sizeof(buf), &written) != DNAC_SUCCESS) {
-        FAIL("dnac_tx_serialize failed");
-        return;
-    }
-
-    exp_tx_row_t tx_row;
-    exp_io_row_t ios[8];
-    int io_count = -1;
-    if (exp_extract_tx(buf, written, 1, 1, &tx_row, ios, 8, &io_count) == 0) {
-        FAIL("exp_extract_tx should reject non-hex-charset owner_fingerprint");
-        return;
-    }
-
-    PASS();
-}
-
-/* ── t12-t13: exp_chain_config_load (Task 4) ────────────────────────
- * Uses mkstemp — a fixed filename would race under CI parallelism
- * (forbidden: "tests that pass under low load but fail under CI
- * parallelism"). Network paths (exp_chain_open/rotate/supply/...) are
- * NOT unit-tested here per plan Task 4 — no network calls in tests;
- * they get the live smoke in Task 9. */
+/* ── exp_chain_config_load ──────────────────────────────────────────
+ * mkstemp — a fixed filename would race under CI parallelism. */
 
 static void test_chain_config_load(void) {
     TEST("exp_chain_config_load (2 servers + comment + blank line)");
@@ -881,8 +757,6 @@ static void test_chain_config_load_rejects_malformed(void) {
     PASS();
 }
 
-/* ── Fix round 1 regressions: exp_chain_config_load port 0 + dup pair ── */
-
 static void test_chain_config_load_rejects_port_zero(void) {
     TEST("exp_chain_config_load rejects port 0");
 
@@ -930,7 +804,7 @@ static void test_chain_config_load_rejects_duplicate(void) {
     PASS();
 }
 
-/* ── t14-t19: exp_reset_fsm_feed (Task 4, F4) — pure logic ──────────── */
+/* ── exp_reset_fsm_feed (F4) — pure logic ───────────────────────────── */
 
 static void test_reset_fsm_match_is_no(void) {
     TEST("reset FSM: matching chain_id -> NO");
@@ -1016,9 +890,7 @@ static void test_reset_fsm_mismatch_then_match_back_to_no(void) {
         FAIL("matching feed after a mismatch should return to NO");
         return;
     }
-    /* verify tracking state was actually cleared, not just the return
-     * code: a fresh single-server mismatch must restart at PENDING, not
-     * jump straight to CONFIRMED off stale servers_seen/polls_seen. */
+    /* tracking state cleared, not just the return code */
     if (exp_reset_fsm_feed(&fsm, cand, 2) != EXP_RESET_PENDING) {
         FAIL("post-reset mismatch should restart at PENDING");
         return;
@@ -1038,13 +910,10 @@ static void test_reset_fsm_candidate_switch_restarts(void) {
 
     exp_reset_fsm_feed(&fsm, ref, 0);
     if (exp_reset_fsm_feed(&fsm, cand_x, 0) != EXP_RESET_PENDING) { FAIL("cand_x poll1 should be PENDING"); return; }
-    /* a DIFFERENT mismatching candidate from a different server must
-     * restart tracking, not carry cand_x's poll count toward cand_y */
     if (exp_reset_fsm_feed(&fsm, cand_y, 1) != EXP_RESET_PENDING) {
         FAIL("candidate switch should restart at PENDING, not CONFIRMED");
         return;
     }
-    /* one more distinct-server poll of cand_y should now confirm */
     if (exp_reset_fsm_feed(&fsm, cand_y, 2) != EXP_RESET_CONFIRMED) {
         FAIL("cand_y poll2 (distinct server) should be CONFIRMED");
         return;
@@ -1052,8 +921,6 @@ static void test_reset_fsm_candidate_switch_restarts(void) {
 
     PASS();
 }
-
-/* ── Fix round 1 regression: negative server_index doesn't mutate FSM ── */
 
 static void test_reset_fsm_negative_index_does_not_mutate(void) {
     TEST("reset FSM: server_index -1 is a no-op (no sentinel collision)");
@@ -1068,11 +935,6 @@ static void test_reset_fsm_negative_index_does_not_mutate(void) {
         FAIL("first mismatch (server 5) should be PENDING");
         return;
     }
-
-    /* Feeding the same candidate with server_index == -1 must NOT mutate
-     * servers_seen/polls_seen (it would otherwise collide with the -1
-     * "empty slot" sentinel and corrupt the distinct-server count) — still
-     * PENDING with only 1 distinct real server recorded. */
     if (exp_reset_fsm_feed(&fsm, cand, -1) != EXP_RESET_PENDING) {
         FAIL("server_index -1 feed should report current status (PENDING), not mutate");
         return;
@@ -1081,9 +943,6 @@ static void test_reset_fsm_negative_index_does_not_mutate(void) {
         FAIL("repeated server_index -1 feeds should stay PENDING (still a no-op)");
         return;
     }
-
-    /* A second REAL distinct server now confirms, per the normal rule —
-     * proving the -1 feeds above contributed nothing toward confirmation. */
     if (exp_reset_fsm_feed(&fsm, cand, 6) != EXP_RESET_CONFIRMED) {
         FAIL("second distinct real server should CONFIRM (only 1 real + this one = 2 distinct)");
         return;
@@ -1092,12 +951,9 @@ static void test_reset_fsm_negative_index_does_not_mutate(void) {
     PASS();
 }
 
-/* ── t22: exp_sync_stale_name (Task 5) ──────────────────────────────── */
-
 static void test_sync_stale_name(void) {
     TEST("exp_sync_stale_name: path+hex8 join, truncation-safe, rejects NULL");
 
-    /* Basic: path join + hex8(chain_id[0..4)), lowercase. */
     uint8_t chain_id[32];
     memset(chain_id, 0, sizeof(chain_id));
     chain_id[0] = 0xDE; chain_id[1] = 0xAD; chain_id[2] = 0xBE; chain_id[3] = 0xEF;
@@ -1112,17 +968,14 @@ static void test_sync_stale_name(void) {
         return;
     }
 
-    /* Truncation-safe: too-small buffer fails rather than writing a
-     * truncated path. */
     uint8_t chain_id2[32];
     fill(chain_id2, 32, 0x11);
-    char small[8]; /* nowhere near enough for "/a.stale-11111111" */
+    char small[8];
     if (exp_sync_stale_name("/a", chain_id2, small, sizeof(small)) == 0) {
         FAIL("expected failure on truncation");
         return;
     }
 
-    /* Rejects NULL / zero-size params. */
     if (exp_sync_stale_name(NULL, chain_id2, out, sizeof(out)) == 0) { FAIL("NULL db_path should fail"); return; }
     if (exp_sync_stale_name("/a", NULL, out, sizeof(out)) == 0) { FAIL("NULL chain_id should fail"); return; }
     if (exp_sync_stale_name("/a", chain_id2, NULL, sizeof(out)) == 0) { FAIL("NULL out should fail"); return; }
@@ -1131,94 +984,7 @@ static void test_sync_stale_name(void) {
     PASS();
 }
 
-/* exp_sync_compute_block_hash: KAT against the pinned preimage layout
- * (dnac/include/dnac/block.h "Compute block_hash" doc, byte-matched by
- * nodus_witness_compute_block_hash_ex):
- *   SHA3-512( height(8 LE) || prev_hash(64) || state_root(64)
- *             || tx_root(64) || tx_count(4 LE) || proposer_id(32) )
- * The expected value is built here from that 236-byte layout directly, so
- * this test fails if dnac_block_compute_hash and the documented preimage
- * ever drift apart — it is not a call-the-same-function tautology. */
-static void test_sync_compute_block_hash(void) {
-    TEST("exp_sync_compute_block_hash: KAT + fail-closed guards");
-
-    nodus_dnac_block_result_t blk;
-    memset(&blk, 0, sizeof(blk));
-    fill(blk.prev_hash, 64, 0xA1);
-    fill(blk.state_root, 64, 0xB2);
-    fill(blk.tx_root, 64, 0xC3);
-    blk.tx_count = 3;
-    blk.timestamp = 1753776000; /* display-only — MUST NOT affect the hash */
-    fill(blk.proposer_id, 32, 0xD4);
-
-    uint8_t got[64];
-    if (exp_sync_compute_block_hash(42, &blk, got) != 0) {
-        FAIL("expected success for height 42 with non-zero state_root");
-        return;
-    }
-
-    /* Expected: manual 236-byte preimage per the pinned layout. */
-    uint8_t pre[236];
-    uint8_t *p = pre;
-    uint64_t height = 42;
-    for (int i = 0; i < 8; i++) *p++ = (uint8_t)((height >> (i * 8)) & 0xff);
-    memset(p, 0xA1, 64); p += 64;   /* prev_hash  */
-    memset(p, 0xB2, 64); p += 64;   /* state_root */
-    memset(p, 0xC3, 64); p += 64;   /* tx_root    */
-    uint32_t tx_count = 3;
-    for (int i = 0; i < 4; i++) *p++ = (uint8_t)((tx_count >> (i * 8)) & 0xff);
-    memset(p, 0xD4, 32); p += 32;   /* proposer   */
-
-    uint8_t want[64];
-    if (qgp_sha3_512(pre, sizeof(pre), want) != 0) { FAIL("sha3 failed"); return; }
-    if (memcmp(got, want, 64) != 0) {
-        FAIL("hash != SHA3-512 over the documented 236-byte preimage");
-        return;
-    }
-
-    /* Timestamp is NOT part of the preimage (PR 2, 2026-05-03) — changing
-     * it must not change the hash. */
-    blk.timestamp = 1;
-    uint8_t got2[64];
-    if (exp_sync_compute_block_hash(42, &blk, got2) != 0 ||
-        memcmp(got, got2, 64) != 0) {
-        FAIL("timestamp leaked into the hash preimage");
-        return;
-    }
-
-    /* Fail-closed: all-zero state_root (pre-upgrade witness) must refuse
-     * to compute rather than hash a wrong preimage. */
-    memset(blk.state_root, 0, 64);
-    if (exp_sync_compute_block_hash(42, &blk, got) == 0) {
-        FAIL("all-zero state_root should fail closed");
-        return;
-    }
-    fill(blk.state_root, 64, 0xB2);
-
-    /* Fail-closed: all-zero tx_root (pre-v0.18.22 witness omits the
-     * explicit "tx_root" response key, field decodes as zeros). A real
-     * tx_root is never all-zero — even an empty block's RFC 6962 root is
-     * SHA3-512(""). Hashing zeros live-produced a wrong tip hash. */
-    memset(blk.tx_root, 0, 64);
-    if (exp_sync_compute_block_hash(42, &blk, got) == 0) {
-        FAIL("all-zero tx_root should fail closed");
-        return;
-    }
-    fill(blk.tx_root, 64, 0xC3);
-
-    /* Fail-closed: heights 0 and 1 (genesis needs the chain_def blob the
-     * dnac_block response doesn't carry). */
-    if (exp_sync_compute_block_hash(1, &blk, got) == 0) { FAIL("height 1 (genesis) should fail closed"); return; }
-    if (exp_sync_compute_block_hash(0, &blk, got) == 0) { FAIL("height 0 should fail closed"); return; }
-
-    /* Rejects NULL params. */
-    if (exp_sync_compute_block_hash(42, NULL, got) == 0) { FAIL("NULL blk should fail"); return; }
-    if (exp_sync_compute_block_hash(42, &blk, NULL) == 0) { FAIL("NULL out should fail"); return; }
-
-    PASS();
-}
-
-/* ── t23+: exp_json (Task 6) ────────────────────────────────────────── */
+/* ── exp_json ──────────────────────────────────────────────────────── */
 
 static void test_json_str_escaping(void) {
     TEST("exp_json_str escapes quote/backslash/control chars");
@@ -1227,9 +993,6 @@ static void test_json_str_escaping(void) {
     exp_json_init(&j);
     exp_json_str(&j, "a\"b\\c\nd\te");
 
-    /* NUL is not exercised (exp_json_str is a NUL-terminated-C-string API —
-     * embedded NULs are out of scope); everything else in 0x00-0x1F either
-     * has a named escape (\n \t here) or falls into the \u00XX branch. */
     const char *expected = "\"a\\\"b\\\\c\\nd\\te\"";
     if (strcmp(j.buf, expected) != 0) {
         printf("(got: %s) ", j.buf ? j.buf : "(null)");
@@ -1237,10 +1000,8 @@ static void test_json_str_escaping(void) {
         exp_json_freebuf(&j);
         return;
     }
-
     exp_json_freebuf(&j);
 
-    /* A raw control char (0x01, no named escape) goes through \u00XX. */
     exp_json_t j2;
     exp_json_init(&j2);
     char raw_ctrl[2] = { 0x01, '\0' };
@@ -1253,7 +1014,6 @@ static void test_json_str_escaping(void) {
     }
     exp_json_freebuf(&j2);
 
-    /* NULL input -> empty string literal, not a crash. */
     exp_json_t j3;
     exp_json_init(&j3);
     exp_json_str(&j3, NULL);
@@ -1283,7 +1043,6 @@ static void test_json_hex_emit(void) {
     }
     exp_json_freebuf(&j);
 
-    /* n==0 / NULL -> empty string literal. */
     exp_json_t j2;
     exp_json_init(&j2);
     exp_json_hex(&j2, NULL, 0);
@@ -1297,79 +1056,11 @@ static void test_json_hex_emit(void) {
     PASS();
 }
 
-/* ── t25+: exp_http_route (Task 6) ──────────────────────────────────── */
+/* ── exp_http_route ────────────────────────────────────────────────── */
 
-static void bytes_to_hex128(const uint8_t b[64], char out[129]) {
-    static const char hexchars[] = "0123456789abcdef";
-    for (int i = 0; i < 64; i++) {
-        out[i * 2]     = hexchars[(b[i] >> 4) & 0xF];
-        out[i * 2 + 1] = hexchars[b[i] & 0xF];
-    }
-    out[128] = '\0';
-}
-
-/* Count non-overlapping occurrences of `needle` in `hay`. */
-static int count_substr(const char *hay, const char *needle) {
-    int n = 0;
-    const char *p = hay;
-    size_t nlen = strlen(needle);
-    while ((p = strstr(p, needle)) != NULL) {
-        n++;
-        p += nlen;
-    }
-    return n;
-}
-
-static void test_route_stats_200(void) {
-    TEST("exp_http_route: GET /api/stats -> 200");
-
-    exp_db_t *db = NULL;
-    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
-    exp_db_set_meta_u64(db, "last_indexed_seq", 42);
-
-    exp_http_ctx_t ctx = {0};
-    ctx.db = &db;
-    ctx.chain = NULL;
-    ctx.port = 0;
-    int stop = 0;
-    ctx.stop = &stop;
-
-    exp_json_t body;
-    int status = -1;
-    if (exp_http_route(&ctx, "GET", "/api/stats", &body, &status) != 0 || status != 200) {
-        FAIL("expected 200");
-        exp_json_freebuf(&body);
-        exp_db_close(db);
-        return;
-    }
-    if (!strstr(body.buf, "\"indexed_seq\":42")) {
-        printf("(got: %s) ", body.buf);
-        FAIL("body missing indexed_seq");
-        exp_json_freebuf(&body);
-        exp_db_close(db);
-        return;
-    }
-
-    exp_json_freebuf(&body);
-    exp_db_close(db);
-    PASS();
-}
-
-static void test_route_block_200(void) {
-    TEST("exp_http_route: GET /api/block/1 -> 200");
-
-    exp_db_t *db = NULL;
-    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
-
-    exp_block_row_t b = {0};
-    b.height = 1;
-    fill(b.tx_root, 64, 0x01);
-    b.timestamp = 1000;
-    fill(b.proposer, 32, 0xA1);
-    b.tx_count = 0;
-    b.has_block_hash = 0;
-    if (exp_db_insert_block(db, &b) != 0) { FAIL("insert_block failed"); exp_db_close(db); return; }
-
+/* Route `path` on `db`; 0 when the status matches `want` and every
+ * `needles` entry (NULL-terminated) occurs in the body. */
+static int route_expect(exp_db_t *db, const char *path, int want, const char *const *needles) {
     exp_http_ctx_t ctx = {0};
     ctx.db = &db;
     int stop = 0;
@@ -1377,382 +1068,338 @@ static void test_route_block_200(void) {
 
     exp_json_t body;
     int status = -1;
-    if (exp_http_route(&ctx, "GET", "/api/block/1", &body, &status) != 0 || status != 200) {
-        FAIL("expected 200");
-        exp_json_freebuf(&body);
-        exp_db_close(db);
-        return;
+    if (exp_http_route(&ctx, "GET", path, &body, &status) != 0) return -1;
+    int ok = (status == want);
+    for (int i = 0; ok && needles && needles[i]; i++) {
+        if (!strstr(body.buf, needles[i])) ok = 0;
     }
-    if (!strstr(body.buf, "\"height\":1")) {
-        printf("(got: %s) ", body.buf);
-        FAIL("body missing height");
-        exp_json_freebuf(&body);
-        exp_db_close(db);
-        return;
-    }
-
+    if (!ok) printf("(%s -> %d: %s) ", path, status, body.buf ? body.buf : "(null)");
     exp_json_freebuf(&body);
-    exp_db_close(db);
-    PASS();
+    return ok ? 0 : -1;
 }
 
-static void test_route_unknown_path_404(void) {
-    TEST("exp_http_route: GET unknown path -> 404");
+static void test_route_stats_and_blocks(void) {
+    TEST("route: /api/stats + /api/blocks (limit clamp, JSON shape)");
 
     exp_db_t *db = NULL;
     if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
-
-    exp_http_ctx_t ctx = {0};
-    ctx.db = &db;
-    int stop = 0;
-    ctx.stop = &stop;
-
-    exp_json_t body;
-    int status = -1;
-    exp_http_route(&ctx, "GET", "/api/nope", &body, &status);
-    if (status != 404) { FAIL("expected 404"); exp_json_freebuf(&body); exp_db_close(db); return; }
-
-    exp_json_freebuf(&body);
-    exp_db_close(db);
-    PASS();
-}
-
-static void test_route_post_405(void) {
-    TEST("exp_http_route: POST any path -> 405");
-
-    exp_db_t *db = NULL;
-    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
-
-    exp_http_ctx_t ctx = {0};
-    ctx.db = &db;
-    int stop = 0;
-    ctx.stop = &stop;
-
-    exp_json_t body;
-    int status = -1;
-    exp_http_route(&ctx, "POST", "/api/stats", &body, &status);
-    if (status != 405) { FAIL("expected 405"); exp_json_freebuf(&body); exp_db_close(db); return; }
-
-    exp_json_freebuf(&body);
-    exp_db_close(db);
-    PASS();
-}
-
-static void test_route_blocks_limit_clamp(void) {
-    TEST("exp_http_route: GET /api/blocks?limit=9999 clamps to 100");
-
-    exp_db_t *db = NULL;
-    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
-
     for (uint64_t h = 1; h <= 150; h++) {
-        exp_block_row_t b = {0};
-        b.height = h;
-        fill(b.tx_root, 64, (uint8_t)h);
-        b.timestamp = h * 1000;
-        fill(b.proposer, 32, 0xA0);
-        b.tx_count = 0;
-        b.has_block_hash = 0;
-        if (exp_db_insert_block(db, &b) != 0) { FAIL("seed insert_block failed"); exp_db_close(db); return; }
+        if (write_empty_height(db, h) != 0) { FAIL("seed failed"); exp_db_close(db); return; }
     }
+    exp_db_set_meta_u64(db, "tip_height", 151);
+
+    static const char *const stats_needles[] = { "\"indexed_height\":150", "\"tip_height\":151",
+                                                 "\"chain_id\":null", NULL };
+    if (route_expect(db, "/api/stats", 200, stats_needles) != 0) { FAIL("stats"); exp_db_close(db); return; }
 
     exp_http_ctx_t ctx = {0};
     ctx.db = &db;
     int stop = 0;
     ctx.stop = &stop;
-
     exp_json_t body;
     int status = -1;
-    if (exp_http_route(&ctx, "GET", "/api/blocks?limit=9999", &body, &status) != 0 || status != 200) {
-        FAIL("expected 200");
-        exp_json_freebuf(&body);
-        exp_db_close(db);
-        return;
-    }
-
-    int n = count_substr(body.buf, "\"height\":");
-    if (n != 100) {
-        printf("(got %d rows) ", n);
-        FAIL("limit=9999 should clamp to 100 rows");
-        exp_json_freebuf(&body);
-        exp_db_close(db);
-        return;
-    }
-
+    exp_http_route(&ctx, "GET", "/api/blocks?limit=9999", &body, &status);
+    int n = (status == 200) ? count_substr(body.buf, "\"height\":") : -1;
+    int shape = status == 200 && strstr(body.buf, "{\"height\":150,\"block_id\":\"") &&
+                strstr(body.buf, "\"applied_count\":0,\"n_items\":0}");
     exp_json_freebuf(&body);
+    if (n != 100 || !shape) { FAIL("blocks clamp/shape"); exp_db_close(db); return; }
+
     exp_db_close(db);
     PASS();
 }
 
-static void test_route_tx_and_address_200(void) {
-    TEST("exp_http_route: GET /api/tx/<hash> and /api/address/<fp> -> 200");
+static void test_route_block_tx_address(void) {
+    TEST("route: /api/block, /api/tx (id + position), /api/address");
 
     exp_db_t *db = NULL;
     if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
+    if (seed_fixture(db) != 0) { FAIL("seed failed"); exp_db_close(db); return; }
 
-    uint8_t token_a[64];
-    fill(token_a, 64, 0x00);
+    static const char *const block_needles[] = {
+        "\"n_items\":3", "\"prev_id\":", "\"position\":\"1:1\"", "\"refused\":true",
+        "\"code\":7", "\"op\":\"delegate\"", "\"next_from\":null", NULL };
+    if (route_expect(db, "/api/block/1", 200, block_needles) != 0) { FAIL("block"); exp_db_close(db); return; }
 
-    exp_tx_row_t tx = {0};
-    fill(tx.hash, 64, 0x55);
-    tx.seq = 1; tx.height = 1; tx.tx_type = 1; tx.fee = 10; tx.timestamp = 5000;
+    static const char *const page_needles[] = { "\"position\":\"1:0\"", "\"next_from\":1", NULL };
+    if (route_expect(db, "/api/block/1?limit=1", 200, page_needles) != 0) { FAIL("block page"); exp_db_close(db); return; }
 
-    char fp[129];
-    set_test_fp(fp, '7');
+    char fp_a[129], fp_b[129], wire_hex[129], path[512];
+    set_test_fp(fp_a, 'a');
+    set_test_fp(fp_b, 'b');
+    uint8_t wire[64];
+    fill(wire, 64, 0x33);
+    bytes_to_hex128(wire, wire_hex);
 
-    exp_io_row_t io = {0};
-    memcpy(io.tx_hash, tx.hash, 64);
-    io.io_index = 0; io.direction = 1;
-    strcpy(io.address, fp);
-    memcpy(io.token_id, token_a, 64);
-    io.amount = 500;
+    char want_in[300], want_out[300];
+    snprintf(want_in, sizeof(want_in), "\"address\":\"%s\",\"token_id\":", fp_a);
+    snprintf(want_out, sizeof(want_out), "\"address\":\"%s\"", fp_b);
+    const char *tx_needles[] = { "\"position\":\"1:2\"", "\"fee\":\"3000\"",
+                                 "\"record\":{\"kind\":\"delegate\"", want_in,
+                                 "\"address\":null,\"token_id\":null,\"amount\":null",
+                                 want_out, "\"amount\":\"400\"", NULL };
+    snprintf(path, sizeof(path), "/api/tx/%s", wire_hex);
+    if (route_expect(db, path, 200, tx_needles) != 0) { FAIL("tx by wire id"); exp_db_close(db); return; }
 
-    static const char raw_bytes[] = "raw-bytes-for-http-test";
-    tx.size = (uint32_t)strlen(raw_bytes);
-    if (exp_db_insert_tx(db, &tx, (const uint8_t *)raw_bytes, strlen(raw_bytes), &io, 1) != 0) {
-        FAIL("insert_tx failed");
-        exp_db_close(db);
-        return;
-    }
+    static const char *const refused_needles[] = { "\"refused\":true", "\"wire_id\":null",
+                                                   "\"inputs\":[],\"outputs\":[]", NULL };
+    if (route_expect(db, "/api/tx/1:1", 200, refused_needles) != 0) { FAIL("tx by position"); exp_db_close(db); return; }
+    if (route_expect(db, "/api/tx/1:9", 404, NULL) != 0) { FAIL("missing position"); exp_db_close(db); return; }
 
-    char tx_hex[129];
-    bytes_to_hex128(tx.hash, tx_hex);
+    static const char *const addr_needles[] = { "\"balances\":null", "\"balance_status\":\"unavailable\"",
+                                                "\"position\":\"1:2\"", "\"position\":\"1:0\"",
+                                                "\"next_before\":null", NULL };
+    snprintf(path, sizeof(path), "/api/address/%s", fp_a);
+    if (route_expect(db, path, 200, addr_needles) != 0) { FAIL("address"); exp_db_close(db); return; }
 
-    exp_http_ctx_t ctx = {0};
-    ctx.db = &db;
-    int stop = 0;
-    ctx.stop = &stop;
+    static const char *const addr_page[] = { "\"next_before\":\"1:2\"", NULL };
+    snprintf(path, sizeof(path), "/api/address/%s?limit=1", fp_a);
+    if (route_expect(db, path, 200, addr_page) != 0) { FAIL("address page cursor"); exp_db_close(db); return; }
+    snprintf(path, sizeof(path), "/api/address/%s?before=nope", fp_a);
+    if (route_expect(db, path, 400, NULL) != 0) { FAIL("address bad cursor"); exp_db_close(db); return; }
 
-    char path[256];
-    snprintf(path, sizeof(path), "/api/tx/%s", tx_hex);
-
-    exp_json_t body;
-    int status = -1;
-    if (exp_http_route(&ctx, "GET", path, &body, &status) != 0 || status != 200) {
-        FAIL("tx: expected 200");
-        exp_json_freebuf(&body);
-        exp_db_close(db);
-        return;
-    }
-    if (!strstr(body.buf, "\"raw\":\"7261772d")) { /* "raw-" prefix in hex */
-        printf("(got: %s) ", body.buf);
-        FAIL("tx body missing raw hex");
-        exp_json_freebuf(&body);
-        exp_db_close(db);
-        return;
-    }
-    exp_json_freebuf(&body);
-
-    snprintf(path, sizeof(path), "/api/address/%s", fp);
-    if (exp_http_route(&ctx, "GET", path, &body, &status) != 0 || status != 200) {
-        FAIL("address: expected 200");
-        exp_json_freebuf(&body);
-        exp_db_close(db);
-        return;
-    }
-    if (!strstr(body.buf, "\"balance\":\"500\"") || !strstr(body.buf, "\"token\":\"DNAC\"")) {
-        printf("(got: %s) ", body.buf);
-        FAIL("address body missing native balance");
-        exp_json_freebuf(&body);
-        exp_db_close(db);
-        return;
-    }
-
-    exp_json_freebuf(&body);
     exp_db_close(db);
     PASS();
 }
 
-static void test_route_address_utxos_unavailable(void) {
-    TEST("exp_http_route: GET /api/address/<fp>?utxos=1 with chain=NULL -> unavailable");
+static void test_route_search(void) {
+    TEST("route: /api/search reports every match (tx, block, address)");
 
     exp_db_t *db = NULL;
     if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
 
-    char fp[129];
-    set_test_fp(fp, '8');
-
-    exp_http_ctx_t ctx = {0};
-    ctx.db = &db;
-    ctx.chain = NULL; /* no live witness connection in this test */
-    int stop = 0;
-    ctx.stop = &stop;
-
-    char path[256];
-    snprintf(path, sizeof(path), "/api/address/%s?utxos=1", fp);
-
-    exp_json_t body;
-    int status = -1;
-    if (exp_http_route(&ctx, "GET", path, &body, &status) != 0 || status != 200) {
-        FAIL("expected 200");
-        exp_json_freebuf(&body);
-        exp_db_close(db);
-        return;
-    }
-    if (!strstr(body.buf, "\"source\":\"witness-live\"") || !strstr(body.buf, "\"error\":\"unavailable\"")) {
-        printf("(got: %s) ", body.buf);
-        FAIL("expected witness-live unavailable degrade");
-        exp_json_freebuf(&body);
-        exp_db_close(db);
-        return;
-    }
-
-    exp_json_freebuf(&body);
-    exp_db_close(db);
-    PASS();
-}
-
-static void test_route_malformed_hex_400(void) {
-    TEST("exp_http_route: GET /api/tx/<bad-hex> -> 400");
-
-    exp_db_t *db = NULL;
-    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
-
-    exp_http_ctx_t ctx = {0};
-    ctx.db = &db;
-    int stop = 0;
-    ctx.stop = &stop;
-
-    exp_json_t body;
-    int status = -1;
-    exp_http_route(&ctx, "GET", "/api/tx/not-a-valid-hash", &body, &status);
-    if (status != 400) { FAIL("expected 400"); exp_json_freebuf(&body); exp_db_close(db); return; }
-
-    exp_json_freebuf(&body);
-    exp_db_close(db);
-    PASS();
-}
-
-static void test_route_search_precedence(void) {
-    TEST("exp_http_route: GET /api/search?q= precedence tx -> block -> address");
-
-    exp_db_t *db = NULL;
-    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
-
+    /* One 128-hex string that is at once a wire id, the block id and an
+     * owner fingerprint. */
     uint8_t H[64];
     fill(H, 64, 0xAB);
     char h_hex[129];
     bytes_to_hex128(H, h_hex);
 
-    /* tx.hash == H, and its one output's address is ALSO the hex string of
-     * H — this deliberately makes tx hash / block hash / address all
-     * resolve to the SAME query string h_hex, so the test proves ordering,
-     * not just "some match exists". */
-    exp_tx_row_t tx = {0};
-    memcpy(tx.hash, H, 64);
-    tx.seq = 500; tx.height = 10; tx.tx_type = 1; tx.fee = 1; tx.timestamp = 123;
+    nodus_dnac_v3_block_result_t p;
+    page_header(&p, 1, 1, 1, 1);
+    memcpy(p.block_id, H, 64);
+    p.count = 1;
+    p.items = calloc(1, sizeof(nodus_dnac_v3_item_t));
+    p.items[0].index = 0;
+    p.items[0].kind = NODUS_DNAC_V3_KIND_ENVELOPE;
+    p.items[0].has_wire_id = true;
+    memcpy(p.items[0].wire_id, H, 64);
+    p.items[0].has_effects = true;
+    p.items[0].n_created = 1;
+    fill(p.items[0].created[0].id, 64, 0x01);
+    memcpy(p.items[0].created[0].owner, h_hex, 129);
+    p.items[0].created[0].amount = 1;
 
-    exp_io_row_t io = {0};
-    memcpy(io.tx_hash, H, 64);
-    io.io_index = 0; io.direction = 1;
-    strcpy(io.address, h_hex);
-    io.amount = 1;
+    exp_block_batch_t b;
+    exp_block_batch_init(&b);
+    int rc = exp_extract_page(&p, &b);
+    if (rc == 0) rc = exp_db_write_height(db, &b);
+    exp_block_batch_free(&b);
+    nodus_client_free_v3_block_result(&p);
+    if (rc != 0) { FAIL("seed failed"); exp_db_close(db); return; }
 
-    static const char raw_bytes[] = "search-test-raw";
-    tx.size = (uint32_t)strlen(raw_bytes);
-    if (exp_db_insert_tx(db, &tx, (const uint8_t *)raw_bytes, strlen(raw_bytes), &io, 1) != 0) {
-        FAIL("insert_tx failed");
-        exp_db_close(db);
-        return;
-    }
+    char path[256];
+    snprintf(path, sizeof(path), "/api/search?q=%s", h_hex);
+    static const char *const all3[] = { "\"type\":\"tx\"", "\"type\":\"block\"", "\"type\":\"address\"", NULL };
+    if (route_expect(db, path, 200, all3) != 0) { FAIL("hex search"); exp_db_close(db); return; }
 
-    exp_block_row_t blk = {0};
-    blk.height = 10;
-    fill(blk.tx_root, 64, 0x02);
-    blk.timestamp = 111;
-    fill(blk.proposer, 32, 0x03);
-    blk.tx_count = 1;
-    blk.has_block_hash = 0;
-    if (exp_db_insert_block(db, &blk) != 0) { FAIL("insert_block failed"); exp_db_close(db); return; }
-    if (exp_db_set_block_hash(db, 10, H) != 0) { FAIL("set_block_hash failed"); exp_db_close(db); return; }
+    static const char *const pos[] = { "{\"type\":\"tx\",\"target\":\"1:0\"}", NULL };
+    if (route_expect(db, "/api/search?q=1:0", 200, pos) != 0) { FAIL("position search"); exp_db_close(db); return; }
+    static const char *const height[] = { "{\"type\":\"block\",\"target\":\"1\"}", NULL };
+    if (route_expect(db, "/api/search?q=1", 200, height) != 0) { FAIL("height search"); exp_db_close(db); return; }
+    static const char *const none[] = { "{\"matches\":[]}", NULL };
+    if (route_expect(db, "/api/search?q=zzz", 200, none) != 0) { FAIL("no-match search"); exp_db_close(db); return; }
+
+    exp_db_close(db);
+    PASS();
+}
+
+static void test_route_errors(void) {
+    TEST("route: 404 unknown path, 405 POST, 400 malformed ids");
+
+    exp_db_t *db = NULL;
+    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
 
     exp_http_ctx_t ctx = {0};
     ctx.db = &db;
     int stop = 0;
     ctx.stop = &stop;
-
-    char path[256];
-    snprintf(path, sizeof(path), "/api/search?q=%s", h_hex);
-
     exp_json_t body;
     int status = -1;
-    if (exp_http_route(&ctx, "GET", path, &body, &status) != 0 || status != 200) {
-        FAIL("expected 200");
-        exp_json_freebuf(&body);
-        exp_db_close(db);
-        return;
-    }
-
-    const char *tx_pos = strstr(body.buf, "\"type\":\"tx\"");
-    const char *block_pos = strstr(body.buf, "\"type\":\"block\"");
-    const char *addr_pos = strstr(body.buf, "\"type\":\"address\"");
-    if (!tx_pos || !block_pos || !addr_pos) {
-        printf("(got: %s) ", body.buf);
-        FAIL("expected all 3 match types present");
-        exp_json_freebuf(&body);
-        exp_db_close(db);
-        return;
-    }
-    if (!(tx_pos < block_pos && block_pos < addr_pos)) {
-        printf("(got: %s) ", body.buf);
-        FAIL("expected precedence order tx < block < address");
-        exp_json_freebuf(&body);
-        exp_db_close(db);
-        return;
-    }
-
+    exp_http_route(&ctx, "POST", "/api/stats", &body, &status);
     exp_json_freebuf(&body);
+    if (status != 405) { FAIL("expected 405"); exp_db_close(db); return; }
+
+    if (route_expect(db, "/api/nope", 404, NULL) != 0 ||
+        route_expect(db, "/api/tx/not-a-valid-id", 400, NULL) != 0 ||
+        route_expect(db, "/api/tx/0:1", 400, NULL) != 0 ||
+        route_expect(db, "/api/block/xyz", 400, NULL) != 0 ||
+        route_expect(db, "/api/block/1?from=abc", 400, NULL) != 0 ||
+        route_expect(db, "/api/block/1", 404, NULL) != 0 ||
+        route_expect(db, "/api/address/short", 400, NULL) != 0) {
+        FAIL("error status mismatch");
+        exp_db_close(db);
+        return;
+    }
+
     exp_db_close(db);
     PASS();
 }
 
-/* Fix round 1, C1: ctx->db is exp_db_t** so exp_http_route can observe a
- * confirmed-reset swap; a NULL *ctx->db (handle_confirmed_reset's
- * reopen/set_meta failure paths can leave it that way) must degrade to a
- * clean 503 JSON error on every route, never a NULL deref. */
+/* ctx->db is exp_db_t** so exp_http_route observes a confirmed-reset swap;
+ * a NULL *ctx->db degrades to a clean 503 on every route. */
 static void test_route_null_db_503(void) {
-    TEST("exp_http_route: *ctx->db == NULL -> 503 index unavailable");
+    TEST("route: *ctx->db == NULL -> 503 index unavailable");
 
     exp_db_t *null_db = NULL;
-
-    exp_http_ctx_t ctx = {0};
-    ctx.db = &null_db;
-    ctx.chain = NULL;
-    int stop = 0;
-    ctx.stop = &stop;
-
-    exp_json_t body;
-    int status = -1;
-    if (exp_http_route(&ctx, "GET", "/api/stats", &body, &status) != 0 || status != 503) {
-        printf("(got status %d) ", status);
-        FAIL("expected 503");
-        exp_json_freebuf(&body);
-        return;
-    }
-    if (!strstr(body.buf, "\"error\":")) {
-        printf("(got: %s) ", body.buf);
-        FAIL("expected JSON error body");
-        exp_json_freebuf(&body);
-        return;
-    }
-
-    exp_json_freebuf(&body);
+    static const char *const err[] = { "\"error\":", NULL };
+    if (route_expect(null_db, "/api/stats", 503, err) != 0) { FAIL("expected 503"); return; }
     PASS();
 }
 
-int main(void) {
-    printf("=== DNA Explorer exp_db Tests ===\n");
+/* ── /api/address balance (dnac_balance through exp_balance_source_t) ── */
 
-    test_meta_roundtrip();
-    test_blocks_ordering();
-    test_tx_insert_and_balance();
-    test_duplicate_insert_noop();
-    test_address_pagination();
-    test_extract_basic_mapping();
-    test_extract_multi_signer();
-    test_signer_fingerprint_kat();
-    test_extract_signer_count_zero();
-    test_extract_rejects_malformed_output_fingerprint();
-    test_extract_rejects_non_hex_charset_output_fingerprint();
+typedef struct {
+    int               mode;          /* 0 ok (two tokens), 1 fail, 2 ok empty */
+    int               calls;
+    char              last_owner[129];
+    pthread_rwlock_t *lock;          /* when set: must NOT be held by us   */
+    int               lock_was_free; /* the writer side could be taken     */
+} fake_balance_t;
+
+static int fake_balance_get(void *vctx, const char *owner_hex,
+                            nodus_dnac_balance_result_t *out) {
+    fake_balance_t *f = (fake_balance_t *)vctx;
+    memset(out, 0, sizeof(*out));
+    f->calls++;
+    snprintf(f->last_owner, sizeof(f->last_owner), "%s", owner_hex);
+    if (f->lock) {
+        /* a writer can take the lock only if no reader holds it — i.e. the
+         * route called us OUTSIDE its rdlock span */
+        if (pthread_rwlock_trywrlock(f->lock) == 0) {
+            f->lock_was_free = 1;
+            pthread_rwlock_unlock(f->lock);
+        }
+    }
+    if (f->mode == 1) return -1;
+    out->tip = 42;
+    if (f->mode == 2) return 0;
+    out->count = 2;
+    out->tokens = calloc(2, sizeof(*out->tokens));
+    if (!out->tokens) { out->count = 0; return -1; }
+    /* native first, as the node orders them */
+    out->tokens[0].total = 700;
+    out->tokens[0].spendable = 300;
+    out->tokens[0].coins = 3;
+    fill(out->tokens[1].token_id, 64, 0x07);
+    out->tokens[1].total = 5;
+    out->tokens[1].spendable = 5;
+    out->tokens[1].coins = 1;
+    return 0;
+}
+
+/* Route `path` with `src` wired and `lock` as db_lock; 0 when the status
+ * matches and every needle occurs. */
+static int route_expect_bal(exp_db_t *db, const exp_balance_source_t *src,
+                            pthread_rwlock_t *lock, const char *path,
+                            int want, const char *const *needles) {
+    exp_http_ctx_t ctx = {0};
+    ctx.db = &db;
+    int stop = 0;
+    ctx.stop = &stop;
+    ctx.balance = src;
+    ctx.db_lock = lock;
+
+    exp_json_t body;
+    int status = -1;
+    if (exp_http_route(&ctx, "GET", path, &body, &status) != 0) return -1;
+    int ok = (status == want);
+    for (int i = 0; ok && needles && needles[i]; i++) {
+        if (!strstr(body.buf, needles[i])) ok = 0;
+    }
+    if (!ok) printf("(%s -> %d: %s) ", path, status, body.buf ? body.buf : "(null)");
+    exp_json_freebuf(&body);
+    return ok ? 0 : -1;
+}
+
+static void test_route_address_balance(void) {
+    TEST("route: /api/address balances from the source (ok / empty / unavailable)");
+
+    exp_db_t *db = NULL;
+    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
+    if (seed_fixture(db) != 0) { FAIL("seed failed"); exp_db_close(db); return; }
+
+    pthread_rwlock_t lock;
+    if (pthread_rwlock_init(&lock, NULL) != 0) { FAIL("lock init"); exp_db_close(db); return; }
+
+    fake_balance_t f;
+    memset(&f, 0, sizeof(f));
+    f.lock = &lock;
+    exp_balance_source_t src = { &f, fake_balance_get };
+
+    char fp_a[129], tok7[129], path[512], want_tok[200];
+    set_test_fp(fp_a, 'a');
+    uint8_t t7[64];
+    fill(t7, 64, 0x07);
+    bytes_to_hex128(t7, tok7);
+    snprintf(path, sizeof(path), "/api/address/%s", fp_a);
+    snprintf(want_tok, sizeof(want_tok),
+             "{\"token_id\":\"%s\",\"total\":\"5\",\"spendable\":\"5\",\"coins\":1}", tok7);
+
+    /* ok: the node's list, amounts as decimal strings, history intact */
+    const char *ok_needles[] = {
+        "\"balances\":[{\"token_id\":\"0000", "\"total\":\"700\",\"spendable\":\"300\",\"coins\":3}",
+        want_tok, "\"balance_status\":\"ok\"", "\"position\":\"1:2\"", "\"next_before\":null", NULL };
+    if (route_expect_bal(db, &src, &lock, path, 200, ok_needles) != 0) {
+        FAIL("ok"); goto out;
+    }
+    if (f.calls != 1 || strcmp(f.last_owner, fp_a) != 0) { FAIL("source asked for the address"); goto out; }
+    if (!f.lock_was_free) { FAIL("the balance was fetched under db_lock"); goto out; }
+
+    /* empty: a real zero — status ok, an empty list */
+    f.mode = 2;
+    static const char *const empty_needles[] = { "\"balances\":[],\"balance_status\":\"ok\"", NULL };
+    if (route_expect_bal(db, &src, &lock, path, 200, empty_needles) != 0) { FAIL("empty"); goto out; }
+
+    /* the source fails: unavailable, never a zero; history still served */
+    f.mode = 1;
+    static const char *const bad_needles[] = { "\"balances\":null,\"balance_status\":\"unavailable\"",
+                                               "\"position\":\"1:2\"", NULL };
+    if (route_expect_bal(db, &src, &lock, path, 200, bad_needles) != 0) { FAIL("unavailable"); goto out; }
+
+    /* a malformed address never reaches the source */
+    f.calls = 0;
+    if (route_expect_bal(db, &src, &lock, "/api/address/short", 400, NULL) != 0 || f.calls != 0) {
+        FAIL("bad address reached the source"); goto out;
+    }
+
+    /* the index gone (a reset's reopen failure): 503, not a half answer */
+    f.mode = 0;
+    static const char *const err[] = { "\"error\":\"index unavailable\"", NULL };
+    if (route_expect_bal(NULL, &src, &lock, path, 503, err) != 0) { FAIL("null db"); goto out; }
+
+    pthread_rwlock_destroy(&lock);
+    exp_db_close(db);
+    PASS();
+    return;
+out:
+    pthread_rwlock_destroy(&lock);
+    exp_db_close(db);
+}
+
+int main(void) {
+    printf("=== DNA Explorer Tests ===\n");
+
+    test_db_schema_version();
+    test_db_schema_rebuild_on_mismatch();
+    test_write_height_and_queries();
+    test_write_height_order_enforced();
+    test_verify_index_detects_gap();
+    test_extract_refuses_mismatched_page();
+    test_sync_collect_concatenates_pages();
+    test_sync_partial_height_keeps_watermark();
+    test_sync_tick_height_bound();
+    test_sync_fsm_keys_on_chain_id32();
     test_chain_config_load();
     test_chain_config_load_rejects_malformed();
     test_chain_config_load_rejects_port_zero();
@@ -1765,19 +1412,14 @@ int main(void) {
     test_reset_fsm_candidate_switch_restarts();
     test_reset_fsm_negative_index_does_not_mutate();
     test_sync_stale_name();
-    test_sync_compute_block_hash();
     test_json_str_escaping();
     test_json_hex_emit();
-    test_route_stats_200();
-    test_route_block_200();
-    test_route_unknown_path_404();
-    test_route_post_405();
-    test_route_blocks_limit_clamp();
-    test_route_tx_and_address_200();
-    test_route_address_utxos_unavailable();
-    test_route_malformed_hex_400();
-    test_route_search_precedence();
+    test_route_stats_and_blocks();
+    test_route_block_tx_address();
+    test_route_search();
+    test_route_errors();
     test_route_null_db_503();
+    test_route_address_balance();
 
     printf("\n=== Results: %d passed, %d failed ===\n", passed, failed);
     return failed > 0 ? 1 : 0;

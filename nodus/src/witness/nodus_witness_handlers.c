@@ -33,9 +33,21 @@
 #include "crypto/nodus_identity.h"
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_u128.h"
+#include "crypto/utils/qgp_log.h"
 #include "witness/nodus_witness_spend_preimage.h"
 #include "nodus/nodus_chain_config.h"       /* HF-1: dnac_fee_info gas_price */
 #include "dnac/dnac.h"                      /* DNAC_CFG_GAS_PRICE_RAW_PER_UNIT */
+/* scan-v3 — dnac_v3_block: the wire's bounds (nodus.h, shared with the
+ * client decoder), the version-3 tip and item classifier, the claim
+ * nullifier derivation, the read-only leg describer and the envelope /
+ * claim codecs. */
+#include "nodus/nodus.h"
+#include "witness/nodus_witness_v2_produce.h"
+#include "witness/nodus_witness_v2_apply.h"
+#include "witness/nodus_witness_rt_native.h"
+#include "dnac/env_wire.h"
+#include "dnac/manifest_wire.h"
+#include "dnac/ledger_ids.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -303,7 +315,10 @@ static void handle_dnac_ledger(nodus_witness_t *w,
  *                 client-server RPC field only — no consensus wire
  *                 carries it. nodus-cli's `chain-config propose` reads
  *                 it so the operator never has to paste a chain id by
- *                 hand.)}
+ *                 hand.),
+ *                 "tip":N (scan-v3, ADDITIVE, successor only: the
+ *                 committed version-3 height MAX(v2_blocks.global_height)
+ *                 — the explorer's sync bound)}
  * ════════════════════════════════════════════════════════════════════ */
 
 static void handle_dnac_supply(nodus_witness_t *w,
@@ -311,7 +326,19 @@ static void handle_dnac_supply(nodus_witness_t *w,
                                  uint32_t txn_id) {
     nodus_witness_supply_t supply;
     int rc = nodus_witness_supply_get(w, &supply);
-    size_t rcount = w->v2_successor ? 6 : 5;
+    /* scan-v3 (decision 2026-09-28-scan-v3-query.md (2)) — "tip", the
+     * committed version-3 height (MAX(v2_blocks.global_height)), rides
+     * the successor arm beside chain_id32: ADDITIVE, an older client
+     * skips the unknown key. Read on the fail-closed accessor — a fault
+     * answers an error, never a tip of 0 (a 0 would tell the explorer
+     * the chain has no blocks). */
+    uint64_t tip = 0;
+    if (w->v2_successor && nodus_witness_v2_tip_height(w, &tip) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "chain height unreadable");
+        return;
+    }
+    size_t rcount = w->v2_successor ? 7 : 5;
 
     uint8_t buf[512];
     cbor_encoder_t enc;
@@ -345,6 +372,8 @@ static void handle_dnac_supply(nodus_witness_t *w,
     if (w->v2_successor) {
         cbor_encode_cstr(&enc, "chain_id32");
         cbor_encode_bstr(&enc, w->v2_chain32, 32);
+        cbor_encode_cstr(&enc, "tip");
+        cbor_encode_uint(&enc, tip);
     }
 
     size_t rlen = cbor_encoder_len(&enc);
@@ -514,8 +543,8 @@ static void handle_dnac_utxo(nodus_witness_t *w,
 
     int count = 0;
     int utxo_rc = nodus_witness_utxo_by_owner(w, owner, utxos, max_results, &count);
-    fprintf(stderr, "WITNESS_UTXO: owner=%.16s... db=%p rc=%d count=%d\n",
-            owner, (void*)w->db, utxo_rc, count);
+    QGP_LOG_DEBUG(LOG_TAG, "dnac_utxo: owner=%.16s... db=%p rc=%d count=%d",
+                  owner, (void*)w->db, utxo_rc, count);
 
     /* Phase 2 / Task 38 defined a per-UTXO proof block. Its wire keys
      * STAY (short CBOR keys to match existing conventions "n", "tid",
@@ -626,6 +655,250 @@ static void handle_dnac_utxo(nodus_witness_t *w,
 
     free(buf);
     free(utxos);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ * dnac_balance — one owner's TRANSPARENT balance, per token (scan-v3)
+ *
+ * Decision docs/plans/decisions/2026-09-28-scan-v3-query.md item 3a
+ * (operator, 2026-09-28). The wire (request arg, response keys, bounds,
+ * error codes) is specified ONCE, in include/nodus/nodus.h beside
+ * nodus_client_dnac_balance.
+ *
+ * TRANSPARENT COINS ONLY. The answer is summed from `utxo_set`, CORE
+ * domain (DNA_DOMAIN_CORE) — coins whose owner and amount every block
+ * already publishes, which is why this query is PUBLIC (no session-owner
+ * gate) by decision 3a while dnac_utxo / dnac_history keep theirs (C11,
+ * d40b89d1): it answers totals only — no coin ids, no history. It must
+ * NEVER be extended to a shielded pool: a pool's notes live in v2_pools,
+ * are not in utxo_set, and a per-owner total of them is unknowable to
+ * the node — and must stay so.
+ *
+ * Sources:
+ *   tip        nodus_witness_v2_tip_height (MAX(v2_blocks.global_height))
+ *   per token  nodus_witness_utxo_balance_by_owner (nodus_witness_db.c):
+ *              total / coins over the owner's CORE rows; spendable = the
+ *              rows with unlock_block < tip + 1. That is the native exec's
+ *              lock gate judged for the NEXT block: rtn_xfer_exec refuses
+ *              an input with `unlock >= ctx->global_height`
+ *              (nodus_witness_rt_native.c, the "inputs: exist, unlocked"
+ *              loop), ctx->global_height = blk->global_height
+ *              (nodus_witness_v2_apply.c) = the FinalizeBlock request's
+ *              height (nodus_witness_cmt_app.c), and the next block's
+ *              height is tip + 1. A coin already consumed by an envelope
+ *              still waiting in the mempool counts until that block
+ *              commits — this is the committed state, nothing else.
+ *
+ * PURE READ: no write, no clock, no cache. FAIL-CLOSED: a tip or row
+ * fault, an overflow, or a malformed stored row answers an error — never
+ * a zero, never a partial list. BOUNDED: at most
+ * NODUS_DNAC_BALANCE_MAX_TOKENS tokens; an owner holding more answers
+ * NODUS_ERR_TOO_LARGE (never a truncated list that would read as
+ * complete).
+ * ════════════════════════════════════════════════════════════════════ */
+
+/* One token entry encodes in at most 1 (map) + 2+66 ("t") + 3×(2+9)
+ * ("a"/"s"/"c") = 102 B; the T2 envelope + "r" framing + "tip" < 128 B. */
+#define NODUS_BALANCE_ENTRY_MAX_BYTES  112u
+#define NODUS_BALANCE_HDR_MAX_BYTES    256u
+
+_Static_assert((size_t)NODUS_BALANCE_HDR_MAX_BYTES +
+                   (size_t)NODUS_DNAC_BALANCE_MAX_TOKENS *
+                       NODUS_BALANCE_ENTRY_MAX_BYTES <
+               (size_t)NODUS_MAX_FRAME_TCP,
+               "a dnac_balance answer must fit the tier-2 frame");
+
+static void balance_err(int *err_code, char *err_msg, size_t err_cap,
+                        int code, const char *msg)
+{
+    if (err_code) *err_code = code;
+    if (err_msg && err_cap) snprintf(err_msg, err_cap, "%s", msg);
+}
+
+int nodus_witness_dnac_balance_build(nodus_witness_t *w, uint32_t txn_id,
+                                     const char *owner,
+                                     uint8_t **out, size_t *out_len,
+                                     int *err_code, char *err_msg,
+                                     size_t err_cap)
+{
+    if (err_code) *err_code = 0;
+    if (err_msg && err_cap) err_msg[0] = '\0';
+    if (!w || !owner || !out || !out_len) {
+        balance_err(err_code, err_msg, err_cap, NODUS_ERR_INTERNAL_ERROR,
+                    "invalid arguments");
+        return -1;
+    }
+    *out = NULL;
+    *out_len = 0;
+
+    /* the owner: exactly 128 lowercase hex characters (the utxo_set owner
+     * format, dnac_utxo's "owner") — anything else is refused, never
+     * normalised */
+    size_t olen = strnlen(owner, NODUS_KEY_HEX_LEN);
+    bool   ok = (olen == 128);
+    for (size_t i = 0; ok && i < 128; i++) {
+        char ch = owner[i];
+        ok = (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+    }
+    if (!ok) {
+        balance_err(err_code, err_msg, err_cap, NODUS_ERR_PROTOCOL_ERROR,
+                    "owner must be 128 lowercase hex characters");
+        return -1;
+    }
+
+    if (!w->v2_successor || !w->db) {
+        balance_err(err_code, err_msg, err_cap, NODUS_ERR_NOT_FOUND,
+                    "this node serves no version-3 chain");
+        return -1;
+    }
+
+    uint64_t tip = 0;
+    if (nodus_witness_v2_tip_height(w, &tip) != 0) {
+        balance_err(err_code, err_msg, err_cap, NODUS_ERR_INTERNAL_ERROR,
+                    "chain height unreadable");
+        return -1;
+    }
+    /* stored unlock_block values are non-negative int64: tip + 1 is
+     * formed only where it cannot wrap */
+    if (tip >= (uint64_t)INT64_MAX) {
+        balance_err(err_code, err_msg, err_cap, NODUS_ERR_INTERNAL_ERROR,
+                    "chain height out of range");
+        return -1;
+    }
+
+    nodus_witness_balance_entry_t *ent =
+        calloc(NODUS_DNAC_BALANCE_MAX_TOKENS, sizeof(*ent));
+    if (!ent) {
+        balance_err(err_code, err_msg, err_cap, NODUS_ERR_INTERNAL_ERROR,
+                    "allocation failed");
+        return -1;
+    }
+    int count = 0;
+    int rc = nodus_witness_utxo_balance_by_owner(
+                 w, owner, tip + 1, ent, (int)NODUS_DNAC_BALANCE_MAX_TOKENS,
+                 &count);
+    if (rc == NODUS_WITNESS_BALANCE_TOO_MANY) {
+        free(ent);
+        balance_err(err_code, err_msg, err_cap, NODUS_ERR_TOO_LARGE,
+                    "owner holds more tokens than one answer carries");
+        return -1;
+    }
+    if (rc != 0 || count < 0 ||
+        count > (int)NODUS_DNAC_BALANCE_MAX_TOKENS) {
+        free(ent);
+        QGP_LOG_WARN(LOG_TAG, "dnac_balance owner=%.16s...: coin set "
+                     "unreadable (rc=%d)", owner, rc);
+        balance_err(err_code, err_msg, err_cap, NODUS_ERR_INTERNAL_ERROR,
+                    "coin set unreadable");
+        return -1;
+    }
+
+    size_t cap = NODUS_BALANCE_HDR_MAX_BYTES +
+                 (size_t)count * NODUS_BALANCE_ENTRY_MAX_BYTES;
+    uint8_t *buf = malloc(cap);
+    if (!buf) {
+        free(ent);
+        balance_err(err_code, err_msg, err_cap, NODUS_ERR_INTERNAL_ERROR,
+                    "allocation failed");
+        return -1;
+    }
+
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_dnac_response(&enc, txn_id, "dnac_balance", 2);
+    cbor_encode_cstr(&enc, "tip");
+    cbor_encode_uint(&enc, tip);
+    cbor_encode_cstr(&enc, "tk");
+    cbor_encode_array(&enc, (size_t)count);
+    for (int i = 0; i < count; i++) {
+        cbor_encode_map(&enc, 4);
+        cbor_encode_cstr(&enc, "t");
+        cbor_encode_bstr(&enc, ent[i].token_id, 64);
+        cbor_encode_cstr(&enc, "a");
+        cbor_encode_uint(&enc, ent[i].total);
+        cbor_encode_cstr(&enc, "s");
+        cbor_encode_uint(&enc, ent[i].spendable);
+        cbor_encode_cstr(&enc, "c");
+        cbor_encode_uint(&enc, ent[i].coins);
+    }
+    free(ent);
+
+    size_t rlen = cbor_encoder_len(&enc);
+    if (rlen == 0) {                     /* the size bound above is broken */
+        free(buf);
+        balance_err(err_code, err_msg, err_cap, NODUS_ERR_INTERNAL_ERROR,
+                    "response buffer overflow");
+        return -1;
+    }
+    *out = buf;
+    *out_len = rlen;
+    return 0;
+}
+
+/* Request:  "a": {"owner": tstr} — exactly one "owner" key; a duplicate,
+ *           a non-text value or a truncated args map is refused.
+ * Response: the frame nodus_witness_dnac_balance_build encodes; an error
+ *           reply when it refuses. NO session-owner gate (decision 3a —
+ *           see the block comment above). */
+static void handle_dnac_balance(nodus_witness_t *w,
+                                struct nodus_tcp_conn *conn,
+                                const uint8_t *payload, size_t len,
+                                uint32_t txn_id)
+{
+    cbor_decoder_t dec;
+    size_t args_count;
+    char   owner[NODUS_KEY_HEX_LEN];
+    bool   have_owner = false;
+
+    if (decode_args(payload, len, &dec, &args_count) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                   "missing args map");
+        return;
+    }
+    memset(owner, 0, sizeof(owner));
+    for (size_t k = 0; k < args_count; k++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        if (key.type == CBOR_ITEM_END || key.type == CBOR_ITEM_ERROR) {
+            send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                       "truncated args map");
+            return;
+        }
+        if (key_match(&key, "owner")) {
+            cbor_item_t val = cbor_decode_next(&dec);
+            /* 128 characters exactly; the content is checked by the
+             * builder */
+            if (have_owner || val.type != CBOR_ITEM_TSTR ||
+                val.tstr.len != 128) {
+                send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                           "owner must be one 128-character string");
+                return;
+            }
+            memcpy(owner, val.tstr.ptr, 128);
+            owner[128] = '\0';
+            have_owner = true;
+        } else {
+            cbor_decode_skip(&dec);
+        }
+    }
+    if (dec.error || !have_owner) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                   "missing or invalid owner");
+        return;
+    }
+
+    uint8_t *frame = NULL;
+    size_t   frame_len = 0;
+    int      ecode = 0;
+    char     emsg[128];
+    if (nodus_witness_dnac_balance_build(w, txn_id, owner, &frame,
+                                         &frame_len, &ecode, emsg,
+                                         sizeof(emsg)) != 0) {
+        send_error(conn, txn_id, ecode ? ecode : NODUS_ERR_INTERNAL_ERROR,
+                   emsg);
+        return;
+    }
+    nodus_tcp_send(conn, frame, frame_len);
+    free(frame);
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -2466,6 +2739,893 @@ static void handle_dnac_validator_list_query(nodus_witness_t *w,
 }
 
 /* ════════════════════════════════════════════════════════════════════
+ * dnac_v3_block — one committed version-3 block, paged (scan-v3)
+ *
+ * Decision docs/plans/decisions/2026-09-28-scan-v3-query.md; design
+ * docs/plans/2026-09-28-scan-v3-design.md item 1. The wire (request
+ * args, every response key, the budget and page bounds) is specified
+ * ONCE, in include/nodus/nodus.h beside the client call
+ * (nodus_client_dnac_v3_block); this comment names only where each
+ * answered value COMES FROM:
+ *
+ *   h / tip          the request / nodus_witness_v2_tip_height
+ *                    (MAX(v2_blocks.global_height))
+ *   bid / pb / gr    v2_blocks.block_id / prev_block_id / global_root
+ *                    (bid is cross-checked against the block store's
+ *                    BlockMeta.block_id.hash — the cometbft header hash)
+ *   ac               v2_blocks.tx_count (applied ENVELOPES — apply.c
+ *                    phase 13 counts the applied wire ids only)
+ *   tm / pa          BlockMeta.header.time / .proposer_address
+ *                    (nodus_cmt_bs_load_block_meta)
+ *   n                the block's Data.Txs count (nodus_cmt_bs_load_block)
+ *   item "k"         nodus_witness_v2_classify_entry (200 → 1, 201 → 2,
+ *                    an empty item → 0)
+ *   item "c"         the STORED FinalizeBlock response,
+ *                    tx_results[index].code
+ *                    (nodus_cmt_ss_load_finalize_block_response); absent
+ *                    → the request fails
+ *   item "w"/"in"    applied envelope: v2_tx_index.tx_id and
+ *                    v2_intent_index.intent_id at (h, global_index), with
+ *                    global_index = the count of APPLIED envelopes before
+ *                    it (apply.c cmt_item_index's `gidx`); a claim that
+ *                    decodes: SHA3-512 of its bytes — the claim_hash
+ *                    v2_claim_bytes stores (checked for an applied claim)
+ *   item "f"/"op"    dna_env_decode (pure) — fee_amount and the legs'
+ *                    (domain, runtime_op)
+ *   effects          applied items only: an envelope's legs through
+ *                    nodus_rt_native_describe_leg (the apply engine's own
+ *                    decoders, nodus_witness_rt_native.c); a claim's coin
+ *                    from its v2_claims_spent row (output_id, amount),
+ *                    the id re-derived by dna_claim_utxo_id and the owner
+ *                    = the claim's dest_binding (nodus_rt_core_claim_apply)
+ *
+ * PURE READ (G1): no write, no transaction, no clock, no cache — the
+ * answer is a function of the committed stores at `h`. FAIL-CLOSED: any
+ * store/decode fault, a stored row that contradicts another, or an
+ * applied item this build cannot describe answers an ERROR, never a
+ * partial or zeroed page (nodus/CLAUDE.md "A DB failure is never a
+ * value"). BOUNDED (G2): one block per request; the page's item bytes
+ * stay within the clamped budget (a page always carries at least one
+ * item, which alone is at most NODUS_V3_BLOCK_ITEM_MAX_BYTES), at most
+ * NODUS_DNAC_V3_BLOCK_PAGE_MAX_ITEMS items; the decode storage is sized
+ * from the block's own BlockMeta (block_size / num_txs), refused above
+ * this node's executor limits.
+ * ════════════════════════════════════════════════════════════════════ */
+
+/* The largest one encoded item can be: 15 consumed ids (15 × 67 B),
+ * 17 created coins (17 × ~300 B), the record map (~560 B) and the fixed
+ * keys (~250 B) come to ~6.9 KB; 16 KiB leaves headroom and an item that
+ * does not fit is a node-local invariant broken → INTERNAL. */
+#define NODUS_V3_BLOCK_ITEM_MAX_BYTES  16384u
+/* The header keys, the "r" framing and the T2 envelope (~420 B). */
+#define NODUS_V3_BLOCK_HDR_MAX_BYTES   1024u
+
+_Static_assert((size_t)NODUS_DNAC_V3_BLOCK_BUDGET_MAX +
+                   NODUS_V3_BLOCK_ITEM_MAX_BYTES +
+                   NODUS_V3_BLOCK_HDR_MAX_BYTES <
+               (size_t)NODUS_MAX_FRAME_TCP,
+               "a dnac_v3_block page must fit the tier-2 frame");
+_Static_assert(NODUS_RT_DESC_MAX_IN == NODUS_DNAC_V3_ITEM_MAX_IN &&
+               NODUS_RT_DESC_MAX_OUT == NODUS_DNAC_V3_ITEM_MAX_OUT,
+               "the wire's per-item bounds are the describer's");
+_Static_assert((int)NODUS_RT_DESC_REC_STAKE ==
+                   NODUS_DNAC_V3_REC_STAKE &&
+               (int)NODUS_RT_DESC_REC_DELEGATE ==
+                   NODUS_DNAC_V3_REC_DELEGATE &&
+               (int)NODUS_RT_DESC_REC_UNSTAKE ==
+                   NODUS_DNAC_V3_REC_UNSTAKE &&
+               (int)NODUS_RT_DESC_REC_UNDELEGATE ==
+                   NODUS_DNAC_V3_REC_UNDELEGATE &&
+               (int)NODUS_RT_DESC_REC_VALIDATOR_UPDATE ==
+                   NODUS_DNAC_V3_REC_VALIDATOR_UPDATE &&
+               (int)NODUS_RT_DESC_REC_CHAIN_CONFIG ==
+                   NODUS_DNAC_V3_REC_CHAIN_CONFIG,
+               "the wire's record kinds are the describer's");
+
+/** Everything one request allocates; released by v3b_free. */
+typedef struct {
+    nodus_witness_t               *w;
+    nodus_cmt_store_t             *store;
+    uint64_t                       height;
+    /* the block */
+    nodus_cmt_block_meta_t        *meta;
+    uint8_t                       *dec_buf;
+    cmt_pb_arena_t                 dec_arena;
+    nodus_cmt_block_decode_t       dec;
+    cmt_block_t                   *blk;
+    /* the stored FinalizeBlock response */
+    cmt_pb_response_finalize_block_t *resp;
+    cmt_pb_rfb_storage_t           rst;
+    cmt_pb_arena_t                 rst_arena;
+    /* per-item scratch */
+    dna_env_view_t                *view;
+    dna_claim_t                   *claim;
+    nodus_rt_leg_desc_t           *desc_core;
+    nodus_rt_leg_desc_t           *desc_sys;
+    /* prepared reads, finalized by v3b_free */
+    sqlite3_stmt                  *st_ids;
+    sqlite3_stmt                  *st_claim;
+    sqlite3_stmt                  *st_cbytes;
+    /* the outcome of a refusal */
+    int                            err_code;
+    char                           err_msg[128];
+} v3b_ctx_t;
+
+static void v3b_free(v3b_ctx_t *c)
+{
+    if (c->st_ids)    sqlite3_finalize(c->st_ids);
+    if (c->st_claim)  sqlite3_finalize(c->st_claim);
+    if (c->st_cbytes) sqlite3_finalize(c->st_cbytes);
+    free(c->meta);
+    free(c->dec_buf);
+    free(c->dec_arena.buf);
+    free(c->dec.txs);
+    free(c->dec.pb_evidence);
+    free(c->dec.evidence);
+    free(c->dec.pb_sigs);
+    free(c->dec.sigs);
+    free(c->blk);
+    free(c->resp);
+    free(c->rst.events);
+    free(c->rst.attributes);
+    free(c->rst.tx_results);
+    free(c->rst.validator_updates);
+    free(c->rst_arena.buf);
+    free(c->view);
+    free(c->claim);
+    free(c->desc_core);
+    free(c->desc_sys);
+    memset(c, 0, sizeof(*c));
+}
+
+/* Record the refusal (first one wins) and return -1. A node-side fault
+ * is logged at WARN; a refusal the CLIENT caused (bad height, bad index,
+ * not held) only at DEBUG, so a client cannot make the node log at will. */
+static int v3b_fail(v3b_ctx_t *c, int code, const char *msg)
+{
+    if (c->err_code == 0) {
+        c->err_code = code;
+        snprintf(c->err_msg, sizeof(c->err_msg), "%s", msg);
+        if (code == NODUS_ERR_INTERNAL_ERROR)
+            QGP_LOG_WARN(LOG_TAG, "dnac_v3_block h=%llu: %s",
+                         (unsigned long long)c->height, msg);
+        else
+            QGP_LOG_DEBUG(LOG_TAG, "dnac_v3_block h=%llu: %s",
+                          (unsigned long long)c->height, msg);
+    }
+    return -1;
+}
+
+static void v3b_hex64(const uint8_t raw[64], char out[129])
+{
+    static const char hexd[] = "0123456789abcdef";
+    for (int i = 0; i < 64; i++) {
+        out[2 * i]     = hexd[raw[i] >> 4];
+        out[2 * i + 1] = hexd[raw[i] & 0x0F];
+    }
+    out[128] = '\0';
+}
+
+/* The op name an envelope's legs name — a mapping of the (domain,
+ * runtime_op) constants of nodus_witness_runtime.h, no call byte read.
+ * A SYSTEM leg names the envelope (its CORE sibling is the funding leg);
+ * otherwise the CORE leg does. NULL = no name this build knows. */
+static const char *v3b_op_name(const dna_env_view_t *v)
+{
+    const char *core = NULL;
+    for (uint16_t l = 0; l < v->leg_count; l++) {
+        uint32_t d = v->leg[l].domain_id, op = v->leg[l].runtime_op;
+        if (d == DNA_DOMAIN_SYSTEM) {
+            switch (op) {
+            case DNA_SYSRULE_STAKE:            return "stake";
+            case DNA_SYSRULE_DELEGATE:         return "delegate";
+            case DNA_SYSRULE_UNSTAKE:          return "unstake";
+            case DNA_SYSRULE_UNDELEGATE:       return "undelegate";
+            case DNA_SYSRULE_VALIDATOR_UPDATE: return "validator_update";
+            case DNA_SYSRULE_CHAIN_CONFIG:     return "chain_config";
+            default:                           return NULL;
+            }
+        }
+        if (d == DNA_DOMAIN_CORE) {
+            switch (op) {
+            case DNA_CORERULE_SPEND:        core = "spend";        break;
+            case DNA_CORERULE_BURN:         core = "burn";         break;
+            case DNA_CORERULE_TOKEN_CREATE: core = "token_create"; break;
+            case DNA_CORERULE_SYSFUND:      core = "sysfund";      break;
+            default:                        core = NULL;           break;
+            }
+        }
+    }
+    return core;
+}
+
+/* The block, its meta and the stored response, sized from the block's
+ * OWN meta and refused above this node's executor limits. */
+static int v3b_load(v3b_ctx_t *c, const nodus_cmt_host_limits_t *limits,
+                    const uint8_t v2_block_id[64])
+{
+    bool   found = false;
+    size_t bsize, ntx;
+    int    rc;
+
+    if (c->height < (uint64_t)nodus_cmt_bs_base(c->store) ||
+        c->height > (uint64_t)nodus_cmt_bs_height(c->store))
+        return v3b_fail(c, NODUS_ERR_NOT_FOUND,
+                        "block not held by this node's block store");
+
+    c->meta = calloc(1, sizeof(*c->meta));
+    if (!c->meta)
+        return v3b_fail(c, NODUS_ERR_INTERNAL_ERROR, "allocation failed");
+    if (nodus_cmt_bs_load_block_meta(c->store, (int64_t)c->height, c->meta,
+                                     &found) != CMT_OK || !found)
+        return v3b_fail(c, NODUS_ERR_INTERNAL_ERROR,
+                        "block meta unreadable at a committed height");
+    if (c->meta->block_size <= 0 || c->meta->num_txs < 0 ||
+        (uint64_t)c->meta->block_size > (uint64_t)limits->tx_arena_cap ||
+        (uint64_t)c->meta->num_txs > (uint64_t)limits->max_txs)
+        return v3b_fail(c, NODUS_ERR_INTERNAL_ERROR,
+                        "block meta outside this node's executor limits");
+    if (c->meta->block_id.hash_len != 64 ||
+        memcmp(c->meta->block_id.hash, v2_block_id, 64) != 0)
+        return v3b_fail(c, NODUS_ERR_INTERNAL_ERROR,
+                        "block store and ledger disagree on the block id");
+    bsize = (size_t)c->meta->block_size;
+    ntx   = (size_t)c->meta->num_txs;
+
+    /* the LoadBlock storage — the handshaker's shape
+     * (nodus_cmt_handshaker_init), sized to THIS block */
+    c->dec_buf           = malloc(bsize);
+    c->dec_arena.buf     = malloc(bsize);
+    c->dec_arena.cap     = bsize;
+    c->dec.arena         = &c->dec_arena;
+    c->dec.txs           = calloc(ntx ? ntx : 1, sizeof(cmt_pb_bytes_t));
+    c->dec.txs_cap       = ntx;
+    c->dec.pb_evidence   = calloc(limits->max_evidence ? limits->max_evidence
+                                                       : 1,
+                                  sizeof(cmt_pb_evidence_t));
+    c->dec.pb_evidence_cap = limits->max_evidence;
+    c->dec.evidence      = calloc(limits->max_evidence ? limits->max_evidence
+                                                       : 1,
+                                  sizeof(cmt_pb_evidence_t));
+    c->dec.evidence_cap  = limits->max_evidence;
+    c->dec.pb_sigs       = calloc(CMT_VALSET_MAX, sizeof(cmt_commit_sig_t));
+    c->dec.pb_sigs_cap   = CMT_VALSET_MAX;
+    c->dec.sigs          = calloc(CMT_VALSET_MAX, sizeof(cmt_commit_sig_t));
+    c->dec.sigs_cap      = CMT_VALSET_MAX;
+    c->blk               = calloc(1, sizeof(*c->blk));
+    if (!c->dec_buf || !c->dec_arena.buf || !c->dec.txs ||
+        !c->dec.pb_evidence || !c->dec.evidence || !c->dec.pb_sigs ||
+        !c->dec.sigs || !c->blk)
+        return v3b_fail(c, NODUS_ERR_INTERNAL_ERROR, "allocation failed");
+    found = false;
+    if (nodus_cmt_bs_load_block(c->store, (int64_t)c->height, c->dec_buf,
+                                bsize, &c->dec, c->blk, &found) != CMT_OK ||
+        !found)
+        return v3b_fail(c, NODUS_ERR_INTERNAL_ERROR,
+                        "block unreadable at a committed height");
+    if (c->blk->data.txs_len != ntx)
+        return v3b_fail(c, NODUS_ERR_INTERNAL_ERROR,
+                        "block and its meta disagree on the item count");
+
+    /* the stored response — nodus_cmt_mock_app_open's pool shape, sized
+     * to this block's item count */
+    {
+        size_t n_events = ntx + 8u;
+        size_t n_attrs  = 4u * n_events;
+        size_t acap     = (64u * 1024u) + (256u * ntx);
+
+        c->resp = calloc(1, sizeof(*c->resp));
+        c->rst.events = calloc(n_events, sizeof(cmt_pb_event_t));
+        c->rst.events_cap = n_events;
+        c->rst.attributes = calloc(n_attrs, sizeof(cmt_pb_event_attribute_t));
+        c->rst.attributes_cap = n_attrs;
+        c->rst.tx_results = calloc(ntx ? ntx : 1,
+                                   sizeof(cmt_pb_stored_exec_tx_result_t));
+        c->rst.tx_results_cap = ntx;
+        c->rst.validator_updates = calloc(CMT_VALSET_MAX,
+                                          sizeof(cmt_pb_validator_update_t));
+        c->rst.validator_updates_cap = CMT_VALSET_MAX;
+        c->rst_arena.buf = malloc(acap);
+        c->rst_arena.cap = acap;
+        c->rst.arena = &c->rst_arena;
+        if (!c->resp || !c->rst.events || !c->rst.attributes ||
+            !c->rst.tx_results || !c->rst.validator_updates ||
+            !c->rst_arena.buf)
+            return v3b_fail(c, NODUS_ERR_INTERNAL_ERROR,
+                            "allocation failed");
+    }
+    rc = nodus_cmt_ss_load_finalize_block_response(c->store,
+                                                   (int64_t)c->height,
+                                                   &c->rst, c->resp);
+    if (rc != CMT_OK)
+        return v3b_fail(c, NODUS_ERR_INTERNAL_ERROR,
+                        "no stored FinalizeBlock response at a committed "
+                        "height");
+    if (c->resp->tx_results_len != ntx)
+        return v3b_fail(c, NODUS_ERR_INTERNAL_ERROR,
+                        "stored response and block disagree on the item "
+                        "count");
+    return 0;
+}
+
+/* The applied envelope's two stored identities at (h, gidx). */
+static int v3b_env_ids(v3b_ctx_t *c, uint32_t gidx, uint8_t wire[64],
+                       uint8_t intent[64])
+{
+    int rc;
+
+    sqlite3_reset(c->st_ids);
+    sqlite3_bind_int64(c->st_ids, 1, (sqlite3_int64)c->height);
+    sqlite3_bind_int64(c->st_ids, 2, (sqlite3_int64)gidx);
+    rc = sqlite3_step(c->st_ids);
+    if (rc != SQLITE_ROW ||
+        sqlite3_column_bytes(c->st_ids, 0) != 64 ||
+        sqlite3_column_bytes(c->st_ids, 1) != 64 ||
+        sqlite3_column_bytes(c->st_ids, 2) != 64 ||
+        memcmp(sqlite3_column_blob(c->st_ids, 0),
+               sqlite3_column_blob(c->st_ids, 1), 64) != 0) {
+        sqlite3_reset(c->st_ids);
+        return v3b_fail(c, NODUS_ERR_INTERNAL_ERROR,
+                        "applied envelope has no consistent index rows");
+    }
+    memcpy(wire, sqlite3_column_blob(c->st_ids, 0), 64);
+    memcpy(intent, sqlite3_column_blob(c->st_ids, 2), 64);
+    rc = sqlite3_step(c->st_ids);
+    sqlite3_reset(c->st_ids);
+    if (rc != SQLITE_DONE)
+        return v3b_fail(c, NODUS_ERR_INTERNAL_ERROR,
+                        "applied envelope index rows are ambiguous");
+    return 0;
+}
+
+static void v3b_enc_coin(cbor_encoder_t *e, const uint8_t id[64],
+                         const uint8_t owner_hex[128], uint64_t amount,
+                         const uint8_t token[64], uint64_t unlock)
+{
+    cbor_encode_map(e, 5);
+    cbor_encode_cstr(e, "id"); cbor_encode_bstr(e, id, 64);
+    cbor_encode_cstr(e, "o");  cbor_encode_tstr(e, (const char *)owner_hex,
+                                                128);
+    cbor_encode_cstr(e, "a");  cbor_encode_uint(e, amount);
+    cbor_encode_cstr(e, "t");  cbor_encode_bstr(e, token, 64);
+    cbor_encode_cstr(e, "u");  cbor_encode_uint(e, unlock);
+}
+
+static void v3b_enc_record(cbor_encoder_t *e, const nodus_rt_leg_desc_t *d)
+{
+    char   fp[129];
+    size_t n = 1;
+
+    switch (d->rec) {
+    case NODUS_RT_DESC_REC_STAKE:            n += 4; break; /* v ds a cm  */
+    case NODUS_RT_DESC_REC_DELEGATE:
+    case NODUS_RT_DESC_REC_UNDELEGATE:       n += 3; break; /* v d a      */
+    case NODUS_RT_DESC_REC_UNSTAKE:          n += 1; break; /* v          */
+    case NODUS_RT_DESC_REC_VALIDATOR_UPDATE: n += 2; break; /* v cm       */
+    case NODUS_RT_DESC_REC_CHAIN_CONFIG:     n += 3; break; /* p nv ef    */
+    default:                                 break;
+    }
+    cbor_encode_map(e, n);
+    cbor_encode_cstr(e, "k");
+    cbor_encode_uint(e, (uint64_t)d->rec);
+    if (d->rec == NODUS_RT_DESC_REC_CHAIN_CONFIG) {
+        cbor_encode_cstr(e, "p");  cbor_encode_uint(e, d->cc_param_id);
+        cbor_encode_cstr(e, "nv"); cbor_encode_uint(e, d->cc_new_value);
+        cbor_encode_cstr(e, "ef"); cbor_encode_uint(e, d->cc_effective);
+        return;
+    }
+    v3b_hex64(d->rec_validator_fp, fp);
+    cbor_encode_cstr(e, "v"); cbor_encode_tstr(e, fp, 128);
+    if (d->rec == NODUS_RT_DESC_REC_DELEGATE ||
+        d->rec == NODUS_RT_DESC_REC_UNDELEGATE) {
+        v3b_hex64(d->rec_delegator_fp, fp);
+        cbor_encode_cstr(e, "d"); cbor_encode_tstr(e, fp, 128);
+    }
+    if (d->rec == NODUS_RT_DESC_REC_STAKE) {
+        v3b_hex64(d->rec_dest_fp, fp);
+        cbor_encode_cstr(e, "ds"); cbor_encode_tstr(e, fp, 128);
+    }
+    if (d->rec == NODUS_RT_DESC_REC_STAKE ||
+        d->rec == NODUS_RT_DESC_REC_DELEGATE ||
+        d->rec == NODUS_RT_DESC_REC_UNDELEGATE) {
+        cbor_encode_cstr(e, "a"); cbor_encode_uint(e, d->rec_amount);
+    }
+    if (d->rec == NODUS_RT_DESC_REC_STAKE ||
+        d->rec == NODUS_RT_DESC_REC_VALIDATOR_UPDATE) {
+        cbor_encode_cstr(e, "cm"); cbor_encode_uint(e, d->rec_commission_bps);
+    }
+}
+
+/**
+ * Encode item `i` into `e`. `*gidx` is the global index the NEXT applied
+ * envelope holds; it advances when this item is one.
+ * @return 0 / -1 (the refusal recorded in `c`).
+ */
+static int v3b_item(v3b_ctx_t *c, uint32_t i, uint32_t *gidx,
+                    cbor_encoder_t *e)
+{
+    const cmt_pb_bytes_t *t = &c->blk->data.txs[i];
+    uint32_t code = c->resp->tx_results[i].det.code;
+    bool     applied = (code == 0);
+    uint8_t  kind = 0;
+    bool     has_w = false, has_in = false, has_f = false;
+    uint8_t  wire[64], intent[64];
+    uint64_t fee = 0;
+    const char *op = NULL;
+    /* effects (applied items only) */
+    bool     eff = false;
+    const nodus_rt_leg_desc_t *core = NULL, *sys = NULL;
+    uint8_t  cl_id[64], cl_owner[128];
+    uint64_t cl_amount = 0;
+    bool     cl_coin = false;
+    static const uint8_t native_token[64] = {0};
+    size_t   n_keys;
+
+    if (t->len > 0 && t->data) {
+        kind = nodus_witness_v2_classify_entry(t->data, (uint32_t)t->len)
+                   == NODUS_W_TX_V2_ENVELOPE
+                   ? NODUS_DNAC_V3_KIND_ENVELOPE : NODUS_DNAC_V3_KIND_CLAIM;
+    }
+    if (applied && kind == NODUS_DNAC_V3_KIND_EMPTY)
+        return v3b_fail(c, NODUS_ERR_INTERNAL_ERROR,
+                        "an empty item carries the applied code");
+
+    if (kind == NODUS_DNAC_V3_KIND_ENVELOPE) {
+        memset(c->view, 0, sizeof(*c->view));
+        if (dna_env_decode(t->data, t->len, c->view) == 0) {
+            has_f = true;
+            fee = c->view->fee_amount;
+            op = v3b_op_name(c->view);
+        } else if (applied) {
+            return v3b_fail(c, NODUS_ERR_INTERNAL_ERROR,
+                            "an applied envelope does not decode");
+        }
+        if (applied) {
+            if (v3b_env_ids(c, *gidx, wire, intent) != 0) return -1;
+            has_w = has_in = true;
+            (*gidx)++;
+            for (uint16_t l = 0; l < c->view->leg_count; l++) {
+                nodus_rt_leg_desc_t *d =
+                    c->view->leg[l].domain_id == DNA_DOMAIN_CORE
+                        ? c->desc_core : c->desc_sys;
+                if ((d == c->desc_core && core) || (d == c->desc_sys && sys))
+                    return v3b_fail(c, NODUS_ERR_INTERNAL_ERROR,
+                                    "an applied envelope repeats a domain");
+                int drc = nodus_rt_native_describe_leg(c->view, l, c->height,
+                                                       intent, d);
+                if (drc != 0)
+                    return v3b_fail(c, NODUS_ERR_INTERNAL_ERROR,
+                                    drc == -2
+                                        ? "hash backend failed describing "
+                                          "an applied envelope"
+                                        : "this build cannot describe an "
+                                          "applied envelope");
+                if (d == c->desc_core) core = d; else sys = d;
+            }
+            eff = true;
+        }
+    } else if (kind == NODUS_DNAC_V3_KIND_CLAIM) {
+        memset(c->claim, 0, sizeof(*c->claim));
+        if (dna_claim_decode(t->data, t->len, c->claim) == 0) {
+            if (qgp_sha3_512(t->data, t->len, wire) != 0)
+                return v3b_fail(c, NODUS_ERR_INTERNAL_ERROR,
+                                "hash backend failed");
+            has_w = true;
+            op = "claim";
+        } else if (applied) {
+            return v3b_fail(c, NODUS_ERR_INTERNAL_ERROR,
+                            "an applied claim does not decode");
+        }
+        if (applied) {
+            uint8_t nul[64], want[64];
+            int     rc;
+
+            if (nodus_witness_v2_claim_nullifier(c->w, t->data, t->len,
+                                                 nul) != 0)
+                return v3b_fail(c, NODUS_ERR_INTERNAL_ERROR,
+                                "an applied claim's nullifier is "
+                                "underivable");
+            sqlite3_reset(c->st_claim);
+            sqlite3_bind_blob(c->st_claim, 1, nul, 64, SQLITE_TRANSIENT);
+            rc = sqlite3_step(c->st_claim);
+            if (rc != SQLITE_ROW ||
+                sqlite3_column_bytes(c->st_claim, 0) != 64 ||
+                sqlite3_column_int64(c->st_claim, 1) <= 0 ||
+                (uint64_t)sqlite3_column_int64(c->st_claim, 2) !=
+                    c->height) {
+                sqlite3_reset(c->st_claim);
+                return v3b_fail(c, NODUS_ERR_INTERNAL_ERROR,
+                                "an applied claim has no spent-claim row "
+                                "at this height");
+            }
+            memcpy(cl_id, sqlite3_column_blob(c->st_claim, 0), 64);
+            cl_amount = (uint64_t)sqlite3_column_int64(c->st_claim, 1);
+            sqlite3_reset(c->st_claim);
+            /* the native CORE hook's own identity (claim_apply) */
+            if (dna_claim_utxo_id(nul, want) != 0 ||
+                memcmp(want, cl_id, 64) != 0)
+                return v3b_fail(c, NODUS_ERR_INTERNAL_ERROR,
+                                "an applied claim's output is not the "
+                                "native CORE coin");
+            {
+                char oh[129];
+                v3b_hex64(c->claim->dest_binding, oh);
+                memcpy(cl_owner, oh, 128);
+            }
+            /* the canonical bytes the apply stored (phase 12c). That
+             * phase stores EVERY decoded claim of the block, refused ones
+             * included (apply.c phase 12c loops over blk->n_claims), so a
+             * block carrying a byte-identical duplicate (refused as an
+             * in-block duplicate) holds two rows with this hash: the
+             * check is "present", never "exactly once". */
+            sqlite3_reset(c->st_cbytes);
+            sqlite3_bind_int64(c->st_cbytes, 1, (sqlite3_int64)c->height);
+            sqlite3_bind_blob(c->st_cbytes, 2, wire, 64, SQLITE_TRANSIENT);
+            rc = sqlite3_step(c->st_cbytes);
+            if (rc != SQLITE_ROW || sqlite3_column_int64(c->st_cbytes, 0) < 1) {
+                sqlite3_reset(c->st_cbytes);
+                return v3b_fail(c, NODUS_ERR_INTERNAL_ERROR,
+                                "an applied claim's bytes are not the "
+                                "stored claim");
+            }
+            sqlite3_reset(c->st_cbytes);
+            cl_coin = true;
+            eff = true;
+        }
+    }
+
+    /* the item map */
+    n_keys = 3;                                   /* i k c */
+    n_keys += has_w ? 1 : 0;
+    n_keys += has_in ? 1 : 0;
+    n_keys += has_f ? 1 : 0;
+    n_keys += op ? 1 : 0;
+    if (eff) {
+        n_keys += 2;                              /* sp cr */
+        n_keys += (core && core->burned) ? 1 : 0;
+        n_keys += (sys && sys->rec != NODUS_RT_DESC_REC_NONE) ? 1 : 0;
+    }
+    cbor_encode_map(e, n_keys);
+    cbor_encode_cstr(e, "i"); cbor_encode_uint(e, i);
+    cbor_encode_cstr(e, "k"); cbor_encode_uint(e, kind);
+    cbor_encode_cstr(e, "c"); cbor_encode_uint(e, code);
+    if (has_w)  { cbor_encode_cstr(e, "w");  cbor_encode_bstr(e, wire, 64); }
+    if (has_in) { cbor_encode_cstr(e, "in"); cbor_encode_bstr(e, intent, 64); }
+    if (has_f)  { cbor_encode_cstr(e, "f");  cbor_encode_uint(e, fee); }
+    if (op)     { cbor_encode_cstr(e, "op"); cbor_encode_cstr(e, op); }
+    if (eff) {
+        cbor_encode_cstr(e, "sp");
+        cbor_encode_array(e, core ? core->n_consumed : 0);
+        for (uint8_t k = 0; core && k < core->n_consumed; k++)
+            cbor_encode_bstr(e, core->consumed[k], 64);
+        cbor_encode_cstr(e, "cr");
+        if (cl_coin) {
+            cbor_encode_array(e, 1);
+            v3b_enc_coin(e, cl_id, cl_owner, cl_amount, native_token, 0);
+        } else {
+            cbor_encode_array(e, core ? core->n_created : 0);
+            for (uint8_t k = 0; core && k < core->n_created; k++)
+                v3b_enc_coin(e, core->created[k].id,
+                             core->created[k].owner_hex,
+                             core->created[k].amount,
+                             core->created[k].token_id,
+                             core->created[k].unlock_block);
+        }
+        if (core && core->burned) {
+            cbor_encode_cstr(e, "bu"); cbor_encode_uint(e, core->burned);
+        }
+        if (sys && sys->rec != NODUS_RT_DESC_REC_NONE) {
+            cbor_encode_cstr(e, "rc");
+            v3b_enc_record(e, sys);
+        }
+    }
+    return 0;
+}
+
+int nodus_witness_v3_block_build(nodus_witness_t *w, nodus_cmt_store_t *store,
+                                 const nodus_cmt_host_limits_t *limits,
+                                 uint32_t txn_id, uint64_t height,
+                                 uint32_t from_index, uint32_t budget,
+                                 uint8_t **out, size_t *out_len,
+                                 int *err_code, char *err_msg,
+                                 size_t err_cap)
+{
+    v3b_ctx_t     c;
+    uint64_t      tip = 0;
+    uint8_t       bid[64], pbid[64], groot[64];
+    uint64_t      applied_count = 0;
+    uint8_t      *items = NULL, *scratch = NULL, *frame = NULL;
+    size_t        items_len = 0, n_page = 0;
+    uint32_t      n_items, gidx = 0, i;
+    bool          has_next = false;
+    uint32_t      next = 0;
+    int           rc = -1;
+
+    memset(&c, 0, sizeof(c));
+    if (out) *out = NULL;
+    if (out_len) *out_len = 0;
+    if (!w || !w->db || !store || !limits || !out || !out_len ||
+        !err_code || !err_msg || err_cap == 0)
+        return -1;
+    c.w = w;
+    c.store = store;
+    c.height = height;
+
+    if (budget == 0) budget = NODUS_DNAC_V3_BLOCK_BUDGET_MAX;
+    if (budget < NODUS_DNAC_V3_BLOCK_BUDGET_MIN)
+        budget = NODUS_DNAC_V3_BLOCK_BUDGET_MIN;
+    if (budget > NODUS_DNAC_V3_BLOCK_BUDGET_MAX)
+        budget = NODUS_DNAC_V3_BLOCK_BUDGET_MAX;
+
+    if (height == 0) {
+        v3b_fail(&c, NODUS_ERR_PROTOCOL_ERROR, "height must be >= 1");
+        goto done;
+    }
+    /* Only COMMITTED state is an answer: a ledger transaction open on
+     * this connection (the host's FinalizeBlock..Commit bracket) would
+     * let these reads see a block that is not committed yet. The host
+     * closes its bracket inside one apply call, so this refuses nothing
+     * in practice — it makes "committed only" checked, not assumed. */
+    if (sqlite3_get_autocommit(w->db) == 0) {
+        v3b_fail(&c, NODUS_ERR_INTERNAL_ERROR,
+                 "a ledger transaction is in progress");
+        goto done;
+    }
+    if (nodus_witness_v2_tip_height(w, &tip) != 0) {
+        v3b_fail(&c, NODUS_ERR_INTERNAL_ERROR, "chain height unreadable");
+        goto done;
+    }
+    if (height > tip) {
+        v3b_fail(&c, NODUS_ERR_NOT_FOUND, "height not committed");
+        goto done;
+    }
+
+    /* the ledger's row for the height */
+    {
+        sqlite3_stmt *st = NULL;
+        int srow;
+
+        if (sqlite3_prepare_v2(w->db,
+                "SELECT block_id, prev_block_id, global_root, tx_count "
+                "FROM v2_blocks WHERE global_height = ?1",
+                -1, &st, NULL) != SQLITE_OK) {
+            v3b_fail(&c, NODUS_ERR_INTERNAL_ERROR, "ledger unreadable");
+            goto done;
+        }
+        sqlite3_bind_int64(st, 1, (sqlite3_int64)height);
+        srow = sqlite3_step(st);
+        if (srow != SQLITE_ROW ||
+            sqlite3_column_bytes(st, 0) != 64 ||
+            sqlite3_column_bytes(st, 1) != 64 ||
+            sqlite3_column_bytes(st, 2) != 64 ||
+            sqlite3_column_int64(st, 3) < 0) {
+            sqlite3_finalize(st);
+            v3b_fail(&c, NODUS_ERR_INTERNAL_ERROR,
+                     "no well-formed ledger row at a committed height");
+            goto done;
+        }
+        memcpy(bid, sqlite3_column_blob(st, 0), 64);
+        memcpy(pbid, sqlite3_column_blob(st, 1), 64);
+        memcpy(groot, sqlite3_column_blob(st, 2), 64);
+        applied_count = (uint64_t)sqlite3_column_int64(st, 3);
+        sqlite3_finalize(st);
+    }
+
+    if (v3b_load(&c, limits, bid) != 0) goto done;
+    n_items = (uint32_t)c.blk->data.txs_len;
+    if (from_index > n_items || (n_items > 0 && from_index == n_items)) {
+        v3b_fail(&c, NODUS_ERR_PROTOCOL_ERROR, "item index out of range");
+        goto done;
+    }
+    if (c.meta->header.time.seconds < 0 ||
+        c.meta->header.time.nanos < 0 ||
+        c.meta->header.proposer_address_len == 0 ||
+        c.meta->header.proposer_address_len >
+            sizeof(c.meta->header.proposer_address)) {
+        v3b_fail(&c, NODUS_ERR_INTERNAL_ERROR, "block header malformed");
+        goto done;
+    }
+
+    c.view      = calloc(1, sizeof(*c.view));
+    c.claim     = calloc(1, sizeof(*c.claim));
+    c.desc_core = calloc(1, sizeof(*c.desc_core));
+    c.desc_sys  = calloc(1, sizeof(*c.desc_sys));
+    items       = malloc((size_t)budget + NODUS_V3_BLOCK_ITEM_MAX_BYTES);
+    scratch     = malloc(NODUS_V3_BLOCK_ITEM_MAX_BYTES);
+    if (!c.view || !c.claim || !c.desc_core || !c.desc_sys || !items ||
+        !scratch) {
+        v3b_fail(&c, NODUS_ERR_INTERNAL_ERROR, "allocation failed");
+        goto done;
+    }
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT t.tx_id, i.tx_id, i.intent_id FROM v2_tx_index t "
+            "JOIN v2_intent_index i ON i.global_height = t.global_height "
+            "AND i.global_index = t.global_index "
+            "WHERE t.global_height = ?1 AND t.global_index = ?2",
+            -1, &c.st_ids, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(w->db,
+            "SELECT output_id, amount, claimed_height FROM v2_claims_spent "
+            "WHERE nullifier = ?1", -1, &c.st_claim, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(w->db,
+            "SELECT COUNT(*) FROM v2_claim_bytes "
+            "WHERE global_height = ?1 AND claim_hash = ?2",
+            -1, &c.st_cbytes, NULL) != SQLITE_OK) {
+        v3b_fail(&c, NODUS_ERR_INTERNAL_ERROR, "ledger unreadable");
+        goto done;
+    }
+
+    /* the applied envelopes BEFORE the page — the global index the
+     * page's first applied envelope holds */
+    for (i = 0; i < from_index; i++) {
+        const cmt_pb_bytes_t *t = &c.blk->data.txs[i];
+        if (c.resp->tx_results[i].det.code == 0 && t->len > 0 && t->data &&
+            nodus_witness_v2_classify_entry(t->data, (uint32_t)t->len) ==
+                NODUS_W_TX_V2_ENVELOPE)
+            gidx++;
+    }
+
+    for (i = from_index; i < n_items; i++) {
+        cbor_encoder_t ie;
+        size_t         ilen;
+        uint32_t       gidx_before = gidx;
+
+        cbor_encoder_init(&ie, scratch, NODUS_V3_BLOCK_ITEM_MAX_BYTES);
+        if (v3b_item(&c, i, &gidx, &ie) != 0) goto done;
+        ilen = cbor_encoder_len(&ie);
+        if (ilen == 0) {
+            v3b_fail(&c, NODUS_ERR_INTERNAL_ERROR,
+                     "an item exceeds the per-item bound");
+            goto done;
+        }
+        if (n_page > 0 &&
+            (items_len + ilen > budget ||
+             n_page >= NODUS_DNAC_V3_BLOCK_PAGE_MAX_ITEMS)) {
+            gidx = gidx_before;
+            has_next = true;
+            next = i;
+            break;
+        }
+        memcpy(items + items_len, scratch, ilen);
+        items_len += ilen;
+        n_page++;
+    }
+
+    /* the frame: the header keys, then "it" LAST so the item bytes
+     * follow the array head verbatim */
+    {
+        size_t         cap = NODUS_V3_BLOCK_HDR_MAX_BYTES + items_len;
+        cbor_encoder_t fe;
+        size_t         hlen;
+        uint64_t       tm_ms;
+
+        frame = malloc(cap);
+        if (!frame) {
+            v3b_fail(&c, NODUS_ERR_INTERNAL_ERROR, "allocation failed");
+            goto done;
+        }
+        tm_ms = (uint64_t)c.meta->header.time.seconds * 1000u +
+                (uint64_t)c.meta->header.time.nanos / 1000000u;
+        cbor_encoder_init(&fe, frame, cap);
+        enc_dnac_response(&fe, txn_id, "dnac_v3_block",
+                          has_next ? 11 : 10);
+        cbor_encode_cstr(&fe, "h");   cbor_encode_uint(&fe, height);
+        cbor_encode_cstr(&fe, "bid"); cbor_encode_bstr(&fe, bid, 64);
+        cbor_encode_cstr(&fe, "pb");  cbor_encode_bstr(&fe, pbid, 64);
+        cbor_encode_cstr(&fe, "tm");  cbor_encode_uint(&fe, tm_ms);
+        cbor_encode_cstr(&fe, "pa");
+        cbor_encode_bstr(&fe, c.meta->header.proposer_address,
+                         c.meta->header.proposer_address_len);
+        cbor_encode_cstr(&fe, "gr");  cbor_encode_bstr(&fe, groot, 64);
+        cbor_encode_cstr(&fe, "ac");  cbor_encode_uint(&fe, applied_count);
+        cbor_encode_cstr(&fe, "n");   cbor_encode_uint(&fe, n_items);
+        cbor_encode_cstr(&fe, "tip"); cbor_encode_uint(&fe, tip);
+        if (has_next) {
+            cbor_encode_cstr(&fe, "nx"); cbor_encode_uint(&fe, next);
+        }
+        cbor_encode_cstr(&fe, "it");  cbor_encode_array(&fe, n_page);
+        hlen = cbor_encoder_len(&fe);
+        if (hlen == 0 || hlen + items_len > cap) {
+            v3b_fail(&c, NODUS_ERR_INTERNAL_ERROR,
+                     "response buffer overflow");
+            goto done;
+        }
+        memcpy(frame + hlen, items, items_len);
+        *out = frame;
+        *out_len = hlen + items_len;
+        frame = NULL;
+    }
+    rc = 0;
+
+done:
+    if (rc != 0) {
+        *err_code = c.err_code ? c.err_code : NODUS_ERR_INTERNAL_ERROR;
+        snprintf(err_msg, err_cap, "%s",
+                 c.err_msg[0] ? c.err_msg : "internal error");
+    }
+    free(frame);
+    free(items);
+    free(scratch);
+    v3b_free(&c);
+    return rc;
+}
+
+/* Request:  "a": {"h": u64, "i": u32 (optional), "b": u32 (optional)}
+ * Response: the frame nodus_witness_v3_block_build encodes; an error
+ *           reply when it refuses. */
+static void handle_dnac_v3_block(nodus_witness_t *w,
+                                 struct nodus_tcp_conn *conn,
+                                 const uint8_t *payload, size_t len,
+                                 uint32_t txn_id)
+{
+    cbor_decoder_t dec;
+    size_t   args_count;
+    uint64_t h = 0;
+    uint64_t from = 0, budget = 0;
+    bool     have_h = false;
+
+    if (decode_args(payload, len, &dec, &args_count) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                   "missing args map");
+        return;
+    }
+    for (size_t k = 0; k < args_count; k++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        if (key.type == CBOR_ITEM_END || key.type == CBOR_ITEM_ERROR) {
+            send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                       "truncated args map");
+            return;
+        }
+        if (key_match(&key, "h") || key_match(&key, "i") ||
+            key_match(&key, "b")) {
+            cbor_item_t val = cbor_decode_next(&dec);
+            if (val.type != CBOR_ITEM_UINT) {
+                send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                           "argument is not an unsigned integer");
+                return;
+            }
+            if (key_match(&key, "h")) {
+                h = val.uint_val;
+                have_h = true;
+            } else if (key_match(&key, "i")) {
+                from = val.uint_val;
+            } else {
+                budget = val.uint_val;
+            }
+        } else {
+            cbor_decode_skip(&dec);
+        }
+    }
+    if (dec.error || !have_h || from > UINT32_MAX) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                   "missing or invalid height / item index");
+        return;
+    }
+    if (budget > UINT32_MAX) budget = UINT32_MAX;   /* clamped below MAX */
+
+    nodus_cmt_node_t *n = (nodus_cmt_node_t *)w->cmt_node;
+    if (!w->v2_successor || !n || !n->store_ready) {
+        send_error(conn, txn_id, NODUS_ERR_NOT_FOUND,
+                   "this node serves no version-3 chain");
+        return;
+    }
+
+    uint8_t *frame = NULL;
+    size_t   frame_len = 0;
+    int      ecode = 0;
+    char     emsg[128];
+    if (nodus_witness_v3_block_build(w, &n->store, &n->limits, txn_id, h,
+                                     (uint32_t)from, (uint32_t)budget,
+                                     &frame, &frame_len, &ecode, emsg,
+                                     sizeof(emsg)) != 0) {
+        send_error(conn, txn_id, ecode ? ecode : NODUS_ERR_INTERNAL_ERROR,
+                   emsg);
+        return;
+    }
+    nodus_tcp_send(conn, frame, frame_len);
+    free(frame);
+}
+
+/* ════════════════════════════════════════════════════════════════════
  * dnac_cc_collect — the node-side governance approval collection
  * (decision docs/plans/decisions/2026-09-26-cc-approval-via-own-node.md)
  *
@@ -2547,6 +3707,8 @@ void nodus_witness_handle_dnac(nodus_witness_t *w,
         handle_dnac_supply(w, conn, txn_id);
     } else if (strcmp(method, "dnac_utxo") == 0) {
         handle_dnac_utxo(w, conn, payload, len, txn_id);
+    } else if (strcmp(method, "dnac_balance") == 0) {
+        handle_dnac_balance(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_ledger_range") == 0) {
         handle_dnac_ledger_range(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_roster") == 0) {
@@ -2559,6 +3721,8 @@ void nodus_witness_handle_dnac(nodus_witness_t *w,
         handle_dnac_block(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_block_range") == 0) {
         handle_dnac_block_range(w, conn, payload, len, txn_id);
+    } else if (strcmp(method, "dnac_v3_block") == 0) {
+        handle_dnac_v3_block(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_genesis") == 0) {
         handle_dnac_genesis(w, conn, txn_id);
     } else if (strcmp(method, "dnac_history") == 0) {

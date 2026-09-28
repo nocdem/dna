@@ -1,127 +1,191 @@
-/* exp_extract — DNAC Explorer TX extraction module. See exp_extract.h. */
+/* exp_extract — DNAC Explorer: dnac_v3_block pages -> index rows. See
+ * exp_extract.h. */
 
 #include "exp_extract.h"
 
+#include <stdlib.h>
 #include <string.h>
-
-#include "dnac/transaction.h"
-#include "crypto/hash/qgp_sha3.h"
 
 #include "crypto/utils/qgp_log.h"
 #define LOG_TAG "EXP_EXTRACT"
 
-int exp_signer_fingerprint(const uint8_t *pubkey, size_t pubkey_len, char fp_out[129]) {
-    if (!pubkey || pubkey_len == 0 || !fp_out) return -1;
-    return qgp_sha3_512_hex(pubkey, pubkey_len, fp_out, QGP_SHA3_512_HEX_LENGTH);
+/* "" or exactly 128 lowercase hex + NUL. */
+static int fp_ok(const char s[129], int allow_empty) {
+    if (s[0] == '\0') return allow_empty;
+    for (int i = 0; i < 128; i++) {
+        char c = s[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return 0;
+    }
+    return s[128] == '\0';
 }
 
-int exp_extract_tx(const uint8_t *raw, size_t raw_len,
-                   uint64_t seq, uint64_t height,
-                   exp_tx_row_t *tx_row,
-                   exp_io_row_t *ios, int max_ios, int *io_count_out) {
-    if (!raw || !tx_row || !ios || max_ios < 0 || !io_count_out) {
-        QGP_LOG_ERROR(LOG_TAG, "invalid params");
-        return -1;
-    }
+/* NUL-terminated within the node's op bound (the struct holds OP_MAX + 1). */
+static int op_ok(const char *op) {
+    return memchr(op, '\0', NODUS_DNAC_V3_OP_MAX + 1) != NULL;
+}
 
-    dnac_transaction_t *tx = NULL;
-    if (dnac_tx_deserialize(raw, raw_len, &tx) != DNAC_SUCCESS || !tx) {
-        QGP_LOG_ERROR(LOG_TAG, "dnac_tx_deserialize failed");
-        return -1;
-    }
+static int header_matches(const exp_block_row_t *b, const nodus_dnac_v3_block_result_t *p) {
+    return b->height == p->height &&
+           memcmp(b->block_id, p->block_id, 64) == 0 &&
+           memcmp(b->prev_id, p->prev_block_id, 64) == 0 &&
+           b->time_ms == p->time_ms &&
+           b->proposer_len == (uint32_t)p->proposer_len &&
+           memcmp(b->proposer, p->proposer, p->proposer_len) == 0 &&
+           memcmp(b->global_root, p->global_root, 64) == 0 &&
+           b->applied_count == p->applied_count &&
+           b->n_items == p->total_items;
+}
 
-    /* Defensive: a malformed-but-deserializable TX with no signer has no
-     * pubkey to attribute inputs to — reject rather than crash. */
-    if (tx->signer_count == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "signer_count == 0");
-        dnac_tx_free(tx);
-        return -1;
+static int item_ok(const nodus_dnac_v3_item_t *it) {
+    if (it->kind > NODUS_DNAC_V3_KIND_CLAIM) return 0;
+    if (!op_ok(it->op)) return 0;
+    if (!it->has_effects) {
+        return it->burned == 0 && it->rec_kind == NODUS_DNAC_V3_REC_NONE &&
+               it->n_consumed == 0 && it->n_created == 0;
     }
-
-    char fp0[129];
-    if (exp_signer_fingerprint(tx->signers[0].pubkey, DNAC_PUBKEY_SIZE, fp0) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "signer[0] fingerprint failed");
-        dnac_tx_free(tx);
-        return -1;
+    if (it->code != 0) return 0;
+    if (it->n_consumed > NODUS_DNAC_V3_ITEM_MAX_IN) return 0;
+    if (it->n_created > NODUS_DNAC_V3_ITEM_MAX_OUT) return 0;
+    for (uint8_t c = 0; c < it->n_created; c++) {
+        if (!fp_ok(it->created[c].owner, 0)) return 0;
     }
+    if (it->rec_kind > NODUS_DNAC_V3_REC_CHAIN_CONFIG) return 0;
+    if (!fp_ok(it->rec_validator_fp, 1) || !fp_ok(it->rec_delegator_fp, 1) ||
+        !fp_ok(it->rec_dest_fp, 1)) {
+        return 0;
+    }
+    return 1;
+}
 
-    /* WARNING (fix round 1, moved fix round 2): owner_fingerprint is a raw
-     * 129-byte wire blob — dnac_tx_deserialize reads it verbatim with no
-     * NUL or charset guarantee. exp_db.c binds row->address with
-     * sqlite3_bind_text(..., -1, ...) (strlen-based); an unterminated or
-     * non-hex blob here is an OOB read + garbage row downstream on a
-     * hostile TX. Reject at this extraction boundary rather than sanitize:
-     * require exactly 128 lowercase-hex chars terminated by NUL at index
-     * 128, matching the project's fingerprint format (see the
-     * accepted-charset loop in dnac/src/wallet/wallet.c:382-388). The
-     * all-zero burn address ("000...0") is valid 128 hex zeros and is
-     * intentionally NOT special-cased here.
-     *
-     * This validation runs as its own pre-pass over ALL outputs, before any
-     * tx_row/ios write, so exp_extract.h's "tx_row/ios/io_count_out left
-     * untouched on failure" contract holds for this failure path too — a
-     * validation failure discovered mid-output-loop (post-write) would
-     * violate that documented guarantee. */
-    for (int i = 0; i < tx->output_count; i++) {
-        const char *fp = tx->outputs[i].owner_fingerprint;
-        if (fp[128] != '\0' || strlen(fp) != 128) {
-            QGP_LOG_ERROR(LOG_TAG, "output[%d] owner_fingerprint not NUL-terminated at 128 or wrong length", i);
-            dnac_tx_free(tx);
+static int grow(void **arr, size_t *cap, size_t need, size_t elem) {
+    if (need <= *cap) return 0;
+    size_t nc = *cap ? *cap : 64;
+    while (nc < need) nc *= 2;
+    void *p = realloc(*arr, nc * elem);
+    if (!p) return -1;
+    *arr = p;
+    *cap = nc;
+    return 0;
+}
+
+int exp_extract_page(const nodus_dnac_v3_block_result_t *page, exp_block_batch_t *batch) {
+    if (!page || !batch) return -1;
+    if (page->count > 0 && !page->items) return -1;
+
+    /* ── check the whole page first ── */
+    if (batch->have_header) {
+        if (!header_matches(&batch->block, page)) {
+            QGP_LOG_ERROR(LOG_TAG, "page header of height %llu differs from the block's first page",
+                          (unsigned long long)page->height);
             return -1;
         }
-        for (int c = 0; c < 128; c++) {
-            char ch = fp[c];
-            if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
-                QGP_LOG_ERROR(LOG_TAG, "output[%d] owner_fingerprint invalid char '%c' at position %d", i, ch, c);
-                dnac_tx_free(tx);
-                return -1;
-            }
+    } else {
+        if (page->height == 0 || page->total_items > EXP_BLOCK_MAX_ITEMS ||
+            page->proposer_len == 0 || page->proposer_len > 64) {
+            QGP_LOG_ERROR(LOG_TAG, "height %llu: header out of bounds (n=%u, proposer %zu bytes)",
+                          (unsigned long long)page->height, (unsigned)page->total_items,
+                          page->proposer_len);
+            return -1;
         }
     }
 
-    int total_ios = tx->input_count + tx->output_count;
-    if (total_ios > max_ios) {
-        QGP_LOG_ERROR(LOG_TAG, "io_count %d exceeds max_ios %d", total_ios, max_ios);
-        dnac_tx_free(tx);
+    size_t base = batch->n_items;
+    if (base + page->count > (size_t)page->total_items) return -1;
+
+    size_t new_ios = 0;
+    for (size_t j = 0; j < page->count; j++) {
+        const nodus_dnac_v3_item_t *it = &page->items[j];
+        if ((size_t)it->index != base + j) {
+            QGP_LOG_ERROR(LOG_TAG, "height %llu: item index %u where %zu was expected",
+                          (unsigned long long)page->height, (unsigned)it->index, base + j);
+            return -1;
+        }
+        if (!item_ok(it)) {
+            QGP_LOG_ERROR(LOG_TAG, "height %llu item %u: out of bounds",
+                          (unsigned long long)page->height, (unsigned)it->index);
+            return -1;
+        }
+        new_ios += (size_t)it->n_consumed + (size_t)it->n_created;
+    }
+
+    if (grow((void **)&batch->items, &batch->cap_items, base + page->count, sizeof(exp_item_row_t)) != 0 ||
+        grow((void **)&batch->ios, &batch->cap_ios, batch->n_ios + new_ios, sizeof(exp_io_row_t)) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "out of memory collecting height %llu", (unsigned long long)page->height);
         return -1;
     }
 
-    memset(tx_row, 0, sizeof(*tx_row));
-    memcpy(tx_row->hash, tx->tx_hash, sizeof(tx_row->hash));
-    tx_row->seq          = seq;
-    tx_row->height       = height;
-    tx_row->tx_type      = (int)tx->type;
-    tx_row->fee          = tx->committed_fee;
-    tx_row->size         = (uint32_t)raw_len;
-    tx_row->timestamp    = tx->timestamp;              /* D4/F6: never wall-clock */
-    tx_row->multi_signer = (tx->signer_count > 1) ? 1 : 0;
-
-    int idx = 0;
-    for (int i = 0; i < tx->input_count; i++, idx++) {
-        exp_io_row_t *row = &ios[idx];
-        memset(row, 0, sizeof(*row));
-        memcpy(row->tx_hash, tx->tx_hash, sizeof(row->tx_hash));
-        row->io_index  = i;
-        row->direction = 0;
-        memcpy(row->address, fp0, sizeof(row->address));
-        memcpy(row->token_id, tx->inputs[i].token_id, sizeof(row->token_id));
-        row->amount = tx->inputs[i].amount;
+    /* ── append ── */
+    if (!batch->have_header) {
+        exp_block_row_t *b = &batch->block;
+        memset(b, 0, sizeof(*b));
+        b->height = page->height;
+        memcpy(b->block_id, page->block_id, 64);
+        memcpy(b->prev_id, page->prev_block_id, 64);
+        b->time_ms = page->time_ms;
+        memcpy(b->proposer, page->proposer, page->proposer_len);
+        b->proposer_len = (uint32_t)page->proposer_len;
+        memcpy(b->global_root, page->global_root, 64);
+        b->applied_count = page->applied_count;
+        b->n_items = page->total_items;
+        batch->have_header = 1;
     }
 
-    for (int i = 0; i < tx->output_count; i++, idx++) {
-        exp_io_row_t *row = &ios[idx];
-        memset(row, 0, sizeof(*row));
-        memcpy(row->tx_hash, tx->tx_hash, sizeof(row->tx_hash));
-        row->io_index  = i;
-        row->direction = 1;
-        /* owner_fingerprint already validated in the pre-pass above. */
-        memcpy(row->address, tx->outputs[i].owner_fingerprint, sizeof(row->address));
-        memcpy(row->token_id, tx->outputs[i].token_id, sizeof(row->token_id));
-        row->amount = tx->outputs[i].amount;
+    for (size_t j = 0; j < page->count; j++) {
+        const nodus_dnac_v3_item_t *it = &page->items[j];
+        exp_item_row_t *r = &batch->items[batch->n_items++];
+        memset(r, 0, sizeof(*r));
+        r->height = page->height;
+        r->idx = it->index;
+        r->kind = it->kind;
+        r->code = it->code;
+        r->has_wire_id = it->has_wire_id ? 1 : 0;
+        memcpy(r->wire_id, it->wire_id, 64);
+        r->has_intent_id = it->has_intent_id ? 1 : 0;
+        memcpy(r->intent_id, it->intent_id, 64);
+        r->has_fee = it->has_fee ? 1 : 0;
+        r->fee = it->fee;
+        strncpy(r->op, it->op, sizeof(r->op) - 1);
+        r->op[sizeof(r->op) - 1] = '\0';
+        r->has_effects = it->has_effects ? 1 : 0;
+        r->burned = it->burned;
+        if (it->has_effects && it->rec_kind != NODUS_DNAC_V3_REC_NONE) {
+            r->rec.kind = it->rec_kind;
+            memcpy(r->rec.validator, it->rec_validator_fp, 129);
+            memcpy(r->rec.delegator, it->rec_delegator_fp, 129);
+            memcpy(r->rec.dest, it->rec_dest_fp, 129);
+            r->rec.amount = it->rec_amount;
+            r->rec.commission_bps = it->rec_commission_bps;
+            r->rec.param_id = it->cc_param_id;
+            r->rec.new_value = it->cc_new_value;
+            r->rec.effective = it->cc_effective;
+        }
+
+        if (!it->has_effects) continue;
+
+        for (uint8_t c = 0; c < it->n_consumed; c++) {
+            exp_io_row_t *io = &batch->ios[batch->n_ios++];
+            memset(io, 0, sizeof(*io));
+            io->height = page->height;
+            io->idx = it->index;
+            io->dir = 0;
+            io->pos = c;
+            memcpy(io->coin_id, it->consumed[c], 64);
+        }
+        for (uint8_t c = 0; c < it->n_created; c++) {
+            const nodus_dnac_v3_coin_t *coin = &it->created[c];
+            exp_io_row_t *io = &batch->ios[batch->n_ios++];
+            memset(io, 0, sizeof(*io));
+            io->height = page->height;
+            io->idx = it->index;
+            io->dir = 1;
+            io->pos = c;
+            memcpy(io->coin_id, coin->id, 64);
+            io->has_owner = 1;
+            memcpy(io->address, coin->owner, 129);
+            memcpy(io->token_id, coin->token_id, 64);
+            io->amount = coin->amount;
+            io->unlock_block = coin->unlock_block;
+        }
     }
-
-    *io_count_out = idx;
-
-    dnac_tx_free(tx);
     return 0;
 }

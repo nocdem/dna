@@ -857,6 +857,28 @@ static int t_join_refuses_mismatch(void) {
     CHECK(nodus_chain_config_grace_for_param(
               (uint8_t)DNAC_CFG_INFLATION_START_BLOCK) == UINT64_MAX,
           "and its grace is unsatisfiable by construction");
+    /* 0.20.3 (decision file 2026-09-23-height-activated-upgrades-before-
+     * testnet.md item 1): BLOCK_INTERVAL_SEC (id 2) is NOT READ by the
+     * running consensus — refused at every value, including the [1, 15]
+     * range it used to accept, with the unsatisfiable grace. RED ON THE
+     * PRE-0.20.3 TREE: id 2 with value 5 (and 1, 15) passed these rules.
+     * MUTANT KILLED: restoring id 2 on dnac_cfg_param_read_by_consensus
+     * or its range check in scalar_rules. */
+    CHECK(nodus_chain_config_scalar_rules(
+              (uint8_t)DNAC_CFG_BLOCK_INTERVAL_SEC, 1, 1, 200, 50) != 0 &&
+          nodus_chain_config_scalar_rules(
+              (uint8_t)DNAC_CFG_BLOCK_INTERVAL_SEC, 5, 1, 200, 50) != 0 &&
+          nodus_chain_config_scalar_rules(
+              (uint8_t)DNAC_CFG_BLOCK_INTERVAL_SEC, 15, 1, 200, 50) != 0,
+          "the unread block interval is refused at any value");
+    CHECK(nodus_chain_config_grace_for_param(
+              (uint8_t)DNAC_CFG_BLOCK_INTERVAL_SEC) == UINT64_MAX,
+          "and its grace is unsatisfiable by construction");
+    /* ...and the read list's two members still pass their own rules
+     * (same window shape), so the refusal above is about id 2. */
+    CHECK(nodus_chain_config_scalar_rules(
+              (uint8_t)DNAC_CFG_GAS_PRICE_RAW_PER_UNIT, 5, 1, 200, 50) == 0,
+          "the gas price (read) is still votable");
 
     close_chain(w);
     cfg_free(&c);

@@ -91,8 +91,11 @@
 #define CC_PARAM_SLOTS              (CC_PARAM_MAX_ID + 1)
 /* CC_MAX_TXS_HARD_CAP RETIRED (R3 W4-C delta 2) with CC_PARAM_MAX_TXS —
  * no live consumer; the id space stays 1..CC_PARAM_MAX_ID unchanged. */
-#define CC_MIN_BLOCK_INTERVAL_SEC   1ULL
-#define CC_MAX_BLOCK_INTERVAL_SEC   15ULL
+/* CC_MIN/MAX_BLOCK_INTERVAL_SEC removed (0.20.3) with their one consumer,
+ * scalar_rules' id-2 range check: id 2 is not read by the running
+ * consensus and is refused before any bound is looked at. The parameter's
+ * [1, 15] definition stays in dnac.h (DNAC_CFG_MIN/MAX_BLOCK_INTERVAL_SEC)
+ * for a consensus that reads it. */
 /* CC_MAX_INFLATION_START RETIRED (tokenomics-v3 P2, P2-4) with
  * CC_PARAM_INFLATION_START — no live consumer. */
 #define CC_MIN_TARGET_ACTIVE        ((uint64_t)CC_COMMITTEE_SIZE)
@@ -633,30 +636,31 @@ int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
                                     uint64_t valid_before_block,
                                     uint64_t effective_block_height) {
     if (param_id < 1 || param_id > CC_PARAM_MAX_ID) return -1;
+    /* 0.20.3 (decision file 2026-09-23-height-activated-upgrades-before-
+     * testnet.md item 1): a proposal for a parameter the RUNNING consensus
+     * does not read is refused. The list is dnac.h's
+     * dnac_cfg_param_read_by_consensus — the same predicate the client
+     * mirror (verify.c) consumes, so the two sides cannot drift. The
+     * switch below holds the bounds of the ids ON the list. Why the
+     * others are off it (their former cases were unreachable after this
+     * gate and were removed — no dead code):
+     *   id 1 MAX_TXS_PER_BLOCK — RETIRED (R3 W4-C delta 2, operator
+     *        "kaldır" 2026-09-18; atlas-dec-5b7568512b95e6d2e671c4eaad2c1879
+     *        rev 1): a block's capacity is bytes and units only.
+     *   id 2 BLOCK_INTERVAL_SEC — NOT READ (0.20.3; decision
+     *        2026-09-23-height-activated-upgrades-before-testnet.md item 1):
+     *        the Comet lane's block pace is a compile-time node setting
+     *        (nodus_witness_cmt_node.c: param 2 "has NO effect on this lane
+     *        and is not read"). NOT retired — a consensus that reads it
+     *        puts it back on the list. Committed id-2 rows stay readable
+     *        (nodus_chain_config_get_u64 and the merkle root never call
+     *        this function).
+     *   id 3 INFLATION_START_BLOCK — RETIRED (tokenomics-v3 P2, P2-4:
+     *        "INFLATION_START parametresi (id 3) emekli"; no per-block
+     *        mint remains). */
+    if (!dnac_cfg_param_read_by_consensus(param_id)) return -1;
 
     switch (param_id) {
-        case CC_PARAM_MAX_TXS:
-            /* RETIRED (R3 W4-C delta 2, operator "kaldır" 2026-09-18;
-             * atlas-dec-5b7568512b95e6d2e671c4eaad2c1879 rev 1): the
-             * per-block transaction-count cap left governance — a
-             * block's capacity is bytes and units only now
-             * (nodus_witness_v2_apply.h's derived envelope ceiling).
-             * This id is NEVER accepted again; ids 2-4 keep their
-             * numbers. */
-            return -1;
-        case CC_PARAM_BLOCK_INTERVAL:
-            if (new_value < CC_MIN_BLOCK_INTERVAL_SEC ||
-                new_value > CC_MAX_BLOCK_INTERVAL_SEC) return -1;
-            break;
-        case CC_PARAM_INFLATION_START:
-            /* RETIRED (tokenomics-v3 P2, P2-4 — decision file §3
-             * 2026-09-23 S-4: "blok başı basım kodu SİLİNİR,
-             * INFLATION_START parametresi (id 3) emekli"). There is no
-             * per-block mint left for a start height to gate (decision
-             * §1: "Yeni token basılmayacak"), so the parameter left
-             * governance exactly as id 1 did. This id is NEVER accepted
-             * again; ids 2 and 4 keep their numbers. */
-            return -1;
         case CC_PARAM_TARGET_ACTIVE:
             if (new_value < CC_MIN_TARGET_ACTIVE ||
                 new_value > CC_MAX_TARGET_ACTIVE) return -1;
@@ -682,9 +686,17 @@ int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
  * alias so existing call sites are untouched). */
 uint64_t nodus_chain_config_grace_for_param(uint8_t param_id) {
     switch (param_id) {
-        case CC_PARAM_BLOCK_INTERVAL:
         case CC_PARAM_TARGET_ACTIVE:
             return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS;
+        case CC_PARAM_BLOCK_INTERVAL:
+            /* NOT READ by the running consensus (0.20.3) — `scalar_rules`
+             * refuses id 2 before any caller reaches a grace check; the
+             * id-1/id-3 treatment below makes the gap test unsatisfiable
+             * by construction for a caller that reaches this function
+             * directly. A consensus that reads the block interval
+             * restores its SAFETY class here together with its entry in
+             * dnac_cfg_param_read_by_consensus. */
+            return (uint64_t)-1;
         case CC_PARAM_INFLATION_START:
             /* RETIRED (tokenomics-v3 P2, P2-4) — the id-1 treatment
              * below, verbatim in intent: `scalar_rules` refuses id 3
@@ -957,9 +969,11 @@ static int cc_appr_rules_chain_config(nodus_witness_t *w,
     cc_appr_parse_cc_call(call, &c);
 
     /* the SAME scalar authority the legacy apply and the V2 exec hook
-     * both consume — id 1 (MAX_TXS_PER_BLOCK) and, since tokenomics-v3
-     * P2, id 3 (INFLATION_START_BLOCK) are refused here exactly as they
-     * are everywhere else. */
+     * both consume — id 1 (MAX_TXS_PER_BLOCK), since tokenomics-v3 P2
+     * id 3 (INFLATION_START_BLOCK) and, since 0.20.3, id 2
+     * (BLOCK_INTERVAL_SEC — not read by the running consensus) are
+     * refused here exactly as they are everywhere else: a seat never
+     * signs an approval for them. */
     if (nodus_chain_config_scalar_rules(c.param_id, c.new_value,
                                         c.signed_at, c.valid_before,
                                         c.effective) != 0) {
