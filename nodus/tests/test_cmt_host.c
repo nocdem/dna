@@ -61,6 +61,18 @@
  *    WAL never started; `wal.CORRUPTED` is the old head; the new head is
  *    exactly the records before the first bad one, byte for byte; the
  *    handle is reopened and started in place and replays cleanly.
+ *  · HARDENING beyond the reference (docs/plans/decisions/2026-09-27-
+ *    p2p-fix-2.md item 1): a head ending in 1..7 header bytes or a short
+ *    body is truncated at start to its last complete record (a clean head
+ *    is not written), the next write lands on a record boundary and a
+ *    reopen replays every record, no repair runs; an over-bound length
+ *    and a mid-file bad checksum are NOT trimmed and still go the
+ *    corruption/repair path; the repair goes through a temp file — a
+ *    failure before the rename leaves the old head byte for byte with the
+ *    `.CORRUPTED` backup made, a stale temp file is replaced and none is
+ *    left, and a head whose first record is bad is repaired to
+ *    EndHeight{0}, never to an empty head; the carry refuses a tail row
+ *    whose MsgInfo fails ValidateBasic, writing nothing.
  *  · The one-time SQLite → file carry-over (decision item 6 AMENDED,
  *    NOT GROUNDED): from OLD-format rows (SHA3-512(P) ‖ P) only the tail
  *    from the latest EndHeight of protocol 1 reaches an absent head, P
@@ -133,7 +145,12 @@
  *     durability classes are asserted as "the bytes are in the file"
  *     (file size) versus "still in the head buffer", not across a power
  *     cut. The shipped 10 MB / 1 GB limits are asserted as values;
- *     the rotation and removal run at lowered limits.
+ *     the rotation and removal run at lowered limits. The same holds for
+ *     the HARDENING directory fsyncs (head creation, rotation rename,
+ *     repair rename, backup): not observable here, not asserted; and the
+ *     `readdir` error branch is not reached (no fault can be injected
+ *     into readdir(3) without wrapping libc at link time). The torn tail
+ *     is made by appending bytes to a closed head, not by a real crash.
  *  8. R3-W3-C2a-17 (delta 9) — `t_store_get_then_full_write_then_main_
  *     write` reproduces the Genesis Protocol harness's SQLITE_BUSY_
  *     SNAPSHOT stall with ONE `get` and one commit by a SECOND connection
@@ -3145,6 +3162,296 @@ static int t_wal_validate_basic_and_repair(void)
     return 0;
 }
 
+/* ══ HARDENING beyond the reference — decision
+ * docs/plans/decisions/2026-09-27-p2p-fix-2.md item 1 ═══════════════════ */
+
+/* `<dir>/cs.wal/<name>` of the fixture. */
+static void wal_sibling(const walfx_t *fx, const char *name, char *out,
+                        size_t cap)
+{
+    snprintf(out, cap, "%s/cs.wal/%s", fx->dir, name);
+}
+
+/* Byte equality of a whole file with `want` (`n` bytes). */
+static int wal_file_is(const char *path, const uint8_t *want, size_t n)
+{
+    size_t   len = 0;
+    uint8_t *b = wal_slurp(path, &len);
+    int      same = (b != NULL && len == n && (n == 0 || memcmp(b, want, n) == 0));
+
+    free(b);
+    return same;
+}
+
+/* 1(a) torn tail: a head ending in 1..7 header bytes or in a body shorter
+ * than its length is truncated at start to the last complete record; the
+ * next write lands on a record boundary and a reopen replays everything,
+ * with no `.CORRUPTED` file (no repair ran). */
+static int t_wal_torn_tail_trimmed_at_start(void)
+{
+    walfx_t                  fx;
+    nodus_cmt_wal_t         *w;
+    cmt_wal_message_t       *m;
+    cmt_timed_wal_message_t *tw;
+    bool                     eof = false;
+    char                     bak[192];
+    uint8_t                 *good_bytes;
+    size_t                   good_len = 0;
+    long long                good;
+    int                      k;
+
+    CHECK(walfx_open(&fx) == 0, "fixture");
+    snprintf(bak, sizeof(bak), "%s%s", fx.file, NODUS_CMT_WAL_CORRUPTED_SUFFIX);
+    w = (nodus_cmt_wal_t *)calloc(1, sizeof(*w));
+    m = (cmt_wal_message_t *)calloc(1, sizeof(*m));
+    tw = (cmt_timed_wal_message_t *)calloc(1, sizeof(*tw));
+    CHECK(w && m && tw, "alloc");
+    /* EndHeight(0) rs(1,0) EndHeight(1) rs(2,0) */
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+          nodus_cmt_wal_start(w) == CMT_OK, "open + start");
+    wal_round_state(m, 1, 0);
+    CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "rs(1,0)");
+    wal_end_height(m, 1);
+    CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_OK, "EndHeight(1)");
+    wal_round_state(m, 2, 0);
+    CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_OK, "rs(2,0)");
+    nodus_cmt_wal_close(w);
+    good = wal_fsize(fx.file);
+    good_bytes = wal_slurp(fx.file, &good_len);
+    CHECK(good_bytes != NULL && (long long)good_len == good && good > 16,
+          "the clean head");
+
+    /* a clean head is not written by start */
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+          nodus_cmt_wal_start(w) == CMT_OK &&
+          wal_file_is(fx.file, good_bytes, good_len),
+          "a clean head: start changes no byte");
+    nodus_cmt_wal_close(w);
+
+    /* 1..7 bytes of a header (the first record's own header bytes) */
+    for (k = 1; k <= 7; k++) {
+        CHECK(wal_append_raw(fx.file, good_bytes, (size_t)k) == 0, "torn header");
+        CHECK(wal_fsize(fx.file) == good + k, "torn bytes on disk");
+        CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+              nodus_cmt_wal_start(w) == CMT_OK, "open + start");
+        CHECK(wal_file_is(fx.file, good_bytes, good_len),
+              "start truncated the head to the last complete record");
+        CHECK(wal_fsize(bak) == -1, "no repair ran (no .CORRUPTED)");
+        wal_round_state(m, 2, 1);
+        CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_OK, "rs(2,1) after the trim");
+        CHECK(wal_reopen_after_end1(w, fx.file, tw, 2) == 0,
+              "reopen: EndHeight(1), rs(2,0), rs(2,1) all decode");
+        CHECK(tw->msg.kind == CMT_PB_WAL_EVENT_DATA_ROUND_STATE &&
+              tw->msg.u.event_data_round_state.height == 2 &&
+              tw->msg.u.event_data_round_state.round == 1,
+              "the appended record sits on a record boundary");
+        CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && eof, "then EOF");
+        nodus_cmt_wal_close(w);
+        CHECK(truncate(fx.file, (off_t)good) == 0, "cut back");
+    }
+
+    /* a short body: 100 announced (within the bound), 10 present */
+    {
+        static const uint8_t hdr[18] = { 0xAA, 0xBB, 0xCC, 0xDD, 0, 0, 0, 100,
+                                         1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
+
+        CHECK(wal_append_raw(fx.file, hdr, sizeof(hdr)) == 0, "short body");
+        CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+              nodus_cmt_wal_start(w) == CMT_OK, "open + start");
+        CHECK(wal_file_is(fx.file, good_bytes, good_len),
+              "a short body is a torn tail: truncated");
+        CHECK(wal_fsize(bak) == -1, "no repair ran");
+        wal_round_state(m, 2, 1);
+        CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_OK, "rs(2,1)");
+        CHECK(wal_reopen_after_end1(w, fx.file, tw, 2) == 0 &&
+              tw->msg.u.event_data_round_state.round == 1, "replays everything");
+        CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && eof, "then EOF");
+        nodus_cmt_wal_close(w);
+        CHECK(truncate(fx.file, (off_t)good) == 0, "cut back");
+    }
+
+    /* the only record torn: the head becomes empty, and OnStart then
+     * writes its EndHeight{0} (wal.go:124-131) */
+    CHECK(truncate(fx.file, 5) == 0, "a head of five bytes");
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+          nodus_cmt_wal_start(w) == CMT_OK, "open + start");
+    {
+        bool found = false;
+
+        CHECK(wal_fsize(fx.file) > 8 &&
+              nodus_cmt_wal_search_end_height(w, 0, &found) == CMT_OK && found &&
+              nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && eof,
+              "trimmed to 0, then EndHeight{0} and nothing else");
+    }
+    nodus_cmt_wal_close(w);
+
+    free(good_bytes);
+    free(w); free(m); free(tw);
+    rmrf(fx.dir);
+    return 0;
+}
+
+/* 1(a) what is NOT a torn tail: a length above the bound at the end, and
+ * a complete record with a bad checksum in the middle (even with torn
+ * bytes after it) — start changes nothing, the read side reports
+ * corruption, and the repair path handles it as before. */
+static int t_wal_torn_tail_not_corruption(void)
+{
+    walfx_t                  fx;
+    nodus_cmt_wal_t         *w;
+    cmt_wal_message_t       *m;
+    cmt_timed_wal_message_t *tw;
+    bool                     found = false, eof = false;
+    char                     bak[192];
+    uint8_t                 *old;
+    size_t                   old_len = 0, off1 = 0;
+    long long                good;
+
+    CHECK(walfx_open(&fx) == 0, "fixture");
+    snprintf(bak, sizeof(bak), "%s%s", fx.file, NODUS_CMT_WAL_CORRUPTED_SUFFIX);
+    w = (nodus_cmt_wal_t *)calloc(1, sizeof(*w));
+    m = (cmt_wal_message_t *)calloc(1, sizeof(*m));
+    tw = (cmt_timed_wal_message_t *)calloc(1, sizeof(*tw));
+    CHECK(w && m && tw, "alloc");
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+          nodus_cmt_wal_start(w) == CMT_OK, "open + start");
+    wal_round_state(m, 1, 0);
+    CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "rs(1,0)");
+    wal_end_height(m, 1);
+    CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_OK, "EndHeight(1)");
+    wal_round_state(m, 2, 0);
+    CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_OK, "rs(2,0)");
+    nodus_cmt_wal_close(w);
+    good = wal_fsize(fx.file);
+
+    /* a length above maxMsgSizeBytes at the end: corruption, kept */
+    {
+        static const uint8_t big[8] = { 0, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF };
+
+        CHECK(wal_append_raw(fx.file, big, sizeof(big)) == 0, "huge length");
+        CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+              nodus_cmt_wal_start(w) == CMT_OK && wal_fsize(fx.file) == good + 8,
+              "start leaves an over-bound length alone");
+        CHECK(nodus_cmt_wal_search_end_height(w, 1, &found) == CMT_OK && found &&
+              nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && !eof &&
+              nodus_cmt_wal_read_next(w, tw, &eof) == CMT_REJECT,
+              "and the reader reports it (wal.go:385-390)");
+        nodus_cmt_wal_close(w);
+        CHECK(truncate(fx.file, (off_t)good) == 0, "cut back");
+    }
+
+    /* a bad checksum in rs(1,0), torn bytes at the end */
+    old = wal_slurp(fx.file, &old_len);
+    CHECK(old != NULL && wal_rec_off(old, old_len, 1, &off1) == 0, "record 1");
+    free(old);
+    CHECK(wal_flip(fx.file, (long)(off1 + 8 + 2)) == 0, "flip");
+    CHECK(wal_append_raw(fx.file, (const uint8_t *)"\x01\x02\x03", 3) == 0,
+          "three torn bytes");
+    old = wal_slurp(fx.file, &old_len);
+    CHECK(old != NULL && (long long)old_len == good + 3, "the corrupted head");
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+          nodus_cmt_wal_start(w) == CMT_OK && wal_file_is(fx.file, old, old_len),
+          "a mid-file bad checksum stops the walk: start changes no byte");
+    CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && !eof &&
+          nodus_cmt_wal_read_next(w, tw, &eof) == CMT_REJECT,
+          "the reader reports it (wal.go:399-402)");
+    CHECK(nodus_cmt_wal_repair(w) == CMT_OK, "the repair path");
+    CHECK(wal_file_is(bak, old, old_len), ".CORRUPTED is the old head");
+    CHECK(wal_file_is(fx.file, old, off1),
+          "the head is the records before the bad one (EndHeight(0))");
+    CHECK(nodus_cmt_wal_search_end_height(w, 0, &found) == CMT_OK && found &&
+          nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && eof,
+          "and replays cleanly");
+    nodus_cmt_wal_close(w);
+    free(old);
+    free(w); free(m); free(tw);
+    rmrf(fx.dir);
+    return 0;
+}
+
+/* 1(b) atomic repair: a failure BEFORE the rename (the temp path cannot
+ * be cleared — a directory sits there) leaves the old head byte for byte
+ * and the `.CORRUPTED` backup made; the retry replaces a stale temp file
+ * and installs the complete repaired head, leaving no temp file; and a
+ * head whose FIRST record is bad is repaired to EndHeight{0}, never to
+ * an empty head. */
+static int t_wal_repair_atomic(void)
+{
+    walfx_t                  fx;
+    nodus_cmt_wal_t         *w;
+    cmt_wal_message_t       *m;
+    cmt_timed_wal_message_t *tw;
+    bool                     found = false, eof = false;
+    char                     bak[192], tmp[192];
+    uint8_t                 *old;
+    size_t                   old_len = 0, off1 = 0;
+    struct stat              st;
+
+    CHECK(walfx_open(&fx) == 0, "fixture");
+    snprintf(bak, sizeof(bak), "%s%s", fx.file, NODUS_CMT_WAL_CORRUPTED_SUFFIX);
+    wal_sibling(&fx, NODUS_CMT_WAL_REPAIR_TMP_NAME, tmp, sizeof(tmp));
+    CHECK(strncmp(NODUS_CMT_WAL_REPAIR_TMP_NAME, "wal", 3) != 0,
+          "the temp name is outside the group's `wal` prefix");
+    w = (nodus_cmt_wal_t *)calloc(1, sizeof(*w));
+    m = (cmt_wal_message_t *)calloc(1, sizeof(*m));
+    tw = (cmt_timed_wal_message_t *)calloc(1, sizeof(*tw));
+    CHECK(w && m && tw, "alloc");
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+          nodus_cmt_wal_start(w) == CMT_OK, "open + start");
+    wal_round_state(m, 1, 0);
+    CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "rs(1,0)");
+    wal_end_height(m, 1);
+    CHECK(nodus_cmt_wal_write_sync(w, m) == CMT_OK, "EndHeight(1)");
+    nodus_cmt_wal_close(w);
+    old = wal_slurp(fx.file, &old_len);
+    CHECK(old != NULL && wal_rec_off(old, old_len, 1, &off1) == 0, "record 1");
+    free(old);
+    CHECK(wal_flip(fx.file, (long)(off1 + 8 + 2)) == 0, "flip rs(1,0)");
+    old = wal_slurp(fx.file, &old_len);
+    CHECK(old != NULL, "the corrupted head");
+
+    /* a failure before the rename */
+    CHECK(mkdir(tmp, 0700) == 0, "a directory at the temp path");
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+          nodus_cmt_wal_start(w) == CMT_OK, "open + start");
+    CHECK(nodus_cmt_wal_repair(w) == CMT_FAULT,
+          "the temp path cannot be cleared: the repair fails");
+    CHECK(wal_file_is(fx.file, old, old_len),
+          "the old head is untouched, byte for byte");
+    CHECK(wal_file_is(bak, old, old_len), "the .CORRUPTED backup was made first");
+    CHECK(stat(tmp, &st) == 0 && S_ISDIR(st.st_mode), "the blocker is still there");
+    CHECK(rmdir(tmp) == 0, "remove the blocker");
+
+    /* the retry, over a stale temp FILE */
+    CHECK(wal_append_raw(tmp, (const uint8_t *)"junk", 4) == 0, "a stale temp file");
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+          nodus_cmt_wal_start(w) == CMT_OK, "open + start again");
+    CHECK(nodus_cmt_wal_repair(w) == CMT_OK, "repair");
+    CHECK(wal_fsize(tmp) == -1, "no temp file after the rename");
+    CHECK(wal_file_is(bak, old, old_len), ".CORRUPTED is the old head");
+    CHECK(wal_file_is(fx.file, old, off1),
+          "the head is exactly the records before the bad one");
+    CHECK(w->started, "reopened and started in place");
+    nodus_cmt_wal_close(w);
+    free(old);
+
+    /* the FIRST record bad: nothing is kept, the head is EndHeight{0} */
+    CHECK(wal_flip(fx.file, 8 + 2) == 0, "flip EndHeight(0)");
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+          nodus_cmt_wal_start(w) == CMT_OK, "open + start");
+    CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_REJECT, "record 0 is bad");
+    CHECK(nodus_cmt_wal_repair(w) == CMT_OK, "repair");
+    CHECK(wal_fsize(fx.file) > 8, "the repaired head is not empty");
+    CHECK(nodus_cmt_wal_search_end_height(w, 0, &found) == CMT_OK && found &&
+          nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && eof,
+          "it holds exactly EndHeight{0}");
+    nodus_cmt_wal_close(w);
+
+    free(w); free(m); free(tw);
+    rmrf(fx.dir);
+    return 0;
+}
+
 /* The size bound (decision 2026-09-26-cmt-wal-file-group.md item 4;
  * group.go:239-299): at lowered limits, thirty heights with the 5 s
  * check fired after each — the head rotates, the OLDEST files go, the
@@ -3568,6 +3875,31 @@ static int t_wal_carry_sqlite_refusals_and_noops(void)
           "columns disagreeing with the payload refuse the start");
     CHECK(wal_fsize(fx.file) == -1 && !carry_tmp_exists(&fx),
           "no head and no temp file left behind");
+    sqlite3_close(db);
+    rmrf(fx.dir);
+
+    /* a tail row whose MsgInfo fails ValidateBasic (NewRoundStep at
+     * height -1; its height column says -1 too, so only ValidateBasic
+     * can refuse it) — decision 2026-09-27-p2p-fix-2.md item 1 */
+    CHECK(walfx_open(&fx) == 0, "fixture");
+    CHECK(carry_db_open(&fx, true, &db) == 0 &&
+          carry_fill(db, m, 0, 0, p, plen) == 0, "rows");
+    wal_new_round_step(m, -1);
+    CHECK(cmt_msg_validate_basic(&m->u.msg_info.msg) == CMT_REJECT,
+          "the message does fail ValidateBasic");
+    CHECK(carry_insert(db, NODUS_CMT_WAL_SQLITE_PROTOCOL_ID, 19, -1, m,
+                       1700000019LL, false, NULL, NULL) == 0,
+          "seq 19, in the tail after EndHeight(4)");
+    dump0 = carry_table_dump(db);
+    CHECK(dump0 != NULL, "dump");
+    CHECK(nodus_cmt_wal_carry_sqlite(db, fx.file, &rows) == CMT_FAULT && rows == 0,
+          "a row failing ValidateBasic refuses the start, as a bad row");
+    CHECK(wal_fsize(fx.file) == -1 && !carry_tmp_exists(&fx),
+          "no head and no temp file left behind");
+    dump1 = carry_table_dump(db);
+    CHECK(dump1 != NULL && strcmp(dump0, dump1) == 0, "the rows are untouched");
+    free(dump0);
+    free(dump1);
     sqlite3_close(db);
     rmrf(fx.dir);
 
@@ -6463,6 +6795,9 @@ int main(void)
         { "wal_search_and_replay",                 t_wal_search_and_replay },
         { "wal_corruption",                        t_wal_corruption },
         { "wal_validate_basic_and_repair",         t_wal_validate_basic_and_repair },
+        { "wal_torn_tail_trimmed_at_start",        t_wal_torn_tail_trimmed_at_start },
+        { "wal_torn_tail_not_corruption",          t_wal_torn_tail_not_corruption },
+        { "wal_repair_atomic",                     t_wal_repair_atomic },
         { "wal_size_bound_rotates_and_removes_oldest",
                                     t_wal_size_bound_rotates_and_removes_oldest },
         { "wal_carry_sqlite_tail",                 t_wal_carry_sqlite_tail },

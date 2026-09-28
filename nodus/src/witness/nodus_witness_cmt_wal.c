@@ -208,6 +208,122 @@ static int wal_now_ns(nodus_cmt_wal_t *w, int64_t *out)
     return CMT_OK;
 }
 
+/* pread(2) of exactly `n` bytes at `off`, retrying EINTR and short reads;
+ * reaching the file's end first is CMT_FAULT (the caller sized the read
+ * from fstat). */
+static int wal_pread_all(int fd, uint8_t *p, size_t n, int64_t off)
+{
+    size_t done = 0;
+
+    while (done < n) {
+        ssize_t k = pread(fd, p + done, n - done, (off_t)(off + (int64_t)done));
+
+        if (k < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return CMT_FAULT;
+        }
+        if (k == 0) {
+            return CMT_FAULT;
+        }
+        done += (size_t)k;
+    }
+    return CMT_OK;
+}
+
+/* HARDENING — decision 2026-09-27-p2p-fix-2.md 1(a); no reference
+ * counterpart. The reference appends behind whatever the head ends with
+ * (wal.go:124-133 OnStart, group.go:204-208 Write): a record cut short by
+ * a crash (1-7 header bytes, or a body shorter than its length) stays in
+ * the file, and when it is 1-3 CRC bytes its Decode is a clean io.EOF
+ * (wal.go:369-371), so the next record is appended BEHIND the torn bytes
+ * and every later read is misaligned.
+ *
+ * Here, once per start and before the first append, the head is walked
+ * record by record from offset 0 on the 8-byte headers:
+ *   · fewer than 8 bytes left, or a length 1..CMT_WAL_MAX_MSG_SIZE_BYTES
+ *     that runs past the end of the file — a TORN TAIL: the head is
+ *     truncated to the end of the last complete, checksum-valid record
+ *     and fsynced (nodus_cmt_autofile_truncate);
+ *   · a length of 0 or above the bound, or a complete record whose
+ *     crc32c does not match — CORRUPTION, not a torn tail: the walk
+ *     stops and nothing is changed; the replay reports it and repairs
+ *     (state.go:338-386), exactly as before;
+ *   · the end of the file on a record boundary — clean, nothing changed.
+ * The read side (wal_decode, SearchForEndHeight, read_next) is untouched;
+ * a file with no torn tail is not written. */
+static int wal_trim_torn_tail(nodus_cmt_wal_t *w)
+{
+    int64_t size = -1;
+    int64_t off = 0;
+    int64_t cut = -1;
+    int     fd;
+    int     rc = CMT_OK;
+
+    if (nodus_cmt_autofile_size(&w->group.head, &size) != CMT_OK) {
+        return CMT_FAULT;
+    }
+    if (size == 0) {
+        return CMT_OK;
+    }
+    do {
+        fd = open(w->path, O_RDONLY | O_CLOEXEC);
+    } while (fd < 0 && errno == EINTR);
+    if (fd < 0) {
+        QGP_LOG_ERROR(LOG_TAG, "torn-tail check: open %s: %s", w->path,
+                      strerror(errno));
+        return CMT_FAULT;
+    }
+    while (off < size) {
+        int64_t  rem = size - off;
+        uint8_t  hdr[NODUS_CMT_WAL_RECORD_HEADER_LEN];
+        uint32_t crc, length;
+
+        if (rem < (int64_t)NODUS_CMT_WAL_RECORD_HEADER_LEN) {
+            cut = off;                                   /* torn header */
+            break;
+        }
+        if (wal_pread_all(fd, hdr, sizeof(hdr), off) != CMT_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "torn-tail check: read %s at %lld: %s",
+                          w->path, (long long)off, strerror(errno));
+            rc = CMT_FAULT;
+            break;
+        }
+        crc = get_be32(hdr);
+        length = get_be32(hdr + 4);
+        if (length == 0 || length > (uint32_t)CMT_WAL_MAX_MSG_SIZE_BYTES) {
+            break;                                       /* corruption */
+        }
+        if ((int64_t)length > rem - (int64_t)NODUS_CMT_WAL_RECORD_HEADER_LEN) {
+            cut = off;                                   /* torn body */
+            break;
+        }
+        if (wal_pread_all(fd, w->dec_buf, (size_t)length,
+                          off + (int64_t)NODUS_CMT_WAL_RECORD_HEADER_LEN)
+            != CMT_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "torn-tail check: read %s at %lld: %s",
+                          w->path, (long long)off, strerror(errno));
+            rc = CMT_FAULT;
+            break;
+        }
+        if (nodus_cmt_crc32_update(0, w->crc32c, w->dec_buf,
+                                   (size_t)length) != crc) {
+            break;                                       /* corruption */
+        }
+        off += (int64_t)NODUS_CMT_WAL_RECORD_HEADER_LEN + (int64_t)length;
+    }
+    (void)close(fd);
+    if (rc != CMT_OK || cut < 0) {
+        return rc;
+    }
+    QGP_LOG_WARN(LOG_TAG, "consensus WAL %s ends with a torn record: "
+                 "truncating from %lld to %lld bytes (the last complete "
+                 "record) before the first append", w->path, (long long)size,
+                 (long long)cut);
+    return nodus_cmt_autofile_truncate(&w->group.head, cut);
+}
+
 int nodus_cmt_wal_start(nodus_cmt_wal_t *w)
 {
     int64_t size = -1;
@@ -218,6 +334,10 @@ int nodus_cmt_wal_start(nodus_cmt_wal_t *w)
     }
     if (w->started) {
         return CMT_FAULT;                    /* service: already started */
+    }
+    /* HARDENING 1(a), before OnStart's own write (header: TORN TAIL) */
+    if (wal_trim_torn_tail(w) != CMT_OK) {
+        return CMT_FAULT;
     }
     /* :125-132 */
     if (nodus_cmt_autofile_size(&w->group.head, &size) != CMT_OK) {
@@ -654,7 +774,10 @@ static int wal_write_all(int fd, const uint8_t *p, size_t n)
 }
 
 /* libs/os/os.go:88-112 `CopyFile`: refuse a directory, create/truncate
- * the destination with the source's permission bits, copy everything. */
+ * the destination with the source's permission bits, copy everything.
+ * HARDENING (decision 2026-09-27-p2p-fix-2.md 1(b); os.go:108 closes
+ * without a sync): the copy is fsynced before it is closed, so the
+ * `.CORRUPTED` backup is durable before the head is replaced. */
 static int wal_copy_file(const char *src, const char *dst)
 {
     uint8_t     buf[65536];
@@ -695,10 +818,15 @@ static int wal_copy_file(const char *src, const char *dst)
             goto done;
         }
     }
+    if (fsync(out) != 0) {                                   /* HARDENING */
+        QGP_LOG_ERROR(LOG_TAG, "copy: fsync %s: %s", dst, strerror(errno));
+        goto done;
+    }
     rc = CMT_OK;
 done:
-    if (out >= 0) {
-        (void)close(out);                                    /* :108 defer */
+    if (out >= 0 && close(out) != 0 && rc == CMT_OK) {       /* :108 defer */
+        QGP_LOG_ERROR(LOG_TAG, "copy: close %s: %s", dst, strerror(errno));
+        rc = CMT_FAULT;
     }
     (void)close(in);                                         /* :93 defer  */
     return rc;
@@ -716,15 +844,32 @@ done:
  * length is "given empty slice" here and a CRC/unmarshal failure there —
  * the reference breaks on ANY error (:2641-2644), so the records kept are
  * the same. The handle opens `src` O_RDWR|O_APPEND (autofile.go:161)
- * where the reference opens it read-only; nothing is written to it. */
-static int wal_repair_file(const char *src, const char *dst, cmt_now_fn now,
-                           void *now_ctx)
+ * where the reference opens it read-only; nothing is written to it.
+ *
+ * HARDENING — decision 2026-09-27-p2p-fix-2.md 1(b); no reference
+ * counterpart. The reference's `os.Create(dst)` (:2628) truncates the
+ * head FIRST and re-encodes into it, so a crash in between leaves an
+ * empty or half-written head. Here the kept records go to `tmp` (same
+ * directory, a stale one removed first, created O_EXCL), which is
+ * fsynced, closed, renamed over `dst`, and the directory fsynced: a crash
+ * at any step leaves either the old head or the complete repaired one.
+ * When NO record survives, the temp file gets `EndHeight{0}` (stamped
+ * now) — the byte state the reference reaches one step later, when
+ * loadWalFile's OnStart finds the re-created head empty (wal.go:124-131)
+ * — so an EMPTY head, which would re-arm the one-time SQLite carry
+ * (`nodus_cmt_wal_carry_sqlite`), is never installed. A failure before
+ * the rename removes `tmp` and leaves `dst` untouched; a failed directory
+ * fsync AFTER the rename is CMT_FAULT with the complete head left in
+ * place (removing it would leave an absent head — the carry again). */
+static int wal_repair_file(const char *src, const char *dst, const char *tmp,
+                           const char *dir, cmt_now_fn now, void *now_ctx)
 {
     nodus_cmt_wal_t         *in;
     cmt_timed_wal_message_t *msg;
-    int                      out;
+    int                      out = -1;
     int                      rc = CMT_OK;
     int                      kept = 0;
+    bool                     renamed = false;
 
     in = (nodus_cmt_wal_t *)calloc(1, sizeof(*in));
     msg = (cmt_timed_wal_message_t *)malloc(sizeof(*msg));
@@ -738,12 +883,22 @@ static int wal_repair_file(const char *src, const char *dst, cmt_now_fn now,
         free(msg);
         return CMT_FAULT;
     }
-    /* :2628-2632 os.Create(dst) — O_RDWR|O_CREATE|O_TRUNC, 0666 */
+    /* :2628-2632 os.Create(dst) → HARDENING: a fresh temp file, not dst */
+    if (unlink(tmp) != 0 && errno != ENOENT) {
+        QGP_LOG_ERROR(LOG_TAG, "repair: remove stale %s: %s", tmp,
+                      strerror(errno));
+        nodus_cmt_wal_close(in);
+        free(in);
+        free(msg);
+        return CMT_FAULT;
+    }
     do {
-        out = open(dst, O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
+        /* 0600, not the reference's os.Create 0666: this file is renamed
+         * over the head, which autofile creates 0600 (ORCHESTRATOR). */
+        out = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
     } while (out < 0 && errno == EINTR);
     if (out < 0) {
-        QGP_LOG_ERROR(LOG_TAG, "repair: create %s: %s", dst, strerror(errno));
+        QGP_LOG_ERROR(LOG_TAG, "repair: create %s: %s", tmp, strerror(errno));
         nodus_cmt_wal_close(in);
         free(in);
         free(msg);
@@ -765,7 +920,47 @@ static int wal_repair_file(const char *src, const char *dst, cmt_now_fn now,
         }
         kept++;
     }
-    (void)close(out);                                    /* :2632 defer */
+    if (rc == CMT_OK && kept == 0) {
+        /* HARDENING: never an empty head (see above) */
+        size_t len = 0;
+
+        memset(msg, 0, sizeof(*msg));
+        msg->msg.kind = CMT_PB_WAL_END_HEIGHT;
+        msg->msg.u.end_height.height = 0;                /* wal.go:129 */
+        if (now(now_ctx, &msg->time) != CMT_OK ||
+            wal_frame(in, msg, &len) != CMT_OK ||
+            wal_write_all(out, in->enc_buf, len) != CMT_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "repair: failed to write "
+                          "EndHeight{0} into the empty repaired head");
+            rc = CMT_FAULT;
+        }
+    }
+    if (rc == CMT_OK && fsync(out) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "repair: fsync %s: %s", tmp, strerror(errno));
+        rc = CMT_FAULT;
+    }
+    if (close(out) != 0 && rc == CMT_OK) {               /* :2632 defer */
+        QGP_LOG_ERROR(LOG_TAG, "repair: close %s: %s", tmp, strerror(errno));
+        rc = CMT_FAULT;
+    }
+    out = -1;
+    if (rc == CMT_OK) {
+        if (rename(tmp, dst) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "repair: rename %s -> %s: %s", tmp, dst,
+                          strerror(errno));
+            rc = CMT_FAULT;
+        } else {
+            renamed = true;
+        }
+    }
+    if (renamed && nodus_cmt_fsync_dir(dir) != CMT_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "repair: the rename onto %s is not durable; "
+                      "the repaired head stays in place", dst);
+        rc = CMT_FAULT;
+    }
+    if (!renamed) {
+        (void)unlink(tmp);
+    }
     nodus_cmt_wal_close(in);                             /* :2626 defer */
     free(in);
     free(msg);
@@ -777,11 +972,16 @@ static int wal_repair_file(const char *src, const char *dst, cmt_now_fn now,
 
 int nodus_cmt_wal_repair(nodus_cmt_wal_t *w)
 {
-    char       path[NODUS_CMT_AUTOFILE_PATH_MAX];
-    char       corrupted[NODUS_CMT_AUTOFILE_PATH_MAX + 16];
-    cmt_now_fn now;
-    void      *now_ctx;
-    int        n;
+    char        path[NODUS_CMT_AUTOFILE_PATH_MAX];
+    char        corrupted[NODUS_CMT_AUTOFILE_PATH_MAX + 16];
+    char        dir[NODUS_CMT_AUTOFILE_PATH_MAX];
+    char        tmp[NODUS_CMT_AUTOFILE_PATH_MAX +
+                    sizeof(NODUS_CMT_WAL_REPAIR_TMP_NAME)];
+    const char *slash;
+    const char *base;
+    cmt_now_fn  now;
+    void       *now_ctx;
+    int         n;
 
     if (!w || !w->path[0] || !w->now) {
         return CMT_FAULT;
@@ -795,6 +995,31 @@ int nodus_cmt_wal_repair(nodus_cmt_wal_t *w)
         (size_t)n >= NODUS_CMT_AUTOFILE_PATH_MAX) {
         return CMT_FAULT;
     }
+    /* HARDENING 1(b): the temp file beside the head. Its name must not
+     * start with the head's base name, or readGroupInfo's prefix match
+     * (group.go:380) would count it into the group. */
+    slash = strrchr(path, '/');
+    if (!slash) {
+        memcpy(dir, ".", 2);
+        base = path;
+    } else if (slash == path) {
+        memcpy(dir, "/", 2);
+        base = slash + 1;
+    } else {
+        memcpy(dir, path, (size_t)(slash - path));
+        dir[slash - path] = '\0';
+        base = slash + 1;
+    }
+    if (strncmp(NODUS_CMT_WAL_REPAIR_TMP_NAME, base, strlen(base)) == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "repair: the temp name %s would match the "
+                      "WAL head's prefix %s", NODUS_CMT_WAL_REPAIR_TMP_NAME,
+                      base);
+        return CMT_FAULT;
+    }
+    n = snprintf(tmp, sizeof(tmp), "%s/%s", dir, NODUS_CMT_WAL_REPAIR_TMP_NAME);
+    if (n < 0 || (size_t)n >= sizeof(tmp)) {
+        return CMT_FAULT;
+    }
 
     /* :359-361 cs.wal.Stop() — ErrNotStarted on a WAL never started */
     if (!w->started) {
@@ -803,14 +1028,16 @@ int nodus_cmt_wal_repair(nodus_cmt_wal_t *w)
     }
     nodus_cmt_wal_close(w);
 
-    /* :366-369 */
-    if (wal_copy_file(path, corrupted) != CMT_OK) {
+    /* :366-369 — made, and (HARDENING 1(b)) durable with its directory
+     * entry, before anything is rewritten */
+    if (wal_copy_file(path, corrupted) != CMT_OK ||
+        nodus_cmt_fsync_dir(dir) != CMT_OK) {
         return CMT_FAULT;
     }
     QGP_LOG_DEBUG(LOG_TAG, "backed up WAL file %s -> %s", path, corrupted);
 
-    /* :374-377 — the WAL file is overwritten */
-    if (wal_repair_file(corrupted, path, now, now_ctx) != CMT_OK) {
+    /* :374-377 — the WAL file is replaced (HARDENING 1(b): temp + rename) */
+    if (wal_repair_file(corrupted, path, tmp, dir, now, now_ctx) != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG, "%s", "the WAL repair failed");
         return CMT_FAULT;
     }
@@ -969,6 +1196,22 @@ static int carry_check_row(int64_t row_height, int64_t row_seq, int row_kind,
                       (long long)row_seq, (long long)row_height);
         return CMT_FAULT;
     }
+    /* Decision 2026-09-27-p2p-fix-2.md item 1: the file reader's check,
+     * the same way (wal_decode above — msgs.go:232-234 inside wal.go:410's
+     * WALFromProto). A carried MsgInfo that fails ValidateBasic would be a
+     * DataCorruptionError on the first replay, and that replay's repair
+     * would cut the carried tail at it; so it is refused here, as a bad
+     * row, before anything is written. */
+    if (tw->msg.kind == CMT_PB_WAL_MSG_INFO) {
+        rc = cmt_msg_validate_basic(&tw->msg.u.msg_info.msg);
+        if (rc != CMT_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "carry: cmt_wal row seq %lld height %lld: "
+                          "its message fails ValidateBasic (kind %d, rc %d)",
+                          (long long)row_seq, (long long)row_height,
+                          (int)tw->msg.u.msg_info.msg.kind, rc);
+            return CMT_FAULT;
+        }
+    }
     *out_p = p;
     *out_plen = plen;
     return CMT_OK;
@@ -1003,29 +1246,6 @@ static int carry_query_int64(sqlite3 *db, const char *sql, bool bind_protocol,
     *out = (int64_t)sqlite3_column_int64(st, col);
     sqlite3_finalize(st);
     return CMT_OK;
-}
-
-/* fsync(2) of a directory, so a rename inside it is durable. */
-static int carry_fsync_dir(const char *dir)
-{
-    int fd;
-    int rc = CMT_OK;
-
-    do {
-        fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    } while (fd < 0 && errno == EINTR);
-    if (fd < 0) {
-        QGP_LOG_ERROR(LOG_TAG, "carry: open directory %s: %s", dir,
-                      strerror(errno));
-        return CMT_FAULT;
-    }
-    if (fsync(fd) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "carry: fsync directory %s: %s", dir,
-                      strerror(errno));
-        rc = CMT_FAULT;
-    }
-    (void)close(fd);
-    return rc;
 }
 
 int nodus_cmt_wal_carry_sqlite(sqlite3 *db, const char *wal_file,
@@ -1250,7 +1470,7 @@ int nodus_cmt_wal_carry_sqlite(sqlite3 *db, const char *wal_file,
         goto out;
     }
     renamed = true;
-    if (carry_fsync_dir(dir) != CMT_OK) {
+    if (nodus_cmt_fsync_dir(dir) != CMT_OK) {
         /* the head is in place but its name may not survive a power cut;
          * refuse to start rather than sign on a WAL that may vanish —
          * and remove it, so the next start carries again */

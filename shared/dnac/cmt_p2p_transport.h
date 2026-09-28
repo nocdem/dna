@@ -106,7 +106,10 @@
  * Monitor refused, the MConnection is parked, an upgrade holds for its
  * job). That step can close the connection or stop its peer (their
  * callbacks); the host names the connection again by (slot, generation)
- * after every call.
+ * after every call. The WRITE side calls it with `with_recv` false (the
+ * send half only): only the read side and the tick deliver messages, so
+ * the queue-share rotation has exactly two drivers (decision
+ * 2026-09-27-p2p-fix-2.md (4)).
  *
  * ── DEVIATIONS (proposed rows) ─────────────────────────────────────────
  *   R-P2P-3   generation per connection (design).
@@ -239,11 +242,21 @@ typedef struct {
      *  a peer connection's socket (`cmt_p2p_transport_may_receive`).
      *  Handshakes are never gated. May be NULL (= always true). */
     bool (*may_receive)(void *ctx);
-    /** Is the queue behind `may_receive` nearly full? While true a peer
-     *  connection delivers ONE message per pump and the loop moves on to
-     *  the next peer — the Go runtime's FIFO hand-out of freed channel
-     *  slots to the blocked recvRoutines. May be NULL (= never). */
+    /** Is the queue behind `may_receive` CONTENDED (too little room left
+     *  for every connected peer's share)? While true a peer connection
+     *  delivers ONE queue-entering message per pump and the loop moves on
+     *  to the next peer, sweep after sweep while room remains — the Go
+     *  runtime's FIFO hand-out of freed channel slots to the blocked
+     *  recvRoutines (decision 2026-09-27-p2p-fix-2.md (4)). May be NULL
+     *  (= never). */
     bool (*recv_near_full)(void *ctx);
+    /** A value that changes exactly when a delivered message takes an
+     *  entry of the queue behind `may_receive` (cmt_p2p_recv_gate_t
+     *  `queue_mark`): the pump tells a queue-entering message from one
+     *  that takes none (ping / pong, HasVote, mempool, PEX, …), and only
+     *  the first kind is a peer's turn. May be NULL (= every delivered
+     *  message counts). */
+    uint64_t (*queue_mark)(void *ctx);
 } cmt_p2p_transport_host_t;
 
 /** The node's own keys and the transport's settings. */
@@ -298,8 +311,9 @@ typedef struct {
     int      n_slots;
     uint64_t next_gen;
     int      n_inbound;                       /* LimitListener in use     */
-    /* The slot whose peer the tick last SERVED (delivered >= 1 message);
-     * the next tick starts just past it (cmt_p2p_transport_tick). -1 =
+    /* The slot whose peer the tick last SERVED (delivered >= 1
+     * queue-entering message, cmt_p2p_peer_pump's count); the next tick
+     * starts just past it (cmt_p2p_transport_tick). -1 =
      * none yet. */
     int      recv_last_served;
 
@@ -429,7 +443,12 @@ int cmt_p2p_transport_job_done(cmt_p2p_transport_t *t, cmt_p2p_hs_job_t *job);
 /** One pass: deadlines, upgrade steps and job submission for every
  *  connection being upgraded, and `cmt_p2p_peer_pump` for every peer
  *  connection, in slot order starting just past the slot last served
- *  (`recv_last_served`, atlas-dec-efa4d29c's round-robin form).
+ *  (`recv_last_served`, atlas-dec-efa4d29c's round-robin form). While
+ *  the host's queue is CONTENDED after that sweep (`recv_near_full`) and
+ *  has room (`may_receive`), further sweeps in the same order ask again
+ *  every peer that delivered a queue-entering message in the sweep
+ *  before — one such message per peer per sweep — until the room is used
+ *  or nobody delivers (decision 2026-09-27-p2p-fix-2.md (4)).
  *  (The host also runs the per-connection step
  *  between socket reads / writes: `cmt_p2p_transport_pump_conn`.) */
 void cmt_p2p_transport_tick(cmt_p2p_transport_t *t);
@@ -440,13 +459,17 @@ void cmt_p2p_transport_tick(cmt_p2p_transport_t *t);
  * upgrade step for one being upgraded (secret connection / NodeInfo
  * exchange); nothing for a dialing or an upgraded-not-yet-wrapped one, or
  * when (slot, gen) no longer names a connection. The host's continuous
- * read / write (file header, "THE HOST'S BYTES"). It may close the
- * connection (the host's `close` runs inside) or stop its peer; the peer
- * object itself is freed only at the end of the switch's tick (or by
- * cmt_p2p_switch_free), never inside this call.
+ * read / write (file header, "THE HOST'S BYTES"). `with_recv` false runs
+ * a peer connection's SEND half only (the gate's `send_only`): the
+ * host's WRITE path must never deliver a message, or it would hand a peer
+ * queue room outside the tick's and the read path's rotation (RT2 A-F3);
+ * an upgrade step always runs whole (handshakes are never gated). It may
+ * close the connection (the host's `close` runs inside) or stop its peer;
+ * the peer object itself is freed only at the end of the switch's tick
+ * (or by cmt_p2p_switch_free), never inside this call.
  */
 void cmt_p2p_transport_pump_conn(cmt_p2p_transport_t *t, int slot,
-                                 uint64_t gen);
+                                 uint64_t gen, bool with_recv);
 
 /** False only when (slot, gen) is a PEER connection and the host's
  *  `may_receive` answers false: the host must then not read that socket
@@ -458,8 +481,8 @@ bool cmt_p2p_transport_may_receive(cmt_p2p_transport_t *t, int slot,
 /** True only when (slot, gen) is a PEER connection and the host's
  *  `recv_near_full` answers true: the host's continuous read should
  *  move on to the next connection after ONE step (that step delivered
- *  at most one message, cmt_p2p_peer_pump). False for every other state,
- *  for a dead (slot, gen), and when the row is NULL. */
+ *  at most one queue-entering message, cmt_p2p_peer_pump). False for
+ *  every other state, for a dead (slot, gen), and when the row is NULL. */
 bool cmt_p2p_transport_recv_near_full(cmt_p2p_transport_t *t, int slot,
                                       uint64_t gen);
 

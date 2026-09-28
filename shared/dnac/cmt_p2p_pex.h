@@ -143,6 +143,34 @@ extern "C" {
 #define CMT_P2P_PEX_DEFAULT_ENSURE_PEERS_PERIOD_NS \
     (30LL * 1000 * 1000 * 1000)                                   /* :34 */
 #define CMT_P2P_PEX_MAX_ATTEMPTS_TO_DIAL   16                     /* :44 */
+
+/** The dial-attempt table's bound (RT2 D-F2; the reference's
+ *  attemptsToDial sync.Map, :95, is unbounded and never pruned): the most
+ *  distinct addresses the address book can hold — every entry sits in at
+ *  least one bucket, so NEW_BUCKET_COUNT × NEW_BUCKET_SIZE + OLD_BUCKET_
+ *  COUNT × OLD_BUCKET_SIZE = 256 × 64 + 64 × 64 = 20 480 (pex/params.go
+ *  :13-22). dialPeer is only called for an address picked from the book,
+ *  and an entry whose address left the book is swept before every
+ *  ensurePeers, so the table cannot need more; the bound and its eviction
+ *  (the entry dialed longest ago leaves first) only guard the time between
+ *  two sweeps. Lookup is a binary search over the table sorted by dial
+ *  string. No reference counterpart. */
+#define CMT_P2P_PEX_ATD_MAX \
+    (CMT_P2P_AB_NEW_BUCKET_COUNT * CMT_P2P_AB_NEW_BUCKET_SIZE + \
+     CMT_P2P_AB_OLD_BUCKET_COUNT * CMT_P2P_AB_OLD_BUCKET_SIZE)
+
+/** A BONDED ID is never abandoned (RT2 D-F2 / Codex 8-9): past
+ *  CMT_P2P_PEX_MAX_ATTEMPTS_TO_DIAL it is NOT marked bad and dropped
+ *  (:538-541) — it keeps being dialed, its backoff capped at
+ *  2^CMT_P2P_PEX_BONDED_MAX_BACKOFF_EXP s + jitter (:544-552's formula
+ *  with the exponent held there): 256 s ≈ 4.3 min between two dials once
+ *  the failures pile up, against 2^16 s ≈ 18 h at the reference's last
+ *  attempt. Its count restarts at 0 on an authenticated connection
+ *  (either direction) and when the book accepts a newer signed ADDR record
+ *  for it. ⚠ NOT GROUNDED — the number: a validator back online is
+ *  re-reached within minutes, and 8 ensurePeers periods (30 s, :34) pass
+ *  between two dials, so a dead validator costs one dial per 4 min. */
+#define CMT_P2P_PEX_BONDED_MAX_BACKOFF_EXP 8
 #define CMT_P2P_PEX_BIAS_TO_SELECT_NEW_PEERS 30                   /* :49 */
 #define CMT_P2P_PEX_DEFAULT_BAN_TIME_NS \
     (24LL * 3600 * 1000 * 1000 * 1000)                            /* :52 */
@@ -245,7 +273,8 @@ void cmt_p2p_pex_send_addrs(cmt_p2p_pex_t *r, cmt_p2p_peer_t *p,
 /** pex_reactor.go:401-403 SetEnsurePeersPeriod. */
 void cmt_p2p_pex_set_ensure_peers_period(cmt_p2p_pex_t *r, int64_t ns);
 
-/** pex_reactor.go:632-638 AttemptsToDial. */
+/** pex_reactor.go:632-638 AttemptsToDial (0 for an address the table
+ *  does not hold). */
 int  cmt_p2p_pex_attempts_to_dial(const cmt_p2p_pex_t *r,
                                   const cmt_p2p_netaddr_t *addr);
 

@@ -73,17 +73,31 @@ int nodus_witness_v2_join_active(nodus_witness_t *w);
 /**
  * Joiner tick: while armed and at least one p2p peer is connected, send a
  * bounded bundle-chunk request (channel 0x70) at the accumulated offset
- * to the next peer in round-robin order (self-throttled). No-op once
- * adopted. Called from the witness tick.
+ * to this download's ONE source peer (self-throttled, one request per
+ * interval). A source whose previous request went unanswered for a whole
+ * interval is excluded for this join attempt; a new source is the next
+ * non-excluded connected peer in round-robin order and starts from
+ * offset 0 (decision 2026-09-27-p2p-fix-2.md (3)). No-op once adopted.
+ * Called from the witness tick.
  */
 void nodus_witness_v2_join_tick(nodus_witness_t *w);
+
+/** Whether `peer_id` is excluded as a genesis-bundle source for the rest
+ *  of this join attempt (its total changed, it refused or left
+ *  unanswered a chunk, or its bundle failed at adopt). */
+bool nodus_witness_v2_join_is_excluded(const nodus_witness_t *w,
+                                       const char *peer_id);
 
 /**
  * Channel 0x70 response (the former verb 25) from the connected peer
  * `peer_id` — accumulate a genesis-bundle chunk, but ONLY when it answers
- * this joiner's one outstanding request (that peer, that offset —
- * nodus_witness_p2p_gb_take); any other response is dropped, its sender
- * never stopped (red-team H2). On the final chunk,
+ * this joiner's one outstanding request (that peer — the download's one
+ * source — that offset; nodus_witness_p2p_gb_take); any other response is
+ * dropped, its sender never stopped (red-team H2). An answer the download
+ * cannot use (another pin, an empty chunk, a total out of range or
+ * CHANGED) excludes the source and drops the bytes; so does a complete
+ * bundle that fails at adopt (decision 2026-09-27-p2p-fix-2.md (3)). On
+ * the final chunk,
  * re-derive the genesis against the local pin and, on a match, adopt the
  * successor DB in place, open the main witness on it and build its
  * cometbft server binding (R3 W3 delta 9 — the node becomes an ordinary,

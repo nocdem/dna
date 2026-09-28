@@ -70,8 +70,8 @@ typedef enum {
     NODUS_T3_V2_GBUNDLE_REQ = 24,  /* channel 0x70 {c, p, o}             */
     NODUS_T3_V2_GBUNDLE_RSP = 25,  /* channel 0x70 {c, p, t, o, d}       */
     NODUS_T3_CC_APPR_REQ    = 40,  /* channel 0x71 {e}                   */
-    NODUS_T3_CC_APPR_RSP    = 41,  /* channel 0x71 {ok, i, s, sh, ep} or
-                                                  {ok, r}                */
+    NODUS_T3_CC_APPR_RSP    = 41,  /* channel 0x71 {ok, i, s, sh, ep, rq}
+                                                  or {ok, r, rq}         */
 } nodus_t3_msg_type_t;
 
 /** O15E Faz D — genesis bundle REQUEST. Offset-chunked pull.
@@ -111,10 +111,31 @@ typedef struct {
     size_t         e_len;
 } nodus_t3_cc_appr_req_t;
 
+/** The length of a 0x71 response's request identity (`rq`, below): a
+ *  SHA3-512 digest. */
+#define NODUS_T3_CC_APPR_RQ_BYTES 64u
+
 /** SYSTEM-governance approval RESPONSE: one committee seat's answer.
  *  ok=true: seat/sig/set_hash/epoch are the signed "DNA.CCAPPR.v1"
  *  approval (nodus_rt_cc_approval_digest); reason is empty.
- *  ok=false: only reason is meaningful (UTF-8, NUL-terminated). */
+ *  ok=false: only reason is meaningful (UTF-8, NUL-terminated).
+ *  BOTH forms carry `rq` (key "rq", 64 bytes): the REQUEST IDENTITY —
+ *  SHA3-512 of the request's `e` bytes, the envelope the responder was
+ *  asked about (computed by the responder and the collector,
+ *  nodus_witness_chain_config.c; this layer only carries it). Decision
+ *  docs/plans/decisions/2026-09-27-p2p-fix-2.md (2): the collector takes
+ *  a response only when `rq` equals the id of the request it sent, so a
+ *  late answer to an EARLIER collection (another envelope) cannot pass as
+ *  an answer to the current one. It is a CORRELATION id, not a security
+ *  binding: the approval's authority is its signature over the approval
+ *  digest, verified by the CLI against the seat key and by the SYSTEM
+ *  runtime at execution (decision 2026-09-26-cc-approval-via-own-node.md,
+ *  header) — which is why it carries no domain separator. Chosen over the
+ *  approval digest because the collector never computes that digest (it
+ *  needs the responder's seat and preflight), while `e` is held by both
+ *  sides as sent. A second request with the SAME envelope has the same
+ *  id; an answer to either is a valid answer to both. Wire change on
+ *  channel 0x71 only (R-P2P-5). */
 typedef struct {
     bool     ok;
     uint16_t seat;
@@ -122,14 +143,16 @@ typedef struct {
     uint8_t  set_hash[64];
     uint64_t epoch;
     char     reason[129];   /* <= 128 chars + NUL, D-16 rev 7 "r: tstr <= 128" */
+    uint8_t  rq[NODUS_T3_CC_APPR_RQ_BYTES];   /* the request identity   */
 } nodus_t3_cc_appr_rsp_t;
 
 /** The request's `e` ceiling: the engine's own envelope bound, so this
  *  layer can never refuse an envelope the engine would accept. The
  *  response's ceiling is its variable fields' worst case (a 4627-byte
- *  signature, a 64-byte set hash, headroom for the refusal string). */
+ *  signature, a 64-byte set hash, the 64-byte request id, headroom for
+ *  the refusal string). */
 #define NODUS_T3_CC_APPR_E_MAX    DNA_ENV_MAX_TOTAL_LEN
-#define NODUS_T3_CC_APPR_RSP_MAX  (4627u + 64u + 256u)
+#define NODUS_T3_CC_APPR_RSP_MAX  (4627u + 64u + NODUS_T3_CC_APPR_RQ_BYTES + 256u)
 
 /** The largest message each channel carries — its descriptor's
  *  RecvMessageCapacity (nodus_witness_p2p.c). The slack covers the map

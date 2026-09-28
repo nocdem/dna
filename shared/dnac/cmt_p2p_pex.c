@@ -47,11 +47,17 @@ typedef struct {
     int64_t  last_push_out;
 } pex_peer_t;
 
-/* :125-128 _attemptsToDial, keyed by DialString (:528). */
+/* :125-128 _attemptsToDial, keyed by DialString (:528) — an array SORTED
+ * by `dial` (binary search; RT2 D-F2), at most CMT_P2P_PEX_ATD_MAX entries
+ * (header). `addr` (with its ID) and `rec_seq` serve the sweep and the
+ * bonded reset (atd_sweep, pex_add_peer). */
 typedef struct {
     char    dial[CMT_P2P_NETADDR_STR_MAX];
+    cmt_p2p_netaddr_t addr;         /* the address dialed, ID included     */
     int     number;
     int64_t last_dialed;
+    uint64_t rec_seq;               /* the book's signed-record seq for the
+                                       ID when stored; 0 = none held       */
 } atd_t;
 
 /* A dialPeer call whose DialPeerWithAddress has not returned yet. */
@@ -187,18 +193,46 @@ static void peer_state_delete(cmt_p2p_pex_t *r, const char *id)
     }
 }
 
+/* The insertion point of dial string `d` in the sorted table; `*found`
+ * says whether an entry is there. O(log n) (RT2 D-F2: it was a linear
+ * strcmp scan on every dial). */
+static int atd_search(const cmt_p2p_pex_t *r, const char *d, bool *found)
+{
+    int lo = 0, hi = r->n_atd;
+
+    while (lo < hi) {
+        int mid = lo + (hi - lo) / 2;
+        int c = strcmp(r->atd[mid].dial, d);
+
+        if (c == 0) {
+            *found = true;
+            return mid;
+        }
+        if (c < 0) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    *found = false;
+    return lo;
+}
+
 static int atd_index(const cmt_p2p_pex_t *r, const cmt_p2p_netaddr_t *addr)
 {
     char d[CMT_P2P_NETADDR_STR_MAX];
+    bool found;
     int i;
 
     (void)cmt_p2p_netaddr_dial_string(addr, d, sizeof(d));
-    for (i = 0; i < r->n_atd; i++) {
-        if (strcmp(r->atd[i].dial, d) == 0) {
-            return i;
-        }
-    }
-    return -1;
+    i = atd_search(r, d, &found);
+    return found ? i : -1;
+}
+
+static void atd_delete_at(cmt_p2p_pex_t *r, int i)
+{
+    memmove(&r->atd[i], &r->atd[i + 1], (size_t)(r->n_atd - i - 1) * sizeof(r->atd[0]));
+    r->n_atd--;
 }
 
 static void atd_delete(cmt_p2p_pex_t *r, const cmt_p2p_netaddr_t *addr)
@@ -206,28 +240,100 @@ static void atd_delete(cmt_p2p_pex_t *r, const cmt_p2p_netaddr_t *addr)
     int i = atd_index(r, addr);
 
     if (i >= 0) {
-        memmove(&r->atd[i], &r->atd[i + 1], (size_t)(r->n_atd - i - 1) * sizeof(r->atd[0]));
-        r->n_atd--;
+        atd_delete_at(r, i);
     }
+}
+
+/* The seq of the signed record the book holds for `id`; 0 = none. */
+static uint64_t atd_book_seq(const cmt_p2p_pex_t *r, const char *id)
+{
+    uint64_t seq = 0;
+
+    if (cmt_p2p_addrbook_record(r->book, id, &seq) == NULL) {
+        return 0;
+    }
+    return seq;
 }
 
 static void atd_store(cmt_p2p_pex_t *r, const cmt_p2p_netaddr_t *addr, int number,
                       int64_t when)
 {
-    int i = atd_index(r, addr);
+    char d[CMT_P2P_NETADDR_STR_MAX];
+    bool found;
+    int i;
     void *na;
 
-    if (i < 0) {
+    (void)cmt_p2p_netaddr_dial_string(addr, d, sizeof(d));
+    i = atd_search(r, d, &found);
+    if (!found) {
+        if (r->n_atd >= CMT_P2P_PEX_ATD_MAX) {
+            /* Full (header): the entry dialed LONGEST ago leaves — the
+             * lowest index among equals, so the choice is the table's own
+             * order, never the allocator's. */
+            int k, oldest = 0;
+
+            for (k = 1; k < r->n_atd; k++) {
+                if (r->atd[k].last_dialed < r->atd[oldest].last_dialed) {
+                    oldest = k;
+                }
+            }
+            atd_delete_at(r, oldest);
+            i = atd_search(r, d, &found);
+        }
         na = grow(r->atd, &r->cap_atd, r->n_atd, sizeof(*r->atd));
         if (na == NULL) {
             return;
         }
         r->atd = (atd_t *)na;
-        i = r->n_atd++;
-        (void)cmt_p2p_netaddr_dial_string(addr, r->atd[i].dial, sizeof(r->atd[i].dial));
+        memmove(&r->atd[i + 1], &r->atd[i], (size_t)(r->n_atd - i) * sizeof(r->atd[0]));
+        r->n_atd++;
+        memset(&r->atd[i], 0, sizeof(r->atd[i]));
+        memcpy(r->atd[i].dial, d, sizeof(d));
     }
+    r->atd[i].addr = *addr;
     r->atd[i].number = number;
     r->atd[i].last_dialed = when;
+    r->atd[i].rec_seq = atd_book_seq(r, addr->id);
+}
+
+/*
+ * The table's upkeep (RT2 D-F2 / Codex 8-9), run before every
+ * ensurePeers: an entry whose address LEFT the book (removed, banned, or
+ * the ID's entry moved to another IP / port) is deleted — dialPeer is only
+ * ever called for an address picked from the book, so such an entry can
+ * never be read again; and a BONDED ID whose book now holds a NEWER
+ * signed ADDR record than when its entry was stored starts again from 0
+ * attempts (a validator that moved announces it with a new record; its
+ * failures at the old address say nothing about the new one). No
+ * reference counterpart: the reference's sync.Map is never pruned
+ * (pex_reactor.go:95, :528-574) and has no bonded set.
+ */
+static void atd_sweep(cmt_p2p_pex_t *r)
+{
+    int i;
+
+    for (i = r->n_atd - 1; i >= 0; i--) {         /* backwards: deletions */
+        const atd_t *e = &r->atd[i];
+
+        if (!cmt_p2p_addrbook_holds_exact(r->book, &e->addr) ||
+            (cmt_p2p_addrbook_is_bonded(r->book, e->addr.id) &&
+             atd_book_seq(r, e->addr.id) > e->rec_seq)) {
+            atd_delete_at(r, i);
+        }
+    }
+}
+
+/* A bonded ID authenticated a connection (either direction): every
+ * attempt count kept for it restarts at 0 (header). */
+static void atd_reset_id(cmt_p2p_pex_t *r, const char *id)
+{
+    int i;
+
+    for (i = r->n_atd - 1; i >= 0; i--) {
+        if (strcmp(r->atd[i].addr.id, id) == 0) {
+            atd_delete_at(r, i);
+        }
+    }
 }
 
 /* ══ the message codec ════════════════════════════════════════════════ */
@@ -707,6 +813,13 @@ static void pex_add_peer(void *ctx, cmt_p2p_peer_t *p)
     cmt_p2p_pex_t *r = (cmt_p2p_pex_t *)ctx;
     pex_peer_t *s;
 
+    /* A BONDED peer's dial attempts restart at 0 on any authenticated
+     * connection, inbound too (the switch adds only authenticated peers;
+     * the reference forgets attempts only on its own successful dial,
+     * :571-572) — header, RT2 D-F2. */
+    if (cmt_p2p_addrbook_is_bonded(r->book, cmt_p2p_peer_id(p))) {
+        atd_reset_id(r, cmt_p2p_peer_id(p));
+    }
     if (cmt_p2p_peer_is_outbound(p)) {                     /* :194-200 */
         if (cmt_p2p_addrbook_need_more_addrs(r->book)) {
             cmt_p2p_pex_request_addrs(r, p);
@@ -1158,20 +1271,30 @@ static void dial_peer(cmt_p2p_pex_t *r, const cmt_p2p_netaddr_t *addr)
 {
     int64_t last, now = px_now(r);
     int attempts = dial_attempts_info(r, addr, &last);     /* :537 */
+    bool bonded = cmt_p2p_addrbook_is_bonded(r->book, addr->id);
+    int exp_attempts = attempts;
     void *na;
     int rc, i;
 
-    if (!cmt_p2p_switch_is_peer_persistent(r->sw, addr) &&
+    /* A BONDED ID is never abandoned (RT2 D-F2, header): the terminal
+     * branch below would MarkBad it — a no-op for a bonded ID
+     * (cmt_p2p_addrbook_mark_bad) — and return on every later tick, i.e.
+     * never dial a validator again. It keeps being dialed with its backoff
+     * capped instead. */
+    if (!bonded && !cmt_p2p_switch_is_peer_persistent(r->sw, addr) &&
         attempts > CMT_P2P_PEX_MAX_ATTEMPTS_TO_DIAL) {     /* :538-541 */
         cmt_p2p_addrbook_mark_bad(r->book, addr, CMT_P2P_PEX_DEFAULT_BAN_TIME_NS);
         QGP_LOG_DEBUG(LOG_TAG, "reached max attempts %d to dial %s",
                       CMT_P2P_PEX_MAX_ATTEMPTS_TO_DIAL, addr->id);
         return;
     }
+    if (bonded && exp_attempts > CMT_P2P_PEX_BONDED_MAX_BACKOFF_EXP) {
+        exp_attempts = CMT_P2P_PEX_BONDED_MAX_BACKOFF_EXP;
+    }
     if (attempts > 0) {                                    /* :544-552 */
         double f = (double)px_rand(r, (int64_t)1 << 53) / (double)((int64_t)1 << 53);
         int64_t jitter = (int64_t)(f * 1e9);
-        uint64_t mult = attempts >= 64 ? 0 : ((uint64_t)1 << (unsigned)attempts);
+        uint64_t mult = exp_attempts >= 64 ? 0 : ((uint64_t)1 << (unsigned)exp_attempts);
         int64_t backoff = (int64_t)((uint64_t)jitter +
                                     mult * (uint64_t)1000000000ULL);  /* Go wraps */
 
@@ -1218,7 +1341,10 @@ static void on_dial(void *ctx, const cmt_p2p_netaddr_t *addr, int err)
             if (err == CMT_P2P_ERR_SWITCH_AUTH_FAILURE) {
                 atd_delete(r, addr);                       /* :562-564 */
             } else {
-                atd_store(r, addr, attempts + 1, px_now(r));   /* :565-566 */
+                /* :565-566; the count saturates (a bonded ID is dialed
+                 * without end, dial_peer) */
+                atd_store(r, addr, attempts < INT32_MAX ? attempts + 1 : attempts,
+                          px_now(r));
             }
             QGP_LOG_DEBUG(LOG_TAG, "dialing failed (attempts: %d): %s",
                           attempts + 1, cmt_p2p_err_str(err));
@@ -1305,6 +1431,7 @@ static void ensure_peers(cmt_p2p_pex_t *r, bool period_elapsed)
     int out = 0, in = 0, dial = 0, num_to_dial, new_bias, max_attempts, i, n_to = 0;
     cmt_p2p_netaddr_t *to_dial;
 
+    atd_sweep(r);                        /* the table's upkeep (RT2 D-F2) */
     cmt_p2p_switch_num_peers(r->sw, &out, &in, &dial);     /* :445 */
     num_to_dial = cmt_p2p_switch_max_num_outbound_peers(r->sw) - (out + dial);  /* :446 */
     QGP_LOG_INFO(LOG_TAG, "Ensure peers numOutPeers=%d numInPeers=%d numDialing=%d "

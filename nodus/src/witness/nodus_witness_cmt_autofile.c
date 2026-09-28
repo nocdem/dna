@@ -21,16 +21,114 @@
 
 #define LOG_TAG "W_CMTAUTOFILE"
 
+/* ══ directory durability (HARDENING, no reference counterpart) ═════════ */
+
+/* filepath.Dir / filepath.Base of a path, into caller buffers. */
+static int g_split(const char *path, char *dir, size_t dcap,
+                   const char **base)
+{
+    const char *slash = strrchr(path, '/');
+    size_t      dl;
+
+    if (!slash) {
+        if (dcap < 2) {
+            return CMT_FAULT;
+        }
+        dir[0] = '.';
+        dir[1] = '\0';
+        *base = path;
+        return CMT_OK;
+    }
+    dl = (size_t)(slash - path);
+    if (dl == 0) {
+        dl = 1;                                          /* "/wal" → "/" */
+    }
+    if (dl >= dcap) {
+        return CMT_FAULT;
+    }
+    memcpy(dir, path, dl);
+    dir[dl] = '\0';
+    *base = slash + 1;
+    return CMT_OK;
+}
+
+int nodus_cmt_fsync_dir(const char *dir)
+{
+    int fd;
+    int rc;
+
+    if (!dir || !dir[0]) {
+        return CMT_FAULT;
+    }
+    do {
+        fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    } while (fd < 0 && errno == EINTR);
+    if (fd < 0) {
+        QGP_LOG_ERROR(LOG_TAG, "open directory %s: %s", dir, strerror(errno));
+        return CMT_FAULT;
+    }
+    do {
+        rc = fsync(fd);
+    } while (rc != 0 && errno == EINTR);
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "fsync directory %s: %s", dir,
+                      strerror(errno));
+    }
+    (void)close(fd);
+    return rc == 0 ? CMT_OK : CMT_FAULT;
+}
+
+/* nodus_cmt_fsync_dir of the directory holding `path`. */
+static int af_fsync_parent(const char *path)
+{
+    char        dir[NODUS_CMT_AUTOFILE_PATH_MAX];
+    const char *base = NULL;
+
+    if (g_split(path, dir, sizeof(dir), &base) != CMT_OK) {
+        return CMT_FAULT;
+    }
+    return nodus_cmt_fsync_dir(dir);
+}
+
 /* ══ AutoFile (autofile.go) ═════════════════════════════════════════════ */
 
-/* autofile.go:160-174 `openFile`. */
+/* autofile.go:160-174 `openFile`.
+ *
+ * HARDENING (decision 2026-09-27-p2p-fix-2.md 1(c); no reference
+ * counterpart — autofile.go:161 is one `os.OpenFile(O_RDWR|O_CREATE|
+ * O_APPEND)` and nothing makes the new directory entry durable): the file
+ * is first opened O_CREAT|O_EXCL; when that CREATED it, the directory is
+ * fsynced, so a power cut cannot lose the head's name after records were
+ * fsynced into it. When the directory fsync fails the fresh (empty) file
+ * is removed again, so the next open creates it — and fsyncs — anew
+ * instead of finding it and skipping the fsync. An existing file is
+ * opened exactly as before (O_RDWR|O_APPEND). */
 static int af_open_file(nodus_cmt_autofile_t *af)
 {
     int fd;
 
     do {
-        fd = open(af->path, O_RDWR | O_CREAT | O_APPEND | O_CLOEXEC,
+        fd = open(af->path, O_RDWR | O_CREAT | O_EXCL | O_APPEND | O_CLOEXEC,
                   NODUS_CMT_AUTOFILE_PERMS);
+    } while (fd < 0 && errno == EINTR);
+    if (fd >= 0) {
+        if (af_fsync_parent(af->path) != CMT_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "created %s but its directory entry is "
+                          "not durable; removing it", af->path);
+            (void)close(fd);
+            (void)unlink(af->path);
+            return CMT_FAULT;
+        }
+        af->fd = fd;
+        return CMT_OK;
+    }
+    if (errno != EEXIST) {
+        QGP_LOG_ERROR(LOG_TAG, "open %s failed: %s", af->path,
+                      strerror(errno));
+        return CMT_FAULT;
+    }
+    do {
+        fd = open(af->path, O_RDWR | O_APPEND | O_CLOEXEC);
     } while (fd < 0 && errno == EINTR);
     if (fd < 0) {
         QGP_LOG_ERROR(LOG_TAG, "open %s failed: %s", af->path,
@@ -154,6 +252,29 @@ int nodus_cmt_autofile_size(nodus_cmt_autofile_t *af, int64_t *out)
     }
     *out = (int64_t)st.st_size;                          /* :193 */
     return CMT_OK;
+}
+
+/* HARDENING, no reference counterpart (AutoFile has no Truncate; decision
+ * 2026-09-27-p2p-fix-2.md 1(a)). */
+int nodus_cmt_autofile_truncate(nodus_cmt_autofile_t *af, int64_t size)
+{
+    int rc;
+
+    if (!af || size < 0) {
+        return CMT_FAULT;
+    }
+    if (af->fd < 0 && af_open_file(af) != CMT_OK) {
+        return CMT_FAULT;
+    }
+    do {
+        rc = ftruncate(af->fd, (off_t)size);
+    } while (rc != 0 && errno == EINTR);
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "truncate %s to %lld failed: %s", af->path,
+                      (long long)size, strerror(errno));
+        return CMT_FAULT;
+    }
+    return nodus_cmt_autofile_sync(af);
 }
 
 /* ══ Group (group.go) ═══════════════════════════════════════════════════ */
@@ -444,6 +565,15 @@ int nodus_cmt_group_rotate_file(nodus_cmt_group_t *g)
     }
     g->max_index++;                                      /* :326 */
     QGP_LOG_INFO(LOG_TAG, "rotated head to %s", index_path);
+    /* HARDENING (decision 2026-09-27-p2p-fix-2.md 1(c)); group.go:321-324
+     * renames and never fsyncs the directory, so a power cut can undo the
+     * rename while the next head's records are already durable. The
+     * index is advanced first: the rename has happened either way. */
+    if (af_fsync_parent(index_path) != CMT_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "rotate: the rename to %s is not durable",
+                      index_path);
+        return CMT_FAULT;
+    }
     return CMT_OK;
 }
 
@@ -482,35 +612,6 @@ static int g_match_index(const char *name, int *out)
     return 1;
 }
 
-/* filepath.Dir / filepath.Base of the head path, into caller buffers. */
-static int g_split(const char *path, char *dir, size_t dcap,
-                   const char **base)
-{
-    const char *slash = strrchr(path, '/');
-    size_t      dl;
-
-    if (!slash) {
-        if (dcap < 2) {
-            return CMT_FAULT;
-        }
-        dir[0] = '.';
-        dir[1] = '\0';
-        *base = path;
-        return CMT_OK;
-    }
-    dl = (size_t)(slash - path);
-    if (dl == 0) {
-        dl = 1;                                          /* "/wal" → "/" */
-    }
-    if (dl >= dcap) {
-        return CMT_FAULT;
-    }
-    memcpy(dir, path, dl);
-    dir[dl] = '\0';
-    *base = slash + 1;
-    return CMT_OK;
-}
-
 int nodus_cmt_group_read_info(const nodus_cmt_group_t *g,
                               nodus_cmt_group_info_t *out)
 {
@@ -536,11 +637,26 @@ int nodus_cmt_group_read_info(const nodus_cmt_group_t *g,
                       strerror(errno));
         return CMT_FAULT;
     }
-    /* :374-399 — sum, min and max: independent of readdir order */
-    while ((ent = readdir(dp)) != NULL) {
+    /* :374-399 — sum, min and max: independent of readdir order.
+     * HARDENING (decision 2026-09-27-p2p-fix-2.md 1(d)): readdir(3)
+     * reports an error only as NULL with errno set, so errno is cleared
+     * before every call; the reference fails on its `Readdir` error
+     * (group.go:367-371, a panic) — here CMT_FAULT, checked below. */
+    for (;;) {
         struct stat st;
         int         idx = 0;
         int         m;
+
+        errno = 0;
+        ent = readdir(dp);
+        if (!ent) {
+            if (errno != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "read dir %s failed: %s", dir,
+                              strerror(errno));
+                rc = CMT_FAULT;
+            }
+            break;
+        }
 
         if (strncmp(ent->d_name, head_base, base_len) != 0) {
             continue;                                    /* :380 prefix */

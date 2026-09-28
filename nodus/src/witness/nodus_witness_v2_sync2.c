@@ -154,12 +154,23 @@ void nodus_witness_v2_sync_handle_gbundle_q(nodus_witness_t *w,
     if (!nodus_witness_p2p_gb_serve_allow(w->p2p, peer_id, now))
         return;
 
-    uint8_t *bundle = NULL;
+    /* RT2 B-F2: the bundle is served from the p2p host's in-memory copy,
+     * read from the database ONCE (nodus_witness_p2p_gb_bundle — the
+     * bundle is immutable after genesis); the former SELECT + malloc per
+     * request made every allowed request a full bundle read. */
+    const uint8_t *bundle = NULL;
     size_t blen = 0;
-    if (nodus_witness_v2_bundle_get(w, &bundle, &blen) != 0) return;
+    if (!nodus_witness_p2p_gb_bundle(w->p2p, w->v2_chain32, &bundle, &blen)) {
+        uint8_t *loaded = NULL;
+        size_t llen = 0;
+        if (nodus_witness_v2_bundle_get(w, &loaded, &llen) != 0) return;
+        if (!nodus_witness_p2p_gb_bundle_keep(w->p2p, w->v2_chain32, loaded, llen) ||
+            !nodus_witness_p2p_gb_bundle(w->p2p, w->v2_chain32, &bundle, &blen))
+            return;
+    }
 
     uint64_t off = q->offset;
-    if (off > blen) { free(bundle); return; }
+    if (off > blen) return;
     size_t remain = blen - (size_t)off;
     uint32_t chunk = (remain > NODUS_T3_V2_GBUNDLE_CHUNK_MAX)
                          ? NODUS_T3_V2_GBUNDLE_CHUNK_MAX
@@ -174,7 +185,6 @@ void nodus_witness_v2_sync_handle_gbundle_q(nodus_witness_t *w,
     rsp.chunk     = bundle + off;
     rsp.chunk_len = chunk;
     v2sync_send(w, peer_id, &rsp);
-    free(bundle);
     QGP_LOG_INFO(LOG_TAG, "served genesis bundle chunk @%llu (%u/%zu bytes)",
                  (unsigned long long)off, chunk, blen);
 }

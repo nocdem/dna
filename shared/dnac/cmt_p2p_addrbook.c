@@ -1626,6 +1626,15 @@ bool cmt_p2p_addrbook_has_address(const cmt_p2p_addrbook_t *a,
     return a != NULL && addr != NULL && lookup_get(a, addr->id) != NULL;      /* :254-255 */
 }
 
+bool cmt_p2p_addrbook_holds_exact(const cmt_p2p_addrbook_t *a,
+                                  const cmt_p2p_netaddr_t *addr)
+{
+    const ka_t *ka = (a != NULL && addr != NULL) ? lookup_get(a, addr->id) : NULL;
+
+    return ka != NULL && ka->addr.port == addr->port &&
+           cmt_p2p_ip_equal(&ka->addr.ip, &addr->ip);
+}
+
 int cmt_p2p_addrbook_size(const cmt_p2p_addrbook_t *a)
 {
     return a != NULL ? a->n_new + a->n_old : 0;            /* :486-488 */
@@ -1755,18 +1764,27 @@ void cmt_p2p_addrbook_mark_bad(cmt_p2p_addrbook_t *a,
     }
 }
 
-int cmt_p2p_addrbook_purge_bonded_unsigned(cmt_p2p_addrbook_t *a)
+int cmt_p2p_addrbook_purge_bonded_ids(cmt_p2p_addrbook_t *a,
+                                      const char (*ids)[CMT_P2P_ID_CAP], int n_ids)
 {
-    int i, n = 0;
+    int k, n = 0;
 
-    if (a == NULL || a->host.bonded_pubkey == NULL) {
+    if (a == NULL || ids == NULL || n_ids <= 0) {
         return 0;
     }
-    /* Backwards: removal shifts the tail of each sorted array. */
-    for (i = a->n_lookup - 1; i >= 0; i--) {
-        ka_t *ka = a->lookup[i];
+    /* Per NEWLY bonded ID: two binary searches (lookup, the ban list —
+     * both sorted by ID, R-P2P-36 / red-team M5), never a walk of the
+     * whole book (RT2 D-F1). */
+    for (k = 0; k < n_ids; k++) {
+        const char *id = ids[k];
+        ka_t *ka;
+        int bi;
 
-        if (ka->rec == NULL && is_bonded(a, ka->addr.id)) {
+        if (memchr(id, '\0', CMT_P2P_ID_CAP) == NULL) {
+            continue;                               /* not a C string */
+        }
+        ka = lookup_get(a, id);
+        if (ka != NULL && ka->rec == NULL) {
             QGP_LOG_INFO(LOG_TAG, "%s is bonded now: its unsigned entry %s "
                          "is dropped (only a signed record is kept)",
                          ka->addr.id, ka->addr_str);
@@ -1774,14 +1792,11 @@ int cmt_p2p_addrbook_purge_bonded_unsigned(cmt_p2p_addrbook_t *a)
             ka_release(ka);
             n++;
         }
-    }
-    for (i = a->n_bad - 1; i >= 0; i--) {
-        ka_t *ka = a->bad[i];
-
-        if (is_bonded(a, ka->addr.id)) {
-            QGP_LOG_INFO(LOG_TAG, "%s is bonded now: its ban is lifted",
-                         ka->addr.id);
-            bad_delete_at(a, i);
+        bi = bad_index(a, id);
+        if (bi >= 0) {
+            ka = a->bad[bi];
+            QGP_LOG_INFO(LOG_TAG, "%s is bonded now: its ban is lifted", id);
+            bad_delete_at(a, bi);
             ka_release(ka);
             n++;
         }

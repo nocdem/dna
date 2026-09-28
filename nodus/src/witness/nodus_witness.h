@@ -54,6 +54,17 @@ typedef struct nodus_cc_collect nodus_cc_collect_t;
  *  it bounds how long a CLI waits, never what any node decides. */
 #define NODUS_CC_COLLECT_DEADLINE_MS  5000u
 
+/** The joiner's p2p ID buffers (`v2_join.src` / `.excl`): a 64-hex-digit
+ *  ID + NUL — CMT_P2P_ID_CAP, pinned by a _Static_assert in
+ *  nodus_witness_v2_join.c (this header does not include the p2p layer). */
+#define NODUS_V2_JOIN_ID_CAP        65
+/** The joiner's per-join exclusion ring (decision 2026-09-27-p2p-fix-2.md
+ *  (3)). ⚠ NOT GROUNDED as a number (no reference counterpart, R-P2P-5):
+ *  more distinct failing peers than this only means the oldest exclusion
+ *  is forgotten and that peer may be asked again — never that a peer is
+ *  refused for good. */
+#define NODUS_V2_JOIN_EXCLUDE_MAX   64
+
 /* ── Witness configuration ───────────────────────────────────────── */
 
 typedef struct {
@@ -551,6 +562,19 @@ typedef struct nodus_witness {
          * stuck joiner names its own early return once a minute instead
          * of never (its logs showed the arm line and then silence). */
         uint64_t last_diag_ms;
+        /* P2P-FIX-2 decision (3) — the ONE source peer of this download
+         * (its p2p ID; "" = none chosen yet): every chunk comes from it,
+         * from offset 0 to the end (nodus_witness_v2_join.c). */
+        char     src[NODUS_V2_JOIN_ID_CAP];
+        /* A request to `src` is out and not yet answered. */
+        bool     awaiting;
+        /* Peers excluded for the rest of this join attempt (a changed
+         * total, a refused / unanswered chunk, a bundle that failed at
+         * adopt): a FIFO ring of at most NODUS_V2_JOIN_EXCLUDE_MAX IDs,
+         * `excl_next` the slot the next exclusion overwrites. */
+        char     excl[NODUS_V2_JOIN_EXCLUDE_MAX][NODUS_V2_JOIN_ID_CAP];
+        int      n_excl;
+        int      excl_next;
     } v2_join;
 
     /* ── FLEET-TM-R3 W3 package C2a — the cometbft server binding ──────
@@ -701,9 +725,11 @@ int nodus_witness_cc_collect_start(nodus_witness_t *w,
 
 /**
  * A 0x71 RESPONSE from the connected peer `peer_id` (nodus_witness_p2p.c
- * cc_receive). Taken ONLY when a collection is pending and `peer_id` is a
- * seat it asked and has not heard from; the last awaited answer ends the
- * collection. @return true taken; false not awaited (the caller drops it).
+ * cc_receive). Taken ONLY when a collection is pending, `rsp->rq` names
+ * ITS request (SHA3-512 of the envelope it sent; decision
+ * 2026-09-27-p2p-fix-2.md (2)) and `peer_id` is a seat it asked and has
+ * not heard from; the last awaited answer ends the collection.
+ * @return true taken; false not awaited (the caller drops it).
  */
 bool nodus_witness_cc_collect_on_rsp(nodus_witness_t *w, const char *peer_id,
                                      const nodus_t3_cc_appr_rsp_t *rsp);
@@ -729,9 +755,13 @@ void nodus_witness_cc_collect_abort(nodus_witness_t *w);
  * requester is dropped before any DB work) → the rate-limit slot is
  * RECORDED for this attempt → committee resolution → the seat gate → the
  * preflight and the approval table.
- * `rsp_out` is zeroed first; a refusal never carries a signature.
+ * `rsp_out` is zeroed first; a refusal never carries a signature. Every
+ * answer to be sent (signed or refused) carries the request identity
+ * `rsp_out->rq` = SHA3-512(req->e) (nodus_tier3.h; decision
+ * 2026-09-27-p2p-fix-2.md (2)); a DROPPED one stays all zero.
  * @return 1 signed (rsp_out->ok); 0 refused (rsp_out->reason);
- *         NODUS_CC_APPR_DROPPED — send nothing; -1 bad arguments.
+ *         NODUS_CC_APPR_DROPPED — send nothing; -1 bad arguments or a
+ *         hash failure (nothing to send).
  */
 int nodus_witness_cc_appr_answer(nodus_witness_t *w,
                                  const uint8_t peer_wid[NODUS_CC_WITNESS_ID_SIZE],

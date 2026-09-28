@@ -525,9 +525,12 @@ static bool io_sock_live(const nodus_p2p_io_t *io, int slot, uint64_t gen)
 /*
  * One socket's writes — the sendRoutine's continuous conn.Write
  * (connection.go:429-507, R-P2P-17): write what write_buf holds; when it
- * is empty, run the connection's step once (cmt_p2p_transport_pump_conn:
- * the MConnection's next flushed bytes are sealed into wbuf) and write
- * again. Ends when send(2) would block (EPOLLOUT armed), when a step
+ * is empty, run the connection's SEND step once
+ * (cmt_p2p_transport_pump_conn with_recv false: the MConnection's next
+ * flushed bytes are sealed into wbuf; nothing is delivered — the write
+ * path never hands out consensus-queue room outside the read path's and
+ * the tick's rotation, RT2 A-F3 / decision 2026-09-27-p2p-fix-2.md (4))
+ * and write again. Ends when send(2) would block (EPOLLOUT armed), when a step
  * produced nothing (EPOLLOUT cleared — nothing to write: the MConnection
  * is idle or parked in its send Monitor, :515), or when the socket /
  * connection is gone. Every trip either sends >= 1 byte or is the single
@@ -553,7 +556,7 @@ static void io_write(nodus_p2p_io_t *io, int slot)
         b = cmt_p2p_transport_write_buf(io->t, slot, gen, &len);
         if (b == NULL || len == 0) {
             if (!stepped) {
-                cmt_p2p_transport_pump_conn(io->t, slot, gen);
+                cmt_p2p_transport_pump_conn(io->t, slot, gen, false);
                 stepped = true;
                 continue;               /* re-check: the step may close it */
             }
@@ -626,9 +629,10 @@ static size_t io_read_budget(const nodus_p2p_io_t *io)
  *     state machine's queue has no room for ONE more message
  *     (h_may_receive): nothing read, EPOLLIN left as it is. The step
  *     itself asks the same row before every message it delivers, and
- *     while the queue is nearly full delivers one message per step
- *     (h_recv_near_full; cmt_p2p_peer.h "THE RECEIVE GATE");
- *   · the queue is nearly full after a step (h_recv_near_full): one
+ *     while the queue is contended delivers ONE queue-entering message
+ *     per step (h_recv_near_full, h_queue_mark; cmt_p2p_peer.h "THE
+ *     RECEIVE GATE");
+ *   · the queue is contended after a step (h_recv_near_full): one
  *     step per call, then the next socket (EPOLLIN stays armed);
  *   · EOF / error, or the step closed the connection.
  * Every trip either reads >= 1 byte or is the single step between two
@@ -662,12 +666,13 @@ static bool io_read(nodus_p2p_io_t *io, int slot)
         b = cmt_p2p_transport_read_buf(io->t, slot, gen, &room);
         if (b == NULL || room == 0) {
             if (!stepped) {
-                cmt_p2p_transport_pump_conn(io->t, slot, gen);
+                cmt_p2p_transport_pump_conn(io->t, slot, gen, true);
                 stepped = true;
-                /* Nearly full: that step delivered at most ONE message;
-                 * the next socket gets its turn before this one steps
-                 * again (the FIFO hand-out, h_recv_near_full). EPOLLIN
-                 * stays armed — level-triggered, the bytes wait. */
+                /* Contended: that step delivered at most ONE
+                 * queue-entering message; the next socket gets its turn
+                 * before this one steps again (the FIFO hand-out,
+                 * h_recv_near_full). EPOLLIN stays armed —
+                 * level-triggered, the bytes wait. */
                 if (cmt_p2p_transport_recv_near_full(io->t, slot, gen)) {
                     return taken > 0;
                 }
@@ -737,10 +742,12 @@ static void io_connect_done(nodus_p2p_io_t *io, int slot)
 }
 
 /* transport.go:286-353 acceptPeers — the host half (LimitListener
- * :261-263: never accept(2) while the limit is reached). */
+ * :261-263: never accept(2) while the limit is reached), at most
+ * NODUS_P2P_ACCEPT_BUDGET accept(2) calls per pass (header). */
 static void io_accept(nodus_p2p_io_t *io)
 {
     struct epoll_event ev;
+    int calls = 0;
 
     if (io->listen_fd < 0) {
         return;
@@ -753,9 +760,11 @@ static void io_accept(nodus_p2p_io_t *io)
         int fd, slot = -1, rc;
         uint64_t gen = 0;
 
-        if (!cmt_p2p_transport_can_accept(io->t)) {
+        if (!cmt_p2p_transport_can_accept(io->t) ||
+            calls >= NODUS_P2P_ACCEPT_BUDGET) {
             break;
         }
+        calls++;
         fd = accept(io->listen_fd, (struct sockaddr *)&ss, &sl);
         if (fd < 0) {
             if (errno == EINTR || errno == ECONNABORTED) {
@@ -970,6 +979,9 @@ struct nodus_witness_p2p {
     bool                        bonded_valid;
     uint64_t                    bonded_tip;
     bool                        self_bonded;
+    /* IDs that JOINED the set, summed over every refresh (the purge's
+     * input, bonded_purge_new) — nodus_witness_p2p_bonded_joined_total */
+    uint64_t                    bonded_joined_total;
 
     /* 0x70 — the joiner's ONE outstanding genesis-bundle request
      * (nodus_witness_p2p_gb_request / _gb_take) and the serving side's
@@ -979,6 +991,12 @@ struct nodus_witness_p2p {
     char                        gb_out_peer[CMT_P2P_ID_CAP];
     uint64_t                    gb_out_offset;
     p2p_gb_serve_t              gb_serve[NODUS_P2P_GB_SERVE_SLOTS];
+    /* The serving side's in-memory copy of the chain's genesis bundle
+     * (RT2 B-F2; nodus_witness_p2p_gb_bundle), and the chain id it
+     * belongs to. NULL = not loaded yet. */
+    uint8_t                    *gb_bundle;
+    size_t                      gb_bundle_len;
+    uint8_t                     gb_bundle_chain[32];
 
     /* our own ADDR record (N7) */
     bool                        have_own_addr;
@@ -1256,21 +1274,35 @@ static int bonded_cmp(const void *a, const void *b)
     return strcmp(((const p2p_bonded_t *)a)->id, ((const p2p_bonded_t *)b)->id);
 }
 
+/* bsearch's comparator with the KEY first (C11 7.22.5.1): the key is the
+ * ID string itself, so a lookup builds no 2.6 KB p2p_bonded_t key (RT2
+ * D-F1 — the former memset of the whole entry, pubkey included, on every
+ * is_bonded / bonded_pubkey). */
+static int bonded_id_cmp(const void *key, const void *elem)
+{
+    return strcmp((const char *)key, ((const p2p_bonded_t *)elem)->id);
+}
+
+static const p2p_bonded_t *bonded_find_in(const p2p_bonded_t *set, int n,
+                                          const char *id)
+{
+    if (id == NULL || n <= 0 || strlen(id) >= CMT_P2P_ID_CAP) {
+        return NULL;
+    }
+    return (const p2p_bonded_t *)bsearch(id, set, (size_t)n, sizeof(*set),
+                                         bonded_id_cmp);
+}
+
 static const p2p_bonded_t *bonded_find(const nodus_witness_p2p_t *p,
                                        const char *id)
 {
-    p2p_bonded_t key;
-
-    if (id == NULL || p->n_bonded == 0 || strlen(id) >= sizeof(key.id)) {
-        return NULL;
-    }
-    memset(&key, 0, sizeof(key));
-    memcpy(key.id, id, strlen(id));
-    return (const p2p_bonded_t *)bsearch(&key, p->bonded, (size_t)p->n_bonded,
-                                         sizeof(*p->bonded), bonded_cmp);
+    return bonded_find_in(p->bonded, p->n_bonded, id);
 }
 
-static void bonded_add(nodus_witness_p2p_t *p, const uint8_t pk[NODUS_PK_BYTES])
+/* One pubkey into the scratch set being built (unsorted while filling;
+ * duplicates skipped). */
+static void bonded_add(p2p_bonded_t **set, int *n, int *cap,
+                       const uint8_t pk[NODUS_PK_BYTES])
 {
     char id[CMT_P2P_ID_CAP];
     int i;
@@ -1278,40 +1310,92 @@ static void bonded_add(nodus_witness_p2p_t *p, const uint8_t pk[NODUS_PK_BYTES])
     if (cmt_p2p_pubkey_to_id(pk, id) != CMT_OK) {
         return;
     }
-    for (i = 0; i < p->n_bonded; i++) {                 /* unsorted while filling */
-        if (strcmp(p->bonded[i].id, id) == 0) {
+    for (i = 0; i < *n; i++) {
+        if (strcmp((*set)[i].id, id) == 0) {
             return;
         }
     }
-    if (p->n_bonded == p->cap_bonded) {
-        int ncap = p->cap_bonded > 0 ? p->cap_bonded * 2 : 64;
-        p2p_bonded_t *nb = (p2p_bonded_t *)realloc(p->bonded,
-                                                  (size_t)ncap * sizeof(*nb));
+    if (*n == *cap) {
+        int ncap = *cap > 0 ? *cap * 2 : 64;
+        p2p_bonded_t *nb = (p2p_bonded_t *)realloc(*set, (size_t)ncap * sizeof(*nb));
 
         if (nb == NULL) {
             return;
         }
-        p->bonded = nb;
-        p->cap_bonded = ncap;
+        *set = nb;
+        *cap = ncap;
     }
-    memcpy(p->bonded[p->n_bonded].id, id, sizeof(id));
-    memcpy(p->bonded[p->n_bonded].pk, pk, NODUS_PK_BYTES);
-    p->n_bonded++;
+    memcpy((*set)[*n].id, id, sizeof(id));
+    memcpy((*set)[*n].pk, pk, NODUS_PK_BYTES);
+    (*n)++;
 }
 
 /* N5: the committee a height resolves to (the deleted B1 gate's reads,
  * nodus_witness_peer.c:696-720 before F5). */
-static void bonded_add_committee(nodus_witness_p2p_t *p, uint64_t height)
+static void bonded_add_committee(nodus_witness_p2p_t *p, p2p_bonded_t **set,
+                                 int *n, int *cap, uint64_t height)
 {
     nodus_committee_member_t *cm = NULL;
-    int n = 0, i;
+    int k = 0, i;
 
-    if (nodus_committee_get_for_block_alloc(p->w, height, &cm, &n) == 0) {
-        for (i = 0; i < n; i++) {
-            bonded_add(p, cm[i].pubkey);
+    if (nodus_committee_get_for_block_alloc(p->w, height, &cm, &k) == 0) {
+        for (i = 0; i < k; i++) {
+            bonded_add(set, n, cap, cm[i].pubkey);
         }
     }
     free(cm);
+}
+
+/*
+ * Z2-F11 — the IDs that are in the new bonded set `nb` and were not in
+ * the old one keep only a signed record and no ban from their unbonded
+ * days (cmt_p2p_addrbook_purge_bonded_ids); otherwise a stale unsigned
+ * entry → failed dials → MarkBad would refuse its signed record for 24 h
+ * (design K2/K3: a new candidate is never held back). Only a NEWLY bonded
+ * ID can need it (RT2 D-F1 — the purge used to walk the whole book and
+ * every ban on every tip change): mark_bad never bans a bonded ID and the
+ * book refuses an unsigned address for one (cmt_p2p_addrbook.c
+ * add_address, and the file load's §2R4 P4 check), so an ID that stays
+ * bonded acquires nothing to purge. Both sets are sorted by ID: one
+ * merge walk. An old set that was never valid counts as empty — every
+ * member is new.
+ */
+static void bonded_purge_new(nodus_witness_p2p_t *p, const p2p_bonded_t *nb,
+                             int n_new)
+{
+    const char (*ids)[CMT_P2P_ID_CAP];
+    char (*fresh)[CMT_P2P_ID_CAP];
+    int i, j = 0, n_fresh = 0, n_old = p->bonded_valid ? p->n_bonded : 0;
+
+    if (n_new == 0) {
+        return;
+    }
+    fresh = (char (*)[CMT_P2P_ID_CAP])malloc((size_t)n_new * sizeof(*fresh));
+    if (fresh == NULL) {
+        return;
+    }
+    for (i = 0; i < n_new; i++) {
+        int c = 1;
+
+        while (j < n_old && (c = strcmp(p->bonded[j].id, nb[i].id)) < 0) {
+            j++;
+        }
+        if (j < n_old && c == 0) {
+            continue;                           /* bonded before: nothing */
+        }
+        memcpy(fresh[n_fresh++], nb[i].id, CMT_P2P_ID_CAP);
+    }
+    ids = (const char (*)[CMT_P2P_ID_CAP])fresh;
+    p->bonded_joined_total += (uint64_t)n_fresh;
+    if (n_fresh > 0 && p->book != NULL) {
+        (void)cmt_p2p_addrbook_purge_bonded_ids(p->book, ids, n_fresh);
+    }
+    free(fresh);
+}
+
+uint64_t nodus_witness_p2p_bonded_joined_total(const nodus_witness_p2p_t *p)
+{
+    return p != NULL ? p->bonded_joined_total : 0;
 }
 
 void nodus_witness_p2p_refresh_bonded(nodus_witness_p2p_t *p)
@@ -1319,6 +1403,8 @@ void nodus_witness_p2p_refresh_bonded(nodus_witness_p2p_t *p)
     uint64_t tip = 0;
     sqlite3_stmt *st = NULL;
     bool was_self;
+    p2p_bonded_t *nb = NULL;
+    int n_new = 0, cap_new = 0;
 
     if (p == NULL) {
         return;
@@ -1334,7 +1420,8 @@ void nodus_witness_p2p_refresh_bonded(nodus_witness_p2p_t *p)
     if (nodus_witness_block_height_checked(p->w, &tip) != 0) {
         return;                                /* keep the last good set */
     }
-    p->n_bonded = 0;
+    /* The new set is built beside the old one, so the two can be
+     * compared (bonded_purge_new) before the old one is replaced. */
     if (sqlite3_prepare_v2(p->w->db,
                            "SELECT pubkey FROM validators WHERE status IN (?, ?) "
                            "ORDER BY pubkey_hash", -1, &st, NULL) == SQLITE_OK) {
@@ -1342,7 +1429,8 @@ void nodus_witness_p2p_refresh_bonded(nodus_witness_p2p_t *p)
         sqlite3_bind_int(st, 2, (int)DNAC_VALIDATOR_ELIGIBLE);
         while (sqlite3_step(st) == SQLITE_ROW) {
             if (sqlite3_column_bytes(st, 0) == NODUS_PK_BYTES) {
-                bonded_add(p, (const uint8_t *)sqlite3_column_blob(st, 0));
+                bonded_add(&nb, &n_new, &cap_new,
+                           (const uint8_t *)sqlite3_column_blob(st, 0));
             }
         }
         sqlite3_finalize(st);
@@ -1350,24 +1438,21 @@ void nodus_witness_p2p_refresh_bonded(nodus_witness_p2p_t *p)
         QGP_LOG_WARN(LOG_TAG, "validators table unreadable: %s",
                      sqlite3_errmsg(p->w->db));
     }
-    bonded_add_committee(p, tip + 1);
+    bonded_add_committee(p, &nb, &n_new, &cap_new, tip + 1);
     if (tip >= 1) {
-        bonded_add_committee(p, tip - 1);
+        bonded_add_committee(p, &nb, &n_new, &cap_new, tip - 1);
     }
-    if (p->n_bonded > 1) {
-        qsort(p->bonded, (size_t)p->n_bonded, sizeof(*p->bonded), bonded_cmp);
+    if (n_new > 1) {
+        qsort(nb, (size_t)n_new, sizeof(*nb), bonded_cmp);
     }
+    bonded_purge_new(p, nb, n_new);
+    free(p->bonded);
+    p->bonded = nb;
+    p->n_bonded = n_new;
+    p->cap_bonded = cap_new;
     p->bonded_valid = true;
     p->bonded_tip = tip;
     p->self_bonded = bonded_find(p, p->self_id) != NULL;
-    /* Z2-F11: an identity that bonded keeps only a signed record, and no
-     * ban from its unbonded days (cmt_p2p_addrbook_purge_bonded_unsigned);
-     * otherwise a stale unsigned entry → failed dials → MarkBad would
-     * refuse its signed record for 24 h (design K2/K3: a new candidate
-     * is never held back). */
-    if (p->book != NULL) {
-        (void)cmt_p2p_addrbook_purge_bonded_unsigned(p->book);
-    }
     if (p->self_bonded && !was_self && p->pex != NULL) {
         cmt_p2p_pex_own_record_changed(p->pex);          /* R-P2P-41 */
     }
@@ -1471,15 +1556,36 @@ static bool h_may_receive(void *ctx)
 }
 
 /*
- * The transport's `recv_near_full` row: fewer free entries than peers
- * connected — the queue can no longer take one message from every peer.
- * From here on each peer delivers ONE message per pump and the walk
- * moves on (cmt_p2p_peer.h "THE RECEIVE GATE"), which is the order the Go
- * runtime gives blocked senders on a full channel (FIFO sendq): every
- * waiting recvRoutine gets one freed slot in turn.
- * ⚠ NOT GROUNDED as a threshold — the reference has none (its blocked
- * goroutines need no decision); "room < connected peers" is the point
- * where the loop, not the runtime, must share the remaining room.
+ * The per-peer share of the state machine's peer queue behind the
+ * contended threshold (h_recv_near_full): the queue divided evenly over
+ * every index the consensus seam has — CMT_CS_MSG_QUEUE_SIZE (1000,
+ * consensus/state.go:168) / CMT_CONR_MAX_PEERS (128) = 7 entries. So the
+ * threshold, connected peers × share, never exceeds the queue itself
+ * (128 × 7 = 896 < 1000), and with every index in use the queue is
+ * contended below nearly its whole size.
+ * ⚠ NOT GROUNDED — the reference has no share (its blocked goroutines
+ * need no decision; decision 2026-09-27-p2p-fix-2.md (4) names "a
+ * per-pass share" and leaves the number to the port).
+ */
+#define NODUS_P2P_RECV_SHARE ((size_t)CMT_CS_MSG_QUEUE_SIZE / (size_t)CMT_CONR_MAX_PEERS)
+_Static_assert((size_t)CMT_CS_MSG_QUEUE_SIZE / (size_t)CMT_CONR_MAX_PEERS >= 1,
+               "every consensus index must have a share of at least one entry");
+
+/*
+ * The transport's `recv_near_full` row — the queue is CONTENDED: fewer
+ * free entries than connected peers × NODUS_P2P_RECV_SHARE, i.e. it can
+ * no longer give every peer its share (decision 2026-09-27-p2p-fix-2.md
+ * (4); RT2 A-F1 — the former "room < peers" rule let one peer take all
+ * but n − 1 entries first). From here on each peer delivers ONE
+ * queue-entering message per pump and the walks move on, sweep after
+ * sweep while room remains (cmt_p2p_peer.h "THE RECEIVE GATE",
+ * cmt_p2p_transport_tick), which is the order the Go runtime gives
+ * blocked senders on a full channel (FIFO sendq): every waiting
+ * recvRoutine gets one freed slot in turn. Above the threshold a peer
+ * delivers until the queue becomes contended — every other peer's share
+ * is still there.
+ * ⚠ NOT GROUNDED as a threshold — the reference has none (register
+ * R-P2P-58, replaced by this rule).
  */
 static bool h_recv_near_full(void *ctx)
 {
@@ -1490,7 +1596,31 @@ static bool h_recv_near_full(void *ctx)
     if (room == SIZE_MAX) {
         return false;
     }
-    return room < (size_t)(n > 1 ? n : 1);
+    return room < (size_t)(n > 1 ? n : 1) * NODUS_P2P_RECV_SHARE;
+}
+
+/*
+ * The transport's `queue_mark` row: the peer queue's LENGTH. A delivered
+ * message entered the queue exactly when the length moved across its
+ * delivery — the pump compares the value right before and right after
+ * the one recv_n call that delivered it (cmt_p2p_peer_pump). Exact
+ * because nothing POPS the queue inside a delivery: the only pop is
+ * cmt_cs_step's (cmt_cs.c:1623), which runs from the lane tick
+ * (nodus_witness.c), never from a reactor Receive; and a delivery pushes
+ * at most one entry (Proposal cmt_conr.c:950-953, BlockPart :975-978,
+ * Vote :1014-1016 — each one cs_q_push, cmt_cs.c:761). Chosen over "the
+ * channel id decides" because channel 0x21 also carries ProposalPOL and
+ * 0x23 VoteSetBits, which enter no queue. No lane (a joiner, before
+ * genesis): 0 — nothing enters a queue, and the queue is never contended.
+ */
+static uint64_t h_queue_mark(void *ctx)
+{
+    const nodus_witness_p2p_t *p = (const nodus_witness_p2p_t *)ctx;
+
+    if (p->conr == NULL || p->conr->cs == NULL) {
+        return 0;
+    }
+    return (uint64_t)p->conr->cs->peer_q_len;
 }
 
 static bool h_bonded_pubkey(void *ctx, const char *id,
@@ -1555,9 +1685,16 @@ static int write_file_atomic(const char *path, const uint8_t *bytes, size_t len)
         }
         off += (size_t)w;
     }
-    if (fsync(fd) != 0 || close(fd) != 0) {
-        unlink(tmp);
-        return -1;
+    /* close(2) runs whatever fsync(2) answered: `fsync || close` left the
+     * descriptor open on every fsync failure (Codex 12). */
+    {
+        int frc = fsync(fd);
+        int crc = close(fd);
+
+        if (frc != 0 || crc != 0) {
+            unlink(tmp);
+            return -1;
+        }
     }
     if (rename(tmp, path) != 0) {
         unlink(tmp);
@@ -2263,6 +2400,43 @@ bool nodus_witness_p2p_gb_serve_allow(nodus_witness_p2p_t *p, const char *peer_i
     return true;
 }
 
+/*
+ * The serving side's bundle copy (RT2 B-F2): the bytes are read from the
+ * chain database ONCE and served from memory after that — the former
+ * SELECT + malloc + free per chunk request made every requester's 100 ms
+ * gap a full bundle read. The bundle is immutable once the genesis
+ * committed (nodus_witness_v2_bundle_persist refuses a row that differs,
+ * nodus_witness_v2_bundle.h "WHY IT IS PERSISTED AT DERIVATION TIME"), so
+ * the copy can never go stale for its chain; it is keyed by the chain id
+ * anyway, so a host that finds itself on another chain reloads. No
+ * reference counterpart (R-P2P-5).
+ */
+bool nodus_witness_p2p_gb_bundle(nodus_witness_p2p_t *p, const uint8_t chain[32],
+                                 const uint8_t **out, size_t *len)
+{
+    if (p == NULL || chain == NULL || out == NULL || len == NULL ||
+        p->gb_bundle == NULL || memcmp(p->gb_bundle_chain, chain, 32) != 0) {
+        return false;
+    }
+    *out = p->gb_bundle;
+    *len = p->gb_bundle_len;
+    return true;
+}
+
+bool nodus_witness_p2p_gb_bundle_keep(nodus_witness_p2p_t *p, const uint8_t chain[32],
+                                      uint8_t *bytes, size_t len)
+{
+    if (p == NULL || chain == NULL || bytes == NULL || len == 0) {
+        free(bytes);
+        return false;
+    }
+    free(p->gb_bundle);
+    p->gb_bundle = bytes;
+    p->gb_bundle_len = len;
+    memcpy(p->gb_bundle_chain, chain, 32);
+    return true;
+}
+
 /* 0x71 — the governance approval (the former verbs 40/41). */
 static const cmt_p2p_ch_desc_t *cc_channels(void *ctx, int *n)
 {
@@ -2286,15 +2460,21 @@ static void cc_receive(void *ctx, cmt_p2p_peer_t *src, uint8_t ch_id,
     }
     if (m.type != NODUS_T3_CC_APPR_REQ) {
         /* A response is taken only by this node's own pending approval
-         * collection, and only from a seat it asked and has not heard from
-         * (decision 2026-09-26-cc-approval-via-own-node.md (3)); every
-         * other response is dropped, as verb 41 was at the tier-3
-         * dispatcher's `default:`. */
+         * collection, only when it names that collection's request (its
+         * `rq`, decision 2026-09-27-p2p-fix-2.md (2)) and only from a seat
+         * it asked and has not heard from (decision
+         * 2026-09-26-cc-approval-via-own-node.md (3)); every other
+         * response is dropped, as verb 41 was at the tier-3 dispatcher's
+         * `default:`. DEBUG, not WARN (RT2 B-F3 / Codex 11): a late honest
+         * answer after the collection's deadline looks exactly like an
+         * unsolicited one, and any connected peer could otherwise write
+         * WARN lines at will. The sender is not stopped, for the same
+         * reason. */
         if (p->w == NULL ||
             !nodus_witness_cc_collect_on_rsp(p->w, cmt_p2p_peer_id(src),
                                              &m.cc_appr_rsp)) {
-            QGP_LOG_WARN(LOG_TAG, "unsolicited 0x71 response from %s dropped",
-                         cmt_p2p_peer_id(src));
+            QGP_LOG_DEBUG(LOG_TAG, "unsolicited 0x71 response from %s dropped",
+                          cmt_p2p_peer_id(src));
         }
         return;
     }
@@ -2829,6 +3009,7 @@ nodus_witness_p2p_t *nodus_witness_p2p_new(struct nodus_witness *w,
     th.bonded_count = h_bonded_count;
     th.may_receive = h_may_receive;
     th.recv_near_full = h_recv_near_full;
+    th.queue_mark = h_queue_mark;
     memset(&tc, 0, sizeof(tc));
     tc.dsa_pk = p->identity->pk.bytes;
     tc.kem_pk = p->identity->mlkem_pk;
@@ -3059,6 +3240,7 @@ void nodus_witness_p2p_free(nodus_witness_p2p_t *p)
     }
     free(p->ni);
     free(p->bonded);
+    free(p->gb_bundle);
     free(p->recv_arena.buf);
     free(p->commit_sigs);
     free(p->ext_sigs);

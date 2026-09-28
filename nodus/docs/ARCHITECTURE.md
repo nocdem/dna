@@ -3242,8 +3242,48 @@ numbered register row (R-P2P-n) in the local design doc
   dangerous signed-at-next-height precondition built and proven, plus an
   opt-in negative control that halts without the carry), `test_v2_grow_7_32.sh`
   (standalone, E=30: 7 → 32 validators, commits with 22 running, halts with 21).
-  Red-teamed in two rounds (11 + 5 read-only agents, 2026-09-27); round-1 fixes
-  in fleet P2P-FIX-1.
+  Red-teamed in two rounds (11 + 5 read-only agents, 2026-09-27) plus an
+  external Codex review; round-1 fixes in fleet P2P-FIX-1.
+
+#### 0.20.1 — second-round fixes (fleet P2P-FIX-2, decision `2026-09-27-p2p-fix-2.md`)
+
+- **Equal share of the consensus queue.** A transport host row `queue_mark`
+  (= the state machine's `peer_q_len`) tells the pump whether a delivered
+  message entered the queue. While the queue is contended (free room < peers ×
+  `NODUS_P2P_RECV_SHARE` 7 = 1000/128), each peer's turn ends after ONE
+  queue-entering message and the transport tick sweeps the peers again while
+  room remains; ping/pong, state-channel, mempool, PEX, 0x70/0x71 messages do
+  not use a turn. The write path pumps send-only. Replaces the partial fairness
+  of R-P2P-58/59 (one flooding peer could take ≈ 94 % of the room).
+- **Accept budget** `NODUS_P2P_ACCEPT_BUDGET` 40 accept(2) calls per pass,
+  refused sockets included; the listener stays armed.
+- **Receive edge cases:** a failed socket's buffered complete messages are
+  delivered before the peer is failed; the secret connection's plaintext left
+  after AUTHSIG is drained with no new ciphertext; the address-book file's fd is
+  closed on every path.
+- **Address book / PEX:** the ban purge runs only for validators that newly
+  joined the bonded set (no per-block scan of the ban list); the dial-attempt
+  table is sorted, bounded at 20 480 and swept of addresses that left the book;
+  a bonded validator is never abandoned (backoff capped at 2^8 s ≈ 4.3 min) and
+  its count resets on an authenticated connection or a newer signed record.
+- **0x71** responses carry `rq` = SHA3-512 of the request envelope (wire change
+  on nodus's own channel; 0.20.0 and 0.20.1 do not mix); the collector takes a
+  response only for its own request; unsolicited responses log at DEBUG.
+- **0x70** a joiner downloads the whole bundle from ONE peer; a peer that
+  changes the total, refuses a chunk, does not answer within 4 s or whose bundle
+  fails the pin is excluded for that join (64-entry ring, cleared if every peer
+  is excluded); a request the joiner itself could not send is retried, not
+  blamed. Serving uses an in-memory copy of the (immutable) bundle.
+- **Consensus WAL hardening** (beyond the reference, which has all four
+  weaknesses): an incomplete final record is trimmed at start before any append
+  (`wal_trim_torn_tail`); repair writes a temp file, fsyncs, renames over the
+  head and fsyncs the directory (the `.CORRUPTED` backup made and synced first;
+  zero kept records → EndHeight{0}, never an empty head); the directory is
+  fsynced after head creation and rotation; `readdir` errors fail the scan; the
+  one-time carry runs ValidateBasic on every carried message.
+- Verified: ctest 189/189; harness short-epoch 15/0/0, production 11 PASS /
+  4 SKIP / 0 FAIL, stop-all with the signed-at-next-height precondition PASS and
+  its negative control halting, GROW-7-32 PASS.
 
 ### Consensus flow (cometbft @709fd12b, the only lane)
 

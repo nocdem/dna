@@ -42,6 +42,19 @@
 
 #define V2JOIN_REQ_INTERVAL_MS  4000u   /* bundle-chunk request cadence   */
 
+/* The most bytes a joiner accepts as a bundle's `total` before it
+ * allocates. The bundle format has NO bound of its own to derive one from
+ * (nodus_witness_v2_bundle.h "CANONICAL LAYOUT": u32 row counts, u32
+ * TEXT / BLOB lengths, a u32 document length — a well-formed frame can
+ * claim up to ~4 GiB per field), so the pre-existing 64 MiB ceiling
+ * stays. ⚠ NOT GROUNDED — a size: a genesis of a few thousand validator
+ * and delegation rows is far below it, and it caps the one allocation a
+ * peer's `total` can trigger. */
+#define V2JOIN_BUNDLE_MAX  (64u * 1024u * 1024u)
+
+_Static_assert(NODUS_V2_JOIN_ID_CAP == CMT_P2P_ID_CAP,
+               "the joiner's peer-ID buffers must hold a p2p ID");
+
 static uint64_t join_mono_ms(void) {
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
@@ -85,6 +98,10 @@ int nodus_witness_v2_join_arm(nodus_witness_t *w) {
     w->v2_join.acc_len   = 0;
     w->v2_join.acc_total = 0;
     w->v2_join.last_req_ms = 0;
+    w->v2_join.src[0]    = '\0';
+    w->v2_join.awaiting  = false;
+    w->v2_join.n_excl    = 0;
+    w->v2_join.excl_next = 0;
     QGP_LOG_INFO(LOG_TAG, "%s", "fresh successor joiner armed with a local "
                  "genesis pin — will pull the genesis bundle");
     return 1;
@@ -99,6 +116,80 @@ static void join_reset_acc(nodus_witness_t *w) {
     w->v2_join.acc = NULL;
     w->v2_join.acc_len = 0;
     w->v2_join.acc_total = 0;
+}
+
+/* ── the ONE source per download (decision 2026-09-27-p2p-fix-2.md (3),
+ * RT2 B-F1) ─────────────────────────────────────────────────────────────
+ * Every chunk of one download comes from ONE peer, `v2_join.src`, from
+ * offset 0 to the end. Mixing chunks of two peers could assemble a bundle
+ * no peer holds — the pin check at adopt would refuse it, but only after
+ * the whole download and a scratch derivation, and without naming a
+ * culprit. When the download from `src` FAILS — its `total` changed, it
+ * refused a chunk (an answer that fails a check below, or no answer
+ * within V2JOIN_REQ_INTERVAL_MS), or the assembled bundle failed at adopt
+ * — that peer is EXCLUDED for the rest of this join attempt, the bytes
+ * are dropped, and the next non-excluded peer starts again from offset 0.
+ * Losing the connection to `src` drops the bytes too but excludes
+ * nobody (the peer did nothing wrong). When every connected peer is
+ * excluded the ring is cleared and the round starts over (JUDGMENT: a
+ * joiner whose only peers are other joiners, or peers not yet serving,
+ * must keep trying; the exclusion only orders the attempts). No reference
+ * counterpart: channel 0x70 is nodus's own (R-P2P-5). */
+
+bool nodus_witness_v2_join_is_excluded(const nodus_witness_t *w,
+                                       const char *peer_id) {
+    if (!w || !peer_id) return false;
+    for (int i = 0; i < w->v2_join.n_excl; i++) {
+        if (strcmp(w->v2_join.excl[i], peer_id) == 0) return true;
+    }
+    return false;
+}
+
+/* The download from the current source failed (`why`): exclude it, drop
+ * its bytes; the next tick picks the next peer (join_pick_source). */
+static void join_fail_source(nodus_witness_t *w, const char *why) {
+    if (w->v2_join.src[0] != '\0' &&
+        !nodus_witness_v2_join_is_excluded(w, w->v2_join.src)) {
+        int slot = w->v2_join.excl_next;
+        snprintf(w->v2_join.excl[slot], sizeof(w->v2_join.excl[slot]), "%s",
+                 w->v2_join.src);
+        w->v2_join.excl_next = (slot + 1) % NODUS_V2_JOIN_EXCLUDE_MAX;
+        if (w->v2_join.n_excl < NODUS_V2_JOIN_EXCLUDE_MAX) w->v2_join.n_excl++;
+    }
+    QGP_LOG_WARN(LOG_TAG, "genesis bundle source %s excluded for this join "
+                 "(%s) — the next peer starts from offset 0", w->v2_join.src,
+                 why);
+    w->v2_join.src[0] = '\0';
+    w->v2_join.awaiting = false;
+    join_reset_acc(w);
+}
+
+/* Choose the source of a new download: the first connected peer, from
+ * the round-robin cursor on, that is not excluded. Every connected peer
+ * excluded → the ring is cleared (above) and the cursor's peer is taken.
+ * @return true and `v2_join.src` set; false when the peer set changed
+ * under the cursor. */
+static bool join_pick_source(nodus_witness_t *w, int n_peers) {
+    char id[CMT_P2P_ID_CAP];
+    int start = (int)(w->v2_join.peer_rr % (uint32_t)n_peers);
+
+    for (int k = 0; k < n_peers; k++) {
+        int i = (start + k) % n_peers;
+        if (!nodus_witness_p2p_peer_id_at(w->p2p, i, id)) return false;
+        if (nodus_witness_v2_join_is_excluded(w, id)) continue;
+        snprintf(w->v2_join.src, sizeof(w->v2_join.src), "%s", id);
+        w->v2_join.peer_rr = (uint32_t)((i + 1) % n_peers);
+        return true;
+    }
+    QGP_LOG_WARN(LOG_TAG, "every connected peer (%d) failed this joiner's "
+                 "genesis bundle download — the exclusions are cleared and "
+                 "the round starts over", n_peers);
+    w->v2_join.n_excl = 0;
+    w->v2_join.excl_next = 0;
+    if (!nodus_witness_p2p_peer_id_at(w->p2p, start, id)) return false;
+    snprintf(w->v2_join.src, sizeof(w->v2_join.src), "%s", id);
+    w->v2_join.peer_rr = (uint32_t)((start + 1) % n_peers);
+    return true;
 }
 
 /* Adopt the fully-received bundle: re-derive the genesis in a scratch DB
@@ -284,29 +375,51 @@ void nodus_witness_v2_join_handle_gbundle_r(nodus_witness_t *w,
                       (unsigned long long)r->offset);
         return;
     }
+    /* The take matched the ONE outstanding request, and every request
+     * goes to the current source (nodus_witness_v2_join_tick) — so this
+     * IS the source's answer. A source replaced since (its request was
+     * replaced by the new source's in the host) cannot get here. */
+    if (strcmp(peer_id, w->v2_join.src) != 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "0x70 response from %s: not this download's "
+                      "source — dropped", peer_id);
+        return;
+    }
+    w->v2_join.awaiting = false;
 
-    /* R3 W3 (D-24 rev 4 (1)): the pin IS the 32-byte chain id — `r->pin`
+    /* Every check below is the SOURCE refusing its chunk (decision
+     * 2026-09-27-p2p-fix-2.md (3)): it answered the request we sent with
+     * something this download cannot use, so the download from it ends
+     * and the next peer starts over (join_fail_source).
+     * R3 W3 (D-24 rev 4 (1)): the pin IS the 32-byte chain id — `r->pin`
      * and `r->chain` now name the same identity (nodus_witness_v2_sync2.c
      * answers both with `w->v2_chain32`), so the two separate comparisons
-     * this used to be collapse into ONE. A response for anything else is
-     * ignored — the pin is the only anchor. */
-    if (memcmp(r->pin, w->v2_join.pin, 32) != 0) return;
-    if (r->total == 0 || r->total > (64u * 1024u * 1024u)) return;
-    if (r->chunk_len == 0) return;
+     * this used to be collapse into ONE — the pin is the only anchor. */
+    if (memcmp(r->pin, w->v2_join.pin, 32) != 0) {
+        join_fail_source(w, "a chunk for another pin");
+        return;
+    }
+    if (r->total == 0 || r->total > V2JOIN_BUNDLE_MAX || r->chunk_len == 0) {
+        join_fail_source(w, "an empty chunk or a total out of range");
+        return;
+    }
 
-    /* Contiguous append only: a chunk must start exactly where we are.
-     * Out-of-order or overlapping chunks are dropped (the next request
-     * re-asks from acc_len), so no peer can scramble the buffer. */
-    if (r->offset != w->v2_join.acc_len) return;
-    if ((uint64_t)w->v2_join.acc_len + r->chunk_len > r->total) return;
+    /* Contiguous append only: a chunk must start exactly where we are
+     * (the offset was ours — the take compared it — so this holds; kept
+     * as the buffer's own guard). */
+    if (r->offset != w->v2_join.acc_len ||
+        (uint64_t)w->v2_join.acc_len + r->chunk_len > r->total) {
+        join_fail_source(w, "a chunk past the bundle's end");
+        return;
+    }
 
     if (w->v2_join.acc_total == 0) {
         w->v2_join.acc = malloc((size_t)r->total);
         if (!w->v2_join.acc) return;
         w->v2_join.acc_total = (size_t)r->total;
     } else if (w->v2_join.acc_total != (size_t)r->total) {
-        /* the total changed mid-transfer — a different bundle; restart */
-        join_reset_acc(w);
+        /* the total changed mid-transfer — the source serves another
+         * bundle than it began with */
+        join_fail_source(w, "its total changed mid-download");
         return;
     }
 
@@ -315,12 +428,14 @@ void nodus_witness_v2_join_handle_gbundle_r(nodus_witness_t *w,
 
     if (w->v2_join.acc_len < w->v2_join.acc_total) return;   /* more chunks */
 
-    QGP_LOG_INFO(LOG_TAG, "genesis bundle fully received (%zu bytes) — "
-                 "re-deriving against the local pin", w->v2_join.acc_len);
+    QGP_LOG_INFO(LOG_TAG, "genesis bundle fully received (%zu bytes) from "
+                 "%s — re-deriving against the local pin",
+                 w->v2_join.acc_len, w->v2_join.src);
     if (join_adopt(w) != 0) {
-        /* Rejected / faulted — drop the buffer and let the tick re-pull
-         * from a fresh offset (possibly from a different peer). */
-        join_reset_acc(w);
+        /* Rejected / faulted: the whole bundle came from the source, so
+         * the source is excluded (join_fail_source drops the buffer) and
+         * the tick re-pulls from offset 0 from the next peer. */
+        join_fail_source(w, "its bundle failed at adopt");
     }
 }
 
@@ -356,27 +471,40 @@ void nodus_witness_v2_join_tick(nodus_witness_t *w) {
         now - w->v2_join.last_req_ms < V2JOIN_REQ_INTERVAL_MS)
         return;
 
-    /* One request to one connected peer per interval, at the current
-     * accumulated offset. The response accumulates; when complete, the
-     * handler adopts.
+    /* One request per interval, to this download's ONE source, at the
+     * accumulated offset (the file's "ONE SOURCE" block). The response
+     * accumulates; when complete, the handler adopts.
      *
-     * ROUND-ROBIN over the switch's peer set (its List() order). A peer
-     * can decline to serve for a reason a joiner cannot see — it holds no
-     * chain itself (another joiner) — so a request to it is wasted, and
-     * without rotation EVERY later request would be wasted the same way
-     * (measured before rotation existed: 1 of 13 simultaneous joiners
-     * never adopted). The cursor advances once per ATTEMPT, so one
-     * unhelpful peer costs exactly one interval. Every connected peer has
+     * A source that left no answer for a whole interval refused its
+     * chunk: it may decline for a reason a joiner cannot see — it holds
+     * no chain itself (another joiner), it is not serving yet — so it is
+     * excluded and the next peer is asked. The choice of a NEW source
+     * walks the switch's peer set (its List() order) round-robin from a
+     * cursor that advances once per choice (measured before rotation
+     * existed: 1 of 13 simultaneous joiners never adopted, asking the
+     * same unhelpful peer forever). Every connected peer has
      * authenticated its identity and our chain id (the pin) at the secret
      * connection and NodeInfo (P2P-PORT F5); the serve side authorizes by
      * the pin equalling its committed genesis. */
-    char peer_id[CMT_P2P_ID_CAP];
-    int i = (int)(w->v2_join.peer_rr % (uint32_t)n_peers);
-    if (!nodus_witness_p2p_peer_id_at(w->p2p, i, peer_id)) {
-        join_diag(w, now, "the p2p peer set changed under the cursor");
-        return;
+    if (w->v2_join.awaiting && w->v2_join.src[0] != '\0') {
+        join_fail_source(w, "no answer within the request interval");
     }
-    w->v2_join.peer_rr = (uint32_t)((i + 1) % n_peers);
+    if (w->v2_join.src[0] != '\0' &&
+        !nodus_witness_p2p_has_peer(w->p2p, w->v2_join.src)) {
+        QGP_LOG_INFO(LOG_TAG, "genesis bundle source %s disconnected — its "
+                     "bytes are dropped, the next peer starts from offset 0",
+                     w->v2_join.src);
+        w->v2_join.src[0] = '\0';
+        w->v2_join.awaiting = false;
+        join_reset_acc(w);
+    }
+    if (w->v2_join.src[0] == '\0') {
+        if (!join_pick_source(w, n_peers)) {
+            join_diag(w, now, "the p2p peer set changed under the cursor");
+            return;
+        }
+        join_reset_acc(w);                    /* a new source: offset 0 */
+    }
 
     nodus_t3_w_v2_gbundle_q_t req;
     memset(&req, 0, sizeof(req));
@@ -387,10 +515,17 @@ void nodus_witness_v2_join_tick(nodus_witness_t *w) {
     uint8_t buf[128];
     size_t len = 0;
     /* Sent through the host so it remembers (peer, offset) as the one
-     * outstanding request — the only answer handle_gbundle_r takes. */
-    if (nodus_t3_gbundle_q_encode(&req, buf, sizeof(buf), &len) == 0 &&
-        !nodus_witness_p2p_gb_request(w->p2p, peer_id, req.offset, buf, len))
-        QGP_LOG_WARN(LOG_TAG, "genesis bundle request to %s not queued",
-                     peer_id);
+     * outstanding request — the only answer handle_gbundle_r takes. A
+     * request that could not be queued is THIS node's send failure, not
+     * the source's: it is retried next interval with the same source and
+     * never counted as "no answer" (ORCHESTRATOR repair — verifier F3:
+     * `awaiting` set on a failed send excluded an honest source). */
+    bool queued = nodus_t3_gbundle_q_encode(&req, buf, sizeof(buf), &len) == 0 &&
+                  nodus_witness_p2p_gb_request(w->p2p, w->v2_join.src,
+                                               req.offset, buf, len);
+    if (!queued)
+        QGP_LOG_WARN(LOG_TAG, "genesis bundle request to %s not queued — "
+                     "retrying next interval", w->v2_join.src);
+    w->v2_join.awaiting = queued;
     w->v2_join.last_req_ms = now;
 }

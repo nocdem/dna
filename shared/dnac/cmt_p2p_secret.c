@@ -642,12 +642,17 @@ static int sc_recv_authsig(cmt_p2p_sc_t *sc, const uint8_t *in, size_t in_len,
         }
         if (chunk_len == 0) {
             /* An EMPTY sealed frame before the AUTHSIG is complete: the
-             * reference's Read returns 0 bytes and its delimited reader
-             * asks again (secret_connection.go:261-273), so a peer could
-             * make this node open frame after frame for free before it
-             * ever authenticates. Nothing but the AUTHSIG may come first
-             * (design R1): close. STRICTER than the reference (red-team
-             * Z1 F14). */
+             * reference's Read returns 0 bytes with no error
+             * (secret_connection.go:261-273). What its delimited reader
+             * does with that depends on where it is: while reading the
+             * length PREFIX, byteReader.ReadByte (libs/protoio/io.go:
+             * 91-98) returns its buffer's STALE byte with a nil error, so
+             * the uvarint takes a byte that was never sent; while reading
+             * the BODY, io.ReadFull (libs/protoio/reader.go:89) asks
+             * again, so a peer could make this node open frame after
+             * frame for free before it ever authenticates. Nothing but the
+             * AUTHSIG may come first (design R1): close. STRICTER than the
+             * reference (red-team Z1 F14; R-P2P-63). */
             QGP_LOG_ERROR(LOG_TAG, "empty sealed frame before AUTHSIG");
             qgp_secure_memzero(frame, sizeof(frame));
             return sc_die(sc, CMT_REJECT);
@@ -1052,6 +1057,14 @@ int cmt_p2p_sc_read(cmt_p2p_sc_t *sc, const uint8_t *in, size_t in_len,
     *n = give;
     qgp_secure_memzero(frame, sizeof(frame));
     return CMT_OK;
+}
+
+size_t cmt_p2p_sc_read_pending(const cmt_p2p_sc_t *sc)
+{
+    if (sc == NULL || sc->state != CMT_P2P_SC_ST_AUTHENTICATED) {
+        return 0;
+    }
+    return sc->recv_len;
 }
 
 void cmt_p2p_sc_clear(cmt_p2p_sc_t *sc)

@@ -342,7 +342,12 @@ SİLİNMEZ"). Proven on localhost by `test_p2p_stopall_nowipe.sh`.
    `grep 'consensus WAL carry-over' <log>` (one line per node that held rows)
    and `grep 'persistent peer(s)' <log>`.
 
-**Rolling back 0.20.0 → 0.19.x (and forward again).** 0.19.x reads only the
+**0.20.0 and 0.20.1 do not mix.** 0.20.1 adds a request digest (`rq`) to the
+0x71 governance-approval response; a 0.20.0 node's response without it is
+refused. 0.20.0 was never deployed — deploy 0.20.1 (or later) to every node in
+the same stop-all.
+
+**Rolling back 0.20.x → 0.19.x (and forward again).** 0.19.x reads only the
 SQLite rows, so a node that signed at the next height under 0.20.0 has that
 vote only in `cs.wal`. Therefore:
 - Roll back only in an idle window, and on every node confirm, before

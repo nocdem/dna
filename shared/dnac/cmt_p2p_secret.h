@@ -123,12 +123,12 @@
  * counter), so a replayed, dropped, reordered or reflected frame fails the
  * GCM tag: exact counter, no gaps, opposite role only (session design R5,
  * N3) — by construction, with no wire field to parse.
- * ⚠ NOT GROUNDED — the nonce byte layout: the design says "role byte ‖
- * 64-bit counter" (p2p-port design §2 row 1) and the dispatch says big-
- * endian; the 3 zero bytes sit where the reference leaves its 4 unused
- * bytes (:450-452), which is also SP 800-38D §8.2.1's suggested
- * "fixed field leading" form (fixed field = 4 bytes, invocation field =
- * 8 bytes).
+ * The nonce byte layout is OPERATOR-APPROVED (decision
+ * docs/plans/decisions/2026-09-26-witness-port-session.md, "P2P portu
+ * bayt/biçim onayları" item 1): role ‖ 00 00 00 ‖ u64 BE counter. The 3
+ * zero bytes sit where the reference leaves its 4 unused bytes
+ * (:450-452), which is also SP 800-38D §8.2.1's suggested "fixed field
+ * leading" form (fixed field = 4 bytes, invocation field = 8 bytes).
  *
  * Counter overflow (reference :453-462 panics when a counter at
  * MaxUint64 is incremented — the frame at MaxUint64 was already sealed):
@@ -503,6 +503,16 @@ int cmt_p2p_sc_write(cmt_p2p_sc_t *sc, const uint8_t *data, size_t len,
 int cmt_p2p_sc_read(cmt_p2p_sc_t *sc, const uint8_t *in, size_t in_len,
                     size_t *consumed, uint8_t *data, size_t data_cap,
                     size_t *n);
+
+/**
+ * Plaintext `cmt_p2p_sc_read` holds already opened (recvBuffer,
+ * secret_connection.go:236-241): what did not fit an earlier read, and
+ * the tail of the frame that completed the AUTHSIG (:268-271 via the
+ * delimited reader). A reader must drain it even when no new wire byte
+ * is waiting — no frame will arrive to push it out (Codex 7).
+ * @return its length in bytes; 0 for NULL or before authentication.
+ */
+size_t cmt_p2p_sc_read_pending(const cmt_p2p_sc_t *sc);
 
 /** Zero every key, secret and buffer. */
 void cmt_p2p_sc_clear(cmt_p2p_sc_t *sc);

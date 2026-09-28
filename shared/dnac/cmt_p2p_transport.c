@@ -1013,43 +1013,70 @@ static bool peer_may_receive(const cmt_p2p_transport_t *t)
     return t->host.may_receive == NULL || t->host.may_receive(t->host.ctx);
 }
 
-/* The receive gate handed to cmt_p2p_peer_pump: the host's two rows,
+/* The receive gate handed to cmt_p2p_peer_pump: the host's three rows,
  * asked by the pump before / after every message (cmt_p2p_peer.h "THE
- * RECEIVE GATE"). */
-static cmt_p2p_recv_gate_t peer_gate(const cmt_p2p_transport_t *t)
+ * RECEIVE GATE"); `send_only` for the host's write path. */
+static cmt_p2p_recv_gate_t peer_gate(const cmt_p2p_transport_t *t, bool send_only)
 {
     cmt_p2p_recv_gate_t g;
 
     g.ctx = t->host.ctx;
     g.may_receive = t->host.may_receive;
     g.recv_near_full = t->host.recv_near_full;
+    g.queue_mark = t->host.queue_mark;
+    g.send_only = send_only;
     return g;
+}
+
+/* The host's `recv_near_full` row: is its queue contended? NULL = never. */
+static bool peer_contended(const cmt_p2p_transport_t *t)
+{
+    return t->host.recv_near_full != NULL && t->host.recv_near_full(t->host.ctx);
 }
 
 /*
  * One pass over every connection. The walk STARTS just past the slot
- * whose peer this tick last served (delivered >= 1 message) and wraps —
- * the served-goes-to-the-back round-robin of the APPROVED fairness rule
- * atlas-dec-efa4d29c (cmt_cs's poll start), applied to the peers a
- * nearly full consensus queue makes compete. The reference needs no
- * order: every peer's recvRoutine is its own goroutine
+ * whose peer this tick last served (delivered >= 1 queue-entering
+ * message) and wraps — the served-goes-to-the-back round-robin of the
+ * APPROVED fairness rule atlas-dec-efa4d29c (cmt_cs's poll start),
+ * applied to the peers a contended consensus queue makes compete. The
+ * reference needs no order: every peer's recvRoutine is its own goroutine
  * (connection.go:590-694) and the Go runtime hands freed channel slots to
  * blocked senders in FIFO order. A walk that always began at slot 0 let a
  * low slot that keeps the queue full be served first on every pass and
  * starve the rest (red-team H3). Deadlines and upgrade steps have no
  * order dependence; they ride the same walk.
+ *
+ * THE CONTENDED SWEEPS (decision 2026-09-27-p2p-fix-2.md (4), RT2 A-F1):
+ * while the queue is contended each peer delivers ONE queue-entering
+ * message per pump (cmt_p2p_peer.h "THE RECEIVE GATE"), so after the
+ * first sweep the room the lane will drain before the next poll may be
+ * mostly unused. Further sweeps in the SAME cyclic order ask again every
+ * peer that delivered a queue-entering message in the sweep before (a
+ * peer that delivered none has nothing complete buffered — its next
+ * bytes come with the next socket read, not from this tick), until the
+ * queue has no room or nobody delivers. Every peer with messages ready
+ * gets one per sweep; the last, partial sweep ends where the room ran
+ * out, and `recv_last_served` = the last peer it served, so the next
+ * tick begins with the peers that sweep did not reach — over passes no
+ * peer's count runs more than one ahead of another's. Termination: each
+ * further sweep delivers >= 1 message out of bytes ALREADY buffered (the
+ * tick reads no socket) and bounded, so the sweeps end; with a queue_mark
+ * row each one also takes >= 1 entry of the host's bounded queue. No
+ * reference counterpart (the goroutines need no sweep).
  */
 void cmt_p2p_transport_tick(cmt_p2p_transport_t *t)
 {
     int k, n, start;
     int64_t now;
     cmt_p2p_recv_gate_t gate;
+    bool any = false;
 
     if (t == NULL) {
         return;
     }
     now = now_ns(t);
-    gate = peer_gate(t);
+    gate = peer_gate(t, false);
     n = t->n_slots;                     /* a slot grown inside a step waits */
     start = (t->recv_last_served >= 0 && t->recv_last_served < n)
                 ? t->recv_last_served + 1 : 0;
@@ -1060,6 +1087,7 @@ void cmt_p2p_transport_tick(cmt_p2p_transport_t *t)
         if (c == NULL) {
             continue;
         }
+        c->recv_again = false;
         switch (c->state) {
         case CMT_P2P_CONN_DIALING:
             if (c->deadline_ns != 0 && now >= c->deadline_ns) {
@@ -1081,22 +1109,49 @@ void cmt_p2p_transport_tick(cmt_p2p_transport_t *t)
         case CMT_P2P_CONN_PEER:
             /* the gate is asked per message: the previous peer's step
              * may have filled the host's queue */
-            if (cmt_p2p_peer_pump(c->peer, &gate)) {
+            if (cmt_p2p_peer_pump(c->peer, &gate) > 0) {
                 t->recv_last_served = i;
+                c->recv_again = true;
+                any = true;
             }
             break;
         default:
             break;
         }
     }
+    /* The contended sweeps (above). */
+    while (any && peer_contended(t) && peer_may_receive(t)) {
+        any = false;
+        for (k = 0; k < n; k++) {
+            int i = (start + k) % n;
+            cmt_p2p_conn_t *c = i < t->n_slots ? t->slots[i] : NULL;
+
+            if (c == NULL || !c->recv_again) {
+                continue;
+            }
+            c->recv_again = false;
+            if (c->state != CMT_P2P_CONN_PEER) {
+                continue;               /* stopped inside an earlier sweep */
+            }
+            if (!peer_may_receive(t)) {
+                break;                  /* the room is used: a partial sweep */
+            }
+            if (cmt_p2p_peer_pump(c->peer, &gate) > 0) {
+                t->recv_last_served = i;
+                c->recv_again = true;
+                any = true;
+            }
+        }
+    }
 }
 
 /* The per-connection body of cmt_p2p_transport_tick without the deadline
  * checks (the tick keeps those): the recvRoutine / sendRoutine step of a
- * peer connection, the upgrade step of one being upgraded. The host calls
- * it between socket reads and writes (header, "THE HOST'S BYTES"). */
+ * peer connection (its send half only when `with_recv` is false — the
+ * host's write path), the upgrade step of one being upgraded. The host
+ * calls it between socket reads and writes (header, "THE HOST'S BYTES"). */
 void cmt_p2p_transport_pump_conn(cmt_p2p_transport_t *t, int slot,
-                                 uint64_t gen)
+                                 uint64_t gen, bool with_recv)
 {
     cmt_p2p_conn_t *c = cmt_p2p_transport_conn(t, slot, gen);
 
@@ -1109,7 +1164,7 @@ void cmt_p2p_transport_pump_conn(cmt_p2p_transport_t *t, int slot,
         advance(t, c);
         break;
     case CMT_P2P_CONN_PEER: {
-        cmt_p2p_recv_gate_t gate = peer_gate(t);
+        cmt_p2p_recv_gate_t gate = peer_gate(t, !with_recv);
 
         (void)cmt_p2p_peer_pump(c->peer, &gate);
         break;

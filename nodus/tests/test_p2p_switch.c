@@ -93,6 +93,25 @@
  *     The queue and its near-full rule are the test's model of the
  *     witness host's rows, not cmt_cs itself; the socket host's own walk
  *     (nodus_p2p_io_pump's last-served start) is not driven here.
+ *   · EQUAL SHARE (decision 2026-09-27-p2p-fix-2.md (4), RT2 A-F1/F2):
+ *     with a modelled 6-entry queue that is always contended (room <
+ *     4 peers × a share of 4), one FLOODER refilled every pass and three
+ *     honest peers, every honest peer's delivered queue-entering count
+ *     stays within ONE of the flooder's after every pass while all have
+ *     messages left; messages on a channel that takes no queue entry
+ *     (TEST_CH2) neither end a turn nor count against a share, and every
+ *     one of them still arrives; nothing is delivered into a full queue
+ *     (test_receive_equal_share — the transport tick's sweeps only, not
+ *     the socket host's read path).
+ *   · EOF WITH BUFFERED MESSAGES (Codex 6): three complete messages
+ *     already in the receiver's buffers when its socket reports EOF —
+ *     held back by a 10 B/s recv Monitor — are all delivered, in order,
+ *     BEFORE the peer is stopped (test_eof_buffered).
+ *   · THE ACCEPT BUDGET (Codex 1): with budget + 10 connections from one
+ *     IP in the backlog (all but the first refused at accept by the
+ *     duplicate-IP filter), one socket-host pass closes exactly
+ *     budget − 1 of them and leaves 10 in the backlog; the next pass
+ *     takes those (test_socket_accept_budget; Linux, loopback).
  *
  * WHAT IT REQUIRES: nothing beyond a default nodus build (no compile
  * flags, no environment). The socket-host case needs loopback TCP on
@@ -142,6 +161,8 @@
 #include <stdint.h>
 #ifdef __linux__
 #include <time.h>
+#include <poll.h>
+#include <unistd.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -164,6 +185,10 @@ static const uint8_t CHAIN_A[32] = { 0x9a, 0xbf, 0x84, 0x37, 0xe7, 0x29 };
 static const uint8_t CHAIN_B[32] = { 0x11, 0x22, 0x33 };
 
 #define TEST_CH 0x40
+/* A second test channel whose messages take NO entry of the modelled
+ * consensus queue — the single-loop model of ping/pong, HasVote,
+ * NewRoundStep, mempool, PEX (the equal-share case). */
+#define TEST_CH2 0x41
 
 /* ══ the in-memory network ═══════════════════════════════════════════ */
 
@@ -278,6 +303,16 @@ struct node {
     int  q_cap;
     int  q_len;
     int  q_overflow;
+    /* the per-peer share behind the contended threshold (the witness
+     * host's NODUS_P2P_RECV_SHARE): contended = room < peers × q_share
+     * (0 = a share of 1, the H3 case's rule) */
+    int  q_share;
+    /* the `queue_mark` row: rises exactly when a message takes an entry */
+    uint64_t q_marks;
+    /* messages received, per sender (index into g_nodes): TEST_CH
+     * (queue-entering in the model) and TEST_CH2 (not) */
+    int  enq_from[MAX_NODES];
+    int  non_from[MAX_NODES];
 #ifdef __linux__
     /* non-NULL: the node's bytes go through the nodus 4004 socket host
      * over real loopback TCP instead of the in-memory pipes */
@@ -419,14 +454,22 @@ static bool h_may_receive(void *ctx)
 }
 
 /* The transport's `recv_near_full` row, the witness host's rule: fewer
- * free entries than connected peers. */
+ * free entries than connected peers × the per-peer share. */
 static bool h_recv_near_full(void *ctx)
 {
     const node_t *n = (const node_t *)ctx;
+    int share = n->q_share > 0 ? n->q_share : 1;
 
     return n->q_cap > 0 &&
            n->q_cap - n->q_len <
-               cmt_p2p_peer_set_size(cmt_p2p_switch_peers(&n->sw));
+               cmt_p2p_peer_set_size(cmt_p2p_switch_peers(&n->sw)) * share;
+}
+
+/* The transport's `queue_mark` row (the witness host's h_queue_mark:
+ * there the queue's length; here a counter of entries taken). */
+static uint64_t h_queue_mark(void *ctx)
+{
+    return ((const node_t *)ctx)->q_marks;
 }
 
 static int h_bonded_count(void *ctx)
@@ -457,13 +500,29 @@ static bool h_is_bonded(void *ctx, const char *id)
 
 /* ── the test reactor ── */
 
-static const cmt_p2p_ch_desc_t TEST_DESCS[] = { { TEST_CH, 1, 10, 0, 0 } };
+static const cmt_p2p_ch_desc_t TEST_DESCS[] = {
+    { TEST_CH, 1, 10, 0, 0 },
+    { TEST_CH2, 1, 10, 0, 0 },
+};
 
 static const cmt_p2p_ch_desc_t *r_channels(void *ctx, int *n)
 {
     (void)ctx;
-    *n = 1;
+    *n = (int)(sizeof(TEST_DESCS) / sizeof(TEST_DESCS[0]));
     return TEST_DESCS;
+}
+
+/* The index in g_nodes of the node whose ID is `id`, or -1. */
+static int node_index(const char *id)
+{
+    int i;
+
+    for (i = 0; i < g_n_nodes; i++) {
+        if (g_nodes[i] != NULL && strcmp(g_nodes[i]->idhex, id) == 0) {
+            return i;
+        }
+    }
+    return -1;
 }
 
 static void r_add(void *ctx, cmt_p2p_peer_t *p)
@@ -491,12 +550,27 @@ static void r_receive(void *ctx, cmt_p2p_peer_t *src, uint8_t ch,
         cmt_p2p_switch_stop_peer_for_error(&n->sw, src, 42);
         return;
     }
+    {
+        int who = node_index(cmt_p2p_peer_id(src));
+
+        if (who >= 0) {
+            if (ch == TEST_CH) {
+                n->enq_from[who]++;
+            } else {
+                n->non_from[who]++;
+            }
+        }
+    }
+    if (ch == TEST_CH2) {
+        return;                         /* takes no entry, not recorded */
+    }
     if (n->q_cap > 0) {
         if (n->q_len >= n->q_cap) {
             n->q_overflow++;            /* the host would drop it */
             return;
         }
         n->q_len++;
+        n->q_marks++;
     }
     if (n->n_msgs >= MAX_RMSGS) {
         return;
@@ -549,6 +623,7 @@ typedef struct {
     int            max_in_switch;
     bool           allow_dup_ip;
     const nodus_identity_t *identity; /* NULL = a fresh one              */
+    int64_t        recv_rate;         /* MConnection recv_rate; 0 = default */
 } node_params_t;
 
 static void params_default(node_params_t *p, const char *ip, uint16_t port)
@@ -572,7 +647,7 @@ static node_t *node_new(const char *name, const node_params_t *prm)
     cmt_p2p_reactor_t r;
     cmt_p2p_netaddr_t laddr;
     char listen[64];
-    static const uint8_t chans[] = { TEST_CH };
+    static const uint8_t chans[] = { TEST_CH, TEST_CH2 };
 
     if (n == NULL) {
         return NULL;
@@ -603,7 +678,7 @@ static node_t *node_new(const char *name, const node_params_t *prm)
     nip.chain_id = prm->ni_chain != NULL ? prm->ni_chain : prm->chain;
     nip.version = "0.19.80";
     nip.channels = chans;
-    nip.n_channels = 1;
+    nip.n_channels = sizeof(chans);
     nip.moniker = name;
     nip.tx_index = "off";
     nip.rpc_address = "";
@@ -623,6 +698,7 @@ static node_t *node_new(const char *name, const node_params_t *prm)
     th.bonded_count = h_bonded_count;
     th.may_receive = h_may_receive;
     th.recv_near_full = h_recv_near_full;
+    th.queue_mark = h_queue_mark;
     memset(&tc, 0, sizeof(tc));
     tc.dsa_pk = n->id.pk.bytes;
     tc.kem_pk = n->id.mlkem_pk;
@@ -633,6 +709,9 @@ static node_t *node_new(const char *name, const node_params_t *prm)
     tc.chain_id = prm->chain;
     tc.node_info = n->ni;
     cmt_p2p_mconn_p2p_default_config(&tc.mconn);
+    if (prm->recv_rate > 0) {
+        tc.mconn.recv_rate = prm->recv_rate;
+    }
     tc.max_num_inbound_peers = prm->max_in_transport;
     tc.n_unconditional_ids = prm->n_uncond_cfg;
     tc.allow_duplicate_ip = prm->allow_dup_ip;
@@ -2462,10 +2541,120 @@ static void test_socket_blocked_receive(void)
         FAIL("blocked receive");
     }
 }
+/* Connections one pass may accept(2) — including the refused — and how
+ * many are opened against the listener here (more than one budget). */
+#define ACCEPT_CONNS (NODUS_P2P_ACCEPT_BUDGET + 10)
+_Static_assert(ACCEPT_CONNS <= 128, "every connection must fit listen(fd, 128)");
+
+/* How many of `fds` the peer has closed (EOF / reset / error readable),
+ * polled until `want` are or ~2 s passed (loopback FIN delivery is not
+ * synchronous with the server's close(2)). */
+static int accept_closed(const int *fds, int n, int want)
+{
+    struct pollfd pf[ACCEPT_CONNS];
+    int64_t end = sock_mono_ms() + 2000;
+    int i, closed = 0;
+
+    for (;;) {
+        closed = 0;
+        for (i = 0; i < n; i++) {
+            pf[i].fd = fds[i];
+            pf[i].events = POLLIN;
+            pf[i].revents = 0;
+        }
+        (void)poll(pf, (nfds_t)n, 10);
+        for (i = 0; i < n; i++) {
+            if ((pf[i].revents & (POLLIN | POLLHUP | POLLERR)) != 0) {
+                closed++;
+            }
+        }
+        if (closed >= want || sock_mono_ms() > end) {
+            return closed;
+        }
+    }
+}
+
+/*
+ * Codex 1 — the listener's accept loop is BOUNDED per pass, the refused
+ * connections included: ACCEPT_CONNS (budget + 10) plain TCP connections
+ * from 127.0.0.1 wait in R's backlog. R's transport admits the first and
+ * refuses every other at accept (the duplicate-IP filter,
+ * transport.go:88-104, :398 — `allow_duplicate_ip` is off), so each
+ * refused one is closed right after accept(2). ONE pump makes exactly
+ * NODUS_P2P_ACCEPT_BUDGET accept(2) calls: 1 admitted + budget − 1
+ * refused (closed); the last 10 are still in the backlog, untouched. The
+ * NEXT pump takes them (the listener stayed armed): all but the admitted
+ * one are closed then. RED before the budget: the first pump drained the
+ * whole backlog (budget + 9 closed).
+ * HOW IT CAN LIE: the closes are observed from the client side through
+ * loopback FIN delivery, polled for at most ~2 s per step; a machine that
+ * delivers a FIN later than that reads as "not closed" and FAILS the
+ * exact count — it cannot pass for the wrong reason, since a 10th
+ * too-many close would only raise the count.
+ */
+static void test_socket_accept_budget(void)
+{
+    node_t *R;
+    struct sockaddr_in sin;
+    int fds[ACCEPT_CONNS];
+    int ok = 1, i, n = 0, closed;
+
+    TEST("4004 socket host: one pass accept(2)s at most the budget, refused too");
+    R = sock_node_new("R");
+    if (R == NULL) {
+        FAIL("setup");
+        world_reset();
+        return;
+    }
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = htons(R->port);
+    sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    for (i = 0; i < ACCEPT_CONNS; i++) {
+        int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+
+        if (fd < 0) {
+            break;
+        }
+        if (connect(fd, (struct sockaddr *)&sin, sizeof(sin)) != 0) {
+            close(fd);
+            break;
+        }
+        fds[n++] = fd;
+    }
+    CHECK(n == ACCEPT_CONNS);
+    nodus_p2p_io_pump(R->io);
+    closed = accept_closed(fds, n, NODUS_P2P_ACCEPT_BUDGET - 1);
+    CHECK(closed == NODUS_P2P_ACCEPT_BUDGET - 1);
+    CHECK(live_slots(R) == 1);                  /* the one admitted */
+    nodus_p2p_io_pump(R->io);
+    closed = accept_closed(fds, n, n - 1);
+    CHECK(closed == n - 1);
+    CHECK(live_slots(R) == 1);
+    if (!ok) {
+        printf("\n    %d connections, %d closed, %d live slots", n, closed,
+               live_slots(R));
+    }
+    for (i = 0; i < n; i++) {
+        close(fds[i]);
+    }
+    world_reset();
+    if (ok) {
+        PASS();
+    } else {
+        FAIL("accept budget");
+    }
+}
 #else
 /* The socket host is Linux-only (epoll; nodus/CMakeLists.txt's
  * NOT WIN32 source list). A skip is printed and counted as neither pass
  * nor fail — it is coverage that did not happen. */
+static void test_socket_accept_budget(void)
+{
+    TEST("4004 socket host: one pass accept(2)s at most the budget, refused too");
+    printf("SKIPPED (Linux only)\n");
+}
+
 static void test_socket_continuous_read(void)
 {
     TEST("4004 socket host: 256 KiB crosses loopback in <= 8 passes (old >= 64)");
@@ -2611,6 +2800,265 @@ static void test_receive_fairness(void)
     }
 }
 
+/* ══ equal share of a contended queue (decision 2026-09-27-p2p-fix-2.md
+ * (4), RT2 A-F1/F2) ════════════════════════════════════════════════════ */
+
+#define SHARE_HONEST   3        /* honest peers H1..H3                    */
+#define SHARE_MSGS     9        /* per honest peer, per channel (queue 10) */
+#define SHARE_QCAP     6        /* room per pass: < 4 peers × share 4      */
+#define SHARE_Q_SHARE  4
+#define SHARE_BLOCKED  6        /* passes every sender needs to flush     */
+#define SHARE_PASSES   60
+
+/* Queue as many TEST_CH / TEST_CH2 messages as the flooder's send
+ * queues take (Send ≡ TrySend: false once a channel's queue is full). */
+static void share_refill(cmt_p2p_peer_t *p)
+{
+    static const uint8_t m[3] = { 'F', 'F', 'F' };
+    int guard;
+
+    for (guard = 0; guard < 64 && cmt_p2p_peer_send(p, TEST_CH, m, 3); guard++) {
+    }
+    for (guard = 0; guard < 64 && cmt_p2p_peer_send(p, TEST_CH2, m, 3); guard++) {
+    }
+}
+
+/*
+ * R holds a modelled consensus queue of SHARE_QCAP entries, drained
+ * between two passes, with the witness host's contended rule scaled to
+ * this size: contended = room < connected peers × SHARE_Q_SHARE (4 × 4 =
+ * 16 > 6, so every pass is contended). Four peers: F floods — refilled to
+ * a full send queue on BOTH channels after every pass — and H1..H3 each
+ * queue SHARE_MSGS TEST_CH messages and SHARE_MSGS TEST_CH2 messages
+ * once. TEST_CH2 takes no queue entry (the model of ping/pong, HasVote,
+ * NewRoundStep, mempool, PEX). R's receive is BLOCKED for the first
+ * SHARE_BLOCKED passes, so every sender's bytes already sit in R's
+ * buffers when the queue opens: from then on every peer has
+ * queue-entering messages ready.
+ *   · EQUAL SHARE: after every pass, while every honest peer still has
+ *     TEST_CH messages to deliver, each honest peer's delivered TEST_CH
+ *     count is within ONE of the flooder's (one queue-entering message
+ *     per peer per sweep, sweeps repeated while room remains, the last
+ *     partial sweep's peers served first next time —
+ *     cmt_p2p_transport_tick). RED before P2P-FIX-2: the rule was
+ *     "room < peers" and any message ended a peer's turn, so with room
+ *     6 ≥ 4 the first peer walked delivered 3 before the queue counted as
+ *     nearly full, and an honest peer whose next message was a TEST_CH2
+ *     lost its turn to it.
+ *   · NON-ENQUEUING MESSAGES DO NOT CONSUME A SHARE: the honest peers'
+ *     TEST_CH2 messages ride along (every one of them arrives) and the
+ *     flooder's TEST_CH2 flood does not lower anyone's TEST_CH count
+ *     (the within-one check above holds with it).
+ *   · NOTHING READ IS DROPPED: the queue never receives a message while
+ *     full (q_overflow == 0).
+ * The queue and its rule are the test's model of the witness host's rows
+ * (nodus_witness_p2p.c h_may_receive / h_recv_near_full / h_queue_mark),
+ * not cmt_cs itself; the socket host's read path (io_read's steps) is not
+ * driven here — only the transport tick's sweeps.
+ */
+static void test_receive_equal_share(void)
+{
+    node_params_t pr, ph;
+    node_t *R, *F, *H[SHARE_HONEST];
+    cmt_p2p_peer_t *pF, *pH[SHARE_HONEST];
+    cmt_p2p_netaddr_t addr;
+    int ok = 1, i, k, pass, iF, iH[SHARE_HONEST], worst = 0, checked = 0;
+    static const char *ips[SHARE_HONEST] = { "10.0.2.3", "10.0.2.4", "10.0.2.5" };
+    char m[4];
+
+    TEST("equal share: one queue-entering message per peer per sweep");
+    params_default(&pr, "10.0.2.1", 4004);
+    R = node_new("R", &pr);
+    params_default(&ph, "10.0.2.2", 4004);
+    F = node_new("F", &ph);
+    for (k = 0; k < SHARE_HONEST; k++) {
+        params_default(&ph, ips[k], 4004);
+        H[k] = node_new("H", &ph);
+    }
+    if (R == NULL || F == NULL || H[0] == NULL || H[1] == NULL || H[2] == NULL) {
+        FAIL("setup");
+        world_reset();
+        return;
+    }
+    addr = addr_of(R);
+    CHECK(cmt_p2p_switch_dial_peer_with_address(&F->sw, &addr) == CMT_P2P_ERR_NONE);
+    for (k = 0; k < SHARE_HONEST; k++) {
+        CHECK(cmt_p2p_switch_dial_peer_with_address(&H[k]->sw, &addr) ==
+              CMT_P2P_ERR_NONE);
+    }
+    run(60, 10 * MS);
+    pF = peer_of(F, R);
+    for (k = 0; k < SHARE_HONEST; k++) {
+        pH[k] = peer_of(H[k], R);
+        CHECK(pH[k] != NULL);
+    }
+    CHECK(n_peers(R) == 1 + SHARE_HONEST && pF != NULL);
+    iF = node_index(F->idhex);
+    for (k = 0; k < SHARE_HONEST; k++) {
+        iH[k] = node_index(H[k]->idhex);
+    }
+    if (!ok || iF < 0) {
+        world_reset();
+        FAIL("link");
+        return;
+    }
+    memset(R->enq_from, 0, sizeof(R->enq_from));
+    memset(R->non_from, 0, sizeof(R->non_from));
+    /* the honest queues: TEST_CH and TEST_CH2, one of each per round */
+    for (i = 0; i < SHARE_MSGS; i++) {
+        for (k = 0; k < SHARE_HONEST; k++) {
+            snprintf(m, sizeof(m), "%c%02d", 'a' + k, i);
+            CHECK(cmt_p2p_peer_send(pH[k], TEST_CH2, (const uint8_t *)m, 3));
+            CHECK(cmt_p2p_peer_send(pH[k], TEST_CH, (const uint8_t *)m, 3));
+        }
+    }
+    share_refill(pF);
+    /* every sender flushes into R's buffers while R reads nothing */
+    R->block_recv = true;
+    for (pass = 0; pass < SHARE_BLOCKED; pass++) {
+        run(1, CMT_P2P_CONFIG_DEFAULT_FLUSH_THROTTLE_NS);
+    }
+    CHECK(R->enq_from[iF] == 0);
+    R->block_recv = false;
+    R->q_cap = SHARE_QCAP;
+    R->q_share = SHARE_Q_SHARE;
+    R->q_len = 0;
+    for (pass = 0; pass < SHARE_PASSES; pass++) {
+        bool all_pending = true;
+
+        run(1, CMT_P2P_CONFIG_DEFAULT_FLUSH_THROTTLE_NS);
+        CHECK(R->q_overflow == 0);
+        R->q_len = 0;                           /* the lane drains it */
+        share_refill(pF);
+        for (k = 0; k < SHARE_HONEST; k++) {
+            if (R->enq_from[iH[k]] >= SHARE_MSGS) {
+                all_pending = false;
+            }
+        }
+        if (!all_pending) {
+            break;          /* an honest peer ran out: shares end there */
+        }
+        checked++;
+        for (k = 0; k < SHARE_HONEST; k++) {
+            int d = R->enq_from[iH[k]] - R->enq_from[iF];
+
+            if (d < 0) {
+                d = -d;
+            }
+            if (d > worst) {
+                worst = d;
+            }
+        }
+    }
+    CHECK(checked >= 2);                /* the property was exercised */
+    CHECK(worst <= 1);
+    CHECK(R->enq_from[iF] > 0);
+    /* the honest peers' remaining traffic still arrives, TEST_CH2 too */
+    R->q_cap = 0;
+    run(40, CMT_P2P_CONFIG_DEFAULT_FLUSH_THROTTLE_NS);
+    for (k = 0; k < SHARE_HONEST; k++) {
+        CHECK(R->enq_from[iH[k]] == SHARE_MSGS);
+        CHECK(R->non_from[iH[k]] == SHARE_MSGS);
+    }
+    CHECK(R->q_overflow == 0);
+    if (!ok) {
+        printf("\n    flooder %d, honest %d / %d / %d after %d checked passes, "
+               "worst gap %d, overflow %d", R->enq_from[iF],
+               R->enq_from[iH[0]], R->enq_from[iH[1]], R->enq_from[iH[2]],
+               checked, worst, R->q_overflow);
+    }
+    world_reset();
+    if (ok) {
+        PASS();
+    } else {
+        FAIL("equal share");
+    }
+}
+
+/* ══ EOF with complete messages still buffered (Codex 6) ═════════════ */
+
+/*
+ * B's recv flowrate Monitor is set to 10 B/s — a 1-byte-per-100 ms
+ * sample (flowrate.go:184 limit = rate × sample), so after ONE packet per
+ * sample the Monitor refuses (connection.go:598) and the rest of A's
+ * three messages stays in B's plaintext buffer. A's socket then closes:
+ * the wire delivers what is in flight and B's host reports EOF
+ * (cmt_p2p_transport_conn_failed). RED before the fix: the next pump
+ * found the throttled receive half with no progress and rbuf empty and
+ * stopped the peer at once — messages 2 and 3 were read from the socket
+ * and never delivered. Now all three arrive, in order, and only THEN is
+ * the peer stopped (connection.go:590-694: bufio's buffered packets reach
+ * onReceive before the read error surfaces).
+ */
+static void test_eof_buffered(void)
+{
+    node_params_t pa, pb;
+    node_t *A, *B;
+    cmt_p2p_peer_t *pAB;
+    cmt_p2p_netaddr_t addr;
+    int ok = 1, before, i, w;
+    char m[4];
+
+    TEST("EOF: complete messages buffered before it are delivered first");
+    params_default(&pa, "10.0.3.1", 4004);
+    params_default(&pb, "10.0.3.2", 4004);
+    pb.recv_rate = 10;
+    A = node_new("A", &pa);
+    B = node_new("B", &pb);
+    if (A == NULL || B == NULL) {
+        FAIL("setup");
+        world_reset();
+        return;
+    }
+    addr = addr_of(B);
+    CHECK(cmt_p2p_switch_dial_peer_with_address(&A->sw, &addr) == CMT_P2P_ERR_NONE);
+    run(40, 10 * MS);
+    pAB = peer_of(A, B);
+    CHECK(pAB != NULL && n_peers(B) == 1);
+    if (pAB == NULL) {
+        world_reset();
+        FAIL("link");
+        return;
+    }
+    /* let B's Monitor start a fresh sample with nothing counted */
+    run(3, 200 * MS);
+    before = B->n_msgs;
+    for (i = 0; i < 3; i++) {
+        snprintf(m, sizeof(m), "E%02d", i);
+        CHECK(cmt_p2p_peer_send(pAB, TEST_CH, (const uint8_t *)m, 3));
+    }
+    /* until the first one is delivered: all three are in B's buffers */
+    for (i = 0; i < 40 && B->n_msgs == before; i++) {
+        run(1, 10 * MS);
+    }
+    CHECK(B->n_msgs == before + 1);
+    /* A's socket closes: the wire hands B what is in flight, then EOF */
+    for (w = 0; w < MAX_WIRES; w++) {
+        if (g_wires[w].used && g_wires[w].a == A && g_wires[w].b == B) {
+            g_wires[w].a_open = false;
+        }
+    }
+    for (i = 0; i < 100 && n_peers(B) == 1; i++) {
+        run(1, 20 * MS);
+    }
+    CHECK(B->n_msgs == before + 3);
+    for (i = 0; i < 3 && B->n_msgs == before + 3; i++) {
+        snprintf(m, sizeof(m), "E%02d", i);
+        CHECK(B->msgs[before + i].len == 3 &&
+              memcmp(B->msgs[before + i].b, m, 3) == 0);
+    }
+    CHECK(n_peers(B) == 0);                  /* and then the peer stopped */
+    if (!ok) {
+        printf("\n    delivered %d of 3, B peers %d", B->n_msgs - before, n_peers(B));
+    }
+    world_reset();
+    if (ok) {
+        PASS();
+    } else {
+        FAIL("EOF buffered");
+    }
+}
+
 /* ══ main ════════════════════════════════════════════════════════════ */
 
 int main(void)
@@ -2640,8 +3088,11 @@ int main(void)
     test_persistent_redial();
     test_cross_dial();
     test_receive_fairness();
+    test_receive_equal_share();
+    test_eof_buffered();
     test_socket_continuous_read();
     test_socket_blocked_receive();
+    test_socket_accept_budget();
 
     printf("\n%d passed, %d failed\n", passed, failed);
     return failed == 0 ? 0 : 1;

@@ -22,6 +22,11 @@
  *   · the 0x71 decoders stay STRICT: an unknown key, a duplicated key, a
  *     key the `ok` value does not admit, a wrong-length signature — each
  *     refused;
+ *   · a 0x71 response carries the REQUEST IDENTITY `rq` (decision
+ *     2026-09-27-p2p-fix-2.md (2)): it round-trips in both forms, and a
+ *     response without it (either form) or with a 63-byte one is refused
+ *     (a well-formed control decodes, so each refusal is for its one
+ *     defect);
  *   · a negative integer anywhere, a non-map top level, and trailing
  *     bytes after the one map are refused (D-22 rev 3's rule, kept).
  *
@@ -194,28 +199,33 @@ static void test_cc_appr_rsp_roundtrip(void)
     uint8_t buf[NODUS_T3_CC_APPR_RSP_MAX + 256];
     size_t len = 0;
 
-    TEST("0x71 response round trip (approval and refusal)");
+    TEST("0x71 response round trip (approval and refusal, with `rq`)");
     memset(&ok_in, 0, sizeof(ok_in));
     ok_in.ok = true;
     ok_in.seat = 6;
     memset(ok_in.sig, 0x7c, sizeof(ok_in.sig));
     memset(ok_in.set_hash, 0x3d, sizeof(ok_in.set_hash));
     ok_in.epoch = 99;
+    memset(ok_in.rq, 0x5e, sizeof(ok_in.rq));
     if (nodus_t3_cc_appr_rsp_encode(&ok_in, buf, sizeof(buf), &len) != 0) FAIL("encode ok");
+    if (len > NODUS_T3_CC_APPR_RSP_MAX) FAIL("approval above NODUS_T3_CC_APPR_RSP_MAX");
     if (nodus_t3_cc_appr_decode(buf, len, &out) != 0) FAIL("decode ok");
     if (out.type != NODUS_T3_CC_APPR_RSP || !out.cc_appr_rsp.ok ||
         out.cc_appr_rsp.seat != 6 || out.cc_appr_rsp.epoch != 99 ||
         memcmp(out.cc_appr_rsp.sig, ok_in.sig, sizeof(ok_in.sig)) != 0 ||
-        memcmp(out.cc_appr_rsp.set_hash, ok_in.set_hash, 64) != 0)
+        memcmp(out.cc_appr_rsp.set_hash, ok_in.set_hash, 64) != 0 ||
+        memcmp(out.cc_appr_rsp.rq, ok_in.rq, NODUS_T3_CC_APPR_RQ_BYTES) != 0)
         FAIL("approval mismatch");
 
     memset(&ref_in, 0, sizeof(ref_in));
     ref_in.ok = false;
     snprintf(ref_in.reason, sizeof(ref_in.reason), "not a committee seat");
+    memset(ref_in.rq, 0xa7, sizeof(ref_in.rq));
     if (nodus_t3_cc_appr_rsp_encode(&ref_in, buf, sizeof(buf), &len) != 0) FAIL("encode refusal");
     if (nodus_t3_cc_appr_decode(buf, len, &out) != 0) FAIL("decode refusal");
     if (out.type != NODUS_T3_CC_APPR_RSP || out.cc_appr_rsp.ok ||
-        strcmp(out.cc_appr_rsp.reason, "not a committee seat") != 0)
+        strcmp(out.cc_appr_rsp.reason, "not a committee seat") != 0 ||
+        memcmp(out.cc_appr_rsp.rq, ref_in.rq, NODUS_T3_CC_APPR_RQ_BYTES) != 0)
         FAIL("refusal mismatch");
     PASS();
 }
@@ -225,13 +235,15 @@ static void test_cc_appr_strict(void)
     uint8_t buf[8192];
     uint8_t sig[NODUS_SIG_BYTES];
     uint8_t sh[64];
+    uint8_t rq[NODUS_T3_CC_APPR_RQ_BYTES];
     nodus_t3_msg_t out;
     cbor_encoder_t enc;
     size_t len;
 
-    TEST("0x71 decoders stay strict (unknown / duplicate / ok-mismatch)");
+    TEST("0x71 decoders stay strict (unknown / duplicate / ok-mismatch / rq)");
     memset(sig, 1, sizeof(sig));
     memset(sh, 2, sizeof(sh));
+    memset(rq, 3, sizeof(rq));
 
     /* request with an extra key */
     cbor_encoder_init(&enc, buf, sizeof(buf));
@@ -249,25 +261,64 @@ static void test_cc_appr_strict(void)
     len = cbor_encoder_len(&enc);
     if (nodus_t3_cc_appr_decode(buf, len, &out) == 0) FAIL("duplicate key accepted");
 
-    /* ok=false carrying a signature */
+    /* the control: a well-formed refusal WITH `rq` decodes — so each
+     * refusal below is refused for its one defect */
     cbor_encoder_init(&enc, buf, sizeof(buf));
     cbor_encode_map(&enc, 3);
     cbor_encode_cstr(&enc, "ok"); cbor_encode_bool(&enc, false);
     cbor_encode_cstr(&enc, "r");  cbor_encode_cstr(&enc, "no");
+    cbor_encode_cstr(&enc, "rq"); cbor_encode_bstr(&enc, rq, sizeof(rq));
+    len = cbor_encoder_len(&enc);
+    if (nodus_t3_cc_appr_decode(buf, len, &out) != 0) FAIL("well-formed refusal refused");
+
+    /* ok=false carrying a signature */
+    cbor_encoder_init(&enc, buf, sizeof(buf));
+    cbor_encode_map(&enc, 4);
+    cbor_encode_cstr(&enc, "ok"); cbor_encode_bool(&enc, false);
+    cbor_encode_cstr(&enc, "r");  cbor_encode_cstr(&enc, "no");
     cbor_encode_cstr(&enc, "s");  cbor_encode_bstr(&enc, sig, sizeof(sig));
+    cbor_encode_cstr(&enc, "rq"); cbor_encode_bstr(&enc, rq, sizeof(rq));
     len = cbor_encoder_len(&enc);
     if (nodus_t3_cc_appr_decode(buf, len, &out) == 0) FAIL("ok=false with s accepted");
 
     /* ok=true with a short signature */
     cbor_encoder_init(&enc, buf, sizeof(buf));
-    cbor_encode_map(&enc, 5);
+    cbor_encode_map(&enc, 6);
     cbor_encode_cstr(&enc, "ok"); cbor_encode_bool(&enc, true);
     cbor_encode_cstr(&enc, "i");  cbor_encode_uint(&enc, 1);
     cbor_encode_cstr(&enc, "s");  cbor_encode_bstr(&enc, sig, sizeof(sig) - 1);
     cbor_encode_cstr(&enc, "sh"); cbor_encode_bstr(&enc, sh, 64);
     cbor_encode_cstr(&enc, "ep"); cbor_encode_uint(&enc, 1);
+    cbor_encode_cstr(&enc, "rq"); cbor_encode_bstr(&enc, rq, sizeof(rq));
     len = cbor_encoder_len(&enc);
     if (nodus_t3_cc_appr_decode(buf, len, &out) == 0) FAIL("short signature accepted");
+
+    /* decision 2026-09-27-p2p-fix-2.md (2): `rq` is REQUIRED in both
+     * forms, and exactly 64 bytes */
+    cbor_encoder_init(&enc, buf, sizeof(buf));
+    cbor_encode_map(&enc, 5);
+    cbor_encode_cstr(&enc, "ok"); cbor_encode_bool(&enc, true);
+    cbor_encode_cstr(&enc, "i");  cbor_encode_uint(&enc, 1);
+    cbor_encode_cstr(&enc, "s");  cbor_encode_bstr(&enc, sig, sizeof(sig));
+    cbor_encode_cstr(&enc, "sh"); cbor_encode_bstr(&enc, sh, 64);
+    cbor_encode_cstr(&enc, "ep"); cbor_encode_uint(&enc, 1);
+    len = cbor_encoder_len(&enc);
+    if (nodus_t3_cc_appr_decode(buf, len, &out) == 0) FAIL("approval without rq accepted");
+
+    cbor_encoder_init(&enc, buf, sizeof(buf));
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "ok"); cbor_encode_bool(&enc, false);
+    cbor_encode_cstr(&enc, "r");  cbor_encode_cstr(&enc, "no");
+    len = cbor_encoder_len(&enc);
+    if (nodus_t3_cc_appr_decode(buf, len, &out) == 0) FAIL("refusal without rq accepted");
+
+    cbor_encoder_init(&enc, buf, sizeof(buf));
+    cbor_encode_map(&enc, 3);
+    cbor_encode_cstr(&enc, "ok"); cbor_encode_bool(&enc, false);
+    cbor_encode_cstr(&enc, "r");  cbor_encode_cstr(&enc, "no");
+    cbor_encode_cstr(&enc, "rq"); cbor_encode_bstr(&enc, rq, sizeof(rq) - 1);
+    len = cbor_encoder_len(&enc);
+    if (nodus_t3_cc_appr_decode(buf, len, &out) == 0) FAIL("63-byte rq accepted");
     PASS();
 }
 

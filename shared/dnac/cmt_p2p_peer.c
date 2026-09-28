@@ -117,13 +117,17 @@ static void rbuf_consume(cmt_p2p_conn_t *c, size_t n)
     c->rbuf_len -= n;
 }
 
-/* secret_connection.go:232-273 Read, frame by frame, into pbuf. */
+/* secret_connection.go:232-273 Read, frame by frame, into pbuf. The
+ * secret connection's own recvBuffer is served first (:236-241) — also
+ * when rbuf is EMPTY: the tail of the frame that completed the AUTHSIG
+ * (the start of the peer's NodeInfo, typically) sits there, and no later
+ * frame need ever arrive to push it out (Codex 7). */
 int cmt_p2p_conn_fill_plain(cmt_p2p_conn_t *c)
 {
     if (c == NULL || c->sc == NULL) {
         return CMT_FAULT;
     }
-    while (c->rbuf_len > 0 &&
+    while ((c->rbuf_len > 0 || cmt_p2p_sc_read_pending(c->sc) > 0) &&
            CMT_P2P_CONN_PBUF_CAP - c->pbuf_len >= CMT_P2P_SC_DATA_MAX_SIZE) {
         size_t used = 0, n = 0;
         int rc = cmt_p2p_sc_read(c->sc, c->rbuf, c->rbuf_len, &used,
@@ -598,14 +602,27 @@ static bool gate_near_full(const cmt_p2p_recv_gate_t *g)
     return g != NULL && g->recv_near_full != NULL && g->recv_near_full(g->ctx);
 }
 
-bool cmt_p2p_peer_pump(cmt_p2p_peer_t *p, const cmt_p2p_recv_gate_t *gate)
+static uint64_t gate_mark(const cmt_p2p_recv_gate_t *g)
+{
+    return (g != NULL && g->queue_mark != NULL) ? g->queue_mark(g->ctx) : 0;
+}
+
+/* Did the delivery between `before` and now take an entry of the host's
+ * queue? With no `queue_mark` row every delivered message counts. */
+static bool gate_entered(const cmt_p2p_recv_gate_t *g, uint64_t before)
+{
+    return g == NULL || g->queue_mark == NULL || gate_mark(g) != before;
+}
+
+size_t cmt_p2p_peer_pump(cmt_p2p_peer_t *p, const cmt_p2p_recv_gate_t *gate)
 {
     int round;
-    bool served = false;
-    bool recv_ended = false;        /* one message delivered while near full */
+    size_t n_enq = 0;               /* queue-entering messages delivered   */
+    bool recv_ended = false;        /* its turn is over (contended queue)  */
+    bool send_only = gate != NULL && gate->send_only;
 
     if (p == NULL || p->conn == NULL) {
-        return false;
+        return 0;
     }
     for (round = 0; round < PEER_PUMP_ROUNDS; round++) {
         cmt_p2p_conn_t *c = p->conn;
@@ -616,16 +633,16 @@ bool cmt_p2p_peer_pump(cmt_p2p_peer_t *p, const cmt_p2p_recv_gate_t *gate)
         int rc;
 
         if (!cmt_p2p_peer_is_running(p) || c->state != CMT_P2P_CONN_PEER) {
-            return served;
+            return n_enq;
         }
         /* recvRoutine (connection.go:590-694) — skipped while the host's
          * reactor Receive is "blocked" (header): the routine is stalled
          * inside a Receive and reads nothing. */
-        recv = !recv_ended && gate_may_receive(gate);
+        recv = !send_only && !recv_ended && gate_may_receive(gate);
         rc = recv ? cmt_p2p_conn_fill_plain(c) : CMT_OK;
         if (rc != CMT_OK) {
             cmt_p2p_mconn_conn_failed(&p->mconn);        /* :628-635 */
-            return served;
+            return n_enq;
         }
         /* One message per recv_n call, the gate asked again before each:
          * the reference's recvRoutine blocks in onReceive per MESSAGE
@@ -633,15 +650,21 @@ bool cmt_p2p_peer_pump(cmt_p2p_peer_t *p, const cmt_p2p_recv_gate_t *gate)
          * condition — no per-step margin (header). */
         while (recv && c->pbuf_len > 0) {
             size_t used = 0, got = 0;
+            uint64_t mark = gate_mark(gate);
+            bool entered;
 
             rc = cmt_p2p_mconn_recv_n(&p->mconn, c->pbuf, c->pbuf_len, &used,
                                       1, &got);
+            entered = got > 0 && gate_entered(gate, mark);
+            if (entered) {
+                n_enq++;
+            }
             if (!cmt_p2p_peer_is_running(p) || c->state != CMT_P2P_CONN_PEER) {
-                return served || got > 0;
+                return n_enq;
             }
             cmt_p2p_conn_pbuf_consume(c, used);
             if (rc != CMT_OK) {
-                return served || got > 0;
+                return n_enq;
             }
             if (used > 0) {
                 progress = true;
@@ -650,10 +673,11 @@ bool cmt_p2p_peer_pump(cmt_p2p_peer_t *p, const cmt_p2p_recv_gate_t *gate)
                 break;          /* no whole message left, or the recv Monitor
                                  * refused (connection.go:598) */
             }
-            served = true;
-            if (gate_near_full(gate)) {
-                /* The FIFO hand-out of freed slots: one message, then
-                 * the next peer (header). The send half still runs. */
+            if (entered && gate_near_full(gate)) {
+                /* The FIFO hand-out of freed slots: one queue-entering
+                 * message, then the next peer (header). A message that
+                 * took no entry is not a turn. The send half still
+                 * runs. */
                 recv_ended = true;
                 break;
             }
@@ -664,7 +688,7 @@ bool cmt_p2p_peer_pump(cmt_p2p_peer_t *p, const cmt_p2p_recv_gate_t *gate)
         /* sendRoutine (connection.go:429-507) */
         cmt_p2p_mconn_tick(&p->mconn);
         if (!cmt_p2p_peer_is_running(p) || c->state != CMT_P2P_CONN_PEER) {
-            return served;
+            return n_enq;
         }
         o = cmt_p2p_mconn_out(&p->mconn, &n);
         if (n > 0) {
@@ -673,7 +697,7 @@ bool cmt_p2p_peer_pump(cmt_p2p_peer_t *p, const cmt_p2p_recv_gate_t *gate)
             rc = cmt_p2p_conn_write_plain(c, o, n, &taken);
             if (rc != CMT_OK) {
                 cmt_p2p_mconn_conn_failed(&p->mconn);    /* :497-500 */
-                return served;
+                return n_enq;
             }
             cmt_p2p_mconn_out_consume(&p->mconn, taken);
             if (taken > 0) {
@@ -681,16 +705,24 @@ bool cmt_p2p_peer_pump(cmt_p2p_peer_t *p, const cmt_p2p_recv_gate_t *gate)
             }
         }
         if (!progress) {
-            /* The socket failed and every byte read before it has been
-             * handled: the reader's error (connection.go:628-635). A
-             * stalled receive half has not handled them yet. */
-            if (recv && c->sock_failed && c->rbuf_len == 0) {
+            /* The socket failed and the receive half is EXHAUSTED (header,
+             * "END OF STREAM"): it ran unstalled this round, moved nothing
+             * and pbuf is empty — every opened plaintext went to the
+             * MConnection, and rbuf holds less than one sealed frame that
+             * can never complete. That is the reader's error
+             * (connection.go:628-635). pbuf still holding bytes means the
+             * recv Monitor throttled (:598) or the gate stalled the half:
+             * those complete messages are delivered first, by a later
+             * call — the reference's bufio serves what it buffered before
+             * its Read returns the error. A stalled or send-only call
+             * decides nothing. */
+            if (recv && c->sock_failed && c->pbuf_len == 0) {
                 cmt_p2p_mconn_conn_failed(&p->mconn);
             }
-            return served;
+            return n_enq;
         }
     }
-    return served;
+    return n_enq;
 }
 
 /* ══ peer_set.go ══════════════════════════════════════════════════════ */

@@ -33,7 +33,11 @@
  * checks that the refused (bonded) attempt IS recorded in the rate-limit
  * table (red-team H1) and that a SEAT requester is still served by the
  * same witness; a requester outside the bonded set is DROPPED with no
- * reply and nothing recorded (t_requester_not_bonded_dropped).
+ * reply and nothing recorded (t_requester_not_bonded_dropped). Both an
+ * approval and a (rate-limited) refusal carry the REQUEST IDENTITY
+ * `rq` = SHA3-512 of the envelope asked about (decision
+ * 2026-09-27-p2p-fix-2.md (2); t_rate_limited_second_request); a dropped
+ * request's response stays all zero, `rq` included.
  * "valid_before already past" is NOT in the matrix (HOW IT CAN LIE 1b).
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
@@ -1019,6 +1023,18 @@ static int t_rate_limited_second_request(void) {
     CHECK(!rsp2.ok, "second request (same sender, same seat, <5s) refused");
     CHECK(strstr(rsp2.reason, "rate-limited") != NULL, rsp2.reason);
     CHECK(sig_is_zero(&rsp2), "the rate-limited refusal carries no signature");
+    /* decision 2026-09-27-p2p-fix-2.md (2): the approval AND the refusal
+     * both name the request they answer — SHA3-512 of the envelope asked
+     * about, the id the collector compares (nodus_tier3.h `rq`) */
+    {
+        uint8_t want[NODUS_T3_CC_APPR_RQ_BYTES];
+
+        CHECK(qgp_sha3_512(env.bytes, env.len, want) == 0, "request id");
+        CHECK(memcmp(rsp1.rq, want, sizeof(want)) == 0,
+              "the approval carries the request id");
+        CHECK(memcmp(rsp2.rq, want, sizeof(want)) == 0,
+              "the refusal carries the request id");
+    }
 
     pre_env_free(&env);
     gfx_close(&g);

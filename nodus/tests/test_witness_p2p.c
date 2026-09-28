@@ -34,6 +34,14 @@
  * Part 2 — a seat B on a REAL derived version-3 chain (7 committee keys):
  *  (2a) THE BONDED SET is the chain's: B's host reports the committee keys
  *       bonded and an outside key not.
+ *  (2a') THE PURGE RUNS ONLY ON A SET CHANGE (RT2 D-F1): the IDs handed
+ *       to the address book's purge (nodus_witness_p2p_bonded_joined_total)
+ *       are every member at the first refresh, none at a refresh over the
+ *       same chain, and every member again after the set was emptied (no
+ *       chain database) and refilled. The purge itself — only the given
+ *       IDs lose their unsigned entry / ban — is test_p2p_pex's
+ *       (test_book_bans). B runs without PEX (no book): the joined count
+ *       is computed whether or not a book exists.
  *  (2b) THE INBOUND CAP BINDS THE UNBONDED ONLY (K2): with
  *       max_num_inbound_peers = 1, an unbonded C gets in, a second unbonded
  *       D is refused, and a BONDED A still gets in (B then has 2 inbound
@@ -55,12 +63,26 @@
  *       CONNECTED, B's own seat absent — decoded with the client SDK's
  *       decoder. No second 4004 identity is ever dialed.
  *  (2e) 0x70 REQUEST / RESPONSE: a fresh joiner J (pin = B's chain id, no
- *       chain) connected to B asks for the genesis bundle on 0x70
- *       (nodus_witness_v2_join_tick), B serves it on 0x70, J re-derives it,
- *       ADOPTS the chain (v2_join.active clears, J's chain id equals the
- *       pin) and builds its consensus binding on its OWN p2p host
+ *       chain) connected to B and to C asks for the genesis bundle on
+ *       0x70 (nodus_witness_v2_join_tick), B serves it on 0x70 (from its
+ *       in-memory bundle copy, RT2 B-F2), J re-derives it, ADOPTS the
+ *       chain (v2_join.active clears, J's chain id equals the pin) and
+ *       builds its consensus binding on its OWN p2p host
  *       (nodus_witness_cmt_live_init) — after which J's host reports the
- *       adopted chain's bonded set.
+ *       adopted chain's bonded set. C (no witness) answers no 0x70
+ *       request: if J's first source is C, C is excluded after one
+ *       request interval and B is asked from offset 0 — either order ends
+ *       in the adoption.
+ *  (2g) 0x70 ONE SOURCE PER DOWNLOAD (decision 2026-09-27-p2p-fix-2.md
+ *       (3)), run on J before (2e) with J's own requests (its tick) and
+ *       FORGED answers handed to its 0x70 entry: a chunk from the peer
+ *       that is not the source is dropped; the source's chunk is taken;
+ *       the next chunk is asked of the SAME source; a changed `total`
+ *       excludes the source and drops its bytes; the next peer starts
+ *       from offset 0; a request left unanswered for an interval
+ *       excludes its source, and with every connected peer excluded the
+ *       ring is cleared and a source chosen again; a whole bundle that
+ *       fails at adopt excludes its source.
  *  (2f) 0x70 OUTSTANDING REQUEST / PER-REQUESTER GATE (red-team H2),
  *       run before (2e): a response is taken only from the peer asked,
  *       for the offset asked, once; a newer request replaces the older;
@@ -105,6 +127,11 @@
  *  5. (2e) depends on the joiner's whole adoption path (bundle apply,
  *     scan, cmt_live_init); a failure anywhere there reads as a 0x70
  *     timeout. B's serve and J's receive are not separately observed.
+ *     Whether J asked C first is not asserted (the peer set's order);
+ *     the exclusion of an unanswering source is asserted in (2g), where
+ *     the "interval" is simulated by clearing last_req_ms, not waited.
+ *     (2g)'s answers are forged: that a REAL peer's changed total or bad
+ *     bundle reaches the joiner is the path (2e) takes for a good one.
  *  6. The address book file and PEX are not exercised (pex = false on
  *     every host here; test_p2p_addrbook / test_p2p_pex own them).
  *  7. (2d) proves the relay with a REFUSAL (an undecodable envelope): a
@@ -128,6 +155,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sched.h>
 #include <time.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -142,6 +170,7 @@
 #include "witness/nodus_witness_p2p.h"
 #include "witness/nodus_witness_v2_gen.h"
 #include "witness/nodus_witness_v2_join.h"
+#include "witness/nodus_witness_v2_bundle.h"    /* the served bytes (2e) */
 #include "witness/nodus_witness_v2_produce.h"   /* tip height (2d)       */
 #include "witness/nodus_witness_committee.h"    /* A's seat index (2d)   */
 #include "witness/nodus_witness_emission.h"
@@ -258,6 +287,26 @@ static int thread_count(void) {
         if (e->d_name[0] != '.') n++;
     }
     closedir(d);
+    return n;
+}
+
+/* The thread count once it has come down to `want`, or the last count
+ * read. pthread_join returns when the joined thread clears its tid (the
+ * CLONE_CHILD_CLEARTID wake in do_exit), BEFORE the kernel removes it
+ * from /proc/self/task — measured on this machine: a count read right
+ * after joining three threads still listed one of them 238 times in
+ * 200 000 (scratchpad join_race.c, 2026-09-28), and no /proc state
+ * (Z/X) marks those entries reliably. That lag is what failed this test
+ * once under `ctest -j4` ("freeing P did not join its 3 worker threads"
+ * after 3.16 s). A thread that was NOT joined never leaves the list, so
+ * re-reading until the count drops still tells the two apart; the bound
+ * is on reads (each after a sched_yield), not on seconds. */
+static int thread_count_settled(int want) {
+    int n = thread_count();
+    for (int i = 0; i < 100000 && n != want; i++) {
+        sched_yield();
+        n = thread_count();
+    }
     return n;
 }
 
@@ -526,6 +575,16 @@ static bool pred_join_done(void *ctx) {
     return !nodus_witness_v2_join_active((nodus_witness_t *)ctx);
 }
 
+typedef struct {
+    nodus_witness_p2p_t *p;
+    const char *id1, *id2;
+} pair2_t;
+
+static bool pred_has_both(void *ctx) {
+    pair2_t *x = (pair2_t *)ctx;
+    return has_peer(x->p, x->id1) && has_peer(x->p, x->id2);
+}
+
 /* ══ PART 1 — P and Q ══════════════════════════════════════════════════ */
 
 static int part1(void) {
@@ -642,9 +701,11 @@ out:
     nodus_witness_p2p_free(Q);
     if (lP != NULL) lane_down(lP);
     if (P != NULL) {
-        int before = thread_count();
+        /* Back to the count before P existed (Q runs no workers): a count
+         * read here, right after Q's free, could itself still list a
+         * thread the kernel has not reaped (thread_count_settled). */
         nodus_witness_p2p_free(P);
-        if (rc == 0 && thread_count() != before - 3) {
+        if (rc == 0 && thread_count_settled(t0) != t0) {
             fprintf(stderr, "CHECK failed: (1a) freeing P did not join its "
                     "3 worker threads\n");
             rc = 1;
@@ -904,6 +965,30 @@ static int part2(void) {
     CHECK(!nodus_witness_p2p_is_bonded(B, idc) && !nodus_witness_p2p_is_bonded(B, idd),
           "(2a) an outside key is not bonded");
 
+    /* (2a') RT2 D-F1 — the purge's input is only the IDs that JOINED the
+     * set: the first refresh (from no set) joined every member; a refresh
+     * over the same chain joins none; a set emptied (no chain database)
+     * and refilled joins every member again. */
+    {
+        uint64_t j0 = nodus_witness_p2p_bonded_joined_total(B);
+        int nb = nodus_witness_p2p_bonded_count(B);
+        sqlite3 *keep = g.w->db;
+
+        CHECK(j0 == (uint64_t)nb, "(2a') the first refresh joined every member");
+        nodus_witness_p2p_refresh_bonded(B);
+        CHECK(nodus_witness_p2p_bonded_joined_total(B) == j0 &&
+              nodus_witness_p2p_bonded_count(B) == nb,
+              "(2a') an unchanged set joins nothing: no purge");
+        g.w->db = NULL;
+        nodus_witness_p2p_refresh_bonded(B);
+        CHECK(nodus_witness_p2p_bonded_count(B) == 0, "(2a') no chain: empty set");
+        g.w->db = keep;
+        nodus_witness_p2p_refresh_bonded(B);
+        CHECK(nodus_witness_p2p_bonded_count(B) == nb &&
+              nodus_witness_p2p_bonded_joined_total(B) == j0 + (uint64_t)nb,
+              "(2a') refilled: every member joined again");
+    }
+
     cfg_local(&cfgX);
     /* A is seat key 0 WITH a witness on the same chain (a second
      * database handle): its responder answers B's 0x71 request in (2d). */
@@ -1046,9 +1131,11 @@ static int part2(void) {
               "(2f) a clock that went back reads as just served");
     }
 
-    /* (2e) 0x70: the joiner J pulls the bundle from B and adopts */
+    /* (2e) 0x70: the joiner J pulls the bundle and adopts — preceded by
+     * (2g), the single-source download driven by hand on the same J */
     {
-        char sB[CMT_P2P_NETADDR_STR_MAX];
+        char sB[CMT_P2P_NETADDR_STR_MAX], sC[CMT_P2P_NETADDR_STR_MAX];
+        pair2_t jl;
 
         sJ = calloc(1, sizeof(*sJ));
         wJ = calloc(1, sizeof(*wJ));
@@ -1062,17 +1149,104 @@ static int part2(void) {
         memcpy(wJ->my_id, g_ks[2].voter, 32);
         CHECK(nodus_witness_v2_join_arm(wJ) == 1, "(2e) the joiner is armed");
 
+        /* J's peers: B (serves the bundle) and C (a host with no witness:
+         * it answers no 0x70 request — the "refusing" peer) */
         cfg_local(&cfgJ);
         dial_str(B, sB, sizeof(sB));
-        CHECK(nodus_p2p_config_add_persistent(&cfgJ, sB) == 0, "J persistent B");
+        dial_str(C, sC, sizeof(sC));
+        CHECK(nodus_p2p_config_add_persistent(&cfgJ, sB) == 0 &&
+              nodus_p2p_config_add_persistent(&cfgJ, sC) == 0,
+              "J persistent B and C");
         wJ->p2p = host_new(wJ, &sJ->identity, g.chain32, &cfgJ, dJ, 0);
         CHECK(wJ->p2p != NULL, "host J (network = the pin)");
         CHECK(nodus_witness_p2p_bonded_count(wJ->p2p) == 0,
               "(2e) a joiner has no bonded set yet");
 
+        /* linked first, with NO join tick running: (2g) drives it */
         d[nd].p = wJ->p2p;
-        d[nd].joiner = wJ;
+        d[nd].joiner = NULL;
         nd++;
+        jl.p = wJ->p2p; jl.id1 = idb; jl.id2 = idc;
+        CHECK(drive(d, nd, pred_has_both, &jl, WAIT_MS), "(2g) J holds B and C");
+
+        /* (2g) decision 2026-09-27-p2p-fix-2.md (3): ONE source per
+         * download; a failing source is excluded and the next one starts
+         * from offset 0. The responses are forged and handed to the
+         * joiner's own 0x70 entry (the one gb_receive calls); the
+         * requests are the joiner's real ones (its tick, through the
+         * host's outstanding-request record). */
+        {
+            static const uint8_t junk[64] = { 0x5c };
+            char first[CMT_P2P_ID_CAP], other[CMT_P2P_ID_CAP], s[CMT_P2P_ID_CAP];
+            nodus_t3_w_v2_gbundle_r_t r;
+
+            memset(&r, 0, sizeof(r));
+            memcpy(r.chain, g.chain32, 32);
+            memcpy(r.pin, g.chain32, 32);
+            r.total = 1000;
+            r.offset = 0;
+            r.chunk = junk;
+            r.chunk_len = (uint32_t)sizeof(junk);
+
+            wJ->v2_join.last_req_ms = 0;
+            nodus_witness_v2_join_tick(wJ);
+            CHECK(wJ->v2_join.src[0] != '\0' && wJ->v2_join.awaiting,
+                  "(2g) a source is chosen and asked @0");
+            snprintf(first, sizeof(first), "%s", wJ->v2_join.src);
+            snprintf(other, sizeof(other), "%s", strcmp(first, idb) == 0 ? idc : idb);
+
+            nodus_witness_v2_join_handle_gbundle_r(wJ, other, &r);
+            CHECK(wJ->v2_join.acc_len == 0 && strcmp(wJ->v2_join.src, first) == 0,
+                  "(2g) a chunk from a peer that is not the source: dropped");
+            nodus_witness_v2_join_handle_gbundle_r(wJ, first, &r);
+            CHECK(wJ->v2_join.acc_len == sizeof(junk) && !wJ->v2_join.awaiting,
+                  "(2g) the source's chunk @0: taken");
+
+            wJ->v2_join.last_req_ms = 0;
+            nodus_witness_v2_join_tick(wJ);
+            CHECK(strcmp(wJ->v2_join.src, first) == 0 && wJ->v2_join.awaiting &&
+                  wJ->v2_join.acc_len == sizeof(junk),
+                  "(2g) the next chunk is asked of the SAME source");
+
+            r.offset = sizeof(junk);
+            r.total = 2000;                        /* the source changed it */
+            nodus_witness_v2_join_handle_gbundle_r(wJ, first, &r);
+            CHECK(nodus_witness_v2_join_is_excluded(wJ, first) &&
+                  wJ->v2_join.src[0] == '\0' && wJ->v2_join.acc_len == 0,
+                  "(2g) a changed total: the source is excluded, its bytes dropped");
+
+            wJ->v2_join.last_req_ms = 0;
+            nodus_witness_v2_join_tick(wJ);
+            CHECK(strcmp(wJ->v2_join.src, other) == 0 && wJ->v2_join.awaiting &&
+                  wJ->v2_join.acc_len == 0,
+                  "(2g) the next peer starts from offset 0");
+
+            /* no answer for a whole interval: `other` refused too; with
+             * every connected peer excluded the round starts over */
+            wJ->v2_join.last_req_ms = 0;
+            nodus_witness_v2_join_tick(wJ);
+            CHECK(wJ->v2_join.n_excl == 0 && wJ->v2_join.src[0] != '\0' &&
+                  wJ->v2_join.acc_len == 0 && wJ->v2_join.awaiting,
+                  "(2g) an unanswered chunk excludes; all excluded: start over");
+
+            /* a whole bundle that fails at adopt excludes its source */
+            snprintf(s, sizeof(s), "%s", wJ->v2_join.src);
+            r.offset = 0;
+            r.total = sizeof(junk);
+            nodus_witness_v2_join_handle_gbundle_r(wJ, s, &r);
+            CHECK(nodus_witness_v2_join_active(wJ) &&
+                  nodus_witness_v2_join_is_excluded(wJ, s) &&
+                  wJ->v2_join.src[0] == '\0' && wJ->v2_join.acc_len == 0,
+                  "(2g) a bundle that fails at adopt: its source is excluded");
+
+            /* (2e) starts a fresh join attempt */
+            wJ->v2_join.n_excl = 0;
+            wJ->v2_join.excl_next = 0;
+            wJ->v2_join.awaiting = false;
+            wJ->v2_join.last_req_ms = 0;
+        }
+
+        d[nd - 1].joiner = wJ;
         CHECK(drive(d, nd, pred_join_done, wJ, JOIN_WAIT_MS),
               "(2e) the bundle crossed 0x70 and the joiner adopted it");
         CHECK(wJ->db != NULL && memcmp(wJ->v2_chain32, g.chain32, 32) == 0,
@@ -1080,6 +1254,22 @@ static int part2(void) {
         CHECK(wJ->cmt_node != NULL, "(2e) the consensus binding was built on J's host");
         CHECK(nodus_witness_p2p_is_bonded(wJ->p2p, idb),
               "(2e) J's host now reads the adopted chain's bonded set");
+        /* RT2 B-F2: B served from its in-memory copy, the database's
+         * bytes exactly; another chain id finds no copy */
+        {
+            const uint8_t *cp = NULL;
+            size_t cl = 0, dl = 0;
+            uint8_t *db = NULL;
+
+            CHECK(nodus_witness_p2p_gb_bundle(B, g.chain32, &cp, &cl),
+                  "(2e) B holds the bundle copy it served from");
+            CHECK(nodus_witness_v2_bundle_get(g.w, &db, &dl) == 0 &&
+                  dl == cl && memcmp(db, cp, cl) == 0,
+                  "(2e) the copy is the database's bundle, byte-exact");
+            free(db);
+            CHECK(!nodus_witness_p2p_gb_bundle(B, other_chain, &cp, &cl),
+                  "(2e) no copy for another chain id");
+        }
     }
 
 out:

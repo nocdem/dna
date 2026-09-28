@@ -113,6 +113,28 @@
  * :394-395), and its search loop's `continue` on such an error never
  * terminates while the error persists (:263-266).
  *
+ * ── TORN TAIL (HARDENING, no reference counterpart) ───────────────────
+ * Decision docs/plans/decisions/2026-09-27-p2p-fix-2.md 1(a). The
+ * reference appends behind whatever the head ends with (wal.go:124-133,
+ * group.go:204-208); a 1-3-byte CRC left by a crash decodes as a clean
+ * io.EOF (wal.go:369-371), so the next record lands behind the torn bytes.
+ * `nodus_cmt_wal_start` — before OnStart's own write and before any
+ * append — walks the HEAD's 8-byte headers from offset 0: if the file
+ * ends inside a header (1-7 bytes) or inside a body whose length is
+ * 1..CMT_WAL_MAX_MSG_SIZE_BYTES, the head is truncated to the end of the
+ * last complete, crc32c-valid record and fsynced. A zero or over-bound
+ * length, or a complete record with a bad crc32c, stops the walk with
+ * NOTHING changed: that is corruption, reported by the replay and
+ * repaired as above. The read side is unchanged; only a torn head is
+ * ever written. Consequence, stated: a torn 4-7-byte header or short body
+ * that the reference would send through repair (with a `.CORRUPTED`
+ * backup) is trimmed at start with no backup — the same records are
+ * lost either way (repair keeps what precedes the first bad record).
+ * The walk cannot tell a torn tail from a MID-FILE length field corrupted
+ * to point past EOF (verifier F2, 2026-09-27): that case is trimmed too,
+ * with every record behind it and no backup — again the same records
+ * repair would drop, only without the `.CORRUPTED` copy.
+ *
  * ── REPAIR (state.go:352-385, `repairWalFile` :2621-2653) ─────────────
  * `nodus_cmt_wal_repair` is the host's half of the reference's retry
  * loop: stop the WAL, copy the HEAD file to `<wal>.CORRUPTED`
@@ -124,6 +146,18 @@
  * `data/cs.wal/wal` at :1019), and rotated `wal.NNN` files are left as
  * they are — a corruption in one of them survives the repair, and the
  * retried replay then refuses to start, as the reference's does.
+ *
+ * HARDENING (decision 2026-09-27-p2p-fix-2.md 1(b), no reference
+ * counterpart; departs from state.go:2628 `os.Create(dst)`, which
+ * truncates the head before re-encoding into it): the `.CORRUPTED` copy
+ * is fsynced and its directory fsynced BEFORE anything is rewritten; the
+ * kept records go to `<dir>/NODUS_CMT_WAL_REPAIR_TMP_NAME` (a stale one
+ * removed first), which is fsynced, renamed over the head, and the
+ * directory fsynced. A crash at any step leaves the old head or the
+ * complete repaired head. When no record is kept, the temp file holds
+ * `EndHeight{0}` — what OnStart would write into the empty re-created
+ * head one step later (wal.go:124-131) — so the head is never empty,
+ * because an empty head would re-arm the one-time SQLite carry.
  *
  * ── OnStart's ONE WRITE ────────────────────────────────────────────────
  * wal.go:124-131: when the HEAD FILE's size is 0 — the head, not the
@@ -180,6 +214,12 @@ extern "C" {
 
 /** state.go:366 `fmt.Sprintf("%s.CORRUPTED", cs.config.WalFile())`. */
 #define NODUS_CMT_WAL_CORRUPTED_SUFFIX ".CORRUPTED"
+
+/** HARDENING (decision 2026-09-27-p2p-fix-2.md 1(b)): the repair's
+ *  temporary file, in the head's directory. The repair refuses (CMT_FAULT)
+ *  a head whose base name is a prefix of it, so `readGroupInfo`'s prefix
+ *  match (group.go:380) never counts or indexes it. */
+#define NODUS_CMT_WAL_REPAIR_TMP_NAME "repair-cs-wal.tmp"
 
 /** wal.go:288 — the 4-byte CRC and the 4-byte length before `P`. */
 #define NODUS_CMT_WAL_RECORD_HEADER_LEN 8u
@@ -238,10 +278,13 @@ int nodus_cmt_wal_open(nodus_cmt_wal_t *w, const char *wal_file,
                        cmt_now_fn now, void *now_ctx);
 
 /**
- * wal.go:124-140 `OnStart` — when the head file's size is 0,
+ * wal.go:124-140 `OnStart` — first (HARDENING 1(a), header: TORN TAIL) a
+ * head ending in a torn record is truncated to its last complete record
+ * and fsynced; then, when the head file's size is 0,
  * `WriteSync(EndHeightMessage{0})`; then `group.Start()` (the 5 s
  * check deadline) and the 2 s flush deadline, both from `now`.
- * @return CMT_OK, CMT_FAULT.
+ * @return CMT_OK, CMT_FAULT (also when the torn-tail check cannot read
+ * the head or the truncate fails).
  */
 int nodus_cmt_wal_start(nodus_cmt_wal_t *w);
 
@@ -294,8 +337,10 @@ int nodus_cmt_wal_read_next(void *ctx, cmt_timed_wal_message_t *out,
 /** The host's half of state.go:352-385 (header: REPAIR), on a STARTED
  *  WAL: `wal.Stop()` (:359-361 — a WAL that was never started is the
  *  reference's ErrNotStarted, CMT_FAULT), `CopyFile(walFile,
- *  walFile+".CORRUPTED")` (:366-369), `repairWalFile(corrupted, walFile)`
- *  (:374-377, :2621-2653), `loadWalFile()` (:382-384) — reopened and
+ *  walFile+".CORRUPTED")` (:366-369; HARDENING: fsynced with its
+ *  directory), `repairWalFile(corrupted, walFile)` (:374-377, :2621-2653;
+ *  HARDENING 1(b): temp file + fsync + rename + directory fsync, never an
+ *  empty head), `loadWalFile()` (:382-384) — reopened and
  *  started into the SAME handle, so a host that holds `w` keeps a valid
  *  pointer. The clock callback is carried over.
  *  @return CMT_OK; CMT_FAULT at the first failing step (the reference
@@ -343,7 +388,11 @@ int nodus_cmt_wal_repair(nodus_cmt_wal_t *w);
  * Every row is checked exactly as the old reader's `wal_decode_row` did
  * (d123b7e6 nodus_witness_cmt_wal.c:455-506): the digest prefix present,
  * `len(P) <= CMT_WAL_MAX_MSG_SIZE_BYTES`, SHA3-512(P) equal, kind 1-4,
- * P decodes, the decoded kind and height equal the row's columns. The
+ * P decodes, the decoded kind and height equal the row's columns — and
+ * (decision 2026-09-27-p2p-fix-2.md item 1) a MsgInfo passes
+ * `cmt_msg_validate_basic`, the file reader's own check (header:
+ * CORRUPTION), so no carried record can be a DataCorruptionError that
+ * the first replay's repair would cut the tail at. The
  * payload P is written unchanged as `crc32c(P) ‖ len(P) ‖ P`.
  *
  * A row that fails a check, a seq that does not increase, or rows with

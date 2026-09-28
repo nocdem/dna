@@ -847,8 +847,9 @@ int nodus_cc_rate_limit_check(nodus_cc_rate_limit_table_t *t,
 
         /* Clock-skew defense: if now_ms < last_accepted_ms, treat as zero
          * elapsed (aggressive) rather than wrap to huge elapsed (permissive).
-         * The monotonic clock used by nodus_time_now_ms() should never
-         * regress in practice, but be safe. */
+         * nodus_time_now_ms() is the WALL clock (CLOCK_REALTIME), not a
+         * monotonic one: it can step back (NTP, an operator), and this
+         * branch is what keeps such a step from opening the cooldown. */
         uint64_t elapsed = (now_ms >= s->last_accepted_ms)
                             ? (now_ms - s->last_accepted_ms) : 0;
 
@@ -1094,12 +1095,13 @@ static int cc_appr_resolve(nodus_witness_t *w, uint64_t *tip_out,
     return 0;
 }
 
-int nodus_witness_cc_appr_answer(nodus_witness_t *w,
-                                 const uint8_t peer_wid[NODUS_CC_WITNESS_ID_SIZE],
-                                 bool requester_bonded,
-                                 const nodus_t3_cc_appr_req_t *req,
-                                 nodus_t3_cc_appr_rsp_t *rsp_out) {
-    if (!w || !peer_wid || !req || !rsp_out) return -1;
+/* The verdict itself (nodus_witness_cc_appr_answer below adds the request
+ * identity to every answer it will send). */
+static int cc_appr_verdict(nodus_witness_t *w,
+                           const uint8_t peer_wid[NODUS_CC_WITNESS_ID_SIZE],
+                           bool requester_bonded,
+                           const nodus_t3_cc_appr_req_t *req,
+                           nodus_t3_cc_appr_rsp_t *rsp_out) {
     nodus_t3_cc_appr_rsp_t *rsp = rsp_out;
     memset(rsp, 0, sizeof(*rsp));
 
@@ -1337,6 +1339,34 @@ int nodus_witness_cc_appr_answer(nodus_witness_t *w,
     return 1;
 }
 
+int nodus_witness_cc_appr_answer(nodus_witness_t *w,
+                                 const uint8_t peer_wid[NODUS_CC_WITNESS_ID_SIZE],
+                                 bool requester_bonded,
+                                 const nodus_t3_cc_appr_req_t *req,
+                                 nodus_t3_cc_appr_rsp_t *rsp_out) {
+    if (!w || !peer_wid || !req || !rsp_out ||
+        (req->e == NULL && req->e_len != 0)) return -1;
+    int arc = cc_appr_verdict(w, peer_wid, requester_bonded, req, rsp_out);
+
+    /* Every answer that will be SENT — the signed approval and every
+     * refusal — names the request it answers (decision
+     * 2026-09-27-p2p-fix-2.md (2); nodus_tier3.h `rq`): SHA3-512 of the
+     * envelope bytes asked about, the same bytes the collector hashed
+     * (nodus_witness_cc_collect_start). Hashed only here, after the
+     * verdict: a DROPPED request (outside the bonded set) costs no hash,
+     * and the rate-limit check still precedes every expensive step. */
+    if (arc < 0 || arc == NODUS_CC_APPR_DROPPED) return arc;
+    /* an empty `e` is hashed as the empty string (qgp_sha3_512 refuses a
+     * NULL pointer even at length 0) */
+    static const uint8_t no_bytes[1] = { 0 };
+    if (qgp_sha3_512(req->e != NULL ? req->e : no_bytes, req->e_len,
+                     rsp_out->rq) != 0) {
+        memset(rsp_out, 0, sizeof(*rsp_out));
+        return -1;
+    }
+    return arc;
+}
+
 int nodus_witness_handle_cc_appr_req(nodus_witness_t *w,
                                      const char *peer_id,
                                      const uint8_t peer_wid[NODUS_CC_WITNESS_ID_SIZE],
@@ -1409,6 +1439,10 @@ struct nodus_cc_collect {
     uint8_t             token[NODUS_SESSION_TOKEN_LEN];
     uint32_t            txn_id;
     int64_t             deadline_ms;         /* monotonic, ms         */
+    /* The request identity every answer must carry: SHA3-512 of the
+     * envelope sent (nodus_tier3.h `rq`; decision 2026-09-27-p2p-fix-2.md
+     * (2)). */
+    uint8_t             rq[NODUS_T3_CC_APPR_RQ_BYTES];
     int                 n_seats;             /* every seat but self   */
     int                 n_waiting;           /* status ASKED          */
     cc_collect_seat_t  *seats;
@@ -1583,7 +1617,8 @@ int nodus_witness_cc_collect_start(nodus_witness_t *w,
     size_t msg_len = 0;
     nodus_t3_cc_appr_req_t req = { .e = e, .e_len = e_len };
     if (!c || !c->seats || !msg ||
-        nodus_t3_cc_appr_req_encode(&req, msg, e_len + 256u, &msg_len) != 0) {
+        nodus_t3_cc_appr_req_encode(&req, msg, e_len + 256u, &msg_len) != 0 ||
+        qgp_sha3_512(e, e_len, c->rq) != 0) {
         free(msg);
         cc_collect_free(c);
         free(committee);
@@ -1630,6 +1665,11 @@ bool nodus_witness_cc_collect_on_rsp(nodus_witness_t *w, const char *peer_id,
                                      const nodus_t3_cc_appr_rsp_t *rsp) {
     if (!w || !peer_id || !rsp || !w->cc_collect) return false;
     nodus_cc_collect_t *c = w->cc_collect;
+    /* An answer to ANOTHER request (a late one to an earlier collection
+     * whose envelope differed) is not an answer to this one, whoever sent
+     * it — decision 2026-09-27-p2p-fix-2.md (2). Refusals carry `rq` too.
+     * No reference counterpart: channel 0x71 is nodus's own (R-P2P-5). */
+    if (memcmp(rsp->rq, c->rq, NODUS_T3_CC_APPR_RQ_BYTES) != 0) return false;
     for (int i = 0; i < c->n_seats; i++) {
         cc_collect_seat_t *s = &c->seats[i];
         if (s->status != CC_COLLECT_ST_ASKED ||

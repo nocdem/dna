@@ -39,6 +39,12 @@
  *     signatures do not verify as 0x0A).
  *   · the caller's row-10 pin: the claimed pk is readable while ENCAPS is
  *     outstanding and an abort there emits no KEYX.
+ *   · plaintext the machine HOLDS (recvBuffer; on a live connection the
+ *     AUTHSIG frame's tail) is drained into the connection's pbuf by
+ *     cmt_p2p_conn_fill_plain with rbuf EMPTY (Codex 7). The held bytes
+ *     are produced here by a short read, not by a crafted AUTHSIG frame
+ *     carrying a tail — the drain does not depend on their origin, but
+ *     the AUTHSIG-tail producer itself is not driven.
  *
  * WHAT IT REQUIRES: nothing beyond a default nodus build (no compile
  * flags, no environment). WHAT IT LEAVES BEHIND: nothing (no files, no
@@ -58,6 +64,7 @@
  */
 
 #include "dnac/cmt_p2p_secret.h"
+#include "dnac/cmt_p2p_peer.h"   /* cmt_p2p_conn_fill_plain (Codex 7 case) */
 #include "crypto/nodus_sign.h"
 #include "crypto/nodus_identity.h"
 #include "crypto/enc/qgp_kyber.h"
@@ -904,6 +911,57 @@ static int open_one(side_t *s, const uint8_t sealed[CMT_P2P_SC_SEALED_FRAME_SIZE
     return (c == CMT_P2P_SC_SEALED_FRAME_SIZE && n == 1) ? CMT_OK : CMT_FAULT;
 }
 
+/*
+ * Codex 7 — plaintext the secret connection HOLDS (its recvBuffer,
+ * secret_connection.go:236-241) is drained into the connection's `pbuf`
+ * by cmt_p2p_conn_fill_plain even when no wire byte waits in `rbuf`. On
+ * a live connection that plaintext is the tail of the frame that
+ * completed the AUTHSIG (typically the start of the peer's NodeInfo) —
+ * and no later frame need ever come to push it out. Here it is produced
+ * by a SHORT read instead (10 of a 100-byte chunk; the other 90 stay
+ * held): the drain reads cmt_p2p_sc_read_pending, not where the bytes
+ * came from. RED before the fix: the loop ran only while rbuf held
+ * bytes, pbuf stayed empty and the 90 bytes were never delivered.
+ */
+static void test_fill_plain_drains_held(void)
+{
+    static uint8_t sealed[CMT_P2P_SC_SEALED_FRAME_SIZE];
+    uint8_t data[100], head[10];
+    side_t i, r;
+    pipe_t ir, ri;
+    cmt_p2p_conn_t *c = NULL;
+    size_t k, olen = 0, used = 0, n = 0;
+    bool ok;
+
+    TEST("held plaintext (AUTHSIG tail) is drained with an empty rbuf");
+    for (k = 0; k < sizeof(data); k++) {
+        data[k] = (uint8_t)(k * 7u + 3u);
+    }
+    ok = make_pair(&i, &r, &ir, &ri) == 0;
+    ok = ok && cmt_p2p_sc_write(i.sc, data, sizeof(data), sealed, sizeof(sealed),
+                                &olen) == CMT_OK && olen == sizeof(sealed);
+    ok = ok && cmt_p2p_sc_read(r.sc, sealed, olen, &used, head, sizeof(head),
+                               &n) == CMT_OK && used == olen && n == sizeof(head);
+    ok = ok && memcmp(head, data, sizeof(head)) == 0;
+    ok = ok && cmt_p2p_sc_read_pending(r.sc) == sizeof(data) - sizeof(head);
+    if (ok) {
+        c = cmt_p2p_conn_new();
+        ok = c != NULL;
+    }
+    if (ok) {
+        /* the connection takes over R's authenticated machine; rbuf is
+         * EMPTY — nothing more arrives from the wire */
+        memcpy(c->sc, r.sc, sizeof(*c->sc));
+        ok = c->rbuf_len == 0 && cmt_p2p_conn_fill_plain(c) == CMT_OK;
+        ok = ok && c->pbuf_len == sizeof(data) - sizeof(head) &&
+             memcmp(c->pbuf, data + sizeof(head), c->pbuf_len) == 0 &&
+             cmt_p2p_sc_read_pending(c->sc) == 0;
+    }
+    cmt_p2p_conn_free(c);                   /* zeroes the copied keys too */
+    free_pair(&i, &r, &ir, &ri);
+    if (ok) PASS(); else FAIL("held plaintext was not drained into pbuf");
+}
+
 static void test_counters(void)
 {
     static uint8_t f1[CMT_P2P_SC_SEALED_FRAME_SIZE], f2[CMT_P2P_SC_SEALED_FRAME_SIZE];
@@ -1134,6 +1192,7 @@ int main(void)
     test_round3("round-3 public key, legacy round-3 Decaps peer -> no session",
                 R3_PK_LEGACY_PEER);
     test_counters();
+    test_fill_plain_drains_held();
     test_overflow();
     test_authsig("AUTHSIG signed by the wrong key -> not authenticated", SIGN_WRONG_KEY);
     test_authsig("AUTHSIG signed raw (no 0x0A tag) -> not authenticated", SIGN_RAW);

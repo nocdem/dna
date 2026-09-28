@@ -95,18 +95,20 @@ int nodus_t3_cc_appr_rsp_encode(const nodus_t3_cc_appr_rsp_t *m,
 
     if (!m || !buf || !out_len) return -1;
     cbor_encoder_init(&enc, buf, cap);
+    /* `rq` — the request identity (nodus_tier3.h), in both forms, last. */
     if (m->ok) {
-        cbor_encode_map(&enc, 5);
+        cbor_encode_map(&enc, 6);
         cbor_encode_cstr(&enc, "ok"); cbor_encode_bool(&enc, true);
         cbor_encode_cstr(&enc, "i");  cbor_encode_uint(&enc, m->seat);
         cbor_encode_cstr(&enc, "s");  cbor_encode_bstr(&enc, m->sig, NODUS_SIG_BYTES);
         cbor_encode_cstr(&enc, "sh"); cbor_encode_bstr(&enc, m->set_hash, 64);
         cbor_encode_cstr(&enc, "ep"); cbor_encode_uint(&enc, m->epoch);
     } else {
-        cbor_encode_map(&enc, 2);
+        cbor_encode_map(&enc, 3);
         cbor_encode_cstr(&enc, "ok"); cbor_encode_bool(&enc, false);
         cbor_encode_cstr(&enc, "r");  cbor_encode_cstr(&enc, m->reason);
     }
+    cbor_encode_cstr(&enc, "rq"); cbor_encode_bstr(&enc, m->rq, NODUS_T3_CC_APPR_RQ_BYTES);
     return enc_finish(&enc, out_len);
 }
 
@@ -211,12 +213,14 @@ static void dec_cc_appr_req(cbor_decoder_t *dec, size_t count,
 }
 
 /* `ok` gates which OTHER keys are legal: ok=true admits exactly
- * {ok,i,s,sh,ep}; ok=false admits exactly {ok,r}. */
+ * {ok,i,s,sh,ep,rq}; ok=false admits exactly {ok,r,rq}. `rq` (the request
+ * identity, exactly 64 bytes) is REQUIRED in both (decision
+ * 2026-09-27-p2p-fix-2.md (2)). */
 static void dec_cc_appr_rsp(cbor_decoder_t *dec, size_t count,
                             nodus_t3_cc_appr_rsp_t *r) {
     bool seen_ok = false, ok_val = false;
     bool seen_i = false, seen_s = false, seen_sh = false;
-    bool seen_ep = false, seen_r = false;
+    bool seen_ep = false, seen_r = false, seen_rq = false;
 
     for (size_t i = 0; i < count; i++) {
         cbor_item_t key = cbor_decode_next(dec);
@@ -268,11 +272,20 @@ static void dec_cc_appr_rsp(cbor_decoder_t *dec, size_t count,
             }
             memcpy(r->reason, val.tstr.ptr, val.tstr.len);
             r->reason[val.tstr.len] = '\0';
+        } else if (KEY_IS(key, "rq")) {
+            if (seen_rq) { dec->error = true; return; }
+            seen_rq = true;
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type != CBOR_ITEM_BSTR ||
+                val.bstr.len != NODUS_T3_CC_APPR_RQ_BYTES) {
+                dec->error = true; return;
+            }
+            memcpy(r->rq, val.bstr.ptr, NODUS_T3_CC_APPR_RQ_BYTES);
         } else {
             dec->error = true; return;
         }
     }
-    if (!seen_ok) { dec->error = true; return; }
+    if (!seen_ok || !seen_rq) { dec->error = true; return; }
     if (ok_val) {
         if (!seen_i || !seen_s || !seen_sh || !seen_ep || seen_r) {
             dec->error = true; return;

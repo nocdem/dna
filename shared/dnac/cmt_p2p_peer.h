@@ -157,6 +157,10 @@ typedef struct cmt_p2p_conn {
     size_t    ni_out_len;
     bool      sock_failed;         /* the host reported EOF / an error      */
     int       err;                 /* why it failed (cmt_p2p_err_t)         */
+    /* The transport tick's contended sweeps (cmt_p2p_transport_tick): this
+     * peer connection delivered a queue-entering message in the tick's
+     * latest sweep, so the next sweep asks it again. */
+    bool      recv_again;
 
     /* ── byte buffers ── */
     uint8_t  *rbuf;
@@ -363,13 +367,22 @@ void cmt_p2p_peer_set_removal_failed(cmt_p2p_peer_t *p);
 bool cmt_p2p_peer_get_removal_failed(const cmt_p2p_peer_t *p);
 
 /** The receive gate `cmt_p2p_peer_pump` asks (its "THE RECEIVE GATE"
- *  below): the transport host's `may_receive` / `recv_near_full` rows. */
+ *  below): the transport host's `may_receive` / `recv_near_full` /
+ *  `queue_mark` rows, and whether the receive half may run at all. */
 typedef struct {
     void *ctx;
     /** Room for one more message? NULL = always. */
     bool (*may_receive)(void *ctx);
-    /** Nearly full: deliver one message per call? NULL = never. */
+    /** Contended: one QUEUE-ENTERING message per call? NULL = never. */
     bool (*recv_near_full)(void *ctx);
+    /** A value that changes exactly when a delivered message took an
+     *  entry of the queue behind `may_receive`, and does not change
+     *  otherwise during one delivery. NULL = every delivered message
+     *  counts as queue-entering. */
+    uint64_t (*queue_mark)(void *ctx);
+    /** true: the SEND half only — no frame is opened, nothing is
+     *  delivered (the host's write path, cmt_p2p_transport_pump_conn). */
+    bool send_only;
 } cmt_p2p_recv_gate_t;
 
 /**
@@ -386,28 +399,49 @@ typedef struct {
  * continuous read / write, cmt_p2p_transport.h "THE HOST'S BYTES").
  *
  * THE RECEIVE GATE (`gate`, the transport host's `may_receive` /
- * `recv_near_full` rows; NULL = receive without limit). The reference's
- * recvRoutine hands each message to `onReceive` and BLOCKS there while a
- * reactor's queue is full (connection.go:676-678 → consensus/reactor.go
- * :324, :330, :350 `peerMsgQueue <-`); the Go runtime then gives each
- * freed slot to the blocked senders in FIFO order. The single-loop form:
+ * `recv_near_full` / `queue_mark` rows; NULL = receive without limit).
+ * The reference's recvRoutine hands each message to `onReceive` and
+ * BLOCKS there while a reactor's queue is full (connection.go:676-678 →
+ * consensus/reactor.go:324, :330, :350 `peerMsgQueue <-`); the Go runtime
+ * then gives each freed slot to the blocked senders in FIFO order. The
+ * single-loop form (decision 2026-09-27-p2p-fix-2.md (4)):
  *   · `may_receive` is asked before EVERY message (cmt_p2p_mconn_recv_n
  *     with max 1). False = the routine is stalled: no frame is opened, no
  *     plaintext reaches the MConnection, only the SEND half runs (ping /
  *     pong / flush / queued messages still go out);
- *   · after a message was delivered while `recv_near_full` answers true,
- *     the receive half ends for THIS call — one message per peer per pass
- *     while the queue is nearly full, the caller moving on to the next
- *     peer (the FIFO hand-out of freed slots).
+ *   · a delivered message is QUEUE-ENTERING when `queue_mark` moved
+ *     across its delivery (compared right before and right after the one
+ *     recv_n call that delivered it). Only such a message is a turn:
+ *     after a queue-entering message was delivered while
+ *     `recv_near_full` answers true, the receive half ends for THIS call
+ *     — one queue-entering message per peer per call while the queue is
+ *     contended, the caller moving on to the next peer (the FIFO hand-out
+ *     of freed slots). A message that takes no entry (ping / pong,
+ *     HasVote, NewRoundStep, mempool, PEX, 0x70 / 0x71) never ends a turn
+ *     and never counts against a peer's share (RT2 A-F2); the call stays
+ *     bounded by PEER_PUMP_ROUNDS, the buffers and the recv Monitor;
+ *   · `send_only`: the receive half does not run at all.
  * Nothing that was read is ever dropped: a message reaches `on_receive`
  * only if `may_receive` was true right before the packets that completed
  * it were consumed, and the bytes of a message that may not be delivered
  * stay unconsumed in the connection's buffers.
- * @return true when at least one message was delivered (this peer was
- *         SERVED on its receive half — the transport's last-served
- *         rotation, cmt_p2p_transport_tick).
+ *
+ * END OF STREAM (Codex 6): the socket's EOF / error
+ * (`cmt_p2p_transport_conn_failed` → `sock_failed`) stops the peer only
+ * once the receive half is EXHAUSTED — a pass that ran it unstalled,
+ * moved nothing and left `pbuf` empty (every opened plaintext was taken
+ * by the MConnection; what may remain in `rbuf` is less than one sealed
+ * frame and can never complete — the reference's io.ReadFull
+ * UnexpectedEOF). While `pbuf` still holds bytes (the recv Monitor
+ * throttled, or the gate stalled the half) the buffered messages are
+ * delivered first, in later calls — connection.go:590-694 hands every
+ * packet bufio already holds to onReceive before the read error surfaces.
+ * @return the number of QUEUE-ENTERING messages delivered (with a NULL
+ *         `queue_mark`, every delivered message) — > 0 means this peer
+ *         was SERVED on its receive half (the transport's last-served
+ *         rotation and its repeated sweeps, cmt_p2p_transport_tick).
  */
-bool cmt_p2p_peer_pump(cmt_p2p_peer_t *p, const cmt_p2p_recv_gate_t *gate);
+size_t cmt_p2p_peer_pump(cmt_p2p_peer_t *p, const cmt_p2p_recv_gate_t *gate);
 
 /* ══ peer_set.go ══════════════════════════════════════════════════════ */
 

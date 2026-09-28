@@ -56,6 +56,19 @@
  *   · Go's `panic` (group.go:309-323 RotateFile, :363-371 and :387-390
  *     readGroupInfo) — CMT_FAULT here; the caller logs and decides.
  *
+ * ── HARDENING BEYOND THE REFERENCE (no reference counterpart) ─────────
+ * Decision docs/plans/decisions/2026-09-27-p2p-fix-2.md item 1 (operator
+ * APPROVED 2026-09-27); each is a register row, labelled HARDENING:
+ *   · 1(c) directory durability — the head file is opened O_EXCL first;
+ *     when that created it, its directory is fsynced (autofile.go:161
+ *     never does); after RotateFile's rename the directory is fsynced
+ *     (group.go:321-324 never does). `nodus_cmt_fsync_dir`.
+ *   · 1(d) a `readdir` error fails `readGroupInfo` (errno cleared before
+ *     every call), as the reference's `Readdir` error does (group.go:
+ *     367-371).
+ *   · 1(a) `nodus_cmt_autofile_truncate` (ftruncate + fsync) — used only
+ *     by the WAL's torn-tail trim at start (nodus_witness_cmt_wal.h).
+ *
  * ── DETERMINISM ────────────────────────────────────────────────────────
  * Node-local storage: nothing here reaches a hash, a vote or a block.
  * The clock appears only as the `now_ns` the owner passes to arm and fire
@@ -127,8 +140,15 @@ typedef struct {
     int  fd;                                  /* autofile.go:54 file; -1 */
 } nodus_cmt_autofile_t;
 
+/** HARDENING (decision 2026-09-27-p2p-fix-2.md 1(c); no reference
+ *  counterpart): open `dir` read-only and fsync(2) it, so a create or a
+ *  rename inside it survives a power cut. @return CMT_OK, CMT_FAULT. */
+int nodus_cmt_fsync_dir(const char *dir);
+
 /** autofile.go:60-89 `OpenAutoFile` — `af.openFile()` (:160-174:
- *  O_RDWR|O_CREATE|O_APPEND, 0600). The path is kept as given (the
+ *  O_RDWR|O_CREATE|O_APPEND, 0600; HARDENING: when the open CREATES the
+ *  file its directory is fsynced — a failed directory fsync removes the
+ *  fresh empty file and is CMT_FAULT). The path is kept as given (the
  *  reference's `filepath.Abs` at :62 only makes the log label absolute;
  *  every open here uses the same string, so relative and absolute name
  *  the same file for the process's lifetime — the witness does not
@@ -153,6 +173,11 @@ int nodus_cmt_autofile_sync(nodus_cmt_autofile_t *af);
 /** autofile.go:179-194 `Size` — opens if needed, then fstat(2).
  *  @return CMT_OK, CMT_FAULT (the reference's -1 + error). */
 int nodus_cmt_autofile_size(nodus_cmt_autofile_t *af, int64_t *out);
+
+/** HARDENING (decision 2026-09-27-p2p-fix-2.md 1(a); AutoFile has no
+ *  Truncate) — opens if needed, ftruncate(2) to `size`, then fsync(2).
+ *  @return CMT_OK, CMT_FAULT. */
+int nodus_cmt_autofile_truncate(nodus_cmt_autofile_t *af, int64_t size);
 
 /* ── Group (group.go:54-76) ──────────────────────────────────────────── */
 
@@ -249,17 +274,21 @@ int nodus_cmt_group_check_head_size_limit(nodus_cmt_group_t *g);
 int nodus_cmt_group_check_total_size_limit(nodus_cmt_group_t *g);
 
 /** group.go:301-327 `RotateFile` — flush, fsync, close the head, rename
- *  it to `<head>.%03d` of the current max index, max index + 1. The new
- *  head is created by the next open (lazy, O_CREAT).
- *  @return CMT_OK, CMT_FAULT (each step the reference panics on). */
+ *  it to `<head>.%03d` of the current max index, max index + 1; then
+ *  (HARDENING 1(c)) fsync the directory. The new head is created by the
+ *  next open (lazy, O_CREAT).
+ *  @return CMT_OK, CMT_FAULT (each step the reference panics on; a failed
+ *  directory fsync is CMT_FAULT with max index already advanced — the
+ *  rename happened). */
 int nodus_cmt_group_rotate_file(nodus_cmt_group_t *g);
 
 /** group.go:348-411 `ReadGroupInfo`/`readGroupInfo` — scans the head's
  *  directory: the head's own size, every `<headBase>*` file's size into
  *  the total, and the index of every name matching `^.+\.([0-9]{3,})$`.
- *  @return CMT_OK, CMT_FAULT (the directory could not be read, a stat
- *  failed, or an index does not fit an int — the reference panics on
- *  each, :363-371, :387-390). */
+ *  @return CMT_OK, CMT_FAULT (the directory could not be opened or read —
+ *  readdir(3) NULL with errno set, HARDENING 1(d) — a stat failed, or an
+ *  index does not fit an int — the reference panics on each, :363-371,
+ *  :387-390). */
 int nodus_cmt_group_read_info(const nodus_cmt_group_t *g,
                               nodus_cmt_group_info_t *out);
 

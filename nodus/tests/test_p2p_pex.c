@@ -57,6 +57,12 @@
  *     a foreign record pushed by another peer stops that peer;
  *     ensurePeers dials exactly max_num_outbound_peers addresses from the
  *     book; a 21-record answer (> 64 000 bytes) arrives whole in parts.
+ *   · the dial-attempt table (RT2 D-F2, Codex 8/9): an address that left
+ *     the book leaves the table; a BONDED ID is never abandoned, its
+ *     backoff is capped at 2^8 s, and its count restarts on a newer
+ *     signed record and on an authenticated inbound connection
+ *     (test_pex_dial_attempts). The purge given only the IDs that joined
+ *     the bonded set touches only those (test_book_bans).
  *
  * WHAT IT REQUIRES: nothing beyond a default nodus build (no compile
  * flags, no environment). WHAT IT LEAVES BEHIND: nothing (no files, no
@@ -1379,9 +1385,10 @@ static void test_signed_addr(void)
  * red-team Z2-F11 — a BONDED ID is never banned: MarkBad on a bonded
  * validator's signed entry leaves it in the book, unbanned. An identity
  * that BECOMES bonded loses its stale unsigned entry and any ban from
- * its unbonded days (cmt_p2p_addrbook_purge_bonded_unsigned), after
- * which its signed record is accepted at once (RED before the fix:
- * ERR_BANNED for the whole ban).
+ * its unbonded days (cmt_p2p_addrbook_purge_bonded_ids, given the IDs
+ * that joined the set — and only those: an ID it is not given keeps its
+ * entry and its ban, RT2 D-F1), after which its signed record is
+ * accepted at once (RED before the fix: ERR_BANNED for the whole ban).
  */
 static void test_book_bans(void)
 {
@@ -1465,14 +1472,26 @@ static void test_book_bans(void)
         cmt_p2p_netaddr_t wold = na(W->idhex, "7.7.7.7", 4004);
         cmt_p2p_netaddr_t xold = na(X->idhex, "7.7.7.8", 4004);
         cmt_p2p_netaddr_t wnew;
+        char joined[2][CMT_P2P_ID_CAP];
+        char only_v[1][CMT_P2P_ID_CAP];
 
+        snprintf(joined[0], CMT_P2P_ID_CAP, "%s", W->idhex);
+        snprintf(joined[1], CMT_P2P_ID_CAP, "%s", X->idhex);
+        snprintf(only_v[0], CMT_P2P_ID_CAP, "%s", V->idhex);
         CHECK(cmt_p2p_addrbook_add_address(a, &wold, &src) == CMT_P2P_AB_OK);
         CHECK(cmt_p2p_addrbook_add_address(a, &xold, &src) == CMT_P2P_AB_OK);
         cmt_p2p_addrbook_mark_bad(a, &xold, 24 * HOUR);
         CHECK(cmt_p2p_addrbook_is_banned(a, &xold));
         bs.ids[bs.n++] = &W->id;
         bs.ids[bs.n++] = &X->id;
-        CHECK(cmt_p2p_addrbook_purge_bonded_unsigned(a) == 2);
+        /* the purge touches ONLY the IDs it is given (RT2 D-F1): V's
+         * signed entry is not an unsigned one and V has no ban */
+        CHECK(cmt_p2p_addrbook_purge_bonded_ids(a, (const char (*)[CMT_P2P_ID_CAP])only_v,
+                                                1) == 0);
+        CHECK(cmt_p2p_addrbook_has_address(a, &wold));     /* not named: kept */
+        CHECK(cmt_p2p_addrbook_is_banned(a, &xold));
+        CHECK(cmt_p2p_addrbook_purge_bonded_ids(a, (const char (*)[CMT_P2P_ID_CAP])joined,
+                                                2) == 2);
         CHECK(!cmt_p2p_addrbook_has_address(a, &wold));
         CHECK(!cmt_p2p_addrbook_is_banned(a, &xold));
         CHECK(cmt_p2p_addrbook_has_address(a, &vaddr));   /* signed: kept */
@@ -1482,7 +1501,8 @@ static void test_book_bans(void)
         CHECK(make_rec(&W->id, &W->id, CHAIN_A, "7.7.7.9", 4004, 1, false, rec) == 0);
         CHECK(cmt_p2p_addrbook_add_signed(a, NULL, &src, rec, sizeof(rec), &wnew) ==
               CMT_P2P_AB_OK);
-        CHECK(cmt_p2p_addrbook_purge_bonded_unsigned(a) == 0);
+        CHECK(cmt_p2p_addrbook_purge_bonded_ids(a, (const char (*)[CMT_P2P_ID_CAP])joined,
+                                                2) == 0);
     }
     cmt_p2p_addrbook_free(a);
     free(bs.file);
@@ -1992,18 +2012,130 @@ static void test_pex_split(void)
     }
 }
 
+/* ══ 15. the dial-attempt table (RT2 D-F2, Codex 8/9) ════════════════ */
+
+/* The bound is the address book's capacity (pex/params.go:13-22): the
+ * table cannot need more entries than the book can hold addresses. */
+_Static_assert(CMT_P2P_PEX_ATD_MAX ==
+               CMT_P2P_AB_NEW_BUCKET_COUNT * CMT_P2P_AB_NEW_BUCKET_SIZE +
+               CMT_P2P_AB_OLD_BUCKET_COUNT * CMT_P2P_AB_OLD_BUCKET_SIZE,
+               "the dial-attempt bound is the book's capacity");
+
+#define ATD_VAL (3 + N_SPLIT)          /* g_val index of the bonded V */
+#define ATD_STEP (20LL * HOUR)         /* > 2^16 s + 1 s: every backoff passes */
+
+/*
+ * C's book holds an UNBONDED address U and the signed record of a BONDED
+ * validator V, both unreachable (no node at either IP: every dial is
+ * refused at once). Eighteen ensurePeers 20 h apart (each longer than the
+ * largest backoff, 2^16 s + 1 s):
+ *   · U reaches maxAttemptsToDial and is MarkBad'ed (banned, out of the
+ *     book, :538-541) — and its entry LEAVES the table with it (the sweep:
+ *     an address out of the book is never dialed again), so AttemptsToDial
+ *     answers 0 for it;
+ *   · V is NEVER abandoned: it is dialed at every step, its count passes
+ *     16 (no terminal branch for a bonded ID) and it is not banned;
+ *   · V's backoff is CAPPED at 2^8 s + jitter: one more dial comes within
+ *     one 300 s step (2^17 s would be due for an unbonded address);
+ *   · a NEWER signed record for V at the SAME address restarts V's count
+ *     (the next dial leaves it at 1);
+ *   · an AUTHENTICATED INBOUND connection from V restarts it at 0.
+ * RED before the fix: U's entry stayed in the table forever, V was
+ * abandoned after 17 attempts (MarkBad is a no-op for a bonded ID and the
+ * branch returned on every later tick), nothing ever reset its count.
+ * Not proved: the eviction at CMT_P2P_PEX_ATD_MAX (it would need a book of
+ * 20 481 addresses; only the bound's value is asserted above).
+ */
+static void test_pex_dial_attempts(void)
+{
+    node_params_t pc = { "20.0.6.1", 4004, 0, NULL };
+    node_t *C, *Vn = NULL;
+    val_t *V = &g_val[ATD_VAL];
+    char hu[CMT_P2P_ID_CAP];
+    cmt_p2p_netaddr_t u, vaddr, caddr;
+    uint8_t rec[CMT_P2P_ADDR_REC_SIZE];
+    int ok = 1, k, d0;
+
+    TEST("pex: attempt table swept; bonded never abandoned, capped, reset");
+    C = node_new("C", &pc);
+    if (C == NULL) {
+        FAIL("setup");
+        world_reset();
+        return;
+    }
+    C->bonded.ids[C->bonded.n++] = &V->id;
+    caddr = addr_of(C);
+    num_id(61, hu);
+    u = na(hu, "61.0.0.1", 4004);
+    CHECK(cmt_p2p_addrbook_add_address(C->book, &u, &caddr) == CMT_P2P_AB_OK);
+    CHECK(make_rec(&V->id, &V->id, CHAIN_A, "62.0.0.1", 4004, 1, false, rec) == 0);
+    CHECK(cmt_p2p_addrbook_add_signed(C->book, NULL, &caddr, rec, sizeof(rec), &vaddr) ==
+          CMT_P2P_AB_OK);
+    CHECK(node_start(C));
+    run(1, 10 * MS);                              /* the first ensurePeers */
+    CHECK(cmt_p2p_pex_attempts_to_dial(C->pex, &u) == 1);
+    CHECK(cmt_p2p_pex_attempts_to_dial(C->pex, &vaddr) == 1);
+    /* Steps 1..16 bring U to 17 attempts; step 17 finds 17 > 16 and bans
+     * it (out of the book, 24 h); step 18 — 20 h later, the ban still on,
+     * so ReinstateBadPeers (:501-504) does not bring it back — sweeps its
+     * entry. */
+    for (k = 0; k < 18; k++) {
+        run(1, ATD_STEP);
+    }
+    /* U: abandoned the reference's way — and swept out of the table */
+    CHECK(cmt_p2p_addrbook_is_banned(C->book, &u));
+    CHECK(!cmt_p2p_addrbook_has_address(C->book, &u));
+    CHECK(cmt_p2p_pex_attempts_to_dial(C->pex, &u) == 0);
+    /* V: dialed at every step (1 + 18), never banned */
+    CHECK(cmt_p2p_pex_attempts_to_dial(C->pex, &vaddr) == 19);
+    CHECK(!cmt_p2p_addrbook_is_banned(C->book, &vaddr));
+    CHECK(cmt_p2p_addrbook_has_address(C->book, &vaddr));
+    /* the capped backoff: due again within 2^8 s + 1 s (the ban on U is
+     * still on: only V is dialed) */
+    d0 = C->n_dials;
+    run(1, 300 * SEC);
+    CHECK(C->n_dials == d0 + 1);
+    CHECK(cmt_p2p_pex_attempts_to_dial(C->pex, &vaddr) == 20);
+    /* a newer signed record at the same address: the count restarts */
+    CHECK(make_rec(&V->id, &V->id, CHAIN_A, "62.0.0.1", 4004, 2, false, rec) == 0);
+    CHECK(cmt_p2p_addrbook_add_signed(C->book, NULL, &caddr, rec, sizeof(rec), NULL) ==
+          CMT_P2P_AB_OK);
+    run(1, 300 * SEC);
+    CHECK(cmt_p2p_pex_attempts_to_dial(C->pex, &vaddr) == 1);
+    /* an authenticated INBOUND connection from V: the count restarts at 0 */
+    {
+        node_params_t pv = { "62.0.0.1", 4004, 0, &V->id };
+
+        Vn = node_new("V", &pv);
+        CHECK(Vn != NULL);
+        if (Vn != NULL) {
+            CHECK(node_start(Vn));
+            CHECK(dial(Vn, C));
+            run(100, 10 * MS);
+            CHECK(peer_of(C, Vn) != NULL);
+            CHECK(cmt_p2p_pex_attempts_to_dial(C->pex, &vaddr) == 0);
+        }
+    }
+    world_reset();
+    if (ok) {
+        PASS();
+    } else {
+        FAIL("dial attempts");
+    }
+}
+
 int main(void)
 {
     int k;
 
     printf("test_p2p_pex — netaddress proto / address book / signed ADDR / PEX "
            "port (P2P-PORT F4)\n");
-    g_val = (val_t *)calloc(3 + N_SPLIT, sizeof(val_t));
+    g_val = (val_t *)calloc(ATD_VAL + 1, sizeof(val_t));
     if (g_val == NULL) {
         printf("memory\n");
         return 1;
     }
-    for (k = 0; k < 3 + N_SPLIT; k++) {
+    for (k = 0; k < ATD_VAL + 1; k++) {
         if (val_make(&g_val[k]) != 0) {
             printf("keygen failed\n");
             free(g_val);
@@ -2026,6 +2158,7 @@ int main(void)
     test_pex_push();
     test_pex_ensure_peers();
     test_pex_split();
+    test_pex_dial_attempts();
 
     free(g_val);
     printf("\n%d passed, %d failed\n", passed, failed);

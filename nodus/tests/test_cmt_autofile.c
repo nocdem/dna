@@ -31,6 +31,12 @@
  *    the end of the last file, an empty read is "given empty slice", an
  *    index above max is EOF, and bytes flushed AFTER an EOF are read by
  *    the next call (nothing is sticky).
+ *  · HARDENING (decision 2026-09-27-p2p-fix-2.md item 1): the directory
+ *    fsync helper succeeds on a directory and fails on a missing one; the
+ *    head is created on first open and opened (not truncated) after;
+ *    `nodus_cmt_autofile_truncate` cuts the file and the next append
+ *    follows the new end; a rotation with its directory fsync succeeds.
+ *    The `readdir` error branch is NOT exercised (no injection point).
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  *  Compile flags: the nodus default build. Environment: none. A writable
@@ -551,6 +557,63 @@ static int t_group_reader(void)
     return 0;
 }
 
+/* HARDENING beyond the reference (docs/plans/decisions/2026-09-27-
+ * p2p-fix-2.md item 1): the directory fsync helper, the create-vs-open
+ * split of the head's open (1(c)), and the truncate the WAL's torn-tail
+ * trim uses (1(a)). fsync itself is not observable (HOW IT CAN LIE 2). */
+static int t_hardening_helpers(void)
+{
+    fx_t                 fx;
+    nodus_cmt_group_t    g;
+    nodus_cmt_autofile_t af;
+    char                 missing[96];
+
+    CHECK(fx_open(&fx) == 0, "fixture");
+    CHECK(nodus_cmt_fsync_dir(fx.dir) == CMT_OK, "fsync of an existing directory");
+    snprintf(missing, sizeof(missing), "%s/absent", fx.dir);
+    CHECK(nodus_cmt_fsync_dir(missing) == CMT_FAULT, "a missing directory: FAULT");
+    CHECK(nodus_cmt_fsync_dir("") == CMT_FAULT && nodus_cmt_fsync_dir(NULL) == CMT_FAULT,
+          "empty / NULL: FAULT");
+
+    /* first open CREATES the head (O_EXCL path), a second opens it */
+    CHECK(fsize(fx.head) == -1, "no head yet");
+    CHECK(nodus_cmt_group_open(&g, fx.head) == CMT_OK && fsize(fx.head) == 0,
+          "created, empty");
+    CHECK(nodus_cmt_group_write(&g, (const uint8_t *)"0123456789", 10) == CMT_OK &&
+          nodus_cmt_group_flush_and_sync(&g) == CMT_OK && fsize(fx.head) == 10,
+          "10 bytes");
+    nodus_cmt_group_close(&g);
+    CHECK(nodus_cmt_group_open(&g, fx.head) == CMT_OK && fsize(fx.head) == 10,
+          "an existing head is opened, not truncated");
+
+    /* truncate, then an append lands at the new end (O_APPEND) */
+    CHECK(nodus_cmt_autofile_truncate(&g.head, 4) == CMT_OK && fsize(fx.head) == 4,
+          "truncated to 4");
+    CHECK(nodus_cmt_group_write(&g, (const uint8_t *)"ab", 2) == CMT_OK &&
+          nodus_cmt_group_flush_and_sync(&g) == CMT_OK && fsize(fx.head) == 6,
+          "the next append follows the new end");
+    CHECK(nodus_cmt_autofile_truncate(&g.head, -1) == CMT_FAULT, "a negative size");
+    nodus_cmt_group_close(&g);
+
+    /* a closed AutoFile reopens lazily for the truncate */
+    CHECK(nodus_cmt_autofile_open(&af, fx.head) == CMT_OK &&
+          nodus_cmt_autofile_close_file(&af) == CMT_OK &&
+          nodus_cmt_autofile_truncate(&af, 1) == CMT_OK && fsize(fx.head) == 1,
+          "lazy reopen, truncated to 1");
+    CHECK(nodus_cmt_autofile_close_file(&af) == CMT_OK, "close");
+
+    /* a rotation (rename + directory fsync) still succeeds */
+    CHECK(nodus_cmt_group_open(&g, fx.head) == CMT_OK &&
+          nodus_cmt_group_rotate_file(&g) == CMT_OK && g.max_index == 1 &&
+          fsize_idx(&fx, 0) == 1 && fsize(fx.head) == -1, "rotated");
+    CHECK(nodus_cmt_group_write(&g, (const uint8_t *)"x", 1) == CMT_OK &&
+          nodus_cmt_group_flush_and_sync(&g) == CMT_OK && fsize(fx.head) == 1,
+          "the next head is created (O_EXCL path) and written");
+    nodus_cmt_group_close(&g);
+    rmrf(fx.dir);
+    return 0;
+}
+
 /* ══ main ══════════════════════════════════════════════════════════════ */
 
 typedef struct {
@@ -568,6 +631,7 @@ int main(void)
         { "group_total_size_limit",    t_group_total_size_limit },
         { "group_check_ticker",        t_group_check_ticker },
         { "group_reader",              t_group_reader },
+        { "hardening_helpers",         t_hardening_helpers },
     };
     size_t i, failed = 0, ncases = sizeof(cases) / sizeof(cases[0]);
 

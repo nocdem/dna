@@ -33,8 +33,11 @@
  *     backpressure: the recv flowrate Monitor, connection.go:598, or the
  *     MConnection refuses), or one recv-Monitor sample's quota was taken
  *     (⚠ NOT GROUNDED per-call cap, nodus_witness_p2p.c io_read_budget);
- *     writes likewise refill `write_buf` from the step between send(2)s
- *     until send would block or nothing is left. EPOLLIN is cleared only
+ *     writes likewise refill `write_buf` from the step — its SEND half
+ *     only: the write path delivers no message (decision
+ *     2026-09-27-p2p-fix-2.md (4)) — between send(2)s until send would
+ *     block or nothing is left. At most NODUS_P2P_ACCEPT_BUDGET accept(2)
+ *     calls per pass. EPOLLIN is cleared only
  *     at true backpressure and re-armed before every wait once `read_buf`
  *     has room again. IP literals only (R-P2P-24).
  *   · the WORKER: N pthreads over three bounded queues — outbound
@@ -217,6 +220,26 @@ int nodus_p2p_config_add_private(nodus_p2p_config_t *c, const char *id);
 
 /* ══ the socket host ══════════════════════════════════════════════════ */
 
+/**
+ * The most accept(2) calls ONE pass makes (nodus_p2p_io_pump's accept
+ * step) — every call counts, the refused and the interrupted ones
+ * included (Codex 1). The reference's acceptPeers (transport.go:268
+ * `go mt.acceptPeers()`, :286-353) is its own goroutine and accepts
+ * without end; here the listener shares the one loop with every
+ * connection and the consensus lane, and a peer that keeps the backlog
+ * full of connections the filters refuse (a duplicate IP, a known
+ * address — each refused AFTER accept(2) returned it) would hold the loop
+ * there. No reference counterpart: the bound exists only because the
+ * goroutine does not.
+ * ⚠ NOT GROUNDED as a number: the default inbound limit
+ * (CMT_P2P_DEFAULT_MAX_NUM_INBOUND_PEERS, config.go:622) — a full
+ * reconnect of the default inbound set is still taken in one pass. The
+ * listener stays in the epoll set with EPOLLIN (level-triggered), so a
+ * backlog left behind wakes the next wait at once and the next pass
+ * continues: nothing is refused because of the budget, only deferred.
+ */
+#define NODUS_P2P_ACCEPT_BUDGET CMT_P2P_DEFAULT_MAX_NUM_INBOUND_PEERS
+
 /** One transport slot's socket. */
 typedef struct {
     int      fd;             /* -1 = none                                */
@@ -268,8 +291,9 @@ void nodus_p2p_io_wait(nodus_p2p_io_t *io, int timeout_ms);
  *  callbacks run inside this call. */
 void nodus_p2p_io_pump(nodus_p2p_io_t *io);
 /** The continuous write of every socket (the pass's last step): what
- *  `write_buf` holds and whatever the connection's step produces next,
- *  until send(2) would block or nothing is left. */
+ *  `write_buf` holds and whatever the connection's SEND step produces
+ *  next (no message is delivered here), until send(2) would block or
+ *  nothing is left. */
 void nodus_p2p_io_flush(nodus_p2p_io_t *io);
 
 /** The host clocks (file header). Nanoseconds. */
@@ -368,6 +392,18 @@ bool nodus_witness_p2p_gb_take(nodus_witness_p2p_t *p, const char *peer_id,
  *  requesters all served inside that gap. */
 bool nodus_witness_p2p_gb_serve_allow(nodus_witness_p2p_t *p, const char *peer_id,
                                       uint64_t now_ms);
+/** The serving side's in-memory copy of the genesis bundle of `chain`
+ *  (RT2 B-F2): true and `*out` / `*len` (owned by the host, valid until
+ *  the host is freed or the copy replaced) when it is held; false when
+ *  nothing is held for that chain — the caller reads the database once
+ *  and hands the bytes to nodus_witness_p2p_gb_bundle_keep. */
+bool nodus_witness_p2p_gb_bundle(nodus_witness_p2p_t *p, const uint8_t chain[32],
+                                 const uint8_t **out, size_t *len);
+/** Keep `bytes` (malloc'd, `len` > 0; ownership passes to the host in
+ *  every case — freed at once on refusal) as the bundle copy of `chain`,
+ *  replacing any other. @return true kept; false refused (NULL / empty). */
+bool nodus_witness_p2p_gb_bundle_keep(nodus_witness_p2p_t *p, const uint8_t chain[32],
+                                      uint8_t *bytes, size_t len);
 
 /** K2 / N5 — the bonded set (file header). */
 bool nodus_witness_p2p_is_bonded(nodus_witness_p2p_t *p, const char *id);
@@ -388,8 +424,15 @@ bool nodus_witness_p2p_signed_addr(nodus_witness_p2p_t *p,
                                    const uint8_t pk[NODUS_PK_BYTES],
                                    char *out, size_t cap);
 
-/** Recompute the bonded set now (the tip moved; a chain was adopted). */
+/** Recompute the bonded set now (the tip moved; a chain was adopted).
+ *  Only the IDs that JOINED the set since the last refresh are handed to
+ *  the address book's purge (cmt_p2p_addrbook_purge_bonded_ids; RT2
+ *  D-F1): an unchanged set purges nothing. */
 void nodus_witness_p2p_refresh_bonded(nodus_witness_p2p_t *p);
+/** Diagnostic: the number of IDs that joined the bonded set, summed over
+ *  every refresh since the host was built (what the purge was given; a
+ *  refresh that found the same set adds 0). */
+uint64_t nodus_witness_p2p_bonded_joined_total(const nodus_witness_p2p_t *p);
 
 /* ══ the consensus lane (file header, "THE CONSENSUS SEAM") ═══════════ */
 

@@ -27,10 +27,13 @@
  *  (c) NOT A SEAT: a node whose identity holds no seat refuses to collect.
  *  (d) BUSY: a second request while one is pending is refused; the
  *      pending one is untouched.
- *  (e) ONLY ASKED PEERS ARE HEARD: a response from X (connected, not a
+ *  (e) ONLY ASKED PEERS ARE HEARD, ONLY FOR THIS REQUEST: a response from
+ *      seat A (asked) whose request id `rq` is an EARLIER envelope's
+ *      SHA3-512, or all zero, is not taken (decision
+ *      2026-09-27-p2p-fix-2.md (2)); a response from X (connected, not a
  *      seat, never asked) and from seat 3's ID (a seat, not connected,
- *      never asked) is not taken; a second response from A (already
- *      answered) is not taken either.
+ *      never asked) is not taken; A's answer carrying THIS envelope's id
+ *      is taken; a second response from A (already answered) is not.
  *  (f) DEADLINE: one millisecond before NODUS_CC_COLLECT_DEADLINE_MS the
  *      collection still pends; at the deadline it ends.
  *  (g) PER-SEAT RESULTS: the reply names every seat but B's own, in
@@ -524,6 +527,9 @@ static int run(void) {
     char dA[128], dS[128], dX[128];
     char ids[3][CMT_P2P_ID_CAP], id3[CMT_P2P_ID_CAP];
     static const uint8_t env[5] = { 0x01, 0x02, 0x03, 0x04, 0x05 };
+    /* an EARLIER collection's envelope: an answer to it is stale here */
+    static const uint8_t old_env[5] = { 0x01, 0x02, 0x03, 0x04, 0x06 };
+    uint8_t rq[NODUS_T3_CC_APPR_RQ_BYTES], rq_old[NODUS_T3_CC_APPR_RQ_BYTES];
     nodus_dnac_cc_collect_result_t *res = calloc(1, sizeof(*res));
     char err[160];
     uint32_t txn = 0;
@@ -534,6 +540,10 @@ static int run(void) {
     memset(&s, 0, sizeof(s));
     s.sv[0] = s.sv[1] = -1;
     CHECK(res != NULL, "result alloc");
+    /* the request identity every answer carries (nodus_tier3.h `rq`):
+     * SHA3-512 of the envelope asked about */
+    CHECK(qgp_sha3_512(env, sizeof(env), rq) == 0 &&
+          qgp_sha3_512(old_env, sizeof(old_env), rq_old) == 0, "request ids");
     CHECK(gfx_open(&g, 1) == 0, "the derived version-3 chain (node B = key 1)");
     CHECK(sess_open(&s, g.srv, 1) == 0, "B's own 4001 session (key 1)");
     seat_self = seat_of(g.w, 1);
@@ -619,11 +629,21 @@ static int run(void) {
           strstr(err, "busy") != NULL, "(d) a second request is refused: busy");
     CHECK(g.w->cc_collect != NULL, "(d) the pending collection is untouched");
 
-    /* (e) only asked peers are heard */
+    /* (e) only asked peers are heard, and only for THIS request */
     {
         nodus_t3_cc_appr_rsp_t r;
         memset(&r, 0, sizeof(r));
         snprintf(r.reason, sizeof(r.reason), "the envelope failed preflight");
+        /* decision 2026-09-27-p2p-fix-2.md (2): A's answer to an EARLIER
+         * envelope (its `rq`), or one with no request id at all, is not
+         * an answer to this collection — even from a seat it asked */
+        memcpy(r.rq, rq_old, sizeof(r.rq));
+        CHECK(!nodus_witness_cc_collect_on_rsp(g.w, ids[0], &r),
+              "(e) A's STALE answer (another envelope's rq) is not taken");
+        memset(r.rq, 0, sizeof(r.rq));
+        CHECK(!nodus_witness_cc_collect_on_rsp(g.w, ids[0], &r),
+              "(e) A's answer with a zero rq is not taken");
+        memcpy(r.rq, rq, sizeof(r.rq));
         CHECK(!nodus_witness_cc_collect_on_rsp(g.w, ids[2], &r),
               "(e) X (connected, never asked) is not heard");
         CHECK(!nodus_witness_cc_collect_on_rsp(g.w, id3, &r),
@@ -675,6 +695,8 @@ static int run(void) {
         rs.ok = true; rs.seat = (uint16_t)seat_s; rs.epoch = 3;
         memset(rs.sig, 0xB1, sizeof(rs.sig));
         memset(rs.set_hash, 0xB2, sizeof(rs.set_hash));
+        memcpy(ra.rq, rq, sizeof(ra.rq));
+        memcpy(rs.rq, rq, sizeof(rs.rq));
 
         CHECK(nodus_witness_cc_collect_start(g.w, g_ks[1].pk, s.token, 31, env,
                                              sizeof(env), mono_ms(), err,
@@ -706,6 +728,7 @@ static int run(void) {
         nodus_t3_cc_appr_rsp_t r;
         memset(&r, 0, sizeof(r));
         snprintf(r.reason, sizeof(r.reason), "refused");
+        memcpy(r.rq, rq, sizeof(r.rq));
         CHECK(nodus_witness_cc_collect_start(g.w, g_ks[1].pk, s.token, 41, env,
                                              sizeof(env), mono_ms(), err,
                                              sizeof(err)) == 0, err);

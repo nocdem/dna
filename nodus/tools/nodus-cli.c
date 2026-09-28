@@ -1038,12 +1038,15 @@ static int cc_hex_to_bytes32(const char *hex, uint8_t out[32]) {
  * ep==local") — a mismatch is a refusal, never silently accepted.
  *
  * ADDED with the relay: the signature itself is verified against the
- * seat's committee key and the locally computed approval digest. A 0x71
- * reply carries no request id, so a seat that answers a PREVIOUS
- * collection after that collection's deadline is taken by the node as an
- * answer to the next one it asked the same seat; such a signature binds
- * the other envelope's digest and passes the seat/sh/ep equality. It is
- * refused here instead of being carried into an envelope CheckTx refuses.
+ * seat's committee key and the locally computed approval digest. Since
+ * P2P-FIX-2 a 0x71 reply carries its request id (`rq`, SHA3-512 of the
+ * envelope — decision 2026-09-27-p2p-fix-2.md (2)) and the node takes
+ * only answers naming the envelope it asked about, so a late answer to a
+ * PREVIOUS collection no longer reaches this CLI. The check stays: the
+ * id is a correlation value, not an authority — a signature that does
+ * not bind THIS envelope's approval digest (a faulty or hostile seat) is
+ * refused here instead of being carried into an envelope CheckTx
+ * refuses.
  *
  * @return 0 accepted (sig_out filled), 1 refused (a line was already
  *         printed explaining why), -1 a local fault (sign/digest).

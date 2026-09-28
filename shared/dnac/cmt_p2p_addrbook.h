@@ -424,6 +424,11 @@ bool cmt_p2p_addrbook_is_banned(const cmt_p2p_addrbook_t *a,
                                 const cmt_p2p_netaddr_t *addr);         /* :241-247 */
 bool cmt_p2p_addrbook_has_address(const cmt_p2p_addrbook_t *a,
                                   const cmt_p2p_netaddr_t *addr);       /* :250-256 */
+/** The book holds an entry for `addr`'s ID AT `addr`'s IP and port (a
+ *  newer record may have moved the ID elsewhere). No reference
+ *  counterpart — the PEX dial-attempt sweep's question (cmt_p2p_pex.c). */
+bool cmt_p2p_addrbook_holds_exact(const cmt_p2p_addrbook_t *a,
+                                  const cmt_p2p_netaddr_t *addr);
 bool cmt_p2p_addrbook_need_more_addrs(const cmt_p2p_addrbook_t *a);     /* :259-261 */
 bool cmt_p2p_addrbook_empty(const cmt_p2p_addrbook_t *a);               /* :265-267 */
 
@@ -472,15 +477,18 @@ bool cmt_p2p_addrbook_is_bonded(const cmt_p2p_addrbook_t *a, const char *id);
 bool cmt_p2p_addrbook_own_seq_seen(const cmt_p2p_addrbook_t *a,
                                    uint64_t *seq);
 
-/** Red-team Z2-F11 — call after the host's bonded set changed: every
- *  UNSIGNED entry whose ID is bonded now is removed (a bonded identity
- *  keeps only a signed record, R-P2P-4 — a stale unsigned address would
- *  be dialed, fail and pile up attempts), and every ban on a bonded ID is
- *  lifted (`cmt_p2p_addrbook_mark_bad` never bans a bonded ID; a ban
- *  from before it bonded would refuse its signed record for the rest of
- *  the ban). No reference counterpart (no bonded set there).
+/** Red-team Z2-F11 — call with the IDs that JOINED the host's bonded set
+ *  (RT2 D-F1: only those, only when the set changed): for each, its
+ *  UNSIGNED entry is removed (a bonded identity keeps only a signed
+ *  record, R-P2P-4 — a stale unsigned address would be dialed, fail and
+ *  pile up attempts), and its ban is lifted (`cmt_p2p_addrbook_mark_bad`
+ *  never bans a bonded ID; a ban from before it bonded would refuse its
+ *  signed record for the rest of the ban). Two binary searches per ID; an
+ *  entry of `ids` that is not NUL-terminated is skipped. No reference
+ *  counterpart (no bonded set there).
  *  @return the number of entries removed or unbanned. */
-int cmt_p2p_addrbook_purge_bonded_unsigned(cmt_p2p_addrbook_t *a);
+int cmt_p2p_addrbook_purge_bonded_ids(cmt_p2p_addrbook_t *a,
+                                      const char (*ids)[CMT_P2P_ID_CAP], int n_ids);
 
 /** At the highest own seq seen: was any record naming us there OTHER
  *  than `rec` (our own record's bytes)? True when the first one seen
