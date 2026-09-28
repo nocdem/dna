@@ -133,7 +133,7 @@ read from the chain:
 
 ```bash
 cd nodus/build
-ctest --output-on-failure    # 192 registered tests, 8 of them labelled bench (`ctest -LE bench` runs 184) — measured with ctest at 0.20.5 (0.20.5 added test_decode_dupkey, test_client_dup_array; 0.20.3 added test_v3_block_query; the 4004 p2p port added test_p2p_secret/mconn/switch/pex, test_witness_p2p, test_network_file, test_cmt_autofile, test_cc_collect and deleted test_cc_client, test_cmt_net, test_heartbeat_signed_checksum, test_strict_decoder, test_witness_peer_dedup, test_witness_protocol_version_gate)
+ctest --output-on-failure    # 197 registered tests, 8 of them labelled bench (`ctest -LE bench` runs 189) — measured with ctest at 0.20.6 (0.20.6 added test_ws_frame, test_ws_upgrade, test_ws_server, test_tcp_deferred_close, test_tcp_read_budget; 0.20.5 added test_decode_dupkey, test_client_dup_array; 0.20.3 added test_v3_block_query; the 4004 p2p port added test_p2p_secret/mconn/switch/pex, test_witness_p2p, test_network_file, test_cmt_autofile, test_cc_collect and deleted test_cc_client, test_cmt_net, test_heartbeat_signed_checksum, test_strict_decoder, test_witness_peer_dedup, test_witness_protocol_version_gate)
 ```
 
 **Test coverage (representative areas — `ctest` runs all):**
