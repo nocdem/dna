@@ -613,8 +613,9 @@ stagef_cmt_wait_row() {
 #
 # THE FUNDER. Node STAGEF_PUMP_FUNDER_NODE's own genesis leaf (default
 # node 3). stagef_up_v2.sh gives every node one leaf (100M DNAC) and no
-# scenario in genesis_protocol_v2.sh's list claims node 1's or node 3's
-# (grep of every `v2-claim` call: test_v2_claim.sh = node 2,
+# scenario in genesis_protocol_v2.sh's list claims node 3's (node 1's is
+# claimed by test_cmt_token_create.sh as its creator's funding — never
+# export FUNDER = 1) (grep of every `v2-claim` call: test_v2_claim.sh = node 2,
 # test_cmt_mempool_flood.sh = nodes 4-7, test_v2_stake.sh = v2user,
 # test_cmt_claim_flood.sh / test_v2_epoch_boundary.sh = the PUMP batch,
 # test_cmt_empty_blocks.sh = v2probe). The PUMP identity's batch is

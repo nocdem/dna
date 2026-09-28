@@ -163,6 +163,13 @@ SCENARIOS_ONLY=0
 #     spendable coins = SKIP 99). Placed before epoch_boundary; it leaves
 #     the coin count unchanged (each spent coin replaced by one coin one
 #     fee smaller).
+#   test_cmt_token_create.sh — a CORE TOKEN_CREATE (`nodus-cli
+#     v2-envelope token-create`) registers a token 7/7, then a
+#     `v2-envelope spend --token` moves part of it 7/7. Funded by NODE 1's
+#     own genesis leaf (claimed here if node 1 is not already funded) —
+#     a leaf no other scenario in this list claims, so it is
+#     order-independent of every leaf above; placed after the flood
+#     scenarios only so their batches are not interleaved with it.
 #   test_v2_epoch_boundary.sh — opportunistically submits whatever
 #     remains of the PUMP batch (ordinarily nothing, since the scenario
 #     above already spent it) to help reach the boundary; SKIPS (99) at
@@ -198,6 +205,7 @@ test_cmt_chain_config.sh
 test_cmt_mempool_flood.sh
 test_cmt_claim_flood.sh
 test_cmt_env_flood.sh
+test_cmt_token_create.sh
 test_v2_epoch_boundary.sh
 test_v2_rewards.sh
 test_cmt_rule_n_retire.sh

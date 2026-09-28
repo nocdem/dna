@@ -4202,6 +4202,625 @@ done:
     }
     return rc;
 }
+
+/* ── `v2-envelope token-create` — the CORE TOKEN_CREATE builder ───────
+ *
+ * Builds a single-leg DNA_CORE envelope, runtime_op 3
+ * (DNA_CORERULE_TOKEN_CREATE), auth_kind 1 (the creator's ML-DSA-87
+ * signature over the leg auth digest), fee in the envelope. A TOOL: no
+ * consensus rule is added or changed here. The chain side is the
+ * SPECIFICATION (nodus_witness_rt_native.c); every rule below is mirrored
+ * client-side so a refusal happens here, with the reason, not at CheckTx:
+ *
+ *   call v1 (rtn_tc_parse :1217-1265) = token_id[64] ‖ name_len u8 ‖ name
+ *   ‖ sym_len u8 ‖ sym ‖ decimals u8 ‖ the SPEND transfer section
+ *   (in_count 1..14, out_count 1..16, rtn_xfer_section_parse
+ *   :1122-1149), exact length;
+ *   - token_id never all-zero (:1226-1227);
+ *   - name 1..32 (:1229), symbol 1..8 (:1235), both printable ASCII
+ *     0x20..0x7e minus ':' (rtn_tc_text_ok :1199-1204);
+ *   - decimals 0..18 (:1241);
+ *   - output[0] IS the token genesis output: its token_id equals the
+ *     declared one (:1250-1251), its amount (the registered supply) is
+ *     >= 1 (:1146) and <= INT64_MAX (:1257-1258), and the registry row's
+ *     creator_fp is output[0]'s owner (rtn_tc_exec :1904) — so `--to`
+ *     names the CREATOR of record, not only the first holder;
+ *   - every other output is NATIVE change (:1259-1263);
+ *   - inputs: present, unlocked (unlock_block < H, :1821-1822), owned by
+ *     the signer (:1823-1827), NATIVE only (:1828-1829), at most 14
+ *     (RTN_TC_MAX_IN :375 — the read budget funds in + pool + registry);
+ *   - fee >= NODUS_W_TOKEN_CREATE_FEE (:1838) and
+ *     Σnative_in == Σnative_out + fee exactly (:1852-1866); the token
+ *     supply is NOT native value, so the inputs pay the fee alone;
+ *   - the token id must not be registered yet (the registry read,
+ *     :1809-1812) — this client cannot see the registry, so a reused id
+ *     is refused by the chain, not here.
+ * The fee goes to the reward pool (rtn_tc_exec's pool SET :1919-1927;
+ * decision docs/plans/decisions/2026-09-22-nodus-tokenomics-v3-operator.md
+ * §1 names TOKEN_CREATE explicitly). The fee floor stays the COMPILED
+ * constant in this package (decision
+ * docs/plans/decisions/2026-09-28-token-create-fee-governance.md — the
+ * governance parameter is a later wipe package).
+ *
+ * Everything else is `v2-envelope spend`'s flow on ONE session
+ * authenticated as the creator: chain id (dnac_supply chain_id32), gas
+ * price (dnac_fee_info), coins + tip (dnac_utxo, unlocked native coins
+ * only, largest first, ties by nullifier — t6_coin_cmp / t6_spend_pick),
+ * the CORE ruleset from the compiled table, the two-pass signature
+ * (t6_env_sign_one_key) and submission (t6_submit_on). Output seeds are
+ * 32 fresh random bytes (nodus_random, the spend precedent); a default
+ * token id is 64 fresh random bytes from the same source.
+ *
+ * Resource fields: the leg declares the EXACT effects rtn_tc_exec emits
+ * (t6_tc_effect_decl) and res_max_total_units is right-sized from that
+ * declaration by the metering module itself (t6_spend_ceiling, with the
+ * TOKEN_CREATE read count in + 2) — the same rule as the SPEND builder,
+ * never a round number: PrepareProposal reserves every envelope's whole
+ * ceiling against one block budget, and under the gas-price rule
+ * (decision docs/plans/decisions/2026-09-25-gas-price.md) the fee must
+ * cover units × gas_price, so an inflated ceiling would cost the creator
+ * real fee once the rule is on. */
+#define T6_TC_MAX_IN      14u   /* RTN_TC_MAX_IN, rt_native.c:375            */
+#define T6_TC_MAX_OUTS    2u    /* the token genesis output + native change */
+#define T6_TC_NAME_MAX    32u   /* RTN_TC_NAME_MAX, rt_native.c:377          */
+#define T6_TC_SYM_MAX     8u    /* RTN_TC_SYM_MAX, rt_native.c:378           */
+#define T6_TC_DEC_MAX     18u   /* RTN_TC_DECIMALS_MAX, rt_native.c:379      */
+/* The registry record the op-4 CREATE carries: RTN_TOKEN_REC_LEN = 188
+ * (rt_native.c:1080; file-local there, so restated with its citation —
+ * the T6_SPEND_MAX_IN / T6_SPEND_OUT_LEN precedent above). */
+#define T6_TOKEN_REC_LEN  188u
+
+/* The EXACT per-leg effect declaration of ONE CORE TOKEN_CREATE leg with
+ * n_in inputs and n_out outputs — what rtn_tc_exec
+ * (nodus_witness_rt_native.c:1794-1940) emits:
+ *   - n_out UTXO CREATEs (:1891-1897): key 64, value
+ *     NODUS_RT_CORE_UTXO_REC_LEN (284);
+ *   - ONE token-registry CREATE (:1898-1918): key 64 (the token id),
+ *     value RTN_TOKEN_REC_LEN (188);
+ *   - ONE reward-pool SET (:1922-1927): key 1, value 8;
+ *   - n_in DELETEs (:1929-1934): key 64, value 0.
+ * Bytes = the canonical encoded result length, the same effect_wire.h
+ * layout t6_spend_effect_decl documents (23-byte head, 84 bytes per
+ * record, then every key and value blob):
+ *   effects = n_in + n_out + 2
+ *   bytes   = 23 + 84·effects + n_out·(64 + 284) + (64 + 188) + (1 + 8)
+ *             + n_in·64
+ *           = 452 + 148·n_in + 432·n_out
+ * Every term is a fixed-size field, so the bound is exact; the charge
+ * gate rejects only actual > declared (res_meter.c). */
+static void t6_tc_effect_decl(uint32_t n_in, uint32_t n_out,
+                              uint32_t *effects_out, uint32_t *bytes_out) {
+    const uint32_t effects = n_in + n_out + 2u;
+    *effects_out = effects;
+    *bytes_out = (uint32_t)DNA_EFFECT_FIXED_HEAD +
+                 (uint32_t)DNA_EFFECT_RECORD_LEN * effects +
+                 n_out * (64u + NODUS_RT_CORE_UTXO_REC_LEN) +
+                 (64u + T6_TOKEN_REC_LEN) +
+                 (1u + 8u) +
+                 n_in * 64u;
+}
+/* The largest shape this builder emits (14 inputs, 2 outputs) stays
+ * inside the metering plan's declaration caps (res_meter.h). */
+_Static_assert(T6_TC_MAX_IN + T6_TC_MAX_OUTS + 2u <=
+                   (unsigned)DNA_EFFECT_MAX_COUNT,
+               "TOKEN_CREATE effect count exceeds the effect codec cap");
+_Static_assert((unsigned)DNA_EFFECT_FIXED_HEAD +
+                   (unsigned)DNA_EFFECT_RECORD_LEN *
+                       (T6_TC_MAX_IN + T6_TC_MAX_OUTS + 2u) +
+                   T6_TC_MAX_OUTS * (64u + NODUS_RT_CORE_UTXO_REC_LEN) +
+                   (64u + T6_TOKEN_REC_LEN) + (1u + 8u) +
+                   T6_TC_MAX_IN * 64u <= DNA_EFFECT_MAX_TOTAL_LEN,
+               "TOKEN_CREATE result length exceeds the effect codec cap");
+_Static_assert(T6_TC_MAX_IN <= T6_SPEND_MAX_IN,
+               "the TOKEN_CREATE plan reuses the SPEND plan's input array");
+
+/* The registry text rule (rtn_tc_text_ok, rt_native.c:1199-1204):
+ * printable ASCII 0x20..0x7e, never ':'. @return 1 ok / 0 refused. */
+static int t6_tc_text_ok(const char *s, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c < 0x20 || c > 0x7e || c == ':') return 0;
+    }
+    return 1;
+}
+
+static int cmd_v2_token_create(const char *server_ip, uint16_t server_port,
+                               int argc, char **argv, int cmd_start) {
+    const char *keys_csv = NULL, *name = NULL, *symbol = NULL;
+    const char *to_hex = NULL, *token_hex = NULL, *submit = NULL;
+    uint64_t supply = 0, fee = 0;
+    unsigned long decimals = 0;
+    int dry_run = 0, have_supply = 0, have_dec = 0, have_fee = 0;
+    int bad_arg = 0;
+
+    for (int i = cmd_start + 2; i < argc; i++) {  /* skip "token-create" */
+        const char *a = argv[i];
+        char *end = NULL;
+        if      (!strcmp(a, "--keys")     && i + 1 < argc) keys_csv  = argv[++i];
+        else if (!strcmp(a, "--name")     && i + 1 < argc) name      = argv[++i];
+        else if (!strcmp(a, "--symbol")   && i + 1 < argc) symbol    = argv[++i];
+        else if (!strcmp(a, "--to")       && i + 1 < argc) to_hex    = argv[++i];
+        else if (!strcmp(a, "--token-id") && i + 1 < argc) token_hex = argv[++i];
+        else if (!strcmp(a, "--submit")   && i + 1 < argc) submit    = argv[++i];
+        else if (!strcmp(a, "--decimals") && i + 1 < argc) {
+            const char *v = argv[++i];
+            if (v[0] < '0' || v[0] > '9') { bad_arg = 1; break; }
+            decimals = strtoul(v, &end, 10);
+            if (!end || *end != '\0') { bad_arg = 1; break; }
+            have_dec = 1;
+        } else if (!strcmp(a, "--supply") && i + 1 < argc) {
+            const char *v = argv[++i];
+            if (v[0] < '0' || v[0] > '9') { bad_arg = 1; break; }
+            errno = 0;
+            supply = strtoull(v, &end, 10);
+            if (!end || *end != '\0' || errno == ERANGE) { bad_arg = 1; break; }
+            have_supply = 1;
+        } else if (!strcmp(a, "--fee") && i + 1 < argc) {
+            const char *v = argv[++i];
+            if (v[0] < '0' || v[0] > '9') { bad_arg = 1; break; }
+            errno = 0;
+            fee = strtoull(v, &end, 10);
+            if (!end || *end != '\0' || errno == ERANGE) { bad_arg = 1; break; }
+            have_fee = 1;
+        } else if (!strcmp(a, "--dry-run")) {
+            dry_run = 1;
+        } else { bad_arg = 1; break; }
+    }
+    if (bad_arg || !keys_csv || !name || !symbol || !have_dec ||
+        !have_supply || (!submit && !dry_run)) {
+        fprintf(stderr,
+            "Usage: v2-envelope token-create --keys <keydir> --name <name> "
+            "--symbol <sym>\n"
+            "       --decimals <0..18> --supply <raw> [--to <fp128hex>] "
+            "[--fee <raw>]\n"
+            "       [--token-id <hex128>] (--dry-run | --submit ip:port)\n"
+            "  One CORE TOKEN_CREATE envelope. The whole flow (chain id, gas "
+            "price, coin\n"
+            "  listing, submission) runs on ONE session to --submit, or to "
+            "the outer -s\n"
+            "  server for --dry-run (which builds and self-checks, submits "
+            "nothing).\n"
+            "  --name 1..%u and --symbol 1..%u chars, printable ASCII "
+            "without ':'.\n"
+            "  --supply   the whole supply, in the token's raw units "
+            "(1..%lld); it is\n"
+            "             minted as ONE output to --to.\n"
+            "  --to       the genesis output's owner AND the registry's "
+            "creator of record\n"
+            "             (default: the --keys identity).\n"
+            "  --fee      native raw; default the creation fee %llu raw, "
+            "raised to\n"
+            "             units x gas_price when the node reports a gas "
+            "price above it.\n"
+            "             A --fee below either is refused, never raised.\n"
+            "  --token-id 64 bytes as 128 lowercase hex; default 64 fresh "
+            "random bytes.\n"
+            "             A token id already registered is refused by the "
+            "chain.\n"
+            "  Inputs are the creator's native coins only (at most %u); "
+            "native change\n"
+            "  returns to the creator. Prints token_id= (for "
+            "`v2-envelope spend --token`)\n"
+            "  and intent_id= (the tx_hash of the UTXOs it creates).\n",
+            (unsigned)T6_TC_NAME_MAX, (unsigned)T6_TC_SYM_MAX,
+            (long long)INT64_MAX,
+            (unsigned long long)NODUS_W_TOKEN_CREATE_FEE,
+            (unsigned)T6_TC_MAX_IN);
+        return 1;
+    }
+
+    /* ── argument verdicts: refuse what the chain would refuse ────────── */
+    const size_t name_len = strlen(name), sym_len = strlen(symbol);
+    if (name_len < 1 || name_len > T6_TC_NAME_MAX ||
+        !t6_tc_text_ok(name, name_len)) {
+        fprintf(stderr, "--name must be 1..%u printable ASCII characters "
+                "without ':' (rtn_tc_parse / rtn_tc_text_ok)\n",
+                (unsigned)T6_TC_NAME_MAX);
+        return 1;
+    }
+    if (sym_len < 1 || sym_len > T6_TC_SYM_MAX ||
+        !t6_tc_text_ok(symbol, sym_len)) {
+        fprintf(stderr, "--symbol must be 1..%u printable ASCII characters "
+                "without ':' (rtn_tc_parse / rtn_tc_text_ok)\n",
+                (unsigned)T6_TC_SYM_MAX);
+        return 1;
+    }
+    if (decimals > T6_TC_DEC_MAX) {
+        fprintf(stderr, "--decimals must be 0..%u\n", (unsigned)T6_TC_DEC_MAX);
+        return 1;
+    }
+    if (supply < 1 || supply > (uint64_t)INT64_MAX) {
+        fprintf(stderr, "--supply must be 1..%lld raw (a zero-value output "
+                "is refused; the registry stores the supply as a signed "
+                "64-bit integer)\n", (long long)INT64_MAX);
+        return 1;
+    }
+    if (have_fee && fee < NODUS_W_TOKEN_CREATE_FEE) {
+        fprintf(stderr, "--fee %llu is below the chain's token-creation fee "
+                "%llu raw (NODUS_W_TOKEN_CREATE_FEE)\n",
+                (unsigned long long)fee,
+                (unsigned long long)NODUS_W_TOKEN_CREATE_FEE);
+        return 1;
+    }
+    if (!have_fee) fee = NODUS_W_TOKEN_CREATE_FEE;
+    uint8_t to_raw[64];
+    if (to_hex && qgp_fp_hex_to_raw(to_hex, to_raw) != 0) {
+        fprintf(stderr, "--to must be exactly 128 lowercase hex chars (a "
+                "fingerprint; the output owner field is checked by "
+                "rtn_hex_lower_ok)\n");
+        return 1;
+    }
+    static const uint8_t native_tok[64] = {0};
+    uint8_t token[64];
+    if (token_hex) {
+        /* same 64-byte lowercase-hex shape as a fingerprint */
+        if (qgp_fp_hex_to_raw(token_hex, token) != 0) {
+            fprintf(stderr, "--token-id must be exactly 128 lowercase hex "
+                    "chars (a 64-byte token id)\n");
+            return 1;
+        }
+    } else if (nodus_random(token, sizeof(token)) != 0) {
+        fprintf(stderr, "random token id generation failed\n");
+        return 1;
+    }
+    if (memcmp(token, native_tok, 64) == 0) {
+        fprintf(stderr, "the token id is all-zero — that is the native "
+                "coin's id, never a token\n");
+        return 1;
+    }
+    char token_fp[QGP_FP_HEX_BUFFER];
+    qgp_fp_raw_to_hex(token, token_fp);          /* printed, lowercase    */
+
+    int rc = 1;
+    nodus_identity_t *keys = NULL;
+    t6_coin_t *coins = NULL;
+    uint8_t *call = NULL, *auth = NULL, *env_bytes = NULL;
+    dna_env_preflight_t *pf = NULL;
+    nodus_dnac_utxo_result_t utxos;
+    memset(&utxos, 0, sizeof(utxos));
+    int utxos_valid = 0, connected = 0;
+    nodus_client_t client;
+    memset(&client, 0, sizeof(client));
+
+    keys = calloc(4, sizeof(*keys));
+    if (!keys) return 1;
+    if (act_load_keys(keys_csv, keys, 4) != 1) {
+        fprintf(stderr, "v2-envelope token-create needs exactly one --keys "
+                "identity\n");
+        goto done;
+    }
+
+    /* Creator fingerprint (128 lowercase hex): the dnac_utxo query key,
+     * the change owner and the default genesis-output owner. */
+    uint8_t creator_raw[64];
+    char creator_fp[QGP_FP_HEX_BUFFER];
+    if (qgp_sha3_512(keys[0].pk.bytes, DNAC_PUBKEY_SIZE, creator_raw) != 0)
+        goto done;
+    qgp_fp_raw_to_hex(creator_raw, creator_fp);
+    char to_fp[QGP_FP_HEX_BUFFER];
+    if (to_hex) qgp_fp_raw_to_hex(to_raw, to_fp);   /* canonical lowercase */
+    else        snprintf(to_fp, sizeof(to_fp), "%s", creator_fp);
+
+    const nodus_domain_runtime_t *core_rt = cli_builtin_runtime(DNA_DOMAIN_CORE);
+    const nodus_domain_runtime_t *sys_rt  = cli_builtin_runtime(DNA_DOMAIN_SYSTEM);
+    if (!core_rt || !sys_rt || !sys_rt->meter_policy) {
+        fprintf(stderr, "CORE runtime / SYSTEM block metering policy not "
+                "found in the compiled production table\n");
+        goto done;
+    }
+
+    /* ── ONE session, authenticated as the creator ─────────────────── */
+    char sip[64];
+    uint16_t sport = 0;
+    if (t6_resolve_target(submit, server_ip, server_port, sip, &sport) != 0) {
+        fprintf(stderr, "invalid --submit target (and no -s server)\n");
+        goto done;
+    }
+    nodus_client_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "%s", sip);
+    cfg.servers[0].port = sport;
+    cfg.server_count    = 1;
+    cfg.auto_reconnect  = false;
+    if (nodus_client_init(&client, &cfg, &keys[0]) != 0) {
+        fprintf(stderr, "client_init failed\n");
+        goto done;
+    }
+    connected = 1;                          /* init succeeded: close owed */
+    if (nodus_client_connect(&client) != 0) {
+        fprintf(stderr, "client connect failed (%s:%u)\n", sip, sport);
+        goto done;
+    }
+
+    uint8_t chain32[DNA_CHAIN_ID_LEN];
+    bool has_chain32 = false;
+    if (nodus_client_dnac_chain_id32(&client, &has_chain32, chain32) != 0 ||
+        !has_chain32) {
+        fprintf(stderr, "this node is not on a version-3 chain (no "
+                "chain_id32 in its dnac_supply reply) — v2-envelope "
+                "token-create needs a version-3 chain\n");
+        goto done;
+    }
+
+    /* HF-1 — the committed gas price at tip + 1, on the SAME session (the
+     * spend builder's source, decision 2026-09-25-gas-price.md "HF-1
+     * O4"). 0 = the rule is off; a failed query is not "price 0". */
+    uint64_t gas_price = 0;
+    {
+        nodus_dnac_fee_info_t fi;
+        memset(&fi, 0, sizeof(fi));
+        int frc = nodus_client_dnac_fee_info(&client, &fi);
+        if (frc != 0) {
+            fprintf(stderr, "dnac_fee_info query failed (rc=%d) — the gas "
+                    "price is unknown, refusing to size a fee\n", frc);
+            goto done;
+        }
+        gas_price = fi.gas_price;
+    }
+
+    int urc = nodus_client_dnac_utxo(&client, creator_fp,
+                                     NODUS_DNAC_MAX_UTXO_RESULTS, &utxos);
+    if (urc != 0) {
+        fprintf(stderr, "dnac_utxo query failed (rc=%d)\n", urc);
+        goto done;
+    }
+    utxos_valid = 1;
+    const uint64_t tip = utxos.block_height;
+    if (tip == 0) {
+        /* the server's height read is FAIL-OPEN (0 on a fault) and the
+         * envelope's expiry is anchored on it — refuse (the spend rule) */
+        fprintf(stderr, "the node reported tip 0 (a version-3 chain past "
+                "its first block never does; its height read may have "
+                "faulted) — refusing to build an envelope whose expiry "
+                "would be wrong\n");
+        goto done;
+    }
+    if (utxos.count >= (int)NODUS_DNAC_MAX_UTXO_RESULTS)
+        fprintf(stderr, "warning: the coin listing is capped at %d rows and "
+                "came back full — the server applies no ordering before its "
+                "cap, so coins beyond it are invisible to this selection\n",
+                (int)NODUS_DNAC_MAX_UTXO_RESULTS);
+
+    /* ── the spendable NATIVE coin set, in the selection order ───────── */
+    coins = calloc((size_t)(utxos.count > 0 ? utxos.count : 1),
+                   sizeof(*coins));
+    if (!coins) goto done;
+    int n_coins = 0, n_locked = 0;
+    for (int i = 0; i < utxos.count; i++) {
+        const nodus_dnac_utxo_entry_t *e = &utxos.entries[i];
+        if (e->amount == 0) continue;
+        if (memcmp(e->token_id, native_tok, 64) != 0) continue; /* native only */
+        if (e->unlock_block > tip) { n_locked++; continue; }
+        t6_coin_t *c = &coins[n_coins++];
+        memcpy(c->nul, e->nullifier, 64);
+        c->amount = e->amount;
+        c->kind   = 0;
+        c->used   = 0;
+    }
+    qsort(coins, (size_t)n_coins, sizeof(*coins), t6_coin_cmp);
+
+    const uint32_t alen = 1u + NODUS_RT_AUTH_SIGNER_LEN;   /* kind-1, 1 sig */
+    const size_t fixed_len = 64 + 1 + name_len + 1 + sym_len + 1;
+    call = malloc(fixed_len + 2 + (size_t)T6_TC_MAX_IN * 64 +
+                  (size_t)T6_TC_MAX_OUTS * T6_SPEND_OUT_LEN);
+    auth = calloc(1, alen);
+    pf   = calloc(1, sizeof(*pf));
+    if (!call || !auth || !pf) goto done;
+
+    dna_env_leg_ctx_t lctx;
+    memset(&lctx, 0, sizeof(lctx));
+    lctx.domain_id       = DNA_DOMAIN_CORE;
+    lctx.ruleset_version = core_rt->ruleset_version;
+    memcpy(lctx.ruleset_hash, core_rt->ruleset_hash, 64);
+
+    /* ── plan + build, under a bounded gas-price fixed point ────────────
+     * The chain requires fee >= max(floor, units × gas_price) for a
+     * non-SYSTEM envelope (nodus_witness_v2_apply.c env_gas_price_check);
+     * the units depend on the input count, the input count on the fee.
+     * Build the REAL leg at the current fee, price it, and if it needs
+     * more raise the fee and re-plan from scratch — the spend builder's
+     * loop. gas_price 0: one pass, the fee is the creation fee. An
+     * explicit --fee is never raised. */
+    t6_spend_plan_t plan;
+    dna_env_leg_in_t leg;
+    dna_env_in_t env_in;
+    uint64_t units = 0, native_change = 0;
+    int n_out = 0;
+    uint8_t out_id[T6_TC_MAX_OUTS][64];
+    for (int pass = 0; ; pass++) {
+        memset(&plan, 0, sizeof(plan));
+        for (int i = 0; i < n_coins; i++) coins[i].used = 0;
+        int prc = t6_spend_pick(coins, n_coins, 0, fee, &plan,
+                                &plan.native_in);
+        if (prc == 0 && plan.n_in > (int)T6_TC_MAX_IN) prc = -2;
+        if (prc != 0) {
+            if (prc == -2)
+                fprintf(stderr, "the fee %llu raw needs more than %u native "
+                        "inputs (the chain's RTN_TC_MAX_IN; selection is "
+                        "largest first, so no smaller set covers it) — "
+                        "consolidate coins first\n",
+                        (unsigned long long)fee, (unsigned)T6_TC_MAX_IN);
+            else if (prc == -3)
+                fprintf(stderr, "the selected input sum overflows u64\n");
+            else
+                fprintf(stderr, "insufficient native funds: the fee is %llu "
+                        "raw; %d spendable native coin(s) listed, %d locked "
+                        "(unlock_block > tip %llu) — nothing was "
+                        "submitted\n", (unsigned long long)fee, n_coins,
+                        n_locked, (unsigned long long)tip);
+            goto done;
+        }
+        native_change = plan.native_in - fee;
+
+        /* inputs: strictly ascending nullifiers on the wire (:1139-1142) */
+        uint8_t nulls[T6_SPEND_MAX_IN][64];
+        for (int j = 0; j < plan.n_in; j++)
+            memcpy(nulls[j], coins[plan.idx[j]].nul, 64);
+        qsort(nulls, (size_t)plan.n_in, 64, t6_nul_cmp);
+
+        size_t off = 0;
+        memcpy(call + off, token, 64);                 off += 64;
+        call[off++] = (uint8_t)name_len;
+        memcpy(call + off, name, name_len);            off += name_len;
+        call[off++] = (uint8_t)sym_len;
+        memcpy(call + off, symbol, sym_len);           off += sym_len;
+        call[off++] = (uint8_t)decimals;
+        call[off++] = (uint8_t)plan.n_in;
+        for (int j = 0; j < plan.n_in; j++) {
+            memcpy(call + off, nulls[j], 64);
+            off += 64;
+        }
+        /* output[0] = the token genesis output; [1] = native change */
+        const char     *o_owner[T6_TC_MAX_OUTS];
+        uint64_t        o_amt[T6_TC_MAX_OUTS];
+        const uint8_t  *o_tok[T6_TC_MAX_OUTS];
+        n_out = 0;
+        o_owner[n_out] = to_fp; o_amt[n_out] = supply; o_tok[n_out] = token;
+        n_out++;
+        if (native_change > 0) {
+            o_owner[n_out] = creator_fp; o_amt[n_out] = native_change;
+            o_tok[n_out] = NULL; n_out++;
+        }
+        call[off++] = (uint8_t)n_out;
+        for (int o = 0; o < n_out; o++) {
+            uint8_t seed[32];
+            if (nodus_random(seed, sizeof(seed)) != 0) {
+                fprintf(stderr, "random seed generation failed\n");
+                goto done;
+            }
+            t6_xfer_out_put(call + off, o_owner[o], o_amt[o], o_tok[o], seed);
+            /* the output id the chain derives (rtn_out_ids :1467-1476) */
+            uint8_t pre[160];
+            memcpy(pre, call + off, 128);
+            memcpy(pre + 128, seed, 32);
+            if (qgp_sha3_512(pre, sizeof(pre), out_id[o]) != 0) goto done;
+            off += T6_SPEND_OUT_LEN;
+        }
+        /* two random seeds colliding into one output id is a
+         * deterministic chain reject (rtn_out_ids :1486-1488) — refuse */
+        if (n_out == 2 && memcmp(out_id[0], out_id[1], 64) == 0) {
+            fprintf(stderr, "two outputs derived the same id — the random "
+                    "source is broken\n");
+            goto done;
+        }
+
+        memset(&leg, 0, sizeof(leg));
+        leg.hdr.domain_id       = DNA_DOMAIN_CORE;
+        leg.hdr.runtime_op      = DNA_CORERULE_TOKEN_CREATE;
+        leg.hdr.ruleset_version = core_rt->ruleset_version;
+        leg.hdr.access_mode     = DNA_ENV_ACCESS_INVOKE;
+        leg.hdr.auth_kind       = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
+        leg.hdr.call_len        = (uint32_t)off;
+        leg.hdr.auth_len        = alen;
+        t6_tc_effect_decl((uint32_t)plan.n_in, (uint32_t)n_out,
+                          &leg.hdr.res_max_effects,
+                          &leg.hdr.res_max_effect_bytes);
+        leg.call_data = call;
+        memset(auth, 0, alen);               /* pass 1 needs a zero blob */
+        leg.auth_data = auth;
+
+        memset(&env_in, 0, sizeof(env_in));
+        /* the mempool lifetime rule (decision 2026-09-25-mempool-policy.md
+         * 1), the spend builder's margin; a 0 tip was refused above */
+        env_in.expiry_height = tip + CLI_ENV_EXPIRY_AHEAD;
+        env_in.fee_amount    = fee;
+        env_in.leg_count     = 1;
+        env_in.legs          = &leg;
+
+        /* reads: in_count + the pool + the registry (read plan :1387) */
+        if (t6_spend_ceiling(&env_in, sys_rt->meter_policy,
+                             (uint32_t)plan.n_in + 2u, &units) != 0) {
+            fprintf(stderr, "could not size res_max_total_units (the "
+                    "metering plan refused the envelope)\n");
+            goto done;
+        }
+        env_in.res_max_total_units = units;
+
+        if (gas_price == 0) break;          /* rule off: one pass        */
+        if (units > UINT64_MAX / gas_price) {
+            fprintf(stderr, "units %llu x gas price %llu overflows u64 — no "
+                    "fee can pay it\n", (unsigned long long)units,
+                    (unsigned long long)gas_price);
+            goto done;
+        }
+        const uint64_t required = units * gas_price;
+        if (required <= fee) break;         /* the fee covers this leg   */
+        if (have_fee) {
+            fprintf(stderr, "--fee %llu is below the chain's gas-price "
+                    "requirement: %llu units x gas price %llu = %llu raw — "
+                    "nothing was submitted\n", (unsigned long long)fee,
+                    (unsigned long long)units,
+                    (unsigned long long)gas_price,
+                    (unsigned long long)required);
+            goto done;
+        }
+        if (pass >= 7) {
+            fprintf(stderr, "the gas-price fee did not settle after %d "
+                    "planning passes (last: fee %llu, required %llu) — "
+                    "nothing was submitted\n", pass + 1,
+                    (unsigned long long)fee, (unsigned long long)required);
+            goto done;
+        }
+        fee = required;                     /* re-plan at the higher fee */
+    }
+
+    uint8_t *auths[1] = { auth };
+    size_t env_len = 0;
+    if (t6_env_sign_one_key(&env_in, auths, &lctx, chain32, tip, &keys[0],
+                            &env_bytes, &env_len, pf) != 0)
+        goto done;
+
+    printf("v2-envelope token-create: %zu bytes, inputs=%d native_in=%llu "
+           "fee=%llu native_change=%llu supply=%llu decimals=%lu "
+           "effects=%u effect_bytes=%u units=%llu tip=%llu\n",
+           env_len, plan.n_in, (unsigned long long)plan.native_in,
+           (unsigned long long)fee, (unsigned long long)native_change,
+           (unsigned long long)supply, decimals,
+           (unsigned)leg.hdr.res_max_effects,
+           (unsigned)leg.hdr.res_max_effect_bytes,
+           (unsigned long long)units, (unsigned long long)tip);
+    printf("  name=%s symbol=%s\n", name, symbol);
+    printf("  token_id=%s\n", token_fp);
+    printf("  wire_id=");
+    for (int b = 0; b < 64; b++) printf("%02x", pf->wire_id[b]);
+    printf("\n  intent_id=");
+    for (int b = 0; b < 64; b++) printf("%02x", pf->intent_id[b]);
+    printf("\n");
+    for (int o = 0; o < n_out; o++) {
+        printf("  out[%d] id=", o);
+        for (int b = 0; b < 64; b++) printf("%02x", out_id[o][b]);
+        printf(" owner=%.16s... amount=%llu %s\n",
+               o == 0 ? to_fp : creator_fp,
+               (unsigned long long)(o == 0 ? supply : native_change),
+               o == 0 ? "(token genesis)" : "(native change)");
+    }
+    fflush(stdout);
+
+    if (dry_run) {
+        printf("  PREFLIGHT SELF-CHECK: OK (1 leg CORE TOKEN_CREATE) — not "
+               "submitted (--dry-run)\n");
+    } else {
+        if (t6_submit_on(&client, &keys[0], pf->wire_id, env_bytes,
+                         (uint32_t)env_len) != 0)
+            goto done;
+    }
+    fflush(stdout);
+    rc = 0;
+
+done:
+    free(env_bytes);
+    free(call);
+    free(auth);
+    free(pf);
+    free(coins);
+    if (utxos_valid) nodus_client_free_utxo_result(&utxos);
+    if (connected) nodus_client_close(&client);
+    if (keys) {
+        for (int i = 0; i < 4; i++) nodus_identity_clear(&keys[i]);
+        free(keys);
+    }
+    return rc;
+}
 #endif /* NODUS_CLI_HAS_DNAC */
 
 /* ── Usage ───────────────────────────────────────────────────────── */
@@ -4236,6 +4855,10 @@ static void usage(const char *prog) {
     fprintf(stderr, "           [--fee <raw>] [--token <hex128>] [--count <N|all>]\n");
     fprintf(stderr, "           [--shard <I>/<M>]\n");
     fprintf(stderr, "           [--submit ip:port] [--dry-run]   CORE SPEND (coin transfer)\n");
+    fprintf(stderr, "  v2-envelope token-create --keys <dir> --name <n> --symbol <s>\n");
+    fprintf(stderr, "           --decimals <0..18> --supply <raw> [--to <fp128hex>]\n");
+    fprintf(stderr, "           [--fee <raw>] [--token-id <hex128>]\n");
+    fprintf(stderr, "           (--dry-run | --submit ip:port)   CORE TOKEN_CREATE\n");
 #endif
 }
 
@@ -4362,13 +4985,18 @@ int main(int argc, char **argv) {
 
     /* O15D — v2-envelope: successor-chain envelope builder/submitter.
      * O15F T6 adds the `stake` subcommand (O11 two-leg STAKE); CLI-SPEND
-     * adds `spend` (single-leg CORE SPEND, networked). */
+     * adds `spend` (single-leg CORE SPEND, networked); `token-create`
+     * builds a single-leg CORE TOKEN_CREATE the same way. */
     if (strcmp(command, "v2-envelope") == 0) {
         int rc;
         if (optind + 1 < argc && strcmp(argv[optind + 1], "stake") == 0)
             rc = cmd_v2_stake(server_ip, server_port, argc, argv, optind);
         else if (optind + 1 < argc && strcmp(argv[optind + 1], "spend") == 0)
             rc = cmd_v2_spend(server_ip, server_port, argc, argv, optind);
+        else if (optind + 1 < argc &&
+                 strcmp(argv[optind + 1], "token-create") == 0)
+            rc = cmd_v2_token_create(server_ip, server_port, argc, argv,
+                                     optind);
         else
             rc = cmd_v2_envelope(server_ip, server_port, argc, argv, optind);
         nodus_identity_clear(&identity);

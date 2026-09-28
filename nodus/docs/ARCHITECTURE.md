@@ -2460,6 +2460,23 @@ declared ceiling, not the work done, decides how many fit.
   bound passes and a short one fails (pinned by `test_v2_native.c`
   §19). A 1-in/1-out spend now declares 8 221 units (was 23 946 with the
   flat 40 / 16 384 ceiling) → 255 per block by units, 276 by bytes.
+- **`nodus-cli v2-envelope token-create`** (`cmd_v2_token_create`,
+  `t6_tc_effect_decl`) builds the CORE TOKEN_CREATE leg (runtime_op 3)
+  on the same one-session flow and helpers as `spend`
+  (`t6_spend_pick` over native coins only, `t6_env_sign_one_key`,
+  `t6_submit_on`). Its exact declaration follows `rtn_tc_exec`: one
+  CREATE per output (64 + 284), ONE token-registry CREATE (key 64 +
+  the 188-byte registry record, `RTN_TOKEN_REC_LEN`), one reward-pool
+  SET (1 + 8), one DELETE per input (64) → `effects = in + out + 2`,
+  `effect_bytes = 452 + 148·in + 432·out`; the ceiling is
+  `t6_spend_ceiling` with the TOKEN_CREATE read count `in + 2` (inputs,
+  pool, registry). Inputs are capped at 14 (`RTN_TC_MAX_IN`), outputs
+  are the token genesis output (`output[0]`, whose owner becomes the
+  registry's `creator_fp`) plus optional native change. Fee =
+  `NODUS_W_TOKEN_CREATE_FEE`, raised to `units × gas_price` by the same
+  bounded fixed point as `spend`. Unlike the SPEND formula, this one is
+  not pinned by a unit test; `test_cmt_token_create.sh` (Genesis
+  Protocol) exercises it end to end.
 - **Measured** (`bench_tps_v2.sh`, E = 720, 7 nodes + clients on ONE
   4-CPU machine, 600 s): 7.55 TPS / 41 per block at the old budget (the
   budget bound); 15.91 TPS / mean 110, max 152 per block at the new one,
@@ -2877,6 +2894,8 @@ server sends no key and the client reads 0.
 the current fee, re-plan until the fee covers the plan's own units),
 self-checks every envelope against the rule before submit, and refuses an
 explicit `--fee` below what the plan needs (it is never raised silently).
+`v2-envelope token-create` applies the same fixed point with the
+creation fee (`NODUS_W_TOKEN_CREATE_FEE`) as its floor.
 `v2-envelope stake --submit` opens the client session first, reads
 `dnac_fee_info` and pays `max(floor, 400 000 × gas_price)` (the stake
 envelope declares 400 000 units); `--dry-run` says the price is unknown
