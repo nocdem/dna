@@ -235,10 +235,14 @@ static int decode_peers(cbor_decoder_t *dec, nodus_peer_t *peers,
 
         nodus_peer_t p;
         memset(&p, 0, sizeof(p));
+        nodus_map_keys_t pks;
+        memset(&pks, 0, sizeof(pks));
 
         for (size_t j = 0; j < map_item.count; j++) {
             cbor_item_t key = cbor_decode_next(dec);
             if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
+            if (nodus_map_key_once(&pks, key.tstr.ptr, key.tstr.len) != 0)
+                return -1;
 
             if (key.tstr.len == 2 && memcmp(key.tstr.ptr, "id", 2) == 0) {
                 cbor_item_t val = cbor_decode_next(dec);
@@ -271,20 +275,29 @@ static int decode_peers(cbor_decoder_t *dec, nodus_peer_t *peers,
     return 0;
 }
 
-int nodus_t1_decode(const uint8_t *buf, size_t len, nodus_tier1_msg_t *msg) {
-    if (!buf || !msg) return -1;
-    memset(msg, 0, sizeof(*msg));
-
+/* Decode into a zeroed msg. Any -1 return may leave heap fields set;
+ * nodus_t1_decode() frees them, so every failure path is leak-free.
+ *
+ * Duplicate keys (P0-A, 2026-09-28): every map — top level, "a", "r" and
+ * each peer entry — refuses a repeated text key (nodus_map_key_once). A
+ * second "val" used to re-run nodus_value_deserialize over msg->value and
+ * leak the first value on every repeat; a second top-level "a"/"r" re-ran
+ * the whole branch. No encoder in this file repeats a key. */
+static int t1_decode_body(const uint8_t *buf, size_t len, nodus_tier1_msg_t *msg) {
     cbor_decoder_t dec;
     cbor_decoder_init(&dec, buf, len);
 
     cbor_item_t top = cbor_decode_next(&dec);
     if (top.type != CBOR_ITEM_MAP) return -1;
     size_t map_count = top.count;
+    nodus_map_keys_t top_ks;
+    memset(&top_ks, 0, sizeof(top_ks));
 
     for (size_t i = 0; i < map_count; i++) {
         cbor_item_t key = cbor_decode_next(&dec);
         if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+        if (nodus_map_key_once(&top_ks, key.tstr.ptr, key.tstr.len) != 0)
+            return -1;
 
         /* "t" → transaction ID */
         if (key.tstr.len == 1 && key.tstr.ptr[0] == 't') {
@@ -312,12 +325,17 @@ int nodus_t1_decode(const uint8_t *buf, size_t len, nodus_tier1_msg_t *msg) {
         else if (key.tstr.len == 1 && key.tstr.ptr[0] == 'a') {
             cbor_item_t args = cbor_decode_next(&dec);
             if (args.type != CBOR_ITEM_MAP) continue;
+            nodus_map_keys_t aks;
+            memset(&aks, 0, sizeof(aks));
+            bool have_target = false;   /* "target" and "k" share one field */
 
             for (size_t j = 0; j < args.count; j++) {
                 cbor_item_t akey = cbor_decode_next(&dec);
                 if (akey.type != CBOR_ITEM_TSTR) {
                     cbor_decode_skip(&dec); continue;
                 }
+                if (nodus_map_key_once(&aks, akey.tstr.ptr, akey.tstr.len) != 0)
+                    return -1;
 
                 if (akey.tstr.len == 2 && memcmp(akey.tstr.ptr, "id", 2) == 0) {
                     cbor_item_t val = cbor_decode_next(&dec);
@@ -325,12 +343,17 @@ int nodus_t1_decode(const uint8_t *buf, size_t len, nodus_tier1_msg_t *msg) {
                         memcpy(msg->node_id.bytes, val.bstr.ptr, NODUS_KEY_BYTES);
                 } else if ((akey.tstr.len == 6 && memcmp(akey.tstr.ptr, "target", 6) == 0) ||
                            (akey.tstr.len == 1 && akey.tstr.ptr[0] == 'k')) {
+                    if (have_target) return -1;
+                    have_target = true;
                     cbor_item_t val = cbor_decode_next(&dec);
                     if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_KEY_BYTES)
                         memcpy(msg->target.bytes, val.bstr.ptr, NODUS_KEY_BYTES);
                 } else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "val", 3) == 0) {
                     cbor_item_t val = cbor_decode_next(&dec);
                     if (val.type == CBOR_ITEM_BSTR) {
+                        /* msg->value is written once per message: "val"
+                         * may sit in "a" or in "r", never in both. */
+                        if (msg->value) return -1;
                         nodus_value_deserialize(val.bstr.ptr, val.bstr.len, &msg->value);
                         msg->has_value = (msg->value != NULL);
                     }
@@ -343,22 +366,31 @@ int nodus_t1_decode(const uint8_t *buf, size_t len, nodus_tier1_msg_t *msg) {
         else if (key.tstr.len == 1 && key.tstr.ptr[0] == 'r') {
             cbor_item_t res = cbor_decode_next(&dec);
             if (res.type != CBOR_ITEM_MAP) continue;
+            nodus_map_keys_t rks;
+            memset(&rks, 0, sizeof(rks));
 
             for (size_t j = 0; j < res.count; j++) {
                 cbor_item_t rkey = cbor_decode_next(&dec);
                 if (rkey.type != CBOR_ITEM_TSTR) {
                     cbor_decode_skip(&dec); continue;
                 }
+                if (nodus_map_key_once(&rks, rkey.tstr.ptr, rkey.tstr.len) != 0)
+                    return -1;
 
                 if (rkey.tstr.len == 2 && memcmp(rkey.tstr.ptr, "id", 2) == 0) {
                     cbor_item_t val = cbor_decode_next(&dec);
                     if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_KEY_BYTES)
                         memcpy(msg->node_id.bytes, val.bstr.ptr, NODUS_KEY_BYTES);
                 } else if (rkey.tstr.len == 5 && memcmp(rkey.tstr.ptr, "nodes", 5) == 0) {
-                    decode_peers(&dec, msg->peers, NODUS_T1_MAX_PEERS, &msg->peer_count);
+                    /* A malformed peer list (non-map entry, repeated key)
+                     * leaves the stream mid-array: refuse the frame. */
+                    if (decode_peers(&dec, msg->peers, NODUS_T1_MAX_PEERS,
+                                     &msg->peer_count) != 0)
+                        return -1;
                 } else if (rkey.tstr.len == 3 && memcmp(rkey.tstr.ptr, "val", 3) == 0) {
                     cbor_item_t val = cbor_decode_next(&dec);
                     if (val.type == CBOR_ITEM_BSTR) {
+                        if (msg->value) return -1;   /* see the "a" branch */
                         nodus_value_deserialize(val.bstr.ptr, val.bstr.len, &msg->value);
                         msg->has_value = (msg->value != NULL);
                     }
@@ -373,6 +405,21 @@ int nodus_t1_decode(const uint8_t *buf, size_t len, nodus_tier1_msg_t *msg) {
     }
 
     return dec.error ? -1 : 0;
+}
+
+int nodus_t1_decode(const uint8_t *buf, size_t len, nodus_tier1_msg_t *msg) {
+    if (!buf || !msg) return -1;
+    memset(msg, 0, sizeof(*msg));
+
+    if (t1_decode_body(buf, len, msg) != 0) {
+        /* Callers differ on whether they free after a failed decode;
+         * free here so no failure path leaks, and leave msg zeroed so a
+         * caller's own nodus_t1_msg_free() is a no-op. */
+        nodus_t1_msg_free(msg);
+        memset(msg, 0, sizeof(*msg));
+        return -1;
+    }
+    return 0;
 }
 
 void nodus_t1_msg_free(nodus_tier1_msg_t *msg) {

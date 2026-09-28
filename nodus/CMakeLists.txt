@@ -910,6 +910,27 @@ add_executable(test_tier2 tests/test_tier2.c)
 target_link_libraries(test_tier2 nodus dsa nodus)
 add_test(NAME test_tier2 COMMAND test_tier2)
 
+# P0-A (2026-09-28): tier-1 / tier-2 / value decoders refuse a repeated map
+# key and a heap field written from two maps; value types outside {1,2,3}.
+add_executable(test_decode_dupkey tests/test_decode_dupkey.c)
+target_link_libraries(test_decode_dupkey nodus dsa nodus)
+add_test(NAME test_decode_dupkey COMMAND test_decode_dupkey)
+
+# P0-B (2026-09-28): the client's DNAC response decoders refuse a repeated
+# array key and never let a declared "count" exceed the decoded array.
+# The decoders are static in nodus_client.c, so — the arrangement
+# register_witness_test_supply_bypass uses for NODUS_V2_TEST_SUPPLY — this
+# target compiles nodus_client.c ITSELF with NODUS_CLIENT_TEST_SEAM=1, which
+# adds decode-only wrappers. libnodus is STATIC: the test's own object
+# satisfies every nodus_client.c symbol, the archive member is never pulled,
+# and the macro is defined on no shipped target.
+add_executable(test_client_dup_array tests/test_client_dup_array.c
+               src/client/nodus_client.c)
+target_link_libraries(test_client_dup_array nodus dsa nodus)
+target_compile_definitions(test_client_dup_array PRIVATE
+                           NODUS_CLIENT_TEST_SEAM=1)
+add_test(NAME test_client_dup_array COMMAND test_client_dup_array)
+
 # Circuit wire protocol test (VPN mesh Faz 1)
 add_executable(test_circuit_wire tests/test_circuit_wire.c)
 target_link_libraries(test_circuit_wire nodus dsa nodus)
