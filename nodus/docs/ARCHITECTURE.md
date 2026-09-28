@@ -92,7 +92,8 @@ nodus/
 │   │   ├── nodus_tier1.c      # T1 encode/decode (server ↔ server)
 │   │   └── nodus_tier2.c      # T2 encode/decode (client ↔ server)
 │   ├── transport/
-│   │   ├── nodus_tcp.c        # TCP transport (epoll, framing, connections)
+│   │   ├── nodus_tcp.c        # TCP transport (epoll, framing, connections; + the WS entry glue)
+│   │   ├── nodus_ws.c         # WebSocket entry codec (RFC 6455 handshake + frames; no sockets)
 │   │   └── nodus_udp.c        # UDP transport (non-blocking recvfrom)
 │   ├── crypto/
 │   │   ├── nodus_sign.c       # Dilithium5 sign/verify/hash wrappers
@@ -1097,6 +1098,119 @@ Server configuration via JSON file (default: `/etc/nodus.conf`):
 - **TCP 4001** — Client DHT operations + auth (Tier 2)
 - **TCP 4002** — Inter-node replication (Tier 1 TCP)
 - **TCP 4003** — Channel system: client posts + inter-node replication (dedicated)
+- **TCP `ws_port`, 127.0.0.1 only** — WebSocket entry of the client port (off by
+  default; see below)
+
+### WebSocket entry (browser clients)
+
+Decision: `docs/plans/decisions/2026-09-25-web-wallet-nodus-send-transport.md`
+(WebSocket inside nodus, 127.0.0.1 only, TLS in a local Caddy, `X-Forwarded-For`
+believed only from loopback, per-IP counter separate from TCP); the same entry is
+`2026-09-24-web-connect-client.md` K5 stage 2. Reference: RFC 6455.
+
+A browser cannot open a raw TCP socket, so the client port gets a second door:
+
+```
+browser ──wss://<node IP>:443──► Caddy (TLS, X-Forwarded-For) ──ws──► 127.0.0.1:<ws_port>
+                                                                         │
+                                          srv->tcp (the 4001 transport) ◄┘  same pool,
+                                          same sessions, same dispatch_t2    same slots
+```
+
+**Configuration** (`nodus.json`, read by `tools/nodus-server.c`):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `ws_port` | `0` = off | TCP port of the entry. The address is ALWAYS `127.0.0.1` (`nodus_tcp_ws_listen`); there is no key for it. Must differ from `tcp_port`, `peer_port`, `witness_port`, `ch_port` (checked in `nodus_server_init`). |
+| `ws_origins` | `["https://wallet.nodusnetwork.io"]` | Allowed browser `Origin` values, exact byte match, at most 8 × 255 bytes. An empty or absent list means the default. |
+
+Startup logs `WebSocket entry listening on 127.0.0.1:<port>, <n> allowed origin(s)`
+and one line per origin.
+
+**One transport, two listening sockets.** The entry is NOT a second `nodus_tcp_t`.
+`srv->tcp` owns a second listening socket (`ws_listen_fd`, epoll marker
+`&tcp->ws_listen_fd`; the plain listener's marker is `NULL`), and accepted
+connections live in the same pool and slot space with `conn->is_ws = 1`. So
+`session_for_conn` (`srv->sessions[conn->slot]`), the same-identity eviction in
+`nodus_auth.c` (which disconnects through `&srv->tcp`) and `idle_timeout_sweep`
+cover WebSocket connections with no change. A second transport would have given two
+connections the same slot number and freed connections through the wrong pool.
+
+**Codec** — `src/transport/nodus_ws.{c,h}`, pure (no sockets, no logging), unit-tested
+by `test_ws_frame` / `test_ws_upgrade`:
+
+- *Upgrade* (RFC 6455 §4.2.1): head ≤ 8 KiB (`NODUS_WS_HS_MAX`, else closed with no
+  response); CRLF line ends only, no control bytes, no obsolete folding;
+  `GET <origin-form> HTTP/1.1`; exactly one `Host`; `Upgrade` list contains
+  `websocket` and `Connection` list contains `Upgrade` (case-insensitive);
+  `Sec-WebSocket-Version: 13` (else 426 with `Sec-WebSocket-Version: 13`); exactly one
+  `Sec-WebSocket-Key` that is canonical base64 of 16 bytes (else 400); exactly one
+  `Origin`, in `ws_origins` (else 403). `Sec-WebSocket-Protocol` containing `binary`
+  (what Emscripten sends) is echoed. `Sec-WebSocket-Accept` = base64(SHA-1(key ‖
+  `258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)) through OpenSSL `EVP_sha1` (§1.3 vector
+  pinned in the tests).
+- *Real client IP*: when the socket peer is `127.0.0.1` (the proxy), the LAST value of
+  the last `X-Forwarded-For` line must parse with `inet_pton` as IPv4 or IPv6 (return
+  value checked) and becomes `conn->ip` (normalised through `inet_ntop`); missing or
+  malformed → 400 and close. Any other socket peer keeps its own address and the
+  header is ignored.
+- *Frames* (§5): every client frame masked (else close 1002), RSV = 0, opcodes 0/2/8/9/10
+  only (text → 1003, others → 1002), control frames ≤ 125 bytes with FIN = 1, minimal
+  length encoding, 64-bit length MSB = 0; a data frame payload over
+  `NODUS_MAX_FRAME_TCP + 7` closes with 1009 when the header completes — before any
+  payload byte is buffered. Fragmented messages are accepted; the parser is a byte
+  stream state machine (header bytes, remaining length, mask key and position,
+  opcode, open-message flag live in `conn->ws`), so any split of the input works.
+- *Ping* → pong with the same payload; *close* → a close reply (echoing the peer's
+  code, or empty) and the connection is dropped.
+
+**Glue** — `src/transport/nodus_tcp.c`:
+
+- *Inbound*: `handle_read` routes `is_ws` connections to `handle_read_ws`, which drains
+  the socket to EAGAIN in 16 KiB chunks. Before the Upgrade the bytes collect in
+  `rbuf`; after it, WebSocket payload is unmasked and APPENDED to `rbuf`, and the
+  unchanged `try_parse_frames` / `nodus_frame_decode` path sees exactly the byte
+  stream a TCP client would have sent. The request head is dropped from `rbuf` at the
+  Upgrade; bytes after it are copied out and fed as frames.
+- *Outbound*: every nodus frame is laid out by `conn_wire_encode` / `conn_wire_size`,
+  the only encoder of the three writer sites (the direct `wbuf` write and the pending
+  FIFO in `nodus_tcp_send_progress`, the auth `pending_buf` in `pending_queue_append`).
+  On a WebSocket connection each nodus frame becomes one FIN=1 unmasked binary frame.
+  `pending_drain_to_wbuf` and `nodus_tcp_pending_flush` only copy those bytes. The
+  101 / refusal responses, pongs and close frames are written raw
+  (`ws_wbuf_append_raw`). Before the Upgrade `nodus_tcp_send*` refuses the connection.
+  (`nodus_server.c`'s republish fast path writes `wbuf` directly, but only on
+  `inter_tcp` connections, where no WebSocket connection can exist.)
+- *Teardown*: every refusal goes through `ws_close_now` (queue the response or close
+  frame, one best-effort flush, `on_disconnect`, `conn_free`) and the caller returns
+  "freed" so the read loop never touches the connection again.
+
+**Limits:**
+
+| Limit | Value | Where |
+|---|---|---|
+| Total connections | `NODUS_TCP_MAX_CONNS` (1024), shared with the plain 4001 listener | `handle_accept_ws` |
+| Per socket IP at accept | none — every peer is 127.0.0.1 | `handle_accept_ws` |
+| Upgrades in progress | 64 (`NODUS_WS_MAX_HANDSHAKING`) | `handle_accept_ws` |
+| Upgrade deadline | 10 s from accept (`NODUS_WS_HANDSHAKE_TIMEOUT_S`) | `nodus_tcp_ws_sweep`, called every loop iteration |
+| Per real IP | 20 open WebSocket connections (`NODUS_WS_MAX_CONNS_PER_IP`), counted after `X-Forwarded-For`; plain TCP connections are counted separately (the 4001 CRIT-5 count skips `is_ws`) | `ws_try_upgrade`, `handle_accept` |
+| After the Upgrade | the ordinary client limits: 15 s unauthenticated / 180 s authenticated idle sweep, session rules | `idle_timeout_sweep` |
+
+After the Upgrade the connection is an ordinary tier-2 client connection: `hello` /
+`auth` / `key_init`, `dnac_*`, put/get — the same code; no tier-2 or consensus
+behaviour differs. The sweep only schedules this node's own connection housekeeping;
+nothing in it reaches block content, votes or state.
+
+**Logs** (tag `NODUS_TCP`, one line per event, never echoing request bytes):
+`ws: upgrade ok slot=… ip=…`, `ws: upgrade refused slot=… status=…: <check>`,
+`ws: per-IP limit 20 reached for <ip>`, `ws: N upgrades pending, new connection
+refused`, `ws: upgrade not completed within 10s`, `ws: closing slot=… code=…:
+<reason>`, `ws: peer closed`.
+
+End-to-end coverage: `test_ws_server` (real server with `ws_port`, loopback client:
+Upgrade, tier-2 `hello` → `challenge` inside WebSocket frames, ping/pong, 403, the
+21st connection from one `X-Forwarded-For` address, the sweep with a supplied
+clock, text frame → close 1003).
 
 ### Inter-node dialer authentication (TCP 4002, v0.18.11)
 

@@ -196,6 +196,13 @@ data_dir = /var/lib/nodus
 seed_nodes = 164.68.105.227:4000,164.68.116.180:4000
 ```
 
+**WebSocket entry (browsers — web wallet / Web Connect), off by default.**
+`nodus-server -c <file.json>` reads two keys: `"ws_port": 4005` opens a plain
+WebSocket listener of the client port on `127.0.0.1` only (a local Caddy serves TLS
+on 443 and forwards to it); `"ws_origins": [...]` lists the allowed browser
+`Origin` values (default `["https://wallet.nodusnetwork.io"]`). See
+`docs/ARCHITECTURE.md` §10 "WebSocket entry" and `docs/DEPLOY_RUNBOOK.md` §2.4.
+
 ### Systemd
 
 ```ini

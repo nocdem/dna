@@ -123,6 +123,18 @@ typedef struct {
     char        network_file[256];
     bool        has_network_pin;
     uint8_t     network_pin[32];
+
+    /* WebSocket entry of the client port (decision
+     * 2026-09-25-web-wallet-nodus-send-transport.md; nodus_ws.h).
+     * ws_port: nodus.json "ws_port"; 0 = OFF (default). The listener is
+     * ALWAYS bound to 127.0.0.1 — there is no address setting; the public
+     * side is a local TLS proxy (Caddy). It is a second listening socket of
+     * `tcp` (the client transport), not a separate transport.
+     * ws_origins: nodus.json "ws_origins" (array of strings); allowed
+     * browser Origin values, exact match. count 0 = the default
+     * NODUS_WS_DEFAULT_ORIGIN, applied in nodus_server_init. */
+    uint16_t            ws_port;
+    nodus_ws_origins_t  ws_origins;
 } nodus_server_config_t;
 
 /* ── Inter-node session (lightweight — rate limiting only, no auth) ── */

@@ -6264,6 +6264,37 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
         goto fail;
     }
 
+    /* WebSocket entry (decision 2026-09-25-web-wallet-nodus-send-transport):
+     * a second listening socket of the CLIENT transport, 127.0.0.1 only.
+     * Its connections live in srv->tcp's pool and slot space, so
+     * session_for_conn, the same-identity eviction (nodus_auth.c) and
+     * idle_timeout_sweep cover them without change. */
+    if (config->ws_port != 0) {
+        uint16_t ws_port = config->ws_port;
+        if (ws_port == config->tcp_port || ws_port == peer_port ||
+            ws_port == config->witness_port || ws_port == config->ch_port) {
+            QGP_LOG_ERROR(LOG_TAG, "ws_port %u collides with another TCP port "
+                          "(tcp %u, peer %u, witness %u, channel %u)",
+                          (unsigned)ws_port, (unsigned)config->tcp_port,
+                          (unsigned)peer_port, (unsigned)config->witness_port,
+                          (unsigned)config->ch_port);
+            goto fail;
+        }
+        /* The list the transport reads lives in srv->config (stable for
+         * the server's lifetime); fill the default there. */
+        if (srv->config.ws_origins.count <= 0)
+            nodus_ws_origins_default(&srv->config.ws_origins);
+        if (nodus_tcp_ws_listen(&srv->tcp, ws_port, &srv->config.ws_origins) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to listen on WebSocket entry 127.0.0.1:%u (%s)",
+                          (unsigned)ws_port, strerror(errno));
+            goto fail;
+        }
+        QGP_LOG_INFO(LOG_TAG, "WebSocket entry listening on 127.0.0.1:%u, %d allowed origin(s)",
+                     (unsigned)srv->tcp.ws_port, srv->config.ws_origins.count);
+        for (int i = 0; i < srv->config.ws_origins.count; i++)
+            QGP_LOG_INFO(LOG_TAG, "  ws origin: %s", srv->config.ws_origins.origin[i]);
+    }
+
     /* Channel server (TCP 4003) — DISABLED: heap corruption in ring/replication.
      * Channel system has known memory safety issues causing SIGABRT crashes.
      * Disabled until root cause is fixed. See commit history for re-enable. */
@@ -6571,8 +6602,14 @@ int nodus_server_run(nodus_server_t *srv) {
     fprintf(stderr, "  UDP port: %d\n", srv->udp.port);
 
     while (srv->running && !srv->stop_requested) {
-        /* Poll client TCP events */
+        /* Poll client TCP events (plain port and, when enabled, the
+         * WebSocket entry — same transport) */
         nodus_tcp_poll(&srv->tcp, 50);
+
+        /* WebSocket entry: close Upgrades not finished within
+         * NODUS_WS_HANDSHAKE_TIMEOUT_S. Local connection housekeeping only. */
+        if (srv->tcp.ws_listen_fd >= 0)
+            nodus_tcp_ws_sweep(&srv->tcp, nodus_time_now());
 
         /* Poll inter-node TCP events */
         nodus_tcp_poll(&srv->inter_tcp, 50);

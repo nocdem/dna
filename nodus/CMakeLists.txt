@@ -490,6 +490,10 @@ set(NODUS_SOURCES
 if(NOT WIN32)
     list(APPEND NODUS_SOURCES
         src/transport/nodus_udp.c
+        # WebSocket entry of the client port (RFC 6455 handshake + frame
+        # codec; pure, no sockets). Server-side only, like the listener
+        # that uses it (nodus_tcp.c ws_listen_fd).
+        src/transport/nodus_ws.c
         src/channel/nodus_hashring.c
         src/channel/nodus_channel_store.c
         src/channel/nodus_channel_server.c
@@ -980,9 +984,29 @@ target_link_libraries(test_client_request_correlation nodus dsa nodus pthread)
 add_test(NAME test_client_request_correlation
          COMMAND test_client_request_correlation)
 
+# WebSocket entry (RFC 6455) — the pure codec: frame parser and opening
+# handshake, no socket. Links libcrypto directly for the EVP SHA-1 the
+# accept value uses.
+add_executable(test_ws_frame tests/test_ws_frame.c)
+target_link_libraries(test_ws_frame nodus dsa nodus OpenSSL::Crypto)
+add_test(NAME test_ws_frame COMMAND test_ws_frame)
+
+add_executable(test_ws_upgrade tests/test_ws_upgrade.c)
+target_link_libraries(test_ws_upgrade nodus dsa nodus OpenSSL::Crypto)
+add_test(NAME test_ws_upgrade COMMAND test_ws_upgrade)
+
+# WebSocket entry end to end: a real nodus_server with ws_port, driven from
+# the test thread (no server thread), a loopback C client doing the Upgrade
+# and the first tier-2 step, the per-real-IP cap and the handshake timeout.
+# Ports 153xx are unique to this test (see the parallel-safety note below).
+add_executable(test_ws_server tests/test_ws_server.c)
+target_link_libraries(test_ws_server nodus dsa nodus OpenSSL::Crypto)
+add_test(NAME test_ws_server COMMAND test_ws_server)
+
 # 2026-07-21 parallel-safety: every server-spawning test now uses a FULLY
 # explicit, test-unique port set (test_server 140xx, test_circuit_live
 # 150xx, test_client 151xx, test_server_init_fail_closes 152xx,
+# test_ws_server 153xx,
 # test_circuit_cross_live 16xxx/17xxx) — an unset peer/witness port made
 # nodus_server_init bind the production defaults 4002/4004, which collided
 # under `ctest -j`. No shared ports remain, so no RESOURCE_LOCK is needed.

@@ -356,6 +356,50 @@ static int buf_ensure(uint8_t **buf, size_t *cap, size_t needed) {
     return 0;
 }
 
+/* ── Outgoing wire layout: the ONE place a nodus frame is laid out ──
+ *
+ * Every byte a connection sends as a nodus frame is produced here: the
+ * direct wbuf write and the Phase-3 pending FIFO in nodus_tcp_send_progress,
+ * and the auth pending_buf in pending_queue_append. The two remaining wbuf
+ * writers — pending_drain_to_wbuf and nodus_tcp_pending_flush — only copy
+ * bytes these produced. On a WebSocket connection each nodus frame becomes
+ * the payload of one FIN=1 binary WS frame (server→client frames are never
+ * masked, RFC 6455 §5.1); on a plain connection the layout is unchanged. */
+static size_t conn_wire_size(const nodus_tcp_conn_t *conn, size_t send_len) {
+    size_t n = NODUS_FRAME_HEADER_SIZE + send_len;
+#ifndef _WIN32
+    if (conn->is_ws)
+        n += nodus_ws_frame_header_len(n);
+#else
+    (void)conn;
+#endif
+    return n;
+}
+
+static size_t conn_wire_encode(const nodus_tcp_conn_t *conn,
+                               uint8_t *dst, size_t cap,
+                               const uint8_t *payload, size_t send_len) {
+    size_t hdr = 0;
+#ifndef _WIN32
+    if (conn->is_ws) {
+        hdr = nodus_ws_frame_header(NODUS_WS_OP_BINARY,
+                                    NODUS_FRAME_HEADER_SIZE + send_len, dst, cap);
+        if (hdr == 0) return 0;
+    }
+#else
+    (void)conn;
+#endif
+    size_t w = nodus_frame_encode(dst + hdr, cap - hdr, payload, (uint32_t)send_len);
+    if (w == 0) return 0;
+    return hdr + w;
+}
+
+/* A WebSocket connection whose Upgrade has not completed carries no nodus
+ * frame in either direction. */
+static bool conn_ws_not_open(const nodus_tcp_conn_t *conn) {
+    return conn->is_ws && !conn->ws_open;
+}
+
 #ifndef _WIN32
 static void epoll_add(int epoll_fd, int fd, uint32_t events, void *ptr) {
     struct epoll_event ev = { .events = events, .data.ptr = ptr };
@@ -524,7 +568,19 @@ static bool try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
 
 /* ── Event handlers ──────────────────────────────────────────────── */
 
+#ifndef _WIN32
+static void handle_read_ws(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn);
+#endif
+
 static void handle_read(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
+#ifndef _WIN32
+    /* All three callers (poll, accept, connect-complete) come through here,
+     * so a WebSocket connection is routed to its own reader in one place. */
+    if (conn->is_ws) {
+        handle_read_ws(tcp, conn);
+        return;
+    }
+#endif
     int eintr_left = NTCP_MAX_EINTR_RETRY;
     for (;;) {
         if (buf_ensure(&conn->rbuf, &conn->rcap, conn->rlen + 4096) != 0) {
@@ -724,12 +780,16 @@ static void handle_accept(nodus_tcp_t *tcp) {
         return;
     }
 
-    /* CRIT-5: Per-IP connection limit */
+    /* CRIT-5: Per-IP connection limit. WebSocket connections share this
+     * pool but are counted separately (after their real IP is known, in
+     * ws_try_upgrade) — decision 2026-09-25-web-wallet-nodus-send-transport
+     * "IP sayacı": 20 plain + 20 WS per IP. */
     char new_ip[64];
     inet_ntop(AF_INET, &addr.sin_addr, new_ip, sizeof(new_ip));
     int ip_count = 0;
     for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
-        if (tcp->pool[i] && strcmp(tcp->pool[i]->ip, new_ip) == 0)
+        if (tcp->pool[i] && !tcp->pool[i]->is_ws &&
+            strcmp(tcp->pool[i]->ip, new_ip) == 0)
             ip_count++;
     }
     if (ip_count >= NODUS_MAX_CONNS_PER_IP) {
@@ -771,6 +831,284 @@ static void handle_accept(nodus_tcp_t *tcp) {
 static void handle_read_fwd(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     handle_read(tcp, conn);
 }
+
+/* ── WebSocket entry glue (RFC 6455; codec in nodus_ws.c) ────────────
+ *
+ * Teardown follows the transport's one protocol: on_disconnect, then
+ * conn_free, and the function that did it returns "freed" so its caller
+ * never touches the connection again (RT1 F7). No new free path. */
+
+/* Append bytes that are NOT a nodus frame — the 101 / refusal response,
+ * a pong, a close frame — to wbuf as they are. wbuf only ever holds whole
+ * frames, so appending at wlen keeps it frame-aligned. */
+static int ws_wbuf_append_raw(nodus_tcp_conn_t *conn,
+                              const uint8_t *bytes, size_t n) {
+    if (conn->wpos > 0) {
+        size_t remaining = conn->wlen - conn->wpos;
+        if (remaining > 0)
+            memmove(conn->wbuf, conn->wbuf + conn->wpos, remaining);
+        conn->wlen = remaining;
+        conn->wpos = 0;
+    }
+    if (buf_ensure(&conn->wbuf, &conn->wcap, conn->wlen + n) != 0)
+        return -1;
+    memcpy(conn->wbuf + conn->wlen, bytes, n);
+    conn->wlen += n;
+    return 0;
+}
+
+/* Queue `bytes` (may be NULL), push what the socket takes right now, then
+ * tear the connection down. The caller must not touch conn afterwards. */
+static void ws_close_now(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
+                         const uint8_t *bytes, size_t n) {
+    if (bytes && n > 0 && ws_wbuf_append_raw(conn, bytes, n) == 0)
+        (void)conn_flush_wbuf(conn, NULL, NULL);
+    if (tcp->on_disconnect)
+        tcp->on_disconnect(conn, tcp->cb_ctx);
+    conn_free(tcp, conn);
+}
+
+/* Parser sink: unmasked payload goes onto the read buffer, where the
+ * ordinary nodus frame decoder (try_parse_frames) finds it (RT1 F4). */
+static int ws_sink_data(void *ctx, const uint8_t *data, size_t len) {
+    nodus_tcp_conn_t *conn = (nodus_tcp_conn_t *)ctx;
+    if (buf_ensure(&conn->rbuf, &conn->rcap, conn->rlen + len) != 0)
+        return -1;
+    memcpy(conn->rbuf + conn->rlen, data, len);
+    conn->rlen += len;
+    return 0;
+}
+
+/* Parser sink: answer a ping with a pong carrying the same payload. */
+static int ws_sink_ping(void *ctx, const uint8_t *payload, size_t len) {
+    nodus_tcp_conn_t *conn = (nodus_tcp_conn_t *)ctx;
+    uint8_t fr[NODUS_WS_SERVER_HDR_MAX + NODUS_WS_CTRL_MAX];
+    if (len > NODUS_WS_CTRL_MAX) return -1;
+    size_t h = nodus_ws_frame_header(NODUS_WS_OP_PONG, len, fr, sizeof(fr));
+    if (h == 0) return -1;
+    memcpy(fr + h, payload, len);
+    if (ws_wbuf_append_raw(conn, fr, h + len) != 0) return -1;
+    (void)conn_flush_wbuf(conn, NULL, NULL);   /* never frees; errors surface on the next write */
+    return 0;
+}
+
+/* Feed raw bytes of an open WS connection. Returns true if conn was freed. */
+static bool ws_feed_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
+                           uint8_t *data, size_t n) {
+    nodus_ws_sink_t sink = { ws_sink_data, ws_sink_ping, conn };
+    uint16_t code = 0;
+    int rc = nodus_ws_feed(&conn->ws, data, n, &sink, &code);
+    if (rc == NODUS_WS_FEED_OK)
+        return false;
+
+    uint8_t cf[4];
+    size_t cl = nodus_ws_close_frame(code, cf, sizeof(cf));
+    if (rc == NODUS_WS_FEED_PEER_CLOSE) {
+        QGP_LOG_INFO(LOG_TAG_TCP, "ws: peer closed slot=%d ip=%s",
+                     conn->slot, conn->ip);
+        /* Frames that arrived before the close are still frames — the
+         * same rule as the plain reader's EOF path. */
+        if (try_parse_frames(tcp, conn))
+            return true;
+    } else {
+        QGP_LOG_WARN(LOG_TAG_TCP, "ws: closing slot=%d ip=%s code=%u: %s",
+                     conn->slot, conn->ip, (unsigned)code,
+                     conn->ws.reason ? conn->ws.reason : "protocol error");
+    }
+    ws_close_now(tcp, conn, cf, cl);
+    return true;
+}
+
+/* Try to complete the HTTP Upgrade from the bytes gathered in rbuf.
+ * Returns true if conn was freed. */
+static bool ws_try_upgrade(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
+    nodus_ws_hs_result_t res;
+    int rc = nodus_ws_handshake_parse(conn->rbuf, conn->rlen, conn->ip,
+                                      tcp->ws_origins, &res);
+    if (rc == NODUS_WS_HS_NEED_MORE)
+        return false;
+
+    if (rc != NODUS_WS_HS_OK) {
+        QGP_LOG_WARN(LOG_TAG_TCP, "ws: upgrade refused slot=%d status=%d: %s",
+                     conn->slot, res.status,
+                     res.reason ? res.reason : "invalid request");
+        char resp[256];
+        size_t rl = nodus_ws_reject_response(res.status, resp, sizeof(resp));
+        ws_close_now(tcp, conn, (const uint8_t *)resp, rl);
+        return true;
+    }
+
+    /* Per real-IP limit among OPEN WebSocket connections only — a separate
+     * counter from the plain listener's (handle_accept). */
+    int same_ip = 0;
+    for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
+        nodus_tcp_conn_t *c = tcp->pool[i];
+        if (c && c != conn && c->is_ws && c->ws_open &&
+            strcmp(c->ip, res.real_ip) == 0)
+            same_ip++;
+    }
+    if (same_ip >= NODUS_WS_MAX_CONNS_PER_IP) {
+        QGP_LOG_WARN(LOG_TAG_TCP, "ws: per-IP limit %d reached for %s, slot=%d closed",
+                     NODUS_WS_MAX_CONNS_PER_IP, res.real_ip, conn->slot);
+        ws_close_now(tcp, conn, NULL, 0);
+        return true;
+    }
+
+    char resp[256];
+    size_t rl = nodus_ws_handshake_response(&res, resp, sizeof(resp));
+    if (rl == 0 || ws_wbuf_append_raw(conn, (const uint8_t *)resp, rl) != 0) {
+        QGP_LOG_ERROR(LOG_TAG_TCP, "ws: could not queue 101 response, slot=%d",
+                      conn->slot);
+        ws_close_now(tcp, conn, NULL, 0);
+        return true;
+    }
+
+    /* Bytes after the request head are already WS frames. Copy them out:
+     * the parser unmasks in place and its sink appends to rbuf, which
+     * buf_ensure may move. */
+    size_t leftover = conn->rlen - res.consumed;
+    uint8_t *rest = NULL;
+    if (leftover > 0) {
+        rest = malloc(leftover);
+        if (!rest) {
+            QGP_LOG_ERROR(LOG_TAG_TCP, "ws: alloc failed after upgrade, slot=%d",
+                          conn->slot);
+            ws_close_now(tcp, conn, NULL, 0);
+            return true;
+        }
+        memcpy(rest, conn->rbuf + res.consumed, leftover);
+    }
+    conn->rlen = 0;   /* the request head must never reach nodus_frame_decode */
+
+    snprintf(conn->ip, sizeof(conn->ip), "%s", res.real_ip);
+    nodus_ws_parser_init(&conn->ws);
+    conn->ws_open = true;
+    QGP_LOG_INFO(LOG_TAG_TCP, "ws: upgrade ok slot=%d ip=%s%s",
+                 conn->slot, conn->ip, res.proto_binary ? " proto=binary" : "");
+
+    (void)conn_flush_wbuf(conn, NULL, NULL);   /* never frees; see ws_sink_ping */
+
+    if (rest) {
+        bool freed = ws_feed_frames(tcp, conn, rest, leftover);
+        free(rest);
+        return freed;
+    }
+    return false;
+}
+
+/* Take one chunk of socket bytes. Returns true if conn was freed. */
+static bool ws_ingest(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
+                      uint8_t *data, size_t n) {
+    if (conn->ws_open)
+        return ws_feed_frames(tcp, conn, data, n);
+
+    /* Upgrade not done: gather the request head in rbuf (unused until the
+     * upgrade). nodus_ws_handshake_parse refuses once 8 KiB pass without
+     * the head's end, so this stays bounded by 8 KiB + one chunk. */
+    if (buf_ensure(&conn->rbuf, &conn->rcap, conn->rlen + n) != 0) {
+        QGP_LOG_WARN(LOG_TAG_TCP, "ws: request buffer full, slot=%d", conn->slot);
+        ws_close_now(tcp, conn, NULL, 0);
+        return true;
+    }
+    memcpy(conn->rbuf + conn->rlen, data, n);
+    conn->rlen += n;
+    return ws_try_upgrade(tcp, conn);
+}
+
+/* The WS reader: drains the socket to EAGAIN (edge-triggered), passes each
+ * chunk through the handshake / frame parser, then — exactly like the plain
+ * reader — decodes the nodus frames accumulated in rbuf. */
+static void handle_read_ws(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
+    uint8_t chunk[16384];
+    int eintr_left = NTCP_MAX_EINTR_RETRY;
+    for (;;) {
+        ssize_t n = poll_read(conn->fd, chunk, sizeof(chunk));
+        if (n > 0) {
+            conn->last_activity = nodus_time_now();
+            eintr_left = NTCP_MAX_EINTR_RETRY;
+            if (ws_ingest(tcp, conn, chunk, (size_t)n))
+                return;                  /* freed — do not touch conn */
+            continue;
+        }
+        if (n == 0) {
+            bool freed = conn->ws_open ? try_parse_frames(tcp, conn) : false;
+            if (!freed) {
+                if (tcp->on_disconnect)
+                    tcp->on_disconnect(conn, tcp->cb_ctx);
+                conn_free(tcp, conn);
+            }
+            return;
+        }
+        ntcp_io_t io = ntcp_classify(n);
+        if (io == NTCP_IO_RETRY && eintr_left-- > 0)
+            continue;
+        if (io == NTCP_IO_WOULDBLOCK)
+            break;
+        if (tcp->on_disconnect)
+            tcp->on_disconnect(conn, tcp->cb_ctx);
+        conn_free(tcp, conn);
+        return;
+    }
+
+    if (conn->ws_open)
+        try_parse_frames(tcp, conn);
+}
+
+static void handle_accept_ws(nodus_tcp_t *tcp) {
+    struct sockaddr_in addr;
+    socklen_t addr_len = sizeof(addr);
+    int fd = accept(tcp->ws_listen_fd, (struct sockaddr *)&addr, &addr_len);
+    if (fd < 0) return;
+
+    if (tcp->count >= NODUS_TCP_MAX_CONNS) {
+        close(fd);
+        return;
+    }
+
+    /* No per-IP check here: every peer of this socket is the local proxy
+     * (127.0.0.1). The per-IP limit applies to the real IP after the
+     * Upgrade. What is bounded here is how many Upgrades may be pending. */
+    int handshaking = 0;
+    for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
+        nodus_tcp_conn_t *c = tcp->pool[i];
+        if (c && c->is_ws && !c->ws_open)
+            handshaking++;
+    }
+    if (handshaking >= NODUS_WS_MAX_HANDSHAKING) {
+        QGP_LOG_WARN(LOG_TAG_TCP, "ws: %d upgrades pending, new connection refused",
+                     handshaking);
+        close(fd);
+        return;
+    }
+
+    set_nonblocking(fd);
+    set_keepalive(fd);
+    set_nodelay(fd);
+
+    nodus_tcp_conn_t *conn = conn_alloc(tcp);
+    if (!conn) { close(fd); return; }
+
+    conn->fd = fd;
+    conn->state = NODUS_CONN_CONNECTED;
+    conn->port = ntohs(addr.sin_port);
+    if (!inet_ntop(AF_INET, &addr.sin_addr, conn->ip, sizeof(conn->ip)))
+        conn->ip[0] = '\0';
+    conn->connected_at = nodus_time_now();
+    conn->last_activity = conn->connected_at;
+    conn->is_ws = true;
+    conn->ws_open = false;
+    nodus_ws_parser_init(&conn->ws);
+
+    epoll_add(tcp->epoll_fd, fd,
+              EPOLLIN | EPOLLRDHUP | (tcp->level_triggered ? 0 : EPOLLET), conn);
+
+    /* Same lifecycle as a plain accept: the session for this slot is
+     * reset now, so every teardown path below runs the usual callbacks. */
+    if (tcp->on_accept)
+        tcp->on_accept(conn, tcp->cb_ctx);
+
+    handle_read_fwd(tcp, conn);
+}
 #endif /* !_WIN32 */
 
 /* ── Public API ──────────────────────────────────────────────────── */
@@ -804,6 +1142,7 @@ int nodus_tcp_init(nodus_tcp_t *tcp, int shared_epoll_fd) {
     if (!tcp) return -1;
     memset(tcp, 0, sizeof(*tcp));
     tcp->listen_fd = -1;
+    tcp->ws_listen_fd = -1;
 
 #ifdef _WIN32
     /* Initialize Winsock */
@@ -878,6 +1217,75 @@ int nodus_tcp_listen(nodus_tcp_t *tcp, const char *bind_ip, uint16_t port) {
 #endif
 }
 
+int nodus_tcp_ws_listen(nodus_tcp_t *tcp, uint16_t port,
+                        const nodus_ws_origins_t *origins) {
+#ifdef _WIN32
+    (void)tcp; (void)port; (void)origins;
+    return -1;  /* Server is Linux-only */
+#else
+    if (!tcp || !origins || origins->count <= 0 || tcp->ws_listen_fd >= 0)
+        return -1;
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+
+    set_reuseaddr(fd);
+    set_nonblocking(fd);
+
+    /* Loopback ONLY — deliberately not configurable. The public side and
+     * TLS belong to the local proxy; X-Forwarded-For is believed only
+     * because nothing but that proxy can reach this socket. */
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0 ||
+        listen(fd, 128) < 0) {
+        close(fd);
+        return -1;
+    }
+
+    socklen_t slen = sizeof(addr);
+    if (getsockname(fd, (struct sockaddr *)&addr, &slen) != 0) {
+        close(fd);
+        return -1;
+    }
+
+    /* Level-triggered like the plain listener; the marker is the address
+     * of ws_listen_fd, which no connection pointer can equal. */
+    struct epoll_event ev = { .events = EPOLLIN, .data.ptr = &tcp->ws_listen_fd };
+    if (epoll_ctl(tcp->epoll_fd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+        close(fd);
+        return -1;
+    }
+
+    tcp->ws_listen_fd = fd;
+    tcp->ws_port = ntohs(addr.sin_port);
+    tcp->ws_origins = origins;
+    return 0;
+#endif
+}
+
+int nodus_tcp_ws_sweep(nodus_tcp_t *tcp, uint64_t now) {
+    if (!tcp) return 0;
+    int closed = 0;
+    for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
+        nodus_tcp_conn_t *c = tcp->pool[i];
+        if (!c || !c->is_ws || c->ws_open) continue;
+        /* Unsigned: a clock that stepped backwards reads as expired, the
+         * same way the idle sweep treats it — closing an unfinished
+         * Upgrade is always safe. */
+        if (now - c->connected_at < NODUS_WS_HANDSHAKE_TIMEOUT_S) continue;
+        QGP_LOG_WARN(LOG_TAG_TCP, "ws: upgrade not completed within %ds, slot=%d closed",
+                     NODUS_WS_HANDSHAKE_TIMEOUT_S, c->slot);
+        nodus_tcp_disconnect(tcp, c);
+        closed++;
+    }
+    return closed;
+}
+
 nodus_tcp_conn_t *nodus_tcp_connect(nodus_tcp_t *tcp,
                                      const char *ip, uint16_t port) {
     if (!tcp || !ip) return NULL;
@@ -950,7 +1358,8 @@ nodus_tcp_conn_t *nodus_tcp_connect(nodus_tcp_t *tcp,
 
 static int pending_queue_append(nodus_tcp_conn_t *conn,
                                  const uint8_t *payload, size_t len) {
-    size_t frame_size = NODUS_FRAME_HEADER_SIZE + len;
+    if (conn_ws_not_open(conn)) return -1;
+    size_t frame_size = conn_wire_size(conn, len);
 
     /* Lazy init */
     if (!conn->pending_buf) {
@@ -979,9 +1388,9 @@ static int pending_queue_append(nodus_tcp_conn_t *conn,
     }
 
     /* Encode frame into pending buffer */
-    size_t written = nodus_frame_encode(conn->pending_buf + conn->pending_len,
-                                         conn->pending_cap - conn->pending_len,
-                                         payload, (uint32_t)len);
+    size_t written = conn_wire_encode(conn, conn->pending_buf + conn->pending_len,
+                                      conn->pending_cap - conn->pending_len,
+                                      payload, len);
     if (written == 0) return -1;
     conn->pending_len += written;
     return 0;
@@ -1050,6 +1459,10 @@ int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
         QGP_LOG_ERROR(LOG_TAG_TCP, "send: payload too large (%zu > %d)", len, NODUS_MAX_FRAME_TCP);
         return -1;
     }
+    if (conn_ws_not_open(conn)) {
+        QGP_LOG_WARN(LOG_TAG_TCP, "send: ws upgrade not complete, slot=%d", conn->slot);
+        return -1;
+    }
 
     /* Phase 3.2d: log first send per conn — captures (slot, fd, conn ptr,
      * peer, has_crypto) at the moment data is first written. Compare with
@@ -1115,7 +1528,7 @@ int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
         }
     }
 
-    size_t frame_size = NODUS_FRAME_HEADER_SIZE + send_len;
+    size_t frame_size = conn_wire_size(conn, send_len);
 
     /* Compact: reclaim space from already-sent bytes before growing */
     if (conn->wpos > 0) {
@@ -1152,8 +1565,8 @@ int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
         if (queue_ok) {
             uint8_t *encoded = malloc(frame_size);
             if (encoded) {
-                size_t written = nodus_frame_encode(encoded, frame_size,
-                                                      send_payload, (uint32_t)send_len);
+                size_t written = conn_wire_encode(conn, encoded, frame_size,
+                                                  send_payload, send_len);
                 if (written == frame_size &&
                     pending_push_tail(conn, encoded, frame_size) == 0) {
                     conn->send_ok_count++;
@@ -1201,9 +1614,9 @@ int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
     }
 
     /* Write frame directly into write buffer */
-    size_t written = nodus_frame_encode(conn->wbuf + conn->wlen,
-                                         conn->wcap - conn->wlen,
-                                         send_payload, (uint32_t)send_len);
+    size_t written = conn_wire_encode(conn, conn->wbuf + conn->wlen,
+                                      conn->wcap - conn->wlen,
+                                      send_payload, send_len);
     if (written == 0) {
         QGP_LOG_ERROR(LOG_TAG_TCP, "send: frame_encode failed (len=%zu)", send_len);
         free(enc_buf);
@@ -1350,6 +1763,12 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
             handle_accept(tcp);
             continue;
         }
+        if ((void *)conn == (void *)&tcp->ws_listen_fd) {
+            /* WebSocket listen socket (marker set in nodus_tcp_ws_listen);
+             * not a connection — must not be dereferenced as one. */
+            handle_accept_ws(tcp);
+            continue;
+        }
 
         if (conn->state == NODUS_CONN_CONNECTING) {
             handle_connect_complete(tcp, conn);
@@ -1472,6 +1891,14 @@ void nodus_tcp_close(nodus_tcp_t *tcp) {
 #endif
         close(tcp->listen_fd);
         tcp->listen_fd = -1;
+    }
+
+    if (tcp->ws_listen_fd >= 0) {
+#ifndef _WIN32
+        epoll_ctl(tcp->epoll_fd, EPOLL_CTL_DEL, tcp->ws_listen_fd, NULL);
+#endif
+        close(tcp->ws_listen_fd);
+        tcp->ws_listen_fd = -1;
     }
 
 #ifndef _WIN32

@@ -449,6 +449,82 @@ the node catches up through the reactor's stored-part gossip.
 
 ---
 
+## 2.4 WebSocket entry for browsers (web wallet / Web Connect) — per node, no chain impact
+
+Decision: `docs/plans/decisions/2026-09-25-web-wallet-nodus-send-transport.md`.
+Design: `docs/ARCHITECTURE.md` §10 "WebSocket entry". The entry touches no
+consensus code; enabling it is a client-port change, so a rolling restart of one
+node at a time is enough. **Deploying it, and installing Caddy on a node, needs the
+operator's explicit permission like every deploy.**
+
+**What runs where.** nodus listens with plain `ws` on `127.0.0.1:<ws_port>` ONLY
+(there is no setting to change the address). Caddy on the same host terminates TLS
+on 443 and forwards to it. The decision's port is `4005`; the decision gives
+browsers `wss://<validator IP>:443` (no domain name).
+
+**1. nodus config** — add to the node's `nodus.json`:
+
+```json
+{
+    "ws_port": 4005,
+    "ws_origins": ["https://wallet.nodusnetwork.io"]
+}
+```
+
+`ws_origins` may be left out: the default is `["https://wallet.nodusnetwork.io"]`.
+A malformed `ws_port` (not an integer 0..65535) or `ws_origins` entry (not a
+string, empty, containing a space or control character, over 255 bytes, more than
+8 entries) refuses the start. A `ws_port` equal to `tcp_port`, `peer_port`,
+`witness_port` or `ch_port` refuses the start.
+
+**2. Caddy** — reverse proxy only. Minimal Caddyfile shape:
+
+```
+https://<node public IP> {
+    reverse_proxy 127.0.0.1:4005
+}
+```
+
+This relies on Caddy's `reverse_proxy` passing the WebSocket Upgrade through and
+setting `X-Forwarded-For` — NOT verified in this change (no Caddy on the build
+machine); step 3's remote check (`ws: upgrade ok … ip=<remote IP>`) is what proves
+it on a host. nodus takes the LAST value of that header as the client's address
+(only because the connection comes from 127.0.0.1). Do NOT put another
+proxy in front of Caddy without re-reading this: the last value must be the one
+Caddy wrote. The certificate for a bare IP (Let's Encrypt `shortlived` IP
+certificate, per the decision) depends on the installed Caddy version's ACME
+settings — UNVERIFIED in this change; confirm the `tls` block against that
+version's documentation before the first rollout.
+
+**3. Verify on the node** (after restart):
+
+```bash
+journalctl -u nodus | grep 'WebSocket entry listening'     # 127.0.0.1:4005, 1 allowed origin(s)
+ss -ltn | grep ':4005'                                     # must show 127.0.0.1:4005, never 0.0.0.0
+curl -si -N --max-time 3 http://127.0.0.1:4005/ \
+  -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+  -H 'Sec-WebSocket-Version: 13' \
+  -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+  -H 'Origin: https://wallet.nodusnetwork.io' \
+  -H 'X-Forwarded-For: 192.0.2.1' | head -5
+# expect: HTTP/1.1 101 Switching Protocols
+#         Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=   (RFC 6455 §1.3 vector)
+```
+
+Same request with `Origin: https://example.com` must answer `403`; without the
+`X-Forwarded-For` line it must answer `400`. From another machine, the same request
+against `https://<node IP>/` (without the `X-Forwarded-For` line — Caddy adds it)
+must answer `101`, and the nodus log must show `ws: upgrade ok slot=… ip=<that
+machine's public IP>`. If it instead shows `ws: upgrade refused … X-Forwarded-For
+missing or malformed`, the header is not reaching nodus — stop and fix the proxy
+(nodus refuses a loopback connection without it rather than count every browser
+as the proxy's address).
+
+**Rollback:** remove `ws_port` (or set it to 0) and restart; the listener is not
+opened and nothing else changes.
+
+---
+
 ## 3. Post-deploy verification
 
 ```bash

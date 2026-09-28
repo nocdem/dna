@@ -13,6 +13,7 @@
 
 #include "nodus/nodus_types.h"
 #include "crypto/nodus_channel_crypto.h"
+#include "transport/nodus_ws.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -161,6 +162,17 @@ typedef struct nodus_tcp_conn {
 
     /* Phase 3.2d: one-shot flag for first SEND log per conn. */
     bool                first_send_logged;
+
+    /* WebSocket entry (nodus_ws.h). is_ws: accepted on the transport's
+     * ws_listen_fd; lives in the SAME pool / slot space as the plain
+     * connections, so session indexing, same-identity eviction and the
+     * idle sweep cover it unchanged. ws_open: the HTTP Upgrade completed —
+     * until then no nodus frame is read from or written to it. After it,
+     * inbound WS payload is unmasked into rbuf and every outbound nodus
+     * frame is wrapped in one binary WS frame (conn_wire_encode). */
+    bool                is_ws;
+    bool                ws_open;
+    nodus_ws_parser_t   ws;
 } nodus_tcp_conn_t;
 
 /* ── Callbacks ───────────────────────────────────────────────────── */
@@ -224,6 +236,13 @@ typedef struct nodus_tcp {
     /* Phase 3: pending-full fallback hook. May be NULL (legacy drop). */
     nodus_tcp_pending_full_fn on_pending_full;
     void                    *pending_full_ctx;
+
+    /* WebSocket entry: a SECOND listening socket of this same transport,
+     * bound to 127.0.0.1 only (nodus_tcp_ws_listen). -1 = off. Its epoll
+     * data.ptr is &ws_listen_fd (the plain listener uses NULL). */
+    int                       ws_listen_fd;
+    uint16_t                  ws_port;
+    const nodus_ws_origins_t *ws_origins;   /* owned by the caller; outlives tcp */
 } nodus_tcp_t;
 
 /**
@@ -235,6 +254,25 @@ int nodus_tcp_init(nodus_tcp_t *tcp, int shared_epoll_fd);
 
 /** Start listening for incoming connections (server only, Linux). */
 int nodus_tcp_listen(nodus_tcp_t *tcp, const char *bind_ip, uint16_t port);
+
+/**
+ * Open the WebSocket entry: a second listening socket on this transport,
+ * bound to 127.0.0.1:port (never any other address — TLS and the public
+ * side belong to the local proxy). Accepted connections share the pool,
+ * callbacks and slot space with the plain listener and carry is_ws.
+ * @param origins  allowed Origin list; must outlive the transport.
+ * Linux only (returns -1 on Windows).
+ */
+int nodus_tcp_ws_listen(nodus_tcp_t *tcp, uint16_t port,
+                        const nodus_ws_origins_t *origins);
+
+/**
+ * Close WebSocket connections whose Upgrade has not completed within
+ * NODUS_WS_HANDSHAKE_TIMEOUT_S of connected_at, as of `now` (seconds,
+ * nodus_time_now() scale). Schedules only this node's own connection
+ * housekeeping. Returns the number closed.
+ */
+int nodus_tcp_ws_sweep(nodus_tcp_t *tcp, uint64_t now);
 
 /** Connect to a remote peer (non-blocking). Returns connection or NULL. */
 nodus_tcp_conn_t *nodus_tcp_connect(nodus_tcp_t *tcp,

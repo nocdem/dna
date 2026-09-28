@@ -28,6 +28,9 @@
 #include <json-c/json.h>
 
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG_CFG "NODUS_CFG"
 #endif
 
 static nodus_server_t server;
@@ -573,6 +576,44 @@ static int load_config_json(const char *path, nodus_server_config_t *cfg) {
         cfg->ch_port = (uint16_t)json_object_get_int(val);
     if (json_object_object_get_ex(root, "witness_port", &val))
         cfg->witness_port = (uint16_t)json_object_get_int(val);
+
+    /* WebSocket entry (nodus_server.h ws_port / ws_origins). Off unless
+     * ws_port is set; the listen address is always 127.0.0.1 and has no
+     * key. A malformed value refuses the start rather than silently
+     * opening (or not opening) a network entry the operator did not ask
+     * for. */
+    if (json_object_object_get_ex(root, "ws_port", &val)) {
+        int p = json_object_get_int(val);
+        if (!json_object_is_type(val, json_type_int) || p < 0 || p > 65535) {
+            QGP_LOG_ERROR(LOG_TAG_CFG, "ws_port must be an integer 0..65535");
+            json_object_put(root);
+            return -1;
+        }
+        cfg->ws_port = (uint16_t)p;
+    }
+    if (json_object_object_get_ex(root, "ws_origins", &val)) {
+        if (!json_object_is_type(val, json_type_array)) {
+            QGP_LOG_ERROR(LOG_TAG_CFG, "ws_origins must be an array of strings");
+            json_object_put(root);
+            return -1;
+        }
+        memset(&cfg->ws_origins, 0, sizeof(cfg->ws_origins));
+        int n = json_object_array_length(val);
+        for (int i = 0; i < n; i++) {
+            struct json_object *entry = json_object_array_get_idx(val, i);
+            const char *s = json_object_is_type(entry, json_type_string)
+                          ? json_object_get_string(entry) : NULL;
+            if (!s || nodus_ws_origins_add(&cfg->ws_origins, s) != 0) {
+                QGP_LOG_ERROR(LOG_TAG_CFG, "ws_origins[%d] rejected (not a string, empty, "
+                              "contains spaces/control characters, over %d bytes, "
+                              "or more than %d entries)",
+                              i, NODUS_WS_ORIGIN_MAX - 1, NODUS_WS_MAX_ORIGINS);
+                json_object_put(root);
+                return -1;
+            }
+        }
+    }
+
     if (json_object_object_get_ex(root, "identity_path", &val))
         snprintf(cfg->identity_path, sizeof(cfg->identity_path), "%s",
                  json_object_get_string(val));
