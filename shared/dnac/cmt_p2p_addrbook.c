@@ -2446,12 +2446,17 @@ static int load_from_file(cmt_p2p_addrbook_t *a)
     off = 0;
     while (off < len) {
         size_t pre = off;
-        int32_t fn;
-        uint32_t wt;
+        int32_t fn = 0;
+        uint32_t wt = 0;
         const uint8_t *p;
         size_t n;
 
-        (void)r_tag(bytes, len, &off, &fn, &wt);
+        /* Pass 1 walked these same bytes, so the tag reads; a failure
+         * still stops the walk rather than branching on an unread tag
+         * (gcc 14 -Wmaybe-uninitialized on the deploy hosts). */
+        if (r_tag(bytes, len, &off, &fn, &wt) != CMT_OK) {
+            break;
+        }
         if (fn == 2 && r_ld(bytes, len, &off, &p, &n) == CMT_OK) {
             ka_file_t f;
 
