@@ -342,6 +342,7 @@ const turkish = {
   "detail.scan.heading": "Devnet’e bir bakış.",
   "detail.next.scan": "Nodus Identity",
   "nav.wiki": "Wiki",
+  "nav.scan": "Scan",
   "resources.title": "Ağa biraz daha yakından bak.",
   "resources.body": "Bir rehber bul, zinciri takip et veya geliştirmeye başla.",
   "resources.wiki": "Wiki ile öğren",
