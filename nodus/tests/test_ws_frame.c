@@ -15,8 +15,17 @@
  *     data frame inside an open message, non-minimal lengths, 64-bit MSB;
  *   - oversize length → 1009 decided at header completion, BEFORE any
  *     payload byte reaches the sink;
- *   - ping → pong frame bytes, peer close → echoed code, server frame
- *     headers for every length form.
+ *   - ping → pong frame bytes, a ping of exactly 125 bytes answered with
+ *     its whole payload, peer close → echoed code, server frame headers for
+ *     every length form;
+ *   - close codes (§7.4): 999, 1004, 1005, 1006, 1015, 2999, 5000 refused
+ *     with 1002; 1000, 3000, 4999 echoed;
+ *   - close reason (§5.5.1 / §8.1): valid UTF-8 echoed, invalid → 1007
+ *     (the code check comes first); nodus_ws_utf8_valid against every
+ *     branch of the RFC 3629 §4 table (overlongs, surrogates, > U+10FFFF,
+ *     F5-FF, lone / truncated / bad continuation).
+ *
+ * Requires: a default build, no environment.
  *
  * Test-runner output uses printf like every other nodus unit test; the
  * module under test logs nothing.
@@ -436,6 +445,26 @@ static void test_ping_pong_bytes(void) {
         FAIL("pong");
     cap_reset(&c);
 
+    /* §5.5: 125 is the LARGEST legal control payload — the boundary of the
+     * "> 125" refusal must answer it, byte for byte. */
+    TEST("ping with exactly 125 bytes → answered, payload intact");
+    {
+        uint8_t big[NODUS_WS_CTRL_MAX];
+        uint8_t fb[NODUS_WS_CTRL_MAX + 16];
+        for (size_t i = 0; i < sizeof(big); i++) big[i] = (uint8_t)(0x5A ^ i);
+        n = build_frame(fb, 0x89, 1, big, sizeof(big), 0);
+        nodus_ws_parser_init(&p);
+        memset(&c, 0, sizeof(c));
+        rc = feed_all(&p, fb, n, &c, &code);
+        if (n == 2 + 4 + NODUS_WS_CTRL_MAX && rc == NODUS_WS_FEED_OK &&
+            c.pings == 1 && c.ping_len == NODUS_WS_CTRL_MAX &&
+            memcmp(c.ping_payload, big, sizeof(big)) == 0 && c.len == 0)
+            PASS();
+        else
+            FAIL("125-byte ping not answered");
+        cap_reset(&c);
+    }
+
     TEST("pong from client is ignored");
     n = build_frame(b, 0x8A, 1, (const uint8_t *)"q", 1, 0);
     nodus_ws_parser_init(&p);
@@ -483,6 +512,63 @@ static void test_close(void) {
     n = build_frame(b, 0x88, 1, bad, 2, 0);
     expect_error("close carrying 1005 → 1002", b, n, NODUS_WS_CLOSE_PROTOCOL);
 
+    /* §7.4.1 / §7.4.2: below 1000 unused, 1004 reserved, 1006 and 1015
+     * never on the wire, 1016-2999 reserved for future RFCs, >= 5000
+     * undefined; 3000-4999 are for libraries / applications. */
+    static const uint16_t refused[] = { 999, 1004, 1006, 1015, 2999, 5000 };
+    for (size_t k = 0; k < sizeof(refused) / sizeof(refused[0]); k++) {
+        char name[64];
+        snprintf(name, sizeof(name), "close carrying %u → 1002",
+                 (unsigned)refused[k]);
+        uint8_t cb[2] = { (uint8_t)(refused[k] >> 8), (uint8_t)refused[k] };
+        n = build_frame(b, 0x88, 1, cb, 2, 0);
+        expect_error(name, b, n, NODUS_WS_CLOSE_PROTOCOL);
+    }
+    static const uint16_t accepted[] = { 3000, 4999 };
+    for (size_t k = 0; k < sizeof(accepted) / sizeof(accepted[0]); k++) {
+        char name[64];
+        snprintf(name, sizeof(name), "close carrying %u → echoed",
+                 (unsigned)accepted[k]);
+        TEST(name);
+        uint8_t cb[2] = { (uint8_t)(accepted[k] >> 8), (uint8_t)accepted[k] };
+        n = build_frame(b, 0x88, 1, cb, 2, 0);
+        nodus_ws_parser_init(&p);
+        memset(&c, 0, sizeof(c));
+        code = 0;
+        rc = feed_all(&p, b, n, &c, &code);
+        if (rc == NODUS_WS_FEED_PEER_CLOSE && code == accepted[k]) PASS();
+        else FAIL("valid close code refused");
+        cap_reset(&c);
+    }
+
+    /* §5.5.1: the reason after the code is UTF-8; §8.1: invalid → 1007. */
+    TEST("close 1000 with a UTF-8 reason → echoed");
+    {
+        static const uint8_t ok_body[] = { 0x03, 0xE8, 'b', 'y', 'e', ' ',
+                                           0xC3, 0xBC, 0xF0, 0x9F, 0x98, 0x80 };
+        n = build_frame(b, 0x88, 1, ok_body, sizeof(ok_body), 0);
+        nodus_ws_parser_init(&p);
+        memset(&c, 0, sizeof(c));
+        code = 0;
+        rc = feed_all(&p, b, n, &c, &code);
+        if (rc == NODUS_WS_FEED_PEER_CLOSE && code == 1000) PASS();
+        else FAIL("valid reason refused");
+        cap_reset(&c);
+    }
+    {
+        static const uint8_t bad_body[] = { 0x03, 0xE8, 'b', 'y', 0xC0, 0xAF };
+        n = build_frame(b, 0x88, 1, bad_body, sizeof(bad_body), 0);
+        expect_error("close reason with invalid UTF-8 → 1007", b, n,
+                     NODUS_WS_CLOSE_INVALID_DATA);
+    }
+    {
+        /* The code check comes first: a bad code with a bad reason is 1002. */
+        static const uint8_t both_bad[] = { 0x03, 0xED, 0xFF };
+        n = build_frame(b, 0x88, 1, both_bad, sizeof(both_bad), 0);
+        expect_error("invalid code AND invalid reason → 1002", b, n,
+                     NODUS_WS_CLOSE_PROTOCOL);
+    }
+
     TEST("input after close is refused");
     nodus_ws_parser_init(&p);
     memset(&c, 0, sizeof(c));
@@ -505,6 +591,64 @@ static void test_close(void) {
     size_t l2 = nodus_ws_close_frame(NODUS_WS_CLOSE_NO_STATUS, cf, sizeof(cf));
     ok = ok && (l2 == 2 && cf[0] == 0x88 && cf[1] == 0x00);
     if (ok) PASS(); else FAIL("close bytes");
+}
+
+/* One case per branch of the RFC 3629 §4 table. */
+static void test_utf8(void) {
+    typedef struct { const char *name; const uint8_t *s; size_t n; bool ok; } u8case_t;
+    static const uint8_t ascii[]     = { 'a', 'b', 0x7F };
+    static const uint8_t two[]       = { 0xC2, 0x80, 0xDF, 0xBF };
+    static const uint8_t three_e0[]  = { 0xE0, 0xA0, 0x80 };             /* U+0800 */
+    static const uint8_t three_ed[]  = { 0xED, 0x9F, 0xBF };             /* U+D7FF */
+    static const uint8_t three_ee[]  = { 0xEE, 0x80, 0x80 };             /* U+E000 */
+    static const uint8_t four_f0[]   = { 0xF0, 0x90, 0x80, 0x80 };       /* U+10000 */
+    static const uint8_t four_f4[]   = { 0xF4, 0x8F, 0xBF, 0xBF };       /* U+10FFFF */
+    static const uint8_t over_c0[]   = { 0xC0, 0xAF };
+    static const uint8_t over_c1[]   = { 0xC1, 0xBF };
+    static const uint8_t over_e0[]   = { 0xE0, 0x9F, 0xBF };
+    static const uint8_t over_f0[]   = { 0xF0, 0x8F, 0xBF, 0xBF };
+    static const uint8_t surr_lo[]   = { 0xED, 0xA0, 0x80 };             /* U+D800 */
+    static const uint8_t surr_hi[]   = { 0xED, 0xBF, 0xBF };             /* U+DFFF */
+    static const uint8_t above[]     = { 0xF4, 0x90, 0x80, 0x80 };       /* U+110000 */
+    static const uint8_t lead_f5[]   = { 0xF5, 0x80, 0x80, 0x80 };
+    static const uint8_t lead_ff[]   = { 0xFF };
+    static const uint8_t lone_cont[] = { 'a', 0x80 };
+    static const uint8_t trunc2[]    = { 0xC3 };
+    static const uint8_t trunc3[]    = { 0xE2, 0x82 };
+    static const uint8_t trunc4[]    = { 0xF0, 0x9F, 0x98 };
+    static const uint8_t bad_cont[]  = { 0xE2, 0x82, 0x41 };
+    static const u8case_t cases[] = {
+        { "empty",                      ascii, 0, true },
+        { "ASCII incl. 0x7F",           ascii, sizeof(ascii), true },
+        { "2-byte bounds",              two, sizeof(two), true },
+        { "E0 A0 80 (U+0800)",          three_e0, sizeof(three_e0), true },
+        { "ED 9F BF (U+D7FF)",          three_ed, sizeof(three_ed), true },
+        { "EE 80 80 (U+E000)",          three_ee, sizeof(three_ee), true },
+        { "F0 90 80 80 (U+10000)",      four_f0, sizeof(four_f0), true },
+        { "F4 8F BF BF (U+10FFFF)",     four_f4, sizeof(four_f4), true },
+        { "overlong C0",                over_c0, sizeof(over_c0), false },
+        { "overlong C1",                over_c1, sizeof(over_c1), false },
+        { "overlong E0 9F",             over_e0, sizeof(over_e0), false },
+        { "overlong F0 8F",             over_f0, sizeof(over_f0), false },
+        { "surrogate U+D800",           surr_lo, sizeof(surr_lo), false },
+        { "surrogate U+DFFF",           surr_hi, sizeof(surr_hi), false },
+        { "above U+10FFFF",             above, sizeof(above), false },
+        { "lead F5",                    lead_f5, sizeof(lead_f5), false },
+        { "lead FF",                    lead_ff, sizeof(lead_ff), false },
+        { "lone continuation",          lone_cont, sizeof(lone_cont), false },
+        { "truncated 2-byte",           trunc2, sizeof(trunc2), false },
+        { "truncated 3-byte",           trunc3, sizeof(trunc3), false },
+        { "truncated 4-byte",           trunc4, sizeof(trunc4), false },
+        { "bad continuation byte",      bad_cont, sizeof(bad_cont), false },
+    };
+    for (size_t k = 0; k < sizeof(cases) / sizeof(cases[0]); k++) {
+        char name[80];
+        snprintf(name, sizeof(name), "utf8: %s → %s", cases[k].name,
+                 cases[k].ok ? "valid" : "invalid");
+        TEST(name);
+        if (nodus_ws_utf8_valid(cases[k].s, cases[k].n) == cases[k].ok) PASS();
+        else FAIL("wrong verdict");
+    }
 }
 
 static void test_server_headers(void) {
@@ -538,6 +682,7 @@ int main(void) {
     test_sink_refusal();
     test_ping_pong_bytes();
     test_close();
+    test_utf8();
     test_server_headers();
     printf("\n%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;

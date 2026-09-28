@@ -24,13 +24,24 @@
  *      before; open connections are never swept.
  *   7. A text frame on an open connection is answered with close 1003 and
  *      the connection is closed (the read-path teardown).
+ *   8. IPv6 clients are counted by /64: 20 distinct addresses in
+ *      2001:db8:1:2::/64 are served, a 21st address in that /64 is closed
+ *      without a 101, an address in 2001:db8:1:3::/64 is served.
+ *   9. The WS entry holds at most NODUS_WS_MAX_CONNS (256) connections: with
+ *      exactly 256 in the pool (one XFF address each, so the per-IP limit
+ *      cannot be what refuses) the 257th is closed at accept, without a
+ *      101, and the pool still holds 256.
  *
  * Requires: a default build (no compile flags, no environment). Uses the
  * test-unique ports 15300-15305 (see nodus/CMakeLists.txt parallel-safety
- * note) and a /tmp data dir removed at the end.
+ * note) and a /tmp data dir removed at the end. Holds ~520 descriptors at
+ * once (item 9): raises RLIMIT_NOFILE's soft limit to its hard limit.
+ * Leaves nothing behind.
  * How it can lie: the liveness bound on each wait is a ROUND count of
  * nodus_tcp_poll calls, not a timing claim; if the server never answers,
- * the check fails — it never passes by waiting.
+ * the check fails — it never passes by waiting. Item 9's refusal check
+ * only counts when the fill check before it reached exactly 256 (it FAILs
+ * otherwise); a hard descriptor limit below ~520 makes the fill FAIL.
  *
  * Test-runner output uses printf like every other nodus unit test.
  */
@@ -48,6 +59,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -378,6 +390,103 @@ static void test_per_ip_limit(void) {
     free(rx);
 }
 
+/* Open WebSocket connections the transport currently holds (Upgrade done or
+ * not) — what handle_accept_ws compares with NODUS_WS_MAX_CONNS. */
+static int pool_ws_count(void) {
+    int n = 0;
+    for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
+        nodus_tcp_conn_t *c = g_srv.tcp.pool[i];
+        if (c && c->is_ws) n++;
+    }
+    return n;
+}
+
+/* Kept open until main's cleanup: they count toward the total cap test. */
+static int g_v6_fds[NODUS_WS_MAX_CONNS_PER_IP];
+static int g_v6_count = 0;
+
+static void test_ipv6_prefix_limit(void) {
+    TEST("20 WS conns from one IPv6 /64 (distinct addresses) served");
+    rx_t *rx = calloc(1, sizeof(*rx));
+    if (!rx) { FAIL("alloc"); return; }
+    int ok = 1;
+    while (g_v6_count < NODUS_WS_MAX_CONNS_PER_IP) {
+        char xff[64];
+        /* Only the low 64 bits differ: every address is in 2001:db8:1:2::/64. */
+        snprintf(xff, sizeof(xff), "2001:db8:1:2:%x::%x",
+                 (unsigned)(0x100 + g_v6_count), (unsigned)(g_v6_count + 1));
+        int got = 0;
+        int fd = ws_open_conn(xff, rx, &got);
+        if (fd < 0 || !got) { ok = 0; if (fd >= 0) close(fd); break; }
+        g_v6_fds[g_v6_count++] = fd;
+    }
+    if (ok && g_v6_count == NODUS_WS_MAX_CONNS_PER_IP) PASS();
+    else FAIL("a connection under the limit was refused");
+
+    TEST("21st address in the same /64 is closed without 101");
+    int got = 0;
+    int fd = ws_open_conn("2001:db8:1:2:ffff:ffff:ffff:ffff", rx, &got);
+    ok = fd >= 0 && !got && rx_until_eof(fd, rx) == 1;
+    if (ok) PASS(); else FAIL("/64 limit not enforced");
+    if (fd >= 0) close(fd);
+
+    TEST("an address in another /64 is still served");
+    fd = ws_open_conn("2001:db8:1:3::1", rx, &got);
+    if (fd >= 0 && got) PASS(); else FAIL("other /64 refused");
+    if (fd >= 0) close(fd);
+    for (int i = 0; i < 20; i++) pump_once();   /* let the server see the close */
+    free(rx);
+}
+
+/* Last test: fills the WS share of the pool. Every other test's connections
+ * that are still open count toward it; the fill tops up to exactly
+ * NODUS_WS_MAX_CONNS with one distinct XFF address per connection, so the
+ * per-IP limit never fires and only the total cap can refuse. */
+static void test_total_cap(void) {
+    TEST("WS connections fill up to NODUS_WS_MAX_CONNS (256)");
+    rx_t *rx = calloc(1, sizeof(*rx));
+    int *fds = calloc(NODUS_WS_MAX_CONNS, sizeof(int));
+    if (!rx || !fds) { FAIL("alloc"); free(rx); free(fds); return; }
+    for (int i = 0; i < 20; i++) pump_once();   /* reap closes of earlier tests */
+
+    int nfds = 0, ok = 1;
+    while (ok && pool_ws_count() < NODUS_WS_MAX_CONNS && nfds < NODUS_WS_MAX_CONNS) {
+        char xff[64];
+        snprintf(xff, sizeof(xff), "198.18.%d.%d", nfds / 250, nfds % 250 + 1);
+        int got = 0;
+        int fd = ws_open_conn(xff, rx, &got);
+        if (fd < 0 || !got) { ok = 0; if (fd >= 0) close(fd); break; }
+        fds[nfds++] = fd;
+    }
+    for (int i = 0; i < 20; i++) pump_once();
+    int before = pool_ws_count();
+    if (ok && before == NODUS_WS_MAX_CONNS) PASS();
+    else {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "pool holds %d WS conns (opened %d here)",
+                 before, nfds);
+        FAIL(msg);
+    }
+
+    /* Without the full pool above, the next check would pass for any
+     * reason a connection can fail; it is only meaningful after a PASS. */
+    TEST("257th WS connection is closed at accept, no 101");
+    int got = 0;
+    int fd = ws_open_conn("198.19.0.1", rx, &got);
+    int closed = fd >= 0 && !got && rx_until_eof(fd, rx) == 1;
+    int after = pool_ws_count();
+    if (before == NODUS_WS_MAX_CONNS && closed && after == NODUS_WS_MAX_CONNS)
+        PASS();
+    else
+        FAIL("cap not enforced");
+    if (fd >= 0) close(fd);
+
+    for (int i = 0; i < nfds; i++) close(fds[i]);
+    for (int i = 0; i < 40; i++) pump_once();
+    free(fds);
+    free(rx);
+}
+
 static void test_handshake_timeout(void) {
     TEST("unfinished Upgrade: not swept before the timeout");
     rx_t *rx = calloc(1, sizeof(*rx));
@@ -425,6 +534,16 @@ static void test_text_frame_closes(void) {
 int main(void) {
     printf("nodus WebSocket entry end-to-end test\n");
 
+    /* The total-cap test holds ~2 x 257 descriptors in this one process
+     * (client and server ends). Raise the soft limit to the hard one; if
+     * that is still too low the fill fails and the test reports FAIL. */
+    struct rlimit rl;
+    if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur < rl.rlim_max) {
+        rl.rlim_cur = rl.rlim_max;
+        if (setrlimit(RLIMIT_NOFILE, &rl) != 0)
+            printf("  (could not raise RLIMIT_NOFILE)\n");
+    }
+
     nodus_server_config_t config;
     memset(&config, 0, sizeof(config));
     snprintf(config.bind_ip, sizeof(config.bind_ip), "127.0.0.1");
@@ -468,11 +587,14 @@ int main(void) {
         test_upgrade_and_hello(id);
         test_origin_refused();
         test_per_ip_limit();
+        test_ipv6_prefix_limit();
         test_handshake_timeout();
         test_text_frame_closes();
+        test_total_cap();                /* last: fills the WS share of the pool */
     }
 
     for (int i = 0; i < g_open_count; i++) close(g_open_fds[i]);
+    for (int i = 0; i < g_v6_count; i++) close(g_v6_fds[i]);
     for (int i = 0; i < 20; i++) pump_once();
     if (id) {
         nodus_identity_clear(id);

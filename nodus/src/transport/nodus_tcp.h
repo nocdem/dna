@@ -23,6 +23,21 @@ extern "C" {
 #define NODUS_TCP_BUF_INIT    (64 * 1024)    /* Initial read/write buffer */
 #define NODUS_TCP_PENDING_MAX  (5 * 1024 * 1024)   /* 5MB auth pending queue cap */
 
+/* Read budget: the most one connection may consume in ONE nodus_tcp_poll
+ * call (see "Read budget" in nodus/docs/ARCHITECTURE.md). A connection that
+ * reaches either limit before its socket returns EAGAIN stops for this call
+ * and is put on nodus_tcp_t.read_head; the next call services it after its
+ * own socket events (and waits 0 ms in epoll_wait/select while that list is
+ * non-empty), so the
+ * edge-triggered event it will not get again is never needed.
+ *   FRAMES: nodus frames taken off rbuf (dispatched or dropped) plus
+ *           WebSocket pings answered — the per-frame work a peer can force.
+ *   BYTES:  socket bytes read. Bounds what the frame count cannot see:
+ *           empty WS data frames and pongs, which reach no callback. At
+ *           256 KiB a 5 MiB NODUS_MAX_FRAME_TCP frame needs 20 calls. */
+#define NODUS_TCP_READ_BUDGET_FRAMES  256
+#define NODUS_TCP_READ_BUDGET_BYTES   (256 * 1024)
+
 /* ── Connection ──────────────────────────────────────────────────── */
 
 typedef enum {
@@ -173,6 +188,36 @@ typedef struct nodus_tcp_conn {
     bool                is_ws;
     bool                ws_open;
     nodus_ws_parser_t   ws;
+    /* Per-IP limit key of the real client address (IPv6 by /64), set when
+     * the Upgrade completes — compared instead of the text in `ip`. */
+    nodus_ws_ip_bucket_t ws_bucket;
+
+    /* Deferred close (see "Connection close" in nodus/docs/ARCHITECTURE.md).
+     * close_pending: the connection has been torn down — on_disconnect has
+     * run, the socket is closed (fd = -1, state = CLOSED) and it has left
+     * the pool — but its memory is still owned by the transport because a
+     * poll batch was in progress. The transport never processes it again;
+     * it is released when the outermost nodus_tcp_poll returns.
+     * close_next: link in nodus_tcp_t.close_list. */
+    bool                   close_pending;
+    struct nodus_tcp_conn *close_next;
+
+    /* Read budget (NODUS_TCP_READ_BUDGET_*).
+     * read_pending: on nodus_tcp_t.read_head — its read stopped on the budget,
+     *   or complete frames are still in rbuf; read_next links that FIFO.
+     *   conn_free unlinks it, so the list never holds a closing connection.
+     * read_active: its read handler is running (a callback may poll again;
+     *   the nested call re-queues it instead of re-entering it).
+     * read_gen: the nodus_tcp_t.poll_gen of the call that last serviced it,
+     *   so one call never services it twice (epoll event + list).
+     * read_bytes_left / read_frames_left: what is left of the budget of the
+     *   service in progress (frames may go below 0 by the pings of one chunk). */
+    bool                   read_pending;
+    bool                   read_active;
+    struct nodus_tcp_conn *read_next;
+    uint64_t               read_gen;
+    size_t                 read_bytes_left;
+    int                    read_frames_left;
 } nodus_tcp_conn_t;
 
 /* ── Callbacks ───────────────────────────────────────────────────── */
@@ -243,6 +288,31 @@ typedef struct nodus_tcp {
     int                       ws_listen_fd;
     uint16_t                  ws_port;
     const nodus_ws_origins_t *ws_origins;   /* owned by the caller; outlives tcp */
+
+    /* Deferred close. poll_depth > 0 while nodus_tcp_poll is running on
+     * this transport, and around the on_connect that nodus_tcp_connect
+     * runs itself on an immediate connect (a depth, not a flag: a callback
+     * may poll again).
+     * Every connection torn down while it is > 0 is detached at once and
+     * parked on close_list; its memory is released only when the depth
+     * returns to 0, so no pointer still held by the event batch, by
+     * try_parse_frames or by a callback's caller can dangle. Not atomic:
+     * callers that poll from one thread and disconnect from another must
+     * serialise the two themselves (nodus_client.c does, poll_mutex). */
+    int                       poll_depth;
+    nodus_tcp_conn_t         *close_list;
+
+    /* Read budget: FIFO of connections with input left over from an earlier
+     * call (conn->read_pending). Serviced at the end of every nodus_tcp_poll
+     * call, after that call's socket events; epoll_wait / select wait 0 ms
+     * while it is non-empty. poll_gen: generation of the call in progress
+     * (a nested call gets its own and restores this one on return);
+     * poll_gen_last: the last generation handed out. */
+    nodus_tcp_conn_t         *read_head;
+    nodus_tcp_conn_t         *read_tail;
+    int                       read_count;
+    uint64_t                  poll_gen;
+    uint64_t                  poll_gen_last;
 } nodus_tcp_t;
 
 /**
@@ -311,12 +381,33 @@ int nodus_tcp_send_raw(nodus_tcp_conn_t *conn,
 int nodus_tcp_pending_flush(nodus_tcp_conn_t *conn);
 
 /**
- * Poll for events. Returns number of events processed.
- * @param timeout_ms  wait timeout (-1 = block forever)
+ * Poll for events. Returns number of events processed (socket events plus
+ * connections serviced from the pending-read list), or -1 on error.
+ * Each connection is read at most once per call and within
+ * NODUS_TCP_READ_BUDGET_*; what is left is serviced by the next call.
+ * @param timeout_ms  wait timeout (-1 = block forever); treated as 0 while
+ *                    the pending-read list is non-empty
  */
 int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms);
 
-/** Disconnect and free a connection. */
+/**
+ * True while connections of this transport wait on the pending-read list
+ * (their read stopped on NODUS_TCP_READ_BUDGET_*). nodus_tcp_poll already
+ * waits 0 ms for its OWN list; a loop that polls several transports in turn
+ * uses this to poll the OTHER ones with timeout 0 too, so leftover input is
+ * not delayed by a sibling's blocking wait.
+ */
+bool nodus_tcp_read_pending(const nodus_tcp_t *tcp);
+
+/**
+ * Disconnect a connection: on_disconnect runs (exactly once — a second call
+ * on a connection already closing is a no-op), the socket is closed and the
+ * connection leaves the pool immediately. Outside nodus_tcp_poll the memory
+ * is freed before this returns. Inside nodus_tcp_poll (any callback) the
+ * memory is kept until the outermost poll returns, so the caller's pointer
+ * and the transport's own references stay valid; the transport does no
+ * further work on it.
+ */
 void nodus_tcp_disconnect(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn);
 
 /** D2.4 gate: cumulative post-established AEAD decrypt failures on this

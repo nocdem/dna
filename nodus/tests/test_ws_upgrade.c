@@ -7,11 +7,19 @@
  *     "Sec-WebSocket-Protocol: binary" only when the client offered it;
  *   - an incomplete head asks for more (every prefix of a valid request);
  *   - missing / wrong Upgrade, Connection, Version (426), Key, Host,
- *     Origin (403), method, HTTP version, bare-LF line ends → refused;
- *   - a head over 8 KiB without its end → refused with no response;
+ *     Origin (403), method, HTTP version, bare-LF line ends, a bare CR
+ *     inside a header line → refused;
+ *   - a repeated Host (400), Origin (403), Sec-WebSocket-Version (426) or
+ *     Sec-WebSocket-Key (400) is refused even when both values are valid;
+ *   - a head over 8 KiB without its end → refused with no response, and so
+ *     is a COMPLETE head of 8193 bytes (a head of exactly 8192 parses);
  *   - the real client IP is the LAST X-Forwarded-For value when the socket
  *     peer is 127.0.0.1; missing or malformed XFF from loopback → refused;
- *   - a non-loopback socket peer keeps its own address and XFF is ignored.
+ *   - a non-loopback socket peer keeps its own address and XFF is ignored;
+ *   - nodus_ws_ip_bucket (the per-IP limit key): IPv6 by /64, IPv4 whole,
+ *     IPv4-mapped IPv6 as its IPv4, families never equal, junk → -1.
+ *
+ * Requires: a default build, no environment.
  *
  * Test-runner output uses printf like every other nodus unit test.
  */
@@ -230,6 +238,18 @@ static void test_rejects(void) {
     expect_reject("obsolete line folding → 400", &r, "127.0.0.1", 400);
     r = req_default(); r.extra = "X-A: a\nX-B: b\r\n";
     expect_reject("bare LF line end → 400", &r, "127.0.0.1", 400);
+    r = req_default(); r.extra = "X-A: a\rb\r\n";
+    expect_reject("bare CR inside a header line → 400", &r, "127.0.0.1", 400);
+
+    /* Exactly one of each (RFC 6455 §4.2.1); the status is the one the
+     * failed check answers with. */
+    r = req_default(); r.extra = "Host: 203.0.113.2\r\n";
+    expect_reject("duplicate Host → 400", &r, "127.0.0.1", 400);
+    r = req_default(); r.extra = "Origin: " ORIGIN_OK "\r\n";
+    expect_reject("duplicate Origin (same value) → 403", &r, "127.0.0.1", 403);
+    r = req_default(); r.extra = "Sec-WebSocket-Version: 13\r\n";
+    expect_reject("duplicate Sec-WebSocket-Version (13) → 426", &r,
+                  "127.0.0.1", 426);
 
     TEST("NUL byte in the head → 400");
     {
@@ -287,6 +307,75 @@ static void test_oversize(void) {
     else FAIL("8 KiB head refused");
     free(extra);
     free(buf);
+
+    /* The same head one byte longer: COMPLETE (it ends in CRLF CRLF), but
+     * its end lies past the limit, so it must be refused like an endless
+     * one — the limit is on the head, not on "a head without its end". */
+    TEST("complete head of 8193 bytes → REJECT, no response");
+    buf = malloc(NODUS_WS_HS_MAX + 2);
+    extra = malloc(pad + 17);
+    if (!buf || !extra) { FAIL("alloc"); free(buf); free(extra); return; }
+    memcpy(extra, "X-Pad: ", 7);
+    memset(extra + 7, 'b', pad + 1);
+    memcpy(extra + 7 + pad + 1, "\r\n", 3);
+    r.extra = extra;
+    n = req_build(&r, buf, NODUS_WS_HS_MAX + 2);
+    memset(&res, 0, sizeof(res));
+    rc = nodus_ws_handshake_parse((const uint8_t *)buf, n, "127.0.0.1",
+                                  &g_origins, &res);
+    if (n == NODUS_WS_HS_MAX + 1 &&
+        memcmp(buf + n - 4, "\r\n\r\n", 4) == 0 &&
+        rc == NODUS_WS_HS_REJECT && res.status == 0 &&
+        nodus_ws_reject_response(res.status, out, sizeof(out)) == 0)
+        PASS();
+    else
+        FAIL("8193-byte head accepted");
+    free(extra);
+    free(buf);
+}
+
+static void test_ip_bucket(void) {
+    nodus_ws_ip_bucket_t a, b;
+
+    TEST("bucket: IPv6 in the same /64 → equal");
+    int ok = nodus_ws_ip_bucket("2001:db8:1:2::1", &a) == 0 &&
+             nodus_ws_ip_bucket("2001:db8:1:2:ffff:ffff:ffff:ffff", &b) == 0 &&
+             a.family == 6 && memcmp(&a, &b, sizeof(a)) == 0;
+    if (ok) PASS(); else FAIL("same /64 differs");
+
+    TEST("bucket: IPv6 in another /64 → different");
+    ok = nodus_ws_ip_bucket("2001:db8:1:2::1", &a) == 0 &&
+         nodus_ws_ip_bucket("2001:db8:1:3::1", &b) == 0 &&
+         memcmp(&a, &b, sizeof(a)) != 0;
+    if (ok) PASS(); else FAIL("other /64 equal");
+
+    TEST("bucket: IPv4 is the whole address");
+    ok = nodus_ws_ip_bucket("198.51.100.7", &a) == 0 &&
+         nodus_ws_ip_bucket("198.51.100.8", &b) == 0 &&
+         a.family == 4 && memcmp(&a, &b, sizeof(a)) != 0 &&
+         nodus_ws_ip_bucket("198.51.100.7", &b) == 0 &&
+         memcmp(&a, &b, sizeof(a)) == 0;
+    if (ok) PASS(); else FAIL("ipv4 key");
+
+    TEST("bucket: IPv4-mapped IPv6 keyed as its IPv4");
+    ok = nodus_ws_ip_bucket("::ffff:198.51.100.7", &a) == 0 &&
+         nodus_ws_ip_bucket("198.51.100.7", &b) == 0 &&
+         memcmp(&a, &b, sizeof(a)) == 0 &&
+         nodus_ws_ip_bucket("::ffff:198.51.100.8", &b) == 0 &&
+         memcmp(&a, &b, sizeof(a)) != 0;
+    if (ok) PASS(); else FAIL("v4-mapped");
+
+    TEST("bucket: IPv4 never equals an IPv6 bucket");
+    ok = nodus_ws_ip_bucket("0.0.0.1", &a) == 0 &&
+         nodus_ws_ip_bucket("::1", &b) == 0 &&
+         memcmp(&a, &b, sizeof(a)) != 0;
+    if (ok) PASS(); else FAIL("families collide");
+
+    TEST("bucket: unparsable address → -1");
+    ok = nodus_ws_ip_bucket("999.1.1.1", &a) == -1 &&
+         nodus_ws_ip_bucket("garbage", &a) == -1 &&
+         nodus_ws_ip_bucket(NULL, &a) == -1;
+    if (ok) PASS(); else FAIL("bad address accepted");
 }
 
 static void test_real_ip(void) {
@@ -391,6 +480,7 @@ int main(void) {
     test_rejects();
     test_oversize();
     test_real_ip();
+    test_ip_bucket();
     test_reject_responses();
     test_origins_api();
     printf("\n%d passed, %d failed\n", passed, failed);

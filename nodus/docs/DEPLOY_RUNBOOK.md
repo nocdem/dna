@@ -520,6 +520,14 @@ missing or malformed`, the header is not reaching nodus — stop and fix the pro
 (nodus refuses a loopback connection without it rather than count every browser
 as the proxy's address).
 
+**Capacity.** One node serves at most **256** browser (WebSocket) connections at
+once, Upgrades in progress included; the remaining 768+ of the 1024 client slots
+stay for app clients on 4001. A further browser connection is closed right after
+accept and the log shows `ws: 256 WebSocket connections open, new connection
+refused` — a node that prints this steadily is full, not broken. Per browser
+address the limit is 20 connections; an IPv6 address is counted by its /64
+(`ws: per-IP limit 20 reached for <ip>` names the address that hit it).
+
 **Rollback:** remove `ws_port` (or set it to 0) and restart; the listener is not
 opened and nothing else changes.
 

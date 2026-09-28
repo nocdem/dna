@@ -206,17 +206,112 @@ static nodus_tcp_conn_t *conn_alloc(nodus_tcp_t *tcp) {
     return conn;
 }
 
+/* True if `conn` is a live member of this transport's pool. Compares the
+ * pointer only — never dereferences it — so it is safe on any pointer an
+ * event batch still carries. Linear in NODUS_TCP_MAX_CONNS; called once per
+ * connection event. (The Windows select loop walks the pool itself.) */
+#ifndef _WIN32
+static bool conn_in_pool(const nodus_tcp_t *tcp, const nodus_tcp_conn_t *conn) {
+    for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++)
+        if (tcp->pool[i] == conn) return true;
+    return false;
+}
+#endif
+
+/* Release the memory of a connection that conn_free already detached. */
+static void conn_release(nodus_tcp_conn_t *conn) {
+    free(conn->pending_buf);
+    free(conn->rbuf);
+    free(conn->wbuf);
+    free(conn);
+}
+
+/* Release every connection parked by conn_free during a poll batch. Only
+ * called when no poll is running on this transport (poll_depth == 0). */
+static void conn_release_deferred(nodus_tcp_t *tcp) {
+    while (tcp->close_list) {
+        nodus_tcp_conn_t *c = tcp->close_list;
+        tcp->close_list = c->close_next;
+        conn_release(c);
+    }
+}
+
+/* ── Read budget: the pending-read FIFO ──────────────────────────────
+ *
+ * A connection whose read handler stopped on NODUS_TCP_READ_BUDGET_* (or
+ * that still has complete frames in rbuf) sits on tcp->read_head until a
+ * later nodus_tcp_poll call services it. Under EPOLLET the kernel reports
+ * no new edge for bytes that were already there, so this list — not epoll —
+ * is what guarantees the rest is processed. A closing connection is never
+ * on it: read_pending_add refuses one and conn_free unlinks. */
+
+static void read_pending_add(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
+    if (conn->read_pending || conn->close_pending) return;
+    conn->read_pending = true;
+    conn->read_next = NULL;
+    if (tcp->read_tail)
+        tcp->read_tail->read_next = conn;
+    else
+        tcp->read_head = conn;
+    tcp->read_tail = conn;
+    tcp->read_count++;
+}
+
+/* Unlink wherever it is. Linear in the list (at most NODUS_TCP_MAX_CONNS). */
+static void read_pending_del(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
+    if (!conn->read_pending) return;
+    nodus_tcp_conn_t *prev = NULL;
+    for (nodus_tcp_conn_t *c = tcp->read_head; c; prev = c, c = c->read_next) {
+        if (c != conn) continue;
+        if (prev) prev->read_next = c->read_next;
+        else      tcp->read_head  = c->read_next;
+        if (tcp->read_tail == c) tcp->read_tail = prev;
+        tcp->read_count--;
+        break;
+    }
+    conn->read_pending = false;
+    conn->read_next = NULL;
+}
+
+static nodus_tcp_conn_t *read_pending_pop(nodus_tcp_t *tcp) {
+    nodus_tcp_conn_t *c = tcp->read_head;
+    if (!c) return NULL;
+    tcp->read_head = c->read_next;
+    if (!tcp->read_head) tcp->read_tail = NULL;
+    tcp->read_count--;
+    c->read_pending = false;
+    c->read_next = NULL;
+    return c;
+}
+
+/* Tear a connection down. The caller has already run on_disconnect.
+ *
+ * Detaching is always immediate: the socket leaves epoll and is closed, the
+ * pool slot is emptied, the per-conn counters are folded, queued frames and
+ * key material are dropped, and the connection is marked close_pending /
+ * CLOSED so any later send on it fails instead of writing to a stale fd.
+ *
+ * Releasing the memory is immediate only when no nodus_tcp_poll is running
+ * on this transport. Inside one — which is every frame, accept, connect and
+ * disconnect callback — the struct is parked on close_list and freed when
+ * the outermost poll returns. That is the ONE safe point: the event batch
+ * still holds this pointer in events[].data.ptr, try_parse_frames still
+ * holds it after on_frame returns, and a later accept in the same batch
+ * must not be handed the same address while a stale event for it is
+ * pending. Freeing any earlier would reintroduce exactly that aliasing. */
 static void conn_free(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
-    if (!conn) return;
+    if (!conn || conn->close_pending) return;
 
     if (conn->fd >= 0) {
 #ifndef _WIN32
         epoll_ctl(tcp->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
 #endif
         close(conn->fd);
+        conn->fd = -1;
     }
 
-    if (conn->slot >= 0 && conn->slot < NODUS_TCP_MAX_CONNS)
+    if (conn->slot >= 0 && conn->slot < NODUS_TCP_MAX_CONNS &&
+        tcp->pool[conn->slot] == conn)
         tcp->pool[conn->slot] = NULL;
 
     /* D2.4: preserve this conn's decrypt-failure count before the struct dies,
@@ -224,6 +319,7 @@ static void conn_free(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     tcp->decrypt_fail_total += conn->decrypt_skip_count;
 
     tcp->count--;
+    read_pending_del(tcp, conn);   /* read budget: never service a closed conn */
     pending_free_all(conn);   /* Phase 3: drop any queued frames */
 
     /* Phase 3.2b-inv: conn lifecycle visibility at TCP layer.
@@ -242,10 +338,18 @@ static void conn_free(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
      * disappear; key material should never linger on the freelist. */
     nodus_channel_crypto_clear(&conn->channel_crypto);
 
-    free(conn->pending_buf);
-    free(conn->rbuf);
-    free(conn->wbuf);
-    free(conn);
+    conn->state = NODUS_CONN_CLOSED;
+    conn->close_pending = true;
+    conn->rlen = 0;
+    conn->wlen = 0;
+    conn->wpos = 0;
+
+    if (tcp->poll_depth > 0) {
+        conn->close_next = tcp->close_list;
+        tcp->close_list = conn;
+        return;
+    }
+    conn_release(conn);
 }
 
 /* ── Phase 3: Pending queue ──────────────────────────────────────── */
@@ -414,12 +518,28 @@ static void epoll_mod(int epoll_fd, int fd, uint32_t events, void *ptr) {
 
 /* ── Frame parsing ───────────────────────────────────────────────── */
 
+/* Outcome of try_parse_frames. */
+typedef enum {
+    PARSE_NEED_DATA = 0,  /* no complete frame left in rbuf                  */
+    PARSE_MORE,           /* complete frames may remain: the frame budget ran
+                           * out, or the channel crypto state flipped        */
+    PARSE_CLOSED          /* conn is closed — do no further work on it       */
+} parse_rc_t;
+
 /**
  * Parse complete frames from the read buffer and dispatch them.
- * Returns true if the connection was freed (bad frame → disconnect),
- * in which case the caller must NOT touch conn again.
+ * Returns PARSE_CLOSED if the connection is closed — torn down here (bad
+ * frame), or closed by the on_frame callback itself (nodus_tcp_disconnect on
+ * its own connection) — in which case the caller must do no further work on
+ * conn.
+ * budgeted: stop (PARSE_MORE) before a complete frame once
+ * conn->read_frames_left is used up. Every frame taken off rbuf — dispatched
+ * or dropped — spends one. Unbudgeted only on a terminal path (EOF, WS
+ * close), where there is no later call to finish the job.
  */
-static bool try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
+static parse_rc_t try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
+                                   bool budgeted) {
+    if (conn->close_pending) return PARSE_CLOSED;
     while (conn->rlen >= NODUS_FRAME_HEADER_SIZE) {
         /* Snapshot crypto state before dispatching — if it changes mid-loop
          * (e.g., key_init handler activates crypto), remaining buffered frames
@@ -438,7 +558,7 @@ static bool try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             if (tcp->on_disconnect)
                 tcp->on_disconnect(conn, tcp->cb_ctx);
             conn_free(tcp, conn);
-            return true;
+            return PARSE_CLOSED;
         }
 
         /* Validate frame size (HIGH-1: TCP path was missing this check) */
@@ -446,8 +566,14 @@ static bool try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             if (tcp->on_disconnect)
                 tcp->on_disconnect(conn, tcp->cb_ctx);
             conn_free(tcp, conn);
-            return true;
+            return PARSE_CLOSED;
         }
+
+        /* Read budget: a complete, valid frame is waiting but this call
+         * may take no more. It stays in rbuf for the next call. */
+        if (budgeted && conn->read_frames_left <= 0)
+            return PARSE_MORE;
+        conn->read_frames_left--;
 
         /* Valid frame — decrypt if channel crypto active.
          * B3 fix — read inline channel_crypto directly; no pointer alias. */
@@ -546,15 +672,26 @@ static bool try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             tcp->on_frame(conn, dispatch_payload, dispatch_len, tcp->cb_ctx);
         free(dec_buf);
 
+        /* The callback closed this connection (nodus_tcp_disconnect from
+         * inside on_frame). on_frame always runs inside nodus_tcp_poll, so
+         * the memory is still ours (deferred until the poll returns), but
+         * no further frame of it may be dispatched. */
+        if (conn->close_pending)
+            return PARSE_CLOSED;
+
         /* If crypto state changed during dispatch (Kyber handshake completed),
          * stop processing — remaining frames in rbuf need different handling.
-         * B3 fix — compare established flag (false → true on init). */
+         * B3 fix — compare established flag (false → true on init).
+         * PARSE_MORE puts the connection on the pending-read list, so the
+         * "next poll iteration" really does handle them; before, under
+         * EPOLLET, that happened only when more bytes arrived. */
         if (conn->channel_crypto.established != established_before) {
             size_t remaining = conn->rlen - consumed;
             if (remaining > 0)
                 memmove(conn->rbuf, conn->rbuf + consumed, remaining);
             conn->rlen = remaining;
-            break;
+            return remaining >= NODUS_FRAME_HEADER_SIZE ? PARSE_MORE
+                                                        : PARSE_NEED_DATA;
         }
 
         /* Shift remaining data */
@@ -563,39 +700,57 @@ static bool try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             memmove(conn->rbuf, conn->rbuf + consumed, remaining);
         conn->rlen = remaining;
     }
-    return false;
+    return PARSE_NEED_DATA;
 }
 
 /* ── Event handlers ──────────────────────────────────────────────── */
 
+/* Outcome of one budgeted read of a connection. */
+typedef enum {
+    READ_DRAINED = 0,  /* socket at EAGAIN and no complete frame left in rbuf */
+    READ_MORE,         /* budget spent (or frames left in rbuf): continue in
+                        * a later nodus_tcp_poll call                        */
+    READ_CLOSED        /* conn is closed — do no further work on it          */
+} read_rc_t;
+
 #ifndef _WIN32
-static void handle_read_ws(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn);
+static read_rc_t read_ws(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn);
 #endif
 
-static void handle_read(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
-#ifndef _WIN32
-    /* All three callers (poll, accept, connect-complete) come through here,
-     * so a WebSocket connection is routed to its own reader in one place. */
-    if (conn->is_ws) {
-        handle_read_ws(tcp, conn);
-        return;
-    }
-#endif
+/* The plain reader. Invariant: the socket is read only while rbuf holds no
+ * complete frame — frames left over from an earlier call are dispatched
+ * first, and each chunk read is parsed before the next one. So rbuf never
+ * holds more than one incomplete frame plus one chunk, however far the
+ * frame budget lags the byte budget. */
+static read_rc_t read_plain(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
+    parse_rc_t pr = try_parse_frames(tcp, conn, true);
+    if (pr == PARSE_CLOSED) return READ_CLOSED;
+    if (pr == PARSE_MORE)   return READ_MORE;
+
     int eintr_left = NTCP_MAX_EINTR_RETRY;
     for (;;) {
+        if (conn->read_bytes_left == 0)
+            return READ_MORE;
+
         if (buf_ensure(&conn->rbuf, &conn->rcap, conn->rlen + 4096) != 0) {
             if (tcp->on_disconnect)
                 tcp->on_disconnect(conn, tcp->cb_ctx);
             conn_free(tcp, conn);
-            return;
+            return READ_CLOSED;
         }
 
-        ssize_t n = poll_read(conn->fd, conn->rbuf + conn->rlen,
-                              conn->rcap - conn->rlen);
+        size_t want = conn->rcap - conn->rlen;
+        if (want > conn->read_bytes_left)
+            want = conn->read_bytes_left;
+        ssize_t n = poll_read(conn->fd, conn->rbuf + conn->rlen, want);
         if (n > 0) {
             conn->rlen += (size_t)n;
+            conn->read_bytes_left -= (size_t)n;
             conn->last_activity = nodus_time_now();
             eintr_left = NTCP_MAX_EINTR_RETRY;   /* progress resets the budget */
+            pr = try_parse_frames(tcp, conn, true);
+            if (pr == PARSE_CLOSED) return READ_CLOSED;
+            if (pr == PARSE_MORE)   return READ_MORE;
             continue;
         }
         if (n == 0) {
@@ -603,21 +758,21 @@ static void handle_read(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
              * buffered data before disconnecting — a frame that arrived in
              * the same segment as the FIN is still a valid frame. (This is
              * read()'s EOF, NOT the NTCP_IO_STALLED case, which is why it is
-             * handled before ntcp_classify.) */
-            bool freed = try_parse_frames(tcp, conn);
-            if (!freed) {
+             * handled before ntcp_classify.) Unbudgeted: there is no later
+             * call for this connection. */
+            if (try_parse_frames(tcp, conn, false) != PARSE_CLOSED) {
                 if (tcp->on_disconnect)
                     tcp->on_disconnect(conn, tcp->cb_ctx);
                 conn_free(tcp, conn);
             }
-            return;
+            return READ_CLOSED;
         }
         /* n < 0 */
         ntcp_io_t io = ntcp_classify(n);
         if (io == NTCP_IO_RETRY && eintr_left-- > 0)
             continue;                    /* interrupted, nothing lost */
         if (io == NTCP_IO_WOULDBLOCK)
-            break;                       /* drained for now */
+            return READ_DRAINED;         /* drained for now */
         /* NTCP_IO_PEER_GONE / NTCP_IO_FATAL / EINTR budget exhausted. A
          * receive-side reset is still a disconnect, so the handling is the
          * same — but it is now reached deliberately rather than by falling
@@ -625,10 +780,76 @@ static void handle_read(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
         if (tcp->on_disconnect)
             tcp->on_disconnect(conn, tcp->cb_ctx);
         conn_free(tcp, conn);
+        return READ_CLOSED;
+    }
+}
+
+/* Read a connection within its per-call budget (NODUS_TCP_READ_BUDGET_*).
+ * Every read of a connection — poll event, pending-read list, the immediate
+ * read after accept / connect-complete — comes through here, so the budget,
+ * the list and the WebSocket routing are decided in one place. Always runs
+ * inside nodus_tcp_poll (poll_depth > 0), so conn's memory outlives a close
+ * made below and read_active can be cleared after it. */
+static void handle_read(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
+    if (conn->close_pending) return;   /* closed by a callback in this batch */
+
+    /* Already serviced by this poll call, or its read is running further up
+     * the stack (a callback polled again): queue it, never skip it — under
+     * EPOLLET a skipped event would not be reported again. */
+    if (conn->read_active || conn->read_gen == tcp->poll_gen) {
+        read_pending_add(tcp, conn);
         return;
     }
+    conn->read_active      = true;
+    conn->read_gen         = tcp->poll_gen;
+    conn->read_bytes_left  = NODUS_TCP_READ_BUDGET_BYTES;
+    conn->read_frames_left = NODUS_TCP_READ_BUDGET_FRAMES;
 
-    try_parse_frames(tcp, conn);
+    read_rc_t rc;
+#ifndef _WIN32
+    if (conn->is_ws)
+        rc = read_ws(tcp, conn);
+    else
+#endif
+        rc = read_plain(tcp, conn);
+
+    conn->read_active = false;
+    if (rc == READ_CLOSED)
+        return;                          /* conn_free already unlinked it */
+    if (rc == READ_MORE)
+        read_pending_add(tcp, conn);
+    else
+        read_pending_del(tcp, conn);
+}
+
+/* Service the pending-read list once: each connection that was on it when
+ * the pass began gets one handle_read. A connection this call already
+ * serviced (its epoll event came first) is re-queued by handle_read, and so
+ * is one that uses its budget again — both go to the tail and wait for the
+ * next call. Bounded by the count at the start, so it always ends. Returns
+ * the number of connections taken off the list. */
+static int read_pending_service(nodus_tcp_t *tcp) {
+    int todo = tcp->read_count;
+    int served = 0;
+    while (todo-- > 0) {
+        nodus_tcp_conn_t *c = read_pending_pop(tcp);
+        if (!c) break;
+        handle_read(tcp, c);
+        served++;
+    }
+    return served;
+}
+
+/* Enter / leave one nodus_tcp_poll call: a fresh generation for the budget
+ * (a nested call gets its own and hands the caller's back on return). */
+static uint64_t poll_gen_enter(nodus_tcp_t *tcp) {
+    uint64_t saved = tcp->poll_gen;
+    tcp->poll_gen = ++tcp->poll_gen_last;
+    return saved;
+}
+
+static void poll_gen_leave(nodus_tcp_t *tcp, uint64_t saved) {
+    tcp->poll_gen = saved;
 }
 
 /* O15B §8 — the ONE write-drain loop.
@@ -749,6 +970,11 @@ static void handle_connect_complete(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     if (tcp->on_connect)
         tcp->on_connect(conn, tcp->cb_ctx);
 
+    /* on_connect may have closed the connection (nodus_tcp_disconnect);
+     * the memory is deferred, but its fd is gone — touch nothing more. */
+    if (conn->close_pending)
+        return;
+
 #ifndef _WIN32
     /* on_connect callback may have queued data (e.g. hello for auth).
      * Re-check wbuf and ensure EPOLLOUT is set so it gets flushed. */
@@ -822,6 +1048,10 @@ static void handle_accept(nodus_tcp_t *tcp) {
     if (tcp->on_accept)
         tcp->on_accept(conn, tcp->cb_ctx);
 
+    /* on_accept may have closed the connection — nothing left to read. */
+    if (conn->close_pending)
+        return;
+
     /* Edge-triggered: data may already be in buffer before epoll_add.
      * Do an immediate read to avoid missing the initial EPOLLIN edge. */
     handle_read_fwd(tcp, conn);
@@ -835,8 +1065,11 @@ static void handle_read_fwd(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
 /* ── WebSocket entry glue (RFC 6455; codec in nodus_ws.c) ────────────
  *
  * Teardown follows the transport's one protocol: on_disconnect, then
- * conn_free, and the function that did it returns "freed" so its caller
- * never touches the connection again (RT1 F7). No new free path. */
+ * conn_free, and the function that did it returns "closed" so its caller
+ * does no further work on the connection (RT1 F7). All of this runs inside
+ * nodus_tcp_poll, so conn_free only detaches and the memory is released
+ * when the poll returns — the same deferred-close rule as the plain path.
+ * No new free path. */
 
 /* Append bytes that are NOT a nodus frame — the 101 / refusal response,
  * a pong, a close frame — to wbuf as they are. wbuf only ever holds whole
@@ -861,6 +1094,7 @@ static int ws_wbuf_append_raw(nodus_tcp_conn_t *conn,
  * tear the connection down. The caller must not touch conn afterwards. */
 static void ws_close_now(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
                          const uint8_t *bytes, size_t n) {
+    if (conn->close_pending) return;   /* already closed: on_disconnect ran */
     if (bytes && n > 0 && ws_wbuf_append_raw(conn, bytes, n) == 0)
         (void)conn_flush_wbuf(conn, NULL, NULL);
     if (tcp->on_disconnect)
@@ -884,6 +1118,7 @@ static int ws_sink_ping(void *ctx, const uint8_t *payload, size_t len) {
     nodus_tcp_conn_t *conn = (nodus_tcp_conn_t *)ctx;
     uint8_t fr[NODUS_WS_SERVER_HDR_MAX + NODUS_WS_CTRL_MAX];
     if (len > NODUS_WS_CTRL_MAX) return -1;
+    conn->read_frames_left--;   /* read budget: a ping is per-frame work */
     size_t h = nodus_ws_frame_header(NODUS_WS_OP_PONG, len, fr, sizeof(fr));
     if (h == 0) return -1;
     memcpy(fr + h, payload, len);
@@ -892,7 +1127,7 @@ static int ws_sink_ping(void *ctx, const uint8_t *payload, size_t len) {
     return 0;
 }
 
-/* Feed raw bytes of an open WS connection. Returns true if conn was freed. */
+/* Feed raw bytes of an open WS connection. Returns true if conn was closed. */
 static bool ws_feed_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
                            uint8_t *data, size_t n) {
     nodus_ws_sink_t sink = { ws_sink_data, ws_sink_ping, conn };
@@ -907,8 +1142,9 @@ static bool ws_feed_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
         QGP_LOG_INFO(LOG_TAG_TCP, "ws: peer closed slot=%d ip=%s",
                      conn->slot, conn->ip);
         /* Frames that arrived before the close are still frames — the
-         * same rule as the plain reader's EOF path. */
-        if (try_parse_frames(tcp, conn))
+         * same rule as the plain reader's EOF path, and unbudgeted like it:
+         * the connection closes right below, there is no later call. */
+        if (try_parse_frames(tcp, conn, false) == PARSE_CLOSED)
             return true;
     } else {
         QGP_LOG_WARN(LOG_TAG_TCP, "ws: closing slot=%d ip=%s code=%u: %s",
@@ -920,7 +1156,7 @@ static bool ws_feed_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
 }
 
 /* Try to complete the HTTP Upgrade from the bytes gathered in rbuf.
- * Returns true if conn was freed. */
+ * Returns true if conn was closed. */
 static bool ws_try_upgrade(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     nodus_ws_hs_result_t res;
     int rc = nodus_ws_handshake_parse(conn->rbuf, conn->rlen, conn->ip,
@@ -939,12 +1175,21 @@ static bool ws_try_upgrade(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     }
 
     /* Per real-IP limit among OPEN WebSocket connections only — a separate
-     * counter from the plain listener's (handle_accept). */
+     * counter from the plain listener's (handle_accept). IPv6 counts by
+     * /64 prefix (nodus_ws_ip_bucket). real_ip came out of inet_ntop, so it
+     * always parses; a failure is refused rather than left uncounted. */
+    nodus_ws_ip_bucket_t bucket;
+    if (nodus_ws_ip_bucket(res.real_ip, &bucket) != 0) {
+        QGP_LOG_ERROR(LOG_TAG_TCP, "ws: client address does not parse, slot=%d closed",
+                      conn->slot);
+        ws_close_now(tcp, conn, NULL, 0);
+        return true;
+    }
     int same_ip = 0;
     for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
         nodus_tcp_conn_t *c = tcp->pool[i];
         if (c && c != conn && c->is_ws && c->ws_open &&
-            strcmp(c->ip, res.real_ip) == 0)
+            memcmp(&c->ws_bucket, &bucket, sizeof(bucket)) == 0)
             same_ip++;
     }
     if (same_ip >= NODUS_WS_MAX_CONNS_PER_IP) {
@@ -981,6 +1226,7 @@ static bool ws_try_upgrade(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     conn->rlen = 0;   /* the request head must never reach nodus_frame_decode */
 
     snprintf(conn->ip, sizeof(conn->ip), "%s", res.real_ip);
+    conn->ws_bucket = bucket;
     nodus_ws_parser_init(&conn->ws);
     conn->ws_open = true;
     QGP_LOG_INFO(LOG_TAG_TCP, "ws: upgrade ok slot=%d ip=%s%s",
@@ -996,7 +1242,7 @@ static bool ws_try_upgrade(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     return false;
 }
 
-/* Take one chunk of socket bytes. Returns true if conn was freed. */
+/* Take one chunk of socket bytes. Returns true if conn was closed. */
 static bool ws_ingest(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
                       uint8_t *data, size_t n) {
     if (conn->ws_open)
@@ -1015,43 +1261,67 @@ static bool ws_ingest(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
     return ws_try_upgrade(tcp, conn);
 }
 
-/* The WS reader: drains the socket to EAGAIN (edge-triggered), passes each
- * chunk through the handshake / frame parser, then — exactly like the plain
- * reader — decodes the nodus frames accumulated in rbuf. */
-static void handle_read_ws(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
+/* The WS reader: reads the socket until EAGAIN or the read budget
+ * (edge-triggered; the pending-read list covers a stop on the budget),
+ * passes each chunk through the handshake / frame parser, then — exactly
+ * like the plain reader — decodes the nodus frames accumulated in rbuf,
+ * after every chunk. Same invariant as read_plain: the socket is read only
+ * while rbuf holds no complete nodus frame. nodus_ws_feed takes a whole
+ * chunk, so the frame budget can overrun by the pings of one chunk; empty
+ * data frames and pongs reach no callback and are bounded by the bytes. */
+static read_rc_t read_ws(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     uint8_t chunk[16384];
+    parse_rc_t pr;
+
+    if (conn->ws_open) {
+        pr = try_parse_frames(tcp, conn, true);
+        if (pr == PARSE_CLOSED) return READ_CLOSED;
+        if (pr == PARSE_MORE)   return READ_MORE;
+    }
+
     int eintr_left = NTCP_MAX_EINTR_RETRY;
     for (;;) {
-        ssize_t n = poll_read(conn->fd, chunk, sizeof(chunk));
+        if (conn->read_bytes_left == 0 || conn->read_frames_left <= 0)
+            return READ_MORE;
+
+        size_t want = sizeof(chunk);
+        if (want > conn->read_bytes_left)
+            want = conn->read_bytes_left;
+        ssize_t n = poll_read(conn->fd, chunk, want);
         if (n > 0) {
+            conn->read_bytes_left -= (size_t)n;
             conn->last_activity = nodus_time_now();
             eintr_left = NTCP_MAX_EINTR_RETRY;
             if (ws_ingest(tcp, conn, chunk, (size_t)n))
-                return;                  /* freed — do not touch conn */
+                return READ_CLOSED;      /* closed — no further work on conn */
+            if (conn->ws_open) {
+                pr = try_parse_frames(tcp, conn, true);
+                if (pr == PARSE_CLOSED) return READ_CLOSED;
+                if (pr == PARSE_MORE)   return READ_MORE;
+            }
             continue;
         }
         if (n == 0) {
-            bool freed = conn->ws_open ? try_parse_frames(tcp, conn) : false;
+            /* EOF — unbudgeted, as in read_plain. */
+            bool freed = conn->ws_open &&
+                         try_parse_frames(tcp, conn, false) == PARSE_CLOSED;
             if (!freed) {
                 if (tcp->on_disconnect)
                     tcp->on_disconnect(conn, tcp->cb_ctx);
                 conn_free(tcp, conn);
             }
-            return;
+            return READ_CLOSED;
         }
         ntcp_io_t io = ntcp_classify(n);
         if (io == NTCP_IO_RETRY && eintr_left-- > 0)
             continue;
         if (io == NTCP_IO_WOULDBLOCK)
-            break;
+            return READ_DRAINED;
         if (tcp->on_disconnect)
             tcp->on_disconnect(conn, tcp->cb_ctx);
         conn_free(tcp, conn);
-        return;
+        return READ_CLOSED;
     }
-
-    if (conn->ws_open)
-        try_parse_frames(tcp, conn);
 }
 
 static void handle_accept_ws(nodus_tcp_t *tcp) {
@@ -1067,12 +1337,22 @@ static void handle_accept_ws(nodus_tcp_t *tcp) {
 
     /* No per-IP check here: every peer of this socket is the local proxy
      * (127.0.0.1). The per-IP limit applies to the real IP after the
-     * Upgrade. What is bounded here is how many Upgrades may be pending. */
-    int handshaking = 0;
+     * Upgrade. What is bounded here is how many WS connections exist in
+     * total (NODUS_WS_MAX_CONNS, so the shared pool keeps room for plain
+     * 4001 clients) and how many Upgrades may be pending. */
+    int ws_total = 0, handshaking = 0;
     for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
         nodus_tcp_conn_t *c = tcp->pool[i];
-        if (c && c->is_ws && !c->ws_open)
+        if (!c || !c->is_ws) continue;
+        ws_total++;
+        if (!c->ws_open)
             handshaking++;
+    }
+    if (ws_total >= NODUS_WS_MAX_CONNS) {
+        QGP_LOG_WARN(LOG_TAG_TCP, "ws: %d WebSocket connections open, new connection refused",
+                     ws_total);
+        close(fd);
+        return;
     }
     if (handshaking >= NODUS_WS_MAX_HANDSHAKING) {
         QGP_LOG_WARN(LOG_TAG_TCP, "ws: %d upgrades pending, new connection refused",
@@ -1106,6 +1386,9 @@ static void handle_accept_ws(nodus_tcp_t *tcp) {
      * reset now, so every teardown path below runs the usual callbacks. */
     if (tcp->on_accept)
         tcp->on_accept(conn, tcp->cb_ctx);
+
+    if (conn->close_pending)   /* closed by on_accept */
+        return;
 
     handle_read_fwd(tcp, conn);
 }
@@ -1339,8 +1622,20 @@ nodus_tcp_conn_t *nodus_tcp_connect(nodus_tcp_t *tcp,
 #ifndef _WIN32
         epoll_add(tcp->epoll_fd, fd, EPOLLIN | EPOLLRDHUP | (tcp->level_triggered ? 0 : EPOLLET), conn);
 #endif
-        if (tcp->on_connect)
+        if (tcp->on_connect) {
+            /* The callback runs under the deferred-close rule like every
+             * other one: if it disconnects this connection, the memory
+             * must outlive the check below, and the caller gets NULL
+             * instead of a pointer to a closed connection. */
+            tcp->poll_depth++;
             tcp->on_connect(conn, tcp->cb_ctx);
+            tcp->poll_depth--;
+            bool closed = conn->close_pending;
+            if (tcp->poll_depth == 0)
+                conn_release_deferred(tcp);
+            if (closed)
+                return NULL;
+        }
     } else if (IS_EINPROGRESS(get_socket_error())) {
         /* Connecting — wait for writable */
 #ifndef _WIN32
@@ -1692,10 +1987,16 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
     }
 
     if (max_fd < 0) {
-        /* No connections — just sleep */
+        /* No connections — just sleep. (The pending-read list holds only
+         * pool members, so it is empty here.) */
         if (timeout_ms > 0) Sleep(timeout_ms);
         return 0;
     }
+
+    /* Read budget: leftover input from an earlier call — do not sleep
+     * (see the epoll variant below). */
+    if (tcp->read_head)
+        timeout_ms = 0;
 
     struct timeval tv;
     tv.tv_sec = timeout_ms / 1000;
@@ -1703,10 +2004,16 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
 
     int n = select(max_fd + 1, &rfds, &wfds, &efds,
                    timeout_ms >= 0 ? &tv : NULL);
-    if (n <= 0) return n;
+    if (n < 0) return n;
+    if (n == 0 && !tcp->read_head) return 0;
+
+    /* Deferred close: nothing closed during this batch is freed before it
+     * ends (see the epoll variant below). */
+    tcp->poll_depth++;
+    uint64_t saved_gen = poll_gen_enter(tcp);
 
     int events = 0;
-    for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
+    for (int i = 0; n > 0 && i < NODUS_TCP_MAX_CONNS; i++) {
         nodus_tcp_conn_t *c = tcp->pool[i];
         if (!c || c->fd < 0) continue;
 
@@ -1721,8 +2028,8 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
         if (FD_ISSET((SOCKET)c->fd, &wfds)) {
             handle_write(tcp, c);
             events++;
-            /* conn may have been freed */
-            if (tcp->pool[i] == NULL) continue;
+            /* conn may have been closed (and the slot refilled) */
+            if (tcp->pool[i] != c) continue;
         }
 
         if (FD_ISSET((SOCKET)c->fd, &rfds)) {
@@ -1730,6 +2037,13 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
             events++;
         }
     }
+
+    events += read_pending_service(tcp);
+    poll_gen_leave(tcp, saved_gen);
+
+    tcp->poll_depth--;
+    if (tcp->poll_depth == 0)
+        conn_release_deferred(tcp);
 
     return events;
 }
@@ -1748,12 +2062,23 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
         }
     }
 
+    /* Read budget: input left over from an earlier call is waiting in user
+     * space or in a socket whose edge was already consumed — do not sleep. */
+    if (tcp->read_head)
+        timeout_ms = 0;
+
     struct epoll_event events[MAX_EVENTS];
     int n = epoll_wait(tcp->epoll_fd, events, MAX_EVENTS, timeout_ms);
     if (n < 0) {
-        if (errno == EINTR) return 0;
-        return -1;
+        if (errno != EINTR) return -1;
+        if (!tcp->read_head) return 0;
+        n = 0;                 /* interrupted: still service the pending reads */
     }
+
+    /* Deferred close: from here until the depth drops back, no connection
+     * memory is released (conn_free parks it on close_list). */
+    tcp->poll_depth++;
+    uint64_t saved_gen = poll_gen_enter(tcp);
 
     for (int i = 0; i < n; i++) {
         nodus_tcp_conn_t *conn = events[i].data.ptr;
@@ -1770,6 +2095,14 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
             continue;
         }
 
+        /* Skip a connection an earlier event of this batch closed (a
+         * callback's nodus_tcp_disconnect, or a transport teardown). The
+         * pointer is compared against the pool without dereferencing it;
+         * it cannot have been handed to a new connection meanwhile, because
+         * nothing closed during the batch is freed before it ends. */
+        if (!conn_in_pool(tcp, conn))
+            continue;
+
         if (conn->state == NODUS_CONN_CONNECTING) {
             handle_connect_complete(tcp, conn);
             continue;
@@ -1782,14 +2115,15 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
             continue;
         }
 
-        int slot = conn->slot;  /* Save before handle_write may free conn */
+        int slot = conn->slot;
 
         if (events[i].events & EPOLLOUT)
             handle_write(tcp, conn);
 
-        /* handle_write() may have freed conn on write error.
-         * Check the pool slot before touching conn again. */
-        if (tcp->pool[slot] == NULL)
+        /* handle_write() may have closed conn on write error (and its
+         * on_disconnect may have opened a new connection in the same slot),
+         * so test identity, not emptiness, before any further work. */
+        if (tcp->pool[slot] != conn)
             continue;
 
         /* Read data before handling HUP — sender may close immediately
@@ -1805,7 +2139,19 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
         }
     }
 
-    return n;
+    /* Read budget: connections left over from earlier calls, after this
+     * call's own events. Inside the depth window, so a close made here is
+     * deferred like any other. */
+    int served = read_pending_service(tcp);
+
+    poll_gen_leave(tcp, saved_gen);
+
+    /* End of the batch: the safe point for everything closed during it. */
+    tcp->poll_depth--;
+    if (tcp->poll_depth == 0)
+        conn_release_deferred(tcp);
+
+    return n + served;
 }
 
 #endif /* _WIN32 */
@@ -1814,6 +2160,10 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
 
 void nodus_tcp_disconnect(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     if (!tcp || !conn) return;
+    /* Already closed earlier in this poll batch: on_disconnect has run once
+     * and must not run again. (Outside a batch a closed conn is freed, so
+     * a caller cannot legitimately hold one there.) */
+    if (conn->close_pending) return;
     if (tcp->on_disconnect)
         tcp->on_disconnect(conn, tcp->cb_ctx);
     conn_free(tcp, conn);
@@ -1828,6 +2178,10 @@ nodus_tcp_conn_t *nodus_tcp_find_by_id(nodus_tcp_t *tcp,
             return c;
     }
     return NULL;
+}
+
+bool nodus_tcp_read_pending(const nodus_tcp_t *tcp) {
+    return tcp && tcp->read_head != NULL;
 }
 
 uint64_t nodus_tcp_decrypt_fail_total(const nodus_tcp_t *tcp) {
@@ -1884,6 +2238,11 @@ void nodus_tcp_close(nodus_tcp_t *tcp) {
         if (tcp->pool[i])
             conn_free(tcp, tcp->pool[i]);
     }
+    /* Called outside a poll, this releases everything at once. Called from
+     * inside a callback, the parked connections are released when the
+     * outermost poll returns, so the transport struct must outlive it. */
+    if (tcp->poll_depth == 0)
+        conn_release_deferred(tcp);
 
     if (tcp->listen_fd >= 0) {
 #ifndef _WIN32

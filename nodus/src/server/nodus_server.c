@@ -6602,9 +6602,17 @@ int nodus_server_run(nodus_server_t *srv) {
     fprintf(stderr, "  UDP port: %d\n", srv->udp.port);
 
     while (srv->running && !srv->stop_requested) {
+        /* Read budget: while either transport has connections left on its
+         * pending-read list, neither poll may block — nodus_tcp_poll waits
+         * 0 ms only for its OWN list, so the sibling's 50 ms wait would
+         * delay that input. Re-evaluated before each call: the first poll
+         * can fill or empty a list. */
+        int poll_ms = (nodus_tcp_read_pending(&srv->tcp) ||
+                       nodus_tcp_read_pending(&srv->inter_tcp)) ? 0 : 50;
+
         /* Poll client TCP events (plain port and, when enabled, the
          * WebSocket entry — same transport) */
-        nodus_tcp_poll(&srv->tcp, 50);
+        nodus_tcp_poll(&srv->tcp, poll_ms);
 
         /* WebSocket entry: close Upgrades not finished within
          * NODUS_WS_HANDSHAKE_TIMEOUT_S. Local connection housekeeping only. */
@@ -6612,7 +6620,9 @@ int nodus_server_run(nodus_server_t *srv) {
             nodus_tcp_ws_sweep(&srv->tcp, nodus_time_now());
 
         /* Poll inter-node TCP events */
-        nodus_tcp_poll(&srv->inter_tcp, 50);
+        poll_ms = (nodus_tcp_read_pending(&srv->tcp) ||
+                   nodus_tcp_read_pending(&srv->inter_tcp)) ? 0 : 50;
+        nodus_tcp_poll(&srv->inter_tcp, poll_ms);
 
         /* The witness port 4004 (the p2p host) is polled inside
          * nodus_witness_tick() */

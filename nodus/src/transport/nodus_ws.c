@@ -171,6 +171,69 @@ int nodus_ws_real_ip(const char *sock_ip, const char *xff, size_t xff_len,
     return -1;
 }
 
+int nodus_ws_ip_bucket(const char *ip, nodus_ws_ip_bucket_t *out) {
+    if (!out) return -1;
+    memset(out, 0, sizeof(*out));
+    if (!ip) return -1;
+
+    struct in_addr a4;
+    struct in6_addr a6;
+    if (inet_pton(AF_INET, ip, &a4) == 1) {
+        out->family = 4;
+        memcpy(out->key, &a4.s_addr, 4);
+        return 0;
+    }
+    if (inet_pton(AF_INET6, ip, &a6) == 1) {
+        if (IN6_IS_ADDR_V4MAPPED(&a6)) {
+            out->family = 4;
+            memcpy(out->key, a6.s6_addr + 12, 4);
+        } else {
+            out->family = 6;
+            memcpy(out->key, a6.s6_addr, 8);
+        }
+        return 0;
+    }
+    return -1;
+}
+
+/* ── UTF-8 (RFC 3629 §4) ─────────────────────────────────────────── */
+
+bool nodus_ws_utf8_valid(const uint8_t *s, size_t n) {
+    if (!s) return n == 0;
+    size_t i = 0;
+    while (i < n) {
+        uint8_t b = s[i];
+        if (b < 0x80) { i++; continue; }
+
+        size_t need;          /* continuation bytes after the lead */
+        uint8_t lo = 0x80;    /* allowed range of the FIRST continuation */
+        uint8_t hi = 0xBF;
+        if (b >= 0xC2 && b <= 0xDF) {
+            need = 1;
+        } else if (b == 0xE0) {
+            need = 2; lo = 0xA0;              /* no overlong 3-byte */
+        } else if (b == 0xED) {
+            need = 2; hi = 0x9F;              /* no surrogates */
+        } else if (b >= 0xE1 && b <= 0xEF) {
+            need = 2;
+        } else if (b == 0xF0) {
+            need = 3; lo = 0x90;              /* no overlong 4-byte */
+        } else if (b >= 0xF1 && b <= 0xF3) {
+            need = 3;
+        } else if (b == 0xF4) {
+            need = 3; hi = 0x8F;              /* nothing above U+10FFFF */
+        } else {
+            return false;     /* 0x80-0xC1 lead, or 0xF5-0xFF */
+        }
+        if (n - i - 1 < need) return false;   /* truncated */
+        if (s[i + 1] < lo || s[i + 1] > hi) return false;
+        for (size_t k = 2; k <= need; k++)
+            if (s[i + k] < 0x80 || s[i + k] > 0xBF) return false;
+        i += need + 1;
+    }
+    return true;
+}
+
 /* ── Opening handshake ───────────────────────────────────────────── */
 
 static int hs_reject(nodus_ws_hs_result_t *res, int status, const char *reason) {
@@ -479,6 +542,11 @@ static int finish_frame(nodus_ws_parser_t *p, const nodus_ws_sink_t *sink,
             uint16_t c = (uint16_t)(((uint16_t)p->ctrl[0] << 8) | p->ctrl[1]);
             if (!close_code_valid(c))
                 return feed_fail(p, code, NODUS_WS_CLOSE_PROTOCOL, "invalid close code");
+            /* §5.5.1: the reason after the code is UTF-8; §8.1: invalid
+             * UTF-8 fails the connection with 1007. */
+            if (!nodus_ws_utf8_valid(p->ctrl + 2, (size_t)p->ctrl_len - 2))
+                return feed_fail(p, code, NODUS_WS_CLOSE_INVALID_DATA,
+                                 "close reason not UTF-8");
             p->closed = true;
             p->reason = "peer close";
             *code = c;

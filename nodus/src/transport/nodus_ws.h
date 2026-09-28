@@ -45,13 +45,21 @@ extern "C" {
  *  pool slot; this caps how many the proxy can hold at once. */
 #define NODUS_WS_MAX_HANDSHAKING     64
 
+/** WebSocket connections per transport, Upgrades in progress and open ones
+ *  together. The WS entry shares the NODUS_TCP_MAX_CONNS (1024) pool with the
+ *  plain 4001 listener; this cap keeps at least 1024 - 256 = 768 slots for
+ *  the plain clients (decision 2026-09-25-web-wallet-nodus-send-transport,
+ *  operator 2026-09-28 "havuz modeli"). Enforced in handle_accept_ws. */
+#define NODUS_WS_MAX_CONNS           256
+
 /** Seconds from accept (conn->connected_at) within which the Upgrade must
  *  complete; nodus_tcp_ws_sweep() closes the connection afterwards. */
 #define NODUS_WS_HANDSHAKE_TIMEOUT_S 10
 
 /** Per real-IP limit among WebSocket connections. Same value as the TCP
  *  client port's CRIT-5 limit, counted SEPARATELY (the decision's "20 + 20"):
- *  WS connections are not counted against TCP and vice versa. */
+ *  WS connections are not counted against TCP and vice versa. An IPv6
+ *  client is counted by its /64 prefix (nodus_ws_ip_bucket). */
 #define NODUS_WS_MAX_CONNS_PER_IP    20
 
 /** Largest client→server frame payload accepted: one full nodus frame
@@ -90,6 +98,9 @@ extern "C" {
 /** 1005 "no status received" is never put on the wire (§7.4.1); here it
  *  means "reply with an EMPTY close body". */
 #define NODUS_WS_CLOSE_NO_STATUS     1005
+/** §7.4.1: data inconsistent with the message type — here, a close reason
+ *  that is not valid UTF-8 (§5.5.1, §8.1). */
+#define NODUS_WS_CLOSE_INVALID_DATA  1007
 #define NODUS_WS_CLOSE_TOO_BIG       1009
 #define NODUS_WS_CLOSE_INTERNAL      1011
 
@@ -170,6 +181,26 @@ int nodus_ws_accept_key(const char *key, size_t key_len,
  */
 int nodus_ws_real_ip(const char *sock_ip, const char *xff, size_t xff_len,
                      char out[64]);
+
+/** The unit the per-IP limit counts (NODUS_WS_MAX_CONNS_PER_IP). One host
+ *  owns a whole IPv6 /64, so an IPv6 client is keyed by its first 8 bytes;
+ *  an IPv4 client by all 4. An IPv4-mapped IPv6 address (::ffff:a.b.c.d) is
+ *  keyed as the IPv4 address it carries — otherwise every such client would
+ *  share the one ::/64 bucket. Zero-filled before use, so two buckets are
+ *  equal exactly when memcmp says so. */
+typedef struct {
+    uint8_t family;      /* 4 or 6 */
+    uint8_t key[8];      /* IPv4: 4 bytes + 4 zero; IPv6: the /64 prefix */
+} nodus_ws_ip_bucket_t;
+
+/** Fill *out from a textual IPv4 / IPv6 address (inet_pton).
+ *  @return 0, or -1 (out zeroed) if ip does not parse. */
+int nodus_ws_ip_bucket(const char *ip, nodus_ws_ip_bucket_t *out);
+
+/** Strict UTF-8 check (RFC 3629 §4): no overlong forms, no surrogates
+ *  (U+D800..U+DFFF), nothing above U+10FFFF, no truncated sequence.
+ *  An empty input is valid. */
+bool nodus_ws_utf8_valid(const uint8_t *s, size_t n);
 
 /* ── Frame parser (client → server, §5.2-§5.5) ───────────────────── */
 

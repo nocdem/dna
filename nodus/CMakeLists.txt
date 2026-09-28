@@ -1003,6 +1003,26 @@ add_executable(test_ws_server tests/test_ws_server.c)
 target_link_libraries(test_ws_server nodus dsa nodus OpenSSL::Crypto)
 add_test(NAME test_ws_server COMMAND test_ws_server)
 
+# Deferred connection close: nodus_tcp_disconnect called from a frame
+# callback — on another connection with an event in the same epoll batch,
+# and on the callback's own connection — must never touch freed memory and
+# must run on_disconnect exactly once. Listens on 127.0.0.1:0 (kernel-chosen
+# port), so it shares no port with any other test. Meaningful as a
+# use-after-free check when built with -fsanitize=address (see its header).
+add_executable(test_tcp_deferred_close tests/test_tcp_deferred_close.c)
+target_link_libraries(test_tcp_deferred_close nodus dsa nodus)
+add_test(NAME test_tcp_deferred_close COMMAND test_tcp_deferred_close)
+
+# Read budget: one nodus_tcp_poll call reads at most
+# NODUS_TCP_READ_BUDGET_FRAMES frames of one connection, the rest is still
+# delivered (in order) by later calls under EPOLLET, and a connection on the
+# pending-read list that gets closed is dropped from it. Listens on
+# 127.0.0.1:0 (kernel-chosen port). Build with -fsanitize=address for the
+# use-after-free checks to be hard failures (see its header).
+add_executable(test_tcp_read_budget tests/test_tcp_read_budget.c)
+target_link_libraries(test_tcp_read_budget nodus dsa nodus)
+add_test(NAME test_tcp_read_budget COMMAND test_tcp_read_budget)
+
 # 2026-07-21 parallel-safety: every server-spawning test now uses a FULLY
 # explicit, test-unique port set (test_server 140xx, test_circuit_live
 # 150xx, test_client 151xx, test_server_init_fail_closes 152xx,

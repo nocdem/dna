@@ -1057,6 +1057,52 @@ Each TCP 4001 connection is assigned a **session** (`nodus_session_t`) with:
 Sessions are cleared on disconnect. The server supports up to `NODUS_MAX_SESSIONS`
 concurrent clients.
 
+**Connection close (deferred inside a poll).** `nodus_tcp_disconnect()` — and every
+teardown inside the transport (bad frame, read/write error, `EPOLLERR`/`EPOLLHUP`,
+WebSocket refusal via `ws_close_now`; not `nodus_tcp_close()`, which runs no
+callback) — runs `on_disconnect` exactly once, then
+detaches the connection at once: epoll removal, `close(fd)`, pool slot emptied,
+`fd = -1`, `state = NODUS_CONN_CLOSED`, `close_pending = true`. The memory is
+released at once only when no `nodus_tcp_poll()` is running on that transport. While
+one is (`nodus_tcp_t.poll_depth > 0`: every frame, accept, connect and disconnect
+callback, including the session eviction in `nodus_auth.c` and the `!bind_ok`
+branch of `dispatch_inter`), the struct is parked on `nodus_tcp_t.close_list` and freed
+when the outermost poll returns. Until then the transport does no more work on it:
+the event loop skips any `data.ptr` no longer in `tcp->pool`, `try_parse_frames`
+stops after the `on_frame` that closed its connection, and a second
+`nodus_tcp_disconnect` on it is a no-op. The end of the batch is the only release
+point on purpose — freeing earlier would let an accept later in the same batch receive
+the same address while a stale event for the old connection is still queued.
+`tests/test_tcp_deferred_close.c` pins both callback shapes (build it with
+`-fsanitize=address` to turn a use-after-free into a hard failure).
+
+**Read budget (fairness between connections).** One `nodus_tcp_poll()` call reads a
+connection at most once and within `NODUS_TCP_READ_BUDGET_FRAMES` (256: nodus frames
+taken off `rbuf`, dispatched or dropped, plus WebSocket pings answered) and
+`NODUS_TCP_READ_BUDGET_BYTES` (256 KiB of socket bytes) — both in `nodus_tcp.h`.
+Before this, a peer streaming small frames (or WebSocket pings / empty frames, which
+never grow `rbuf`) kept its read loop spinning until `EAGAIN`, so the poll never
+returned and the server loop — which also runs the witness tick — starved. A
+connection that stops on the budget goes on `nodus_tcp_t.read_head` (FIFO); every
+call services that list after its own socket events and waits 0 ms in
+`epoll_wait`/`select` while it is non-empty, because under `EPOLLET` no new edge comes
+for bytes already read or still queued. The socket is read only while `rbuf` holds no
+complete frame (each chunk is parsed before the next read), so `rbuf` never holds more
+than one incomplete frame plus one chunk. `nodus_ws_feed` consumes a whole 16 KiB
+chunk, so the frame budget can overrun by one chunk's pings; empty WebSocket data
+frames and pongs reach no callback and are bounded by the byte budget. Terminal paths
+(EOF, WebSocket close) still dispatch every complete frame before closing. A closing
+connection is never on the list: `conn_free` unlinks it. The server loop
+(`nodus_server_run` in `nodus_server.c`) polls the client and inter-node transports in
+turn; `nodus_tcp_poll` waits 0 ms only for its OWN pending list, so before each of the
+two calls the loop asks `nodus_tcp_read_pending()` of both transports and passes
+timeout 0 while either list is non-empty, 50 ms otherwise (re-evaluated before each
+call, since the first poll can fill or empty a list). A connection over its budget
+therefore gets its next slice on the next loop iteration without a sibling's 50 ms
+wait in between. Only these two transports are checked.
+`tests/test_tcp_read_budget.c` pins the budget, in-order delivery of the rest across
+later calls, and removal of a pending connection closed inside and outside a poll.
+
 **Channel sessions** (TCP 4003) are managed separately by `nodus_channel_server_t`:
 - Client sessions (`nodus_ch_client_session_t`): auth state, channel subscriptions, rate limiting
 - Node sessions (`nodus_ch_node_session_t`): inter-node replication connections
@@ -1162,12 +1208,16 @@ by `test_ws_frame` / `test_ws_upgrade`:
   stream state machine (header bytes, remaining length, mask key and position,
   opcode, open-message flag live in `conn->ws`), so any split of the input works.
 - *Ping* → pong with the same payload; *close* → a close reply (echoing the peer's
-  code, or empty) and the connection is dropped.
+  code, or empty) and the connection is dropped. A close code must be 1000-1003,
+  1007-1014 or 3000-4999 (else 1002). The reason text after the code must be valid
+  UTF-8 (§5.5.1, §8.1; strict RFC 3629 check `nodus_ws_utf8_valid`: no overlongs, no
+  surrogates, nothing above U+10FFFF, no truncated sequence) — else close 1007
+  (`NODUS_WS_CLOSE_INVALID_DATA`). The code is checked first.
 
 **Glue** — `src/transport/nodus_tcp.c`:
 
-- *Inbound*: `handle_read` routes `is_ws` connections to `handle_read_ws`, which drains
-  the socket to EAGAIN in 16 KiB chunks. Before the Upgrade the bytes collect in
+- *Inbound*: `handle_read` routes `is_ws` connections to `read_ws`, which reads the
+  socket in 16 KiB chunks until EAGAIN or the read budget (below). Before the Upgrade the bytes collect in
   `rbuf`; after it, WebSocket payload is unmasked and APPENDED to `rbuf`, and the
   unchanged `try_parse_frames` / `nodus_frame_decode` path sees exactly the byte
   stream a TCP client would have sent. The request head is dropped from `rbuf` at the
@@ -1189,11 +1239,11 @@ by `test_ws_frame` / `test_ws_upgrade`:
 
 | Limit | Value | Where |
 |---|---|---|
-| Total connections | `NODUS_TCP_MAX_CONNS` (1024), shared with the plain 4001 listener | `handle_accept_ws` |
+| Total connections | the pool is `NODUS_TCP_MAX_CONNS` (1024), shared with the plain 4001 listener; WebSocket connections (Upgrading + open) take at most 256 of it (`NODUS_WS_MAX_CONNS`), so at least 768 slots stay for 4001 clients (operator 2026-09-28, appended to the decision) | `handle_accept_ws` |
 | Per socket IP at accept | none — every peer is 127.0.0.1 | `handle_accept_ws` |
 | Upgrades in progress | 64 (`NODUS_WS_MAX_HANDSHAKING`) | `handle_accept_ws` |
 | Upgrade deadline | 10 s from accept (`NODUS_WS_HANDSHAKE_TIMEOUT_S`) | `nodus_tcp_ws_sweep`, called every loop iteration |
-| Per real IP | 20 open WebSocket connections (`NODUS_WS_MAX_CONNS_PER_IP`), counted after `X-Forwarded-For`; plain TCP connections are counted separately (the 4001 CRIT-5 count skips `is_ws`) | `ws_try_upgrade`, `handle_accept` |
+| Per real IP | 20 open WebSocket connections (`NODUS_WS_MAX_CONNS_PER_IP`), counted after `X-Forwarded-For`. IPv4 by the whole address; IPv6 by its /64 prefix (one host owns a /64); an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) as the IPv4 it carries — `nodus_ws_ip_bucket`, stored per connection in `conn->ws_bucket`; `conn->ip` keeps the full normalised address for the logs. Plain TCP connections are counted separately (the 4001 CRIT-5 count skips `is_ws`) | `ws_try_upgrade`, `handle_accept` |
 | After the Upgrade | the ordinary client limits: 15 s unauthenticated / 180 s authenticated idle sweep, session rules | `idle_timeout_sweep` |
 
 After the Upgrade the connection is an ordinary tier-2 client connection: `hello` /
@@ -1203,14 +1253,20 @@ nothing in it reaches block content, votes or state.
 
 **Logs** (tag `NODUS_TCP`, one line per event, never echoing request bytes):
 `ws: upgrade ok slot=… ip=…`, `ws: upgrade refused slot=… status=…: <check>`,
-`ws: per-IP limit 20 reached for <ip>`, `ws: N upgrades pending, new connection
-refused`, `ws: upgrade not completed within 10s`, `ws: closing slot=… code=…:
+`ws: per-IP limit 20 reached for <ip>`, `ws: N WebSocket connections open, new
+connection refused`, `ws: N upgrades pending, new connection refused`, `ws: upgrade not completed within 10s`, `ws: closing slot=… code=…:
 <reason>`, `ws: peer closed`.
 
 End-to-end coverage: `test_ws_server` (real server with `ws_port`, loopback client:
 Upgrade, tier-2 `hello` → `challenge` inside WebSocket frames, ping/pong, 403, the
-21st connection from one `X-Forwarded-For` address, the sweep with a supplied
-clock, text frame → close 1003).
+21st connection from one `X-Forwarded-For` address, the 21st address in one IPv6 /64
+while another /64 is served, the sweep with a supplied clock, text frame → close
+1003, and the 257th WebSocket connection refused at accept with 256 in the pool).
+Codec coverage: `test_ws_upgrade` (incl. a complete 8193-byte head refused, a bare CR
+in a header line, repeated Host / Origin / Version, the /64 bucket) and
+`test_ws_frame` (incl. close codes 999/1004/1005/1006/1015/2999/5000 refused and
+3000/4999 echoed, a 125-byte ping answered, invalid-UTF-8 close reason → 1007, every
+branch of the UTF-8 check).
 
 ### Inter-node dialer authentication (TCP 4002, v0.18.11)
 
