@@ -36,6 +36,7 @@
 #include "witness/nodus_witness_v2_env.h"       /* env preflight seam    */
 #include "witness/nodus_witness_v2_produce.h"   /* classify_entry / tip  */
 #include "witness/nodus_witness_domreg.h"       /* contextual rulesets   */
+#include "witness/nodus_witness_runtime.h"      /* start-time selfcheck  */
 /* FLEET-TM-R3 W3 package C2a — the cometbft server binding: the startup
  * table and the two reactors, whose host tables are the p2p host's
  * (P2P-PORT F5; the C2b transport glue nodus_witness_cmt_net is deleted).
@@ -2351,6 +2352,21 @@ int nodus_witness_init(nodus_witness_t *witness,
      * witness_cmt_tick has ever run once. */
     witness->cmt_next_deadline_ns = INT64_MAX;
 
+    /* R1-9 — the compiled runtime table is checked on EVERY start, not
+     * only at genesis derivation (nodus_witness_domreg_init_genesis):
+     * the pinned SYSTEM/CORE ruleset digests are re-derived through the
+     * C encoder, the metering-policy identity and the auth-kind
+     * allowlists are checked (nodus_witness_runtime_selfcheck). A build
+     * whose table disagrees with its own pins would execute blocks under
+     * rules no other node runs; it must not start a witness at all. */
+    if (nodus_witness_runtime_selfcheck() != 0) {
+        fprintf(stderr,
+                "%s: REFUSING START — the compiled runtime table failed "
+                "its selfcheck (a pinned ruleset digest, the metering "
+                "policy or an auth-kind allowlist does not re-derive). "
+                "This build is broken; do not run it.\n", LOG_TAG);
+        return -1;
+    }
 
     /* Phase 10 / Task 53 — invalidate the committee cache. UINT64_MAX
      * is the sentinel meaning "no epoch cached yet"; a real epoch

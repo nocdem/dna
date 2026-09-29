@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ═════════════════════════════════════════════════════════════════════
-# check_genesis_conf.sh — refuse a version-4 (cometbft + treasury) genesis
-# config that is not ready for the ceremony.
+# check_genesis_conf.sh — refuse a version-5 (cometbft + treasury + genesis
+# outputs) genesis config that is not ready for the ceremony.
 #
 # Usage:
 #   check_genesis_conf.sh <genesis.conf> --cli <path/to/nodus-cli>

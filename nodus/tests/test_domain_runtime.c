@@ -184,11 +184,14 @@ static const uint8_t CORE_TYPES_EXP[6] = { 1, 2, 3, 11, 12, 13 };
 static const uint32_t CORE_RULES_EXP[7] = { 1, 2, 3, 4, 5, 6, 7 };
 static const uint32_t SYS_RULES_EXP[6]  = { 1, 2, 3, 4, 5, 6 };
 /* The compiled ruleset versions this build ships. */
-#define SYS_RSV  6u    /* W-A: the treasury leg + the genesis refund (was 5,
-                        * O15F: op 6 CHAIN_CONFIG TARGET_ACTIVE [7..30]) */
+#define SYS_RSV  6u    /* W-A: the treasury leg (the genesis-seat refund to
+                        * the Foundation pool was withdrawn by general
+                        * multisig) (was 5, O15F: op 6 CHAIN_CONFIG
+                        * TARGET_ACTIVE [7..30]) */
 #define CORE_RSV 4u    /* W-C: TOKEN_CREATE fee floor = chain_config param
-                        * 6 (was 3, O11: SYSFUND appended) — NOT FINAL
-                        * until the general-multisig package closes */
+                        * 6, and general multisig: auth_kind 3 — ONE
+                        * advance for both (was 3, O11: SYSFUND
+                        * appended) */
 
 int main(void) {
     /* ── 1. self-check ──────────────────────────────────────────────── */

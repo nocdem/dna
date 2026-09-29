@@ -730,9 +730,11 @@ int nodus_witness_v2_bundle_apply(nodus_witness_t *w2,
         if (!ok) return -1;
     }
 
-    /* The joiner persists its OWN bundle so it too can serve — and a
-     * byte-mismatch vs what it received is a fault (proves the
-     * derivation is reproducible). */
+    /* The joiner persists its OWN bundle, re-serialized from its own
+     * tables, so it too can serve. This does NOT compare it with the
+     * bytes it received: persist only refuses a row that already exists
+     * with different bytes (nodus_witness_v2_bundle.h). What the joiner
+     * proved is the pin + app_hash match above. */
     if (nodus_witness_v2_bundle_persist(w2) != 0) return -1;
 
     QGP_LOG_INFO(LOG_TAG, "%s", "successor genesis adopted from bundle "

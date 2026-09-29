@@ -1776,9 +1776,9 @@ static int gen_v3_encode_planned(const nodus_v2_gen_config_t *cfg,
     if (gen_v3_shape_ok(cfg) != 0) return -1;
 
     /* THE BODY is gen_encode_planned's output. It writes
-     * cfg->config_version, which reads 3 here — D-18 rev 4's version-2
-     * body differed only in that field (the version-2 encoder itself is
-     * deleted, P4). */
+     * cfg->config_version, which reads 5 here (gen_v3_shape_ok above
+     * refuses any other) — D-18 rev 4's version-2 body differed only in
+     * that field (the version-2 encoder itself is deleted, P4). */
     uint8_t *body = NULL;
     size_t   body_len = 0;
     if (gen_encode_planned(cfg, plan, &body, &body_len) != 0) return -1;
@@ -3325,7 +3325,8 @@ int nodus_witness_v2_gen_derive_v3(const char *data_path,
 
         if (out_chain32)
             memcpy(out_chain32, chain32, NODUS_V2_GEN_CHAIN_ID_LEN);
-        QGP_LOG_INFO(LOG_TAG, "cometbft (version 3) chain derived: %s "
+        QGP_LOG_INFO(LOG_TAG, "cometbft (document version 5) chain "
+                     "derived: %s "
                      "(reserve=%llu raw across %zu claim leaves, "
                      "bonded=%llu)", real_path,
                      (unsigned long long)plan.total_claimable,

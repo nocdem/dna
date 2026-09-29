@@ -5007,7 +5007,11 @@ done:
  *      (offline, each co-signer) re-derives the leg digest from the
  *      envelope bytes + chain id + the compiled CORE ruleset and REFUSES
  *      if it differs from the exported one, checks its key is in the
- *      descriptor, prints what it is signing, and signs.
+ *      descriptor, REFUSES a SPEND call whose length does not match its
+ *      own counts, prints what it is signing (every input's full
+ *      nullifier, every output's owner, amount and token id) with a
+ *      WARNING that the input owners were NOT verified (no RPC answers
+ *      an address's coins without its session key), and signs.
  *   4. msig combine --in <export> --sig <file> ... [--keys <dir>
  *      --submit ip:port] [--out <envelope file>]
  *      verifies every signature, assembles them in ascending pubkey
@@ -5638,20 +5642,57 @@ static int cmd_msig_sign(int argc, char **argv, int cmd_start) {
         char ah[QGP_FP_HEX_BUFFER];
         if (dna_msig_address(desc, dl, addr) != 0) goto done;
         qgp_fp_raw_to_hex(addr, ah);
+        /* The SPEND call is nin u8 ‖ nin × nullifier[64] ‖ nout u8 ‖
+         * nout × T6_SPEND_OUT_LEN (the build above, and the chain's
+         * rtn_spend_parse). Nothing is read before its length is proved
+         * against the leg's own call_len: a short or inconsistent call
+         * is REFUSED, never displayed. */
         const uint8_t *c = v.buf + v.call_off[0];
+        const size_t clen = v.leg[0].call_len;
+        if (clen < 2 || c[0] < 1 || c[0] > T6_SPEND_MAX_IN ||
+            clen < 2 + (size_t)c[0] * 64) {
+            fprintf(stderr, "REFUSED: the exported CORE SPEND call is "
+                    "malformed (length %zu)\n", clen);
+            goto done;
+        }
         uint8_t nin = c[0];
-        const uint8_t *outs = c + 1 + (size_t)nin * 64 + 1;
         uint8_t nout = c[1 + (size_t)nin * 64];
-        printf("signing a CORE SPEND from %u-of-%u address %.16s...: "
+        const uint8_t *outs = c + 1 + (size_t)nin * 64 + 1;
+        if (nout < 1 ||
+            clen != 2 + (size_t)nin * 64 + (size_t)nout * T6_SPEND_OUT_LEN) {
+            fprintf(stderr, "REFUSED: the exported CORE SPEND call length "
+                    "%zu does not match its %u input(s) and %u output(s)\n",
+                    clen, (unsigned)nin, (unsigned)nout);
+            goto done;
+        }
+        printf("signing a CORE SPEND from %u-of-%u address %s: "
                "%u input(s), fee %llu\n", (unsigned)m, (unsigned)n, ah,
                (unsigned)nin, (unsigned long long)v.fee_amount);
+        for (uint8_t i = 0; i < nin; i++) {
+            char nh[129];
+            for (int b = 0; b < 64; b++)
+                snprintf(nh + 2 * b, 3, "%02x", c[1 + (size_t)i * 64 + b]);
+            printf("  in[%u]  nullifier %s\n", (unsigned)i, nh);
+        }
         for (uint8_t o = 0; o < nout; o++) {
             const uint8_t *r = outs + (size_t)o * T6_SPEND_OUT_LEN;
             uint64_t amt = 0;
             for (int b = 0; b < 8; b++) amt = (amt << 8) | r[128 + b];
-            printf("  out[%u] -> %.16s... amount %llu\n", (unsigned)o,
-                   (const char *)r, (unsigned long long)amt);
+            char th[129];
+            for (int b = 0; b < 64; b++)
+                snprintf(th + 2 * b, 3, "%02x", r[136 + b]);
+            printf("  out[%u] -> %.128s amount %llu token %s\n",
+                   (unsigned)o, (const char *)r, (unsigned long long)amt,
+                   th);
         }
+        /* R1-5: the carried descriptor is not covered by the digest, and
+         * no RPC answers a coin's owner for an address that has no
+         * session key (dnac_utxo is gated to the session's own
+         * fingerprint), so this tool cannot prove the inputs belong to
+         * the address above. Say so on every signature. */
+        printf("WARNING: the input owners were NOT verified. Sign only if "
+               "you know every nullifier above is a coin of address %s.\n",
+               ah);
     }
     uint8_t sig[DNAC_SIGNATURE_SIZE];
     size_t sl = 0;

@@ -50,7 +50,8 @@ initial_height        = 1
 # decision §1 "Toplam arz 1.000.000.000 NODUS, sabit" — 1 000 000 000
 # NODUS × 10^8 raw units (decimal_unit below). Rule P.2 (gen_plan_build,
 # nodus_witness_v2_gen.c): Σ allocations + Σ self_stake +
-# reward_pool_initial + Σ treasury balances == total_supply_raw.
+# reward_pool_initial + Σ treasury balances + Σ genesis outputs ==
+# total_supply_raw.
 total_supply_raw      = 100000000000000000
 
 # decision §1 "Epoch uzunluğu 720 blok". Must equal the build's compiled

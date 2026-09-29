@@ -1190,9 +1190,9 @@ int nodus_v2_gen_config_parse_file(const char *path,
     st.cfg->n_allocs = st.n_allocs;
     st.cfg->allocs   = st.allocs;
 
-    /* ── version 4: the required keys, the defaults, the Comet rows ───
+    /* ── version 5: the required keys, the defaults, the Comet rows ───
      * The condition always holds here — the key is required above and
-     * nv2gc_assign_top refuses any value but 4 — and is kept as the
+     * nv2gc_assign_top refuses any value but 5 — and is kept as the
      * explicit statement of which document this block completes. (The
      * "version-2 file carrying a version-3 key" refusal that stood before
      * this block is gone with version 2, tokenomics-v3 P4.) */

@@ -50,10 +50,11 @@
  * would only give the operator a way to fail later, in the builder,
  * instead of never.
  *
- * `config_version` is the opposite case: REQUIRED in the file, and 4 is
- * its only legal value (the final pre-testnet wipe W-A retired 3 when the
- * nine [treasury] blocks arrived; tokenomics-v3 P4 had deleted version 2,
- * OBLIGATION atlas-dec-71525f3b). It is required rather than forced so
+ * `config_version` is the opposite case: REQUIRED in the file, and 5 is
+ * its only legal value (general multisig retired 4 when the
+ * [genesis_output] blocks arrived; the final pre-testnet wipe W-A had
+ * retired 3 when the nine [treasury] blocks arrived; tokenomics-v3 P4
+ * had deleted version 2, OBLIGATION atlas-dec-71525f3b). It is required rather than forced so
  * that a file written for a retired schema is refused instead of being
  * silently read as the new one.
  *
@@ -78,8 +79,8 @@
  * nodus_witness_v2_gen.c:559-564), at least one allocation and the nine
  * treasury blocks (two shown):
  *
- *     # DNA Chain — cometbft genesis config (document version 4)
- *     config_version        = 4          # REQUIRED; 4 is the only value
+ *     # DNA Chain — cometbft genesis config (document version 5)
+ *     config_version        = 5          # REQUIRED; 5 is the only value
  *     genesis_time_ms       = <UTC ms>   # REQUIRED
  *     initial_height        = 1          # REQUIRED (0 and 1 differ in
  *                                        # chain id)
@@ -131,7 +132,12 @@
  *     ...                                # pools 2..8
  *     [treasury]
  *     pool_id = 9
- *     balance = 5000000000000000
+ *     balance = 0                        # pools 5..9 hold 0: their coins
+ *                                        # are [genesis_output] blocks to
+ *                                        # the Foundation multisig address
+ *                                        # (decision 2026-09-29-general-
+ *                                        # multisig.md item 2; checked by
+ *                                        # check_genesis_conf.sh)
  *
  *     [genesis_output]                   # config_version 5 (general
  *     owner  = <128 lowercase hex chars> # multisig): 0..64 blocks, FILE
@@ -185,10 +191,10 @@ extern "C" {
  * under ceremony conditions: a refusal that does not name the line is a
  * refusal that costs an hour.
  *
- * The file must say `config_version = 4` (the only schema since the
- * final pre-testnet wipe W-A; a version-3 or version-2 file, and a file
- * with no version, is refused) and carry exactly nine `[treasury]`
- * blocks in pool order. The contract is WIDER than well-formedness, and
+ * The file must say `config_version = 5` (the only schema since general
+ * multisig; a version-4, version-3 or version-2 file, and a file with no
+ * version, is refused) and carry exactly nine `[treasury]` blocks in
+ * pool order, plus 0..64 `[genesis_output]` blocks. The contract is WIDER than well-formedness, and
  * deliberately (register row R3-C1b-3): deriving the Comet
  * validator rows (`nodus_witness_v2_gen_v3_fill_comet_rows`) runs the
  * builder's SHARED genesis rules through `gen_plan_build`, so a

@@ -90,11 +90,12 @@ int main(void) {
     CHECK_ERR(dnac_tx_verify_delegate_rules(&tx));
 
     /* ──────────────────────────────────────────────────────────────
-     * 3. Rule S: signer == validator → reject self-delegation.
+     * 3. Self-delegation is ALLOWED (Rule S removed — decision
+     *    2026-09-28-treasury-pools-and-exact-self-stake.md item 6).
      * ────────────────────────────────────────────────────────────── */
     build_valid_delegate(&tx, min);
     memset(tx.delegate_fields.validator_pubkey, 0xAA, DNAC_PUBKEY_SIZE);  /* match signer */
-    CHECK_ERR(dnac_tx_verify_delegate_rules(&tx));
+    CHECK_OK(dnac_tx_verify_delegate_rules(&tx));
 
     /* ──────────────────────────────────────────────────────────────
      * 4. signer_count != 1 → reject.

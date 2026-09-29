@@ -1095,8 +1095,10 @@ int dnac_unstake(dnac_context_t *ctx,
  *
  * @param ctx               DNAC context
  * @param validator_pubkey  Dilithium5 pubkey of the target validator
- *                          (DNAC_PUBKEY_SIZE bytes; must differ from caller's
- *                          signing pubkey — Rule S: no self-delegation)
+ *                          (DNAC_PUBKEY_SIZE bytes; MAY equal the caller's
+ *                          signing pubkey — self-delegation is allowed,
+ *                          decision 2026-09-28-treasury-pools-and-exact-
+ *                          self-stake.md item 6)
  * @param amount            Amount to delegate in raw units
  *                          (must be >= DNAC_MIN_DELEGATION)
  * @param callback          Completion callback (can be NULL)
@@ -1557,7 +1559,11 @@ int dnac_query_block_range(dnac_context_t *ctx,
 /**
  * @brief Create a new token
  *
- * Burns TOKEN_CREATE_FEE (1% of genesis supply, 10M DNAC) and creates a new custom token.
+ * Legacy tx lane: pays this builder's compiled TOKEN_CREATE_FEE (10^15 raw
+ * = 10M, token_create.c) and creates a new custom token. On the version-3
+ * chain the creation fee is the governed chain_config parameter
+ * DNAC_CFG_TOKEN_CREATE_FEE_RAW (param 6) and it is credited to the reward
+ * pool, never burned (nodus_witness_rt_native.c rtn_tc_exec).
  * On success, the full supply is assigned to the creator as a genesis UTXO.
  *
  * @param ctx DNAC context

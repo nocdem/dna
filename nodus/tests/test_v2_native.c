@@ -11785,6 +11785,96 @@ static int test_core_multisig(void) {
         CHECK(msig_hook(&fx, &e, &av) == 0 && av.n_msig == 0,
               "A a kind-1 verdict has n_msig 0");
         OK();
+
+        /* R1-7: a verdict the ENGINE could never have built reaches the
+         * CORE exec hook only if this node's engine invariant broke —
+         * a node FAULT (-2), never a deterministic verdict (-1).
+         * KILLED BY: rtn_owners_init returning -1 on any of the three
+         * shapes, or nodus_rt_core_exec folding its rc into -1. The
+         * control proves the forged fields, not the envelope, flip the
+         * rc. */
+        {
+            static uint8_t iid[64];
+            static uint8_t res[DNA_EFFECT_MAX_TOTAL_LEN];
+            size_t rl = 0;
+            memset(iid, 0x7E, sizeof(iid));
+            nodus_rt_exec_ctx_t ctx;
+            memset(&ctx, 0, sizeof(ctx));
+            ctx.chain_id = fx.chain_id;
+            ctx.intent_id = iid;
+            ctx.wire_id = iid;
+            ctx.token_create_fee = TC_FEE;
+            dna_env_view_t v1;
+            CHECK(dna_env_decode(e.bytes, e.len, &v1) == 0, "decode k1");
+            nodus_rt_auth_verdict_t good = av;       /* kind-1, 2 signers */
+            nodus_rt_auth_verdict_t bad;
+            ctx.auth = &good;
+            CHECK(core_exec_at(&fx, &v1, 0, &ctx, 1, res, sizeof(res), &rl)
+                      == -1,
+                  "A control: the intact kind-1 verdict over a multisig "
+                  "coin is a VERDICT (-1, not owned), not a fault");
+            OK();
+            bad = good;
+            bad.n_msig = 1;
+            ctx.auth = &bad;
+            CHECK(core_exec_at(&fx, &v1, 0, &ctx, 1, res, sizeof(res), &rl)
+                      == -2,
+                  "A multisig facts on a kind-1 leg are a node FAULT (-2)");
+            OK();
+            bad = good;
+            bad.n_signers = 0;
+            ctx.auth = &bad;
+            CHECK(core_exec_at(&fx, &v1, 0, &ctx, 1, res, sizeof(res), &rl)
+                      == -2,
+                  "A an empty verdict is a node FAULT (-2)");
+            OK();
+            bad = good;
+            bad.n_signers = NODUS_RT_AUTH_MAX_SIGNERS + 1;
+            ctx.auth = &bad;
+            CHECK(core_exec_at(&fx, &v1, 0, &ctx, 1, res, sizeof(res), &rl)
+                      == -2,
+                  "A a verdict above the signer cap is a node FAULT (-2)");
+            OK();
+            ctx.auth = NULL;
+            CHECK(core_exec_at(&fx, &v1, 0, &ctx, 1, res, sizeof(res), &rl)
+                      == -2,
+                  "A a missing verdict is a node FAULT (-2)");
+            OK();
+
+            /* kind 3: the hook's own verdict is the control; stripping
+             * its multisig facts is the fault */
+            tl = msig_tail(tail, sizeof(tail), &D23, 1, 1);
+            memset(&so, 0, sizeof(so));
+            so.msig_tail = tail;
+            so.msig_tail_len = tl;
+            CHECK(spend_env(&fx, &e, ins, 1, o, 1, FEE_MIN, s78, 2, &so)
+                      == 0, "build k3");
+            CHECK(msig_hook(&fx, &e, &av) == 0 && av.n_msig == 1,
+                  "k3 verdict");
+            dna_env_view_t v3;
+            CHECK(dna_env_decode(e.bytes, e.len, &v3) == 0, "decode k3");
+            ctx.auth = &av;
+            CHECK(core_exec_at(&fx, &v3, 0, &ctx, 1, res, sizeof(res), &rl)
+                      == 0,
+                  "A control: the intact 2-of-3 verdict executes (0)");
+            OK();
+            bad = av;
+            bad.n_msig = 0;
+            ctx.auth = &bad;
+            CHECK(core_exec_at(&fx, &v3, 0, &ctx, 1, res, sizeof(res), &rl)
+                      == -2,
+                  "A a kind-3 verdict without multisig facts is a node "
+                  "FAULT (-2)");
+            OK();
+            bad = av;
+            bad.n_msig = NODUS_RT_MSIG_MAX_DESC + 1;
+            ctx.auth = &bad;
+            CHECK(core_exec_at(&fx, &v3, 0, &ctx, 1, res, sizeof(res), &rl)
+                      == -2,
+                  "A a kind-3 verdict above the descriptor cap is a node "
+                  "FAULT (-2)");
+            OK();
+        }
     }
 
     /* ── B. M-of-N SPEND through the engine ───────────────────────────── */

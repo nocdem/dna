@@ -515,7 +515,8 @@ int dnac_tx_verify_stake_rules(const dnac_transaction_t *tx);
  * Rules enforced:
  *   - tx->type == DNAC_TX_DELEGATE
  *   - signer_count == 1
- *   - signer[0].pubkey != delegate_fields.validator_pubkey (Rule S)
+ *   - (no Rule S: a validator may delegate to itself — decision
+ *     2026-09-28-treasury-pools-and-exact-self-stake.md item 6)
  *   - Σ DNAC inputs − Σ DNAC outputs >= DNAC_MIN_DELEGATION (Rule J)
  *
  * Rules requiring witness-side DB access (Rule B validator status,

@@ -46,8 +46,8 @@ Three stages, fail-closed:
   stage 1 CONTROL — re-derive, and ASSERT byte-equal to the pins:
       * the SYSTEM meter-policy identity digest   (KAT_METPOL_SYSTEM)
       * SYSTEM ruleset_version 4 (RETIRED)        (RETIRED_RS_SYSTEM_V4)
-      * SYSTEM ruleset_version 5 (live)           (KAT_RS_SYSTEM)
-      * DNA_CORE ruleset_version 3 (live)         (KAT_RS_CORE)
+      * SYSTEM ruleset_version 5 (RETIRED by v6)  (was KAT_RS_SYSTEM)
+      * DNA_CORE ruleset_version 3 (RETIRED by v4) (was KAT_RS_CORE)
     The v4 → v5 pair is the proof that "the preimage differs ONLY in the
     ruleset_version field" is how the previous bump was pinned — the same
     shape this file then extends to v6.
@@ -241,8 +241,10 @@ def control_leg() -> bool:
          PIN_METPOL_SYSTEM),
         ("SYSTEM ruleset v4 (retired)", system_hash(4).hex(),
          PIN_RS_SYSTEM_V4),
-        ("SYSTEM ruleset v5 (live)", system_hash(5).hex(), PIN_RS_SYSTEM_V5),
-        ("DNA_CORE ruleset v3 (live)", core_hash(3).hex(), PIN_RS_CORE_V3),
+        ("SYSTEM ruleset v5 (retired)", system_hash(5).hex(),
+         PIN_RS_SYSTEM_V5),
+        ("DNA_CORE ruleset v3 (retired)", core_hash(3).hex(),
+         PIN_RS_CORE_V3),
     ]
     ok = True
     for label, got, want in checks:

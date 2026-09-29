@@ -529,7 +529,8 @@ typedef struct nodus_domain_runtime {
      * the worst-case LEGAL envelope stays exactly the enumerated shapes
      * the DNA_ENV_MAX_TOTAL_LEN derivation contains. 0 is INVALID
      * (selfcheck rejects a runtime that accepts no kind). SYSTEM
-     * declares {1,2}; CORE declares {1}. */
+     * declares {1,2}; CORE declares {1,3} (general multisig, CORE v4 —
+     * pinned by nodus_witness_runtime_selfcheck). */
     uint32_t              allowed_auth_kinds;
     /* The typed EXECUTION boundary (header block above). Native auth
      * season installed the real hooks; the burn season completed the
@@ -550,7 +551,8 @@ typedef struct nodus_domain_runtime {
      * DomainHead is created at ACTIVATION. NULL = the state root itself
      * (the generic case — a runtime whose state root contains no
      * self-referencing container legs). SYSTEM sets it to the
-     * "DNA.SYSPAYL.v2" payload root (the S5 genesis cycle break) — the
+     * "DNA.SYSPAYL.v3" payload root (the S5 genesis cycle break; W-A
+     * appended the treasury leg, nodus_witness_roots_v2.c) — the
      * ONE protocol-special composition, kept inside SYSTEM's runtime
      * entry so the generic engine never branches on a domain id. */
     nodus_rt_root_fn      payload_root;
@@ -657,11 +659,11 @@ int nodus_rt_core_state_init(const nodus_domain_runtime_t *rt,
  * Implemented in nodus_witness_rt_native.c. The shared auth hook is the
  * ONE compiled implementation of auth_kind 1 (both production entries
  * reference the same symbol — scheme verification cannot fork per
- * domain); the per-domain read_plan/exec pairs implement — since O11,
- * under SYSTEM ruleset_version 3 — the stake lifecycle
- * DNA_SYSRULE_STAKE / DELEGATE / UNSTAKE / UNDELEGATE and
- * DNA_SYSRULE_CHAIN_CONFIG (SYSTEM) and — under CORE ruleset_version 3
- * — DNA_CORERULE_SPEND, DNA_CORERULE_BURN, DNA_CORERULE_TOKEN_CREATE
+ * domain); the per-domain read_plan/exec pairs implement — today under
+ * SYSTEM ruleset_version 6 (the stake lifecycle since O11) — the stake
+ * lifecycle DNA_SYSRULE_STAKE / DELEGATE / UNSTAKE / UNDELEGATE and
+ * DNA_SYSRULE_CHAIN_CONFIG (SYSTEM) and — today under CORE
+ * ruleset_version 4 — DNA_CORERULE_SPEND, DNA_CORERULE_BURN, DNA_CORERULE_TOKEN_CREATE
  * and DNA_CORERULE_SYSFUND (DNA_CORE), and deterministically reject
  * every other owned runtime_op. The compiled adapters are exported so
  * tests can drive them directly. */

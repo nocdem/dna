@@ -2,9 +2,9 @@
  * dnac_delegate() / dnac_undelegate().
  *
  * Only the parameter-gate checks that fire before the builder touches the
- * dna_engine / nodus layer are exercised here. The engine-dependent
- * Rule S check (signer != validator_pubkey) needs a real context and is
- * deferred to integration coverage in Phase 17 Tasks 78-82.
+ * dna_engine / nodus layer are exercised here. (The former Rule S
+ * self-delegation refusal is removed — decision
+ * 2026-09-28-treasury-pools-and-exact-self-stake.md item 6.)
  */
 
 #include "dnac/dnac.h"

@@ -1620,19 +1620,24 @@ typedef struct {
     uint8_t  used[NODUS_RT_MSIG_MAX_DESC];
 } rtn_owners_t;
 
-/* @return 0 / -1 the verdict is not a well-formed verdict for this leg's
- * auth_kind (fail closed — a broken verdict is never ownership). */
+/* @return 0 / -2 the verdict is not a well-formed verdict for this leg's
+ * auth_kind. The ENGINE builds the verdict and refuses to execute a leg
+ * it did not verify (nodus_witness_v2_apply.c, the "empty authorization
+ * verdict slot" FAULT), so a missing, empty, oversized or kind-mismatched
+ * verdict here is an engine invariant broken on THIS node — a node
+ * FAULT (-2), never a deterministic verdict about the envelope. Fail
+ * closed either way: a broken verdict is never ownership. */
 static int rtn_owners_init(const dna_env_view_t *env, uint16_t leg,
                            const nodus_rt_exec_ctx_t *ctx,
                            rtn_owners_t *o) {
     memset(o, 0, sizeof(*o));
     const nodus_rt_auth_verdict_t *v = ctx->auth;
     if (!v || v->n_signers < 1 || v->n_signers > NODUS_RT_AUTH_MAX_SIGNERS)
-        return -1;
+        return -2;
     if (env->leg[leg].auth_kind == NODUS_RT_AUTHKIND_DSA87_MSIG_V1) {
-        if (v->n_msig < 1 || v->n_msig > NODUS_RT_MSIG_MAX_DESC) return -1;
+        if (v->n_msig < 1 || v->n_msig > NODUS_RT_MSIG_MAX_DESC) return -2;
     } else if (v->n_msig != 0) {
-        return -1;                       /* multisig facts on a non-msig
+        return -2;                       /* multisig facts on a non-msig
                                           * leg: broken verdict          */
     }
     o->n_sig = v->n_signers;
@@ -2493,9 +2498,12 @@ int nodus_rt_core_exec(const nodus_domain_runtime_t *rt,
      * the engine refuses to execute an unverified leg — and this hook
      * additionally fails closed on a missing/empty verdict — and on a
      * verdict whose multisig facts disagree with the leg's auth_kind
-     * (rtn_owners_init). */
+     * (rtn_owners_init) — a node FAULT (-2), propagated as-is. */
     rtn_owners_t own;
-    if (rtn_owners_init(env, leg_index, ctx, &own) != 0) return -1;
+    {
+        int orc = rtn_owners_init(env, leg_index, ctx, &own);
+        if (orc != 0) return orc;
+    }
 
     switch (env->leg[leg_index].runtime_op) {
     case DNA_CORERULE_SPEND: {

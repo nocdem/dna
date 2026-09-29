@@ -148,8 +148,9 @@ int dnac_tx_verify_stake_rules_internal(const dnac_transaction_t *tx) {
  * Enforces the locally-verifiable subset of the DELEGATE rule set:
  *
  *   - signer_count == 1
- *   - signer[0].pubkey != validator_pubkey  (Rule S: no self-delegation via
- *     DELEGATE; the validator's own 10M stake flows through STAKE)
+ *   - (no Rule S: signer[0].pubkey MAY equal validator_pubkey — a
+ *     validator may delegate to itself, as on the chain; decision
+ *     2026-09-28-treasury-pools-and-exact-self-stake.md item 6)
  *   - Σ DNAC inputs − Σ DNAC outputs >= DNAC_MIN_DELEGATION (100 DNAC)
  *     (Rule J: minimum delegation amount. The net `input − output` is the
  *     amount being moved into the delegation state minus fee; since fee is
@@ -177,15 +178,6 @@ static int verify_delegate_rules(const dnac_transaction_t *tx) {
         QGP_LOG_ERROR(LOG_TAG, "DELEGATE: signer_count=%u != 1",
                       (unsigned)tx->signer_count);
         return DNAC_ERROR_INVALID_SIGNATURE;
-    }
-
-    /* Rule S: signer[0].pubkey != validator_pubkey. Self-delegation via
-     * DELEGATE is prohibited — validators bond their own 10M via STAKE. */
-    if (memcmp(tx->signers[0].pubkey,
-               tx->delegate_fields.validator_pubkey,
-               DNAC_PUBKEY_SIZE) == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "DELEGATE: self-delegation forbidden (Rule S)");
-        return DNAC_ERROR_INVALID_PARAM;
     }
 
     /* Σ DNAC input − Σ DNAC output >= DNAC_MIN_DELEGATION (Rule J). */

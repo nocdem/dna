@@ -8,10 +8,11 @@
  *
  * Design-doc references: §2.3 (appended fields), §2.4 / Rule B (validator
  * ACTIVE), Rule G (<64 delegations/delegator), Rule J (min delegation),
- * Rule O (EPOCH_LENGTH hold), Rule Q (two-UTXO UNDELEGATE payout),
- * Rule S (no self-delegation).
+ * Rule O (EPOCH_LENGTH hold), Rule Q (two-UTXO UNDELEGATE payout).
  *
- * Rule S (signer != validator_pubkey) is enforced here at the client.
+ * Rule S (no self-delegation) is REMOVED, as on the chain (decision
+ * 2026-09-28-treasury-pools-and-exact-self-stake.md item 6): a validator
+ * may delegate to itself from the same wallet.
  * Rules B / G / O run witness-side at state-apply time.
  *
  * Copyright (c) 2026 nocdem
@@ -57,18 +58,16 @@ int dnac_delegate(dnac_context_t *ctx,
     dna_engine_t *engine = dnac_get_engine(ctx);
     if (!owner_fp || !engine) return DNAC_ERROR_NOT_INITIALIZED;
 
-    /* Fetch caller's pubkey early to enforce Rule S (no self-delegation).
-     * This also confirms the engine is usable before doing any network
-     * work — symmetric with dnac_stake's guard ordering. */
+    /* Fetch the caller's pubkey early: it signs the TX (step 6), and this
+     * confirms the engine is usable before doing any network work —
+     * symmetric with dnac_stake's guard ordering. Self-delegation is
+     * allowed (Rule S removed — decision 2026-09-28-treasury-pools-and-
+     * exact-self-stake.md item 6, matching the chain's rtn_delegate_exec),
+     * so the signer is NOT compared with validator_pubkey. */
     uint8_t signer_pubkey[DNAC_PUBKEY_SIZE];
     int rc = dna_engine_get_signing_public_key(engine, signer_pubkey,
                                                sizeof(signer_pubkey));
     if (rc < 0) return DNAC_ERROR_CRYPTO;
-
-    if (memcmp(signer_pubkey, validator_pubkey, DNAC_PUBKEY_SIZE) == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "self-delegation rejected (Rule S)");
-        return DNAC_ERROR_INVALID_PARAM;
-    }
 
     if (!nodus_messenger_wait_for_ready(5000)) {
         return DNAC_ERROR_NETWORK;
