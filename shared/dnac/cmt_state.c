@@ -16,22 +16,27 @@
 
 #include <string.h>
 
-/* Go's `totalVotingPower += validator.VotingPower` (state.go:280), which
- * WRAPS on overflow by specification; C signed overflow is UNDEFINED, so
- * the sum is carried in uint64 and converted back. The same shape as
- * cmt_validation.c:63-66 and cmt_validator_set.c's wrap helpers — this
- * was the one int64 accumulation of the R1 layer that skipped them
- * (deviation register R3-AUD-22).
+/* Go's `totalVotingPower += validator.VotingPower` (cometbft@v0.38.26
+ * state.go:287), which WRAPS on overflow by specification; C signed
+ * overflow is UNDEFINED, so the sum is carried in uint64 and converted
+ * back. The same shape as cmt_validation.c:63-66 and cmt_validator_set.c's
+ * wrap helpers — this was the one int64 accumulation of the R1 layer that
+ * skipped them (deviation register R3-AUD-22).
  *
  * At this chain's INTENDED scale it cannot overflow — under tokenomics v2
  * (atlas-dec-93ff0761d40f5bc16fbae607ab54f458, PROPOSED as of 2026-09-15:
  * power = stake / 10^8, supply 10^9) a 128-member set totals ~10^9, nine
  * orders below INT64_MAX. It is written wrap-safe anyway because the
- * summand is NOT bounded by the set's total here: MedianTime looks a
- * signature's validator up BY ADDRESS (:277) and never cross-checks that
- * address against the signature's index, so a commit whose signatures all
- * name the same high-power validator sums that power once per signature.
- * The reference wraps on that input; C would be undefined. */
+ * summand is NOT bounded by the set's total HERE: MedianTime itself looks
+ * a signature's validator up BY ADDRESS (:281) and does not cross-check
+ * that address against the signature's index, so a commit whose
+ * signatures all name the same high-power validator sums that power once
+ * per signature. Since CSA-2026-001 ("Tachyon", v0.38.21) VerifyCommit
+ * refuses such a commit (types/validation.go:362-365,
+ * cmt_verify_commit_single), and validateBlock runs VerifyCommit before
+ * MedianTime — but MedianTime is also reached from MakeBlock and callable
+ * on its own, and the reference wraps on that input where C would be
+ * undefined. */
 static int64_t go_add_i64(int64_t a, int64_t b)
 {
     return (int64_t)((uint64_t)a + (uint64_t)b);
@@ -152,15 +157,16 @@ int cmt_state_copy(const cmt_state_t *src, cmt_state_t *dst)
 
 /* ══ MedianTime ═══════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b state/state.go:269-286 — MedianTime().
- * BFT-time's block time; reads NO clock. */
+/* cometbft@v0.38.26 state/state.go:273-292 — MedianTime().
+ * BFT-time's block time; reads NO clock. Every `:NNN` in this body is a
+ * v0.38.26 line. */
 int cmt_state_median_time(const cmt_commit_t *commit,
                           const cmt_validator_set_t *vals,
                           cmt_time_t *out)
 {
     cmt_weighted_time_t        times[CMT_VALSET_MAX];
     const cmt_weighted_time_t *slots[CMT_VALSET_MAX];
-    int64_t                    total = 0;                        /* :271 */
+    int64_t                    total = 0;                        /* :275 */
     size_t                     n;
     size_t                     i;
     int                        rc;
@@ -171,7 +177,7 @@ int cmt_state_median_time(const cmt_commit_t *commit,
     n = cmt_commit_size(commit);
     if (n > (size_t)CMT_VALSET_MAX) {
         /* A capacity rule of this port: the reference sizes the array at
-         * :270 dynamically, and nothing here allocates. It cannot fire on
+         * :274 dynamically, and nothing here allocates. It cannot fire on
          * a commit whose signature count equals a set size, since a set
          * holds at most CMT_VALSET_MAX. */
         return CMT_REJECT;
@@ -179,21 +185,21 @@ int cmt_state_median_time(const cmt_commit_t *commit,
     if (n != 0u && commit->signatures == NULL) {
         return CMT_FAULT;
     }
-    /* :270 — one slot per signature, LEFT AS HOLES where the reference
+    /* :274 — one slot per signature, LEFT AS HOLES where the reference
      * leaves nil. */
     for (i = 0; i < n; i++) {
         slots[i] = NULL;
     }
 
-    for (i = 0; i < n; i++) {                                 /* :273-283 */
+    for (i = 0; i < n; i++) {                                 /* :277-289 */
         const cmt_commit_sig_t *cs = &commit->signatures[i];
         cmt_validator_t         val;
         int32_t                 idx;
 
         if (cs->block_id_flag == (int32_t)CMT_BLOCK_ID_FLAG_ABSENT) {
-            continue;                                         /* :274-276 */
+            continue;                                         /* :278-280 */
         }
-        /* :277 — BY ADDRESS, not by index. */
+        /* :281 — BY ADDRESS, not by index. */
         rc = cmt_validator_set_get_by_address(vals, cs->validator_address,
                                               cs->validator_address_len,
                                               &idx, &val);
@@ -201,28 +207,38 @@ int cmt_state_median_time(const cmt_commit_t *commit,
             return rc;
         }
         if (idx < 0) {
-            /* :278-279 — the reference's own comment: without this test a
-             * test panicked; "not needed normally". A signer the set does
-             * not contain contributes NOTHING, silently. */
-            continue;
+            /* :283-286 — CSA-2026-001 ("Tachyon", v0.38.21): a non-absent
+             * signer the set does not contain is an ERROR ("commit
+             * validator not found in validator set"). Up to 709fd12b it
+             * was silently skipped, which let a commit drop a signer's
+             * stamp from the median. The commit reaches here from a
+             * block's LastCommit — peer input — so the class is
+             * CMT_REJECT. */
+            return CMT_REJECT;
         }
-        total = go_add_i64(total, val.voting_power); /* :280 — Go wraps by
+        total = go_add_i64(total, val.voting_power); /* :287 — Go wraps by
                                                       * specification    */
         rc = cmt_new_weighted_time(cs->timestamp, val.voting_power,
-                                   &times[i]);                   /* :281 */
+                                   &times[i]);                   /* :288 */
         if (rc != CMT_OK) {
             return rc;
         }
         slots[i] = &times[i];
     }
-    /* :285 — and the median itself, including the zero-time fallback when
+    /* :291 — and the median itself, including the zero-time fallback when
      * nothing was selected. */
     return cmt_weighted_median(slots, n, total, out);
 }
 
 /* ══ MakeBlock ════════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b state/state.go:234-263 — (state State) MakeBlock() */
+/* cometbft@v0.38.26 state/state.go:234-267 — (state State) MakeBlock().
+ * The v0.38.21 change is at :250-254: MedianTime's error is returned
+ * ("error making block while calculating median time") instead of being
+ * impossible. Here that is the rc of cmt_state_median_time, passed
+ * through unchanged — the C signature already returned a code, so no
+ * caller changes. The `:NNN` below that differ from 709fd12b are marked
+ * v0.38.26 by this line. */
 int cmt_state_make_block(const cmt_state_t *state,
                          int64_t height,
                          const cmt_data_t *data,
@@ -252,22 +268,22 @@ int cmt_state_make_block(const cmt_state_t *state,
         return rc;
     }
 
-    /* :246-251 — the TIMESTAMP. */
+    /* :246-255 — the TIMESTAMP. */
     if (height == state->initial_height) {
         timestamp = state->last_block_time;   /* :248 the genesis time   */
     } else {
         if (last_commit == NULL) {
-            /* :250 would nil-dereference inside MedianTime (:270). */
+            /* :250 would nil-dereference inside MedianTime (:274). */
             return CMT_FAULT;
         }
         rc = cmt_state_median_time(last_commit, &state->last_validators,
                                    &timestamp);                  /* :250 */
         if (rc != CMT_OK) {
-            return rc;
+            return rc;                                        /* :251-253 */
         }
     }
 
-    /* :257 — the two set hashes. */
+    /* :261 — the two set hashes. */
     rc = cmt_validator_set_hash(&state->validators, scratch->leaves,
                                 sizeof(scratch->leaves), scratch->items,
                                 (size_t)CMT_VALSET_MAX, val_hash);
@@ -280,27 +296,28 @@ int cmt_state_make_block(const cmt_state_t *state,
     if (rc != CMT_OK) {
         return rc;
     }
-    /* :258 — ConsensusHash, a FLAT hash of HashedParams (params.go:272). */
+    /* :262 — ConsensusHash, a FLAT hash of HashedParams (v0.38.26
+     * types/params.go:275). */
     rc = cmt_consensus_params_hash(&state->consensus_params, cons_hash);
     if (rc != CMT_OK) {
         return rc;
     }
 
-    /* :254-260 — Populate fills the ten state-derived header fields. It
+    /* :258-264 — Populate fills the ten state-derived header fields. It
      * deliberately does not touch Height (MakeBlock set it) nor the three
      * fillHeader computed. */
     return cmt_header_populate(&out->header,
-                               &state->version.consensus,        /* :255 */
+                               &state->version.consensus,        /* :259 */
                                state->chain_id, state->chain_id_len,
-                               timestamp,                        /* :256 */
+                               timestamp,                        /* :260 */
                                &state->last_block_id,
-                               val_hash, (size_t)CMT_TMHASH_SIZE,/* :257 */
+                               val_hash, (size_t)CMT_TMHASH_SIZE,/* :261 */
                                next_val_hash, (size_t)CMT_TMHASH_SIZE,
-                               cons_hash, (size_t)CMT_TMHASH_SIZE,/* :258 */
+                               cons_hash, (size_t)CMT_TMHASH_SIZE,/* :262 */
                                state->app_hash, state->app_hash_len,
                                state->last_results_hash,
                                state->last_results_hash_len,
-                               proposer_address,                 /* :259 */
+                               proposer_address,                 /* :263 */
                                proposer_address_len);
 }
 

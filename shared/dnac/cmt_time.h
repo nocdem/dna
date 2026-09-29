@@ -47,6 +47,11 @@
  * a7c231ae400d7e2520c2d721bc6162dcd57a1f815df86752db996c6f74a88a2e.
  * (`libs/time/time.go`, named in the port map's rev-1 pin table, does not
  * exist in this tree; types/time/time.go is the file.)
+ * Moved to cometbft v0.38.26 (decision 2026-09-30-cometbft-pin-v0.38.26):
+ * types/time/time.go, 58 lines,
+ * 96b30a90fccf88db6c54cb7da5db0a6497cfdd5de8013d6aff0774f789d2393b — one
+ * line differs, :45 (the sort key; see cmt_weighted_median). Citations
+ * that still say @709fd12b name lines that are identical in both.
  * Governing records: umbrella rev 3 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
  * clock POLICY (atlas-dec-4ac0423068085c100fdfa3e264ca16bc),
  * K-1 rev 2 (atlas-dec-3ba8153088b0d60c63083028023b61be).
@@ -152,13 +157,16 @@ int cmt_time_validate(cmt_time_t t);
 /**
  * Go `time.Time.UnixNano()` — seconds*1e9 + nanos, as an int64 that WRAPS.
  *
- * This is not a convenience: it is the exact sort key the reference uses
- * at types/time/time.go:45, and Go's int64 arithmetic wraps on overflow by
- * specification. The wrap is reproduced here with unsigned arithmetic
- * (C signed overflow is undefined), so the ordering matches the reference
- * bit for bit, including for the times where the reference's ordering is
- * itself surprising: UnixNano overflows outside roughly
- * [1677-09-21, 2262-04-11], while the Timestamp range reaches year 9999.
+ * Go's int64 arithmetic wraps on overflow by specification; the wrap is
+ * reproduced here with unsigned arithmetic (C signed overflow is
+ * undefined). UnixNano overflows outside roughly [1677-09-21, 2262-04-11],
+ * while the Timestamp range reaches year 9999.
+ *
+ * It is NO LONGER WeightedMedian's sort key: up to 709fd12b
+ * types/time/time.go:45 sorted on UnixNano, and cometbft v0.38.26 sorts on
+ * `Time.Before` instead (see cmt_weighted_median). Its callers now are the
+ * scheduling paths that turn a time into nanoseconds (cmt_cs.c,
+ * cmt_conr.c, cmt_memr.c, cmt_bsync_reactor.c).
  */
 int64_t cmt_time_unix_nano(cmt_time_t t);
 
@@ -178,13 +186,15 @@ int cmt_new_weighted_time(cmt_time_t t, int64_t weight,
                           cmt_weighted_time_t *out);
 
 /**
- * cometbft@709fd12b types/time/time.go:35-58 — `WeightedMedian()`.
+ * cometbft@v0.38.26 types/time/time.go:35-58 — `WeightedMedian()`.
  * The block time of BFT-time: the weighted median of the previous
  * commit's vote timestamps.
  *
  * The walk, line by line: `median = totalVotingPower / 2` (:36, truncating
  * division — C99 and Go truncate toward zero identically); the entries are
- * sorted ascending by UnixNano with NULLs last (:38-46); then the first
+ * sorted ascending by `Time.Before` — the instant, seconds then
+ * nanoseconds — with NULLs last (:38-46; at 709fd12b :45 compared
+ * UnixNano, which wraps outside 1678..2262); then the first
  * entry whose weight is at least the remaining median is the answer, and
  * every entry passed over subtracts its weight from the remaining median
  * (:48-56). NULL entries are skipped (:49).
@@ -198,17 +208,15 @@ int cmt_new_weighted_time(cmt_time_t t, int64_t weight,
  * `sort.Slice` reorders the caller's slice (:38). A caller that needs its
  * original order must copy first.
  *
- * NOTE reference quirk: Go's `sort.Slice` is NOT STABLE. Two entries whose
- * UnixNano values are equal can be ordered either way, and if their
- * WEIGHTS differ the running subtraction visits them in an unspecified
- * order. This is harmless wherever equal UnixNano implies an equal time
- * value — which holds for every time inside the UnixNano range, since
- * seconds*1e9 + nanos is injective there. It does NOT hold once UnixNano
- * wraps, where two different instants can share a sort key. This port
- * sorts with a STABLE insertion sort, so two DNA nodes always agree with
- * each other; agreement with Go is exact wherever Go is itself
- * well-defined. A later wave must keep vote timestamps inside the
- * non-wrapping range for the two to coincide everywhere.
+ * NOTE reference quirk: Go's `sort.Slice` is NOT STABLE. Two entries
+ * whose times are equal can be ordered either way, and if their WEIGHTS
+ * differ the running subtraction visits them in an unspecified order —
+ * but only entries with EQUAL times can swap, and the walk returns a
+ * time, so every order yields the same answer. Since the sort key is the
+ * instant itself (v0.38.26 :45), that holds over the whole Timestamp
+ * range; at 709fd12b it held only inside the UnixNano range, where the
+ * key was injective. This port sorts with a STABLE insertion sort, so two
+ * DNA nodes always agree with each other, and with Go on every input.
  *
  * @param weighted_times array of n pointers; an entry may be NULL.
  * @return CMT_OK, CMT_FAULT on NULL arguments.

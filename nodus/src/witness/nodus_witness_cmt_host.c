@@ -3,6 +3,11 @@
  * @brief cometbft @709fd12b state/execution.go + state/validation.go as
  *        the host behind cmt_cs_host_t. Contract and every file:line:
  *        nodus_witness_cmt_host.h.
+ *
+ * validateBlock, validateBlockAndCheckEvidence, ValidateBlock,
+ * ValidateBlockSkipLastCommit and the MakeBlock error path are ported at
+ * cometbft@v0.38.26 (decision 2026-09-30-cometbft-pin-v0.38.26) and say so
+ * at each site; every other `:NNN` here is still a 709fd12b line.
  */
 
 #include "witness/nodus_witness_cmt_host.h"
@@ -765,7 +770,12 @@ int nodus_cmt_host_create_proposal_block(void *vctx, int64_t height,
         return CMT_FAULT;
     }
 
-    /* :128 the FIRST MakeBlock, on the reaped txs, into tmp_block */
+    /* :128 the FIRST MakeBlock, on the reaped txs, into tmp_block.
+     * cometbft@v0.38.26 execution.go:137-140 returns MakeBlock's error
+     * (MedianTime over this node's own LastCommit) from
+     * CreateProposalBlock, and consensus/state.go:1304-1306 (v0.38.26)
+     * panics on it —
+     * so it stays CMT_FAULT here, as it was. */
     memset(&data, 0, sizeof(data));
     data.txs = ctx->reap_txs;
     data.txs_cap = ctx->limits.max_txs;
@@ -906,7 +916,8 @@ int nodus_cmt_host_process_proposal(void *vctx, cmt_block_t *block,
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
- * validateBlock — state/validation.go:15-150
+ * validateBlock — cometbft@v0.38.26 state/validation.go:16-170
+ * (every `:NNN` in nodus_cmt_validate_block is a v0.38.26 line)
  * ═══════════════════════════════════════════════════════════════════════ */
 
 static bool bytes_equal(const uint8_t *a, size_t an, const uint8_t *b, size_t bn)
@@ -928,20 +939,26 @@ static bool time_equal(cmt_time_t a, cmt_time_t b)
 }
 
 int nodus_cmt_validate_block(nodus_cmt_blockexec_t *ctx,
-                             const cmt_state_t *state, cmt_block_t *block)
+                             const cmt_state_t *state, cmt_block_t *block,
+                             const nodus_cmt_block_validation_options_t *opts)
 {
     uint8_t hash[CMT_TMHASH_SIZE];
+    bool    skip_last_commit;
     int     rc;
 
     if (!ctx || !state || !block) {
         return CMT_FAULT;
     }
-    /* :17-19 */
+    /* :21-25 — `opts ...func(*blockValidationOptions)` folded into one
+     * struct; NULL is "no options", the zero value of :22. */
+    skip_last_commit = (opts != NULL) && opts->skip_last_commit_verification;
+
+    /* :27-29 */
     rc = cmt_block_validate_basic(block, CMT_BLOCK_PROTOCOL);
     if (rc != CMT_OK) {
         return CMT_REJECT;
     }
-    /* :22-28 */
+    /* :32-38 */
     if (block->header.version.app != state->version.consensus.app ||
         block->header.version.block != state->version.consensus.block) {
         QGP_LOG_ERROR(LOG_TAG, "wrong Block.Header.Version. Expected {%" PRIu64
@@ -950,13 +967,13 @@ int nodus_cmt_validate_block(nodus_cmt_blockexec_t *ctx,
                       block->header.version.block, block->header.version.app);
         return CMT_REJECT;
     }
-    /* :29-34 */
+    /* :39-44 */
     if (!bytes_equal(block->header.chain_id, block->header.chain_id_len,
                      state->chain_id, state->chain_id_len)) {
         QGP_LOG_ERROR(LOG_TAG, "%s", "wrong Block.Header.ChainID");
         return CMT_REJECT;
     }
-    /* :35-38 */
+    /* :45-48 */
     if (state->last_block_height == 0 &&
         block->header.height != state->initial_height) {
         QGP_LOG_ERROR(LOG_TAG, "wrong Block.Header.Height. Expected %" PRId64
@@ -964,7 +981,7 @@ int nodus_cmt_validate_block(nodus_cmt_blockexec_t *ctx,
                       block->header.height, state->initial_height);
         return CMT_REJECT;
     }
-    /* :39-44 */
+    /* :49-54 */
     if (state->last_block_height > 0 &&
         block->header.height != state->last_block_height + 1) {
         QGP_LOG_ERROR(LOG_TAG, "wrong Block.Header.Height. Expected %" PRId64
@@ -972,18 +989,18 @@ int nodus_cmt_validate_block(nodus_cmt_blockexec_t *ctx,
                       block->header.height);
         return CMT_REJECT;
     }
-    /* :46-51 */
+    /* :56-61 */
     if (!cmt_block_id_equals(&block->header.last_block_id, &state->last_block_id)) {
         QGP_LOG_ERROR(LOG_TAG, "%s", "wrong Block.Header.LastBlockID.");
         return CMT_REJECT;
     }
-    /* :54-59 (D-23 rev 4) */
+    /* :64-69 (D-23 rev 4) */
     if (!bytes_equal(block->header.app_hash, block->header.app_hash_len,
                      state->app_hash, state->app_hash_len)) {
         QGP_LOG_ERROR(LOG_TAG, "%s", "wrong Block.Header.AppHash.");
         return CMT_REJECT;
     }
-    /* :60-65 */
+    /* :70-75 */
     if (cmt_consensus_params_hash(&state->consensus_params, hash) != CMT_OK) {
         return CMT_FAULT;
     }
@@ -992,14 +1009,14 @@ int nodus_cmt_validate_block(nodus_cmt_blockexec_t *ctx,
         QGP_LOG_ERROR(LOG_TAG, "%s", "wrong Block.Header.ConsensusHash.");
         return CMT_REJECT;
     }
-    /* :66-71 (D-23 rev 4) */
+    /* :76-81 (D-23 rev 4) */
     if (!bytes_equal(block->header.last_results_hash,
                      block->header.last_results_hash_len,
                      state->last_results_hash, state->last_results_hash_len)) {
         QGP_LOG_ERROR(LOG_TAG, "%s", "wrong Block.Header.LastResultsHash.");
         return CMT_REJECT;
     }
-    /* :72-77 */
+    /* :82-87 */
     rc = cmt_validator_set_hash(&state->validators, ctx->valset_hash_scratch,
                                 (size_t)CMT_VALSET_MAX * (size_t)CMT_VALIDATOR_BYTES_MAX,
                                 ctx->valset_items, CMT_VALSET_MAX, hash);
@@ -1011,7 +1028,7 @@ int nodus_cmt_validate_block(nodus_cmt_blockexec_t *ctx,
         QGP_LOG_ERROR(LOG_TAG, "%s", "wrong Block.Header.ValidatorsHash.");
         return CMT_REJECT;
     }
-    /* :78-83 */
+    /* :88-93 */
     rc = cmt_validator_set_hash(&state->next_validators, ctx->valset_hash_scratch,
                                 (size_t)CMT_VALSET_MAX * (size_t)CMT_VALIDATOR_BYTES_MAX,
                                 ctx->valset_items, CMT_VALSET_MAX, hash);
@@ -1023,14 +1040,14 @@ int nodus_cmt_validate_block(nodus_cmt_blockexec_t *ctx,
         QGP_LOG_ERROR(LOG_TAG, "%s", "wrong Block.Header.NextValidatorsHash.");
         return CMT_REJECT;
     }
-    /* :86-97 */
+    /* :96-106 */
     if (block->header.height == state->initial_height) {
-        if (cmt_commit_size(block->last_commit) != 0) {              /* :88 */
+        if (cmt_commit_size(block->last_commit) != 0) {              /* :97 */
             QGP_LOG_ERROR(LOG_TAG, "%s", "initial block can't have LastCommit "
                           "signatures");
             return CMT_REJECT;
         }
-    } else {
+    } else if (!skip_last_commit) {                                  /* :100 */
         cmt_validator_set_t last_vals;
 
         /* VerifyCommit writes the set's total-power cache; the state is
@@ -1042,19 +1059,19 @@ int nodus_cmt_validate_block(nodus_cmt_blockexec_t *ctx,
         }
         rc = cmt_verify_commit(state->chain_id, state->chain_id_len, &last_vals,
                                &state->last_block_id, block->header.height - 1,
-                               block->last_commit, NULL);            /* :92-93 */
+                               block->last_commit, NULL);          /* :102-103 */
         if (rc != CMT_OK) {
             QGP_LOG_ERROR(LOG_TAG, "LastCommit does not verify (rc %d)", rc);
             return rc == CMT_FAULT ? CMT_FAULT : CMT_REJECT;
         }
     }
-    /* :102-107 */
+    /* :111-116 */
     if (block->header.proposer_address_len != CMT_ADDRESS_SIZE) {
         QGP_LOG_ERROR(LOG_TAG, "expected ProposerAddress size %d, got %zu",
                       (int)CMT_ADDRESS_SIZE, block->header.proposer_address_len);
         return CMT_REJECT;
     }
-    /* :108-112 */
+    /* :117-121 */
     if (!cmt_validator_set_has_address(&state->validators,
                                        block->header.proposer_address,
                                        block->header.proposer_address_len)) {
@@ -1062,39 +1079,57 @@ int nodus_cmt_validate_block(nodus_cmt_blockexec_t *ctx,
                       "validator");
         return CMT_REJECT;
     }
-    /* :115-142 block Time */
-    if (block->header.height > state->initial_height) {              /* :116 */
+    /* :123-162 block Time.
+     *
+     * NOT PORTED — :124-129, the v0.38.26 wall-clock tolerance
+     * (`block.Time` must be before `time.Now() + blockTimeTolerance`;
+     * config.go:1050 defaults the tolerance to 60 s and node.go:393 wires
+     * it in). It is a clock read inside block validation, which the
+     * recorded clock scope forbids
+     * (docs/plans/decisions/2026-09-25-consensus-clock-scope-correction.md:
+     * "No validation, state derivation or threshold reads a clock").
+     * Held for an operator decision; nothing of it — option field,
+     * setter, check — exists in this port. */
+    if (block->header.height > state->initial_height) {              /* :131 */
         cmt_time_t median;
 
-        if (!time_after(block->header.time, state->last_block_time)) { /* :117 */
+        if (!time_after(block->header.time, state->last_block_time)) { /* :132 */
             QGP_LOG_ERROR(LOG_TAG, "%s", "block time not greater than last "
                           "block time");
             return CMT_REJECT;
         }
         rc = cmt_state_median_time(block->last_commit, &state->last_validators,
-                                   &median);                         /* :122 */
+                                   &median);                         /* :139 */
         if (rc != CMT_OK) {
-            return CMT_FAULT;
+            /* :140-142 — "error validating block while calculating median
+             * time". The LastCommit is peer input, so MedianTime's own
+             * refusal (a signer outside LastValidators, state.go:283-286)
+             * stays a REJECT; only this process's own failure is a FAULT.
+             * Up to 709fd12b MedianTime could not fail on input, and every
+             * rc here was mapped to FAULT. */
+            QGP_LOG_ERROR(LOG_TAG, "median time of LastCommit failed (rc %d)",
+                          rc);
+            return rc == CMT_FAULT ? CMT_FAULT : CMT_REJECT;
         }
-        if (!time_equal(block->header.time, median)) {               /* :123 */
+        if (!time_equal(block->header.time, median)) {               /* :143 */
             QGP_LOG_ERROR(LOG_TAG, "%s", "invalid block time.");
             return CMT_REJECT;
         }
-    } else if (block->header.height == state->initial_height) {      /* :130 */
-        cmt_time_t genesis_time = state->last_block_time;            /* :131 */
+    } else if (block->header.height == state->initial_height) {      /* :150 */
+        cmt_time_t genesis_time = state->last_block_time;            /* :151 */
 
-        if (!time_equal(block->header.time, genesis_time)) {         /* :132 */
+        if (!time_equal(block->header.time, genesis_time)) {         /* :152 */
             QGP_LOG_ERROR(LOG_TAG, "%s", "block time is not equal to genesis "
                           "time");
             return CMT_REJECT;
         }
-    } else {                                                         /* :139 */
+    } else {                                                         /* :159 */
         QGP_LOG_ERROR(LOG_TAG, "block height %" PRId64 " lower than initial "
                       "height %" PRId64, block->header.height,
                       state->initial_height);
         return CMT_REJECT;
     }
-    /* :145-147 */
+    /* :165-167 */
     {
         int64_t max = state->consensus_params.evidence.max_bytes, got = 0;
 
@@ -1107,25 +1142,27 @@ int nodus_cmt_validate_block(nodus_cmt_blockexec_t *ctx,
             return CMT_REJECT;
         }
     }
-    return CMT_OK;                                                   /* :149 */
+    return CMT_OK;                                                   /* :169 */
 }
 
-/* :190-197 ValidateBlock */
-int nodus_cmt_host_validate_block(void *vctx, const cmt_state_t *state,
-                                  cmt_block_t *block)
+/* cometbft@v0.38.26 state/execution.go:214-219 —
+ * validateBlockAndCheckEvidence(). `withBlockTimeTolerance` (:215, :221-223)
+ * is NOT appended: see the NOT PORTED note in nodus_cmt_validate_block. */
+static int validate_block_and_check_evidence(
+    nodus_cmt_blockexec_t *ctx, const cmt_state_t *state, cmt_block_t *block,
+    const nodus_cmt_block_validation_options_t *opts)
 {
-    nodus_cmt_blockexec_t *ctx = (nodus_cmt_blockexec_t *)vctx;
     int rc;
 
     if (!ctx || !state || !block) {
         return CMT_FAULT;
     }
-    rc = nodus_cmt_validate_block(ctx, state, block);                /* :191 */
+    rc = nodus_cmt_validate_block(ctx, state, block, opts);          /* :215 */
     if (rc != CMT_OK) {
         return rc;
     }
     rc = ctx->evpool->check_evidence(ctx->evpool->ctx, block->evidence.evidence,
-                                     block->evidence.evidence_len);  /* :195 */
+                                     block->evidence.evidence_len);  /* :218 */
     /* R3-AUD-17's second half (tasks/reference-deviation-register.md:245,
      * which cites this site as `:1116-1117`): the class is passed
      * through, so an evidence pool reporting a NODE-LOCAL failure is not
@@ -1134,6 +1171,32 @@ int nodus_cmt_host_validate_block(void *vctx, const cmt_state_t *state,
         return CMT_OK;
     }
     return rc == CMT_FAULT ? CMT_FAULT : CMT_REJECT;
+}
+
+/* cometbft@v0.38.26 state/execution.go:202-204 — ValidateBlock() */
+int nodus_cmt_host_validate_block(void *vctx, const cmt_state_t *state,
+                                  cmt_block_t *block)
+{
+    return validate_block_and_check_evidence((nodus_cmt_blockexec_t *)vctx,
+                                             state, block, NULL);    /* :203 */
+}
+
+/* cometbft@v0.38.26 state/execution.go:210-212 —
+ * ValidateBlockSkipLastCommit(): the same checks without VerifyCommit on
+ * the block's LastCommit (validation.go:100). The reference's own
+ * contract: only for a caller that has already verified that LastCommit
+ * (blocksync/reactor.go:605, after VerifyCommitExtended / the next
+ * block's commit check). */
+int nodus_cmt_host_validate_block_skip_last_commit(void *vctx,
+                                                   const cmt_state_t *state,
+                                                   cmt_block_t *block)
+{
+    nodus_cmt_block_validation_options_t opts;
+
+    memset(&opts, 0, sizeof(opts));
+    opts.skip_last_commit_verification = true;           /* :225-227 */
+    return validate_block_and_check_evidence((nodus_cmt_blockexec_t *)vctx,
+                                             state, block, &opts); /* :211 */
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -1683,7 +1746,9 @@ int nodus_cmt_blockexec_apply_block(nodus_cmt_blockexec_t *ctx,
     if (!ctx || !block_id || !block || !in_out_state) {
         return CMT_FAULT;
     }
-    rc = nodus_cmt_validate_block(ctx, in_out_state, block);         /* :215 */
+    /* cometbft@v0.38.26 execution.go:246 passes `withBlockTimeTolerance`
+     * here; not ported (see nodus_cmt_validate_block), so no options. */
+    rc = nodus_cmt_validate_block(ctx, in_out_state, block, NULL);   /* :215 */
     if (rc != CMT_OK) {
         return rc == CMT_FAULT ? CMT_FAULT : CMT_REJECT;             /* :216 */
     }

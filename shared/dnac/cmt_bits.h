@@ -80,6 +80,14 @@
  *
  * Reference @709fd12b: libs/bits/bit_array.go, 497 lines,
  * de70791bae05efc5c2e059f56c6582b7cbe700531dfb73c0e53077cfaa297d49.
+ * Moved to cometbft v0.38.26 (decision 2026-09-30-cometbft-pin-v0.38.26):
+ * libs/bits/bit_array.go, 521 lines,
+ * a0ae167455e93aa046884a2ba298e767da95f20bfcbb9fb738579a4d7af8e31b —
+ * ASA-2025-003 (v0.38.19): `numElements` (:519-521), setIndex's word
+ * guard (:93), getNumTrueIndices' shape guard (:285-288) and
+ * `ValidateBasic` (:504-517). Lines up to :283 are unchanged, so the
+ * @709fd12b citations below :283 still name the same lines; from the old
+ * :284 on, v0.38.26 is 5 lines lower up to the old :497.
  * Governing records: umbrella rev 5 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
  * INVARIANT (atlas-dec-7495d3372e004b24b4f6cc7bff5caf07),
  * chunking rev 2 (atlas-dec-6d35670369b69df4439cb720036fa2d7 — the part
@@ -148,8 +156,9 @@ typedef struct {
     uint64_t elems[CMT_BITS_MAX_ELEMS];     /* bit_array.go:20 `Elems` */
 } cmt_bit_array_t;
 
-/** The number of uint64 words a `bits`-wide array needs: (bits+63)/64.
- *  This is the reference's expression at bit_array.go:31, :44, :124. */
+/** cometbft@v0.38.26 libs/bits/bit_array.go:519-521 — `numElements()`:
+ *  the number of uint64 words a `bits`-wide array needs, (bits+63)/64
+ *  (written inline at 709fd12b :31, :44, :124). 0 for bits <= 0. */
 size_t cmt_bits_num_elems(int bits);
 
 /* ── constructors ───────────────────────────────────────────────────── */
@@ -177,10 +186,12 @@ int cmt_bits_size(const cmt_bit_array_t *ba);
  *          subscript and panic (INVARIANT 7495d337). */
 int cmt_bits_get_index(const cmt_bit_array_t *ba, int i);
 
-/** cometbft@709fd12b libs/bits/bit_array.go:83-90 `SetIndex()` and
+/** cometbft@v0.38.26 libs/bits/bit_array.go:83-90 `SetIndex()` and
  *  :92-102 `setIndex()`.
  *  @return 1 when the bit was written, 0 when it was not (NULL array
- *          :84-86, or i >= bits :93-95), CMT_FAULT for i < 0. */
+ *          :84-86; i >= bits, or — since v0.38.19, ASA-2025-003 — the
+ *          word i/64 missing because the array has fewer words than its
+ *          size needs, :93-95), CMT_FAULT for i < 0. */
 int cmt_bits_set_index(cmt_bit_array_t *ba, int i, bool v);
 
 /* ── combinators ────────────────────────────────────────────────────── */
@@ -253,11 +264,15 @@ int cmt_bits_is_full(const cmt_bit_array_t *ba);
 /* ── population ─────────────────────────────────────────────────────── */
 
 /**
- * cometbft@709fd12b libs/bits/bit_array.go:284-299 —
+ * cometbft@v0.38.26 libs/bits/bit_array.go:284-304 —
  * `getNumTrueIndices()`. Counts every set bit in all words but the last,
  * then only the first `Bits - (n-1)*64` bits of the last word — so bits
  * that Not() left set in the last word's PADDING are NOT counted.
- * @return the count, or CMT_FAULT for a NULL or zero-word array.
+ * @return the count; 0 for a NULL, zero-size or zero-word array and for
+ *         one whose word count does not match its size (:285-288,
+ *         ASA-2025-003 — a panic at 709fd12b, CMT_FAULT in this port
+ *         until the pin moved); CMT_FAULT only for a hand-built array
+ *         wider than this port's capacity.
  */
 int cmt_bits_get_num_true_indices(const cmt_bit_array_t *ba);
 
@@ -333,6 +348,22 @@ int cmt_bits_bytes(const cmt_bit_array_t *ba, uint8_t *out, size_t cap,
  *         returns without doing anything, :401-403).
  */
 int cmt_bits_update(cmt_bit_array_t *ba, const cmt_bit_array_t *o);
+
+/**
+ * cometbft@v0.38.26 libs/bits/bit_array.go:504-517 — `ValidateBasic()`,
+ * new in v0.38.19 (ASA-2025-003). A NULL array (Go's nil) and a
+ * zero-size array with no words are VALID; otherwise the word count must
+ * be exactly (Size() + 63) / 64.
+ *
+ * Its reference callers are the consensus reactor's message checks
+ * (consensus/reactor.go:1615 NewValidBlockMessage.BlockParts, :1826
+ * VoteSetBitsMessage.Votes). This port's wire decoder,
+ * `cmt_bits_from_proto` (cmt_pb.c), already REFUSES the mismatch before
+ * any message sees the array, so on the decode path this can only agree;
+ * it exists so those message checks can make the reference's call.
+ * @return CMT_OK, CMT_REJECT on the mismatch.
+ */
+int cmt_bits_validate_basic(const cmt_bit_array_t *ba);
 
 #ifdef __cplusplus
 }

@@ -11,9 +11,11 @@
  *     unit weights and times 10/20/30 s the answer is 10 s, NOT the middle
  *     one, because `median = total/2 = 1` and the first entry's weight
  *     already reaches it; with weights 1/2/1 it is 20 s;
- *   · an ABSENT entry is skipped (:274-276), and a signer the set does not
- *     contain is skipped AND excluded from the total (:277-282) — the
- *     latter changes the answer, which is how the skip is observable;
+ *   · an ABSENT entry is skipped (:274-276), and a non-absent signer the
+ *     set does not contain is REFUSED (CMT_REJECT) — the CSA-2026-001
+ *     change, cometbft@v0.38.26 state.go:283-286; at 709fd12b it was
+ *     skipped. The three upstream `TestMedianTime` cases
+ *     (v0.38.26 state_test.go:1129-1210) are ported in 1a;
  *   · that same power sum WRAPS on overflow, as Go's does by
  *     specification (:280): nine entries naming one 2^61-power validator
  *     total 2^61 again, and the walk answers the EARLIEST timestamp where
@@ -333,18 +335,26 @@ static int t_median_time(void)
     CHECK(med.seconds == 10,
           "an absent entry contributes neither a time nor its power"); OK();
 
-    /* ── a signer NOT IN THE SET (:277-282): skipped, and excluded from
-     * the total — which is the difference that makes the skip visible.
-     * Rebuild the full commit, then give the heavy entry a stranger's
-     * address: the remaining 10s(w1) and 30s(w1) give total 2, median 1,
-     * answer 10s, exactly as the absent case. */
+    /* ── a signer NOT IN THE SET: an ERROR since CSA-2026-001 ("Tachyon",
+     * cometbft@v0.38.26 state/state.go:283-286). Up to 709fd12b it was
+     * skipped and dropped from the total — with this very commit the
+     * answer was 10s, the same as the absent case. Now the whole commit is
+     * refused, and as REJECT: a block's LastCommit is peer input. */
     fill_commit(&commit, sigs, &st.validators, secs, NVALS);
     pat(sigs[pow2].validator_address, 32, 0xEE);
-    CHECK(cmt_state_median_time(&commit, &st.validators, &med) == CMT_OK,
-          "MedianTime with an unknown signer"); OK();
-    CHECK(med.seconds == 10,
-          "a signer the set does not contain is skipped, total and all");
+    CHECK(cmt_state_median_time(&commit, &st.validators, &med) ==
+          CMT_REJECT,
+          "a non-absent signer the set does not contain is refused");
     OK();
+    /* …but an ABSENT entry is skipped before the lookup (:278-280), so
+     * whatever address it carries never reaches it. */
+    memset(&sigs[pow2], 0, sizeof(sigs[pow2]));
+    cmt_new_commit_sig_absent(&sigs[pow2]);
+    pat(sigs[pow2].validator_address, 32, 0xEE);
+    sigs[pow2].validator_address_len = 32u;
+    CHECK(cmt_state_median_time(&commit, &st.validators, &med) == CMT_OK &&
+          med.seconds == 10,
+          "an absent entry is never looked up"); OK();
 
     /* ── nothing selected: Go's ZERO time, not the Unix epoch. ── */
     commit.signatures_len = 0u;
@@ -363,6 +373,60 @@ static int t_median_time(void)
     return 0;
 }
 
+/* ══ 1a. TestMedianTime — cometbft@v0.38.26 state/state_test.go:1129-1210
+ *
+ * The three cases upstream added with CSA-2026-001, ported with their own
+ * powers (three validators of 30) and relative stamps. `now` is a FIXED
+ * instant here — the port reads no clock — and only the ORDER and the
+ * WEIGHTS decide the median, which are upstream's unchanged:
+ *   · "all validators present": now, now+1m, now+2m → now+1m
+ *     (total 90, median 45: 45 > 30 → 15, 15 <= 30 → the second);
+ *   · "validator not in validator set": an error, "commit validator not
+ *     found in validator set" — REJECT here. RED at 709fd12b, where the
+ *     unknown signer was skipped and the answer was `now`;
+ *   · "not all validators present": two of three signatures, now and
+ *     now+1m → now (total 60, median 30 <= 30 on the first). */
+static int t_median_time_upstream(void)
+{
+    static const int64_t powers[NVALS] = { 30, 30, 30 };
+    const int64_t        now = 1700000000;
+    cmt_genesis_doc_t    doc;
+    cmt_state_t          st;
+    cmt_commit_sig_t     sigs[NVALS + 1];
+    cmt_commit_t         commit;
+    cmt_time_t           med;
+    int64_t              secs[NVALS];
+
+    make_doc(&doc, NVALS, powers);
+    CHECK(cmt_state_init(&st, g_stor_a) == CMT_OK, "init"); OK();
+    CHECK(cmt_state_make_genesis(&doc, never_now, NULL, g_scratch, &st) ==
+          CMT_OK, "genesis"); OK();
+
+    /* "all validators present" */
+    secs[0] = now;
+    secs[1] = now + 60;
+    secs[2] = now + 120;
+    fill_commit(&commit, sigs, &st.validators, secs, NVALS);
+    CHECK(cmt_state_median_time(&commit, &st.validators, &med) == CMT_OK &&
+          med.seconds == now + 60 && med.nanos == 0,
+          "all present: the median is now+1m"); OK();
+
+    /* "validator not in validator set" — val1, then a stranger. */
+    fill_commit(&commit, sigs, &st.validators, secs, 2u);
+    pat(sigs[1].validator_address, 32, 0xEE);
+    CHECK(cmt_state_median_time(&commit, &st.validators, &med) ==
+          CMT_REJECT,
+          "a commit validator not found in the set is an error"); OK();
+
+    /* "not all validators present" — val1 and val2 only. */
+    fill_commit(&commit, sigs, &st.validators, secs, 2u);
+    CHECK(cmt_state_median_time(&commit, &st.validators, &med) == CMT_OK &&
+          med.seconds == now && med.nanos == 0,
+          "two of three present: the median is now"); OK();
+    CHECK(g_now_calls == 0, "and no clock was read"); OK();
+    return 0;
+}
+
 /* ══ 1b. MedianTime's voting-power sum WRAPS — R3-AUD-22 ══════════════
  *
  * WHAT IT PROVES: that `totalVotingPower += validator.VotingPower`
@@ -372,13 +436,16 @@ static int t_median_time(void)
  *
  * WHY THE INPUT IS REACHABLE AT ALL, since a validator set's total is
  * capped at MaxTotalVotingPower: MedianTime looks a signature's validator
- * up BY ADDRESS (state.go:277) and never cross-checks that address
- * against the signature's INDEX, while the signatures themselves are
- * verified by index (types/validation.go:353-356) and the address is not
- * in the signed bytes (canonical.go:57-66). A commit whose entries all
- * name one heavy validator therefore adds that validator's power once per
- * entry, and the sum is NOT bounded by the set's total. That hole is the
- * reference's own; this test is about the ARITHMETIC, not the hole.
+ * up BY ADDRESS (state.go:277) and does not itself cross-check that
+ * address against the signature's INDEX, and the address is not in the
+ * signed bytes (canonical.go:57-66). A commit whose entries all name one
+ * heavy validator therefore adds that validator's power once per entry,
+ * and the sum is NOT bounded by the set's total. Up to 709fd12b
+ * VerifyCommit accepted such a commit too; since CSA-2026-001 ("Tachyon",
+ * cometbft@v0.38.26 types/validation.go:362-365) VerifyCommit refuses it
+ * (test_cmt_validation.c t_tachyon), so on the validateBlock path it can
+ * no longer reach MedianTime. MedianTime on its own still accepts it, as
+ * the reference's does; this test is about the ARITHMETIC, not the hole.
  *
  * RED at 7f21263c ONLY UNDER -fsanitize=undefined (or a compiler that
  * exploits the UB): `total = total + val.voting_power` on plain int64_t
@@ -769,14 +836,32 @@ static int t_make_block(void)
 
     /* ── height != InitialHeight: the timestamp is the MedianTime of the
      * commit it is given. A genesis state's LastValidators is EMPTY, so
-     * every signer would be "not in the set" and the median would be the
-     * ZERO time — the set has to be populated first, which is what the
-     * real state machine does when it advances. */
-    CHECK(cmt_validator_set_copy(&st.validators, &st.last_validators) ==
-          CMT_OK, "populate LastValidators"); OK();
+     * every signer would be "not in the set", which since CSA-2026-001 is
+     * an error (cometbft@v0.38.26 state.go:283-286) that MakeBlock
+     * returns (:250-253) — the set has to be populated first, which is
+     * what the real state machine does when it advances. */
     for (i = 0; i < NVALS; i++) {
         secs[i] = 10 + 10 * (int64_t)i;
     }
+    fill_commit(&commit, sigs, &st.validators, secs, NVALS);
+    CHECK(cmt_state_make_block(&st, 2, NULL, &commit, NULL, proposer, 32u,
+                               g_bscratch, &blk) == CMT_REJECT,
+          "MakeBlock over a commit whose signers LastValidators does not "
+          "contain returns MedianTime's error"); OK();
+    CHECK(cmt_validator_set_copy(&st.validators, &st.last_validators) ==
+          CMT_OK, "populate LastValidators"); OK();
+
+    /* cometbft@v0.38.26 state/validation_test.go:480-548
+     * TestValidateBlockInvalidCommit "commit with unknown validator
+     * flagged as commit": one COMMIT entry naming a key outside the set →
+     * makeBlock errors with "commit validator not found in validator set".
+     * RED at 709fd12b, where MakeBlock returned a block stamped with the
+     * zero time. */
+    fill_commit(&commit, sigs, &st.last_validators, secs, 1u);
+    pat(sigs[0].validator_address, 32, 0xEE);
+    CHECK(cmt_state_make_block(&st, 2, NULL, &commit, NULL, proposer, 32u,
+                               g_bscratch, &blk) == CMT_REJECT,
+          "MakeBlock refuses a commit from an unknown validator"); OK();
     fill_commit(&commit, sigs, &st.last_validators, secs, NVALS);
     CHECK(cmt_state_median_time(&commit, &st.last_validators, &med) ==
           CMT_OK, "MedianTime"); OK();
@@ -839,6 +924,7 @@ int main(void)
 
     if (t_time_is_zero() != 0) goto out;
     if (t_median_time() != 0) goto out;
+    if (t_median_time_upstream() != 0) goto out;
     if (t_median_time_wraps() != 0) goto out;
     if (t_make_genesis() != 0) goto out;
     if (t_copy() != 0) goto out;

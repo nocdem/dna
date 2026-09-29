@@ -120,6 +120,15 @@
  * Reference @709fd12b (SHA-256 verified before use):
  *   state/execution.go   789 lines
  *   state/validation.go  150 lines
+ * Partly moved to cometbft v0.38.26 (decision
+ * 2026-09-30-cometbft-pin-v0.38.26): validateBlock with its options
+ * struct, ValidateBlock and ValidateBlockSkipLastCommit cite
+ *   state/validation.go  170 lines
+ *     c868b1b0b70aaf4d78c7201e320079dd237943f60907b683bcd306c463b8a1d5
+ *   state/execution.go (v0.38.26 :202-227)
+ * at their own declarations. The v0.38.26 wall-clock block-time tolerance
+ * (validation.go:124-129, execution.go:47-63/:221-223) is NOT ported —
+ * see `nodus_cmt_block_validation_options_t`.
  *   state/services.go, state/tx_filter.go, mempool/mempool.go,
  *   mempool/nop_mempool.go, proxy/app_conn.go, abci/types/application.go,
  *   proto/tendermint/abci/types.proto, types/protobuf.go — pin table of
@@ -599,6 +608,14 @@ int nodus_cmt_host_process_proposal(void *ctx, cmt_block_t *block,
                                     const cmt_state_t *state, bool *out_accept);
 int nodus_cmt_host_validate_block(void *ctx, const cmt_state_t *state,
                                   cmt_block_t *block);
+/** cometbft@v0.38.26 state/execution.go:206-212
+ *  `ValidateBlockSkipLastCommit`: `nodus_cmt_host_validate_block` without
+ *  VerifyCommit on the block's LastCommit (validation.go:100). Only for a
+ *  caller that has already verified that commit elsewhere — the
+ *  reference's one caller is blocksync/reactor.go:605. */
+int nodus_cmt_host_validate_block_skip_last_commit(void *ctx,
+                                                   const cmt_state_t *state,
+                                                   cmt_block_t *block);
 int nodus_cmt_host_apply_verified_block(void *ctx, const cmt_block_id_t *block_id,
                                         cmt_block_t *block,
                                         cmt_state_t *in_out_state);
@@ -642,9 +659,21 @@ bool nodus_cmt_host_next_deadline(const nodus_cmt_blockexec_t *ctx,
 
 /* ── exposed for the tests ─────────────────────────────────────────── */
 
-/** state/validation.go:15-150 `validateBlock(state, block)`. */
+/** cometbft@v0.38.26 state/validation.go:16-19 `blockValidationOptions`.
+ *  The reference's `blockTimeTolerance` (:17) is NOT a field here: its
+ *  check (:124-129) reads the wall clock inside block validation, which
+ *  docs/plans/decisions/2026-09-25-consensus-clock-scope-correction.md
+ *  forbids; it waits on an operator decision. */
+typedef struct {
+    bool skip_last_commit_verification;                /* :18 */
+} nodus_cmt_block_validation_options_t;
+
+/** cometbft@v0.38.26 state/validation.go:21-170
+ *  `validateBlock(state, block, opts...)`. `opts` may be NULL (no
+ *  options). */
 int nodus_cmt_validate_block(nodus_cmt_blockexec_t *ctx,
-                             const cmt_state_t *state, cmt_block_t *block);
+                             const cmt_state_t *state, cmt_block_t *block,
+                             const nodus_cmt_block_validation_options_t *opts);
 
 /** execution.go:567-591 `validateValidatorUpdates`. */
 int nodus_cmt_validate_validator_updates(const cmt_pb_validator_update_t *updates,

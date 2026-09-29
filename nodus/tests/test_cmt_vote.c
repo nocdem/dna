@@ -628,6 +628,72 @@ static int test_proposal_validate_basic(void)
     return 0;
 }
 
+/* ══ Proposal.ValidateBlockSize — cometbft@v0.38.26
+ *    types/proposal_test.go:194-219 TestProposalValidateBlockSize ═══════
+ *
+ * Upstream's six rows, verbatim. Its fifth row is NAMED "0 chunk max" but
+ * passes -1 as the bound; it is ported as written, and a real 0 bound is
+ * added after the table. The function is new in v0.38.x, so every row is
+ * RED only in the sense that it did not exist at 709fd12b. */
+static int test_proposal_validate_block_size(void)
+{
+    static const struct {
+        const char *name;
+        int64_t     max;
+        uint32_t    total;
+        bool        pass;
+    } tc[] = {
+        { "10 chunk max, 5 chunk proposal, success",
+          10 * (int64_t)CMT_BLOCK_PART_SIZE_BYTES, 5u, true },
+        { "10 chunk max, 20 chunk proposal, fail",
+          10 * (int64_t)CMT_BLOCK_PART_SIZE_BYTES, 20u, false },
+        { "10 chunk max, max uint32 chunk proposal, fail",
+          10 * (int64_t)CMT_BLOCK_PART_SIZE_BYTES, UINT32_MAX, false },
+        { "-1 chunk max, max uint32 chunk proposal, fail", -1, UINT32_MAX,
+          false },
+        { "0 chunk max, max uint32 chunk proposal, fail", -1, UINT32_MAX,
+          false },
+        { "total parts equals chunk max, success", -1, 1600u, true },
+    };
+    cmt_proposal_t p;
+    size_t         i;
+
+    for (i = 0; i < sizeof(tc) / sizeof(tc[0]); i++) {
+        cmt_block_id_t bid;
+        int            rc;
+
+        cmt_pb_block_id_init(&bid);
+        bid.part_set_header.total = tc[i].total;
+        /* NewProposal(0, 0, 0, BlockID{PartSetHeader{Total: n}}) */
+        CHECK(cmt_new_proposal(0, 0, 0, &bid, CMT_TIME_ZERO, &p) == CMT_OK,
+              "NewProposal");
+        rc = cmt_proposal_validate_block_size(&p, tc[i].max);
+        if ((rc == CMT_OK) != tc[i].pass) {
+            fprintf(stderr, "  case: %s (rc %d)\n", tc[i].name, rc);
+        }
+        CHECK((rc == CMT_OK) == tc[i].pass, "ValidateBlockSize verdict");
+        if (!tc[i].pass) {
+            CHECK(rc == CMT_REJECT, "too many parts is REJECT (peer input)");
+        }
+    }
+    OK();
+
+    /* The boundary one past the reference's own "equals" row, and a real
+     * zero bound: (0 - 1) / 65536 + 1 = 1 part, truncating like Go. */
+    p.block_id.part_set_header.total = 1601u;
+    CHECK(cmt_proposal_validate_block_size(&p, -1) == CMT_REJECT,
+          "1601 parts exceed MaxBlockSizeBytes"); OK();
+    p.block_id.part_set_header.total = 1u;
+    CHECK(cmt_proposal_validate_block_size(&p, 0) == CMT_OK,
+          "a zero bound still admits one part"); OK();
+    p.block_id.part_set_header.total = 2u;
+    CHECK(cmt_proposal_validate_block_size(&p, 0) == CMT_REJECT,
+          "but not two"); OK();
+    CHECK(cmt_proposal_validate_block_size(NULL, -1) == CMT_FAULT, "NULL");
+    OK();
+    return 0;
+}
+
 /* ══ CommitSig / ExtendedCommitSig from a vote (vote.go:101-138) ══════ */
 
 static int test_commit_sig(void)
@@ -835,6 +901,16 @@ static int test_vote_proto(void)
     CHECK(cmt_vote_to_proto(NULL, &pb) == CMT_OK && pb.height == 0,
           "a NULL receiver yields the zero vote"); OK();
 
+    /* cometbft@v0.38.26 types/vote_test.go:473 TestVoteProtobuf "nil
+     * vote": `VoteFromProto(nil)` is an error, ErrVoteNil (vote.go:82-84,
+     * #5777). RED at 709fd12b's port, which answered CMT_FAULT (the
+     * reference itself nil-dereferenced). REJECT: a nil vote is peer
+     * input. A NULL OUTPUT stays this process's own FAULT. */
+    CHECK(cmt_vote_from_proto(NULL, &back) == CMT_REJECT,
+          "a nil vote is ErrVoteNil — REJECT, not a fault"); OK();
+    CHECK(cmt_vote_from_proto(&pb, NULL) == CMT_FAULT,
+          "a NULL output is still a FAULT"); OK();
+
     /* VotesToProto (vote.go:392-406) DROPS a nil element rather than
      * emitting it — the reference's own comment at :400-402. */
     {
@@ -879,6 +955,7 @@ int main(void)
     if (test_canonical() != 0) return 1;
     if (test_vote_validate_basic() != 0) return 1;
     if (test_proposal_validate_basic() != 0) return 1;
+    if (test_proposal_validate_block_size() != 0) return 1;
     if (test_commit_sig() != 0) return 1;
     if (test_vote_proto() != 0) return 1;
     if (test_sign_and_check() != 0) return 1;

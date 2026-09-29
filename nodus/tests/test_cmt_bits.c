@@ -31,7 +31,12 @@
  *     getNthTrueIndex scans all 64 bits of it — the reference's asymmetry,
  *     which is only safe because PickRandom draws below the smaller count;
  *   · PickRandom never returns an index whose bit is clear, and reports
- *     "nothing to pick" rather than picking, on an empty or nil array.
+ *     "nothing to pick" rather than picking, on an empty or nil array;
+ *   · ASA-2025-003 (cometbft v0.38.19, ported at v0.38.26): an array
+ *     whose word count disagrees with its size counts 0 true bits, is
+ *     refused by ValidateBasic, and SetIndex into its missing words
+ *     answers false — the three upstream tests of that fix
+ *     (test_asa_2025_003).
  *
  * ── WHAT IT REQUIRES ───────────────────────────────────────────────────
  * A default build. No compile flags, no environment variables, no network,
@@ -480,8 +485,11 @@ static int test_predicates(void)
     }
     OK();
 
-    /* A zero-word array is the shape the reference indexes from the end
-     * of and panics on; here it is a reported fault, never a read. */
+    /* A zero-word array is the shape IsFull indexes from the end of and
+     * panics on; here it is a reported fault, never a read. The count is
+     * different since cometbft v0.38.19 (ASA-2025-003): getNumTrueIndices
+     * answers 0 for it (v0.38.26 bit_array.go:285-288) — see
+     * test_asa_2025_003. */
     {
         cmt_bit_array_t bad;
 
@@ -489,11 +497,115 @@ static int test_predicates(void)
         bad.bits = 8;
         bad.n_elems = 0;
         CHECK(cmt_bits_is_full(&bad) == CMT_FAULT, "zero-word IsFull");
-        CHECK(cmt_bits_get_num_true_indices(&bad) == CMT_FAULT,
-              "zero-word count");
+        CHECK(cmt_bits_get_num_true_indices(&bad) == 0,
+              "zero-word count is 0 (v0.38.19)");
         CHECK(cmt_bits_get_nth_true_index(&bad, 0) == -1, "zero-word nth");
         OK();
     }
+    return 0;
+}
+
+/* ── ASA-2025-003 (cometbft v0.38.19): Elems/Bits mismatch ─────────────
+ *
+ * The three upstream tests the fix brought, ported with the reference's
+ * own shapes (cometbft@v0.38.26 libs/bits/bit_array_test.go):
+ *   · TestGetNumTrueIndicesInvalidStates (:176-196) — every malformed
+ *     shape counts 0. RED at 709fd12b's port, which returned CMT_FAULT for
+ *     the zero-word shapes and COUNTED the "more elements than bits" one;
+ *   · TestBitArrayValidateBasic (:400-420) — nil and zero-size are valid,
+ *     a word count that disagrees with Bits is not. The function did not
+ *     exist before;
+ *   · TestBytes' tail (:279-281) — SetIndex on an array whose Elems are
+ *     missing answers false. RED at 709fd12b's port (CMT_FAULT).
+ * Go's `Elems: make([]uint64, 5)` is `n_elems = 5` here; the port's
+ * inline array is always CMT_BITS_MAX_ELEMS wide, so only the COUNT is
+ * the malformed part, which is exactly what the reference checks. */
+static int test_asa_2025_003(void)
+{
+    static const struct {
+        const char *name;
+        bool        is_nil;
+        int         bits;
+        size_t      n_elems;
+        bool        valid;
+    } tc[] = {
+        { "empty",                                false, 0,   0, true  },
+        { "explicit 0 bits nil elements",         false, 0,   0, true  },
+        { "explicit 0 bits 0 len elements",       false, 0,   0, true  },
+        { "nil",                                  true,  0,   0, true  },
+        { "with elements",                        false, 10,  1, true  },
+        { "more elements than bits specifies",    false, 0,   5, false },
+        { "less elements than bits specifies",    false, 200, 1, false },
+    };
+    cmt_bit_array_t ba;
+    size_t          i;
+
+    for (i = 0; i < sizeof(tc) / sizeof(tc[0]); i++) {
+        const cmt_bit_array_t *p = NULL;
+
+        memset(&ba, 0, sizeof(ba));
+        if (!tc[i].is_nil) {
+            if (tc[i].bits == 10) {
+                /* upstream: NewBitArray(10) */
+                CHECK(cmt_bits_new(&ba, 10) == CMT_OK, "NewBitArray(10)");
+            } else {
+                ba.bits    = tc[i].bits;
+                ba.n_elems = tc[i].n_elems;
+            }
+            p = &ba;
+        }
+        /* TestGetNumTrueIndicesInvalidStates: every row expects 0 (the
+         * one well-formed row has no bit set). */
+        if (cmt_bits_get_num_true_indices(p) != 0) {
+            fprintf(stderr, "  case: %s\n", tc[i].name);
+        }
+        CHECK(cmt_bits_get_num_true_indices(p) == 0,
+              "getNumTrueIndices of this shape is 0");
+        /* TestBitArrayValidateBasic */
+        if ((cmt_bits_validate_basic(p) == CMT_OK) != tc[i].valid) {
+            fprintf(stderr, "  case: %s\n", tc[i].name);
+        }
+        CHECK((cmt_bits_validate_basic(p) == CMT_OK) == tc[i].valid,
+              "ValidateBasic accepts exactly the consistent shapes");
+        if (!tc[i].valid) {
+            CHECK(cmt_bits_validate_basic(p) == CMT_REJECT,
+                  "and refuses the others as REJECT (peer input)");
+        }
+    }
+    OK();
+
+    /* The "more elements than bits" shape with a bit SET in its words:
+     * the old count read the words anyway; the guard must stop it. */
+    memset(&ba, 0, sizeof(ba));
+    ba.bits     = 0;
+    ba.n_elems  = 5;
+    ba.elems[0] = 0xFFu;
+    CHECK(cmt_bits_get_num_true_indices(&ba) == 0,
+          "words beyond what Bits specifies are not counted");
+    /* …and so PickRandom finds nothing to pick on it. */
+    {
+        int idx = -1;
+
+        CHECK(cmt_bits_pick_random(&ba, &idx) == CMT_REJECT,
+              "PickRandom on a malformed array picks nothing");
+    }
+    OK();
+
+    /* TestBytes' tail: `bA = NewBitArray(4); bA.Elems = nil;
+     * require.False(t, bA.SetIndex(1, true))`. */
+    CHECK(cmt_bits_new(&ba, 4) == CMT_OK, "NewBitArray(4)");
+    ba.n_elems = 0;
+    CHECK(cmt_bits_set_index(&ba, 1, true) == 0,
+          "SetIndex on missing Elems answers false, it does not fault");
+    CHECK(ba.elems[0] == 0u, "and writes nothing");
+    OK();
+
+    /* A well-formed array is untouched by the new guard. */
+    CHECK(cmt_bits_new(&ba, 130) == CMT_OK, "new 130");
+    CHECK(cmt_bits_set_index(&ba, 129, true) == 1, "set 129");
+    CHECK(cmt_bits_validate_basic(&ba) == CMT_OK, "valid");
+    CHECK(cmt_bits_get_num_true_indices(&ba) == 1, "count 1");
+    OK();
     return 0;
 }
 
@@ -656,6 +768,7 @@ int main(void)
     if (test_population() != 0)   { return 1; }
     if (test_bytes() != 0)        { return 1; }
     if (test_pick_random() != 0)  { return 1; }
+    if (test_asa_2025_003() != 0) { return 1; }
 
     printf("test_cmt_bits: OK (%d groups)\n", g_checks);
     return 0;

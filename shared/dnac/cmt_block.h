@@ -180,7 +180,10 @@ _Static_assert((int)CMT_ADDRESS_SIZE == (int)CMT_TMHASH_TRUNCATED_SIZE,
 /** cometbft@709fd12b types/signable.go:8-13 — `MaxSignatureSize`.
  *  `max(ed25519.SignatureSize, 64)` = 64 → the ML-DSA-87 signature size
  *  4627 (shared/crypto/sign/qgp_dilithium.h:14). Same value as cmt_pb.h's
- *  CMT_PB_SIG_MAX. */
+ *  CMT_PB_SIG_MAX. cometbft@v0.38.26 signable.go:13 makes it
+ *  `max(ed25519.SignatureSize, mldsa65.SignatureSize)` = 3309 — the
+ *  ML-DSA-65 key type this port does not have (ML-DSA-87 is the one key
+ *  type); the substitution, and so the value, is unchanged. */
 #define CMT_MAX_SIGNATURE_SIZE CMT_PB_SIG_MAX
 
 /** cometbft@709fd12b types/vote.go:18-19 — `MaxVoteExtensionSize`,
@@ -268,19 +271,33 @@ _Static_assert((int)CMT_ADDRESS_SIZE == (int)CMT_TMHASH_TRUNCATED_SIZE,
 #define CMT_MAX_COMMIT_OVERHEAD_BYTES ((int64_t)159)
 
 /**
- * cometbft@709fd12b types/block.go:595-597 — `MaxCommitSigBytes`, 109
- * there. RE-DERIVED as the marshalled size of a widest CommitSig:
+ * cometbft@v0.38.26 types/block.go:595-603 — `MaxCommitSigBytes`.
+ *
+ * v0.38.26 replaced 709fd12b's measured constant 109 (:595-597) with a
+ * FORMULA, `MaxSignatureSize + 20 + 1 + 14 + maxCommitSigProtoEncOverhead`
+ * where the overhead is 4 + 2 + 1 + 1 + 3 = 11 (:598, :603). With this
+ * port's substitutions — MaxSignatureSize 4627 (ML-DSA-87) and the address
+ * 32 bytes (crypto.AddressSize, the `20` of :601) — that is
+ *   4627 + 32 + 1 + 14 + 11 = 4685,
+ * which is EXACTLY the marshalled size of a widest DNA CommitSig, measured
+ * by test_cmt_block.c:
  *   block_id_flag      1 + varint 1                         =    2
  *   validator_address  1 + 1 + 32                           =   34
  *   timestamp (ALWAYS) 1 + 1 + (1+10 seconds, 1+5 nanos)    =   19
  *   signature          1 + 2 + 4627                         = 4630
  *                                                      total = 4685
- * The identical arithmetic gives the reference's 109 with its sizes
- * (2 + 22 + 19 + 66). Its source comment says "14 bytes for the
- * timestamp"; the field is 19 and 2+22+19+66 = 109, so again the constant
- * is right and the comment is loose.
+ * So the value is unchanged by the pin move; only its derivation is now
+ * the reference's formula. (Upstream's own value moved from 109 to 3355,
+ * because its MaxSignatureSize became ML-DSA-65's 3309 — a key type this
+ * port does not have.)
  */
 #define CMT_MAX_COMMIT_SIG_BYTES ((int64_t)4685)
+
+_Static_assert(CMT_MAX_COMMIT_SIG_BYTES ==
+               (int64_t)CMT_MAX_SIGNATURE_SIZE + (int64_t)CMT_ADDRESS_SIZE +
+               1 + 14 + (4 + 2 + 1 + 1 + 3),
+               "MaxCommitSigBytes must equal the v0.38.26 formula "
+               "(types/block.go:598, :603) at this port's sizes");
 
 /** cometbft@709fd12b types/block.go:583-589 — `BlockIDFlag`.
  *  The same three values as cmt_pb.h's wire enum, which this aliases so
@@ -431,9 +448,10 @@ int cmt_header_from_proto(const cmt_pb_header_t *ph, uint64_t block_protocol,
  *  Field-identical to cmt_pb_commit_sig_t. */
 typedef cmt_pb_commit_sig_t cmt_commit_sig_t;
 
-/** cometbft@709fd12b types/block.go:608-612 — `MaxCommitBytes()`.
- *  `MaxCommitOverheadBytes + ((MaxCommitSigBytes + 2) * valCount)`; the 2
- *  is the repeated field's tag plus length byte (:610). Overflow REFUSES.
+/** cometbft@v0.38.26 types/block.go:613-618 — `MaxCommitBytes()`.
+ *  `MaxCommitOverheadBytes + ((MaxCommitSigBytes + 3) * valCount)`; the 3
+ *  is the repeated field's tag plus a two-byte length varint (:615 — it
+ *  was 2 at 709fd12b:610). Overflow REFUSES.
  *  @return CMT_OK, CMT_REJECT on a negative count or an overflow. */
 int cmt_max_commit_bytes(int64_t val_count, int64_t *out);
 

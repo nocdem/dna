@@ -8,6 +8,7 @@
  */
 
 #include "dnac/cmt_proposal.h"
+#include "dnac/cmt_params.h"   /* CMT_MAX_BLOCK_SIZE_BYTES, BlockPartSizeBytes */
 
 #include <string.h>
 
@@ -65,6 +66,37 @@ int cmt_proposal_validate_basic(const cmt_proposal_t *p)
         return CMT_REJECT;                                       /* :76-78 */
     }
     return CMT_OK;
+}
+
+/* cometbft@v0.38.26 types/proposal.go:82-96 —
+ * (p *Proposal) ValidateBlockSize(). New in v0.38.x (#5324). */
+int cmt_proposal_validate_block_size(const cmt_proposal_t *p,
+                                     int64_t max_block_size_bytes)
+{
+    int64_t total_parts;
+    int64_t max_parts;
+
+    if (p == NULL) {
+        return CMT_FAULT;
+    }
+    if (max_block_size_bytes == -1) {                            /* :87 */
+        max_block_size_bytes = (int64_t)CMT_MAX_BLOCK_SIZE_BYTES;/* :88 */
+    }
+    total_parts = (int64_t)p->block_id.part_set_header.total;    /* :90 */
+    /* :91 `(maxBlockSizeBytes-1)/int64(BlockPartSizeBytes) + 1`. The
+     * subtraction wraps in Go for INT64_MIN; C's would be undefined, so
+     * it is carried in uint64 (the port's wrap pattern). Both divisions
+     * truncate toward zero. The caller passes the consensus parameter
+     * Block.MaxBytes, which ValidateConsensusParams keeps at -1 or
+     * 1..MaxBlockSizeBytes, so the wrap is not reached from consensus. */
+    max_parts = (int64_t)((uint64_t)max_block_size_bytes - 1u) /
+                (int64_t)CMT_BLOCK_PART_SIZE_BYTES + 1;
+    if (total_parts > max_parts) {                               /* :92 */
+        /* :93 "proposal has too many parts". A proposal is a PEER's
+         * message (consensus/reactor.go:326): REJECT. */
+        return CMT_REJECT;
+    }
+    return CMT_OK;                                               /* :95 */
 }
 
 /* cometbft@709fd12b types/proposal.go:102-118 — ProposalSignBytes().

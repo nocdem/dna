@@ -51,23 +51,32 @@ int cmt_new_conflicting_vote_error(const cmt_vote_t *vote1,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/vote.go:81-99 — VoteFromProto().
- * NOTE reference asymmetry (:77-80 versus :82): the doc comment promises
+/* cometbft@v0.38.26 types/vote.go:81-103 — VoteFromProto().
+ * NOTE reference asymmetry (:77-80 versus :86): the doc comment promises
  * no validation, but BlockIDFromProto validates. Ported as-is. */
 int cmt_vote_from_proto(const cmt_pb_vote_t *pv, cmt_vote_t *out)
 {
     cmt_block_id_t bid;
     int            rc;
 
-    if (pv == NULL || out == NULL) {
+    if (out == NULL) {
         return CMT_FAULT;
     }
-    rc = cmt_block_id_from_proto(&pv->block_id, &bid);           /* :82  */
+    if (pv == NULL) {
+        /* :82-84 — `ErrVoteNil` (#5777, v0.38.23); at 709fd12b :82
+         * dereferenced the nil and panicked. A nil vote is what a peer's
+         * VoteMessage without a vote decodes to, so the class is REJECT.
+         * (This port's VoteMessage decoder already refuses that shape
+         * before calling here — cmt_msgs.c; this makes the function
+         * itself answer as the reference now does.) */
+        return CMT_REJECT;
+    }
+    rc = cmt_block_id_from_proto(&pv->block_id, &bid);           /* :86  */
     if (rc != CMT_OK) {
         return rc;
     }
-    *out = *pv;                                                  /* :87-98 */
-    out->block_id = bid;                                         /* :91  */
+    *out = *pv;                                                  /* :91-102 */
+    out->block_id = bid;                                         /* :95  */
     return CMT_OK;
 }
 

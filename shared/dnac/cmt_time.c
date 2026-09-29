@@ -54,9 +54,12 @@ int cmt_time_canonical(cmt_time_t t, cmt_time_t *out)
     return CMT_OK;
 }
 
-/* Go `time.Time.UnixNano()` — the sort key of types/time/time.go:45.
- * Computed in uint64 so the overflow WRAPS as Go's int64 arithmetic does,
- * instead of being undefined as C signed overflow is. */
+/* Go `time.Time.UnixNano()`. It was the sort key of types/time/time.go:45
+ * up to 709fd12b; since cometbft v0.38.26 that sort uses Time.Before
+ * (cmt_wt_less below), and this function serves the scheduling callers
+ * (cmt_cs.c, cmt_conr.c, cmt_memr.c, cmt_bsync_reactor.c). Computed in
+ * uint64 so the overflow WRAPS as Go's int64 arithmetic does, instead of
+ * being undefined as C signed overflow is. */
 int64_t cmt_time_unix_nano(cmt_time_t t)
 {
     uint64_t ns;
@@ -81,11 +84,16 @@ int cmt_new_weighted_time(cmt_time_t t, int64_t weight,
     return CMT_OK;
 }
 
-/* The comparator of types/time/time.go:38-46, written out.
- * Returns true when a must sort before b.
+/* The comparator of cometbft@v0.38.26 types/time/time.go:38-46, written
+ * out. Returns true when a must sort before b.
  *   a == NULL             -> false  (:39-41: a nil is never "less")
  *   b == NULL, a != NULL  -> true   (:42-44: everything precedes a nil)
- *   otherwise             -> UnixNano(a) < UnixNano(b)   (:45) */
+ *   otherwise             -> a.Time.Before(b.Time)       (:45)
+ * Go's Time.Before compares the instant — seconds first, then
+ * nanoseconds — over the WHOLE range. At 709fd12b :45 compared UnixNano,
+ * which wraps outside ~1678..2262, so a valid year-9999 stamp sorted
+ * BELOW every present-day one. `nanos` is in [0, 1e9) for every valid
+ * time (cmt_time_validate), so (seconds, nanos) order IS instant order. */
 static bool cmt_wt_less(const cmt_weighted_time_t *a,
                         const cmt_weighted_time_t *b)
 {
@@ -95,10 +103,14 @@ static bool cmt_wt_less(const cmt_weighted_time_t *a,
     if (b == NULL) {
         return true;
     }
-    return cmt_time_unix_nano(a->time) < cmt_time_unix_nano(b->time);
+    if (a->time.seconds != b->time.seconds) {
+        return a->time.seconds < b->time.seconds;
+    }
+    return a->time.nanos < b->time.nanos;
 }
 
-/* cometbft@709fd12b types/time/time.go:35-58 — WeightedMedian() */
+/* cometbft@v0.38.26 types/time/time.go:35-58 — WeightedMedian()
+ * (line numbers identical to 709fd12b; only :45 changed). */
 int cmt_weighted_median(const cmt_weighted_time_t **weighted_times, size_t n,
                         int64_t total_voting_power, cmt_time_t *out)
 {

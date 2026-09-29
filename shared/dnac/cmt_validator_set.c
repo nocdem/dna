@@ -16,6 +16,8 @@
                                    * Included from the .c and NOT from
                                    * cmt_validator_set.h, because
                                    * cmt_validation.h includes THAT header. */
+#include "dnac/cmt_block.h"       /* ExtendedCommit — VerifyCommitExtended */
+#include "dnac/cmt_vote.h"        /* VerifyExtension — VerifyCommitExtended */
 
 #include <string.h>
 
@@ -638,7 +640,10 @@ size_t cmt_validator_set_size(const cmt_validator_set_t *vals)
     return (vals == NULL) ? 0 : vals->validators_len;
 }
 
-/* :314-328 updateTotalVotingPower() */
+/* cometbft@v0.38.26 types/validator_set.go:314-326 —
+ * updateTotalVotingPower(). Since v0.38.26 it RETURNS an error where
+ * 709fd12b:320-324 panicked; each caller now decides the class (see the
+ * header's "Return codes"). */
 int cmt_validator_set_update_total_voting_power(cmt_validator_set_t *vals)
 {
     int64_t sum = 0;
@@ -650,15 +655,40 @@ int cmt_validator_set_update_total_voting_power(cmt_validator_set_t *vals)
     for (i = 0; i < vals->validators_len; i++) {
         sum = cmt_vs_safe_add_clip(sum, vals->validators[i].voting_power); /* :318 */
         if (sum > CMT_MAX_TOTAL_VOTING_POWER) {           /* :319 */
-            /* :320-324 panic. FAULT, not a verdict — see the header. */
-            return CMT_FAULT;
+            /* :320 "total voting power %d exceeds maximum %d" — a
+             * property of the members' powers, so the value is REJECT;
+             * the two callers that still PANIC map it to FAULT. */
+            return CMT_REJECT;
         }
     }
-    vals->total_voting_power = sum;                       /* :327 */
+    vals->total_voting_power = sum;                       /* :324 */
+    return CMT_OK;                                        /* :325 */
+}
+
+/* cometbft@v0.38.26 types/validator_set.go:330-337 —
+ * TotalVotingPowerSafe(): TotalVotingPower's recomputation, with the
+ * overflow RETURNED (CMT_REJECT) instead of panicking. Its one reference
+ * caller is ValidatorSetFromProto (:993-996), where the powers come off
+ * the wire or the store. */
+int cmt_validator_set_total_voting_power_safe(cmt_validator_set_t *vals,
+                                              int64_t *out)
+{
+    int rc;
+
+    if (vals == NULL || out == NULL) {
+        return CMT_FAULT;
+    }
+    if (vals->total_voting_power == 0) {                  /* :331 */
+        rc = cmt_validator_set_update_total_voting_power(vals); /* :332 */
+        if (rc != CMT_OK) {
+            return rc;                                    /* :333 */
+        }
+    }
+    *out = vals->total_voting_power;                      /* :336 */
     return CMT_OK;
 }
 
-/* :332-337 TotalVotingPower() */
+/* cometbft@v0.38.26 types/validator_set.go:341-350 — TotalVotingPower() */
 int cmt_validator_set_total_voting_power(cmt_validator_set_t *vals,
                                          int64_t *out)
 {
@@ -667,13 +697,17 @@ int cmt_validator_set_total_voting_power(cmt_validator_set_t *vals,
     if (vals == NULL || out == NULL) {
         return CMT_FAULT;
     }
-    if (vals->total_voting_power == 0) {                  /* :333 */
-        rc = cmt_validator_set_update_total_voting_power(vals);  /* :334 */
+    if (vals->total_voting_power == 0) {                  /* :342 */
+        rc = cmt_validator_set_update_total_voting_power(vals);  /* :343 */
         if (rc != CMT_OK) {
-            return rc;
+            /* :344-345 `panic(err)`. FAULT, not a verdict: every set this
+             * is called on was built by a path that already refused the
+             * overflow (verifyUpdates :491-496, FromProto's Safe call
+             * :994, FromExistingValidators :1021) — see the header. */
+            return CMT_FAULT;
         }
     }
-    *out = vals->total_voting_power;                      /* :336 */
+    *out = vals->total_voting_power;                      /* :348 */
     return CMT_OK;
 }
 
@@ -1190,6 +1224,77 @@ int cmt_validator_set_verify_commit(cmt_validator_set_t *vals,
 {
     return cmt_verify_commit(chain_id, chain_id_len, vals, block_id,
                              height, commit, err);                /* :701 */
+}
+
+/* cometbft@v0.38.26 types/validator_set.go:717-758 —
+ * (vals *ValidatorSet) VerifyCommitExtended(). New in v0.38.22 (#5629),
+ * the full-commit check block sync applies to a block's extended commit
+ * when vote extensions are enabled (blocksync/reactor.go:591). */
+int cmt_validator_set_verify_commit_extended(
+        cmt_validator_set_t *vals, const uint8_t *chain_id,
+        size_t chain_id_len, const cmt_pb_block_id_t *block_id,
+        int64_t height, const cmt_pb_extended_commit_t *ext_commit,
+        cmt_pb_commit_sig_t *sigs, size_t sigs_cap,
+        uint8_t *scratch, size_t scratch_cap)
+{
+    cmt_pb_commit_t commit;
+    cmt_vote_t      vote;
+    cmt_validator_t val;
+    size_t          i;
+    int             rc;
+
+    if (vals == NULL) {
+        return CMT_FAULT;
+    }
+    if (ext_commit == NULL) {
+        /* :725-727 "nil extended commit" — an error in Go; a NULL pointer
+         * cannot come off the wire in C (the decoder yields a struct), so
+         * it is this process's own error: FAULT (deviation register
+         * R1B-10, the rule cmt_verify_basic_vals_and_commit follows). */
+        return CMT_FAULT;
+    }
+    /* :729-733 — 1. every COMMIT entry carries an extension signature and
+     * no other entry carries extension data. */
+    rc = cmt_extended_commit_ensure_extensions(ext_commit, true);
+    if (rc != CMT_OK) {
+        return rc;
+    }
+    /* :735-739 — 2. the regular commit, the SAME check validateBlock
+     * makes (Tachyon's address check included). */
+    memset(&commit, 0, sizeof(commit));
+    rc = cmt_extended_commit_to_commit(ext_commit, sigs, sigs_cap, &commit);
+    if (rc != CMT_OK) {
+        return rc;
+    }
+    rc = cmt_validator_set_verify_commit(vals, chain_id, chain_id_len,
+                                         block_id, height, &commit, NULL);
+    if (rc != CMT_OK) {
+        return rc;
+    }
+    /* :741-755 — 3. every entry's extension signature, in index order,
+     * against the key of the validator AT THAT INDEX. VerifyExtension
+     * accepts an absent or nil entry without a check (vote.go:268-270),
+     * which is what lets such entries through. */
+    for (i = 0; i < ext_commit->extended_signatures_len; i++) {
+        rc = cmt_validator_set_get_by_index(vals, (int32_t)i, &val);
+        if (rc != CMT_OK) {
+            /* :745-748 "should not happen as we verified the commit
+             * above" — VerifyCommit made the counts equal. */
+            return rc;
+        }
+        rc = cmt_extended_commit_get_extended_vote(ext_commit, (int32_t)i,
+                                                   &vote);       /* :750 */
+        if (rc != CMT_OK) {
+            return rc;
+        }
+        rc = cmt_vote_verify_extension(chain_id, chain_id_len, &vote,
+                                       val.pub_key.key, scratch,
+                                       scratch_cap);         /* :751-753 */
+        if (rc != CMT_OK) {
+            return rc;   /* "invalid vote extension signature (val #%d)" */
+        }
+    }
+    return CMT_OK;                                               /* :757 */
 }
 
 /* :708-712 (vals *ValidatorSet) VerifyCommitLight() — the whole body is
@@ -1711,12 +1816,16 @@ int cmt_validator_set_update_with_change_set_ex(cmt_validator_set_t *vals,
         return rc;
     }
 
-    /* :668 — "will panic if total voting power > MaxTotalVotingPower". The
-     * cache is cleared first so the recomputation actually happens. */
+    /* cometbft@v0.38.26 validator_set.go:679-681 — `if err =
+     * vals.updateTotalVotingPower(); err != nil { panic(err) }` (a bare
+     * panicking call at 709fd12b:668). Still a panic, so a failure here is
+     * CMT_FAULT: verifyUpdates (:491-496) has already refused every change
+     * set that could overflow. The cache is cleared first so the
+     * recomputation actually happens. */
     vals->total_voting_power = 0;
     rc = cmt_validator_set_update_total_voting_power(vals);
     if (rc != CMT_OK) {
-        return rc;
+        return CMT_FAULT;
     }
     rc = cmt_validator_set_total_voting_power(vals, &tvp);     /* :671 */
     if (rc != CMT_OK) {
@@ -1864,8 +1973,12 @@ int cmt_validator_set_from_proto(const cmt_pb_validator_set_t *vp,
     }
     vals->has_proposer = true;                                /* :931 */
 
-    /* :933-938 — the peer's total is NEVER trusted; it is recomputed. */
-    rc = cmt_validator_set_total_voting_power(vals, &tvp);
+    /* :933-938 — the peer's total is NEVER trusted; it is recomputed.
+     * cometbft@v0.38.26 validator_set.go:993-996 recomputes it with
+     * TotalVotingPowerSafe, so members whose powers sum above
+     * MaxTotalVotingPower are REFUSED (CMT_REJECT — the powers come off
+     * the wire or the store) where 709fd12b:938 panicked. */
+    rc = cmt_validator_set_total_voting_power_safe(vals, &tvp);
     if (rc != CMT_OK) {
         return rc;
     }
@@ -1917,6 +2030,8 @@ int cmt_validator_set_from_existing_validators(cmt_validator_set_t *vals,
     vals->proposer     = *prev;
     vals->has_proposer = true;
 
+    /* cometbft@v0.38.26 validator_set.go:1021-1023 — the overflow is
+     * RETURNED (it was a panic inside 709fd12b:963): CMT_REJECT. */
     rc = cmt_validator_set_update_total_voting_power(vals);   /* :963 */
     if (rc != CMT_OK) {
         return rc;

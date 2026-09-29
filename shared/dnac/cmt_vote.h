@@ -162,9 +162,12 @@ int cmt_new_conflicting_vote_error(const cmt_vote_t *vote1,
                                    const cmt_vote_t *vote2,
                                    cmt_err_vote_conflicting_votes_t *out);
 
-/** cometbft@709fd12b types/vote.go:81-99 — `VoteFromProto()`.
- *  The identity plus BlockIDFromProto (:82), which validates — see the
- *  asymmetry note in the header. */
+/** cometbft@v0.38.26 types/vote.go:81-103 — `VoteFromProto()`.
+ *  The identity plus BlockIDFromProto (:86), which validates — see the
+ *  asymmetry note in the header.
+ *  @return CMT_OK; CMT_REJECT for a NULL `pv` (:82-84 `ErrVoteNil`,
+ *          #5777 — a panic at 709fd12b) or an invalid BlockID;
+ *          CMT_FAULT for a NULL `out`. */
 int cmt_vote_from_proto(const cmt_pb_vote_t *pv, cmt_vote_t *out);
 
 /** cometbft@709fd12b types/vote.go:371-390 — `(vote *Vote) ToProto()`.

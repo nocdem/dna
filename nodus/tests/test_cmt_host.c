@@ -1022,7 +1022,13 @@ static int env_make_block(t_env_t *e, const cmt_state_t *state, int64_t height,
                               proposer.address, proposer.address_len,
                               e->bscratch, out);
     free(vstor);
-    return rc == CMT_OK ? 0 : -1;
+    /* -2 is MakeBlock's own REJECT (cometbft@v0.38.26 state.go:250-253,
+     * the MedianTime error), so a caller can tell it from a fixture
+     * failure; every other caller only tests `== 0`. */
+    if (rc == CMT_OK) {
+        return 0;
+    }
+    return rc == CMT_REJECT ? -2 : -1;
 }
 
 static int env_make_part_set(t_env_t *e, const cmt_block_t *b, cmt_part_set_t *out)
@@ -6387,10 +6393,11 @@ static int t_exec_prepare_proposal_serialization_overhead(void)
      * evidenceBytes). With ML-DSA-87 the overhead is
      * MaxOverheadForBlock 11 + MaxHeaderBytes 790 + MaxCommitBytes(1),
      * where MaxCommitBytes(1) = MaxCommitOverheadBytes 159 +
-     * 1 × (MaxCommitSigBytes 4685 + 2) = 4846 (block.go:594-597,
-     * :608-611; cmt_block.h:244, :254, :268, :283; cmt_block.c:451
-     * `per = CMT_MAX_COMMIT_SIG_BYTES + 2`) — 5647 bytes in all, so a
-     * 5000-byte block has data room 5000 − 5647 = −647, NEGATIVE, and
+     * 1 × (MaxCommitSigBytes 4685 + 3) = 4847 (cometbft@v0.38.26
+     * block.go:593-603, :613-618 — the frame is 3 there, 2 at 709fd12b;
+     * cmt_block.c `per = CMT_MAX_COMMIT_SIG_BYTES + 3`) — 5648 bytes in
+     * all, so a 5000-byte block has data room 5000 − 5648 = −648,
+     * NEGATIVE, and
      * `MaxDataBytes(5000, …)` is the reference's panic — CMT_REJECT here.
      * The same quantity is therefore read from a base large enough to be
      * valid; the value of `non_data` is identical for every base, which
@@ -6423,11 +6430,21 @@ static int t_exec_prepare_proposal_app_error(void)
 
 /* :1021-1114 TestCreateProposalAbsentVoteExtensions: the extension data
  * stripped from the last commit; panic iff extensions were REQUIRED at
- * the commit's height (enable height ≤ height-1) */
+ * the commit's height (enable height ≤ height-1).
+ *
+ * The four rows are cometbft@v0.38.26 state/execution_test.go:1030-1063:
+ * height 3 and enable heights 2 / 3 / 0 / 4. At 709fd12b they were height
+ * 2 and 1 / 2 / 0 / 3. Upstream moved them one height up together with
+ * CSA-2026-001: at height 2, makeState(1, 1) runs its LastValidators
+ * loop (helpers_test.go:154-160, env_make_state here) zero times, so
+ * LastValidators is EMPTY. The last commit's signer is then not in it,
+ * and MedianTime now refuses that (state.go:283-286), so MakeBlock fails
+ * before PrepareProposal is reached. Same input, same failure in both —
+ * the fixture moves, not the port. */
 static int t_exec_create_proposal_absent_vote_extensions(void)
 {
     struct { int64_t height, enable; bool expect_panic; } tcs[4] = {
-        { 2, 1, true }, { 2, 2, false }, { 2, 0, false }, { 2, 3, false } };
+        { 3, 2, true }, { 3, 3, false }, { 3, 0, false }, { 3, 4, false } };
     int t;
 
     for (t = 0; t < 4; t++) {
@@ -6656,12 +6673,25 @@ static int t_val_validate_block_commit(void)
             CHECK(env_make_block(&e, e.state, height, wh, b) == 0, "block");
             CHECK(nodus_cmt_host_validate_block(x.be, e.state, b) == CMT_REJECT,
                   "ErrInvalidCommitHeight (as REJECT)");
+            /* cometbft@v0.38.26 execution.go:210-212
+             * ValidateBlockSkipLastCommit: the same block, whose ONLY
+             * defect is its LastCommit's height, passes when VerifyCommit
+             * is skipped (validation.go:100) — every other check,
+             * MedianTime over that commit included, still runs and holds.
+             * Project-authored; upstream ships no unit case for it. */
+            CHECK(nodus_cmt_host_validate_block_skip_last_commit(x.be, e.state, b) == CMT_OK,
+                  "ValidateBlockSkipLastCommit skips only the LastCommit check");
             free(wh);
-            /* #2589: len(Signatures) != LastValidators.Size() */
+            /* #2589: len(Signatures) != LastValidators.Size(). Since
+             * cometbft@v0.38.26 (validation_test.go:195-200) this commit
+             * never reaches ValidateBlock: its second entry is the
+             * stranger's precommit, MedianTime refuses a signer outside
+             * LastValidators (state.go:283-286), and makeBlock returns
+             * "error making block". At 709fd12b the block was built and
+             * ValidateBlock refused it with ErrInvalidCommitSignatures. */
             CHECK(have_wrong_sigs, "wrongSigsCommit built");
-            CHECK(env_make_block(&e, e.state, height, wrong, b) == 0, "block");
-            CHECK(nodus_cmt_host_validate_block(x.be, e.state, b) == CMT_REJECT,
-                  "ErrInvalidCommitSignatures (as REJECT)");
+            CHECK(env_make_block(&e, e.state, height, wrong, b) == -2,
+                  "makeBlock refuses the stranger's signature (REJECT)");
         }
         /* a good block passes */
         CHECK(make_and_commit_good_block(&e, &x, e.state, height, last_commit, proposer.address, b,
