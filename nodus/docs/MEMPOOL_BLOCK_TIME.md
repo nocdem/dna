@@ -115,8 +115,8 @@ only. Three bounds, in this order:
 |---|---|---|---|
 | Byte budget | cometbft's `Block.MaxBytes` 22 020 096 → `MaxDataBytes` for the round | ConsensusParams from the genesis document | `nodus_witness_cmt_app.c` (`max_tx_bytes`) |
 | Unit budget | the ledger's own meter (the O15I capacity seam, `nodus_witness_v2_produce_batch_check_capped`) | `nodus_witness_v2_produce.c` | `app_seam_check` |
-| **Per-class item caps** | **envelopes ≤ `min(env_bound, NODUS_V2_ENV_BATCH_MAX)`; claims ≤ `min(claim_bound, NODUS_V2_APPLY_MAX_CLAIMS)`** — `NODUS_V2_ENV_BATCH_MAX` (a per-block MEMORY ceiling on envelope-scratch allocation, 3 209 at this build — `nodus_witness_v2_apply.h`'s `_Static_assert`-pinned arithmetic: 64 MiB / ~21 KB per envelope) and `NODUS_V2_APPLY_MAX_CLAIMS` (14 162, cometbft's own 100 MiB block ceiling / the smallest encoded claim) are BOTH release resource bounds of the apply engine, NOT protocol numbers and NOT derived from the genesis document | `nodus_witness_v2_apply.h` | `nodus_witness_cmt_app.c` (PrepareProposal's per-class compaction pass, ProcessProposal's per-class classify-and-reject pass) |
-| Mixed item cap (defense-in-depth) | `NODUS_V2_APPLY_MAX_OPS` = the SUM of the two per-class bounds above (17 371 at this build) | `nodus_witness_v2_apply.h` | `nodus_witness_cmt_app.c` (kept as a belt-and-braces trim/refusal AFTER the per-class ones; redundant in practice once they hold) |
+| **Per-class item caps** | **envelopes ≤ `min(env_bound, NODUS_V2_ENV_BATCH_MAX)`; claims ≤ `min(claim_bound, NODUS_V2_APPLY_MAX_CLAIMS)`** — `NODUS_V2_ENV_BATCH_MAX` (a per-block MEMORY ceiling on envelope-scratch allocation, 3 075 at this build since general multisig grew the auth verdict, 3 209 before — `nodus_witness_v2_apply.h`'s `_Static_assert`-pinned arithmetic: 64 MiB / 21 824 B per envelope) and `NODUS_V2_APPLY_MAX_CLAIMS` (14 162, cometbft's own 100 MiB block ceiling / the smallest encoded claim) are BOTH release resource bounds of the apply engine, NOT protocol numbers and NOT derived from the genesis document | `nodus_witness_v2_apply.h` | `nodus_witness_cmt_app.c` (PrepareProposal's per-class compaction pass, ProcessProposal's per-class classify-and-reject pass) |
+| Mixed item cap (defense-in-depth) | `NODUS_V2_APPLY_MAX_OPS` = the SUM of the two per-class bounds above (17 237 at this build; 17 371 before general multisig) | `nodus_witness_v2_apply.h` | `nodus_witness_cmt_app.c` (kept as a belt-and-braces trim/refusal AFTER the per-class ones; redundant in practice once they hold) |
 
 `PrepareProposal` packs, per class, the highest-fee entries up to each
 class's own cap (dropping from the tail of the fee order within that
@@ -124,7 +124,7 @@ class); `ProcessProposal` REFUSES a proposal exceeding either class's
 cap before any per-item work (ABCI REJECT → a nil prevote);
 `FinalizeBlock`'s engine FAULT on a larger DECIDED block is the last
 line (register R3-W3-C2a-19, superseded by R3-W4-C delta 2). Throughput
-is therefore **3 209 envelopes OR ~14 162 claims per block** (whichever
+is therefore **3 075 envelopes (3 209 before general multisig) OR ~14 162 claims per block** (whichever
 class is filled), a release-resource ceiling now sized in the
 low-to-mid thousands rather than the flat 16 W3 shipped as an interim
 fix. The request-side arrays are sized per request from the derived
@@ -242,7 +242,7 @@ empty-block cadence (`test_cmt_empty_blocks.sh`).
 
 ## Limitations, named
 
-- 3 209 envelopes OR ~14 162 claims per block (the engine's derived
+- 3 075 envelopes (3 209 before general multisig) OR ~14 162 claims per block (the engine's derived
   memory-ceiling resource bounds, `NODUS_V2_ENV_BATCH_MAX` /
   `NODUS_V2_APPLY_MAX_CLAIMS`) — W4-C delta 2, superseding the flat
   16-item cap delta 1 shipped as an interim fix.

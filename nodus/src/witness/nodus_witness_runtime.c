@@ -148,7 +148,35 @@ static int sys_policy_build(dna_meter_policy_t *p) {
  * SYSTEM's digest commits SYS_METER_POLICY_DIGEST; CORE's commits the
  * all-zero "no policy declared" field. */
 static const uint8_t SYS_RULESET_HASH[DNA_DOM_HASH_LEN] = {
-    /* O15F — SYSTEM ruleset_version 4 → 5: the V2-lane CHAIN_CONFIG
+    /* Final pre-testnet wipe, W-A (design 2026-09-28-final-wipe-package-
+     * design.md §7 Fable F3): SYSTEM ruleset_version 5 → 6. The SYSTEM
+     * runtime's committed state changed meaning — system_state_root
+     * gained the treasury_root leg ("DNA.SYS.v4"), its genesis payload
+     * root moved to "DNA.SYSPAYL.v3" (W-A also credited a genesis seat's
+     * graduation refund to the Foundation pool — WITHDRAWN by general
+     * multisig, decision 2026-09-29-general-multisig.md: every seat
+     * releases a UTXO to its unstake destination again, a genesis seat's
+     * being the Foundation multisig address; the descriptor preimage is
+     * unaffected, so v6 stands);
+     * and (W-B, same v6) STAKE accepts only a bond of EXACTLY
+     * DNAC_SELF_STAKE_AMOUNT and DELEGATE accepts a validator delegating
+     * to itself (Rule S removed); and (W-C, same v6) CHAIN_CONFIG
+     * accepts param id 6 TOKEN_CREATE_FEE_RAW (hook-side scalar rules,
+     * not the descriptor, so the pinned v6 digest below is unaffected) —
+     * and the exact-tuple identity IS the activation mechanism, so the
+     * version advances. The descriptor preimage differs from v5 ONLY in
+     * the ruleset_version field (rule list {1..6}, type list
+     * {4,5,6,7,9,10} and the meter-policy digest are byte-identical), so
+     * the digest moves by construction.
+     *
+     * The v6 digest comes from the INDEPENDENT python3 ruleset oracle,
+     * never from this build's own encoder; the same value is
+     * nodus/tests/test_domain_runtime.c KAT_RS_SYSTEM, and
+     * nodus_witness_runtime_selfcheck() re-derives it through the C
+     * encoder on every start. The retired v5 value 0efc48bf…f350 is
+     * dead: old SYSTEM legs are never reinterpreted.
+     *
+     * HISTORY — O15F, SYSTEM ruleset_version 4 → 5: the V2-lane CHAIN_CONFIG
      * (runtime op 6) NARROWS the accepted TARGET_ACTIVE_COUNT range to
      * [7..30] (a proposal for 31 is a deterministic reject in
      * rtn_cc_exec). Narrowing the accepted runtime-op-6 semantics changes
@@ -165,17 +193,67 @@ static const uint8_t SYS_RULESET_HASH[DNA_DOM_HASH_LEN] = {
      * pins (SYSTEM v4 4fe76fed…7736 and CORE v3 ed4b1bcd…4437)
      * byte-exactly before this value was accepted; selfcheck re-derives
      * it through the C encoder on every run. */
-    0x0e, 0xfc, 0x48, 0xbf, 0x13, 0xb8, 0xda, 0xd5,
-    0x3f, 0x41, 0xb4, 0xe7, 0x62, 0x3c, 0xab, 0xed,
-    0x26, 0x2d, 0x94, 0xb3, 0xbd, 0xae, 0x2a, 0x1a,
-    0x07, 0xf7, 0xe0, 0xc9, 0x39, 0x4c, 0x9f, 0x6c,
-    0xf4, 0xc5, 0x09, 0x6f, 0x98, 0x53, 0xd9, 0xf2,
-    0xb7, 0xae, 0x8d, 0x08, 0x45, 0xea, 0xac, 0xdb,
-    0xf6, 0xd8, 0x59, 0xdf, 0x34, 0xc5, 0xb3, 0xda,
-    0xd1, 0x89, 0x6c, 0x16, 0xb3, 0xf9, 0xf3, 0x50
+    /* W-A PINNED (2026-09-29): SYSTEM v6 from the independent
+     * shared/dnac/tests/ruleset_desc_oracle.py, whose control legs
+     * reproduced SYSTEM v4 4fe76fed…7736, SYSTEM v5 0efc48bf…f350, CORE v3
+     * ed4b1bcd…4437 and the meter-policy digest 8d038f1e…f5cc byte-exactly
+     * first (written by an agent that did not read this build's C). */
+    0x0e, 0xf9, 0x8b, 0xd0, 0xea, 0xe3, 0xbf, 0xcb,
+    0x3f, 0xca, 0x36, 0x2c, 0x68, 0x9e, 0x0a, 0xd9,
+    0x45, 0xaf, 0xe3, 0x18, 0xfa, 0x89, 0x7b, 0xa0,
+    0x55, 0xd9, 0x63, 0xab, 0xd0, 0x18, 0xcc, 0x71,
+    0x11, 0xcf, 0x35, 0x06, 0x33, 0x9d, 0x1c, 0x86,
+    0x28, 0xb5, 0xe3, 0xb8, 0x6a, 0x0c, 0x6e, 0x64,
+    0x7f, 0xeb, 0xde, 0xd9, 0xe1, 0xb1, 0x0f, 0xb8,
+    0xf5, 0x24, 0xe6, 0x4a, 0xab, 0x0b, 0x1a, 0x63
 };
 static const uint8_t CORE_RULESET_HASH[DNA_DOM_HASH_LEN] = {
-    /* O11 — CORE ruleset_version 2 → 3: the rule list GREW to {1..7}
+    /* Final pre-testnet wipe, W-C (design 2026-09-28-final-wipe-package-
+     * design.md §1 W-C and §7 Fable F3): CORE ruleset_version 3 → 4. The
+     * CORE TOKEN_CREATE fee rule changes meaning — rtn_tc_exec
+     * (nodus_witness_rt_native.c) enforces fee >= ctx->token_create_fee,
+     * the COMMITTED chain_config param 6 (TOKEN_CREATE_FEE_RAW, decision
+     * 2026-09-28-token-create-fee-governance.md) active at the block's
+     * height, read by the engine (nodus_witness_v2_apply.c
+     * env_token_create_fee) instead of the compiled
+     * NODUS_W_TOKEN_CREATE_FEE (still the no-row value). The exact-tuple
+     * identity IS the activation mechanism, so the version advances. The
+     * descriptor preimage differs from v3 ONLY in the
+     * ruleset_version field (rule list {1..7}, type list
+     * {1,2,3,11,12,13} and the all-zero "no policy declared" digest are
+     * byte-identical), so the digest moves by construction.
+     *
+     * AND (general multisig, same v4 — ONE bump for the whole final-wipe
+     * release, decision 2026-09-29-general-multisig.md "CORE 3→4 tek
+     * artış"): CORE accepts auth_kind 3 (the M-of-N address scheme) and
+     * every CORE op decides input ownership through the one predicate
+     * that honours a satisfied multisig address
+     * (nodus_witness_rt_native.c rtn_input_owned). The auth-kind
+     * allowlist is NOT a descriptor field (rule list, type list and
+     * meter-policy digest are), so the multisig change leaves the v4
+     * preimage exactly the W-C one — the version field alone moved.
+     *
+     * The same value is nodus/tests/test_domain_runtime.c KAT_RS_CORE,
+     * and nodus_witness_runtime_selfcheck() re-derives it through the C
+     * encoder on every start. The retired v3 value ed4b1bcd…4437 (below,
+     * in HISTORY) is dead: old CORE legs are never reinterpreted.
+     * PINNED 2026-09-29 from shared/dnac/tests/ruleset_desc_oracle.py
+     * (independent; control legs SYSTEM v4/v5, CORE v3 and the meter-policy
+     * digest reproduced first). */
+    0xc2, 0x19, 0xbd, 0x60, 0xce, 0x48, 0xab, 0x74,
+    0x2b, 0x58, 0xda, 0x7b, 0x8c, 0x9f, 0xfb, 0xb5,
+    0x6b, 0x78, 0x52, 0x00, 0x39, 0x9b, 0x19, 0x78,
+    0xd3, 0x69, 0xa4, 0x1a, 0xd5, 0xca, 0x2d, 0x6e,
+    0x81, 0x02, 0x28, 0x91, 0x79, 0xea, 0x18, 0xb3,
+    0x3a, 0xbb, 0x26, 0xec, 0xbb, 0xf5, 0x0d, 0xf8,
+    0xc1, 0xd1, 0x6f, 0xd8, 0x4e, 0x52, 0xcc, 0x97,
+    0x96, 0x49, 0x9e, 0x76, 0x05, 0xb2, 0x57, 0x30
+    /* HISTORY — the retired CORE v3 digest, kept as the oracle's control
+     * leg (NOT compiled):
+     *   ed4b1bcd f0e8f78f 0b64985e 42d41d51 81edd5d4 8594bceb 73bf5efb
+     *   6ada0838 8d6fb6ba 0492f8bd ca212a5d da8779e7 4513c521 0bc4baa2
+     *   f70bf38c b2634437
+     * O11 — CORE ruleset_version 2 → 3: the rule list GREW to {1..7}
      * (DNA_CORERULE_SYSFUND appended) and op 7 became executable. Adding
      * an owned op changes the accepted runtime semantics exactly as
      * enabling one does, and the descriptor commits the rule list
@@ -184,14 +262,6 @@ static const uint8_t CORE_RULESET_HASH[DNA_DOM_HASH_LEN] = {
      * byte-identical. The retired CORE v2 resolves NOTHING: v2 legs are
      * never reinterpreted. Same oracle + control legs as the SYSTEM pin
      * above; the burn-season value 746f584a…67a1 is dead. */
-    0xed, 0x4b, 0x1b, 0xcd, 0xf0, 0xe8, 0xf7, 0x8f,
-    0x0b, 0x64, 0x98, 0x5e, 0x42, 0xd4, 0x1d, 0x51,
-    0x81, 0xed, 0xd5, 0xd4, 0x85, 0x94, 0xbc, 0xeb,
-    0x73, 0xbf, 0x5e, 0xfb, 0x6a, 0xda, 0x08, 0x38,
-    0x8d, 0x6f, 0xb6, 0xba, 0x04, 0x92, 0xf8, 0xbd,
-    0xca, 0x21, 0x2a, 0x5d, 0xda, 0x87, 0x79, 0xe7,
-    0x45, 0x13, 0xc5, 0x21, 0x0b, 0xc4, 0xba, 0xa2,
-    0xf7, 0x0b, 0xf3, 0x8c, 0xb2, 0x63, 0x44, 0x37
 };
 
 /* ── Function tables ────────────────────────────────────────────────── */
@@ -267,7 +337,17 @@ static const nodus_domain_runtime_t BUILTIN[] = {
     {
         .domain_id       = DNA_DOMAIN_SYSTEM,
         .runtime_kind    = DNA_RUNTIME_NATIVE_BUILTIN,
-        /* ruleset_version 5 — O15F: the V2-lane CHAIN_CONFIG (runtime
+        /* ruleset_version 6 — final pre-testnet wipe, W-A (Fable F3):
+         * the SYSTEM state root gained the treasury leg ("DNA.SYS.v4"),
+         * the payload root moved to "DNA.SYSPAYL.v3" (the W-A genesis-
+         * seat refund to the Foundation pool is withdrawn by general
+         * multisig — a genesis seat releases a UTXO to its destination,
+         * the Foundation multisig address) — see
+         * SYS_RULESET_HASH above (its v6 digest is pinned from the
+         * independent oracle). The preimage differs from v5 ONLY in this
+         * field.
+         *
+         * HISTORY — ruleset_version 5 — O15F: the V2-lane CHAIN_CONFIG (runtime
          * op 6) now NARROWS the accepted TARGET_ACTIVE_COUNT range to
          * [7..30] (a proposal for 31 is a deterministic reject). That
          * changes the accepted runtime-op-6 semantics, and no separate
@@ -281,7 +361,7 @@ static const nodus_domain_runtime_t BUILTIN[] = {
          * v4 (like v3/v2/v1) resolves NOTHING: old SYSTEM legs are never
          * reinterpreted. */
         .runtime_abi     = NODUS_DOMAIN_RUNTIME_ABI_V1,
-        .ruleset_version = 5,
+        .ruleset_version = 6,
         .ruleset_hash    = { 0 },   /* set via memcpy-free static init below
                                      * is impossible for a named array —
                                      * selfcheck compares against the pinned
@@ -292,7 +372,7 @@ static const nodus_domain_runtime_t BUILTIN[] = {
             .domain_id = DNA_DOMAIN_SYSTEM,
             .name = "SYSTEM",
             .runtime_abi = NODUS_DOMAIN_RUNTIME_ABI_V1,
-            .ruleset_version = 5,
+            .ruleset_version = 6,
             .rule_count = 6, .rule_ids = SYS_RULES,
             .tx_type_count = 6, .tx_types = SYS_TYPES
         },
@@ -326,7 +406,16 @@ static const nodus_domain_runtime_t BUILTIN[] = {
     {
         .domain_id       = DNA_DOMAIN_CORE,
         .runtime_kind    = DNA_RUNTIME_NATIVE_BUILTIN,
-        /* ruleset_version 3 — O11: the rule list GREW (op 7,
+        /* ruleset_version 4 — final pre-testnet wipe: W-C (Fable F3) —
+         * the TOKEN_CREATE fee floor is the governed chain_config param
+         * 6 at the block's height (ctx->token_create_fee, engine-read) —
+         * AND general multisig — auth_kind 3 accepted, one ownership
+         * predicate (ONE bump for both). See CORE_RULESET_HASH above
+         * (its v4 digest is pinned from the independent oracle). The
+         * preimage differs
+         * from v3 ONLY in this field.
+         *
+         * HISTORY — ruleset_version 3 — O11: the rule list GREW (op 7,
          * DNA_CORERULE_SYSFUND) and that op is executable. Adding an
          * owned op changes this ruleset's accepted semantics exactly as
          * enabling one does, and the exact-tuple identity IS the
@@ -334,14 +423,14 @@ static const nodus_domain_runtime_t BUILTIN[] = {
          * (like v1) resolves NOTHING — old CORE envelopes are never
          * reinterpreted. */
         .runtime_abi     = NODUS_DOMAIN_RUNTIME_ABI_V1,
-        .ruleset_version = 3,
+        .ruleset_version = 4,
         .ruleset_hash    = { 0 },
         .descriptor = {
             .descriptor_version = DNA_RULESET_DESC_VERSION,
             .domain_id = DNA_DOMAIN_CORE,
             .name = "DNA_CORE",
             .runtime_abi = NODUS_DOMAIN_RUNTIME_ABI_V1,
-            .ruleset_version = 3,
+            .ruleset_version = 4,
             .rule_count = 7, .rule_ids = CORE_RULES,
             .tx_type_count = 6, .tx_types = CORE_TYPES
         },
@@ -352,11 +441,16 @@ static const nodus_domain_runtime_t BUILTIN[] = {
          * still reject inside the hooks); shared auth implementation. */
         .auth      = nodus_rt_auth_dsa87_v1,
         /* capacity season: CORE consumes ordinary multi-signer
-         * authorization ONLY — no CORE operation reads committee
-         * approvals, so a CORE leg can never be made to carry (or a
-         * block to pay for) a committee-approval blob. */
+         * authorization — no CORE operation reads committee approvals,
+         * so a CORE leg can never be made to carry (or a block to pay
+         * for) a committee-approval blob. General multisig (CORE v4,
+         * decision 2026-09-29-general-multisig.md): CORE also accepts
+         * auth_kind 3, the M-of-N address scheme — every CORE op decides
+         * input ownership through the one predicate that reads it
+         * (nodus_witness_rt_native.c rtn_input_owned). */
         .allowed_auth_kinds =
-            NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MULTI_V1),
+            NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MULTI_V1) |
+            NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MSIG_V1),
         .read_plan = nodus_rt_core_read_plan,
         .exec      = nodus_rt_core_exec,
         .state_root   = nodus_rt_core_state_root,
@@ -470,7 +564,8 @@ int nodus_witness_runtime_selfcheck(void) {
         if (rt->allowed_auth_kinds == 0) return -1;
         if (rt->allowed_auth_kinds &
             ~(NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MULTI_V1) |
-              NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_CC_V1)))
+              NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_CC_V1) |
+              NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MSIG_V1)))
             return -1;
         if (!rt->adapter) return -1;
         if (nodus_adapter_selfcheck(rt->adapter) != 0) return -1;
@@ -504,13 +599,16 @@ int nodus_witness_runtime_selfcheck(void) {
         if (i == 0 && (!g_sys_policy_ready || !rt->meter_policy)) return -1;
         if (i == 1 && rt->meter_policy) return -1;
         /* the exact configured auth-kind shape (header contract):
-         * SYSTEM {1,2} — submitter + committee carrier; CORE {1} */
+         * SYSTEM {1,2} — submitter + committee carrier; CORE {1,3} —
+         * submitter + general multisig (CORE v4). SYSTEM never carries
+         * kind 3: its ops decide authority on exactly one signer. */
         if (i == 0 && rt->allowed_auth_kinds !=
                 (NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MULTI_V1) |
                  NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_CC_V1)))
             return -1;
         if (i == 1 && rt->allowed_auth_kinds !=
-                NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MULTI_V1))
+                (NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MULTI_V1) |
+                 NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MSIG_V1)))
             return -1;
         /* pinned digest must equal a FRESH recomputation */
         uint8_t fresh[DNA_DOM_HASH_LEN];

@@ -4,7 +4,8 @@
  *   - signer_count == 1
  *   - param_id in {1..DNAC_CFG_PARAM_MAX_ID}
  *   - param_id read by the running consensus (0.20.3,
- *     dnac_cfg_param_read_by_consensus: 4 and 5)
+ *     dnac_cfg_param_read_by_consensus: 4, 5 and — final pre-testnet
+ *     wipe W-C — 6)
  *   - new_value in per-param range
  *   - signed_at_block > 0
  *   - valid_before_block > effective_block_height
@@ -112,18 +113,25 @@ int main(void) {
      * case checks accepts a valid value. */
     build_valid_chain_config(&tx, 0, 5);
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
-    build_valid_chain_config(&tx, DNAC_CFG_PARAM_MAX_ID + 1, 0);   /* 6 */
+    build_valid_chain_config(&tx, DNAC_CFG_PARAM_MAX_ID + 1, 0);   /* 7 (W-C) */
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
     build_valid_chain_config(&tx, VEH_PARAM, VEH_VALUE);
     CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
 
-    /* 5b. The read list itself: exactly {4, 5} of the governed id space
-     * are read by the running consensus. MUTANT KILLED: adding an id to
-     * dnac_cfg_param_read_by_consensus without a reader, or dropping 4/5
-     * (the witness-side scalar_rules consumes the same predicate). */
+    /* 5b. The read list itself: exactly {4, 5, 6} of the governed id
+     * space are read by the running consensus. Id 6
+     * (TOKEN_CREATE_FEE_RAW) joined with its consensus reader in the
+     * final pre-testnet wipe W-C: the engine reads the committed row into
+     * the exec context and the CORE TOKEN_CREATE exec enforces it
+     * (nodus_witness_v2_apply.c env_token_create_fee,
+     * nodus_witness_rt_native.c rtn_tc_exec). MUTANT KILLED: adding an id
+     * to dnac_cfg_param_read_by_consensus without a reader, or dropping
+     * 4/5/6 (the witness-side scalar_rules consumes the same
+     * predicate). */
     for (unsigned id = 0; id <= 255u; id++) {
         const bool want = (id == DNAC_CFG_TARGET_ACTIVE_COUNT ||
-                           id == DNAC_CFG_GAS_PRICE_RAW_PER_UNIT);
+                           id == DNAC_CFG_GAS_PRICE_RAW_PER_UNIT ||
+                           id == DNAC_CFG_TOKEN_CREATE_FEE_RAW);
         CHECK(dnac_cfg_param_read_by_consensus((uint8_t)id) == want);
     }
 
@@ -205,6 +213,28 @@ int main(void) {
     CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
     build_valid_chain_config(&tx, DNAC_CFG_GAS_PRICE_RAW_PER_UNIT,
                              DNAC_CFG_MAX_GAS_PRICE + 1);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+
+    /* 8c. TOKEN_CREATE_FEE_RAW (id 6, final pre-testnet wipe W-C —
+     * decision 2026-09-28-token-create-fee-governance.md):
+     * [DNAC_CFG_MIN_TOKEN_CREATE_FEE, DNAC_CFG_MAX_TOKEN_CREATE_FEE] =
+     * [10^8, 10^15]. Mirrors the witness-side scalar_rules. RED on the
+     * pre-W-C tree: id 6 was > DNAC_CFG_PARAM_MAX_ID (5), so the three
+     * accepting lines failed. */
+    build_valid_chain_config(&tx, DNAC_CFG_TOKEN_CREATE_FEE_RAW,
+                             DNAC_CFG_MIN_TOKEN_CREATE_FEE - 1);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, DNAC_CFG_TOKEN_CREATE_FEE_RAW,
+                             DNAC_CFG_MIN_TOKEN_CREATE_FEE);
+    CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, DNAC_CFG_TOKEN_CREATE_FEE_RAW,
+                             100000000000ULL);          /* genesis 10^11 */
+    CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, DNAC_CFG_TOKEN_CREATE_FEE_RAW,
+                             DNAC_CFG_MAX_TOKEN_CREATE_FEE);
+    CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, DNAC_CFG_TOKEN_CREATE_FEE_RAW,
+                             DNAC_CFG_MAX_TOKEN_CREATE_FEE + 1);
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
 
     /* 9. signed_at_block == 0 rejected (CC-AUDIT-008). */

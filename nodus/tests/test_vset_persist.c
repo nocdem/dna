@@ -561,13 +561,15 @@ static int write_frozen_copy(nodus_witness_t *w, uint64_t epoch,
         sqlite3_stmt *ins = NULL;
         if (sqlite3_prepare_v2(w->db,
                 "INSERT INTO v2_balance_copy (epoch_start, validator_fp, "
-                "owner_fp, amount) VALUES (?, ?, ?, ?)", -1, &ins, NULL)
+                "owner_fp, kind, amount) VALUES (?, ?, ?, ?, ?)", -1, &ins,
+                NULL)
             != SQLITE_OK)
             return -1;
         sqlite3_bind_int64(ins, 1, (int64_t)epoch);
         sqlite3_bind_blob (ins, 2, vfp, 64, SQLITE_STATIC);
         sqlite3_bind_blob (ins, 3, k == 0 ? vfp : dfp, 64, SQLITE_STATIC);
-        sqlite3_bind_int64(ins, 4, (int64_t)amt[k]);
+        sqlite3_bind_int  (ins, 4, k);   /* kind: 0 the bond, 1 a delegation */
+        sqlite3_bind_int64(ins, 5, (int64_t)amt[k]);
         int rc = sqlite3_step(ins);
         sqlite3_finalize(ins);
         if (rc != SQLITE_DONE) return -1;

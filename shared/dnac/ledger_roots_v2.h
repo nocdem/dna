@@ -27,13 +27,17 @@
  *     no partial or fallback root is ever produced.
  *
  * ── TAG TABLE (each exactly 16 bytes, zero-padded) ────────────────────
- *   composition   "DNA.SYS.v3"      system_state_root (root-layout round
- *                                   dropped the epoch_state leg — a
+ *   composition   "DNA.SYS.v4"      system_state_root (final pre-testnet
+ *                                   wipe, package W-A: the treasury_root
+ *                                   leg APPENDED as the 8th leg — a
  *                                   changed preimage is never hashed
- *                                   under the old tag; "DNA.SYS.v2" is
- *                                   HISTORY, the 8-leg composition of
- *                                   P1, and "DNA.SYS.v1" the 7-leg one
- *                                   before it)
+ *                                   under the old tag; "DNA.SYS.v3" is
+ *                                   HISTORY, the 7-leg composition of
+ *                                   the root-layout round, "DNA.SYS.v2"
+ *                                   the 8-leg composition of P1 (with
+ *                                   epoch_state, no treasury) and
+ *                                   "DNA.SYS.v1" the 7-leg one before
+ *                                   it)
  *                 "DNA.CORE.v2"     core_state_root (tokenomics-v3 P2
  *                                   added the accrual_root leg — a
  *                                   changed preimage is never hashed
@@ -48,10 +52,14 @@
  *                 "DNA.ACNODE.v1"   reward-accrual Merkle inner node
  *   tokens        "DNA.TOKLEAF.v1"  token leaf
  *                 "DNA.TOKNODE.v1"  token Merkle inner node
- *   genesis       "DNA.SYSPAYL.v2"  system_payload_root (root-layout
- *   payload                         round: 4 legs, epoch_state dropped;
- *                                   "DNA.SYSPAYL.v1" is HISTORY, the
- *                                   5-leg form)
+ *   treasury      "DNA.TRLEAF.v1"   treasury-pool leaf (W-A)
+ *   (W-A)         "DNA.TRNODE.v1"   treasury-pool Merkle inner node
+ *   genesis       "DNA.SYSPAYL.v3"  system_payload_root (W-A: 5 legs,
+ *   payload                         treasury_root APPENDED last;
+ *                                   "DNA.SYSPAYL.v2" is HISTORY, the
+ *                                   4-leg form of the root-layout round,
+ *                                   "DNA.SYSPAYL.v1" the 5-leg form with
+ *                                   epoch_state before it)
  *   RETIRED       "DNA.EPOCH.v2" / "DNA.EPNODE.v2" / "DNA.E.EPOCH.v2" —
  *                 the epoch_state leg's leaf / inner node / empty root,
  *                 DELETED with the leg (root-layout round K2). Never
@@ -74,22 +82,45 @@
  *                                   v2_attendance_epoch table (P1)
  *                 "DNA.E.ACCRU.v1"  accrual_root of an EMPTY
  *                                   v2_reward_accrual table (P2)
+ *                 "DNA.E.TREAS.v1"  treasury_root of an EMPTY
+ *                                   v2_treasury table (W-A)
+ *   Collision scan (W-A): `git grep -n "DNA\.TR\|DNA\.E\.TREAS\|TRLEAF\|
+ *   TRNODE"` over the whole tree found NO prior use of the three W-A
+ *   tags before adoption. SELF-CONSISTENT, not externally referenced —
+ *   the P1 ATTEP / P2 ACLEAF precedent; the proof is an INDEPENDENT
+ *   oracle KAT over this contract (author != auditor).
  *   (domains_root has NO empty tag: SYSTEM must always be present — an
  *    empty domain list is a hard error, not an empty tree.)
  *
  * ── Composition preimages (exact) ─────────────────────────────────────
- *   system_state_root = SHA3-512("DNA.SYS.v3"  ‖ validator_root[64]
+ *   system_state_root = SHA3-512("DNA.SYS.v4"  ‖ validator_root[64]
  *       ‖ delegation_root[64] ‖ chain_config_root[64]
  *       ‖ validator_set_root[64] ‖ domain_registry_root[64]
- *       ‖ manifest_root[64] ‖ attendance_root[64])      — 7 legs
+ *       ‖ manifest_root[64] ‖ attendance_root[64]
+ *       ‖ treasury_root[64])                            — 8 legs
  *     tokenomics-v3 P1 (D-4, S-2) added the attendance leg ("DNA.SYS.v1"
  *     -> "DNA.SYS.v2"); the root-layout round (K2, 2026-09-25) removed
  *     the epoch_state leg — its table had no writer left after P2 — and
- *     moved the tag again ("DNA.SYS.v2" -> "DNA.SYS.v3"): a changed
- *     composition is a new tag, never the same tag over different bytes.
- *     `system_payload_root` below moved with it ("DNA.SYSPAYL.v2", 4
- *     legs) — attendance stays a container-lifetime leg like
- *     domreg/manifest, empty at genesis, so it is not a payload leg.
+ *     moved the tag again ("DNA.SYS.v2" -> "DNA.SYS.v3"); the final
+ *     pre-testnet wipe (package W-A, 2026-09-28/29, decision
+ *     2026-09-28-treasury-pools-and-exact-self-stake.md answers 9 + 12)
+ *     APPENDS treasury_root as the 8th and LAST leg ("DNA.SYS.v3" ->
+ *     "DNA.SYS.v4"): a changed composition is a new tag, never the same
+ *     tag over different bytes. `system_payload_root` below moved with
+ *     it ("DNA.SYSPAYL.v3", 5 legs) — the treasury is SEEDED at genesis,
+ *     so unlike attendance/domreg/manifest it IS a payload leg.
+ *   treasury leaf (W-A) = SHA3-512("DNA.TRLEAF.v1" ‖ pool_id(4 BE)
+ *       ‖ balance(8 BE))  — one per `v2_treasury` row; 16 + 4 + 8 = 28
+ *       preimage bytes.
+ *   treasury_root (W-A) = tagged Merkle over the treasury leaves,
+ *       STRICTLY ascending pool_id (duplicates reject), inner
+ *       "DNA.TRNODE.v1", n == 0 -> DNA_V2_EMPTY_TREASURY
+ *       (SHA3-512("DNA.E.TREAS.v1" zero-padded to 16 bytes)). The pools
+ *       are keyless and locked (pool ids 1..9 in the tokenomics §1 table
+ *       order: 1 Storage, 2 Compute, 3 VPN/Bandwidth, 4 Future services,
+ *       5 Security/bug bounty, 6 Liquidity, 7 Ecosystem grants,
+ *       8 Foundation, 9 Community airdrop); this function commits
+ *       whatever rows it is given and does not itself bound pool_id.
  *   core_state_root   = SHA3-512("DNA.CORE.v2" ‖ utxo_root[64]
  *       ‖ token_root[64] ‖ pools_root[64] ‖ claims_root[64]
  *       ‖ name_root[64] ‖ supply_root[64] ‖ accrual_root[64])
@@ -153,7 +184,8 @@
  *
  * ── Merkle construction (RFC6962-style, per tree) ─────────────────────
  *   leaves  = the already-tagged 64-byte hashes (DomainHead / token leaf /
- *             vset / attendance / accrual leaf), in strictly ascending
+ *             vset / attendance / accrual / treasury leaf), in strictly
+ *             ascending
  *             canonical-key order;
  *   inner   = SHA3-512(NODE_TAG[16] ‖ left[64] ‖ right[64]);
  *   an unpaired (odd) node is PROMOTED to the next level unchanged —
@@ -197,6 +229,8 @@ typedef enum {
     DNA_V2_EMPTY_ATTENDANCE,   /* empty v2_attendance_epoch  */
     /* tokenomics-v3 P2 (P2-8) — APPENDED. */
     DNA_V2_EMPTY_ACCRUAL,      /* empty v2_reward_accrual    */
+    /* final pre-testnet wipe, W-A — APPENDED. */
+    DNA_V2_EMPTY_TREASURY,     /* empty v2_treasury          */
     DNA_V2_EMPTY__COUNT
 } dna_v2_empty_kind_t;
 
@@ -234,6 +268,27 @@ int dna_v2_accrual_leaf_hash(const uint8_t owner_fp[DNA_V2_ROOT_LEN],
 int dna_v2_accrual_root(const uint8_t (*owner_fps)[DNA_V2_ROOT_LEN],
                         const uint64_t *amounts, size_t n,
                         uint8_t out[DNA_V2_ROOT_LEN]);
+
+/* ── treasury_root (final pre-testnet wipe, W-A) ───────────────────────
+ * The keyless, locked treasury pools (`v2_treasury`): one balance per
+ * pool id, seeded from the genesis document. A leg of system_state_root
+ * (the 8th, last) and of system_payload_root (the 5th, last). */
+
+/** leaf = SHA3-512("DNA.TRLEAF.v1" ‖ pool_id(4 BE) ‖ balance(8 BE)).
+ *  @return 0 / -1. */
+int dna_v2_treasury_leaf_hash(uint32_t pool_id, uint64_t balance,
+                              uint8_t out[DNA_V2_ROOT_LEN]);
+
+/**
+ * treasury_root over `v2_treasury` rows, STRICTLY ASCENDING pool_id
+ * (equal or descending neighbours reject — insertion order can never
+ * reach the root); inner = SHA3-512("DNA.TRNODE.v1" ‖ left ‖ right);
+ * odd node promoted; n == 1 the single leaf; n == 0 ->
+ * DNA_V2_EMPTY_TREASURY.
+ * @return 0 / -1 (NULL, bad order, allocation or digest failure).
+ */
+int dna_v2_treasury_root(const uint32_t *pool_ids, const uint64_t *balances,
+                         size_t n, uint8_t out[DNA_V2_ROOT_LEN]);
 
 /* ── token_root ─────────────────────────────────────────────────────── */
 #define DNA_V2_TOKEN_ID_LEN   64
@@ -369,8 +424,8 @@ int dna_v2_domains_root(const dna_v2_domain_head_t *heads, size_t n,
                         uint8_t out[DNA_V2_ROOT_LEN]);
 
 /* ── Composition ────────────────────────────────────────────────────── */
-/** 7 legs under "DNA.SYS.v3" (root-layout round K2: the epoch_state leg
- *  removed; was 8 legs under "DNA.SYS.v2", tokenomics-v3 P1). */
+/** 8 legs under "DNA.SYS.v4" (W-A: treasury_root appended LAST; was 7
+ *  legs under "DNA.SYS.v3", root-layout round K2). */
 int dna_v2_system_root(const uint8_t validator_root[64],
                        const uint8_t delegation_root[64],
                        const uint8_t chain_config_root[64],
@@ -378,6 +433,7 @@ int dna_v2_system_root(const uint8_t validator_root[64],
                        const uint8_t domain_registry_root[64],
                        const uint8_t manifest_root[64],
                        const uint8_t attendance_root[64],
+                       const uint8_t treasury_root[64],
                        uint8_t out[DNA_V2_ROOT_LEN]);
 
 /** tokenomics-v3 P2 (P2-8): gained the 7th leg `accrual_root` and a new
@@ -396,19 +452,23 @@ int dna_v2_global_root(const uint8_t domains_root[64],
 
 /* ── SYSTEM runtime-owned genesis payload root (Ledger V2 S5) ─────────
  *
- * Tag "DNA.SYSPAYL.v2" (16 bytes, zero-padded — S5 JUDGMENT tag; the
- * root-layout round K2 moved it from "DNA.SYSPAYL.v1" because the
- * epoch_state leg left the preimage).
+ * Tag "DNA.SYSPAYL.v3" (16 bytes, zero-padded — S5 JUDGMENT tag; the
+ * root-layout round K2 moved it from "DNA.SYSPAYL.v1" to "v2" because
+ * the epoch_state leg left the preimage; W-A moved it to "v3" because
+ * treasury_root joined it).
  *
- *   system_payload_root = SHA3-512("DNA.SYSPAYL.v2" ‖ validator_root
- *       ‖ delegation_root ‖ chain_config_root ‖ validator_set_root)
- *                                                            — 4 legs
+ *   system_payload_root = SHA3-512("DNA.SYSPAYL.v3" ‖ validator_root
+ *       ‖ delegation_root ‖ chain_config_root ‖ validator_set_root
+ *       ‖ treasury_root)                                     — 5 legs
  *
  * This is dna_v2_system_root MINUS the THREE container-lifetime legs
  * (domain_registry_root, manifest_root, attendance_root) under a
  * DISTINCT tag. attendance_root is empty at genesis exactly like
  * domreg/manifest, so it is excluded for the same reason and the
- * genesis-cycle argument below is unchanged. It exists to break the
+ * genesis-cycle argument below is unchanged. treasury_root is SEEDED at
+ * genesis from the document (W-A) and commits no manifest, so it is a
+ * runtime payload leg — appended LAST, the same position it takes in
+ * the full composition. It exists to break the
  * genesis cycle: a DomainManifest's `genesis_state_root` is defined as
  * the domain's RUNTIME-OWNED genesis payload root — it never covers a
  * structure that commits that domain's own manifest, so
@@ -417,7 +477,7 @@ int dna_v2_global_root(const uint8_t domains_root[64],
  * issuance belongs to DNA_CORE, whose payload root IS its full
  * core_state_root — no self-reference exists for CORE, so the generic
  * rule holds trivially.) The FINAL SYSTEM DomainHead.state_root remains
- * the full 7-leg dna_v2_system_root. At domain ACTIVATION the payload
+ * the full 8-leg dna_v2_system_root. At domain ACTIVATION the payload
  * root is the value compared against the registry-committed
  * genesis_state_root (the runtime's optional payload_root hook —
  * nodus_witness_runtime.h; a runtime without the hook compares its
@@ -426,6 +486,7 @@ int dna_v2_system_payload_root(const uint8_t validator_root[64],
                                const uint8_t delegation_root[64],
                                const uint8_t chain_config_root[64],
                                const uint8_t validator_set_root[64],
+                               const uint8_t treasury_root[64],
                                uint8_t out[DNA_V2_ROOT_LEN]);
 
 #ifdef __cplusplus

@@ -25,9 +25,9 @@ extern "C" {
  * reading the string reported a version this binary had not been for a
  * long time. Bump BOTH, together, every time. */
 #define NODUS_VERSION_MAJOR  0
-#define NODUS_VERSION_MINOR  20
-#define NODUS_VERSION_PATCH  6
-#define NODUS_VERSION_STRING "0.20.6"
+#define NODUS_VERSION_MINOR  21
+#define NODUS_VERSION_PATCH  0
+#define NODUS_VERSION_STRING "0.21.0"
 
 /* Mempool lifetime ceiling (docs/plans/decisions/2026-09-25-mempool-
  * policy.md, decision 1 — "100 block yeterli"): CheckTx (new AND
@@ -579,6 +579,13 @@ typedef struct {
                              *   0 = the rule is off, or an older server
                              *   that does not send the key. A builder
                              *   pays max(min_fee, units x gas_price). */
+    uint64_t token_create_fee; /**< Final pre-testnet wipe W-C: committed
+                             *   chain_config param 6 TOKEN_CREATE_FEE_RAW
+                             *   at tip + 1 (the server answers the
+                             *   compiled NODUS_W_TOKEN_CREATE_FEE when no
+                             *   row is active); 0 = an older server that
+                             *   does not send the key — the caller falls
+                             *   back to NODUS_W_TOKEN_CREATE_FEE. */
 } nodus_dnac_fee_info_t;
 
 /** Maximum inclusion-proof depth for anchored UTXO / TX proofs.

@@ -24,6 +24,7 @@ This directory provides a function-level reference for the DNA Connect codebase.
 | **Transport** | [transport.md](transport.md) | DHT transport layer (presence, offline queue) |
 | **Database** | [database.md](database.md) | SQLite databases (contacts, cache, profiles) |
 | **Blockchain** | [blockchain.md](blockchain.md) | Multi-chain wallet (Cellframe, ETH, Solana, TRON) |
+| **DNA Chain ledger** | [ledger.md](ledger.md) | Tagged state-root hashing (`shared/dnac/ledger_roots_v2.h`, in libdna) + the nodus witness treasury / genesis entries it covers |
 | **Engine** | [engine.md](engine.md) | Internal engine implementation |
 | **Calls** | [calls.md](calls.md) | PQ VoIP call subsystem (signaling, key agreement, FSM, orchestrator) |
 | **Key Sizes** | [key-sizes.md](key-sizes.md) | Cryptographic key size reference |

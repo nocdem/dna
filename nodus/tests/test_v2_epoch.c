@@ -298,7 +298,20 @@ static int seed_validator(fixture_t *fx, int k, uint64_t bond,
     memcpy(v.pubkey, g_pk[k], DNAC_PUBKEY_SIZE);
     v.self_stake = bond;
     v.status = status;
-    v.active_since_block = 1;
+    /* Final pre-testnet wipe, W-A: a GENESIS seat (active_since_block
+     * <= 1) refunds its bond into the Foundation treasury pool at
+     * graduation and writes NO release UTXO (nodus_witness_v2_epoch.c
+     * v2ep_graduate; that path is test_v2_treasury.c §5's subject). The
+     * graduation cases in THIS file are about the release-UTXO path
+     * (amount, owner, lock, identity, rollback), so every row seeded as a
+     * graduation candidate — RETIRING or AUTO_RETIRED — is a LATER-JOINED
+     * seat (active_since_block 2, what a STAKE at height 2 writes). The
+     * status is exit-only, so tenure (which gates ACTIVE/ELIGIBLE
+     * selection) never reads it; ACTIVE / ELIGIBLE rows stay genesis
+     * seats, always tenured. */
+    v.active_since_block =
+        (status == (uint8_t)DNAC_VALIDATOR_RETIRING ||
+         status == (uint8_t)DNAC_VALIDATOR_AUTO_RETIRED) ? 2 : 1;
     v.commission_bps = comm;
     v.pending_commission_bps = pend_comm;
     v.pending_effective_block = pend_eff;
@@ -1201,7 +1214,8 @@ static int test_boundary_chain(void) {
         CHECK(v.self_stake == 0,
               "the bond is zeroed — its value lives in the UTXO now");
         CHECK(v.commission_bps == 250, "commission untouched");
-        CHECK(v.active_since_block == 1, "tenure untouched");
+        CHECK(v.active_since_block == 2,
+              "tenure untouched (2: seeded as a later-joined seat, W-A)");
         CHECK(v.unstake_commit_block == 3, "commit block untouched");
         CHECK(memcmp(v.unstake_destination_fp, g_fp[6], 129) == 0,
               "destination untouched");
@@ -3913,6 +3927,12 @@ static int test_rule_n_graduation_deferral(void) {
         CHECK(nodus_validator_get(fx.w, g_pk[1], &v) == 0, "get 1");
         v.status = (uint8_t)DNAC_VALIDATOR_RETIRING;
         v.unstake_commit_block = 3;
+        /* W-A: this case pins the release UTXO at H+E, so the seat is a
+         * later-joined one (a genesis seat would refund into the
+         * Foundation pool instead — seed_validator's note). Set before
+         * the V2 genesis, like the status flip; the frozen snapshots
+         * already hold key 1 either way. */
+        v.active_since_block = 2;
         CHECK(nodus_validator_update(fx.w, &v) == 0, "RETIRING mid-epoch");
     }
     CHECK(fx_v2_genesis(&fx) == 0, "v2 genesis");

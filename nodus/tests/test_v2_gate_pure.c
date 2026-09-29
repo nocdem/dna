@@ -185,6 +185,9 @@ static int cfg_make(cfgbox_t *b) {
         }
         hex_lower_fp(v->unstake_destination_pubkey, DNAC_PUBKEY_SIZE,
                      v->unstake_destination_fp);
+        /* general multisig ONAY 2: a genesis row's destination pubkey is
+         * ALL ZERO (the fp above is only a shape-valid address) */
+        memset(v->unstake_destination_pubkey, 0, DNAC_PUBKEY_SIZE);
         v->self_stake     = DNAC_SELF_STAKE_AMOUNT;
         v->commission_bps = (uint16_t)(100 * (i + 1));
     }

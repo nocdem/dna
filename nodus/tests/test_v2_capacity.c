@@ -118,10 +118,35 @@ int main(void) {
         CHECK(dlg_two_tc == 819098u,
               "two-leg DELEGATE+TOKEN_CREATE worst case drifted");
         CHECK(dlg_two_tc > dlg_two && dlg_two_tc > two_leg_tc,
-              "the mixed DELEGATE+TOKEN_CREATE shape must dominate");
-        CHECK(dlg_two_tc <= DNA_ENV_MAX_TOTAL_LEN,
+              "the mixed DELEGATE+TOKEN_CREATE shape must dominate the "
+              "kind-1 pairs");
+        /* General multisig (decision 2026-09-29-general-multisig.md,
+         * design §7 rev 2 / F3.1): CORE admits auth_kind 3 = the kind-1
+         * body ‖ dcount u8 ‖ dcount × (dlen u16 ‖ descriptor), each
+         * descriptor 16 + 1 + 1 + N × 2592 bytes, Σ N <= 15 per leg.
+         * At Σ N = 15 the length grows with dcount only (20 bytes per
+         * descriptor), so the maximum is dcount = 7 (six 2-key + one
+         * 3-key descriptor) — the oracle's "MAX blob" (147,307,
+         * shared/dnac/tests/multisig_oracle.py). Written here from the
+         * raw widths, independent of the rt_native.c macros. */
+        const uint64_t desc_hdr = 16u + 1u + 1u;
+        uint64_t k3_max = (1u + 15u * signer) + 1u +
+                          7u * (2u + desc_hdr) + 15u * 2592u;
+        uint64_t k3_three = (1u + 15u * signer) + 1u +
+                            3u * (2u + desc_hdr) + 15u * 2592u;  /* 7/6/2 */
+        uint64_t dlg_two_k3 = dlg_single + 30u + tc_call + k3_max;
+        CHECK(k3_max == 147307u, "maximal kind-3 blob drifted");
+        CHECK(k3_three == 147227u,
+              "kind-3 blob at the per-address cap (7/6/2) drifted");
+        CHECK(k3_max > k3_three,
+              "more descriptors at the same key total must be longer");
+        CHECK(dlg_two_k3 == 858119u,
+              "worst-case DELEGATE(kind 2)+TOKEN_CREATE(kind 3) drifted");
+        CHECK(dlg_two_k3 > dlg_two_tc,
+              "the kind-3 CORE shape must now dominate");
+        CHECK(dlg_two_k3 <= DNA_ENV_MAX_TOTAL_LEN,
               "ceiling no longer contains the worst case");
-        CHECK(dlg_two_tc > (DNA_ENV_MAX_TOTAL_LEN / 2u),
+        CHECK(dlg_two_k3 > (DNA_ENV_MAX_TOTAL_LEN / 2u),
               "2^19 would already contain the worst case — the ceiling "
               "is no longer the SMALLEST containing power of two");
     }

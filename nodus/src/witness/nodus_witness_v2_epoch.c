@@ -696,7 +696,20 @@ static int v2ep_graduate(nodus_witness_t *w, uint64_t h,
          * DNAC_SELF_STAKE_AMOUNT literal — paying the literal would
          * strand a surplus bond or mint from nothing, and either way the
          * supply invariant (which sums validators.self_stake) refuses
-         * the block. */
+         * the block.
+         *
+         * EVERY seat releases its bond as a locked UTXO to its
+         * unstake_destination_fp — a GENESIS seat included. General
+         * multisig (decision 2026-09-29-general-multisig.md, operator
+         * answer: "o yedi tanesinin şeyi foundation adrese geri dönmek
+         * zorunda; foundation adres multisig olacak") WITHDREW W-A's
+         * refund of a genesis seat's bond into the Foundation treasury
+         * pool: a genesis row's destination is the Foundation MULTISIG
+         * ADDRESS (the genesis document carries it; the genesis rule is
+         * an address-SHAPE check, nodus_witness_v2_gen.c), and the
+         * released coin is spent like any multisig coin (auth_kind 3).
+         * The destination is a 64-byte address either way — the release
+         * never needs to know whether one key or M-of-N opens it. */
         if (v2ep_release_utxo(w, nul, grad_id, NODUS_V2_EPGRAD_OUT_IDX,
                               v.unstake_destination_fp, v.self_stake, h,
                               self_unlock) != 0)
@@ -717,7 +730,18 @@ static int v2ep_graduate(nodus_witness_t *w, uint64_t h,
          * (nodus_witness_v2_claims.c) — a mismatch here would move value
          * the equation does not see, so it is a FAULT, never a partial
          * release. The value MOVES from the delegated bucket into the
-         * utxo bucket; the supply equation is unchanged. */
+         * utxo bucket; the supply equation is unchanged.
+         *
+         * A SELF-DELEGATION (allowed since the final pre-testnet wipe,
+         * W-B — decision 2026-09-28-treasury-pools-and-exact-self-
+         * stake.md item 6) is one of these rows like any other: it is
+         * in total_delegated AND external_delegated (rtn_delegate_exec
+         * moves both), so the equality below still holds, and it is
+         * released here to its DELEGATOR's fp — the validator's own —
+         * as a locked UTXO. It does NOT follow a genesis seat's bond to
+         * the Foundation address: only the self_stake came out of the
+         * Foundation allocation; a self-delegation is the validator's
+         * own coin (decision answer 7 names the 10M only). */
         {
             if (deleg_rank == 0 &&
                 nodus_witness_v2_settlement_tx_hash(h, deleg_tx_hash) != 0)

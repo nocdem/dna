@@ -103,18 +103,24 @@ typedef struct {
 
     /** The validator's OWN bond, raw units; zeroed post-UNSTAKE.
      *
-     * S3 (owner decision O-3): this is >= DNAC_SELF_STAKE_AMOUNT, no longer
-     * exactly equal to it. apply_stake stores the bond the STAKE TX actually
-     * locked (Σnative_in − Σnative_out − committed_fee); every TX the shipped
-     * client builds locks exactly DNAC_SELF_STAKE_AMOUNT, so live values are
-     * unchanged. Consumers that pay the bond back (UNSTAKE graduation) MUST
-     * read this field, never the macro. */
+     * Final pre-testnet wipe, W-B (decision 2026-09-28-treasury-pools-and-
+     * exact-self-stake.md item 5): the witness STAKE rule accepts EXACTLY
+     * DNAC_SELF_STAKE_AMOUNT (rtn_stake_exec), so every row a STAKE or the
+     * genesis (Rule P.1) writes holds exactly that value; the earlier S3
+     * ">= DNAC_SELF_STAKE_AMOUNT" rule (owner decision O-3) is superseded.
+     * Consumers that pay the bond back (UNSTAKE graduation) still read this
+     * field, never the macro: the row is the committed value. */
     uint64_t self_stake;
 
-    /** Σ of all delegations to this validator (includes self if Rule S ever lifted). */
+    /** Σ of all delegations to this validator, a SELF-delegation included
+     *  (allowed since W-B, decision item 6 — Rule S is gone). */
     uint64_t total_delegated;
 
-    /** Σ of delegations where delegator != validator — used for committee ranking. */
+    /** The delegation bucket ranking and voting power add to self_stake
+     *  (self_stake + external_delegated). Legacy NAME: since W-B it counts
+     *  EVERY delegation, the validator's own self-delegation included, and
+     *  every writer moves it together with total_delegated, so the two are
+     *  equal. */
     uint64_t external_delegated;
 
     /** Current commission rate, basis points (0..DNAC_COMMISSION_BPS_MAX = 5000). */

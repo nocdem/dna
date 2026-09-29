@@ -216,6 +216,16 @@ extern "C" {
  *
  *   524,288 = 2^19 < 813,904 <= 2^20 = 1,048,576.
  *
+ * Both are since DOMINATED (the derivation moved with the runtimes; the
+ * governing asserts live in nodus_witness_rt_native.c): O11's SYSTEM
+ * DELEGATE leg under the maximal committee blob beside a maximal
+ * TOKEN_CREATE leg, 819,098 bytes; then general multisig (decision
+ * 2026-09-29-general-multisig.md) — CORE admits auth_kind 3, whose
+ * maximal blob (15 signers ‖ 7 descriptors carrying Σ N = 15 keys) is
+ * 147,307 bytes — the same pair with that blob on the CORE leg:
+ *   706,065 + 30 + 4,717 + 147,307 = 858,119 bytes,
+ *   524,288 = 2^19 < 858,119 <= 2^20 — the ceiling is UNCHANGED.
+ *
  * The shape arithmetic is pinned by _Static_asserts next to the
  * constants it derives from (nodus_witness_rt_native.c — this header
  * stays free of any nodus dependency, the ledger_ids.h rule).

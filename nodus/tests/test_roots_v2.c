@@ -62,6 +62,13 @@ static int hex_eq(const uint8_t h[64], const char *hex, const char *what) {
     return 1;
 }
 
+/* Final pre-testnet wipe, W-A: every vector whose preimage W-A introduced
+ * or changed is PINNED (2026-09-29) from an INDEPENDENT oracle written
+ * from the contract in shared/dnac/ledger_roots_v2.h
+ * (shared/dnac/tests/ledger_roots_v2_treasury_oracle.py; author != auditor
+ * — the executor that wrote the C did NOT compute these). The inputs of
+ * each vector are stated beside it. */
+
 /* Pinned python3-oracle literals (independent sha3_512 implementation). */
 static const char *EMPTY_KAT[DNA_V2_EMPTY__COUNT] = {
     /* VSET   */ "fd1c65789de6e38765ae77ca7d302e7a7b95400233ef55218139df9f1b4e63487a3d88706303b0a5b8eeec695526d26d04d0267bcce826c995f2b8a5d8f2261b",
@@ -75,6 +82,9 @@ static const char *EMPTY_KAT[DNA_V2_EMPTY__COUNT] = {
      * ATTND/ACCRU below keep their own values, only their index moved. */
     /* ATTND  */ "c917bcb22a2eef99ded15a92b70117d32a92996276f395ca3acbc8abfa17bcd66cda39856cc038582cc32f67e49ece48055434718ff5f4a94e95d1f6f60c0001",
     /* ACCRU  */ "225010d99df0cb442e76fc02469f95922ecf182b07678887e00924bdf4ee3f99bb010b0c983b5e66b92b44e39c9fb74cdbe3b3d20578cfc0d94cc6fd9e6c4ea8",
+    /* TREAS  — W-A: SHA3-512 of the 16 bytes "DNA.E.TREAS.v1\0\0"
+     * (shared/dnac/tests/ledger_roots_v2_treasury_oracle.py EMPTY_TREASURY). */
+    /* TREAS  */ "4eb839d71f0600aaa28f13536ac640f34fab69cd3046a9b4d72fc7ef047f69940f3961d145bf4997d5e7a07e657c1e58720309406d60849b245b8148cb42a2ae",
 };
 /* tokenomics-v3 P2 (P2-8) re-pin: the supply leaf gained reward_pool and
  * the tag "DNA.SUPPLY.v2"; the CORE composition gained a 7th leg
@@ -132,13 +142,48 @@ static const char *KAT_DOMAINS_3    = "823492dabf1bddd0b76b907d31233e4affeaf5b4f
  * an external audit; see the script's PROVENANCE). No "DNA.SYSPAYL.v1"
  * vector was ever pinned, so KAT_SYSPAYL_V2 has no payload-root control;
  * it rests on the same method the two SYS controls prove.
- *   KAT_SYSTEM_7LEG_V3: DNA.SYS.v3, legs fill(0x90..0x96) in the order
+ *
+ * RETIRED, final pre-testnet wipe W-A: the 7-leg "DNA.SYS.v3" and 4-leg
+ * "DNA.SYSPAYL.v2" vectors are superseded by the 8-leg "DNA.SYS.v4" and
+ * 5-leg "DNA.SYSPAYL.v3" below (treasury_root appended LAST to both).
+ * Historical notes only — and the CONTROL LEGS the W-A oracle must
+ * reproduce byte-exactly before it emits the new vectors:
+ *   KAT_SYSTEM_7LEG_V3 (DNA.SYS.v3, legs fill(0x90..0x96) in the order
  *     validator, delegation, chain_config, vset, domreg, manifest,
- *     attendance.
- *   KAT_SYSPAYL_V2: DNA.SYSPAYL.v2, legs fill(0xA0..0xA3) in the order
- *     validator, delegation, chain_config, vset. */
-static const char *KAT_SYSTEM_7LEG_V3 = "841abb1a867749ac68b688469513bbbc447962a8bbead05663d14d97744fda86aaad6bc67230578050f743a7fc3b7e94176bb0074c7ee7f1b247b74fb9a356fd";
-static const char *KAT_SYSPAYL_V2     = "0bf7a1b805467d9c580faec171895abb0c63e3e1e9be83aa9ebfc263307c7ce123d685e607d9d5aa9c4b21b44cdad92c62de6d00f779a27b56b2b655432cdd4b";
+ *     attendance):
+ *     841abb1a867749ac68b688469513bbbc447962a8bbead05663d14d97744fda86aaad6bc67230578050f743a7fc3b7e94176bb0074c7ee7f1b247b74fb9a356fd
+ *   KAT_SYSPAYL_V2 (DNA.SYSPAYL.v2, legs fill(0xA0..0xA3) in the order
+ *     validator, delegation, chain_config, vset):
+ *     0bf7a1b805467d9c580faec171895abb0c63e3e1e9be83aa9ebfc263307c7ce123d685e607d9d5aa9c4b21b44cdad92c62de6d00f779a27b56b2b655432cdd4b
+ *
+ * LIVE (W-A), pinned from shared/dnac/tests/ledger_roots_v2_treasury_oracle.py
+ * (written by an agent that did not read the C; it reproduces the two
+ * retired control legs above before emitting — SELF-CONSISTENT, not an
+ * external audit; KAT_SYS_V4_FILL / KAT_SYSPAYL_V3_FILL there):
+ *   KAT_SYSTEM_8LEG_V4: "DNA.SYS.v4\0\0\0\0\0\0" ‖ legs fill(0x90..0x97)
+ *     in the order validator, delegation, chain_config, vset, domreg,
+ *     manifest, attendance, treasury (fill(dst,64,seed): dst[i] =
+ *     (uint8_t)(seed + i*7)).
+ *   KAT_SYSPAYL_V3: "DNA.SYSPAYL.v3\0\0" ‖ legs fill(0xA0..0xA4) in the
+ *     order validator, delegation, chain_config, vset, treasury. */
+static const char *KAT_SYSTEM_8LEG_V4 = "3d03d9e70e84e9ec2c32ae726602ca5b8260c30d4cdbea7f43a3eb1db74a854c223dada26342228260d58a4ba8e9dd5b6f21babf09814c02c0e30c6ad134bc9b";
+static const char *KAT_SYSPAYL_V3     = "956709f0c64356de847383bc56b6aa351e2a8a20a4b3ff003537b40aa06b1d8fb72776bd6b77d553c3de0b32e9e9425311e62666e30db5f5fbdcd6c9edab095f";
+/* W-A treasury leg — pinned from the same oracle's functions
+ * (treasury_leaf / treasury_root) evaluated at the inputs below.
+ * leaf = SHA3-512("DNA.TRLEAF.v1\0\0\0" ‖ pool_id u32 BE ‖ balance u64 BE);
+ * inner = SHA3-512("DNA.TRNODE.v1\0\0\0" ‖ L ‖ R); odd node PROMOTED.
+ *   KAT_TR_LEAF    pool_id 1, balance 10000000000000000 (100M × 10^8)
+ *   KAT_TR_ROOT_2  pools 1, 2 — balances 10^16, 10^16
+ *   KAT_TR_ROOT_3  pools 1, 2, 3 — balances 10^16, 10^16, 5 × 10^15
+ *                  (the third node is PROMOTED at level 0)
+ *   KAT_TR_ROOT_9  the decision's nine pools, ×10^8 raw: 1 100M,
+ *                  2 100M, 3 50M, 4 50M, 5 50M, 6 150M, 7 100M, 8 30M,
+ *                  9 50M (decision 2026-09-28-treasury-pools-and-exact-
+ *                  self-stake.md §Karar 1 + answer 11). */
+static const char *KAT_TR_LEAF        = "4b787f34803bb48e668a83d212a0263b9a64657426703256902b0712197e7bbfbe9e484192e89de5be14a6809c47bf212e3145d9750341b5a07926a0d2b40a15";
+static const char *KAT_TR_ROOT_2      = "27d7b3a39194a74bb125770d39e227c7569accd1e6c989a413fbcfc7c66abf67b78b6c53abf03d6f7cef3033192c4a4b6f545fc5a51e31e473df0dce0f59cb09";
+static const char *KAT_TR_ROOT_3      = "86d1c0ca3a5c464de255b9ee0377a1db29e9305d5a0799eebd1a95e7ec059394d59d61c758ee0698b71ba2536804c79b724bf39e7507cea1c8e00c5e44e953de";
+static const char *KAT_TR_ROOT_9      = "3b818e2db10551e4f6b06a3041fbaa722ef41a1fed1286709fdcbc7625e1d68a9e9232e74c3194771a5aa664ad29b4cf854516748cbbad0e128bb9288863aa33";
 static const char *KAT_CORE_7LEG    = "6316f2646cbe34ef0fc5c5d0487d62a9f72b4e58ccdbf40b5b7c3217210aeecd96d1fff0a313ed25434f0ca0990aa98791e4787ff4546a4d57d948b8f326c765";
 static const char *KAT_GLOBAL       = "0c0d2fce1984bf15c2e5841eeef72a067aefe4cdf8790a713332f09326393f79185dc7277f3d403a6f9d47fbfc68b049ddb117a654f2da59e0e4218e45f7e681";
 /* ── tokenomics-v3 P1 (D-4, S-2) — attendance leg, SELF-CONSISTENT with
@@ -393,54 +438,120 @@ static int test_shared_layer(void) {
         }
     }
 
-    /* Composition KATs + full subroot mutation sweep. SYSTEM = 7 legs
-     * (validator/delegation/chain_config/vset/domreg/manifest/attendance
-     * — "DNA.SYS.v3", root-layout round K2 removed the epoch leg); the
-     * SYSTEM payload root = 4 legs (validator/delegation/chain_config/
-     * vset — "DNA.SYSPAYL.v2"); CORE = 7 legs
+    /* ── W-A: the treasury leg — leaf KAT, n==1 == leaf, two- and
+     * three-row roots (the odd third node PROMOTED), the nine-pool
+     * genesis set, order and duplicate rejection, n==0 == tagged empty,
+     * both leaf fields bound. KILLED BY: dropping pool_id or balance from
+     * the leaf preimage; duplicating instead of promoting the odd node;
+     * accepting a non-ascending pool_id. */
+    {
+        const uint64_t U = 100000000ULL;             /* 10^8 raw / NODUS */
+        uint32_t ids[9] = { 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+        uint64_t bals[9] = {
+            100000000ULL * U, 100000000ULL * U, 50000000ULL * U,
+            50000000ULL * U, 50000000ULL * U, 150000000ULL * U,
+            100000000ULL * U, 30000000ULL * U, 50000000ULL * U
+        };
+        uint8_t leaf[64], tr[64];
+        CHECK(dna_v2_treasury_leaf_hash(1, 10000000000000000ULL, leaf) == 0 &&
+              hex_eq(leaf, KAT_TR_LEAF, "treasury leaf"),
+              "treasury leaf KAT"); OK();
+        CHECK(dna_v2_treasury_root(ids, bals, 1, tr) == 0 &&
+              memcmp(tr, leaf, 64) == 0, "treasury root n==1 != leaf"); OK();
+        CHECK(dna_v2_treasury_root(ids, bals, 2, tr) == 0 &&
+              hex_eq(tr, KAT_TR_ROOT_2, "treasury root 2"),
+              "treasury root n==2 KAT"); OK();
+        {
+            uint64_t b3[3] = { 10000000000000000ULL, 10000000000000000ULL,
+                               5000000000000000ULL };
+            CHECK(dna_v2_treasury_root(ids, b3, 3, tr) == 0 &&
+                  hex_eq(tr, KAT_TR_ROOT_3, "treasury root 3"),
+                  "treasury root n==3 KAT"); OK();
+        }
+        CHECK(dna_v2_treasury_root(ids, bals, 9, tr) == 0 &&
+              hex_eq(tr, KAT_TR_ROOT_9, "treasury root 9"),
+              "treasury root n==9 (genesis set) KAT"); OK();
+        CHECK(dna_v2_treasury_root(NULL, NULL, 0, tr) == 0 &&
+              hex_eq(tr, EMPTY_KAT[DNA_V2_EMPTY_TREASURY], "treasury n0"),
+              "treasury root n==0 KAT"); OK();
+        uint32_t desc[2] = { 2, 1 };
+        CHECK(dna_v2_treasury_root(desc, bals, 2, tr) != 0,
+              "descending pool_id accepted"); OK();
+        uint32_t dup[2] = { 1, 1 };
+        CHECK(dna_v2_treasury_root(dup, bals, 2, tr) != 0,
+              "duplicate pool_id accepted"); OK();
+        CHECK(dna_v2_treasury_root(NULL, bals, 2, tr) != 0,
+              "treasury root accepted NULL ids"); OK();
+        CHECK(dna_v2_treasury_leaf_hash(2, 10000000000000000ULL, h2) == 0 &&
+              memcmp(leaf, h2, 64) != 0, "pool_id not bound in leaf"); OK();
+        CHECK(dna_v2_treasury_leaf_hash(1, 10000000000000001ULL, h2) == 0 &&
+              memcmp(leaf, h2, 64) != 0, "balance not bound in leaf"); OK();
+    }
+
+    /* Composition KATs + full subroot mutation sweep. SYSTEM = 8 legs
+     * (validator/delegation/chain_config/vset/domreg/manifest/attendance/
+     * treasury — "DNA.SYS.v4", W-A appended treasury last; the root-layout
+     * round K2 had removed the epoch leg); the SYSTEM payload root = 5
+     * legs (validator/delegation/chain_config/vset/treasury —
+     * "DNA.SYSPAYL.v3"); CORE = 7 legs
      * (utxo/token/pools/claims/names/SUPPLY/ACCRUAL — native issuance is
      * CORE's own asset commitment; the accrual leg and "DNA.CORE.v2" are
      * tokenomics-v3 P2, P2-8). */
     {
-        uint8_t legs[7][64];
-        for (int i = 0; i < 7; i++) fill(legs[i], 64, (uint8_t)(0x90 + i));
+        uint8_t legs[8][64];
+        for (int i = 0; i < 8; i++) fill(legs[i], 64, (uint8_t)(0x90 + i));
         CHECK(dna_v2_system_root(legs[0], legs[1], legs[2], legs[3], legs[4],
-                                 legs[5], legs[6], h) == 0, "sys");
-        CHECK(hex_eq(h, KAT_SYSTEM_7LEG_V3, "system"), "system KAT"); OK();
-        for (int i = 0; i < 7; i++) {
+                                 legs[5], legs[6], legs[7], h) == 0, "sys");
+        CHECK(hex_eq(h, KAT_SYSTEM_8LEG_V4, "system"), "system KAT"); OK();
+        for (int i = 0; i < 8; i++) {
             legs[i][0] ^= 1;
             CHECK(dna_v2_system_root(legs[0], legs[1], legs[2], legs[3],
-                                     legs[4], legs[5], legs[6],
+                                     legs[4], legs[5], legs[6], legs[7],
                                      h2) == 0 && memcmp(h, h2, 64) != 0,
                   "system leg not bound"); OK();
             legs[i][0] ^= 1;
         }
-        /* Leg ORDER is bound: swapping two legs moves the root. */
+        /* Leg ORDER is bound: swapping two legs moves the root — incl.
+         * the new last leg against its neighbour. */
         CHECK(dna_v2_system_root(legs[1], legs[0], legs[2], legs[3],
-                                 legs[4], legs[5], legs[6], h2) == 0 &&
+                                 legs[4], legs[5], legs[6], legs[7],
+                                 h2) == 0 &&
               memcmp(h, h2, 64) != 0, "system leg order not bound"); OK();
+        CHECK(dna_v2_system_root(legs[0], legs[1], legs[2], legs[3],
+                                 legs[4], legs[5], legs[7], legs[6],
+                                 h2) == 0 &&
+              memcmp(h, h2, 64) != 0,
+              "treasury/attendance leg order not bound"); OK();
+        CHECK(dna_v2_system_root(legs[0], legs[1], legs[2], legs[3],
+                                 legs[4], legs[5], legs[6], NULL, h2) != 0,
+              "system root accepted a NULL treasury leg"); OK();
 
-        uint8_t pl[4][64];
-        for (int i = 0; i < 4; i++) fill(pl[i], 64, (uint8_t)(0xA0 + i));
-        CHECK(dna_v2_system_payload_root(pl[0], pl[1], pl[2], pl[3], h) == 0,
-              "payload");
-        CHECK(hex_eq(h, KAT_SYSPAYL_V2, "system payload"),
+        uint8_t pl[5][64];
+        for (int i = 0; i < 5; i++) fill(pl[i], 64, (uint8_t)(0xA0 + i));
+        CHECK(dna_v2_system_payload_root(pl[0], pl[1], pl[2], pl[3], pl[4],
+                                         h) == 0, "payload");
+        CHECK(hex_eq(h, KAT_SYSPAYL_V3, "system payload"),
               "system payload KAT"); OK();
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < 5; i++) {
             pl[i][0] ^= 1;
             CHECK(dna_v2_system_payload_root(pl[0], pl[1], pl[2], pl[3],
-                                             h2) == 0 &&
+                                             pl[4], h2) == 0 &&
                   memcmp(h, h2, 64) != 0, "payload leg not bound"); OK();
             pl[i][0] ^= 1;
         }
         /* The payload root and the full SYSTEM root are distinct tags:
-         * the same four legs padded with the 3 container-lifetime legs'
+         * the same five legs padded with the 3 container-lifetime legs'
          * bytes must not collide with the payload root. */
         CHECK(dna_v2_system_root(pl[0], pl[1], pl[2], pl[3], pl[0], pl[1],
-                                 pl[2], h2) == 0 && memcmp(h, h2, 64) != 0,
+                                 pl[2], pl[4], h2) == 0 &&
+              memcmp(h, h2, 64) != 0,
               "payload root collides with a system root"); OK();
-        CHECK(dna_v2_system_payload_root(NULL, pl[1], pl[2], pl[3], h2) != 0,
+        CHECK(dna_v2_system_payload_root(NULL, pl[1], pl[2], pl[3], pl[4],
+                                         h2) != 0,
               "payload root accepted a NULL leg"); OK();
+        CHECK(dna_v2_system_payload_root(pl[0], pl[1], pl[2], pl[3], NULL,
+                                         h2) != 0,
+              "payload root accepted a NULL treasury leg"); OK();
         uint8_t cl[7][64];
         for (int i = 0; i < 7; i++) fill(cl[i], 64, (uint8_t)(0xB0 + i));
         CHECK(dna_v2_core_root(cl[0], cl[1], cl[2], cl[3], cl[4], cl[5],
@@ -546,7 +657,14 @@ static const char *SCHEMA_SQL =
      * as production's does; left EMPTY here, it yields the tagged
      * DNA_V2_EMPTY_ACCRUAL root. */
     "CREATE TABLE IF NOT EXISTS v2_reward_accrual ("
-    "  owner_fp BLOB PRIMARY KEY, amount INTEGER NOT NULL);";
+    "  owner_fp BLOB PRIMARY KEY, amount INTEGER NOT NULL);"
+    /* W-A: the treasury leg is FAIL-CLOSED on an absent table for the
+     * accrual leg's reason (nodus_witness_treasury_root_v2 — the table is
+     * in WITNESS_DB_SCHEMA and the S16 rung). Byte-identical to
+     * production's DDL; left EMPTY by the fixtures it yields the tagged
+     * DNA_V2_EMPTY_TREASURY root. */
+    "CREATE TABLE IF NOT EXISTS v2_treasury ("
+    "  pool_id INTEGER PRIMARY KEY, balance INTEGER NOT NULL);";
 
 static int setup_w(nodus_witness_t **w_out) {
     nodus_witness_t *w = calloc(1, sizeof(*w));   /* multi-MB: heap-alloc */
@@ -647,31 +765,111 @@ static int test_loaders(void) {
     /* The DB-loaded root equals the shared-layer oracle-pinned root. */
     CHECK(hex_eq(r1, KAT_TOKEN_ROOT, "db token root"), "db tok KAT"); OK();
 
-    /* Root-layout round K2: the DB-loaded SYSTEM compositions equal the
-     * shared-layer functions over the individually loaded legs, IN THE
-     * K2 ORDER — the witness wiring cannot drift from the pinned
+    /* Root-layout round K2 + W-A: the DB-loaded SYSTEM compositions equal
+     * the shared-layer functions over the individually loaded legs, IN
+     * THE W-A ORDER — the witness wiring cannot drift from the pinned
      * composition (a leg dropped, duplicated or reordered moves it).
-     * KILLED BY: re-adding an epoch leg, or swapping two legs, in
-     * nodus_witness_system_root_v2 / _system_payload_root_v2. */
-    {
+     * Checked twice: over an EMPTY treasury table and over a seeded one,
+     * so a loader that ignored the table would fail the second.
+     * KILLED BY: re-adding an epoch leg, dropping the treasury leg, or
+     * swapping two legs, in nodus_witness_system_root_v2 /
+     * _system_payload_root_v2. */
+    for (int pass = 0; pass < 2; pass++) {
+        if (pass == 1)
+            CHECK(run_sql(wa->db,
+                  "INSERT INTO v2_treasury (pool_id, balance) VALUES "
+                  "(1, 700), (8, 30), (9, 0)") == 0, "treasury seed");
         uint8_t v[64], dl[64], cc[64], vs[64], dr[64], mf[64], at[64];
-        uint8_t expect[64];
+        uint8_t tr[64], expect[64];
         CHECK(nodus_witness_merkle_compute_validator_root(wa, v) == 0 &&
               nodus_witness_merkle_compute_delegation_root(wa, dl) == 0 &&
               nodus_chain_config_compute_root(wa, cc) == 0 &&
               nodus_witness_vset_root(wa, vs) == 0 &&
               nodus_witness_domreg_root(wa, dr) == 0 &&
               nodus_witness_manifest_root_v2(wa, mf) == 0 &&
-              nodus_witness_attendance_root(wa, at) == 0, "legs");
+              nodus_witness_attendance_root(wa, at) == 0 &&
+              nodus_witness_treasury_root_v2(wa, tr) == 0, "legs");
         CHECK(nodus_witness_system_root_v2(wa, h) == 0 &&
-              dna_v2_system_root(v, dl, cc, vs, dr, mf, at, expect) == 0 &&
+              dna_v2_system_root(v, dl, cc, vs, dr, mf, at, tr,
+                                 expect) == 0 &&
               memcmp(h, expect, 64) == 0,
-              "witness SYSTEM root != 7-leg DNA.SYS.v3 composition"); OK();
+              "witness SYSTEM root != 8-leg DNA.SYS.v4 composition"); OK();
         CHECK(nodus_witness_system_payload_root_v2(wa, h) == 0 &&
-              dna_v2_system_payload_root(v, dl, cc, vs, expect) == 0 &&
+              dna_v2_system_payload_root(v, dl, cc, vs, tr, expect) == 0 &&
               memcmp(h, expect, 64) == 0,
-              "witness payload root != 4-leg DNA.SYSPAYL.v2 composition");
+              "witness payload root != 5-leg DNA.SYSPAYL.v3 composition");
         OK();
+        if (pass == 1) {
+            /* The loader reads the rows the shared function hashes. */
+            uint32_t ids[3] = { 1, 8, 9 };
+            uint64_t bals[3] = { 700, 30, 0 };
+            CHECK(dna_v2_treasury_root(ids, bals, 3, expect) == 0 &&
+                  memcmp(tr, expect, 64) == 0,
+                  "treasury loader != shared treasury_root"); OK();
+        }
+    }
+
+    /* W-A: the treasury leg is a SYSTEM leg, never a CORE leg — a pool
+     * balance move changes the SYSTEM root and NOT the CORE root; the
+     * total is the loader's; every malformed row FAILS the root and the
+     * total, never skipped. (The pool balance is moved by a direct
+     * UPDATE: general multisig — decision 2026-09-29-general-multisig.md
+     * — deleted W-A's credit primitive with the genesis-seat refund, its
+     * only caller; no block path writes a pool after genesis.)
+     * KILLED BY: composing treasury into CORE; a loader that skips a bad
+     * row. */
+    {
+        uint8_t sys0[64], core0[64], sys1[64], core1[64];
+        uint64_t tot = 0;
+        CHECK(nodus_witness_treasury_total(wa, &tot) == 0 && tot == 730,
+              "treasury total != Σ rows"); OK();
+        CHECK(nodus_witness_system_root_v2(wa, sys0) == 0 &&
+              nodus_witness_core_root_v2(wa, core0) == 0, "roots pre-move");
+        CHECK(run_sql(wa->db, "UPDATE v2_treasury SET balance = balance + "
+                              "10 WHERE pool_id = 8") == 0, "pool 8 += 10");
+        CHECK(nodus_witness_system_root_v2(wa, sys1) == 0 &&
+              nodus_witness_core_root_v2(wa, core1) == 0,
+              "roots post-move");
+        CHECK(memcmp(sys0, sys1, 64) != 0,
+              "a treasury balance move must change the SYSTEM root"); OK();
+        CHECK(memcmp(core0, core1, 64) == 0,
+              "a treasury balance move must NOT change the CORE root"); OK();
+        CHECK(nodus_witness_treasury_total(wa, &tot) == 0 && tot == 740,
+              "the total reads the moved balance"); OK();
+
+        static const char *const bad_rows[] = {
+            "INSERT INTO v2_treasury (pool_id, balance) VALUES (0, 1)",
+            "INSERT INTO v2_treasury (pool_id, balance) VALUES (10, 1)",
+            "INSERT INTO v2_treasury (pool_id, balance) VALUES (4, -1)",
+            "INSERT INTO v2_treasury (pool_id, balance) VALUES (4, 'x')",
+        };
+        for (size_t i = 0; i < sizeof(bad_rows) / sizeof(bad_rows[0]); i++) {
+            CHECK(run_sql(wa->db, bad_rows[i]) == 0, "bad row insert");
+            CHECK(nodus_witness_treasury_root_v2(wa, h) != 0,
+                  "a malformed treasury row must FAIL the root"); OK();
+            CHECK(nodus_witness_treasury_total(wa, &tot) != 0,
+                  "a malformed treasury row must FAIL the total"); OK();
+            CHECK(run_sql(wa->db, "DELETE FROM v2_treasury WHERE pool_id "
+                                  "NOT IN (1, 8, 9)") == 0,
+                  "bad row cleanup");
+        }
+        CHECK(run_sql(wa->db, "DELETE FROM v2_treasury") == 0,
+              "treasury cleanup");
+        uint8_t empty[64];
+        CHECK(nodus_witness_treasury_root_v2(wa, h) == 0 &&
+              dna_v2_empty_root(DNA_V2_EMPTY_TREASURY, empty) == 0 &&
+              memcmp(h, empty, 64) == 0,
+              "empty treasury table must be the tagged empty root"); OK();
+    }
+    /* Fail-closed: an ABSENT v2_treasury table is a fault, never the
+     * empty state (it is in the base schema). */
+    {
+        nodus_witness_t *wt = calloc(1, sizeof(*wt));
+        CHECK(wt != NULL, "alloc wt");
+        CHECK(sqlite3_open(":memory:", &wt->db) == SQLITE_OK, "open wt");
+        CHECK(nodus_witness_treasury_root_v2(wt, h) != 0,
+              "missing v2_treasury table did not fail"); OK();
+        teardown_w(wt);
     }
 
     /* Supply root from DB (init writes genesis=1e17, minted=0, burned=0,

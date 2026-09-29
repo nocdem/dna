@@ -1623,7 +1623,7 @@ static int t_s16_fresh_climb(void)
           strcmp(cols, "owner_fp,amount") == 0,
           "v2_reward_accrual column list");
     CHECK(table_cols(fx.w->db, "v2_balance_copy", cols, sizeof(cols)) == 0 &&
-          strcmp(cols, "epoch_start,validator_fp,owner_fp,amount") == 0,
+          strcmp(cols, "epoch_start,validator_fp,owner_fp,kind,amount") == 0,
           "v2_balance_copy column list");
     CHECK(has_col(fx.w->db, "supply_tracking", "reward_pool") == 1,
           "supply_tracking.reward_pool missing");

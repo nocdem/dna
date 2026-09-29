@@ -50,28 +50,36 @@
  * would only give the operator a way to fail later, in the builder,
  * instead of never.
  *
- * `config_version` is the opposite case: REQUIRED in the file, and 3 is
- * its only legal value (tokenomics-v3 P4 deleted version 2, OBLIGATION
- * atlas-dec-71525f3b). It is required rather than forced so that a file
- * written for the deleted schema is refused instead of being silently
- * read as the new one.
+ * `config_version` is the opposite case: REQUIRED in the file, and 4 is
+ * its only legal value (the final pre-testnet wipe W-A retired 3 when the
+ * nine [treasury] blocks arrived; tokenomics-v3 P4 had deleted version 2,
+ * OBLIGATION atlas-dec-71525f3b). It is required rather than forced so
+ * that a file written for a retired schema is refused instead of being
+ * silently read as the new one.
  *
  * ── THE FORMAT ──────────────────────────────────────────────────────
  * Line-oriented ASCII. `#` begins a comment that runs to end of line.
  * Blank lines are ignored. `key = value`, with optional ' ' / '\t'
- * around the `=`. `[validator]` and `[allocation]` open a repeated
- * block; every key of the open block must appear exactly once before
- * the next block header or EOF. The five top-level keys must appear
- * before the first block header (after a header the open scope is the
- * block, and a top-level key is then simply not one of that block's
+ * around the `=`. `[validator]`, `[allocation]` and `[treasury]` open a
+ * repeated block; every key of the open block must appear exactly once
+ * before the next block header or EOF. The five top-level keys must
+ * appear before the first block header (after a header the open scope is
+ * the block, and a top-level key is then simply not one of that block's
  * keys — i.e. an unknown key).
+ *
+ * `[treasury]` (W-A, decision 2026-09-28-treasury-pools-and-exact-self-
+ * stake.md): one block per keyless treasury pool, EXACTLY nine, in pool
+ * order 1..9 (the n-th block is pool n). A missing, tenth or out-of-order
+ * block is refused; an empty pool is written as `balance = 0`, never
+ * omitted.
  *
  * A complete, minimal example — one validator block shown; a derivable
  * config needs exactly DNAC_COMMITTEE_SIZE of them (Rule P.1,
- * nodus_witness_v2_gen.c:559-564), and at least one allocation:
+ * nodus_witness_v2_gen.c:559-564), at least one allocation and the nine
+ * treasury blocks (two shown):
  *
- *     # DNA Chain — version-3 (cometbft) genesis config
- *     config_version        = 3          # REQUIRED; 3 is the only value
+ *     # DNA Chain — cometbft genesis config (document version 4)
+ *     config_version        = 4          # REQUIRED; 4 is the only value
  *     genesis_time_ms       = <UTC ms>   # REQUIRED
  *     initial_height        = 1          # REQUIRED (0 and 1 differ in
  *                                        # chain id)
@@ -89,13 +97,25 @@
  *                                        # 200M × 10^8 (v2_gen.c
  *                                        # GEN_V3_REWARD_POOL_INITIAL);
  *                                        # Rule P.2: Σ allocations +
- *                                        # Σ self_stake + this ==
+ *                                        # Σ self_stake + this +
+ *                                        # Σ treasury balances ==
  *                                        # total_supply_raw
  *     payout_interval_epochs = 24        # optional, default 24; >= 1
+ *     gas_price_raw_per_unit = 121       # optional, default 121 (W-C;
+ *                                        # decision 2026-09-25-gas-
+ *                                        # price.md); [0, 1000000], 0 =
+ *                                        # the gas rule starts off
+ *     token_create_fee_raw   = 100000000000  # optional, default 10^11
+ *                                        # = 1 000 NODUS (W-C; decision
+ *                                        # 2026-09-28-token-create-fee-
+ *                                        # governance.md); [10^8, 10^15]
  *
  *     [validator]
  *     pubkey                     = <5184 lowercase hex chars>
- *     unstake_destination_pubkey = <5184 lowercase hex chars>
+ *     unstake_destination_pubkey = <5184 '0' characters — MUST be all
+ *                                   zero on a genesis row (general
+ *                                   multisig ONAY 2; gen_plan_build
+ *                                   refuses anything else)>
  *     unstake_destination_fp     = <128 lowercase hex chars>
  *     self_stake                 = 1000000000000000
  *     commission_bps             = 500
@@ -105,10 +125,36 @@
  *     dest_binding = <128 lowercase hex chars>
  *     amount       = 5000000000000
  *
- * `unstake_destination_fp` MUST be SHA3-512(unstake_destination_pubkey)
- * rendered as lowercase hex. The parser only checks its SHAPE; the
- * DERIVATION is checked by the builder (gen_plan_build), because that
- * is the one place every producer of a config passes through.
+ *     [treasury]
+ *     pool_id = 1                        # pool order 1..9, one per block
+ *     balance = 10000000000000000        # raw; 0 is legal
+ *     ...                                # pools 2..8
+ *     [treasury]
+ *     pool_id = 9
+ *     balance = 5000000000000000
+ *
+ *     [genesis_output]                   # config_version 5 (general
+ *     owner  = <128 lowercase hex chars> # multisig): 0..64 blocks, FILE
+ *     amount = 5000000000000000          # ORDER = each coin's index;
+ *                                        # owner = an address (e.g. the
+ *                                        # Foundation multisig), not
+ *                                        # all-zero; amount 1..INT64_MAX;
+ *                                        # counted by Rule P.2, NOT
+ *                                        # claimable, seeded into
+ *                                        # utxo_set at genesis
+ *
+ * `config_version` is REQUIRED and must be 5 (general multisig, decision
+ * 2026-09-29-general-multisig.md ONAY 2; 4 under W-A/W-C is refused).
+ *
+ * `unstake_destination_fp` is the destination ADDRESS as 128 lowercase
+ * hex characters — a single-key SHA3-512(pubkey) or an M-of-N multisig
+ * address (general multisig, decision 2026-09-29-general-multisig.md:
+ * the genesis seats' bonds return to the Foundation multisig address).
+ * The parser and the builder check its SHAPE only; the builder no longer
+ * requires it to derive from `unstake_destination_pubkey` (a multisig
+ * address derives from no single key). What it MEANS is the ceremony
+ * checker's job (tools/genesis/check_genesis_conf.sh recomputes the
+ * Foundation multisig address from its pubkeys + M).
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -139,9 +185,10 @@ extern "C" {
  * under ceremony conditions: a refusal that does not name the line is a
  * refusal that costs an hour.
  *
- * The file must say `config_version = 3` (the only schema since
- * tokenomics-v3 P4; a version-2 file, and a file with no version, is
- * refused). The contract is WIDER than well-formedness, and
+ * The file must say `config_version = 4` (the only schema since the
+ * final pre-testnet wipe W-A; a version-3 or version-2 file, and a file
+ * with no version, is refused) and carry exactly nine `[treasury]`
+ * blocks in pool order. The contract is WIDER than well-formedness, and
  * deliberately (register row R3-C1b-3): deriving the Comet
  * validator rows (`nodus_witness_v2_gen_v3_fill_comet_rows`) runs the
  * builder's SHARED genesis rules through `gen_plan_build`, so a

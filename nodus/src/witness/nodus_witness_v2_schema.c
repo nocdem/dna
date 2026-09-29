@@ -1787,7 +1787,18 @@ int nodus_witness_db_migrate_v2s16_ex(nodus_witness_t *w,
 
         /* 2 + 3. The two reward tables — byte-identical to the base
          * schema's (nodus_witness.c), a no-op on any DB this build
-         * created. */
+         * created. Final pre-testnet wipe, W-B: v2_balance_copy gained
+         * `kind` (0 bond, 1 delegation) in its primary key, so a
+         * self-delegation and its validator's bond are two rows. Changed
+         * IN this rung, like W-A's treasury table below and for the same
+         * reason (wipe, no migration). A DB an older build created holds
+         * the old four-column table, which CREATE TABLE IF NOT EXISTS
+         * leaves alone: at S15 the shape check below REFUSES it; at S16
+         * (this rung never re-runs) the copy writer's INSERT names a
+         * `kind` column the old table lacks, its prepare fails and the
+         * boundary FAULTS (nodus_witness_v2_balance_copy_write) — either
+         * way the node stops rather than run the copy under the old key.
+         * The package ships with the chain wipe that removes such DBs. */
         if (exec_sql(w,
                 "CREATE TABLE IF NOT EXISTS v2_reward_accrual ("
                 "  owner_fp BLOB PRIMARY KEY,"
@@ -1799,21 +1810,38 @@ int nodus_witness_db_migrate_v2s16_ex(nodus_witness_t *w,
                 "  epoch_start INTEGER NOT NULL,"
                 "  validator_fp BLOB NOT NULL,"
                 "  owner_fp BLOB NOT NULL,"
+                "  kind INTEGER NOT NULL,"
                 "  amount INTEGER NOT NULL,"
-                "  PRIMARY KEY (epoch_start, validator_fp, owner_fp)"
+                "  PRIMARY KEY (epoch_start, validator_fp, owner_fp, kind)"
+                ")") != 0)
+            break;
+        /* 4. Final pre-testnet wipe, W-A: the keyless treasury pools —
+         * byte-identical to the base schema's (nodus_witness.c). Added
+         * to THIS rung rather than a new one: the package ships with a
+         * chain wipe and no migration (devnet), and every DB this build
+         * opens gains the table from WITNESS_DB_SCHEMA anyway — this
+         * CREATE is the rung's own statement of its shape, verified
+         * below. */
+        if (exec_sql(w,
+                "CREATE TABLE IF NOT EXISTS v2_treasury ("
+                "  pool_id INTEGER PRIMARY KEY,"
+                "  balance INTEGER NOT NULL"
                 ")") != 0)
             break;
         if (fail_at == V2S16MIG_FAIL_AFTER_TABLES) break;
 
-        /* Verify: both tables exist with their exact shape, and the
+        /* Verify: the three tables exist with their exact shape, and the
          * column is present. */
         static const char *const acc_cols[] = { "owner_fp", "amount" };
         static const char *const copy_cols[] =
-            { "epoch_start", "validator_fp", "owner_fp", "amount" };
+            { "epoch_start", "validator_fp", "owner_fp", "kind", "amount" };
+        static const char *const treas_cols[] = { "pool_id", "balance" };
         if (table_cols_exact(w, "v2_reward_accrual", acc_cols,
                 sizeof(acc_cols) / sizeof(acc_cols[0])) != 1 ||
             table_cols_exact(w, "v2_balance_copy", copy_cols,
                 sizeof(copy_cols) / sizeof(copy_cols[0])) != 1 ||
+            table_cols_exact(w, "v2_treasury", treas_cols,
+                sizeof(treas_cols) / sizeof(treas_cols[0])) != 1 ||
             col_present(w, "supply_tracking", "reward_pool") != 1) {
             QGP_LOG_ERROR(LOG_TAG, "%s",
                           "S16 reward schema shape drift — refusing");

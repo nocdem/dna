@@ -49,7 +49,17 @@
 typedef enum {
     NV2GC_SCOPE_TOP = 0,
     NV2GC_SCOPE_VALIDATOR,
-    NV2GC_SCOPE_ALLOCATION
+    NV2GC_SCOPE_ALLOCATION,
+    /* Final pre-testnet wipe, W-A (config_version 4): one [treasury]
+     * block per keyless treasury pool, EXACTLY NODUS_V2_GEN_TREASURY_POOLS
+     * of them, in pool_id order 1..9 (decision 2026-09-28-treasury-pools-
+     * and-exact-self-stake.md answer 11). */
+    NV2GC_SCOPE_TREASURY,
+    /* General multisig (config_version 5, decision 2026-09-29-general-
+     * multisig.md ONAY 2): one [genesis_output] block per genesis coin,
+     * 0 .. NODUS_V2_GEN_MAX_GENOUTS of them, in FILE ORDER — the order is
+     * each coin's index in its identity, never sorted. */
+    NV2GC_SCOPE_GENOUT
 } nv2gc_scope_t;
 
 /* Every key of the open scope, as a bit in a "seen" mask. The mask is
@@ -76,9 +86,12 @@ enum {
 
     /* ── the version-3 top-level keys (D-18 rev 4) ─────────────────────
      * `config_version` names the document the file expresses. Since
-     * tokenomics-v3 P4 it is REQUIRED and its only legal value is 3
-     * (version 2 is deleted, OBLIGATION atlas-dec-71525f3b); before P4 it
-     * was optional and absent meant 2.
+     * tokenomics-v3 P4 it is REQUIRED (version 2 is deleted, OBLIGATION
+     * atlas-dec-71525f3b; before P4 it was optional and absent meant 2);
+     * since the final pre-testnet wipe W-A it was 4 — the version-3
+     * document plus the nine [treasury] blocks — and since general
+     * multisig its only legal value is 5 (plus the [genesis_output]
+     * blocks).
      *
      * Of the other version-3 keys only two are REQUIRED, and for the same
      * reason the five above are: no defensible default exists.
@@ -107,6 +120,13 @@ enum {
     NV2GC_K_REWARD_POOL    = 1u << 16,
     NV2GC_K_REWARD_DIV     = 1u << 17,
     NV2GC_K_PAYOUT_EPOCHS  = 1u << 18,
+    /* W-C (final pre-testnet wipe): the genesis values of the two
+     * governed fee parameters (chain_config params 5 and 6). OPTIONAL,
+     * defaulted from nodus_witness_v2_gen_v3_defaults like the
+     * tokenomics fields above — the builder holds the operator-approved
+     * values (121 raw/unit; 10^11 raw), this file states none. */
+    NV2GC_K_GAS_PRICE      = 1u << 19,
+    NV2GC_K_TC_FEE         = 1u << 20,
     NV2GC_V3_REQUIRED      = NV2GC_K_GENESIS_TIME | NV2GC_K_INITIAL_HEIGHT,
 
     /* NV2GC_SCOPE_VALIDATOR */
@@ -128,7 +148,17 @@ enum {
     NV2GC_K_DEST_BINDING   = 1u << 1,
     NV2GC_K_AMOUNT         = 1u << 2,
     NV2GC_ALLOC_REQUIRED   = NV2GC_K_SOURCE_ID | NV2GC_K_DEST_BINDING |
-                             NV2GC_K_AMOUNT
+                             NV2GC_K_AMOUNT,
+
+    /* NV2GC_SCOPE_TREASURY (W-A) */
+    NV2GC_K_POOL_ID        = 1u << 0,
+    NV2GC_K_BALANCE        = 1u << 1,
+    NV2GC_TREAS_REQUIRED   = NV2GC_K_POOL_ID | NV2GC_K_BALANCE,
+
+    /* NV2GC_SCOPE_GENOUT (general multisig) */
+    NV2GC_K_GO_OWNER       = 1u << 0,
+    NV2GC_K_GO_AMOUNT      = 1u << 1,
+    NV2GC_GENOUT_REQUIRED  = NV2GC_K_GO_OWNER | NV2GC_K_GO_AMOUNT
 };
 
 /* ── byte classification: EXPLICIT, never <ctype.h> ──────────────────
@@ -377,6 +407,7 @@ typedef struct {
     nodus_v2_gen_alloc_t  *allocs;   /* grown; handed to cfg at the end */
     uint32_t               allocs_cap;
     uint32_t               n_allocs;
+    uint32_t               n_treasury; /* [treasury] blocks opened (W-A) */
     nv2gc_scope_t          scope;
     unsigned               seen;     /* key bits of the OPEN scope      */
     /* The top-level keys seen ANYWHERE in the file. `seen` is cleared on
@@ -400,7 +431,11 @@ static int nv2gc_close_scope(nv2gc_state_t *st, size_t lineno) {
                                      what = "a [validator] block";  break;
         case NV2GC_SCOPE_ALLOCATION: need = NV2GC_ALLOC_REQUIRED;
                                      what = "an [allocation] block"; break;
-        default:                     need = NV2GC_TOP_REQUIRED;
+        case NV2GC_SCOPE_TREASURY:   need = NV2GC_TREAS_REQUIRED;
+                                     what = "a [treasury] block";    break;
+        case NV2GC_SCOPE_GENOUT:     need = NV2GC_GENOUT_REQUIRED;
+                                     what = "a [genesis_output] block"; break;
+        default:                    need = NV2GC_TOP_REQUIRED;
                                      what = "the top-level section";  break;
     }
     if ((st->seen & need) == need) return 0;
@@ -475,6 +510,29 @@ static int nv2gc_open_scope(nv2gc_state_t *st, nv2gc_scope_t s,
     } else if (s == NV2GC_SCOPE_ALLOCATION) {
         if (nv2gc_alloc_grow(st, lineno) != 0) return -1;
         st->n_allocs++;
+    } else if (s == NV2GC_SCOPE_TREASURY) {
+        /* The ARRAY BOUND only, like [validator]. The pool-set rule
+         * (entry i carries pool_id i + 1) belongs to gen_plan_build —
+         * one authority per rule. */
+        if (st->n_treasury >= NODUS_V2_GEN_TREASURY_POOLS) {
+            fprintf(stderr,
+                    "genesis config line %zu: more than %u [treasury] "
+                    "blocks — the pool set is exactly pools 1..%u.\n",
+                    lineno, (unsigned)NODUS_V2_GEN_TREASURY_POOLS,
+                    (unsigned)NODUS_V2_GEN_TREASURY_POOLS);
+            return -1;
+        }
+        st->n_treasury++;
+    } else if (s == NV2GC_SCOPE_GENOUT) {
+        /* The ARRAY BOUND only; owner / amount rules are gen_plan_build's. */
+        if (st->cfg->n_genesis_outputs >= NODUS_V2_GEN_MAX_GENOUTS) {
+            fprintf(stderr,
+                    "genesis config line %zu: more than %u [genesis_output] "
+                    "blocks — the builder's ceiling.\n",
+                    lineno, (unsigned)NODUS_V2_GEN_MAX_GENOUTS);
+            return -1;
+        }
+        st->cfg->n_genesis_outputs++;
     }
 
     st->scope = s;
@@ -554,6 +612,10 @@ static int nv2gc_assign_top(nv2gc_state_t *st, const char *key,
               &st->cfg->reward_divisor_log2 },
             { "payout_interval_epochs", NV2GC_K_PAYOUT_EPOCHS,
               &st->cfg->payout_interval_epochs },
+            { "gas_price_raw_per_unit", NV2GC_K_GAS_PRICE,
+              &st->cfg->gas_price_raw_per_unit },
+            { "token_create_fee_raw", NV2GC_K_TC_FEE,
+              &st->cfg->token_create_fee_raw },
             { "version_app",         NV2GC_K_VERSION_APP,
               &st->cfg->consensus_params.version.app },
         };
@@ -604,13 +666,17 @@ static int nv2gc_assign_top(nv2gc_state_t *st, const char *key,
         uint64_t v = 0;
         /* tokenomics-v3 P4 (OBLIGATION atlas-dec-71525f3b): version 2 —
          * the pure-V2 chain with a height-0 genesis block — is DELETED
-         * with its derivation. 3 is the only schema this build derives. */
+         * with its derivation. Final pre-testnet wipe W-A: version 3 is
+         * RETIRED too (no treasury pools). General multisig: version 4 is
+         * RETIRED as well (no genesis outputs); 5 is the only schema this
+         * build derives. */
         if (nv2gc_u64(val, &v) != 0 ||
-            v != (uint64_t)NODUS_V2_GEN_CONFIG_VERSION_V3) {
+            v != (uint64_t)NODUS_V2_GEN_CONFIG_VERSION_V5) {
             nv2gc_bad_value(lineno, key,
-                "expected 3 (the cometbft genesis document). Version 2 "
-                "(the pure-V2 chain) is deleted from this build; no other "
-                "value is a schema it understands.");
+                "expected 5 (the cometbft genesis document with the nine "
+                "[treasury] pools and the [genesis_output] blocks). Version "
+                "4 (no genesis outputs), 3 (no treasury) and 2 (the pure-V2 "
+                "chain) are not schemas this build derives.");
             return -1;
         }
         st->cfg->config_version = (uint32_t)v;
@@ -669,8 +735,10 @@ static int nv2gc_assign_validator(nv2gc_state_t *st, const char *key,
         if (nv2gc_mark(st, NV2GC_K_UNSTAKE_FP, key, lineno) != 0) return -1;
         if (nv2gc_fp(val, v->unstake_destination_fp) != 0) {
             nv2gc_bad_value(lineno, key,
-                "expected exactly 128 LOWERCASE hex characters = "
-                "SHA3-512(unstake_destination_pubkey). Uppercase is "
+                "expected exactly 128 LOWERCASE hex characters — the "
+                "destination ADDRESS (a single-key SHA3-512(pubkey) or "
+                "an M-of-N multisig address; the genesis seats use the "
+                "Foundation multisig address). Uppercase is "
                 "refused: the graduation predicate that later reads this "
                 "field accepts lowercase only, so an uppercase digit "
                 "would derive a chain that HALTS at its first retirement.");
@@ -767,6 +835,77 @@ static int nv2gc_assign_alloc(nv2gc_state_t *st, const char *key,
     return 1;                                    /* not an allocation key */
 }
 
+/* W-A — one keyless treasury pool. The block is stored at its FILE
+ * position (the n-th [treasury] block fills treasury[n-1]); the builder
+ * then requires treasury[i].pool_id == i + 1, so the blocks must appear
+ * in pool order 1..9. Parsing only proves REPRESENTABILITY here — the
+ * pool-set rule and the INT64_MAX storage bound on a balance are
+ * gen_plan_build's (one authority per rule). */
+static int nv2gc_assign_treasury(nv2gc_state_t *st, const char *key,
+                                 const char *val, size_t lineno) {
+    /* n_treasury >= 1 here by construction: this scope is only opened by
+     * nv2gc_open_scope(TREASURY), which bounds and increments it first. */
+    nodus_v2_gen_treasury_t *t = &st->cfg->treasury[st->n_treasury - 1u];
+
+    if (strcmp(key, "pool_id") == 0) {
+        if (nv2gc_mark(st, NV2GC_K_POOL_ID, key, lineno) != 0) return -1;
+        uint64_t tmp = 0;
+        if (nv2gc_u64(val, &tmp) != 0 || tmp > (uint64_t)UINT32_MAX) {
+            nv2gc_bad_value(lineno, key,
+                "expected a base-10 integer (the pool number, 1..9 in "
+                "block order) — the field is a uint32_t and an "
+                "out-of-range value is refused, not truncated.");
+            return -1;
+        }
+        t->pool_id = (uint32_t)tmp;
+        return 0;
+    }
+    if (strcmp(key, "balance") == 0) {
+        if (nv2gc_mark(st, NV2GC_K_BALANCE, key, lineno) != 0) return -1;
+        if (nv2gc_u64(val, &t->balance) != 0) {
+            nv2gc_bad_value(lineno, key,
+                "expected a base-10 unsigned 64-bit integer (raw units; "
+                "0 is a legal balance).");
+            return -1;
+        }
+        return 0;
+    }
+    return 1;                                      /* not a treasury key */
+}
+
+/* General multisig — one genesis output, stored at its FILE position
+ * (the n-th [genesis_output] block fills genesis_outputs[n-1]; that
+ * position is the coin's identity index). Parsing proves
+ * REPRESENTABILITY only: the all-zero-owner refusal and the 1..INT64_MAX
+ * amount bound are gen_plan_build's (one authority per rule). */
+static int nv2gc_assign_genout(nv2gc_state_t *st, const char *key,
+                               const char *val, size_t lineno) {
+    nodus_v2_gen_output_t *o =
+        &st->cfg->genesis_outputs[st->cfg->n_genesis_outputs - 1u];
+
+    if (strcmp(key, "owner") == 0) {
+        if (nv2gc_mark(st, NV2GC_K_GO_OWNER, key, lineno) != 0) return -1;
+        if (nv2gc_hex(val, 64, o->owner) != 0) {
+            nv2gc_bad_value(lineno, key,
+                "expected exactly 128 LOWERCASE hex characters — the owner "
+                "ADDRESS (a single-key SHA3-512(pubkey) or an M-of-N "
+                "multisig address, `nodus-cli msig address`).");
+            return -1;
+        }
+        return 0;
+    }
+    if (strcmp(key, "amount") == 0) {
+        if (nv2gc_mark(st, NV2GC_K_GO_AMOUNT, key, lineno) != 0) return -1;
+        if (nv2gc_u64(val, &o->amount) != 0) {
+            nv2gc_bad_value(lineno, key,
+                "expected a base-10 unsigned 64-bit integer (raw units).");
+            return -1;
+        }
+        return 0;
+    }
+    return 1;                                /* not a genesis-output key */
+}
+
 /* ── the parse ───────────────────────────────────────────────────── */
 
 void nodus_v2_gen_config_free(nodus_v2_gen_config_t *cfg) {
@@ -853,13 +992,19 @@ int nodus_v2_gen_config_parse_file(const char *path,
             } else if (strcmp(s, "[allocation]") == 0) {
                 if (nv2gc_open_scope(&st, NV2GC_SCOPE_ALLOCATION,
                                      lineno) != 0) goto out;
+            } else if (strcmp(s, "[treasury]") == 0) {
+                if (nv2gc_open_scope(&st, NV2GC_SCOPE_TREASURY,
+                                     lineno) != 0) goto out;
+            } else if (strcmp(s, "[genesis_output]") == 0) {
+                if (nv2gc_open_scope(&st, NV2GC_SCOPE_GENOUT,
+                                     lineno) != 0) goto out;
             } else {
                 char echo[NV2GC_ECHO_MAX + 4];
                 nv2gc_echo(s, echo);
                 fprintf(stderr,
                         "genesis config line %zu: unknown block header '%s' "
-                        "— only [validator] and [allocation] exist.\n",
-                        lineno, echo);
+                        "— only [validator], [allocation], [treasury] and "
+                        "[genesis_output] exist.\n", lineno, echo);
                 goto out;
             }
             continue;
@@ -933,6 +1078,10 @@ int nodus_v2_gen_config_parse_file(const char *path,
                 ar = nv2gc_assign_validator(&st, key, val, lineno); break;
             case NV2GC_SCOPE_ALLOCATION:
                 ar = nv2gc_assign_alloc(&st, key, val, lineno); break;
+            case NV2GC_SCOPE_TREASURY:
+                ar = nv2gc_assign_treasury(&st, key, val, lineno); break;
+            case NV2GC_SCOPE_GENOUT:
+                ar = nv2gc_assign_genout(&st, key, val, lineno); break;
             default:
                 ar = nv2gc_assign_top(&st, key, val, lineno); break;
         }
@@ -952,6 +1101,8 @@ int nodus_v2_gen_config_parse_file(const char *path,
                     lineno, key,
                     st.scope == NV2GC_SCOPE_VALIDATOR  ? "a [validator] block"
                     : st.scope == NV2GC_SCOPE_ALLOCATION ? "an [allocation] block"
+                    : st.scope == NV2GC_SCOPE_TREASURY ? "a [treasury] block"
+                    : st.scope == NV2GC_SCOPE_GENOUT ? "a [genesis_output] block"
                     : "the top-level section");
             goto out;
         }
@@ -988,9 +1139,25 @@ int nodus_v2_gen_config_parse_file(const char *path,
     if (!(st.top_seen & NV2GC_K_CONFIG_VERSION)) {
         fprintf(stderr,
                 "genesis config: no 'config_version' key. It is required "
-                "and must be 3 (the cometbft genesis document) — version 2 "
-                "is deleted from this build, and an absent version is "
-                "refused rather than guessed.\n");
+                "and must be 5 (the cometbft genesis document with the "
+                "treasury pools and genesis outputs) — versions 2 to 4 are "
+                "not derived by "
+                "this build, and an absent version is refused rather than "
+                "guessed.\n");
+        goto out;
+    }
+    /* W-A: EXACTLY the nine [treasury] blocks — refused HERE with a
+     * sentence about the file, not left to the builder's "treasury[i]
+     * pool_id 0" (the allocation-count precedent below). A missing pool
+     * is never read as a zero balance: absent is never a value. */
+    if (st.n_treasury != NODUS_V2_GEN_TREASURY_POOLS) {
+        fprintf(stderr,
+                "genesis config: %u [treasury] blocks — a version-5 "
+                "document carries EXACTLY %u, one per pool 1..%u in that "
+                "order (write balance = 0 for an empty pool).\n",
+                (unsigned)st.n_treasury,
+                (unsigned)NODUS_V2_GEN_TREASURY_POOLS,
+                (unsigned)NODUS_V2_GEN_TREASURY_POOLS);
         goto out;
     }
     st.cfg->claim_start_height = 0;
@@ -1023,13 +1190,13 @@ int nodus_v2_gen_config_parse_file(const char *path,
     st.cfg->n_allocs = st.n_allocs;
     st.cfg->allocs   = st.allocs;
 
-    /* ── version 3: the required keys, the defaults, the Comet rows ───
+    /* ── version 4: the required keys, the defaults, the Comet rows ───
      * The condition always holds here — the key is required above and
-     * nv2gc_assign_top refuses any value but 3 — and is kept as the
+     * nv2gc_assign_top refuses any value but 4 — and is kept as the
      * explicit statement of which document this block completes. (The
      * "version-2 file carrying a version-3 key" refusal that stood before
      * this block is gone with version 2, tokenomics-v3 P4.) */
-    if (st.cfg->config_version == NODUS_V2_GEN_CONFIG_VERSION_V3) {
+    if (st.cfg->config_version == NODUS_V2_GEN_CONFIG_VERSION_V5) {
         if ((st.top_seen & NV2GC_V3_REQUIRED) != NV2GC_V3_REQUIRED) {
             fprintf(stderr,
                     "genesis config: a version-3 document must name BOTH "
@@ -1086,6 +1253,41 @@ int nodus_v2_gen_config_parse_file(const char *path,
             st.cfg->reward_divisor_log2 = dflt->reward_divisor_log2;
         if (!(st.top_seen & NV2GC_K_PAYOUT_EPOCHS))
             st.cfg->payout_interval_epochs = dflt->payout_interval_epochs;
+        /* W-C: the governed fee parameters' genesis values. Their ranges
+         * are the derivation's (nodus_witness_v2_gen_v3_validate). */
+        if (!(st.top_seen & NV2GC_K_GAS_PRICE))
+            st.cfg->gas_price_raw_per_unit = dflt->gas_price_raw_per_unit;
+        if (!(st.top_seen & NV2GC_K_TC_FEE))
+            st.cfg->token_create_fee_raw = dflt->token_create_fee_raw;
+        /* W-A: config_version and the treasury POOL IDS are the two
+         * structural fields _v3_defaults writes. Neither is copied: the
+         * version is REQUIRED in the file (and already proven to be the
+         * builder's by nv2gc_assign_top), and every pool id comes from
+         * its own [treasury] block — gen_plan_build then refuses any id
+         * that is not the default's (index + 1). The two are ASSERTED
+         * equal to the builder's instead of overwritten, so a file can
+         * never be silently "corrected" into a different chain. */
+        if (st.cfg->config_version != dflt->config_version) {
+            fprintf(stderr, "genesis config: internal — config_version %u "
+                    "is not the builder's %u.\n",
+                    (unsigned)st.cfg->config_version,
+                    (unsigned)dflt->config_version);
+            free(dflt);
+            goto out;
+        }
+        for (size_t t = 0; t < NODUS_V2_GEN_TREASURY_POOLS; t++) {
+            if (st.cfg->treasury[t].pool_id != dflt->treasury[t].pool_id) {
+                fprintf(stderr,
+                        "genesis config: [treasury] block %zu names pool_id "
+                        "%u — the blocks must list pools 1..%u in order, "
+                        "so block %zu is pool %u.\n", t + 1,
+                        (unsigned)st.cfg->treasury[t].pool_id,
+                        (unsigned)NODUS_V2_GEN_TREASURY_POOLS, t + 1,
+                        (unsigned)dflt->treasury[t].pool_id);
+                free(dflt);
+                goto out;
+            }
+        }
         free(dflt);
 
         /* app_hash and chain_id stay ZERO: they are OUTPUTS of the

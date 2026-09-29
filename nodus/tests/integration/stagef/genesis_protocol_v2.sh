@@ -167,9 +167,28 @@ SCENARIOS_ONLY=0
 #     v2-envelope token-create`) registers a token 7/7, then a
 #     `v2-envelope spend --token` moves part of it 7/7. Funded by NODE 1's
 #     own genesis leaf (claimed here if node 1 is not already funded) —
-#     a leaf no other scenario in this list claims, so it is
+#     a leaf only test_cmt_self_delegate.sh (below) may also claim, under
+#     the same "only if not already funded" rule, so it is
 #     order-independent of every leaf above; placed after the flood
 #     scenarios only so their batches are not interleaved with it.
+#   test_cmt_self_delegate.sh (final pre-testnet wipe, W-B) — node 1, a
+#     genesis validator, delegates 1M NODUS to ITSELF (`nodus-cli
+#     v2-envelope delegate`); asserts the row, the (bond, self-
+#     delegation) split in the frozen copy and a +1M total_stake in the
+#     first snapshot built from it, 7/7. Funded by node 1's coins — AFTER
+#     test_cmt_token_create.sh, which ordinarily already claimed node 1's
+#     leaf (this scenario claims it itself otherwise). SKIPS (99) at the
+#     shipped epoch length (needs up to 3E blocks, the CLI-SPEND pump).
+#     BEFORE test_cmt_rule_n_retire.sh: node 1 must be seated in both
+#     compared snapshots.
+#   test_cmt_multisig.sh (general multisig, final pre-testnet wipe) —
+#     `nodus-cli msig address` over nodes 2/3/4 (2-of-3); node 1 pays it
+#     with an ordinary spend; `v2-envelope spend --msig` + two offline
+#     `msig sign` + `msig combine` spend it to node 5 (one signature is
+#     refused locally first); 7/7 effects and state_root. DEFAULT build,
+#     no epoch wait. Funded by node 1's coins — AFTER
+#     test_cmt_token_create.sh / test_cmt_self_delegate.sh (claims node
+#     1's leaf itself only if node 1 is not already funded).
 #   test_v2_epoch_boundary.sh — opportunistically submits whatever
 #     remains of the PUMP batch (ordinarily nothing, since the scenario
 #     above already spent it) to help reach the boundary; SKIPS (99) at
@@ -215,6 +234,8 @@ test_cmt_mempool_flood.sh
 test_cmt_claim_flood.sh
 test_cmt_env_flood.sh
 test_cmt_token_create.sh
+test_cmt_self_delegate.sh
+test_cmt_multisig.sh
 test_v2_epoch_boundary.sh
 test_v2_rewards.sh
 test_cmt_blocksync.sh

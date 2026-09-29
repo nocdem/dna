@@ -326,11 +326,14 @@ extern "C" {
  *     cannot exist while only SYSTEM and CORE are registered; the
  *     `_Static_assert` below is the trip-wire if that ever changes
  *     without this cost formula being revisited. Computed from the
- *     struct layout (`nodus_witness_runtime.h:250`'s own
- *     `NODUS_RT_AUTH_MAX_SIGNERS` = 15 — not env_wire.h):
- *     2 + 15×64 + 2 + 2 = 966 B exactly (no padding — every member is
- *     `uint16_t`/`uint8_t`, naturally 2-aligned, and 966 is already
- *     even).
+ *     struct layout (`nodus_witness_runtime.h`'s own
+ *     `NODUS_RT_AUTH_MAX_SIGNERS` = 15 and `NODUS_RT_MSIG_MAX_DESC` = 7
+ *     — not env_wire.h): 2 + 15×64 + 2 + 2 = 966 B before the general-
+ *     multisig season; it added n_msig u16 (2) + msig_satisfied[7] (7) +
+ *     msig_addr[7][64] (448) = 1 423 B of members, padded to the struct's
+ *     2-byte alignment = 1 424 B (every member is `uint16_t`/`uint8_t`;
+ *     the one pad byte trails msig_addr). Pinned by the cost assert
+ *     below — a passing compile IS the measurement.
  *   - 2 × 64 B — the `wire_ids` entry each of those (up to) two touched
  *     domains gets (`nodus_witness_v2_apply.c`'s `dom_ctx_t.wire_ids`,
  *     delta 1: heap, lazily allocated, 64 B per touched domain).
@@ -365,14 +368,19 @@ extern "C" {
  *   - Using ONLY the documented, already-`_Static_assert`-enforced
  *     ceilings (`dna_env_preflight_t` MEASURED 15 096 B, `dna_meter_t`
  *     audited <= 4096 B), the WORST-CASE per-envelope cost is 15 096 +
- *     4 096 + 2x966 + 128 = 21 252 B, giving a WORST-CASE
- *     `NODUS_V2_ENV_BATCH_MAX` of 67 108 864 / 21 252 = 3 157 — already
- *     above the 3 002 byte-derived practical ceiling. The REAL compiled
- *     value (using the true, possibly-smaller `sizeof(dna_meter_t)`)
- *     can only be EQUAL OR LARGER, so it is provably above 3 002 too.
+ *     4 096 + 2x1 424 + 128 = 22 168 B (general multisig; 21 252 with
+ *     the 966-B verdict before it), giving a WORST-CASE
+ *     `NODUS_V2_ENV_BATCH_MAX` of 67 108 864 / 22 168 = 3 027 (3 157
+ *     before) — still above the 3 002 byte-derived practical ceiling,
+ *     now by a margin of 25. The REAL compiled value (using the true,
+ *     possibly-smaller `sizeof(dna_meter_t)`) can only be EQUAL OR
+ *     LARGER, so it is provably above 3 002 too.
  *   - MEASURED (ORCHESTRATOR build, 2026-09-18): `sizeof(dna_meter_t)`
- *     = 3 752, so the cost is 20 908 B and this bound is 3 209 — the
- *     pins below hold exactly these figures.
+ *     = 3 752, so the cost was 20 908 B and this bound 3 209. General
+ *     multisig (2026-09-29) grows the verdict 966 → 1 424 B: the cost is
+ *     15 096 + 3 752 + 2×1 424 + 128 = 21 824 B and this bound is
+ *     67 108 864 / 21 824 = 3 075 — the pins below hold exactly these
+ *     figures (a clean compile is their measurement).
  */
 #define NODUS_V2_ENV_BATCH_MAX \
     (NODUS_V2_APPLY_SCRATCH_BUDGET_BYTES / NODUS_V2_APPLY_ENV_COST_BYTES)
@@ -434,10 +442,11 @@ _Static_assert(NODUS_V2_APPLY_MAX_CLAIMS == 14162,
  * W4 package C (2026-09-18) replaces the flat 16 with the SUM of the two
  * bounds now derived independently above: the envelope batch max
  * (`NODUS_V2_ENV_BATCH_MAX`, the 64 MiB scratch budget over the measured
- * per-envelope cost — 3 209 on this build; delta 1 briefly tied it to the
+ * per-envelope cost — 3 075 on this build since general multisig, 3 209
+ * before it; delta 1 briefly tied it to the
  * governance hard cap of 10, retired in delta 2) plus the most claims one
  * cometbft block can carry (`NODUS_V2_APPLY_MAX_CLAIMS`, 14 162) =
- * 17 371. The per-block scratch this bounded
+ * 17 237 (17 371 before general multisig). The per-block scratch this bounded
  * (`wire_ids`/`claim_nuls`/`all_ids`/`auths`) is no longer
  * fixed-size at this number — it is heap-allocated and sized by the
  * BLOCK's own `n_envs`/`n_claims`/leg counts (see the per-field comments
@@ -461,20 +470,33 @@ _Static_assert(NODUS_V2_APPLY_MAX_CLAIMS == 14162,
  * sizeof(dna_meter_t) 3 752, sizeof(nodus_rt_auth_verdict_t) 966 ⇒
  * NODUS_V2_APPLY_ENV_COST_BYTES = 15 096 + 3 752 + 2×966 + 128 = 20 908;
  * NODUS_V2_ENV_BATCH_MAX = 67 108 864 / 20 908 = 3 209;
- * NODUS_V2_APPLY_MAX_OPS = 3 209 + 14 162 = 17 371. The pins below are
+ * NODUS_V2_APPLY_MAX_OPS = 3 209 + 14 162 = 17 371.
+ *
+ * General multisig (decision 2026-09-29-general-multisig.md, design F1.1):
+ * the verdict carries every auth_kind-3 descriptor address and its
+ * satisfied flag, sizeof(nodus_rt_auth_verdict_t) 966 → 1 424 (layout
+ * arithmetic at the cost macro above) ⇒
+ * NODUS_V2_APPLY_ENV_COST_BYTES = 15 096 + 3 752 + 2×1 424 + 128 = 21 824;
+ * NODUS_V2_ENV_BATCH_MAX = 67 108 864 / 21 824 = 3 075;
+ * NODUS_V2_APPLY_MAX_OPS = 3 075 + 14 162 = 17 237. The pins below are
  * the trip-wires: a struct layout or budget change moves them and must
- * move every citation of these numbers with it. */
-_Static_assert(NODUS_V2_APPLY_ENV_COST_BYTES == 20908,
+ * move every citation of these numbers with it (known citations outside
+ * this header: nodus_witness_cmt_app.h, nodus/docs/MEMPOOL_BLOCK_TIME.md,
+ * nodus/docs/ARCHITECTURE.md, stagef/README.md). */
+_Static_assert(sizeof(nodus_rt_auth_verdict_t) == 1424,
+               "nodus_rt_auth_verdict_t drifted — re-derive the per-envelope "
+               "scratch cost below");
+_Static_assert(NODUS_V2_APPLY_ENV_COST_BYTES == 21824,
                "NODUS_V2_APPLY_ENV_COST_BYTES drifted — a struct in the "
                "per-envelope scratch changed size; re-derive "
-               "NODUS_V2_ENV_BATCH_MAX and re-check every citation of 20908");
-_Static_assert(NODUS_V2_ENV_BATCH_MAX == 3209,
+               "NODUS_V2_ENV_BATCH_MAX and re-check every citation of 21824");
+_Static_assert(NODUS_V2_ENV_BATCH_MAX == 3075,
                "NODUS_V2_ENV_BATCH_MAX drifted — re-derive from the scratch "
-               "budget / per-envelope cost and re-check every citation of 3209");
-_Static_assert(NODUS_V2_APPLY_MAX_OPS == 17371,
+               "budget / per-envelope cost and re-check every citation of 3075");
+_Static_assert(NODUS_V2_APPLY_MAX_OPS == 17237,
                "NODUS_V2_APPLY_MAX_OPS drifted — re-derive from "
                "NODUS_V2_ENV_BATCH_MAX + NODUS_V2_APPLY_MAX_CLAIMS and "
-               "re-check every citation of 17371");
+               "re-check every citation of 17237");
 
 /**
  * Bound on the engine's refusal-reason string (`nodus_v2_block_t
@@ -1183,10 +1205,13 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk);
 /** A leg authorization verdict a caller already holds for THESE bytes
  *  (the CheckTx recheck cache). A leg's entry is consulted only when
  *  `present[l]` is 1, the leg's auth_kind is 1 (NODUS_RT_AUTHKIND_DSA87_
- *  MULTI_V1, whose verdict is a pure function of the bytes and the leg
- *  digest — nodus_witness_runtime.h's auth contract) AND `digest[l]`
- *  equals the digest this run derives. auth_kind 2 is ALWAYS verified
- *  afresh: its verdict depends on the governing committee snapshot. */
+ *  MULTI_V1) or 3 (NODUS_RT_AUTHKIND_DSA87_MSIG_V1 — general multisig,
+ *  F1.3), whose verdicts are pure functions of the bytes and the leg
+ *  digest — nodus_witness_runtime.h's auth contract — AND `digest[l]`
+ *  equals the digest this run derives (and a kind-3 verdict carries
+ *  1..NODUS_RT_MSIG_MAX_DESC descriptor facts, a kind-1 verdict none).
+ *  auth_kind 2 is ALWAYS verified afresh: its verdict depends on the
+ *  governing committee snapshot. */
 typedef struct {
     uint16_t                       leg_count;
     const uint8_t                 *present;   /* [leg_count]              */

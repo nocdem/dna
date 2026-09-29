@@ -388,8 +388,16 @@ static void handle_dnac_supply(nodus_witness_t *w,
 /* ══════════════════════���═════════════════════════════════════════════
  * dnac_fee_info — Return current dynamic fee parameters
  *
- * Response: { base_fee, mempool, min_fee, gas_price }
+ * Response: { base_fee, mempool, min_fee, gas_price, token_create_fee }
  * Client uses min_fee directly when building TX.
+ *
+ * token_create_fee (final pre-testnet wipe W-C, decision 2026-09-28-
+ * token-create-fee-governance.md) = the committed TOKEN_CREATE_FEE_RAW
+ * (chain_config param 6) active at tip + 1; with no row active, the
+ * compiled NODUS_W_TOKEN_CREATE_FEE (a version-4 genesis always writes
+ * the height-0 row, so that arm is a pre-genesis node or an older
+ * chain). Same fault rule as gas_price: a read fault is an error, never
+ * a fabricated value. An older client decoder skips the unknown key.
  *
  * gas_price (HF-1, decision 2026-09-25-gas-price.md "HF-1 O4": the CLI
  * price source) = the committed GAS_PRICE_RAW_PER_UNIT active at tip + 1
@@ -436,16 +444,28 @@ static void handle_dnac_fee_info(nodus_witness_t *w,
                     "gas price unreadable");
         return;
     }
+    /* W-C: the token-creation fee at tip + 1, the same accessor and the
+     * same fault rule. The default is the compiled floor, never 0. */
+    uint64_t token_create_fee = NODUS_W_TOKEN_CREATE_FEE;
+    if (w->db &&
+        nodus_chain_config_get_u64(w, (uint8_t)DNAC_CFG_TOKEN_CREATE_FEE_RAW,
+                                   tip + 1, NODUS_W_TOKEN_CREATE_FEE,
+                                   &token_create_fee) < 0) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "token-create fee unreadable");
+        return;
+    }
 
-    /* 4 keys: the longest reply is 1 map header + "dnac_fee_info"
-     * framing (enc_dnac_response) + 4 short keys + 4 uint64 values at
+    /* 5 keys: the longest reply is 1 map header + "dnac_fee_info"
+     * framing (enc_dnac_response) + 5 short keys (the longest,
+     * "token_create_fee", 17 bytes with its head) + 5 uint64 values at
      * 9 bytes each — well inside 256; the rlen check below still
      * refuses an overflow rather than sending a truncated map. */
     uint8_t buf[256];
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, sizeof(buf));
 
-    enc_dnac_response(&enc, txn_id, "dnac_fee_info", 4);
+    enc_dnac_response(&enc, txn_id, "dnac_fee_info", 5);
     cbor_encode_cstr(&enc, "base_fee");
     cbor_encode_uint(&enc, base_fee);
     cbor_encode_cstr(&enc, "mempool");
@@ -454,6 +474,8 @@ static void handle_dnac_fee_info(nodus_witness_t *w,
     cbor_encode_uint(&enc, min_fee);
     cbor_encode_cstr(&enc, "gas_price");
     cbor_encode_uint(&enc, gas_price);
+    cbor_encode_cstr(&enc, "token_create_fee");
+    cbor_encode_uint(&enc, token_create_fee);
 
     size_t rlen = cbor_encoder_len(&enc);
     if (rlen > 0) {

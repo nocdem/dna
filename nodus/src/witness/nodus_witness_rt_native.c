@@ -27,7 +27,7 @@
  *      (tokenomics-v3 P2, P2-4 — RETIRED, refused by the scalar rules).
  *      Since 0.20.3 the scalar rules also refuse every id the running
  *      consensus does not read (dnac.h dnac_cfg_param_read_by_consensus:
- *      4 and 5), so an id-2 (BLOCK_INTERVAL_SEC) leg is an item refusal
+ *      4, 5 and — final pre-testnet wipe W-C — 6), so an id-2 (BLOCK_INTERVAL_SEC) leg is an item refusal
  *      here, in block apply — no chain_config_history row is written.
  *
  *   2. DNA_CORE / DNA_CORERULE_SPEND (runtime_op 1, legacy tx 1): the
@@ -35,7 +35,9 @@
  *      preserved: inputs exist+unspent (utxo_set row present), lock rule
  *      (unlock_block >= H rejects — the legacy "unlock > tip" gate,
  *      nodus_witness_verify.c:731), ownership = UTXO owner fingerprint
- *      is one of the VERIFIED signers (verify.c:740-751), output
+ *      is one of the VERIFIED signers (verify.c:740-751) — or, since
+ *      general multisig (auth_kind 3), a carried M-of-N address whose
+ *      >= M keys signed (rtn_input_owned, the ONE predicate), output
  *      identity = SHA3-512(owner_fp_128 ‖ seed_32) (the shipped
  *      update_utxo_set derivation, nodus_witness_bft.c:852-860), fee =
  *      Σnative_in − Σnative_out, must equal the envelope's committed
@@ -68,8 +70,11 @@
  *      tx 3): custom-token registration. Source semantics preserved:
  *      output[0] is the token genesis output and the registry commits
  *      exactly its (token_id, amount, fp) (nodus_witness_bft.c:
- *      2243-2281); the creation fee must meet the shipped
- *      NODUS_W_TOKEN_CREATE_FEE floor (verify.c:776-789) and equal
+ *      2243-2281); the creation fee must meet the governed floor —
+ *      chain_config param 6 at the block's height, handed in by the
+ *      engine as ctx->token_create_fee (final pre-testnet wipe W-C;
+ *      before it, the compiled NODUS_W_TOKEN_CREATE_FEE, verify.c:
+ *      776-789, which is still the no-row value) — and equal
  *      what the native inputs release (the block-level supply
  *      invariant rule, enforced per transaction here); metadata bounds
  *      are the client builder's (token_create.c:52-56 — name 1..32,
@@ -87,8 +92,11 @@
  *
  *   5. SYSTEM / DNA_SYSRULE_STAKE (runtime_op 1, legacy tx 4 — O11):
  *      validator registration. Source semantics preserved from
- *      apply_stake (nodus_witness_bft.c:1505-1620): bond >=
- *      DNAC_SELF_STAKE_AMOUNT (:1568), a new ACTIVE row with
+ *      apply_stake (nodus_witness_bft.c:1505-1620) with ONE narrowing:
+ *      the bond must EQUAL DNAC_SELF_STAKE_AMOUNT (the legacy floor
+ *      :1568 was `>=`; final pre-testnet wipe W-B, decision
+ *      2026-09-28-treasury-pools-and-exact-self-stake.md item 5), a new
+ *      ACTIVE row with
  *      active_since = the executing height (:1583), the unstake
  *      destination fingerprint stored as 128 hex chars and the
  *      destination PUBKEY populated only when the fingerprint derives
@@ -262,6 +270,11 @@
  *     + 30 + (2 + 15×64 + 16×232) + (1 + 15×7219) = 813,904
  *   both <= 1,048,576 = DNA_ENV_MAX_TOTAL_LEN = 2^20 (the smallest
  *   power of two containing the worst case).
+ * These two are HISTORY: O11 (DELEGATE under kind 2, 819,098) and then
+ * general multisig (CORE admits auth_kind 3 — a TOKEN_CREATE leg under
+ * the maximal kind-3 blob beside that DELEGATE leg, 858,119) dominate
+ * them; the governing asserts are the "General-multisig capacity
+ * derivation" block below. 2^20 still holds.
  *
  * ── Honest divergences from the legacy lane (all fail-closed) ─────────
  *   - PER-TOKEN conservation: Σin == Σout per non-native token and
@@ -326,6 +339,7 @@
 #include "dnac/validator.h"            /* DNAC_VALIDATOR_ACTIVE (O11)    */
 #include "dnac/ledger_ids.h"           /* dna_bft_quorum                 */
 #include "dnac/effect_wire.h"
+#include "dnac/msig_wire.h"            /* auth_kind 3 descriptors        */
 #include "dnac/res_meter.h"            /* dna_ck_add_u64                 */
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/sign/qgp_dilithium.h" /* qgp_dsa87_verify               */
@@ -349,7 +363,7 @@ static void rtn_put32(uint8_t *p, uint32_t v) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * The shared authorization implementation — kinds 1 and 2
+ * The shared authorization implementation — kinds 1, 2 and 3
  * (contract: runtime.h; ONE compiled symbol for both production
  * entries, so scheme verification cannot fork per domain)
  * ════════════════════════════════════════════════════════════════════ */
@@ -430,11 +444,25 @@ _Static_assert(700914u + DNA_ENV_LEG_HDR_LEN + 4717u +
  * as identities because the oracle and test_v2_capacity re-derive both
  * as control legs. */
 /* TOKEN_CREATE checks ONLY its own creation floor: that is sound iff the
- * creation fee dominates BOTH generic floors — pinned, not assumed. */
+ * creation fee dominates BOTH generic floors — pinned, not assumed. The
+ * compiled constant is the floor when no param-6 row is active. */
 _Static_assert(NODUS_W_TOKEN_CREATE_FEE >= DNAC_MIN_FEE_RAW &&
                    NODUS_W_TOKEN_CREATE_FEE >= NODUS_W_BASE_TX_FEE,
                "the TOKEN_CREATE fee floor no longer dominates the "
                "generic fee floors — re-derive the rtn_tc_exec fee gate");
+/* Final pre-testnet wipe W-C: the SAME soundness condition for the
+ * governed floor (chain_config param 6, TOKEN_CREATE_FEE_RAW): the LOWEST
+ * value governance may vote (DNAC_CFG_MIN_TOKEN_CREATE_FEE) must still
+ * dominate both generic floors, or a legal vote would let a TOKEN_CREATE
+ * pay less than a plain transfer. Its ceiling is the compiled constant
+ * above — the value the chain charged before the parameter existed. */
+_Static_assert(DNAC_CFG_MIN_TOKEN_CREATE_FEE >= DNAC_MIN_FEE_RAW &&
+                   DNAC_CFG_MIN_TOKEN_CREATE_FEE >= NODUS_W_BASE_TX_FEE,
+               "the governed TOKEN_CREATE fee floor can be voted below a "
+               "generic fee floor — re-derive DNAC_CFG_MIN_TOKEN_CREATE_FEE");
+_Static_assert(DNAC_CFG_MAX_TOKEN_CREATE_FEE == NODUS_W_TOKEN_CREATE_FEE,
+               "the governed TOKEN_CREATE fee ceiling is no longer the "
+               "pre-governance compiled fee (design §1 W-C range)");
 
 /* ── Capacity-season tags (each EXACTLY 16 bytes, zero-padded ASCII —
  *    the env_wire.c discipline; collision-scanned against the full
@@ -544,6 +572,70 @@ static int rtn_auth_submitters(const uint8_t *a, uint32_t alen,
     return 0;
 }
 
+/**
+ * auth_kind 3 (general multisig — decision 2026-09-29-general-multisig.md,
+ * design §7 rev 2): parse the DESCRIPTOR section that follows the signer
+ * section (`off` = its first byte) and fill the verdict's multisig fields.
+ * The signer section is already verified (out->n_signers set; its
+ * pubkeys sit at a + 1 + i × NODUS_RT_AUTH_SIGNER_LEN, strictly
+ * ascending).
+ *
+ *   dcount u8 (1 .. NODUS_RT_MSIG_MAX_DESC — 0 would be a second spelling
+ *              of kind 1)
+ *   dcount × ( dlen u16 BE ‖ descriptor[dlen] )
+ *
+ * Every descriptor passes dna_msig_desc_parse (tag, 2 <= N <= 7,
+ * 1 <= M <= N, dlen == 18 + N × 2592 EXACTLY, strictly ascending keys,
+ * no zero key — the signer section's own zero-key rule); descriptors are
+ * STRICTLY ascending by address (one canonical encoding, no duplicate);
+ * Σ N <= NODUS_RT_MSIG_MAX_KEYS (F3.1); the blob is consumed EXACTLY.
+ * Satisfaction (>= M of the descriptor's keys among the verified signer
+ * keys) is RECORDED, never judged here: use and ownership are exec's
+ * (F1.2). The key match is a byte-exact merge of two strictly ascending
+ * lists — no hashing, one comparison per step.
+ * @return 0 / -1 reject / -2 hash-backend NODE fault.
+ */
+static int rtn_auth_msig(const uint8_t *a, uint32_t alen, uint64_t off,
+                         nodus_rt_auth_verdict_t *out) {
+    if (off >= (uint64_t)alen) return -1;           /* no dcount byte   */
+    uint32_t dc = a[off];
+    off += 1;
+    if (dc < 1 || dc > NODUS_RT_MSIG_MAX_DESC) return -1;
+    const uint8_t *signers = a + 1;
+    const uint32_t ns = out->n_signers;
+    uint32_t sum_n = 0;
+    for (uint32_t i = 0; i < dc; i++) {
+        if ((uint64_t)alen - off < 2u) return -1;   /* truncated dlen   */
+        uint32_t dlen = ((uint32_t)a[off] << 8) | a[off + 1];
+        off += 2;
+        if ((uint64_t)alen - off < (uint64_t)dlen) return -1;
+        const uint8_t *d = a + off;
+        uint8_t m = 0, n = 0;
+        const uint8_t *keys = NULL;
+        if (dna_msig_desc_parse(d, dlen, &m, &n, &keys) != 0) return -1;
+        sum_n += n;
+        if (sum_n > (uint32_t)NODUS_RT_MSIG_MAX_KEYS) return -1;
+        if (qgp_sha3_512(d, dlen, out->msig_addr[i]) != 0) return -2;
+        if (i > 0 && memcmp(out->msig_addr[i - 1], out->msig_addr[i],
+                            64) >= 0)
+            return -1;                   /* duplicate or disorder        */
+        uint32_t hit = 0, si = 0, ki = 0;
+        while (si < ns && ki < n) {
+            int c = memcmp(signers + (size_t)si * NODUS_RT_AUTH_SIGNER_LEN,
+                           keys + (size_t)ki * DNA_MSIG_PUBKEY_LEN,
+                           DNA_MSIG_PUBKEY_LEN);
+            if (c == 0) { hit++; si++; ki++; }
+            else if (c < 0) si++;
+            else ki++;
+        }
+        out->msig_satisfied[i] = (hit >= m) ? 1u : 0u;
+        off += dlen;
+    }
+    if (off != (uint64_t)alen) return -1;           /* trailing bytes   */
+    out->n_msig = (uint16_t)dc;
+    return 0;
+}
+
 int nodus_rt_auth_dsa87_v1(const nodus_domain_runtime_t *rt,
                            const dna_env_view_t *env, uint16_t leg_index,
                            const nodus_rt_exec_ctx_t *ctx,
@@ -561,6 +653,17 @@ int nodus_rt_auth_dsa87_v1(const nodus_domain_runtime_t *rt,
         uint64_t consumed = 0;
         int rc = rtn_auth_submitters(a, alen, ctx->leg_auth_digest,
                                      /*exact=*/1, out, &consumed);
+        if (rc != 0) { memset(out, 0, sizeof(*out)); return rc; }
+        return 0;
+    }
+
+    if (h->auth_kind == NODUS_RT_AUTHKIND_DSA87_MSIG_V1) {
+        /* general multisig: the kind-1 body (same signatures over the
+         * same leg digest — no new preimage), then the descriptors */
+        uint64_t consumed = 0;
+        int rc = rtn_auth_submitters(a, alen, ctx->leg_auth_digest,
+                                     /*exact=*/0, out, &consumed);
+        if (rc == 0) rc = rtn_auth_msig(a, alen, consumed, out);
         if (rc != 0) { memset(out, 0, sizeof(*out)); return rc; }
         return 0;
     }
@@ -729,11 +832,53 @@ _Static_assert(706065u + DNA_ENV_LEG_HDR_LEN + 4717u +
                "drifted");
 _Static_assert(819098u > 819055u && 819098u > 813947u,
                "the mixed DELEGATE+TOKEN_CREATE shape no longer "
-               "dominates — re-derive which pair governs the ceiling");
-_Static_assert(819098u <= (unsigned)DNA_ENV_MAX_TOTAL_LEN,
+               "dominates the kind-1 pairs — re-derive which pair governs");
+
+/* ── General-multisig capacity derivation (decision 2026-09-29-general-
+ * multisig.md, design §7 rev 2 / F3.1) — the governing worst case NOW.
+ * CORE's allowlist admits auth_kind 3, so the largest CORE leg carries
+ * the kind-1 body at its 15-signer maximum PLUS the descriptor section
+ * at its maximum. With Σ N <= NODUS_RT_MSIG_MAX_KEYS = 15 fixed, the
+ * section length is 1 + Σ (2 + 18 + N × 2592) = 1 + 20·dcount + 2592·ΣN,
+ * maximal at ΣN = 15 and the LARGEST dcount, 7 (six N=2 descriptors and
+ * one N=3 — NODUS_RT_MSIG_MAX_DESC = floor(15 / DNA_MSIG_MIN_N)):
+ *   kind-3 blob = (1 + 15 × 7219) + 1 + 7 × (2 + 18) + 15 × 2592
+ *               = 108,286 + 1 + 140 + 38,880 = 147,307
+ * (the oracle's "MAX blob" closed form, multisig_oracle.py). The worst
+ * envelope is the O11 worst single SYSTEM leg (706,065, kind 2) plus the
+ * largest admission-legal CORE leg — TOKEN_CREATE (4,717) — under that
+ * blob:
+ *   706,065 + 30 + 4,717 + 147,307 = 858,119
+ *   524,288 = 2^19 < 858,119 <= 2^20 = 1,048,576 — DNA_ENV_MAX_TOTAL_LEN
+ *   UNCHANGED, still the smallest containing power of two.
+ * SYSTEM stays {1,2}: kind 3 can never ride the 706,065-byte leg, and a
+ * single envelope has at most one leg per domain (legs strictly
+ * ascending by domain_id), so no second CORE leg exists to add. */
+_Static_assert(DNA_MSIG_PUBKEY_LEN == (unsigned)NODUS_CC_PUBKEY_SIZE,
+               "multisig descriptor key width != the ML-DSA-87 key width");
+_Static_assert(NODUS_RT_MSIG_MAX_DESC ==
+                   (unsigned)NODUS_RT_MSIG_MAX_KEYS / DNA_MSIG_MIN_N,
+               "NODUS_RT_MSIG_MAX_DESC is no longer the derived "
+               "floor(max keys / min N)");
+_Static_assert(DNA_MSIG_MAX_N <= (unsigned)NODUS_RT_MSIG_MAX_KEYS,
+               "one address may not need more keys than a leg may carry");
+_Static_assert((1u + (unsigned)NODUS_RT_AUTH_MAX_SIGNERS *
+                         NODUS_RT_AUTH_SIGNER_LEN) + 1u +
+                   (unsigned)NODUS_RT_MSIG_MAX_DESC *
+                       (2u + (unsigned)DNA_MSIG_HDR_LEN) +
+                   (unsigned)NODUS_RT_MSIG_MAX_KEYS * DNA_MSIG_PUBKEY_LEN
+                   == 147307u,
+               "maximal auth_kind-3 blob drifted");
+_Static_assert(706065u + DNA_ENV_LEG_HDR_LEN + 4717u + 147307u == 858119u,
+               "worst-case DELEGATE(kind 2)+TOKEN_CREATE(kind 3) envelope "
+               "drifted");
+_Static_assert(858119u > 819098u,
+               "the kind-3 CORE shape no longer dominates — re-derive "
+               "which pair governs the ceiling");
+_Static_assert(858119u <= (unsigned)DNA_ENV_MAX_TOTAL_LEN,
                "envelope ceiling no longer contains the worst legal "
                "envelope — re-derive DNA_ENV_MAX_TOTAL_LEN");
-_Static_assert(819098u > (unsigned)DNA_ENV_MAX_TOTAL_LEN / 2u,
+_Static_assert(858119u > (unsigned)DNA_ENV_MAX_TOTAL_LEN / 2u,
                "the ceiling is no longer the SMALLEST containing power "
                "of two — re-derive DNA_ENV_MAX_TOTAL_LEN");
 
@@ -1449,13 +1594,76 @@ static void rtn_fp_hex(const uint8_t raw[64], uint8_t out[128]) {
     }
 }
 
-/* lowercase-hex fingerprints of the VERIFIED signers (shared by every
- * CORE exec path — ownership binds to the engine verdict, never to
- * envelope bytes). */
-static void rtn_signer_fps(const nodus_rt_exec_ctx_t *ctx,
-                           uint8_t sfp[][128]) {
-    for (uint16_t s = 0; s < ctx->auth->n_signers; s++)
-        rtn_fp_hex(ctx->auth->signer_fp[s], sfp[s]);
+/* ── THE ONE INPUT-OWNERSHIP PREDICATE (general multisig, design F2.1) ─
+ * WHO may spend, as the CORE exec sees it: the VERIFIED signers'
+ * fingerprints plus — auth_kind 3 only — every carried multisig address
+ * with its satisfied flag, all rendered once as the 128-char lowercase
+ * hex the utxo_set `owner` column holds. Built ONCE per leg from the
+ * ENGINE verdict, never from envelope bytes. SPEND, BURN, TOKEN_CREATE
+ * and SYSFUND all decide "is this input owned" through rtn_input_owned
+ * below and nothing else, so a multisig coin funds every CORE operation
+ * (transfers, burns, token-creation fees, stake/delegate bonds) under
+ * one rule:
+ *   owned  ⇔  owner ∈ { verified signer fps }
+ *          ∨  owner == a carried descriptor's address whose >= M keys
+ *             are verified signers.
+ * And every carried descriptor must be USED — equal to the owner of at
+ * least one input — or the leg is refused (rtn_owners_all_used; F1.2:
+ * one canonical witness, no free-riding bytes; decided HERE at exec,
+ * after the hook already priced the bytes). */
+typedef struct {
+    uint16_t n_sig;
+    uint8_t  sig[NODUS_RT_AUTH_MAX_SIGNERS][128];
+    uint16_t n_msig;
+    uint8_t  msig[NODUS_RT_MSIG_MAX_DESC][128];
+    uint8_t  sat[NODUS_RT_MSIG_MAX_DESC];
+    uint8_t  used[NODUS_RT_MSIG_MAX_DESC];
+} rtn_owners_t;
+
+/* @return 0 / -1 the verdict is not a well-formed verdict for this leg's
+ * auth_kind (fail closed — a broken verdict is never ownership). */
+static int rtn_owners_init(const dna_env_view_t *env, uint16_t leg,
+                           const nodus_rt_exec_ctx_t *ctx,
+                           rtn_owners_t *o) {
+    memset(o, 0, sizeof(*o));
+    const nodus_rt_auth_verdict_t *v = ctx->auth;
+    if (!v || v->n_signers < 1 || v->n_signers > NODUS_RT_AUTH_MAX_SIGNERS)
+        return -1;
+    if (env->leg[leg].auth_kind == NODUS_RT_AUTHKIND_DSA87_MSIG_V1) {
+        if (v->n_msig < 1 || v->n_msig > NODUS_RT_MSIG_MAX_DESC) return -1;
+    } else if (v->n_msig != 0) {
+        return -1;                       /* multisig facts on a non-msig
+                                          * leg: broken verdict          */
+    }
+    o->n_sig = v->n_signers;
+    for (uint16_t s = 0; s < v->n_signers; s++)
+        rtn_fp_hex(v->signer_fp[s], o->sig[s]);
+    o->n_msig = v->n_msig;
+    for (uint16_t m = 0; m < v->n_msig; m++) {
+        rtn_fp_hex(v->msig_addr[m], o->msig[m]);
+        o->sat[m] = v->msig_satisfied[m] ? 1u : 0u;
+    }
+    return 0;
+}
+
+/* @return 1 owned / 0 not owned. Marks a matched descriptor USED. */
+static int rtn_input_owned(rtn_owners_t *o, const uint8_t owner128[128]) {
+    for (uint16_t s = 0; s < o->n_sig; s++)
+        if (memcmp(owner128, o->sig[s], 128) == 0) return 1;
+    for (uint16_t m = 0; m < o->n_msig; m++) {
+        if (memcmp(owner128, o->msig[m], 128) == 0) {
+            o->used[m] = 1;
+            return o->sat[m] ? 1 : 0;    /* < M signers: not owned       */
+        }
+    }
+    return 0;
+}
+
+/* @return 1 every carried descriptor owns >= 1 input / 0 one is unused. */
+static int rtn_owners_all_used(const rtn_owners_t *o) {
+    for (uint16_t m = 0; m < o->n_msig; m++)
+        if (!o->used[m]) return 0;
+    return 1;
 }
 
 /* Deterministic output identities — the SOURCE derivation
@@ -1644,6 +1852,7 @@ static int rtn_utxo_delete_eff(dna_effect_in_t *eff, uint8_t dvh[64],
 static int rtn_xfer_exec(const rtn_spend_call_t *c, uint64_t burn_amount,
                          const dna_env_view_t *env,
                          const nodus_rt_exec_ctx_t *ctx,
+                         rtn_owners_t *own,
                          const nodus_rt_read_res_t *reads, uint16_t n_reads,
                          uint8_t *res_out, size_t res_cap,
                          size_t *res_len_out) {
@@ -1656,9 +1865,6 @@ static int rtn_xfer_exec(const rtn_spend_call_t *c, uint64_t burn_amount,
                                                   : NULL;
     const nodus_rt_read_res_t *r_pool = &reads[c->in_count + n_sup - 1];
 
-    uint8_t sfp[NODUS_RT_AUTH_MAX_SIGNERS][128];
-    rtn_signer_fps(ctx, sfp);
-
     static const uint8_t native_token[64] = { 0 };
     rtn_tok_sum_t toks[RTN_SPEND_MAX_IN + RTN_SPEND_MAX_OUT + 1];
     size_t n_toks = 0;
@@ -1668,7 +1874,8 @@ static int rtn_xfer_exec(const rtn_spend_call_t *c, uint64_t burn_amount,
     toks[0].token = native_token;
     n_toks = 1;
 
-    /* ── inputs: exist, unlocked, OWNED BY A VERIFIED SIGNER ────────── */
+    /* ── inputs: exist, unlocked, OWNED (rtn_input_owned — a verified
+     *    signer, or a satisfied carried multisig address) ──────────── */
     for (uint8_t i = 0; i < c->in_count; i++) {
         const nodus_rt_read_res_t *r = &reads[i];
         if (!r->present) return -1;      /* missing OR already spent     */
@@ -1678,17 +1885,16 @@ static int rtn_xfer_exec(const rtn_spend_call_t *c, uint64_t burn_amount,
         uint64_t unlock = rtn_get64(rec + RTN_UTXO_UNLOCK_OFF);
         if (unlock >= ctx->global_height) return -1;   /* locked (the
                                           * legacy unlock > tip gate)    */
-        int owned = 0;
-        for (uint16_t s = 0; s < ctx->auth->n_signers && !owned; s++)
-            if (memcmp(rec + RTN_UTXO_OWNER_OFF, sfp[s], 128) == 0)
-                owned = 1;
-        if (!owned) return -1;           /* wrong owner                  */
+        if (!rtn_input_owned(own, rec + RTN_UTXO_OWNER_OFF))
+            return -1;                   /* wrong owner / < M signers    */
         if (rtn_tok_add(toks, &n_toks,
                         sizeof(toks) / sizeof(toks[0]),
                         rec + RTN_UTXO_TOKEN_OFF,
                         rtn_get64(rec + RTN_UTXO_AMOUNT_OFF), 1) != 0)
             return -1;                   /* checked-add overflow         */
     }
+    if (!rtn_owners_all_used(own)) return -1;   /* a carried descriptor
+                                          * owns no input (F1.2)         */
 
     /* ── outputs ────────────────────────────────────────────────────── */
     for (uint8_t o = 0; o < c->out_count; o++) {
@@ -1782,9 +1988,11 @@ static int rtn_xfer_exec(const rtn_spend_call_t *c, uint64_t burn_amount,
  * where the legacy verify summed it blindly); output[0] is the token
  * genesis output whose (token_id, amount, fp) the registry commits
  * (nodus_witness_bft.c:2243-2281: supply = output[0].amount,
- * creator_fp = output[0].fp); the creation fee must meet the shipped
- * NODUS_W_TOKEN_CREATE_FEE floor (verify.c:776-789 checks BOTH
- * total_input and declared_fee against it) and — the block-level rule
+ * creator_fp = output[0].fp); the creation fee must meet the governed
+ * floor ctx->token_create_fee (W-C: chain_config param 6 at the block's
+ * height, engine-read; the legacy verify.c:776-789 checked BOTH
+ * total_input and declared_fee against the compiled
+ * NODUS_W_TOKEN_CREATE_FEE, still the no-row value) and — the block-level rule
  * the legacy supply invariant enforces (bft.c:998) — equal exactly what
  * the native inputs release: Σnative_in == Σnative_out + fee. Registry
  * uniqueness is a HARD reject (fail-closed divergence from the legacy
@@ -1794,14 +2002,12 @@ static int rtn_xfer_exec(const rtn_spend_call_t *c, uint64_t burn_amount,
 static int rtn_tc_exec(const rtn_tc_call_t *t,
                        const dna_env_view_t *env,
                        const nodus_rt_exec_ctx_t *ctx,
+                       rtn_owners_t *own,
                        const nodus_rt_read_res_t *reads, uint16_t n_reads,
                        uint8_t *res_out, size_t res_cap,
                        size_t *res_len_out) {
     const rtn_spend_call_t *c = &t->xfer;
     if (!reads || n_reads != (uint16_t)(c->in_count + 2)) return -2;
-
-    uint8_t sfp[NODUS_RT_AUTH_MAX_SIGNERS][128];
-    rtn_signer_fps(ctx, sfp);
 
     static const uint8_t native_token[64] = { 0 };
 
@@ -1820,11 +2026,8 @@ static int rtn_tc_exec(const rtn_tc_call_t *t,
         const uint8_t *rec = r->value;
         uint64_t unlock = rtn_get64(rec + RTN_UTXO_UNLOCK_OFF);
         if (unlock >= ctx->global_height) return -1;
-        int owned = 0;
-        for (uint16_t s = 0; s < ctx->auth->n_signers && !owned; s++)
-            if (memcmp(rec + RTN_UTXO_OWNER_OFF, sfp[s], 128) == 0)
-                owned = 1;
-        if (!owned) return -1;           /* wrong owner                  */
+        if (!rtn_input_owned(own, rec + RTN_UTXO_OWNER_OFF))
+            return -1;                   /* wrong owner / < M signers    */
         if (memcmp(rec + RTN_UTXO_TOKEN_OFF, native_token, 64) != 0)
             return -1;                   /* fee funding is native-only   */
         if (dna_ck_add_u64(native_in,
@@ -1832,14 +2035,27 @@ static int rtn_tc_exec(const rtn_tc_call_t *t,
                            &native_in) != 0)
             return -1;
     }
+    if (!rtn_owners_all_used(own)) return -1;   /* unused descriptor
+                                          * (F1.2)                       */
 
     /* ── fee + conservation ─────────────────────────────────────────── */
     uint64_t fee = env->fee_amount;
-    if (fee < NODUS_W_TOKEN_CREATE_FEE)
-        return -1;                       /* the shipped creation floor —
-                                          * itself far above the generic
-                                          * DNAC_MIN_FEE_RAW /
-                                          * NODUS_W_BASE_TX_FEE floors   */
+    /* Final pre-testnet wipe W-C (decision 2026-09-28-token-create-fee-
+     * governance.md; CORE ruleset 4): the creation floor is the COMMITTED
+     * chain_config param 6 (TOKEN_CREATE_FEE_RAW) active at
+     * ctx->global_height — read by the ENGINE (nodus_witness_v2_apply.c
+     * env_token_create_fee; this hook stays pure) and handed in as
+     * ctx->token_create_fee; the compiled NODUS_W_TOKEN_CREATE_FEE when
+     * no row is active. The governed range's floor
+     * (DNAC_CFG_MIN_TOKEN_CREATE_FEE, pinned above) keeps it above the
+     * generic DNAC_MIN_FEE_RAW / NODUS_W_BASE_TX_FEE floors, so this ONE
+     * check still subsumes them. A ctx value below that floor cannot
+     * come from a committed row (scalar_rules / the genesis verdict
+     * refuse it) — it is an engine fault, never a cheaper creation. */
+    if (ctx->token_create_fee < DNAC_CFG_MIN_TOKEN_CREATE_FEE)
+        return -2;
+    if (fee < ctx->token_create_fee)
+        return -1;                       /* below the governed floor     */
     uint64_t native_out = 0;             /* outputs[1..] are native by
                                           * the parse; output[0] is the
                                           * new token's genesis supply   */
@@ -2061,6 +2277,7 @@ static int rtn_sysfund_release_coin(const uint8_t *spc, uint32_t spl,
 static int rtn_sysfund_exec(const rtn_spend_call_t *c,
                             const dna_env_view_t *env,
                             const nodus_rt_exec_ctx_t *ctx,
+                            rtn_owners_t *own,
                             const nodus_rt_read_res_t *reads,
                             uint16_t n_reads,
                             uint8_t *res_out, size_t res_cap,
@@ -2075,11 +2292,9 @@ static int rtn_sysfund_exec(const rtn_spend_call_t *c,
                           &release) != 0)
         return -1;                       /* unparseable record leg       */
 
-    uint8_t sfp[NODUS_RT_AUTH_MAX_SIGNERS][128];
-    rtn_signer_fps(ctx, sfp);
     static const uint8_t native_token[64] = { 0 };
 
-    /* ── inputs: exist, unlocked, OWNED BY A VERIFIED SIGNER, NATIVE ── */
+    /* ── inputs: exist, unlocked, OWNED (rtn_input_owned), NATIVE ───── */
     uint64_t native_in = 0;
     for (uint8_t i = 0; i < c->in_count; i++) {
         const nodus_rt_read_res_t *r = &reads[i];
@@ -2090,13 +2305,12 @@ static int rtn_sysfund_exec(const rtn_spend_call_t *c,
         uint64_t unlock = rtn_get64(rec + RTN_UTXO_UNLOCK_OFF);
         if (unlock >= ctx->global_height) return -1;   /* the legacy
                                           * unlock > tip gate, verbatim  */
-        int owned = 0;
-        for (uint16_t s = 0; s < ctx->auth->n_signers && !owned; s++)
-            if (memcmp(rec + RTN_UTXO_OWNER_OFF, sfp[s], 128) == 0)
-                owned = 1;
-        if (!owned) return -1;           /* wrong owner                  */
+        if (!rtn_input_owned(own, rec + RTN_UTXO_OWNER_OFF))
+            return -1;                   /* wrong owner / < M signers    */
         /* HONEST LABEL (O11 R2): the funding owners are THIS leg's
-         * verified signers; the record identity is the SIBLING leg's.
+         * verified signers (general multisig: or a satisfied multisig
+         * address this leg carries — a multisig coin can fund a bond or
+         * a delegation); the record identity is the SIBLING leg's.
          * Third-party funding (F funds X's bond/delegation) is therefore
          * expressible — as it already was on the legacy WITNESS surface
          * (multi-signer wire, inputs owned by ANY signer,
@@ -2112,6 +2326,8 @@ static int rtn_sysfund_exec(const rtn_spend_call_t *c,
                            &native_in) != 0)
             return -1;
     }
+    if (!rtn_owners_all_used(own)) return -1;   /* unused descriptor
+                                          * (F1.2)                       */
 
     /* ── fee floors (BOTH shipped, as a conjunction) ────────────────── */
     uint64_t fee = env->fee_amount;
@@ -2275,36 +2491,37 @@ int nodus_rt_core_exec(const nodus_domain_runtime_t *rt,
     /* The ENGINE-verified authorization verdict is the ONLY ownership
      * authority. A commitment without a verdict never reaches here —
      * the engine refuses to execute an unverified leg — and this hook
-     * additionally fails closed on a missing/empty verdict. */
-    if (!ctx->auth || ctx->auth->n_signers < 1 ||
-        ctx->auth->n_signers > NODUS_RT_AUTH_MAX_SIGNERS)
-        return -1;
+     * additionally fails closed on a missing/empty verdict — and on a
+     * verdict whose multisig facts disagree with the leg's auth_kind
+     * (rtn_owners_init). */
+    rtn_owners_t own;
+    if (rtn_owners_init(env, leg_index, ctx, &own) != 0) return -1;
 
     switch (env->leg[leg_index].runtime_op) {
     case DNA_CORERULE_SPEND: {
         rtn_spend_call_t c;
         if (rtn_spend_parse(env, leg_index, &c) != 0) return -1;
-        return rtn_xfer_exec(&c, 0, env, ctx, reads, n_reads,
+        return rtn_xfer_exec(&c, 0, env, ctx, &own, reads, n_reads,
                              res_out, res_cap, res_len_out);
     }
     case DNA_CORERULE_BURN: {
         rtn_spend_call_t c;
         uint64_t burn = 0;
         if (rtn_burn_parse(env, leg_index, &c, &burn) != 0) return -1;
-        return rtn_xfer_exec(&c, burn, env, ctx, reads, n_reads,
+        return rtn_xfer_exec(&c, burn, env, ctx, &own, reads, n_reads,
                              res_out, res_cap, res_len_out);
     }
     case DNA_CORERULE_TOKEN_CREATE: {
         rtn_tc_call_t t;
         if (rtn_tc_parse(env, leg_index, &t) != 0) return -1;
-        return rtn_tc_exec(&t, env, ctx, reads, n_reads,
+        return rtn_tc_exec(&t, env, ctx, &own, reads, n_reads,
                            res_out, res_cap, res_len_out);
     }
     case DNA_CORERULE_SYSFUND: {
         rtn_spend_call_t c;
         if (rtn_sysfund_shape(env, leg_index) != 0) return -1;
         if (rtn_sysfund_parse(env, leg_index, &c) != 0) return -1;
-        return rtn_sysfund_exec(&c, env, ctx, reads, n_reads,
+        return rtn_sysfund_exec(&c, env, ctx, &own, reads, n_reads,
                                 res_out, res_cap, res_len_out);
     }
     default:
@@ -3191,7 +3408,12 @@ static int rtn_del_rec_ok(const uint8_t *v, const uint8_t *key);
  *
  * Source semantics preserved from apply_stake (nodus_witness_bft.c:
  * 1505-1620): the bond is what the transaction actually locked and must
- * meet the self-bond floor DNAC_SELF_STAKE_AMOUNT (:1568); the new row
+ * EQUAL DNAC_SELF_STAKE_AMOUNT — the legacy source's floor (:1568, `>=`)
+ * NARROWED to an exact amount by the final pre-testnet wipe, W-B
+ * (decision 2026-09-28-treasury-pools-and-exact-self-stake.md item 5:
+ * "Self-stake TAM 10M — ne az ne fazla. Fazlasını isteyen validator
+ * delegasyonla ekler"; a validator that wants more weight delegates to
+ * itself, rtn_delegate_exec); the new row
  * is created ACTIVE with active_since = the executing height (:1583-84);
  * the unstake destination fingerprint is stored as 128 hex chars
  * (:1595, qgp_fp_raw_to_hex) and the destination PUBKEY is populated
@@ -3287,21 +3509,22 @@ static int rtn_stake_exec(const dna_env_view_t *env, uint16_t leg_index,
                                           * (dnac verify.c / transaction.h
                                           * :495). Witness-enforced here,
                                           * fail-closed direction.       */
-    if (c.bond < DNAC_SELF_STAKE_AMOUNT)
-        return -1;                       /* the self-bond floor (:1568)  */
-    if (c.bond > (uint64_t)INT64_MAX)
-        return -1;                       /* self_stake is stored in an
-                                          * SQLite INTEGER column; a value
-                                          * above INT64_MAX would
-                                          * round-trip negative and poison
-                                          * every later read of the row.
-                                          * Bounded at the SOURCE so the
-                                          * rejection is a VERDICT — the
-                                          * mutate-side mirror in
-                                          * rtn_val_rec_ok is a node-fault
-                                          * class and must not be the
-                                          * first line of defence (the
-                                          * rtn_tc_parse precedent).      */
+    if (c.bond != DNAC_SELF_STAKE_AMOUNT)
+        return -1;                       /* W-B: EXACTLY the self-bond,
+                                          * neither less (the legacy floor,
+                                          * :1568) nor more (decision
+                                          * 2026-09-28-treasury-pools-and-
+                                          * exact-self-stake.md item 5).
+                                          * The equality also subsumes the
+                                          * former `bond > INT64_MAX`
+                                          * VERDICT (self_stake is an
+                                          * SQLite INTEGER column): the one
+                                          * accepted value is 10^15, far
+                                          * inside it, so the storage bound
+                                          * is still decided HERE, in the
+                                          * verdict class, never first by
+                                          * the node-fault mirror in
+                                          * rtn_val_rec_ok.                */
 
     /* ── mediated reads ─────────────────────────────────────────────── */
     if (n_reads != 2 || !reads) return -2;
@@ -3445,18 +3668,35 @@ static int rtn_stake_exec(const dna_env_view_t *env, uint16_t leg_index,
  * is their first user.) */
 
 /**
- * DNA_SYSRULE_DELEGATE (O11) — bond someone else's stake to a validator.
+ * DNA_SYSRULE_DELEGATE (O11) — bond stake to a validator.
  *
  * Source semantics preserved from apply_delegate (nodus_witness_bft.c:
- * 1336-1495): Rule S rejects self-delegation by comparing the two
- * pubkeys directly (:1356); the amount is EXPLICIT on the wire and must
+ * 1336-1495) with ONE removal: the legacy Rule S (self-delegation
+ * refused by comparing the two pubkeys, :1356) is GONE — final
+ * pre-testnet wipe, W-B (decision 2026-09-28-treasury-pools-and-exact-
+ * self-stake.md item 6: "Kendine delegasyon serbest … bu miktar
+ * sıralamaya ve oy gücüne eklenir"). A validator may delegate to its own
+ * row with the SAME key; the delegation is an ordinary delegation row
+ * (delegator == validator) and every rule below applies to it
+ * unchanged. Rule S never protected anything — a second wallet could
+ * always delegate to its owner's validator — so the only consequence of
+ * lifting it is that a delegator fp may now equal the validator fp,
+ * which the frozen balance copy keeps apart by its `kind` column
+ * (nodus_witness_v2_econ.c, nodus_witness_v2_balance_copy_write). The
+ * amount is EXPLICIT on the wire and must
  * be non-zero and within total supply (:1374-1383); the target must
  * exist and be BONDED — ACTIVE or ELIGIBLE, so a validator that merely
  * lost its seat stays delegatable while RETIRING / UNSTAKED /
  * AUTO_RETIRED do not (:1424-1434); an existing delegation is TOPPED UP
  * rather than replaced (:1448-1470); and both validator totals rise by
- * the amount, external_delegated included, because Rule S makes every
- * delegation external (:1476-1486).
+ * the amount (:1476-1486). `external_delegated` keeps its legacy NAME
+ * but is now "every delegation row, the validator's own self-delegation
+ * included": it is the bucket the ranking and the voting power add to
+ * self_stake (nodus_witness_committee.c, nodus_witness_validator.c), and
+ * a self-delegation counts there exactly like anyone else's. Every
+ * writer still moves total_delegated and external_delegated by the same
+ * amount, so the two stay equal (the graduation's release check,
+ * nodus_witness_v2_epoch.c, relies on it).
  *
  * delegated_at_block is written with the executing height on BOTH paths
  * — a top-up REFRESHES it, exactly as the legacy source did (:1468).
@@ -3514,10 +3754,7 @@ static int rtn_delegate_exec(const dna_env_view_t *env, uint16_t leg_index,
         if (rc != 0) return rc;          /* identity = the delegator     */
     }
 
-    /* ── scalar rules ───────────────────────────────────────────────── */
-    if (memcmp(c.delegator_pubkey, c.validator_pubkey,
-               DNAC_PUBKEY_SIZE) == 0)
-        return -1;                       /* Rule S: no self-delegation   */
+    /* ── scalar rules (no Rule S since W-B — header block) ──────────── */
     if (c.amount < 1 || c.amount > DNAC_DEFAULT_TOTAL_SUPPLY)
         return -1;                       /* :1374-1383                   */
 

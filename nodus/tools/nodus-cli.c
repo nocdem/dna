@@ -61,6 +61,7 @@
 #include <sqlite3.h>
 #include "dnac/env_wire.h"
 #include "dnac/env_preflight.h"
+#include "dnac/msig_wire.h"                 /* general multisig (msig)   */
 #include "dnac/ledger_ids.h"                /* DNA_DOMAIN_SYSTEM          */
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_committee.h"
@@ -1008,6 +1009,10 @@ static int cc_param_name_to_id(const char *name, uint8_t *out_id) {
         /* HF-1 (decision 2026-09-25-gas-price.md) — param id 5 */
         { "GAS_PRICE_RAW_PER_UNIT", DNAC_CFG_GAS_PRICE_RAW_PER_UNIT },
         { "gas_price_raw_per_unit", DNAC_CFG_GAS_PRICE_RAW_PER_UNIT },
+        /* final pre-testnet wipe W-C (decision 2026-09-28-token-create-
+         * fee-governance.md) — param id 6 */
+        { "TOKEN_CREATE_FEE_RAW", DNAC_CFG_TOKEN_CREATE_FEE_RAW },
+        { "token_create_fee_raw", DNAC_CFG_TOKEN_CREATE_FEE_RAW },
     };
     for (size_t i = 0; i < sizeof(map)/sizeof(map[0]); i++) {
         if (strcmp(name, map[i].n) == 0) { *out_id = map[i].id; return 0; }
@@ -1231,17 +1236,22 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
             "(active validator set; epoch-boundary effective)\n"
             "  GAS_PRICE_RAW_PER_UNIT [0, %llu]   "
             "(raw per declared gas unit; 0 = rule off)\n"
+            "  TOKEN_CREATE_FEE_RAW   [%llu, %llu]   "
+            "(raw fee of one token creation)\n"
             "BLOCK_INTERVAL_SEC is not read by the running consensus "
             "and is refused.\n",
             (unsigned long long)DNAC_CFG_MIN_TARGET_ACTIVE,
             (unsigned long long)DNAC_CFG_MAX_TARGET_ACTIVE,
-            (unsigned long long)DNAC_CFG_MAX_GAS_PRICE);
+            (unsigned long long)DNAC_CFG_MAX_GAS_PRICE,
+            (unsigned long long)DNAC_CFG_MIN_TOKEN_CREATE_FEE,
+            (unsigned long long)DNAC_CFG_MAX_TOKEN_CREATE_FEE);
         return 1;
     }
     uint8_t param_id = 0;
     if (cc_param_name_to_id(param_name, &param_id) != 0) {
         fprintf(stderr, "Unknown param name: %s - accepted: "
-                "TARGET_ACTIVE_COUNT | GAS_PRICE_RAW_PER_UNIT "
+                "TARGET_ACTIVE_COUNT | GAS_PRICE_RAW_PER_UNIT | "
+                "TOKEN_CREATE_FEE_RAW "
                 "(the parameters the running consensus reads)\n",
                 param_name);
         return 1;
@@ -1652,10 +1662,13 @@ static int act_load_keys(const char *csv, nodus_identity_t *out, int cap) {
  * votes with — the wallet CLI's `dna stake` bonds the wallet identity,
  * which no server runs.
  *
- * --bond RAW (default exactly the DNA minimum) supports the S3 extra
- * self-bond rule: bond = Σin − Σchange − fee, witness requires
- * bond >= DNAC_SELF_STAKE_AMOUNT. unstake destination = this identity's
- * own fingerprint. */
+ * --bond RAW (default DNAC_SELF_STAKE_AMOUNT) is the amount the envelope
+ * locks: bond = Σin − Σchange − fee. Final pre-testnet wipe, W-B
+ * (decision 2026-09-28-treasury-pools-and-exact-self-stake.md item 5):
+ * the witness accepts EXACTLY DNAC_SELF_STAKE_AMOUNT (rtn_stake_exec), so
+ * any other value is refused HERE rather than built into an envelope the
+ * chain rejects; more weight is added by delegating to oneself. unstake
+ * destination = this identity's own fingerprint. */
 static int cmd_stake(const char *server_ip, uint16_t server_port,
                      int argc, char **argv, int cmd_start) {
     uint64_t commission_bps = 500;
@@ -1669,7 +1682,7 @@ static int cmd_stake(const char *server_ip, uint16_t server_port,
             bond_raw = strtoull(argv[++i], NULL, 10);
         } else {
             fprintf(stderr, "Unknown arg: %s\n"
-                    "Usage: stake [--commission BPS] [--bond RAW>=%llu]\n",
+                    "Usage: stake [--commission BPS] [--bond %llu]\n",
                     a, (unsigned long long)DNAC_SELF_STAKE_AMOUNT);
             return 1;
         }
@@ -1681,9 +1694,10 @@ static int cmd_stake(const char *server_ip, uint16_t server_port,
                 (unsigned)DNAC_COMMISSION_BPS_MAX);
         return 1;
     }
-    if (bond_raw < DNAC_SELF_STAKE_AMOUNT) {
-        fprintf(stderr, "--bond %llu < minimum self-bond %llu\n",
-                (unsigned long long)bond_raw,
+    if (bond_raw != DNAC_SELF_STAKE_AMOUNT) {
+        fprintf(stderr, "--bond %llu != the self-bond %llu (the chain "
+                "accepts exactly this amount; add more by delegating to "
+                "yourself)\n", (unsigned long long)bond_raw,
                 (unsigned long long)DNAC_SELF_STAKE_AMOUNT);
         return 1;
     }
@@ -2863,6 +2877,26 @@ fail:
     return -1;
 }
 
+/* Decode exactly `n` bytes from 2n LOWERCASE hex characters (the form
+ * the genesis document and `xxd -p` print a public key in). @return 0 /
+ * -1 on a wrong length or any other character. */
+static int t6_hex_exact(const char *hex, uint8_t *out, size_t n) {
+    if (!hex || strlen(hex) != 2 * n) return -1;
+    for (size_t i = 0; i < n; i++) {
+        int v = 0;
+        for (int j = 0; j < 2; j++) {
+            char c = hex[2 * i + (size_t)j];
+            int d;
+            if (c >= '0' && c <= '9')      d = c - '0';
+            else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+            else return -1;
+            v = (v << 4) | d;
+        }
+        out[i] = (uint8_t)v;
+    }
+    return 0;
+}
+
 /* P2P-PORT F6 (K3, decision 2026-09-26-witness-port-session.md): no
  * local database. Everything comes from the node over ONE session
  * authenticated AS THE STAKER, exactly as `v2-envelope spend`:
@@ -2878,50 +2912,109 @@ fail:
  * intent_id commits expiry_height = tip + CLI_ENV_EXPIRY_AHEAD
  * (env_wire.h intent_id preimage), so a dry run and a later submit can
  * differ when a block lands in between — a caller that needs the
- * submitted envelope's intent_id reads it from the SUBMIT output. */
+ * submitted envelope's intent_id reads it from the SUBMIT output.
+ *
+ * `v2-envelope delegate` (final pre-testnet wipe, W-B) is the SAME
+ * two-leg builder with the SYSTEM leg swapped: leg0 = SYSTEM DELEGATE
+ * (runtime_op 2, call = delegator_pk[2592] ‖ validator_pk[2592] ‖
+ * amount u64 = 5192, nodus_witness_rt_native.c rtn_deleg_parse), leg1 =
+ * the same CORE SYSFUND funding, whose lock the exec derives from the
+ * DELEGATE call's amount exactly as it does from STAKE's bond. The
+ * delegator is the --keys identity (it signs both legs and owns the
+ * funding coins); the target is --validator, the validator's 2592-byte
+ * public key as 5184 lowercase hex. Since W-B the target may be the
+ * --keys identity itself (Rule S is gone — decision 2026-09-28-
+ * treasury-pools-and-exact-self-stake.md item 6); that is how a
+ * validator adds weight beyond its exact 10M self-bond. Every other
+ * DELEGATE rule (a bonded target, the 100-NODUS minimum for a new row,
+ * the per-validator delegator cap) is the chain's, decided at CheckTx —
+ * the builder checks only what the call bytes alone decide
+ * (1 <= amount <= total supply, rtn_delegate_exec's scalar rule). */
 static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
                         int argc, char **argv, int cmd_start) {
     const char *keys_csv = NULL, *dest_fp_hex = NULL;
+    const char *validator_hex = NULL;
     const char *submit = NULL;
     uint64_t bond = 0;
     uint32_t commission = 0;
     int dry_run = 0, have_bond = 0, have_comm = 0, bad_arg = 0;
+    /* "stake" or "delegate" — the word after "v2-envelope" (main's
+     * dispatch routes only those two here) */
+    const int is_deleg = !strcmp(argv[cmd_start + 1], "delegate");
+    const char *verb = is_deleg ? "delegate" : "stake";
 
-    for (int i = cmd_start + 2; i < argc; i++) {   /* skip the "stake" word */
+    for (int i = cmd_start + 2; i < argc; i++) {   /* skip the verb word */
         const char *a = argv[i];
         if      (!strcmp(a, "--keys")       && i + 1 < argc) keys_csv = argv[++i];
-        else if (!strcmp(a, "--bond")       && i + 1 < argc) {
+        else if (!is_deleg && !strcmp(a, "--bond") && i + 1 < argc) {
             bond = strtoull(argv[++i], NULL, 10); have_bond = 1;
-        } else if (!strcmp(a, "--commission") && i + 1 < argc) {
+        } else if (is_deleg && !strcmp(a, "--amount") && i + 1 < argc) {
+            bond = strtoull(argv[++i], NULL, 10); have_bond = 1;
+        } else if (!is_deleg && !strcmp(a, "--commission") && i + 1 < argc) {
             commission = (uint32_t)strtoul(argv[++i], NULL, 10); have_comm = 1;
-        } else if (!strcmp(a, "--dest-fp")  && i + 1 < argc) dest_fp_hex = argv[++i];
+        } else if (!is_deleg && !strcmp(a, "--dest-fp") && i + 1 < argc)
+            dest_fp_hex = argv[++i];
+        else if (is_deleg && !strcmp(a, "--validator") && i + 1 < argc)
+            validator_hex = argv[++i];
         else if (!strcmp(a, "--submit")     && i + 1 < argc) submit = argv[++i];
         else if (!strcmp(a, "--dry-run"))                    dry_run = 1;
         else { bad_arg = 1; break; }   /* incl. the retired --db */
     }
-    if (bad_arg || !keys_csv || !dest_fp_hex || !have_bond || !have_comm ||
-        (!submit && !dry_run)) {
+    if (bad_arg || !keys_csv || !have_bond || (!submit && !dry_run) ||
+        (!is_deleg && (!dest_fp_hex || !have_comm)) ||
+        (is_deleg && !validator_hex)) {
         fprintf(stderr,
             "Usage: v2-envelope stake --keys <keydir> --bond <raw> "
             "--commission <bps> --dest-fp <hex128>\n"
+            "       (--dry-run | --submit ip:port)\n"
+            "       v2-envelope delegate --keys <keydir> --validator "
+            "<hex5184 pubkey> --amount <raw>\n"
             "       (--dry-run | --submit ip:port)\n"
             "  Everything (chain id, coins, tip, gas price) is read from "
             "the node over ONE\n"
             "  session: --submit, or the outer -s server for --dry-run. No "
             "local database\n"
             "  (--db is retired). --dry-run builds and self-checks, submits "
-            "nothing.\n");
+            "nothing.\n"
+            "  delegate: --validator may be the --keys identity's own key "
+            "(self-delegation).\n");
         return 1;
+    }
+    uint8_t validator_pk[DNAC_PUBKEY_SIZE] = {0};
+    if (is_deleg) {
+        if (t6_hex_exact(validator_hex, validator_pk, DNAC_PUBKEY_SIZE) != 0) {
+            fprintf(stderr, "--validator must be exactly %d lowercase hex "
+                    "chars (the validator's public key)\n",
+                    2 * DNAC_PUBKEY_SIZE);
+            return 1;
+        }
+        /* the chain's scalar rule (rtn_delegate_exec) */
+        if (bond < 1 || bond > DNAC_DEFAULT_TOTAL_SUPPLY) {
+            fprintf(stderr, "--amount must be 1..%llu raw\n",
+                    (unsigned long long)DNAC_DEFAULT_TOTAL_SUPPLY);
+            return 1;
+        }
     }
     /* the witness bound (tokenomics-v3 P3-8, rtn_stake_exec) — the u16
      * wire field alone would admit values the chain refuses */
-    if (commission > (uint32_t)DNAC_COMMISSION_BPS_MAX) {
+    if (!is_deleg && commission > (uint32_t)DNAC_COMMISSION_BPS_MAX) {
         fprintf(stderr, "--commission must be 0..%u\n",
                 (unsigned)DNAC_COMMISSION_BPS_MAX);
         return 1;
     }
-    uint8_t dest_fp[64];
-    if (qgp_fp_hex_to_raw(dest_fp_hex, dest_fp) != 0) {
+    /* the witness rule (final pre-testnet wipe W-B, rtn_stake_exec): the
+     * bond is EXACTLY DNAC_SELF_STAKE_AMOUNT — refused here with a reason
+     * rather than left to the preflight self-check's bare VERDICT */
+    if (!is_deleg && bond != DNAC_SELF_STAKE_AMOUNT) {
+        fprintf(stderr, "--bond %llu != the self-bond %llu (the chain "
+                "accepts exactly this amount; add more by delegating to "
+                "yourself: v2-envelope delegate)\n",
+                (unsigned long long)bond,
+                (unsigned long long)DNAC_SELF_STAKE_AMOUNT);
+        return 1;
+    }
+    uint8_t dest_fp[64] = {0};
+    if (!is_deleg && qgp_fp_hex_to_raw(dest_fp_hex, dest_fp) != 0) {
         fprintf(stderr, "--dest-fp must be exactly 128 lowercase hex chars\n");
         return 1;
     }
@@ -2950,7 +3043,8 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     if (!keys) return 1;
     n_keys = act_load_keys(keys_csv, keys, 4);
     if (n_keys != 1) {
-        fprintf(stderr, "v2-envelope stake needs exactly one --keys identity\n");
+        fprintf(stderr, "v2-envelope %s needs exactly one --keys identity\n",
+                verb);
         goto done;
     }
 
@@ -3005,7 +3099,7 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
             !has_chain32) {
             fprintf(stderr, "this node is not on a version-3 chain (no "
                     "chain_id32 in its dnac_supply reply) — v2-envelope "
-                    "stake needs a version-3 chain\n");
+                    "%s needs a version-3 chain\n", verb);
             goto done;
         }
     }
@@ -3108,23 +3202,38 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     }
     if (n_in < 1 || sum_in < need) {
         fprintf(stderr, "insufficient native funding: have %llu, need %llu "
-                "(bond %llu + fee %llu) over %d input(s)\n",
+                "(%s %llu + fee %llu) over %d input(s)\n",
                 (unsigned long long)sum_in, (unsigned long long)need,
+                is_deleg ? "amount" : "bond",
                 (unsigned long long)bond, (unsigned long long)fee, n_in);
         goto done;
     }
     uint64_t change = sum_in - need;
 
-    /* leg0 STAKE call (2666): staker_pk ‖ commission u16 ‖ bond u64 ‖
-     * dest_fp[64 RAW]. */
-    scall = calloc(1, 2666);
-    if (!scall) goto done;
-    memcpy(scall, keys[0].pk.bytes, DNAC_PUBKEY_SIZE);
-    scall[2592] = (uint8_t)(commission >> 8);
-    scall[2593] = (uint8_t)commission;
-    for (int i = 0; i < 8; i++) scall[2594 + i] = (uint8_t)(bond >> (56 - 8 * i));
-    memcpy(scall + 2602, dest_fp, 64);
-    uint32_t scall_len = 2666;
+    uint32_t scall_len;
+    if (!is_deleg) {
+        /* leg0 STAKE call (2666): staker_pk ‖ commission u16 ‖ bond u64 ‖
+         * dest_fp[64 RAW]. */
+        scall = calloc(1, 2666);
+        if (!scall) goto done;
+        memcpy(scall, keys[0].pk.bytes, DNAC_PUBKEY_SIZE);
+        scall[2592] = (uint8_t)(commission >> 8);
+        scall[2593] = (uint8_t)commission;
+        for (int i = 0; i < 8; i++) scall[2594 + i] = (uint8_t)(bond >> (56 - 8 * i));
+        memcpy(scall + 2602, dest_fp, 64);
+        scall_len = 2666;
+    } else {
+        /* leg0 DELEGATE call (5192): delegator_pk (the --keys identity)
+         * ‖ validator_pk ‖ amount u64 — `bond` holds --amount, the value
+         * the SYSFUND leg locks (rtn_deleg_parse). */
+        scall = calloc(1, 2u * DNAC_PUBKEY_SIZE + 8u);
+        if (!scall) goto done;
+        memcpy(scall, keys[0].pk.bytes, DNAC_PUBKEY_SIZE);
+        memcpy(scall + DNAC_PUBKEY_SIZE, validator_pk, DNAC_PUBKEY_SIZE);
+        for (int i = 0; i < 8; i++)
+            scall[2 * DNAC_PUBKEY_SIZE + i] = (uint8_t)(bond >> (56 - 8 * i));
+        scall_len = 2u * DNAC_PUBKEY_SIZE + 8u;
+    }
 
     /* leg1 SYSFUND call = SPEND transfer section: in_count ‖ nullifiers
      * (ascending — the SELECT already returns them so) ‖ out_count ‖
@@ -3160,7 +3269,8 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     dna_env_leg_in_t legs[2];
     memset(legs, 0, sizeof(legs));
     legs[0].hdr.domain_id            = DNA_DOMAIN_SYSTEM;
-    legs[0].hdr.runtime_op           = DNA_SYSRULE_STAKE;
+    legs[0].hdr.runtime_op           = is_deleg ? DNA_SYSRULE_DELEGATE
+                                                : DNA_SYSRULE_STAKE;
     legs[0].hdr.ruleset_version      = sys_rt->ruleset_version;
     legs[0].hdr.access_mode          = DNA_ENV_ACCESS_INVOKE;
     legs[0].hdr.auth_kind            = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
@@ -3216,11 +3326,11 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     /* Printed on BOTH paths (P2P-PORT F6): the submitted envelope's own
      * intent_id is what a caller waits for — a dry run's may differ (its
      * expiry is tip-relative, see this function's header). */
-    printf("v2-envelope stake: %zu bytes, inputs=%d sum_in=%llu "
-           "bond=%llu fee=%llu change=%llu tip=%llu\n", env_len, n_in,
-           (unsigned long long)sum_in, (unsigned long long)bond,
-           (unsigned long long)fee, (unsigned long long)change,
-           (unsigned long long)tip);
+    printf("v2-envelope %s: %zu bytes, inputs=%d sum_in=%llu "
+           "%s=%llu fee=%llu change=%llu tip=%llu\n", verb, env_len, n_in,
+           (unsigned long long)sum_in, is_deleg ? "amount" : "bond",
+           (unsigned long long)bond, (unsigned long long)fee,
+           (unsigned long long)change, (unsigned long long)tip);
     printf("  wire_id=");
     for (int b = 0; b < 64; b++) printf("%02x", pf->wire_id[b]);
     printf("\n  intent_id=");
@@ -3228,8 +3338,9 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     printf("\n");
     fflush(stdout);
     if (dry_run) {
-        printf("  PREFLIGHT SELF-CHECK: OK (2 legs SYSTEM STAKE + CORE "
-               "SYSFUND) — not submitted (--dry-run)\n");
+        printf("  PREFLIGHT SELF-CHECK: OK (2 legs SYSTEM %s + CORE "
+               "SYSFUND) — not submitted (--dry-run)\n",
+               is_deleg ? "DELEGATE" : "STAKE");
     } else {
         /* on the session the gas price and the coins were read from */
         if (t6_submit_on(&client, &keys[0], pf->wire_id, env_bytes,
@@ -3556,8 +3667,18 @@ static int t6_spend_units_for_shape(const nodus_domain_runtime_t *core_rt,
     return rc;
 }
 
+static int cmd_v2_spend_msig(const char *server_ip, uint16_t server_port,
+                             int argc, char **argv, int cmd_start);
+
 static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
                         int argc, char **argv, int cmd_start) {
+    /* general multisig: `--msig <descriptor>` selects the offline M-of-N
+     * builder (a different coin source and no signature here — see the
+     * "General multisig" block below) */
+    for (int i = cmd_start + 2; i < argc; i++)
+        if (!strcmp(argv[i], "--msig"))
+            return cmd_v2_spend_msig(server_ip, server_port, argc, argv,
+                                     cmd_start);
     const char *keys_csv = NULL, *to_hex = NULL, *token_hex = NULL;
     const char *submit = NULL;
     uint64_t amount = 0, fee = 0;
@@ -4229,7 +4350,8 @@ done:
  *   - inputs: present, unlocked (unlock_block < H, :1821-1822), owned by
  *     the signer (:1823-1827), NATIVE only (:1828-1829), at most 14
  *     (RTN_TC_MAX_IN :375 — the read budget funds in + pool + registry);
- *   - fee >= NODUS_W_TOKEN_CREATE_FEE (:1838) and
+ *   - fee >= ctx->token_create_fee (rtn_tc_exec; W-C: chain_config
+ *     param 6 at the block's height) and
  *     Σnative_in == Σnative_out + fee exactly (:1852-1866); the token
  *     supply is NOT native value, so the inputs pay the fee alone;
  *   - the token id must not be registered yet (the registry read,
@@ -4237,10 +4359,14 @@ done:
  *     is refused by the chain, not here.
  * The fee goes to the reward pool (rtn_tc_exec's pool SET :1919-1927;
  * decision docs/plans/decisions/2026-09-22-nodus-tokenomics-v3-operator.md
- * §1 names TOKEN_CREATE explicitly). The fee floor stays the COMPILED
- * constant in this package (decision
- * docs/plans/decisions/2026-09-28-token-create-fee-governance.md — the
- * governance parameter is a later wipe package).
+ * §1 names TOKEN_CREATE explicitly). The fee floor is the chain's
+ * GOVERNED value since the final pre-testnet wipe W-C (chain_config
+ * param 6 TOKEN_CREATE_FEE_RAW, decision docs/plans/decisions/
+ * 2026-09-28-token-create-fee-governance.md): rtn_tc_exec enforces
+ * fee >= the committed row at the block's height, and this builder
+ * reads the same value at tip + 1 from dnac_fee_info
+ * (`token_create_fee`); an older server that does not report it falls
+ * back to the compiled NODUS_W_TOKEN_CREATE_FEE with a warning.
  *
  * Everything else is `v2-envelope spend`'s flow on ONE session
  * authenticated as the creator: chain id (dnac_supply chain_id32), gas
@@ -4388,11 +4514,15 @@ static int cmd_v2_token_create(const char *server_ip, uint16_t server_port,
             "  --to       the genesis output's owner AND the registry's "
             "creator of record\n"
             "             (default: the --keys identity).\n"
-            "  --fee      native raw; default the creation fee %llu raw, "
-            "raised to\n"
-            "             units x gas_price when the node reports a gas "
-            "price above it.\n"
-            "             A --fee below either is refused, never raised.\n"
+            "  --fee      native raw; default the chain's creation fee "
+            "(dnac_fee_info\n"
+            "             token_create_fee; %llu raw from an older server "
+            "that does\n"
+            "             not report it), raised to units x gas_price when "
+            "the node\n"
+            "             reports a gas price above it. A --fee below either "
+            "is refused,\n"
+            "             never raised.\n"
             "  --token-id 64 bytes as 128 lowercase hex; default 64 fresh "
             "random bytes.\n"
             "             A token id already registered is refused by the "
@@ -4435,14 +4565,9 @@ static int cmd_v2_token_create(const char *server_ip, uint16_t server_port,
                 "64-bit integer)\n", (long long)INT64_MAX);
         return 1;
     }
-    if (have_fee && fee < NODUS_W_TOKEN_CREATE_FEE) {
-        fprintf(stderr, "--fee %llu is below the chain's token-creation fee "
-                "%llu raw (NODUS_W_TOKEN_CREATE_FEE)\n",
-                (unsigned long long)fee,
-                (unsigned long long)NODUS_W_TOKEN_CREATE_FEE);
-        return 1;
-    }
-    if (!have_fee) fee = NODUS_W_TOKEN_CREATE_FEE;
+    /* W-C: the creation fee is the chain's governed value (dnac_fee_info
+     * `token_create_fee`, read on the session below); a --fee is judged
+     * against it there, and the default is taken from it there. */
     uint8_t to_raw[64];
     if (to_hex && qgp_fp_hex_to_raw(to_hex, to_raw) != 0) {
         fprintf(stderr, "--to must be exactly 128 lowercase hex chars (a "
@@ -4556,6 +4681,29 @@ static int cmd_v2_token_create(const char *server_ip, uint16_t server_port,
             goto done;
         }
         gas_price = fi.gas_price;
+
+        /* W-C — the chain's token-creation fee: the committed
+         * chain_config param 6 at tip + 1 (decision 2026-09-28-token-
+         * create-fee-governance.md), the floor rtn_tc_exec enforces. An
+         * older server sends no `token_create_fee` key (0 here): fall
+         * back to the compiled NODUS_W_TOKEN_CREATE_FEE, which is what
+         * such a chain enforces, and say so. */
+        uint64_t chain_fee = fi.token_create_fee;
+        if (chain_fee == 0) {
+            chain_fee = NODUS_W_TOKEN_CREATE_FEE;
+            fprintf(stderr, "warning: the node did not report "
+                    "token_create_fee (an older server) — using the "
+                    "compiled creation fee %llu raw\n",
+                    (unsigned long long)chain_fee);
+        }
+        if (have_fee && fee < chain_fee) {
+            fprintf(stderr, "--fee %llu is below the chain's token-creation "
+                    "fee %llu raw (chain_config TOKEN_CREATE_FEE_RAW at tip "
+                    "+ 1) — nothing was submitted\n",
+                    (unsigned long long)fee, (unsigned long long)chain_fee);
+            goto done;
+        }
+        if (!have_fee) fee = chain_fee;
     }
 
     int urc = nodus_client_dnac_utxo(&client, creator_fp,
@@ -4821,6 +4969,900 @@ done:
     }
     return rc;
 }
+
+/* ══ General multisig — the offline M-of-N flow (design F6.1) ═══════════
+ *
+ * Decision docs/plans/decisions/2026-09-29-general-multisig.md; design
+ * docs/plans/2026-09-29-general-multisig-design.md §7 rev 2. The chain
+ * side is the SPECIFICATION: a coin owned by an M-of-N address
+ * (SHA3-512 of a shared/dnac/msig_wire.h descriptor) is spent by a CORE
+ * leg carrying auth_kind 3 = the kind-1 signer section ‖ dcount ‖
+ * (dlen ‖ descriptor) (nodus_witness_rt_native.c rtn_auth_msig), with
+ * >= M of the descriptor's keys among the verified signers
+ * (rtn_input_owned). Every signer signs the SAME leg auth digest a
+ * kind-1 signer would — there is no multisig signature preimage.
+ *
+ * Because auth_len is bound by the digest, the FINAL signer count K must
+ * be fixed before anyone signs (runtime.h "COORDINATION NOTE"): the
+ * builder writes it into the unsigned envelope (default K = M), and
+ * `combine` refuses any other number of signatures.
+ *
+ * FOUR STEPS, three of them offline:
+ *   1. msig address --m <M> --pubkey <file> ... [--descriptor-out <file>]
+ *      prints the address (128 hex) of M-of-{the listed keys}; pubkey
+ *      files are raw 2592-byte ML-DSA-87 keys (an identity's nodus.pk).
+ *      The keys are sorted into the one canonical order; the operator
+ *      never orders them by hand.
+ *   2. v2-envelope spend --msig <descriptor> --keys <dir> --in <nul>:<amt>
+ *      ... --to <fp> --amount <raw> --export <file>
+ *      builds the UNSIGNED single-leg SPEND. The coins are named
+ *      explicitly (--in nullifier:amount, native only): dnac_utxo answers
+ *      only for the session's own fingerprint, so a multisig address's
+ *      coins cannot be listed over a session — the chain checks every
+ *      input anyway (present, unlocked, owned, conservation). --keys is
+ *      ANY identity: it opens the session that reads the chain id, the
+ *      tip and the gas price; it signs nothing. Change returns to the
+ *      multisig address.
+ *   3. msig sign --keys <dir> --in <export> --out <sigfile>
+ *      (offline, each co-signer) re-derives the leg digest from the
+ *      envelope bytes + chain id + the compiled CORE ruleset and REFUSES
+ *      if it differs from the exported one, checks its key is in the
+ *      descriptor, prints what it is signing, and signs.
+ *   4. msig combine --in <export> --sig <file> ... [--keys <dir>
+ *      --submit ip:port] [--out <envelope file>]
+ *      verifies every signature, assembles them in ascending pubkey
+ *      order, runs the chain's OWN auth hook locally (the satisfied flag
+ *      must be 1) and the preflight self-check, then submits (any
+ *      session identity) or writes the envelope.
+ * ════════════════════════════════════════════════════════════════════ */
+
+#define MSIG_EXPORT_MAGIC "nodus-msig-export v1"
+#define MSIG_SIG_MAGIC    "nodus-msig-sig v1"
+
+/* Read a whole file (at most `max` bytes). @return 0 / -1. */
+static int msig_read_file(const char *path, uint8_t **out, size_t *len,
+                          size_t max) {
+    *out = NULL;
+    *len = 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) { fprintf(stderr, "cannot open %s\n", path); return -1; }
+    uint8_t *buf = malloc(max + 1);
+    if (!buf) { fclose(f); return -1; }
+    size_t n = fread(buf, 1, max + 1, f);
+    fclose(f);
+    if (n > max) {
+        fprintf(stderr, "%s is larger than %zu bytes\n", path, max);
+        free(buf);
+        return -1;
+    }
+    *out = buf;
+    *len = n;
+    return 0;
+}
+
+static void msig_hex_line(FILE *f, const char *key, const uint8_t *b,
+                          size_t n) {
+    fprintf(f, "%s ", key);
+    for (size_t i = 0; i < n; i++) fprintf(f, "%02x", b[i]);
+    fputc('\n', f);
+}
+
+/* In a "key value\n" text file held in `txt` (NUL-terminated), find the
+ * line starting with "key " and return a malloc'd copy of its value
+ * (up to the newline). @return the copy or NULL. */
+static char *msig_kv(const char *txt, const char *key) {
+    size_t kl = strlen(key);
+    const char *p = txt;
+    while (p && *p) {
+        if (strncmp(p, key, kl) == 0 && p[kl] == ' ') {
+            const char *v = p + kl + 1;
+            const char *e = strchr(v, '\n');
+            size_t vl = e ? (size_t)(e - v) : strlen(v);
+            char *out = malloc(vl + 1);
+            if (!out) return NULL;
+            memcpy(out, v, vl);
+            out[vl] = '\0';
+            return out;
+        }
+        p = strchr(p, '\n');
+        if (p) p++;
+    }
+    return NULL;
+}
+
+/* A field of `n` raw bytes from its hex value. @return 0 / -1. */
+static int msig_kv_hex(const char *txt, const char *key, uint8_t *out,
+                       size_t n) {
+    char *v = msig_kv(txt, key);
+    int rc = (v && t6_hex_exact(v, out, n) == 0) ? 0 : -1;
+    if (rc != 0) fprintf(stderr, "missing or malformed '%s'\n", key);
+    free(v);
+    return rc;
+}
+
+/* The export file, parsed. `env` is heap (caller frees). */
+typedef struct {
+    uint8_t  chain32[DNA_CHAIN_ID_LEN];
+    uint64_t tip;
+    uint32_t signers;
+    uint8_t  digest[64];
+    uint8_t *env;
+    size_t   env_len;
+} msig_export_t;
+
+static int msig_export_read(const char *path, msig_export_t *x) {
+    memset(x, 0, sizeof(*x));
+    uint8_t *raw = NULL;
+    size_t rl = 0;
+    /* hex doubles the envelope; a 1 MiB envelope is the chain's ceiling */
+    if (msig_read_file(path, &raw, &rl,
+                       2u * (size_t)DNA_ENV_MAX_TOTAL_LEN + 4096u) != 0)
+        return -1;
+    raw[rl] = '\0';
+    const char *txt = (const char *)raw;
+    int rc = -1;
+    char *v = NULL;
+    if (strncmp(txt, MSIG_EXPORT_MAGIC "\n",
+                strlen(MSIG_EXPORT_MAGIC) + 1) != 0) {
+        fprintf(stderr, "%s is not a %s file\n", path, MSIG_EXPORT_MAGIC);
+        goto out;
+    }
+    if (msig_kv_hex(txt, "chain_id", x->chain32, DNA_CHAIN_ID_LEN) != 0 ||
+        msig_kv_hex(txt, "digest", x->digest, 64) != 0)
+        goto out;
+    v = msig_kv(txt, "tip");
+    if (!v) goto out;
+    x->tip = strtoull(v, NULL, 10);
+    free(v);
+    v = msig_kv(txt, "signers");
+    if (!v) goto out;
+    x->signers = (uint32_t)strtoul(v, NULL, 10);
+    free(v);
+    v = msig_kv(txt, "envelope");
+    if (!v || strlen(v) % 2 != 0 || strlen(v) == 0) goto out;
+    x->env_len = strlen(v) / 2;
+    x->env = malloc(x->env_len);
+    if (!x->env || t6_hex_exact(v, x->env, x->env_len) != 0) {
+        fprintf(stderr, "malformed envelope hex\n");
+        goto out;
+    }
+    rc = 0;
+out:
+    free(v);
+    free(raw);
+    if (rc != 0) { free(x->env); x->env = NULL; }
+    return rc;
+}
+
+/* The kind-3 leg of an exported envelope: exactly one CORE SPEND leg,
+ * auth_kind 3, K signer slots, ONE descriptor. Fills the view, the
+ * descriptor pointer/len and its (M, N, keys). @return 0 / -1. */
+static int msig_leg_open(const msig_export_t *x, dna_env_view_t *v,
+                         const uint8_t **desc, size_t *dlen, uint8_t *m,
+                         uint8_t *n, const uint8_t **keys) {
+    if (dna_env_decode(x->env, x->env_len, v) != 0 || v->leg_count != 1 ||
+        v->leg[0].domain_id != DNA_DOMAIN_CORE ||
+        v->leg[0].runtime_op != DNA_CORERULE_SPEND ||
+        v->leg[0].auth_kind != NODUS_RT_AUTHKIND_DSA87_MSIG_V1) {
+        fprintf(stderr, "the export is not a one-leg CORE SPEND under "
+                "auth_kind 3\n");
+        return -1;
+    }
+    const uint8_t *a = v->buf + v->auth_off[0];
+    uint32_t alen = v->leg[0].auth_len;
+    uint64_t off = 1u + (uint64_t)x->signers * NODUS_RT_AUTH_SIGNER_LEN;
+    if (x->signers < 1 || x->signers > NODUS_RT_AUTH_MAX_SIGNERS ||
+        (uint64_t)alen < off + 3u || a[0] != x->signers || a[off] != 1) {
+        fprintf(stderr, "the auth blob does not carry %u signer slots and "
+                "ONE descriptor\n", (unsigned)x->signers);
+        return -1;
+    }
+    size_t dl = ((size_t)a[off + 1] << 8) | a[off + 2];
+    if ((uint64_t)alen != off + 3u + dl ||
+        dna_msig_desc_parse(a + off + 3, dl, m, n, keys) != 0) {
+        fprintf(stderr, "the carried descriptor is malformed\n");
+        return -1;
+    }
+    *desc = a + off + 3;
+    *dlen = dl;
+    return 0;
+}
+
+/* The CORE leg digest of the exported envelope, re-derived. */
+static int msig_digest(const msig_export_t *x, dna_env_preflight_t *pf) {
+    const nodus_domain_runtime_t *core_rt = cli_builtin_runtime(DNA_DOMAIN_CORE);
+    if (!core_rt) return -1;
+    dna_env_leg_ctx_t lctx;
+    memset(&lctx, 0, sizeof(lctx));
+    lctx.domain_id       = DNA_DOMAIN_CORE;
+    lctx.ruleset_version = core_rt->ruleset_version;
+    memcpy(lctx.ruleset_hash, core_rt->ruleset_hash, 64);
+    if (dna_env_preflight(x->env, x->env_len, x->chain32, x->tip + 1, &lctx,
+                          1, pf) != DNA_ENV_PF_OK) {
+        fprintf(stderr, "preflight of the exported envelope failed (wrong "
+                "chain id, expired, or a different CORE ruleset)\n");
+        return -1;
+    }
+    return 0;
+}
+
+static int msig_key_in(const uint8_t *keys, uint8_t n, const uint8_t *pk) {
+    for (uint8_t i = 0; i < n; i++)
+        if (memcmp(keys + (size_t)i * DNA_MSIG_PUBKEY_LEN, pk,
+                   DNA_MSIG_PUBKEY_LEN) == 0)
+            return 1;
+    return 0;
+}
+
+static int msig_pk_cmp(const void *a, const void *b) {
+    return memcmp(a, b, DNA_MSIG_PUBKEY_LEN);
+}
+
+/* `msig address` — offline. */
+static int cmd_msig_address(int argc, char **argv, int cmd_start) {
+    const char *pk_path[DNA_MSIG_MAX_N + 1];
+    const char *desc_out = NULL;
+    int n_pk = 0, bad = 0;
+    long m = 0;
+    for (int i = cmd_start + 2; i < argc; i++) {
+        const char *a = argv[i];
+        if (!strcmp(a, "--m") && i + 1 < argc) m = strtol(argv[++i], NULL, 10);
+        else if (!strcmp(a, "--pubkey") && i + 1 < argc) {
+            if (n_pk > (int)DNA_MSIG_MAX_N) { bad = 1; break; }
+            pk_path[n_pk++] = argv[++i];
+        } else if (!strcmp(a, "--descriptor-out") && i + 1 < argc)
+            desc_out = argv[++i];
+        else { bad = 1; break; }
+    }
+    if (bad || n_pk < (int)DNA_MSIG_MIN_N || n_pk > (int)DNA_MSIG_MAX_N ||
+        m < 1 || m > n_pk) {
+        fprintf(stderr,
+            "Usage: msig address --m <M> --pubkey <file> --pubkey <file> ... "
+            "[--descriptor-out <file>]\n"
+            "  2..%u raw 2592-byte ML-DSA-87 public keys (an identity's "
+            "nodus.pk), 1 <= M <= N.\n"
+            "  Prints the M-of-N address (128 hex) the chain derives: "
+            "SHA3-512(\"DNA.MSIG.v1\" ‖ M ‖ N ‖ keys ascending).\n",
+            (unsigned)DNA_MSIG_MAX_N);
+        return 1;
+    }
+    uint8_t keys[DNA_MSIG_MAX_N * DNA_MSIG_PUBKEY_LEN];
+    for (int i = 0; i < n_pk; i++) {
+        uint8_t *b = NULL;
+        size_t l = 0;
+        if (msig_read_file(pk_path[i], &b, &l, DNA_MSIG_PUBKEY_LEN) != 0)
+            return 1;
+        if (l != DNA_MSIG_PUBKEY_LEN) {
+            fprintf(stderr, "%s: %zu bytes, a public key is %u\n",
+                    pk_path[i], l, (unsigned)DNA_MSIG_PUBKEY_LEN);
+            free(b);
+            return 1;
+        }
+        memcpy(keys + (size_t)i * DNA_MSIG_PUBKEY_LEN, b, DNA_MSIG_PUBKEY_LEN);
+        free(b);
+    }
+    /* the one canonical order — the encoder refuses anything else */
+    qsort(keys, (size_t)n_pk, DNA_MSIG_PUBKEY_LEN, msig_pk_cmp);
+    uint8_t desc[DNA_MSIG_MAX_DESC_LEN], addr[64];
+    size_t dl = 0;
+    if (dna_msig_desc_encode((uint8_t)m, (uint8_t)n_pk, keys, desc,
+                             sizeof(desc), &dl) != 0) {
+        fprintf(stderr, "refused: a duplicate key, or a key whose first 32 "
+                "bytes are zero\n");
+        return 1;
+    }
+    if (dna_msig_address(desc, dl, addr) != 0) return 1;
+    char hex[QGP_FP_HEX_BUFFER];
+    qgp_fp_raw_to_hex(addr, hex);
+    printf("msig %ld-of-%d address %s\n", m, n_pk, hex);
+    if (desc_out) {
+        FILE *f = fopen(desc_out, "wb");
+        if (!f || fwrite(desc, 1, dl, f) != dl) {
+            fprintf(stderr, "cannot write %s\n", desc_out);
+            if (f) fclose(f);
+            return 1;
+        }
+        fclose(f);
+        printf("descriptor (%zu bytes) written to %s\n", dl, desc_out);
+    }
+    return 0;
+}
+
+/* `v2-envelope spend --msig` — builds the UNSIGNED envelope + export. */
+static int cmd_v2_spend_msig(const char *server_ip, uint16_t server_port,
+                             int argc, char **argv, int cmd_start) {
+    const char *desc_path = NULL, *keys_csv = NULL, *to_hex = NULL;
+    const char *export_path = NULL, *submit = NULL;
+    const char *in_arg[T6_SPEND_MAX_IN];
+    int n_in = 0, bad = 0, have_fee = 0;
+    uint64_t amount = 0, fee = 0;
+    long k_signers = 0;
+    for (int i = cmd_start + 2; i < argc; i++) {
+        const char *a = argv[i];
+        if      (!strcmp(a, "--msig")   && i + 1 < argc) desc_path = argv[++i];
+        else if (!strcmp(a, "--keys")   && i + 1 < argc) keys_csv  = argv[++i];
+        else if (!strcmp(a, "--to")     && i + 1 < argc) to_hex    = argv[++i];
+        else if (!strcmp(a, "--export") && i + 1 < argc) export_path = argv[++i];
+        else if (!strcmp(a, "--submit") && i + 1 < argc) submit    = argv[++i];
+        else if (!strcmp(a, "--amount") && i + 1 < argc)
+            amount = strtoull(argv[++i], NULL, 10);
+        else if (!strcmp(a, "--fee") && i + 1 < argc) {
+            fee = strtoull(argv[++i], NULL, 10); have_fee = 1;
+        } else if (!strcmp(a, "--signers") && i + 1 < argc)
+            k_signers = strtol(argv[++i], NULL, 10);
+        else if (!strcmp(a, "--in") && i + 1 < argc) {
+            if (n_in >= (int)T6_SPEND_MAX_IN) { bad = 1; break; }
+            in_arg[n_in++] = argv[++i];
+        } else { bad = 1; break; }
+    }
+    if (bad || !desc_path || !keys_csv || !to_hex || !export_path ||
+        n_in < 1 || amount == 0) {
+        fprintf(stderr,
+            "Usage: v2-envelope spend --msig <descriptor-file> --keys <dir>\n"
+            "         --in <nullifier128hex>:<amount> [--in ...] (1..%u native "
+            "coins of the multisig address)\n"
+            "         --to <fp128hex> --amount <raw> [--fee <raw>] "
+            "[--signers <K>]\n"
+            "         --export <file> [--submit ip:port]\n"
+            "  Builds the UNSIGNED CORE SPEND (auth_kind 3) and writes the "
+            "export file\n"
+            "  for `msig sign`. --keys opens the session (chain id, tip, gas "
+            "price) and\n"
+            "  signs nothing. K (default M) is FINAL: combine needs exactly K "
+            "signatures.\n"
+            "  Change goes back to the multisig address.\n",
+            (unsigned)T6_SPEND_MAX_IN);
+        return 1;
+    }
+
+    int rc = 1;
+    uint8_t *dbuf = NULL, *call = NULL, *auth = NULL, *env_bytes = NULL;
+    nodus_identity_t *keys = NULL;
+    dna_env_preflight_t *pf = NULL;
+    nodus_client_t client;
+    memset(&client, 0, sizeof(client));
+    int connected = 0, utxos_valid = 0;
+    nodus_dnac_utxo_result_t utxos;
+    memset(&utxos, 0, sizeof(utxos));
+
+    size_t dlen = 0;
+    uint8_t m = 0, n = 0, addr[64];
+    const uint8_t *dkeys = NULL;
+    if (msig_read_file(desc_path, &dbuf, &dlen, DNA_MSIG_MAX_DESC_LEN) != 0)
+        goto done;
+    if (dna_msig_desc_parse(dbuf, dlen, &m, &n, &dkeys) != 0 ||
+        dna_msig_address(dbuf, dlen, addr) != 0) {
+        fprintf(stderr, "%s is not a valid multisig descriptor\n", desc_path);
+        goto done;
+    }
+    if (k_signers == 0) k_signers = m;
+    if (k_signers < m || k_signers > n) {
+        fprintf(stderr, "--signers must be in [M=%u, N=%u]\n",
+                (unsigned)m, (unsigned)n);
+        goto done;
+    }
+    char addr_hex[QGP_FP_HEX_BUFFER], to_fp[QGP_FP_HEX_BUFFER];
+    qgp_fp_raw_to_hex(addr, addr_hex);
+    uint8_t to_raw[64];
+    if (qgp_fp_hex_to_raw(to_hex, to_raw) != 0) {
+        fprintf(stderr, "--to must be exactly 128 lowercase hex chars\n");
+        goto done;
+    }
+    qgp_fp_raw_to_hex(to_raw, to_fp);
+
+    /* inputs: nullifier:amount, strictly ascending for the wire */
+    t6_coin_t ins[T6_SPEND_MAX_IN];
+    uint64_t sum_in = 0;
+    for (int i = 0; i < n_in; i++) {
+        const char *c = strchr(in_arg[i], ':');
+        if (!c || (size_t)(c - in_arg[i]) != 128) {
+            fprintf(stderr, "--in must be <nullifier 128 hex>:<amount>\n");
+            goto done;
+        }
+        char nh[129];
+        memcpy(nh, in_arg[i], 128);
+        nh[128] = '\0';
+        if (t6_hex_exact(nh, ins[i].nul, 64) != 0) {
+            fprintf(stderr, "--in nullifier is not 128 lowercase hex\n");
+            goto done;
+        }
+        ins[i].amount = strtoull(c + 1, NULL, 10);
+        if (ins[i].amount == 0 || sum_in > UINT64_MAX - ins[i].amount) {
+            fprintf(stderr, "--in amount must be >= 1 (and the sum fit "
+                    "u64)\n");
+            goto done;
+        }
+        sum_in += ins[i].amount;
+    }
+    qsort(ins, (size_t)n_in, sizeof(ins[0]), t6_nul_cmp);
+    for (int i = 1; i < n_in; i++)
+        if (memcmp(ins[i - 1].nul, ins[i].nul, 64) == 0) {
+            fprintf(stderr, "duplicate --in nullifier\n");
+            goto done;
+        }
+
+    const uint64_t fee_floor = DNAC_MIN_FEE_RAW > NODUS_W_BASE_TX_FEE
+                             ? DNAC_MIN_FEE_RAW : NODUS_W_BASE_TX_FEE;
+    if (!have_fee) fee = fee_floor;
+    if (fee < fee_floor) {
+        fprintf(stderr, "--fee is below the chain's floor %llu\n",
+                (unsigned long long)fee_floor);
+        goto done;
+    }
+
+    const nodus_domain_runtime_t *core_rt = cli_builtin_runtime(DNA_DOMAIN_CORE);
+    const nodus_domain_runtime_t *sys_rt  = cli_builtin_runtime(DNA_DOMAIN_SYSTEM);
+    if (!core_rt || !sys_rt || !sys_rt->meter_policy) goto done;
+
+    /* ── the session (chain id, tip, gas price) — it signs nothing ─── */
+    keys = calloc(4, sizeof(*keys));
+    if (!keys || act_load_keys(keys_csv, keys, 4) != 1) {
+        fprintf(stderr, "--msig needs exactly one --keys identity (the "
+                "session)\n");
+        goto done;
+    }
+    char sip[64];
+    uint16_t sport = 0;
+    if (t6_resolve_target(submit, server_ip, server_port, sip, &sport) != 0) {
+        fprintf(stderr, "invalid --submit target (and no -s server)\n");
+        goto done;
+    }
+    nodus_client_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "%s", sip);
+    cfg.servers[0].port = sport;
+    cfg.server_count    = 1;
+    cfg.auto_reconnect  = false;
+    if (nodus_client_init(&client, &cfg, &keys[0]) != 0) goto done;
+    connected = 1;
+    if (nodus_client_connect(&client) != 0) {
+        fprintf(stderr, "client connect failed (%s:%u)\n", sip, sport);
+        goto done;
+    }
+    uint8_t chain32[DNA_CHAIN_ID_LEN];
+    bool has_chain32 = false;
+    if (nodus_client_dnac_chain_id32(&client, &has_chain32, chain32) != 0 ||
+        !has_chain32) {
+        fprintf(stderr, "this node is not on a version-3 chain\n");
+        goto done;
+    }
+    uint64_t gas_price = 0;
+    {
+        nodus_dnac_fee_info_t fi;
+        memset(&fi, 0, sizeof(fi));
+        if (nodus_client_dnac_fee_info(&client, &fi) != 0) {
+            fprintf(stderr, "dnac_fee_info query failed — the gas price is "
+                    "unknown, refusing to size a fee\n");
+            goto done;
+        }
+        gas_price = fi.gas_price;
+    }
+    /* the tip rides the session's own dnac_utxo reply (its coins are not
+     * used) — the same source `v2-envelope spend` anchors expiry on */
+    if (nodus_client_dnac_utxo(&client, keys[0].fingerprint, 1, &utxos) != 0) {
+        fprintf(stderr, "dnac_utxo (tip) query failed\n");
+        goto done;
+    }
+    utxos_valid = 1;
+    const uint64_t tip = utxos.block_height;
+    if (tip == 0) {
+        fprintf(stderr, "the node reported tip 0 — refusing\n");
+        goto done;
+    }
+
+    /* ── build (fee fixed-point, at most 3 passes) ────────────────────── */
+    const uint32_t tail_len = 1u + 2u + (uint32_t)dlen;
+    const uint32_t alen = 1u + (uint32_t)k_signers * NODUS_RT_AUTH_SIGNER_LEN +
+                          tail_len;
+    call = malloc(2 + (size_t)T6_SPEND_MAX_IN * 64 + 2u * T6_SPEND_OUT_LEN);
+    auth = calloc(1, alen);
+    pf   = calloc(1, sizeof(*pf));
+    if (!call || !auth || !pf) goto done;
+    auth[0] = (uint8_t)k_signers;
+    {
+        uint8_t *t = auth + 1 + (size_t)k_signers * NODUS_RT_AUTH_SIGNER_LEN;
+        t[0] = 1;                            /* dcount: one descriptor   */
+        t[1] = (uint8_t)(dlen >> 8);
+        t[2] = (uint8_t)dlen;
+        memcpy(t + 3, dbuf, dlen);
+    }
+    dna_env_leg_in_t leg;
+    dna_env_in_t env_in;
+    uint64_t change = 0, units = 0;
+    int n_out = 0;
+    for (int pass = 0; ; pass++) {
+        if (amount > sum_in || fee > sum_in - amount) {
+            fprintf(stderr, "the inputs (%llu) do not cover amount %llu + "
+                    "fee %llu\n", (unsigned long long)sum_in,
+                    (unsigned long long)amount, (unsigned long long)fee);
+            goto done;
+        }
+        change = sum_in - amount - fee;
+        size_t off = 0;
+        call[off++] = (uint8_t)n_in;
+        for (int i = 0; i < n_in; i++, off += 64)
+            memcpy(call + off, ins[i].nul, 64);
+        n_out = change > 0 ? 2 : 1;
+        call[off++] = (uint8_t)n_out;
+        for (int o = 0; o < n_out; o++) {
+            uint8_t seed[32];
+            if (nodus_random(seed, sizeof(seed)) != 0) goto done;
+            t6_xfer_out_put(call + off, o == 0 ? to_fp : addr_hex,
+                            o == 0 ? amount : change, NULL, seed);
+            off += T6_SPEND_OUT_LEN;
+        }
+        memset(&leg, 0, sizeof(leg));
+        leg.hdr.domain_id       = DNA_DOMAIN_CORE;
+        leg.hdr.runtime_op      = DNA_CORERULE_SPEND;
+        leg.hdr.ruleset_version = core_rt->ruleset_version;
+        leg.hdr.access_mode     = DNA_ENV_ACCESS_INVOKE;
+        leg.hdr.auth_kind       = NODUS_RT_AUTHKIND_DSA87_MSIG_V1;
+        leg.hdr.call_len        = (uint32_t)off;
+        leg.hdr.auth_len        = alen;
+        t6_spend_effect_decl((uint32_t)n_in, (uint32_t)n_out,
+                             &leg.hdr.res_max_effects,
+                             &leg.hdr.res_max_effect_bytes);
+        leg.call_data = call;
+        leg.auth_data = auth;
+        memset(&env_in, 0, sizeof(env_in));
+        env_in.expiry_height = tip + CLI_ENV_EXPIRY_AHEAD;
+        env_in.fee_amount    = fee;
+        env_in.leg_count     = 1;
+        env_in.legs          = &leg;
+        if (t6_spend_ceiling(&env_in, sys_rt->meter_policy,
+                             (uint32_t)n_in + 1u, &units) != 0) {
+            fprintf(stderr, "could not size res_max_total_units\n");
+            goto done;
+        }
+        env_in.res_max_total_units = units;
+        uint64_t need = fee_floor;
+        if (gas_price != 0) {
+            if (units > UINT64_MAX / gas_price) goto done;
+            if (units * gas_price > need) need = units * gas_price;
+        }
+        if (fee >= need) break;
+        if (have_fee || pass >= 2) {
+            fprintf(stderr, "fee %llu is below the gas-price requirement "
+                    "%llu (%llu units x %llu)\n", (unsigned long long)fee,
+                    (unsigned long long)need, (unsigned long long)units,
+                    (unsigned long long)gas_price);
+            goto done;
+        }
+        fee = need;
+    }
+
+    /* ── pass 1: the unsigned envelope and its leg digest ──────────────── */
+    size_t env_len = 0, used = 0;
+    if (dna_env_encoded_size(env_in.legs, env_in.leg_count, &env_len) != 0)
+        goto done;
+    env_bytes = malloc(env_len);
+    if (!env_bytes ||
+        dna_env_encode(&env_in, env_bytes, env_len, &used) != 0 ||
+        used != env_len)
+        goto done;
+    {
+        msig_export_t x;
+        memset(&x, 0, sizeof(x));
+        memcpy(x.chain32, chain32, DNA_CHAIN_ID_LEN);
+        x.tip = tip;
+        x.env = env_bytes;
+        x.env_len = env_len;
+        if (msig_digest(&x, pf) != 0) goto done;
+    }
+    FILE *f = fopen(export_path, "w");
+    if (!f) { fprintf(stderr, "cannot write %s\n", export_path); goto done; }
+    fprintf(f, "%s\n", MSIG_EXPORT_MAGIC);
+    msig_hex_line(f, "chain_id", chain32, DNA_CHAIN_ID_LEN);
+    fprintf(f, "tip %llu\n", (unsigned long long)tip);
+    fprintf(f, "signers %ld\n", k_signers);
+    msig_hex_line(f, "digest", pf->auth_digest[0], 64);
+    msig_hex_line(f, "envelope", env_bytes, env_len);
+    if (fclose(f) != 0) goto done;
+
+    printf("v2-envelope spend --msig: %u-of-%u address %.16s... inputs=%d "
+           "sum_in=%llu amount=%llu fee=%llu change=%llu units=%llu "
+           "signers=%ld expiry=%llu\n", (unsigned)m, (unsigned)n, addr_hex,
+           n_in, (unsigned long long)sum_in, (unsigned long long)amount,
+           (unsigned long long)fee, (unsigned long long)change,
+           (unsigned long long)units, k_signers,
+           (unsigned long long)(tip + CLI_ENV_EXPIRY_AHEAD));
+    printf("  intent_id=");
+    for (int b = 0; b < 64; b++) printf("%02x", pf->intent_id[b]);
+    printf("\n  digest=");
+    for (int b = 0; b < 64; b++) printf("%02x", pf->auth_digest[0][b]);
+    printf("\n  export written to %s — next: `msig sign` by %ld co-signers, "
+           "then `msig combine` before block %llu\n", export_path,
+           k_signers, (unsigned long long)(tip + CLI_ENV_EXPIRY_AHEAD));
+    rc = 0;
+
+done:
+    free(dbuf);
+    free(call);
+    free(auth);
+    free(env_bytes);
+    free(pf);
+    if (utxos_valid) nodus_client_free_utxo_result(&utxos);
+    if (connected) nodus_client_close(&client);
+    if (keys) {
+        for (int i = 0; i < 4; i++) nodus_identity_clear(&keys[i]);
+        free(keys);
+    }
+    return rc;
+}
+
+/* `msig sign` — offline, one co-signer. */
+static int cmd_msig_sign(int argc, char **argv, int cmd_start) {
+    const char *keys_csv = NULL, *in_path = NULL, *out_path = NULL;
+    for (int i = cmd_start + 2; i < argc; i++) {
+        const char *a = argv[i];
+        if      (!strcmp(a, "--keys") && i + 1 < argc) keys_csv = argv[++i];
+        else if (!strcmp(a, "--in")   && i + 1 < argc) in_path  = argv[++i];
+        else if (!strcmp(a, "--out")  && i + 1 < argc) out_path = argv[++i];
+        else { keys_csv = NULL; break; }
+    }
+    if (!keys_csv || !in_path || !out_path) {
+        fprintf(stderr, "Usage: msig sign --keys <dir> --in <export> --out "
+                "<sigfile>\n");
+        return 1;
+    }
+    int rc = 1;
+    nodus_identity_t *keys = calloc(4, sizeof(*keys));
+    dna_env_preflight_t *pf = calloc(1, sizeof(*pf));
+    msig_export_t x;
+    memset(&x, 0, sizeof(x));
+    if (!keys || !pf) goto done;
+    if (act_load_keys(keys_csv, keys, 4) != 1) {
+        fprintf(stderr, "msig sign needs exactly one --keys identity\n");
+        goto done;
+    }
+    if (msig_export_read(in_path, &x) != 0) goto done;
+    dna_env_view_t v;
+    const uint8_t *desc = NULL, *dkeys = NULL;
+    size_t dl = 0;
+    uint8_t m = 0, n = 0;
+    if (msig_leg_open(&x, &v, &desc, &dl, &m, &n, &dkeys) != 0) goto done;
+    if (!msig_key_in(dkeys, n, keys[0].pk.bytes)) {
+        fprintf(stderr, "this key is not one of the descriptor's %u keys\n",
+                (unsigned)n);
+        goto done;
+    }
+    /* never sign a digest you did not derive yourself */
+    if (msig_digest(&x, pf) != 0) goto done;
+    if (memcmp(pf->auth_digest[0], x.digest, 64) != 0) {
+        fprintf(stderr, "REFUSED: the exported digest is not the digest of "
+                "the exported envelope on this chain\n");
+        goto done;
+    }
+    {
+        uint8_t addr[64];
+        char ah[QGP_FP_HEX_BUFFER];
+        if (dna_msig_address(desc, dl, addr) != 0) goto done;
+        qgp_fp_raw_to_hex(addr, ah);
+        const uint8_t *c = v.buf + v.call_off[0];
+        uint8_t nin = c[0];
+        const uint8_t *outs = c + 1 + (size_t)nin * 64 + 1;
+        uint8_t nout = c[1 + (size_t)nin * 64];
+        printf("signing a CORE SPEND from %u-of-%u address %.16s...: "
+               "%u input(s), fee %llu\n", (unsigned)m, (unsigned)n, ah,
+               (unsigned)nin, (unsigned long long)v.fee_amount);
+        for (uint8_t o = 0; o < nout; o++) {
+            const uint8_t *r = outs + (size_t)o * T6_SPEND_OUT_LEN;
+            uint64_t amt = 0;
+            for (int b = 0; b < 8; b++) amt = (amt << 8) | r[128 + b];
+            printf("  out[%u] -> %.16s... amount %llu\n", (unsigned)o,
+                   (const char *)r, (unsigned long long)amt);
+        }
+    }
+    uint8_t sig[DNAC_SIGNATURE_SIZE];
+    size_t sl = 0;
+    if (qgp_dsa87_sign(sig, &sl, x.digest, 64, keys[0].sk.bytes) != 0 ||
+        sl != DNAC_SIGNATURE_SIZE) {
+        fprintf(stderr, "signing failed\n");
+        goto done;
+    }
+    FILE *f = fopen(out_path, "w");
+    if (!f) { fprintf(stderr, "cannot write %s\n", out_path); goto done; }
+    fprintf(f, "%s\n", MSIG_SIG_MAGIC);
+    msig_hex_line(f, "digest", x.digest, 64);
+    msig_hex_line(f, "pubkey", keys[0].pk.bytes, DNAC_PUBKEY_SIZE);
+    msig_hex_line(f, "sig", sig, DNAC_SIGNATURE_SIZE);
+    if (fclose(f) != 0) goto done;
+    printf("signature written to %s\n", out_path);
+    rc = 0;
+done:
+    free(x.env);
+    free(pf);
+    if (keys) {
+        for (int i = 0; i < 4; i++) nodus_identity_clear(&keys[i]);
+        free(keys);
+    }
+    return rc;
+}
+
+/* `msig combine` — assemble, self-check, submit or write. */
+static int cmd_msig_combine(const char *server_ip, uint16_t server_port,
+                            int argc, char **argv, int cmd_start) {
+    const char *in_path = NULL, *keys_csv = NULL, *submit = NULL;
+    const char *out_path = NULL;
+    const char *sig_path[NODUS_RT_AUTH_MAX_SIGNERS];
+    int n_sig = 0, bad = 0;
+    for (int i = cmd_start + 2; i < argc; i++) {
+        const char *a = argv[i];
+        if      (!strcmp(a, "--in")     && i + 1 < argc) in_path  = argv[++i];
+        else if (!strcmp(a, "--keys")   && i + 1 < argc) keys_csv = argv[++i];
+        else if (!strcmp(a, "--submit") && i + 1 < argc) submit   = argv[++i];
+        else if (!strcmp(a, "--out")    && i + 1 < argc) out_path = argv[++i];
+        else if (!strcmp(a, "--sig")    && i + 1 < argc) {
+            if (n_sig >= (int)NODUS_RT_AUTH_MAX_SIGNERS) { bad = 1; break; }
+            sig_path[n_sig++] = argv[++i];
+        } else { bad = 1; break; }
+    }
+    if (bad || !in_path || n_sig < 1 || (!out_path && !keys_csv)) {
+        fprintf(stderr,
+            "Usage: msig combine --in <export> --sig <file> [--sig ...]\n"
+            "         (--keys <dir> [--submit ip:port] | --out <envelope>)\n"
+            "  Needs EXACTLY the export's K signatures. --keys is any "
+            "identity (the\n"
+            "  submitting session); --out only writes the signed envelope.\n");
+        return 1;
+    }
+    int rc = 1;
+    msig_export_t x;
+    memset(&x, 0, sizeof(x));
+    nodus_identity_t *keys = NULL;
+    dna_env_preflight_t *pf = calloc(1, sizeof(*pf));
+    uint8_t (*spk)[DNAC_PUBKEY_SIZE] = calloc(NODUS_RT_AUTH_MAX_SIGNERS,
+                                              DNAC_PUBKEY_SIZE);
+    uint8_t (*ssig)[DNAC_SIGNATURE_SIZE] = calloc(NODUS_RT_AUTH_MAX_SIGNERS,
+                                                  DNAC_SIGNATURE_SIZE);
+    nodus_client_t client;
+    memset(&client, 0, sizeof(client));
+    int connected = 0;
+    if (!pf || !spk || !ssig) goto done;
+    if (msig_export_read(in_path, &x) != 0) goto done;
+    dna_env_view_t v;
+    const uint8_t *desc = NULL, *dkeys = NULL;
+    size_t dl = 0;
+    uint8_t m = 0, n = 0;
+    if (msig_leg_open(&x, &v, &desc, &dl, &m, &n, &dkeys) != 0) goto done;
+    if ((uint32_t)n_sig != x.signers) {
+        fprintf(stderr, "the export fixed %u signers (auth_len is signed); "
+                "%d signature file(s) given\n", (unsigned)x.signers, n_sig);
+        goto done;
+    }
+    if (msig_digest(&x, pf) != 0 ||
+        memcmp(pf->auth_digest[0], x.digest, 64) != 0) {
+        fprintf(stderr, "the export's digest does not re-derive\n");
+        goto done;
+    }
+    for (int i = 0; i < n_sig; i++) {
+        uint8_t *raw = NULL;
+        size_t rl = 0;
+        if (msig_read_file(sig_path[i], &raw, &rl, 32768) != 0) goto done;
+        raw[rl] = '\0';
+        const char *txt = (const char *)raw;
+        uint8_t dg[64];
+        int ok = strncmp(txt, MSIG_SIG_MAGIC "\n",
+                         strlen(MSIG_SIG_MAGIC) + 1) == 0 &&
+                 msig_kv_hex(txt, "digest", dg, 64) == 0 &&
+                 msig_kv_hex(txt, "pubkey", spk[i], DNAC_PUBKEY_SIZE) == 0 &&
+                 msig_kv_hex(txt, "sig", ssig[i], DNAC_SIGNATURE_SIZE) == 0;
+        free(raw);
+        if (!ok) { fprintf(stderr, "%s is malformed\n", sig_path[i]); goto done; }
+        if (memcmp(dg, x.digest, 64) != 0) {
+            fprintf(stderr, "%s signs another digest\n", sig_path[i]);
+            goto done;
+        }
+        if (!msig_key_in(dkeys, n, spk[i])) {
+            fprintf(stderr, "%s: key not in the descriptor\n", sig_path[i]);
+            goto done;
+        }
+        if (qgp_dsa87_verify(ssig[i], DNAC_SIGNATURE_SIZE, x.digest, 64,
+                             spk[i]) != 0) {
+            fprintf(stderr, "%s: signature does not verify\n", sig_path[i]);
+            goto done;
+        }
+    }
+    /* ascending pubkey order (the ONE canonical signer encoding), no
+     * duplicate key — selection sort over <= 15 entries */
+    uint8_t *a = x.env + v.auth_off[0];
+    for (int i = 0; i < n_sig; i++) {
+        int best = -1;
+        for (int j = 0; j < n_sig; j++) {
+            int used = 0;
+            for (int t = 0; t < i; t++)
+                if (memcmp(a + 1 + (size_t)t * NODUS_RT_AUTH_SIGNER_LEN,
+                           spk[j], DNAC_PUBKEY_SIZE) == 0) used = 1;
+            if (used) continue;
+            if (best < 0 || memcmp(spk[j], spk[best], DNAC_PUBKEY_SIZE) < 0)
+                best = j;
+        }
+        if (best < 0) {
+            fprintf(stderr, "duplicate signer key among the signature "
+                    "files\n");
+            goto done;
+        }
+        uint8_t *slot = a + 1 + (size_t)i * NODUS_RT_AUTH_SIGNER_LEN;
+        memcpy(slot, spk[best], DNAC_PUBKEY_SIZE);
+        memcpy(slot + DNAC_PUBKEY_SIZE, ssig[best], DNAC_SIGNATURE_SIZE);
+    }
+    /* the chain's OWN auth hook, locally: >= M keys must be satisfied */
+    {
+        const nodus_domain_runtime_t *core_rt =
+            cli_builtin_runtime(DNA_DOMAIN_CORE);
+        nodus_rt_auth_verdict_t av;
+        nodus_rt_exec_ctx_t ctx;
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.chain_id = x.chain32;
+        ctx.global_height = x.tip + 1;
+        ctx.leg_auth_digest = x.digest;
+        if (!core_rt || dna_env_decode(x.env, x.env_len, &v) != 0 ||
+            nodus_rt_auth_dsa87_v1(core_rt, &v, 0, &ctx, &av) != 0 ||
+            av.n_msig != 1 || !av.msig_satisfied[0]) {
+            fprintf(stderr, "the assembled authorization does not satisfy "
+                    "the descriptor (M=%u)\n", (unsigned)m);
+            goto done;
+        }
+    }
+    if (msig_digest(&x, pf) != 0) goto done;   /* pass-2 self-check     */
+    printf("msig combine: %d signature(s) assembled, %zu bytes\n  wire_id=",
+           n_sig, x.env_len);
+    for (int b = 0; b < 64; b++) printf("%02x", pf->wire_id[b]);
+    printf("\n  intent_id=");
+    for (int b = 0; b < 64; b++) printf("%02x", pf->intent_id[b]);
+    printf("\n");
+    if (out_path) {
+        FILE *f = fopen(out_path, "wb");
+        if (!f || fwrite(x.env, 1, x.env_len, f) != x.env_len) {
+            fprintf(stderr, "cannot write %s\n", out_path);
+            if (f) fclose(f);
+            goto done;
+        }
+        fclose(f);
+        printf("  signed envelope written to %s\n", out_path);
+    }
+    if (keys_csv) {
+        keys = calloc(4, sizeof(*keys));
+        if (!keys || act_load_keys(keys_csv, keys, 4) != 1) {
+            fprintf(stderr, "--keys must name exactly one identity\n");
+            goto done;
+        }
+        char sip[64];
+        uint16_t sport = 0;
+        if (t6_resolve_target(submit, server_ip, server_port, sip,
+                              &sport) != 0) {
+            fprintf(stderr, "invalid --submit target (and no -s server)\n");
+            goto done;
+        }
+        nodus_client_config_t cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "%s", sip);
+        cfg.servers[0].port = sport;
+        cfg.server_count    = 1;
+        cfg.auto_reconnect  = false;
+        if (nodus_client_init(&client, &cfg, &keys[0]) != 0) goto done;
+        connected = 1;
+        if (nodus_client_connect(&client) != 0) {
+            fprintf(stderr, "client connect failed (%s:%u)\n", sip, sport);
+            goto done;
+        }
+        if (t6_submit_on(&client, &keys[0], pf->wire_id, x.env,
+                         (uint32_t)x.env_len) != 0)
+            goto done;
+    }
+    rc = 0;
+done:
+    free(x.env);
+    free(pf);
+    free(spk);
+    free(ssig);
+    if (connected) nodus_client_close(&client);
+    if (keys) {
+        for (int i = 0; i < 4; i++) nodus_identity_clear(&keys[i]);
+        free(keys);
+    }
+    return rc;
+}
 #endif /* NODUS_CLI_HAS_DNAC */
 
 /* ── Usage ───────────────────────────────────────────────────────── */
@@ -4841,16 +5883,20 @@ static void usage(const char *prog) {
     fprintf(stderr, "  ch_listen <uuid> [logfile]  Subscribe to channel on TCP 4003, log posts\n");
 #ifdef NODUS_CLI_HAS_DNAC
     fprintf(stderr, "  chain-config propose --param <NAME> --value <N> --effective <BLOCK>\n");
-    fprintf(stderr, "  stake [--commission BPS] [--bond RAW]   Bond this node identity as validator (S3)\n");
+    fprintf(stderr, "  stake [--commission BPS] [--bond RAW = exactly 10M NODUS]   Bond this node identity as validator (S3)\n");
     fprintf(stderr, "                              [--nonce <N>]  (committee operator only)\n");
-    fprintf(stderr, "                  NAME: TARGET_ACTIVE_COUNT | GAS_PRICE_RAW_PER_UNIT\n");
+    fprintf(stderr, "                  NAME: TARGET_ACTIVE_COUNT | GAS_PRICE_RAW_PER_UNIT |\n");
+    fprintf(stderr, "                        TOKEN_CREATE_FEE_RAW\n");
     fprintf(stderr, "                        (the parameters the running consensus reads)\n");
     fprintf(stderr, "                  run without --value for per-param ranges\n");
     fprintf(stderr, "  v2-claim --legacy-db <t.db> --db <s.db> --keys <dir>\n");
     fprintf(stderr, "           (--dry-run | --submit ip:port)   Successor GENESIS_CLAIM\n");
-    fprintf(stderr, "  v2-envelope stake --keys <dir> --bond <raw>\n");
+    fprintf(stderr, "  v2-envelope stake --keys <dir> --bond <raw = exactly 10M NODUS>\n");
     fprintf(stderr, "           --commission <bps> --dest-fp <hex128>\n");
     fprintf(stderr, "           (--dry-run | --submit ip:port)   O11 two-leg STAKE\n");
+    fprintf(stderr, "  v2-envelope delegate --keys <dir> --validator <hex5184 pubkey>\n");
+    fprintf(stderr, "           --amount <raw> (--dry-run | --submit ip:port)\n");
+    fprintf(stderr, "                                   two-leg DELEGATE (own key = self-delegation)\n");
     fprintf(stderr, "  v2-envelope spend --keys <dir> --to <fp128hex> --amount <raw|all>\n");
     fprintf(stderr, "           [--fee <raw>] [--token <hex128>] [--count <N|all>]\n");
     fprintf(stderr, "           [--shard <I>/<M>]\n");
@@ -4859,6 +5905,15 @@ static void usage(const char *prog) {
     fprintf(stderr, "           --decimals <0..18> --supply <raw> [--to <fp128hex>]\n");
     fprintf(stderr, "           [--fee <raw>] [--token-id <hex128>]\n");
     fprintf(stderr, "           (--dry-run | --submit ip:port)   CORE TOKEN_CREATE\n");
+    fprintf(stderr, "  msig address --m <M> --pubkey <file> ... [--descriptor-out <f>]\n");
+    fprintf(stderr, "                                   M-of-N multisig address (offline)\n");
+    fprintf(stderr, "  v2-envelope spend --msig <descriptor> --keys <dir>\n");
+    fprintf(stderr, "           --in <nul128hex>:<amount> ... --to <fp128hex> --amount <raw>\n");
+    fprintf(stderr, "           [--fee <raw>] [--signers <K>] --export <file>\n");
+    fprintf(stderr, "                                   UNSIGNED multisig spend + digest\n");
+    fprintf(stderr, "  msig sign --keys <dir> --in <export> --out <sigfile>   (offline)\n");
+    fprintf(stderr, "  msig combine --in <export> --sig <f> ... (--keys <dir>\n");
+    fprintf(stderr, "           [--submit ip:port] | --out <envelope>)   assemble + submit\n");
 #endif
 }
 
@@ -4923,6 +5978,23 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+#ifdef NODUS_CLI_HAS_DNAC
+    /* general multisig — `msig address` and `msig sign` are OFFLINE;
+     * `msig combine` submits over its own --submit / -s session */
+    if (strcmp(command, "msig") == 0) {
+        const char *sub = optind + 1 < argc ? argv[optind + 1] : "";
+        if (!strcmp(sub, "address"))
+            return cmd_msig_address(argc, argv, optind);
+        if (!strcmp(sub, "sign"))
+            return cmd_msig_sign(argc, argv, optind);
+        if (!strcmp(sub, "combine"))
+            return cmd_msig_combine(server_ip, server_port, argc, argv,
+                                    optind);
+        fprintf(stderr, "Usage: msig (address | sign | combine) ...\n");
+        return 1;
+    }
+#endif
+
     /* All other commands need a server, except cluster-status which
      * takes its target list as positional args. */
     if (!server_ip && strcmp(command, "cluster-status") != 0) {
@@ -4986,10 +6058,13 @@ int main(int argc, char **argv) {
     /* O15D — v2-envelope: successor-chain envelope builder/submitter.
      * O15F T6 adds the `stake` subcommand (O11 two-leg STAKE); CLI-SPEND
      * adds `spend` (single-leg CORE SPEND, networked); `token-create`
-     * builds a single-leg CORE TOKEN_CREATE the same way. */
+     * builds a single-leg CORE TOKEN_CREATE the same way; W-B adds
+     * `delegate` (two-leg DELEGATE, the stake builder's sibling). */
     if (strcmp(command, "v2-envelope") == 0) {
         int rc;
-        if (optind + 1 < argc && strcmp(argv[optind + 1], "stake") == 0)
+        if (optind + 1 < argc &&
+            (strcmp(argv[optind + 1], "stake") == 0 ||
+             strcmp(argv[optind + 1], "delegate") == 0))
             rc = cmd_v2_stake(server_ip, server_port, argc, argv, optind);
         else if (optind + 1 < argc && strcmp(argv[optind + 1], "spend") == 0)
             rc = cmd_v2_spend(server_ip, server_port, argc, argv, optind);

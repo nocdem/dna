@@ -21,6 +21,7 @@
 #include "crypto/utils/qgp_log.h"
 
 #include <sqlite3.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -141,7 +142,8 @@ int nodus_witness_token_root_v2(nodus_witness_t *w, uint8_t out[64]) {
 /* Root-layout round (K2, 2026-09-25): the epoch_state leg
  * (nodus_witness_epoch_root_v2) is DELETED together with the
  * `epoch_state` table — no writer of it remained after tokenomics-v3
- * P2, so the leg was a constant. SYSTEM is 7 legs ("DNA.SYS.v3"). */
+ * P2, so the leg was a constant. SYSTEM was 7 legs ("DNA.SYS.v3");
+ * W-A appended treasury_root, so it is 8 legs ("DNA.SYS.v4"). */
 
 /* ── supply_root ────────────────────────────────────────────────────── */
 
@@ -231,6 +233,113 @@ int nodus_witness_accrual_root_v2(nodus_witness_t *w, uint8_t out[64]) {
         ret = dna_v2_accrual_root((const uint8_t (*)[64])fps, amts, n, out);
     free(fps);
     free(amts);
+    return ret;
+}
+
+/* ── treasury (final pre-testnet wipe, W-A) ────────────────────────────
+ * Contract: nodus_witness_roots_v2.h. The accrual leg's fail-closed
+ * shape, with one scan used by the root AND the supply term so the two
+ * can never disagree on which rows are well-formed. No sqlite_master
+ * probe: `v2_treasury` is in WITNESS_DB_SCHEMA (nodus_witness.c) and
+ * the S16 rung, so a missing table on a DB this build opened is a
+ * fault, not an empty state. */
+
+/* Scan every row, pool_id ASC. On success *ids / *bals are malloc'd
+ * (NULL when n == 0) and *n_out holds the row count. A malformed row —
+ * pool_id outside [MIN, MAX], a negative balance, a non-INTEGER column
+ * — FAILS the scan; it is never skipped. */
+static int treasury_scan(nodus_witness_t *w, uint32_t **ids,
+                         uint64_t **bals, size_t *n_out) {
+    *ids = NULL;
+    *bals = NULL;
+    *n_out = 0;
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(w->db,
+        "SELECT pool_id, balance FROM v2_treasury ORDER BY pool_id ASC",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "treasury scan prepare failed: %s",
+                      sqlite3_errmsg(w->db));
+        return -1;
+    }
+    /* The pool set is fixed at NODUS_TREASURY_POOL_COUNT; a table with
+     * more rows than that cannot pass the range check below anyway (the
+     * key is unique), so this bound is also the array bound. */
+    uint32_t *pid = malloc(NODUS_TREASURY_POOL_COUNT * sizeof(uint32_t));
+    uint64_t *bal = malloc(NODUS_TREASURY_POOL_COUNT * sizeof(uint64_t));
+    if (!pid || !bal) {
+        free(pid); free(bal); sqlite3_finalize(stmt);
+        return -1;
+    }
+    size_t n = 0;
+    int fail = 0;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        if (sqlite3_column_type(stmt, 0) != SQLITE_INTEGER ||
+            sqlite3_column_type(stmt, 1) != SQLITE_INTEGER) {
+            QGP_LOG_ERROR(LOG_TAG, "treasury row %zu has a non-INTEGER "
+                          "column — failing", n);
+            fail = 1;
+            break;
+        }
+        sqlite3_int64 id = sqlite3_column_int64(stmt, 0);
+        sqlite3_int64 b  = sqlite3_column_int64(stmt, 1);
+        if (id < (sqlite3_int64)NODUS_TREASURY_POOL_MIN ||
+            id > (sqlite3_int64)NODUS_TREASURY_POOL_MAX || b < 0 ||
+            n >= NODUS_TREASURY_POOL_COUNT) {
+            QGP_LOG_ERROR(LOG_TAG, "treasury row %zu malformed (pool_id "
+                          "%lld, balance %lld) — failing", n,
+                          (long long)id, (long long)b);
+            fail = 1;
+            break;
+        }
+        pid[n] = (uint32_t)id;
+        bal[n] = (uint64_t)b;
+        n++;
+    }
+    if (!fail && rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "treasury scan aborted mid-stream (rc=%d) — "
+                      "failing", rc);
+        fail = 1;
+    }
+    sqlite3_finalize(stmt);
+    if (fail) {
+        free(pid);
+        free(bal);
+        return -1;
+    }
+    *ids = pid;
+    *bals = bal;
+    *n_out = n;
+    return 0;
+}
+
+int nodus_witness_treasury_root_v2(nodus_witness_t *w, uint8_t out[64]) {
+    if (!w || !w->db || !out) return -1;
+    uint32_t *ids = NULL;
+    uint64_t *bals = NULL;
+    size_t n = 0;
+    if (treasury_scan(w, &ids, &bals, &n) != 0) return -1;
+    int ret = dna_v2_treasury_root(ids, bals, n, out);
+    free(ids);
+    free(bals);
+    return ret;
+}
+
+int nodus_witness_treasury_total(nodus_witness_t *w, uint64_t *out) {
+    if (!w || !w->db || !out) return -1;
+    uint32_t *ids = NULL;
+    uint64_t *bals = NULL;
+    size_t n = 0;
+    if (treasury_scan(w, &ids, &bals, &n) != 0) return -1;
+    uint64_t sum = 0;
+    int ret = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (bals[i] > UINT64_MAX - sum) { ret = -1; break; }
+        sum += bals[i];
+    }
+    free(ids);
+    free(bals);
+    if (ret == 0) *out = sum;
     return ret;
 }
 
@@ -334,7 +443,7 @@ int nodus_witness_system_payload_root_v2(nodus_witness_t *w,
                                          uint8_t out[64]) {
     if (!w || !out) return -1;
     uint8_t validator_root[64], delegation_root[64];
-    uint8_t chain_config_root[64], vset[64];
+    uint8_t chain_config_root[64], vset[64], treasury[64];
     if (nodus_witness_merkle_compute_validator_root(w, validator_root) != 0)
         return -1;
     if (nodus_witness_merkle_compute_delegation_root(w, delegation_root) != 0)
@@ -343,16 +452,19 @@ int nodus_witness_system_payload_root_v2(nodus_witness_t *w,
         return -1;
     if (nodus_witness_vset_root(w, vset) != 0)
         return -1;
-    /* "DNA.SYSPAYL.v2", 4 legs (root-layout round K2). */
+    if (nodus_witness_treasury_root_v2(w, treasury) != 0)
+        return -1;
+    /* "DNA.SYSPAYL.v3", 5 legs (W-A: treasury_root appended last). */
     return dna_v2_system_payload_root(validator_root, delegation_root,
-                                      chain_config_root, vset, out);
+                                      chain_config_root, vset, treasury,
+                                      out);
 }
 
 int nodus_witness_system_root_v2(nodus_witness_t *w, uint8_t out[64]) {
     if (!w || !out) return -1;
     uint8_t validator_root[64], delegation_root[64];
     uint8_t chain_config_root[64], vset[64], domreg[64], manifest[64];
-    uint8_t attendance[64];
+    uint8_t attendance[64], treasury[64];
     if (nodus_witness_merkle_compute_validator_root(w, validator_root) != 0)
         return -1;
     if (nodus_witness_merkle_compute_delegation_root(w, delegation_root) != 0)
@@ -394,12 +506,22 @@ int nodus_witness_system_root_v2(nodus_witness_t *w, uint8_t out[64]) {
      * F12 ve F13-b" class). */
     if (nodus_witness_attendance_root(w, attendance) != 0)
         return -1;
+    /* Final pre-testnet wipe, W-A: the keyless treasury pools, the 8th
+     * and LAST leg under "DNA.SYS.v4". A SYSTEM leg (not CORE) because
+     * a future exit rule will be a SYSTEM leg with a CORE sibling
+     * (UNDELEGATE precedent — design §7 F2). There is NO writer after
+     * genesis in this build: general multisig (decision 2026-09-29-
+     * general-multisig.md) withdrew W-A's genesis graduation refund —
+     * a genesis seat releases a UTXO to its destination, the Foundation
+     * multisig address. */
+    if (nodus_witness_treasury_root_v2(w, treasury) != 0)
+        return -1;
     /* GENERICITY CORRECTION (locked): the native supply_root is NOT a
      * SYSTEM leg — issuance belongs to the DNA_CORE runtime and is
      * committed by ITS state root below. */
     return dna_v2_system_root(validator_root, delegation_root,
                               chain_config_root, vset, domreg, manifest,
-                              attendance, out);
+                              attendance, treasury, out);
 }
 
 int nodus_witness_core_root_v2(nodus_witness_t *w, uint8_t out[64]) {

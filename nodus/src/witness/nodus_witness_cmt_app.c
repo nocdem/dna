@@ -114,7 +114,8 @@ struct nodus_cmt_app_acache {
     uint8_t                  wire_id[64];
     uint64_t                 gen;       /* last commit generation used    */
     uint16_t                 leg_count;
-    uint8_t                 *present;   /* [leg_count] 1 = kind-1 verdict */
+    uint8_t                 *present;   /* [leg_count] 1 = kind-1/3
+                                         * verdict cached               */
     uint8_t                (*digest)[64];            /* [leg_count]       */
     nodus_rt_auth_verdict_t *verdict;                /* [leg_count]       */
 };
@@ -342,25 +343,36 @@ static size_t acache_find(const nodus_cmt_app_ledger_t *ctx,
 }
 
 /**
- * Cache the auth_kind-1 verdicts of an envelope the dry run just
- * ADMITTED. Nothing is cached when no leg is kind 1, when the cache is at
- * its cap, or when an allocation fails — a miss only means the next
- * recheck verifies in full, so none of these is an error.
+ * Cache the auth_kind-1 and auth_kind-3 verdicts of an envelope the dry
+ * run just ADMITTED (kind 3 — general multisig, design F1.3: its verdict,
+ * descriptor facts included, is a pure function of the auth bytes and
+ * the leg digest exactly like kind 1's, and the cache key is the
+ * wire_id, which commits the auth bytes). Nothing is cached when no leg
+ * is kind 1 or 3, when the cache is at its cap, or when an allocation
+ * fails — a miss only means the next recheck verifies in full, so none
+ * of these is an error. Kind 2 is never cached (its verdict depends on
+ * the governing committee snapshot).
  */
+static int acache_kind_ok(uint8_t kind)
+{
+    return kind == NODUS_RT_AUTHKIND_DSA87_MULTI_V1 ||
+           kind == NODUS_RT_AUTHKIND_DSA87_MSIG_V1;
+}
+
 static void acache_store(nodus_cmt_app_ledger_t *ctx,
                          const nodus_v2_env_dry_run_t *dry)
 {
     struct nodus_cmt_app_acache *e;
     size_t   at;
     int      found;
-    uint16_t l, n_kind1 = 0;
+    uint16_t l, n_cacheable = 0;
 
     for (l = 0; l < dry->leg_count; l++) {
-        if (dry->auth_kind[l] == NODUS_RT_AUTHKIND_DSA87_MULTI_V1) {
-            n_kind1++;
+        if (acache_kind_ok(dry->auth_kind[l])) {
+            n_cacheable++;
         }
     }
-    if (n_kind1 == 0 || ctx->acache_n >= ctx->acache_max) {
+    if (n_cacheable == 0 || ctx->acache_n >= ctx->acache_max) {
         return;
     }
     at = acache_find(ctx, dry->wire_id, &found);
@@ -398,7 +410,7 @@ static void acache_store(nodus_cmt_app_ledger_t *ctx,
     e->gen       = ctx->acache_gen;
     e->leg_count = dry->leg_count;
     for (l = 0; l < dry->leg_count; l++) {
-        if (dry->auth_kind[l] != NODUS_RT_AUTHKIND_DSA87_MULTI_V1) {
+        if (!acache_kind_ok(dry->auth_kind[l])) {
             continue;              /* kind 2: never cached               */
         }
         e->present[l] = 1;
@@ -788,7 +800,7 @@ static int app_pend_admit(nodus_cmt_app_ledger_t *ctx,
  * CHECKTX-P1 — the ENVELOPE half after the admission lane: the per-item
  * lifetime rule, the dry run, then the conflict keys (intent + every
  * row-identity row), then the auth cache. On RECHECK the cached kind-1
- * verdicts of this wire_id are
+ * and kind-3 (general multisig) verdicts of this wire_id are
  * offered to the dry run, which takes one only where the leg digest it
  * derives again matches — and re-runs every state-dependent stage.
  * @return CMT_OK (verdict in `*refused`) / CMT_FAULT node-local.
@@ -843,7 +855,9 @@ static int app_check_envelope(nodus_cmt_app_ledger_t *ctx,
         }
     }
 
-    dry = (nodus_v2_env_dry_run_t *)calloc(1, sizeof(*dry));   /* ~70 KB */
+    dry = (nodus_v2_env_dry_run_t *)calloc(1, sizeof(*dry));   /* ~100 KB:
+                                     * 64 verdicts × 1 424 B since general
+                                     * multisig (~70 KB before) */
     if (!dry) {
         return CMT_FAULT;
     }
@@ -1359,8 +1373,9 @@ static int app_prep_quota_ix(const app_prep_units_t *u, uint32_t domain_id)
  *  - R3 W4 package C — the PER-CLASS caps, now that the engine's own
  *    scratch is heap and sized per-block (nodus_witness_v2_apply.c):
  *    envelopes ≤ min(`env_bound`, `NODUS_V2_ENV_BATCH_MAX`) (delta 2
- *    on: a derived MEMORY ceiling, 64 MiB scratch budget / 20 908 B per
- *    envelope = 3 209 — NOT the chain-config hard cap of 10 delta 1
+ *    on: a derived MEMORY ceiling, 64 MiB scratch budget / 21 824 B per
+ *    envelope = 3 075 since general multisig grew the auth verdict
+ *    (20 908 B / 3 209 before) — NOT the chain-config hard cap of 10 delta 1
  *    briefly tied it to; MAX_TXS_PER_BLOCK is RETIRED, apply.h; the
  *    min() because this chain's own byte-derived env_bound can only be
  *    SMALLER on a genesis document with an unusually small block) and

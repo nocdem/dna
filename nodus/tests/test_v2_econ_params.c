@@ -273,9 +273,13 @@ static int cfg_make(cfgbox_t *b, uint8_t salt, uint64_t inflation_start) {
     if (!b->cfg || !b->allocs) { cfg_free(b); return -1; }
 
     nodus_v2_gen_config_t *c = b->cfg;
-    /* tokenomics-v3 P4: 3 is the only config version gen_plan_build
-     * accepts; the version-3 TAIL is completed by cfg_make_v3. */
-    c->config_version        = NODUS_V2_GEN_CONFIG_VERSION_V3;
+    /* Final pre-testnet wipe W-A / general multisig: 5 is the only
+     * config version gen_plan_build accepts (nine treasury pools, ids
+     * 1..9, zero balances here; no genesis outputs); the TAIL is
+     * completed by cfg_make_v3. */
+    c->config_version        = NODUS_V2_GEN_CONFIG_VERSION_V5;
+    for (size_t p = 0; p < NODUS_V2_GEN_TREASURY_POOLS; p++)
+        c->treasury[p].pool_id = (uint32_t)(p + 1);
     c->total_supply_raw      = DNAC_DEFAULT_TOTAL_SUPPLY;
     c->epoch_length          = (uint64_t)DNAC_EPOCH_LENGTH;
     c->blocks_per_year       = (uint64_t)DNAC_BLOCKS_PER_YEAR;
@@ -294,6 +298,9 @@ static int cfg_make(cfgbox_t *b, uint8_t salt, uint64_t inflation_start) {
         }
         hex_lower_fp(v->unstake_destination_pubkey, DNAC_PUBKEY_SIZE,
                      v->unstake_destination_fp);
+        /* general multisig ONAY 2: a genesis row's destination pubkey is
+         * ALL ZERO (the fp above is only a shape-valid address) */
+        memset(v->unstake_destination_pubkey, 0, DNAC_PUBKEY_SIZE);
         v->self_stake     = DNAC_SELF_STAKE_AMOUNT;
         v->commission_bps = (uint16_t)(100 * (i + 1));
     }
@@ -963,8 +970,12 @@ static int t_inflation_start_from_genesis(void) {
                   0xABCDULL, &got) == 1 && got == 0xABCDULL,
               "the reader reports it ABSENT (rc 1), not a value");
     }
-    CHECK(q1(w->db, "SELECT COUNT(*) FROM chain_config_history") == 3,
-          "the committed band is exactly the three build-identity rows");
+    CHECK(q1(w->db, "SELECT COUNT(*) FROM chain_config_history") == 5,
+          "the committed rows are exactly the three build-identity rows "
+          "+ the two W-C governed fee rows (params 5 and 6)");
+    CHECK(q1(w->db, "SELECT COUNT(*) FROM chain_config_history "
+                    "WHERE param_id >= 200") == 3,
+          "the band itself is exactly the three build-identity rows");
     CHECK(q1(w->db, "SELECT total_minted FROM supply_tracking "
                     "WHERE id = 1") == 0,
           "total_minted is 0 and nothing will ever write it");
@@ -1032,9 +1043,10 @@ static int t_determinism_twin(void) {
      * the digest covered them. tokenomics-v3 P2: three rows (param 3 is
      * retired), and the out-of-root copy(0) the engine genesis writes is
      * in the digest as well. */
-    CHECK(q1(w1->db, "SELECT COUNT(*) FROM chain_config_history") == 3 &&
-          q1(w2->db, "SELECT COUNT(*) FROM chain_config_history") == 3,
-          "both twins carry exactly the three economic rows");
+    CHECK(q1(w1->db, "SELECT COUNT(*) FROM chain_config_history") == 5 &&
+          q1(w2->db, "SELECT COUNT(*) FROM chain_config_history") == 5,
+          "both twins carry exactly the three economic rows + the two "
+          "W-C governed fee rows");
     CHECK(q1(w1->db, "SELECT COUNT(*) FROM v2_balance_copy") ==
               (int64_t)N_VAL &&
           q1(w2->db, "SELECT COUNT(*) FROM v2_balance_copy") ==

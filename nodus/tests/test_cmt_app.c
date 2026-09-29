@@ -398,6 +398,9 @@ static int cfg_make_v3_real(cfgbox_t *b)
         }
         hex_lower_fp(v->unstake_destination_pubkey, DNAC_PUBKEY_SIZE,
                      v->unstake_destination_fp);
+        /* general multisig ONAY 2: a genesis row's destination pubkey is
+         * ALL ZERO (the fp above is only a shape-valid address) */
+        memset(v->unstake_destination_pubkey, 0, DNAC_PUBKEY_SIZE);
         v->self_stake     = DNAC_SELF_STAKE_AMOUNT;
         v->commission_bps = (uint16_t)(100 * (k + 1));
     }
@@ -421,6 +424,12 @@ static int cfg_make_v3_real(cfgbox_t *b)
      * this fixture's allocations spend the whole supply and it is not a
      * reward test — no pool reserved. */
     c->reward_pool_initial = 0;
+    /* W-C: the builder's default genesis gas price (121) switches the
+     * fee rule ON from block 1; this file's CORE envelopes pay 0..9 raw
+     * to isolate OTHER rules (fee ordering, capacity, conflicts), so the
+     * chain opts out explicitly — a committed price-0 row. The gas rule
+     * itself is test_v2_gas_price.c's. */
+    c->gas_price_raw_per_unit = 0;
     c->genesis_time_ms = GEN_TIME_MS;
     c->initial_height  = 1;
     if (nodus_witness_v2_gen_v3_fill_comet_rows(c) != 0) {
@@ -504,6 +513,9 @@ static int cfg_make_v3_real_n(cfgbox_t *b, uint32_t n)
         }
         hex_lower_fp(v->unstake_destination_pubkey, DNAC_PUBKEY_SIZE,
                      v->unstake_destination_fp);
+        /* general multisig ONAY 2: a genesis row's destination pubkey is
+         * ALL ZERO (the fp above is only a shape-valid address) */
+        memset(v->unstake_destination_pubkey, 0, DNAC_PUBKEY_SIZE);
         v->self_stake     = DNAC_SELF_STAKE_AMOUNT;
         v->commission_bps = (uint16_t)(100 * (k + 1));
     }
@@ -529,6 +541,12 @@ static int cfg_make_v3_real_n(cfgbox_t *b, uint32_t n)
      * this fixture's allocations spend the whole supply and it is not a
      * reward test — no pool reserved. */
     c->reward_pool_initial = 0;
+    /* W-C: the builder's default genesis gas price (121) switches the
+     * fee rule ON from block 1; this file's CORE envelopes pay 0..9 raw
+     * to isolate OTHER rules (fee ordering, capacity, conflicts), so the
+     * chain opts out explicitly — a committed price-0 row. The gas rule
+     * itself is test_v2_gas_price.c's. */
+    c->gas_price_raw_per_unit = 0;
     c->genesis_time_ms = GEN_TIME_MS;
     c->initial_height  = 1;
     if (nodus_witness_v2_gen_v3_fill_comet_rows(c) != 0) {
@@ -5591,6 +5609,153 @@ static int t_check_tx_recheck_kind2(void)
     return 0;
 }
 
+/* ── general multisig (decision 2026-09-29-general-multisig.md, design
+ * F1.3): the CheckTx recheck cache covers auth_kind 3 ─────────────────
+ * The scripted CORE auth stub (v2x_auth) never fills multisig facts, and
+ * the engine only reuses a kind-3 verdict that carries 1..7 of them
+ * (nodus_witness_v2_apply.c env_authorize_legs) — so this case answers a
+ * kind-3 leg with the stub's verdict PLUS one satisfied descriptor
+ * address, exactly the shape the real hook produces (rt_native.c
+ * rtn_auth_msig). It is counted like the other two hooks. */
+static int ckt_auth_msig1(const nodus_domain_runtime_t *rt,
+                          const dna_env_view_t *env, uint16_t leg,
+                          const nodus_rt_exec_ctx_t *ctx,
+                          nodus_rt_auth_verdict_t *out)
+{
+    int rc;
+
+    g_ckt_auth_calls++;
+    rc = g_ckt_auth_orig[1](rt, env, leg, ctx, out);
+    if (rc == 0 &&
+        env->leg[leg].auth_kind == NODUS_RT_AUTHKIND_DSA87_MSIG_V1) {
+        out->n_msig = 1;
+        out->msig_satisfied[0] = 1;
+        memset(out->msig_addr[0], 0x3C, 64);
+    }
+    return rc;
+}
+
+/** ckt_spend_env's scripted CORE spend, carried under auth_kind 3 (a
+ *  1-byte stub auth blob — the scripted hook reads no structure).
+ *  @return 0 / -1. */
+static int ckt_spend_env_kind3(v2x_env_t *e, uint8_t tag, uint64_t fee)
+{
+    static const uint8_t auth_stub[1] = { 0xAB };
+    uint8_t          key[64], res[1024], script[1200];
+    size_t           rl = 0;
+    uint32_t         sl;
+    dna_effect_in_t  eff;
+    dna_env_leg_in_t in;
+    dna_env_in_t     env;
+
+    memset(key, tag, sizeof(key));
+    memset(&eff, 0, sizeof(eff));
+    eff.hdr.op_id       = V2X_OP_UTXDEL;
+    eff.hdr.effect_kind = DNA_EFFECT_DELETE;
+    eff.hdr.precond_tag = DNA_EFFECT_PRE_EXISTS;
+    eff.hdr.key_len     = 64;
+    eff.key             = key;
+    if (v2x_effres(res, sizeof(res), &eff, 1, &rl) != 0) {
+        return -1;
+    }
+    sl = v2x_script_build(script, sizeof(script), NULL, 0, res, rl);
+    if (sl == 0) {
+        return -1;
+    }
+    memset(&in, 0, sizeof(in));
+    in.hdr.domain_id            = DNA_DOMAIN_CORE;
+    in.hdr.runtime_op           = 1;
+    in.hdr.ruleset_version      = v2x_ruleset_version_for(DNA_DOMAIN_CORE);
+    in.hdr.access_mode          = DNA_ENV_ACCESS_INVOKE;
+    in.hdr.auth_kind            = NODUS_RT_AUTHKIND_DSA87_MSIG_V1;
+    in.hdr.call_len             = sl;
+    in.hdr.auth_len             = 1;
+    in.hdr.res_max_effects      = 4;
+    in.hdr.res_max_effect_bytes = 2048;
+    in.call_data                = script;
+    in.auth_data                = auth_stub;
+    memset(&env, 0, sizeof(env));
+    env.expiry_height       = CKT_EXPIRY;
+    env.fee_amount          = fee;
+    env.res_max_total_units = TEST_APP_ENV_CEILING;
+    env.leg_count           = 1;
+    env.legs                = &in;
+    return dna_env_encode(&env, e->bytes, sizeof(e->bytes), &e->len);
+}
+
+/**
+ * The LIGHT recheck covers auth_kind 3 (general multisig, F1.3): a
+ * kind-3 spend admitted NEW is verified once; after a Commit that spends
+ * an unrelated row, its RECHECK is admitted WITHOUT a re-verification —
+ * the cache (keyed by the wire_id, which commits the auth bytes) answered
+ * with the kind-3 verdict, descriptor facts included. A second kind-3
+ * spend of the row the block consumed is dropped at recheck, also from
+ * the cache. Control: the first NEW admission DID verify (the counter
+ * moved), so the zero-delta at recheck is the cache, not a skipped hook.
+ *
+ * HOW IT CAN LIE: the auth hook is SCRIPTED (ckt_auth_msig1 fills the
+ * facts the real hook would); this proves the cache store/reuse path for
+ * kind 3, not signature or descriptor verification (test_v2_native.c
+ * §multisig drives the real hook).
+ */
+static int t_check_tx_recheck_kind3(void)
+{
+    gfx_t                         g;
+    cmt_genesis_doc_t             doc;
+    cmt_genesis_validator_t       gvals[DNAC_COMMITTEE_SIZE];
+    nodus_cmt_app_ledger_t       *app = NULL;
+    nodus_witness_v2_block_ctx_t *bctx = NULL;
+    nodus_abci_response_commit_t  cres;
+    v2x_env_t                    *e = NULL;
+    uint32_t                      code = 0;
+
+    CHECK(cap_fixture(&g, "ckt_recheck_k3", &doc, gvals, &app, &bctx) == 0,
+          "version-3 fixture, scripted runtime, bound app, block context");
+    CHECK(ckt_counting_table(g.w, g_v2x_table, 2) == 0,
+          "the scripted table, auth hooks counted");
+    CHECK((g_ckt_table[1].allowed_auth_kinds &
+           NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MSIG_V1)) != 0,
+          "PREMISE: CORE's (builtin-copied) allowlist admits kind 3");
+    g_ckt_table[1].auth = ckt_auth_msig1;
+    e = calloc(2, sizeof(*e));
+    CHECK(e != NULL, "alloc");
+    CHECK(ckt_row_insert(g.w, 0xD1) == 0 && ckt_row_insert(g.w, 0xD2) == 0,
+          "two committed CORE rows");
+    CHECK(ckt_spend_env_kind3(&e[0], 0xD1, 3) == 0 &&
+          ckt_spend_env_kind3(&e[1], 0xD2, 3) == 0,
+          "two kind-3 spends");
+
+    CHECK(ckt_check(app, e[0].bytes, e[0].len, CMT_MEM_CHECK_TX_TYPE_NEW,
+                    &code) == 0 && code == CMT_MEM_CODE_TYPE_OK &&
+          ckt_check(app, e[1].bytes, e[1].len, CMT_MEM_CHECK_TX_TYPE_NEW,
+                    &code) == 0 && code == CMT_MEM_CODE_TYPE_OK,
+          "both kind-3 spends admitted");
+    CHECK(g_ckt_auth_calls == 2, "two NEW admissions verified two legs");
+
+    CHECK(run_sql(g.w->db, "BEGIN IMMEDIATE") == 0, "the host's BEGIN");
+    CHECK(ckt_row_delete(g.w, 0xD1) == 1, "row D1 spent (exactly one row)");
+    memset(&cres, 0, sizeof(cres));
+    CHECK(nodus_cmt_app_commit(app, &cres) == CMT_OK, "Commit");
+
+    CHECK(ckt_check(app, e[0].bytes, e[0].len,
+                    CMT_MEM_CHECK_TX_TYPE_RECHECK, &code) == 0 &&
+          code != CMT_MEM_CODE_TYPE_OK,
+          "the kind-3 spend of the spent row is dropped at recheck");
+    CHECK(ckt_check(app, e[1].bytes, e[1].len,
+                    CMT_MEM_CHECK_TX_TYPE_RECHECK, &code) == 0 &&
+          code == CMT_MEM_CODE_TYPE_OK,
+          "the kind-3 spend of the live row survives the recheck");
+    CHECK(g_ckt_auth_calls == 2, "the recheck re-verified NO kind-3 leg "
+          "(the cache answered for the same wire ids)");
+
+    free(e);
+    free(bctx);
+    nodus_cmt_app_ledger_release(app);
+    free(app);
+    gfx_close(&g);
+    return 0;
+}
+
 /**
  * PrepareProposal, red-team F1: a chain_config candidate the seam refuses
  * ALONE (0 declared units) no longer rides alone. (a) With two ordinary
@@ -6416,6 +6581,7 @@ int main(void)
         { "check_tx_claim_variants",    t_check_tx_claim_variants },
         { "check_tx_recheck_light",     t_check_tx_recheck_light },
         { "check_tx_recheck_kind2",     t_check_tx_recheck_kind2 },
+        { "check_tx_recheck_kind3",     t_check_tx_recheck_kind3 },
         { "prepare_cc_refused_packs_rest", t_prepare_cc_refused_packs_rest },
         { "prepare_refill_after_drop",  t_prepare_refill_after_drop },
         { "prepare_claims_past_env_window",

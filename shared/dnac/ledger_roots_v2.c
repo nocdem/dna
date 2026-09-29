@@ -23,8 +23,10 @@
 /* tokenomics-v3 P1 (D-4, S-2): "DNA.SYS.v1" -> "DNA.SYS.v2" — the 8th
  * leg (attendance_root). Root-layout round (K2, 2026-09-25):
  * "DNA.SYS.v2" -> "DNA.SYS.v3" — the epoch_state leg is removed (7
- * legs). A changed preimage is never hashed under the OLD tag. */
-static const uint8_t TAG_SYS[TAG_LEN]     = "DNA.SYS.v3\0\0\0\0\0";
+ * legs). Final pre-testnet wipe (W-A): "DNA.SYS.v3" -> "DNA.SYS.v4" —
+ * treasury_root appended as the 8th and last leg. A changed preimage is
+ * never hashed under the OLD tag. */
+static const uint8_t TAG_SYS[TAG_LEN]     = "DNA.SYS.v4\0\0\0\0\0";
 /* tokenomics-v3 P2 (P2-8): "DNA.CORE.v1" -> "DNA.CORE.v2" — the 7th leg
  * (accrual_root) changes the composition; "DNA.SUPPLY.v1" ->
  * "DNA.SUPPLY.v2" — the leaf gained reward_pool. A changed preimage is
@@ -53,6 +55,14 @@ static const uint8_t TAG_ATNODE[TAG_LEN]  = "DNA.ATNODE.v1\0\0";
  * precedent (ledger_roots_v2_attendance_oracle.py PROVENANCE). */
 static const uint8_t TAG_ACLEAF[TAG_LEN]  = "DNA.ACLEAF.v1\0\0";
 static const uint8_t TAG_ACNODE[TAG_LEN]  = "DNA.ACNODE.v1\0\0";
+/* Final pre-testnet wipe, W-A (decision
+ * 2026-09-28-treasury-pools-and-exact-self-stake.md answer 12, operator
+ * "1 ok") — collision-scanned against every DNA.* tag in the tree before
+ * adoption (git grep "DNA\.TR", "DNA\.E\.TREAS", "TRLEAF", "TRNODE": no
+ * prior use). SELF-CONSISTENT, not externally referenced — proven by an
+ * independent oracle KAT, the ACLEAF precedent above. */
+static const uint8_t TAG_TRLEAF[TAG_LEN]  = "DNA.TRLEAF.v1\0\0";
+static const uint8_t TAG_TRNODE[TAG_LEN]  = "DNA.TRNODE.v1\0\0";
 
 static const uint8_t TAG_EMPTY[DNA_V2_EMPTY__COUNT][TAG_LEN] = {
     "DNA.E.VSET.v1\0\0",   /* DNA_V2_EMPTY_VSET     */
@@ -65,6 +75,7 @@ static const uint8_t TAG_EMPTY[DNA_V2_EMPTY__COUNT][TAG_LEN] = {
     /* "DNA.E.EPOCH.v2" — DELETED, root-layout round K2 */
     "DNA.E.ATTND.v1\0",   /* DNA_V2_EMPTY_ATTENDANCE (P1) */
     "DNA.E.ACCRU.v1\0",    /* DNA_V2_EMPTY_ACCRUAL (P2)    */
+    "DNA.E.TREAS.v1\0",    /* DNA_V2_EMPTY_TREASURY (W-A)  */
 };
 
 static void put_be32(uint32_t v, uint8_t out[4]) {
@@ -323,6 +334,43 @@ int dna_v2_accrual_root(const uint8_t (*owner_fps)[DNA_V2_ROOT_LEN],
     return rc;
 }
 
+/* ── treasury_root (final pre-testnet wipe, W-A) ──────────────────────
+ * Contract: ledger_roots_v2.h. The accrual leg's exact shape. */
+
+int dna_v2_treasury_leaf_hash(uint32_t pool_id, uint64_t balance,
+                              uint8_t out[DNA_V2_ROOT_LEN]) {
+    if (!out) return -1;
+    uint8_t pre[TAG_LEN + 4 + 8];
+    memcpy(pre, TAG_TRLEAF, TAG_LEN);
+    put_be32(pool_id, pre + TAG_LEN);
+    put_be64(balance, pre + TAG_LEN + 4);
+    return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;
+}
+
+int dna_v2_treasury_root(const uint32_t *pool_ids, const uint64_t *balances,
+                         size_t n, uint8_t out[DNA_V2_ROOT_LEN]) {
+    if (!out || (n > 0 && (!pool_ids || !balances))) return -1;
+    if (n == 0)
+        return dna_v2_empty_root(DNA_V2_EMPTY_TREASURY, out);
+    /* Strictly ascending pool_id: rejects duplicates AND any
+     * non-canonical order, so no input ordering can influence the root. */
+    for (size_t i = 1; i < n; i++)
+        if (pool_ids[i - 1] >= pool_ids[i]) return -1;
+
+    uint8_t (*level)[DNA_V2_ROOT_LEN] = malloc(n * sizeof(*level));
+    if (!level) return -1;
+    for (size_t i = 0; i < n; i++) {
+        if (dna_v2_treasury_leaf_hash(pool_ids[i], balances[i],
+                                      level[i]) != 0) {
+            free(level);
+            return -1;
+        }
+    }
+    int rc = tagged_merkle(TAG_TRNODE, level, n, out);
+    free(level);
+    return rc;
+}
+
 /* ── DomainHead + domains_root ──────────────────────────────────────── */
 
 int dna_v2_domain_head_encode(const dna_v2_domain_head_t *head,
@@ -378,19 +426,21 @@ int dna_v2_system_root(const uint8_t validator_root[64],
                        const uint8_t domain_registry_root[64],
                        const uint8_t manifest_root[64],
                        const uint8_t attendance_root[64],
+                       const uint8_t treasury_root[64],
                        uint8_t out[DNA_V2_ROOT_LEN]) {
     if (!validator_root || !delegation_root ||
         !chain_config_root || !validator_set_root || !domain_registry_root ||
-        !manifest_root || !attendance_root || !out)
+        !manifest_root || !attendance_root || !treasury_root || !out)
         return -1;
-    uint8_t pre[TAG_LEN + 7 * DNA_V2_ROOT_LEN];
+    uint8_t pre[TAG_LEN + 8 * DNA_V2_ROOT_LEN];
     memcpy(pre, TAG_SYS, TAG_LEN);
-    const uint8_t *parts[7] = {
+    /* W-A: treasury_root is the 8th and LAST leg ("DNA.SYS.v4"). */
+    const uint8_t *parts[8] = {
         validator_root, delegation_root, chain_config_root,
         validator_set_root, domain_registry_root, manifest_root,
-        attendance_root
+        attendance_root, treasury_root
     };
-    for (int i = 0; i < 7; i++)
+    for (int i = 0; i < 8; i++)
         memcpy(pre + TAG_LEN + (size_t)i * DNA_V2_ROOT_LEN, parts[i],
                DNA_V2_ROOT_LEN);
     return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;
@@ -431,24 +481,27 @@ int dna_v2_global_root(const uint8_t domains_root[64],
 /* ── SYSTEM payload root (S5 genesis cycle break) ───────────────────── */
 
 /* Root-layout round (K2): "DNA.SYSPAYL.v1" (5 legs) -> "DNA.SYSPAYL.v2"
- * (4 legs, the epoch_state leg removed). */
-static const uint8_t TAG_SYSPAYL[TAG_LEN] = "DNA.SYSPAYL.v2\0";
+ * (4 legs, the epoch_state leg removed). Final pre-testnet wipe (W-A):
+ * "DNA.SYSPAYL.v2" -> "DNA.SYSPAYL.v3" (5 legs, treasury_root appended
+ * LAST — the treasury is seeded at genesis). */
+static const uint8_t TAG_SYSPAYL[TAG_LEN] = "DNA.SYSPAYL.v3\0";
 
 int dna_v2_system_payload_root(const uint8_t validator_root[64],
                                const uint8_t delegation_root[64],
                                const uint8_t chain_config_root[64],
                                const uint8_t validator_set_root[64],
+                               const uint8_t treasury_root[64],
                                uint8_t out[DNA_V2_ROOT_LEN]) {
     if (!validator_root || !delegation_root ||
-        !chain_config_root || !validator_set_root || !out)
+        !chain_config_root || !validator_set_root || !treasury_root || !out)
         return -1;
-    uint8_t pre[TAG_LEN + 4 * DNA_V2_ROOT_LEN];
+    uint8_t pre[TAG_LEN + 5 * DNA_V2_ROOT_LEN];
     memcpy(pre, TAG_SYSPAYL, TAG_LEN);
-    const uint8_t *parts[4] = {
+    const uint8_t *parts[5] = {
         validator_root, delegation_root, chain_config_root,
-        validator_set_root
+        validator_set_root, treasury_root
     };
-    for (int i = 0; i < 4; i++)
+    for (int i = 0; i < 5; i++)
         memcpy(pre + TAG_LEN + (size_t)i * DNA_V2_ROOT_LEN, parts[i],
                DNA_V2_ROOT_LEN);
     return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;

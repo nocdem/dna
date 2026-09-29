@@ -198,7 +198,7 @@ int nodus_witness_v2_econ_params_load(nodus_witness_t *w,
  * that boundary.
  *
  * A stored-negative stake or amount, a malformed pubkey, a row that
- * already exists for (epoch_start, validator, owner) — every one is a
+ * already exists for (epoch_start, validator, owner, kind) — every one is a
  * FAULT, never skipped.
  *
  * MUST run inside the caller's transaction; opens/commits nothing.
@@ -213,7 +213,9 @@ int nodus_witness_v2_balance_copy_write(nodus_witness_t *w,
 
 /**
  * tokenomics-v3 P3-1 — one validator's FROZEN totals in copy(epoch_start):
- *   *self_out  = the amount of its own row (owner_fp == validator_fp),
+ *   *self_out  = the amount of its bond row (kind 0 — final wipe W-B;
+ *                a self-delegation is a kind-1 row with owner_fp ==
+ *                validator_fp and counts as a delegation),
  *                0 when that row is absent;
  *   *total_out = its own row + Σ every delegator row of that validator,
  *                0 when it has no row at all ("absent means 0").

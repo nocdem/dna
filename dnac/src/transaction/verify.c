@@ -420,7 +420,7 @@ int dnac_tx_verify_validator_update_rules_internal(const dnac_transaction_t *tx)
  *   - signer_count == 1
  *   - chain_config_fields.param_id ∈ {1..DNAC_CFG_PARAM_MAX_ID}
  *   - dnac_cfg_param_read_by_consensus(param_id) (0.20.3) — the running
- *     consensus reads the parameter; today {4, 5}
+ *     consensus reads the parameter; today {4, 5, 6}
  *   - chain_config_fields.new_value in per-param range (§5.2):
  *       MAX_TXS_PER_BLOCK      : RETIRED (R3 W4-C delta 2, operator
  *                                "kaldır" 2026-09-18;
@@ -443,7 +443,10 @@ int dnac_tx_verify_validator_update_rules_internal(const dnac_transaction_t *tx)
  *                                 DNAC_CFG_MAX_TARGET_ACTIVE=128]  (S3)
  *       GAS_PRICE_RAW_PER_UNIT : [0, DNAC_CFG_MAX_GAS_PRICE=1000000] (HF-1;
  *                                0 = the price rule is off)
- *   - signed_at_block > 0               (CC-AUDIT-008)
+ *       TOKEN_CREATE_FEE_RAW   : [DNAC_CFG_MIN_TOKEN_CREATE_FEE=10^8,
+ *                                 DNAC_CFG_MAX_TOKEN_CREATE_FEE=10^15]
+ *                                (final pre-testnet wipe W-C)
+ *   - signed_at_block > 0              (CC-AUDIT-008)
  *   - valid_before_block > effective_block_height
  *   - valid_before_block > signed_at_block
  *   - committee_sig_count ∈ [DNAC_CHAIN_CONFIG_MIN_SIGS,
@@ -506,6 +509,20 @@ static int verify_chain_config_rules(const dnac_transaction_t *tx) {
                               "CHAIN_CONFIG: GAS_PRICE_RAW_PER_UNIT=%llu out of [0,%llu]",
                               (unsigned long long)cc->new_value,
                               (unsigned long long)DNAC_CFG_MAX_GAS_PRICE);
+                return DNAC_ERROR_INVALID_PARAM;
+            }
+            break;
+        case DNAC_CFG_TOKEN_CREATE_FEE_RAW:
+            /* Final pre-testnet wipe W-C (decision 2026-09-28-token-
+             * create-fee-governance.md), mirroring nodus_witness_chain_
+             * config.c's scalar_rules: [MIN, MAX] = [10^8, 10^15]. */
+            if (cc->new_value < DNAC_CFG_MIN_TOKEN_CREATE_FEE ||
+                cc->new_value > DNAC_CFG_MAX_TOKEN_CREATE_FEE) {
+                QGP_LOG_ERROR(LOG_TAG,
+                              "CHAIN_CONFIG: TOKEN_CREATE_FEE_RAW=%llu out of [%llu,%llu]",
+                              (unsigned long long)cc->new_value,
+                              (unsigned long long)DNAC_CFG_MIN_TOKEN_CREATE_FEE,
+                              (unsigned long long)DNAC_CFG_MAX_TOKEN_CREATE_FEE);
                 return DNAC_ERROR_INVALID_PARAM;
             }
             break;

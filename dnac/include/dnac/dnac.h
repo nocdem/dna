@@ -530,7 +530,22 @@ typedef enum {
                                           *   identical to 0.19.79). Range
                                           *   [0, DNAC_CFG_MAX_GAS_PRICE];
                                           *   grace class ERGONOMIC. */
-    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_GAS_PRICE_RAW_PER_UNIT
+    DNAC_CFG_TOKEN_CREATE_FEE_RAW  = 6,  /**< Final pre-testnet wipe, W-C
+                                          *   (decision file docs/plans/
+                                          *   decisions/2026-09-28-token-
+                                          *   create-fee-governance.md):
+                                          *   the minimum fee, in raw
+                                          *   units, of a CORE
+                                          *   TOKEN_CREATE. Genesis value
+                                          *   10^11 (1 000 NODUS), a
+                                          *   height-0 chain_config row
+                                          *   written from the genesis
+                                          *   document. Range
+                                          *   [DNAC_CFG_MIN_TOKEN_CREATE_
+                                          *   FEE, DNAC_CFG_MAX_TOKEN_
+                                          *   CREATE_FEE]; grace class
+                                          *   ERGONOMIC. */
+    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_TOKEN_CREATE_FEE_RAW
 } dnac_chain_config_param_id_t;
 
 /** The chain-config parameters the RUNNING consensus reads — the one list
@@ -545,7 +560,12 @@ typedef enum {
  *      committee_target_for_epoch, nodus_witness_vset.c
  *      vset_target_for_epoch;
  *    - GAS_PRICE_RAW_PER_UNIT (5): nodus_witness_v2_apply.c
- *      env_gas_price_check, nodus_witness_handlers.c (the fee quote).
+ *      env_gas_price_check, nodus_witness_handlers.c (the fee quote);
+ *    - TOKEN_CREATE_FEE_RAW (6, final pre-testnet wipe W-C):
+ *      nodus_witness_v2_apply.c env_token_create_fee (the engine reads
+ *      it into nodus_rt_exec_ctx_t.token_create_fee; the CORE
+ *      TOKEN_CREATE exec rtn_tc_exec enforces fee >= it),
+ *      nodus_witness_handlers.c (the fee quote).
  *  No other governed id has a reader: 1 and 3 are RETIRED (above), and 2
  *  (BLOCK_INTERVAL_SEC) is not read on this lane.
  *
@@ -561,7 +581,8 @@ typedef enum {
  *  cited, in the same change that adds the reader. */
 static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
     return param_id == (uint8_t)DNAC_CFG_TARGET_ACTIVE_COUNT ||
-           param_id == (uint8_t)DNAC_CFG_GAS_PRICE_RAW_PER_UNIT;
+           param_id == (uint8_t)DNAC_CFG_GAS_PRICE_RAW_PER_UNIT ||
+           param_id == (uint8_t)DNAC_CFG_TOKEN_CREATE_FEE_RAW;
 }
 
 /** Value range bounds — consensus-critical (client + witness reject out-of-range).
@@ -628,6 +649,24 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
  *  1-in/1-out transfer (8 221 declared units) costs <= ~82 NODUS. The
  *  floor is 0 and 0 is LEGAL: it switches the rule off again. */
 #define DNAC_CFG_MAX_GAS_PRICE              1000000ULL
+
+/** TOKEN_CREATE_FEE_RAW range (final pre-testnet wipe W-C, param_id 6):
+ *  [10^8, 10^15] raw = [1 NODUS, 10 000 000 NODUS].
+ *
+ *  Decision docs/plans/decisions/2026-09-28-token-create-fee-governance.md
+ *  (operator "Gov ile değişsin", start value 1 000 NODUS, ERGONOMIC grace)
+ *  and the range PROPOSED in docs/plans/2026-09-28-final-wipe-package-
+ *  design.md §1 W-C: the floor is one whole NODUS (a vote cannot make
+ *  token creation free — the floor also keeps the fee above the generic
+ *  DNAC_MIN_FEE_RAW floor, pinned in nodus_witness_rt_native.c); the
+ *  ceiling is the pre-governance compiled NODUS_W_TOKEN_CREATE_FEE
+ *  (10 000 000 NODUS), so a mistaken vote can never price creation above
+ *  what the chain charged before the parameter existed.
+ *  The genesis value (10^11) is the genesis document's
+ *  token_create_fee_raw field; the builder refuses a value outside this
+ *  range. */
+#define DNAC_CFG_MIN_TOKEN_CREATE_FEE       100000000ULL
+#define DNAC_CFG_MAX_TOKEN_CREATE_FEE       1000000000000000ULL
 
 /** chain_config_tx vote-count SHAPE bounds — NOT the quorum rule.
  *

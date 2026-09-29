@@ -695,7 +695,8 @@ int nodus_witness_db_migrate_v2s15_ex(nodus_witness_t *w,
  *      core_state_root (accrual_root).
  *   3. `v2_balance_copy(epoch_start INTEGER NOT NULL, validator_fp BLOB
  *      NOT NULL, owner_fp BLOB NOT NULL, amount INTEGER NOT NULL,
- *      PRIMARY KEY (epoch_start, validator_fp, owner_fp))` is CREATED —
+ *      kind INTEGER NOT NULL (0 bond, 1 delegation — final wipe W-B),
+ *      PRIMARY KEY (epoch_start, validator_fp, owner_fp, kind))` is CREATED —
  *      the frozen per-boundary balance copy, OUT of every root.
  *
  * All three also live in the base schema (nodus_witness.c) so every

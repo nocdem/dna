@@ -431,7 +431,8 @@ int main(void) {
         sqlite3_stmt *stmt = NULL;
         CHECK_EQ(sqlite3_prepare_v2(w.db,
             "INSERT INTO v2_balance_copy (epoch_start, validator_fp, "
-            "owner_fp, amount) VALUES (?, ?, ?, 50000)", -1, &stmt, NULL),
+            "owner_fp, kind, amount) VALUES (?, ?, ?, 1, 50000)", -1,
+            &stmt, NULL),                  /* kind 1: a delegation */
             SQLITE_OK);
         sqlite3_bind_int64(stmt, 1, (int64_t)copy_e);
         sqlite3_bind_blob (stmt, 2, vfp, 64, SQLITE_TRANSIENT);
