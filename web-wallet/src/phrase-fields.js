@@ -36,13 +36,28 @@ export function createPhraseFields(grid, error) {
     panel.className = 'phrase-suggestions'; panel.setAttribute('role', 'listbox'); panel.hidden = true;
     cell.append(label, input, panel); grid.append(cell); inputs.push(input);
     input.addEventListener('paste', event => {
+      if (!pasteAllowed) {
+        event.preventDefault();
+        error.textContent = 'Type each word from your written backup; pasting is disabled here.';
+        return;
+      }
+      if (input.readOnly) { event.preventDefault(); return; }
+      // Some sources put the text only under 'text' or 'text/html', not
+      // 'text/plain'. An empty read used to cancel the paste and fill
+      // nothing (seen 2026-09-29). Read every text form; if none is
+      // readable, let the browser insert natively and the 'input'
+      // handler below distributes the words.
+      const data = event.clipboardData;
+      let text = data ? (data.getData('text/plain') || data.getData('text') || '') : '';
+      if (!text.trim() && data) {
+        const html = data.getData('text/html');
+        if (html) text = new DOMParser().parseFromString(html, 'text/html').body.textContent || '';
+      }
+      if (!text.trim()) return;
       event.preventDefault();
-      if (!pasteAllowed) { error.textContent = 'Type each word from your written backup; pasting is disabled here.'; return; }
-      if (!input.readOnly) {
-        if (distribute(event.clipboardData.getData('text/plain'), index)) {
-          // A paste is activity even when input defaults have been prevented.
-          input.dispatchEvent(new Event('input', { bubbles: true }));
-        }
+      if (distribute(text, index)) {
+        // A paste is activity even when input defaults have been prevented.
+        input.dispatchEvent(new Event('input', { bubbles: true }));
       }
     });
     input.addEventListener('input', () => {
