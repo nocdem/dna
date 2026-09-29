@@ -766,10 +766,23 @@ static int t_tachyon(void)
  *     carrying extension data, pass (VerifyExtension's early return,
  *     v0.38.26 vote.go:268-270).
  * The function is new in v0.38.22, so there is no 709fd12b behaviour to
- * be RED against; these cases pin the port against upstream's own. */
+ * be RED against; these cases pin the port against upstream's own.
+ *
+ * One case is this port's own (red-team 2026-09-30 row 3-1, BS-12 (iii)):
+ *   · "a long extension": entry 0 carries a validly signed 300-byte
+ *     extension (the reference bounds an extension by nothing but the
+ *     block/message limits) → OK. RED before the move: the function took
+ *     a caller-sized sign-bytes scratch and this file handed it 256 bytes,
+ *     so cmt_vote_extension_sign_bytes could not frame the ~360-byte sign
+ *     bytes and a VALID commit was refused; it now sizes that buffer per
+ *     vote itself.
+ * Block sync (cmt_bsync_reactor.c process_first, reactor.go:591) is this
+ * function's production caller; test_cmt_bsync_reactor runs with vote
+ * extensions disabled, so that call site is covered by reading only. */
 static cmt_extended_commit_sig_t g_esigs[NVALS];
-static cmt_commit_sig_t          g_tosigs[NVALS];
-static uint8_t                   g_ext_scratch[256];
+/* The test's own signing buffer (sign bytes for up to ~900-byte
+ * extensions); the function under test no longer takes one. */
+static uint8_t                   g_ext_scratch[1024];
 
 /* Turn g_commit into an extended commit whose COMMIT entries carry the
  * extension "ext-<i>" signed by the validator at index i. */
@@ -833,8 +846,7 @@ static int t_verify_commit_extended(void)
     if (make_ext_commit(&ec, ext) != 0) return 1;
     CHECK(cmt_validator_set_verify_commit_extended(
               &g_vs, g_chain, sizeof(g_chain), &g_commit.block_id, HEIGHT,
-              &ec, g_tosigs, NVALS, g_ext_scratch,
-              sizeof(g_ext_scratch)) == CMT_OK,
+              &ec) == CMT_OK,
           "a fully signed extended commit verifies"); OK();
 
     /* "invalid signature" — entry 1's extension signature is garbage. */
@@ -842,8 +854,7 @@ static int t_verify_commit_extended(void)
         (uint8_t)(g_esigs[1].extension_signature[0] ^ 0x01u);
     CHECK(cmt_validator_set_verify_commit_extended(
               &g_vs, g_chain, sizeof(g_chain), &g_commit.block_id, HEIGHT,
-              &ec, g_tosigs, NVALS, g_ext_scratch,
-              sizeof(g_ext_scratch)) == CMT_REJECT,
+              &ec) == CMT_REJECT,
           "a bad extension signature is refused"); OK();
     g_esigs[1].extension_signature[0] =
         (uint8_t)(g_esigs[1].extension_signature[0] ^ 0x01u);
@@ -856,8 +867,7 @@ static int t_verify_commit_extended(void)
         g_esigs[2].extension_signature_len = 0u;
         CHECK(cmt_validator_set_verify_commit_extended(
                   &g_vs, g_chain, sizeof(g_chain), &g_commit.block_id,
-                  HEIGHT, &ec, g_tosigs, NVALS, g_ext_scratch,
-                  sizeof(g_ext_scratch)) == CMT_REJECT,
+                  HEIGHT, &ec) == CMT_REJECT,
               "a COMMIT entry without an extension signature is refused");
         OK();
         g_esigs[2].extension_signature_len = saved;
@@ -868,8 +878,7 @@ static int t_verify_commit_extended(void)
         (uint8_t)(g_esigs[0].commit_sig.signature[0] ^ 0x01u);
     CHECK(cmt_validator_set_verify_commit_extended(
               &g_vs, g_chain, sizeof(g_chain), &g_commit.block_id, HEIGHT,
-              &ec, g_tosigs, NVALS, g_ext_scratch,
-              sizeof(g_ext_scratch)) == CMT_REJECT,
+              &ec) == CMT_REJECT,
           "a bad commit signature is refused by the VerifyCommit step");
     OK();
     g_esigs[0].commit_sig.signature[0] =
@@ -878,9 +887,44 @@ static int t_verify_commit_extended(void)
     /* "nil extended commit" */
     CHECK(cmt_validator_set_verify_commit_extended(
               &g_vs, g_chain, sizeof(g_chain), &g_commit.block_id, HEIGHT,
-              NULL, g_tosigs, NVALS, g_ext_scratch,
-              sizeof(g_ext_scratch)) == CMT_FAULT,
+              NULL) == CMT_FAULT,
           "a NULL extended commit is a FAULT (R1B-10)"); OK();
+
+    /* "a long extension" (this port's case, BS-12 (iii)): entry 0's
+     * extension replaced by 300 bytes and re-signed by its validator. The
+     * sign bytes (~360 bytes) exceed the 256-byte scratch this file used
+     * to hand the function; the function now sizes it per vote. */
+    {
+        static uint8_t long_ext[300];
+        cmt_vote_t     vote;
+        size_t         sb_len;
+        size_t         siglen;
+
+        if (make_good_commit() != 0) return 1;
+        if (make_ext_commit(&ec, ext) != 0) return 1;
+        CHECK(g_esigs[0].commit_sig.block_id_flag ==
+                  (int32_t)CMT_BLOCK_ID_FLAG_COMMIT,
+              "entry 0 is a COMMIT entry"); OK();
+        memset(long_ext, 0xA5, sizeof(long_ext));
+        g_esigs[0].extension.data = long_ext;
+        g_esigs[0].extension.len  = sizeof(long_ext);
+        CHECK(cmt_extended_commit_get_extended_vote(&ec, 0, &vote) == CMT_OK &&
+              cmt_vote_extension_sign_bytes(g_chain, sizeof(g_chain), &vote,
+                                            g_ext_scratch,
+                                            sizeof(g_ext_scratch),
+                                            &sb_len) == CMT_OK &&
+              qgp_dsa87_sign(g_esigs[0].extension_signature, &siglen,
+                             g_ext_scratch, sb_len,
+                             g_sk[g_key_of_index[0]]) == 0,
+              "the 300-byte extension is signed"); OK();
+        g_esigs[0].extension_signature_len = siglen;
+        CHECK(sb_len > 256u,
+              "its sign bytes exceed the old 256-byte caller scratch"); OK();
+        CHECK(cmt_validator_set_verify_commit_extended(
+                  &g_vs, g_chain, sizeof(g_chain), &g_commit.block_id,
+                  HEIGHT, &ec) == CMT_OK,
+              "a validly signed 300-byte extension verifies"); OK();
+    }
 
     /* "allows absent and nil votes in extended commit": the 20-power
      * validator votes NIL, the 10-power one is ABSENT; 70 of 100 still
@@ -897,8 +941,7 @@ static int t_verify_commit_extended(void)
           "the nil and absent entries carry no extension data"); OK();
     CHECK(cmt_validator_set_verify_commit_extended(
               &g_vs, g_chain, sizeof(g_chain), &g_commit.block_id, HEIGHT,
-              &ec, g_tosigs, NVALS, g_ext_scratch,
-              sizeof(g_ext_scratch)) == CMT_OK,
+              &ec) == CMT_OK,
           "absent and nil entries pass"); OK();
     return 0;
 }

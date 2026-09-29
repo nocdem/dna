@@ -38,6 +38,12 @@
  *  (1e) MEMPOOL ON 0x30: a tx admitted to P's mempool (sender 0, the RPC
  *       idiom) is gossiped by P's cmt_memr over channel 0x30 and admitted
  *       to Q's mempool (cmt_mem_size == 1).
+ *  (1e') A RECEIVE FAULT STOPS THE LANE (red-team rows 5-n / 5-n+): with
+ *       Q's application CheckTx failing (CMT_FAULT, the reference's panic
+ *       at mempool/clist_mempool.go:272-274), a second tx P gossips makes
+ *       Q's cmt_memr_receive return CMT_FAULT inside the switch's receive
+ *       callback, and Q's nodus_witness_p2p_lane_tick then returns
+ *       CMT_FAULT — and again on the next call (sticky); P's stays CMT_OK.
  *  (1f) RESTART RE-DIALS PERSISTENT PEERS: Q is freed and rebuilt with the
  *       same identity and config; the new Q dials P on its own (node.go:
  *       563-564) and both sides see each other again.
@@ -150,6 +156,14 @@
  *     this file's. A's answer must arrive inside B's 5000 ms collection
  *     deadline (B's poll feeds it the real monotonic clock); a slower
  *     machine reads A as NO_ANSWER and the check fails as such.
+ *  8. (1e') provokes the sticky lane fault through ONE seam only — the
+ *     mempool receive, via the application's CheckTx (no production test
+ *     hook exists or is added). The other sites that feed the same flag
+ *     (consensus and block sync receive, the held-status replay, the
+ *     reactors' InitPeer / AddPeer / RemovePeer) share its one code path
+ *     (lane_fault_note / the flag) but are covered by reading, not by this
+ *     test. That the witness stops on the lane tick's CMT_FAULT
+ *     (nodus_witness.c witness_cmt_tick) is not exercised here either.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -401,6 +415,14 @@ static int app_check_tx(void *ctx, const cmt_mem_request_check_tx_t *req,
 
 static int app_flush(void *ctx) { (void)ctx; return CMT_OK; }
 
+/* (1e') the application connection failing — the reference panics
+ * (mempool/clist_mempool.go:272-274); cmt_mem_check_tx answers CMT_FAULT. */
+static int app_check_tx_fault(void *ctx, const cmt_mem_request_check_tx_t *req,
+                              cmt_mem_response_check_tx_t *res) {
+    (void)ctx; (void)req; (void)res;
+    return CMT_FAULT;
+}
+
 /* The lane's clock: the wall clock, canonical — the witness's own
  * witness_cmt_now shape. The mempool reactor's sleeps are read against
  * it, so a frozen clock would stall the gossip routine. */
@@ -643,6 +665,12 @@ static bool pred_mempool_one(void *ctx) {
     return cmt_mem_size(&((lane_t *)ctx)->mem) == 1;
 }
 
+/* (1e') the host's lane tick reports the fault a receive raised. */
+static bool pred_lane_fault(void *ctx) {
+    return nodus_witness_p2p_lane_tick((nodus_witness_p2p_t *)ctx, NULL)
+           == CMT_FAULT;
+}
+
 typedef struct {
     dial_obs_t *obs;
     nodus_witness_p2p_t *dialer;
@@ -833,6 +861,31 @@ static int part1(void) {
         CHECK(cmt_mem_size(&lP->mem) == 1, "(1e) P holds it");
         CHECK(drive(d, 2, pred_mempool_one, lQ, WAIT_MS),
               "(1e) the tx crossed channel 0x30 into Q's mempool");
+    }
+
+    /* (1e') a CMT_FAULT inside a receive callback reaches the lane tick
+     * (red-team rows 5-n / 5-n+): Q's application connection now fails,
+     * P gossips a SECOND tx (the first is in Q's cache and would not
+     * reach CheckTx), Q's cmt_memr_receive answers CMT_FAULT from inside
+     * the switch's callback, and Q's nodus_witness_p2p_lane_tick — the
+     * call on which the witness stops participating — returns CMT_FAULT,
+     * and keeps returning it. P is untouched: the fault is Q's own. */
+    {
+        static const uint8_t tx2[8] = { 7, 7, 7, 7, 7, 7, 7, 7 };
+        cmt_mem_tx_info_t info;
+
+        CHECK(nodus_witness_p2p_lane_tick(Q, NULL) == CMT_OK,
+              "(1e') before the fault Q's lane tick is OK");
+        lQ->app.check_tx = app_check_tx_fault;   /* cmt_mem keeps &lQ->app */
+        memset(&info, 0, sizeof(info));
+        CHECK(cmt_mem_check_tx(&lP->mem, tx2, sizeof(tx2), &info, NULL, NULL)
+              == CMT_OK, "(1e') P admits the second tx");
+        CHECK(drive(d, 2, pred_lane_fault, Q, WAIT_MS),
+              "(1e') Q's receive FAULT surfaces as a lane-tick CMT_FAULT");
+        CHECK(nodus_witness_p2p_lane_tick(Q, NULL) == CMT_FAULT,
+              "(1e') the lane fault is sticky");
+        CHECK(nodus_witness_p2p_lane_tick(P, NULL) == CMT_OK,
+              "(1e') P's lane is not faulted");
     }
 
     /* (1f) restart Q: the new Q dials its persistent peer on its own */

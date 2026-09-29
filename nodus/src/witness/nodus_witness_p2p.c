@@ -1042,6 +1042,14 @@ struct nodus_witness_p2p {
     bool                        lane_live;
     p2p_lane_slot_t             slots[CMT_CONR_MAX_PEERS];
     bool                        any_pending_stop;
+    /* A reactor call made from a p2p callback (receive, InitPeer,
+     * AddPeer, RemovePeer) returned CMT_FAULT — node-local (W1.7). The
+     * callback has no caller to hand it to, so it is kept here and
+     * nodus_witness_p2p_lane_tick / _lane_live return CMT_FAULT from then
+     * on; the witness stops consensus participation on that
+     * (nodus_witness.c witness_cmt_tick). Never cleared: a node that
+     * faulted does not resume (lane_fault_note). */
+    bool                        lane_fault;
 };
 
 /* ── the worker (R-P2P-8, R-P2P-43) ─────────────────────────────────── */
@@ -1969,6 +1977,25 @@ bool nodus_witness_p2p_signed_addr(nodus_witness_p2p_t *p,
 
 /* ── the consensus seam (file header) ───────────────────────────────── */
 
+/* A reactor call made from inside a p2p callback returned `rc`. CMT_FAULT
+ * is node-local (W1.7: a store, allocation or wiring failure of THIS
+ * node, never a peer's input) and must stop consensus participation; the
+ * callback returns void, so the fault is logged and made sticky here and
+ * nodus_witness_p2p_lane_tick returns it (the reference panics at the
+ * same places, e.g. mempool/clist_mempool.go:272-274). CMT_REJECT and
+ * CMT_OK are not faults and are left to the caller. */
+static void lane_fault_note(nodus_witness_p2p_t *p, int rc, const char *what,
+                            const char *peer_id, int index)
+{
+    if (rc != CMT_FAULT) {
+        return;
+    }
+    QGP_LOG_ERROR(LOG_TAG, "%s: CMT_FAULT (peer %s, index %d) — consensus "
+                  "participation stops at the next lane tick", what,
+                  peer_id != NULL ? peer_id : "-", index);
+    p->lane_fault = true;
+}
+
 static int lane_find(const nodus_witness_p2p_t *p, const cmt_p2p_peer_t *peer)
 {
     int i;
@@ -2013,10 +2040,12 @@ static void lane_slot_release(nodus_witness_p2p_t *p, int i)
 static void lane_slot_clear(nodus_witness_p2p_t *p, int i)
 {
     if (p->slots[i].conr_init && p->conr != NULL) {
-        (void)cmt_conr_remove_peer(p->conr, i);
+        lane_fault_note(p, cmt_conr_remove_peer(p->conr, i),
+                        "conr RemovePeer", NULL, i);
     }
     if (p->slots[i].memr_init && p->memr != NULL) {
-        (void)cmt_memr_remove_peer(p->memr, i);
+        lane_fault_note(p, cmt_memr_remove_peer(p->memr, i),
+                        "memr RemovePeer", NULL, i);
     }
     memset(&p->slots[i], 0, sizeof(p->slots[i]));
 }
@@ -2066,47 +2095,61 @@ static bool peer_wid(const cmt_p2p_peer_t *peer, uint8_t out[32])
 static void lane_conr_init(nodus_witness_p2p_t *p, int i)
 {
     uint8_t id[32];
+    int     rc;
 
     if (p->conr == NULL || p->slots[i].conr_init || !peer_wid(p->slots[i].peer, id)) {
         return;
     }
-    if (cmt_conr_init_peer(p->conr, i, id) == CMT_OK) {   /* switch.go:829-831 */
+    rc = cmt_conr_init_peer(p->conr, i, id);              /* switch.go:829-831 */
+    if (rc == CMT_OK) {
         p->slots[i].conr_init = true;
     }
+    lane_fault_note(p, rc, "conr InitPeer", cmt_p2p_peer_id(p->slots[i].peer), i);
 }
 
 static void lane_memr_init(nodus_witness_p2p_t *p, int i)
 {
+    int rc;
+
     if (p->memr == NULL || p->slots[i].memr_init) {
         return;
     }
-    if (cmt_memr_init_peer(p->memr, i) == CMT_OK) {
+    rc = cmt_memr_init_peer(p->memr, i);
+    if (rc == CMT_OK) {
         p->slots[i].memr_init = true;
     }
+    lane_fault_note(p, rc, "memr InitPeer", cmt_p2p_peer_id(p->slots[i].peer), i);
 }
 
 static void lane_conr_add(nodus_witness_p2p_t *p, int i)
 {
+    int rc;
+
     if (p->conr == NULL || !p->slots[i].conr_init || p->slots[i].conr_added) {
         return;
     }
-    if (cmt_conr_add_peer(p->conr, i) == CMT_OK) {        /* switch.go:858-860 */
+    rc = cmt_conr_add_peer(p->conr, i);                   /* switch.go:858-860 */
+    if (rc == CMT_OK) {
         p->slots[i].conr_added = true;
     }
+    lane_fault_note(p, rc, "conr AddPeer", cmt_p2p_peer_id(p->slots[i].peer), i);
 }
 
 static void lane_memr_add(nodus_witness_p2p_t *p, int i)
 {
     const cmt_p2p_peer_t *peer = p->slots[i].peer;
+    int                   rc;
 
     if (p->memr == NULL || !p->slots[i].memr_init || p->slots[i].memr_added) {
         return;
     }
-    if (cmt_memr_add_peer(p->memr, i, cmt_p2p_peer_is_persistent(peer),
-                          cmt_p2p_switch_is_peer_unconditional(
-                              &p->sw, cmt_p2p_peer_id(peer))) == CMT_OK) {
+    rc = cmt_memr_add_peer(p->memr, i, cmt_p2p_peer_is_persistent(peer),
+                           cmt_p2p_switch_is_peer_unconditional(
+                               &p->sw, cmt_p2p_peer_id(peer)));
+    if (rc == CMT_OK) {
         p->slots[i].memr_added = true;
     }
+    lane_fault_note(p, rc, "memr AddPeer", cmt_p2p_peer_id(peer), i);
 }
 
 static void process_pending_stops(nodus_witness_p2p_t *p)
@@ -2176,7 +2219,8 @@ static void cons_remove_peer(void *ctx, cmt_p2p_peer_t *peer, int reason)
         return;
     }
     if (p->slots[i].conr_init && p->conr != NULL) {
-        (void)cmt_conr_remove_peer(p->conr, i);           /* reactor.go:213-223 */
+        lane_fault_note(p, cmt_conr_remove_peer(p->conr, i),   /* reactor.go:213-223 */
+                        "conr RemovePeer", cmt_p2p_peer_id(peer), i);
     }
     p->slots[i].conr_init = false;
     p->slots[i].conr_added = false;
@@ -2200,6 +2244,7 @@ static void cons_receive(void *ctx, cmt_p2p_peer_t *src, uint8_t ch_id,
     if (rc == CMT_FAULT) {
         QGP_LOG_ERROR(LOG_TAG, "conr receive: CMT_FAULT (index %d channel "
                       "0x%02x)", i, ch_id);
+        p->lane_fault = true;          /* sticky — lane_fault_note */
     } else if (rc == CMT_REJECT) {
         /* The state machine's peer queue was full (R3-A-2) and the
          * message is DROPPED after its PeerState effects — the reference
@@ -2259,7 +2304,8 @@ static void mem_remove_peer(void *ctx, cmt_p2p_peer_t *peer, int reason)
         return;
     }
     if (p->slots[i].memr_init && p->memr != NULL) {
-        (void)cmt_memr_remove_peer(p->memr, i);           /* mempool/reactor.go:133-136 */
+        lane_fault_note(p, cmt_memr_remove_peer(p->memr, i),   /* mempool/reactor.go:133-136 */
+                        "memr RemovePeer", cmt_p2p_peer_id(peer), i);
     }
     p->slots[i].memr_init = false;
     p->slots[i].memr_added = false;
@@ -2286,6 +2332,7 @@ static void mem_receive(void *ctx, cmt_p2p_peer_t *src, uint8_t ch_id,
     rc = cmt_memr_receive(p->memr, i, msg, len, id, sizeof(id));
     if (rc == CMT_FAULT) {
         QGP_LOG_ERROR(LOG_TAG, "memr receive: CMT_FAULT (index %d)", i);
+        p->lane_fault = true;          /* sticky — lane_fault_note */
     } else if (rc == CMT_REJECT) {
         QGP_LOG_WARN(LOG_TAG, "memr receive: REJECT from index %d", i);
     }
@@ -2308,10 +2355,10 @@ static void bs_add_peer(void *ctx, cmt_p2p_peer_t *peer)
     nodus_witness_p2p_t *p = (nodus_witness_p2p_t *)ctx;
 
     if (p->lane_live && p->bsync != NULL) {
-        if (cmt_bsync_reactor_add_peer(p->bsync, cmt_p2p_peer_id(peer)) != CMT_OK) {
-            QGP_LOG_ERROR(LOG_TAG, "blocksync AddPeer(%s): CMT_FAULT",
-                          cmt_p2p_peer_id(peer));
-        }
+        /* cmt_bsync_reactor_add_peer answers CMT_OK or CMT_FAULT only. */
+        lane_fault_note(p, cmt_bsync_reactor_add_peer(p->bsync,
+                                                      cmt_p2p_peer_id(peer)),
+                        "blocksync AddPeer", cmt_p2p_peer_id(peer), -1);
     }
 }
 
@@ -2390,6 +2437,7 @@ static void bs_replay_status(nodus_witness_p2p_t *p, int i)
                                   p->slots[i].bs_status_len) == CMT_FAULT) {
         QGP_LOG_ERROR(LOG_TAG, "blocksync receive (held status): CMT_FAULT "
                       "(peer %s)", id);
+        p->lane_fault = true;          /* sticky — lane_fault_note */
     }
 }
 
@@ -2448,6 +2496,7 @@ static void bs_receive(void *ctx, cmt_p2p_peer_t *src, uint8_t ch_id,
     if (rc == CMT_FAULT) {
         QGP_LOG_ERROR(LOG_TAG, "blocksync receive: CMT_FAULT (peer %s)",
                       cmt_p2p_peer_id(src));
+        p->lane_fault = true;          /* sticky — lane_fault_note */
     }
     process_pending_stops(p);
 }
@@ -2994,11 +3043,12 @@ int nodus_witness_p2p_lane_live(nodus_witness_p2p_t *p)
         lane_memr_init(p, i);
         lane_conr_add(p, i);
         lane_memr_add(p, i);
-        if (p->bsync != NULL &&
-            cmt_bsync_reactor_add_peer(p->bsync,
-                                       cmt_p2p_peer_id(p->slots[i].peer)) != CMT_OK) {
-            QGP_LOG_ERROR(LOG_TAG, "blocksync AddPeer(%s): CMT_FAULT",
-                          cmt_p2p_peer_id(p->slots[i].peer));
+        if (p->bsync != NULL) {
+            /* CMT_OK or CMT_FAULT only (cmt_bsync_reactor_add_peer). */
+            lane_fault_note(p, cmt_bsync_reactor_add_peer(
+                                   p->bsync, cmt_p2p_peer_id(p->slots[i].peer)),
+                            "blocksync AddPeer",
+                            cmt_p2p_peer_id(p->slots[i].peer), i);
         }
         /* The StatusResponse this peer sent before the lane was live
          * (DEVIATION, bs_hold_status) — after AddPeer, as the reference's
@@ -3007,7 +3057,8 @@ int nodus_witness_p2p_lane_live(nodus_witness_p2p_t *p)
         bs_replay_status(p, i);
     }
     process_pending_stops(p);   /* a replayed status may be invalid (:253-257) */
-    return CMT_OK;
+    /* A reactor fault during the admission above (lane_fault_note). */
+    return p->lane_fault ? CMT_FAULT : CMT_OK;
 }
 
 int nodus_witness_p2p_lane_tick(nodus_witness_p2p_t *p, int64_t *next_deadline_ns)
@@ -3019,6 +3070,11 @@ int nodus_witness_p2p_lane_tick(nodus_witness_p2p_t *p, int64_t *next_deadline_n
         *next_deadline_ns = INT64_MAX;
     }
     if (p == NULL || p->conr == NULL || p->memr == NULL) {
+        return CMT_FAULT;
+    }
+    /* A reactor call made from a p2p callback since the last tick (or
+     * any earlier one) returned CMT_FAULT — sticky, lane_fault_note. */
+    if (p->lane_fault) {
         return CMT_FAULT;
     }
     if (cmt_conr_tick(p->conr, &d_conr) == CMT_FAULT) {

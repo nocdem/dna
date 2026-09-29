@@ -106,8 +106,14 @@
  * summing above max(max_tx_bytes, max_batch_bytes) (both defaults leave
  * that at 1 MiB — `max_batch_bytes` is 0), or malformed framing now
  * DISCONNECTS; the "EMPTY `Txs` is logged and ignored" branch of
- * :145-148 is kept, as the reference keeps it, and is no longer
- * reached from the wire. The descriptor's
+ * :155-158 is kept, as the reference keeps it, and IS still reachable
+ * from the wire, in the reference as here: the filter tallies the entries
+ * of EVERY `Txs` submessage in the message (filter.go:51-78), while the
+ * decode keeps only the LAST one (types.pb.go:447-451 — a fresh `Txs`,
+ * `Sum` replaced; cmt_pb_mempool.c mem_message_merge), so a message
+ * whose earlier `Txs` carries an entry and whose last `Txs` is empty
+ * passes the filter and reaches the branch. Its effect is one ERROR log
+ * line and nothing else, on every node alike. The descriptor's
  * `RecvMessageCapacity` (:83) is enforced by the reference's transport
  * (p2p/conn, deliberately unpinned — pin record rev 15); it is enforced
  * HERE at the reactor boundary, so the decoder never sees more bytes than

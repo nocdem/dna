@@ -1515,12 +1515,19 @@ static void witness_setup_identity(nodus_witness_t *witness) {
 /**
  * The ONE production `cmt_now_fn` on this chain (BFT-time POLICY,
  * atlas-dec-4ac0423068085c100fdfa3e264ca16bc, APPROVED): the reference's
- * `Now()` (types/time/time.go:9-11) is read only to stamp a validator's
- * OWN vote/proposal and to evaluate the genesis-time wait / timer
- * deadlines in the tick — never for a validation, threshold or state
- * derivation, which is exactly the scope this policy allows. CLOCK_
- * REALTIME, never MONOTONIC: the value this feeds ends up inside a
- * signed vote/proposal preimage and must be wall-clock UTC.
+ * `Now()` (types/time/time.go:9-11) is read to stamp a validator's OWN
+ * vote/proposal, to evaluate the genesis-time wait / timer deadlines in
+ * the tick, by the signer, the reactors and the WAL — and, since the
+ * v0.38.26 pin, ONCE in block validation: the executor's `now` row (the
+ * same callback, nodus_cmt_node_init) feeds the 60 s block-time
+ * tolerance check (state/validation.go:124-129; decision
+ * 2026-09-25-consensus-clock-scope-correction.md, addendum "Ek — pin
+ * v0.38.26"). That check is node-local — a node whose clock lags more
+ * than the tolerance refuses near-tip blocks and stops, the chain does
+ * not split — and no threshold or state derivation reads a clock.
+ * CLOCK_REALTIME, never MONOTONIC: the value this feeds ends up inside a
+ * signed vote/proposal preimage and is compared with block times, so it
+ * must be wall-clock UTC.
  */
 static int witness_cmt_now(void *ctx, cmt_time_t *out) {
     (void)ctx;

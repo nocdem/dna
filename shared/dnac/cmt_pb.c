@@ -4051,14 +4051,23 @@ int cmt_pb_new_valid_block_marshal(const cmt_pb_new_valid_block_t *m,
  *
  * NOTE deviation, field 4: the generated decoder MERGES a repeated
  * occurrence into the BitArray it already has (:2079-2084 allocates only
- * when nil and then calls Unmarshal on it, which APPENDS to Elems). This
- * port calls the ported FromProto (cmt_bits_from_proto), which parses the
- * occurrence whole and REPLACES. The two differ only for a malformed
- * message that carries field 4 twice: Go would build an array whose Elems
- * no longer agree with Bits — the very state the APPROVED INVARIANT
- * (atlas-dec-7495d3372e004b24b4f6cc7bff5caf07) exists to refuse — while
- * this decoder keeps the last occurrence and checks the agreement. Reusing
- * the ported FromProto is preferred over a second BitArray decoder. */
+ * when nil and then calls Unmarshal on it; v0.38.26 libs/bits
+ * types.pb.go:245, :299 APPEND each occurrence's Elems, and a later Bits
+ * overwrites the earlier). This port calls the ported FromProto
+ * (cmt_bits_from_proto), which parses the occurrence whole and REPLACES:
+ * it keeps the LAST occurrence and checks its Bits/Elems agreement. The
+ * two differ only for a message that carries the field more than once,
+ * which no conforming encoder produces. The merged Go array is then
+ * sometimes inconsistent (refused later by ValidateBasic, ASA-2025-003)
+ * and sometimes VALID — e.g. {Bits 64, one word} then {Bits 128, one
+ * word} merges to Bits 128 with two words — where this decoder sees Bits
+ * 128 with one word and refuses the message (the sender is stopped). The
+ * effect is confined to one peer's gossip bookkeeping (PeerState) and to
+ * whether that peer is disconnected; no block, vote or state root
+ * depends on it, so nodes cannot diverge through it. The APPROVED
+ * INVARIANT (atlas-dec-7495d3372e004b24b4f6cc7bff5caf07) is why the
+ * agreement is checked at decode. Reusing the ported FromProto is
+ * preferred over a second BitArray decoder. */
 static int nvb_merge(const uint8_t *in, size_t len,
                      cmt_pb_new_valid_block_t *m)
 {
@@ -4266,7 +4275,10 @@ int cmt_pb_proposal_pol_marshal(const cmt_pb_proposal_pol_t *m, uint8_t *out,
 }
 
 /* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:2210-2330 —
- * ProposalPOL.Unmarshal. Field 3's merge-vs-replace note is nvb_merge's. */
+ * ProposalPOL.Unmarshal. Field 3's merge-vs-replace note is nvb_merge's:
+ * Go merges repeated occurrences (Elems appended) and can end with a
+ * VALID array where this decoder keeps the last occurrence and may
+ * refuse it; the effect is peer-state bookkeeping / a disconnect only. */
 static int ppol_merge(const uint8_t *in, size_t len,
                       cmt_pb_proposal_pol_t *m)
 {
@@ -4771,7 +4783,10 @@ int cmt_pb_vote_set_bits_marshal(const cmt_pb_vote_set_bits_t *m,
 }
 
 /* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:2804-2976 —
- * VoteSetBits.Unmarshal. Field 5's merge-vs-replace note is nvb_merge's. */
+ * VoteSetBits.Unmarshal. Field 5's merge-vs-replace note is nvb_merge's:
+ * Go merges repeated occurrences (Elems appended) and can end with a
+ * VALID array where this decoder keeps the last occurrence and may
+ * refuse it; the effect is peer-state bookkeeping / a disconnect only. */
 static int vsb_merge(const uint8_t *in, size_t len,
                      cmt_pb_vote_set_bits_t *m)
 {

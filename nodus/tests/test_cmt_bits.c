@@ -536,6 +536,15 @@ static int test_asa_2025_003(void)
         { "with elements",                        false, 10,  1, true  },
         { "more elements than bits specifies",    false, 0,   5, false },
         { "less elements than bits specifies",    false, 200, 1, false },
+        /* Not upstream rows — Go's signed numElements (bit_array.go:519-521,
+         * red-team row 2-2): (bits + 63) / 64 truncates toward zero, so
+         * -1 and -126 expect 0 words and -127 / -200 a NEGATIVE count no
+         * array has. RED against the former clamp (cmt_bits_num_elems
+         * gives 0 for every bits <= 0), which accepted the last two. */
+        { "bits -1, no elements (Go expects 0)",  false, -1,   0, true  },
+        { "bits -126, no elements (Go expects 0)", false, -126, 0, true },
+        { "bits -127, no elements (Go expects -1)", false, -127, 0, false },
+        { "bits -200, no elements (Go expects -2)", false, -200, 0, false },
     };
     cmt_bit_array_t ba;
     size_t          i;

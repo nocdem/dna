@@ -40,8 +40,12 @@ static int cmt_bits_ones_count64(uint64_t v)
 
 /* cometbft@v0.38.26 libs/bits/bit_array.go:519-521 — numElements(), the
  * (bits+63)/64 that 709fd12b wrote inline at :31, :44, :124. For
- * bits <= 0 Go's integer division gives 0 for every bits > -63; this port
- * returns 0 for all of them, and no ported path passes bits <= -63. */
+ * bits <= 0 Go's integer division (truncating toward zero) gives 0 for
+ * every bits in (-127, 0] and a NEGATIVE count from bits = -127 down; this
+ * helper returns 0 for every bits <= 0. Its callers size storage and
+ * never see a negative width; the one place the reference's negative
+ * count matters, ValidateBasic, computes it signed itself
+ * (cmt_bits_validate_basic). */
 size_t cmt_bits_num_elems(int bits)
 {
     if (bits <= 0) {
@@ -545,17 +549,29 @@ int cmt_bits_update(cmt_bit_array_t *ba, const cmt_bit_array_t *o)
     return CMT_OK;
 }
 
-/* cometbft@v0.38.26 libs/bits/bit_array.go:504-517 — ValidateBasic().
- * New in v0.38.19 (ASA-2025-003). */
+/* cometbft@v0.38.26 libs/bits/bit_array.go:504-521 — ValidateBasic()
+ * with numElements(). New in v0.38.19 (ASA-2025-003). The ONE port: the
+ * consensus message checks (cmt_msgs.c — NewValidBlock.BlockParts,
+ * ProposalPOL.ProposalPOL, VoteSetBits.Votes) call it. */
 int cmt_bits_validate_basic(const cmt_bit_array_t *ba)
 {
+    int64_t expected_elems;
+
     if (ba == NULL) {
         return CMT_OK;                               /* :508-510 */
     }
-    /* :512-515 — the word count must be exactly numElements(Size()). A
-     * BitArray arrives from a PEER (VoteSetBits, NewValidBlock), so the
-     * mismatch is a property of the input: REJECT. */
-    if (ba->n_elems != cmt_bits_num_elems(cmt_bits_size(ba))) {
+    /* :512 — numElements(bA.Size()) = (bits + 63) / 64 in Go's signed
+     * int (64-bit), truncating toward zero as C does: 0 for bits in
+     * (-127, 0], negative from -127 down. NOT cmt_bits_num_elems, which
+     * clamps every negative width to 0 and would accept bits = -200 with
+     * no words. */
+    expected_elems = ((int64_t)cmt_bits_size(ba) + 63) / 64;
+    /* :513-515 — the word count must be exactly that. A BitArray arrives
+     * from a PEER (VoteSetBits, NewValidBlock, ProposalPOL), so the
+     * mismatch is a property of the input: REJECT ("mismatch between
+     * specified number of bits %d, and number of elements %d"). A
+     * negative expectation never equals a length. */
+    if (expected_elems < 0 || (uint64_t)expected_elems != (uint64_t)ba->n_elems) {
         return CMT_REJECT;
     }
     return CMT_OK;                                   /* :516 */

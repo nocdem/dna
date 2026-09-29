@@ -83,7 +83,10 @@
  *     TriggeredTimeoutPrecommit FLAG and not a step comparison, and
  *     `enterCommit` has NO ROUND TERM at all. A guard that trips returns
  *     CMT_OK and changes nothing — a CMT_REJECT there would deadlock the
- *     state machine.
+ *     state machine;
+ *   · (red-team row 7-2) the prevote step's ValidateBlock (:1363-1368)
+ *     prevotes nil on a VERDICT (CMT_REJECT) and STOPS on a node-local
+ *     CMT_FAULT instead of voting nil about a block it never judged.
  *
  * ── WHAT IT REQUIRES ───────────────────────────────────────────────────
  * COMPILE FLAGS: none. A DEFAULT BUILD is enough. The file compiles
@@ -120,7 +123,11 @@
  *     `validate_block`, `apply_verified_block` and every block-store row
  *     are never reached in a passing run; several are deliberately wired
  *     to fail so that a test which DID reach them would break rather than
- *     silently pass. `finalizeCommit` is not exercised at all.
+ *     silently pass. `finalizeCommit` is not exercised at all. The one
+ *     exception is `t_prevote_validation_fault`, which calls
+ *     `cmt_cs_default_do_prevote` directly with a zeroed placeholder as
+ *     the proposal block and sets what `validate_block` answers
+ *     (`g_validate_rc`); the block is never read, decoded or proposed.
  *  3. THE SLOT ALLOCATOR IS NEVER CALLED. Every path that builds a part
  *     set needs either a valid proposal signature (:1945) or a +2/3
  *     majority (:1553, :1647, :2299), and a host-free test can produce
@@ -382,10 +389,15 @@ static int h_process_proposal(void *c, cmt_block_t *b, const cmt_state_t *s,
     return CMT_FAULT;
 }
 
+/* What `validate_block` answers. CMT_FAULT (the default, reset by
+ * fresh_cs) keeps it a deliberate failure like the rows around it; only
+ * t_prevote_validation_fault reaches it on purpose and sets it. */
+static int g_validate_rc = CMT_FAULT;
+
 static int h_validate_block(void *c, const cmt_state_t *s, cmt_block_t *b)
 {
     (void)c; (void)s; (void)b;
-    return CMT_FAULT;
+    return g_validate_rc;
 }
 
 static int h_apply_block(void *c, const cmt_block_id_t *id, cmt_block_t *b,
@@ -621,6 +633,7 @@ static int fresh_cs(void)
     g_replay_eof  = true;
     g_replay_rec      = NULL;
     g_replay_rec_left = 0;
+    g_validate_rc     = CMT_FAULT;
 
     if (cmt_config_default(&g_config) != CMT_OK) {
         return 1;
@@ -1896,6 +1909,63 @@ static int t_replay_validate_basic_gate(void)
     return 0;
 }
 
+/* ══ 17. a node-local validation fault is not a nil prevote ══════════
+ *
+ * WHAT IT PROVES: that `defaultDoPrevote` (state.go:1340-1368) turns a
+ * validation VERDICT on the proposal block (CMT_REJECT — the reference's
+ * `err != nil`) into a prevote for nil, and a NODE-LOCAL failure to
+ * validate (CMT_FAULT — a clock read for the 60 s block-time tolerance,
+ * state/validation.go:124-129, a store or allocation failure; a class
+ * the reference's ValidateBlock cannot produce) into CMT_FAULT, which
+ * stops the node instead of casting a vote about a block it never judged
+ * (red-team row 7-2).
+ *
+ * HOW: `cmt_cs_default_do_prevote` is called directly on a fresh state
+ * machine with no lock and a proposal block present. The block is a
+ * zeroed placeholder: the fixture's `validate_block` never reads it, and
+ * on the REJECT path the nil prevote returns at :2445 (no private
+ * validator) before anything signs, so `process_proposal` is never
+ * reached either. HOW IT CAN LIE (1) holds: the nil vote itself is not
+ * observed, only that the step returned CMT_OK on that path.
+ *
+ * RED at 404c9825: cmt_cs.c:2466-2474 answered every non-OK from
+ * `validate_block` with the nil prevote, so the CMT_FAULT row returned
+ * CMT_OK.
+ */
+static int t_prevote_validation_fault(void)
+{
+    cmt_block_t *placeholder;
+    cmt_block_t *saved;
+    int          rc;
+
+    placeholder = (cmt_block_t *)calloc(1u, sizeof(*placeholder));
+    CHECK(placeholder != NULL, "alloc"); OK();
+    CHECK(fresh_cs() == 0, "construct"); OK();
+    CHECK(g_cs->rs.locked_block == NULL, "no lock at a fresh height"); OK();
+    saved = g_cs->rs.proposal_block;
+    g_cs->rs.proposal_block = placeholder;
+
+    g_validate_rc = CMT_FAULT;
+    rc = cmt_cs_default_do_prevote(g_cs, 1, 0);
+    g_validate_rc = CMT_REJECT;
+    g_cs->rs.proposal_block = saved;
+    CHECK(rc == CMT_FAULT,
+          "a CMT_FAULT from validate_block stops the node, no nil prevote");
+    OK();
+
+    g_cs->rs.proposal_block = placeholder;
+    rc = cmt_cs_default_do_prevote(g_cs, 1, 0);
+    g_cs->rs.proposal_block = saved;
+    CHECK(rc == CMT_OK,
+          "a CMT_REJECT from validate_block is the nil prevote (:1364-1368)");
+    OK();
+
+    g_validate_rc = CMT_FAULT;
+    cmt_cs_free(g_cs);
+    free(placeholder);
+    return 0;
+}
+
 /* ══ main ═════════════════════════════════════════════════════════════ */
 
 int main(void)
@@ -1953,6 +2023,7 @@ int main(void)
     if (rc == 0 && t_double_signing() != 0)          { rc = 1; }
     if (rc == 0 && t_replay_end_height_rule() != 0)  { rc = 1; }
     if (rc == 0 && t_replay_validate_basic_gate() != 0) { rc = 1; }
+    if (rc == 0 && t_prevote_validation_fault() != 0)   { rc = 1; }
 
     free_slots();
     free(g_sync_rounds);

@@ -491,10 +491,22 @@ void nodus_witness_p2p_lane_bind(nodus_witness_p2p_t *p, cmt_conr_t *conr,
                                  cmt_memr_t *memr);
 /** The reactors are running: admit every connected peer (R-P2P-47) —
  *  consensus and mempool InitPeer / AddPeer, then the block sync
- *  reactor's AddPeer when one is bound. */
+ *  reactor's AddPeer when one is bound.
+ *  @return CMT_OK; CMT_FAULT on NULL / unbound reactors, or when a reactor
+ *  call made here or from an earlier p2p callback returned CMT_FAULT (the
+ *  sticky lane fault, below). */
 int  nodus_witness_p2p_lane_live(nodus_witness_p2p_t *p);
 /** cmt_conr_tick + cmt_memr_tick (+ cmt_bsync_reactor_tick when bound),
  *  then the deferred StopPeerForErrors.
+ *
+ *  THE STICKY LANE FAULT: the p2p callbacks (Receive of 0x20-0x23, 0x30,
+ *  0x40 and the replayed held StatusResponse; the reactors' InitPeer,
+ *  AddPeer and RemovePeer) return nothing, so a CMT_FAULT from a reactor
+ *  inside one — node-local by the W1.7 rule — is logged and remembered by
+ *  the host, and from then on this call returns CMT_FAULT before ticking
+ *  anything; the caller stops consensus participation on it
+ *  (nodus_witness.c witness_cmt_tick). It is never cleared. A CMT_REJECT
+ *  there is a peer's fault and is handled where it arises, not here.
  *  @return CMT_OK or CMT_FAULT; `*next_deadline_ns` the earliest of the
  *  reactors' deadlines (INT64_MAX = none). */
 int  nodus_witness_p2p_lane_tick(nodus_witness_p2p_t *p,

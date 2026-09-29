@@ -12,7 +12,7 @@
 #include "dnac/cmt_bsync_reactor.h"
 #include "dnac/cmt_pb_store.h"      /* cmt_pb_block_unmarshal            */
 #include "dnac/cmt_validation.h"    /* cmt_verify_commit                 */
-#include "dnac/cmt_vote.h"          /* cmt_vote_verify_extension         */
+#include "dnac/cmt_validator_set.h" /* VerifyCommitExtended (BS-12)     */
 #include "dnac/cmt_vote_set.h"      /* CMT_MAX_VOTES_COUNT               */
 
 #include "crypto/utils/qgp_log.h"
@@ -855,97 +855,6 @@ static bool local_node_blocks_the_chain(cmt_bsync_reactor_t *bcR)
     return bcR->state.validators.validators[idx].voting_power >= total / 3; /* :313 */
 }
 
-/* cometbft@v0.38.26 types/validator_set.go:717-757 —
- * `(vals *ValidatorSet) VerifyCommitExtended(chainID, blockID, height,
- * extCommit)` over the reactor's own validator set (reactor.go:591
- * `state.Validators`). BS-12: placed here, built from the types layer's
- * API. "extCommit must already be validated by ValidateBasic" (:718) —
- * cmt_extended_commit_from_proto ran it at decode (cmt_block.h:654-656).
- * @return CMT_OK; CMT_REJECT (the reference's error — a peer's fault);
- *         CMT_FAULT on memory or a backend failure. */
-static int verify_commit_extended(cmt_bsync_reactor_t *bcR,
-                                  const cmt_block_id_t *block_id,
-                                  int64_t height,
-                                  const cmt_extended_commit_t *ec)
-{
-    cmt_validator_set_t *vals = &bcR->state.validators;
-    cmt_commit_sig_t    *sigs = NULL;
-    cmt_commit_t         commit;
-    cmt_pb_vote_t       *vote = NULL;
-    size_t               n;
-    size_t               i;
-    int                  rc;
-
-    if (ec == NULL) {
-        return CMT_REJECT;                     /* :725-727 "nil extended commit" */
-    }
-    /* :729-733 — 1. ensure vote extensions */
-    rc = cmt_extended_commit_ensure_extensions(ec, true);
-    if (rc != CMT_OK) {
-        return rc;
-    }
-    /* :735-739 — 2. verify regular commit (extCommit.ToCommit()) */
-    n    = ec->extended_signatures_len;
-    sigs = (cmt_commit_sig_t *)calloc(n != 0u ? n : 1u, sizeof(*sigs));
-    if (sigs == NULL) {
-        return CMT_FAULT;
-    }
-    rc = cmt_extended_commit_to_commit(ec, sigs, n != 0u ? n : 1u, &commit);
-    if (rc == CMT_OK) {
-        rc = cmt_verify_commit(bcR->state.chain_id, bcR->state.chain_id_len,
-                               vals, block_id, height, &commit, NULL);
-    }
-    if (rc != CMT_OK) {
-        free(sigs);
-        return rc;
-    }
-    /* :741-754 — 3. check signatures */
-    vote = (cmt_pb_vote_t *)malloc(sizeof(*vote));
-    if (vote == NULL) {
-        free(sigs);
-        return CMT_FAULT;
-    }
-    for (i = 0; i < n && rc == CMT_OK; i++) {
-        cmt_validator_t val;
-        uint8_t        *scratch;
-        size_t          cap;
-
-        /* :743-748 — "should not happen as we verified the commit above" */
-        if (cmt_validator_set_get_by_index(vals, (int32_t)i, &val) != CMT_OK ||
-            !val.pub_key.present) {
-            QGP_LOG_ERROR(LOG_TAG, "unable to find val #%zu out of %zu vals",
-                          i, cmt_validator_set_size(vals));
-            rc = CMT_REJECT;
-            break;
-        }
-        /* :750 extCommit.GetExtendedVote(idx) */
-        rc = cmt_extended_commit_get_extended_vote(ec, (int32_t)i, vote);
-        if (rc != CMT_OK) {
-            break;
-        }
-        /* :751 vote.VerifyExtension(chainID, val.PubKey); the scratch
-         * holds the extension sign bytes (cmt_vote.h: 64 + 11 + the
-         * extension's length, plus the chain ID). */
-        cap = 128u + bcR->state.chain_id_len + vote->extension.len;
-        scratch = (uint8_t *)malloc(cap);
-        if (scratch == NULL) {
-            rc = CMT_FAULT;
-            break;
-        }
-        rc = cmt_vote_verify_extension(bcR->state.chain_id,
-                                       bcR->state.chain_id_len, vote,
-                                       val.pub_key.key, scratch, cap);
-        free(scratch);
-        if (rc == CMT_REJECT) {
-            QGP_LOG_ERROR(LOG_TAG, "invalid vote extension signature (val "
-                          "#%zu)", i);                             /* :752 */
-        }
-    }
-    free(vote);
-    free(sigs);
-    return rc;                                                     /* :756 */
-}
-
 /* cometbft@v0.38.26 blocksync/reactor.go:655-677 handleValidationFailure()
  * — the peers that delivered `height_a` and `height_b` are removed,
  * banned, their requests redone, and stopped with ErrReactorValidation;
@@ -1087,11 +996,22 @@ static int process_first(cmt_bsync_reactor_t *bcR, cmt_bsync_block_t *first,
                                      second->block.last_commit, NULL); /* :581 */
         }
     }
-    /* v0.38.26 :587-595 — "Fully verify extended commit if present". */
+    /* v0.38.26 :587-595 — "Fully verify extended commit if present":
+     * `state.Validators.VerifyCommitExtended` (:591), the types layer's
+     * port (BS-12). "extCommit must already be validated by
+     * ValidateBasic" (types/validator_set.go:718) —
+     * cmt_extended_commit_from_proto ran it at decode. The address of the
+     * held commit is passed, never NULL. */
     if (verr == CMT_OK && ext_enabled) {
-        verr = verify_commit_extended(bcR, &first_id,
-                                      first->block.header.height,
-                                      &first->ext_commit);         /* :591 */
+        verr = cmt_validator_set_verify_commit_extended(
+            &bcR->state.validators, bcR->state.chain_id,
+            bcR->state.chain_id_len, &first_id,
+            first->block.header.height, &first->ext_commit);       /* :591 */
+        if (verr == CMT_REJECT) {
+            QGP_LOG_ERROR(LOG_TAG, "invalid extended commit for height "
+                          "%lld (VerifyCommitExtended)",
+                          (long long)first->block.header.height);  /* :592 */
+        }
     }
     /* v0.38.26 :597-613 — validate the block before it is persisted.
      * BS-11: the full ValidateBlock for EVERY block (the reference uses

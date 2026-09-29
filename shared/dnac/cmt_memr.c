@@ -456,8 +456,12 @@ int cmt_memr_receive(cmt_memr_t *memR, int peer_slot,
     }
 
     /* :141 debug log; :143 — the Txs branch. The empty-Txs test below is
-     * kept as the reference keeps it (v0.38.26 :155-158), though the
-     * filter above now refuses a message with no entry first. */
+     * kept as the reference keeps it (v0.38.26 :155-158), and it is
+     * reachable from the wire: the filter above refuses a message with no
+     * entry in ANY of its Txs submessages, but the decode keeps only the
+     * LAST one (oneof, types.pb.go:447-451), so a non-empty Txs followed
+     * by an empty one arrives here — in the reference too (header
+     * "RECEIVE"). One ERROR line, no other effect. */
     if (txs->txs_len == 0) {                                       /* :145 */
         QGP_LOG_ERROR(LOG_TAG, "received empty txs from peer %d",
                       peer_slot);                                  /* :146 */

@@ -3,9 +3,16 @@
  * @brief cometbft @709fd12b types/validator.go + types/validator_set.go in
  *        C — see cmt_validator_set.h.
  *
- * NOTHING HERE READS A CLOCK, DRAWS RANDOMNESS, ITERATES A MAP OR
- * ALLOCATES. Every function is a pure function of its arguments and of the
- * caller-owned storage it is given.
+ * NOTHING HERE READS A CLOCK, DRAWS RANDOMNESS OR ITERATES A MAP. Every
+ * function is a pure function of its arguments and of the caller-owned
+ * storage it is given. It is NOT allocation-free (red-team 2026-09-30
+ * row 3-n): `cmt_validator_set_verify_commit_extended` allocates its own
+ * buffers, and callees in other files allocate transiently — the
+ * extension sign bytes (`cmt_vote_extension_sign_bytes`, cmt_vote.c) and
+ * the Merkle leaf hashes behind `cmt_validator_set_hash`
+ * (`cmt_merkle_hash_from_byte_slices`, cmt_merkle.c). Every such buffer
+ * is freed before the call returns, and an allocation failure is
+ * CMT_FAULT.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -19,6 +26,7 @@
 #include "dnac/cmt_block.h"       /* ExtendedCommit — VerifyCommitExtended */
 #include "dnac/cmt_vote.h"        /* VerifyExtension — VerifyCommitExtended */
 
+#include <stdlib.h>               /* VerifyCommitExtended's buffers */
 #include <string.h>
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -1226,31 +1234,38 @@ int cmt_validator_set_verify_commit(cmt_validator_set_t *vals,
                              height, commit, err);                /* :701 */
 }
 
-/* cometbft@v0.38.26 types/validator_set.go:717-758 —
+/* cometbft@v0.38.26 types/validator_set.go:717-757 —
  * (vals *ValidatorSet) VerifyCommitExtended(). New in v0.38.22 (#5629),
  * the full-commit check block sync applies to a block's extended commit
- * when vote extensions are enabled (blocksync/reactor.go:591). */
+ * when vote extensions are enabled (blocksync/reactor.go:591; its one
+ * production caller, cmt_bsync_reactor.c process_first — BS-12).
+ *
+ * ALLOCATES (the one function in this file that does): `ToCommit`'s
+ * signature array (one entry per extended signature), one vote, and per
+ * vote a sign-bytes buffer sized for THAT vote's extension — the
+ * extension is application data with no bound here, so a caller-sized
+ * scratch would refuse a valid extension the reference accepts. */
 int cmt_validator_set_verify_commit_extended(
         cmt_validator_set_t *vals, const uint8_t *chain_id,
         size_t chain_id_len, const cmt_pb_block_id_t *block_id,
-        int64_t height, const cmt_pb_extended_commit_t *ext_commit,
-        cmt_pb_commit_sig_t *sigs, size_t sigs_cap,
-        uint8_t *scratch, size_t scratch_cap)
+        int64_t height, const cmt_pb_extended_commit_t *ext_commit)
 {
-    cmt_pb_commit_t commit;
-    cmt_vote_t      vote;
-    cmt_validator_t val;
-    size_t          i;
-    int             rc;
+    cmt_pb_commit_t      commit;
+    cmt_pb_commit_sig_t *sigs = NULL;
+    cmt_vote_t          *vote = NULL;
+    size_t               n;
+    size_t               i;
+    int                  rc;
 
     if (vals == NULL) {
         return CMT_FAULT;
     }
     if (ext_commit == NULL) {
         /* :725-727 "nil extended commit" — an error in Go; a NULL pointer
-         * cannot come off the wire in C (the decoder yields a struct), so
-         * it is this process's own error: FAULT (deviation register
-         * R1B-10, the rule cmt_verify_basic_vals_and_commit follows). */
+         * cannot come off the wire in C (the decoder yields a struct, and
+         * block sync passes the address of the one it holds), so it is
+         * this process's own error: FAULT (deviation register R1B-10, the
+         * rule cmt_verify_basic_vals_and_commit follows). */
         return CMT_FAULT;
     }
     /* :729-733 — 1. every COMMIT entry carries an extension signature and
@@ -1261,40 +1276,71 @@ int cmt_validator_set_verify_commit_extended(
     }
     /* :735-739 — 2. the regular commit, the SAME check validateBlock
      * makes (Tachyon's address check included). */
-    memset(&commit, 0, sizeof(commit));
-    rc = cmt_extended_commit_to_commit(ext_commit, sigs, sigs_cap, &commit);
-    if (rc != CMT_OK) {
-        return rc;
+    n    = ext_commit->extended_signatures_len;
+    sigs = (cmt_pb_commit_sig_t *)calloc(n != 0u ? n : 1u, sizeof(*sigs));
+    if (sigs == NULL) {
+        return CMT_FAULT;
     }
-    rc = cmt_validator_set_verify_commit(vals, chain_id, chain_id_len,
-                                         block_id, height, &commit, NULL);
+    memset(&commit, 0, sizeof(commit));
+    rc = cmt_extended_commit_to_commit(ext_commit, sigs, n != 0u ? n : 1u,
+                                       &commit);
+    if (rc == CMT_OK) {
+        rc = cmt_validator_set_verify_commit(vals, chain_id, chain_id_len,
+                                             block_id, height, &commit,
+                                             NULL);
+    }
     if (rc != CMT_OK) {
+        free(sigs);
         return rc;
     }
     /* :741-755 — 3. every entry's extension signature, in index order,
      * against the key of the validator AT THAT INDEX. VerifyExtension
      * accepts an absent or nil entry without a check (vote.go:268-270),
-     * which is what lets such entries through. */
-    for (i = 0; i < ext_commit->extended_signatures_len; i++) {
+     * which is what lets such entries through. The key is read only for
+     * a non-nil precommit, i.e. a COMMIT entry, whose validator step 2
+     * already refused if it had no key (validation.go:384-386); a keyless
+     * validator at an ABSENT entry passes, as in the reference. */
+    vote = (cmt_vote_t *)malloc(sizeof(*vote));
+    if (vote == NULL) {
+        free(sigs);
+        return CMT_FAULT;
+    }
+    for (i = 0; i < n && rc == CMT_OK; i++) {
+        cmt_validator_t val;
+        uint8_t        *scratch;
+        size_t          cap;
+
         rc = cmt_validator_set_get_by_index(vals, (int32_t)i, &val);
         if (rc != CMT_OK) {
-            /* :745-748 "should not happen as we verified the commit
-             * above" — VerifyCommit made the counts equal. */
-            return rc;
+            /* :745-748 "unable to find val #%d out of %d vals" — "should
+             * not happen as we verified the commit above": VerifyCommit
+             * made the counts equal. An error, not a panic, upstream. */
+            break;
         }
         rc = cmt_extended_commit_get_extended_vote(ext_commit, (int32_t)i,
-                                                   &vote);       /* :750 */
+                                                   vote);        /* :750 */
         if (rc != CMT_OK) {
-            return rc;
+            break;
         }
-        rc = cmt_vote_verify_extension(chain_id, chain_id_len, &vote,
+        /* The extension sign bytes (cmt_vote_extension_sign_bytes): the
+         * canonical body is at most 64 + 11 + the extension's length
+         * (chain ID included) and its varint length prefix at most 10
+         * more; 128 + the chain ID's length covers both with room. */
+        cap     = 128u + chain_id_len + vote->extension.len;
+        scratch = (uint8_t *)malloc(cap);
+        if (scratch == NULL) {
+            rc = CMT_FAULT;
+            break;
+        }
+        rc = cmt_vote_verify_extension(chain_id, chain_id_len, vote,
                                        val.pub_key.key, scratch,
-                                       scratch_cap);         /* :751-753 */
-        if (rc != CMT_OK) {
-            return rc;   /* "invalid vote extension signature (val #%d)" */
-        }
+                                       cap);                 /* :751-753 */
+        free(scratch);
+        /* a REJECT here is "invalid vote extension signature (val #%d)" */
     }
-    return CMT_OK;                                               /* :757 */
+    free(vote);
+    free(sigs);
+    return rc;                                                   /* :757 */
 }
 
 /* :708-712 (vals *ValidatorSet) VerifyCommitLight() — the whole body is

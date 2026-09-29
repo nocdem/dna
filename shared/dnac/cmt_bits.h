@@ -2,9 +2,12 @@
  * @file shared/dnac/cmt_bits.h
  * @brief cometbft @709fd12b `libs/bits.BitArray` ported to C.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * Wave R1-A of the cometbft → C consensus port. Nothing calls this yet;
- * additive only. The live witness BFT and QC V2 are untouched.
+ * ═══ ACTIVATION: LIVE ═══════════════════════════════════════════════════
+ * Wave R1-A of the cometbft → C consensus port. Live: the vote sets and
+ * part sets, the consensus reactor and its peer state, the block and
+ * wire codecs and the consensus message checks (cmt_vote_set.c,
+ * cmt_part_set.c, cmt_conr.c, cmt_ps.c, cmt_block.c, cmt_pb.c,
+ * cmt_msgs.c) call it.
  * ════════════════════════════════════════════════════════════════════════
  *
  * A BitArray is what a VoteSet reports as "who has voted" and what a
@@ -350,17 +353,22 @@ int cmt_bits_bytes(const cmt_bit_array_t *ba, uint8_t *out, size_t cap,
 int cmt_bits_update(cmt_bit_array_t *ba, const cmt_bit_array_t *o);
 
 /**
- * cometbft@v0.38.26 libs/bits/bit_array.go:504-517 — `ValidateBasic()`,
- * new in v0.38.19 (ASA-2025-003). A NULL array (Go's nil) and a
- * zero-size array with no words are VALID; otherwise the word count must
- * be exactly (Size() + 63) / 64.
+ * cometbft@v0.38.26 libs/bits/bit_array.go:504-521 — `ValidateBasic()`
+ * with `numElements()`, new in v0.38.19 (ASA-2025-003). A NULL array
+ * (Go's nil) and a zero-size array with no words are VALID; otherwise the
+ * word count must be exactly (Size() + 63) / 64 computed as Go does, in
+ * signed 64-bit arithmetic truncating toward zero — so a width in
+ * (-127, 0] expects 0 words and a width of -127 or below expects a
+ * negative count no array can have (always REJECT).
  *
- * Its reference callers are the consensus reactor's message checks
- * (consensus/reactor.go:1615 NewValidBlockMessage.BlockParts, :1826
- * VoteSetBitsMessage.Votes). This port's wire decoder,
- * `cmt_bits_from_proto` (cmt_pb.c), already REFUSES the mismatch before
- * any message sees the array, so on the decode path this can only agree;
- * it exists so those message checks can make the reference's call.
+ * Its callers are the consensus message checks, as in the reference
+ * (consensus/reactor.go:1615 NewValidBlockMessage.BlockParts, :1678
+ * ProposalPOLMessage.ProposalPOL, :1826 VoteSetBitsMessage.Votes) —
+ * cmt_msgs.c, passing NULL for an absent (nil) array. This is the ONE
+ * port; cmt_msgs.c's former file-local copy is gone (red-team row 2-2).
+ * This port's wire decoder, `cmt_bits_from_proto` (cmt_pb.c), already
+ * REFUSES the mismatch before any message sees the array, so on the
+ * decode path this can only agree.
  * @return CMT_OK, CMT_REJECT on the mismatch.
  */
 int cmt_bits_validate_basic(const cmt_bit_array_t *ba);

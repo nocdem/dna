@@ -215,7 +215,10 @@ typedef struct {
  * cometbft@709fd12b types/validator_set.go:56-65 — `type ValidatorSet`.
  *
  * `validators` is CALLER-OWNED storage: `validators_cap` slots of which
- * `validators_len` are used. Nothing in this module allocates.
+ * `validators_len` are used. This module never allocates a set's storage
+ * (the transient buffers of `cmt_validator_set_verify_commit_extended`
+ * and of its hash callees are freed before they return — see
+ * cmt_validator_set.c's header).
  *
  * ⚠ THE PROPOSER IS HELD BY VALUE, and that is a stated difference. The
  * reference's `Proposer` is a `*Validator` that POINTS INTO `Validators`,
@@ -932,24 +935,25 @@ int cmt_validator_set_verify_commit(cmt_validator_set_t *vals,
  *  3. every entry's `VerifyExtension` against the key of the validator at
  *     its index (:741-754); absent and nil entries pass without a check
  *     (v0.38.26 vote.go:268-270).
- * Its reference caller is block sync (blocksync/reactor.go:591).
+ * Its reference caller is block sync (blocksync/reactor.go:591), and so
+ * is this port's: cmt_bsync_reactor.c `process_first` (BS-12, moved here
+ * from a static copy there).
  *
- * @param sigs, sigs_cap storage for `ToCommit`'s signatures — at least
- *        `ext_commit->extended_signatures_len` entries.
- * @param scratch, scratch_cap the extension sign-bytes buffer
- *        `cmt_vote_verify_extension` needs (64 + 11 + the longest
- *        extension, cmt_vote.h).
- * @return CMT_OK, CMT_REJECT; CMT_FAULT on NULL — including a NULL
- *         `ext_commit`, which the reference returns as the error "nil
- *         extended commit" (:725-727) and which is FAULT here under
- *         deviation register R1B-10.
+ * The buffers it needs — `ToCommit`'s signatures and, per vote, the
+ * extension sign bytes sized for that vote's extension — are allocated
+ * inside and freed before it returns, so no extension the reference
+ * accepts is refused for want of caller scratch.
+ * @return CMT_OK, CMT_REJECT; CMT_FAULT on NULL or an allocation /
+ *         backend failure — including a NULL `ext_commit`, which the
+ *         reference returns as the error "nil extended commit"
+ *         (:725-727) and which is FAULT here under deviation register
+ *         R1B-10 (block sync passes the address of the commit it holds,
+ *         never NULL).
  */
 int cmt_validator_set_verify_commit_extended(
         cmt_validator_set_t *vals, const uint8_t *chain_id,
         size_t chain_id_len, const cmt_pb_block_id_t *block_id,
-        int64_t height, const cmt_pb_extended_commit_t *ext_commit,
-        cmt_pb_commit_sig_t *sigs, size_t sigs_cap,
-        uint8_t *scratch, size_t scratch_cap);
+        int64_t height, const cmt_pb_extended_commit_t *ext_commit);
 
 /**
  * cometbft@709fd12b types/validator_set.go:708-712 —

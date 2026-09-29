@@ -2465,10 +2465,22 @@ int cmt_cs_default_do_prevote(cmt_cs_t *cs, int64_t height, int32_t round)
 
     rc = cs->host.validate_block(cs->host_ctx, &cs->state,
                                  cs->rs.proposal_block);          /* :1363 */
+    if (rc == CMT_FAULT) {
+        /* NODE-LOCAL (W1.7): the validation could not be carried out on
+         * THIS node — a clock read for the block-time tolerance
+         * (state/validation.go:124-129), a store or allocation failure.
+         * That says nothing about the block, so it is not a nil vote; the
+         * reference's ValidateBlock has no such class (every error it
+         * returns is a verdict on the block), and this port stops instead,
+         * as it does at the precommit and finalize sites. */
+        QGP_LOG_ERROR(LOG_TAG, "prevote step: CMT_FAULT validating the "
+                               "proposal block — stopping");
+        return CMT_FAULT;
+    }
     if (rc != CMT_OK) {
-        /* :1364-1370 — an invalid proposal block is a PREVOTE FOR NIL, not
-         * an error. This is the one ValidateBlock site of the three that
-         * simply votes nil. */
+        /* :1364-1370 — an invalid proposal block (CMT_REJECT) is a
+         * PREVOTE FOR NIL, not an error. This is the one ValidateBlock
+         * site of the three that simply votes nil. */
         QGP_LOG_ERROR(LOG_TAG, "prevote step: consensus deems this block "
                                "invalid; prevoting nil");
         return cmt_cs_sign_add_vote(cs, CMT_PB_MSG_TYPE_PREVOTE, NULL, 0u,

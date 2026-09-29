@@ -90,8 +90,18 @@
  * :592-602, :792, :850, :892) and once per `cmt_bsync_reactor_receive`
  * that reaches the pool (pool.go:345-348 decrPending's monitor/timer,
  * :387/:464 the ban check). Every read schedules or rate-limits THIS
- * node's own requests. `VerifyCommit`, `VerifyCommitExtended`,
- * ValidateBlock, the apply and FilterMsgBytes never see a time. reactor.go:339/:558/:561 (the blocks/s log rate) is
+ * node's own requests. `VerifyCommit`, `VerifyCommitExtended`, the apply
+ * and FilterMsgBytes never see a time. ValidateBlock DOES, once, since
+ * the v0.38.26 pin: the executor behind `validate_block`
+ * (nodus_cmt_host_validate_block) refuses a block whose time is not
+ * before this node's wall clock + 60 s (state/validation.go:124-129;
+ * decision 2026-09-25-consensus-clock-scope-correction.md, addendum "Ek —
+ * pin v0.38.26"). Consequence, the reference's too: a node whose clock
+ * LAGS the chain by more than 60 s refuses honest near-tip blocks as a
+ * validation failure (reactor.go:597-613), and handle_validation_failure
+ * removes, bans and disconnects the honest peers that delivered them
+ * (reactor.go:655-677) — this node only, node-local, the chain does not
+ * split; node NTP is an operational obligation. reactor.go:339/:558/:561 (the blocks/s log rate) is
  * log-only and NOT ported — the cmt_cs.c:1920-1921 precedent for
  * state.go:1064.
  *
@@ -145,17 +155,21 @@
  *         and STRICTER where the held block at the new height is not the
  *         one whose LastCommit was verified (it was redone from another
  *         peer after the pop): one more commit verification per block.
- *   BS-12 PLACEMENT: `VerifyCommitExtended` belongs to types
- *         (v0.38.26 types/validator_set.go:717-757, a ValidatorSet
- *         method). The types layer (cmt_validator_set.c) has no port of it
- *         and is outside this package; it is written here as a static
- *         function from the types layer's existing API
- *         (`cmt_extended_commit_ensure_extensions`,
- *         `cmt_extended_commit_to_commit`, `cmt_verify_commit`,
- *         `cmt_validator_set_get_by_index`,
- *         `cmt_extended_commit_get_extended_vote`,
- *         `cmt_vote_verify_extension`), line for line. It moves to
- *         cmt_validator_set.c when that file's owner ports it.
+ *   BS-12 PLACEMENT — MOVED (2026-09-30, red-team row 3-1):
+ *         `VerifyCommitExtended` belongs to types (v0.38.26
+ *         types/validator_set.go:717-757, a ValidatorSet method). It was
+ *         first written here as a static copy; there is now ONE port,
+ *         `cmt_validator_set_verify_commit_extended` (cmt_validator_set.c),
+ *         and block sync calls it (reactor.go:591). The two copies had
+ *         drifted: a NULL extended commit was REJECT here and FAULT there
+ *         (the types rule, R1B-10, stands — block sync passes the address
+ *         of the commit it holds, never NULL); a validator without a
+ *         public key was refused here even at an ABSENT entry, which the
+ *         reference passes (VerifyExtension never reads the key for it,
+ *         vote.go:268-270, and VerifyCommit refuses a keyless signer of
+ *         any non-absent entry first, validation.go:384-386) — the types
+ *         behaviour, the reference's, stands; and the types copy took a
+ *         caller-sized sign-bytes scratch, now sized per vote inside.
  *
  * ── DETERMINISM ────────────────────────────────────────────────────────
  * The chain a node ends with is fixed by the commits, not by the path: a

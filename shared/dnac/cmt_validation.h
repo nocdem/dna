@@ -35,13 +35,15 @@
  * ── THE LIGHT FAMILY: `VerifyCommitLight` IS PORTED, Trusting IS NOT ──
  * `VerifyCommitLight` / `VerifyCommitLightAllSignatures` /
  * `verifyCommitLightInternal` (:61-115) are PORTED (blocksync port,
- * 2026-09-29): their caller `blocksync/reactor.go:496` is now built
- * (cmt_bsync_reactor.c), and the operator's answer in
- * docs/plans/decisions/2026-09-29-blocksync-before-testnet.md is "follow
- * the reference — port VerifyCommitLight". Block sync verifies the first
- * block with the SECOND block's LastCommit through
- * `cmt_verify_commit_light`, exactly as the reference does — it no longer
- * takes the full `VerifyCommit` path. The wrappers at
+ * 2026-09-29), for their then caller `blocksync/reactor.go:496` @709fd12b
+ * and the operator's answer in
+ * docs/plans/decisions/2026-09-29-blocksync-before-testnet.md ("follow
+ * the reference — port VerifyCommitLight"). The v0.38.26 pin moved that
+ * caller to the FULL check: block sync now verifies the first block with
+ * the SECOND block's LastCommit through `cmt_verify_commit`
+ * (v0.38.26 reactor.go:580-585, "Fully verify second.LastCommit";
+ * cmt_bsync_reactor.c process_first), so the light pair has NO
+ * production caller today — only its tests. The wrappers at
  * `validator_set.go:708-720` are ported with them
  * (cmt_validator_set.h). `VerifyCommitLightTrusting*` (:125-192) stay YOK
  * by the port map's REV 3/3.1 scope rule (map ~892, ~950): their callers
@@ -183,11 +185,12 @@ typedef enum {
      *   ignore: `BlockIDFlag != BlockIDFlagCommit`  (:101)
      *   count : always true                         (:104)
      * Passed by `cmt_verify_commit_light` and
-     * `cmt_verify_commit_light_all_signatures` (:109, :113-114), whose
-     * live caller is block sync (blocksync/reactor.go:496,
-     * cmt_bsync_reactor.c). A NIL entry is therefore IGNORED here — not
-     * verified — which is the light path's difference from
-     * CMT_SIG_POLICY_COMMIT.
+     * `cmt_verify_commit_light_all_signatures` (:109, :113-114), which have
+     * NO production caller since the v0.38.26 pin: block sync, their
+     * caller @709fd12b (reactor.go:496), now calls the full
+     * `cmt_verify_commit` (v0.38.26 reactor.go:580-585). A NIL entry is
+     * IGNORED here — not verified — which is the light path's difference
+     * from CMT_SIG_POLICY_COMMIT.
      */
     CMT_SIG_POLICY_LIGHT = 1
 } cmt_commit_sig_policy_t;
@@ -334,8 +337,10 @@ int cmt_verify_commit(const uint8_t *chain_id, size_t chain_id_len,
  *     counts (:104);
  *   · the loop RETURNS as soon as the tally exceeds the threshold
  *     (countAllSignatures false, :392-394), so a bad signature AFTER that
- *     point is not seen. That is the reference's light semantics, and the
- *     one block sync uses (blocksync/reactor.go:496). Two nodes given the
+ *     point is not seen. That is the reference's light semantics — the
+ *     one block sync used @709fd12b (blocksync/reactor.go:496); since the
+ *     v0.38.26 pin block sync uses the full `cmt_verify_commit` and this
+ *     function has no production caller. Two nodes given the
  *     same commit and set reach the same verdict, because entries are
  *     visited in validator-index order (:344) and the exit point is a
  *     function of that order only.

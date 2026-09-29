@@ -124,8 +124,16 @@
  *             reference also counts, is not);
  *           · a copy from a slot that has already delivered, while the
  *             requester holds a block, is dropped SILENTLY — no
- *             send_error: an honest slow peer may legitimately answer a
- *             request twice (after a retry). A slot that already delivered
+ *             send_error. SCOPE, narrower than "a slow peer is never
+ *             punished": only a duplicate from the SAME slot, still
+ *             assigned to the same peer, is dropped this way. A late
+ *             answer from a peer whose request was redone and handed to
+ *             ANOTHER peer is not one — the requester no longer names it,
+ *             so the copy is refused as "requested block #%d from %v, not
+ *             %s" with send_error (pool.go:354-357), or, when no request
+ *             to it is outstanding at all, as an unsolicited BlockResponse
+ *             (reactor.go:312-314); either stops that peer, as in the
+ *             reference. A slot that already delivered
  *             but whose block was since discarded (the other peer's copy
  *             was kept and then refused, `rq_reset`) IS stored when it
  *             sends again — it is the only copy on offer — but its peer
@@ -297,7 +305,9 @@ typedef struct {
     char                 got_block_from[CMT_P2P_ID_CAP]; /* :655 */
     cmt_bsync_block_t   *block;                        /* :656-657 block + extCommit */
     /* BS-10 (own fix, header): the slot's peer has delivered this height
-     * since the slot was last assigned. */
+     * since the slot was last assigned. Only a repeat from THAT slot is
+     * dropped silently; a late copy from a peer the slot no longer names
+     * is refused and stops it (pool.go:354-357, reactor.go:312-314). */
     bool                 peer_delivered;
     bool                 second_delivered;
 

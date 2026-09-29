@@ -199,7 +199,7 @@ int cmt_verify_commit_single(const uint8_t *chain_id, size_t chain_id_len,
              * index. CanonicalVote does not contain the address, so the
              * signature alone cannot bind it; before this check a commit
              * could carry validator i's valid signature under validator
-             * j's address, and MedianTime (state/state.go:282), which
+             * j's address, and MedianTime (state/state.go:281), which
              * looks signers up BY ADDRESS, then weighted i's timestamp
              * with j's power. The address is carried by the commit, so
              * a mismatch is a property of peer input: REJECT. */
